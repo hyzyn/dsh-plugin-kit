@@ -6,6 +6,11 @@
     - id: all
       name: '@dsh-kit/all'
 
+# from ../env
+- insert:
+    - id: env-manager
+      name: '@dsh-kit/env'
+
 # from ../hello
 - insert:
     - id: hello

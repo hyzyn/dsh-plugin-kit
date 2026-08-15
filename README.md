@@ -10,6 +10,7 @@
 dsh-plugin-kit/
 ├── packages/
 │   ├── hello/            # 最小 host 插件模板（create-plugin 的复制蓝本）
+│   ├── env/              # 环境变量 / 密钥管理插件（Web GUI 设置卡片）
 │   ├── mcp/              # MCP 服务器配置插件（Web GUI 设置卡片）
 │   ├── all/              # 聚合安装包：一条 bundle patch 挂载全部插件
 │   └── kit/              # 插件开发工具包（definePlugin 等类型助手）
@@ -25,6 +26,7 @@ dsh-plugin-kit/
 | 包名 | 说明 |
 | --- | --- |
 | `@dsh-kit/hello` | 最小 host 插件模板 / 示例插件，也是 `pnpm create-plugin` 的复制蓝本 |
+| `@dsh-kit/env` | 环境变量 / 密钥管理插件：在 Web GUI 设置 → 插件中提供「环境变量 / 密钥管理」卡片，管理 `~/.dsh/env.yml` 中的环境变量与密钥（支持普通值、`js:` 表达式、密钥标记、写入 `process.env`） |
 | `@dsh-kit/mcp` | MCP 服务器配置插件：在 Web GUI 设置 → 插件中提供「MCP 服务器配置」卡片，管理 `~/.dsh/cordis.patch.yml` 中的 MCP 服务器（支持 stdio / streamable-http、连接测试、启用/停用） |
 
 > `@dsh-kit/all` 是聚合安装包，`@dsh-kit/kit` 是插件开发工具包，不属于业务插件。
