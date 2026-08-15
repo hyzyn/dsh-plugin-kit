@@ -1,11 +1,11 @@
 /* eslint-disable */
 /**
- * @dsh-kit/env — 浏览器半体：官方设置 → 插件 里的「环境变量 / 密钥管理」卡片。
+ * @hyzyn/dsh-env — 浏览器半体：官方设置 → 插件 里的「环境变量 / 密钥管理」卡片。
  * 通过核心 slots 服务注册到 settings.plugin.item 插槽。
- * 纯前端 React 卡片，宿主经 /plugins/@dsh-kit/env/client.js 提供。
+ * 纯前端 React 卡片，宿主经 /plugins/@hyzyn/dsh-env/client.js 提供。
  */
 window.__ModuleLoader__.load({
-  id: '@dsh-kit/env',
+  id: '@hyzyn/dsh-env',
   factory: (require) => {
     const exports = {}
 

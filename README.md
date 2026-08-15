@@ -54,17 +54,17 @@ dsh plugin --profile web add link:$(pwd)/packages/prompt
 安装后**重启一次 `dsh web`**，打开 Web GUI 的 设置 → 插件，即可看到对应的管理卡片。
 之后在卡片里的所有修改（保存环境变量 / MCP 服务器 / Prompt）都会**自动生效，无需再重启**。
 
-> 卸载：`dsh plugin --profile web remove @dsh-kit/<包名>`（如 `@dsh-kit/mcp`），重启后插件行消失。
+> 卸载：`dsh plugin --profile web remove @hyzyn/dsh-<包名>`（如 `@hyzyn/dsh-mcp`），重启后插件行消失。
 
 ## 内置插件一览
 
 | 插件 | 卡片位置 | 干什么用 |
 | --- | --- | --- |
-| `@dsh-kit/env` | 设置 → 插件 →「环境变量 / 密钥管理」 | 图形化管理环境变量与密钥，保存后写入 `process.env` |
-| `@dsh-kit/mcp` | 设置 → 插件 →「MCP 服务器配置」 | 给 DSH 添加 MCP 服务器，模型即可使用 `mcp__<服务器>__<工具>` |
-| `@dsh-kit/prompt` | 设置 → 插件 →「Prompt 管理」 | 可视化编辑 systemPrompt，版本管理 / A/B 测试 / 导出分享 |
+| `@hyzyn/dsh-env` | 设置 → 插件 →「环境变量 / 密钥管理」 | 图形化管理环境变量与密钥，保存后写入 `process.env` |
+| `@hyzyn/dsh-mcp` | 设置 → 插件 →「MCP 服务器配置」 | 给 DSH 添加 MCP 服务器，模型即可使用 `mcp__<服务器>__<工具>` |
+| `@hyzyn/dsh-prompt` | 设置 → 插件 →「Prompt 管理」 | 可视化编辑 systemPrompt，版本管理 / A/B 测试 / 导出分享 |
 
-### 环境变量 / 密钥管理（@dsh-kit/env）
+### 环境变量 / 密钥管理（@hyzyn/dsh-env）
 
 - **做什么**：在 Web GUI 里增删改环境变量和密钥，保存后立即写入当前进程的 `process.env`，宿主和之后启动的子进程都能读到，无需重启。
 - **怎么用**：打开卡片 → 添加键值 →（敏感条目勾选「密钥」，以密码框显示）→ 保存。
@@ -72,7 +72,7 @@ dsh plugin --profile web add link:$(pwd)/packages/prompt
 - **存哪里**：`~/.dsh/env.yml` 的托管区块（自动生成，请勿手改）。
 - **注意**：键名只允许字母/数字/下划线，且不能重复。
 
-### MCP 服务器配置（@dsh-kit/mcp）
+### MCP 服务器配置（@hyzyn/dsh-mcp）
 
 - **做什么**：给 DSH 添加 MCP 服务器，保存后 1~2 秒内热加载为 `mcp__<服务器名>__<工具名>` 工具，模型即可直接调用，无需重启。
 - **怎么用**：打开卡片 → 添加服务器（选传输方式）→（建议先点「连接测试」）→ 保存。
@@ -80,7 +80,7 @@ dsh plugin --profile web add link:$(pwd)/packages/prompt
 - **存哪里**：`~/.dsh/cordis.patch.yml` 的托管区块。
 - **注意**：**不要**手工往该文件里追加插件行，否则启动时报 `duplicate loader entry id` 直接退出。
 
-### Prompt 管理（@dsh-kit/prompt）
+### Prompt 管理（@hyzyn/dsh-prompt）
 
 - **做什么**：可视化编辑 systemPrompt，启用后其内容作为 systemPrompt section 注入，保存即生效。
 - **怎么用**：打开卡片 → 新建/编辑 Prompt（可保存多个版本）→ 启用。
@@ -90,15 +90,15 @@ dsh plugin --profile web add link:$(pwd)/packages/prompt
 
 ## 界面预览
 
-### MCP 服务器配置（@dsh-kit/mcp）
+### MCP 服务器配置（@hyzyn/dsh-mcp）
 
 ![MCP 服务器配置插件](/docs/dsh-plugin-kit-mcp.png)
 
-### 环境变量 / 密钥管理（@dsh-kit/env）
+### 环境变量 / 密钥管理（@hyzyn/dsh-env）
 
 ![环境变量 / 密钥管理插件](/docs/dsh-plugin-kit-env.png)
 
-### Prompt 管理（@dsh-kit/prompt）
+### Prompt 管理（@hyzyn/dsh-prompt）
 
 ![Prompt 管理插件](/docs/dsh-plugin-kit-promat.png)
 
@@ -106,7 +106,7 @@ dsh plugin --profile web add link:$(pwd)/packages/prompt
 
 ```bash
 pnpm create-plugin <name> [id]
-# 例：pnpm create-plugin timer          → packages/timer（@dsh-kit/timer，插件 id: timer）
+# 例：pnpm create-plugin timer          → packages/timer（@hyzyn/dsh-timer，插件 id: timer）
 # 例：pnpm create-plugin pet-tracker pt → packages/pet-tracker（插件 id: pt）
 ```
 
@@ -116,7 +116,7 @@ pnpm create-plugin <name> [id]
 2. 构建并本地安装调试：
 
 ```bash
-pnpm --filter @dsh-kit/<name> build
+pnpm --filter @hyzyn/dsh-<name> build
 dsh plugin --profile web add link:$(pwd)/packages/<name>
 ```
 
@@ -144,7 +144,7 @@ dsh plugin --profile web add link:$(pwd)/packages/<name>
 ## 发布到 npm
 
 1. 把各包的 `workspace:*` 依赖改成真实版本号；
-2. 把 `@dsh-kit/*` scope 换成你拥有的 npm scope；
+2. 把 `@hyzyn/dsh-*` scope 换成你拥有的 npm scope；
 3. `pnpm -r publish`（`files` 已包含 lib/、cordis.patch.yml、README）。
 
 ## 常见问题

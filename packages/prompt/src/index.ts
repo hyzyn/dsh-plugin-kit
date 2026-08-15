@@ -1,5 +1,5 @@
 /**
- * @dsh-kit/prompt — DSH Web GUI 的 Prompt 管理插件（宿主半体）。
+ * @hyzyn/dsh-prompt — DSH Web GUI 的 Prompt 管理插件（宿主半体）。
  *
  * 能力：
  * - 可视化编辑 systemPrompt：在设置 → 插件 的「Prompt 管理」卡片中维护多个

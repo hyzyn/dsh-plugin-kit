@@ -1,5 +1,5 @@
 {
-  "name": "@dsh-kit/all",
+  "name": "@hyzyn/dsh-all",
   "version": "0.1.0",
   "description": "dsh-plugin-kit 聚合安装包：一条 bundle patch 挂载仓库内全部插件（cordis.patch.yml 与 dependencies 由 scripts/aggregate.mjs 自动生成，勿手改）。",
   "type": "module",
@@ -21,10 +21,10 @@
     }
   },
   "dependencies": {
-    "@dsh-kit/env": "workspace:*",
-    "@dsh-kit/hello": "workspace:*",
-    "@dsh-kit/mcp": "workspace:*",
-    "@dsh-kit/prompt": "workspace:*"
+    "@hyzyn/dsh-env": "workspace:*",
+    "@hyzyn/dsh-hello": "workspace:*",
+    "@hyzyn/dsh-mcp": "workspace:*",
+    "@hyzyn/dsh-prompt": "workspace:*"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",

@@ -1,12 +1,12 @@
 /* eslint-disable */
 /**
- * @dsh-kit/prompt — 浏览器半体：官方设置 → 插件 里的「Prompt 管理」卡片。
+ * @hyzyn/dsh-prompt — 浏览器半体：官方设置 → 插件 里的「Prompt 管理」卡片。
  * 通过核心 slots 服务注册到 settings.plugin.item 插槽。
  * 纯前端 DOM 面板（React 只承担卡片外壳与展开状态），无构建步骤，
- * 宿主经 /plugins/@dsh-kit/prompt/client.js 提供。
+ * 宿主经 /plugins/@hyzyn/dsh-prompt/client.js 提供。
  */
 window.__ModuleLoader__.load({
-  id: '@dsh-kit/prompt',
+  id: '@hyzyn/dsh-prompt',
   factory: (require) => {
     const exports = {}
 

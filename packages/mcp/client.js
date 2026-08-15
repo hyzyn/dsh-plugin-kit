@@ -1,13 +1,13 @@
 /* eslint-disable */
 /**
- * @dsh-kit/mcp — 浏览器半体：官方设置 → 插件 里的「MCP 服务器配置」卡片。
+ * @hyzyn/dsh-mcp — 浏览器半体：官方设置 → 插件 里的「MCP 服务器配置」卡片。
  * 通过核心 slots 服务注册到 settings.plugin.item 插槽（与官方终端 / Agent 循环 /
  * 网页搜索卡片同级），不再占用侧边栏、不做全屏面板接管。
  * 纯 DOM 渲染（React 只承担卡片外壳与展开状态），无构建步骤，
- * 宿主经 /plugins/@dsh-kit/mcp/client.js 提供。
+ * 宿主经 /plugins/@hyzyn/dsh-mcp/client.js 提供。
  */
 window.__ModuleLoader__.load({
-  id: '@dsh-kit/mcp',
+  id: '@hyzyn/dsh-mcp',
   factory: (require) => {
     const exports = {}
 

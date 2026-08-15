@@ -1,5 +1,5 @@
 /**
- * @dsh-kit/kit — dsh-plugin-kit 插件开发工具包。
+ * @hyzyn/dsh-kit — dsh-plugin-kit 插件开发工具包。
  * 仅提供与 DSH SDK 正交的类型助手，不包含任何运行时行为。
  */
 import type { Context } from '@deepseek-ai/cordis'

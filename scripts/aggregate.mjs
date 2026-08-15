@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * 生成 @dsh-kit/all 聚合清单：
+ * 生成 @hyzyn/dsh-all 聚合清单：
  *   packages/all/cordis.patch.yml —— 自身行 + 全部插件行
  *   packages/all/package.json dependencies —— 全部插件 workspace:*
- * 扫描规则：packages 下各子目录的 package.json 含 dsh.bundle.patch、且包名不是 @dsh-kit/all。
+ * 扫描规则：packages 下各子目录的 package.json 含 dsh.bundle.patch、且包名不是 @hyzyn/dsh-all。
  * 每行的 id 与包名从插件自己的 cordis.patch.yml 提取。
  * 用法：pnpm aggregate（仓库根目录）
  */
@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const packagesDir = join(root, 'packages')
-const ALL_NAME = '@dsh-kit/all'
+const ALL_NAME = '@hyzyn/dsh-all'
 
 function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'))
@@ -87,7 +87,7 @@ const allPkgPath = join(packagesDir, 'all', 'package.json')
 const allPkg = readJson(allPkgPath)
 const deps = { ...(allPkg.dependencies ?? {}) }
 for (const key of Object.keys(deps)) {
-  if (key.startsWith('@dsh-kit/')) delete deps[key]
+  if (key.startsWith('@hyzyn/dsh-')) delete deps[key]
 }
 for (const p of plugins) deps[p.name] = 'workspace:*'
 allPkg.dependencies = Object.fromEntries(Object.entries(deps).sort())

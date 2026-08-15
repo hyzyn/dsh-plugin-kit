@@ -4,4 +4,4 @@
 #   dsh plugin --profile web add link:$(pwd)/packages/env
 - insert:
     - id: env-manager
-      name: '@dsh-kit/env'
+      name: '@hyzyn/dsh-env'

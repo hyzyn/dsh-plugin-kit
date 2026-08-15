@@ -1,5 +1,5 @@
 /**
- * @dsh-kit/mcp — DSH Web GUI 的 MCP 服务器配置插件（宿主半体）。
+ * @hyzyn/dsh-mcp — DSH Web GUI 的 MCP 服务器配置插件（宿主半体）。
  *
  * 机制：MCP 服务器在 DSH 里是 @deepseek-ai/dsh-mcp-client 的插件实例。
  * 本插件在 ~/.dsh/cordis.patch.yml（home 补丁层，对所有 profile 生效）

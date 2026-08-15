@@ -1,4 +1,4 @@
-# @dsh-kit/all
+# @hyzyn/dsh-all
 
 dsh-plugin-kit 聚合安装包：一条 bundle patch 挂载仓库内全部插件。
 

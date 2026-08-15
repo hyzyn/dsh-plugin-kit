@@ -1,4 +1,4 @@
-# @dsh-kit/prompt
+# @hyzyn/dsh-prompt
 
 DSH Web GUI 的 **Prompt 管理插件**：官方 设置 → 插件 里的「Prompt 管理」卡片，提供 systemPrompt 的可视化编辑、版本管理、A/B 测试、导出/分享。浏览器半体通过核心 `settings.plugin.item` 插槽注册。
 
@@ -35,11 +35,11 @@ DSH Web GUI 的 **Prompt 管理插件**：官方 设置 → 插件 里的「Prom
 ## 安装
 
 ```bash
-pnpm --filter @dsh-kit/prompt build
+pnpm --filter @hyzyn/dsh-prompt build
 dsh plugin --profile web add link:$(pwd)/packages/prompt
 ```
 
-插件自身行由 `cordis.patch.yml` 的 `insert: { id: prompt-manager, name: '@dsh-kit/prompt' }` 挂载；保存 Prompt 后宿主会立即刷新 systemPrompt section，无需重启。
+插件自身行由 `cordis.patch.yml` 的 `insert: { id: prompt-manager, name: '@hyzyn/dsh-prompt' }` 挂载；保存 Prompt 后宿主会立即刷新 systemPrompt section，无需重启。
 
 ## 配置
 

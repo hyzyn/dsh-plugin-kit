@@ -3,4 +3,4 @@
 #   dsh plugin --profile web add link:$(pwd)/packages/prompt
 - insert:
     - id: prompt-manager
-      name: '@dsh-kit/prompt'
+      name: '@hyzyn/dsh-prompt'

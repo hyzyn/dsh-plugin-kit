@@ -1,4 +1,4 @@
-# @dsh-kit/mcp
+# @hyzyn/dsh-mcp
 
 DSH Web GUI 的 **MCP 服务器配置插件**：官方 设置 → 插件 里的「MCP 服务器配置」卡片，提供图形化管理。浏览器半体通过核心 `settings.plugin.item` 插槽注册，与官方终端 / Agent 循环 / 网页搜索卡片同级。
 
@@ -41,13 +41,13 @@ MCP 服务器在 DSH 里是官方 `@deepseek-ai/dsh-mcp-client` 的插件实例�
 ## 安装
 
 ```bash
-pnpm --filter @dsh-kit/mcp build
+pnpm --filter @hyzyn/dsh-mcp build
 dsh plugin --profile web add link:$(pwd)/packages/mcp
 ```
 
 `dsh plugin add` 会同时把本包装进 profile 依赖，并因其声明了 `dsh.bundle`
 而把它加进 `dsh.profile.bundles` 补丁层——`cordis.patch.yml` 里的
-`insert: { id: mcp-config, name: '@dsh-kit/mcp' }` 插件行由此生效，
+`insert: { id: mcp-config, name: '@hyzyn/dsh-mcp' }` 插件行由此生效，
 **只需挂载这一次**。插件代码更新后重启 `dsh web` 即可生效。
 
 > ⚠️ 不要再把同一插件行手工追加到 `~/.dsh/cordis.patch.yml`：同一
@@ -65,7 +65,7 @@ DSH 对 home 补丁层的监听在 1~2 秒内热加载为 `mcp__<server>__<tool>
 ## 卸载
 
 ```bash
-dsh plugin --profile web remove @dsh-kit/mcp
+dsh plugin --profile web remove @hyzyn/dsh-mcp
 ```
 
 重启 `dsh web` 后插件行随之消失。托管区块可以留着（无插件时只是空行），

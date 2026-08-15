@@ -8,4 +8,4 @@
 # "duplicate loader entry id: mcp-config"（home 层只放 MCP 服务器托管区块）。
 - insert:
     - id: mcp-config
-      name: '@dsh-kit/mcp'
+      name: '@hyzyn/dsh-mcp'

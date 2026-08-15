@@ -1,5 +1,5 @@
 /**
- * @dsh-kit/env — DSH Web GUI 的环境变量 / 密钥管理插件（宿主半体）。
+ * @hyzyn/dsh-env — DSH Web GUI 的环境变量 / 密钥管理插件（宿主半体）。
  *
  * 机制：本插件在 ~/.dsh/env.yml（可用 DSH_ENV_FILE 覆盖）里维护一段带标记的
  * 托管区块，每条环境变量是一个 YAML 条目：

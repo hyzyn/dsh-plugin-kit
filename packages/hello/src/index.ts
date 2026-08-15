@@ -1,10 +1,10 @@
 /**
- * @dsh-kit/hello — dsh-plugin-kit 的最小 host 插件模板。
+ * @hyzyn/dsh-hello — dsh-plugin-kit 的最小 host 插件模板。
  * 覆盖：dsh.bundle.patch manifest、cordis.patch.yml 行、{ name, inject, apply }
  * 导出形状与 tsc 构建配置。新插件以本目录为蓝本（pnpm create-plugin）。
  */
 import type { Context } from '@deepseek-ai/cordis'
-import { definePlugin } from '@dsh-kit/kit'
+import { definePlugin } from '@hyzyn/dsh-kit'
 
 export interface Config {
   /** 挂载时打印一行日志（默认开）。 */

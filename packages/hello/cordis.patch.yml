@@ -5,4 +5,4 @@
 # 行内容为按包名注册的裸插件行：exports "." 的 node 半体运行在宿主进程。
 - insert:
     - id: hello
-      name: '@dsh-kit/hello'
+      name: '@hyzyn/dsh-hello'

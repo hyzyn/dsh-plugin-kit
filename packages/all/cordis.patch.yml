@@ -4,24 +4,24 @@
 # from self
 - insert:
     - id: all
-      name: '@dsh-kit/all'
+      name: '@hyzyn/dsh-all'
 
 # from ../env
 - insert:
     - id: env-manager
-      name: '@dsh-kit/env'
+      name: '@hyzyn/dsh-env'
 
 # from ../hello
 - insert:
     - id: hello
-      name: '@dsh-kit/hello'
+      name: '@hyzyn/dsh-hello'
 
 # from ../mcp
 - insert:
     - id: mcp-config
-      name: '@dsh-kit/mcp'
+      name: '@hyzyn/dsh-mcp'
 
 # from ../prompt
 - insert:
     - id: prompt-manager
-      name: '@dsh-kit/prompt'
+      name: '@hyzyn/dsh-prompt'

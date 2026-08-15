@@ -1,4 +1,4 @@
-# @dsh-kit/kit
+# @hyzyn/dsh-kit
 
 dsh-plugin-kit 的插件开发工具包：类型助手与共用代码。
 零运行时依赖（`@deepseek-ai/cordis` 仅为类型）。
@@ -9,7 +9,7 @@ dsh-plugin-kit 的插件开发工具包：类型助手与共用代码。
 - `DshPlugin<C>` / `PluginConfig` —— 插件对象与配置的类型。
 
 ```ts
-import { definePlugin } from '@dsh-kit/kit'
+import { definePlugin } from '@hyzyn/dsh-kit'
 
 const plugin = definePlugin<{ enabled?: boolean }>({
   name: 'my-plugin',

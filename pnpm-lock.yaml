@@ -14,16 +14,16 @@ importers:
 
   packages/all:
     dependencies:
-      '@dsh-kit/env':
+      '@hyzyn/dsh-env':
         specifier: workspace:*
         version: link:../env
-      '@dsh-kit/hello':
+      '@hyzyn/dsh-hello':
         specifier: workspace:*
         version: link:../hello
-      '@dsh-kit/mcp':
+      '@hyzyn/dsh-mcp':
         specifier: workspace:*
         version: link:../mcp
-      '@dsh-kit/prompt':
+      '@hyzyn/dsh-prompt':
         specifier: workspace:*
         version: link:../prompt
     devDependencies:
@@ -55,7 +55,7 @@ importers:
 
   packages/hello:
     dependencies:
-      '@dsh-kit/kit':
+      '@hyzyn/dsh-kit':
         specifier: workspace:*
         version: link:../kit
     devDependencies:

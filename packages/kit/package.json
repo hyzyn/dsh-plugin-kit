@@ -1,5 +1,5 @@
 {
-  "name": "@dsh-kit/kit",
+  "name": "@hyzyn/dsh-kit",
   "version": "0.1.0",
   "description": "dsh-plugin-kit 插件开发工具包：definePlugin 类型助手等共用代码，零运行时依赖。",
   "type": "module",

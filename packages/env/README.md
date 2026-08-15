@@ -1,4 +1,4 @@
-# @dsh-kit/env
+# @hyzyn/dsh-env
 
 DSH Web GUI 的 **环境变量 / 密钥管理插件**：官方 设置 → 插件 里的「环境变量 / 密钥管理」卡片，提供图形化管理。浏览器半体通过核心 `settings.plugin.item` 插槽注册。
 
@@ -19,11 +19,11 @@ DSH Web GUI 的 **环境变量 / 密钥管理插件**：官方 设置 → 插件
 ## 安装
 
 ```bash
-pnpm --filter @dsh-kit/env build
+pnpm --filter @hyzyn/dsh-env build
 dsh plugin --profile web add link:$(pwd)/packages/env
 ```
 
-插件自身行由 `cordis.patch.yml` 的 `insert: { id: env-manager, name: '@dsh-kit/env' }` 挂载；保存环境变量后立即写入 `process.env`，无需重启宿主进程。
+插件自身行由 `cordis.patch.yml` 的 `insert: { id: env-manager, name: '@hyzyn/dsh-env' }` 挂载；保存环境变量后立即写入 `process.env`，无需重启宿主进程。
 
 ## 配置
 

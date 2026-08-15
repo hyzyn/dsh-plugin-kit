@@ -2,7 +2,7 @@
 /**
  * 从 packages/hello 模板复制生成一个新插件包，并自动重跑聚合脚本。
  * 用法：node scripts/create-plugin.mjs <name> [id]
- *   <name>  包名后缀（小写字母/数字/连字符）→ @dsh-kit/<name>、packages/<name>
+ *   <name>  包名后缀（小写字母/数字/连字符）→ @hyzyn/dsh-<name>、packages/<name>
  *   [id]    cordis 插件 id（默认与 <name> 相同）
  * 等价快捷方式：pnpm create-plugin <name> [id]
  */
@@ -49,7 +49,7 @@ function rewrite(dir) {
     const ext = full.slice(full.lastIndexOf('.'))
     if (!TEXT_EXTS.has(ext)) continue
     const text = readFileSync(full, 'utf8')
-      .replaceAll('@dsh-kit/hello', `@dsh-kit/${name}`)
+      .replaceAll('@hyzyn/dsh-hello', `@hyzyn/dsh-${name}`)
       .replaceAll('id: hello', `id: ${id}`)
       .replaceAll("'hello'", `'${id}'`)
       .replaceAll('dsh-plugin-kit/hello', `dsh-plugin-kit/${name}`)
@@ -60,7 +60,7 @@ function rewrite(dir) {
 }
 rewrite(destDir)
 
-console.log(`[create-plugin] packages/${name} 已生成（包 @dsh-kit/${name}，插件 id ${id}）`)
+console.log(`[create-plugin] packages/${name} 已生成（包 @hyzyn/dsh-${name}，插件 id ${id}）`)
 
 const agg = spawnSync(process.execPath, [join(root, 'scripts', 'aggregate.mjs')], { stdio: 'inherit' })
 if (agg.status !== 0) {
