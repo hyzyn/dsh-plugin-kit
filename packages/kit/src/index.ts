@@ -4,10 +4,8 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 
-/** 插件配置的宽类型：任意只读对象。 */
-export interface PluginConfig {
-  readonly [key: string]: unknown
-}
+/** 插件配置的宽类型：任意对象。 */
+export type PluginConfig = object
 
 /** 一个 DSH 插件对象：与 cordis.patch.yml 中 insert 行的 id 一一对应。 */
 export interface DshPlugin<C extends PluginConfig = PluginConfig> {
