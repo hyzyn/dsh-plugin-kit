@@ -20,3 +20,8 @@
 - insert:
     - id: mcp-config
       name: '@dsh-kit/mcp'
+
+# from ../prompt
+- insert:
+    - id: prompt-manager
+      name: '@dsh-kit/prompt'

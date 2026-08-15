@@ -14,12 +14,18 @@ importers:
 
   packages/all:
     dependencies:
+      '@dsh-kit/env':
+        specifier: workspace:*
+        version: link:../env
       '@dsh-kit/hello':
         specifier: workspace:*
         version: link:../hello
       '@dsh-kit/mcp':
         specifier: workspace:*
         version: link:../mcp
+      '@dsh-kit/prompt':
+        specifier: workspace:*
+        version: link:../prompt
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: ^4.0.1
@@ -73,6 +79,25 @@ importers:
         version: 5.7.3
 
   packages/mcp:
+    dependencies:
+      js-yaml:
+        specifier: ^4.1.0
+        version: 4.3.1
+      react:
+        specifier: ^18.2.0
+        version: 18.3.1
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: ^4.0.1
+        version: 4.0.1
+      '@types/node':
+        specifier: ^22.20.0
+        version: 22.20.1
+      typescript:
+        specifier: ~5.7.2
+        version: 5.7.3
+
+  packages/prompt:
     dependencies:
       js-yaml:
         specifier: ^4.1.0

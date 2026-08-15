@@ -1,7 +1,7 @@
 {
-  "name": "@dsh-kit/all",
-  "version": "0.0.0",
-  "description": "dsh-plugin-kit 聚合安装包：一条 bundle patch 挂载仓库内全部插件（cordis.patch.yml 与 dependencies 由 scripts/aggregate.mjs 自动生成，勿手改）。",
+  "name": "@dsh-kit/prompt",
+  "version": "0.1.0",
+  "description": "DSH Web GUI 的 Prompt 管理插件：可视化编辑 systemPrompt、版本管理、A/B 测试、导出/分享，配置保存在 ~/.dsh/prompts.yml 的托管区块。",
   "type": "module",
   "engines": {
     "node": ">=22.19.0"
@@ -13,21 +13,27 @@
       "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
     },
+    "./client": "./client.js",
     "./package.json": "./package.json"
   },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": []
     }
   },
   "dependencies": {
-    "@dsh-kit/env": "workspace:*",
-    "@dsh-kit/hello": "workspace:*",
-    "@dsh-kit/mcp": "workspace:*",
-    "@dsh-kit/prompt": "workspace:*"
+    "js-yaml": "^4.1.0"
+  },
+  "peerDependencies": {
+    "react": "^18.2.0"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
+    "@types/node": "^22.20.0",
     "typescript": "~5.7.2"
   },
   "scripts": {
@@ -36,6 +42,7 @@
   },
   "files": [
     "lib",
+    "client.js",
     "cordis.patch.yml",
     "README.md"
   ],

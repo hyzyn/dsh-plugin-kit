@@ -1,0 +1,6 @@
+# dsh-plugin-kit/prompt bundle patch：把本插件行插入 profile 阵容。
+# 启用方式：
+#   dsh plugin --profile web add link:$(pwd)/packages/prompt
+- insert:
+    - id: prompt-manager
+      name: '@dsh-kit/prompt'
