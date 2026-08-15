@@ -1,6 +1,7 @@
 # dsh-plugin-kit
 
 > DSH 插件全家桶：三款开箱即用的插件 + 一条命令生成新插件的开发脚手架。
+> 插件已发布到 npm（`@hyzyn/dsh-all` 等），一行命令即可安装使用：`dsh plugin --profile web add @hyzyn/dsh-all`。
 > npm 包名与仓库目录名均为 `dsh-plugin-kit`。
 
 本仓库是一个 pnpm monorepo，主要解决两件事：
@@ -27,7 +28,33 @@ dsh-plugin-kit/
 
 ## 快速开始（装插件）
 
-**前置要求**：Node ≥ 22.19、pnpm 10、本机已装 DSH（`dsh` 命令可用）。
+### 直接安装（已发布到 npm，推荐）
+
+插件已发布到 npm，**无需克隆仓库**，任何装了 DSH 的机器一条命令即可：
+
+```bash
+# 全家桶：一条命令装下全部插件
+dsh plugin --profile web add @hyzyn/dsh-all
+```
+
+或按需单个安装：
+
+```bash
+dsh plugin --profile web add @hyzyn/dsh-env     # 环境变量 / 密钥管理
+dsh plugin --profile web add @hyzyn/dsh-mcp     # MCP 服务器配置
+dsh plugin --profile web add @hyzyn/dsh-prompt  # Prompt 管理
+```
+
+安装后**重启一次 `dsh web`**，打开 Web GUI 的 设置 → 插件，即可看到对应的管理卡片。
+之后在卡片里的所有修改（保存环境变量 / MCP 服务器 / Prompt）都会**自动生效，无需再重启**。
+
+> 卸载：`dsh plugin --profile web remove @hyzyn/dsh-<包名>`（如 `@hyzyn/dsh-mcp`），重启后插件行消失。
+
+### 本地开发安装（从源码 link）
+
+想改插件代码或调试时，从仓库源码安装：
+
+**前置要求**：Node ≥ 22.19、pnpm 10、DSH（`dsh` 命令可用）。
 
 ```bash
 cd dsh-plugin-kit
@@ -35,26 +62,15 @@ pnpm install
 pnpm build        # 构建全部包，产出 lib/
 ```
 
-### 方式一：全家桶（推荐）
-
-一条命令安装全部插件：
-
 ```bash
+# 全家桶
 dsh plugin --profile web add link:$(pwd)/packages/all
-```
 
-### 方式二：单个安装
-
-```bash
+# 或单个
 dsh plugin --profile web add link:$(pwd)/packages/env
 dsh plugin --profile web add link:$(pwd)/packages/mcp
 dsh plugin --profile web add link:$(pwd)/packages/prompt
 ```
-
-安装后**重启一次 `dsh web`**，打开 Web GUI 的 设置 → 插件，即可看到对应的管理卡片。
-之后在卡片里的所有修改（保存环境变量 / MCP 服务器 / Prompt）都会**自动生效，无需再重启**。
-
-> 卸载：`dsh plugin --profile web remove @hyzyn/dsh-<包名>`（如 `@hyzyn/dsh-mcp`），重启后插件行消失。
 
 ## 内置插件一览
 
@@ -143,9 +159,13 @@ dsh plugin --profile web add link:$(pwd)/packages/<name>
 
 ## 发布到 npm
 
-1. 把各包的 `workspace:*` 依赖改成真实版本号；
-2. 把 `@hyzyn/dsh-*` scope 换成你拥有的 npm scope；
-3. `pnpm -r publish`（`files` 已包含 lib/、cordis.patch.yml、README）。
+本仓库插件已发布（`@hyzyn/dsh-all@0.1.0` 等），升级版本后重新发布：
+
+1. 修改各包 `package.json#version`（聚合包与插件保持同版本）；
+2. `pnpm -r publish`——`workspace:*` 依赖会自动替换为真实版本号；`files` 已包含 lib/、cordis.patch.yml、README；
+3. `npm view @hyzyn/dsh-all versions` 验证。
+
+> 注意：scope（`@hyzyn`）必须是你拥有的 npm 账号/组织 scope，否则发布会被拒。
 
 ## 常见问题
 
