@@ -46,5 +46,8 @@
     "cordis.patch.yml",
     "README.md"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  }
 }
