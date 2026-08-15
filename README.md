@@ -43,6 +43,12 @@ dsh-plugin-kit/
 
 ![环境变量 / 密钥管理插件](/docs/dsh-plugin-kit-env.png)
 
+### Prompt 管理（@dsh-kit/prompt）
+
+可视化编辑 systemPrompt、版本管理、A/B 测试、导出/分享。
+
+![Prompt 管理插件](/docs/dsh-plugin-kit-promat.png)
+
 ## 快速开始
 
 ```bash

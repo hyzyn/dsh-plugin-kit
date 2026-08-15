@@ -28,11 +28,10 @@ window.__ModuleLoader__.load({
       '.pM_pluginCardOpen .pM_chevron{transform:rotate(180deg)}',
       '.pM_cardBody{padding:2px 16px 16px}',
       '.pM_panel{display:flex;flex-direction:column;gap:12px;color:var(--dsw-alias-label-primary);font-family:var(--dsw-font-family);box-sizing:border-box}',
-      '.pM_panelHeader{display:flex;align-items:center;gap:10px;flex:none}',
-      '.pM_panelTitle{margin:0;font-size:15px;font-weight:700;white-space:nowrap;flex:1}',
-      '.pM_subtitle{color:var(--dsw-alias-label-tertiary);font-size:11.5px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:320px}',
-      '.pM_toolbar{display:flex;align-items:center;gap:8px;flex:none}',
-      '.pM_toolbarSpacer{flex:1}',
+      '.pM_panelHeader{display:flex;align-items:center;gap:8px 10px;flex:none;flex-wrap:wrap}',
+      '.pM_panelTitle{margin:0;font-size:15px;font-weight:700;white-space:nowrap;flex:1;min-width:0}',
+      '.pM_subtitle{color:var(--dsw-alias-label-tertiary);font-size:11.5px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:320px;min-width:0;flex:0 1 auto}',
+      '.pM_toolbar{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex:1 1 100%;min-width:0;flex-wrap:wrap}',
       '.pM_btn{color:var(--dsw-alias-label-primary-foreground);background:var(--dsw-alias-button-info-fill);border:none;border-radius:8px;padding:6px 14px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}',
       '.pM_btn:hover:not(:disabled){background:var(--dsw-alias-button-info-hover)}',
       '.pM_btn:disabled{opacity:.5;cursor:default}',
@@ -75,7 +74,7 @@ window.__ModuleLoader__.load({
       '.pM_radioRow{display:flex;align-items:center;gap:16px}',
       '.pM_checkRow{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--dsw-alias-label-primary);cursor:pointer}',
       '.pM_formError{color:var(--dsw-alias-state-error-primary);font-size:12px;margin:0;white-space:pre-wrap}',
-      '.pM_toast{position:fixed;left:50%;bottom:36px;transform:translateX(-50%);z-index:200;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary);border-radius:10px;padding:9px 16px;font-size:13px;box-shadow:var(--dsw-shadow-lv3);max-width:70vw}',
+      '.pM_toast{position:fixed;left:50%;bottom:36px;transform:translateX(-50%);z-index:2147483647;pointer-events:none;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary);border-radius:10px;padding:9px 16px;font-size:13px;box-shadow:var(--dsw-shadow-lv3);max-width:70vw}',
       '.pM_toast[data-kind=ok]{border-color:var(--dsw-alias-state-success-primary);color:var(--dsw-alias-state-success-primary)}',
       '.pM_toast[data-kind=error]{border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}',
       '.pM_mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}',
@@ -227,14 +226,14 @@ window.__ModuleLoader__.load({
     function renderMainHtml() {
       const parts = []
       parts.push('<div class="pM_panel">')
-      parts.push('<div class="pM_panelHeader"><h2 class="pM_panelTitle">Prompt 管理</h2>')
-      parts.push('<span class="pM_subtitle" title="' + esc(state.file) + '">' + esc(state.file) + '</span>')
-      parts.push('<span class="pM_toolbarSpacer"></span>')
+      parts.push('<div class="pM_panelHeader">')
+      parts.push('<div class="pM_toolbar">')
       parts.push('<button class="pM_btnGhost" data-action="refresh"' + (state.loading ? ' disabled' : '') + '>刷新</button>')
       parts.push('<button class="pM_btnGhost" data-action="import">导入</button>')
       parts.push('<button class="pM_btnGhost" data-action="export-json-all">导出全部 JSON</button>')
       parts.push('<button class="pM_btnGhost" data-action="export-md-all">导出全部 MD</button>')
       parts.push('<button class="pM_btn" data-action="create">+ 新建 Prompt</button>')
+      parts.push('</div>')
       parts.push('</div>')
       if (state.fileError) parts.push('<div class="pM_banner" data-kind="error">' + esc(state.fileError) + '</div>')
       if (state.loading) {
@@ -282,9 +281,10 @@ window.__ModuleLoader__.load({
       parts.push('<div class="pM_panel">')
       parts.push('<div class="pM_panelHeader"><h2 class="pM_panelTitle">编辑 Prompt</h2>')
       parts.push('<span class="pM_subtitle">' + esc(prompt.id || '新 Prompt') + '</span>')
-      parts.push('<span class="pM_toolbarSpacer"></span>')
+      parts.push('<div class="pM_toolbar">')
       parts.push('<button class="pM_btnGhost" data-action="editor-back">返回</button>')
       parts.push('<button class="pM_btn" data-action="editor-save"' + (state.busy ? ' disabled' : '') + '>保存修改</button>')
+      parts.push('</div>')
       parts.push('</div>')
       parts.push('<div class="pM_field"><span class="pM_fieldLabel">名称</span><input class="pM_input" data-field="name" value="' + esc(prompt.name) + '" placeholder="Prompt 名称" /></div>')
       parts.push('<div class="pM_field"><span class="pM_fieldLabel">描述</span><input class="pM_input" data-field="description" value="' + esc(prompt.description || '') + '" placeholder="可选描述" /></div>')
@@ -333,9 +333,10 @@ window.__ModuleLoader__.load({
       const parts = []
       parts.push('<div class="pM_panel">')
       parts.push('<div class="pM_panelHeader"><h2 class="pM_panelTitle">A/B 测试 · ' + esc(prompt.name) + '</h2>')
-      parts.push('<span class="pM_toolbarSpacer"></span>')
+      parts.push('<div class="pM_toolbar">')
       parts.push('<button class="pM_btnGhost" data-action="ab-back">返回</button>')
       parts.push('<button class="pM_btn" data-action="ab-save"' + (state.busy ? ' disabled' : '') + '>保存 A/B</button>')
+      parts.push('</div>')
       parts.push('</div>')
       parts.push('<div class="pM_banner" data-kind="info">启用后，宿主会按 A 权重随机选择一个版本注入 systemPrompt；当前命中可通过 /api/dsh-prompt/active 查看。</div>')
       parts.push('<label class="pM_checkRow"><input type="checkbox" data-field="ab-enabled"' + (ab.enabled ? ' checked' : '') + ' /> 启用 A/B 测试</label>')
@@ -421,6 +422,10 @@ window.__ModuleLoader__.load({
         toast('名称不能为空', 'error')
         return
       }
+      if (prompt.ab?.enabled && prompt.ab.aVersionId && prompt.ab.aVersionId === prompt.ab.bVersionId) {
+        toast('A/B 两个版本不能相同', 'error')
+        return
+      }
       state.busy = true
       try {
         const data = await apiSave(prompt)
@@ -446,6 +451,10 @@ window.__ModuleLoader__.load({
       const selected = prompt.versions.find((version) => version.id === editor.selectedVersionId) || prompt.versions[0]
       if (selected === undefined || !selected.content.trim()) {
         toast('内容不能为空', 'error')
+        return
+      }
+      if (prompt.ab?.enabled && prompt.ab.aVersionId && prompt.ab.aVersionId === prompt.ab.bVersionId) {
+        toast('A/B 两个版本不能相同', 'error')
         return
       }
       prompt.versions = [...prompt.versions, {
@@ -504,6 +513,10 @@ window.__ModuleLoader__.load({
     async function saveAb() {
       const ab = state.ab
       if (ab === null) return
+      if (ab.enabled && ab.aVersionId === ab.bVersionId) {
+        toast('A/B 两个版本不能相同', 'error')
+        return
+      }
       state.busy = true
       try {
         await apiAb({

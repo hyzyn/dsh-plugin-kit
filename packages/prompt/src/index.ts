@@ -250,7 +250,7 @@ function validatePromptInput(raw: unknown, existing?: Prompt): { prompt?: Prompt
     const aWeight = typeof rawAb.aWeight === 'number' ? Math.round(rawAb.aWeight) : 50
     if (!versions.some((version) => version.id === aVersionId)) return { error: 'A/B 的 A 版本不存在: ' + aVersionId }
     if (!versions.some((version) => version.id === bVersionId)) return { error: 'A/B 的 B 版本不存在: ' + bVersionId }
-    if (aVersionId === bVersionId) return { error: 'A/B 两个版本不能相同' }
+    if (enabled && aVersionId === bVersionId) return { error: 'A/B 两个版本不能相同' }
     if (!Number.isInteger(aWeight) || aWeight < 0 || aWeight > 100) return { error: 'aWeight 必须是 0~100 的整数' }
     ab = { enabled, aVersionId, bVersionId, aWeight }
   }
@@ -562,7 +562,7 @@ function makeRoutes(
           writeJson(res, 400, { error: 'B 版本不存在: ' + bVersionId })
           return
         }
-        if (aVersionId === bVersionId) {
+        if (body.enabled === true && aVersionId === bVersionId) {
           writeJson(res, 400, { error: 'A/B 两个版本不能相同' })
           return
         }
