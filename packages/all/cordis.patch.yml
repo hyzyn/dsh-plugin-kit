@@ -10,3 +10,8 @@
 - insert:
     - id: hello
       name: '@dsh-kit/hello'
+
+# from ../mcp
+- insert:
+    - id: mcp-config
+      name: '@dsh-kit/mcp'

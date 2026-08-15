@@ -1,7 +1,7 @@
 {
-  "name": "@dsh-kit/all",
-  "version": "0.0.0",
-  "description": "dsh-plugin-kit 聚合安装包：一条 bundle patch 挂载仓库内全部插件（cordis.patch.yml 与 dependencies 由 scripts/aggregate.mjs 自动生成，勿手改）。",
+  "name": "@dsh-kit/mcp",
+  "version": "0.1.0",
+  "description": "DSH Web GUI 的 MCP 服务器配置插件：官方设置 → 插件 里的「MCP 服务器配置」卡片，托管 ~/.dsh/cordis.patch.yml 的 MCP 区块，保存后经 HMR 热加载为 mcp__<server>__<tool> 工具（支持 stdio / streamable-http、连接测试、启用停用）。",
   "type": "module",
   "engines": {
     "node": ">=22.19.0"
@@ -13,19 +13,27 @@
       "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
     },
+    "./client": "./client.js",
     "./package.json": "./package.json"
   },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": []
     }
   },
   "dependencies": {
-    "@dsh-kit/hello": "workspace:*",
-    "@dsh-kit/mcp": "workspace:*"
+    "js-yaml": "^4.1.0"
+  },
+  "peerDependencies": {
+    "react": "^18.2.0"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
+    "@types/node": "^22.20.0",
     "typescript": "~5.7.2"
   },
   "scripts": {
@@ -34,6 +42,7 @@
   },
   "files": [
     "lib",
+    "client.js",
     "cordis.patch.yml",
     "README.md"
   ],
