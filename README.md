@@ -2,9 +2,7 @@
 
 通用 DSH 插件库 —— pnpm monorepo：一条命令生成插件模板，一条 patch 聚合全库安装。
 
-> npm 包名是 `dsh-plugin-kit`。当前文件夹名仍是旧的 `dsh-ui-components`：
-> 建议本会话结束后手动 `mv dsh-ui-components dsh-plugin-kit` 再开新会话
-> （会话工作目录绑定旧路径，运行中改名会破坏后续文件操作）。
+> npm 包名与仓库目录名均为 `dsh-plugin-kit`。
 
 ## 目录结构
 
