@@ -18,7 +18,7 @@ Repo gates: `pnpm typecheck` / `pnpm build` / `pnpm aggregate`.
 
 <p align="center">
   <strong>The plugin family for the DeepSeek Harness (DSH) Web GUI</strong><br>
-  <em>Environment variables · MCP servers · Prompt · Profile · RSS · Global search · Codegraph · Desktop launcher · Plugin scaffolding</em>
+  <em>Environment variables · MCP servers · Prompt · Profile · RSS · Global search · Codegraph · Plugin scaffolding</em>
 </p>
 
 <p align="center">
@@ -29,7 +29,7 @@ Repo gates: `pnpm typecheck` / `pnpm build` / `pnpm aggregate`.
 
 ## What It Is
 
-dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (DSH) Web GUI: environment variable / secret management, MCP server configuration, Prompt management, Profile management, RSS / news aggregation, global search, Codegraph integration, and a desktop client launcher, plus a one-command scaffolding tool for generating new plugins. Everything mounts into `dsh web` through the official profile mechanism, so no DSH source changes are needed. Install the plugins individually, or install everything at once with the aggregate package.
+dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (DSH) Web GUI: environment variable / secret management, MCP server configuration, Prompt management, Profile management, RSS / news aggregation, global search, and Codegraph integration, plus a one-command scaffolding tool for generating new plugins. Everything mounts into `dsh web` through the official profile mechanism, so no DSH source changes are needed. Install the plugins individually, or install everything at once with the aggregate package.
 
 ![Example of DSH plugin management cards](docs/dsh-plugin-kit-mcp.png)
 
@@ -42,7 +42,6 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 | RSS aggregation | None | Multiple sources + daily “Today’s Worth Reading” digest |
 | Global search | Session titles/content only | Unified sidebar search over sessions, Prompts, and MCP tools |
 | Codegraph integration | None | Code-graph card: index status / symbol search / callers-callees-impact / one-click sync-index |
-| Desktop client | Launch manually | Auto-detect + one-click launch DeepSeek Harness Desktop |
 | Plugin development | Hand-written boilerplate | `pnpm create-plugin` scaffolding + `@hyzyn/dsh-kit` type helpers |
 
 ## Feature Plugins
@@ -124,14 +123,6 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 
 ![Codegraph settings card](docs/dsh-plugin-kit-codegraph.png)
 
-### Desktop Client (@hyzyn/dsh-desktop)
-
-- **What it does**: shows a “Desktop Client” card in the Web GUI and opens the local DeepSeek Harness Desktop (Tauri native window) with one click.
-- **How to use**: open Settings → Plugins → “Desktop Client” → click “Open Desktop Client”; if auto-detection fails, set `DSH_DESKTOP_APP` or specify the app path in `Config.desktopAppPath`.
-- **Supports**: auto-detection on macOS `/Applications`, `~/Applications`, and the dev target directory; also supports common Linux/Windows executable locations. On macOS it uses `open`, on Windows `cmd start`, and on Linux it prefers executing the binary directly.
-- **Where it is stored**: no config file; the path comes from `Config.desktopAppPath`, the `DSH_DESKTOP_APP` environment variable, or auto-detection.
-- **Note**: this plugin is only a launcher. The desktop app itself is still your Tauri project; build `DeepSeek Harness.app` / the executable first before launching.
-
 ## Quick Start
 
 ### System Requirements
@@ -189,7 +180,6 @@ dsh plugin --profile web add @hyzyn/dsh-profile # Profile management
 dsh plugin --profile web add @hyzyn/dsh-rss     # RSS / news aggregation
 dsh plugin --profile web add @hyzyn/dsh-search  # Global search
 dsh plugin --profile web add @hyzyn/dsh-codegraph # Codegraph integration
-dsh plugin --profile web add @hyzyn/dsh-desktop # Desktop client launcher
 ```
 
 ### Verify and Uninstall
@@ -286,7 +276,6 @@ A: There may be root-owned files in the local `~/.npm` cache (a historical npm b
 - The managed block in `~/.dsh/cordis.patch.yml` is only for MCP server configuration; manually adding plugin lines can cause `duplicate loader entry id` at startup.
 - Profile deletion is recursive and irreversible after the in-panel confirmation. The built-in `web` profile is protected; `headless` can be deleted.
 - RSS needs network access on first startup. An unreachable source does not block other sources, but that source may be missing from the day’s digest.
-- The desktop client is only a launcher; it does not build the Tauri project. Build `DeepSeek Harness.app` / the executable first before launching.
 - The browser half depends on the official `dsh-web-app` settings panel slots service; non-official Web GUIs may not show the management cards.
 - Installing from the repository requires Node.js >= 22.19 and pnpm 10; it is for development/debugging only. npm installs are not affected.
 

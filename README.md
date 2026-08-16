@@ -18,7 +18,7 @@
 
 <p align="center">
   <strong>DeepSeek Harness（DSH）Web GUI 的插件全家桶</strong><br>
-  <em>环境变量 · MCP 服务器 · Prompt · Profile · RSS · 全局搜索 · Codegraph 集成 · 桌面客户端 · 插件脚手架</em>
+  <em>环境变量 · MCP 服务器 · Prompt · Profile · RSS · 全局搜索 · Codegraph 集成 · 插件脚手架</em>
 </p>
 
 <p align="center">
@@ -29,7 +29,7 @@
 
 ## 是什么
 
-dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合：环境变量 / 密钥管理、MCP 服务器配置、Prompt 管理、Profile 管理、RSS / 新闻聚合、全局搜索、Codegraph 集成和桌面客户端启动器，外加一条命令生成新插件的开发脚手架。所有插件都走官方 profile 机制挂载到 `dsh web`，不改 DSH 源码；可以逐个安装，也可以用聚合包一次装齐。
+dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合：环境变量 / 密钥管理、MCP 服务器配置、Prompt 管理、Profile 管理、RSS / 新闻聚合、全局搜索、Codegraph 集成，外加一条命令生成新插件的开发脚手架。所有插件都走官方 profile 机制挂载到 `dsh web`，不改 DSH 源码；可以逐个安装，也可以用聚合包一次装齐。
 
 ![DSH 插件管理卡片示例](docs/dsh-plugin-kit-mcp.png)
 
@@ -42,7 +42,6 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 | RSS 聚合 | 无 | 多源订阅 + 每日「今日值得读」自动摘要 |
 | 全局搜索 | 仅会话标题/内容 | 侧边栏统一搜索历史会话、Prompt、MCP 工具 |
 | Codegraph 集成 | 无 | 代码图谱卡片：索引状态 / 符号搜索 / 调用链 / 影响面 / 一键 sync-index |
-| 桌面客户端 | 手动启动 | 自动探测 + 一键打开 DeepSeek Harness Desktop |
 | 插件开发 | 手写样板 | `pnpm create-plugin` 脚手架 + `@hyzyn/dsh-kit` 类型助手 |
 
 ## 功能插件
@@ -124,14 +123,6 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 
 ![侧边栏「今日值得读」弹窗：按分类分组，来源带「查看更多」直达官网](docs/dsh-plugin-kit-rss-view.png)
 
-### 桌面客户端（@hyzyn/dsh-desktop）
-
-- **做什么**：在 Web GUI 里显示「桌面客户端」卡片，一键打开本机 DeepSeek Harness Desktop（Tauri 原生窗口）。
-- **怎么用**：打开 设置 → 插件 →「桌面客户端」→ 点击「打开桌面客户端」；未自动探测到时，设置 `DSH_DESKTOP_APP` 或在插件 `Config.desktopAppPath` 指定 App 路径。
-- **支持**：自动探测 macOS `/Applications`、`~/Applications`、开发机 target 目录，也支持 Linux / Windows 常见可执行文件位置；macOS 用 `open` 启动，Windows 用 `cmd start`，Linux 优先直接执行。
-- **存哪里**：无配置文件；路径来自 `Config.desktopAppPath`、环境变量 `DSH_DESKTOP_APP` 或自动探测。
-- **注意**：该插件只是启动器，桌面 App 本身仍是你仓库里的 Tauri 工程；需要先构建好 `DeepSeek Harness.app` / 可执行文件才能打开。
-
 ## 快速开始
 
 ### 系统要求
@@ -189,7 +180,6 @@ dsh plugin --profile web add @hyzyn/dsh-profile # Profile 管理
 dsh plugin --profile web add @hyzyn/dsh-rss     # RSS / 新闻聚合
 dsh plugin --profile web add @hyzyn/dsh-search  # 全局搜索
 dsh plugin --profile web add @hyzyn/dsh-codegraph # Codegraph 集成
-dsh plugin --profile web add @hyzyn/dsh-desktop # 桌面客户端启动器
 ```
 
 ### 验证与卸载
@@ -286,7 +276,6 @@ A: 本机 `~/.npm` 缓存存在 root-owned 文件（历史 npm bug），执行 `
 - MCP 的 `~/.dsh/cordis.patch.yml` 里托管区块只应放服务器配置；手工追加插件行会导致 `duplicate loader entry id` 启动失败。
 - Profile 删除为递归删除，面板内会二次确认，但一旦执行不可撤销；内置 `web` profile 受保护，`headless` 可删。
 - RSS 首次启动需要联网抓取；某个源不可达不会阻塞其它源，但当天 digest 可能缺少该源内容。
-- 桌面客户端只是启动器，不负责构建 Tauri 工程；需要先构建好 `DeepSeek Harness.app` / 可执行文件才能打开。
 - 浏览器半体依赖官方 `dsh-web-app` 的设置面板 slots 服务，非官方 Web GUI 可能不显示管理卡片。
 - 仓库安装需要 Node.js >= 22.19 与 pnpm 10，仅供开发调试；npm 安装不受影响。
 
