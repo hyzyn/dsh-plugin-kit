@@ -30,3 +30,8 @@
 - insert:
     - id: prompt-manager
       name: '@hyzyn/dsh-prompt'
+
+# from ../rss
+- insert:
+    - id: rss-digest
+      name: '@hyzyn/dsh-rss'
