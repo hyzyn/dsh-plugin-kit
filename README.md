@@ -1,146 +1,199 @@
-# dsh-plugin-kit
+# dsh-plugin-kit · DSH 插件全家桶
 
-> **中文** | [English](./README.en.md)
+中文 | [English](README.en.md)
 
-> DSH 插件全家桶：四款开箱即用的插件 + 一条命令生成新插件的开发脚手架。
-> 插件已发布到 npm（`@hyzyn/dsh-all` 等），一行命令即可安装使用：`dsh plugin --profile web add @hyzyn/dsh-all`。
-> npm 包名与仓库目录名均为 `dsh-plugin-kit`。
+<p align="center">
+  <img src="https://img.shields.io/github/v/release/hyzyn/dsh-plugin-kit?style=flat-square" alt="Version">
+  &nbsp;
+  <img src="https://img.shields.io/github/stars/hyzyn/dsh-plugin-kit?style=flat-square" alt="Stars">
+  &nbsp;
+  <img src="https://img.shields.io/github/forks/hyzyn/dsh-plugin-kit?style=flat-square" alt="Forks">
+  &nbsp;
+  <img src="https://img.shields.io/npm/v/@hyzyn%2Fdsh-all?style=flat-square&label=npm" alt="npm">
+  &nbsp;
+  <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License">
+</p>
 
-本仓库是一个 pnpm monorepo，主要解决两件事：
+仓库门禁：`pnpm typecheck` / `pnpm build` / `pnpm aggregate`。
 
-1. **用插件**：装好后，DSH Web GUI 的 设置 → 插件 里会出现四张管理卡片（环境变量 / MCP 服务器 / Prompt / Profile），全部图形化操作，保存即生效；
-2. **写插件**：`pnpm create-plugin` 一条命令从模板生成新插件包，本地安装调试，构建发布。
+<p align="center">
+  <strong>DeepSeek Harness（DSH）Web GUI 的插件全家桶</strong><br>
+  <em>环境变量 · MCP 服务器 · Prompt · Profile · RSS · 桌面客户端 · 插件脚手架</em>
+</p>
 
-## 目录结构
+<p align="center">
 
-```
-dsh-plugin-kit/
-├── packages/
-│   ├── env/      # 环境变量 / 密钥管理插件（Web GUI 设置卡片）
-│   ├── mcp/      # MCP 服务器配置插件（Web GUI 设置卡片）
-│   ├── prompt/   # Prompt 管理插件（Web GUI 设置卡片）
-│   ├── profile/  # Profile 管理插件（Web GUI 设置卡片）
-│   ├── all/      # 聚合安装包：一条命令装下全部插件
-│   ├── hello/    # 最小插件模板（create-plugin 的复制蓝本）
-│   └── kit/      # 插件开发工具包（definePlugin 类型助手）
-├── scripts/
-│   ├── create-plugin.mjs  # 从 hello 模板生成新插件
-│   └── aggregate.mjs      # 重新生成 packages/all 聚合清单
-└── tsconfig.base.json     # 各包共享的 TS 配置
-```
+[是什么](#是什么) · [功能插件](#功能插件) · [快速开始](#快速开始) · [开发新插件](#开发新插件) · [常见问题](#常见问题) · [已知限制](#已知限制) · [参与贡献](#参与贡献)
 
-## 快速开始（装插件）
+</p>
 
-### 直接安装（已发布到 npm，推荐）
+## 是什么
 
-插件已发布到 npm，**无需克隆仓库**，任何装了 DSH 的机器一条命令即可：
+dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合：环境变量 / 密钥管理、MCP 服务器配置、Prompt 管理、Profile 管理、RSS / 新闻聚合和桌面客户端启动器，外加一条命令生成新插件的开发脚手架。所有插件都走官方 profile 机制挂载到 `dsh web`，不改 DSH 源码；可以逐个安装，也可以用聚合包一次装齐。
 
-```bash
-# 全家桶：一条命令装下全部插件
-dsh plugin --profile web add @hyzyn/dsh-all
-```
+![DSH 插件管理卡片示例](docs/dsh-plugin-kit-mcp.png)
 
-或按需单个安装：
-
-```bash
-dsh plugin --profile web add @hyzyn/dsh-env     # 环境变量 / 密钥管理
-dsh plugin --profile web add @hyzyn/dsh-mcp     # MCP 服务器配置
-dsh plugin --profile web add @hyzyn/dsh-prompt  # Prompt 管理
-dsh plugin --profile web add @hyzyn/dsh-profile # Profile 管理
-```
-
-安装后**重启一次 `dsh web`**，打开 Web GUI 的 设置 → 插件，即可看到对应的管理卡片。
-之后在卡片里的所有修改（保存环境变量 / MCP 服务器 / Prompt）都会**自动生效，无需再重启**。
-
-> 卸载：`dsh plugin --profile web remove @hyzyn/dsh-<包名>`（如 `@hyzyn/dsh-mcp`），重启后插件行消失。
-
-### 本地开发安装（从源码 link）
-
-想改插件代码或调试时，从仓库源码安装：
-
-**前置要求**：Node ≥ 22.19、pnpm 10、DSH（`dsh` 命令可用）。
-
-```bash
-cd dsh-plugin-kit
-pnpm install
-pnpm build        # 构建全部包，产出 lib/
-```
-
-```bash
-# 全家桶
-dsh plugin --profile web add link:$(pwd)/packages/all
-
-# 或单个
-dsh plugin --profile web add link:$(pwd)/packages/env
-dsh plugin --profile web add link:$(pwd)/packages/mcp
-dsh plugin --profile web add link:$(pwd)/packages/prompt
-dsh plugin --profile web add link:$(pwd)/packages/profile
-```
-
-## 内置插件一览
-
-| 插件 | 卡片位置 | 干什么用 |
+| 能力 | 原生 dsh web | dsh-plugin-kit 全家桶 |
 | --- | --- | --- |
-| `@hyzyn/dsh-env` | 设置 → 插件 →「环境变量 / 密钥管理」 | 图形化管理环境变量与密钥，保存后写入 `process.env` |
-| `@hyzyn/dsh-mcp` | 设置 → 插件 →「MCP 服务器配置」 | 给 DSH 添加 MCP 服务器，模型即可使用 `mcp__<服务器>__<工具>` |
-| `@hyzyn/dsh-prompt` | 设置 → 插件 →「Prompt 管理」 | 可视化编辑 systemPrompt，版本管理 / A/B 测试 / 导出分享 |
-| `@hyzyn/dsh-profile` | 设置 → 插件 →「Profile 管理」 | 查看 / 创建 / 复制 / 重命名 / 删除 DSH profile |
+| 环境变量管理 | 命令行 / 手改配置 | Web GUI 卡片，保存即写入 `process.env` |
+| MCP 服务器 | 手改 patch / 命令行 | 可视化卡片 + 连接测试 + 保存后热加载 |
+| Prompt 管理 | 手改配置 | 可视化编辑 + 版本管理 / A/B 测试 / 导出分享 |
+| Profile 管理 | 命令行 | 可视化创建 / 复制 / 重命名 / 删除 |
+| RSS 聚合 | 无 | 多源订阅 + 每日「今日值得读」自动摘要 |
+| 桌面客户端 | 手动启动 | 自动探测 + 一键打开 DeepSeek Harness Desktop |
+| 插件开发 | 手写样板 | `pnpm create-plugin` 脚手架 + `@hyzyn/dsh-kit` 类型助手 |
+
+## 功能插件
 
 ### 环境变量 / 密钥管理（@hyzyn/dsh-env）
 
 - **做什么**：在 Web GUI 里增删改环境变量和密钥，保存后立即写入当前进程的 `process.env`，宿主和之后启动的子进程都能读到，无需重启。
-- **怎么用**：打开卡片 → 添加键值 →（敏感条目勾选「密钥」，以密码框显示）→ 保存。
+- **怎么用**：打开 设置 → 插件 →「环境变量 / 密钥管理」→ 添加键值 →（敏感条目勾选「密钥」，以密码框显示）→ 保存。
 - **支持**：普通字符串；`js:` 前缀表达式（如 `js:process.env.API_KEY`）；密钥标记。
 - **存哪里**：`~/.dsh/env.yml` 的托管区块（自动生成，请勿手改）。
-- **注意**：键名只允许字母/数字/下划线，且不能重复。
+- **注意**：键名只允许字母 / 数字 / 下划线，且不能重复。
+
+![环境变量 / 密钥管理插件](docs/dsh-plugin-kit-env.png)
 
 ### MCP 服务器配置（@hyzyn/dsh-mcp）
 
 - **做什么**：给 DSH 添加 MCP 服务器，保存后 1~2 秒内热加载为 `mcp__<服务器名>__<工具名>` 工具，模型即可直接调用，无需重启。
-- **怎么用**：打开卡片 → 添加服务器（选传输方式）→（建议先点「连接测试」）→ 保存。
-- **支持**：两种传输——stdio（本地子进程，如 `npx -y @modelcontextprotocol/server-filesystem`）与 streamable-http（远程服务）；`js:` 前缀表达式（如 `js:process.env.GITHUB_TOKEN`）；启用/停用、编辑、删除；状态徽章。
+- **怎么用**：打开 设置 → 插件 →「MCP 服务器配置」→ 添加服务器（选传输方式）→（建议先点「连接测试」）→ 保存。
+- **支持**：两种传输——stdio（本地子进程，如 `npx -y @modelcontextprotocol/server-filesystem`）与 streamable-http（远程服务）；`js:` 前缀表达式（如 `js:process.env.GITHUB_TOKEN`）；启用 / 停用、编辑、删除；状态徽章。
 - **存哪里**：`~/.dsh/cordis.patch.yml` 的托管区块。
 - **注意**：**不要**手工往该文件里追加插件行，否则启动时报 `duplicate loader entry id` 直接退出。
+
+![MCP 服务器配置插件](docs/dsh-plugin-kit-mcp.png)
 
 ### Prompt 管理（@hyzyn/dsh-prompt）
 
 - **做什么**：可视化编辑 systemPrompt，启用后其内容作为 systemPrompt section 注入，保存即生效。
-- **怎么用**：打开卡片 → 新建/编辑 Prompt（可保存多个版本）→ 启用。
-- **支持**：版本切换/回滚；A/B 测试（为同一 Prompt 选 A/B 两版并按权重随机命中）；导出 JSON/Markdown、一键复制分享、从 JSON 导入。
+- **怎么用**：打开 设置 → 插件 →「Prompt 管理」→ 新建 / 编辑 Prompt（可保存多个版本）→ 启用。
+- **支持**：版本切换 / 回滚；A/B 测试（为同一 Prompt 选 A/B 两版并按权重随机命中）；导出 JSON / Markdown、一键复制分享、从 JSON 导入。
 - **存哪里**：`~/.dsh/prompts.yml` 的托管区块。
 - **注意**：每个 Prompt 至少一个版本，单版本内容 ≤ 500KB。
+
+![Prompt 管理插件](docs/dsh-plugin-kit-promat.png)
 
 ### Profile 管理（@hyzyn/dsh-profile）
 
 - **做什么**：可视化查看 `~/.dsh/profiles` 下的全部 DSH profile，支持创建、复制、重命名、删除，方便维护多套 DSH 环境。
-- **怎么用**：打开卡片 → 查看 profile 列表 → 新建 / 复制 / 重命名 / 删除；可为每个 profile 设置端口并复制带 `--port` 的启动命令。
+- **怎么用**：打开 设置 → 插件 →「Profile 管理」→ 查看 profile 列表 → 新建 / 复制 / 重命名 / 删除；可为每个 profile 设置端口并复制带 `--port` 的启动命令。
 - **支持**：初始化状态、bundle 层与依赖展示；基础模板 / `web` / `headless` 模板新建；复制排除 `node_modules` 与锁文件并自动安装依赖；重命名；端口配置与复制启动命令。
 - **存哪里**：直接管理 `~/.dsh/profiles/<name>` 目录。
 - **注意**：删除为递归删除，操作前请二次确认；内置的 `web` 默认 profile 不允许删除，`headless` 可以删除；新建后首次使用 `dsh plugin --profile <name> add ...` 时按需安装依赖。
 
-## 界面预览
+![Profile 管理配置界面](docs/dsh-plugin-kit-profile.png)
 
-### MCP 服务器配置（@hyzyn/dsh-mcp）
+![命令行启动 headless profile 示例](docs/dsh-plugin-kit-profile-example-headless1.png)
 
-![MCP 服务器配置插件](/docs/dsh-plugin-kit-mcp.png)
+### RSS / 新闻聚合（@hyzyn/dsh-rss）
 
-### 环境变量 / 密钥管理（@hyzyn/dsh-env）
+- **做什么**：订阅多个 RSS / Atom 源，每天自动汇总成一篇「今日值得读」Markdown，并注入 systemPrompt 供模型直接引用。
+- **怎么用**：安装后可在侧边栏「新建会话」下方点击「今日值得读」直接查看新闻；也可打开 设置 → 插件 →「RSS / 新闻聚合」勾选内置渠道、添加自定义渠道（保存时即时校验地址）、维护新闻分类与聚合设置，保存后自动刷新。
+- **内置渠道**：阮一峰、少数派、Solidot、Hacker News、掘金、IT之家、36氪（36氪官方 feed 被反爬拦截，内置为第三方 RSSHub 镜像），勾选即展示、取消勾选即不抓取。
+- **自定义渠道**：填写任意 RSS / Atom 地址，保存时真实抓取校验——官网首页、非 feed、抓不到内容的地址会报错且不保存。
+- **新闻分类**：渠道的分类从「新闻分类」列表里选择；digest（Markdown、systemPrompt、弹窗）按分类分组展示，保存时自动把使用中的分类合并进列表。
+- **支持**：RSS 2.0 / Atom 解析、按来源去重、每源条数限制、每日定时生成、启动补生成、自定义输出目录、内置渠道库。
+- **存哪里**：`~/.dsh/rss-digest/YYYY-MM-DD.md`（可用 `DSH_RSS_DIGEST_DIR` 覆盖）。
+- **注意**：首次安装启动时会联网抓取一次；某个源不可达时会在 digest 的「抓取失败」里列出，不影响其它源。
 
-![环境变量 / 密钥管理插件](/docs/dsh-plugin-kit-env.png)
+![RSS / 新闻聚合设置卡片](docs/dsh-plugin-kit-rss-setting.png)
 
-### Prompt 管理（@hyzyn/dsh-prompt）
+![侧边栏「今日值得读」弹窗：按分类分组，来源带「查看更多」直达官网](docs/dsh-plugin-kit-rss-view.png)
 
-![Prompt 管理插件](/docs/dsh-plugin-kit-promat.png)
+### 桌面客户端（@hyzyn/dsh-desktop）
 
-### Profile 管理（@hyzyn/dsh-profile）
+- **做什么**：在 Web GUI 里显示「桌面客户端」卡片，一键打开本机 DeepSeek Harness Desktop（Tauri 原生窗口）。
+- **怎么用**：打开 设置 → 插件 →「桌面客户端」→ 点击「打开桌面客户端」；未自动探测到时，设置 `DSH_DESKTOP_APP` 或在插件 `Config.desktopAppPath` 指定 App 路径。
+- **支持**：自动探测 macOS `/Applications`、`~/Applications`、开发机 target 目录，也支持 Linux / Windows 常见可执行文件位置；macOS 用 `open` 启动，Windows 用 `cmd start`，Linux 优先直接执行。
+- **存哪里**：无配置文件；路径来自 `Config.desktopAppPath`、环境变量 `DSH_DESKTOP_APP` 或自动探测。
+- **注意**：该插件只是启动器，桌面 App 本身仍是你仓库里的 Tauri 工程；需要先构建好 `DeepSeek Harness.app` / 可执行文件才能打开。
 
-![Profile 管理配置界面](/docs/dsh-plugin-kit-profile.png)
+## 快速开始
 
-![命令行启动 headless profile 示例](/docs/dsh-plugin-kit-profile-example-headless1.png)
+### 系统要求
+
+- 已安装 DeepSeek Harness，`dsh web` 可正常启动。
+- npm 安装方式无额外要求；从仓库安装需要 Node.js >= 22.19 与 pnpm 10。
+
+### 三步上手
+
+1. 安装聚合包：`dsh plugin --profile web add @hyzyn/dsh-all`
+2. 重启 `dsh web`，设置 → 插件 里出现全部管理卡片
+3. 打开「设置 > 插件」按需使用各卡片，保存后即时生效
+
+### 从 npm 安装（推荐）
+
+插件已发布到 npm（`@hyzyn` scope），一条命令装齐：
+
+```sh
+dsh plugin --profile web add @hyzyn/dsh-all
+```
+
+装完重启 `dsh web`，打开 设置 → 插件 即可看到全部卡片。只想用某一个插件，见下文「单独安装某个插件」。
+
+### 从 GitHub 仓库安装（开发调试）
+
+插件包已在 npm 发布，仓库安装仅供开发调试（需要 Node.js >= 22.19 与 pnpm 10）：
+
+```sh
+# 1. 克隆仓库
+git clone https://github.com/hyzyn/dsh-plugin-kit.git
+cd dsh-plugin-kit
+
+# 2. 安装依赖并构建
+pnpm install
+pnpm build
+
+# 3. 把全家桶链接进 web profile
+dsh plugin --profile web add link:$(pwd)/packages/all
+
+# 4. 重启 dsh web
+dsh web
+```
+
+> 只想用某个子包：第 3 步改为 `dsh plugin --profile web add link:$(pwd)/packages/<name>` 即可，例如 `packages/mcp`。
+
+### 单独安装某个插件
+
+不想装全家桶时，可单独安装任意插件（npm 已发布，直接用包名）：
+
+```sh
+dsh plugin --profile web add @hyzyn/dsh-env     # 环境变量 / 密钥管理
+dsh plugin --profile web add @hyzyn/dsh-mcp     # MCP 服务器配置
+dsh plugin --profile web add @hyzyn/dsh-prompt  # Prompt 管理
+dsh plugin --profile web add @hyzyn/dsh-profile # Profile 管理
+dsh plugin --profile web add @hyzyn/dsh-rss     # RSS / 新闻聚合
+dsh plugin --profile web add @hyzyn/dsh-desktop # 桌面客户端启动器
+```
+
+### 验证与卸载
+
+装好重启 `dsh web`，打开 设置 → 插件 出现对应卡片就是生效了；也可以用 `dsh --profile web --dump-config` 确认插件配置层已挂载。卡片没出现，多半是装完没重启 `dsh web`。
+
+卸载：`dsh plugin --profile web remove @hyzyn/dsh-all`（或对应的 `@hyzyn/dsh-<包名>`），然后重启 `dsh web`。
+
+### 安装排障
+
+<details>
+<summary><strong>展开查看常见安装问题</strong></summary>
+
+<br>
+
+> **卡片没出现？** 重启 `dsh web`；确认用的是官方 `dsh-web-app` 设置面板（浏览器半体依赖核心 slots 服务）。
+
+> **MCP 服务器保存后没有工具？** 等 1~2 秒 HMR；在卡片里看状态徽章与冲突提示；保存前先点「连接测试」。
+
+> **报 `duplicate loader entry id`？** 多半是手工往 `~/.dsh/cordis.patch.yml` 加了插件行。删掉重复行——插件行只由 bundle 补丁挂载，托管区块只放服务器配置。
+
+> **`npm install` / `npm view` 报 EPERM？** 本机 `~/.npm` 缓存存在 root-owned 文件（历史 npm bug），执行 `sudo chown -R $(id -u):$(id -g) ~/.npm` 修复。pnpm 不受影响。
+
+</details>
 
 ## 开发新插件
 
-```bash
+```sh
 pnpm create-plugin <name> [id]
 # 例：pnpm create-plugin timer          → packages/timer（@hyzyn/dsh-timer，插件 id: timer）
 # 例：pnpm create-plugin pet-tracker pt → packages/pet-tracker（插件 id: pt）
@@ -151,7 +204,7 @@ pnpm create-plugin <name> [id]
 1. 编辑 `packages/<name>/src/index.ts` 写插件逻辑；
 2. 构建并本地安装调试：
 
-```bash
+```sh
 pnpm --filter @hyzyn/dsh-<name> build
 dsh plugin --profile web add link:$(pwd)/packages/<name>
 ```
@@ -167,38 +220,69 @@ dsh plugin --profile web add link:$(pwd)/packages/<name>
 
 服务注入两种写法：`inject: ['tools', 'webServer']` 后直接 `ctx.tools`；或运行时 `ctx.get('tools')` 判空。配置用 schemastery 导出同名 `Config` schema。
 
-## 常用命令速查
-
-| 命令 | 作用 |
-| --- | --- |
-| `pnpm install` | 安装依赖 |
-| `pnpm build` | 构建全部包（tsc 产出 lib/） |
-| `pnpm typecheck` | 全仓类型检查 |
-| `pnpm create-plugin <name> [id]` | 从模板生成新插件 |
-| `pnpm aggregate` | 重新生成 `packages/all` 聚合清单（增删插件后跑一次） |
-
 ## 常见问题
 
-**卡片没出现？**
-重启 `dsh web`；确认用的是官方 `dsh-web-app` 设置面板（浏览器半体依赖核心 slots 服务）。
+<details>
+<summary><strong>装完重启了，设置 → 插件里还是没有卡片？</strong></summary>
 
-**改了插件代码不生效？**
-重新 `pnpm build` 后重启 `dsh web`。
+A: 先确认插件装进了 `web` profile（命令里的 `--profile web`），再用 `dsh --profile web --dump-config` 确认插件配置层已挂载；还不行就看上文「安装排障」。注意页面刷新不够，要重启 `dsh web` 进程。
 
-**MCP 服务器保存后没有工具？**
-等 1~2 秒 HMR；在卡片里看状态徽章与冲突提示；保存前先点「连接测试」。
+</details>
 
-**报 `duplicate loader entry id`？**
-多半是手工往 `~/.dsh/cordis.patch.yml` 加了插件行。删掉重复行——插件行只由 bundle 补丁挂载，托管区块只放服务器配置。
+<details>
+<summary><strong>改了插件代码不生效？</strong></summary>
 
-**`npm install` / `npm view` 报 EPERM？**
-本机 `~/.npm` 缓存存在 root-owned 文件（历史 npm bug），执行 `sudo chown -R $(id -u):$(id -g) ~/.npm` 修复。pnpm 不受影响。
+A: 重新 `pnpm build` 后重启 `dsh web`。如果改的是浏览器半体，可能还需要清一下浏览器缓存或硬刷新。
 
-## 环境备注
+</details>
 
-- SDK 版本基线：`@deepseek-ai/dsh-*@0.1.0-rc.6`、`@deepseek-ai/cordis@^4.0.1`、`schemastery@^3.18`（官方 profile 里 alias 到 `@deepseek-ai/schemastery@3.18.1`）。
+<details>
+<summary><strong>MCP 服务器保存后没有工具？</strong></summary>
 
-## 参考
+A: 等 1~2 秒 HMR；在卡片里看状态徽章与冲突提示；保存前先点「连接测试」。仍不行就检查服务器进程是否真的能启动、地址是否可达。
 
-- DSH 内置 skill `cordis-plugin-development`：动态 Cordis 插件（运行时 cordis_define）的开发规范
-- 各插件包内 README（`packages/<name>/README.md`）：更详细的实现说明
+</details>
+
+<details>
+<summary><strong>报 `duplicate loader entry id`？</strong></summary>
+
+A: 多半是手工往 `~/.dsh/cordis.patch.yml` 加了插件行。删掉重复行——插件行只由 bundle 补丁挂载，托管区块只放服务器配置。
+
+</details>
+
+<details>
+<summary><strong>`npm install` / `npm view` 报 EPERM？</strong></summary>
+
+A: 本机 `~/.npm` 缓存存在 root-owned 文件（历史 npm bug），执行 `sudo chown -R $(id -u):$(id -g) ~/.npm` 修复。pnpm 不受影响。
+
+</details>
+
+## 已知限制
+
+- MCP 的 `~/.dsh/cordis.patch.yml` 里托管区块只应放服务器配置；手工追加插件行会导致 `duplicate loader entry id` 启动失败。
+- Profile 删除为递归删除，面板内会二次确认，但一旦执行不可撤销；内置 `web` profile 受保护，`headless` 可删。
+- RSS 首次启动需要联网抓取；某个源不可达不会阻塞其它源，但当天 digest 可能缺少该源内容。
+- 桌面客户端只是启动器，不负责构建 Tauri 工程；需要先构建好 `DeepSeek Harness.app` / 可执行文件才能打开。
+- 浏览器半体依赖官方 `dsh-web-app` 的设置面板 slots 服务，非官方 Web GUI 可能不显示管理卡片。
+- 仓库安装需要 Node.js >= 22.19 与 pnpm 10，仅供开发调试；npm 安装不受影响。
+
+## 参与贡献
+
+- 新插件用脚手架生成：`pnpm create-plugin <name> [id]`，避免手写样板。
+- 提交信息遵循 Conventional Commits（如 `fix(mcp): 修复连接测试超时`），用户可见变更请附截图或验证证据。
+- 提交前过门禁：`pnpm typecheck && pnpm build && pnpm aggregate`。
+- 增删插件后记得跑 `pnpm aggregate` 重新生成 `packages/all` 聚合清单。
+
+## 许可证
+
+本仓库以 [MIT](LICENSE) 授权。
+
+## 贡献者
+
+<div align="center">
+
+**喜欢这个项目？点个 Star。**
+
+[报告 Bug](https://github.com/hyzyn/dsh-plugin-kit/issues) · [请求功能](https://github.com/hyzyn/dsh-plugin-kit/issues) · [查看 Releases](https://github.com/hyzyn/dsh-plugin-kit/releases)
+
+</div>
