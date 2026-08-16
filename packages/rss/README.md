@@ -19,11 +19,11 @@ DSH 的 RSS / 新闻聚合插件：订阅多个 RSS / Atom 源，每天自动汇
 
 设置 → 插件 →「RSS / 新闻聚合」卡片（内置渠道勾选 + 自定义渠道 + 新闻分类）：
 
-![RSS 设置卡片](../../docs/dsh-plugin-kit-rss-setting.png)
+![RSS 设置卡片](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-rss-setting.png)
 
 侧边栏「今日值得读」弹窗（按分类分组、来源带「查看更多」直达官网、底部可手动刷新）：
 
-![今日值得读弹窗](../../docs/dsh-plugin-kit-rss-view.png)
+![今日值得读弹窗](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-rss-view.png)
 
 ## 配置示例
 
