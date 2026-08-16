@@ -35,3 +35,8 @@
 - insert:
     - id: rss-digest
       name: '@hyzyn/dsh-rss'
+
+# from ../search
+- insert:
+    - id: global-search
+      name: '@hyzyn/dsh-search'

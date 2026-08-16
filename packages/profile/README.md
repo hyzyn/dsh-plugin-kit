@@ -66,11 +66,11 @@ interface Config {
 
 设置 → 插件 →「Profile 管理」卡片（配置界面）：
 
-![Profile 管理配置界面](../../docs/dsh-plugin-kit-profile.png)
+![Profile 管理配置界面](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-profile.png)
 
 用 `headless` 模板建好 profile 后，命令行可直接以该 profile 启动 headless 会话（一次性回答一个任务、打印结果后退出）：
 
-![命令行启动 headless profile 示例](../../docs/dsh-plugin-kit-profile-example-headless1.png)
+![命令行启动 headless profile 示例](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-profile-example-headless1.png)
 
 ```bash
 # 以 headless profile 启动：回答一个任务、打印结果后退出

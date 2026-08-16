@@ -18,7 +18,7 @@
 
 <p align="center">
   <strong>DeepSeek Harness（DSH）Web GUI 的插件全家桶</strong><br>
-  <em>环境变量 · MCP 服务器 · Prompt · Profile · RSS · 桌面客户端 · 插件脚手架</em>
+  <em>环境变量 · MCP 服务器 · Prompt · Profile · RSS · 全局搜索 · 桌面客户端 · 插件脚手架</em>
 </p>
 
 <p align="center">
@@ -29,7 +29,7 @@
 
 ## 是什么
 
-dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合：环境变量 / 密钥管理、MCP 服务器配置、Prompt 管理、Profile 管理、RSS / 新闻聚合和桌面客户端启动器，外加一条命令生成新插件的开发脚手架。所有插件都走官方 profile 机制挂载到 `dsh web`，不改 DSH 源码；可以逐个安装，也可以用聚合包一次装齐。
+dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合：环境变量 / 密钥管理、MCP 服务器配置、Prompt 管理、Profile 管理、RSS / 新闻聚合、全局搜索和桌面客户端启动器，外加一条命令生成新插件的开发脚手架。所有插件都走官方 profile 机制挂载到 `dsh web`，不改 DSH 源码；可以逐个安装，也可以用聚合包一次装齐。
 
 ![DSH 插件管理卡片示例](docs/dsh-plugin-kit-mcp.png)
 
@@ -40,6 +40,7 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 | Prompt 管理 | 手改配置 | 可视化编辑 + 版本管理 / A/B 测试 / 导出分享 |
 | Profile 管理 | 命令行 | 可视化创建 / 复制 / 重命名 / 删除 |
 | RSS 聚合 | 无 | 多源订阅 + 每日「今日值得读」自动摘要 |
+| 全局搜索 | 仅会话标题/内容 | 侧边栏统一搜索历史会话、Prompt、MCP 工具 |
 | 桌面客户端 | 手动启动 | 自动探测 + 一键打开 DeepSeek Harness Desktop |
 | 插件开发 | 手写样板 | `pnpm create-plugin` 脚手架 + `@hyzyn/dsh-kit` 类型助手 |
 
@@ -86,6 +87,16 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 ![Profile 管理配置界面](docs/dsh-plugin-kit-profile.png)
 
 ![命令行启动 headless profile 示例](docs/dsh-plugin-kit-profile-example-headless1.png)
+
+### 全局搜索（@hyzyn/dsh-search）
+
+- **做什么**：在 Web GUI 侧边栏加一个「全局搜索」入口，输入关键词后同时搜索历史会话、Prompt 管理里的提示词和当前已加载的 MCP 工具。
+- **怎么用**：安装后在侧边栏「新建会话」下方点击 / 聚焦全局搜索框 → 输入关键词 → 点击会话会打开并尝试定位到匹配文字；点击 Prompt / MCP 工具会尝试跳转到对应设置卡片，跳转失败时自动复制内容 / 工具名。
+- **支持**：历史会话全文搜索（走 DSH 自带 sessionQuery 索引）；Prompt 名称 / 描述 / 版本内容；`mcp__` 前缀 MCP 工具；单类结果数量可配置；结果关键词高亮。
+- **存哪里**：无独立配置；Prompt 读取 `~/.dsh/prompts.yml` 的托管区块。
+- **注意**：需要宿主已安装 `sessionQuery` / `tools` 服务；缺失时对应类别返回空列表，不影响其它类别。若 `session-query` 全文索引配置为 `openAt: "never"`，历史会话会自动降级为逐会话扫描；会话结果会过滤为当前可跳转的可见会话。
+
+![全局搜索插件](docs/dsh-plugin-kit-search.png)
 
 ### RSS / 新闻聚合（@hyzyn/dsh-rss）
 
@@ -165,6 +176,7 @@ dsh plugin --profile web add @hyzyn/dsh-mcp     # MCP 服务器配置
 dsh plugin --profile web add @hyzyn/dsh-prompt  # Prompt 管理
 dsh plugin --profile web add @hyzyn/dsh-profile # Profile 管理
 dsh plugin --profile web add @hyzyn/dsh-rss     # RSS / 新闻聚合
+dsh plugin --profile web add @hyzyn/dsh-search  # 全局搜索
 dsh plugin --profile web add @hyzyn/dsh-desktop # 桌面客户端启动器
 ```
 

@@ -18,7 +18,7 @@ Repo gates: `pnpm typecheck` / `pnpm build` / `pnpm aggregate`.
 
 <p align="center">
   <strong>The plugin family for the DeepSeek Harness (DSH) Web GUI</strong><br>
-  <em>Environment variables · MCP servers · Prompt · Profile · RSS · Desktop launcher · Plugin scaffolding</em>
+  <em>Environment variables · MCP servers · Prompt · Profile · RSS · Global search · Desktop launcher · Plugin scaffolding</em>
 </p>
 
 <p align="center">
@@ -29,7 +29,7 @@ Repo gates: `pnpm typecheck` / `pnpm build` / `pnpm aggregate`.
 
 ## What It Is
 
-dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (DSH) Web GUI: environment variable / secret management, MCP server configuration, Prompt management, Profile management, RSS / news aggregation, and a desktop client launcher, plus a one-command scaffolding tool for generating new plugins. Everything mounts into `dsh web` through the official profile mechanism, so no DSH source changes are needed. Install the plugins individually, or install everything at once with the aggregate package.
+dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (DSH) Web GUI: environment variable / secret management, MCP server configuration, Prompt management, Profile management, RSS / news aggregation, global search, and a desktop client launcher, plus a one-command scaffolding tool for generating new plugins. Everything mounts into `dsh web` through the official profile mechanism, so no DSH source changes are needed. Install the plugins individually, or install everything at once with the aggregate package.
 
 ![Example of DSH plugin management cards](docs/dsh-plugin-kit-mcp.png)
 
@@ -40,6 +40,7 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 | Prompt management | Manual config | Visual editing + versioning / A/B testing / export & sharing |
 | Profile management | CLI | Visual create / copy / rename / delete |
 | RSS aggregation | None | Multiple sources + daily “Today’s Worth Reading” digest |
+| Global search | Session titles/content only | Unified sidebar search over sessions, Prompts, and MCP tools |
 | Desktop client | Launch manually | Auto-detect + one-click launch DeepSeek Harness Desktop |
 | Plugin development | Hand-written boilerplate | `pnpm create-plugin` scaffolding + `@hyzyn/dsh-kit` type helpers |
 
@@ -86,6 +87,16 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 ![Profile management configuration UI](docs/dsh-plugin-kit-profile.png)
 
 ![Example of starting a headless profile from the command line](docs/dsh-plugin-kit-profile-example-headless1.png)
+
+### Global Search (@hyzyn/dsh-search)
+
+- **What it does**: adds a “Global Search” entry to the Web GUI sidebar. Type a keyword and it searches historical sessions, managed Prompts, and currently loaded MCP tools at once.
+- **How to use**: after installing, click or focus the global search box below “New Session” in the sidebar → type a keyword → click a session result to open it and try to locate the matching text; clicking a Prompt / MCP tool result tries to jump to the matching settings card, and falls back to copying the content / tool name if navigation is unavailable.
+- **Supports**: full-text session search via DSH’s built-in `sessionQuery`; Prompt name / description / version content; `mcp__`-prefixed MCP tools; configurable per-category result limits; keyword highlighting in results.
+- **Where it is stored**: no separate config; Prompts are read from the managed block of `~/.dsh/prompts.yml`.
+- **Note**: requires the host `sessionQuery` / `tools` services; if absent, that category returns an empty list without affecting the others. If the `session-query` full-text index is configured with `openAt: "never"`, session search automatically degrades to per-session scanning; session results are filtered to currently visible/jumpable sessions.
+
+![Global search plugin](docs/dsh-plugin-kit-search.png)
 
 ### RSS / News Aggregation (@hyzyn/dsh-rss)
 
@@ -165,6 +176,7 @@ dsh plugin --profile web add @hyzyn/dsh-mcp     # MCP server configuration
 dsh plugin --profile web add @hyzyn/dsh-prompt  # Prompt management
 dsh plugin --profile web add @hyzyn/dsh-profile # Profile management
 dsh plugin --profile web add @hyzyn/dsh-rss     # RSS / news aggregation
+dsh plugin --profile web add @hyzyn/dsh-search  # Global search
 dsh plugin --profile web add @hyzyn/dsh-desktop # Desktop client launcher
 ```
 
