@@ -194,7 +194,7 @@ window.__ModuleLoader__.load({
                   className: 'env_list',
                   children: entries.map((entry, index) => jsxs('div', {
                     className: 'env_row',
-                    key: entry.key || 'row-' + index,
+                    key: 'env-row-' + index,
                     children: [
                       jsx('input', {
                         className: 'env_input',
