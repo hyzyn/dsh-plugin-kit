@@ -18,7 +18,7 @@
 
 <p align="center">
   <strong>DeepSeek Harness（DSH）Web GUI 的插件全家桶</strong><br>
-  <em>环境变量 · MCP 服务器 · Prompt · Profile · RSS · 全局搜索 · 桌面客户端 · 插件脚手架</em>
+  <em>环境变量 · MCP 服务器 · Prompt · Profile · RSS · 全局搜索 · Codegraph 集成 · 桌面客户端 · 插件脚手架</em>
 </p>
 
 <p align="center">
@@ -29,7 +29,7 @@
 
 ## 是什么
 
-dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合：环境变量 / 密钥管理、MCP 服务器配置、Prompt 管理、Profile 管理、RSS / 新闻聚合、全局搜索和桌面客户端启动器，外加一条命令生成新插件的开发脚手架。所有插件都走官方 profile 机制挂载到 `dsh web`，不改 DSH 源码；可以逐个安装，也可以用聚合包一次装齐。
+dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合：环境变量 / 密钥管理、MCP 服务器配置、Prompt 管理、Profile 管理、RSS / 新闻聚合、全局搜索、Codegraph 集成和桌面客户端启动器，外加一条命令生成新插件的开发脚手架。所有插件都走官方 profile 机制挂载到 `dsh web`，不改 DSH 源码；可以逐个安装，也可以用聚合包一次装齐。
 
 ![DSH 插件管理卡片示例](docs/dsh-plugin-kit-mcp.png)
 
@@ -41,6 +41,7 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 | Profile 管理 | 命令行 | 可视化创建 / 复制 / 重命名 / 删除 |
 | RSS 聚合 | 无 | 多源订阅 + 每日「今日值得读」自动摘要 |
 | 全局搜索 | 仅会话标题/内容 | 侧边栏统一搜索历史会话、Prompt、MCP 工具 |
+| Codegraph 集成 | 无 | 代码图谱卡片：索引状态 / 符号搜索 / 调用链 / 影响面 / 一键 sync-index |
 | 桌面客户端 | 手动启动 | 自动探测 + 一键打开 DeepSeek Harness Desktop |
 | 插件开发 | 手写样板 | `pnpm create-plugin` 脚手架 + `@hyzyn/dsh-kit` 类型助手 |
 
@@ -97,6 +98,16 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 - **注意**：需要宿主已安装 `sessionQuery` / `tools` 服务；缺失时对应类别返回空列表，不影响其它类别。若 `session-query` 全文索引配置为 `openAt: "never"`，历史会话会自动降级为逐会话扫描；会话结果会过滤为当前可跳转的可见会话。
 
 ![全局搜索插件](docs/dsh-plugin-kit-search.png)
+
+### Codegraph 集成（@hyzyn/dsh-codegraph）
+
+- **做什么**：代码图谱集成——设置 → 插件 里的「Codegraph」卡片提供索引状态、符号搜索、callers / callees / impact 查看和一键 sync / index；安装后自动向 systemPrompt 注入 CodeGraph 使用指引，模型在已索引项目里优先用 `codegraph_explore` / `codegraph explore` 查询代码而不是 grep / read。
+- **怎么用**：打开 设置 → 插件 →「Codegraph」→ 查看索引状态、搜索符号、点击结果查看源码与调用链 / 影响面、手动 Sync / 重建索引。
+- **支持**：索引状态（版本、文件 / 符号 / 边数量、最后索引时间、待同步变更）；符号搜索与 node / callers / callees / impact 详情；**默认路径跟随当前活动会话的工作目录**（切换项目会话自动切换，手动输入可临时覆盖）；一键增量 sync 与全量重建。
+- **存哪里**：索引在项目 `.codegraph/` 目录（由 `codegraph index` 生成）；插件无独立配置文件。
+- **注意**：查询目标项目需要先有 Codegraph 索引；未索引项目会返回指引改用常规工具。索引 / 重建为本地 CLI 操作，消耗真实磁盘与 CPU。
+
+![Codegraph 设置卡片](docs/dsh-plugin-kit-codegraph.png)
 
 ### RSS / 新闻聚合（@hyzyn/dsh-rss）
 
@@ -177,6 +188,7 @@ dsh plugin --profile web add @hyzyn/dsh-prompt  # Prompt 管理
 dsh plugin --profile web add @hyzyn/dsh-profile # Profile 管理
 dsh plugin --profile web add @hyzyn/dsh-rss     # RSS / 新闻聚合
 dsh plugin --profile web add @hyzyn/dsh-search  # 全局搜索
+dsh plugin --profile web add @hyzyn/dsh-codegraph # Codegraph 集成
 dsh plugin --profile web add @hyzyn/dsh-desktop # 桌面客户端启动器
 ```
 

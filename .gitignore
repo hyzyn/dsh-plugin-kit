@@ -6,3 +6,5 @@ dist/
 .pnpm-store/
 .idea/
 docs/PUBLISHING.md
+
+.dsh-vision-toolkit/

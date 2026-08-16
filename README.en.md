@@ -18,7 +18,7 @@ Repo gates: `pnpm typecheck` / `pnpm build` / `pnpm aggregate`.
 
 <p align="center">
   <strong>The plugin family for the DeepSeek Harness (DSH) Web GUI</strong><br>
-  <em>Environment variables · MCP servers · Prompt · Profile · RSS · Global search · Desktop launcher · Plugin scaffolding</em>
+  <em>Environment variables · MCP servers · Prompt · Profile · RSS · Global search · Codegraph · Desktop launcher · Plugin scaffolding</em>
 </p>
 
 <p align="center">
@@ -29,7 +29,7 @@ Repo gates: `pnpm typecheck` / `pnpm build` / `pnpm aggregate`.
 
 ## What It Is
 
-dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (DSH) Web GUI: environment variable / secret management, MCP server configuration, Prompt management, Profile management, RSS / news aggregation, global search, and a desktop client launcher, plus a one-command scaffolding tool for generating new plugins. Everything mounts into `dsh web` through the official profile mechanism, so no DSH source changes are needed. Install the plugins individually, or install everything at once with the aggregate package.
+dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (DSH) Web GUI: environment variable / secret management, MCP server configuration, Prompt management, Profile management, RSS / news aggregation, global search, Codegraph integration, and a desktop client launcher, plus a one-command scaffolding tool for generating new plugins. Everything mounts into `dsh web` through the official profile mechanism, so no DSH source changes are needed. Install the plugins individually, or install everything at once with the aggregate package.
 
 ![Example of DSH plugin management cards](docs/dsh-plugin-kit-mcp.png)
 
@@ -41,6 +41,7 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 | Profile management | CLI | Visual create / copy / rename / delete |
 | RSS aggregation | None | Multiple sources + daily “Today’s Worth Reading” digest |
 | Global search | Session titles/content only | Unified sidebar search over sessions, Prompts, and MCP tools |
+| Codegraph integration | None | Code-graph card: index status / symbol search / callers-callees-impact / one-click sync-index |
 | Desktop client | Launch manually | Auto-detect + one-click launch DeepSeek Harness Desktop |
 | Plugin development | Hand-written boilerplate | `pnpm create-plugin` scaffolding + `@hyzyn/dsh-kit` type helpers |
 
@@ -113,6 +114,16 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 
 ![Sidebar “Today’s Worth Reading” modal: grouped by category, each source links to its website](docs/dsh-plugin-kit-rss-view.png)
 
+### Codegraph Integration (@hyzyn/dsh-codegraph)
+
+- **What it does**: code-graph integration — the “Codegraph” card under Settings → Plugins shows index status, symbol search, callers / callees / impact, and one-click sync / index. On install it automatically injects a CodeGraph usage guideline into systemPrompt so the model prefers `codegraph_explore` / `codegraph explore` over grep / read in indexed projects.
+- **How to use**: open Settings → Plugins → “Codegraph” → view index status, search symbols, click a result to inspect source and call chains / impact, or run Sync / rebuild index manually.
+- **Supports**: index status (version, file / symbol / edge counts, last indexed time, pending changes); symbol search with node / callers / callees / impact details; **the default path follows the active session’s workspace directory** (switches when you switch projects; a manual input temporarily overrides it); one-click incremental sync and full rebuild.
+- **Where it is stored**: the index lives in the project’s `.codegraph/` directory (created by `codegraph index`); the plugin has no config file of its own.
+- **Note**: the target project needs a Codegraph index first; unindexed projects return guidance to fall back to regular tools. Indexing / rebuilding are local CLI operations that consume real disk and CPU.
+
+![Codegraph settings card](docs/dsh-plugin-kit-codegraph.png)
+
 ### Desktop Client (@hyzyn/dsh-desktop)
 
 - **What it does**: shows a “Desktop Client” card in the Web GUI and opens the local DeepSeek Harness Desktop (Tauri native window) with one click.
@@ -177,6 +188,7 @@ dsh plugin --profile web add @hyzyn/dsh-prompt  # Prompt management
 dsh plugin --profile web add @hyzyn/dsh-profile # Profile management
 dsh plugin --profile web add @hyzyn/dsh-rss     # RSS / news aggregation
 dsh plugin --profile web add @hyzyn/dsh-search  # Global search
+dsh plugin --profile web add @hyzyn/dsh-codegraph # Codegraph integration
 dsh plugin --profile web add @hyzyn/dsh-desktop # Desktop client launcher
 ```
 

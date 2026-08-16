@@ -6,6 +6,11 @@
     - id: all
       name: '@hyzyn/dsh-all'
 
+# from ../codegraph
+- insert:
+    - id: codegraph
+      name: '@hyzyn/dsh-codegraph'
+
 # from ../env
 - insert:
     - id: env-manager
