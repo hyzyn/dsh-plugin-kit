@@ -21,6 +21,11 @@
     - id: mcp-config
       name: '@hyzyn/dsh-mcp'
 
+# from ../profile
+- insert:
+    - id: profile-manager
+      name: '@hyzyn/dsh-profile'
+
 # from ../prompt
 - insert:
     - id: prompt-manager

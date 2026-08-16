@@ -23,6 +23,9 @@ importers:
       '@hyzyn/dsh-mcp':
         specifier: workspace:*
         version: link:../mcp
+      '@hyzyn/dsh-profile':
+        specifier: workspace:*
+        version: link:../profile
       '@hyzyn/dsh-prompt':
         specifier: workspace:*
         version: link:../prompt
@@ -83,6 +86,22 @@ importers:
       js-yaml:
         specifier: ^4.1.0
         version: 4.3.1
+      react:
+        specifier: ^18.2.0
+        version: 18.3.1
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: ^4.0.1
+        version: 4.0.1
+      '@types/node':
+        specifier: ^22.20.0
+        version: 22.20.1
+      typescript:
+        specifier: ~5.7.2
+        version: 5.7.3
+
+  packages/profile:
+    dependencies:
       react:
         specifier: ^18.2.0
         version: 18.3.1

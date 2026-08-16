@@ -1,12 +1,12 @@
 # dsh-plugin-kit
 
-> DSH 插件全家桶：三款开箱即用的插件 + 一条命令生成新插件的开发脚手架。
+> DSH 插件全家桶：四款开箱即用的插件 + 一条命令生成新插件的开发脚手架。
 > 插件已发布到 npm（`@hyzyn/dsh-all` 等），一行命令即可安装使用：`dsh plugin --profile web add @hyzyn/dsh-all`。
 > npm 包名与仓库目录名均为 `dsh-plugin-kit`。
 
 本仓库是一个 pnpm monorepo，主要解决两件事：
 
-1. **用插件**：装好后，DSH Web GUI 的 设置 → 插件 里会出现三张管理卡片（环境变量 / MCP 服务器 / Prompt），全部图形化操作，保存即生效；
+1. **用插件**：装好后，DSH Web GUI 的 设置 → 插件 里会出现四张管理卡片（环境变量 / MCP 服务器 / Prompt / Profile），全部图形化操作，保存即生效；
 2. **写插件**：`pnpm create-plugin` 一条命令从模板生成新插件包，本地安装调试，构建发布。
 
 ## 目录结构
@@ -17,6 +17,7 @@ dsh-plugin-kit/
 │   ├── env/      # 环境变量 / 密钥管理插件（Web GUI 设置卡片）
 │   ├── mcp/      # MCP 服务器配置插件（Web GUI 设置卡片）
 │   ├── prompt/   # Prompt 管理插件（Web GUI 设置卡片）
+│   ├── profile/  # Profile 管理插件（Web GUI 设置卡片）
 │   ├── all/      # 聚合安装包：一条命令装下全部插件
 │   ├── hello/    # 最小插件模板（create-plugin 的复制蓝本）
 │   └── kit/      # 插件开发工具包（definePlugin 类型助手）
@@ -43,6 +44,7 @@ dsh plugin --profile web add @hyzyn/dsh-all
 dsh plugin --profile web add @hyzyn/dsh-env     # 环境变量 / 密钥管理
 dsh plugin --profile web add @hyzyn/dsh-mcp     # MCP 服务器配置
 dsh plugin --profile web add @hyzyn/dsh-prompt  # Prompt 管理
+dsh plugin --profile web add @hyzyn/dsh-profile # Profile 管理
 ```
 
 安装后**重启一次 `dsh web`**，打开 Web GUI 的 设置 → 插件，即可看到对应的管理卡片。
@@ -70,6 +72,7 @@ dsh plugin --profile web add link:$(pwd)/packages/all
 dsh plugin --profile web add link:$(pwd)/packages/env
 dsh plugin --profile web add link:$(pwd)/packages/mcp
 dsh plugin --profile web add link:$(pwd)/packages/prompt
+dsh plugin --profile web add link:$(pwd)/packages/profile
 ```
 
 ## 内置插件一览
@@ -79,6 +82,7 @@ dsh plugin --profile web add link:$(pwd)/packages/prompt
 | `@hyzyn/dsh-env` | 设置 → 插件 →「环境变量 / 密钥管理」 | 图形化管理环境变量与密钥，保存后写入 `process.env` |
 | `@hyzyn/dsh-mcp` | 设置 → 插件 →「MCP 服务器配置」 | 给 DSH 添加 MCP 服务器，模型即可使用 `mcp__<服务器>__<工具>` |
 | `@hyzyn/dsh-prompt` | 设置 → 插件 →「Prompt 管理」 | 可视化编辑 systemPrompt，版本管理 / A/B 测试 / 导出分享 |
+| `@hyzyn/dsh-profile` | 设置 → 插件 →「Profile 管理」 | 查看 / 创建 / 复制 / 重命名 / 删除 DSH profile |
 
 ### 环境变量 / 密钥管理（@hyzyn/dsh-env）
 
@@ -104,6 +108,14 @@ dsh plugin --profile web add link:$(pwd)/packages/prompt
 - **存哪里**：`~/.dsh/prompts.yml` 的托管区块。
 - **注意**：每个 Prompt 至少一个版本，单版本内容 ≤ 500KB。
 
+### Profile 管理（@hyzyn/dsh-profile）
+
+- **做什么**：可视化查看 `~/.dsh/profiles` 下的全部 DSH profile，支持创建、复制、删除，方便维护多套 DSH 环境。
+- **怎么用**：打开卡片 → 查看 profile 列表 → 新建 / 复制 / 删除。
+- **支持**：初始化状态、bundle 层与依赖展示；默认 / `web` / `headless` 模板新建；复制排除 `node_modules` 与锁文件；重命名。
+- **存哪里**：直接管理 `~/.dsh/profiles/<name>` 目录。
+- **注意**：删除为递归删除，操作前请二次确认；新建后首次使用 `dsh plugin --profile <name> add ...` 时按需安装依赖。
+
 ## 界面预览
 
 ### MCP 服务器配置（@hyzyn/dsh-mcp）
@@ -117,6 +129,12 @@ dsh plugin --profile web add link:$(pwd)/packages/prompt
 ### Prompt 管理（@hyzyn/dsh-prompt）
 
 ![Prompt 管理插件](/docs/dsh-plugin-kit-promat.png)
+
+### Profile 管理（@hyzyn/dsh-profile）
+
+![Profile 管理配置界面](/docs/dsh-plugin-kit-profile.png)
+
+![命令行启动 headless profile 示例](/docs/dsh-plugin-kit-profile-example-headless1.png)
 
 ## 开发新插件
 
@@ -156,16 +174,6 @@ dsh plugin --profile web add link:$(pwd)/packages/<name>
 | `pnpm typecheck` | 全仓类型检查 |
 | `pnpm create-plugin <name> [id]` | 从模板生成新插件 |
 | `pnpm aggregate` | 重新生成 `packages/all` 聚合清单（增删插件后跑一次） |
-
-## 发布到 npm
-
-本仓库插件已发布（`@hyzyn/dsh-all@0.1.0` 等），升级版本后重新发布：
-
-1. 修改各包 `package.json#version`（聚合包与插件保持同版本）；
-2. `pnpm -r publish`——`workspace:*` 依赖会自动替换为真实版本号；`files` 已包含 lib/、cordis.patch.yml、README；
-3. `npm view @hyzyn/dsh-all versions` 验证。
-
-> 注意：scope（`@hyzyn`）必须是你拥有的 npm 账号/组织 scope，否则发布会被拒。
 
 ## 常见问题
 
