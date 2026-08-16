@@ -110,11 +110,11 @@ dsh plugin --profile web add link:$(pwd)/packages/profile
 
 ### Profile 管理（@hyzyn/dsh-profile）
 
-- **做什么**：可视化查看 `~/.dsh/profiles` 下的全部 DSH profile，支持创建、复制、删除，方便维护多套 DSH 环境。
-- **怎么用**：打开卡片 → 查看 profile 列表 → 新建 / 复制 / 删除。
-- **支持**：初始化状态、bundle 层与依赖展示；默认 / `web` / `headless` 模板新建；复制排除 `node_modules` 与锁文件；重命名。
+- **做什么**：可视化查看 `~/.dsh/profiles` 下的全部 DSH profile，支持创建、复制、重命名、删除，方便维护多套 DSH 环境。
+- **怎么用**：打开卡片 → 查看 profile 列表 → 新建 / 复制 / 重命名 / 删除；可为每个 profile 设置端口并复制带 `--port` 的启动命令。
+- **支持**：初始化状态、bundle 层与依赖展示；基础模板 / `web` / `headless` 模板新建；复制排除 `node_modules` 与锁文件并自动安装依赖；重命名；端口配置与复制启动命令。
 - **存哪里**：直接管理 `~/.dsh/profiles/<name>` 目录。
-- **注意**：删除为递归删除，操作前请二次确认；新建后首次使用 `dsh plugin --profile <name> add ...` 时按需安装依赖。
+- **注意**：删除为递归删除，操作前请二次确认；内置的 `web` 默认 profile 不允许删除，`headless` 可以删除；新建后首次使用 `dsh plugin --profile <name> add ...` 时按需安装依赖。
 
 ## 界面预览
 

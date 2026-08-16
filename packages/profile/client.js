@@ -50,6 +50,8 @@ window.__ModuleLoader__.load({
       '.pf_banner{border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:8px;padding:8px 12px;font-size:12.5px;line-height:1.5;overflow-wrap:anywhere;flex:none}',
       '.pf_banner[data-kind=error]{color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary)}',
       '.pf_banner[data-kind=ok]{color:var(--dsw-alias-state-success-primary);border-color:var(--dsw-alias-state-success-primary)}',
+      '.pf_banner[data-kind=info]{color:var(--dsw-alias-state-business-primary);border-color:var(--dsw-alias-state-business-primary)}',
+      '.pf_busyOverlay{position:fixed;left:50%;bottom:80px;transform:translateX(-50%);z-index:2147483647;pointer-events:none;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary);border-radius:10px;padding:10px 18px;font-size:13px;box-shadow:var(--dsw-shadow-lv3);max-width:80vw;text-align:center}',
       '.pf_empty,.pf_loading{text-align:center;color:var(--dsw-alias-label-tertiary);padding:24px 12px;font-size:12.5px}',
       '.pf_form{display:flex;flex-direction:column;gap:10px;border-top:1px solid var(--dsw-alias-border-l1);padding-top:12px}',
       '.pf_formTitle{font-weight:700;font-size:13px}',
@@ -79,6 +81,7 @@ window.__ModuleLoader__.load({
       create: '/api/dsh-profile/create',
       duplicate: '/api/dsh-profile/duplicate',
       rename: '/api/dsh-profile/rename',
+      port: '/api/dsh-profile/port',
       delete: '/api/dsh-profile/delete',
     }
 
@@ -99,10 +102,10 @@ window.__ModuleLoader__.load({
     }
 
     const apiList = () => apiRequest(API.list)
-    const apiCreate = (name, template) => apiRequest(API.create, {
+    const apiCreate = (name, template, port) => apiRequest(API.create, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name, template }),
+      body: JSON.stringify({ name, template, port }),
     })
     const apiDuplicate = (name, from) => apiRequest(API.duplicate, {
       method: 'POST',
@@ -114,6 +117,12 @@ window.__ModuleLoader__.load({
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name, newName }),
     })
+    const apiSetPort = (name, port) => apiRequest(API.port, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name, port }),
+    })
+
 
     const apiDelete = (name) => apiRequest(API.delete, {
       method: 'POST',
@@ -129,10 +138,12 @@ window.__ModuleLoader__.load({
       profilesRoot: '',
       loading: false,
       busy: false,
+      busyText: '',
       error: '',
       ok: '',
       newName: '',
       newTemplate: '',
+      newPort: '',
       dupName: '',
       dupFrom: '',
     }
@@ -140,6 +151,7 @@ window.__ModuleLoader__.load({
     let panelEl
     let toastEl
     let toastTimer
+    let busyEl
 
     function toast(message, kind) {
       if (!toastEl) {
@@ -154,6 +166,23 @@ window.__ModuleLoader__.load({
       toastTimer = setTimeout(() => {
         if (toastEl) toastEl.style.display = 'none'
       }, 2400)
+    }
+
+
+    function showBusy(message) {
+      if (!busyEl) {
+        busyEl = document.createElement('div')
+        busyEl.className = 'pf_busyOverlay'
+        document.body.appendChild(busyEl)
+      }
+      busyEl.textContent = message
+      busyEl.style.display = 'block'
+    }
+
+    function hideBusy() {
+      if (busyEl) {
+        busyEl.style.display = 'none'
+      }
     }
 
     async function load() {
@@ -174,11 +203,13 @@ window.__ModuleLoader__.load({
       }
     }
 
-    async function run(action, successMessage) {
+    async function run(action, successMessage, busyMessage) {
       if (state.busy) return
       state.busy = true
+      state.busyText = busyMessage || '处理中…'
       state.error = ''
       state.ok = ''
+      showBusy(state.busyText)
       renderAll(panelEl)
       try {
         await action()
@@ -188,6 +219,8 @@ window.__ModuleLoader__.load({
         state.error = error.message || String(error)
       } finally {
         state.busy = false
+        state.busyText = ''
+        hideBusy()
         renderAll(panelEl)
       }
     }
@@ -208,18 +241,28 @@ window.__ModuleLoader__.load({
           ? esc(profile.bundles.join(', '))
           : '（无 bundle）'
         const deps = Object.keys(profile.dependencies || {}).length
+        const portText = profile.port != null ? '端口 ' + profile.port : '未设端口'
+        const launchCmd = 'dsh --profile ' + profile.name + (profile.port != null ? ' --port ' + profile.port : '')
+        const protectedProfile = profile.name === 'web'
+        const deleteButton = protectedProfile
+          ? '<button class="pf_btnGhost pf_btnDanger" disabled title="默认 profile 不能删除">删除</button>'
+          : '<button class="pf_btnGhost pf_btnDanger" data-action="delete" data-name="' + esc(profile.name) + '">删除</button>'
         return '<div class="pf_card">' +
           '<div class="pf_cardRow">' +
             '<span class="pf_cardName">' + esc(profile.name) + '</span>' +
             status +
+            (protectedProfile ? '<span class="pf_badge" data-kind="warn">内置</span>' : '') +
+            '<span class="pf_badge">' + esc(portText) + '</span>' +
             '<span class="pf_cardSummary">' + bundles + ' · ' + deps + ' 个依赖</span>' +
             '<span class="pf_cardActions">' +
+              '<button class="pf_btnGhost" data-action="port" data-name="' + esc(profile.name) + '">端口</button>' +
+              '<button class="pf_btnGhost" data-action="copy-command" data-name="' + esc(profile.name) + '">复制启动命令</button>' +
               '<button class="pf_btnGhost" data-action="rename" data-name="' + esc(profile.name) + '">重命名</button>' +
               '<button class="pf_btnGhost" data-action="dup" data-name="' + esc(profile.name) + '">复制</button>' +
-              '<button class="pf_btnGhost pf_btnDanger" data-action="delete" data-name="' + esc(profile.name) + '">删除</button>' +
+              deleteButton +
             '</span>' +
           '</div>' +
-          '<div class="pf_hint">' + esc(profile.dir) + (profile.patchExists ? '' : ' · 缺少 cordis.patch.yml') + '</div>' +
+          '<div class="pf_hint">' + esc(profile.dir) + (profile.patchExists ? '' : ' · 缺少 cordis.patch.yml') + '<br>启动: ' + esc(launchCmd) + '</div>' +
         '</div>'
       }).join('') + '</div>'
     }
@@ -236,16 +279,18 @@ window.__ModuleLoader__.load({
         '</div>' +
         (state.error ? '<div class="pf_banner" data-kind="error">' + esc(state.error) + '</div>' : '') +
         (state.ok ? '<div class="pf_banner" data-kind="ok">' + esc(state.ok) + '</div>' : '') +
+        (state.busy ? '<div class="pf_banner" data-kind="info">' + esc(state.busyText) + '</div>' : '') +
         renderProfiles() +
         '<div class="pf_form">' +
           '<div class="pf_formTitle">新建 profile</div>' +
           '<div class="pf_formRow">' +
             '<input class="pf_input" id="pfNewName" placeholder="名称，如 dev" value="' + esc(state.newName) + '">' +
             '<select class="pf_select" id="pfNewTemplate">' +
-              '<option value="">默认（@deepseek-ai/dsh-base）</option>' +
+              '<option value="">基础模板（仅核心 / 自定义开发）</option>' +
               '<option value="web">web（base + web-app）</option>' +
               '<option value="headless">headless（base + headless）</option>' +
             '</select>' +
+            '<input class="pf_input" id="pfNewPort" placeholder="端口（可选）" value="' + esc(state.newPort) + '">' +
             '<button class="pf_btn" id="pfCreate" ' + (state.busy ? 'disabled' : '') + '>创建</button>' +
           '</div>' +
         '</div>' +
@@ -278,8 +323,10 @@ window.__ModuleLoader__.load({
       if (target.id === 'pfCreate') {
         const nameInput = document.getElementById('pfNewName')
         const templateSelect = document.getElementById('pfNewTemplate')
+        const portInput = document.getElementById('pfNewPort')
         state.newName = nameInput ? nameInput.value.trim() : ''
         state.newTemplate = templateSelect ? templateSelect.value : ''
+        state.newPort = portInput ? portInput.value.trim() : ''
         if (!state.newName) {
           state.error = '请输入 profile 名称'
           renderAll(panelEl)
@@ -287,7 +334,8 @@ window.__ModuleLoader__.load({
         }
         const name = state.newName
         const template = state.newTemplate
-        run(() => apiCreate(name, template), '已创建 profile：' + name)
+        const port = state.newPort === '' ? null : state.newPort
+        run(() => apiCreate(name, template, port), '已创建 profile：' + name, '正在创建 profile…')
         return
       }
       if (target.id === 'pfDup') {
@@ -302,7 +350,7 @@ window.__ModuleLoader__.load({
         }
         const from = state.dupFrom
         const name = state.dupName
-        run(() => apiDuplicate(name, from), '已复制 profile：' + name)
+        run(() => apiDuplicate(name, from), '已复制 profile：' + name, '正在复制并安装依赖，请稍候…')
         return
       }
       const action = target.dataset && target.dataset.action
@@ -317,18 +365,44 @@ window.__ModuleLoader__.load({
         if (nameInput) nameInput.value = state.dupName
         return
       }
+      if (action === 'port') {
+        if (!name) return
+        const profile = state.profiles.find((item) => item.name === name)
+        const current = profile && profile.port != null ? String(profile.port) : ''
+        const input = window.prompt('设置启动端口（留空清除，0 表示自动分配）：', current)
+        if (input === null) return
+        const port = input.trim() === '' ? null : input.trim()
+        run(() => apiSetPort(name, port), '已更新端口：' + name, '正在设置端口…')
+        return
+      }
+      if (action === 'copy-command') {
+        if (!name) return
+        const profile = state.profiles.find((item) => item.name === name)
+        const port = profile && profile.port != null ? ' --port ' + profile.port : ''
+        const cmd = 'dsh --profile ' + name + port
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(cmd).then(() => {
+            toast('已复制：' + cmd, 'ok')
+          }).catch(() => {
+            window.prompt('复制启动命令', cmd)
+          })
+        } else {
+          window.prompt('复制启动命令', cmd)
+        }
+        return
+      }
       if (action === 'rename') {
         if (!name) return
         const newName = window.prompt('新的 profile 名称：', name)
         if (!newName || newName.trim() === '' || newName === name) return
-        run(() => apiRename(name, newName.trim()), '已重命名 profile：' + newName.trim())
+        run(() => apiRename(name, newName.trim()), '已重命名 profile：' + newName.trim(), '正在重命名…')
         return
       }
 
       if (action === 'delete') {
         if (!name) return
         if (!window.confirm('确定删除 profile「' + name + '」？此操作不可撤销。')) return
-        run(() => apiDelete(name), '已删除 profile：' + name)
+        run(() => apiDelete(name), '已删除 profile：' + name, '正在删除…')
       }
     }
 
@@ -363,7 +437,7 @@ window.__ModuleLoader__.load({
                 className: 'pf_cardHeadText',
                 children: [
                   jsx('span', { className: 'pf_cardName', children: 'Profile 管理' }),
-                  jsx('span', { className: 'pf_cardDescription', children: '查看、创建、复制、删除 DSH profile。' }),
+                  jsx('span', { className: 'pf_cardDescription', children: '查看、创建、复制、重命名、删除、端口配置 DSH profile。' }),
                 ],
               }),
               jsx('svg', {
@@ -399,6 +473,8 @@ window.__ModuleLoader__.load({
           styleEl = undefined
           toastEl?.remove()
           toastEl = undefined
+          busyEl?.remove()
+          busyEl = undefined
           panelEl = undefined
         }
       })

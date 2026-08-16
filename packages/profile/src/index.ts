@@ -1,6 +1,7 @@
 /**
  * @hyzyn/dsh-profile — DSH Web GUI 的 Profile 管理插件（宿主半体）。
  */
+import { spawnSync } from 'node:child_process'
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -20,7 +21,10 @@ export interface Config {
 
 const PROFILE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 const RESERVED_PROFILE_NAMES = new Set(['node_modules', '.', '..'])
+const PROTECTED_PROFILE_NAMES = new Set(['web'])
+const BUILTIN_PROFILE_ORDER = ['web', 'headless']
 const MAX_JSON_BODY_BYTES = 512 * 1024
+const RUNTIME_FILE = 'profile.runtime.json'
 const DEFAULT_BUNDLES = ['@deepseek-ai/dsh-base']
 const PROFILE_TEMPLATES: Record<string, string[]> = {
   web: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app'],
@@ -30,6 +34,7 @@ const PROFILE_TEMPLATES: Record<string, string[]> = {
 const dshHome = () => process.env.DSH_HOME?.trim() || join(homedir(), '.dsh')
 const profilesRoot = () => join(dshHome(), 'profiles')
 const profileDir = (name: string) => join(profilesRoot(), name)
+const runtimeFilePath = (name: string) => join(profileDir(name), RUNTIME_FILE)
 
 interface ProfileInfo {
   name: string
@@ -38,6 +43,7 @@ interface ProfileInfo {
   patchExists: boolean
   bundles: string[]
   dependencies: Record<string, string>
+  port: number | null
   dir: string
 }
 
@@ -51,11 +57,45 @@ function isValidProfileName(name: unknown): name is string {
   return PROFILE_NAME_RE.test(trimmed) && !RESERVED_PROFILE_NAMES.has(trimmed)
 }
 
+function readProfileRuntime(name: string): { port?: number } {
+  const file = runtimeFilePath(name)
+  if (!existsSync(file)) return {}
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf8')) as { port?: unknown }
+    return typeof parsed.port === 'number' && Number.isInteger(parsed.port) && parsed.port >= 0 && parsed.port <= 65535 ? { port: parsed.port } : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeProfileRuntime(name: string, port: number | null): void {
+  const file = runtimeFilePath(name)
+  if (port === null) {
+    if (existsSync(file)) rmSync(file, { force: true })
+    return
+  }
+  writeFileSync(file, JSON.stringify({ port }, null, 2) + '\n')
+}
+
+function normalizePort(value: unknown): { port?: number; error?: string } {
+  if (value === undefined || value === null || value === '') return {}
+  if (typeof value !== 'string' && typeof value !== 'number') {
+    return { error: 'port 必须是 0~65535 的整数' }
+  }
+  const n = Number(value)
+  if (!Number.isInteger(n) || n < 0 || n > 65535) {
+    return { error: 'port 必须是 0~65535 的整数' }
+  }
+  return { port: n }
+}
+
+
 function readProfileInfo(name: string): ProfileInfo {
   const dir = profileDir(name)
   const manifestPath = join(dir, 'package.json')
   const patchPath = join(dir, 'cordis.patch.yml')
   const packageJson = existsSync(manifestPath)
+  const runtime = readProfileRuntime(name)
   let bundles: string[] = []
   let dependencies: Record<string, string> = {}
   if (packageJson) {
@@ -81,6 +121,7 @@ function readProfileInfo(name: string): ProfileInfo {
     patchExists: existsSync(patchPath),
     bundles,
     dependencies,
+    port: runtime.port ?? null,
     dir,
   }
 }
@@ -91,7 +132,14 @@ function listProfiles(): ProfileInfo[] {
   const names = readdirSync(root, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && !RESERVED_PROFILE_NAMES.has(entry.name))
     .map((entry) => entry.name)
-    .sort()
+    .sort((a, b) => {
+      const ai = BUILTIN_PROFILE_ORDER.indexOf(a)
+      const bi = BUILTIN_PROFILE_ORDER.indexOf(b)
+      if (ai !== -1 || bi !== -1) {
+        return (ai === -1 ? 1 : ai) - (bi === -1 ? 1 : bi)
+      }
+      return a.localeCompare(b)
+    })
   return names.map(readProfileInfo)
 }
 
@@ -151,6 +199,18 @@ function createProfile(name: string, template?: string): void {
   }
 }
 
+function installProfileDependencies(dir: string): void {
+  const result = spawnSync('pnpm', ['install'], { cwd: dir, encoding: 'utf8' })
+  if (result.error !== undefined) {
+    throw new Error('复制后安装依赖失败: ' + result.error.message)
+  }
+  if (result.status !== 0) {
+    const detail = (result.stderr || result.stdout || '').toString().trim()
+    throw new Error('复制后安装依赖失败（pnpm 退出码 ' + String(result.status) + '）' + (detail ? ': ' + detail : ''))
+  }
+}
+
+
 function copyProfile(source: string, target: string): void {
   const src = profileDir(source)
   const dest = profileDir(target)
@@ -183,9 +243,13 @@ function copyProfile(source: string, target: string): void {
       /* 复制后改名失败不阻塞，目录仍可用 */
     }
   }
+  installProfileDependencies(dest)
 }
 
 function deleteProfile(name: string): void {
+  if (PROTECTED_PROFILE_NAMES.has(name)) {
+    throw new Error('默认 profile 不能删除: ' + name)
+  }
   const dir = profileDir(name)
   if (!existsSync(dir)) {
     throw new Error('profile 不存在: ' + name)
@@ -324,8 +388,14 @@ function makeRoutes(): Array<{ kind: 'exact'; path: string; handler: RouteHandle
           return
         }
         const template = typeof body.template === 'string' ? body.template : undefined
+        const portResult = normalizePort(body.port)
+        if (portResult.error !== undefined) {
+          writeJson(res, 400, { error: portResult.error })
+          return
+        }
         try {
           createProfile(name, template)
+          if (portResult.port !== undefined) writeProfileRuntime(name, portResult.port)
         } catch (error) {
           writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) })
           return
@@ -391,6 +461,40 @@ function makeRoutes(): Array<{ kind: 'exact'; path: string; handler: RouteHandle
         writeJson(res, 200, { ok: true, profile: readProfileInfo(newName) })
       },
     },
+    {
+      kind: 'exact',
+      path: '/api/dsh-profile/port',
+      handler: async (req, res) => {
+        if (!guard(req, res, 'POST')) return
+        const body = await readJsonBody(req)
+        if (body === undefined) {
+          writeJson(res, 400, { error: 'invalid JSON body' })
+          return
+        }
+        const name = typeof body.name === 'string' ? body.name.trim() : ''
+        if (!isValidProfileName(name)) {
+          writeJson(res, 400, { error: '非法 profile 名称: ' + JSON.stringify(name) })
+          return
+        }
+        if (!existsSync(profileDir(name))) {
+          writeJson(res, 400, { error: 'profile 不存在: ' + name })
+          return
+        }
+        const portResult = normalizePort(body.port)
+        if (portResult.error !== undefined) {
+          writeJson(res, 400, { error: portResult.error })
+          return
+        }
+        try {
+          writeProfileRuntime(name, portResult.port ?? null)
+        } catch (error) {
+          writeJson(res, 500, { error: '写入端口配置失败: ' + (error instanceof Error ? error.message : String(error)) })
+          return
+        }
+        writeJson(res, 200, { ok: true, profile: readProfileInfo(name) })
+      },
+    },
+
 
     {
       kind: 'exact',
@@ -423,7 +527,7 @@ function makeRoutes(): Array<{ kind: 'exact'; path: string; handler: RouteHandle
  * 插件本体
  * ------------------------------------------------------------------ */
 
-const PROFILE_GUIDANCE = '本机已安装 dsh-profile-manager 插件（Profile 管理）：Web GUI 的 设置 → 插件 里有「Profile 管理」卡片，提供 DSH profile 的图形化管理（查看、创建、复制、删除）。Profile 是 $DSH_HOME/profiles 下的独立目录，每个 profile 拥有自己的 bundle 层与补丁文件；用户提到「profile / 配置文件 / 多环境」时即指本插件，请引导用户打开设置里的 Profile 卡片操作，而不是直接修改 ~/.dsh/profiles 目录。'
+const PROFILE_GUIDANCE = '本机已安装 dsh-profile-manager 插件（Profile 管理）：Web GUI 的 设置 → 插件 里有「Profile 管理」卡片，提供 DSH profile 的图形化管理（查看、创建、复制、重命名、删除、端口配置）。Profile 是 $DSH_HOME/profiles 下的独立目录，每个 profile 拥有自己的 bundle 层与补丁文件；用户提到「profile / 配置文件 / 多环境」时即指本插件，请引导用户打开设置里的 Profile 卡片操作，而不是直接修改 ~/.dsh/profiles 目录。'
 
 export function apply(ctx: Context, config?: Config): void {
   if (config?.enabled === false) return
