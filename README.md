@@ -1,5 +1,7 @@
 # dsh-plugin-kit
 
+> **中文** | [English](./README.en.md)
+
 > DSH 插件全家桶：四款开箱即用的插件 + 一条命令生成新插件的开发脚手架。
 > 插件已发布到 npm（`@hyzyn/dsh-all` 等），一行命令即可安装使用：`dsh plugin --profile web add @hyzyn/dsh-all`。
 > npm 包名与仓库目录名均为 `dsh-plugin-kit`。
