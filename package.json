@@ -1,7 +1,6 @@
 {
-  "name": "dsh-plugin-kit",
-  "version": "0.0.0",
-  "private": true,
+  "name": "@hyzyn/dsh-plugin-kit",
+  "version": "0.1.0",
   "type": "module",
   "description": "通用 DSH 插件库（pnpm monorepo）：模板插件、插件开发工具包、一键聚合安装包。根包同时是全家桶 bundle（dsh.bundle.patch），DSH 与插件市场可直接识别安装。",
   "main": "lib/index.js",
@@ -25,6 +24,14 @@
   },
   "packageManager": "pnpm@10.30.3",
   "license": "MIT",
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@hyzyn/dsh-codegraph": "0.1.0",
     "@hyzyn/dsh-env": "0.1.1",
