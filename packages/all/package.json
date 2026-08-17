@@ -21,14 +21,14 @@
     }
   },
   "dependencies": {
-    "@hyzyn/dsh-codegraph": "0.1.0",
-    "@hyzyn/dsh-env": "0.1.1",
-    "@hyzyn/dsh-hello": "0.1.0",
-    "@hyzyn/dsh-mcp": "0.1.0",
-    "@hyzyn/dsh-profile": "0.1.1",
-    "@hyzyn/dsh-prompt": "0.1.0",
-    "@hyzyn/dsh-rss": "0.1.1",
-    "@hyzyn/dsh-search": "0.1.0"
+    "@hyzyn/dsh-codegraph": "0.1.1",
+    "@hyzyn/dsh-env": "workspace:*",
+    "@hyzyn/dsh-hello": "workspace:*",
+    "@hyzyn/dsh-mcp": "workspace:*",
+    "@hyzyn/dsh-profile": "workspace:*",
+    "@hyzyn/dsh-prompt": "workspace:*",
+    "@hyzyn/dsh-rss": "workspace:*",
+    "@hyzyn/dsh-search": "workspace:*"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",

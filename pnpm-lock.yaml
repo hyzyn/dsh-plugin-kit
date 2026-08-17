@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@hyzyn/dsh-codegraph':
-        specifier: 0.1.0
-        version: 0.1.0(react@18.3.1)
+        specifier: 0.1.1
+        version: 0.1.1(react@18.3.1)
       '@hyzyn/dsh-env':
         specifier: 0.1.1
         version: 0.1.1(react@18.3.1)
@@ -40,29 +40,29 @@ importers:
   packages/all:
     dependencies:
       '@hyzyn/dsh-codegraph':
-        specifier: 0.1.0
-        version: 0.1.0(react@18.3.1)
+        specifier: 0.1.1
+        version: 0.1.1(react@18.3.1)
       '@hyzyn/dsh-env':
-        specifier: 0.1.1
-        version: 0.1.1(react@18.3.1)
+        specifier: workspace:*
+        version: link:../env
       '@hyzyn/dsh-hello':
-        specifier: 0.1.0
-        version: 0.1.0
+        specifier: workspace:*
+        version: link:../hello
       '@hyzyn/dsh-mcp':
-        specifier: 0.1.0
-        version: 0.1.0(react@18.3.1)
+        specifier: workspace:*
+        version: link:../mcp
       '@hyzyn/dsh-profile':
-        specifier: 0.1.1
-        version: 0.1.1(react@18.3.1)
+        specifier: workspace:*
+        version: link:../profile
       '@hyzyn/dsh-prompt':
-        specifier: 0.1.0
-        version: 0.1.0(react@18.3.1)
+        specifier: workspace:*
+        version: link:../prompt
       '@hyzyn/dsh-rss':
-        specifier: 0.1.1
-        version: 0.1.1(react@18.3.1)
+        specifier: workspace:*
+        version: link:../rss
       '@hyzyn/dsh-search':
-        specifier: 0.1.0
-        version: 0.1.0
+        specifier: workspace:*
+        version: link:../search
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: ^4.0.1
@@ -74,8 +74,8 @@ importers:
   packages/codegraph:
     dependencies:
       '@hyzyn/dsh-kit':
-        specifier: workspace:*
-        version: link:../kit
+        specifier: ^0.1.0
+        version: 0.1.0
       react:
         specifier: ^18.2.0
         version: 18.3.1
@@ -112,8 +112,8 @@ importers:
   packages/hello:
     dependencies:
       '@hyzyn/dsh-kit':
-        specifier: workspace:*
-        version: link:../kit
+        specifier: ^0.1.0
+        version: 0.1.0
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: ^4.0.1
@@ -191,8 +191,8 @@ importers:
   packages/rss:
     dependencies:
       '@hyzyn/dsh-kit':
-        specifier: workspace:*
-        version: link:../kit
+        specifier: ^0.1.0
+        version: 0.1.0
       react:
         specifier: ^18.2.0
         version: 18.3.1
@@ -243,8 +243,8 @@ packages:
   '@deepseek-ai/cosmokit@1.8.2':
     resolution: {integrity: sha512-muBOKtSrUKU5m/xpq8ZXWL6hQ/jgd4PhU2PqH97bcxIiLEJfNwZOGQEx4t/aS/GgxRAR+ra9pMHPMtTHU4sqqA==}
 
-  '@hyzyn/dsh-codegraph@0.1.0':
-    resolution: {integrity: sha512-jMGlyrqtFvAbUTMIc0dDfEB85JrCwU9JYcKHG4fjiGC4zjDwcYr2JaPXvJM7I7XRi28dlosgZiazfmL66SdmwQ==}
+  '@hyzyn/dsh-codegraph@0.1.1':
+    resolution: {integrity: sha512-e4AewQf1DASIQnAr/C2svKUkz+ywSDVFgfUKeafT1/PWJErid16PzogLcCuWMpZJGCav/lRcpWPMJAq9FRV/xQ==}
     engines: {node: '>=22.19.0'}
     peerDependencies:
       react: ^18.2.0
@@ -332,9 +332,9 @@ snapshots:
 
   '@deepseek-ai/cosmokit@1.8.2': {}
 
-  '@hyzyn/dsh-codegraph@0.1.0(react@18.3.1)':
+  '@hyzyn/dsh-codegraph@0.1.1(react@18.3.1)':
     dependencies:
-      '@hyzyn/dsh-kit': link:packages/kit
+      '@hyzyn/dsh-kit': 0.1.0
       react: 18.3.1
 
   '@hyzyn/dsh-env@0.1.1(react@18.3.1)':

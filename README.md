@@ -138,10 +138,11 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 
 ### 从 npm 安装（推荐）
 
-插件已发布到 npm（`@hyzyn` scope），一条命令装齐：
+插件已发布到 npm（`@hyzyn` scope），一条命令装齐——两种等价方式任选：
 
 ```sh
-dsh plugin --profile web add @hyzyn/dsh-all
+dsh plugin --profile web add @hyzyn/dsh-all              # 聚合安装包
+dsh plugin --profile web add @hyzyn/dsh-plugin-kit       # 仓库根 bundle（同样挂载全家桶）
 ```
 
 装完重启 `dsh web`，打开 设置 → 插件 即可看到全部卡片。只想用某一个插件，见下文「单独安装某个插件」。

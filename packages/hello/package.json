@@ -21,7 +21,7 @@
     }
   },
   "dependencies": {
-    "@hyzyn/dsh-kit": "workspace:*"
+    "@hyzyn/dsh-kit": "^0.1.0"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",

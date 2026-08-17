@@ -138,10 +138,11 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 
 ### Install from npm (recommended)
 
-The plugins are published to npm (under the `@hyzyn` scope). Install everything with one command:
+The plugins are published to npm (under the `@hyzyn` scope). Install everything with one command — either of these two equivalent options:
 
 ```sh
-dsh plugin --profile web add @hyzyn/dsh-all
+dsh plugin --profile web add @hyzyn/dsh-all              # aggregate package
+dsh plugin --profile web add @hyzyn/dsh-plugin-kit       # repo root bundle (mounts the whole family too)
 ```
 
 After installation, restart `dsh web` and open Settings → Plugins to see all the cards. If you only want one plugin, see “Install a Single Plugin” below.
