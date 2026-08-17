@@ -90,10 +90,10 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 
 ### Global Search (@hyzyn/dsh-search)
 
-- **What it does**: adds a “Global Search” entry to the Web GUI sidebar. Type a keyword and it searches historical sessions, managed Prompts, currently loaded MCP tools, and the official RSS / RSSHub routes curated by [awesome-rsshub-routes](https://jackyst0.github.io/awesome-rsshub-routes/) at once.
-- **How to use**: after installing, click or focus the global search box below “New Session” in the sidebar → type a keyword → click a session result to open it and try to locate the matching text; clicking a Prompt / MCP tool result tries to jump to the matching settings card, and falls back to copying the content / tool name if navigation is unavailable; clicking an RSS feed result copies its subscribe URL.
-- **Supports**: full-text session search via DSH’s built-in `sessionQuery`; Prompt name / description / version content; `mcp__`-prefixed MCP tools; RSS feed name / category / URL (name matches first); configurable per-category result limits; keyword highlighting in results.
-- **Where it is stored**: no separate config; Prompts are read from the managed block of `~/.dsh/prompts.yml`; RSS feeds ship as a bundled snapshot and silently refresh from the upstream OPML every 12 hours at runtime (falling back to the snapshot when offline).
+- **What it does**: adds a “Global Search” entry to the Web GUI sidebar. Type a keyword and it searches historical sessions, managed Prompts, and currently loaded MCP tools at once.
+- **How to use**: after installing, click or focus the global search box below “New Session” in the sidebar → type a keyword → click a session result to open it and try to locate the matching text; clicking a Prompt / MCP tool result tries to jump to the matching settings card, and falls back to copying the content / tool name if navigation is unavailable.
+- **Supports**: full-text session search via DSH’s built-in `sessionQuery`; Prompt name / description / version content; `mcp__`-prefixed MCP tools; configurable per-category result limits; keyword highlighting in results.
+- **Where it is stored**: no separate config; Prompts are read from the managed block of `~/.dsh/prompts.yml`.
 - **Note**: requires the host `sessionQuery` / `tools` services; if absent, that category returns an empty list without affecting the others. If the `session-query` full-text index is configured with `openAt: "never"`, session search automatically degrades to per-session scanning; session results are filtered to currently visible/jumpable sessions.
 
 ![Global search plugin](docs/dsh-plugin-kit-search.png)
@@ -101,9 +101,10 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 ### RSS / News Aggregation (@hyzyn/dsh-rss)
 
 - **What it does**: subscribe to multiple RSS / Atom sources and automatically compile a daily “Today’s Worth Reading” Markdown digest, injected into systemPrompt for the model to reference.
-- **How to use**: after installing, click “Today’s Worth Reading” in the sidebar below “New Session” to view news directly; you can also open Settings → Plugins → “RSS / News Aggregation” to toggle built-in channels, add custom channels (validated on save), and manage categories and aggregation settings. Saving refreshes the digest automatically.
+- **How to use**: after installing, click “Today’s Worth Reading” in the sidebar below “New Session” to view news directly; you can also open Settings → Plugins → “RSS / News Aggregation” to toggle built-in channels, add custom channels (validated on save), search and one-click add feeds from the [awesome-rsshub-routes](https://jackyst0.github.io/awesome-rsshub-routes/) catalog, and manage categories and aggregation settings. Saving refreshes the digest automatically.
 - **Built-in channels**: Ruanyifeng, sspai, Solidot, Hacker News, Juejin, ITHome, 36Kr (36Kr’s official feed is blocked by anti-bot protection, so the built-in entry uses a third-party RSSHub mirror) — check to show, uncheck to stop fetching.
 - **Custom channels**: enter any RSS / Atom URL; it is validated with a real fetch on save — homepages, non-feed pages, and empty feeds are rejected with a clear error and not saved.
+- **Source catalog**: ships the awesome-rsshub-routes curated catalog (official RSS and RSSHub routes, 98 feeds / 12 categories), searchable and filterable by category with one-click add to custom channels; bundled snapshot silently refreshes from the upstream OPML every 12 hours at runtime (falling back to the snapshot when offline).
 - **Categories**: a channel’s category is picked from the category list, and the digest (Markdown, systemPrompt, modal) is grouped by category; categories in use are merged into the list automatically on save.
 - **Supports**: RSS 2.0 / Atom parsing, deduplication, per-source item limits, daily scheduled generation, startup catch-up generation, custom output directory, and the built-in channel library.
 - **Where it is stored**: `~/.dsh/rss-digest/YYYY-MM-DD.md` (override with `DSH_RSS_DIGEST_DIR`).

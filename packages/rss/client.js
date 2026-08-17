@@ -2,7 +2,8 @@
 /**
  * @hyzyn/dsh-rss — 浏览器半体：设置 → 插件 →「RSS / 新闻聚合」卡片。
  * 通过核心 slots 服务注册到 settings.plugin.item 插槽。
- * 支持查看今日 digest、直接点击打开原文，以及维护订阅渠道 / 新闻分类。
+ * 支持查看今日 digest、直接点击打开原文、维护订阅渠道 / 新闻分类，
+ * 以及浏览搜索 awesome-rsshub-routes 精选订阅源目录并一键添加订阅。
  */
 window.__ModuleLoader__.load({
   id: '@hyzyn/dsh-rss',
@@ -131,6 +132,7 @@ window.__ModuleLoader__.load({
       refresh: '/api/dsh-rss/refresh',
       config: '/api/dsh-rss/config',
       sources: '/api/dsh-rss/sources',
+      catalog: '/api/dsh-rss/catalog',
     }
 
     /* 内置渠道库（与宿主端保持一致；服务端返回时以服务端为准，这里是兜底） */
@@ -172,6 +174,13 @@ window.__ModuleLoader__.load({
       saving: false,
       modalLoading: false,
       error: '',
+      catalogQuery: '',
+      catalogCategory: '',
+      catalogEntries: [],
+      catalogCategories: [],
+      catalogLoading: false,
+      catalogError: '',
+      catalogDisabled: false,
     }
 
     let panelEl
@@ -548,6 +557,47 @@ window.__ModuleLoader__.load({
       parts.push('<button class="rss_btnGhost" data-action="config-add-source">+ 添加订阅源</button>')
       parts.push('</div>')
 
+      // 订阅源目录（awesome-rsshub-routes）
+      parts.push('<div class="rss_settingSection">')
+      parts.push('<div class="rss_settingTitle">订阅源目录</div>')
+      parts.push('<div class="rss_settingHint">搜索 <a class="rss_linkBtn" href="https://jackyst0.github.io/awesome-rsshub-routes/" target="_blank" rel="noreferrer">awesome-rsshub-routes</a> 精选订阅源（官方 RSS 与 RSSHub 路由），一键加入自定义渠道，保存后生效。</div>')
+      if (state.catalogError) {
+        parts.push('<div class="rss_banner" data-kind="error">' + esc(state.catalogError) + '</div>')
+      }
+      parts.push('<div class="rss_addRow">')
+      parts.push('<input class="rss_input" data-field="catalog-query" value="' + esc(state.catalogQuery) + '" placeholder="搜索目录，如 arxiv、Hacker News…" autocomplete="off" />')
+      parts.push('<select class="rss_input" data-field="catalog-category">')
+      parts.push('<option value="">全部分类</option>')
+      for (const cat of state.catalogCategories || []) {
+        parts.push('<option value="' + esc(cat) + '"' + (cat === state.catalogCategory ? ' selected' : '') + '>' + esc(cat) + '</option>')
+      }
+      parts.push('</select>')
+      parts.push('</div>')
+      if (state.catalogLoading) {
+        parts.push('<div class="rss_loading">加载目录…</div>')
+      } else if (state.catalogDisabled) {
+        parts.push('<div class="rss_empty">目录已停用（配置 includeCatalog: false）。</div>')
+      } else if ((state.catalogEntries || []).length === 0) {
+        parts.push('<div class="rss_empty">没有匹配的订阅源。</div>')
+      } else {
+        parts.push('<div class="rss_list">')
+        for (let i = 0; i < state.catalogEntries.length; i++) {
+          const entry = state.catalogEntries[i]
+          const added = (state.config?.sources || []).some((source) => source.url === entry.url)
+          parts.push('<div class="rss_item">')
+          parts.push('<div class="rss_itemTop">')
+          parts.push('<div class="rss_itemMain">')
+          parts.push('<div class="rss_itemTitle">' + esc(entry.name) + ' <span class="rss_sourceChip">' + esc(entry.category) + '</span></div>')
+          parts.push('<div class="rss_itemMeta">' + esc(entry.url) + '</div>')
+          parts.push('</div>')
+          parts.push('<button class="rss_linkBtn" data-action="catalog-add" data-index="' + i + '"' + (added ? ' disabled' : '') + '>' + (added ? '已添加' : '添加') + '</button>')
+          parts.push('</div>')
+          parts.push('</div>')
+        }
+        parts.push('</div>')
+      }
+      parts.push('</div>')
+
       // 新闻分类
       parts.push('<div class="rss_settingSection">')
       parts.push('<div class="rss_settingTitle">新闻分类</div>')
@@ -606,6 +656,12 @@ window.__ModuleLoader__.load({
             entry.category = el.value || undefined
           } else if (field === 'new-category') {
             state.newCategory = el.value
+          } else if (field === 'catalog-query') {
+            state.catalogQuery = el.value
+            scheduleCatalogLoad()
+          } else if (field === 'catalog-category') {
+            state.catalogCategory = el.value
+            loadCatalog()
           } else if (field === 'max-items') {
             state.config.maxItemsPerSource = Number(el.value)
           } else if (field === 'max-total') {
@@ -620,6 +676,46 @@ window.__ModuleLoader__.load({
     }
 
     /* ================================ 数据操作 ================================ */
+
+    let catalogTimer = null
+
+    function scheduleCatalogLoad() {
+      clearTimeout(catalogTimer)
+      catalogTimer = setTimeout(loadCatalog, 250)
+    }
+
+    async function loadCatalog() {
+      const queryInput = panelEl !== undefined ? panelEl.querySelector('[data-field="catalog-query"]') : null
+      const wasFocused = queryInput !== null && document.activeElement === queryInput
+      const caret = wasFocused ? queryInput.selectionStart : 0
+      state.catalogLoading = true
+      state.catalogError = ''
+      try {
+        const params = new URLSearchParams()
+        if (state.catalogQuery && state.catalogQuery.trim()) params.set('q', state.catalogQuery.trim())
+        if (state.catalogCategory) params.set('category', state.catalogCategory)
+        const suffix = params.toString() ? '?' + params.toString() : ''
+        const data = await apiRequest(API.catalog + suffix)
+        state.catalogEntries = data.entries || []
+        state.catalogCategories = data.categories || state.catalogCategories
+        state.catalogDisabled = data.disabled === true
+      } catch (error) {
+        state.catalogError = error.message
+        state.catalogEntries = []
+      } finally {
+        state.catalogLoading = false
+        if (panelEl !== undefined) {
+          renderAll(panelEl)
+          if (wasFocused) {
+            const next = panelEl.querySelector('[data-field="catalog-query"]')
+            if (next !== null) {
+              next.focus()
+              next.setSelectionRange(caret, caret)
+            }
+          }
+        }
+      }
+    }
 
     async function load() {
       state.loading = true
@@ -637,7 +733,10 @@ window.__ModuleLoader__.load({
         state.error = error.message
       } finally {
         state.loading = false
-        if (panelEl !== undefined) renderAll(panelEl)
+        if (panelEl !== undefined) {
+          renderAll(panelEl)
+          loadCatalog()
+        }
       }
     }
 
@@ -726,6 +825,13 @@ window.__ModuleLoader__.load({
         if (!state.config.categories) state.config.categories = []
         if (!state.config.categories.includes(value)) state.config.categories.push(value)
         state.newCategory = ''
+        if (panelEl !== undefined) renderAll(panelEl)
+      } else if (action === 'catalog-add') {
+        if (!state.config || index === undefined) return
+        const entry = (state.catalogEntries || [])[Number(index)]
+        if (!entry) return
+        if ((state.config.sources || []).some((source) => source.url === entry.url)) return
+        state.config.sources.push({ name: entry.name, url: entry.url, category: entry.category, limit: 5 })
         if (panelEl !== undefined) renderAll(panelEl)
       } else if (action === 'config-remove-category') {
         if (!state.config) return

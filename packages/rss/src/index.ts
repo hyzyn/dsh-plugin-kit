@@ -15,6 +15,7 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { definePlugin } from '@hyzyn/dsh-kit'
+import { getCatalogCategories, searchCatalog } from './catalog.js'
 
 export const name = 'rss-digest'
 export const inject: string[] = []
@@ -92,6 +93,8 @@ export interface Config {
   enabled?: boolean
   /** 是否向 agent 注入插件能力与当天 digest 公告。默认开。 */
   announceToAgent?: boolean
+  /** 是否提供 awesome-rsshub-routes 精选订阅源目录（/api/dsh-rss/catalog，供 GUI 浏览搜索添加）。默认开。 */
+  includeCatalog?: boolean
   /** 订阅源列表；不传时使用内置默认源。 */
   sources?: Source[]
   /** 可选的新闻分类列表，用于 UI 里维护分类。 */
@@ -866,6 +869,31 @@ function makeRoutes(config?: Config, onDigestChanged?: (digest: DigestResult) =>
         writeJson(res, 200, { ok: true, sources: normalizeSources(config), digestDir: digestDir(config) })
       },
     },
+    {
+      kind: 'exact',
+      path: '/api/dsh-rss/catalog',
+      handler: async (req, res) => {
+        if (!guard(req, res, 'GET')) return
+        if (config?.includeCatalog === false) {
+          writeJson(res, 200, { ok: true, total: 0, categories: [], entries: [], disabled: true })
+          return
+        }
+        let query = ''
+        let category: string | undefined
+        try {
+          const params = new URL('http://localhost' + (req.url ?? '/')).searchParams
+          query = params.get('q') ?? ''
+          const rawCategory = params.get('category')
+          category = rawCategory !== null && rawCategory.trim() !== '' ? rawCategory.trim() : undefined
+        } catch {
+          writeJson(res, 400, { error: 'invalid query string' })
+          return
+        }
+        const categories = getCatalogCategories()
+        const entries = searchCatalog(query, 100, category)
+        writeJson(res, 200, { ok: true, total: entries.length, categories, entries })
+      },
+    },
   ]
 }
 
@@ -875,7 +903,7 @@ function makeRoutes(config?: Config, onDigestChanged?: (digest: DigestResult) =>
 
 function buildSystemPromptText(digest: DigestResult | null): string {
   if (!digest) {
-    return '本机已安装 rss-digest 插件（RSS / 新闻聚合）：每天自动抓取订阅源并生成「今日值得读」。用户询问今日新闻 / 值得读时，可提示稍后刷新或等待生成。'
+    return '本机已安装 rss-digest 插件（RSS / 新闻聚合）：每天自动抓取订阅源并生成「今日值得读」；内置 awesome-rsshub-routes 精选订阅源目录（官方 RSS 与 RSSHub 路由），可在 Web GUI 设置 → 插件 →「RSS / 新闻聚合」中浏览搜索并一键添加订阅。用户询问今日新闻 / 值得读时，可提示稍后刷新或等待生成。'
   }
   if (digest.items.length === 0) {
     return `本机已安装 rss-digest 插件（RSS / 新闻聚合）。${digest.date} 的「今日值得读」已生成，但暂无新条目。`

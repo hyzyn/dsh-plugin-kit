@@ -40,7 +40,7 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 | Prompt 管理 | 手改配置 | 可视化编辑 + 版本管理 / A/B 测试 / 导出分享 |
 | Profile 管理 | 命令行 | 可视化创建 / 复制 / 重命名 / 删除 |
 | RSS 聚合 | 无 | 多源订阅 + 每日「今日值得读」自动摘要 |
-| 全局搜索 | 仅会话标题/内容 | 侧边栏统一搜索历史会话、Prompt、MCP 工具、RSS 订阅源 |
+| 全局搜索 | 仅会话标题/内容 | 侧边栏统一搜索历史会话、Prompt、MCP 工具 |
 | Codegraph 集成 | 无 | 代码图谱卡片：索引状态 / 符号搜索 / 调用链 / 影响面 / 一键 sync-index |
 | 插件开发 | 手写样板 | `pnpm create-plugin` 脚手架 + `@hyzyn/dsh-kit` 类型助手 |
 
@@ -90,10 +90,10 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 
 ### 全局搜索（@hyzyn/dsh-search）
 
-- **做什么**：在 Web GUI 侧边栏加一个「全局搜索」入口，输入关键词后同时搜索历史会话、Prompt 管理里的提示词、当前已加载的 MCP 工具，以及 [awesome-rsshub-routes](https://jackyst0.github.io/awesome-rsshub-routes/) 收录的官方 RSS 与 RSSHub 路由（RSS 订阅源）。
-- **怎么用**：安装后在侧边栏「新建会话」下方点击 / 聚焦全局搜索框 → 输入关键词 → 点击会话会打开并尝试定位到匹配文字；点击 Prompt / MCP 工具会尝试跳转到对应设置卡片，跳转失败时自动复制内容 / 工具名；点击 RSS 订阅源会复制订阅地址。
-- **支持**：历史会话全文搜索（走 DSH 自带 sessionQuery 索引）；Prompt 名称 / 描述 / 版本内容；`mcp__` 前缀 MCP 工具；RSS 订阅源名称 / 分类 / URL（名称命中优先）；单类结果数量可配置；结果关键词高亮。
-- **存哪里**：无独立配置；Prompt 读取 `~/.dsh/prompts.yml` 的托管区块；RSS 订阅源内置快照，运行时每 12 小时从上游 OPML 静默刷新（离线自动回退快照）。
+- **做什么**：在 Web GUI 侧边栏加一个「全局搜索」入口，输入关键词后同时搜索历史会话、Prompt 管理里的提示词和当前已加载的 MCP 工具。
+- **怎么用**：安装后在侧边栏「新建会话」下方点击 / 聚焦全局搜索框 → 输入关键词 → 点击会话会打开并尝试定位到匹配文字；点击 Prompt / MCP 工具会尝试跳转到对应设置卡片，跳转失败时自动复制内容 / 工具名。
+- **支持**：历史会话全文搜索（走 DSH 自带 sessionQuery 索引）；Prompt 名称 / 描述 / 版本内容；`mcp__` 前缀 MCP 工具；单类结果数量可配置；结果关键词高亮。
+- **存哪里**：无独立配置；Prompt 读取 `~/.dsh/prompts.yml` 的托管区块。
 - **注意**：需要宿主已安装 `sessionQuery` / `tools` 服务；缺失时对应类别返回空列表，不影响其它类别。若 `session-query` 全文索引配置为 `openAt: "never"`，历史会话会自动降级为逐会话扫描；会话结果会过滤为当前可跳转的可见会话。
 
 ![全局搜索插件](docs/dsh-plugin-kit-search.png)
@@ -111,9 +111,10 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 ### RSS / 新闻聚合（@hyzyn/dsh-rss）
 
 - **做什么**：订阅多个 RSS / Atom 源，每天自动汇总成一篇「今日值得读」Markdown，并注入 systemPrompt 供模型直接引用。
-- **怎么用**：安装后可在侧边栏「新建会话」下方点击「今日值得读」直接查看新闻；也可打开 设置 → 插件 →「RSS / 新闻聚合」勾选内置渠道、添加自定义渠道（保存时即时校验地址）、维护新闻分类与聚合设置，保存后自动刷新。
+- **怎么用**：安装后可在侧边栏「新建会话」下方点击「今日值得读」直接查看新闻；也可打开 设置 → 插件 →「RSS / 新闻聚合」勾选内置渠道、添加自定义渠道（保存时即时校验地址）、从 [awesome-rsshub-routes](https://jackyst0.github.io/awesome-rsshub-routes/) 订阅源目录搜索并一键添加，维护新闻分类与聚合设置，保存后自动刷新。
 - **内置渠道**：阮一峰、少数派、Solidot、Hacker News、掘金、IT之家、36氪（36氪官方 feed 被反爬拦截，内置为第三方 RSSHub 镜像），勾选即展示、取消勾选即不抓取。
 - **自定义渠道**：填写任意 RSS / Atom 地址，保存时真实抓取校验——官网首页、非 feed、抓不到内容的地址会报错且不保存。
+- **订阅源目录**：内置 awesome-rsshub-routes 精选目录（官方 RSS 与 RSSHub 路由，98 条 / 12 分类），可搜索 / 按分类筛选并一键加入自定义渠道；快照随插件内置，运行时每 12 小时从上游 OPML 静默刷新。
 - **新闻分类**：渠道的分类从「新闻分类」列表里选择；digest（Markdown、systemPrompt、弹窗）按分类分组展示，保存时自动把使用中的分类合并进列表。
 - **支持**：RSS 2.0 / Atom 解析、按来源去重、每源条数限制、每日定时生成、启动补生成、自定义输出目录、内置渠道库。
 - **存哪里**：`~/.dsh/rss-digest/YYYY-MM-DD.md`（可用 `DSH_RSS_DIGEST_DIR` 覆盖）。

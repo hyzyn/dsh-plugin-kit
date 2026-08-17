@@ -6,6 +6,7 @@ DSH 的 RSS / 新闻聚合插件：订阅多个 RSS / Atom 源，每天自动汇
 
 - 内置渠道库（阮一峰、少数派、Solidot、Hacker News、掘金、IT之家、36氪），在设置里勾选要展示的渠道即可；36氪官方 feed 被反爬拦截，内置地址为第三方 RSSHub 镜像；
 - 支持自定义渠道：填写自己的 RSS / Atom 地址，保存时真实抓取校验，抓不到内容的地址会提示且不保存；
+- **订阅源目录**：整合 [awesome-rsshub-routes](https://jackyst0.github.io/awesome-rsshub-routes/) 精选订阅源（官方 RSS 与 RSSHub 路由，98 条 / 12 分类），在设置卡片里搜索 / 按分类筛选，一键加入自定义渠道；内置快照，运行时每 12 小时从上游 OPML 静默刷新（离线自动回退快照）；
 - 零依赖解析 RSS 2.0 与 Atom，按链接 / id / 标题去重，并按时间倒序生成 Markdown；
 - 默认每天 `08:00` 自动生成当天 digest；插件启动时若当天 digest 不存在也会自动补生成；
 - 把当天 digest 注入 `systemPrompt`，模型在用户问“今日值得读”时可以直接引用；
@@ -50,6 +51,7 @@ DSH 的 RSS / 新闻聚合插件：订阅多个 RSS / Atom 源，每天自动汇
 | --- | --- | --- |
 | `enabled` | 是否启用插件 | `true` |
 | `announceToAgent` | 是否把 digest 注入 systemPrompt | `true` |
+| `includeCatalog` | 是否提供订阅源目录（/api/dsh-rss/catalog） | `true` |
 | `sources` | 自定义订阅源列表；传入后替代全部内置渠道 | 内置 7 个渠道 |
 | `maxItemsPerSource` | 每个源最多取多少条 | `5` |
 | `maxTotalItems` | 每天最多汇总多少条 | `30` |
