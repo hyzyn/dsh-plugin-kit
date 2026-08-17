@@ -40,7 +40,7 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 | Prompt 管理 | 手改配置 | 可视化编辑 + 版本管理 / A/B 测试 / 导出分享 |
 | Profile 管理 | 命令行 | 可视化创建 / 复制 / 重命名 / 删除 |
 | RSS 聚合 | 无 | 多源订阅 + 每日「今日值得读」自动摘要 |
-| 全局搜索 | 仅会话标题/内容 | 侧边栏统一搜索历史会话、Prompt、MCP 工具 |
+| 全局搜索 | 仅会话标题/内容 | 侧边栏统一搜索历史会话、Prompt、MCP 工具、RSS 订阅源 |
 | Codegraph 集成 | 无 | 代码图谱卡片：索引状态 / 符号搜索 / 调用链 / 影响面 / 一键 sync-index |
 | 插件开发 | 手写样板 | `pnpm create-plugin` 脚手架 + `@hyzyn/dsh-kit` 类型助手 |
 
@@ -90,10 +90,10 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 
 ### 全局搜索（@hyzyn/dsh-search）
 
-- **做什么**：在 Web GUI 侧边栏加一个「全局搜索」入口，输入关键词后同时搜索历史会话、Prompt 管理里的提示词和当前已加载的 MCP 工具。
-- **怎么用**：安装后在侧边栏「新建会话」下方点击 / 聚焦全局搜索框 → 输入关键词 → 点击会话会打开并尝试定位到匹配文字；点击 Prompt / MCP 工具会尝试跳转到对应设置卡片，跳转失败时自动复制内容 / 工具名。
-- **支持**：历史会话全文搜索（走 DSH 自带 sessionQuery 索引）；Prompt 名称 / 描述 / 版本内容；`mcp__` 前缀 MCP 工具；单类结果数量可配置；结果关键词高亮。
-- **存哪里**：无独立配置；Prompt 读取 `~/.dsh/prompts.yml` 的托管区块。
+- **做什么**：在 Web GUI 侧边栏加一个「全局搜索」入口，输入关键词后同时搜索历史会话、Prompt 管理里的提示词、当前已加载的 MCP 工具，以及 [awesome-rsshub-routes](https://jackyst0.github.io/awesome-rsshub-routes/) 收录的官方 RSS 与 RSSHub 路由（RSS 订阅源）。
+- **怎么用**：安装后在侧边栏「新建会话」下方点击 / 聚焦全局搜索框 → 输入关键词 → 点击会话会打开并尝试定位到匹配文字；点击 Prompt / MCP 工具会尝试跳转到对应设置卡片，跳转失败时自动复制内容 / 工具名；点击 RSS 订阅源会复制订阅地址。
+- **支持**：历史会话全文搜索（走 DSH 自带 sessionQuery 索引）；Prompt 名称 / 描述 / 版本内容；`mcp__` 前缀 MCP 工具；RSS 订阅源名称 / 分类 / URL（名称命中优先）；单类结果数量可配置；结果关键词高亮。
+- **存哪里**：无独立配置；Prompt 读取 `~/.dsh/prompts.yml` 的托管区块；RSS 订阅源内置快照，运行时每 12 小时从上游 OPML 静默刷新（离线自动回退快照）。
 - **注意**：需要宿主已安装 `sessionQuery` / `tools` 服务；缺失时对应类别返回空列表，不影响其它类别。若 `session-query` 全文索引配置为 `openAt: "never"`，历史会话会自动降级为逐会话扫描；会话结果会过滤为当前可跳转的可见会话。
 
 ![全局搜索插件](docs/dsh-plugin-kit-search.png)
@@ -148,7 +148,9 @@ dsh plugin --profile web add @hyzyn/dsh-all
 
 ### 从 GitHub 仓库安装（开发调试）
 
-插件包已在 npm 发布，仓库安装仅供开发调试（需要 Node.js >= 22.19 与 pnpm 10）：
+插件包已在 npm 发布，仓库安装仅供开发调试（需要 Node.js >= 22.19 与 pnpm 10）。
+仓库根目录本身也是一个 DSH bundle（`package.json#dsh.bundle.patch`，由 `pnpm aggregate` 生成），
+`dsh plugin add link:$(pwd)` 即可把整个全家桶识别并挂载为一个插件：
 
 ```sh
 # 1. 克隆仓库
@@ -159,14 +161,22 @@ cd dsh-plugin-kit
 pnpm install
 pnpm build
 
-# 3. 把全家桶链接进 web profile
-dsh plugin --profile web add link:$(pwd)/packages/all
+# 3. 把全家桶链接进 web profile（根包即 bundle，等价于安装 @hyzyn/dsh-all）
+dsh plugin --profile web add link:$(pwd)
 
 # 4. 重启 dsh web
 dsh web
 ```
 
+> ⚠️ 如果 web profile 里已经装过 `@hyzyn/dsh-all` 或任一 `@hyzyn/dsh-<包名>`，
+> 不要再 add 根包（或 `packages/all`），否则插件行重复挂载会在启动时报
+> `duplicate loader entry id`。
+
 > 只想用某个子包：第 3 步改为 `dsh plugin --profile web add link:$(pwd)/packages/<name>` 即可，例如 `packages/mcp`。
+
+> 根包声明了 `dsh` 字段后，GitHub 的 DSH 插件市场（如 DSH-Plugins-Marketplace，
+> 按 `dsh.bundle` / `@deepseek-ai/*` 依赖识别）会把本仓库识别为 DSH 插件
+> （cordis-plugin），不再标记「非 DSH 插件」。
 
 ### 单独安装某个插件
 

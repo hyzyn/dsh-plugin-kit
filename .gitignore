@@ -8,3 +8,6 @@ dist/
 docs/PUBLISHING.md
 
 .dsh-vision-toolkit/
+.jspace/
+# 根 bundle 插件入口需要入库（子包 lib/ 仍是构建产物，保持忽略）
+!/lib/

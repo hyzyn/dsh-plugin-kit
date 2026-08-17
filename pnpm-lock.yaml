@@ -7,6 +7,31 @@ settings:
 importers:
 
   .:
+    dependencies:
+      '@hyzyn/dsh-codegraph':
+        specifier: 0.1.0
+        version: 0.1.0(react@18.3.1)
+      '@hyzyn/dsh-env':
+        specifier: 0.1.1
+        version: 0.1.1(react@18.3.1)
+      '@hyzyn/dsh-hello':
+        specifier: 0.1.0
+        version: 0.1.0
+      '@hyzyn/dsh-mcp':
+        specifier: 0.1.0
+        version: 0.1.0(react@18.3.1)
+      '@hyzyn/dsh-profile':
+        specifier: 0.1.1
+        version: 0.1.1(react@18.3.1)
+      '@hyzyn/dsh-prompt':
+        specifier: 0.1.0
+        version: 0.1.0(react@18.3.1)
+      '@hyzyn/dsh-rss':
+        specifier: 0.1.1
+        version: 0.1.1(react@18.3.1)
+      '@hyzyn/dsh-search':
+        specifier: 0.1.0
+        version: 0.1.0
     devDependencies:
       typescript:
         specifier: ~5.7.2
@@ -14,25 +39,53 @@ importers:
 
   packages/all:
     dependencies:
+      '@hyzyn/dsh-codegraph':
+        specifier: 0.1.0
+        version: 0.1.0(react@18.3.1)
       '@hyzyn/dsh-env':
-        specifier: workspace:*
-        version: link:../env
+        specifier: 0.1.1
+        version: 0.1.1(react@18.3.1)
       '@hyzyn/dsh-hello':
-        specifier: workspace:*
-        version: link:../hello
+        specifier: 0.1.0
+        version: 0.1.0
       '@hyzyn/dsh-mcp':
-        specifier: workspace:*
-        version: link:../mcp
+        specifier: 0.1.0
+        version: 0.1.0(react@18.3.1)
       '@hyzyn/dsh-profile':
-        specifier: workspace:*
-        version: link:../profile
+        specifier: 0.1.1
+        version: 0.1.1(react@18.3.1)
       '@hyzyn/dsh-prompt':
-        specifier: workspace:*
-        version: link:../prompt
+        specifier: 0.1.0
+        version: 0.1.0(react@18.3.1)
+      '@hyzyn/dsh-rss':
+        specifier: 0.1.1
+        version: 0.1.1(react@18.3.1)
+      '@hyzyn/dsh-search':
+        specifier: 0.1.0
+        version: 0.1.0
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: ^4.0.1
         version: 4.0.1
+      typescript:
+        specifier: ~5.7.2
+        version: 5.7.3
+
+  packages/codegraph:
+    dependencies:
+      '@hyzyn/dsh-kit':
+        specifier: workspace:*
+        version: link:../kit
+      react:
+        specifier: ^18.2.0
+        version: 18.3.1
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: ^4.0.1
+        version: 4.0.1
+      '@types/node':
+        specifier: ^22.20.0
+        version: 22.20.1
       typescript:
         specifier: ~5.7.2
         version: 5.7.3
@@ -135,6 +188,44 @@ importers:
         specifier: ~5.7.2
         version: 5.7.3
 
+  packages/rss:
+    dependencies:
+      '@hyzyn/dsh-kit':
+        specifier: workspace:*
+        version: link:../kit
+      react:
+        specifier: ^18.2.0
+        version: 18.3.1
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: ^4.0.1
+        version: 4.0.1
+      '@types/node':
+        specifier: ^22.20.0
+        version: 22.20.1
+      typescript:
+        specifier: ~5.7.2
+        version: 5.7.3
+
+  packages/search:
+    dependencies:
+      '@hyzyn/dsh-kit':
+        specifier: ^0.1.0
+        version: 0.1.0
+      js-yaml:
+        specifier: ^4.1.0
+        version: 4.3.1
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: ^4.0.1
+        version: 4.0.1
+      '@types/node':
+        specifier: ^22.20.0
+        version: 22.20.1
+      typescript:
+        specifier: ~5.7.2
+        version: 5.7.3
+
 packages:
 
   '@deepseek-ai/cordis@4.0.1':
@@ -151,6 +242,54 @@ packages:
 
   '@deepseek-ai/cosmokit@1.8.2':
     resolution: {integrity: sha512-muBOKtSrUKU5m/xpq8ZXWL6hQ/jgd4PhU2PqH97bcxIiLEJfNwZOGQEx4t/aS/GgxRAR+ra9pMHPMtTHU4sqqA==}
+
+  '@hyzyn/dsh-codegraph@0.1.0':
+    resolution: {integrity: sha512-jMGlyrqtFvAbUTMIc0dDfEB85JrCwU9JYcKHG4fjiGC4zjDwcYr2JaPXvJM7I7XRi28dlosgZiazfmL66SdmwQ==}
+    engines: {node: '>=22.19.0'}
+    peerDependencies:
+      react: ^18.2.0
+
+  '@hyzyn/dsh-env@0.1.1':
+    resolution: {integrity: sha512-QbacKTXRsEnAJTS8N7iVInLPOYsHbvVVpFqg0FE6Ahoe7eAIpAPUPvVj80TJyOHbV8A+/qtUyiNfsCUogBnv9g==}
+    engines: {node: '>=22.19.0'}
+    peerDependencies:
+      react: ^18.2.0
+
+  '@hyzyn/dsh-hello@0.1.0':
+    resolution: {integrity: sha512-FtYeYTDh3qTLhFt79xo97G+XMtYdPFgwSh2DH0hXidWHNtGLmKM7uHaR16RDFTjEH1dT5Vk4rYHokDYHR0DBgA==}
+    engines: {node: '>=22.19.0'}
+
+  '@hyzyn/dsh-kit@0.1.0':
+    resolution: {integrity: sha512-AfHJ0EE0tzWMuEM5OW7dynAg+V8DR60Z76FOrG0wkMNiHvAn1XSdnAcTnlbvXZnqSmpOPZu+rzgaf21saaeTQA==}
+    engines: {node: '>=22.19.0'}
+
+  '@hyzyn/dsh-mcp@0.1.0':
+    resolution: {integrity: sha512-32v/5SPFXcC1iQCRDeZIC6PaBHyaGO3IrKxHX8ok5j7Nsdoi+PcOdKAntoNcRgiMi6h1W5mNmkDGg47FytdD/g==}
+    engines: {node: '>=22.19.0'}
+    peerDependencies:
+      react: ^18.2.0
+
+  '@hyzyn/dsh-profile@0.1.1':
+    resolution: {integrity: sha512-WdNdLAYMrq4xodX24Z4xx8Avst9sNPHnVrehV4T1OEtAFdALIAWOnXw84zAuJ1PaO7uQCpnbFwf7oagcHY158w==}
+    engines: {node: '>=22.19.0'}
+    peerDependencies:
+      react: ^18.2.0
+
+  '@hyzyn/dsh-prompt@0.1.0':
+    resolution: {integrity: sha512-02mwmyjX7tHjNSZhxC4CbB2a/s9MD+uZbD2c21ihYiK7PfOfovFI1dUGdLB9s+RG+uOw/JEM5MyT65JzQDQWqw==}
+    engines: {node: '>=22.19.0'}
+    peerDependencies:
+      react: ^18.2.0
+
+  '@hyzyn/dsh-rss@0.1.1':
+    resolution: {integrity: sha512-nUsHKANxjWOF8zykTc06upehjm0y55kEayfVKQVQ4F57bABnThUYm+MUCdS4m2jlHrsCAeO9pbim2Ww5oQaGkA==}
+    engines: {node: '>=22.19.0'}
+    peerDependencies:
+      react: ^18.2.0
+
+  '@hyzyn/dsh-search@0.1.0':
+    resolution: {integrity: sha512-w1SU3CLGwWpUd/Fu0lu+twObWpsqDesjiogtTASpi4neirrtQNGb1TemwgX5aVvYlVDemiNuNTXDnoqtAFgNPw==}
+    engines: {node: '>=22.19.0'}
 
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
@@ -192,6 +331,46 @@ snapshots:
       '@standard-schema/spec': 1.1.0
 
   '@deepseek-ai/cosmokit@1.8.2': {}
+
+  '@hyzyn/dsh-codegraph@0.1.0(react@18.3.1)':
+    dependencies:
+      '@hyzyn/dsh-kit': link:packages/kit
+      react: 18.3.1
+
+  '@hyzyn/dsh-env@0.1.1(react@18.3.1)':
+    dependencies:
+      js-yaml: 4.3.1
+      react: 18.3.1
+
+  '@hyzyn/dsh-hello@0.1.0':
+    dependencies:
+      '@hyzyn/dsh-kit': 0.1.0
+
+  '@hyzyn/dsh-kit@0.1.0': {}
+
+  '@hyzyn/dsh-mcp@0.1.0(react@18.3.1)':
+    dependencies:
+      js-yaml: 4.3.1
+      react: 18.3.1
+
+  '@hyzyn/dsh-profile@0.1.1(react@18.3.1)':
+    dependencies:
+      react: 18.3.1
+
+  '@hyzyn/dsh-prompt@0.1.0(react@18.3.1)':
+    dependencies:
+      js-yaml: 4.3.1
+      react: 18.3.1
+
+  '@hyzyn/dsh-rss@0.1.1(react@18.3.1)':
+    dependencies:
+      '@hyzyn/dsh-kit': 0.1.0
+      react: 18.3.1
+
+  '@hyzyn/dsh-search@0.1.0':
+    dependencies:
+      '@hyzyn/dsh-kit': 0.1.0
+      js-yaml: 4.3.1
 
   '@standard-schema/spec@1.1.0': {}
 
