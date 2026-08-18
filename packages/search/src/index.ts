@@ -475,37 +475,80 @@ function searchMcpTools(ctx: Context, rawQuery: string, limit: number): McpToolH
 
 interface PanelDefinition {
   id: string
-  /** 卡片标题（中英，按 openSettingsCard 的 titleTexts 匹配顺序） */
+  /** section: 设置窗口一级大类（导航级）；card: 插件配置卡片 */
+  kind: 'section' | 'card'
+  /** 标题（中英，按 openSettingsSection/openSettingsCard 的 titleTexts 匹配顺序） */
   titles: string[]
   /** 额外可搜索关键词（含标题别名） */
   keywords: string[]
   description: string
-  /** 宿主插件的 registry name；为 undefined 表示随 DSH 内置、恒可用（官方卡片） */
+  /** 宿主插件的 registry name；为 undefined 表示随 DSH 内置、恒可用（官方大类/卡片） */
   registryName?: string
 }
 
-/** 内置设置面板目录：官方面板 + dsh-plugin-kit 各插件面板。 */
+/** 内置设置面板目录：设置一级大类 + 官方面板 + dsh-plugin-kit 各插件面板。 */
 const PANEL_DIRECTORY: PanelDefinition[] = [
+  // 设置窗口一级大类（导航级）
+  {
+    id: 's-general',
+    kind: 'section',
+    titles: ['通用设置', 'General'],
+    keywords: ['general', '通用', '设置', '常规', '基础'],
+    description: '设置 → 通用设置：界面与工具通用选项',
+  },
+  {
+    id: 's-models',
+    kind: 'section',
+    titles: ['模型', 'Models'],
+    keywords: ['model', 'models', '模型', '提供商', 'provider', '推理'],
+    description: '设置 → 模型：模型提供商与模型列表管理',
+  },
+  {
+    id: 's-plugins',
+    kind: 'section',
+    titles: ['插件', 'Plugins'],
+    keywords: ['plugin', 'plugins', '插件', '扩展'],
+    description: '设置 → 插件：插件配置与插件清单',
+  },
+  {
+    id: 's-agent-presets',
+    kind: 'section',
+    titles: ['Agent 预设', 'Agent presets'],
+    keywords: ['agent', 'preset', '预设', 'agent preset', 'agentpresets'],
+    description: '设置 → Agent 预设：预设方案与角色模板',
+  },
+  {
+    id: 's-market',
+    kind: 'section',
+    titles: ['插件市场', 'Plugin Market'],
+    keywords: ['market', 'marketplace', '插件市场', '市场', '商店', 'plugin market'],
+    description: '设置 → 插件市场：发现与安装社区插件',
+  },
+  // 插件配置卡片（随 DSH 内置）
   {
     id: 'terminal',
+    kind: 'card',
     titles: ['终端', 'Shell'],
     keywords: ['terminal', 'bash', '终端', 'shell', '命令行'],
     description: '终端 / Shell 行为设置',
   },
   {
     id: 'agent-loop',
+    kind: 'card',
     titles: ['Agent 循环', 'Agent loop'],
     keywords: ['agent', 'loop', '循环', 'agent loop', 'agentloop'],
     description: 'Agent 循环设置',
   },
   {
     id: 'web-search',
+    kind: 'card',
     titles: ['网页搜索', 'Web search'],
     keywords: ['web', 'search', '网页', '搜索', 'websearch'],
     description: '网页搜索设置',
   },
   {
     id: 'mcp-config',
+    kind: 'card',
     titles: ['MCP 服务器配置', 'MCP Server Configuration'],
     keywords: ['mcp', 'server', '服务器', '配置', '工具', '工具集'],
     description: 'MCP 服务器配置：stdio 本地进程或 streamable-http 远程服务',
@@ -513,6 +556,7 @@ const PANEL_DIRECTORY: PanelDefinition[] = [
   },
   {
     id: 'prompt-manager',
+    kind: 'card',
     titles: ['Prompt 管理', 'Prompt Management'],
     keywords: ['prompt', 'systemprompt', '提示词', '提示', 'prompts', 'system prompt'],
     description: 'Prompt 管理：systemPrompt 可视化编辑、版本管理与 A/B 测试',
@@ -520,6 +564,7 @@ const PANEL_DIRECTORY: PanelDefinition[] = [
   },
   {
     id: 'env-manager',
+    kind: 'card',
     titles: ['环境变量 / 密钥管理', 'Environment Variables / Secrets'],
     keywords: ['env', 'environment', '环境变量', '密钥', 'secret', 'secrets', '环境'],
     description: '环境变量 / 密钥管理：配置进程环境变量与敏感信息',
@@ -527,6 +572,7 @@ const PANEL_DIRECTORY: PanelDefinition[] = [
   },
   {
     id: 'profile-manager',
+    kind: 'card',
     titles: ['Profile 管理', 'Profile Management'],
     keywords: ['profile', 'profiles', '环境', '配置', '多环境', 'profile 管理'],
     description: 'Profile 管理：DSH profile 的创建、复制、重命名与删除',
@@ -534,6 +580,7 @@ const PANEL_DIRECTORY: PanelDefinition[] = [
   },
   {
     id: 'rss-digest',
+    kind: 'card',
     titles: ['RSS / 新闻聚合', 'RSS / News Aggregation'],
     keywords: ['rss', 'news', '新闻', '聚合', 'digest', '今日值得读'],
     description: 'RSS / 新闻聚合：多源订阅与每日「今日值得读」自动摘要',
@@ -541,6 +588,7 @@ const PANEL_DIRECTORY: PanelDefinition[] = [
   },
   {
     id: 'codegraph',
+    kind: 'card',
     titles: ['Codegraph 集成', 'Codegraph Integration'],
     keywords: ['codegraph', '代码图谱', '图谱', '索引', '调用链', '影响面', 'code graph'],
     description: 'Codegraph 集成：代码图谱索引、符号搜索与调用链分析',
@@ -565,8 +613,10 @@ function getLoadedRegistryNames(ctx: Context): Set<string> {
 
 interface PanelHit {
   id: string
+  /** section: 设置一级大类；card: 插件配置卡片 */
+  kind: 'section' | 'card'
   name: string
-  /** 卡片标题（中英），供客户端 openSettingsCard 匹配 */
+  /** 标题（中英），供客户端 openSettingsSection/openSettingsCard 匹配 */
   titles: string[]
   description: string
   snippet: string
@@ -579,13 +629,14 @@ function searchPanels(ctx: Context, rawQuery: string, limit: number): PanelHit[]
   const hits: PanelHit[] = []
   for (const panel of PANEL_DIRECTORY) {
     if (hits.length >= limit) break
-    // 非官方面板：宿主插件未加载时跳过，避免搜到未安装的卡片
+    // 非官方条目：宿主插件未加载时跳过，避免搜到未安装的卡片
     if (panel.registryName !== undefined && !loaded.has(panel.registryName)) continue
     const searchable = [...panel.titles, ...panel.keywords, panel.description].map(normalizeQuery)
     const matched = searchable.some((text) => text.includes(query))
     if (!matched) continue
     hits.push({
       id: panel.id,
+      kind: panel.kind,
       name: panel.titles[0],
       titles: panel.titles,
       description: panel.description,

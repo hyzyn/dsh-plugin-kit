@@ -428,8 +428,9 @@ window.__ModuleLoader__.load({
         parts.push('<div class="gs_sectionTitle">设置面板</div>')
         parts.push('<div class="gs_list">')
         for (const item of panels) {
+          const kind = item.kind === 'section' ? 'section' : 'card'
           parts.push(
-            '<button type="button" class="gs_item" data-kind="panel" data-titles="' + esc(JSON.stringify(item.titles || [item.name])) + '">' +
+            '<button type="button" class="gs_item" data-kind="panel" data-panel-kind="' + kind + '" data-titles="' + esc(JSON.stringify(item.titles || [item.name])) + '">' +
               '<span class="gs_itemTitle">' + highlightText(item.name, state.query) + '<span class="gs_badge">设置</span></span>' +
               (item.description ? '<span class="gs_itemDesc">' + highlightText(item.description, state.query) + '</span>' : '') +
             '</button>',
@@ -494,10 +495,12 @@ window.__ModuleLoader__.load({
           /* 走默认 */
         }
         const label = titles[0] || '设置面板'
+        const isSection = el.dataset.panelKind === 'section'
         closeModal()
-        const jumped = await openSettingsCard(titles)
+        // section => 跳设置一级大类；card => 展开具体卡片
+        const jumped = isSection ? await openSettingsSection(titles) : await openSettingsCard(titles)
         if (jumped) {
-          toast('已打开「' + label + '」设置卡片', 'ok')
+          toast('已打开「' + label + '」设置' + (isSection ? '分区' : '卡片'), 'ok')
         } else {
           copyText(label)
         }
@@ -568,13 +571,51 @@ window.__ModuleLoader__.load({
     }
 
     function findSettingsSectionButton(scope) {
+      return findNavSectionButton(['插件', 'Plugins'], scope)
+    }
+
+    /** 在设置窗口侧边栏找到匹配一级大类标题的导航按钮。 */
+    function findNavSectionButton(titleTexts, scope) {
       const root = (scope && scope.tagName === 'NAV' ? scope : (scope?.querySelector('nav') || scope)) || document
       const buttons = root.querySelectorAll('button')
       for (const btn of buttons) {
         const text = (btn.textContent || '').replace(/\s+/g, ' ').trim()
-        if (text === '插件' || text === 'Plugins') return btn
+        const looksLikeNav = /sidebar-nav|section|nav/i.test(btn.className) || btn.closest('nav') !== null || btn.hasAttribute('aria-current') || btn.getAttribute('role') === 'tab'
+        if (looksLikeNav && titleTexts.some((item) => text.includes(item))) return btn
       }
       return null
+    }
+
+    /** 打开设置对话框并导航到指定一级大类（侧边栏 nav 按钮）。 */
+    async function openSettingsSection(titleTexts) {
+      const trigger = findSettingsTrigger()
+      if (trigger === null) {
+        console.warn('[dsh-global-search] openSettingsSection: settings trigger not found')
+        return false
+      }
+      if (trigger.getAttribute('aria-expanded') !== 'true') {
+        trigger.click()
+      }
+      const panel = await waitFor(() => document.querySelector('[role="dialog"]'))
+      if (panel === null) {
+        console.warn('[dsh-global-search] openSettingsSection: settings dialog not found')
+        return false
+      }
+      let sectionButton = await waitFor(() => findNavSectionButton(titleTexts, panel))
+      if (sectionButton === null) {
+        sectionButton = await waitFor(() => findButtonByText('button', titleTexts, panel.querySelector('nav') || panel))
+      }
+      if (sectionButton === null) {
+        console.warn('[dsh-global-search] openSettingsSection: nav section not found: ' + titleTexts.join(' / '))
+        return false
+      }
+      sectionButton.click()
+      try {
+        sectionButton.scrollIntoView({ block: 'center', behavior: 'smooth' })
+      } catch {
+        /* 滚动失败不阻塞 */
+      }
+      return true
     }
 
     function findCardHeader(titleTexts, scope) {
