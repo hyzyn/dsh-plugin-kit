@@ -114,6 +114,8 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 
 ![Sidebar “Today’s Worth Reading” modal: grouped by category, each source links to its website](docs/dsh-plugin-kit-rss-view.png)
 
+![Query today’s news: ask the model for “Today’s Worth Reading” and it cites the daily digest](docs/dsh-plugin-kit-rss-query-news.png)
+
 ### Codegraph Integration (@hyzyn/dsh-codegraph)
 
 - **What it does**: code-graph integration — the “Codegraph” card under Settings → Plugins shows index status, symbol search, callers / callees / impact, and one-click sync / index. On install it automatically injects a CodeGraph usage guideline into systemPrompt so the model prefers `codegraph_explore` / `codegraph explore` over grep / read in indexed projects.

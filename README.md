@@ -124,6 +124,8 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 
 ![侧边栏「今日值得读」弹窗：按分类分组，来源带「查看更多」直达官网](docs/dsh-plugin-kit-rss-view.png)
 
+![查询今日新闻：向模型提问「今日值得读」直接引用当天 digest](docs/dsh-plugin-kit-rss-query-news.png)
+
 ## 快速开始
 
 ### 系统要求

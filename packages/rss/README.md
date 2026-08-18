@@ -26,6 +26,10 @@ DSH 的 RSS / 新闻聚合插件：订阅多个 RSS / Atom 源，每天自动汇
 
 ![今日值得读弹窗](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-rss-view.png)
 
+向模型询问当天新闻时，直接引用当天 digest（无需打开弹窗）：
+
+![查询今日新闻](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-rss-query-news.png)
+
 ## 配置示例
 
 在 DSH 的插件配置中传入 `Config`：
