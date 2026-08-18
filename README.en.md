@@ -40,7 +40,7 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 | Prompt management | Manual config | Visual editing + versioning / A/B testing / export & sharing |
 | Profile management | CLI | Visual create / copy / rename / delete |
 | RSS aggregation | None | Multiple sources + daily “Today’s Worth Reading” digest |
-| Global search | Session titles/content only | Unified sidebar search over sessions, Prompts, and MCP tools |
+| Global search | Session titles/content only | Unified sidebar full-text search over historical sessions |
 | Codegraph integration | None | Code-graph card: index status / symbol search / callers-callees-impact / one-click sync-index |
 | Plugin development | Hand-written boilerplate | `pnpm create-plugin` scaffolding + `@hyzyn/dsh-kit` type helpers |
 
@@ -90,11 +90,11 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 
 ### Global Search (@hyzyn/dsh-search)
 
-- **What it does**: adds a “Global Search” entry to the Web GUI sidebar. Type a keyword and it searches historical sessions, managed Prompts, and currently loaded MCP tools at once.
-- **How to use**: after installing, click or focus the global search box below “New Session” in the sidebar → type a keyword → click a session result to open it and try to locate the matching text; clicking a Prompt / MCP tool result tries to jump to the matching settings card, and falls back to copying the content / tool name if navigation is unavailable.
-- **Supports**: full-text session search via DSH’s built-in `sessionQuery`; Prompt name / description / version content; `mcp__`-prefixed MCP tools; configurable per-category result limits; keyword highlighting in results.
-- **Where it is stored**: no separate config; Prompts are read from the managed block of `~/.dsh/prompts.yml`.
-- **Note**: requires the host `sessionQuery` / `tools` services; if absent, that category returns an empty list without affecting the others. If the `session-query` full-text index is configured with `openAt: "never"`, session search automatically degrades to per-session scanning; session results are filtered to currently visible/jumpable sessions.
+- **What it does**: adds a “Global Search” entry to the Web GUI sidebar. Type a keyword to run full-text search over historical sessions.
+- **How to use**: after installing, click or focus the global search box below “New Session” in the sidebar → type a keyword → click a session result to open it and try to locate the matching text.
+- **Supports**: full-text session search via DSH’s built-in `sessionQuery`; configurable result limits; keyword highlighting in results.
+- **Where it is stored**: no separate config.
+- **Note**: requires the host `sessionQuery` service; if absent, session search returns an empty list. If the `session-query` full-text index is configured with `openAt: "never"`, session search automatically degrades to per-session scanning; session results are filtered to currently visible/jumpable sessions.
 
 ![Global search plugin](docs/dsh-plugin-kit-search.png)
 

@@ -424,7 +424,7 @@ function makeRoutes(ctx: Context, config: Config): Array<{ kind: 'exact'; path: 
  * 插件本体
  * ------------------------------------------------------------------ */
 
-const SEARCH_GUIDANCE = '本机已安装 dsh-search 插件（全局搜索）：Web GUI 侧边栏有「全局搜索」入口，可同时搜索历史会话、Prompt 管理里的提示词，以及当前已加载的 MCP 工具（mcp__ 前缀）。'
+const SEARCH_GUIDANCE = '本机已安装 dsh-search 插件（全局搜索）：Web GUI 侧边栏有「全局搜索」入口，可全文搜索历史会话。'
 
 const plugin = definePlugin<Config>({
   name: 'global-search',
