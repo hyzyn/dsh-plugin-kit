@@ -694,7 +694,8 @@ window.__ModuleLoader__.load({
       // 注册到官方设置 → 插件 → 可配置 卡片列表（与终端 / Agent 循环 / 网页搜索同级）
       ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
         name: 'settings.plugin.item',
-        id: 'mcp-config',
+        // settings.plugin.item 是 keyed 插槽：key 必须是该卡片所编辑的 settings 命名空间
+        key: 'mcp-config',
         order: 100,
       }, McpSettingsCard))
     }

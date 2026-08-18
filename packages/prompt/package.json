@@ -26,6 +26,7 @@
     }
   },
   "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1",
     "js-yaml": "^4.1.0"
   },
   "peerDependencies": {

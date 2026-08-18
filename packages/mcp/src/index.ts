@@ -15,6 +15,7 @@ import { chmodSync, existsSync, readFileSync, renameSync, statSync, writeFileSyn
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
+import z from '@deepseek-ai/schemastery'
 import yaml from 'js-yaml'
 
 export const name = 'mcp-config'
@@ -26,6 +27,36 @@ export interface Config {
   /** 是否向 agent 注入插件能力公告。默认开。 */
   announceToAgent?: boolean
 }
+
+/* ------------------------------------------------------------------ *
+ * settings 命名空间（让「设置 → 插件 → 插件配置」派发本插件卡片）
+ * ------------------------------------------------------------------ */
+
+/** 与 ~/.dsh/cordis.patch.yml 托管区块的服务器行形状对齐。 */
+const MCP_SETTINGS_SCHEMA = z.object({
+  servers: z.array(z.object({
+    id: z.string(),
+    disabled: z.boolean(),
+    config: z.object({
+      serverName: z.string(),
+      transport: z.union([z.const('stdio'), z.const('streamable-http')]),
+      command: z.string(),
+      args: z.array(z.string()),
+      env: z.dict(z.union([z.string(), z.object({ __jsExpr: z.string() })])),
+      cwd: z.string(),
+      url: z.string(),
+      headers: z.dict(z.union([z.string(), z.object({ __jsExpr: z.string() })])),
+      toolCallTimeoutMs: z.natural(),
+      failOnStartupError: z.boolean(),
+      reconnect: z.object({
+        enabled: z.boolean(),
+        initialDelayMs: z.natural(),
+        maxDelayMs: z.natural(),
+        maxAttempts: z.natural(),
+      }),
+    }),
+  })).default([]),
+})
 
 /* ------------------------------------------------------------------ *
  * 常量与类型
@@ -914,6 +945,12 @@ export function apply(ctx: Context, config?: Config): void {
         }
       }
     }, 'dsh-mcp-config: routes')
+  })
+
+  // 注册 settings 命名空间：卡片 key 与命名空间同名，插件配置标签页才会派发它
+  ctx.inject(['settings'], (settingsCtx: Context) => {
+    const settings = (settingsCtx as unknown as { settings: { register(ns: string, schema: unknown): unknown } }).settings
+    settings.register('mcp-config', MCP_SETTINGS_SCHEMA)
   })
 
   if (announce) {

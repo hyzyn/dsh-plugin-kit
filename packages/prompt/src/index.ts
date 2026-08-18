@@ -18,6 +18,7 @@ import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
+import z from '@deepseek-ai/schemastery'
 import yaml from 'js-yaml'
 
 export const name = 'prompt-manager'
@@ -31,6 +32,35 @@ export interface Config {
   /** 是否把启用的 Prompt 注入 systemPrompt。默认开。 */
   applyToSystemPrompt?: boolean
 }
+
+/* ------------------------------------------------------------------ *
+ * settings 命名空间（让「设置 → 插件 → 插件配置」派发本插件卡片）
+ * ------------------------------------------------------------------ */
+
+/** 与 ~/.dsh/prompts.yml 托管区块的 store 形状对齐。 */
+const PROMPT_SETTINGS_SCHEMA = z.object({
+  activePromptId: z.union([z.string(), z.const(null)]),
+  prompts: z.array(z.object({
+    id: z.string(),
+    name: z.string(),
+    description: z.string(),
+    versions: z.array(z.object({
+      id: z.string(),
+      label: z.string(),
+      note: z.string(),
+      content: z.string(),
+      createdAt: z.string(),
+    })),
+    activeVersionId: z.union([z.string(), z.const(null)]),
+    ab: z.object({
+      enabled: z.boolean(),
+      aVersionId: z.string(),
+      bVersionId: z.string(),
+      aWeight: z.number(),
+    }),
+    updatedAt: z.string(),
+  })).default([]),
+})
 
 /* ------------------------------------------------------------------ *
  * 常量与类型
@@ -763,6 +793,12 @@ export function apply(ctx: Context, config?: Config): void {
         }
       }
     }, 'dsh-prompt-manager: routes')
+  })
+
+  // 注册 settings 命名空间：卡片 key 与命名空间同名，插件配置标签页才会派发它
+  ctx.inject(['settings'], (settingsCtx: Context) => {
+    const settings = (settingsCtx as unknown as { settings: { register(ns: string, schema: unknown): unknown } }).settings
+    settings.register('prompt-manager', PROMPT_SETTINGS_SCHEMA)
   })
 
   if (announce || applyToSystemPrompt) {

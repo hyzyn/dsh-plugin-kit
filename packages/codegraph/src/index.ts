@@ -11,6 +11,7 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { Context } from '@deepseek-ai/cordis'
+import z from '@deepseek-ai/schemastery'
 import { definePlugin } from '@hyzyn/dsh-kit'
 
 const execFileAsync = promisify(execFile)
@@ -27,6 +28,18 @@ export interface Config {
   /** 默认项目路径，默认 `process.cwd()`。 */
   defaultPath?: string
 }
+
+/* ------------------------------------------------------------------ *
+ * settings 命名空间（让「设置 → 插件 → 插件配置」派发本插件卡片）
+ * ------------------------------------------------------------------ */
+
+const CODEGRAPH_SETTINGS_SCHEMA = z.object({
+  enabled: z.boolean(),
+  announceToAgent: z.boolean(),
+  usageGuidance: z.boolean(),
+  command: z.string(),
+  defaultPath: z.string(),
+})
 
 /* ------------------------------------------------------------------ *
  * 常量与类型
@@ -359,6 +372,12 @@ const plugin = definePlugin<Config>({
           }
         }
       }, 'dsh-codegraph: routes')
+    })
+
+    // 注册 settings 命名空间：卡片 key 与命名空间同名，插件配置标签页才会派发它
+    ctx.inject(['settings'], (settingsCtx: Context) => {
+      const settings = (settingsCtx as unknown as { settings: { register(ns: string, schema: unknown): unknown } }).settings
+      settings.register('codegraph', CODEGRAPH_SETTINGS_SCHEMA)
     })
 
     if (announce) {

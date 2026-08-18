@@ -26,6 +26,7 @@
     }
   },
   "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1",
     "@hyzyn/dsh-kit": "^0.1.0"
   },
   "peerDependencies": {
