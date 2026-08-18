@@ -9,29 +9,29 @@ importers:
   .:
     dependencies:
       '@hyzyn/dsh-codegraph':
-        specifier: 0.1.1
-        version: 0.1.1(react@18.3.1)
+        specifier: 0.1.3
+        version: link:packages/codegraph
       '@hyzyn/dsh-env':
-        specifier: 0.1.1
-        version: 0.1.1(react@18.3.1)
+        specifier: 0.1.3
+        version: link:packages/env
       '@hyzyn/dsh-hello':
         specifier: 0.1.0
         version: link:packages/hello
       '@hyzyn/dsh-mcp':
-        specifier: 0.1.0
-        version: 0.1.0(react@18.3.1)
-      '@hyzyn/dsh-profile':
-        specifier: 0.1.1
-        version: 0.1.1(react@18.3.1)
-      '@hyzyn/dsh-prompt':
-        specifier: 0.1.0
-        version: 0.1.0(react@18.3.1)
-      '@hyzyn/dsh-rss':
         specifier: 0.1.2
-        version: 0.1.2(react@18.3.1)
+        version: link:packages/mcp
+      '@hyzyn/dsh-profile':
+        specifier: 0.1.3
+        version: link:packages/profile
+      '@hyzyn/dsh-prompt':
+        specifier: 0.1.2
+        version: link:packages/prompt
+      '@hyzyn/dsh-rss':
+        specifier: 0.1.4
+        version: link:packages/rss
       '@hyzyn/dsh-search':
-        specifier: 0.1.0
-        version: 0.1.0
+        specifier: 0.1.1
+        version: link:packages/search
     devDependencies:
       typescript:
         specifier: ~5.7.2
@@ -40,8 +40,8 @@ importers:
   packages/all:
     dependencies:
       '@hyzyn/dsh-codegraph':
-        specifier: 0.1.1
-        version: 0.1.1(react@18.3.1)
+        specifier: workspace:*
+        version: link:../codegraph
       '@hyzyn/dsh-env':
         specifier: workspace:*
         version: link:../env
@@ -272,78 +272,6 @@ packages:
       '@standard-schema/spec': 1.1.0
     dev: false
 
-  /@hyzyn/dsh-codegraph@0.1.1(react@18.3.1):
-    resolution: {integrity: sha512-e4AewQf1DASIQnAr/C2svKUkz+ywSDVFgfUKeafT1/PWJErid16PzogLcCuWMpZJGCav/lRcpWPMJAq9FRV/xQ==}
-    engines: {node: '>=22.19.0'}
-    peerDependencies:
-      react: ^18.2.0
-    dependencies:
-      '@hyzyn/dsh-kit': 0.1.1
-      react: 18.3.1
-    dev: false
-
-  /@hyzyn/dsh-env@0.1.1(react@18.3.1):
-    resolution: {integrity: sha512-QbacKTXRsEnAJTS8N7iVInLPOYsHbvVVpFqg0FE6Ahoe7eAIpAPUPvVj80TJyOHbV8A+/qtUyiNfsCUogBnv9g==}
-    engines: {node: '>=22.19.0'}
-    peerDependencies:
-      react: ^18.2.0
-    dependencies:
-      js-yaml: 4.3.1
-      react: 18.3.1
-    dev: false
-
-  /@hyzyn/dsh-kit@0.1.1:
-    resolution: {integrity: sha512-D7JWEz+4f42MqroEEJYQLGR/2onME7RxobzWTn0EM1aPxEhfZS8Lx1o18Ahgl4JH1Ge65nC0OGHpL8vo+5tdbQ==}
-    engines: {node: '>=22.19.0'}
-    dev: false
-
-  /@hyzyn/dsh-mcp@0.1.0(react@18.3.1):
-    resolution: {integrity: sha512-32v/5SPFXcC1iQCRDeZIC6PaBHyaGO3IrKxHX8ok5j7Nsdoi+PcOdKAntoNcRgiMi6h1W5mNmkDGg47FytdD/g==}
-    engines: {node: '>=22.19.0'}
-    peerDependencies:
-      react: ^18.2.0
-    dependencies:
-      js-yaml: 4.3.1
-      react: 18.3.1
-    dev: false
-
-  /@hyzyn/dsh-profile@0.1.1(react@18.3.1):
-    resolution: {integrity: sha512-WdNdLAYMrq4xodX24Z4xx8Avst9sNPHnVrehV4T1OEtAFdALIAWOnXw84zAuJ1PaO7uQCpnbFwf7oagcHY158w==}
-    engines: {node: '>=22.19.0'}
-    peerDependencies:
-      react: ^18.2.0
-    dependencies:
-      react: 18.3.1
-    dev: false
-
-  /@hyzyn/dsh-prompt@0.1.0(react@18.3.1):
-    resolution: {integrity: sha512-02mwmyjX7tHjNSZhxC4CbB2a/s9MD+uZbD2c21ihYiK7PfOfovFI1dUGdLB9s+RG+uOw/JEM5MyT65JzQDQWqw==}
-    engines: {node: '>=22.19.0'}
-    peerDependencies:
-      react: ^18.2.0
-    dependencies:
-      js-yaml: 4.3.1
-      react: 18.3.1
-    dev: false
-
-  /@hyzyn/dsh-rss@0.1.2(react@18.3.1):
-    resolution: {integrity: sha512-SCgC05ZW4vagTbDyA9c3WCakiJYu5KMs1mC+lyo4VupRBdP60KctlVOjm2vcY7vTHz0LRO8FyBawap7C9KFLww==}
-    engines: {node: '>=22.19.0'}
-    peerDependencies:
-      react: ^18.2.0
-    dependencies:
-      '@hyzyn/dsh-kit': 0.1.1
-      react: 18.3.1
-    dev: false
-
-  /@hyzyn/dsh-search@0.1.0:
-    resolution: {integrity: sha512-w1SU3CLGwWpUd/Fu0lu+twObWpsqDesjiogtTASpi4neirrtQNGb1TemwgX5aVvYlVDemiNuNTXDnoqtAFgNPw==}
-    engines: {node: '>=22.19.0'}
-    dependencies:
-      '@hyzyn/dsh-kit': 0.1.1
-      js-yaml: 4.3.1
-    dev: false
-
   /@standard-schema/spec@1.1.0:
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
 
@@ -368,13 +296,6 @@ packages:
       argparse: 2.0.1
     dev: false
 
-  /js-yaml@4.3.1:
-    resolution: {integrity: sha512-CY6crGq313MX8GkwvB7tzgp99vjQxY1++5y10/BKN/GUfHqWaOGQMNZkBvqSzsZKWk/ijwHlWzzkLulsGHhjWQ==}
-    hasBin: true
-    dependencies:
-      argparse: 2.0.1
-    dev: false
-
   /loose-envify@1.4.0:
     resolution: {integrity: sha512-lyuxPGr/Wfhrlem2CL/UcnUc1zcqKAImBDzukY7Y5F/yQiNdko6+fRLevlw1HgMySw7f611UIY408EtxRSoK3Q==}
     hasBin: true
@@ -384,13 +305,6 @@ packages:
 
   /react@18.2.0:
     resolution: {integrity: sha512-/3IjMdb2L9QbBdWiW5e3P2/npwMBaU9mHCSCUzNln0ZCYbcfTsGbTJrU/kGemdH2IWmB2ioZ+zkxtmq6g09fGQ==}
-    engines: {node: '>=0.10.0'}
-    dependencies:
-      loose-envify: 1.4.0
-    dev: false
-
-  /react@18.3.1:
-    resolution: {integrity: sha512-wS+hAgJShR0KhEvPJArfuPVN1+Hz1t0Y6n5jLrGQbkb4urgPE/0Rve+1kMB1v/oWgHgm4WIcV+i7F2pTVj+2iQ==}
     engines: {node: '>=0.10.0'}
     dependencies:
       loose-envify: 1.4.0
