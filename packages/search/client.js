@@ -379,7 +379,7 @@ window.__ModuleLoader__.load({
         for (const item of prompts) {
           parts.push(
             '<button type="button" class="gs_item" data-kind="prompt" data-id="' + esc(item.id) + '">' +
-              '<span class="gs_itemTitle">' + highlightText(item.name, state.query) + (item.active ? '<span class="gs_badge">启用中</span>' : '') + '</span>' +
+              '<span class="gs_itemTitle">' + highlightText(item.name, state.query) + (item.active ? '<span class="gs_badge">启用中</span>' : '') + '<span class="gs_badge">设置</span></span>' +
               (item.description ? '<span class="gs_itemDesc">' + highlightText(item.description, state.query) + '</span>' : '') +
               '<span class="gs_itemDesc">' + highlightText(item.snippet, state.query) + '</span>' +
             '</button>',
@@ -395,7 +395,7 @@ window.__ModuleLoader__.load({
         for (const item of tools) {
           parts.push(
             '<button type="button" class="gs_item" data-kind="tool" data-name="' + esc(item.name) + '">' +
-              '<span class="gs_itemTitle">' + highlightText(item.name, state.query) + '</span>' +
+              '<span class="gs_itemTitle">' + highlightText(item.name, state.query) + '<span class="gs_badge">设置</span></span>' +
               (item.description ? '<span class="gs_itemDesc">' + highlightText(item.description, state.query) + '</span>' : '') +
             '</button>',
           )
@@ -432,14 +432,22 @@ window.__ModuleLoader__.load({
         const snippet = el.querySelector('.gs_itemDesc:last-of-type')?.textContent || ''
         closeModal()
         const jumped = await openSettingsCard(['Prompt 管理', 'Prompt Management'])
-        if (!jumped) copyText(snippet)
+        if (jumped) {
+          toast('已打开「Prompt 管理」设置卡片', 'ok')
+        } else {
+          copyText(snippet)
+        }
         return
       }
       if (kind === 'tool') {
         const name = el.dataset.name || ''
         closeModal()
         const jumped = await openSettingsCard(['MCP 服务器配置', 'MCP Server Configuration'])
-        if (!jumped) copyText(name)
+        if (jumped) {
+          toast('已打开「MCP 服务器配置」设置卡片', 'ok')
+        } else {
+          copyText(name)
+        }
         return
       }
     }
@@ -572,6 +580,11 @@ window.__ModuleLoader__.load({
       }
       if (card.getAttribute('aria-expanded') !== 'true') {
         card.click()
+      }
+      try {
+        card.scrollIntoView({ block: 'center', behavior: 'smooth' })
+      } catch {
+        /* 滚动失败不阻塞 */
       }
       return true
     }
