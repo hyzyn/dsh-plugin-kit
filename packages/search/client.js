@@ -96,8 +96,8 @@ window.__ModuleLoader__.load({
       return parts.join('')
     }
 
-    async function api(path) {
-      const res = await fetch(path, { cache: 'no-store' })
+    async function api(path, signal) {
+      const res = await fetch(path, { cache: 'no-store', signal })
       let body = {}
       try {
         body = await res.json()
@@ -116,7 +116,7 @@ window.__ModuleLoader__.load({
       query: '',
       loading: false,
       error: '',
-      results: { sessions: [], prompts: [], tools: [] },
+      results: { sessions: [], prompts: [], tools: [], panels: [] },
     }
 
     let modalEl = null
@@ -125,6 +125,7 @@ window.__ModuleLoader__.load({
     let searchTimer = null
     let searchSeq = 0
     let activeCtx = null
+    let activeCtl = null
 
     function toast(message, kind) {
       if (toastEl === null || !toastEl.isConnected) {
@@ -248,8 +249,20 @@ window.__ModuleLoader__.load({
       const query = state.query.trim()
       const seq = ++searchSeq
       if (query === '') {
-        state.results = { sessions: [], prompts: [], tools: [] }
+        state.results = { sessions: [], prompts: [], tools: [], panels: [] }
         state.error = ''
+        renderResults()
+        return
+      }
+      // 取消上一个仍在途的请求，避免服务器端堆积扫描
+      activeCtl?.abort()
+      const controller = new AbortController()
+      activeCtl = controller
+      // 最少 2 个字符才发起查询（按码点计，CJK 单字不触发全量扫描）
+      if ([...query].length < 2) {
+        state.results = { sessions: [], prompts: [], tools: [], panels: [] }
+        state.error = ''
+        state.loading = false
         renderResults()
         return
       }
@@ -257,17 +270,19 @@ window.__ModuleLoader__.load({
       state.error = ''
       renderResults()
       try {
-        const data = await api('/api/dsh-search/query?q=' + encodeURIComponent(query))
+        const data = await api('/api/dsh-search/query?q=' + encodeURIComponent(query), controller.signal)
         if (seq !== searchSeq) return
         state.results = {
           sessions: data.sessions || [],
           prompts: data.prompts || [],
           tools: data.tools || [],
+          panels: data.panels || [],
         }
       } catch (error) {
         if (seq !== searchSeq) return
+        if (error && error.name === 'AbortError') return
         state.error = error.message || String(error)
-        state.results = { sessions: [], prompts: [], tools: [] }
+        state.results = { sessions: [], prompts: [], tools: [], panels: [] }
       } finally {
         if (seq === searchSeq) {
           state.loading = false
@@ -283,7 +298,7 @@ window.__ModuleLoader__.load({
         return
       }
       state.query = ''
-      state.results = { sessions: [], prompts: [], tools: [] }
+      state.results = { sessions: [], prompts: [], tools: [], panels: [] }
       state.error = ''
 
       const backdrop = document.createElement('div')
@@ -299,7 +314,7 @@ window.__ModuleLoader__.load({
           '<h2 class="gs_modalTitle">全局搜索</h2>' +
           '<button type="button" class="gs_modalClose" aria-label="关闭">×</button>' +
         '</div>' +
-        '<input class="gs_searchInput" type="search" placeholder="搜索历史会话、Prompt、MCP 工具…" autocomplete="off" />' +
+        '<input class="gs_searchInput" type="search" placeholder="搜索历史会话、Prompt、MCP 工具、设置面板…" autocomplete="off" />' +
         '<div class="gs_modalBody"></div>'
 
       backdrop.appendChild(modal)
@@ -313,7 +328,7 @@ window.__ModuleLoader__.load({
       input.addEventListener('input', () => {
         state.query = input.value
         clearTimeout(searchTimer)
-        searchTimer = setTimeout(runSearch, 180)
+        searchTimer = setTimeout(runSearch, 250)
       })
       input.addEventListener('keydown', (event) => {
         if (event.key === 'Escape') closeModal()
@@ -329,6 +344,8 @@ window.__ModuleLoader__.load({
 
     function closeModal() {
       if (modalEl === null) return
+      activeCtl?.abort()
+      activeCtl = null
       modalEl.remove()
       modalEl = null
       clearTimeout(searchTimer)
@@ -348,10 +365,10 @@ window.__ModuleLoader__.load({
         return
       }
 
-      const { sessions, prompts, tools } = state.results
-      const total = sessions.length + prompts.length + tools.length
+      const { sessions, prompts, tools, panels } = state.results
+      const total = sessions.length + prompts.length + tools.length + panels.length
       if (state.query.trim() === '') {
-        body.innerHTML = '<div class="gs_empty">输入关键词，搜索历史会话、Prompt 和 MCP 工具。</div>'
+        body.innerHTML = '<div class="gs_empty">输入关键词，搜索历史会话、Prompt、MCP 工具和设置面板。</div>'
         return
       }
       if (total === 0) {
@@ -406,6 +423,21 @@ window.__ModuleLoader__.load({
         parts.push('</div></div>')
       }
 
+      if (panels.length > 0) {
+        parts.push('<div class="gs_section">')
+        parts.push('<div class="gs_sectionTitle">设置面板</div>')
+        parts.push('<div class="gs_list">')
+        for (const item of panels) {
+          parts.push(
+            '<button type="button" class="gs_item" data-kind="panel" data-titles="' + esc(JSON.stringify(item.titles || [item.name])) + '">' +
+              '<span class="gs_itemTitle">' + highlightText(item.name, state.query) + '<span class="gs_badge">设置</span></span>' +
+              (item.description ? '<span class="gs_itemDesc">' + highlightText(item.description, state.query) + '</span>' : '') +
+            '</button>',
+          )
+        }
+        parts.push('</div></div>')
+      }
+
       body.innerHTML = parts.join('')
       body.querySelectorAll('.gs_item').forEach((el) => {
         el.addEventListener('click', () => handleResultClick(el))
@@ -450,6 +482,24 @@ window.__ModuleLoader__.load({
           toast('已打开「MCP 服务器配置」设置卡片', 'ok')
         } else {
           copyText(name)
+        }
+        return
+      }
+      if (kind === 'panel') {
+        let titles = [el.dataset.titles || '']
+        try {
+          const parsed = JSON.parse(el.dataset.titles || '')
+          if (Array.isArray(parsed) && parsed.length > 0) titles = parsed
+        } catch {
+          /* 走默认 */
+        }
+        const label = titles[0] || '设置面板'
+        closeModal()
+        const jumped = await openSettingsCard(titles)
+        if (jumped) {
+          toast('已打开「' + label + '」设置卡片', 'ok')
+        } else {
+          copyText(label)
         }
         return
       }

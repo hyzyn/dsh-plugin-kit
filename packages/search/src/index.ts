@@ -28,8 +28,12 @@ export interface Config {
   includePrompts?: boolean
   /** 是否搜索 MCP 工具。默认 true。 */
   includeMcpTools?: boolean
+  /** 是否搜索设置面板（设置 → 插件 → 插件配置）。默认 true。 */
+  includePanels?: boolean
   /** 是否向 agent 注入插件能力公告。默认开。 */
   announceToAgent?: boolean
+  /** 会话回退扫描的最大会话数（宿主 FTS 不可用时的保护上限）。默认 80。 */
+  maxScanSessions?: number
 }
 
 const dshHome = () => process.env.DSH_HOME?.trim() || join(homedir(), '.dsh')
@@ -193,14 +197,102 @@ interface SessionQueryLike {
   filterEvents?(sessionId: string, filters: unknown[]): Promise<Array<{ text: string; time: number; type?: string; surface?: string }>>
 }
 
-const MAX_SCAN_SESSIONS = 200
+const MAX_SCAN_SESSIONS = 80
+const SESSION_SCAN_CONCURRENCY = 4
+const SCAN_TIMEOUT_MS = 5_000
+const TEXT_CACHE_TTL_MS = 90_000
+const TEXT_CACHE_MAX_BYTES = 192 * 1024 * 1024
+const RESULT_CACHE_TTL_MS = 30_000
+const RESULT_CACHE_MAX_ENTRIES = 64
 let warnedSearchFallback = false
 
-async function searchSessions(ctx: Context, rawQuery: string, limit: number, signal?: AbortSignal): Promise<SessionHit[]> {
+/* ------------------------------------------------------------------ *
+ * 会话文档缓存（P0 优化：同一会话只解压一次，90s 内重复查询直接内存扫描）
+ * ------------------------------------------------------------------ */
+
+interface CachedSessionDocs {
+  docs: Array<{ text: string; time: number; type?: string; surface?: string }>
+  bytes: number
+  at: number
+}
+
+const sessionDocCache = new Map<string, CachedSessionDocs>()
+let sessionDocBytes = 0
+
+function getCachedDocs(sessionId: string): CachedSessionDocs | undefined {
+  const entry = sessionDocCache.get(sessionId)
+  if (entry === undefined) return undefined
+  if (Date.now() - entry.at > TEXT_CACHE_TTL_MS) {
+    sessionDocCache.delete(sessionId)
+    sessionDocBytes -= entry.bytes
+    return undefined
+  }
+  return entry
+}
+
+function setCachedDocs(sessionId: string, entry: CachedSessionDocs): void {
+  const previous = sessionDocCache.get(sessionId)
+  if (previous !== undefined) sessionDocBytes -= previous.bytes
+  sessionDocCache.set(sessionId, entry)
+  sessionDocBytes += entry.bytes
+  // LRU 淘汰：超出字节预算时从最旧条目起淘汰
+  while (sessionDocBytes > TEXT_CACHE_MAX_BYTES && sessionDocCache.size > 1) {
+    const oldestKey = sessionDocCache.keys().next().value as string | undefined
+    if (oldestKey === undefined || oldestKey === sessionId) break
+    const oldest = sessionDocCache.get(oldestKey)
+    sessionDocCache.delete(oldestKey)
+    if (oldest !== undefined) sessionDocBytes -= oldest.bytes
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * 结果缓存（P0 优化：相同查询串 30s 内直接复用）
+ * ------------------------------------------------------------------ */
+
+interface CachedSearchResult {
+  hits: SessionHit[]
+  at: number
+}
+
+const resultCache = new Map<string, CachedSearchResult>()
+
+function getCachedResult(key: string): SessionHit[] | undefined {
+  const entry = resultCache.get(key)
+  if (entry === undefined) return undefined
+  if (Date.now() - entry.at > RESULT_CACHE_TTL_MS) {
+    resultCache.delete(key)
+    return undefined
+  }
+  return entry.hits
+}
+
+function setCachedResult(key: string, hits: SessionHit[]): void {
+  if (resultCache.size >= RESULT_CACHE_MAX_ENTRIES) {
+    const oldestKey = resultCache.keys().next().value
+    if (oldestKey !== undefined) resultCache.delete(oldestKey)
+  }
+  resultCache.set(key, { hits, at: Date.now() })
+}
+
+/**
+ * 生成本地扫描的文本过滤器，语义与宿主 compileSessionTextFilter 对齐：
+ * 大小写不敏感、空白弹性、正则元字符转义。
+ */
+function compileLocalTextFilter(query: string): RegExp {
+  const pattern = query.trim().split(/\s+/u).map((part) => part.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')).join('\\s+')
+  return new RegExp(pattern, 'iu')
+}
+
+async function searchSessions(ctx: Context, rawQuery: string, limit: number, signal?: AbortSignal, maxScanSessions = MAX_SCAN_SESSIONS): Promise<SessionHit[]> {
   const query = rawQuery.trim()
   if (query === '') return []
+  // 1 字符查询（含 CJK 单字）命中面极小却要付出全量扫描成本，直接不搜会话
+  if ([...query].length < 2) return []
   const sessionQuery = getService(ctx, 'sessionQuery') as SessionQueryLike | undefined
   if (sessionQuery === undefined) return []
+  const cacheKey = query + '|' + limit
+  const cached = getCachedResult(cacheKey)
+  if (cached !== undefined) return filterVisibleSessionHits(ctx, cached, signal)
   let hits: SessionHit[] = []
   if (typeof sessionQuery.searchSessions === 'function') {
     try {
@@ -221,7 +313,9 @@ async function searchSessions(ctx: Context, rawQuery: string, limit: number, sig
           time: hit.bestMatch?.time ?? 0,
         }]
       })
-      return await filterVisibleSessionHits(ctx, hits, signal)
+      const visible = await filterVisibleSessionHits(ctx, hits, signal)
+      setCachedResult(cacheKey, visible)
+      return visible
     } catch (error) {
       // openAt: "never" 等场景会禁用全文索引；退化为逐会话扫描原始事件。
       // 这样即使 session search 被禁用，Prompt / MCP 搜索也不会被拖垮。
@@ -231,11 +325,19 @@ async function searchSessions(ctx: Context, rawQuery: string, limit: number, sig
       }
     }
   }
-  hits = await searchSessionsByScan(sessionQuery, query, limit, signal)
-  return await filterVisibleSessionHits(ctx, hits, signal)
+  hits = await searchSessionsByScan(sessionQuery, query, limit, signal, maxScanSessions)
+  const visible = await filterVisibleSessionHits(ctx, hits, signal)
+  setCachedResult(cacheKey, visible)
+  return visible
 }
 
-async function searchSessionsByScan(sessionQuery: SessionQueryLike, query: string, limit: number, signal?: AbortSignal): Promise<SessionHit[]> {
+async function searchSessionsByScan(
+  sessionQuery: SessionQueryLike,
+  query: string,
+  limit: number,
+  signal?: AbortSignal,
+  maxScanSessions = MAX_SCAN_SESSIONS,
+): Promise<SessionHit[]> {
   if (typeof sessionQuery.listSessions !== 'function' || typeof sessionQuery.filterEvents !== 'function') return []
   let records: Array<{ header: { id: string } }> = []
   try {
@@ -244,30 +346,73 @@ async function searchSessionsByScan(sessionQuery: SessionQueryLike, query: strin
     console.warn('[dsh-global-search] session list unavailable for fallback scan:', error instanceof Error ? error.message : String(error))
     return []
   }
-  const hits: SessionHit[] = []
-  let scanned = 0
-  for (const record of records) {
-    if (hits.length >= limit) break
-    if (scanned >= MAX_SCAN_SESSIONS) break
-    scanned += 1
-    try {
-      const docs = await sessionQuery.filterEvents(record.header.id, [
-        { kind: 'text', text: query },
-      ])
-      const doc = docs.find((item) =>
-        item.surface === 'current' && (item.type === 'user/message' || item.type === 'assistant/message'),
-      ) ?? docs[0]
-      if (doc === undefined) continue
-      hits.push({
-        id: record.header.id,
-        snippet: makeSnippet(doc.text, query),
-        time: doc.time,
+  const filter = compileLocalTextFilter(query)
+  const sessions = records.slice(0, maxScanSessions)
+  const collected: SessionHit[] = []
+
+  const scanPromise = (async () => {
+    let next = 0
+    const workers = Array.from({ length: Math.min(SESSION_SCAN_CONCURRENCY, sessions.length) }, async () => {
+      while (next < sessions.length && collected.length < limit) {
+        if (signal?.aborted) return
+        const index = next
+        next += 1
+        const hit = await scanOneSession(sessionQuery, sessions[index].header.id, filter, query)
+        if (hit !== undefined) collected.push(hit)
+      }
+    })
+    await Promise.all(workers)
+  })()
+
+  // 整体超时：返回已收集的部分结果，避免最坏情况长时间无响应；
+  // 即使被切走，后台任务仍在为下一个查询填充会话缓存。
+  await Promise.race([
+    scanPromise,
+    new Promise<void>((resolve) => {
+      setTimeout(resolve, SCAN_TIMEOUT_MS)
+    }),
+  ])
+  return collected.slice(0, limit)
+}
+
+/** 单会话扫描：优先使用缓存文档；未缓存则一次拉取全部文档并缓存（消除重复解压）。 */
+async function scanOneSession(
+  sessionQuery: SessionQueryLike,
+  sessionId: string,
+  filter: RegExp,
+  query: string,
+): Promise<SessionHit | undefined> {
+  try {
+    if (typeof sessionQuery.filterEvents !== 'function') return undefined
+    let cached = getCachedDocs(sessionId)
+    if (cached === undefined) {
+      const docs = await sessionQuery.filterEvents(sessionId, [])
+      let bytes = 0
+      const docsOut = docs.map((doc) => {
+        if (typeof doc.text === 'string') bytes += doc.text.length
+        return {
+          text: doc.text,
+          time: doc.time,
+          ...(doc.type !== undefined ? { type: doc.type } : {}),
+          ...(doc.surface !== undefined ? { surface: doc.surface } : {}),
+        }
       })
-    } catch {
-      // 单个会话读取失败不阻塞其它会话
+      cached = { docs: docsOut, bytes, at: Date.now() }
+      setCachedDocs(sessionId, cached)
     }
+    const doc = cached.docs.find((item) =>
+      filter.test(item.text) && item.surface === 'current' && (item.type === 'user/message' || item.type === 'assistant/message'),
+    ) ?? cached.docs.find((item) => filter.test(item.text))
+    if (doc === undefined) return undefined
+    return {
+      id: sessionId,
+      snippet: makeSnippet(doc.text, query),
+      time: doc.time,
+    }
+  } catch {
+    // 单个会话读取失败不阻塞其它会话
+    return undefined
   }
-  return hits
 }
 
 async function getVisibleSessionIds(ctx: Context, signal?: AbortSignal): Promise<Set<string>> {
@@ -320,6 +465,132 @@ function searchMcpTools(ctx: Context, rawQuery: string, limit: number): McpToolH
     if (!schema.name.startsWith('mcp__')) continue
     if (!includesText(schema.name, query) && !includesText(schema.description, query)) continue
     hits.push({ name: schema.name, description: schema.description ?? '' })
+  }
+  return hits
+}
+
+/* ------------------------------------------------------------------ *
+ * 设置面板搜索（设置 → 插件 → 插件配置 里的可配置卡片）
+ * ------------------------------------------------------------------ */
+
+interface PanelDefinition {
+  id: string
+  /** 卡片标题（中英，按 openSettingsCard 的 titleTexts 匹配顺序） */
+  titles: string[]
+  /** 额外可搜索关键词（含标题别名） */
+  keywords: string[]
+  description: string
+  /** 宿主插件的 registry name；为 undefined 表示随 DSH 内置、恒可用（官方卡片） */
+  registryName?: string
+}
+
+/** 内置设置面板目录：官方面板 + dsh-plugin-kit 各插件面板。 */
+const PANEL_DIRECTORY: PanelDefinition[] = [
+  {
+    id: 'terminal',
+    titles: ['终端', 'Shell'],
+    keywords: ['terminal', 'bash', '终端', 'shell', '命令行'],
+    description: '终端 / Shell 行为设置',
+  },
+  {
+    id: 'agent-loop',
+    titles: ['Agent 循环', 'Agent loop'],
+    keywords: ['agent', 'loop', '循环', 'agent loop', 'agentloop'],
+    description: 'Agent 循环设置',
+  },
+  {
+    id: 'web-search',
+    titles: ['网页搜索', 'Web search'],
+    keywords: ['web', 'search', '网页', '搜索', 'websearch'],
+    description: '网页搜索设置',
+  },
+  {
+    id: 'mcp-config',
+    titles: ['MCP 服务器配置', 'MCP Server Configuration'],
+    keywords: ['mcp', 'server', '服务器', '配置', '工具', '工具集'],
+    description: 'MCP 服务器配置：stdio 本地进程或 streamable-http 远程服务',
+    registryName: 'mcp-config',
+  },
+  {
+    id: 'prompt-manager',
+    titles: ['Prompt 管理', 'Prompt Management'],
+    keywords: ['prompt', 'systemprompt', '提示词', '提示', 'prompts', 'system prompt'],
+    description: 'Prompt 管理：systemPrompt 可视化编辑、版本管理与 A/B 测试',
+    registryName: 'prompt-manager',
+  },
+  {
+    id: 'env-manager',
+    titles: ['环境变量 / 密钥管理', 'Environment Variables / Secrets'],
+    keywords: ['env', 'environment', '环境变量', '密钥', 'secret', 'secrets', '环境'],
+    description: '环境变量 / 密钥管理：配置进程环境变量与敏感信息',
+    registryName: 'env-manager',
+  },
+  {
+    id: 'profile-manager',
+    titles: ['Profile 管理', 'Profile Management'],
+    keywords: ['profile', 'profiles', '环境', '配置', '多环境', 'profile 管理'],
+    description: 'Profile 管理：DSH profile 的创建、复制、重命名与删除',
+    registryName: 'profile-manager',
+  },
+  {
+    id: 'rss-digest',
+    titles: ['RSS / 新闻聚合', 'RSS / News Aggregation'],
+    keywords: ['rss', 'news', '新闻', '聚合', 'digest', '今日值得读'],
+    description: 'RSS / 新闻聚合：多源订阅与每日「今日值得读」自动摘要',
+    registryName: 'rss-digest',
+  },
+  {
+    id: 'codegraph',
+    titles: ['Codegraph 集成', 'Codegraph Integration'],
+    keywords: ['codegraph', '代码图谱', '图谱', '索引', '调用链', '影响面', 'code graph'],
+    description: 'Codegraph 集成：代码图谱索引、符号搜索与调用链分析',
+    registryName: 'codegraph',
+  },
+]
+
+function getLoadedRegistryNames(ctx: Context): Set<string> {
+  const names = new Set<string>()
+  try {
+    const registry = (ctx as unknown as { registry?: { values?(): Iterable<{ name?: string }> } }).registry
+    if (registry?.values !== undefined) {
+      for (const runtime of registry.values()) {
+        if (typeof runtime.name === 'string' && runtime.name !== '') names.add(runtime.name)
+      }
+    }
+  } catch {
+    /* registry 枚举失败不阻塞 */
+  }
+  return names
+}
+
+interface PanelHit {
+  id: string
+  name: string
+  /** 卡片标题（中英），供客户端 openSettingsCard 匹配 */
+  titles: string[]
+  description: string
+  snippet: string
+}
+
+function searchPanels(ctx: Context, rawQuery: string, limit: number): PanelHit[] {
+  const query = normalizeQuery(rawQuery)
+  if (query === '') return []
+  const loaded = getLoadedRegistryNames(ctx)
+  const hits: PanelHit[] = []
+  for (const panel of PANEL_DIRECTORY) {
+    if (hits.length >= limit) break
+    // 非官方面板：宿主插件未加载时跳过，避免搜到未安装的卡片
+    if (panel.registryName !== undefined && !loaded.has(panel.registryName)) continue
+    const searchable = [...panel.titles, ...panel.keywords, panel.description].map(normalizeQuery)
+    const matched = searchable.some((text) => text.includes(query))
+    if (!matched) continue
+    hits.push({
+      id: panel.id,
+      name: panel.titles[0],
+      titles: panel.titles,
+      description: panel.description,
+      snippet: makeSnippet([...panel.titles, panel.description].join('，'), query),
+    })
   }
   return hits
 }
@@ -402,18 +673,28 @@ function makeRoutes(ctx: Context, config: Config): Array<{ kind: 'exact'; path: 
         }
         const q = query.trim()
         if (q === '') {
-          writeJson(res, 200, { ok: true, query: '', sessions: [], prompts: [], tools: [] })
+          writeJson(res, 200, { ok: true, query: '', sessions: [], prompts: [], tools: [], panels: [] })
           return
         }
+        const controller = new AbortController()
+        const reqEvents = req as unknown as {
+          once(event: string, listener: () => void): void
+          removeListener(event: string, listener: () => void): void
+        }
+        const onClose = () => controller.abort()
+        reqEvents.once('close', onClose)
         try {
-          const [sessions, prompts, tools] = await Promise.all([
-            config.includeSessions !== false ? searchSessions(ctx, q, maxResults) : Promise.resolve([]),
+          const [sessions, prompts, tools, panels] = await Promise.all([
+            config.includeSessions !== false ? searchSessions(ctx, q, maxResults, controller.signal, config.maxScanSessions) : Promise.resolve([]),
             config.includePrompts !== false ? Promise.resolve(searchPrompts(q, maxResults)) : Promise.resolve([]),
             config.includeMcpTools !== false ? Promise.resolve(searchMcpTools(ctx, q, maxResults)) : Promise.resolve([]),
+            config.includePanels !== false ? Promise.resolve(searchPanels(ctx, q, maxResults)) : Promise.resolve([]),
           ])
-          writeJson(res, 200, { ok: true, query: q, sessions, prompts, tools })
+          writeJson(res, 200, { ok: true, query: q, sessions, prompts, tools, panels })
         } catch (error) {
           writeJson(res, 500, { error: '搜索失败: ' + (error instanceof Error ? error.message : String(error)) })
+        } finally {
+          reqEvents.removeListener('close', onClose)
         }
       },
     },

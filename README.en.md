@@ -90,9 +90,9 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 
 ### Global Search (@hyzyn/dsh-search)
 
-- **What it does**: adds a “Global Search” entry to the Web GUI sidebar. Type a keyword to run full-text search over historical sessions.
-- **How to use**: after installing, click or focus the global search box below “New Session” in the sidebar → type a keyword → click a session result to open it and try to locate the matching text.
-- **Supports**: full-text session search via DSH’s built-in `sessionQuery`; configurable result limits; keyword highlighting in results.
+- **What it does**: adds a “Global Search” entry to the Web GUI sidebar. Type a keyword to run full-text search over historical sessions and settings panels.
+- **How to use**: after installing, click or focus the global search box below “New Session” in the sidebar → type a keyword → click a session result to open it and try to locate the matching text; click a settings-panel result to jump straight to the corresponding settings card.
+- **Supports**: full-text session search via DSH’s built-in `sessionQuery`; settings-panel search (official panels always searchable, plugin panels filtered dynamically by what is installed); configurable result limits; keyword highlighting in results.
 - **Where it is stored**: no separate config.
 - **Note**: requires the host `sessionQuery` service; if absent, session search returns an empty list. If the `session-query` full-text index is configured with `openAt: "never"`, session search automatically degrades to per-session scanning; session results are filtered to currently visible/jumpable sessions.
 
