@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-rss",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "DSH 的 RSS / 新闻聚合插件：订阅多个 RSS/Atom 源，每天自动汇总成一篇「今日值得读」Markdown，并注入 systemPrompt 供模型直接引用。",
   "type": "module",
   "engines": {

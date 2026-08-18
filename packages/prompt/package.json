@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-prompt",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DSH Web GUI 的 Prompt 管理插件：可视化编辑 systemPrompt、版本管理、A/B 测试、导出/分享，配置保存在 ~/.dsh/prompts.yml 的托管区块。",
   "type": "module",
   "engines": {
