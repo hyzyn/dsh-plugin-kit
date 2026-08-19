@@ -15,7 +15,16 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { definePlugin } from '@hyzyn/dsh-kit'
-import { getCatalogCategories, searchCatalog } from './catalog.js'
+import {
+  BUILTIN_CATALOG_NAME,
+  getBuiltinCatalogEntries,
+  getCatalogCategories,
+  getCatalogSourceNames,
+  getMergedCatalogEntries,
+  searchCatalogEntries,
+  catalogStatus,
+  type CatalogSource,
+} from './catalog.js'
 
 export const name = 'rss-digest'
 export const inject: string[] = []
@@ -93,8 +102,10 @@ export interface Config {
   enabled?: boolean
   /** 是否向 agent 注入插件能力与当天 digest 公告。默认开。 */
   announceToAgent?: boolean
-  /** 是否提供 awesome-rsshub-routes 精选订阅源目录（/api/dsh-rss/catalog，供 GUI 浏览搜索添加）。默认开。 */
+  /** 是否提供精选订阅源目录（/api/dsh-rss/catalog，供 GUI 浏览搜索添加）。默认开。 */
   includeCatalog?: boolean
+  /** 附加的 OPML 目录来源（可选多个），与内置 awesome-rsshub-routes 目录合并展示。 */
+  catalogs?: CatalogSource[]
   /** 订阅源列表；不传时使用内置默认源。 */
   sources?: Source[]
   /** 可选的新闻分类列表，用于 UI 里维护分类。 */
@@ -180,6 +191,7 @@ function latestJsonPath(config?: Config): string {
 interface RssStore {
   sources: Source[]
   categories: string[]
+  catalogs: CatalogSource[]
   maxItemsPerSource?: number
   maxTotalItems?: number
   dailyTime?: string
@@ -196,6 +208,7 @@ function defaultRssStore(config?: Config): RssStore {
   return {
     sources: Array.isArray(config?.sources) && config.sources.length > 0 ? config.sources : defaultSources(),
     categories: Array.isArray(config?.categories) ? config.categories.filter((item): item is string => typeof item === 'string' && item.trim() !== '') : [],
+    catalogs: Array.isArray(config?.catalogs) ? config.catalogs.filter((item): item is CatalogSource => typeof item === 'object' && item !== null && typeof item.name === 'string' && item.name.trim() !== '' && typeof item.url === 'string' && item.url.trim() !== '') : [],
     maxItemsPerSource: config?.maxItemsPerSource,
     maxTotalItems: config?.maxTotalItems,
     dailyTime: config?.dailyTime?.trim() || DEFAULT_DAILY_TIME,
@@ -213,6 +226,9 @@ export function readRssStore(config?: Config): RssStore {
     return {
       sources: Array.isArray(parsed.sources) ? parsed.sources : base.sources,
       categories: Array.isArray(parsed.categories) ? parsed.categories : base.categories,
+      catalogs: Array.isArray(parsed.catalogs)
+        ? parsed.catalogs.filter((item): item is CatalogSource => typeof item === 'object' && item !== null && typeof item.name === 'string' && item.name.trim() !== '' && typeof item.url === 'string' && item.url.trim() !== '')
+        : base.catalogs,
       maxItemsPerSource: typeof parsed.maxItemsPerSource === 'number' ? parsed.maxItemsPerSource : base.maxItemsPerSource,
       maxTotalItems: typeof parsed.maxTotalItems === 'number' ? parsed.maxTotalItems : base.maxTotalItems,
       dailyTime: typeof parsed.dailyTime === 'string' && parsed.dailyTime.trim() ? parsed.dailyTime : base.dailyTime,
@@ -287,10 +303,32 @@ function validateRssStoreInput(raw: unknown): { store?: RssStore; error?: string
   const autoGenerateOnMount = typeof input.autoGenerateOnMount === 'boolean' ? input.autoGenerateOnMount : undefined
   const announceToAgent = typeof input.announceToAgent === 'boolean' ? input.announceToAgent : undefined
 
+  let catalogs: CatalogSource[] | undefined
+  if (input.catalogs !== undefined) {
+    if (!Array.isArray(input.catalogs)) return { error: 'catalogs 必须是数组' }
+    const result: CatalogSource[] = []
+    for (const item of input.catalogs) {
+      if (typeof item !== 'object' || item === null) return { error: '每个目录来源必须是对象' }
+      const catalog = item as Record<string, unknown>
+      const name = typeof catalog.name === 'string' ? catalog.name.trim() : ''
+      const url = typeof catalog.url === 'string' ? catalog.url.trim() : ''
+      if (!name) return { error: '目录来源名称不能为空' }
+      if (!url) return { error: '目录来源 URL 不能为空' }
+      try {
+        new URL(url)
+      } catch {
+        return { error: '目录来源 URL 不合法: ' + url }
+      }
+      result.push({ name, url })
+    }
+    catalogs = result
+  }
+
   return {
     store: {
       sources: sources ?? [],
       categories,
+      catalogs: catalogs ?? [],
       ...(maxItemsPerSource !== undefined ? { maxItemsPerSource } : {}),
       ...(maxTotalItems !== undefined ? { maxTotalItems } : {}),
       ...(dailyTime !== undefined ? { dailyTime } : {}),
@@ -874,24 +912,46 @@ function makeRoutes(config?: Config, onDigestChanged?: (digest: DigestResult) =>
       path: '/api/dsh-rss/catalog',
       handler: async (req, res) => {
         if (!guard(req, res, 'GET')) return
-        if (config?.includeCatalog === false) {
-          writeJson(res, 200, { ok: true, total: 0, categories: [], entries: [], disabled: true })
+        const includeCatalog = config?.includeCatalog !== false
+        if (!includeCatalog) {
+          writeJson(res, 200, { ok: true, total: 0, categories: [], sources: [], entries: [], catalogs: [], builtin: null, disabled: true })
           return
         }
         let query = ''
         let category: string | undefined
+        let source: string | undefined
         try {
           const params = new URL('http://localhost' + (req.url ?? '/')).searchParams
           query = params.get('q') ?? ''
           const rawCategory = params.get('category')
           category = rawCategory !== null && rawCategory.trim() !== '' ? rawCategory.trim() : undefined
+          const rawSource = params.get('source')
+          source = rawSource !== null && rawSource.trim() !== '' ? rawSource.trim() : undefined
         } catch {
           writeJson(res, 400, { error: 'invalid query string' })
           return
         }
-        const categories = getCatalogCategories()
-        const entries = searchCatalog(query, 100, category)
-        writeJson(res, 200, { ok: true, total: entries.length, categories, entries })
+        const store = readRssStore(config)
+        const catalogs = store.catalogs ?? []
+        const merged = getMergedCatalogEntries(catalogs, true)
+        const categories = getCatalogCategories(merged)
+        const sourceNames = getCatalogSourceNames(merged)
+        const entries = searchCatalogEntries(merged, query, 100, category, source)
+        const statuses = catalogs.map((catalog) => catalogStatus(catalog))
+        writeJson(res, 200, {
+          ok: true,
+          total: entries.length,
+          categories,
+          sources: sourceNames,
+          entries,
+          catalogs: statuses,
+          builtin: {
+            name: BUILTIN_CATALOG_NAME,
+            entryCount: getBuiltinCatalogEntries().length,
+            enabled: true,
+          },
+          disabled: false,
+        })
       },
     },
   ]
