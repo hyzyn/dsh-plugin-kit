@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-search",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "DSH Web GUI 的全局搜索插件：在侧边栏提供「全局搜索」入口，全文搜索历史会话。",
   "type": "module",
   "engines": {

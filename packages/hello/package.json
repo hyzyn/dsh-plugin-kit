@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-hello",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "dsh-plugin-kit 的最小 host 插件模板：dsh manifest、bundle patch 与构建配置的参考实现，也是 pnpm create-plugin 的复制蓝本。",
   "type": "module",
   "engines": {
