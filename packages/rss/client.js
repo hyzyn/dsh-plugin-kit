@@ -32,7 +32,7 @@ window.__ModuleLoader__.load({
       '.rss_pluginCardOpen .rss_chevron{transform:rotate(180deg)}',
       '.rss_cardBody{padding:2px 16px 16px}',
       '.rss_panel{display:flex;flex-direction:column;gap:12px;color:var(--dsw-alias-label-primary);font-family:var(--dsw-font-family);box-sizing:border-box}',
-      '.rss_panelHeader{display:flex;align-items:center;gap:8px 10px;flex:none;flex-wrap:wrap}',
+      '.rss_panelHeader{display:flex;align-items:center;gap:8px 10px;flex:none;flex-wrap:wrap;position:sticky;top:0;z-index:20;background:var(--dsw-alias-bg-layer-3);padding:8px 0;margin:-2px 0 0}',
       '.rss_panelTitle{margin:0;font-size:15px;font-weight:700;white-space:nowrap;flex:1;min-width:0}',
       '.rss_toolbar{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex:1 1 100%;min-width:0;flex-wrap:wrap}',
       '.rss_btn{color:var(--dsw-alias-label-primary-foreground);background:var(--dsw-alias-button-info-fill);border:none;border-radius:8px;padding:6px 14px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}',
@@ -93,18 +93,35 @@ window.__ModuleLoader__.load({
       '.rss_sourceEditorList{display:flex;flex-direction:column;gap:8px}',
       '.rss_sourceEditor{display:grid;grid-template-columns:1fr 2fr 1fr 70px auto;gap:6px;align-items:center}',
       '.rss_sourceEditor .rss_input{min-width:0}',
+      '.rss_channelList{display:flex;flex-direction:column;gap:6px;min-width:0}',
+      '.rss_channelRow{display:grid;grid-template-columns:20px 24px minmax(80px,1.2fr) minmax(100px,1.5fr) minmax(80px,0.8fr) 52px 52px;gap:6px;align-items:center;padding:6px 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-layer-2);min-width:0}',
+      '.rss_channelRow .rss_input{min-width:0}',
+      '.rss_channelRow > *{min-width:0}',
+      '.rss_channelRow.rss_dragging{opacity:.45}',
+      '.rss_dragHandle{cursor:grab;color:var(--dsw-alias-label-tertiary);text-align:center;user-select:none;font-size:14px;line-height:1}',
+      '.rss_dragHandle:active{cursor:grabbing}',
+      '.rss_channelName,.rss_channelUrl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--dsw-alias-label-primary)}',
+      '.rss_channelUrl{color:var(--dsw-alias-label-tertiary)}',
+      '.rss_channelType{font-size:11px;color:var(--dsw-alias-label-tertiary);white-space:nowrap}',
+      '.rss_disabledTitle{font-size:11.5px;font-weight:600;color:var(--dsw-alias-label-tertiary);margin:8px 0 2px}',
       '.rss_builtinList{display:flex;flex-direction:column;gap:2px}',
       '.rss_builtinRow{display:flex;align-items:center;gap:10px;font-size:13px;color:var(--dsw-alias-label-primary);cursor:pointer;padding:3px 0}',
       '.rss_builtinRow input[type=checkbox]{accent-color:var(--dsw-alias-state-business-primary);width:14px;height:14px;margin:0;flex:none}',
       '.rss_builtinName{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
       '.rss_builtinRow .rss_builtinCategory{flex:none;width:120px}',
       '.rss_builtinNote{font-size:11px;color:var(--dsw-alias-label-tertiary);padding:0 0 2px 24px;line-height:1.5}',
+      '.rss_channelRow.rss_builtinRow{display:grid;padding:6px 8px;gap:6px}',
+      '.rss_channelRow.rss_builtinRow .rss_builtinCategory{width:auto;flex:none}',
       '.rss_input{color:var(--dsw-alias-label-primary);background:var(--dsw-specific-input-major);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;outline:none;padding:6px 9px;font-family:inherit;font-size:12px;box-sizing:border-box;width:100%}',
       '.rss_input:focus{border-color:var(--dsw-alias-state-business-primary)}',
       '.rss_input::placeholder{color:var(--dsw-alias-label-tertiary)}',
       '.rss_addRow{display:flex;gap:6px;align-items:center}',
       '.rss_addRow > .rss_input:first-child{flex:1;min-width:0}',
       '.rss_addRow > .rss_input:last-child{flex:none;width:auto;max-width:55%}',
+      '.rss_catalogAddRow{display:grid;grid-template-columns:minmax(140px,1fr) minmax(220px,2fr) auto;gap:6px;align-items:center}',
+      '.rss_catalogAddRow .rss_input{min-width:0}',
+      '.rss_catalogSearchRow{display:grid;grid-template-columns:minmax(220px,2fr) minmax(110px,1fr) minmax(110px,1fr);gap:6px;align-items:center}',
+      '.rss_catalogSearchRow .rss_input{min-width:0}',
       '.rss_categories{display:flex;flex-wrap:wrap;gap:6px}',
       '.rss_categoryChip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:999px;padding:2px 6px 2px 10px;font-size:11px;line-height:1.6;white-space:nowrap}',
       '.rss_categoryRemove{appearance:none;background:0 0;border:0;color:var(--dsw-alias-label-tertiary);cursor:pointer;font-size:13px;line-height:1;padding:2px}',
@@ -230,6 +247,7 @@ window.__ModuleLoader__.load({
       catalogBuiltin: null,
       catalogNewName: '',
       catalogNewUrl: '',
+      catalogOpen: false,
       customQuery: '',
       modalQuery: '',
       modalCategory: '',
@@ -240,8 +258,11 @@ window.__ModuleLoader__.load({
 
     let panelEl
     let modalEl
+    let catalogModalEl
     let toastEl
     let toastTimer
+    let saveTimer
+    let dragIndex = null
 
     /* ================================ Toast ================================ */
 
@@ -298,8 +319,14 @@ window.__ModuleLoader__.load({
       return html
     }
 
+    function catalogRoot() {
+      if (catalogModalEl !== undefined && catalogModalEl.isConnected) return catalogModalEl
+      return panelEl
+    }
+
     function updateCatalogSources() {
-      const node = panelEl !== undefined ? panelEl.querySelector('#rss-catalog-sources') : null
+      const root = catalogRoot()
+      const node = root !== undefined ? root.querySelector('#rss-catalog-sources') : null
       if (node === null) return
       node.outerHTML = '<div id="rss-catalog-sources">' + renderCatalogSourcesBlock() + '</div>'
     }
@@ -316,9 +343,171 @@ window.__ModuleLoader__.load({
       return (state.config?.sources || []).find((source) => builtinOf(source)?.key === builtin.key) || null
     }
 
-    function customSourceList() {
-      return (state.config?.sources || []).filter((source) => builtinOf(source) === null)
+    function channelListHtml() {
+      const query = (state.customQuery || '').trim().toLowerCase()
+      const sources = state.config?.sources || []
+      const urlCount = new Map()
+      for (const source of sources) {
+        const key = (source.url || '').trim().toLowerCase()
+        urlCount.set(key, (urlCount.get(key) || 0) + 1)
+      }
+      const enabled = []
+      for (let i = 0; i < sources.length; i++) {
+        const source = sources[i]
+        const builtin = builtinOf(source)
+        if (!query || (source.name || '').toLowerCase().includes(query) || (source.url || '').toLowerCase().includes(query)) {
+          enabled.push({
+            source,
+            index: i,
+            builtin,
+            dup: urlCount.get((source.url || '').trim().toLowerCase()) > 1,
+          })
+        }
+      }
+      const disabledBuiltins = (state.builtins || [])
+        .filter((builtin) => findBuiltinSource(builtin) === null)
+        .filter((builtin) => !query || (builtin.name || '').toLowerCase().includes(query) || (builtin.url || '').toLowerCase().includes(query))
+      if (enabled.length === 0 && disabledBuiltins.length === 0) {
+        return '<div class="rss_empty">没有匹配的渠道。</div>'
+      }
+      const parts = []
+      parts.push('<div class="rss_channelList" id="rss-channel-list">')
+      for (const row of enabled) parts.push(renderChannelRow(row))
+      if (disabledBuiltins.length > 0) {
+        parts.push('<div class="rss_disabledTitle">未启用内置渠道</div>')
+        for (const builtin of disabledBuiltins) parts.push(renderDisabledBuiltinRow(builtin))
+      }
+      parts.push('</div>')
+      return parts.join('')
     }
+
+    function renderChannelRow(row) {
+      const { source, index, builtin, dup } = row
+      if (builtin) {
+        const category = source.category?.trim() || builtin.category
+        return '<div class="rss_channelRow rss_builtinRow" data-channel-index="' + index + '">' +
+          '<span class="rss_dragHandle" draggable="true" data-drag-index="' + index + '" title="拖拽排序">⋮⋮</span>' +
+          '<input type="checkbox" data-action="builtin-toggle" data-key="' + esc(builtin.key) + '" checked />' +
+          '<span class="rss_channelName" title="' + esc(builtin.name) + '">' + esc(builtin.name) + '</span>' +
+          '<span class="rss_channelUrl" title="' + esc(builtin.url) + '">' + esc(builtin.url) + '</span>' +
+          '<select class="rss_input rss_builtinCategory" data-field="rss-builtin-category" data-key="' + esc(builtin.key) + '">' + categoryOptions(category) + '</select>' +
+          '<span class="rss_channelType">内置</span>' +
+          '<span></span>' +
+          '</div>'
+      }
+      return '<div class="rss_channelRow' + (dup ? ' rss_dupRow' : '') + '" data-channel-index="' + index + '">' +
+        '<span class="rss_dragHandle" draggable="true" data-drag-index="' + index + '" title="拖拽排序">⋮⋮</span>' +
+        '<span></span>' +
+        '<input class="rss_input" data-field="rss-source-name" data-index="' + index + '" value="' + esc(source.name || '') + '" placeholder="名称" />' +
+        '<input class="rss_input" data-field="rss-source-url" data-index="' + index + '" value="' + esc(source.url || '') + '" placeholder="RSS/Atom URL" spellcheck="false" />' +
+        '<select class="rss_input" data-field="rss-source-category" data-index="' + index + '">' + categoryOptions(source.category) + '</select>' +
+        '<span class="rss_channelType">自定义</span>' +
+        '<button class="rss_linkBtn" data-danger="true" data-action="config-remove-source" data-index="' + index + '">删除</button>' +
+        '</div>'
+    }
+
+    function renderDisabledBuiltinRow(builtin) {
+      return '<div class="rss_channelRow rss_builtinRow" data-disabled="true">' +
+        '<span class="rss_dragHandle" style="visibility:hidden">⋮⋮</span>' +
+        '<input type="checkbox" data-action="builtin-toggle" data-key="' + esc(builtin.key) + '" />' +
+        '<span class="rss_channelName" title="' + esc(builtin.name) + '">' + esc(builtin.name) + '</span>' +
+        '<span class="rss_channelUrl" title="' + esc(builtin.url) + '">' + esc(builtin.url) + '</span>' +
+        '<span class="rss_channelType">内置</span>' +
+        '<span></span><span></span>' +
+        '</div>'
+    }
+
+    function renderChannelsSection() {
+      const all = state.config?.sources || []
+      const parts = []
+      parts.push('<div class="rss_settingSection" id="rss-sec-channels">')
+      parts.push('<div class="rss_settingTitle">订阅渠道</div>')
+      parts.push('<div class="rss_settingHint">内置渠道和自定义渠道统一管理；拖拽手柄可排序，常用修改会自动保存。</div>')
+      parts.push('<div class="rss_addRow" id="rss-custom-tools">')
+      parts.push('<input class="rss_input" data-field="rss-custom-query" value="' + esc(state.customQuery) + '" placeholder="筛选名称 / URL…" autocomplete="off" spellcheck="false" />')
+      parts.push('<span class="rss_customCount">' + all.length + ' 个</span>')
+      parts.push('<button class="rss_btnGhost" data-action="config-add-source">+ 添加源</button>')
+      parts.push('</div>')
+      parts.push('<div class="rss_customImport">')
+      parts.push('<input type="file" id="rss-import-file" data-field="rss-import-file" accept=".opml,.xml,text/xml,application/xml" style="display:none" />')
+      parts.push('<button class="rss_btnGhost" data-action="custom-import-opml">导入 OPML</button>')
+      parts.push('<button class="rss_btnGhost" data-action="custom-import-paste">' + (state.importOpen ? '收起粘贴导入' : '粘贴 URL 列表') + '</button>')
+      parts.push('<button class="rss_btnGhost" data-action="custom-export-opml">导出 OPML</button>')
+      parts.push('<button class="rss_btnGhost" data-action="catalog-open">订阅源目录</button>')
+      parts.push('<span class="rss_customImportHint">支持从任何 RSS 阅读器 / 网站导入订阅（OPML 文件或 URL 列表），也可导出给其他应用使用；导入后会自动校验并保存。</span>')
+      parts.push('</div>')
+      if (state.importOpen) {
+        parts.push('<div class="rss_importPaste">')
+        parts.push('<textarea class="rss_input rss_importTextarea" data-field="rss-import-text" placeholder="每行一个订阅地址；也可用「名称, 地址」格式：&#10;阮一峰的网络日志, https://www.ruanyifeng.com/blog/atom.xml&#10;https://example.com/feed">' + esc(state.importText) + '</textarea>')
+        parts.push('<button class="rss_btn" data-action="custom-import-paste-go">导入</button>')
+        parts.push('</div>')
+      }
+      parts.push('<div id="rss-channel-list">' + channelListHtml() + '</div>')
+      parts.push('</div>')
+      return parts.join('')
+    }
+
+    function updateChannels() {
+      updateSection('rss-sec-channels', renderChannelsSection())
+    }
+
+    function updateChannelList() {
+      const node = panelEl !== undefined ? panelEl.querySelector('#rss-channel-list') : null
+      if (node === null) return
+      node.innerHTML = channelListHtml()
+    }
+
+    function moveChannel(from, to) {
+      const sources = state.config?.sources
+      if (!sources || from === to || from < 0 || from >= sources.length || to < 0 || to >= sources.length) return
+      const [moved] = sources.splice(from, 1)
+      sources.splice(to, 0, moved)
+      updateChannels()
+      markDirty()
+      scheduleSave()
+    }
+
+    function handleChannelDragStart(event) {
+      if ((state.customQuery || '').trim()) return
+      const handle = event.target.closest ? event.target.closest('[data-drag-index]') : null
+      if (!handle) return
+      dragIndex = Number(handle.dataset.dragIndex)
+      const row = handle.closest('[data-channel-index]')
+      if (row) row.classList.add('rss_dragging')
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = 'move'
+        try {
+          event.dataTransfer.setData('text/plain', String(dragIndex))
+        } catch {
+          /* 某些环境不允许 setData */
+        }
+      }
+    }
+
+    function handleChannelDragOver(event) {
+      if (dragIndex === null) return
+      const row = event.target.closest ? event.target.closest('[data-channel-index]') : null
+      if (!row) return
+      event.preventDefault()
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+    }
+
+    function handleChannelDrop(event) {
+      if (dragIndex === null) return
+      const row = event.target.closest ? event.target.closest('[data-channel-index]') : null
+      if (!row) return
+      event.preventDefault()
+      const toIndex = Number(row.dataset.channelIndex)
+      moveChannel(dragIndex, toIndex)
+      dragIndex = null
+    }
+
+    function handleChannelDragEnd() {
+      dragIndex = null
+      const dragging = panelEl !== undefined ? panelEl.querySelector('.rss_channelRow.rss_dragging') : null
+      if (dragging) dragging.classList.remove('rss_dragging')
+    }
+
 
     function renderHeader() {
       const parts = []
@@ -329,7 +518,8 @@ window.__ModuleLoader__.load({
       }
       parts.push('<div class="rss_toolbar">')
       parts.push('<button class="rss_btnGhost" data-action="digest-refresh"' + (state.refreshing ? ' disabled' : '') + '>' + (state.refreshing ? '刷新中…' : '刷新') + '</button>')
-      parts.push('<button class="rss_btn" data-action="config-save"' + (state.saving ? ' disabled' : '') + '>' + (state.saving ? '保存中…' : '保存') + '</button>')
+      parts.push('<button class="rss_btnGhost" data-action="config-reset"' + (state.loading ? ' disabled' : '') + '>放弃修改</button>')
+      parts.push('<button class="rss_btn" data-action="config-save" title="Ctrl / Cmd + S"' + (state.saving ? ' disabled' : '') + '>' + (state.saving ? '保存中…' : '保存') + '</button>')
       parts.push('</div>')
       parts.push('</div>')
       return parts.join('')
@@ -375,98 +565,8 @@ window.__ModuleLoader__.load({
       return parts.join('')
     }
 
-    function renderBuiltinSection() {
-      const parts = []
-      parts.push('<div class="rss_settingSection" id="rss-sec-builtin">')
-      parts.push('<div class="rss_settingTitle">内置渠道</div>')
-      parts.push('<div class="rss_settingHint">勾选要抓取的渠道；分类决定「今日值得读」里的分组。</div>')
-      parts.push('<div class="rss_builtinList">')
-      for (const builtin of state.builtins || []) {
-        const entry = findBuiltinSource(builtin)
-        const category = entry?.category || builtin.category
-        parts.push('<label class="rss_builtinRow">')
-        parts.push('<input type="checkbox" data-action="builtin-toggle" data-key="' + esc(builtin.key) + '"' + (entry !== null ? ' checked' : '') + ' />')
-        parts.push('<span class="rss_builtinName" title="' + esc(builtin.name) + '">' + esc(builtin.name) + '</span>')
-        parts.push('<select class="rss_input rss_builtinCategory" data-field="rss-builtin-category" data-key="' + esc(builtin.key) + '">' + categoryOptions(category) + '</select>')
-        parts.push('</label>')
-        if (builtin.note) {
-          parts.push('<div class="rss_builtinNote">' + esc(builtin.note) + '</div>')
-        }
-      }
-      parts.push('</div>')
-      parts.push('</div>')
-      return parts.join('')
-    }
-
     function isSubscribed(url) {
       return (state.config?.sources || []).some((source) => source.url === url)
-    }
-
-    function customListHtml() {
-      const all = customSourceList()
-      const query = (state.customQuery || '').trim().toLowerCase()
-      const filtered = query
-        ? all.filter((source) => (source.name || '').toLowerCase().includes(query) || (source.url || '').toLowerCase().includes(query))
-        : all
-      if (all.length === 0) {
-        return '<div class="rss_empty">暂无自定义渠道，可点击「+ 添加源」或从下方目录批量添加。</div>'
-      }
-      if (filtered.length === 0) {
-        return '<div class="rss_empty">没有匹配的自定义渠道。</div>'
-      }
-      // 统计重复 URL（按去空格小写比较）
-      const urlCount = new Map()
-      for (const source of all) {
-        const key = (source.url || '').trim().toLowerCase()
-        urlCount.set(key, (urlCount.get(key) || 0) + 1)
-      }
-      const parts = []
-      parts.push('<div class="rss_sourceEditorList">')
-      for (const source of filtered) {
-        const fullIndex = state.config.sources.indexOf(source)
-        const dup = urlCount.get((source.url || '').trim().toLowerCase()) > 1
-        parts.push('<div class="rss_sourceEditor' + (dup ? ' rss_dupRow' : '') + '">')
-        parts.push('<div class="rss_srcNameCell">')
-        parts.push('<input class="rss_input" data-field="rss-source-name" data-index="' + fullIndex + '" value="' + esc(source.name || '') + '" placeholder="名称" />')
-        if (dup) parts.push('<span class="rss_dupBadge" title="此 URL 与其他自定义渠道重复，会重复抓取">URL 重复</span>')
-        parts.push('</div>')
-        parts.push('<input class="rss_input" data-field="rss-source-url" data-index="' + fullIndex + '" value="' + esc(source.url || '') + '" placeholder="RSS/Atom URL" spellcheck="false" />')
-        parts.push('<select class="rss_input" data-field="rss-source-category" data-index="' + fullIndex + '">' + categoryOptions(source.category) + '</select>')
-        parts.push('<input class="rss_input" data-field="rss-source-limit" data-index="' + fullIndex + '" type="number" min="1" value="' + (source.limit || 5) + '" />')
-        parts.push('<button class="rss_linkBtn" data-danger="true" data-action="config-remove-source" data-index="' + fullIndex + '">删除</button>')
-        parts.push('</div>')
-      }
-      parts.push('</div>')
-      return parts.join('')
-    }
-
-    function renderCustomSection() {
-      const all = customSourceList()
-      const parts = []
-      parts.push('<div class="rss_settingSection" id="rss-sec-custom">')
-      parts.push('<div class="rss_settingTitle">自定义渠道</div>')
-      parts.push('<div class="rss_settingHint">添加你自己的 RSS / Atom 地址。保存时会真实抓取校验，抓不到内容的地址会提示且不保存。</div>')
-      parts.push('<div class="rss_addRow" id="rss-custom-tools">')
-      parts.push('<input class="rss_input" data-field="rss-custom-query" value="' + esc(state.customQuery) + '" placeholder="筛选名称 / URL…" autocomplete="off" spellcheck="false" />')
-      parts.push('<span class="rss_customCount">' + all.length + ' 个</span>')
-      parts.push('<button class="rss_btnGhost" data-action="config-add-source">+ 添加源</button>')
-      parts.push('</div>')
-      parts.push('<div class="rss_customImport">')
-      parts.push('<input type="file" id="rss-import-file" data-field="rss-import-file" accept=".opml,.xml,text/xml,application/xml" style="display:none" />')
-      parts.push('<button class="rss_btnGhost" data-action="custom-import-opml">导入 OPML</button>')
-      parts.push('<button class="rss_btnGhost" data-action="custom-import-paste">' + (state.importOpen ? '收起粘贴导入' : '粘贴 URL 列表') + '</button>')
-      parts.push('<button class="rss_btnGhost" data-action="custom-export-opml">导出 OPML</button>')
-      parts.push('<span class="rss_customImportHint">支持从任何 RSS 阅读器 / 网站导入订阅（OPML 文件或 URL 列表），也可导出给其他应用使用；导入后点右上角「保存」校验并生效。</span>')
-      parts.push('</div>')
-      if (state.importOpen) {
-        parts.push('<div class="rss_importPaste">')
-        parts.push('<textarea class="rss_input rss_importTextarea" data-field="rss-import-text" placeholder="每行一个订阅地址；也可用「名称, 地址」格式：&#10;阮一峰的网络日志, https://www.ruanyifeng.com/blog/atom.xml&#10;https://example.com/feed">' + esc(state.importText) + '</textarea>')
-        parts.push('<button class="rss_btn" data-action="custom-import-paste-go">导入</button>')
-        parts.push('</div>')
-      }
-      parts.push('<div id="rss-custom-list">' + customListHtml() + '</div>')
-      parts.push('</div>')
-      return parts.join('')
     }
 
     function catalogToolsHtml() {
@@ -477,7 +577,7 @@ window.__ModuleLoader__.load({
       html += '<span class="rss_catalogStats">共 ' + entries.length + ' 条 · 已订阅 ' + subscribed + ' · 已选 ' + selectedCount + '</span>'
       html += '<button class="rss_btnGhost" data-action="catalog-select-all">全选</button>'
       html += '<button class="rss_btnGhost" data-action="catalog-clear"' + (selectedCount === 0 ? ' disabled' : '') + '>清空</button>'
-      html += '<button class="rss_btn" data-action="catalog-add-selected"' + (selectedCount === 0 ? ' disabled' : '') + '>添加选中' + (selectedCount > 0 ? ' (' + selectedCount + ')' : '') + '</button>'
+      html += '<button class="rss_btn" data-action="catalog-add-selected"' + (selectedCount === 0 ? ' disabled' : '') + '>添加选中并保存' + (selectedCount > 0 ? ' (' + selectedCount + ')' : '') + '</button>'
       html += '</div>'
       return html
     }
@@ -522,10 +622,9 @@ window.__ModuleLoader__.load({
     function renderCatalogSection() {
       const parts = []
       parts.push('<div class="rss_settingSection" id="rss-sec-catalog">')
-      parts.push('<div class="rss_settingTitle">订阅源目录</div>')
-      parts.push('<div class="rss_settingHint">目录可来自多个来源：内置 <a class="rss_linkBtn" href="https://jackyst0.github.io/awesome-rsshub-routes/" target="_blank" rel="noreferrer">awesome-rsshub-routes</a> 精选列表 + 你添加的其他 OPML 目录；搜索结果统一汇总并标注来源，一键加入自定义渠道，保存后生效。</div>')
+      parts.push('<div class="rss_settingHint">目录可来自多个来源：内置 <a class="rss_linkBtn" href="https://jackyst0.github.io/awesome-rsshub-routes/" target="_blank" rel="noreferrer">awesome-rsshub-routes</a> 精选列表 + 你添加的其他 OPML 目录；搜索结果统一汇总并标注来源，可一键加入自定义渠道并保存。</div>')
       parts.push('<div id="rss-catalog-sources">' + renderCatalogSourcesBlock() + '</div>')
-      parts.push('<div class="rss_addRow">')
+      parts.push('<div class="rss_addRow rss_catalogSearchRow">')
       parts.push('<input class="rss_input" data-field="rss-catalog-query" value="' + esc(state.catalogQuery) + '" placeholder="搜索目录，如 arxiv、Hacker News…" autocomplete="off" spellcheck="false" />')
       parts.push('<select class="rss_input" data-field="rss-catalog-category">' + catalogCategoryOptions() + '</select>')
       parts.push('<select class="rss_input" data-field="rss-catalog-source">' + catalogSourceOptions() + '</select>')
@@ -564,7 +663,7 @@ window.__ModuleLoader__.load({
         parts.push('<span class="rss_catalogSourceActions"><button class="rss_linkBtn" data-danger="true" data-action="catalog-remove-source" data-url="' + esc(catalog.url) + '">' + (status === undefined ? '取消' : '移除') + '</button></span>')
         parts.push('</div>')
       }
-      parts.push('<div class="rss_addRow">')
+      parts.push('<div class="rss_addRow rss_catalogAddRow">')
       parts.push('<input class="rss_input" data-field="rss-catalog-new-name" value="' + esc(state.catalogNewName) + '" placeholder="目录名称，如：我的精选" />')
       parts.push('<input class="rss_input" data-field="rss-catalog-new-url" value="' + esc(state.catalogNewUrl) + '" placeholder="OPML 目录 URL（https://…/feeds.opml）" spellcheck="false" />')
       parts.push('<button class="rss_btnGhost" data-action="catalog-add-source">添加目录</button>')
@@ -606,10 +705,11 @@ window.__ModuleLoader__.load({
       parts.push('<div class="rss_field"><span class="rss_fieldLabel">每日总条数</span><input class="rss_input" data-field="rss-max-total" type="number" min="1" value="' + (config.maxTotalItems || 30) + '" /></div>')
       parts.push('<div class="rss_field"><span class="rss_fieldLabel">每日生成时间</span><input class="rss_input" data-field="rss-daily-time" type="time" value="' + esc(config.dailyTime || '08:00') + '" /></div>')
       parts.push('</div>')
-      parts.push('<div class="rss_settingHint">修改后点击右上角「保存」，保存成功会自动重新抓取当天 digest。</div>')
+      parts.push('<div class="rss_settingHint">修改后点击顶部「保存」，保存成功会自动重新抓取当天 digest。</div>')
       parts.push('</div>')
       return parts.join('')
     }
+
 
     function renderAll(container) {
       panelEl = container
@@ -621,9 +721,7 @@ window.__ModuleLoader__.load({
         parts.push('<div class="rss_loading">加载中…</div>')
       } else {
         parts.push(renderDigestSection())
-        parts.push(renderBuiltinSection())
-        parts.push(renderCustomSection())
-        parts.push(renderCatalogSection())
+        parts.push(renderChannelsSection())
         parts.push(renderCategoriesSection())
         parts.push(renderAggregateSection())
       }
@@ -644,30 +742,32 @@ window.__ModuleLoader__.load({
       updateSection('rss-header', renderHeader())
     }
 
+
     function updateError() {
       updateSection('rss-error', renderErrorNode())
     }
 
     function updateCatalogResults() {
-      const node = panelEl !== undefined ? panelEl.querySelector('#rss-catalog-results') : null
+      const root = catalogRoot()
+      const node = root !== undefined ? root.querySelector('#rss-catalog-results') : null
       if (node === null) return
       node.innerHTML = renderCatalogResults()
     }
 
     function updateCatalogTools() {
-      const node = panelEl !== undefined ? panelEl.querySelector('#rss-catalog-tools') : null
+      const root = catalogRoot()
+      const node = root !== undefined ? root.querySelector('#rss-catalog-tools') : null
       if (node === null) return
       node.outerHTML = catalogToolsHtml()
     }
 
     function updateCustomList() {
-      const node = panelEl !== undefined ? panelEl.querySelector('#rss-custom-list') : null
-      if (node === null) return
-      node.innerHTML = customListHtml()
+      updateChannelList()
     }
 
     function updateCatalogSelect() {
-      const select = panelEl !== undefined ? panelEl.querySelector('[data-field="rss-catalog-category"]') : null
+      const root = catalogRoot()
+      const select = root !== undefined ? root.querySelector('[data-field="rss-catalog-category"]') : null
       if (select === null) return
       select.innerHTML = catalogCategoryOptions()
     }
@@ -943,6 +1043,54 @@ window.__ModuleLoader__.load({
 
     const RSS_SIDEBAR_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12h.01M4 8a4 4 0 0 1 4 4M4 4a8 8 0 0 1 8 8"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/></svg>'
 
+    /* ================================ 订阅源目录弹窗 ================================ */
+
+    function renderCatalogModalHtml() {
+      return '<div class="rss_modalBackdrop" data-action="catalog-backdrop">' +
+        '<div class="rss_modal rss_catalogModal" role="dialog" aria-modal="true" aria-label="订阅源目录">' +
+          '<div class="rss_modalHeader">' +
+            '<h3 class="rss_modalTitle">订阅源目录</h3>' +
+            '<button class="rss_modalClose" data-action="catalog-close" aria-label="关闭">×</button>' +
+          '</div>' +
+          '<div class="rss_modalBody">' + renderCatalogSection() + '</div>' +
+          '<div class="rss_modalFooter">' +
+            '<span class="rss_modalCount"></span>' +
+            '<button class="rss_btnGhost" data-action="catalog-close">关闭</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    }
+
+    function renderCatalogModal() {
+      if (catalogModalEl === undefined) return
+      catalogModalEl.innerHTML = renderCatalogModalHtml()
+    }
+
+    function openCatalogModal() {
+      if (catalogModalEl === undefined || !catalogModalEl.isConnected) {
+        catalogModalEl = document.createElement('div')
+        catalogModalEl.className = 'rss_modalRoot'
+        document.body.appendChild(catalogModalEl)
+      }
+      state.catalogOpen = true
+      renderCatalogModal()
+      catalogModalEl.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') closeCatalogModal()
+      })
+      loadCatalog()
+      const search = catalogModalEl.querySelector('[data-field="rss-catalog-query"]')
+      if (search !== null) search.focus()
+    }
+
+    function closeCatalogModal() {
+      state.catalogOpen = false
+      if (catalogModalEl !== undefined) {
+        catalogModalEl.remove()
+        catalogModalEl = undefined
+      }
+    }
+
+
     function sidebarRoot() {
       const column = document.querySelector('[data-pane="sidebar"], [class*="sidebarCol"]')
       if (column === null) return undefined
@@ -1084,9 +1232,11 @@ window.__ModuleLoader__.load({
           state.config.sources.push(entry)
           const checkbox = panelEl !== undefined ? panelEl.querySelector('[data-action="builtin-toggle"][data-key="' + key + '"]') : null
           if (checkbox !== null) checkbox.checked = true
+          updateChannels()
         }
         entry.category = el.value || undefined
         markDirty()
+        scheduleSave()
       },
       'rss-new-category': (el) => {
         state.newCategory = el.value
@@ -1106,7 +1256,7 @@ window.__ModuleLoader__.load({
         const file = el.files && el.files[0]
         if (!file) return
         const reader = new FileReader()
-        reader.onload = () => importSourcesFromText(String(reader.result || ''), 'OPML')
+        reader.onload = () => importSourcesFromText(String(reader.result || ''), 'OPML', true)
         reader.readAsText(file)
         el.value = '' // 允许再次选择同一文件
       },
@@ -1234,8 +1384,23 @@ window.__ModuleLoader__.load({
       }
     }
 
+
+    function scheduleSave(delay) {
+      clearTimeout(saveTimer)
+      saveTimer = setTimeout(() => {
+        saveTimer = undefined
+        if (state.saving) {
+          scheduleSave(200)
+          return
+        }
+        saveConfig()
+      }, delay || 500)
+    }
+
     async function saveConfig() {
       if (!state.config) return
+      clearTimeout(saveTimer)
+      saveTimer = undefined
       state.saving = true
       state.error = ''
       updateHeader()
@@ -1400,7 +1565,7 @@ window.__ModuleLoader__.load({
       return { added, skipped }
     }
 
-    function importSourcesFromText(text, kind) {
+    function importSourcesFromText(text, kind, autoSave) {
       if (!text || !text.trim()) {
         toast('没有可导入的内容', 'error')
         return
@@ -1413,13 +1578,18 @@ window.__ModuleLoader__.load({
       const result = mergeSources(items)
       state.importOpen = false
       state.importText = ''
-      updateSection('rss-sec-custom', renderCustomSection())
+      updateChannels()
       if (result.added === 0) {
         toast('没有新增订阅源（' + result.skipped + ' 个已订阅或无效）', 'info')
         return
       }
       markDirty()
-      toast('已导入 ' + result.added + ' 个订阅源' + (result.skipped > 0 ? '，跳过 ' + result.skipped + ' 个已存在' : '') + '，点击右上角「保存」校验生效', 'ok')
+      if (autoSave) {
+        toast('已导入 ' + result.added + ' 个订阅源' + (result.skipped > 0 ? '，跳过 ' + result.skipped + ' 个已存在' : '') + '，正在保存…', 'info')
+        saveConfig()
+      } else {
+        toast('已导入 ' + result.added + ' 个订阅源' + (result.skipped > 0 ? '，跳过 ' + result.skipped + ' 个已存在' : '') + '，点击「保存」校验生效', 'ok')
+      }
     }
 
     function buildOpml() {
@@ -1473,6 +1643,12 @@ window.__ModuleLoader__.load({
       } else if (action === 'modal-cat') {
         state.modalCategory = value || ''
         renderDigestModal()
+      } else if (action === 'catalog-open') {
+        openCatalogModal()
+      } else if (action === 'catalog-close') {
+        closeCatalogModal()
+      } else if (action === 'catalog-backdrop') {
+        if (event.target === el) closeCatalogModal()
       } else if (action === 'digest-view') {
         openDigestModal()
       } else if (action === 'digest-refresh') {
@@ -1493,18 +1669,23 @@ window.__ModuleLoader__.load({
           if (indexOf !== -1) state.config.sources.splice(indexOf, 1)
         }
         markDirty()
+        updateChannels()
+        scheduleSave()
       } else if (action === 'config-add-source') {
         if (!state.config) return
         state.config.sources.push({ name: '', url: '', category: '', limit: 5 })
-        updateSection('rss-sec-custom', renderCustomSection())
+        updateChannels()
         markDirty()
-        const rows = panelEl !== undefined ? panelEl.querySelectorAll('#rss-sec-custom [data-field="rss-source-name"]') : []
+        const rows = panelEl !== undefined ? panelEl.querySelectorAll('#rss-sec-channels [data-field="rss-source-name"]') : []
         const lastRow = rows.length > 0 ? rows[rows.length - 1] : null
-        if (lastRow !== null) lastRow.focus()
+        if (lastRow !== null) {
+          lastRow.focus()
+          lastRow.scrollIntoView({ block: 'center', behavior: 'smooth' })
+        }
       } else if (action === 'config-remove-source') {
         if (!state.config || index === undefined) return
         state.config.sources.splice(Number(index), 1)
-        updateSection('rss-sec-custom', renderCustomSection())
+        updateChannels()
         markDirty()
       } else if (action === 'config-add-category') {
         if (!state.config) return
@@ -1515,11 +1696,13 @@ window.__ModuleLoader__.load({
         state.newCategory = ''
         updateSection('rss-sec-categories', renderCategoriesSection())
         markDirty()
+        scheduleSave()
       } else if (action === 'config-remove-category') {
         if (!state.config) return
         state.config.categories = (state.config.categories || []).filter((item) => item !== value)
         updateSection('rss-sec-categories', renderCategoriesSection())
         markDirty()
+        scheduleSave()
       } else if (action === 'catalog-add') {
         if (!state.config || index === undefined) return
         const entry = (state.catalogEntries || [])[Number(index)]
@@ -1527,9 +1710,10 @@ window.__ModuleLoader__.load({
         if (isSubscribed(entry.url)) return
         state.config.sources.push({ name: entry.name, url: entry.url, category: entry.category, limit: 5 })
         state.catalogSelected.delete(entry.url)
-        updateSection('rss-sec-custom', renderCustomSection())
+        updateChannels()
         updateCatalogResults()
         markDirty()
+        scheduleSave()
       } else if (action === 'catalog-toggle') {
         if (!state.config) return
         const url = el.dataset.url
@@ -1579,22 +1763,23 @@ window.__ModuleLoader__.load({
           toast(skipped > 0 ? '所选条目均已订阅' : '未选择条目', 'info')
           return
         }
-        updateSection('rss-sec-custom', renderCustomSection())
+        updateChannels()
         updateCatalogResults()
         markDirty()
-        toast('已添加 ' + added + ' 个订阅源' + (skipped > 0 ? '，跳过 ' + skipped + ' 个已订阅' : ''), 'ok')
+        toast('已添加 ' + added + ' 个订阅源' + (skipped > 0 ? '，跳过 ' + skipped + ' 个已订阅' : '') + '，正在保存…', 'info')
+        saveConfig()
       } else if (action === 'custom-import-opml') {
         const fileInput = panelEl !== undefined ? panelEl.querySelector('#rss-import-file') : null
         if (fileInput !== null) fileInput.click()
       } else if (action === 'custom-import-paste') {
         state.importOpen = !state.importOpen
-        updateSection('rss-sec-custom', renderCustomSection())
+        updateChannels()
         if (state.importOpen) {
-          const textarea = panelEl !== undefined ? panelEl.querySelector('#rss-sec-custom [data-field="rss-import-text"]') : null
+          const textarea = panelEl !== undefined ? panelEl.querySelector('#rss-sec-channels [data-field="rss-import-text"]') : null
           if (textarea !== null) textarea.focus()
         }
       } else if (action === 'custom-import-paste-go') {
-        importSourcesFromText(state.importText || '', 'URL')
+        importSourcesFromText(state.importText || '', 'URL', true)
       } else if (action === 'custom-export-opml') {
         exportOpml()
       } else if (action === 'catalog-add-source') {
@@ -1628,16 +1813,23 @@ window.__ModuleLoader__.load({
         state.config.catalogs.push({ name, url })
         state.catalogNewName = ''
         state.catalogNewUrl = ''
-        updateSection('rss-sec-catalog', renderCatalogSection())
+        updateCatalogSources()
         markDirty()
-        toast('目录已加入，点击右上角「保存」后生效', 'ok')
+        toast('目录已加入，正在保存…', 'info')
+        saveConfig()
       } else if (action === 'catalog-remove-source') {
         if (!state.config) return
         const url = el.dataset.url
         if (!url) return
         state.config.catalogs = (state.config.catalogs || []).filter((item) => item.url !== url)
-        updateSection('rss-sec-catalog', renderCatalogSection())
+        updateCatalogSources()
         markDirty()
+        toast('目录已移除，正在保存…', 'info')
+        saveConfig()
+      } else if (action === 'config-reset') {
+        if (state.dirty && !window.confirm('放弃未保存的修改并重新加载？')) return
+        state.dirty = false
+        load()
       } else if (action === 'config-save') {
         saveConfig()
       }
@@ -1713,16 +1905,35 @@ window.__ModuleLoader__.load({
     exports.apply = (ctx) => {
       ctx.effect(() => {
         ensureStyle()
+        const onKeyDown = (event) => {
+          if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
+            if (panelEl !== undefined && panelEl.isConnected) {
+              event.preventDefault()
+              saveConfig()
+            }
+          }
+        }
         document.addEventListener('click', handleClick, true)
         document.addEventListener('input', handleFieldEvent, true)
         document.addEventListener('change', handleFieldEvent, true)
+        document.addEventListener('keydown', onKeyDown, true)
+        document.addEventListener('dragstart', handleChannelDragStart, true)
+        document.addEventListener('dragover', handleChannelDragOver, true)
+        document.addEventListener('drop', handleChannelDrop, true)
+        document.addEventListener('dragend', handleChannelDragEnd, true)
         const disposeSidebar = mountSidebarEntry()
         return () => {
           document.removeEventListener('click', handleClick, true)
           document.removeEventListener('input', handleFieldEvent, true)
           document.removeEventListener('change', handleFieldEvent, true)
+          document.removeEventListener('keydown', onKeyDown, true)
+          document.removeEventListener('dragstart', handleChannelDragStart, true)
+          document.removeEventListener('dragover', handleChannelDragOver, true)
+          document.removeEventListener('drop', handleChannelDrop, true)
+          document.removeEventListener('dragend', handleChannelDragEnd, true)
           if (disposeSidebar) disposeSidebar()
           clearTimeout(toastTimer)
+          clearTimeout(saveTimer)
           styleEl?.remove()
           styleEl = undefined
           toastEl?.remove()
@@ -1731,6 +1942,8 @@ window.__ModuleLoader__.load({
           panelEl = undefined
           modalEl?.remove()
           modalEl = undefined
+          catalogModalEl?.remove()
+          catalogModalEl = undefined
         }
       })
       ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
