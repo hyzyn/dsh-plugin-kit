@@ -141,6 +141,10 @@ const RSS_SETTINGS_SCHEMA = z.object({
     builtin: z.string(),
   })).default([]),
   categories: z.array(z.string()).default([]),
+  catalogs: z.array(z.object({
+    name: z.string(),
+    url: z.string(),
+  })).default([]),
   maxItemsPerSource: z.natural(),
   maxTotalItems: z.natural(),
   dailyTime: z.string(),
