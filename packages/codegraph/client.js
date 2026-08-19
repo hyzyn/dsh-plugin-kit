@@ -344,7 +344,8 @@ window.__ModuleLoader__.load({
       })
       ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
         name: 'settings.plugin.item',
-        id: 'codegraph',
+        // settings.plugin.item 是 keyed 插槽：key 必须是该卡片所编辑的 settings 命名空间
+        key: 'codegraph',
         order: 120,
       }, CodegraphSettingsCard))
     }

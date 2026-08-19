@@ -14,6 +14,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
+import z from '@deepseek-ai/schemastery'
 import { definePlugin } from '@hyzyn/dsh-kit'
 import {
   BUILTIN_CATALOG_NAME,
@@ -125,6 +126,28 @@ export interface Config {
   /** 抓取时使用的 User-Agent。 */
   userAgent?: string
 }
+
+/* ------------------------------------------------------------------ *
+ * settings 命名空间（让「设置 → 插件 → 插件配置」派发本插件卡片）
+ * ------------------------------------------------------------------ */
+
+/** 与 ~/.dsh/rss.json 的可编辑 store 形状对齐。 */
+const RSS_SETTINGS_SCHEMA = z.object({
+  sources: z.array(z.object({
+    name: z.string(),
+    url: z.string(),
+    category: z.string(),
+    limit: z.natural(),
+    builtin: z.string(),
+  })).default([]),
+  categories: z.array(z.string()).default([]),
+  maxItemsPerSource: z.natural(),
+  maxTotalItems: z.natural(),
+  dailyTime: z.string(),
+  autoGenerateOnMount: z.boolean(),
+  announceToAgent: z.boolean(),
+  updatedAt: z.string(),
+})
 
 /* ------------------------------------------------------------------ *
  * 默认值 / 路径
@@ -1055,6 +1078,12 @@ export function apply(ctx: Context, config?: Config): void {
         }
       }
     }, 'dsh-rss-digest: routes')
+  })
+
+  // 注册 settings 命名空间：卡片 key 与命名空间同名，插件配置标签页才会派发它
+  ctx.inject(['settings'], (settingsCtx: Context) => {
+    const settings = (settingsCtx as unknown as { settings: { register(ns: string, schema: unknown): unknown } }).settings
+    settings.register('rss-digest', RSS_SETTINGS_SCHEMA)
   })
 
   if (announce) {

@@ -6,6 +6,7 @@ import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, r
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
+import z from '@deepseek-ai/schemastery'
 
 export const name = 'profile-manager'
 export const inject: string[] = []
@@ -14,6 +15,15 @@ export interface Config {
   enabled?: boolean
   announceToAgent?: boolean
 }
+
+/* ------------------------------------------------------------------ *
+ * settings 命名空间（让「设置 → 插件 → 插件配置」派发本插件卡片）
+ * ------------------------------------------------------------------ */
+
+const PROFILE_SETTINGS_SCHEMA = z.object({
+  enabled: z.boolean(),
+  announceToAgent: z.boolean(),
+})
 
 /* ------------------------------------------------------------------ *
  * 常量与类型
@@ -548,6 +558,12 @@ export function apply(ctx: Context, config?: Config): void {
         }
       }
     }, 'dsh-profile-manager: routes')
+  })
+
+  // 注册 settings 命名空间：卡片 key 与命名空间同名，插件配置标签页才会派发它
+  ctx.inject(['settings'], (settingsCtx: Context) => {
+    const settings = (settingsCtx as unknown as { settings: { register(ns: string, schema: unknown): unknown } }).settings
+    settings.register('profile-manager', PROFILE_SETTINGS_SCHEMA)
   })
 
   if (announce) {

@@ -28,6 +28,9 @@
   "peerDependencies": {
     "react": "^18.2.0"
   },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
     "@types/node": "^22.20.0",

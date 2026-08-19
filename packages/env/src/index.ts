@@ -22,6 +22,7 @@ import { chmodSync, existsSync, readFileSync, renameSync, statSync, writeFileSyn
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
+import z from '@deepseek-ai/schemastery'
 import yaml from 'js-yaml'
 
 export const name = 'env-manager'
@@ -35,6 +36,19 @@ export interface Config {
   /** 保存/启动时是否把解析后的值写入 process.env。默认开。 */
   applyToProcessEnv?: boolean
 }
+
+/* ------------------------------------------------------------------ *
+ * settings 命名空间（让「设置 → 插件 → 插件配置」派发本插件卡片）
+ * ------------------------------------------------------------------ */
+
+/** 与 ~/.dsh/env.yml 托管区块的条目形状对齐。 */
+const ENV_SETTINGS_SCHEMA = z.object({
+  entries: z.array(z.object({
+    key: z.string(),
+    value: z.union([z.string(), z.object({ __jsExpr: z.string() })]),
+    secret: z.boolean(),
+  })).default([]),
+})
 
 /* ------------------------------------------------------------------ *
  * 常量与类型
@@ -394,6 +408,12 @@ export function apply(ctx: Context, config?: Config): void {
         }
       }
     }, 'dsh-env-manager: routes')
+  })
+
+  // 注册 settings 命名空间：卡片 key 与命名空间同名，插件配置标签页才会派发它
+  ctx.inject(['settings'], (settingsCtx: Context) => {
+    const settings = (settingsCtx as unknown as { settings: { register(ns: string, schema: unknown): unknown } }).settings
+    settings.register('env-manager', ENV_SETTINGS_SCHEMA)
   })
 
   if (announce) {
