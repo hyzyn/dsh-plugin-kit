@@ -90,6 +90,19 @@ async function run() {
   const app = new Context()
   const wsFiber = app.plugin(WebServerRuntime, { host: '127.0.0.1', port: 0 })
   const subFiber = app.plugin(LocalSubprocessRuntime)
+  // 最小 settings 服务 stub：让插件的 settings 注入回调触发，并可手动派发
+  // settings/updated 事件（与 dsh-settings 的 dispatch 方式一致）来测配置热生效。
+  const stubFiber = app.plugin({
+    name: 'settings-stub',
+    apply: (ctx) => {
+      ctx.provide('settings', { register() {} })
+    },
+  })
+  await stubFiber.await()
+  const emitSettingsUpdated = (ns, next) => {
+    const args = ['settings/updated', ns, next, {}, 'test']
+    for (const cb of app.events.dispatch('emit', args)) cb(...args)
+  }
   const pluginFiber = app.plugin({ name, inject, apply }, { maxSessions: 2, term: 'xterm-256color', colorTerm: 'truecolor' })
   await wsFiber.await()
   await subFiber.await()
@@ -246,6 +259,30 @@ async function run() {
     await s.waitFor(() => s.state.errors.some((m) => /cwd 不存在/.test(m)), 10000, 'cwd 错误')
     pass('B8b 不存在的 cwd 被拒')
     s.client.send(JSON.stringify({ t: 'kill', sid: 'cwd-tab' }))
+    await s.waitFor(() => s.state.exited !== null, 10000, 'exit')
+    s.client.close()
+  }
+
+  // B9: 配置热生效（settings/updated → LiveConfig / maxSessions）
+  console.log('\n[8] 配置热生效')
+  {
+    const s = openSession(port)
+    await s.open()
+    emitSettingsUpdated('tty', { shell: '', term: 'xterm-256color', colorTerm: 'truecolor', cwd: '/tmp', maxSessions: 1 })
+    await sleep(300)
+    s.client.send(JSON.stringify({ t: 'spawn', sid: 'hot' })) // 不带 cwd → 应落到热改后的 /tmp
+    await s.waitFor(() => s.state.ready, 10000, 'ready')
+    s.client.send(JSON.stringify({ t: 'input', sid: 'hot', d: 'pwd\n' }))
+    await s.waitFor(() => s.state.text.includes('/tmp'), 10000, 'pwd=/tmp')
+    pass('B9 配置热生效：cwd 动态更新后新会话生效（pwd=/tmp）')
+    const s2 = openSession(port)
+    await s2.open()
+    s2.client.send(JSON.stringify({ t: 'spawn', sid: 's2' }))
+    await s2.waitFor(() => s2.state.errors.length > 0, 10000, 's2 上限错误')
+    if (/会话数已达上限/.test(s2.state.errors[0])) pass('B9b maxSessions 热改生效（上限降为 1）')
+    else fail('B9b maxSessions 热改生效（上限降为 1）', s2.state.errors[0])
+    s2.client.close()
+    s.client.send(JSON.stringify({ t: 'kill', sid: 'hot' }))
     await s.waitFor(() => s.state.exited !== null, 10000, 'exit')
     s.client.close()
   }

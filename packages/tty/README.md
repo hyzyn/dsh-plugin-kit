@@ -104,6 +104,7 @@ pnpm --filter @hyzyn/dsh-tty tui          # TUI 冒烟：vim/nano 全屏渲染
   └─ 帧协议：spawn/input/resize/kill ↔ ready/data/exit/error + 背压
 ```
 
-M0 探针、集成测试（10 项）与真实实例冒烟（live / TUI）在真实 DSH 服务组合
+M0 探针、集成测试（12 项）与真实实例冒烟（live / TUI）在真实 DSH 服务组合
 上验证过：TERM 注入、resize 透传、sid 冲突、并发上限、loopback 围栏、
-多会话数据隔离、cwd 跟随与校验、kill→exit 全链路。
+多会话数据隔离、cwd 跟随与校验、配置热生效（settings/updated）、
+kill→exit 全链路。
