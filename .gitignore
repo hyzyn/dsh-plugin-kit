@@ -9,6 +9,9 @@ docs/PUBLISHING.md
 
 .dsh-vision-toolkit/
 .jspace/
+# 本地杂项：贡献导出 bundle 与 smoke 测试脚本，不入库
+.dsh-contrib.bundle
+.smoke/
 # 根 bundle 插件入口需要入库；子包 lib/ 为预构建产物，随 git 分发（git 安装
 # 默认不跑构建，产物必须入库才能装，详见 dshmarket #18）
 !/lib/
