@@ -45,3 +45,8 @@
 - insert:
     - id: global-search
       name: '@hyzyn/dsh-search'
+
+# from ../tty
+- insert:
+    - id: tty
+      name: '@hyzyn/dsh-tty'

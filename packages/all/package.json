@@ -28,7 +28,8 @@
     "@hyzyn/dsh-profile": "workspace:*",
     "@hyzyn/dsh-prompt": "workspace:*",
     "@hyzyn/dsh-rss": "workspace:*",
-    "@hyzyn/dsh-search": "workspace:*"
+    "@hyzyn/dsh-search": "workspace:*",
+    "@hyzyn/dsh-tty": "workspace:*"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",

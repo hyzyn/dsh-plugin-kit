@@ -18,7 +18,7 @@ Repo gates: `pnpm typecheck` / `pnpm build` / `pnpm aggregate`.
 
 <p align="center">
   <strong>The plugin family for the DeepSeek Harness (DSH) Web GUI</strong><br>
-  <em>Environment variables · MCP servers · Prompt · Profile · RSS · Global search · Codegraph · Plugin scaffolding</em>
+  <em>Environment variables · MCP servers · Prompt · Profile · RSS · Global search · Codegraph · Terminal panel · Plugin scaffolding</em>
 </p>
 
 <p align="center">
@@ -29,7 +29,7 @@ Repo gates: `pnpm typecheck` / `pnpm build` / `pnpm aggregate`.
 
 ## What It Is
 
-dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (DSH) Web GUI: environment variable / secret management, MCP server configuration, Prompt management, Profile management, RSS / news aggregation, global search, and Codegraph integration, plus a one-command scaffolding tool for generating new plugins. Everything mounts into `dsh web` through the official profile mechanism, so no DSH source changes are needed. Install the plugins individually, or install everything at once with the aggregate package.
+dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (DSH) Web GUI: environment variable / secret management, MCP server configuration, Prompt management, Profile management, RSS / news aggregation, global search, Codegraph integration, and a terminal panel, plus a one-command scaffolding tool for generating new plugins. Everything mounts into `dsh web` through the official profile mechanism, so no DSH source changes are needed. Install the plugins individually, or install everything at once with the aggregate package.
 
 ![Example of DSH plugin management cards](docs/dsh-plugin-kit-mcp.png)
 
@@ -42,6 +42,7 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 | RSS aggregation | None | Multiple sources + daily “Today’s Worth Reading” digest |
 | Global search | Session titles/content only | Unified sidebar full-text search over historical sessions |
 | Codegraph integration | None | Code-graph card: index status / symbol search / callers-callees-impact / one-click sync-index |
+| Terminal panel | None | Sidebar “Terminal” entry + xterm.js modal: real PTY interactive terminal (vim / htop / dev servers) |
 | Plugin development | Hand-written boilerplate | `pnpm create-plugin` scaffolding + `@hyzyn/dsh-kit` type helpers |
 
 ## Feature Plugins
@@ -126,6 +127,14 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 
 ![Codegraph settings card](docs/dsh-plugin-kit-codegraph.png)
 
+### Terminal Panel (@hyzyn/dsh-tty)
+
+- **What it does**: adds a “Terminal” entry to the Web GUI sidebar that opens a large modal with an embedded xterm.js interactive terminal (real PTY via node-pty), capable of running arbitrary commands and TUI programs (vim / htop / dev servers).
+- **How to use**: install, then restart `dsh web`; click “Terminal” in the sidebar → it connects automatically and starts `$SHELL` (working directory is the host process’s start directory) → the panel auto-resizes with the window; closing the panel or pressing Esc ends the session; click the terminal area after exit to reopen.
+- **Supports**: TERM=xterm-256color injection (via a `-c` wrapper layer so TUI apps don’t degrade); resize passthrough to node-pty’s native API; a WebSocket frame protocol (spawn/input/resize/kill ↔ ready/data/exit/error); downstream backpressure protection; loopback trust fence; concurrency cap (default 4); configurable `$SHELL` / term / cwd.
+- **Where it is stored**: no config file of its own; configuration lives in the “Settings → Plugins → Terminal Panel” card.
+- **Note**: resize relies on DSH’s internal terminal-handle shape (known limitation); output is a UTF-8 text stream, so `cat`-ing binary files shows replacement characters; v1 is one session per connection. See `packages/tty/README.md` for details.
+
 ## Quick Start
 
 ### System Requirements
@@ -195,6 +204,7 @@ dsh plugin --profile web add @hyzyn/dsh-profile # Profile management
 dsh plugin --profile web add @hyzyn/dsh-rss     # RSS / news aggregation
 dsh plugin --profile web add @hyzyn/dsh-search  # Global search
 dsh plugin --profile web add @hyzyn/dsh-codegraph # Codegraph integration
+dsh plugin --profile web add @hyzyn/dsh-tty     # Terminal panel
 ```
 
 ### Verify and Uninstall
@@ -292,6 +302,7 @@ A: There may be root-owned files in the local `~/.npm` cache (a historical npm b
 - Profile deletion is recursive and irreversible after the in-panel confirmation. The built-in `web` profile is protected; `headless` can be deleted.
 - RSS needs network access on first startup. An unreachable source does not block other sources, but that source may be missing from the day’s digest.
 - The browser half depends on the official `dsh-web-app` settings panel slots service; non-official Web GUIs may not show the management cards.
+- The terminal panel (dsh-tty) resize passthrough relies on DSH’s internal terminal-handle shape, and TERM injection needs the `-c` wrapper layer (DSH hard-codes node-pty `name:"dumb"`); see `packages/tty/README.md`.
 - Installing from the repository requires Node.js >= 22.19 and pnpm 10; it is for development/debugging only. npm installs are not affected.
 
 ## Contributing

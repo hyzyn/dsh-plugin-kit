@@ -18,7 +18,7 @@
 
 <p align="center">
   <strong>DeepSeek Harness（DSH）Web GUI 的插件全家桶</strong><br>
-  <em>环境变量 · MCP 服务器 · Prompt · Profile · RSS · 全局搜索 · Codegraph 集成 · 插件脚手架</em>
+  <em>环境变量 · MCP 服务器 · Prompt · Profile · RSS · 全局搜索 · Codegraph 集成 · 终端面板 · 插件脚手架</em>
 </p>
 
 <p align="center">
@@ -42,6 +42,7 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 | RSS 聚合 | 无 | 多源订阅 + 每日「今日值得读」自动摘要 |
 | 全局搜索 | 仅会话标题/内容 | 侧边栏统一全文搜索历史会话、Prompt、MCP 工具与设置面板 |
 | Codegraph 集成 | 无 | 代码图谱卡片：索引状态 / 符号搜索 / 调用链 / 影响面 / 一键 sync-index |
+| 终端面板 | 无 | 侧边栏「终端」入口 + xterm.js 大弹窗：真实 PTY 交互终端（vim/htop/dev server） |
 | 插件开发 | 手写样板 | `pnpm create-plugin` 脚手架 + `@hyzyn/dsh-kit` 类型助手 |
 
 ## 功能插件
@@ -107,6 +108,14 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 - **注意**：查询目标项目需要先有 Codegraph 索引；未索引项目会返回指引改用常规工具。索引 / 重建为本地 CLI 操作，消耗真实磁盘与 CPU。
 
 ![Codegraph 设置卡片](docs/dsh-plugin-kit-codegraph.png)
+
+### 终端面板（@hyzyn/dsh-tty）
+
+- **做什么**：在 Web GUI 侧边栏加一个「终端」入口，点击打开大弹窗，内嵌 xterm.js 全交互终端（node-pty 真实 PTY），可运行任意命令与 TUI 程序（vim / htop / dev server 等）。
+- **怎么用**：安装后重启 `dsh web`，侧边栏点击「终端」→ 自动连接并启动 `$SHELL`（工作目录为宿主启动目录）→ 面板大小变化自动 resize；关闭面板或 Esc 结束会话，退出后点终端区域可重开。
+- **支持**：TERM=xterm-256color 注入（`-c` 包装层，TUI 应用不退化）；resize 透传 node-pty 原生 API；WS 双向帧协议（spawn/input/resize/kill ↔ ready/data/exit/error）；下行背压保护；loopback 信任围栏；并发上限（默认 4）；`$SHELL` / term / cwd 可配置。
+- **存哪里**：无独立配置文件；配置走「设置 → 插件 → 终端面板」卡片。
+- **注意**：resize 依赖 DSH 内部 terminal handle 结构（已知限制）；输出为 utf8 文本流，`cat` 二进制文件会有替换字符；第一版单会话/连接。详细见 `packages/tty/README.md`。
 
 ### RSS / 新闻聚合（@hyzyn/dsh-rss）
 
@@ -194,6 +203,7 @@ dsh plugin --profile web add @hyzyn/dsh-profile # Profile 管理
 dsh plugin --profile web add @hyzyn/dsh-rss     # RSS / 新闻聚合
 dsh plugin --profile web add @hyzyn/dsh-search  # 全局搜索
 dsh plugin --profile web add @hyzyn/dsh-codegraph # Codegraph 集成
+dsh plugin --profile web add @hyzyn/dsh-tty     # 终端面板
 ```
 
 ### 验证与卸载
@@ -291,6 +301,7 @@ A: 本机 `~/.npm` 缓存存在 root-owned 文件（历史 npm bug），执行 `
 - Profile 删除为递归删除，面板内会二次确认，但一旦执行不可撤销；内置 `web` profile 受保护，`headless` 可删。
 - RSS 首次启动需要联网抓取；某个源不可达不会阻塞其它源，但当天 digest 可能缺少该源内容。
 - 浏览器半体依赖官方 `dsh-web-app` 的设置面板 slots 服务，非官方 Web GUI 可能不显示管理卡片。
+- 终端面板（dsh-tty）的 resize 透传依赖 DSH 内部 terminal handle 结构，TERM 注入需经 `-c` 包装层（DSH 硬编码 node-pty name:"dumb"）；详见 `packages/tty/README.md`。
 - 仓库安装需要 Node.js >= 22.19 与 pnpm 10，仅供开发调试；npm 安装不受影响。
 
 ## 参与贡献

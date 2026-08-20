@@ -1,0 +1,8 @@
+# dsh-plugin-kit/tty bundle patch：把本插件行插入 profile 阵容。
+# 作为 profile bundle 层（package.json 的 dsh.bundle.patch 字段）叠加到
+# dsh-base 之上；启用方式：
+#   dsh plugin --profile web add link:$(pwd)/packages/tty
+# 行内容为按包名注册的裸插件行：exports "." 的 node 半体运行在宿主进程。
+- insert:
+    - id: tty
+      name: '@hyzyn/dsh-tty'
