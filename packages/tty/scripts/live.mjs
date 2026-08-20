@@ -19,6 +19,7 @@ const timer = setTimeout(() => {
 let text = ''
 let sawReady = false
 let sawExit = false
+let killed = false
 
 client.on('open', () => {
   clearTimeout(timer)
@@ -34,7 +35,8 @@ client.on('message', (raw) => {
     client.send(JSON.stringify({ t: 'input', d: 'printf "LIVE_OK_%s\\n" "$TERM"\n' }))
   } else if (msg.t === 'data') {
     text += String(msg.d ?? '')
-    if (/LIVE_OK_xterm-256color/.test(text)) {
+    if (!killed && /LIVE_OK_xterm-256color/.test(text)) {
+      killed = true
       console.log('[live] TERM 注入 + 数据通道 OK（xterm-256color）')
       client.send(JSON.stringify({ t: 'kill' }))
     }

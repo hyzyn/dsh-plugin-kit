@@ -42,7 +42,7 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 | RSS 聚合 | 无 | 多源订阅 + 每日「今日值得读」自动摘要 |
 | 全局搜索 | 仅会话标题/内容 | 侧边栏统一全文搜索历史会话、Prompt、MCP 工具与设置面板 |
 | Codegraph 集成 | 无 | 代码图谱卡片：索引状态 / 符号搜索 / 调用链 / 影响面 / 一键 sync-index |
-| 终端面板 | 无 | 侧边栏「终端」入口 + xterm.js 大弹窗：真实 PTY 交互终端（vim/htop/dev server） |
+| 终端面板 | 无 | 侧边栏「终端」入口 + xterm.js 大弹窗：多标签页真实 PTY 终端（vim/htop/dev server），cwd 跟随会话，配置热生效 |
 | 插件开发 | 手写样板 | `pnpm create-plugin` 脚手架 + `@hyzyn/dsh-kit` 类型助手 |
 
 ## 功能插件
@@ -111,11 +111,11 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 
 ### 终端面板（@hyzyn/dsh-tty）
 
-- **做什么**：在 Web GUI 侧边栏加一个「终端」入口，点击打开大弹窗，内嵌 xterm.js 全交互终端（node-pty 真实 PTY），可运行任意命令与 TUI 程序（vim / htop / dev server 等）。
-- **怎么用**：安装后重启 `dsh web`，侧边栏点击「终端」→ 自动连接并启动 `$SHELL`（工作目录为宿主启动目录）→ 面板大小变化自动 resize；关闭面板或 Esc 结束会话，退出后点终端区域可重开。
-- **支持**：TERM=xterm-256color 注入（`-c` 包装层，TUI 应用不退化）；resize 透传 node-pty 原生 API；WS 双向帧协议（spawn/input/resize/kill ↔ ready/data/exit/error）；下行背压保护；loopback 信任围栏；并发上限（默认 4）；`$SHELL` / term / cwd 可配置。
+- **做什么**：在 Web GUI 侧边栏加一个「终端」入口，点击打开大弹窗，内嵌 xterm.js 全交互终端（node-pty 真实 PTY），支持多标签页，可运行任意命令与 TUI 程序（vim / htop / dev server 等）。
+- **怎么用**：安装后重启 `dsh web`，侧边栏点击「终端」→ 自动创建第一个终端（默认 `$SHELL`）→ 标签栏「+」新建、✕ 关闭；新标签默认在当前 DSH 会话工作目录打开；Ctrl+F 终端内搜索，工具栏清屏/复制/粘贴；关闭面板或 Esc 结束全部会话。
+- **支持**：多标签页（单连接多会话，帧协议 v2 带 sid）；cwd 跟随当前会话（sessions 客户端服务）；TERM=xterm-256color 注入（`-c` 包装层，TUI 应用不退化）；resize 透传 node-pty 原生 API；WS 双向帧协议（spawn/input/resize/kill ↔ ready/data/exit/error）；下行背压保护；loopback 信任围栏；并发上限（默认 4）；配置保存即热生效（settings/updated）。
 - **存哪里**：无独立配置文件；配置走「设置 → 插件 → 终端面板」卡片。
-- **注意**：resize 依赖 DSH 内部 terminal handle 结构（已知限制）；输出为 utf8 文本流，`cat` 二进制文件会有替换字符；第一版单会话/连接。详细见 `packages/tty/README.md`。
+- **注意**：resize 依赖 DSH 内部 terminal handle 结构（已知限制）；输出为 utf8 文本流，`cat` 二进制文件会有替换字符。详细见 `packages/tty/README.md`。
 
 ### RSS / 新闻聚合（@hyzyn/dsh-rss）
 

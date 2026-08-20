@@ -3,18 +3,20 @@
  *
  * 机制：浏览器半体打开「终端」大弹窗后，经 WebSocket 连接
  * /api/dsh-tty/ws（webServer.registerUpgrade 注册的 upgrade 路由），
- * 首帧 spawn 一个真实 PTY 会话（ctx.subprocess.spawnTerminal，node-pty），
+ * spawn 帧创建真实 PTY 会话（ctx.subprocess.spawnTerminal，node-pty），
  * 之后双向透传：input/resize/kill 上行，data/exit/error 下行。
  *
- * 帧协议（JSON 文本帧）：
- *   C→S  {t:'spawn', cols?, rows?}        连接后首帧，创建会话（单会话/连接）
- *   C→S  {t:'input', d}                   按键/粘贴数据
- *   C→S  {t:'resize', cols, rows}         xterm fit 触发
- *   C→S  {t:'kill'}                       用户关闭会话
- *   S→C  {t:'ready', pid}                 会话就绪
- *   S→C  {t:'data', d}                    终端输出（utf8 文本）
- *   S→C  {t:'exit', code, signal}         PTY 退出事实
- *   S→C  {t:'error', m}                   错误
+ * 帧协议 v2（JSON 文本帧；sid 维度支持单连接多会话/标签页）：
+ *   C→S  {t:'spawn', sid?, cols?, rows?, cwd?}  创建会话；sid 缺省时宿主生成
+ *   C→S  {t:'input', sid?, d}                  按键/粘贴数据
+ *   C→S  {t:'resize', sid?, cols, rows}        xterm fit 触发
+ *   C→S  {t:'kill', sid?}                      关闭会话
+ *   S→C  {t:'ready', sid, pid}                 会话就绪
+ *   S→C  {t:'data', sid, d}                    终端输出（utf8 文本）
+ *   S→C  {t:'exit', sid, code, signal}         PTY 退出事实（恰好一次）
+ *   S→C  {t:'error', sid?, m}                  错误
+ * 省略 sid 时按「该连接唯一会话」路由；连接上存在 0 或多个会话时省略 sid 报错。
+ * 旧脚本（spawn 不带 sid）自动兼容：宿主生成 sid，响应帧多带 sid 字段。
  *
  * M0 探针（scripts/probe.mjs）验证过的三个关键结论：
  *   1. TERM 必须用 `shell -c 'export TERM=...; exec "$shell"'` 包装层注入——
@@ -28,6 +30,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { randomUUID } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import { PassThrough } from 'node:stream'
 import WebSocket, { WebSocketServer } from 'ws'
 import { definePlugin } from '@hyzyn/dsh-kit'
@@ -45,7 +48,7 @@ export interface Config {
   term?: string
   /** COLORTERM 值。默认 truecolor。 */
   colorTerm?: string
-  /** 会话工作目录；缺省为宿主进程启动目录。 */
+  /** 会话工作目录（客户端 spawn 带 cwd 时优先）；缺省为宿主进程启动目录。 */
   cwd?: string
 }
 
@@ -69,9 +72,10 @@ const DEFAULT_MAX_SESSIONS = 4
 /** 下行背压阈值（ws.bufferedAmount 字节）。 */
 const BACKPRESSURE_HIGH = 512 * 1024
 const BACKPRESSURE_LOW = 128 * 1024
+const SID_RE = /^[A-Za-z0-9_-]{1,64}$/
 
 const TTY_GUIDANCE =
-  '本机已安装 dsh-tty 插件（终端面板）：Web GUI 侧边栏的「终端」入口可打开交互终端（xterm.js + PTY），可运行任意命令与 TUI 程序（vim/htop 等），工作目录为宿主进程启动目录。长驻进程（dev server、watch、交互式程序）应引导用户到终端面板里运行，不要在 bash 工具里挂起等待；用户提到「开个终端 / 在终端里跑」时引导其打开该面板。'
+  '本机已安装 dsh-tty 插件（终端面板）：Web GUI 侧边栏的「终端」入口可打开交互终端（xterm.js + PTY），可运行任意命令与 TUI 程序（vim/htop 等），支持多标签页；新标签默认在当前会话工作目录打开，工作目录可随当前会话切换。长驻进程（dev server、watch、交互式程序）应引导用户到终端面板里运行，不要在 bash 工具里挂起等待；用户提到「开个终端 / 在终端里跑」时引导其打开该面板。'
 
 /* ------------------------------------------------------------------ *
  * 类型
@@ -111,6 +115,29 @@ interface SocketLike {
 }
 
 type WsMessage = Record<string, unknown>
+
+/** 可热更新的运行时配置（settings/updated 动态应用）。 */
+class LiveConfig {
+  shell: string
+  term: string
+  colorTerm: string
+  cwd: string
+
+  constructor(init: { shell: string; term: string; colorTerm: string; cwd: string }) {
+    this.shell = init.shell
+    this.term = init.term
+    this.colorTerm = init.colorTerm
+    this.cwd = init.cwd
+  }
+
+  /** 合并部分更新；空字符串/undefined 保持原值。 */
+  apply(partial: Partial<{ shell: string; term: string; colorTerm: string; cwd: string }>): void {
+    if (typeof partial.shell === 'string' && partial.shell.trim() !== '') this.shell = partial.shell.trim()
+    if (typeof partial.term === 'string' && partial.term.trim() !== '') this.term = partial.term.trim()
+    if (typeof partial.colorTerm === 'string' && partial.colorTerm.trim() !== '') this.colorTerm = partial.colorTerm.trim()
+    if (typeof partial.cwd === 'string' && partial.cwd.trim() !== '') this.cwd = partial.cwd.trim()
+  }
+}
 
 /* ------------------------------------------------------------------ *
  * 工具
@@ -171,11 +198,19 @@ function isLoopbackUpgrade(req: ReqLike): boolean {
 
 class SessionManager {
   private readonly sessions = new Map<string, TtySession>()
+  private limit: number
 
-  constructor(private readonly maxSessions: number) {}
+  constructor(maxSessions: number) {
+    this.limit = maxSessions
+  }
 
-  get limit(): number {
-    return this.maxSessions
+  get limitValue(): number {
+    return this.limit
+  }
+
+  /** 配置热生效时调整上限（1~16）。 */
+  setLimit(maxSessions: number): void {
+    this.limit = Math.max(1, Math.min(16, maxSessions))
   }
 
   get count(): number {
@@ -183,7 +218,7 @@ class SessionManager {
   }
 
   canSpawn(): boolean {
-    return this.sessions.size < this.maxSessions
+    return this.sessions.size < this.limit
   }
 
   add(session: TtySession): void {
@@ -211,7 +246,7 @@ class TtyServer {
   constructor(
     private readonly ctx: Context,
     private readonly sessions: SessionManager,
-    private readonly options: { shell: string; term: string; colorTerm: string; cwd: string },
+    private readonly options: LiveConfig,
   ) {
     this.wss.on('connection', (ws) => this.onConnection(ws))
   }
@@ -228,15 +263,17 @@ class TtyServer {
   }
 
   private onConnection(ws: WebSocket): void {
-    let session: TtySession | undefined
+    /** 本连接上的会话表（sid → session）；单连接多会话（标签页）。 */
+    const local = new Map<string, TtySession>()
 
-    const cleanup = async (): Promise<void> => {
-      if (session === undefined) return
-      const handle = session.handle
-      session.closed = true
-      this.sessions.remove(session.id)
-      session = undefined
-      await forceKill(handle)
+    const cleanupAll = async (): Promise<void> => {
+      const all = [...local.values()]
+      local.clear()
+      await Promise.all(all.map(async (session) => {
+        session.closed = true
+        this.sessions.remove(session.id)
+        await forceKill(session.handle)
+      }))
     }
 
     ws.on('message', (raw) => {
@@ -246,76 +283,110 @@ class TtyServer {
       } catch {
         return
       }
-      void this.handleMessage(ws, msg, () => session, (next) => {
-        session = next
-      }, cleanup)
+      void this.handleMessage(ws, msg, local, cleanupAll)
     })
 
     ws.on('close', () => {
-      void cleanup()
+      void cleanupAll()
     })
     ws.on('error', (error) => {
       this.ctx.logger.warn('[dsh-tty] ws error: ' + error.message)
     })
   }
 
+  /**
+   * 解析帧里的 sid：显式 sid 校验格式；缺省时仅当连接恰好一个会话才可用。
+   * 返回 undefined 并已发送错误帧时，调用方应直接返回。
+   */
+  private resolveSid(ws: WebSocket, msg: WsMessage, local: Map<string, TtySession>): string | undefined {
+    const raw = msg.sid
+    if (typeof raw === 'string' && raw !== '') {
+      if (!SID_RE.test(raw)) {
+        send(ws, { t: 'error', m: '非法 sid' })
+        return undefined
+      }
+      return raw
+    }
+    if (local.size === 1) return [...local.keys()][0]
+    send(ws, { t: 'error', m: local.size === 0 ? '没有可用会话（先发 spawn）' : '存在多个会话，请指定 sid' })
+    return undefined
+  }
+
   private async handleMessage(
     ws: WebSocket,
     msg: WsMessage,
-    getSession: () => TtySession | undefined,
-    setSession: (session: TtySession | undefined) => void,
-    cleanup: () => Promise<void>,
+    local: Map<string, TtySession>,
+    cleanupAll: () => Promise<void>,
   ): Promise<void> {
     try {
       if (msg.t === 'spawn') {
-        if (getSession() !== undefined) {
-          send(ws, { t: 'error', m: '会话已存在（单会话模式，先发 kill 或重连）' })
+        const sid = typeof msg.sid === 'string' && msg.sid !== '' ? msg.sid : randomUUID()
+        if (!SID_RE.test(sid)) {
+          send(ws, { t: 'error', m: '非法 sid' })
+          return
+        }
+        if (local.has(sid)) {
+          send(ws, { t: 'error', sid, m: 'sid 已存在' })
           return
         }
         if (!this.sessions.canSpawn()) {
-          send(ws, { t: 'error', m: `会话数已达上限（${this.sessions.limit}）` })
+          send(ws, { t: 'error', sid, m: `会话数已达上限（${this.sessions.limitValue}）` })
           return
         }
-        // 运行时取服务：cordis 的 inject 门禁禁止在未声明的 inject 里直接
-        // 访问 ctx.subprocess 属性，用 ctx.get() 免声明读取（mcp 同款模式）。
+        // 客户端（当前会话）cwd 优先；校验存在性，避免 node-pty 抛难懂错误
+        const cwd = typeof msg.cwd === 'string' && msg.cwd.trim() !== '' ? msg.cwd.trim() : this.options.cwd
+        if (!existsSync(cwd)) {
+          send(ws, { t: 'error', sid, m: `cwd 不存在: ${cwd}` })
+          return
+        }
         const subprocess = (this.ctx as unknown as { get(name: string): { spawnTerminal(spec: unknown): Promise<PtyHandle> } | undefined }).get('subprocess')
         if (subprocess === undefined) {
-          send(ws, { t: 'error', m: 'subprocess 服务不可用' })
+          send(ws, { t: 'error', sid, m: 'subprocess 服务不可用' })
           return
         }
         const handle = await subprocess.spawnTerminal({
           argv: shellArgv(this.options.shell, this.options.term, this.options.colorTerm),
           rows: Number(msg.rows) || 24,
           cols: Number(msg.cols) || 80,
-          cwd: this.options.cwd,
+          cwd,
           env: { TERM: this.options.term, COLORTERM: this.options.colorTerm },
           graceMs: 5000,
         })
-        const next: TtySession = { id: randomUUID(), handle, ws, closed: false, paused: false }
-        setSession(next)
+        const next: TtySession = { id: sid, handle, ws, closed: false, paused: false }
+        local.set(sid, next)
         this.sessions.add(next)
-        send(ws, { t: 'ready', pid: handle.pid })
+        send(ws, { t: 'ready', sid, pid: handle.pid })
         this.attachOutput(next)
         handle.done.then((outcome) => {
-          // 注意：kill 主动关闭时 cleanup 已把 session 置空，这里不能再依赖
-          // 会话存在性判断，用 exitSent 保证 exit 帧恰好发一次。
+          // kill 主动关闭时会话可能已被移出 local，用 exitSent 保证 exit 帧恰好一次
           if (next.exitSent === true) return
           next.exitSent = true
           next.closed = true
-          setSession(undefined)
-          this.sessions.remove(next.id)
-          send(ws, { t: 'exit', code: outcome.exitCode, signal: outcome.signal })
+          local.delete(sid)
+          this.sessions.remove(sid)
+          send(ws, { t: 'exit', sid, code: outcome.exitCode, signal: outcome.signal })
         }).catch(() => { /* spawn 级失败已在 try 中处理 */ })
       } else if (msg.t === 'input') {
-        const session = getSession()
+        const sid = this.resolveSid(ws, msg, local)
+        if (sid === undefined) return
+        const session = local.get(sid)
         if (session !== undefined) await session.handle.write(String(msg.d ?? ''))
       } else if (msg.t === 'resize') {
-        const session = getSession()
+        const sid = this.resolveSid(ws, msg, local)
+        if (sid === undefined) return
+        const session = local.get(sid)
         if (session !== undefined) {
           session.handle.terminal.resize(Number(msg.cols) || 80, Number(msg.rows) || 24)
         }
       } else if (msg.t === 'kill') {
-        await cleanup()
+        const sid = this.resolveSid(ws, msg, local)
+        if (sid === undefined) return
+        const session = local.get(sid)
+        if (session === undefined) return
+        session.closed = true
+        local.delete(sid)
+        this.sessions.remove(sid)
+        await forceKill(session.handle)
       }
     } catch (error) {
       send(ws, { t: 'error', m: error instanceof Error ? error.message : String(error) })
@@ -329,7 +400,8 @@ class TtyServer {
       if (session.closed) return
       const text = chunk.toString('utf8')
       const ws = session.ws
-      ws.send(JSON.stringify({ t: 'data', d: text }), () => {
+      const sid = session.id
+      ws.send(JSON.stringify({ t: 'data', sid, d: text }), () => {
         if (session.paused && ws.bufferedAmount < BACKPRESSURE_LOW && output.readableFlowing === false) {
           output.resume()
         }
@@ -362,13 +434,14 @@ const plugin = definePlugin<Config>({
   inject: [],
   apply(ctx: Context, config?: Config) {
     if (config?.enabled === false) return
-    const shell = config?.shell?.trim() || process.env.SHELL || '/bin/zsh'
-    const term = config?.term?.trim() || 'xterm-256color'
-    const colorTerm = config?.colorTerm?.trim() || 'truecolor'
-    const cwd = config?.cwd?.trim() || process.cwd()
-    const maxSessions = Math.max(1, Math.min(16, config?.maxSessions ?? DEFAULT_MAX_SESSIONS))
-    const sessions = new SessionManager(maxSessions)
-    const server = new TtyServer(ctx, sessions, { shell, term, colorTerm, cwd })
+    const live = new LiveConfig({
+      shell: config?.shell?.trim() || process.env.SHELL || '/bin/zsh',
+      term: config?.term?.trim() || 'xterm-256color',
+      colorTerm: config?.colorTerm?.trim() || 'truecolor',
+      cwd: config?.cwd?.trim() || process.cwd(),
+    })
+    const sessions = new SessionManager(config?.maxSessions ?? DEFAULT_MAX_SESSIONS)
+    const server = new TtyServer(ctx, sessions, live)
 
     // upgrade 路由（/api/dsh-tty/ws）
     ctx.inject(['webServer'], (webCtx: Context) => {
@@ -389,10 +462,31 @@ const plugin = definePlugin<Config>({
       }, 'dsh-tty: upgrade route')
     })
 
-    // settings 命名空间：让「设置 → 插件 → 插件配置」派发本插件卡片
+    // settings 命名空间 + 配置热生效：settings/updated 事件（dsh-settings 提交事件，
+    // 监听器签名 (ns, next, prev, source)）动态应用 shell/term/colorTerm/cwd/maxSessions
     ctx.inject(['settings'], (settingsCtx: Context) => {
-      const settings = (settingsCtx as unknown as { settings: { register(ns: string, schema: unknown): unknown } }).settings
-      settings.register('tty', TTY_SETTINGS_SCHEMA)
+      settingsCtx.effect(() => {
+        const settings = (settingsCtx as unknown as { settings: { register(ns: string, schema: unknown): unknown } }).settings
+        settings.register('tty', TTY_SETTINGS_SCHEMA)
+        const events = settingsCtx as unknown as { events: { on(name: string, listener: (...args: unknown[]) => void): () => void } }
+        const off = events.events.on('settings/updated', (ns: unknown, next: unknown) => {
+          if (ns !== 'tty' || typeof next !== 'object' || next === null) return
+          const section = next as Record<string, unknown>
+          live.apply({
+            shell: typeof section.shell === 'string' ? section.shell : undefined,
+            term: typeof section.term === 'string' ? section.term : undefined,
+            colorTerm: typeof section.colorTerm === 'string' ? section.colorTerm : undefined,
+            cwd: typeof section.cwd === 'string' ? section.cwd : undefined,
+          })
+          if (typeof section.maxSessions === 'number' && Number.isInteger(section.maxSessions) && section.maxSessions >= 1) {
+            sessions.setLimit(section.maxSessions)
+          }
+          console.log(`[dsh-tty] config hot-applied (shell=${live.shell}, term=${live.term}, cwd=${live.cwd}, maxSessions=${sessions.limitValue})`)
+        })
+        return () => {
+          off()
+        }
+      }, 'dsh-tty: settings')
     })
 
     // 向 agent 公告终端面板能力
@@ -412,7 +506,7 @@ const plugin = definePlugin<Config>({
       }
     }, 'dsh-tty: session cleanup')
 
-    console.log(`[dsh-tty] mounted (shell=${shell}, term=${term}, cwd=${cwd}, maxSessions=${maxSessions})`)
+    console.log(`[dsh-tty] mounted (shell=${live.shell}, term=${live.term}, cwd=${live.cwd}, maxSessions=${sessions.limitValue})`)
   },
 })
 

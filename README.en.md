@@ -42,7 +42,7 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 | RSS aggregation | None | Multiple sources + daily “Today’s Worth Reading” digest |
 | Global search | Session titles/content only | Unified sidebar full-text search over historical sessions |
 | Codegraph integration | None | Code-graph card: index status / symbol search / callers-callees-impact / one-click sync-index |
-| Terminal panel | None | Sidebar “Terminal” entry + xterm.js modal: real PTY interactive terminal (vim / htop / dev servers) |
+| Terminal panel | None | Sidebar “Terminal” entry + xterm.js modal: multi-tab real PTY terminal (vim / htop / dev servers), cwd follows session, hot-reload config |
 | Plugin development | Hand-written boilerplate | `pnpm create-plugin` scaffolding + `@hyzyn/dsh-kit` type helpers |
 
 ## Feature Plugins
@@ -129,11 +129,11 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 
 ### Terminal Panel (@hyzyn/dsh-tty)
 
-- **What it does**: adds a “Terminal” entry to the Web GUI sidebar that opens a large modal with an embedded xterm.js interactive terminal (real PTY via node-pty), capable of running arbitrary commands and TUI programs (vim / htop / dev servers).
-- **How to use**: install, then restart `dsh web`; click “Terminal” in the sidebar → it connects automatically and starts `$SHELL` (working directory is the host process’s start directory) → the panel auto-resizes with the window; closing the panel or pressing Esc ends the session; click the terminal area after exit to reopen.
-- **Supports**: TERM=xterm-256color injection (via a `-c` wrapper layer so TUI apps don’t degrade); resize passthrough to node-pty’s native API; a WebSocket frame protocol (spawn/input/resize/kill ↔ ready/data/exit/error); downstream backpressure protection; loopback trust fence; concurrency cap (default 4); configurable `$SHELL` / term / cwd.
+- **What it does**: adds a “Terminal” entry to the Web GUI sidebar that opens a large modal with an embedded xterm.js interactive terminal (real PTY via node-pty), with multi-tab support, capable of running arbitrary commands and TUI programs (vim / htop / dev servers).
+- **How to use**: install, then restart `dsh web`; click “Terminal” in the sidebar → the first terminal is created automatically (default `$SHELL`) → use “+” in the tab bar to open more tabs and ✕ to close; new tabs default to the current DSH session’s working directory; Ctrl+F searches inside the terminal, and the toolbar offers clear / copy / paste; closing the panel or pressing Esc ends all sessions.
+- **Supports**: multi-tab sessions (multiple sessions per connection, protocol v2 with sid); working directory follows the current session (sessions client service); TERM=xterm-256color injection (via a `-c` wrapper layer so TUI apps don’t degrade); resize passthrough to node-pty’s native API; a WebSocket frame protocol (spawn/input/resize/kill ↔ ready/data/exit/error); downstream backpressure protection; loopback trust fence; concurrency cap (default 4); settings hot-reload (settings/updated).
 - **Where it is stored**: no config file of its own; configuration lives in the “Settings → Plugins → Terminal Panel” card.
-- **Note**: resize relies on DSH’s internal terminal-handle shape (known limitation); output is a UTF-8 text stream, so `cat`-ing binary files shows replacement characters; v1 is one session per connection. See `packages/tty/README.md` for details.
+- **Note**: resize relies on DSH’s internal terminal-handle shape (known limitation); output is a UTF-8 text stream, so `cat`-ing binary files shows replacement characters. See `packages/tty/README.md` for details.
 
 ## Quick Start
 

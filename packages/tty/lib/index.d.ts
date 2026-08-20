@@ -3,18 +3,20 @@
  *
  * 机制：浏览器半体打开「终端」大弹窗后，经 WebSocket 连接
  * /api/dsh-tty/ws（webServer.registerUpgrade 注册的 upgrade 路由），
- * 首帧 spawn 一个真实 PTY 会话（ctx.subprocess.spawnTerminal，node-pty），
+ * spawn 帧创建真实 PTY 会话（ctx.subprocess.spawnTerminal，node-pty），
  * 之后双向透传：input/resize/kill 上行，data/exit/error 下行。
  *
- * 帧协议（JSON 文本帧）：
- *   C→S  {t:'spawn', cols?, rows?}        连接后首帧，创建会话（单会话/连接）
- *   C→S  {t:'input', d}                   按键/粘贴数据
- *   C→S  {t:'resize', cols, rows}         xterm fit 触发
- *   C→S  {t:'kill'}                       用户关闭会话
- *   S→C  {t:'ready', pid}                 会话就绪
- *   S→C  {t:'data', d}                    终端输出（utf8 文本）
- *   S→C  {t:'exit', code, signal}         PTY 退出事实
- *   S→C  {t:'error', m}                   错误
+ * 帧协议 v2（JSON 文本帧；sid 维度支持单连接多会话/标签页）：
+ *   C→S  {t:'spawn', sid?, cols?, rows?, cwd?}  创建会话；sid 缺省时宿主生成
+ *   C→S  {t:'input', sid?, d}                  按键/粘贴数据
+ *   C→S  {t:'resize', sid?, cols, rows}        xterm fit 触发
+ *   C→S  {t:'kill', sid?}                      关闭会话
+ *   S→C  {t:'ready', sid, pid}                 会话就绪
+ *   S→C  {t:'data', sid, d}                    终端输出（utf8 文本）
+ *   S→C  {t:'exit', sid, code, signal}         PTY 退出事实（恰好一次）
+ *   S→C  {t:'error', sid?, m}                  错误
+ * 省略 sid 时按「该连接唯一会话」路由；连接上存在 0 或多个会话时省略 sid 报错。
+ * 旧脚本（spawn 不带 sid）自动兼容：宿主生成 sid，响应帧多带 sid 字段。
  *
  * M0 探针（scripts/probe.mjs）验证过的三个关键结论：
  *   1. TERM 必须用 `shell -c 'export TERM=...; exec "$shell"'` 包装层注入——
@@ -39,7 +41,7 @@ export interface Config {
     term?: string;
     /** COLORTERM 值。默认 truecolor。 */
     colorTerm?: string;
-    /** 会话工作目录；缺省为宿主进程启动目录。 */
+    /** 会话工作目录（客户端 spawn 带 cwd 时优先）；缺省为宿主进程启动目录。 */
     cwd?: string;
 }
 export declare const name: string, inject: string[] | undefined, apply: (ctx: Context, config?: Config | undefined) => void;

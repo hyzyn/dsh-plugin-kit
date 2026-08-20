@@ -52,7 +52,7 @@ function openSession(port, headers) {
     state.frames.push(msg)
     if (msg.t === 'data') state.text += String(msg.d ?? '')
     if (msg.t === 'ready') state.ready = true
-    if (msg.t === 'exit') state.exited = { code: msg.code, signal: msg.signame ?? msg.signal }
+    if (msg.t === 'exit') state.exited = { sid: msg.sid, code: msg.code, signal: msg.signal }
     if (msg.t === 'error') state.errors.push(String(msg.m ?? ''))
     for (const w of [...state.waiters]) w()
   })
@@ -90,7 +90,7 @@ async function run() {
   const app = new Context()
   const wsFiber = app.plugin(WebServerRuntime, { host: '127.0.0.1', port: 0 })
   const subFiber = app.plugin(LocalSubprocessRuntime)
-  const pluginFiber = app.plugin({ name, inject, apply }, { maxSessions: 1, term: 'xterm-256color', colorTerm: 'truecolor' })
+  const pluginFiber = app.plugin({ name, inject, apply }, { maxSessions: 2, term: 'xterm-256color', colorTerm: 'truecolor' })
   await wsFiber.await()
   await subFiber.await()
   await pluginFiber.await()
@@ -150,18 +150,18 @@ async function run() {
     s.client.close()
   }
 
-  // B3: 单会话约束
-  console.log('\n[3] 单会话约束')
+  // B3: sid 冲突约束（v2：同连接多会话，同 sid 才拒绝）
+  console.log('\n[3] sid 冲突约束')
   {
     const s = openSession(port)
     await s.open()
-    s.client.send(JSON.stringify({ t: 'spawn' }))
+    s.client.send(JSON.stringify({ t: 'spawn', sid: 'tab-a' }))
     await s.waitFor(() => s.state.ready, 10000, 'ready')
-    s.client.send(JSON.stringify({ t: 'spawn' }))
-    await s.waitFor(() => s.state.errors.length > 0, 10000, '重复 spawn 错误')
-    if (/会话已存在/.test(s.state.errors[0])) pass('B3 同连接二次 spawn 被拒')
-    else fail('B3 同连接二次 spawn 被拒', s.state.errors[0])
-    s.client.send(JSON.stringify({ t: 'kill' }))
+    s.client.send(JSON.stringify({ t: 'spawn', sid: 'tab-a' }))
+    await s.waitFor(() => s.state.errors.length > 0, 10000, '重复 sid 错误')
+    if (/sid 已存在/.test(s.state.errors[0])) pass('B3 同 sid 二次 spawn 被拒')
+    else fail('B3 同 sid 二次 spawn 被拒', s.state.errors[0])
+    s.client.send(JSON.stringify({ t: 'kill', sid: 'tab-a' }))
     await s.waitFor(() => s.state.exited !== null, 10000, 'exit')
     s.client.close()
   }
@@ -171,16 +171,23 @@ async function run() {
   {
     const s1 = openSession(port)
     await s1.open()
-    s1.client.send(JSON.stringify({ t: 'spawn' }))
+    s1.client.send(JSON.stringify({ t: 'spawn', sid: 's1' }))
     await s1.waitFor(() => s1.state.ready, 10000, 's1 ready')
     const s2 = openSession(port)
     await s2.open()
-    s2.client.send(JSON.stringify({ t: 'spawn' }))
-    await s2.waitFor(() => s2.state.errors.length > 0, 10000, 's2 上限错误')
-    if (/会话数已达上限/.test(s2.state.errors[0])) pass('B4 maxSessions=1 生效（第二连接被拒）')
-    else fail('B4 maxSessions=1 生效（第二连接被拒）', s2.state.errors[0])
+    s2.client.send(JSON.stringify({ t: 'spawn', sid: 's2' }))
+    await s2.waitFor(() => s2.state.ready, 10000, 's2 ready')
+    const s3 = openSession(port)
+    await s3.open()
+    s3.client.send(JSON.stringify({ t: 'spawn', sid: 's3' }))
+    await s3.waitFor(() => s3.state.errors.length > 0, 10000, 's3 上限错误')
+    if (/会话数已达上限/.test(s3.state.errors[0])) pass('B4 maxSessions=2 生效（第三连接被拒）')
+    else fail('B4 maxSessions=2 生效（第三连接被拒）', s3.state.errors[0])
+    s3.client.close()
+    s2.client.send(JSON.stringify({ t: 'kill', sid: 's2' }))
+    await s2.waitFor(() => s2.state.exited !== null, 10000, 's2 exit')
     s2.client.close()
-    s1.client.send(JSON.stringify({ t: 'kill' }))
+    s1.client.send(JSON.stringify({ t: 'kill', sid: 's1' }))
     await s1.waitFor(() => s1.state.exited !== null, 10000, 's1 exit')
     s1.client.close()
   }
@@ -199,6 +206,48 @@ async function run() {
     if (outcome === 'rejected') pass('B5 伪造 Host 的 upgrade 被拒')
     else fail('B5 伪造 Host 的 upgrade 被拒', '连接意外建立（' + outcome + '）')
     try { s.client.terminate() } catch { /* 忽略 */ }
+  }
+
+  // B7: 单连接多会话（共存、数据隔离、单独 kill）
+  console.log('\n[6] 单连接多会话')
+  {
+    const s = openSession(port)
+    await s.open()
+    s.client.send(JSON.stringify({ t: 'spawn', sid: 'tab-1' }))
+    await s.waitFor(() => s.state.ready, 10000, 'tab-1 ready')
+    s.state.ready = false
+    s.client.send(JSON.stringify({ t: 'spawn', sid: 'tab-2' }))
+    await s.waitFor(() => s.state.ready, 10000, 'tab-2 ready')
+    s.client.send(JSON.stringify({ t: 'input', sid: 'tab-1', d: 'printf "TAB1_%s\\n" OK\n' }))
+    await s.waitFor(() => /TAB1_OK/.test(s.state.text), 10000, 'tab-1 回显')
+    s.client.send(JSON.stringify({ t: 'input', sid: 'tab-2', d: 'printf "TAB2_%s\\n" OK\n' }))
+    await s.waitFor(() => /TAB2_OK/.test(s.state.text), 10000, 'tab-2 回显')
+    s.client.send(JSON.stringify({ t: 'kill', sid: 'tab-1' }))
+    await s.waitFor(() => s.state.exited !== null && s.state.exited.sid === 'tab-1', 10000, 'tab-1 exit（带 sid）')
+    s.client.send(JSON.stringify({ t: 'input', sid: 'tab-2', d: 'printf "TAB2_%s\\n" STILL\n' }))
+    await s.waitFor(() => /TAB2_STILL/.test(s.state.text), 10000, 'tab-2 仍可用')
+    pass('B7 单连接多会话：双 tab 共存、数据隔离、单独 kill 后另一 tab 存活')
+    s.client.send(JSON.stringify({ t: 'kill', sid: 'tab-2' }))
+    await s.waitFor(() => s.state.exited !== null && s.state.exited.sid === 'tab-2', 10000, 'tab-2 exit')
+    s.client.close()
+  }
+
+  // B8: cwd 跟随与校验
+  console.log('\n[7] cwd 跟随与校验')
+  {
+    const s = openSession(port)
+    await s.open()
+    s.client.send(JSON.stringify({ t: 'spawn', sid: 'cwd-tab', cwd: '/tmp' }))
+    await s.waitFor(() => s.state.ready, 10000, 'ready')
+    s.client.send(JSON.stringify({ t: 'input', sid: 'cwd-tab', d: 'pwd\n' }))
+    await s.waitFor(() => s.state.text.includes('/tmp'), 10000, 'pwd 输出')
+    pass('B8 spawn 携带 cwd 生效（pwd=/tmp）')
+    s.client.send(JSON.stringify({ t: 'spawn', sid: 'bad-cwd', cwd: '/nonexistent-dir-xyz' }))
+    await s.waitFor(() => s.state.errors.some((m) => /cwd 不存在/.test(m)), 10000, 'cwd 错误')
+    pass('B8b 不存在的 cwd 被拒')
+    s.client.send(JSON.stringify({ t: 'kill', sid: 'cwd-tab' }))
+    await s.waitFor(() => s.state.exited !== null, 10000, 'exit')
+    s.client.close()
   }
 
   const failed = RESULTS.filter(([kind]) => kind === 'FAIL')
