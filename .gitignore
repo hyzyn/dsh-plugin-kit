@@ -9,5 +9,7 @@ docs/PUBLISHING.md
 
 .dsh-vision-toolkit/
 .jspace/
-# 根 bundle 插件入口需要入库（子包 lib/ 仍是构建产物，保持忽略）
+# 根 bundle 插件入口需要入库；子包 lib/ 为预构建产物，随 git 分发（git 安装
+# 默认不跑构建，产物必须入库才能装，详见 dshmarket #18）
 !/lib/
+!packages/**/lib/
