@@ -239,6 +239,13 @@ async function run() {
     await s.waitFor(() => s.state.exited !== null && s.state.exited.sid === 'tab-1', 10000, 'tab-1 exit（带 sid）')
     s.client.send(JSON.stringify({ t: 'input', sid: 'tab-2', d: 'printf "TAB2_%s\\n" STILL\n' }))
     await s.waitFor(() => /TAB2_STILL/.test(s.state.text), 10000, 'tab-2 仍可用')
+    // 竞态回归：对已删除 sid 发 input/resize 应静默忽略（无错误帧）
+    const errorsBefore = s.state.errors.length
+    s.client.send(JSON.stringify({ t: 'input', sid: 'tab-1', d: 'echo ghost\n' }))
+    s.client.send(JSON.stringify({ t: 'resize', sid: 'tab-1', cols: 90, rows: 20 }))
+    await sleep(600)
+    if (s.state.errors.length === errorsBefore) pass('B7b 已删除 sid 的 input/resize 静默忽略（无错误帧）')
+    else fail('B7b 已删除 sid 的 input/resize 静默忽略（无错误帧）', JSON.stringify(s.state.errors.slice(errorsBefore)))
     pass('B7 单连接多会话：双 tab 共存、数据隔离、单独 kill 后另一 tab 存活')
     s.client.send(JSON.stringify({ t: 'kill', sid: 'tab-2' }))
     await s.waitFor(() => s.state.exited !== null && s.state.exited.sid === 'tab-2', 10000, 'tab-2 exit')

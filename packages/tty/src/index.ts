@@ -295,19 +295,23 @@ class TtyServer {
   }
 
   /**
-   * 解析帧里的 sid：显式 sid 校验格式；缺省时仅当连接恰好一个会话才可用。
-   * 返回 undefined 并已发送错误帧时，调用方应直接返回。
+   * 解析帧里的 sid。返回：
+   *   { sid }        目标会话；
+   *   { unknown }    显式 sid 但本连接无此会话（客户端竞态，如 resize 先于
+   *                  spawn 就绪到达；调用方应静默忽略，而不是报错）；
+   *   undefined      已发送错误帧（非法 sid / sid 缺省但无法唯一路由）。
    */
-  private resolveSid(ws: WebSocket, msg: WsMessage, local: Map<string, TtySession>): string | undefined {
+  private resolveSid(ws: WebSocket, msg: WsMessage, local: Map<string, TtySession>): { sid: string } | { unknown: true } | undefined {
     const raw = msg.sid
     if (typeof raw === 'string' && raw !== '') {
       if (!SID_RE.test(raw)) {
         send(ws, { t: 'error', m: '非法 sid' })
         return undefined
       }
-      return raw
+      if (!local.has(raw)) return { unknown: true }
+      return { sid: raw }
     }
-    if (local.size === 1) return [...local.keys()][0]
+    if (local.size === 1) return { sid: [...local.keys()][0] }
     send(ws, { t: 'error', m: local.size === 0 ? '没有可用会话（先发 spawn）' : '存在多个会话，请指定 sid' })
     return undefined
   }
@@ -367,25 +371,25 @@ class TtyServer {
           send(ws, { t: 'exit', sid, code: outcome.exitCode, signal: outcome.signal })
         }).catch(() => { /* spawn 级失败已在 try 中处理 */ })
       } else if (msg.t === 'input') {
-        const sid = this.resolveSid(ws, msg, local)
-        if (sid === undefined) return
-        const session = local.get(sid)
+        const resolved = this.resolveSid(ws, msg, local)
+        if (resolved === undefined || 'unknown' in resolved) return
+        const session = local.get(resolved.sid)
         if (session !== undefined) await session.handle.write(String(msg.d ?? ''))
       } else if (msg.t === 'resize') {
-        const sid = this.resolveSid(ws, msg, local)
-        if (sid === undefined) return
-        const session = local.get(sid)
+        const resolved = this.resolveSid(ws, msg, local)
+        if (resolved === undefined || 'unknown' in resolved) return
+        const session = local.get(resolved.sid)
         if (session !== undefined) {
           session.handle.terminal.resize(Number(msg.cols) || 80, Number(msg.rows) || 24)
         }
       } else if (msg.t === 'kill') {
-        const sid = this.resolveSid(ws, msg, local)
-        if (sid === undefined) return
-        const session = local.get(sid)
+        const resolved = this.resolveSid(ws, msg, local)
+        if (resolved === undefined || 'unknown' in resolved) return
+        const session = local.get(resolved.sid)
         if (session === undefined) return
         session.closed = true
-        local.delete(sid)
-        this.sessions.remove(sid)
+        local.delete(resolved.sid)
+        this.sessions.remove(resolved.sid)
         await forceKill(session.handle)
       }
     } catch (error) {

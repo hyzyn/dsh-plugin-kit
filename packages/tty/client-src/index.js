@@ -192,7 +192,7 @@ function createTerminal(tab) {
 /** 新建标签页并 spawn。 */
 function addTab() {
   const sid = newSid()
-  const tab = { sid, term: null, fit: null, search: null, termEl: null, overlayEl: null, exited: false }
+  const tab = { sid, term: null, fit: null, search: null, termEl: null, overlayEl: null, exited: false, spawned: false }
   createTerminal(tab)
   tabs.set(sid, tab)
   tabCounter += 1
@@ -214,8 +214,15 @@ function respawnTab(oldSid) {
   const old = tabs.get(oldSid)
   if (old === undefined) return
   if (!old.exited) sendFrame({ t: 'kill', sid: oldSid })
+  if (old.term !== null) {
+    try {
+      old.term.dispose()
+    } catch {
+      /* 忽略 */
+    }
+  }
   tabs.delete(oldSid)
-  const tab = { sid: newSid(), term: null, fit: null, search: null, termEl: null, overlayEl: null, exited: false }
+  const tab = { sid: newSid(), term: null, fit: null, search: null, termEl: null, overlayEl: null, exited: false, spawned: false }
   createTerminal(tab)
   tabs.set(tab.sid, tab)
   renderTabbar()
@@ -254,7 +261,7 @@ function switchTab(sid) {
   } catch {
     /* 忽略 */
   }
-  if (!tab.exited) {
+  if (tab.spawned && !tab.exited) {
     sendResize(tab)
   }
   showTabOverlay(tab, tab.exited ? '会话已退出 — 点击重新打开' : '')
@@ -353,7 +360,9 @@ function connect() {
       const tab = tabs.get(sid)
       if (tab !== undefined) {
         tab.exited = false
+        tab.spawned = true
         showTabOverlay(tab, '')
+        sendResize(tab) // spawn 就绪后补一次精确尺寸
       }
     } else if (msg.t === 'data') {
       const tab = tabs.get(sid)
