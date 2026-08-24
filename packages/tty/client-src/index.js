@@ -661,6 +661,15 @@ function mountSidebarEntry() {
 
 /* ================================ 注册 ================================ */
 
+window.__ModuleLoader__.load({
+  id: '@hyzyn/dsh-tty',
+  factory: (require) => {
+    const exports = {}
+    // React 必须取自宿主（与 module loader 共享同一实例）；require 是加载器传入的
+    // 参数（作用域内遮蔽全局），esbuild 不会把它打包进 bundle。
+    const React = require('react')
+    const { jsx, jsxs } = require('react/jsx-runtime')
+
 const CHEVRON_PATH = 'M6 9.5L9.5 7L6 4.5V9.5Z'
 
 /**
@@ -779,14 +788,7 @@ function TtySettingsCard() {
   })
 }
 
-window.__ModuleLoader__.load({
-  id: '@hyzyn/dsh-tty',
-  factory: (require) => {
-    const exports = {}
-    // React 必须取自宿主（与 module loader 共享同一实例）；require 是加载器传入的
-    // 参数（作用域内遮蔽全局），esbuild 不会把它打包进 bundle。
-    const React = require('react')
-    const { jsx, jsxs } = require('react/jsx-runtime')
+
     exports.inject = ['slots', 'sessions']
     exports.apply = (ctx) => {
       sessionsService = ctx.sessions
