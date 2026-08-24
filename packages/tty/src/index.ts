@@ -106,6 +106,7 @@ interface TtySession {
 }
 
 interface ReqLike {
+  method?: string
   headers: Record<string, string | string[] | undefined>
   socket: { remoteAddress?: string }
 }
@@ -433,6 +434,70 @@ class TtyServer {
  * 插件本体
  * ------------------------------------------------------------------ */
 
+/** HTTP 路由的 loopback 信任围栏（与 dsh-mcp 同思路）。 */
+function isLoopbackHttp(req: ReqLike): boolean {
+  const address = req.socket.remoteAddress
+  if (address !== '127.0.0.1' && address !== '::1' && address !== '::ffff:127.0.0.1') return false
+  const host = req.headers.host
+  if (typeof host !== 'string') return false
+  let hostUrl: URL
+  try {
+    hostUrl = new URL('http://' + host)
+  } catch {
+    return false
+  }
+  if (hostUrl.hostname !== '127.0.0.1' && hostUrl.hostname !== 'localhost' && hostUrl.hostname !== '[::1]') return false
+  if (req.headers['sec-fetch-site'] === 'cross-site') return false
+  const origin = req.headers.origin
+  if (origin === undefined) return true
+  try {
+    return new URL(origin).host === hostUrl.host
+  } catch {
+    return false
+  }
+}
+
+interface ResLike {
+  writeHead(status: number, headers?: Record<string, string>): void
+  end(body?: string): void
+}
+
+function writeJson(res: ResLike, status: number, body: unknown): void {
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'referrer-policy': 'no-referrer' })
+  res.end(JSON.stringify(body))
+}
+
+async function readJsonBody(req: ReqLike & AsyncIterable<Uint8Array>): Promise<Record<string, unknown> | undefined> {
+  const chunks: Uint8Array[] = []
+  let size = 0
+  try {
+    for await (const chunk of req) {
+      size += chunk.length
+      if (size > 512 * 1024) return undefined
+      chunks.push(chunk)
+    }
+  } catch {
+    return undefined
+  }
+  try {
+    const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** 设置卡片展示的当前有效配置快照。 */
+interface ConfigSnapshot {
+  enabled: boolean
+  announceToAgent: boolean
+  maxSessions: number
+  shell: string
+  term: string
+  colorTerm: string
+  cwd: string
+}
+
 const plugin = definePlugin<Config>({
   name: 'tty',
   inject: [],
@@ -446,49 +511,169 @@ const plugin = definePlugin<Config>({
     })
     const sessions = new SessionManager(config?.maxSessions ?? DEFAULT_MAX_SESSIONS)
     const server = new TtyServer(ctx, sessions, live)
+    const stateRef = { enabled: true, announceToAgent: config?.announceToAgent !== false }
+    let settingsScope: { get(): Record<string, unknown>; update(patch: Record<string, unknown>): Promise<unknown> } | undefined
 
-    // upgrade 路由（/api/dsh-tty/ws）
-    ctx.inject(['webServer'], (webCtx: Context) => {
-      webCtx.effect(() => {
-        const webServer = (webCtx as unknown as { webServer: { registerUpgrade(route: unknown): () => void } }).webServer
-        const dispose = webServer.registerUpgrade({
-          path: WS_PATH,
-          handler: (req: ReqLike, socket: SocketLike, head: Buffer) => server.handleUpgrade(req, socket, head),
-        })
-        return () => {
-          server.close()
-          try {
-            dispose()
-          } catch {
-            /* 路由已释放 */
-          }
-        }
-      }, 'dsh-tty: upgrade route')
+    const snapshot = (): ConfigSnapshot => ({
+      enabled: stateRef.enabled,
+      announceToAgent: stateRef.announceToAgent,
+      maxSessions: sessions.limitValue,
+      shell: live.shell,
+      term: live.term,
+      colorTerm: live.colorTerm,
+      cwd: live.cwd,
     })
 
-    // settings 命名空间 + 配置热生效：settings/updated 事件（dsh-settings 提交事件，
-    // 监听器签名 (ns, next, prev, source)）动态应用 shell/term/colorTerm/cwd/maxSessions
+    /** 规范化并应用一份配置补丁（settings/updated 事件与 HTTP POST 共用；幂等）。 */
+    const applyPatch = (section: Record<string, unknown>): void => {
+      live.apply({
+        shell: typeof section.shell === 'string' ? section.shell : undefined,
+        term: typeof section.term === 'string' ? section.term : undefined,
+        colorTerm: typeof section.colorTerm === 'string' ? section.colorTerm : undefined,
+        cwd: typeof section.cwd === 'string' ? section.cwd : undefined,
+      })
+      if (typeof section.maxSessions === 'number' && Number.isInteger(section.maxSessions) && section.maxSessions >= 1 && section.maxSessions <= 16) {
+        sessions.setLimit(section.maxSessions)
+      }
+      if (typeof section.enabled === 'boolean') stateRef.enabled = section.enabled
+      if (typeof section.announceToAgent === 'boolean') stateRef.announceToAgent = section.announceToAgent
+      console.log(`[dsh-tty] config applied (shell=${live.shell}, term=${live.term}, cwd=${live.cwd}, maxSessions=${sessions.limitValue})`)
+    }
+
+    /** 校验 HTTP POST 的配置体；返回规范化补丁或错误信息。 */
+    const normalizePatch = (input: Record<string, unknown>): { patch?: Record<string, unknown>; error?: string } => {
+      const patch: Record<string, unknown> = {}
+      const known = new Set(['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd'])
+      for (const key of Object.keys(input)) {
+        if (!known.has(key)) return { error: '未知配置项: ' + key }
+      }
+      if (input.enabled !== undefined) {
+        if (typeof input.enabled !== 'boolean') return { error: 'enabled 必须是布尔值' }
+        patch.enabled = input.enabled
+      }
+      if (input.announceToAgent !== undefined) {
+        if (typeof input.announceToAgent !== 'boolean') return { error: 'announceToAgent 必须是布尔值' }
+        patch.announceToAgent = input.announceToAgent
+      }
+      if (input.maxSessions !== undefined) {
+        const value = Number(input.maxSessions)
+        if (!Number.isInteger(value) || value < 1 || value > 16) return { error: 'maxSessions 必须是 1~16 的整数' }
+        patch.maxSessions = value
+      }
+      for (const key of ['shell', 'term', 'colorTerm'] as const) {
+        if (input[key] === undefined) continue
+        if (typeof input[key] !== 'string') return { error: key + ' 必须是字符串' }
+        if ((input[key] as string).trim() !== '') patch[key] = (input[key] as string).trim()
+      }
+      if (input.cwd !== undefined) {
+        if (typeof input.cwd !== 'string') return { error: 'cwd 必须是字符串' }
+        const cwd = input.cwd.trim()
+        if (cwd !== '') {
+          if (!existsSync(cwd)) return { error: 'cwd 不存在: ' + cwd }
+          patch.cwd = cwd
+        }
+      }
+      return { patch }
+    }
+
+    // webServer：WS upgrade 路由 + 配置读写路由（/api/dsh-tty/config）
+    ctx.inject(['webServer'], (webCtx: Context) => {
+      webCtx.effect(() => {
+        const webServer = (webCtx as unknown as {
+          webServer: {
+            registerUpgrade(route: unknown): () => void
+            register(route: unknown): () => void
+          }
+        }).webServer
+        const disposers: Array<() => void> = []
+        disposers.push(webServer.registerUpgrade({
+          path: WS_PATH,
+          handler: (req: ReqLike, socket: SocketLike, head: Buffer) => server.handleUpgrade(req, socket, head),
+        }))
+        disposers.push(webServer.register({
+          kind: 'exact',
+          path: '/api/dsh-tty/config',
+          handler: async (req: ReqLike & AsyncIterable<Uint8Array>, res: ResLike) => {
+            if (!isLoopbackHttp(req)) {
+              writeJson(res, 403, { error: 'forbidden: loopback-only' })
+              return
+            }
+            if (req.method === 'GET') {
+              writeJson(res, 200, { ok: true, config: snapshot() })
+              return
+            }
+            if (req.method !== 'POST') {
+              writeJson(res, 405, { error: 'method not allowed: ' + String(req.method) })
+              return
+            }
+            const body = await readJsonBody(req)
+            if (body === undefined) {
+              writeJson(res, 400, { error: 'invalid JSON body' })
+              return
+            }
+            const normalized = normalizePatch(body)
+            if (normalized.error !== undefined) {
+              writeJson(res, 400, { error: normalized.error })
+              return
+            }
+            const patch = normalized.patch ?? {}
+            const scope = settingsScope
+            if (scope !== undefined) {
+              try {
+                // 官方持久化通道：写入 settings 命名空间（dsh-settings-file），
+                // 成功后触发 settings/updated → applyPatch 热应用
+                await scope.update(patch)
+              } catch (error) {
+                writeJson(res, 500, { error: '保存配置失败: ' + (error instanceof Error ? error.message : String(error)) })
+                return
+              }
+            }
+            // 无 settings 服务（或 stub）时直接应用；有服务时也再应用一次（幂等）
+            applyPatch(patch)
+            writeJson(res, 200, { ok: true, config: snapshot() })
+          },
+        }))
+        return () => {
+          server.close()
+          for (const dispose of disposers) {
+            try {
+              dispose()
+            } catch {
+              /* 路由已释放 */
+            }
+          }
+        }
+      }, 'dsh-tty: web routes')
+    })
+
+    // settings 命名空间：注册 + 启动合并持久化值 + settings/updated 热应用
     ctx.inject(['settings'], (settingsCtx: Context) => {
       settingsCtx.effect(() => {
-        const settings = (settingsCtx as unknown as { settings: { register(ns: string, schema: unknown): unknown } }).settings
-        settings.register('tty', TTY_SETTINGS_SCHEMA)
+        const settings = (settingsCtx as unknown as {
+          settings: { register(ns: string, schema: unknown): { get(): Record<string, unknown>; update(patch: Record<string, unknown>): Promise<unknown> } }
+        }).settings
+        const scope = settings.register('tty', TTY_SETTINGS_SCHEMA)
+        settingsScope = scope
+        // 启动合并：字符串字段非空才覆盖；maxSessions/布尔用「非默认值才覆盖」启发式
+        //（schema 默认值会混入 resolved，无法区分「显式保存的 4」与「从未保存」）。
+        const stored = scope.get()
+        const startup: Record<string, unknown> = {}
+        if (typeof stored.shell === 'string' && stored.shell.trim() !== '') startup.shell = stored.shell
+        if (typeof stored.term === 'string' && stored.term.trim() !== '') startup.term = stored.term
+        if (typeof stored.colorTerm === 'string' && stored.colorTerm.trim() !== '') startup.colorTerm = stored.colorTerm
+        if (typeof stored.cwd === 'string' && stored.cwd.trim() !== '') startup.cwd = stored.cwd
+        if (stored.maxSessions !== 4 && typeof stored.maxSessions === 'number') startup.maxSessions = stored.maxSessions
+        if (stored.enabled === false) startup.enabled = false
+        if (stored.announceToAgent === false) startup.announceToAgent = false
+        if (Object.keys(startup).length > 0) applyPatch(startup)
         const events = settingsCtx as unknown as { events: { on(name: string, listener: (...args: unknown[]) => void): () => void } }
         const off = events.events.on('settings/updated', (ns: unknown, next: unknown) => {
           if (ns !== 'tty' || typeof next !== 'object' || next === null) return
-          const section = next as Record<string, unknown>
-          live.apply({
-            shell: typeof section.shell === 'string' ? section.shell : undefined,
-            term: typeof section.term === 'string' ? section.term : undefined,
-            colorTerm: typeof section.colorTerm === 'string' ? section.colorTerm : undefined,
-            cwd: typeof section.cwd === 'string' ? section.cwd : undefined,
-          })
-          if (typeof section.maxSessions === 'number' && Number.isInteger(section.maxSessions) && section.maxSessions >= 1) {
-            sessions.setLimit(section.maxSessions)
-          }
-          console.log(`[dsh-tty] config hot-applied (shell=${live.shell}, term=${live.term}, cwd=${live.cwd}, maxSessions=${sessions.limitValue})`)
+          applyPatch(next as Record<string, unknown>)
         })
         return () => {
           off()
+          settingsScope = undefined
         }
       }, 'dsh-tty: settings')
     })

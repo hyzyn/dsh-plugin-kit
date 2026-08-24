@@ -95,7 +95,7 @@ async function run() {
   const stubFiber = app.plugin({
     name: 'settings-stub',
     apply: (ctx) => {
-      ctx.provide('settings', { register() {} })
+      ctx.provide('settings', { register: () => ({ get: () => ({}), update: async () => {} }) })
     },
   })
   await stubFiber.await()
@@ -292,6 +292,24 @@ async function run() {
     s.client.send(JSON.stringify({ t: 'kill', sid: 'hot' }))
     await s.waitFor(() => s.state.exited !== null, 10000, 'exit')
     s.client.close()
+  }
+
+  // B10: /api/dsh-tty/config 读写 API
+  console.log('\n[9] 配置 API')
+  {
+    const base = `http://127.0.0.1:${port}/api/dsh-tty/config`
+    const res1 = await fetch(base)
+    const d1 = await res1.json().catch(() => ({}))
+    if (res1.status === 200 && d1.ok === true && typeof d1.config?.shell === 'string') pass('B10a GET 当前配置')
+    else fail('B10a GET 当前配置', res1.status + ' ' + JSON.stringify(d1))
+    const res2 = await fetch(base, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ maxSessions: 3, term: 'xterm-256color' }) })
+    const d2 = await res2.json().catch(() => ({}))
+    if (res2.status === 200 && d2.ok === true && d2.config?.maxSessions === 3) pass('B10b POST 配置生效（maxSessions=3）')
+    else fail('B10b POST 配置生效（maxSessions=3）', res2.status + ' ' + JSON.stringify(d2))
+    const res3 = await fetch(base, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ maxSessions: 99 }) })
+    const d3 = await res3.json().catch(() => ({}))
+    if (res3.status === 400 && /maxSessions/.test(String(d3.error ?? ''))) pass('B10c 非法 maxSessions 被拒')
+    else fail('B10c 非法 maxSessions 被拒', res3.status + ' ' + JSON.stringify(d3))
   }
 
   const failed = RESULTS.filter(([kind]) => kind === 'FAIL')

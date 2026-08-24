@@ -53,6 +53,28 @@ const CSS = [
   '.tt_term .xterm{height:100%}',
   '.tt_overlay{position:absolute;inset:0;align-items:center;justify-content:center;background:rgba(0,0,0,.55);color:#e6edf3;font-size:13px;cursor:pointer;display:flex;z-index:5}',
   '.tt_overlay:empty{display:none}',
+  '.tt_card{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);border-radius:12px;list-style:none;transition:border-color .16s,background .16s}',
+  '.tt_card:hover{border-color:var(--dsw-alias-label-dimmed)}',
+  '.tt_cardOpen{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-label-dimmed)}',
+  '.tt_cardHeader{appearance:none;width:100%;font:inherit;color:inherit;text-align:left;cursor:pointer;background:0 0;border:0;border-radius:12px;align-items:center;gap:12px;padding:14px 16px;display:flex}',
+  '.tt_cardHeadText{flex-direction:column;flex:1;gap:4px;min-width:0;display:flex}',
+  '.tt_cardName{color:var(--dsw-alias-label-primary);font-size:15px;font-weight:600;line-height:1.4}',
+  '.tt_cardDescription{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.5}',
+  '.tt_cardChevron{color:var(--dsw-alias-label-tertiary);flex:none;transition:transform .16s}',
+  '.tt_cardChevronOpen{transform:rotate(180deg)}',
+  '.tt_cardBody{border-top:1px solid var(--dsw-alias-border-l2);margin:0 16px;padding-bottom:8px}',
+  '.tt_cardField{flex-direction:column;gap:6px;padding:12px 0;display:flex}',
+  '.tt_cardField+.tt_cardField{border-top:1px solid var(--dsw-alias-border-l2)}',
+  '.tt_cardLabel{min-width:0;color:var(--dsw-alias-label-primary);flex:1;font-size:13px;font-weight:500;line-height:1.5}',
+  '.tt_cardInput{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);height:34px;font:inherit;color:var(--dsw-alias-label-primary);border-radius:8px;padding:0 12px;font-size:13px;line-height:1.5;box-sizing:border-box}',
+  '.tt_cardInput:focus-visible{border-color:var(--dsw-alias-state-business-primary);outline:none}',
+  '.tt_cardCheckbox{width:16px;height:16px;accent-color:var(--dsw-alias-state-business-primary)}',
+  '.tt_cardRow{align-items:center;gap:8px;display:flex}',
+  '.tt_cardSave{appearance:none;font:inherit;cursor:pointer;border-radius:8px;padding:5px 14px;font-size:13px;line-height:1.5;background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-3);border:1px solid transparent}',
+  '.tt_cardSave:disabled{opacity:.4;cursor:default}',
+  '.tt_cardMessage{margin:8px 0 0;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-tertiary)}',
+  '.tt_cardMessageOk{color:var(--dsw-alias-state-success-primary)}',
+  '.tt_cardMessageError{color:var(--dsw-alias-state-error-primary)}',
 ].join('\n')
 
 /* ================================ 基础工具 ================================ */
@@ -639,14 +661,142 @@ function mountSidebarEntry() {
 
 /* ================================ 注册 ================================ */
 
+const CHEVRON_PATH = 'M6 9.5L9.5 7L6 4.5V9.5Z'
+
+/**
+ * 设置 → 插件 →「终端面板」卡片：读取/编辑 tty settings 命名空间。
+ * 注意：React 必须取自 module loader 的 require（宿主 GUI 同一个 React 实例），
+ * 不能把独立副本打进 bundle（hooks 依赖渲染器的 dispatcher）。
+ */
+function TtySettingsCard() {
+  const [open, setOpen] = React.useState(false)
+  const [form, setForm] = React.useState(null)
+  const [loaded, setLoaded] = React.useState(false)
+  const [saving, setSaving] = React.useState(false)
+  const [message, setMessage] = React.useState({ kind: '', text: '' })
+
+  const load = async () => {
+    try {
+      const res = await fetch('/api/dsh-tty/config', { cache: 'no-store' })
+      const data = await res.json()
+      if (data.ok && typeof data.config === 'object' && data.config !== null) setForm(data.config)
+      else setMessage({ kind: 'error', text: String(data.error || '读取配置失败') })
+    } catch (error) {
+      setMessage({ kind: 'error', text: String(error && error.message ? error.message : error) })
+    }
+  }
+  React.useEffect(() => {
+    if (open && !loaded) {
+      setLoaded(true)
+      void load()
+    }
+  }, [open])
+
+  const set = (key, value) => setForm((current) => ({ ...(current || {}), [key]: value }))
+  const save = async () => {
+    setSaving(true)
+    setMessage({ kind: '', text: '' })
+    try {
+      const res = await fetch('/api/dsh-tty/config', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(form || {}),
+      })
+      const data = await res.json()
+      if (!res.ok || !data.ok) setMessage({ kind: 'error', text: String(data.error || '保存失败') })
+      else {
+        setMessage({ kind: 'ok', text: '已保存并热生效' })
+        if (data.config) setForm(data.config)
+      }
+    } catch (error) {
+      setMessage({ kind: 'error', text: String(error && error.message ? error.message : error) })
+    }
+    setSaving(false)
+  }
+
+  const textField = (label, key, placeholder) => jsxs('label', {
+    className: 'tt_cardField',
+    children: [
+      jsx('span', { className: 'tt_cardLabel', children: label }),
+      jsx('input', { className: 'tt_cardInput', value: form[key] ?? '', placeholder: placeholder ?? '', onChange: (event) => set(key, event.target.value) }),
+    ],
+  })
+  const boolField = (label, key) => jsxs('label', {
+    className: 'tt_cardField tt_cardRow',
+    children: [
+      jsx('input', { type: 'checkbox', className: 'tt_cardCheckbox', checked: form[key] === true, onChange: (event) => set(key, event.target.checked) }),
+      jsx('span', { className: 'tt_cardLabel', children: label }),
+    ],
+  })
+
+  return jsxs('li', {
+    className: open ? 'tt_card tt_cardOpen' : 'tt_card',
+    children: [
+      jsxs('button', {
+        type: 'button',
+        className: 'tt_cardHeader',
+        'aria-expanded': open,
+        onClick: () => setOpen((current) => !current),
+        children: [
+          jsxs('span', {
+            className: 'tt_cardHeadText',
+            children: [
+              jsx('span', { className: 'tt_cardName', children: '终端面板' }),
+              jsx('span', { className: 'tt_cardDescription', children: 'xterm 终端面板：多标签页、cwd 跟随会话；shell / TERM / 并发上限等保存即热生效。' }),
+            ],
+          }),
+          jsxs('svg', {
+            className: open ? 'tt_cardChevron tt_cardChevronOpen' : 'tt_cardChevron',
+            width: '14', height: '14', viewBox: '0 0 12 14', fill: 'none', xmlns: 'http://www.w3.org/2000/svg',
+            children: jsx('path', { d: 'M6 9.5L9.5 7L6 4.5V9.5Z', fill: 'currentColor' }),
+          }),
+        ],
+      }),
+      open ? jsxs('div', {
+        className: 'tt_cardBody',
+        children: [
+          form === null
+            ? jsx('div', { className: 'tt_cardMessage', children: '加载配置中…' })
+            : jsxs('div', { children: [
+                boolField('启用插件（需重启生效）', 'enabled'),
+                boolField('向 agent 公告终端面板能力', 'announceToAgent'),
+                textField('并发会话上限（1~16）', 'maxSessions', '4'),
+                textField('Shell 路径（默认 $SHELL）', 'shell', '/bin/zsh'),
+                textField('TERM', 'term', 'xterm-256color'),
+                textField('COLORTERM', 'colorTerm', 'truecolor'),
+                textField('兜底工作目录（客户端当前会话 cwd 优先）', 'cwd', ''),
+                jsxs('div', {
+                  className: 'tt_cardField tt_cardRow',
+                  children: [
+                    jsx('button', { className: 'tt_cardSave', disabled: saving, onClick: () => void save(), children: saving ? '保存中…' : '保存' }),
+                    jsx('span', { className: 'tt_cardMessage' + (message.kind === 'ok' ? ' tt_cardMessageOk' : message.kind === 'error' ? ' tt_cardMessageError' : ''), children: message.text }),
+                  ],
+                }),
+              ] }),
+        ],
+      }) : null,
+    ],
+  })
+}
+
 window.__ModuleLoader__.load({
   id: '@hyzyn/dsh-tty',
   factory: (require) => {
     const exports = {}
-    exports.inject = ['sessions']
+    // React 必须取自宿主（与 module loader 共享同一实例）；require 是加载器传入的
+    // 参数（作用域内遮蔽全局），esbuild 不会把它打包进 bundle。
+    const React = require('react')
+    const { jsx, jsxs } = require('react/jsx-runtime')
+    exports.inject = ['slots', 'sessions']
     exports.apply = (ctx) => {
       sessionsService = ctx.sessions
       mountSidebarEntry()
+      ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
+        name: 'settings.plugin.item',
+        // settings.plugin.item 是 keyed 插槽：key 必须是该卡片所编辑的 settings 命名空间
+        key: 'tty',
+        order: 110,
+      }, TtySettingsCard))
       return () => {
         closeModal()
       }
