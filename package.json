@@ -39,8 +39,8 @@
     "@hyzyn/dsh-mcp": "0.1.3",
     "@hyzyn/dsh-profile": "0.1.4",
     "@hyzyn/dsh-prompt": "0.1.3",
-    "@hyzyn/dsh-rss": "0.1.5",
-    "@hyzyn/dsh-search": "0.1.2",
+    "@hyzyn/dsh-rss": "0.1.6",
+    "@hyzyn/dsh-search": "0.1.3",
     "@hyzyn/dsh-tty": "0.1.1"
   }
 }

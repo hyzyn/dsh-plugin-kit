@@ -1041,7 +1041,7 @@ window.__ModuleLoader__.load({
 
     /* ================================ 侧边栏入口 ================================ */
 
-    const RSS_SIDEBAR_ICON = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12h.01M4 8a4 4 0 0 1 4 4M4 4a8 8 0 0 1 8 8"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/></svg>'
+    const RSS_SIDEBAR_ICON = '<svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12h.01M4 8a4 4 0 0 1 4 4M4 4a8 8 0 0 1 8 8"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/></svg>'
 
     /* ================================ 订阅源目录弹窗 ================================ */
 

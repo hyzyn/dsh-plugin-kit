@@ -144,7 +144,7 @@ window.__ModuleLoader__.load({
 
     /* ================================ 侧边栏入口 ================================ */
 
-    const SEARCH_ICON = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></svg>'
+    const SEARCH_ICON = '<svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></svg>'
 
     function sidebarRoot() {
       const column = document.querySelector('[data-pane="sidebar"], [class*="sidebarCol"]')
