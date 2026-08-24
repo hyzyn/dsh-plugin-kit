@@ -312,6 +312,41 @@ async function run() {
     else fail('B10c 非法 maxSessions 被拒', res3.status + ' ' + JSON.stringify(d3))
   }
 
+  // B11: 超限被拒后的恢复（用户场景：kill 一个会话后新 spawn 必须成功）
+  console.log('\n[10] 超限恢复')
+  {
+    const base = `http://127.0.0.1:${port}/api/dsh-tty/config`
+    await fetch(base, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ maxSessions: 2 }) })
+    await sleep(200)
+    const s1 = openSession(port)
+    await s1.open()
+    s1.client.send(JSON.stringify({ t: 'spawn', sid: 'x1' }))
+    await s1.waitFor(() => s1.state.ready, 10000, 'x1 ready')
+    const s2 = openSession(port)
+    await s2.open()
+    s2.client.send(JSON.stringify({ t: 'spawn', sid: 'x2' }))
+    await s2.waitFor(() => s2.state.ready, 10000, 'x2 ready')
+    const s3 = openSession(port)
+    await s3.open()
+    s3.client.send(JSON.stringify({ t: 'spawn', sid: 'x3' }))
+    await s3.waitFor(() => s3.state.errors.length > 0, 10000, 'x3 被拒')
+    if (/会话数已达上限/.test(s3.state.errors[0])) pass('B11a 超限拒绝（cap=2 第三个被拒）')
+    else fail('B11a 超限拒绝（cap=2 第三个被拒）', s3.state.errors[0])
+    s1.client.send(JSON.stringify({ t: 'kill', sid: 'x1' }))
+    await s1.waitFor(() => s1.state.exited !== null, 10000, 'x1 exit')
+    s3.client.send(JSON.stringify({ t: 'spawn', sid: 'x3b' }))
+    await s3.waitFor(() => s3.state.ready, 10000, 'x3b ready')
+    pass('B11b 释放名额后新 spawn 成功')
+    s2.client.send(JSON.stringify({ t: 'kill', sid: 'x2' }))
+    await s2.waitFor(() => s2.state.exited !== null, 10000, 'x2 exit')
+    s3.client.send(JSON.stringify({ t: 'kill', sid: 'x3b' }))
+    await s3.waitFor(() => s3.state.exited !== null, 10000, 'x3b exit')
+    s1.client.close()
+    s2.client.close()
+    s3.client.close()
+    await fetch(base, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ maxSessions: 4 }) })
+  }
+
   const failed = RESULTS.filter(([kind]) => kind === 'FAIL')
   console.log(`\n==== 集成测试：${RESULTS.length - failed.length}/${RESULTS.length} PASS ====`)
   for (const [kind, name, detail] of RESULTS) console.log(`  ${kind === 'PASS' ? '✔' : '✘'} ${name}${detail ? ' — ' + detail : ''}`)

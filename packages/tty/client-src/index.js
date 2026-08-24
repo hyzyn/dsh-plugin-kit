@@ -69,7 +69,8 @@ const CSS = [
   '.tt_cardInput{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);height:34px;font:inherit;color:var(--dsw-alias-label-primary);border-radius:8px;padding:0 12px;font-size:13px;line-height:1.5;box-sizing:border-box}',
   '.tt_cardInput:focus-visible{border-color:var(--dsw-alias-state-business-primary);outline:none}',
   '.tt_cardCheckbox{width:16px;height:16px;accent-color:var(--dsw-alias-state-business-primary)}',
-  '.tt_cardRow{align-items:center;gap:8px;display:flex}',
+  '.tt_cardRow{align-items:center;gap:8px;display:flex;flex-direction:row}',
+  '.tt_cardHint{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.5;margin-top:2px}',
   '.tt_cardSave{appearance:none;font:inherit;cursor:pointer;border-radius:8px;padding:5px 14px;font-size:13px;line-height:1.5;background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-3);border:1px solid transparent}',
   '.tt_cardSave:disabled{opacity:.4;cursor:default}',
   '.tt_cardMessage{margin:8px 0 0;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-tertiary)}',
@@ -243,6 +244,7 @@ function respawnTab(oldSid) {
       /* 忽略 */
     }
   }
+  if (old.termEl !== null) old.termEl.remove()
   tabs.delete(oldSid)
   const tab = { sid: newSid(), term: null, fit: null, search: null, termEl: null, overlayEl: null, exited: false, spawned: false }
   createTerminal(tab)
@@ -258,6 +260,16 @@ function closeTab(sid) {
   if (tab === undefined) return
   if (!tab.exited) sendFrame({ t: 'kill', sid })
   tabs.delete(sid)
+  // 彻底移除：dispose xterm 实例并把 termEl（含错误/退出浮层）从面板拿走，
+  // 否则被关闭标签的幽灵 DOM 会叠在其它标签上
+  if (tab.term !== null) {
+    try {
+      tab.term.dispose()
+    } catch {
+      /* 忽略 */
+    }
+  }
+  if (tab.termEl !== null) tab.termEl.remove()
   if (activeSid === sid) {
     activeSid = null
     const next = [...tabs.keys()].pop() ?? null
@@ -723,11 +735,12 @@ function TtySettingsCard() {
     setSaving(false)
   }
 
-  const textField = (label, key, placeholder) => jsxs('label', {
+  const textField = (label, key, placeholder, hint) => jsxs('label', {
     className: 'tt_cardField',
     children: [
       jsx('span', { className: 'tt_cardLabel', children: label }),
       jsx('input', { className: 'tt_cardInput', value: form[key] ?? '', placeholder: placeholder ?? '', onChange: (event) => set(key, event.target.value) }),
+      hint ? jsx('span', { className: 'tt_cardHint', children: hint }) : null,
     ],
   })
   const boolField = (label, key) => jsxs('label', {
@@ -769,11 +782,11 @@ function TtySettingsCard() {
             : jsxs('div', { children: [
                 boolField('启用插件（需重启生效）', 'enabled'),
                 boolField('向 agent 公告终端面板能力', 'announceToAgent'),
-                textField('并发会话上限（1~16）', 'maxSessions', '4'),
-                textField('Shell 路径（默认 $SHELL）', 'shell', '/bin/zsh'),
-                textField('TERM', 'term', 'xterm-256color'),
-                textField('COLORTERM', 'colorTerm', 'truecolor'),
-                textField('兜底工作目录（客户端当前会话 cwd 优先）', 'cwd', ''),
+                textField('并发会话上限（1~16）', 'maxSessions', '4', '超过上限的新标签会被拒绝；保存即热生效'),
+                textField('Shell 路径（默认 $SHELL）', 'shell', '', '留空使用 $SHELL'),
+                textField('TERM', 'term', 'xterm-256color', 'TUI 程序依赖此值'),
+                textField('COLORTERM', 'colorTerm', 'truecolor', ''),
+                textField('兜底工作目录（客户端当前会话 cwd 优先）', 'cwd', '', '留空使用宿主进程启动目录'),
                 jsxs('div', {
                   className: 'tt_cardField tt_cardRow',
                   children: [
