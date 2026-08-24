@@ -346,13 +346,24 @@ function toggleSearch() {
   if (hidden) searchInputEl.focus()
 }
 
+/** 搜索高亮装饰：深色终端背景（#0d1117）下的高对比配色。 */
+const SEARCH_DECORATIONS = {
+  matchBackground: '#3d2b00',
+  matchBorder: '#8a5a00',
+  activeMatchBackground: '#b06a00',
+  activeMatchBorder: '#ffb84d',
+  matchOverviewRuler: '#8a5a00',
+  activeMatchColorOverviewRuler: '#ffb84d',
+}
+
 function doSearch(backwards) {
   const tab = activeTab()
   if (tab === undefined || tab.search === undefined) return
   const query = searchInputEl.value
   if (query === '') return
-  if (backwards) tab.search.findPrevious(query)
-  else tab.search.findNext(query)
+  const options = { decorations: SEARCH_DECORATIONS }
+  if (backwards) tab.search.findPrevious(query, options)
+  else tab.search.findNext(query, options)
 }
 
 function connect() {
