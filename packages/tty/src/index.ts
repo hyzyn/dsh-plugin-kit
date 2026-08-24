@@ -34,6 +34,7 @@ import { existsSync } from 'node:fs'
 import { PassThrough } from 'node:stream'
 import WebSocket, { WebSocketServer } from 'ws'
 import { definePlugin } from '@hyzyn/dsh-kit'
+import { defineTool } from '@deepseek-ai/dsh-tools'
 
 export interface Config {
   /** 关闭整个插件。默认开。 */
@@ -530,11 +531,15 @@ interface ConfigSnapshot {
   term: string
   colorTerm: string
   cwd: string
+  /** agent 工具（tty_list / tty_capture / tty_send）是否已注册到 harness。 */
+  toolsRegistered: boolean
 }
 
 const plugin = definePlugin<Config>({
   name: 'tty',
-  inject: [],
+  // 声明 inject：tools 服务只有声明式 inject 才能解析（动态 ctx.inject/ctx.get
+  // 均拿不到，实测 mcp-client 同款模式），声明后 ctx.get('tools') 才能取到。
+  inject: ['tools'],
   apply(ctx: Context, config?: Config) {
     if (config?.enabled === false) return
     const live = new LiveConfig({
@@ -545,7 +550,7 @@ const plugin = definePlugin<Config>({
     })
     const sessions = new SessionManager(config?.maxSessions ?? DEFAULT_MAX_SESSIONS)
     const server = new TtyServer(ctx, sessions, live)
-    const stateRef = { enabled: true, announceToAgent: config?.announceToAgent !== false }
+    const stateRef = { enabled: true, announceToAgent: config?.announceToAgent !== false, toolsRegistered: false }
     let settingsScope: { get(): Record<string, unknown>; update(patch: Record<string, unknown>): Promise<unknown> } | undefined
 
     const snapshot = (): ConfigSnapshot => ({
@@ -556,6 +561,7 @@ const plugin = definePlugin<Config>({
       term: live.term,
       colorTerm: live.colorTerm,
       cwd: live.cwd,
+      toolsRegistered: stateRef.toolsRegistered,
     })
 
     /** 规范化并应用一份配置补丁（settings/updated 事件与 HTTP POST 共用；幂等）。 */
@@ -715,15 +721,17 @@ const plugin = definePlugin<Config>({
     // agent 工具集（P1）：tty_list / tty_capture / tty_send。
     // 信任模型：与 bash 工具同权（agent 本就能执行任意命令），不额外加确认层；
     // agent 对终端的操作会实时出现在浏览器面板里（同一 PTY），天然可被用户观察。
-    ctx.inject(['tools'], (toolsCtx: Context) => {
-      toolsCtx.effect(() => {
-        const tools = (toolsCtx as unknown as { tools: { register(definition: unknown): () => void } }).tools
+    // inject: ['tools'] 声明后（见上方），ctx.get('tools') 才能解析到服务。
+    const toolsHost = (ctx as unknown as { get(name: string): { register(definition: unknown): () => void } | undefined }).get('tools')
+    if (toolsHost !== undefined) {
+      ctx.effect(() => {
+        const tools = toolsHost
         const tailLines = (session: TtySession, lines: number): string => {
           const parts = session.buffer.split('\n')
           return parts.slice(-(lines + 1)).join('\n').replace(/^\n+/, '')
         }
         const disposers: Array<() => void> = []
-        disposers.push(tools.register({
+        disposers.push(tools.register(defineTool({
           name: 'tty_list',
           description: '列出当前活跃的终端面板会话（sid / pid / cwd / 创建与最后活动时间）。用户开了终端面板后，用 tty_capture 读取某个 sid 的终端输出，用 tty_send 向该终端发送按键。',
           parameters: {},
@@ -760,13 +768,13 @@ const plugin = definePlugin<Config>({
           async execute(): Promise<{ sessions: ReturnType<SessionManager['list']> }> {
             return { sessions: sessions.list() }
           },
-        }))
-        disposers.push(tools.register({
+        })))
+        disposers.push(tools.register(defineTool({
           name: 'tty_capture',
           description: '读取某个终端面板会话（tty_list 提供 sid）的近期输出（默认尾部 60 行，最多 500 行）。适合查看用户终端里正在运行的 dev server / watch / 构建输出。',
           parameters: {
             sid: { type: 'string', required: true, description: '会话 id（来自 tty_list）' },
-            lines: { type: 'number', required: false, description: '读取尾部行数（1~500，默认 60）' },
+            lines: { type: 'number', description: '读取尾部行数（1~500，默认 60）' },
           },
           output: {
             schema: {
@@ -790,8 +798,8 @@ const plugin = definePlugin<Config>({
             if (session === undefined || session.closed) throw new Error(`会话不存在或已退出: ${input.sid}`)
             return { sid: input.sid, tail: tailLines(session, lines) }
           },
-        }))
-        disposers.push(tools.register({
+        })))
+        disposers.push(tools.register(defineTool({
           name: 'tty_send',
           description: '向某个终端面板会话（tty_list 提供 sid）的 PTY 发送按键/文本（命令以 \\n 结尾）。适合给用户终端里运行的程序发交互输入（如 dev server 的 q 键、menu 选择、回答提示）。操作会实时显示在用户的终端面板里。',
           parameters: {
@@ -821,8 +829,11 @@ const plugin = definePlugin<Config>({
             await session.handle.write(input.data)
             return { ok: true, sent: input.data.length }
           },
-        }))
+        })))
+        stateRef.toolsRegistered = true
+        console.log('[dsh-tty] agent tools registered (tty_list, tty_capture, tty_send)')
         return () => {
+          stateRef.toolsRegistered = false
           for (const dispose of disposers) {
             try {
               dispose()
@@ -832,7 +843,9 @@ const plugin = definePlugin<Config>({
           }
         }
       }, 'dsh-tty: agent tools')
-    })
+    } else {
+      console.log('[dsh-tty] tools service unavailable; agent tools skipped')
+    }
 
     // 向 agent 公告终端面板能力
     if (config?.announceToAgent !== false) {

@@ -18,6 +18,7 @@ import WebServerRuntime from '@deepseek-ai/dsh-host-webserver'
 import { LocalSubprocessRuntime } from '@deepseek-ai/dsh-subprocess-local'
 import WebSocket from 'ws'
 import { name, inject, apply } from '../lib/index.js'
+import { assertSupportedJsonSchema } from '@deepseek-ai/dsh-tools'
 
 
 /* 全局看门狗：任何环节卡死时留痕退出（正常路径会先 process.exit）。 */
@@ -367,6 +368,18 @@ async function run() {
     if (list === undefined || capture === undefined || send === undefined) {
       fail('B12 agent 工具集', '工具未注册: ' + toolDefs.map((d) => d.name).join(','))
     } else {
+      // 真实宿主同样的校验（注册时 assertSupportedJsonSchema）
+      let schemaOk = true
+      for (const d of toolDefs.filter((x) => x.name.startsWith('tty_'))) {
+        try {
+          assertSupportedJsonSchema(d.parameters)
+          assertSupportedJsonSchema(d.output?.schema ?? {})
+        } catch (e) {
+          schemaOk = false
+          fail('B12e 工具 schema 通过 DSH 校验', d.name + ': ' + String(e && e.message ? e.message : e))
+        }
+      }
+      if (schemaOk) pass('B12e 工具 schema 通过 DSH 校验（assertSupportedJsonSchema）')
       const listed = await list.execute({})
       if (Array.isArray(listed.sessions) && listed.sessions.some((x) => x.sid === 't12')) pass('B12a tty_list 列出活跃会话')
       else fail('B12a tty_list 列出活跃会话', JSON.stringify(listed))
