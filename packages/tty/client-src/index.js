@@ -169,6 +169,8 @@ function createTerminal(tab) {
     fontFamily: '"SF Mono", Menlo, Consolas, "Courier New", monospace',
     scrollback: 5000,
     convertEol: false,
+    // 搜索高亮装饰（SearchAddon decorations）依赖提案 API
+    allowProposedApi: true,
   })
   const fit = new FitAddon()
   const search = new SearchAddon()
