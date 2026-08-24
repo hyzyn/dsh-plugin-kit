@@ -92,10 +92,17 @@ async function run() {
   const subFiber = app.plugin(LocalSubprocessRuntime)
   // 最小 settings 服务 stub：让插件的 settings 注入回调触发，并可手动派发
   // settings/updated 事件（与 dsh-settings 的 dispatch 方式一致）来测配置热生效。
+  const toolDefs = []
   const stubFiber = app.plugin({
     name: 'settings-stub',
     apply: (ctx) => {
       ctx.provide('settings', { register: () => ({ get: () => ({}), update: async () => {} }) })
+      ctx.provide('tools', {
+        register: (definition) => {
+          toolDefs.push(definition)
+          return () => {}
+        },
+      })
     },
   })
   await stubFiber.await()
@@ -345,6 +352,49 @@ async function run() {
     s2.client.close()
     s3.client.close()
     await fetch(base, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ maxSessions: 4 }) })
+  }
+
+  // B12: agent 工具集（tty_list / tty_capture / tty_send）
+  console.log('\n[11] agent 工具集')
+  {
+    const s = openSession(port)
+    await s.open()
+    s.client.send(JSON.stringify({ t: 'spawn', sid: 't12' }))
+    await s.waitFor(() => s.state.ready, 10000, 't12 ready')
+    const list = toolDefs.find((d) => d.name === 'tty_list')
+    const capture = toolDefs.find((d) => d.name === 'tty_capture')
+    const send = toolDefs.find((d) => d.name === 'tty_send')
+    if (list === undefined || capture === undefined || send === undefined) {
+      fail('B12 agent 工具集', '工具未注册: ' + toolDefs.map((d) => d.name).join(','))
+    } else {
+      const listed = await list.execute({})
+      if (Array.isArray(listed.sessions) && listed.sessions.some((x) => x.sid === 't12')) pass('B12a tty_list 列出活跃会话')
+      else fail('B12a tty_list 列出活跃会话', JSON.stringify(listed))
+      const sent = await send.execute({ sid: 't12', data: 'printf "CAPTURE_%s\\n" OK\n' })
+      if (sent.ok === true && sent.sent > 0) pass('B12b tty_send 发送输入')
+      else fail('B12b tty_send 发送输入', JSON.stringify(sent))
+      await sleep(600)
+      // shell 执行有延迟（.zshrc 启动），轮询等待标记出现在输出缓冲
+      let captured = null
+      for (let i = 0; i < 16; i++) {
+        await sleep(250)
+        captured = await capture.execute({ sid: 't12', lines: 20 })
+        if (typeof captured.tail === 'string' && captured.tail.includes('CAPTURE_OK')) break
+      }
+      if (captured !== null && typeof captured.tail === 'string' && captured.tail.includes('CAPTURE_OK')) pass('B12c tty_capture 读到会话输出')
+      else fail('B12c tty_capture 读到会话输出', JSON.stringify(captured === null ? null : captured.tail).slice(0, 120))
+      let rejected = false
+      try {
+        await capture.execute({ sid: 'ghost-session' })
+      } catch {
+        rejected = true
+      }
+      if (rejected) pass('B12d 不存在的 sid 调用工具被拒')
+      else fail('B12d 不存在的 sid 调用工具被拒', '未抛错')
+    }
+    s.client.send(JSON.stringify({ t: 'kill', sid: 't12' }))
+    await s.waitFor(() => s.state.exited !== null, 10000, 't12 exit')
+    s.client.close()
   }
 
   const failed = RESULTS.filter(([kind]) => kind === 'FAIL')

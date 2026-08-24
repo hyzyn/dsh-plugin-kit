@@ -28,6 +28,19 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
 - 关闭面板或按 Esc 结束全部会话（PTY 树级清理）；会话退出后点终端区域可重开；
 - 并发上限默认 4（配置 `maxSessions`，1~16）。
 
+## agent 工具（P1）
+
+插件向 agent 注入三个工具（与 bash 工具同权，操作实时显示在用户终端里）：
+
+| 工具 | 作用 |
+| --- | --- |
+| `tty_list` | 列出活跃终端会话（sid / pid / cwd / 活动时间） |
+| `tty_capture` | 读取指定会话的近期输出（尾部 N 行，默认 60）——查看 dev server / build 日志 |
+| `tty_send` | 向指定会话发送按键/文本（如 dev server 的 q 键、菜单选择） |
+
+典型用法：用户在终端面板里跑了 `pnpm dev`，agent 用 `tty_list` 找到 sid →
+`tty_capture` 看日志 → `tty_send` 发 `q` 停止。
+
 ## 配置（设置 → 插件 → 终端面板，保存即热生效）
 
 | 项 | 默认 | 说明 |

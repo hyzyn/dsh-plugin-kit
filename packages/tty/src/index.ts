@@ -73,9 +73,10 @@ const DEFAULT_MAX_SESSIONS = 4
 const BACKPRESSURE_HIGH = 512 * 1024
 const BACKPRESSURE_LOW = 128 * 1024
 const SID_RE = /^[A-Za-z0-9_-]{1,64}$/
+const BUFFER_CAP = 256 * 1024
 
 const TTY_GUIDANCE =
-  '本机已安装 dsh-tty 插件（终端面板）：Web GUI 侧边栏的「终端」入口可打开交互终端（xterm.js + PTY），可运行任意命令与 TUI 程序（vim/htop 等），支持多标签页；新标签默认在当前会话工作目录打开，工作目录可随当前会话切换。长驻进程（dev server、watch、交互式程序）应引导用户到终端面板里运行，不要在 bash 工具里挂起等待；用户提到「开个终端 / 在终端里跑」时引导其打开该面板。'
+  '本机已安装 dsh-tty 插件（终端面板）：Web GUI 侧边栏的「终端」入口可打开交互终端（xterm.js + PTY），可运行任意命令与 TUI 程序（vim/htop 等），支持多标签页；新标签默认在当前会话工作目录打开，工作目录可随当前会话切换。长驻进程（dev server、watch、交互式程序）应引导用户到终端面板里运行，不要在 bash 工具里挂起等待；用户提到「开个终端 / 在终端里跑」时引导其打开该面板。agent 侧也有配套工具：tty_list 列出活跃终端会话，tty_capture 读取会话近期输出（可查看 dev server/NPM 日志），tty_send 向会话发送按键——操作会实时显示在用户终端里。'
 
 /* ------------------------------------------------------------------ *
  * 类型
@@ -103,6 +104,12 @@ interface TtySession {
   paused: boolean
   /** exit 帧只发一次（kill 主动关闭与 shell 自然退出共用同一回调）。 */
   exitSent?: boolean
+  /** agent 工具展示用的元数据。 */
+  cwd: string
+  startedAt: number
+  lastOutputAt: number
+  /** 输出环形缓冲（尾部 256KB，供 tty_capture）。 */
+  buffer: string
 }
 
 interface ReqLike {
@@ -228,6 +235,21 @@ class SessionManager {
 
   remove(id: string): void {
     this.sessions.delete(id)
+  }
+
+  get(id: string): TtySession | undefined {
+    return this.sessions.get(id)
+  }
+
+  /** agent 工具用的只读快照。 */
+  list(): Array<{ sid: string; pid: number; cwd: string; startedAt: number; lastOutputAt: number }> {
+    return [...this.sessions.values()].map((session) => ({
+      sid: session.id,
+      pid: session.handle.pid,
+      cwd: session.cwd,
+      startedAt: session.startedAt,
+      lastOutputAt: session.lastOutputAt,
+    }))
   }
 
   async disposeAll(): Promise<void> {
@@ -357,7 +379,17 @@ class TtyServer {
           env: { TERM: this.options.term, COLORTERM: this.options.colorTerm },
           graceMs: 5000,
         })
-        const next: TtySession = { id: sid, handle, ws, closed: false, paused: false }
+        const next: TtySession = {
+          id: sid,
+          handle,
+          ws,
+          closed: false,
+          paused: false,
+          cwd,
+          startedAt: Date.now(),
+          lastOutputAt: Date.now(),
+          buffer: '',
+        }
         local.set(sid, next)
         this.sessions.add(next)
         send(ws, { t: 'ready', sid, pid: handle.pid })
@@ -404,6 +436,8 @@ class TtyServer {
     const onData = (chunk: Buffer) => {
       if (session.closed) return
       const text = chunk.toString('utf8')
+      session.lastOutputAt = Date.now()
+      session.buffer = (session.buffer + text).slice(-BUFFER_CAP)
       const ws = session.ws
       const sid = session.id
       ws.send(JSON.stringify({ t: 'data', sid, d: text }), () => {
@@ -676,6 +710,128 @@ const plugin = definePlugin<Config>({
           settingsScope = undefined
         }
       }, 'dsh-tty: settings')
+    })
+
+    // agent 工具集（P1）：tty_list / tty_capture / tty_send。
+    // 信任模型：与 bash 工具同权（agent 本就能执行任意命令），不额外加确认层；
+    // agent 对终端的操作会实时出现在浏览器面板里（同一 PTY），天然可被用户观察。
+    ctx.inject(['tools'], (toolsCtx: Context) => {
+      toolsCtx.effect(() => {
+        const tools = (toolsCtx as unknown as { tools: { register(definition: unknown): () => void } }).tools
+        const tailLines = (session: TtySession, lines: number): string => {
+          const parts = session.buffer.split('\n')
+          return parts.slice(-(lines + 1)).join('\n').replace(/^\n+/, '')
+        }
+        const disposers: Array<() => void> = []
+        disposers.push(tools.register({
+          name: 'tty_list',
+          description: '列出当前活跃的终端面板会话（sid / pid / cwd / 创建与最后活动时间）。用户开了终端面板后，用 tty_capture 读取某个 sid 的终端输出，用 tty_send 向该终端发送按键。',
+          parameters: {},
+          output: {
+            schema: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                sessions: {
+                  type: 'array',
+                  required: true,
+                  items: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      sid: { type: 'string', required: true },
+                      pid: { type: 'number', required: true },
+                      cwd: { type: 'string', required: true },
+                      startedAt: { type: 'number', required: true },
+                      lastOutputAt: { type: 'number', required: true },
+                    },
+                  },
+                },
+              },
+            },
+            render: (_args: unknown, value: unknown) => {
+              const sessions = (value as { sessions?: Array<{ sid: string; pid: number; cwd: string; startedAt: number; lastOutputAt: number }> })?.sessions ?? []
+              const text = sessions.length === 0
+                ? '当前没有活跃的终端面板会话（请引导用户先打开终端面板，或用户尚未打开）'
+                : '终端面板会话：' + sessions.map((s) => `\n- sid=${s.sid} pid=${s.pid} cwd=${s.cwd} (启动于 ${new Date(s.startedAt).toLocaleString()})`).join('')
+              return [{ type: 'text', text }]
+            },
+          },
+          async execute(): Promise<{ sessions: ReturnType<SessionManager['list']> }> {
+            return { sessions: sessions.list() }
+          },
+        }))
+        disposers.push(tools.register({
+          name: 'tty_capture',
+          description: '读取某个终端面板会话（tty_list 提供 sid）的近期输出（默认尾部 60 行，最多 500 行）。适合查看用户终端里正在运行的 dev server / watch / 构建输出。',
+          parameters: {
+            sid: { type: 'string', required: true, description: '会话 id（来自 tty_list）' },
+            lines: { type: 'number', required: false, description: '读取尾部行数（1~500，默认 60）' },
+          },
+          output: {
+            schema: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                sid: { type: 'string', required: true },
+                tail: { type: 'string', required: true },
+              },
+            },
+            render: (_args: unknown, value: unknown) => {
+              const v = value as { sid?: string; tail?: string }
+              return [{ type: 'text', text: `终端会话 ${v.sid ?? '?'} 尾部输出：\n\n${v.tail ?? ''}` }]
+            },
+          },
+          async execute(args: unknown): Promise<{ sid: string; tail: string }> {
+            const input = args as { sid?: unknown; lines?: unknown }
+            if (typeof input.sid !== 'string' || input.sid === '') throw new Error('sid 必须是非空字符串')
+            const lines = Math.max(1, Math.min(500, typeof input.lines === 'number' && Number.isInteger(input.lines) && input.lines >= 1 ? input.lines : 60))
+            const session = sessions.get(input.sid)
+            if (session === undefined || session.closed) throw new Error(`会话不存在或已退出: ${input.sid}`)
+            return { sid: input.sid, tail: tailLines(session, lines) }
+          },
+        }))
+        disposers.push(tools.register({
+          name: 'tty_send',
+          description: '向某个终端面板会话（tty_list 提供 sid）的 PTY 发送按键/文本（命令以 \\n 结尾）。适合给用户终端里运行的程序发交互输入（如 dev server 的 q 键、menu 选择、回答提示）。操作会实时显示在用户的终端面板里。',
+          parameters: {
+            sid: { type: 'string', required: true, description: '会话 id（来自 tty_list）' },
+            data: { type: 'string', required: true, description: '要发送的文本（含换行则直接发送命令）' },
+          },
+          output: {
+            schema: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                ok: { type: 'boolean', required: true },
+                sent: { type: 'number', required: true },
+              },
+            },
+            render: (_args: unknown, value: unknown) => {
+              const v = value as { sent?: number }
+              return [{ type: 'text', text: `已向终端会话发送 ${v.sent ?? 0} 个字符` }]
+            },
+          },
+          async execute(args: unknown): Promise<{ ok: boolean; sent: number }> {
+            const input = args as { sid?: unknown; data?: unknown }
+            if (typeof input.sid !== 'string' || input.sid === '') throw new Error('sid 必须是非空字符串')
+            if (typeof input.data !== 'string' || input.data === '') throw new Error('data 必须是非空字符串')
+            const session = sessions.get(input.sid)
+            if (session === undefined || session.closed) throw new Error(`会话不存在或已退出: ${input.sid}`)
+            await session.handle.write(input.data)
+            return { ok: true, sent: input.data.length }
+          },
+        }))
+        return () => {
+          for (const dispose of disposers) {
+            try {
+              dispose()
+            } catch {
+              /* 工具已注销 */
+            }
+          }
+        }
+      }, 'dsh-tty: agent tools')
     })
 
     // 向 agent 公告终端面板能力
