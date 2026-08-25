@@ -5,6 +5,9 @@
  * bundle 分发），经 window.__ModuleLoader__.load 注册。
  *
  * v0.2 能力：
+ * v0.3 能力：
+ *   - 最小化/折叠：点空白处、Esc 或「—」按钮把弹窗收进右下角悬浮条，
+ *     PTY 会话与输出缓冲保持存活；悬浮条点击恢复，✕ 才真正关闭（结束会话）
  *   - 多会话标签页（每标签一个 sid 的 xterm 实例，可切换/关闭/新建）
  *   - 新标签默认在当前会话工作目录打开（注入 sessions 客户端服务）
  *   - 便利功能：终端内搜索（Ctrl+F）、可点击链接、清屏/复制/粘贴按钮
@@ -38,8 +41,22 @@ const CSS = [
   '.tt_toolBtn:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}',
   '.tt_searchInput{width:120px;height:28px;background:var(--dsw-specific-input-major);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;color:inherit;font:inherit;font-size:12px;padding:0 8px;flex:none}',
   '.tt_searchInput:focus{border-color:var(--dsw-alias-state-business-primary);outline:none}',
-  '.tt_close{appearance:none;background:0 0;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:8px;width:30px;height:30px;cursor:pointer;font-size:16px;line-height:1;flex:none}',
-  '.tt_close:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}',
+  '.tt_min,.tt_close{appearance:none;background:0 0;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:8px;width:30px;height:30px;cursor:pointer;font-size:16px;line-height:1;flex:none}',
+  '.tt_min:hover,.tt_close:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}',
+  // 最小化：弹窗仅隐藏（会话与输出缓冲保持存活），右下角悬浮条负责恢复/关闭
+  '.tt_modalBackdrop[data-minimized]{display:none}',
+  '.tt_dock{position:fixed;right:18px;bottom:18px;z-index:1300;display:inline-flex;align-items:center;gap:10px;height:38px;padding:0 8px 0 16px;border-radius:999px;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);box-shadow:var(--dsw-shadow-lv3);color:var(--dsw-alias-label-primary);font-size:13px;cursor:pointer;user-select:none}',
+  '.tt_dock:hover{border-color:var(--dsw-alias-label-dimmed)}',
+  '.tt_dockTitle{display:flex;align-items:center;gap:8px;font-weight:600;white-space:nowrap}',
+  '.tt_dockCount{color:var(--dsw-alias-label-tertiary);font-size:12px;font-weight:400}',
+  '.tt_dockStatus{max-width:220px;color:var(--dsw-alias-label-tertiary);font-size:12px;white-space:nowrap;text-overflow:ellipsis;overflow:hidden}',
+  '.tt_dockDot{width:8px;height:8px;border-radius:50%;background:var(--dsw-alias-label-tertiary);flex:none}',
+  '.tt_dockDot[data-state=connected]{background:var(--dsw-alias-state-success-primary)}',
+  '.tt_dockDot[data-state=error]{background:var(--dsw-alias-state-error-primary)}',
+  '@keyframes ttDockPulse{from{box-shadow:0 0 0 6px rgba(63,185,80,.35)}to{box-shadow:0 0 0 0 rgba(63,185,80,0)}}',
+  '.tt_dockDot[data-active]{animation:ttDockPulse .9s ease-out}',
+  '.tt_dockClose{appearance:none;background:0 0;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:50%;width:26px;height:26px;cursor:pointer;font-size:12px;line-height:1;flex:none;display:inline-flex;align-items:center;justify-content:center}',
+  '.tt_dockClose:hover{color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary)}',
   '.tt_tabbar{flex:none;display:flex;align-items:center;gap:6px;padding:6px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);overflow-x:auto}',
   '.tt_tab{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 8px 0 12px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);font-size:12px;cursor:pointer;flex:none;white-space:nowrap}',
   '.tt_tab:hover{color:var(--dsw-alias-label-primary)}',
@@ -117,6 +134,13 @@ let searchInputEl = null
 let bodyOverlayEl = null
 let intentionalClose = false
 let resizeObserver = null
+/** 最小化状态：弹窗隐藏但会话保活，由右下角悬浮条（dock）恢复。 */
+let minimized = false
+let dockEl = null
+let dockCountEl = null
+let dockStatusEl = null
+let dockDotEl = null
+let dockActivityTimer = null
 
 /** sid → 标签页 */
 const tabs = new Map()
@@ -128,6 +152,19 @@ function setStatus(text, state) {
   if (statusEl === null) return
   statusEl.textContent = text
   statusDotEl.dataset.state = state
+  // 悬浮条与弹窗头部状态保持一致（最小化时用户只看得到悬浮条）
+  if (dockStatusEl !== null) dockStatusEl.textContent = text
+  if (dockDotEl !== null) dockDotEl.dataset.state = state
+}
+
+/** 最小化期间有输出到达：脉冲提示悬浮条，说明会话仍在活动。 */
+function flashDockActivity() {
+  if (!minimized || dockDotEl === null) return
+  dockDotEl.dataset.active = ''
+  clearTimeout(dockActivityTimer)
+  dockActivityTimer = setTimeout(() => {
+    if (dockDotEl !== null) delete dockDotEl.dataset.active
+  }, 900)
 }
 
 function sendFrame(msg) {
@@ -413,7 +450,10 @@ function connect() {
       }
     } else if (msg.t === 'data') {
       const tab = tabs.get(sid)
-      if (tab !== undefined && tab.term !== null) tab.term.write(String(msg.d ?? ''))
+      if (tab !== undefined && tab.term !== null) {
+        tab.term.write(String(msg.d ?? ''))
+        flashDockActivity()
+      }
     } else if (msg.t === 'exit') {
       const tab = tabs.get(sid)
       if (tab !== undefined) {
@@ -453,7 +493,11 @@ function showBodyOverlay(text) {
 }
 
 function openModal() {
-  if (modalEl !== null) return
+  if (modalEl !== null) {
+    // 已在运行：最小化中则从悬浮条恢复，否则保持现状
+    if (minimized) restoreModal()
+    return
+  }
   ensureStyle()
 
   modalEl = document.createElement('div')
@@ -468,7 +512,8 @@ function openModal() {
     '<button class="tt_toolBtn" data-act="clear" title="清屏">清屏</button>' +
     '<button class="tt_toolBtn" data-act="copy" title="复制选中内容">复制</button>' +
     '<button class="tt_toolBtn" data-act="paste" title="粘贴">粘贴</button>' +
-    '<button class="tt_close" title="关闭终端">✕</button>' +
+    '<button class="tt_min" title="最小化到悬浮条（会话保持运行）">—</button>' +
+    '<button class="tt_close" title="关闭终端（结束所有会话）">✕</button>' +
     '</div>' +
     '<div class="tt_tabbar"></div>' +
     '<div class="tt_body"><div class="tt_overlay"></div></div>' +
@@ -495,6 +540,8 @@ function openModal() {
       event.preventDefault()
       doSearch(event.shiftKey)
     } else if (event.key === 'Escape') {
+      // 只收起搜索框：阻断冒泡，避免文档级 Esc 处理器把整个面板最小化
+      event.stopPropagation()
       searchInputEl.style.display = 'none'
     }
   })
@@ -515,15 +562,20 @@ function openModal() {
       sendFrame({ t: 'input', sid: tab.sid, d: text })
     }).catch(() => {})
   })
+  modalEl.querySelector('.tt_min').addEventListener('click', () => {
+    minimizeModal()
+  })
   modalEl.querySelector('.tt_close').addEventListener('click', () => {
     closeModal()
   })
+  // 点空白处 = 最小化而不是关闭：会话保活，随时从悬浮条恢复
   modalEl.addEventListener('mousedown', (event) => {
-    if (event.target === modalEl) closeModal()
+    if (event.target === modalEl) minimizeModal()
   })
   document.addEventListener('keydown', onModalKeydown)
 
   resizeObserver = new ResizeObserver(() => {
+    if (minimized) return // display:none 下 fit 尺寸无意义，恢复时统一重算
     const tab = activeTab()
     if (tab !== undefined && tab.fit !== undefined) {
       try {
@@ -539,9 +591,81 @@ function openModal() {
   connect()
 }
 
+/** 右下角悬浮条：展示会话数 / 连接状态，点击恢复窗口。 */
+function buildDock() {
+  dockEl = document.createElement('div')
+  dockEl.className = 'tt_dock'
+  dockEl.title = '点击恢复终端窗口'
+  dockEl.innerHTML =
+    '<span class="tt_dockTitle">' + TERMINAL_ICON + '<span>终端</span><span class="tt_dockCount"></span></span>' +
+    '<span class="tt_dockStatus"></span>' +
+    '<span class="tt_dockDot"></span>' +
+    '<button class="tt_dockClose" title="关闭终端（结束所有会话）">✕</button>'
+  dockCountEl = dockEl.querySelector('.tt_dockCount')
+  dockStatusEl = dockEl.querySelector('.tt_dockStatus')
+  dockDotEl = dockEl.querySelector('.tt_dockDot')
+  const running = [...tabs.values()].filter((tab) => !tab.exited).length
+  dockCountEl.textContent = tabs.size > 0 ? '· ' + running + '/' + tabs.size : ''
+  // 快照当前状态（此后 setStatus 会持续同步）
+  if (statusEl !== null) dockStatusEl.textContent = statusEl.textContent
+  if (statusDotEl !== null) dockDotEl.dataset.state = statusDotEl.dataset.state ?? ''
+  dockEl.addEventListener('click', (event) => {
+    if (event.target.closest('.tt_dockClose') !== null) {
+      event.stopPropagation()
+      closeModal()
+      return
+    }
+    restoreModal()
+  })
+  document.body.appendChild(dockEl)
+}
+
+/** 最小化：隐藏弹窗但保留 DOM / WebSocket / xterm 缓冲，收进右下角悬浮条。 */
+function minimizeModal() {
+  if (modalEl === null || minimized) return
+  minimized = true
+  if (searchInputEl !== null) searchInputEl.style.display = 'none'
+  modalEl.dataset.minimized = ''
+  buildDock()
+}
+
+/** 从悬浮条恢复弹窗：重新 fit 并把精确尺寸同步给 PTY。 */
+function restoreModal() {
+  if (modalEl === null || !minimized) return
+  minimized = false
+  delete modalEl.dataset.minimized
+  clearTimeout(dockActivityTimer)
+  if (dockEl !== null) {
+    dockEl.remove()
+    dockEl = null
+  }
+  dockCountEl = null
+  dockStatusEl = null
+  dockDotEl = null
+  const tab = activeTab()
+  if (tab !== undefined && tab.fit !== undefined) {
+    try {
+      tab.fit.fit()
+    } catch {
+      /* 忽略 */
+    }
+    if (tab.spawned && !tab.exited) sendResize(tab)
+  }
+  if (tab !== undefined && tab.term !== null) tab.term.focus()
+}
+
 function closeModal() {
   if (modalEl === null) return
   intentionalClose = true
+  minimized = false
+  clearTimeout(dockActivityTimer)
+  if (dockEl !== null) {
+    dockEl.remove()
+    dockEl = null
+  }
+  dockCountEl = null
+  dockStatusEl = null
+  dockDotEl = null
   if (socket !== null) {
     for (const tab of tabs.values()) {
       if (!tab.exited) sendFrame({ t: 'kill', sid: tab.sid })
@@ -583,7 +707,8 @@ function closeModal() {
 function onModalKeydown(event) {
   if (event.key === 'Escape' && modalEl !== null) {
     event.preventDefault()
-    closeModal()
+    // Esc = 最小化（会话保活）；真正关闭请用 ✕ 按钮
+    minimizeModal()
   }
 }
 

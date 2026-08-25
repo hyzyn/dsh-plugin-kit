@@ -5,6 +5,8 @@ xterm.js 全交互终端（node-pty 真实 PTY），支持**多标签页**，可
 命令与 TUI 程序（vim / htop / dev server 等）。浏览器半体打包了 xterm
 内核，宿主半体经 WebSocket 与 PTY 会话双向透传。
 
+![终端面板：多标签页 xterm 弹窗，标题栏含最小化「—」与关闭 ✕](../../docs/dsh-plugin-kit-tty.png)
+
 ## 安装
 
 ```bash
@@ -23,10 +25,15 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
   （宿主配置 `cwd` 作兜底）；
 - 支持 vim / htop / less 等 TUI（TERM 已注入为 `xterm-256color`）；
 - 面板大小变化自动 resize（xterm fit → PTY 原生 resize）；
-- **Ctrl+F 终端内搜索**（Enter 下一个 / Shift+Enter 上一个 / Esc 关闭），
+- **Ctrl+F 终端内搜索**（Enter 下一个 / Shift+Enter 上一个 / Esc 只关搜索框），
   输出中的链接可点击，工具栏提供 清屏 / 复制选中 / 粘贴；
-- 关闭面板或按 Esc 结束全部会话（PTY 树级清理）；会话退出后点终端区域可重开；
+- **最小化到悬浮条**：点弹窗外空白处、按 Esc 或标题栏「—」把面板收进右下角
+  悬浮条——PTY 会话与输出缓冲保持存活，最小化期间有输出时状态点会脉冲提示；
+  点悬浮条（或侧边栏「终端」入口）恢复窗口，悬浮条 ✕ 才真正关闭并结束全部会话；
+- 标题栏 ✕ 关闭面板并结束全部会话（PTY 树级清理）；会话退出后点终端区域可重开；
 - 并发上限默认 4（配置 `maxSessions`，1~16）。
+
+![终端面板设置卡片：shell / TERM / 并发上限等保存即热生效](../../docs/dsh-plugin-kit-tty-setting.png)
 
 ## agent 工具（P1）
 
