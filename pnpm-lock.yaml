@@ -9,7 +9,7 @@ importers:
   .:
     dependencies:
       '@hyzyn/dsh-codegraph':
-        specifier: 0.1.4
+        specifier: 0.1.5
         version: link:packages/codegraph
       '@hyzyn/dsh-env':
         specifier: 0.1.4
