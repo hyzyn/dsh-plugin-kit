@@ -213,7 +213,10 @@ window.__ModuleLoader__.load({
 
     function summaryOf(server) {
       const config = server.config || {}
-      if (config.transport === 'stdio') return (config.command || '') + (config.args && config.args.length ? ' ' + config.args.join(' ') : '')
+      if (config.transport === 'stdio') {
+        const command = (config.command || '') + (config.args && config.args.length ? ' ' + config.args.join(' ') : '')
+        return config.cwd ? config.cwd + ' $ ' + command : command
+      }
       return config.url || ''
     }
 
@@ -326,7 +329,7 @@ window.__ModuleLoader__.load({
       parts.push('<div id="ed_stdio" style="display:' + (transport === 'stdio' ? 'flex' : 'none') + ';flex-direction:column;gap:10px">')
       parts.push('<div class="mX_formRow">')
       parts.push('<div class="mX_field"><label class="mX_fieldLabel" for="ed_command">command（可执行文件）</label><input class="mX_input" id="ed_command" placeholder="npx" value="' + esc(config.command || '') + '"></div>')
-      parts.push('<div class="mX_field"><label class="mX_fieldLabel" for="ed_cwd">cwd（工作目录，可选）</label><input class="mX_input" id="ed_cwd" placeholder="/path/to/project" value="' + esc(config.cwd || '') + '"></div>')
+      parts.push('<div class="mX_field"><label class="mX_fieldLabel" for="ed_cwd">cwd（工作目录，可选；目录需已存在）</label><input class="mX_input" id="ed_cwd" placeholder="/path/to/project" value="' + esc(config.cwd || '') + '"></div>')
       parts.push('</div>')
       parts.push('<div class="mX_field"><label class="mX_fieldLabel" for="ed_args">args（JSON 数组，或每行一个参数）</label><textarea class="mX_input mX_textarea" id="ed_args" placeholder="[-y, @modelcontextprotocol/server-filesystem]">' + esc(JSON.stringify(config.args || [])) + '</textarea></div>')
       parts.push('<div class="mX_field"><label class="mX_fieldLabel" for="ed_env">env（每行 KEY=VALUE；js: 开头为 JS 表达式）</label><textarea class="mX_input mX_textarea" id="ed_env" placeholder="GITHUB_TOKEN=js:process.env.GITHUB_TOKEN">' + esc(kvToText(config.env)) + '</textarea></div>')

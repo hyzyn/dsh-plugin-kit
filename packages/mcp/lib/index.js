@@ -165,31 +165,45 @@ function renderManagedBlock(rows) {
     }));
     return yaml.dump(patches, { schema: YAML_SCHEMA, lineWidth: -1, noRefs: true });
 }
-/** 把托管区块写回 home 补丁文件（原子替换，保留文件其它内容与权限）。 */
-function writeManagedRows(rows) {
-    const patchFile = homePatchPath();
-    const existed = existsSync(patchFile);
-    const mode = existed ? (statSync(patchFile).mode & 0o777) : 0o600;
-    const text = existed ? readFileSync(patchFile, 'utf8') : '# dsh home patch layer\n';
+/** 纯函数：把托管区块（含首尾标记行）拼进 home 补丁文本，保留区块外的所有内容。 */
+export function spliceManagedBlock(text, rows) {
     const lines = text.split('\n');
     const start = lines.findIndex((line) => line.includes('dsh-mcp-config managed'));
     const end = start === -1 ? -1 : lines.findIndex((line, index) => index > start && line.includes('end dsh-mcp-config managed'));
     const block = MARK_START + '\n' + renderManagedBlock(rows) + MARK_END + '\n';
-    let next;
     if (start === -1) {
-        next = text.replace(/\s*$/, '') + (text.trim() === '' ? '' : '\n') + '\n' + block;
+        return text.replace(/\s*$/, '') + (text.trim() === '' ? '' : '\n') + '\n' + block;
     }
-    else if (end === -1) {
-        next = lines.slice(0, start).join('\n') + '\n' + block;
+    if (end === -1) {
+        // 悬空起始标记（收尾标记丢失）：只重写标记行本身。区块体本来就是顶层
+        // 合法行，保留而不是吞掉——旧行为会连带删掉区块之后的所有内容。
+        return [...lines.slice(0, start), ...block.split('\n'), ...lines.slice(start + 1)].join('\n');
     }
-    else {
-        next = [...lines.slice(0, start), ...block.split('\n'), ...lines.slice(end + 1)].join('\n');
+    return [...lines.slice(0, start), ...block.split('\n'), ...lines.slice(end + 1)].join('\n');
+}
+/** 把托管区块写回 home 补丁文件（原子替换，保留文件其它内容与权限）。 */
+function writeManagedRows(rows) {
+    const patchFile = homePatchPath();
+    for (let attempt = 0;; attempt++) {
+        const existed = existsSync(patchFile);
+        const stat = existed ? statSync(patchFile) : undefined;
+        const mode = stat ? (stat.mode & 0o777) : 0o600;
+        // 写前复核：dsh-codegraph 等插件也会写这个文件。盖章（mtime+size）→ 读 →
+        // 渲染 → 复核，期间被别人写过就重读重做，避免用旧快照覆盖掉它的改动。
+        const stamp = stat ? stat.mtimeMs + ':' + stat.size : 'absent';
+        const text = stat ? readFileSync(patchFile, 'utf8') : '# dsh home patch layer\n';
+        const next = spliceManagedBlock(text, rows);
+        const statNow = existsSync(patchFile) ? statSync(patchFile) : undefined;
+        const stampNow = statNow ? statNow.mtimeMs + ':' + statNow.size : 'absent';
+        if (stat !== undefined && stampNow !== stamp && attempt < 3)
+            continue;
+        const tmp = join(dirname(patchFile), '.cordis.patch.yml.' + process.pid + '.tmp');
+        writeFileSync(tmp, next, { mode });
+        renameSync(tmp, patchFile);
+        if (stat === undefined || (mode & 0o077) !== 0)
+            chmodSync(patchFile, mode);
+        return;
     }
-    const tmp = join(dirname(patchFile), '.cordis.patch.yml.' + process.pid + '.tmp');
-    writeFileSync(tmp, next, { mode });
-    renameSync(tmp, patchFile);
-    if (!existed || (mode & 0o077) !== 0)
-        chmodSync(patchFile, mode);
 }
 /* ------------------------------------------------------------------ *
  * 配置校验（对齐 dsh-mcp-client 的 Config 约束）
@@ -272,6 +286,8 @@ function validateConfig(raw) {
     const command = transport === 'stdio' ? asString(input.command, 'command', errors) : undefined;
     const args = asStringArray(input.args, 'args', errors);
     const cwd = input.cwd === undefined || input.cwd === '' ? undefined : asString(input.cwd, 'cwd', errors);
+    if (cwd !== undefined && !existsSync(cwd))
+        errors.push('cwd 不存在: ' + cwd);
     const url = transport === 'streamable-http' ? asString(input.url, 'url', errors) : undefined;
     if (transport === 'streamable-http' && url !== undefined) {
         try {
