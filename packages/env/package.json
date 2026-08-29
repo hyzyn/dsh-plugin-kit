@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-env",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "DSH Web GUI 的环境变量 / 密钥管理插件：官方设置 → 插件 里的「环境变量 / 密钥管理」卡片，托管 ~/.dsh/env.yml 的密钥区块，支持普通值与 js: 前缀表达式，保存后可选写入当前进程环境变量。",
   "type": "module",
   "engines": {
@@ -48,6 +48,15 @@
     "README.md"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hyzyn/dsh-plugin-kit.git",
+    "directory": "packages/env"
+  },
+  "homepage": "https://github.com/hyzyn/dsh-plugin-kit/tree/main/packages/env#readme",
+  "bugs": {
+    "url": "https://github.com/hyzyn/dsh-plugin-kit/issues"
+  },
   "publishConfig": {
     "access": "public"
   }

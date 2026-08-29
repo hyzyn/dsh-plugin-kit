@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-kit",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "dsh-plugin-kit 插件开发工具包：definePlugin 类型助手等共用代码，零运行时依赖。",
   "type": "module",
   "engines": {
@@ -27,6 +27,15 @@
     "lib"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hyzyn/dsh-plugin-kit.git",
+    "directory": "packages/kit"
+  },
+  "homepage": "https://github.com/hyzyn/dsh-plugin-kit/tree/main/packages/kit#readme",
+  "bugs": {
+    "url": "https://github.com/hyzyn/dsh-plugin-kit/issues"
+  },
   "publishConfig": {
     "access": "public"
   }

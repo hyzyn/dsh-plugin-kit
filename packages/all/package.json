@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-all",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "dsh-plugin-kit 聚合安装包：一条 bundle patch 挂载仓库内全部插件（cordis.patch.yml 与 dependencies 由 scripts/aggregate.mjs 自动生成，勿手改）。",
   "type": "module",
   "engines": {
@@ -45,6 +45,15 @@
     "README.md"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hyzyn/dsh-plugin-kit.git",
+    "directory": "packages/all"
+  },
+  "homepage": "https://github.com/hyzyn/dsh-plugin-kit/tree/main/packages/all#readme",
+  "bugs": {
+    "url": "https://github.com/hyzyn/dsh-plugin-kit/issues"
+  },
   "publishConfig": {
     "access": "public"
   }

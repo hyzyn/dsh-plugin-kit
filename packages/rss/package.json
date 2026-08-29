@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-rss",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "DSH 的 RSS / 新闻聚合插件：订阅多个 RSS/Atom 源，每天自动汇总成一篇「今日值得读」Markdown，并注入 systemPrompt 供模型直接引用。",
   "type": "module",
   "engines": {
@@ -48,6 +48,15 @@
     "README.md"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hyzyn/dsh-plugin-kit.git",
+    "directory": "packages/rss"
+  },
+  "homepage": "https://github.com/hyzyn/dsh-plugin-kit/tree/main/packages/rss#readme",
+  "bugs": {
+    "url": "https://github.com/hyzyn/dsh-plugin-kit/issues"
+  },
   "publishConfig": {
     "access": "public"
   }

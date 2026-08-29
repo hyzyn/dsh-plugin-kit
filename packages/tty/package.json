@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-tty",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "DSH Web GUI 的终端面板插件：侧边栏「终端」大弹窗，xterm.js + PTY 全交互终端（路线1）。",
   "type": "module",
   "engines": {
@@ -59,6 +59,15 @@
     "README.md"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hyzyn/dsh-plugin-kit.git",
+    "directory": "packages/tty"
+  },
+  "homepage": "https://github.com/hyzyn/dsh-plugin-kit/tree/main/packages/tty#readme",
+  "bugs": {
+    "url": "https://github.com/hyzyn/dsh-plugin-kit/issues"
+  },
   "publishConfig": {
     "access": "public"
   }

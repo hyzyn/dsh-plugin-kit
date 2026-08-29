@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-codegraph",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "DSH Web GUI 的 Codegraph 集成插件：在设置 → 插件 里提供 Codegraph 状态、符号搜索、callers/callees/impact 查看和一键 sync/index，托管 codegraph MCP 服务器的项目目录，并向 agent 注入 Codegraph 能力提示。",
   "type": "module",
   "engines": {
@@ -49,6 +49,15 @@
     "README.md"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hyzyn/dsh-plugin-kit.git",
+    "directory": "packages/codegraph"
+  },
+  "homepage": "https://github.com/hyzyn/dsh-plugin-kit/tree/main/packages/codegraph#readme",
+  "bugs": {
+    "url": "https://github.com/hyzyn/dsh-plugin-kit/issues"
+  },
   "publishConfig": {
     "access": "public"
   }

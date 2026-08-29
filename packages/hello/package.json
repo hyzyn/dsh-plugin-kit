@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-hello",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "dsh-plugin-kit 的最小 host 插件模板：dsh manifest、bundle patch 与构建配置的参考实现，也是 pnpm create-plugin 的复制蓝本。",
   "type": "module",
   "engines": {
@@ -38,6 +38,15 @@
     "README.md"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hyzyn/dsh-plugin-kit.git",
+    "directory": "packages/hello"
+  },
+  "homepage": "https://github.com/hyzyn/dsh-plugin-kit/tree/main/packages/hello#readme",
+  "bugs": {
+    "url": "https://github.com/hyzyn/dsh-plugin-kit/issues"
+  },
   "publishConfig": {
     "access": "public"
   }
