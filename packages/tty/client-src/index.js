@@ -12,7 +12,13 @@
  *   - 多会话标签页（每标签一个 sid 的 xterm 实例，可切换/关闭/新建）
  *   - 新标签默认在当前会话工作目录打开（注入 sessions 客户端服务）
  *   - 便利功能：终端内搜索（Ctrl+F）、可点击链接、清屏/复制/粘贴按钮
- * 帧协议与宿主半体（src/index.ts）对齐：spawn/input/resize/kill ↔ ready/data/exit/error。
+ * v0.4 能力：
+ *   - 标签栏「+」改为菜单：本地终端 / SSH 连接簿（读 /api/dsh-tty/config 的
+ *     sshHosts）/ SSH 连接…（host/port/username/auth 表单，可保存回连接簿）
+ *   - SSH 会话：{t:'ssh'} 帧创建（name 引用连接簿或内联字段），ready 帧的
+ *     target 回显到状态栏与标签标题；respawn 复用原 spawnSpec
+ *   - 设置卡片维护 SSH 连接簿（列表 + 删除，随「保存」写入 tty settings）
+ * 帧协议与宿主半体（src/index.ts）对齐：spawn/ssh/input/resize/kill ↔ ready/data/exit/error。
  */
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
@@ -106,6 +112,25 @@ const CSS = [
   '.tt_cardMessage{margin:8px 0 0;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-tertiary)}',
   '.tt_cardMessageOk{color:var(--dsw-alias-state-success-primary)}',
   '.tt_cardMessageError{color:var(--dsw-alias-state-error-primary)}',
+  // 「+」新建菜单（本地终端 / SSH 连接簿 / SSH 连接…）
+  '.tt_addMenu{position:fixed;z-index:1400;min-width:220px;max-width:320px;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:10px;box-shadow:var(--dsw-shadow-lv3);padding:6px;display:flex;flex-direction:column;gap:2px}',
+  '.tt_addMenuItem{appearance:none;background:0 0;border:none;color:var(--dsw-alias-label-primary);text-align:left;font:inherit;font-size:13px;padding:7px 10px;border-radius:8px;cursor:pointer;display:flex;flex-direction:column;gap:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+  '.tt_addMenuItem:hover{background:var(--dsw-alias-interactive-bg-hover)}',
+  '.tt_addMenuSub{font-size:11px;color:var(--dsw-alias-label-tertiary)}',
+  '.tt_addMenuSep{height:1px;background:var(--dsw-alias-border-l1);margin:4px 2px}',
+  '.tt_addMenuTitle{font-size:11px;color:var(--dsw-alias-label-tertiary);padding:4px 10px 2px}',
+  // SSH 连接对话框
+  '.tt_sshBackdrop{position:fixed;inset:0;z-index:1400;background:var(--dsw-alias-bg-mask-1);display:flex;align-items:center;justify-content:center}',
+  '.tt_sshCard{width:min(430px,92vw);max-height:86vh;overflow-y:auto;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:14px;box-shadow:var(--dsw-shadow-lv3);color:var(--dsw-alias-label-primary);padding:18px;display:flex;flex-direction:column;gap:10px}',
+  '.tt_sshTitle{margin:0;font-size:15px;font-weight:600}',
+  '.tt_sshRow{display:flex;flex-direction:column;gap:5px}',
+  '.tt_sshGrid{display:grid;grid-template-columns:1fr 110px;gap:10px}',
+  '.tt_sshActions{display:flex;gap:10px;justify-content:flex-end;margin-top:4px}',
+  '.tt_sshError{color:var(--dsw-alias-state-error-primary);font-size:12px;min-height:16px;line-height:1.4}',
+  '.tt_sshHostRow{display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--dsw-alias-border-l1)}',
+  '.tt_sshHostMeta{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}',
+  '.tt_sshHostName{font-size:13px;font-weight:500;color:var(--dsw-alias-label-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+  '.tt_sshHostTarget{font-size:12px;color:var(--dsw-alias-label-tertiary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
 ].join('\n')
 
 /* ================================ 基础工具 ================================ */
@@ -160,6 +185,11 @@ const tabs = new Map()
 let activeSid = null
 let tabCounter = 0
 let connecting = false
+/** 「+」新建菜单与 SSH 连接对话框（挂在 document.body 的浮层）。 */
+let addMenuEl = null
+let sshDialogEl = null
+/** SSH 连接簿缓存：/api/dsh-tty/config 的 sshHosts（设置卡片保存后同步）。 */
+let sshHostsCache = []
 
 function setStatus(text, state) {
   if (statusEl === null) return
@@ -256,30 +286,51 @@ function createTerminal(tab) {
   tab.overlayEl = overlayEl
 }
 
-/** 新建标签页并 spawn。 */
-function addTab() {
+/**
+ * 新建标签页。spawnSpec 为创建帧的可变部分（本地 {t:'spawn',cwd} / SSH
+ * {t:'ssh',...}），随标签保存以便 respawn 复用；label 为标签标题（SSH 标签
+ * 传连接名或 user@host，缺省显示「终端 N」）。
+ */
+function addTab(spawnSpec, label) {
   const sid = newSid()
-  const tab = { sid, term: null, fit: null, search: null, termEl: null, overlayEl: null, exited: false, spawned: false }
+  const tab = {
+    sid,
+    term: null,
+    fit: null,
+    search: null,
+    termEl: null,
+    overlayEl: null,
+    exited: false,
+    spawned: false,
+    spawnSpec: spawnSpec ?? { t: 'spawn', cwd: currentCwd() },
+    label,
+  }
   createTerminal(tab)
   tabs.set(sid, tab)
   tabCounter += 1
   renderTabbar()
   switchTab(sid)
-  const dims = tab.fit.proposeDimensions()
-  sendFrame({
-    t: 'spawn',
-    sid,
-    cols: dims !== undefined ? dims.cols : 80,
-    rows: dims !== undefined ? dims.rows : 24,
-    cwd: currentCwd(),
-  })
+  spawnTab(tab)
   return tab
 }
 
-/** 退出后重开：换新 sid 重新 spawn（保留标签位）。 */
+/** 按标签保存的 spawnSpec 发创建帧（sid/cols/rows 由本地补齐）。 */
+function spawnTab(tab) {
+  const dims = tab.fit !== null ? tab.fit.proposeDimensions() : undefined
+  sendFrame({
+    ...tab.spawnSpec,
+    sid: tab.sid,
+    cols: dims !== undefined ? dims.cols : 80,
+    rows: dims !== undefined ? dims.rows : 24,
+  })
+}
+
+/** 退出后重开：换新 sid 重新 spawn（保留标签位，复用原 spawnSpec/label）。 */
 function respawnTab(oldSid) {
   const old = tabs.get(oldSid)
   if (old === undefined) return
+  const spawnSpec = old.spawnSpec
+  const label = old.label
   if (!old.exited) sendFrame({ t: 'kill', sid: oldSid })
   if (old.term !== null) {
     try {
@@ -290,13 +341,12 @@ function respawnTab(oldSid) {
   }
   if (old.termEl !== null) old.termEl.remove()
   tabs.delete(oldSid)
-  const tab = { sid: newSid(), term: null, fit: null, search: null, termEl: null, overlayEl: null, exited: false, spawned: false }
+  const tab = { sid: newSid(), term: null, fit: null, search: null, termEl: null, overlayEl: null, exited: false, spawned: false, spawnSpec, label }
   createTerminal(tab)
   tabs.set(tab.sid, tab)
   renderTabbar()
   switchTab(tab.sid)
-  const dims = tab.fit.proposeDimensions()
-  sendFrame({ t: 'spawn', sid: tab.sid, cols: dims !== undefined ? dims.cols : 80, rows: dims !== undefined ? dims.rows : 24, cwd: currentCwd() })
+  spawnTab(tab)
 }
 
 function closeTab(sid) {
@@ -352,7 +402,16 @@ function renderTabbar() {
     const btn = document.createElement('button')
     btn.className = 'tt_tab'
     if (sid === activeSid) btn.dataset.active = ''
-    btn.innerHTML = '<span>终端 ' + tabCounterLabel(sid) + '</span><span class="tt_tabClose" title="关闭">✕</span>'
+    // 标签标题：SSH 标签用 label（连接名 / target），本地标签用「终端 N」
+    const labelEl = document.createElement('span')
+    labelEl.textContent = tab.label || '终端 ' + tabCounterLabel(sid)
+    const closeEl = document.createElement('span')
+    closeEl.className = 'tt_tabClose'
+    closeEl.title = '关闭'
+    closeEl.textContent = '✕'
+    btn.title = labelEl.textContent
+    btn.appendChild(labelEl)
+    btn.appendChild(closeEl)
     btn.addEventListener('click', (event) => {
       if (event.target.closest('.tt_tabClose') !== null) {
         event.stopPropagation()
@@ -365,10 +424,10 @@ function renderTabbar() {
   }
   const add = document.createElement('button')
   add.className = 'tt_tabAdd'
-  add.title = '新建终端'
+  add.title = '新建（本地 / SSH）'
   add.textContent = '+'
   add.addEventListener('click', () => {
-    addTab()
+    openAddMenu(add)
   })
   tabbarEl.appendChild(add)
 }
@@ -381,6 +440,326 @@ function tabCounterLabel(sid) {
     index += 1
   }
   return String(index)
+}
+
+/* ============================ 「+」菜单 / SSH 连接 ============================ */
+
+/** 连接簿缓存同步：config 快照里带 sshHosts 时整体覆盖（设置卡片保存后也走这里）。 */
+function syncSshHostsCache(config) {
+  if (config !== null && typeof config === 'object' && Array.isArray(config.sshHosts)) {
+    sshHostsCache = config.sshHosts
+  }
+}
+
+/** 连接簿条目的展示副标题：user@host[:port] · auth。 */
+function sshHostTargetLabel(entry) {
+  const port = Number(entry?.port)
+  const suffix = Number.isInteger(port) && port !== 22 ? ':' + port : ''
+  const auth = entry?.auth === 'key' ? 'key' : entry?.auth === 'password' ? 'password' : 'agent'
+  return String(entry?.username ?? '') + '@' + String(entry?.host ?? '') + suffix + ' · ' + auth
+}
+
+/** 拉取连接簿（失败静默保留旧缓存）；菜单开着时原位刷新条目。 */
+async function refreshSshHosts() {
+  try {
+    const res = await fetch('/api/dsh-tty/config', { cache: 'no-store' })
+    const data = await res.json()
+    if (data.ok && typeof data.config === 'object' && data.config !== null) {
+      const before = sshHostsCache
+      syncSshHostsCache(data.config)
+      if (addMenuEl !== null && sshHostsCache !== before) renderAddMenuItems(addMenuEl)
+    }
+  } catch {
+    /* 网络失败：保留旧缓存 */
+  }
+}
+
+function onDocAddMenuMouseDown(event) {
+  if (addMenuEl === null) return
+  // 点在菜单里或「+」上（由「+」自己 toggle）不收起，其余一律收起
+  if (event.target instanceof Element && (addMenuEl.contains(event.target) || event.target.closest('.tt_tabAdd') !== null)) return
+  closeAddMenu()
+}
+
+/** 标签栏「+」菜单：本地终端 / SSH 连接簿 / SSH 连接…（再点一次「+」收起）。 */
+function openAddMenu(anchorBtn) {
+  if (addMenuEl !== null) {
+    closeAddMenu()
+    return
+  }
+  void refreshSshHosts()
+  const menu = document.createElement('div')
+  menu.className = 'tt_addMenu'
+  addMenuEl = menu
+  renderAddMenuItems(menu)
+  document.body.appendChild(menu)
+  const rect = anchorBtn.getBoundingClientRect()
+  menu.style.left = Math.max(8, Math.min(rect.left, window.innerWidth - 340)) + 'px'
+  menu.style.top = rect.bottom + 4 + 'px'
+  document.addEventListener('mousedown', onDocAddMenuMouseDown, true)
+}
+
+function closeAddMenu() {
+  if (addMenuEl === null) return
+  document.removeEventListener('mousedown', onDocAddMenuMouseDown, true)
+  addMenuEl.remove()
+  addMenuEl = null
+}
+
+function addMenuItem(menu, label, sub, onClick) {
+  const item = document.createElement('button')
+  item.type = 'button'
+  item.className = 'tt_addMenuItem'
+  const main = document.createElement('span')
+  main.textContent = label
+  item.appendChild(main)
+  if (sub !== '') {
+    const subEl = document.createElement('span')
+    subEl.className = 'tt_addMenuSub'
+    subEl.textContent = sub
+    item.appendChild(subEl)
+  }
+  item.addEventListener('click', onClick)
+  menu.appendChild(item)
+}
+
+function renderAddMenuItems(menu) {
+  menu.textContent = ''
+  addMenuItem(menu, '本地终端', '在当前会话工作目录打开', () => {
+    closeAddMenu()
+    addTab()
+  })
+  const sep1 = document.createElement('div')
+  sep1.className = 'tt_addMenuSep'
+  menu.appendChild(sep1)
+  const bookTitle = document.createElement('div')
+  bookTitle.className = 'tt_addMenuTitle'
+  bookTitle.textContent = 'SSH 连接簿'
+  menu.appendChild(bookTitle)
+  for (const entry of sshHostsCache) {
+    if (entry === null || typeof entry !== 'object' || typeof entry.name !== 'string' || entry.name === '') continue
+    addMenuItem(menu, entry.name, sshHostTargetLabel(entry), () => {
+      closeAddMenu()
+      addTab({ t: 'ssh', name: entry.name }, entry.name)
+    })
+  }
+  if (sshHostsCache.length === 0) {
+    const empty = document.createElement('div')
+    empty.className = 'tt_addMenuTitle'
+    empty.textContent = '（空 — 在设置卡片或「SSH 连接…」里保存）'
+    menu.appendChild(empty)
+  }
+  const sep2 = document.createElement('div')
+  sep2.className = 'tt_addMenuSep'
+  menu.appendChild(sep2)
+  addMenuItem(menu, 'SSH 连接…', '手动填写主机 / 用户 / 认证方式', () => {
+    closeAddMenu()
+    openSshDialog()
+  })
+}
+
+/**
+ * SSH 连接对话框：host/port/username/auth（agent/key/password，key 附
+ * keyPath/passphrase，password 附密码）+「保存到连接簿」与名称。字段全部
+ * 用 DOM API 创建与取值，用户输入不经过 innerHTML；勾选保存时先 POST
+ * /api/dsh-tty/config（sshHosts 整体替换、同名覆盖），成功后再开 SSH 标签。
+ */
+function openSshDialog() {
+  if (sshDialogEl !== null) return
+  const backdrop = document.createElement('div')
+  backdrop.className = 'tt_sshBackdrop'
+  const card = document.createElement('div')
+  card.className = 'tt_sshCard'
+
+  const title = document.createElement('div')
+  title.className = 'tt_sshTitle'
+  title.textContent = 'SSH 连接'
+  card.appendChild(title)
+
+  const fields = {}
+  const fieldRow = (key, labelText, options) => {
+    const row = document.createElement('label')
+    row.className = 'tt_sshRow'
+    const label = document.createElement('span')
+    label.className = 'tt_cardLabel'
+    label.textContent = labelText
+    row.appendChild(label)
+    let input
+    if (options?.select !== undefined) {
+      input = document.createElement('select')
+      for (const option of options.select) {
+        const optionEl = document.createElement('option')
+        optionEl.value = option.value
+        optionEl.textContent = option.label
+        input.appendChild(optionEl)
+      }
+    } else {
+      input = document.createElement('input')
+      input.type = options?.type ?? 'text'
+      input.placeholder = options?.placeholder ?? ''
+    }
+    input.className = 'tt_cardInput'
+    input.autocomplete = 'off'
+    input.spellcheck = false
+    row.appendChild(input)
+    fields[key] = input
+    return row
+  }
+
+  const grid = document.createElement('div')
+  grid.className = 'tt_sshGrid'
+  grid.appendChild(fieldRow('host', '主机', { placeholder: 'example.com 或 IP' }))
+  grid.appendChild(fieldRow('port', '端口', { placeholder: '22' }))
+  card.appendChild(grid)
+  card.appendChild(fieldRow('username', '用户名', { placeholder: 'root' }))
+  card.appendChild(fieldRow('auth', '认证方式', {
+    select: [
+      { value: 'agent', label: 'agent — 使用本机 ssh-agent' },
+      { value: 'key', label: 'key — 私钥文件' },
+      { value: 'password', label: 'password — 密码' },
+    ],
+  }))
+  const keyRow = fieldRow('keyPath', '私钥路径', { placeholder: '~/.ssh/id_ed25519' })
+  const passphraseRow = fieldRow('passphrase', '私钥口令（可空）', { type: 'password' })
+  const passwordRow = fieldRow('password', '密码', { type: 'password' })
+  card.appendChild(keyRow)
+  card.appendChild(passphraseRow)
+  card.appendChild(passwordRow)
+
+  const saveRow = document.createElement('label')
+  saveRow.className = 'tt_cardRow'
+  const saveCheck = document.createElement('input')
+  saveCheck.type = 'checkbox'
+  saveCheck.className = 'tt_cardCheckbox'
+  const saveLabel = document.createElement('span')
+  saveLabel.className = 'tt_cardLabel'
+  saveLabel.textContent = '保存到连接簿（同名覆盖）'
+  saveRow.appendChild(saveCheck)
+  saveRow.appendChild(saveLabel)
+  card.appendChild(saveRow)
+  const nameRow = fieldRow('name', '连接簿名称', { placeholder: '留空则用主机名' })
+  nameRow.style.display = 'none'
+  card.appendChild(nameRow)
+  saveCheck.addEventListener('change', () => {
+    nameRow.style.display = saveCheck.checked ? '' : 'none'
+    if (saveCheck.checked && fields.name.value.trim() === '' && fields.host.value.trim() !== '') {
+      fields.name.value = fields.host.value.trim()
+    }
+    if (saveCheck.checked) fields.name.focus()
+  })
+
+  const errorEl = document.createElement('div')
+  errorEl.className = 'tt_sshError'
+  card.appendChild(errorEl)
+
+  const actions = document.createElement('div')
+  actions.className = 'tt_sshActions'
+  const cancelBtn = document.createElement('button')
+  cancelBtn.type = 'button'
+  cancelBtn.className = 'tt_toolBtn'
+  cancelBtn.textContent = '取消'
+  const connectBtn = document.createElement('button')
+  connectBtn.type = 'button'
+  connectBtn.className = 'tt_cardSave'
+  connectBtn.textContent = '连接'
+  actions.appendChild(cancelBtn)
+  actions.appendChild(connectBtn)
+  card.appendChild(actions)
+
+  const syncAuthRows = () => {
+    keyRow.style.display = fields.auth.value === 'key' ? '' : 'none'
+    passphraseRow.style.display = fields.auth.value === 'key' ? '' : 'none'
+    passwordRow.style.display = fields.auth.value === 'password' ? '' : 'none'
+  }
+  fields.auth.addEventListener('change', syncAuthRows)
+  syncAuthRows()
+
+  cancelBtn.addEventListener('click', () => closeSshDialog())
+  backdrop.addEventListener('mousedown', (event) => {
+    if (event.target === backdrop) closeSshDialog()
+  })
+
+  connectBtn.addEventListener('click', () => {
+    errorEl.textContent = ''
+    const host = fields.host.value.trim()
+    const username = fields.username.value.trim()
+    let port = Number(fields.port.value)
+    if (!Number.isInteger(port) || port < 1 || port > 65535) port = 22
+    if (host === '' || username === '') {
+      errorEl.textContent = '主机与用户名必填'
+      return
+    }
+    const auth = fields.auth.value
+    const spec = { t: 'ssh', host, port, username, auth }
+    if (auth === 'key') {
+      const keyPath = fields.keyPath.value.trim()
+      if (keyPath !== '') spec.keyPath = keyPath
+      const passphrase = fields.passphrase.value
+      if (passphrase !== '') spec.passphrase = passphrase
+    }
+    if (auth === 'password') {
+      const password = fields.password.value
+      if (password !== '') spec.password = password
+    }
+    const targetLabel = port !== 22 ? username + '@' + host + ':' + port : username + '@' + host
+    const proceed = (bookName) => {
+      closeSshDialog()
+      if (modalEl === null) return // 对话框存续期间面板被关闭：不再开标签
+      addTab(spec, bookName !== '' ? bookName : targetLabel)
+    }
+    if (!saveCheck.checked) {
+      proceed('')
+      return
+    }
+    const bookName = fields.name.value.trim() || host
+    connectBtn.disabled = true
+    void saveSshHostEntry({
+      name: bookName,
+      host,
+      port,
+      username,
+      auth,
+      keyPath: spec.keyPath ?? '',
+      passphrase: spec.passphrase ?? '',
+      password: spec.password ?? '',
+    }).then((error) => {
+      connectBtn.disabled = false
+      if (error !== undefined) {
+        errorEl.textContent = '保存连接簿失败：' + error
+        return
+      }
+      proceed(bookName)
+    })
+  })
+
+  backdrop.appendChild(card)
+  document.body.appendChild(backdrop)
+  sshDialogEl = backdrop
+  fields.host.focus()
+}
+
+function closeSshDialog() {
+  if (sshDialogEl === null) return
+  sshDialogEl.remove()
+  sshDialogEl = null
+}
+
+/** 保存一条连接簿：sshHosts 整体替换（同名覆盖）；返回错误信息或 undefined。 */
+async function saveSshHostEntry(entry) {
+  const next = [...sshHostsCache.filter((host) => host?.name !== entry.name), entry]
+  try {
+    const res = await fetch('/api/dsh-tty/config', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sshHosts: next }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || !data.ok) return String(data.error || 'HTTP ' + res.status)
+    syncSshHostsCache(data.config)
+    return undefined
+  } catch (error) {
+    return String(error && error.message ? error.message : error)
+  }
 }
 
 function toggleSearch() {
@@ -445,11 +824,17 @@ function connect() {
     }
     const sid = msg.sid
     if (msg.t === 'ready') {
-      setStatus('已连接 pid=' + msg.pid, 'connected')
+      // SSH 会话 ready 带 target（user@host[:port]，pid 为 null）；本地带 pid
+      const target = typeof msg.target === 'string' ? msg.target : ''
+      setStatus(msg.kind === 'ssh' ? 'SSH ' + (target !== '' ? target + ' ' : '') + '已连接' : '已连接 pid=' + msg.pid, 'connected')
       const tab = tabs.get(sid)
       if (tab !== undefined) {
         tab.exited = false
         tab.spawned = true
+        if (msg.kind === 'ssh' && target !== '' && !tab.label) {
+          tab.label = target // 标签缺标题时（如旧缓存条目）用宿主回显的 target
+          renderTabbar()
+        }
         showTabOverlay(tab, '')
         sendResize(tab) // spawn 就绪后补一次精确尺寸
         syncEntryBadge() // 断线重连后徽标计数恢复
@@ -630,6 +1015,8 @@ function buildDock() {
 /** 最小化：隐藏弹窗但保留 DOM / WebSocket / xterm 缓冲；状态合并进侧边栏入口。 */
 function minimizeModal() {
   if (modalEl === null || minimized) return
+  closeAddMenu()
+  closeSshDialog()
   minimized = true
   if (searchInputEl !== null) searchInputEl.style.display = 'none'
   modalEl.dataset.minimized = ''
@@ -711,6 +1098,8 @@ function closeModal() {
   if (modalEl === null) return
   intentionalClose = true
   minimized = false
+  closeAddMenu()
+  closeSshDialog()
   clearTimeout(dockActivityTimer)
   if (dockEl !== null) {
     dockEl.remove()
@@ -761,7 +1150,15 @@ function closeModal() {
 function onModalKeydown(event) {
   if (event.key === 'Escape' && modalEl !== null) {
     event.preventDefault()
-    // Esc = 最小化（会话保活）；真正关闭请用 ✕ 按钮
+    // Esc 优先关浮层（SSH 对话框 /「+」菜单），再最小化（会话保活）；✕ 才真正关闭
+    if (sshDialogEl !== null) {
+      closeSshDialog()
+      return
+    }
+    if (addMenuEl !== null) {
+      closeAddMenu()
+      return
+    }
     minimizeModal()
   }
 }
@@ -893,8 +1290,10 @@ function TtySettingsCard() {
     try {
       const res = await fetch('/api/dsh-tty/config', { cache: 'no-store' })
       const data = await res.json()
-      if (data.ok && typeof data.config === 'object' && data.config !== null) setForm(data.config)
-      else setMessage({ kind: 'error', text: String(data.error || '读取配置失败') })
+      if (data.ok && typeof data.config === 'object' && data.config !== null) {
+        setForm(data.config)
+        syncSshHostsCache(data.config) // 连接簿缓存与设置保持一致（「+」菜单共用）
+      } else setMessage({ kind: 'error', text: String(data.error || '读取配置失败') })
     } catch (error) {
       setMessage({ kind: 'error', text: String(error && error.message ? error.message : error) })
     }
@@ -907,20 +1306,35 @@ function TtySettingsCard() {
   }, [open])
 
   const set = (key, value) => setForm((current) => ({ ...(current || {}), [key]: value }))
+  /** 删除连接簿条目（随「保存」一并提交）。 */
+  const removeSshHost = (name) => setForm((current) => ({
+    ...(current || {}),
+    sshHosts: (Array.isArray(current?.sshHosts) ? current.sshHosts : []).filter((host) => host?.name !== name),
+  }))
   const save = async () => {
     setSaving(true)
     setMessage({ kind: '', text: '' })
+    // 只提交配置项：快照里的 toolsRegistered 等非配置键会被宿主 normalizePatch 拒绝
+    const body = {}
+    for (const key of ['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd']) {
+      const value = (form || {})[key]
+      if (value !== undefined && value !== '') body[key] = value
+    }
+    body.sshHosts = Array.isArray(form?.sshHosts) ? form.sshHosts : []
     try {
       const res = await fetch('/api/dsh-tty/config', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(form || {}),
+        body: JSON.stringify(body),
       })
       const data = await res.json()
       if (!res.ok || !data.ok) setMessage({ kind: 'error', text: String(data.error || '保存失败') })
       else {
         setMessage({ kind: 'ok', text: '已保存并热生效' })
-        if (data.config) setForm(data.config)
+        if (data.config) {
+          setForm(data.config)
+          syncSshHostsCache(data.config)
+        }
       }
     } catch (error) {
       setMessage({ kind: 'error', text: String(error && error.message ? error.message : error) })
@@ -957,7 +1371,7 @@ function TtySettingsCard() {
             className: 'tt_cardHeadText',
             children: [
               jsx('span', { className: 'tt_cardName', children: '终端面板' }),
-              jsx('span', { className: 'tt_cardDescription', children: 'xterm 终端面板：多标签页、cwd 跟随会话；shell / TERM / 并发上限等保存即热生效。' }),
+              jsx('span', { className: 'tt_cardDescription', children: 'xterm 终端面板：多标签页、cwd 跟随会话、SSH 连接簿；shell / TERM / 并发上限等保存即热生效。' }),
             ],
           }),
           jsx('svg', {
@@ -984,6 +1398,27 @@ function TtySettingsCard() {
                 textField('TERM', 'term', 'xterm-256color', 'TUI 程序依赖此值'),
                 textField('COLORTERM', 'colorTerm', 'truecolor', ''),
                 textField('兜底工作目录（客户端当前会话 cwd 优先）', 'cwd', '', '留空使用宿主进程启动目录'),
+                jsxs('div', {
+                  className: 'tt_cardField',
+                  children: [
+                    jsx('span', { className: 'tt_cardLabel', children: 'SSH 连接簿' }),
+                    ...(Array.isArray(form.sshHosts) && form.sshHosts.length > 0
+                      ? [jsx('div', {
+                          children: form.sshHosts.map((host) => jsxs('div', {
+                            className: 'tt_sshHostRow',
+                            children: [
+                              jsx('div', { className: 'tt_sshHostMeta', children: [
+                                jsx('span', { className: 'tt_sshHostName', children: host?.name ?? '' }),
+                                jsx('span', { className: 'tt_sshHostTarget', children: sshHostTargetLabel(host ?? {}) }),
+                              ] }),
+                              jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => removeSshHost(host?.name), children: '删除' }),
+                            ],
+                          }, String(host?.name ?? ''))),
+                        })]
+                      : [jsx('span', { className: 'tt_cardHint', children: '暂无条目 — 终端面板「+」→ SSH 连接… 勾选「保存到连接簿」即可添加' })]),
+                    jsx('span', { className: 'tt_cardHint', children: '随「保存」一并写入配置；密码/口令支持 env:VAR 引用，避免明文入库' }),
+                  ],
+                }),
                 jsxs('div', {
                   className: 'tt_cardField tt_cardRow',
                   children: [

@@ -7,11 +7,14 @@
  * 之后双向透传：input/resize/kill 上行，data/exit/error 下行。
  *
  * 帧协议 v2（JSON 文本帧；sid 维度支持单连接多会话/标签页）：
- *   C→S  {t:'spawn', sid?, cols?, rows?, cwd?}  创建会话；sid 缺省时宿主生成
+ *   C→S  {t:'spawn', sid?, cols?, rows?, cwd?}  创建本地会话；sid 缺省时宿主生成
+ *   C→S  {t:'ssh', sid?, cols?, rows?, name? | host, username, ...}
+ *                                               创建 SSH 会话（ssh2 原生，见 ssh.ts）；
+ *                                               name 引用连接簿条目，内联字段可覆盖
  *   C→S  {t:'input', sid?, d}                  按键/粘贴数据
  *   C→S  {t:'resize', sid?, cols, rows}        xterm fit 触发
  *   C→S  {t:'kill', sid?}                      关闭会话
- *   S→C  {t:'ready', sid, pid}                 会话就绪
+ *   S→C  {t:'ready', sid, pid, kind, target?}  会话就绪（ssh 时 pid=null，target=user@host）
  *   S→C  {t:'data', sid, d}                    终端输出（utf8 文本）
  *   S→C  {t:'exit', sid, code, signal}         PTY 退出事实（恰好一次）
  *   S→C  {t:'error', sid?, m}                  错误
@@ -28,6 +31,7 @@
  *     子进程），必须 best-effort：失败降级为对顶层 shell 直接 SIGKILL。
  */
 import type { Context } from '@deepseek-ai/cordis';
+import type { SshHostEntry } from './ssh.js';
 export interface Config {
     /** 关闭整个插件。默认开。 */
     enabled?: boolean;
@@ -43,5 +47,7 @@ export interface Config {
     colorTerm?: string;
     /** 会话工作目录（客户端 spawn 带 cwd 时优先）；缺省为宿主进程启动目录。 */
     cwd?: string;
+    /** SSH 连接簿（面板「+」菜单可选；密码/口令支持 env:VAR 引用）。 */
+    sshHosts?: SshHostEntry[];
 }
 export declare const name: string, inject: string[] | undefined, apply: (ctx: Context, config?: Config | undefined) => void;
