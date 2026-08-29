@@ -119,7 +119,7 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 - **存哪里**：无独立配置文件；配置走「设置 → 插件 → 终端面板」卡片。
 - **注意**：resize 依赖 DSH 内部 terminal handle 结构（已知限制）；输出为 utf8 文本流，`cat` 二进制文件会有替换字符。详细见 `packages/tty/README.md`。
 
-![终端面板：多标签页 xterm 弹窗，标题栏含最小化「—」与关闭 ✕](docs/dsh-plugin-kit-tty.png)
+![终端面板：多标签页 xterm 弹窗，工具栏含搜索/清屏/复制/粘贴，标题栏含最小化「—」与关闭 ✕](docs/dsh-plugin-kit-tty.png)
 
 ![终端面板设置卡片：shell / TERM / 并发上限等保存即热生效](docs/dsh-plugin-kit-tty-setting.png)
 

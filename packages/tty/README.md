@@ -5,7 +5,7 @@ xterm.js 全交互终端（node-pty 真实 PTY），支持**多标签页**，可
 命令与 TUI 程序（vim / htop / dev server 等）。浏览器半体打包了 xterm
 内核，宿主半体经 WebSocket 与 PTY 会话双向透传。
 
-![终端面板：多标签页 xterm 弹窗，标题栏含最小化「—」与关闭 ✕](../../docs/dsh-plugin-kit-tty.png)
+![终端面板：多标签页 xterm 弹窗，工具栏含搜索/清屏/复制/粘贴，标题栏含最小化「—」与关闭 ✕](../../docs/dsh-plugin-kit-tty.png)
 
 ## 安装
 
