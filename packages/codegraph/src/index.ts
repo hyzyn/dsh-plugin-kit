@@ -8,11 +8,11 @@
  * 与 MCP 的关系：MCP 让模型直接调用 codegraph_explore / codegraph_node；
  * 本插件补上 Web GUI、人工操作（sync/index）和 systemPrompt 自动提示。
  */
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { definePlugin } from '@hyzyn/dsh-kit'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
 
@@ -341,7 +341,7 @@ const CODEGRAPH_USAGE_GUIDANCE = `<!-- CODEGRAPH_START -->
 
 In repositories indexed by CodeGraph (a \`.codegraph/\` directory exists at the repo root), reach for it BEFORE grep/find or reading files when you need to understand or locate code:
 
-- **MCP tool** (when available): \`codegraph_explore\` or \`mcp__codegraph__codegraph_explore\` answers most code questions in one call — the relevant symbols' verbatim source plus the call paths between them, including dynamic-dispatch hops grep can't follow. Name a file or symbol in the query to read its current line-numbered source. If it's listed but deferred, load it by name via tool search.
+- **MCP tool** (when available): \`mcp__codegraph__codegraph_explore\` answers most code questions in one call — the relevant symbols' verbatim source plus the call paths between them, including dynamic-dispatch hops grep can't follow. Name a file or symbol in the query to read its current line-numbered source. If it's listed but deferred, load it by name via tool search.
 - **Shell** (always works): \`codegraph explore "<symbol names or question>"\` prints the same output.
 
 If there is no \`.codegraph/\` directory, skip CodeGraph entirely — indexing is the user's decision.

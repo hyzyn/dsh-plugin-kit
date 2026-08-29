@@ -6,8 +6,9 @@
  *
  * v0.2 能力：
  * v0.3 能力：
- *   - 最小化/折叠：点空白处、Esc 或「—」按钮把弹窗收进右下角悬浮条，
- *     PTY 会话与输出缓冲保持存活；悬浮条点击恢复，✕ 才真正关闭（结束会话）
+ *   - 最小化/折叠：点空白处、Esc 或「—」按钮把弹窗收起，PTY 会话与输出
+ *     缓冲保持存活；最小化状态合并进侧边栏「终端」入口（会话数徽标 +
+ *     状态点，点击入口恢复），入口不在时才退回紧凑悬浮条；✕ 才真正关闭
  *   - 多会话标签页（每标签一个 sid 的 xterm 实例，可切换/关闭/新建）
  *   - 新标签默认在当前会话工作目录打开（注入 sessions 客户端服务）
  *   - 便利功能：终端内搜索（Ctrl+F）、可点击链接、清屏/复制/粘贴按钮
@@ -41,10 +42,24 @@ const CSS = [
   '.tt_toolBtn:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}',
   '.tt_searchInput{width:120px;height:28px;background:var(--dsw-specific-input-major);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;color:inherit;font:inherit;font-size:12px;padding:0 8px;flex:none}',
   '.tt_searchInput:focus{border-color:var(--dsw-alias-state-business-primary);outline:none}',
-  '.tt_min,.tt_close{appearance:none;background:0 0;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:8px;width:30px;height:30px;cursor:pointer;font-size:16px;line-height:1;flex:none}',
+  '.tt_min{appearance:none;background:0 0;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:8px;width:30px;height:30px;cursor:pointer;font-size:16px;line-height:1;flex:none}',
+  '.tt_close{appearance:none;background:0 0;border:none;color:var(--dsw-alias-label-tertiary);border-radius:8px;width:30px;height:30px;cursor:pointer;font-size:18px;line-height:1;flex:none}',
   '.tt_min:hover,.tt_close:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}',
-  // 最小化：弹窗仅隐藏（会话与输出缓冲保持存活），右下角悬浮条负责恢复/关闭
+  // 最小化：弹窗仅隐藏（会话与输出缓冲保持存活），状态合并进侧边栏
+  // 「终端」入口（会话数徽标 + 状态点，点击入口恢复）；入口不存在时才
+  // 退回紧凑悬浮条
   '.tt_modalBackdrop[data-minimized]{display:none}',
+  '.tt_sidebarEntryBadge{display:none;align-items:center;gap:5px;margin-left:auto;padding-left:8px;flex:none}',
+  '.tt_sidebarEntry[data-minimized]{color:var(--dsw-alias-label-primary)}',
+  '.tt_sidebarEntry[data-minimized] .tt_sidebarEntryBadge{display:inline-flex}',
+  '[data-sidebar-collapsed] .tt_sidebarEntryBadge{margin-left:0;padding-left:0}',
+  '[data-sidebar-collapsed] .tt_sidebarBadgeCount{display:none}',
+  '.tt_sidebarBadgeDot{width:7px;height:7px;border-radius:50%;background:var(--dsw-alias-label-tertiary);flex:none}',
+  '.tt_sidebarBadgeDot[data-state=connected]{background:var(--dsw-alias-state-success-primary)}',
+  '.tt_sidebarBadgeDot[data-state=error]{background:var(--dsw-alias-state-error-primary)}',
+  '@keyframes ttPulse{from{box-shadow:0 0 0 5px rgba(63,185,80,.35)}to{box-shadow:0 0 0 0 rgba(63,185,80,0)}}',
+  '.tt_sidebarBadgeDot[data-active],.tt_dockDot[data-active]{animation:ttPulse .9s ease-out}',
+  '.tt_dockCompact .tt_dockStatus{display:none}',
   '.tt_dock{position:fixed;right:18px;bottom:18px;z-index:1300;display:inline-flex;align-items:center;gap:10px;height:38px;padding:0 8px 0 16px;border-radius:999px;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);box-shadow:var(--dsw-shadow-lv3);color:var(--dsw-alias-label-primary);font-size:13px;cursor:pointer;user-select:none}',
   '.tt_dock:hover{border-color:var(--dsw-alias-label-dimmed)}',
   '.tt_dockTitle{display:flex;align-items:center;gap:8px;font-weight:600;white-space:nowrap}',
@@ -53,10 +68,8 @@ const CSS = [
   '.tt_dockDot{width:8px;height:8px;border-radius:50%;background:var(--dsw-alias-label-tertiary);flex:none}',
   '.tt_dockDot[data-state=connected]{background:var(--dsw-alias-state-success-primary)}',
   '.tt_dockDot[data-state=error]{background:var(--dsw-alias-state-error-primary)}',
-  '@keyframes ttDockPulse{from{box-shadow:0 0 0 6px rgba(63,185,80,.35)}to{box-shadow:0 0 0 0 rgba(63,185,80,0)}}',
-  '.tt_dockDot[data-active]{animation:ttDockPulse .9s ease-out}',
-  '.tt_dockClose{appearance:none;background:0 0;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:50%;width:26px;height:26px;cursor:pointer;font-size:12px;line-height:1;flex:none;display:inline-flex;align-items:center;justify-content:center}',
-  '.tt_dockClose:hover{color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary)}',
+  '.tt_dockClose{appearance:none;background:0 0;border:none;color:var(--dsw-alias-label-tertiary);border-radius:50%;width:26px;height:26px;cursor:pointer;font-size:14px;line-height:1;flex:none;display:inline-flex;align-items:center;justify-content:center}',
+  '.tt_dockClose:hover{color:var(--dsw-alias-state-error-primary)}',
   '.tt_tabbar{flex:none;display:flex;align-items:center;gap:6px;padding:6px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);overflow-x:auto}',
   '.tt_tab{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 8px 0 12px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);font-size:12px;cursor:pointer;flex:none;white-space:nowrap}',
   '.tt_tab:hover{color:var(--dsw-alias-label-primary)}',
@@ -152,19 +165,11 @@ function setStatus(text, state) {
   if (statusEl === null) return
   statusEl.textContent = text
   statusDotEl.dataset.state = state
-  // 悬浮条与弹窗头部状态保持一致（最小化时用户只看得到悬浮条）
+  // 最小化时用户只看得到侧边栏入口徽标 / 兜底悬浮条，状态同步到那里
   if (dockStatusEl !== null) dockStatusEl.textContent = text
   if (dockDotEl !== null) dockDotEl.dataset.state = state
-}
-
-/** 最小化期间有输出到达：脉冲提示悬浮条，说明会话仍在活动。 */
-function flashDockActivity() {
-  if (!minimized || dockDotEl === null) return
-  dockDotEl.dataset.active = ''
-  clearTimeout(dockActivityTimer)
-  dockActivityTimer = setTimeout(() => {
-    if (dockDotEl !== null) delete dockDotEl.dataset.active
-  }, 900)
+  const badgeDot = document.querySelector('[data-dsh-tty-entry] .tt_sidebarBadgeDot')
+  if (badgeDot !== null) badgeDot.dataset.state = state
 }
 
 function sendFrame(msg) {
@@ -447,6 +452,7 @@ function connect() {
         tab.spawned = true
         showTabOverlay(tab, '')
         sendResize(tab) // spawn 就绪后补一次精确尺寸
+        syncEntryBadge() // 断线重连后徽标计数恢复
       }
     } else if (msg.t === 'data') {
       const tab = tabs.get(sid)
@@ -462,6 +468,7 @@ function connect() {
         const signal = msg.signal !== null && msg.signal !== undefined ? 'signal=' + msg.signal : ''
         setStatus('已退出 ' + [code, signal].filter(Boolean).join(' '), '')
         showTabOverlay(tab, '会话已退出 — 点击重新打开')
+        syncEntryBadge() // 最小化时徽标计数同步减少
       }
     } else if (msg.t === 'error') {
       setStatus('错误：' + String(msg.m ?? ''), 'error')
@@ -620,13 +627,58 @@ function buildDock() {
   document.body.appendChild(dockEl)
 }
 
-/** 最小化：隐藏弹窗但保留 DOM / WebSocket / xterm 缓冲，收进右下角悬浮条。 */
+/** 最小化：隐藏弹窗但保留 DOM / WebSocket / xterm 缓冲；状态合并进侧边栏入口。 */
 function minimizeModal() {
   if (modalEl === null || minimized) return
   minimized = true
   if (searchInputEl !== null) searchInputEl.style.display = 'none'
   modalEl.dataset.minimized = ''
-  buildDock()
+  if (document.querySelector('[data-dsh-tty-entry]') !== null) {
+    syncEntryBadge()
+  } else {
+    // 兜底：侧边栏入口不在（被宿主卸载等）才用紧凑悬浮条
+    buildDock()
+    dockEl.classList.add('tt_dockCompact')
+  }
+}
+
+/**
+ * 最小化状态的唯一可见载体是侧边栏「终端」入口本身：
+ * 入口右侧追加「运行中/总数」徽标与状态点，点击入口即恢复（openModal 已处理）。
+ */
+function syncEntryBadge() {
+  const entry = document.querySelector('[data-dsh-tty-entry]')
+  if (entry === null) return
+  let badge = entry.querySelector('.tt_sidebarEntryBadge')
+  if (!minimized) {
+    if (badge !== null) badge.remove()
+    delete entry.dataset.minimized
+    entry.removeAttribute('title')
+    return
+  }
+  if (badge === null) {
+    badge = document.createElement('span')
+    badge.className = 'tt_sidebarEntryBadge'
+    badge.innerHTML = '<span class="tt_sidebarBadgeDot"></span><span class="tt_sidebarBadgeCount"></span>'
+    entry.appendChild(badge)
+  }
+  entry.title = '终端已最小化 — 点击恢复'
+  const running = [...tabs.values()].filter((tab) => !tab.exited).length
+  badge.querySelector('.tt_sidebarBadgeCount').textContent = running + '/' + tabs.size
+  const dot = badge.querySelector('.tt_sidebarBadgeDot')
+  if (dot !== null && statusDotEl !== null) dot.dataset.state = statusDotEl.dataset.state ?? ''
+}
+
+/** 最小化期间有输出到达：脉冲提示（入口徽标状态点，兜底时为悬浮条状态点）。 */
+function flashDockActivity() {
+  if (!minimized) return
+  const dot = document.querySelector('[data-dsh-tty-entry] .tt_sidebarBadgeDot') ?? dockDotEl
+  if (dot === null) return
+  dot.dataset.active = ''
+  clearTimeout(dockActivityTimer)
+  dockActivityTimer = setTimeout(() => {
+    delete dot.dataset.active
+  }, 900)
 }
 
 /** 从悬浮条恢复弹窗：重新 fit 并把精确尺寸同步给 PTY。 */
@@ -642,6 +694,7 @@ function restoreModal() {
   dockCountEl = null
   dockStatusEl = null
   dockDotEl = null
+  syncEntryBadge()
   const tab = activeTab()
   if (tab !== undefined && tab.fit !== undefined) {
     try {
@@ -666,6 +719,7 @@ function closeModal() {
   dockCountEl = null
   dockStatusEl = null
   dockDotEl = null
+  syncEntryBadge()
   if (socket !== null) {
     for (const tab of tabs.values()) {
       if (!tab.exited) sendFrame({ t: 'kill', sid: tab.sid })
@@ -820,7 +874,8 @@ window.__ModuleLoader__.load({
     const React = require('react')
     const { jsx, jsxs } = require('react/jsx-runtime')
 
-const CHEVRON_PATH = 'M6 9.5L9.5 7L6 4.5V9.5Z'
+// 与官方 GUI / 其他插件设置卡片一致的「V」形展开箭头（14×14，展开时旋转 180°）
+const CHEVRON_PATH = 'M11.8486 5.5L11.4238 5.92383L8.69727 8.65137C8.44157 8.90706 8.21562 9.13382 8.01172 9.29785C7.79912 9.46883 7.55595 9.61756 7.25 9.66602C7.08435 9.69222 6.91565 9.69222 6.75 9.66602C6.44405 9.61756 6.20088 9.46883 5.98828 9.29785C5.78438 9.13382 5.55843 9.13382 5.30273 8.65137L2.57617 5.92383L2.15137 5.5L3 4.65137L3.42383 5.07617L6.15137 7.80273C6.42595 8.07732 6.59876 8.24849 6.74023 8.3623C6.87291 8.46904 6.92272 8.47813 6.9375 8.48047C6.97895 8.48703 7.02105 8.48703 7.0625 8.48047C7.07728 8.47813 7.12709 8.46904 7.25977 8.3623C7.40124 8.24849 7.57405 8.07732 7.84863 7.80273L10.5762 5.07617L11 4.65137L11.8486 5.5Z'
 
 /**
  * 设置 → 插件 →「终端面板」卡片：读取/编辑 tty settings 命名空间。
@@ -905,10 +960,14 @@ function TtySettingsCard() {
               jsx('span', { className: 'tt_cardDescription', children: 'xterm 终端面板：多标签页、cwd 跟随会话；shell / TERM / 并发上限等保存即热生效。' }),
             ],
           }),
-          jsxs('svg', {
+          jsx('svg', {
+            width: '14',
+            height: '14',
+            viewBox: '0 0 14 14',
+            fill: 'none',
+            xmlns: 'http://www.w3.org/2000/svg',
             className: open ? 'tt_cardChevron tt_cardChevronOpen' : 'tt_cardChevron',
-            width: '14', height: '14', viewBox: '0 0 12 14', fill: 'none', xmlns: 'http://www.w3.org/2000/svg',
-            children: jsx('path', { d: 'M6 9.5L9.5 7L6 4.5V9.5Z', fill: 'currentColor' }),
+            children: jsx('path', { d: CHEVRON_PATH, fill: 'currentColor' }),
           }),
         ],
       }),

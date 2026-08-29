@@ -148,9 +148,10 @@ window.__ModuleLoader__.load({
       '.rss_modal{background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);width:min(720px,100vw - 48px);max-height:calc(100vh - 96px);box-shadow:var(--dsw-shadow-lv3);color:var(--dsw-alias-label-primary);border-radius:14px;flex-direction:column;gap:12px;padding:16px;display:flex;overflow:hidden}',
       '.rss_modalHeader{flex:none;align-items:center;gap:10px;display:flex}',
       '.rss_modalTitle{flex:1;margin:0;font-size:16px;font-weight:700}',
-      '.rss_modalClose{appearance:none;background:0 0;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:8px;width:30px;height:30px;cursor:pointer;font-size:16px;line-height:1}',
+      '.rss_modalClose{appearance:none;background:0 0;border:none;color:var(--dsw-alias-label-tertiary);border-radius:8px;width:30px;height:30px;cursor:pointer;font-size:18px;line-height:1}',
       '.rss_modalClose:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}',
       '.rss_modalBody{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:10px}',
+      '.rss_modalFilter{position:sticky;top:0;z-index:20;flex:none;display:flex;flex-direction:column;gap:10px;background:var(--dsw-alias-bg-base);padding-bottom:6px;margin-bottom:-6px}',
       '.rss_modalToolbar{display:flex;gap:8px;flex:none}',
       '.rss_modalChips{display:flex;flex-wrap:wrap;gap:6px;flex:none}',
       '.rss_modalChip{border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);background:0 0;border-radius:999px;padding:2px 10px;font-size:11.5px;line-height:1.6;cursor:pointer}',
@@ -881,6 +882,8 @@ window.__ModuleLoader__.load({
       if (digest?.errors && digest.errors.length) {
         parts.push('<div class="rss_banner" data-kind="warn">抓取失败：' + digest.errors.map((e) => esc(e.source + ': ' + e.error)).join('；') + '</div>')
       }
+      /* 搜索框 + 分类 chips 打包成吸顶区块：列表滚动时筛选条件始终可见 */
+      parts.push('<div class="rss_modalFilter">')
       parts.push('<div class="rss_modalToolbar">')
       parts.push('<input class="rss_input" data-field="rss-modal-search" value="' + esc(state.modalQuery) + '" placeholder="搜索标题 / 摘要 / 来源…" autocomplete="off" spellcheck="false" />')
       parts.push('</div>')
@@ -892,6 +895,7 @@ window.__ModuleLoader__.load({
         }
         parts.push('</div>')
       }
+      parts.push('</div>')
       if (items.length === 0) {
         parts.push('<div class="rss_empty">' + (allItems.length === 0 ? '今天暂无条目。' : '没有匹配的条目。') + '</div>')
       } else {
