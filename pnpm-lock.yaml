@@ -18,7 +18,7 @@ importers:
         specifier: 0.1.1
         version: link:packages/hello
       '@hyzyn/dsh-mcp':
-        specifier: 0.1.3
+        specifier: 0.1.4
         version: link:packages/mcp
       '@hyzyn/dsh-profile':
         specifier: 0.1.4
