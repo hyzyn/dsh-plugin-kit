@@ -104,8 +104,9 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 - **做什么**：代码图谱集成——设置 → 插件 里的「Codegraph」卡片提供索引状态、符号搜索、callers / callees / impact 查看和一键 sync / index；安装后自动向 systemPrompt 注入 CodeGraph 使用指引，模型在已索引项目里优先用 `codegraph_explore` / `codegraph explore` 查询代码而不是 grep / read。
 - **怎么用**：打开 设置 → 插件 →「Codegraph」→ 查看索引状态、搜索符号、点击结果查看源码与调用链 / 影响面、手动 Sync / 重建索引。
 - **支持**：索引状态（版本、文件 / 符号 / 边数量、最后索引时间、待同步变更）；符号搜索与 node / callers / callees / impact 详情；**默认路径跟随当前活动会话的工作目录**（切换项目会话自动切换，手动输入可临时覆盖）；一键增量 sync 与全量重建。
-- **存哪里**：索引在项目 `.codegraph/` 目录（由 `codegraph index` 生成）；插件无独立配置文件。
-- **注意**：查询目标项目需要先有 Codegraph 索引；未索引项目会返回指引改用常规工具。索引 / 重建为本地 CLI 操作，消耗真实磁盘与 CPU。
+- **MCP 托管（默认开）**：DSH 的 MCP 客户端不声明 roots，`codegraph serve --mcp` 只能从工作目录向上找 `.codegraph/`——宿主若从家目录启动，模型调用 `mcp__codegraph__*` 会拿到 "No CodeGraph project is loaded"。本插件自动在 `~/.dsh/cordis.patch.yml` 托管 codegraph MCP 服务器行并把 cwd 对齐默认项目路径（卡片「设为默认项目」一键切换，保存即热重启 MCP 服务器）；已在 MCP 卡片配置过的行只补 cwd 不动其它字段。可用 `mcpIntegration: false` 关闭。
+- **存哪里**：索引在项目 `.codegraph/` 目录（由 `codegraph index` 生成）；默认项目路径持久化在 settings 命名空间 `codegraph`。
+- **注意**：查询目标项目需要先有 Codegraph 索引；未索引项目会返回指引改用常规工具。索引 / 重建为本地 CLI 操作，消耗真实磁盘与 CPU。一台 codegraph MCP 服务器同一时刻只挂载一个默认项目，其它已索引项目可在工具调用里传 `projectPath` 查询。
 
 ![Codegraph 设置卡片](docs/dsh-plugin-kit-codegraph.png)
 
@@ -303,6 +304,7 @@ A: 本机 `~/.npm` 缓存存在 root-owned 文件（历史 npm bug），执行 `
 ## 已知限制
 
 - MCP 的 `~/.dsh/cordis.patch.yml` 里托管区块只应放服务器配置；手工追加插件行会导致 `duplicate loader entry id` 启动失败。
+- Codegraph 的 MCP 托管只对齐 codegraph 一个服务器的工作目录；DSH 的 MCP 客户端暂不声明 roots，切换项目需在 Codegraph 卡片「设为默认项目」或调用工具时传 `projectPath`。
 - Profile 删除为递归删除，面板内会二次确认，但一旦执行不可撤销；内置 `web` profile 受保护，`headless` 可删。
 - RSS 首次启动需要联网抓取；某个源不可达不会阻塞其它源，但当天 digest 可能缺少该源内容。
 - 浏览器半体依赖官方 `dsh-web-app` 的设置面板 slots 服务，非官方 Web GUI 可能不显示管理卡片。

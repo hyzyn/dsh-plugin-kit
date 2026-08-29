@@ -1,7 +1,7 @@
 {
   "name": "@hyzyn/dsh-codegraph",
   "version": "0.1.4",
-  "description": "DSH Web GUI 的 Codegraph 集成插件：在设置 → 插件 里提供 Codegraph 状态、符号搜索、callers/callees/impact 查看和一键 sync/index，并向 agent 注入 Codegraph 能力提示。",
+  "description": "DSH Web GUI 的 Codegraph 集成插件：在设置 → 插件 里提供 Codegraph 状态、符号搜索、callers/callees/impact 查看和一键 sync/index，托管 codegraph MCP 服务器的项目目录，并向 agent 注入 Codegraph 能力提示。",
   "type": "module",
   "engines": {
     "node": ">=22.19.0"
@@ -27,7 +27,8 @@
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.1",
-    "@hyzyn/dsh-kit": "^0.1.0"
+    "@hyzyn/dsh-kit": "^0.1.0",
+    "js-yaml": "^4.1.0"
   },
   "peerDependencies": {
     "react": "^18.2.0"

@@ -51,6 +51,8 @@ window.__ModuleLoader__.load({
       '.cg_error{color:var(--dsw-alias-state-error-primary);font-size:12px;margin:0;white-space:pre-wrap}',
       '.cg_ok{color:var(--dsw-alias-state-success-primary);font-size:12px;margin:0}',
       '.cg_sectionTitle{margin:0;font-size:13px;font-weight:700;color:var(--dsw-alias-label-secondary)}',
+      '.cg_mcpRow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}',
+      '.cg_mcpMeta{color:var(--dsw-alias-label-tertiary);font-size:11.5px;line-height:1.5;min-width:0}',
     ].join('\n')
 
     let styleEl
@@ -105,6 +107,8 @@ window.__ModuleLoader__.load({
       const [error, setError] = React.useState('')
       const [ok, setOk] = React.useState('')
       const [loading, setLoading] = React.useState(false)
+      const [mcp, setMcp] = React.useState(null)
+      const [settingDefault, setSettingDefault] = React.useState(false)
 
       // 当前活动会话的工作目录（随会话切换实时更新；无活动会话时为 ''）。
       const currentCwd = React.useSyncExternalStore(
@@ -119,6 +123,15 @@ window.__ModuleLoader__.load({
       // 有效路径：手动编辑过就用手动值（清空则回落后端默认）；
       // 未编辑过则跟随当前活动会话的工作目录。
       const effectivePath = path !== '' ? path : (manual ? '' : currentCwd)
+
+      const loadMcpStatus = React.useCallback(async () => {
+        try {
+          const data = await api('/api/dsh-codegraph/default-path')
+          setMcp(data.mcp || null)
+        } catch {
+          setMcp(null)
+        }
+      }, [])
 
       const loadStatus = React.useCallback(async () => {
         setLoading(true)
@@ -136,8 +149,11 @@ window.__ModuleLoader__.load({
       }, [effectivePath, manual, currentCwd])
 
       React.useEffect(() => {
-        if (open) loadStatus()
-      }, [open, loadStatus])
+        if (open) {
+          loadStatus()
+          loadMcpStatus()
+        }
+      }, [open, loadStatus, loadMcpStatus])
 
       // 跟随当前项目：打开卡片或切换会话时，若用户未手动编辑过路径，
       // 自动采用当前活动会话的工作目录；手动编辑后停止跟随。
@@ -201,6 +217,35 @@ window.__ModuleLoader__.load({
           setLoading(false)
         }
       }
+
+      // 把当前有效路径设为默认项目：宿主会持久化并热切换 codegraph MCP 服务器
+      const setDefaultProject = async () => {
+        if (!effectivePath) return
+        setSettingDefault(true)
+        setError('')
+        setOk('')
+        try {
+          const data = await api('/api/dsh-codegraph/default-path', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ path: effectivePath }),
+          })
+          setMcp(data.mcp || null)
+          setOk('已把默认项目切到 ' + (data.defaultPath || effectivePath) + (data.persisted === false ? '（本次会话内生效）' : '') + '，codegraph MCP 服务器将热切换。')
+        } catch (err) {
+          setError(err.message)
+        } finally {
+          setSettingDefault(false)
+        }
+      }
+
+      const mcpText = React.useMemo(() => {
+        if (!mcp) return 'MCP：状态未知'
+        if (mcp.mode === 'own') return 'MCP：已托管（本插件维护工作目录）· cwd ' + (mcp.cwd || '(未设置)') + (mcp.disabled ? ' · 已停用' : '')
+        if (mcp.mode === 'dsh-mcp') return 'MCP：已对齐 MCP 卡片里的行 · cwd ' + (mcp.cwd || '(未设置)') + (mcp.disabled ? ' · 已停用' : '')
+        if (mcp.mode === 'external') return 'MCP：检测到手工配置行，插件不接管'
+        return 'MCP：' + (mcp.note || '未托管')
+      }, [mcp])
 
       const statusText = status ? JSON.stringify(status, null, 2) : ''
 
@@ -294,6 +339,20 @@ window.__ModuleLoader__.load({
                   ],
                 }),
                 loading ? jsx('div', { className: 'cg_loading', children: '加载中…' }) : null,
+                jsxs('div', {
+                  className: 'cg_mcpRow',
+                  children: [
+                    jsx('button', {
+                      type: 'button',
+                      className: 'cg_btnGhost',
+                      disabled: settingDefault || loading || !effectivePath,
+                      title: '把当前路径持久化为默认项目，codegraph MCP 服务器的工作目录随之热切换',
+                      onClick: setDefaultProject,
+                      children: '设为默认项目',
+                    }),
+                    jsx('span', { className: 'cg_mcpMeta', children: mcpText }),
+                  ],
+                }),
                 error ? jsx('p', { className: 'cg_error', children: error }) : null,
                 ok ? jsx('p', { className: 'cg_ok', children: ok }) : null,
                 status ? jsx('pre', { className: 'cg_pre', children: statusText }) : null,
