@@ -126,7 +126,10 @@ SSH 会话同表调度：`tty_list` 里 `kind: 'ssh'` 的条目按 `target`
   sha256 指纹记录进 `hostKeys`（随 settings 持久化）；之后每次连接校验，
   指纹一致放行，**指纹变更直接拒绝连接**（防中间人冒充），错误信息带重置
   指引。主机重装/换钥匙后，到 设置 → 插件 → 终端面板 → 「SSH 主机密钥
-  记录」删除对应记录再重连即可（记录列表支持删除）；
+  记录」删除对应记录再重连即可（记录列表支持删除）。**「从 known_hosts
+  导入」（0.4.1）**：一键解析 `~/.ssh/known_hosts` 把已有主机指纹批量
+  预填充（连接簿里的主机名还会用于还原 `|1|` hashed 条目，非默认端口按
+  `[host]:port` 解析）；
 - **计入 `maxSessions` 并发上限**；关断与本地会话一致：标签 ✕ / `kill`
   帧关闭 ssh2 channel，`exit` 帧照常带回退出码 / 信号。
 
@@ -158,7 +161,7 @@ SSH 会话同表调度：`tty_list` 里 `kind: 'ssh'` 的条目按 `target`
 | C→S | `{t:'sessions'}` | 列出全局会话快照（`attachable` 标记可重连者） |
 | C→S | `{t:'attach', sid}` | 重连孤儿会话（保活窗口内）：`ready(reattached:true)` 后紧跟一帧 `data` 回放输出缓冲 |
 | S→C | `{t:'ready', sid, pid, kind, target?, reattached?}` | 会话就绪；`kind:'local'` 带 pid，`kind:'ssh'` 时 pid=null、target=user@host[:port]；attach 复用此帧并带 `reattached:true` |
-| S→C | `{t:'data', sid, d}` | 终端输出（utf8 文本，StringDecoder 兜跨帧多字节序列） |
+| S→C | `{t:'data', sid, d}` | 终端输出（utf8 文本，StringDecoder 兜跨帧多字节序列）；**12ms 窗口/64KB 阈值合并成帧**（0.4.1），exit/kill 前强制冲刷保证帧序 |
 | S→C | `{t:'exit', sid, code, signal}` | PTY 退出事实（恰好一次；attach 换连接后仍随当前连接送达） |
 | S→C | `{t:'error', sid?, m}` | 错误 |
 | S→C | `{t:'sessions', list}` | 会话快照（`{sid, kind, target, pid?, cwd, startedAt, lastOutputAt, attachable}`） |
@@ -217,7 +220,9 @@ pnpm --filter @hyzyn/dsh-tty ssh-smoke    # SSH 冒烟：内存 SSH server（ssh
   first use），之后指纹一致放行、变更拒绝——不再是无条件放行的
   accept-and-log。注意 TOFU 的固有边界：首次连接若已遭遇 MITM 则记录的
   就是伪指纹；`hostKeys` 随 settings 落盘，指纹变更需人工在设置卡片确认
-  并删除记录。
+  并删除记录；`hostKeys` 按 host:port 只存**一条**指纹——同一主机提供多种
+  密钥类型（rsa/ed25519/ecdsa）且算法协商变化时可能误报变更，删除记录
+  重连即可重新校准；known_hosts 导入同为每主机首条优先。
 - **SSH 密码 / 口令建议 `env:VAR` 引用**：连接簿随 settings 文件落盘，
   `password` / `passphrase` 明文入库有泄露面；建议 `env:VAR` +
   dsh-env-manager 托管，或直接用 `agent` 认证（凭证不落盘）。
@@ -248,8 +253,8 @@ pnpm --filter @hyzyn/dsh-tty ssh-smoke    # SSH 冒烟：内存 SSH server（ssh
   │  与 cwd 跟随（tty_list）
   ├─ 本地路径：ctx.get('subprocess').spawnTerminal({ argv: shell -c 包装层, cwd })
   ├─ 辅助路由：/api/dsh-tty/ssh-config（~/.ssh/config 导入候选）、
-  │  /api/dsh-tty/env-vars（env 插件托管变量名，env:VAR 选择器数据源）
-  │  ——均 loopback 围栏
+  │  /api/dsh-tty/env-vars（env 插件托管变量名）、/api/dsh-tty/known-hosts
+  │  （TOFU 指纹预填充，src/known-hosts.ts 解析含 hashed 条目）——均 loopback 围栏
   └─ 帧协议：spawn|ssh / input / resize / kill / sessions / attach
      ↔ ready/data/exit/error/sessions + 背压
 

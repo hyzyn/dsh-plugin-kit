@@ -15,6 +15,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 import { spawnSsh, sshTarget, expandHome } from './ssh.js';
 import { buildShellSpawn } from './shell-integration.js';
 import { parseSshConfig } from './ssh-config.js';
+import { parseKnownHosts } from './known-hosts.js';
 const SSH_HOST_SCHEMA = z.object({
     name: z.string(),
     host: z.string(),
@@ -190,6 +191,10 @@ const OSC133_RE = /\x1b\]133;([ABDC])(?:;(\d+))?(?:\x07|\x1b\\)/g;
 const OSC7_RE = /\x1b\]7;([^\x07\x1b]*)(?:\x07|\x1b\\)/g;
 /** 单条命令输出捕获上限（环形，超出丢头部）。 */
 const COMMAND_CAP = 256 * 1024;
+/** data 帧合并窗口（毫秒）：窗口内的 PTY chunk 合成一帧，显著降帧/降 CPU。 */
+const FLUSH_INTERVAL_MS = 12;
+/** 待发输出超过该字符数时跳过窗口立即冲刷（防超长输出无限延迟）。 */
+const FLUSH_SIZE_CHARS = 64 * 1024;
 function createShellState() {
     return { carry: '', inCommand: false, cmdBuffer: '', lastCommand: null };
 }
@@ -490,8 +495,8 @@ class SessionManager {
             attachable: session.ws === null && !session.closed,
         }));
     }
-    /** 释放并销毁会话：kill PTY/channel + 释放虚拟屏（幂等）。 */
-    async destroy(session) {
+    /** 同步退役：移出全局表 + 释放虚拟屏（幂等，不杀进程）。 */
+    retire(session) {
         session.closed = true;
         this.sessions.delete(session.id);
         try {
@@ -500,6 +505,10 @@ class SessionManager {
         catch {
             /* 已释放 */
         }
+    }
+    /** 释放并销毁会话：退役 + 树级终止（等待 terminate 完成，最慢 ~20s）。 */
+    async destroy(session) {
+        this.retire(session);
         await forceKill(session.handle);
     }
     /** 回收超过保活期的孤儿会话（回收器定时调用；graceMs<=0 时不动作）。 */
@@ -509,7 +518,7 @@ class SessionManager {
         const now = Date.now();
         for (const session of [...this.sessions.values()]) {
             if (session.orphanedAt !== null && now - session.orphanedAt >= graceMs) {
-                await this.destroy(session);
+                void this.destroy(session); // 后台收尾：terminate 最慢可达 ~20s，不阻塞回收器
             }
         }
     }
@@ -566,11 +575,13 @@ class TtyServer {
                 if (this.options.reconnectGraceMs > 0) {
                     // 客户端正常关面板会先逐个 kill（会话已移出 local），走到这里的都是
                     // 「异常断开仍有存活会话」：转孤儿保活，等待新连接 attach，到点由回收器清理
+                    this.flushPendingOutput(session); // 没了收件人，待发帧直接丢弃（回放走环形缓冲）
                     session.ws = null;
                     session.orphanedAt = Date.now();
                     return;
                 }
-                await this.sessions.destroy(session);
+                this.flushPendingOutput(session);
+                this.killSessionNow(session);
             }));
         };
         ws.on('message', (raw) => {
@@ -612,6 +623,21 @@ class TtyServer {
             return { sid: [...local.keys()][0] };
         send(ws, { t: 'error', m: local.size === 0 ? '没有可用会话（先发 spawn）' : '存在多个会话，请指定 sid' });
         return undefined;
+    }
+    /**
+     * 立即终止会话：同步退役 + 顶层 shell 直接 SIGKILL，让 done/exit 帧立刻可发；
+     * 树级子进程清理（SIGTERM→grace→SIGKILL，交互式 zsh 忽略 SIGTERM 时最慢
+     * 可拖 ~20s）由 terminate 在后台继续收尾，不阻塞 kill 帧处理。
+     */
+    killSessionNow(session) {
+        this.sessions.retire(session);
+        try {
+            session.handle.forceKill?.();
+        }
+        catch {
+            /* 已退出 */
+        }
+        void forceKill(session.handle);
     }
     /** 每会话一块虚拟屏（xterm-headless）：tty_screen 的数据源；失败降级为 null。 */
     createScreen(cols, rows) {
@@ -675,6 +701,8 @@ class TtyServer {
                     screen: this.createScreen(Number(msg.cols) || 80, Number(msg.rows) || 24),
                     orphanedAt: null,
                     shellState: createShellState(),
+                    pendingOutput: '',
+                    flushTimer: null,
                 };
                 local.set(sid, next);
                 this.sessions.add(next);
@@ -748,6 +776,8 @@ class TtyServer {
                     screen: this.createScreen(Number(msg.cols) || 80, Number(msg.rows) || 24),
                     orphanedAt: null,
                     shellState: createShellState(),
+                    pendingOutput: '',
+                    flushTimer: null,
                 };
                 local.set(sid, next);
                 this.sessions.add(next);
@@ -788,15 +818,17 @@ class TtyServer {
                     // 本连接没有该 sid：若是孤儿会话（前连接已断）也允许 kill，
                     // 避免「关闭面板杀不掉孤儿」泄漏到保活期结束
                     const orphan = this.sessions.get(String(msg.sid ?? ''));
-                    if (orphan !== undefined && !orphan.closed)
-                        await this.sessions.destroy(orphan);
+                    if (orphan !== undefined && !orphan.closed) {
+                        this.flushPendingOutput(orphan);
+                        this.killSessionNow(orphan);
+                    }
                     return;
                 }
                 const session = local.get(resolved.sid);
                 if (session === undefined)
                     return;
                 local.delete(resolved.sid);
-                await this.sessions.destroy(session);
+                this.killSessionNow(session);
             }
             else if (msg.t === 'sessions') {
                 send(ws, { t: 'sessions', list: this.sessions.listForAttach() });
@@ -856,12 +888,30 @@ class TtyServer {
             catch {
                 /* 已释放 */
             }
+            this.flushPendingOutput(session); // exit 前冲掉合并窗口里的尾巴，保序
             send(session.ws, { t: 'exit', sid: session.id, code: outcome.exitCode, signal: outcome.signal });
         }).catch(() => { });
     }
     /** 输出下行 + 基于 ws.bufferedAmount 的背压（暂停/恢复 PassThrough）。 */
     attachOutput(session) {
         const output = session.handle.output;
+        const flush = () => {
+            session.flushTimer = null;
+            const ws = session.ws;
+            const pending = session.pendingOutput;
+            if (session.closed || ws === null || pending === '')
+                return;
+            session.pendingOutput = '';
+            ws.send(JSON.stringify({ t: 'data', sid: session.id, d: pending }), () => {
+                if (session.paused && ws.bufferedAmount < BACKPRESSURE_LOW && output.readableFlowing === false) {
+                    output.resume();
+                }
+            });
+            if (!session.paused && ws.bufferedAmount > BACKPRESSURE_HIGH) {
+                session.paused = true;
+                output.pause();
+            }
+        };
         const onData = (chunk) => {
             if (session.closed)
                 return;
@@ -879,18 +929,35 @@ class TtyServer {
             const ws = session.ws;
             if (ws === null)
                 return; // 孤儿会话：仅积累缓冲，等待重连 attach 回放
-            const sid = session.id;
-            ws.send(JSON.stringify({ t: 'data', sid, d: text }), () => {
-                if (session.paused && ws.bufferedAmount < BACKPRESSURE_LOW && output.readableFlowing === false) {
-                    output.resume();
+            // data 帧合并：窗口内攒批，超阈值立即冲刷；exit/kill 前会强制 flush 保序
+            session.pendingOutput += text;
+            if (session.pendingOutput.length >= FLUSH_SIZE_CHARS) {
+                if (session.flushTimer !== null) {
+                    clearTimeout(session.flushTimer);
+                    session.flushTimer = null;
                 }
-            });
-            if (!session.paused && ws.bufferedAmount > BACKPRESSURE_HIGH) {
-                session.paused = true;
-                output.pause();
+                flush();
+            }
+            else if (session.flushTimer === null) {
+                const timer = setTimeout(flush, FLUSH_INTERVAL_MS);
+                timer.unref?.();
+                session.flushTimer = timer;
             }
         };
         output.on('data', onData);
+    }
+    /** 立即冲刷待发的合并输出（exit/kill 前调用，保证 exit 帧永远在最后一帧 data 之后）。 */
+    flushPendingOutput(session) {
+        if (session.flushTimer !== null) {
+            clearTimeout(session.flushTimer);
+            session.flushTimer = null;
+        }
+        const ws = session.ws;
+        const pending = session.pendingOutput;
+        session.pendingOutput = '';
+        if (session.closed || ws === null || pending === '')
+            return;
+        send(ws, { t: 'data', sid: session.id, d: pending });
     }
     close() {
         for (const client of this.wss.clients) {
@@ -1213,6 +1280,29 @@ const plugin = definePlugin({
                             return;
                         }
                         writeJson(res, 200, { ok: true, names: readManagedEnvKeys() });
+                    },
+                }));
+                // known_hosts 指纹导入候选（TOFU 预填充）：hashed 条目用连接簿主机名还原
+                disposers.push(webServer.register({
+                    kind: 'exact',
+                    path: '/api/dsh-tty/known-hosts',
+                    handler: async (req, res) => {
+                        if (!isLoopbackHttp(req)) {
+                            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+                            return;
+                        }
+                        if (req.method !== 'GET') {
+                            writeJson(res, 405, { error: 'method not allowed: ' + String(req.method) });
+                            return;
+                        }
+                        try {
+                            const text = readFileSync(expandHome('~/.ssh/known_hosts'), 'utf8');
+                            const candidates = live.sshHosts.flatMap((entry) => [entry.host, `[${entry.host}]:${entry.port}`]);
+                            writeJson(res, 200, { ok: true, entries: parseKnownHosts(text, candidates) });
+                        }
+                        catch (error) {
+                            writeJson(res, 200, { ok: false, error: '无法读取 ~/.ssh/known_hosts: ' + (error instanceof Error ? error.message : String(error)) });
+                        }
                     },
                 }));
                 return () => {

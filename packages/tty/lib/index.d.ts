@@ -46,7 +46,8 @@
  *     子进程），必须 best-effort：失败降级为对顶层 shell 直接 SIGKILL。
  */
 import type { Context } from '@deepseek-ai/cordis';
-import type { SshHostEntry } from './ssh.js';
+import type { HostKeyRecord, SshHostEntry } from './ssh.js';
+export type { HostKeyRecord } from './ssh.js';
 export interface Config {
     /** 关闭整个插件。默认开。 */
     enabled?: boolean;
@@ -70,12 +71,5 @@ export interface Config {
     hostKeys?: HostKeyRecord[];
     /** 是否注入 OSC 133/7 shell 集成（命令边界标记 + cwd 上报）。默认开。 */
     shellIntegration?: boolean;
-}
-/** TOFU 主机指纹记录。 */
-export interface HostKeyRecord {
-    host: string;
-    port: number;
-    /** hostVerifier 收到的原样 sha256 十六进制指纹。 */
-    fingerprint: string;
 }
 export declare const name: string, inject: string[] | undefined, apply: (ctx: Context, config?: Config | undefined) => void;

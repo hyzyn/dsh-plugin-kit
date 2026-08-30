@@ -9,6 +9,19 @@
  *   B4. maxSessions 上限：第二连接 spawn 报「会话数已达上限」
  *   B5. loopback 围栏：伪造 Host 的 upgrade 请求被拒
  *   B6. TERM 注入（-c 包装层）生效
+ *   B7. 单连接多会话：共存、数据隔离、单独 kill
+ *   B8. cwd 跟随与校验
+ *   B9. 配置热生效（settings/updated）
+ *   B10. /api/dsh-tty/config 读写 API
+ *   B11. 超限被拒后的恢复
+ *   B12. agent 工具集（tty_list / tty_capture / tty_screen / tty_expect / tty_send）
+ *   B13. 断线保活与重连（sessions/attach 帧，协议 v3）
+ *   B14. tty_screen 虚拟屏 + tty_capture ANSI 清洗
+ *   B15. shell 集成（OSC 133 命令捕获/退出码 + OSC 7 cwd 跟随）
+ *   B16. ~/.ssh/config 解析器
+ *   B17. tty_expect 匹配与超时
+ *   B18. data 帧合并后帧序不变量（exit 在最后一帧 data 之后）
+ *   B19. known_hosts 解析器
  *
  * 用法：pnpm --filter @hyzyn/dsh-tty integration
  * 退出码：0 = 全部 PASS，1 = 任一 FAIL。
@@ -19,6 +32,7 @@ import { LocalSubprocessRuntime } from '@deepseek-ai/dsh-subprocess-local'
 import WebSocket from 'ws'
 import { name, inject, apply } from '../lib/index.js'
 import { parseSshConfig } from '../lib/ssh-config.js'
+import { parseKnownHosts } from '../lib/known-hosts.js'
 import { assertSupportedJsonSchema } from '@deepseek-ai/dsh-tools'
 
 
@@ -596,6 +610,64 @@ async function run() {
     s.client.send(JSON.stringify({ t: 'kill', sid: 'ex-1' }))
     await s.waitFor(() => s.state.exited !== null, 10000, 'ex-1 exit')
     s.client.close()
+  }
+
+  // B18: data 帧合并与帧序不变量（exit 永远在最后一帧 data 之后）
+  console.log('\n[17] data 帧合并与帧序')
+  {
+    const s = openSession(port)
+    await s.open()
+    console.log('    [B18] spawning…')
+    s.client.send(JSON.stringify({ t: 'spawn', sid: 'co-1' }))
+    await s.waitFor(() => s.state.ready, 10000, 'co-1 ready')
+    console.log('    [B18] ready ✓')
+    s.client.send(JSON.stringify({ t: 'input', sid: 'co-1', d: 'printf "COARSE_%s\\n" OK\n' }))
+    console.log('    [B18] input sent')
+    await s.waitFor(() => /COARSE_OK/.test(s.state.text), 10000, 'COARSE_OK 输出')
+    console.log('    [B18] COARSE_OK ✓')
+    await sleep(300)
+    console.log('    [B18] killing…')
+    s.client.send(JSON.stringify({ t: 'kill', sid: 'co-1' }))
+    await s.waitFor(() => s.state.exited !== null && s.state.exited.sid === 'co-1', 10000, 'co-1 exit')
+    console.log('    [B18] exit ✓')
+    const exitIndex = s.state.frames.findIndex((f) => f.t === 'exit' && f.sid === 'co-1')
+    const lastDataIndex = s.state.frames.reduce((acc, f, i) => (f.t === 'data' && f.sid === 'co-1' ? i : acc), -1)
+    if (exitIndex > lastDataIndex && /COARSE_OK/.test(s.state.text)) pass('B18 帧合并后帧序不变量（exit 在最后一帧 data 之后，输出完整）')
+    else fail('B18 帧合并后帧序不变量（exit 在最后一帧 data 之后，输出完整）', `exitIndex=${exitIndex} lastDataIndex=${lastDataIndex}`)
+    s.client.close()
+  }
+
+  // B19: known_hosts 解析器（非 hashed / [host]:port / 通配跳过 / @marker 跳过 / hashed 候选还原）
+  console.log('\n[18] known_hosts 解析器')
+  {
+    const { createHash, createHmac, randomBytes } = await import('node:crypto')
+    const blob1 = Buffer.from('web1-host-key-bytes', 'utf8').toString('base64')
+    const blob2 = Buffer.from('db1-host-key-bytes', 'utf8').toString('base64')
+    const blob3 = Buffer.from('hashed-host-key-bytes', 'utf8').toString('base64')
+    const salt = randomBytes(20)
+    const hmac = createHmac('sha1', salt).update('web1.example.com').digest('base64')
+    const sample = [
+      '# comment',
+      '@cert-authority *.example.com ssh-ed25519 ' + blob1,
+      'web1.example.com,alias ssh-ed25519 ' + blob1,
+      '[db1.internal]:2222 ssh-rsa ' + blob2,
+      '*.wildcard ssh-ed25519 ' + blob1,
+      '|1|' + salt.toString('base64') + '|' + hmac + ' ssh-ed25519 ' + blob3,
+    ].join('\n')
+    const entries = parseKnownHosts(sample, ['web1.example.com'])
+    const fp1 = createHash('sha256').update(Buffer.from('web1-host-key-bytes')).digest('hex')
+    const fp2 = createHash('sha256').update(Buffer.from('db1-host-key-bytes')).digest('hex')
+    const web1 = entries.find((e) => e.host === 'web1.example.com')
+    const alias = entries.find((e) => e.host === 'alias')
+    const db1 = entries.find((e) => e.host === 'db1.internal')
+    const hashedReplayed = entries.filter((e) => e.host === 'web1.example.com').length
+    const ok = entries.length === 3
+      && web1 !== undefined && web1.port === 22 && web1.fingerprint === fp1
+      && alias !== undefined && alias.port === 22 && alias.fingerprint === fp1
+      && db1 !== undefined && db1.port === 2222 && db1.fingerprint === fp2
+      && hashedReplayed === 1
+    if (ok) pass('B19 known_hosts 解析（别名拆分/[host]:port/@marker与通配跳过/hashed 候选还原+去重）')
+    else fail('B19 known_hosts 解析（别名拆分/[host]:port/@marker与通配跳过/hashed 候选还原+去重）', JSON.stringify(entries))
   }
 
   const failed = RESULTS.filter(([kind]) => kind === 'FAIL')

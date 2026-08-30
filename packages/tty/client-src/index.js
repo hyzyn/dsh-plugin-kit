@@ -29,8 +29,8 @@
  *     筛选选择器（宿主 /api/dsh-tty/env-vars，仅 env 插件托管变量名）
  *   - 「+」菜单连接簿条目带 ✎ 编辑：对话框编辑模式（预填全字段，可改名，
  *     「保存修改」按原名替换条目），连接照常可用
- *   - 设置卡片：从 ~/.ssh/config 导入连接簿（同名跳过）；shell 集成开关；
- *     连接簿行内编辑表单
+ *   - 设置卡片：从 ~/.ssh/config 导入连接簿（同名跳过）；从 known_hosts 导入
+ *     主机指纹（TOFU 预填充）；shell 集成开关；连接簿行内编辑表单
  *   - 标签双击重命名（随标签持久化，断线恢复保留）
  * 帧协议与宿主半体（src/index.ts）对齐：spawn/ssh/input/resize/kill/
  * sessions/attach ↔ ready/data/exit/error/sessions。
@@ -1875,6 +1875,56 @@ function TtySettingsCard() {
       setMessage({ kind: 'error', text: String(error && error.message ? error.message : error) })
     }
   }
+  /** 从 ~/.ssh/known_hosts 导入指纹（TOFU 预填充）：立即 POST，同名 host:port 跳过。 */
+  const importKnownHosts = async () => {
+    setMessage({ kind: '', text: '' })
+    try {
+      const res = await fetch('/api/dsh-tty/known-hosts', { cache: 'no-store' })
+      const data = await res.json()
+      if (!data.ok) {
+        setMessage({ kind: 'error', text: String(data.error || '读取 ~/.ssh/known_hosts 失败') })
+        return
+      }
+      const incoming = Array.isArray(data.entries) ? data.entries : []
+      const merged = [...(Array.isArray(form?.hostKeys) ? form.hostKeys : [])]
+      const existing = new Set(merged.map((hk) => String(hk?.host ?? '') + ':' + String(hk?.port ?? 22)))
+      let added = 0
+      let skipped = 0
+      for (const record of incoming) {
+        if (record === null || typeof record !== 'object' || typeof record.host !== 'string' || typeof record.fingerprint !== 'string') continue
+        const key = record.host + ':' + String(record.port ?? 22)
+        if (existing.has(key)) {
+          skipped += 1
+          continue
+        }
+        existing.add(key)
+        merged.push({ host: record.host, port: Number(record.port) || 22, fingerprint: record.fingerprint })
+        added += 1
+      }
+      if (added === 0) {
+        setMessage({ kind: 'ok', text: skipped > 0 ? `没有新指纹（${skipped} 条已存在）` : 'known_hosts 里没有可导入的具体主机' })
+        return
+      }
+      setForm((current) => ({ ...(current || {}), hostKeys: merged }))
+      try {
+        const saveRes = await fetch('/api/dsh-tty/config', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ hostKeys: merged }),
+        })
+        const saveData = await saveRes.json().catch(() => ({}))
+        if (!saveRes.ok || !saveData.ok) {
+          setMessage({ kind: 'error', text: String(saveData.error || '保存 hostKeys 失败') })
+          return
+        }
+        setMessage({ kind: 'ok', text: `已导入 ${added} 条指纹（跳过 ${skipped} 条已存在）` })
+      } catch (error) {
+        setMessage({ kind: 'error', text: String(error && error.message ? error.message : error) })
+      }
+    } catch (error) {
+      setMessage({ kind: 'error', text: String(error && error.message ? error.message : error) })
+    }
+  }
   const save = async () => {
     setSaving(true)
     setMessage({ kind: '', text: '' })
@@ -2055,7 +2105,13 @@ function TtySettingsCard() {
                 jsxs('div', {
                   className: 'tt_cardField',
                   children: [
-                    jsx('span', { className: 'tt_cardLabel', children: 'SSH 主机密钥记录（TOFU）' }),
+                    jsxs('div', {
+                      className: 'tt_cardRow',
+                      children: [
+                        jsx('span', { className: 'tt_cardLabel', children: 'SSH 主机密钥记录（TOFU）' }),
+                        jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => void importKnownHosts(), children: '从 known_hosts 导入' }),
+                      ],
+                    }),
                     ...(Array.isArray(form.hostKeys) && form.hostKeys.length > 0
                       ? [jsx('div', {
                           children: form.hostKeys.map((hk) => jsxs('div', {

@@ -17,6 +17,13 @@ export interface TermHandle {
     /** terminate 失败后的最后手段（本地 PTY：对顶层 shell 直接 SIGKILL）。 */
     forceKill?(): void;
 }
+/** TOFU 主机指纹记录。 */
+export interface HostKeyRecord {
+    host: string;
+    port: number;
+    /** hostVerifier 收到的原样 sha256 十六进制指纹。 */
+    fingerprint: string;
+}
 /** 内联 SSH 连接规格（ws 帧或连接簿条目共用）。 */
 export interface SshSpec {
     host: string;
