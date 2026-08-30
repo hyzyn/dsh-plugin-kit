@@ -16,7 +16,6 @@ const only = (otp ? arg3 : arg2)?.split(',') ?? null
 // 可通过参数指定只发部分包（用于 OTP 过期后续发）: node scripts/release-publish-all.mjs <otp> packages/tty,.
 const targets = [
   ['packages/kit', '@hyzyn/dsh-kit'],
-  ['packages/hello', '@hyzyn/dsh-hello'],
   ['packages/codegraph', '@hyzyn/dsh-codegraph'],
   ['packages/env', '@hyzyn/dsh-env'],
   ['packages/mcp', '@hyzyn/dsh-mcp'],

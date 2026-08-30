@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 从 packages/hello 模板复制生成一个新插件包，并自动重跑聚合脚本。
+ * 从 templates/hello 模板复制生成一个新插件包，并自动重跑聚合脚本。
  * 用法：node scripts/create-plugin.mjs <name> [id]
  *   <name>  包名后缀（小写字母/数字/连字符）→ @hyzyn/dsh-<name>、packages/<name>
  *   [id]    cordis 插件 id（默认与 <name> 相同）
@@ -24,10 +24,10 @@ if (!slugRe.test(name) || !slugRe.test(id)) {
   process.exit(1)
 }
 
-const srcDir = join(packagesDir, 'hello')
+const srcDir = join(root, 'templates', 'hello')
 const destDir = join(packagesDir, name)
 if (!existsSync(join(srcDir, 'package.json'))) {
-  console.error('模板 packages/hello 不存在')
+  console.error('模板 templates/hello 不存在')
   process.exit(1)
 }
 if (existsSync(destDir)) {

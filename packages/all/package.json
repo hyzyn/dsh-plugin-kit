@@ -23,7 +23,6 @@
   "dependencies": {
     "@hyzyn/dsh-codegraph": "workspace:*",
     "@hyzyn/dsh-env": "workspace:*",
-    "@hyzyn/dsh-hello": "workspace:*",
     "@hyzyn/dsh-mcp": "workspace:*",
     "@hyzyn/dsh-profile": "workspace:*",
     "@hyzyn/dsh-prompt": "workspace:*",

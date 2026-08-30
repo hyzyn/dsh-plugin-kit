@@ -16,11 +16,6 @@
     - id: env-manager
       name: '@hyzyn/dsh-env'
 
-# from ../packages/hello
-- insert:
-    - id: hello
-      name: '@hyzyn/dsh-hello'
-
 # from ../packages/mcp
 - insert:
     - id: mcp-config

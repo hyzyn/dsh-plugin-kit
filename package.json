@@ -43,12 +43,11 @@
   "dependencies": {
     "@hyzyn/dsh-codegraph": "0.1.6",
     "@hyzyn/dsh-env": "0.1.5",
-    "@hyzyn/dsh-hello": "0.1.2",
     "@hyzyn/dsh-mcp": "0.1.5",
     "@hyzyn/dsh-profile": "0.1.5",
     "@hyzyn/dsh-prompt": "0.1.4",
     "@hyzyn/dsh-rss": "0.1.7",
     "@hyzyn/dsh-search": "0.1.4",
-    "@hyzyn/dsh-tty": "0.1.2"
+    "@hyzyn/dsh-tty": "0.2.1"
   }
 }

@@ -243,7 +243,7 @@ pnpm create-plugin <name> [id]
 # 例：pnpm create-plugin pet-tracker pt → packages/pet-tracker（插件 id: pt）
 ```
 
-脚本会复制 `packages/hello` 模板、替换包名与插件 id，并自动更新聚合包。然后：
+脚本会复制 `templates/hello` 模板、替换包名与插件 id，并自动更新聚合包。然后：
 
 1. 编辑 `packages/<name>/src/index.ts` 写插件逻辑；
 2. 构建并本地安装调试：

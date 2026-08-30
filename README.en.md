@@ -238,7 +238,7 @@ pnpm create-plugin <name> [id]
 # Example: pnpm create-plugin pet-tracker pt → packages/pet-tracker (plugin id: pt)
 ```
 
-The script copies the `packages/hello` template, replaces the package name and plugin id, and automatically updates the aggregate package. Then:
+The script copies the `templates/hello` template, replaces the package name and plugin id, and automatically updates the aggregate package. Then:
 
 1. Edit `packages/<name>/src/index.ts` to write your plugin logic;
 2. Build and install locally for debugging:
