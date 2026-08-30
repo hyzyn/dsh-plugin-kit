@@ -26,6 +26,8 @@ export interface SshSpec {
     keyPath?: string;
     passphrase?: string;
     password?: string;
+    /** OpenSSH agent forwarding：远程可用本地 ssh-agent 的钥匙（git clone 等）。 */
+    agentForward?: boolean;
 }
 /** 连接簿条目（带名字，存 settings）。 */
 export interface SshHostEntry extends SshSpec {
@@ -52,6 +54,9 @@ export interface HostKeyStore {
     /** 首次连接握手时记录指纹。 */
     record(host: string, port: number, fingerprint: string): void;
 }
+declare function expandHome(path: string): string;
+/** 供 ~/.ssh/config 导入路由使用（~ 与 ~/ 前缀展开 home）。 */
+export { expandHome };
 /** 展示用目标串：user@host（非默认端口时带 :port）。 */
 export declare function sshTarget(spec: SshSpec): string;
 /**

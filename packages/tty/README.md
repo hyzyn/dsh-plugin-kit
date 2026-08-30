@@ -5,8 +5,10 @@ xterm.js 全交互终端（node-pty 真实 PTY，WebGL 渲染器加速），支�
 可运行任意命令与 TUI 程序（vim / htop / dev server 等）。浏览器半体打包了 xterm
 内核，宿主半体经 WebSocket 与 PTY 会话双向透传。0.2.0 起支持 **SSH 连接
 （方案 C）**：`ssh2` 原生直连远程主机，像本地终端一样交互；0.3.0 起支持
-**断线自动重连**（刷新页面/网络抖动后会话保活并恢复现场）与 **SSH 主机指纹
-TOFU 钉扎**（见下文）。
+**断线自动重连**与 **SSH 主机指纹 TOFU 钉扎**；0.4.0 起内置 **shell 集成
+（OSC 133/7）**——agent 能按「命令」粒度读写终端（`tty_capture{last}` /
+`tty_expect`），并支持 **agent forwarding**、**~/.ssh/config 导入** 等深化
+能力（见下文）。
 
 ![终端面板：多标签页 xterm 弹窗，工具栏含搜索/清屏/复制/粘贴，标题栏含最小化「—」与关闭 ✕](../../docs/dsh-plugin-kit-tty.png)
 
@@ -24,8 +26,9 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
 
 - 打开面板自动创建第一个终端（默认 `$SHELL`，macOS 上通常是 zsh）；
 - **多标签页**：标签栏「+」新建终端（0.2.0 起「+」为菜单：本地终端 /
-  SSH 连接簿 / SSH 连接…，SSH 见下节）、标签 ✕ 关闭；每个标签独立会话
-  （本地 PTY 或 SSH channel）；
+  SSH 连接簿（条目带 ✎ 编辑）/ SSH 连接…，SSH 见下节）、标签 ✕ 关闭；
+  **双击标签可重命名**（重命名随标签持久化，断线恢复后保留）；每个标签
+  独立会话（本地 PTY 或 SSH channel）；
 - **工作目录跟随当前 DSH 会话**：新标签默认在当前会话工作目录打开
   （宿主配置 `cwd` 作兜底）；
 - 支持 vim / htop / less 等 TUI（TERM 已注入为 `xterm-256color`）；
@@ -49,22 +52,37 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
 
 ## agent 工具（P1）
 
-插件向 agent 注入四个工具（与 bash 工具同权，操作实时显示在用户终端里）：
+插件向 agent 注入五个工具（与 bash 工具同权，操作实时显示在用户终端里）：
 
 | 工具 | 作用 |
 | --- | --- |
-| `tty_list` | 列出活跃终端会话（sid / kind（local\|ssh）/ target / pid / cwd / 活动时间；SSH 会话无 pid，显示 target） |
-| `tty_capture` | 读取指定会话的近期输出（尾部 N 行，默认 60）——查看 dev server / build 日志；**默认剥离 ANSI 转义序列并收敛同行覆盖（进度条刷屏），返回纯文本**，`raw: true` 取原始流 |
-| `tty_screen` | 读取指定会话**当前可见屏幕**的渲染结果（xterm-headless 虚拟屏，纯文本）——能真正读懂 vim / htop / 菜单等 TUI 界面 |
+| `tty_list` | 列出活跃终端会话（sid / kind（local\|ssh）/ target / pid / **cwd 实时跟随 cd** / 活动时间） |
+| `tty_capture` | 读取近期输出（尾部 N 行，默认清洗 ANSI，`raw:true` 取原始流）；**`last:true` 只返回上一条已完成命令的输出 + 退出码**（shell 集成标记，见下节） |
+| `tty_screen` | 读取**当前可见屏幕**的渲染结果（xterm-headless 虚拟屏，纯文本）——能真正读懂 vim / htop / 菜单等 TUI 界面 |
+| `tty_expect` | 用正则**等待后续输出**中的就绪信号（dev server URL、构建完成等）；超时不抛错（`matched:false` + 尾部输出），命令提前结束也会带退出码早停 |
 | `tty_send` | 向指定会话发送按键/文本（如 dev server 的 q 键、菜单选择） |
 
-典型用法：用户在终端面板里跑了 `pnpm dev`，agent 用 `tty_list` 找到 sid →
-`tty_capture` 看日志 → `tty_send` 发 `q` 停止；跑 vim / htop 等全屏程序时用
-`tty_screen` 看界面再决定按键。
+典型 agent 流程（推荐）：`tty_send` 启动长任务 → `tty_expect` 等就绪标记 →
+`tty_capture{last:true}` 拿单条命令结果。此外 `systemPrompt` 里注册了动态
+context，每轮对话自动携带活跃终端快照（sid / kind / cwd），无需先调
+`tty_list` 也有上下文。
+
+### shell 集成（OSC 133/7，0.4.0）
+
+spawn 时经既有的 `-c` 包装层按 shell 类型注入钩子（对用户透明，不改 rc）：
+
+- **zsh**：`ZDOTDIR` 指向临时桩目录（VS Code 同款方案），桩文件先 source
+  用户原 rc 再追加 `precmd`/`preexec` 钩子；
+- **bash**：`--rcfile` 桩（先 source `~/.bashrc`）；命令开始标记走 `PS0`
+  （bash ≥ 4.4，macOS 自带 bash 3.2 优雅降级：仅丢 B 标记）；
+- 标记语义：`133;A` prompt 开始 / `133;B` 命令开始 / `133;D;<exit>` 命令
+  结束带退出码 / `OSC 7 file://…` cwd 上报（`tty_list.cwd` 跟随 `cd`，
+  SSH 会话则上报远程路径）；
+- 其他 shell 静默关闭；配置 `shellIntegration: false` 可整体关掉（逃生门）。
 
 SSH 会话同表调度：`tty_list` 里 `kind: 'ssh'` 的条目按 `target`
-（user@host[:port]）识别，`tty_capture` / `tty_send` 用法与本地会话完全
-一致——远程机器上的 dev server 日志与按键交互照常可用。
+（user@host[:port]）识别，`tty_capture` / `tty_expect` / `tty_send` 用法与
+本地会话完全一致——远程机器上的 dev server 日志与按键交互照常可用。
 
 ## SSH 连接（方案 C）
 
@@ -74,11 +92,12 @@ SSH 会话同表调度：`tty_list` 里 `kind: 'ssh'` 的条目按 `target`
 关闭、输出缓冲、背压与 agent 工具全部复用同一套调度。
 
 - **「+」菜单三个入口**：本地终端 / **SSH 连接簿**（配置里保存过的条目，
-  显示 `user@host[:port] · auth`）/ **SSH 连接…**（表单手填 host / port /
-  username / auth，连接前可勾选保存）；
+  显示 `user@host[:port] · auth`，**条目带 ✎ 进入编辑模式**）/ SSH 连接…
+  （表单手填 host / port / username / auth，连接前可勾选保存）；
 - **连接簿**：SSH 连接对话框勾选「保存到连接簿」即存为条目（同名覆盖，
-  名称留空用主机名）；也可在 设置 → 插件 → 终端面板 卡片维护（列表 +
-  删除，随「保存」一并写入配置）；
+  名称留空用主机名）；「+」菜单条目的 ✎ 与设置卡片里的 **编辑** 都走同一
+  编辑表单（行内改 host/port/username/auth/私钥/密码/agent forwarding，
+  支持改名，同名冲突校验，随「保存」写入配置）；
 - **认证方式（auth）三选一**：
   - `agent`（默认）——走 ssh-agent（`SSH_AUTH_SOCK`），凭证不落盘，最推荐；
   - `key`——`keyPath` 私钥文件（`~` 开头可省略 home），`passphrase` 可选；
@@ -92,6 +111,17 @@ SSH 会话同表调度：`tty_list` 里 `kind: 'ssh'` 的条目按 `target`
   显示 `SSH user@host 已连接`；连接失败（连接超时 / 认证被拒 / 主机
   不可达）以 `error` 帧带回原因，标签规格已随标签保存，点终端区域可按
   原规格重开；
+- **agent forwarding（0.4.0）**：SSH 对话框勾选「agent forwarding」后远程
+  可用本地 ssh-agent 的钥匙（远程 `git clone` 私有仓库等）。任意认证方式下
+  都可开（凭证仍不落盘）；本机未运行 ssh-agent 时连接会明确报错而非静默
+  失效。连接簿条目随 `agentForward` 保存，列表里显示 `· fwd`；
+- **`~/.ssh/config` 导入（0.4.0）**：设置卡片连接簿区「从 ~/.ssh/config
+  导入」——解析 `HostName/User/Port/IdentityFile` 生成候选条目（跳过通配符
+  块与无 User 条目，`Include` 不展开），同名跳过，随「保存」写入；
+- **env:VAR 选择器（0.4.0）**：SSH 对话框的密码/口令字段旁有筛选框 + 限高
+  列表，数据源是 **env 插件托管文件里的变量名**（`~/.dsh/env.yml` 托管区块，
+  宿主只回名字绝不含值）；点击即填 `env:NAME`。未托管变量时给出提示，仍可
+  手输任意 `env:VAR`（连接时校验存在性）；
 - **主机指纹 TOFU 钉扎（0.3.0）**：首次连接成功后把该主机（host:port）的
   sha256 指纹记录进 `hostKeys`（随 settings 持久化）；之后每次连接校验，
   指纹一致放行，**指纹变更直接拒绝连接**（防中间人冒充），错误信息带重置
@@ -114,13 +144,14 @@ SSH 会话同表调度：`tty_list` 里 `kind: 'ssh'` 的条目按 `target`
 | `reconnectGraceSec` | 120 | 异常断开后会话保活秒数（0~3600）：刷新页面/网络抖动后会话存活等待重连，超时由回收器结束；`0` = 旧行为，断开立即结束 |
 | `sshHosts` | `[]` | SSH 连接簿（面板「+」菜单可选）：条目 `{name, host, port=22, username, auth=agent\|key\|password, keyPath, passphrase, password}`；保存时整体替换、同名覆盖；`password` / `passphrase` 支持 `env:VAR` 引用，避免明文入库 |
 | `hostKeys` | `[]` | SSH 主机指纹记录（TOFU，自动维护）：条目 `{host, port, fingerprint}`；按 host:port 唯一，首次连接自动追加，指纹变更拒绝连接；设置卡片可删除重置 |
+| `shellIntegration` | true | 注入 OSC 133/7 shell 集成（命令边界标记 + cwd 上报；`tty_capture{last}` 依赖它）；zsh/bash 支持，其他 shell 自动跳过；出兼容问题时可关闭 |
 
 ## 帧协议（/api/dsh-tty/ws，JSON 文本帧；v3 = 单连接多会话 + 断线重连）
 
 | 方向 | 帧 | 说明 |
 | --- | --- | --- |
 | C→S | `{t:'spawn', sid?, cols?, rows?, cwd?}` | 创建会话；sid 缺省由宿主生成，cwd 缺省用配置兜底 |
-| C→S | `{t:'ssh', sid?, cols?, rows?, name? \| host, username, …}` | 创建 SSH 会话（ssh2 原生）；`name` 引用连接簿条目作基底，内联 `host/port/username/auth/keyPath/passphrase/password` 可逐项覆盖 |
+| C→S | `{t:'ssh', sid?, cols?, rows?, name? \| host, username, …}` | 创建 SSH 会话（ssh2 原生）；`name` 引用连接簿条目作基底，内联 `host/port/username/auth/keyPath/passphrase/password/agentForward` 可逐项覆盖 |
 | C→S | `{t:'input', sid?, d}` | 按键/粘贴数据 |
 | C→S | `{t:'resize', sid?, cols, rows}` | 面板尺寸变化 |
 | C→S | `{t:'kill', sid?}` | 关闭会话（孤儿会话也允许跨连接 kill，防泄漏） |
@@ -177,6 +208,11 @@ pnpm --filter @hyzyn/dsh-tty ssh-smoke    # SSH 冒烟：内存 SSH server（ssh
 - **断线保活窗口有限**：异常断开后会话仅在 `reconnectGraceSec`（默认 120s）
   内保活可重连，宿主进程重启则所有会话结束；超期后未重连的会话由回收器
   结束，输出缓冲（尾部 256KB）之外的滚动历史无法恢复。
+- **shell 集成仅 zsh / bash**：其他 shell 自动跳过（`tty_capture{last}` 会
+  明确报错而非错报）；bash 3.2（macOS 自带）无 `PS0`，仅丢「命令开始」
+  标记——`tty_capture{last}` 依赖 B..D 区间，此时不可用，`tty_expect` 的
+  早停同步失效（超时路径不受影响）。用户 rc 若覆盖 `PROMPT_COMMAND`/钩子
+  数组，集成可能失效——可关闭 `shellIntegration` 或反馈补丁兼容。
 - **SSH host key 为 TOFU 钉扎**：首次连接自动记录 sha256 指纹（trust on
   first use），之后指纹一致放行、变更拒绝——不再是无条件放行的
   accept-and-log。注意 TOFU 的固有边界：首次连接若已遭遇 MITM 则记录的
@@ -206,7 +242,14 @@ pnpm --filter @hyzyn/dsh-tty ssh-smoke    # SSH 冒烟：内存 SSH server（ssh
   │  孤儿回收器按 reconnectGraceSec 清理异常断开的会话）
   ├─ 每会话 256KB 环形缓冲（tty_capture / 断线回放）+ xterm-headless
   │  虚拟屏（tty_screen）+ StringDecoder（utf8 分帧兜底）
+  ├─ shell 集成（src/shell-integration.ts）：zsh ZDOTDIR / bash --rcfile
+  │  桩注入 OSC 133/7 钩子；输出流解析（feedShellIntegration，跨 chunk
+  │  残包 carry）→ 命令边界捕获（tty_capture{last} / tty_expect 早停）
+  │  与 cwd 跟随（tty_list）
   ├─ 本地路径：ctx.get('subprocess').spawnTerminal({ argv: shell -c 包装层, cwd })
+  ├─ 辅助路由：/api/dsh-tty/ssh-config（~/.ssh/config 导入候选）、
+  │  /api/dsh-tty/env-vars（env 插件托管变量名，env:VAR 选择器数据源）
+  │  ——均 loopback 围栏
   └─ 帧协议：spawn|ssh / input / resize / kill / sessions / attach
      ↔ ready/data/exit/error/sessions + 背压
 
@@ -218,11 +261,12 @@ SSH 路径 (src/ssh.ts，方案 C)
      背压一并透传到 channel —— 之后与本地 PTY 无差别调度
 ```
 
-M0 探针、集成测试（B1~B14 共 30 项断言）与真实实例冒烟（live / TUI）在
+M0 探针、集成测试（B1~B17 共 35 项断言）与真实实例冒烟（live / TUI）在
 真实 DSH 服务组合上验证过：TERM 注入、resize 透传、sid 冲突、并发上限、
 loopback 围栏、多会话数据隔离、cwd 跟随与校验、配置热生效（settings/updated）、
 kill→exit 全链路、断线保活 + sessions/attach 重连回放、tty_screen 虚拟屏、
-tty_capture ANSI 清洗。SSH 路径由 `ssh-smoke`（内存 SSH server × 真实
-`spawnSsh`）验证：password 认证建链与 prompt、命令往返、pty-req 初始
-尺寸与 resize（window-change）、terminate / exit-status 全链路，以及
-TOFU 指纹记录（S7）与指纹变更拒绝连接（S8）。
+tty_capture ANSI 清洗、shell 集成（capture{last} + exitCode、OSC 7 cwd
+跟随）、tty_expect 匹配与超时、~/.ssh/config 解析器。SSH 路径由 `ssh-smoke`
+（内存 SSH server × 真实 `spawnSsh`）验证：password 认证建链与 prompt、
+命令往返、pty-req 初始尺寸与 resize（window-change）、terminate /
+exit-status 全链路，以及 TOFU 指纹记录（S7）与指纹变更拒绝连接（S8）。

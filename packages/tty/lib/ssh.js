@@ -42,6 +42,8 @@ function expandHome(path) {
         return join(homedir(), path.slice(2));
     return path;
 }
+/** 供 ~/.ssh/config 导入路由使用（~ 与 ~/ 前缀展开 home）。 */
+export { expandHome };
 /** 展示用目标串：user@host（非默认端口时带 :port）。 */
 export function sshTarget(spec) {
     const port = spec.port ?? 22;
@@ -83,6 +85,12 @@ function buildConnectConfig(spec) {
         // 大量服务端（如部分路由器/堡垒机）只开 keyboard-interactive
         base.tryKeyboard = true;
     }
+    // agent forwarding 需要 agent 通道：key/password 认证时也把 SSH_AUTH_SOCK
+    // 挂上（只用于转发，不参与认证）。@types/ssh2 的 ConnectConfig.agentForward
+    // 在缺 agent 时会直接 throw，故这里仅在 SOCK 存在时设置
+    if (spec.agentForward === true && process.env.SSH_AUTH_SOCK !== undefined && process.env.SSH_AUTH_SOCK !== '') {
+        base.agent = base.agent ?? process.env.SSH_AUTH_SOCK;
+    }
     return base;
 }
 /**
@@ -92,6 +100,10 @@ function buildConnectConfig(spec) {
 export async function spawnSsh(spec, options) {
     const target = sshTarget(spec);
     const logger = options.logger;
+    // agent forwarding 预检：缺 SSH_AUTH_SOCK 时 ssh2 只会静默不转发，这里显式报错
+    if (spec.agentForward === true && (process.env.SSH_AUTH_SOCK === undefined || process.env.SSH_AUTH_SOCK === '')) {
+        throw new Error('agent forwarding 需要 SSH_AUTH_SOCK（本机未运行 ssh-agent 或变量未设置）');
+    }
     const conn = new Client();
     const output = new PassThrough();
     let exitCode = null;
@@ -144,7 +156,9 @@ export async function spawnSsh(spec, options) {
     const channel = await new Promise((resolve, reject) => {
         let settled = false;
         conn.on('ready', () => {
-            conn.shell({ term: options.term, cols: options.cols, rows: options.rows }, (error, ch) => {
+            // agentForward 走 per-channel 请求（@types/ssh2 的 ShellOptions 未声明，
+            // 运行时支持；仅在本机 agent 存在时生效，见 buildConnectConfig）
+            conn.shell({ term: options.term, cols: options.cols, rows: options.rows, agentForward: spec.agentForward === true }, (error, ch) => {
                 settled = true;
                 if (error !== undefined && error !== null) {
                     conn.end();

@@ -1,6 +1,8 @@
 import z from '@deepseek-ai/schemastery';
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 import WebSocket, { WebSocketServer } from 'ws';
@@ -10,7 +12,9 @@ import xtermHeadless from '@xterm/headless';
 const HeadlessTerminal = xtermHeadless.Terminal;
 import { definePlugin } from '@hyzyn/dsh-kit';
 import { defineTool } from '@deepseek-ai/dsh-tools';
-import { spawnSsh, sshTarget } from './ssh.js';
+import { spawnSsh, sshTarget, expandHome } from './ssh.js';
+import { buildShellSpawn } from './shell-integration.js';
+import { parseSshConfig } from './ssh-config.js';
 const SSH_HOST_SCHEMA = z.object({
     name: z.string(),
     host: z.string(),
@@ -20,6 +24,7 @@ const SSH_HOST_SCHEMA = z.object({
     keyPath: z.string().default(''),
     passphrase: z.string().default(''),
     password: z.string().default(''),
+    agentForward: z.boolean().default(false),
 });
 const HOST_KEY_SCHEMA = z.object({
     host: z.string(),
@@ -38,6 +43,7 @@ const TTY_SETTINGS_SCHEMA = z.object({
     reconnectGraceSec: z.natural().max(3600).default(120),
     sshHosts: z.array(SSH_HOST_SCHEMA).default([]),
     hostKeys: z.array(HOST_KEY_SCHEMA).default([]),
+    shellIntegration: z.boolean().default(true),
 });
 /* ------------------------------------------------------------------ *
  * 常量
@@ -55,7 +61,7 @@ const BUFFER_CAP = 256 * 1024;
 const TERM_RE = /^[A-Za-z0-9_.+-]+$/;
 /** 孤儿会话回收器的扫描间隔。 */
 const REAPER_INTERVAL_MS = 10_000;
-const TTY_GUIDANCE = '本机已安装 dsh-tty 插件（终端面板）：Web GUI 侧边栏的「终端」入口可打开交互终端（xterm.js + PTY），可运行任意命令与 TUI 程序（vim/htop 等），支持多标签页与断线自动重连（刷新页面/网络抖动后会话保活并恢复现场）；新标签默认在当前会话工作目录打开，工作目录可随当前会话切换。标签栏「+」菜单还能开 SSH 标签页（ssh2 原生连接，连接簿在设置卡片维护，主机指纹 TOFU 钉扎），像本地终端一样操作远程主机。长驻进程（dev server、watch、交互式程序）应引导用户到终端面板里运行，不要在 bash 工具里挂起等待；用户提到「开个终端 / 在终端里跑 / SSH 到某台机器」时引导其打开该面板。agent 侧也有配套工具：tty_list 列出活跃终端会话（含 SSH 会话的 target），tty_capture 读取会话近期输出（默认已清洗 ANSI 转义序列，适合读 dev server/NPM 日志），tty_screen 读取当前可见屏幕的渲染结果（可读懂 vim/htop 等 TUI 画面），tty_send 向会话发送按键——操作会实时显示在用户终端里。';
+const TTY_GUIDANCE = '本机已安装 dsh-tty 插件（终端面板）：Web GUI 侧边栏的「终端」入口可打开交互终端（xterm.js + PTY），可运行任意命令与 TUI 程序（vim/htop 等），支持多标签页与断线自动重连（刷新页面/网络抖动后会话保活并恢复现场）；新标签默认在当前会话工作目录打开。标签栏「+」菜单还能开 SSH 标签页（ssh2 原生连接，连接簿在设置卡片维护，支持 agent forwarding 与主机指纹 TOFU 钉扎），像本地终端一样操作远程主机。长驻进程（dev server、watch、交互式程序）应引导用户到终端面板里运行，不要在 bash 工具里挂起等待；用户提到「开个终端 / 在终端里跑 / SSH 到某台机器」时引导其打开该面板。agent 侧配套工具：tty_list 列出活跃终端会话（含 SSH 的 target 与实时 cwd），tty_capture 读取近期输出（默认清洗 ANSI；last:true 拿「上一条命令」的输出+退出码），tty_screen 读取当前可见屏幕（可读懂 vim/htop 等 TUI），tty_expect 用正则等待输出中的就绪信号（如 dev server URL、构建完成），tty_send 发送按键——操作会实时显示在用户终端里。推荐流程：tty_send 启动长任务 → tty_expect 等就绪标记 → tty_capture{last:true} 拿结果。';
 /** 本地 PTY 包装成 TermHandle（resize/kill 仍是透传 node-pty 的内部耦合；防御性降级）。 */
 function wrapLocalPty(handle) {
     let resizeWarned = false;
@@ -103,6 +109,8 @@ class LiveConfig {
     reconnectGraceMs;
     sshHosts;
     hostKeys;
+    /** OSC 133/7 shell 集成开关。 */
+    shellIntegration;
     constructor(init) {
         this.shell = init.shell;
         this.term = sanitizeTermValue(init.term, 'xterm-256color');
@@ -111,6 +119,7 @@ class LiveConfig {
         this.reconnectGraceMs = Math.max(0, Math.min(3600, init.reconnectGraceSec)) * 1000;
         this.sshHosts = init.sshHosts ?? [];
         this.hostKeys = init.hostKeys ?? [];
+        this.shellIntegration = init.shellIntegration;
     }
     /** 合并部分更新；空字符串/undefined 保持原值；sshHosts/hostKeys 传数组即整体替换。 */
     apply(partial) {
@@ -129,6 +138,8 @@ class LiveConfig {
             this.sshHosts = partial.sshHosts;
         if (Array.isArray(partial.hostKeys))
             this.hostKeys = partial.hostKeys;
+        if (typeof partial.shellIntegration === 'boolean')
+            this.shellIntegration = partial.shellIntegration;
     }
     findSshHost(name) {
         return this.sshHosts.find((entry) => entry.name === name);
@@ -151,13 +162,6 @@ async function forceKill(handle) {
         }
     }
 }
-/**
- * shell argv。node-pty 的 name 优先于 env.TERM，而 DSH 硬编码 name:"dumb"，
- * 只能在 exec 真正的 shell 之前 export（M0 A2 实测结论）。
- */
-function shellArgv(shell, term, colorTerm) {
-    return [shell, '-c', `export TERM='${term}'; export COLORTERM='${colorTerm}'; exec "${shell}"`];
-}
 function send(ws, msg) {
     if (ws === null || ws.readyState !== WebSocket.OPEN)
         return;
@@ -179,6 +183,88 @@ function cleanAnsiTail(raw) {
         const idx = line.lastIndexOf('\r');
         return idx === -1 ? line : line.slice(idx + 1);
     }).join('\n');
+}
+/** OSC 133 命令标记帧：\x1b]133;<A|B|D>[;<exit>](BEL|ST)。 */
+const OSC133_RE = /\x1b\]133;([ABDC])(?:;(\d+))?(?:\x07|\x1b\\)/g;
+/** OSC 7 cwd 上报帧：\x1b]7;file://<host><path>(BEL|ST)。 */
+const OSC7_RE = /\x1b\]7;([^\x07\x1b]*)(?:\x07|\x1b\\)/g;
+/** 单条命令输出捕获上限（环形，超出丢头部）。 */
+const COMMAND_CAP = 256 * 1024;
+function createShellState() {
+    return { carry: '', inCommand: false, cmdBuffer: '', lastCommand: null };
+}
+/** OSC 7 body（file://host/path）→ 解码后的路径；解析失败返回 undefined。 */
+function osc7Path(body) {
+    try {
+        const url = new URL(body);
+        if (url.protocol !== 'file:')
+            return undefined;
+        const decoded = decodeURIComponent(url.pathname);
+        return decoded !== '' ? decoded : undefined;
+    }
+    catch {
+        return undefined;
+    }
+}
+/**
+ * 把一块输出喂进 shell 集成解析（cwd 跟随 + 命令边界捕获）。
+ * 残包处理：尾部若有未闭合的 OSC 序列（lastIndexOf('\x1b]') 起无终结符），
+ * 扣回 carry 等下一块拼齐；扣留部分不进命令捕获，避免半截序列混入。
+ * 命令捕获按「标记之间的文本段」累积——B、输出、D 常在同一 chunk 到达，
+ * 先处理段再翻转状态，才能把 B..D 之间的输出完整收进 lastCommand。
+ */
+function feedShellIntegration(session, text) {
+    const state = session.shellState;
+    let data = state.carry + text;
+    state.carry = '';
+    const lastOpen = data.lastIndexOf('\x1b]');
+    if (lastOpen !== -1) {
+        const tail = data.slice(lastOpen);
+        if (!/\x07|\x1b\\/.test(tail)) {
+            if (tail.length <= 512) {
+                state.carry = tail;
+                data = data.slice(0, lastOpen);
+            }
+            // 超过 512B 仍不闭合视为垃圾：放弃扣留，整块照常处理
+        }
+    }
+    for (const match of data.matchAll(OSC7_RE)) {
+        const path = osc7Path(match[1]);
+        if (path !== undefined)
+            session.cwd = path;
+    }
+    OSC133_RE.lastIndex = 0;
+    let cursor = 0;
+    for (const match of data.matchAll(OSC133_RE)) {
+        const segment = data.slice(cursor, match.index).replace(OSC7_RE, '');
+        if (state.inCommand && segment !== '') {
+            state.cmdBuffer = (state.cmdBuffer + segment).slice(-COMMAND_CAP);
+        }
+        const kind = match[1];
+        if (kind === 'B') {
+            state.inCommand = true;
+            state.cmdBuffer = '';
+        }
+        else if (kind === 'D') {
+            if (state.inCommand) {
+                const exitCode = match[2] !== undefined ? Number(match[2]) : null;
+                state.lastCommand = {
+                    output: state.cmdBuffer.slice(-COMMAND_CAP),
+                    exitCode: exitCode !== null && Number.isFinite(exitCode) ? exitCode : null,
+                    endedAt: Date.now(),
+                };
+                state.inCommand = false;
+                state.cmdBuffer = '';
+            }
+        }
+        // A（prompt 开始）无需记录
+        cursor = match.index + match[0].length;
+    }
+    if (state.inCommand) {
+        const rest = data.slice(cursor).replace(OSC7_RE, '');
+        if (rest !== '')
+            state.cmdBuffer = (state.cmdBuffer + rest).slice(-COMMAND_CAP);
+    }
 }
 /**
  * 宽松清洗一份 sshHosts 输入（settings 存储/热更新事件路径）：
@@ -208,6 +294,7 @@ function sanitizeSshHosts(input) {
             keyPath: typeof raw.keyPath === 'string' ? raw.keyPath : '',
             passphrase: typeof raw.passphrase === 'string' ? raw.passphrase : '',
             password: typeof raw.password === 'string' ? raw.password : '',
+            agentForward: raw.agentForward === true,
         });
     }
     return out;
@@ -239,6 +326,9 @@ function validateSshHosts(input) {
         for (const key of ['keyPath', 'passphrase', 'password']) {
             if (raw[key] !== undefined && typeof raw[key] !== 'string')
                 return { error: `sshHosts.${key} 必须是字符串` };
+        }
+        if (raw.agentForward !== undefined && typeof raw.agentForward !== 'boolean') {
+            return { error: 'sshHosts.agentForward 必须是布尔值' };
         }
         if ((raw.auth === 'key') && (typeof raw.keyPath !== 'string' || raw.keyPath.trim() === '')) {
             return { error: `sshHosts「${String(raw.name)}」auth=key 需要 keyPath` };
@@ -560,12 +650,13 @@ class TtyServer {
                     send(ws, { t: 'error', sid, m: 'subprocess 服务不可用' });
                     return;
                 }
+                const spawnPlan = buildShellSpawn(this.options.shell, this.options.term, this.options.colorTerm, this.options.shellIntegration);
                 const handle = wrapLocalPty(await subprocess.spawnTerminal({
-                    argv: shellArgv(this.options.shell, this.options.term, this.options.colorTerm),
+                    argv: spawnPlan.argv,
                     rows: Number(msg.rows) || 24,
                     cols: Number(msg.cols) || 80,
                     cwd,
-                    env: { TERM: this.options.term, COLORTERM: this.options.colorTerm },
+                    env: { TERM: this.options.term, COLORTERM: this.options.colorTerm, ...spawnPlan.env },
                     graceMs: 5000,
                 }));
                 const next = {
@@ -583,6 +674,7 @@ class TtyServer {
                     decoder: new StringDecoder('utf8'),
                     screen: this.createScreen(Number(msg.cols) || 80, Number(msg.rows) || 24),
                     orphanedAt: null,
+                    shellState: createShellState(),
                 };
                 local.set(sid, next);
                 this.sessions.add(next);
@@ -618,6 +710,7 @@ class TtyServer {
                     keyPath: typeof msg.keyPath === 'string' && msg.keyPath !== '' ? msg.keyPath : profile?.keyPath,
                     passphrase: typeof msg.passphrase === 'string' && msg.passphrase !== '' ? msg.passphrase : profile?.passphrase,
                     password: typeof msg.password === 'string' && msg.password !== '' ? msg.password : profile?.password,
+                    agentForward: typeof msg.agentForward === 'boolean' ? msg.agentForward : profile?.agentForward ?? false,
                 };
                 if (spec.host === '' || spec.username === '') {
                     send(ws, { t: 'error', sid, m: 'SSH 会话需要 host 与 username（或用 name 引用连接簿）' });
@@ -654,6 +747,7 @@ class TtyServer {
                     decoder: new StringDecoder('utf8'),
                     screen: this.createScreen(Number(msg.cols) || 80, Number(msg.rows) || 24),
                     orphanedAt: null,
+                    shellState: createShellState(),
                 };
                 local.set(sid, next);
                 this.sessions.add(next);
@@ -771,10 +865,11 @@ class TtyServer {
         const onData = (chunk) => {
             if (session.closed)
                 return;
-            // StringDecoder 兜跨 chunk 多字节序列，再喂虚拟屏与环形缓冲
+            // StringDecoder 兜跨 chunk 多字节序列，再喂 shell 集成解析与虚拟屏
             const text = session.decoder.write(chunk);
             session.lastOutputAt = Date.now();
             session.buffer = (session.buffer + text).slice(-BUFFER_CAP);
+            feedShellIntegration(session, text);
             try {
                 session.screen?.write(text);
             }
@@ -811,6 +906,35 @@ class TtyServer {
 /* ------------------------------------------------------------------ *
  * 插件本体
  * ------------------------------------------------------------------ */
+/**
+ * env 插件托管变量名（~/.dsh/env.yml 托管区块内的 key，路径解析与 env 插件
+ * 一致：DSH_ENV_FILE / DSH_HOME 优先）。只提取键名、绝不读值——这些是用户
+ * 明确交给 dsh-env-manager 托管的变量，才是 env:VAR 引用的推荐来源；键行由
+ * env 插件以 yaml 数组渲染（`- key: NAME`），逐行宽容提取即可，不引 YAML 依赖。
+ */
+function readManagedEnvKeys() {
+    const dshHome = process.env.DSH_HOME?.trim() || join(homedir(), '.dsh');
+    const file = process.env.DSH_ENV_FILE?.trim() || join(dshHome, 'env.yml');
+    try {
+        const lines = readFileSync(file, 'utf8').split('\n');
+        const start = lines.findIndex((line) => line.includes('dsh-env-manager managed'));
+        if (start === -1)
+            return [];
+        const end = lines.findIndex((line, index) => index > start && line.includes('end dsh-env-manager managed'));
+        if (end === -1)
+            return [];
+        const keys = [];
+        for (const line of lines.slice(start + 1, end)) {
+            const match = line.match(/^\s*-\s*key:\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1\s*$/);
+            if (match !== null)
+                keys.push(match[2]);
+        }
+        return [...new Set(keys)].sort().slice(0, 200);
+    }
+    catch {
+        return [];
+    }
+}
 /** HTTP 路由的 loopback 信任围栏（与 dsh-mcp 同思路）。 */
 function isLoopbackHttp(req) {
     const address = req.socket.remoteAddress;
@@ -882,6 +1006,7 @@ const plugin = definePlugin({
             reconnectGraceSec: typeof config?.reconnectGraceSec === 'number' && Number.isInteger(config.reconnectGraceSec) && config.reconnectGraceSec >= 0 ? config.reconnectGraceSec : DEFAULT_RECONNECT_GRACE_SEC,
             sshHosts: Array.isArray(config?.sshHosts) ? config.sshHosts : [],
             hostKeys: Array.isArray(config?.hostKeys) ? config.hostKeys : [],
+            shellIntegration: config?.shellIntegration !== false,
         });
         const sessions = new SessionManager(config?.maxSessions ?? DEFAULT_MAX_SESSIONS);
         /** TOFU 指纹记录持久化：写入 settings 命名空间（合并语义），失败不影响连接。 */
@@ -908,6 +1033,7 @@ const plugin = definePlugin({
             reconnectGraceSec: Math.round(live.reconnectGraceMs / 1000),
             sshHosts: live.sshHosts,
             hostKeys: live.hostKeys,
+            shellIntegration: live.shellIntegration,
             toolsRegistered: stateRef.toolsRegistered,
         });
         /** 规范化并应用一份配置补丁（settings/updated 事件与 HTTP POST 共用；幂等）。 */
@@ -920,6 +1046,7 @@ const plugin = definePlugin({
                 reconnectGraceSec: typeof section.reconnectGraceSec === 'number' ? section.reconnectGraceSec : undefined,
                 sshHosts: sanitizeSshHosts(section.sshHosts),
                 hostKeys: sanitizeHostKeys(section.hostKeys),
+                shellIntegration: typeof section.shellIntegration === 'boolean' ? section.shellIntegration : undefined,
             });
             if (typeof section.maxSessions === 'number' && Number.isInteger(section.maxSessions) && section.maxSessions >= 1 && section.maxSessions <= 16) {
                 sessions.setLimit(section.maxSessions);
@@ -933,7 +1060,7 @@ const plugin = definePlugin({
         /** 校验 HTTP POST 的配置体；返回规范化补丁或错误信息。 */
         const normalizePatch = (input) => {
             const patch = {};
-            const known = new Set(['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'sshHosts', 'hostKeys']);
+            const known = new Set(['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'sshHosts', 'hostKeys', 'shellIntegration']);
             for (const key of Object.keys(input)) {
                 if (!known.has(key))
                     return { error: '未知配置项: ' + key };
@@ -959,6 +1086,11 @@ const plugin = definePlugin({
                 if (!Number.isInteger(value) || value < 0 || value > 3600)
                     return { error: 'reconnectGraceSec 必须是 0~3600 的整数' };
                 patch.reconnectGraceSec = value;
+            }
+            if (input.shellIntegration !== undefined) {
+                if (typeof input.shellIntegration !== 'boolean')
+                    return { error: 'shellIntegration 必须是布尔值' };
+                patch.shellIntegration = input.shellIntegration;
             }
             for (const key of ['shell', 'term', 'colorTerm']) {
                 if (input[key] === undefined)
@@ -1045,6 +1177,44 @@ const plugin = definePlugin({
                         writeJson(res, 200, { ok: true, config: snapshot() });
                     },
                 }));
+                // ~/.ssh/config 导入候选（连接簿）：loopback 围栏，只回解析结果不落盘
+                disposers.push(webServer.register({
+                    kind: 'exact',
+                    path: '/api/dsh-tty/ssh-config',
+                    handler: async (req, res) => {
+                        if (!isLoopbackHttp(req)) {
+                            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+                            return;
+                        }
+                        if (req.method !== 'GET') {
+                            writeJson(res, 405, { error: 'method not allowed: ' + String(req.method) });
+                            return;
+                        }
+                        try {
+                            const text = readFileSync(expandHome('~/.ssh/config'), 'utf8');
+                            writeJson(res, 200, { ok: true, entries: parseSshConfig(text) });
+                        }
+                        catch (error) {
+                            writeJson(res, 200, { ok: false, error: '无法读取 ~/.ssh/config: ' + (error instanceof Error ? error.message : String(error)) });
+                        }
+                    },
+                }));
+                // env:VAR 下拉数据源（SSH 对话框）：只回 env 插件托管变量名，绝不含值
+                disposers.push(webServer.register({
+                    kind: 'exact',
+                    path: '/api/dsh-tty/env-vars',
+                    handler: async (req, res) => {
+                        if (!isLoopbackHttp(req)) {
+                            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+                            return;
+                        }
+                        if (req.method !== 'GET') {
+                            writeJson(res, 405, { error: 'method not allowed: ' + String(req.method) });
+                            return;
+                        }
+                        writeJson(res, 200, { ok: true, names: readManagedEnvKeys() });
+                    },
+                }));
                 return () => {
                     server.close();
                     for (const dispose of disposers) {
@@ -1085,6 +1255,8 @@ const plugin = definePlugin({
                 if (stored.reconnectGraceSec !== 120 && typeof stored.reconnectGraceSec === 'number' && Number.isInteger(stored.reconnectGraceSec) && stored.reconnectGraceSec >= 0 && stored.reconnectGraceSec <= 3600) {
                     startup.reconnectGraceSec = stored.reconnectGraceSec;
                 }
+                if (stored.shellIntegration === false)
+                    startup.shellIntegration = false;
                 const storedHosts = sanitizeSshHosts(stored.sshHosts);
                 if (storedHosts !== undefined && storedHosts.length > 0)
                     startup.sshHosts = storedHosts;
@@ -1163,10 +1335,11 @@ const plugin = definePlugin({
                 })));
                 disposers.push(tools.register(defineTool({
                     name: 'tty_capture',
-                    description: '读取某个终端面板会话（tty_list 提供 sid）的近期输出（默认尾部 60 行，最多 500 行；默认已剥离 ANSI 转义序列并收敛同行覆盖，返回纯文本）。适合查看用户终端里正在运行的 dev server / watch / 构建输出；要看 TUI 程序的当前画面用 tty_screen。',
+                    description: '读取某个终端面板会话（tty_list 提供 sid）的近期输出。默认读取尾部 N 行（60，最多 500，已剥离 ANSI 转义序列并收敛同行覆盖）；last:true 时只返回「上一条已完成命令」的输出与退出码（依赖 shell 集成标记，更适合拿单条命令的结果）。',
                     parameters: {
                         sid: { type: 'string', required: true, description: '会话 id（来自 tty_list）' },
-                        lines: { type: 'number', description: '读取尾部行数（1~500，默认 60）' },
+                        lines: { type: 'number', description: '读取尾部行数（1~500，默认 60）；last:true 时忽略' },
+                        last: { type: 'boolean', description: 'true 只返回上一条命令的输出+退出码（默认 false 读尾部）' },
                         raw: { type: 'boolean', description: 'true 返回含 ANSI 转义序列的原始输出（默认 false 清洗为纯文本）' },
                     },
                     output: {
@@ -1176,23 +1349,36 @@ const plugin = definePlugin({
                             properties: {
                                 sid: { type: 'string', required: true },
                                 tail: { type: 'string', required: true },
+                                source: { type: 'string' },
+                                exitCode: { type: 'number' },
                             },
                         },
                         render: (_args, value) => {
                             const v = value;
-                            return [{ type: 'text', text: `终端会话 ${v.sid ?? '?'} 尾部输出：\n\n${v.tail ?? ''}` }];
+                            const head = v.source === 'last'
+                                ? `终端会话 ${v.sid ?? '?'} 上一条命令的输出（exitCode=${String(v.exitCode ?? '?')}）：\n\n`
+                                : `终端会话 ${v.sid ?? '?'} 尾部输出：\n\n`;
+                            return [{ type: 'text', text: head + (v.tail ?? '') }];
                         },
                     },
                     async execute(args) {
                         const input = args;
                         if (typeof input.sid !== 'string' || input.sid === '')
                             throw new Error('sid 必须是非空字符串');
-                        const lines = Math.max(1, Math.min(500, typeof input.lines === 'number' && Number.isInteger(input.lines) && input.lines >= 1 ? input.lines : 60));
                         const session = sessions.get(input.sid);
                         if (session === undefined || session.closed)
                             throw new Error(`会话不存在或已退出: ${input.sid}`);
+                        const useRaw = input.raw === true;
+                        if (input.last === true) {
+                            const last = session.shellState.lastCommand;
+                            if (last === null) {
+                                throw new Error('暂无「上一条命令」记录（shell 集成未生效——shell 不受支持或被配置关闭——或尚未执行过命令）；可改用 lines 读尾部');
+                            }
+                            return { sid: input.sid, source: 'last', exitCode: last.exitCode ?? undefined, tail: (useRaw ? last.output : cleanAnsiTail(last.output)).slice(0, 128 * 1024) };
+                        }
+                        const lines = Math.max(1, Math.min(500, typeof input.lines === 'number' && Number.isInteger(input.lines) && input.lines >= 1 ? input.lines : 60));
                         const rawTail = tailLines(session, lines);
-                        return { sid: input.sid, tail: input.raw === true ? rawTail : cleanAnsiTail(rawTail) };
+                        return { sid: input.sid, source: 'tail', tail: useRaw ? rawTail : cleanAnsiTail(rawTail) };
                     },
                 })));
                 disposers.push(tools.register(defineTool({
@@ -1238,6 +1424,90 @@ const plugin = definePlugin({
                     },
                 })));
                 disposers.push(tools.register(defineTool({
+                    name: 'tty_expect',
+                    description: '在某个终端面板会话（tty_list 提供 sid）的后续输出中等待一个正则出现（如 dev server 的 ready/URL、构建完成标记、交互提示）。匹配到立即返回 matched:true 与周边输出；超时不抛错，返回 matched:false + 尾部输出供判断重试或放弃；期间该命令若已结束（shell 集成标记）也会提前返回并带退出码。适合先 tty_send 启动长任务、再 tty_expect 等就绪信号的流程。',
+                    parameters: {
+                        sid: { type: 'string', required: true, description: '会话 id（来自 tty_list）' },
+                        pattern: { type: 'string', required: true, description: '等待匹配的正则表达式（JavaScript RegExp 语法）' },
+                        timeoutSec: { type: 'number', description: '等待秒数（1~600，默认 30）' },
+                    },
+                    output: {
+                        schema: {
+                            type: 'object',
+                            additionalProperties: false,
+                            properties: {
+                                matched: { type: 'boolean', required: true },
+                                timedOut: { type: 'boolean', required: true },
+                                text: { type: 'string', required: true },
+                                exitCode: { type: 'number' },
+                            },
+                        },
+                        render: (_args, value) => {
+                            const v = value;
+                            if (v.matched === true)
+                                return [{ type: 'text', text: `已匹配到等待的模式：\n\n${v.text ?? ''}` }];
+                            const why = v.timedOut === true ? '等待超时' : `命令已结束（exitCode=${String(v.exitCode ?? '?')}）但未出现匹配`;
+                            return [{ type: 'text', text: `${why}。尾部输出：\n\n${v.text ?? ''}` }];
+                        },
+                    },
+                    async execute(args) {
+                        const input = args;
+                        if (typeof input.sid !== 'string' || input.sid === '')
+                            throw new Error('sid 必须是非空字符串');
+                        if (typeof input.pattern !== 'string' || input.pattern === '')
+                            throw new Error('pattern 必须是非空字符串');
+                        const session = sessions.get(input.sid);
+                        if (session === undefined || session.closed)
+                            throw new Error(`会话不存在或已退出: ${input.sid}`);
+                        let re;
+                        try {
+                            re = new RegExp(input.pattern);
+                        }
+                        catch (error) {
+                            throw new Error('pattern 不是合法的正则表达式: ' + (error instanceof Error ? error.message : String(error)));
+                        }
+                        const timeoutSec = Math.max(1, Math.min(600, typeof input.timeoutSec === 'number' && Number.isInteger(input.timeoutSec) && input.timeoutSec >= 1 ? input.timeoutSec : 30));
+                        const timeoutMs = timeoutSec * 1000;
+                        return await new Promise((resolve) => {
+                            const startedAt = Date.now();
+                            const startedInCommand = session.shellState.inCommand;
+                            let acc = '';
+                            let settled = false;
+                            const decoder = new StringDecoder('utf8');
+                            const output = session.handle.output;
+                            const finish = (result) => {
+                                if (settled)
+                                    return;
+                                settled = true;
+                                clearTimeout(timer);
+                                output.off('data', onData);
+                                resolve(result);
+                            };
+                            const onData = (chunk) => {
+                                acc += decoder.write(chunk);
+                                const hay = acc.length > 16 * 1024 ? acc.slice(-16 * 1024) : acc;
+                                if (re.test(hay)) {
+                                    finish({ matched: true, timedOut: false, text: cleanAnsiTail(hay.slice(-6 * 1024)) });
+                                    return;
+                                }
+                                // 命令早停：注册时命令在飞（B..D 之间），如今 D 已到仍未匹配
+                                const state = session.shellState;
+                                if (startedInCommand && !state.inCommand && state.lastCommand !== null && state.lastCommand.endedAt >= startedAt) {
+                                    finish({ matched: false, timedOut: false, exitCode: state.lastCommand.exitCode ?? undefined, text: cleanAnsiTail(acc.slice(-6 * 1024)) });
+                                }
+                            };
+                            const timer = setTimeout(() => {
+                                finish({ matched: false, timedOut: true, text: cleanAnsiTail(acc.slice(-6 * 1024)) });
+                            }, timeoutMs);
+                            timer.unref?.();
+                            output.on('data', onData);
+                            void session.handle.done.then(() => {
+                                finish({ matched: false, timedOut: false, text: cleanAnsiTail(acc.slice(-6 * 1024)) });
+                            });
+                        });
+                    },
+                })));
+                disposers.push(tools.register(defineTool({
                     name: 'tty_send',
                     description: '向某个终端面板会话（tty_list 提供 sid）的 PTY 发送按键/文本（命令以 \\n 结尾）。适合给用户终端里运行的程序发交互输入（如 dev server 的 q 键、menu 选择、回答提示）。操作会实时显示在用户的终端面板里。',
                     parameters: {
@@ -1272,7 +1542,7 @@ const plugin = definePlugin({
                     },
                 })));
                 stateRef.toolsRegistered = true;
-                console.log('[dsh-tty] agent tools registered (tty_list, tty_capture, tty_screen, tty_send)');
+                console.log('[dsh-tty] agent tools registered (tty_list, tty_capture, tty_screen, tty_expect, tty_send)');
                 return () => {
                     stateRef.toolsRegistered = false;
                     for (const dispose of disposers) {
@@ -1289,12 +1559,29 @@ const plugin = definePlugin({
         else {
             console.log('[dsh-tty] tools service unavailable; agent tools skipped');
         }
-        // 向 agent 公告终端面板能力
+        // 向 agent 公告终端面板能力（静态 section）+ 每轮注入活跃会话快照（动态 context）
         if (config?.announceToAgent !== false) {
             ctx.inject(['systemPrompt'], (promptCtx) => {
                 promptCtx.effect(() => {
                     const systemPrompt = promptCtx.systemPrompt;
-                    return systemPrompt.section({ name: 'plugin:dsh-tty', order: 150, text: TTY_GUIDANCE });
+                    const contextDisposable = systemPrompt.context({
+                        name: 'plugin:dsh-tty:terminals',
+                        order: 150,
+                        text: () => {
+                            const list = sessions.list();
+                            if (list.length === 0)
+                                return '当前没有活跃的终端面板会话（可引导用户打开「终端」面板，或用 spawn 类工作流替代）。';
+                            return '当前活跃的终端面板会话（可用 tty_capture / tty_screen / tty_expect / tty_send 操作，sid 如下）：\n' + list.map((s) => {
+                                const where = s.kind === 'ssh' ? `ssh ${s.target}` : `pid=${String(s.pid ?? '?')} cwd=${s.cwd}`;
+                                return `- sid=${s.sid} [${s.kind}] ${where} (最后活动 ${new Date(s.lastOutputAt).toLocaleTimeString()})`;
+                            }).join('\n');
+                        },
+                    });
+                    const sectionDisposable = systemPrompt.section({ name: 'plugin:dsh-tty', order: 150, text: TTY_GUIDANCE });
+                    return () => {
+                        sectionDisposable();
+                        contextDisposable();
+                    };
                 }, 'dsh-tty: announcement');
             });
         }

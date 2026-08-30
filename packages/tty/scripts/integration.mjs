@@ -18,6 +18,7 @@ import WebServerRuntime from '@deepseek-ai/dsh-host-webserver'
 import { LocalSubprocessRuntime } from '@deepseek-ai/dsh-subprocess-local'
 import WebSocket from 'ws'
 import { name, inject, apply } from '../lib/index.js'
+import { parseSshConfig } from '../lib/ssh-config.js'
 import { assertSupportedJsonSchema } from '@deepseek-ai/dsh-tools'
 
 
@@ -51,7 +52,8 @@ function openSession(port, headers) {
   client.on('message', (raw) => {
     const msg = JSON.parse(raw.toString())
     state.frames.push(msg)
-    if (msg.t === 'data') state.text += String(msg.d ?? '')
+    // 收集器剥掉 shell 集成标记（133;B 与命令输出同行，会粘住 ^…$ 行匹配）
+    if (msg.t === 'data') state.text += String(msg.d ?? '').replace(/\x1b\]133;[ABDC](?:;\d+)?(?:\x07|\x1b\\)|\x1b\]7;[^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
     if (msg.t === 'ready') state.ready = true
     if (msg.t === 'exit') state.exited = { sid: msg.sid, code: msg.code, signal: msg.signal }
     if (msg.t === 'error') state.errors.push(String(msg.m ?? ''))
@@ -487,6 +489,112 @@ async function run() {
     }
     s.client.send(JSON.stringify({ t: 'kill', sid: 'screen-1' }))
     await s.waitFor(() => s.state.exited !== null, 10000, 'screen-1 exit')
+    s.client.close()
+  }
+
+  // B15: shell 集成（OSC 133/7）—— 命令捕获 + 退出码 + cwd 跟随（真实 zsh）
+  console.log('\n[14] shell 集成（OSC 133/7）')
+  {
+    const s = openSession(port)
+    await s.open()
+    s.client.send(JSON.stringify({ t: 'spawn', sid: 'si-1' }))
+    await s.waitFor(() => s.state.ready, 10000, 'si-1 ready')
+    const capture = toolDefs.find((d) => d.name === 'tty_capture')
+    const list = toolDefs.find((d) => d.name === 'tty_list')
+    const expect = toolDefs.find((d) => d.name === 'tty_expect')
+    if (capture === undefined || list === undefined || expect === undefined) {
+      fail('B15 工具注册', '缺工具: ' + toolDefs.map((d) => d.name).join(','))
+    } else {
+      s.client.send(JSON.stringify({ t: 'input', sid: 'si-1', d: 'printf "SI_%s\\n" OK\n' }))
+      await s.waitFor(() => /SI_OK/.test(s.state.text), 10000, 'SI_OK 输出')
+      await sleep(600) // 等 D 标记（precmd 在下一 prompt 前发出）
+      let last = null
+      for (let i = 0; i < 12; i++) {
+        await sleep(250)
+        try {
+          last = await capture.execute({ sid: 'si-1', last: true })
+        } catch (error) {
+          last = { error: error.message }
+        }
+        if (last !== null && last.source === 'last') break
+      }
+      if (last !== null && last.source === 'last' && String(last.tail).includes('SI_OK') && last.exitCode === 0) pass('B15a tty_capture{last:true} 拿到命令输出 + exitCode=0')
+      else fail('B15a tty_capture{last:true} 拿到命令输出 + exitCode=0', JSON.stringify(last).slice(0, 160))
+      // OSC 7：cd 之后 tty_list 的 cwd 跟随
+      s.client.send(JSON.stringify({ t: 'input', sid: 'si-1', d: 'cd /tmp\n' }))
+      let cwdOk = false
+      for (let i = 0; i < 16 && !cwdOk; i++) {
+        await sleep(300)
+        const listed = await list.execute({})
+        const entry = listed.sessions.find((x) => x.sid === 'si-1')
+        cwdOk = entry !== undefined && entry.cwd === '/tmp'
+      }
+      if (cwdOk) pass('B15b OSC 7 cwd 上报生效（tty_list 跟随 cd /tmp）')
+      else fail('B15b OSC 7 cwd 上报生效（tty_list 跟随 cd /tmp）', 'cwd 未更新')
+    }
+    s.client.send(JSON.stringify({ t: 'kill', sid: 'si-1' }))
+    await s.waitFor(() => s.state.exited !== null, 10000, 'si-1 exit')
+    s.client.close()
+  }
+
+  // B16: ~/.ssh/config 解析器（纯函数，不读文件系统）
+  console.log('\n[15] ssh-config 解析器')
+  {
+    const sample = [
+      '# comment',
+      'Host web1',
+      '  HostName web1.example.com',
+      '  User alice',
+      '  Port 2222',
+      '  IdentityFile ~/.ssh/id_ed25519',
+      '',
+      'Host = db1',
+      '  hostname = db1.internal # inline comment',
+      '  user = bob',
+      '',
+      'Host *',
+      '  Compression yes',
+      '',
+      'Host nouser',
+      '  HostName nowhere',
+    ].join('\n')
+    const entries = parseSshConfig(sample)
+    const web1 = entries.find((e) => e.name === 'web1')
+    const db1 = entries.find((e) => e.name === 'db1')
+    const ok = entries.length === 2
+      && web1 !== undefined && web1.host === 'web1.example.com' && web1.username === 'alice'
+      && web1.port === 2222 && web1.auth === 'key' && web1.keyPath === '~/.ssh/id_ed25519'
+      && db1 !== undefined && db1.host === 'db1.internal' && db1.username === 'bob' && db1.auth === 'agent'
+      && db1.port === 22
+    if (ok) pass('B16 ssh-config 解析（别名/=/行内注释/IdentityFile→key/通配与无User跳过）')
+    else fail('B16 ssh-config 解析（别名/=/行内注释/IdentityFile→key/通配与无User跳过）', JSON.stringify(entries))
+  }
+
+  // B17: tty_expect —— 匹配与超时两分支
+  console.log('\n[16] tty_expect')
+  {
+    const s = openSession(port)
+    await s.open()
+    s.client.send(JSON.stringify({ t: 'spawn', sid: 'ex-1' }))
+    await s.waitFor(() => s.state.ready, 10000, 'ex-1 ready')
+    const expect = toolDefs.find((d) => d.name === 'tty_expect')
+    if (expect === undefined) {
+      fail('B17 tty_expect 注册', '未找到 tty_expect')
+    } else {
+      // 先注册等待再发命令（工具内部同步挂 output 监听，无竞态窗口）
+      const pendingOk = expect.execute({ sid: 'ex-1', pattern: 'EXPECT_HIT', timeoutSec: 15 })
+      await sleep(300)
+      s.client.send(JSON.stringify({ t: 'input', sid: 'ex-1', d: 'sleep 1; printf "EXPECT_%s\\n" HIT\n' }))
+      const okResult = await pendingOk
+      if (okResult.matched === true && okResult.timedOut === false && /EXPECT_HIT/.test(okResult.text)) pass('B17a tty_expect 等到就绪标记（matched=true）')
+      else fail('B17a tty_expect 等到就绪标记（matched=true）', JSON.stringify(okResult).slice(0, 160))
+      await sleep(800) // 等上一条命令的 D 标记与 prompt 落定，走纯超时分支
+      const missResult = await expect.execute({ sid: 'ex-1', pattern: 'NEVER_APPEARS_XYZ', timeoutSec: 1 })
+      if (missResult.matched === false && missResult.timedOut === true && typeof missResult.text === 'string') pass('B17b tty_expect 超时不抛错（matched=false, timedOut=true）')
+      else fail('B17b tty_expect 超时不抛错（matched=false, timedOut=true）', JSON.stringify(missResult).slice(0, 160))
+    }
+    s.client.send(JSON.stringify({ t: 'kill', sid: 'ex-1' }))
+    await s.waitFor(() => s.state.exited !== null, 10000, 'ex-1 exit')
     s.client.close()
   }
 

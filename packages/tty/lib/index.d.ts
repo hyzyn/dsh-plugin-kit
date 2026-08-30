@@ -30,6 +30,12 @@
  * reconnectGraceSec（默认 120s，0 = 旧行为立即结束），等待新连接 attach
  * 并回放 256KB 环形缓冲；到点由回收器清理。
  *
+ * shell 集成（src/shell-integration.ts，0.4.0）：spawn 时经 -c 包装层注入
+ * OSC 133/7 钩子（zsh ZDOTDIR 桩 / bash --rcfile 桩），输出流解析出命令
+ * 边界（tty_capture{last} / tty_expect 早停）与实时 cwd（tty_list）。
+ * 辅助路由：/api/dsh-tty/ssh-config（~/.ssh/config 导入候选）、
+ * /api/dsh-tty/env-vars（SSH 对话框 env:VAR 下拉，仅变量名）。
+ *
  * M0 探针（scripts/probe.mjs）验证过的三个关键结论：
  *   1. TERM 必须用 `shell -c 'export TERM=...; exec "$shell"'` 包装层注入——
  *     DSH 的 spawnTerminal 硬编码 node-pty name:"dumb"，且 node-pty 里
@@ -62,6 +68,8 @@ export interface Config {
     reconnectGraceSec?: number;
     /** 已记录的 SSH 主机密钥指纹（TOFU 钉扎，按 host:port 唯一）。 */
     hostKeys?: HostKeyRecord[];
+    /** 是否注入 OSC 133/7 shell 集成（命令边界标记 + cwd 上报）。默认开。 */
+    shellIntegration?: boolean;
 }
 /** TOFU 主机指纹记录。 */
 export interface HostKeyRecord {
