@@ -410,6 +410,86 @@ async function run() {
     s.client.close()
   }
 
+  // B13: 断线保活与重连（sessions/attach 帧，协议 v3）
+  console.log('\n[12] 断线保活与重连')
+  {
+    const s1 = openSession(port)
+    await s1.open()
+    s1.client.send(JSON.stringify({ t: 'spawn', sid: 're-1' }))
+    await s1.waitFor(() => s1.state.ready, 10000, 're-1 ready')
+    s1.client.send(JSON.stringify({ t: 'input', sid: 're-1', d: 'printf "REPLAY_%s\\n" MARK\n' }))
+    await s1.waitFor(() => /REPLAY_MARK/.test(s1.state.text), 10000, '回放标记输出')
+    // 不 kill 直接断开 = 异常断开：会话应转孤儿保活（默认 reconnectGraceSec=120）
+    s1.client.close()
+    await sleep(400)
+    const s2 = openSession(port)
+    await s2.open()
+    s2.client.send(JSON.stringify({ t: 'sessions' }))
+    await s2.waitFor(() => s2.state.frames.some((f) => f.t === 'sessions'), 10000, 'sessions 帧')
+    const sessionsFrame = s2.state.frames.find((f) => f.t === 'sessions')
+    const entry = (sessionsFrame?.list ?? []).find((x) => x.sid === 're-1')
+    if (entry !== undefined && entry.attachable === true) pass('B13a 异常断开后会话保活且 attachable')
+    else fail('B13a 异常断开后会话保活且 attachable', JSON.stringify(sessionsFrame))
+    // attach → ready（reattached:true）→ data 帧回放断线前输出
+    s2.client.send(JSON.stringify({ t: 'attach', sid: 're-1' }))
+    await s2.waitFor(() => s2.state.frames.some((f) => f.t === 'ready' && f.sid === 're-1'), 10000, 'attach ready')
+    if (s2.state.frames.some((f) => f.t === 'ready' && f.sid === 're-1' && f.reattached === true)) pass('B13b attach 成功（ready.reattached）')
+    else fail('B13b attach 成功（ready.reattached）', '缺 reattached 标记')
+    await s2.waitFor(() => /REPLAY_MARK/.test(s2.state.text), 10000, '缓冲回放')
+    pass('B13c attach 后回放断线前输出（REPLAY_MARK）')
+    s2.client.send(JSON.stringify({ t: 'input', sid: 're-1', d: 'printf "AFTER_%s\\n" ATTACH\n' }))
+    await s2.waitFor(() => /AFTER_ATTACH/.test(s2.state.text), 10000, 'attach 后输入')
+    pass('B13d attach 后会话继续交互')
+    // 已连接会话的重复 attach 被拒（防多窗口抢绑）
+    const errorsBefore = s2.state.errors.length
+    s2.client.send(JSON.stringify({ t: 'attach', sid: 're-1' }))
+    await s2.waitFor(() => s2.state.errors.length > errorsBefore, 10000, '重复 attach 错误')
+    if (/已连接/.test(s2.state.errors[s2.state.errors.length - 1])) pass('B13e 已连接会话的重复 attach 被拒')
+    else fail('B13e 已连接会话的重复 attach 被拒', s2.state.errors[s2.state.errors.length - 1])
+    s2.client.send(JSON.stringify({ t: 'kill', sid: 're-1' }))
+    await s2.waitFor(() => s2.state.exited !== null && s2.state.exited.sid === 're-1', 10000, 're-1 exit')
+    s2.client.close()
+  }
+
+  // B14: tty_screen 虚拟屏 + tty_capture ANSI 清洗
+  console.log('\n[13] tty_screen 与 tty_capture 清洗')
+  {
+    const s = openSession(port)
+    await s.open()
+    s.client.send(JSON.stringify({ t: 'spawn', sid: 'screen-1' }))
+    await s.waitFor(() => s.state.ready, 10000, 'screen-1 ready')
+    const screenTool = toolDefs.find((d) => d.name === 'tty_screen')
+    const capture = toolDefs.find((d) => d.name === 'tty_capture')
+    if (screenTool === undefined || capture === undefined) {
+      fail('B14 工具注册', '缺工具: ' + toolDefs.map((d) => d.name).join(','))
+    } else {
+      s.client.send(JSON.stringify({ t: 'input', sid: 'screen-1', d: 'printf "SCREEN_%s\\n" OK\n' }))
+      await s.waitFor(() => /SCREEN_OK/.test(s.state.text), 10000, '屏幕标记输出')
+      // tty_screen：虚拟屏渲染的可见屏幕应包含标记（等价用户此刻看到的画面）
+      let shot = null
+      for (let i = 0; i < 16; i++) {
+        await sleep(250)
+        shot = await screenTool.execute({ sid: 'screen-1' })
+        if (typeof shot?.text === 'string' && shot.text.includes('SCREEN_OK')) break
+      }
+      if (shot !== null && typeof shot.text === 'string' && shot.text.includes('SCREEN_OK')) pass('B14a tty_screen 虚拟屏渲染可见屏幕（SCREEN_OK）')
+      else fail('B14a tty_screen 虚拟屏渲染可见屏幕（SCREEN_OK）', JSON.stringify(shot === null ? null : shot.text).slice(0, 120))
+      // tty_capture：默认清洗后尾部应为纯文本（无 ESC 转义）且包含标记
+      let cap = null
+      for (let i = 0; i < 16; i++) {
+        await sleep(250)
+        cap = await capture.execute({ sid: 'screen-1', lines: 80 })
+        if (typeof cap.tail === 'string' && cap.tail.includes('SCREEN_OK')) break
+      }
+      const cleanOk = cap !== null && typeof cap.tail === 'string' && cap.tail.includes('SCREEN_OK') && !/\x1b/.test(cap.tail)
+      if (cleanOk) pass('B14b tty_capture 默认清洗 ANSI（尾部为纯文本且含标记）')
+      else fail('B14b tty_capture 默认清洗 ANSI（尾部为纯文本且含标记）', JSON.stringify(cap === null ? null : cap.tail).slice(0, 120))
+    }
+    s.client.send(JSON.stringify({ t: 'kill', sid: 'screen-1' }))
+    await s.waitFor(() => s.state.exited !== null, 10000, 'screen-1 exit')
+    s.client.close()
+  }
+
   const failed = RESULTS.filter(([kind]) => kind === 'FAIL')
   console.log(`\n==== 集成测试：${RESULTS.length - failed.length}/${RESULTS.length} PASS ====`)
   for (const [kind, name, detail] of RESULTS) console.log(`  ${kind === 'PASS' ? '✔' : '✘'} ${name}${detail ? ' — ' + detail : ''}`)

@@ -21,6 +21,8 @@
  *   S4 resize(110,33) 不抛错且生效（window-change → stty "33 110"）
  *   S5 terminate 后 done 恰好 resolve（含退出事实）
  *   S6 第二轮会话 exit 命令 → 服务端 exit-status → done.exitCode=0
+ *   S7 TOFU：首次连接经 HostKeyStore 记录 sha256 指纹
+ *   S8 TOFU：同 host:port 换服务器密钥后，指纹变更拒绝连接（带重置指引）
  *
  * 用法：pnpm --filter @hyzyn/dsh-tty ssh-smoke（需先 build 产出 lib/ssh.js）
  * 退出码：0 = 全部 PASS，1 = 任一 FAIL。
@@ -162,25 +164,35 @@ function onClientConnection(client) {
   })
 }
 
-async function startServer() {
-  // 临时 RSA host key：pkcs1 PEM（-----BEGIN RSA PRIVATE KEY-----），不落盘
+async function startServer(preferredPort) {
+  // 临时 RSA host key：pkcs1 PEM（-----BEGIN RSA PRIVATE KEY-----），不落盘。
+  // 传 preferredPort 时复用同一端口（TOFU 用例：同 host:port 换密钥模拟指纹变更）
   const { privateKey } = generateKeyPairSync('rsa', {
     modulusLength: 2048,
     publicKeyEncoding: { type: 'spki', format: 'pem' },
     privateKeyEncoding: { type: 'pkcs1', format: 'pem' },
   })
-  const server = new ssh2.Server({ hostKeys: [privateKey] }, onClientConnection)
-  await new Promise((resolve, reject) => {
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', () => {
-      server.removeListener('error', reject)
-      resolve()
-    })
-  })
-  server.on('error', (error) => {
-    console.error('[ssh-smoke] server 错误: ' + error.message)
-  })
-  return server
+  let lastError = null
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const server = new ssh2.Server({ hostKeys: [privateKey] }, onClientConnection)
+    try {
+      await new Promise((resolve, reject) => {
+        server.once('error', reject)
+        server.listen(preferredPort ?? 0, '127.0.0.1', () => {
+          server.removeListener('error', reject)
+          resolve()
+        })
+      })
+      server.on('error', (error) => {
+        console.error('[ssh-smoke] server 错误: ' + error.message)
+      })
+      return server
+    } catch (error) {
+      lastError = error
+      await sleep(300) // 端口尚未完全释放（TIME_WAIT 等）：稍后重试
+    }
+  }
+  throw lastError ?? new Error('startServer 重试耗尽')
 }
 
 async function stopServer(server) {
@@ -213,7 +225,13 @@ async function main() {
   const port = server.address().port
   console.log(`server 就绪 on 127.0.0.1:${port}，放行密码用户 ${USER}`)
 
-  const options = { term: 'xterm-256color', cols: 80, rows: 24, logger: { info: (m) => console.log('  ' + m), warn: (m) => console.warn('  ' + m) } }
+  // TOFU 指纹存储（内存实现）：S1/S6 走 record + match，S8 用换密钥的服务端走 mismatch
+  const fingerprintMap = new Map()
+  const hostKeyStore = {
+    get: (host, p) => fingerprintMap.get(host + ':' + p),
+    record: (host, p, fp) => fingerprintMap.set(host + ':' + p, fp),
+  }
+  const options = { term: 'xterm-256color', cols: 80, rows: 24, hostKeyStore, logger: { info: (m) => console.log('  ' + m), warn: (m) => console.warn('  ' + m) } }
 
   // ---- 会话 1：认证/输出/resize/terminate ----
   console.log('\n[1] 全链路（spawn→prompt→printf/echo→stty→resize→terminate）')
@@ -314,15 +332,37 @@ async function main() {
     }
   }
 
-  // ---- 清理 ----
-  console.log('\n[3] 清理内存 SSH server')
-  await stopServer(server)
-  console.log('server 已关闭（端口已释放）')
+  // ---- TOFU 主机指纹钉扎（协议层）----
+  console.log('\n[3] TOFU 主机指纹钉扎')
+  {
+    // S7：前两轮连接应已在 HostKeyStore 记录指纹
+    const fp = hostKeyStore.get('127.0.0.1', port)
+    if (typeof fp === 'string' && fp.length > 0) pass('S7 首次连接经 HostKeyStore 记录 sha256 指纹（' + fp.slice(0, 16) + '…）')
+    else fail('S7 首次连接经 HostKeyStore 记录 sha256 指纹', String(fp))
 
-  const failed = RESULTS.filter(([kind]) => kind === 'FAIL')
-  console.log(`\n==== SSH 冒烟：${RESULTS.length - failed.length}/${RESULTS.length} PASS ====`)
-  for (const [kind, name, detail] of RESULTS) console.log(`  ${kind === 'PASS' ? '✔' : '✘'} ${name}${detail ? ' — ' + detail : ''}`)
-  process.exit(failed.length > 0 ? 1 : 0)
+    // S8：同 host:port 换一把服务器密钥 → 指纹变更必须拒绝连接
+    await stopServer(server)
+    const server2 = await startServer(port)
+    console.log(`    已在 127.0.0.1:${port} 起新 server（不同 host key），验证指纹变更拒绝…`)
+    let mismatchError = null
+    try {
+      await spawnSsh(
+        { host: '127.0.0.1', port, username: USER, auth: 'password', password: PASSWORD },
+        options,
+      )
+    } catch (error) {
+      mismatchError = error instanceof Error ? error.message : String(error)
+    }
+    if (mismatchError !== null && /主机密钥指纹变更/.test(mismatchError)) pass('S8 指纹变更拒绝连接（错误含重置指引）')
+    else fail('S8 指纹变更拒绝连接（错误含重置指引）', mismatchError === null ? '连接意外成功' : String(mismatchError))
+
+    await stopServer(server2)
+    console.log('两个内存 SSH server 均已关闭（端口已释放）')
+    const failed = RESULTS.filter(([kind]) => kind === 'FAIL')
+    console.log(`\n==== SSH 冒烟：${RESULTS.length - failed.length}/${RESULTS.length} PASS ====`)
+    for (const [kind, name, detail] of RESULTS) console.log(`  ${kind === 'PASS' ? '✔' : '✘'} ${name}${detail ? ' — ' + detail : ''}`)
+    process.exit(failed.length > 0 ? 1 : 0)
+  }
 }
 
 main().catch((error) => {

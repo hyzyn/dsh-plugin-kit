@@ -1,10 +1,12 @@
 # @hyzyn/dsh-tty
 
 DSH Web GUI 的**终端面板**插件：侧边栏「终端」入口打开一个大弹窗，内嵌
-xterm.js 全交互终端（node-pty 真实 PTY），支持**多标签页**，可运行任意
-命令与 TUI 程序（vim / htop / dev server 等）。浏览器半体打包了 xterm
+xterm.js 全交互终端（node-pty 真实 PTY，WebGL 渲染器加速），支持**多标签页**，
+可运行任意命令与 TUI 程序（vim / htop / dev server 等）。浏览器半体打包了 xterm
 内核，宿主半体经 WebSocket 与 PTY 会话双向透传。0.2.0 起支持 **SSH 连接
-（方案 C）**：`ssh2` 原生直连远程主机，像本地终端一样交互（见下文）。
+（方案 C）**：`ssh2` 原生直连远程主机，像本地终端一样交互；0.3.0 起支持
+**断线自动重连**（刷新页面/网络抖动后会话保活并恢复现场）与 **SSH 主机指纹
+TOFU 钉扎**（见下文）。
 
 ![终端面板：多标签页 xterm 弹窗，工具栏含搜索/清屏/复制/粘贴，标题栏含最小化「—」与关闭 ✕](../../docs/dsh-plugin-kit-tty.png)
 
@@ -30,6 +32,12 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
 - 面板大小变化自动 resize（xterm fit → PTY 原生 resize）；
 - **Ctrl+F 终端内搜索**（Enter 下一个 / Shift+Enter 上一个 / Esc 只关搜索框），
   输出中的链接可点击，工具栏提供 清屏 / 复制选中 / 粘贴；
+- **断线自动重连（0.3.0）**：刷新页面、网络抖动等异常断开后，会话在宿主
+  保活 `reconnectGraceSec`（默认 120 秒），客户端指数退避自动重连（封顶 5s），
+  重连后按 sid **attach 回原会话并回放断线期间的输出缓冲**；页面刷新后从
+  sessionStorage 恢复标签列表（宿主侧已结束的会话自动丢弃）；
+- **WebGL 渲染器（0.3.0）**：高吞吐输出（build 日志）渲染性能质变；WebGL
+  上下文丢失（多标签超出浏览器配额等）时自动回退 DOM 渲染器；
 - **最小化（状态并入侧边栏入口）**：点弹窗外空白处、按 Esc 或标题栏「—」
   把面板收起——PTY 会话与输出缓冲保持存活，侧边栏「终端」入口上显示
   「运行中/总数」徽标与状态点（有输出时脉冲提示），点击入口即可恢复；
@@ -41,16 +49,18 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
 
 ## agent 工具（P1）
 
-插件向 agent 注入三个工具（与 bash 工具同权，操作实时显示在用户终端里）：
+插件向 agent 注入四个工具（与 bash 工具同权，操作实时显示在用户终端里）：
 
 | 工具 | 作用 |
 | --- | --- |
 | `tty_list` | 列出活跃终端会话（sid / kind（local\|ssh）/ target / pid / cwd / 活动时间；SSH 会话无 pid，显示 target） |
-| `tty_capture` | 读取指定会话的近期输出（尾部 N 行，默认 60）——查看 dev server / build 日志 |
+| `tty_capture` | 读取指定会话的近期输出（尾部 N 行，默认 60）——查看 dev server / build 日志；**默认剥离 ANSI 转义序列并收敛同行覆盖（进度条刷屏），返回纯文本**，`raw: true` 取原始流 |
+| `tty_screen` | 读取指定会话**当前可见屏幕**的渲染结果（xterm-headless 虚拟屏，纯文本）——能真正读懂 vim / htop / 菜单等 TUI 界面 |
 | `tty_send` | 向指定会话发送按键/文本（如 dev server 的 q 键、菜单选择） |
 
 典型用法：用户在终端面板里跑了 `pnpm dev`，agent 用 `tty_list` 找到 sid →
-`tty_capture` 看日志 → `tty_send` 发 `q` 停止。
+`tty_capture` 看日志 → `tty_send` 发 `q` 停止；跑 vim / htop 等全屏程序时用
+`tty_screen` 看界面再决定按键。
 
 SSH 会话同表调度：`tty_list` 里 `kind: 'ssh'` 的条目按 `target`
 （user@host[:port]）识别，`tty_capture` / `tty_send` 用法与本地会话完全
@@ -82,6 +92,11 @@ SSH 会话同表调度：`tty_list` 里 `kind: 'ssh'` 的条目按 `target`
   显示 `SSH user@host 已连接`；连接失败（连接超时 / 认证被拒 / 主机
   不可达）以 `error` 帧带回原因，标签规格已随标签保存，点终端区域可按
   原规格重开；
+- **主机指纹 TOFU 钉扎（0.3.0）**：首次连接成功后把该主机（host:port）的
+  sha256 指纹记录进 `hostKeys`（随 settings 持久化）；之后每次连接校验，
+  指纹一致放行，**指纹变更直接拒绝连接**（防中间人冒充），错误信息带重置
+  指引。主机重装/换钥匙后，到 设置 → 插件 → 终端面板 → 「SSH 主机密钥
+  记录」删除对应记录再重连即可（记录列表支持删除）；
 - **计入 `maxSessions` 并发上限**；关断与本地会话一致：标签 ✕ / `kill`
   帧关闭 ssh2 channel，`exit` 帧照常带回退出码 / 信号。
 
@@ -96,9 +111,11 @@ SSH 会话同表调度：`tty_list` 里 `kind: 'ssh'` 的条目按 `target`
 | `term` | `xterm-256color` | TERM 值 |
 | `colorTerm` | `truecolor` | COLORTERM 值 |
 | `cwd` | 宿主启动目录 | 兜底工作目录（客户端当前会话 cwd 优先） |
+| `reconnectGraceSec` | 120 | 异常断开后会话保活秒数（0~3600）：刷新页面/网络抖动后会话存活等待重连，超时由回收器结束；`0` = 旧行为，断开立即结束 |
 | `sshHosts` | `[]` | SSH 连接簿（面板「+」菜单可选）：条目 `{name, host, port=22, username, auth=agent\|key\|password, keyPath, passphrase, password}`；保存时整体替换、同名覆盖；`password` / `passphrase` 支持 `env:VAR` 引用，避免明文入库 |
+| `hostKeys` | `[]` | SSH 主机指纹记录（TOFU，自动维护）：条目 `{host, port, fingerprint}`；按 host:port 唯一，首次连接自动追加，指纹变更拒绝连接；设置卡片可删除重置 |
 
-## 帧协议（/api/dsh-tty/ws，JSON 文本帧；v2 支持单连接多会话）
+## 帧协议（/api/dsh-tty/ws，JSON 文本帧；v3 = 单连接多会话 + 断线重连）
 
 | 方向 | 帧 | 说明 |
 | --- | --- | --- |
@@ -106,11 +123,19 @@ SSH 会话同表调度：`tty_list` 里 `kind: 'ssh'` 的条目按 `target`
 | C→S | `{t:'ssh', sid?, cols?, rows?, name? \| host, username, …}` | 创建 SSH 会话（ssh2 原生）；`name` 引用连接簿条目作基底，内联 `host/port/username/auth/keyPath/passphrase/password` 可逐项覆盖 |
 | C→S | `{t:'input', sid?, d}` | 按键/粘贴数据 |
 | C→S | `{t:'resize', sid?, cols, rows}` | 面板尺寸变化 |
-| C→S | `{t:'kill', sid?}` | 关闭会话 |
-| S→C | `{t:'ready', sid, pid, kind, target?}` | 会话就绪；`kind:'local'` 带 pid，`kind:'ssh'` 时 pid=null、target=user@host[:port] |
-| S→C | `{t:'data', sid, d}` | 终端输出（utf8 文本） |
-| S→C | `{t:'exit', sid, code, signal}` | PTY 退出事实（恰好一次） |
+| C→S | `{t:'kill', sid?}` | 关闭会话（孤儿会话也允许跨连接 kill，防泄漏） |
+| C→S | `{t:'sessions'}` | 列出全局会话快照（`attachable` 标记可重连者） |
+| C→S | `{t:'attach', sid}` | 重连孤儿会话（保活窗口内）：`ready(reattached:true)` 后紧跟一帧 `data` 回放输出缓冲 |
+| S→C | `{t:'ready', sid, pid, kind, target?, reattached?}` | 会话就绪；`kind:'local'` 带 pid，`kind:'ssh'` 时 pid=null、target=user@host[:port]；attach 复用此帧并带 `reattached:true` |
+| S→C | `{t:'data', sid, d}` | 终端输出（utf8 文本，StringDecoder 兜跨帧多字节序列） |
+| S→C | `{t:'exit', sid, code, signal}` | PTY 退出事实（恰好一次；attach 换连接后仍随当前连接送达） |
 | S→C | `{t:'error', sid?, m}` | 错误 |
+| S→C | `{t:'sessions', list}` | 会话快照（`{sid, kind, target, pid?, cwd, startedAt, lastOutputAt, attachable}`） |
+
+断线保活语义：客户端正常关面板会先逐个发 `kill` 再断开；因此「WS close
+且仍有存活会话」判定为异常断开——会话转入孤儿状态（输出继续积累进环形
+缓冲，不向任何连接发送），保活 `reconnectGraceSec` 后由回收器清理；期间
+新连接可 `{t:'sessions'}` 查询 + `{t:'attach', sid}` 重连回放。
 
 sid 省略时按「该连接唯一会话」路由；连接上存在 0 或多个会话时省略 sid
 会报错。upgrade 路由带 loopback 信任围栏（remoteAddress + Host + Origin
@@ -135,23 +160,28 @@ pnpm --filter @hyzyn/dsh-tty ssh-smoke    # SSH 冒烟：内存 SSH server（ssh
 
 - **resize 为内部耦合**：DSH 的 `spawnTerminal` handle 未暴露 resize，
   插件直接透传 `(handle).terminal.resize(cols, rows)`（node-pty 原生 API，
-  同进程可达）。DSH 升级若改内部结构可能失效，届时退化为固定尺寸。
+  同进程可达）。DSH 升级若改内部结构，0.3.0 起会警告一次并退化为固定尺寸，
+  不再逐帧抛错。
 - **TERM 注入用 `-c` 包装层**：DSH 硬编码 node-pty `name:"dumb"`，而
   node-pty 里 name 优先于 env.TERM，因此 shell 以
-  `sh -c 'export TERM=...; exec "$shell"'` 方式启动（对用户透明）。
+  `sh -c 'export TERM=...; exec "$shell"'` 方式启动（对用户透明；TERM /
+  COLORTERM 值做白名单校验，防止破坏包装层命令）。
 - **terminate() 有「幸存者」竞态**：DSH 树级清理偶发报
   `terminal cleanup failed; surviving pids`，插件按 best-effort 处理
   （失败降级对顶层 shell 直接 SIGKILL），退出码/信号可能为 null。
 - **输出为 utf8 文本流**：node-pty 数据经 DSH 按 utf8 编码传输，非 UTF-8
-  字节会被替换字符吃掉（如 `cat` 二进制文件），属预期行为。
+  字节会被替换字符吃掉（如 `cat` 二进制文件），属预期行为；跨 chunk 的
+  多字节 UTF-8 序列已由 StringDecoder 兜住（0.3.0），中文高速输出不再花。
 - 浏览器半体依赖官方 `dsh-web-app` 的侧边栏结构（`[data-pane="sidebar"]`），
   非官方 Web GUI 可能不显示入口。
-- 连接断开（如宿主重启）时所有会话结束，需重新连接后重开标签。
-- **SSH host key 当前为 accept-and-log**：不做 known_hosts 钉扎，每次连接
-  记录 sha256 指纹后无条件放行，等同于手敲
-  `ssh -o StrictHostKeyChecking=no`（而非 accept-new）——首次连接不询问、
-  主机指纹变更不告警，存在 MITM（中间人）冒充风险；loopback 围栏保证只有
-  本机 Web GUI 能发起连接，仅作为缓解，known_hosts 钉扎留作后续项。
+- **断线保活窗口有限**：异常断开后会话仅在 `reconnectGraceSec`（默认 120s）
+  内保活可重连，宿主进程重启则所有会话结束；超期后未重连的会话由回收器
+  结束，输出缓冲（尾部 256KB）之外的滚动历史无法恢复。
+- **SSH host key 为 TOFU 钉扎**：首次连接自动记录 sha256 指纹（trust on
+  first use），之后指纹一致放行、变更拒绝——不再是无条件放行的
+  accept-and-log。注意 TOFU 的固有边界：首次连接若已遭遇 MITM 则记录的
+  就是伪指纹；`hostKeys` 随 settings 落盘，指纹变更需人工在设置卡片确认
+  并删除记录。
 - **SSH 密码 / 口令建议 `env:VAR` 引用**：连接簿随 settings 文件落盘，
   `password` / `passphrase` 明文入库有泄露面；建议 `env:VAR` +
   dsh-env-manager 托管，或直接用 `agent` 认证（凭证不落盘）。
@@ -164,26 +194,35 @@ pnpm --filter @hyzyn/dsh-tty ssh-smoke    # SSH 冒烟：内存 SSH server（ssh
 ```
 浏览器半体 (client.js, esbuild bundle)
   ├─ 侧边栏「终端」入口 → 大弹窗
-  ├─ 标签栏：每标签一个 xterm.js 实例（独立 sid）
+  ├─ 标签栏：每标签一个 xterm.js 实例（独立 sid；WebGL 渲染器，丢失回退 DOM）
+  ├─ 断线重连：指数退避自动重连 + sessions 查询 + attach 恢复；
+  │  标签列表存 sessionStorage（刷新后按 sid 重连保活会话）
   ├─ sessions 客户端服务：新标签带当前会话 cwd
   └─ WebSocket ──→ /api/dsh-tty/ws (webServer.registerUpgrade)
                         │
 宿主半体 (src/index.ts)
   ├─ 连接内会话表（sid → 本地 PTY / SSH channel，单连接多会话）
-  ├─ SessionManager（maxSessions 上限，热调整；SSH 会话同表调度）
+  ├─ SessionManager（maxSessions 上限，热调整；SSH 会话同表调度；
+  │  孤儿回收器按 reconnectGraceSec 清理异常断开的会话）
+  ├─ 每会话 256KB 环形缓冲（tty_capture / 断线回放）+ xterm-headless
+  │  虚拟屏（tty_screen）+ StringDecoder（utf8 分帧兜底）
   ├─ 本地路径：ctx.get('subprocess').spawnTerminal({ argv: shell -c 包装层, cwd })
-  └─ 帧协议：spawn|ssh / input / resize / kill ↔ ready/data/exit/error + 背压
+  └─ 帧协议：spawn|ssh / input / resize / kill / sessions / attach
+     ↔ ready/data/exit/error/sessions + 背压
 
 SSH 路径 (src/ssh.ts，方案 C)
   └─ {t:'ssh'} → spawnSsh：ssh2 Client 原生连接（agent / key / password，
-     password·passphrase 支持 env:VAR 取密），开 shell channel 包装成与
-     PTY 同形状的 TermHandle（pid=null，kind='ssh'，target=user@host[:port]），
+     password·passphrase 支持 env:VAR 取密；host key 经 HostKeyStore
+     TOFU 钉扎），开 shell channel 包装成与 PTY 同形状的 TermHandle
+     （pid=null，kind='ssh'，target=user@host[:port]），
      背压一并透传到 channel —— 之后与本地 PTY 无差别调度
 ```
 
-M0 探针、集成测试（12 项）与真实实例冒烟（live / TUI）在真实 DSH 服务组合
-上验证过：TERM 注入、resize 透传、sid 冲突、并发上限、loopback 围栏、
-多会话数据隔离、cwd 跟随与校验、配置热生效（settings/updated）、
-kill→exit 全链路。SSH 路径由 `ssh-smoke`（内存 SSH server × 真实
+M0 探针、集成测试（B1~B14 共 30 项断言）与真实实例冒烟（live / TUI）在
+真实 DSH 服务组合上验证过：TERM 注入、resize 透传、sid 冲突、并发上限、
+loopback 围栏、多会话数据隔离、cwd 跟随与校验、配置热生效（settings/updated）、
+kill→exit 全链路、断线保活 + sessions/attach 重连回放、tty_screen 虚拟屏、
+tty_capture ANSI 清洗。SSH 路径由 `ssh-smoke`（内存 SSH server × 真实
 `spawnSsh`）验证：password 认证建链与 prompt、命令往返、pty-req 初始
-尺寸与 resize（window-change）、terminate / exit-status 全链路。
+尺寸与 resize（window-change）、terminate / exit-status 全链路，以及
+TOFU 指纹记录（S7）与指纹变更拒绝连接（S8）。

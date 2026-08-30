@@ -6,20 +6,29 @@
  * spawn 帧创建真实 PTY 会话（ctx.subprocess.spawnTerminal，node-pty），
  * 之后双向透传：input/resize/kill 上行，data/exit/error 下行。
  *
- * 帧协议 v2（JSON 文本帧；sid 维度支持单连接多会话/标签页）：
+ * 帧协议 v3（JSON 文本帧；sid 维度支持单连接多会话/标签页 + 断线重连）：
  *   C→S  {t:'spawn', sid?, cols?, rows?, cwd?}  创建本地会话；sid 缺省时宿主生成
  *   C→S  {t:'ssh', sid?, cols?, rows?, name? | host, username, ...}
  *                                               创建 SSH 会话（ssh2 原生，见 ssh.ts）；
  *                                               name 引用连接簿条目，内联字段可覆盖
  *   C→S  {t:'input', sid?, d}                  按键/粘贴数据
  *   C→S  {t:'resize', sid?, cols, rows}        xterm fit 触发
- *   C→S  {t:'kill', sid?}                      关闭会话
+ *   C→S  {t:'kill', sid?}                      关闭会话（孤儿会话也可跨连接 kill）
+ *   C→S  {t:'sessions'}                        列出全局会话（attachable 标记可重连者）
+ *   C→S  {t:'attach', sid}                     重连孤儿会话（断线保活窗口内）：
+ *                                               ready 后紧跟一帧 data 回放输出缓冲
  *   S→C  {t:'ready', sid, pid, kind, target?}  会话就绪（ssh 时 pid=null，target=user@host）
- *   S→C  {t:'data', sid, d}                    终端输出（utf8 文本）
+ *   S→C  {t:'data', sid, d}                    终端输出（utf8 文本，StringDecoder 兜多字节分帧）
  *   S→C  {t:'exit', sid, code, signal}         PTY 退出事实（恰好一次）
  *   S→C  {t:'error', sid?, m}                  错误
+ *   S→C  {t:'sessions', list}                  会话快照（attachable=true 表示前连接已断、可 attach）
  * 省略 sid 时按「该连接唯一会话」路由；连接上存在 0 或多个会话时省略 sid 报错。
  * 旧脚本（spawn 不带 sid）自动兼容：宿主生成 sid，响应帧多带 sid 字段。
+ *
+ * 断线保活：客户端正常关面板会先逐个 kill 再断开；因此「WS close 且仍有
+ * 存活会话」判定为异常断开（刷新/网络抖动），会话转入孤儿状态保活
+ * reconnectGraceSec（默认 120s，0 = 旧行为立即结束），等待新连接 attach
+ * 并回放 256KB 环形缓冲；到点由回收器清理。
  *
  * M0 探针（scripts/probe.mjs）验证过的三个关键结论：
  *   1. TERM 必须用 `shell -c 'export TERM=...; exec "$shell"'` 包装层注入——
@@ -49,5 +58,16 @@ export interface Config {
     cwd?: string;
     /** SSH 连接簿（面板「+」菜单可选；密码/口令支持 env:VAR 引用）。 */
     sshHosts?: SshHostEntry[];
+    /** 异常断开后会话保活秒数（0 = 立即结束；默认 120，最大 3600）。 */
+    reconnectGraceSec?: number;
+    /** 已记录的 SSH 主机密钥指纹（TOFU 钉扎，按 host:port 唯一）。 */
+    hostKeys?: HostKeyRecord[];
+}
+/** TOFU 主机指纹记录。 */
+export interface HostKeyRecord {
+    host: string;
+    port: number;
+    /** hostVerifier 收到的原样 sha256 十六进制指纹。 */
+    fingerprint: string;
 }
 export declare const name: string, inject: string[] | undefined, apply: (ctx: Context, config?: Config | undefined) => void;

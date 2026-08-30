@@ -18,12 +18,20 @@
  *   - SSH 会话：{t:'ssh'} 帧创建（name 引用连接簿或内联字段），ready 帧的
  *     target 回显到状态栏与标签标题；respawn 复用原 spawnSpec
  *   - 设置卡片维护 SSH 连接簿（列表 + 删除，随「保存」写入 tty settings）
- * 帧协议与宿主半体（src/index.ts）对齐：spawn/ssh/input/resize/kill ↔ ready/data/exit/error。
+ * v0.5 能力：
+ *   - 断线保活与重连：异常断开（刷新页面/网络抖动）后会话在宿主保活
+ *     reconnectGraceSec（默认 120s），客户端自动重连（指数退避封顶 5s），
+ *     对存活标签发 {t:'attach'} 恢复并回放缓冲；页面刷新后从 sessionStorage
+ *     恢复标签列表（未存活者自动丢弃）；✕ 关闭才真正结束全部会话
+ *   - WebGL 渲染器（@xterm/addon-webgl，上下文丢失自动回退 DOM 渲染器）
+ * 帧协议与宿主半体（src/index.ts）对齐：spawn/ssh/input/resize/kill/
+ * sessions/attach ↔ ready/data/exit/error/sessions。
  */
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
 import { WebLinksAddon } from '@xterm/addon-web-links'
+import { WebglAddon } from '@xterm/addon-webgl'
 import xtermCss from '@xterm/xterm/css/xterm.css'
 
 /* ================================ CSS ================================ */
@@ -179,6 +187,11 @@ let dockCountEl = null
 let dockStatusEl = null
 let dockDotEl = null
 let dockActivityTimer = null
+/** 断线自动重连：指数退避（1s 起步、封顶 5s），面板开着就一直尝试。 */
+let reconnectTimer = null
+let reconnectDelay = 1000
+/** 标签列表持久化（sessionStorage）：页面刷新后按 sid 重连宿主保活的会话。 */
+const PERSIST_KEY = 'dsh-tty:tabs'
 
 /** sid → 标签页 */
 const tabs = new Map()
@@ -223,6 +236,59 @@ function currentCwd() {
   }
 }
 
+/** 标签列表持久化（sessionStorage，随浏览器标签页生命周期）：只存未退出的标签。 */
+function persistTabs() {
+  try {
+    const data = [...tabs.values()]
+      .filter((tab) => !tab.exited)
+      .map((tab) => ({ sid: tab.sid, spawnSpec: tab.spawnSpec, label: tab.label }))
+    if (data.length === 0 || modalEl === null) sessionStorage.removeItem(PERSIST_KEY)
+    else sessionStorage.setItem(PERSIST_KEY, JSON.stringify(data))
+  } catch {
+    /* 隐私模式等存储不可用：静默跳过 */
+  }
+}
+
+/** 读取持久化标签（页面刷新后重开面板用）；结构不合法的条目直接丢弃。 */
+function loadPersistedTabs() {
+  try {
+    const raw = sessionStorage.getItem(PERSIST_KEY)
+    if (raw === null) return []
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((item) => item !== null && typeof item === 'object' && typeof item.sid === 'string' && item.sid !== '' && item.spawnSpec !== null && typeof item.spawnSpec === 'object')
+  } catch {
+    return []
+  }
+}
+
+/**
+ * 等待某一类型的第一帧（独立监听，主 onmessage 同时照常处理）；
+ * 超时返回 null（宿主不支持该帧 / 网络异常）。
+ */
+function waitFrame(type, timeoutMs) {
+  return new Promise((resolve) => {
+    const onMsg = (event) => {
+      let msg
+      try {
+        msg = JSON.parse(event.data)
+      } catch {
+        return
+      }
+      if (msg.t === type) {
+        clearTimeout(timer)
+        socket.removeEventListener('message', onMsg)
+        resolve(msg)
+      }
+    }
+    const timer = setTimeout(() => {
+      socket.removeEventListener('message', onMsg)
+      resolve(null)
+    }, timeoutMs)
+    socket.addEventListener('message', onMsg)
+  })
+}
+
 function sendResize(tab) {
   if (tab === undefined || tab.fit === undefined) return
   const dims = tab.fit.proposeDimensions()
@@ -265,6 +331,21 @@ function createTerminal(tab) {
     fit.fit()
   } catch {
     /* 容器尚未布局完成时忽略 */
+  }
+  // WebGL 渲染器：高吞吐输出（build 日志）性能质变；上下文丢失（多标签
+  // 超出浏览器 WebGL 上下文配额等）时释放本 addon，xterm 自动回退 DOM 渲染器
+  try {
+    const webgl = new WebglAddon()
+    webgl.onContextLoss(() => {
+      try {
+        webgl.dispose()
+      } catch {
+        /* 已释放 */
+      }
+    })
+    term.loadAddon(webgl)
+  } catch {
+    /* WebGL 不可用：保持 DOM 渲染器 */
   }
 
   term.onData((data) => {
@@ -311,7 +392,33 @@ function addTab(spawnSpec, label) {
   renderTabbar()
   switchTab(sid)
   spawnTab(tab)
+  persistTabs()
   return tab
+}
+
+/**
+ * 页面刷新后恢复标签：沿用持久化的 sid / spawnSpec / label，发 attach 重连
+ * 宿主保活的会话（不再 spawnTab）；attach 失败会走 error 浮层（点击 respawn）。
+ */
+function restoreTab(saved) {
+  const tab = {
+    sid: saved.sid,
+    term: null,
+    fit: null,
+    search: null,
+    termEl: null,
+    overlayEl: null,
+    exited: false,
+    spawned: false,
+    spawnSpec: saved.spawnSpec,
+    label: typeof saved.label === 'string' ? saved.label : undefined,
+  }
+  createTerminal(tab)
+  tabs.set(tab.sid, tab)
+  tabCounter += 1
+  renderTabbar()
+  switchTab(tab.sid)
+  sendFrame({ t: 'attach', sid: tab.sid })
 }
 
 /** 按标签保存的 spawnSpec 发创建帧（sid/cols/rows 由本地补齐）。 */
@@ -347,6 +454,7 @@ function respawnTab(oldSid) {
   renderTabbar()
   switchTab(tab.sid)
   spawnTab(tab)
+  persistTabs()
 }
 
 function closeTab(sid) {
@@ -371,6 +479,7 @@ function closeTab(sid) {
   }
   renderTabbar()
   if (tabs.size === 0) closeModal()
+  else persistTabs()
 }
 
 function switchTab(sid) {
@@ -789,6 +898,49 @@ function doSearch(backwards) {
   else tab.search.findNext(query, options)
 }
 
+/** 断线自动重连：指数退避封顶 5s；面板开着就一直尝试，✕ 关闭时停止。 */
+function scheduleReconnect() {
+  if (intentionalClose || modalEl === null || reconnectTimer !== null) return
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null
+    connect()
+  }, reconnectDelay)
+  reconnectDelay = Math.min(reconnectDelay * 2, 5000)
+}
+
+/**
+ * 连接建立后的恢复流程：
+ *   - 面板内还有未退出标签（同页断线重连）→ 逐个 attach 回场；
+ *   - 空面板但有 sessionStorage 持久化（页面刷新后重开）→ 查询宿主仍保活
+ *     的会话，能 attach 的恢复标签，其余丢弃；都没有则新建首个标签。
+ */
+async function afterSocketOpen() {
+  const restored = loadPersistedTabs()
+  if (tabs.size === 0) {
+    if (restored.length > 0) {
+      sendFrame({ t: 'sessions' })
+      const frame = await waitFrame('sessions', 4000)
+      const alive = new Map()
+      if (frame !== null && Array.isArray(frame.list)) {
+        for (const entry of frame.list) {
+          if (entry !== null && typeof entry === 'object' && entry.attachable === true) alive.set(entry.sid, entry)
+        }
+      }
+      for (const saved of restored) {
+        if (!alive.has(saved.sid)) continue
+        restoreTab(saved)
+      }
+      persistTabs()
+    }
+    if (tabs.size === 0) addTab()
+    return
+  }
+  for (const tab of [...tabs.values()]) {
+    if (tab.exited) continue
+    sendFrame({ t: 'attach', sid: tab.sid })
+  }
+}
+
 function connect() {
   if (socket !== null) {
     try {
@@ -799,6 +951,8 @@ function connect() {
     socket = null
   }
   intentionalClose = false
+  clearTimeout(reconnectTimer)
+  reconnectTimer = null
   connecting = true
   setStatus('连接中…', '')
   try {
@@ -806,14 +960,15 @@ function connect() {
   } catch (error) {
     connecting = false
     setStatus('连接失败：' + error.message, 'error')
-    showBodyOverlay('点击重试')
+    scheduleReconnect()
     return
   }
 
   socket.onopen = () => {
     connecting = false
+    reconnectDelay = 1000
     setStatus('已连接', 'connected')
-    if (tabs.size === 0) addTab()
+    void afterSocketOpen()
   }
   socket.onmessage = (event) => {
     let msg
@@ -824,7 +979,8 @@ function connect() {
     }
     const sid = msg.sid
     if (msg.t === 'ready') {
-      // SSH 会话 ready 带 target（user@host[:port]，pid 为 null）；本地带 pid
+      // SSH 会话 ready 带 target（user@host[:port]，pid 为 null）；本地带 pid。
+      // attach 重连也复用 ready 帧（多带 reattached:true），后跟一帧 data 回放缓冲
       const target = typeof msg.target === 'string' ? msg.target : ''
       setStatus(msg.kind === 'ssh' ? 'SSH ' + (target !== '' ? target + ' ' : '') + '已连接' : '已连接 pid=' + msg.pid, 'connected')
       const tab = tabs.get(sid)
@@ -836,8 +992,9 @@ function connect() {
           renderTabbar()
         }
         showTabOverlay(tab, '')
-        sendResize(tab) // spawn 就绪后补一次精确尺寸
+        sendResize(tab) // spawn/attach 就绪后补一次精确尺寸
         syncEntryBadge() // 断线重连后徽标计数恢复
+        persistTabs()
       }
     } else if (msg.t === 'data') {
       const tab = tabs.get(sid)
@@ -854,6 +1011,7 @@ function connect() {
         setStatus('已退出 ' + [code, signal].filter(Boolean).join(' '), '')
         showTabOverlay(tab, '会话已退出 — 点击重新打开')
         syncEntryBadge() // 最小化时徽标计数同步减少
+        persistTabs() // 已退出的标签不再持久化
       }
     } else if (msg.t === 'error') {
       setStatus('错误：' + String(msg.m ?? ''), 'error')
@@ -868,11 +1026,12 @@ function connect() {
   socket.onclose = () => {
     connecting = false
     if (intentionalClose) return
-    setStatus('连接断开', 'error')
+    setStatus('连接断开 — 自动重连中', 'error')
+    // 不再把未退出标签标记为 exited：会话在宿主保活，重连后 attach 恢复
     for (const tab of tabs.values()) {
-      tab.exited = true
-      showTabOverlay(tab, '连接断开 — 点击重新连接')
+      if (!tab.exited) showTabOverlay(tab, '连接断开 — 自动重连中…')
     }
+    scheduleReconnect()
   }
   socket.onerror = () => {
     /* onclose 会跟随触发 */
@@ -1101,6 +1260,9 @@ function closeModal() {
   closeAddMenu()
   closeSshDialog()
   clearTimeout(dockActivityTimer)
+  clearTimeout(reconnectTimer)
+  reconnectTimer = null
+  reconnectDelay = 1000
   if (dockEl !== null) {
     dockEl.remove()
     dockEl = null
@@ -1145,6 +1307,12 @@ function closeModal() {
   bodyOverlayEl = null
   searchInputEl = null
   tabCounter = 0
+  // 主动关闭 = 结束全部会话：清掉持久化，下次打开从全新面板开始
+  try {
+    sessionStorage.removeItem(PERSIST_KEY)
+  } catch {
+    /* 忽略 */
+  }
 }
 
 function onModalKeydown(event) {
@@ -1311,12 +1479,31 @@ function TtySettingsCard() {
     ...(current || {}),
     sshHosts: (Array.isArray(current?.sshHosts) ? current.sshHosts : []).filter((host) => host?.name !== name),
   }))
+  /** 立即删除一条 TOFU 主机指纹记录（指纹变更且确认安全后，删掉即可重连）。 */
+  const removeHostKey = async (record) => {
+    const next = (Array.isArray(form?.hostKeys) ? form.hostKeys : []).filter(
+      (hk) => !(hk?.host === record?.host && Number(hk?.port) === Number(record?.port)),
+    )
+    setForm((current) => ({ ...(current || {}), hostKeys: next }))
+    try {
+      const res = await fetch('/api/dsh-tty/config', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ hostKeys: next }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.ok) setMessage({ kind: 'error', text: String(data.error || '删除主机密钥记录失败') })
+      else setMessage({ kind: 'ok', text: '已删除主机密钥记录（下次连接重新记录指纹）' })
+    } catch (error) {
+      setMessage({ kind: 'error', text: String(error && error.message ? error.message : error) })
+    }
+  }
   const save = async () => {
     setSaving(true)
     setMessage({ kind: '', text: '' })
     // 只提交配置项：快照里的 toolsRegistered 等非配置键会被宿主 normalizePatch 拒绝
     const body = {}
-    for (const key of ['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd']) {
+    for (const key of ['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec']) {
       const value = (form || {})[key]
       if (value !== undefined && value !== '') body[key] = value
     }
@@ -1371,7 +1558,7 @@ function TtySettingsCard() {
             className: 'tt_cardHeadText',
             children: [
               jsx('span', { className: 'tt_cardName', children: '终端面板' }),
-              jsx('span', { className: 'tt_cardDescription', children: 'xterm 终端面板：多标签页、cwd 跟随会话、SSH 连接簿；shell / TERM / 并发上限等保存即热生效。' }),
+              jsx('span', { className: 'tt_cardDescription', children: 'xterm 终端面板：多标签页、断线自动重连、cwd 跟随会话、SSH 连接簿与主机指纹钉扎；shell / TERM / 并发上限等保存即热生效。' }),
             ],
           }),
           jsx('svg', {
@@ -1398,6 +1585,7 @@ function TtySettingsCard() {
                 textField('TERM', 'term', 'xterm-256color', 'TUI 程序依赖此值'),
                 textField('COLORTERM', 'colorTerm', 'truecolor', ''),
                 textField('兜底工作目录（客户端当前会话 cwd 优先）', 'cwd', '', '留空使用宿主进程启动目录'),
+                textField('断线保活（秒，0 = 立即结束）', 'reconnectGraceSec', '120', '刷新页面/网络抖动后会话保活等待重连，超时后结束；保存即热生效'),
                 jsxs('div', {
                   className: 'tt_cardField',
                   children: [
@@ -1417,6 +1605,27 @@ function TtySettingsCard() {
                         })]
                       : [jsx('span', { className: 'tt_cardHint', children: '暂无条目 — 终端面板「+」→ SSH 连接… 勾选「保存到连接簿」即可添加' })]),
                     jsx('span', { className: 'tt_cardHint', children: '随「保存」一并写入配置；密码/口令支持 env:VAR 引用，避免明文入库' }),
+                  ],
+                }),
+                jsxs('div', {
+                  className: 'tt_cardField',
+                  children: [
+                    jsx('span', { className: 'tt_cardLabel', children: 'SSH 主机密钥记录（TOFU）' }),
+                    ...(Array.isArray(form.hostKeys) && form.hostKeys.length > 0
+                      ? [jsx('div', {
+                          children: form.hostKeys.map((hk) => jsxs('div', {
+                            className: 'tt_sshHostRow',
+                            children: [
+                              jsx('div', { className: 'tt_sshHostMeta', children: [
+                                jsx('span', { className: 'tt_sshHostName', children: String(hk?.host ?? '') + ':' + String(hk?.port ?? 22) }),
+                                jsx('span', { className: 'tt_sshHostTarget', children: 'sha256:' + String(hk?.fingerprint ?? '') }),
+                              ] }),
+                              jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => void removeHostKey(hk), children: '删除' }),
+                            ],
+                          }, String(hk?.host ?? '') + ':' + String(hk?.port ?? 22))),
+                        })]
+                      : [jsx('span', { className: 'tt_cardHint', children: '暂无记录 — 首次 SSH 连接成功后自动记录主机指纹' })]),
+                    jsx('span', { className: 'tt_cardHint', children: '主机指纹变更时连接会被拒绝（防中间人）；确认安全后删除对应记录即可重连' }),
                   ],
                 }),
                 jsxs('div', {

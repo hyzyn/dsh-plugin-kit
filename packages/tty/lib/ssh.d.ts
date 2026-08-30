@@ -39,6 +39,18 @@ export interface SshSpawnOptions {
         info(msg: string): void;
         warn(msg: string): void;
     };
+    /**
+     * known_hosts TOFU 钉扎存储：首次连接 record() 记录指纹，之后 get() 校验。
+     * 缺省时退化为 accept-and-log（仅记录指纹，无条件放行）。
+     */
+    hostKeyStore?: HostKeyStore;
+}
+/** 主机指纹钉扎存储（宿主半体实现为 LiveConfig + settings 持久化）。 */
+export interface HostKeyStore {
+    /** 已记录的指纹（hostVerifier 收到的原样十六进制串）；未记录返回 undefined。 */
+    get(host: string, port: number): string | undefined;
+    /** 首次连接握手时记录指纹。 */
+    record(host: string, port: number, fingerprint: string): void;
 }
 /** 展示用目标串：user@host（非默认端口时带 :port）。 */
 export declare function sshTarget(spec: SshSpec): string;

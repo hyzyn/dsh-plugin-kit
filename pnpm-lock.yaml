@@ -239,6 +239,9 @@ importers:
       '@hyzyn/dsh-kit':
         specifier: ^0.1.0
         version: 0.1.1
+      '@xterm/headless':
+        specifier: ^5.5.0
+        version: 5.5.0
       ssh2:
         specifier: ^1.17.0
         version: 1.17.0
@@ -279,6 +282,9 @@ importers:
       '@xterm/addon-web-links':
         specifier: ^0.12.0
         version: 0.12.0
+      '@xterm/addon-webgl':
+        specifier: ^0.19.0
+        version: 0.19.0
       '@xterm/xterm':
         specifier: ^5.5.0
         version: 5.5.0
@@ -660,6 +666,12 @@ packages:
   '@xterm/addon-web-links@0.12.0':
     resolution: {integrity: sha512-4Smom3RPyVp7ZMYOYDoC/9eGJJJqYhnPLGGqJ6wOBfB8VxPViJNSKdgRYb8NpaM6YSelEKbA2SStD7lGyqaobw==}
 
+  '@xterm/addon-webgl@0.19.0':
+    resolution: {integrity: sha512-b3fMOsyLVuCeNJWxolACEUED0vm7qC0cy4wRvf3oURSzDTYVQiGPhTnhWZwIHdvC48Y+oLhvYXnY4XDXPoJo6A==}
+
+  '@xterm/headless@5.5.0':
+    resolution: {integrity: sha512-5xXB7kdQlFBP82ViMJTwwEc3gKCLGKR/eoxQm4zge7GPBl86tCdI0IdPJjoKd8mUSFXz5V7i/25sfsEkP4j46g==}
+
   '@xterm/xterm@5.5.0':
     resolution: {integrity: sha512-hqJHYaQb5OptNunnyAnkHyM8aCjZ1MEIDTQu1iIbbTD/xops91NB5yq1ZK/dC2JDbVWtF23zUtl9JE2NqwT87A==}
 
@@ -1026,6 +1038,10 @@ snapshots:
   '@xterm/addon-search@0.16.0': {}
 
   '@xterm/addon-web-links@0.12.0': {}
+
+  '@xterm/addon-webgl@0.19.0': {}
+
+  '@xterm/headless@5.5.0': {}
 
   '@xterm/xterm@5.5.0': {}
 
