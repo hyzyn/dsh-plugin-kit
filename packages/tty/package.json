@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-tty",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "DSH Web GUI 的终端面板插件：侧边栏「终端」大弹窗，xterm.js + PTY 全交互终端（路线1），ssh2 原生 SSH 远程连接（方案 C）。",
   "type": "module",
   "engines": {
@@ -25,14 +25,17 @@
     }
   },
   "dependencies": {
-    "@deepseek-ai/dsh-tools": "0.1.0-rc.7",
     "@deepseek-ai/schemastery": "^3.18.1",
     "@hyzyn/dsh-kit": "^0.1.0",
     "ssh2": "^1.17.0",
     "ws": "^8.18.0"
   },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": "^0.1.1-rc.2"
+  },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-tools": "0.1.1-rc.2",
     "@deepseek-ai/dsh-host-webserver": "0.1.0-rc.7",
     "@deepseek-ai/dsh-subprocess": "0.1.0-rc.7",
     "@deepseek-ai/dsh-subprocess-local": "0.1.0-rc.7",
