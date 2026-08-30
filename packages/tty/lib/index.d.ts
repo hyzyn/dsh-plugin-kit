@@ -47,6 +47,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis';
 import type { HostKeyRecord, SshHostEntry } from './ssh.js';
+import type { TunnelSpec } from './tunnels.js';
 export type { HostKeyRecord } from './ssh.js';
 export interface Config {
     /** 关闭整个插件。默认开。 */
@@ -71,5 +72,7 @@ export interface Config {
     hostKeys?: HostKeyRecord[];
     /** 是否注入 OSC 133/7 shell 集成（命令边界标记 + cwd 上报）。默认开。 */
     shellIntegration?: boolean;
+    /** 端口转发隧道（引用连接簿条目；宿主自持连接与重连，见 src/tunnels.ts）。 */
+    tunnels?: TunnelSpec[];
 }
 export declare const name: string, inject: string[] | undefined, apply: (ctx: Context, config?: Config | undefined) => void;

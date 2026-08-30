@@ -154,6 +154,18 @@ const CSS = [
   '.tt_sshHostTarget{font-size:12px;color:var(--dsw-alias-label-tertiary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
   // 连接簿行内编辑表单
   '.tt_sshEdit{border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-3);display:flex;flex-direction:column;gap:8px;padding:10px;margin:4px 0 8px}',
+  // 隧道状态点（活跃绿 / 连接中蓝 / 错误红 / 停止灰）
+  // 隧道添加表单栅格：本地方向 = 端口窄列 + 主机吃满；远程方向 = 两端口等分
+  '.tt_tunnelGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}',
+  '.tt_tunnelGridLocal{display:grid;grid-template-columns:100px minmax(0,1fr) 100px;gap:10px}',
+  '.tt_tunnelGrid .tt_cardInput,.tt_tunnelGridLocal .tt_cardInput{min-width:0;width:auto}',
+  // 连接簿 / 主机密钥记录列表：条目多时限高滚动
+  '.tt_hostList{max-height:200px;overflow-y:auto;display:flex;flex-direction:column}',
+  // 隧道状态点（活跃绿 / 连接中蓝 / 错误红 / 停止灰）
+  '.tt_tunnelDot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--dsw-alias-label-tertiary)}',
+  '.tt_tunnelDot[data-state=active]{background:var(--dsw-alias-state-success-primary)}',
+  '.tt_tunnelDot[data-state=connecting]{background:var(--dsw-alias-state-business-primary)}',
+  '.tt_tunnelDot[data-state=error]{background:var(--dsw-alias-state-error-primary)}',
   // env:VAR 选择器（筛选框 + 限高滚动列表）
   '.tt_envList{max-height:132px;overflow-y:auto;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-3);display:flex;flex-direction:column;gap:2px;padding:4px}',
   '.tt_envItem{appearance:none;background:0 0;border:none;color:var(--dsw-alias-label-primary);text-align:left;font:12px "SF Mono",Menlo,Consolas,monospace;padding:5px 8px;border-radius:6px;cursor:pointer}',
@@ -614,10 +626,19 @@ function startTabRename(sid, tabBtn) {
 /* ============================ 「+」菜单 / SSH 连接 ============================ */
 
 /** 连接簿缓存同步：config 快照里带 sshHosts 时整体覆盖（设置卡片保存后也走这里）。 */
+let tunnelsCache = []
 function syncSshHostsCache(config) {
   if (config !== null && typeof config === 'object' && Array.isArray(config.sshHosts)) {
     sshHostsCache = config.sshHosts
   }
+  if (config !== null && typeof config === 'object' && Array.isArray(config.tunnels)) {
+    tunnelsCache = config.tunnels
+  }
+}
+
+/** 连接簿条目名下的启用隧道数（「+」菜单徽标用）。 */
+function tunnelCountFor(bookName) {
+  return tunnelsCache.filter((t) => t?.bookName === bookName && t?.enabled !== false).length
 }
 
 /** 连接簿条目的展示副标题：user@host[:port] · auth[ · fwd]。 */
@@ -718,7 +739,8 @@ function renderAddMenuItems(menu) {
     main.textContent = entry.name
     const sub = document.createElement('span')
     sub.className = 'tt_addMenuSub'
-    sub.textContent = sshHostTargetLabel(entry)
+    const tunnelCount = tunnelCountFor(entry.name)
+    sub.textContent = sshHostTargetLabel(entry) + (tunnelCount > 0 ? ' · ⇄' + String(tunnelCount) : '')
     item.appendChild(main)
     item.appendChild(sub)
     item.addEventListener('click', () => {
@@ -1744,6 +1766,106 @@ function TtySettingsCard() {
   const [editing, setEditing] = React.useState(null)
   const [editForm, setEditForm] = React.useState(null)
   const [editError, setEditError] = React.useState('')
+  /** 隧道实时状态（卡片展开期间 2s 轮询 /api/dsh-tty/tunnels）。 */
+  const [tunnelStatus, setTunnelStatus] = React.useState([])
+  const [tunnelDraft, setTunnelDraft] = React.useState({ direction: 'local', localPort: '', remoteHost: '', remotePort: '', localTargetPort: '', bookName: '' })
+  React.useEffect(() => {
+    if (!open) return undefined
+    let alive = true
+    const poll = async () => {
+      try {
+        const res = await fetch('/api/dsh-tty/tunnels', { cache: 'no-store' })
+        const data = await res.json()
+        if (alive && data.ok && Array.isArray(data.tunnels)) setTunnelStatus(data.tunnels)
+      } catch {
+        /* 网络失败：保留上次状态 */
+      }
+    }
+    void poll()
+    const timer = setInterval(poll, 2000)
+    return () => {
+      alive = false
+      clearInterval(timer)
+    }
+  }, [open])
+  const setDraft = (key) => (event) => setTunnelDraft((current) => ({ ...(current || {}), [key]: event.target.value }))
+  const tunnelRule = (t) => (t?.direction === 'remote'
+    ? `远程:${t.remoteHost || '127.0.0.1'}:${String(t.remotePort ?? 0)} → 本机:${String(t.localTargetPort ?? 0)}`
+    : `本机:${String(t?.localPort ?? 0)} → ${t?.remoteHost ?? '?'}:${String(t?.remotePort ?? 0)}`)
+  const selectedBook = (form?.sshHosts ?? []).find((host) => host?.name === tunnelDraft?.bookName)
+  /** 立即提交当前隧道列表（写 settings → reconcile 热生效）；失败回滚提示。 */
+  const pushTunnels = async (next) => {
+    try {
+      const res = await fetch('/api/dsh-tty/config', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ tunnels: next }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.ok) {
+        setMessage({ kind: 'error', text: String(data.error || '保存隧道失败') })
+        return false
+      }
+      return true
+    } catch (error) {
+      setMessage({ kind: 'error', text: String(error && error.message ? error.message : error) })
+      return false
+    }
+  }
+  /** 添加隧道（append 进 form.tunnels 并立即生效；重名自动加后缀）。 */
+  const addTunnel = () => {
+    setMessage({ kind: '', text: '' })
+    const d = tunnelDraft || {}
+    const bookName = d.bookName || (Array.isArray(form?.sshHosts) ? form.sshHosts[0]?.name : '') || ''
+    if (bookName === '') {
+      setMessage({ kind: 'error', text: '请先在连接簿里添加 SSH 条目' })
+      return
+    }
+    const num = (v) => {
+      const n = Number(v)
+      return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : 0
+    }
+    let tunnel
+    if (d.direction === 'remote') {
+      tunnel = { name: '', bookName, direction: 'remote', remotePort: num(d.remotePort), localTargetHost: '', localTargetPort: num(d.localTargetPort), enabled: true }
+      if (tunnel.remotePort < 1 || tunnel.localTargetPort < 1) {
+        setMessage({ kind: 'error', text: '远程监听端口与本地目标端口必填（1~65535）' })
+        return
+      }
+      tunnel.name = `${bookName}-R${String(tunnel.remotePort)}`
+    } else {
+      tunnel = { name: '', bookName, direction: 'local', localPort: num(d.localPort), remoteHost: d.remoteHost.trim(), remotePort: num(d.remotePort), enabled: true }
+      if (tunnel.localPort < 1 || tunnel.remoteHost === '' || tunnel.remotePort < 1) {
+        setMessage({ kind: 'error', text: '本地端口、远程主机、远程端口必填' })
+        return
+      }
+      tunnel.name = `${bookName}-L${String(tunnel.localPort)}`
+    }
+    const existing = new Set((Array.isArray(form?.tunnels) ? form.tunnels : []).map((t) => t?.name))
+    let finalName = tunnel.name
+    let n = 2
+    while (existing.has(finalName)) {
+      finalName = `${tunnel.name}-${String(n)}`
+      n += 1
+    }
+    tunnel.name = finalName
+    const next = [...(Array.isArray(form?.tunnels) ? form.tunnels : []), tunnel]
+    setForm((current) => ({ ...(current || {}), tunnels: next }))
+    setTunnelDraft((current) => ({ ...(current || {}), localPort: '', remoteHost: '', remotePort: '', localTargetPort: '' }))
+    void pushTunnels(next).then((ok) => {
+      if (ok) setMessage({ kind: 'ok', text: `隧道「${finalName}」已生效` })
+    })
+  }
+  const removeTunnel = (name) => {
+    const next = (Array.isArray(form?.tunnels) ? form.tunnels : []).filter((t) => t?.name !== name)
+    setForm((current) => ({ ...(current || {}), tunnels: next }))
+    void pushTunnels(next)
+  }
+  const toggleTunnelEnabled = (name, checked) => {
+    const next = (Array.isArray(form?.tunnels) ? form.tunnels : []).map((t) => (t?.name === name ? { ...t, enabled: checked } : t))
+    setForm((current) => ({ ...(current || {}), tunnels: next }))
+    void pushTunnels(next)
+  }
   /** 进入编辑：复制条目到表单（按原始 name 定位，改名也安全）。 */
   const startEditSshHost = (host) => {
     setEditing(host?.name ?? null)
@@ -1935,6 +2057,7 @@ function TtySettingsCard() {
       if (value !== undefined && value !== '') body[key] = value
     }
     body.sshHosts = Array.isArray(form?.sshHosts) ? form.sshHosts : []
+    body.tunnels = Array.isArray(form?.tunnels) ? form.tunnels : []
     try {
       const res = await fetch('/api/dsh-tty/config', {
         method: 'POST',
@@ -2074,6 +2197,7 @@ function TtySettingsCard() {
                     jsx('span', { className: 'tt_cardLabel', children: 'SSH 连接簿' }),
                     ...(Array.isArray(form.sshHosts) && form.sshHosts.length > 0
                       ? [jsx('div', {
+                          className: 'tt_hostList',
                           children: form.sshHosts.map((host) => jsxs('div', {
                             children: [
                               jsxs('div', {
@@ -2105,15 +2229,77 @@ function TtySettingsCard() {
                 jsxs('div', {
                   className: 'tt_cardField',
                   children: [
+                jsxs('div', {
+                  className: 'tt_cardField',
+                  children: [
+                    jsx('span', { className: 'tt_cardLabel', children: '端口转发' }),
+                    ...(Array.isArray(form.tunnels) && form.tunnels.length > 0
+                      ? [jsx('div', {
+                          children: form.tunnels.map((t) => {
+                            const st = tunnelStatus.find((s) => s.name === t?.name)
+                            const state = st?.state ?? 'stopped'
+                            return jsxs('div', {
+                              className: 'tt_sshHostRow',
+                              children: [
+                                jsx('span', { className: 'tt_tunnelDot', 'data-state': state, title: state }),
+                                jsx('div', { className: 'tt_sshHostMeta', children: [
+                                  jsx('span', { className: 'tt_sshHostName', children: (t?.name ?? '') + ' · ' + tunnelRule(t ?? {}) }),
+                                  jsx('span', { className: 'tt_sshHostTarget', children: (t?.bookName ?? '') + (st?.error ? ' · ' + st.error : '') + (st?.lastForwardError ? ' · ' + st.lastForwardError : '') }),
+                                ] }),
+                                jsx('input', { type: 'checkbox', className: 'tt_cardCheckbox', checked: t?.enabled !== false, title: '启用', onChange: (event) => toggleTunnelEnabled(t?.name, event.target.checked) }),
+                                jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => removeTunnel(t?.name), children: '删除' }),
+                              ],
+                            }, String(t?.name ?? ''))
+                          }),
+                        })]
+                      : [jsx('span', { className: 'tt_cardHint', children: '暂无隧道 — 把远程数据库/内部服务映射到本地端口' })]),
                     jsxs('div', {
-                      className: 'tt_cardRow',
+                      className: 'tt_sshEdit',
                       children: [
-                        jsx('span', { className: 'tt_cardLabel', children: 'SSH 主机密钥记录（TOFU）' }),
+                        jsxs('div', {
+                          className: 'tt_cardRow',
+                          children: [
+                            jsxs('select', { className: 'tt_cardInput', value: tunnelDraft.direction, onChange: setDraft('direction'), children: [
+                              jsx('option', { value: 'local', children: '本地转发（-L）：本机端口 → 远程服务' }),
+                              jsx('option', { value: 'remote', children: '远程转发（-R）：远程端口 → 本机服务' }),
+                            ] }),
+                            jsxs('select', { className: 'tt_cardInput', value: tunnelDraft.bookName, onChange: setDraft('bookName'), children: [
+                              jsx('option', { value: '', children: '选择连接簿条目' }),
+                              ...(Array.isArray(form?.sshHosts) ? form.sshHosts.map((host) => jsx('option', { value: host?.name ?? '', children: host?.name ?? '' })) : []),
+                            ] }),
+                          ],
+                        }),
+                        jsx('span', { className: 'tt_cardHint', children: selectedBook !== undefined
+                          ? '经 ' + sshHostTargetLabel(selectedBook) + ' 连接 — 隧道的主机与认证取自该连接簿条目'
+                          : '选择这条隧道要走哪台 SSH 连接（主机与认证取自连接簿）' }),
+                        tunnelDraft.direction === 'local'
+                          ? jsxs('div', { className: 'tt_tunnelGridLocal', children: [
+                              jsx('input', { className: 'tt_cardInput', placeholder: '本地端口', value: tunnelDraft.localPort, autoComplete: 'off', onChange: setDraft('localPort') }),
+                              jsx('input', { className: 'tt_cardInput', placeholder: '远程主机（从服务器侧访问，如 db.internal）', value: tunnelDraft.remoteHost, autoComplete: 'off', onChange: setDraft('remoteHost') }),
+                              jsx('input', { className: 'tt_cardInput', placeholder: '远程端口', value: tunnelDraft.remotePort, autoComplete: 'off', onChange: setDraft('remotePort') }),
+                            ] })
+                          : jsxs('div', { className: 'tt_tunnelGrid', children: [
+                              jsx('input', { className: 'tt_cardInput', placeholder: '远程监听端口', value: tunnelDraft.remotePort, autoComplete: 'off', onChange: setDraft('remotePort') }),
+                              jsx('input', { className: 'tt_cardInput', placeholder: '本地目标端口', value: tunnelDraft.localTargetPort, autoComplete: 'off', onChange: setDraft('localTargetPort') }),
+                            ] }),
+                        jsx('div', { className: 'tt_cardRow', children: [
+                          jsx('button', { type: 'button', className: 'tt_cardSave', onClick: addTunnel, children: '添加隧道' }),
+                          jsx('span', { className: 'tt_cardHint', children: '添加后立即生效；断线自动重连；本地端口建议 1024 以上；远程主机由 SSH 服务器侧访问（127.0.0.1 = 服务器自身）' }),
+                        ] }),
+                      ],
+                    }),
+                  ],
+                }),
+                jsxs('div', {
+                  className: 'tt_cardField',
+                  children: [
+                    jsx('span', { className: 'tt_cardLabel', children: 'SSH 主机密钥记录（TOFU）' }),
                         jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => void importKnownHosts(), children: '从 known_hosts 导入' }),
                       ],
                     }),
                     ...(Array.isArray(form.hostKeys) && form.hostKeys.length > 0
                       ? [jsx('div', {
+                          className: 'tt_hostList',
                           children: form.hostKeys.map((hk) => jsxs('div', {
                             className: 'tt_sshHostRow',
                             children: [

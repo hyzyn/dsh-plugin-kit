@@ -22,6 +22,7 @@
  *   B17. tty_expect 匹配与超时
  *   B18. data 帧合并后帧序不变量（exit 在最后一帧 data 之后）
  *   B19. known_hosts 解析器
+ *   B20. 端口转发隧道（forwardOut 往返 + forwardIn 就绪 + 状态与工具）
  *
  * 用法：pnpm --filter @hyzyn/dsh-tty integration
  * 退出码：0 = 全部 PASS，1 = 任一 FAIL。
@@ -668,6 +669,126 @@ async function run() {
       && hashedReplayed === 1
     if (ok) pass('B19 known_hosts 解析（别名拆分/[host]:port/@marker与通配跳过/hashed 候选还原+去重）')
     else fail('B19 known_hosts 解析（别名拆分/[host]:port/@marker与通配跳过/hashed 候选还原+去重）', JSON.stringify(entries))
+  }
+
+  // B20: 端口转发隧道（内存 SSH 服务桥接 + 双隧道 + 本地转发往返）
+  console.log('\n[19] 端口转发隧道')
+  {
+    const ssh2mod = await import('ssh2')
+    const ssh2 = ssh2mod.default ?? ssh2mod
+    const netMod = await import('node:net')
+    const net = netMod.default ?? netMod
+    const { generateKeyPairSync } = await import('node:crypto')
+    const mkEcho = () => new Promise((resolve) => {
+      const server = net.createServer((socket) => socket.on('data', (d) => socket.write(d)))
+      server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port }))
+    })
+    const targetA = await mkEcho() // local 方向的「远程服务」
+    const targetB = await mkEcho() // remote 方向的「本地服务」
+    const freePort = () => new Promise((resolve, reject) => {
+      const probe = net.createServer()
+      probe.on('error', reject)
+      probe.listen(0, '127.0.0.1', () => {
+        const p = probe.address().port
+        probe.close(() => resolve(p))
+      })
+    })
+    const tunnelLocalPort = await freePort()
+    const remoteBindPort = await freePort()
+    const { privateKey } = generateKeyPairSync('rsa', {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+      privateKeyEncoding: { type: 'pkcs1', format: 'pem' },
+    })
+    const sshServer = new ssh2.Server({ hostKeys: [privateKey] }, (client) => {
+      client.on('authentication', (ctx) => {
+        if (ctx.method === 'password' && ctx.username === 'test' && ctx.password === 'secret') ctx.accept()
+        else ctx.reject()
+      })
+      client.on('request', (accept, reject, name) => {
+        if (name === 'tcpip-forward' || name === 'cancel-tcpip-forward') accept()
+        else reject()
+      })
+      client.on('tcpip', (accept, reject, info) => {
+        const stream = accept()
+        const upstream = net.connect(info.destPort, info.destIP, () => {
+          stream.pipe(upstream)
+          upstream.pipe(stream)
+        })
+        upstream.on('error', () => stream.end())
+        stream.on('error', () => upstream.end())
+      })
+      client.on('error', () => {})
+    })
+    await new Promise((resolve, reject) => {
+      sshServer.once('error', reject)
+      sshServer.listen(0, '127.0.0.1', () => {
+        sshServer.removeListener('error', reject)
+        resolve()
+      })
+    })
+    const sshPort = sshServer.address().port
+    const post = async (body) => {
+      const res = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+      return res.json()
+    }
+    const put = await post({
+      sshHosts: [{ name: 'it-ssh', host: '127.0.0.1', port: sshPort, username: 'test', auth: 'password', password: 'secret', keyPath: '', passphrase: '', agentForward: false }],
+      tunnels: [
+        { name: 't-local', bookName: 'it-ssh', direction: 'local', localPort: tunnelLocalPort, remoteHost: '127.0.0.1', remotePort: targetA.port, enabled: true },
+        { name: 't-remote', bookName: 'it-ssh', direction: 'remote', remotePort: remoteBindPort, localTargetPort: targetB.port, enabled: true },
+      ],
+    })
+    if (put.ok === true && Array.isArray(put.config?.tunnels) && put.config.tunnels.length === 2) pass('B20a tunnels 配置热生效（POST → reconcile）')
+    else fail('B20a tunnels 配置热生效（POST → reconcile）', JSON.stringify(put).slice(0, 160))
+    let statuses = []
+    for (let i = 0; i < 30; i++) {
+      await sleep(400)
+      const r = await (await fetch(`http://127.0.0.1:${port}/api/dsh-tty/tunnels`)).json()
+      statuses = r.tunnels ?? []
+      if (statuses.length === 2 && statuses.every((t) => t.state === 'active')) break
+    }
+    if (statuses.length === 2 && statuses.every((t) => t.state === 'active')) pass('B20b 双隧道到达 active（forwardOut + forwardIn）')
+    else fail('B20b 双隧道到达 active（forwardOut + forwardIn）', JSON.stringify(statuses))
+    const roundtrip = await new Promise((resolve) => {
+      const socket = net.connect(tunnelLocalPort, '127.0.0.1', () => socket.write('PING_B20'))
+      let buf = ''
+      socket.on('data', (d) => {
+        buf += d.toString()
+        if (buf.includes('PING_B20')) {
+          socket.end()
+          resolve(buf)
+        }
+      })
+      socket.on('error', (e) => resolve('ERR:' + e.message))
+      setTimeout(() => resolve('TIMEOUT:' + buf), 6000)
+    })
+    if (typeof roundtrip === 'string' && roundtrip.includes('PING_B20')) pass('B20c 本地转发往返（TCP → forwardOut → 服务端桥 → echo 目标）')
+    else fail('B20c 本地转发往返（TCP → forwardOut → 服务端桥 → echo 目标）', String(roundtrip).slice(0, 120))
+    const tunnelList = toolDefs.find((d) => d.name === 'tunnel_list')
+    if (tunnelList === undefined) {
+      fail('B20d tunnel_list 注册', '未找到 tunnel_list')
+    } else {
+      const listed = await tunnelList.execute({})
+      const names = (listed.tunnels ?? []).map((t) => `${t.name}:${t.state}`).join(',')
+      if (Array.isArray(listed.tunnels) && listed.tunnels.some((t) => t.name === 't-local' && t.state === 'active')) pass('B20d tunnel_list 工具可见隧道状态（' + names + '）')
+      else fail('B20d tunnel_list 工具可见隧道状态', names)
+    }
+    await post({ tunnels: [] })
+    await sleep(400)
+    const after = await (await fetch(`http://127.0.0.1:${port}/api/dsh-tty/tunnels`)).json()
+    if ((after.tunnels ?? []).length === 0) pass('B20e tunnels 清空即停止（reconcile 移除）')
+    else fail('B20e tunnels 清空即停止（reconcile 移除）', JSON.stringify(after.tunnels))
+    targetA.server.close()
+    targetB.server.close()
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, 1000).unref()
+      sshServer.close(() => {
+        clearTimeout(timer)
+        resolve()
+      })
+    })
+    sshServer.closeAllConnections?.()
   }
 
   const failed = RESULTS.filter(([kind]) => kind === 'FAIL')

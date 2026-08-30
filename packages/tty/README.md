@@ -8,7 +8,8 @@ xterm.js 全交互终端（node-pty 真实 PTY，WebGL 渲染器加速），支�
 **断线自动重连**与 **SSH 主机指纹 TOFU 钉扎**；0.4.0 起内置 **shell 集成
 （OSC 133/7）**——agent 能按「命令」粒度读写终端（`tty_capture{last}` /
 `tty_expect`），并支持 **agent forwarding**、**~/.ssh/config 导入** 等深化
-能力（见下文）。
+能力；0.5.0 起内置**端口转发管理**——连接簿条目配隧道（-L/-R 两向），宿主
+自持连接、断线自动重连、状态徽标（见下文）。
 
 ![终端面板：多标签页 xterm 弹窗，工具栏含搜索/清屏/复制/粘贴，标题栏含最小化「—」与关闭 ✕](../../docs/dsh-plugin-kit-tty.png)
 
@@ -84,6 +85,25 @@ SSH 会话同表调度：`tty_list` 里 `kind: 'ssh'` 的条目按 `target`
 （user@host[:port]）识别，`tty_capture` / `tty_expect` / `tty_send` 用法与
 本地会话完全一致——远程机器上的 dev server 日志与按键交互照常可用。
 
+## 端口转发（0.5.0）
+
+设置 → 插件 → 终端面板 卡片的「端口转发」区块维护隧道；每条隧道引用一条
+连接簿条目（主机与认证随之），两个方向：
+
+- **本地转发（-L）**：本地 `127.0.0.1:localPort` 监听 → 经 SSH 在服务端侧
+  连到 `remoteHost:remotePort`——把远程数据库/内部服务映射到本地（最高频
+  用法：`localPort=5432 → db.internal:5432`）；
+- **远程转发（-R）**：服务端监听 `remoteHost:remotePort`（缺省
+  127.0.0.1）→ 入站连接拨回本地 `localTargetHost:localTargetPort`——把本机
+  dev server 暴露给远程/内网；
+- **宿主自持生命周期**：隧道与终端标签互相独立（各有各的 SSH 连接），面板
+  关了隧道照跑；SSH 断线自动指数退避重连（1s→15s 封顶），remote 方向重连
+  后自动重新 forwardIn；连接簿改密码后重连自动用新凭证；
+- **状态徽标**：卡片展开期间 2s 轮询实时状态（活跃绿/连接中蓝/错误红/停止
+  灰 + 最近错误）；「+」菜单的连接簿条目显示 `⇄N` 隧道徽标；agent 可用
+  `tunnel_list` 工具查询状态；
+- TOFU 与终端会话共享同一份 hostKeys 钉扎；端口不占用 maxSessions 名额。
+
 ## SSH 连接（方案 C）
 
 0.2.0 起标签栏「+」变为一键菜单，除本地终端外还能开 **SSH 标签页**：宿主
@@ -148,6 +168,7 @@ SSH 会话同表调度：`tty_list` 里 `kind: 'ssh'` 的条目按 `target`
 | `sshHosts` | `[]` | SSH 连接簿（面板「+」菜单可选）：条目 `{name, host, port=22, username, auth=agent\|key\|password, keyPath, passphrase, password}`；保存时整体替换、同名覆盖；`password` / `passphrase` 支持 `env:VAR` 引用，避免明文入库 |
 | `hostKeys` | `[]` | SSH 主机指纹记录（TOFU，自动维护）：条目 `{host, port, fingerprint}`；按 host:port 唯一，首次连接自动追加，指纹变更拒绝连接；设置卡片可删除重置 |
 | `shellIntegration` | true | 注入 OSC 133/7 shell 集成（命令边界标记 + cwd 上报；`tty_capture{last}` 依赖它）；zsh/bash 支持，其他 shell 自动跳过；出兼容问题时可关闭 |
+| `tunnels` | `[]` | 端口转发隧道：条目 `{name, bookName, direction=local\|remote, localPort?, remoteHost?, remotePort?, localTargetHost?, localTargetPort?, enabled}`；`bookName` 引用连接簿条目提供主机与认证；卡片「端口转发」区块可视化维护 |
 
 ## 帧协议（/api/dsh-tty/ws，JSON 文本帧；v3 = 单连接多会话 + 断线重连）
 
@@ -216,6 +237,7 @@ pnpm --filter @hyzyn/dsh-tty ssh-smoke    # SSH 冒烟：内存 SSH server（ssh
   标记——`tty_capture{last}` 依赖 B..D 区间，此时不可用，`tty_expect` 的
   早停同步失效（超时路径不受影响）。用户 rc 若覆盖 `PROMPT_COMMAND`/钩子
   数组，集成可能失效——可关闭 `shellIntegration` 或反馈补丁兼容。
+- **端口转发边界**：本地监听固定 127.0.0.1（不暴露局域网）；remote 方向服务端监听还受服务端 sshd `GatewayPorts` 限制；隧道的 SSH 连接与终端会话独立，均走 TOFU 钉扎与连接簿认证；隧道规格变更（端口/目标/启停）经「保存」热生效，热改连接簿凭证则在下次重连时生效。
 - **SSH host key 为 TOFU 钉扎**：首次连接自动记录 sha256 指纹（trust on
   first use），之后指纹一致放行、变更拒绝——不再是无条件放行的
   accept-and-log。注意 TOFU 的固有边界：首次连接若已遭遇 MITM 则记录的
@@ -255,6 +277,8 @@ pnpm --filter @hyzyn/dsh-tty ssh-smoke    # SSH 冒烟：内存 SSH server（ssh
   ├─ 辅助路由：/api/dsh-tty/ssh-config（~/.ssh/config 导入候选）、
   │  /api/dsh-tty/env-vars（env 插件托管变量名）、/api/dsh-tty/known-hosts
   │  （TOFU 指纹预填充，src/known-hosts.ts 解析含 hashed 条目）——均 loopback 围栏
+  ├─ 端口转发（src/tunnels.ts）：宿主自持隧道（-L/-R 双向），断线退避重连、
+  │  TOFU 共用、连接计数；GET /api/dsh-tty/tunnels 实时状态 + tunnel_list 工具
   └─ 帧协议：spawn|ssh / input / resize / kill / sessions / attach
      ↔ ready/data/exit/error/sessions + 背压
 
@@ -271,7 +295,7 @@ M0 探针、集成测试（B1~B17 共 35 项断言）与真实实例冒烟（liv
 loopback 围栏、多会话数据隔离、cwd 跟随与校验、配置热生效（settings/updated）、
 kill→exit 全链路、断线保活 + sessions/attach 重连回放、tty_screen 虚拟屏、
 tty_capture ANSI 清洗、shell 集成（capture{last} + exitCode、OSC 7 cwd
-跟随）、tty_expect 匹配与超时、~/.ssh/config 解析器。SSH 路径由 `ssh-smoke`
+跟随）、tty_expect 匹配与超时、~/.ssh/config 解析器、端口转发（双隧道 active + forwardOut 往返 + reconcile 清理）。SSH 路径由 `ssh-smoke`
 （内存 SSH server × 真实 `spawnSsh`）验证：password 认证建链与 prompt、
 命令往返、pty-req 初始尺寸与 resize（window-change）、terminate /
 exit-status 全链路，以及 TOFU 指纹记录（S7）与指纹变更拒绝连接（S8）。

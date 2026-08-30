@@ -16,6 +16,7 @@ import { spawnSsh, sshTarget, expandHome } from './ssh.js';
 import { buildShellSpawn } from './shell-integration.js';
 import { parseSshConfig } from './ssh-config.js';
 import { parseKnownHosts } from './known-hosts.js';
+import { TunnelManager } from './tunnels.js';
 const SSH_HOST_SCHEMA = z.object({
     name: z.string(),
     host: z.string(),
@@ -32,6 +33,17 @@ const HOST_KEY_SCHEMA = z.object({
     port: z.natural().max(65535).default(22),
     fingerprint: z.string(),
 });
+const TUNNEL_SCHEMA = z.object({
+    name: z.string(),
+    bookName: z.string(),
+    direction: z.union([z.const('local'), z.const('remote')]).default('local'),
+    localPort: z.natural().max(65535).default(0),
+    remoteHost: z.string().default(''),
+    remotePort: z.natural().max(65535).default(0),
+    localTargetHost: z.string().default(''),
+    localTargetPort: z.natural().max(65535).default(0),
+    enabled: z.boolean().default(true),
+});
 /** 与「设置 → 插件 → 终端面板」卡片表单对齐的 schema。 */
 const TTY_SETTINGS_SCHEMA = z.object({
     enabled: z.boolean().default(true),
@@ -44,6 +56,7 @@ const TTY_SETTINGS_SCHEMA = z.object({
     reconnectGraceSec: z.natural().max(3600).default(120),
     sshHosts: z.array(SSH_HOST_SCHEMA).default([]),
     hostKeys: z.array(HOST_KEY_SCHEMA).default([]),
+    tunnels: z.array(TUNNEL_SCHEMA).default([]),
     shellIntegration: z.boolean().default(true),
 });
 /* ------------------------------------------------------------------ *
@@ -62,7 +75,7 @@ const BUFFER_CAP = 256 * 1024;
 const TERM_RE = /^[A-Za-z0-9_.+-]+$/;
 /** 孤儿会话回收器的扫描间隔。 */
 const REAPER_INTERVAL_MS = 10_000;
-const TTY_GUIDANCE = '本机已安装 dsh-tty 插件（终端面板）：Web GUI 侧边栏的「终端」入口可打开交互终端（xterm.js + PTY），可运行任意命令与 TUI 程序（vim/htop 等），支持多标签页与断线自动重连（刷新页面/网络抖动后会话保活并恢复现场）；新标签默认在当前会话工作目录打开。标签栏「+」菜单还能开 SSH 标签页（ssh2 原生连接，连接簿在设置卡片维护，支持 agent forwarding 与主机指纹 TOFU 钉扎），像本地终端一样操作远程主机。长驻进程（dev server、watch、交互式程序）应引导用户到终端面板里运行，不要在 bash 工具里挂起等待；用户提到「开个终端 / 在终端里跑 / SSH 到某台机器」时引导其打开该面板。agent 侧配套工具：tty_list 列出活跃终端会话（含 SSH 的 target 与实时 cwd），tty_capture 读取近期输出（默认清洗 ANSI；last:true 拿「上一条命令」的输出+退出码），tty_screen 读取当前可见屏幕（可读懂 vim/htop 等 TUI），tty_expect 用正则等待输出中的就绪信号（如 dev server URL、构建完成），tty_send 发送按键——操作会实时显示在用户终端里。推荐流程：tty_send 启动长任务 → tty_expect 等就绪标记 → tty_capture{last:true} 拿结果。';
+const TTY_GUIDANCE = '本机已安装 dsh-tty 插件（终端面板）：Web GUI 侧边栏的「终端」入口可打开交互终端（xterm.js + PTY），可运行任意命令与 TUI 程序（vim/htop 等），支持多标签页与断线自动重连（刷新页面/网络抖动后会话保活并恢复现场）；新标签默认在当前会话工作目录打开。标签栏「+」菜单还能开 SSH 标签页（ssh2 原生连接，连接簿在设置卡片维护，支持 agent forwarding 与主机指纹 TOFU 钉扎），像本地终端一样操作远程主机。长驻进程（dev server、watch、交互式程序）应引导用户到终端面板里运行，不要在 bash 工具里挂起等待；用户提到「开个终端 / 在终端里跑 / SSH 到某台机器」时引导其打开该面板。agent 侧配套工具：tty_list 列出活跃终端会话（含 SSH 的 target 与实时 cwd），tty_capture 读取近期输出（默认清洗 ANSI；last:true 拿「上一条命令」的输出+退出码），tty_screen 读取当前可见屏幕（可读懂 vim/htop 等 TUI），tty_expect 用正则等待输出中的就绪信号（如 dev server URL、构建完成），tty_send 发送按键，tunnel_list 列出端口转发隧道状态——操作会实时显示在用户终端里。端口转发：连接簿条目可配本地/远程隧道（如把远程数据库映射到本地端口），宿主自动保活重连，用户提到「转发端口 / 访问远程库」时引导其到终端面板设置卡片配置。推荐流程：tty_send 启动长任务 → tty_expect 等就绪标记 → tty_capture{last:true} 拿结果。';
 /** 本地 PTY 包装成 TermHandle（resize/kill 仍是透传 node-pty 的内部耦合；防御性降级）。 */
 function wrapLocalPty(handle) {
     let resizeWarned = false;
@@ -110,8 +123,10 @@ class LiveConfig {
     reconnectGraceMs;
     sshHosts;
     hostKeys;
-    /** OSC 133/7 shell 集成开关。 */
+    /** 是否注入 OSC 133/7 shell 集成。 */
     shellIntegration;
+    /** 端口转发隧道规格。 */
+    tunnels;
     constructor(init) {
         this.shell = init.shell;
         this.term = sanitizeTermValue(init.term, 'xterm-256color');
@@ -121,8 +136,9 @@ class LiveConfig {
         this.sshHosts = init.sshHosts ?? [];
         this.hostKeys = init.hostKeys ?? [];
         this.shellIntegration = init.shellIntegration;
+        this.tunnels = init.tunnels ?? [];
     }
-    /** 合并部分更新；空字符串/undefined 保持原值；sshHosts/hostKeys 传数组即整体替换。 */
+    /** 合并部分更新；空字符串/undefined 保持原值；sshHosts/hostKeys/tunnels 传数组即整体替换。 */
     apply(partial) {
         if (typeof partial.shell === 'string' && partial.shell.trim() !== '')
             this.shell = partial.shell.trim();
@@ -141,6 +157,8 @@ class LiveConfig {
             this.hostKeys = partial.hostKeys;
         if (typeof partial.shellIntegration === 'boolean')
             this.shellIntegration = partial.shellIntegration;
+        if (Array.isArray(partial.tunnels))
+            this.tunnels = partial.tunnels;
     }
     findSshHost(name) {
         return this.sshHosts.find((entry) => entry.name === name);
@@ -270,6 +288,84 @@ function feedShellIntegration(session, text) {
         if (rest !== '')
             state.cmdBuffer = (state.cmdBuffer + rest).slice(-COMMAND_CAP);
     }
+}
+/** 宽松清洗一份 tunnels 输入；输入不是数组时返回 undefined（表示「未提供，保持原值」）。 */
+function sanitizeTunnels(input) {
+    if (!Array.isArray(input))
+        return undefined;
+    const out = [];
+    for (const item of input) {
+        if (typeof item !== 'object' || item === null)
+            continue;
+        const raw = item;
+        if (typeof raw.name !== 'string' || raw.name.trim() === '')
+            continue;
+        if (typeof raw.bookName !== 'string' || raw.bookName.trim() === '')
+            continue;
+        const num = (value) => {
+            const n = Number(value);
+            return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : 0;
+        };
+        out.push({
+            name: raw.name.trim(),
+            bookName: raw.bookName.trim(),
+            direction: raw.direction === 'remote' ? 'remote' : 'local',
+            localPort: num(raw.localPort),
+            remoteHost: typeof raw.remoteHost === 'string' ? raw.remoteHost.trim() : '',
+            remotePort: num(raw.remotePort),
+            localTargetHost: typeof raw.localTargetHost === 'string' ? raw.localTargetHost.trim() : '',
+            localTargetPort: num(raw.localTargetPort),
+            enabled: raw.enabled !== false,
+        });
+    }
+    return out;
+}
+/** 严格校验 tunnels（HTTP POST 路径）；bookNames 为同次提交（或现有）的连接簿名字集合。 */
+function validateTunnels(input, bookNames) {
+    if (!Array.isArray(input))
+        return { error: 'tunnels 必须是数组' };
+    const names = new Set();
+    for (const item of input) {
+        if (typeof item !== 'object' || item === null)
+            return { error: 'tunnels 条目必须是对象' };
+        const raw = item;
+        if (typeof raw.name !== 'string' || raw.name.trim() === '')
+            return { error: 'tunnels.name 必须是非空字符串' };
+        const name = raw.name.trim();
+        if (names.has(name))
+            return { error: `tunnels.name 重复: ${name}` };
+        names.add(name);
+        if (typeof raw.bookName !== 'string' || raw.bookName.trim() === '')
+            return { error: `tunnels「${name}」bookName 必须是非空字符串` };
+        if (!bookNames.has(raw.bookName.trim()))
+            return { error: `tunnels「${name}」引用的连接簿条目不存在: ${String(raw.bookName)}` };
+        const direction = raw.direction === 'remote' ? 'remote' : 'local';
+        const intIn = (value) => {
+            const n = Number(value);
+            return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : null;
+        };
+        if (direction === 'local') {
+            if (intIn(raw.localPort) === null)
+                return { error: `tunnels「${name}」local 方向需要 localPort（1~65535）` };
+            if (typeof raw.remoteHost !== 'string' || raw.remoteHost.trim() === '')
+                return { error: `tunnels「${name}」local 方向需要 remoteHost` };
+            if (intIn(raw.remotePort) === null)
+                return { error: `tunnels「${name}」local 方向需要 remotePort（1~65535）` };
+        }
+        else {
+            if (intIn(raw.remotePort) === null)
+                return { error: `tunnels「${name}」remote 方向需要 remotePort（服务端监听端口 1~65535）` };
+            if (intIn(raw.localTargetPort) === null)
+                return { error: `tunnels「${name}」remote 方向需要 localTargetPort（1~65535）` };
+            if (raw.remoteHost !== undefined && typeof raw.remoteHost !== 'string')
+                return { error: `tunnels「${name}」remoteHost 必须是字符串` };
+            if (raw.localTargetHost !== undefined && typeof raw.localTargetHost !== 'string')
+                return { error: `tunnels「${name}」localTargetHost 必须是字符串` };
+        }
+        if (raw.enabled !== undefined && typeof raw.enabled !== 'boolean')
+            return { error: `tunnels「${name}」enabled 必须是布尔值` };
+    }
+    return { tunnels: sanitizeTunnels(input) };
 }
 /**
  * 宽松清洗一份 sshHosts 输入（settings 存储/热更新事件路径）：
@@ -1074,6 +1170,7 @@ const plugin = definePlugin({
             sshHosts: Array.isArray(config?.sshHosts) ? config.sshHosts : [],
             hostKeys: Array.isArray(config?.hostKeys) ? config.hostKeys : [],
             shellIntegration: config?.shellIntegration !== false,
+            tunnels: Array.isArray(config?.tunnels) ? config.tunnels : [],
         });
         const sessions = new SessionManager(config?.maxSessions ?? DEFAULT_MAX_SESSIONS);
         /** TOFU 指纹记录持久化：写入 settings 命名空间（合并语义），失败不影响连接。 */
@@ -1086,6 +1183,7 @@ const plugin = definePlugin({
             });
         };
         const hostKeyStore = new HostKeyStore(live, persistHostKeys);
+        const tunnelManager = new TunnelManager({ info: (m) => ctx.logger.info(m), warn: (m) => ctx.logger.warn(m) }, hostKeyStore, (bookName) => live.findSshHost(bookName));
         const server = new TtyServer(ctx, sessions, live, hostKeyStore);
         const stateRef = { enabled: true, announceToAgent: config?.announceToAgent !== false, toolsRegistered: false };
         let settingsScope;
@@ -1100,6 +1198,7 @@ const plugin = definePlugin({
             reconnectGraceSec: Math.round(live.reconnectGraceMs / 1000),
             sshHosts: live.sshHosts,
             hostKeys: live.hostKeys,
+            tunnels: live.tunnels,
             shellIntegration: live.shellIntegration,
             toolsRegistered: stateRef.toolsRegistered,
         });
@@ -1114,7 +1213,10 @@ const plugin = definePlugin({
                 sshHosts: sanitizeSshHosts(section.sshHosts),
                 hostKeys: sanitizeHostKeys(section.hostKeys),
                 shellIntegration: typeof section.shellIntegration === 'boolean' ? section.shellIntegration : undefined,
+                tunnels: sanitizeTunnels(section.tunnels),
             });
+            // 隧道按最新规格对齐（幂等；sshHosts 变更也会触发，让重连取到新凭证）
+            tunnelManager.reconcile(live.tunnels);
             if (typeof section.maxSessions === 'number' && Number.isInteger(section.maxSessions) && section.maxSessions >= 1 && section.maxSessions <= 16) {
                 sessions.setLimit(section.maxSessions);
             }
@@ -1127,7 +1229,7 @@ const plugin = definePlugin({
         /** 校验 HTTP POST 的配置体；返回规范化补丁或错误信息。 */
         const normalizePatch = (input) => {
             const patch = {};
-            const known = new Set(['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'sshHosts', 'hostKeys', 'shellIntegration']);
+            const known = new Set(['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'sshHosts', 'hostKeys', 'tunnels', 'shellIntegration']);
             for (const key of Object.keys(input)) {
                 if (!known.has(key))
                     return { error: '未知配置项: ' + key };
@@ -1188,6 +1290,15 @@ const plugin = definePlugin({
                 if (validated.error !== undefined)
                     return { error: validated.error };
                 patch.hostKeys = validated.keys;
+            }
+            if (input.tunnels !== undefined) {
+                // bookName 交叉校验：优先用同次提交的 sshHosts（整体替换语义），否则用现有连接簿
+                const bookSource = Array.isArray(patch.sshHosts) ? patch.sshHosts : live.sshHosts;
+                const bookNames = new Set(bookSource.map((host) => host.name));
+                const validated = validateTunnels(input.tunnels, bookNames);
+                if (validated.error !== undefined)
+                    return { error: validated.error };
+                patch.tunnels = validated.tunnels;
             }
             return { patch };
         };
@@ -1305,6 +1416,22 @@ const plugin = definePlugin({
                         }
                     },
                 }));
+                // 端口转发隧道实时状态（设置卡片轮询徽标 + tunnel_list 工具数据源）
+                disposers.push(webServer.register({
+                    kind: 'exact',
+                    path: '/api/dsh-tty/tunnels',
+                    handler: async (req, res) => {
+                        if (!isLoopbackHttp(req)) {
+                            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+                            return;
+                        }
+                        if (req.method !== 'GET') {
+                            writeJson(res, 405, { error: 'method not allowed: ' + String(req.method) });
+                            return;
+                        }
+                        writeJson(res, 200, { ok: true, tunnels: tunnelManager.list() });
+                    },
+                }));
                 return () => {
                     server.close();
                     for (const dispose of disposers) {
@@ -1353,6 +1480,9 @@ const plugin = definePlugin({
                 const storedKeys = sanitizeHostKeys(stored.hostKeys);
                 if (storedKeys !== undefined && storedKeys.length > 0)
                     startup.hostKeys = storedKeys;
+                const storedTunnels = sanitizeTunnels(stored.tunnels);
+                if (storedTunnels !== undefined && storedTunnels.length > 0)
+                    startup.tunnels = storedTunnels;
                 if (Object.keys(startup).length > 0)
                     applyPatch(startup);
                 const events = settingsCtx;
@@ -1631,8 +1761,53 @@ const plugin = definePlugin({
                         return { ok: true, sent: input.data.length };
                     },
                 })));
+                disposers.push(tools.register(defineTool({
+                    name: 'tunnel_list',
+                    description: '列出端口转发隧道及其实时状态（活跃/连接中/错误/停止、规则、当前与累计连接数、最近错误）。用户说「隧道连不上 / 转发挂了 / 端口转发不通」时先用它诊断；隧道在 设置 → 插件 → 终端面板 卡片维护。',
+                    parameters: {},
+                    output: {
+                        schema: {
+                            type: 'object',
+                            additionalProperties: false,
+                            properties: {
+                                tunnels: {
+                                    type: 'array',
+                                    required: true,
+                                    items: {
+                                        type: 'object',
+                                        additionalProperties: false,
+                                        properties: {
+                                            name: { type: 'string', required: true },
+                                            direction: { type: 'string', required: true },
+                                            rule: { type: 'string', required: true },
+                                            bookName: { type: 'string', required: true },
+                                            state: { type: 'string', required: true },
+                                            error: { type: 'string' },
+                                            connections: { type: 'number', required: true },
+                                            totalConnections: { type: 'number', required: true },
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                        render: (_args, value) => {
+                            const v = value;
+                            const tunnels = v.tunnels ?? [];
+                            if (tunnels.length === 0)
+                                return [{ type: 'text', text: '当前没有配置端口转发隧道（设置 → 插件 → 终端面板 卡片可添加）' }];
+                            const text = '端口转发隧道：' + tunnels.map((t) => {
+                                const tail = t.error !== null && t.error !== undefined ? `（错误: ${t.error}）` : t.lastForwardError !== null && t.lastForwardError !== undefined ? `（最近转发失败: ${t.lastForwardError}）` : `（连接 ${String(t.connections)}）`;
+                                return `\n- ${t.name} [${t.direction}] ${t.rule} — ${t.state}${tail}`;
+                            }).join('');
+                            return [{ type: 'text', text }];
+                        },
+                    },
+                    async execute() {
+                        return { tunnels: tunnelManager.list().map((t) => ({ ...t, error: t.error ?? undefined })) };
+                    },
+                })));
                 stateRef.toolsRegistered = true;
-                console.log('[dsh-tty] agent tools registered (tty_list, tty_capture, tty_screen, tty_expect, tty_send)');
+                console.log('[dsh-tty] agent tools registered (tty_list, tty_capture, tty_screen, tty_expect, tty_send, tunnel_list)');
                 return () => {
                     stateRef.toolsRegistered = false;
                     for (const dispose of disposers) {
@@ -1682,10 +1857,11 @@ const plugin = definePlugin({
         }, REAPER_INTERVAL_MS);
         reaperTimer.unref?.();
         ctx.effect(() => () => clearInterval(reaperTimer), 'dsh-tty: orphan reaper');
-        // 插件卸载时回收全部会话
+        // 插件卸载时回收全部会话与隧道
         ctx.effect(() => {
             return () => {
                 void sessions.disposeAll();
+                tunnelManager.disposeAll();
             };
         }, 'dsh-tty: session cleanup');
         console.log(`[dsh-tty] mounted (shell=${live.shell}, term=${live.term}, cwd=${live.cwd}, maxSessions=${sessions.limitValue})`);

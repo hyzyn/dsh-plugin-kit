@@ -1,3 +1,4 @@
+import type { ConnectConfig } from 'ssh2';
 import { PassThrough } from 'node:stream';
 export interface TermExit {
     exitCode: number | null;
@@ -66,6 +67,21 @@ declare function expandHome(path: string): string;
 export { expandHome };
 /** 展示用目标串：user@host（非默认端口时带 :port）。 */
 export declare function sshTarget(spec: SshSpec): string;
+/** 构造连接配置（认证三态 + keepalive + hostHash）；隧道管理器与 spawnSsh 共用。 */
+export declare function buildConnectConfig(spec: SshSpec): ConnectConfig;
+/** TOFU 主机指纹策略（hostVerifier 接线）；返回的 mismatchMessage() 供连接错误路径取人类可读拒绝原因。 */
+export declare function applyHostKeyPolicy(options: {
+    connectConfig: ConnectConfig;
+    spec: SshSpec;
+    store?: HostKeyStore;
+    logger?: {
+        info(msg: string): void;
+        warn(msg: string): void;
+    };
+    target: string;
+}): {
+    mismatchMessage(): string | null;
+};
 /**
  * 建立 SSH 连接并打开交互 shell channel，返回 TermHandle。
  * 失败（连接超时/认证被拒/host 不可达）时 reject 带人类可读信息。

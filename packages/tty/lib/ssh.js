@@ -52,7 +52,8 @@ export function sshTarget(spec) {
 /* ------------------------------------------------------------------ *
  * 连接与 channel 包装
  * ------------------------------------------------------------------ */
-function buildConnectConfig(spec) {
+/** 构造连接配置（认证三态 + keepalive + hostHash）；隧道管理器与 spawnSsh 共用。 */
+export function buildConnectConfig(spec) {
     const auth = spec.auth ?? 'agent';
     const base = {
         host: spec.host,
@@ -92,6 +93,30 @@ function buildConnectConfig(spec) {
         base.agent = base.agent ?? process.env.SSH_AUTH_SOCK;
     }
     return base;
+}
+/** TOFU 主机指纹策略（hostVerifier 接线）；返回的 mismatchMessage() 供连接错误路径取人类可读拒绝原因。 */
+export function applyHostKeyPolicy(options) {
+    const { connectConfig, spec, store, logger, target } = options;
+    const port = spec.port ?? 22;
+    let hostKeyMismatch = null;
+    connectConfig.hostVerifier = (hash) => {
+        const known = store?.get(spec.host, port);
+        if (known === undefined) {
+            store?.record(spec.host, port, hash);
+            logger?.info(`[dsh-tty] ssh ${target} 首次连接，已记录 host key 指纹 sha256:${hash}（TOFU）`);
+            return true;
+        }
+        if (known === hash) {
+            logger?.info(`[dsh-tty] ssh ${target} host key 指纹匹配（sha256:${hash}）`);
+            return true;
+        }
+        hostKeyMismatch =
+            `SSH 主机密钥指纹变更：${target} 已记录 sha256:${known}，本次为 sha256:${hash}。` +
+                '可能是主机重装或换钥匙，也可能是中间人（MITM）冒充；确认安全后，到 设置 → 插件 → 终端面板 → SSH 主机密钥记录 删除该主机再重连。';
+        logger?.warn(`[dsh-tty] ${hostKeyMismatch}`);
+        return false;
+    };
+    return { mismatchMessage: () => hostKeyMismatch };
 }
 /**
  * 建立 SSH 连接并打开交互 shell channel，返回 TermHandle。
@@ -133,26 +158,7 @@ export async function spawnSsh(spec, options) {
     };
     // 认证配置可能抛错（keyPath 读不到 / env 变量缺失）——先构造再连
     const connectConfig = buildConnectConfig(spec);
-    const port = spec.port ?? 22;
-    /** hostVerifier 拒绝时置位；error 事件里用它替换 ssh2 的笼统报错。 */
-    let hostKeyMismatch = null;
-    connectConfig.hostVerifier = (hash) => {
-        const known = options.hostKeyStore?.get(spec.host, port);
-        if (known === undefined) {
-            options.hostKeyStore?.record(spec.host, port, hash);
-            logger?.info(`[dsh-tty] ssh ${target} 首次连接，已记录 host key 指纹 sha256:${hash}（TOFU）`);
-            return true;
-        }
-        if (known === hash) {
-            logger?.info(`[dsh-tty] ssh ${target} host key 指纹匹配（sha256:${hash}）`);
-            return true;
-        }
-        hostKeyMismatch =
-            `SSH 主机密钥指纹变更：${target} 已记录 sha256:${known}，本次为 sha256:${hash}。` +
-                '可能是主机重装或换钥匙，也可能是中间人（MITM）冒充；确认安全后，到 设置 → 插件 → 终端面板 → SSH 主机密钥记录 删除该主机再重连。';
-        logger?.warn(`[dsh-tty] ${hostKeyMismatch}`);
-        return false;
-    };
+    const policy = applyHostKeyPolicy({ connectConfig, spec, store: options.hostKeyStore, logger, target });
     const channel = await new Promise((resolve, reject) => {
         let settled = false;
         conn.on('ready', () => {
@@ -171,8 +177,9 @@ export async function spawnSsh(spec, options) {
         conn.on('error', (error) => {
             if (!settled) {
                 settled = true;
-                if (hostKeyMismatch !== null)
-                    reject(new Error(hostKeyMismatch));
+                const mismatch = policy.mismatchMessage();
+                if (mismatch !== null)
+                    reject(new Error(mismatch));
                 else
                     reject(new Error(`SSH 连接失败（${target}）: ${error.message}`));
             }
