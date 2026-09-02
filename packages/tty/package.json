@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-tty",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "DSH Web GUI 的终端面板插件：侧边栏「终端」大弹窗，xterm.js + PTY 全交互终端（路线1），ssh2 原生 SSH 远程连接（方案 C）。",
   "type": "module",
   "engines": {

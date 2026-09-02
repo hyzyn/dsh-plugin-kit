@@ -23,6 +23,8 @@
  *   B18. data 帧合并后帧序不变量（exit 在最后一帧 data 之后）
  *   B19. known_hosts 解析器
  *   B20. 端口转发隧道（forwardOut 往返 + forwardIn 就绪 + 状态与工具）
+ *   B21. /api/dsh-tty/shells 候选列表（Shell 路径可选可输入的数据源）
+ *   B22. bash 3.2（无 PS0）shell 集成：DEBUG trap 兜底 B 标记（capture{last} + expect 早停）
  *
  * 用法：pnpm --filter @hyzyn/dsh-tty integration
  * 退出码：0 = 全部 PASS，1 = 任一 FAIL。
@@ -789,6 +791,74 @@ async function run() {
       })
     })
     sshServer.closeAllConnections?.()
+  }
+
+  // B21: /api/dsh-tty/shells 候选列表（设置卡片「Shell 路径」数据源）
+  console.log('\n[19] shells 候选路由')
+  {
+    const { existsSync } = await import('node:fs')
+    const data = await (await fetch(`http://127.0.0.1:${port}/api/dsh-tty/shells`)).json()
+    const shells = Array.isArray(data.shells) ? data.shells : []
+    const allAbsolute = shells.every((p) => typeof p === 'string' && p.startsWith('/'))
+    const hasCurrent = typeof process.env.SHELL !== 'string' || process.env.SHELL.trim() === '' || shells.includes(process.env.SHELL)
+    const hasBash = !existsSync('/bin/bash') || shells.includes('/bin/bash')
+    if (data.ok === true && shells.length > 0 && allAbsolute && hasCurrent && hasBash) pass('B21 shells 候选路由（/etc/shells + $SHELL 去重、存在且可执行、$SHELL 优先）')
+    else fail('B21 shells 候选路由（/etc/shells + $SHELL 去重、存在且可执行、$SHELL 优先）', JSON.stringify(data).slice(0, 200))
+  }
+
+  // B22: bash 3.2（macOS 自带，无 PS0）shell 集成 —— DEBUG trap 兜底 B 标记
+  // 注意：本用例把 config.shell 热切成 /bin/bash（内存 settings stub 不持久），
+  // 必须放在所有依赖默认 shell 的用例之后。
+  console.log('\n[20] bash 3.2 shell 集成（DEBUG trap 兜底）')
+  {
+    const { existsSync } = await import('node:fs')
+    if (!existsSync('/bin/bash')) {
+      console.log('  ⊘ SKIP  B22（本机无 /bin/bash）')
+    } else {
+      await fetch(`http://127.0.0.1:${port}/api/dsh-tty/config`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ shell: '/bin/bash' }),
+      })
+      const s = openSession(port)
+      await s.open()
+      s.client.send(JSON.stringify({ t: 'spawn', sid: 'b32-1' }))
+      await s.waitFor(() => s.state.ready, 10000, 'b32-1 ready')
+      const capture = toolDefs.find((d) => d.name === 'tty_capture')
+      const expect = toolDefs.find((d) => d.name === 'tty_expect')
+      if (capture === undefined || expect === undefined) {
+        fail('B22 工具注册', '缺工具: ' + toolDefs.map((d) => d.name).join(','))
+      } else {
+        // a) DEBUG trap 补出 B 标记 → capture{last:true} 可用
+        s.client.send(JSON.stringify({ t: 'input', sid: 'b32-1', d: 'printf "B32_%s\\n" OK\n' }))
+        await s.waitFor(() => /B32_OK/.test(s.state.text), 10000, 'B32_OK 输出')
+        await sleep(600) // 等 D 标记（PROMPT_COMMAND 在下一 prompt 前发出）
+        let last = null
+        for (let i = 0; i < 12; i++) {
+          await sleep(250)
+          try {
+            last = await capture.execute({ sid: 'b32-1', last: true })
+          } catch (error) {
+            last = { error: error.message }
+          }
+          if (last !== null && last.source === 'last') break
+        }
+        if (last !== null && last.source === 'last' && String(last.tail).includes('B32_OK') && last.exitCode === 0) pass('B22a bash 3.2 tty_capture{last:true} 拿到命令输出 + exitCode=0（DEBUG trap 补 B 标记）')
+        else fail('B22a bash 3.2 tty_capture{last:true} 拿到命令输出 + exitCode=0（DEBUG trap 补 B 标记）', JSON.stringify(last).slice(0, 160))
+        // b) 命令在飞时注册 expect → 命令结束（D 标记）早停并带退出码
+        await sleep(600) // 等 B22a 的 prompt 落定，避免吃到上一条的 D
+        const startedAt = Date.now()
+        s.client.send(JSON.stringify({ t: 'input', sid: 'b32-1', d: 'sleep 2\n' }))
+        await sleep(500) // B 标记已到（inCommand=true）后再注册
+        const early = await expect.execute({ sid: 'b32-1', pattern: 'NEVER_APPEARS_B32', timeoutSec: 20 })
+        const elapsed = Date.now() - startedAt
+        if (early.matched === false && early.timedOut === false && early.exitCode === 0 && elapsed < 10000) pass(`B22b bash 3.2 tty_expect 命令结束早停（exitCode=0，${elapsed}ms << 20s 超时）`)
+        else fail('B22b bash 3.2 tty_expect 命令结束早停（exitCode=0）', JSON.stringify(early).slice(0, 160) + ` elapsed=${elapsed}ms`)
+      }
+      s.client.send(JSON.stringify({ t: 'kill', sid: 'b32-1' }))
+      await s.waitFor(() => s.state.exited !== null, 10000, 'b32-1 exit')
+      s.client.close()
+    }
   }
 
   const failed = RESULTS.filter(([kind]) => kind === 'FAIL')

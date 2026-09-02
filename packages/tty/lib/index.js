@@ -1,6 +1,6 @@
 import z from '@deepseek-ai/schemastery';
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { accessSync, constants as fsConstants, existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
@@ -1098,6 +1098,49 @@ function readManagedEnvKeys() {
         return [];
     }
 }
+/**
+ * 设置卡片「Shell 路径」候选（可选可输入的数据源）：/etc/shells + $SHELL +
+ * 常见安装路径，去重后过滤「存在且可执行」，$SHELL 排最前。只回路径，
+ * 不做任何执行。
+ */
+function listCandidateShells() {
+    const candidates = [];
+    const push = (value) => {
+        const path = value?.trim() ?? '';
+        if (path !== '' && !candidates.includes(path))
+            candidates.push(path);
+    };
+    try {
+        for (const line of readFileSync('/etc/shells', 'utf8').split('\n')) {
+            const path = line.trim();
+            if (path !== '' && !path.startsWith('#'))
+                push(path);
+        }
+    }
+    catch {
+        /* 无 /etc/shells（如 Windows）时跳过 */
+    }
+    push(process.env.SHELL);
+    for (const path of [
+        '/bin/zsh', '/usr/bin/zsh', '/usr/local/bin/zsh', '/opt/homebrew/bin/zsh',
+        '/bin/bash', '/usr/bin/bash', '/usr/local/bin/bash', '/opt/homebrew/bin/bash',
+        '/bin/fish', '/usr/bin/fish', '/usr/local/bin/fish', '/opt/homebrew/bin/fish',
+        '/bin/sh', '/bin/dash', '/bin/ksh', '/bin/tcsh', '/bin/csh',
+    ])
+        push(path);
+    const usable = candidates.filter((path) => {
+        try {
+            accessSync(path, fsConstants.X_OK);
+            return true;
+        }
+        catch {
+            return false;
+        }
+    });
+    const shell = process.env.SHELL?.trim() ?? '';
+    usable.sort((a, b) => (a === shell ? -1 : b === shell ? 1 : a.localeCompare(b)));
+    return usable;
+}
 /** HTTP 路由的 loopback 信任围栏（与 dsh-mcp 同思路）。 */
 function isLoopbackHttp(req) {
     const address = req.socket.remoteAddress;
@@ -1414,6 +1457,22 @@ const plugin = definePlugin({
                         catch (error) {
                             writeJson(res, 200, { ok: false, error: '无法读取 ~/.ssh/known_hosts: ' + (error instanceof Error ? error.message : String(error)) });
                         }
+                    },
+                }));
+                // 已安装 shell 候选（设置卡片「Shell 路径」可选可输入）：loopback 围栏，只回路径不执行
+                disposers.push(webServer.register({
+                    kind: 'exact',
+                    path: '/api/dsh-tty/shells',
+                    handler: async (req, res) => {
+                        if (!isLoopbackHttp(req)) {
+                            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+                            return;
+                        }
+                        if (req.method !== 'GET') {
+                            writeJson(res, 405, { error: 'method not allowed: ' + String(req.method) });
+                            return;
+                        }
+                        writeJson(res, 200, { ok: true, shells: listCandidateShells(), current: process.env.SHELL ?? '' });
                     },
                 }));
                 // 端口转发隧道实时状态（设置卡片轮询徽标 + tunnel_list 工具数据源）
