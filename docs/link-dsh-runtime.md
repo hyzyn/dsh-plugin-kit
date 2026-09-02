@@ -15,6 +15,10 @@
 **dsh 运行时自带的那套库**（`~/.npm-global/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai`），
 让插件与宿主共享同一份、同版本的库，从而诚实观察兼容性。
 
+顺带把声明依赖的包里的 `@hyzyn/dsh-kit` 链到本仓库 workspace 包（`packages/kit`）：
+registry 发布版的类型会经 `.pnpm` 解析出另一份 cordis（与插件侧那份不同源），
+tsc 会报 `Context` 互不兼容；链到 workspace 后两边 cordis 同源。
+
 ## 用法
 
 ```bash
