@@ -30,7 +30,8 @@
  *   - 「+」菜单连接簿条目带 ✎ 编辑：对话框编辑模式（预填全字段，可改名，
  *     「保存修改」按原名替换条目），连接照常可用
  *   - 设置卡片：从 ~/.ssh/config 导入连接簿（同名跳过）；从 known_hosts 导入
- *     主机指纹（TOFU 预填充）；shell 集成开关；连接簿行内编辑表单
+ *     主机指纹（TOFU 预填充）；shell 集成开关；连接簿行内编辑表单；
+ *     Shell 路径可选可输入（自绘下拉候选来自 /api/dsh-tty/shells）
  *   - 标签双击重命名（随标签持久化，断线恢复保留）
  * 帧协议与宿主半体（src/index.ts）对齐：spawn/ssh/input/resize/kill/
  * sessions/attach ↔ ready/data/exit/error/sessions。
@@ -171,6 +172,7 @@ const CSS = [
   '.tt_envItem{appearance:none;background:0 0;border:none;color:var(--dsw-alias-label-primary);text-align:left;font:12px "SF Mono",Menlo,Consolas,monospace;padding:5px 8px;border-radius:6px;cursor:pointer}',
   '.tt_envItem:hover{background:var(--dsw-alias-interactive-bg-hover)}',
   '.tt_envMore{font-size:11px;color:var(--dsw-alias-label-tertiary);padding:4px 8px}',
+  '.tt_shellList{margin-top:6px}',
 ].join('\n')
 
 /* ================================ 基础工具 ================================ */
@@ -1742,6 +1744,9 @@ function TtySettingsCard() {
   const [loaded, setLoaded] = React.useState(false)
   const [saving, setSaving] = React.useState(false)
   const [message, setMessage] = React.useState({ kind: '', text: '' })
+  /** 已安装 shell 候选（/api/dsh-tty/shells，加载失败保持空 = 纯手输）。 */
+  const [shellOptions, setShellOptions] = React.useState([])
+  const [shellListOpen, setShellListOpen] = React.useState(false)
 
   const load = async () => {
     try {
@@ -1755,10 +1760,20 @@ function TtySettingsCard() {
       setMessage({ kind: 'error', text: String(error && error.message ? error.message : error) })
     }
   }
+  const loadShellOptions = async () => {
+    try {
+      const res = await fetch('/api/dsh-tty/shells', { cache: 'no-store' })
+      const data = await res.json()
+      if (data.ok && Array.isArray(data.shells)) setShellOptions(data.shells)
+    } catch {
+      /* 网络失败：候选保持为空，输入框照常可用 */
+    }
+  }
   React.useEffect(() => {
     if (open && !loaded) {
       setLoaded(true)
       void load()
+      void loadShellOptions()
     }
   }, [open])
 
@@ -2186,7 +2201,54 @@ function TtySettingsCard() {
                 boolField('向 agent 公告终端面板能力', 'announceToAgent'),
                 boolField('shell 集成（OSC 133/7 注入，tty_capture{last} 与 cwd 跟随依赖它）', 'shellIntegration'),
                 textField('并发会话上限（1~16）', 'maxSessions', '4', '超过上限的新标签会被拒绝；保存即热生效'),
-                textField('Shell 路径（默认 $SHELL）', 'shell', '', '留空使用 $SHELL'),
+                jsxs('div', {
+                  className: 'tt_cardField',
+                  onBlur: (event) => {
+                    // 焦点离开整个字段（含下拉列表）才收起；点击候选项由
+                    // preventDefault 保持焦点在输入框内，不会触发这里的收起
+                    if (!event.currentTarget.contains(event.relatedTarget)) setShellListOpen(false)
+                  },
+                  children: [
+                    jsx('span', { className: 'tt_cardLabel', children: 'Shell 路径（默认 $SHELL）' }),
+                    jsx('input', {
+                      className: 'tt_cardInput',
+                      value: form.shell ?? '',
+                      placeholder: '留空使用 $SHELL',
+                      autoComplete: 'off',
+                      spellCheck: false,
+                      onFocus: () => setShellListOpen(true),
+                      onClick: () => setShellListOpen(true),
+                      onKeyDown: (event) => {
+                        if (event.key === 'Escape') setShellListOpen(false)
+                      },
+                      onChange: (event) => {
+                        set('shell', event.target.value)
+                        setShellListOpen(true)
+                      },
+                    }),
+                    ...(shellListOpen ? [jsx('div', {
+                      className: 'tt_envList tt_shellList',
+                      children: (() => {
+                        const kw = (form.shell ?? '').trim().toLowerCase()
+                        const hit = kw === '' ? shellOptions : shellOptions.filter((path) => path.toLowerCase().includes(kw))
+                        if (hit.length === 0) {
+                          return jsx('span', { className: 'tt_envMore', children: '没有匹配的候选 — 直接输入任意路径即可' })
+                        }
+                        return hit.map((path) => jsx('button', {
+                          type: 'button',
+                          className: 'tt_envItem',
+                          onMouseDown: (event) => event.preventDefault(),
+                          onClick: () => {
+                            set('shell', path)
+                            setShellListOpen(false)
+                          },
+                          children: path,
+                        }, path))
+                      })(),
+                    }, 'shell-list')] : []),
+                    jsx('span', { className: 'tt_cardHint', children: '可下拉选择本机已安装 shell（$SHELL 优先），也可直接输入任意路径；zsh / bash 支持 shell 集成' }),
+                  ],
+                }, 'shell-field'),
                 textField('TERM', 'term', 'xterm-256color', 'TUI 程序依赖此值'),
                 textField('COLORTERM', 'colorTerm', 'truecolor', ''),
                 textField('兜底工作目录（客户端当前会话 cwd 优先）', 'cwd', '', '留空使用宿主进程启动目录'),

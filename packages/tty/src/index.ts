@@ -34,7 +34,8 @@
  * OSC 133/7 钩子（zsh ZDOTDIR 桩 / bash --rcfile 桩），输出流解析出命令
  * 边界（tty_capture{last} / tty_expect 早停）与实时 cwd（tty_list）。
  * 辅助路由：/api/dsh-tty/ssh-config（~/.ssh/config 导入候选）、
- * /api/dsh-tty/env-vars（SSH 对话框 env:VAR 下拉，仅变量名）。
+ * /api/dsh-tty/env-vars（SSH 对话框 env:VAR 下拉，仅变量名）、
+ * /api/dsh-tty/shells（设置卡片「Shell 路径」候选，仅路径）。
  *
  * M0 探针（scripts/probe.mjs）验证过的三个关键结论：
  *   1. TERM 必须用 `shell -c 'export TERM=...; exec "$shell"'` 包装层注入——
@@ -48,7 +49,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { randomUUID } from 'node:crypto'
-import { existsSync, readFileSync } from 'node:fs'
+import { accessSync, constants as fsConstants, existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -1216,6 +1217,45 @@ function readManagedEnvKeys(): string[] {
   }
 }
 
+/**
+ * 设置卡片「Shell 路径」候选（可选可输入的数据源）：/etc/shells + $SHELL +
+ * 常见安装路径，去重后过滤「存在且可执行」，$SHELL 排最前。只回路径，
+ * 不做任何执行。
+ */
+function listCandidateShells(): string[] {
+  const candidates: string[] = []
+  const push = (value: string | undefined): void => {
+    const path = value?.trim() ?? ''
+    if (path !== '' && !candidates.includes(path)) candidates.push(path)
+  }
+  try {
+    for (const line of readFileSync('/etc/shells', 'utf8').split('\n')) {
+      const path = line.trim()
+      if (path !== '' && !path.startsWith('#')) push(path)
+    }
+  } catch {
+    /* 无 /etc/shells（如 Windows）时跳过 */
+  }
+  push(process.env.SHELL)
+  for (const path of [
+    '/bin/zsh', '/usr/bin/zsh', '/usr/local/bin/zsh', '/opt/homebrew/bin/zsh',
+    '/bin/bash', '/usr/bin/bash', '/usr/local/bin/bash', '/opt/homebrew/bin/bash',
+    '/bin/fish', '/usr/bin/fish', '/usr/local/bin/fish', '/opt/homebrew/bin/fish',
+    '/bin/sh', '/bin/dash', '/bin/ksh', '/bin/tcsh', '/bin/csh',
+  ]) push(path)
+  const usable = candidates.filter((path) => {
+    try {
+      accessSync(path, fsConstants.X_OK)
+      return true
+    } catch {
+      return false
+    }
+  })
+  const shell = process.env.SHELL?.trim() ?? ''
+  usable.sort((a, b) => (a === shell ? -1 : b === shell ? 1 : a.localeCompare(b)))
+  return usable
+}
+
 /** HTTP 路由的 loopback 信任围栏（与 dsh-mcp 同思路）。 */
 function isLoopbackHttp(req: ReqLike): boolean {
   const address = req.socket.remoteAddress
@@ -1540,6 +1580,22 @@ const plugin = definePlugin<Config>({
             } catch (error) {
               writeJson(res, 200, { ok: false, error: '无法读取 ~/.ssh/known_hosts: ' + (error instanceof Error ? error.message : String(error)) })
             }
+          },
+        }))
+        // 已安装 shell 候选（设置卡片「Shell 路径」可选可输入）：loopback 围栏，只回路径不执行
+        disposers.push(webServer.register({
+          kind: 'exact',
+          path: '/api/dsh-tty/shells',
+          handler: async (req: ReqLike, res: ResLike) => {
+            if (!isLoopbackHttp(req)) {
+              writeJson(res, 403, { error: 'forbidden: loopback-only' })
+              return
+            }
+            if (req.method !== 'GET') {
+              writeJson(res, 405, { error: 'method not allowed: ' + String(req.method) })
+              return
+            }
+            writeJson(res, 200, { ok: true, shells: listCandidateShells(), current: process.env.SHELL ?? '' })
           },
         }))
         // 端口转发隧道实时状态（设置卡片轮询徽标 + tunnel_list 工具数据源）

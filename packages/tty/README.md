@@ -9,7 +9,9 @@ xterm.js 全交互终端（node-pty 真实 PTY，WebGL 渲染器加速），支�
 （OSC 133/7）**——agent 能按「命令」粒度读写终端（`tty_capture{last}` /
 `tty_expect`），并支持 **agent forwarding**、**~/.ssh/config 导入** 等深化
 能力；0.5.0 起内置**端口转发管理**——连接簿条目配隧道（-L/-R 两向），宿主
-自持连接、断线自动重连、状态徽标（见下文）。
+自持连接、断线自动重连、状态徽标（见下文）；0.6.0 起 **bash 3.2（macOS
+自带）补全命令开始标记**（DEBUG trap 兜底，`tty_capture{last}` /
+`tty_expect` 早停恢复可用），设置卡片 **Shell 路径可选可输入**。
 
 ![终端面板：多标签页 xterm 弹窗，工具栏含搜索/清屏/复制/粘贴，标题栏含最小化「—」与关闭 ✕](../../docs/dsh-plugin-kit-tty.png)
 
@@ -74,8 +76,14 @@ spawn 时经既有的 `-c` 包装层按 shell 类型注入钩子（对用户透�
 
 - **zsh**：`ZDOTDIR` 指向临时桩目录（VS Code 同款方案），桩文件先 source
   用户原 rc 再追加 `precmd`/`preexec` 钩子；
-- **bash**：`--rcfile` 桩（先 source `~/.bashrc`）；命令开始标记走 `PS0`
-  （bash ≥ 4.4，macOS 自带 bash 3.2 优雅降级：仅丢 B 标记）；
+- **bash**：`--rcfile` 桩（先 source `~/.bashrc`）；命令开始标记按版本二选一：
+  bash ≥ 4.4 走 `PS0`；bash < 4.4（macOS 自带 3.2）无 PS0，用 **DEBUG trap
+  兜底**（handler 按 `$BASH_COMMAND` 过滤掉 PROMPT_COMMAND 机制自身的
+  fire，避免幻影标记把用户输出切出捕获区间；bash 3.2 的
+  `trap - DEBUG` 在 handler 内卸载不生效，故按「永久武装 + 过滤」设计）。
+  副作用：循环体等复合命令的内部命令会多发 B 标记，仅影响
+  `tty_capture{last}` 对这类命令的截取起点，D/退出码与 `tty_expect` 不受影响；
+  PROMPT_COMMAND 挂钩兼容字符串与数组（bash 5.1+）两种形态；
 - 标记语义：`133;A` prompt 开始 / `133;B` 命令开始 / `133;D;<exit>` 命令
   结束带退出码 / `OSC 7 file://…` cwd 上报（`tty_list.cwd` 跟随 `cd`，
   SSH 会话则上报远程路径）；
@@ -160,7 +168,7 @@ SSH 会话同表调度：`tty_list` 里 `kind: 'ssh'` 的条目按 `target`
 | `enabled` | true | 关闭整个插件（需重启生效） |
 | `announceToAgent` | true | 是否向 agent 公告终端面板能力（systemPrompt 注入） |
 | `maxSessions` | 4 | 并发 PTY 会话上限（1~16） |
-| `shell` | `$SHELL` | shell 路径 |
+| `shell` | `$SHELL` | shell 路径；设置卡片可选可输入（下拉候选来自 `/etc/shells` + `$SHELL` + 常见安装路径，仅列存在且可执行者，`$SHELL` 优先），也可手输任意路径 |
 | `term` | `xterm-256color` | TERM 值 |
 | `colorTerm` | `truecolor` | COLORTERM 值 |
 | `cwd` | 宿主启动目录 | 兜底工作目录（客户端当前会话 cwd 优先） |
@@ -233,10 +241,11 @@ pnpm --filter @hyzyn/dsh-tty ssh-smoke    # SSH 冒烟：内存 SSH server（ssh
   内保活可重连，宿主进程重启则所有会话结束；超期后未重连的会话由回收器
   结束，输出缓冲（尾部 256KB）之外的滚动历史无法恢复。
 - **shell 集成仅 zsh / bash**：其他 shell 自动跳过（`tty_capture{last}` 会
-  明确报错而非错报）；bash 3.2（macOS 自带）无 `PS0`，仅丢「命令开始」
-  标记——`tty_capture{last}` 依赖 B..D 区间，此时不可用，`tty_expect` 的
-  早停同步失效（超时路径不受影响）。用户 rc 若覆盖 `PROMPT_COMMAND`/钩子
-  数组，集成可能失效——可关闭 `shellIntegration` 或反馈补丁兼容。
+  明确报错而非错报）。bash < 4.4 走 DEBUG trap 兜底：循环体等复合命令的
+  内部命令会多发 B 标记，`tty_capture{last}` 对这类命令只截取最后一个内部
+  命令之后的输出（退出码与 `tty_expect` 不受影响）。用户 rc 若覆盖
+  `PROMPT_COMMAND`/钩子数组，集成可能失效——可关闭 `shellIntegration` 或
+  反馈补丁兼容。
 - **端口转发边界**：本地监听固定 127.0.0.1（不暴露局域网）；remote 方向服务端监听还受服务端 sshd `GatewayPorts` 限制；隧道的 SSH 连接与终端会话独立，均走 TOFU 钉扎与连接簿认证；隧道规格变更（端口/目标/启停）经「保存」热生效，热改连接簿凭证则在下次重连时生效。
 - **SSH host key 为 TOFU 钉扎**：首次连接自动记录 sha256 指纹（trust on
   first use），之后指纹一致放行、变更拒绝——不再是无条件放行的
@@ -276,7 +285,8 @@ pnpm --filter @hyzyn/dsh-tty ssh-smoke    # SSH 冒烟：内存 SSH server（ssh
   ├─ 本地路径：ctx.get('subprocess').spawnTerminal({ argv: shell -c 包装层, cwd })
   ├─ 辅助路由：/api/dsh-tty/ssh-config（~/.ssh/config 导入候选）、
   │  /api/dsh-tty/env-vars（env 插件托管变量名）、/api/dsh-tty/known-hosts
-  │  （TOFU 指纹预填充，src/known-hosts.ts 解析含 hashed 条目）——均 loopback 围栏
+  │  （TOFU 指纹预填充，src/known-hosts.ts 解析含 hashed 条目）、
+  │  /api/dsh-tty/shells（Shell 路径候选）——均 loopback 围栏
   ├─ 端口转发（src/tunnels.ts）：宿主自持隧道（-L/-R 双向），断线退避重连、
   │  TOFU 共用、连接计数；GET /api/dsh-tty/tunnels 实时状态 + tunnel_list 工具
   └─ 帧协议：spawn|ssh / input / resize / kill / sessions / attach
@@ -290,12 +300,14 @@ SSH 路径 (src/ssh.ts，方案 C)
      背压一并透传到 channel —— 之后与本地 PTY 无差别调度
 ```
 
-M0 探针、集成测试（B1~B17 共 35 项断言）与真实实例冒烟（live / TUI）在
+M0 探针、集成测试（B1~B22 共 45 项断言）与真实实例冒烟（live / TUI）在
 真实 DSH 服务组合上验证过：TERM 注入、resize 透传、sid 冲突、并发上限、
 loopback 围栏、多会话数据隔离、cwd 跟随与校验、配置热生效（settings/updated）、
 kill→exit 全链路、断线保活 + sessions/attach 重连回放、tty_screen 虚拟屏、
 tty_capture ANSI 清洗、shell 集成（capture{last} + exitCode、OSC 7 cwd
-跟随）、tty_expect 匹配与超时、~/.ssh/config 解析器、端口转发（双隧道 active + forwardOut 往返 + reconcile 清理）。SSH 路径由 `ssh-smoke`
+跟随）、tty_expect 匹配与超时、~/.ssh/config 解析器、端口转发（双隧道 active + forwardOut 往返 + reconcile 清理）、
+shells 候选路由、bash 3.2 shell 集成（DEBUG trap 兜底：capture{last} +
+exitCode、tty_expect 命令结束早停）。SSH 路径由 `ssh-smoke`
 （内存 SSH server × 真实 `spawnSsh`）验证：password 认证建链与 prompt、
 命令往返、pty-req 初始尺寸与 resize（window-change）、terminate /
 exit-status 全链路，以及 TOFU 指纹记录（S7）与指纹变更拒绝连接（S8）。
