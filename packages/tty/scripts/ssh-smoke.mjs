@@ -25,7 +25,8 @@
  *   S8 TOFU：同 host:port 换服务器密钥后，指纹变更拒绝连接（带重置指引）
  *   S9 SFTP（0.7.0）：scripts/lib/test-sshd.mjs 的 sftp subsystem（映射临时目录
  *      真实 fs）× 真实 SftpManager——list/realpath home/上传覆盖+追加/下载
- *      （含 content-length）/mkdir+rename+递归与非递归删除/TOFU 指纹变更拒绝
+ *      （含 content-length）/mkdir+rename+递归与非递归删除/TOFU 指纹变更拒绝；
+ *      S9g（0.8.0）：mkdir parents 自底向上逐级补齐（幂等）+ tree 限深截断/全量
  *
  * 用法：pnpm --filter @hyzyn/dsh-tty ssh-smoke（需先 build 产出 lib/ssh.js、lib/sftp.js）
  * 退出码：0 = 全部 PASS，1 = 任一 FAIL。
@@ -470,6 +471,29 @@ async function main() {
       else fail('S9f TOFU 指纹变更拒绝 SFTP 连接（错误含重置指引）', mismatch === null ? '连接意外成功' : String(mismatch))
     } catch (error) {
       fail('S9f TOFU 指纹变更拒绝 SFTP 连接（错误含重置指引）', error.message)
+    }
+
+    // S9g mkdir parents 自底向上逐级补齐（mkdir -p 语义）+ tree 递归列举与限深
+    try {
+      const deep = rootDir + '/p/a/b/c'
+      await manager.mkdir(spec, deep, true)
+      await manager.mkdir(spec, rootDir + '/p', true) // 幂等：已存在目录不报错
+      await fsp.writeFile(path.join(rootDir, 'p', 'a', 'b', 'c', 'leaf.txt'), 'leaf\n')
+      const shallow = await manager.tree(spec, rootDir + '/p', { maxDepth: 1 })
+      const full = await manager.tree(spec, rootDir + '/p', { maxDepth: 4 })
+      const shallowOk = shallow.entries.length === 1 && shallow.entries[0].path === rootDir + '/p/a'
+        && shallow.entries[0].isDir === true && shallow.truncated === true
+      const fullOk = full.entries.map((e) => e.path).join('|') === [rootDir + '/p/a', rootDir + '/p/a/b', rootDir + '/p/a/b/c', rootDir + '/p/a/b/c/leaf.txt'].join('|')
+        && full.truncated === false
+        && full.entries[3].size === 'leaf\n'.length
+      let noParentsRejected = false
+      try { await manager.mkdir(spec, rootDir + '/q/r/s') } catch { noParentsRejected = true }
+      await manager.remove(spec, rootDir + '/p', true)
+      const cleaned = await fsp.access(path.join(rootDir, 'p')).then(() => false, () => true)
+      if (shallowOk && fullOk && noParentsRejected && cleaned) pass('S9g mkdir parents 逐级补齐/幂等 + tree 限深截断/全量')
+      else fail('S9g mkdir parents 逐级补齐/幂等 + tree 限深截断/全量', `shallow=${JSON.stringify(shallow.entries).slice(0, 100)} truncated=${String(shallow.truncated)} full=${full.entries.map((e) => e.path).join('|')} noParents=${String(noParentsRejected)} cleaned=${String(cleaned)}`)
+    } catch (error) {
+      fail('S9g mkdir parents 逐级补齐/幂等 + tree 限深截断/全量', error.message)
     }
 
     manager.disposeAll()

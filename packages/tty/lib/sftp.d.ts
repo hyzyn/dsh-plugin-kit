@@ -14,6 +14,27 @@ export interface SftpListResult {
     path: string;
     entries: SftpEntryInfo[];
 }
+export interface SftpTreeEntry {
+    /** 从 tree 根出发的绝对路径。 */
+    path: string;
+    name: string;
+    /** 相对根的层级（根的直接子项为 1）。 */
+    depth: number;
+    isDir: boolean;
+    size: number;
+    mtime: number;
+}
+export interface SftpTreeResult {
+    path: string;
+    entries: SftpTreeEntry[];
+    /** 因 maxDepth / maxEntries 截断（还有未列举的内容）。 */
+    truncated: boolean;
+    /** 读取失败的子目录（权限等），最多保留 10 条。 */
+    errors: Array<{
+        path: string;
+        message: string;
+    }>;
+}
 export interface SftpLogger {
     info(msg: string): void;
     warn(msg: string): void;
@@ -38,7 +59,23 @@ export declare class SftpManager {
     disposeAll(): void;
     /** 目录列表；path 为空时 realpath('.') 解析登录 home 并回传实际路径。 */
     list(spec: SshSpec, path: string): Promise<SftpListResult>;
-    mkdir(spec: SshSpec, path: string): Promise<void>;
+    /**
+     * 创建目录。parents:true 时等效 mkdir -p（自底向上）：先直接建目标，
+     * 失败且目标确不存在时向最近的祖先逐级补齐——不从文件系统根逐级 stat
+     * （往返少，也不要求对中间层级有探测权限）；「已存在且是目录」视为
+     * 成功，同名非目录明确报错；补齐后重试仍失败再兜底 stat 防并发竞态。
+     */
+    mkdir(spec: SshSpec, path: string, parents?: boolean): Promise<void>;
+    /**
+     * 递归列举（agent sftp_tree 用）：深度优先、目录优先（与 list 同排序），
+     * maxDepth（1~8，默认 3）限层、maxEntries（1~2000，默认 500）限条数，
+     * 超限置 truncated；符号链接不跟随（防环），仅作条目呈现；读取失败的
+     * 子目录记入 errors（权限等）并继续。
+     */
+    tree(spec: SshSpec, path: string, options?: {
+        maxDepth?: number;
+        maxEntries?: number;
+    }): Promise<SftpTreeResult>;
     rename(spec: SshSpec, from: string, to: string): Promise<void>;
     /**
      * 删除文件 / 目录。目录不带 recursive 时走 rmdir（非空会明确报错）；
@@ -55,6 +92,9 @@ export declare class SftpManager {
     private ensureSweeper;
     private close;
     private realpath;
+    /** stat 的静默版：路径不存在等错误一律回 null（mkdir -p 的逐级探测用）。 */
+    private statQuiet;
+    private mkdirOne;
     private readdir;
     private removeEntry;
 }

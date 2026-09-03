@@ -27,6 +27,8 @@
  *   B22. bash 3.2（无 PS0）shell 集成：DEBUG trap 兜底 B 标记（capture{last} + expect 早停）
  *   B23. SFTP 文件传输（/api/dsh-tty/sftp/* 路由：list/mkdir/upload/download/remove
  *        + agent 工具 sftp_list/sftp_read/sftp_write，test-sshd 内存 sshd）
+ *   B24. SFTP 管理闭环（agent sftp_mkdir/sftp_rename/sftp_remove/sftp_tree：
+ *        mkdir -p、tree 限深截断、跨目录 rename、非空删除拒绝与递归删除）
  *
  * 用法：pnpm --filter @hyzyn/dsh-tty integration
  * 退出码：0 = 全部 PASS，1 = 任一 FAIL。
@@ -974,6 +976,109 @@ async function run() {
     const gone = await fsp.access(path.join(rootDir, 'b23dir')).then(() => false, () => true)
     if (rm.data.ok === true && gone) pass('B23f remove 路由（目录递归删除）')
     else fail('B23f remove 路由（目录递归删除）', `status=${String(rm.status)} data=${JSON.stringify(rm.data).slice(0, 120)} gone=${String(gone)}`)
+    await post({ sshHosts: [] })
+    await sftpd.close()
+    await fsp.rm(rootDir, { recursive: true, force: true })
+    console.log('    sftp sshd 已关闭，临时目录已清理')
+  }
+
+  // B24: SFTP 管理闭环（0.8.0）—— agent sftp_mkdir/sftp_rename/sftp_remove/
+  // sftp_tree（test-sshd 内存 sshd，覆盖 parents 逐级补齐、tree 限深截断、
+  // 跨目录 rename = mv、非空目录非递归删除拒绝、递归删除与不存在路径报错）。
+  console.log('\n[22] SFTP 管理闭环（agent sftp_mkdir/rename/remove/tree）')
+  {
+    const rootDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'dsh-tty-b24-'))
+    const sftpd = await startSftpSshd({ rootDir })
+    const post = async (body) => {
+      const res = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+      return res.json()
+    }
+    const put = await post({ sshHosts: [{ name: 'b24-ssh', host: '127.0.0.1', port: sftpd.port, username: TEST_USER, auth: 'password', password: TEST_PASSWORD, keyPath: '', passphrase: '', agentForward: false }] })
+    if (put.ok === true) pass('B24a 连接簿写入（b24-ssh）')
+    else fail('B24a 连接簿写入（b24-ssh）', JSON.stringify(put).slice(0, 160))
+
+    const sftpMkdir = toolDefs.find((d) => d.name === 'sftp_mkdir')
+    const sftpRename = toolDefs.find((d) => d.name === 'sftp_rename')
+    const sftpRemove = toolDefs.find((d) => d.name === 'sftp_remove')
+    const sftpTree = toolDefs.find((d) => d.name === 'sftp_tree')
+    const sftpWrite = toolDefs.find((d) => d.name === 'sftp_write')
+    const sftpRead = toolDefs.find((d) => d.name === 'sftp_read')
+    if (sftpMkdir === undefined || sftpRename === undefined || sftpRemove === undefined || sftpTree === undefined || sftpWrite === undefined || sftpRead === undefined) {
+      fail('B24 工具注册', '缺工具: ' + toolDefs.map((d) => d.name).filter((n) => n.startsWith('sftp')).join(',') || '无')
+    } else {
+      let schemaOk = true
+      for (const d of [sftpMkdir, sftpRename, sftpRemove, sftpTree]) {
+        try {
+          assertSupportedJsonSchema(d.parameters)
+          assertSupportedJsonSchema(d.output?.schema ?? {})
+        } catch (e) {
+          schemaOk = false
+          fail('B24 工具注册（schema 校验）', d.name + ' schema: ' + String(e && e.message ? e.message : e))
+        }
+      }
+      if (schemaOk) pass('B24a sftp_mkdir/rename/remove/tree schema 校验')
+
+      // b) mkdir parents 逐级补齐（等效 mkdir -p）
+      const libDir = rootDir + '/b24/proj/src/lib'
+      await sftpMkdir.execute({ book: 'b24-ssh', path: libDir, parents: true })
+      const libStat = await fsp.stat(libDir).then((s) => s.isDirectory(), () => false)
+      let noParentsRejected = false
+      try {
+        await sftpMkdir.execute({ book: 'b24-ssh', path: rootDir + '/b24/no/such/dir' })
+      } catch {
+        noParentsRejected = true
+      }
+      if (libStat && noParentsRejected) pass('B24b sftp_mkdir（parents 逐级补齐 + 缺父目录被拒）')
+      else fail('B24b sftp_mkdir（parents 逐级补齐 + 缺父目录被拒）', `libDir=${String(libStat)} noParentsRejected=${String(noParentsRejected)}`)
+
+      // seed 一个文件（sftp_write），供 tree / rename / 移动断言
+      await sftpWrite.execute({ book: 'b24-ssh', path: libDir + '/util.ts', content: 'export const b24 = 1\n' })
+
+      // c) tree：深度优先目录优先 + maxDepth 限深截断
+      const treeShallow = await sftpTree.execute({ book: 'b24-ssh', path: rootDir + '/b24', maxDepth: 1 })
+      const shallowOk = treeShallow.entries.length === 1 && treeShallow.entries[0].path === rootDir + '/b24/proj' && treeShallow.entries[0].depth === 1 && treeShallow.entries[0].isDir === true && treeShallow.truncated === true
+      const treeFull = await sftpTree.execute({ book: 'b24-ssh', path: rootDir + '/b24', maxDepth: 4 })
+      const names = treeFull.entries.map((e) => e.path)
+      const fullOk = names.join('|') === [rootDir + '/b24/proj', rootDir + '/b24/proj/src', rootDir + '/b24/proj/src/lib', rootDir + '/b24/proj/src/lib/util.ts'].join('|')
+        && treeFull.truncated === false
+        && treeFull.entries[3].size === 'export const b24 = 1\n'.length
+      if (shallowOk && fullOk) pass('B24c sftp_tree（深度优先目录优先 + maxDepth 截断标记）')
+      else fail('B24c sftp_tree（深度优先目录优先 + maxDepth 截断标记）', `shallow=${JSON.stringify(treeShallow).slice(0, 160)} full=${names.join('|')} truncated=${String(treeFull.truncated)}`)
+
+      // d) rename 文件 + 内容不变
+      await sftpRename.execute({ book: 'b24-ssh', from: libDir + '/util.ts', to: libDir + '/helper.ts' })
+      const renamed = await fsp.access(libDir + '/util.ts').then(() => false, () => true)
+      const readBack = await sftpRead.execute({ book: 'b24-ssh', path: libDir + '/helper.ts' })
+      if (renamed && readBack.content === 'export const b24 = 1\n') pass('B24d sftp_rename（文件重命名 + 内容不变）')
+      else fail('B24d sftp_rename（文件重命名 + 内容不变）', `renamed=${String(renamed)} content=${JSON.stringify(readBack.content ?? readBack).slice(0, 80)}`)
+
+      // e) rename 跨目录 = 移动
+      await sftpMkdir.execute({ book: 'b24-ssh', path: rootDir + '/b24/dest' })
+      await sftpRename.execute({ book: 'b24-ssh', from: libDir + '/helper.ts', to: rootDir + '/b24/dest/helper.ts' })
+      const movedAway = await fsp.access(libDir + '/helper.ts').then(() => false, () => true)
+      const movedContent = await fsp.readFile(rootDir + '/b24/dest/helper.ts', 'utf8').catch(() => null)
+      if (movedAway && movedContent === 'export const b24 = 1\n') pass('B24e sftp_rename（跨目录移动 = mv）')
+      else fail('B24e sftp_rename（跨目录移动 = mv）', `movedAway=${String(movedAway)} content=${JSON.stringify(movedContent).slice(0, 80)}`)
+
+      // f) remove：非空目录不带 recursive 被拒；recursive 整树删除；已删路径再操作报错
+      let nonEmptyRejected = false
+      try {
+        await sftpRemove.execute({ book: 'b24-ssh', path: rootDir + '/b24/proj' })
+      } catch {
+        nonEmptyRejected = true
+      }
+      await sftpRemove.execute({ book: 'b24-ssh', path: rootDir + '/b24', recursive: true })
+      const treeGone = await fsp.access(rootDir + '/b24').then(() => false, () => true)
+      let missingRejected = false
+      try {
+        await sftpTree.execute({ book: 'b24-ssh', path: rootDir + '/b24' })
+      } catch {
+        missingRejected = true
+      }
+      if (nonEmptyRejected && treeGone && missingRejected) pass('B24f sftp_remove（非空目录需 recursive + 递归删除 + 复查报错）')
+      else fail('B24f sftp_remove（非空目录需 recursive + 递归删除 + 复查报错）', `nonEmptyRejected=${String(nonEmptyRejected)} treeGone=${String(treeGone)} missingRejected=${String(missingRejected)}`)
+    }
+
     await post({ sshHosts: [] })
     await sftpd.close()
     await fsp.rm(rootDir, { recursive: true, force: true })

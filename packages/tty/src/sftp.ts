@@ -10,9 +10,10 @@
  * 隧道共用同一 HostKeyStore，指纹变更同样拒绝且文案一致；password 认证挂
  * keyboard-interactive 自动应答（同 spawnSsh，很多服务端只开这个）。
  *
- * 文件操作走 SFTPWrapper：目录列表（realpath 解析 home）/ stat / mkdir /
- * rename / remove（目录递归 = readdir 深度优先 unlink + rmdir）/ 上传下载
- * 直接给流（HTTP 路由 pipe，不整文件进内存）。不计入 maxSessions 名额
+ * 文件操作走 SFTPWrapper：目录列表（realpath 解析 home）/ stat / mkdir
+ * （parents:true 逐级补齐，0.8.0）/ rename / remove（目录递归 = readdir
+ * 深度优先 unlink + rmdir）/ tree（递归列举，0.8.0）/ 上传下载直接给流
+ * （HTTP 路由 pipe，不整文件进内存）。不计入 maxSessions 名额
  * （同端口转发）；SFTP 的权限边界与 SSH 终端登录一致（同一账号）。
  */
 import { Client } from 'ssh2'
@@ -42,6 +43,26 @@ export interface SftpListResult {
   /** 实际列出的目录（入参为空时经 realpath 解析为登录 home）。 */
   path: string
   entries: SftpEntryInfo[]
+}
+
+export interface SftpTreeEntry {
+  /** 从 tree 根出发的绝对路径。 */
+  path: string
+  name: string
+  /** 相对根的层级（根的直接子项为 1）。 */
+  depth: number
+  isDir: boolean
+  size: number
+  mtime: number
+}
+
+export interface SftpTreeResult {
+  path: string
+  entries: SftpTreeEntry[]
+  /** 因 maxDepth / maxEntries 截断（还有未列举的内容）。 */
+  truncated: boolean
+  /** 读取失败的子目录（权限等），最多保留 10 条。 */
+  errors: Array<{ path: string; message: string }>
 }
 
 export interface SftpLogger {
@@ -119,11 +140,111 @@ export class SftpManager {
     return { path: resolved, entries }
   }
 
-  async mkdir(spec: SshSpec, path: string): Promise<void> {
+  /**
+   * 创建目录。parents:true 时等效 mkdir -p（自底向上）：先直接建目标，
+   * 失败且目标确不存在时向最近的祖先逐级补齐——不从文件系统根逐级 stat
+   * （往返少，也不要求对中间层级有探测权限）；「已存在且是目录」视为
+   * 成功，同名非目录明确报错；补齐后重试仍失败再兜底 stat 防并发竞态。
+   */
+  async mkdir(spec: SshSpec, path: string, parents = false): Promise<void> {
     const sftp = await this.acquire(spec)
-    await new Promise<void>((resolve, reject) => {
-      sftp.mkdir(path.trim(), (error) => (error != null ? reject(new Error(`创建目录失败: ${error.message}`)) : resolve()))
-    })
+    const target = path.trim().replace(/\/+$/, '')
+    if (target === '') throw new Error('创建目录失败: 路径不能为空')
+    if (!parents) {
+      await this.mkdirOne(sftp, target)
+      return
+    }
+    const isAbsolute = target.startsWith('/')
+    const segments = target.split('/').filter((seg) => seg !== '' && seg !== '.')
+    if (segments.length === 0) return // 根目录本身总是存在的
+    const join = (depth: number): string => {
+      const prefix = segments.slice(0, depth).join('/')
+      return isAbsolute ? '/' + prefix : prefix
+    }
+    const ensure = async (depth: number): Promise<void> => {
+      const current = join(depth)
+      try {
+        await this.mkdirOne(sftp, current)
+        return
+      } catch (firstError) {
+        const existing = await this.statQuiet(sftp, current)
+        if (existing !== null) {
+          if (existing.isDirectory()) return
+          throw new Error(`创建目录失败: ${current} 已存在且不是目录`)
+        }
+        if (depth > 1) {
+          await ensure(depth - 1)
+          try {
+            await this.mkdirOne(sftp, current)
+            return
+          } catch {
+            /* 落到兜底 stat（并发创建等竞态） */
+          }
+          const raced = await this.statQuiet(sftp, current)
+          if (raced !== null && raced.isDirectory()) return
+        }
+        throw firstError
+      }
+    }
+    await ensure(segments.length)
+  }
+
+  /**
+   * 递归列举（agent sftp_tree 用）：深度优先、目录优先（与 list 同排序），
+   * maxDepth（1~8，默认 3）限层、maxEntries（1~2000，默认 500）限条数，
+   * 超限置 truncated；符号链接不跟随（防环），仅作条目呈现；读取失败的
+   * 子目录记入 errors（权限等）并继续。
+   */
+  async tree(spec: SshSpec, path: string, options: { maxDepth?: number; maxEntries?: number } = {}): Promise<SftpTreeResult> {
+    const maxDepth = Math.max(1, Math.min(8, Number.isInteger(options.maxDepth) ? (options.maxDepth as number) : 3))
+    const maxEntries = Math.max(1, Math.min(2000, Number.isInteger(options.maxEntries) ? (options.maxEntries as number) : 500))
+    const sftp = await this.acquire(spec)
+    const trimmed = path.trim()
+    const root = trimmed === '' ? await this.realpath(sftp, '.') : trimmed === '/' ? '/' : trimmed.replace(/\/+$/, '')
+    const entries: SftpTreeEntry[] = []
+    const errors: Array<{ path: string; message: string }> = []
+    let truncated = false
+    const walk = async (dir: string, depth: number, isRoot = false): Promise<void> => {
+      let list: import('ssh2').FileEntryWithStats[]
+      try {
+        list = (await this.readdir(sftp, dir)).filter((item) => !DOT_ENTRIES.has(item.filename))
+      } catch (error) {
+        // 请求的根目录读不到（不存在/权限）→ 明确报错；子目录失败记入 errors 继续
+        if (isRoot) throw new Error(`读取目录失败: ${error instanceof Error ? error.message : String(error)}`)
+        errors.push({ path: dir, message: error instanceof Error ? error.message : String(error) })
+        return
+      }
+      list.sort((a, b) => {
+        const kindDiff = (a.attrs.isDirectory() ? 0 : 1) - (b.attrs.isDirectory() ? 0 : 1)
+        if (kindDiff !== 0) return kindDiff
+        return a.filename.localeCompare(b.filename)
+      })
+      for (const item of list) {
+        if (entries.length >= maxEntries) {
+          truncated = true
+          return
+        }
+        const isDir = item.attrs.isDirectory()
+        const isSymlink = item.attrs.isSymbolicLink()
+        entries.push({
+          path: dir.endsWith('/') ? dir + item.filename : dir + '/' + item.filename,
+          name: item.filename,
+          depth,
+          isDir,
+          size: Number(item.attrs.size ?? 0),
+          mtime: Number(item.attrs.mtime ?? 0) * 1000,
+        })
+        if (isDir && !isSymlink) {
+          if (depth + 1 > maxDepth) {
+            truncated = true
+            continue
+          }
+          await walk(dir.endsWith('/') ? dir + item.filename : dir + '/' + item.filename, depth + 1)
+        }
+      }
+    }
+    await walk(root, 1, true)
+    return { path: root, entries, truncated, errors: errors.slice(0, 10) }
   }
 
   async rename(spec: SshSpec, from: string, to: string): Promise<void> {
@@ -276,6 +397,19 @@ export class SftpManager {
   private realpath(sftp: SFTPWrapper, path: string): Promise<string> {
     return new Promise<string>((resolve, reject) => {
       sftp.realpath(path, (error, absPath) => (error !== undefined ? reject(new Error(`realpath 失败: ${error.message}`)) : resolve(absPath)))
+    })
+  }
+
+  /** stat 的静默版：路径不存在等错误一律回 null（mkdir -p 的逐级探测用）。 */
+  private statQuiet(sftp: SFTPWrapper, path: string): Promise<import('ssh2').Stats | null> {
+    return new Promise((resolve) => {
+      sftp.stat(path, (error, stats) => (error !== undefined || stats === undefined ? resolve(null) : resolve(stats)))
+    })
+  }
+
+  private mkdirOne(sftp: SFTPWrapper, path: string): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      sftp.mkdir(path, (error) => (error != null ? reject(new Error(`创建目录失败: ${error.message}`)) : resolve()))
     })
   }
 

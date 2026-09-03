@@ -170,20 +170,57 @@ function attachSftp(sftpStream, rootDir) {
       fail(reqId, error, STATUS.NO_SUCH_FILE)
     }
   })
+  // 以下单路径操作的 resolveWithin 守卫可能同步 throw（路径越出 rootDir），
+  // 必须 try/catch 后回 status 包——否则响应丢失，客户端会永远挂起。
   sftpStream.on('STAT', (reqId, requestPath) => {
-    fsp.stat(resolveWithin(rootDir, requestPath)).then((stats) => sftpStream.attrs(reqId, attrsOf(stats))).catch((error) => fail(reqId, error))
+    let target
+    try {
+      target = resolveWithin(rootDir, requestPath)
+    } catch (error) {
+      fail(reqId, error)
+      return
+    }
+    fsp.stat(target).then((stats) => sftpStream.attrs(reqId, attrsOf(stats))).catch((error) => fail(reqId, error))
   })
   sftpStream.on('LSTAT', (reqId, requestPath) => {
-    fsp.lstat(resolveWithin(rootDir, requestPath)).then((stats) => sftpStream.attrs(reqId, attrsOf(stats))).catch((error) => fail(reqId, error))
+    let target
+    try {
+      target = resolveWithin(rootDir, requestPath)
+    } catch (error) {
+      fail(reqId, error)
+      return
+    }
+    fsp.lstat(target).then((stats) => sftpStream.attrs(reqId, attrsOf(stats))).catch((error) => fail(reqId, error))
   })
   sftpStream.on('MKDIR', (reqId, requestPath) => {
-    fsp.mkdir(resolveWithin(rootDir, requestPath)).then(() => statusOk(reqId)).catch((error) => fail(reqId, error))
+    let target
+    try {
+      target = resolveWithin(rootDir, requestPath)
+    } catch (error) {
+      fail(reqId, error)
+      return
+    }
+    fsp.mkdir(target).then(() => statusOk(reqId)).catch((error) => fail(reqId, error))
   })
   sftpStream.on('RMDIR', (reqId, requestPath) => {
-    fsp.rmdir(resolveWithin(rootDir, requestPath)).then(() => statusOk(reqId)).catch((error) => fail(reqId, error))
+    let target
+    try {
+      target = resolveWithin(rootDir, requestPath)
+    } catch (error) {
+      fail(reqId, error)
+      return
+    }
+    fsp.rmdir(target).then(() => statusOk(reqId)).catch((error) => fail(reqId, error))
   })
   sftpStream.on('REMOVE', (reqId, requestPath) => {
-    fsp.unlink(resolveWithin(rootDir, requestPath)).then(() => statusOk(reqId)).catch((error) => fail(reqId, error))
+    let target
+    try {
+      target = resolveWithin(rootDir, requestPath)
+    } catch (error) {
+      fail(reqId, error)
+      return
+    }
+    fsp.unlink(target).then(() => statusOk(reqId)).catch((error) => fail(reqId, error))
   })
   sftpStream.on('RENAME', (reqId, from, to) => {
     try {

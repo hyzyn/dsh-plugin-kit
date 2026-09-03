@@ -13,7 +13,10 @@ xterm.js 全交互终端（node-pty 真实 PTY，WebGL 渲染器加速），支�
 自带）补全命令开始标记**（DEBUG trap 兜底，`tty_capture{last}` /
 `tty_expect` 早停恢复可用），设置卡片 **Shell 路径可选可输入**；0.7.0 起内置
 **SFTP 文件传输**——SSH 连接的远程目录浏览与上传/下载/新建目录/重命名/删除
-（面板「文件浏览」对话框 + agent `sftp_*` 工具，见下文）。
+（面板「文件浏览」对话框 + agent `sftp_*` 工具，见下文）；0.8.0 起面板支持
+**拖拽上传**（文件与文件夹直接拖入，递归展开目录结构逐级上传），agent 侧
+补齐**管理闭环**：`sftp_mkdir`（parents 逐级补齐）/ `sftp_rename`（跨目录
+移动）/ `sftp_remove`（递归删除）/ `sftp_tree`（限深递归列举）。
 
 ![终端面板：多标签页 xterm 弹窗，工具栏含搜索/清屏/复制/粘贴，标题栏含最小化「—」与关闭 ✕](../../docs/dsh-plugin-kit-tty.png)
 
@@ -57,7 +60,7 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
 
 ## agent 工具（P1）
 
-插件向 agent 注入九个工具（与 bash 工具同权，操作实时显示在用户终端里）：
+插件向 agent 注入十三个工具（与 bash 工具同权，操作实时显示在用户终端里）：
 
 | 工具 | 作用 |
 | --- | --- |
@@ -69,6 +72,10 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
 | `sftp_list` | 列出 SSH 远程目录内容（名称/类型/大小/修改时间，目录在前）；`book` 为连接簿条目名，`path` 缺省为登录 home |
 | `sftp_read` | 读取远程**文本**文件（默认 ≤256KB 可调至 1MB，超出截断；含 NUL 字节按二进制拒绝） |
 | `sftp_write` | 写远程文本文件（默认覆盖，`append:true` 追加；单次 ≤1MB） |
+| `sftp_mkdir` | 创建远程目录；`parents:true` 逐级补齐缺失父目录（等效 `mkdir -p`，自底向上创建，已存在目录幂等跳过） |
+| `sftp_rename` | 重命名/移动远程文件或目录（`to` 与 `from` 不同目录即移动；不覆盖已存在的目标） |
+| `sftp_remove` | 删除远程文件/目录；目录默认 rmdir（非空明确报错），`recursive:true` 整树删除（不可恢复） |
+| `sftp_tree` | 递归列举远程目录结构（深度优先、目录优先；`maxDepth` 1~8 / `maxEntries` 1~2000 限流，超限 `truncated:true`；symlink 不跟随防环） |
 | `tunnel_list` | 列出端口转发隧道及其实时状态（活跃/连接中/错误/停止、规则、连接数） |
 
 典型 agent 流程（推荐）：`tty_send` 启动长任务 → `tty_expect` 等就绪标记 →
@@ -118,7 +125,7 @@ SSH 会话同表调度：`tty_list` 里 `kind: 'ssh'` 的条目按 `target`
   `tunnel_list` 工具查询状态；
 - TOFU 与终端会话共享同一份 hostKeys 钉扎；端口不占用 maxSessions 名额。
 
-## SFTP 文件传输（0.7.0）
+## SFTP 文件传输（0.7.0，0.8.0 增强）
 
 不动终端、不占会话名额，直接对 SSH 连接做远程文件操作（`ssh2` 的 sftp
 subsystem，宿主半体 `src/sftp.ts`）：
@@ -126,7 +133,9 @@ subsystem，宿主半体 `src/sftp.ts`）：
 - **入口**：① 标签栏「+」菜单的连接簿条目带 📂（按该条目打开文件浏览）；
   ② SSH 连接对话框填好主机/认证后点「文件浏览」（不落连接簿也能浏览）；
 - **操作**：目录浏览（路径框回车跳转、`..（上级目录）`、单击文件即下载）、
-  **上传**（多选文件，XHR 流式 + 进度百分比）、**下载**（POST → 浏览器 Blob
+  **上传**（多选文件，XHR 流式 + 进度百分比；0.8.0 起支持**拖拽**——文件与
+  文件夹直接拖入对话框，文件夹经 `webkitGetAsEntry` 递归展开逐个上传，目录
+  用 mkdir parents 逐级补齐）、**下载**（POST → 浏览器 Blob
   → `<a download>`）、**新建目录**、**重命名**（行内编辑器）、**删除**
   （🗑 二次点击确认，目录带 `recursive` 整目录删除）；
 - **连接管理**：懒连接池——首次操作才建 SSH 连接，空闲 120 秒自动回收，
@@ -138,7 +147,8 @@ subsystem，宿主半体 `src/sftp.ts`）：
   与 WS ssh 帧同语义「条目作基底 + 内联逐项覆盖」）或 upload 的
   `x-dsh-sftp-meta` 头（base64url）携带——**凭证不进 URL/查询串**；上传下载
   均为流式 pipe，不整文件进内存；
-- **agent 工具**：`sftp_list` / `sftp_read` / `sftp_write`（见上表）——只收
+- **agent 工具**：`sftp_list` / `sftp_read` / `sftp_write` / `sftp_mkdir` /
+  `sftp_rename` / `sftp_remove` / `sftp_tree`（见上表）——只收
   `book` 连接簿条目名，**不接受内联凭证**（agent 上下文不进明文密钥）。
 
 ## SSH 连接（方案 C）
@@ -321,7 +331,8 @@ pnpm --filter @hyzyn/dsh-tty ssh-smoke    # SSH 冒烟：内存 SSH server（ssh
   ├─ SFTP（src/sftp.ts，0.7.0）：懒连接池（空闲 120s 回收、断开按需重连、
   │  TOFU 共用）→ POST /api/dsh-tty/sftp/list|mkdir|rename|remove|download|
   │  upload（spec 走体/头，凭证不进 URL；上传下载流式 pipe）+
-  │  sftp_list/sftp_read/sftp_write 工具（只收连接簿名）
+  │  sftp_list/read/write/mkdir/rename/remove/tree 工具（只收连接簿名；
+  │  mkdir 支持 parents 自底向上逐级补齐，tree 限深限数递归列举）
   ├─ 端口转发（src/tunnels.ts）：宿主自持隧道（-L/-R 双向），断线退避重连、
   │  TOFU 共用、连接计数；GET /api/dsh-tty/tunnels 实时状态 + tunnel_list 工具
   └─ 帧协议：spawn|ssh / input / resize / kill / sessions / attach
@@ -335,7 +346,7 @@ SSH 路径 (src/ssh.ts，方案 C)
      背压一并透传到 channel —— 之后与本地 PTY 无差别调度
 ```
 
-M0 探针、集成测试（B1~B23 共 51 项断言）与真实实例冒烟（live / TUI）在
+M0 探针、集成测试（B1~B24 共 58 项断言）与真实实例冒烟（live / TUI）在
 真实 DSH 服务组合上验证过：TERM 注入、resize 透传、sid 冲突、并发上限、
 loopback 围栏、多会话数据隔离、cwd 跟随与校验、配置热生效（settings/updated）、
 kill→exit 全链路、断线保活 + sessions/attach 重连回放、tty_screen 虚拟屏、
@@ -343,10 +354,13 @@ tty_capture ANSI 清洗、shell 集成（capture{last} + exitCode、OSC 7 cwd
 跟随）、tty_expect 匹配与超时、~/.ssh/config 解析器、端口转发（双隧道 active + forwardOut 往返 + reconcile 清理）、
 shells 候选路由、bash 3.2 shell 集成（DEBUG trap 兜底：capture{last} +
 exitCode、tty_expect 命令结束早停）、SFTP 文件传输（list/mkdir/upload/
-download/remove 路由 + sftp_* 工具，test-sshd 内存 sshd 端到端）。SSH 路径由 `ssh-smoke`
+download/remove 路由 + sftp_* 工具，test-sshd 内存 sshd 端到端）、SFTP 管理
+闭环（agent sftp_mkdir/-rename/-remove/-tree：parents 补齐、tree 限深截断、
+跨目录移动、非空删除拒绝与递归删除）。SSH 路径由 `ssh-smoke`
 （内存 SSH server × 真实 `spawnSsh`）验证：password 认证建链与 prompt、
 命令往返、pty-req 初始尺寸与 resize（window-change）、terminate /
 exit-status 全链路，以及 TOFU 指纹记录（S7）与指纹变更拒绝连接（S8）；
 SFTP 由 ssh-smoke S9（test-sshd 的 sftp subsystem × 真实 SftpManager）覆盖：
 目录列表与 realpath home、上传覆盖+追加、下载（stat size 作 content-length）、
-mkdir/rename/非递归删除拒绝/递归删除、TOFU 指纹变更拒绝。
+mkdir/rename/非递归删除拒绝/递归删除、TOFU 指纹变更拒绝；S9g 覆盖 mkdir
+`parents` 自底向上逐级补齐（幂等）与 `tree` 限深截断/全量。
