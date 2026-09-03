@@ -127,10 +127,14 @@ SSH 会话同表调度：`tty_list` 里 `kind: 'ssh'` 的条目按 `target`
   `tunnel_list` 工具查询状态；
 - TOFU 与终端会话共享同一份 hostKeys 钉扎；端口不占用 maxSessions 名额。
 
-## SFTP 文件传输（0.7.0，0.8.0 增强）
+## SFTP 文件传输（0.7.0，0.8.0/0.9.0 增强）
 
 不动终端、不占会话名额，直接对 SSH 连接做远程文件操作（`ssh2` 的 sftp
 subsystem，宿主半体 `src/sftp.ts`）：
+
+![SFTP 单窗体：远程目录浏览，行内 下载/重命名/删除](../../docs/dsh-plugin-kit-tty-sftp-dialog.png)
+
+![SFTP 双栏（0.9.0）：左本机 / 右远程，行内 ⇨/⇦ 服务端直传](../../docs/dsh-plugin-kit-tty-sftp-dual.png)
 
 - **入口**：① 标签栏「+」菜单的连接簿条目带 📂（按该条目打开文件浏览）；
   ② SSH 连接对话框填好主机/认证后点「文件浏览」（不落连接簿也能浏览）；
