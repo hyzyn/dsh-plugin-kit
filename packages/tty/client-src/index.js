@@ -173,6 +173,26 @@ const CSS = [
   '.tt_envItem:hover{background:var(--dsw-alias-interactive-bg-hover)}',
   '.tt_envMore{font-size:11px;color:var(--dsw-alias-label-tertiary);padding:4px 8px}',
   '.tt_shellList{margin-top:6px}',
+  // SFTP 文件浏览对话框（工具栏 + 行内编辑器 + 列表 + 状态行；列表滚动，卡片定高）
+  '.tt_sftpCard{width:min(720px,94vw);height:min(640px,86vh);background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:14px;box-shadow:var(--dsw-shadow-lv3);color:var(--dsw-alias-label-primary);padding:16px;display:flex;flex-direction:column;gap:10px;overflow:hidden}',
+  '.tt_sftpBar{display:flex;gap:8px;align-items:center}',
+  '.tt_sftpPath{flex:1;min-width:0;height:30px;background:var(--dsw-specific-input-major);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;color:inherit;font:12px "SF Mono",Menlo,Consolas,monospace;padding:0 10px;box-sizing:border-box}',
+  '.tt_sftpPath:focus{border-color:var(--dsw-alias-state-business-primary);outline:none}',
+  '.tt_sftpList{flex:1;min-height:200px;overflow-y:auto;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-3);display:flex;flex-direction:column}',
+  '.tt_sftpRow{appearance:none;background:0 0;border:none;color:var(--dsw-alias-label-primary);text-align:left;font:inherit;font-size:13px;display:flex;align-items:center;gap:8px;padding:6px 10px;cursor:pointer}',
+  '.tt_sftpRow:hover{background:var(--dsw-alias-interactive-bg-hover)}',
+  '.tt_sftpIcon{flex:none;width:18px;text-align:center}',
+  '.tt_sftpName{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+  '.tt_sftpMeta{flex:none;font-size:11px;color:var(--dsw-alias-label-tertiary);font-family:"SF Mono",Menlo,Consolas,monospace}',
+  '.tt_sftpAct{appearance:none;background:0 0;border:none;color:var(--dsw-alias-label-tertiary);cursor:pointer;font-size:13px;line-height:1;flex:none;padding:3px 5px;border-radius:6px}',
+  '.tt_sftpAct:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}',
+  '.tt_sftpAct[data-danger]{color:var(--dsw-alias-state-error-primary);font-size:12px;font-weight:600}',
+  '.tt_sftpEditor{display:flex;gap:8px;align-items:center}',
+  '.tt_sftpEditor .tt_cardInput{flex:1;min-width:0;height:30px;font-size:12px}',
+  '.tt_sftpFoot{display:flex;align-items:center;gap:10px}',
+  '.tt_sftpStatus{flex:1;min-width:0;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-tertiary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+  '.tt_sftpStatus[data-state=error]{color:var(--dsw-alias-state-error-primary)}',
+  '.tt_sftpStatus[data-state=busy]{color:var(--dsw-alias-state-business-primary)}',
 ].join('\n')
 
 /* ================================ 基础工具 ================================ */
@@ -749,6 +769,15 @@ function renderAddMenuItems(menu) {
       closeAddMenu()
       addTab({ t: 'ssh', name: entry.name }, entry.name)
     })
+    const browse = document.createElement('button')
+    browse.type = 'button'
+    browse.className = 'tt_addMenuEdit'
+    browse.title = 'SFTP 文件浏览'
+    browse.textContent = '📂'
+    browse.addEventListener('click', () => {
+      closeAddMenu()
+      openSftpBrowser({ name: entry.name })
+    })
     const edit = document.createElement('button')
     edit.type = 'button'
     edit.className = 'tt_addMenuEdit'
@@ -759,6 +788,7 @@ function renderAddMenuItems(menu) {
       openSshDialog(entry)
     })
     rowEl.appendChild(item)
+    rowEl.appendChild(browse)
     rowEl.appendChild(edit)
     menu.appendChild(rowEl)
   }
@@ -993,6 +1023,46 @@ function openSshDialog(entry) {
   connectBtn.className = 'tt_cardSave'
   connectBtn.textContent = '连接'
   actions.appendChild(cancelBtn)
+  const sftpBtn = document.createElement('button')
+  sftpBtn.type = 'button'
+  sftpBtn.className = 'tt_toolBtn'
+  sftpBtn.textContent = '文件浏览'
+  sftpBtn.title = '不动终端，直接以当前填写的信息打开 SFTP 文件浏览'
+  sftpBtn.addEventListener('click', () => {
+    errorEl.textContent = ''
+    const host = fields.host.value.trim()
+    const username = fields.username.value.trim()
+    let port = Number(fields.port.value)
+    if (!Number.isInteger(port) || port < 1 || port > 65535) port = 22
+    if (host === '' || username === '') {
+      errorEl.textContent = '主机与用户名必填'
+      return
+    }
+    const auth = fields.auth.value
+    const spec = { host, port, username, auth }
+    if (auth === 'key') {
+      const keyPath = fields.keyPath.value.trim()
+      if (keyPath === '') {
+        errorEl.textContent = 'auth=key 需要私钥路径'
+        return
+      }
+      spec.keyPath = keyPath
+      const passphrase = fields.passphrase.value
+      if (passphrase !== '') spec.passphrase = passphrase
+    }
+    if (auth === 'password') {
+      const password = fields.password.value
+      if (password === '') {
+        errorEl.textContent = 'auth=password 需要密码'
+        return
+      }
+      spec.password = password
+    }
+    if (fwdCheck.checked) spec.agentForward = true
+    closeSshDialog()
+    openSftpBrowser(spec)
+  })
+  actions.appendChild(sftpBtn)
   let saveEditBtn = null
   if (isEdit) {
     saveEditBtn = document.createElement('button')
@@ -1160,6 +1230,459 @@ async function saveSshHostUpdate(originalName, entry) {
   } catch (error) {
     return String(error && error.message ? error.message : error)
   }
+}
+
+/* ============================ SFTP 文件浏览 ============================ */
+
+let sftpDialogEl = null
+
+/** UTF-8 安全的 base64url（upload 的 x-dsh-sftp-meta 头用；服务端 Buffer base64url 解）。 */
+function b64uEncode(text) {
+  const bytes = new TextEncoder().encode(text)
+  let bin = ''
+  for (const byte of bytes) bin += String.fromCharCode(byte)
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+function formatBytes(n) {
+  if (!Number.isFinite(n) || n <= 0) return ''
+  if (n < 1024) return String(n) + ' B'
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let value = n
+  let index = -1
+  do {
+    value /= 1024
+    index += 1
+  } while (value >= 1024 && index < units.length - 1)
+  return (value >= 100 ? value.toFixed(0) : value.toFixed(1)) + ' ' + units[index]
+}
+
+function formatMtime(ms) {
+  const date = new Date(ms)
+  if (Number.isNaN(date.getTime())) return ''
+  const pad = (v) => String(v).padStart(2, '0')
+  return date.getFullYear() + '-' + pad(date.getMonth() + 1) + '-' + pad(date.getDate()) + ' ' + pad(date.getHours()) + ':' + pad(date.getMinutes())
+}
+
+function parentRemotePath(path) {
+  const trimmed = String(path).replace(/\/+$/, '')
+  const index = trimmed.lastIndexOf('/')
+  if (index <= 0) return '/'
+  return trimmed.slice(0, index)
+}
+
+function joinRemotePath(dir, name) {
+  return dir.endsWith('/') ? dir + name : dir + '/' + name
+}
+
+/**
+ * SFTP 文件浏览对话框（0.7.0）：目录列表 / 进入上级与子目录（路径框回车跳转）/
+ * 新建目录 / 重命名（行内编辑器）/ 删除（目录递归，🗑 二次点击确认）/
+ * 上传（XHR 流式 + 进度）/ 下载（POST → blob → a[download]）。
+ * specInput = {name}（连接簿条目，服务端按连接簿解析凭证）或内联 SSH 字段
+ * （SSH 连接对话框「文件浏览」带字段进来）；每个请求都带全 spec，凭证只走
+ * loopback POST 体 / meta 头，不进 URL。下载经浏览器内存（大文件建议终端 scp）。
+ */
+function openSftpBrowser(specInput) {
+  if (sftpDialogEl !== null) return
+  const raw = specInput !== null && typeof specInput === 'object' ? specInput : {}
+  const spec = {}
+  if (typeof raw.name === 'string' && raw.name !== '') {
+    spec.name = raw.name
+  } else {
+    for (const key of ['host', 'username', 'auth', 'keyPath', 'passphrase', 'password']) {
+      if (typeof raw[key] === 'string' && raw[key] !== '') spec[key] = raw[key]
+    }
+    const port = Number(raw.port)
+    if (Number.isInteger(port) && port >= 1 && port <= 65535) spec.port = port
+    if (raw.agentForward === true) spec.agentForward = true
+  }
+  const label = spec.name ?? (spec.username !== undefined ? spec.username + '@' + String(spec.host ?? '') : String(spec.host ?? ''))
+
+  const backdrop = document.createElement('div')
+  backdrop.className = 'tt_sshBackdrop'
+  const card = document.createElement('div')
+  card.className = 'tt_sftpCard'
+
+  const title = document.createElement('div')
+  title.className = 'tt_sshTitle'
+  title.textContent = 'SFTP — ' + label
+  card.appendChild(title)
+
+  /* 工具栏：路径输入（回车跳转）+ 刷新 / 新建目录 / 上传（隐藏 file input） */
+  const bar = document.createElement('div')
+  bar.className = 'tt_sftpBar'
+  const pathInput = document.createElement('input')
+  pathInput.type = 'text'
+  pathInput.className = 'tt_sftpPath'
+  pathInput.placeholder = '远程路径（回车跳转）'
+  pathInput.spellcheck = false
+  pathInput.autocomplete = 'off'
+  const refreshBtn = document.createElement('button')
+  refreshBtn.type = 'button'
+  refreshBtn.className = 'tt_toolBtn'
+  refreshBtn.textContent = '刷新'
+  const mkdirBtn = document.createElement('button')
+  mkdirBtn.type = 'button'
+  mkdirBtn.className = 'tt_toolBtn'
+  mkdirBtn.textContent = '新建目录'
+  const uploadBtn = document.createElement('button')
+  uploadBtn.type = 'button'
+  uploadBtn.className = 'tt_toolBtn'
+  uploadBtn.textContent = '上传'
+  const fileInput = document.createElement('input')
+  fileInput.type = 'file'
+  fileInput.multiple = true
+  fileInput.style.display = 'none'
+  bar.appendChild(pathInput)
+  bar.appendChild(refreshBtn)
+  bar.appendChild(mkdirBtn)
+  bar.appendChild(uploadBtn)
+  card.appendChild(bar)
+  card.appendChild(fileInput)
+
+  /* 行内编辑器（mkdir / rename 共用）：输入 + 确定 / 取消 */
+  const editor = document.createElement('div')
+  editor.className = 'tt_sftpEditor'
+  editor.style.display = 'none'
+  const editorInput = document.createElement('input')
+  editorInput.type = 'text'
+  editorInput.className = 'tt_cardInput'
+  editorInput.spellcheck = false
+  editorInput.autocomplete = 'off'
+  const editorOk = document.createElement('button')
+  editorOk.type = 'button'
+  editorOk.className = 'tt_toolBtn'
+  editorOk.textContent = '确定'
+  const editorCancel = document.createElement('button')
+  editorCancel.type = 'button'
+  editorCancel.className = 'tt_toolBtn'
+  editorCancel.textContent = '取消'
+  editor.appendChild(editorInput)
+  editor.appendChild(editorOk)
+  editor.appendChild(editorCancel)
+  card.appendChild(editor)
+  let editorCommit = null
+  const closeEditor = () => {
+    editor.style.display = 'none'
+    editorCommit = null
+  }
+  editorOk.addEventListener('click', () => {
+    void editorCommit?.()
+  })
+  editorCancel.addEventListener('click', closeEditor)
+  editorInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      void editorCommit?.()
+    } else if (event.key === 'Escape') {
+      event.stopPropagation()
+      closeEditor()
+    }
+  })
+
+  const list = document.createElement('div')
+  list.className = 'tt_sftpList'
+  card.appendChild(list)
+
+  const foot = document.createElement('div')
+  foot.className = 'tt_sftpFoot'
+  const status = document.createElement('div')
+  status.className = 'tt_sftpStatus'
+  const closeBtn = document.createElement('button')
+  closeBtn.type = 'button'
+  closeBtn.className = 'tt_toolBtn'
+  closeBtn.textContent = '关闭'
+  foot.appendChild(status)
+  foot.appendChild(closeBtn)
+  card.appendChild(foot)
+
+  const state = { path: '', busy: false }
+  const setStatus = (text, kind) => {
+    status.textContent = text
+    if (kind === undefined) delete status.dataset.state
+    else status.dataset.state = kind
+  }
+  const setBusy = (busy) => {
+    state.busy = busy
+    for (const el of [refreshBtn, mkdirBtn, uploadBtn, closeBtn]) el.disabled = busy
+    pathInput.disabled = busy
+  }
+
+  const api = async (action, payload) => {
+    const res = await fetch('/api/dsh-tty/sftp/' + action, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...spec, ...payload }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data.ok !== true) throw new Error(String(data.error || 'HTTP ' + res.status))
+    return data
+  }
+
+  /** 任务包装：置忙 → 执行 → 失败置错误态 → 解忙（loadDir 的错误在内部消化）。 */
+  const runTask = async (busyText, task) => {
+    if (state.busy) return
+    setBusy(true)
+    setStatus(busyText, 'busy')
+    try {
+      await task()
+    } catch (error) {
+      setStatus(String(error && error.message ? error.message : error), 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const listRow = (icon, name, meta) => {
+    const row = document.createElement('button')
+    row.type = 'button'
+    row.className = 'tt_sftpRow'
+    const iconEl = document.createElement('span')
+    iconEl.className = 'tt_sftpIcon'
+    iconEl.textContent = icon
+    const nameEl = document.createElement('span')
+    nameEl.className = 'tt_sftpName'
+    nameEl.textContent = name
+    nameEl.title = name
+    row.appendChild(iconEl)
+    row.appendChild(nameEl)
+    if (meta !== '') {
+      const metaEl = document.createElement('span')
+      metaEl.className = 'tt_sftpMeta'
+      metaEl.textContent = meta
+      row.appendChild(metaEl)
+    }
+    return row
+  }
+
+  const appendAct = (row, glyph, titleText, onClick) => {
+    const act = document.createElement('button')
+    act.type = 'button'
+    act.className = 'tt_sftpAct'
+    act.textContent = glyph
+    act.title = titleText
+    act.addEventListener('click', (event) => {
+      event.stopPropagation()
+      onClick()
+    })
+    row.appendChild(act)
+  }
+
+  /** 删除按钮：首击变「确认?」（4s 复位），再击执行（目录带 recursive）。 */
+  const appendDelete = (row, entry, full) => {
+    const act = document.createElement('button')
+    act.type = 'button'
+    act.className = 'tt_sftpAct'
+    act.textContent = '🗑'
+    act.title = '删除 ' + entry.name + (entry.isDir ? '（含内容）' : '')
+    let confirmTimer = null
+    act.addEventListener('click', (event) => {
+      event.stopPropagation()
+      if (state.busy) return
+      if (confirmTimer !== null) {
+        clearTimeout(confirmTimer)
+        confirmTimer = null
+        act.textContent = '🗑'
+        delete act.dataset.danger
+        void runTask('删除 ' + entry.name + '…', async () => {
+          await api('remove', { path: full, recursive: entry.isDir === true })
+          await loadDir(state.path)
+          setStatus('已删除 ' + entry.name)
+        })
+        return
+      }
+      act.textContent = '确认?'
+      act.dataset.danger = ''
+      confirmTimer = setTimeout(() => {
+        confirmTimer = null
+        act.textContent = '🗑'
+        delete act.dataset.danger
+      }, 4000)
+    })
+    row.appendChild(act)
+  }
+
+  const renderRows = (entries) => {
+    list.textContent = ''
+    if (state.path !== '' && state.path !== '/') {
+      const up = listRow('📁', '..（上级目录）', '')
+      up.addEventListener('click', () => {
+        void runTask('加载中…', () => loadDir(parentRemotePath(state.path)))
+      })
+      list.appendChild(up)
+    }
+    const rows = Array.isArray(entries) ? entries : []
+    if (rows.length === 0) {
+      const empty = document.createElement('div')
+      empty.className = 'tt_addMenuTitle'
+      empty.textContent = '（空目录）'
+      list.appendChild(empty)
+      return
+    }
+    for (const entry of rows) {
+      if (entry === null || typeof entry !== 'object' || typeof entry.name !== 'string' || entry.name === '') continue
+      const full = joinRemotePath(state.path, entry.name)
+      const metaParts = []
+      if (entry.isDir === true) metaParts.push('目录')
+      else metaParts.push(formatBytes(Number(entry.size)) || '—')
+      const mtime = formatMtime(Number(entry.mtime))
+      if (mtime !== '') metaParts.push(mtime)
+      const row = listRow(entry.isDir ? '📁' : entry.isSymlink ? '↗' : '📄', entry.name, metaParts.join(' · '))
+      if (entry.isDir === true) {
+        row.addEventListener('click', (event) => {
+          if (event.target instanceof Element && event.target.closest('.tt_sftpAct') !== null) return
+          void runTask('加载中…', () => loadDir(full))
+        })
+      } else {
+        // 文件单击即下载；行内按钮经 stopPropagation 不会二次触发
+        row.addEventListener('click', (event) => {
+          if (event.target instanceof Element && event.target.closest('.tt_sftpAct') !== null) return
+          void downloadEntry(entry, full)
+        })
+        appendAct(row, '⬇', '下载 ' + entry.name, () => void downloadEntry(entry, full))
+      }
+      appendAct(row, '✎', '重命名 ' + entry.name, () => {
+        editorInput.placeholder = '新名称'
+        editorInput.value = entry.name
+        editor.style.display = ''
+        editorInput.focus()
+        editorInput.select()
+        editorCommit = async () => {
+          const value = editorInput.value.trim()
+          if (value === '' || value === entry.name) return
+          closeEditor()
+          await runTask('重命名 ' + entry.name + '…', async () => {
+            await api('rename', { from: full, to: joinRemotePath(state.path, value) })
+            await loadDir(state.path)
+          })
+        }
+      })
+      appendDelete(row, entry, full)
+      list.appendChild(row)
+    }
+  }
+
+  /** 目录加载（busy 由调用方管）：path 为空时服务端 realpath 解析登录 home。 */
+  const loadDir = async (pathArg) => {
+    try {
+      const data = await api('list', { path: pathArg ?? state.path })
+      state.path = typeof data.path === 'string' && data.path !== '' ? data.path : '/'
+      pathInput.value = state.path
+      const count = Array.isArray(data.entries) ? data.entries.length : 0
+      renderRows(data.entries)
+      setStatus(state.path + ' — ' + String(count) + ' 项')
+    } catch (error) {
+      setStatus(String(error && error.message ? error.message : error), 'error')
+    }
+  }
+
+  const downloadEntry = (entry, full) => runTask('下载 ' + entry.name + '…', async () => {
+    const res = await fetch('/api/dsh-tty/sftp/download', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...spec, path: full }),
+    })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      throw new Error(String(data.error || 'HTTP ' + res.status))
+    }
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = entry.name
+    anchor.click()
+    setTimeout(() => URL.revokeObjectURL(url), 30_000)
+    setStatus('已下载 ' + entry.name + '（' + (formatBytes(blob.size) || String(blob.size) + ' B') + '）')
+  })
+
+  const uploadOne = (file) => new Promise((resolve, reject) => {
+    const meta = b64uEncode(JSON.stringify({ ...spec, path: joinRemotePath(state.path, file.name) }))
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', '/api/dsh-tty/sftp/upload')
+    xhr.setRequestHeader('x-dsh-sftp-meta', meta)
+    xhr.upload.addEventListener('progress', (event) => {
+      if (event.lengthComputable) {
+        setStatus('上传 ' + file.name + ' ' + String(Math.round((event.loaded / event.total) * 100)) + '%', 'busy')
+      }
+    })
+    xhr.addEventListener('load', () => {
+      if (xhr.status === 200) {
+        resolve()
+        return
+      }
+      let message = 'HTTP ' + xhr.status
+      try {
+        const data = JSON.parse(xhr.responseText)
+        if (data !== null && typeof data === 'object' && typeof data.error === 'string') message = data.error
+      } catch {
+        /* 保底 HTTP 状态码 */
+      }
+      reject(new Error(message))
+    })
+    xhr.addEventListener('error', () => reject(new Error('网络错误')))
+    xhr.send(file)
+  })
+
+  const uploadFiles = async (files) => runTask('上传中…', async () => {
+    for (const file of files) {
+      await uploadOne(file)
+    }
+    setStatus('上传完成 ' + String(files.length) + ' 个文件')
+    await loadDir(state.path)
+  })
+
+  refreshBtn.addEventListener('click', () => {
+    void runTask('加载中…', () => loadDir(state.path))
+  })
+  mkdirBtn.addEventListener('click', () => {
+    if (state.busy) return
+    editorInput.placeholder = '新目录名（相对当前目录）'
+    editorInput.value = ''
+    editor.style.display = ''
+    editorInput.focus()
+    editorCommit = async () => {
+      const value = editorInput.value.trim()
+      if (value === '') return
+      closeEditor()
+      await runTask('创建目录 ' + value + '…', async () => {
+        await api('mkdir', { path: joinRemotePath(state.path, value) })
+        await loadDir(state.path)
+      })
+    }
+  })
+  uploadBtn.addEventListener('click', () => {
+    if (state.busy === false) fileInput.click()
+  })
+  fileInput.addEventListener('change', () => {
+    const files = [...(fileInput.files ?? [])]
+    fileInput.value = ''
+    if (files.length > 0) void uploadFiles(files)
+  })
+  pathInput.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return
+    event.preventDefault()
+    if (state.busy) return
+    const target = pathInput.value.trim()
+    if (target === '') return
+    void runTask('加载中…', () => loadDir(target))
+  })
+  closeBtn.addEventListener('click', closeSftpDialog)
+  backdrop.addEventListener('mousedown', (event) => {
+    if (event.target === backdrop) closeSftpDialog()
+  })
+
+  backdrop.appendChild(card)
+  document.body.appendChild(backdrop)
+  sftpDialogEl = backdrop
+  void runTask('连接中…', () => loadDir(''))
+}
+
+function closeSftpDialog() {
+  if (sftpDialogEl === null) return
+  sftpDialogEl.remove()
+  sftpDialogEl = null
 }
 
 function toggleSearch() {
@@ -1467,6 +1990,7 @@ function minimizeModal() {
   if (modalEl === null || minimized) return
   closeAddMenu()
   closeSshDialog()
+  closeSftpDialog()
   minimized = true
   if (searchInputEl !== null) searchInputEl.style.display = 'none'
   modalEl.dataset.minimized = ''
@@ -1550,6 +2074,7 @@ function closeModal() {
   minimized = false
   closeAddMenu()
   closeSshDialog()
+  closeSftpDialog()
   clearTimeout(dockActivityTimer)
   clearTimeout(reconnectTimer)
   reconnectTimer = null
@@ -1609,7 +2134,11 @@ function closeModal() {
 function onModalKeydown(event) {
   if (event.key === 'Escape' && modalEl !== null) {
     event.preventDefault()
-    // Esc 优先关浮层（SSH 对话框 /「+」菜单），再最小化（会话保活）；✕ 才真正关闭
+    // Esc 优先关浮层（SFTP 浏览 / SSH 对话框 /「+」菜单），再最小化（会话保活）；✕ 才真正关闭
+    if (sftpDialogEl !== null) {
+      closeSftpDialog()
+      return
+    }
     if (sshDialogEl !== null) {
       closeSshDialog()
       return
