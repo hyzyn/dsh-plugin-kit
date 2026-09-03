@@ -13,7 +13,7 @@
   &nbsp;
   <img src="https://img.shields.io/npm/dt/@hyzyn%2Fdsh-all?style=flat-square&label=downloads" alt="Downloads">
   &nbsp;
-  <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License">
+  <img src="https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square" alt="License">
 </p>
 
 仓库门禁：`pnpm typecheck` / `pnpm build` / `pnpm aggregate`。
@@ -329,7 +329,7 @@ A: 本机 `~/.npm` 缓存存在 root-owned 文件（历史 npm bug），执行 `
 
 ## 许可证
 
-本仓库以 [MIT](LICENSE) 授权。
+本仓库以 [Apache License 2.0](LICENSE) 授权。
 
 ## 贡献者
 
