@@ -11,6 +11,8 @@
   &nbsp;
   <img src="https://img.shields.io/npm/v/@hyzyn%2Fdsh-all?style=flat-square&label=npm" alt="npm">
   &nbsp;
+  <img src="https://img.shields.io/npm/dt/@hyzyn%2Fdsh-all?style=flat-square&label=downloads" alt="Downloads">
+  &nbsp;
   <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License">
 </p>
 
@@ -29,9 +31,11 @@
 
 ## 是什么
 
-dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合：环境变量 / 密钥管理、MCP 服务器配置、Prompt 管理、Profile 管理、RSS / 新闻聚合、全局搜索、Codegraph 集成，外加一条命令生成新插件的开发脚手架。所有插件都走官方 profile 机制挂载到 `dsh web`，不改 DSH 源码；可以逐个安装，也可以用聚合包一次装齐。
+dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合：环境变量 / 密钥管理、MCP 服务器配置、Prompt 管理、Profile 管理、RSS / 新闻聚合、全局搜索、Codegraph 集成、终端面板（本地 + SSH 终端、SFTP 文件传输），外加一条命令生成新插件的开发脚手架。所有插件都走官方 profile 机制挂载到 `dsh web`，不改 DSH 源码；可以逐个安装，也可以用聚合包一次装齐。
 
-![DSH 插件管理卡片示例](docs/dsh-plugin-kit-mcp.png)
+![SFTP 双栏：左本机 / 右远程，行内直传](docs/dsh-plugin-kit-tty-sftp-dual.png)
+
+![终端面板：侧边栏入口打开 xterm.js 多标签终端](docs/dsh-plugin-kit-tty.png)
 
 | 能力 | 原生 dsh web | dsh-plugin-kit 全家桶 |
 | --- | --- | --- |
@@ -42,7 +46,7 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 | RSS 聚合 | 无 | 多源订阅 + 每日「今日值得读」自动摘要 |
 | 全局搜索 | 仅会话标题/内容 | 侧边栏统一全文搜索历史会话、Prompt、MCP 工具与设置面板 |
 | Codegraph 集成 | 无 | 代码图谱卡片：索引状态 / 符号搜索 / 调用链 / 影响面 / 一键 sync-index |
-| 终端面板 | 无 | 侧边栏「终端」入口 + xterm.js 大弹窗：多标签页真实 PTY 终端（vim/htop/dev server），cwd 跟随会话，配置热生效 |
+| 终端面板 | 无 | 侧边栏「终端」入口 + xterm.js 多标签真实 PTY 终端（vim/htop/dev server）；SSH 直连远程主机（连接簿、指纹钉扎、断线重连）；**SFTP 文件传输**（单窗体 / 左本机右远程双栏直传、拖拽上传）；agent 配套 `tty_*` / `sftp_*` 工具 |
 | 插件开发 | 手写样板 | `pnpm create-plugin` 脚手架 + `@hyzyn/dsh-kit` 类型助手 |
 
 ## 功能插件
@@ -112,16 +116,21 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 
 ### 终端面板（@hyzyn/dsh-tty）
 
-- **做什么**：在 Web GUI 侧边栏加一个「终端」入口，点击打开大弹窗，内嵌 xterm.js 全交互终端（node-pty 真实 PTY），支持多标签页，可运行任意命令与 TUI 程序（vim / htop / dev server 等）。
-- **怎么用**：安装后重启 `dsh web`，侧边栏点击「终端」→ 自动创建第一个终端（默认 `$SHELL`）→ 标签栏「+」新建、✕ 关闭；新标签默认在当前 DSH 会话工作目录打开；Ctrl+F 终端内搜索，工具栏清屏/复制/粘贴。
+- **做什么**：在 Web GUI 侧边栏加一个「终端」入口，点击打开大弹窗，内嵌 xterm.js 全交互终端（node-pty 真实 PTY），支持多标签页，可运行任意命令与 TUI 程序（vim / htop / dev server 等）；还能 **SSH 直连远程主机**（连接簿 / 主机指纹钉扎 / 断线自动重连 / 端口转发隧道），以及 **SFTP 文件传输**——单窗体或「左本机 / 右远程」双栏两种界面，上传 / 下载 / 重命名 / 删除一应俱全。
+- **怎么用**：安装后重启 `dsh web`，侧边栏点击「终端」→ 自动创建第一个终端（默认 `$SHELL`）→ 标签栏「+」新建（本地终端 / SSH 连接簿 / SSH 连接…）、✕ 关闭；新标签默认在当前 DSH 会话工作目录打开；SSH 标签的连接栏提供 SFTP / 隧道入口；Ctrl+F 终端内搜索，工具栏清屏/复制/粘贴。
+- **SFTP 两种界面（设置可选）**：`dialog` 单窗体——远程目录浏览、多选/拖拽上传（文件夹递归）、下载、重命名、删除；`dual` 双栏——左本机 / 右远程，行内 `⇨ / ⇦` 由宿主服务端把两个路径流式直传（目录递归、同名覆盖，字节不经过浏览器）。
 - **最小化（状态并入侧边栏入口）**：点弹窗外空白处、按 Esc 或标题栏「—」把面板收起，PTY 会话与输出缓冲保持存活；侧边栏「终端」入口显示会话数徽标与状态点，点击入口恢复；悬浮条 ✕ / 标题栏 ✕ 才真正关闭并结束全部会话。
-- **支持**：多标签页（单连接多会话，帧协议 v2 带 sid）；cwd 跟随当前会话（sessions 客户端服务）；TERM=xterm-256color 注入（`-c` 包装层，TUI 应用不退化）；resize 透传 node-pty 原生 API；WS 双向帧协议（spawn/input/resize/kill ↔ ready/data/exit/error）；下行背压保护；loopback 信任围栏；并发上限（默认 4）；配置保存即热生效（settings/updated）；agent 工具集（tty_list / tty_capture / tty_send，可查看与交互用户终端里的长驻进程）。
+- **支持**：多标签页（单连接多会话）；cwd 跟随当前会话；TERM=xterm-256color 注入（TUI 应用不退化）；断线自动重连（会话保活 + 输出缓冲回放）；SSH agent / 密钥 / 密码认证，`env:VAR` 密钥引用不落盘；端口转发隧道（-L/-R，宿主自持重连）；下行背压保护；loopback 信任围栏；并发上限（默认 4）；配置保存即热生效；agent 工具集（`tty_list` / `tty_capture` / `tty_screen` / `tty_expect` / `tty_send` / `sftp_*` / `tunnel_list`）。
 - **存哪里**：无独立配置文件；配置走「设置 → 插件 → 终端面板」卡片。
 - **注意**：resize 依赖 DSH 内部 terminal handle 结构（已知限制）；输出为 utf8 文本流，`cat` 二进制文件会有替换字符。详细见 `packages/tty/README.md`。
 
-![终端面板：多标签页 xterm 弹窗，工具栏含搜索/清屏/复制/粘贴，标题栏含最小化「—」与关闭 ✕](docs/dsh-plugin-kit-tty.png)
+![终端面板：侧边栏入口打开 xterm.js 多标签终端，紧凑两行头部（标签 + SSH 连接栏）](docs/dsh-plugin-kit-tty.png)
 
-![终端面板设置卡片：shell / TERM / 并发上限等保存即热生效](docs/dsh-plugin-kit-tty-setting.png)
+![SFTP 双栏：左本机 / 右远程，行内 ⇨/⇦ 服务端直传（sftpStyle=dual）](docs/dsh-plugin-kit-tty-sftp-dual.png)
+
+![SFTP 单窗体：远程目录浏览 + 下载/重命名/删除](docs/dsh-plugin-kit-tty-sftp-dialog.png)
+
+![终端面板设置卡片：shell / TERM / SFTP 风格 / 并发上限等保存即热生效](docs/dsh-plugin-kit-tty-setting.png)
 
 ### RSS / 新闻聚合（@hyzyn/dsh-rss）
 
