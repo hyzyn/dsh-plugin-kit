@@ -87,6 +87,16 @@ export declare class SftpManager {
     openDownload(spec: SshSpec, path: string): Promise<SftpDownload>;
     /** 上传：返回可写流与完成信号（路由 pipe 请求体，await done 后回包）。 */
     openUpload(spec: SshSpec, path: string, append?: boolean): Promise<SftpUpload>;
+    /**
+     * 本机文件 / 目录 → 远程（双栏「→ 传输」）。目录递归建目录后逐个上传；
+     * 同名文件直接覆盖（openUpload 'w'）。不经过浏览器，字节不出宿主进程。
+     */
+    uploadFromLocal(spec: SshSpec, localPath: string, remotePath: string): Promise<void>;
+    /**
+     * 远程文件 / 目录 → 本机（双栏「← 传输」）。目录递归建本地目录后逐个下载；
+     * 同名文件直接覆盖（'w' 写流）。远程符号链接按文件下载（跟随目标）。
+     */
+    downloadToLocal(spec: SshSpec, remotePath: string, localPath: string): Promise<void>;
     /** 取（或建立）该 spec 的 SFTP 通道；连接断开的旧条目在此处自动重建。 */
     private acquire;
     private ensureSweeper;

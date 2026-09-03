@@ -18,6 +18,10 @@
  */
 import { Client } from 'ssh2'
 import type { ReadStream, SFTPWrapper, WriteStream } from 'ssh2'
+import { createReadStream, createWriteStream } from 'node:fs'
+import { mkdir as fsMkdir, readdir as fsReaddir, stat as fsStat } from 'node:fs/promises'
+import { basename, dirname, join as pathJoin } from 'node:path'
+import { pipeline } from 'node:stream/promises'
 import { applyHostKeyPolicy, buildConnectConfig, sshTarget } from './ssh.js'
 import type { HostKeyStore, SshSpec } from './ssh.js'
 
@@ -28,6 +32,11 @@ const SFTP_SWEEP_MS = 30_000
 
 /** OpenSSH 等 server 的 readdir 会带回 '.'/'..'：目录列表与递归删除都要跳过。 */
 const DOT_ENTRIES = new Set(['.', '..'])
+
+/** 远程路径拼接（POSIX 语义；本机路径拼接用 node:path）。 */
+function joinRemotePath(base: string, name: string): string {
+  return (base.endsWith('/') ? base : base + '/') + name
+}
 
 export interface SftpEntryInfo {
   name: string
@@ -292,6 +301,61 @@ export class SftpManager {
       stream.on('close', () => resolve())
     })
     return { stream, done }
+  }
+
+  /* -------------------------------------------------------------- */
+  /* 双栏直传（0.9.0）：本机路径 ↔ 远程路径，服务端流式搬运            */
+  /* -------------------------------------------------------------- */
+
+  /**
+   * 本机文件 / 目录 → 远程（双栏「→ 传输」）。目录递归建目录后逐个上传；
+   * 同名文件直接覆盖（openUpload 'w'）。不经过浏览器，字节不出宿主进程。
+   */
+  async uploadFromLocal(spec: SshSpec, localPath: string, remotePath: string): Promise<void> {
+    const root = localPath.trim()
+    const info = await fsStat(root).catch(() => {
+      throw new Error('本机路径不存在: ' + root)
+    })
+    if (info.isDirectory()) {
+      await this.mkdir(spec, remotePath, true)
+      const children = await fsReaddir(root, { withFileTypes: true })
+      for (const child of children) {
+        await this.uploadFromLocal(spec, pathJoin(root, child.name), joinRemotePath(remotePath, child.name))
+      }
+      return
+    }
+    if (!info.isFile()) throw new Error('不支持传输的文件类型: ' + root)
+    const { stream, done } = await this.openUpload(spec, remotePath, false)
+    await pipeline(createReadStream(root), stream).catch((error: unknown) => {
+      throw new Error(`上传失败（${basename(root)}）: ${error instanceof Error ? error.message : String(error)}`)
+    })
+    await done
+  }
+
+  /**
+   * 远程文件 / 目录 → 本机（双栏「← 传输」）。目录递归建本地目录后逐个下载；
+   * 同名文件直接覆盖（'w' 写流）。远程符号链接按文件下载（跟随目标）。
+   */
+  async downloadToLocal(spec: SshSpec, remotePath: string, localPath: string): Promise<void> {
+    const target = remotePath.trim()
+    const sftp = await this.acquire(spec)
+    const stats = await new Promise<import('ssh2').Stats>((resolve, reject) => {
+      sftp.stat(target, (error, found) => (error != null ? reject(new Error(`远程路径不存在: ${target}（${error.message}）`)) : resolve(found)))
+    })
+    if (stats.isDirectory()) {
+      await fsMkdir(localPath, { recursive: true })
+      const list = await this.list(spec, target)
+      for (const entry of list.entries) {
+        if (DOT_ENTRIES.has(entry.name)) continue
+        await this.downloadToLocal(spec, joinRemotePath(target, entry.name), pathJoin(localPath, entry.name))
+      }
+      return
+    }
+    await fsMkdir(dirname(localPath), { recursive: true })
+    const { stream } = await this.openDownload(spec, target)
+    await pipeline(stream, createWriteStream(localPath)).catch((error: unknown) => {
+      throw new Error(`下载失败（${basename(target)}）: ${error instanceof Error ? error.message : String(error)}`)
+    })
   }
 
   /* -------------------------------------------------------------- */

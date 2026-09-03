@@ -1,8 +1,9 @@
 import z from '@deepseek-ai/schemastery';
 import { randomUUID } from 'node:crypto';
 import { accessSync, constants as fsConstants, existsSync, readFileSync } from 'node:fs';
+import { mkdir as fsMkdir, readdir as fsReaddir, rename as fsRename, rm as fsRm, stat as fsStat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { StringDecoder } from 'node:string_decoder';
@@ -60,6 +61,7 @@ const TTY_SETTINGS_SCHEMA = z.object({
     hostKeys: z.array(HOST_KEY_SCHEMA).default([]),
     tunnels: z.array(TUNNEL_SCHEMA).default([]),
     shellIntegration: z.boolean().default(true),
+    sftpStyle: z.union([z.const('dialog'), z.const('dual')]).default('dialog'),
 });
 /* ------------------------------------------------------------------ *
  * 常量
@@ -1232,6 +1234,34 @@ async function readJsonBody(req) {
         return undefined;
     }
 }
+/**
+ * 本机目录列表（/api/dsh-tty/local-fs/list）：path 空 = 用户 home，返回实际
+ * 绝对路径。stat 失败的条目（悬空符号链接等）按 size/mtime = 0 占位仍列出。
+ */
+async function listLocalDir(rawPath) {
+    const root = rawPath !== '' ? expandHome(rawPath) : homedir();
+    const resolved = resolve(root);
+    const dirents = await fsReaddir(resolved, { withFileTypes: true });
+    const entries = [];
+    for (const dirent of dirents) {
+        let isDir = dirent.isDirectory();
+        let isFile = dirent.isFile();
+        let size = 0;
+        let mtime = 0;
+        try {
+            const stats = await fsStat(join(resolved, dirent.name));
+            isDir = stats.isDirectory();
+            isFile = stats.isFile();
+            size = Number(stats.size ?? 0);
+            mtime = Number(stats.mtimeMs ?? 0);
+        }
+        catch {
+            /* stat 失败：保留 dirent 类型判断，占位展示 */
+        }
+        entries.push({ name: dirent.name, isDir, isFile, isSymlink: dirent.isSymbolicLink(), size, mtime });
+    }
+    return { path: resolved, entries };
+}
 const plugin = definePlugin({
     name: 'tty',
     // 声明 inject：tools 服务只有声明式 inject 才能解析（动态 ctx.inject/ctx.get
@@ -1267,7 +1297,7 @@ const plugin = definePlugin({
         // （连接簿名或内联字段），连接簿凭证热改后天然生效
         const sftpManager = new SftpManager({ info: (m) => ctx.logger.info(m), warn: (m) => ctx.logger.warn(m) }, hostKeyStore);
         const server = new TtyServer(ctx, sessions, live, hostKeyStore);
-        const stateRef = { enabled: true, announceToAgent: config?.announceToAgent !== false, toolsRegistered: false };
+        const stateRef = { enabled: true, announceToAgent: config?.announceToAgent !== false, toolsRegistered: false, sftpStyle: config?.sftpStyle === 'dual' ? 'dual' : 'dialog' };
         let settingsScope;
         const snapshot = () => ({
             enabled: stateRef.enabled,
@@ -1282,6 +1312,7 @@ const plugin = definePlugin({
             hostKeys: live.hostKeys,
             tunnels: live.tunnels,
             shellIntegration: live.shellIntegration,
+            sftpStyle: stateRef.sftpStyle,
             toolsRegistered: stateRef.toolsRegistered,
         });
         /** 规范化并应用一份配置补丁（settings/updated 事件与 HTTP POST 共用；幂等）。 */
@@ -1306,12 +1337,14 @@ const plugin = definePlugin({
                 stateRef.enabled = section.enabled;
             if (typeof section.announceToAgent === 'boolean')
                 stateRef.announceToAgent = section.announceToAgent;
+            if (section.sftpStyle === 'dialog' || section.sftpStyle === 'dual')
+                stateRef.sftpStyle = section.sftpStyle;
             console.log(`[dsh-tty] config applied (shell=${live.shell}, term=${live.term}, cwd=${live.cwd}, maxSessions=${sessions.limitValue}, sshHosts=${live.sshHosts.length})`);
         };
         /** 校验 HTTP POST 的配置体；返回规范化补丁或错误信息。 */
         const normalizePatch = (input) => {
             const patch = {};
-            const known = new Set(['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'sshHosts', 'hostKeys', 'tunnels', 'shellIntegration']);
+            const known = new Set(['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'sshHosts', 'hostKeys', 'tunnels', 'shellIntegration', 'sftpStyle']);
             for (const key of Object.keys(input)) {
                 if (!known.has(key))
                     return { error: '未知配置项: ' + key };
@@ -1342,6 +1375,11 @@ const plugin = definePlugin({
                 if (typeof input.shellIntegration !== 'boolean')
                     return { error: 'shellIntegration 必须是布尔值' };
                 patch.shellIntegration = input.shellIntegration;
+            }
+            if (input.sftpStyle !== undefined) {
+                if (input.sftpStyle !== 'dialog' && input.sftpStyle !== 'dual')
+                    return { error: 'sftpStyle 必须是 dialog 或 dual' };
+                patch.sftpStyle = input.sftpStyle;
             }
             for (const key of ['shell', 'term', 'colorTerm']) {
                 if (input[key] === undefined)
@@ -1670,6 +1708,88 @@ const plugin = definePlugin({
                         writeJson(res, 404, { error: 'not found: ' + sub });
                     },
                 }));
+                // 本机文件浏览（0.9.0，双栏 SFTP 的本机一侧）：loopback 围栏。信任模型
+                // 与终端/SFTP 一致——浏览器仅同源可访问，且本机能做的 SSH 会话也能做；
+                // list/mkdir/rename/remove 操作本机路径；transfer 在服务端把本机路径与
+                // 远程路径流式对拷（凭证不落浏览器，字节不经过浏览器）。
+                disposers.push(webServer.register({
+                    kind: 'prefix',
+                    path: '/api/dsh-tty/local-fs',
+                    handler: async (req, res) => {
+                        if (!isLoopbackHttp(req)) {
+                            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+                            return;
+                        }
+                        const sub = new URL(req.url ?? '/', 'http://loopback').pathname.slice('/api/dsh-tty/local-fs'.length);
+                        if (req.method !== 'POST') {
+                            writeJson(res, 405, { error: 'method not allowed: ' + String(req.method) });
+                            return;
+                        }
+                        const body = await readJsonBody(req);
+                        if (body === undefined) {
+                            writeJson(res, 400, { error: 'invalid JSON body' });
+                            return;
+                        }
+                        const strField = (key) => (typeof body[key] === 'string' ? body[key].trim() : '');
+                        try {
+                            if (sub === '/list') {
+                                const result = await listLocalDir(strField('path'));
+                                writeJson(res, 200, { ok: true, path: result.path, entries: result.entries });
+                                return;
+                            }
+                            if (sub === '/mkdir') {
+                                const target = strField('path');
+                                if (target === '')
+                                    throw new Error('path 必填');
+                                await fsMkdir(target, { recursive: body.parents === true });
+                                writeJson(res, 200, { ok: true });
+                                return;
+                            }
+                            if (sub === '/rename') {
+                                const from = strField('from');
+                                const to = strField('to');
+                                if (from === '' || to === '')
+                                    throw new Error('from/to 必填');
+                                await fsRename(from, to);
+                                writeJson(res, 200, { ok: true });
+                                return;
+                            }
+                            if (sub === '/remove') {
+                                const target = strField('path');
+                                if (target === '')
+                                    throw new Error('path 必填');
+                                await fsRm(target, { recursive: body.recursive === true });
+                                writeJson(res, 200, { ok: true });
+                                return;
+                            }
+                            if (sub === '/transfer') {
+                                // up = 本机→远程（上传），down = 远程→本机（下载）；目录递归
+                                const direction = strField('direction');
+                                const localPath = strField('localPath');
+                                const remotePath = strField('remotePath');
+                                if (localPath === '' || remotePath === '')
+                                    throw new Error('localPath/remotePath 必填');
+                                if (direction !== 'up' && direction !== 'down')
+                                    throw new Error('direction 必须是 up 或 down');
+                                const parsed = mergeSshSpec((name) => live.findSshHost(name), body.name, body);
+                                if (parsed.spec === undefined) {
+                                    writeJson(res, 400, { error: parsed.error ?? '无效的 SSH 连接规格' });
+                                    return;
+                                }
+                                if (direction === 'up')
+                                    await sftpManager.uploadFromLocal(parsed.spec, localPath, remotePath);
+                                else
+                                    await sftpManager.downloadToLocal(parsed.spec, remotePath, localPath);
+                                writeJson(res, 200, { ok: true });
+                                return;
+                            }
+                            writeJson(res, 404, { error: 'not found: ' + sub });
+                        }
+                        catch (error) {
+                            writeJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+                        }
+                    },
+                }));
                 return () => {
                     server.close();
                     for (const dispose of disposers) {
@@ -1712,6 +1832,8 @@ const plugin = definePlugin({
                 }
                 if (stored.shellIntegration === false)
                     startup.shellIntegration = false;
+                if (stored.sftpStyle === 'dual')
+                    startup.sftpStyle = 'dual';
                 const storedHosts = sanitizeSshHosts(stored.sshHosts);
                 if (storedHosts !== undefined && storedHosts.length > 0)
                     startup.sshHosts = storedHosts;
