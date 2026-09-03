@@ -77,7 +77,7 @@ const BUFFER_CAP = 256 * 1024;
 const TERM_RE = /^[A-Za-z0-9_.+-]+$/;
 /** 孤儿会话回收器的扫描间隔。 */
 const REAPER_INTERVAL_MS = 10_000;
-const TTY_GUIDANCE = '本机已安装 dsh-tty 插件（终端面板）：Web GUI 侧边栏的「终端」入口可打开交互终端（xterm.js + PTY），可运行任意命令与 TUI 程序（vim/htop 等），支持多标签页与断线自动重连（刷新页面/网络抖动后会话保活并恢复现场）；新标签默认在当前会话工作目录打开。标签栏「+」菜单还能开 SSH 标签页（ssh2 原生连接，连接簿在设置卡片维护，支持 agent forwarding 与主机指纹 TOFU 钉扎），像本地终端一样操作远程主机。长驻进程（dev server、watch、交互式程序）应引导用户到终端面板里运行，不要在 bash 工具里挂起等待；用户提到「开个终端 / 在终端里跑 / SSH 到某台机器」时引导其打开该面板。agent 侧配套工具：tty_list 列出活跃终端会话（含 SSH 的 target 与实时 cwd），tty_capture 读取近期输出（默认清洗 ANSI；last:true 拿「上一条命令」的输出+退出码），tty_screen 读取当前可见屏幕（可读懂 vim/htop 等 TUI），tty_expect 用正则等待输出中的就绪信号（如 dev server URL、构建完成），tty_send 发送按键，tunnel_list 列出端口转发隧道状态——操作会实时显示在用户终端里。SFTP 文件传输：面板内可对 SSH 连接簿条目（或 SSH 连接对话框当前填写的信息）打开文件浏览（上传/下载/建目录/重命名/删除），agent 配套 sftp_list 列远程目录、sftp_read 读远程文本文件（≤1MB）、sftp_write 写远程文本文件（≤1MB，可追加），book 参数为连接簿条目名。端口转发：连接簿条目可配本地/远程隧道（如把远程数据库映射到本地端口），宿主自动保活重连，用户提到「转发端口 / 访问远程库」时引导其到终端面板设置卡片配置。推荐流程：tty_send 启动长任务 → tty_expect 等就绪标记 → tty_capture{last:true} 拿结果。';
+const TTY_GUIDANCE = '本机已安装 dsh-tty 插件（终端面板）：Web GUI 侧边栏的「终端」入口可打开交互终端（xterm.js + PTY），可运行任意命令与 TUI 程序（vim/htop 等），支持多标签页与断线自动重连（刷新页面/网络抖动后会话保活并恢复现场）；新标签默认在当前会话工作目录打开。标签栏「+」菜单还能开 SSH 标签页（ssh2 原生连接，连接簿在设置卡片维护，支持 agent forwarding 与主机指纹 TOFU 钉扎），像本地终端一样操作远程主机。长驻进程（dev server、watch、交互式程序）应引导用户到终端面板里运行，不要在 bash 工具里挂起等待；用户提到「开个终端 / 在终端里跑 / SSH 到某台机器」时引导其打开该面板。agent 侧配套工具：tty_list 列出活跃终端会话（含 SSH 的 target 与实时 cwd），tty_capture 读取近期输出（默认清洗 ANSI；last:true 拿「上一条命令」的输出+退出码），tty_screen 读取当前可见屏幕（可读懂 vim/htop 等 TUI），tty_expect 用正则等待输出中的就绪信号（如 dev server URL、构建完成），tty_send 发送按键，tunnel_list 列出端口转发隧道状态——操作会实时显示在用户终端里。SFTP 文件传输：面板内可对 SSH 连接簿条目（或 SSH 连接对话框当前填写的信息）打开文件浏览（上传/下载/建目录/重命名/删除），agent 配套 sftp_list 列远程目录、sftp_tree 递归看目录结构、sftp_read 读远程文本文件（≤1MB）、sftp_write 写远程文本文件（≤1MB，可追加）、sftp_mkdir 建目录（parents 可逐级补齐）、sftp_rename 重命名/移动、sftp_remove 删除（目录需 recursive），book 参数为连接簿条目名。端口转发：连接簿条目可配本地/远程隧道（如把远程数据库映射到本地端口），宿主自动保活重连，用户提到「转发端口 / 访问远程库」时引导其到终端面板设置卡片配置。推荐流程：tty_send 启动长任务 → tty_expect 等就绪标记 → tty_capture{last:true} 拿结果。';
 /** 本地 PTY 包装成 TermHandle（resize/kill 仍是透传 node-pty 的内部耦合；防御性降级）。 */
 function wrapLocalPty(handle) {
     let resizeWarned = false;
@@ -1572,7 +1572,7 @@ const plugin = definePlugin({
                                 if (jsonAction === '/mkdir') {
                                     if (strField('path') === '')
                                         throw new Error('path 必填');
-                                    await sftpManager.mkdir(spec, strField('path'));
+                                    await sftpManager.mkdir(spec, strField('path'), body.parents === true);
                                     writeJson(res, 200, { ok: true });
                                     return;
                                 }
@@ -2196,8 +2196,182 @@ const plugin = definePlugin({
                         return { ok: true, path: input.path.trim(), bytes, append };
                     },
                 })));
+                // —— SFTP 管理闭环（0.8.0）——
+                // mkdir（可逐级补齐）/ rename（可跨目录，等效移动）/ remove（目录
+                // 递归）/ tree（限深限数的递归列举），与 sftp_list/read/write 一起
+                // 让 agent 不开面板也能完整管理远程文件；同样只收连接簿条目名。
+                disposers.push(tools.register(defineTool({
+                    name: 'sftp_mkdir',
+                    description: '在 SSH 远程创建目录（book 连接簿条目 + path）。parents:true 时逐级补齐缺失的父目录（等效 mkdir -p，默认 false，父目录缺失直接报错）。',
+                    parameters: {
+                        book: { type: 'string', required: true, description: 'SSH 连接簿条目名（设置 → 插件 → 终端面板 维护）' },
+                        path: { type: 'string', required: true, description: '要创建的远程目录路径' },
+                        parents: { type: 'boolean', description: 'true 逐级补齐缺失父目录（默认 false）' },
+                    },
+                    output: {
+                        schema: {
+                            type: 'object',
+                            additionalProperties: false,
+                            properties: {
+                                ok: { type: 'boolean', required: true },
+                                path: { type: 'string', required: true },
+                            },
+                        },
+                        render: (_args, value) => {
+                            const v = value;
+                            return [{ type: 'text', text: `已创建远程目录 ${v.path ?? '?'}` }];
+                        },
+                    },
+                    async execute(args) {
+                        const input = args;
+                        const spec = sftpBookSpec(input.book);
+                        if (typeof input.path !== 'string' || input.path.trim() === '')
+                            throw new Error('path 必须是非空字符串');
+                        await sftpManager.mkdir(spec, input.path, input.parents === true);
+                        return { ok: true, path: input.path.trim() };
+                    },
+                })));
+                disposers.push(tools.register(defineTool({
+                    name: 'sftp_rename',
+                    description: '在 SSH 远程重命名 / 移动文件或目录（book 连接簿条目 + from + to）。to 与 from 不同目录即为移动（目标目录需已存在）；不会覆盖已存在的目标（服务端 rename 语义）。',
+                    parameters: {
+                        book: { type: 'string', required: true, description: 'SSH 连接簿条目名' },
+                        from: { type: 'string', required: true, description: '原远程路径' },
+                        to: { type: 'string', required: true, description: '新远程路径（跨目录即移动）' },
+                    },
+                    output: {
+                        schema: {
+                            type: 'object',
+                            additionalProperties: false,
+                            properties: {
+                                ok: { type: 'boolean', required: true },
+                                from: { type: 'string', required: true },
+                                to: { type: 'string', required: true },
+                            },
+                        },
+                        render: (_args, value) => {
+                            const v = value;
+                            return [{ type: 'text', text: `已将远程 ${v.from ?? '?'} 重命名/移动为 ${v.to ?? '?'}` }];
+                        },
+                    },
+                    async execute(args) {
+                        const input = args;
+                        const spec = sftpBookSpec(input.book);
+                        if (typeof input.from !== 'string' || input.from.trim() === '')
+                            throw new Error('from 必须是非空字符串');
+                        if (typeof input.to !== 'string' || input.to.trim() === '')
+                            throw new Error('to 必须是非空字符串');
+                        await sftpManager.rename(spec, input.from, input.to);
+                        return { ok: true, from: input.from.trim(), to: input.to.trim() };
+                    },
+                })));
+                disposers.push(tools.register(defineTool({
+                    name: 'sftp_remove',
+                    description: '删除 SSH 远程文件或目录（book 连接簿条目 + path）。文件直接删除；目录默认走 rmdir（非空明确报错），recursive:true 整目录递归删除（不可恢复，谨慎使用）。',
+                    parameters: {
+                        book: { type: 'string', required: true, description: 'SSH 连接簿条目名' },
+                        path: { type: 'string', required: true, description: '要删除的远程路径' },
+                        recursive: { type: 'boolean', description: '目录 true 时递归删除全部内容（默认 false）' },
+                    },
+                    output: {
+                        schema: {
+                            type: 'object',
+                            additionalProperties: false,
+                            properties: {
+                                ok: { type: 'boolean', required: true },
+                                path: { type: 'string', required: true },
+                                recursive: { type: 'boolean', required: true },
+                            },
+                        },
+                        render: (_args, value) => {
+                            const v = value;
+                            return [{ type: 'text', text: `已删除远程 ${v.path ?? '?'}${v.recursive === true ? '（含全部内容）' : ''}` }];
+                        },
+                    },
+                    async execute(args) {
+                        const input = args;
+                        const spec = sftpBookSpec(input.book);
+                        if (typeof input.path !== 'string' || input.path.trim() === '')
+                            throw new Error('path 必须是非空字符串');
+                        const recursive = input.recursive === true;
+                        await sftpManager.remove(spec, input.path, recursive);
+                        return { ok: true, path: input.path.trim(), recursive };
+                    },
+                })));
+                disposers.push(tools.register(defineTool({
+                    name: 'sftp_tree',
+                    description: '递归列举 SSH 远程目录结构（book 连接簿条目 + path）：深度优先、目录优先，maxDepth（1~8，默认 3）限层、maxEntries（1~2000，默认 500）限条数，超限 truncated:true；符号链接不跟随；读取失败的子目录列入 errors。适合先看远程项目结构再定位文件。',
+                    parameters: {
+                        book: { type: 'string', required: true, description: 'SSH 连接簿条目名' },
+                        path: { type: 'string', description: '远程目录路径（缺省 = 登录 home）' },
+                        maxDepth: { type: 'number', description: '最大下钻层数（1~8，默认 3）' },
+                        maxEntries: { type: 'number', description: '最大条目数（1~2000，默认 500）' },
+                    },
+                    output: {
+                        schema: {
+                            type: 'object',
+                            additionalProperties: false,
+                            properties: {
+                                path: { type: 'string', required: true },
+                                entries: {
+                                    type: 'array',
+                                    required: true,
+                                    items: {
+                                        type: 'object',
+                                        additionalProperties: false,
+                                        properties: {
+                                            path: { type: 'string', required: true },
+                                            name: { type: 'string', required: true },
+                                            depth: { type: 'number', required: true },
+                                            isDir: { type: 'boolean', required: true },
+                                            size: { type: 'number', required: true },
+                                            mtime: { type: 'number', required: true },
+                                        },
+                                    },
+                                },
+                                truncated: { type: 'boolean', required: true },
+                                errors: {
+                                    type: 'array',
+                                    required: true,
+                                    items: {
+                                        type: 'object',
+                                        additionalProperties: false,
+                                        properties: {
+                                            path: { type: 'string', required: true },
+                                            message: { type: 'string', required: true },
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                        render: (_args, value) => {
+                            const v = value;
+                            const entries = v.entries ?? [];
+                            if (entries.length === 0)
+                                return [{ type: 'text', text: `远程目录 ${v.path ?? '?'} 为空` }];
+                            const head = `远程目录 ${v.path ?? '?'} 结构（${String(entries.length)} 项${v.truncated === true ? '，已截断' : ''}）：`;
+                            const lines = entries.map((e) => {
+                                const indent = '  '.repeat(Math.max(0, e.depth - 1));
+                                const tail = e.isDir ? '/' : ' — ' + humanFileSize(e.size);
+                                return `${indent}- ${e.name}${tail}`;
+                            });
+                            for (const item of v.errors ?? [])
+                                lines.push(`! ${item.path}（${item.message}）`);
+                            return [{ type: 'text', text: head + '\n' + lines.join('\n') }];
+                        },
+                    },
+                    async execute(args) {
+                        const input = args;
+                        const spec = sftpBookSpec(input.book);
+                        const result = await sftpManager.tree(spec, typeof input.path === 'string' ? input.path : '', {
+                            maxDepth: typeof input.maxDepth === 'number' && Number.isInteger(input.maxDepth) ? input.maxDepth : undefined,
+                            maxEntries: typeof input.maxEntries === 'number' && Number.isInteger(input.maxEntries) ? input.maxEntries : undefined,
+                        });
+                        return result;
+                    },
+                })));
                 stateRef.toolsRegistered = true;
-                console.log('[dsh-tty] agent tools registered (tty_list, tty_capture, tty_screen, tty_expect, tty_send, tunnel_list, sftp_list, sftp_read, sftp_write)');
+                console.log('[dsh-tty] agent tools registered (tty_list, tty_capture, tty_screen, tty_expect, tty_send, tunnel_list, sftp_list, sftp_read, sftp_write, sftp_mkdir, sftp_rename, sftp_remove, sftp_tree)');
                 return () => {
                     stateRef.toolsRegistered = false;
                     for (const dispose of disposers) {
@@ -2252,7 +2426,6 @@ const plugin = definePlugin({
             return () => {
                 void sessions.disposeAll();
                 tunnelManager.disposeAll();
-                sftpManager.disposeAll();
                 sftpManager.disposeAll();
             };
         }, 'dsh-tty: session cleanup');

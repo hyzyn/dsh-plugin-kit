@@ -33,6 +33,9 @@
  *     主机指纹（TOFU 预填充）；shell 集成开关；连接簿行内编辑表单；
  *     Shell 路径可选可输入（自绘下拉候选来自 /api/dsh-tty/shells）
  *   - 标签双击重命名（随标签持久化，断线恢复保留）
+ * v0.8 能力：
+ *   - SFTP 文件浏览：文件 / 文件夹拖到对话框任意位置即上传（webkitGetAsEntry
+ *     递归展开整文件夹、保留层级，逐文件进度 i/n），拖入时列表高亮可放置
  * 帧协议与宿主半体（src/index.ts）对齐：spawn/ssh/input/resize/kill/
  * sessions/attach ↔ ready/data/exit/error/sessions。
  */
@@ -171,6 +174,7 @@ const CSS = [
   '.tt_envList{max-height:132px;overflow-y:auto;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-3);display:flex;flex-direction:column;gap:2px;padding:4px}',
   '.tt_envItem{appearance:none;background:0 0;border:none;color:var(--dsw-alias-label-primary);text-align:left;font:12px "SF Mono",Menlo,Consolas,monospace;padding:5px 8px;border-radius:6px;cursor:pointer}',
   '.tt_envItem:hover{background:var(--dsw-alias-interactive-bg-hover)}',
+  '.tt_envItem[data-danger]{color:var(--dsw-alias-state-error-primary);font-weight:600}',
   '.tt_envMore{font-size:11px;color:var(--dsw-alias-label-tertiary);padding:4px 8px}',
   '.tt_shellList{margin-top:6px}',
   // SFTP 文件浏览对话框（工具栏 + 行内编辑器 + 列表 + 状态行；列表滚动，卡片定高）
@@ -179,6 +183,8 @@ const CSS = [
   '.tt_sftpPath{flex:1;min-width:0;height:30px;background:var(--dsw-specific-input-major);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;color:inherit;font:12px "SF Mono",Menlo,Consolas,monospace;padding:0 10px;box-sizing:border-box}',
   '.tt_sftpPath:focus{border-color:var(--dsw-alias-state-business-primary);outline:none}',
   '.tt_sftpList{flex:1;min-height:200px;overflow-y:auto;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-3);display:flex;flex-direction:column}',
+  // 拖拽上传高亮（0.8.0）：文件/文件夹拖到列表上时显示可放置提示
+  '.tt_sftpList[data-drag]{border-color:var(--dsw-alias-state-business-primary);border-style:dashed;background:var(--dsw-alias-interactive-bg-hover)}',
   '.tt_sftpRow{appearance:none;background:0 0;border:none;color:var(--dsw-alias-label-primary);text-align:left;font:inherit;font-size:13px;display:flex;align-items:center;gap:8px;padding:6px 10px;cursor:pointer}',
   '.tt_sftpRow:hover{background:var(--dsw-alias-interactive-bg-hover)}',
   '.tt_sftpIcon{flex:none;width:18px;text-align:center}',
@@ -877,7 +883,9 @@ function openSshDialog(entry) {
 
   /**
    * env:VAR 选择器：筛选框 + 限高滚动列表（数据源为 env 插件托管的变量名，
-   * 宿主 /api/dsh-tty/env-vars 只回名字）。点击项填入 env:NAME；列表空时给
+   * 宿主 /api/dsh-tty/env-vars 只回名字）。点击项填入 env:NAME——目标为空或
+   * 已是 env: 引用时直接替换；有手输内容时首击只进确认态（4s 复位），再击
+   * 才覆盖（密码框是掩码显示，不该被一次误点静默清空）；列表空时给
    * 「去 env 插件托管」的提示。
    */
   const envSelectRow = (targetInput) => {
@@ -908,8 +916,27 @@ function openSshDialog(entry) {
         item.type = 'button'
         item.className = 'tt_envItem'
         item.textContent = name
+        const ref = 'env:' + name
+        let confirmTimer = null
+        const disarm = () => {
+          if (confirmTimer !== null) {
+            clearTimeout(confirmTimer)
+            confirmTimer = null
+          }
+          item.textContent = name
+          delete item.dataset.danger
+        }
         item.addEventListener('click', () => {
-          targetInput.value = 'env:' + name
+          const current = targetInput.value
+          if (current === '' || current.startsWith('env:') || confirmTimer !== null) {
+            disarm()
+            targetInput.value = ref
+            targetInput.focus()
+            return
+          }
+          item.textContent = name + '（再点覆盖已填）'
+          item.dataset.danger = ''
+          confirmTimer = setTimeout(disarm, 4000)
         })
         list.appendChild(item)
       }
@@ -1276,6 +1303,56 @@ function joinRemotePath(dir, name) {
 }
 
 /**
+ * 收集拖放进来的文件（0.8.0）：目录条目经 webkitGetAsEntry 递归展开
+ * （readEntries 每批 ≤100 需循环读完），返回 [{ relPath, file }]——relPath
+ * 保留文件夹层级（如 "assets/img/logo.png"），上传端据此补齐远程父目录；
+ * 无 entries（纯文件拖放/不支持 DataTransferItem）退回 dataTransfer.files。
+ */
+async function collectDroppedFiles(dataTransfer) {
+  if (dataTransfer === null || dataTransfer === undefined) return []
+  const items = typeof dataTransfer.items !== 'undefined' ? [...dataTransfer.items] : []
+  const entries = []
+  for (const item of items) {
+    const entry = typeof item.webkitGetAsEntry === 'function' ? item.webkitGetAsEntry() : null
+    if (entry !== null) entries.push(entry)
+  }
+  if (entries.length === 0) {
+    return [...(dataTransfer.files ?? [])].map((file) => ({ relPath: file.name, file }))
+  }
+  const out = []
+  const walkEntry = (entry, prefix) => new Promise((resolve) => {
+    if (entry.isFile === true) {
+      entry.file(
+        (file) => {
+          out.push({ relPath: prefix + entry.name, file })
+          resolve()
+        },
+        () => resolve()
+      )
+      return
+    }
+    if (entry.isDirectory !== true) {
+      resolve()
+      return
+    }
+    const reader = entry.createReader()
+    const readBatch = () => {
+      reader.readEntries(async (batch) => {
+        if (batch.length === 0) {
+          resolve()
+          return
+        }
+        for (const child of batch) await walkEntry(child, prefix + entry.name + '/')
+        readBatch()
+      }, () => resolve())
+    }
+    readBatch()
+  })
+  for (const entry of entries) await walkEntry(entry, '')
+  return out
+}
+
+/**
  * SFTP 文件浏览对话框（0.7.0）：目录列表 / 进入上级与子目录（路径框回车跳转）/
  * 新建目录 / 重命名（行内编辑器）/ 删除（目录递归，🗑 二次点击确认）/
  * 上传（XHR 流式 + 进度）/ 下载（POST → blob → a[download]）。
@@ -1330,6 +1407,7 @@ function openSftpBrowser(specInput) {
   uploadBtn.type = 'button'
   uploadBtn.className = 'tt_toolBtn'
   uploadBtn.textContent = '上传'
+  uploadBtn.title = '选择文件上传；也可以把文件 / 文件夹直接拖进列表'
   const fileInput = document.createElement('input')
   fileInput.type = 'file'
   fileInput.multiple = true
@@ -1597,14 +1675,15 @@ function openSftpBrowser(specInput) {
     setStatus('已下载 ' + entry.name + '（' + (formatBytes(blob.size) || String(blob.size) + ' B') + '）')
   })
 
-  const uploadOne = (file) => new Promise((resolve, reject) => {
-    const meta = b64uEncode(JSON.stringify({ ...spec, path: joinRemotePath(state.path, file.name) }))
+  const uploadOne = (file, relPath, index, total) => new Promise((resolve, reject) => {
+    const meta = b64uEncode(JSON.stringify({ ...spec, path: joinRemotePath(state.path, relPath) }))
     const xhr = new XMLHttpRequest()
     xhr.open('POST', '/api/dsh-tty/sftp/upload')
     xhr.setRequestHeader('x-dsh-sftp-meta', meta)
+    const label = total > 1 ? String(index) + '/' + String(total) + ' ' : ''
     xhr.upload.addEventListener('progress', (event) => {
       if (event.lengthComputable) {
-        setStatus('上传 ' + file.name + ' ' + String(Math.round((event.loaded / event.total) * 100)) + '%', 'busy')
+        setStatus('上传 ' + label + relPath + ' ' + String(Math.round((event.loaded / event.total) * 100)) + '%', 'busy')
       }
     })
     xhr.addEventListener('load', () => {
@@ -1625,11 +1704,27 @@ function openSftpBrowser(specInput) {
     xhr.send(file)
   })
 
-  const uploadFiles = async (files) => runTask('上传中…', async () => {
-    for (const file of files) {
-      await uploadOne(file)
+  /**
+   * 上传一批条目（选择器或拖入，relPath 保留文件夹层级）：文件夹拖入时先
+   * 按 relPath 补齐远程父目录（mkdir parents，已存在的失败忽略——真正的
+   * 失败由随后那一个文件的上传请求带出），再逐个流式上传。
+   */
+  const uploadFiles = async (items) => runTask('上传中…', async () => {
+    const dirs = new Set()
+    for (const item of items) {
+      const cut = item.relPath.lastIndexOf('/')
+      if (cut <= 0) continue
+      const dir = item.relPath.slice(0, cut)
+      if (dirs.has(dir)) continue
+      dirs.add(dir)
+      await api('mkdir', { path: joinRemotePath(state.path, dir), parents: true }).catch(() => {})
     }
-    setStatus('上传完成 ' + String(files.length) + ' 个文件')
+    let index = 0
+    for (const item of items) {
+      index += 1
+      await uploadOne(item.file, item.relPath, index, items.length)
+    }
+    setStatus('上传完成 ' + String(items.length) + ' 个文件')
     await loadDir(state.path)
   })
 
@@ -1656,9 +1751,37 @@ function openSftpBrowser(specInput) {
     if (state.busy === false) fileInput.click()
   })
   fileInput.addEventListener('change', () => {
-    const files = [...(fileInput.files ?? [])]
+    const files = [...(fileInput.files ?? [])].map((file) => ({ relPath: file.name, file }))
     fileInput.value = ''
     if (files.length > 0) void uploadFiles(files)
+  })
+  // 拖拽上传（0.8.0）：文件 / 文件夹拖到对话框任意位置即上传到当前目录；
+  // dragenter/leave 用计数器防子元素间移动闪烁
+  let dragDepth = 0
+  const setDragActive = (active) => {
+    if (active) list.dataset.drag = ''
+    else delete list.dataset.drag
+  }
+  card.addEventListener('dragenter', (event) => {
+    event.preventDefault()
+    dragDepth += 1
+    setDragActive(true)
+  })
+  card.addEventListener('dragover', (event) => {
+    event.preventDefault()
+  })
+  card.addEventListener('dragleave', () => {
+    dragDepth = Math.max(0, dragDepth - 1)
+    if (dragDepth === 0) setDragActive(false)
+  })
+  card.addEventListener('drop', (event) => {
+    event.preventDefault()
+    dragDepth = 0
+    setDragActive(false)
+    if (state.busy) return
+    void collectDroppedFiles(event.dataTransfer).then((items) => {
+      if (items.length > 0) void uploadFiles(items)
+    })
   })
   pathInput.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter') return

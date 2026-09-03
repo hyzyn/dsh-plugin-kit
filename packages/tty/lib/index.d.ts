@@ -37,7 +37,8 @@
  * /api/dsh-tty/env-vars（SSH 对话框 env:VAR 下拉，仅变量名）、
  * /api/dsh-tty/shells（设置卡片「Shell 路径」候选，仅路径）、
  * /api/dsh-tty/sftp/*（SFTP 文件传输 0.7.0：list/mkdir/rename/remove/
- * download/upload，spec 解析与 WS ssh 帧同款，见 src/sftp.ts）。
+ * download/upload；0.8.0 起 mkdir 支持 parents 逐级补齐，spec 解析与
+ * WS ssh 帧同款，见 src/sftp.ts）。
  *
  * M0 探针（scripts/probe.mjs）验证过的三个关键结论：
  *   1. TERM 必须用 `shell -c 'export TERM=...; exec "$shell"'` 包装层注入——
