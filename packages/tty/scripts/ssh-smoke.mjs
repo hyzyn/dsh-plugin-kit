@@ -23,13 +23,21 @@
  *   S6 第二轮会话 exit 命令 → 服务端 exit-status → done.exitCode=0
  *   S7 TOFU：首次连接经 HostKeyStore 记录 sha256 指纹
  *   S8 TOFU：同 host:port 换服务器密钥后，指纹变更拒绝连接（带重置指引）
+ *   S9 SFTP（0.7.0）：scripts/lib/test-sshd.mjs 的 sftp subsystem（映射临时目录
+ *      真实 fs）× 真实 SftpManager——list/realpath home/上传覆盖+追加/下载
+ *      （含 content-length）/mkdir+rename+递归与非递归删除/TOFU 指纹变更拒绝
  *
- * 用法：pnpm --filter @hyzyn/dsh-tty ssh-smoke（需先 build 产出 lib/ssh.js）
+ * 用法：pnpm --filter @hyzyn/dsh-tty ssh-smoke（需先 build 产出 lib/ssh.js、lib/sftp.js）
  * 退出码：0 = 全部 PASS，1 = 任一 FAIL。
  */
 import ssh2 from 'ssh2'
 import { generateKeyPairSync } from 'node:crypto'
+import fsp from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import { spawnSsh } from '../lib/ssh.js'
+import { SftpManager } from '../lib/sftp.js'
+import { startSftpSshd, TEST_USER, TEST_PASSWORD } from './lib/test-sshd.mjs'
 
 const USER = 'test'
 const PASSWORD = 'secret'
@@ -358,6 +366,119 @@ async function main() {
 
     await stopServer(server2)
     console.log('两个内存 SSH server 均已关闭（端口已释放）')
+  }
+
+  // ---- SFTP（0.7.0）：test-sshd 的 sftp subsystem × 真实 SftpManager ----
+  console.log('\n[4] SFTP 文件传输（test-sshd sftp subsystem × lib/sftp.js）')
+  {
+    const rootDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'dsh-tty-sftp-'))
+    const sftpd = await startSftpSshd({ rootDir })
+    console.log(`    sftp sshd on 127.0.0.1:${sftpd.port}，rootDir=${rootDir}`)
+    await fsp.writeFile(path.join(rootDir, 'a.txt'), Buffer.alloc(100, 0x61))
+    await fsp.mkdir(path.join(rootDir, 'sub'))
+    await fsp.writeFile(path.join(rootDir, 'sub', 'nested.txt'), 'nested')
+
+    const sftpLogger = { info: () => {}, warn: (m) => console.warn('  ' + m) }
+    const acceptStore = { get: () => undefined, record: () => {} }
+    const manager = new SftpManager(sftpLogger, acceptStore)
+    const spec = { host: '127.0.0.1', port: sftpd.port, username: TEST_USER, auth: 'password', password: TEST_PASSWORD }
+
+    // S9a 目录列表：真实路径、文件/目录判定与 size
+    try {
+      const listed = await manager.list(spec, rootDir)
+      const aTxt = listed.entries.find((e) => e.name === 'a.txt')
+      const sub = listed.entries.find((e) => e.name === 'sub')
+      const ok = listed.path === rootDir
+        && Array.isArray(listed.entries) && listed.entries.length === 2
+        && aTxt?.isFile === true && aTxt?.size === 100
+        && sub?.isDir === true && sub?.isFile === false
+      if (ok) pass('S9a list 目录列表（真实路径、文件/目录判定与 size）')
+      else fail('S9a list 目录列表（真实路径、文件/目录判定与 size）', JSON.stringify(listed).slice(0, 200))
+    } catch (error) {
+      fail('S9a list 目录列表（真实路径、文件/目录判定与 size）', error.message)
+    }
+
+    // S9b path 缺省 → realpath('.') 解析到登录 home（test-sshd 映射为 rootDir）
+    try {
+      const home = await manager.list(spec, '')
+      if (home.path === rootDir) pass('S9b path 缺省 realpath 解析到登录 home')
+      else fail('S9b path 缺省 realpath 解析到登录 home', 'path=' + String(home.path))
+    } catch (error) {
+      fail('S9b path 缺省 realpath 解析到登录 home', error.message)
+    }
+
+    // S9c 上传：覆盖写 + 追加写，字节逐一比对
+    try {
+      const data = Buffer.alloc(5000, 0x5a)
+      const first = await manager.openUpload(spec, rootDir + '/up.bin')
+      first.stream.write(data)
+      first.stream.end()
+      await first.done
+      const second = await manager.openUpload(spec, rootDir + '/up.bin', true)
+      second.stream.write('tail')
+      second.stream.end()
+      await second.done
+      const expected = Buffer.concat([data, Buffer.from('tail')])
+      const stored = await fsp.readFile(path.join(rootDir, 'up.bin'))
+      if (stored.equals(expected)) pass('S9c 上传覆盖 + 追加（5000+4 字节逐一一致）')
+      else fail('S9c 上传覆盖 + 追加（5000+4 字节逐一一致）', `落盘 ${String(stored.length)} 字节，期望 ${String(expected.length)}`)
+    } catch (error) {
+      fail('S9c 上传覆盖 + 追加（5000+4 字节逐一一致）', error.message)
+    }
+
+    // S9d 下载：字节一致 + size（content-length 数据源）
+    try {
+      const { stream, size } = await manager.openDownload(spec, rootDir + '/up.bin')
+      const chunks = []
+      for await (const chunk of stream) chunks.push(chunk)
+      const downloaded = Buffer.concat(chunks)
+      const expected = Buffer.concat([Buffer.alloc(5000, 0x5a), Buffer.from('tail')])
+      if (downloaded.equals(expected) && size === expected.length) {
+        pass('S9d 下载字节一致（stat size=' + String(size) + ' = 实际字节数）')
+      } else {
+        fail('S9d 下载字节一致（stat size 与实际一致）', `size=${String(size)} 实际=${String(downloaded.length)}`)
+      }
+    } catch (error) {
+      fail('S9d 下载字节一致（stat size 与实际一致）', error.message)
+    }
+
+    // S9e mkdir / rename / 非递归删除拒绝 / 递归删除
+    try {
+      await manager.mkdir(spec, rootDir + '/nested')
+      await manager.rename(spec, rootDir + '/a.txt', rootDir + '/nested/b.txt')
+      const moved = await fsp.access(path.join(rootDir, 'nested', 'b.txt')).then(() => true, () => false)
+      let refused = null
+      try { await manager.remove(spec, rootDir + '/nested', false) } catch (error) { refused = error.message }
+      const refusedOk = refused !== null && /recursive|非空/.test(refused)
+      await manager.remove(spec, rootDir + '/nested', true)
+      const gone = await fsp.access(path.join(rootDir, 'nested')).then(() => false, () => true)
+      if (moved && refusedOk && gone) pass('S9e mkdir/rename/非递归删除拒绝/递归删除')
+      else fail('S9e mkdir/rename/非递归删除拒绝/递归删除', `moved=${String(moved)} refused=${JSON.stringify(refused)} gone=${String(gone)}`)
+    } catch (error) {
+      fail('S9e mkdir/rename/非递归删除拒绝/递归删除', error.message)
+    }
+
+    // S9f TOFU：预置指纹与服务器不符 → SFTP 连接同样拒绝（与终端同源钉扎）
+    try {
+      const mismatchMap = new Map([[`127.0.0.1:${String(sftpd.port)}`, 'deadbeef'.repeat(8)]])
+      const strictStore = { get: (host, p) => mismatchMap.get(host + ':' + String(p)), record: () => {} }
+      const strictManager = new SftpManager(sftpLogger, strictStore)
+      let mismatch = null
+      try { await strictManager.list(spec, '') } catch (error) { mismatch = error.message }
+      strictManager.disposeAll()
+      if (mismatch !== null && /主机密钥指纹变更/.test(mismatch)) pass('S9f TOFU 指纹变更拒绝 SFTP 连接（错误含重置指引）')
+      else fail('S9f TOFU 指纹变更拒绝 SFTP 连接（错误含重置指引）', mismatch === null ? '连接意外成功' : String(mismatch))
+    } catch (error) {
+      fail('S9f TOFU 指纹变更拒绝 SFTP 连接（错误含重置指引）', error.message)
+    }
+
+    manager.disposeAll()
+    await sftpd.close()
+    await fsp.rm(rootDir, { recursive: true, force: true })
+    console.log('    sftp sshd 已关闭，临时目录已清理')
+  }
+
+  {
     const failed = RESULTS.filter(([kind]) => kind === 'FAIL')
     console.log(`\n==== SSH 冒烟：${RESULTS.length - failed.length}/${RESULTS.length} PASS ====`)
     for (const [kind, name, detail] of RESULTS) console.log(`  ${kind === 'PASS' ? '✔' : '✘'} ${name}${detail ? ' — ' + detail : ''}`)

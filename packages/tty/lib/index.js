@@ -4,6 +4,7 @@ import { accessSync, constants as fsConstants, existsSync, readFileSync } from '
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { StringDecoder } from 'node:string_decoder';
 import WebSocket, { WebSocketServer } from 'ws';
 // @xterm/headless 是 CJS 包：ESM 具名导入在 Node 运行时会炸（Named export not
@@ -17,6 +18,7 @@ import { buildShellSpawn } from './shell-integration.js';
 import { parseSshConfig } from './ssh-config.js';
 import { parseKnownHosts } from './known-hosts.js';
 import { TunnelManager } from './tunnels.js';
+import { SftpManager } from './sftp.js';
 const SSH_HOST_SCHEMA = z.object({
     name: z.string(),
     host: z.string(),
@@ -75,7 +77,7 @@ const BUFFER_CAP = 256 * 1024;
 const TERM_RE = /^[A-Za-z0-9_.+-]+$/;
 /** 孤儿会话回收器的扫描间隔。 */
 const REAPER_INTERVAL_MS = 10_000;
-const TTY_GUIDANCE = '本机已安装 dsh-tty 插件（终端面板）：Web GUI 侧边栏的「终端」入口可打开交互终端（xterm.js + PTY），可运行任意命令与 TUI 程序（vim/htop 等），支持多标签页与断线自动重连（刷新页面/网络抖动后会话保活并恢复现场）；新标签默认在当前会话工作目录打开。标签栏「+」菜单还能开 SSH 标签页（ssh2 原生连接，连接簿在设置卡片维护，支持 agent forwarding 与主机指纹 TOFU 钉扎），像本地终端一样操作远程主机。长驻进程（dev server、watch、交互式程序）应引导用户到终端面板里运行，不要在 bash 工具里挂起等待；用户提到「开个终端 / 在终端里跑 / SSH 到某台机器」时引导其打开该面板。agent 侧配套工具：tty_list 列出活跃终端会话（含 SSH 的 target 与实时 cwd），tty_capture 读取近期输出（默认清洗 ANSI；last:true 拿「上一条命令」的输出+退出码），tty_screen 读取当前可见屏幕（可读懂 vim/htop 等 TUI），tty_expect 用正则等待输出中的就绪信号（如 dev server URL、构建完成），tty_send 发送按键，tunnel_list 列出端口转发隧道状态——操作会实时显示在用户终端里。端口转发：连接簿条目可配本地/远程隧道（如把远程数据库映射到本地端口），宿主自动保活重连，用户提到「转发端口 / 访问远程库」时引导其到终端面板设置卡片配置。推荐流程：tty_send 启动长任务 → tty_expect 等就绪标记 → tty_capture{last:true} 拿结果。';
+const TTY_GUIDANCE = '本机已安装 dsh-tty 插件（终端面板）：Web GUI 侧边栏的「终端」入口可打开交互终端（xterm.js + PTY），可运行任意命令与 TUI 程序（vim/htop 等），支持多标签页与断线自动重连（刷新页面/网络抖动后会话保活并恢复现场）；新标签默认在当前会话工作目录打开。标签栏「+」菜单还能开 SSH 标签页（ssh2 原生连接，连接簿在设置卡片维护，支持 agent forwarding 与主机指纹 TOFU 钉扎），像本地终端一样操作远程主机。长驻进程（dev server、watch、交互式程序）应引导用户到终端面板里运行，不要在 bash 工具里挂起等待；用户提到「开个终端 / 在终端里跑 / SSH 到某台机器」时引导其打开该面板。agent 侧配套工具：tty_list 列出活跃终端会话（含 SSH 的 target 与实时 cwd），tty_capture 读取近期输出（默认清洗 ANSI；last:true 拿「上一条命令」的输出+退出码），tty_screen 读取当前可见屏幕（可读懂 vim/htop 等 TUI），tty_expect 用正则等待输出中的就绪信号（如 dev server URL、构建完成），tty_send 发送按键，tunnel_list 列出端口转发隧道状态——操作会实时显示在用户终端里。SFTP 文件传输：面板内可对 SSH 连接簿条目（或 SSH 连接对话框当前填写的信息）打开文件浏览（上传/下载/建目录/重命名/删除），agent 配套 sftp_list 列远程目录、sftp_read 读远程文本文件（≤1MB）、sftp_write 写远程文本文件（≤1MB，可追加），book 参数为连接簿条目名。端口转发：连接簿条目可配本地/远程隧道（如把远程数据库映射到本地端口），宿主自动保活重连，用户提到「转发端口 / 访问远程库」时引导其到终端面板设置卡片配置。推荐流程：tty_send 启动长任务 → tty_expect 等就绪标记 → tty_capture{last:true} 拿结果。';
 /** 本地 PTY 包装成 TermHandle（resize/kill 仍是透传 node-pty 的内部耦合；防御性降级）。 */
 function wrapLocalPty(handle) {
     let resizeWarned = false;
@@ -820,26 +822,13 @@ class TtyServer {
                     send(ws, { t: 'error', sid, m: `会话数已达上限（${this.sessions.limitValue}）` });
                     return;
                 }
-                // name 引用连接簿条目作基底，内联字段可逐项覆盖
-                const profile = typeof msg.name === 'string' && msg.name !== '' ? this.options.findSshHost(msg.name) : undefined;
-                if (typeof msg.name === 'string' && msg.name !== '' && profile === undefined) {
-                    send(ws, { t: 'error', sid, m: `连接簿中不存在: ${msg.name}` });
+                // name 引用连接簿条目作基底，内联字段可逐项覆盖（与 SFTP 路由共用 mergeSshSpec）
+                const merged = mergeSshSpec((name) => this.options.findSshHost(name), msg.name, msg);
+                if (merged.error !== undefined || merged.spec === undefined) {
+                    send(ws, { t: 'error', sid, m: merged.error ?? 'SSH 连接参数缺失' });
                     return;
                 }
-                const spec = {
-                    host: typeof msg.host === 'string' && msg.host.trim() !== '' ? msg.host.trim() : profile?.host ?? '',
-                    port: Number(msg.port) || profile?.port || 22,
-                    username: typeof msg.username === 'string' && msg.username.trim() !== '' ? msg.username.trim() : profile?.username ?? '',
-                    auth: msg.auth === 'key' || msg.auth === 'password' || msg.auth === 'agent' ? msg.auth : profile?.auth ?? 'agent',
-                    keyPath: typeof msg.keyPath === 'string' && msg.keyPath !== '' ? msg.keyPath : profile?.keyPath,
-                    passphrase: typeof msg.passphrase === 'string' && msg.passphrase !== '' ? msg.passphrase : profile?.passphrase,
-                    password: typeof msg.password === 'string' && msg.password !== '' ? msg.password : profile?.password,
-                    agentForward: typeof msg.agentForward === 'boolean' ? msg.agentForward : profile?.agentForward ?? false,
-                };
-                if (spec.host === '' || spec.username === '') {
-                    send(ws, { t: 'error', sid, m: 'SSH 会话需要 host 与 username（或用 name 引用连接簿）' });
-                    return;
-                }
+                const spec = merged.spec;
                 const target = sshTarget(spec);
                 send(ws, { t: 'data', sid, d: `\x1b[2mConnecting ${target} …\x1b[0m\r\n` });
                 let handle;
@@ -1141,6 +1130,28 @@ function listCandidateShells() {
     usable.sort((a, b) => (a === shell ? -1 : b === shell ? 1 : a.localeCompare(b)));
     return usable;
 }
+/**
+ * 「连接簿条目作基底 + 内联字段逐项覆盖」的共享解析（WS ssh 帧与 SFTP 路由共用）。
+ * name 指向连接簿缺失条目、或解析结果缺 host/username 时返回 error。
+ */
+function mergeSshSpec(findSshHost, name, inline) {
+    const profile = typeof name === 'string' && name !== '' ? findSshHost(name) : undefined;
+    if (typeof name === 'string' && name !== '' && profile === undefined)
+        return { error: `连接簿中不存在: ${name}` };
+    const spec = {
+        host: typeof inline.host === 'string' && inline.host.trim() !== '' ? inline.host.trim() : profile?.host ?? '',
+        port: Number(inline.port) || profile?.port || 22,
+        username: typeof inline.username === 'string' && inline.username.trim() !== '' ? inline.username.trim() : profile?.username ?? '',
+        auth: inline.auth === 'key' || inline.auth === 'password' || inline.auth === 'agent' ? inline.auth : profile?.auth ?? 'agent',
+        keyPath: typeof inline.keyPath === 'string' && inline.keyPath !== '' ? inline.keyPath : profile?.keyPath,
+        passphrase: typeof inline.passphrase === 'string' && inline.passphrase !== '' ? inline.passphrase : profile?.passphrase,
+        password: typeof inline.password === 'string' && inline.password !== '' ? inline.password : profile?.password,
+        agentForward: typeof inline.agentForward === 'boolean' ? inline.agentForward : profile?.agentForward ?? false,
+    };
+    if (spec.host === '' || spec.username === '')
+        return { error: 'SSH 会话需要 host 与 username（或用 name 引用连接簿）' };
+    return { spec };
+}
 /** HTTP 路由的 loopback 信任围栏（与 dsh-mcp 同思路）。 */
 function isLoopbackHttp(req) {
     const address = req.socket.remoteAddress;
@@ -1173,6 +1184,31 @@ function isLoopbackHttp(req) {
 function writeJson(res, status, body) {
     res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'referrer-policy': 'no-referrer' });
     res.end(JSON.stringify(body));
+}
+/** 下载响应的 content-disposition：ASCII 兜底 + RFC 5987 UTF-8 扩展（非 ASCII 文件名）。 */
+function contentDispositionValue(name) {
+    const ascii = name.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+    return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`;
+}
+/** 远程路径取末段（下载文件名展示用）；空串/根路径退化为 'download'。 */
+function remoteBasename(path) {
+    const trimmed = path.trim().replace(/\/+$/, '');
+    const index = trimmed.lastIndexOf('/');
+    const base = index >= 0 ? trimmed.slice(index + 1) : trimmed;
+    return base === '' ? 'download' : base;
+}
+/** 人类可读文件大小（sftp_list render 用）。 */
+function humanFileSize(bytes) {
+    if (!Number.isFinite(bytes) || bytes <= 0)
+        return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let value = bytes;
+    let index = 0;
+    while (value >= 1024 && index < units.length - 1) {
+        value /= 1024;
+        index += 1;
+    }
+    return `${value >= 100 || index === 0 ? Math.round(value) : Math.round(value * 10) / 10} ${units[index]}`;
 }
 async function readJsonBody(req) {
     const chunks = [];
@@ -1227,6 +1263,9 @@ const plugin = definePlugin({
         };
         const hostKeyStore = new HostKeyStore(live, persistHostKeys);
         const tunnelManager = new TunnelManager({ info: (m) => ctx.logger.info(m), warn: (m) => ctx.logger.warn(m) }, hostKeyStore, (bookName) => live.findSshHost(bookName));
+        // SFTP 文件传输：懒连接池 + TOFU 同源（见 src/sftp.ts）；spec 由各请求携带
+        // （连接簿名或内联字段），连接簿凭证热改后天然生效
+        const sftpManager = new SftpManager({ info: (m) => ctx.logger.info(m), warn: (m) => ctx.logger.warn(m) }, hostKeyStore);
         const server = new TtyServer(ctx, sessions, live, hostKeyStore);
         const stateRef = { enabled: true, announceToAgent: config?.announceToAgent !== false, toolsRegistered: false };
         let settingsScope;
@@ -1489,6 +1528,146 @@ const plugin = definePlugin({
                             return;
                         }
                         writeJson(res, 200, { ok: true, tunnels: tunnelManager.list() });
+                    },
+                }));
+                // SFTP 文件传输（0.7.0，src/sftp.ts）：loopback 围栏；spec 解析与 WS ssh
+                // 帧同款（mergeSshSpec：连接簿条目作基底 + 内联字段覆盖）。list/mkdir/
+                // rename/remove/download 走 JSON 体（凭证不进 URL/查询串）；download 响应
+                // 为文件字节流（stat 成功时带 content-length）；upload 以 x-dsh-sftp-meta
+                // 头携带 base64url(JSON)（spec + path + append），请求体即原始文件字节，
+                // pipeline 直灌 SFTP 写流——上传下载都不整文件进内存。
+                disposers.push(webServer.register({
+                    kind: 'prefix',
+                    path: '/api/dsh-tty/sftp',
+                    handler: async (req, res) => {
+                        if (!isLoopbackHttp(req)) {
+                            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+                            return;
+                        }
+                        const sub = new URL(req.url ?? '/', 'http://loopback').pathname.slice('/api/dsh-tty/sftp'.length);
+                        const jsonAction = ['/list', '/mkdir', '/rename', '/remove', '/download'].find((action) => action === sub);
+                        if (jsonAction !== undefined) {
+                            if (req.method !== 'POST') {
+                                writeJson(res, 405, { error: 'method not allowed: ' + String(req.method) });
+                                return;
+                            }
+                            const body = await readJsonBody(req);
+                            if (body === undefined) {
+                                writeJson(res, 400, { error: 'invalid JSON body' });
+                                return;
+                            }
+                            const parsed = mergeSshSpec((name) => live.findSshHost(name), body.name, body);
+                            if (parsed.spec === undefined) {
+                                writeJson(res, 400, { error: parsed.error ?? '无效的 SSH 连接规格' });
+                                return;
+                            }
+                            const spec = parsed.spec;
+                            const strField = (key) => (typeof body[key] === 'string' ? body[key].trim() : '');
+                            try {
+                                if (jsonAction === '/list') {
+                                    const result = await sftpManager.list(spec, strField('path'));
+                                    writeJson(res, 200, { ok: true, path: result.path, entries: result.entries });
+                                    return;
+                                }
+                                if (jsonAction === '/mkdir') {
+                                    if (strField('path') === '')
+                                        throw new Error('path 必填');
+                                    await sftpManager.mkdir(spec, strField('path'));
+                                    writeJson(res, 200, { ok: true });
+                                    return;
+                                }
+                                if (jsonAction === '/rename') {
+                                    if (strField('from') === '' || strField('to') === '')
+                                        throw new Error('from/to 必填');
+                                    await sftpManager.rename(spec, strField('from'), strField('to'));
+                                    writeJson(res, 200, { ok: true });
+                                    return;
+                                }
+                                if (jsonAction === '/remove') {
+                                    if (strField('path') === '')
+                                        throw new Error('path 必填');
+                                    await sftpManager.remove(spec, strField('path'), body.recursive === true);
+                                    writeJson(res, 200, { ok: true });
+                                    return;
+                                }
+                                // download：路径必填（无 home 兜底），流式回包
+                                const target = strField('path');
+                                if (target === '')
+                                    throw new Error('path 必填');
+                                const { stream, size } = await sftpManager.openDownload(spec, target);
+                                res.writeHead(200, {
+                                    'content-type': 'application/octet-stream',
+                                    'content-disposition': contentDispositionValue(remoteBasename(target)),
+                                    ...(size !== null ? { 'content-length': String(size) } : {}),
+                                });
+                                // 客户端中断或写流失败都要回收 SFTP 读流，避免连接池通道悬挂
+                                res.on('close', () => {
+                                    if (res.writableEnded !== true)
+                                        stream.destroy();
+                                });
+                                stream.on('error', (error) => {
+                                    ctx.logger.warn('[dsh-tty] sftp 下载流错误: ' + error.message);
+                                    res.destroy();
+                                });
+                                stream.pipe(res);
+                                return;
+                            }
+                            catch (error) {
+                                writeJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+                                return;
+                            }
+                        }
+                        if (sub === '/upload') {
+                            if (req.method !== 'POST') {
+                                writeJson(res, 405, { error: 'method not allowed: ' + String(req.method) });
+                                return;
+                            }
+                            const metaRaw = req.headers['x-dsh-sftp-meta'];
+                            let meta;
+                            if (typeof metaRaw === 'string' && metaRaw !== '') {
+                                try {
+                                    const parsedMeta = JSON.parse(Buffer.from(metaRaw, 'base64url').toString('utf8'));
+                                    if (typeof parsedMeta === 'object' && parsedMeta !== null && !Array.isArray(parsedMeta))
+                                        meta = parsedMeta;
+                                }
+                                catch {
+                                    /* 落到下面的 400 */
+                                }
+                            }
+                            if (meta === undefined) {
+                                writeJson(res, 400, { error: '缺少或非法的 x-dsh-sftp-meta 头' });
+                                return;
+                            }
+                            const target = typeof meta.path === 'string' ? meta.path.trim() : '';
+                            if (target === '') {
+                                writeJson(res, 400, { error: 'meta.path 必填' });
+                                return;
+                            }
+                            const parsed = mergeSshSpec((name) => live.findSshHost(name), meta.name, meta);
+                            if (parsed.spec === undefined) {
+                                writeJson(res, 400, { error: parsed.error ?? '无效的 SSH 连接规格' });
+                                return;
+                            }
+                            try {
+                                const { stream, done } = await sftpManager.openUpload(parsed.spec, target, meta.append === true);
+                                let bytes = 0;
+                                req.on('data', (chunk) => {
+                                    bytes += chunk.length;
+                                });
+                                await pipeline(req, stream);
+                                await done;
+                                writeJson(res, 200, { ok: true, bytes });
+                            }
+                            catch (error) {
+                                const message = error instanceof Error ? error.message : String(error);
+                                if (res.headersSent)
+                                    res.destroy();
+                                else
+                                    writeJson(res, 500, { error: message });
+                            }
+                            return;
+                        }
+                        writeJson(res, 404, { error: 'not found: ' + sub });
                     },
                 }));
                 return () => {
@@ -1865,8 +2044,160 @@ const plugin = definePlugin({
                         return { tunnels: tunnelManager.list().map((t) => ({ ...t, error: t.error ?? undefined })) };
                     },
                 })));
+                // —— SFTP 文件传输工具（0.7.0）——
+                // 只收连接簿条目名（book），不接受内联凭证：agent 上下文不进明文密钥；
+                // 连接与终端/隧道共用同一 HostKeyStore（TOFU 同源）。
+                const sftpBookSpec = (book) => {
+                    if (typeof book !== 'string' || book.trim() === '')
+                        throw new Error('book 必须是 SSH 连接簿条目名');
+                    const entry = live.findSshHost(book.trim());
+                    if (entry === undefined)
+                        throw new Error(`连接簿中不存在: ${book.trim()}`);
+                    return entry;
+                };
+                disposers.push(tools.register(defineTool({
+                    name: 'sftp_list',
+                    description: '列出 SSH 远程目录内容（名称/类型/大小/修改时间，目录在前）。book 为 SSH 连接簿条目名；path 缺省为远程登录 home。用于查找远程文件、确认上传下载结果。',
+                    parameters: {
+                        book: { type: 'string', required: true, description: 'SSH 连接簿条目名（设置 → 插件 → 终端面板 维护）' },
+                        path: { type: 'string', description: '远程目录路径（缺省 = 登录 home）' },
+                    },
+                    output: {
+                        schema: {
+                            type: 'object',
+                            additionalProperties: false,
+                            properties: {
+                                path: { type: 'string', required: true },
+                                entries: {
+                                    type: 'array',
+                                    required: true,
+                                    items: {
+                                        type: 'object',
+                                        additionalProperties: false,
+                                        properties: {
+                                            name: { type: 'string', required: true },
+                                            isDir: { type: 'boolean', required: true },
+                                            size: { type: 'number', required: true },
+                                            mtime: { type: 'number', required: true },
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                        render: (_args, value) => {
+                            const v = value;
+                            const entries = v.entries ?? [];
+                            if (entries.length === 0)
+                                return [{ type: 'text', text: `远程目录 ${v.path ?? '?'} 为空` }];
+                            const text = `远程目录 ${v.path ?? '?'}（${String(entries.length)} 项）：` + entries.map((e) => `\n- ${e.name}${e.isDir ? '/' : ''} — ${e.isDir ? '目录' : humanFileSize(e.size)}`).join('');
+                            return [{ type: 'text', text }];
+                        },
+                    },
+                    async execute(args) {
+                        const input = args;
+                        const spec = sftpBookSpec(input.book);
+                        const result = await sftpManager.list(spec, typeof input.path === 'string' ? input.path : '');
+                        return { path: result.path, entries: result.entries.map((e) => ({ name: e.name, isDir: e.isDir, size: e.size, mtime: e.mtime })) };
+                    },
+                })));
+                disposers.push(tools.register(defineTool({
+                    name: 'sftp_read',
+                    description: '读取 SSH 远程文本文件（book 连接簿条目 + path）。默认最多 256KB（可调至 1MB），超出截断；检测到 NUL 字节按二进制文件拒绝。适合查看远程配置、小日志。',
+                    parameters: {
+                        book: { type: 'string', required: true, description: 'SSH 连接簿条目名' },
+                        path: { type: 'string', required: true, description: '远程文件路径' },
+                        maxBytes: { type: 'number', description: '最大读取字节数（1~1048576，默认 262144）' },
+                    },
+                    output: {
+                        schema: {
+                            type: 'object',
+                            additionalProperties: false,
+                            properties: {
+                                path: { type: 'string', required: true },
+                                content: { type: 'string', required: true },
+                                truncated: { type: 'boolean', required: true },
+                            },
+                        },
+                        render: (_args, value) => {
+                            const v = value;
+                            const head = `远程文件 ${v.path ?? '?'}${v.truncated === true ? '（已截断）' : ''}：`;
+                            return [{ type: 'text', text: head + '\n' + String(v.content ?? '') }];
+                        },
+                    },
+                    async execute(args) {
+                        const input = args;
+                        const spec = sftpBookSpec(input.book);
+                        if (typeof input.path !== 'string' || input.path.trim() === '')
+                            throw new Error('path 必须是非空字符串');
+                        const maxBytes = typeof input.maxBytes === 'number' && Number.isInteger(input.maxBytes) && input.maxBytes >= 1 && input.maxBytes <= 1024 * 1024 ? input.maxBytes : 256 * 1024;
+                        const { stream } = await sftpManager.openDownload(spec, input.path);
+                        const chunks = [];
+                        let total = 0;
+                        try {
+                            for await (const chunk of stream) {
+                                const piece = chunk;
+                                chunks.push(piece);
+                                total += piece.length;
+                                if (total > maxBytes)
+                                    break; // 只多读一段用于判定截断，其余丢弃
+                            }
+                        }
+                        finally {
+                            stream.destroy();
+                        }
+                        const buf = Buffer.concat(chunks);
+                        const truncated = buf.length > maxBytes;
+                        const sliced = truncated ? buf.subarray(0, maxBytes) : buf;
+                        if (sliced.includes(0))
+                            throw new Error('疑似二进制文件（含 NUL 字节），sftp_read 只支持文本内容');
+                        return { path: input.path.trim(), content: sliced.toString('utf8'), truncated };
+                    },
+                })));
+                disposers.push(tools.register(defineTool({
+                    name: 'sftp_write',
+                    description: '写 SSH 远程文本文件（book 连接簿条目 + path + content）。默认覆盖写入，append:true 追加到文件尾；单次最多 1MB。适合远程写配置、落结果文件。',
+                    parameters: {
+                        book: { type: 'string', required: true, description: 'SSH 连接簿条目名' },
+                        path: { type: 'string', required: true, description: '远程文件路径' },
+                        content: { type: 'string', required: true, description: '要写入的文本内容（≤1MB）' },
+                        append: { type: 'boolean', description: 'true 追加到文件尾（默认覆盖）' },
+                    },
+                    output: {
+                        schema: {
+                            type: 'object',
+                            additionalProperties: false,
+                            properties: {
+                                ok: { type: 'boolean', required: true },
+                                path: { type: 'string', required: true },
+                                bytes: { type: 'number', required: true },
+                                append: { type: 'boolean', required: true },
+                            },
+                        },
+                        render: (_args, value) => {
+                            const v = value;
+                            return [{ type: 'text', text: `已${v.append === true ? '追加' : '写入'}远程文件 ${v.path ?? '?'}（${String(v.bytes ?? 0)} 字节）` }];
+                        },
+                    },
+                    async execute(args) {
+                        const input = args;
+                        const spec = sftpBookSpec(input.book);
+                        if (typeof input.path !== 'string' || input.path.trim() === '')
+                            throw new Error('path 必须是非空字符串');
+                        if (typeof input.content !== 'string')
+                            throw new Error('content 必须是字符串');
+                        const bytes = Buffer.byteLength(input.content, 'utf8');
+                        if (bytes > 1024 * 1024)
+                            throw new Error(`content 超过上限：${String(bytes)} 字节 > 1MB（大文件请用终端 scp 或面板上传）`);
+                        const append = input.append === true;
+                        const { stream, done } = await sftpManager.openUpload(spec, input.path, append);
+                        stream.write(input.content, 'utf8');
+                        stream.end();
+                        await done;
+                        return { ok: true, path: input.path.trim(), bytes, append };
+                    },
+                })));
                 stateRef.toolsRegistered = true;
-                console.log('[dsh-tty] agent tools registered (tty_list, tty_capture, tty_screen, tty_expect, tty_send, tunnel_list)');
+                console.log('[dsh-tty] agent tools registered (tty_list, tty_capture, tty_screen, tty_expect, tty_send, tunnel_list, sftp_list, sftp_read, sftp_write)');
                 return () => {
                     stateRef.toolsRegistered = false;
                     for (const dispose of disposers) {
@@ -1916,11 +2247,13 @@ const plugin = definePlugin({
         }, REAPER_INTERVAL_MS);
         reaperTimer.unref?.();
         ctx.effect(() => () => clearInterval(reaperTimer), 'dsh-tty: orphan reaper');
-        // 插件卸载时回收全部会话与隧道
+        // 插件卸载时回收全部会话、隧道与 SFTP 连接
         ctx.effect(() => {
             return () => {
                 void sessions.disposeAll();
                 tunnelManager.disposeAll();
+                sftpManager.disposeAll();
+                sftpManager.disposeAll();
             };
         }, 'dsh-tty: session cleanup');
         console.log(`[dsh-tty] mounted (shell=${live.shell}, term=${live.term}, cwd=${live.cwd}, maxSessions=${sessions.limitValue})`);

@@ -25,6 +25,8 @@
  *   B20. 端口转发隧道（forwardOut 往返 + forwardIn 就绪 + 状态与工具）
  *   B21. /api/dsh-tty/shells 候选列表（Shell 路径可选可输入的数据源）
  *   B22. bash 3.2（无 PS0）shell 集成：DEBUG trap 兜底 B 标记（capture{last} + expect 早停）
+ *   B23. SFTP 文件传输（/api/dsh-tty/sftp/* 路由：list/mkdir/upload/download/remove
+ *        + agent 工具 sftp_list/sftp_read/sftp_write，test-sshd 内存 sshd）
  *
  * 用法：pnpm --filter @hyzyn/dsh-tty integration
  * 退出码：0 = 全部 PASS，1 = 任一 FAIL。
@@ -33,10 +35,14 @@ import { Context } from '@deepseek-ai/cordis'
 import WebServerRuntime from '@deepseek-ai/dsh-host-webserver'
 import { LocalSubprocessRuntime } from '@deepseek-ai/dsh-subprocess-local'
 import WebSocket from 'ws'
+import fsp from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import { name, inject, apply } from '../lib/index.js'
 import { parseSshConfig } from '../lib/ssh-config.js'
 import { parseKnownHosts } from '../lib/known-hosts.js'
 import { assertSupportedJsonSchema } from '@deepseek-ai/dsh-tools'
+import { startSftpSshd, TEST_USER, TEST_PASSWORD } from './lib/test-sshd.mjs'
 
 
 /* 全局看门狗：任何环节卡死时留痕退出（正常路径会先 process.exit）。 */
@@ -859,6 +865,119 @@ async function run() {
       await s.waitFor(() => s.state.exited !== null, 10000, 'b32-1 exit')
       s.client.close()
     }
+  }
+
+  // B23: SFTP 文件传输（0.7.0）—— /api/dsh-tty/sftp/* 路由 + sftp_* agent 工具
+  // 数据源是 scripts/lib/test-sshd.mjs 的内存 sshd（sftp subsystem 映射临时目录）。
+  console.log('\n[21] SFTP 文件传输（HTTP 路由 + agent 工具）')
+  {
+    const rootDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'dsh-tty-b23-'))
+    const sftpd = await startSftpSshd({ rootDir })
+    const post = async (body) => {
+      const res = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+      return res.json()
+    }
+    const put = await post({ sshHosts: [{ name: 'b23-ssh', host: '127.0.0.1', port: sftpd.port, username: TEST_USER, auth: 'password', password: TEST_PASSWORD, keyPath: '', passphrase: '', agentForward: false }] })
+    if (put.ok === true) pass('B23a 连接簿写入（POST config sshHosts → SFTP 走连接簿凭证）')
+    else fail('B23a 连接簿写入（POST config sshHosts → SFTP 走连接簿凭证）', JSON.stringify(put).slice(0, 160))
+    await fsp.writeFile(path.join(rootDir, 'seed.txt'), 'SEED_CONTENT_B23')
+
+    const sftpApi = async (action, payload) => {
+      const res = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/sftp/${action}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'b23-ssh', ...payload }),
+      })
+      const data = await res.json().catch(() => ({}))
+      return { status: res.status, data }
+    }
+
+    // b) list：path 缺省 → realpath home（rootDir）+ 预置文件可见
+    const listed = await sftpApi('list', { path: '' })
+    const seed = (listed.data.entries ?? []).find((e) => e.name === 'seed.txt')
+    if (listed.data.ok === true && listed.data.path === rootDir && seed?.isFile === true && seed?.size === 16) {
+      pass('B23b list 路由（path 缺省 realpath 到 rootDir，seed.txt 文件属性正确）')
+    } else {
+      fail('B23b list 路由（path 缺省 realpath 到 rootDir，seed.txt 文件属性正确）', JSON.stringify(listed).slice(0, 200))
+    }
+
+    // c) mkdir + upload（原始字节 body，x-dsh-sftp-meta 头带 spec+path）
+    const mk = await sftpApi('mkdir', { path: rootDir + '/b23dir' })
+    const payload = Buffer.alloc(4096, 0x62)
+    const up = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/sftp/upload`, {
+      method: 'POST',
+      headers: { 'x-dsh-sftp-meta': Buffer.from(JSON.stringify({ name: 'b23-ssh', path: rootDir + '/b23dir/up.bin' })).toString('base64url') },
+      body: payload,
+    })
+    const upData = await up.json().catch(() => ({}))
+    let stored = null
+    try {
+      stored = await fsp.readFile(path.join(rootDir, 'b23dir', 'up.bin'))
+    } catch {
+      stored = null
+    }
+    if (mk.data.ok === true && up.status === 200 && upData.ok === true && upData.bytes === 4096 && stored !== null && stored.equals(payload)) {
+      pass('B23c mkdir + upload 路由（4096 字节流式落盘逐一一致）')
+    } else {
+      fail('B23c mkdir + upload 路由（4096 字节流式落盘逐一一致）', `mk=${JSON.stringify(mk.data).slice(0, 80)} up=${up.status}/${JSON.stringify(upData).slice(0, 80)} stored=${stored === null ? '缺失' : String(stored.length) + 'B'}`)
+    }
+
+    // d) download：流式响应 + content-disposition + 字节一致
+    const dl = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/sftp/download`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'b23-ssh', path: rootDir + '/b23dir/up.bin' }),
+    })
+    const dlBuf = Buffer.from(await dl.arrayBuffer())
+    const disposition = dl.headers.get('content-disposition') ?? ''
+    if (dl.status === 200 && dlBuf.equals(payload) && disposition.includes('up.bin')) {
+      pass('B23d download 路由（octet-stream + content-disposition + 字节一致）')
+    } else {
+      fail('B23d download 路由（octet-stream + content-disposition + 字节一致）', `status=${String(dl.status)} bytes=${String(dlBuf.length)} disposition=${JSON.stringify(disposition)}`)
+    }
+
+    // e) agent 工具：schema 校验 + sftp_list / sftp_write（追加）/ sftp_read
+    const sftpList = toolDefs.find((d) => d.name === 'sftp_list')
+    const sftpRead = toolDefs.find((d) => d.name === 'sftp_read')
+    const sftpWrite = toolDefs.find((d) => d.name === 'sftp_write')
+    if (sftpList === undefined || sftpRead === undefined || sftpWrite === undefined) {
+      fail('B23e sftp_* agent 工具（schema + list/read/write）', '缺工具: ' + toolDefs.map((d) => d.name).filter((n) => n.startsWith('sftp')).join(',') || '无')
+    } else {
+      let schemaOk = true
+      for (const d of [sftpList, sftpRead, sftpWrite]) {
+        try {
+          assertSupportedJsonSchema(d.parameters)
+          assertSupportedJsonSchema(d.output?.schema ?? {})
+        } catch (e) {
+          schemaOk = false
+          fail('B23e sftp_* agent 工具（schema + list/read/write）', d.name + ' schema: ' + String(e && e.message ? e.message : e))
+        }
+      }
+      const toolListed = schemaOk ? await sftpList.execute({ book: 'b23-ssh', path: rootDir + '/b23dir' }) : null
+      const saw = toolListed !== null && (toolListed.entries ?? []).some((e) => e.name === 'up.bin' && e.isDir === false && e.size === 4096)
+      let noteOk = false
+      let readBack = null
+      try {
+        await sftpWrite.execute({ book: 'b23-ssh', path: rootDir + '/b23dir/note.txt', content: 'hello-b23', append: true })
+        await sftpWrite.execute({ book: 'b23-ssh', path: rootDir + '/b23dir/note.txt', content: '-again', append: true })
+        readBack = await sftpRead.execute({ book: 'b23-ssh', path: rootDir + '/b23dir/note.txt' })
+        noteOk = readBack.content === 'hello-b23-again' && readBack.truncated === false
+      } catch (error) {
+        readBack = { error: error.message }
+      }
+      if (schemaOk && saw === true && noteOk) pass('B23e sftp_* agent 工具（schema 通过 + list 可见上传文件 + write 追加后 read 一致）')
+      else fail('B23e sftp_* agent 工具（schema 通过 + list 可见上传文件 + write 追加后 read 一致）', `saw=${String(saw)} note=${JSON.stringify(readBack).slice(0, 120)}`)
+    }
+
+    // f) remove 递归 + 连接簿清空
+    const rm = await sftpApi('remove', { path: rootDir + '/b23dir', recursive: true })
+    const gone = await fsp.access(path.join(rootDir, 'b23dir')).then(() => false, () => true)
+    if (rm.data.ok === true && gone) pass('B23f remove 路由（目录递归删除）')
+    else fail('B23f remove 路由（目录递归删除）', `status=${String(rm.status)} data=${JSON.stringify(rm.data).slice(0, 120)} gone=${String(gone)}`)
+    await post({ sshHosts: [] })
+    await sftpd.close()
+    await fsp.rm(rootDir, { recursive: true, force: true })
+    console.log('    sftp sshd 已关闭，临时目录已清理')
   }
 
   const failed = RESULTS.filter(([kind]) => kind === 'FAIL')

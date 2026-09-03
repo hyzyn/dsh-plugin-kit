@@ -11,7 +11,9 @@ xterm.js 全交互终端（node-pty 真实 PTY，WebGL 渲染器加速），支�
 能力；0.5.0 起内置**端口转发管理**——连接簿条目配隧道（-L/-R 两向），宿主
 自持连接、断线自动重连、状态徽标（见下文）；0.6.0 起 **bash 3.2（macOS
 自带）补全命令开始标记**（DEBUG trap 兜底，`tty_capture{last}` /
-`tty_expect` 早停恢复可用），设置卡片 **Shell 路径可选可输入**。
+`tty_expect` 早停恢复可用），设置卡片 **Shell 路径可选可输入**；0.7.0 起内置
+**SFTP 文件传输**——SSH 连接的远程目录浏览与上传/下载/新建目录/重命名/删除
+（面板「文件浏览」对话框 + agent `sftp_*` 工具，见下文）。
 
 ![终端面板：多标签页 xterm 弹窗，工具栏含搜索/清屏/复制/粘贴，标题栏含最小化「—」与关闭 ✕](../../docs/dsh-plugin-kit-tty.png)
 
@@ -55,7 +57,7 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
 
 ## agent 工具（P1）
 
-插件向 agent 注入五个工具（与 bash 工具同权，操作实时显示在用户终端里）：
+插件向 agent 注入九个工具（与 bash 工具同权，操作实时显示在用户终端里）：
 
 | 工具 | 作用 |
 | --- | --- |
@@ -64,6 +66,10 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
 | `tty_screen` | 读取**当前可见屏幕**的渲染结果（xterm-headless 虚拟屏，纯文本）——能真正读懂 vim / htop / 菜单等 TUI 界面 |
 | `tty_expect` | 用正则**等待后续输出**中的就绪信号（dev server URL、构建完成等）；超时不抛错（`matched:false` + 尾部输出），命令提前结束也会带退出码早停 |
 | `tty_send` | 向指定会话发送按键/文本（如 dev server 的 q 键、菜单选择） |
+| `sftp_list` | 列出 SSH 远程目录内容（名称/类型/大小/修改时间，目录在前）；`book` 为连接簿条目名，`path` 缺省为登录 home |
+| `sftp_read` | 读取远程**文本**文件（默认 ≤256KB 可调至 1MB，超出截断；含 NUL 字节按二进制拒绝） |
+| `sftp_write` | 写远程文本文件（默认覆盖，`append:true` 追加；单次 ≤1MB） |
+| `tunnel_list` | 列出端口转发隧道及其实时状态（活跃/连接中/错误/停止、规则、连接数） |
 
 典型 agent 流程（推荐）：`tty_send` 启动长任务 → `tty_expect` 等就绪标记 →
 `tty_capture{last:true}` 拿单条命令结果。此外 `systemPrompt` 里注册了动态
@@ -112,6 +118,29 @@ SSH 会话同表调度：`tty_list` 里 `kind: 'ssh'` 的条目按 `target`
   `tunnel_list` 工具查询状态；
 - TOFU 与终端会话共享同一份 hostKeys 钉扎；端口不占用 maxSessions 名额。
 
+## SFTP 文件传输（0.7.0）
+
+不动终端、不占会话名额，直接对 SSH 连接做远程文件操作（`ssh2` 的 sftp
+subsystem，宿主半体 `src/sftp.ts`）：
+
+- **入口**：① 标签栏「+」菜单的连接簿条目带 📂（按该条目打开文件浏览）；
+  ② SSH 连接对话框填好主机/认证后点「文件浏览」（不落连接簿也能浏览）；
+- **操作**：目录浏览（路径框回车跳转、`..（上级目录）`、单击文件即下载）、
+  **上传**（多选文件，XHR 流式 + 进度百分比）、**下载**（POST → 浏览器 Blob
+  → `<a download>`）、**新建目录**、**重命名**（行内编辑器）、**删除**
+  （🗑 二次点击确认，目录带 `recursive` 整目录删除）；
+- **连接管理**：懒连接池——首次操作才建 SSH 连接，空闲 120 秒自动回收，
+  断开后下次操作自动重连；连接簿条目在每次（重）连接时实时解析（改密码
+  后自动用新凭证）；TOFU 与终端会话/隧道共用同一份 `hostKeys` 钉扎，指纹
+  变同样拒绝；SFTP 不计入 `maxSessions` 名额；
+- **传输通道**：`POST /api/dsh-tty/sftp/list|mkdir|rename|remove|download|
+  upload`（全部 loopback 围栏）。连接规格经 JSON 体（连接簿名或内联字段，
+  与 WS ssh 帧同语义「条目作基底 + 内联逐项覆盖」）或 upload 的
+  `x-dsh-sftp-meta` 头（base64url）携带——**凭证不进 URL/查询串**；上传下载
+  均为流式 pipe，不整文件进内存；
+- **agent 工具**：`sftp_list` / `sftp_read` / `sftp_write`（见上表）——只收
+  `book` 连接簿条目名，**不接受内联凭证**（agent 上下文不进明文密钥）。
+
 ## SSH 连接（方案 C）
 
 0.2.0 起标签栏「+」变为一键菜单，除本地终端外还能开 **SSH 标签页**：宿主
@@ -120,8 +149,9 @@ SSH 会话同表调度：`tty_list` 里 `kind: 'ssh'` 的条目按 `target`
 关闭、输出缓冲、背压与 agent 工具全部复用同一套调度。
 
 - **「+」菜单三个入口**：本地终端 / **SSH 连接簿**（配置里保存过的条目，
-  显示 `user@host[:port] · auth`，**条目带 ✎ 进入编辑模式**）/ SSH 连接…
-  （表单手填 host / port / username / auth，连接前可勾选保存）；
+  显示 `user@host[:port] · auth`，**条目带 📂 文件浏览与 ✎ 编辑**）/ SSH 连接…
+  （表单手填 host / port / username / auth，连接前可勾选保存，对话框底部
+  「文件浏览」可跳过终端直接以当前信息打开 SFTP）；
 - **连接簿**：SSH 连接对话框勾选「保存到连接簿」即存为条目（同名覆盖，
   名称留空用主机名）；「+」菜单条目的 ✎ 与设置卡片里的 **编辑** 都走同一
   编辑表单（行内改 host/port/username/auth/私钥/密码/agent forwarding，
@@ -247,6 +277,7 @@ pnpm --filter @hyzyn/dsh-tty ssh-smoke    # SSH 冒烟：内存 SSH server（ssh
   `PROMPT_COMMAND`/钩子数组，集成可能失效——可关闭 `shellIntegration` 或
   反馈补丁兼容。
 - **端口转发边界**：本地监听固定 127.0.0.1（不暴露局域网）；remote 方向服务端监听还受服务端 sshd `GatewayPorts` 限制；隧道的 SSH 连接与终端会话独立，均走 TOFU 钉扎与连接簿认证；隧道规格变更（端口/目标/启停）经「保存」热生效，热改连接簿凭证则在下次重连时生效。
+- **SFTP 边界**：文件权限 = 对应 SSH 账号的终端权限（无额外沙箱/chroot）；下载经浏览器内存（超大文件建议终端 `scp`/`rsync`）；agent 工具 `sftp_read` ≤1MB 且拒绝二进制、`sftp_write` 单次 ≤1MB（大内容走面板上传或终端）；`sftp_*` 工具只收连接簿条目名，内联凭证仅供面板对话框使用。
 - **SSH host key 为 TOFU 钉扎**：首次连接自动记录 sha256 指纹（trust on
   first use），之后指纹一致放行、变更拒绝——不再是无条件放行的
   accept-and-log。注意 TOFU 的固有边界：首次连接若已遭遇 MITM 则记录的
@@ -287,6 +318,10 @@ pnpm --filter @hyzyn/dsh-tty ssh-smoke    # SSH 冒烟：内存 SSH server（ssh
   │  /api/dsh-tty/env-vars（env 插件托管变量名）、/api/dsh-tty/known-hosts
   │  （TOFU 指纹预填充，src/known-hosts.ts 解析含 hashed 条目）、
   │  /api/dsh-tty/shells（Shell 路径候选）——均 loopback 围栏
+  ├─ SFTP（src/sftp.ts，0.7.0）：懒连接池（空闲 120s 回收、断开按需重连、
+  │  TOFU 共用）→ POST /api/dsh-tty/sftp/list|mkdir|rename|remove|download|
+  │  upload（spec 走体/头，凭证不进 URL；上传下载流式 pipe）+
+  │  sftp_list/sftp_read/sftp_write 工具（只收连接簿名）
   ├─ 端口转发（src/tunnels.ts）：宿主自持隧道（-L/-R 双向），断线退避重连、
   │  TOFU 共用、连接计数；GET /api/dsh-tty/tunnels 实时状态 + tunnel_list 工具
   └─ 帧协议：spawn|ssh / input / resize / kill / sessions / attach
@@ -300,14 +335,18 @@ SSH 路径 (src/ssh.ts，方案 C)
      背压一并透传到 channel —— 之后与本地 PTY 无差别调度
 ```
 
-M0 探针、集成测试（B1~B22 共 45 项断言）与真实实例冒烟（live / TUI）在
+M0 探针、集成测试（B1~B23 共 51 项断言）与真实实例冒烟（live / TUI）在
 真实 DSH 服务组合上验证过：TERM 注入、resize 透传、sid 冲突、并发上限、
 loopback 围栏、多会话数据隔离、cwd 跟随与校验、配置热生效（settings/updated）、
 kill→exit 全链路、断线保活 + sessions/attach 重连回放、tty_screen 虚拟屏、
 tty_capture ANSI 清洗、shell 集成（capture{last} + exitCode、OSC 7 cwd
 跟随）、tty_expect 匹配与超时、~/.ssh/config 解析器、端口转发（双隧道 active + forwardOut 往返 + reconcile 清理）、
 shells 候选路由、bash 3.2 shell 集成（DEBUG trap 兜底：capture{last} +
-exitCode、tty_expect 命令结束早停）。SSH 路径由 `ssh-smoke`
+exitCode、tty_expect 命令结束早停）、SFTP 文件传输（list/mkdir/upload/
+download/remove 路由 + sftp_* 工具，test-sshd 内存 sshd 端到端）。SSH 路径由 `ssh-smoke`
 （内存 SSH server × 真实 `spawnSsh`）验证：password 认证建链与 prompt、
 命令往返、pty-req 初始尺寸与 resize（window-change）、terminate /
-exit-status 全链路，以及 TOFU 指纹记录（S7）与指纹变更拒绝连接（S8）。
+exit-status 全链路，以及 TOFU 指纹记录（S7）与指纹变更拒绝连接（S8）；
+SFTP 由 ssh-smoke S9（test-sshd 的 sftp subsystem × 真实 SftpManager）覆盖：
+目录列表与 realpath home、上传覆盖+追加、下载（stat size 作 content-length）、
+mkdir/rename/非递归删除拒绝/递归删除、TOFU 指纹变更拒绝。
