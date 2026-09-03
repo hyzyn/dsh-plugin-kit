@@ -16,7 +16,9 @@ xterm.js 全交互终端（node-pty 真实 PTY，WebGL 渲染器加速），支�
 （面板「文件浏览」对话框 + agent `sftp_*` 工具，见下文）；0.8.0 起面板支持
 **拖拽上传**（文件与文件夹直接拖入，递归展开目录结构逐级上传），agent 侧
 补齐**管理闭环**：`sftp_mkdir`（parents 逐级补齐）/ `sftp_rename`（跨目录
-移动）/ `sftp_remove`（递归删除）/ `sftp_tree`（限深递归列举）。
+移动）/ `sftp_remove`（递归删除）/ `sftp_tree`（限深递归列举）；0.9.0 起
+**SFTP 界面可选双栏风格**（左本机 / 右远程、行内直传，宿主服务端对拷），
+面板头部压缩为「标签行 + SSH 连接栏」两行。
 
 ![终端面板：多标签页 xterm 弹窗，工具栏含搜索/清屏/复制/粘贴，标题栏含最小化「—」与关闭 ✕](../../docs/dsh-plugin-kit-tty.png)
 
@@ -149,7 +151,13 @@ subsystem，宿主半体 `src/sftp.ts`）：
   均为流式 pipe，不整文件进内存；
 - **agent 工具**：`sftp_list` / `sftp_read` / `sftp_write` / `sftp_mkdir` /
   `sftp_rename` / `sftp_remove` / `sftp_tree`（见上表）——只收
-  `book` 连接簿条目名，**不接受内联凭证**（agent 上下文不进明文密钥）。
+  `book` 连接簿条目名，**不接受内联凭证**（agent 上下文不进明文密钥）；
+- **双栏风格（0.9.0 可选，配置 `sftpStyle`）**：左本机 / 右远程两栏——本机
+  侧浏览与文件操作走新增的 `/api/dsh-tty/local-fs` 路由（list/mkdir/rename/
+  remove，loopback 围栏）；行内 `⇨ / ⇦` 把条目对拷到对面栏的当前目录
+  （`/api/dsh-tty/local-fs/transfer` 由宿主服务端把两个路径流式直传，目录
+  递归、同名覆盖，**字节不经过浏览器**）；单窗体风格照旧，设置卡片切换，
+  重新打开 SFTP 生效。
 
 ## SSH 连接（方案 C）
 
@@ -217,6 +225,7 @@ subsystem，宿主半体 `src/sftp.ts`）：
 | `hostKeys` | `[]` | SSH 主机指纹记录（TOFU，自动维护）：条目 `{host, port, fingerprint}`；按 host:port 唯一，首次连接自动追加，指纹变更拒绝连接；设置卡片可删除重置 |
 | `shellIntegration` | true | 注入 OSC 133/7 shell 集成（命令边界标记 + cwd 上报；`tty_capture{last}` 依赖它）；zsh/bash 支持，其他 shell 自动跳过；出兼容问题时可关闭 |
 | `tunnels` | `[]` | 端口转发隧道：条目 `{name, bookName, direction=local\|remote, localPort?, remoteHost?, remotePort?, localTargetHost?, localTargetPort?, enabled}`；`bookName` 引用连接簿条目提供主机与认证；卡片「端口转发」区块可视化维护 |
+| `sftpStyle` | `dialog` | SFTP 文件浏览界面风格：`dialog` 单窗体（远程目录 + 上传/下载/拖拽）/ `dual` 双栏（左本机 / 右远程，行内 `⇨/⇦` 宿主服务端直传）；重新打开 SFTP 生效 |
 
 ## 帧协议（/api/dsh-tty/ws，JSON 文本帧；v3 = 单连接多会话 + 断线重连）
 

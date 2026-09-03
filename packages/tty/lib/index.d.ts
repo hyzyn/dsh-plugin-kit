@@ -78,5 +78,7 @@ export interface Config {
     shellIntegration?: boolean;
     /** 端口转发隧道（引用连接簿条目；宿主自持连接与重连，见 src/tunnels.ts）。 */
     tunnels?: TunnelSpec[];
+    /** SFTP 文件浏览界面风格：dialog = 单窗体（默认）/ dual = 本机+远程双栏。 */
+    sftpStyle?: 'dialog' | 'dual';
 }
 export declare const name: string, inject: string[] | undefined, apply: (ctx: Context, config?: Config | undefined) => void;

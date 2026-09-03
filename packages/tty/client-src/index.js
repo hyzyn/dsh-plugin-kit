@@ -36,6 +36,14 @@
  * v0.8 能力：
  *   - SFTP 文件浏览：文件 / 文件夹拖到对话框任意位置即上传（webkitGetAsEntry
  *     递归展开整文件夹、保留层级，逐文件进度 i/n），拖入时列表高亮可放置
+ * v0.9 能力：
+ *   - 紧凑头部：标签行兼作标题行（去「终端」标题文字与常态「已连接」状态
+ *     文字，异常/瞬时消息才点亮；搜索/清屏/复制/粘贴改图标按钮），下方保留
+ *     一条 SSH 连接栏——左侧状态点 + 目标，右侧 SFTP / 隧道等图标扩展按钮，
+ *     本地终端标签整栏隐藏
+ *   - SFTP 双栏风格（设置 sftpStyle 可选 dialog/dual）：左本机 / 右远程两栏，
+ *     行内 ⇨/⇦ 由宿主 /api/dsh-tty/local-fs/transfer 服务端直传（目录递归、
+ *     同名覆盖，字节不经过浏览器）；单窗体风格照旧
  * 帧协议与宿主半体（src/index.ts）对齐：spawn/ssh/input/resize/kill/
  * sessions/attach ↔ ready/data/exit/error/sessions。
  */
@@ -58,18 +66,23 @@ const CSS = [
   '[data-sidebar-collapsed] .tt_sidebarEntryLabel{display:none}',
   '.tt_modalBackdrop{z-index:1300;background:var(--dsw-alias-bg-mask-1);justify-content:center;align-items:flex-start;display:flex;position:fixed;inset:0;padding-top:5vh}',
   '.tt_modal{background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);width:min(1180px,96vw);height:min(84vh,920px);box-shadow:var(--dsw-shadow-lv3);color:var(--dsw-alias-label-primary);border-radius:14px;flex-direction:column;gap:0;display:flex;overflow:hidden}',
-  '.tt_header{flex:none;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);display:flex}',
-  '.tt_title{flex:1;margin:0;font-size:14px;font-weight:600;white-space:nowrap;align-items:center;gap:8px;display:flex}',
-  '.tt_status{font-size:11px;color:var(--dsw-alias-label-tertiary);align-items:center;gap:6px;display:flex;white-space:nowrap}',
+  // 单行头部（0.9）：标题图标 + 标签区（兼标题行）+ 状态/连接信息 + 工具/窗口按钮
+  '.tt_header{flex:none;align-items:center;gap:8px;padding:4px 10px;border-bottom:1px solid var(--dsw-alias-border-l1);display:flex}',
+  '.tt_titleIcon{flex:none;display:inline-flex;color:var(--dsw-alias-label-primary)}',
+  '.tt_status{font-size:11px;color:var(--dsw-alias-label-tertiary);align-items:center;gap:6px;display:flex;white-space:nowrap;flex:none}',
   '.tt_statusDot{width:8px;height:8px;border-radius:50%;background:var(--dsw-alias-label-tertiary);flex:none}',
   '.tt_statusDot[data-state=connected]{background:var(--dsw-alias-state-success-primary)}',
   '.tt_statusDot[data-state=error]{background:var(--dsw-alias-state-error-primary)}',
-  '.tt_toolBtn{appearance:none;background:0 0;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:8px;height:28px;padding:0 10px;cursor:pointer;font-size:12px;flex:none;white-space:nowrap}',
+  '.tt_toolBtn{appearance:none;background:0 0;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:8px;height:26px;padding:0 8px;cursor:pointer;font-size:12px;flex:none;white-space:nowrap}',
   '.tt_toolBtn:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}',
-  '.tt_searchInput{width:120px;height:28px;background:var(--dsw-specific-input-major);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;color:inherit;font:inherit;font-size:12px;padding:0 8px;flex:none}',
+  // 图标化工具按钮（搜索/清屏/复制/粘贴）：语义靠 tooltip 与固定次序
+  '.tt_iconBtn{width:26px;padding:0;display:inline-flex;align-items:center;justify-content:center}',
+  // 连接栏扩展按钮（图标 + 文字）
+  '.tt_connAct{display:inline-flex;align-items:center;gap:5px}',
+  '.tt_searchInput{width:140px;height:26px;background:var(--dsw-specific-input-major);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;color:inherit;font:inherit;font-size:12px;padding:0 8px;flex:none}',
   '.tt_searchInput:focus{border-color:var(--dsw-alias-state-business-primary);outline:none}',
-  '.tt_min{appearance:none;background:0 0;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:8px;width:30px;height:30px;cursor:pointer;font-size:16px;line-height:1;flex:none}',
-  '.tt_close{appearance:none;background:0 0;border:none;color:var(--dsw-alias-label-tertiary);border-radius:8px;width:30px;height:30px;cursor:pointer;font-size:18px;line-height:1;flex:none}',
+  '.tt_min{appearance:none;background:0 0;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:8px;width:26px;height:26px;cursor:pointer;font-size:14px;line-height:1;flex:none}',
+  '.tt_close{appearance:none;background:0 0;border:none;color:var(--dsw-alias-label-tertiary);border-radius:8px;width:26px;height:26px;cursor:pointer;font-size:15px;line-height:1;flex:none}',
   '.tt_min:hover,.tt_close:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}',
   // 最小化：弹窗仅隐藏（会话与输出缓冲保持存活），状态合并进侧边栏
   // 「终端」入口（会话数徽标 + 状态点，点击入口恢复）；入口不存在时才
@@ -96,16 +109,31 @@ const CSS = [
   '.tt_dockDot[data-state=error]{background:var(--dsw-alias-state-error-primary)}',
   '.tt_dockClose{appearance:none;background:0 0;border:none;color:var(--dsw-alias-label-tertiary);border-radius:50%;width:26px;height:26px;cursor:pointer;font-size:14px;line-height:1;flex:none;display:inline-flex;align-items:center;justify-content:center}',
   '.tt_dockClose:hover{color:var(--dsw-alias-state-error-primary)}',
-  '.tt_tabbar{flex:none;display:flex;align-items:center;gap:6px;padding:6px 12px;border-bottom:1px solid var(--dsw-alias-border-l1);overflow-x:auto}',
-  '.tt_tab{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 8px 0 12px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);font-size:12px;cursor:pointer;flex:none;white-space:nowrap}',
+  // 标签区并入头部行：吃掉剩余空间，多标签时横向滚动（滚动条尽量细）
+  '.tt_tabs{flex:1 1 0;min-width:0;display:flex;align-items:center;gap:6px;overflow-x:auto;overflow-y:hidden;padding:2px 0;scrollbar-width:thin}',
+  '.tt_tab{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 8px 0 12px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);font-size:12px;cursor:pointer;flex:none;white-space:nowrap}',
   '.tt_tab:hover{color:var(--dsw-alias-label-primary)}',
   '.tt_tab[data-active]{background:var(--dsw-specific-sidebar-nav-item-active);color:var(--dsw-alias-label-primary);font-weight:600}',
   '.tt_tabClose{appearance:none;background:0 0;border:none;color:inherit;cursor:pointer;font-size:13px;line-height:1;padding:0 2px}',
   '.tt_tabRename{width:96px;height:20px;font-size:12px;border:1px solid var(--dsw-alias-state-business-primary);border-radius:4px;background:var(--dsw-alias-bg-layer-3);color:inherit;padding:0 4px;box-sizing:border-box;font-family:inherit}',
   '.tt_tabClose:hover{color:var(--dsw-alias-state-error-primary)}',
-  '.tt_tabAdd{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border:1px dashed var(--dsw-alias-border-l2);border-radius:8px;background:0 0;color:var(--dsw-alias-label-secondary);font-size:16px;cursor:pointer;flex:none}',
+  '.tt_tabAdd{display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border:1px dashed var(--dsw-alias-border-l2);border-radius:8px;background:0 0;color:var(--dsw-alias-label-secondary);font-size:16px;cursor:pointer;flex:none}',
   '.tt_tabAdd:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-label-secondary)}',
   '.tt_body{flex:1;min-height:0;position:relative;background:#0d1117;overflow:hidden}',
+  // 连接栏（仅 SSH 标签显示）：左侧连接状态，右侧 SFTP / 后续扩展按钮
+  '.tt_connbar{flex:none;display:flex;align-items:center;gap:8px;padding:3px 10px;border-bottom:1px solid var(--dsw-alias-border-l1)}',
+  '.tt_connbar[data-hidden]{display:none}',
+  '.tt_connArea{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:8px}',
+  '.tt_connDot{width:8px;height:8px;border-radius:50%;background:var(--dsw-alias-label-tertiary);flex:none}',
+  '.tt_connDot[data-state=connected]{background:var(--dsw-alias-state-success-primary)}',
+  '.tt_connDot[data-state=connecting]{background:var(--dsw-alias-state-warning-primary,#d29922)}',
+  '.tt_connDot[data-state=exited]{background:var(--dsw-alias-label-tertiary)}',
+  '.tt_connDot[data-state=error]{background:var(--dsw-alias-state-error-primary)}',
+  '.tt_connTarget{font:12px "SF Mono",Menlo,Consolas,monospace;color:var(--dsw-alias-label-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}',
+  '.tt_connActions{display:flex;align-items:center;gap:6px;flex:none;margin-left:auto}',
+  '.tt_connActions{display:flex;align-items:center;gap:6px;flex:none}',
+  '.tt_tunnelPop{position:fixed;z-index:1350;display:flex;flex-direction:column;gap:8px;padding:10px 12px;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:10px;box-shadow:var(--dsw-shadow-lv3);min-width:280px;max-width:380px;color:var(--dsw-alias-label-primary)}',
+  '.tt_tunnelPopRow{display:flex;align-items:center;gap:8px;min-width:0}',
   '.tt_term{position:absolute;inset:0;padding:8px 10px}',
   '.tt_term .xterm{height:100%}',
   '.tt_overlay{position:absolute;inset:0;align-items:center;justify-content:center;background:rgba(0,0,0,.55);color:#e6edf3;font-size:13px;cursor:pointer;display:flex;z-index:5}',
@@ -179,6 +207,9 @@ const CSS = [
   '.tt_shellList{margin-top:6px}',
   // SFTP 文件浏览对话框（工具栏 + 行内编辑器 + 列表 + 状态行；列表滚动，卡片定高）
   '.tt_sftpCard{width:min(720px,94vw);height:min(640px,86vh);background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:14px;box-shadow:var(--dsw-shadow-lv3);color:var(--dsw-alias-label-primary);padding:16px;display:flex;flex-direction:column;gap:10px;overflow:hidden}',
+  // 标题行：标题吃满，✕ 固定右上角（统一关闭交互）
+  '.tt_sftpTitleRow{display:flex;align-items:center;gap:10px}',
+  '.tt_sftpTitleRow .tt_sshTitle{flex:1}',
   '.tt_sftpBar{display:flex;gap:8px;align-items:center}',
   '.tt_sftpPath{flex:1;min-width:0;height:30px;background:var(--dsw-specific-input-major);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;color:inherit;font:12px "SF Mono",Menlo,Consolas,monospace;padding:0 10px;box-sizing:border-box}',
   '.tt_sftpPath:focus{border-color:var(--dsw-alias-state-business-primary);outline:none}',
@@ -199,6 +230,16 @@ const CSS = [
   '.tt_sftpStatus{flex:1;min-width:0;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-tertiary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
   '.tt_sftpStatus[data-state=error]{color:var(--dsw-alias-state-error-primary)}',
   '.tt_sftpStatus[data-state=busy]{color:var(--dsw-alias-state-business-primary)}',
+  // 双栏 SFTP（0.9.0，sftpStyle=dual）：左本机 / 右远程两栏，行内 ⇨/⇦ 直传
+  '.tt_sftpDualCard{width:min(1180px,96vw);height:min(720px,88vh);background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:14px;box-shadow:var(--dsw-shadow-lv3);color:var(--dsw-alias-label-primary);padding:16px;display:flex;flex-direction:column;gap:10px;overflow:hidden}',
+  '.tt_sftpDual{flex:1;min-height:0;display:flex;gap:12px}',
+  '.tt_sftpPane{flex:1;min-width:0;display:flex;flex-direction:column;gap:8px}',
+  '.tt_sftpPaneHead{font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary);white-space:nowrap}',
+  '.tt_sftpPane .tt_sftpBar{flex:none}',
+  '.tt_sftpTransfer{align-items:center;justify-content:center;display:flex}',
+  '.tt_sftpTransferAct{appearance:none;background:0 0;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:8px;min-width:34px;height:26px;cursor:pointer;font-size:14px;flex:none}',
+  '.tt_sftpTransferAct:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}',
+  '.tt_sftpTransferAct:disabled{opacity:.4;cursor:default}',
 ].join('\n')
 
 /* ================================ 基础工具 ================================ */
@@ -229,12 +270,34 @@ function ensureStyle() {
 const TERMINAL_ICON =
   '<svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5l3.5 3L3 11"/><path d="M8.5 11H13"/></svg>'
 
+// 头部工具按钮图标（14px 线性风格，与 TERMINAL_ICON 同族）：搜索 / 清屏 / 复制 / 粘贴
+const ICON_SEARCH =
+  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4L14 14"/></svg>'
+const ICON_CLEAR =
+  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 4.5h11"/><path d="M6 4.5V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5"/><path d="M4.5 4.5l.7 8.1a1 1 0 0 0 1 .9h3.6a1 1 0 0 0 1-.9l.7-8.1"/></svg>'
+const ICON_COPY =
+  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.4"/><path d="M3.5 10.5h-1v-8h8v1"/></svg>'
+const ICON_PASTE =
+  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="3" width="9" height="11" rx="1.4"/><rect x="5.5" y="1.5" width="5" height="3" rx="1" fill="var(--dsw-alias-bg-base,#fff)"/></svg>'
+// 连接栏扩展按钮图标（14px）：重新连接 / SFTP / 端口转发隧道
+const ICON_RECONNECT =
+  '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/><path d="M13.7 1.8v2.7H11"/></svg>'
+const ICON_SFTP =
+  '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.8 12.8V4.2a1 1 0 0 1 1-1h3l1.4 1.6h6a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H2.8a1 1 0 0 1-1-1z"/></svg>'
+const ICON_TUNNEL =
+  '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 5.5L2 8l2.5 2.5"/><path d="M11.5 5.5L14 8l-2.5 2.5"/><path d="M2.8 8h10.4"/></svg>'
+
 let sessionsService = null
 let socket = null
 let modalEl = null
+let statusChipEl = null
 let statusEl = null
 let statusDotEl = null
 let tabbarEl = null
+let connbarEl = null
+let connDotEl = null
+let connTargetEl = null
+let connActionsEl = null
 let bodyEl = null
 let searchInputEl = null
 let bodyOverlayEl = null
@@ -268,6 +331,8 @@ function setStatus(text, state) {
   if (statusEl === null) return
   statusEl.textContent = text
   statusDotEl.dataset.state = state
+  // 单行头部常态不占位：state=connected 时收起状态块，异常/瞬时消息才点亮
+  if (statusChipEl !== null) statusChipEl.style.display = state === 'connected' ? 'none' : ''
   // 最小化时用户只看得到侧边栏入口徽标 / 兜底悬浮条，状态同步到那里
   if (dockStatusEl !== null) dockStatusEl.textContent = text
   if (dockDotEl !== null) dockDotEl.dataset.state = state
@@ -553,6 +618,7 @@ function switchTab(sid) {
     bodyEl.appendChild(tab.termEl)
   }
   renderTabbar()
+  renderConnbar()
   try {
     tab.fit.fit()
   } catch {
@@ -606,6 +672,146 @@ function renderTabbar() {
   tabbarEl.appendChild(add)
 }
 
+/* ================================ 连接栏 ================================ */
+
+/** 隧道规则展示（与设置卡片同语义的轻量副本，供连接栏弹层使用）。 */
+function tunnelRuleText(t) {
+  return t?.direction === 'remote'
+    ? `远程:${t.remoteHost || '127.0.0.1'}:${String(t.remotePort ?? 0)} → 本机:${String(t.localTargetPort ?? 0)}`
+    : `本机:${String(t?.localPort ?? 0)} → ${t?.remoteHost ?? '?'}:${String(t?.remotePort ?? 0)}`
+}
+
+/**
+ * 连接栏（仅 SSH 标签显示，本地终端 / 无会话时整栏隐藏，会话退出等状态由
+ * 终端体内遮罩表达）：左侧状态点 + 目标（user@host:port / 连接名），右侧
+ * 扩展按钮区（图标 + 文字）——SFTP（复用该标签的连接规格，凭证不重复录入）
+ * 与 隧道 N（有启用隧道时，弹层看实时状态）；已退出标签放「重新打开」。
+ * 随 switchTab 与会话状态事件刷新。
+ */
+function renderConnbar() {
+  if (connbarEl === null || connTargetEl === null || connActionsEl === null || connDotEl === null) return
+  connActionsEl.textContent = ''
+  const tab = activeTab()
+  const spec = tab?.spawnSpec ?? {}
+  if (tab === undefined || spec.t !== 'ssh') {
+    connbarEl.dataset.hidden = ''
+    return
+  }
+  delete connbarEl.dataset.hidden
+  const port = Number(spec.port)
+  connTargetEl.textContent = typeof tab.target === 'string' && tab.target !== ''
+    ? tab.target
+    : typeof spec.name === 'string' && spec.name !== ''
+      ? spec.name
+      : String(spec.username ?? '') + '@' + String(spec.host ?? '') + (Number.isInteger(port) && port !== 22 ? ':' + port : '')
+  connDotEl.dataset.state = tab.exited ? 'exited' : tab.live === true ? 'connected' : tab.errored === true ? 'error' : 'connecting'
+  const action = (icon, label, title, onClick) => {
+    const btn = document.createElement('button')
+    btn.type = 'button'
+    btn.className = 'tt_toolBtn tt_connAct'
+    btn.title = title
+    // icon 为内置图标常量，label 文本走 textContent（用户数据不进 innerHTML）
+    btn.innerHTML = icon + '<span></span>'
+    btn.lastElementChild.textContent = label
+    btn.addEventListener('click', onClick)
+    connActionsEl.appendChild(btn)
+  }
+  if (tab.exited) {
+    action(ICON_RECONNECT, '重新打开', '以原连接信息重开会话', () => respawnTab(tab.sid))
+  }
+  action(ICON_SFTP, 'SFTP', '打开该连接的文件浏览（SFTP）', () => openSftpBrowser(tab.spawnSpec))
+  const bookName = typeof spec.name === 'string' ? spec.name : ''
+  const tunnelCount = bookName !== '' ? tunnelCountFor(bookName) : 0
+  if (tunnelCount > 0) {
+    action(ICON_TUNNEL, '隧道 ' + tunnelCount, '查看该连接的端口转发隧道', (event) => {
+      openTunnelPopover(event.currentTarget, bookName)
+    })
+  }
+}
+
+let tunnelPopoverEl = null
+let tunnelPopoverDismiss = null
+
+function closeTunnelPopover() {
+  if (tunnelPopoverDismiss !== null) {
+    document.removeEventListener('mousedown', tunnelPopoverDismiss, true)
+    tunnelPopoverDismiss = null
+  }
+  if (tunnelPopoverEl !== null) {
+    tunnelPopoverEl.remove()
+    tunnelPopoverEl = null
+  }
+}
+
+/** 隧道状态弹层：该连接簿条目的启用隧道 + 实时状态（编辑仍在设置卡片）。 */
+function openTunnelPopover(anchor, bookName) {
+  if (tunnelPopoverEl !== null) {
+    closeTunnelPopover()
+    return
+  }
+  const pop = document.createElement('div')
+  pop.className = 'tt_tunnelPop'
+  const title = document.createElement('div')
+  title.className = 'tt_tunnelPopTitle'
+  title.textContent = '端口转发 — ' + bookName
+  pop.appendChild(title)
+  const listEl = document.createElement('div')
+  listEl.textContent = '加载中…'
+  pop.appendChild(listEl)
+  const hint = document.createElement('span')
+  hint.className = 'tt_cardHint'
+  hint.textContent = '增删/启停在 设置 → 插件 → 终端面板 的端口转发区块维护'
+  pop.appendChild(hint)
+  document.body.appendChild(pop)
+  tunnelPopoverEl = pop
+  const rect = anchor.getBoundingClientRect()
+  pop.style.top = String(rect.bottom + 6) + 'px'
+  pop.style.left = String(Math.max(8, rect.right - 340)) + 'px'
+  const onDocMouseDown = (event) => {
+    if (tunnelPopoverEl !== pop) return
+    if (pop.contains(event.target) || anchor.contains(event.target)) return
+    closeTunnelPopover()
+  }
+  tunnelPopoverDismiss = onDocMouseDown
+  setTimeout(() => document.addEventListener('mousedown', onDocMouseDown, true), 0)
+  void (async () => {
+    let statusList = []
+    try {
+      const res = await fetch('/api/dsh-tty/tunnels', { cache: 'no-store' })
+      const data = await res.json()
+      if (data.ok && Array.isArray(data.tunnels)) statusList = data.tunnels
+    } catch {
+      /* 状态获取失败：按无状态渲染 */
+    }
+    if (tunnelPopoverEl !== pop) return // 弹层已被关闭
+    listEl.textContent = ''
+    const mine = tunnelsCache.filter((t) => t?.bookName === bookName && t?.enabled !== false)
+    if (mine.length === 0) {
+      const empty = document.createElement('span')
+      empty.className = 'tt_cardHint'
+      empty.textContent = '该连接暂无启用的隧道'
+      listEl.appendChild(empty)
+      return
+    }
+    for (const t of mine) {
+      const st = statusList.find((s) => s?.name === t?.name)
+      const state = st?.state ?? 'stopped'
+      const row = document.createElement('div')
+      row.className = 'tt_tunnelPopRow'
+      const dot = document.createElement('span')
+      dot.className = 'tt_connDot'
+      dot.dataset.state = state === 'active' ? 'connected' : state === 'error' ? 'error' : 'connecting'
+      const text = document.createElement('span')
+      text.className = 'tt_connTarget'
+      text.title = String(st?.error ?? st?.lastForwardError ?? '')
+      text.textContent = tunnelRuleText(t) + ' · ' + state
+      row.appendChild(dot)
+      row.appendChild(text)
+      listEl.appendChild(row)
+    }
+  })()
+}
+
 /** 标签显示序号（按创建顺序，简化：Map 序 +1）。 */
 function tabCounterLabel(sid) {
   let index = 1
@@ -655,12 +861,17 @@ function startTabRename(sid, tabBtn) {
 
 /** 连接簿缓存同步：config 快照里带 sshHosts 时整体覆盖（设置卡片保存后也走这里）。 */
 let tunnelsCache = []
+/** SFTP 界面风格缓存（dialog 单窗体 / dual 双栏）：config 快照与设置保存同步。 */
+let sftpStyleCache = 'dialog'
 function syncSshHostsCache(config) {
   if (config !== null && typeof config === 'object' && Array.isArray(config.sshHosts)) {
     sshHostsCache = config.sshHosts
   }
   if (config !== null && typeof config === 'object' && Array.isArray(config.tunnels)) {
     tunnelsCache = config.tunnels
+  }
+  if (config !== null && typeof config === 'object' && (config.sftpStyle === 'dual' || config.sftpStyle === 'dialog')) {
+    sftpStyleCache = config.sftpStyle
   }
 }
 
@@ -1259,6 +1470,426 @@ async function saveSshHostUpdate(originalName, entry) {
   }
 }
 
+/* ============================ SFTP 双栏浏览器 ============================ */
+
+/**
+ * SFTP 双栏浏览器（0.9.0，设置 sftpStyle=dual 时替代单窗体）：左本机 / 右远程
+ * 两栏，行内「⇨ / ⇦」把条目对拷到对面栏的当前目录——走
+ * /api/dsh-tty/local-fs/transfer 由宿主服务端流式直传（目录递归、同名覆盖，
+ * 字节不经过浏览器）；本机侧浏览/改名/删除走同路由，远程侧复用单窗体的
+ * /api/dsh-tty/sftp/*。与单窗体共用 sftpDialogEl 互斥与 Esc 关闭。
+ */
+function openSftpDual(spec, label) {
+  if (sftpDialogEl !== null) return
+
+  const backdrop = document.createElement('div')
+  backdrop.className = 'tt_sshBackdrop'
+  const card = document.createElement('div')
+  card.className = 'tt_sftpDualCard'
+
+  // 标题行：标题 + 右上角 ✕ 关闭
+  const titleRow = document.createElement('div')
+  titleRow.className = 'tt_sftpTitleRow'
+  const title = document.createElement('div')
+  title.className = 'tt_sshTitle'
+  title.textContent = 'SFTP 双栏 — ' + label
+  const titleClose = document.createElement('button')
+  titleClose.type = 'button'
+  titleClose.className = 'tt_close'
+  titleClose.title = '关闭'
+  titleClose.textContent = '✕'
+  titleClose.addEventListener('click', closeSftpDialog)
+  titleRow.appendChild(title)
+  titleRow.appendChild(titleClose)
+  card.appendChild(titleRow)
+
+  const status = document.createElement('div')
+  status.className = 'tt_sftpStatus'
+  const setStatus = (text, kind) => {
+    status.textContent = text
+    if (kind === undefined) delete status.dataset.state
+    else status.dataset.state = kind
+  }
+
+  /** 两侧栏共享传输互斥：传输期间两栏都置忙。 */
+  let jointBusy = false
+  const runJoint = (busyText, task) => {
+    if (jointBusy || panes.local.busy || panes.remote.busy) return
+    jointBusy = true
+    for (const pane of [panes.local, panes.remote]) pane.setBusy(true)
+    setStatus(busyText, 'busy')
+    Promise.resolve()
+      .then(task)
+      .catch((error) => setStatus(String(error && error.message ? error.message : error), 'error'))
+      .finally(() => {
+        jointBusy = false
+        for (const pane of [panes.local, panes.remote]) pane.setBusy(false)
+      })
+  }
+
+  /** 把行内编辑器插到对应栏的工具行之下（与单窗体一致的视觉位置）。 */
+  const showEditor = (kind) => {
+    panes[kind].bar.after(editor)
+    editor.style.display = ''
+    editorInput.focus()
+    editorInput.select()
+  }
+
+  const panes = {}
+
+  /**
+   * 构建一侧栏。api 按 kind 分发：remote → /api/dsh-tty/sftp/*（带 spec），
+   * local → /api/dsh-tty/local-fs/*。返回 loadDir / renderRows / 传输入口。
+   */
+  const buildPane = (kind, titleText) => {
+    const pane = { kind, path: '', busy: false }
+    const wrap = document.createElement('div')
+    wrap.className = 'tt_sftpPane'
+
+    const head = document.createElement('div')
+    head.className = 'tt_sftpPaneHead'
+    head.textContent = titleText
+    wrap.appendChild(head)
+
+    const bar = document.createElement('div')
+    bar.className = 'tt_sftpBar'
+    const pathInput = document.createElement('input')
+    pathInput.type = 'text'
+    pathInput.className = 'tt_sftpPath'
+    pathInput.placeholder = kind === 'local' ? '本机路径（回车跳转）' : '远程路径（回车跳转）'
+    pathInput.spellcheck = false
+    pathInput.autocomplete = 'off'
+    const refreshBtn = document.createElement('button')
+    refreshBtn.type = 'button'
+    refreshBtn.className = 'tt_toolBtn'
+    refreshBtn.textContent = '刷新'
+    const mkdirBtn = document.createElement('button')
+    mkdirBtn.type = 'button'
+    mkdirBtn.className = 'tt_toolBtn'
+    mkdirBtn.textContent = '新建目录'
+    bar.appendChild(pathInput)
+    bar.appendChild(refreshBtn)
+    bar.appendChild(mkdirBtn)
+    wrap.appendChild(bar)
+
+    const list = document.createElement('div')
+    list.className = 'tt_sftpList'
+    wrap.appendChild(list)
+    pane.bar = bar // 行内编辑器插入位置（工具行之下）
+
+    const setBusy = (busy) => {
+      pane.busy = busy
+      for (const el of [refreshBtn, mkdirBtn]) el.disabled = busy
+      pathInput.disabled = busy
+    }
+
+    const api = async (action, payload) => {
+      const base = kind === 'local' ? '/api/dsh-tty/local-fs/' : '/api/dsh-tty/sftp/'
+      const body = kind === 'local' ? payload : { ...spec, ...payload }
+      const res = await fetch(base + action, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok || data.ok !== true) throw new Error(String(data.error || 'HTTP ' + res.status))
+      return data
+    }
+
+    const runTask = (busyText, task) => {
+      if (pane.busy || jointBusy) return
+      setBusy(true)
+      setStatus(busyText, 'busy')
+      return Promise.resolve()
+        .then(task)
+        .catch((error) => setStatus(String(error && error.message ? error.message : error), 'error'))
+        .finally(() => setBusy(false))
+    }
+
+    const joinChild = (dir, name) => (dir.endsWith('/') || dir.endsWith('\\') ? dir + name : dir + '/' + name)
+
+    const rowOf = (entry) => {
+      const full = joinChild(pane.path, entry.name)
+      const metaParts = []
+      if (entry.isDir === true) metaParts.push('目录')
+      else metaParts.push(formatBytes(Number(entry.size)) || '—')
+      const mtime = formatMtime(Number(entry.mtime))
+      if (mtime !== '') metaParts.push(mtime)
+      const row = listRow(entry.isDir ? '📁' : entry.isSymlink ? '↗' : '📄', entry.name, metaParts.join(' · '))
+      const reload = () => pane.loadDir(pane.path)
+      const other = kind === 'local' ? panes.remote : panes.local
+      if (entry.isDir === true) {
+        row.addEventListener('click', (event) => {
+          if (event.target instanceof Element && event.target.closest('.tt_sftpAct') !== null) return
+          void pane.loadDir(full)
+        })
+      }
+      // 直传：⇨ 本机→远程 / ⇦ 远程→本机（对面栏当前目录下；目录递归、同名覆盖）
+      appendAct(row, kind === 'local' ? '⇨' : '⇦', '传输到' + (kind === 'local' ? '远程' : '本机') + '：' + other.path, () => {
+        runJoint('传输 ' + entry.name + '…', async () => {
+          const res = await fetch('/api/dsh-tty/local-fs/transfer', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              direction: kind === 'local' ? 'up' : 'down',
+              ...spec,
+              localPath: kind === 'local' ? full : joinChild(other.path, entry.name),
+              remotePath: kind === 'local' ? joinChild(other.path, entry.name) : full,
+            }),
+          })
+          const data = await res.json().catch(() => ({}))
+          if (!res.ok || data.ok !== true) throw new Error(String(data.error || 'HTTP ' + res.status))
+          setStatus('已传输 ' + entry.name)
+          await other.loadDir(other.path)
+        })
+      })
+      if (kind !== 'local' && entry.isDir !== true) {
+        // 远程文件保留浏览器下载（⬇）
+        appendAct(row, '⬇', '下载 ' + entry.name, () => void downloadRemoteEntry(entry, full))
+      }
+      appendAct(row, '✎', '重命名 ' + entry.name, () => {
+        editorInput.placeholder = '新名称'
+        editorInput.value = entry.name
+        showEditor(kind)
+        editorCommit = async () => {
+          const value = editorInput.value.trim()
+          if (value === '' || value === entry.name) return
+          closeEditor()
+          await pane.runTask('重命名 ' + entry.name + '…', async () => {
+            await api('rename', { from: full, to: joinChild(pane.path, value) })
+            await reload()
+          })
+        }
+      })
+      appendDelete(row, () => pane.runTask('删除 ' + entry.name + '…', async () => {
+        await api('remove', { path: full, recursive: entry.isDir === true })
+        await reload()
+        setStatus('已删除 ' + entry.name)
+      }), entry)
+      return row
+    }
+
+    const renderRows = (entries) => {
+      list.textContent = ''
+      if (pane.path !== '' && pane.path !== '/' && /^[A-Za-z]:[\\/]?$/.test(pane.path) === false) {
+        const up = listRow('📁', '..（上级目录）', '')
+        up.addEventListener('click', () => {
+          void pane.loadDir(parentRemotePath(pane.path))
+        })
+        list.appendChild(up)
+      }
+      const rows = Array.isArray(entries) ? entries : []
+      if (rows.length === 0) {
+        const empty = document.createElement('div')
+        empty.className = 'tt_addMenuTitle'
+        empty.textContent = '（空目录）'
+        list.appendChild(empty)
+        return
+      }
+      for (const entry of rows) {
+        if (entry === null || typeof entry !== 'object' || typeof entry.name !== 'string' || entry.name === '') continue
+        list.appendChild(rowOf(entry))
+      }
+    }
+
+    pane.loadDir = async (pathArg) => {
+      try {
+        const data = await api('list', { path: pathArg ?? pane.path })
+        pane.path = typeof data.path === 'string' && data.path !== '' ? data.path : pane.path
+        pathInput.value = pane.path
+        const count = Array.isArray(data.entries) ? data.entries.length : 0
+        renderRows(data.entries)
+        setStatus(pane.path + ' — ' + String(count) + ' 项')
+      } catch (error) {
+        setStatus(String(error && error.message ? error.message : error), 'error')
+      }
+    }
+    pane.runTask = runTask
+    pane.setBusy = setBusy
+    panes[kind] = pane
+
+    refreshBtn.addEventListener('click', () => {
+      void pane.runTask('加载中…', () => pane.loadDir(pane.path))
+    })
+    mkdirBtn.addEventListener('click', () => {
+      if (pane.busy || jointBusy) return
+      editorInput.placeholder = '新目录名（相对当前目录）'
+      editorInput.value = ''
+      showEditor(kind)
+      editorCommit = async () => {
+        const value = editorInput.value.trim()
+        if (value === '') return
+        closeEditor()
+        await pane.runTask('创建目录 ' + value + '…', async () => {
+          await api('mkdir', { path: joinChild(pane.path, value), parents: true })
+          await pane.loadDir(pane.path)
+        })
+      }
+    })
+    pathInput.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') return
+      event.preventDefault()
+      if (pane.busy || jointBusy) return
+      const target = pathInput.value.trim()
+      if (target === '') return
+      void pane.runTask('加载中…', () => pane.loadDir(target))
+    })
+
+    return wrap
+  }
+
+  /* 行内编辑器（重命名 / 新建目录共用，最后操作的栏生效）+ 列表行工厂 */
+  const editor = document.createElement('div')
+  editor.className = 'tt_sftpEditor'
+  editor.style.display = 'none'
+  const editorInput = document.createElement('input')
+  editorInput.type = 'text'
+  editorInput.className = 'tt_cardInput'
+  editorInput.spellcheck = false
+  editorInput.autocomplete = 'off'
+  const editorOk = document.createElement('button')
+  editorOk.type = 'button'
+  editorOk.className = 'tt_toolBtn'
+  editorOk.textContent = '确定'
+  const editorCancel = document.createElement('button')
+  editorCancel.type = 'button'
+  editorCancel.className = 'tt_toolBtn'
+  editorCancel.textContent = '取消'
+  editor.appendChild(editorInput)
+  editor.appendChild(editorOk)
+  editor.appendChild(editorCancel)
+  let editorCommit = null
+  const closeEditor = () => {
+    editor.style.display = 'none'
+    editorInput.value = ''
+    editorCommit = null
+  }
+  editorOk.addEventListener('click', () => void editorCommit?.())
+  editorCancel.addEventListener('click', closeEditor)
+  editorInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      void editorCommit?.()
+    } else if (event.key === 'Escape') {
+      event.stopPropagation()
+      closeEditor()
+    }
+  })
+
+  const listRow = (icon, name, meta) => {
+    const row = document.createElement('button')
+    row.type = 'button'
+    row.className = 'tt_sftpRow'
+    const iconEl = document.createElement('span')
+    iconEl.className = 'tt_sftpIcon'
+    iconEl.textContent = icon
+    const nameEl = document.createElement('span')
+    nameEl.className = 'tt_sftpName'
+    nameEl.textContent = name
+    nameEl.title = name
+    row.appendChild(iconEl)
+    row.appendChild(nameEl)
+    if (meta !== '') {
+      const metaEl = document.createElement('span')
+      metaEl.className = 'tt_sftpMeta'
+      metaEl.textContent = meta
+      row.appendChild(metaEl)
+    }
+    return row
+  }
+
+  const appendAct = (row, glyph, titleText, onClick) => {
+    const act = document.createElement('button')
+    act.type = 'button'
+    act.className = 'tt_sftpAct'
+    act.textContent = glyph
+    act.title = titleText
+    act.addEventListener('click', (event) => {
+      event.stopPropagation()
+      onClick()
+    })
+    row.appendChild(act)
+  }
+
+  /** 删除按钮：首击变「确认?」（4s 复位），再击执行（目录递归由请求带出）。 */
+  const appendDelete = (row, onConfirm, entry) => {
+    const act = document.createElement('button')
+    act.type = 'button'
+    act.className = 'tt_sftpAct'
+    act.textContent = '🗑'
+    act.title = '删除 ' + entry.name + (entry.isDir ? '（含内容）' : '')
+    let confirmTimer = null
+    act.addEventListener('click', (event) => {
+      event.stopPropagation()
+      if (confirmTimer !== null) {
+        clearTimeout(confirmTimer)
+        confirmTimer = null
+        act.textContent = '🗑'
+        delete act.dataset.danger
+        onConfirm()
+        return
+      }
+      act.textContent = '确认?'
+      act.dataset.danger = ''
+      confirmTimer = setTimeout(() => {
+        confirmTimer = null
+        act.textContent = '🗑'
+        delete act.dataset.danger
+      }, 4000)
+    })
+    row.appendChild(act)
+  }
+
+  /** 远程文件浏览器下载（双栏里保留；整传用 ⇦ 走服务端直传）。 */
+  const downloadRemoteEntry = (entry, full) => panes.remote.runTask('下载 ' + entry.name + '…', async () => {
+    const res = await fetch('/api/dsh-tty/sftp/download', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...spec, path: full }),
+    })
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}))
+      throw new Error(String(data.error || 'HTTP ' + res.status))
+    }
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = entry.name
+    anchor.click()
+    setTimeout(() => URL.revokeObjectURL(url), 30_000)
+    setStatus('已下载 ' + entry.name + '（' + (formatBytes(blob.size) || String(blob.size) + ' B') + '）')
+  })
+
+  const localWrap = buildPane('local', '本机')
+  const remoteWrap = buildPane('remote', '远程')
+  panes.local.wrap = localWrap
+  panes.remote.wrap = remoteWrap
+
+  const dual = document.createElement('div')
+  dual.className = 'tt_sftpDual'
+  dual.appendChild(localWrap)
+  dual.appendChild(remoteWrap)
+  card.appendChild(dual)
+  // 行内编辑器（重命名 / 新建目录）：挂在两栏之下、状态行之上
+  card.appendChild(editor)
+
+  const foot = document.createElement('div')
+  foot.className = 'tt_sftpFoot'
+  foot.appendChild(status)
+  card.appendChild(foot)
+
+  backdrop.addEventListener('mousedown', (event) => {
+    if (event.target === backdrop) closeSftpDialog()
+  })
+
+  backdrop.appendChild(card)
+  document.body.appendChild(backdrop)
+  sftpDialogEl = backdrop
+  void panes.local.loadDir('')
+  void panes.remote.loadDir('')
+}
+
 /* ============================ SFTP 文件浏览 ============================ */
 
 let sftpDialogEl = null
@@ -1375,16 +2006,32 @@ function openSftpBrowser(specInput) {
     if (raw.agentForward === true) spec.agentForward = true
   }
   const label = spec.name ?? (spec.username !== undefined ? spec.username + '@' + String(spec.host ?? '') : String(spec.host ?? ''))
+  // 双栏风格（设置 sftpStyle=dual）：转交双栏浏览器，共用互斥锁与关闭逻辑
+  if (sftpStyleCache === 'dual') {
+    openSftpDual(spec, label)
+    return
+  }
 
   const backdrop = document.createElement('div')
   backdrop.className = 'tt_sshBackdrop'
   const card = document.createElement('div')
   card.className = 'tt_sftpCard'
 
+  // 标题行：标题 + 右上角 ✕ 关闭
+  const titleRow = document.createElement('div')
+  titleRow.className = 'tt_sftpTitleRow'
   const title = document.createElement('div')
   title.className = 'tt_sshTitle'
   title.textContent = 'SFTP — ' + label
-  card.appendChild(title)
+  const titleClose = document.createElement('button')
+  titleClose.type = 'button'
+  titleClose.className = 'tt_close'
+  titleClose.title = '关闭'
+  titleClose.textContent = '✕'
+  titleClose.addEventListener('click', closeSftpDialog)
+  titleRow.appendChild(title)
+  titleRow.appendChild(titleClose)
+  card.appendChild(titleRow)
 
   /* 工具栏：路径输入（回车跳转）+ 刷新 / 新建目录 / 上传（隐藏 file input） */
   const bar = document.createElement('div')
@@ -1467,12 +2114,7 @@ function openSftpBrowser(specInput) {
   foot.className = 'tt_sftpFoot'
   const status = document.createElement('div')
   status.className = 'tt_sftpStatus'
-  const closeBtn = document.createElement('button')
-  closeBtn.type = 'button'
-  closeBtn.className = 'tt_toolBtn'
-  closeBtn.textContent = '关闭'
   foot.appendChild(status)
-  foot.appendChild(closeBtn)
   card.appendChild(foot)
 
   const state = { path: '', busy: false }
@@ -1483,7 +2125,7 @@ function openSftpBrowser(specInput) {
   }
   const setBusy = (busy) => {
     state.busy = busy
-    for (const el of [refreshBtn, mkdirBtn, uploadBtn, closeBtn]) el.disabled = busy
+    for (const el of [refreshBtn, mkdirBtn, uploadBtn]) el.disabled = busy
     pathInput.disabled = busy
   }
 
@@ -1791,7 +2433,6 @@ function openSftpBrowser(specInput) {
     if (target === '') return
     void runTask('加载中…', () => loadDir(target))
   })
-  closeBtn.addEventListener('click', closeSftpDialog)
   backdrop.addEventListener('mousedown', (event) => {
     if (event.target === backdrop) closeSftpDialog()
   })
@@ -1924,10 +2565,14 @@ function connect() {
       if (tab !== undefined) {
         tab.exited = false
         tab.spawned = true
+        tab.live = true
+        tab.errored = false
+        tab.target = target // 连接栏展示用（label 可能是自定义连接名）
         if (msg.kind === 'ssh' && target !== '' && !tab.label) {
           tab.label = target // 标签缺标题时（如旧缓存条目）用宿主回显的 target
           renderTabbar()
         }
+        renderConnbar()
         showTabOverlay(tab, '')
         sendResize(tab) // spawn/attach 就绪后补一次精确尺寸
         syncEntryBadge() // 断线重连后徽标计数恢复
@@ -1943,9 +2588,11 @@ function connect() {
       const tab = tabs.get(sid)
       if (tab !== undefined) {
         tab.exited = true
+        tab.live = false
         const code = msg.code !== null && msg.code !== undefined ? 'code=' + msg.code : ''
         const signal = msg.signal !== null && msg.signal !== undefined ? 'signal=' + msg.signal : ''
         setStatus('已退出 ' + [code, signal].filter(Boolean).join(' '), '')
+        renderConnbar()
         showTabOverlay(tab, '会话已退出 — 点击重新打开')
         syncEntryBadge() // 最小化时徽标计数同步减少
         persistTabs() // 已退出的标签不再持久化
@@ -1954,7 +2601,11 @@ function connect() {
       setStatus('错误：' + String(msg.m ?? ''), 'error')
       if (typeof sid === 'string') {
         const tab = tabs.get(sid)
-        if (tab !== undefined) showTabOverlay(tab, '错误：' + String(msg.m ?? '') + ' — 点击重试')
+        if (tab !== undefined) {
+          if (!tab.live) tab.errored = true // spawn/attach 失败：连接栏状态点转错误色
+          renderConnbar()
+          showTabOverlay(tab, '错误：' + String(msg.m ?? '') + ' — 点击重试')
+        }
       } else {
         showBodyOverlay('点击重试')
       }
@@ -1992,25 +2643,33 @@ function openModal() {
   modalEl.className = 'tt_modalBackdrop'
   modalEl.innerHTML =
     '<div class="tt_modal">' +
+    // 两行头部：标签行（图标 + 标签区 + 状态 + 工具/窗口按钮）+ SSH 连接栏
     '<div class="tt_header">' +
-    '<div class="tt_title">' + TERMINAL_ICON + '<span>终端</span></div>' +
+    '<span class="tt_titleIcon">' + TERMINAL_ICON + '</span>' +
+    '<div class="tt_tabs"></div>' +
     '<div class="tt_status"><span class="tt_statusDot"></span><span class="tt_statusText">初始化…</span></div>' +
     '<input class="tt_searchInput" style="display:none" placeholder="搜索 (Enter 下一个, Shift+Enter 上一个)" />' +
-    '<button class="tt_toolBtn" data-act="search" title="搜索 (Ctrl+F)">搜索</button>' +
-    '<button class="tt_toolBtn" data-act="clear" title="清屏">清屏</button>' +
-    '<button class="tt_toolBtn" data-act="copy" title="复制选中内容">复制</button>' +
-    '<button class="tt_toolBtn" data-act="paste" title="粘贴">粘贴</button>' +
+    '<button class="tt_toolBtn tt_iconBtn" data-act="search" title="搜索 (Ctrl+F)">' + ICON_SEARCH + '</button>' +
+    '<button class="tt_toolBtn tt_iconBtn" data-act="clear" title="清屏">' + ICON_CLEAR + '</button>' +
+    '<button class="tt_toolBtn tt_iconBtn" data-act="copy" title="复制选中内容">' + ICON_COPY + '</button>' +
+    '<button class="tt_toolBtn tt_iconBtn" data-act="paste" title="粘贴">' + ICON_PASTE + '</button>' +
     '<button class="tt_min" title="最小化到悬浮条（会话保持运行）">—</button>' +
     '<button class="tt_close" title="关闭终端（结束所有会话）">✕</button>' +
     '</div>' +
-    '<div class="tt_tabbar"></div>' +
+    // 连接栏：左侧连接状态，右侧 SFTP / 扩展按钮；本地终端时隐藏（renderConnbar 控制）
+    '<div class="tt_connbar" data-hidden><div class="tt_connArea"><span class="tt_connDot"></span><span class="tt_connTarget">—</span></div><div class="tt_connActions"></div></div>' +
     '<div class="tt_body"><div class="tt_overlay"></div></div>' +
     '</div>'
   document.body.appendChild(modalEl)
 
+  statusChipEl = modalEl.querySelector('.tt_status')
   statusEl = modalEl.querySelector('.tt_statusText')
   statusDotEl = modalEl.querySelector('.tt_statusDot')
-  tabbarEl = modalEl.querySelector('.tt_tabbar')
+  tabbarEl = modalEl.querySelector('.tt_tabs')
+  connbarEl = modalEl.querySelector('.tt_connbar')
+  connDotEl = modalEl.querySelector('.tt_connDot')
+  connTargetEl = modalEl.querySelector('.tt_connTarget')
+  connActionsEl = modalEl.querySelector('.tt_connActions')
   bodyEl = modalEl.querySelector('.tt_body')
   bodyOverlayEl = modalEl.querySelector('.tt_body > .tt_overlay')
   searchInputEl = modalEl.querySelector('.tt_searchInput')
@@ -2075,6 +2734,10 @@ function openModal() {
     }
   })
   resizeObserver.observe(bodyEl)
+
+  // 首帧渲染：标签区的「+」要立即可见；连接栏按当前标签决定显隐
+  renderTabbar()
+  renderConnbar()
 
   connect()
 }
@@ -2239,9 +2902,15 @@ function closeModal() {
   document.removeEventListener('keydown', onModalKeydown)
   modalEl.remove()
   modalEl = null
+  statusChipEl = null
   statusEl = null
   statusDotEl = null
   tabbarEl = null
+  connbarEl = null
+  connDotEl = null
+  connTargetEl = null
+  connActionsEl = null
+  closeTunnelPopover()
   bodyEl = null
   bodyOverlayEl = null
   searchInputEl = null
@@ -2719,7 +3388,7 @@ function TtySettingsCard() {
     setMessage({ kind: '', text: '' })
     // 只提交配置项：快照里的 toolsRegistered 等非配置键会被宿主 normalizePatch 拒绝
     const body = {}
-    for (const key of ['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'shellIntegration']) {
+    for (const key of ['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'shellIntegration', 'sftpStyle']) {
       const value = (form || {})[key]
       if (value !== undefined && value !== '') body[key] = value
     }
@@ -2852,6 +3521,22 @@ function TtySettingsCard() {
                 boolField('启用插件（需重启生效）', 'enabled'),
                 boolField('向 agent 公告终端面板能力', 'announceToAgent'),
                 boolField('shell 集成（OSC 133/7 注入，tty_capture{last} 与 cwd 跟随依赖它）', 'shellIntegration'),
+                jsxs('div', {
+                  className: 'tt_cardField',
+                  children: [
+                    jsx('span', { className: 'tt_cardLabel', children: 'SFTP 文件浏览风格' }),
+                    jsxs('select', {
+                      className: 'tt_cardInput',
+                      value: form.sftpStyle === 'dual' ? 'dual' : 'dialog',
+                      onChange: (event) => set('sftpStyle', event.target.value),
+                      children: [
+                        jsx('option', { value: 'dialog', children: '单窗体 — 远程目录 + 上传/下载/拖拽' }),
+                        jsx('option', { value: 'dual', children: '双栏 — 左本机 / 右远程，选中直传' }),
+                      ],
+                    }),
+                    jsx('span', { className: 'tt_cardHint', children: '双栏在本机与远程之间对拷文件（目录递归、同名覆盖）；重新打开 SFTP 后生效' }),
+                  ],
+                }),
                 textField('并发会话上限（1~16）', 'maxSessions', '4', '超过上限的新标签会被拒绝；保存即热生效'),
                 jsxs('div', {
                   className: 'tt_cardField',
