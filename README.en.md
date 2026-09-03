@@ -11,7 +11,7 @@
   &nbsp;
   <img src="https://img.shields.io/npm/v/@hyzyn%2Fdsh-all?style=flat-square&label=npm" alt="npm">
   &nbsp;
-  <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License">
+  <img src="https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square" alt="License">
 </p>
 
 Repo gates: `pnpm typecheck` / `pnpm build` / `pnpm aggregate`.
@@ -314,7 +314,7 @@ A: There may be root-owned files in the local `~/.npm` cache (a historical npm b
 
 ## License
 
-This repository is licensed under the [MIT](LICENSE) license.
+This repository is licensed under the [Apache License 2.0](LICENSE).
 
 ## Contributors
 

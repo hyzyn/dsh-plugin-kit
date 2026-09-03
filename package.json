@@ -23,7 +23,7 @@
     "typescript": "~5.7.2"
   },
   "packageManager": "pnpm@10.30.3",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/hyzyn/dsh-plugin-kit.git"
