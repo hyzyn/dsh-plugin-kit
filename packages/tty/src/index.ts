@@ -85,7 +85,7 @@ import { parseKnownHosts } from './known-hosts.js'
 import { TunnelManager } from './tunnels.js'
 import type { TunnelSpec } from './tunnels.js'
 import { SftpManager } from './sftp.js'
-import { buildTmuxSpawnPlan, ensureTmuxAssets, killTmuxSession, probeTmux, refreshTmuxClient, sanitizePersistName } from './tmux.js'
+import { buildTmuxSpawnPlan, ensureTmuxAssets, killTmuxSession, listTmuxSessions, probeTmux, refreshTmuxClient, sanitizePersistName } from './tmux.js'
 
 export type { HostKeyRecord } from './ssh.js'
 
@@ -1154,7 +1154,10 @@ class TtyServer {
         local.delete(resolved.sid)
         this.killSessionNow(session)
       } else if (msg.t === 'sessions') {
-        send(ws, { t: 'sessions', list: this.sessions.listForAttach() })
+        // tmux 字段（0.10.1）：专用 socket 上现存的持久会话名——客户端用它
+        // 确认 localStorage 里的持久标签规格是否仍可恢复（新窗口/新浏览器）
+        const tmuxSessions = await listTmuxSessions()
+        send(ws, { t: 'sessions', list: this.sessions.listForAttach(), tmux: tmuxSessions })
       } else if (msg.t === 'attach') {
         const raw = msg.sid
         if (typeof raw !== 'string' || raw === '' || !SID_RE.test(raw)) {

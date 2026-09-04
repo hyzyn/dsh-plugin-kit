@@ -36,6 +36,8 @@ export declare function buildTmuxSpawnPlan(options: {
 }): ShellSpawnPlan;
 /** kill 帧的 tmux 侧收尾：kill-session（不存在/已死同样 resolve，错误吞掉）。 */
 export declare function killTmuxSession(tmuxName: string): Promise<void>;
+/** 专用 socket 上现存的 tmux 会话名（sessions 帧的 tmux 字段，客户端恢复确认用）。 */
+export declare function listTmuxSessions(): Promise<string[]>;
 /**
  * attach 重画：tmux 背书会话重连时不回放宿主环形缓冲（tmux 的整屏重画会把
  * 同样内容再画一遍 → 重影 + 幽灵滚动条），改为让 tmux 强制重画客户端一次。
