@@ -20,7 +20,7 @@ import { parseSshConfig } from './ssh-config.js';
 import { parseKnownHosts } from './known-hosts.js';
 import { TunnelManager } from './tunnels.js';
 import { SftpManager } from './sftp.js';
-import { buildTmuxSpawnPlan, ensureTmuxAssets, killTmuxSession, probeTmux, sanitizePersistName } from './tmux.js';
+import { buildTmuxSpawnPlan, ensureTmuxAssets, killTmuxSession, probeTmux, refreshTmuxClient, sanitizePersistName } from './tmux.js';
 const SSH_HOST_SCHEMA = z.object({
     name: z.string(),
     host: z.string(),
@@ -1028,9 +1028,16 @@ class TtyServer {
                     }
                 }
                 send(ws, { t: 'ready', sid: session.id, pid: session.handle.pid, kind: session.kind, target: session.target !== '' ? session.target : undefined, reattached: true, ...(session.tmuxName !== null ? { persist: true } : {}) });
-                // 断线期间的输出经 256KB 环形缓冲回放（缓冲为空则跳过）
-                if (session.buffer !== '')
+                // 断线期间的输出经 256KB 环形缓冲回放（缓冲为空则跳过）。
+                // tmux 背书会话例外：现场由 tmux 负责重画——回放会把缓冲里的可见屏
+                // 先写进全新 xterm（制造屏外幽灵滚动历史 → 莫名滚动条），随后 tmux
+                // 整屏重画再画一遍（内容重影）；故跳过回放，强制 tmux 重画一次
+                if (session.tmuxName !== null) {
+                    void refreshTmuxClient(session.tmuxName);
+                }
+                else if (session.buffer !== '') {
                     send(ws, { t: 'data', sid: session.id, d: session.buffer });
+                }
             }
         }
         catch (error) {

@@ -1204,6 +1204,29 @@ async function run() {
       if (!listedFinal.includes('dsh-b26resume')) pass('B26c 恢复会话 kill 后 tmux 会话清理')
       else fail('B26c 恢复会话 kill 后 tmux 会话清理', JSON.stringify(listedFinal))
       w2.client.close()
+
+      // B26d: attach 不回放缓冲 —— 重连后现场由 tmux refresh-client 重画恰好一次
+      //（旧行为：回放缓冲 + tmux 重画 = 内容重影 + 幽灵滚动条）
+      const w3 = openSession(port)
+      await w3.open()
+      w3.client.send(JSON.stringify({ t: 'spawn', sid: 'b26d', cols: 80, rows: 24, persist: true, persistName: 'b26refresh' }))
+      await w3.waitFor(() => w3.state.ready, 10000, 'b26d ready')
+      w3.client.send(JSON.stringify({ t: 'input', sid: 'b26d', d: 'printf "B26REFRESH-%s\\n" ok\n' }))
+      await w3.waitFor(() => /B26REFRESH-ok/.test(w3.state.text), 10000, 'b26d 输出')
+      await sleep(600) // 等 D 标记与重画尘埃落定
+      w3.client.close() // 异常断开 → 孤儿（grace=1s，需在回收前尽快 attach）
+      await sleep(200)
+      const w4 = openSession(port)
+      await w4.open()
+      w4.client.send(JSON.stringify({ t: 'attach', sid: 'b26d' }))
+      await w4.waitFor(() => w4.state.ready, 10000, 'b26d attach ready')
+      await w4.waitFor(() => /B26REFRESH-ok/.test(w4.state.text), 10000, 'refresh-client 重画')
+      const occurrences = (w4.state.text.match(/B26REFRESH-ok/g) ?? []).length
+      if (occurrences === 1) pass('B26d attach 跳过缓冲回放（tmux 重画一次，无重影/幽灵滚动条）')
+      else fail('B26d attach 跳过缓冲回放（tmux 重画一次，无重影/幽灵滚动条）', `marker 出现 ${occurrences} 次`)
+      w4.client.send(JSON.stringify({ t: 'kill', sid: 'b26d' }))
+      await w4.waitFor(() => w4.state.exited !== null, 10000, 'b26d exit')
+      w4.client.close()
       await post({ reconnectGraceSec: 120, persistence: 'off' })
       console.log('    持久化配置已还原（persistence=off，grace=120）')
     }
