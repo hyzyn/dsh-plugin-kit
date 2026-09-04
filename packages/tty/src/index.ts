@@ -7,17 +7,24 @@
  * 之后双向透传：input/resize/kill 上行，data/exit/error 下行。
  *
  * 帧协议 v3（JSON 文本帧；sid 维度支持单连接多会话/标签页 + 断线重连）：
- *   C→S  {t:'spawn', sid?, cols?, rows?, cwd?}  创建本地会话；sid 缺省时宿主生成
- *   C→S  {t:'ssh', sid?, cols?, rows?, name? | host, username, ...}
- *                                               创建 SSH 会话（ssh2 原生，见 ssh.ts）；
- *                                               name 引用连接簿条目，内联字段可覆盖
+ *   C→S  {t:'spawn', sid?, cols?, rows?, cwd?, persist?, persistName?}
+ *                                              创建本地会话；sid 缺省时宿主生成；
+ *                                              persist=true 且配置 persistence=tmux
+ *                                              时以 tmux 持久会话托管（0.10.0）
+ *   C→S  {t:'ssh', sid?, cols?, rows?, name? | host, username, ...,
+ *         persist?, persistName?}              创建 SSH 会话（ssh2 原生，见 ssh.ts）；
+ *                                              name 引用连接簿条目，内联字段可覆盖；
+ *                                              persist 语义同 spawn（远程 tmux 托管）
  *   C→S  {t:'input', sid?, d}                  按键/粘贴数据
  *   C→S  {t:'resize', sid?, cols, rows}        xterm fit 触发
- *   C→S  {t:'kill', sid?}                      关闭会话（孤儿会话也可跨连接 kill）
+ *   C→S  {t:'kill', sid?}                      关闭会话（孤儿会话也可跨连接 kill；
+ *                                              tmux 会话先 kill-session 再杀客户端）
  *   C→S  {t:'sessions'}                        列出全局会话（attachable 标记可重连者）
  *   C→S  {t:'attach', sid}                     重连孤儿会话（断线保活窗口内）：
- *                                               ready 后紧跟一帧 data 回放输出缓冲
- *   S→C  {t:'ready', sid, pid, kind, target?}  会话就绪（ssh 时 pid=null，target=user@host）
+ *                                              ready 后紧跟一帧 data 回放输出缓冲
+ *   S→C  {t:'ready', sid, pid, kind, target?, persist?, reattached?}
+ *                                              会话就绪（ssh 时 pid=null，target=user@host；
+ *                                              persist=true 表示 tmux 持久会话）
  *   S→C  {t:'data', sid, d}                    终端输出（utf8 文本，StringDecoder 兜多字节分帧）
  *   S→C  {t:'exit', sid, code, signal}         PTY 退出事实（恰好一次）
  *   S→C  {t:'error', sid?, m}                  错误
@@ -76,6 +83,7 @@ import { parseKnownHosts } from './known-hosts.js'
 import { TunnelManager } from './tunnels.js'
 import type { TunnelSpec } from './tunnels.js'
 import { SftpManager } from './sftp.js'
+import { buildTmuxSpawnPlan, ensureTmuxAssets, killTmuxSession, probeTmux, sanitizePersistName } from './tmux.js'
 
 export type { HostKeyRecord } from './ssh.js'
 
@@ -106,6 +114,8 @@ export interface Config {
   tunnels?: TunnelSpec[]
   /** SFTP 文件浏览界面风格：dialog = 单窗体（默认）/ dual = 本机+远程双栏。 */
   sftpStyle?: 'dialog' | 'dual'
+  /** 会话持久化：off = 会话随宿主生死（默认）；tmux = 「持久终端」标签由 tmux server 托管，可跨宿主重启恢复。 */
+  persistence?: 'off' | 'tmux'
 }
 
 const SSH_HOST_SCHEMA = z.object({
@@ -118,6 +128,8 @@ const SSH_HOST_SCHEMA = z.object({
   passphrase: z.string().default(''),
   password: z.string().default(''),
   agentForward: z.boolean().default(false),
+  /** 该条目的 SSH 标签默认以 tmux 持久会话打开（仅 persistence=tmux 时生效）。 */
+  persist: z.boolean().default(false),
 })
 
 const HOST_KEY_SCHEMA = z.object({
@@ -153,6 +165,7 @@ const TTY_SETTINGS_SCHEMA = z.object({
   tunnels: z.array(TUNNEL_SCHEMA).default([]),
   shellIntegration: z.boolean().default(true),
   sftpStyle: z.union([z.const('dialog'), z.const('dual')]).default('dialog'),
+  persistence: z.union([z.const('off'), z.const('tmux')]).default('off'),
 })
 
 /* ------------------------------------------------------------------ *
@@ -174,7 +187,7 @@ const TERM_RE = /^[A-Za-z0-9_.+-]+$/
 const REAPER_INTERVAL_MS = 10_000
 
 const TTY_GUIDANCE =
-  '本机已安装 dsh-tty 插件（终端面板）：Web GUI 侧边栏的「终端」入口可打开交互终端（xterm.js + PTY），可运行任意命令与 TUI 程序（vim/htop 等），支持多标签页与断线自动重连（刷新页面/网络抖动后会话保活并恢复现场）；新标签默认在当前会话工作目录打开。标签栏「+」菜单还能开 SSH 标签页（ssh2 原生连接，连接簿在设置卡片维护，支持 agent forwarding 与主机指纹 TOFU 钉扎），像本地终端一样操作远程主机。长驻进程（dev server、watch、交互式程序）应引导用户到终端面板里运行，不要在 bash 工具里挂起等待；用户提到「开个终端 / 在终端里跑 / SSH 到某台机器」时引导其打开该面板。agent 侧配套工具：tty_list 列出活跃终端会话（含 SSH 的 target 与实时 cwd），tty_capture 读取近期输出（默认清洗 ANSI；last:true 拿「上一条命令」的输出+退出码），tty_screen 读取当前可见屏幕（可读懂 vim/htop 等 TUI），tty_expect 用正则等待输出中的就绪信号（如 dev server URL、构建完成），tty_send 发送按键，tunnel_list 列出端口转发隧道状态——操作会实时显示在用户终端里。SFTP 文件传输：面板内可对 SSH 连接簿条目（或 SSH 连接对话框当前填写的信息）打开文件浏览（上传/下载/建目录/重命名/删除），agent 配套 sftp_list 列远程目录、sftp_tree 递归看目录结构、sftp_read 读远程文本文件（≤1MB）、sftp_write 写远程文本文件（≤1MB，可追加）、sftp_mkdir 建目录（parents 可逐级补齐）、sftp_rename 重命名/移动、sftp_remove 删除（目录需 recursive），book 参数为连接簿条目名。端口转发：连接簿条目可配本地/远程隧道（如把远程数据库映射到本地端口），宿主自动保活重连，用户提到「转发端口 / 访问远程库」时引导其到终端面板设置卡片配置。推荐流程：tty_send 启动长任务 → tty_expect 等就绪标记 → tty_capture{last:true} 拿结果。'
+  '本机已安装 dsh-tty 插件（终端面板）：Web GUI 侧边栏的「终端」入口可打开交互终端（xterm.js + PTY），可运行任意命令与 TUI 程序（vim/htop 等），支持多标签页与断线自动重连（刷新页面/网络抖动后会话保活并恢复现场）；新标签默认在当前会话工作目录打开。标签栏「+」菜单还能开 SSH 标签页（ssh2 原生连接，连接簿在设置卡片维护，支持 agent forwarding 与主机指纹 TOFU 钉扎），像本地终端一样操作远程主机。开启「会话持久化（tmux）」后「+」菜单有「持久终端」：会话由 tmux server 托管，宿主重启/断线超时后重开标签即恢复现场，长任务建议放持久终端里跑。长驻进程（dev server、watch、交互式程序）应引导用户到终端面板里运行，不要在 bash 工具里挂起等待；用户提到「开个终端 / 在终端里跑 / SSH 到某台机器」时引导其打开该面板。agent 侧配套工具：tty_list 列出活跃终端会话（含 SSH 的 target 与实时 cwd），tty_capture 读取近期输出（默认清洗 ANSI；last:true 拿「上一条命令」的输出+退出码），tty_screen 读取当前可见屏幕（可读懂 vim/htop 等 TUI），tty_expect 用正则等待输出中的就绪信号（如 dev server URL、构建完成），tty_send 发送按键，tunnel_list 列出端口转发隧道状态——操作会实时显示在用户终端里。SFTP 文件传输：面板内可对 SSH 连接簿条目（或 SSH 连接对话框当前填写的信息）打开文件浏览（上传/下载/建目录/重命名/删除），agent 配套 sftp_list 列远程目录、sftp_tree 递归看目录结构、sftp_read 读远程文本文件（≤1MB）、sftp_write 写远程文本文件（≤1MB，可追加）、sftp_mkdir 建目录（parents 可逐级补齐）、sftp_rename 重命名/移动、sftp_remove 删除（目录需 recursive），book 参数为连接簿条目名。端口转发：连接簿条目可配本地/远程隧道（如把远程数据库映射到本地端口），宿主自动保活重连，用户提到「转发端口 / 访问远程库」时引导其到终端面板设置卡片配置。推荐流程：tty_send 启动长任务 → tty_expect 等就绪标记 → tty_capture{last:true} 拿结果。'
 
 /* ------------------------------------------------------------------ *
  * 类型
@@ -255,6 +268,8 @@ interface TtySession {
   pendingOutput: string
   /** 合并冲刷定时器；null 表示无待冲刷窗口。 */
   flushTimer: NodeJS.Timeout | null
+  /** tmux 持久会话名（本地与 SSH 同语义）；null = 非持久会话。 */
+  tmuxName: string | null
 }
 
 interface ReqLike {
@@ -290,8 +305,10 @@ class LiveConfig {
   shellIntegration: boolean
   /** 端口转发隧道规格。 */
   tunnels: TunnelSpec[]
+  /** 会话持久化模式（off / tmux）。 */
+  persistence: 'off' | 'tmux'
 
-  constructor(init: { shell: string; term: string; colorTerm: string; cwd: string; reconnectGraceSec: number; sshHosts?: SshHostEntry[]; hostKeys?: HostKeyRecord[]; shellIntegration: boolean; tunnels?: TunnelSpec[] }) {
+  constructor(init: { shell: string; term: string; colorTerm: string; cwd: string; reconnectGraceSec: number; sshHosts?: SshHostEntry[]; hostKeys?: HostKeyRecord[]; shellIntegration: boolean; tunnels?: TunnelSpec[]; persistence?: 'off' | 'tmux' }) {
     this.shell = init.shell
     this.term = sanitizeTermValue(init.term, 'xterm-256color')
     this.colorTerm = sanitizeTermValue(init.colorTerm, 'truecolor')
@@ -301,10 +318,11 @@ class LiveConfig {
     this.hostKeys = init.hostKeys ?? []
     this.shellIntegration = init.shellIntegration
     this.tunnels = init.tunnels ?? []
+    this.persistence = init.persistence === 'tmux' ? 'tmux' : 'off'
   }
 
   /** 合并部分更新；空字符串/undefined 保持原值；sshHosts/hostKeys/tunnels 传数组即整体替换。 */
-  apply(partial: Partial<{ shell: string; term: string; colorTerm: string; cwd: string; reconnectGraceSec: number; sshHosts: SshHostEntry[]; hostKeys: HostKeyRecord[]; shellIntegration: boolean; tunnels: TunnelSpec[] }>): void {
+  apply(partial: Partial<{ shell: string; term: string; colorTerm: string; cwd: string; reconnectGraceSec: number; sshHosts: SshHostEntry[]; hostKeys: HostKeyRecord[]; shellIntegration: boolean; tunnels: TunnelSpec[]; persistence: 'off' | 'tmux' }>): void {
     if (typeof partial.shell === 'string' && partial.shell.trim() !== '') this.shell = partial.shell.trim()
     if (typeof partial.term === 'string' && partial.term.trim() !== '') this.term = sanitizeTermValue(partial.term, this.term)
     if (typeof partial.colorTerm === 'string' && partial.colorTerm.trim() !== '') this.colorTerm = sanitizeTermValue(partial.colorTerm, this.colorTerm)
@@ -316,6 +334,7 @@ class LiveConfig {
     if (Array.isArray(partial.hostKeys)) this.hostKeys = partial.hostKeys
     if (typeof partial.shellIntegration === 'boolean') this.shellIntegration = partial.shellIntegration
     if (Array.isArray(partial.tunnels)) this.tunnels = partial.tunnels
+    if (partial.persistence === 'tmux' || partial.persistence === 'off') this.persistence = partial.persistence
   }
 
   findSshHost(name: string): SshHostEntry | undefined {
@@ -363,8 +382,11 @@ function cleanAnsiTail(raw: string): string {
   }).join('\n')
 }
 
-/** OSC 133 命令标记帧：\x1b]133;<A|B|D>[;<exit>](BEL|ST)。 */
-const OSC133_RE = /\x1b\]133;([ABDC])(?:;(\d+))?(?:\x07|\x1b\\)/g
+/** OSC 133 命令标记帧：\x1b]133;<A|B|D|T>[;<payload>](BEL|ST)。
+ * T（0.10.0）= tmux 持久标签的 pane 内容快照（base64）：tmux 的 pane 重画是
+ * 异步批量的，命令输出会落在 D 标记之后逃出 B..D 捕获窗口，故由钩子在发 D
+ * 前 capture-pane 随流直送，宿主优先采用。 */
+const OSC133_RE = /\x1b\]133;([ABDCT])(?:;([^\x07\x1b]*))?(?:\x07|\x1b\\)/g
 /** OSC 7 cwd 上报帧：\x1b]7;file://<host><path>(BEL|ST)。 */
 const OSC7_RE = /\x1b\]7;([^\x07\x1b]*)(?:\x07|\x1b\\)/g
 /** 单条命令输出捕获上限（环形，超出丢头部）。 */
@@ -376,16 +398,25 @@ const FLUSH_SIZE_CHARS = 64 * 1024
 
 /** shell 集成状态：OSC 133/7 解析产物（每会话一份）。 */
 interface ShellIntegrationState {
-  /** 跨 chunk 未闭合 OSC 序列的残包缓冲（≤512B，超限丢弃）。 */
+  /** 跨 chunk 未闭合 OSC 序列的残包缓冲（≤64KB，超限丢弃；上限容纳 T 快照）。 */
   carry: string
   /** B..D 之间：命令输出捕获中。 */
   inCommand: boolean
   cmdBuffer: string
+  /** T 标记带来的 pane 快照（tmux 持久标签；D 时优先于 cmdBuffer）。 */
+  pendingT: string | null
   lastCommand: { output: string; exitCode: number | null; endedAt: number } | null
 }
 
 function createShellState(): ShellIntegrationState {
-  return { carry: '', inCommand: false, cmdBuffer: '', lastCommand: null }
+  return { carry: '', inCommand: false, cmdBuffer: '', pendingT: null, lastCommand: null }
+}
+
+/** OSC 133;T 的 base64 payload → utf8 文本（无效输入返回 null）。 */
+function decodeBase64Utf8(payload: string | undefined): string | null {
+  if (payload === undefined || payload === '') return null
+  const text = Buffer.from(payload, 'base64').toString('utf8')
+  return text !== '' ? text : null
 }
 
 /** OSC 7 body（file://host/path）→ 解码后的路径；解析失败返回 undefined。 */
@@ -415,11 +446,11 @@ function feedShellIntegration(session: TtySession, text: string): void {
   if (lastOpen !== -1) {
     const tail = data.slice(lastOpen)
     if (!/\x07|\x1b\\/.test(tail)) {
-      if (tail.length <= 512) {
+      if (tail.length <= 64 * 1024) {
         state.carry = tail
         data = data.slice(0, lastOpen)
       }
-      // 超过 512B 仍不闭合视为垃圾：放弃扣留，整块照常处理
+      // 超过 64KB 仍不闭合视为垃圾：放弃扣留，整块照常处理（上限容纳 T 快照）
     }
   }
   for (const match of data.matchAll(OSC7_RE)) {
@@ -437,16 +468,20 @@ function feedShellIntegration(session: TtySession, text: string): void {
     if (kind === 'B') {
       state.inCommand = true
       state.cmdBuffer = ''
+      state.pendingT = null
+    } else if (kind === 'T') {
+      state.pendingT = decodeBase64Utf8(match[2])
     } else if (kind === 'D') {
       if (state.inCommand) {
-        const exitCode = match[2] !== undefined ? Number(match[2]) : null
+        const exitCode = match[2] !== undefined && /^\d+$/.test(match[2]) ? Number(match[2]) : null
         state.lastCommand = {
-          output: state.cmdBuffer.slice(-COMMAND_CAP),
+          output: (state.pendingT ?? state.cmdBuffer).slice(-COMMAND_CAP),
           exitCode: exitCode !== null && Number.isFinite(exitCode) ? exitCode : null,
           endedAt: Date.now(),
         }
         state.inCommand = false
         state.cmdBuffer = ''
+        state.pendingT = null
       }
     }
     // A（prompt 开始）无需记录
@@ -543,6 +578,7 @@ function sanitizeSshHosts(input: unknown): SshHostEntry[] | undefined {
       passphrase: typeof raw.passphrase === 'string' ? raw.passphrase : '',
       password: typeof raw.password === 'string' ? raw.password : '',
       agentForward: raw.agentForward === true,
+      persist: raw.persist === true,
     })
   }
   return out
@@ -572,6 +608,9 @@ function validateSshHosts(input: unknown): { hosts?: SshHostEntry[]; error?: str
     }
     if (raw.agentForward !== undefined && typeof raw.agentForward !== 'boolean') {
       return { error: 'sshHosts.agentForward 必须是布尔值' }
+    }
+    if (raw.persist !== undefined && typeof raw.persist !== 'boolean') {
+      return { error: 'sshHosts.persist 必须是布尔值' }
     }
     if ((raw.auth === 'key') && (typeof raw.keyPath !== 'string' || raw.keyPath.trim() === '')) {
       return { error: `sshHosts「${String(raw.name)}」auth=key 需要 keyPath` }
@@ -709,26 +748,27 @@ class SessionManager {
     return this.sessions.get(id)
   }
 
-  /** 会话的只读快照（SSH 会话无本地 pid，该字段省略）。 */
-  private snapshotOf(session: TtySession): { sid: string; pid?: number; cwd: string; kind: 'local' | 'ssh'; target: string; startedAt: number; lastOutputAt: number } {
-    const base = {
+  /** 会话的只读快照（SSH 会话无本地 pid，该字段省略；tmux 持久会话带 persist）。 */
+  private snapshotOf(session: TtySession): { sid: string; pid?: number; cwd: string; kind: 'local' | 'ssh'; target: string; startedAt: number; lastOutputAt: number; persist?: true } {
+    const base: { sid: string; pid?: number; cwd: string; kind: 'local' | 'ssh'; target: string; startedAt: number; lastOutputAt: number; persist?: true } = {
       sid: session.id,
       cwd: session.cwd,
       kind: session.kind,
       target: session.target,
       startedAt: session.startedAt,
       lastOutputAt: session.lastOutputAt,
+      ...(session.tmuxName !== null ? { persist: true as const } : {}),
     }
     return session.handle.pid === null ? base : { ...base, pid: session.handle.pid }
   }
 
   /** agent 工具用的只读快照。 */
-  list(): Array<{ sid: string; pid?: number; cwd: string; kind: 'local' | 'ssh'; target: string; startedAt: number; lastOutputAt: number }> {
+  list(): Array<{ sid: string; pid?: number; cwd: string; kind: 'local' | 'ssh'; target: string; startedAt: number; lastOutputAt: number; persist?: true }> {
     return [...this.sessions.values()].map((session) => this.snapshotOf(session))
   }
 
   /** sessions 帧用：额外带 attachable（孤儿且未关闭的会话可被新连接 attach）。 */
-  listForAttach(): Array<{ sid: string; pid?: number; cwd: string; kind: 'local' | 'ssh'; target: string; startedAt: number; lastOutputAt: number; attachable: boolean }> {
+  listForAttach(): Array<{ sid: string; pid?: number; cwd: string; kind: 'local' | 'ssh'; target: string; startedAt: number; lastOutputAt: number; persist?: true; attachable: boolean }> {
     return [...this.sessions.values()].map((session) => ({
       ...this.snapshotOf(session),
       attachable: session.ws === null && !session.closed,
@@ -871,9 +911,24 @@ class TtyServer {
    * 立即终止会话：同步退役 + 顶层 shell 直接 SIGKILL，让 done/exit 帧立刻可发；
    * 树级子进程清理（SIGTERM→grace→SIGKILL，交互式 zsh 忽略 SIGTERM 时最慢
    * 可拖 ~20s）由 terminate 在后台继续收尾，不阻塞 kill 帧处理。
+   * tmux 背书会话先向 tmux server 发 kill-session（杀客户端只会 detach，
+   * 会话会留在 tmux server 上）；2.5s 兜底 forceKill 防收尾悬挂。
    */
   private killSessionNow(session: TtySession): void {
     this.sessions.retire(session)
+    const teardown = session.handle.tmuxTeardown
+    if (teardown !== undefined) {
+      let settled = false
+      const finish = (): void => {
+        if (settled) return
+        settled = true
+        void forceKill(session.handle)
+      }
+      const timer = setTimeout(finish, 2500)
+      timer.unref?.()
+      void teardown().catch(() => {}).then(finish)
+      return
+    }
     try {
       session.handle.forceKill?.()
     } catch {
@@ -924,7 +979,21 @@ class TtyServer {
           send(ws, { t: 'error', sid, m: 'subprocess 服务不可用' })
           return
         }
-        const spawnPlan = buildShellSpawn(this.options.shell, this.options.term, this.options.colorTerm, this.options.shellIntegration)
+        // 持久化（0.10.0）：配置 persistence=tmux 且帧带 persist 时，spawn 包装层
+        // 换成 `exec tmux -L dsh-tty -A -s <名>`（tmux 托管）；tmux 未安装则降级
+        // 普通会话并回灰字提示。持久名稳定（客户端生成、随标签规格保存），
+        // 宿主重启后重开标签按同名 attach 回原 tmux 会话
+        const wantsPersist = msg.persist === true && this.options.persistence === 'tmux'
+        let spawnPlan = buildShellSpawn(this.options.shell, this.options.term, this.options.colorTerm, this.options.shellIntegration)
+        let tmuxName: string | null = null
+        if (wantsPersist) {
+          const probe = await probeTmux()
+          if (probe.available) {
+            tmuxName = sanitizePersistName(msg.persistName, sid)
+            ensureTmuxAssets({ shell: this.options.shell, colorTerm: this.options.colorTerm, shellIntegration: this.options.shellIntegration, passthrough: probe.passthrough })
+            spawnPlan = buildTmuxSpawnPlan({ shell: this.options.shell, term: this.options.term, colorTerm: this.options.colorTerm, tmuxName })
+          }
+        }
         const handle = wrapLocalPty(await subprocess.spawnTerminal({
           argv: spawnPlan.argv,
           rows: Number(msg.rows) || 24,
@@ -933,6 +1002,7 @@ class TtyServer {
           env: { TERM: this.options.term, COLORTERM: this.options.colorTerm, ...spawnPlan.env },
           graceMs: 5000,
         }))
+        if (tmuxName !== null) handle.tmuxTeardown = () => killTmuxSession(tmuxName)
         const next: TtySession = {
           id: sid,
           handle,
@@ -951,10 +1021,16 @@ class TtyServer {
           shellState: createShellState(),
           pendingOutput: '',
           flushTimer: null,
+          tmuxName,
         }
         local.set(sid, next)
         this.sessions.add(next)
-        send(ws, { t: 'ready', sid, pid: handle.pid, kind: 'local' })
+        send(ws, { t: 'ready', sid, pid: handle.pid, kind: 'local', ...(tmuxName !== null ? { persist: true } : {}) })
+        if (wantsPersist && tmuxName === null) {
+          const notice = '\x1b[2m[dsh-tty] 未检测到 tmux，本标签以普通会话运行；安装 tmux 后新开的「持久终端」可跨宿主重启恢复现场\x1b[0m\r\n'
+          next.buffer = (next.buffer + notice).slice(-BUFFER_CAP)
+          send(ws, { t: 'data', sid, d: notice })
+        }
         this.attachOutput(next)
         this.watchDone(next, local)
       } else if (msg.t === 'ssh') {
@@ -980,6 +1056,10 @@ class TtyServer {
         const spec: SshSpec = merged.spec
         const target = sshTarget(spec)
         send(ws, { t: 'data', sid, d: `\x1b[2mConnecting ${target} …\x1b[0m\r\n` })
+        // 持久化（0.10.0）：远程 `exec tmux new-session -A` 托管；远程无 tmux 时
+        // spawnSsh 降级普通 shell channel 并经 startupNotice 回灰字提示
+        const wantsPersist = msg.persist === true && this.options.persistence === 'tmux'
+        const persistOpt = wantsPersist ? { name: sanitizePersistName(msg.persistName, sid) } : undefined
         let handle: TermHandle
         try {
           handle = await spawnSsh(spec, {
@@ -988,11 +1068,13 @@ class TtyServer {
             rows: Number(msg.rows) || 24,
             logger: { info: (m) => this.ctx.logger.info(m), warn: (m) => this.ctx.logger.warn(m) },
             hostKeyStore: this.hostKeyStore,
+            ...(persistOpt !== undefined ? { persist: persistOpt } : {}),
           })
         } catch (error) {
           send(ws, { t: 'error', sid, m: error instanceof Error ? error.message : String(error) })
           return
         }
+        const tmuxName = persistOpt !== undefined && handle.startupNotice === undefined ? persistOpt.name : null
         const next: TtySession = {
           id: sid,
           handle,
@@ -1011,10 +1093,16 @@ class TtyServer {
           shellState: createShellState(),
           pendingOutput: '',
           flushTimer: null,
+          tmuxName,
         }
         local.set(sid, next)
         this.sessions.add(next)
-        send(ws, { t: 'ready', sid, pid: null, kind: 'ssh', target })
+        send(ws, { t: 'ready', sid, pid: null, kind: 'ssh', target, ...(tmuxName !== null ? { persist: true } : {}) })
+        if (handle.startupNotice !== undefined) {
+          const notice = `\x1b[2m[dsh-tty] ${handle.startupNotice}\x1b[0m\r\n`
+          next.buffer = (next.buffer + notice).slice(-BUFFER_CAP)
+          send(ws, { t: 'data', sid, d: notice })
+        }
         this.attachOutput(next)
         this.watchDone(next, local)
       } else if (msg.t === 'input') {
@@ -1082,7 +1170,7 @@ class TtyServer {
             /* 已退出 */
           }
         }
-        send(ws, { t: 'ready', sid: session.id, pid: session.handle.pid, kind: session.kind, target: session.target !== '' ? session.target : undefined, reattached: true })
+        send(ws, { t: 'ready', sid: session.id, pid: session.handle.pid, kind: session.kind, target: session.target !== '' ? session.target : undefined, reattached: true, ...(session.tmuxName !== null ? { persist: true } : {}) })
         // 断线期间的输出经 256KB 环形缓冲回放（缓冲为空则跳过）
         if (session.buffer !== '') send(ws, { t: 'data', sid: session.id, d: session.buffer })
       }
@@ -1415,6 +1503,8 @@ interface ConfigSnapshot {
   shellIntegration: boolean
   /** SFTP 文件浏览界面风格（客户端渲染用）。 */
   sftpStyle: 'dialog' | 'dual'
+  /** 会话持久化模式（客户端渲染「+」菜单与 SSH 对话框用）。 */
+  persistence: 'off' | 'tmux'
   /** agent 工具（tty_list / tty_capture / tty_screen / tty_expect / tty_send / tunnel_list / sftp_list / sftp_read / sftp_write / sftp_mkdir / sftp_rename / sftp_remove / sftp_tree）是否已注册到 harness。 */
   toolsRegistered: boolean
 }
@@ -1436,6 +1526,7 @@ const plugin = definePlugin<Config>({
       hostKeys: Array.isArray(config?.hostKeys) ? config.hostKeys : [],
       shellIntegration: config?.shellIntegration !== false,
       tunnels: Array.isArray(config?.tunnels) ? config.tunnels : [],
+      persistence: config?.persistence === 'tmux' ? 'tmux' : 'off',
     })
     const sessions = new SessionManager(config?.maxSessions ?? DEFAULT_MAX_SESSIONS)
     /** TOFU 指纹记录持久化：写入 settings 命名空间（合并语义），失败不影响连接。 */
@@ -1476,6 +1567,7 @@ const plugin = definePlugin<Config>({
       tunnels: live.tunnels,
       shellIntegration: live.shellIntegration,
       sftpStyle: stateRef.sftpStyle,
+      persistence: live.persistence,
       toolsRegistered: stateRef.toolsRegistered,
     })
 
@@ -1491,6 +1583,7 @@ const plugin = definePlugin<Config>({
         hostKeys: sanitizeHostKeys(section.hostKeys),
         shellIntegration: typeof section.shellIntegration === 'boolean' ? section.shellIntegration : undefined,
         tunnels: sanitizeTunnels(section.tunnels),
+        persistence: section.persistence === 'tmux' || section.persistence === 'off' ? section.persistence : undefined,
       })
       // 隧道按最新规格对齐（幂等；sshHosts 变更也会触发，让重连取到新凭证）
       tunnelManager.reconcile(live.tunnels)
@@ -1506,7 +1599,7 @@ const plugin = definePlugin<Config>({
     /** 校验 HTTP POST 的配置体；返回规范化补丁或错误信息。 */
     const normalizePatch = (input: Record<string, unknown>): { patch?: Record<string, unknown>; error?: string } => {
       const patch: Record<string, unknown> = {}
-      const known = new Set(['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'sshHosts', 'hostKeys', 'tunnels', 'shellIntegration', 'sftpStyle'])
+      const known = new Set(['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'sshHosts', 'hostKeys', 'tunnels', 'shellIntegration', 'sftpStyle', 'persistence'])
       for (const key of Object.keys(input)) {
         if (!known.has(key)) return { error: '未知配置项: ' + key }
       }
@@ -1535,6 +1628,10 @@ const plugin = definePlugin<Config>({
       if (input.sftpStyle !== undefined) {
         if (input.sftpStyle !== 'dialog' && input.sftpStyle !== 'dual') return { error: 'sftpStyle 必须是 dialog 或 dual' }
         patch.sftpStyle = input.sftpStyle
+      }
+      if (input.persistence !== undefined) {
+        if (input.persistence !== 'off' && input.persistence !== 'tmux') return { error: 'persistence 必须是 off 或 tmux' }
+        patch.persistence = input.persistence
       }
       for (const key of ['shell', 'term', 'colorTerm'] as const) {
         if (input[key] === undefined) continue
@@ -1958,6 +2055,7 @@ const plugin = definePlugin<Config>({
         }
         if (stored.shellIntegration === false) startup.shellIntegration = false
         if (stored.sftpStyle === 'dual') startup.sftpStyle = 'dual'
+        if (stored.persistence === 'tmux') startup.persistence = 'tmux'
         const storedHosts = sanitizeSshHosts(stored.sshHosts)
         if (storedHosts !== undefined && storedHosts.length > 0) startup.sshHosts = storedHosts
         const storedKeys = sanitizeHostKeys(stored.hostKeys)
@@ -2013,18 +2111,20 @@ const plugin = definePlugin<Config>({
                       cwd: { type: 'string', required: true },
                       startedAt: { type: 'number', required: true },
                       lastOutputAt: { type: 'number', required: true },
+                      persist: { type: 'boolean' },
                     },
                   },
                 },
               },
             },
             render: (_args: unknown, value: unknown) => {
-              const sessions = (value as { sessions?: Array<{ sid: string; pid?: number; cwd: string; kind: 'local' | 'ssh'; target: string; startedAt: number; lastOutputAt: number }> })?.sessions ?? []
+              const sessions = (value as { sessions?: Array<{ sid: string; pid?: number; cwd: string; kind: 'local' | 'ssh'; target: string; startedAt: number; lastOutputAt: number; persist?: boolean }> })?.sessions ?? []
               const text = sessions.length === 0
                 ? '当前没有活跃的终端面板会话（请引导用户先打开终端面板，或用户尚未打开）'
                 : '终端面板会话：' + sessions.map((s) => {
                     const where = s.kind === 'ssh' ? `ssh ${s.target}` : `pid=${String(s.pid ?? '?')} cwd=${s.cwd}`
-                    return `\n- sid=${s.sid} [${s.kind}] ${where} (启动于 ${new Date(s.startedAt).toLocaleString()})`
+                    const persist = s.persist === true ? ' [tmux 持久]' : ''
+                    return `\n- sid=${s.sid} [${s.kind}]${persist} ${where} (启动于 ${new Date(s.startedAt).toLocaleString()})`
                   }).join('')
               return [{ type: 'text', text }]
             },
@@ -2610,7 +2710,7 @@ const plugin = definePlugin<Config>({
               if (list.length === 0) return '当前没有活跃的终端面板会话（可引导用户打开「终端」面板，或用 spawn 类工作流替代）。'
               return '当前活跃的终端面板会话（可用 tty_capture / tty_screen / tty_expect / tty_send 操作，sid 如下）：\n' + list.map((s) => {
                 const where = s.kind === 'ssh' ? `ssh ${s.target}` : `pid=${String(s.pid ?? '?')} cwd=${s.cwd}`
-                return `- sid=${s.sid} [${s.kind}] ${where} (最后活动 ${new Date(s.lastOutputAt).toLocaleTimeString()})`
+                return `- sid=${s.sid} [${s.kind}]${s.persist === true ? ' [tmux 持久]' : ''} ${where} (最后活动 ${new Date(s.lastOutputAt).toLocaleTimeString()})`
               }).join('\n')
             },
           })
