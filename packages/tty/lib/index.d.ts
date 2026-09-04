@@ -7,17 +7,24 @@
  * 之后双向透传：input/resize/kill 上行，data/exit/error 下行。
  *
  * 帧协议 v3（JSON 文本帧；sid 维度支持单连接多会话/标签页 + 断线重连）：
- *   C→S  {t:'spawn', sid?, cols?, rows?, cwd?}  创建本地会话；sid 缺省时宿主生成
- *   C→S  {t:'ssh', sid?, cols?, rows?, name? | host, username, ...}
- *                                               创建 SSH 会话（ssh2 原生，见 ssh.ts）；
- *                                               name 引用连接簿条目，内联字段可覆盖
+ *   C→S  {t:'spawn', sid?, cols?, rows?, cwd?, persist?, persistName?}
+ *                                              创建本地会话；sid 缺省时宿主生成；
+ *                                              persist=true 且配置 persistence=tmux
+ *                                              时以 tmux 持久会话托管（0.10.0）
+ *   C→S  {t:'ssh', sid?, cols?, rows?, name? | host, username, ...,
+ *         persist?, persistName?}              创建 SSH 会话（ssh2 原生，见 ssh.ts）；
+ *                                              name 引用连接簿条目，内联字段可覆盖；
+ *                                              persist 语义同 spawn（远程 tmux 托管）
  *   C→S  {t:'input', sid?, d}                  按键/粘贴数据
  *   C→S  {t:'resize', sid?, cols, rows}        xterm fit 触发
- *   C→S  {t:'kill', sid?}                      关闭会话（孤儿会话也可跨连接 kill）
+ *   C→S  {t:'kill', sid?}                      关闭会话（孤儿会话也可跨连接 kill；
+ *                                              tmux 会话先 kill-session 再杀客户端）
  *   C→S  {t:'sessions'}                        列出全局会话（attachable 标记可重连者）
  *   C→S  {t:'attach', sid}                     重连孤儿会话（断线保活窗口内）：
- *                                               ready 后紧跟一帧 data 回放输出缓冲
- *   S→C  {t:'ready', sid, pid, kind, target?}  会话就绪（ssh 时 pid=null，target=user@host）
+ *                                              ready 后紧跟一帧 data 回放输出缓冲
+ *   S→C  {t:'ready', sid, pid, kind, target?, persist?, reattached?}
+ *                                              会话就绪（ssh 时 pid=null，target=user@host；
+ *                                              persist=true 表示 tmux 持久会话）
  *   S→C  {t:'data', sid, d}                    终端输出（utf8 文本，StringDecoder 兜多字节分帧）
  *   S→C  {t:'exit', sid, code, signal}         PTY 退出事实（恰好一次）
  *   S→C  {t:'error', sid?, m}                  错误
@@ -80,5 +87,7 @@ export interface Config {
     tunnels?: TunnelSpec[];
     /** SFTP 文件浏览界面风格：dialog = 单窗体（默认）/ dual = 本机+远程双栏。 */
     sftpStyle?: 'dialog' | 'dual';
+    /** 会话持久化：off = 会话随宿主生死（默认）；tmux = 「持久终端」标签由 tmux server 托管，可跨宿主重启恢复。 */
+    persistence?: 'off' | 'tmux';
 }
 export declare const name: string, inject: string[] | undefined, apply: (ctx: Context, config?: Config | undefined) => void;

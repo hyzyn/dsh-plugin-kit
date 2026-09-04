@@ -17,6 +17,13 @@ export interface TermHandle {
     terminate(): Promise<unknown>;
     /** terminate 失败后的最后手段（本地 PTY：对顶层 shell 直接 SIGKILL）。 */
     forceKill?(): void;
+    /**
+     * tmux 背书会话（0.10.0 持久化）的关闭收尾：kill-session 让 pane 真正结束，
+     * 而不是只杀客户端把会话留在 tmux server 上。kill 帧路径在 forceKill 前调用。
+     */
+    tmuxTeardown?(): Promise<void>;
+    /** spawn 后注入终端的灰字提示（如远程无 tmux 降级为普通会话）。 */
+    startupNotice?: string;
 }
 /** TOFU 主机指纹记录。 */
 export interface HostKeyRecord {
@@ -40,6 +47,8 @@ export interface SshSpec {
 /** 连接簿条目（带名字，存 settings）。 */
 export interface SshHostEntry extends SshSpec {
     name: string;
+    /** 该条目的 SSH 标签默认以 tmux 持久会话打开（仅宿主 persistence=tmux 时生效）。 */
+    persist?: boolean;
 }
 export interface SshSpawnOptions {
     term: string;
@@ -54,6 +63,15 @@ export interface SshSpawnOptions {
      * 缺省时退化为 accept-and-log（仅记录指纹，无条件放行）。
      */
     hostKeyStore?: HostKeyStore;
+    /**
+     * tmux 会话持久化（0.10.0）：远程以 `exec tmux new-session -A -s <name>` 开
+     * pty channel（专用 socket dsh-tty），会话托管在远程 tmux server 上，断线/
+     * 宿主重启后按同名接回。远程无 tmux 时降级普通 shell channel，
+     * startupNotice 带提示。name 须已过 sanitizePersistName（安全字符集）。
+     */
+    persist?: {
+        name: string;
+    };
 }
 /** 主机指纹钉扎存储（宿主半体实现为 LiveConfig + settings 持久化）。 */
 export interface HostKeyStore {

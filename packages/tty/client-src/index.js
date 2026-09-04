@@ -44,6 +44,12 @@
  *   - SFTP 双栏风格（设置 sftpStyle 可选 dialog/dual）：左本机 / 右远程两栏，
  *     行内 ⇨/⇦ 由宿主 /api/dsh-tty/local-fs/transfer 服务端直传（目录递归、
  *     同名覆盖，字节不经过浏览器）；单窗体风格照旧
+ * v0.10 能力：
+ *   - 会话持久化（设置 persistence=tmux）：「+」菜单出现「持久终端」、SSH
+ *     对话框/连接簿出现「持久会话」——spawn/ssh 帧带 persist + 稳定
+ *     persistName，宿主以 `tmux -L dsh-tty new-session -A -s <名>` 托管；
+ *     断线保活超时 / 宿主重启后重开标签按同名接回原现场（tmux 重画可见屏，
+ *     正在跑的程序原样存活）；连接栏与 ready 帧带 tmux 持久标记
  * 帧协议与宿主半体（src/index.ts）对齐：spawn/ssh/input/resize/kill/
  * sessions/attach ↔ ready/data/exit/error/sessions。
  */
@@ -557,6 +563,32 @@ function spawnTab(tab) {
   })
 }
 
+/**
+ * 持久标签在宿主侧已结束（宿主重启/保活超时）时的恢复：换新 sid 按原
+ * spawnSpec（含原 persistName）重新 spawn —— 宿主 `tmux new-session -A` 按
+ * 同名接回原会话现场；非持久标签不走这里（维持丢弃语义）。
+ */
+function restoreTabAsNew(saved) {
+  const tab = {
+    sid: newSid(),
+    term: null,
+    fit: null,
+    search: null,
+    termEl: null,
+    overlayEl: null,
+    exited: false,
+    spawned: false,
+    spawnSpec: saved.spawnSpec,
+    label: typeof saved.label === 'string' ? saved.label : undefined,
+  }
+  createTerminal(tab)
+  tabs.set(tab.sid, tab)
+  tabCounter += 1
+  renderTabbar()
+  switchTab(tab.sid)
+  spawnTab(tab)
+}
+
 /** 退出后重开：换新 sid 重新 spawn（保留标签位，复用原 spawnSpec/label）。 */
 function respawnTab(oldSid) {
   const old = tabs.get(oldSid)
@@ -699,11 +731,12 @@ function renderConnbar() {
   }
   delete connbarEl.dataset.hidden
   const port = Number(spec.port)
-  connTargetEl.textContent = typeof tab.target === 'string' && tab.target !== ''
+  connTargetEl.textContent = (typeof tab.target === 'string' && tab.target !== ''
     ? tab.target
     : typeof spec.name === 'string' && spec.name !== ''
       ? spec.name
-      : String(spec.username ?? '') + '@' + String(spec.host ?? '') + (Number.isInteger(port) && port !== 22 ? ':' + port : '')
+      : String(spec.username ?? '') + '@' + String(spec.host ?? '') + (Number.isInteger(port) && port !== 22 ? ':' + port : ''))
+    + (tab.persistTmux === true ? ' · tmux 持久' : '')
   connDotEl.dataset.state = tab.exited ? 'exited' : tab.live === true ? 'connected' : tab.errored === true ? 'error' : 'connecting'
   const action = (icon, label, title, onClick) => {
     const btn = document.createElement('button')
@@ -863,6 +896,8 @@ function startTabRename(sid, tabBtn) {
 let tunnelsCache = []
 /** SFTP 界面风格缓存（dialog 单窗体 / dual 双栏）：config 快照与设置保存同步。 */
 let sftpStyleCache = 'dialog'
+/** 会话持久化模式缓存（off / tmux）：config 快照与设置保存同步，控制「+」菜单与 SSH 对话框的持久入口。 */
+let persistenceCache = 'off'
 function syncSshHostsCache(config) {
   if (config !== null && typeof config === 'object' && Array.isArray(config.sshHosts)) {
     sshHostsCache = config.sshHosts
@@ -873,6 +908,18 @@ function syncSshHostsCache(config) {
   if (config !== null && typeof config === 'object' && (config.sftpStyle === 'dual' || config.sftpStyle === 'dialog')) {
     sftpStyleCache = config.sftpStyle
   }
+  if (config !== null && typeof config === 'object' && (config.persistence === 'tmux' || config.persistence === 'off')) {
+    persistenceCache = config.persistence
+  }
+}
+
+/**
+ * 持久标签的 tmux 会话名（客户端生成、随标签规格保存）：重开标签/宿主重启后
+ * 携同一名字 spawn，宿主按 `tmux new-session -A -s dsh-<名>` 接回原会话。
+ * 只用安全字符集（宿主 sanitizePersistName 校验）。
+ */
+function newPersistName() {
+  return Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4)
 }
 
 /** 连接簿条目名下的启用隧道数（「+」菜单徽标用）。 */
@@ -880,13 +927,14 @@ function tunnelCountFor(bookName) {
   return tunnelsCache.filter((t) => t?.bookName === bookName && t?.enabled !== false).length
 }
 
-/** 连接簿条目的展示副标题：user@host[:port] · auth[ · fwd]。 */
+/** 连接簿条目的展示副标题：user@host[:port] · auth[ · fwd][ · tmux]。 */
 function sshHostTargetLabel(entry) {
   const port = Number(entry?.port)
   const suffix = Number.isInteger(port) && port !== 22 ? ':' + port : ''
   const auth = entry?.auth === 'key' ? 'key' : entry?.auth === 'password' ? 'password' : 'agent'
   const fwd = entry?.agentForward === true ? ' · fwd' : ''
-  return String(entry?.username ?? '') + '@' + String(entry?.host ?? '') + suffix + ' · ' + auth + fwd
+  const persist = entry?.persist === true ? ' · tmux' : ''
+  return String(entry?.username ?? '') + '@' + String(entry?.host ?? '') + suffix + ' · ' + auth + fwd + persist
 }
 
 /** 拉取连接簿（失败静默保留旧缓存）；菜单开着时原位刷新条目。 */
@@ -959,6 +1007,12 @@ function renderAddMenuItems(menu) {
     closeAddMenu()
     addTab()
   })
+  if (persistenceCache === 'tmux') {
+    addMenuItem(menu, '持久终端（tmux）', '宿主重启 / 断线超时后重开即恢复现场', () => {
+      closeAddMenu()
+      addTab({ t: 'spawn', cwd: currentCwd(), persist: true, persistName: newPersistName() }, '持久终端')
+    })
+  }
   const sep1 = document.createElement('div')
   sep1.className = 'tt_addMenuSep'
   menu.appendChild(sep1)
@@ -979,12 +1033,17 @@ function renderAddMenuItems(menu) {
     const sub = document.createElement('span')
     sub.className = 'tt_addMenuSub'
     const tunnelCount = tunnelCountFor(entry.name)
-    sub.textContent = sshHostTargetLabel(entry) + (tunnelCount > 0 ? ' · ⇄' + String(tunnelCount) : '')
+    const persistMark = entry.persist === true ? ' · tmux' : ''
+    sub.textContent = sshHostTargetLabel(entry) + persistMark + (tunnelCount > 0 ? ' · ⇄' + String(tunnelCount) : '')
     item.appendChild(main)
     item.appendChild(sub)
     item.addEventListener('click', () => {
       closeAddMenu()
-      addTab({ t: 'ssh', name: entry.name }, entry.name)
+      // 条目勾了「持久会话」且宿主开着持久化：随标签生成稳定 tmux 会话名
+      const persistSpec = entry.persist === true && persistenceCache === 'tmux'
+        ? { persist: true, persistName: newPersistName() }
+        : {}
+      addTab({ t: 'ssh', name: entry.name, ...persistSpec }, entry.name)
     })
     const browse = document.createElement('button')
     browse.type = 'button'
@@ -1211,6 +1270,20 @@ function openSshDialog(entry) {
   fwdRow.appendChild(fwdLabel)
   card.appendChild(fwdRow)
 
+  // 持久会话（0.10.0，宿主 persistence=tmux 时显示）：远程 tmux 托管，断线/
+  // 宿主重启后重开即恢复；随连接簿条目保存
+  const persistRow = document.createElement('label')
+  persistRow.className = 'tt_cardRow'
+  const persistCheck = document.createElement('input')
+  persistCheck.type = 'checkbox'
+  persistCheck.className = 'tt_cardCheckbox'
+  const persistLabel = document.createElement('span')
+  persistLabel.className = 'tt_cardLabel'
+  persistLabel.textContent = '持久会话（tmux 托管，断线/重启后恢复现场；远程需安装 tmux）'
+  persistRow.appendChild(persistCheck)
+  persistRow.appendChild(persistLabel)
+  if (persistenceCache === 'tmux') card.appendChild(persistRow)
+
   const saveRow = document.createElement('label')
   saveRow.className = 'tt_cardRow'
   const saveCheck = document.createElement('input')
@@ -1244,6 +1317,8 @@ function openSshDialog(entry) {
     fields.keyPath.value = String(editing.keyPath ?? '')
     fields.passphrase.value = String(editing.passphrase ?? '')
     fields.password.value = String(editing.password ?? '')
+    fwdCheck.checked = editing.agentForward === true
+    persistCheck.checked = editing.persist === true
   }
 
   const errorEl = document.createElement('div')
@@ -1329,6 +1404,7 @@ function openSshDialog(entry) {
         passphrase: fields.passphrase.value,
         password: fields.password.value,
         agentForward: fwdCheck.checked,
+        persist: persistCheck.checked,
       }
       if (auth === 'key' && next.keyPath === '') {
         errorEl.textContent = 'auth=key 需要私钥路径'
@@ -1387,6 +1463,10 @@ function openSshDialog(entry) {
       if (password !== '') spec.password = password
     }
     if (fwdCheck.checked) spec.agentForward = true
+    if (persistCheck.checked) {
+      spec.persist = true
+      spec.persistName = newPersistName()
+    }
     const targetLabel = port !== 22 ? username + '@' + host + ':' + port : username + '@' + host
     const proceed = (bookName) => {
       closeSshDialog()
@@ -1409,6 +1489,7 @@ function openSshDialog(entry) {
       passphrase: spec.passphrase ?? '',
       password: spec.password ?? '',
       agentForward: fwdCheck.checked,
+      persist: persistCheck.checked,
     }).then((error) => {
       connectBtn.disabled = false
       if (error !== undefined) {
@@ -2486,11 +2567,18 @@ function scheduleReconnect() {
   reconnectDelay = Math.min(reconnectDelay * 2, 5000)
 }
 
+/** 持久标签判定：spawnSpec 带 persist 标记与稳定 persistName（tmux 侧按名接回）。 */
+function isPersistentSpec(spec) {
+  return spec !== null && typeof spec === 'object' && spec.persist === true && typeof spec.persistName === 'string' && spec.persistName !== ''
+}
+
 /**
  * 连接建立后的恢复流程：
- *   - 面板内还有未退出标签（同页断线重连）→ 逐个 attach 回场；
+ *   - 面板内还有未退出标签（同页断线重连）→ 逐个 attach 回场；宿主已重启
+ *     （sid 消失）的持久标签按原 persistName 重新 spawn，tmux -A 接回原现场；
  *   - 空面板但有 sessionStorage 持久化（页面刷新后重开）→ 查询宿主仍保活
- *     的会话，能 attach 的恢复标签，其余丢弃；都没有则新建首个标签。
+ *     的会话，能 attach 的恢复标签；持久标签即使宿主重启也重新 spawn 接回
+ *     （非持久标签维持旧行为丢弃）；都没有则新建首个标签。
  */
 async function afterSocketOpen() {
   const restored = loadPersistedTabs()
@@ -2505,16 +2593,34 @@ async function afterSocketOpen() {
         }
       }
       for (const saved of restored) {
-        if (!alive.has(saved.sid)) continue
-        restoreTab(saved)
+        if (alive.has(saved.sid)) {
+          restoreTab(saved)
+        } else if (isPersistentSpec(saved.spawnSpec)) {
+          restoreTabAsNew(saved)
+        }
+        // 非持久且宿主侧已结束：维持旧行为丢弃
       }
       persistTabs()
     }
     if (tabs.size === 0) addTab()
     return
   }
-  for (const tab of [...tabs.values()]) {
-    if (tab.exited) continue
+  // 同页断线重连：宿主重启过的持久标签 sid 已失效，先查 sessions 分流
+  const liveTabs = [...tabs.values()].filter((tab) => !tab.exited)
+  const persistTabsDead = liveTabs.filter((tab) => isPersistentSpec(tab.spawnSpec))
+  let deadPersistSids = null
+  if (persistTabsDead.length > 0) {
+    sendFrame({ t: 'sessions' })
+    const frame = await waitFrame('sessions', 4000)
+    const aliveSids = new Set((frame !== null && Array.isArray(frame.list) ? frame.list : []).map((entry) => entry?.sid).filter((sid) => typeof sid === 'string'))
+    deadPersistSids = persistTabsDead.filter((tab) => !aliveSids.has(tab.sid))
+    for (const tab of deadPersistSids) {
+      respawnTab(tab.sid) // 换新 sid 重发 spawnSpec（含原 persistName）→ 宿主 tmux -A 接回
+    }
+  }
+  const respawned = deadPersistSids !== null ? new Set(deadPersistSids.map((tab) => tab.sid)) : new Set()
+  for (const tab of liveTabs) {
+    if (respawned.has(tab.sid)) continue
     sendFrame({ t: 'attach', sid: tab.sid })
   }
 }
@@ -2568,6 +2674,7 @@ function connect() {
         tab.live = true
         tab.errored = false
         tab.target = target // 连接栏展示用（label 可能是自定义连接名）
+        tab.persistTmux = msg.persist === true // tmux 持久会话（连接栏徽标用）
         if (msg.kind === 'ssh' && target !== '' && !tab.label) {
           tab.label = target // 标签缺标题时（如旧缓存条目）用宿主回显的 target
           renderTabbar()
@@ -3216,6 +3323,7 @@ function TtySettingsCard() {
       passphrase: host?.passphrase ?? '',
       password: host?.password ?? '',
       agentForward: host?.agentForward === true,
+      persist: host?.persist === true,
     })
   }
   const cancelEditSshHost = () => {
@@ -3256,6 +3364,7 @@ function TtySettingsCard() {
             passphrase: editForm.passphrase,
             password: editForm.password,
             agentForward: editForm.agentForward,
+            persist: editForm.persist === true,
           }
         : h),
     }))
@@ -3388,7 +3497,7 @@ function TtySettingsCard() {
     setMessage({ kind: '', text: '' })
     // 只提交配置项：快照里的 toolsRegistered 等非配置键会被宿主 normalizePatch 拒绝
     const body = {}
-    for (const key of ['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'shellIntegration', 'sftpStyle']) {
+    for (const key of ['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'shellIntegration', 'sftpStyle', 'persistence']) {
       const value = (form || {})[key]
       if (value !== undefined && value !== '') body[key] = value
     }
@@ -3461,6 +3570,10 @@ function TtySettingsCard() {
           jsx('input', { type: 'checkbox', className: 'tt_cardCheckbox', checked: editForm.agentForward === true, onChange: (event) => setEditForm((current) => ({ ...(current || {}), agentForward: event.target.checked })) }),
           jsx('span', { className: 'tt_cardLabel', children: 'agent forwarding' }),
         ] }),
+        jsxs('label', { className: 'tt_cardRow', children: [
+          jsx('input', { type: 'checkbox', className: 'tt_cardCheckbox', checked: editForm.persist === true, onChange: (event) => setEditForm((current) => ({ ...(current || {}), persist: event.target.checked })) }),
+          jsx('span', { className: 'tt_cardLabel', children: '持久会话（tmux 托管，断线/重启后恢复）' }),
+        ] }),
         editError !== '' ? jsx('span', { className: 'tt_cardMessage tt_cardMessageError', children: editError }) : null,
         jsxs('div', { className: 'tt_cardRow', children: [
           jsx('button', { type: 'button', className: 'tt_cardSave', onClick: applyEditSshHost, children: '应用' }),
@@ -3498,7 +3611,7 @@ function TtySettingsCard() {
             className: 'tt_cardHeadText',
             children: [
               jsx('span', { className: 'tt_cardName', children: '终端面板' }),
-              jsx('span', { className: 'tt_cardDescription', children: 'xterm 终端面板：多标签页、断线自动重连、cwd 跟随会话、SSH 连接簿与主机指纹钉扎；shell / TERM / 并发上限等保存即热生效。' }),
+              jsx('span', { className: 'tt_cardDescription', children: 'xterm 终端面板：多标签页、断线自动重连、cwd 跟随会话、SSH 连接簿与主机指纹钉扎、tmux 会话持久化；shell / TERM / 并发上限等保存即热生效。' }),
             ],
           }),
           jsx('svg', {
@@ -3535,6 +3648,22 @@ function TtySettingsCard() {
                       ],
                     }),
                     jsx('span', { className: 'tt_cardHint', children: '双栏在本机与远程之间对拷文件（目录递归、同名覆盖）；重新打开 SFTP 后生效' }),
+                  ],
+                }),
+                jsxs('div', {
+                  className: 'tt_cardField',
+                  children: [
+                    jsx('span', { className: 'tt_cardLabel', children: '会话持久化（tmux）' }),
+                    jsxs('select', {
+                      className: 'tt_cardInput',
+                      value: form.persistence === 'tmux' ? 'tmux' : 'off',
+                      onChange: (event) => set('persistence', event.target.value),
+                      children: [
+                        jsx('option', { value: 'off', children: '关闭 — 会话随面板/宿主结束（默认）' }),
+                        jsx('option', { value: 'tmux', children: 'tmux — 「持久终端」标签跨宿主重启恢复' }),
+                      ],
+                    }),
+                    jsx('span', { className: 'tt_cardHint', children: '开启后「+」菜单出现「持久终端」、SSH 对话框出现「持久会话」；需本机安装 tmux（≥3.3 体验完整，agent 命令粒度工具依赖 passthrough）；已有持久标签不受开关影响' }),
                   ],
                 }),
                 textField('并发会话上限（1~16）', 'maxSessions', '4', '超过上限的新标签会被拒绝；保存即热生效'),

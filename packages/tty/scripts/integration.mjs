@@ -29,6 +29,11 @@
  *        + agent 工具 sftp_list/sftp_read/sftp_write，test-sshd 内存 sshd）
  *   B24. SFTP 管理闭环（agent sftp_mkdir/sftp_rename/sftp_remove/sftp_tree：
  *        mkdir -p、tree 限深截断、跨目录 rename、非空删除拒绝与递归删除）
+ *   B25. 会话持久化（tmux，0.10.0）：配置门控、tmux 会话托管、kill-session
+ *        收尾、shell 集成 DCS passthrough（capture{last}）；无 tmux 时降级
+ *        普通会话 + 灰字提示（本机无 tmux 则跳过 tmux 断言）
+ *   B26. 持久恢复（tmux）：保活回收只杀 PTY 不杀 tmux 会话；同 persistName
+ *        重新 spawn 按 `tmux -A` 接回原现场（屏幕重画含此前输出）
  *
  * 用法：pnpm --filter @hyzyn/dsh-tty integration
  * 退出码：0 = 全部 PASS，1 = 任一 FAIL。
@@ -1083,6 +1088,125 @@ async function run() {
     await sftpd.close()
     await fsp.rm(rootDir, { recursive: true, force: true })
     console.log('    sftp sshd 已关闭，临时目录已清理')
+  }
+
+  // B25/B26: 会话持久化（tmux，0.10.0）—— persistence 门控 / tmux 托管 /
+  // kill-session 收尾 / shell 集成 DCS passthrough / 保活回收不杀 tmux 会话 /
+  // 同 persistName 接回现场。本机无 tmux 时只验证降级提示路径。
+  console.log('\n[23] 会话持久化（tmux）')
+  {
+    const execFileP = (file, args) => new Promise((resolve) => {
+      import('node:child_process').then(({ execFile }) => {
+        execFile(file, args, { timeout: 5000 }, (error, stdout, stderr) => resolve({ error, stdout: String(stdout), stderr: String(stderr) }))
+      })
+    })
+    const tmuxList = async () => {
+      const out = await execFileP('tmux', ['-L', 'dsh-tty', 'list-sessions', '-F', '#{session_name}'])
+      return out.error !== null && out.error !== undefined ? [] : out.stdout.trim().split('\n').filter(Boolean)
+    }
+    const post = async (body) => {
+      const res = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+      return res.json()
+    }
+    const probe = await execFileP('tmux', ['-V'])
+    const hasTmux = probe.error === null || probe.error === undefined
+    const versionMatch = /tmux\s+(\d+)\.(\d+)/.exec(probe.stdout)
+    const hasPassthrough = hasTmux && versionMatch !== null && (Number(versionMatch[1]) > 3 || (Number(versionMatch[1]) === 3 && Number(versionMatch[2]) >= 3))
+
+    // B25a: persistence=off 时 persist 帧被门控 —— 普通会话、ready 无 persist、无 tmux 会话
+    await post({ persistence: 'off' })
+    {
+      const s = openSession(port)
+      await s.open()
+      s.client.send(JSON.stringify({ t: 'spawn', sid: 'b25off', persist: true, persistName: 'b25gate' }))
+      await s.waitFor(() => s.state.ready, 10000, 'ready')
+      const ready = s.state.frames.find((f) => f.t === 'ready' && f.sid === 'b25off')
+      const listed = hasTmux ? await tmuxList() : []
+      if (ready !== undefined && ready.persist !== true && !listed.includes('dsh-b25gate')) pass('B25a persistence=off 门控 persist 帧（普通会话）')
+      else fail('B25a persistence=off 门控 persist 帧（普通会话）', `persist=${String(ready?.persist)} listed=${JSON.stringify(listed)}`)
+      s.client.send(JSON.stringify({ t: 'kill', sid: 'b25off' }))
+      await s.waitFor(() => s.state.exited !== null, 10000, 'exit')
+      s.client.close()
+    }
+
+    if (!hasTmux) {
+      // 降级路径：persistence=tmux + persist 帧 + 无 tmux → 普通会话 + 灰字提示
+      await post({ persistence: 'tmux' })
+      const s = openSession(port)
+      await s.open()
+      s.client.send(JSON.stringify({ t: 'spawn', sid: 'b25fb', persist: true, persistName: 'b25fb' }))
+      await s.waitFor(() => s.state.ready, 10000, 'ready')
+      await s.waitFor(() => /未检测到 tmux/.test(s.state.text), 10000, '降级提示')
+      const ready = s.state.frames.find((f) => f.t === 'ready' && f.sid === 'b25fb')
+      if (ready !== undefined && ready.persist !== true) pass('B25b 无 tmux 降级为普通会话 + 灰字提示')
+      else fail('B25b 无 tmux 降级为普通会话 + 灰字提示', `persist=${String(ready?.persist)}`)
+      s.client.send(JSON.stringify({ t: 'kill', sid: 'b25fb' }))
+      await s.waitFor(() => s.state.exited !== null, 10000, 'exit')
+      s.client.close()
+      await post({ persistence: 'off' })
+      console.log('    本机无 tmux：B25c/B26 跳过')
+    } else {
+      await post({ persistence: 'tmux' })
+      const s = openSession(port)
+      await s.open()
+      s.client.send(JSON.stringify({ t: 'spawn', sid: 'b25tmux', cols: 80, rows: 24, persist: true, persistName: 'b25persist' }))
+      await s.waitFor(() => s.state.ready, 10000, 'ready')
+      const ready = s.state.frames.find((f) => f.t === 'ready' && f.sid === 'b25tmux')
+      const listed = await tmuxList()
+      if (ready !== undefined && ready.persist === true && listed.includes('dsh-b25persist')) pass('B25b persistence=tmux 持久 spawn（tmux 会话托管 + ready.persist）')
+      else fail('B25b persistence=tmux 持久 spawn（tmux 会话托管 + ready.persist）', `persist=${String(ready?.persist)} listed=${JSON.stringify(listed)}`)
+
+      // shell 集成经 DCS passthrough 送达宿主：capture{last} 拿到命令输出与退出码
+      if (hasPassthrough) {
+        s.client.send(JSON.stringify({ t: 'input', sid: 'b25tmux', d: 'printf "B25LAST-%s\\n" 42\n' }))
+        await s.waitFor(() => /B25LAST-42/.test(s.state.text), 10000, '命令输出')
+        await sleep(600) // 等 D 标记（precmd）到达
+        const ttyCapture = toolDefs.find((d) => d.name === 'tty_capture')
+        const last = await ttyCapture.execute({ sid: 'b25tmux', last: true })
+        if (last.source === 'last' && /B25LAST-42/.test(last.tail ?? '') && last.exitCode === 0) pass('B25c tmux passthrough shell 集成（capture{last} + 退出码）')
+        else fail('B25c tmux passthrough shell 集成（capture{last} + 退出码）', JSON.stringify({ source: last.source, exitCode: last.exitCode, tail: (last.tail ?? '').slice(-80) }))
+      } else {
+        console.log('    tmux <3.3（无 allow-passthrough）：B25c 跳过')
+      }
+
+      // B25d: kill 帧 → tmux 会话真正结束（kill-session 而非 detach）
+      s.client.send(JSON.stringify({ t: 'kill', sid: 'b25tmux' }))
+      await s.waitFor(() => s.state.exited !== null, 10000, 'exit')
+      await sleep(500)
+      const listedAfterKill = await tmuxList()
+      if (!listedAfterKill.includes('dsh-b25persist')) pass('B25d kill 帧收尾 tmux 会话（kill-session）')
+      else fail('B25d kill 帧收尾 tmux 会话（kill-session）', JSON.stringify(listedAfterKill))
+
+      // B26: 恢复现场 —— 保活回收只杀 PTY（tmux 会话存活）；同 persistName 接回
+      await post({ reconnectGraceSec: 1 })
+      const w1 = openSession(port)
+      await w1.open()
+      w1.client.send(JSON.stringify({ t: 'spawn', sid: 'b26a', cols: 80, rows: 24, persist: true, persistName: 'b26resume' }))
+      await w1.waitFor(() => w1.state.ready, 10000, 'b26a ready')
+      w1.client.send(JSON.stringify({ t: 'input', sid: 'b26a', d: 'printf "B26MARK-%s\\n" resume\n' }))
+      await w1.waitFor(() => /B26MARK-resume/.test(w1.state.text), 10000, '标记输出')
+      // 异常断开 → 孤儿 → 保活 1s + 回收器扫描（≤10s）只杀 PTY；tmux 会话应存活
+      w1.client.close()
+      await sleep(12500)
+      const listedAfterReap = await tmuxList()
+      if (listedAfterReap.includes('dsh-b26resume')) pass('B26a 保活回收只杀 PTY（tmux 会话存活可恢复）')
+      else fail('B26a 保活回收只杀 PTY（tmux 会话存活可恢复）', JSON.stringify(listedAfterReap))
+      const w2 = openSession(port)
+      await w2.open()
+      w2.client.send(JSON.stringify({ t: 'spawn', sid: 'b26b', cols: 80, rows: 24, persist: true, persistName: 'b26resume' }))
+      await w2.waitFor(() => w2.state.ready, 10000, 'b26b ready')
+      await w2.waitFor(() => /B26MARK-resume/.test(w2.state.text), 10000, '接回重画')
+      pass('B26b 同 persistName 重新 spawn 接回原现场（tmux -A 重画）')
+      w2.client.send(JSON.stringify({ t: 'kill', sid: 'b26b' }))
+      await w2.waitFor(() => w2.state.exited !== null, 10000, 'b26b exit')
+      await sleep(500)
+      const listedFinal = await tmuxList()
+      if (!listedFinal.includes('dsh-b26resume')) pass('B26c 恢复会话 kill 后 tmux 会话清理')
+      else fail('B26c 恢复会话 kill 后 tmux 会话清理', JSON.stringify(listedFinal))
+      w2.client.close()
+      await post({ reconnectGraceSec: 120, persistence: 'off' })
+      console.log('    持久化配置已还原（persistence=off，grace=120）')
+    }
   }
 
   const failed = RESULTS.filter(([kind]) => kind === 'FAIL')

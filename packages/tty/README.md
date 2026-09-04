@@ -18,7 +18,10 @@ xterm.js 全交互终端（node-pty 真实 PTY，WebGL 渲染器加速），支�
 补齐**管理闭环**：`sftp_mkdir`（parents 逐级补齐）/ `sftp_rename`（跨目录
 移动）/ `sftp_remove`（递归删除）/ `sftp_tree`（限深递归列举）；0.9.0 起
 **SFTP 界面可选双栏风格**（左本机 / 右远程、行内直传，宿主服务端对拷），
-面板头部压缩为「标签行 + SSH 连接栏」两行。
+面板头部压缩为「标签行 + SSH 连接栏」两行；0.10.0 起支持**会话持久化
+（tmux）**——「持久终端」标签由 tmux server（专用 socket）托管，断线保活
+超时、甚至宿主重启后重开标签即按名接回原现场（正在跑的程序原样存活），
+SSH 侧同理（远程 tmux）。
 
 ![终端面板：多标签页 xterm 弹窗，工具栏含搜索/清屏/复制/粘贴，标题栏含最小化「—」与关闭 ✕](../../docs/dsh-plugin-kit-tty.png)
 
@@ -55,7 +58,8 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
   把面板收起——PTY 会话与输出缓冲保持存活，侧边栏「终端」入口上显示
   「运行中/总数」徽标与状态点（有输出时脉冲提示），点击入口即可恢复；
   悬浮条 ✕ / 标题栏 ✕ 才真正关闭并结束全部会话；
-- 标题栏 ✕ 关闭面板并结束全部会话（PTY 树级清理）；会话退出后点终端区域可重开；
+- 标题栏 ✕ 关闭面板并结束全部会话（PTY 树级清理；tmux 持久标签同时
+  kill-session）；会话退出后点终端区域可重开；
 - 并发上限默认 4（配置 `maxSessions`，1~16）。
 
 ![终端面板设置卡片：shell / TERM / 并发上限等保存即热生效](../../docs/dsh-plugin-kit-tty-setting.png)
@@ -66,7 +70,7 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
 
 | 工具 | 作用 |
 | --- | --- |
-| `tty_list` | 列出活跃终端会话（sid / kind（local\|ssh）/ target / pid / **cwd 实时跟随 cd** / 活动时间） |
+| `tty_list` | 列出活跃终端会话（sid / kind（local\|ssh）/ target / pid / **cwd 实时跟随 cd** / 活动时间；tmux 持久会话带 `persist` 标记） |
 | `tty_capture` | 读取近期输出（尾部 N 行，默认清洗 ANSI，`raw:true` 取原始流）；**`last:true` 只返回上一条已完成命令的输出 + 退出码**（shell 集成标记，见下节） |
 | `tty_screen` | 读取**当前可见屏幕**的渲染结果（xterm-headless 虚拟屏，纯文本）——能真正读懂 vim / htop / 菜单等 TUI 界面 |
 | `tty_expect` | 用正则**等待后续输出**中的就绪信号（dev server URL、构建完成等）；超时不抛错（`matched:false` + 尾部输出），命令提前结束也会带退出码早停 |
@@ -163,6 +167,43 @@ subsystem，宿主半体 `src/sftp.ts`）：
   递归、同名覆盖，**字节不经过浏览器**）；单窗体风格照旧，设置卡片切换，
   重新打开 SFTP 生效。
 
+## 会话持久化（tmux，0.10.0）
+
+默认安全模型不变：会话随宿主生死（内核级 PTY 清理）。需要「活得比宿主久」
+的工作（dev server、build、训练任务），开**持久终端**——会话状态委托给
+tmux server（专用 socket `dsh-tty`，与用户自己的 tmux 完全隔离），断线保活
+超时、甚至宿主重启后都能接回：
+
+- **入口**：设置卡片「会话持久化」选 `tmux` 后，「+」菜单出现
+  「持久终端（tmux）」；SSH 连接对话框与连接簿编辑表单出现「持久会话」
+  勾选（连接簿条目显示 `· tmux`，设置卡片亦可改）；
+- **机制**：spawn/ssh 帧带 `persist` + 客户端生成、随标签规格保存的稳定
+  `persistName`——本地把 `-c` 包装层换成 `exec tmux -L dsh-tty -f
+  <conf> new-session -A -s dsh-<名>`（cwd 由 node-pty spawn 继承）；SSH 则
+  远程 `exec tmux -L dsh-tty -f /dev/null new-session -A -s dsh-<名>` 开
+  pty channel。`-A` attach-or-create：宿主重启后重开标签按同名接回原
+  tmux 会话，正在跑的程序、pane 状态原样恢复；
+- **恢复链路**：浏览器重连后查 `sessions`——持久标签 sid 已失效的，客户端
+  自动按原 persistName 重新 spawn（非持久标签维持丢弃语义）；保活回收器
+  超时只杀 PTY（tmux 客户端），**不杀 tmux 会话**，回收后照样可接回；
+- **关闭语义**：kill 帧（标签 ✕ / 关面板）对 tmux 背书会话先
+  `tmux kill-session` 再杀客户端——真正结束，而不是 detach 留活口；
+- **shell 集成兼容**：tmux 会吞掉不认识的转义序列——钩子检测 `$TMUX` 把
+  OSC 133/7 包进 DCS passthrough 信封（payload 内 ESC 双写），tmux ≥3.3 +
+  `allow-passthrough on`（宿主自动写入桩 conf）时解包转发，宿主解析器看到的
+  仍是裸标记：`tty_expect` / OSC 7 cwd 跟随在持久标签内照常工作；
+  `tty_capture{last}` 另有一层修正——tmux 的 pane 重画是异步批量的，命令输出
+  会落在 D 标记之后逃出捕获窗口，故钩子在发 D 前先 `capture-pane` 把 pane
+  内容经 `OSC 133;T`（base64，最近 200 行）随流直送，宿主优先采用 T 快照
+  作为命令输出（超出 200 行的输出截断头部，与环形缓冲语义一致）；
+- **运行资产**：`<DSH_HOME|~/.dsh>/tty/` 下的稳定桩目录（tmux server 比宿主
+  进程活得久，不能用临时目录）：`tmux.conf`（status off 防重绘污染捕获、
+  真色 overrides、`default-command` 指向内层启动器）与 `inner.sh`（按当前
+  配置 exec 内层 shell，zsh ZDOTDIR / bash --rcfile 桩照常注入）；配置热改
+  对新开 pane 生效，`tmux.conf` 本身只在 tmux server 首启时读取；
+- **降级**：本机/远程未安装 tmux 时，持久 spawn 自动落回普通会话，终端里
+  回一行灰字提示；不装任何东西也能正常用，只是无持久化。
+
 ## SSH 连接（方案 C）
 
 0.2.0 起标签栏「+」变为一键菜单，除本地终端外还能开 **SSH 标签页**：宿主
@@ -225,24 +266,25 @@ subsystem，宿主半体 `src/sftp.ts`）：
 | `colorTerm` | `truecolor` | COLORTERM 值 |
 | `cwd` | 宿主启动目录 | 兜底工作目录（客户端当前会话 cwd 优先） |
 | `reconnectGraceSec` | 120 | 异常断开后会话保活秒数（0~3600）：刷新页面/网络抖动后会话存活等待重连，超时由回收器结束；`0` = 旧行为，断开立即结束 |
-| `sshHosts` | `[]` | SSH 连接簿（面板「+」菜单可选）：条目 `{name, host, port=22, username, auth=agent\|key\|password, keyPath, passphrase, password}`；保存时整体替换、同名覆盖；`password` / `passphrase` 支持 `env:VAR` 引用，避免明文入库 |
+| `sshHosts` | `[]` | SSH 连接簿（面板「+」菜单可选）：条目 `{name, host, port=22, username, auth=agent\|key\|password, keyPath, passphrase, password, agentForward, persist}`；保存时整体替换、同名覆盖；`password` / `passphrase` 支持 `env:VAR` 引用，避免明文入库；`persist` 勾选后该条目的标签默认以 tmux 持久会话打开 |
 | `hostKeys` | `[]` | SSH 主机指纹记录（TOFU，自动维护）：条目 `{host, port, fingerprint}`；按 host:port 唯一，首次连接自动追加，指纹变更拒绝连接；设置卡片可删除重置 |
 | `shellIntegration` | true | 注入 OSC 133/7 shell 集成（命令边界标记 + cwd 上报；`tty_capture{last}` 依赖它）；zsh/bash 支持，其他 shell 自动跳过；出兼容问题时可关闭 |
 | `tunnels` | `[]` | 端口转发隧道：条目 `{name, bookName, direction=local\|remote, localPort?, remoteHost?, remotePort?, localTargetHost?, localTargetPort?, enabled}`；`bookName` 引用连接簿条目提供主机与认证；卡片「端口转发」区块可视化维护 |
 | `sftpStyle` | `dialog` | SFTP 文件浏览界面风格：`dialog` 单窗体（远程目录 + 上传/下载/拖拽）/ `dual` 双栏（左本机 / 右远程，行内 `⇨/⇦` 宿主服务端直传）；重新打开 SFTP 生效 |
+| `persistence` | `off` | 会话持久化：`off` 会话随宿主生死（默认）；`tmux` 开启「持久终端」入口（「+」菜单 / SSH 对话框 / 连接簿），持久标签由 tmux server 托管、可跨宿主重启恢复（需本机/远程安装 tmux） |
 
 ## 帧协议（/api/dsh-tty/ws，JSON 文本帧；v3 = 单连接多会话 + 断线重连）
 
 | 方向 | 帧 | 说明 |
 | --- | --- | --- |
-| C→S | `{t:'spawn', sid?, cols?, rows?, cwd?}` | 创建会话；sid 缺省由宿主生成，cwd 缺省用配置兜底 |
-| C→S | `{t:'ssh', sid?, cols?, rows?, name? \| host, username, …}` | 创建 SSH 会话（ssh2 原生）；`name` 引用连接簿条目作基底，内联 `host/port/username/auth/keyPath/passphrase/password/agentForward` 可逐项覆盖 |
+| C→S | `{t:'spawn', sid?, cols?, rows?, cwd?, persist?, persistName?}` | 创建会话；sid 缺省由宿主生成，cwd 缺省用配置兜底；`persist` + 稳定 `persistName`（0.10.0）= tmux 持久会话（`dsh-<名>`，需 persistence=tmux） |
+| C→S | `{t:'ssh', sid?, cols?, rows?, name? \| host, username, …, persist?, persistName?}` | 创建 SSH 会话（ssh2 原生）；`name` 引用连接簿条目作基底，内联 `host/port/username/auth/keyPath/passphrase/password/agentForward` 可逐项覆盖；`persist` 语义同 spawn（远程 tmux 托管） |
 | C→S | `{t:'input', sid?, d}` | 按键/粘贴数据 |
 | C→S | `{t:'resize', sid?, cols, rows}` | 面板尺寸变化 |
 | C→S | `{t:'kill', sid?}` | 关闭会话（孤儿会话也允许跨连接 kill，防泄漏） |
 | C→S | `{t:'sessions'}` | 列出全局会话快照（`attachable` 标记可重连者） |
 | C→S | `{t:'attach', sid}` | 重连孤儿会话（保活窗口内）：`ready(reattached:true)` 后紧跟一帧 `data` 回放输出缓冲 |
-| S→C | `{t:'ready', sid, pid, kind, target?, reattached?}` | 会话就绪；`kind:'local'` 带 pid，`kind:'ssh'` 时 pid=null、target=user@host[:port]；attach 复用此帧并带 `reattached:true` |
+| S→C | `{t:'ready', sid, pid, kind, target?, persist?, reattached?}` | 会话就绪；`kind:'local'` 带 pid，`kind:'ssh'` 时 pid=null、target=user@host[:port]；attach 复用此帧并带 `reattached:true`；`persist:true` 表示 tmux 持久会话（0.10.0） |
 | S→C | `{t:'data', sid, d}` | 终端输出（utf8 文本，StringDecoder 兜跨帧多字节序列）；**12ms 窗口/64KB 阈值合并成帧**（0.4.1），exit/kill 前强制冲刷保证帧序 |
 | S→C | `{t:'exit', sid, code, signal}` | PTY 退出事实（恰好一次；attach 换连接后仍随当前连接送达） |
 | S→C | `{t:'error', sid?, m}` | 错误 |
@@ -300,6 +342,7 @@ pnpm --filter @hyzyn/dsh-tty ssh-smoke    # SSH 冒烟：内存 SSH server（ssh
   `PROMPT_COMMAND`/钩子数组，集成可能失效——可关闭 `shellIntegration` 或
   反馈补丁兼容。
 - **端口转发边界**：本地监听固定 127.0.0.1（不暴露局域网）；remote 方向服务端监听还受服务端 sshd `GatewayPorts` 限制；隧道的 SSH 连接与终端会话独立，均走 TOFU 钉扎与连接簿认证；隧道规格变更（端口/目标/启停）经「保存」热生效，热改连接簿凭证则在下次重连时生效。
+- **会话持久化（tmux）边界**：持久标签由 tmux server（专用 socket `dsh-tty`）托管——宿主被硬杀 / 保活回收 / 浏览器丢失标签规格时，tmux 会话会**留存**（这正是恢复能力的前提），直到机器重启或手动 `tmux -L dsh-tty kill-server`；agent 命令粒度工具（capture{last}/expect）依赖 tmux ≥3.3 的 DCS `allow-passthrough`，更低版本持久化可用但该能力降级；恢复接回重画的是当前可见屏，断线前的滚动历史在 tmux 自己的 history buffer（copy-mode）里，不在外层 xterm 滚动区；持久标签的 `exit` 帧退出码是 tmux 客户端的（0），shell 退出码经 OSC 133;D 标记照常可用；`tmux.conf` 只在 tmux server 首启时读取（改配置后需 `tmux -L dsh-tty kill-server` 让下次 spawn 重建 server）；`grace=0` 的「断开立即结束」对持久标签同样会 kill-session（tmux 会话不存活）；持久 SSH 会话要求远程装有 tmux，且远程 `~/.tmux.conf` 不影响专用 socket 的独立 conf（`-f /dev/null`）。
 - **SFTP 边界**：文件权限 = 对应 SSH 账号的终端权限（无额外沙箱/chroot）；下载经浏览器内存（超大文件建议终端 `scp`/`rsync`）；agent 工具 `sftp_read` ≤1MB 且拒绝二进制、`sftp_write` 单次 ≤1MB（大内容走面板上传或终端）；`sftp_*` 工具只收连接簿条目名，内联凭证仅供面板对话框使用。
 - **SSH host key 为 TOFU 钉扎**：首次连接自动记录 sha256 指纹（trust on
   first use），之后指纹一致放行、变更拒绝——不再是无条件放行的
@@ -337,6 +380,11 @@ pnpm --filter @hyzyn/dsh-tty ssh-smoke    # SSH 冒烟：内存 SSH server（ssh
   │  残包 carry）→ 命令边界捕获（tty_capture{last} / tty_expect 早停）
   │  与 cwd 跟随（tty_list）
   ├─ 本地路径：ctx.get('subprocess').spawnTerminal({ argv: shell -c 包装层, cwd })
+  │  持久标签（0.10.0）：包装层换 `exec tmux -L dsh-tty -f <conf> new -A -s dsh-<名>`
+  │  （src/tmux.ts：探测/资产生成/spawn 计划/kill-session；稳定资产在
+  │  <DSH_HOME|~/.dsh>/tty/——tmux.conf + inner.sh + zsh/bash 桩；tmux 会吞
+  │  不认识的序列，shell 集成钩子检测 $TMUX 把 OSC 133/7 包 DCS passthrough
+  │  信封，tmux ≥3.3 解包转发，宿主解析器零改动）
   ├─ 辅助路由：/api/dsh-tty/ssh-config（~/.ssh/config 导入候选）、
   │  /api/dsh-tty/env-vars（env 插件托管变量名）、/api/dsh-tty/known-hosts
   │  （TOFU 指纹预填充，src/known-hosts.ts 解析含 hashed 条目）、
@@ -356,7 +404,10 @@ SSH 路径 (src/ssh.ts，方案 C)
      password·passphrase 支持 env:VAR 取密；host key 经 HostKeyStore
      TOFU 钉扎），开 shell channel 包装成与 PTY 同形状的 TermHandle
      （pid=null，kind='ssh'，target=user@host[:port]），
-     背压一并透传到 channel —— 之后与本地 PTY 无差别调度
+     背压一并透传到 channel —— 之后与本地 PTY 无差别调度；
+     persist 时先 `command -v tmux` 探测再 `exec tmux -L dsh-tty -f /dev/null
+     new -A -s dsh-<名>` 开 pty channel（远程 tmux 托管；无 tmux 降级普通
+     shell channel + 灰字提示；kill 经连接内 `tmux kill-session` 收尾）
 ```
 
 M0 探针、集成测试（B1~B24 共 58 项断言）与真实实例冒烟（live / TUI）在
@@ -369,7 +420,10 @@ shells 候选路由、bash 3.2 shell 集成（DEBUG trap 兜底：capture{last} 
 exitCode、tty_expect 命令结束早停）、SFTP 文件传输（list/mkdir/upload/
 download/remove 路由 + sftp_* 工具，test-sshd 内存 sshd 端到端）、SFTP 管理
 闭环（agent sftp_mkdir/-rename/-remove/-tree：parents 补齐、tree 限深截断、
-跨目录移动、非空删除拒绝与递归删除）。SSH 路径由 `ssh-smoke`
+跨目录移动、非空删除拒绝与递归删除）；会话持久化（B25/B26：persistence
+门控、tmux 会话托管与 kill-session 收尾、无 tmux 降级提示、DCS passthrough
+下 capture{last}、保活回收只杀 PTY 不杀 tmux 会话、同 persistName 接回现场
+——本机无 tmux 时自动只跑降级路径）。SSH 路径由 `ssh-smoke`
 （内存 SSH server × 真实 `spawnSsh`）验证：password 认证建链与 prompt、
 命令往返、pty-req 初始尺寸与 resize（window-change）、terminate /
 exit-status 全链路，以及 TOFU 指纹记录（S7）与指纹变更拒绝连接（S8）；

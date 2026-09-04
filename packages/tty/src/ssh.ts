@@ -24,6 +24,8 @@ import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
+import { TMUX_SOCKET } from './tmux.js'
+import { shSingleQuote } from './shell-integration.js'
 
 /* ------------------------------------------------------------------ *
  * 统一会话句柄：本地 PTY 与 SSH channel 共用同一形状
@@ -47,6 +49,13 @@ export interface TermHandle {
   terminate(): Promise<unknown>
   /** terminate 失败后的最后手段（本地 PTY：对顶层 shell 直接 SIGKILL）。 */
   forceKill?(): void
+  /**
+   * tmux 背书会话（0.10.0 持久化）的关闭收尾：kill-session 让 pane 真正结束，
+   * 而不是只杀客户端把会话留在 tmux server 上。kill 帧路径在 forceKill 前调用。
+   */
+  tmuxTeardown?(): Promise<void>
+  /** spawn 后注入终端的灰字提示（如远程无 tmux 降级为普通会话）。 */
+  startupNotice?: string
 }
 
 /* ------------------------------------------------------------------ *
@@ -77,6 +86,8 @@ export interface SshSpec {
 /** 连接簿条目（带名字，存 settings）。 */
 export interface SshHostEntry extends SshSpec {
   name: string
+  /** 该条目的 SSH 标签默认以 tmux 持久会话打开（仅宿主 persistence=tmux 时生效）。 */
+  persist?: boolean
 }
 
 export interface SshSpawnOptions {
@@ -89,6 +100,13 @@ export interface SshSpawnOptions {
    * 缺省时退化为 accept-and-log（仅记录指纹，无条件放行）。
    */
   hostKeyStore?: HostKeyStore
+  /**
+   * tmux 会话持久化（0.10.0）：远程以 `exec tmux new-session -A -s <name>` 开
+   * pty channel（专用 socket dsh-tty），会话托管在远程 tmux server 上，断线/
+   * 宿主重启后按同名接回。远程无 tmux 时降级普通 shell channel，
+   * startupNotice 带提示。name 须已过 sanitizePersistName（安全字符集）。
+   */
+  persist?: { name: string }
 }
 
 /** 主机指纹钉扎存储（宿主半体实现为 LiveConfig + settings 持久化）。 */
@@ -240,9 +258,14 @@ export async function spawnSsh(spec: SshSpec, options: SshSpawnOptions): Promise
   // 认证配置可能抛错（keyPath 读不到 / env 变量缺失）——先构造再连
   const connectConfig = buildConnectConfig(spec)
   const policy = applyHostKeyPolicy({ connectConfig, spec, store: options.hostKeyStore, logger, target })
+
+  /** 持久会话：远程 tmux 探测/降级提示（spawn 后由调用方注入终端）。 */
+  let startupNotice: string | undefined
+  let tmuxUsed = false
+
   const channel = await new Promise<ClientChannel>((resolve, reject) => {
     let settled = false
-    conn.on('ready', () => {
+    const openShell = (): void => {
       // agentForward 走 per-channel 请求（@types/ssh2 的 ShellOptions 未声明，
       // 运行时支持；仅在本机 agent 存在时生效，见 buildConnectConfig）
       conn.shell(
@@ -257,6 +280,59 @@ export async function spawnSsh(spec: SshSpec, options: SshSpawnOptions): Promise
           resolve(ch)
         },
       )
+    }
+    /** 持久会话：远程 `exec tmux new-session -A`（pty channel，语义与 shell 一致）。 */
+    const openTmux = (): void => {
+      // 链式 set-option 幂等重放（attach 已有 server 时也生效）；首 pane 在
+      // 选项生效前创建，default-terminal 用 tmux 自身默认（README 已知限制）
+      const cmd = [
+        `exec tmux -L ${TMUX_SOCKET} -f /dev/null new-session -A -s ${shSingleQuote(options.persist?.name ?? '')}`,
+        "';' set-option -g status off",
+        "';' set-option -g history-limit 20000",
+        "';' set-option -ga terminal-overrides ,*:RGB",
+      ].join(' ')
+      conn.exec(cmd, { pty: { term: options.term, cols: options.cols, rows: options.rows } }, (error, ch) => {
+        if (error !== undefined && error !== null) {
+          // tmux 启动失败（存在但异常）：连接已建立，降级普通 shell 优于直接报错
+          logger?.warn(`[dsh-tty] ssh ${target} tmux 启动失败，降级普通 shell: ${error.message}`)
+          startupNotice = 'tmux 启动失败，已降级为普通会话'
+          openShell()
+          return
+        }
+        settled = true
+        tmuxUsed = true
+        resolve(ch)
+      })
+    }
+    const openWithPersist = (): void => {
+      // 先毫秒级探测远程是否有 tmux（不带 pty 的 exec）；探测失败按未安装降级。
+      // error 与 close 可能先后到达，proceeded 防止降级路径开两条 channel
+      let proceeded = false
+      const fallback = (notice: string): void => {
+        if (proceeded) return
+        proceeded = true
+        startupNotice = notice
+        openShell()
+      }
+      conn.exec('command -v tmux >/dev/null 2>&1', (error, stream) => {
+        if (error !== undefined && error !== null) {
+          fallback('远程 tmux 探测失败，已降级为普通会话')
+          return
+        }
+        let code: number | null = null
+        stream.on('exit', (c: number | null) => { code = typeof c === 'number' ? c : 1 })
+        stream.on('error', () => fallback('远程 tmux 探测失败，已降级为普通会话'))
+        stream.on('close', () => {
+          if (proceeded) return
+          proceeded = true
+          if (code === 0) openTmux()
+          else fallback('远程未安装 tmux，本次以普通会话连接（安装后持久会话可跨断线/宿主重启恢复）')
+        })
+      })
+    }
+    conn.on('ready', () => {
+      if (options.persist !== undefined) openWithPersist()
+      else openShell()
     })
     conn.on('error', (error) => {
       if (!settled) {
@@ -299,6 +375,28 @@ export async function spawnSsh(spec: SshSpec, options: SshSpawnOptions): Promise
     finish()
   })
 
+  // 持久会话的关闭收尾：kill-session 须在连接还活着时发出（连接随 channel
+  // 关闭而断开）；resolve 时机 = 远程命令跑完（stream close），调用方另有
+  // 2.5s 兜底 forceKill 防悬挂
+  const tmuxTeardown =
+    tmuxUsed && options.persist !== undefined
+      ? (): Promise<void> =>
+          new Promise<void>((resolve) => {
+            try {
+              conn.exec(`tmux -L ${TMUX_SOCKET} kill-session -t ${shSingleQuote(options.persist?.name ?? '')}`, (error, stream) => {
+                if (error !== undefined && error !== null) {
+                  resolve()
+                  return
+                }
+                stream.on('close', () => resolve())
+                stream.on('error', () => resolve())
+              })
+            } catch {
+              resolve()
+            }
+          })
+      : undefined
+
   // 背压透传：TtyServer 暂停 PassThrough 时一并暂停上游 channel，
   // 避免高速输出（cat 大文件）在 Node 侧无界堆积
   const nativePause = output.pause.bind(output)
@@ -320,7 +418,7 @@ export async function spawnSsh(spec: SshSpec, options: SshSpawnOptions): Promise
     return nativeResume()
   }
 
-  logger?.info(`[dsh-tty] ssh 会话就绪: ${target}`)
+  logger?.info(`[dsh-tty] ssh 会话就绪: ${target}${tmuxUsed ? '（tmux 持久）' : ''}`)
   return {
     kind: 'ssh',
     pid: null,
@@ -346,5 +444,7 @@ export async function spawnSsh(spec: SshSpec, options: SshSpawnOptions): Promise
       finish()
       return Promise.resolve(true)
     },
+    ...(tmuxTeardown !== undefined ? { tmuxTeardown } : {}),
+    ...(startupNotice !== undefined ? { startupNotice } : {}),
   }
 }
