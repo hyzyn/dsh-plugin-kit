@@ -375,8 +375,42 @@ function persistTabs() {
       .map((tab) => ({ sid: tab.sid, spawnSpec: tab.spawnSpec, label: tab.label }))
     if (data.length === 0 || modalEl === null) sessionStorage.removeItem(PERSIST_KEY)
     else sessionStorage.setItem(PERSIST_KEY, JSON.stringify(data))
+    syncPersistSpecStore(data)
   } catch {
     /* 隐私模式等存储不可用：静默跳过 */
+  }
+}
+
+/**
+ * 持久标签规格（localStorage，跨浏览器标签页/窗口存活）：sessionStorage 只
+ * 有同一个浏览器标签页能看到，dsh 重启自动打开的新窗口读不到——持久化的
+ * 「宿主重启后恢复」就断在这一环。规格跨窗口共享，恢复前经宿主 sessions
+ * 帧的 tmux 会话名清单确认仍存活（已关闭/已消失的规格自动淘汰）。
+ */
+const PERSIST_SPEC_KEY = 'dsh-tty:persist-specs'
+
+function syncPersistSpecStore(data) {
+  try {
+    const specs = data
+      .filter((tab) => isPersistentSpec(tab.spawnSpec))
+      .map((tab) => ({ spawnSpec: tab.spawnSpec, label: tab.label }))
+    if (specs.length === 0) localStorage.removeItem(PERSIST_SPEC_KEY)
+    else localStorage.setItem(PERSIST_SPEC_KEY, JSON.stringify(specs))
+  } catch {
+    /* 存储不可用：静默跳过 */
+  }
+}
+
+/** 读取跨窗口的持久标签规格（结构不合法的条目丢弃）。 */
+function loadPersistSpecs() {
+  try {
+    const raw = localStorage.getItem(PERSIST_SPEC_KEY)
+    if (raw === null) return []
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((item) => item !== null && typeof item === 'object' && isPersistentSpec(item.spawnSpec))
+  } catch {
+    return []
   }
 }
 
@@ -2578,12 +2612,17 @@ function isPersistentSpec(spec) {
  *     （sid 消失）的持久标签按原 persistName 重新 spawn，tmux -A 接回原现场；
  *   - 空面板但有 sessionStorage 持久化（页面刷新后重开）→ 查询宿主仍保活
  *     的会话，能 attach 的恢复标签；持久标签即使宿主重启也重新 spawn 接回
- *     （非持久标签维持旧行为丢弃）；都没有则新建首个标签。
+ *     （非持久标签维持旧行为丢弃）；
+ *   - 全新窗口/浏览器（sessionStorage 为空，dsh 重启自动打开的新窗口）→
+ *     localStorage 里的持久标签规格 + sessions 帧的 tmux 会话名清单做存活
+ *     确认，仍存活的按 persistName 接回——已关闭/已消失的自动淘汰。
+ *   - 都没有则新建首个标签。
  */
 async function afterSocketOpen() {
   const restored = loadPersistedTabs()
+  const specs = loadPersistSpecs()
   if (tabs.size === 0) {
-    if (restored.length > 0) {
+    if (restored.length > 0 || specs.length > 0) {
       sendFrame({ t: 'sessions' })
       const frame = await waitFrame('sessions', 4000)
       const alive = new Map()
@@ -2592,13 +2631,24 @@ async function afterSocketOpen() {
           if (entry !== null && typeof entry === 'object' && entry.attachable === true) alive.set(entry.sid, entry)
         }
       }
+      const tmuxNames = new Set(frame !== null && Array.isArray(frame.tmux) ? frame.tmux.filter((n) => typeof n === 'string') : [])
+      const seenNames = new Set()
       for (const saved of restored) {
         if (alive.has(saved.sid)) {
           restoreTab(saved)
         } else if (isPersistentSpec(saved.spawnSpec)) {
           restoreTabAsNew(saved)
+        } else {
+          continue // 非持久且宿主侧已结束：维持旧行为丢弃
         }
-        // 非持久且宿主侧已结束：维持旧行为丢弃
+        if (isPersistentSpec(saved.spawnSpec)) seenNames.add(saved.spawnSpec.persistName)
+      }
+      for (const spec of specs) {
+        const name = spec.spawnSpec.persistName
+        if (seenNames.has(name)) continue // sessionStorage 已恢复（避免同标签双开）
+        if (!tmuxNames.has('dsh-' + name)) continue // tmux 侧已不存在（被关闭/重启丢失）：淘汰
+        restoreTabAsNew(spec)
+        seenNames.add(name)
       }
       persistTabs()
     }
