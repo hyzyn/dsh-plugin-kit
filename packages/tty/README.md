@@ -186,6 +186,9 @@ tmux server（专用 socket `dsh-tty`，与用户自己的 tmux 完全隔离）�
 - **恢复链路**：浏览器重连后查 `sessions`——持久标签 sid 已失效的，客户端
   自动按原 persistName 重新 spawn（非持久标签维持丢弃语义）；保活回收器
   超时只杀 PTY（tmux 客户端），**不杀 tmux 会话**，回收后照样可接回；
+  同宿主内的重连（attach）对 tmux 会话**不回放宿主缓冲**——回放会把可见屏
+  先写进全新 xterm（幽灵滚动条），tmux 整屏重画再画一遍（重影）——改为
+  强制 `tmux refresh-client` 重画恰好一次；
 - **关闭语义**：kill 帧（标签 ✕ / 关面板）对 tmux 背书会话先
   `tmux kill-session` 再杀客户端——真正结束，而不是 detach 留活口；
 - **shell 集成兼容**：tmux 会吞掉不认识的转义序列——钩子检测 `$TMUX` 把
