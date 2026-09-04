@@ -284,6 +284,7 @@ tmux server（专用 socket `dsh-tty`，与用户自己的 tmux 完全隔离）�
 | C→S | `{t:'ssh', sid?, cols?, rows?, name? \| host, username, …, persist?, persistName?}` | 创建 SSH 会话（ssh2 原生）；`name` 引用连接簿条目作基底，内联 `host/port/username/auth/keyPath/passphrase/password/agentForward` 可逐项覆盖；`persist` 语义同 spawn（远程 tmux 托管） |
 | C→S | `{t:'input', sid?, d}` | 按键/粘贴数据 |
 | C→S | `{t:'resize', sid?, cols, rows}` | 面板尺寸变化 |
+| C→S | `{t:'refresh', sid?}` | 强制重画（0.10.1）：宿主对 tmux 会话执行 `refresh-client`（客户端 reset 清残 scrollback 后请现场重画；非 tmux 会话 no-op） |
 | C→S | `{t:'kill', sid?}` | 关闭会话（孤儿会话也允许跨连接 kill，防泄漏） |
 | C→S | `{t:'sessions'}` | 列出全局会话快照（`attachable` 标记可重连者） |
 | C→S | `{t:'attach', sid}` | 重连孤儿会话（保活窗口内）：`ready(reattached:true)` 后紧跟一帧 `data` 回放输出缓冲 |

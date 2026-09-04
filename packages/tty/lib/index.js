@@ -976,6 +976,18 @@ class TtyServer {
                     }
                 }
             }
+            else if (msg.t === 'refresh') {
+                // 强制 tmux 重画（0.10.1）：客户端 reset 清掉残 scrollback 后请宿主
+                // refresh-client 重画现场——不碰尺寸，规避隐藏标签下 proposeDimensions
+                // 返回垃圾尺寸把 pane 压扁的隐患；非 tmux 会话为无害 no-op
+                const resolved = this.resolveSid(ws, msg, local);
+                if (resolved === undefined || 'unknown' in resolved)
+                    return;
+                const session = local.get(resolved.sid);
+                if (session !== undefined && session.tmuxName !== null) {
+                    void refreshTmuxClient(session.tmuxName);
+                }
+            }
             else if (msg.t === 'kill') {
                 const resolved = this.resolveSid(ws, msg, local);
                 if (resolved === undefined)
