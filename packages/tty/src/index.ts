@@ -17,6 +17,8 @@
  *                                              persist 语义同 spawn（远程 tmux 托管）
  *   C→S  {t:'input', sid?, d}                  按键/粘贴数据
  *   C→S  {t:'resize', sid?, cols, rows}        xterm fit 触发
+ *   C→S  {t:'refresh', sid?}                   请宿主 refresh-client 强制 tmux
+ *                                              重画（tmux 会话；非 tmux no-op）
  *   C→S  {t:'kill', sid?}                      关闭会话（孤儿会话也可跨连接 kill；
  *                                              tmux 会话先 kill-session 再杀客户端）
  *   C→S  {t:'sessions'}                        列出全局会话（attachable 标记可重连者）
@@ -1123,6 +1125,16 @@ class TtyServer {
           } catch {
             /* 非法尺寸或已释放 */
           }
+        }
+      } else if (msg.t === 'refresh') {
+        // 强制 tmux 重画（0.10.1）：客户端 reset 清掉残 scrollback 后请宿主
+        // refresh-client 重画现场——不碰尺寸，规避隐藏标签下 proposeDimensions
+        // 返回垃圾尺寸把 pane 压扁的隐患；非 tmux 会话为无害 no-op
+        const resolved = this.resolveSid(ws, msg, local)
+        if (resolved === undefined || 'unknown' in resolved) return
+        const session = local.get(resolved.sid)
+        if (session !== undefined && session.tmuxName !== null) {
+          void refreshTmuxClient(session.tmuxName)
         }
       } else if (msg.t === 'kill') {
         const resolved = this.resolveSid(ws, msg, local)

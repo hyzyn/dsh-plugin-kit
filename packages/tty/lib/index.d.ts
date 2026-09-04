@@ -17,6 +17,8 @@
  *                                              persist 语义同 spawn（远程 tmux 托管）
  *   C→S  {t:'input', sid?, d}                  按键/粘贴数据
  *   C→S  {t:'resize', sid?, cols, rows}        xterm fit 触发
+ *   C→S  {t:'refresh', sid?}                   请宿主 refresh-client 强制 tmux
+ *                                              重画（tmux 会话；非 tmux no-op）
  *   C→S  {t:'kill', sid?}                      关闭会话（孤儿会话也可跨连接 kill；
  *                                              tmux 会话先 kill-session 再杀客户端）
  *   C→S  {t:'sessions'}                        列出全局会话（attachable 标记可重连者）

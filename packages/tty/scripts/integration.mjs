@@ -1224,6 +1224,12 @@ async function run() {
       const occurrences = (w4.state.text.match(/B26REFRESH-ok/g) ?? []).length
       if (occurrences === 1) pass('B26d attach 跳过缓冲回放（tmux 重画一次，无重影/幽灵滚动条）')
       else fail('B26d attach 跳过缓冲回放（tmux 重画一次，无重影/幽灵滚动条）', `marker 出现 ${occurrences} 次`)
+      // refresh 帧：reset 后请宿主 refresh-client 重画（不碰尺寸）
+      w4.client.send(JSON.stringify({ t: 'refresh', sid: 'b26d' }))
+      await sleep(600)
+      const refreshedOk = (w4.state.text.match(/B26REFRESH-ok/g) ?? []).length >= 1 && w4.state.errors.length === 0
+      if (refreshedOk) pass('B26e refresh 帧（refresh-client 重画，无错误）')
+      else fail('B26e refresh 帧（refresh-client 重画，无错误）', `errors=${JSON.stringify(w4.state.errors)}`)
       w4.client.send(JSON.stringify({ t: 'kill', sid: 'b26d' }))
       await w4.waitFor(() => w4.state.exited !== null, 10000, 'b26d exit')
       w4.client.close()
