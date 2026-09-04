@@ -2682,6 +2682,24 @@ function connect() {
         renderConnbar()
         showTabOverlay(tab, '')
         sendResize(tab) // spawn/attach 就绪后补一次精确尺寸
+        if (msg.persist === true) {
+          // 持久标签（tmux）：现场由 tmux 重画，但字体加载/布局微调会让 xterm
+          // 在重画之后收缩（proposeDimensions 行数变少）——收缩瞬间多出的行被
+          // 推进 scrollback，形成幽灵滚动条且视口停在顶部。等字体就绪后 reset
+          // 清掉残 scrollback，并 poke 一次 resize（rows-1 → rows）强制 tmux
+          // 按当前真实尺寸重画，对任何收缩原因自愈
+          const settle = () => {
+            if (tab.term === null || tab.exited) return
+            tab.term.reset()
+            const dims = tab.fit !== null ? tab.fit.proposeDimensions() : undefined
+            if (dims !== undefined) sendFrame({ t: 'resize', sid: tab.sid, cols: dims.cols, rows: Math.max(2, dims.rows - 1) })
+            setTimeout(() => {
+              if (!tab.exited) sendResize(tab)
+            }, 80)
+          }
+          const fontsReady = document.fonts !== undefined && document.fonts.ready !== undefined ? document.fonts.ready : Promise.resolve()
+          Promise.race([fontsReady, new Promise((r) => setTimeout(r, 500))]).then(() => setTimeout(settle, 150))
+        }
         syncEntryBadge() // 断线重连后徽标计数恢复
         persistTabs()
       }
