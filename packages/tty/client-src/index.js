@@ -765,12 +765,20 @@ function renderConnbar() {
   }
   delete connbarEl.dataset.hidden
   const port = Number(spec.port)
+  // 持久状态徽标：ready.persist=true → 已由 tmux 托管；规格请求了持久但
+  // ready 没带（远程无 tmux 降级等）→ 常驻提示「未持久化」，不再只靠 spawn
+  // 时的一行灰字（容易滚走被忽略）
+  const persistMark = tab.persistTmux === true
+    ? ' · tmux 持久'
+    : spec.persist === true && tab.spawned === true
+      ? ' · 未持久化（tmux 不可用）'
+      : ''
   connTargetEl.textContent = (typeof tab.target === 'string' && tab.target !== ''
     ? tab.target
     : typeof spec.name === 'string' && spec.name !== ''
       ? spec.name
       : String(spec.username ?? '') + '@' + String(spec.host ?? '') + (Number.isInteger(port) && port !== 22 ? ':' + port : ''))
-    + (tab.persistTmux === true ? ' · tmux 持久' : '')
+    + persistMark
   connDotEl.dataset.state = tab.exited ? 'exited' : tab.live === true ? 'connected' : tab.errored === true ? 'error' : 'connecting'
   const action = (icon, label, title, onClick) => {
     const btn = document.createElement('button')
