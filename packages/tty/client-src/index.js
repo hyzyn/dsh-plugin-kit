@@ -173,6 +173,7 @@ const CSS = [
   '.tt_cardMessageError{color:var(--dsw-alias-state-error-primary)}',
   // 「+」新建菜单（本地终端 / SSH 连接簿 / SSH 连接…）
   '.tt_addMenu{position:fixed;z-index:1400;min-width:220px;max-width:320px;background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:10px;box-shadow:var(--dsw-shadow-lv3);padding:6px;display:flex;flex-direction:column;gap:2px}',
+  '.tt_addMenuItem[data-soldout]{opacity:.45}',
   '.tt_addMenuItem{appearance:none;background:0 0;border:none;color:var(--dsw-alias-label-primary);text-align:left;font:inherit;font-size:13px;padding:7px 10px;border-radius:8px;cursor:pointer;display:flex;flex-direction:column;gap:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
   '.tt_addMenuItem:hover{background:var(--dsw-alias-interactive-bg-hover)}',
   '.tt_addMenuSub{font-size:11px;color:var(--dsw-alias-label-tertiary)}',
@@ -1034,7 +1035,7 @@ async function sessionLimitNotice() {
   await refreshSessionCount()
   if (maxSessionsCache === null || liveSessionCount === null) return null
   if (liveSessionCount < maxSessionsCache) return null
-  const text = `会话数已达上限（${liveSessionCount}/${maxSessionsCache}）——关闭不用的窗口/标签，或在设置卡片调大「并发会话上限」`
+  const text = `会话数已达上限（当前共 ${liveSessionCount} 个 / 上限 ${maxSessionsCache}，含其他窗口与待恢复会话）——关闭不用的窗口/标签，或在设置卡片调大「并发会话上限」`
   showToast(text)
   return text
 }
@@ -1122,8 +1123,10 @@ function addMenuItem(menu, label, sub, onClick, disabled) {
   item.type = 'button'
   item.className = 'tt_addMenuItem'
   if (disabled === true) {
-    item.disabled = true
-    item.title = '会话数已达上限——关闭不用的窗口/标签后再试'
+    // 不用原生 disabled：禁用按钮不派发点击事件，用户点了没有任何反馈；
+    // 视觉置灰 + 可点击 → 点击时弹 toast 说明
+    item.setAttribute('data-soldout', '')
+    item.title = '会话数已达上限——点击查看怎么办'
   }
   const main = document.createElement('span')
   main.textContent = label
@@ -1162,8 +1165,8 @@ function renderAddMenuItems(menu) {
     item.type = 'button'
     item.className = 'tt_addMenuItem'
     if (atLimit) {
-      item.disabled = true
-      item.title = '会话数已达上限——关闭不用的窗口/标签后再试'
+      item.setAttribute('data-soldout', '')
+      item.title = '会话数已达上限——点击查看怎么办'
     }
     const main = document.createElement('span')
     main.textContent = entry.name
