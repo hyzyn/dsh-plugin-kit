@@ -285,6 +285,27 @@ export async function spawnSsh(spec, options) {
     channel.on('close', () => {
         finish();
     });
+    // 持久会话的重画（0.10.1 跨窗口共享）：远程 list-clients + 逐个
+    // refresh-client 一条 exec 管道完成；resolve 时机 = 远程命令跑完
+    const tmuxRefresh = tmuxUsed && options.persist !== undefined
+        ? () => new Promise((resolve) => {
+            const cmd = `tmux -L ${TMUX_SOCKET} list-clients -t ${shSingleQuote(options.persist?.name ?? '')} -F '#{client_name}' | ` +
+                `while IFS= read -r c; do tmux -L ${TMUX_SOCKET} refresh-client -t "$c"; done`;
+            try {
+                conn.exec(cmd, (error, stream) => {
+                    if (error !== undefined && error !== null) {
+                        resolve();
+                        return;
+                    }
+                    stream.on('close', () => resolve());
+                    stream.on('error', () => resolve());
+                });
+            }
+            catch {
+                resolve();
+            }
+        })
+        : undefined;
     // 持久会话的关闭收尾：kill-session 须在连接还活着时发出（连接随 channel
     // 关闭而断开）；resolve 时机 = 远程命令跑完（stream close），调用方另有
     // 2.5s 兜底 forceKill 防悬挂
@@ -356,6 +377,7 @@ export async function spawnSsh(spec, options) {
             return Promise.resolve(true);
         },
         ...(tmuxTeardown !== undefined ? { tmuxTeardown } : {}),
+        ...(tmuxRefresh !== undefined ? { tmuxRefresh } : {}),
         ...(startupNotice !== undefined ? { startupNotice } : {}),
     };
 }

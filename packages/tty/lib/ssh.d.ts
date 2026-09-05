@@ -22,6 +22,12 @@ export interface TermHandle {
      * 而不是只杀客户端把会话留在 tmux server 上。kill 帧路径在 forceKill 前调用。
      */
     tmuxTeardown?(): Promise<void>;
+    /**
+     * 强制 tmux 重画该会话的全部客户端（0.10.1 跨窗口共享：新绑定连接的
+     * xterm 需要一份可见屏重画）。本地实现走本机 tmux CLI（src/tmux.ts），
+     * SSH 实现在远程连接内 exec（本机 tmux 看不到远程会话）。
+     */
+    tmuxRefresh?(): Promise<void>;
     /** spawn 后注入终端的灰字提示（如远程无 tmux 降级为普通会话）。 */
     startupNotice?: string;
 }
