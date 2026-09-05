@@ -192,8 +192,9 @@ tmux server（专用 socket `dsh-tty`，与用户自己的 tmux 完全隔离）�
   强制 `tmux refresh-client` 重画恰好一次；
   持久标签规格同时写入 **localStorage**（sessionStorage 只对同一浏览器标签
   可见，dsh 重启自动打开的新窗口原本读不到、恢复就断在这一环）——全新
-  窗口打开面板时，经 sessions 帧的 tmux 会话名清单**存活确认**后按
-  persistName 接回，已关闭/已消失的规格自动淘汰；
+  窗口打开面板时按规格直接 respawn：tmux 会话存活则接回原现场，已消失
+  （远程重装/重装丢失）则开新 shell；规格只随「标签被主动关闭/退出」淘汰，
+  不做事前存活确认（确认依赖的留存状态一旦漂移会让恢复静默失效）；
 - **关闭语义**：kill 帧（标签 ✕ / 关面板）对 tmux 背书会话先
   `tmux kill-session` 再杀客户端——真正结束，而不是 detach 留活口；
 - **shell 集成兼容**：tmux 会吞掉不认识的转义序列——钩子检测 `$TMUX` 把
@@ -297,7 +298,7 @@ tmux server（专用 socket `dsh-tty`，与用户自己的 tmux 完全隔离）�
 | S→C | `{t:'data', sid, d}` | 终端输出（utf8 文本，StringDecoder 兜跨帧多字节序列）；**12ms 窗口/64KB 阈值合并成帧**（0.4.1），exit/kill 前强制冲刷保证帧序 |
 | S→C | `{t:'exit', sid, code, signal}` | PTY 退出事实（恰好一次；attach 换连接后仍随当前连接送达） |
 | S→C | `{t:'error', sid?, m}` | 错误 |
-| S→C | `{t:'sessions', list, tmux?}` | 会话快照（`{sid, kind, target, pid?, cwd, startedAt, lastOutputAt, attachable, persist?}`）；`tmux` = 专用 socket 上现存的持久会话名清单（0.10.1，新窗口恢复持久标签的存活确认数据源） |
+| S→C | `{t:'sessions', list, tmux?}` | 会话快照（`{sid, kind, target, pid?, cwd, startedAt, lastOutputAt, attachable, persist?}`）；`tmux` = 专用 socket 上现存的持久会话名 + SSH 持久会话留存名（0.10.1，可观测字段） |
 
 断线保活语义：客户端正常关面板会先逐个发 `kill` 再断开；因此「WS close
 且仍有存活会话」判定为异常断开——会话转入孤儿状态（输出继续积累进环形
