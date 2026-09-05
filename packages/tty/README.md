@@ -174,9 +174,10 @@ subsystem，宿主半体 `src/sftp.ts`）：
 tmux server（专用 socket `dsh-tty`，与用户自己的 tmux 完全隔离），断线保活
 超时、甚至宿主重启后都能接回：
 
-- **入口**：设置卡片「会话持久化」选 `tmux` 后，「+」菜单出现
-  「持久终端（tmux）」；SSH 连接对话框与连接簿编辑表单出现「持久会话」
-  勾选（连接簿条目显示 `· tmux`，设置卡片亦可改）；
+- **入口（0.10.1 简化）**：设置卡片「会话持久化」选 `tmux` 即唯一开关——开启后
+  **所有新开的标签默认持久化**：「+」菜单的「本地终端」、连接簿条目点击、
+  SSH 连接对话框（「持久会话」默认勾选，单次连接可取消）。不再有单独的
+  「持久终端」菜单项与条目级勾选；
 - **机制**：spawn/ssh 帧带 `persist` + 客户端生成、随标签规格保存的稳定
   `persistName`——本地把 `-c` 包装层换成 `exec tmux -L dsh-tty -f
   <conf> new-session -A -s dsh-<名>`（cwd 由 node-pty spawn 继承）；SSH 则
@@ -273,12 +274,12 @@ tmux server（专用 socket `dsh-tty`，与用户自己的 tmux 完全隔离）�
 | `colorTerm` | `truecolor` | COLORTERM 值 |
 | `cwd` | 宿主启动目录 | 兜底工作目录（客户端当前会话 cwd 优先） |
 | `reconnectGraceSec` | 120 | 异常断开后会话保活秒数（0~3600）：刷新页面/网络抖动后会话存活等待重连，超时由回收器结束；`0` = 旧行为，断开立即结束 |
-| `sshHosts` | `[]` | SSH 连接簿（面板「+」菜单可选）：条目 `{name, host, port=22, username, auth=agent\|key\|password, keyPath, passphrase, password, agentForward, persist}`；保存时整体替换、同名覆盖；`password` / `passphrase` 支持 `env:VAR` 引用，避免明文入库；`persist` 勾选后该条目的标签默认以 tmux 持久会话打开 |
+| `sshHosts` | `[]` | SSH 连接簿（面板「+」菜单可选）：条目 `{name, host, port=22, username, auth=agent\|key\|password, keyPath, passphrase, password, agentForward}`；保存时整体替换、同名覆盖；`password` / `passphrase` 支持 `env:VAR` 引用，避免明文入库；持久化开启时条目点击默认以 tmux 持久会话打开 |
 | `hostKeys` | `[]` | SSH 主机指纹记录（TOFU，自动维护）：条目 `{host, port, fingerprint}`；按 host:port 唯一，首次连接自动追加，指纹变更拒绝连接；设置卡片可删除重置 |
 | `shellIntegration` | true | 注入 OSC 133/7 shell 集成（命令边界标记 + cwd 上报；`tty_capture{last}` 依赖它）；zsh/bash 支持，其他 shell 自动跳过；出兼容问题时可关闭 |
 | `tunnels` | `[]` | 端口转发隧道：条目 `{name, bookName, direction=local\|remote, localPort?, remoteHost?, remotePort?, localTargetHost?, localTargetPort?, enabled}`；`bookName` 引用连接簿条目提供主机与认证；卡片「端口转发」区块可视化维护 |
 | `sftpStyle` | `dialog` | SFTP 文件浏览界面风格：`dialog` 单窗体（远程目录 + 上传/下载/拖拽）/ `dual` 双栏（左本机 / 右远程，行内 `⇨/⇦` 宿主服务端直传）；重新打开 SFTP 生效 |
-| `persistence` | `off` | 会话持久化：`off` 会话随宿主生死（默认）；`tmux` 开启「持久终端」入口（「+」菜单 / SSH 对话框 / 连接簿），持久标签由 tmux server 托管、可跨宿主重启恢复（需本机/远程安装 tmux） |
+| `persistence` | `off` | 会话持久化：`off` 会话随宿主生死（默认）；`tmux` 开启后**所有新开的标签默认由 tmux server 托管**、可跨宿主重启恢复（需本机/远程安装 tmux）；SSH 对话框可对单次连接取消 |
 
 ## 帧协议（/api/dsh-tty/ws，JSON 文本帧；v3 = 单连接多会话 + 断线重连）
 
