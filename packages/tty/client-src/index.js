@@ -377,7 +377,10 @@ function persistTabs() {
       .map((tab) => ({ sid: tab.sid, spawnSpec: tab.spawnSpec, label: tab.label }))
     if (data.length === 0 || modalEl === null) sessionStorage.removeItem(PERSIST_KEY)
     else sessionStorage.setItem(PERSIST_KEY, JSON.stringify(data))
-    syncPersistSpecStore(data)
+    // 持久规格独立留存：exit 帧（自然退出/回收器回收/宿主重启）不淘汰规格——
+    // 那正是需要恢复的场景；规格只随「标签被主动关闭」（closeTab）淘汰。
+    // 恢复时按规格 respawn：tmux 会话存活则接回原现场，已消失则新开 shell
+    syncPersistSpecStore([...tabs.values()].map((tab) => ({ spawnSpec: tab.spawnSpec, label: tab.label })))
   } catch {
     /* 隐私模式等存储不可用：静默跳过 */
   }
@@ -2626,11 +2629,15 @@ function defaultLocalSpec() {
  *     的会话，能 attach 的恢复标签；持久标签即使宿主重启也重新 spawn 接回
  *     （非持久标签维持旧行为丢弃）；
  *   - 全新窗口/浏览器（sessionStorage 为空，dsh 重启自动打开的新窗口）→
- *     localStorage 里的持久标签规格 + sessions 帧的 tmux 会话名清单做存活
- *     确认，仍存活的按 persistName 接回——已关闭/已消失的自动淘汰。
+ *     localStorage 里的持久标签规格直接按 persistName respawn——不做事前
+ *     存活确认（规格只随「标签被主动关闭/退出」淘汰，存在即用户意图；
+ *     tmux 会话存活则 `tmux -A` 接回原现场，已消失则开新 shell）；
  *   - 都没有则新建首个标签。
  */
 async function afterSocketOpen() {
+  // 先拉一次配置：persistenceCache（持久化开关）决定默认本地标签是否 tmux 托管，
+  // 必须在恢复/新建标签之前就位
+  await refreshSshHosts()
   const restored = loadPersistedTabs()
   const specs = loadPersistSpecs()
   if (tabs.size === 0) {
@@ -2643,7 +2650,6 @@ async function afterSocketOpen() {
           if (entry !== null && typeof entry === 'object' && entry.attachable === true) alive.set(entry.sid, entry)
         }
       }
-      const tmuxNames = new Set(frame !== null && Array.isArray(frame.tmux) ? frame.tmux.filter((n) => typeof n === 'string') : [])
       const seenNames = new Set()
       for (const saved of restored) {
         if (alive.has(saved.sid)) {
@@ -2658,7 +2664,6 @@ async function afterSocketOpen() {
       for (const spec of specs) {
         const name = spec.spawnSpec.persistName
         if (seenNames.has(name)) continue // sessionStorage 已恢复（避免同标签双开）
-        if (!tmuxNames.has('dsh-' + name)) continue // tmux 侧已不存在（被关闭/重启丢失）：淘汰
         restoreTabAsNew(spec)
         seenNames.add(name)
       }
