@@ -54,6 +54,12 @@ export interface TermHandle {
    * 而不是只杀客户端把会话留在 tmux server 上。kill 帧路径在 forceKill 前调用。
    */
   tmuxTeardown?(): Promise<void>
+  /**
+   * 强制 tmux 重画该会话的全部客户端（0.10.1 跨窗口共享：新绑定连接的
+   * xterm 需要一份可见屏重画）。本地实现走本机 tmux CLI（src/tmux.ts），
+   * SSH 实现在远程连接内 exec（本机 tmux 看不到远程会话）。
+   */
+  tmuxRefresh?(): Promise<void>
   /** spawn 后注入终端的灰字提示（如远程无 tmux 降级为普通会话）。 */
   startupNotice?: string
 }
@@ -379,6 +385,30 @@ export async function spawnSsh(spec: SshSpec, options: SshSpawnOptions): Promise
     finish()
   })
 
+  // 持久会话的重画（0.10.1 跨窗口共享）：远程 list-clients + 逐个
+  // refresh-client 一条 exec 管道完成；resolve 时机 = 远程命令跑完
+  const tmuxRefresh =
+    tmuxUsed && options.persist !== undefined
+      ? (): Promise<void> =>
+          new Promise<void>((resolve) => {
+            const cmd =
+              `tmux -L ${TMUX_SOCKET} list-clients -t ${shSingleQuote(options.persist?.name ?? '')} -F '#{client_name}' | ` +
+              `while IFS= read -r c; do tmux -L ${TMUX_SOCKET} refresh-client -t "$c"; done`
+            try {
+              conn.exec(cmd, (error, stream) => {
+                if (error !== undefined && error !== null) {
+                  resolve()
+                  return
+                }
+                stream.on('close', () => resolve())
+                stream.on('error', () => resolve())
+              })
+            } catch {
+              resolve()
+            }
+          })
+      : undefined
+
   // 持久会话的关闭收尾：kill-session 须在连接还活着时发出（连接随 channel
   // 关闭而断开）；resolve 时机 = 远程命令跑完（stream close），调用方另有
   // 2.5s 兜底 forceKill 防悬挂
@@ -449,6 +479,7 @@ export async function spawnSsh(spec: SshSpec, options: SshSpawnOptions): Promise
       return Promise.resolve(true)
     },
     ...(tmuxTeardown !== undefined ? { tmuxTeardown } : {}),
+    ...(tmuxRefresh !== undefined ? { tmuxRefresh } : {}),
     ...(startupNotice !== undefined ? { startupNotice } : {}),
   }
 }

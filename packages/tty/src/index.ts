@@ -1029,7 +1029,7 @@ class TtyServer {
             }
             local.set(sid, existing)
             send(ws, { t: 'ready', sid, pid: existing.handle.pid, kind: existing.kind, persist: true, target: existing.target !== '' ? existing.target : undefined })
-            void refreshTmuxClient(persistName) // 为新绑定的客户端重画一次可见屏
+            void existing.handle.tmuxRefresh?.() // 为新绑定的客户端重画一次可见屏
             return
           }
         }
@@ -1067,7 +1067,10 @@ class TtyServer {
           env: { TERM: this.options.term, COLORTERM: this.options.colorTerm, ...spawnPlan.env },
           graceMs: 5000,
         }))
-        if (tmuxName !== null) handle.tmuxTeardown = () => killTmuxSession(tmuxName)
+        if (tmuxName !== null) {
+          handle.tmuxTeardown = () => killTmuxSession(tmuxName)
+          handle.tmuxRefresh = () => refreshTmuxClient(tmuxName)
+        }
         const next: TtySession = {
           id: sid,
           handle,
@@ -1128,7 +1131,7 @@ class TtyServer {
             }
             local.set(sid, existing)
             send(ws, { t: 'ready', sid, pid: null, kind: 'ssh', target: existing.target, persist: true })
-            void refreshTmuxClient(persistName)
+            void existing.handle.tmuxRefresh?.()
             return
           }
         }
@@ -1222,7 +1225,7 @@ class TtyServer {
         if (resolved === undefined || 'unknown' in resolved) return
         const session = local.get(resolved.sid)
         if (session !== undefined && !session.closed && session.tmuxName !== null) {
-          void refreshTmuxClient(session.tmuxName)
+          void session.handle.tmuxRefresh?.()
         }
       } else if (msg.t === 'kill') {
         const resolved = this.resolveSid(ws, msg, local)
@@ -1283,7 +1286,7 @@ class TtyServer {
         // 先写进全新 xterm（制造屏外幽灵滚动历史 → 莫名滚动条），随后 tmux
         // 整屏重画再画一遍（内容重影）；故跳过回放，强制 tmux 重画一次
         if (session.tmuxName !== null) {
-          void refreshTmuxClient(session.tmuxName)
+          void session.handle.tmuxRefresh?.()
         } else if (session.buffer !== '') {
           send(ws, { t: 'data', sid: raw, d: session.buffer })
         }
