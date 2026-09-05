@@ -831,7 +831,7 @@ class TtyServer {
                     return;
                 }
                 if (!this.sessions.canSpawn()) {
-                    send(ws, { t: 'error', sid, m: `会话数已达上限（${this.sessions.limitValue}）` });
+                    send(ws, { t: 'error', sid, m: `会话数已达上限（${this.sessions.limitValue}）——每个窗口的每个标签各占一个名额：关闭不用的窗口/标签，或在设置卡片调大「并发会话上限」` });
                     return;
                 }
                 // 客户端（当前会话）cwd 优先；校验存在性，避免 node-pty 抛难懂错误
@@ -912,7 +912,7 @@ class TtyServer {
                     return;
                 }
                 if (!this.sessions.canSpawn()) {
-                    send(ws, { t: 'error', sid, m: `会话数已达上限（${this.sessions.limitValue}）` });
+                    send(ws, { t: 'error', sid, m: `会话数已达上限（${this.sessions.limitValue}）——每个窗口的每个标签各占一个名额：关闭不用的窗口/标签，或在设置卡片调大「并发会话上限」` });
                     return;
                 }
                 // name 引用连接簿条目作基底，内联字段可逐项覆盖（与 SFTP 路由共用 mergeSshSpec）
