@@ -246,8 +246,13 @@ function wrapLocalPty(handle: PtyHandle): TermHandle {
 interface TtySession {
   id: string
   handle: TermHandle
-  /** 所属 WS 连接；null 表示孤儿状态（前连接异常断开，等待 attach 或回收）。 */
-  ws: WebSocket | null
+  /**
+   * 绑定的 WS 连接集合（clientSid → ws，0.10.1 起支持跨连接共享）：持久
+   * （tmux）会话可被多个窗口同时绑定——同 tmuxName 的 spawn 不再新建 PTY
+   * 而是重绑定到现有会话（单 PTY 多客户端扇出，名额不翻倍）。key = 该连接
+   * 侧标签的 sid（回帧按各客户端自己的 sid 寻址）；map 为空 = 孤儿状态。
+   */
+  clients: Map<string, WebSocket>
   closed: boolean
   paused: boolean
   /** exit 帧只发一次（kill 主动关闭与 shell 自然退出共用同一回调）。 */
@@ -792,8 +797,16 @@ class SessionManager {
   listForAttach(): Array<{ sid: string; pid?: number; cwd: string; kind: 'local' | 'ssh'; target: string; startedAt: number; lastOutputAt: number; persist?: true; attachable: boolean }> {
     return [...this.sessions.values()].map((session) => ({
       ...this.snapshotOf(session),
-      attachable: session.ws === null && !session.closed,
+      attachable: session.clients.size === 0 && !session.closed,
     }))
+  }
+
+  /** 按 tmux 持久会话名查找存活会话（跨窗口共享用）；不存在/已关闭返回 undefined。 */
+  findByTmuxName(tmuxName: string): TtySession | undefined {
+    for (const session of this.sessions.values()) {
+      if (session.tmuxName === tmuxName && !session.closed) return session
+    }
+    return undefined
   }
 
   /** 同步退役：移出全局表 + 释放虚拟屏（幂等，不杀进程）。 */
@@ -873,15 +886,20 @@ class TtyServer {
     const local = new Map<string, TtySession>()
 
     const cleanupAll = async (): Promise<void> => {
-      const all = [...local.values()]
+      const all = [...local.entries()]
       local.clear()
-      await Promise.all(all.map(async (session) => {
+      await Promise.all(all.map(async ([clientSid, session]) => {
         if (session.closed) return
+        // 解绑本连接的客户端；其余窗口仍绑定着（跨连接共享）时会话继续在线
+        session.clients.delete(clientSid)
+        if (session.clients.size > 0) {
+          this.flushPendingOutput(session)
+          return
+        }
         if (this.options.reconnectGraceMs > 0) {
           // 客户端正常关面板会先逐个 kill（会话已移出 local），走到这里的都是
           // 「异常断开仍有存活会话」：转孤儿保活，等待新连接 attach，到点由回收器清理
           this.flushPendingOutput(session) // 没了收件人，待发帧直接丢弃（回放走环形缓冲）
-          session.ws = null
           session.orphanedAt = Date.now()
           return
         }
@@ -987,6 +1005,34 @@ class TtyServer {
           send(ws, { t: 'error', sid, m: 'sid 已存在' })
           return
         }
+        // 持久化（0.10.0）：配置 persistence=tmux 且帧带 persist 时，spawn 包装层
+        // 换成 `exec tmux -L dsh-tty -A -s <名>`（tmux 托管）；tmux 未安装则降级
+        // 普通会话并回灰字提示。持久名稳定（客户端生成、随标签规格保存），
+        // 宿主重启后重开标签按同名 attach 回原 tmux 会话
+        const persistName = msg.persist === true && this.options.persistence === 'tmux'
+          ? sanitizePersistName(msg.persistName, sid)
+          : null
+        // 跨窗口共享（0.10.1）：同 tmuxName 的宿主会话还活着（别的窗口接回过）
+        // 时不再新建 PTY，本连接重绑定到它——单 PTY 多客户端扇出，名额不翻倍
+        if (persistName !== null) {
+          const existing = this.sessions.findByTmuxName(persistName)
+          if (existing !== undefined) {
+            existing.clients.set(sid, ws)
+            existing.orphanedAt = null
+            if (existing.paused) {
+              existing.paused = false
+              try {
+                existing.handle.output.resume()
+              } catch {
+                /* 已退出 */
+              }
+            }
+            local.set(sid, existing)
+            send(ws, { t: 'ready', sid, pid: existing.handle.pid, kind: existing.kind, persist: true, target: existing.target !== '' ? existing.target : undefined })
+            void refreshTmuxClient(persistName) // 为新绑定的客户端重画一次可见屏
+            return
+          }
+        }
         if (!this.sessions.canSpawn()) {
           send(ws, { t: 'error', sid, m: `会话数已达上限（${this.sessions.limitValue}）——每个窗口的每个标签各占一个名额：关闭不用的窗口/标签，或在设置卡片调大「并发会话上限」` })
           return
@@ -1002,17 +1048,13 @@ class TtyServer {
           send(ws, { t: 'error', sid, m: 'subprocess 服务不可用' })
           return
         }
-        // 持久化（0.10.0）：配置 persistence=tmux 且帧带 persist 时，spawn 包装层
-        // 换成 `exec tmux -L dsh-tty -A -s <名>`（tmux 托管）；tmux 未安装则降级
-        // 普通会话并回灰字提示。持久名稳定（客户端生成、随标签规格保存），
-        // 宿主重启后重开标签按同名 attach 回原 tmux 会话
-        const wantsPersist = msg.persist === true && this.options.persistence === 'tmux'
+        const wantsPersist = persistName !== null
         let spawnPlan = buildShellSpawn(this.options.shell, this.options.term, this.options.colorTerm, this.options.shellIntegration)
         let tmuxName: string | null = null
         if (wantsPersist) {
           const probe = await probeTmux()
           if (probe.available) {
-            tmuxName = sanitizePersistName(msg.persistName, sid)
+            tmuxName = persistName
             ensureTmuxAssets({ shell: this.options.shell, colorTerm: this.options.colorTerm, shellIntegration: this.options.shellIntegration, passthrough: probe.passthrough })
             spawnPlan = buildTmuxSpawnPlan({ shell: this.options.shell, term: this.options.term, colorTerm: this.options.colorTerm, tmuxName })
           }
@@ -1029,7 +1071,7 @@ class TtyServer {
         const next: TtySession = {
           id: sid,
           handle,
-          ws,
+          clients: new Map([[sid, ws]]),
           closed: false,
           paused: false,
           cwd,
@@ -1050,7 +1092,7 @@ class TtyServer {
         this.sessions.add(next)
         send(ws, { t: 'ready', sid, pid: handle.pid, kind: 'local', ...(tmuxName !== null ? { persist: true } : {}) })
         if (wantsPersist && tmuxName === null) {
-          const notice = '\x1b[2m[dsh-tty] 未检测到 tmux，本标签以普通会话运行；安装 tmux 后新开的「持久终端」可跨宿主重启恢复现场\x1b[0m\r\n'
+          const notice = '\x1b[2m[dsh-tty] 未检测到 tmux，本标签以普通会话运行；安装 tmux 后持久化标签可跨宿主重启恢复现场\x1b[0m\r\n'
           next.buffer = (next.buffer + notice).slice(-BUFFER_CAP)
           send(ws, { t: 'data', sid, d: notice })
         }
@@ -1065,6 +1107,30 @@ class TtyServer {
         if (local.has(sid)) {
           send(ws, { t: 'error', sid, m: 'sid 已存在' })
           return
+        }
+        // 跨窗口共享（0.10.1）：同 tmuxName 的 SSH 持久会话还活着时不重建远程
+        // 连接，本连接重绑定到现有会话（单 PTY 多客户端扇出）
+        const persistName = msg.persist === true && this.options.persistence === 'tmux'
+          ? sanitizePersistName(msg.persistName, sid)
+          : null
+        if (persistName !== null) {
+          const existing = this.sessions.findByTmuxName(persistName)
+          if (existing !== undefined && existing.kind === 'ssh') {
+            existing.clients.set(sid, ws)
+            existing.orphanedAt = null
+            if (existing.paused) {
+              existing.paused = false
+              try {
+                existing.handle.output.resume()
+              } catch {
+                /* 已退出 */
+              }
+            }
+            local.set(sid, existing)
+            send(ws, { t: 'ready', sid, pid: null, kind: 'ssh', target: existing.target, persist: true })
+            void refreshTmuxClient(persistName)
+            return
+          }
         }
         if (!this.sessions.canSpawn()) {
           send(ws, { t: 'error', sid, m: `会话数已达上限（${this.sessions.limitValue}）——每个窗口的每个标签各占一个名额：关闭不用的窗口/标签，或在设置卡片调大「并发会话上限」` })
@@ -1081,8 +1147,8 @@ class TtyServer {
         send(ws, { t: 'data', sid, d: `\x1b[2mConnecting ${target} …\x1b[0m\r\n` })
         // 持久化（0.10.0）：远程 `exec tmux new-session -A` 托管；远程无 tmux 时
         // spawnSsh 降级普通 shell channel 并经 startupNotice 回灰字提示
-        const wantsPersist = msg.persist === true && this.options.persistence === 'tmux'
-        const persistOpt = wantsPersist ? { name: sanitizePersistName(msg.persistName, sid) } : undefined
+        const wantsPersist = persistName !== null
+        const persistOpt = wantsPersist ? { name: persistName } : undefined
         let handle: TermHandle
         try {
           handle = await spawnSsh(spec, {
@@ -1101,7 +1167,7 @@ class TtyServer {
         const next: TtySession = {
           id: sid,
           handle,
-          ws,
+          clients: new Map([[sid, ws]]),
           closed: false,
           paused: false,
           cwd: '',
@@ -1133,7 +1199,7 @@ class TtyServer {
         const resolved = this.resolveSid(ws, msg, local)
         if (resolved === undefined || 'unknown' in resolved) return
         const session = local.get(resolved.sid)
-        if (session !== undefined) await session.handle.write(String(msg.d ?? ''))
+        if (session !== undefined && !session.closed) await session.handle.write(String(msg.d ?? ''))
       } else if (msg.t === 'resize') {
         const resolved = this.resolveSid(ws, msg, local)
         if (resolved === undefined || 'unknown' in resolved) return
@@ -1155,7 +1221,7 @@ class TtyServer {
         const resolved = this.resolveSid(ws, msg, local)
         if (resolved === undefined || 'unknown' in resolved) return
         const session = local.get(resolved.sid)
-        if (session !== undefined && session.tmuxName !== null) {
+        if (session !== undefined && !session.closed && session.tmuxName !== null) {
           void refreshTmuxClient(session.tmuxName)
         }
       } else if (msg.t === 'kill') {
@@ -1193,14 +1259,16 @@ class TtyServer {
           send(ws, { t: 'error', sid: raw, m: `会话不存在或已结束: ${raw}` })
           return
         }
-        if (session.ws !== null) {
+        // 跨连接共享（0.10.1）：tmux 持久会话允许多窗口同时绑定（单 PTY 扇出）；
+        // 非 tmux 会话仍独占（两个视图交错输入无意义）
+        if (session.clients.size > 0 && session.tmuxName === null) {
           send(ws, { t: 'error', sid: raw, m: '会话已连接到其它窗口' })
           return
         }
-        // 重新绑定到本连接：解孤儿态，恢复被背压暂停的输出流
-        session.ws = ws
+        // 重新绑定到本连接（key = 本连接侧的 sid）：解孤儿态，恢复被背压暂停的输出流
+        session.clients.set(raw, ws)
         session.orphanedAt = null
-        local.set(session.id, session)
+        local.set(raw, session)
         if (session.paused) {
           session.paused = false
           try {
@@ -1209,7 +1277,7 @@ class TtyServer {
             /* 已退出 */
           }
         }
-        send(ws, { t: 'ready', sid: session.id, pid: session.handle.pid, kind: session.kind, target: session.target !== '' ? session.target : undefined, reattached: true, ...(session.tmuxName !== null ? { persist: true } : {}) })
+        send(ws, { t: 'ready', sid: raw, pid: session.handle.pid, kind: session.kind, target: session.target !== '' ? session.target : undefined, reattached: true, ...(session.tmuxName !== null ? { persist: true } : {}) })
         // 断线期间的输出经 256KB 环形缓冲回放（缓冲为空则跳过）。
         // tmux 背书会话例外：现场由 tmux 负责重画——回放会把缓冲里的可见屏
         // 先写进全新 xterm（制造屏外幽灵滚动历史 → 莫名滚动条），随后 tmux
@@ -1217,7 +1285,7 @@ class TtyServer {
         if (session.tmuxName !== null) {
           void refreshTmuxClient(session.tmuxName)
         } else if (session.buffer !== '') {
-          send(ws, { t: 'data', sid: session.id, d: session.buffer })
+          send(ws, { t: 'data', sid: raw, d: session.buffer })
         }
       }
     } catch (error) {
@@ -1242,7 +1310,11 @@ class TtyServer {
         /* 已释放 */
       }
       this.flushPendingOutput(session) // exit 前冲掉合并窗口里的尾巴，保序
-      send(session.ws, { t: 'exit', sid: session.id, code: outcome.exitCode, signal: outcome.signal })
+      // exit 广播到所有绑定连接（跨窗口共享），各客户端按自己的 sid 收址
+      for (const [clientSid, clientWs] of session.clients) {
+        send(clientWs, { t: 'exit', sid: clientSid, code: outcome.exitCode, signal: outcome.signal })
+      }
+      session.clients.clear()
     }).catch(() => { /* spawn 级失败已在分支内处理 */ })
   }
 
@@ -1251,16 +1323,23 @@ class TtyServer {
     const output = session.handle.output
     const flush = (): void => {
       session.flushTimer = null
-      const ws = session.ws
       const pending = session.pendingOutput
-      if (session.closed || ws === null || pending === '') return
+      if (session.closed || session.clients.size === 0 || pending === '') return
       session.pendingOutput = ''
-      ws.send(JSON.stringify({ t: 'data', sid: session.id, d: pending }), () => {
-        if (session.paused && ws.bufferedAmount < BACKPRESSURE_LOW && output.readableFlowing === false) {
-          output.resume()
+      let maxBuffered = 0
+      for (const [clientSid, clientWs] of session.clients) {
+        try {
+          clientWs.send(JSON.stringify({ t: 'data', sid: clientSid, d: pending }), () => {
+            if (session.paused && clientWs.bufferedAmount < BACKPRESSURE_LOW && output.readableFlowing === false) {
+              output.resume()
+            }
+          })
+          maxBuffered = Math.max(maxBuffered, clientWs.bufferedAmount)
+        } catch {
+          /* 客户端已断开 */
         }
-      })
-      if (!session.paused && ws.bufferedAmount > BACKPRESSURE_HIGH) {
+      }
+      if (!session.paused && maxBuffered > BACKPRESSURE_HIGH) {
         session.paused = true
         output.pause()
       }
@@ -1277,8 +1356,7 @@ class TtyServer {
       } catch {
         /* 虚拟屏异常不阻断输出链路 */
       }
-      const ws = session.ws
-      if (ws === null) return // 孤儿会话：仅积累缓冲，等待重连 attach 回放
+      if (session.clients.size === 0) return // 孤儿会话：仅积累缓冲，等待重连 attach 回放
       // data 帧合并：窗口内攒批，超阈值立即冲刷；exit/kill 前会强制 flush 保序
       session.pendingOutput += text
       if (session.pendingOutput.length >= FLUSH_SIZE_CHARS) {
@@ -1302,11 +1380,12 @@ class TtyServer {
       clearTimeout(session.flushTimer)
       session.flushTimer = null
     }
-    const ws = session.ws
     const pending = session.pendingOutput
     session.pendingOutput = ''
-    if (session.closed || ws === null || pending === '') return
-    send(ws, { t: 'data', sid: session.id, d: pending })
+    if (session.closed || session.clients.size === 0 || pending === '') return
+    for (const [clientSid, clientWs] of session.clients) {
+      send(clientWs, { t: 'data', sid: clientSid, d: pending })
+    }
   }
 
   close(): void {
