@@ -2946,7 +2946,7 @@ function openModal() {
     '<button class="tt_toolBtn tt_iconBtn" data-act="copy" title="复制选中内容">' + ICON_COPY + '</button>' +
     '<button class="tt_toolBtn tt_iconBtn" data-act="paste" title="粘贴">' + ICON_PASTE + '</button>' +
     '<button class="tt_min" title="最小化到悬浮条（会话保持运行）">—</button>' +
-    '<button class="tt_close" title="关闭终端（结束所有会话）">✕</button>' +
+    '<button class="tt_close" title="关闭面板（结束会话，标签保留，重开即恢复列表）">✕</button>' +
     '</div>' +
     // 连接栏：左侧连接状态，右侧 SFTP / 扩展按钮；本地终端时隐藏（renderConnbar 控制）
     '<div class="tt_connbar" data-hidden><div class="tt_connArea"><span class="tt_connDot"></span><span class="tt_connTarget">—</span></div><div class="tt_connActions"></div></div>' +
@@ -3043,7 +3043,7 @@ function buildDock() {
     '<span class="tt_dockTitle">' + TERMINAL_ICON + '<span>终端</span><span class="tt_dockCount"></span></span>' +
     '<span class="tt_dockStatus"></span>' +
     '<span class="tt_dockDot"></span>' +
-    '<button class="tt_dockClose" title="关闭终端（结束所有会话）">✕</button>'
+    '<button class="tt_dockClose" title="关闭面板（结束会话，标签保留，重开即恢复列表）">✕</button>'
   dockCountEl = dockEl.querySelector('.tt_dockCount')
   dockStatusEl = dockEl.querySelector('.tt_dockStatus')
   dockDotEl = dockEl.querySelector('.tt_dockDot')
