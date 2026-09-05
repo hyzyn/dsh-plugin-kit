@@ -101,8 +101,8 @@ const CSS = [
   '.tt_sidebarEntry[data-minimized] .tt_sidebarEntryBadge{display:inline-flex}',
   '[data-sidebar-collapsed] .tt_sidebarEntryBadge{margin-left:0;padding-left:0}',
   '[data-sidebar-collapsed] .tt_sidebarBadgeCount{display:none}',
-  '.tt_toast{position:fixed;top:64px;left:50%;transform:translateX(-50%);z-index:10001;background:rgba(248,81,73,.12);color:#ff9d96;border:1px solid rgba(248,81,73,.45);padding:9px 16px;border-radius:8px;font-size:12.5px;line-height:1.5;box-shadow:0 8px 24px rgba(0,0,0,.35);max-width:min(560px,86vw);pointer-events:none;animation:ttToastIn .18s ease-out}',
-  '@keyframes ttToastIn{from{opacity:0;transform:translateX(-50%) translateY(-6px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}',
+  '.tt_toast{position:fixed;bottom:28px;left:50%;transform:translateX(-50%);z-index:10060;background:#fff5f5;color:#7a1010;border:1px solid #f85149;border-left:4px solid #f85149;padding:11px 18px;border-radius:8px;font-size:13px;font-weight:500;line-height:1.55;box-shadow:0 10px 28px rgba(0,0,0,.5);max-width:min(640px,92vw);pointer-events:none;animation:ttToastIn .18s ease-out}',
+  '@keyframes ttToastIn{from{opacity:0;transform:translateX(-50%) translateY(8px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}',
   '.tt_sidebarBadgeDot{width:7px;height:7px;border-radius:50%;background:var(--dsw-alias-label-tertiary);flex:none}',
   '.tt_sidebarBadgeDot[data-state=connected]{background:var(--dsw-alias-state-success-primary)}',
   '.tt_sidebarBadgeDot[data-state=error]{background:var(--dsw-alias-state-error-primary)}',
@@ -1007,7 +1007,7 @@ function syncSshHostsCache(config) {
 function showToast(text) {
   const toast = document.createElement('div')
   toast.className = 'tt_toast'
-  toast.textContent = text
+  toast.textContent = '⚠ ' + text
   document.body.appendChild(toast)
   setTimeout(() => toast.remove(), 4000)
 }
