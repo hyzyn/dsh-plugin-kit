@@ -26,17 +26,17 @@
     }
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.1",
-    "@hyzyn/dsh-kit": "^0.1.0",
+    "@deepseek-ai/schemastery": "^3.18.2",
+    "@hyzyn/dsh-kit": "workspace:*",
     "js-yaml": "^4.1.0"
   },
   "peerDependencies": {
     "react": "^18.2.0"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/cordis": "^4.0.2",
     "@types/node": "^22.20.0",
-    "typescript": "~5.7.2"
+    "typescript": "~5.9.3"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
