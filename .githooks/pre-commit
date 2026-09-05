@@ -1,0 +1,15 @@
+#!/bin/sh
+# 提交前强制重建：本仓库构建产物（packages/*/lib、packages/*/client.js）随源码
+# 入库，此钩子保证提交里的产物永远与源码同步；构建失败则中止提交。
+# 启用：git config core.hooksPath .githooks
+if ! out=$(pnpm -r build 2>&1); then
+  printf '%s\n' "$out"
+  echo "✘ [pre-commit] 构建失败，提交中止"
+  exit 1
+fi
+# 产物若有变化，自动并入本次提交（只暂存构建产物路径，不碰其他改动）
+if ! git diff --quiet -- packages/tty/client.js 'packages/*/lib' 2>/dev/null; then
+  git add -- 'packages/*/lib' 'packages/tty/client.js'
+  echo "↻ [pre-commit] 构建产物已刷新并入本次提交"
+fi
+exit 0
