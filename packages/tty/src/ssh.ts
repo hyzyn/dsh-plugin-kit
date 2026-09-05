@@ -305,7 +305,9 @@ export async function spawnSsh(spec: SshSpec, options: SshSpawnOptions): Promise
       })
     }
     const openWithPersist = (): void => {
-      // 先毫秒级探测远程是否有 tmux（不带 pty 的 exec）；探测失败按未安装降级。
+      // 先毫秒级探测远程是否有 tmux（不带 pty 的 exec）。决策依据：exit（大多
+      // 数 sshd 立即回）→ close（兜底，个别实现无 exit）→ 10s 超时（实测某些
+      // sshd 如 CentOS 9 只回 exit 不回 close，等 close 会永久卡死 spawn）。
       // error 与 close 可能先后到达，proceeded 防止降级路径开两条 channel
       let proceeded = false
       const fallback = (notice: string): void => {
@@ -314,20 +316,22 @@ export async function spawnSsh(spec: SshSpec, options: SshSpawnOptions): Promise
         startupNotice = notice
         openShell()
       }
+      const decide = (code: number | null): void => {
+        if (proceeded) return
+        proceeded = true
+        if (code === 0) openTmux()
+        else fallback('远程 tmux 不可用（未安装或探测超时），本次以普通会话连接；安装 tmux 后持久会话可跨断线/宿主重启恢复')
+      }
       conn.exec('command -v tmux >/dev/null 2>&1', (error, stream) => {
         if (error !== undefined && error !== null) {
           fallback('远程 tmux 探测失败，已降级为普通会话')
           return
         }
-        let code: number | null = null
-        stream.on('exit', (c: number | null) => { code = typeof c === 'number' ? c : 1 })
+        stream.on('exit', (c: number | null) => { decide(typeof c === 'number' ? c : 1) })
+        stream.on('close', () => { decide(null) })
         stream.on('error', () => fallback('远程 tmux 探测失败，已降级为普通会话'))
-        stream.on('close', () => {
-          if (proceeded) return
-          proceeded = true
-          if (code === 0) openTmux()
-          else fallback('远程未安装 tmux，本次以普通会话连接（安装后持久会话可跨断线/宿主重启恢复）')
-        })
+        const timer = setTimeout(() => decide(null), 10_000)
+        timer.unref?.()
       })
     }
     conn.on('ready', () => {

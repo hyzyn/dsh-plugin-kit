@@ -66,6 +66,7 @@ const TTY_SETTINGS_SCHEMA = z.object({
     shellIntegration: z.boolean().default(true),
     sftpStyle: z.union([z.const('dialog'), z.const('dual')]).default('dialog'),
     persistence: z.union([z.const('off'), z.const('tmux')]).default('off'),
+    persistSessions: z.array(z.object({ tmuxName: z.string() })).default([]),
 });
 /* ------------------------------------------------------------------ *
  * 常量
@@ -137,6 +138,8 @@ class LiveConfig {
     tunnels;
     /** 会话持久化模式（off / tmux）。 */
     persistence;
+    /** SSH 持久会话名（远程 tmux 托管；本机 socket 清单看不到，随 settings 留存）。 */
+    persistSessions;
     constructor(init) {
         this.shell = init.shell;
         this.term = sanitizeTermValue(init.term, 'xterm-256color');
@@ -148,6 +151,7 @@ class LiveConfig {
         this.shellIntegration = init.shellIntegration;
         this.tunnels = init.tunnels ?? [];
         this.persistence = init.persistence === 'tmux' ? 'tmux' : 'off';
+        this.persistSessions = init.persistSessions ?? [];
     }
     /** 合并部分更新；空字符串/undefined 保持原值；sshHosts/hostKeys/tunnels 传数组即整体替换。 */
     apply(partial) {
@@ -172,6 +176,8 @@ class LiveConfig {
             this.tunnels = partial.tunnels;
         if (partial.persistence === 'tmux' || partial.persistence === 'off')
             this.persistence = partial.persistence;
+        if (Array.isArray(partial.persistSessions))
+            this.persistSessions = partial.persistSessions;
     }
     findSshHost(name) {
         return this.sshHosts.find((entry) => entry.name === name);
@@ -514,6 +520,20 @@ function validateHostKeys(input) {
     }
     return { keys: sanitizeHostKeys(input) };
 }
+/** 宽松清洗一份 persistSessions（内部状态：SSH 持久会话名）；非法条目丢弃。 */
+function sanitizePersistSessions(input) {
+    if (!Array.isArray(input))
+        return undefined;
+    const out = [];
+    for (const item of input) {
+        if (typeof item !== 'object' || item === null)
+            continue;
+        const name = item.tmuxName;
+        if (typeof name === 'string' && /^dsh-[A-Za-z0-9_-]{1,64}$/.test(name) && !out.includes(name))
+            out.push(name);
+    }
+    return out;
+}
 /**
  * TOFU 主机指纹存储：get/record 面向 spawnSsh 的 hostVerifier；
  * record 时经 persist 回调写入 settings（宿主重启后钉扎仍在）。
@@ -674,12 +694,16 @@ class TtyServer {
     sessions;
     options;
     hostKeyStore;
+    trackPersist;
     wss = new WebSocketServer({ noServer: true });
-    constructor(ctx, sessions, options, hostKeyStore) {
+    constructor(ctx, sessions, options, hostKeyStore, 
+    /** SSH 持久会话名留存回调（apply 闭包实现，settings 落盘）。 */
+    trackPersist) {
         this.ctx = ctx;
         this.sessions = sessions;
         this.options = options;
         this.hostKeyStore = hostKeyStore;
+        this.trackPersist = trackPersist;
         this.wss.on('connection', (ws) => this.onConnection(ws));
     }
     /** registerUpgrade 的 handler（loopback 围栏 + ws 握手）。 */
@@ -943,6 +967,8 @@ class TtyServer {
                 local.set(sid, next);
                 this.sessions.add(next);
                 send(ws, { t: 'ready', sid, pid: null, kind: 'ssh', target, ...(tmuxName !== null ? { persist: true } : {}) });
+                if (tmuxName !== null)
+                    this.trackPersist(tmuxName, true); // 留存：远程 tmux 本机清单看不到
                 if (handle.startupNotice !== undefined) {
                     const notice = `\x1b[2m[dsh-tty] ${handle.startupNotice}\x1b[0m\r\n`;
                     next.buffer = (next.buffer + notice).slice(-BUFFER_CAP);
@@ -1009,9 +1035,11 @@ class TtyServer {
                 this.killSessionNow(session);
             }
             else if (msg.t === 'sessions') {
-                // tmux 字段（0.10.1）：专用 socket 上现存的持久会话名——客户端用它
-                // 确认 localStorage 里的持久标签规格是否仍可恢复（新窗口/新浏览器）
-                const tmuxSessions = await listTmuxSessions();
+                // tmux 字段（0.10.1）：本机 socket 现存持久会话 + SSH 持久会话名（远程
+                // tmux 托管、本机清单看不到，从 settings 留存读取）——客户端用它确认
+                // localStorage 里的持久标签规格是否仍可恢复（新窗口/新浏览器）
+                const localTmux = await listTmuxSessions();
+                const tmuxSessions = [...new Set([...localTmux, ...this.options.persistSessions])];
                 send(ws, { t: 'sessions', list: this.sessions.listForAttach(), tmux: tmuxSessions });
             }
             else if (msg.t === 'attach') {
@@ -1070,6 +1098,8 @@ class TtyServer {
             session.closed = true;
             local.delete(session.id);
             this.sessions.remove(session.id);
+            if (session.kind === 'ssh' && session.tmuxName !== null)
+                this.trackPersist(session.tmuxName, false);
             try {
                 session.screen?.dispose();
             }
@@ -1382,6 +1412,7 @@ const plugin = definePlugin({
             shellIntegration: config?.shellIntegration !== false,
             tunnels: Array.isArray(config?.tunnels) ? config.tunnels : [],
             persistence: config?.persistence === 'tmux' ? 'tmux' : 'off',
+            persistSessions: sanitizePersistSessions(config?.persistSessions) ?? [],
         });
         const sessions = new SessionManager(config?.maxSessions ?? DEFAULT_MAX_SESSIONS);
         /** TOFU 指纹记录持久化：写入 settings 命名空间（合并语义），失败不影响连接。 */
@@ -1394,11 +1425,30 @@ const plugin = definePlugin({
             });
         };
         const hostKeyStore = new HostKeyStore(live, persistHostKeys);
+        /** SSH 持久会话名留存（远程 tmux 本机 socket 看不到；新窗口恢复确认的数据源）。 */
+        const persistPersistSessions = () => {
+            const scope = settingsScope;
+            if (scope === undefined)
+                return;
+            void Promise.resolve(scope.update({ persistSessions: live.persistSessions.map((name) => ({ tmuxName: name })) })).catch((error) => {
+                console.warn('[dsh-tty] 持久会话名留存失败: ' + (error instanceof Error ? error.message : String(error)));
+            });
+        };
+        /** 记录/移除一个 SSH 持久会话名并落盘（幂等）。 */
+        const trackPersistSession = (tmuxName, present) => {
+            const next = present
+                ? (live.persistSessions.includes(tmuxName) ? live.persistSessions : [...live.persistSessions, tmuxName])
+                : live.persistSessions.filter((name) => name !== tmuxName);
+            if (next.join('|') === live.persistSessions.join('|'))
+                return;
+            live.persistSessions = next;
+            persistPersistSessions();
+        };
         const tunnelManager = new TunnelManager({ info: (m) => ctx.logger.info(m), warn: (m) => ctx.logger.warn(m) }, hostKeyStore, (bookName) => live.findSshHost(bookName));
         // SFTP 文件传输：懒连接池 + TOFU 同源（见 src/sftp.ts）；spec 由各请求携带
         // （连接簿名或内联字段），连接簿凭证热改后天然生效
         const sftpManager = new SftpManager({ info: (m) => ctx.logger.info(m), warn: (m) => ctx.logger.warn(m) }, hostKeyStore);
-        const server = new TtyServer(ctx, sessions, live, hostKeyStore);
+        const server = new TtyServer(ctx, sessions, live, hostKeyStore, trackPersistSession);
         const stateRef = { enabled: true, announceToAgent: config?.announceToAgent !== false, toolsRegistered: false, sftpStyle: config?.sftpStyle === 'dual' ? 'dual' : 'dialog' };
         let settingsScope;
         const snapshot = () => ({
@@ -1431,6 +1481,7 @@ const plugin = definePlugin({
                 shellIntegration: typeof section.shellIntegration === 'boolean' ? section.shellIntegration : undefined,
                 tunnels: sanitizeTunnels(section.tunnels),
                 persistence: section.persistence === 'tmux' || section.persistence === 'off' ? section.persistence : undefined,
+                persistSessions: sanitizePersistSessions(section.persistSessions),
             });
             // 隧道按最新规格对齐（幂等；sshHosts 变更也会触发，让重连取到新凭证）
             tunnelManager.reconcile(live.tunnels);
@@ -1945,6 +1996,9 @@ const plugin = definePlugin({
                     startup.sftpStyle = 'dual';
                 if (stored.persistence === 'tmux')
                     startup.persistence = 'tmux';
+                const storedPersistSessions = sanitizePersistSessions(stored.persistSessions);
+                if (storedPersistSessions !== undefined && storedPersistSessions.length > 0)
+                    startup.persistSessions = storedPersistSessions;
                 const storedHosts = sanitizeSshHosts(stored.sshHosts);
                 if (storedHosts !== undefined && storedHosts.length > 0)
                     startup.sshHosts = storedHosts;

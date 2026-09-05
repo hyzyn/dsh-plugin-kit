@@ -91,5 +91,9 @@ export interface Config {
     sftpStyle?: 'dialog' | 'dual';
     /** 会话持久化：off = 会话随宿主生死（默认）；tmux = 「持久终端」标签由 tmux server 托管，可跨宿主重启恢复。 */
     persistence?: 'off' | 'tmux';
+    /** 内部状态：SSH 持久会话名（远程 tmux 托管，本机 socket 清单看不到，随 settings 留存供新窗口恢复确认）。 */
+    persistSessions?: Array<{
+        tmuxName: string;
+    }>;
 }
 export declare const name: string, inject: string[] | undefined, apply: (ctx: Context, config?: Config | undefined) => void;
