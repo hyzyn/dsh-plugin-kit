@@ -66,6 +66,7 @@ const TTY_SETTINGS_SCHEMA = z.object({
     shellIntegration: z.boolean().default(true),
     sftpStyle: z.union([z.const('dialog'), z.const('dual')]).default('dialog'),
     persistence: z.union([z.const('off'), z.const('tmux')]).default('off'),
+    endOnPageClose: z.boolean().default(false),
     persistSessions: z.array(z.object({ tmuxName: z.string() })).default([]),
 });
 /* ------------------------------------------------------------------ *
@@ -138,6 +139,8 @@ class LiveConfig {
     tunnels;
     /** 会话持久化模式（off / tmux）。 */
     persistence;
+    /** 页面断开且保活期结束时是否结束 tmux 持久会话（默认 false = 留存）。 */
+    endOnPageClose;
     /** SSH 持久会话名（远程 tmux 托管；本机 socket 清单看不到，随 settings 留存）。 */
     persistSessions;
     constructor(init) {
@@ -151,6 +154,7 @@ class LiveConfig {
         this.shellIntegration = init.shellIntegration;
         this.tunnels = init.tunnels ?? [];
         this.persistence = init.persistence === 'tmux' ? 'tmux' : 'off';
+        this.endOnPageClose = init.endOnPageClose === true;
         this.persistSessions = init.persistSessions ?? [];
     }
     /** 合并部分更新；空字符串/undefined 保持原值；sshHosts/hostKeys/tunnels 传数组即整体替换。 */
@@ -176,6 +180,8 @@ class LiveConfig {
             this.tunnels = partial.tunnels;
         if (partial.persistence === 'tmux' || partial.persistence === 'off')
             this.persistence = partial.persistence;
+        if (typeof partial.endOnPageClose === 'boolean')
+            this.endOnPageClose = partial.endOnPageClose;
         if (Array.isArray(partial.persistSessions))
             this.persistSessions = partial.persistSessions;
     }
@@ -595,8 +601,12 @@ function isLoopbackUpgrade(req) {
 class SessionManager {
     sessions = new Map();
     limit;
-    constructor(maxSessions) {
+    /** 回收器销毁孤儿时是否连 tmux 持久会话一起结束（endOnPageClose 策略）。 */
+    endTmuxOnReap = () => false;
+    constructor(maxSessions, endTmuxOnReap) {
         this.limit = maxSessions;
+        if (endTmuxOnReap !== undefined)
+            this.endTmuxOnReap = endTmuxOnReap;
     }
     get limitValue() {
         return this.limit;
@@ -663,9 +673,18 @@ class SessionManager {
             /* 已释放 */
         }
     }
-    /** 释放并销毁会话：退役 + 树级终止（等待 terminate 完成，最慢 ~20s）。 */
+    /** 释放并销毁会话：退役 + 树级终止（等待 terminate 完成，最慢 ~20s）。
+     *  endOnPageClose 策略下，回收器销毁孤儿时连 tmux 持久会话一起结束。 */
     async destroy(session) {
         this.retire(session);
+        if (session.tmuxName !== null && this.endTmuxOnReap()) {
+            try {
+                await session.handle.tmuxTeardown?.();
+            }
+            catch {
+                /* tmux 收尾失败不阻断回收 */
+            }
+        }
         await forceKill(session.handle);
     }
     /** 回收超过保活期的孤儿会话（回收器定时调用；graceMs<=0 时不动作）。 */
@@ -1536,9 +1555,10 @@ const plugin = definePlugin({
             shellIntegration: config?.shellIntegration !== false,
             tunnels: Array.isArray(config?.tunnels) ? config.tunnels : [],
             persistence: config?.persistence === 'tmux' ? 'tmux' : 'off',
+            endOnPageClose: config?.endOnPageClose === true,
             persistSessions: sanitizePersistSessions(config?.persistSessions) ?? [],
         });
-        const sessions = new SessionManager(config?.maxSessions ?? DEFAULT_MAX_SESSIONS);
+        const sessions = new SessionManager(config?.maxSessions ?? DEFAULT_MAX_SESSIONS, () => live.endOnPageClose);
         /** TOFU 指纹记录持久化：写入 settings 命名空间（合并语义），失败不影响连接。 */
         const persistHostKeys = (records) => {
             const scope = settingsScope;
@@ -1590,6 +1610,7 @@ const plugin = definePlugin({
             shellIntegration: live.shellIntegration,
             sftpStyle: stateRef.sftpStyle,
             persistence: live.persistence,
+            endOnPageClose: live.endOnPageClose,
             toolsRegistered: stateRef.toolsRegistered,
         });
         /** 规范化并应用一份配置补丁（settings/updated 事件与 HTTP POST 共用；幂等）。 */
@@ -1605,6 +1626,7 @@ const plugin = definePlugin({
                 shellIntegration: typeof section.shellIntegration === 'boolean' ? section.shellIntegration : undefined,
                 tunnels: sanitizeTunnels(section.tunnels),
                 persistence: section.persistence === 'tmux' || section.persistence === 'off' ? section.persistence : undefined,
+                endOnPageClose: typeof section.endOnPageClose === 'boolean' ? section.endOnPageClose : undefined,
                 persistSessions: sanitizePersistSessions(section.persistSessions),
             });
             // 隧道按最新规格对齐（幂等；sshHosts 变更也会触发，让重连取到新凭证）
@@ -1623,7 +1645,7 @@ const plugin = definePlugin({
         /** 校验 HTTP POST 的配置体；返回规范化补丁或错误信息。 */
         const normalizePatch = (input) => {
             const patch = {};
-            const known = new Set(['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'sshHosts', 'hostKeys', 'tunnels', 'shellIntegration', 'sftpStyle', 'persistence']);
+            const known = new Set(['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'sshHosts', 'hostKeys', 'tunnels', 'shellIntegration', 'sftpStyle', 'persistence', 'endOnPageClose']);
             for (const key of Object.keys(input)) {
                 if (!known.has(key))
                     return { error: '未知配置项: ' + key };
@@ -1664,6 +1686,11 @@ const plugin = definePlugin({
                 if (input.persistence !== 'off' && input.persistence !== 'tmux')
                     return { error: 'persistence 必须是 off 或 tmux' };
                 patch.persistence = input.persistence;
+            }
+            if (input.endOnPageClose !== undefined) {
+                if (typeof input.endOnPageClose !== 'boolean')
+                    return { error: 'endOnPageClose 必须是布尔值' };
+                patch.endOnPageClose = input.endOnPageClose;
             }
             for (const key of ['shell', 'term', 'colorTerm']) {
                 if (input[key] === undefined)
@@ -2120,6 +2147,8 @@ const plugin = definePlugin({
                     startup.sftpStyle = 'dual';
                 if (stored.persistence === 'tmux')
                     startup.persistence = 'tmux';
+                if (stored.endOnPageClose === true)
+                    startup.endOnPageClose = true;
                 const storedPersistSessions = sanitizePersistSessions(stored.persistSessions);
                 if (storedPersistSessions !== undefined && storedPersistSessions.length > 0)
                     startup.persistSessions = storedPersistSessions;

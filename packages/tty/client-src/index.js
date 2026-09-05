@@ -3680,7 +3680,7 @@ function TtySettingsCard() {
     setMessage({ kind: '', text: '' })
     // 只提交配置项：快照里的 toolsRegistered 等非配置键会被宿主 normalizePatch 拒绝
     const body = {}
-    for (const key of ['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'shellIntegration', 'sftpStyle', 'persistence']) {
+    for (const key of ['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'shellIntegration', 'sftpStyle', 'persistence', 'endOnPageClose']) {
       const value = (form || {})[key]
       if (value !== undefined && value !== '') body[key] = value
     }
@@ -3843,6 +3843,8 @@ function TtySettingsCard() {
                       ],
                     }),
                     jsx('span', { className: 'tt_cardHint', children: '开启后所有新标签（本地/SSH 连接簿/SSH 连接对话框）默认由 tmux 托管、可跨宿主重启恢复；需本机/远程安装 tmux；SSH 对话框可对单次连接取消勾选；已有标签不受影响' }),
+                    boolField('关闭页面后结束持久会话（不保活）', 'endOnPageClose'),
+                    jsx('span', { className: 'tt_cardHint', children: '默认关闭：整个页面关闭时持久会话留存（保活期后可再恢复）；开启则页面断开且保活期结束时连 tmux 会话一起结束——注意刷新页面在保活期内不受影响' }),
                   ],
                 }),
                 textField('并发会话上限（1~16）', 'maxSessions', '4', '超过上限的新标签会被拒绝；保存即热生效'),

@@ -118,6 +118,8 @@ export interface Config {
   sftpStyle?: 'dialog' | 'dual'
   /** 会话持久化：off = 会话随宿主生死（默认）；tmux = 「持久终端」标签由 tmux server 托管，可跨宿主重启恢复。 */
   persistence?: 'off' | 'tmux'
+  /** 页面（最后一个连接）断开且保活期结束时，是否连 tmux 持久会话一起结束（默认 false = 留存可恢复）。 */
+  endOnPageClose?: boolean
   /** 内部状态：SSH 持久会话名（远程 tmux 托管，本机 socket 清单看不到，随 settings 留存供新窗口恢复确认）。 */
   persistSessions?: Array<{ tmuxName: string }>
 }
@@ -170,6 +172,7 @@ const TTY_SETTINGS_SCHEMA = z.object({
   shellIntegration: z.boolean().default(true),
   sftpStyle: z.union([z.const('dialog'), z.const('dual')]).default('dialog'),
   persistence: z.union([z.const('off'), z.const('tmux')]).default('off'),
+  endOnPageClose: z.boolean().default(false),
   persistSessions: z.array(z.object({ tmuxName: z.string() })).default([]),
 })
 
@@ -317,10 +320,12 @@ class LiveConfig {
   tunnels: TunnelSpec[]
   /** 会话持久化模式（off / tmux）。 */
   persistence: 'off' | 'tmux'
+  /** 页面断开且保活期结束时是否结束 tmux 持久会话（默认 false = 留存）。 */
+  endOnPageClose: boolean
   /** SSH 持久会话名（远程 tmux 托管；本机 socket 清单看不到，随 settings 留存）。 */
   persistSessions: string[]
 
-  constructor(init: { shell: string; term: string; colorTerm: string; cwd: string; reconnectGraceSec: number; sshHosts?: SshHostEntry[]; hostKeys?: HostKeyRecord[]; shellIntegration: boolean; tunnels?: TunnelSpec[]; persistence?: 'off' | 'tmux'; persistSessions?: string[] }) {
+  constructor(init: { shell: string; term: string; colorTerm: string; cwd: string; reconnectGraceSec: number; sshHosts?: SshHostEntry[]; hostKeys?: HostKeyRecord[]; shellIntegration: boolean; tunnels?: TunnelSpec[]; persistence?: 'off' | 'tmux'; endOnPageClose?: boolean; persistSessions?: string[] }) {
     this.shell = init.shell
     this.term = sanitizeTermValue(init.term, 'xterm-256color')
     this.colorTerm = sanitizeTermValue(init.colorTerm, 'truecolor')
@@ -331,11 +336,12 @@ class LiveConfig {
     this.shellIntegration = init.shellIntegration
     this.tunnels = init.tunnels ?? []
     this.persistence = init.persistence === 'tmux' ? 'tmux' : 'off'
+    this.endOnPageClose = init.endOnPageClose === true
     this.persistSessions = init.persistSessions ?? []
   }
 
   /** 合并部分更新；空字符串/undefined 保持原值；sshHosts/hostKeys/tunnels 传数组即整体替换。 */
-  apply(partial: Partial<{ shell: string; term: string; colorTerm: string; cwd: string; reconnectGraceSec: number; sshHosts: SshHostEntry[]; hostKeys: HostKeyRecord[]; shellIntegration: boolean; tunnels: TunnelSpec[]; persistence: 'off' | 'tmux'; persistSessions: string[] }>): void {
+  apply(partial: Partial<{ shell: string; term: string; colorTerm: string; cwd: string; reconnectGraceSec: number; sshHosts: SshHostEntry[]; hostKeys: HostKeyRecord[]; shellIntegration: boolean; tunnels: TunnelSpec[]; persistence: 'off' | 'tmux'; endOnPageClose: boolean; persistSessions: string[] }>): void {
     if (typeof partial.shell === 'string' && partial.shell.trim() !== '') this.shell = partial.shell.trim()
     if (typeof partial.term === 'string' && partial.term.trim() !== '') this.term = sanitizeTermValue(partial.term, this.term)
     if (typeof partial.colorTerm === 'string' && partial.colorTerm.trim() !== '') this.colorTerm = sanitizeTermValue(partial.colorTerm, this.colorTerm)
@@ -348,6 +354,7 @@ class LiveConfig {
     if (typeof partial.shellIntegration === 'boolean') this.shellIntegration = partial.shellIntegration
     if (Array.isArray(partial.tunnels)) this.tunnels = partial.tunnels
     if (partial.persistence === 'tmux' || partial.persistence === 'off') this.persistence = partial.persistence
+    if (typeof partial.endOnPageClose === 'boolean') this.endOnPageClose = partial.endOnPageClose
     if (Array.isArray(partial.persistSessions)) this.persistSessions = partial.persistSessions
   }
 
@@ -740,9 +747,12 @@ function isLoopbackUpgrade(req: ReqLike): boolean {
 class SessionManager {
   private readonly sessions = new Map<string, TtySession>()
   private limit: number
+  /** 回收器销毁孤儿时是否连 tmux 持久会话一起结束（endOnPageClose 策略）。 */
+  private endTmuxOnReap: () => boolean = () => false
 
-  constructor(maxSessions: number) {
+  constructor(maxSessions: number, endTmuxOnReap?: () => boolean) {
     this.limit = maxSessions
+    if (endTmuxOnReap !== undefined) this.endTmuxOnReap = endTmuxOnReap
   }
 
   get limitValue(): number {
@@ -820,9 +830,17 @@ class SessionManager {
     }
   }
 
-  /** 释放并销毁会话：退役 + 树级终止（等待 terminate 完成，最慢 ~20s）。 */
+  /** 释放并销毁会话：退役 + 树级终止（等待 terminate 完成，最慢 ~20s）。
+   *  endOnPageClose 策略下，回收器销毁孤儿时连 tmux 持久会话一起结束。 */
   async destroy(session: TtySession): Promise<void> {
     this.retire(session)
+    if (session.tmuxName !== null && this.endTmuxOnReap()) {
+      try {
+        await session.handle.tmuxTeardown?.()
+      } catch {
+        /* tmux 收尾失败不阻断回收 */
+      }
+    }
     await forceKill(session.handle)
   }
 
@@ -1676,6 +1694,8 @@ interface ConfigSnapshot {
   sftpStyle: 'dialog' | 'dual'
   /** 会话持久化模式（客户端渲染「+」菜单与 SSH 对话框用）。 */
   persistence: 'off' | 'tmux'
+  /** 页面断开且保活期结束时是否结束 tmux 持久会话。 */
+  endOnPageClose: boolean
   /** agent 工具（tty_list / tty_capture / tty_screen / tty_expect / tty_send / tunnel_list / sftp_list / sftp_read / sftp_write / sftp_mkdir / sftp_rename / sftp_remove / sftp_tree）是否已注册到 harness。 */
   toolsRegistered: boolean
 }
@@ -1698,9 +1718,10 @@ const plugin = definePlugin<Config>({
       shellIntegration: config?.shellIntegration !== false,
       tunnels: Array.isArray(config?.tunnels) ? config.tunnels : [],
       persistence: config?.persistence === 'tmux' ? 'tmux' : 'off',
+      endOnPageClose: config?.endOnPageClose === true,
       persistSessions: sanitizePersistSessions(config?.persistSessions) ?? [],
     })
-    const sessions = new SessionManager(config?.maxSessions ?? DEFAULT_MAX_SESSIONS)
+    const sessions = new SessionManager(config?.maxSessions ?? DEFAULT_MAX_SESSIONS, () => live.endOnPageClose)
     /** TOFU 指纹记录持久化：写入 settings 命名空间（合并语义），失败不影响连接。 */
     const persistHostKeys = (records: HostKeyRecord[]): void => {
       const scope = settingsScope
@@ -1757,6 +1778,7 @@ const plugin = definePlugin<Config>({
       shellIntegration: live.shellIntegration,
       sftpStyle: stateRef.sftpStyle,
       persistence: live.persistence,
+      endOnPageClose: live.endOnPageClose,
       toolsRegistered: stateRef.toolsRegistered,
     })
 
@@ -1773,6 +1795,7 @@ const plugin = definePlugin<Config>({
         shellIntegration: typeof section.shellIntegration === 'boolean' ? section.shellIntegration : undefined,
         tunnels: sanitizeTunnels(section.tunnels),
         persistence: section.persistence === 'tmux' || section.persistence === 'off' ? section.persistence : undefined,
+        endOnPageClose: typeof section.endOnPageClose === 'boolean' ? section.endOnPageClose : undefined,
         persistSessions: sanitizePersistSessions(section.persistSessions),
       })
       // 隧道按最新规格对齐（幂等；sshHosts 变更也会触发，让重连取到新凭证）
@@ -1789,7 +1812,7 @@ const plugin = definePlugin<Config>({
     /** 校验 HTTP POST 的配置体；返回规范化补丁或错误信息。 */
     const normalizePatch = (input: Record<string, unknown>): { patch?: Record<string, unknown>; error?: string } => {
       const patch: Record<string, unknown> = {}
-      const known = new Set(['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'sshHosts', 'hostKeys', 'tunnels', 'shellIntegration', 'sftpStyle', 'persistence'])
+      const known = new Set(['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'sshHosts', 'hostKeys', 'tunnels', 'shellIntegration', 'sftpStyle', 'persistence', 'endOnPageClose'])
       for (const key of Object.keys(input)) {
         if (!known.has(key)) return { error: '未知配置项: ' + key }
       }
@@ -1822,6 +1845,10 @@ const plugin = definePlugin<Config>({
       if (input.persistence !== undefined) {
         if (input.persistence !== 'off' && input.persistence !== 'tmux') return { error: 'persistence 必须是 off 或 tmux' }
         patch.persistence = input.persistence
+      }
+      if (input.endOnPageClose !== undefined) {
+        if (typeof input.endOnPageClose !== 'boolean') return { error: 'endOnPageClose 必须是布尔值' }
+        patch.endOnPageClose = input.endOnPageClose
       }
       for (const key of ['shell', 'term', 'colorTerm'] as const) {
         if (input[key] === undefined) continue
@@ -2246,6 +2273,7 @@ const plugin = definePlugin<Config>({
         if (stored.shellIntegration === false) startup.shellIntegration = false
         if (stored.sftpStyle === 'dual') startup.sftpStyle = 'dual'
         if (stored.persistence === 'tmux') startup.persistence = 'tmux'
+        if (stored.endOnPageClose === true) startup.endOnPageClose = true
         const storedPersistSessions = sanitizePersistSessions(stored.persistSessions)
         if (storedPersistSessions !== undefined && storedPersistSessions.length > 0) startup.persistSessions = storedPersistSessions
         const storedHosts = sanitizeSshHosts(stored.sshHosts)
