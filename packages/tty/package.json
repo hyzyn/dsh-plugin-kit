@@ -2,6 +2,22 @@
   "name": "@hyzyn/dsh-tty",
   "version": "0.10.0",
   "description": "DSH Web GUI 的终端面板插件：侧边栏「终端」大弹窗，xterm.js + PTY 全交互终端（路线1），ssh2 原生 SSH 远程连接（方案 C），tmux 会话持久化（0.10.0）。",
+  "keywords": [
+    "dsh",
+    "deepseek",
+    "deepseek-harness",
+    "terminal",
+    "ssh",
+    "sftp",
+    "tmux",
+    "xterm",
+    "pty",
+    "agent",
+    "ai",
+    "plugin",
+    "web",
+    "cordis"
+  ],
   "type": "module",
   "engines": {
     "node": ">=22.19.0"

@@ -48,6 +48,6 @@
     "@hyzyn/dsh-prompt": "0.1.4",
     "@hyzyn/dsh-rss": "0.1.7",
     "@hyzyn/dsh-search": "0.1.4",
-    "@hyzyn/dsh-tty": "0.9.0"
+    "@hyzyn/dsh-tty": "0.10.0"
   }
 }
