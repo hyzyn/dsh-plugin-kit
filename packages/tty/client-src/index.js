@@ -369,6 +369,33 @@ function currentCwd() {
   }
 }
 
+/**
+ * 持久（tmux）标签的自愈：tmux 只重画可见屏，外层 xterm 的缓冲行数正常应
+ * 恰好等于视口行数；一旦超出（字体加载后收缩、标签切换的连接栏显隐、窗口
+ * 尺寸变化等把多出的行推进 scrollback）→ reset 清掉残 scrollback 后发
+ * refresh 帧请宿主 refresh-client 重画。非持久标签不干预。
+ */
+function settleNow(tab) {
+  if (tab.term === null || tab.exited) return
+  try {
+    if (tab.term.buffer.active.length <= tab.term.rows) return
+  } catch {
+    return
+  }
+  tab.term.reset()
+  sendFrame({ t: 'refresh', sid: tab.sid })
+}
+
+let settleTimer = null
+function scheduleSettle(delay) {
+  if (settleTimer !== null) clearTimeout(settleTimer)
+  settleTimer = setTimeout(() => {
+    settleTimer = null
+    const tab = activeTab()
+    if (tab !== undefined) settleNow(tab)
+  }, delay ?? 200)
+}
+
 /** 标签列表持久化（sessionStorage，随浏览器标签页生命周期）：只存未退出的标签。 */
 function persistTabs() {
   try {
@@ -520,6 +547,12 @@ function createTerminal(tab) {
 
   term.onData((data) => {
     sendFrame({ t: 'input', sid: tab.sid, d: data })
+  })
+  // 持久（tmux）标签尺寸自愈：SSH↔本地标签切换会改变终端区高度（连接栏
+  // 显隐），xterm 收缩的瞬间多出的行被推进 scrollback——幽灵滚动条 + 视口
+  // 停在顶部。onResize 时检测缓冲超出视口即 reset + refresh 重画
+  term.onResize(() => {
+    if (isPersistentSpec(tab.spawnSpec)) scheduleSettle(200)
   })
   term.attachCustomKeyEventHandler((event) => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
@@ -2750,24 +2783,10 @@ function connect() {
         showTabOverlay(tab, '')
         sendResize(tab) // spawn/attach 就绪后补一次精确尺寸
         if (msg.persist === true) {
-          // 持久标签（tmux）：现场由 tmux 重画，但字体加载/布局微调会让 xterm
-          // 在重画之后收缩——收缩瞬间多出的行被推进 scrollback，形成幽灵滚动
-          // 条且视口停在顶部。仅在真的出现幽灵 scrollback 时才干预：reset 清掉
-          // 残 scrollback 后发 refresh 帧请宿主 refresh-client 重画（不碰尺寸，
-          // 且会话的所有客户端都会被刷新）；干净时跳过，避免无谓的闪屏
-          const settle = () => {
-            if (tab.term === null || tab.exited) return
-            try {
-              const bufferLength = tab.term.buffer !== undefined ? tab.term.buffer.active.length : 0
-              if (bufferLength <= tab.term.rows + 2) return
-            } catch {
-              /* buffer 不可用：按需继续 */
-            }
-            tab.term.reset()
-            sendFrame({ t: 'refresh', sid: tab.sid })
-          }
+          // 持久标签（tmux）：字体加载后的收缩等会在重画后推开 scrollback，
+          // 字体就绪后跑一次自愈（onResize 的切换/窗口抖动自愈见 createTerminal）
           const fontsReady = document.fonts !== undefined && document.fonts.ready !== undefined ? document.fonts.ready : Promise.resolve()
-          Promise.race([fontsReady, new Promise((r) => setTimeout(r, 500))]).then(() => setTimeout(settle, 150))
+          Promise.race([fontsReady, new Promise((r) => setTimeout(r, 500))]).then(() => scheduleSettle(150))
         }
         syncEntryBadge() // 断线重连后徽标计数恢复
         persistTabs()
