@@ -34,6 +34,8 @@
  *        普通会话 + 灰字提示（本机无 tmux 则跳过 tmux 断言）
  *   B26. 持久恢复（tmux）：保活回收只杀 PTY 不杀 tmux 会话；同 persistName
  *        重新 spawn 按 `tmux -A` 接回原现场（屏幕重画含此前输出）
+ *   B27. 跨窗口共享（0.10.1）：同 persistName 二次 spawn 重绑定现有宿主会话
+ *        （不新建 PTY / 不占名额）、输出扇出、kill 广播 exit
  *
  * 用法：pnpm --filter @hyzyn/dsh-tty integration
  * 退出码：0 = 全部 PASS，1 = 任一 FAIL。
@@ -1245,6 +1247,43 @@ async function run() {
       await post({ reconnectGraceSec: 120, persistence: 'off' })
       console.log('    持久化配置已还原（persistence=off，grace=120）')
     }
+  }
+
+  // B27: 跨窗口共享持久会话（0.10.1）——同 persistName 的第二次 spawn 重绑定
+  // 到现有宿主会话（不新建 PTY、不占名额），输出扇出两侧可见；kill 广播 exit
+  console.log('\n[24] 跨窗口共享持久会话')
+  {
+    const post = async (body) => {
+      const res = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+      return res.json()
+    }
+    await post({ persistence: 'tmux' })
+    const wA = openSession(port)
+    await wA.open()
+    wA.client.send(JSON.stringify({ t: 'spawn', sid: 'b27a', cols: 80, rows: 24, persist: true, persistName: 'b27share' }))
+    await wA.waitFor(() => wA.state.ready, 10000, 'b27a ready')
+    wA.client.send(JSON.stringify({ t: 'input', sid: 'b27a', d: 'printf "B27MARK-%s\\n" shared\n' }))
+    await wA.waitFor(() => /B27MARK-shared/.test(wA.state.text), 10000, 'b27a 标记输出')
+    const wB = openSession(port)
+    await wB.open()
+    wB.client.send(JSON.stringify({ t: 'spawn', sid: 'b27b', cols: 80, rows: 24, persist: true, persistName: 'b27share' }))
+    await wB.waitFor(() => wB.state.ready, 10000, 'b27b ready（重绑定）')
+    await wB.waitFor(() => /B27MARK-shared/.test(wB.state.text), 10000, 'B 侧可见共享输出')
+    const ttyList = toolDefs.find((d) => d.name === 'tty_list')
+    const listed = await ttyList.execute({})
+    const persistCount = listed.sessions.filter((s) => s.persist === true).length
+    const bothAlive = wA.state.exited === null && wB.state.exited === null
+    if (persistCount === 1 && bothAlive) pass('B27a 同 persistName 二次 spawn 重绑定（不新建 PTY / 不占名额）')
+    else fail('B27a 同 persistName 二次 spawn 重绑定（不新建 PTY / 不占名额）', `persist 会话数=${String(persistCount)}`)
+    // kill A → exit 广播到 B（共享会话随 kill 结束）
+    wA.client.send(JSON.stringify({ t: 'kill', sid: 'b27a' }))
+    await wB.waitFor(() => wB.state.exited !== null, 10000, 'B 侧 exit 广播')
+    if (wB.state.exited !== null) pass('B27b kill 广播 exit 到共享连接')
+    else fail('B27b kill 广播 exit 到共享连接', JSON.stringify(wB.state.exited))
+    wA.client.close()
+    wB.client.close()
+    await post({ persistence: 'off' })
+    console.log('    持久化配置已还原')
   }
 
   const failed = RESULTS.filter(([kind]) => kind === 'FAIL')
