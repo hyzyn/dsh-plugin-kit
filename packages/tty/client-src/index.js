@@ -1035,7 +1035,10 @@ async function sessionLimitNotice() {
   await refreshSessionCount()
   if (maxSessionsCache === null || liveSessionCount === null) return null
   if (liveSessionCount < maxSessionsCache) return null
-  const text = `会话数已达上限（当前共 ${liveSessionCount} 个 / 上限 ${maxSessionsCache}，含其他窗口与待恢复会话）——关闭不用的窗口/标签，或在设置卡片调大「并发会话上限」`
+  // 分账：本窗口标签数可数，其余来自其他窗口/页面（含待恢复会话）
+  const ownCount = [...tabs.values()].filter((t) => !t.exited).length
+  const othersCount = Math.max(0, liveSessionCount - ownCount)
+  const text = `会话数已达上限（共 ${liveSessionCount} 个 / 上限 ${maxSessionsCache}：本窗口 ${ownCount} 个${othersCount > 0 ? ' + 其他窗口 ' + othersCount + ' 个' : ''}）——关闭不用的窗口/标签，或在设置卡片调大「并发会话上限」`
   showToast(text)
   return text
 }
