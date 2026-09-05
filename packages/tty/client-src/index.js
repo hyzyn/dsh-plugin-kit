@@ -101,6 +101,8 @@ const CSS = [
   '.tt_sidebarEntry[data-minimized] .tt_sidebarEntryBadge{display:inline-flex}',
   '[data-sidebar-collapsed] .tt_sidebarEntryBadge{margin-left:0;padding-left:0}',
   '[data-sidebar-collapsed] .tt_sidebarBadgeCount{display:none}',
+  '.tt_toast{position:fixed;top:64px;left:50%;transform:translateX(-50%);z-index:10001;background:rgba(248,81,73,.12);color:#ff9d96;border:1px solid rgba(248,81,73,.45);padding:9px 16px;border-radius:8px;font-size:12.5px;line-height:1.5;box-shadow:0 8px 24px rgba(0,0,0,.35);max-width:min(560px,86vw);pointer-events:none;animation:ttToastIn .18s ease-out}',
+  '@keyframes ttToastIn{from{opacity:0;transform:translateX(-50%) translateY(-6px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}',
   '.tt_sidebarBadgeDot{width:7px;height:7px;border-radius:50%;background:var(--dsw-alias-label-tertiary);flex:none}',
   '.tt_sidebarBadgeDot[data-state=connected]{background:var(--dsw-alias-state-success-primary)}',
   '.tt_sidebarBadgeDot[data-state=error]{background:var(--dsw-alias-state-error-primary)}',
@@ -979,6 +981,9 @@ let tunnelsCache = []
 let sftpStyleCache = 'dialog'
 /** 会话持久化模式缓存（off / tmux）：config 快照与设置保存同步，控制「+」菜单与 SSH 对话框的持久入口。 */
 let persistenceCache = 'off'
+/** 宿主并发会话上限与最近一次查询的存活会话数（新增标签的前置校验用）。 */
+let maxSessionsCache = null
+let liveSessionCount = null
 function syncSshHostsCache(config) {
   if (config !== null && typeof config === 'object' && Array.isArray(config.sshHosts)) {
     sshHostsCache = config.sshHosts
@@ -992,6 +997,51 @@ function syncSshHostsCache(config) {
   if (config !== null && typeof config === 'object' && (config.persistence === 'tmux' || config.persistence === 'off')) {
     persistenceCache = config.persistence
   }
+  if (config !== null && typeof config === 'object' && Number.isInteger(config.maxSessions) && config.maxSessions >= 1) {
+    maxSessionsCache = config.maxSessions
+  }
+}
+
+/** 轻量 toast 提醒（自动消失）。 */
+function showToast(text) {
+  const toast = document.createElement('div')
+  toast.className = 'tt_toast'
+  toast.textContent = text
+  document.body.appendChild(toast)
+  setTimeout(() => toast.remove(), 4000)
+}
+
+/** 查询宿主当前存活会话数（sessions 帧）。 */
+async function refreshSessionCount() {
+  try {
+    sendFrame({ t: 'sessions' })
+    const frame = await waitFrame('sessions', 3000)
+    if (frame !== null && Array.isArray(frame.list)) {
+      liveSessionCount = frame.list.length
+      return liveSessionCount
+    }
+  } catch {
+    /* 查询失败：保持上次值 */
+  }
+  return null
+}
+
+/**
+ * 新增标签的前置校验：达到并发上限时弹 toast 提醒并返回提示文案（调用方
+ * 不再创建标签）；未达上限或状态未知（放行，交由宿主兜底）返回 null。
+ */
+async function sessionLimitNotice() {
+  await refreshSessionCount()
+  if (maxSessionsCache === null || liveSessionCount === null) return null
+  if (liveSessionCount < maxSessionsCache) return null
+  const text = `会话数已达上限（${liveSessionCount}/${maxSessionsCache}）——关闭不用的窗口/标签，或在设置卡片调大「并发会话上限」`
+  showToast(text)
+  return text
+}
+
+/** 是否已知达到上限（菜单置灰用；点击时仍会实时复核）。 */
+function atSessionLimit() {
+  return maxSessionsCache !== null && liveSessionCount !== null && liveSessionCount >= maxSessionsCache
 }
 
 /**
@@ -1046,6 +1096,9 @@ function openAddMenu(anchorBtn) {
     return
   }
   void refreshSshHosts()
+  void refreshSessionCount().then(() => {
+    if (addMenuEl !== null) renderAddMenuItems(addMenuEl)
+  })
   const menu = document.createElement('div')
   menu.className = 'tt_addMenu'
   addMenuEl = menu
@@ -1064,10 +1117,14 @@ function closeAddMenu() {
   addMenuEl = null
 }
 
-function addMenuItem(menu, label, sub, onClick) {
+function addMenuItem(menu, label, sub, onClick, disabled) {
   const item = document.createElement('button')
   item.type = 'button'
   item.className = 'tt_addMenuItem'
+  if (disabled === true) {
+    item.disabled = true
+    item.title = '会话数已达上限——关闭不用的窗口/标签后再试'
+  }
   const main = document.createElement('span')
   main.textContent = label
   item.appendChild(main)
@@ -1083,10 +1140,12 @@ function addMenuItem(menu, label, sub, onClick) {
 
 function renderAddMenuItems(menu) {
   menu.textContent = ''
-  addMenuItem(menu, '本地终端', persistenceCache === 'tmux' ? 'tmux 托管 · 宿主重启后可恢复' : '在当前会话工作目录打开', () => {
+  const atLimit = atSessionLimit()
+  addMenuItem(menu, '本地终端', persistenceCache === 'tmux' ? 'tmux 托管 · 宿主重启后可恢复' : '在当前会话工作目录打开', async () => {
+    if (await sessionLimitNotice()) return
     closeAddMenu()
     addTab()
-  })
+  }, atLimit)
   const sep1 = document.createElement('div')
   sep1.className = 'tt_addMenuSep'
   menu.appendChild(sep1)
@@ -1102,6 +1161,10 @@ function renderAddMenuItems(menu) {
     const item = document.createElement('button')
     item.type = 'button'
     item.className = 'tt_addMenuItem'
+    if (atLimit) {
+      item.disabled = true
+      item.title = '会话数已达上限——关闭不用的窗口/标签后再试'
+    }
     const main = document.createElement('span')
     main.textContent = entry.name
     const sub = document.createElement('span')
@@ -1110,7 +1173,8 @@ function renderAddMenuItems(menu) {
     sub.textContent = sshHostTargetLabel(entry) + (tunnelCount > 0 ? ' · ⇄' + String(tunnelCount) : '')
     item.appendChild(main)
     item.appendChild(sub)
-    item.addEventListener('click', () => {
+    item.addEventListener('click', async () => {
+      if (await sessionLimitNotice()) return
       closeAddMenu()
       // 持久化开启时条目点击默认 tmux 托管（无需条目级勾选）
       const persistSpec = persistenceCache === 'tmux'
@@ -1515,8 +1579,14 @@ function openSshDialog(entry) {
     if (event.target === backdrop) closeSshDialog()
   })
 
-  connectBtn.addEventListener('click', () => {
+  connectBtn.addEventListener('click', async () => {
     errorEl.textContent = ''
+    // 并发上限前置校验：达到上限不发起连接（对话框留在原地提示）
+    const limitText = await sessionLimitNotice()
+    if (limitText !== null) {
+      errorEl.textContent = limitText
+      return
+    }
     const host = fields.host.value.trim()
     const username = fields.username.value.trim()
     let port = Number(fields.port.value)
@@ -2702,7 +2772,10 @@ async function afterSocketOpen() {
       }
       persistTabs()
     }
-    if (tabs.size === 0) addTab()
+    if (tabs.size === 0) {
+      if (await sessionLimitNotice()) return // 上限已满：不再创建注定失败的空标签
+      addTab()
+    }
     return
   }
   // 同页断线重连：宿主重启过的持久标签 sid 已失效，先查 sessions 分流
