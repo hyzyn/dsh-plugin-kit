@@ -858,6 +858,8 @@ class SessionManager {
 
 class TtyServer {
   private readonly wss = new WebSocketServer({ noServer: true })
+  /** 在途的持久会话创建（tmuxName → 创建 promise）：dsh 重启后多页面并发恢复时收敛竞态。 */
+  private readonly pendingTmux = new Map<string, Promise<TtySession | null>>()
 
   constructor(
     private readonly ctx: Context,
@@ -948,6 +950,41 @@ class TtyServer {
     return undefined
   }
 
+  /** 把一个客户端连接重绑定到既有会话（跨窗口共享 / 并发恢复收敛共用）。 */
+  private rebindClient(session: TtySession, sid: string, ws: WebSocket, local: Map<string, TtySession>): void {
+    session.clients.set(sid, ws)
+    session.orphanedAt = null
+    if (session.paused) {
+      session.paused = false
+      try {
+        session.handle.output.resume()
+      } catch {
+        /* 已退出 */
+      }
+    }
+    local.set(sid, session)
+    send(ws, {
+      t: 'ready',
+      sid,
+      pid: session.handle.pid,
+      kind: session.kind,
+      target: session.target !== '' ? session.target : undefined,
+      ...(session.tmuxName !== null ? { persist: true as const } : {}),
+    })
+    if (session.tmuxName !== null) void session.handle.tmuxRefresh?.()
+  }
+
+  /** 等待同 tmuxName 的在途创建完成；返回可重绑定的会话（null = 无在途/已失败）。 */
+  private async waitPendingTmux(tmuxName: string): Promise<TtySession | null> {
+    const inflight = this.pendingTmux.get(tmuxName)
+    if (inflight === undefined) return null
+    try {
+      return await inflight
+    } catch {
+      return null
+    }
+  }
+
   /**
    * 立即终止会话：同步退役 + 顶层 shell 直接 SIGKILL，让 done/exit 帧立刻可发；
    * 树级子进程清理（SIGTERM→grace→SIGKILL，交互式 zsh 忽略 SIGTERM 时最慢
@@ -1012,24 +1049,13 @@ class TtyServer {
         const persistName = msg.persist === true && this.options.persistence === 'tmux'
           ? sanitizePersistName(msg.persistName, sid)
           : null
-        // 跨窗口共享（0.10.1）：同 tmuxName 的宿主会话还活着（别的窗口接回过）
-        // 时不再新建 PTY，本连接重绑定到它——单 PTY 多客户端扇出，名额不翻倍
+        // 跨窗口共享（0.10.1）：同 tmuxName 的宿主会话还活着（别的窗口接回过，
+        // 或同刻并发恢复的在途创建）时不再新建 PTY，本连接重绑定到它——
+        // 单 PTY 多客户端扇出，名额不翻倍
         if (persistName !== null) {
-          const existing = this.sessions.findByTmuxName(persistName)
-          if (existing !== undefined) {
-            existing.clients.set(sid, ws)
-            existing.orphanedAt = null
-            if (existing.paused) {
-              existing.paused = false
-              try {
-                existing.handle.output.resume()
-              } catch {
-                /* 已退出 */
-              }
-            }
-            local.set(sid, existing)
-            send(ws, { t: 'ready', sid, pid: existing.handle.pid, kind: existing.kind, persist: true, target: existing.target !== '' ? existing.target : undefined })
-            void existing.handle.tmuxRefresh?.() // 为新绑定的客户端重画一次可见屏
+          const existing = (this.sessions.findByTmuxName(persistName) ?? (await this.waitPendingTmux(persistName))) ?? null
+          if (existing !== null) {
+            this.rebindClient(existing, sid, ws, local)
             return
           }
         }
@@ -1059,41 +1085,53 @@ class TtyServer {
             spawnPlan = buildTmuxSpawnPlan({ shell: this.options.shell, term: this.options.term, colorTerm: this.options.colorTerm, tmuxName })
           }
         }
-        const handle = wrapLocalPty(await subprocess.spawnTerminal({
-          argv: spawnPlan.argv,
-          rows: Number(msg.rows) || 24,
-          cols: Number(msg.cols) || 80,
-          cwd,
-          env: { TERM: this.options.term, COLORTERM: this.options.colorTerm, ...spawnPlan.env },
-          graceMs: 5000,
-        }))
+        // 在途注册：tmuxName 相同的并发 spawn 等本次创建完成后重绑定（防竞态翻倍）
+        const create = (async (): Promise<TtySession> => {
+          const handle = wrapLocalPty(await subprocess.spawnTerminal({
+            argv: spawnPlan.argv,
+            rows: Number(msg.rows) || 24,
+            cols: Number(msg.cols) || 80,
+            cwd,
+            env: { TERM: this.options.term, COLORTERM: this.options.colorTerm, ...spawnPlan.env },
+            graceMs: 5000,
+          }))
+          if (tmuxName !== null) {
+            handle.tmuxTeardown = () => killTmuxSession(tmuxName)
+            handle.tmuxRefresh = () => refreshTmuxClient(tmuxName)
+          }
+          const next: TtySession = {
+            id: sid,
+            handle,
+            clients: new Map([[sid, ws]]),
+            closed: false,
+            paused: false,
+            cwd,
+            kind: 'local',
+            target: '',
+            startedAt: Date.now(),
+            lastOutputAt: Date.now(),
+            buffer: '',
+            decoder: new StringDecoder('utf8'),
+            screen: this.createScreen(Number(msg.cols) || 80, Number(msg.rows) || 24),
+            orphanedAt: null,
+            shellState: createShellState(),
+            pendingOutput: '',
+            flushTimer: null,
+            tmuxName,
+          }
+          local.set(sid, next)
+          this.sessions.add(next)
+          return next
+        })()
         if (tmuxName !== null) {
-          handle.tmuxTeardown = () => killTmuxSession(tmuxName)
-          handle.tmuxRefresh = () => refreshTmuxClient(tmuxName)
+          const registered = create.catch(() => null)
+          this.pendingTmux.set(tmuxName, registered)
+          void registered.finally(() => {
+            if (this.pendingTmux.get(tmuxName) === registered) this.pendingTmux.delete(tmuxName)
+          })
         }
-        const next: TtySession = {
-          id: sid,
-          handle,
-          clients: new Map([[sid, ws]]),
-          closed: false,
-          paused: false,
-          cwd,
-          kind: 'local',
-          target: '',
-          startedAt: Date.now(),
-          lastOutputAt: Date.now(),
-          buffer: '',
-          decoder: new StringDecoder('utf8'),
-          screen: this.createScreen(Number(msg.cols) || 80, Number(msg.rows) || 24),
-          orphanedAt: null,
-          shellState: createShellState(),
-          pendingOutput: '',
-          flushTimer: null,
-          tmuxName,
-        }
-        local.set(sid, next)
-        this.sessions.add(next)
-        send(ws, { t: 'ready', sid, pid: handle.pid, kind: 'local', ...(tmuxName !== null ? { persist: true } : {}) })
+        const next = await create
+        send(ws, { t: 'ready', sid, pid: next.handle.pid, kind: 'local', ...(tmuxName !== null ? { persist: true } : {}) })
         if (wantsPersist && tmuxName === null) {
           const notice = '\x1b[2m[dsh-tty] 未检测到 tmux，本标签以普通会话运行；安装 tmux 后持久化标签可跨宿主重启恢复现场\x1b[0m\r\n'
           next.buffer = (next.buffer + notice).slice(-BUFFER_CAP)
@@ -1117,21 +1155,9 @@ class TtyServer {
           ? sanitizePersistName(msg.persistName, sid)
           : null
         if (persistName !== null) {
-          const existing = this.sessions.findByTmuxName(persistName)
-          if (existing !== undefined && existing.kind === 'ssh') {
-            existing.clients.set(sid, ws)
-            existing.orphanedAt = null
-            if (existing.paused) {
-              existing.paused = false
-              try {
-                existing.handle.output.resume()
-              } catch {
-                /* 已退出 */
-              }
-            }
-            local.set(sid, existing)
-            send(ws, { t: 'ready', sid, pid: null, kind: 'ssh', target: existing.target, persist: true })
-            void existing.handle.tmuxRefresh?.()
+          const existing = (this.sessions.findByTmuxName(persistName) ?? (await this.waitPendingTmux(persistName))) ?? null
+          if (existing !== null && existing.kind === 'ssh' && !existing.closed) {
+            this.rebindClient(existing, sid, ws, local)
             return
           }
         }
@@ -1152,52 +1178,68 @@ class TtyServer {
         // spawnSsh 降级普通 shell channel 并经 startupNotice 回灰字提示
         const wantsPersist = persistName !== null
         const persistOpt = wantsPersist ? { name: persistName } : undefined
-        let handle: TermHandle
-        try {
-          handle = await spawnSsh(spec, {
-            term: this.options.term,
-            cols: Number(msg.cols) || 80,
-            rows: Number(msg.rows) || 24,
-            logger: { info: (m) => this.ctx.logger.info(m), warn: (m) => this.ctx.logger.warn(m) },
-            hostKeyStore: this.hostKeyStore,
-            ...(persistOpt !== undefined ? { persist: persistOpt } : {}),
+        // 在途注册：同 persistName 的并发恢复等待本次创建完成后重绑定（防竞态翻倍）
+        const create = (async (): Promise<TtySession> => {
+          let handle: TermHandle
+          try {
+            handle = await spawnSsh(spec, {
+              term: this.options.term,
+              cols: Number(msg.cols) || 80,
+              rows: Number(msg.rows) || 24,
+              logger: { info: (m) => this.ctx.logger.info(m), warn: (m) => this.ctx.logger.warn(m) },
+              hostKeyStore: this.hostKeyStore,
+              ...(persistOpt !== undefined ? { persist: persistOpt } : {}),
+            })
+          } catch (error) {
+            send(ws, { t: 'error', sid, m: error instanceof Error ? error.message : String(error) })
+            throw error
+          }
+          const tmuxName = persistOpt !== undefined && handle.startupNotice === undefined ? persistOpt.name : null
+          const next: TtySession = {
+            id: sid,
+            handle,
+            clients: new Map([[sid, ws]]),
+            closed: false,
+            paused: false,
+            cwd: '',
+            kind: 'ssh',
+            target,
+            startedAt: Date.now(),
+            lastOutputAt: Date.now(),
+            buffer: '',
+            decoder: new StringDecoder('utf8'),
+            screen: this.createScreen(Number(msg.cols) || 80, Number(msg.rows) || 24),
+            orphanedAt: null,
+            shellState: createShellState(),
+            pendingOutput: '',
+            flushTimer: null,
+            tmuxName,
+          }
+          local.set(sid, next)
+          this.sessions.add(next)
+          send(ws, { t: 'ready', sid, pid: null, kind: 'ssh', target, ...(tmuxName !== null ? { persist: true } : {}) })
+          if (tmuxName !== null) this.trackPersist(tmuxName, true) // 留存：远程 tmux 本机清单看不到
+          if (handle.startupNotice !== undefined) {
+            const notice = `\x1b[2m[dsh-tty] ${handle.startupNotice}\x1b[0m\r\n`
+            next.buffer = (next.buffer + notice).slice(-BUFFER_CAP)
+            send(ws, { t: 'data', sid, d: notice })
+          }
+          this.attachOutput(next)
+          this.watchDone(next, local)
+          return next
+        })()
+        if (persistName !== null) {
+          const registered = create.catch(() => null)
+          this.pendingTmux.set(persistName, registered)
+          void registered.finally(() => {
+            if (this.pendingTmux.get(persistName) === registered) this.pendingTmux.delete(persistName)
           })
-        } catch (error) {
-          send(ws, { t: 'error', sid, m: error instanceof Error ? error.message : String(error) })
-          return
         }
-        const tmuxName = persistOpt !== undefined && handle.startupNotice === undefined ? persistOpt.name : null
-        const next: TtySession = {
-          id: sid,
-          handle,
-          clients: new Map([[sid, ws]]),
-          closed: false,
-          paused: false,
-          cwd: '',
-          kind: 'ssh',
-          target,
-          startedAt: Date.now(),
-          lastOutputAt: Date.now(),
-          buffer: '',
-          decoder: new StringDecoder('utf8'),
-          screen: this.createScreen(Number(msg.cols) || 80, Number(msg.rows) || 24),
-          orphanedAt: null,
-          shellState: createShellState(),
-          pendingOutput: '',
-          flushTimer: null,
-          tmuxName,
+        try {
+          await create
+        } catch {
+          return // 错误帧已在创建闭包内发送
         }
-        local.set(sid, next)
-        this.sessions.add(next)
-        send(ws, { t: 'ready', sid, pid: null, kind: 'ssh', target, ...(tmuxName !== null ? { persist: true } : {}) })
-        if (tmuxName !== null) this.trackPersist(tmuxName, true) // 留存：远程 tmux 本机清单看不到
-        if (handle.startupNotice !== undefined) {
-          const notice = `\x1b[2m[dsh-tty] ${handle.startupNotice}\x1b[0m\r\n`
-          next.buffer = (next.buffer + notice).slice(-BUFFER_CAP)
-          send(ws, { t: 'data', sid, d: notice })
-        }
-        this.attachOutput(next)
-        this.watchDone(next, local)
       } else if (msg.t === 'input') {
         const resolved = this.resolveSid(ws, msg, local)
         if (resolved === undefined || 'unknown' in resolved) return
