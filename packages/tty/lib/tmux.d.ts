@@ -41,8 +41,8 @@ export declare function listTmuxSessions(): Promise<string[]>;
 /**
  * attach 重画：tmux 背书会话重连时不回放宿主环形缓冲（tmux 的整屏重画会把
  * 同样内容再画一遍 → 重影 + 幽灵滚动条），改为让 tmux 强制重画客户端一次。
- * refresh-client 的 -t 收的是 client（tty）名，先经 list-clients -t <会话>
- * 拿到该会话当前 attached 的客户端再刷新；任何失败静默吞掉（极端情况下
- * 用户敲一次键 tmux 也会重画）。
+ * 同一会话可能被多个窗口同时接回（每窗口一个 PTY 客户端），list-clients
+ * 逐个 refresh——只刷第一个会把另一个窗口留在 reset 后的空白屏上；任何
+ * 失败静默吞掉（极端情况下用户敲一次键 tmux 也会重画）。
  */
 export declare function refreshTmuxClient(tmuxName: string): Promise<void>;

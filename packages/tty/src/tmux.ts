@@ -164,19 +164,25 @@ export function listTmuxSessions(): Promise<string[]> {
 /**
  * attach 重画：tmux 背书会话重连时不回放宿主环形缓冲（tmux 的整屏重画会把
  * 同样内容再画一遍 → 重影 + 幽灵滚动条），改为让 tmux 强制重画客户端一次。
- * refresh-client 的 -t 收的是 client（tty）名，先经 list-clients -t <会话>
- * 拿到该会话当前 attached 的客户端再刷新；任何失败静默吞掉（极端情况下
- * 用户敲一次键 tmux 也会重画）。
+ * 同一会话可能被多个窗口同时接回（每窗口一个 PTY 客户端），list-clients
+ * 逐个 refresh——只刷第一个会把另一个窗口留在 reset 后的空白屏上；任何
+ * 失败静默吞掉（极端情况下用户敲一次键 tmux 也会重画）。
  */
 export function refreshTmuxClient(tmuxName: string): Promise<void> {
   return new Promise((resolve) => {
     execFile('tmux', ['-L', TMUX_SOCKET, 'list-clients', '-t', tmuxName, '-F', '#{client_name}'], { timeout: 4000 }, (error, stdout) => {
-      const client = String(stdout).trim().split('\n')[0] ?? ''
-      if ((error !== null && error !== undefined) || client === '') {
+      if (error !== null && error !== undefined) {
         resolve()
         return
       }
-      execFile('tmux', ['-L', TMUX_SOCKET, 'refresh-client', '-t', client], { timeout: 4000 }, () => resolve())
+      const clients = String(stdout).trim().split('\n').filter(Boolean)
+      if (clients.length === 0) {
+        resolve()
+        return
+      }
+      void Promise.all(clients.map((client) => new Promise<void>((done) => {
+        execFile('tmux', ['-L', TMUX_SOCKET, 'refresh-client', '-t', client], { timeout: 4000 }, () => done())
+      }))).then(() => resolve())
     })
   })
 }

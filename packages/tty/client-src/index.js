@@ -2735,11 +2735,17 @@ function connect() {
         if (msg.persist === true) {
           // 持久标签（tmux）：现场由 tmux 重画，但字体加载/布局微调会让 xterm
           // 在重画之后收缩——收缩瞬间多出的行被推进 scrollback，形成幽灵滚动
-          // 条且视口停在顶部。等字体就绪后 reset 清掉残 scrollback，再发
-          // refresh 帧请宿主 refresh-client 重画一次（不碰尺寸：隐藏标签下
-          // proposeDimensions 会给垃圾尺寸，size poke 曾把 pane 压扁）
+          // 条且视口停在顶部。仅在真的出现幽灵 scrollback 时才干预：reset 清掉
+          // 残 scrollback 后发 refresh 帧请宿主 refresh-client 重画（不碰尺寸，
+          // 且会话的所有客户端都会被刷新）；干净时跳过，避免无谓的闪屏
           const settle = () => {
             if (tab.term === null || tab.exited) return
+            try {
+              const bufferLength = tab.term.buffer !== undefined ? tab.term.buffer.active.length : 0
+              if (bufferLength <= tab.term.rows + 2) return
+            } catch {
+              /* buffer 不可用：按需继续 */
+            }
             tab.term.reset()
             sendFrame({ t: 'refresh', sid: tab.sid })
           }
