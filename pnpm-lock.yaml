@@ -9,29 +9,29 @@ importers:
   .:
     dependencies:
       '@hyzyn/dsh-codegraph':
-        specifier: 0.1.6
-        version: 0.1.6(react@18.3.1)
-      '@hyzyn/dsh-env':
-        specifier: 0.1.5
-        version: 0.1.5(react@18.3.1)
-      '@hyzyn/dsh-mcp':
-        specifier: 0.1.5
-        version: 0.1.5(react@18.3.1)
-      '@hyzyn/dsh-profile':
-        specifier: 0.1.5
-        version: 0.1.5(react@18.3.1)
-      '@hyzyn/dsh-prompt':
-        specifier: 0.1.4
-        version: 0.1.4(react@18.3.1)
-      '@hyzyn/dsh-rss':
         specifier: 0.1.7
         version: 0.1.7(react@18.3.1)
+      '@hyzyn/dsh-env':
+        specifier: 0.1.6
+        version: 0.1.6(react@18.3.1)
+      '@hyzyn/dsh-mcp':
+        specifier: 0.1.6
+        version: 0.1.6(react@18.3.1)
+      '@hyzyn/dsh-profile':
+        specifier: 0.1.6
+        version: 0.1.6(react@18.3.1)
+      '@hyzyn/dsh-prompt':
+        specifier: 0.1.5
+        version: 0.1.5(react@18.3.1)
+      '@hyzyn/dsh-rss':
+        specifier: 0.1.8
+        version: 0.1.8(react@18.3.1)
       '@hyzyn/dsh-search':
-        specifier: 0.1.4
-        version: 0.1.4
+        specifier: 0.1.5
+        version: 0.1.5
       '@hyzyn/dsh-tty':
-        specifier: 0.10.0
-        version: 0.10.0(@deepseek-ai/dsh-tools@0.1.1-rc.2(60a5acffe69dfec1022871fdb15fdfc9))
+        specifier: 0.10.1
+        version: 0.10.1(@deepseek-ai/dsh-tools@0.1.1-rc.2(60a5acffe69dfec1022871fdb15fdfc9))
     devDependencies:
       typescript:
         specifier: ~5.9.3
@@ -309,9 +309,6 @@ packages:
       '@deepseek-ai/cordis-plugin-loader':
         optional: true
 
-  '@deepseek-ai/cosmokit@1.8.2':
-    resolution: {integrity: sha512-muBOKtSrUKU5m/xpq8ZXWL6hQ/jgd4PhU2PqH97bcxIiLEJfNwZOGQEx4t/aS/GgxRAR+ra9pMHPMtTHU4sqqA==}
-
   '@deepseek-ai/cosmokit@1.8.3':
     resolution: {integrity: sha512-qBo+ronVM6Eu2WNVJXi8JcMiqZ19T9BRIpV+5qJUFPXjGH/Z0QKcQMC/IZJ7L394YTOtJgcovbk9qP0w2GsBXQ==}
 
@@ -439,9 +436,6 @@ packages:
       '@deepseek-ai/dsh-scope': ^0.1.0-rc.8
       '@deepseek-ai/dsh-session': ^0.1.0-rc.8
       '@deepseek-ai/dsh-system-prompt': ^0.1.0-rc.8
-
-  '@deepseek-ai/schemastery@3.18.1':
-    resolution: {integrity: sha512-Qn0FCSwCQnpnj6SB31I6i2sIKgKWnkbJM8O0EU91Gv2UsYVvtZTl6IA0sCwk2e2MZf5S8w5hpq9QkeVvK9qwxg==}
 
   '@deepseek-ai/schemastery@3.18.2':
     resolution: {integrity: sha512-njDtZsznjYxok7KLLlHOPyuv2efdWVbSflAHgztSfbMsg+CVraEoRe2DjOCgClYv3ZCSm7WXoaUkbB/+RY7tWQ==}
@@ -602,52 +596,52 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@hyzyn/dsh-codegraph@0.1.6':
-    resolution: {integrity: sha512-yUWRkUvMpbR4HqS1WOVpLpx6+cFGGvGQNprWUFojNOIXOQwsVaQBBgLbuvfke6rfgwIXRzrBf7ZG/8GD9kDrcg==}
+  '@hyzyn/dsh-codegraph@0.1.7':
+    resolution: {integrity: sha512-q/BifA5lj3Vw/9BkwBD09ZWPOCBOaOqc9ExwzyI4Av3PQ+LXPhzeJovf0lFCZjo+V9yWupoxjrR9oh6jXrgJBw==}
     engines: {node: '>=22.19.0'}
     peerDependencies:
       react: ^18.2.0
 
-  '@hyzyn/dsh-env@0.1.5':
-    resolution: {integrity: sha512-LIBRBOfKbtTEVRJagVnD6YAaOJL/YjwmOlvAjj5rqqM1ep5Te/gngHv8p90g17Pz0pyiJDBqG29U+hL6zaXqpw==}
+  '@hyzyn/dsh-env@0.1.6':
+    resolution: {integrity: sha512-Lma+ufK+MJJitBpDjgilxvZpmxJQZvHQRhF+T9KttFzoStKXdc2WSeEjXlmtHj4YJJBzyOMxXjI0qvoAWqky/w==}
     engines: {node: '>=22.19.0'}
     peerDependencies:
       react: ^18.2.0
 
-  '@hyzyn/dsh-kit@0.1.1':
-    resolution: {integrity: sha512-D7JWEz+4f42MqroEEJYQLGR/2onME7RxobzWTn0EM1aPxEhfZS8Lx1o18Ahgl4JH1Ge65nC0OGHpL8vo+5tdbQ==}
+  '@hyzyn/dsh-kit@0.1.2':
+    resolution: {integrity: sha512-gyQ4XayRKaEIv5sIwe3syILHfWCd+wOdRaLFtv+Dm09XbNELSAUjwXWXuEDSYDvVpXDTm7hJSpZzA/A0NaC1JA==}
     engines: {node: '>=22.19.0'}
 
-  '@hyzyn/dsh-mcp@0.1.5':
-    resolution: {integrity: sha512-A6C2TTYlxtNqmSaUFgWGGHgbkwUNHRadL2kIRzjuasqTlh5jSLsEWPCMGgVuSXGOTTibEPk0hWCyG6Eszapk3g==}
-    engines: {node: '>=22.19.0'}
-    peerDependencies:
-      react: ^18.2.0
-
-  '@hyzyn/dsh-profile@0.1.5':
-    resolution: {integrity: sha512-eHZ8GAL9NQI7fxmWspeH/gskPwtCGwRRGJf/PdIizgg/YGTKvhhOnmgKsFPUDc3G0YHYQF0Sv6K1YkbcTM7S4A==}
+  '@hyzyn/dsh-mcp@0.1.6':
+    resolution: {integrity: sha512-TD3PxhFdaVuS1m7befG6pDqWKNSgcHd1nU5YjSriRaOKlYfWWnHqEkxfYgstyAXfiXVu6hkzq7AqXuwJ8fxjng==}
     engines: {node: '>=22.19.0'}
     peerDependencies:
       react: ^18.2.0
 
-  '@hyzyn/dsh-prompt@0.1.4':
-    resolution: {integrity: sha512-py7RgK52urg2iYxhyM7JpsalIGlX2FmdLZKg+ft2Mfh2I4WZioDKqjUa8g7uXIWOu47KUJJfaEgjO2bB/HHNfw==}
+  '@hyzyn/dsh-profile@0.1.6':
+    resolution: {integrity: sha512-+/WmgRaVJ3/uiMIMSgEFbhisxYfDboHolk2Bst0wH+oH2eVH3PVDqUaMV9G5nFCOHLy1JJbAeuybSL8eJslOSg==}
     engines: {node: '>=22.19.0'}
     peerDependencies:
       react: ^18.2.0
 
-  '@hyzyn/dsh-rss@0.1.7':
-    resolution: {integrity: sha512-5mFPMdG71dlKLRADMHYiRWFqIKEezK5oTBw29i6FAfGP9mnYZ9IDnIQmUx0fg4CnYbG/yscSsyuxJZtUJDfbgQ==}
+  '@hyzyn/dsh-prompt@0.1.5':
+    resolution: {integrity: sha512-wH2DFYwgdkMs6s+jX5c/DzrVkC62EXlp2XNpsfKy1cclvGFqbv6c7W2IY+uSiJlEHt2aUJWhVqVG6RtkWdmnww==}
     engines: {node: '>=22.19.0'}
     peerDependencies:
       react: ^18.2.0
 
-  '@hyzyn/dsh-search@0.1.4':
-    resolution: {integrity: sha512-yoX1wwKzlZg2Zqj3LsQOTXrOFCyg/FaQoQGna3H8k6p0Hz1h5yYs+B8W507vmPryfOHOgo9cLC4g7CrYCNmfZQ==}
+  '@hyzyn/dsh-rss@0.1.8':
+    resolution: {integrity: sha512-pWtXeS1ju3z8jIg15uFoNqXX3x6XFzwSYr/qDdTD7kEXyUp7PJDSQHySinzMZNhPyB7XScCKl8wlUKOtExhMFw==}
+    engines: {node: '>=22.19.0'}
+    peerDependencies:
+      react: ^18.2.0
+
+  '@hyzyn/dsh-search@0.1.5':
+    resolution: {integrity: sha512-RzuuVmYet+glMXogh5r9InGghI/MVT5pjvvXiFQUZDlmy03vrtEHe4hZejk+Oow9uG6T3oIaccMloAz3OTY8hQ==}
     engines: {node: '>=22.19.0'}
 
-  '@hyzyn/dsh-tty@0.10.0':
-    resolution: {integrity: sha512-Dqb3CfQq4HiFkp2CEv6f/I4C9GuEdJa94t1C94FutFwwDhP7Cjn1H/dGYx5I9dFB7I0cTIXibvc7KvlfOjhahQ==}
+  '@hyzyn/dsh-tty@0.10.1':
+    resolution: {integrity: sha512-NZ05ycYtZC1jfQjPGFx5bMpZmWbd8YIkDX5Mc0HMxJPo4ttcHWxHj5QtGyViTEbu8YSE57jdCiK4lk+A99J7aQ==}
     engines: {node: '>=22.19.0'}
     peerDependencies:
       '@deepseek-ai/dsh-tools': ^0.1.1-rc.2
@@ -773,8 +767,6 @@ snapshots:
       '@deepseek-ai/cosmokit': 1.8.3
       '@standard-schema/spec': 1.1.0
 
-  '@deepseek-ai/cosmokit@1.8.2': {}
-
   '@deepseek-ai/cosmokit@1.8.3': {}
 
   '@deepseek-ai/dsh-agent@0.1.0-rc.8(fd02a188607bf95239ea4dc11d806a44)':
@@ -893,11 +885,6 @@ snapshots:
       '@deepseek-ai/dsh-system-prompt': 0.1.0-rc.8(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.2))(@deepseek-ai/dsh-llm@0.1.0-rc.8(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-attachment@0.1.0-rc.8(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-brand@0.1.0-rc.8(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.2)))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.2)))(@deepseek-ai/dsh-brand@0.1.0-rc.8(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.2)))(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.2))(@deepseek-ai/dsh-timeout@0.1.0-rc.8(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.2))))(@deepseek-ai/dsh-scope@0.1.0-rc.8(@deepseek-ai/cordis@4.0.2)(@deepseek-ai/dsh-invariants@0.1.0-rc.8(@deepseek-ai/cordis@4.0.2)))
       '@deepseek-ai/schemastery': 3.18.2
 
-  '@deepseek-ai/schemastery@3.18.1':
-    dependencies:
-      '@deepseek-ai/cosmokit': 1.8.2
-      '@standard-schema/spec': 1.1.0
-
   '@deepseek-ai/schemastery@3.18.2':
     dependencies:
       '@deepseek-ai/cosmokit': 1.8.3
@@ -981,54 +968,54 @@ snapshots:
   '@esbuild/win32-x64@0.28.2':
     optional: true
 
-  '@hyzyn/dsh-codegraph@0.1.6(react@18.3.1)':
+  '@hyzyn/dsh-codegraph@0.1.7(react@18.3.1)':
     dependencies:
-      '@deepseek-ai/schemastery': 3.18.1
-      '@hyzyn/dsh-kit': 0.1.1
+      '@deepseek-ai/schemastery': 3.18.2
+      '@hyzyn/dsh-kit': 0.1.2
       js-yaml: 4.3.2
       react: 18.3.1
 
-  '@hyzyn/dsh-env@0.1.5(react@18.3.1)':
+  '@hyzyn/dsh-env@0.1.6(react@18.3.1)':
     dependencies:
-      '@deepseek-ai/schemastery': 3.18.1
+      '@deepseek-ai/schemastery': 3.18.2
       js-yaml: 4.3.2
       react: 18.3.1
 
-  '@hyzyn/dsh-kit@0.1.1': {}
+  '@hyzyn/dsh-kit@0.1.2': {}
 
-  '@hyzyn/dsh-mcp@0.1.5(react@18.3.1)':
+  '@hyzyn/dsh-mcp@0.1.6(react@18.3.1)':
     dependencies:
-      '@deepseek-ai/schemastery': 3.18.1
+      '@deepseek-ai/schemastery': 3.18.2
       js-yaml: 4.3.2
       react: 18.3.1
 
-  '@hyzyn/dsh-profile@0.1.5(react@18.3.1)':
+  '@hyzyn/dsh-profile@0.1.6(react@18.3.1)':
     dependencies:
-      '@deepseek-ai/schemastery': 3.18.1
+      '@deepseek-ai/schemastery': 3.18.2
       react: 18.3.1
 
-  '@hyzyn/dsh-prompt@0.1.4(react@18.3.1)':
+  '@hyzyn/dsh-prompt@0.1.5(react@18.3.1)':
     dependencies:
-      '@deepseek-ai/schemastery': 3.18.1
+      '@deepseek-ai/schemastery': 3.18.2
       js-yaml: 4.3.2
       react: 18.3.1
 
-  '@hyzyn/dsh-rss@0.1.7(react@18.3.1)':
+  '@hyzyn/dsh-rss@0.1.8(react@18.3.1)':
     dependencies:
-      '@deepseek-ai/schemastery': 3.18.1
-      '@hyzyn/dsh-kit': 0.1.1
+      '@deepseek-ai/schemastery': 3.18.2
+      '@hyzyn/dsh-kit': 0.1.2
       react: 18.3.1
 
-  '@hyzyn/dsh-search@0.1.4':
+  '@hyzyn/dsh-search@0.1.5':
     dependencies:
-      '@hyzyn/dsh-kit': 0.1.1
+      '@hyzyn/dsh-kit': 0.1.2
       js-yaml: 4.3.2
 
-  '@hyzyn/dsh-tty@0.10.0(@deepseek-ai/dsh-tools@0.1.1-rc.2(60a5acffe69dfec1022871fdb15fdfc9))':
+  '@hyzyn/dsh-tty@0.10.1(@deepseek-ai/dsh-tools@0.1.1-rc.2(60a5acffe69dfec1022871fdb15fdfc9))':
     dependencies:
       '@deepseek-ai/dsh-tools': 0.1.1-rc.2(60a5acffe69dfec1022871fdb15fdfc9)
       '@deepseek-ai/schemastery': 3.18.2
-      '@hyzyn/dsh-kit': 0.1.1
+      '@hyzyn/dsh-kit': 0.1.2
       '@xterm/headless': 5.5.0
       ssh2: 1.17.0
       ws: 8.21.3
