@@ -197,6 +197,8 @@ tmux server（专用 socket `dsh-tty`，与用户自己的 tmux 完全隔离）�
   不做事前存活确认（确认依赖的留存状态一旦漂移会让恢复静默失效）；
 - **关闭语义**：kill 帧（标签 ✕ / 关面板）对 tmux 背书会话先
   `tmux kill-session` 再杀客户端——真正结束，而不是 detach 留活口；
+  整个页面关闭时默认**留存**（保活期后可再恢复），配置
+  `endOnPageClose: true` 则改为保活期结束时连 tmux 会话一起结束；
 - **shell 集成兼容**：tmux 会吞掉不认识的转义序列——钩子检测 `$TMUX` 把
   OSC 133/7 包进 DCS passthrough 信封（payload 内 ESC 双写），tmux ≥3.3 +
   `allow-passthrough on`（宿主自动写入桩 conf）时解包转发，宿主解析器看到的
@@ -281,6 +283,7 @@ tmux server（专用 socket `dsh-tty`，与用户自己的 tmux 完全隔离）�
 | `tunnels` | `[]` | 端口转发隧道：条目 `{name, bookName, direction=local\|remote, localPort?, remoteHost?, remotePort?, localTargetHost?, localTargetPort?, enabled}`；`bookName` 引用连接簿条目提供主机与认证；卡片「端口转发」区块可视化维护 |
 | `sftpStyle` | `dialog` | SFTP 文件浏览界面风格：`dialog` 单窗体（远程目录 + 上传/下载/拖拽）/ `dual` 双栏（左本机 / 右远程，行内 `⇨/⇦` 宿主服务端直传）；重新打开 SFTP 生效 |
 | `persistence` | `off` | 会话持久化：`off` 会话随宿主生死（默认）；`tmux` 开启后**所有新开的标签默认由 tmux server 托管**、可跨宿主重启恢复（需本机/远程安装 tmux）；SSH 对话框可对单次连接取消 |
+| `endOnPageClose` | `false` | 页面（最后一个连接）断开且保活期结束时，是否连 tmux 持久会话一起结束。默认 `false` = 留存可恢复；`true` = 页面关了就不保活（保活期内刷新仍可无缝接回） |
 
 ## 帧协议（/api/dsh-tty/ws，JSON 文本帧；v3 = 单连接多会话 + 断线重连）
 
