@@ -1,0 +1,70 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      # tag 锚点是 @hyzyn/dsh-all（用户视角的聚合包，沿用 v0.1.15 惯例），见 RELEASING.md
+      - name: Verify tag matches @hyzyn/dsh-all version
+        run: |
+          PKG_VERSION="v$(node -p "require('./packages/all/package.json').version")"
+          if [ "$PKG_VERSION" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME 与 @hyzyn/dsh-all 版本 $PKG_VERSION 不一致"
+            exit 1
+          fi
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r build
+      - run: pnpm -r typecheck
+      - name: Check aggregate is up to date
+        run: |
+          pnpm aggregate
+          git diff --exit-code -- cordis.patch.yml package.json packages/all/cordis.patch.yml packages/all/package.json \
+            || { echo "::error::聚合层过期：在本地跑 pnpm aggregate 后重新提交"; exit 1; }
+      - name: Publish to npm
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "::warning::NPM_TOKEN secret 未配置；跳过 npm publish（手动发布见 RELEASING.md）"
+            exit 0
+          fi
+          # token 明文写入 runner 的 ~/.npmrc 后由 pnpm publish 读取；
+          # ${VAR} 占位符在 pnpm publish 下解析不可靠（会拿错凭证 → 403/404 乱象），不用
+          printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > ~/.npmrc
+          node scripts/release-publish-tag.mjs
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PREV=$(git describe --tags --abbrev=0 "HEAD^" 2>/dev/null || true)
+          RANGE="${PREV:+${PREV}..}HEAD"
+          {
+            echo "## Highlights"
+            echo
+            git log "$RANGE" --format='- %s' | grep -v '^- chore:' || true
+            echo
+            if [ -n "$PREV" ]; then
+              echo "**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREV}...${GITHUB_REF_NAME}"
+            fi
+          } > release-notes.md
+          cat release-notes.md
+          ALL_VERSION=$(node -p "require('./packages/all/package.json').version")
+          EXTRA=""
+          case "$ALL_VERSION" in *-*) EXTRA="--prerelease";; esac
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" $EXTRA --notes-file release-notes.md \
+            || gh release edit "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" $EXTRA --notes-file release-notes.md \
+            || true

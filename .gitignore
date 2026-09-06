@@ -5,7 +5,6 @@ dist/
 .DS_Store
 .pnpm-store/
 .idea/
-docs/PUBLISHING.md
 
 .dsh-vision-toolkit/
 .jspace/
