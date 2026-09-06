@@ -2,8 +2,10 @@
 // OTP 可选：使用 bypass-2FA 的 granular token 时不需要；经典 token 需传动态码。
 // 包过滤参数支持 only= 前缀，也可直接写裸包名（node scripts/release-publish-all.mjs packages/tty）。
 // 任一失败立即停止，后续可用剩余包名重跑。
-// ⚠️ 「全部完成 ✔」不代表真的发上去了，发完必须查 registry 核实（见 docs/PUBLISHING.md）。
+// ⚠️ 「全部完成 ✔」不代表真的发上去了，发完必须回查 registry 核实
+// （npm view 有本地缓存，curl 直查最可靠：curl -s https://registry.npmjs.org/<包名>）。
 import { execSync } from 'node:child_process'
+import { targets } from './publish-targets.mjs'
 
 const arg2 = process.argv[2]
 const arg3 = process.argv[3]
@@ -15,21 +17,6 @@ if (arg3 && !otp) {
 }
 let only = (otp ? arg3 : arg2)?.split(',') ?? null
 if (only !== null) only = only.map((item) => item.trim().replace(/^only=/, '')).filter((item) => item !== '')
-
-// 可通过参数指定只发部分包（用于 OTP 过期后续发）: node scripts/release-publish-all.mjs <otp> packages/tty,.
-const targets = [
-  ['packages/kit', '@hyzyn/dsh-kit'],
-  ['packages/codegraph', '@hyzyn/dsh-codegraph'],
-  ['packages/env', '@hyzyn/dsh-env'],
-  ['packages/mcp', '@hyzyn/dsh-mcp'],
-  ['packages/profile', '@hyzyn/dsh-profile'],
-  ['packages/prompt', '@hyzyn/dsh-prompt'],
-  ['packages/rss', '@hyzyn/dsh-rss'],
-  ['packages/search', '@hyzyn/dsh-search'],
-  ['packages/tty', '@hyzyn/dsh-tty'],
-  ['packages/all', '@hyzyn/dsh-all'],
-  ['.', '@hyzyn/dsh-plugin-kit'],
-]
 
 const env = { ...process.env }
 for (const [dir, name] of targets) {
