@@ -3,6 +3,7 @@ lib/
 dist/
 *.tsbuildinfo
 .DS_Store
+.zcode/
 .pnpm-store/
 .idea/
 
