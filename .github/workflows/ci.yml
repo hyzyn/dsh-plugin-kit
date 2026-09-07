@@ -26,5 +26,5 @@ jobs:
             || { echo "::error::聚合层过期：在本地跑 pnpm aggregate 后重新提交"; exit 1; }
       # 防回归：workspace: 协议残留会让消费者从 git 子路径安装时直接失败
       # （ERR_PNPM_WORKSPACE_PKG_NOT_FOUND），而 npm 产物因 publish 期转换看不出问题
-      - name: Check no workspace: protocol in publishable deps
+      - name: Check no workspace protocol in publishable deps
         run: node scripts/check-publishable.mjs
