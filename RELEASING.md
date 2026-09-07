@@ -24,6 +24,13 @@ npmjs.com → Access Tokens → Generate New Token（granular）生成：
 3. 动了插件运行行为的改动，真实装进 DSH 跑一遍：`dsh plugin --profile <name> add
    @hyzyn/dsh-<pkg>`（或 link: 路径调试）。build 绿不等于装上没问题。
    tty 的 integration/live/ssh-smoke 需要真机，按需本地跑。
+4. 各包依赖**不要写 `workspace:*`**。它只在 monorepo 内部有效：`pnpm publish` 会把它
+   换成真实版本（所以 npm 产物看起来是对的），但用户从 git 子路径安装
+   （`git+https://github.com/hyzyn/dsh-plugin-kit.git#main&path:packages/tty`）时协议
+   原样保留，pnpm 报 `ERR_PNPM_WORKSPACE_PKG_NOT_FOUND` 装不上——而报错指不到本仓库，
+   只能靠用户来提 issue。写真实版本（如 `^0.1.2`）即可；本地开发靠根 `.npmrc` 的
+   `link-workspace-packages=true` 仍然链接到 `packages/*`，体验不变。
+   CI 与 Release workflow 都会跑 `node scripts/check-publishable.mjs` 兜底。
 
 ## 攒批
 
@@ -60,6 +67,7 @@ build + typecheck + 聚合检查 → 按依赖序发布全部包（registry 上�
 | --- | --- |
 | `403 ... Two-factor authentication or granular access token with bypass 2fa` | 缺动态码或 token 不是 bypass-2FA：换 bypass granular token |
 | `404 Not found - PUT <包名>` / `404 ... install from a tarball` | token 对该包无发布权（npm 故意 404 隐藏存在性）：检查 granular token 的 Packages and scopes 是否勾到该包、权限是否 Read and write |
+| 用户报 `ERR_PNPM_WORKSPACE_PKG_NOT_FOUND ... "@hyzyn/dsh-kit@workspace:*"` | 某包依赖残留 `workspace:*`：从 git 子路径安装必炸（npm 安装正常，因为 publish 期已转换）。改真实版本 + bump 受影响包重发；本地先跑 `node scripts/check-publishable.mjs` 确认 |
 
 校验 token 身份（不泄露值）：
 

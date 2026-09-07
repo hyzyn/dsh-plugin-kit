@@ -34,6 +34,10 @@ jobs:
           pnpm aggregate
           git diff --exit-code -- cordis.patch.yml package.json packages/all/cordis.patch.yml packages/all/package.json \
             || { echo "::error::聚合层过期：在本地跑 pnpm aggregate 后重新提交"; exit 1; }
+      # 发布前最后一道闸：workspace: 残留只在 git 子路径安装时暴露（npm 产物因
+      # publish 期转换看不出问题），一旦发出去只能靠发新版本补救
+      - name: Check no workspace: protocol in publishable deps
+        run: node scripts/check-publishable.mjs
       - name: Publish to npm
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
