@@ -45,6 +45,7 @@ import WebServerRuntime from '@deepseek-ai/dsh-host-webserver'
 import { LocalSubprocessRuntime } from '@deepseek-ai/dsh-subprocess-local'
 import WebSocket from 'ws'
 import fsp from 'node:fs/promises'
+import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { name, inject, apply } from '../lib/index.js'
@@ -1284,6 +1285,72 @@ async function run() {
     wB.client.close()
     await post({ persistence: 'off' })
     console.log('    持久化配置已还原')
+  }
+
+  // B28: SSH 连接测试路由 /api/dsh-tty/probe（0.11.0）
+  // 连接簿行「测试」（bookRecord=true 完整 TOFU）与对话框「试连」（无 store
+  // 只比对）共用；验证：成功分类、host key 记录/匹配、坏密码、端口不通
+  console.log('\n[25] SSH 连接测试路由')
+  {
+    const probe = async (body) => {
+      const res = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/probe`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      return res.json()
+    }
+    // 起一个内存 sshd（password test/secret，无 shell——probe 只握手不开 channel）
+    const sftpd = await startSftpSshd({ rootDir: os.tmpdir() })
+    const spec = { host: '127.0.0.1', port: sftpd.port, username: TEST_USER, auth: 'password', password: TEST_PASSWORD }
+    // 试连（bookRecord=false）：成功且不落盘 hostKeys
+    const cfgBefore = await (await fetch(`http://127.0.0.1:${port}/api/dsh-tty/config`)).json()
+    const hostsBefore = Array.isArray(cfgBefore.config?.hostKeys) ? cfgBefore.config.hostKeys.length : 0
+    const r1 = await probe({ ...spec, bookRecord: false })
+    if (r1.ok === true && r1.result?.auth?.ok === true && r1.result?.tcp?.ok === true) pass('B28a 试连成功（auth.ok，hostkey=' + String(r1.result?.hostkey?.state) + '）')
+    else fail('B28a 试连成功', JSON.stringify(r1))
+    const cfgAfter1 = await (await fetch(`http://127.0.0.1:${port}/api/dsh-tty/config`)).json()
+    const hostsAfter1 = Array.isArray(cfgAfter1.config?.hostKeys) ? cfgAfter1.config.hostKeys.length : 0
+    if (hostsAfter1 === hostsBefore) pass('B28b 试连不落盘 hostKeys（对话框试连语义）')
+    else fail('B28b 试连不落盘 hostKeys（对话框试连语义）', `before=${hostsBefore} after=${hostsAfter1}`)
+
+    // 连接簿测试（bookRecord=true）：新指纹当场 TOFU 记录
+    const r2 = await probe({ ...spec, bookRecord: true })
+    if (r2.ok === true && r2.result?.auth?.ok === true && r2.result?.hostkey?.state === 'recorded') pass('B28c 连接簿测试：新指纹 TOFU 记录（' + String(r2.result?.hostkey?.fingerprint?.slice(0, 12)) + '…）')
+    else fail('B28c 连接簿测试：新指纹 TOFU 记录', JSON.stringify(r2))
+    const cfgAfter2 = await (await fetch(`http://127.0.0.1:${port}/api/dsh-tty/config`)).json()
+    const hostsAfter2 = Array.isArray(cfgAfter2.config?.hostKeys) ? cfgAfter2.config.hostKeys : []
+    const recordedKey = hostsAfter2.some((hk) => hk.host === '127.0.0.1' && Number(hk.port) === sftpd.port && typeof hk.fingerprint === 'string')
+    if (recordedKey) pass('B28d 指纹已持久化到 hostKeys（可被后续连接校验）')
+    else fail('B28d 指纹已持久化到 hostKeys', JSON.stringify(hostsAfter2))
+    // 再连同主机 → matched（与记录一致放行）
+    const r3 = await probe({ ...spec, bookRecord: true })
+    if (r3.ok === true && r3.result?.auth?.ok === true && r3.result?.hostkey?.state === 'matched') pass('B28e 二次测试：指纹匹配放行')
+    else fail('B28e 二次测试：指纹匹配放行', JSON.stringify(r3))
+
+    // 坏密码 → 认证被拒（分类文案）
+    const r4 = await probe({ ...spec, password: 'wrong', bookRecord: true })
+    if (r4.ok === false && r4.result?.auth?.ok === false && /认证被拒绝/.test(r4.result?.auth?.error || '')) pass('B28f 坏密码 → 认证被拒绝')
+    else fail('B28f 坏密码 → 认证被拒绝', JSON.stringify(r4))
+
+    // 端口不通 → TCP 拒绝（不进入握手）
+    const dead = net.createServer()
+    await new Promise((resolve) => dead.listen(0, '127.0.0.1', resolve))
+    const deadPort = dead.address().port
+    await new Promise((resolve) => dead.close(resolve))
+    const r5 = await probe({ ...spec, port: deadPort, bookRecord: false })
+    if (r5.ok === false && r5.result?.tcp?.ok === false && r5.result?.auth?.ok === false) pass('B28g 端口不通 → tcp 拒绝')
+    else fail('B28g 端口不通 → tcp 拒绝', JSON.stringify(r5))
+
+    // 字段校验：缺 username / 非法端口 → 友好错误（不触发网络）
+    const r6 = await probe({ host: '127.0.0.1', port: 22, username: '', auth: 'password', password: 'x' })
+    if (r6.ok === false && /用户名|主机/.test(r6.error || '')) pass('B28h 缺字段 → 友好错误')
+    else fail('B28h 缺字段 → 友好错误', JSON.stringify(r6))
+    const r7 = await probe({ host: '127.0.0.1', port: 70000, username: 'u', auth: 'password', password: 'x' })
+    if (r7.ok === false && /端口/.test(r7.error || '')) pass('B28i 非法端口 → 友好错误')
+    else fail('B28i 非法端口 → 友好错误', JSON.stringify(r7))
+
+    await sftpd.close()
   }
 
   const failed = RESULTS.filter(([kind]) => kind === 'FAIL')

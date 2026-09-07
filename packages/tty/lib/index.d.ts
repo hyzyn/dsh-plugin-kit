@@ -93,9 +93,20 @@ export interface Config {
     persistence?: 'off' | 'tmux';
     /** 页面（最后一个连接）断开且保活期结束时，是否连 tmux 持久会话一起结束（默认 false = 留存可恢复）。 */
     endOnPageClose?: boolean;
+    /** SFTP 传输限制（0 = 不限）。 */
+    sftpLimits?: Partial<SftpLimits>;
     /** 内部状态：SSH 持久会话名（远程 tmux 托管，本机 socket 清单看不到，随 settings 留存供新窗口恢复确认）。 */
     persistSessions?: Array<{
         tmuxName: string;
     }>;
+}
+/** SFTP 传输限制（均为 0 = 不限；客户端浏览器侧执行，宿主不做总量闸）。 */
+export interface SftpLimits {
+    /** 单文件下载上限（MB）。默认 1024。 */
+    maxDownloadMb: number;
+    /** 单文件上传上限（MB）。默认 2048。 */
+    maxUploadMb: number;
+    /** 一次批量/拖拽上传的文件数上限。默认 1000。 */
+    maxUploadFiles: number;
 }
 export declare const name: string, inject: string[] | undefined, apply: (ctx: Context, config?: Config | undefined) => void;

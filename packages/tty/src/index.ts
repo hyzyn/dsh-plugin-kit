@@ -79,6 +79,7 @@ import { definePlugin } from '@hyzyn/dsh-kit'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { spawnSsh, sshTarget, expandHome } from './ssh.js'
 import type { HostKeyRecord, SshHostEntry, SshSpec, TermHandle } from './ssh.js'
+import { probeSsh } from './probe.js'
 import { buildShellSpawn } from './shell-integration.js'
 import { parseSshConfig } from './ssh-config.js'
 import { parseKnownHosts } from './known-hosts.js'
@@ -120,9 +121,24 @@ export interface Config {
   persistence?: 'off' | 'tmux'
   /** 页面（最后一个连接）断开且保活期结束时，是否连 tmux 持久会话一起结束（默认 false = 留存可恢复）。 */
   endOnPageClose?: boolean
+  /** SFTP 传输限制（0 = 不限）。 */
+  sftpLimits?: Partial<SftpLimits>
   /** 内部状态：SSH 持久会话名（远程 tmux 托管，本机 socket 清单看不到，随 settings 留存供新窗口恢复确认）。 */
   persistSessions?: Array<{ tmuxName: string }>
 }
+
+/** SFTP 传输限制（均为 0 = 不限；客户端浏览器侧执行，宿主不做总量闸）。 */
+export interface SftpLimits {
+  /** 单文件下载上限（MB）。默认 1024。 */
+  maxDownloadMb: number
+  /** 单文件上传上限（MB）。默认 2048。 */
+  maxUploadMb: number
+  /** 一次批量/拖拽上传的文件数上限。默认 1000。 */
+  maxUploadFiles: number
+}
+
+/** SFTP 传输限制默认值。 */
+const DEFAULT_SFTP_LIMITS: Required<SftpLimits> = { maxDownloadMb: 1024, maxUploadMb: 2048, maxUploadFiles: 1000 }
 
 const SSH_HOST_SCHEMA = z.object({
   name: z.string(),
@@ -173,6 +189,11 @@ const TTY_SETTINGS_SCHEMA = z.object({
   sftpStyle: z.union([z.const('dialog'), z.const('dual')]).default('dialog'),
   persistence: z.union([z.const('off'), z.const('tmux')]).default('off'),
   endOnPageClose: z.boolean().default(false),
+  sftpLimits: z.object({
+    maxDownloadMb: z.natural().max(1024 * 1024).default(1024),
+    maxUploadMb: z.natural().max(1024 * 1024).default(2048),
+    maxUploadFiles: z.natural().max(100000).default(1000),
+  }).default({ maxDownloadMb: 1024, maxUploadMb: 2048, maxUploadFiles: 1000 }),
   persistSessions: z.array(z.object({ tmuxName: z.string() })).default([]),
 })
 
@@ -324,8 +345,10 @@ class LiveConfig {
   endOnPageClose: boolean
   /** SSH 持久会话名（远程 tmux 托管；本机 socket 清单看不到，随 settings 留存）。 */
   persistSessions: string[]
+  /** SFTP 传输限制（客户端浏览器侧执行）。 */
+  sftpLimits: Required<SftpLimits>
 
-  constructor(init: { shell: string; term: string; colorTerm: string; cwd: string; reconnectGraceSec: number; sshHosts?: SshHostEntry[]; hostKeys?: HostKeyRecord[]; shellIntegration: boolean; tunnels?: TunnelSpec[]; persistence?: 'off' | 'tmux'; endOnPageClose?: boolean; persistSessions?: string[] }) {
+  constructor(init: { shell: string; term: string; colorTerm: string; cwd: string; reconnectGraceSec: number; sshHosts?: SshHostEntry[]; hostKeys?: HostKeyRecord[]; shellIntegration: boolean; tunnels?: TunnelSpec[]; persistence?: 'off' | 'tmux'; endOnPageClose?: boolean; sftpLimits?: Partial<SftpLimits>; persistSessions?: string[] }) {
     this.shell = init.shell
     this.term = sanitizeTermValue(init.term, 'xterm-256color')
     this.colorTerm = sanitizeTermValue(init.colorTerm, 'truecolor')
@@ -337,11 +360,12 @@ class LiveConfig {
     this.tunnels = init.tunnels ?? []
     this.persistence = init.persistence === 'tmux' ? 'tmux' : 'off'
     this.endOnPageClose = init.endOnPageClose === true
+    this.sftpLimits = sanitizeSftpLimits(init.sftpLimits)
     this.persistSessions = init.persistSessions ?? []
   }
 
   /** 合并部分更新；空字符串/undefined 保持原值；sshHosts/hostKeys/tunnels 传数组即整体替换。 */
-  apply(partial: Partial<{ shell: string; term: string; colorTerm: string; cwd: string; reconnectGraceSec: number; sshHosts: SshHostEntry[]; hostKeys: HostKeyRecord[]; shellIntegration: boolean; tunnels: TunnelSpec[]; persistence: 'off' | 'tmux'; endOnPageClose: boolean; persistSessions: string[] }>): void {
+  apply(partial: Partial<{ shell: string; term: string; colorTerm: string; cwd: string; reconnectGraceSec: number; sshHosts: SshHostEntry[]; hostKeys: HostKeyRecord[]; shellIntegration: boolean; tunnels: TunnelSpec[]; persistence: 'off' | 'tmux'; endOnPageClose: boolean; sftpLimits?: Partial<SftpLimits>; persistSessions: string[] }>): void {
     if (typeof partial.shell === 'string' && partial.shell.trim() !== '') this.shell = partial.shell.trim()
     if (typeof partial.term === 'string' && partial.term.trim() !== '') this.term = sanitizeTermValue(partial.term, this.term)
     if (typeof partial.colorTerm === 'string' && partial.colorTerm.trim() !== '') this.colorTerm = sanitizeTermValue(partial.colorTerm, this.colorTerm)
@@ -355,6 +379,7 @@ class LiveConfig {
     if (Array.isArray(partial.tunnels)) this.tunnels = partial.tunnels
     if (partial.persistence === 'tmux' || partial.persistence === 'off') this.persistence = partial.persistence
     if (typeof partial.endOnPageClose === 'boolean') this.endOnPageClose = partial.endOnPageClose
+    if (partial.sftpLimits !== undefined) this.sftpLimits = sanitizeSftpLimits({ ...this.sftpLimits, ...partial.sftpLimits })
     if (Array.isArray(partial.persistSessions)) this.persistSessions = partial.persistSessions
   }
 
@@ -657,6 +682,19 @@ function sanitizeHostKeys(input: unknown): HostKeyRecord[] | undefined {
     })
   }
   return out
+}
+
+/** 清洗一份 sftpLimits 输入：每项取 0~上限 的整数（0 = 不限），缺省回落默认值。 */
+function sanitizeSftpLimits(input: Partial<SftpLimits> | undefined): Required<SftpLimits> {
+  const num = (value: unknown, fallback: number, max: number): number => {
+    const n = Number(value)
+    return Number.isInteger(n) && n >= 0 && n <= max ? n : fallback
+  }
+  return {
+    maxDownloadMb: num(input?.maxDownloadMb, DEFAULT_SFTP_LIMITS.maxDownloadMb, 1024 * 1024),
+    maxUploadMb: num(input?.maxUploadMb, DEFAULT_SFTP_LIMITS.maxUploadMb, 1024 * 1024),
+    maxUploadFiles: num(input?.maxUploadFiles, DEFAULT_SFTP_LIMITS.maxUploadFiles, 100000),
+  }
 }
 
 /** 严格校验一份 hostKeys 输入（HTTP POST 路径）；返回错误信息或清洗后的数组。 */
@@ -1696,6 +1734,8 @@ interface ConfigSnapshot {
   persistence: 'off' | 'tmux'
   /** 页面断开且保活期结束时是否结束 tmux 持久会话。 */
   endOnPageClose: boolean
+  /** SFTP 传输限制（客户端渲染 + 浏览器侧执行）。 */
+  sftpLimits: Required<SftpLimits>
   /** agent 工具（tty_list / tty_capture / tty_screen / tty_expect / tty_send / tunnel_list / sftp_list / sftp_read / sftp_write / sftp_mkdir / sftp_rename / sftp_remove / sftp_tree）是否已注册到 harness。 */
   toolsRegistered: boolean
 }
@@ -1719,6 +1759,7 @@ const plugin = definePlugin<Config>({
       tunnels: Array.isArray(config?.tunnels) ? config.tunnels : [],
       persistence: config?.persistence === 'tmux' ? 'tmux' : 'off',
       endOnPageClose: config?.endOnPageClose === true,
+      sftpLimits: sanitizeSftpLimits(config?.sftpLimits),
       persistSessions: sanitizePersistSessions(config?.persistSessions) ?? [],
     })
     const sessions = new SessionManager(config?.maxSessions ?? DEFAULT_MAX_SESSIONS, () => live.endOnPageClose)
@@ -1779,6 +1820,7 @@ const plugin = definePlugin<Config>({
       sftpStyle: stateRef.sftpStyle,
       persistence: live.persistence,
       endOnPageClose: live.endOnPageClose,
+      sftpLimits: live.sftpLimits,
       toolsRegistered: stateRef.toolsRegistered,
     })
 
@@ -1796,6 +1838,7 @@ const plugin = definePlugin<Config>({
         tunnels: sanitizeTunnels(section.tunnels),
         persistence: section.persistence === 'tmux' || section.persistence === 'off' ? section.persistence : undefined,
         endOnPageClose: typeof section.endOnPageClose === 'boolean' ? section.endOnPageClose : undefined,
+        sftpLimits: typeof section.sftpLimits === 'object' && section.sftpLimits !== null ? section.sftpLimits as Record<string, unknown> : undefined,
         persistSessions: sanitizePersistSessions(section.persistSessions),
       })
       // 隧道按最新规格对齐（幂等；sshHosts 变更也会触发，让重连取到新凭证）
@@ -1812,7 +1855,7 @@ const plugin = definePlugin<Config>({
     /** 校验 HTTP POST 的配置体；返回规范化补丁或错误信息。 */
     const normalizePatch = (input: Record<string, unknown>): { patch?: Record<string, unknown>; error?: string } => {
       const patch: Record<string, unknown> = {}
-      const known = new Set(['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'sshHosts', 'hostKeys', 'tunnels', 'shellIntegration', 'sftpStyle', 'persistence', 'endOnPageClose'])
+      const known = new Set(['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'sshHosts', 'hostKeys', 'tunnels', 'shellIntegration', 'sftpStyle', 'persistence', 'endOnPageClose', 'sftpLimits'])
       for (const key of Object.keys(input)) {
         if (!known.has(key)) return { error: '未知配置项: ' + key }
       }
@@ -1880,6 +1923,20 @@ const plugin = definePlugin<Config>({
         const validated = validateTunnels(input.tunnels, bookNames)
         if (validated.error !== undefined) return { error: validated.error }
         patch.tunnels = validated.tunnels
+      }
+      if (input.sftpLimits !== undefined) {
+        if (typeof input.sftpLimits !== 'object' || input.sftpLimits === null || Array.isArray(input.sftpLimits)) return { error: 'sftpLimits 必须是对象' }
+        const raw = input.sftpLimits as Record<string, unknown>
+        const next: Partial<Record<keyof SftpLimits, number>> = {}
+        for (const key of ['maxDownloadMb', 'maxUploadMb', 'maxUploadFiles'] as const) {
+          if (raw[key] === undefined) continue
+          const value = Number(raw[key])
+          if (!Number.isInteger(value) || value < 0 || value > (key === 'maxUploadFiles' ? 100000 : 1024 * 1024)) {
+            return { error: key + ' 必须是 0~' + (key === 'maxUploadFiles' ? '100000' : '1048576') + ' 的整数（0 = 不限）' }
+          }
+          next[key] = value
+        }
+        patch.sftpLimits = next
       }
       return { patch }
     }
@@ -1998,6 +2055,70 @@ const plugin = definePlugin<Config>({
             } catch (error) {
               writeJson(res, 200, { ok: false, error: '无法读取 ~/.ssh/known_hosts: ' + (error instanceof Error ? error.message : String(error)) })
             }
+          },
+        }))
+        // SSH 连接测试（0.11.0，src/probe.ts）：连接簿行「测试」与 SSH 对话框
+        // 「试连」共用。body 携带完整内联 SSH 规格（不引用连接簿——卡片测试
+        // 由客户端先行展开条目），免去服务端按 name 解析；只诊断不建会话。
+        // 连接簿条目测试传 store（新指纹当场 TOFU record）；对话框试连不带
+        // store（只比对不落盘，避免给未保存草稿建立钉扎）。
+        disposers.push(webServer.register({
+          kind: 'exact',
+          path: '/api/dsh-tty/probe',
+          handler: async (req: ReqLike & AsyncIterable<Uint8Array>, res: ResLike) => {
+            if (!isLoopbackHttp(req)) {
+              writeJson(res, 403, { error: 'forbidden: loopback-only' })
+              return
+            }
+            if (req.method !== 'POST') {
+              writeJson(res, 405, { error: 'method not allowed: ' + String(req.method) })
+              return
+            }
+            const body = await readJsonBody(req)
+            if (body === undefined) {
+              writeJson(res, 400, { error: 'invalid JSON body' })
+              return
+            }
+            const host = typeof body.host === 'string' ? body.host.trim() : ''
+            const username = typeof body.username === 'string' ? body.username.trim() : ''
+            if (host === '' || username === '') {
+              writeJson(res, 200, { ok: false, error: '主机与用户名必填' })
+              return
+            }
+            let port = 22
+            if (body.port !== undefined && body.port !== '') {
+              const value = Number(body.port)
+              if (!Number.isInteger(value) || value < 1 || value > 65535) {
+                writeJson(res, 200, { ok: false, error: '端口必须是 1~65535 的整数' })
+                return
+              }
+              port = value
+            }
+            const auth = body.auth === 'key' || body.auth === 'password' ? body.auth : 'agent'
+            const spec: SshSpec = { host, port, username, auth }
+            if (auth === 'key') {
+              const keyPath = typeof body.keyPath === 'string' ? body.keyPath.trim() : ''
+              if (keyPath === '') {
+                writeJson(res, 200, { ok: false, error: 'auth=key 需要私钥路径' })
+                return
+              }
+              spec.keyPath = keyPath
+              const passphrase = typeof body.passphrase === 'string' ? body.passphrase : ''
+              if (passphrase !== '') spec.passphrase = passphrase
+            }
+            if (auth === 'password') {
+              const password = typeof body.password === 'string' ? body.password : ''
+              if (password === '') {
+                writeJson(res, 200, { ok: false, error: 'auth=password 需要密码' })
+                return
+              }
+              spec.password = password
+            }
+            if (body.agentForward === true) spec.agentForward = true
+            // bookRecord=true：来自连接簿条目的完整 TOFU（store 记录新指纹）；
+            // 缺省（对话框试连）只比对不落盘
+            const result = await probeSsh(spec, body.bookRecord === true ? hostKeyStore : undefined)
+            writeJson(res, 200, { ok: result.auth.ok, result })
           },
         }))
         // 已安装 shell 候选（设置卡片「Shell 路径」可选可输入）：loopback 围栏，只回路径不执行
