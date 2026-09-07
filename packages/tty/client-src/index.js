@@ -52,6 +52,14 @@
  *     存活）；连接栏与 ready 帧带 tmux 持久标记；0.10.1 起持久标签规格
  *     另存 localStorage（跨窗口），新窗口经 sessions 帧的 tmux 清单确认
  *     后自动接回；reset 后以 refresh 帧请宿主 refresh-client 重画
+ * v0.11 能力：
+ *   - SSH 连接测试：设置卡片连接簿条目行内「测试」按钮 + SSH 连接对话框
+ *     「试连」按钮——按当前填写的 host/port/认证 走宿主 /api/dsh-tty/probe
+ *     做 TCP → 主机密钥（TOFU）→ 认证 逐段诊断，不建会话不占名额；连接簿
+ *     测试随行展示结果（成功/失败原因 + host key 记录/匹配/变更提示）
+ *   - SFTP 传输进度条：底部状态行新增细进度条 + 百分比——上传（XHR 流式，
+ *     多文件带 i/n 标签）、下载（改流式读 response.body，content-length
+ *     算百分比；无双栏整传走服务端直传时为不定进度脉冲）
  * 帧协议与宿主半体（src/index.ts）对齐：spawn/ssh/input/resize/kill/
  * sessions/attach ↔ ready/data/exit/error/sessions。
  */
@@ -190,11 +198,16 @@ const CSS = [
   '.tt_sshRow{display:flex;flex-direction:column;gap:5px}',
   '.tt_sshGrid{display:grid;grid-template-columns:1fr 110px;gap:10px}',
   '.tt_sshActions{display:flex;gap:10px;justify-content:flex-end;margin-top:4px}',
+  // 对话框按钮行统一尺寸：主按钮与工具按钮同高同行（仅配色区分主次）
+  '.tt_sshActions .tt_toolBtn,.tt_sshActions .tt_cardSave{height:26px;padding:0 10px;font-size:12px;line-height:1.5;box-sizing:border-box}',
   '.tt_sshError{color:var(--dsw-alias-state-error-primary);font-size:12px;min-height:16px;line-height:1.4}',
   '.tt_sshHostRow{display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--dsw-alias-border-l1)}',
   '.tt_sshHostMeta{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}',
   '.tt_sshHostName{font-size:13px;font-weight:500;color:var(--dsw-alias-label-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
   '.tt_sshHostTarget{font-size:12px;color:var(--dsw-alias-label-tertiary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+  '.tt_sshProbeResult{margin:2px 0 4px;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word}',
+  '.tt_sshProbeOk{color:var(--dsw-alias-state-success-primary)}',
+  '.tt_sshProbeBad{color:var(--dsw-alias-state-error-primary)}',
   // 连接簿行内编辑表单
   '.tt_sshEdit{border:1px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-3);display:flex;flex-direction:column;gap:8px;padding:10px;margin:4px 0 8px}',
   // 隧道状态点（活跃绿 / 连接中蓝 / 错误红 / 停止灰）
@@ -241,6 +254,14 @@ const CSS = [
   '.tt_sftpStatus{flex:1;min-width:0;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-tertiary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
   '.tt_sftpStatus[data-state=error]{color:var(--dsw-alias-state-error-primary)}',
   '.tt_sftpStatus[data-state=busy]{color:var(--dsw-alias-state-business-primary)}',
+  // 传输进度条（0.11.0）：状态行下方细条 + 百分比文本，上传/下载共用
+  '.tt_sftpProgress{flex:none;width:172px;display:none;align-items:center;gap:6px}',
+  '.tt_sftpProgress[data-active]{display:flex}',
+  '.tt_sftpTrack{flex:1;height:4px;border-radius:2px;background:var(--dsw-alias-border-l2);overflow:hidden}',
+  '.tt_sftpFill{height:100%;width:0;border-radius:2px;background:var(--dsw-alias-state-business-primary);transition:width .15s linear}',
+  '.tt_sftpProgress[data-state=error] .tt_sftpFill{background:var(--dsw-alias-state-error-primary)}',
+  '.tt_sftpProgress[data-state=done] .tt_sftpFill{background:var(--dsw-alias-state-success-primary)}',
+  '.tt_sftpPct{flex:none;font-size:11px;color:var(--dsw-alias-label-tertiary);font-family:"SF Mono",Menlo,Consolas,monospace;min-width:38px;max-width:110px;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
   // 双栏 SFTP（0.9.0，sftpStyle=dual）：左本机 / 右远程两栏，行内 ⇨/⇦ 直传
   '.tt_sftpDualCard{width:min(1180px,96vw);height:min(720px,88vh);background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:14px;box-shadow:var(--dsw-shadow-lv3);color:var(--dsw-alias-label-primary);padding:16px;display:flex;flex-direction:column;gap:10px;overflow:hidden}',
   '.tt_sftpDual{flex:1;min-height:0;display:flex;gap:12px}',
@@ -982,6 +1003,8 @@ let tunnelsCache = []
 let sftpStyleCache = 'dialog'
 /** 会话持久化模式缓存（off / tmux）：config 快照与设置保存同步，控制「+」菜单与 SSH 对话框的持久入口。 */
 let persistenceCache = 'off'
+/** SFTP 传输限制缓存（0 = 不限）：跟随 config 快照，浏览器侧执行。 */
+let sftpLimitsCache = { maxDownloadMb: 1024, maxUploadMb: 2048, maxUploadFiles: 1000 }
 /** 宿主并发会话上限与最近一次查询的存活会话数（新增标签的前置校验用）。 */
 let maxSessionsCache = null
 let liveSessionCount = null
@@ -997,6 +1020,9 @@ function syncSshHostsCache(config) {
   }
   if (config !== null && typeof config === 'object' && (config.persistence === 'tmux' || config.persistence === 'off')) {
     persistenceCache = config.persistence
+  }
+  if (config !== null && typeof config === 'object' && typeof config.sftpLimits === 'object' && config.sftpLimits !== null) {
+    sftpLimitsCache = { ...sftpLimitsCache, ...config.sftpLimits }
   }
   if (config !== null && typeof config === 'object' && Number.isInteger(config.maxSessions) && config.maxSessions >= 1) {
     maxSessionsCache = config.maxSessions
@@ -1069,6 +1095,40 @@ function sshHostTargetLabel(entry) {
   const auth = entry?.auth === 'key' ? 'key' : entry?.auth === 'password' ? 'password' : 'agent'
   const fwd = entry?.agentForward === true ? ' · fwd' : ''
   return String(entry?.username ?? '') + '@' + String(entry?.host ?? '') + suffix + ' · ' + auth + fwd
+}
+
+/** POST /api/dsh-tty/probe 发起一次 SSH 连接测试；返回 result 或 {error}。 */
+async function probeSshFetch(spec, bookRecord) {
+  const res = await fetch('/api/dsh-tty/probe', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ...spec, bookRecord: bookRecord === true }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (data && data.ok === false && data.error) return { error: String(data.error) }
+  if (data && data.result) return { result: data.result }
+  return { error: String(data && data.error ? data.error : '连接测试失败（HTTP ' + res.status + '）') }
+}
+
+/** 把 probe 结果压缩成一行摘要（按钮旁/卡片内提示用）。 */
+function probeSummary(probeResult, opts) {
+  if (!probeResult) return '连接测试…'
+  const r = probeResult
+  const tcpMs = typeof r.tcp?.ms === 'number' ? r.tcp.ms : null
+  const authMs = typeof r.auth?.ms === 'number' ? r.auth.ms : null
+  const tail = []
+  if (r.tcp?.ok) tail.push('TCP ' + (tcpMs !== null ? tcpMs + 'ms' : '通'))
+  if (r.banner?.ok) tail.push('banner 正常')
+  const hk = r.hostkey?.state
+  if (hk === 'matched') tail.push('主机密钥匹配')
+  else if (hk === 'recorded') tail.push('主机密钥已记录（TOFU）')
+  else if (hk === 'mismatch') tail.push('主机密钥不匹配！')
+  if (r.auth?.ok) {
+    const authText = authMs !== null ? '认证通过（' + authMs + 'ms）' : '认证通过'
+    return '✅ 连接成功：' + authText + (tail.length ? ' · ' + tail.join(' · ') : '')
+  }
+  const failed = r.auth?.error || r.tcp?.error || '未知错误'
+  return (opts?.prefix || '❌ 连接失败：') + failed + (tail.length ? ' · ' + tail.join(' · ') : '')
 }
 
 /** 拉取连接簿（失败静默保留旧缓存）；菜单开着时原位刷新条目。 */
@@ -1469,6 +1529,45 @@ function openSshDialog(entry) {
   const errorEl = document.createElement('div')
   errorEl.className = 'tt_sshError'
   card.appendChild(errorEl)
+  const probeEl = document.createElement('div')
+  probeEl.className = 'tt_sshProbeResult'
+  probeEl.style.display = 'none'
+  card.appendChild(probeEl)
+
+  /** 从当前对话框字段收集 probe spec（不含 name/persist）；字段不齐返回 null 并提示。 */
+  const collectProbeSpec = () => {
+    errorEl.textContent = ''
+    const host = fields.host.value.trim()
+    const username = fields.username.value.trim()
+    let port = Number(fields.port.value)
+    if (!Number.isInteger(port) || port < 1 || port > 65535) port = 22
+    if (host === '' || username === '') {
+      errorEl.textContent = '主机与用户名必填'
+      return null
+    }
+    const auth = fields.auth.value
+    const spec = { host, port, username, auth }
+    if (auth === 'key') {
+      const keyPath = fields.keyPath.value.trim()
+      if (keyPath === '') {
+        errorEl.textContent = 'auth=key 需要私钥路径'
+        return null
+      }
+      spec.keyPath = keyPath
+      const passphrase = fields.passphrase.value
+      if (passphrase !== '') spec.passphrase = passphrase
+    }
+    if (auth === 'password') {
+      const password = fields.password.value
+      if (password === '') {
+        errorEl.textContent = 'auth=password 需要密码'
+        return null
+      }
+      spec.password = password
+    }
+    if (fwdCheck.checked) spec.agentForward = true
+    return spec
+  }
 
   const actions = document.createElement('div')
   actions.className = 'tt_sshActions'
@@ -1567,6 +1666,31 @@ function openSshDialog(entry) {
     })
     actions.appendChild(saveEditBtn)
   }
+  // 试连：不建会话、不占名额；按当前填写诊断 TCP/主机密钥/认证（不落盘 TOFU）
+  const probeBtn = document.createElement('button')
+  probeBtn.type = 'button'
+  probeBtn.className = 'tt_toolBtn'
+  probeBtn.textContent = '试连'
+  probeBtn.title = '按当前填写诊断连接（TCP → 主机密钥 → 认证）；不会新建会话，也不记录主机指纹'
+  probeBtn.addEventListener('click', () => {
+    const spec = collectProbeSpec()
+    if (spec === null) return
+    probeEl.style.display = ''
+    probeEl.className = 'tt_sshProbeResult'
+    probeEl.textContent = '连接测试中…'
+    probeBtn.disabled = true
+    void probeSshFetch(spec, false).then((out) => {
+      probeBtn.disabled = false
+      if (out.result) {
+        probeEl.className = 'tt_sshProbeResult' + (out.result.auth?.ok === true ? ' tt_sshProbeOk' : ' tt_sshProbeBad')
+        probeEl.textContent = probeSummary(out.result)
+      } else {
+        probeEl.className = 'tt_sshProbeResult tt_sshProbeBad'
+        probeEl.textContent = '❌ 连接失败：' + String(out.error || '未知错误')
+      }
+    })
+  })
+  actions.appendChild(probeBtn)
   actions.appendChild(connectBtn)
   card.appendChild(actions)
 
@@ -1858,6 +1982,9 @@ function openSftpDual(spec, label) {
       }
       // 直传：⇨ 本机→远程 / ⇦ 远程→本机（对面栏当前目录下；目录递归、同名覆盖）
       appendAct(row, kind === 'local' ? '⇨' : '⇦', '传输到' + (kind === 'local' ? '远程' : '本机') + '：' + other.path, () => {
+        progress.reset()
+        // 服务端直传（字节不经过浏览器）：无长度可分，用不定进度脉冲提示活跃
+        progress.pulse(0)
         runJoint('传输 ' + entry.name + '…', async () => {
           const res = await fetch('/api/dsh-tty/local-fs/transfer', {
             method: 'POST',
@@ -1870,7 +1997,12 @@ function openSftpDual(spec, label) {
             }),
           })
           const data = await res.json().catch(() => ({}))
-          if (!res.ok || data.ok !== true) throw new Error(String(data.error || 'HTTP ' + res.status))
+          if (!res.ok || data.ok !== true) {
+            progress.fail('传输失败')
+            throw new Error(String(data.error || 'HTTP ' + res.status))
+          }
+          progress.done('完成')
+          setTimeout(() => progress.reset(), 1500)
           setStatus('已传输 ' + entry.name)
           await other.loadDir(other.path)
         })
@@ -2074,22 +2206,23 @@ function openSftpDual(spec, label) {
 
   /** 远程文件浏览器下载（双栏里保留；整传用 ⇦ 走服务端直传）。 */
   const downloadRemoteEntry = (entry, full) => panes.remote.runTask('下载 ' + entry.name + '…', async () => {
-    const res = await fetch('/api/dsh-tty/sftp/download', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ...spec, path: full }),
-    })
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}))
-      throw new Error(String(data.error || 'HTTP ' + res.status))
+    progress.reset()
+    let blob
+    try {
+      blob = await fetchBlobWithProgress('/api/dsh-tty/sftp/download', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...spec, path: full }),
+      }, (loaded, total) => {
+        progress.set(loaded, total)
+      }, sftpLimitsCache.maxDownloadMb)
+    } catch (error) {
+      progress.fail('下载失败')
+      throw error
     }
-    const blob = await res.blob()
-    const url = URL.createObjectURL(blob)
-    const anchor = document.createElement('a')
-    anchor.href = url
-    anchor.download = entry.name
-    anchor.click()
-    setTimeout(() => URL.revokeObjectURL(url), 30_000)
+    progress.done('完成')
+    triggerBlobDownload(blob, entry.name)
+    setTimeout(() => progress.reset(), 1500)
     setStatus('已下载 ' + entry.name + '（' + (formatBytes(blob.size) || String(blob.size) + ' B') + '）')
   })
 
@@ -2108,6 +2241,8 @@ function openSftpDual(spec, label) {
 
   const foot = document.createElement('div')
   foot.className = 'tt_sftpFoot'
+  const progress = makeProgressBar()
+  foot.appendChild(progress.el)
   foot.appendChild(status)
   card.appendChild(foot)
 
@@ -2147,6 +2282,20 @@ function formatBytes(n) {
   return (value >= 100 ? value.toFixed(0) : value.toFixed(1)) + ' ' + units[index]
 }
 
+/** 速率格式化（bytes/s）：整数化避免「512.3 B/s」这类小数值。 */
+function formatRate(bytesPerSec) {
+  if (!Number.isFinite(bytesPerSec) || bytesPerSec <= 0) return ''
+  if (bytesPerSec < 1024) return '<1 KB/s'
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let value = bytesPerSec
+  let index = -1
+  do {
+    value /= 1024
+    index += 1
+  } while (value >= 1024 && index < units.length - 1)
+  return (value >= 100 ? value.toFixed(0) : value.toFixed(1)) + ' ' + units[index] + '/s'
+}
+
 function formatMtime(ms) {
   const date = new Date(ms)
   if (Number.isNaN(date.getTime())) return ''
@@ -2163,6 +2312,202 @@ function parentRemotePath(path) {
 
 function joinRemotePath(dir, name) {
   return dir.endsWith('/') ? dir + name : dir + '/' + name
+}
+
+/**
+ * 传输进度条（0.11.0）：状态行右侧的细条 + 百分比。返回受控对象：
+ *   el —— 挂到 foot（status 前）的容器
+ *   set(loaded, total, label) —— 更新进度（total 未知时显示文本不定进度）
+ *   pulse(label) —— 总字节未知的忙碌态（如服务端直传）
+ *   done(label) / fail(label) —— 终态着色
+ *   reset() —— 隐藏并复位（下一次传输前调用）
+ * 进度只做视觉反馈，不阻塞调用方；label 可带「文件 i/n · 名字」。
+ */
+function makeProgressBar() {
+  const el = document.createElement('div')
+  el.className = 'tt_sftpProgress'
+  const track = document.createElement('div')
+  track.className = 'tt_sftpTrack'
+  const fill = document.createElement('div')
+  fill.className = 'tt_sftpFill'
+  track.appendChild(fill)
+  const pct = document.createElement('span')
+  pct.className = 'tt_sftpPct'
+  pct.textContent = ''
+  el.appendChild(track)
+  el.appendChild(pct)
+  const setText = (text) => { pct.textContent = text }
+  // 效率：文本去重（同文本不重复写 DOM）+ 宽度只按整数百分比更新
+  let lastText = ''
+  let lastWidth = -1
+  const setTextOnce = (text) => {
+    if (text !== lastText) {
+      lastText = text
+      pct.textContent = text
+    }
+  }
+  const setWidth = (percent) => {
+    const rounded = Math.round(percent)
+    if (rounded !== lastWidth) {
+      lastWidth = rounded
+      fill.style.width = rounded + '%'
+    }
+  }
+  const api = {
+    el,
+    reset() {
+      delete el.dataset.active
+      delete el.dataset.state
+      lastText = ''
+      lastWidth = -1
+      this._last = undefined
+      this._lastAt = 0
+      this._rate = undefined
+      fill.style.width = '0%'
+      pct.textContent = ''
+    },
+    /**
+     * loaded/total 都明确：真实百分比 + 实时速率（bytes/s）。
+     * 速率按调用间隔滑动平均（EMA），高频 chunk 不抖动。
+     */
+    set(loaded, total) {
+      el.dataset.active = ''
+      delete el.dataset.state
+      const now = Date.now()
+      if (this._last !== undefined && now > this._lastAt) {
+        const inst = (loaded - this._last) / ((now - this._lastAt) / 1000)
+        this._rate = this._rate === undefined ? inst : this._rate * 0.7 + inst * 0.3
+      }
+      this._last = loaded
+      this._lastAt = now
+      if (Number.isFinite(total) && total > 0) {
+        const percent = Math.min(100, Math.max(0, (loaded / total) * 100))
+        setWidth(percent)
+        const rate = this._rate !== undefined && this._rate >= 0 ? formatRate(this._rate) : ''
+        setTextOnce(Math.round(percent) + '%' + (rate !== '' ? ' · ' + rate : ''))
+      } else {
+        fill.style.width = ''
+        const rate = this._rate !== undefined && this._rate >= 0 ? formatRate(this._rate) : ''
+        setTextOnce(formatBytes(loaded) + (rate !== '' ? ' · ' + rate : ''))
+      }
+    },
+    /** 总量未知（无 content-length）：走不定进度（条纹动画）+ 已传字节 + 速率。 */
+    pulse(loaded) {
+      el.dataset.active = ''
+      delete el.dataset.state
+      fill.style.width = '45%'
+      fill.style.transition = 'none'
+      setTimeout(() => { fill.style.transition = 'width .15s linear' }, 30)
+      const now = Date.now()
+      if (this._last !== undefined && now > this._lastAt) {
+        const inst = (loaded - this._last) / ((now - this._lastAt) / 1000)
+        this._rate = this._rate === undefined ? inst : this._rate * 0.7 + inst * 0.3
+      }
+      this._last = loaded
+      this._lastAt = now
+      const rate = this._rate !== undefined && this._rate >= 0 ? formatRate(this._rate) : ''
+      setTextOnce((Number.isFinite(loaded) ? formatBytes(loaded) : '…') + (rate !== '' ? ' · ' + rate : ''))
+    },
+    done(label) {
+      el.dataset.active = ''
+      el.dataset.state = 'done'
+      fill.style.width = '100%'
+      lastWidth = 100
+      setTextOnce(label !== undefined && label !== '' ? label : '完成')
+    },
+    fail(label) {
+      el.dataset.active = ''
+      el.dataset.state = 'error'
+      setTextOnce(label !== undefined && label !== '' ? label : '失败')
+    },
+    /** 文本状态（兼容仅文案提示）。 */
+    text(text) {
+      delete el.dataset.state
+      if (text === undefined || text === '') {
+        el.dataset.active = ''
+        lastText = ''
+        pct.textContent = ''
+      } else {
+        el.dataset.active = ''
+        fill.style.width = ''
+        lastWidth = -1
+        setTextOnce(text)
+      }
+    },
+  }
+  return api
+}
+
+/**
+ * 流式下载为 Blob 并汇报进度（0.11.0）：fetch 端点带 content-length 时按
+ * response.body reader 累积算百分比；无 length 时降级不定进度。返回 Blob。
+ * maxMb（0 = 不限）：content-length 超限在开始前中止；无长度时累计超限中止
+ * （reader.cancel 停下载流，避免整文件灌内存）。
+ */
+async function fetchBlobWithProgress(url, init, onProgress, maxMb = 0) {
+  const maxBytes = maxMb > 0 ? maxMb * 1024 * 1024 : 0
+  const res = await fetch(url, init)
+  if (!res.ok) {
+    let message = 'HTTP ' + res.status
+    try {
+      const data = await res.json()
+      if (data !== null && typeof data === 'object' && typeof data.error === 'string') message = data.error
+    } catch {
+      /* 保底状态码 */
+    }
+    throw new Error(message)
+  }
+  const total = Number(res.headers.get('content-length'))
+  const totalFinite = Number.isFinite(total) && total > 0
+  if (maxBytes > 0 && totalFinite && total > maxBytes) {
+    try {
+      await res.body?.cancel()
+    } catch {
+      /* 已取消 */
+    }
+    throw new Error('文件超过下载上限（' + formatBytes(maxBytes) + '）：请用双栏 ⇦ 直传或终端 scp/rsync')
+  }
+  const body = res.body
+  if (body === null || typeof body.getReader !== 'function') {
+    // 极老浏览器无流式 body：退回一次性 blob（无进度）
+    const blob = await res.blob()
+    if (maxBytes > 0 && blob.size > maxBytes) {
+      throw new Error('文件超过下载上限（' + formatBytes(maxBytes) + '）：请用双栏 ⇦ 直传或终端 scp/rsync')
+    }
+    if (totalFinite) onProgress(total, total)
+    return blob
+  }
+  const reader = body.getReader()
+  const chunks = []
+  let received = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    if (value !== undefined && value.byteLength > 0) {
+      received += value.byteLength
+      if (maxBytes > 0 && received > maxBytes) {
+        try {
+          await reader.cancel()
+        } catch {
+          /* 已取消 */
+        }
+        throw new Error('文件超过下载上限（' + formatBytes(maxBytes) + '）：请用双栏 ⇦ 直传或终端 scp/rsync')
+      }
+      chunks.push(value)
+      onProgress(received, totalFinite ? total : NaN)
+    }
+  }
+  return new Blob(chunks, { type: 'application/octet-stream' })
+}
+
+/** 触发浏览器下载（Blob → 临时 <a download>）。 */
+function triggerBlobDownload(blob, filename) {
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  anchor.click()
+  setTimeout(() => URL.revokeObjectURL(url), 30_000)
 }
 
 /**
@@ -2183,11 +2528,26 @@ async function collectDroppedFiles(dataTransfer) {
     return [...(dataTransfer.files ?? [])].map((file) => ({ relPath: file.name, file }))
   }
   const out = []
+  // 上限（0 = 不限）：展开途中即拦截，避免大目录一次攒几千个 File 引用
+  const maxFiles = sftpLimitsCache.maxUploadFiles
+  const maxBytes = sftpLimitsCache.maxUploadMb > 0 ? sftpLimitsCache.maxUploadMb * 1024 * 1024 : 0
+  const tooMany = () => maxFiles > 0 && out.length >= maxFiles
+  let totalBytes = 0
   const walkEntry = (entry, prefix) => new Promise((resolve) => {
+    if (tooMany()) {
+      resolve()
+      return
+    }
     if (entry.isFile === true) {
       entry.file(
         (file) => {
-          out.push({ relPath: prefix + entry.name, file })
+          if (maxBytes > 0 && totalBytes + (file.size ?? 0) > maxBytes) {
+            // 超总量上限：本次收集直接标记（由调用方报错）
+            out._limitExceeded = true
+          } else {
+            out.push({ relPath: prefix + entry.name, file })
+            totalBytes += file.size ?? 0
+          }
           resolve()
         },
         () => resolve()
@@ -2205,7 +2565,14 @@ async function collectDroppedFiles(dataTransfer) {
           resolve()
           return
         }
-        for (const child of batch) await walkEntry(child, prefix + entry.name + '/')
+        for (const child of batch) {
+          if (tooMany()) break
+          await walkEntry(child, prefix + entry.name + '/')
+        }
+        if (tooMany()) {
+          resolve()
+          return
+        }
         readBatch()
       }, () => resolve())
     }
@@ -2346,6 +2713,8 @@ function openSftpBrowser(specInput) {
   foot.className = 'tt_sftpFoot'
   const status = document.createElement('div')
   status.className = 'tt_sftpStatus'
+  const progress = makeProgressBar()
+  foot.appendChild(progress.el)
   foot.appendChild(status)
   card.appendChild(foot)
 
@@ -2530,22 +2899,23 @@ function openSftpBrowser(specInput) {
   }
 
   const downloadEntry = (entry, full) => runTask('下载 ' + entry.name + '…', async () => {
-    const res = await fetch('/api/dsh-tty/sftp/download', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ...spec, path: full }),
-    })
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}))
-      throw new Error(String(data.error || 'HTTP ' + res.status))
+    progress.reset()
+    let blob
+    try {
+      blob = await fetchBlobWithProgress('/api/dsh-tty/sftp/download', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ ...spec, path: full }),
+      }, (loaded, total) => {
+        progress.set(loaded, total)
+      }, sftpLimitsCache.maxDownloadMb)
+    } catch (error) {
+      progress.fail('下载失败')
+      throw error
     }
-    const blob = await res.blob()
-    const url = URL.createObjectURL(blob)
-    const anchor = document.createElement('a')
-    anchor.href = url
-    anchor.download = entry.name
-    anchor.click()
-    setTimeout(() => URL.revokeObjectURL(url), 30_000)
+    progress.done('完成')
+    triggerBlobDownload(blob, entry.name)
+    setTimeout(() => progress.reset(), 1500)
     setStatus('已下载 ' + entry.name + '（' + (formatBytes(blob.size) || String(blob.size) + ' B') + '）')
   })
 
@@ -2555,16 +2925,22 @@ function openSftpBrowser(specInput) {
     xhr.open('POST', '/api/dsh-tty/sftp/upload')
     xhr.setRequestHeader('x-dsh-sftp-meta', meta)
     const label = total > 1 ? String(index) + '/' + String(total) + ' ' : ''
+    // 文件名/序号归状态行（进度条只显示百分比，两者不重复）
+    setStatus('上传 ' + label + relPath, 'busy')
     xhr.upload.addEventListener('progress', (event) => {
       if (event.lengthComputable) {
-        setStatus('上传 ' + label + relPath + ' ' + String(Math.round((event.loaded / event.total) * 100)) + '%', 'busy')
+        progress.set(event.loaded, event.total)
+      } else {
+        progress.pulse(0)
       }
     })
     xhr.addEventListener('load', () => {
       if (xhr.status === 200) {
+        if (total === 1) progress.done('上传完成')
         resolve()
         return
       }
+      progress.fail('上传失败')
       let message = 'HTTP ' + xhr.status
       try {
         const data = JSON.parse(xhr.responseText)
@@ -2574,7 +2950,10 @@ function openSftpBrowser(specInput) {
       }
       reject(new Error(message))
     })
-    xhr.addEventListener('error', () => reject(new Error('网络错误')))
+    xhr.addEventListener('error', () => {
+      progress.fail('上传失败')
+      reject(new Error('网络错误'))
+    })
     xhr.send(file)
   })
 
@@ -2582,8 +2961,28 @@ function openSftpBrowser(specInput) {
    * 上传一批条目（选择器或拖入，relPath 保留文件夹层级）：文件夹拖入时先
    * 按 relPath 补齐远程父目录（mkdir parents，已存在的失败忽略——真正的
    * 失败由随后那一个文件的上传请求带出），再逐个流式上传。
+   * 入口处做限制校验（文件数 / 单文件大小，0 = 不限），超限不发起上传。
    */
   const uploadFiles = async (items) => runTask('上传中…', async () => {
+    const limits = sftpLimitsCache
+    // 拖拽收集途中已按 File 数/单文件上限拦截；这里兜底校验（file input 路径）
+    if (limits.maxUploadFiles > 0 && items.length > limits.maxUploadFiles) {
+      setStatus('文件数超过上限（' + String(limits.maxUploadFiles) + '）：本次 ' + String(items.length) + ' 个，请分批上传', 'error')
+      progress.fail('超限')
+      return
+    }
+    const maxBytes = limits.maxUploadMb > 0 ? limits.maxUploadMb * 1024 * 1024 : 0
+    const tooBig = items.find((item) => maxBytes > 0 && (item.file?.size ?? 0) > maxBytes)
+    if (tooBig !== undefined) {
+      setStatus('文件超过上传上限（' + formatBytes(maxBytes) + '）：' + String(tooBig.relPath ?? '') + '，请用双栏 ⇨ 直传或终端 scp/rsync', 'error')
+      progress.fail('超限')
+      return
+    }
+    if (items._limitExceeded === true) {
+      setStatus('文件总大小超过上传上限：请分批上传（或用双栏 ⇨ 直传）', 'error')
+      progress.fail('超限')
+      return
+    }
     const dirs = new Set()
     for (const item of items) {
       const cut = item.relPath.lastIndexOf('/')
@@ -2593,11 +2992,14 @@ function openSftpBrowser(specInput) {
       dirs.add(dir)
       await api('mkdir', { path: joinRemotePath(state.path, dir), parents: true }).catch(() => {})
     }
+    progress.reset()
     let index = 0
     for (const item of items) {
       index += 1
       await uploadOne(item.file, item.relPath, index, items.length)
     }
+    progress.done('全部完成')
+    setTimeout(() => progress.reset(), 1500)
     setStatus('上传完成 ' + String(items.length) + ' 个文件')
     await loadDir(state.path)
   })
@@ -2654,7 +3056,7 @@ function openSftpBrowser(specInput) {
     setDragActive(false)
     if (state.busy) return
     void collectDroppedFiles(event.dataTransfer).then((items) => {
-      if (items.length > 0) void uploadFiles(items)
+      if (items.length > 0 || items._limitExceeded === true) void uploadFiles(items)
     })
   })
   pathInput.addEventListener('keydown', (event) => {
@@ -3391,9 +3793,16 @@ function TtySettingsCard() {
   }, [open])
 
   const set = (key, value) => setForm((current) => ({ ...(current || {}), [key]: value }))
+  /** sftpLimits 单项更新（函数式合并，避免连续编辑覆盖）。 */
+  const setSftpLimit = (key, value) => setForm((current) => ({
+    ...(current || {}),
+    sftpLimits: { ...((current?.sftpLimits) ?? {}), [key]: value },
+  }))
   const [editing, setEditing] = React.useState(null)
   const [editForm, setEditForm] = React.useState(null)
   const [editError, setEditError] = React.useState('')
+  /** 连接簿条目「测试」状态：{ [name]: { running:boolean, ok?:boolean, text:string } }。 */
+  const [probeStates, setProbeStates] = React.useState({})
   /** 隧道实时状态（卡片展开期间 2s 轮询 /api/dsh-tty/tunnels）。 */
   const [tunnelStatus, setTunnelStatus] = React.useState([])
   const [tunnelDraft, setTunnelDraft] = React.useState({ direction: 'local', localPort: '', remoteHost: '', remotePort: '', localTargetPort: '', bookName: '' })
@@ -3559,10 +3968,40 @@ function TtySettingsCard() {
   /** 删除连接簿条目（随「保存」一并提交）。 */
   const removeSshHost = (name) => {
     if (editing === name) cancelEditSshHost()
+    setProbeStates((current) => {
+      const next = { ...current }
+      delete next[name]
+      return next
+    })
     setForm((current) => ({
       ...(current || {}),
       sshHosts: (Array.isArray(current?.sshHosts) ? current.sshHosts : []).filter((host) => host?.name !== name),
     }))
+  }
+  /** 测试连接簿条目：展开成内联 spec 走 /api/dsh-tty/probe（bookRecord=完整 TOFU）。 */
+  const testSshHost = async (host) => {
+    const name = host?.name ?? ''
+    if (name === '') return
+    const spec = {
+      host: host?.host ?? '',
+      port: Number(host?.port) || 22,
+      username: host?.username ?? '',
+      auth: host?.auth === 'key' || host?.auth === 'password' ? host.auth : 'agent',
+      keyPath: host?.keyPath ?? '',
+      passphrase: host?.passphrase ?? '',
+      password: host?.password ?? '',
+      agentForward: host?.agentForward === true,
+    }
+    setProbeStates((current) => ({ ...current, [name]: { running: true, text: '连接测试中…' } }))
+    const out = await probeSshFetch(spec, true)
+    setProbeStates((current) => {
+      const prev = current[name] || {}
+      if (out.result) {
+        const ok = out.result.auth?.ok === true
+        return { ...current, [name]: { running: false, ok, text: probeSummary(out.result) } }
+      }
+      return { ...current, [name]: { running: false, ok: false, text: '❌ 连接失败：' + String(out.error || '未知错误') } }
+    })
   }
   /** 立即删除一条 TOFU 主机指纹记录（指纹变更且确认安全后，删掉即可重连）。 */
   const removeHostKey = async (record) => {
@@ -3686,6 +4125,14 @@ function TtySettingsCard() {
     }
     body.sshHosts = Array.isArray(form?.sshHosts) ? form.sshHosts : []
     body.tunnels = Array.isArray(form?.tunnels) ? form.tunnels : []
+    // sftpLimits：对象整体提交（宿主按字段校验；0 = 不限）
+    if (form?.sftpLimits && typeof form.sftpLimits === 'object') {
+      body.sftpLimits = {
+        maxDownloadMb: Number(form.sftpLimits.maxDownloadMb) || 0,
+        maxUploadMb: Number(form.sftpLimits.maxUploadMb) || 0,
+        maxUploadFiles: Number(form.sftpLimits.maxUploadFiles) || 0,
+      }
+    }
     try {
       const res = await fetch('/api/dsh-tty/config', {
         method: 'POST',
@@ -3832,6 +4279,45 @@ function TtySettingsCard() {
                 jsxs('div', {
                   className: 'tt_cardField',
                   children: [
+                    jsx('span', { className: 'tt_cardLabel', children: 'SFTP 传输限制（0 = 不限）' }),
+                    jsxs('div', { className: 'tt_sshGrid', children: [
+                      jsxs('label', { className: 'tt_sshRow', children: [
+                        jsx('span', { className: 'tt_cardLabel', children: '下载上限 (MB)' }),
+                        jsx('input', {
+                          className: 'tt_cardInput',
+                          type: 'number',
+                          min: 0,
+                          value: String(Number.isFinite(Number(form?.sftpLimits?.maxDownloadMb)) ? Number(form.sftpLimits.maxDownloadMb) : 1024),
+                          onChange: (event) => setSftpLimit('maxDownloadMb', Number(event.target.value) || 0),
+                        }),
+                      ] }),
+                      jsxs('label', { className: 'tt_sshRow', children: [
+                        jsx('span', { className: 'tt_cardLabel', children: '上传上限 (MB)' }),
+                        jsx('input', {
+                          className: 'tt_cardInput',
+                          type: 'number',
+                          min: 0,
+                          value: String(Number.isFinite(Number(form?.sftpLimits?.maxUploadMb)) ? Number(form.sftpLimits.maxUploadMb) : 2048),
+                          onChange: (event) => setSftpLimit('maxUploadMb', Number(event.target.value) || 0),
+                        }),
+                      ] }),
+                      jsxs('label', { className: 'tt_sshRow', children: [
+                        jsx('span', { className: 'tt_cardLabel', children: '批量文件数上限' }),
+                        jsx('input', {
+                          className: 'tt_cardInput',
+                          type: 'number',
+                          min: 0,
+                          value: String(Number.isFinite(Number(form?.sftpLimits?.maxUploadFiles)) ? Number(form.sftpLimits.maxUploadFiles) : 1000),
+                          onChange: (event) => setSftpLimit('maxUploadFiles', Number(event.target.value) || 0),
+                        }),
+                      ] }),
+                    ] }),
+                    jsx('span', { className: 'tt_cardHint', children: '浏览器侧保护：单个文件超过上限时中止下载/上传（大文件请用双栏 ⇨/⇦ 直传或终端 scp/rsync，不占浏览器内存）；文件数上限针对一次批量/拖拽上传；保存即热生效' }),
+                  ],
+                }),
+                jsxs('div', {
+                  className: 'tt_cardField',
+                  children: [
                     jsx('span', { className: 'tt_cardLabel', children: '会话持久化（tmux）' }),
                     jsxs('select', {
                       className: 'tt_cardInput',
@@ -3916,10 +4402,14 @@ function TtySettingsCard() {
                                     jsx('span', { className: 'tt_sshHostName', children: host?.name ?? '' }),
                                     jsx('span', { className: 'tt_sshHostTarget', children: sshHostTargetLabel(host ?? {}) }),
                                   ] }),
+                                  jsx('button', { type: 'button', className: 'tt_toolBtn', disabled: probeStates[host?.name]?.running === true, onClick: () => void testSshHost(host), title: '试连该条目：TCP → 主机密钥 → 认证逐段诊断', children: probeStates[host?.name]?.running === true ? '测试中…' : '测试' }),
                                   jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => startEditSshHost(host), children: '编辑' }),
                                   jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => removeSshHost(host?.name), children: '删除' }),
                                 ],
                               }),
+                              probeStates[host?.name] && probeStates[host?.name].text
+                                ? jsx('div', { className: 'tt_sshProbeResult' + (probeStates[host?.name].ok ? ' tt_sshProbeOk' : ' tt_sshProbeBad'), children: probeStates[host?.name].text })
+                                : null,
                               editing === host?.name ? renderSshHostEditor() : null,
                             ],
                           }, String(host?.name ?? ''))),
