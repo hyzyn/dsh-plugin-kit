@@ -57,12 +57,13 @@ if (published.length === 0) {
   process.exit(0)
 }
 
-// 发布后核实：CDN 传播有几秒延迟，逐包重试直查
+// 发布后核实：CDN 传播可达 1–2 分钟（v0.1.17 实测 15 秒窗口不够，误报失败），
+// 逐包重试直查，总窗口 20 次 × 6 秒 ≈ 2 分钟
 console.log('\n===== 核实 registry =====')
 let verified = 0
 for (const [name, version, prerelease] of published) {
   const distTag = prerelease ? 'next' : 'latest'
-  for (let attempt = 1; attempt <= 6; attempt++) {
+  for (let attempt = 1; attempt <= 20; attempt++) {
     try {
       const doc = fetchRegistry(name)
       if (doc.versions?.[version] && doc['dist-tags']?.[distTag]) {
@@ -71,11 +72,11 @@ for (const [name, version, prerelease] of published) {
         break
       }
     } catch {}
-    if (attempt === 6) {
-      console.error(`✘ ${name}@${version} 发布后 ${attempt} 次回查均未在 registry 确认，请人工核实后再处理`)
+    if (attempt === 20) {
+      console.error(`✘ ${name}@${version} 发布后 ${attempt} 次回查（约 2 分钟）均未在 registry 确认，请人工核实后再处理`)
       process.exit(1)
     }
-    execSync('sleep 3')
+    execSync('sleep 6')
   }
 }
 console.log(`\n全部完成 ✔（发布 ${verified} 个包，均经 registry 核实）`)
