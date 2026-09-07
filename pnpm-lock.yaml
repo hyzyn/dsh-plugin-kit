@@ -9,29 +9,29 @@ importers:
   .:
     dependencies:
       '@hyzyn/dsh-codegraph':
-        specifier: 0.1.7
-        version: 0.1.7(react@18.3.1)
+        specifier: 0.1.8
+        version: link:packages/codegraph
       '@hyzyn/dsh-env':
         specifier: 0.1.6
-        version: 0.1.6(react@18.3.1)
+        version: link:packages/env
       '@hyzyn/dsh-mcp':
         specifier: 0.1.6
-        version: 0.1.6(react@18.3.1)
+        version: link:packages/mcp
       '@hyzyn/dsh-profile':
         specifier: 0.1.6
-        version: 0.1.6(react@18.3.1)
+        version: link:packages/profile
       '@hyzyn/dsh-prompt':
         specifier: 0.1.5
-        version: 0.1.5(react@18.3.1)
+        version: link:packages/prompt
       '@hyzyn/dsh-rss':
-        specifier: 0.1.8
-        version: 0.1.8(react@18.3.1)
+        specifier: 0.1.9
+        version: link:packages/rss
       '@hyzyn/dsh-search':
-        specifier: 0.1.5
-        version: 0.1.5
+        specifier: 0.1.6
+        version: link:packages/search
       '@hyzyn/dsh-tty':
-        specifier: 0.10.2
-        version: 0.10.2(@deepseek-ai/dsh-tools@0.1.2-rc.1(681f04d3fbf43cb3b707868af36d2599))
+        specifier: 0.10.3
+        version: link:packages/tty
     devDependencies:
       typescript:
         specifier: ~5.9.3
@@ -40,28 +40,28 @@ importers:
   packages/all:
     dependencies:
       '@hyzyn/dsh-codegraph':
-        specifier: workspace:*
+        specifier: 0.1.8
         version: link:../codegraph
       '@hyzyn/dsh-env':
-        specifier: workspace:*
+        specifier: 0.1.6
         version: link:../env
       '@hyzyn/dsh-mcp':
-        specifier: workspace:*
+        specifier: 0.1.6
         version: link:../mcp
       '@hyzyn/dsh-profile':
-        specifier: workspace:*
+        specifier: 0.1.6
         version: link:../profile
       '@hyzyn/dsh-prompt':
-        specifier: workspace:*
+        specifier: 0.1.5
         version: link:../prompt
       '@hyzyn/dsh-rss':
-        specifier: workspace:*
+        specifier: 0.1.9
         version: link:../rss
       '@hyzyn/dsh-search':
-        specifier: workspace:*
+        specifier: 0.1.6
         version: link:../search
       '@hyzyn/dsh-tty':
-        specifier: workspace:*
+        specifier: 0.10.3
         version: link:../tty
     devDependencies:
       '@deepseek-ai/cordis':
@@ -77,7 +77,7 @@ importers:
         specifier: ^3.18.2
         version: 3.18.2
       '@hyzyn/dsh-kit':
-        specifier: workspace:*
+        specifier: 0.1.2
         version: link:../kit
       js-yaml:
         specifier: ^4.1.0
@@ -196,7 +196,7 @@ importers:
         specifier: ^3.18.2
         version: 3.18.2
       '@hyzyn/dsh-kit':
-        specifier: workspace:*
+        specifier: 0.1.2
         version: link:../kit
       react:
         specifier: ^18.2.0
@@ -215,7 +215,7 @@ importers:
   packages/search:
     dependencies:
       '@hyzyn/dsh-kit':
-        specifier: workspace:*
+        specifier: 0.1.2
         version: link:../kit
       js-yaml:
         specifier: ^4.1.0
@@ -237,7 +237,7 @@ importers:
         specifier: ^3.18.2
         version: 3.18.2
       '@hyzyn/dsh-kit':
-        specifier: workspace:*
+        specifier: 0.1.2
         version: link:../kit
       '@xterm/headless':
         specifier: ^5.5.0
@@ -596,56 +596,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [win32]
-
-  '@hyzyn/dsh-codegraph@0.1.7':
-    resolution: {integrity: sha512-q/BifA5lj3Vw/9BkwBD09ZWPOCBOaOqc9ExwzyI4Av3PQ+LXPhzeJovf0lFCZjo+V9yWupoxjrR9oh6jXrgJBw==}
-    engines: {node: '>=22.19.0'}
-    peerDependencies:
-      react: ^18.2.0
-
-  '@hyzyn/dsh-env@0.1.6':
-    resolution: {integrity: sha512-Lma+ufK+MJJitBpDjgilxvZpmxJQZvHQRhF+T9KttFzoStKXdc2WSeEjXlmtHj4YJJBzyOMxXjI0qvoAWqky/w==}
-    engines: {node: '>=22.19.0'}
-    peerDependencies:
-      react: ^18.2.0
-
-  '@hyzyn/dsh-kit@0.1.2':
-    resolution: {integrity: sha512-gyQ4XayRKaEIv5sIwe3syILHfWCd+wOdRaLFtv+Dm09XbNELSAUjwXWXuEDSYDvVpXDTm7hJSpZzA/A0NaC1JA==}
-    engines: {node: '>=22.19.0'}
-
-  '@hyzyn/dsh-mcp@0.1.6':
-    resolution: {integrity: sha512-TD3PxhFdaVuS1m7befG6pDqWKNSgcHd1nU5YjSriRaOKlYfWWnHqEkxfYgstyAXfiXVu6hkzq7AqXuwJ8fxjng==}
-    engines: {node: '>=22.19.0'}
-    peerDependencies:
-      react: ^18.2.0
-
-  '@hyzyn/dsh-profile@0.1.6':
-    resolution: {integrity: sha512-+/WmgRaVJ3/uiMIMSgEFbhisxYfDboHolk2Bst0wH+oH2eVH3PVDqUaMV9G5nFCOHLy1JJbAeuybSL8eJslOSg==}
-    engines: {node: '>=22.19.0'}
-    peerDependencies:
-      react: ^18.2.0
-
-  '@hyzyn/dsh-prompt@0.1.5':
-    resolution: {integrity: sha512-wH2DFYwgdkMs6s+jX5c/DzrVkC62EXlp2XNpsfKy1cclvGFqbv6c7W2IY+uSiJlEHt2aUJWhVqVG6RtkWdmnww==}
-    engines: {node: '>=22.19.0'}
-    peerDependencies:
-      react: ^18.2.0
-
-  '@hyzyn/dsh-rss@0.1.8':
-    resolution: {integrity: sha512-pWtXeS1ju3z8jIg15uFoNqXX3x6XFzwSYr/qDdTD7kEXyUp7PJDSQHySinzMZNhPyB7XScCKl8wlUKOtExhMFw==}
-    engines: {node: '>=22.19.0'}
-    peerDependencies:
-      react: ^18.2.0
-
-  '@hyzyn/dsh-search@0.1.5':
-    resolution: {integrity: sha512-RzuuVmYet+glMXogh5r9InGghI/MVT5pjvvXiFQUZDlmy03vrtEHe4hZejk+Oow9uG6T3oIaccMloAz3OTY8hQ==}
-    engines: {node: '>=22.19.0'}
-
-  '@hyzyn/dsh-tty@0.10.2':
-    resolution: {integrity: sha512-ZwJslyTEozk5g8PKCE0/p/3tMf/fXa25DVn6sjlfRAkz22jiM4ukdG2luPLo7YiXfLQbZEDd/o1424vLUlFyBA==}
-    engines: {node: '>=22.19.0'}
-    peerDependencies:
-      '@deepseek-ai/dsh-tools': ^0.1.2-rc.1
 
   '@koromix/koffi-android-arm64@3.2.1':
     resolution: {integrity: sha512-1pJQ4jnZlUJduK9u9DC5CGy3aOgDUPvIXpNb6syV3+Dh5Q/ugezAIGCqvY+w+1mgXsve0pd0NVvJRjdZNHQ6MA==}
@@ -1118,61 +1068,6 @@ snapshots:
 
   '@esbuild/win32-x64@0.28.2':
     optional: true
-
-  '@hyzyn/dsh-codegraph@0.1.7(react@18.3.1)':
-    dependencies:
-      '@deepseek-ai/schemastery': 3.18.2
-      '@hyzyn/dsh-kit': 0.1.2
-      js-yaml: 4.3.2
-      react: 18.3.1
-
-  '@hyzyn/dsh-env@0.1.6(react@18.3.1)':
-    dependencies:
-      '@deepseek-ai/schemastery': 3.18.2
-      js-yaml: 4.3.2
-      react: 18.3.1
-
-  '@hyzyn/dsh-kit@0.1.2': {}
-
-  '@hyzyn/dsh-mcp@0.1.6(react@18.3.1)':
-    dependencies:
-      '@deepseek-ai/schemastery': 3.18.2
-      js-yaml: 4.3.2
-      react: 18.3.1
-
-  '@hyzyn/dsh-profile@0.1.6(react@18.3.1)':
-    dependencies:
-      '@deepseek-ai/schemastery': 3.18.2
-      react: 18.3.1
-
-  '@hyzyn/dsh-prompt@0.1.5(react@18.3.1)':
-    dependencies:
-      '@deepseek-ai/schemastery': 3.18.2
-      js-yaml: 4.3.2
-      react: 18.3.1
-
-  '@hyzyn/dsh-rss@0.1.8(react@18.3.1)':
-    dependencies:
-      '@deepseek-ai/schemastery': 3.18.2
-      '@hyzyn/dsh-kit': 0.1.2
-      react: 18.3.1
-
-  '@hyzyn/dsh-search@0.1.5':
-    dependencies:
-      '@hyzyn/dsh-kit': 0.1.2
-      js-yaml: 4.3.2
-
-  '@hyzyn/dsh-tty@0.10.2(@deepseek-ai/dsh-tools@0.1.2-rc.1(681f04d3fbf43cb3b707868af36d2599))':
-    dependencies:
-      '@deepseek-ai/dsh-tools': 0.1.2-rc.1(681f04d3fbf43cb3b707868af36d2599)
-      '@deepseek-ai/schemastery': 3.18.2
-      '@hyzyn/dsh-kit': 0.1.2
-      '@xterm/headless': 5.5.0
-      ssh2: 1.17.0
-      ws: 8.21.3
-    transitivePeerDependencies:
-      - bufferutil
-      - utf-8-validate
 
   '@koromix/koffi-android-arm64@3.2.1':
     optional: true

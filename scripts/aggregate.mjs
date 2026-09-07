@@ -82,32 +82,44 @@ for (const p of plugins) {
 }
 writeFileSync(join(packagesDir, 'all', 'cordis.patch.yml'), out.join('\n') + '\n')
 
-// 2) 同步 packages/all/package.json 的 dependencies（插件 → workspace:*）
+// 2) 同步 packages/all/package.json 的 dependencies（插件 → 精确版本）
+//
+// 不能用 workspace:*：pnpm publish 会把它替换成真实版本（所以 npm 产物是对的），
+// 但从 git 子路径安装（git+https://...#main&path:packages/all）时协议原样保留，
+// 消费者侧 pnpm 找不到同名 workspace 包直接 ERR_PNPM_WORKSPACE_PKG_NOT_FOUND。
+// 同理根 bundle 也要真实版本——它在 profile / 市场安装里独立解析。
+//
+// 版本取各插件自己的 package.json：发布流是「先 bump 本地版本 → aggregate → 发布」，
+// 本地版本即本次要发布的版本（未 bump 的包其版本已存在于 registry），两者恒等。
 const allPkgPath = join(packagesDir, 'all', 'package.json')
 const allPkg = readJson(allPkgPath)
-// 发布版本快照：写入 workspace:* 之前先捕获 all 当前依赖里的精确版本号
-// （仓库提交态为发布版本，如 @hyzyn/dsh-search: 0.1.0）；根 bundle 依赖要用
-// npm 上真实存在的版本，不能用 workspace:*（npm 不支持该协议）。
-const publishedVersions = { ...(allPkg.dependencies ?? {}) }
+// 上一轮提交态（用于提示本次有哪些包被 bump），值可能是历史遗留的 workspace:*
+const previousVersions = { ...(allPkg.dependencies ?? {}) }
 const deps = { ...(allPkg.dependencies ?? {}) }
 for (const key of Object.keys(deps)) {
   if (key.startsWith('@hyzyn/dsh-')) delete deps[key]
 }
-for (const p of plugins) deps[p.name] = 'workspace:*'
+const pluginVersions = {}
+for (const p of plugins) {
+  pluginVersions[p.name] = p.version
+  deps[p.name] = p.version
+}
 allPkg.dependencies = Object.fromEntries(Object.entries(deps).sort())
 writeFileSync(allPkgPath, JSON.stringify(allPkg, null, 2) + '\n')
 
 console.log(`[aggregate] ${plugins.length} 个插件 → packages/all/cordis.patch.yml + dependencies`)
 for (const p of plugins) {
-  console.log(`  - ${p.name}  (rows: ${p.rows.map((r) => r.id).join(', ')})`)
+  const prev = previousVersions[p.name]
+  const bumped = prev && prev !== p.version ? `  ${prev} → ${p.version}` : ''
+  console.log(`  - ${p.name}@${p.version}${bumped}  (rows: ${p.rows.map((r) => r.id).join(', ')})`)
 }
 
 // 3) 生成仓库根 bundle：根 cordis.patch.yml + 根 package.json dependencies。
 //    根包声明 dsh.bundle.patch 后，DSH 加载器（dsh.bundle 判定）与 DSH 插件市场
 //    （looksLikeDshPlugin：dsh 字段 / @deepseek-ai/* 依赖）都会把仓库根识别为
 //    DSH 插件；`dsh plugin --profile web add link:$(pwd)` 一条命令挂载全家桶。
-//    依赖取 packages/all 提交态里的精确发布版本（见 publishedVersions），
-//    新插件不在其中时退回本地版本；不能用 workspace:*——npm 不支持该协议，
+//    依赖取各插件本次的发布版本（见 pluginVersions），与 packages/all 保持一致；
+//    不能用 workspace:*——npm 不支持该协议，且 git 子路径安装时原样保留会解析失败，
 //    根包要在 profile / 市场安装里独立解析。
 const rootPkgPath = join(root, 'package.json')
 const rootPkg = readJson(rootPkgPath)
@@ -132,8 +144,7 @@ for (const key of Object.keys(rootDeps)) {
   if (key.startsWith('@hyzyn/dsh-')) delete rootDeps[key]
 }
 for (const p of plugins) {
-  const pub = publishedVersions[p.name]
-  rootDeps[p.name] = pub && pub !== 'workspace:*' ? pub : p.version
+  rootDeps[p.name] = pluginVersions[p.name]
 }
 rootPkg.dependencies = Object.fromEntries(Object.entries(rootDeps).sort())
 writeFileSync(rootPkgPath, JSON.stringify(rootPkg, null, 2) + '\n')
