@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>dsh-tty preview</title>
+<link rel="stylesheet" href="./skin.css" />
+<style>
+  html, body { margin: 0; height: 100%; }
+  body {
+    display: flex;
+    background: var(--dsw-alias-bg-base);
+    color: var(--dsw-alias-label-primary);
+    font: 14px/1.5 system-ui, -apple-system, "PingFang SC", "Helvetica Neue", sans-serif;
+  }
+  [data-pane="sidebar"] {
+    flex: none;
+    width: 236px;
+    padding: 10px 10px 14px;
+    box-sizing: border-box;
+    background: var(--dsw-specific-sidebar-fill);
+    border-right: 1px solid var(--dsw-alias-border-l1);
+  }
+  .sidebarInner { display: flex; flex-direction: column; gap: 4px; height: 100%; }
+  .logoRow { display: flex; align-items: center; gap: 8px; padding: 6px 12px 10px; font-weight: 600; color: var(--dsw-alias-label-primary); }
+  .logoMark { width: 22px; height: 22px; border-radius: 7px; background: var(--dsw-alias-brand-primary); color: var(--dsw-alias-label-primary-inverted); display: grid; place-items: center; font-size: 12px; font-weight: 700; }
+  .newSession {
+    display: flex; align-items: center; gap: 8px; width: 100%; height: 34px; padding: 0 12px;
+    border: 1px dashed var(--dsw-alias-border-l2); border-radius: 10px; background: 0 0;
+    color: var(--dsw-alias-label-secondary); font: inherit; font-size: 13px; cursor: pointer; margin-bottom: 6px;
+  }
+  .fakeEntry { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px; border-radius: 8px; color: var(--dsw-alias-label-secondary); font-size: 13px; }
+  .spacer { flex: 1; }
+  .main { flex: 1; display: grid; place-items: center; color: var(--dsw-alias-label-tertiary); font-size: 13px; }
+  /* 设置卡片预览容器：滚动条跟随主题，避免截图里出现浅色默认滚动条 */
+  #preview-settings { scrollbar-width: thin; scrollbar-color: var(--dsw-alias-scrollbar-bg-l1, rgba(127,127,127,.45)) transparent; }
+  #preview-settings::-webkit-scrollbar { width: 10px; }
+  #preview-settings::-webkit-scrollbar-track { background: transparent; }
+  #preview-settings::-webkit-scrollbar-thumb { border: 3px solid transparent; border-radius: 999px; background: var(--dsw-alias-scrollbar-bg-l1, rgba(127,127,127,.4)); background-clip: content-box; }
+  .mainCard { padding: 18px 26px; border: 1px dashed var(--dsw-alias-border-l2); border-radius: 14px; }
+</style>
+</head>
+<body>
+  <div data-pane="sidebar" class="sidebarCol">
+    <div class="sidebarInner">
+      <div class="logoRow"><span class="logoMark">D</span><span>DeepSeek Harness</span></div>
+      <button class="newSession">＋ 新会话</button>
+      <div class="fakeEntry" data-dsh-global-search-entry>全局搜索</div>
+      <div class="spacer"></div>
+    </div>
+  </div>
+  <div class="main"><div class="mainCard">DSH 主区域（预览占位）</div></div>
+
+  <script>
+    // 场景开关（必须在 mock-host.js 之前执行）
+    const _q = new URLSearchParams(location.search)
+    if (_q.get('sftp')) window.__PREVIEW_SFTP_STYLE = _q.get('sftp')
+    if (_q.get('persist')) window.__PREVIEW_PERSISTENCE = _q.get('persist')
+    if (_q.get('theme') !== 'light') document.documentElement.dataset.previewDark = ''
+    document.addEventListener('DOMContentLoaded', () => {
+      if (_q.get('theme') !== 'light') document.body.setAttribute('data-ds-dark-theme', '')
+    })
+  </script>
+  <script src="./vendor/react.js"></script>
+  <script src="./vendor/react-dom.js"></script>
+  <script src="./mock-host.js"></script>
+  <script src="./client.js"></script>
+  <script src="./harness.js"></script>
+</body>
+</html>
