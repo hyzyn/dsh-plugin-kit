@@ -59,9 +59,18 @@ jobs:
           {
             echo "## Highlights"
             echo
-            # 只列面向用户的改动：过滤 chore/docs/test/ci/build/style/refactor
-            # （要连 "chore(deps):" 这类带 scope 的一起滤掉，不能只匹配 '^- chore:'）
-            git log "$RANGE" --format='- %s' | grep -vE '^- (chore|docs|test|ci|build|style|refactor)(\([^)]*\))?!?:' || true
+            # 只列用户可见改动，两道过滤：
+            #   1) 类型：chore/docs/test/ci/build/style/refactor 一律不列
+            #      （必须带 scope 一起匹配，"chore(deps):" 才算滤掉）
+            #   2) scope：内部维护范围（ci/deps/release/repo/tooling）不列
+            NOTES=$(git log "$RANGE" --format='- %s' \
+              | grep -vE '^- (chore|docs|test|ci|build|style|refactor)(\([^)]*\))?!?:' \
+              | grep -vE '^- [a-z]+(\((ci|deps|release|repo|tooling)\))!?:' || true)
+            if [ -n "$NOTES" ]; then
+              printf '%s\n' "$NOTES"
+            else
+              echo "- 内部维护发布（无用户可见改动）"
+            fi
             echo
             if [ -n "$PREV" ]; then
               echo "**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREV}...${GITHUB_REF_NAME}"
