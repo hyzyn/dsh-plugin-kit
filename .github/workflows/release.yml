@@ -59,7 +59,9 @@ jobs:
           {
             echo "## Highlights"
             echo
-            git log "$RANGE" --format='- %s' | grep -v '^- chore:' || true
+            # 只列面向用户的改动：过滤 chore/docs/test/ci/build/style/refactor
+            # （要连 "chore(deps):" 这类带 scope 的一起滤掉，不能只匹配 '^- chore:'）
+            git log "$RANGE" --format='- %s' | grep -vE '^- (chore|docs|test|ci|build|style|refactor)(\([^)]*\))?!?:' || true
             echo
             if [ -n "$PREV" ]; then
               echo "**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREV}...${GITHUB_REF_NAME}"
