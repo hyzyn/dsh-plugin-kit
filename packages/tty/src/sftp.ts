@@ -18,9 +18,11 @@
  */
 import { Client } from 'ssh2'
 import type { ReadStream, SFTPWrapper, WriteStream } from 'ssh2'
+import { randomUUID } from 'node:crypto'
 import { createReadStream, createWriteStream } from 'node:fs'
-import { mkdir as fsMkdir, readdir as fsReaddir, stat as fsStat } from 'node:fs/promises'
+import { mkdir as fsMkdir, readdir as fsReaddir, rm as fsRm, stat as fsStat } from 'node:fs/promises'
 import { basename, dirname, join as pathJoin } from 'node:path'
+import { PassThrough } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { applyHostKeyPolicy, buildConnectConfig, sshTarget } from './ssh.js'
 import type { HostKeyStore, SshSpec } from './ssh.js'
@@ -91,6 +93,47 @@ export interface SftpUpload {
   done: Promise<void>
 }
 
+/**
+ * 传输任务（0.12.0）：双栏 ⇨/⇦ 的服务端直传任务化——start 立刻返回 id，
+ * 客户端轮询 /cancel 端点中止。无它时一个目录递归直传在 HTTP 请求里同步跑
+ * 完，浏览器无法打断（只能关窗口，服务端还在写远端）。
+ */
+export interface SftpTransferJob {
+  id: string
+  direction: 'up' | 'down'
+  /** 起始路径对（进度行展示用）。 */
+  localPath: string
+  remotePath: string
+  /** 已完成字节 / 总字节（总字节在开传前递归统计，统计中可为 0）。 */
+  bytes: number
+  total: number
+  /** 当前正在搬运的文件相对名（展示用）。 */
+  current: string
+  state: 'running' | 'done' | 'error' | 'canceled'
+  error?: string
+}
+
+/** 取消感知的传输选项（直传任务内部用；HTTP 上传/下载路由不传 signal）。 */
+export interface SftpTransferOptions {
+  signal?: AbortSignal
+  /** 每搬运一个文件前回调（进度行显示当前文件名）。 */
+  onFile?: (name: string) => void
+  /** 字节累加（进度条分子）。 */
+  onBytes?: (delta: number) => void
+}
+
+function throwIfCanceled(options?: SftpTransferOptions): void {
+  if (options?.signal?.aborted === true) throw new TransferCanceledError()
+}
+
+/** 取消信号：不是「失败」，单独一类以便任务终态区分 canceled / error。 */
+class TransferCanceledError extends Error {
+  constructor() {
+    super('传输已取消')
+    this.name = 'TransferCanceledError'
+  }
+}
+
 interface RuntimeConn {
   spec: SshSpec
   signature: string
@@ -106,6 +149,7 @@ function signatureOf(spec: SshSpec): string {
 export class SftpManager {
   private readonly conns = new Map<string, RuntimeConn>()
   private sweeper: NodeJS.Timeout | null = null
+  private readonly jobs = new Map<string, { job: SftpTransferJob; cancel: () => void }>()
 
   constructor(
     private readonly logger: SftpLogger,
@@ -120,6 +164,9 @@ export class SftpManager {
     }
     for (const rt of this.conns.values()) this.close(rt)
     this.conns.clear()
+    // 在途直传任务一并中止（防止卸载后还在写远端/本机）
+    for (const entry of [...this.jobs.values()]) entry.cancel()
+    this.jobs.clear()
   }
 
   /* -------------------------------------------------------------- */
@@ -300,62 +347,219 @@ export class SftpManager {
       })
       stream.on('close', () => resolve())
     })
+    // 必挂一个 no-op 分支：客户端中断 / 取消会让流以 destroy 收尾（不是正常
+    // close），done 随之 reject——调用方可能已走别的路径返回，此时这个
+    // rejection 无人处理会变成 unhandled rejection 并拖垮宿主进程。
+    // 挂 handler 不改变语义：await done 仍会拿到同一个 rejection。
+    done.catch(() => {})
     return { stream, done }
   }
 
   /* -------------------------------------------------------------- */
-  /* 双栏直传（0.9.0）：本机路径 ↔ 远程路径，服务端流式搬运            */
+  /* 双栏直传（0.9.0，0.12.0 任务化 + 可取消）：本机路径 ↔ 远程路径      */
   /* -------------------------------------------------------------- */
 
   /**
    * 本机文件 / 目录 → 远程（双栏「→ 传输」）。目录递归建目录后逐个上传；
    * 同名文件直接覆盖（openUpload 'w'）。不经过浏览器，字节不出宿主进程。
+   * signal 中止时销毁读写流并删除半截的远程文件（删除失败只记日志）。
    */
-  async uploadFromLocal(spec: SshSpec, localPath: string, remotePath: string): Promise<void> {
+  async uploadFromLocal(spec: SshSpec, localPath: string, remotePath: string, options?: SftpTransferOptions): Promise<void> {
     const root = localPath.trim()
     const info = await fsStat(root).catch(() => {
       throw new Error('本机路径不存在: ' + root)
     })
+    throwIfCanceled(options)
     if (info.isDirectory()) {
       await this.mkdir(spec, remotePath, true)
       const children = await fsReaddir(root, { withFileTypes: true })
       for (const child of children) {
-        await this.uploadFromLocal(spec, pathJoin(root, child.name), joinRemotePath(remotePath, child.name))
+        throwIfCanceled(options)
+        await this.uploadFromLocal(spec, pathJoin(root, child.name), joinRemotePath(remotePath, child.name), options)
       }
       return
     }
     if (!info.isFile()) throw new Error('不支持传输的文件类型: ' + root)
+    const label = basename(root)
+    options?.onFile?.(label)
     const { stream, done } = await this.openUpload(spec, remotePath, false)
-    await pipeline(createReadStream(root), stream).catch((error: unknown) => {
-      throw new Error(`上传失败（${basename(root)}）: ${error instanceof Error ? error.message : String(error)}`)
-    })
+    try {
+      await this.pipeCounted(createReadStream(root), stream, options)
+    } catch (error) {
+      // 取消：pipeline 已收尾（写流随之销毁），此时删半截文件才不会有写入竞态。
+      // 不 await done——被 destroy 打断的写流不会走正常 close，等它只会挂住。
+      if (options?.signal?.aborted === true) {
+        await this.deleteRemoteQuiet(spec, remotePath)
+        throw new TransferCanceledError()
+      }
+      throw new Error(`上传失败（${label}）: ${error instanceof Error ? error.message : String(error)}`)
+    }
     await done
   }
 
   /**
    * 远程文件 / 目录 → 本机（双栏「← 传输」）。目录递归建本地目录后逐个下载；
    * 同名文件直接覆盖（'w' 写流）。远程符号链接按文件下载（跟随目标）。
+   * signal 中止时销毁读写流并删除半截的本机文件（删除失败只记日志）。
    */
-  async downloadToLocal(spec: SshSpec, remotePath: string, localPath: string): Promise<void> {
+  async downloadToLocal(spec: SshSpec, remotePath: string, localPath: string, options?: SftpTransferOptions): Promise<void> {
     const target = remotePath.trim()
     const sftp = await this.acquire(spec)
     const stats = await new Promise<import('ssh2').Stats>((resolve, reject) => {
       sftp.stat(target, (error, found) => (error != null ? reject(new Error(`远程路径不存在: ${target}（${error.message}）`)) : resolve(found)))
     })
+    throwIfCanceled(options)
     if (stats.isDirectory()) {
       await fsMkdir(localPath, { recursive: true })
       const list = await this.list(spec, target)
       for (const entry of list.entries) {
         if (DOT_ENTRIES.has(entry.name)) continue
-        await this.downloadToLocal(spec, joinRemotePath(target, entry.name), pathJoin(localPath, entry.name))
+        throwIfCanceled(options)
+        await this.downloadToLocal(spec, joinRemotePath(target, entry.name), pathJoin(localPath, entry.name), options)
       }
       return
     }
     await fsMkdir(dirname(localPath), { recursive: true })
+    const label = basename(target)
+    options?.onFile?.(label)
     const { stream } = await this.openDownload(spec, target)
-    await pipeline(stream, createWriteStream(localPath)).catch((error: unknown) => {
-      throw new Error(`下载失败（${basename(target)}）: ${error instanceof Error ? error.message : String(error)}`)
-    })
+    try {
+      await this.pipeCounted(stream, createWriteStream(localPath), options)
+    } catch (error) {
+      // 取消：pipeline 已收尾（本机写流随之关闭），此时删半截文件才安全
+      if (options?.signal?.aborted === true) {
+        await fsRm(localPath, { force: true }).catch(() => {
+          /* 半截文件清理是尽力而为 */
+        })
+        throw new TransferCanceledError()
+      }
+      throw new Error(`下载失败（${label}）: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  /**
+   * 带字节计数与取消感知的 pipe：source→sink 之间插一个 PassThrough 只做
+   * 「数了就转发」；取消时 destroy 它——pipeline 随即结束并销毁两端流，
+   * 不留悬挂的 SFTP 句柄，也不会误报成「传输失败」。
+   */
+  private async pipeCounted(source: NodeJS.ReadableStream, sink: NodeJS.WritableStream, options: SftpTransferOptions | undefined): Promise<void> {
+    if (options === undefined || (options.signal === undefined && options.onBytes === undefined)) {
+      await pipeline(source, sink)
+      return
+    }
+    const meter = new PassThrough()
+    if (options.onBytes !== undefined) {
+      const onBytes = options.onBytes
+      meter.on('data', (chunk: Buffer) => onBytes(chunk.length))
+    }
+    if (options.signal !== undefined) {
+      const signal = options.signal
+      const abort = () => meter.destroy()
+      if (signal.aborted) abort()
+      else signal.addEventListener('abort', abort, { once: true })
+    }
+    await pipeline(source, meter, sink)
+  }
+
+  /** 删远端文件（取消后的半截清理）：失败只记日志，不影响取消本身。 */
+  async deleteRemoteQuiet(spec: SshSpec, path: string): Promise<void> {
+    try {
+      const sftp = await this.acquire(spec)
+      await new Promise<void>((resolve) => {
+        sftp.unlink(path.trim(), () => resolve())
+      })
+    } catch (error) {
+      this.logger.warn(`[dsh-tty] sftp 半截文件清理失败（${path}）: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  /**
+   * 预扫描总字节数（直传进度分母）：目录递归累加文件大小，只数「源头一侧」
+   * ——up 数本机、down 数远程（对侧尚未创建，数不到也不该数）。目的是让
+   * 进度条有真实百分比：纯统计（不搬运），单项失败按 0 计、不阻断传输。
+   */
+  private async estimateBytes(spec: SshSpec, direction: 'up' | 'down', localPath: string, remotePath: string): Promise<number> {
+    try {
+      if (direction === 'up') {
+        const info = await fsStat(localPath)
+        if (!info.isDirectory()) return info.isFile() ? info.size : 0
+        let total = 0
+        const children = await fsReaddir(localPath, { withFileTypes: true })
+        for (const child of children) {
+          total += await this.estimateBytes(spec, direction, pathJoin(localPath, child.name), joinRemotePath(remotePath, child.name))
+        }
+        return total
+      }
+      const sftp = await this.acquire(spec)
+      const stats = await new Promise<import('ssh2').Stats | null>((resolve) => {
+        sftp.stat(remotePath, (error, found) => (error != null ? resolve(null) : resolve(found)))
+      })
+      if (stats === null) return 0
+      if (!stats.isDirectory()) return Number(stats.size ?? 0)
+      let total = 0
+      const list = await this.list(spec, remotePath).catch(() => ({ entries: [] as SftpEntryInfo[] }))
+      for (const entry of list.entries) {
+        if (DOT_ENTRIES.has(entry.name)) continue
+        total += await this.estimateBytes(spec, direction, pathJoin(localPath, entry.name), joinRemotePath(remotePath, entry.name))
+      }
+      return total
+    } catch {
+      /* 统计是尽力而为：失败退化为不定进度，不影响传输本身 */
+      return 0
+    }
+  }
+
+  /** 开一个可取消的直传任务（路由 /transfer 的 start 分支）。 */
+  startTransfer(spec: SshSpec, direction: 'up' | 'down', localPath: string, remotePath: string): SftpTransferJob {
+    const job: SftpTransferJob = {
+      id: randomUUID(),
+      direction,
+      localPath,
+      remotePath,
+      bytes: 0,
+      total: 0,
+      current: '',
+      state: 'running',
+    }
+    const controller = new AbortController()
+    this.jobs.set(job.id, { job, cancel: () => controller.abort() })
+    const options: SftpTransferOptions = {
+      signal: controller.signal,
+      onFile: (name) => {
+        job.current = name
+      },
+      onBytes: (delta) => {
+        job.bytes += delta
+      },
+    }
+    void (async () => {
+      try {
+        job.total = await this.estimateBytes(spec, direction, localPath, remotePath)
+        if (direction === 'up') await this.uploadFromLocal(spec, localPath, remotePath, options)
+        else await this.downloadToLocal(spec, remotePath, localPath, options)
+        job.state = 'done'
+      } catch (error) {
+        job.state = controller.signal.aborted ? 'canceled' : 'error'
+        job.error = error instanceof Error ? error.message : String(error)
+      } finally {
+        // 终态保留 60s 供客户端最后一次轮询取到结果，之后自动回收
+        setTimeout(() => this.jobs.delete(job.id), 60_000).unref?.()
+      }
+    })()
+    return job
+  }
+
+  /** 任务快照（路由 /transfer?job=<id> 轮询）。 */
+  getTransfer(id: string): SftpTransferJob | undefined {
+    return this.jobs.get(id)?.job
+  }
+
+  /** 中止任务（路由 /transfer 的 cancel 分支）；已终态的任务返回 undefined。 */
+  cancelTransfer(id: string): SftpTransferJob | undefined {
+    const entry = this.jobs.get(id)
+    if (entry === undefined) return undefined
+    if (entry.job.state === 'running') entry.cancel()
+    return entry.job
   }
 
   /* -------------------------------------------------------------- */

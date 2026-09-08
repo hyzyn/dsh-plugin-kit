@@ -216,7 +216,7 @@ const TERM_RE = /^[A-Za-z0-9_.+-]+$/
 const REAPER_INTERVAL_MS = 10_000
 
 const TTY_GUIDANCE =
-  '本机已安装 dsh-tty 插件（终端面板）：Web GUI 侧边栏的「终端」入口可打开交互终端（xterm.js + PTY），可运行任意命令与 TUI 程序（vim/htop 等），支持多标签页与断线自动重连（刷新页面/网络抖动后会话保活并恢复现场）；新标签默认在当前会话工作目录打开。标签栏「+」菜单还能开 SSH 标签页（ssh2 原生连接，连接簿在设置卡片维护，支持 agent forwarding 与主机指纹 TOFU 钉扎），像本地终端一样操作远程主机。设置卡片开启「会话持久化（tmux）」后，新开的本地/SSH 标签默认由 tmux server 托管（宿主重启/断线超时后重开即恢复现场），长任务建议在持久化开启时运行。长驻进程（dev server、watch、交互式程序）应引导用户到终端面板里运行，不要在 bash 工具里挂起等待；用户提到「开个终端 / 在终端里跑 / SSH 到某台机器」时引导其打开该面板。agent 侧配套工具：tty_list 列出活跃终端会话（含 SSH 的 target 与实时 cwd），tty_capture 读取近期输出（默认清洗 ANSI；last:true 拿「上一条命令」的输出+退出码），tty_screen 读取当前可见屏幕（可读懂 vim/htop 等 TUI），tty_expect 用正则等待输出中的就绪信号（如 dev server URL、构建完成），tty_send 发送按键，tunnel_list 列出端口转发隧道状态——操作会实时显示在用户终端里。SFTP 文件传输：面板内可对 SSH 连接簿条目（或 SSH 连接对话框当前填写的信息）打开文件浏览（上传/下载/建目录/重命名/删除），agent 配套 sftp_list 列远程目录、sftp_tree 递归看目录结构、sftp_read 读远程文本文件（≤1MB）、sftp_write 写远程文本文件（≤1MB，可追加）、sftp_mkdir 建目录（parents 可逐级补齐）、sftp_rename 重命名/移动、sftp_remove 删除（目录需 recursive），book 参数为连接簿条目名。端口转发：连接簿条目可配本地/远程隧道（如把远程数据库映射到本地端口），宿主自动保活重连，用户提到「转发端口 / 访问远程库」时引导其到终端面板设置卡片配置。推荐流程：tty_send 启动长任务 → tty_expect 等就绪标记 → tty_capture{last:true} 拿结果。'
+  '本机已安装 dsh-tty 插件（终端面板）：Web GUI 侧边栏的「终端」入口可打开交互终端（xterm.js + PTY），可运行任意命令与 TUI 程序（vim/htop 等），支持多标签页与断线自动重连（刷新页面/网络抖动后会话保活并恢复现场）；新标签默认在当前会话工作目录打开。标签栏「+」菜单还能开 SSH 标签页（ssh2 原生连接，连接簿在设置卡片维护，支持 agent forwarding 与主机指纹 TOFU 钉扎），像本地终端一样操作远程主机。设置卡片开启「会话持久化（tmux）」后，新开的本地/SSH 标签默认由 tmux server 托管（宿主重启/断线超时后重开即恢复现场），长任务建议在持久化开启时运行。长驻进程（dev server、watch、交互式程序）应引导用户到终端面板里运行，不要在 bash 工具里挂起等待；用户提到「开个终端 / 在终端里跑 / SSH 到某台机器」时引导其打开该面板。agent 侧配套工具：tty_list 列出活跃终端会话（含 SSH 的 target 与实时 cwd），tty_capture 读取近期输出（默认清洗 ANSI；last:true 拿「上一条命令」的输出+退出码），tty_screen 读取当前可见屏幕（可读懂 vim/htop 等 TUI），tty_expect 用正则等待输出中的就绪信号（如 dev server URL、构建完成），tty_send 发送按键，tunnel_list 列出端口转发隧道状态——操作会实时显示在用户终端里。SFTP 文件传输：面板内可对 SSH 连接簿条目（或 SSH 连接对话框当前填写的信息）打开文件浏览（上传/下载/建目录/重命名/删除），传输期间进度条右侧 ✕ 可取消（半截文件自动清理）；agent 配套 sftp_list 列远程目录、sftp_tree 递归看目录结构、sftp_read 读远程文本文件（≤1MB）、sftp_write 写远程文本文件（≤1MB，可追加）、sftp_mkdir 建目录（parents 可逐级补齐）、sftp_rename 重命名/移动、sftp_remove 删除（目录需 recursive），book 参数为连接簿条目名。端口转发：连接簿条目可配本地/远程隧道（如把远程数据库映射到本地端口），宿主自动保活重连，用户提到「转发端口 / 访问远程库」时引导其到终端面板设置卡片配置。推荐流程：tty_send 启动长任务 → tty_expect 等就绪标记 → tty_capture{last:true} 拿结果。'
 
 /* ------------------------------------------------------------------ *
  * 类型
@@ -2263,16 +2263,29 @@ const plugin = definePlugin<Config>({
                 writeJson(res, 400, { error: parsed.error ?? '无效的 SSH 连接规格' })
                 return
               }
+              // 取消上传（0.12.0）：客户端 abort → req 'aborted' → 打断 pipeline
+              // 并删掉远端半截文件。不清理的话远端会留一个同名残留文件，用户
+              // 只看得到「已取消」，却有个打不开的文件占着位。
+              const controller = new AbortController()
+              let abortedByClient = false
+              req.on('aborted', () => {
+                abortedByClient = true
+                controller.abort()
+              })
               try {
                 const { stream, done } = await sftpManager.openUpload(parsed.spec, target, meta.append === true)
                 let bytes = 0
                 req.on('data', (chunk: Buffer) => {
                   bytes += chunk.length
                 })
-                await pipeline(req, stream)
+                await pipeline(req, stream, { signal: controller.signal })
                 await done
                 writeJson(res, 200, { ok: true, bytes })
               } catch (error) {
+                if (abortedByClient) {
+                  void sftpManager.deleteRemoteQuiet(parsed.spec, target)
+                  return
+                }
                 const message = error instanceof Error ? error.message : String(error)
                 if (res.headersSent) res.destroy()
                 else writeJson(res, 500, { error: message })
@@ -2335,6 +2348,31 @@ const plugin = definePlugin<Config>({
               }
               if (sub === '/transfer') {
                 // up = 本机→远程（上传），down = 远程→本机（下载）；目录递归
+                // 0.12.0：任务化（start 返回 jobId，浏览器可轮询进度 / 取消），
+                // 代替原先「一个 HTTP 请求同步跑完、无法打断」的直传。
+                const action = strField('action')
+                const jobId = strField('job')
+                if (action === 'status') {
+                  if (jobId === '') throw new Error('job 必填')
+                  const job = sftpManager.getTransfer(jobId)
+                  if (job === undefined) {
+                    writeJson(res, 404, { error: '传输任务不存在或已回收' })
+                    return
+                  }
+                  writeJson(res, 200, { ok: true, job })
+                  return
+                }
+                if (action === 'cancel') {
+                  if (jobId === '') throw new Error('job 必填')
+                  const job = sftpManager.cancelTransfer(jobId)
+                  if (job === undefined) {
+                    writeJson(res, 404, { error: '传输任务不存在或已回收' })
+                    return
+                  }
+                  writeJson(res, 200, { ok: true, job })
+                  return
+                }
+                if (action !== '' && action !== 'start') throw new Error('action 必须是 start/status/cancel')
                 const direction = strField('direction')
                 const localPath = strField('localPath')
                 const remotePath = strField('remotePath')
@@ -2345,9 +2383,8 @@ const plugin = definePlugin<Config>({
                   writeJson(res, 400, { error: parsed.error ?? '无效的 SSH 连接规格' })
                   return
                 }
-                if (direction === 'up') await sftpManager.uploadFromLocal(parsed.spec, localPath, remotePath)
-                else await sftpManager.downloadToLocal(parsed.spec, remotePath, localPath)
-                writeJson(res, 200, { ok: true })
+                const job = sftpManager.startTransfer(parsed.spec, direction, localPath, remotePath)
+                writeJson(res, 200, { ok: true, job })
                 return
               }
               writeJson(res, 404, { error: 'not found: ' + sub })

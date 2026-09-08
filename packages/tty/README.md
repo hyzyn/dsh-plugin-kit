@@ -21,7 +21,11 @@ xterm.js 全交互终端（node-pty 真实 PTY，WebGL 渲染器加速），支�
 面板头部压缩为「标签行 + SSH 连接栏」两行；0.10.0 起支持**会话持久化
 （tmux）**——「持久终端」标签由 tmux server（专用 socket）托管，断线保活
 超时、甚至宿主重启后重开标签即按名接回原现场（正在跑的程序原样存活），
-SSH 侧同理（远程 tmux）；0.11.0 起支持 **SSH 连接测试**——设置卡片连接簿
+SSH 侧同理（远程 tmux）；0.12.0 起做了一轮**界面视觉 overhaul**——样式表
+独立成 `client-src/tty.css` 并引入 `--tt-*` 令牌层（圆角/控件高度/间距/
+动效统一，颜色全部派生自 DSH 皮肤 token，明暗主题自动跟随）、图标全面矢量
+化、遮罩/toast/SFTP/连接栏等交互面重排，并新增 `pnpm preview` 截图回归
+工具（见「开发」）；0.11.0 起支持 **SSH 连接测试**——设置卡片连接簿
 条目行内「测试」与 SSH 连接对话框「试连」，按 TCP → 主机密钥（TOFU）→
 认证 逐段诊断连接（见下文 SSH 连接）；SFTP 传输增加**可视化进度条**
 （上传/下载百分比，服务端直传为不定进度脉冲，见下文 SFTP）。
@@ -154,8 +158,14 @@ subsystem，宿主半体 `src/sftp.ts`）：
 - **传输进度条（0.11.0）**：底部状态行右侧新增细进度条 + 百分比——上传按
   XHR 流式进度（多文件带 `i/n · 文件名` 标签）；下载改为流式读
   `response.body`，按响应 `content-length` 实时算百分比（无长度时降级为已传
-  字节文本）；双栏 `⇨/⇦` 服务端直传（字节不经过浏览器、无长度可分）显示
-  不定进度脉冲 + 完成/失败着色；
+  字节文本）；
+- **取消传输（0.12.0）**：进度条右侧 ✕——**上传**中断在途 XHR（批次里剩余
+  文件一并跳过）；**下载**用 `AbortController` 打断流式读取；**双栏 ⇨/⇦
+  直传**改为服务端任务化（start 返回 jobId → 400ms 轮询真实字节进度 → ✕ 打
+  cancel 中止），不再是一个打不断的同步 HTTP 请求。取消后**半截文件自动
+  删除**（上传的远端残留文件 / 下载的本机残留文件；清理失败只记日志），状态行
+  走「已取消」而非红色失败态；关闭文件浏览对话框也会收掉在途传输，不留
+  「看不见但还在写远端」的后台搬运；
 - **连接管理**：懒连接池——首次操作才建 SSH 连接，空闲 120 秒自动回收，
   断开后下次操作自动重连；连接簿条目在每次（重）连接时实时解析（改密码
   后自动用新凭证）；TOFU 与终端会话/隧道共用同一份 `hostKeys` 钉扎，指纹
@@ -340,10 +350,35 @@ pnpm --filter @hyzyn/dsh-tty integration  # 集成测试：真实插件 × 真�
 pnpm --filter @hyzyn/dsh-tty live         # 对运行中的 dsh web 做存活冒烟
 pnpm --filter @hyzyn/dsh-tty tui          # TUI 冒烟：vim/nano 全屏渲染
 pnpm --filter @hyzyn/dsh-tty ssh-smoke    # SSH 冒烟：内存 SSH server（ssh2.Server）× 真实 spawnSsh 端到端（需先 build）
+pnpm --filter @hyzyn/dsh-tty preview      # 视觉预览：headless Chrome 逐场景截图（见下）
 ```
 
-浏览器半体源码在 `client-src/index.js`，构建产物 `client.js`（含 xterm 内核）。
+浏览器半体源码在 `client-src/index.js`，样式表独立成 `client-src/tty.css`（由
+esbuild 的 text loader 内联进 `client.js`）。构建产物 `client.js`（含 xterm 内核），
 改客户端后需重新 `pnpm build` 并刷新页面（可能需硬刷新）。
+
+### 视觉预览 / 截图回归（`scripts/preview.mjs`）
+
+改样式不该靠「刷新页面看一眼」：脚本把 `client.js` 装进一个纯静态夹具页
+（`scripts/preview/harness.html` + `mock-host.js` 伪造的 DSH 宿主：module
+loader / fetch / WebSocket），用 headless Chrome 把 14 个界面状态逐个渲染并
+截图到 `packages/tty/.preview/shots/`：
+
+```bash
+node scripts/preview.mjs                 # 全场景
+node scripts/preview.mjs local menu ssh  # 指定场景
+node scripts/preview.mjs --list          # 列出场景
+node scripts/preview.mjs --theme=light   # 浅色主题
+```
+
+覆盖：本地终端 / 多标签 + SSH 连接栏 / 「+」菜单 / SSH 对话框（新建、编辑）/
+设置卡片 / SFTP（单窗体、双栏）/ 最小化徽标 / 退出与错误遮罩 / 隧道弹层 /
+搜索框 / toast。夹具还会把 `--dsw-*` 皮肤变量与真实界面一并渲染，因此能验
+「明暗主题切换后是否还有白色面板」这类问题。产物目录 `.preview/` 已 gitignore。
+
+> 夹具需要 Chrome/Chromium（默认找 playwright 缓存的 Chrome for Testing，
+> 也可用 `CHROME_PATH` 指定）。若宿主环境限制了 Chrome 的沙箱（子进程被
+> 拒），需要放开后运行，否则浏览器起不来。
 
 ## 已知限制
 
