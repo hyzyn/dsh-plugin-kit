@@ -39,7 +39,15 @@ for (const [dir, name] of targets) {
     continue
   }
   const prerelease = version.includes('-')
-  console.log(`\n===== publish ${name}@${version} (${dir})${prerelease ? ' [dist-tag next]' : ''} =====`)
+  // 首发的包（registry 上包名本身都还不存在）传播最慢：npm 要先建包文档再上 CDN，
+  // 实测 v0.1.20 的 @hyzyn/dsh-docker 超过 2 分钟才可读——回查窗口按此放宽（见下）
+  let firstRelease = false
+  try {
+    fetchRegistry(name)
+  } catch {
+    firstRelease = true
+  }
+  console.log(`\n===== publish ${name}@${version} (${dir})${prerelease ? ' [dist-tag next]' : ''}${firstRelease ? ' [首次发布]' : ''} =====`)
   try {
     execSync(`pnpm publish --no-git-checks${prerelease ? ' --tag next' : ''}`, {
       cwd: dir,
@@ -49,7 +57,7 @@ for (const [dir, name] of targets) {
     console.error(`✘ ${name}@${version} 发布失败，已停止（后续包未发布）；修复后重跑 workflow 即可续发`)
     process.exit(1)
   }
-  published.push([name, version, prerelease])
+  published.push([name, version, prerelease, firstRelease])
 }
 
 if (published.length === 0) {
@@ -58,12 +66,15 @@ if (published.length === 0) {
 }
 
 // 发布后核实：CDN 传播可达 1–2 分钟（v0.1.17 实测 15 秒窗口不够，误报失败），
-// 逐包重试直查，总窗口 20 次 × 6 秒 ≈ 2 分钟
+// 首次发布的包更慢（npm 建包文档 + 传播，v0.1.20 的 dsh-docker 超 2 分钟），
+// 所以分两档窗口：常规 20 次 × 6 秒 ≈ 2 分钟，首发 40 次 × 9 秒 ≈ 6 分钟。
 console.log('\n===== 核实 registry =====')
 let verified = 0
-for (const [name, version, prerelease] of published) {
+for (const [name, version, prerelease, firstRelease] of published) {
   const distTag = prerelease ? 'next' : 'latest'
-  for (let attempt = 1; attempt <= 20; attempt++) {
+  const maxAttempts = firstRelease ? 40 : 20
+  const waitSec = firstRelease ? 9 : 6
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       const doc = fetchRegistry(name)
       if (doc.versions?.[version] && doc['dist-tags']?.[distTag]) {
@@ -72,11 +83,15 @@ for (const [name, version, prerelease] of published) {
         break
       }
     } catch {}
-    if (attempt === 20) {
-      console.error(`✘ ${name}@${version} 发布后 ${attempt} 次回查（约 2 分钟）均未在 registry 确认，请人工核实后再处理`)
+    if (attempt === maxAttempts) {
+      // 注意：走到这里 **publish 本身是成功的**（失败会在上面立即退出），
+      // 只是回查没读到——不要据此重发（会撞 cannot publish over），先人工核实 registry
+      console.error(`✘ ${name}@${version} 发布后 ${attempt} 次回查（约 ${attempt * waitSec / 60} 分钟）未在 registry 读到。`)
+      console.error('   publish 命令本身已成功，多半是 registry / CDN 传播延迟：请先直查')
+      console.error(`   curl -s https://registry.npmjs.org/${encodeURIComponent(name)} 确认，再决定是否重跑（重跑会自动跳过已发布的版本）`)
       process.exit(1)
     }
-    execSync('sleep 6')
+    execSync(`sleep ${waitSec}`)
   }
 }
 console.log(`\n全部完成 ✔（发布 ${verified} 个包，均经 registry 核实）`)
