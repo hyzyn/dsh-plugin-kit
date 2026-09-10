@@ -10,6 +10,13 @@ export declare function pluginRuntimeDir(): string;
  * 注入集成（zsh → ZDOTDIR 桩；bash → --rcfile 桩）。integration=false 或不
  * 支持的 shell 返回最简包装层。
  */
+/**
+ * 带自定义命令的本地 spawn 计划（0.14.0）：给「开一个标签直接跑某条命令」用
+ * （如 dsh-docker 的 `docker exec -it <容器> sh`）。命令由**宿主侧插件**提供，
+ * 信任级与插件本身相同；TERM / COLORTERM 仍走白名单值。
+ * 命令必须单行（换行会破坏 -c 包装层），由调用方（src/index.ts 的帧解析）保证。
+ */
+export declare function buildCommandSpawn(shell: string, term: string, colorTerm: string, command: string): ShellSpawnPlan;
 export declare function buildShellSpawn(shell: string, term: string, colorTerm: string, integration: boolean): ShellSpawnPlan;
 /** POSIX 单引号安全包裹（路径/值进 inner.sh 与 -c 包装层用）。 */
 export declare function shSingleQuote(value: string): string;

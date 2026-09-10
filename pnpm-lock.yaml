@@ -11,11 +11,14 @@ importers:
       '@hyzyn/dsh-codegraph':
         specifier: 0.1.8
         version: link:packages/codegraph
+      '@hyzyn/dsh-docker':
+        specifier: 0.1.0
+        version: link:packages/docker
       '@hyzyn/dsh-env':
         specifier: 0.1.6
         version: link:packages/env
       '@hyzyn/dsh-mcp':
-        specifier: 0.1.6
+        specifier: 0.1.7
         version: link:packages/mcp
       '@hyzyn/dsh-profile':
         specifier: 0.1.6
@@ -30,7 +33,7 @@ importers:
         specifier: 0.1.6
         version: link:packages/search
       '@hyzyn/dsh-tty':
-        specifier: 0.12.0
+        specifier: 0.15.0
         version: link:packages/tty
     devDependencies:
       typescript:
@@ -42,11 +45,14 @@ importers:
       '@hyzyn/dsh-codegraph':
         specifier: 0.1.8
         version: link:../codegraph
+      '@hyzyn/dsh-docker':
+        specifier: 0.1.0
+        version: link:../docker
       '@hyzyn/dsh-env':
         specifier: 0.1.6
         version: link:../env
       '@hyzyn/dsh-mcp':
-        specifier: 0.1.6
+        specifier: 0.1.7
         version: link:../mcp
       '@hyzyn/dsh-profile':
         specifier: 0.1.6
@@ -61,7 +67,7 @@ importers:
         specifier: 0.1.6
         version: link:../search
       '@hyzyn/dsh-tty':
-        specifier: 0.12.0
+        specifier: 0.15.0
         version: link:../tty
     devDependencies:
       '@deepseek-ai/cordis':
@@ -92,6 +98,40 @@ importers:
       '@types/node':
         specifier: ^22.20.0
         version: 22.20.1
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+
+  packages/docker:
+    dependencies:
+      '@deepseek-ai/schemastery':
+        specifier: ^3.18.2
+        version: 3.18.2
+      '@hyzyn/dsh-kit':
+        specifier: 0.1.2
+        version: link:../kit
+      ssh2:
+        specifier: ^1.17.0
+        version: 1.17.0
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: ^4.0.2
+        version: 4.0.2
+      '@deepseek-ai/dsh-host-webserver':
+        specifier: 0.1.2-rc.1
+        version: 0.1.2-rc.1(@deepseek-ai/cordis@4.0.2)
+      '@deepseek-ai/dsh-tools':
+        specifier: 0.1.2-rc.1
+        version: 0.1.2-rc.1(681f04d3fbf43cb3b707868af36d2599)
+      '@types/node':
+        specifier: ^22.20.0
+        version: 22.20.1
+      '@types/ssh2':
+        specifier: ^1.15.6
+        version: 1.15.6
+      esbuild:
+        specifier: ^0.28.2
+        version: 0.28.2
       typescript:
         specifier: ~5.9.3
         version: 5.9.3

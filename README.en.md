@@ -18,7 +18,7 @@ Repo gates: `pnpm typecheck` / `pnpm build` / `pnpm aggregate`.
 
 <p align="center">
   <strong>The plugin family for the DeepSeek Harness (DSH) Web GUI</strong><br>
-  <em>Environment variables · MCP servers · Prompt · Profile · RSS · Global search · Codegraph · Terminal panel · Plugin scaffolding</em>
+  <em>Environment variables · MCP servers · Prompt · Profile · RSS · Global search · Codegraph · Terminal panel · Container panel · Plugin scaffolding</em>
 </p>
 
 <p align="center">
@@ -29,7 +29,7 @@ Repo gates: `pnpm typecheck` / `pnpm build` / `pnpm aggregate`.
 
 ## What It Is
 
-dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (DSH) Web GUI: environment variable / secret management, MCP server configuration, Prompt management, Profile management, RSS / news aggregation, global search, Codegraph integration, and a terminal panel, plus a one-command scaffolding tool for generating new plugins. Everything mounts into `dsh web` through the official profile mechanism, so no DSH source changes are needed. Install the plugins individually, or install everything at once with the aggregate package.
+dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (DSH) Web GUI: environment variable / secret management, MCP server configuration, Prompt management, Profile management, RSS / news aggregation, global search, Codegraph integration, a terminal panel, and a Docker container panel (containers and images on the local or an SSH host, read-only by default), plus a one-command scaffolding tool for generating new plugins. Everything mounts into `dsh web` through the official profile mechanism, so no DSH source changes are needed. Install the plugins individually, or install everything at once with the aggregate package.
 
 ![Example of DSH plugin management cards](docs/dsh-plugin-kit-mcp.png)
 
@@ -43,6 +43,7 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 | Global search | Session titles/content only | Unified sidebar full-text search over historical sessions |
 | Codegraph integration | None | Code-graph card: index status / symbol search / callers-callees-impact / one-click sync-index |
 | Terminal panel | None | Sidebar “Terminal” entry + xterm.js modal: multi-tab real PTY terminal (vim / htop / dev servers), cwd follows session, hot-reload config |
+| Docker container panel | None | Sidebar “Containers” entry + multi-target (local / SSH) container list with search and state filter, start / stop / remove, details, logs, resource usage and images; **read-only by default**, mutations and exec gated behind explicit switches; `docker_*` agent tools |
 | Plugin development | Hand-written boilerplate | `pnpm create-plugin` scaffolding + `@hyzyn/dsh-kit` type helpers |
 
 ## Feature Plugins
@@ -135,6 +136,18 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 - **Where it is stored**: no config file of its own; configuration lives in the “Settings → Plugins → Terminal Panel” card.
 - **Note**: resize relies on DSH’s internal terminal-handle shape (known limitation); output is a UTF-8 text stream, so `cat`-ing binary files shows replacement characters. See `packages/tty/README.md` for details.
 
+### Docker Container Panel (@hyzyn/dsh-docker)
+
+- **What it does**: adds a “Containers” entry to the Web GUI sidebar for inspecting containers on the **local machine or an SSH host** — list with state / health / ports / compose project, container details, log tails, resource usage, and images. Once you explicitly enable the switches, it can also start / stop / remove containers and run a one-shot `docker exec`.
+- **How to use**: install, restart `dsh web`, then click “Containers” in the sidebar → pick a target (local / SSH) → the container list supports search and state filtering → open a card for details / logs / stats, or start / stop / remove (requires “allow mutations”); manage targets and switches under Settings → Plugins → “Docker Container Panel”, saved and applied hot.
+- **Terminal button**: with tty ≥ 0.15.0 installed, the first icon on a card opens an **in-panel terminal drawer** (tty's `ttyTerminal.mount` embeds the terminal in place, so the panel stays open); with tty 0.14.0 it falls back to opening a new terminal tab and closing the panel, and without tty it copies the command `docker exec -it '<container>' sh` (falls back to copying the command when tty's terminal capability is unavailable).
+- **Contextual entry**: with tty ≥ 0.13.0 installed, the SSH tab’s connection bar (next to SFTP) shows a “Containers” button — it opens the panel straight for the host you are connected to (shown whenever the plugin is loaded; the target is resolved at click time by connection-book name or `host:port`, and a missing target shows how to configure it).
+- **Targets**: `kind=local` runs the host machine’s docker CLI; `kind=ssh` can **reference a tty connection-book entry by name** (data-level reuse, tty unchanged; inline host/username when tty is not installed) and runs docker on the remote host over an ssh2 exec channel, with TOFU host-key pinning seeded from tty’s existing records.
+- **Supports**: container list (`all` includes stopped containers), `docker inspect` details, logs (tail / timestamps / since), `docker stats --no-stream` snapshots, image list, and one-shot exec (exit code plus stdout/stderr); `dockerBin` can be set to `podman`; oversized output is truncated.
+- **Security model (important)**: the docker socket is equivalent to root on the target host, so the plugin is **read-only by default** — with `allowMutations` off, start / stop / remove are rejected (HTTP 403 and no agent tool registered); with `allowExec` off, exec is rejected. Container names/IDs pass a whitelist check, commands are always built as argv arrays with single-quote escaping, and passwords / passphrases should use `env:VAR` and are never sent back to the browser.
+- **Where it is stored**: the `docker` settings namespace (`~/.dsh/settings.yaml`).
+- **Note**: there is no interactive TTY (exec is a one-shot command; use the terminal panel for `docker exec -it`), no live log streaming, no image delete / pull / build, and no multi-target aggregate view; `docker rm` is issued without `-f`, so removing a running container fails with a “stop it first” hint. See `packages/docker/README.md` for details.
+
 ## Quick Start
 
 ### System Requirements
@@ -205,6 +218,7 @@ dsh plugin --profile web add @hyzyn/dsh-rss     # RSS / news aggregation
 dsh plugin --profile web add @hyzyn/dsh-search  # Global search
 dsh plugin --profile web add @hyzyn/dsh-codegraph # Codegraph integration
 dsh plugin --profile web add @hyzyn/dsh-tty     # Terminal panel
+dsh plugin --profile web add @hyzyn/dsh-docker  # Docker container panel
 ```
 
 ### Verify and Uninstall

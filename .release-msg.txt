@@ -1,0 +1,33 @@
+feat: dsh-docker 新插件（0.1.0）、tty 0.15.0（ttyTerminal.mount 就地嵌入）、mcp 0.1.7，发布 v0.1.20
+
+dsh-tty 0.13.0 ~ 0.15.0
+- 0.13.0 连接栏扩展点 ttyConnbar：SSH 标签的连接栏可由其他插件注册上下文按钮
+- 0.14.0 终端服务 ttyTerminal.open：让其他插件「开一个标签直接跑一条命令」
+- 0.15.0 ttyTerminal.mount：把终端就地嵌入调用方的面板——不进标签栏、不写
+  sessionStorage、tty 面板关闭不波及（保留连接、不置 intentionalClose）；冷启动
+  安全（创建帧排队等 onopen）、断线重连 / 宿主重启按原命令重跑、resize 跟随容器
+- 服务契约加 version 字段（ttyConnbar=1 / ttyTerminal=2），消费方按版本判能力
+- SSH 对话框：错误与试连结果收进定高状态带，消息出现不再撑动垂直居中的对话框
+  （实测点击前后卡片几何完全一致）；修「选项」分组标签被插两次
+
+dsh-docker 0.1.0（新包）
+- Docker 容器面板：本机 / SSH 目标、容器列表与详情、日志、统计、镜像、一次性 exec、
+  开关保护的启停删；指纹 TOFU 并以 tty 已有记录作种子；自持池化 SSH exec 通道
+- 交互式终端三级降级：ttyTerminal.mount 就地嵌入（面板底部终端抽屉，面板不收起）→
+  open 开标签 + 收面板 → 复制命令（未装 tty / 内联 key·password 拿不到凭证）
+- 卡片动作条按「查看 / 变更」分组：左侧 终端·日志·统计（只读也永远可用），
+  竖线分隔，右侧 启停·重启·删除（按破坏性递增，只读时整组置灰）；删除额外留距
+- 可选消费 ttyConnbar：SSH 连接栏「容器」按钮（目标在点击时解析）
+
+dsh-mcp 0.1.7
+- MCP initialize 的 clientInfo.version 改为读 package.json（原先写死 0.1.0，
+  随包版本漂移）
+
+工具与文档
+- tty 预览夹具可同页加载 dsh-docker，做「服务提供方 + 消费方」的真实端到端联调；
+  20 个场景截图回归（新增 embed / embed-panel / docker-exec / docker-panel(-rw) /
+  ssh-probe），断言覆盖「关 tty 面板不掉嵌入会话」「试连不改变对话框几何」等不变量
+- dsh-docker 新增 smoke / route-smoke / client-smoke（38 项）
+- 根 README（中/英）、tty README、docker README 补齐客户端服务契约与集成说明
+
+聚合层同步：9 个插件；@hyzyn/dsh-all 0.1.20、@hyzyn/dsh-plugin-kit 0.1.14。

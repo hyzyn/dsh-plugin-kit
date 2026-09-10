@@ -13,6 +13,7 @@
 import { spawn } from 'node:child_process'
 import { chmodSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
+import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
@@ -483,6 +484,22 @@ interface ProbeResult {
   error?: string
 }
 
+/**
+ * 本插件版本：MCP initialize 的 clientInfo.version 会原样报给服务器，写死会随包
+ * 版本漂移（曾长期停在 0.1.0），所以从 package.json 读取；读不到时回落到 '0.0.0'
+ * 而不是让插件挂载失败。
+ */
+function readOwnVersion(): string {
+  try {
+    const pkg = createRequire(import.meta.url)('../package.json') as { version?: unknown }
+    return typeof pkg.version === 'string' && pkg.version !== '' ? pkg.version : '0.0.0'
+  } catch {
+    return '0.0.0'
+  }
+}
+
+const MCP_CLIENT_INFO = { name: 'dsh-mcp-config', version: readOwnVersion() }
+
 function initRequest(protocolVersion: string) {
   return {
     jsonrpc: '2.0',
@@ -491,7 +508,7 @@ function initRequest(protocolVersion: string) {
     params: {
       protocolVersion,
       capabilities: {},
-      clientInfo: { name: 'dsh-mcp-config', version: '0.1.0' },
+      clientInfo: MCP_CLIENT_INFO,
     },
   }
 }

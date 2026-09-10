@@ -16,7 +16,7 @@ import { definePlugin } from '@hyzyn/dsh-kit';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { spawnSsh, sshTarget, expandHome } from './ssh.js';
 import { probeSsh } from './probe.js';
-import { buildShellSpawn } from './shell-integration.js';
+import { buildCommandSpawn, buildShellSpawn } from './shell-integration.js';
 import { parseSshConfig } from './ssh-config.js';
 import { parseKnownHosts } from './known-hosts.js';
 import { TunnelManager } from './tunnels.js';
@@ -88,6 +88,28 @@ const DEFAULT_RECONNECT_GRACE_SEC = 120;
 const BACKPRESSURE_HIGH = 512 * 1024;
 const BACKPRESSURE_LOW = 128 * 1024;
 const SID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+/** 自定义命令标签（0.14.0）的长度上限：单条命令，防误传超长脚本。 */
+const COMMAND_MAX = 2000;
+/**
+ * 清洗帧里的 `command`（0.14.0，ttyTerminal 服务用）：必须是单行、非空、
+ * 长度受控的字符串。命令来自**宿主侧插件**（如 dsh-docker 的
+ * `docker exec -it <容器> sh`），信任级与插件本身相同；这里只做形状校验，
+ * 避免换行破坏本地 `-c` 包装层、或超长内容拖垮帧解析。
+ */
+function sanitizeCommand(value) {
+    if (value === undefined)
+        return {};
+    if (typeof value !== 'string')
+        return { error: 'command 必须是字符串' };
+    const trimmed = value.trim();
+    if (trimmed === '')
+        return { error: 'command 不能为空' };
+    if (trimmed.length > COMMAND_MAX)
+        return { error: `command 过长（≤${String(COMMAND_MAX)} 字符）` };
+    if (/[\r\n\0]/.test(trimmed))
+        return { error: 'command 必须是单行（不能含换行/NUL）' };
+    return { command: trimmed };
+}
 const BUFFER_CAP = 256 * 1024;
 /** TERM/COLORTERM 白名单：防止值里的引号破坏 -c 包装层命令（shellArgv 单引号包裹）。 */
 const TERM_RE = /^[A-Za-z0-9_.+-]+$/;
@@ -930,7 +952,14 @@ class TtyServer {
                 // 换成 `exec tmux -L dsh-tty -A -s <名>`（tmux 托管）；tmux 未安装则降级
                 // 普通会话并回灰字提示。持久名稳定（客户端生成、随标签规格保存），
                 // 宿主重启后重开标签按同名 attach 回原 tmux 会话
-                const persistName = msg.persist === true && this.options.persistence === 'tmux'
+                // 命令标签（0.14.0）：直接跑一条命令，不做 tmux 持久化（命令短命）
+                const parsedCommand = sanitizeCommand(msg.command);
+                if (parsedCommand.error !== undefined) {
+                    send(ws, { t: 'error', sid, m: parsedCommand.error });
+                    return;
+                }
+                const command = parsedCommand.command ?? null;
+                const persistName = command === null && msg.persist === true && this.options.persistence === 'tmux'
                     ? sanitizePersistName(msg.persistName, sid)
                     : null;
                 // 跨窗口共享（0.10.1）：同 tmuxName 的宿主会话还活着（别的窗口接回过，
@@ -959,7 +988,9 @@ class TtyServer {
                     return;
                 }
                 const wantsPersist = persistName !== null;
-                let spawnPlan = buildShellSpawn(this.options.shell, this.options.term, this.options.colorTerm, this.options.shellIntegration);
+                let spawnPlan = command !== null
+                    ? buildCommandSpawn(this.options.shell, this.options.term, this.options.colorTerm, command)
+                    : buildShellSpawn(this.options.shell, this.options.term, this.options.colorTerm, this.options.shellIntegration);
                 let tmuxName = null;
                 if (wantsPersist) {
                     const probe = await probeTmux();
@@ -1037,7 +1068,13 @@ class TtyServer {
                 }
                 // 跨窗口共享（0.10.1）：同 tmuxName 的 SSH 持久会话还活着时不重建远程
                 // 连接，本连接重绑定到现有会话（单 PTY 多客户端扇出）
-                const persistName = msg.persist === true && this.options.persistence === 'tmux'
+                const parsedCommand = sanitizeCommand(msg.command);
+                if (parsedCommand.error !== undefined) {
+                    send(ws, { t: 'error', sid, m: parsedCommand.error });
+                    return;
+                }
+                const command = parsedCommand.command ?? null;
+                const persistName = command === null && msg.persist === true && this.options.persistence === 'tmux'
                     ? sanitizePersistName(msg.persistName, sid)
                     : null;
                 if (persistName !== null) {
@@ -1074,6 +1111,7 @@ class TtyServer {
                             rows: Number(msg.rows) || 24,
                             logger: { info: (m) => this.ctx.logger.info(m), warn: (m) => this.ctx.logger.warn(m) },
                             hostKeyStore: this.hostKeyStore,
+                            ...(command !== null ? { command } : {}),
                             ...(persistOpt !== undefined ? { persist: persistOpt } : {}),
                         });
                     }
