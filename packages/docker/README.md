@@ -49,6 +49,8 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
   连接簿时按条目名匹配，否则按 `host:port` 匹配已解析的目标；**没配到目标也不会
   藏按钮**——面板会带一条提示告诉你会话主机（含连接簿名）该去设置卡片怎么配。
 
+  ![docker 面板挂进终端面板右侧 dock：终端保持可见可用](../../docs/dsh-plugin-kit-docker-dock.png)
+
   这条路径打开的面板**不会盖住终端**：tty ≥ 0.16 时它挂在终端面板右侧的 dock 里
   （可拖宽、可折叠成窄条、✕ 收起），终端照常敲命令；tty 更旧或面板没开时才退回
   全屏模态。dock 模式下卡片「终端」按钮改为**在同一终端面板新开标签**执行
@@ -99,6 +101,8 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
   `docker exec <容器> sh -c "<命令>"`，返回退出码与 stdout/stderr（无 TTY）。
 - **交互式终端（卡片第一个图标）**：跑 `docker exec -it '<容器>' sh`。按 tty 能力
   三级降级——
+  ![exec 终端抽屉 + 日志页共存：折叠只藏起来、会话保持运行](../../docs/dsh-plugin-kit-docker-exec.png)
+
   1. **就地嵌入（tty ≥ 0.15，推荐）**：在面板底部开一个**终端抽屉**，由 tty 的
      `ttyTerminal.mount` 把终端挂进来。面板不收起，看着容器日志直接进容器敲命令，
      上下文不断。抽屉会挤占正文高度，所以它可以让位而不结束会话：
@@ -138,6 +142,8 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
 之类的错误。
 
 ## 配置（设置 → 插件 → Docker 容器面板，保存即热生效）
+
+![设置卡片：目标 CRUD、能力开关与参数，保存即热生效](../../docs/dsh-plugin-kit-docker-setting.png)
 
 配置落在 settings 命名空间 `docker`，即 `~/.dsh/settings.yaml` 的 `docker:`
 段（`$DSH_HOME/settings.yaml`；DSH 的 settings 文件由宿主 `dsh-settings-file`

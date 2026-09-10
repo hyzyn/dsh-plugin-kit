@@ -146,9 +146,9 @@ SSH 会话同表调度：`tty_list` 里 `kind: 'ssh'` 的条目按 `target`
 不动终端、不占会话名额，直接对 SSH 连接做远程文件操作（`ssh2` 的 sftp
 subsystem，宿主半体 `src/sftp.ts`）：
 
-![SFTP 单窗体：远程目录浏览，行内 下载/重命名/删除](../../docs/dsh-plugin-kit-tty-sftp-dialog.png)
+![SFTP 单窗体（0.16.0 起挂在终端下方抽屉）：远程目录浏览，行内 下载/重命名/删除](../../docs/dsh-plugin-kit-tty-sftp-dialog.png)
 
-![SFTP 双栏（0.9.0）：左本机 / 右远程，行内 ⇨/⇦ 服务端直传](../../docs/dsh-plugin-kit-tty-sftp-dual.png)
+![SFTP 双栏（0.9.0；0.16.0 起挂在终端下方抽屉）：左本机 / 右远程，行内 ⇨/⇦ 服务端直传](../../docs/dsh-plugin-kit-tty-sftp-dual.png)
 
 - **落点（0.16.0）**：终端面板开着且挂载位空着时，文件浏览**挂在终端下方**——路径栏 /
   列表 / 传输进度占满整宽（文件列表是横向宽表，下方全宽比右侧窄栏好用，终端也保住
