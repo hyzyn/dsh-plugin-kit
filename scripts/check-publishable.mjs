@@ -15,13 +15,33 @@
  *
  * 用法：node scripts/check-publishable.mjs（CI 与 release workflow 均调用）
  */
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { targets } from './publish-targets.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const DEP_FIELDS = ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']
+
+/*
+ * 覆盖度检查：packages/* 下每个可发布包都必须出现在 publish-targets.mjs 里。
+ * 清单是手工维护的，漏一行不会有任何报错——发布流程只是「静默跳过」它，用户永远
+ * 装不到（v0.1.20 的 dsh-docker 就这么漏了一次：workflow 全绿，但 registry 上没有）。
+ */
+const uncovered = []
+const listed = new Set(targets.map(([, name]) => name))
+for (const entry of readdirSync(join(root, 'packages'), { withFileTypes: true })) {
+  if (!entry.isDirectory()) continue
+  const dir = 'packages/' + entry.name
+  let pkg
+  try {
+    pkg = JSON.parse(readFileSync(join(root, dir, 'package.json'), 'utf8'))
+  } catch {
+    continue // 没有 package.json 的目录不是工作区包
+  }
+  if (pkg.private === true || typeof pkg.name !== 'string' || pkg.name === '') continue
+  if (!listed.has(pkg.name)) uncovered.push({ dir, name: pkg.name })
+}
 
 const offenders = []
 for (const [dir, name] of targets) {
@@ -42,8 +62,17 @@ for (const [dir, name] of targets) {
   }
 }
 
+if (uncovered.length > 0) {
+  console.error('✘ ' + uncovered.length + ' 个可发布包不在 scripts/publish-targets.mjs 里（发布流程会静默跳过它们）')
+  console.error('')
+  for (const u of uncovered) console.error('  ' + u.name + ' (' + u.dir + ')')
+  console.error('')
+  console.error('修复：在 scripts/publish-targets.mjs 的 targets 里按依赖序补一行（放在 packages/all 之前）。')
+  process.exit(1)
+}
+
 if (offenders.length === 0) {
-  console.log(`✔ 可发布包依赖检查通过：${targets.length} 个包，无 workspace: 协议残留`)
+  console.log('✔ 可发布包检查通过：' + targets.length + ' 个包在发布清单内，无 workspace: 协议残留')
   process.exit(0)
 }
 
