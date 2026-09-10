@@ -107,18 +107,29 @@
   const DOCKER_TARGETS = [
     { name: '目标1', kind: 'ssh', label: 'root@192.168.80.248' },
     { name: '目标2', kind: 'local', label: '本机' },
+    // 与 tty 连接簿的 prod-web-01 对齐：连接栏「容器」按钮的命中路径（docker-dock 场景）
+    { name: 'prod-web-01', kind: 'ssh', label: 'deploy@10.20.30.41' },
   ]
+  // 形状照搬宿主 /config：设置卡片会读 ttyBooks / hostKeys / ttyAvailable，
+  // 少一个字段就是「渲染期 undefined.length」——离线场景直接崩
   window.__PREVIEW_DOCKER_CONFIG = {
     enabled: true,
+    announceToAgent: true,
+    dockerBin: 'docker',
     allowMutations: false,
     allowExec: true,
     pollIntervalSec: 5,
     logTailDefault: 200,
     maxOutputKb: 512,
     execTimeoutSec: 30,
+    hostKeys: [],
+    ttyBooks: ['prod-web-01'],
+    ttyAvailable: true,
+    toolsRegistered: [],
     targets: [
       { name: '目标1', kind: 'ssh', book: '', host: '192.168.80.248', port: 22, username: 'root', auth: 'agent', agentForward: false },
       { name: '目标2', kind: 'local', book: '', host: '', port: 22, username: '', auth: 'agent', agentForward: false },
+      { name: 'prod-web-01', kind: 'ssh', book: 'prod-web-01', host: '', port: 22, username: '', auth: 'agent', agentForward: false },
     ],
   }
   window.__PREVIEW_DOCKER_CONTAINERS = [
@@ -135,8 +146,34 @@
       { id: 'sha256:11aa', shortId: '11aa22bb33cc', tags: ['app:2026.09.07'], size: 184320000, createdAt: null, createdSince: '2 days ago' },
       { id: 'sha256:22bb', shortId: '22bb33cc44dd', tags: ['postgres:16-alpine'], size: 42000000, createdAt: null, createdSince: '3 weeks ago' },
     ] }
-    if (path === '/inspect') return { ok: true, details: [window.__PREVIEW_DOCKER_CONTAINERS[0]] }
-    if (path === '/logs') return { ok: true, logs: '2026-09-09T12:00:00Z INFO  server listening on :8080\n2026-09-09T12:00:01Z INFO  connected to postgres\n2026-09-09T12:00:02Z WARN  slow query 412ms\n2026-09-09T12:00:03Z INFO  request GET /health 200 3ms\n' }
+    // 详情形状按宿主 /inspect 的真实返回补齐：缺字段会让「概览」页在渲染期崩掉
+    // （detail.mounts.length 之类），预览也就看不到日志/概览页
+    if (path === '/inspect') {
+      const base = window.__PREVIEW_DOCKER_CONTAINERS[0]
+      return { ok: true, details: [{
+        ...base,
+        startedAt: '2026-09-06 04:11:22 +0800 CST',
+        finishedAt: null,
+        exitCode: null,
+        restartCount: 0,
+        restartPolicy: 'unless-stopped',
+        pid: 48213,
+        healthLogTail: null,
+        mounts: [{ source: '/srv/app', destination: '/app', readWrite: true }],
+        networks: [{ name: 'app_default', ip: '172.20.0.7' }],
+        entrypoint: 'docker-entrypoint.sh',
+        command: 'node server.js',
+        workingDir: '/app',
+        user: 'node',
+      }] }
+    }
+    // /logs 的真实响应形状是 { id, text, truncated }（见 dsh-docker 宿主 /logs 路由）；
+    // 早先这里回的是裸字符串，客户端 logs.text 拿到 undefined 直接崩掉整面板
+    if (path === '/logs') return { ok: true, logs: {
+      id: body && body.id ? body.id : 'app-web-1',
+      truncated: false,
+      text: '2026-09-09T12:00:00Z INFO  server listening on :8080\n2026-09-09T12:00:01Z INFO  connected to postgres\n2026-09-09T12:00:02Z WARN  slow query 412ms\n2026-09-09T12:00:03Z INFO  request GET /health 200 3ms\n',
+    } }
     if (path === '/stats') return { ok: true, stats: [null] }
     return { ok: true }
   }

@@ -130,6 +130,53 @@
     await sleep(200)
     return item
   }
+  /** SFTP 落点断言：卡片在挂载位里（docked）还是退回了居中对话框（modal）。 */
+  const sftpSurfaceAssert = () => ({
+    docked: q('.tt_dockPaneBody > .tt_sftpCard') !== null || q('.tt_dockPaneBody > .tt_sftpDualCard') !== null,
+    modal: q('.tt_sshBackdrop > .tt_sftpCard') !== null || q('.tt_sshBackdrop > .tt_sftpDualCard') !== null,
+    cardTitleRowHidden: (() => {
+      const row = q('.tt_dockPaneBody .tt_sftpTitleRow')
+      return row === null ? null : getComputedStyle(row).display
+    })(),
+    rows: qa('.tt_sftpRow').length,
+    termWidth: Math.round((q('.tt_body') || { getBoundingClientRect: () => ({ width: 0 }) }).getBoundingClientRect().width),
+    // 卡片必须完整落在挂载位里（border-box 回归）：右边/底边不溢出，工具栏最右按钮不被裁
+    fitsDock: (() => {
+      const body = q('.tt_dockPaneBody')
+      if (body === null) return null
+      const card = q('.tt_dockPaneBody > .tt_sftpCard, .tt_dockPaneBody > .tt_sftpDualCard')
+      if (card === null) return null
+      const b = body.getBoundingClientRect()
+      const c = card.getBoundingClientRect()
+      const bar = q('.tt_dockPaneBody .tt_sftpBar')
+      return {
+        overflowRight: Math.round(c.right - b.right),
+        overflowBottom: Math.round(c.bottom - b.bottom),
+        actionsFit: bar === null ? null : Math.round(bar.getBoundingClientRect().right) <= Math.round(b.right),
+      }
+    })(),
+  })
+
+  /** 终端里最后一行非空文本（xterm 会把光标所在行渲染成空 div）。 */
+  const lastTermRowText = () => {
+    const rows = qa('.tt_term .xterm-rows > div')
+    for (let i = rows.length - 1; i >= 0; i -= 1) {
+      const text = rows[i].textContent.trim()
+      if (text !== '') return text
+    }
+    return null
+  }
+
+  /** 终端里第一行非空文本（判断视口有没有跳）。 */
+  const firstTermRowText = () => {
+    const rows = qa('.tt_term .xterm-rows > div')
+    for (let i = 0; i < rows.length; i += 1) {
+      const text = rows[i].textContent.trim()
+      if (text !== '') return text
+    }
+    return null
+  }
+
   const feed = (text) => {
     const el = activeTabEl()
     if (el) emit({ t: 'data', sid: sidOf(el), d: text })
@@ -213,7 +260,45 @@
       await waitFor(() => q('#preview-settings .tt_cardBody'))
       await sleep(400)
     },
-    /* SFTP 单窗体 */
+    /* 设置卡片：docker 与 tty 并排（同一张 ul 里），核对两家的观感是否一致 */
+    async 'settings-docker'() {
+      const host = document.createElement('div')
+      host.id = 'preview-settings'
+      host.style.cssText = 'position:fixed;inset:24px 24px 24px 260px;overflow:auto;z-index:2000;background:var(--dsw-alias-bg-base);padding:8px;border-radius:16px'
+      document.body.appendChild(host)
+      const list = document.createElement('ul')
+      list.style.cssText = 'display:flex;flex-direction:column;gap:12px;margin:0;padding:0'
+      host.appendChild(list)
+      const docker = cards.find((c) => c.spec.key === 'docker')
+      const tty = cards.find((c) => c.spec.key === 'tty')
+      if (docker === undefined) throw new Error('未注册 docker 设置卡片')
+      const root = window.ReactDOM.createRoot(list)
+      root.render(window.React.createElement(window.React.Fragment, null,
+        window.React.createElement(tty.Component),
+        window.React.createElement(docker.Component),
+      ))
+      await waitFor(() => q('.dk_settingsCard'), 3000)
+      q('.tt_cardHeader').click()
+      await sleep(300)
+      q('.dk_settingsHead').click()
+      await waitFor(() => q('.dk_settingsBody'), 4000)
+      await sleep(600)
+      const box = (sel) => {
+        const el = q(sel)
+        if (el === null) return null
+        const cs = getComputedStyle(el)
+        return { radius: cs.borderRadius, border: cs.borderColor, bg: cs.backgroundColor, pad: cs.padding, w: Math.round(el.getBoundingClientRect().width) }
+      }
+      window.__previewAssert = {
+        dockerCard: box('.dk_settingsCard'),
+        ttyCard: box('.tt_card'),
+        dockerName: getComputedStyle(q('.dk_settingsName')).fontSize + '/' + getComputedStyle(q('.dk_settingsName')).fontWeight,
+        ttyName: getComputedStyle(q('.tt_cardName')).fontSize + '/' + getComputedStyle(q('.tt_cardName')).fontWeight,
+        dockerDesc: getComputedStyle(q('.dk_settingsDesc')).fontSize,
+        ttyDesc: getComputedStyle(q('.tt_cardDescription')).fontSize,
+      }
+    },
+    /* SFTP 单窗体（0.16.0 起挂进右侧挂载位，终端保持可见） */
     async sftp() {
       await openPanel()
       await clickAdd()
@@ -225,8 +310,9 @@
       await waitFor(() => q('.tt_sftpCard'))
       await waitFor(() => qa('.tt_sftpRow').length > 1)
       await sleep(250)
+      window.__previewAssert = sftpSurfaceAssert()
     },
-    /* SFTP 双栏 */
+    /* SFTP 双栏（同样挂进挂载位，初始给到面板宽度的 62%） */
     async 'sftp-dual'() {
       // 双栏风格由 config.sftpStyle 决定，必须在开面板（拉配置）之前改
       window.__PREVIEW_CONFIG.sftpStyle = 'dual'
@@ -240,6 +326,22 @@
       await waitFor(() => q('.tt_sftpDualCard'))
       await waitFor(() => qa('.tt_sftpRow').length > 2)
       await sleep(250)
+      window.__previewAssert = sftpSurfaceAssert()
+    },
+    /* SFTP 落点断言：挂载位（dock）还是退回了对话框 */
+    async 'sftp-fallback'() {
+      // 抽屉已被 dsh-docker 的容器面板占用 → SFTP 应退回居中对话框，不能挤掉它
+      await SCENARIOS['docker-dock']()
+      const before = { dockerPanel: q('.tt_dockPaneBody .dk_panel') !== null }
+      const sftpBtn = qa('.tt_connAct').find((b) => b.textContent.includes('SFTP'))
+      sftpBtn.click()
+      await waitFor(() => q('.tt_sshBackdrop .tt_sftpCard'), 4000)
+      await sleep(250)
+      window.__previewAssert = {
+        ...sftpSurfaceAssert(),
+        dockerPanelBefore: before.dockerPanel,
+        dockerPanelAfter: q('.tt_dockPaneBody .dk_panel') !== null,
+      }
     },
     /* 最小化（状态并入侧边栏入口） */
     async minimized() {
@@ -332,6 +434,137 @@
       await waitFor(() => q('.dk_drawer'), 4000)
       await waitFor(() => q('.dk_drawerBody .xterm'), 4000)
       await sleep(700)
+    },
+    /* docker：终端抽屉 + 日志页共存，折叠只隐藏不结束会话（0.2.0 回归） */
+    async 'docker-exec-logs'() {
+      await SCENARIOS['docker-exec']()
+      // 抽屉开着的同时进日志页：两边都得活着
+      qa('.dk_card')[0].querySelectorAll('.dk_iconBtn')[1].click()
+      await waitFor(() => q('.dk_logs'), 4000)
+      await waitFor(() => q('.dk_drawerBody .xterm'), 4000)
+      await sleep(300)
+      const fold = await waitFor(() => q('.dk_drawerFold'), 3000)
+      fold.click()
+      await waitFor(() => q('.dk_drawer[data-collapsed="1"]'), 3000)
+      await sleep(250)
+      const termAliveWhenCollapsed = q('.dk_drawerBody .xterm') !== null
+      const collapsedHeight = Math.round(q('.dk_drawer').getBoundingClientRect().height)
+      fold.click()
+      await waitFor(() => !q('.dk_drawer[data-collapsed="1"]'), 3000)
+      await sleep(300)
+      window.__previewAssert = {
+        termAliveWhenCollapsed,
+        collapsedHeight,
+        expandedHeight: Math.round(q('.dk_drawer').getBoundingClientRect().height),
+        logLines: document.querySelectorAll('.dk_logLine').length,
+        sockets: window.__mockSockets.length,
+      }
+    },
+    /* 右侧挂载位（ttyPanel.mountPane）：骨架 + 终端共存 */
+    async 'dock-pane'() {
+      await openPanel()
+      const service = services.get('ttyPanel')
+      if (service === undefined) throw new Error('ttyPanel 服务不存在')
+      const pane = service.mountPane({ title: '演示侧栏', hint: 'ttyPanel v1', size: 420 })
+      pane.element.innerHTML = '<div style="padding:16px;color:var(--tt-label-2);font-size:13px;line-height:1.8">'
+        + '这块由消费插件自己 render（dsh-docker 的容器面板就走这里）。<br>'
+        + '拖左边缘可调宽，标题栏右侧箭头可折叠，终端始终可见可用。</div>'
+      await waitFor(() => q('.tt_dockPane'), 3000)
+      await sleep(300)
+      window.__previewAssert = {
+        width: Math.round(q('.tt_dockPane').getBoundingClientRect().width),
+        collapsed: pane.isCollapsed(),
+        termVisible: q('.tt_term') !== null,
+      }
+    },
+    /* 底部挂载位 + 终端重排：缩高度后视口必须钉在底部（输出不被顶上去） */
+    async 'dock-pane-bottom'() {
+      await openPanel()
+      const el = tabs()[0]
+      const sid = sidOf(el)
+      let text = ''
+      for (let i = 1; i <= 200; i += 1) text += 'line-' + i + '\r\n'
+      text += 'END-OF-OUTPUT\r\n'
+      emit({ t: 'data', sid, d: text })
+      await sleep(400)
+      const before = lastTermRowText()
+      const rowsBefore = qa('.tt_term .xterm-rows > div').length
+      const pane = services.get('ttyPanel').mountPane({ title: '演示底部面板', hint: 'side=bottom', side: 'bottom', size: 320 })
+      pane.element.innerHTML = '<div style="padding:12px;color:var(--tt-label-2);font-size:13px">底部面板（等同 SFTP 落点）</div>'
+      await waitFor(() => q('.tt_dockPane[data-side="bottom"]'), 3000)
+      await sleep(600)
+      const phaseA = {
+        rowsAfter: qa('.tt_term .xterm-rows > div').length,
+        after: lastTermRowText(),
+        pinnedToBottom: lastTermRowText() === 'END-OF-OUTPUT',
+        viewportAtBottom: (() => {
+          const el2 = q('.tt_term .xterm-viewport')
+          return el2 === null ? null : el2.scrollTop + el2.clientHeight >= el2.scrollHeight - 2
+        })(),
+      }
+      // B) 翻在历史里时再改一次高度（折叠再展开）：视口停在原处，不该跳到别处
+      const vp = q('.tt_term .xterm-viewport')
+      vp.scrollTop = 0
+      await sleep(250)
+      const historyBefore = firstTermRowText()
+      q('.tt_dockPaneFold').click()
+      await sleep(350)
+      q('.tt_dockPaneFold').click()
+      await sleep(550)
+      const historyAfter = firstTermRowText()
+      window.__previewAssert = {
+        before,
+        rowsBefore,
+        // A) 贴着底部开面板：最新一行必须还在视口里
+        ...phaseA,
+        // B) 翻在历史里改高度：视口锁在同几行
+        historyBefore,
+        historyAfter,
+        historyStable: historyBefore === historyAfter,
+        bodyH: Math.round(q('.tt_body').getBoundingClientRect().height),
+        screenH: Math.round(q('.tt_term .xterm-screen').getBoundingClientRect().height),
+        termH: Math.round(q('.tt_term').getBoundingClientRect().height),
+      }
+    },
+    /* docker 面板挂进 tty 右侧 dock（连接栏「容器」→ 不盖住终端，0.16.0 端到端） */
+    async 'docker-dock'() {
+      await openPanel()
+      await clickAdd()
+      await clickMenuItem('prod-web-01')
+      await waitFor(() => tabs().length === 2)
+      await sleep(250)
+      const btn = qa('.tt_connAct').find((b) => b.textContent.includes('容器'))
+      if (btn === undefined) throw new Error('连接栏没有「容器」按钮')
+      btn.click()
+      await waitFor(() => q('.tt_dockPane'), 5000)
+      await waitFor(() => qa('.tt_dockPaneBody .dk_card').length >= 3, 5000)
+      await sleep(400)
+      const before = {
+        modalWidth: Math.round(q('.tt_modal').getBoundingClientRect().width),
+        bodyWidth: Math.round(q('.tt_body').getBoundingClientRect().width),
+        paneWidth: Math.round(q('.tt_dockPane').getBoundingClientRect().width),
+      }
+      // 折叠 → 终端拿回宽度；展开 → 恢复
+      q('.tt_dockPaneFold').click()
+      await sleep(300)
+      const collapsed = {
+        paneWidth: Math.round(q('.tt_dockPane').getBoundingClientRect().width),
+        bodyWidth: Math.round(q('.tt_body').getBoundingClientRect().width),
+        // 折叠只是 display:none，DOM（和消费插件的 React 树）必须还在
+        bodyDisplay: getComputedStyle(q('.tt_dockPaneBody')).display,
+      }
+      q('.tt_dockPaneFold').click()
+      await sleep(300)
+      const expanded = { paneWidth: Math.round(q('.tt_dockPane').getBoundingClientRect().width) }
+      window.__previewAssert = {
+        docked: q('.tt_dockPaneBody .dk_panel[data-dock="1"]') !== null,
+        modalBackdrop: q('.dk_backdrop') !== null,
+        cards: qa('.tt_dockPaneBody .dk_card').length,
+        before,
+        collapsed,
+        expanded,
+        ttTerms: document.querySelectorAll('.tt_term').length,
+      }
     },
     /* toast 提醒（并发上限） */
     async toast() {

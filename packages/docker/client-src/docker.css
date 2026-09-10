@@ -34,6 +34,8 @@
   --dk-gap-md: 8px;
   --dk-gap-lg: 12px;
   --dk-gap-xl: 16px;
+  /* 设置卡片标题行内边距：对齐 DSH 内置卡片 / 其他插件卡片（pM_pluginCard、tt_card） */
+  --dk-pad-cardHead: 14px 16px;
   --dk-mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   --dk-ease: cubic-bezier(.2, .8, .2, 1);
   --dk-dur: .16s;
@@ -47,6 +49,7 @@
   --dk-hover-solid: var(--dsw-alias-interactive-bg-hover-solid, rgba(127, 127, 127, .16));
   --dk-label: var(--dsw-alias-label-primary, #1a1a1a);
   --dk-label-2: var(--dsw-alias-label-secondary, #555);
+  --dk-label-dimmed: var(--dsw-alias-label-dimmed, var(--dk-label-3));
   --dk-label-3: var(--dsw-alias-label-tertiary, #888);
   --dk-surface: var(--dsw-alias-bg-base, #fff);
   --dk-surface-solid: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-base, #fff));
@@ -207,8 +210,22 @@
   line-height: 1.5;
 }
 
+/*
+ * dock 模式（0.3.0）：面板长在 tty 面板的右侧挂载位里，撑满宿主即可——
+ * 外框 / 圆角 / 阴影 / 最小高度都是「独立弹窗」的装饰，挂在别人栏里要全去掉。
+ */
+.dk_panelDock {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
 /* ---- 交互式终端抽屉（ttyTerminal.mount 就地嵌入，0.15.0） ---- */
 .dk_drawer {
+  position: relative; /* 顶部拖拽条的定位基准 */
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
@@ -218,6 +235,34 @@
   background: var(--dk-surface-2);
   animation: dk_drawerIn var(--dk-dur) var(--dk-ease);
 }
+
+/* 拖拽条：贴着抽屉上沿，鼠标进入才显形（常态不打扰终端内容） */
+.dk_drawerResize {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  height: 5px;
+  cursor: ns-resize;
+}
+
+.dk_drawerResize:hover { background: color-mix(in srgb, var(--dk-accent) 55%, transparent); }
+
+/*
+ * 折叠：只把抽屉压到标题栏高度（正文隐藏），**不卸载**挂载点——tty 那边的
+ * xterm 与 PTY 会话照旧跑着，展开即原样回来。
+ */
+.dk_drawer[data-collapsed="1"] {
+  height: auto; /* 只剩标题栏（正文 display:none），别写死高度：header 是内容盒 + 内边距 */
+  min-height: 0;
+}
+
+.dk_drawer[data-collapsed="1"] .dk_drawerResize,
+.dk_drawer[data-collapsed="1"] .dk_drawerBody { display: none; }
+
+.dk_drawerFold .dk_iconGlyph { transition: transform var(--dk-dur) var(--dk-ease); }
+.dk_drawer[data-collapsed="1"] .dk_drawerFold .dk_iconGlyph { transform: rotate(180deg); }
 
 @keyframes dk_drawerIn {
   from { opacity: 0; transform: translateY(8px); }
@@ -319,6 +364,13 @@
 .dk_iconBtn:focus-visible { outline: none; box-shadow: var(--dk-ring); }
 .dk_iconBtn:disabled { opacity: .45; cursor: not-allowed; }
 
+/*
+ * 刷新中的图标自己转（data-spin 由各处的 refresh 按钮按 loading 打）：
+ * 比在按钮旁边另挂一个独立 spinner 直观——用户刚点的就是这颗。
+ */
+.dk_iconBtn[data-spin="1"] { color: var(--dk-accent); }
+.dk_iconBtn[data-spin="1"] > span { animation: dk_spin .8s linear infinite; }
+
 /* ============================ 工具栏 ============================ */
 
 .dk_toolbar {
@@ -353,6 +405,9 @@
 }
 
 .dk_search { flex: 1 1 200px; min-width: 160px; }
+
+/* 工具条里的结果计数（镜像：23 / 23 个镜像）：别被压缩，数字等宽 */
+.dk_searchCount { flex: none; font-variant-numeric: tabular-nums; }
 
 .dk_seg {
   display: inline-flex;
@@ -639,12 +694,14 @@
 }
 
 .dk_filterBar {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--dk-gap-md);
   flex: 1 1 auto;
   min-width: 0;
-  padding: var(--dk-gap-xs) 0;
+  /* 右侧给计数留固定槽（92px ≈ 4 位数 + 「行匹配」），输入框宽度因此恒定 */
+  padding: var(--dk-gap-xs) 92px var(--dk-gap-xs) 0;
 }
 
 .dk_tab {
@@ -716,24 +773,53 @@
 }
 
 
-.dk_filterToggle {
+/* 过滤输入框常驻；清空按钮浮在框内右侧（绝对定位 → 出现/消失都不挤动布局） */
+.dk_filterWrap {
+  position: relative;
+  display: flex;
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.dk_filterInput {
+  flex: 1 1 auto;
+  height: var(--dk-h-md);
+  min-width: 0;
+  /* 常驻右侧内边距给清除按钮留位：内边距跟着内容变会改 flex 基准，反而挤动输入框 */
+  padding-right: 28px;
+}
+
+.dk_filterClear {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
   display: inline-flex;
   align-items: center;
-  gap: var(--dk-gap-xs);
+  justify-content: center;
+  width: 20px;
+  height: 20px;
   padding: 0;
   border: none;
+  border-radius: var(--dk-r-sm);
   background: transparent;
-  color: var(--dk-label-2);
-  font-size: 12px;
-  font-family: inherit;
+  color: var(--dk-label-3);
   cursor: pointer;
 }
 
-.dk_filterToggle:hover { color: var(--dk-label); }
-.dk_caret { display: inline-flex; transform: rotate(-90deg); transition: transform var(--dk-dur) var(--dk-ease); }
-.dk_filterToggle[data-on="1"] .dk_caret { transform: none; }
-.dk_filterInput { flex: 1 1 200px; height: var(--dk-h-md); min-width: 0; }
-.dk_filterCount { flex: none; color: var(--dk-label-3); font-size: 11px; font-variant-numeric: tabular-nums; }
+.dk_filterClear:hover { background: var(--dk-hover); color: var(--dk-label); }
+.dk_filterClear:focus-visible { outline: none; box-shadow: var(--dk-ring); }
+/* 计数（「201 行」/「1 / 201 行匹配」）右对齐在固定槽里：文案变长也不会把输入框挤动 */
+.dk_filterCount {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  white-space: nowrap;
+  color: var(--dk-label-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
 
 .dk_logBody {
   flex: 1 1 auto;
@@ -863,6 +949,36 @@
 
 .dk_tableWrap { overflow: auto; }
 
+/*
+ * 镜像页：搜索框已经在工具条（固定区），这里再让表体自己滚、表头钉住——
+ * 长镜像列表滚到底时列名（镜像 / 大小 / 创建 / ID）仍然看得见。
+ */
+.dk_mainImages {
+  display: flex;
+  flex-direction: column;
+  /* auto 而不是 hidden：横幅 / 空态在矮面板里仍可滚，不会被裁掉 */
+  overflow: auto;
+}
+
+.dk_imagesView {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.dk_mainImages .dk_tableWrap {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.dk_images thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--dk-surface-solid);
+}
+
 .dk_images {
   width: 100%;
   border-collapse: collapse;
@@ -953,14 +1069,57 @@
 
 /* ============================ 设置卡片 ============================ */
 
-.dk_cardBody {
+/*
+ * 外框与 DSH 内置卡片 / 其他插件卡片（pM_pluginCard、tt_card）同一套度量：
+ * border-l2 + bg-layer-3（展开时 layer-2）、12px 圆角、标题行 14/16、
+ * 标题 14px/600、描述 12px/label-secondary。
+ * 之前是内联的 10px 圆角 + 更浅的边框 + 13px 标题，在设置列表里一眼就是「另一套」。
+ */
+.dk_settingsCard {
+  list-style: none;
+  border: 1px solid var(--dk-border-strong);
+  border-radius: var(--dk-r-xl);
+  background: var(--dk-surface-3);
+  transition: border-color var(--dk-dur) var(--dk-ease), background var(--dk-dur) var(--dk-ease);
+}
+
+.dk_settingsCard:hover { border-color: var(--dk-label-dimmed); }
+.dk_settingsCardOpen { background: var(--dk-surface-2); border-color: var(--dk-label-dimmed); }
+
+.dk_settingsHead {
+  display: flex;
+  align-items: center;
+  gap: var(--dk-gap-lg);
+  width: 100%;
+  padding: var(--dk-pad-cardHead);
+  border: 0;
+  border-radius: var(--dk-r-xl);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dk_settingsHead:focus-visible { outline: none; box-shadow: var(--dk-ring); }
+.dk_settingsHeadText { display: flex; flex-direction: column; gap: var(--dk-gap-xs); flex: 1; min-width: 0; }
+.dk_settingsName { color: var(--dk-label); font-size: 14px; font-weight: 600; line-height: 1.4; }
+.dk_settingsDesc { color: var(--dk-label-2); font-size: 12px; line-height: 1.5; }
+
+.dk_settingsChevron {
+  flex: none;
+  display: inline-flex;
+  color: var(--dk-label-3);
+  transition: transform var(--dk-dur) var(--dk-ease);
+}
+
+.dk_settingsCardOpen .dk_settingsChevron { transform: rotate(180deg); }
+
+.dk_settingsBody {
   display: flex;
   flex-direction: column;
   gap: var(--dk-gap-lg);
-  padding: var(--dk-gap-lg);
-  border: 1px solid var(--dk-border);
-  border-radius: var(--dk-r-lg);
-  background: var(--dk-surface-solid);
+  padding: 2px var(--dk-gap-xl) var(--dk-gap-xl);
   color: var(--dk-label);
   font-size: 13px;
 }

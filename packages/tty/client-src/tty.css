@@ -295,15 +295,12 @@
   background: linear-gradient(180deg, var(--tt-surface-2), var(--tt-surface));
 }
 .tt_titleIcon {
+  /* 无边框图标：与其他插件面板（dsh-docker 的 .dk_titleIcon）保持一致——
+     之前这里套了一个描边 + 淡色底 28×28 的「应用图标」盒子，两个面板并排看很跳 */
   flex: none;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  border: 1px solid color-mix(in srgb, var(--tt-accent) 26%, var(--tt-border));
-  border-radius: var(--tt-r-md);
-  background: color-mix(in srgb, var(--tt-accent) 12%, transparent);
   color: var(--tt-accent);
 }
 
@@ -757,11 +754,190 @@
 
 .tt_body {
   position: relative;
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 0; /* 右侧挂了 dock 时，终端区要能被压窄而不是把 dock 顶出去 */
   min-height: 0;
   overflow: hidden;
   background: var(--tt-term-bg);
 }
+
+/* ======================= 右侧挂载位（ttyPanel，0.16.0） ======================= */
+
+/* 终端区与挂载位并排的横向容器（openModal 建立） */
+.tt_work {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.tt_dockPane {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  width: 460px; /* 初值；挂载/拖拽时由 JS 写成 inline 宽度 */
+  min-width: 0;
+  border-left: 1px solid var(--tt-border-strong);
+  background: var(--tt-surface-2);
+}
+
+/* 拖拽条：贴在左边缘（悬停显形） */
+.tt_dockPaneResize {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  z-index: 3;
+  width: 6px;
+  cursor: col-resize;
+}
+
+.tt_dockPaneResize:hover { background: color-mix(in srgb, var(--tt-accent) 55%, transparent); }
+
+.tt_dockPaneHead {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--tt-gap-sm);
+  min-height: 34px;
+  padding: var(--tt-gap-xs) var(--tt-gap-sm) var(--tt-gap-xs) var(--tt-gap-lg);
+  border-bottom: 1px solid var(--tt-border);
+}
+
+.tt_dockPaneTitle {
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tt_dockPaneHint {
+  flex: none;
+  color: var(--tt-label-3);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.tt_dockPaneSpacer { flex: 1 1 auto; }
+
+.tt_dockPaneFold,
+.tt_dockPaneClose {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: var(--tt-r-sm);
+  background: transparent;
+  color: var(--tt-label-2);
+  cursor: pointer;
+}
+
+.tt_dockPaneFold:hover,
+.tt_dockPaneClose:hover { background: var(--tt-hover); color: var(--tt-label); }
+
+.tt_dockPaneBody {
+  position: relative;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* SFTP 卡片挂进侧栏时（0.16.0）：撑满挂载位、去掉模态外框；标题行由侧栏标题栏替代 */
+.tt_dockPaneBody > .tt_sftpCard,
+.tt_dockPaneBody > .tt_sftpDualCard {
+  /* 卡片自己没声明 border-box，width/height:100% 会再加上 padding，右边与底部各溢出
+     24px（工具栏最右那颗按钮被裁掉、状态行贴边）。挂载位里必须自己兜住。 */
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  padding: var(--tt-gap-lg);
+  gap: var(--tt-gap-md);
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  animation: none;
+}
+
+.tt_dockPaneBody > .tt_sftpCard > .tt_sftpTitleRow,
+.tt_dockPaneBody > .tt_sftpDualCard > .tt_sftpTitleRow { display: none; }
+
+/* 折叠：压成右侧窄条（竖排标题 + 展开/关闭），终端拿回全部宽度 */
+.tt_dockPane[data-collapsed="1"] {
+  width: 32px;
+  flex-basis: 32px;
+}
+
+.tt_dockPane[data-collapsed="1"] .tt_dockPaneResize,
+.tt_dockPane[data-collapsed="1"] .tt_dockPaneHint,
+.tt_dockPane[data-collapsed="1"] .tt_dockPaneBody { display: none; }
+
+.tt_dockPane[data-collapsed="1"] .tt_dockPaneHead {
+  flex-direction: column;
+  gap: var(--tt-gap-xs);
+  padding: var(--tt-gap-md) 0;
+  border-bottom: none;
+}
+
+.tt_dockPane[data-collapsed="1"] .tt_dockPaneTitle {
+  max-height: 40vh;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+}
+
+.tt_dockPane[data-collapsed="1"] .tt_dockPaneSpacer { flex: 0 0 var(--tt-gap-md); }
+
+/* ---- 下方挂载位（side=bottom：横向宽表用它，例如 SFTP 文件列表 / 双栏） ---- */
+
+.tt_work[data-side="bottom"] { flex-direction: column; }
+
+/* 底部 pane 由内容（inline 高度）定高，宽度铺满；拖拽条在上边缘 */
+.tt_dockPane[data-side="bottom"] {
+  width: auto;
+  flex-basis: auto;
+  min-height: 0;
+  border-left: none;
+  border-top: 1px solid var(--tt-border-strong);
+}
+
+.tt_dockPane[data-side="bottom"] .tt_dockPaneResize {
+  top: -3px;
+  bottom: auto;
+  left: 0;
+  right: 0;
+  width: auto;
+  height: 6px;
+  cursor: ns-resize;
+}
+
+/* 折叠：压成一条标题栏（高度 auto），终端拿回全部高度 */
+.tt_dockPane[data-side="bottom"][data-collapsed="1"] {
+  width: auto;
+  height: auto;
+  flex-basis: auto;
+}
+
+.tt_dockPane[data-side="bottom"][data-collapsed="1"] .tt_dockPaneHead {
+  flex-direction: row;
+  gap: var(--tt-gap-sm);
+  padding: var(--tt-gap-xs) var(--tt-gap-sm) var(--tt-gap-xs) var(--tt-gap-lg);
+  border-bottom: none;
+}
+
+.tt_dockPane[data-side="bottom"][data-collapsed="1"] .tt_dockPaneTitle {
+  max-height: none;
+  writing-mode: horizontal-tb;
+  text-orientation: mixed;
+}
+
+.tt_dockPane[data-side="bottom"][data-collapsed="1"] .tt_dockPaneSpacer { flex: 1 1 auto; }
 .tt_body::before {
   content: '';
   position: absolute;

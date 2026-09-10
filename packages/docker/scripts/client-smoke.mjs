@@ -170,7 +170,7 @@ await test('factory 只 require 平台 seed 提供的模块', () => {
 
 /** 造一个最小 client ctx：slots 恒有，ttyConnbar 可选。 */
 function makeClientCtx(options = {}) {
-  const state = { cards: [], injected: [], connbarFactory: null, renders: 0, unmounted: 0, execCalls: [], mountCalls: [] }
+  const state = { cards: [], injected: [], connbarFactory: null, renders: 0, unmounted: 0, execCalls: [], mountCalls: [], paneCalls: [] }
   const ctx = {
     slots: {
       inject: (slot, callback) => {
@@ -196,6 +196,18 @@ function makeClientCtx(options = {}) {
             },
           },
         })
+      }
+      if (names.includes('ttyPanel') && options.ttyPanel === true) {
+        // tty ≥ 0.16 的右侧挂载位；传 ttyPanelOpen: false 可模拟「面板没开」
+        const service = {
+          version: 1,
+          isOpen: () => options.ttyPanelOpen !== false,
+          mountPane(call) {
+            state.paneCalls.push(call)
+            return { element: { tagName: 'DIV', appendChild() {}, remove() {} }, dispose() {} }
+          },
+        }
+        callback({ ttyPanel: service })
       }
       if (names.includes('ttyTerminal') && options.ttyTerminal === true) {
         // 默认按最新契约（version 2 = 有 mount）；传 ttyTerminalVersion: 1 可模拟老版本
@@ -240,7 +252,7 @@ await test('tty 未安装时：可选注入不触发、apply 仍成功', () => {
   const exports_ = registration.factory(requireStub)
   const { ctx, state } = makeClientCtx({ ttyConnbar: false, ttyTerminal: false })
   const dispose = exports_.apply(ctx)
-  assert.deepEqual(state.injected.sort(), ['ttyConnbar', 'ttyTerminal'])
+  assert.deepEqual(state.injected.sort(), ['ttyConnbar', 'ttyPanel', 'ttyTerminal'])
   assert.equal(state.connbarFactory, null)
   assert.equal(state.execCalls.length, 0)
   dispose()
@@ -315,7 +327,7 @@ await test('ttyTerminal：可选注入成功，且 bundle 内含 exec 命令与�
   const exports_ = registration.factory((spec) => SEED[spec])
   const { ctx, state } = makeClientCtx({ ttyConnbar: false, ttyTerminal: true })
   const dispose = exports_.apply(ctx)
-  assert.deepEqual(state.injected.sort(), ['ttyConnbar', 'ttyTerminal'])
+  assert.deepEqual(state.injected.sort(), ['ttyConnbar', 'ttyPanel', 'ttyTerminal'])
   // 命令构造与兜底路径：静态断言（点击路径在真实应用里由端到端脚本覆盖）
   // esbuild 默认 charset=ascii：中文在 bundle 里是 \uXXXX，先解码再断言
   const decoded = code.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
@@ -340,6 +352,39 @@ await test('ttyTerminal：按契约版本选择 mount（就地嵌入）/ open（
   const dispose = exports_.apply(old.ctx)
   assert.equal(typeof dispose, 'function')
   dispose()
+})
+
+await test('ttyPanel：面板开着时挂进右侧侧栏（docked），没开则回退弹窗', async () => {
+  const requireStub = (spec) => SEED[spec]
+  // 1) 面板开着（isOpen → true）：走 ttyPanel.mountPane，ContainerPanel 拿到 docked
+  const exports_ = registration.factory(requireStub)
+  const { ctx, state } = makeClientCtx({ ttyConnbar: true, ttyPanel: true })
+  const dispose = exports_.apply(ctx)
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  const buttons = []
+  state.connbarFactory({ spec: { t: 'ssh', name: 'prod-a', host: '10.0.0.5', port: 2222 }, bookName: 'prod-a', addAction: (icon, label, title, onClick) => buttons.push({ onClick }) })
+  buttons[0].onClick()
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  assert.equal(state.paneCalls.length, 1, '面板开着时应挂进 ttyPanel')
+  assert.equal(state.paneCalls[0].title, 'Docker 容器')
+  const docked = renders[renders.length - 1]
+  assert.equal(docked.props.docked, true, 'dock 模式必须显式传给 ContainerPanel')
+  // 2) 面板没开（isOpen → false）：仍然挂 body 级模态
+  const modal = makeClientCtx({ ttyConnbar: true, ttyPanel: true, ttyPanelOpen: false })
+  const exports2 = registration.factory(requireStub)
+  const dispose2 = exports2.apply(modal.ctx)
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  const buttons2 = []
+  modal.state.connbarFactory({ spec: { t: 'ssh', name: 'prod-a', host: '10.0.0.5', port: 2222 }, bookName: 'prod-a', addAction: (icon, label, title, onClick) => buttons2.push({ onClick }) })
+  const before = documentStub.body.children.length
+  buttons2[0].onClick()
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  assert.equal(modal.state.paneCalls.length, 0, '面板没开时不该挂 pane')
+  assert.ok(documentStub.body.children.length > before, '没开面板时应回退到 body 级模态')
+  const modalPanel = renders[renders.length - 1]
+  assert.notEqual(modalPanel.props.docked, true)
+  dispose()
+  dispose2()
 })
 
 await test('样式表：折叠态（data-sidebar-collapsed）隐藏入口标签', () => {
