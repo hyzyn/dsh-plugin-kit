@@ -144,6 +144,13 @@ function buildExecCommand(name) {
 /** tty 的终端服务（可选注入；null = 不可用，走复制命令兜底）。 */
 let terminalApi = null
 
+/**
+ * tty 的面板挂载位（可选注入，tty ≥ 0.16 的 ttyPanel 服务；null = 不可用）。
+ * 面板开着时把容器面板挂成右侧侧栏，SSH 终端保持可见——从连接栏点「容器」的
+ * 主路径；拿不到或面板没开就回到自带 backdrop 的全屏模态。
+ */
+let panelApi = null
+
 let configCache = null
 let targetsCache = []
 let cacheAt = 0
@@ -346,6 +353,8 @@ window.__ModuleLoader__.load({
         type: 'button',
         className: 'dk_iconBtn' + (props.danger === true ? ' dk_iconBtnDanger' : ''),
         'data-on': props.on === true ? '1' : undefined,
+        // 刷新类按钮的 loading 态：图标自己转（见 docker.css）
+        'data-spin': props.spin === true ? '1' : undefined,
         disabled,
         title: props.title,
         'aria-label': props.title,
@@ -457,7 +466,6 @@ window.__ModuleLoader__.load({
       const [logsError, setLogsError] = useState('')
       const [logsLoading, setLogsLoading] = useState(false)
       const [logFilter, setLogFilter] = useState('')
-      const [filterOpen, setFilterOpen] = useState(true)
       const [logAuto, setLogAuto] = useState(false)
       const [logIntervalSec, setLogIntervalSec] = useState(3)
       const [stats, setStats] = useState(null)
@@ -586,7 +594,10 @@ window.__ModuleLoader__.load({
 
       /** 日志统计（工具条与正文共用）。 */
       const logStats = () => {
-        const raw = logs === null ? '' : logs.text
+        // 只认 string：宿主 /logs 的形状是 { id, text, truncated }，但客户端不该
+        // 因为一个畸形/旧版响应就在渲染期抛错——那会连整块面板和 exec 终端一起被
+        // React 卸载掉（一次日志请求赔进去一个正在跑的容器会话）。
+        const raw = logs !== null && typeof logs === 'object' && typeof logs.text === 'string' ? logs.text : ''
         const needle = logFilter.trim().toLowerCase()
         const allLines = raw === '' ? [] : raw.split('\n')
         const matchedLines = needle === '' ? allLines : allLines.filter((line) => line.toLowerCase().includes(needle))
@@ -633,23 +644,37 @@ window.__ModuleLoader__.load({
         ] })
       }
 
-      /** 过滤行：并入标签页那一行。 */
+      /**
+       * 过滤行：并入标签页那一行。输入框**常驻**（原来那个「收起 / 展开」按钮点了会
+       * 挤动整行，作用也不直观）；有内容时框内右侧浮出一个「清空过滤」按钮——
+       * 绝对定位，不占布局，所以出现 / 消失都不会让任何东西位移。
+       */
       const logFilterBar = () => {
         const { needle, allLines, matchedLines } = logStats()
         return jsxs('div', { className: 'dk_filterBar', children: [
-          jsx('button', {
-            type: 'button',
-            className: 'dk_filterToggle',
-            'data-on': filterOpen ? '1' : '0',
-            onClick: () => setFilterOpen((value) => !value),
-            children: [jsx('span', { className: 'dk_caret', dangerouslySetInnerHTML: { __html: ICON_CHEVRON } }, 'c'), '过滤日志'],
-          }),
-          filterOpen ? jsx('input', {
-            className: 'dk_input dk_filterInput',
-            placeholder: '过滤日志…',
-            value: logFilter,
-            onChange: (event) => setLogFilter(event.target.value),
-          }) : null,
+          jsxs('div', { className: 'dk_filterWrap', children: [
+            jsx('input', {
+              className: 'dk_input dk_filterInput',
+              placeholder: '过滤日志…',
+              value: logFilter,
+              onChange: (event) => setLogFilter(event.target.value),
+              // Esc 清空过滤（而不是冒泡去最小化 / 关闭面板）
+              onKeyDown: (event) => {
+                if (event.key === 'Escape' && logFilter !== '') {
+                  event.stopPropagation()
+                  setLogFilter('')
+                }
+              },
+            }),
+            logFilter === '' ? null : jsx('button', {
+              type: 'button',
+              className: 'dk_filterClear',
+              title: '清空过滤',
+              'aria-label': '清空过滤',
+              onClick: () => setLogFilter(''),
+              children: jsx('span', { className: 'dk_iconGlyph', dangerouslySetInnerHTML: { __html: ICON_CLOSE } }),
+            }, 'clear'),
+          ] }),
           jsx('span', { className: 'dk_filterCount', children: needle === '' ? String(allLines.length) + ' 行' : String(matchedLines.length) + ' / ' + String(allLines.length) + ' 行匹配' }),
         ] })
       }
@@ -710,6 +735,10 @@ window.__ModuleLoader__.load({
       }
 
       const tabs = [['overview', '概览'], ['logs', '日志'], ['stats', '统计']]
+      // 当前页是否还在取数：刷新按钮据此转圈（点刷新后必然转，首次打开也转，符合「正在取数」的直觉）
+      const refreshing = tab === 'overview'
+        ? detail === null && detailError === ''
+        : tab === 'stats' ? stats === null && statsError === '' : false
       // 紧凑布局：详情视图自己渲染顶栏（不再叠加面板头/工具条/过滤行三层）
       //   第一行 = 返回 + 容器名 + 状态 + 目标主机 +（日志页：LINES/TIMESTAMPS/AUTO REFRESH…）+ 关闭
       //   第二行 = 标签页 +（日志页：过滤行）
@@ -720,8 +749,9 @@ window.__ModuleLoader__.load({
           jsx(Badge, { state: item.state, health: item.health, status: item.status }),
           jsx('span', { className: 'dk_detailSub', children: props.targetLabel ?? '' }),
           jsx('span', { className: 'dk_headerSpacer' }),
-          tab === 'logs' ? logControls() : jsx(IconAction, { icon: ICON_REFRESH, title: '刷新', onClick: props.onRefresh }, 'refresh'),
-          jsx('button', { type: 'button', className: 'dk_iconBtn', title: '关闭面板', onClick: props.onClose, children: jsx('span', { className: 'dk_iconGlyph', dangerouslySetInnerHTML: { __html: ICON_CLOSE } }) }, 'close'),
+          tab === 'logs' ? logControls() : jsx(IconAction, { icon: ICON_REFRESH, title: '刷新', spin: refreshing, onClick: props.onRefresh }, 'refresh'),
+          // dock 模式的 ✕ 在 tty 的挂载位标题栏上（这里再来一个会重复）
+          props.docked === true ? null : jsx('button', { type: 'button', className: 'dk_iconBtn', title: '关闭面板', onClick: props.onClose, children: jsx('span', { className: 'dk_iconGlyph', dangerouslySetInnerHTML: { __html: ICON_CLOSE } }) }, 'close'),
         ] }),
         jsxs('div', { className: 'dk_tabs', children: [
           ...tabs.map(([key, label]) => jsx('button', {
@@ -744,26 +774,50 @@ window.__ModuleLoader__.load({
 
     /**
      * 交互式终端抽屉（0.15.0）：tty 把终端就地挂进 hostRef，面板不收起。
-     * 收起抽屉（或关闭面板）即结束会话——dispose 由 ContainerPanel 的 effect 负责。
+     *
+     * 高度与折叠（0.2.0）：抽屉会挤占面板正文（容器列表 / 日志 / 统计）的高度，
+     * 所以它必须能被用户自己让位——顶部拖拽调高矮，或折叠成一条标题栏。
+     * **折叠只隐藏，不 dispose**：会话照旧跑着，展开即原样回来；真正结束会话
+     * 的是右侧那个 ✕（以及关闭面板，两者都会走结束确认）。
+     * 挂载点始终在 DOM 里（折叠时靠 CSS 隐藏），否则 tty 那边的 xterm 会被拆掉。
      */
     function ExecDrawer(props) {
+      const collapsed = props.collapsed === true
       return jsxs('div', {
         className: 'dk_drawer',
+        'data-collapsed': collapsed ? '1' : undefined,
+        style: collapsed || props.height === null ? undefined : { height: String(props.height) + 'px' },
         children: [
+          jsx('div', {
+            className: 'dk_drawerResize',
+            title: '拖动调整终端高度（双击折叠 / 展开）',
+            onMouseDown: props.onResizeStart,
+            onDoubleClick: props.onToggleCollapse,
+          }, 'resize'),
           jsxs('div', {
             className: 'dk_drawerHead',
             children: [
               jsx('span', { className: 'dk_drawerIcon', dangerouslySetInnerHTML: { __html: ICON_TERM } }),
               jsx('span', { className: 'dk_drawerTitle', title: props.label, children: props.label }),
-              jsx('span', { className: 'dk_drawerHint', children: '由终端面板承载 · 收起抽屉结束会话' }),
+              jsx('span', {
+                className: 'dk_drawerHint',
+                children: collapsed ? '已折叠 · 会话保持运行' : '由终端面板承载 · 折叠保留会话',
+              }),
               jsx('span', { className: 'dk_headerSpacer' }),
               jsx('button', {
                 type: 'button',
+                className: 'dk_iconBtn dk_drawerFold',
+                title: collapsed ? '展开终端（会话未中断）' : '折叠终端（会话保持运行）',
+                onClick: props.onToggleCollapse,
+                children: jsx('span', { className: 'dk_iconGlyph', dangerouslySetInnerHTML: { __html: ICON_CHEVRON } }),
+              }, 'fold'),
+              jsx('button', {
+                type: 'button',
                 className: 'dk_iconBtn',
-                title: '关闭终端',
+                title: '结束终端会话并收起抽屉',
                 onClick: props.onClose,
                 children: jsx('span', { dangerouslySetInnerHTML: { __html: ICON_CLOSE } }),
-              }),
+              }, 'close'),
             ],
           }),
           jsx('div', { className: 'dk_drawerBody', ref: props.hostRef }),
@@ -800,6 +854,14 @@ window.__ModuleLoader__.load({
        */
       const [exec, setExec] = useState(null)
       const execHostRef = useRef(null)
+      /** 终端抽屉折叠 / 高度：折叠只是藏起来，会话照跑；height=null 用样式默认值。 */
+      const [execFold, setExecFold] = useState(false)
+      const [execHeight, setExecHeight] = useState(null)
+      /** 关闭面板 = tty dispose 掉抽屉终端（会话结束）：有活动会话时先确认。 */
+      const [closeConfirm, setCloseConfirm] = useState(false)
+      const panelRef = useRef(null)
+      /** 记录 mousedown 是否落在 backdrop 上（决定 mouseup 时算不算「点击外部」）。 */
+      const backdropDownRef = useRef(false)
 
       useEffect(() => () => { mountedRef.current = false }, [])
 
@@ -825,6 +887,47 @@ window.__ModuleLoader__.load({
           }
         }
       }, [exec])
+
+      /**
+       * 抽屉拖拽调高：上限取面板高度的 75%，免得日志/统计连标题都被挤没；
+       * 拖动期间锁住文本选中，否则会顺手把面板文字刷蓝。
+       */
+      const startDrawerResize = (event) => {
+        if (event.button !== undefined && event.button !== 0) return
+        const drawer = event.currentTarget.parentElement
+        const panel = panelRef.current
+        if (drawer === null || panel === null) return
+        event.preventDefault()
+        const startY = event.clientY
+        const startHeight = drawer.getBoundingClientRect().height
+        const maxHeight = Math.max(160, Math.round(panel.getBoundingClientRect().height * 0.75))
+        const onMove = (moveEvent) => {
+          const next = Math.round(startHeight + (startY - moveEvent.clientY))
+          setExecHeight(Math.min(maxHeight, Math.max(160, next)))
+        }
+        const onUp = () => {
+          document.removeEventListener('mousemove', onMove)
+          document.removeEventListener('mouseup', onUp)
+          document.body.style.userSelect = ''
+        }
+        document.body.style.userSelect = 'none'
+        document.addEventListener('mousemove', onMove)
+        document.addEventListener('mouseup', onUp)
+      }
+
+      /**
+       * 关闭面板：面板一卸载，tty 就会 dispose 掉抽屉里的终端（会话结束）。
+       * 有活动会话时先确认——点 backdrop 空白处也会走到这里，一声不吭地杀掉
+       * 一个正在排障的容器 shell 代价太大（tty 面板自身也是「点空白 = 最小化」
+       * 而不是结束会话，这里与它对齐）。
+       */
+      const requestClose = () => {
+        if (exec === null) {
+          props.onClose()
+          return
+        }
+        setCloseConfirm(true)
+      }
 
       useEffect(() => {
         api.config().then((payload) => {
@@ -894,11 +997,13 @@ window.__ModuleLoader__.load({
         return undefined
       }, [target, all, view])
 
+      // 自动刷新只服务容器列表（状态会变）；镜像列表变化慢，跟着每 5s 跑一次 docker images
+      // 纯属白烧目标机的 docker CLI，所以镜像页不轮询、也不显示这个开关
       useEffect(() => {
-        if (!autoRefresh || target === '') return undefined
+        if (!autoRefresh || target === '' || view !== 'containers') return undefined
         const timer = setInterval(refresh, Math.max(2, config?.pollIntervalSec ?? 5) * 1000)
         return () => clearInterval(timer)
-      }, [autoRefresh, refresh, target, config])
+      }, [autoRefresh, refresh, target, config, view])
 
       useEffect(() => {
         if (notice === '') return undefined
@@ -953,9 +1058,21 @@ window.__ModuleLoader__.load({
           copyExecCommand(item, '内联目标用了 key/password 认证，浏览器端拿不到凭证')
           return
         }
+        // 0) dock 模式：面板已经长在 tty 面板里了，再嵌一层终端就成了「终端套面板
+        //    套终端」——同一面板新开一个标签才是这里的自然语义（标签会切到前台，
+        //    容器列表继续留在右侧）
+        if (props.docked === true) {
+          try {
+            terminalApi.open(options)
+          } catch (error) {
+            copyExecCommand(item, error instanceof Error ? error.message : String(error))
+          }
+          return
+        }
         // 1) 就地嵌入（契约版本 2 才保证有 mount）
         if (typeof terminalApi.mount === 'function' && Number(terminalApi.version ?? 0) >= 2) {
           setExec({ label, options })
+          setExecFold(false) // 换容器时展开：新会话总该看得见
           return
         }
         // 2) 借 tty 弹窗承载
@@ -1030,17 +1147,8 @@ window.__ModuleLoader__.load({
 
       const body = () => {
         if (view === 'images') {
-          return jsxs('div', { children: [
-            jsx('div', { className: 'dk_logBar', children: [
-              jsx('input', {
-                className: 'dk_input',
-                style: { flex: '1 1 200px' },
-                placeholder: '搜索镜像（仓库 / 标签 / ID）',
-                value: imageSearch,
-                onChange: (event) => setImageSearch(event.target.value),
-              }),
-              jsx('span', { className: 'dk_hint', children: String(filteredImages.length) + ' / ' + String(images.length) + ' 个镜像' }),
-            ] }),
+          // 搜索框在工具条里（固定区，不随镜像列表滚走）；表体自己滚，表头钉住
+          return jsxs('div', { className: 'dk_imagesView', children: [
             filteredImages.length === 0
               ? empty()
               : jsx('div', { className: 'dk_tableWrap', children: jsxs('table', { className: 'dk_images', children: [
@@ -1070,13 +1178,8 @@ window.__ModuleLoader__.load({
         }, item.id)) })
       }
 
-      return jsxs('div', {
-        className: 'dk_backdrop',
-        onMouseDown: () => props.onClose(),
-        children: [jsxs('div', {
-          className: 'dk_panel',
-          onMouseDown: (event) => event.stopPropagation(),
-          children: [selected !== null ? [
+      const docked = props.docked === true
+      const panelChildren = [selected !== null ? [
             jsx(ContainerView, {
               item: selected,
               target,
@@ -1086,7 +1189,8 @@ window.__ModuleLoader__.load({
               refreshToken,
               onBack: () => setDetail(null),
               onRefresh: refreshDetail,
-              onClose: props.onClose,
+              onClose: requestClose,
+              docked,
             }, 'detail'),
             confirm === null ? null : jsx(ConfirmDialog, {
               title: confirm.title,
@@ -1096,26 +1200,33 @@ window.__ModuleLoader__.load({
               onConfirm: confirm.run,
             }, 'confirm'),
           ] : [
-            /* 头部 */
-            jsxs('div', { className: 'dk_header', children: [
+            /*
+             * 头部：dock 模式下**整条不渲染**——标题与 ✕ 已经在 tty 的侧栏标题栏上，
+             * 再留一条只挂着一个刷新按钮的空行（520px 窄栏里特别刺眼）不如把这几个
+             * 控件并进工具条首行（见下面的 refresh / 只读徽标 / loading）。
+             */
+            docked ? null : jsxs('div', { className: 'dk_header', children: [
               jsx('span', { className: 'dk_titleIcon', dangerouslySetInnerHTML: { __html: ICON_BOX } }),
               jsx('span', { className: 'dk_title', children: 'Docker 容器' }),
               config?.allowMutations === true ? null : jsx('span', { className: 'dk_badge', 'data-state': 'paused', children: '只读模式' }),
               jsx('span', { className: 'dk_headerSpacer' }),
-              loading ? jsx('span', { className: 'dk_spin' }) : null,
-              // 详情视图自带刷新（详情头 + 日志工具条），面板头这颗只在列表视图出现，
-              // 避免同一屏出现三个「刷新」
-              selected !== null ? null : jsx('button', { type: 'button', className: 'dk_iconBtn', title: '刷新列表', onClick: refresh, children: jsx('span', { dangerouslySetInnerHTML: { __html: ICON_REFRESH } }) }),
-              jsx('button', { type: 'button', className: 'dk_iconBtn', title: '关闭面板', onClick: props.onClose, children: jsx('span', { dangerouslySetInnerHTML: { __html: ICON_CLOSE } }) }),
+              // 刷新中让图标自己转（loading 也用于镜像列表）
+              selected !== null ? null : jsx('button', { type: 'button', className: 'dk_iconBtn', title: '刷新列表', 'data-spin': loading ? '1' : undefined, onClick: refresh, children: jsx('span', { className: 'dk_iconGlyph', dangerouslySetInnerHTML: { __html: ICON_REFRESH } }) }),
+              jsx('button', { type: 'button', className: 'dk_iconBtn', title: '关闭面板', onClick: requestClose, children: jsx('span', { dangerouslySetInnerHTML: { __html: ICON_CLOSE } }) }),
             ] }),
             /* 工具栏：只在列表视图显示；容器详情是整栏视图，列表筛选在这里没有意义 */
             selected !== null ? null : jsxs('div', { className: 'dk_toolbar', children: [
+              // dock 模式（没有头部那条）：刷新 / 只读徽标并到首行，别浪费一整行；
+              // 刷新中图标自己转，所以这里不再另挂一个 spinner
+              docked ? jsx('button', { type: 'button', className: 'dk_iconBtn', title: '刷新列表', 'data-spin': loading ? '1' : undefined, onClick: refresh, children: jsx('span', { className: 'dk_iconGlyph', dangerouslySetInnerHTML: { __html: ICON_REFRESH } }) }, 'refresh') : null,
+              docked && config?.allowMutations !== true ? jsx('span', { className: 'dk_badge', 'data-state': 'paused', children: '只读模式' }, 'readonly') : null,
               jsx('select', {
                 className: 'dk_select',
                 value: target,
                 onChange: (event) => {
                   setTarget(event.target.value)
                   setDetail(null)
+                  props.onTargetChange?.(targetLabel(event.target.value))
                 },
                 children: [
                   // 会话主机未匹配目标时保持「未选择」，让用户显式挑一个，不替他默认
@@ -1137,6 +1248,14 @@ window.__ModuleLoader__.load({
                 value: search,
                 onChange: (event) => setSearch(event.target.value),
               }) : null,
+              // 镜像搜索与容器搜索同处工具条（固定区）：长列表滚起来后搜索框仍在原地
+              view === 'images' ? jsx('input', {
+                className: 'dk_input dk_search',
+                placeholder: '搜索镜像（仓库 / 标签 / ID）',
+                value: imageSearch,
+                onChange: (event) => setImageSearch(event.target.value),
+              }) : null,
+              view === 'images' ? jsx('span', { className: 'dk_hint dk_searchCount', children: String(filteredImages.length) + ' / ' + String(images.length) + ' 个镜像' }) : null,
               view === 'containers' ? jsx('div', { className: 'dk_seg', children: [['all', '全部'], ['running', '运行中'], ['stopped', '已停止'], ['unhealthy', '不健康']].map(([key, label]) => jsx('button', {
                 type: 'button',
                 className: 'dk_segBtn',
@@ -1148,14 +1267,15 @@ window.__ModuleLoader__.load({
                 jsx('input', { type: 'checkbox', checked: all, onChange: (event) => setAll(event.target.checked) }),
                 '含已停止',
               ] }) : null,
-              jsx('label', { className: 'dk_check', children: [
+              // 镜像页没有「状态」可轮询：开关只在容器页出现（切回容器页时原设置照旧生效）
+              view === 'containers' ? jsx('label', { className: 'dk_check', children: [
                 jsx('input', { type: 'checkbox', checked: autoRefresh, onChange: (event) => setAutoRefresh(event.target.checked) }),
                 '自动刷新',
-              ] }),
+              ] }) : null,
             ] }),
             /* 主体 */
             jsxs('div', { className: 'dk_body', children: [
-              jsxs('div', { className: 'dk_main', children: [
+              jsxs('div', { className: 'dk_main' + (view === 'images' ? ' dk_mainImages' : ''), children: [
                 error === '' ? null : jsx(Banner, { title: '操作失败', hint: error }),
                 notice === '' ? null : jsx(Banner, { kind: 'info', title: notice }),
                 props.sessionHint === undefined ? null : jsx(Banner, {
@@ -1185,10 +1305,49 @@ window.__ModuleLoader__.load({
           exec === null ? null : jsx(ExecDrawer, {
             label: exec.label,
             hostRef: execHostRef,
+            collapsed: execFold,
+            height: execHeight,
+            onToggleCollapse: () => setExecFold((value) => !value),
+            onResizeStart: startDrawerResize,
             onClose: () => setExec(null),
           }, 'execDrawer'),
-        ],
-        })],
+          /* 有活动终端会话时关面板要确认（见 requestClose） */
+          closeConfirm && exec !== null ? jsx(ConfirmDialog, {
+            title: '结束容器终端会话',
+            text: '关闭面板会结束「' + exec.label + '」的终端会话（docker exec -it …）。'
+              + '若只是想给日志 / 列表腾地方，先点抽屉右上角的折叠按钮即可，会话会保持运行。',
+            confirmLabel: '结束并关闭',
+            onCancel: () => setCloseConfirm(false),
+            onConfirm: () => {
+              setCloseConfirm(false)
+              props.onClose()
+            },
+          }, 'closeConfirm') : null,
+      ]
+
+      const panel = jsxs('div', {
+        className: 'dk_panel' + (docked ? ' dk_panelDock' : ''),
+        'data-dock': docked ? '1' : undefined,
+        ref: panelRef,
+        onMouseDown: (event) => event.stopPropagation(),
+        children: panelChildren,
+      })
+
+      // dock 模式（0.3.0）：面板长在 tty 面板的右侧挂载位里，不再自带 backdrop——
+      // 终端就在旁边，必须保持可见、可点、可输入
+      if (docked) return panel
+
+      return jsxs('div', {
+        className: 'dk_backdrop',
+        // 「点击外部关闭」要求按下与松开都落在 backdrop 上：从面板里按下、拖到
+        // 外面松手不再算关闭（那一下会顺手结束正在跑的终端会话）
+        onMouseDown: (event) => { backdropDownRef.current = event.target === event.currentTarget },
+        onMouseUp: (event) => {
+          const outside = backdropDownRef.current && event.target === event.currentTarget
+          backdropDownRef.current = false
+          if (outside) requestClose()
+        },
+        children: [panel],
       })
     }
 
@@ -1299,28 +1458,37 @@ window.__ModuleLoader__.load({
         onChange: (event) => patch({ [key]: Number(event.target.value) }),
       })
 
-      const header = jsxs('div', {
-        className: 'dk_targetHead',
-        role: 'button',
-        tabIndex: 0,
-        style: { cursor: 'pointer', padding: '10px 12px', border: '1px solid var(--dk-border)', borderRadius: 'var(--dk-r-lg)', background: 'var(--dk-surface-solid)' },
-        onClick: () => setOpen((value) => !value),
-        onKeyDown: (event) => { if (event.key === 'Enter') setOpen((value) => !value) },
+      /*
+       * 卡片外壳：整条 li 就是卡片（标题行 + 展开体在同一张卡里），
+       * 与 DSH 内置卡片 / 其他插件卡片（pM_pluginCard、tt_card）用同一套度量，
+       * 别再用内联样式自己捏一个「看起来是另一套」的头部。
+       */
+      const card = (body) => jsxs('li', {
+        className: 'dk_settingsCard' + (open ? ' dk_settingsCardOpen' : ''),
         children: [
-          jsxs('div', { children: [
-            jsx('div', { style: { fontWeight: 600, fontSize: 13 }, children: 'Docker 容器面板' }),
-            jsx('div', { className: 'dk_hint', children: '本机 / SSH 主机上的容器与镜像；默认只读，变更操作需显式开启' }),
-          ] }),
-          jsx('span', { style: { transform: open ? 'rotate(180deg)' : 'none', transition: 'transform var(--dk-dur) var(--dk-ease)' }, dangerouslySetInnerHTML: { __html: ICON_CHEVRON } }),
+          jsxs('button', {
+            type: 'button',
+            className: 'dk_settingsHead',
+            'aria-expanded': open,
+            onClick: () => setOpen((value) => !value),
+            children: [
+              jsxs('span', { className: 'dk_settingsHeadText', children: [
+                jsx('span', { className: 'dk_settingsName', children: 'Docker 容器面板' }),
+                jsx('span', { className: 'dk_settingsDesc', children: '本机 / SSH 主机上的容器与镜像；默认只读，变更操作需显式开启' }),
+              ] }),
+              jsx('span', { className: 'dk_settingsChevron', dangerouslySetInnerHTML: { __html: ICON_CHEVRON } }),
+            ],
+          }),
+          open ? jsx('div', { className: 'dk_settingsBody', children: body }) : null,
         ],
       })
 
-      if (!open) return header
+      if (!open) return card(null)
       if (!loaded || form === null) {
-        return jsxs('div', { children: [header, jsx('div', { className: 'dk_cardBody', children: jsxs('div', { className: 'dk_row', children: [jsx('span', { className: 'dk_spin' }), '读取配置…'] }) })] })
+        return card(jsxs('div', { className: 'dk_row', children: [jsx('span', { className: 'dk_spin' }), '读取配置…'] }))
       }
 
-      return jsxs('div', { children: [header, jsx('div', { className: 'dk_cardBody', children: [
+      return card([
         sectionTitle('基本'),
         jsxs('div', { className: 'dk_row', children: [
           jsx('label', { className: 'dk_check', children: [jsx('input', { type: 'checkbox', checked: form.enabled, onChange: (event) => patch({ enabled: event.target.checked }) }), '启用插件'] }),
@@ -1395,7 +1563,7 @@ window.__ModuleLoader__.load({
           jsx('button', { type: 'button', className: 'dk_btn dk_btnPrimary', disabled: saving, onClick: save, children: saving ? '保存中…' : '保存' }),
           jsx('span', { className: 'dk_msg', 'data-kind': message.kind, children: message.text }),
         ] }),
-      ] })] })
+      ])
     }
 
     /* ------------------------------------------------------------------ *
@@ -1404,45 +1572,98 @@ window.__ModuleLoader__.load({
 
     let hostEl = null
     let root = null
+    /** dock 模式的宿主（tty 面板右侧挂载位）；模态模式下为 null。 */
+    let dockedPane = null
 
+    /** 收起当前面板（模态宿主 / dock pane 都要清干净）。 */
     function closePanel() {
-      if (root !== null) {
-        const current = root
-        root = null
-        setTimeout(() => current.unmount(), 0)
+      const currentRoot = root
+      const currentHost = hostEl
+      const currentPane = dockedPane
+      root = null
+      hostEl = null
+      dockedPane = null
+      // 先摘宿主再卸载（卸载是异步的，避免在 React 渲染中 unmount）；pane 也先摘，
+      // 否则紧接着的这次点击会撞上「宿主还在、面板已不可见」的窗口被吞掉
+      if (currentHost !== null) currentHost.remove()
+      if (currentRoot !== null) {
+        setTimeout(() => {
+          try {
+            currentRoot.unmount()
+          } catch {
+            /* 已卸载 */
+          }
+        }, 0)
       }
-      if (hostEl !== null) {
-        const current = hostEl
-        hostEl = null
-        setTimeout(() => current.remove(), 0)
+      if (currentPane !== null) {
+        try {
+          currentPane.dispose()
+        } catch {
+          /* 忽略：pane 可能已经被 tty 收掉 */
+        }
       }
     }
 
+    /** 鸭子判定挂载点（不依赖宿主全局 HTMLElement，离线冒烟里也能跑）。 */
+    function isMountable(value) {
+      return value !== null && typeof value === 'object' && typeof value.appendChild === 'function'
+    }
+
+    /** tty ≥ 0.16 的右侧挂载位（ttyPanel）：面板开着时优先挂进去，终端保持可见。 */
+    function ttyPanelCanDock() {
+      return typeof panelApi?.mountPane === 'function'
+        && typeof panelApi.isOpen === 'function'
+        && Number(panelApi.version ?? 0) >= 1
+        && panelApi.isOpen() === true
+    }
+
     function openPanel(options) {
-      // 关闭走的是 setTimeout 清理（避免在 React 渲染中卸载），因此紧接着的这次
-      // 点击可能撞上「hostEl 还在、面板却已经不可见」的窗口——先把残留宿主清掉，
-      // 否则这次点击会被直接吞掉（表现为「点侧边栏入口没反应」）
-      if (hostEl !== null) {
-        const staleHost = hostEl
-        const staleRoot = root
-        hostEl = null
-        root = null
-        try {
-          staleRoot?.unmount()
-        } catch {
-          /* 已卸载 */
-        }
-        staleHost.remove()
-      }
+      closePanel()
       ensureStyle()
-      hostEl = document.createElement('div')
-      document.body.appendChild(hostEl)
-      root = createRoot(hostEl)
-      root.render(jsx(ContainerPanel, {
+      const panelProps = {
         onClose: closePanel,
         initialTarget: options?.target ?? '',
         sessionHint: options?.sessionHint,
-      }))
+      }
+      // 1) 终端面板开着 → 挂成右侧侧栏（从 SSH 连接栏点「容器」的主路径）
+      if (ttyPanelCanDock()) {
+        let pane = null
+        try {
+          pane = panelApi.mountPane({
+            title: 'Docker 容器',
+            hint: options?.target === undefined || options.target === '' ? '' : options.target,
+            size: 520,
+            min: 360,
+            // 面板自身被关（tty ✕ / 宿主卸载）时，把 docker 这边的 React 树一起收掉
+            onClose: () => closePanel(),
+          })
+        } catch (error) {
+          pane = null
+          console.warn('[dsh-docker] 挂载到终端面板失败，回退弹窗：' + (error instanceof Error ? error.message : String(error)))
+        }
+        if (pane !== null && isMountable(pane.element)) {
+          dockedPane = pane
+          root = createRoot(pane.element)
+          root.render(jsx(ContainerPanel, {
+            ...panelProps,
+            docked: true,
+            // 在面板里换目标时同步侧栏灰字（侧栏标题由 tty 渲染，只能经 handle 改）
+            onTargetChange: (label) => {
+              try {
+                pane.setHint(label)
+              } catch {
+                /* pane 已被收掉 */
+              }
+            },
+          }))
+          return
+        }
+      }
+      // 2) 兜底：自带 backdrop 的全屏模态
+      hostEl = document.createElement('div')
+      document.body.appendChild(hostEl)
+      root = createRoot(hostEl)
+      root.render(jsx(ContainerPanel, panelProps))
     }
 
     function sidebarRoot() {
@@ -1564,6 +1785,13 @@ window.__ModuleLoader__.load({
       ctx.inject(['ttyTerminal'], (terminalCtx) => {
         terminalApi = terminalCtx.ttyTerminal ?? null
         return () => { terminalApi = null }
+      })
+
+      // 面板挂载位（可选）：tty 0.16.0 起提供 ttyPanel 服务，面板开着时容器面板
+      // 直接挂进它的右侧侧栏，不再用模态盖住终端
+      ctx.inject(['ttyPanel'], (panelCtx) => {
+        panelApi = panelCtx.ttyPanel ?? null
+        return () => { panelApi = null }
       })
 
       let disposeConnbarAction = () => {}

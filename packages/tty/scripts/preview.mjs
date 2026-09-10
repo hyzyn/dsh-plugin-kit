@@ -46,8 +46,10 @@ const SCENARIOS = [
   ['ssh-probe', 'SSH 连接对话框（试连结果）'],
   ['ssh-edit', 'SSH 连接对话框（编辑）'],
   ['settings', '设置卡片'],
-  ['sftp', 'SFTP 单窗体'],
-  ['sftp-dual', 'SFTP 双栏'],
+  ['settings-docker', '设置卡片（docker 与 tty 并排对照）'],
+  ['sftp', 'SFTP 单窗体（挂右侧挂载位）'],
+  ['sftp-dual', 'SFTP 双栏（挂右侧挂载位）'],
+  ['sftp-fallback', 'SFTP 落点回退（抽屉被容器面板占用 → 对话框）'],
   ['minimized', '最小化（侧边栏徽标）'],
   ['exited', '会话退出遮罩'],
   ['error', '连接错误遮罩'],
@@ -59,6 +61,10 @@ const SCENARIOS = [
   ['docker-panel', 'docker 面板（只读：变更组整组置灰）'],
   ['docker-panel-rw', 'docker 面板（允许变更：动作条全可用）'],
   ['docker-exec', 'docker 面板 → 终端抽屉（端到端）'],
+  ['docker-exec-logs', 'docker 面板 → 终端抽屉 + 日志页（折叠保留会话）'],
+  ['dock-pane', '终端面板右侧挂载位（ttyPanel 骨架）'],
+  ['dock-pane-bottom', '底部挂载位 + 终端重排（视口钉底）'],
+  ['docker-dock', '连接栏「容器」→ docker 面板挂进右侧 dock（终端不被盖住）'],
 ]
 
 if (flags.has('--list')) {

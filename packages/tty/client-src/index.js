@@ -164,6 +164,8 @@ const ICON_ARROW_RIGHT =
   '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.4 8h9"/><path d="M9.2 4.8L12.4 8l-3.2 3.2"/></svg>'
 const ICON_ARROW_LEFT =
   '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.6 8h-9"/><path d="M6.8 4.8L3.6 8l3.2 3.2"/></svg>'
+const ICON_ARROW_DOWN =
+  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3.4v9"/><path d="M4.8 9.2L8 12.4l3.2-3.2"/></svg>'
 const ICON_SERVER =
   '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.4" y="3.2" width="11.2" height="4" rx="1.2"/><rect x="2.4" y="8.8" width="11.2" height="4" rx="1.2"/><path d="M5 5.2h.01"/><path d="M5 10.8h.01"/></svg>'
 // 状态 / 提示
@@ -191,6 +193,8 @@ let connTargetEl = null
 let connBadgeEl = null
 let connActionsEl = null
 let bodyEl = null
+/** 终端区 + 右侧挂载位的横向容器（openModal 建立；ttyPanel.mountPane 往这里插 pane）。 */
+let workEl = null
 let searchInputEl = null
 let bodyOverlayEl = null
 let intentionalClose = false
@@ -410,6 +414,34 @@ function sendResize(tab) {
   if (tab === undefined || tab.fit === undefined) return
   const dims = tab.fit.proposeDimensions()
   if (dims !== undefined) sendFrame({ t: 'resize', sid: tab.sid, cols: dims.cols, rows: dims.rows })
+}
+
+/**
+ * 终端区尺寸变化（窗口缩放、挂载位开合）后的重新 fit。
+ *
+ * 不能只调 fit 就完事：xterm 在 rows 变化时会按自己的规则挪视口，用户看到的就是
+ * 「开个面板，终端里的文字被往上顶了」。这里按用户当时的意图锚定视口——
+ * 本来就贴着底部（在看最新输出）就继续贴底；翻在历史里就锁住原来那几行不跳。
+ */
+function refitTerminal(tab) {
+  if (tab === undefined || tab.fit === undefined) return
+  const term = tab.term
+  const buffer = term !== null && term.buffer !== undefined ? term.buffer.active : null
+  const anchor = buffer == null ? null : { atBottom: buffer.viewportY >= buffer.baseY, line: buffer.viewportY }
+  try {
+    tab.fit.fit()
+  } catch {
+    return // 容器还没布局（面板最小化等）：交给下一次
+  }
+  if (anchor !== null) {
+    try {
+      if (anchor.atBottom) term.scrollToBottom()
+      else term.scrollToLine(Math.min(anchor.line, term.buffer.active.baseY))
+    } catch {
+      /* 极端时序下 term 可能已 dispose：忽略 */
+    }
+  }
+  if (!tab.exited) sendResize(tab)
 }
 
 /**
@@ -839,6 +871,219 @@ function disposeEmbedded(controller) {
     }
     socket = null
   }
+}
+
+/* ============================ 右侧挂载位（ttyPanel，0.16.0） ============================ */
+
+/**
+ * 其他插件（如 dsh-docker）在终端面板里挂一块**自己的**界面，终端保持可见可交互。
+ * 与 ttyTerminal.mount 互为镜像：那边是「tty 往调用方给的元素里塞终端」，这边是
+ * 「tty 给调用方一个元素去 render」。
+ *
+ * 生命周期约定（写进 README 的客户端服务契约）：
+ *   - pane 的 DOM 长在 .tt_modal 里：面板最小化 / 恢复跟着走，消费者不需要做任何事；
+ *   - 面板被关闭（✕ / 宿主卸载）时，tty 先调挂载时传入的 onClose（消费者在这里
+ *     unmount 自己的 React root 等），随后才摘 DOM；
+ *   - 消费者主动收起用返回值的 dispose()（幂等，不会再触发 onClose）；
+ *   - v1 同时只挂一个 pane：后来的 mountPane 会先收掉前一个（并通知它）。
+ */
+const DOCK_DEFAULT_WIDTH = 460
+const DOCK_MIN_WIDTH = 280
+const DOCK_DEFAULT_HEIGHT = 320
+const DOCK_MIN_HEIGHT = 160
+let dockPane = null
+/** 记住用户拖出来的尺寸，下次挂载沿用（同一次会话内，两个方向各记一份）。 */
+let dockWidth = DOCK_DEFAULT_WIDTH
+let dockHeight = DOCK_DEFAULT_HEIGHT
+
+/** 终端面板卡片（.tt_modal）的矩形：dock 的上限与初始尺寸都以它为准。 */
+function panelCardRect() {
+  const card = modalEl !== null ? modalEl.querySelector('.tt_modal') : null
+  const el = card !== null ? card : modalEl
+  return el !== null ? el.getBoundingClientRect() : null
+}
+
+const dockMinSize = (side) => (side === 'bottom' ? DOCK_MIN_HEIGHT : DOCK_MIN_WIDTH)
+
+/** dock 尺寸上限：面板卡片长边的 72%，给终端留足位置。 */
+function dockMaxSize(side) {
+  const rect = panelCardRect()
+  if (rect === null) return 900
+  const base = side === 'bottom' ? rect.height : rect.width
+  return Math.max(dockMinSize(side), Math.round(base * 0.72))
+}
+
+function clampDockSize(side, value) {
+  return Math.min(dockMaxSize(side), Math.max(dockMinSize(side), Math.round(value)))
+}
+
+/** 把折叠态 / 尺寸落到 inline style（折叠交给 CSS 的窄条样式）。 */
+function applyDockGeometry() {
+  const pane = dockPane
+  if (pane === null) return
+  if (pane.collapsed) {
+    pane.el.style.width = ''
+    pane.el.style.height = ''
+    pane.el.style.flexBasis = ''
+    return
+  }
+  if (pane.side === 'bottom') {
+    dockHeight = clampDockSize('bottom', dockHeight)
+    pane.el.style.width = ''
+    pane.el.style.height = String(dockHeight) + 'px'
+    pane.el.style.flexBasis = String(dockHeight) + 'px'
+    return
+  }
+  dockWidth = clampDockSize('right', dockWidth)
+  pane.el.style.height = ''
+  pane.el.style.width = String(dockWidth) + 'px'
+  pane.el.style.flexBasis = String(dockWidth) + 'px'
+}
+
+/** 卸载 pane：notify=true 表示由 tty 发起（先通知消费者清理）。 */
+function teardownDockPane(notify) {
+  const pane = dockPane
+  if (pane === null) return
+  dockPane = null
+  pane.disposed = true
+  if (notify && pane.onClose !== null) {
+    try {
+      pane.onClose()
+    } catch (error) {
+      // 消费者的清理异常不该拖垮终端面板（面板照常关）
+      console.warn('[dsh-tty] ttyPanel.onClose 抛错：' + (error instanceof Error ? error.message : String(error)))
+    }
+  }
+  try {
+    pane.el.remove()
+  } catch {
+    /* 忽略 */
+  }
+  // 摘掉方向标记：下一个 pane 可能挂在另一侧
+  if (workEl !== null) delete workEl.dataset.side
+}
+
+/**
+ * 挂一个 pane。options：
+ *   title（标题）· hint（标题右侧灰字）· side（'right' 默认 | 'bottom'）·
+ *   size（初始尺寸 px：右侧 = 宽度，底部 = 高度）· min（最小尺寸 px）·
+ *   onClose（被 tty 收掉时的回调）
+ * 返回 handle：element（消费者 render 的宿主）· setTitle / setHint ·
+ *   expand / collapse / toggle / isCollapsed · dispose()。
+ *
+ * 方向按内容形态挑：竖向列表 / 列表+详情（容器面板）用 right；横向宽表（SFTP
+ * 文件列表、本地↔远程双栏）用 bottom —— 全宽摆得下更多列，也不挤终端宽度。
+ */
+function mountDockPane(options) {
+  if (modalEl === null) openModal()
+  if (workEl === null) throw new Error('ttyPanel.mountPane：终端面板未就绪')
+  if (dockPane !== null) teardownDockPane(true)
+  ensureStyle()
+
+  const side = options?.side === 'bottom' ? 'bottom' : 'right'
+  const minSize = Math.max(side === 'bottom' ? 120 : 200, Math.round(typeof options?.min === 'number' && Number.isFinite(options.min) ? options.min : dockMinSize(side)))
+  if (typeof options?.size === 'number' && Number.isFinite(options.size)) {
+    const wanted = clampDockSize(side, options.size)
+    if (side === 'bottom') dockHeight = wanted
+    else dockWidth = wanted
+  }
+
+  const el = document.createElement('div')
+  el.className = 'tt_dockPane'
+  el.dataset.side = side
+  workEl.dataset.side = side
+  el.innerHTML =
+    '<div class="tt_dockPaneResize" title="' + (side === 'bottom' ? '拖动调整高度' : '拖动调整宽度') + '"></div>' +
+    '<div class="tt_dockPaneHead">' +
+    '<span class="tt_dockPaneTitle"></span>' +
+    '<span class="tt_dockPaneHint"></span>' +
+    '<span class="tt_dockPaneSpacer"></span>' +
+    '<button class="tt_dockPaneFold" type="button"></button>' +
+    '<button class="tt_dockPaneClose" type="button" title="关闭侧栏">' + ICON_CLOSE + '</button>' +
+    '</div>' +
+    '<div class="tt_dockPaneBody"></div>'
+  workEl.appendChild(el)
+
+  const titleEl = el.querySelector('.tt_dockPaneTitle')
+  const hintEl = el.querySelector('.tt_dockPaneHint')
+  const paneBodyEl = el.querySelector('.tt_dockPaneBody')
+  const foldEl = el.querySelector('.tt_dockPaneFold')
+  const closeEl = el.querySelector('.tt_dockPaneClose')
+  const resizeEl = el.querySelector('.tt_dockPaneResize')
+
+  const pane = {
+    el,
+    element: paneBodyEl,
+    disposed: false,
+    collapsed: false,
+    side,
+    minSize,
+    onClose: typeof options?.onClose === 'function' ? options.onClose : null,
+  }
+
+  const foldIcon = () => {
+    if (side === 'bottom') return pane.collapsed ? ICON_UP : ICON_ARROW_DOWN
+    return pane.collapsed ? ICON_ARROW_LEFT : ICON_ARROW_RIGHT
+  }
+
+  const setCollapsed = (value) => {
+    pane.collapsed = value === true
+    if (pane.collapsed) el.dataset.collapsed = '1'
+    else delete el.dataset.collapsed
+    foldEl.innerHTML = foldIcon()
+    foldEl.title = pane.collapsed ? '展开侧栏' : '收起侧栏'
+    foldEl.setAttribute('aria-label', foldEl.title)
+    applyDockGeometry()
+  }
+
+  pane.setTitle = (text) => { titleEl.textContent = typeof text === 'string' ? text : '' }
+  pane.setHint = (text) => { hintEl.textContent = typeof text === 'string' ? text : '' }
+  pane.isCollapsed = () => pane.collapsed === true
+  pane.collapse = () => setCollapsed(true)
+  pane.expand = () => setCollapsed(false)
+  pane.toggle = () => setCollapsed(!pane.collapsed)
+  pane.dispose = () => {
+    if (pane.disposed || dockPane !== pane) return
+    teardownDockPane(false)
+  }
+
+  // 拖边缘调尺寸（右侧拖左边、底部拖上边）：上限随面板卡片走，拖动期间锁文本选中
+  resizeEl.addEventListener('mousedown', (event) => {
+    if (event.button !== 0 || pane.collapsed) return
+    event.preventDefault()
+    const startX = event.clientX
+    const startY = event.clientY
+    const rect = el.getBoundingClientRect()
+    const onMove = (moveEvent) => {
+      if (side === 'bottom') {
+        dockHeight = clampDockSize('bottom', Math.max(minSize, rect.height + (startY - moveEvent.clientY)))
+      } else {
+        dockWidth = clampDockSize('right', Math.max(minSize, rect.width + (startX - moveEvent.clientX)))
+      }
+      applyDockGeometry()
+    }
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      document.body.style.userSelect = ''
+    }
+    document.body.style.userSelect = 'none'
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  })
+  // 双击顶边折叠 / 展开（与 docker 抽屉的手感一致）
+  resizeEl.addEventListener('dblclick', () => setCollapsed(!pane.collapsed))
+  foldEl.addEventListener('click', () => setCollapsed(!pane.collapsed))
+  // ✕：由 tty 收掉并通知消费者（消费者在 onClose 里做自己的清理）
+  closeEl.addEventListener('click', () => teardownDockPane(true))
+
+  pane.setTitle(typeof options?.title === 'string' ? options.title : '')
+  pane.setHint(typeof options?.hint === 'string' ? options.hint : '')
+  setCollapsed(options?.collapsed === true)
+  dockPane = pane
+  // setCollapsed 里的 applyDockGeometry 此时还没认领到 pane：挂上后再落一次宽度
+  applyDockGeometry()
+  return pane
 }
 
 function switchTab(sid) {
@@ -2042,10 +2287,8 @@ async function saveSshHostUpdate(originalName, entry) {
  * /api/dsh-tty/sftp/*。与单窗体共用 sftpDialogEl 互斥与 Esc 关闭。
  */
 function openSftpDual(spec, label) {
-  if (sftpDialogEl !== null) return
+  if (isSftpOpen()) return
 
-  const backdrop = document.createElement('div')
-  backdrop.className = 'tt_sshBackdrop'
   const card = document.createElement('div')
   card.className = 'tt_sftpDualCard'
 
@@ -2534,20 +2777,50 @@ function openSftpDual(spec, label) {
     }
   }
 
-  backdrop.addEventListener('mousedown', (event) => {
-    if (event.target === backdrop) closeSftpDialog()
-  })
-
-  backdrop.appendChild(card)
-  document.body.appendChild(backdrop)
-  sftpDialogEl = backdrop
+  // 双栏两栏并排，给足高度（面板卡片高度的 56%，还能自己拖高）
+  const cardRect = panelCardRect()
+  const dualSize = cardRect === null ? 420 : Math.round(cardRect.height * 0.56)
+  mountSftpSurface(card, 'SFTP 双栏 · ' + label, dualSize)
   void panes.local.loadDir('')
   void panes.remote.loadDir('')
 }
 
 /* ============================ SFTP 文件浏览 ============================ */
 
+/** 模态宿主（.tt_sshBackdrop，覆盖整个终端面板）。 */
 let sftpDialogEl = null
+/** 抽屉宿主（ttyPanel 的右侧 pane，0.16.0）：终端保持可见时走这条。 */
+let sftpDockPane = null
+
+const isSftpOpen = () => sftpDialogEl !== null || sftpDockPane !== null
+
+/**
+ * 把 SFTP 卡片放进宿主（0.16.0）：终端面板开着**且右侧挂载位空着**时挂成抽屉，
+ * 终端继续可见可用；否则（面板没开 / 已被别的面板占用）退回原来的居中对话框。
+ * 只挂不占用别人的位置——抽屉里已有 dsh-docker 面板时不会把它挤掉。
+ */
+function mountSftpSurface(card, title, height) {
+  if (modalEl !== null && !minimized && workEl !== null && dockPane === null) {
+    try {
+      // 文件列表是横向宽表（双栏更是两栏并排）：挂**下方**全宽比右侧窄栏好用，
+      // 终端也因此保住宽度（长命令行不会折行）
+      const pane = mountDockPane({ title, side: 'bottom', size: height, min: 200, onClose: () => closeSftpDialog() })
+      pane.element.appendChild(card)
+      sftpDockPane = pane
+      return
+    } catch (error) {
+      console.warn('[dsh-tty] SFTP 挂到右侧侧栏失败，回退对话框：' + (error instanceof Error ? error.message : String(error)))
+    }
+  }
+  const backdrop = document.createElement('div')
+  backdrop.className = 'tt_sshBackdrop'
+  backdrop.appendChild(card)
+  backdrop.addEventListener('mousedown', (event) => {
+    if (event.target === backdrop) closeSftpDialog()
+  })
+  document.body.appendChild(backdrop)
+  sftpDialogEl = backdrop
+}
 
 /**
  * 在途传输的取消按钮（0.12.0）：进度条在传输期间把它登记到这里，
@@ -2976,7 +3249,7 @@ async function collectDroppedFiles(dataTransfer) {
  * loopback POST 体 / meta 头，不进 URL。下载经浏览器内存（大文件建议终端 scp）。
  */
 function openSftpBrowser(specInput) {
-  if (sftpDialogEl !== null) return
+  if (isSftpOpen()) return
   const raw = specInput !== null && typeof specInput === 'object' ? specInput : {}
   const spec = {}
   if (typeof raw.name === 'string' && raw.name !== '') {
@@ -2996,12 +3269,10 @@ function openSftpBrowser(specInput) {
     return
   }
 
-  const backdrop = document.createElement('div')
-  backdrop.className = 'tt_sshBackdrop'
   const card = document.createElement('div')
   card.className = 'tt_sftpCard'
 
-  // 标题行：标题 + 右上角 ✕ 关闭
+  // 标题行：标题 + 右上角 ✕ 关闭（挂进侧栏时由 CSS 隐藏，标题在侧栏标题栏上）
   const titleRow = document.createElement('div')
   titleRow.className = 'tt_sftpTitleRow'
   const title = document.createElement('div')
@@ -3512,22 +3783,22 @@ function openSftpBrowser(specInput) {
     if (target === '') return
     void runTask('加载中…', () => loadDir(target))
   })
-  backdrop.addEventListener('mousedown', (event) => {
-    if (event.target === backdrop) closeSftpDialog()
-  })
-
-  backdrop.appendChild(card)
-  document.body.appendChild(backdrop)
-  sftpDialogEl = backdrop
+  const singleRect = panelCardRect()
+  mountSftpSurface(card, 'SFTP · ' + label, singleRect === null ? 340 : Math.round(singleRect.height * 0.46))
   void runTask('连接中…', () => loadDir(''))
 }
 
 function closeSftpDialog() {
-  if (sftpDialogEl === null) return
+  if (!isSftpOpen()) return
   // 在途传输随窗体一起收掉（否则关了界面、服务端还在写远端半截文件）
   cancelActiveTransfer()
-  sftpDialogEl.remove()
+  const dialogEl = sftpDialogEl
+  const pane = sftpDockPane
+  // 先清引用：pane 的 ✕ 会经 onClose 回到这里，重复调用要是幂等的
   sftpDialogEl = null
+  sftpDockPane = null
+  if (dialogEl !== null) dialogEl.remove()
+  if (pane !== null) pane.dispose()
 }
 
 function toggleSearch() {
@@ -3870,7 +4141,11 @@ function openModal() {
     '</div>' +
     // 连接栏：左侧连接状态，右侧 SFTP / 扩展按钮；本地终端时隐藏（renderConnbar 控制）
     '<div class="tt_connbar" data-hidden><div class="tt_connArea"><span class="tt_connDot"></span><span class="tt_connTarget">—</span><span class="tt_connBadge"></span></div><div class="tt_connActions"></div></div>' +
+    // 终端区与「右侧挂载位」并排：其他插件（如 dsh-docker）经 ttyPanel.mountPane
+    // 把界面挂进 .tt_work，终端保持可见——这是从 SSH 连接栏打开容器面板的主路径
+    '<div class="tt_work">' +
     '<div class="tt_body"><div class="tt_overlay"></div></div>' +
+    '</div>' +
     '</div>'
   document.body.appendChild(modalEl)
 
@@ -3883,6 +4158,7 @@ function openModal() {
   connTargetEl = modalEl.querySelector('.tt_connTarget')
   connBadgeEl = modalEl.querySelector('.tt_connBadge')
   connActionsEl = modalEl.querySelector('.tt_connActions')
+  workEl = modalEl.querySelector('.tt_work')
   bodyEl = modalEl.querySelector('.tt_body')
   bodyOverlayEl = modalEl.querySelector('.tt_body > .tt_overlay')
   searchInputEl = modalEl.querySelector('.tt_searchInput')
@@ -3939,15 +4215,9 @@ function openModal() {
 
   resizeObserver = new ResizeObserver(() => {
     if (minimized) return // display:none 下 fit 尺寸无意义，恢复时统一重算
-    const tab = activeTab()
-    if (tab !== undefined && tab.fit !== undefined) {
-      try {
-        tab.fit.fit()
-      } catch {
-        return
-      }
-      if (!tab.exited) sendResize(tab)
-    }
+    // 面板变窄/变矮时 dock 也要跟着收（否则会把终端挤到没有位置）
+    applyDockGeometry()
+    refitTerminal(activeTab())
   })
   resizeObserver.observe(bodyEl)
 
@@ -4076,6 +4346,8 @@ function restoreModal() {
 
 function closeModal() {
   if (modalEl === null) return
+  // 面板被收掉：先通知 pane 的消费者清理自己的界面（React root 等），再摘 DOM
+  teardownDockPane(true)
   // 还有嵌入终端（如 dsh-docker 抽屉里的那个）在跑时：连接不能断，也不能标成
   // 主动关闭——否则重连停摆、别人的终端跟着黑掉
   const keepSocket = hasEmbedded()
@@ -4129,6 +4401,7 @@ function closeModal() {
   document.removeEventListener('keydown', onModalKeydown)
   modalEl.remove()
   modalEl = null
+  workEl = null
   statusChipEl = null
   statusEl = null
   statusDotEl = null
@@ -5122,7 +5395,22 @@ function TtySettingsCard() {
           return mountTerminal(hostEl, options)
         },
       })
+      // 面板内挂载位（0.16.0）：其他插件在终端面板右侧挂一块自己的界面（dsh-docker
+      // 的容器面板就走这里），终端保持可见。契约见 README「客户端服务契约」。
+      const disposePanel = ctx.provide('ttyPanel', {
+        /** 契约版本：1 = mountPane + isOpen。 */
+        version: 1,
+        /** 面板是否正开着（最小化不算）：调用方据此决定挂进来还是走自己的弹窗。 */
+        isOpen() {
+          return modalEl !== null && !minimized
+        },
+        /** 挂一个右侧 pane（同一时刻只有一个，返回的 handle 见函数注释）。 */
+        mountPane(options) {
+          return mountDockPane(options)
+        },
+      })
       return () => {
+        disposePanel()
         disposeTerminal()
         disposeConnbar()
         closeModal()
