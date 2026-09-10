@@ -78,6 +78,13 @@ export interface SshSpawnOptions {
     persist?: {
         name: string;
     };
+    /**
+     * 自定义远程命令（0.14.0）：给「开一个标签直接跑某条命令」用（如
+     * `docker exec -it <容器> sh`）。设置后走 `conn.exec(command, {pty})`，
+     * 不建登录 shell、也不做 tmux 持久化（命令的生命周期本就短）。
+     * 命令由宿主侧插件提供，单行（由帧解析保证）。
+     */
+    command?: string;
 }
 /** 主机指纹钉扎存储（宿主半体实现为 LiveConfig + settings 持久化）。 */
 export interface HostKeyStore {

@@ -1187,11 +1187,27 @@
   font-size: 12.5px;
   box-sizing: border-box;
 }
-.tt_sshError {
-  min-height: 16px;
-  color: var(--tt-danger);
+/*
+ * 状态带：定高（两行），错误与试连结果都落在这里。
+ * 定高 = 消息出现 / 消失不改变卡片高度——卡片在遮罩里垂直居中，一变高整个对话框
+ * 都会跳，点一下「试连」布局就动，实测很难受。空元素用 :empty 摘出布局，
+ * 有消息时贴着底部（靠近动作行）显示。
+ */
+.tt_sshStatus {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  height: 38px;
+  overflow-y: auto;
   font-size: 12px;
   line-height: 1.45;
+}
+.tt_sshStatus > :empty {
+  display: none;
+}
+.tt_sshError {
+  color: var(--tt-danger);
 }
 .tt_sshHostRow {
   display: flex;
@@ -1224,7 +1240,7 @@
   text-overflow: ellipsis;
 }
 .tt_sshProbeResult {
-  margin: 2px 0 4px;
+  margin: 0;
   font-size: 12px;
   line-height: 1.5;
   white-space: pre-wrap;

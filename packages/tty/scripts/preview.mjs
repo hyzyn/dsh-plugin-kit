@@ -43,6 +43,7 @@ const SCENARIOS = [
   ['multi', '多标签 + SSH 连接栏'],
   ['menu', '「+」新建菜单'],
   ['ssh', 'SSH 连接对话框'],
+  ['ssh-probe', 'SSH 连接对话框（试连结果）'],
   ['ssh-edit', 'SSH 连接对话框（编辑）'],
   ['settings', '设置卡片'],
   ['sftp', 'SFTP 单窗体'],
@@ -53,6 +54,11 @@ const SCENARIOS = [
   ['tunnel', '隧道状态弹层'],
   ['search', '搜索框展开'],
   ['toast', 'toast 提醒'],
+  ['embed', '嵌入式终端（ttyTerminal.mount）'],
+  ['embed-panel', '嵌入终端与面板共存（关面板不掉线）'],
+  ['docker-panel', 'docker 面板（只读：变更组整组置灰）'],
+  ['docker-panel-rw', 'docker 面板（允许变更：动作条全可用）'],
+  ['docker-exec', 'docker 面板 → 终端抽屉（端到端）'],
 ]
 
 if (flags.has('--list')) {
@@ -192,6 +198,9 @@ function prepare() {
   }
   writeFileSync(join(previewDir, 'skin.css'), skinCss())
   writeFileSync(join(previewDir, 'client.js'), readFileSync(join(root, 'client.js')))
+  // dsh-docker 的浏览器半体（可选）：在同一页面里跑「tty 提供服务 + docker 消费」的联调场景
+  const dockerClient = join(root, '..', 'docker', 'client.js')
+  if (existsSync(dockerClient)) writeFileSync(join(previewDir, 'docker-client.js'), readFileSync(dockerClient))
 }
 
 /* ------------------------------ Chrome/CDP ------------------------------ */
@@ -353,6 +362,8 @@ async function shoot(cdp, name, label) {
   })
   try {
     const url = 'file://' + join(previewDir, 'harness.html') + '?scenario=' + encodeURIComponent(name) + '&theme=' + theme
+      // 样例路径随机器变化：运行时注入，避免把开发者目录写进夹具源码
+      + '&cwd=' + encodeURIComponent(root) + '&home=' + encodeURIComponent(homedir())
     await cdp.send('Page.navigate', { url })
     // 导航提交是异步的：必须等到新文档真的挂上了本次场景，否则会拿到上一个
     // 场景的 __previewReady（截图就会停在半成品状态）

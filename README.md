@@ -20,7 +20,7 @@
 
 <p align="center">
   <strong>DeepSeek Harness（DSH）Web GUI 的插件全家桶</strong><br>
-  <em>环境变量 · MCP 服务器 · Prompt · Profile · RSS · 全局搜索 · Codegraph 集成 · 终端面板 · 插件脚手架</em>
+  <em>环境变量 · MCP 服务器 · Prompt · Profile · RSS · 全局搜索 · Codegraph 集成 · 终端面板 · 容器面板 · 插件脚手架</em>
 </p>
 
 <p align="center">
@@ -31,7 +31,7 @@
 
 ## 是什么
 
-dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合：环境变量 / 密钥管理、MCP 服务器配置、Prompt 管理、Profile 管理、RSS / 新闻聚合、全局搜索、Codegraph 集成、终端面板（本地 + SSH 终端、SFTP 文件传输），外加一条命令生成新插件的开发脚手架。所有插件都走官方 profile 机制挂载到 `dsh web`，不改 DSH 源码；可以逐个安装，也可以用聚合包一次装齐。
+dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合：环境变量 / 密钥管理、MCP 服务器配置、Prompt 管理、Profile 管理、RSS / 新闻聚合、全局搜索、Codegraph 集成、终端面板（本地 + SSH 终端、SFTP 文件传输）、Docker 容器面板（本机 / SSH 主机上的容器与镜像查看，默认只读），外加一条命令生成新插件的开发脚手架。所有插件都走官方 profile 机制挂载到 `dsh web`，不改 DSH 源码；可以逐个安装，也可以用聚合包一次装齐。
 
 ![SFTP 双栏：左本机 / 右远程，行内直传](docs/dsh-plugin-kit-tty-sftp-dual.png)
 
@@ -47,6 +47,7 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 | 全局搜索 | 仅会话标题/内容 | 侧边栏统一全文搜索历史会话、Prompt、MCP 工具与设置面板 |
 | Codegraph 集成 | 无 | 代码图谱卡片：索引状态 / 符号搜索 / 调用链 / 影响面 / 一键 sync-index |
 | 终端面板 | 无 | 侧边栏「终端」入口 + xterm.js 多标签真实 PTY 终端（vim/htop/dev server）；SSH 直连远程主机（连接簿、指纹钉扎、断线重连）；**SFTP 文件传输**（单窗体 / 左本机右远程双栏直传、拖拽上传）；agent 配套 `tty_*` / `sftp_*` 工具 |
+| Docker 容器面板 | 无 | 侧边栏「容器」入口 + 多目标（本机 / SSH）容器列表（搜索 / 状态筛选）、启停删、详情、日志、资源占用与镜像；**默认只读**，变更与 exec 需显式开关；agent 配套 `docker_*` 工具 |
 | 插件开发 | 手写样板 | `pnpm create-plugin` 脚手架 + `@hyzyn/dsh-kit` 类型助手 |
 
 ## 功能插件
@@ -131,6 +132,17 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 ![SFTP 单窗体：远程目录浏览 + 下载/重命名/删除](docs/dsh-plugin-kit-tty-sftp-dialog.png)
 
 ![终端面板设置卡片：shell / TERM / SFTP 风格 / 并发上限等保存即热生效](docs/dsh-plugin-kit-tty-setting.png)
+
+### Docker 容器面板（@hyzyn/dsh-docker）
+
+- **做什么**：在 Web GUI 侧边栏加一个「容器」入口，查看**本机或 SSH 主机**上的容器列表（状态 / 健康 / 端口 / compose 项目）、容器详情、日志尾部、资源占用与镜像列表；显式打开开关后可启停删容器、执行一次性 `docker exec`。
+- **怎么用**：安装后重启 `dsh web`，侧边栏点击「容器」→ 选择目标（本机 / SSH）→ 容器卡片（镜像 / ID / 端口 / 创建 + 图标操作条）支持搜索与状态筛选 → 点卡片进整栏详情（概览 / 日志 / 统计），或直接点卡片上的图标操作条（左侧「终端 / 日志 / 资源占用」只读可用，右侧「启停 / 重启 / 删除」用竖线分隔、需打开「允许变更操作」）；日志页有 LINES / TIMESTAMPS / AUTO REFRESH 工具条、过滤行与按级别着色。设置 → 插件 →「Docker 容器面板」维护目标与开关，保存即热生效。
+- **上下文入口**：装了 tty ≥ 0.15.0 时，卡片第一个图标是「终端」——点击在**面板底部弹出终端抽屉**（tty 的 `ttyTerminal.mount` 就地嵌入），看着日志直接进容器敲命令，面板不收起；tty 为 0.14.0 时退回「新开终端标签 + 收面板」，更旧或未装则退化为复制命令；SSH 标签的连接栏（SFTP 旁）还会出现「容器」按钮——点击直接用当前会话那台主机打开面板，目标由会话隐式决定（注册即显示；按连接簿名 / host:port 在点击时解析目标，没配目标会提示怎么配）。
+- **目标**：`kind=local` 走宿主所在机器的 docker CLI；`kind=ssh` 可直接**引用 tty 连接簿条目名**（数据级复用，tty 零改动；未装 tty 时用内联 host/username），经 ssh2 exec channel 在远端执行，主机指纹 TOFU 钉扎并以 tty 已有记录作种子。
+- **支持**：容器列表（`all` 含已停止）、`docker inspect` 详情、日志（tail / 时间戳 / since）、`docker stats --no-stream` 快照、镜像列表、一次性 exec（返回退出码与 stdout/stderr）；`dockerBin` 可填 `podman`；输出超限自动截断。
+- **安全模型（重点）**：docker socket ≈ 目标主机 root 权限，因此**默认只读**——`allowMutations` 未开启时启停删被拒（HTTP 403，工具不注册），`allowExec` 未开启时 exec 被拒；容器名 / ID 过白名单校验，命令一律 argv 构造 + 单引号转义；密码 / 口令建议 `env:VAR` 引用且永不回传浏览器。
+- **存哪里**：settings 命名空间 `docker`（`~/.dsh/settings.yaml`）。
+- **注意**：没有交互式 TTY（exec 是一次性命令，交互排障请到终端面板跑 `docker exec -it`），没有实时日志流、没有镜像删除 / 拉取 / 构建、没有多目标聚合视图；`docker rm` 不带 `-f`，运行中容器会报错并提示先停止。详细见 `packages/docker/README.md`。
 
 ### RSS / 新闻聚合（@hyzyn/dsh-rss）
 
@@ -219,6 +231,7 @@ dsh plugin --profile web add @hyzyn/dsh-rss     # RSS / 新闻聚合
 dsh plugin --profile web add @hyzyn/dsh-search  # 全局搜索
 dsh plugin --profile web add @hyzyn/dsh-codegraph # Codegraph 集成
 dsh plugin --profile web add @hyzyn/dsh-tty     # 终端面板
+dsh plugin --profile web add @hyzyn/dsh-docker  # Docker 容器面板
 ```
 
 ### 验证与卸载

@@ -250,6 +250,16 @@ function ensureBashStubRc() {
  * 注入集成（zsh → ZDOTDIR 桩；bash → --rcfile 桩）。integration=false 或不
  * 支持的 shell 返回最简包装层。
  */
+/**
+ * 带自定义命令的本地 spawn 计划（0.14.0）：给「开一个标签直接跑某条命令」用
+ * （如 dsh-docker 的 `docker exec -it <容器> sh`）。命令由**宿主侧插件**提供，
+ * 信任级与插件本身相同；TERM / COLORTERM 仍走白名单值。
+ * 命令必须单行（换行会破坏 -c 包装层），由调用方（src/index.ts 的帧解析）保证。
+ */
+export function buildCommandSpawn(shell, term, colorTerm, command) {
+    const pre = `export TERM='${term}'; export COLORTERM='${colorTerm}';`;
+    return { argv: [shell, '-c', `${pre} exec ${command}`], env: {} };
+}
 export function buildShellSpawn(shell, term, colorTerm, integration) {
     const pre = `export TERM='${term}'; export COLORTERM='${colorTerm}';`;
     const exec = `exec "${shell}"`;
