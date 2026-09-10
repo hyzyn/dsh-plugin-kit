@@ -37,15 +37,20 @@
   const requireShim = (name) => {
     if (name === 'react') return window.React
     if (name === 'react/jsx-runtime') return window.__jsxRuntime
+    // dsh-docker 的客户端用 createRoot 挂面板（React 18 的 react-dom/client 入口）
+    if (name === 'react-dom') return window.ReactDOM
+    if (name === 'react-dom/client') return { createRoot: window.ReactDOM.createRoot, hydrateRoot: window.ReactDOM.hydrateRoot }
     throw new Error('预览夹具未提供模块：' + name)
   }
   const exports = mod.factory(requireShim)
   const cards = []
+  /** 客户端服务表：tty 提供 ttyConnbar，夹具里也允许注册消费方（见 connbarActions）。 */
+  const services = new Map()
   const ctx = {
     sessions: {
       list: {
         getSnapshot: () => ({
-          byId: { s1: { cwd: '/Users/czz/coding/webproject/deepseek-harness/dsh-plugin-kit' } },
+          byId: { s1: { cwd: window.__PREVIEW_CWD || '/home/user/project' } },
           current: 's1',
         }),
       },
@@ -57,8 +62,43 @@
         return () => {}
       },
     },
+    // cordis 服务面（tty 客户端 0.13.0 起用 ctx.provide 暴露连接栏注册点）
+    provide: (name, value) => {
+      services.set(name, value)
+      return () => services.delete(name)
+    },
+    get: (name) => services.get(name),
+    inject: (names, cb) => {
+      const scope = {}
+      for (const name of names) scope[name] = services.get(name)
+      cb(scope)
+      return () => {}
+    },
+    effect: (cb) => {
+      const dispose = cb()
+      return () => {
+        if (typeof dispose === 'function') dispose()
+      }
+    },
+    reflect: {
+      provide: (name, value) => {
+        services.set(name, value)
+        return () => services.delete(name)
+      },
+    },
   }
   exports.apply(ctx)
+
+  /**
+   * docker 插件（可选）：与 tty 共用同一个 ctx——tty 已经 ctx.provide 了 ttyConnbar /
+   * ttyTerminal，所以 docker 的 ctx.inject 能拿到真实服务。这就是「ttyTerminal.mount
+   * 就地嵌入」的端到端联调场景（不是靠 mock 服务自欺）。
+   */
+  const dockerModule = window.__modules.get('@hyzyn/dsh-docker')
+  if (dockerModule) {
+    const dockerExports = dockerModule.factory(requireShim)
+    dockerExports.apply(ctx)
+  }
 
   /* ---------- 交互助手 ---------- */
   const entry = () => q('[data-dsh-tty-entry]')
@@ -128,6 +168,22 @@
       await clickMenuItem('SSH 连接…')
       await waitFor(() => q('.tt_sshCard'))
       await sleep(150)
+    },
+    /* SSH 连接对话框：跑一次「试连」并展示结果（验证状态带不撑动布局） */
+    async 'ssh-probe'() {
+      await openPanel()
+      await clickAdd()
+      await clickMenuItem('SSH 连接…')
+      await waitFor(() => q('.tt_sshCard'))
+      const inputs = qa('.tt_sshCard input')
+      inputs[0].value = '192.168.80.248'
+      inputs[1].value = '22'
+      inputs[2].value = 'root'
+      const probeBtn = qa('.tt_sshActions .tt_toolBtn').find((b) => b.textContent.includes('试连'))
+      probeBtn.click()
+      const resultEl = () => q('.tt_sshProbeResult')
+      await waitFor(() => resultEl() && resultEl().textContent !== '' && !resultEl().textContent.includes('测试中'))
+      await sleep(250)
     },
     /* SSH 连接对话框（编辑连接簿条目，含 env 选择器） */
     async 'ssh-edit'() {
@@ -226,6 +282,57 @@
       q('.tt_searchInput').value = 'client.js'
       await sleep(80)
     },
+    /* 嵌入终端：ttyTerminal.mount 挂到一块普通 div（面板不开，冷启动连接） */
+    async embed() {
+      const host = document.createElement('div')
+      host.id = 'preview-embed'
+      host.style.cssText = 'position:fixed;left:120px;top:120px;width:840px;height:420px;z-index:3000;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;overflow:hidden;background:#0b0e14'
+      document.body.appendChild(host)
+      const terminal = services.get('ttyTerminal')
+      if (terminal === undefined) throw new Error('ttyTerminal 服务不存在')
+      window.__embedDispose = terminal.mount(host, { command: 'docker exec -it app-web-1 sh', label: 'app-web-1 · exec' })
+      await waitFor(() => q('#preview-embed .xterm'), 4000)
+      await sleep(700)
+    },
+    /* 共存：先挂嵌入终端，再开/关 tty 面板 —— 嵌入会话必须活着 */
+    async 'embed-panel'() {
+      await SCENARIOS.embed()
+      await openPanel()
+      await sleep(400)
+      q('.tt_close').click()
+      await sleep(500)
+      const frames = (window.__mockLog || []).join(' ')
+      window.__previewAssert = {
+        embedAlive: q('#preview-embed .xterm') !== null,
+        killFrames: (frames.match(/in:kill/g) || []).length,
+        socketOpen: window.__mockSockets.some((s) => s.readyState === 1),
+      }
+    },
+    /* docker 面板（列表视图）：看容器卡片与动作条分组 */
+    async 'docker-panel'() {
+      const entry = await waitFor(() => q('[data-dsh-docker-entry]'), 4000)
+      entry.click()
+      await waitFor(() => q('.dk_panel'), 5000)
+      await waitFor(() => qa('.dk_card').length >= 4, 5000)
+      await sleep(350)
+    },
+    /* docker 面板（允许变更）：动作条右组可用的样子 */
+    async 'docker-panel-rw'() {
+      window.__PREVIEW_DOCKER_CONFIG.allowMutations = true
+      await SCENARIOS['docker-panel']()
+    },
+    /* docker 面板 → 卡片「终端」→ 抽屉里的嵌入式终端 */
+    async 'docker-exec'() {
+      const entry = await waitFor(() => q('[data-dsh-docker-entry]'), 4000)
+      entry.click()
+      await waitFor(() => q('.dk_panel'), 5000)
+      const card = await waitFor(() => qa('.dk_card')[0], 5000)
+      // 卡片动作条第一个图标按钮就是「终端」（docker exec -it）
+      card.querySelector('.dk_iconBtn').click()
+      await waitFor(() => q('.dk_drawer'), 4000)
+      await waitFor(() => q('.dk_drawerBody .xterm'), 4000)
+      await sleep(700)
+    },
     /* toast 提醒（并发上限） */
     async toast() {
       // 先开面板拿到首个标签，再进入「已达上限」状态（否则开面板本身就被拦下）
@@ -263,6 +370,17 @@
       modal: rect('.tt_modal'),
       sftp: rect('.tt_sftpCard') || rect('.tt_sftpDualCard'),
       ssh: rect('.tt_sshCard'),
+      // 分组标签与状态带：核对「选项」不再重复、试连结果落在定高状态带里
+      sshSections: [...document.querySelectorAll('.tt_sshSection')].map((el) => el.textContent),
+      sshStatus: (() => {
+        const band = document.querySelector('.tt_sshStatus')
+        if (!band) return null
+        return {
+          h: Math.round(band.getBoundingClientRect().height),
+          error: band.querySelector('.tt_sshError')?.textContent || '',
+          probe: band.querySelector('.tt_sshProbeResult')?.textContent || '',
+        }
+      })(),
       addMenu: rect('.tt_addMenu'),
       toast: rect('.tt_toast'),
       dock: rect('.tt_dock'),
@@ -281,6 +399,35 @@
           return el ? el.getBoundingClientRect().width + 'x' + Math.round(el.getBoundingClientRect().height) : null
         })(),
       },
+      docker: {
+        panel: document.querySelector('.dk_panel') !== null,
+        cards: document.querySelectorAll('.dk_card').length,
+        // 卡片动作条：分组、间距、配色（用来核对「查看 / 变更」两组的划分）
+        actionBar: (() => {
+          const bar = document.querySelector('.dk_actionBar')
+          if (!bar) return null
+          return [...bar.children].map((el) => {
+            const box = el.getBoundingClientRect()
+            const style = getComputedStyle(el)
+            return {
+              cls: el.classList.contains('dk_actionBarSep') ? 'SEP' : el.className.replace('dk_iconBtn', 'btn').trim(),
+              x: Math.round(box.x),
+              w: Math.round(box.width),
+              gapBefore: el.previousElementSibling === null ? null : Math.round(box.x - el.previousElementSibling.getBoundingClientRect().right),
+              color: style.color,
+              disabled: el.disabled === true,
+            }
+          })
+        })(),
+        drawer: !!rect('.dk_drawer'),
+        drawerTerm: document.querySelector('.dk_drawerBody .xterm') !== null,
+        drawerText: (document.querySelector('.dk_drawerBody .xterm-rows')?.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80),
+      },
+      embed: {
+        host: document.querySelector('#preview-embed .xterm') !== null,
+        text: (document.querySelector('#preview-embed .xterm-rows')?.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80),
+      },
+      assert: window.__previewAssert ?? null,
       bodyChildren: [...document.body.children].map((el) => el.className || el.tagName).slice(0, 12),
       // 样式自检：浏览器实际解析出的规则数（与 tty.css 的规则数比对，能发现
       // 语法错误导致的静默丢弃——esbuild 的 text loader 不解析 CSS）

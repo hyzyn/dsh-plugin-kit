@@ -313,11 +313,101 @@ tmux server（专用 socket `dsh-tty`，与用户自己的 tmux 完全隔离）�
 | `endOnPageClose` | `false` | 页面（最后一个连接）断开且保活期结束时，是否连 tmux 持久会话一起结束。默认 `false` = 留存可恢复；`true` = 页面关了就不保活（保活期内刷新仍可无缝接回） |
 | `sftpLimits` | `{maxDownloadMb: 1024, maxUploadMb: 2048, maxUploadFiles: 1000}` | SFTP 传输限制（浏览器侧保护，均为 **0 = 不限**）：`maxDownloadMb` 单文件下载上限（超限中止并提示用双栏 `⇦`/终端 scp）、`maxUploadMb` 单文件上传上限、`maxUploadFiles` 一次批量/拖拽上传的文件数上限；大文件请走双栏 `⇨/⇦` 服务端直传（字节不经过浏览器，不占内存） |
 
+## 连接栏扩展点（客户端服务 `ttyConnbar`，0.13.0）
+
+其他插件可以在 SSH 连接栏（SFTP / 隧道按钮那一行）追加自己的上下文按钮，而不需要
+tty 认识它——tty 只暴露一个通用客户端服务。**内置动作（重新打开 / SFTP / 隧道）也
+走同一条注册通道**，显示顺序 = 注册顺序；未注册任何扩展时行为与之前完全一致。
+
+```js
+// 消费方（如 dsh-docker）在自己的客户端半体里可选注入：tty 没装就不会触发
+ctx.inject(['ttyConnbar'], (c) => {
+  const dispose = c.ttyConnbar.addAction(({ tab, spec, bookName, addAction }) => {
+    // 每次 renderConnbar 都会调用一次；自行决定这次要不要加按钮
+    if (spec.t !== 'ssh') return
+    addAction(iconSvg, '容器', '打开该主机的 Docker 容器面板', () => { /* 打开自己的面板 */ })
+  })
+  // 卸载时调用 dispose()
+})
+```
+
+| 成员 | 说明 |
+| --- | --- |
+| `addAction(factory)` | 注册按钮工厂；返回注销函数。`factory` 收到 `{tab, spec, bookName, addAction}`：`spec` 是会话的 spawnSpec（`{t:'ssh', name?, host, port, username, ...}`），`bookName` 是连接簿条目名（内联连接为 `''`），`addAction(icon, label, title, onClick)` 用 tty 的按钮样式追加一个按钮 |
+| `requestRender()` | 请 tty 重新渲染连接栏（消费方异步拿到新数据后需要按钮立刻出现时用） |
+
+- 只在 **SSH 标签**上触发；本地标签的连接栏本身是隐藏的。
+- 工厂抛错只记 `console.warn`，不影响连接栏与内置按钮。
+- 服务名 `ttyConnbar` 未声明在 tty 的 `Context` 类型面上，消费方用字符串注入即可；
+  tty 未安装或版本 < 0.13.0 时注入不会触发，消费方需按可选依赖处理。
+
+### 终端命令标签（客户端服务 `ttyTerminal`，0.14.0）
+
+比连接栏按钮更进一步的扩展点：让其他插件**开一个标签直接跑一条命令**（典型用途
+是 dsh-docker 的卡片「终端」按钮 → `docker exec -it <容器> sh`）。
+
+```js
+ctx.inject(['ttyTerminal'], (c) => {
+  c.ttyTerminal.open({
+    command: "docker exec -it 'ems-consumer-test' sh",  // 必填，单行，≤2000 字符
+    book: 'HS-248',        // 二选一：连接簿条目名 → SSH 标签
+    // spec: { host, port, username, auth, agentForward },  // 内联 SSH 字段
+    // （都不传 = 本地标签，用 cwd 指定工作目录）
+    label: 'ems-consumer-test · exec',
+    cwd: '/optional/local/cwd',
+  })
+})
+```
+
+- 命令标签**不做 tmux 持久化**（命令短命，attach 无意义），也不走登录 shell；
+  SSH 侧用 `conn.exec(command, {pty})`，本地侧用 `sh -c 'export TERM=…; exec <command>'`。
+- **命令标签会自动重开**：宿主重启 / 断线重连后 sid 已失效，客户端对
+  `spawnSpec.command` 的标签按原规格重新执行命令（普通非持久标签维持「点击重试」
+  的旧行为）。页面刷新后同样按原命令恢复。
+- 命令来自**宿主侧插件**（不是远程用户输入），信任级与插件本身相同；tty 只校验
+  形状：非空、单行、长度 ≤2000（换行会破坏本地 `-c` 包装层）。
+- 服务名 `ttyTerminal` 同样未声明在 `Context` 类型面上，按可选依赖注入；tty 未安装
+  或版本 < 0.14.0 时不会触发（dsh-docker 会退化为「复制命令」）。
+
+
+### 就地嵌入终端（`ttyTerminal.mount`，0.15.0）
+
+`open` 是「借 tty 的弹窗开一个标签」——用户的面板会被弹窗盖住/被顶到后面；如果消费方
+希望**在自己的面板里就地放一块终端**（典型是 dsh-docker 的终端抽屉：看着容器日志直接
+进容器敲命令，上下文不断），用 `mount`：
+
+```js
+ctx.inject(['ttyTerminal'], (c) => {
+  if (Number(c.ttyTerminal.version ?? 0) < 2) { /* 老版本：退回 open */ }
+  const dispose = c.ttyTerminal.mount(hostEl, {
+    command: "docker exec -it 'ems-consumer-test' sh",  // 与 open 同一套 options
+    book: 'HS-248',                                     // book > spec > 本地
+    label: 'ems-consumer-test · exec',
+  })
+  // 收起自己的抽屉时：
+  // dispose()
+})
+```
+
+- `hostEl` 需是 `HTMLElement`：tty 往里塞一个绝对定位的 `.tt_term`，所以挂载点要
+  `position: relative` 且有确定尺寸（尺寸变化会被 ResizeObserver 接住并同步给 PTY）。
+- 嵌入终端与标签**共用同一条 WebSocket 与会话表**，但语义是「别人面板里的一块终端」：
+  不进标签栏、不写 sessionStorage、不参与 tty 面板的显隐；**tty 面板关闭不会波及它**
+  （反过来说：嵌入会话在跑时，tty 的连接不会被关掉）。
+- 断线自动重连、宿主重启后按原命令重跑、退出后点击遮罩重开，全部沿用既有逻辑；
+  `dispose()` 结束会话并卸载 DOM。挂载是**冷启动安全**的——tty 面板没开、连接还没建，
+  `mount` 也会把连接拉起来（创建帧先排队，`onopen` 后补发）。
+- 嵌入终端没有 tty 面板头部的搜索/清屏/复制工具栏，Ctrl+F 交还浏览器。
+
+> 契约版本：`ttyConnbar.version === 1`、`ttyTerminal.version === 2`（1 = 只有 `open`，
+> 2 = 增加 `mount`）。消费方**按版本号判断能力**，不要用 `typeof fn === 'function'`
+> 之外的假设；老版本 tty 上 `inject` 依然会触发，但没有 `mount` 字段。
+
 ## 帧协议（/api/dsh-tty/ws，JSON 文本帧；v3 = 单连接多会话 + 断线重连）
 
 | 方向 | 帧 | 说明 |
 | --- | --- | --- |
-| C→S | `{t:'spawn', sid?, cols?, rows?, cwd?, persist?, persistName?}` | 创建会话；sid 缺省由宿主生成，cwd 缺省用配置兜底；`persist` + 稳定 `persistName`（0.10.0）= tmux 持久会话（`dsh-<名>`，需 persistence=tmux） |
+| C→S | `{t:'spawn', sid?, cols?, rows?, cwd?, persist?, persistName?, command?}` | 创建会话；sid 缺省由宿主生成，cwd 缺省用配置兜底；`persist` + 稳定 `persistName`（0.10.0）= tmux 持久会话（`dsh-<名>`，需 persistence=tmux）；`command`（0.14.0）= 直接跑一条命令（不做持久化） |
 | C→S | `{t:'ssh', sid?, cols?, rows?, name? \| host, username, …, persist?, persistName?}` | 创建 SSH 会话（ssh2 原生）；`name` 引用连接簿条目作基底，内联 `host/port/username/auth/keyPath/passphrase/password/agentForward` 可逐项覆盖；`persist` 语义同 spawn（远程 tmux 托管） |
 | C→S | `{t:'input', sid?, d}` | 按键/粘贴数据 |
 | C→S | `{t:'resize', sid?, cols, rows}` | 面板尺寸变化 |

@@ -11,6 +11,11 @@
     - id: codegraph
       name: '@hyzyn/dsh-codegraph'
 
+# from ../docker
+- insert:
+    - id: docker
+      name: '@hyzyn/dsh-docker'
+
 # from ../env
 - insert:
     - id: env-manager

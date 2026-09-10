@@ -210,6 +210,16 @@ const PERSIST_KEY = 'dsh-tty:tabs'
 
 /** sid → 标签页 */
 const tabs = new Map()
+/**
+ * 嵌入式终端（0.15.0）：其他插件（如 dsh-docker）经 ttyTerminal.mount 把终端挂到
+ * 自己的面板里。它们与标签共用同一条 WebSocket 与会话表，但**不进标签栏、不写
+ * sessionStorage、也不随 tty 面板关闭而销毁**——这里单独记 sid，便于廉价判断
+ * 「还有没有嵌入会话在跑」（决定关面板时要不要留连接）。
+ */
+const embeddedSids = new Set()
+const hasEmbedded = () => embeddedSids.size > 0
+/** 连接尚未就绪时挂起的创建帧（嵌入式终端可能在 socket 打开前就挂载）。 */
+const pendingSpawns = new Set()
 let activeSid = null
 let tabCounter = 0
 let connecting = false
@@ -218,6 +228,32 @@ let addMenuEl = null
 let sshDialogEl = null
 /** SSH 连接簿缓存：/api/dsh-tty/config 的 sshHosts（设置卡片保存后同步）。 */
 let sshHostsCache = []
+/**
+ * 连接栏按钮注册表（0.13.0）：内置动作（重新打开 / SFTP / 隧道）与第三方插件
+ * 经客户端服务 `ttyConnbar` 注册的按钮走**同一条通道**，显示顺序 = 注册顺序。
+ * 每次 renderConnbar 按当前标签调用一遍全部工厂，工厂自行决定这次要不要加按钮。
+ */
+const connbarActions = new Set()
+
+/** 注册一个连接栏按钮工厂；返回注销函数。 */
+function registerConnbarAction(factory) {
+  connbarActions.add(factory)
+  return () => connbarActions.delete(factory)
+}
+
+// 内置动作：与第三方扩展同一通道，因此顺序与权限完全一致
+registerConnbarAction(({ tab, addAction }) => {
+  if (tab.exited) addAction(ICON_RECONNECT, '重新打开', '以原连接信息重开会话', () => respawnTab(tab.sid))
+})
+registerConnbarAction(({ tab, addAction }) => {
+  addAction(ICON_SFTP, 'SFTP', '打开该连接的文件浏览（SFTP）', () => openSftpBrowser(tab.spawnSpec))
+})
+registerConnbarAction(({ bookName, addAction }) => {
+  const count = bookName !== '' ? tunnelCountFor(bookName) : 0
+  if (count > 0) {
+    addAction(ICON_TUNNEL, '隧道 ' + count, '查看该连接的端口转发隧道', (event) => openTunnelPopover(event.currentTarget, bookName))
+  }
+})
 
 function setStatus(text, state) {
   if (statusEl === null) return
@@ -284,14 +320,14 @@ function scheduleSettle(delay) {
 function persistTabs() {
   try {
     const data = [...tabs.values()]
-      .filter((tab) => !tab.exited)
+      .filter((tab) => !tab.exited && tab.embedded !== true) // 嵌入会话不进标签持久化
       .map((tab) => ({ sid: tab.sid, spawnSpec: tab.spawnSpec, label: tab.label }))
     if (data.length === 0 || modalEl === null) sessionStorage.removeItem(PERSIST_KEY)
     else sessionStorage.setItem(PERSIST_KEY, JSON.stringify(data))
     // 持久规格独立留存：exit 帧（自然退出/回收器回收/宿主重启）不淘汰规格——
     // 那正是需要恢复的场景；规格只随「标签被主动关闭」（closeTab）淘汰。
     // 恢复时按规格 respawn：tmux 会话存活则接回原现场，已消失则新开 shell
-    syncPersistSpecStore([...tabs.values()].map((tab) => ({ spawnSpec: tab.spawnSpec, label: tab.label })))
+    syncPersistSpecStore([...tabs.values()].filter((tab) => tab.embedded !== true).map((tab) => ({ spawnSpec: tab.spawnSpec, label: tab.label })))
   } catch {
     /* 隐私模式等存储不可用：静默跳过 */
   }
@@ -495,6 +531,8 @@ function createTerminal(tab) {
     if (isPersistentSpec(tab.spawnSpec)) scheduleSettle(200)
   })
   term.attachCustomKeyEventHandler((event) => {
+    // 嵌入式终端没有搜索框（搜索是 tty 面板头部的 UI），Ctrl+F 交还给浏览器
+    if (tab.embedded === true) return true
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
       event.preventDefault()
       toggleSearch()
@@ -568,12 +606,19 @@ function restoreTab(saved) {
 /** 按标签保存的 spawnSpec 发创建帧（sid/cols/rows 由本地补齐）。 */
 function spawnTab(tab) {
   const dims = tab.fit !== null ? tab.fit.proposeDimensions() : undefined
-  sendFrame({
+  const frame = {
     ...tab.spawnSpec,
     sid: tab.sid,
     cols: dims !== undefined ? dims.cols : 80,
     rows: dims !== undefined ? dims.rows : 24,
-  })
+  }
+  if (socket === null || socket.readyState !== WebSocket.OPEN) {
+    // 连接还没就绪：挂起，onopen 后补发。嵌入式终端是「冷启动」的（面板没开也可能
+    // 被挂载），必然走到这条路径；面板流程下创建帧本来就在 onopen 之后发。
+    pendingSpawns.add({ tab, frame })
+    return
+  }
+  sendFrame(frame)
 }
 
 /**
@@ -606,6 +651,11 @@ function restoreTabAsNew(saved) {
 function respawnTab(oldSid) {
   const old = tabs.get(oldSid)
   if (old === undefined) return
+  if (old.embedded === true) {
+    // 嵌入终端没有「标签位」概念：原地重建，DOM 仍挂在调用方的容器里
+    respawnEmbedded(old)
+    return
+  }
   const spawnSpec = old.spawnSpec
   const label = old.label
   if (!old.exited) sendFrame({ t: 'kill', sid: oldSid })
@@ -632,6 +682,7 @@ function closeTab(sid) {
   if (tab === undefined) return
   if (!tab.exited) sendFrame({ t: 'kill', sid })
   tabs.delete(sid)
+  embeddedSids.delete(sid) // 兜底：嵌入终端正常走 disposeEmbedded，这里防漏
   // 彻底移除：dispose xterm 实例并把 termEl（含错误/退出浮层）从面板拿走，
   // 否则被关闭标签的幽灵 DOM 会叠在其它标签上
   if (tab.term !== null) {
@@ -648,8 +699,146 @@ function closeTab(sid) {
     if (next !== null) switchTab(next)
   }
   renderTabbar()
-  if (tabs.size === 0) closeModal()
+  // 注意判据是「没有自己的标签了」：嵌入终端不占标签位，不该因为它而留住空面板
+  if (![...tabs.values()].some((tab) => tab.embedded !== true)) closeModal()
   else persistTabs()
+}
+
+/* ============================ 嵌入式终端（0.15.0） ============================ */
+
+/**
+ * 校验并规范化 ttyTerminal 的 command：必填、单行（宿主包装层按单行拼接）。
+ * open 与 mount 共用，保证两个入口的入参约束一致。
+ */
+function normalizeTerminalCommand(options) {
+  const command = typeof options?.command === 'string' ? options.command.trim() : ''
+  if (command === '') throw new Error('ttyTerminal 需要 command')
+  if (/[\r\n\0]/.test(command)) throw new Error('command 必须是单行')
+  return command
+}
+
+/** 由 options 组装创建帧：book > spec > 本地（三者互斥），与 open 语义一致。 */
+function buildTerminalSpec(options, command) {
+  if (typeof options?.book === 'string' && options.book !== '') return { t: 'ssh', name: options.book, command }
+  if (options?.spec !== null && typeof options?.spec === 'object') return { t: 'ssh', ...options.spec, command }
+  return { t: 'spawn', ...(typeof options?.cwd === 'string' && options.cwd !== '' ? { cwd: options.cwd } : {}), command }
+}
+
+/** 嵌入终端的尺寸跟随：挂载容器变化即 fit，并把精确尺寸同步给 PTY。 */
+function observeEmbeddedResize(tab) {
+  const controller = tab.controller
+  if (controller === undefined || controller.observer !== null) return
+  controller.observer = new ResizeObserver(() => {
+    if (controller.disposed || controller.tab !== tab || tab.term === null) return
+    try {
+      tab.fit.fit()
+    } catch {
+      return // 容器还没布局（抽屉 display:none 时）
+    }
+    if (tab.spawned && !tab.exited) sendResize(tab)
+  })
+  controller.observer.observe(controller.hostEl)
+}
+
+/** 在挂载容器里建一个嵌入标签（不进标签栏、不写 sessionStorage）。 */
+function createEmbeddedTab(controller, spawnSpec, label) {
+  const tab = {
+    sid: newSid(),
+    term: null,
+    fit: null,
+    search: null,
+    termEl: null,
+    overlayEl: null,
+    exited: false,
+    spawned: false,
+    embedded: true,
+    controller,
+    spawnSpec,
+    label,
+  }
+  createTerminal(tab)
+  tabs.set(tab.sid, tab)
+  embeddedSids.add(tab.sid)
+  controller.hostEl.appendChild(tab.termEl)
+  observeEmbeddedResize(tab)
+  spawnTab(tab)
+  return tab
+}
+
+/** 嵌入终端的原地重建（退出后点击重开 / 宿主重启后重新跑命令）：DOM 位置不变。 */
+function respawnEmbedded(old) {
+  const controller = old.controller
+  if (controller === undefined || controller.disposed) return undefined
+  if (!old.exited) sendFrame({ t: 'kill', sid: old.sid })
+  try {
+    old.term?.dispose()
+  } catch {
+    /* 忽略 */
+  }
+  old.termEl?.remove()
+  tabs.delete(old.sid)
+  embeddedSids.delete(old.sid)
+  if (controller.observer !== null) {
+    controller.observer.disconnect()
+    controller.observer = null
+  }
+  controller.tab = createEmbeddedTab(controller, old.spawnSpec, old.label)
+  return controller.tab
+}
+
+/**
+ * 把终端挂到调用方提供的元素里（ttyTerminal.mount，0.15.0）。
+ *
+ * 与标签共用同一条 WebSocket 与会话表，但语义是「别人面板里的一块终端」：
+ *   - 不进标签栏、不参与 switchTab 的显隐、不写 sessionStorage；
+ *   - tty 面板关闭时不销毁（closeModal 只清自己的标签，连接也留着）；
+ *   - 断线自动重连、宿主重启后按原命令重跑、resize 跟随容器，都复用既有逻辑。
+ * 返回 dispose()：结束会话并卸载 DOM——调用方在自己的抽屉关闭时调用它。
+ */
+function mountTerminal(hostEl, options) {
+  if (!(hostEl instanceof HTMLElement)) throw new Error('ttyTerminal.mount 需要 HTMLElement 作为挂载点')
+  const command = normalizeTerminalCommand(options)
+  const spawnSpec = buildTerminalSpec(options, command)
+  const label = typeof options?.label === 'string' && options.label !== '' ? options.label : undefined
+  ensureStyle()
+  const controller = { hostEl, tab: null, observer: null, disposed: false }
+  controller.tab = createEmbeddedTab(controller, spawnSpec, label)
+  // 冷启动：面板没开时也要把连接拉起来（创建帧已在 spawnTab 里挂起，onopen 补发）
+  ensureSocket()
+  return () => disposeEmbedded(controller)
+}
+
+/** 卸载嵌入终端：结束会话、拆 DOM，若已无其他消费者则顺手收掉连接。 */
+function disposeEmbedded(controller) {
+  if (controller.disposed) return
+  controller.disposed = true
+  if (controller.observer !== null) {
+    controller.observer.disconnect()
+    controller.observer = null
+  }
+  const tab = controller.tab
+  if (tab !== null) {
+    if (!tab.exited) sendFrame({ t: 'kill', sid: tab.sid })
+    try {
+      tab.term?.dispose()
+    } catch {
+      /* 忽略 */
+    }
+    tab.termEl?.remove()
+    tabs.delete(tab.sid)
+    embeddedSids.delete(tab.sid)
+    controller.tab = null
+  }
+  // 面板没开、也没有别的嵌入终端：连接留着没意义，收掉（下次挂载会重新连）
+  if (modalEl === null && !hasEmbedded() && socket !== null) {
+    intentionalClose = true
+    try {
+      socket.close()
+    } catch {
+      /* 忽略 */
+    }
+    socket = null
+  }
 }
 
 function switchTab(sid) {
@@ -657,9 +846,11 @@ function switchTab(sid) {
   if (tab === undefined) return
   activeSid = sid
   for (const [otherSid, other] of tabs) {
+    // 嵌入终端的显隐由挂载方（抽屉/面板）决定，这里不碰
+    if (other.embedded === true) continue
     if (other.termEl !== null) other.termEl.style.display = otherSid === sid ? '' : 'none'
   }
-  if (bodyEl !== null && tab.termEl !== null && tab.termEl.parentElement !== bodyEl) {
+  if (tab.embedded !== true && bodyEl !== null && tab.termEl !== null && tab.termEl.parentElement !== bodyEl) {
     bodyEl.appendChild(tab.termEl)
   }
   renderTabbar()
@@ -693,6 +884,7 @@ function renderTabbar() {
   if (tabbarEl === null) return
   tabbarEl.textContent = ''
   for (const [sid, tab] of tabs) {
+    if (tab.embedded === true) continue // 嵌入终端不进标签栏
     const btn = document.createElement('button')
     btn.className = 'tt_tab'
     btn.dataset.sid = sid
@@ -803,16 +995,15 @@ function renderConnbar() {
     btn.addEventListener('click', onClick)
     connActionsEl.appendChild(btn)
   }
-  if (tab.exited) {
-    action(ICON_RECONNECT, '重新打开', '以原连接信息重开会话', () => respawnTab(tab.sid))
-  }
-  action(ICON_SFTP, 'SFTP', '打开该连接的文件浏览（SFTP）', () => openSftpBrowser(tab.spawnSpec))
+  // 内置动作与第三方扩展同一通道（见文件上方 connbarActions）；单个工厂抛错只记
+  // 日志，不影响连接栏与其他按钮
   const bookName = typeof spec.name === 'string' ? spec.name : ''
-  const tunnelCount = bookName !== '' ? tunnelCountFor(bookName) : 0
-  if (tunnelCount > 0) {
-    action(ICON_TUNNEL, '隧道 ' + tunnelCount, '查看该连接的端口转发隧道', (event) => {
-      openTunnelPopover(event.currentTarget, bookName)
-    })
+  for (const factory of connbarActions) {
+    try {
+      factory({ tab, spec, bookName, addAction: action })
+    } catch (error) {
+      console.warn('[dsh-tty] connbar action failed: ' + (error instanceof Error ? error.message : String(error)))
+    }
   }
 }
 
@@ -1462,7 +1653,6 @@ function openSshDialog(entry) {
   card.appendChild(passwordEnv.row)
 
   card.appendChild(sectionLabel('选项'))
-  card.appendChild(sectionLabel('选项'))
   const fwdRow = document.createElement('label')
   fwdRow.className = 'tt_cardRow'
   const fwdCheck = document.createElement('input')
@@ -1528,13 +1718,20 @@ function openSshDialog(entry) {
     persistCheck.checked = persistenceCache === 'tmux'
   }
 
+  /*
+   * 状态带：错误与试连结果是「同一块地方的两条消息」，统一收进一个**定高**容器。
+   * 定高是为了不让消息出现时把卡片撑高——卡片在遮罩里垂直居中，一变高整个对话框
+   * 都会跳（试连按钮点一下布局就动，实测很难受）。空消息靠 :empty 隐藏。
+   */
+  const statusEl = document.createElement('div')
+  statusEl.className = 'tt_sshStatus'
   const errorEl = document.createElement('div')
   errorEl.className = 'tt_sshError'
-  card.appendChild(errorEl)
   const probeEl = document.createElement('div')
   probeEl.className = 'tt_sshProbeResult'
-  probeEl.style.display = 'none'
-  card.appendChild(probeEl)
+  statusEl.appendChild(errorEl)
+  statusEl.appendChild(probeEl)
+  card.appendChild(statusEl)
 
   /** 从当前对话框字段收集 probe spec（不含 name/persist）；字段不齐返回 null 并提示。 */
   const collectProbeSpec = () => {
@@ -1685,7 +1882,6 @@ function openSshDialog(entry) {
   probeBtn.addEventListener('click', () => {
     const spec = collectProbeSpec()
     if (spec === null) return
-    probeEl.style.display = ''
     probeEl.className = 'tt_sshProbeResult'
     probeEl.textContent = '连接测试中…'
     probeBtn.disabled = true
@@ -3368,7 +3564,8 @@ function doSearch(backwards) {
 
 /** 断线自动重连：指数退避封顶 5s；面板开着就一直尝试，✕ 关闭时停止。 */
 function scheduleReconnect() {
-  if (intentionalClose || modalEl === null || reconnectTimer !== null) return
+  // 面板关着**且**没有嵌入式终端在跑才放弃重连（嵌入终端可能在别人的面板里展示）
+  if (intentionalClose || (modalEl === null && !hasEmbedded()) || reconnectTimer !== null) return
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null
     connect()
@@ -3379,6 +3576,15 @@ function scheduleReconnect() {
 /** 持久标签判定：spawnSpec 带 persist 标记与稳定 persistName（tmux 侧按名接回）。 */
 function isPersistentSpec(spec) {
   return spec !== null && typeof spec === 'object' && spec.persist === true && typeof spec.persistName === 'string' && spec.persistName !== ''
+}
+
+/**
+ * 可自动重开的标签（0.14.0）：持久标签（tmux 按名接回）之外，**命令标签**
+ * （spawnSpec.command，如 dsh-docker 的 `docker exec -it …`）也算——它的语义就是
+ * 「跑这条命令」，宿主重启/断线后重新执行一次比留个「会话不存在」的报错更有用。
+ */
+function isRerunnableSpec(spec) {
+  return isPersistentSpec(spec) || (spec !== null && typeof spec === 'object' && typeof spec.command === 'string' && spec.command !== '')
 }
 
 /** 持久化开启时的本地默认规格（设置开关是唯一开关：新标签默认 tmux 托管）。 */
@@ -3405,9 +3611,16 @@ async function afterSocketOpen() {
   // 先拉一次配置：persistenceCache（持久化开关）决定默认本地标签是否 tmux 托管，
   // 必须在恢复/新建标签之前就位
   await refreshSshHosts()
+  // 面板没开（例如只有 dsh-docker 的嵌入终端在跑）：只做嵌入会话的回场，
+  // 不碰标签恢复、也不新建标签
+  if (modalEl === null) {
+    await recoverEmbeddedTabs()
+    return
+  }
   const restored = loadPersistedTabs()
   const specs = loadPersistSpecs()
-  if (tabs.size === 0) {
+  // 判据是「没有自己的标签」而不是 tabs.size===0——嵌入终端不占标签位
+  if (![...tabs.values()].some((tab) => tab.embedded !== true)) {
     if (restored.length > 0 || specs.length > 0) {
       sendFrame({ t: 'sessions' })
       const frame = await waitFrame('sessions', 4000)
@@ -3421,7 +3634,8 @@ async function afterSocketOpen() {
       for (const saved of restored) {
         if (alive.has(saved.sid)) {
           restoreTab(saved)
-        } else if (isPersistentSpec(saved.spawnSpec)) {
+        } else if (isRerunnableSpec(saved.spawnSpec)) {
+          // 持久标签按 tmux 名接回；命令标签重新执行一次（0.14.0）
           restoreTabAsNew(saved)
         } else {
           continue // 非持久且宿主侧已结束：维持旧行为丢弃
@@ -3436,29 +3650,65 @@ async function afterSocketOpen() {
       }
       persistTabs()
     }
-    if (tabs.size === 0) {
+    if (![...tabs.values()].some((tab) => tab.embedded !== true)) {
       if (await sessionLimitNotice()) return // 上限已满：不再创建注定失败的空标签
       addTab()
     }
     return
   }
-  // 同页断线重连：宿主重启过的持久标签 sid 已失效，先查 sessions 分流
-  const liveTabs = [...tabs.values()].filter((tab) => !tab.exited)
-  const persistTabsDead = liveTabs.filter((tab) => isPersistentSpec(tab.spawnSpec))
+  // 同页断线重连：宿主重启过的持久标签 sid 已失效，先查 sessions 分流。
+  // liveTabs 含嵌入式终端；respawnTab 按 embedded 分流到「原地重建」。
+  // 还没 ready 的嵌入会话要排除——宿主可能尚未登记它的 sid，误判会双开
+  const liveTabs = [...tabs.values()].filter((tab) => !tab.exited && (tab.embedded !== true || tab.spawned === true))
+  const rerunnableTabs = liveTabs.filter((tab) => isRerunnableSpec(tab.spawnSpec))
   let deadPersistSids = null
-  if (persistTabsDead.length > 0) {
+  if (rerunnableTabs.length > 0) {
     sendFrame({ t: 'sessions' })
     const frame = await waitFrame('sessions', 4000)
     const aliveSids = new Set((frame !== null && Array.isArray(frame.list) ? frame.list : []).map((entry) => entry?.sid).filter((sid) => typeof sid === 'string'))
-    deadPersistSids = persistTabsDead.filter((tab) => !aliveSids.has(tab.sid))
+    deadPersistSids = rerunnableTabs.filter((tab) => !aliveSids.has(tab.sid))
     for (const tab of deadPersistSids) {
-      respawnTab(tab.sid) // 换新 sid 重发 spawnSpec（含原 persistName）→ 宿主 tmux -A 接回
+      // 换新 sid 重发 spawnSpec：持久标签 tmux -A 接回，命令标签重新执行命令
+      respawnTab(tab.sid)
     }
   }
   const respawned = deadPersistSids !== null ? new Set(deadPersistSids.map((tab) => tab.sid)) : new Set()
   for (const tab of liveTabs) {
     if (respawned.has(tab.sid)) continue
     sendFrame({ t: 'attach', sid: tab.sid })
+  }
+}
+
+/** 确保有一条可用连接（面板与嵌入终端共用；已连/在连则不动）。 */
+function ensureSocket() {
+  if (socket !== null && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return
+  connect()
+}
+
+/**
+ * 嵌入终端的回场（面板没开时走这里，0.15.0）：宿主保活的 attach 回去，宿主重启过
+ * 的就按原 spawnSpec 重新跑一次命令（命令标签语义 = 跑这条命令）。非命令规格
+ * （理论上不会出现）标成已退出，交给调用方的遮罩提示。
+ */
+async function recoverEmbeddedTabs() {
+  const embeddedTabs = [...tabs.values()].filter((tab) => tab.embedded === true && !tab.exited)
+  if (embeddedTabs.length === 0) return
+  sendFrame({ t: 'sessions' })
+  const frame = await waitFrame('sessions', 4000)
+  const alive = new Set((frame !== null && Array.isArray(frame.list) ? frame.list : []).map((entry) => entry?.sid).filter((sid) => typeof sid === 'string'))
+  for (const tab of embeddedTabs) {
+    // 刚挂上、还没收到 ready 的会话：宿主侧的会话表可能还没登记（SSH 建链有耗时），
+    // 这时按「已死」重开会话会导致双开——直接跳过，交给它的 spawn 帧正常走完
+    if (tab.spawned !== true) continue
+    if (alive.has(tab.sid)) {
+      sendFrame({ t: 'attach', sid: tab.sid })
+    } else if (isRerunnableSpec(tab.spawnSpec)) {
+      respawnEmbedded(tab)
+    } else {
+      tab.exited = true
+      tab.live = false
+      showTabOverlay(tab, '会话已结束', '点击重新执行', 'exited')
+    }
   }
 }
 
@@ -3489,6 +3739,11 @@ function connect() {
     connecting = false
     reconnectDelay = 1000
     setStatus('已连接', 'connected')
+    // 先补发挂起的创建帧（嵌入式终端冷启动时排在这里），再走面板的恢复流程
+    for (const entry of [...pendingSpawns]) {
+      pendingSpawns.delete(entry)
+      if (tabs.has(entry.tab.sid)) sendFrame(entry.frame)
+    }
     void afterSocketOpen()
   }
   socket.onmessage = (event) => {
@@ -3700,7 +3955,9 @@ function openModal() {
   renderTabbar()
   renderConnbar()
 
-  connect()
+  // 连接可能已经因为嵌入终端而存在：复用它，并把面板自己的标签/恢复流程补上
+  if (socket !== null && socket.readyState === WebSocket.OPEN) void afterSocketOpen()
+  else connect()
 }
 
 /** 右下角悬浮条：展示会话数 / 连接状态，点击恢复窗口。 */
@@ -3819,7 +4076,10 @@ function restoreModal() {
 
 function closeModal() {
   if (modalEl === null) return
-  intentionalClose = true
+  // 还有嵌入终端（如 dsh-docker 抽屉里的那个）在跑时：连接不能断，也不能标成
+  // 主动关闭——否则重连停摆、别人的终端跟着黑掉
+  const keepSocket = hasEmbedded()
+  intentionalClose = !keepSocket
   minimized = false
   closeAddMenu()
   closeSshDialog()
@@ -3838,20 +4098,24 @@ function closeModal() {
   syncEntryBadge()
   if (socket !== null) {
     for (const tab of tabs.values()) {
-      if (!tab.exited) sendFrame({ t: 'kill', sid: tab.sid })
+      // 只结束面板自己的会话；嵌入终端由调用方（抽屉关闭时）收尾
+      if (!tab.exited && tab.embedded !== true) sendFrame({ t: 'kill', sid: tab.sid })
     }
-    try {
-      socket.close()
-    } catch {
-      /* 忽略 */
+    if (!keepSocket) {
+      try {
+        socket.close()
+      } catch {
+        /* 忽略 */
+      }
+      socket = null
     }
-    socket = null
   }
   if (resizeObserver !== null) {
     resizeObserver.disconnect()
     resizeObserver = null
   }
-  for (const tab of tabs.values()) {
+  for (const [sid, tab] of [...tabs]) {
+    if (tab.embedded === true) continue // 嵌入终端的 xterm 与 DOM 归挂载方管
     if (tab.term !== null) {
       try {
         tab.term.dispose()
@@ -3859,8 +4123,8 @@ function closeModal() {
         /* 忽略 */
       }
     }
+    tabs.delete(sid)
   }
-  tabs.clear()
   activeSid = null
   document.removeEventListener('keydown', onModalKeydown)
   modalEl.remove()
@@ -4816,7 +5080,51 @@ function TtySettingsCard() {
         key: 'tty',
         order: 110,
       }, TtySettingsCard))
+      // 连接栏按钮注册点：其他插件（如 dsh-docker）经 ctx.inject(['ttyConnbar'])
+      // 注册上下文按钮；内置动作也走同一通道，tty 不感知具体插件
+      const disposeConnbar = ctx.provide('ttyConnbar', {
+        /** 契约版本：1 = addAction + requestRender（payload 见 README「客户端服务契约」）。 */
+        version: 1,
+        addAction: registerConnbarAction,
+        requestRender() {
+          renderConnbar()
+        },
+      })
+      // 终端服务（0.14.0 起）：其他插件（如 dsh-docker）可以「跑一条命令拿一个终端」，
+      // 用于 `docker exec -it <容器> sh` 这类交互式进入。两个入口：
+      //   open  —— 在 tty 面板里新开一个标签（会弹面板，命令标签随之持久化重跑）
+      //   mount —— 把终端挂进调用方自己的容器（就地嵌入，不弹面板、不进标签栏）
+      // 契约见 README「客户端服务契约」；消费方应按 version 校验后再用。
+      const disposeTerminal = ctx.provide('ttyTerminal', {
+        /** 契约版本：1 = 只有 open；2 = 增加 mount（就地嵌入）。 */
+        version: 2,
+        /**
+         * 新开标签并执行命令。options：
+         *   command（必填，单行）· book（连接簿条目名，走 SSH）·
+         *   spec（内联 SSH 字段，走 SSH）· label（标签名）· cwd（本地标签工作目录）
+         * 三者互斥：book > spec > 本地。
+         */
+        open(options) {
+          const command = normalizeTerminalCommand(options)
+          const spawnSpec = buildTerminalSpec(options, command)
+          const label = typeof options?.label === 'string' && options.label !== '' ? options.label : undefined
+          ensureStyle()
+          if (modalEl === null) openModal()
+          addTab(spawnSpec, label)
+        },
+        /**
+         * 把终端挂进 hostEl（就地嵌入，0.15.0）。options 与 open 相同，额外：
+         *   hostEl 需是 HTMLElement（挂载点，建议 position:relative、有确定尺寸）。
+         * 返回 dispose()：调用方在收起自己的容器时调用，结束会话并卸载 DOM。
+         * 嵌入终端与面板标签共用连接，但 tty 面板关闭不会波及它。
+         */
+        mount(hostEl, options) {
+          return mountTerminal(hostEl, options)
+        },
+      })
       return () => {
+        disposeTerminal()
+        disposeConnbar()
         closeModal()
       }
     }

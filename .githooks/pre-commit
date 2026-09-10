@@ -8,8 +8,8 @@ if ! out=$(pnpm -r build 2>&1); then
   exit 1
 fi
 # 产物若有变化，自动并入本次提交（只暂存构建产物路径，不碰其他改动）
-if ! git diff --quiet -- packages/tty/client.js 'packages/*/lib' 2>/dev/null; then
-  git add -- 'packages/*/lib' 'packages/tty/client.js'
+if ! git diff --quiet -- 'packages/*/client.js' 'packages/*/lib' 2>/dev/null; then
+  git add -- 'packages/*/lib' 'packages/*/client.js'
   echo "↻ [pre-commit] 构建产物已刷新并入本次提交"
 fi
 exit 0

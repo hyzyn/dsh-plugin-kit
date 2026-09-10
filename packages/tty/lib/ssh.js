@@ -179,6 +179,18 @@ export async function spawnSsh(spec, options) {
                 resolve(ch);
             });
         };
+        /** 自定义命令（0.14.0）：`conn.exec(command, {pty})`，与 tmux 分支同形。 */
+        const openCommand = () => {
+            conn.exec(options.command ?? '', { pty: { term: options.term, cols: options.cols, rows: options.rows } }, (error, ch) => {
+                settled = true;
+                if (error !== undefined && error !== null) {
+                    conn.end();
+                    reject(new Error(`远程命令启动失败: ${error.message}`));
+                    return;
+                }
+                resolve(ch);
+            });
+        };
         /** 持久会话：远程 `exec tmux new-session -A`（pty channel，语义与 shell 一致）。 */
         const openTmux = () => {
             // 链式 set-option 幂等重放（attach 已有 server 时也生效）；首 pane 在
@@ -237,7 +249,10 @@ export async function spawnSsh(spec, options) {
             });
         };
         conn.on('ready', () => {
-            if (options.persist !== undefined)
+            // 命令标签（0.14.0）优先：不做 tmux 持久化（命令短命，attach 没意义）
+            if (options.command !== undefined && options.command !== '')
+                openCommand();
+            else if (options.persist !== undefined)
                 openWithPersist();
             else
                 openShell();

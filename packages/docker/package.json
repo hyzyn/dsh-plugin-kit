@@ -1,17 +1,15 @@
 {
-  "name": "@hyzyn/dsh-tty",
-  "version": "0.15.0",
-  "description": "DSH Web GUI 的终端面板插件：侧边栏「终端」大弹窗，xterm.js + PTY 全交互终端（路线1），ssh2 原生 SSH 远程连接（方案 C），tmux 会话持久化（0.10.0），连接栏扩展点 ttyConnbar（0.13.0）、终端服务 ttyTerminal（0.14.0 open / 0.15.0 mount 就地嵌入）。",
+  "name": "@hyzyn/dsh-docker",
+  "version": "0.1.0",
+  "description": "DSH Web GUI 的 Docker 容器面板插件：本机或 SSH 主机上的容器列表 / 启停删 / 日志 / 统计 / 镜像 / 一次性 exec，默认只读，配套只读优先的 agent 工具。",
   "keywords": [
     "dsh",
     "deepseek",
     "deepseek-harness",
-    "terminal",
+    "docker",
+    "container",
+    "compose",
     "ssh",
-    "sftp",
-    "tmux",
-    "xterm",
-    "pty",
     "agent",
     "ai",
     "plugin",
@@ -43,9 +41,7 @@
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.2",
     "@hyzyn/dsh-kit": "0.1.2",
-    "@xterm/headless": "^5.5.0",
-    "ssh2": "^1.17.0",
-    "ws": "^8.18.0"
+    "ssh2": "^1.17.0"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-tools": "^0.1.2-rc.1"
@@ -53,29 +49,16 @@
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
     "@deepseek-ai/dsh-host-webserver": "0.1.2-rc.1",
-    "@deepseek-ai/dsh-subprocess": "0.1.2-rc.1",
-    "@deepseek-ai/dsh-subprocess-local": "0.1.2-rc.1",
     "@deepseek-ai/dsh-tools": "0.1.2-rc.1",
     "@types/node": "^22.20.0",
     "@types/ssh2": "^1.15.6",
-    "@types/ws": "^8.5.12",
-    "@xterm/addon-fit": "^0.10.0",
-    "@xterm/addon-search": "^0.16.0",
-    "@xterm/addon-web-links": "^0.12.0",
-    "@xterm/addon-webgl": "^0.19.0",
-    "@xterm/xterm": "^5.5.0",
     "esbuild": "^0.28.2",
     "typescript": "~5.9.3"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/build-client.mjs",
     "typecheck": "tsc --noEmit",
-    "probe": "node scripts/probe.mjs",
-    "integration": "node scripts/integration.mjs",
-    "live": "node scripts/live.mjs",
-    "tui": "node scripts/tui-smoke.mjs",
-    "preview": "node scripts/preview.mjs",
-    "ssh-smoke": "node scripts/ssh-smoke.mjs"
+    "smoke": "node scripts/smoke.mjs && node scripts/route-smoke.mjs && node scripts/client-smoke.mjs"
   },
   "files": [
     "lib",
@@ -87,9 +70,9 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/hyzyn/dsh-plugin-kit.git",
-    "directory": "packages/tty"
+    "directory": "packages/docker"
   },
-  "homepage": "https://github.com/hyzyn/dsh-plugin-kit/tree/main/packages/tty#readme",
+  "homepage": "https://github.com/hyzyn/dsh-plugin-kit/tree/main/packages/docker#readme",
   "bugs": {
     "url": "https://github.com/hyzyn/dsh-plugin-kit/issues"
   },

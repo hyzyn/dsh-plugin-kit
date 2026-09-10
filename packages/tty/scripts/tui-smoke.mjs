@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * @hyzyn/dsh-tty — TUI 冒烟：在真实实例上验证 vim / htop 可启动、可按键、可退出。
- * 用法：node scripts/tui-smoke.mjs [wsUrl]（默认 ws://127.0.0.1:3090/api/dsh-tty/ws）
+ * 用法：node scripts/tui-smoke.mjs [wsUrl]（默认 ws://127.0.0.1:3090/api/dsh-tty/ws，可用 DSH_TTY_WS_URL 覆盖）
  * 原理：xterm.js 渲染由浏览器完成，这里验证 PTY 侧的 TUI 行为——
  *   TERM=xterm-256color 下 vim 启动会输出 ANSI 转义序列、htop 同理；
  *   通过发送按键（:q! / q）验证输入通道。
@@ -9,7 +9,8 @@
  */
 import WebSocket from 'ws'
 
-const url = process.argv[2] ?? 'ws://127.0.0.1:3090/api/dsh-tty/ws'
+// 默认地址可用环境变量 DSH_TTY_WS_URL 覆盖（不同 profile 的实例端口不同）
+const url = process.argv[2] ?? process.env.DSH_TTY_WS_URL ?? 'ws://127.0.0.1:3090/api/dsh-tty/ws'
 const client = new WebSocket(url)
 client.setMaxListeners(0)
 

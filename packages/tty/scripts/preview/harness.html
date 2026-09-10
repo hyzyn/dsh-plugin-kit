@@ -55,6 +55,10 @@
     const _q = new URLSearchParams(location.search)
     if (_q.get('sftp')) window.__PREVIEW_SFTP_STYLE = _q.get('sftp')
     if (_q.get('persist')) window.__PREVIEW_PERSISTENCE = _q.get('persist')
+    // 样例路径（终端 cwd / SFTP 本机栏 / 家目录）由 preview.mjs 运行时注入，
+    // 源码里不留任何开发者机器路径；脱离 preview.mjs 打开时用中性占位
+    window.__PREVIEW_CWD = _q.get('cwd') || '/home/user/project'
+    window.__PREVIEW_HOME = _q.get('home') || '/home/user'
     if (_q.get('theme') !== 'light') document.documentElement.dataset.previewDark = ''
     document.addEventListener('DOMContentLoaded', () => {
       if (_q.get('theme') !== 'light') document.body.setAttribute('data-ds-dark-theme', '')
@@ -64,6 +68,8 @@
   <script src="./vendor/react-dom.js"></script>
   <script src="./mock-host.js"></script>
   <script src="./client.js"></script>
+  <!-- dsh-docker 的浏览器半体：用于「ttyTerminal.mount 就地嵌入」的端到端联调 -->
+  <script src="./docker-client.js"></script>
   <script src="./harness.js"></script>
 </body>
 </html>

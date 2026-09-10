@@ -33,7 +33,7 @@
     shell: '/bin/zsh',
     term: 'xterm-256color',
     colorTerm: 'truecolor',
-    cwd: '/Users/czz/coding/webproject/deepseek-harness/dsh-plugin-kit',
+    cwd: window.__PREVIEW_CWD || '/home/user/project',
     reconnectGraceSec: 120,
     shellIntegration: true,
     sftpStyle: window.__PREVIEW_SFTP_STYLE || 'dialog',
@@ -88,18 +88,65 @@
     ] }
     if (url.indexOf('/api/dsh-tty/sftp/list') === 0) return { ok: true, path: body && body.path ? body.path : '/srv/app', entries: SFTP_FILES }
     if (url.indexOf('/api/dsh-tty/sftp/') === 0) return { ok: true }
-    if (url.indexOf('/api/dsh-tty/local-fs/list') === 0) return { ok: true, path: body && body.path ? body.path : '/Users/czz/coding/webproject/deepseek-harness/dsh-plugin-kit', entries: LOCAL_FILES }
-    if (url.indexOf('/api/dsh-tty/local-fs') === 0) return { ok: true, home: '/Users/czz' }
-    if (url.indexOf('/api/dsh-tty/probe') === 0) return { ok: true, result: { ok: true, steps: [{ name: 'tcp', ok: true, detail: 'connect ok' }, { name: 'hostkey', ok: true, detail: 'known_hosts 匹配' }, { name: 'auth', ok: true, detail: '认证成功' }] } }
+    if (url.indexOf('/api/dsh-tty/local-fs/list') === 0) return { ok: true, path: body && body.path ? body.path : (window.__PREVIEW_CWD || '/home/user/project'), entries: LOCAL_FILES }
+    if (url.indexOf('/api/dsh-tty/local-fs') === 0) return { ok: true, home: window.__PREVIEW_HOME || '/home/user' }
+    // 形状对齐 probeSummary()：{ tcp:{ok,ms}, banner:{ok}, hostkey:{state}, auth:{ok,ms} }
+    if (url.indexOf('/api/dsh-tty/probe') === 0) return { ok: true, result: {
+      tcp: { ok: true, ms: 8 },
+      banner: { ok: true },
+      hostkey: { state: 'matched' },
+      auth: { ok: true, ms: 296 },
+    } }
     if (url.indexOf('/api/dsh-tty/ssh-config') === 0) return { ok: true, hosts: [] }
     if (url.indexOf('/api/dsh-tty/known-hosts') === 0) return { ok: true, keys: [] }
+    if (url.indexOf('/api/dsh-docker/') === 0) return dockerRoute(url.slice('/api/dsh-docker'.length), body)
+    return { ok: true }
+  }
+
+  /* ---------- 假 dsh-docker API：让 docker 面板与 tty 的 ttyTerminal 端到端联调 ---------- */
+  const DOCKER_TARGETS = [
+    { name: '目标1', kind: 'ssh', label: 'root@192.168.80.248' },
+    { name: '目标2', kind: 'local', label: '本机' },
+  ]
+  window.__PREVIEW_DOCKER_CONFIG = {
+    enabled: true,
+    allowMutations: false,
+    allowExec: true,
+    pollIntervalSec: 5,
+    logTailDefault: 200,
+    maxOutputKb: 512,
+    execTimeoutSec: 30,
+    targets: [
+      { name: '目标1', kind: 'ssh', book: '', host: '192.168.80.248', port: 22, username: 'root', auth: 'agent', agentForward: false },
+      { name: '目标2', kind: 'local', book: '', host: '', port: 22, username: '', auth: 'agent', agentForward: false },
+    ],
+  }
+  window.__PREVIEW_DOCKER_CONTAINERS = [
+    { id: 'a1b2c3d4e5f6a7b8c9d0', shortId: 'a1b2c3d4e5f6', name: 'app-web-1', image: 'app:2026.09.07', state: 'running', health: 'healthy', status: 'Up 3 days', ports: [{ hostPort: 8080, containerPort: 8080, protocol: 'tcp' }], createdAt: null, runningFor: 'Up 3 days', composeProject: 'app', composeService: 'web' },
+    { id: 'b2c3d4e5f6a7b8c9d0e1', shortId: 'b2c3d4e5f6a7', name: 'app-worker-1', image: 'app:2026.09.07', state: 'running', health: null, status: 'Up 3 days', ports: [], createdAt: null, runningFor: 'Up 3 days', composeProject: 'app', composeService: 'worker' },
+    { id: 'c3d4e5f6a7b8c9d0e1f2', shortId: 'c3d4e5f6a7b8', name: 'postgres', image: 'postgres:16-alpine', state: 'running', health: 'healthy', status: 'Up 5 days', ports: [{ hostPort: 5432, containerPort: 5432, protocol: 'tcp' }], createdAt: null, runningFor: 'Up 5 days', composeProject: null, composeService: null },
+    { id: 'd4e5f6a7b8c9d0e1f2a3', shortId: 'd4e5f6a7b8c9', name: 'redis', image: 'redis:7-alpine', state: 'exited', health: null, status: 'Exited (0) 2 hours ago', ports: [], createdAt: null, runningFor: '', composeProject: null, composeService: null },
+  ]
+  const dockerRoute = (path, body) => {
+    if (path === '/config') return { ok: true, config: window.__PREVIEW_DOCKER_CONFIG }
+    if (path === '/targets') return { ok: true, targets: DOCKER_TARGETS }
+    if (path === '/containers') return { ok: true, containers: window.__PREVIEW_DOCKER_CONTAINERS }
+    if (path === '/images') return { ok: true, images: [
+      { id: 'sha256:11aa', shortId: '11aa22bb33cc', tags: ['app:2026.09.07'], size: 184320000, createdAt: null, createdSince: '2 days ago' },
+      { id: 'sha256:22bb', shortId: '22bb33cc44dd', tags: ['postgres:16-alpine'], size: 42000000, createdAt: null, createdSince: '3 weeks ago' },
+    ] }
+    if (path === '/inspect') return { ok: true, details: [window.__PREVIEW_DOCKER_CONTAINERS[0]] }
+    if (path === '/logs') return { ok: true, logs: '2026-09-09T12:00:00Z INFO  server listening on :8080\n2026-09-09T12:00:01Z INFO  connected to postgres\n2026-09-09T12:00:02Z WARN  slow query 412ms\n2026-09-09T12:00:03Z INFO  request GET /health 200 3ms\n' }
+    if (path === '/stats') return { ok: true, stats: [null] }
     return { ok: true }
   }
 
   const realFetch = window.fetch ? window.fetch.bind(window) : null
   window.fetch = (url, init) => {
     const target = typeof url === 'string' ? url : String(url && url.url ? url.url : url)
-    if (target.indexOf('/api/dsh-tty/') === -1) return realFetch ? realFetch(url, init) : json({ ok: true })
+    if (target.indexOf('/api/dsh-tty/') === -1 && target.indexOf('/api/dsh-docker/') === -1) {
+      return realFetch ? realFetch(url, init) : json({ ok: true })
+    }
     let body = null
     try {
       body = init && typeof init.body === 'string' ? JSON.parse(init.body) : null
@@ -200,9 +247,12 @@
   window.WebSocket = MockSocket
 
   /* ---------- module loader ---------- */
+  window.__modules = new Map()
   window.__ModuleLoader__ = {
     load(def) {
-      window.__ttyModule = def
+      window.__modules.set(def.id, def)
+      // 兼容：夹具最早只跑 tty 一个插件
+      if (def.id === '@hyzyn/dsh-tty') window.__ttyModule = def
     },
   }
 

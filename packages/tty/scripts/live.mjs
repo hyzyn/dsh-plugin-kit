@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 /**
  * @hyzyn/dsh-tty — 对「正在运行的 dsh web」做存活探测与端到端冒烟。
- * 用法：node scripts/live.mjs [wsUrl]   （默认 ws://127.0.0.1:3080/api/dsh-tty/ws）
+ * 用法：node scripts/live.mjs [wsUrl]   （默认 ws://127.0.0.1:3080/api/dsh-tty/ws，可用 DSH_TTY_WS_URL 覆盖）
  * 用途：确认用户重启 dsh web 后插件宿主半体已加载；未重启时路由不存在，连接即失败。
  * 退出码：0 = 路由存在且 spawn→echo→kill→exit 全链路通过；1 = 失败；2 = 路由未注册。
  */
 import WebSocket from 'ws'
 
-const url = process.argv[2] ?? 'ws://127.0.0.1:3080/api/dsh-tty/ws'
+// 默认地址可用环境变量 DSH_TTY_WS_URL 覆盖（不同 profile 的实例端口不同）
+const url = process.argv[2] ?? process.env.DSH_TTY_WS_URL ?? 'ws://127.0.0.1:3080/api/dsh-tty/ws'
 const client = new WebSocket(url)
 client.setMaxListeners(0)
 
