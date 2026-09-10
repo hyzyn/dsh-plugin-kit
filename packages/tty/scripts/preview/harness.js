@@ -223,7 +223,7 @@
       await clickMenuItem('SSH 连接…')
       await waitFor(() => q('.tt_sshCard'))
       const inputs = qa('.tt_sshCard input')
-      inputs[0].value = '192.168.80.248'
+      inputs[0].value = '192.0.2.10'
       inputs[1].value = '22'
       inputs[2].value = 'root'
       const probeBtn = qa('.tt_sshActions .tt_toolBtn').find((b) => b.textContent.includes('试连'))

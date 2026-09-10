@@ -42,11 +42,11 @@
     sftpLimits: { maxDownloadMb: 1024, maxUploadMb: 2048, maxUploadFiles: 1000 },
     toolsRegistered: true,
     sshHosts: [
-      { name: 'prod-web-01', host: '10.20.30.41', port: 22, username: 'deploy', auth: 'key', keyPath: '~/.ssh/id_ed25519', passphrase: '', password: '', agentForward: true, persist: false },
+      { name: 'prod-web-01', host: '198.51.100.20', port: 22, username: 'deploy', auth: 'key', keyPath: '~/.ssh/id_ed25519', passphrase: '', password: '', agentForward: true, persist: false },
       { name: 'staging-db', host: 'db.staging.internal', port: 2222, username: 'root', auth: 'password', keyPath: '', passphrase: '', password: 'env:STAGING_DB_PASSWORD', agentForward: false, persist: false },
     ],
     hostKeys: [
-      { host: '10.20.30.41', port: 22, fingerprint: 'SHA256:9xQ2mVr7Kp3sTf1cZbLd8uYwAe4nHjR6gPoXkMvQ2Bc' },
+      { host: '198.51.100.20', port: 22, fingerprint: 'SHA256:9xQ2mVr7Kp3sTf1cZbLd8uYwAe4nHjR6gPoXkMvQ2Bc' },
       { host: 'db.staging.internal', port: 2222, fingerprint: 'SHA256:3fLp8Rt2Wq9yUvC4dXzN6mBsAe1hKjG7oPwXiMnQ5Bd' },
     ],
     tunnels: [
@@ -105,10 +105,10 @@
 
   /* ---------- 假 dsh-docker API：让 docker 面板与 tty 的 ttyTerminal 端到端联调 ---------- */
   const DOCKER_TARGETS = [
-    { name: '目标1', kind: 'ssh', label: 'root@192.168.80.248' },
+    { name: '目标1', kind: 'ssh', label: 'root@192.0.2.10' },
     { name: '目标2', kind: 'local', label: '本机' },
     // 与 tty 连接簿的 prod-web-01 对齐：连接栏「容器」按钮的命中路径（docker-dock 场景）
-    { name: 'prod-web-01', kind: 'ssh', label: 'deploy@10.20.30.41' },
+    { name: 'prod-web-01', kind: 'ssh', label: 'deploy@198.51.100.20' },
   ]
   // 形状照搬宿主 /config：设置卡片会读 ttyBooks / hostKeys / ttyAvailable，
   // 少一个字段就是「渲染期 undefined.length」——离线场景直接崩
@@ -127,7 +127,7 @@
     ttyAvailable: true,
     toolsRegistered: [],
     targets: [
-      { name: '目标1', kind: 'ssh', book: '', host: '192.168.80.248', port: 22, username: 'root', auth: 'agent', agentForward: false },
+      { name: '目标1', kind: 'ssh', book: '', host: '192.0.2.10', port: 22, username: 'root', auth: 'agent', agentForward: false },
       { name: '目标2', kind: 'local', book: '', host: '', port: 22, username: '', auth: 'agent', agentForward: false },
       { name: 'prod-web-01', kind: 'ssh', book: 'prod-web-01', host: '', port: 22, username: '', auth: 'agent', agentForward: false },
     ],
@@ -238,7 +238,7 @@
       const sid = msg.sid
       if (msg.t === 'spawn' || msg.t === 'ssh') {
         if (!SESSIONS.some((s) => s.sid === sid)) SESSIONS.push({ sid, attachable: true, kind: msg.t === 'ssh' ? 'ssh' : 'local', tmux: msg.persistName })
-        const target = msg.t === 'ssh' ? (msg.username || 'deploy') + '@' + (msg.host || '10.20.30.41') + (msg.port && Number(msg.port) !== 22 ? ':' + msg.port : '') : undefined
+        const target = msg.t === 'ssh' ? (msg.username || 'deploy') + '@' + (msg.host || '198.51.100.20') + (msg.port && Number(msg.port) !== 22 ? ':' + msg.port : '') : undefined
         setTimeout(() => {
           this._deliver(msg.t === 'ssh'
             ? { t: 'ready', sid, kind: 'ssh', pid: null, target: msg.name ? target : target, persist: msg.persist === true }
@@ -295,7 +295,7 @@
 
   window.__PREVIEW_SSH_BANNER =
     '\x1b[38;2;110;118;129mWelcome to Ubuntu 24.04.1 LTS (GNU/Linux 6.8.0-45-generic aarch64)\x1b[0m\r\n' +
-    '\x1b[38;2;110;118;129mLast login: Mon Sep  8 12:38:52 2026 from 10.20.0.7\x1b[0m\r\n' +
+    '\x1b[38;2;110;118;129mLast login: Mon Sep  8 12:38:52 2026 from 198.51.100.7\x1b[0m\r\n' +
     '\x1b[38;2;126;206;153mdeploy@prod-web-01\x1b[0m:\x1b[38;2;122;162;247m~/app\x1b[0m$ docker compose ps\r\n' +
     '\x1b[38;2;110;118;129mNAME                IMAGE               STATUS          PORTS\x1b[0m\r\n' +
     'app-web-1           app:2026.09.07      \x1b[38;2;126;206;153mUp 3 days\x1b[0m       0.0.0.0:8080->8080/tcp\r\n' +
@@ -304,10 +304,10 @@
 
   window.__PREVIEW_BANNER =
     '\x1b[38;2;110;118;129mLast login: Mon Sep  8 12:41:07 on ttys003\x1b[0m\r\n' +
-    '\x1b[38;2;122;162;247m~/coding/webproject/deepseek-harness/dsh-plugin-kit\x1b[0m \x1b[38;2;158;206;106mpnpm\x1b[0m -r build\r\n' +
+    '\x1b[38;2;122;162;247m~/projects/demo-app\x1b[0m \x1b[38;2;158;206;106mpnpm\x1b[0m -r build\r\n' +
     '\x1b[38;2;97;175;239mpackages/tty build$\x1b[0m tsc -p tsconfig.json && node scripts/build-client.mjs\r\n' +
     '  client-src/index.js  \x1b[38;2;229;192;123m486.2kb\x1b[0m  \x1b[38;2;110;118;129m⟳\x1b[0m 200ms\r\n' +
     '\x1b[38;2;152;195;121m[dsh-tty] client.js built\x1b[0m\r\n' +
     '\x1b[38;2;110;118;129mDone in 1.8s\x1b[0m\r\n' +
-    '\x1b[38;2;122;162;247m~/coding/webproject/deepseek-harness/dsh-plugin-kit\x1b[0m \x1b[38;2;122;162;247m❯\x1b[0m '
+    '\x1b[38;2;122;162;247m~/projects/demo-app\x1b[0m \x1b[38;2;122;162;247m❯\x1b[0m '
 })()
