@@ -10,6 +10,7 @@ export const targets = [
   ['packages/prompt', '@hyzyn/dsh-prompt'],
   ['packages/rss', '@hyzyn/dsh-rss'],
   ['packages/search', '@hyzyn/dsh-search'],
+  ['packages/docker', '@hyzyn/dsh-docker'],
   ['packages/tty', '@hyzyn/dsh-tty'],
   ['packages/all', '@hyzyn/dsh-all'],
   ['.', '@hyzyn/dsh-plugin-kit'],
