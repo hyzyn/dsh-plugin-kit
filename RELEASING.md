@@ -19,6 +19,17 @@ npmjs.com → Access Tokens → Generate New Token（granular）生成：
 
 1. `pnpm -r build && pnpm -r typecheck` 全绿。本地 `pnpm publish` 没有闸，全靠自觉——
    CI 在发布前会再跑一遍兜底。
+   **bump 完版本号先同步 lockfile**：`pnpm install --lockfile-only`，然后
+   `git diff --exit-code pnpm-lock.yaml`。workspace 内部依赖是按版本号写进
+   lockfile 的（`specifier:` 那一行），只改 package.json 不改 lockfile，CI 第一步
+   `pnpm install --frozen-lockfile` 就会红——v0.1.22 就是两次卡在这里（两次都只
+   同步了 package.json，白等两轮 CI）。一条命令过完前三项：
+
+   ```bash
+   pnpm install --lockfile-only && git diff --exit-code pnpm-lock.yaml \
+     && pnpm -r build && pnpm -r typecheck \
+     && pnpm aggregate && git diff --exit-code
+   ```
 2. `pnpm aggregate` 无 diff。聚合层（根 `cordis.patch.yml`、`packages/all`）必须钉住
    本次要发的插件版本；CI 与 Release workflow 都强制检查，过期直接红。
 3. 动了插件运行行为的改动，真实装进 DSH 跑一遍：`dsh plugin --profile <name> add
