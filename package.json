@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-plugin-kit",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "type": "module",
   "description": "通用 DSH 插件库（pnpm monorepo）：模板插件、插件开发工具包、一键聚合安装包。根包同时是全家桶 bundle（dsh.bundle.patch），DSH 与插件市场可直接识别安装。",
   "main": "lib/index.js",
@@ -42,7 +42,7 @@
   },
   "dependencies": {
     "@hyzyn/dsh-codegraph": "0.1.8",
-    "@hyzyn/dsh-docker": "0.3.0",
+    "@hyzyn/dsh-docker": "0.3.1",
     "@hyzyn/dsh-env": "0.1.6",
     "@hyzyn/dsh-mcp": "0.1.7",
     "@hyzyn/dsh-profile": "0.1.6",

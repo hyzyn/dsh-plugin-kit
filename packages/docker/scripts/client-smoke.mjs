@@ -394,6 +394,15 @@ await test('样式表：折叠态（data-sidebar-collapsed）隐藏入口标签'
   assert.ok(code.includes('[data-sidebar-collapsed] .dk_entryLabel'), '缺少折叠态标签隐藏规则')
 })
 
+await test('样式表：字段标签锁死 line-height（中英混排的行框不等高会让输入框错开）', () => {
+  // 中文走 PingFang SC 回退字体，行框比纯拉丁文本高 ~2px；.dk_fieldGrid 是 align-items:start，
+  // 同一行里「docker CLI」和「统计刷新间隔（秒）」的输入框就会差 2px（真实踩过的回归）。
+  // 行高必须写死，不能留给字体度量决定 —— 这条只在无浏览器环境里守「规则还在」。
+  const rule = /\.dk_label \{[^}]*\}/.exec(code)?.[0] ?? ''
+  assert.notEqual(rule, '', '找不到 .dk_label 规则')
+  assert.ok(/line-height:\s*[0-9]/.test(rule), '.dk_label 缺少数值 line-height')
+})
+
 await test('样式表内联进了 bundle（dk_ 前缀 + 侧边栏入口属性）', () => {
   assert.ok(code.includes('dk_backdrop'))
   assert.ok(code.includes('data-dsh-docker-entry'))
