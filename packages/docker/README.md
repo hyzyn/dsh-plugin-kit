@@ -60,6 +60,8 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
 
 面板内：
 
+![容器列表：目标选择 / 搜索与状态筛选 / 卡片动作条（查看 · 变更两组）](../../docs/dsh-plugin-kit-docker-panel.png)
+
 - **目标选择**：面板先选目标（来自配置 `targets`，本机 / SSH）；只配置了一个
   目标时默认选中它，agent 工具也可以省略 `target` 参数。
 - **容器列表**：名称 / 状态 / 健康态 / 镜像 / 端口映射 / compose 项目与服务 /
@@ -91,12 +93,16 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
   检查输出；下方可执行一次性 `docker exec`（需 `allowExec`）。
 - **日志**：`docker logs --tail` 的尾部快照（默认 `logTailDefault` 行），可切
   时间戳与 `--since`；输出超过 `maxOutputKb` 会截断并标记。
+
+![日志页：级别着色 + 常驻过滤框 + 行数统计](../../docs/dsh-plugin-kit-docker-logs.png)
 - **统计**：`docker stats --no-stream` 快照（CPU% / 内存用量与占比 / 网络 IO /
   块 IO / PIDs），面板按 `pollIntervalSec` 轮询刷新。
 - **镜像**：`docker images` 列表（reference / 大小 / 创建时间 / 短 ID）；
   `<none>:<none>` 的 dangling 镜像带 `dangling` 标记。**只有列表，没有删除 /
   拉取 / 构建**。搜索框与「N / M 个镜像」计数**固定在工具条里**（不随列表滚走），
   表头列名在表体内吸顶——镜像多的时候滚到哪都还知道自己在看什么列。
+
+![镜像页：搜索框固定在工具条，表头吸顶](../../docs/dsh-plugin-kit-docker-images.png)
 - **一次性 exec**：`allowExec` 开启后可输入命令，等价
   `docker exec <容器> sh -c "<命令>"`，返回退出码与 stdout/stderr（无 TTY）。
 - **交互式终端（卡片第一个图标）**：跑 `docker exec -it '<容器>' sh`。按 tty 能力
@@ -403,4 +409,4 @@ stats 解析（百分比 / 内存 / IO / PIDs）、size 与 percent 的异常输
 
 ## 版本 / 许可证
 
-`@hyzyn/dsh-docker` 0.3.0 · [Apache License 2.0](../../LICENSE)
+`@hyzyn/dsh-docker` 0.3.1 · [Apache License 2.0](../../LICENSE)

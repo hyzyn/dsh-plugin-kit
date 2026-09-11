@@ -396,7 +396,11 @@
   transition: border-color var(--dk-dur) var(--dk-ease), box-shadow var(--dk-dur) var(--dk-ease);
 }
 
-.dk_input { min-width: 180px; }
+/*
+ * 输入框一律可收缩：以前这里是 min-width: 180px，遇到窄容器（设置面板 ~600px 时
+ * 每列只有 ~180px）会把列撑破、和隔壁字段叠在一起。宽度交给容器的栅格/弹性布局决定。
+ */
+.dk_input { min-width: 0; }
 .dk_select:focus-visible,
 .dk_input:focus-visible {
   outline: none;
@@ -1138,15 +1142,57 @@
   display: flex;
   flex-direction: column;
   gap: var(--dk-gap-sm);
+  min-width: 0;
 }
 
-.dk_label { font-size: 12px; color: var(--dk-label-2); }
+/*
+ * 标签行高必须锁死。
+ * 中文走 PingFang SC 回退字体，行框比纯拉丁文本高 ~2.5px（16.5 vs 14）；栅格是
+ * align-items:start，同一行里「docker CLI」和「统计刷新间隔（秒）」的输入框就会
+ * 差 2.5px 错开，基线也高低不齐。给死行高后两种文本的行框等高，输入框顶边对齐。
+ * 别删成 line-height: normal —— 一删就退回字体度量决定行框。
+ */
+.dk_label { font-size: 12px; line-height: 1.4; color: var(--dk-label-2); }
 .dk_hint { font-size: 11px; color: var(--dk-label-3); line-height: 1.6; }
 .dk_row { display: flex; align-items: center; gap: var(--dk-gap-md); flex-wrap: wrap; }
 
+/*
+ * 设置卡片的字段栅格：**等宽** 3 列（窄屏 2 列）。
+ * 不要再给单个字段跨列——第一行跨 2 列、第二行单列，行与行之间宽度不一致，
+ * 看起来比不对齐还乱（v0.1.22 的教训）。
+ */
+.dk_fieldGrid {
+  display: grid;
+  /* auto-fit + minmax：列宽跟着**容器**走，而不是视口 —— 设置面板本身可能是窄的。
+     卡片 ~966px → 3 列；~570px → 2 列；再窄 → 1 列，永远不会叠 */
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--dk-gap-lg) var(--dk-gap-xl);
+  align-items: start;
+}
+
+.dk_fieldGrid .dk_input,
+.dk_fieldGrid .dk_select { min-width: 0; }
+
+/* 数字输入去掉浏览器原生上下箭头：各平台样式不一，还会吃掉右内边距 */
+.dk_input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+  font-variant-numeric: tabular-nums;
+}
+
+.dk_input[type="number"]::-webkit-outer-spin-button,
+.dk_input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+/*
+ * 目标行与内联 SSH 字段共用同一套列宽模板（1fr · 96px · 1fr · 150px），
+ * 内联块整宽铺开 → host/port/username/auth 正好落在目标名/类型/连接簿/操作列下方。
+ */
 .dk_targetRow {
   display: grid;
-  grid-template-columns: 1fr 96px 1fr auto;
+  grid-template-columns: minmax(0, 1fr) 96px minmax(0, 1fr) minmax(0, 150px);
   gap: var(--dk-gap-sm);
   align-items: center;
   padding: var(--dk-gap-sm);
@@ -1154,6 +1200,21 @@
   border-radius: var(--dk-r-md);
   background: var(--dk-surface-2);
 }
+
+/* 删除按钮靠右，不跟着列宽被拉长 */
+.dk_targetRow > .dk_btnDanger { justify-self: end; }
+
+.dk_targetInline {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) 96px minmax(0, 1fr) minmax(0, 150px);
+  gap: var(--dk-gap-sm);
+  align-items: center;
+}
+
+/* 凭据占前三列，复选框固定第 4 列（与上面的 auth 下拉上下对齐） */
+.dk_targetInline > .dk_credential { grid-column: 1 / span 3; }
+.dk_targetInline > .dk_check { grid-row: 2; grid-column: 4; }
 
 .dk_targetRow .dk_input,
 .dk_targetRow .dk_select {
@@ -1199,6 +1260,9 @@
 /* 窄屏：抽屉改为覆盖整栏 */
 @media (max-width: 860px) {
   .dk_body { flex-direction: column; }
-  .dk_targetRow { grid-template-columns: 1fr 1fr; }
+  .dk_targetRow,
+  .dk_targetInline { grid-template-columns: minmax(0, 1fr) 80px; }
+  .dk_targetInline > .dk_credential { grid-column: 1 / -1; }
+  .dk_targetInline > .dk_check { grid-row: auto; grid-column: 2; }
   .dk_cardRow { grid-template-columns: 40px 1fr; }
 }
