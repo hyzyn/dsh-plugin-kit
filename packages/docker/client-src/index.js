@@ -638,8 +638,15 @@ window.__ModuleLoader__.load({
             onChange: (event) => setLogIntervalSec(Number(event.target.value)),
             children: [2, 3, 5, 10].map((value) => jsx('option', { value: String(value), children: String(value) + 's' }, String(value))),
           }),
-          logsLoading ? jsx('span', { className: 'dk_spin' }) : null,
-          jsx(IconAction, { icon: ICON_REFRESH, title: '刷新日志', onClick: loadLogs }, 'refresh'),
+          /*
+           * 刷新中的反馈做成「图标自己转」，不再另插一个 dk_spin 圆环：
+           * 圆环是独立元素、又在刷新按钮左边，工具条整体右对齐 → 每次轮询开始 /
+           * 结束，LINES / TIMESTAMPS / AUTO REFRESH 那一串都被横推 ~23px（实测，
+           * 自动刷新 3s 一次就是持续抖动）；而且圆环离真正要点的按钮隔着一个控件，
+           * 看不出是谁在转。与概览页 / 列表页的刷新按钮同款（IconAction 的 spin →
+           * data-spin → 图标转 + 高亮当前色）。
+           */
+          jsx(IconAction, { icon: ICON_REFRESH, title: '刷新日志', spin: logsLoading, onClick: loadLogs }, 'refresh'),
           jsx(IconAction, { icon: ICON_DOWNLOAD, title: '下载日志', disabled: raw === '', onClick: () => downloadText(item.name + '.log', raw) }, 'download'),
         ] })
       }
@@ -1443,11 +1450,15 @@ window.__ModuleLoader__.load({
       }
 
       const sectionTitle = (text) => jsx('div', { className: 'dk_cardSection', children: text })
-      const field = (label, control, hint) => jsxs('div', { className: 'dk_field', children: [
-        jsx('span', { className: 'dk_label', children: label }),
-        control,
-        hint === undefined ? null : jsx('span', { className: 'dk_hint', children: hint }),
-      ] })
+      const field = (label, control, hint, span) => jsxs('div', {
+        className: 'dk_field',
+        'data-span': span === undefined ? undefined : String(span),
+        children: [
+          jsx('span', { className: 'dk_label', children: label }),
+          control,
+          hint === undefined ? null : jsx('span', { className: 'dk_hint', children: hint }),
+        ],
+      })
 
       const numberInput = (key, min, max, hint) => jsx('input', {
         className: 'dk_input',
@@ -1494,7 +1505,8 @@ window.__ModuleLoader__.load({
           jsx('label', { className: 'dk_check', children: [jsx('input', { type: 'checkbox', checked: form.enabled, onChange: (event) => patch({ enabled: event.target.checked }) }), '启用插件'] }),
           jsx('label', { className: 'dk_check', children: [jsx('input', { type: 'checkbox', checked: form.announceToAgent, onChange: (event) => patch({ announceToAgent: event.target.checked }) }), '向 agent 公告能力'] }),
         ] }),
-        jsxs('div', { className: 'dk_row', children: [
+        // 字段用栅格而不是 flex 换行：标签 + 控件按列对齐，数字框宽度一致
+        jsxs('div', { className: 'dk_fieldGrid', children: [
           field('docker CLI', jsx('input', { className: 'dk_input', value: form.dockerBin, onChange: (event) => patch({ dockerBin: event.target.value }) }), '默认 docker；podman 可填 podman'),
           field('统计刷新间隔（秒）', numberInput('pollIntervalSec', 1, 60)),
           field('日志默认行数', numberInput('logTailDefault', 1, 5000)),
@@ -1530,17 +1542,21 @@ window.__ModuleLoader__.load({
               }),
             ] }),
           jsx('button', { type: 'button', className: 'dk_btn dk_btnDanger', onClick: () => removeTarget(index), children: '删除' }),
-          item.kind === 'ssh' && (item.book ?? '') === '' ? jsxs('div', { className: 'dk_row', style: { gridColumn: '1 / -1' }, children: [
+          /*
+           * 内联 SSH 字段：栅格而不是 flex 换行——host / port / username / auth 与上方
+           * 目标名那行上下对齐，凭据（私钥或密码）单独占一行，复选框固定在行尾列。
+           */
+          item.kind === 'ssh' && (item.book ?? '') === '' ? jsxs('div', { className: 'dk_targetInline', children: [
             jsx('input', { className: 'dk_input', placeholder: 'host', value: item.host ?? '', onChange: (event) => patchTarget(index, { host: event.target.value }) }),
-            jsx('input', { className: 'dk_input', style: { width: 90 }, placeholder: 'port', value: item.port ?? 22, onChange: (event) => patchTarget(index, { port: Number(event.target.value) || 22 }) }),
+            jsx('input', { className: 'dk_input', placeholder: '22', title: '端口', value: item.port ?? 22, onChange: (event) => patchTarget(index, { port: Number(event.target.value) || 22 }) }),
             jsx('input', { className: 'dk_input', placeholder: 'username', value: item.username ?? '', onChange: (event) => patchTarget(index, { username: event.target.value }) }),
             jsx('select', { className: 'dk_select', value: item.auth ?? 'agent', onChange: (event) => patchTarget(index, { auth: event.target.value }), children: [
               jsx('option', { value: 'agent', children: 'ssh-agent' }),
               jsx('option', { value: 'key', children: '私钥' }),
               jsx('option', { value: 'password', children: '密码' }),
             ] }),
-            (item.auth ?? 'agent') === 'key' ? jsx('input', { className: 'dk_input', placeholder: '~/.ssh/id_ed25519', value: item.keyPath ?? '', onChange: (event) => patchTarget(index, { keyPath: event.target.value }) }) : null,
-            (item.auth ?? 'agent') === 'password' ? jsx('input', { className: 'dk_input', type: 'password', placeholder: item.passwordSet === true ? '（已设置，留空保持不变）' : 'env:SSH_PASSWORD', value: item.password ?? '', onChange: (event) => patchTarget(index, { password: event.target.value }) }) : null,
+            (item.auth ?? 'agent') === 'key' ? jsx('input', { className: 'dk_input dk_credential', placeholder: '~/.ssh/id_ed25519', value: item.keyPath ?? '', onChange: (event) => patchTarget(index, { keyPath: event.target.value }) }) : null,
+            (item.auth ?? 'agent') === 'password' ? jsx('input', { className: 'dk_input dk_credential', type: 'password', placeholder: item.passwordSet === true ? '（已设置，留空保持不变）' : 'env:SSH_PASSWORD', value: item.password ?? '', onChange: (event) => patchTarget(index, { password: event.target.value }) }) : null,
             jsx('label', { className: 'dk_check', children: [jsx('input', { type: 'checkbox', checked: item.agentForward === true, onChange: (event) => patchTarget(index, { agentForward: event.target.checked }) }), 'agent forwarding'] }),
           ] }) : null,
         ] }, String(index) + item.name)),
