@@ -6,7 +6,10 @@ DSH Web GUI 的 **Docker 容器面板**插件：侧边栏「容器」入口打�
 **exec channel**（非 PTY）在远程跑 docker CLI，本机目标直接 spawn；agent 侧
 配套 `docker_*` 工具，**默认只读**。
 
-## 与 dsh-tty 的关系（方案 A：独立插件，tty 零改动）
+## 与 dsh-tty 的关系
+
+本插件自成一体：不 import 任何 tty 代码，tty 也无需改一行源码，两者可各自单独安装、
+各自升级；装了 tty 就在下面这些可选扩展点上协作，没装则安静降级。
 
 | 维度 | 说明 |
 | --- | --- |

@@ -3,8 +3,8 @@
 DSH Web GUI 的**终端面板**插件：侧边栏「终端」入口打开一个大弹窗，内嵌
 xterm.js 全交互终端（node-pty 真实 PTY，WebGL 渲染器加速），支持**多标签页**，
 可运行任意命令与 TUI 程序（vim / htop / dev server 等）。浏览器半体打包了 xterm
-内核，宿主半体经 WebSocket 与 PTY 会话双向透传。0.2.0 起支持 **SSH 连接
-（方案 C）**：`ssh2` 原生直连远程主机，像本地终端一样交互；0.3.0 起支持
+内核，宿主半体经 WebSocket 与 PTY 会话双向透传。0.2.0 起支持 **SSH 连接**：
+`ssh2` 原生直连远程主机，像本地终端一样交互；0.3.0 起支持
 **断线自动重连**与 **SSH 主机指纹 TOFU 钉扎**；0.4.0 起内置 **shell 集成
 （OSC 133/7）**——agent 能按「命令」粒度读写终端（`tty_capture{last}` /
 `tty_expect`），并支持 **agent forwarding**、**~/.ssh/config 导入** 等深化
@@ -242,7 +242,7 @@ tmux server（专用 socket `dsh-tty`，与用户自己的 tmux 完全隔离）�
 - **降级**：本机/远程未安装 tmux 时，持久 spawn 自动落回普通会话，终端里
   回一行灰字提示；不装任何东西也能正常用，只是无持久化。
 
-## SSH 连接（方案 C）
+## SSH 连接
 
 0.2.0 起标签栏「+」变为一键菜单，除本地终端外还能开 **SSH 标签页**：宿主
 半体用 `ssh2` 原生建立连接并打开 shell channel（不经过本地 ssh 进程，也
@@ -614,7 +614,7 @@ node scripts/preview.mjs --theme=light   # 浅色主题
   └─ 帧协议：spawn|ssh / input / resize / kill / sessions / attach
      ↔ ready/data/exit/error/sessions + 背压
 
-SSH 路径 (src/ssh.ts，方案 C)
+SSH 路径 (src/ssh.ts)
   └─ {t:'ssh'} → spawnSsh：ssh2 Client 原生连接（agent / key / password，
      password·passphrase 支持 env:VAR 取密；host key 经 HostKeyStore
      TOFU 钉扎），开 shell channel 包装成与 PTY 同形状的 TermHandle
