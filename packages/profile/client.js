@@ -22,6 +22,7 @@ window.__ModuleLoader__.load({
       '.pf_cardHeader:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}',
       '.pf_cardHeadText{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}',
       '.pf_cardName{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:600}',
+      '.dshkit_badge{flex:none;margin-left:auto;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:600;line-height:16px;letter-spacing:.02em;color:var(--dsw-alias-label-dimmed);background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1)}',
       '.pf_cardDescription{color:var(--dsw-alias-label-secondary);font-size:12px}',
       '.pf_chevron{flex:none;color:var(--dsw-alias-label-tertiary);transition:transform .16s}',
       '.pf_pluginCardOpen .pf_chevron{transform:rotate(180deg)}',
@@ -440,6 +441,7 @@ window.__ModuleLoader__.load({
                   jsx('span', { className: 'pf_cardDescription', children: '查看、创建、复制、重命名、删除、端口配置 DSH profile。' }),
                 ],
               }),
+              jsx('span', { className: 'dshkit_badge', children: 'Kit' }),
               jsx('svg', {
                 width: '14',
                 height: '14',
@@ -482,7 +484,7 @@ window.__ModuleLoader__.load({
         name: 'settings.plugin.item',
         // settings.plugin.item 是 keyed 插槽：key 必须是该卡片所编辑的 settings 命名空间
         key: 'profile-manager',
-        order: 95,
+        order: 92,
       }, ProfileSettingsCard))
     }
 

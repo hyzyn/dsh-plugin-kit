@@ -10,7 +10,7 @@
  * 浏览器半体（./client）通过 /api/dsh-search/query 查询；路由带 loopback-only
  * 信任围栏。
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { definePlugin } from '@hyzyn/dsh-kit';
@@ -20,9 +20,36 @@ const promptFilePath = () => process.env.DSH_PROMPT_FILE?.trim() || join(dshHome
 function emptyStore() {
     return { activePromptId: null, prompts: [] };
 }
+/**
+ * 托管文件解析缓存（P1 优化：单文件，无容量上限）：
+ * 以文件路径 + (mtimeMs, size) 为 key 复用整个 ManagedRead（含 fileError），
+ * 文件未变化时不再 readFileSync + yaml.load；文件不存在（含 statSync 抛错）
+ * 也缓存该状态，避免每次 existsSync。
+ */
+let promptStoreCache;
+/** 文件指纹：mtimeMs + size；文件不存在或 statSync 失败返回 undefined（按不存在处理）。 */
+function promptFileFingerprint(file) {
+    try {
+        const stat = statSync(file);
+        return stat.mtimeMs + ':' + stat.size;
+    }
+    catch {
+        return undefined;
+    }
+}
 function readPromptStore() {
     const file = promptFilePath();
-    const existed = existsSync(file);
+    const fingerprint = promptFileFingerprint(file);
+    const key = file + '|' + (fingerprint ?? 'missing');
+    const cached = promptStoreCache;
+    if (cached !== undefined && cached.key === key)
+        return cached.value;
+    const result = parsePromptStore(file, fingerprint !== undefined);
+    promptStoreCache = { key, value: result };
+    return result;
+}
+/** 解析托管区块（不做缓存）；existed 为 false 时按空文件处理。 */
+function parsePromptStore(file, existed) {
     const text = existed ? readFileSync(file, 'utf8') : '';
     const lines = text.split('\n');
     const start = lines.findIndex((line) => line.includes('dsh-prompt-manager managed'));
@@ -84,11 +111,28 @@ function includesText(haystack, query) {
 }
 function makeSnippet(text, query, radius = 60) {
     const lower = text.toLowerCase();
-    const index = lower.indexOf(query);
-    if (index === -1)
+    // 多词查询与服务端正则一致按空白切分（正则把空格编译为 \s+）；单词查询即单词组。
+    const terms = query.trim().split(/\s+/u).filter((term) => term !== '');
+    const found = terms
+        .map((term) => ({ start: lower.indexOf(term), length: term.length }))
+        .filter((item) => item.start !== -1);
+    if (found.length === 0)
         return text.slice(0, radius * 2) + (text.length > radius * 2 ? '…' : '');
-    const start = Math.max(0, index - radius);
-    const end = Math.min(text.length, index + query.length + radius);
+    let start;
+    let end;
+    if (found.length === terms.length) {
+        // 全部命中：窗口覆盖从最小起点到最大终点，两端各向外扩 40 字符，总长截到 240 字符。
+        const rawStart = Math.min(...found.map((item) => item.start));
+        const rawEnd = Math.max(...found.map((item) => item.start + item.length));
+        start = Math.max(0, rawStart - 40);
+        end = Math.min(text.length, rawEnd + 40, start + 240);
+    }
+    else {
+        // 部分命中：以第一个命中的词为锚，沿用单词 radius 窗口语义。
+        const anchor = found[0];
+        start = Math.max(0, anchor.start - radius);
+        end = Math.min(text.length, anchor.start + anchor.length + radius);
+    }
     return (start > 0 ? '…' : '') + text.slice(start, end).replace(/\s+/g, ' ').trim() + (end < text.length ? '…' : '');
 }
 function searchPrompts(rawQuery, limit) {
@@ -119,8 +163,11 @@ function searchPrompts(rawQuery, limit) {
     return hits;
 }
 const MAX_SCAN_SESSIONS = 80;
-const SESSION_SCAN_CONCURRENCY = 4;
-const SCAN_TIMEOUT_MS = 5_000;
+const SESSION_SCAN_CONCURRENCY = 6;
+// 冷扫描（逐会话解压）单会话约 100-300ms，5s 只够覆盖 ~30 个会话，首个查询
+// 容易被截断成空结果；10s 配合文档缓存预热（超时后后台扫描继续填缓存）
+// 让重试很快收敛。
+const SCAN_TIMEOUT_MS = 10_000;
 const TEXT_CACHE_TTL_MS = 90_000;
 const TEXT_CACHE_MAX_BYTES = 192 * 1024 * 1024;
 const RESULT_CACHE_TTL_MS = 30_000;
@@ -212,6 +259,8 @@ async function searchSessions(ctx, rawQuery, limit, signal, maxScanSessions = MA
                 const id = hit.header?.id;
                 if (!id)
                     return [];
+                if (isSubagentHeader(hit.header))
+                    return [];
                 return [{
                         id,
                         snippet: hit.bestMatch?.snippet ?? '',
@@ -219,7 +268,10 @@ async function searchSessions(ctx, rawQuery, limit, signal, maxScanSessions = MA
                     }];
             });
             const visible = await filterVisibleSessionHits(ctx, hits, signal);
-            setCachedResult(cacheKey, visible);
+            // 空结果不写缓存：回退扫描被超时截断时可能暂时为空，
+            // 缓存会让 30s 内的重试一直为空（后台扫描仍在填充文档缓存）。
+            if (visible.length > 0)
+                setCachedResult(cacheKey, visible);
             return visible;
         }
         catch (error) {
@@ -233,9 +285,65 @@ async function searchSessions(ctx, rawQuery, limit, signal, maxScanSessions = MA
     }
     hits = await searchSessionsByScan(sessionQuery, query, limit, signal, maxScanSessions);
     const visible = await filterVisibleSessionHits(ctx, hits, signal);
-    setCachedResult(cacheKey, visible);
+    // 同上：空结果不写缓存，避免超时截断的空结果被 30s 固化。
+    if (visible.length > 0)
+        setCachedResult(cacheKey, visible);
     return visible;
 }
+/**
+ * 防御式读取会话记录时间（ms）：依次尝试 header 与记录顶层上的
+ * time / updatedAt / createdAt / startTime，number 直接用，string 用
+ * Date.parse（NaN 视为缺失），取能解析到的最大值；全部缺失返回 undefined。
+ */
+function readRecordTime(record) {
+    if (typeof record !== 'object' || record === null)
+        return undefined;
+    const source = record;
+    const header = typeof source.header === 'object' && source.header !== null ? source.header : {};
+    let best;
+    for (const value of [header.time, header.updatedAt, header.createdAt, header.startTime, source.time, source.updatedAt, source.createdAt, source.startTime]) {
+        const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Date.parse(value) : Number.NaN;
+        if (!Number.isFinite(parsed))
+            continue;
+        if (best === undefined || parsed > best)
+            best = parsed;
+    }
+    return best;
+}
+/**
+ * subagent 会话不能作为主会话打开（sessions.open 只接受主会话或已编目的
+ * 子会话地址，直接 open 子会话 id 视图是空白），搜索结果里必须排除。
+ */
+function isSubagentHeader(header) {
+    if (typeof header !== 'object' || header === null)
+        return false;
+    const source = header;
+    if (source.origin === 'subagent')
+        return true;
+    return typeof source.delegationDepth === 'number' && source.delegationDepth > 0;
+}
+/**
+ * 记录按时间降序排列（最近优先）：没有时间的记录排在有时间记录之后并保持原有相对顺序，
+ * 有时间记录之间用原索引做稳定 tie-break。
+ */
+function sortRecordsByTimeDesc(records) {
+    return records
+        .map((record, index) => ({ record, index, time: readRecordTime(record) }))
+        .sort((a, b) => {
+        if (a.time === undefined && b.time === undefined)
+            return a.index - b.index;
+        if (a.time === undefined)
+            return 1;
+        if (b.time === undefined)
+            return -1;
+        return a.time === b.time ? a.index - b.index : b.time - a.time;
+    })
+        .map((entry) => entry.record);
+}
+/**
+ * 回退扫描（宿主 FTS 不可用时逐会话扫描原始事件）：
+ * 会话按最近优先截断到 maxScanSessions；命中结果按时间倒序返回。
+ */
 async function searchSessionsByScan(sessionQuery, query, limit, signal, maxScanSessions = MAX_SCAN_SESSIONS) {
     if (typeof sessionQuery.listSessions !== 'function' || typeof sessionQuery.filterEvents !== 'function')
         return [];
@@ -248,7 +356,9 @@ async function searchSessionsByScan(sessionQuery, query, limit, signal, maxScanS
         return [];
     }
     const filter = compileLocalTextFilter(query);
-    const sessions = records.slice(0, maxScanSessions);
+    // subagent 会话排除在扫描之外（打不开，也不占结果名额）；
+    // 最近优先：先按记录时间降序，再截断到 maxScanSessions。
+    const sessions = sortRecordsByTimeDesc(records.filter((record) => !isSubagentHeader(record?.header))).slice(0, maxScanSessions);
     const collected = [];
     const scanPromise = (async () => {
         let next = 0;
@@ -267,12 +377,19 @@ async function searchSessionsByScan(sessionQuery, query, limit, signal, maxScanS
     })();
     // 整体超时：返回已收集的部分结果，避免最坏情况长时间无响应；
     // 即使被切走，后台任务仍在为下一个查询填充会话缓存。
+    let scanTimeout;
     await Promise.race([
         scanPromise,
         new Promise((resolve) => {
-            setTimeout(resolve, SCAN_TIMEOUT_MS);
+            scanTimeout = setTimeout(resolve, SCAN_TIMEOUT_MS);
         }),
     ]);
+    // 扫描先结束时清掉超时定时器：后台扫描不受影响，但不留 ref 计时器拖住进程退出。
+    if (scanTimeout !== undefined)
+        clearTimeout(scanTimeout);
+    // 命中按时间倒序返回（同一时间保持收集顺序稳定）；只影响回退扫描路径，
+    // 宿主 FTS 正常返回时仍保持其相关度排序。
+    collected.sort((a, b) => b.time - a.time);
     return collected.slice(0, limit);
 }
 /** 单会话扫描：优先使用缓存文档；未缓存则一次拉取全部文档并缓存（消除重复解压）。 */
@@ -311,7 +428,17 @@ async function scanOneSession(sessionQuery, sessionId, filter, query) {
         return undefined;
     }
 }
+/* ------------------------------------------------------------------ *
+ * 可见会话集合短缓存（P1 优化：5s 内复用 persistence.list 结果，
+ * 结果缓存命中路径 filterVisibleSessionHits 同样受益）
+ * ------------------------------------------------------------------ */
+const VISIBLE_CACHE_TTL_MS = 5_000;
+/** 缓存的可见会话集合（只读）；空集合不写缓存。 */
+let visibleSessionIdsCache;
 async function getVisibleSessionIds(ctx, signal) {
+    const cached = visibleSessionIdsCache;
+    if (cached !== undefined && Date.now() - cached.at <= VISIBLE_CACHE_TTL_MS)
+        return cached.ids;
     const ids = new Set();
     const sessions = getService(ctx, 'sessions');
     try {
@@ -326,14 +453,24 @@ async function getVisibleSessionIds(ctx, signal) {
         try {
             const cold = await persistence.list(signal);
             for (const meta of cold) {
-                if (meta.cwd !== undefined)
-                    ids.add(meta.id);
+                // 宿主实际返回快照形状 { header: { id, cwd }, revision, ... }；
+                // 兼容旧的扁平 { id, cwd } 形状。cwd 缺失视为不可跳转，跳过。
+                const header = meta.header;
+                if (isSubagentHeader(header) || isSubagentHeader(meta))
+                    continue;
+                const id = meta.id ?? header?.id;
+                const cwd = meta.cwd ?? header?.cwd;
+                if (id !== undefined && cwd !== undefined)
+                    ids.add(id);
             }
         }
         catch {
             /* 忽略持久化列表读取失败 */
         }
     }
+    // 空集合不写缓存（下次查询重算），避免新会话上线后被空集缓存挡住。
+    if (ids.size > 0)
+        visibleSessionIdsCache = { ids, at: Date.now() };
     return ids;
 }
 async function filterVisibleSessionHits(ctx, hits, signal) {
@@ -558,6 +695,7 @@ function writeJson(res, status, body) {
 }
 function makeRoutes(ctx, config) {
     const maxResults = Math.max(1, Math.min(50, config.maxResults ?? 8));
+    const maxScanSessions = Math.max(1, Math.min(500, config.maxScanSessions ?? MAX_SCAN_SESSIONS));
     return [
         {
             kind: 'exact',
@@ -590,7 +728,7 @@ function makeRoutes(ctx, config) {
                 reqEvents.once('close', onClose);
                 try {
                     const [sessions, prompts, tools, panels] = await Promise.all([
-                        config.includeSessions !== false ? searchSessions(ctx, q, maxResults, controller.signal, config.maxScanSessions) : Promise.resolve([]),
+                        config.includeSessions !== false ? searchSessions(ctx, q, maxResults, controller.signal, maxScanSessions) : Promise.resolve([]),
                         config.includePrompts !== false ? Promise.resolve(searchPrompts(q, maxResults)) : Promise.resolve([]),
                         config.includeMcpTools !== false ? Promise.resolve(searchMcpTools(ctx, q, maxResults)) : Promise.resolve([]),
                         config.includePanels !== false ? Promise.resolve(searchPanels(ctx, q, maxResults)) : Promise.resolve([]),

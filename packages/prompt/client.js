@@ -23,6 +23,7 @@ window.__ModuleLoader__.load({
       '.pM_cardHeader:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}',
       '.pM_cardHeadText{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}',
       '.pM_cardName{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:600}',
+      '.dshkit_badge{flex:none;margin-left:auto;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:600;line-height:16px;letter-spacing:.02em;color:var(--dsw-alias-label-dimmed);background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1)}',
       '.pM_cardDescription{color:var(--dsw-alias-label-secondary);font-size:12px}',
       '.pM_chevron{flex:none;color:var(--dsw-alias-label-tertiary);transition:transform .16s}',
       '.pM_pluginCardOpen .pM_chevron{transform:rotate(180deg)}',
@@ -774,6 +775,7 @@ window.__ModuleLoader__.load({
                   jsx('span', { className: 'pM_cardDescription', children: '可视化编辑 systemPrompt、版本管理、A/B 测试、导出/分享。' }),
                 ],
               }),
+              jsx('span', { className: 'dshkit_badge', children: 'Kit' }),
               jsx('svg', {
                 width: '14',
                 height: '14',

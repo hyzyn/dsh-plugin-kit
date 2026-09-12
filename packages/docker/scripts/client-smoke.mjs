@@ -300,6 +300,30 @@ await test('ttyConnbar：SSH 标签一律显示「容器」，目标在点击时
   dispose()
 })
 
+await test('插件禁用（config.enabled=false）：连接栏不再提供「容器」按钮', async () => {
+  // 重新执行 bundle：模块级缓存 / 显隐状态归零；fetch 返回禁用态 config，
+  // /targets 按宿主禁用行为返回 403 形状的失败载荷
+  let reg = null
+  const disabledFetch = (url) => {
+    const payload = String(url).endsWith('/config')
+      ? { ok: true, config: { ...FAKE_CONFIG, enabled: false } }
+      : { ok: false, error: 'forbidden: disabled' }
+    return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(payload) })
+  }
+  const run = new Function('window', 'document', 'MutationObserver', 'fetch', code)
+  run({ __ModuleLoader__: { load: (entry) => { reg = entry } } }, documentStub, class { observe() {} disconnect() {} }, disabledFetch)
+  const exports_ = reg.factory((spec) => SEED[spec])
+  const { ctx, state } = makeClientCtx({ ttyConnbar: true })
+  const dispose = exports_.apply(ctx)
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  const buttons = []
+  state.connbarFactory({ spec: { t: 'ssh', name: 'prod-a', host: '10.0.0.5', port: 2222 }, bookName: 'prod-a', addAction: (icon, label, title, onClick) => buttons.push({ label, onClick }) })
+  assert.equal(buttons.length, 0, '禁用后连接栏不应插入「容器」按钮')
+  // 卸载后再触发迟到的一次缓存刷新：不允许把入口状态挂回已卸载的实例
+  dispose()
+  await new Promise((resolve) => setTimeout(resolve, 10))
+})
+
 await test('缓存尚未就绪时点击：现场重拉并锁定当前会话对应的目标', async () => {
   // 重新执行 bundle，得到干净的模块级缓存（不 await → 挂载时的刷新还没落地）
   let reg = null

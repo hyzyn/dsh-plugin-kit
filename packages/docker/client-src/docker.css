@@ -95,10 +95,14 @@
 
 [data-dsh-docker-entry] {
   position: relative;
+  /* 与 tty 侧边栏入口同因：宿主无全局 box-sizing reset，width:100% + 左右 padding
+     在 content-box 下会比容器宽 24px，多出的右侧会被侧边栏裁掉（hover 底色缺一角）。 */
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   gap: var(--dk-gap-md);
   width: 100%;
+  min-width: 0;
   height: var(--dk-h-lg);
   padding: 0 var(--dk-gap-lg);
   border-radius: var(--dk-r-md);
@@ -140,6 +144,8 @@
 [data-sidebar-collapsed] [data-dsh-docker-entry] {
   justify-content: center;
   width: 100%;
+  /* 折叠 rail 里宿主的行是 36×36，跟齐（与 tty 入口一致） */
+  height: 36px;
   padding: 0;
   margin: 0;
 }
@@ -1108,6 +1114,20 @@
 .dk_settingsHead:focus-visible { outline: none; box-shadow: var(--dk-ring); }
 .dk_settingsHeadText { display: flex; flex-direction: column; gap: var(--dk-gap-xs); flex: 1; min-width: 0; }
 .dk_settingsName { color: var(--dk-label); font-size: 14px; font-weight: 600; line-height: 1.4; }
+/* dsh-plugin-kit 套件徽标（约定见 @hyzyn/dsh-kit README：全部 kit 设置卡片共用） */
+.dshkit_badge {
+  flex: none;
+  margin-left: auto;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  letter-spacing: 0.02em;
+  color: var(--dk-label-2, var(--dsw-alias-label-dimmed));
+  background: var(--dk-bg-2, var(--dsw-alias-bg-layer-2));
+  border: 1px solid var(--dk-border, var(--dsw-alias-border-l1));
+}
 .dk_settingsDesc { color: var(--dk-label-2); font-size: 12px; line-height: 1.5; }
 
 .dk_settingsChevron {
