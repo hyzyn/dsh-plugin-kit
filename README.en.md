@@ -29,34 +29,26 @@ Repo gates: `pnpm typecheck` / `pnpm build` / `pnpm aggregate`.
 
 ## What It Is
 
-dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (DSH) Web GUI: environment variable / secret management, MCP server configuration, Prompt management, Profile management, RSS / news aggregation, global search, Codegraph integration, a terminal panel, and a Docker container panel (containers and images on the local or an SSH host, read-only by default), plus a one-command scaffolding tool for generating new plugins. Everything mounts into `dsh web` through the official profile mechanism, so no DSH source changes are needed. Install the plugins individually, or install everything at once with the aggregate package.
+dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (DSH) Web GUI: MCP server configuration, Profile management, RSS / news aggregation, global search, Codegraph integration, a terminal panel, a Docker container panel (containers and images on the local or an SSH host, read-only by default), environment variable / secret management, and Prompt management, plus a one-command scaffolding tool for generating new plugins. Everything mounts into `dsh web` through the official profile mechanism, so no DSH source changes are needed. Install the plugins individually, or install everything at once with the aggregate package.
 
-![Example of DSH plugin management cards](docs/dsh-plugin-kit-mcp.png)
+![SFTP dual pane: local left / remote right, inline ⇨/⇦ server-side streaming transfer](docs/dsh-plugin-kit-tty-sftp-dual.png)
+
+![Terminal panel: the sidebar entry opens a multi-tab xterm.js terminal](docs/dsh-plugin-kit-tty.png)
 
 | Capability | Stock dsh web | dsh-plugin-kit family |
 | --- | --- | --- |
-| Environment variables | CLI / manual config | Web GUI card, saves directly into `process.env` |
 | MCP servers | Manual patch / CLI | Visual card + connection test + hot reload after saving |
-| Prompt management | Manual config | Visual editing + versioning / A/B testing / export & sharing |
 | Profile management | CLI | Visual create / copy / rename / delete |
 | RSS aggregation | None | Multiple sources + daily “Today’s Worth Reading” digest |
 | Global search | Session titles/content only | Unified sidebar full-text search over historical sessions |
 | Codegraph integration | None | Code-graph card: index status / symbol search / callers-callees-impact / one-click sync-index |
 | Terminal panel | None | Sidebar “Terminal” entry + xterm.js modal: multi-tab real PTY terminal (vim / htop / dev servers), cwd follows session, hot-reload config |
 | Docker container panel | None | Sidebar “Containers” entry + multi-target (local / SSH) container list with search and state filter, start / stop / remove, details, logs, resource usage and images; **read-only by default**, mutations and exec gated behind explicit switches; `docker_*` agent tools |
+| Environment variables | CLI / manual config | Web GUI card, saves directly into `process.env` |
+| Prompt management | Manual config | Visual editing + versioning / A/B testing / export & sharing |
 | Plugin development | Hand-written boilerplate | `pnpm create-plugin` scaffolding + `@hyzyn/dsh-kit` type helpers |
 
 ## Feature Plugins
-
-### Environment Variables / Secrets Management (@hyzyn/dsh-env)
-
-- **What it does**: add, edit, or delete environment variables and secrets in the Web GUI. After saving, they are immediately written into the current process’s `process.env`, so both the host and subsequently started child processes can read them without restarting.
-- **How to use**: open Settings → Plugins → “Environment Variables / Secrets Management” → add a key-value pair → (check “Secret” for sensitive entries to show them as password fields) → save.
-- **Supports**: plain strings; `js:` prefixed expressions (e.g. `js:process.env.API_KEY`); secret marking.
-- **Where it is stored**: the managed block of `~/.dsh/env.yml` (auto-generated; do not edit by hand).
-- **Note**: key names may only contain letters, digits, and underscores, and must not be duplicated.
-
-![Environment variables / secrets management plugin](docs/dsh-plugin-kit-env.png)
 
 ### MCP Server Configuration (@hyzyn/dsh-mcp)
 
@@ -67,16 +59,6 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 - **Note**: **do not** manually append plugin lines to this file, otherwise DSH may fail to start with `duplicate loader entry id`.
 
 ![MCP server configuration plugin](docs/dsh-plugin-kit-mcp.png)
-
-### Prompt Management (@hyzyn/dsh-prompt)
-
-- **What it does**: visually edit systemPrompt. When enabled, its content is injected as a systemPrompt section and takes effect immediately after saving.
-- **How to use**: open Settings → Plugins → “Prompt Management” → create/edit a Prompt (multiple versions can be saved) → enable.
-- **Supports**: version switching/rollback; A/B testing (choose A/B versions for the same Prompt and randomly match them by weight); export JSON/Markdown, one-click copy & share, import from JSON.
-- **Where it is stored**: the managed block of `~/.dsh/prompts.yml`.
-- **Note**: each Prompt must have at least one version, and a single version’s content must be ≤ 500KB.
-
-![Prompt management plugin](docs/dsh-plugin-kit-promat.png)
 
 ### Profile Management (@hyzyn/dsh-profile)
 
@@ -89,18 +71,6 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 ![Profile management configuration UI](docs/dsh-plugin-kit-profile.png)
 
 ![Example of starting a headless profile from the command line](docs/dsh-plugin-kit-profile-example-headless1.png)
-
-### Global Search (@hyzyn/dsh-search)
-
-- **What it does**: adds a “Global Search” entry to the Web GUI sidebar (⌘/Ctrl+K also opens it) that presents a command-palette window: grouped rows for recent sessions, full-text session hits, Prompts, MCP tools, quick actions, and settings sections.
-- **How to use**: click the sidebar search box or press ⌘/Ctrl+K — the palette **opens with content already in it** (recent sessions + quick actions + settings sections, rendered locally with no request); typing filters local candidates instantly while host full-text hits stream in. ↑/↓ select, ↵ opens, esc closes; ⌥1-9 opens the Nth recent session, and ⌥N / ⌥O / ⌥, trigger New session / Open folder / Open settings. Clicking a session result opens it and tries to locate the matching text; Prompt and MCP tool rows jump to their settings cards; settings sections jump to the corresponding section of the settings dialog.
-- **Supports**: full-text session search via DSH’s built-in `sessionQuery` plus instant title candidates from the client session list; settings sections enumerated live from the client slot registry (`settings.section`, so third-party sections such as “Skins” or “Pets” are listed too, in the same order as the settings navigation); Prompts read from the `~/.dsh/prompts.yml` managed block; MCP tools enumerated by the `mcp__` prefix with their server shown; keyword highlighting; configurable result limits.
-- **Where it is stored**: no separate config.
-- **Note**: requires the host `sessionQuery` service; if absent, session search returns an empty list. If the `session-query` full-text index is configured with `openAt: "never"`, session search automatically degrades to per-session scanning; session results are filtered to currently visible/jumpable sessions. “New session” reuses the GUI’s own `uiWorkspace.startSession()`; “Open folder” is hidden when no directory-picker plugin is installed.
-
-![Global search plugin](docs/dsh-plugin-kit-search.png)
-
-![Global search results (recent sessions / session hits / Prompt / MCP tools / settings)](docs/dsh-plugin-kit-search-query.png)
 
 ### RSS / News Aggregation (@hyzyn/dsh-rss)
 
@@ -120,11 +90,24 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 
 ![Query today’s news: ask the model for “Today’s Worth Reading” and it cites the daily digest](docs/dsh-plugin-kit-rss-query-news.png)
 
+### Global Search (@hyzyn/dsh-search)
+
+- **What it does**: adds a “Global Search” entry to the Web GUI sidebar (⌘/Ctrl+K also opens it) that presents a command-palette window: grouped rows for recent sessions, full-text session hits, Prompts, MCP tools, quick actions, and settings sections.
+- **How to use**: click the sidebar search box or press ⌘/Ctrl+K — the palette **opens with content already in it** (recent sessions + quick actions + settings sections, rendered locally with no request); typing filters local candidates instantly while host full-text hits stream in. ↑/↓ select, ↵ opens, esc closes; ⌥1-9 opens the Nth recent session, and ⌥N / ⌥O / ⌥, trigger New session / Open folder / Open settings. Clicking a session result opens it and tries to locate the matching text; Prompt and MCP tool rows jump to their settings cards; settings sections jump to the corresponding section of the settings dialog.
+- **Supports**: full-text session search via DSH’s built-in `sessionQuery` plus instant title candidates from the client session list; settings sections enumerated live from the client slot registry (`settings.section`, so third-party sections such as “Skins” or “Pets” are listed too, in the same order as the settings navigation); Prompts read from the `~/.dsh/prompts.yml` managed block; MCP tools enumerated by the `mcp__` prefix with their server shown; keyword highlighting; configurable result limits.
+- **Where it is stored**: no separate config.
+- **Note**: requires the host `sessionQuery` service; if absent, session search returns an empty list. If the `session-query` full-text index is configured with `openAt: "never"`, session search automatically degrades to per-session scanning; session results are filtered to currently visible/jumpable sessions. “New session” reuses the GUI’s own `uiWorkspace.startSession()`; “Open folder” is hidden when no directory-picker plugin is installed.
+
+![Global search plugin](docs/dsh-plugin-kit-search.png)
+
+![Global search results (recent sessions / session hits / Prompt / MCP tools / settings)](docs/dsh-plugin-kit-search-query.png)
+
 ### Codegraph Integration (@hyzyn/dsh-codegraph)
 
 - **What it does**: code-graph integration — the “Codegraph” card under Settings → Plugins shows index status, symbol search, callers / callees / impact, and one-click sync / index. On install it automatically injects a CodeGraph usage guideline into systemPrompt so the model prefers `codegraph_explore` / `codegraph explore` over grep / read in indexed projects.
 - **How to use**: open Settings → Plugins → “Codegraph” → view index status, search symbols, click a result to inspect source and call chains / impact, or run Sync / rebuild index manually.
 - **Supports**: index status (version, file / symbol / edge counts, last indexed time, pending changes); symbol search with node / callers / callees / impact details; **the default path follows the active session’s workspace directory** (switches when you switch projects; a manual input temporarily overrides it); one-click incremental sync and full rebuild.
+- **MCP integration (on by default)**: DSH’s MCP client does not declare roots, so `codegraph serve --mcp` can only look upward from its working directory for `.codegraph/` — when the host starts in the home directory, `mcp__codegraph__*` calls fail with “No CodeGraph project is loaded”. This plugin manages the codegraph MCP server row in `~/.dsh/cordis.patch.yml` and aligns its cwd with the default project path (the card’s “Set as default project” switches it in one click and the MCP server hot-restarts on save); a row already configured in the MCP card only gets its cwd filled in, other fields are left untouched. Disable with `mcpIntegration: false`.
 - **Where it is stored**: the index lives in the project’s `.codegraph/` directory (created by `codegraph index`); the plugin has no config file of its own.
 - **Note**: the target project needs a Codegraph index first; unindexed projects return guidance to fall back to regular tools. Indexing / rebuilding are local CLI operations that consume real disk and CPU.
 
@@ -132,11 +115,21 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 
 ### Terminal Panel (@hyzyn/dsh-tty)
 
-- **What it does**: adds a “Terminal” entry to the Web GUI sidebar that opens a large modal with an embedded xterm.js interactive terminal (real PTY via node-pty), with multi-tab support, capable of running arbitrary commands and TUI programs (vim / htop / dev servers).
-- **How to use**: install, then restart `dsh web`; click “Terminal” in the sidebar → the first terminal is created automatically (default `$SHELL`) → use “+” in the tab bar to open more tabs and ✕ to close; new tabs default to the current DSH session’s working directory; Ctrl+F searches inside the terminal, and the toolbar offers clear / copy / paste; closing the panel or pressing Esc ends all sessions.
-- **Supports**: multi-tab sessions (multiple sessions per connection, protocol v2 with sid); working directory follows the current session (sessions client service); TERM=xterm-256color injection (via a `-c` wrapper layer so TUI apps don’t degrade); resize passthrough to node-pty’s native API; a WebSocket frame protocol (spawn/input/resize/kill ↔ ready/data/exit/error); downstream backpressure protection; loopback trust fence; concurrency cap (default 4); settings hot-reload (settings/updated); agent tools (tty_list / tty_capture / tty_send, to inspect and interact with long-running processes in the user's terminal).
+- **What it does**: adds a “Terminal” entry to the Web GUI sidebar that opens a large modal with an embedded xterm.js interactive terminal (real PTY via node-pty) and multi-tab support, capable of running arbitrary commands and TUI programs (vim / htop / dev servers). It also does **direct SSH to remote hosts** (connection book / host-key pinning / automatic reconnect / port-forward tunnels) and **SFTP file transfer** — either the single-pane dialog or the “local left / remote right” dual pane, with upload / download / rename / delete.
+- **How to use**: install, then restart `dsh web`; click “Terminal” in the sidebar → the first terminal is created automatically (default `$SHELL`) → use “+” in the tab bar for a new tab (local terminal / SSH connection book / SSH connection…) and ✕ to close; new tabs default to the current DSH session’s working directory; SSH tabs expose SFTP and tunnel entries in their connection bar; Ctrl+F searches inside the terminal, and the toolbar offers clear / copy / paste.
+- **Two SFTP layouts (configurable)**: `dialog` — a single pane with remote directory browsing, multi-select / drag-and-drop upload (recursive folders), download, rename, delete; `dual` — local pane on the left, remote on the right, where the inline `⇨ / ⇦` buttons stream both paths through the host server (recursive folders, same-name overwrite, bytes never pass through the browser).
+- **Minimize (state folded into the sidebar entry)**: clicking outside the modal, pressing Esc, or the title-bar “—” collapses the panel while PTY sessions and their output buffers stay alive; the sidebar “Terminal” entry then shows a session-count badge and a status dot, and clicking it brings the panel back. Only the floating bar’s ✕ or the title-bar ✕ really closes it and ends every session.
+- **Supports**: multi-tab sessions (multiple sessions per connection); working directory follows the current session; TERM=xterm-256color injection (TUI apps don’t degrade); automatic reconnect after a drop (session keep-alive + output-buffer replay); SSH agent / key / password auth with `env:VAR` secret references that never touch disk; port-forward tunnels (-L / -R, kept alive by the host); downstream backpressure protection; loopback trust fence; concurrency cap (default 4); settings hot-reload; agent tools (`tty_list` / `tty_capture` / `tty_screen` / `tty_expect` / `tty_send` / `sftp_*` / `tunnel_list`).
 - **Where it is stored**: no config file of its own; configuration lives in the “Settings → Plugins → Terminal Panel” card.
 - **Note**: resize relies on DSH’s internal terminal-handle shape (known limitation); output is a UTF-8 text stream, so `cat`-ing binary files shows replacement characters. See `packages/tty/README.md` for details.
+
+![Terminal panel: the sidebar entry opens a multi-tab xterm.js terminal with a compact two-row header (tabs + SSH connection bar)](docs/dsh-plugin-kit-tty.png)
+
+![SFTP dual pane: local left / remote right, inline ⇨/⇦ server-side streaming transfer (sftpStyle=dual)](docs/dsh-plugin-kit-tty-sftp-dual.png)
+
+![SFTP single-pane dialog: remote directory browsing with download / rename / delete](docs/dsh-plugin-kit-tty-sftp-dialog.png)
+
+![Terminal panel settings card: shell / TERM / SFTP style / concurrency cap, saved and applied hot](docs/dsh-plugin-kit-tty-setting.png)
 
 ### Docker Container Panel (@hyzyn/dsh-docker)
 
@@ -149,6 +142,26 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 - **Security model (important)**: the docker socket is equivalent to root on the target host, so the plugin is **read-only by default** — with `allowMutations` off, start / stop / remove are rejected (HTTP 403 and no agent tool registered); with `allowExec` off, exec is rejected. Container names/IDs pass a whitelist check, commands are always built as argv arrays with single-quote escaping, and passwords / passphrases should use `env:VAR` and are never sent back to the browser.
 - **Where it is stored**: the `docker` settings namespace (`~/.dsh/settings.yaml`).
 - **Note**: there is no interactive TTY (exec is a one-shot command; use the terminal panel for `docker exec -it`), no live log streaming, no image delete / pull / build, and no multi-target aggregate view; `docker rm` is issued without `-f`, so removing a running container fails with a “stop it first” hint. See `packages/docker/README.md` for details.
+
+### Environment Variables / Secrets Management (@hyzyn/dsh-env)
+
+- **What it does**: add, edit, or delete environment variables and secrets in the Web GUI. After saving, they are immediately written into the current process’s `process.env`, so both the host and subsequently started child processes can read them without restarting.
+- **How to use**: open Settings → Plugins → “Environment Variables / Secrets Management” → add a key-value pair → (check “Secret” for sensitive entries to show them as password fields) → save.
+- **Supports**: plain strings; `js:` prefixed expressions (e.g. `js:process.env.API_KEY`); secret marking.
+- **Where it is stored**: the managed block of `~/.dsh/env.yml` (auto-generated; do not edit by hand).
+- **Note**: key names may only contain letters, digits, and underscores, and must not be duplicated.
+
+![Environment variables / secrets management plugin](docs/dsh-plugin-kit-env.png)
+
+### Prompt Management (@hyzyn/dsh-prompt)
+
+- **What it does**: visually edit systemPrompt. When enabled, its content is injected as a systemPrompt section and takes effect immediately after saving.
+- **How to use**: open Settings → Plugins → “Prompt Management” → create/edit a Prompt (multiple versions can be saved) → enable.
+- **Supports**: version switching/rollback; A/B testing (choose A/B versions for the same Prompt and randomly match them by weight); export JSON/Markdown, one-click copy & share, import from JSON.
+- **Where it is stored**: the managed block of `~/.dsh/prompts.yml`.
+- **Note**: each Prompt must have at least one version, and a single version’s content must be ≤ 500KB.
+
+![Prompt management plugin](docs/dsh-plugin-kit-promat.png)
 
 ## Quick Start
 
@@ -315,6 +328,7 @@ A: There may be root-owned files in the local `~/.npm` cache (a historical npm b
 ## Known Limitations
 
 - The managed block in `~/.dsh/cordis.patch.yml` is only for MCP server configuration; manually adding plugin lines can cause `duplicate loader entry id` at startup.
+- Codegraph’s MCP integration only aligns the working directory of the single `codegraph` server; DSH’s MCP client does not declare roots yet, so switching projects means using the card’s “Set as default project” or passing `projectPath` on the tool call.
 - Profile deletion is recursive and irreversible after the in-panel confirmation. The built-in `web` profile is protected; `headless` can be deleted.
 - RSS needs network access on first startup. An unreachable source does not block other sources, but that source may be missing from the day’s digest.
 - The browser half depends on the official `dsh-web-app` settings panel slots service; non-official Web GUIs may not show the management cards.

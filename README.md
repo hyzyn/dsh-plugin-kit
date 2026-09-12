@@ -31,7 +31,7 @@
 
 ## 是什么
 
-dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合：环境变量 / 密钥管理、MCP 服务器配置、Prompt 管理、Profile 管理、RSS / 新闻聚合、全局搜索、Codegraph 集成、终端面板（本地 + SSH 终端、SFTP 文件传输）、Docker 容器面板（本机 / SSH 主机上的容器与镜像查看，默认只读），外加一条命令生成新插件的开发脚手架。所有插件都走官方 profile 机制挂载到 `dsh web`，不改 DSH 源码；可以逐个安装，也可以用聚合包一次装齐。
+dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合：MCP 服务器配置、Profile 管理、RSS / 新闻聚合、全局搜索、Codegraph 集成、终端面板（本地 + SSH 终端、SFTP 文件传输）、Docker 容器面板（本机 / SSH 主机上的容器与镜像查看，默认只读）、环境变量 / 密钥管理、Prompt 管理，外加一条命令生成新插件的开发脚手架。所有插件都走官方 profile 机制挂载到 `dsh web`，不改 DSH 源码；可以逐个安装，也可以用聚合包一次装齐。
 
 ![SFTP 双栏：左本机 / 右远程，行内直传](docs/dsh-plugin-kit-tty-sftp-dual.png)
 
@@ -39,28 +39,18 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 
 | 能力 | 原生 dsh web | dsh-plugin-kit 全家桶 |
 | --- | --- | --- |
-| 环境变量管理 | 命令行 / 手改配置 | Web GUI 卡片，保存即写入 `process.env` |
 | MCP 服务器 | 手改 patch / 命令行 | 可视化卡片 + 连接测试 + 保存后热加载 |
-| Prompt 管理 | 手改配置 | 可视化编辑 + 版本管理 / A/B 测试 / 导出分享 |
 | Profile 管理 | 命令行 | 可视化创建 / 复制 / 重命名 / 删除 |
 | RSS 聚合 | 无 | 多源订阅 + 每日「今日值得读」自动摘要 |
 | 全局搜索 | 仅会话标题/内容 | 侧边栏统一全文搜索历史会话、Prompt、MCP 工具与设置面板 |
 | Codegraph 集成 | 无 | 代码图谱卡片：索引状态 / 符号搜索 / 调用链 / 影响面 / 一键 sync-index |
 | 终端面板 | 无 | 侧边栏「终端」入口 + xterm.js 多标签真实 PTY 终端（vim/htop/dev server）；SSH 直连远程主机（连接簿、指纹钉扎、断线重连）；**SFTP 文件传输**（单窗体 / 左本机右远程双栏直传、拖拽上传）；agent 配套 `tty_*` / `sftp_*` 工具 |
 | Docker 容器面板 | 无 | 侧边栏「容器」入口 + 多目标（本机 / SSH）容器列表（搜索 / 状态筛选）、启停删、详情、日志、资源占用与镜像；**默认只读**，变更与 exec 需显式开关；agent 配套 `docker_*` 工具 |
+| 环境变量管理 | 命令行 / 手改配置 | Web GUI 卡片，保存即写入 `process.env` |
+| Prompt 管理 | 手改配置 | 可视化编辑 + 版本管理 / A/B 测试 / 导出分享 |
 | 插件开发 | 手写样板 | `pnpm create-plugin` 脚手架 + `@hyzyn/dsh-kit` 类型助手 |
 
 ## 功能插件
-
-### 环境变量 / 密钥管理（@hyzyn/dsh-env）
-
-- **做什么**：在 Web GUI 里增删改环境变量和密钥，保存后立即写入当前进程的 `process.env`，宿主和之后启动的子进程都能读到，无需重启。
-- **怎么用**：打开 设置 → 插件 →「环境变量 / 密钥管理」→ 添加键值 →（敏感条目勾选「密钥」，以密码框显示）→ 保存。
-- **支持**：普通字符串；`js:` 前缀表达式（如 `js:process.env.API_KEY`）；密钥标记。
-- **存哪里**：`~/.dsh/env.yml` 的托管区块（自动生成，请勿手改）。
-- **注意**：键名只允许字母 / 数字 / 下划线，且不能重复。
-
-![环境变量 / 密钥管理插件](docs/dsh-plugin-kit-env.png)
 
 ### MCP 服务器配置（@hyzyn/dsh-mcp）
 
@@ -71,16 +61,6 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 - **注意**：**不要**手工往该文件里追加插件行，否则启动时报 `duplicate loader entry id` 直接退出。
 
 ![MCP 服务器配置插件](docs/dsh-plugin-kit-mcp.png)
-
-### Prompt 管理（@hyzyn/dsh-prompt）
-
-- **做什么**：可视化编辑 systemPrompt，启用后其内容作为 systemPrompt section 注入，保存即生效。
-- **怎么用**：打开 设置 → 插件 →「Prompt 管理」→ 新建 / 编辑 Prompt（可保存多个版本）→ 启用。
-- **支持**：版本切换 / 回滚；A/B 测试（为同一 Prompt 选 A/B 两版并按权重随机命中）；导出 JSON / Markdown、一键复制分享、从 JSON 导入。
-- **存哪里**：`~/.dsh/prompts.yml` 的托管区块。
-- **注意**：每个 Prompt 至少一个版本，单版本内容 ≤ 500KB。
-
-![Prompt 管理插件](docs/dsh-plugin-kit-promat.png)
 
 ### Profile 管理（@hyzyn/dsh-profile）
 
@@ -93,6 +73,24 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 ![Profile 管理配置界面](docs/dsh-plugin-kit-profile.png)
 
 ![命令行启动 headless profile 示例](docs/dsh-plugin-kit-profile-example-headless1.png)
+
+### RSS / 新闻聚合（@hyzyn/dsh-rss）
+
+- **做什么**：订阅多个 RSS / Atom 源，每天自动汇总成一篇「今日值得读」Markdown，并注入 systemPrompt 供模型直接引用。
+- **怎么用**：安装后可在侧边栏「新建会话」下方点击「今日值得读」直接查看新闻；也可打开 设置 → 插件 →「RSS / 新闻聚合」勾选内置渠道、添加自定义渠道（保存时即时校验地址）、从 [awesome-rsshub-routes](https://jackyst0.github.io/awesome-rsshub-routes/) 订阅源目录搜索并一键添加，维护新闻分类与聚合设置，保存后自动刷新。
+- **内置渠道**：阮一峰、少数派、Solidot、Hacker News、掘金、IT之家、36氪（36氪官方 feed 被反爬拦截，内置为第三方 RSSHub 镜像），勾选即展示、取消勾选即不抓取。
+- **自定义渠道**：填写任意 RSS / Atom 地址，保存时真实抓取校验——官网首页、非 feed、抓不到内容的地址会报错且不保存。
+- **订阅源目录**：内置 awesome-rsshub-routes 精选目录（官方 RSS 与 RSSHub 路由，98 条 / 12 分类），可搜索 / 按分类筛选并一键加入自定义渠道；快照随插件内置，运行时每 12 小时从上游 OPML 静默刷新。
+- **新闻分类**：渠道的分类从「新闻分类」列表里选择；digest（Markdown、systemPrompt、弹窗）按分类分组展示，保存时自动把使用中的分类合并进列表。
+- **支持**：RSS 2.0 / Atom 解析、按来源去重、每源条数限制、每日定时生成、启动补生成、自定义输出目录、内置渠道库。
+- **存哪里**：`~/.dsh/rss-digest/YYYY-MM-DD.md`（可用 `DSH_RSS_DIGEST_DIR` 覆盖）。
+- **注意**：首次安装启动时会联网抓取一次；某个源不可达时会在 digest 的「抓取失败」里列出，不影响其它源。
+
+![RSS / 新闻聚合设置卡片](docs/dsh-plugin-kit-rss-setting.png)
+
+![侧边栏「今日值得读」弹窗：按分类分组，来源带「查看更多」直达官网](docs/dsh-plugin-kit-rss-view.png)
+
+![查询今日新闻：向模型提问「今日值得读」直接引用当天 digest](docs/dsh-plugin-kit-rss-query-news.png)
 
 ### 全局搜索（@hyzyn/dsh-search）
 
@@ -139,30 +137,33 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 
 - **做什么**：在 Web GUI 侧边栏加一个「容器」入口，查看**本机或 SSH 主机**上的容器列表（状态 / 健康 / 端口 / compose 项目）、容器详情、日志尾部、资源占用与镜像列表；显式打开开关后可启停删容器、执行一次性 `docker exec`。
 - **怎么用**：安装后重启 `dsh web`，侧边栏点击「容器」→ 选择目标（本机 / SSH）→ 容器卡片（镜像 / ID / 端口 / 创建 + 图标操作条）支持搜索与状态筛选 → 点卡片进整栏详情（概览 / 日志 / 统计），或直接点卡片上的图标操作条（左侧「终端 / 日志 / 资源占用」只读可用，右侧「启停 / 重启 / 删除」用竖线分隔、需打开「允许变更操作」）；日志页有 LINES / TIMESTAMPS / AUTO REFRESH 工具条、过滤行与按级别着色。设置 → 插件 →「Docker 容器面板」维护目标与开关，保存即热生效。
-- **上下文入口**：装了 tty ≥ 0.15.0 时，卡片第一个图标是「终端」——点击在**面板底部弹出终端抽屉**（tty 的 `ttyTerminal.mount` 就地嵌入），看着日志直接进容器敲命令，面板不收起；tty 为 0.14.0 时退回「新开终端标签 + 收面板」，更旧或未装则退化为复制命令；SSH 标签的连接栏（SFTP 旁）还会出现「容器」按钮——点击直接用当前会话那台主机打开面板，目标由会话隐式决定（注册即显示；按连接簿名 / host:port 在点击时解析目标，没配目标会提示怎么配）。
+- **终端按钮**：装了 tty ≥ 0.15.0 时，卡片第一个图标是「终端」——点击在**面板底部弹出终端抽屉**（tty 的 `ttyTerminal.mount` 就地嵌入），看着日志直接进容器敲命令，面板不收起；tty 为 0.14.0 时退回「新开终端标签 + 收面板」，更旧或未装则退化为复制命令。
+- **上下文入口**：装了 tty ≥ 0.13.0 时，SSH 标签的连接栏（SFTP 旁）会出现「容器」按钮——点击直接用当前会话那台主机打开面板（插件加载期间一直显示；目标在点击时按连接簿名 / `host:port` 解析，没配目标会提示怎么配）。
 - **目标**：`kind=local` 走宿主所在机器的 docker CLI；`kind=ssh` 可直接**引用 tty 连接簿条目名**（数据级复用，tty 零改动；未装 tty 时用内联 host/username），经 ssh2 exec channel 在远端执行，主机指纹 TOFU 钉扎并以 tty 已有记录作种子。
 - **支持**：容器列表（`all` 含已停止）、`docker inspect` 详情、日志（tail / 时间戳 / since）、`docker stats --no-stream` 快照、镜像列表、一次性 exec（返回退出码与 stdout/stderr）；`dockerBin` 可填 `podman`；输出超限自动截断。
 - **安全模型（重点）**：docker socket ≈ 目标主机 root 权限，因此**默认只读**——`allowMutations` 未开启时启停删被拒（HTTP 403，工具不注册），`allowExec` 未开启时 exec 被拒；容器名 / ID 过白名单校验，命令一律 argv 构造 + 单引号转义；密码 / 口令建议 `env:VAR` 引用且永不回传浏览器。
 - **存哪里**：settings 命名空间 `docker`（`~/.dsh/settings.yaml`）。
 - **注意**：没有交互式 TTY（exec 是一次性命令，交互排障请到终端面板跑 `docker exec -it`），没有实时日志流、没有镜像删除 / 拉取 / 构建、没有多目标聚合视图；`docker rm` 不带 `-f`，运行中容器会报错并提示先停止。详细见 `packages/docker/README.md`。
 
-### RSS / 新闻聚合（@hyzyn/dsh-rss）
+### 环境变量 / 密钥管理（@hyzyn/dsh-env）
 
-- **做什么**：订阅多个 RSS / Atom 源，每天自动汇总成一篇「今日值得读」Markdown，并注入 systemPrompt 供模型直接引用。
-- **怎么用**：安装后可在侧边栏「新建会话」下方点击「今日值得读」直接查看新闻；也可打开 设置 → 插件 →「RSS / 新闻聚合」勾选内置渠道、添加自定义渠道（保存时即时校验地址）、从 [awesome-rsshub-routes](https://jackyst0.github.io/awesome-rsshub-routes/) 订阅源目录搜索并一键添加，维护新闻分类与聚合设置，保存后自动刷新。
-- **内置渠道**：阮一峰、少数派、Solidot、Hacker News、掘金、IT之家、36氪（36氪官方 feed 被反爬拦截，内置为第三方 RSSHub 镜像），勾选即展示、取消勾选即不抓取。
-- **自定义渠道**：填写任意 RSS / Atom 地址，保存时真实抓取校验——官网首页、非 feed、抓不到内容的地址会报错且不保存。
-- **订阅源目录**：内置 awesome-rsshub-routes 精选目录（官方 RSS 与 RSSHub 路由，98 条 / 12 分类），可搜索 / 按分类筛选并一键加入自定义渠道；快照随插件内置，运行时每 12 小时从上游 OPML 静默刷新。
-- **新闻分类**：渠道的分类从「新闻分类」列表里选择；digest（Markdown、systemPrompt、弹窗）按分类分组展示，保存时自动把使用中的分类合并进列表。
-- **支持**：RSS 2.0 / Atom 解析、按来源去重、每源条数限制、每日定时生成、启动补生成、自定义输出目录、内置渠道库。
-- **存哪里**：`~/.dsh/rss-digest/YYYY-MM-DD.md`（可用 `DSH_RSS_DIGEST_DIR` 覆盖）。
-- **注意**：首次安装启动时会联网抓取一次；某个源不可达时会在 digest 的「抓取失败」里列出，不影响其它源。
+- **做什么**：在 Web GUI 里增删改环境变量和密钥，保存后立即写入当前进程的 `process.env`，宿主和之后启动的子进程都能读到，无需重启。
+- **怎么用**：打开 设置 → 插件 →「环境变量 / 密钥管理」→ 添加键值 →（敏感条目勾选「密钥」，以密码框显示）→ 保存。
+- **支持**：普通字符串；`js:` 前缀表达式（如 `js:process.env.API_KEY`）；密钥标记。
+- **存哪里**：`~/.dsh/env.yml` 的托管区块（自动生成，请勿手改）。
+- **注意**：键名只允许字母 / 数字 / 下划线，且不能重复。
 
-![RSS / 新闻聚合设置卡片](docs/dsh-plugin-kit-rss-setting.png)
+![环境变量 / 密钥管理插件](docs/dsh-plugin-kit-env.png)
 
-![侧边栏「今日值得读」弹窗：按分类分组，来源带「查看更多」直达官网](docs/dsh-plugin-kit-rss-view.png)
+### Prompt 管理（@hyzyn/dsh-prompt）
 
-![查询今日新闻：向模型提问「今日值得读」直接引用当天 digest](docs/dsh-plugin-kit-rss-query-news.png)
+- **做什么**：可视化编辑 systemPrompt，启用后其内容作为 systemPrompt section 注入，保存即生效。
+- **怎么用**：打开 设置 → 插件 →「Prompt 管理」→ 新建 / 编辑 Prompt（可保存多个版本）→ 启用。
+- **支持**：版本切换 / 回滚；A/B 测试（为同一 Prompt 选 A/B 两版并按权重随机命中）；导出 JSON / Markdown、一键复制分享、从 JSON 导入。
+- **存哪里**：`~/.dsh/prompts.yml` 的托管区块。
+- **注意**：每个 Prompt 至少一个版本，单版本内容 ≤ 500KB。
+
+![Prompt 管理插件](docs/dsh-plugin-kit-promat.png)
 
 ## 快速开始
 
