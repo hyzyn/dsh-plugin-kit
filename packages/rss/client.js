@@ -111,6 +111,7 @@ window.__ModuleLoader__.load({
       '.rss_sources{display:flex;flex-wrap:wrap;gap:6px}',
       '.rss_sourceChip{display:inline-block;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:999px;padding:1px 8px;font-size:11px;line-height:1.6;white-space:nowrap}',
       '.rss_settingSection{display:flex;flex-direction:column;gap:8px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);border-radius:10px;padding:12px}',
+      '.rss_checkRow{display:flex;gap:8px;align-items:flex-start;font-size:13px;line-height:1.5;color:var(--dsw-alias-label-primary);cursor:pointer}',
       '.rss_settingTitle{font-size:13px;font-weight:700}',
       '.rss_settingHint{color:var(--dsw-alias-label-tertiary);font-size:11.5px;line-height:1.5}',
       '.rss_sourceEditorList{display:flex;flex-direction:column;gap:8px}',
@@ -746,6 +747,16 @@ window.__ModuleLoader__.load({
       return parts.join('')
     }
 
+    function renderPluginSection() {
+      const config = state.config
+      const parts = []
+      parts.push('<div class="rss_settingSection" id="rss-sec-plugin">')
+      parts.push('<div class="rss_settingTitle">插件</div>')
+      parts.push('<label class="rss_checkRow"><input type="checkbox" data-field="rss-enabled" ' + (config.enabled !== false ? 'checked' : '') + ' /> 启用插件（保存后热生效：关闭即收起侧栏入口、停用每日汇总与 agent 公告；本卡片保持可用）</label>')
+      parts.push('</div>')
+      return parts.join('')
+    }
+
 
     function renderAll(container) {
       panelEl = container
@@ -756,6 +767,7 @@ window.__ModuleLoader__.load({
       if (state.loading || !state.config) {
         parts.push('<div class="rss_loading">加载中…</div>')
       } else {
+        parts.push(renderPluginSection())
         parts.push(renderDigestSection())
         parts.push(renderChannelsSection())
         parts.push(renderCategoriesSection())
@@ -1265,6 +1277,38 @@ window.__ModuleLoader__.load({
       return entry
     }
 
+    /* ============================ 入口显隐闸门 ============================ */
+
+    /**
+     * 「今日值得读」入口的显隐：config 确认「插件已禁用」（enabled === false）后
+     * 收起，其余情况（含 config 拉取失败）保持显示。entryGate 由 apply 挂载期间
+     * 注入（null = 已卸载，迟到的缓存刷新不允许再把入口挂回来）；禁用瞬间已打开
+     * 的摘要弹窗一并收掉。
+     */
+    let entryGate = null
+    let entryVisible = false
+
+    function setEntryVisible(visible) {
+      entryVisible = visible
+      if (entryGate !== null) entryGate.set(visible)
+    }
+
+    /** 由 config 推进入口显隐：仅「确认 enabled:false」收起。 */
+    function syncEntryFromConfig(config) {
+      setEntryVisible(!(config !== null && typeof config === 'object' && config.enabled === false))
+    }
+
+    /** 挂载时预取一次配置：驱动入口显隐（打开面板时 load() 会再拉一次）。 */
+    async function primeConfig() {
+      try {
+        const res = await apiRequest(API.config)
+        state.config = res.config || state.config
+        syncEntryFromConfig(state.config)
+      } catch {
+        /* 挂载时宿主可能未就绪：入口先保持显示 */
+      }
+    }
+
     function placeSidebarEntry(root, entry) {
       const button = newSessionButton(root)
       if (button === undefined) return false
@@ -1333,6 +1377,11 @@ window.__ModuleLoader__.load({
     /* ================================ 输入委托（按需更新，不再整面板重建） ================================ */
 
     const FIELD_HANDLERS = {
+      'rss-enabled': (el) => {
+        if (!state.config) return
+        state.config.enabled = el.checked
+        markDirty()
+      },
       'rss-source-name': (el) => {
         if (!state.config || el.dataset.index === undefined) return
         const source = state.config.sources[Number(el.dataset.index)]
@@ -1498,6 +1547,7 @@ window.__ModuleLoader__.load({
         state.digest = digestRes
         state.config = configRes.config || { sources: [], categories: [], maxItemsPerSource: 5, maxTotalItems: 30, dailyTime: '08:00' }
         state.builtins = configRes.builtins || BUILTIN_CHANNELS
+        syncEntryFromConfig(state.config)
       } catch (error) {
         state.error = error.message
       } finally {
@@ -1560,7 +1610,8 @@ window.__ModuleLoader__.load({
         state.builtins = data.builtins || BUILTIN_CHANNELS
         state.newCategory = ''
         state.dirty = false
-        toast('已保存', 'ok')
+        syncEntryFromConfig(state.config)
+        toast('已保存，热生效', 'ok')
         await refresh()
         loadCatalog()
       } catch (error) {
@@ -2051,6 +2102,26 @@ window.__ModuleLoader__.load({
     exports.apply = (ctx) => {
       ctx.effect(() => {
         ensureStyle()
+        // 侧栏入口先按可见挂载（与旧行为一致），config 确认禁用后由闸门收起；
+        // 运行期显隐由 syncEntryFromConfig（配置加载/保存后）驱动
+        let entryMounted = false
+        let unmountEntry = () => {}
+        entryGate = {
+          set(visible) {
+            if (visible === entryMounted) return
+            entryMounted = visible
+            if (visible) {
+              unmountEntry = mountSidebarEntry()
+              return
+            }
+            unmountEntry()
+            unmountEntry = () => {}
+            // 禁用瞬间的摘要弹窗一起收掉：数据路由已被宿主 403，留着只会报错
+            closeDigestModal()
+          },
+        }
+        setEntryVisible(true)
+        void primeConfig()
         const onKeyDown = (event) => {
           if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
             if (panelEl !== undefined && panelEl.isConnected) {
@@ -2067,7 +2138,6 @@ window.__ModuleLoader__.load({
         document.addEventListener('dragover', handleChannelDragOver, true)
         document.addEventListener('drop', handleChannelDrop, true)
         document.addEventListener('dragend', handleChannelDragEnd, true)
-        const disposeSidebar = mountSidebarEntry()
         return () => {
           document.removeEventListener('click', handleClick, true)
           document.removeEventListener('input', handleFieldEvent, true)
@@ -2077,7 +2147,9 @@ window.__ModuleLoader__.load({
           document.removeEventListener('dragover', handleChannelDragOver, true)
           document.removeEventListener('drop', handleChannelDrop, true)
           document.removeEventListener('dragend', handleChannelDragEnd, true)
-          if (disposeSidebar) disposeSidebar()
+          entryGate = null
+          entryVisible = false
+          unmountEntry()
           clearTimeout(toastTimer)
           clearTimeout(saveTimer)
           styleEl?.remove()
