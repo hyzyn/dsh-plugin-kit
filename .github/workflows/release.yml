@@ -72,6 +72,14 @@ jobs:
               echo "- 内部维护发布（无用户可见改动）"
             fi
             echo
+            echo "## 包版本"
+            echo
+            # 全部 workspace 包的发布清单：Highlights 只列提交主题，bump 矩阵在这里给全量视图
+            for f in packages/*/package.json; do
+              node -p "const p = require('./$f'); '- ' + p.name + ' ' + p.version" 2>/dev/null
+            done | sort
+            node -p "'- ' + require('./package.json').name + ' ' + require('./package.json').version"
+            echo
             if [ -n "$PREV" ]; then
               echo "**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREV}...${GITHUB_REF_NAME}"
             fi
