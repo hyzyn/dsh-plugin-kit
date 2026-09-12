@@ -127,6 +127,7 @@ window.__ModuleLoader__.load({
           setEntries(data.entries || entries)
           setFile(data.file || file)
           setOk('已保存' + (data.applied ? '，并已写入 process.env' : ''))
+          if (Array.isArray(data.warnings) && data.warnings.length > 0) setError(data.warnings.join('\n'))
         } catch (err) {
           setError(err.message)
         } finally {
@@ -147,7 +148,7 @@ window.__ModuleLoader__.load({
                 className: 'env_cardHeadText',
                 children: [
                   jsx('span', { className: 'env_cardName', children: '环境变量 / 密钥管理' }),
-                  jsx('span', { className: 'env_cardDescription', children: '管理环境变量与密钥：普通值或 js: 表达式，保存后可选写入 process.env。' }),
+                  jsx('span', { className: 'env_cardDescription', children: '管理环境变量与密钥：普通值或 js: 表达式；密钥值存入官方凭据存储，保存后写入 process.env。' }),
                 ],
               }),
               jsx('span', { className: 'dshkit_badge', children: 'Kit' }),
@@ -206,7 +207,9 @@ window.__ModuleLoader__.load({
                       }),
                       jsx('input', {
                         className: 'env_input',
-                        placeholder: entry.secret && entry.value == null ? '已保存，留空保存＝保持不变' : 'value 或 js:process.env.XXX',
+                        placeholder: entry.secret && entry.value == null
+                          ? (entry.storage === 'refs' ? '已存入官方凭据存储，留空保持不变' : '已保存，留空保存＝保持不变')
+                          : 'value 或 js:process.env.XXX',
                         type: entry.secret ? 'password' : 'text',
                         value: entry.value ?? '',
                         onChange: (event) => updateEntry(index, { value: event.target.value }),
