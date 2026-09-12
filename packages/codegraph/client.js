@@ -22,6 +22,7 @@ window.__ModuleLoader__.load({
       '.cg_cardHeader:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}',
       '.cg_cardHeadText{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}',
       '.cg_cardName{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:600}',
+      '.dshkit_badge{flex:none;margin-left:auto;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:600;line-height:16px;letter-spacing:.02em;color:var(--dsw-alias-label-dimmed);background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1)}',
       '.cg_cardDescription{color:var(--dsw-alias-label-secondary);font-size:12px}',
       '.cg_chevron{flex:none;color:var(--dsw-alias-label-tertiary);transition:transform .16s}',
       '.cg_pluginCardOpen .cg_chevron{transform:rotate(180deg)}',
@@ -265,6 +266,7 @@ window.__ModuleLoader__.load({
                   jsx('span', { className: 'cg_cardDescription', children: '代码图谱：索引状态、符号搜索、callers/callees/impact、一键 sync/index。' }),
                 ],
               }),
+              jsx('span', { className: 'dshkit_badge', children: 'Kit' }),
               jsx('svg', {
                 width: '14',
                 height: '14',
@@ -405,7 +407,7 @@ window.__ModuleLoader__.load({
         name: 'settings.plugin.item',
         // settings.plugin.item 是 keyed 插槽：key 必须是该卡片所编辑的 settings 命名空间
         key: 'codegraph',
-        order: 120,
+        order: 104,
       }, CodegraphSettingsCard))
     }
 

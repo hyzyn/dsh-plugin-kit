@@ -127,10 +127,15 @@
 
 .tt_sidebarEntry {
   position: relative;
+  /* 宿主不对插件 DOM 做全局 box-sizing reset（它自己的组件都逐个显式声明）：
+     width:100% + 左右各 12px padding 在 content-box 下会比容器宽 24px，多出的右侧
+     12px 正好是徽标所在处，被侧边栏裁掉 → 徽标贴死裁切线、末位字符被切一半。 */
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   gap: var(--tt-gap-md);
   width: 100%;
+  min-width: 0;
   height: 32px;
   padding: 0 12px;
   border: none;
@@ -172,6 +177,9 @@
 [data-sidebar-collapsed] .tt_sidebarEntry {
   justify-content: center;
   width: 100%;
+  /* 折叠 rail 里宿主的行是 36×36（.hHd-Xa_collapsed .hHd-Xa_panelRow），跟齐，
+     否则本插件入口比同栏其它入口矮 4px */
+  height: 36px;
   padding: 0;
 }
 [data-sidebar-collapsed] .tt_sidebarEntryLabel {
@@ -191,7 +199,13 @@
 .tt_sidebarEntry[data-minimized] .tt_sidebarEntryBadge {
   display: inline-flex;
 }
+/* 折叠态徽标只剩一个状态点：必须脱离 flex 流当角标。留在流里的话，它和图标一起被
+   justify-content:center 居中（18 图标 + 8 间距 + 7 点 = 33px），图标被顶偏 7.5px，
+   与同栏其它折叠入口的图标错位。 */
 [data-sidebar-collapsed] .tt_sidebarEntryBadge {
+  position: absolute;
+  top: 3px;
+  right: 3px;
   margin-left: 0;
   padding-left: 0;
 }
@@ -1195,6 +1209,9 @@
   flex-direction: row;
   align-items: center;
   gap: 10px;
+  /* 同为 content-box 陷阱：菜单只有 6px 内边距且不裁剪，条目按 content-box 会往右
+     戳出边框约 14px（hover 底色外溢） */
+  box-sizing: border-box;
   width: 100%;
   padding: 7px 10px;
   border: none;
@@ -1873,6 +1890,20 @@
   font-size: 15px;
   font-weight: 600;
   line-height: 1.4;
+}
+/* dsh-plugin-kit 套件徽标（约定见 @hyzyn/dsh-kit README：全部 kit 设置卡片共用） */
+.dshkit_badge {
+  flex: none;
+  margin-left: auto;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  letter-spacing: 0.02em;
+  color: var(--tt-label-3);
+  background: var(--tt-bg-2, var(--dsw-alias-bg-layer-2));
+  border: 1px solid var(--tt-border, var(--dsw-alias-border-l1));
 }
 .tt_cardDescription {
   color: var(--tt-label-3);

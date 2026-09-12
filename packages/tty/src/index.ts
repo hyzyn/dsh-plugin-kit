@@ -934,6 +934,8 @@ class TtyServer {
   private readonly wss = new WebSocketServer({ noServer: true })
   /** 在途的持久会话创建（tmuxName → 创建 promise）：dsh 重启后多页面并发恢复时收敛竞态。 */
   private readonly pendingTmux = new Map<string, Promise<TtySession | null>>()
+  /** WS 闸门（插件禁用时关闭）：拒绝新升级 + 断开存量连接。 */
+  private wsGateOpen = true
 
   constructor(
     private readonly ctx: Context,
@@ -946,9 +948,31 @@ class TtyServer {
     this.wss.on('connection', (ws) => this.onConnection(ws))
   }
 
+  /**
+   * 按启用状态对齐 WS 闸门（幂等）。关闭时对存量连接发正常关闭帧：客户端走
+   * 既有重连循环，禁用期间升级被拒，重新启用后自动重连并 attach 孤儿会话。
+   * PTY 进程不受影响（转孤儿保活），不因禁用杀用户进程。
+   */
+  setWsGate(open: boolean): void {
+    if (open === this.wsGateOpen) return
+    this.wsGateOpen = open
+    if (open) return
+    for (const ws of this.wss.clients) {
+      try {
+        ws.close(1001, 'dsh-tty disabled')
+      } catch {
+        /* 已关闭 */
+      }
+    }
+  }
+
   /** registerUpgrade 的 handler（loopback 围栏 + ws 握手）。 */
   handleUpgrade(req: ReqLike, socket: SocketLike, head: Buffer): void {
     if (!isLoopbackUpgrade(req)) {
+      socket.destroy()
+      return
+    }
+    if (!this.wsGateOpen) {
       socket.destroy()
       return
     }
@@ -1837,6 +1861,12 @@ const plugin = definePlugin<Config>({
     const server = new TtyServer(ctx, sessions, live, hostKeyStore, trackPersistSession)
     const stateRef = { enabled: true, announceToAgent: config?.announceToAgent !== false, toolsRegistered: false, sftpStyle: config?.sftpStyle === 'dual' ? 'dual' : 'dialog' as 'dialog' | 'dual' }
     let settingsScope: { get(): Record<string, unknown>; update(patch: Record<string, unknown>): Promise<unknown> } | undefined
+    // 工具/公告的重注册钩子：真正的实现由各自的注入 effect 挂载时回填。
+    // applyPatch 定义在注入之前，只能先拿 noop——启动顺序无论是 settings 先行
+    // （registerAll 读 stateRef 自行短路）还是 tools/announcement 先行（applyPatch
+    // 再触发一次重注册，幂等），两种顺序最终状态一致。
+    let refreshToolsHook: () => void = () => {}
+    let refreshAnnouncementHook: () => void = () => {}
 
     const snapshot = (): ConfigSnapshot => ({
       enabled: stateRef.enabled,
@@ -1875,15 +1905,22 @@ const plugin = definePlugin<Config>({
         sftpLimits: typeof section.sftpLimits === 'object' && section.sftpLimits !== null ? section.sftpLimits as Record<string, unknown> : undefined,
         persistSessions: sanitizePersistSessions(section.persistSessions),
       })
-      // 隧道按最新规格对齐（幂等；sshHosts 变更也会触发，让重连取到新凭证）
-      tunnelManager.reconcile(live.tunnels)
-      if (typeof section.maxSessions === 'number' && Number.isInteger(section.maxSessions) && section.maxSessions >= 1 && section.maxSessions <= 16) {
-        sessions.setLimit(section.maxSessions)
-      }
       if (typeof section.enabled === 'boolean') stateRef.enabled = section.enabled
       if (typeof section.announceToAgent === 'boolean') stateRef.announceToAgent = section.announceToAgent
       if (section.sftpStyle === 'dialog' || section.sftpStyle === 'dual') stateRef.sftpStyle = section.sftpStyle
-      console.log(`[dsh-tty] config applied (shell=${live.shell}, term=${live.term}, cwd=${live.cwd}, maxSessions=${sessions.limitValue}, sshHosts=${live.sshHosts.length})`)
+      // 隧道按最新规格对齐（幂等；sshHosts 变更也会触发，让重连取到新凭证）。
+      // 禁用态清空目标列表（拆掉活跃转发），重新启用后的下一次对齐自动恢复
+      tunnelManager.reconcile(stateRef.enabled ? live.tunnels : [])
+      if (typeof section.maxSessions === 'number' && Number.isInteger(section.maxSessions) && section.maxSessions >= 1 && section.maxSessions <= 16) {
+        sessions.setLimit(section.maxSessions)
+      }
+      // 禁用/启用热生效（enabled 不再只是记账）：工具与公告重注册（幂等）、
+      // WS 闸门与隧道随开关对齐。PTY 进程不杀——会话转孤儿保活，重新启用后
+      // 客户端重连即 attach 回来
+      refreshToolsHook()
+      refreshAnnouncementHook()
+      server.setWsGate(stateRef.enabled)
+      console.log(`[dsh-tty] config applied (shell=${live.shell}, term=${live.term}, cwd=${live.cwd}, maxSessions=${sessions.limitValue}, sshHosts=${live.sshHosts.length}, enabled=${String(stateRef.enabled)})`)
     }
 
     /** 校验 HTTP POST 的配置体；返回规范化补丁或错误信息。 */
@@ -1985,6 +2022,21 @@ const plugin = definePlugin<Config>({
           }
         }).webServer
         const disposers: Array<() => void> = []
+        // 数据路由的禁用守卫：enabled=false 时一律 403。/config 不走它——设置
+        // 卡片靠它渲染，也是重新启用插件的唯一 UI 入口（不能一并关掉）。
+        // never 参数做签名擦除：原样适配 ReqLike / IncomingMessage 等各种 handler。
+        const guardDisabled =
+          (handler: (req: never, res: never) => unknown) =>
+          (req: never, res: never): unknown => {
+            if (!stateRef.enabled) {
+              writeJson(res as ResLike, 403, { error: '插件已禁用（设置 → 插件 → 终端面板 → 启用插件）' })
+              return
+            }
+            return handler(req, res)
+          }
+        const registerGated = (route: { kind: string; path: string; handler: (req: never, res: never) => unknown }): void => {
+          disposers.push(webServer.register({ ...route, handler: guardDisabled(route.handler) }))
+        }
         disposers.push(webServer.registerUpgrade({
           path: WS_PATH,
           handler: (req: ReqLike, socket: SocketLike, head: Buffer) => server.handleUpgrade(req, socket, head),
@@ -2033,7 +2085,7 @@ const plugin = definePlugin<Config>({
           },
         }))
         // ~/.ssh/config 导入候选（连接簿）：loopback 围栏，只回解析结果不落盘
-        disposers.push(webServer.register({
+        registerGated({
           kind: 'exact',
           path: '/api/dsh-tty/ssh-config',
           handler: async (req: ReqLike, res: ResLike) => {
@@ -2052,9 +2104,9 @@ const plugin = definePlugin<Config>({
               writeJson(res, 200, { ok: false, error: '无法读取 ~/.ssh/config: ' + (error instanceof Error ? error.message : String(error)) })
             }
           },
-        }))
+        })
         // env:VAR 下拉数据源（SSH 对话框）：只回 env 插件托管变量名，绝不含值
-        disposers.push(webServer.register({
+        registerGated({
           kind: 'exact',
           path: '/api/dsh-tty/env-vars',
           handler: async (req: ReqLike, res: ResLike) => {
@@ -2068,9 +2120,9 @@ const plugin = definePlugin<Config>({
             }
             writeJson(res, 200, { ok: true, names: readManagedEnvKeys() })
           },
-        }))
+        })
         // known_hosts 指纹导入候选（TOFU 预填充）：hashed 条目用连接簿主机名还原
-        disposers.push(webServer.register({
+        registerGated({
           kind: 'exact',
           path: '/api/dsh-tty/known-hosts',
           handler: async (req: ReqLike, res: ResLike) => {
@@ -2090,13 +2142,13 @@ const plugin = definePlugin<Config>({
               writeJson(res, 200, { ok: false, error: '无法读取 ~/.ssh/known_hosts: ' + (error instanceof Error ? error.message : String(error)) })
             }
           },
-        }))
+        })
         // SSH 连接测试（0.11.0，src/probe.ts）：连接簿行「测试」与 SSH 对话框
         // 「试连」共用。body 携带完整内联 SSH 规格（不引用连接簿——卡片测试
         // 由客户端先行展开条目），免去服务端按 name 解析；只诊断不建会话。
         // 连接簿条目测试传 store（新指纹当场 TOFU record）；对话框试连不带
         // store（只比对不落盘，避免给未保存草稿建立钉扎）。
-        disposers.push(webServer.register({
+        registerGated({
           kind: 'exact',
           path: '/api/dsh-tty/probe',
           handler: async (req: ReqLike & AsyncIterable<Uint8Array>, res: ResLike) => {
@@ -2154,9 +2206,9 @@ const plugin = definePlugin<Config>({
             const result = await probeSsh(spec, body.bookRecord === true ? hostKeyStore : undefined)
             writeJson(res, 200, { ok: result.auth.ok, result })
           },
-        }))
+        })
         // 已安装 shell 候选（设置卡片「Shell 路径」可选可输入）：loopback 围栏，只回路径不执行
-        disposers.push(webServer.register({
+        registerGated({
           kind: 'exact',
           path: '/api/dsh-tty/shells',
           handler: async (req: ReqLike, res: ResLike) => {
@@ -2170,9 +2222,9 @@ const plugin = definePlugin<Config>({
             }
             writeJson(res, 200, { ok: true, shells: listCandidateShells(), current: process.env.SHELL ?? '' })
           },
-        }))
+        })
         // 端口转发隧道实时状态（设置卡片轮询徽标 + tunnel_list 工具数据源）
-        disposers.push(webServer.register({
+        registerGated({
           kind: 'exact',
           path: '/api/dsh-tty/tunnels',
           handler: async (req: ReqLike, res: ResLike) => {
@@ -2186,14 +2238,14 @@ const plugin = definePlugin<Config>({
             }
             writeJson(res, 200, { ok: true, tunnels: tunnelManager.list() })
           },
-        }))
+        })
         // SFTP 文件传输（0.7.0，src/sftp.ts）：loopback 围栏；spec 解析与 WS ssh
         // 帧同款（mergeSshSpec：连接簿条目作基底 + 内联字段覆盖）。list/mkdir/
         // rename/remove/download 走 JSON 体（凭证不进 URL/查询串）；download 响应
         // 为文件字节流（stat 成功时带 content-length）；upload 以 x-dsh-sftp-meta
         // 头携带 base64url(JSON)（spec + path + append），请求体即原始文件字节，
         // pipeline 直灌 SFTP 写流——上传下载都不整文件进内存。
-        disposers.push(webServer.register({
+        registerGated({
           kind: 'prefix',
           path: '/api/dsh-tty/sftp',
           handler: async (req: IncomingMessage, res: ServerResponse) => {
@@ -2328,12 +2380,12 @@ const plugin = definePlugin<Config>({
             }
             writeJson(res, 404, { error: 'not found: ' + sub })
           },
-        }))
+        })
         // 本机文件浏览（0.9.0，双栏 SFTP 的本机一侧）：loopback 围栏。信任模型
         // 与终端/SFTP 一致——浏览器仅同源可访问，且本机能做的 SSH 会话也能做；
         // list/mkdir/rename/remove 操作本机路径；transfer 在服务端把本机路径与
         // 远程路径流式对拷（凭证不落浏览器，字节不经过浏览器）。
-        disposers.push(webServer.register({
+        registerGated({
           kind: 'prefix',
           path: '/api/dsh-tty/local-fs',
           handler: async (req: IncomingMessage, res: ServerResponse) => {
@@ -2426,7 +2478,7 @@ const plugin = definePlugin<Config>({
               writeJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
             }
           },
-        }))
+        })
         return () => {
           server.close()
           for (const dispose of disposers) {
@@ -2499,604 +2551,623 @@ const plugin = definePlugin<Config>({
           const parts = session.buffer.split('\n')
           return parts.slice(-(lines + 1)).join('\n').replace(/^\n+/, '')
         }
-        const disposers: Array<() => void> = []
-        disposers.push(tools.register(defineTool({
-          name: 'tty_list',
-          description: '列出当前活跃的终端面板会话（sid / kind(local|ssh) / target / pid / cwd / 创建与最后活动时间）。用户开了终端面板后，用 tty_capture 读取某个 sid 的终端输出，用 tty_send 向该终端发送按键。',
-          parameters: {},
-          output: {
-            schema: {
-              type: 'object',
-              additionalProperties: false,
-              properties: {
-                sessions: {
-                  type: 'array',
-                  required: true,
-                  items: {
-                    type: 'object',
-                    additionalProperties: false,
-                    properties: {
-                      sid: { type: 'string', required: true },
-                      kind: { type: 'string', required: true },
-                      target: { type: 'string', required: true },
-                      pid: { type: 'number' },
-                      cwd: { type: 'string', required: true },
-                      startedAt: { type: 'number', required: true },
-                      lastOutputAt: { type: 'number', required: true },
-                      persist: { type: 'boolean' },
-                    },
-                  },
-                },
-              },
-            },
-            render: (_args: unknown, value: unknown) => {
-              const sessions = (value as { sessions?: Array<{ sid: string; pid?: number; cwd: string; kind: 'local' | 'ssh'; target: string; startedAt: number; lastOutputAt: number; persist?: boolean }> })?.sessions ?? []
-              const text = sessions.length === 0
-                ? '当前没有活跃的终端面板会话（请引导用户先打开终端面板，或用户尚未打开）'
-                : '终端面板会话：' + sessions.map((s) => {
-                    const where = s.kind === 'ssh' ? `ssh ${s.target}` : `pid=${String(s.pid ?? '?')} cwd=${s.cwd}`
-                    const persist = s.persist === true ? ' [tmux 持久]' : ''
-                    return `\n- sid=${s.sid} [${s.kind}]${persist} ${where} (启动于 ${new Date(s.startedAt).toLocaleString()})`
-                  }).join('')
-              return [{ type: 'text', text }]
-            },
-          },
-          async execute(): Promise<{ sessions: ReturnType<SessionManager['list']> }> {
-            return { sessions: sessions.list() }
-          },
-        })))
-        disposers.push(tools.register(defineTool({
-          name: 'tty_capture',
-          description: '读取某个终端面板会话（tty_list 提供 sid）的近期输出。默认读取尾部 N 行（60，最多 500，已剥离 ANSI 转义序列并收敛同行覆盖）；last:true 时只返回「上一条已完成命令」的输出与退出码（依赖 shell 集成标记，更适合拿单条命令的结果）。',
-          parameters: {
-            sid: { type: 'string', required: true, description: '会话 id（来自 tty_list）' },
-            lines: { type: 'number', description: '读取尾部行数（1~500，默认 60）；last:true 时忽略' },
-            last: { type: 'boolean', description: 'true 只返回上一条命令的输出+退出码（默认 false 读尾部）' },
-            raw: { type: 'boolean', description: 'true 返回含 ANSI 转义序列的原始输出（默认 false 清洗为纯文本）' },
-          },
-          output: {
-            schema: {
-              type: 'object',
-              additionalProperties: false,
-              properties: {
-                sid: { type: 'string', required: true },
-                tail: { type: 'string', required: true },
-                source: { type: 'string' },
-                exitCode: { type: 'number' },
-              },
-            },
-            render: (_args: unknown, value: unknown) => {
-              const v = value as { sid?: string; tail?: string; source?: string; exitCode?: number }
-              const head = v.source === 'last'
-                ? `终端会话 ${v.sid ?? '?'} 上一条命令的输出（exitCode=${String(v.exitCode ?? '?')}）：\n\n`
-                : `终端会话 ${v.sid ?? '?'} 尾部输出：\n\n`
-              return [{ type: 'text', text: head + (v.tail ?? '') }]
-            },
-          },
-          async execute(args: unknown): Promise<{ sid: string; tail: string; source?: string; exitCode?: number }> {
-            const input = args as { sid?: unknown; lines?: unknown; last?: unknown; raw?: unknown }
-            if (typeof input.sid !== 'string' || input.sid === '') throw new Error('sid 必须是非空字符串')
-            const session = sessions.get(input.sid)
-            if (session === undefined || session.closed) throw new Error(`会话不存在或已退出: ${input.sid}`)
-            const useRaw = input.raw === true
-            if (input.last === true) {
-              const last = session.shellState.lastCommand
-              if (last === null) {
-                throw new Error('暂无「上一条命令」记录（shell 集成未生效——shell 不受支持或被配置关闭——或尚未执行过命令）；可改用 lines 读尾部')
-              }
-              return { sid: input.sid, source: 'last', exitCode: last.exitCode ?? undefined, tail: (useRaw ? last.output : cleanAnsiTail(last.output)).slice(0, 128 * 1024) }
-            }
-            const lines = Math.max(1, Math.min(500, typeof input.lines === 'number' && Number.isInteger(input.lines) && input.lines >= 1 ? input.lines : 60))
-            const rawTail = tailLines(session, lines)
-            return { sid: input.sid, source: 'tail', tail: useRaw ? rawTail : cleanAnsiTail(rawTail) }
-          },
-        })))
-        disposers.push(tools.register(defineTool({
-          name: 'tty_screen',
-          description: '读取某个终端面板会话（tty_list 提供 sid）当前可见屏幕的渲染结果（纯文本，等价于用户此刻看到的画面）。适合查看全屏交互程序（vim / htop / 菜单选择）的当前界面状态；要历史滚动输出用 tty_capture。',
-          parameters: {
-            sid: { type: 'string', required: true, description: '会话 id（来自 tty_list）' },
-          },
-          output: {
-            schema: {
-              type: 'object',
-              additionalProperties: false,
-              properties: {
-                sid: { type: 'string', required: true },
-                cols: { type: 'number', required: true },
-                rows: { type: 'number', required: true },
-                text: { type: 'string', required: true },
-              },
-            },
-            render: (_args: unknown, value: unknown) => {
-              const v = value as { sid?: string; cols?: number; rows?: number; text?: string }
-              return [{ type: 'text', text: `终端会话 ${v.sid ?? '?'} 当前屏幕（${String(v.cols ?? '?')}×${String(v.rows ?? '?')}）：\n\n${v.text ?? ''}` }]
-            },
-          },
-          async execute(args: unknown): Promise<{ sid: string; cols: number; rows: number; text: string }> {
-            const input = args as { sid?: unknown }
-            if (typeof input.sid !== 'string' || input.sid === '') throw new Error('sid 必须是非空字符串')
-            const session = sessions.get(input.sid)
-            if (session === undefined || session.closed) throw new Error(`会话不存在或已退出: ${input.sid}`)
-            const screen = session.screen
-            if (screen === null) throw new Error(`虚拟屏不可用: ${input.sid}`)
-            const buffer = screen.buffer.active
-            const lines: string[] = []
-            for (let row = 0; row < screen.rows; row++) {
-              lines.push(buffer.getLine(row)?.translateToString(true) ?? '')
-            }
-            while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop()
-            return { sid: input.sid, cols: screen.cols, rows: screen.rows, text: lines.join('\n').slice(0, 32 * 1024) }
-          },
-        })))
-        disposers.push(tools.register(defineTool({
-          name: 'tty_expect',
-          description: '在某个终端面板会话（tty_list 提供 sid）的后续输出中等待一个正则出现（如 dev server 的 ready/URL、构建完成标记、交互提示）。匹配到立即返回 matched:true 与周边输出；超时不抛错，返回 matched:false + 尾部输出供判断重试或放弃；期间该命令若已结束（shell 集成标记）也会提前返回并带退出码。适合先 tty_send 启动长任务、再 tty_expect 等就绪信号的流程。',
-          parameters: {
-            sid: { type: 'string', required: true, description: '会话 id（来自 tty_list）' },
-            pattern: { type: 'string', required: true, description: '等待匹配的正则表达式（JavaScript RegExp 语法）' },
-            timeoutSec: { type: 'number', description: '等待秒数（1~600，默认 30）' },
-          },
-          output: {
-            schema: {
-              type: 'object',
-              additionalProperties: false,
-              properties: {
-                matched: { type: 'boolean', required: true },
-                timedOut: { type: 'boolean', required: true },
-                text: { type: 'string', required: true },
-                exitCode: { type: 'number' },
-              },
-            },
-            render: (_args: unknown, value: unknown) => {
-              const v = value as { matched?: boolean; timedOut?: boolean; text?: string; exitCode?: number }
-              if (v.matched === true) return [{ type: 'text', text: `已匹配到等待的模式：\n\n${v.text ?? ''}` }]
-              const why = v.timedOut === true ? '等待超时' : `命令已结束（exitCode=${String(v.exitCode ?? '?')}）但未出现匹配`
-              return [{ type: 'text', text: `${why}。尾部输出：\n\n${v.text ?? ''}` }]
-            },
-          },
-          async execute(args: unknown): Promise<{ matched: boolean; timedOut: boolean; text: string; exitCode?: number }> {
-            const input = args as { sid?: unknown; pattern?: unknown; timeoutSec?: unknown }
-            if (typeof input.sid !== 'string' || input.sid === '') throw new Error('sid 必须是非空字符串')
-            if (typeof input.pattern !== 'string' || input.pattern === '') throw new Error('pattern 必须是非空字符串')
-            const session = sessions.get(input.sid)
-            if (session === undefined || session.closed) throw new Error(`会话不存在或已退出: ${input.sid}`)
-            let re: RegExp
+        let activeDisposers: Array<() => void> = []
+        /** 幂等重注册：撤下现有工具后按 enabled 决定是否重挂（禁用热生效的入口；由 applyPatch 经 refreshToolsHook 触发）。 */
+        const registerAll = (): void => {
+          for (const dispose of activeDisposers) {
             try {
-              re = new RegExp(input.pattern)
-            } catch (error) {
-              throw new Error('pattern 不是合法的正则表达式: ' + (error instanceof Error ? error.message : String(error)))
+              dispose()
+            } catch {
+              /* 工具已注销 */
             }
-            const timeoutSec = Math.max(1, Math.min(600, typeof input.timeoutSec === 'number' && Number.isInteger(input.timeoutSec) && input.timeoutSec >= 1 ? input.timeoutSec : 30))
-            const timeoutMs = timeoutSec * 1000
-            return await new Promise<{ matched: boolean; timedOut: boolean; text: string; exitCode?: number }>((resolve) => {
-              const startedAt = Date.now()
-              const startedInCommand = session.shellState.inCommand
-              let acc = ''
-              let settled = false
-              const decoder = new StringDecoder('utf8')
-              const output = session.handle.output
-              const finish = (result: { matched: boolean; timedOut: boolean; text: string; exitCode?: number }): void => {
-                if (settled) return
-                settled = true
-                clearTimeout(timer)
-                output.off('data', onData)
-                resolve(result)
-              }
-              const onData = (chunk: Buffer): void => {
-                acc += decoder.write(chunk)
-                const hay = acc.length > 16 * 1024 ? acc.slice(-16 * 1024) : acc
-                if (re.test(hay)) {
-                  finish({ matched: true, timedOut: false, text: cleanAnsiTail(hay.slice(-6 * 1024)) })
-                  return
-                }
-                // 命令早停：注册时命令在飞（B..D 之间），如今 D 已到仍未匹配
-                const state = session.shellState
-                if (startedInCommand && !state.inCommand && state.lastCommand !== null && state.lastCommand.endedAt >= startedAt) {
-                  finish({ matched: false, timedOut: false, exitCode: state.lastCommand.exitCode ?? undefined, text: cleanAnsiTail(acc.slice(-6 * 1024)) })
-                }
-              }
-              const timer = setTimeout(() => {
-                finish({ matched: false, timedOut: true, text: cleanAnsiTail(acc.slice(-6 * 1024)) })
-              }, timeoutMs)
-              timer.unref?.()
-              output.on('data', onData)
-              void session.handle.done.then(() => {
-                finish({ matched: false, timedOut: false, text: cleanAnsiTail(acc.slice(-6 * 1024)) })
-              })
-            })
-          },
-        })))
-        disposers.push(tools.register(defineTool({
-          name: 'tty_send',
-          description: '向某个终端面板会话（tty_list 提供 sid）的 PTY 发送按键/文本（命令以 \\n 结尾）。适合给用户终端里运行的程序发交互输入（如 dev server 的 q 键、menu 选择、回答提示）。操作会实时显示在用户的终端面板里。',
-          parameters: {
-            sid: { type: 'string', required: true, description: '会话 id（来自 tty_list）' },
-            data: { type: 'string', required: true, description: '要发送的文本（含换行则直接发送命令）' },
-          },
-          output: {
-            schema: {
-              type: 'object',
-              additionalProperties: false,
-              properties: {
-                ok: { type: 'boolean', required: true },
-                sent: { type: 'number', required: true },
-              },
-            },
-            render: (_args: unknown, value: unknown) => {
-              const v = value as { sent?: number }
-              return [{ type: 'text', text: `已向终端会话发送 ${v.sent ?? 0} 个字符` }]
-            },
-          },
-          async execute(args: unknown): Promise<{ ok: boolean; sent: number }> {
-            const input = args as { sid?: unknown; data?: unknown }
-            if (typeof input.sid !== 'string' || input.sid === '') throw new Error('sid 必须是非空字符串')
-            if (typeof input.data !== 'string' || input.data === '') throw new Error('data 必须是非空字符串')
-            const session = sessions.get(input.sid)
-            if (session === undefined || session.closed) throw new Error(`会话不存在或已退出: ${input.sid}`)
-            await session.handle.write(input.data)
-            return { ok: true, sent: input.data.length }
-          },
-        })))
-        disposers.push(tools.register(defineTool({
-          name: 'tunnel_list',
-          description: '列出端口转发隧道及其实时状态（活跃/连接中/错误/停止、规则、当前与累计连接数、最近错误）。用户说「隧道连不上 / 转发挂了 / 端口转发不通」时先用它诊断；隧道在 设置 → 插件 → 终端面板 卡片维护。',
-          parameters: {},
-          output: {
-            schema: {
-              type: 'object',
-              additionalProperties: false,
-              properties: {
-                tunnels: {
-                  type: 'array',
-                  required: true,
-                  items: {
-                    type: 'object',
-                    additionalProperties: false,
-                    properties: {
-                      name: { type: 'string', required: true },
-                      direction: { type: 'string', required: true },
-                      rule: { type: 'string', required: true },
-                      bookName: { type: 'string', required: true },
-                      state: { type: 'string', required: true },
-                      error: { type: 'string' },
-                      connections: { type: 'number', required: true },
-                      totalConnections: { type: 'number', required: true },
+          }
+          activeDisposers = []
+          if (!stateRef.enabled) {
+            stateRef.toolsRegistered = false
+            console.log('[dsh-tty] agent tools skipped (disabled)')
+            return
+          }
+          activeDisposers.push(tools.register(defineTool({
+            name: 'tty_list',
+            description: '列出当前活跃的终端面板会话（sid / kind(local|ssh) / target / pid / cwd / 创建与最后活动时间）。用户开了终端面板后，用 tty_capture 读取某个 sid 的终端输出，用 tty_send 向该终端发送按键。',
+            parameters: {},
+            output: {
+              schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  sessions: {
+                    type: 'array',
+                    required: true,
+                    items: {
+                      type: 'object',
+                      additionalProperties: false,
+                      properties: {
+                        sid: { type: 'string', required: true },
+                        kind: { type: 'string', required: true },
+                        target: { type: 'string', required: true },
+                        pid: { type: 'number' },
+                        cwd: { type: 'string', required: true },
+                        startedAt: { type: 'number', required: true },
+                        lastOutputAt: { type: 'number', required: true },
+                        persist: { type: 'boolean' },
+                      },
                     },
                   },
                 },
               },
+              render: (_args: unknown, value: unknown) => {
+                const sessions = (value as { sessions?: Array<{ sid: string; pid?: number; cwd: string; kind: 'local' | 'ssh'; target: string; startedAt: number; lastOutputAt: number; persist?: boolean }> })?.sessions ?? []
+                const text = sessions.length === 0
+                  ? '当前没有活跃的终端面板会话（请引导用户先打开终端面板，或用户尚未打开）'
+                  : '终端面板会话：' + sessions.map((s) => {
+                      const where = s.kind === 'ssh' ? `ssh ${s.target}` : `pid=${String(s.pid ?? '?')} cwd=${s.cwd}`
+                      const persist = s.persist === true ? ' [tmux 持久]' : ''
+                      return `\n- sid=${s.sid} [${s.kind}]${persist} ${where} (启动于 ${new Date(s.startedAt).toLocaleString()})`
+                    }).join('')
+                return [{ type: 'text', text }]
+              },
             },
-            render: (_args: unknown, value: unknown) => {
-              const v = value as { tunnels?: Array<{ name: string; direction: string; rule: string; state: string; error: string | null; lastForwardError?: string | null; connections: number }> }
-              const tunnels = v.tunnels ?? []
-              if (tunnels.length === 0) return [{ type: 'text', text: '当前没有配置端口转发隧道（设置 → 插件 → 终端面板 卡片可添加）' }]
-              const text = '端口转发隧道：' + tunnels.map((t) => {
-                const tail = t.error !== null && t.error !== undefined ? `（错误: ${t.error}）` : t.lastForwardError !== null && t.lastForwardError !== undefined ? `（最近转发失败: ${t.lastForwardError}）` : `（连接 ${String(t.connections)}）`
-                return `\n- ${t.name} [${t.direction}] ${t.rule} — ${t.state}${tail}`
-              }).join('')
-              return [{ type: 'text', text }]
+            async execute(): Promise<{ sessions: ReturnType<SessionManager['list']> }> {
+              return { sessions: sessions.list() }
             },
-          },
-          async execute(): Promise<{ tunnels: Array<{ name: string; bookName: string; direction: string; rule: string; state: string; error?: string; connections: number; totalConnections: number }> }> {
-            return { tunnels: tunnelManager.list().map((t) => ({ ...t, error: t.error ?? undefined })) }
-          },
-        })))
-        // —— SFTP 文件传输工具（0.7.0）——
-        // 只收连接簿条目名（book），不接受内联凭证：agent 上下文不进明文密钥；
-        // 连接与终端/隧道共用同一 HostKeyStore（TOFU 同源）。
-        const sftpBookSpec = (book: unknown): SshSpec => {
-          if (typeof book !== 'string' || book.trim() === '') throw new Error('book 必须是 SSH 连接簿条目名')
-          const entry = live.findSshHost(book.trim())
-          if (entry === undefined) throw new Error(`连接簿中不存在: ${book.trim()}`)
-          return entry
+          })))
+          activeDisposers.push(tools.register(defineTool({
+            name: 'tty_capture',
+            description: '读取某个终端面板会话（tty_list 提供 sid）的近期输出。默认读取尾部 N 行（60，最多 500，已剥离 ANSI 转义序列并收敛同行覆盖）；last:true 时只返回「上一条已完成命令」的输出与退出码（依赖 shell 集成标记，更适合拿单条命令的结果）。',
+            parameters: {
+              sid: { type: 'string', required: true, description: '会话 id（来自 tty_list）' },
+              lines: { type: 'number', description: '读取尾部行数（1~500，默认 60）；last:true 时忽略' },
+              last: { type: 'boolean', description: 'true 只返回上一条命令的输出+退出码（默认 false 读尾部）' },
+              raw: { type: 'boolean', description: 'true 返回含 ANSI 转义序列的原始输出（默认 false 清洗为纯文本）' },
+            },
+            output: {
+              schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  sid: { type: 'string', required: true },
+                  tail: { type: 'string', required: true },
+                  source: { type: 'string' },
+                  exitCode: { type: 'number' },
+                },
+              },
+              render: (_args: unknown, value: unknown) => {
+                const v = value as { sid?: string; tail?: string; source?: string; exitCode?: number }
+                const head = v.source === 'last'
+                  ? `终端会话 ${v.sid ?? '?'} 上一条命令的输出（exitCode=${String(v.exitCode ?? '?')}）：\n\n`
+                  : `终端会话 ${v.sid ?? '?'} 尾部输出：\n\n`
+                return [{ type: 'text', text: head + (v.tail ?? '') }]
+              },
+            },
+            async execute(args: unknown): Promise<{ sid: string; tail: string; source?: string; exitCode?: number }> {
+              const input = args as { sid?: unknown; lines?: unknown; last?: unknown; raw?: unknown }
+              if (typeof input.sid !== 'string' || input.sid === '') throw new Error('sid 必须是非空字符串')
+              const session = sessions.get(input.sid)
+              if (session === undefined || session.closed) throw new Error(`会话不存在或已退出: ${input.sid}`)
+              const useRaw = input.raw === true
+              if (input.last === true) {
+                const last = session.shellState.lastCommand
+                if (last === null) {
+                  throw new Error('暂无「上一条命令」记录（shell 集成未生效——shell 不受支持或被配置关闭——或尚未执行过命令）；可改用 lines 读尾部')
+                }
+                return { sid: input.sid, source: 'last', exitCode: last.exitCode ?? undefined, tail: (useRaw ? last.output : cleanAnsiTail(last.output)).slice(0, 128 * 1024) }
+              }
+              const lines = Math.max(1, Math.min(500, typeof input.lines === 'number' && Number.isInteger(input.lines) && input.lines >= 1 ? input.lines : 60))
+              const rawTail = tailLines(session, lines)
+              return { sid: input.sid, source: 'tail', tail: useRaw ? rawTail : cleanAnsiTail(rawTail) }
+            },
+          })))
+          activeDisposers.push(tools.register(defineTool({
+            name: 'tty_screen',
+            description: '读取某个终端面板会话（tty_list 提供 sid）当前可见屏幕的渲染结果（纯文本，等价于用户此刻看到的画面）。适合查看全屏交互程序（vim / htop / 菜单选择）的当前界面状态；要历史滚动输出用 tty_capture。',
+            parameters: {
+              sid: { type: 'string', required: true, description: '会话 id（来自 tty_list）' },
+            },
+            output: {
+              schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  sid: { type: 'string', required: true },
+                  cols: { type: 'number', required: true },
+                  rows: { type: 'number', required: true },
+                  text: { type: 'string', required: true },
+                },
+              },
+              render: (_args: unknown, value: unknown) => {
+                const v = value as { sid?: string; cols?: number; rows?: number; text?: string }
+                return [{ type: 'text', text: `终端会话 ${v.sid ?? '?'} 当前屏幕（${String(v.cols ?? '?')}×${String(v.rows ?? '?')}）：\n\n${v.text ?? ''}` }]
+              },
+            },
+            async execute(args: unknown): Promise<{ sid: string; cols: number; rows: number; text: string }> {
+              const input = args as { sid?: unknown }
+              if (typeof input.sid !== 'string' || input.sid === '') throw new Error('sid 必须是非空字符串')
+              const session = sessions.get(input.sid)
+              if (session === undefined || session.closed) throw new Error(`会话不存在或已退出: ${input.sid}`)
+              const screen = session.screen
+              if (screen === null) throw new Error(`虚拟屏不可用: ${input.sid}`)
+              const buffer = screen.buffer.active
+              const lines: string[] = []
+              for (let row = 0; row < screen.rows; row++) {
+                lines.push(buffer.getLine(row)?.translateToString(true) ?? '')
+              }
+              while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop()
+              return { sid: input.sid, cols: screen.cols, rows: screen.rows, text: lines.join('\n').slice(0, 32 * 1024) }
+            },
+          })))
+          activeDisposers.push(tools.register(defineTool({
+            name: 'tty_expect',
+            description: '在某个终端面板会话（tty_list 提供 sid）的后续输出中等待一个正则出现（如 dev server 的 ready/URL、构建完成标记、交互提示）。匹配到立即返回 matched:true 与周边输出；超时不抛错，返回 matched:false + 尾部输出供判断重试或放弃；期间该命令若已结束（shell 集成标记）也会提前返回并带退出码。适合先 tty_send 启动长任务、再 tty_expect 等就绪信号的流程。',
+            parameters: {
+              sid: { type: 'string', required: true, description: '会话 id（来自 tty_list）' },
+              pattern: { type: 'string', required: true, description: '等待匹配的正则表达式（JavaScript RegExp 语法）' },
+              timeoutSec: { type: 'number', description: '等待秒数（1~600，默认 30）' },
+            },
+            output: {
+              schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  matched: { type: 'boolean', required: true },
+                  timedOut: { type: 'boolean', required: true },
+                  text: { type: 'string', required: true },
+                  exitCode: { type: 'number' },
+                },
+              },
+              render: (_args: unknown, value: unknown) => {
+                const v = value as { matched?: boolean; timedOut?: boolean; text?: string; exitCode?: number }
+                if (v.matched === true) return [{ type: 'text', text: `已匹配到等待的模式：\n\n${v.text ?? ''}` }]
+                const why = v.timedOut === true ? '等待超时' : `命令已结束（exitCode=${String(v.exitCode ?? '?')}）但未出现匹配`
+                return [{ type: 'text', text: `${why}。尾部输出：\n\n${v.text ?? ''}` }]
+              },
+            },
+            async execute(args: unknown): Promise<{ matched: boolean; timedOut: boolean; text: string; exitCode?: number }> {
+              const input = args as { sid?: unknown; pattern?: unknown; timeoutSec?: unknown }
+              if (typeof input.sid !== 'string' || input.sid === '') throw new Error('sid 必须是非空字符串')
+              if (typeof input.pattern !== 'string' || input.pattern === '') throw new Error('pattern 必须是非空字符串')
+              const session = sessions.get(input.sid)
+              if (session === undefined || session.closed) throw new Error(`会话不存在或已退出: ${input.sid}`)
+              let re: RegExp
+              try {
+                re = new RegExp(input.pattern)
+              } catch (error) {
+                throw new Error('pattern 不是合法的正则表达式: ' + (error instanceof Error ? error.message : String(error)))
+              }
+              const timeoutSec = Math.max(1, Math.min(600, typeof input.timeoutSec === 'number' && Number.isInteger(input.timeoutSec) && input.timeoutSec >= 1 ? input.timeoutSec : 30))
+              const timeoutMs = timeoutSec * 1000
+              return await new Promise<{ matched: boolean; timedOut: boolean; text: string; exitCode?: number }>((resolve) => {
+                const startedAt = Date.now()
+                const startedInCommand = session.shellState.inCommand
+                let acc = ''
+                let settled = false
+                const decoder = new StringDecoder('utf8')
+                const output = session.handle.output
+                const finish = (result: { matched: boolean; timedOut: boolean; text: string; exitCode?: number }): void => {
+                  if (settled) return
+                  settled = true
+                  clearTimeout(timer)
+                  output.off('data', onData)
+                  resolve(result)
+                }
+                const onData = (chunk: Buffer): void => {
+                  acc += decoder.write(chunk)
+                  const hay = acc.length > 16 * 1024 ? acc.slice(-16 * 1024) : acc
+                  if (re.test(hay)) {
+                    finish({ matched: true, timedOut: false, text: cleanAnsiTail(hay.slice(-6 * 1024)) })
+                    return
+                  }
+                  // 命令早停：注册时命令在飞（B..D 之间），如今 D 已到仍未匹配
+                  const state = session.shellState
+                  if (startedInCommand && !state.inCommand && state.lastCommand !== null && state.lastCommand.endedAt >= startedAt) {
+                    finish({ matched: false, timedOut: false, exitCode: state.lastCommand.exitCode ?? undefined, text: cleanAnsiTail(acc.slice(-6 * 1024)) })
+                  }
+                }
+                const timer = setTimeout(() => {
+                  finish({ matched: false, timedOut: true, text: cleanAnsiTail(acc.slice(-6 * 1024)) })
+                }, timeoutMs)
+                timer.unref?.()
+                output.on('data', onData)
+                void session.handle.done.then(() => {
+                  finish({ matched: false, timedOut: false, text: cleanAnsiTail(acc.slice(-6 * 1024)) })
+                })
+              })
+            },
+          })))
+          activeDisposers.push(tools.register(defineTool({
+            name: 'tty_send',
+            description: '向某个终端面板会话（tty_list 提供 sid）的 PTY 发送按键/文本（命令以 \\n 结尾）。适合给用户终端里运行的程序发交互输入（如 dev server 的 q 键、menu 选择、回答提示）。操作会实时显示在用户的终端面板里。',
+            parameters: {
+              sid: { type: 'string', required: true, description: '会话 id（来自 tty_list）' },
+              data: { type: 'string', required: true, description: '要发送的文本（含换行则直接发送命令）' },
+            },
+            output: {
+              schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  ok: { type: 'boolean', required: true },
+                  sent: { type: 'number', required: true },
+                },
+              },
+              render: (_args: unknown, value: unknown) => {
+                const v = value as { sent?: number }
+                return [{ type: 'text', text: `已向终端会话发送 ${v.sent ?? 0} 个字符` }]
+              },
+            },
+            async execute(args: unknown): Promise<{ ok: boolean; sent: number }> {
+              const input = args as { sid?: unknown; data?: unknown }
+              if (typeof input.sid !== 'string' || input.sid === '') throw new Error('sid 必须是非空字符串')
+              if (typeof input.data !== 'string' || input.data === '') throw new Error('data 必须是非空字符串')
+              const session = sessions.get(input.sid)
+              if (session === undefined || session.closed) throw new Error(`会话不存在或已退出: ${input.sid}`)
+              await session.handle.write(input.data)
+              return { ok: true, sent: input.data.length }
+            },
+          })))
+          activeDisposers.push(tools.register(defineTool({
+            name: 'tunnel_list',
+            description: '列出端口转发隧道及其实时状态（活跃/连接中/错误/停止、规则、当前与累计连接数、最近错误）。用户说「隧道连不上 / 转发挂了 / 端口转发不通」时先用它诊断；隧道在 设置 → 插件 → 终端面板 卡片维护。',
+            parameters: {},
+            output: {
+              schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  tunnels: {
+                    type: 'array',
+                    required: true,
+                    items: {
+                      type: 'object',
+                      additionalProperties: false,
+                      properties: {
+                        name: { type: 'string', required: true },
+                        direction: { type: 'string', required: true },
+                        rule: { type: 'string', required: true },
+                        bookName: { type: 'string', required: true },
+                        state: { type: 'string', required: true },
+                        error: { type: 'string' },
+                        connections: { type: 'number', required: true },
+                        totalConnections: { type: 'number', required: true },
+                      },
+                    },
+                  },
+                },
+              },
+              render: (_args: unknown, value: unknown) => {
+                const v = value as { tunnels?: Array<{ name: string; direction: string; rule: string; state: string; error: string | null; lastForwardError?: string | null; connections: number }> }
+                const tunnels = v.tunnels ?? []
+                if (tunnels.length === 0) return [{ type: 'text', text: '当前没有配置端口转发隧道（设置 → 插件 → 终端面板 卡片可添加）' }]
+                const text = '端口转发隧道：' + tunnels.map((t) => {
+                  const tail = t.error !== null && t.error !== undefined ? `（错误: ${t.error}）` : t.lastForwardError !== null && t.lastForwardError !== undefined ? `（最近转发失败: ${t.lastForwardError}）` : `（连接 ${String(t.connections)}）`
+                  return `\n- ${t.name} [${t.direction}] ${t.rule} — ${t.state}${tail}`
+                }).join('')
+                return [{ type: 'text', text }]
+              },
+            },
+            async execute(): Promise<{ tunnels: Array<{ name: string; bookName: string; direction: string; rule: string; state: string; error?: string; connections: number; totalConnections: number }> }> {
+              return { tunnels: tunnelManager.list().map((t) => ({ ...t, error: t.error ?? undefined })) }
+            },
+          })))
+          // —— SFTP 文件传输工具（0.7.0）——
+          // 只收连接簿条目名（book），不接受内联凭证：agent 上下文不进明文密钥；
+          // 连接与终端/隧道共用同一 HostKeyStore（TOFU 同源）。
+          const sftpBookSpec = (book: unknown): SshSpec => {
+            if (typeof book !== 'string' || book.trim() === '') throw new Error('book 必须是 SSH 连接簿条目名')
+            const entry = live.findSshHost(book.trim())
+            if (entry === undefined) throw new Error(`连接簿中不存在: ${book.trim()}`)
+            return entry
+          }
+          activeDisposers.push(tools.register(defineTool({
+            name: 'sftp_list',
+            description: '列出 SSH 远程目录内容（名称/类型/大小/修改时间，目录在前）。book 为 SSH 连接簿条目名；path 缺省为远程登录 home。用于查找远程文件、确认上传下载结果。',
+            parameters: {
+              book: { type: 'string', required: true, description: 'SSH 连接簿条目名（设置 → 插件 → 终端面板 维护）' },
+              path: { type: 'string', description: '远程目录路径（缺省 = 登录 home）' },
+            },
+            output: {
+              schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  path: { type: 'string', required: true },
+                  entries: {
+                    type: 'array',
+                    required: true,
+                    items: {
+                      type: 'object',
+                      additionalProperties: false,
+                      properties: {
+                        name: { type: 'string', required: true },
+                        isDir: { type: 'boolean', required: true },
+                        size: { type: 'number', required: true },
+                        mtime: { type: 'number', required: true },
+                      },
+                    },
+                  },
+                },
+              },
+              render: (_args: unknown, value: unknown) => {
+                const v = value as { path?: string; entries?: Array<{ name: string; isDir: boolean; size: number }> }
+                const entries = v.entries ?? []
+                if (entries.length === 0) return [{ type: 'text', text: `远程目录 ${v.path ?? '?'} 为空` }]
+                const text = `远程目录 ${v.path ?? '?'}（${String(entries.length)} 项）：` + entries.map((e) => `\n- ${e.name}${e.isDir ? '/' : ''} — ${e.isDir ? '目录' : humanFileSize(e.size)}`).join('')
+                return [{ type: 'text', text }]
+              },
+            },
+            async execute(args: unknown): Promise<{ path: string; entries: Array<{ name: string; isDir: boolean; size: number; mtime: number }> }> {
+              const input = args as { book?: unknown; path?: unknown }
+              const spec = sftpBookSpec(input.book)
+              const result = await sftpManager.list(spec, typeof input.path === 'string' ? input.path : '')
+              return { path: result.path, entries: result.entries.map((e) => ({ name: e.name, isDir: e.isDir, size: e.size, mtime: e.mtime })) }
+            },
+          })))
+          activeDisposers.push(tools.register(defineTool({
+            name: 'sftp_read',
+            description: '读取 SSH 远程文本文件（book 连接簿条目 + path）。默认最多 256KB（可调至 1MB），超出截断；检测到 NUL 字节按二进制文件拒绝。适合查看远程配置、小日志。',
+            parameters: {
+              book: { type: 'string', required: true, description: 'SSH 连接簿条目名' },
+              path: { type: 'string', required: true, description: '远程文件路径' },
+              maxBytes: { type: 'number', description: '最大读取字节数（1~1048576，默认 262144）' },
+            },
+            output: {
+              schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  path: { type: 'string', required: true },
+                  content: { type: 'string', required: true },
+                  truncated: { type: 'boolean', required: true },
+                },
+              },
+              render: (_args: unknown, value: unknown) => {
+                const v = value as { path?: string; content?: string; truncated?: boolean }
+                const head = `远程文件 ${v.path ?? '?'}${v.truncated === true ? '（已截断）' : ''}：`
+                return [{ type: 'text', text: head + '\n' + String(v.content ?? '') }]
+              },
+            },
+            async execute(args: unknown): Promise<{ path: string; content: string; truncated: boolean }> {
+              const input = args as { book?: unknown; path?: unknown; maxBytes?: unknown }
+              const spec = sftpBookSpec(input.book)
+              if (typeof input.path !== 'string' || input.path.trim() === '') throw new Error('path 必须是非空字符串')
+              const maxBytes = typeof input.maxBytes === 'number' && Number.isInteger(input.maxBytes) && input.maxBytes >= 1 && input.maxBytes <= 1024 * 1024 ? input.maxBytes : 256 * 1024
+              const { stream } = await sftpManager.openDownload(spec, input.path)
+              const chunks: Buffer[] = []
+              let total = 0
+              try {
+                for await (const chunk of stream) {
+                  const piece = chunk as Buffer
+                  chunks.push(piece)
+                  total += piece.length
+                  if (total > maxBytes) break // 只多读一段用于判定截断，其余丢弃
+                }
+              } finally {
+                stream.destroy()
+              }
+              const buf = Buffer.concat(chunks)
+              const truncated = buf.length > maxBytes
+              const sliced = truncated ? buf.subarray(0, maxBytes) : buf
+              if (sliced.includes(0)) throw new Error('疑似二进制文件（含 NUL 字节），sftp_read 只支持文本内容')
+              return { path: input.path.trim(), content: sliced.toString('utf8'), truncated }
+            },
+          })))
+          activeDisposers.push(tools.register(defineTool({
+            name: 'sftp_write',
+            description: '写 SSH 远程文本文件（book 连接簿条目 + path + content）。默认覆盖写入，append:true 追加到文件尾；单次最多 1MB。适合远程写配置、落结果文件。',
+            parameters: {
+              book: { type: 'string', required: true, description: 'SSH 连接簿条目名' },
+              path: { type: 'string', required: true, description: '远程文件路径' },
+              content: { type: 'string', required: true, description: '要写入的文本内容（≤1MB）' },
+              append: { type: 'boolean', description: 'true 追加到文件尾（默认覆盖）' },
+            },
+            output: {
+              schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  ok: { type: 'boolean', required: true },
+                  path: { type: 'string', required: true },
+                  bytes: { type: 'number', required: true },
+                  append: { type: 'boolean', required: true },
+                },
+              },
+              render: (_args: unknown, value: unknown) => {
+                const v = value as { path?: string; bytes?: number; append?: boolean }
+                return [{ type: 'text', text: `已${v.append === true ? '追加' : '写入'}远程文件 ${v.path ?? '?'}（${String(v.bytes ?? 0)} 字节）` }]
+              },
+            },
+            async execute(args: unknown): Promise<{ ok: boolean; path: string; bytes: number; append: boolean }> {
+              const input = args as { book?: unknown; path?: unknown; content?: unknown; append?: unknown }
+              const spec = sftpBookSpec(input.book)
+              if (typeof input.path !== 'string' || input.path.trim() === '') throw new Error('path 必须是非空字符串')
+              if (typeof input.content !== 'string') throw new Error('content 必须是字符串')
+              const bytes = Buffer.byteLength(input.content, 'utf8')
+              if (bytes > 1024 * 1024) throw new Error(`content 超过上限：${String(bytes)} 字节 > 1MB（大文件请用终端 scp 或面板上传）`)
+              const append = input.append === true
+              const { stream, done } = await sftpManager.openUpload(spec, input.path, append)
+              stream.write(input.content, 'utf8')
+              stream.end()
+              await done
+              return { ok: true, path: input.path.trim(), bytes, append }
+            },
+          })))
+          // —— SFTP 管理闭环（0.8.0）——
+          // mkdir（可逐级补齐）/ rename（可跨目录，等效移动）/ remove（目录
+          // 递归）/ tree（限深限数的递归列举），与 sftp_list/read/write 一起
+          // 让 agent 不开面板也能完整管理远程文件；同样只收连接簿条目名。
+          activeDisposers.push(tools.register(defineTool({
+            name: 'sftp_mkdir',
+            description: '在 SSH 远程创建目录（book 连接簿条目 + path）。parents:true 时逐级补齐缺失的父目录（等效 mkdir -p，默认 false，父目录缺失直接报错）。',
+            parameters: {
+              book: { type: 'string', required: true, description: 'SSH 连接簿条目名（设置 → 插件 → 终端面板 维护）' },
+              path: { type: 'string', required: true, description: '要创建的远程目录路径' },
+              parents: { type: 'boolean', description: 'true 逐级补齐缺失父目录（默认 false）' },
+            },
+            output: {
+              schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  ok: { type: 'boolean', required: true },
+                  path: { type: 'string', required: true },
+                },
+              },
+              render: (_args: unknown, value: unknown) => {
+                const v = value as { path?: string }
+                return [{ type: 'text', text: `已创建远程目录 ${v.path ?? '?'}` }]
+              },
+            },
+            async execute(args: unknown): Promise<{ ok: boolean; path: string }> {
+              const input = args as { book?: unknown; path?: unknown; parents?: unknown }
+              const spec = sftpBookSpec(input.book)
+              if (typeof input.path !== 'string' || input.path.trim() === '') throw new Error('path 必须是非空字符串')
+              await sftpManager.mkdir(spec, input.path, input.parents === true)
+              return { ok: true, path: input.path.trim() }
+            },
+          })))
+          activeDisposers.push(tools.register(defineTool({
+            name: 'sftp_rename',
+            description: '在 SSH 远程重命名 / 移动文件或目录（book 连接簿条目 + from + to）。to 与 from 不同目录即为移动（目标目录需已存在）；不会覆盖已存在的目标（服务端 rename 语义）。',
+            parameters: {
+              book: { type: 'string', required: true, description: 'SSH 连接簿条目名' },
+              from: { type: 'string', required: true, description: '原远程路径' },
+              to: { type: 'string', required: true, description: '新远程路径（跨目录即移动）' },
+            },
+            output: {
+              schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  ok: { type: 'boolean', required: true },
+                  from: { type: 'string', required: true },
+                  to: { type: 'string', required: true },
+                },
+              },
+              render: (_args: unknown, value: unknown) => {
+                const v = value as { from?: string; to?: string }
+                return [{ type: 'text', text: `已将远程 ${v.from ?? '?'} 重命名/移动为 ${v.to ?? '?'}` }]
+              },
+            },
+            async execute(args: unknown): Promise<{ ok: boolean; from: string; to: string }> {
+              const input = args as { book?: unknown; from?: unknown; to?: unknown }
+              const spec = sftpBookSpec(input.book)
+              if (typeof input.from !== 'string' || input.from.trim() === '') throw new Error('from 必须是非空字符串')
+              if (typeof input.to !== 'string' || input.to.trim() === '') throw new Error('to 必须是非空字符串')
+              await sftpManager.rename(spec, input.from, input.to)
+              return { ok: true, from: input.from.trim(), to: input.to.trim() }
+            },
+          })))
+          activeDisposers.push(tools.register(defineTool({
+            name: 'sftp_remove',
+            description: '删除 SSH 远程文件或目录（book 连接簿条目 + path）。文件直接删除；目录默认走 rmdir（非空明确报错），recursive:true 整目录递归删除（不可恢复，谨慎使用）。',
+            parameters: {
+              book: { type: 'string', required: true, description: 'SSH 连接簿条目名' },
+              path: { type: 'string', required: true, description: '要删除的远程路径' },
+              recursive: { type: 'boolean', description: '目录 true 时递归删除全部内容（默认 false）' },
+            },
+            output: {
+              schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  ok: { type: 'boolean', required: true },
+                  path: { type: 'string', required: true },
+                  recursive: { type: 'boolean', required: true },
+                },
+              },
+              render: (_args: unknown, value: unknown) => {
+                const v = value as { path?: string; recursive?: boolean }
+                return [{ type: 'text', text: `已删除远程 ${v.path ?? '?'}${v.recursive === true ? '（含全部内容）' : ''}` }]
+              },
+            },
+            async execute(args: unknown): Promise<{ ok: boolean; path: string; recursive: boolean }> {
+              const input = args as { book?: unknown; path?: unknown; recursive?: unknown }
+              const spec = sftpBookSpec(input.book)
+              if (typeof input.path !== 'string' || input.path.trim() === '') throw new Error('path 必须是非空字符串')
+              const recursive = input.recursive === true
+              await sftpManager.remove(spec, input.path, recursive)
+              return { ok: true, path: input.path.trim(), recursive }
+            },
+          })))
+          activeDisposers.push(tools.register(defineTool({
+            name: 'sftp_tree',
+            description: '递归列举 SSH 远程目录结构（book 连接簿条目 + path）：深度优先、目录优先，maxDepth（1~8，默认 3）限层、maxEntries（1~2000，默认 500）限条数，超限 truncated:true；符号链接不跟随；读取失败的子目录列入 errors。适合先看远程项目结构再定位文件。',
+            parameters: {
+              book: { type: 'string', required: true, description: 'SSH 连接簿条目名' },
+              path: { type: 'string', description: '远程目录路径（缺省 = 登录 home）' },
+              maxDepth: { type: 'number', description: '最大下钻层数（1~8，默认 3）' },
+              maxEntries: { type: 'number', description: '最大条目数（1~2000，默认 500）' },
+            },
+            output: {
+              schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  path: { type: 'string', required: true },
+                  entries: {
+                    type: 'array',
+                    required: true,
+                    items: {
+                      type: 'object',
+                      additionalProperties: false,
+                      properties: {
+                        path: { type: 'string', required: true },
+                        name: { type: 'string', required: true },
+                        depth: { type: 'number', required: true },
+                        isDir: { type: 'boolean', required: true },
+                        size: { type: 'number', required: true },
+                        mtime: { type: 'number', required: true },
+                      },
+                    },
+                  },
+                  truncated: { type: 'boolean', required: true },
+                  errors: {
+                    type: 'array',
+                    required: true,
+                    items: {
+                      type: 'object',
+                      additionalProperties: false,
+                      properties: {
+                        path: { type: 'string', required: true },
+                        message: { type: 'string', required: true },
+                      },
+                    },
+                  },
+                },
+              },
+              render: (_args: unknown, value: unknown) => {
+                const v = value as { path?: string; entries?: Array<{ path: string; name: string; depth: number; isDir: boolean; size: number }>; truncated?: boolean; errors?: Array<{ path: string; message: string }> }
+                const entries = v.entries ?? []
+                if (entries.length === 0) return [{ type: 'text', text: `远程目录 ${v.path ?? '?'} 为空` }]
+                const head = `远程目录 ${v.path ?? '?'} 结构（${String(entries.length)} 项${v.truncated === true ? '，已截断' : ''}）：`
+                const lines = entries.map((e) => {
+                  const indent = '  '.repeat(Math.max(0, e.depth - 1))
+                  const tail = e.isDir ? '/' : ' — ' + humanFileSize(e.size)
+                  return `${indent}- ${e.name}${tail}`
+                })
+                for (const item of v.errors ?? []) lines.push(`! ${item.path}（${item.message}）`)
+                return [{ type: 'text', text: head + '\n' + lines.join('\n') }]
+              },
+            },
+            async execute(args: unknown): Promise<{ path: string; entries: Array<{ path: string; name: string; depth: number; isDir: boolean; size: number; mtime: number }>; truncated: boolean; errors: Array<{ path: string; message: string }> }> {
+              const input = args as { book?: unknown; path?: unknown; maxDepth?: unknown; maxEntries?: unknown }
+              const spec = sftpBookSpec(input.book)
+              const result = await sftpManager.tree(spec, typeof input.path === 'string' ? input.path : '', {
+                maxDepth: typeof input.maxDepth === 'number' && Number.isInteger(input.maxDepth) ? input.maxDepth : undefined,
+                maxEntries: typeof input.maxEntries === 'number' && Number.isInteger(input.maxEntries) ? input.maxEntries : undefined,
+              })
+              return result
+            },
+          })))
+          stateRef.toolsRegistered = true
+          console.log('[dsh-tty] agent tools registered (tty_list, tty_capture, tty_screen, tty_expect, tty_send, tunnel_list, sftp_list, sftp_read, sftp_write, sftp_mkdir, sftp_rename, sftp_remove, sftp_tree)')
         }
-        disposers.push(tools.register(defineTool({
-          name: 'sftp_list',
-          description: '列出 SSH 远程目录内容（名称/类型/大小/修改时间，目录在前）。book 为 SSH 连接簿条目名；path 缺省为远程登录 home。用于查找远程文件、确认上传下载结果。',
-          parameters: {
-            book: { type: 'string', required: true, description: 'SSH 连接簿条目名（设置 → 插件 → 终端面板 维护）' },
-            path: { type: 'string', description: '远程目录路径（缺省 = 登录 home）' },
-          },
-          output: {
-            schema: {
-              type: 'object',
-              additionalProperties: false,
-              properties: {
-                path: { type: 'string', required: true },
-                entries: {
-                  type: 'array',
-                  required: true,
-                  items: {
-                    type: 'object',
-                    additionalProperties: false,
-                    properties: {
-                      name: { type: 'string', required: true },
-                      isDir: { type: 'boolean', required: true },
-                      size: { type: 'number', required: true },
-                      mtime: { type: 'number', required: true },
-                    },
-                  },
-                },
-              },
-            },
-            render: (_args: unknown, value: unknown) => {
-              const v = value as { path?: string; entries?: Array<{ name: string; isDir: boolean; size: number }> }
-              const entries = v.entries ?? []
-              if (entries.length === 0) return [{ type: 'text', text: `远程目录 ${v.path ?? '?'} 为空` }]
-              const text = `远程目录 ${v.path ?? '?'}（${String(entries.length)} 项）：` + entries.map((e) => `\n- ${e.name}${e.isDir ? '/' : ''} — ${e.isDir ? '目录' : humanFileSize(e.size)}`).join('')
-              return [{ type: 'text', text }]
-            },
-          },
-          async execute(args: unknown): Promise<{ path: string; entries: Array<{ name: string; isDir: boolean; size: number; mtime: number }> }> {
-            const input = args as { book?: unknown; path?: unknown }
-            const spec = sftpBookSpec(input.book)
-            const result = await sftpManager.list(spec, typeof input.path === 'string' ? input.path : '')
-            return { path: result.path, entries: result.entries.map((e) => ({ name: e.name, isDir: e.isDir, size: e.size, mtime: e.mtime })) }
-          },
-        })))
-        disposers.push(tools.register(defineTool({
-          name: 'sftp_read',
-          description: '读取 SSH 远程文本文件（book 连接簿条目 + path）。默认最多 256KB（可调至 1MB），超出截断；检测到 NUL 字节按二进制文件拒绝。适合查看远程配置、小日志。',
-          parameters: {
-            book: { type: 'string', required: true, description: 'SSH 连接簿条目名' },
-            path: { type: 'string', required: true, description: '远程文件路径' },
-            maxBytes: { type: 'number', description: '最大读取字节数（1~1048576，默认 262144）' },
-          },
-          output: {
-            schema: {
-              type: 'object',
-              additionalProperties: false,
-              properties: {
-                path: { type: 'string', required: true },
-                content: { type: 'string', required: true },
-                truncated: { type: 'boolean', required: true },
-              },
-            },
-            render: (_args: unknown, value: unknown) => {
-              const v = value as { path?: string; content?: string; truncated?: boolean }
-              const head = `远程文件 ${v.path ?? '?'}${v.truncated === true ? '（已截断）' : ''}：`
-              return [{ type: 'text', text: head + '\n' + String(v.content ?? '') }]
-            },
-          },
-          async execute(args: unknown): Promise<{ path: string; content: string; truncated: boolean }> {
-            const input = args as { book?: unknown; path?: unknown; maxBytes?: unknown }
-            const spec = sftpBookSpec(input.book)
-            if (typeof input.path !== 'string' || input.path.trim() === '') throw new Error('path 必须是非空字符串')
-            const maxBytes = typeof input.maxBytes === 'number' && Number.isInteger(input.maxBytes) && input.maxBytes >= 1 && input.maxBytes <= 1024 * 1024 ? input.maxBytes : 256 * 1024
-            const { stream } = await sftpManager.openDownload(spec, input.path)
-            const chunks: Buffer[] = []
-            let total = 0
-            try {
-              for await (const chunk of stream) {
-                const piece = chunk as Buffer
-                chunks.push(piece)
-                total += piece.length
-                if (total > maxBytes) break // 只多读一段用于判定截断，其余丢弃
-              }
-            } finally {
-              stream.destroy()
-            }
-            const buf = Buffer.concat(chunks)
-            const truncated = buf.length > maxBytes
-            const sliced = truncated ? buf.subarray(0, maxBytes) : buf
-            if (sliced.includes(0)) throw new Error('疑似二进制文件（含 NUL 字节），sftp_read 只支持文本内容')
-            return { path: input.path.trim(), content: sliced.toString('utf8'), truncated }
-          },
-        })))
-        disposers.push(tools.register(defineTool({
-          name: 'sftp_write',
-          description: '写 SSH 远程文本文件（book 连接簿条目 + path + content）。默认覆盖写入，append:true 追加到文件尾；单次最多 1MB。适合远程写配置、落结果文件。',
-          parameters: {
-            book: { type: 'string', required: true, description: 'SSH 连接簿条目名' },
-            path: { type: 'string', required: true, description: '远程文件路径' },
-            content: { type: 'string', required: true, description: '要写入的文本内容（≤1MB）' },
-            append: { type: 'boolean', description: 'true 追加到文件尾（默认覆盖）' },
-          },
-          output: {
-            schema: {
-              type: 'object',
-              additionalProperties: false,
-              properties: {
-                ok: { type: 'boolean', required: true },
-                path: { type: 'string', required: true },
-                bytes: { type: 'number', required: true },
-                append: { type: 'boolean', required: true },
-              },
-            },
-            render: (_args: unknown, value: unknown) => {
-              const v = value as { path?: string; bytes?: number; append?: boolean }
-              return [{ type: 'text', text: `已${v.append === true ? '追加' : '写入'}远程文件 ${v.path ?? '?'}（${String(v.bytes ?? 0)} 字节）` }]
-            },
-          },
-          async execute(args: unknown): Promise<{ ok: boolean; path: string; bytes: number; append: boolean }> {
-            const input = args as { book?: unknown; path?: unknown; content?: unknown; append?: unknown }
-            const spec = sftpBookSpec(input.book)
-            if (typeof input.path !== 'string' || input.path.trim() === '') throw new Error('path 必须是非空字符串')
-            if (typeof input.content !== 'string') throw new Error('content 必须是字符串')
-            const bytes = Buffer.byteLength(input.content, 'utf8')
-            if (bytes > 1024 * 1024) throw new Error(`content 超过上限：${String(bytes)} 字节 > 1MB（大文件请用终端 scp 或面板上传）`)
-            const append = input.append === true
-            const { stream, done } = await sftpManager.openUpload(spec, input.path, append)
-            stream.write(input.content, 'utf8')
-            stream.end()
-            await done
-            return { ok: true, path: input.path.trim(), bytes, append }
-          },
-        })))
-        // —— SFTP 管理闭环（0.8.0）——
-        // mkdir（可逐级补齐）/ rename（可跨目录，等效移动）/ remove（目录
-        // 递归）/ tree（限深限数的递归列举），与 sftp_list/read/write 一起
-        // 让 agent 不开面板也能完整管理远程文件；同样只收连接簿条目名。
-        disposers.push(tools.register(defineTool({
-          name: 'sftp_mkdir',
-          description: '在 SSH 远程创建目录（book 连接簿条目 + path）。parents:true 时逐级补齐缺失的父目录（等效 mkdir -p，默认 false，父目录缺失直接报错）。',
-          parameters: {
-            book: { type: 'string', required: true, description: 'SSH 连接簿条目名（设置 → 插件 → 终端面板 维护）' },
-            path: { type: 'string', required: true, description: '要创建的远程目录路径' },
-            parents: { type: 'boolean', description: 'true 逐级补齐缺失父目录（默认 false）' },
-          },
-          output: {
-            schema: {
-              type: 'object',
-              additionalProperties: false,
-              properties: {
-                ok: { type: 'boolean', required: true },
-                path: { type: 'string', required: true },
-              },
-            },
-            render: (_args: unknown, value: unknown) => {
-              const v = value as { path?: string }
-              return [{ type: 'text', text: `已创建远程目录 ${v.path ?? '?'}` }]
-            },
-          },
-          async execute(args: unknown): Promise<{ ok: boolean; path: string }> {
-            const input = args as { book?: unknown; path?: unknown; parents?: unknown }
-            const spec = sftpBookSpec(input.book)
-            if (typeof input.path !== 'string' || input.path.trim() === '') throw new Error('path 必须是非空字符串')
-            await sftpManager.mkdir(spec, input.path, input.parents === true)
-            return { ok: true, path: input.path.trim() }
-          },
-        })))
-        disposers.push(tools.register(defineTool({
-          name: 'sftp_rename',
-          description: '在 SSH 远程重命名 / 移动文件或目录（book 连接簿条目 + from + to）。to 与 from 不同目录即为移动（目标目录需已存在）；不会覆盖已存在的目标（服务端 rename 语义）。',
-          parameters: {
-            book: { type: 'string', required: true, description: 'SSH 连接簿条目名' },
-            from: { type: 'string', required: true, description: '原远程路径' },
-            to: { type: 'string', required: true, description: '新远程路径（跨目录即移动）' },
-          },
-          output: {
-            schema: {
-              type: 'object',
-              additionalProperties: false,
-              properties: {
-                ok: { type: 'boolean', required: true },
-                from: { type: 'string', required: true },
-                to: { type: 'string', required: true },
-              },
-            },
-            render: (_args: unknown, value: unknown) => {
-              const v = value as { from?: string; to?: string }
-              return [{ type: 'text', text: `已将远程 ${v.from ?? '?'} 重命名/移动为 ${v.to ?? '?'}` }]
-            },
-          },
-          async execute(args: unknown): Promise<{ ok: boolean; from: string; to: string }> {
-            const input = args as { book?: unknown; from?: unknown; to?: unknown }
-            const spec = sftpBookSpec(input.book)
-            if (typeof input.from !== 'string' || input.from.trim() === '') throw new Error('from 必须是非空字符串')
-            if (typeof input.to !== 'string' || input.to.trim() === '') throw new Error('to 必须是非空字符串')
-            await sftpManager.rename(spec, input.from, input.to)
-            return { ok: true, from: input.from.trim(), to: input.to.trim() }
-          },
-        })))
-        disposers.push(tools.register(defineTool({
-          name: 'sftp_remove',
-          description: '删除 SSH 远程文件或目录（book 连接簿条目 + path）。文件直接删除；目录默认走 rmdir（非空明确报错），recursive:true 整目录递归删除（不可恢复，谨慎使用）。',
-          parameters: {
-            book: { type: 'string', required: true, description: 'SSH 连接簿条目名' },
-            path: { type: 'string', required: true, description: '要删除的远程路径' },
-            recursive: { type: 'boolean', description: '目录 true 时递归删除全部内容（默认 false）' },
-          },
-          output: {
-            schema: {
-              type: 'object',
-              additionalProperties: false,
-              properties: {
-                ok: { type: 'boolean', required: true },
-                path: { type: 'string', required: true },
-                recursive: { type: 'boolean', required: true },
-              },
-            },
-            render: (_args: unknown, value: unknown) => {
-              const v = value as { path?: string; recursive?: boolean }
-              return [{ type: 'text', text: `已删除远程 ${v.path ?? '?'}${v.recursive === true ? '（含全部内容）' : ''}` }]
-            },
-          },
-          async execute(args: unknown): Promise<{ ok: boolean; path: string; recursive: boolean }> {
-            const input = args as { book?: unknown; path?: unknown; recursive?: unknown }
-            const spec = sftpBookSpec(input.book)
-            if (typeof input.path !== 'string' || input.path.trim() === '') throw new Error('path 必须是非空字符串')
-            const recursive = input.recursive === true
-            await sftpManager.remove(spec, input.path, recursive)
-            return { ok: true, path: input.path.trim(), recursive }
-          },
-        })))
-        disposers.push(tools.register(defineTool({
-          name: 'sftp_tree',
-          description: '递归列举 SSH 远程目录结构（book 连接簿条目 + path）：深度优先、目录优先，maxDepth（1~8，默认 3）限层、maxEntries（1~2000，默认 500）限条数，超限 truncated:true；符号链接不跟随；读取失败的子目录列入 errors。适合先看远程项目结构再定位文件。',
-          parameters: {
-            book: { type: 'string', required: true, description: 'SSH 连接簿条目名' },
-            path: { type: 'string', description: '远程目录路径（缺省 = 登录 home）' },
-            maxDepth: { type: 'number', description: '最大下钻层数（1~8，默认 3）' },
-            maxEntries: { type: 'number', description: '最大条目数（1~2000，默认 500）' },
-          },
-          output: {
-            schema: {
-              type: 'object',
-              additionalProperties: false,
-              properties: {
-                path: { type: 'string', required: true },
-                entries: {
-                  type: 'array',
-                  required: true,
-                  items: {
-                    type: 'object',
-                    additionalProperties: false,
-                    properties: {
-                      path: { type: 'string', required: true },
-                      name: { type: 'string', required: true },
-                      depth: { type: 'number', required: true },
-                      isDir: { type: 'boolean', required: true },
-                      size: { type: 'number', required: true },
-                      mtime: { type: 'number', required: true },
-                    },
-                  },
-                },
-                truncated: { type: 'boolean', required: true },
-                errors: {
-                  type: 'array',
-                  required: true,
-                  items: {
-                    type: 'object',
-                    additionalProperties: false,
-                    properties: {
-                      path: { type: 'string', required: true },
-                      message: { type: 'string', required: true },
-                    },
-                  },
-                },
-              },
-            },
-            render: (_args: unknown, value: unknown) => {
-              const v = value as { path?: string; entries?: Array<{ path: string; name: string; depth: number; isDir: boolean; size: number }>; truncated?: boolean; errors?: Array<{ path: string; message: string }> }
-              const entries = v.entries ?? []
-              if (entries.length === 0) return [{ type: 'text', text: `远程目录 ${v.path ?? '?'} 为空` }]
-              const head = `远程目录 ${v.path ?? '?'} 结构（${String(entries.length)} 项${v.truncated === true ? '，已截断' : ''}）：`
-              const lines = entries.map((e) => {
-                const indent = '  '.repeat(Math.max(0, e.depth - 1))
-                const tail = e.isDir ? '/' : ' — ' + humanFileSize(e.size)
-                return `${indent}- ${e.name}${tail}`
-              })
-              for (const item of v.errors ?? []) lines.push(`! ${item.path}（${item.message}）`)
-              return [{ type: 'text', text: head + '\n' + lines.join('\n') }]
-            },
-          },
-          async execute(args: unknown): Promise<{ path: string; entries: Array<{ path: string; name: string; depth: number; isDir: boolean; size: number; mtime: number }>; truncated: boolean; errors: Array<{ path: string; message: string }> }> {
-            const input = args as { book?: unknown; path?: unknown; maxDepth?: unknown; maxEntries?: unknown }
-            const spec = sftpBookSpec(input.book)
-            const result = await sftpManager.tree(spec, typeof input.path === 'string' ? input.path : '', {
-              maxDepth: typeof input.maxDepth === 'number' && Number.isInteger(input.maxDepth) ? input.maxDepth : undefined,
-              maxEntries: typeof input.maxEntries === 'number' && Number.isInteger(input.maxEntries) ? input.maxEntries : undefined,
-            })
-            return result
-          },
-        })))
-        stateRef.toolsRegistered = true
-        console.log('[dsh-tty] agent tools registered (tty_list, tty_capture, tty_screen, tty_expect, tty_send, tunnel_list, sftp_list, sftp_read, sftp_write, sftp_mkdir, sftp_rename, sftp_remove, sftp_tree)')
+        refreshToolsHook = registerAll
+        registerAll()
         return () => {
           stateRef.toolsRegistered = false
-          for (const dispose of disposers) {
+          refreshToolsHook = () => {}
+          for (const dispose of activeDisposers) {
             try {
               dispose()
             } catch {
@@ -3110,11 +3181,32 @@ const plugin = definePlugin<Config>({
     }
 
     // 向 agent 公告终端面板能力（静态 section）+ 每轮注入活跃会话快照（动态 context）
-    if (config?.announceToAgent !== false) {
-      ctx.inject(['systemPrompt'], (promptCtx: Context) => {
-        promptCtx.effect(() => {
-          const systemPrompt = (promptCtx as unknown as { systemPrompt: { section(options: { name: string; order?: number; text: string }): () => void; context(options: { name: string; order?: number; text: string | ((context: unknown) => string) }): () => void } }).systemPrompt
-          const contextDisposable = systemPrompt.context({
+    ctx.inject(['systemPrompt'], (promptCtx: Context) => {
+      promptCtx.effect(() => {
+        const systemPrompt = (promptCtx as unknown as { systemPrompt: { section(options: { name: string; order?: number; text: string }): () => void; context(options: { name: string; order?: number; text: string | ((context: unknown) => string) }): () => void } }).systemPrompt
+        let contextDisposable: (() => void) | undefined
+        let sectionDisposable: (() => void) | undefined
+
+        /** 幂等重建：按 enabled && announceToAgent 撤下/恢复公告与动态快照（禁用热生效入口）。 */
+        const rebuild = (): void => {
+          if (sectionDisposable !== undefined) {
+            try {
+              sectionDisposable()
+            } catch {
+              /* 已注销 */
+            }
+            sectionDisposable = undefined
+          }
+          if (contextDisposable !== undefined) {
+            try {
+              contextDisposable()
+            } catch {
+              /* 已注销 */
+            }
+            contextDisposable = undefined
+          }
+          if (!stateRef.enabled || !stateRef.announceToAgent) return
+          contextDisposable = systemPrompt.context({
             name: 'plugin:dsh-tty:terminals',
             order: 150,
             text: () => {
@@ -3126,14 +3218,30 @@ const plugin = definePlugin<Config>({
               }).join('\n')
             },
           })
-          const sectionDisposable = systemPrompt.section({ name: 'plugin:dsh-tty', order: 150, text: TTY_GUIDANCE })
-          return () => {
-            sectionDisposable()
-            contextDisposable()
+          sectionDisposable = systemPrompt.section({ name: 'plugin:dsh-tty', order: 150, text: TTY_GUIDANCE })
+        }
+
+        refreshAnnouncementHook = rebuild
+        rebuild()
+        return () => {
+          refreshAnnouncementHook = () => {}
+          if (sectionDisposable !== undefined) {
+            try {
+              sectionDisposable()
+            } catch {
+              /* 已注销 */
+            }
           }
-        }, 'dsh-tty: announcement')
-      })
-    }
+          if (contextDisposable !== undefined) {
+            try {
+              contextDisposable()
+            } catch {
+              /* 已注销 */
+            }
+          }
+        }
+      }, 'dsh-tty: announcement')
+    })
 
     // 孤儿会话回收器：超过保活期的异常断开会话定期清理（grace=0 时为 no-op，
     // 断开时立即结束）；插件卸载时随 effect 一起停掉

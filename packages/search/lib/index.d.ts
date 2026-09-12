@@ -14,7 +14,7 @@ export interface Config {
     includePanels?: boolean;
     /** 是否向 agent 注入插件能力公告。默认开。 */
     announceToAgent?: boolean;
-    /** 会话回退扫描的最大会话数（宿主 FTS 不可用时的保护上限）。默认 80。 */
+    /** 会话回退扫描的最大会话数：宿主 FTS 不可用时按会话最近优先截断到此数，上限 500。默认 80。 */
     maxScanSessions?: number;
 }
 export declare const name: string, inject: string[] | undefined, apply: (ctx: Context, config?: Config | undefined) => void;

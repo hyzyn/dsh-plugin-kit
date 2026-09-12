@@ -245,14 +245,17 @@ function registerConnbarAction(factory) {
   return () => connbarActions.delete(factory)
 }
 
-// 内置动作：与第三方扩展同一通道，因此顺序与权限完全一致
+// 内置动作：与第三方扩展同一通道，因此顺序与权限完全一致（插件禁用时全部收起）
 registerConnbarAction(({ tab, addAction }) => {
+  if (!entryVisible) return
   if (tab.exited) addAction(ICON_RECONNECT, '重新打开', '以原连接信息重开会话', () => respawnTab(tab.sid))
 })
 registerConnbarAction(({ tab, addAction }) => {
+  if (!entryVisible) return
   addAction(ICON_SFTP, 'SFTP', '打开该连接的文件浏览（SFTP）', () => openSftpBrowser(tab.spawnSpec))
 })
 registerConnbarAction(({ bookName, addAction }) => {
+  if (!entryVisible) return
   const count = bookName !== '' ? tunnelCountFor(bookName) : 0
   if (count > 0) {
     addAction(ICON_TUNNEL, '隧道 ' + count, '查看该连接的端口转发隧道', (event) => openTunnelPopover(event.currentTarget, bookName))
@@ -1393,7 +1396,29 @@ let sftpLimitsCache = { maxDownloadMb: 1024, maxUploadMb: 2048, maxUploadFiles: 
 /** 宿主并发会话上限与最近一次查询的存活会话数（新增标签的前置校验用）。 */
 let maxSessionsCache = null
 let liveSessionCount = null
+/* ============================ 入口显隐闸门 ============================ */
+
+/**
+ * 侧栏「终端」入口与连接栏内置动作的显隐：config 确认「插件已禁用」
+ * （enabled === false）后收起，其余情况（含 config 拉取失败）保持显示——只对
+ * 确认禁用收起，避免瞬时故障把没禁用用户的入口藏掉。entryGate 由 apply 挂载
+ * 期间注入（null = 已卸载，迟到的缓存刷新不允许再把入口挂回来）。
+ */
+let entryGate = null
+let entryVisible = false
+
+function setEntryVisible(visible) {
+  entryVisible = visible
+  if (entryGate !== null) entryGate.set(visible)
+}
+
+/** 由 config 推进入口显隐：仅「确认 enabled:false」收起。 */
+function syncEntryFromConfig(config) {
+  setEntryVisible(!(config !== null && typeof config === 'object' && config.enabled === false))
+}
+
 function syncSshHostsCache(config) {
+  syncEntryFromConfig(config)
   if (config !== null && typeof config === 'object' && Array.isArray(config.sshHosts)) {
     sshHostsCache = config.sshHosts
   }
@@ -5050,6 +5075,7 @@ function TtySettingsCard() {
               jsx('span', { className: 'tt_cardDescription', children: 'xterm 终端面板：多标签页、断线自动重连、cwd 跟随会话、SSH 连接簿与主机指纹钉扎、tmux 会话持久化；shell / TERM / 并发上限等保存即热生效。' }),
             ],
           }),
+          jsx('span', { className: 'dshkit_badge', children: 'Kit' }),
           jsx('svg', {
             width: '14',
             height: '14',
@@ -5068,7 +5094,7 @@ function TtySettingsCard() {
             ? jsx('div', { className: 'tt_cardMessage', children: '加载配置中…' })
             : jsxs('div', { children: [
                 sectionTitle('基础'),
-                boolField('启用插件（需重启生效）', 'enabled'),
+                boolField('启用插件（保存即热生效：工具与面板入口立刻收起，会话转保活）', 'enabled'),
                 boolField('向 agent 公告终端面板能力', 'announceToAgent'),
                 boolField('shell 集成（OSC 133/7 注入，tty_capture{last} 与 cwd 跟随依赖它）', 'shellIntegration'),
                 sectionTitle('SFTP 文件传输'),
@@ -5346,12 +5372,33 @@ function TtySettingsCard() {
     exports.inject = ['slots', 'sessions']
     exports.apply = (ctx) => {
       sessionsService = ctx.sessions
-      mountSidebarEntry()
+      // 侧栏入口先按可见挂载（与旧行为一致），config 确认禁用后由闸门收起；
+      // 运行期显隐由 syncSshHostsCache（各处 config 拉取/保存共用出口）驱动
+      let entryMounted = false
+      let unmountEntry = () => {}
+      entryGate = {
+        set(visible) {
+          if (visible === entryMounted) return
+          entryMounted = visible
+          if (visible) {
+            unmountEntry = mountSidebarEntry()
+            return
+          }
+          unmountEntry()
+          unmountEntry = () => {}
+          // 禁用瞬间的终端面板一起收掉：存量 WS 已被服务端关闭，面板留着只会不停重连失败
+          closeModal()
+          renderConnbar()
+        },
+      }
+      setEntryVisible(true)
+      // 挂载时拉一次 config：预热连接簿缓存 + 驱动入口显隐（失败静默，各入口打开时会再拉）
+      void refreshSshHosts()
       ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
         name: 'settings.plugin.item',
         // settings.plugin.item 是 keyed 插槽：key 必须是该卡片所编辑的 settings 命名空间
         key: 'tty',
-        order: 110,
+        order: 100,
       }, TtySettingsCard))
       // 连接栏按钮注册点：其他插件（如 dsh-docker）经 ctx.inject(['ttyConnbar'])
       // 注册上下文按钮；内置动作也走同一通道，tty 不感知具体插件
@@ -5378,6 +5425,8 @@ function TtySettingsCard() {
          * 三者互斥：book > spec > 本地。
          */
         open(options) {
+          // 插件禁用时不提供终端能力（服务端 WS 闸门也会拒绝 spawn）
+          if (!entryVisible) return
           const command = normalizeTerminalCommand(options)
           const spawnSpec = buildTerminalSpec(options, command)
           const label = typeof options?.label === 'string' && options.label !== '' ? options.label : undefined
@@ -5387,11 +5436,12 @@ function TtySettingsCard() {
         },
         /**
          * 把终端挂进 hostEl（就地嵌入，0.15.0）。options 与 open 相同，额外：
-         *   hostEl 需是 HTMLElement（挂载点，建议 position:relative、有确定尺寸）。
+         * hostEl 需是 HTMLElement（挂载点，建议 position:relative、有确定尺寸）。
          * 返回 dispose()：调用方在收起自己的容器时调用，结束会话并卸载 DOM。
          * 嵌入终端与面板标签共用连接，但 tty 面板关闭不会波及它。
          */
         mount(hostEl, options) {
+          if (!entryVisible) return () => {}
           return mountTerminal(hostEl, options)
         },
       })
@@ -5410,6 +5460,9 @@ function TtySettingsCard() {
         },
       })
       return () => {
+        entryGate = null
+        entryVisible = false
+        unmountEntry()
         disposePanel()
         disposeTerminal()
         disposeConnbar()

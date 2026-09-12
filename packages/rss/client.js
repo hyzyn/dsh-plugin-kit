@@ -27,6 +27,7 @@ window.__ModuleLoader__.load({
       '.rss_cardHeader:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}',
       '.rss_cardHeadText{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}',
       '.rss_cardName{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:600}',
+      '.dshkit_badge{flex:none;margin-left:auto;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:600;line-height:16px;letter-spacing:.02em;color:var(--dsw-alias-label-dimmed);background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1)}',
       '.rss_cardDescription{color:var(--dsw-alias-label-secondary);font-size:12px}',
       '.rss_chevron{flex:none;color:var(--dsw-alias-label-tertiary);transition:transform .16s}',
       '.rss_pluginCardOpen .rss_chevron{transform:rotate(180deg)}',
@@ -41,6 +42,16 @@ window.__ModuleLoader__.load({
       '.rss_btnGhost{color:var(--dsw-alias-label-primary);background:0 0;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:5px 12px;font-size:12px;cursor:pointer;white-space:nowrap}',
       '.rss_btnGhost:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}',
       '.rss_btnGhost:disabled{opacity:.45;cursor:default}',
+      '.rss_btnGhost:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}',
+      // 图标按钮不带可见边框：这个家族里图标按钮一律靠 hover 底色表达可点（宿主 .hHd-Xa_iconButton、
+      // 同弹窗 .rss_modalClose、docker .dk_iconBtn 都如此），边框是文字按钮的语汇。
+      // 仍留 1px transparent 占位，保证盒子尺寸与 hover 时不跳动。
+      '.rss_btnIcon{width:28px;height:28px;padding:0;border:1px solid transparent;border-radius:8px;background:0 0;color:var(--dsw-alias-label-secondary);display:inline-flex;align-items:center;justify-content:center;flex:none;transition:background .16s,color .16s}',
+      '.rss_btnIcon:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
+      '.rss_btnIcon svg{display:block}',
+      '@keyframes rss_spin{to{transform:rotate(360deg)}}',
+      '.rss_btnIcon[data-loading] svg{animation:rss_spin .9s linear infinite}',
+      '@media (prefers-reduced-motion:reduce){.rss_btnIcon[data-loading] svg{animation:none}}',
       '.rss_dirtyChip{flex:none;display:inline-flex;align-items:center;gap:5px;border:1px solid var(--dsw-alias-state-warn-primary);color:var(--dsw-alias-state-warn-primary);border-radius:999px;padding:1px 9px;font-size:11px;line-height:1.6;white-space:nowrap}',
       '.rss_dirtyChip::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}',
       '.rss_meta{display:flex;flex-wrap:wrap;gap:6px 14px;color:var(--dsw-alias-label-secondary);font-size:12px}',
@@ -50,6 +61,18 @@ window.__ModuleLoader__.load({
       '.rss_banner[data-kind=warn]{color:var(--dsw-alias-state-warn-primary);border-color:var(--dsw-alias-state-warn-primary)}',
       '.rss_banner[data-kind=ok]{color:var(--dsw-alias-state-success-primary);border-color:var(--dsw-alias-state-success-primary)}',
       '.rss_loading,.rss_empty{text-align:center;color:var(--dsw-alias-label-tertiary);padding:24px 12px;font-size:12.5px}',
+      // 骨架屏：只在「真没数据 + 加载已过消抖阈值」时出现（见 renderSkeleton / beginLoading）。
+      // 卡片几何与 .rss_item 完全一致，避免真内容替换时跳版。
+      '.rss_skel{display:flex;flex-direction:column;gap:6px;transition:opacity .18s}',
+      '.rss_skel[data-pending]{opacity:0}',
+      '.rss_skelCard{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:8px 12px;display:flex;flex-direction:column;gap:4px}',
+      '.rss_skelLine{height:13px;border-radius:6px;background:linear-gradient(90deg,color-mix(in srgb,var(--dsw-alias-label-tertiary) 10%,transparent) 25%,color-mix(in srgb,var(--dsw-alias-label-tertiary) 22%,transparent) 37%,color-mix(in srgb,var(--dsw-alias-label-tertiary) 10%,transparent) 63%);background-size:400% 100%;animation:rss_shimmer 1.4s linear infinite}',
+      '.rss_skelLine[data-w=sm]{height:9px}',
+      '@keyframes rss_shimmer{from{background-position:100% 0}to{background-position:0 0}}',
+      '@media (prefers-reduced-motion:reduce){.rss_skelLine{animation:none}}',
+      // 刷新中：旧列表继续显示（stale-while-revalidate），压暗表示「正在更新」。
+      // 不用 pointer-events:none —— 那会连滚轮一起吃掉，刷新期间列表就滚不动了。
+      '.rss_modalBody[data-updating]{opacity:.55;transition:opacity .16s}',
       '.rss_digestStats{color:var(--dsw-alias-label-secondary);font-size:12px;margin:2px 0 8px;line-height:1.5}',
       '.rss_digestActions{display:flex;gap:8px;flex-wrap:wrap}',
       '.rss_customCount{flex:none;color:var(--dsw-alias-label-tertiary);font-size:12px;white-space:nowrap}',
@@ -137,7 +160,9 @@ window.__ModuleLoader__.load({
       '.rss_toast[data-kind=error]{border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}',
       '.rss_toastIcon{flex:none;font-weight:700}',
       '@keyframes rss_toastIn{from{opacity:0;transform:translate(-50%,8px)}to{opacity:1;transform:translate(-50%,0)}}',
-      '.rss_sidebarEntry{width:100%;height:32px;color:var(--dsw-alias-label-secondary);cursor:pointer;white-space:nowrap;background:0 0;border:none;border-radius:8px;align-items:center;gap:8px;padding:0 12px;font-size:13px;display:flex}',
+      // 侧边栏不在宿主 box-sizing reset 的作用域内：width:100% + 左右 padding 会按
+      // content-box 撑出 24px，右侧被侧边栏裁掉（hover 底色右边缺角）。必须显式声明。
+      '.rss_sidebarEntry{box-sizing:border-box;width:100%;height:32px;color:var(--dsw-alias-label-secondary);cursor:pointer;white-space:nowrap;background:0 0;border:none;border-radius:8px;align-items:center;gap:8px;padding:0 12px;font-size:13px;display:flex}',
       '.rss_sidebarEntry:hover{background:var(--dsw-specific-sidebar-nav-item-hover);color:var(--dsw-alias-label-primary)}',
       '.rss_sidebarEntry[data-active]{background:var(--dsw-specific-sidebar-nav-item-active);color:var(--dsw-alias-label-primary);font-weight:600}',
       '.rss_sidebarEntryIcon{flex:none;justify-content:center;align-items:center;display:inline-flex}',
@@ -151,8 +176,13 @@ window.__ModuleLoader__.load({
       '.rss_modalClose{appearance:none;background:0 0;border:none;color:var(--dsw-alias-label-tertiary);border-radius:8px;width:30px;height:30px;cursor:pointer;font-size:18px;line-height:1}',
       '.rss_modalClose:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}',
       '.rss_modalBody{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:10px}',
-      '.rss_modalFilter{position:sticky;top:0;z-index:20;flex:none;display:flex;flex-direction:column;gap:10px;background:var(--dsw-alias-bg-base);padding-bottom:6px;margin-bottom:-6px}',
-      '.rss_modalToolbar{display:flex;gap:8px;flex:none}',
+      // 筛选 + 动作行改成 .rss_modal 的固定子项（不再放进滚动区）：不必再靠 sticky +
+      // 背景遮罩 + 负 margin 这套 hack 让筛选条件「假装吸顶」
+      '.rss_modalFilter{flex:none;display:flex;flex-direction:column;gap:10px}',
+      '.rss_modalToolbar{display:flex;gap:8px;flex:none;align-items:center}',
+      '.rss_modalToolbar .rss_input{flex:1;min-width:0}',
+      // 计数贴住右侧动作簇；无 digest 时不渲染搜索框，此时靠 margin-left:auto 把动作推到右边
+      '.rss_modalToolbar .rss_modalCount{flex:none;margin-left:auto;white-space:nowrap}',
       '.rss_modalChips{display:flex;flex-wrap:wrap;gap:6px;flex:none}',
       '.rss_modalChip{border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);background:0 0;border-radius:999px;padding:2px 10px;font-size:11.5px;line-height:1.6;cursor:pointer}',
       '.rss_modalChip:hover{border-color:var(--dsw-alias-label-dimmed);color:var(--dsw-alias-label-primary)}',
@@ -160,6 +190,10 @@ window.__ModuleLoader__.load({
       '.rss_modalFooter{flex:none;display:flex;justify-content:flex-end;gap:8px;align-items:center}',
       '.rss_modalCount{flex:1;color:var(--dsw-alias-label-tertiary);font-size:12px;align-self:center;min-width:0}',
     ].join('\n')
+
+    /* 底栏图标：与 dsh-tty 同一套 16×16 描边风格（1.6 线宽），语义靠 title/aria-label */
+    const ICON_COPY = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.4"/><path d="M3.5 10.5h-1v-8h8v1"/></svg>'
+    const ICON_REFRESH = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/><path d="M13.7 1.8v2.7H11"/></svg>'
 
     let styleEl
     function ensureStyle() {
@@ -233,6 +267,7 @@ window.__ModuleLoader__.load({
       refreshing: false,
       saving: false,
       modalLoading: false,
+      modalSlow: false,
       error: '',
       dirty: false,
       catalogQuery: '',
@@ -558,8 +593,8 @@ window.__ModuleLoader__.load({
         }
         parts.push('<div class="rss_digestActions">')
         parts.push('<button class="rss_btnGhost" data-action="digest-view"' + (items.length === 0 ? ' disabled' : '') + '>查看列表</button>')
-        parts.push('<button class="rss_btnGhost" data-action="digest-refresh"' + (state.refreshing ? ' disabled' : '') + '>' + (state.refreshing ? '刷新中…' : '刷新') + '</button>')
-        parts.push('<button class="rss_btnGhost" data-action="digest-copy"' + (items.length === 0 ? ' disabled' : '') + '>复制 Markdown</button>')
+        parts.push('<button class="rss_btnGhost rss_btnIcon" data-action="digest-refresh"' + (state.refreshing ? ' disabled data-loading aria-busy="true"' : '') + ' title="' + (state.refreshing ? '刷新中…' : '刷新') + '" aria-label="刷新">' + ICON_REFRESH + '</button>')
+        parts.push('<button class="rss_btnGhost rss_btnIcon" data-action="digest-copy"' + (items.length === 0 ? ' disabled' : '') + ' title="复制 Markdown" aria-label="复制 Markdown">' + ICON_COPY + '</button>')
         parts.push('</div>')
       }
       parts.push('</div>')
@@ -873,19 +908,27 @@ window.__ModuleLoader__.load({
       return parts.join('')
     }
 
-    function renderModalBody() {
+    /**
+     * 筛选 + 动作行：搜索框、计数、复制 / 刷新，以及分类 chips。
+     * 它是 .rss_modal 的固定子项（不在滚动区里），所以列表怎么滚都看得见——
+     * 与 tty 的 SFTP 面板「路径输入 + 刷新/新建目录/上传」同一形态。
+     */
+    function renderModalFilter() {
       const digest = state.digest
-      const allItems = digest?.items || []
-      const items = filteredModalItems()
+      const total = digest ? (digest.items || []).length : 0
+      const visible = digest ? filteredModalItems().length : 0
+      const empty = !digest || total === 0
       const cats = modalCategories()
       const parts = []
-      if (digest?.errors && digest.errors.length) {
-        parts.push('<div class="rss_banner" data-kind="warn">抓取失败：' + digest.errors.map((e) => esc(e.source + ': ' + e.error)).join('；') + '</div>')
-      }
-      /* 搜索框 + 分类 chips 打包成吸顶区块：列表滚动时筛选条件始终可见 */
       parts.push('<div class="rss_modalFilter">')
       parts.push('<div class="rss_modalToolbar">')
-      parts.push('<input class="rss_input" data-field="rss-modal-search" value="' + esc(state.modalQuery) + '" placeholder="搜索标题 / 摘要 / 来源…" autocomplete="off" spellcheck="false" />')
+      // 没有 digest 时不渲染搜索框（列表是空的，搜也没意义），只留动作
+      if (digest) {
+        parts.push('<input class="rss_input" data-field="rss-modal-search" value="' + esc(state.modalQuery) + '" placeholder="搜索标题 / 摘要 / 来源…" autocomplete="off" spellcheck="false" />')
+      }
+      parts.push('<span class="rss_modalCount">' + (digest ? visible + ' / ' + total + ' 条' : '') + '</span>')
+      parts.push('<button class="rss_btnGhost rss_btnIcon" data-action="modal-copy"' + (empty ? ' disabled' : '') + ' title="复制 Markdown" aria-label="复制 Markdown">' + ICON_COPY + '</button>')
+      parts.push('<button class="rss_btnGhost rss_btnIcon" data-action="modal-refresh"' + (state.modalLoading ? ' disabled data-loading aria-busy="true"' : '') + ' title="' + (state.modalLoading ? '刷新中…' : '刷新') + '" aria-label="刷新">' + ICON_REFRESH + '</button>')
       parts.push('</div>')
       if (cats.length > 1) {
         parts.push('<div class="rss_modalChips">')
@@ -896,6 +939,17 @@ window.__ModuleLoader__.load({
         parts.push('</div>')
       }
       parts.push('</div>')
+      return parts.join('')
+    }
+
+    function renderModalBody() {
+      const digest = state.digest
+      const allItems = digest?.items || []
+      const items = filteredModalItems()
+      const parts = []
+      if (digest?.errors && digest.errors.length) {
+        parts.push('<div class="rss_banner" data-kind="warn">抓取失败：' + digest.errors.map((e) => esc(e.source + ': ' + e.error)).join('；') + '</div>')
+      }
       if (items.length === 0) {
         parts.push('<div class="rss_empty">' + (allItems.length === 0 ? '今天暂无条目。' : '没有匹配的条目。') + '</div>')
       } else {
@@ -904,24 +958,101 @@ window.__ModuleLoader__.load({
       return parts.join('')
     }
 
-    function renderDigestModal() {
+    /* ---------- 加载态：消抖 + 骨架屏 ---------- */
+
+    /**
+     * 超过这个时长仍未加载完，才允许出占位。
+     * GET /api/dsh-rss/digest 只是读 ~/.dsh/rss-digest/ 里的文件（毫秒级），不加消抖的话
+     * 骨架屏会闪一帧就被真内容替掉，比直接出内容更难受。
+     */
+    const LOADING_DEBOUNCE_MS = 180
+    let modalSlowTimer = null
+
+    function beginLoading() {
+      state.modalLoading = true
+      state.modalSlow = false
+      clearTimeout(modalSlowTimer)
+      modalSlowTimer = setTimeout(() => {
+        modalSlowTimer = null
+        if (!state.modalLoading) return
+        state.modalSlow = true
+        if (state.digest) {
+          // 有旧数据：只把 body 标记成「更新中」，绝不整树重渲染——重渲染会重置滚动位置、
+          // 打断正在输入的搜索框。慢刷新（>阈值）才需要这个提示。
+          const body = modalEl !== undefined ? modalEl.querySelector('.rss_modalBody') : null
+          if (body !== null) {
+            body.setAttribute('data-updating', '')
+            body.setAttribute('aria-busy', 'true')
+          }
+          return
+        }
+        // 没数据可显示：重渲染以淡入骨架
+        renderDigestModal()
+      }, LOADING_DEBOUNCE_MS)
+    }
+
+    function endLoading() {
+      clearTimeout(modalSlowTimer)
+      modalSlowTimer = null
+      state.modalLoading = false
+      state.modalSlow = false
+    }
+
+    /**
+     * 骨架屏：4 张与 .rss_item 同形的卡片轮廓（标题条 + 两行摘要）。
+     * pending=true 时先渲染但保持透明——先占住高度（弹窗不会从矮变高跳一下），
+     * 等消抖阈值过了再去掉 data-pending 淡入，毫秒级请求就不会「闪一下骨架」。
+     */
+    function renderSkeleton(pending) {
+      const widths = [88, 72, 94, 66]
+      const parts = ['<div class="rss_skel"' + (pending ? ' data-pending' : '') + ' aria-hidden="true">']
+      for (const width of widths) {
+        parts.push('<div class="rss_skelCard">')
+        parts.push('<div class="rss_skelLine" style="width:' + width + '%"></div>')
+        parts.push('<div class="rss_skelLine" data-w="sm" style="width:96%"></div>')
+        parts.push('<div class="rss_skelLine" data-w="sm" style="width:58%"></div>')
+        parts.push('</div>')
+      }
+      parts.push('</div>')
+      return parts.join('')
+    }
+
+    /**
+     * 整树重渲染弹窗。
+     * @param keepScroll 数据落地时保留列表滚动位置（刷新不该把用户读到一半的列表弹回顶部）。
+     *                   搜索/筛选触发的重渲染传 false。
+     */
+    function renderDigestModal(keepScroll = false) {
       if (modalEl === undefined) return
       const digest = state.digest
       let content
-      if (state.modalLoading) {
-        content = '<div class="rss_loading">加载中…</div>'
-      } else if (!digest) {
-        content = '<div class="rss_empty">还没有生成 digest，点击「刷新」抓取。</div>'
-      } else {
+      let updating = false
+      if (digest) {
+        // 已有数据：刷新不清空列表（stale-while-revalidate），新数据回来整体替换。
+        // 原来这里会无条件换成「加载中…」，把看得好好的条目抹掉。
         content = renderModalBody()
+        // 压暗同样要消抖：GET /digest 是毫秒级，打开弹窗时立刻压暗会出现
+        // 「列表出现 → 变淡几帧 → 恢复」的闪烁，只有慢加载才需要这个提示
+        updating = state.modalLoading && state.modalSlow
+      } else if (state.modalLoading) {
+        // 真没数据可显示：骨架先以透明态占位，过了消抖阈值才淡入（见 renderSkeleton）
+        content = renderSkeleton(!state.modalSlow)
+      } else {
+        content = '<div class="rss_empty">还没有生成 digest，点击「刷新」抓取。</div>'
       }
       if (state.error) {
         content = '<div class="rss_banner" data-kind="error">' + esc(state.error) + '</div>' + content
       }
       const title = '今日值得读' + (digest && digest.date ? ' · ' + esc(digest.date) : '')
-      const total = digest ? (digest.items || []).length : 0
-      const visible = digest ? filteredModalItems().length : 0
-      const empty = !digest || total === 0
+      // 重渲染会重建整棵 DOM，两样东西要还回去：
+      //  - 搜索框焦点/光标：刷新期间列表是活的，用户可能正在输入，落地时不能把人踢出去；
+      //  - 列表滚动位置（仅 keepScroll）：刷新落地不该把读到一半的列表弹回顶部。
+      //    筛选/搜索引起的重渲染传 false —— 那是换了内容，理应回到顶部。
+      const prevSearch = modalEl.querySelector('[data-field="rss-modal-search"]')
+      const searchFocused = prevSearch !== null && document.activeElement === prevSearch
+      const caretPos = searchFocused ? prevSearch.selectionStart : null
+      const prevBody = keepScroll ? modalEl.querySelector('.rss_modalBody') : null
+      const prevScroll = prevBody !== null ? prevBody.scrollTop : 0
       modalEl.innerHTML =
         '<div class="rss_modalBackdrop" data-action="modal-backdrop">' +
           '<div class="rss_modal" role="dialog" aria-modal="true" aria-label="' + title + '">' +
@@ -929,12 +1060,8 @@ window.__ModuleLoader__.load({
               '<h3 class="rss_modalTitle">' + title + '</h3>' +
               '<button class="rss_modalClose" data-action="modal-close" aria-label="关闭">×</button>' +
             '</div>' +
-            '<div class="rss_modalBody">' + content + '</div>' +
-            '<div class="rss_modalFooter">' +
-              (digest ? '<span class="rss_modalCount">' + visible + ' / ' + total + ' 条</span>' : '<span class="rss_modalCount"></span>') +
-              '<button class="rss_btnGhost" data-action="modal-copy"' + (empty ? ' disabled' : '') + '>复制 Markdown</button>' +
-              '<button class="rss_btnGhost" data-action="modal-refresh"' + (state.modalLoading ? ' disabled' : '') + '>' + (state.modalLoading ? '刷新中…' : '刷新') + '</button>' +
-            '</div>' +
+            renderModalFilter() +
+            '<div class="rss_modalBody"' + (updating ? ' data-updating aria-busy="true"' : '') + '>' + content + '</div>' +
           '</div>' +
         '</div>'
       const search = modalEl.querySelector('[data-field="rss-modal-search"]')
@@ -953,6 +1080,20 @@ window.__ModuleLoader__.load({
             }
           }
         })
+        if (searchFocused) {
+          search.focus()
+          if (caretPos !== null) {
+            try {
+              search.setSelectionRange(caretPos, caretPos)
+            } catch {
+              /* 无 caret 的输入框忽略 */
+            }
+          }
+        }
+      }
+      if (prevScroll > 0) {
+        const nextBody = modalEl.querySelector('.rss_modalBody')
+        if (nextBody !== null) nextBody.scrollTop = prevScroll
       }
     }
 
@@ -964,7 +1105,7 @@ window.__ModuleLoader__.load({
       }
       state.modalOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null
       modalEl.style.display = ''
-      state.modalLoading = true
+      beginLoading()
       state.modalQuery = ''
       state.modalCategory = ''
       renderDigestModal()
@@ -1010,7 +1151,7 @@ window.__ModuleLoader__.load({
     }
 
     async function loadDigestModal() {
-      state.modalLoading = true
+      beginLoading()
       renderDigestModal()
       try {
         const [digestRes, configRes] = await Promise.all([
@@ -1023,13 +1164,13 @@ window.__ModuleLoader__.load({
       } catch (error) {
         state.error = error.message
       } finally {
-        state.modalLoading = false
-        renderDigestModal()
+        endLoading()
+        renderDigestModal(true)
       }
     }
 
     async function refreshDigestModal() {
-      state.modalLoading = true
+      beginLoading()
       renderDigestModal()
       try {
         const data = await apiRequest(API.refresh, { method: 'POST' })
@@ -1038,8 +1179,8 @@ window.__ModuleLoader__.load({
       } catch (error) {
         toast(error.message, 'error')
       } finally {
-        state.modalLoading = false
-        renderDigestModal()
+        endLoading()
+        renderDigestModal(true)
       }
     }
 
@@ -1883,6 +2024,7 @@ window.__ModuleLoader__.load({
                   jsx('span', { className: 'rss_cardDescription', children: '订阅 RSS/Atom，管理渠道与分类，每天自动汇总「今日值得读」。' }),
                 ],
               }),
+              jsx('span', { className: 'dshkit_badge', children: 'Kit' }),
               jsx('svg', {
                 width: '14',
                 height: '14',
@@ -1954,7 +2096,7 @@ window.__ModuleLoader__.load({
         name: 'settings.plugin.item',
         // settings.plugin.item 是 keyed 插槽：key 必须是该卡片所编辑的 settings 命名空间
         key: 'rss-digest',
-        order: 100,
+        order: 94,
       }, RssSettingsCard))
     }
 

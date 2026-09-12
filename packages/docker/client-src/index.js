@@ -151,28 +151,67 @@ let terminalApi = null
  */
 let panelApi = null
 
+/** tty 的连接栏服务（可选注入；null = 不可用）。闸门切换显隐时用它请求重绘。 */
+let connbarApi = null
+
 let configCache = null
 let targetsCache = []
 let cacheAt = 0
 
+/* ============================ 入口显隐闸门 ============================ */
+
+/**
+ * 侧栏入口与连接栏「容器」按钮的显隐：config 确认「插件已禁用」（enabled ===
+ * false）后收起，其余情况（含 config 拉取失败）保持显示——只对确认禁用收起，
+ * 避免瞬时故障把没禁用用户的入口藏掉。entryGate 由 apply 挂载期间注入
+ * （null = 已卸载，迟到的缓存刷新不允许再把入口挂回来）；entryVisible 供
+ * 连接栏工厂同步判定，宿主下次渲染连接栏时生效。
+ */
+let entryGate = null
+let entryVisible = false
+
+function setEntryVisible(visible) {
+  entryVisible = visible
+  if (entryGate !== null) entryGate.set(visible)
+}
+
+/** 由 config 推进入口显隐：仅「确认 enabled:false」收起。 */
+function syncEntryFromConfig(config) {
+  setEntryVisible(!(config !== null && typeof config === 'object' && config.enabled === false))
+}
+
 function primeTargetsCache(config) {
   if (config !== null && typeof config === 'object') configCache = config
   cacheAt = Date.now()
+  syncEntryFromConfig(configCache)
 }
 
 async function refreshTargetsCache() {
+  let ok = true
   try {
-    const [configPayload, targetsPayload] = await Promise.all([api.config(), api.targets()])
+    const configPayload = await api.config()
     configCache = configPayload.config
-    targetsCache = targetsPayload.targets ?? []
     cacheAt = Date.now()
-    return true
+    syncEntryFromConfig(configCache)
   } catch (error) {
+    ok = false
     // 挂载时那次请求可能早于宿主就绪（或瞬时失败）：留下可诊断日志；
     // 点击路径还会再兜底拉一次，不会因此永远匹配不上
-    console.warn('[dsh-docker] 目标缓存刷新失败：' + (error instanceof Error ? error.message : String(error)))
-    return false
+    console.warn('[dsh-docker] 配置缓存刷新失败：' + (error instanceof Error ? error.message : String(error)))
   }
+  try {
+    const targetsPayload = await api.targets()
+    targetsCache = targetsPayload.targets ?? []
+    cacheAt = Date.now()
+  } catch (error) {
+    // 插件禁用时宿主会拒掉 /targets（403）：禁用状态下这是预期，不算失败也不刷警告；
+    // /config 与 /targets 分开拉，禁用态下 config 的成功结果不能被 targets 拖垮
+    if (entryVisible) {
+      ok = false
+      console.warn('[dsh-docker] 目标缓存刷新失败：' + (error instanceof Error ? error.message : String(error)))
+    }
+  }
+  return ok
 }
 
 /**
@@ -1487,6 +1526,7 @@ window.__ModuleLoader__.load({
                 jsx('span', { className: 'dk_settingsName', children: 'Docker 容器面板' }),
                 jsx('span', { className: 'dk_settingsDesc', children: '本机 / SSH 主机上的容器与镜像；默认只读，变更操作需显式开启' }),
               ] }),
+              jsx('span', { className: 'dshkit_badge', children: 'Kit' }),
               jsx('span', { className: 'dk_settingsChevron', dangerouslySetInnerHTML: { __html: ICON_CHEVRON } }),
             ],
           }),
@@ -1785,12 +1825,31 @@ window.__ModuleLoader__.load({
     exports.inject = ['slots']
     exports.apply = (ctx) => {
       ensureStyle()
-      const unmountEntry = mountSidebarEntry()
+      // 侧栏入口先按可见挂载（与旧行为一致），config 确认禁用后由闸门收起；
+      // 运行期显隐由 syncEntryFromConfig（缓存刷新 / 设置卡片保存后）驱动
+      let entryMounted = false
+      let unmountEntry = () => {}
+      entryGate = {
+        set(visible) {
+          if (visible === entryMounted) return
+          entryMounted = visible
+          if (visible) {
+            unmountEntry = mountSidebarEntry()
+            return
+          }
+          unmountEntry()
+          unmountEntry = () => {}
+          // 禁用瞬间的面板一起收掉：面板里的数据请求已被宿主 403，留着只会报错
+          closePanel()
+          if (typeof connbarApi?.requestRender === 'function') connbarApi.requestRender()
+        },
+      }
+      setEntryVisible(true)
       const disposeCard = ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
         name: 'settings.plugin.item',
         // key 必须是该卡片所编辑的 settings 命名空间
         key: 'docker',
-        order: 112,
+        order: 102,
       }, DockerSettingsCard))
 
       // 上下文入口（可选）：tty 0.13.0 起提供 ttyConnbar 客户端服务，在 SSH 连接栏
@@ -1815,7 +1874,10 @@ window.__ModuleLoader__.load({
       ctx.inject(['ttyConnbar'], (connbarCtx) => {
         const connbar = connbarCtx.ttyConnbar
         if (connbar === undefined) return
+        connbarApi = connbar
         disposeConnbarAction = connbar.addAction((payload) => {
+          // 插件禁用时连接栏不提供「容器」按钮（tty 下次渲染连接栏时生效）
+          if (!entryVisible) return
           const spec = payload?.spec ?? {}
           if (spec.t !== 'ssh') return
           const bookName = typeof payload?.bookName === 'string' ? payload.bookName : ''
@@ -1857,6 +1919,9 @@ window.__ModuleLoader__.load({
       return () => {
         disposeConnbarAction()
         disposeCard()
+        entryGate = null
+        entryVisible = false
+        connbarApi = null
         unmountEntry()
         closePanel()
       }

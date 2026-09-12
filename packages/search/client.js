@@ -12,7 +12,9 @@ window.__ModuleLoader__.load({
     /* ================================ CSS ================================ */
 
     const CSS = [
-      '.gs_sidebarEntry{width:100%;height:32px;color:var(--dsw-alias-label-secondary);cursor:pointer;white-space:nowrap;background:0 0;border:none;border-radius:8px;align-items:center;gap:8px;padding:0 12px;font-size:13px;display:flex}',
+      // 侧边栏不在宿主 box-sizing reset 的作用域内：width:100% + 左右 padding 会按
+      // content-box 撑出 24px，右侧被侧边栏裁掉（hover 底色右边缺角）。必须显式声明。
+      '.gs_sidebarEntry{box-sizing:border-box;width:100%;height:32px;color:var(--dsw-alias-label-secondary);cursor:pointer;white-space:nowrap;background:0 0;border:none;border-radius:8px;align-items:center;gap:8px;padding:0 12px;font-size:13px;display:flex}',
       '.gs_sidebarEntry:hover{background:var(--dsw-specific-sidebar-nav-item-hover);color:var(--dsw-alias-label-primary)}',
       '.gs_sidebarEntry[data-active]{background:var(--dsw-specific-sidebar-nav-item-active);color:var(--dsw-alias-label-primary);font-weight:600}',
       '.gs_sidebarEntryIcon{flex:none;justify-content:center;align-items:center;display:inline-flex}',
@@ -41,18 +43,24 @@ window.__ModuleLoader__.load({
       '.gs_modalBody{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:14px}',
       '.gs_sectionTitle{font-size:12px;font-weight:700;color:var(--dsw-alias-label-tertiary);margin:2px 0 6px;text-transform:uppercase;letter-spacing:.03em}',
       '.gs_list{display:flex;flex-direction:column;gap:6px}',
-      '.gs_item{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:8px 12px;display:flex;flex-direction:column;gap:3px;cursor:pointer}',
+      // 注意：.gs_item 是 <button>，UA 默认 text-align:center，不显式归左会把标题/摘要/时间都居中
+      '.gs_item{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:8px 12px;display:flex;flex-direction:column;gap:3px;cursor:pointer;text-align:left}',
       '.gs_item:hover{border-color:var(--dsw-alias-label-dimmed)}',
-      '.gs_itemTitle{font-size:13px;font-weight:600;line-height:1.4;display:flex;align-items:center;gap:8px}',
+      // 标题必须是普通行内流：写成 flex 会把「文本 + <mark> + 文本」拆成三个匿名 flex 项，
+      // 各自被压窄换行（高亮词组被拦腰折断），还会多出 gap 并把行内高度撑歪
+      '.gs_itemTitle{font-size:13px;font-weight:600;line-height:1.4;display:block}',
       '.gs_itemMeta{color:var(--dsw-alias-label-tertiary);font-size:11px;font-weight:400}',
       '.gs_itemDesc{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.5;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}',
-      '.gs_badge{display:inline-block;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:999px;padding:0 7px;font-size:10px;line-height:1.7;white-space:nowrap;flex:none}',
-      '.gs_highlight{background:var(--dsw-alias-state-warn-primary);color:var(--dsw-alias-label-primary-foreground);border-radius:2px;padding:0 1px}',
+      // 标题不再是 flex，原来的 gap:8px 没了，用 margin-left 补间距（inline-block 之间的间隔）
+      '.gs_badge{display:inline-block;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:999px;padding:0 7px;font-size:10px;line-height:1.7;white-space:nowrap;margin-left:8px;vertical-align:middle}',
+      // 高亮词是「一个整体」，不能被行尾折断（CJK 会逐字断行 → 词组被劈成两行）
+      '.gs_highlight{background:var(--dsw-alias-state-warn-primary);color:var(--dsw-alias-label-primary-foreground);border-radius:2px;padding:0 1px;white-space:nowrap}',
       '.gs_empty,.gs_loading,.gs_error{text-align:center;color:var(--dsw-alias-label-tertiary);padding:24px 12px;font-size:12.5px}',
       '.gs_error{color:var(--dsw-alias-state-error-primary)}',
       '.gs_toast{position:fixed;left:50%;bottom:36px;transform:translateX(-50%);z-index:2147483647;pointer-events:none;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary);border-radius:10px;padding:9px 16px;font-size:13px;box-shadow:var(--dsw-shadow-lv3);max-width:70vw}',
       '.gs_toast[data-kind=ok]{border-color:var(--dsw-alias-state-success-primary);color:var(--dsw-alias-state-success-primary)}',
       '.gs_toast[data-kind=error]{border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}',
+      '.gs_item[data-active]{border-color:var(--dsw-alias-state-business-primary);background:var(--dsw-alias-bg-layer-3)}',
     ].join('\n')
 
     let styleEl
@@ -75,24 +83,42 @@ window.__ModuleLoader__.load({
       return date.toLocaleString()
     }
 
+    /**
+     * 按空白拆词后逐词高亮（与服务端把空格编译成 \s+ 的弹性匹配对齐）。
+     * 词组为空时原样转义返回；单词时与旧的整串匹配等价。
+     */
     function highlightText(text, query) {
       const value = String(text ?? '')
-      const q = String(query ?? '').trim()
-      if (q === '') return esc(value)
-      const lower = value.toLowerCase()
-      const lowerQ = q.toLowerCase()
-      const parts = []
-      let index = 0
-      for (;;) {
-        const found = lower.indexOf(lowerQ, index)
-        if (found === -1) {
-          parts.push(esc(value.slice(index)))
-          break
-        }
-        parts.push(esc(value.slice(index, found)))
-        parts.push('<mark class="gs_highlight">' + esc(value.slice(found, found + q.length)) + '</mark>')
-        index = found + q.length
+      const words = String(query ?? '')
+        .trim()
+        .split(/\s+/)
+        .filter((word) => word !== '')
+      if (words.length === 0) return esc(value)
+      // 正则元字符转义后用 | 连接，一次全局扫描逐段拼接
+      const pattern = words.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
+      let regex
+      try {
+        regex = new RegExp(pattern, 'giu')
+      } catch {
+        return esc(value)
       }
+      const parts = []
+      let lastIndex = 0
+      let match = regex.exec(value)
+      while (match !== null) {
+        if (match[0] === '') {
+          // 空匹配兜底：只推进扫描位置，避免死循环
+          regex.lastIndex = match.index + 1
+          match = regex.exec(value)
+          continue
+        }
+        parts.push(esc(value.slice(lastIndex, match.index)))
+        parts.push('<mark class="gs_highlight">' + esc(match[0]) + '</mark>')
+        lastIndex = match.index + match[0].length
+        regex.lastIndex = lastIndex
+        match = regex.exec(value)
+      }
+      parts.push(esc(value.slice(lastIndex)))
       return parts.join('')
     }
 
@@ -126,6 +152,9 @@ window.__ModuleLoader__.load({
     let searchSeq = 0
     let activeCtx = null
     let activeCtl = null
+    let activeItemIndex = -1
+    let globalHotkeyHandler = null
+    let globalEscapeHandler = null
 
     function toast(message, kind) {
       if (toastEl === null || !toastEl.isConnected) {
@@ -331,8 +360,21 @@ window.__ModuleLoader__.load({
         searchTimer = setTimeout(runSearch, 250)
       })
       input.addEventListener('keydown', (event) => {
-        if (event.key === 'Escape') closeModal()
+        // ↑/↓ 在结果项之间移动高亮（无选中时分别到首项/末项）
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+          event.preventDefault()
+          moveActiveItem(event.key === 'ArrowDown' ? 1 : -1)
+          return
+        }
         if (event.key === 'Enter') {
+          const items = resultItems()
+          const active = activeItemIndex >= 0 ? items[activeItemIndex] : undefined
+          // 有高亮项则直接触发该项，不再走「立即刷新搜索」
+          if (active !== undefined) {
+            event.preventDefault()
+            handleResultClick(active)
+            return
+          }
           clearTimeout(searchTimer)
           runSearch()
         }
@@ -349,12 +391,72 @@ window.__ModuleLoader__.load({
       modalEl.remove()
       modalEl = null
       clearTimeout(searchTimer)
+      activeItemIndex = -1
+    }
+
+    /* ---------- 键盘：全局快捷键 + 结果导航 ---------- */
+
+    /** 全局 hotkey：Cmd/Ctrl+K 打开搜索弹窗（已开则聚焦输入框）。 */
+    function onGlobalHotkey(event) {
+      if (event.isComposing) return
+      if ((event.metaKey || event.ctrlKey) && String(event.key).toLowerCase() === 'k') {
+        event.preventDefault()
+        event.stopPropagation()
+        if (modalEl !== null && modalEl.isConnected) {
+          const input = modalEl.querySelector('.gs_searchInput')
+          if (input !== null) input.focus()
+        } else {
+          openModal()
+        }
+      }
+    }
+
+    /** 全局 Escape：搜索弹窗打开时关闭（输入框不再单独处理，避免双路）。 */
+    function onGlobalEscape(event) {
+      if (event.isComposing) return
+      if (event.key !== 'Escape') return
+      if (modalEl === null || !modalEl.isConnected) return
+      closeModal()
+    }
+
+    /** 当前渲染出的结果项，按文档顺序跨分组连续。 */
+    function resultItems() {
+      if (modalEl === null || !modalEl.isConnected) return []
+      return Array.from(modalEl.querySelectorAll('.gs_item'))
+    }
+
+    /** 设置唯一高亮项并跟随滚动，index 为 -1 时清空全部高亮。 */
+    function setActiveItem(items, index) {
+      for (let i = 0; i < items.length; i += 1) {
+        if (i === index) items[i].setAttribute('data-active', '')
+        else items[i].removeAttribute('data-active')
+      }
+      activeItemIndex = index
+      const item = items[index]
+      if (item === undefined) return
+      try {
+        item.scrollIntoView({ block: 'nearest' })
+      } catch {
+        /* 滚动失败不阻塞 */
+      }
+    }
+
+    /** ↓/↑ 移动高亮：无选中时 ↓ 到首项、↑ 到末项，到头不循环。 */
+    function moveActiveItem(delta) {
+      const items = resultItems()
+      if (items.length === 0) return
+      const next = activeItemIndex < 0
+        ? (delta > 0 ? 0 : items.length - 1)
+        : Math.min(items.length - 1, Math.max(0, activeItemIndex + delta))
+      setActiveItem(items, next)
     }
 
     function renderResults() {
       if (modalEl === null) return
       const body = modalEl.querySelector('.gs_modalBody')
       if (body === null) return
+      // 重渲染会替换 DOM，旧的高亮引用失效：选中索引清零
+      activeItemIndex = -1
 
       if (state.loading) {
         body.innerHTML = '<div class="gs_loading">搜索中…</div>'
@@ -685,14 +787,18 @@ window.__ModuleLoader__.load({
 
     /* ================================ 跳转到会话内文字 ================================ */
 
-    function findTextContainer(query) {
-      const q = String(query || '').trim().toLowerCase()
-      if (q === '') return null
-      const root = document.querySelector('[data-conversation-scroll]') || document.querySelector('[class*="conversation"]') || document.body
-      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+    /**
+     * 在会话滚动容器内查找包含关键词的消息块。
+     * 严格以 scroller 为根：绝不在 body / 侧边栏范围里找——侧边栏会话标题
+     * 常含相同关键词，宽泛匹配会把用户带离会话内容。
+     */
+    function findTextInScroller(scroller, lowerQuery) {
+      const walker = document.createTreeWalker(scroller, NodeFilter.SHOW_TEXT)
       while (walker.nextNode()) {
         const node = walker.currentNode
-        if (!(node.nodeValue || '').toLowerCase().includes(q)) continue
+        if (!(node.nodeValue || '').toLowerCase().includes(lowerQuery)) continue
         let el = node.parentElement
         for (let i = 0; i < 8 && el; i += 1) {
           if (el.matches && el.matches('[class*="flowItem"], [class*="message"], [class*="node"], [class*="turn"], [class*="chat"], [class*="content"]')) return el
@@ -703,21 +809,80 @@ window.__ModuleLoader__.load({
       return null
     }
 
+    /**
+     * 打开会话后定位到匹配文本。
+     * 会话视图是底部锚定的虚拟列表，初始只渲染末尾一屏，较早的匹配消息不在
+     * DOM 里：逐屏向上滚动触发加载更早消息，直到命中、到顶不再增长或总超时。
+     * 没找到时恢复原滚动位置，不打扰用户当前视图。
+     */
     async function jumpToSessionText(query) {
       const q = String(query || '').trim()
       if (q === '') return
-      const target = await waitFor(() => findTextContainer(q), 6000)
-      if (target === null) return
-      try {
-        target.scrollIntoView({ block: 'center', behavior: 'smooth' })
-        target.style.outline = '2px solid var(--dsw-alias-state-warn-primary)'
-        target.style.borderRadius = '8px'
-        setTimeout(() => {
-          target.style.outline = ''
-          target.style.borderRadius = ''
-        }, 3000)
-      } catch {
-        /* 滚动失败不阻塞 */
+      const lowerQuery = q.toLowerCase()
+      const startedAt = Date.now()
+      // 注意：sessions.open 会触发会话视图重挂载，滚动容器节点会被替换——
+      // 每一轮都必须重新 query，绝不能缓存节点引用（detached 节点上写 scrollTop 无效）。
+      const getScroller = () => document.querySelector('[data-conversation-scroll]')
+      let scroller = null
+      while (Date.now() - startedAt < 8000) {
+        scroller = getScroller()
+        if (scroller !== null) break
+        await sleep(200)
+      }
+      if (scroller === null) return
+      // 切换会话时旧内容可能还挂在容器里：等一次内容签名变化再开始找
+      //（同会话跳转时内容不变，很快放行）
+      const signatureOf = (el) => el.innerHTML.length + ':' + el.scrollHeight
+      const signature = signatureOf(scroller)
+      for (let i = 0; i < 6; i += 1) {
+        await sleep(200)
+        const current = getScroller()
+        if (current !== null && signatureOf(current) !== signature) break
+      }
+      const initialScroll = getScroller()?.scrollTop ?? null
+      let lastHeight = scroller.scrollHeight
+      while (Date.now() - startedAt < 15000) {
+        const box = getScroller()
+        if (box === null) {
+          await sleep(250)
+          continue
+        }
+        const target = findTextInScroller(box, lowerQuery)
+        if (target !== null) {
+          try {
+            // behavior 用 auto（瞬时）：smooth 的动画过程会被会话视图的
+            // 吸底滚动逻辑逐帧弹回底部，导致定位无效。
+            target.scrollIntoView({ block: 'center', behavior: 'auto' })
+            target.style.outline = '2px solid var(--dsw-alias-state-warn-primary)'
+            target.style.borderRadius = '8px'
+            setTimeout(() => {
+              target.style.outline = ''
+              target.style.borderRadius = ''
+            }, 3000)
+          } catch {
+            /* 滚动失败不阻塞 */
+          }
+          return
+        }
+        const atTop = box.scrollTop <= 4
+        const grew = box.scrollHeight !== lastHeight
+        lastHeight = box.scrollHeight
+        // 到顶且内容不再增长才判定穷尽；冷打开的会话内容是逐步渲染的，
+        // 空容器 / 短容器上「到顶且未增长」只是还没加载完，必须继续等。
+        const rendered = box.scrollHeight > box.clientHeight * 1.2
+        if (atTop && !grew && rendered) break
+        if (!atTop) {
+          box.scrollTop = Math.max(0, box.scrollTop - Math.max(240, box.clientHeight * 0.85))
+        }
+        await sleep(320)
+      }
+      const endBox = getScroller()
+      if (endBox !== null && initialScroll !== null) {
+        try {
+          endBox.scrollTop = initialScroll
+        } catch {
+          /* 恢复失败不阻塞 */
+        }
       }
     }
 
@@ -730,8 +895,25 @@ window.__ModuleLoader__.load({
       ctx.effect(() => {
         ensureStyle()
         const disposeSidebar = mountSidebarEntry()
+        // 全局快捷键只挂一次（capture 阶段，先于宿主/输入框处理）
+        if (globalHotkeyHandler === null) {
+          globalHotkeyHandler = onGlobalHotkey
+          document.addEventListener('keydown', globalHotkeyHandler, true)
+        }
+        if (globalEscapeHandler === null) {
+          globalEscapeHandler = onGlobalEscape
+          document.addEventListener('keydown', globalEscapeHandler, true)
+        }
         return () => {
           if (disposeSidebar) disposeSidebar()
+          if (globalHotkeyHandler !== null) {
+            document.removeEventListener('keydown', globalHotkeyHandler, true)
+            globalHotkeyHandler = null
+          }
+          if (globalEscapeHandler !== null) {
+            document.removeEventListener('keydown', globalEscapeHandler, true)
+            globalEscapeHandler = null
+          }
           closeModal()
           styleEl?.remove()
           styleEl = undefined
