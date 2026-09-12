@@ -54,6 +54,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # 重跑/删 tag 重打的残留：同 tag 的 draft 不删会堆在 Release 列表里（v0.1.19/v0.1.20 教训）
+          gh api "repos/$GITHUB_REPOSITORY/releases" --jq '.[] | select(.draft and .tag_name == "'"$GITHUB_REF_NAME"'") | .id' \
+            | while read -r id; do gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"; done || true
           PREV=$(git describe --tags --abbrev=0 "HEAD^" 2>/dev/null || true)
           RANGE="${PREV:+${PREV}..}HEAD"
           {
