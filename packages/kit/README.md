@@ -39,7 +39,9 @@ kit 生态的插件统一支持 `enabled` 配置（默认 `true`），语义分�
 不要把「禁用」实现成不注册 settings 命名空间。参考实现：
 `packages/docker/src/index.ts`（`refreshTools` / 路由守卫 / `refreshAnnouncement`）、
 `packages/tty/src/index.ts`（同约定，另有 WS 升级闸门：禁用时断开存量连接并拒绝
-新升级，PTY 进程转孤儿保活，重新启用后客户端自动重连 attach）。
+新升级，PTY 进程转孤儿保活，重新启用后客户端自动重连 attach）、
+`packages/rss/src/index.ts`（开关写 store 文件 `~/.dsh/rss.json` 而非 settings
+命名空间：数据路由守卫 + 调度器 tick 短路 + systemPrompt section 撤下/重挂）。
 
 ## 设置卡片约定（settings.plugin.item）
 
