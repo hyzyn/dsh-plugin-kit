@@ -92,13 +92,15 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 
 ### Global Search (@hyzyn/dsh-search)
 
-- **What it does**: adds a “Global Search” entry to the Web GUI sidebar. Type a keyword to run full-text search over historical sessions and settings panels.
-- **How to use**: after installing, click or focus the global search box below “New Session” in the sidebar → type a keyword → click a session result to open it and try to locate the matching text; click a settings-panel result to jump straight to the corresponding settings card.
-- **Supports**: full-text session search via DSH’s built-in `sessionQuery`; settings-panel search (official panels always searchable, plugin panels filtered dynamically by what is installed); configurable result limits; keyword highlighting in results.
+- **What it does**: adds a “Global Search” entry to the Web GUI sidebar (⌘/Ctrl+K also opens it) that presents a command-palette window: grouped rows for recent sessions, full-text session hits, Prompts, MCP tools, quick actions, and settings sections.
+- **How to use**: click the sidebar search box or press ⌘/Ctrl+K — the palette **opens with content already in it** (recent sessions + quick actions + settings sections, rendered locally with no request); typing filters local candidates instantly while host full-text hits stream in. ↑/↓ select, ↵ opens, esc closes; ⌥1-9 opens the Nth recent session, and ⌥N / ⌥O / ⌥, trigger New session / Open folder / Open settings. Clicking a session result opens it and tries to locate the matching text; Prompt and MCP tool rows jump to their settings cards; settings sections jump to the corresponding section of the settings dialog.
+- **Supports**: full-text session search via DSH’s built-in `sessionQuery` plus instant title candidates from the client session list; settings sections enumerated live from the client slot registry (`settings.section`, so third-party sections such as “Skins” or “Pets” are listed too, in the same order as the settings navigation); Prompts read from the `~/.dsh/prompts.yml` managed block; MCP tools enumerated by the `mcp__` prefix with their server shown; keyword highlighting; configurable result limits.
 - **Where it is stored**: no separate config.
-- **Note**: requires the host `sessionQuery` service; if absent, session search returns an empty list. If the `session-query` full-text index is configured with `openAt: "never"`, session search automatically degrades to per-session scanning; session results are filtered to currently visible/jumpable sessions.
+- **Note**: requires the host `sessionQuery` service; if absent, session search returns an empty list. If the `session-query` full-text index is configured with `openAt: "never"`, session search automatically degrades to per-session scanning; session results are filtered to currently visible/jumpable sessions. “New session” reuses the GUI’s own `uiWorkspace.startSession()`; “Open folder” is hidden when no directory-picker plugin is installed.
 
 ![Global search plugin](docs/dsh-plugin-kit-search.png)
+
+![Global search results (recent sessions / session hits / Prompt / MCP tools / settings)](docs/dsh-plugin-kit-search-query.png)
 
 ### RSS / News Aggregation (@hyzyn/dsh-rss)
 
