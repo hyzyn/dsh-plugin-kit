@@ -53,7 +53,7 @@ export interface DigestResult {
     sources?: DigestSourceMeta[];
 }
 export interface Config {
-    /** 关闭整个插件（不调度、不注入 systemPrompt）。默认开。 */
+    /** composition 层开关：false 时插件不挂载（重启保持）。运行期开关在设置卡片（写 store，热生效）。默认开。 */
     enabled?: boolean;
     /** 是否向 agent 注入插件能力与当天 digest 公告。默认开。 */
     announceToAgent?: boolean;
@@ -82,6 +82,8 @@ export interface Config {
 }
 export declare function digestDir(config?: Config): string;
 interface RssStore {
+    /** 插件启用开关（设置卡片可改，写回 store；关闭即热生效）。默认开。 */
+    enabled?: boolean;
     sources: Source[];
     categories: string[];
     catalogs: CatalogSource[];

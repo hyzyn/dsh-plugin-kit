@@ -33,6 +33,7 @@ const BUILTIN_BY_KEY = new Map(BUILTIN_CHANNELS.map((channel) => [channel.key, c
  * ------------------------------------------------------------------ */
 /** 与 ~/.dsh/rss.json 的可编辑 store 形状对齐。 */
 const RSS_SETTINGS_SCHEMA = z.object({
+    enabled: z.boolean(),
     sources: z.array(z.object({
         name: z.string(),
         url: z.string(),
@@ -108,6 +109,7 @@ function rssConfigPath() {
 }
 function defaultRssStore(config) {
     return {
+        enabled: config?.enabled,
         sources: Array.isArray(config?.sources) && config.sources.length > 0 ? config.sources : defaultSources(),
         categories: Array.isArray(config?.categories) ? config.categories.filter((item) => typeof item === 'string' && item.trim() !== '') : [],
         catalogs: Array.isArray(config?.catalogs) ? config.catalogs.filter((item) => typeof item === 'object' && item !== null && typeof item.name === 'string' && item.name.trim() !== '' && typeof item.url === 'string' && item.url.trim() !== '') : [],
@@ -126,6 +128,7 @@ export function readRssStore(config) {
     try {
         const parsed = JSON.parse(readFileSync(file, 'utf8'));
         return {
+            enabled: typeof parsed.enabled === 'boolean' ? parsed.enabled : base.enabled,
             sources: Array.isArray(parsed.sources) ? parsed.sources : base.sources,
             categories: Array.isArray(parsed.categories) ? parsed.categories : base.categories,
             catalogs: Array.isArray(parsed.catalogs)
@@ -208,6 +211,7 @@ function validateRssStoreInput(raw) {
         : undefined;
     const autoGenerateOnMount = typeof input.autoGenerateOnMount === 'boolean' ? input.autoGenerateOnMount : undefined;
     const announceToAgent = typeof input.announceToAgent === 'boolean' ? input.announceToAgent : undefined;
+    const enabled = typeof input.enabled === 'boolean' ? input.enabled : undefined;
     let catalogs;
     if (input.catalogs !== undefined) {
         if (!Array.isArray(input.catalogs))
@@ -235,6 +239,7 @@ function validateRssStoreInput(raw) {
     }
     return {
         store: {
+            ...(enabled !== undefined ? { enabled } : {}),
             sources: sources ?? [],
             categories,
             catalogs: catalogs ?? [],
@@ -683,7 +688,15 @@ function digestMarkdown(digest) {
         return '';
     }
 }
-function makeRoutes(config, onDigestChanged) {
+function makeRoutes(config, onDigestChanged, 
+/** 禁用闸门与配置保存回调：disabled 供数据路由短路（/config 例外），onStoreSaved 在保存成功后触发热应用。 */
+hooks) {
+    const disabledGuard = (res) => {
+        if (hooks?.disabled() !== true)
+            return false;
+        writeJson(res, 403, { error: '插件已禁用（设置 → 插件 → RSS / 新闻聚合 → 启用插件）' });
+        return true;
+    };
     const guard = (req, res, method) => {
         if (!isLoopbackRequest(req)) {
             writeJson(res, 403, { error: 'forbidden: loopback-only' });
@@ -721,6 +734,8 @@ function makeRoutes(config, onDigestChanged) {
             handler: async (req, res) => {
                 if (!guard(req, res, 'GET'))
                     return;
+                if (disabledGuard(res))
+                    return;
                 writeJson(res, 200, { ok: true, ...digestPayload() });
             },
         },
@@ -729,6 +744,8 @@ function makeRoutes(config, onDigestChanged) {
             path: '/api/dsh-rss/refresh',
             handler: async (req, res) => {
                 if (!guard(req, res, 'POST'))
+                    return;
+                if (disabledGuard(res))
                     return;
                 try {
                     const digest = await generateDigest(config);
@@ -763,8 +780,10 @@ function makeRoutes(config, onDigestChanged) {
                     writeJson(res, 400, { error: validated.error ?? '配置校验失败' });
                     return;
                 }
-                // 自定义渠道保存前真实抓取一次，地址抓不到内容就直接报错，不写入
-                const customSources = validated.store.sources.filter((source) => resolveBuiltin(source) === undefined);
+                // 自定义渠道保存前真实抓取一次（只校验新增的：存量渠道当初添加时已校验过，
+                // 全量重验会让任一外部源抽风就卡死整个保存——包括启用开关本身）
+                const previousStore = readRssStore(config);
+                const customSources = validated.store.sources.filter((source) => resolveBuiltin(source) === undefined && !previousStore.sources.some((existing) => existing.url === source.url));
                 if (customSources.length > 0) {
                     const checks = await Promise.allSettled(customSources.map((source) => validateCustomSource(source, config)));
                     const failures = [];
@@ -786,6 +805,8 @@ function makeRoutes(config, onDigestChanged) {
                     writeJson(res, 500, { error: '写入 RSS 配置失败: ' + (error instanceof Error ? error.message : String(error)) });
                     return;
                 }
+                // 保存成功即热应用：enabled / announceToAgent 的开关变化立刻生效
+                hooks?.onStoreSaved();
                 writeJson(res, 200, { ok: true, config: readRssStore(config), builtins: BUILTIN_CHANNELS, file: rssConfigPath() });
             },
         },
@@ -795,6 +816,8 @@ function makeRoutes(config, onDigestChanged) {
             handler: async (req, res) => {
                 if (!guard(req, res, 'GET'))
                     return;
+                if (disabledGuard(res))
+                    return;
                 writeJson(res, 200, { ok: true, sources: normalizeSources(config), digestDir: digestDir(config) });
             },
         },
@@ -803,6 +826,8 @@ function makeRoutes(config, onDigestChanged) {
             path: '/api/dsh-rss/catalog',
             handler: async (req, res) => {
                 if (!guard(req, res, 'GET'))
+                    return;
+                if (disabledGuard(res))
                     return;
                 const includeCatalog = config?.includeCatalog !== false;
                 if (!includeCatalog) {
@@ -892,14 +917,15 @@ export function apply(ctx, config) {
     if (config?.enabled === false)
         return;
     const store = readRssStore(config);
-    const announce = store.announceToAgent !== false;
     const autoGenerateOnMount = store.autoGenerateOnMount !== false;
+    // enabled / announce 都是热状态：卡片保存（POST /config → onStoreSaved）即刻生效
+    let enabled = store.enabled !== false;
+    let announce = store.announceToAgent !== false;
     let latest = readLatestDigest(config);
     let systemPromptApi = null;
     let sectionDisposer = null;
     const updateSystemPrompt = () => {
-        if (!announce || systemPromptApi === null)
-            return;
+        // 先撤旧 section 再按开关决定是否重挂：禁用或关闭公告时这里就是「撤下」路径
         if (sectionDisposer !== null) {
             try {
                 sectionDisposer();
@@ -909,6 +935,8 @@ export function apply(ctx, config) {
             }
             sectionDisposer = null;
         }
+        if (!enabled || !announce || systemPromptApi === null)
+            return;
         const text = buildSystemPromptText(latest);
         if (!text)
             return;
@@ -931,6 +959,15 @@ export function apply(ctx, config) {
     const routes = makeRoutes(config, (digest) => {
         latest = digest;
         updateSystemPrompt();
+    }, {
+        disabled: () => !enabled,
+        onStoreSaved: () => {
+            const saved = readRssStore(config);
+            enabled = saved.enabled !== false;
+            announce = saved.announceToAgent !== false;
+            updateSystemPrompt();
+            console.log(`[dsh-rss-digest] config applied (enabled=${String(enabled)}, announceToAgent=${String(announce)})`);
+        },
     });
     ctx.inject(['webServer'], (webCtx) => {
         webCtx.effect(() => {
@@ -976,6 +1013,9 @@ export function apply(ctx, config) {
     }
     ctx.effect(() => {
         const timer = setInterval(() => {
+            // 禁用态整个调度停摆：不生成、不抓取（store 保存即时翻转 enabled，无需重建定时器）
+            if (!enabled)
+                return;
             const now = new Date();
             const hh = String(now.getHours()).padStart(2, '0');
             const mm = String(now.getMinutes()).padStart(2, '0');
@@ -987,12 +1027,12 @@ export function apply(ctx, config) {
                 }
             }
         }, 30_000);
-        if (autoGenerateOnMount) {
+        if (autoGenerateOnMount && enabled) {
             void refresh(false);
         }
         return () => clearInterval(timer);
     }, 'dsh-rss-digest: scheduler');
-    console.log(`[dsh-rss-digest] mounted, digest dir: ${digestDir(config)}`);
+    console.log(`[dsh-rss-digest] mounted (enabled=${String(enabled)}, announceToAgent=${String(announce)}, dailyTime=${store.dailyTime?.trim() || DEFAULT_DAILY_TIME}), digest dir: ${digestDir(config)}`);
 }
 const plugin = definePlugin({
     name,
