@@ -10,13 +10,17 @@
  *   - key: API_KEY
  *     value: js:process.env.API_KEY
  *     secret: true
+ *   - key: STORED_TOKEN    # 密钥值已存入官方凭据存储，文件只留清单不带值
+ *     secret: true
  *
  * 值支持普通字符串与 js: 前缀的 !!js 表达式（与 dsh 补丁文件方言一致）。
+ * 密钥条目的明文值默认存入官方凭据存储（~/.dsh/.credentials.yaml 的 refs，
+ * 经 ctx.credentials seam 读写）；env 文件承载清单与 js: 引用，不再落明文密钥。
  * 保存后若开启 applyToProcessEnv，会把解析后的值写入当前进程的 process.env，
  * 供宿主和后续启动的子进程使用。
  *
  * 浏览器半体（./client）通过 /api/dsh-env/* 路由读写配置；路由带
- * loopback-only 信任围栏。
+ * loopback-only 信任围栏，密钥条目不下发明文（write-only）。
  */
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -71,12 +75,13 @@ function fromDtoValue(value) {
         return { __jsExpr: value.slice(3) };
     return String(value);
 }
-/** 序列化条目列表给浏览器：密钥条目不下发明文（value 为 null），GUI 以 write-only 方式编辑。 */
+/** 序列化条目列表给浏览器：密钥条目一律不下发明文（value 为 null），storage 标明值的存放处。 */
 function toDtoEntries(entries) {
     return entries.map((entry) => ({
         key: entry.key,
-        value: entry.secret ? null : dtoValue(entry.value),
+        value: entry.secret ? null : entry.value === undefined ? '' : dtoValue(entry.value),
         secret: entry.secret,
+        storage: entry.secret && entry.value === undefined ? 'refs' : 'file',
     }));
 }
 /** 评估 !!js 表达式（与 loader 相同的信任模型：表达式来自用户自己的配置）。 */
@@ -118,10 +123,12 @@ function readManagedEntries() {
             const entry = raw;
             if (typeof entry.key !== 'string' || entry.key.length === 0)
                 continue;
+            const secret = entry.secret === true;
             result.entries.push({
                 key: entry.key,
-                value: entry.value === undefined ? '' : entry.value,
-                secret: entry.secret === true,
+                // 密钥条目缺 value 字段 = 值在官方凭据存储；其余缺值沿用空串语义。
+                value: entry.value === undefined || entry.value === null ? (secret ? undefined : '') : entry.value,
+                secret,
             });
         }
     }
@@ -130,11 +137,11 @@ function readManagedEntries() {
     }
     return result;
 }
-/** 生成托管区块文本（不含首尾标记行）。 */
+/** 生成托管区块文本（不含首尾标记行）；undefined 值的键整体省略（ref 托管清单形态）。 */
 function renderManagedBlock(entries) {
     const rows = entries.map((entry) => ({
         key: entry.key,
-        value: entry.value,
+        ...(entry.value === undefined ? {} : { value: entry.value }),
         secret: entry.secret === true,
     }));
     return yaml.dump(rows, { schema: YAML_SCHEMA, lineWidth: -1, noRefs: true });
@@ -173,6 +180,7 @@ function validateEntries(rawEntries, previous) {
     if (!Array.isArray(rawEntries))
         return { error: 'entries 必须是数组' };
     const entries = [];
+    const inherited = new Set();
     const seen = new Set();
     for (const raw of rawEntries) {
         if (typeof raw !== 'object' || raw === null)
@@ -184,30 +192,128 @@ function validateEntries(rawEntries, previous) {
         if (seen.has(key))
             return { error: '重复的键名: ' + key };
         seen.add(key);
-        // value 缺省（null / undefined）＝保留已存值：密钥条目不回明文，客户端留空
-        // 保存即"不改"；普通条目同样适用，保持规则单一。
-        const prior = previous.find((p) => p.key === key);
-        entries.push({
-            key,
-            value: input.value === undefined || input.value === null
-                ? (prior !== undefined ? prior.value : '')
-                : fromDtoValue(input.value),
-            secret: input.secret === true,
-        });
+        if (input.value === undefined || input.value === null) {
+            // value 缺省＝保留已存值：密钥条目不回明文，客户端留空保存即"不改"。
+            const prior = previous.find((p) => p.key === key);
+            if (prior !== undefined)
+                inherited.add(key);
+            entries.push({ key, value: prior !== undefined ? prior.value : '', secret: input.secret === true });
+        }
+        else {
+            entries.push({ key, value: fromDtoValue(input.value), secret: input.secret === true });
+        }
     }
-    return { entries };
+    return { entries, inherited };
 }
 /* ------------------------------------------------------------------ *
  * process.env 应用
  * ------------------------------------------------------------------ */
 function applyToProcessEnv(entries) {
     for (const entry of entries) {
+        if (entry.value === undefined)
+            continue; // ref 托管：由 applyStoreEntriesToProcessEnv 经凭据存储解析
         const resolved = evalValue(entry.value);
         if (resolved === '') {
             delete process.env[entry.key];
         }
         else {
             process.env[entry.key] = resolved;
+        }
+    }
+}
+const seamError = (error) => (error instanceof Error ? error.message : String(error));
+/**
+ * 启动迁移：把 env 文件里带明文值的密钥条目搬入官方凭据存储。幂等且非破坏——
+ * 只有 set 成功的条目才从文件移除值；refs 已有同名键（用户经官方界面存过）
+ * 跳过不覆盖；被启动环境遮蔽、空值、js: 引用一律留在文件，下次启动重试。
+ */
+async function migrateSecretsToStore(seam) {
+    const managed = readManagedEntries();
+    const moved = new Set();
+    const conflicts = [];
+    for (const entry of managed.entries) {
+        if (entry.secret !== true || entry.value === undefined || isJsExpr(entry.value) || entry.value === '')
+            continue;
+        const info = await seam.describe(entry.key).catch(() => null);
+        if (info === null)
+            break; // seam 暂不可用：本轮放弃，下次启动重试
+        if (info.configured) {
+            conflicts.push(entry.key);
+            continue;
+        }
+        try {
+            await seam.set(entry.key, entry.value);
+        }
+        catch {
+            continue;
+        }
+        moved.add(entry.key);
+    }
+    if (moved.size > 0) {
+        writeManagedEntries(managed.entries.map((entry) => (moved.has(entry.key) ? { ...entry, value: undefined } : entry)));
+    }
+    return { migrated: moved.size, conflicts };
+}
+/** 把 ref 托管的密钥解析进 process.env——tty/docker 的 env:VAR 与 mcp 的 js:process.env 消费链依赖它。 */
+async function applyStoreEntriesToProcessEnv(seam, entries) {
+    for (const entry of entries) {
+        if (entry.secret !== true || entry.value !== undefined)
+            continue;
+        try {
+            const hit = await seam.resolve(entry.key);
+            if (hit === undefined || hit.value === '')
+                delete process.env[entry.key];
+            else
+                process.env[entry.key] = hit.value;
+        }
+        catch {
+            /* 单条失败不阻塞其余条目 */
+        }
+    }
+}
+/**
+ * 保存时的密钥分流。显式输入的值是权威：能写入 refs 就写入（文件只留清单）；
+ * 被启动环境遮蔽等失败留在文件并带警告，下次保存或下次启动迁移会重试。
+ * 启动迁移不覆盖 refs 已有值，但用户在卡片里重新输入值属于明确改写，允许覆盖。
+ */
+async function routeSecretEntries(seam, entries, previous, inherited, warnings) {
+    const prevByKey = new Map(previous.map((entry) => [entry.key, entry]));
+    const nextKeys = new Set(entries.map((entry) => entry.key));
+    for (const prev of previous) {
+        if (!nextKeys.has(prev.key) && prev.secret === true && prev.value === undefined)
+            await seam.unset(prev.key).catch(() => { });
+    }
+    for (const entry of entries) {
+        const prev = prevByKey.get(entry.key);
+        if (entry.secret !== true) {
+            // 取消密钥：ref 托管的值物化回 env 文件（保持可见），再清掉 refs
+            if (prev !== undefined && prev.secret === true && prev.value === undefined) {
+                if (entry.value === undefined) {
+                    const hit = await seam.resolve(entry.key).catch(() => undefined);
+                    entry.value = hit === undefined ? '' : hit.value;
+                }
+                await seam.unset(entry.key).catch(() => { });
+            }
+            continue;
+        }
+        if (entry.value === undefined)
+            continue; // 保留现状：ref 托管或文件值都不动
+        if (isJsExpr(entry.value)) {
+            // 改为 js: 引用：此前若 ref 托管，一并清理 refs
+            if (prev !== undefined && prev.value === undefined)
+                await seam.unset(entry.key).catch(() => { });
+            continue;
+        }
+        if (inherited.has(entry.key))
+            continue; // 留空保存＝保持现状：不重试写入，避免覆盖 refs 既有值
+        if (entry.value === '')
+            continue; // 空值：官方存储拒绝空串，按文件空值语义（删除变量）
+        try {
+            await seam.set(entry.key, entry.value);
+            entry.value = undefined;
+        }
+        catch (error) {
+            warnings.push(entry.key + ' 未能写入凭据存储，值保留在 env 文件: ' + seamError(error));
         }
     }
 }
@@ -265,7 +371,7 @@ async function readJsonBody(req) {
         return undefined;
     }
 }
-function makeRoutes(ctx, applyToProcessEnvOnSave) {
+function makeRoutes(ctx, applyOnSave, store) {
     const guard = (req, res, method) => {
         if (!isLoopbackRequest(req)) {
             writeJson(res, 403, { error: 'forbidden: loopback-only' });
@@ -311,26 +417,36 @@ function makeRoutes(ctx, applyToProcessEnvOnSave) {
                     return;
                 }
                 const entries = validated.entries;
+                const warnings = [];
+                const seam = store.current;
+                if (seam !== null && validated.inherited !== undefined) {
+                    // 密钥分流：refs 可用则按存储策略落位，失败/缺失退回纯文件模式
+                    await routeSecretEntries(seam, entries, current.entries, validated.inherited, warnings).catch((error) => {
+                        warnings.push('凭据存储暂不可用，密钥值保留在 env 文件: ' + seamError(error));
+                    });
+                }
                 try {
                     writeManagedEntries(entries);
                 }
                 catch (error) {
-                    writeJson(res, 500, { error: '写入 env 文件失败: ' + (error instanceof Error ? error.message : String(error)) });
+                    writeJson(res, 500, { error: '写入 env 文件失败: ' + seamError(error) });
                     return;
                 }
-                if (applyToProcessEnvOnSave) {
+                if (applyOnSave) {
                     try {
                         applyToProcessEnv(entries);
                     }
                     catch (error) {
-                        writeJson(res, 200, { ok: true, applied: false, warning: '已写入文件，但应用 process.env 失败: ' + (error instanceof Error ? error.message : String(error)) });
-                        return;
+                        warnings.push('已写入文件，但应用 process.env 失败: ' + seamError(error));
                     }
+                    if (seam !== null)
+                        await applyStoreEntriesToProcessEnv(seam, entries).catch(() => { });
                 }
                 const managed = readManagedEntries();
                 writeJson(res, 200, {
                     ok: true,
-                    applied: applyToProcessEnvOnSave,
+                    applied: applyOnSave,
+                    ...(warnings.length > 0 ? { warnings } : {}),
                     ...(managed.fileError !== undefined ? { fileError: managed.fileError } : {}),
                     entries: toDtoEntries(managed.entries),
                     file: managed.file,
@@ -342,14 +458,16 @@ function makeRoutes(ctx, applyToProcessEnvOnSave) {
 /* ------------------------------------------------------------------ *
  * 插件本体
  * ------------------------------------------------------------------ */
-const ENV_GUIDANCE = '本机已安装 dsh-env-manager 插件（环境变量 / 密钥管理）：Web GUI 的 设置 → 插件 里有「环境变量 / 密钥管理」卡片，提供图形化管理。配置保存在 ~/.dsh/env.yml 的托管区块（auto-generated，勿手改），支持普通值与 js: 前缀表达式（如 js:process.env.XXX）；保存后默认写入当前进程的 process.env，供宿主和后续启动的子进程使用。用户提到「环境变量 / 密钥 / env / secret」时即指本插件，请引导用户打开设置里的环境变量卡片操作，而不是直接修改配置文件。';
+const ENV_GUIDANCE = '本机已安装 dsh-env-manager 插件（环境变量 / 密钥管理）：Web GUI 的 设置 → 插件 里有「环境变量 / 密钥管理」卡片，提供图形化管理。配置保存在 ~/.dsh/env.yml 的托管区块（auto-generated，勿手改），支持普通值与 js: 前缀表达式（如 js:process.env.XXX）；密钥条目的明文值默认存入官方凭据存储（~/.dsh/.credentials.yaml），env 文件只保留清单不落密钥明文。保存后默认写入当前进程的 process.env，供宿主和后续启动的子进程使用。用户提到「环境变量 / 密钥 / env / secret」时即指本插件，请引导用户打开设置里的环境变量卡片操作，而不是直接修改配置文件。';
 export function apply(ctx, config) {
     if (config?.enabled === false)
         return;
     const applyOnSave = config?.applyToProcessEnv !== false;
-    const routes = makeRoutes(ctx, applyOnSave);
+    const useStore = config?.secretsInCredentials !== false;
+    const store = { current: null };
+    const routes = makeRoutes(ctx, applyOnSave, store);
     const announce = config?.announceToAgent !== false;
-    // 启动时也把已有条目应用一次，保证宿主进程内立即可用。
+    // 启动时也把已有条目应用一次，保证宿主进程内立即可用（ref 托管条目由下方回调补齐）。
     if (applyOnSave) {
         try {
             applyToProcessEnv(readManagedEntries().entries);
@@ -357,6 +475,25 @@ export function apply(ctx, config) {
         catch {
             /* 启动时应用失败不阻塞插件 */
         }
+    }
+    if (useStore) {
+        // 凭据 seam 由 base 组合提供（ctx.inject 动态回调与 webServer 同款模式）；
+        // 服务缺失时回调不执行，插件整体退回 env 文件单存储的旧模式。
+        ctx.inject(['credentials'], (credCtx) => {
+            const seam = credCtx.credentials;
+            store.current = seam;
+            void (async () => {
+                const { migrated, conflicts } = await migrateSecretsToStore(seam);
+                if (migrated > 0)
+                    console.log('[dsh-env-manager] migrated ' + migrated + ' secret(s) into the credentials store');
+                if (conflicts.length > 0)
+                    console.warn('[dsh-env-manager] credentials store already configured for: ' + conflicts.join(', ') + '（未覆盖，条目留在 env 文件）');
+                if (applyOnSave)
+                    await applyStoreEntriesToProcessEnv(seam, readManagedEntries().entries);
+            })().catch((error) => {
+                console.warn('[dsh-env-manager] credentials migration failed: ' + seamError(error));
+            });
+        });
     }
     ctx.inject(['webServer'], (webCtx) => {
         webCtx.effect(() => {

@@ -147,7 +147,7 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 
 - **What it does**: add, edit, or delete environment variables and secrets in the Web GUI. After saving, they are immediately written into the current process’s `process.env`, so both the host and subsequently started child processes can read them without restarting.
 - **How to use**: open Settings → Plugins → “Environment Variables / Secrets Management” → add a key-value pair → (check “Secret” for sensitive entries; secret values are never sent back to the browser, and saving with an empty field keeps the stored value) → save.
-- **Supports**: plain strings; `js:` prefixed expressions (e.g. `js:process.env.API_KEY`); secret marking (write-only: secret values never go back to the browser; saving with an empty value keeps the stored one).
+- **Supports**: plain strings; `js:` prefixed expressions (e.g. `js:process.env.API_KEY`); secret values migrate automatically into the official credentials store `.credentials.yaml` (write-only: the API never sends secrets back, env file keeps only the manifest; existing refs are never overwritten — conflicting entries stay in the env file with a warning).
 - **Where it is stored**: the managed block of `~/.dsh/env.yml` (auto-generated; do not edit by hand).
 - **Note**: key names may only contain letters, digits, and underscores, and must not be duplicated.
 
