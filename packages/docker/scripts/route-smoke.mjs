@@ -8,6 +8,8 @@
  *     /inspect、/logs、/stats、/images、/action、/exec
  *   - 信任模型：默认只读 → /action 与 /exec 403，且对应 agent 工具不注册；
  *     打开开关后（含 settings/updated 热更新路径）立刻解锁
+ *   - 禁用热生效：enabled=false → 工具清空、公告撤下、数据路由 403，/config 保持
+ *     可读写（卡片渲染与重新启用的唯一入口）；含 settings 已禁用时的挂载路径
  *   - 安全：非 loopback 请求 403；容器名/ID 注入尝试被白名单拒绝
  *
  * 用法：pnpm --filter @hyzyn/dsh-docker build && node scripts/route-smoke.mjs
@@ -141,7 +143,11 @@ function makeCtx(config, options = {}) {
       child.systemPrompt = {
         section: (options_) => {
           state.prompts.push(options_)
-          return () => {}
+          // 与 tools.register 对称：dispose 从列表摘除，禁用撤公告的路径才可断言
+          return () => {
+            const index = state.prompts.indexOf(options_)
+            if (index >= 0) state.prompts.splice(index, 1)
+          }
         },
       }
     }
@@ -476,7 +482,72 @@ await test('GET /config 以 settings 解析值为准（挂载竞态不再返回�
 })
 
 /* ------------------------------------------------------------------ *
- * 7. 结果
+ * 7. 禁用与恢复：enabled 热生效（设置卡片路径 + 重启路径）
+ * ------------------------------------------------------------------ */
+
+await test('禁用：POST /config enabled=false → 工具清空、公告撤下、数据路由 403', async () => {
+  const res = await call('POST', '/config', { enabled: false })
+  assert.equal(res.status, 200)
+  assert.equal(res.body.config.enabled, false)
+  assert.deepEqual(toolNames(), [], '禁用后不应残留任何 agent 工具')
+  assert.equal(state.prompts.length, 0, '禁用后能力公告应被撤下')
+  const blockedGet = await call('GET', '/targets')
+  assert.equal(blockedGet.status, 403)
+  assert.match(blockedGet.body.error, /插件已禁用/)
+  const blockedPost = await call('POST', '/containers', { target: '本机' })
+  assert.equal(blockedPost.status, 403)
+  // 禁用状态下 /action 与 /exec 的每调用守卫也必须仍然兜底
+  const action = await call('POST', '/action', { target: '本机', action: 'stop', id: 'shop-web-1' })
+  assert.equal(action.status, 403)
+  assert.match(action.body.error, /插件已禁用/)
+})
+
+await test('禁用期间：GET/POST /config 保持可用（卡片渲染与重新启用的唯一入口）', async () => {
+  const read = await call('GET', '/config')
+  assert.equal(read.status, 200)
+  assert.equal(read.body.config.enabled, false)
+  const write = await call('POST', '/config', { pollIntervalSec: 6 })
+  assert.equal(write.status, 200)
+})
+
+await test('重新启用：工具（含能力开关项）、公告、数据路由全部恢复', async () => {
+  const res = await call('POST', '/config', { enabled: true })
+  assert.equal(res.status, 200)
+  assert.equal(res.body.config.enabled, true)
+  const names = toolNames()
+  for (const readonly of ['docker_targets', 'docker_ps', 'docker_inspect', 'docker_logs', 'docker_stats', 'docker_images']) {
+    assert.equal(names.includes(readonly), true, `缺少只读工具 ${readonly}`)
+  }
+  // allowMutations / allowExec 在此前的用例里已打开：重启用后对应工具一并回来
+  assert.equal(names.includes('docker_action'), true)
+  assert.equal(names.includes('docker_exec'), true)
+  assert.equal(state.prompts.length, 1)
+  assert.equal(state.prompts[0].name, 'plugin:dsh-docker')
+  assert.equal((await call('GET', '/targets')).status, 200)
+})
+
+await test('重启路径：settings 命名空间已禁用时挂载 → 挂载即禁用（卡片仍可读）', async () => {
+  // 模拟上一次会话在设置卡片里关掉过「启用插件」：settings 命名空间持久化了 enabled:false
+  const second = makeCtx({ dockerBin: fakeBin, targets: MOUNT_TARGETS }, { ttyConfig: TTY_CONFIG })
+  second.state.settingsStored = { enabled: false }
+  host.apply({ ...second.ctx }, { dockerBin: fakeBin, targets: MOUNT_TARGETS })
+  const secondRoute = second.state.routes.find((item) => item.path === '/api/dsh-docker')
+  assert.ok(secondRoute !== undefined, '挂载时仍应注册路由（禁用是运行态而非不挂载）')
+  assert.deepEqual(second.state.tools, [], '挂载即禁用：不应注册任何 agent 工具')
+  assert.equal(second.state.prompts.length, 0, '挂载即禁用：不应注册能力公告')
+  const req = async (method, sub) => {
+    const res = makeRes()
+    await secondRoute.handler(makeReq(method, '/api/dsh-docker' + sub, method === 'GET' ? undefined : {}), res)
+    return res
+  }
+  assert.equal((await req('GET', '/targets')).status, 403)
+  const config = await req('GET', '/config')
+  assert.equal(config.status, 200, '禁用态下 /config 必须保持可读（卡片依赖）')
+  assert.equal(config.body.config.enabled, false)
+})
+
+/* ------------------------------------------------------------------ *
+ * 8. 结果
  * ------------------------------------------------------------------ */
 
 let failed = 0

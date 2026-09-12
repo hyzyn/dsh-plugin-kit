@@ -26,7 +26,11 @@ async function run() {
     apply: (ctx) => {
       ctx.provide('settings', { register: () => ({ get: () => ({}), update: async () => {} }) })
       ctx.provide('tools', { register: () => () => {} })
-      ctx.provide('systemPrompt', { register: () => () => {} })
+      // 与真实契约同形（section/context 返回注销器）：插件热应用时会调用重建
+      ctx.provide('systemPrompt', {
+        section: () => () => {},
+        context: () => () => {},
+      })
     },
   })
   await stubFiber.await()

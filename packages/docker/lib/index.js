@@ -452,7 +452,8 @@ const plugin = definePlugin({
                 merged.hostKeys = live.hostKeys;
             live = normalizeConfig(merged);
             refreshTools();
-            console.log(`[dsh-docker] config applied (bin=${live.dockerBin}, targets=${String(live.targets.length)}, allowMutations=${String(live.allowMutations)}, allowExec=${String(live.allowExec)})`);
+            refreshAnnouncement();
+            console.log(`[dsh-docker] config applied (enabled=${String(live.enabled)}, bin=${live.dockerBin}, targets=${String(live.targets.length)}, allowMutations=${String(live.allowMutations)}, allowExec=${String(live.allowExec)})`);
         };
         /* ---------- agent 工具 ---------- */
         let toolsApi;
@@ -518,6 +519,9 @@ const plugin = definePlugin({
             registeredNames = [];
             const tools = toolsApi;
             if (tools === undefined)
+                return;
+            // 插件禁用（设置卡片关掉「启用插件」）时不注册任何工具：运行期关掉也要立刻生效
+            if (!live.enabled)
                 return;
             const targetParam = { type: 'string', description: '目标名（docker_targets 列出；只有一个目标时可省略）' };
             const add = (toolName, definition) => {
@@ -952,7 +956,7 @@ const plugin = definePlugin({
             toolsCtx.effect(() => {
                 toolsApi = toolsCtx.tools;
                 refreshTools();
-                console.log('[dsh-docker] agent tools registered (' + registeredNames.join(', ') + ')');
+                console.log('[dsh-docker] agent tools ' + (live.enabled ? 'registered (' + registeredNames.join(', ') + ')' : 'skipped (disabled)'));
                 return () => {
                     toolsApi = undefined;
                     for (const dispose of toolDisposers) {
@@ -968,6 +972,27 @@ const plugin = definePlugin({
                 };
             }, 'dsh-docker: agent tools');
         });
+        /* ---------- 能力公告 ---------- */
+        let systemPromptApi;
+        let announcementDispose;
+        /** 按当前配置重建公告 section（enabled / announceToAgent 热变化时调用；幂等）。 */
+        const refreshAnnouncement = () => {
+            if (announcementDispose !== undefined) {
+                try {
+                    announcementDispose();
+                }
+                catch {
+                    /* 已注销 */
+                }
+                announcementDispose = undefined;
+            }
+            const systemPrompt = systemPromptApi;
+            if (systemPrompt === undefined)
+                return;
+            if (!live.enabled || !live.announceToAgent)
+                return;
+            announcementDispose = systemPrompt.section({ name: 'plugin:dsh-docker', order: 152, text: DOCKER_GUIDANCE });
+        };
         /* ---------- HTTP 路由（loopback 围栏） ---------- */
         ctx.inject(['webServer'], (webCtx) => {
             webCtx.effect(() => {
@@ -981,6 +1006,13 @@ const plugin = definePlugin({
                             return;
                         }
                         const sub = new URL(req.url ?? '/', 'http://loopback').pathname.slice(ROUTE_PREFIX.length);
+                        // 插件禁用时只保留 /config 读写：设置卡片靠它渲染，也是重新启用插件的唯一
+                        // UI 入口（不能一并关掉，否则卡片消失就没有恢复路径了）；其余数据路由一律
+                        // 403——agent 工具已由 refreshTools 同步清空，这里只管 HTTP 半体。
+                        if (!live.enabled && sub !== '/config') {
+                            writeJson(res, 403, { error: '插件已禁用（设置 → 插件 → Docker 容器面板 → 启用插件）' });
+                            return;
+                        }
                         if (sub === '/config') {
                             if (req.method === 'GET') {
                                 writeJson(res, 200, { ok: true, config: snapshot() });
@@ -1172,6 +1204,7 @@ const plugin = definePlugin({
                 const diag = (resolved ?? {});
                 console.log(`[dsh-docker] settings resolved (keys=${Object.keys(diag).join('|')}, targets=${Array.isArray(diag.targets) ? String(diag.targets.length) : 'not-array'}, hostKeys=${Array.isArray(diag.hostKeys) ? String(diag.hostKeys.length) : 'not-array'})`);
                 refreshTools();
+                refreshAnnouncement();
                 const events = settingsCtx;
                 const off = events.events.on('settings/updated', (ns, next) => {
                     if (ns !== 'docker' || typeof next !== 'object' || next === null)
@@ -1186,15 +1219,24 @@ const plugin = definePlugin({
             }, 'dsh-docker: settings');
         });
         /* ---------- 能力公告 ---------- */
-        if (live.announceToAgent) {
-            ctx.inject(['systemPrompt'], (promptCtx) => {
-                promptCtx.effect(() => {
-                    const systemPrompt = promptCtx.systemPrompt;
-                    const dispose = systemPrompt.section({ name: 'plugin:dsh-docker', order: 152, text: DOCKER_GUIDANCE });
-                    return () => dispose();
-                }, 'dsh-docker: announcement');
-            });
-        }
+        ctx.inject(['systemPrompt'], (promptCtx) => {
+            promptCtx.effect(() => {
+                systemPromptApi = promptCtx.systemPrompt;
+                refreshAnnouncement();
+                return () => {
+                    systemPromptApi = undefined;
+                    if (announcementDispose !== undefined) {
+                        try {
+                            announcementDispose();
+                        }
+                        catch {
+                            /* 已注销 */
+                        }
+                        announcementDispose = undefined;
+                    }
+                };
+            }, 'dsh-docker: announcement');
+        });
         /* ---------- 卸载清理 ---------- */
         ctx.effect(() => {
             return () => {

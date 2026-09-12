@@ -25,6 +25,7 @@ window.__ModuleLoader__.load({
       '.mX_cardHeader:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}',
       '.mX_cardHeadText{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}',
       '.mX_cardName{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:600}',
+      '.dshkit_badge{flex:none;margin-left:auto;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:600;line-height:16px;letter-spacing:.02em;color:var(--dsw-alias-label-dimmed);background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1)}',
       '.mX_cardDescription{color:var(--dsw-alias-label-secondary);font-size:12px}',
       '.mX_chevron{flex:none;color:var(--dsw-alias-label-tertiary);transition:transform .16s}',
       '.mX_pluginCardOpen .mX_chevron{transform:rotate(180deg)}',
@@ -656,6 +657,7 @@ window.__ModuleLoader__.load({
                   jsx('span', { className: 'mX_cardDescription', children: '管理 MCP 服务器：stdio 本地进程或 streamable-http 远程服务；保存后热加载为 mcp__<server>__<tool> 工具，无需重启。' }),
                 ],
               }),
+              jsx('span', { className: 'dshkit_badge', children: 'Kit' }),
               jsx('svg', {
                 width: '14',
                 height: '14',
@@ -699,7 +701,7 @@ window.__ModuleLoader__.load({
         name: 'settings.plugin.item',
         // settings.plugin.item 是 keyed 插槽：key 必须是该卡片所编辑的 settings 命名空间
         key: 'mcp-config',
-        order: 100,
+        order: 96,
       }, McpSettingsCard))
     }
 

@@ -36,6 +36,8 @@
  *        重新 spawn 按 `tmux -A` 接回原现场（屏幕重画含此前输出）
  *   B27. 跨窗口共享（0.10.1）：同 persistName 二次 spawn 重绑定现有宿主会话
  *        （不新建 PTY / 不占名额）、输出扇出、kill 广播 exit
+ *   B29. 禁用热生效（enabled 开关）：工具/公告撤下与恢复、数据路由 403、
+ *        /config 保持可读写、存量 WS 被关闭与新升级被拒
  *
  * 用法：pnpm --filter @hyzyn/dsh-tty integration
  * 退出码：0 = 全部 PASS，1 = 任一 FAIL。
@@ -129,6 +131,7 @@ async function run() {
   // 最小 settings 服务 stub：让插件的 settings 注入回调触发，并可手动派发
   // settings/updated 事件（与 dsh-settings 的 dispatch 方式一致）来测配置热生效。
   const toolDefs = []
+  const promptParts = []
   const stubFiber = app.plugin({
     name: 'settings-stub',
     apply: (ctx) => {
@@ -136,7 +139,28 @@ async function run() {
       ctx.provide('tools', {
         register: (definition) => {
           toolDefs.push(definition)
-          return () => {}
+          // dispose 必须真摘除：B29 禁用场景要断言「工具全部撤下」
+          return () => {
+            const index = toolDefs.indexOf(definition)
+            if (index >= 0) toolDefs.splice(index, 1)
+          }
+        },
+      })
+      // systemPrompt 桩：记录 section/context 注册与撤下（B29 公告断言用）
+      ctx.provide('systemPrompt', {
+        section: (options) => {
+          promptParts.push(options)
+          return () => {
+            const index = promptParts.indexOf(options)
+            if (index >= 0) promptParts.splice(index, 1)
+          }
+        },
+        context: (options) => {
+          promptParts.push(options)
+          return () => {
+            const index = promptParts.indexOf(options)
+            if (index >= 0) promptParts.splice(index, 1)
+          }
         },
       })
     },
@@ -1351,6 +1375,71 @@ async function run() {
     else fail('B28i 非法端口 → 友好错误', JSON.stringify(r7))
 
     await sftpd.close()
+  }
+
+  // B29: 禁用热生效（enabled 开关）：工具/公告撤下、数据路由 403、WS 关闭与拒绝、/config 保持可用
+  console.log('\n[29] 禁用热生效与恢复（enabled 开关）')
+  {
+    const configPost = async (body) => {
+      const res = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+      return { status: res.status, body: await res.json() }
+    }
+
+    // 存量 WS 先连上（插件仍启用），禁用后应被服务端正常关闭
+    const alive = openSession(port)
+    await alive.open()
+
+    const off = await configPost({ enabled: false })
+    if (off.status === 200 && off.body.config?.enabled === false) pass('B29a POST /config enabled=false 生效')
+    else fail('B29a POST /config enabled=false 生效', `status=${String(off.status)}`)
+    await sleep(100)
+    if (toolDefs.length === 0) pass('B29b 禁用后 agent 工具全部撤下')
+    else fail('B29b 禁用后 agent 工具全部撤下', `残留: ${toolDefs.map((d) => d.name).join(',')}`)
+    if (promptParts.length === 0) pass('B29c 禁用后公告与动态快照撤下')
+    else fail('B29c 禁用后公告与动态快照撤下', `残留 ${String(promptParts.length)}`)
+    const probeRes = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/probe`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ host: '127.0.0.1', username: 'u' }) })
+    if (probeRes.status === 403) pass('B29d 禁用后数据路由 403（/probe）')
+    else fail('B29d 禁用后数据路由 403（/probe）', `status=${String(probeRes.status)}`)
+    const cfgGet = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/config`)
+    if (cfgGet.status === 200 && (await cfgGet.json()).config?.enabled === false) pass('B29e 禁用后 /config 仍可读（卡片依赖）')
+    else fail('B29e 禁用后 /config 仍可读（卡片依赖）', `status=${String(cfgGet.status)}`)
+
+    // 存量 WS 已在禁用前连上：应被服务端正常关闭（会话转孤儿保活，PTY 进程不动）
+    try {
+      await alive.waitFor(() => alive.state.closed, 5000, '禁用后存量 WS 关闭')
+      pass('B29f 禁用后存量 WS 被服务端关闭')
+    } catch (error) {
+      fail('B29f 禁用后存量 WS 被服务端关闭', String(error?.message ?? error).slice(0, 140))
+    }
+
+    // 新升级被拒（socket 直接 destroy：ws 客户端应快速 error/close 而非建连成功）
+    const rejected = await new Promise((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/api/dsh-tty/ws`)
+      const timer = setTimeout(() => { ws.terminate(); resolve(false) }, 3000)
+      ws.once('open', () => { clearTimeout(timer); ws.terminate(); resolve(false) })
+      ws.once('error', () => { clearTimeout(timer); resolve(true) })
+      ws.once('close', () => { clearTimeout(timer); resolve(true) })
+    })
+    if (rejected) pass('B29g 禁用后新 WS 升级被拒')
+    else fail('B29g 禁用后新 WS 升级被拒', '3s 内未收到 error/close 或握手成功')
+
+    // 重新启用：工具、公告、WS 全部恢复
+    const on = await configPost({ enabled: true })
+    if (on.status === 200 && on.body.config?.enabled === true) pass('B29h 重新启用生效')
+    else fail('B29h 重新启用生效', `status=${String(on.status)}`)
+    await sleep(100)
+    if (toolDefs.length === 13) pass('B29i 重新启用后 13 个 agent 工具回归')
+    else fail('B29i 重新启用后 13 个 agent 工具回归', `当前 ${String(toolDefs.length)}`)
+    if (promptParts.length === 2) pass('B29j 重新启用后公告与动态快照恢复')
+    else fail('B29j 重新启用后公告与动态快照恢复', `当前 ${String(promptParts.length)}`)
+    const again = openSession(port)
+    try {
+      await again.open()
+      pass('B29k 重新启用后 WS 可连接')
+    } catch (error) {
+      fail('B29k 重新启用后 WS 可连接', String(error?.message ?? error).slice(0, 140))
+    }
+    again.client.close()
   }
 
   const failed = RESULTS.filter(([kind]) => kind === 'FAIL')
