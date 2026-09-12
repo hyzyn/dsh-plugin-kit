@@ -9,7 +9,7 @@ dist/
 
 .dsh-vision-toolkit/
 .jspace/
-# tty 插件视觉预览夹具产物（scripts/preview.mjs 生成）
+# 各插件视觉预览夹具产物（scripts/preview.mjs 生成）
 .preview/
 # 本地杂项：贡献导出 bundle 与 smoke 测试脚本，不入库
 .dsh-contrib.bundle

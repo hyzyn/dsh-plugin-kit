@@ -621,35 +621,35 @@ const PANEL_DIRECTORY: PanelDefinition[] = [
     kind: 'section',
     titles: ['通用设置', 'General'],
     keywords: ['general', '通用', '设置', '常规', '基础'],
-    description: '设置 → 通用设置：界面与工具通用选项',
+    description: '界面与工具的通用选项',
   },
   {
     id: 's-models',
     kind: 'section',
     titles: ['模型', 'Models'],
     keywords: ['model', 'models', '模型', '提供商', 'provider', '推理'],
-    description: '设置 → 模型：模型提供商与模型列表管理',
+    description: '模型提供商与模型列表管理',
   },
   {
     id: 's-plugins',
     kind: 'section',
     titles: ['插件', 'Plugins'],
     keywords: ['plugin', 'plugins', '插件', '扩展'],
-    description: '设置 → 插件：插件配置与插件清单',
+    description: '插件配置与插件清单',
   },
   {
     id: 's-agent-presets',
     kind: 'section',
     titles: ['Agent 预设', 'Agent presets'],
     keywords: ['agent', 'preset', '预设', 'agent preset', 'agentpresets'],
-    description: '设置 → Agent 预设：预设方案与角色模板',
+    description: '预设方案与角色模板',
   },
   {
     id: 's-market',
     kind: 'section',
     titles: ['插件市场', 'Plugin Market'],
     keywords: ['market', 'marketplace', '插件市场', '市场', '商店', 'plugin market'],
-    description: '设置 → 插件市场：发现与安装社区插件',
+    description: '发现与安装社区插件',
   },
   // 插件配置卡片（随 DSH 内置）
   {
@@ -657,28 +657,28 @@ const PANEL_DIRECTORY: PanelDefinition[] = [
     kind: 'card',
     titles: ['终端', 'Shell'],
     keywords: ['terminal', 'bash', '终端', 'shell', '命令行'],
-    description: '终端 / Shell 行为设置',
+    description: 'Shell 行为与命令超时设置',
   },
   {
     id: 'agent-loop',
     kind: 'card',
     titles: ['Agent 循环', 'Agent loop'],
     keywords: ['agent', 'loop', '循环', 'agent loop', 'agentloop'],
-    description: 'Agent 循环设置',
+    description: '循环轮次、中断与并发设置',
   },
   {
     id: 'web-search',
     kind: 'card',
     titles: ['网页搜索', 'Web search'],
     keywords: ['web', 'search', '网页', '搜索', 'websearch'],
-    description: '网页搜索设置',
+    description: '搜索提供商与结果条数',
   },
   {
     id: 'mcp-config',
     kind: 'card',
     titles: ['MCP 服务器配置', 'MCP Server Configuration'],
     keywords: ['mcp', 'server', '服务器', '配置', '工具', '工具集'],
-    description: 'MCP 服务器配置：stdio 本地进程或 streamable-http 远程服务',
+    description: 'stdio 本地进程或 streamable-http 远程服务',
     registryName: 'mcp-config',
   },
   {
@@ -686,7 +686,7 @@ const PANEL_DIRECTORY: PanelDefinition[] = [
     kind: 'card',
     titles: ['Prompt 管理', 'Prompt Management'],
     keywords: ['prompt', 'systemprompt', '提示词', '提示', 'prompts', 'system prompt'],
-    description: 'Prompt 管理：systemPrompt 可视化编辑、版本管理与 A/B 测试',
+    description: 'systemPrompt 可视化编辑、版本管理与 A/B 测试',
     registryName: 'prompt-manager',
   },
   {
@@ -694,7 +694,7 @@ const PANEL_DIRECTORY: PanelDefinition[] = [
     kind: 'card',
     titles: ['环境变量 / 密钥管理', 'Environment Variables / Secrets'],
     keywords: ['env', 'environment', '环境变量', '密钥', 'secret', 'secrets', '环境'],
-    description: '环境变量 / 密钥管理：配置进程环境变量与敏感信息',
+    description: '配置进程环境变量与敏感信息',
     registryName: 'env-manager',
   },
   {
@@ -702,7 +702,7 @@ const PANEL_DIRECTORY: PanelDefinition[] = [
     kind: 'card',
     titles: ['Profile 管理', 'Profile Management'],
     keywords: ['profile', 'profiles', '环境', '配置', '多环境', 'profile 管理'],
-    description: 'Profile 管理：DSH profile 的创建、复制、重命名与删除',
+    description: 'DSH profile 的创建、复制、重命名与删除',
     registryName: 'profile-manager',
   },
   {
@@ -710,7 +710,7 @@ const PANEL_DIRECTORY: PanelDefinition[] = [
     kind: 'card',
     titles: ['RSS / 新闻聚合', 'RSS / News Aggregation'],
     keywords: ['rss', 'news', '新闻', '聚合', 'digest', '今日值得读'],
-    description: 'RSS / 新闻聚合：多源订阅与每日「今日值得读」自动摘要',
+    description: '多源订阅与每日「今日值得读」自动摘要',
     registryName: 'rss-digest',
   },
   {
@@ -718,7 +718,7 @@ const PANEL_DIRECTORY: PanelDefinition[] = [
     kind: 'card',
     titles: ['Codegraph 集成', 'Codegraph Integration'],
     keywords: ['codegraph', '代码图谱', '图谱', '索引', '调用链', '影响面', 'code graph'],
-    description: 'Codegraph 集成：代码图谱索引、符号搜索与调用链分析',
+    description: '代码图谱索引、符号搜索与调用链分析',
     registryName: 'codegraph',
   },
 ]
@@ -749,22 +749,47 @@ interface PanelHit {
   snippet: string
 }
 
+/** 目录条目：searchPanels 的输入，也是浏览器半体的「打开即有内容」目录。 */
+interface PanelEntry extends Omit<PanelHit, 'snippet'> {
+  /** 额外可搜索关键词（与 PanelDefinition.keywords 同义） */
+  keywords: string[]
+}
+
+/**
+ * 当前可用的设置面板清单：官方条目恒在，插件卡片按宿主已加载的插件过滤
+ * （避免把未安装的卡片送给客户端）。
+ * 浏览器半体的目录路由与 /query 的 panels 字段共用这一份清单。
+ */
+function listPanels(ctx: Context): PanelEntry[] {
+  const loaded = getLoadedRegistryNames(ctx)
+  const items: PanelEntry[] = []
+  for (const panel of PANEL_DIRECTORY) {
+    if (panel.registryName !== undefined && !loaded.has(panel.registryName)) continue
+    items.push({
+      id: panel.id,
+      kind: panel.kind,
+      name: panel.titles[0],
+      titles: panel.titles,
+      keywords: panel.keywords,
+      description: panel.description,
+    })
+  }
+  return items
+}
+
 function searchPanels(ctx: Context, rawQuery: string, limit: number): PanelHit[] {
   const query = normalizeQuery(rawQuery)
   if (query === '') return []
-  const loaded = getLoadedRegistryNames(ctx)
   const hits: PanelHit[] = []
-  for (const panel of PANEL_DIRECTORY) {
+  for (const panel of listPanels(ctx)) {
     if (hits.length >= limit) break
-    // 非官方条目：宿主插件未加载时跳过，避免搜到未安装的卡片
-    if (panel.registryName !== undefined && !loaded.has(panel.registryName)) continue
     const searchable = [...panel.titles, ...panel.keywords, panel.description].map(normalizeQuery)
     const matched = searchable.some((text) => text.includes(query))
     if (!matched) continue
     hits.push({
       id: panel.id,
       kind: panel.kind,
-      name: panel.titles[0],
+      name: panel.name,
       titles: panel.titles,
       description: panel.description,
       snippet: makeSnippet([...panel.titles, panel.description].join('，'), query),
@@ -833,6 +858,22 @@ function makeRoutes(ctx: Context, config: Config): Array<{ kind: 'exact'; path: 
   return [
     {
       kind: 'exact',
+      path: '/api/dsh-search/catalog',
+      handler: async (req, res) => {
+        if (!isLoopbackRequest(req)) {
+          writeJson(res, 403, { error: 'forbidden: loopback-only' })
+          return
+        }
+        if (req.method !== 'GET') {
+          writeJson(res, 405, { error: 'method not allowed: ' + String(req.method) })
+          return
+        }
+        // 目录是静态清单（不含用户数据），开关只受 includePanels 控制
+        writeJson(res, 200, { ok: true, panels: config.includePanels !== false ? listPanels(ctx) : [] })
+      },
+    },
+    {
+      kind: 'exact',
       path: '/api/dsh-search/query',
       handler: async (req, res) => {
         if (!isLoopbackRequest(req)) {
@@ -884,7 +925,7 @@ function makeRoutes(ctx: Context, config: Config): Array<{ kind: 'exact'; path: 
  * 插件本体
  * ------------------------------------------------------------------ */
 
-const SEARCH_GUIDANCE = '本机已安装 dsh-search 插件（全局搜索）：Web GUI 侧边栏有「全局搜索」入口，可全文搜索历史会话。'
+const SEARCH_GUIDANCE = '本机已安装 dsh-search 插件（全局搜索）：Web GUI 侧边栏有「全局搜索」入口，⌘/Ctrl+K 也可唤出命令面板，可全文搜索历史会话、Prompt、MCP 工具与设置面板。'
 
 const plugin = definePlugin<Config>({
   name: 'global-search',

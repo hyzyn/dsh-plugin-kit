@@ -18,6 +18,7 @@
  *      坏 YAML 与缺结束标记不 500、prompts 为空
  *   i. 单字 query：sessions 短路（不触碰宿主 FTS）但 panels / tools 照常返回
  *   j. MCP 工具：只返回 mcp__ 前缀工具，name / description 均可命中
+ *   k. /api/dsh-search/catalog：围栏与 405、条目形状、插件卡片跟随 registry、includePanels 关闭
  *
  * 隔离说明：插件在模块级持有结果缓存 / 会话文档缓存 / 可见集合缓存 / Prompt 解析缓存，
  * 用例之间会互相残留。这里每个用例组用 `?smoke=N` 重新 import 一次 lib（Node 的 ESM
@@ -103,11 +104,12 @@ function makeCtx(options = {}) {
  * ------------------------------------------------------------------ */
 
 const ROUTE_PATH = '/api/dsh-search/query'
+const CATALOG_PATH = '/api/dsh-search/catalog'
 
 function makeReq(sub, options = {}) {
   return {
     method: options.method ?? 'GET',
-    url: ROUTE_PATH + sub,
+    url: (options.path ?? ROUTE_PATH) + sub,
     headers: { host: '127.0.0.1:3080', ...(options.headers ?? {}) },
     socket: { remoteAddress: options.remoteAddress ?? '127.0.0.1' },
     // handler 用 once/removeListener 挂 AbortController 的 close 监听
@@ -145,7 +147,7 @@ const queryParam = (query) => '?q=' + encodeURIComponent(query)
 
 let moduleSeq = 0
 
-/** 全新模块状态 + 全新假 ctx：apply 后取回该实例的 /api/dsh-search/query 路由。 */
+/** 全新模块状态 + 全新假 ctx：apply 后取回该实例的两条路由。 */
 async function mount(options = {}) {
   const host = await import(`../lib/index.js?smoke=${++moduleSeq}`)
   const { ctx, state } = makeCtx(options)
@@ -159,7 +161,18 @@ async function mount(options = {}) {
   const route = state.routes.find((item) => item.path === ROUTE_PATH)
   assert.ok(route !== undefined, '未注册 /api/dsh-search/query 路由')
   assert.equal(route.kind, 'exact')
-  return { host, ctx, state, route, call: (sub, request) => callRoute(route, sub, request) }
+  const catalog = state.routes.find((item) => item.path === CATALOG_PATH)
+  assert.ok(catalog !== undefined, '未注册 /api/dsh-search/catalog 路由')
+  assert.equal(catalog.kind, 'exact')
+  return {
+    host,
+    ctx,
+    state,
+    route,
+    catalog,
+    call: (sub, request) => callRoute(route, sub, request),
+    callCatalog: (request = {}) => callRoute(catalog, '', { ...request, path: CATALOG_PATH }),
+  }
 }
 
 const results = []
@@ -183,7 +196,7 @@ await test('0. 挂载面：导出形态 + 路由注册 + 能力公告', async ()
   assert.deepEqual(host.inject, [])
   assert.equal(route.kind, 'exact')
   assert.equal(route.path, ROUTE_PATH)
-  assert.equal(state.routes.length, 1, '只应注册一条路由')
+  assert.equal(state.routes.length, 2, '应注册 /query 与 /catalog 两条路由')
   // 两处 effect（路由 + 能力公告）在挂载时同步执行，disposer 被逐个收纳
   assert.equal(state.disposers.length, 2)
   assert.equal(state.sections.length, 1)
@@ -732,6 +745,48 @@ await test('j. MCP 工具：只返回 mcp__ 前缀，name / description 均可�
   assert.deepEqual(noHit.body.tools, [], '非前缀工具即使在描述里命中也不返回')
 })
 
+/* ------------------------------------------------------------------ *
+ * k. 设置目录路由
+ * ------------------------------------------------------------------ */
+
+await test('k. 目录路由：围栏 / 405 / includePanels 关闭 / 插件卡片跟随 registry', async () => {
+  const { callCatalog } = await mount({ registryNames: ['mcp-config', 'codegraph'] })
+
+  const ok = await callCatalog()
+  assert.equal(ok.status, 200)
+  assert.equal(ok.body.ok, true)
+  const ids = ok.body.panels.map((panel) => panel.id)
+  // 官方大类与官方面板恒在
+  for (const id of ['s-general', 's-models', 's-plugins', 's-agent-presets', 's-market', 'terminal', 'agent-loop', 'web-search']) {
+    assert.ok(ids.includes(id), '官方条目应恒在：' + id)
+  }
+  // 插件卡片跟随 registry
+  assert.ok(ids.includes('mcp-config'), '已加载插件的卡片应出现')
+  assert.ok(ids.includes('codegraph'), '已加载插件的卡片应出现')
+  assert.ok(!ids.includes('profile-manager'), '未加载插件的卡片不得出现')
+  assert.ok(!ids.includes('rss-digest'), '未加载插件的卡片不得出现')
+  // 条目形状：客户端即时筛选要用的字段齐全
+  const general = ok.body.panels.find((panel) => panel.id === 's-general')
+  assert.equal(general.kind, 'section')
+  assert.equal(general.name, '通用设置')
+  assert.deepEqual(general.titles, ['通用设置', 'General'])
+  assert.ok(general.keywords.includes('常规'))
+  assert.equal(general.description, '界面与工具的通用选项')
+
+  // 围栏与动词：目录同样只服务 loopback + GET
+  const nonLoopback = await callCatalog({ remoteAddress: '10.0.0.5' })
+  assert.equal(nonLoopback.status, 403)
+  const crossSite = await callCatalog({ headers: { 'sec-fetch-site': 'cross-site' } })
+  assert.equal(crossSite.status, 403)
+  const post = await callCatalog({ method: 'POST' })
+  assert.equal(post.status, 405)
+
+  // includePanels: false 时目录同样为空（浏览器半体退回 /query 的 panels）
+  const { callCatalog: callDisabled } = await mount({ registryNames: ['mcp-config'], config: { includePanels: false } })
+  const disabled = await callDisabled()
+  assert.equal(disabled.status, 200)
+  assert.deepEqual(disabled.body.panels, [])
+})
 /* ------------------------------------------------------------------ *
  * 结果
  * ------------------------------------------------------------------ */
