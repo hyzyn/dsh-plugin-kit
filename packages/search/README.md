@@ -4,6 +4,8 @@ DSH Web GUI 的 **全局搜索插件**：侧边栏注入全局搜索入口（⌘
 
 ![全局搜索插件](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-search.png)
 
+![全局搜索的检索结果（最近会话 / 历史会话 / Prompt / MCP 工具 / 设置分组）](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-search-query.png)
+
 ## 面板行为
 
 **打开即出内容**（不发请求，零延迟）：
