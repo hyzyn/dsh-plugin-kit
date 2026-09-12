@@ -19,16 +19,18 @@ npmjs.com → Access Tokens → Generate New Token（granular）生成：
 
 1. `pnpm -r build && pnpm -r typecheck` 全绿。本地 `pnpm publish` 没有闸，全靠自觉——
    CI 在发布前会再跑一遍兜底。
-   **bump 完版本号先同步 lockfile**：`pnpm install --lockfile-only`，然后
-   `git diff --exit-code pnpm-lock.yaml`。workspace 内部依赖是按版本号写进
+   **bump 完版本号先同步 lockfile**，且顺序必须是：**bump → `pnpm aggregate`（聚合层
+   钉新版本）→ `pnpm install --lockfile-only`**。workspace 内部依赖是按版本号写进
    lockfile 的（`specifier:` 那一行），只改 package.json 不改 lockfile，CI 第一步
    `pnpm install --frozen-lockfile` 就会红——v0.1.22 就是两次卡在这里（两次都只
-   同步了 package.json，白等两轮 CI）。一条命令过完前三项：
+   同步了 package.json，白等两轮 CI）；顺序颠倒同样会红：aggregate 晚于 install，
+   聚合层重钉的 specifier 没进 lockfile（v0.1.24，第一轮 Release 就折在这）。一条
+   命令过完前三项：
 
    ```bash
-   pnpm install --lockfile-only && git diff --exit-code pnpm-lock.yaml \
-     && pnpm -r build && pnpm -r typecheck \
-     && pnpm aggregate && git diff --exit-code
+   pnpm aggregate && pnpm install --lockfile-only \
+     && pnpm -r build && pnpm -r typecheck
+   git diff pnpm-lock.yaml   # 自查：应能看到本轮 specifier 变化；没有 = 没同步上
    ```
 2. `pnpm aggregate` 无 diff。聚合层（根 `cordis.patch.yml`、`packages/all`）必须钉住
    本次要发的插件版本；CI 与 Release workflow 都强制检查，过期直接红。
@@ -57,8 +59,9 @@ npmjs.com → Access Tokens → Generate New Token（granular）生成：
 ```bash
 git switch main && git pull
 # 1. bump 受影响包的 package.json 版本号
-# 2. pnpm aggregate          # 重新生成聚合层
-# 3. 提交全部改动并推送 main（CI 先绿）
+# 2. pnpm aggregate                  # 重新生成聚合层（钉新版本）
+# 3. pnpm install --lockfile-only    # 必须在 aggregate 之后：聚合层重钉要进 lockfile
+# 4. 提交全部改动并推送 main（CI 先绿）
 git tag "v$(node -p "require('./packages/all/package.json').version")"
 git push origin main --tags
 ```
@@ -66,7 +69,7 @@ git push origin main --tags
 tag 推上去后 Release workflow 接管：校验 tag 与 `@hyzyn/dsh-all` 版本一致 →
 build + typecheck + 聚合检查 → 按依赖序发布全部包（registry 上已存在的「包名@版本」
 自动跳过，未 bump 的包不拦路）→ 逐包回查 registry 核实 → 建 GitHub Release
-（Highlights 自动过滤 chore 提交）。
+（Highlights 自动过滤 chore 提交，并附全部 workspace 包的版本清单）。
 
 发布中途失败：修复后删除并重打同一个 tag 再推即可，已发出的包重跑时自动跳过（幂等）。
 兜底的手动发布：`node scripts/release-publish-all.mjs [6位OTP] [only=]包目录,...`
@@ -76,6 +79,7 @@ build + typecheck + 聚合检查 → 按依赖序发布全部包（registry 上�
 
 | 症状 | 原因与处理 |
 | --- | --- |
+| `ERR_PNPM_OUTDATED_LOCKFILE ... specifiers in the lockfile don't match` | lockfile 与 package.json 脱节：aggregate 晚于 `install --lockfile-only`，聚合层重钉的 specifier 没进 lockfile（v0.1.24）。按「bump → aggregate → install --lockfile-only」顺序重跑；已发包的修复直接追加 lockfile 提交、删 tag 重打（幂等） |
 | `403 ... Two-factor authentication or granular access token with bypass 2fa` | 缺动态码或 token 不是 bypass-2FA：换 bypass granular token |
 | `404 Not found - PUT <包名>` / `404 ... install from a tarball` | token 对该包无发布权（npm 故意 404 隐藏存在性）：检查 granular token 的 Packages and scopes 是否勾到该包、权限是否 Read and write |
 | 用户报 `ERR_PNPM_WORKSPACE_PKG_NOT_FOUND ... "@hyzyn/dsh-kit@workspace:*"` | 某包依赖残留 `workspace:*`：从 git 子路径安装必炸（npm 安装正常，因为 publish 期已转换）。改真实版本 + bump 受影响包重发；本地先跑 `node scripts/check-publishable.mjs` 确认 |
