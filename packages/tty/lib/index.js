@@ -1430,14 +1430,19 @@ class TtyServer {
  * env 插件以 yaml 数组渲染（`- key: NAME`），逐行宽容提取即可，不引 YAML 依赖。
  */
 function readManagedEnvKeys() {
+    // 托管区块标记（与 env 插件 MARK_START/MARK_END 逐字符一致）
+    const MARK_START = '# --- dsh-env-manager managed (auto-generated; do not edit) ---';
+    const MARK_END = '# --- end dsh-env-manager managed ---';
     const dshHome = process.env.DSH_HOME?.trim() || join(homedir(), '.dsh');
     const file = process.env.DSH_ENV_FILE?.trim() || join(dshHome, 'env.yml');
     try {
         const lines = readFileSync(file, 'utf8').split('\n');
-        const start = lines.findIndex((line) => line.includes('dsh-env-manager managed'));
+        // 标记必须整行精确匹配（trimEnd 仅容忍 \r 与尾部空格）：值经 yaml literal block
+        // 缩进渲染，子串匹配会把值内的标记文本误判为区块边界，导致键名提取落空。
+        const start = lines.findIndex((line) => line.trimEnd() === MARK_START);
         if (start === -1)
             return [];
-        const end = lines.findIndex((line, index) => index > start && line.includes('end dsh-env-manager managed'));
+        const end = lines.findIndex((line, index) => index > start && line.trimEnd() === MARK_END);
         if (end === -1)
             return [];
         const keys = [];

@@ -206,9 +206,9 @@ window.__ModuleLoader__.load({
                       }),
                       jsx('input', {
                         className: 'env_input',
-                        placeholder: 'value 或 js:process.env.XXX',
+                        placeholder: entry.secret && entry.value == null ? '已保存，留空保存＝保持不变' : 'value 或 js:process.env.XXX',
                         type: entry.secret ? 'password' : 'text',
-                        value: entry.value,
+                        value: entry.value ?? '',
                         onChange: (event) => updateEntry(index, { value: event.target.value }),
                       }),
                       jsxs('label', {

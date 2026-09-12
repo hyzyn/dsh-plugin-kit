@@ -18,7 +18,7 @@
  * 浏览器半体（./client）通过 /api/dsh-env/* 路由读写配置；路由带
  * loopback-only 信任围栏。
  */
-import { chmodSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -102,6 +102,15 @@ function fromDtoValue(value: unknown): string | JsExpr {
   return String(value)
 }
 
+/** 序列化条目列表给浏览器：密钥条目不下发明文（value 为 null），GUI 以 write-only 方式编辑。 */
+function toDtoEntries(entries: EnvEntry[]): Array<{ key: string; value: string | null; secret: boolean }> {
+  return entries.map((entry) => ({
+    key: entry.key,
+    value: entry.secret ? null : dtoValue(entry.value),
+    secret: entry.secret,
+  }))
+}
+
 /** 评估 !!js 表达式（与 loader 相同的信任模型：表达式来自用户自己的配置）。 */
 function evalValue(value: string | JsExpr): string {
   if (!isJsExpr(value)) return value
@@ -125,10 +134,12 @@ function readManagedEntries(): ManagedRead {
   const existed = existsSync(file)
   const text = existed ? readFileSync(file, 'utf8') : ''
   const lines = text.split('\n')
-  const start = lines.findIndex((line) => line.includes('dsh-env-manager managed'))
+  // 标记必须整行精确匹配（trimEnd 仅容忍 \r 与尾部空格）：值经 yaml literal block
+  // 缩进渲染，子串匹配会把值内的标记文本误判为区块边界，导致条目被截断丢失。
+  const start = lines.findIndex((line) => line.trimEnd() === MARK_START)
   const result: ManagedRead = { entries: [], file }
   if (start === -1) return result
-  const end = lines.findIndex((line, index) => index > start && line.includes('end dsh-env-manager managed'))
+  const end = lines.findIndex((line, index) => index > start && line.trimEnd() === MARK_END)
   if (end === -1) {
     result.fileError = '托管区块缺少结束标记（# --- end dsh-env-manager managed ---）'
     return result
@@ -167,15 +178,16 @@ function renderManagedBlock(entries: EnvEntry[]): string {
   return yaml.dump(rows, { schema: YAML_SCHEMA, lineWidth: -1, noRefs: true })
 }
 
-/** 把托管区块写回 env 文件（原子替换，保留文件其它内容与权限）。 */
+/** 把托管区块写回 env 文件（原子替换，保留文件其它内容；权限一律收紧为 0600）。 */
 function writeManagedEntries(entries: EnvEntry[]): void {
   const file = envFilePath()
   const existed = existsSync(file)
-  const mode = existed ? (statSync(file).mode & 0o777) : 0o600
   const text = existed ? readFileSync(file, 'utf8') : '# dsh env managed file\n'
   const lines = text.split('\n')
-  const start = lines.findIndex((line) => line.includes('dsh-env-manager managed'))
-  const end = start === -1 ? -1 : lines.findIndex((line, index) => index > start && line.includes('end dsh-env-manager managed'))
+  // 同 readManagedEntries：标记整行精确匹配（仅容忍尾部空白），值内的标记
+  // 文本（缩进 literal block 渲染）不得被当作区块边界，否则托管区块被截断。
+  const start = lines.findIndex((line) => line.trimEnd() === MARK_START)
+  const end = start === -1 ? -1 : lines.findIndex((line, index) => index > start && line.trimEnd() === MARK_END)
   const block = MARK_START + '\n' + renderManagedBlock(entries) + MARK_END + '\n'
   let next: string
   if (start === -1) {
@@ -185,17 +197,18 @@ function writeManagedEntries(entries: EnvEntry[]): void {
   } else {
     next = [...lines.slice(0, start), ...block.split('\n'), ...lines.slice(end + 1)].join('\n')
   }
+  // 文件承载明文密钥，不继承既有宽松权限：writeFileSync 的 mode 只会被 umask
+  // 进一步收紧、不会放宽，rename 后即为 0600。
   const tmp = join(dirname(file), '.env.yml.' + process.pid + '.tmp')
-  writeFileSync(tmp, next, { mode })
+  writeFileSync(tmp, next, { mode: 0o600 })
   renameSync(tmp, file)
-  if (!existed || (mode & 0o077) !== 0) chmodSync(file, mode)
 }
 
 /* ------------------------------------------------------------------ *
  * 校验
  * ------------------------------------------------------------------ */
 
-function validateEntries(rawEntries: unknown): { entries?: EnvEntry[]; error?: string } {
+function validateEntries(rawEntries: unknown, previous: EnvEntry[]): { entries?: EnvEntry[]; error?: string } {
   if (!Array.isArray(rawEntries)) return { error: 'entries 必须是数组' }
   const entries: EnvEntry[] = []
   const seen = new Set<string>()
@@ -206,9 +219,14 @@ function validateEntries(rawEntries: unknown): { entries?: EnvEntry[]; error?: s
     if (!KEY_RE.test(key)) return { error: '非法键名: ' + JSON.stringify(key) }
     if (seen.has(key)) return { error: '重复的键名: ' + key }
     seen.add(key)
+    // value 缺省（null / undefined）＝保留已存值：密钥条目不回明文，客户端留空
+    // 保存即"不改"；普通条目同样适用，保持规则单一。
+    const prior = previous.find((p) => p.key === key)
     entries.push({
       key,
-      value: fromDtoValue(input.value ?? ''),
+      value: input.value === undefined || input.value === null
+        ? (prior !== undefined ? prior.value : '')
+        : fromDtoValue(input.value),
       secret: input.secret === true,
     })
   }
@@ -269,7 +287,7 @@ function isLoopbackRequest(request: ReqLike): boolean {
 }
 
 function writeJson(res: ResLike, status: number, body: unknown): void {
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'referrer-policy': 'no-referrer' })
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'referrer-policy': 'no-referrer', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' })
   res.end(JSON.stringify(body))
 }
 
@@ -317,11 +335,7 @@ function makeRoutes(ctx: Context, applyToProcessEnvOnSave: boolean): Array<{ kin
         writeJson(res, 200, {
           ok: true,
           ...(managed.fileError !== undefined ? { fileError: managed.fileError } : {}),
-          entries: managed.entries.map((entry) => ({
-            key: entry.key,
-            value: dtoValue(entry.value),
-            secret: entry.secret,
-          })),
+          entries: toDtoEntries(managed.entries),
           file: managed.file,
         })
       },
@@ -336,7 +350,8 @@ function makeRoutes(ctx: Context, applyToProcessEnvOnSave: boolean): Array<{ kin
           writeJson(res, 400, { error: 'invalid JSON body' })
           return
         }
-        const validated = validateEntries(body.entries)
+        const current = readManagedEntries()
+        const validated = validateEntries(body.entries, current.entries)
         if (validated.error !== undefined) {
           writeJson(res, 400, { error: validated.error })
           return
@@ -361,11 +376,7 @@ function makeRoutes(ctx: Context, applyToProcessEnvOnSave: boolean): Array<{ kin
           ok: true,
           applied: applyToProcessEnvOnSave,
           ...(managed.fileError !== undefined ? { fileError: managed.fileError } : {}),
-          entries: managed.entries.map((entry) => ({
-            key: entry.key,
-            value: dtoValue(entry.value),
-            secret: entry.secret,
-          })),
+          entries: toDtoEntries(managed.entries),
           file: managed.file,
         })
       },
