@@ -33,9 +33,9 @@
 
 dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合：MCP 服务器配置、Profile 管理、RSS / 新闻聚合、全局搜索、Codegraph 集成、终端面板（本地 + SSH 终端、SFTP 文件传输）、Docker 容器面板（本机 / SSH 主机上的容器与镜像查看，默认只读）、环境变量 / 密钥管理、Prompt 管理，外加一条命令生成新插件的开发脚手架。所有插件都走官方 profile 机制挂载到 `dsh web`，不改 DSH 源码；可以逐个安装，也可以用聚合包一次装齐。
 
-![SFTP 双栏：左本机 / 右远程，行内直传](docs/dsh-plugin-kit-tty-sftp-dual.png)
+![SFTP 双栏：左本机 / 右远程，行内直传](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-sftp-dual.png)
 
-![终端面板：侧边栏入口打开 xterm.js 多标签终端](docs/dsh-plugin-kit-tty.png)
+![终端面板：侧边栏入口打开 xterm.js 多标签终端](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty.png)
 
 | 能力 | 原生 dsh web | dsh-plugin-kit 全家桶 |
 | --- | --- | --- |
@@ -60,7 +60,7 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 - **存哪里**：`~/.dsh/cordis.patch.yml` 的托管区块。
 - **注意**：**不要**手工往该文件里追加插件行，否则启动时报 `duplicate loader entry id` 直接退出。
 
-![MCP 服务器配置插件](docs/dsh-plugin-kit-mcp.png)
+![MCP 服务器配置插件](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-mcp.png)
 
 ### Profile 管理（@hyzyn/dsh-profile）
 
@@ -70,9 +70,9 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 - **存哪里**：直接管理 `~/.dsh/profiles/<name>` 目录。
 - **注意**：删除为递归删除，操作前请二次确认；内置的 `web` 默认 profile 不允许删除，`headless` 可以删除；新建后首次使用 `dsh plugin --profile <name> add ...` 时按需安装依赖。
 
-![Profile 管理配置界面](docs/dsh-plugin-kit-profile.png)
+![Profile 管理配置界面](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-profile.png)
 
-![命令行启动 headless profile 示例](docs/dsh-plugin-kit-profile-example-headless1.png)
+![命令行启动 headless profile 示例](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-profile-example-headless1.png)
 
 ### RSS / 新闻聚合（@hyzyn/dsh-rss）
 
@@ -86,11 +86,11 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 - **存哪里**：`~/.dsh/rss-digest/YYYY-MM-DD.md`（可用 `DSH_RSS_DIGEST_DIR` 覆盖）。
 - **注意**：首次安装启动时会联网抓取一次；某个源不可达时会在 digest 的「抓取失败」里列出，不影响其它源。
 
-![RSS / 新闻聚合设置卡片](docs/dsh-plugin-kit-rss-setting.png)
+![RSS / 新闻聚合设置卡片](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-rss-setting.png)
 
-![侧边栏「今日值得读」弹窗：按分类分组，来源带「查看更多」直达官网](docs/dsh-plugin-kit-rss-view.png)
+![侧边栏「今日值得读」弹窗：按分类分组，来源带「查看更多」直达官网](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-rss-view.png)
 
-![查询今日新闻：向模型提问「今日值得读」直接引用当天 digest](docs/dsh-plugin-kit-rss-query-news.png)
+![查询今日新闻：向模型提问「今日值得读」直接引用当天 digest](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-rss-query-news.png)
 
 ### 全局搜索（@hyzyn/dsh-search）
 
@@ -100,9 +100,9 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 - **存哪里**：无独立配置。
 - **注意**：需要宿主已安装 `sessionQuery` 服务；缺失时会话搜索返回空列表。若 `session-query` 全文索引配置为 `openAt: "never"`，历史会话会自动降级为逐会话扫描；会话结果会过滤为当前可跳转的可见会话。「新会话」复用 GUI 自己的 `uiWorkspace.startSession()`；「打开文件夹」在未安装目录选择器插件时不出现。
 
-![全局搜索插件](docs/dsh-plugin-kit-search.png)
+![全局搜索插件](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-search.png)
 
-![全局搜索的检索结果（最近会话 / 历史会话 / Prompt / MCP 工具 / 设置分组）](docs/dsh-plugin-kit-search-query.png)
+![全局搜索的检索结果（最近会话 / 历史会话 / Prompt / MCP 工具 / 设置分组）](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-search-query.png)
 
 ### Codegraph 集成（@hyzyn/dsh-codegraph）
 
@@ -113,7 +113,7 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 - **存哪里**：索引在项目 `.codegraph/` 目录（由 `codegraph index` 生成）；默认项目路径持久化在 settings 命名空间 `codegraph`。
 - **注意**：查询目标项目需要先有 Codegraph 索引；未索引项目会返回指引改用常规工具。索引 / 重建为本地 CLI 操作，消耗真实磁盘与 CPU。一台 codegraph MCP 服务器同一时刻只挂载一个默认项目，其它已索引项目可在工具调用里传 `projectPath` 查询。
 
-![Codegraph 设置卡片](docs/dsh-plugin-kit-codegraph.png)
+![Codegraph 设置卡片](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-codegraph.png)
 
 ### 终端面板（@hyzyn/dsh-tty）
 
@@ -125,13 +125,13 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 - **存哪里**：无独立配置文件；配置走「设置 → 插件 → 终端面板」卡片。
 - **注意**：resize 依赖 DSH 内部 terminal handle 结构（已知限制）；输出为 utf8 文本流，`cat` 二进制文件会有替换字符。详细见 `packages/tty/README.md`。
 
-![终端面板：侧边栏入口打开 xterm.js 多标签终端，紧凑两行头部（标签 + SSH 连接栏）](docs/dsh-plugin-kit-tty.png)
+![终端面板：侧边栏入口打开 xterm.js 多标签终端，紧凑两行头部（标签 + SSH 连接栏）](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty.png)
 
-![SFTP 双栏：左本机 / 右远程，行内 ⇨/⇦ 服务端直传（sftpStyle=dual）](docs/dsh-plugin-kit-tty-sftp-dual.png)
+![SFTP 双栏：左本机 / 右远程，行内 ⇨/⇦ 服务端直传（sftpStyle=dual）](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-sftp-dual.png)
 
-![SFTP 单窗体：远程目录浏览 + 下载/重命名/删除](docs/dsh-plugin-kit-tty-sftp-dialog.png)
+![SFTP 单窗体：远程目录浏览 + 下载/重命名/删除](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-sftp-dialog.png)
 
-![终端面板设置卡片：shell / TERM / SFTP 风格 / 并发上限等保存即热生效](docs/dsh-plugin-kit-tty-setting.png)
+![终端面板设置卡片：shell / TERM / SFTP 风格 / 并发上限等保存即热生效](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-setting.png)
 
 ### Docker 容器面板（@hyzyn/dsh-docker）
 
@@ -153,7 +153,7 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 - **存哪里**：`~/.dsh/env.yml` 的托管区块（自动生成，请勿手改）。
 - **注意**：键名只允许字母 / 数字 / 下划线，且不能重复。
 
-![环境变量 / 密钥管理插件](docs/dsh-plugin-kit-env.png)
+![环境变量 / 密钥管理插件](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-env.png)
 
 ### Prompt 管理（@hyzyn/dsh-prompt）
 
@@ -163,7 +163,7 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 - **存哪里**：`~/.dsh/prompts.yml` 的托管区块。
 - **注意**：每个 Prompt 至少一个版本，单版本内容 ≤ 500KB。
 
-![Prompt 管理插件](docs/dsh-plugin-kit-promat.png)
+![Prompt 管理插件](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-promat.png)
 
 ## 快速开始
 
