@@ -182,6 +182,15 @@ window.__ModuleLoader__.load({
       folder: icon('<path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9l-.8-1.2A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"/>'),
     }
 
+    /*
+     * 侧边栏入口图标单独一份，**不共用** ICONS：ICONS 是 24 栅格按 16px 渲染，线宽折合
+     * 1.8×16/24 ≈ 1.2px、图形也只有 10.7px 高；而它左右邻居（rss / tty / docker 的入口）
+     * 统一是「16 栅格 + 18×18 + stroke 1.7」，折合线宽 ≈ 1.9px、图形 ≈ 12px。并排放在
+     * 侧边栏里，共用那套的放大镜明显偏细偏小。这里把同一形状换算到 16 栅格（中心 7.3、
+     * 半径 4.7、手柄到 13.3），套用邻居的尺寸与线宽。面板内部仍用 ICONS 那套。
+     */
+    const ENTRY_ICON = '<svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7.3" cy="7.3" r="4.7"/><path d="m13.3 13.3-2.4-2.4"/></svg>'
+
     /* ================================ 状态 ================================ */
 
     const state = {
@@ -262,7 +271,7 @@ window.__ModuleLoader__.load({
       entry.className = 'gs_sidebarSearch'
       entry.setAttribute('role', 'search')
       entry.setAttribute('aria-label', '全局搜索')
-      entry.innerHTML = '<span class="gs_sidebarEntryIcon">' + ICONS.search + '</span><input class="gs_sidebarSearchInput" placeholder="全局搜索…" readOnly />'
+      entry.innerHTML = '<span class="gs_sidebarEntryIcon">' + ENTRY_ICON + '</span><input class="gs_sidebarSearchInput" placeholder="全局搜索…" readOnly />'
       entry.addEventListener('click', (event) => {
         event.preventDefault()
         openPalette()
