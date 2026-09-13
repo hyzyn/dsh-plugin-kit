@@ -2,7 +2,9 @@
 /**
  * @hyzyn/dsh-codegraph — 浏览器半体：官方设置 → 插件 里的「Codegraph」卡片。
  * 通过核心 slots 服务注册到 settings.plugin.item 插槽。
- * 纯前端 React 卡片，宿主经 /plugins/@hyzyn/dsh-codegraph/client.js 提供。
+ * 纯前端 React 卡片，宿主经 client-modules 的 combo 路由（/plugins/??<id>/client.js&rev=…）
+ * 按 boot graph 下发的 URL 提供；单包直链 /plugins/@hyzyn/dsh-codegraph/client.js 在
+ * 当前 DSH（0.1.5-rc.2）上不再直接可用。
  */
 window.__ModuleLoader__.load({
   id: '@hyzyn/dsh-codegraph',

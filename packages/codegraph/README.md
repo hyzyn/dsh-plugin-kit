@@ -51,12 +51,28 @@ Searched for a .codegraph/ directory starting from: /Users/you
 
 所有路由均为 loopback-only，防止远程访问。
 
+## 兼容性（DSH / codegraph CLI）
+
+- **DSH**：已在 `0.1.5-rc.2` 上实测全链路——宿主路由（status/query/callers/callees/impact/node 全 200）、浏览器半体（client 模块进 boot graph 并被 combo 路由正常供给）、两段 systemPrompt 注入、MCP 托管行形状（`@deepseek-ai/dsh-mcp-client` 的 `stdio` 配置）。`package.json` 声明 `engines.dsh: ">=0.1.2-rc.1 <0.2.0"`，插件市场据此给出兼容性结论。
+  - 为什么下限写成 `>=0.1.2-rc.1` 而不是更短的 `^0.1.2`：`^` 不包含**下限版本自身的预发布**，`0.1.2-rc.1` 这种已实测可用的宿主会被判成不兼容，而市场的更新路径对确认不兼容是**直接拒绝安装**（需 `force` 绕过）；`^0.1.5` 更会连 `0.1.5-rc.2` 一起误杀。DSH 长期以 `-rc.N` 发布，档位必须显式带上 RC 下限。
+  - 上限 `<0.2.0` 表示「0.1 线上不设验证点」：跨到 0.2 时市场会明确报 incompatible（而不是悄悄放行），提醒先复验再放宽。
+- **codegraph CLI**：已在 `1.5.0` 上实测；用到的子命令是 `status` / `query` / `callers` / `callees` / `impact` / `node` / `sync` / `index`，旗标逐个核对过。`codegraph serve --mcp` 仍可用（顶层 help 不列，`codegraph serve --help` 在），托管行无需改动。
+- **浏览器半体的 URL 形态**：当前 DSH 走 client-modules 的 combo 路由，单包直链 `/plugins/@hyzyn/dsh-codegraph/client.js` 已不再直接可用；浏览器只用 boot graph（`window.__DSH_BOOT__`）下发的 `/plugins/??<id>/client.js&rev=…`，插件侧无需改动。
+
 ## 开发
 
 ```bash
 pnpm --filter @hyzyn/dsh-codegraph build
 pnpm --filter @hyzyn/dsh-codegraph typecheck
+pnpm vitest run packages/codegraph          # 托管行决策矩阵 + CLI 旋钮
 node packages/codegraph/scripts/verify-sync.mjs   # 托管行同步逻辑验证（需先 build）
+```
+
+升级本机 DSH 之后，先重链再 typecheck——否则 `packages/*/node_modules/@deepseek-ai/*` 还是仓库
+`.pnpm` 里那份旧副本，插件与宿主各持一份不同版本的库，兼容性问题会被掩盖：
+
+```bash
+node scripts/link-dsh-runtime.mjs     # 把 packages/* 的 @deepseek-ai/* 与 @hyzyn/dsh-kit 链到 dsh 运行时 / 本仓库 workspace
 ```
 
 ## 安装到 DSH
@@ -81,10 +97,27 @@ export interface Config {
   defaultPath?: string
   /** 是否托管 codegraph MCP 服务器行。默认开；关闭时撤销本插件写入的托管行。 */
   mcpIntegration?: boolean
+  /** 查询类命令（status/query/callers/callees/impact/node）超时毫秒数，默认 60000。 */
+  cliTimeoutMs?: number
+  /** 索引类命令（sync/index）超时毫秒数，默认 600000。大仓库全量重建会超过查询档。 */
+  indexTimeoutMs?: number
+  /** 给 `codegraph index` 追加 `--force`（CLI 拒绝索引家目录/文件系统根时会用到）。默认关。 */
+  indexForce?: boolean
 }
 ```
 
 settings 命名空间 `codegraph` 里保存过的 `defaultPath` / `mcpIntegration` 优先于插件配置；卡片「设为默认项目」写入的就是它。
+
+`command` / `cliTimeoutMs` / `indexTimeoutMs` / `indexForce` 是**安装级旋钮**，只读插件配置、不进 settings 命名空间。在 profile 的补丁里按 id 覆盖即可，例如：
+
+```yaml
+- id: codegraph
+  config:
+    indexTimeoutMs: 1800000
+    indexForce: true
+```
+
+超时命中时卡片上的报错会直接点名对应配置项（`cliTimeoutMs` / `indexTimeoutMs`），不必去翻日志。
 
 ## 系统提示词
 
