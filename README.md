@@ -16,7 +16,7 @@
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square" alt="License">
 </p>
 
-仓库门禁：`pnpm typecheck` / `pnpm build` / `pnpm aggregate`。
+仓库门禁：`pnpm typecheck` / `pnpm build` / `pnpm test` / `pnpm aggregate`。
 
 <p align="center">
   <strong>DeepSeek Harness（DSH）Web GUI 的插件全家桶</strong><br>
@@ -41,14 +41,14 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 | --- | --- | --- |
 | MCP 服务器 | 手改 patch / 命令行 | 可视化卡片 + 连接测试 + 保存后热加载 |
 | Profile 管理 | 命令行 | 可视化创建 / 复制 / 重命名 / 删除 |
-| RSS 聚合 | 无 | 多源订阅 + 每日「今日值得读」自动摘要 |
+| RSS 聚合 | 无 | 多源订阅 + 每日「今日值得读」+ 可选 AI 摘要（跟随宿主默认模型，零配置） |
 | 全局搜索 | 仅会话标题/内容 | 侧边栏统一全文搜索历史会话、Prompt、MCP 工具与设置面板 |
 | Codegraph 集成 | 无 | 代码图谱卡片：索引状态 / 符号搜索 / 调用链 / 影响面 / 一键 sync-index |
 | 终端面板 | 无 | 侧边栏「终端」入口 + xterm.js 多标签真实 PTY 终端（vim/htop/dev server）；SSH 直连远程主机（连接簿、指纹钉扎、断线重连）；**SFTP 文件传输**（单窗体 / 左本机右远程双栏直传、拖拽上传）；agent 配套 `tty_*` / `sftp_*` 工具 |
-| Docker 容器面板 | 无 | 侧边栏「容器」入口 + 多目标（本机 / SSH）容器列表（搜索 / 状态筛选）、启停删、详情、日志、资源占用与镜像；**默认只读**，变更与 exec 需显式开关；agent 配套 `docker_*` 工具 |
+| Docker 容器面板 | 无 | 侧边栏「容器」入口 + 多目标（本机 / SSH）容器列表（搜索 / 状态筛选）、启停删、详情、日志（快照 + **SSE 实时跟随**）、资源占用（快照 + **实时跟随 + sparkline**）、**Compose 项目视图 + 项目级聚合日志**、镜像列表与详情（层 / 构建历史）、**`docker pull` 进度流**、删除 / dangling 清理；**默认只读**，变更与 exec 需显式开关；agent 配套 `docker_*` 工具 |
 | 环境变量管理 | 命令行 / 手改配置 | Web GUI 卡片，保存即写入 `process.env` |
 | Prompt 管理 | 手改配置 | 可视化编辑 + 版本管理 / A/B 测试 / 导出分享 |
-| 插件开发 | 手写样板 | `pnpm create-plugin` 脚手架 + `@hyzyn/dsh-kit` 类型助手 |
+| 插件开发 | 手写样板 | `pnpm create-plugin` 脚手架 + `@hyzyn/dsh-kit` 类型助手与宿主半体共享工具库（HTTP 围栏 / 托管区块 / !!js 表达式） |
 
 ## 功能插件
 
@@ -82,9 +82,10 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 - **自定义渠道**：填写任意 RSS / Atom 地址，保存时真实抓取校验——官网首页、非 feed、抓不到内容的地址会报错且不保存。
 - **订阅源目录**：内置 awesome-rsshub-routes 精选目录（官方 RSS 与 RSSHub 路由，98 条 / 12 分类），可搜索 / 按分类筛选并一键加入自定义渠道；快照随插件内置，运行时每 12 小时从上游 OPML 静默刷新。
 - **新闻分类**：渠道的分类从「新闻分类」列表里选择；digest（Markdown、systemPrompt、弹窗）按分类分组展示，保存时自动把使用中的分类合并进列表。
+- **AI 摘要（可选）**：卡片里开启后，每天 digest 的条目由宿主已配置的默认模型各生成一句中文摘要（无需填 API key；也可在卡片里成对指定 provider/model 用别的模型）。结果按条目缓存 30 天，重复生成不重复计费；单条失败自动回落原文截断，不影响其它条目。摘要同时进 Markdown、弹窗、搜索与 systemPrompt。
 - **支持**：RSS 2.0 / Atom 解析、按来源去重、每源条数限制、每日定时生成、启动补生成、自定义输出目录、内置渠道库。
 - **存哪里**：`~/.dsh/rss-digest/YYYY-MM-DD.md`（可用 `DSH_RSS_DIGEST_DIR` 覆盖）。
-- **注意**：首次安装启动时会联网抓取一次；某个源不可达时会在 digest 的「抓取失败」里列出，不影响其它源。
+- **注意**：首次安装启动时会联网抓取一次；某个源不可达时会在 digest 的「抓取失败」里列出，不影响其它源。AI 摘要开启时生成耗时取决于模型响应（失败条目回落，不会卡死生成）。
 
 ![RSS / 新闻聚合设置卡片](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-rss-setting.png)
 
@@ -135,15 +136,15 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 
 ### Docker 容器面板（@hyzyn/dsh-docker）
 
-- **做什么**：在 Web GUI 侧边栏加一个「容器」入口，查看**本机或 SSH 主机**上的容器列表（状态 / 健康 / 端口 / compose 项目）、容器详情、日志尾部、资源占用与镜像列表；显式打开开关后可启停删容器、执行一次性 `docker exec`。
-- **怎么用**：安装后重启 `dsh web`，侧边栏点击「容器」→ 选择目标（本机 / SSH）→ 容器卡片（镜像 / ID / 端口 / 创建 + 图标操作条）支持搜索与状态筛选 → 点卡片进整栏详情（概览 / 日志 / 统计），或直接点卡片上的图标操作条（左侧「终端 / 日志 / 资源占用」只读可用，右侧「启停 / 重启 / 删除」用竖线分隔、需打开「允许变更操作」）；日志页有 LINES / TIMESTAMPS / AUTO REFRESH 工具条、过滤行与按级别着色。设置 → 插件 →「Docker 容器面板」维护目标与开关，保存即热生效。
+- **做什么**：在 Web GUI 侧边栏加一个「容器」入口，查看**本机或 SSH 主机**上的容器列表（状态 / 健康 / 端口 / compose 项目）、**Compose 项目视图（项目 → 服务 → 容器 + 项目级聚合日志）**、容器详情、日志尾部、资源占用（**实时跟随 + 迷你趋势图**）与镜像（列表 + 详情：层 / 构建历史）；显式打开开关后可启停删容器、拉取 / 删除 / 清理镜像、执行一次性 `docker exec`。
+- **怎么用**：安装后重启 `dsh web`，侧边栏点击「容器」→ 选择目标（本机 / SSH）→ 工具条三段切换「容器 / 镜像 / Compose」：容器卡片（镜像 / ID / 端口 / 创建 + 图标操作条）支持搜索与状态筛选，点卡片进整栏详情（概览 / 日志 / 统计，统计页有 **FOLLOW 实时跟随 + 迷你趋势图**），日志页有 LINES / TIMESTAMPS / AUTO REFRESH / **FOLLOW（实时跟随）** 工具条与过滤行；镜像页每行可看**详情（层 / 构建历史）**、删除，工具条有**拉取镜像（图标，SSE 逐层进度）**与「清理 dangling」；Compose 页按项目分组，点进项目看服务表或**项目级聚合日志**（客户端按 `[service]` 前缀混流）。设置 → 插件 →「Docker 容器面板」维护目标与开关，保存即热生效。
 - **终端按钮**：装了 tty ≥ 0.15.0 时，卡片第一个图标是「终端」——点击在**面板底部弹出终端抽屉**（tty 的 `ttyTerminal.mount` 就地嵌入），看着日志直接进容器敲命令，面板不收起；tty 为 0.14.0 时退回「新开终端标签 + 收面板」，更旧或未装则退化为复制命令。
 - **上下文入口**：装了 tty ≥ 0.13.0 时，SSH 标签的连接栏（SFTP 旁）会出现「容器」按钮——点击直接用当前会话那台主机打开面板（插件加载期间一直显示；目标在点击时按连接簿名 / `host:port` 解析，没配目标会提示怎么配）。
 - **目标**：`kind=local` 走宿主所在机器的 docker CLI；`kind=ssh` 可直接**引用 tty 连接簿条目名**（数据级复用，tty 零改动；未装 tty 时用内联 host/username），经 ssh2 exec channel 在远端执行，主机指纹 TOFU 钉扎并以 tty 已有记录作种子。
-- **支持**：容器列表（`all` 含已停止）、`docker inspect` 详情、日志（tail / 时间戳 / since）、`docker stats --no-stream` 快照、镜像列表、一次性 exec（返回退出码与 stdout/stderr）；`dockerBin` 可填 `podman`；输出超限自动截断。
+- **支持**：容器列表（`all` 含已停止）、`docker inspect` 详情、日志（tail / 时间戳 / since）、**实时日志流**（FOLLOW 开关走 SSE `docker logs --follow`，本地与 SSH 目标都支持，自动滚动 / 过滤着色与快照共用，容器退出自动切回快照）、`docker stats` **快照 + 实时流**（SSE，60 点 sparkline 看 CPU / 内存趋势；这条流不会自然结束，前端主动断）、**Compose 项目视图**（按 `composeProject` / `composeService` 分组，项目级聚合日志在客户端按 `[service]` 前缀混流）、**容器事件活动流**（SSE `docker events` → 列表头部「活动」条 + 500ms 防抖刷新容器列表）、**网络与卷**（列表 + 详情：子网 / 网关 / 接入容器、挂载点 / 选项 / 标签；删除与 prune 需 `allowMutations`）、以及**容器列表多选的临时聚合日志**（勾 2~8 个容器即开混流）、镜像列表 + **镜像详情**（`docker image inspect` 的层 / 大小 + `docker history` 构建历史）、**`docker pull` 进度流**（SSE 逐层）、镜像删除 / dangling 清理（需 `allowMutations`）、一次性 exec（返回退出码与 stdout/stderr）；`dockerBin` 可填 `podman`；输出超限自动截断。四条 SSE 长流（日志 / 统计 / 事件 / 拉取）共用同一份 `openSseStream` 基建（心跳 / 活跃流登记 / 断开清理）。
 - **安全模型（重点）**：docker socket ≈ 目标主机 root 权限，因此**默认只读**——`allowMutations` 未开启时启停删被拒（HTTP 403，工具不注册），`allowExec` 未开启时 exec 被拒；容器名 / ID 过白名单校验，命令一律 argv 构造 + 单引号转义；密码 / 口令建议 `env:VAR` 引用且永不回传浏览器。
 - **存哪里**：settings 命名空间 `docker`（`~/.dsh/settings.yaml`）。
-- **注意**：没有交互式 TTY（exec 是一次性命令，交互排障请到终端面板跑 `docker exec -it`），没有实时日志流、没有镜像删除 / 拉取 / 构建、没有多目标聚合视图；`docker rm` 不带 `-f`，运行中容器会报错并提示先停止。详细见 `packages/docker/README.md`。
+- **注意**：没有交互式 TTY（exec 是一次性命令，交互排障请到终端面板跑 `docker exec -it`），流式能力只在浏览器面板里（agent 的 `docker_logs` / `docker_stats` / `docker_image_pull` 保持快照语义），没有 `docker build` / `save` / `load` / `push`，Compose 是只读视图（不提供 `compose up/down`），没有多目标聚合视图；`docker rm` 与 `docker image rm` 都不带 `-f`，运行中容器 / 被引用的镜像会报错并给出提示。详细见 `packages/docker/README.md`。
 
 ### 环境变量 / 密钥管理（@hyzyn/dsh-env）
 
@@ -331,7 +332,7 @@ A: 本机 `~/.npm` 缓存存在 root-owned 文件（历史 npm bug），执行 `
 - MCP 的 `~/.dsh/cordis.patch.yml` 里托管区块只应放服务器配置；手工追加插件行会导致 `duplicate loader entry id` 启动失败。
 - Codegraph 的 MCP 托管只对齐 codegraph 一个服务器的工作目录；DSH 的 MCP 客户端暂不声明 roots，切换项目需在 Codegraph 卡片「设为默认项目」或调用工具时传 `projectPath`。
 - Profile 删除为递归删除，面板内会二次确认，但一旦执行不可撤销；内置 `web` profile 受保护，`headless` 可删。
-- RSS 首次启动需要联网抓取；某个源不可达不会阻塞其它源，但当天 digest 可能缺少该源内容。
+- RSS 首次启动需要联网抓取；某个源不可达不会阻塞其它源，但当天 digest 可能缺少该源内容。AI 摘要依赖宿主已配置的模型（`agent-default-model` 或卡片里成对指定的 provider/model），未配置或调用失败时条目回落原文截断。
 - 浏览器半体依赖官方 `dsh-web-app` 的设置面板 slots 服务，非官方 Web GUI 可能不显示管理卡片。
 - 终端面板（dsh-tty）的 resize 透传依赖 DSH 内部 terminal handle 结构，TERM 注入需经 `-c` 包装层（DSH 硬编码 node-pty name:"dumb"）；详见 `packages/tty/README.md`。
 - 仓库安装需要 Node.js >= 22.19 与 pnpm 10，仅供开发调试；npm 安装不受影响。
@@ -340,7 +341,7 @@ A: 本机 `~/.npm` 缓存存在 root-owned 文件（历史 npm bug），执行 `
 
 - 新插件用脚手架生成：`pnpm create-plugin <name> [id]`，避免手写样板。
 - 提交信息遵循 Conventional Commits（如 `fix(mcp): 修复连接测试超时`），用户可见变更请附截图或验证证据。
-- 提交前过门禁：`pnpm typecheck && pnpm build && pnpm aggregate`。
+- 提交前过门禁：`pnpm typecheck && pnpm build && pnpm test && pnpm aggregate`。
 - 增删插件后记得跑 `pnpm aggregate` 重新生成 `packages/all` 聚合清单。
 
 ## 许可证

@@ -92,7 +92,7 @@ function evalValue(value) {
     const result = fn(process);
     return typeof result === 'string' ? result : String(result ?? '');
 }
-function readManagedEntries() {
+export function readManagedEntries() {
     const file = envFilePath();
     const existed = existsSync(file);
     const text = existed ? readFileSync(file, 'utf8') : '';
@@ -138,7 +138,7 @@ function readManagedEntries() {
     return result;
 }
 /** 生成托管区块文本（不含首尾标记行）；undefined 值的键整体省略（ref 托管清单形态）。 */
-function renderManagedBlock(entries) {
+export function renderManagedBlock(entries) {
     const rows = entries.map((entry) => ({
         key: entry.key,
         ...(entry.value === undefined ? {} : { value: entry.value }),
@@ -147,7 +147,7 @@ function renderManagedBlock(entries) {
     return yaml.dump(rows, { schema: YAML_SCHEMA, lineWidth: -1, noRefs: true });
 }
 /** 把托管区块写回 env 文件（原子替换，保留文件其它内容；权限一律收紧为 0600）。 */
-function writeManagedEntries(entries) {
+export function writeManagedEntries(entries) {
     const file = envFilePath();
     const existed = existsSync(file);
     const text = existed ? readFileSync(file, 'utf8') : '# dsh env managed file\n';

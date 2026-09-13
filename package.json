@@ -16,11 +16,14 @@
   "scripts": {
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "create-plugin": "node scripts/create-plugin.mjs",
     "aggregate": "node scripts/aggregate.mjs"
   },
   "devDependencies": {
-    "typescript": "~5.9.3"
+    "typescript": "~5.9.3",
+    "vitest": "^3.2.7"
   },
   "packageManager": "pnpm@10.30.3",
   "license": "Apache-2.0",

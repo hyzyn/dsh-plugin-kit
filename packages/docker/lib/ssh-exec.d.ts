@@ -49,6 +49,16 @@ export interface ExecLogger {
     info(msg: string): void;
     warn(msg: string): void;
 }
+/** 长流（docker logs --follow）的分片回调；chunk 已按 utf8 解码，跨包的
+ *  多字节序列由 StringDecoder 兜住，调用方拿到的一定是完整文本。 */
+export interface StreamHandlers {
+    onStdout(chunk: string): void;
+    onStderr(chunk: string): void;
+}
+/** 长流结束结果：自然退出给退出码，被中止（signal）时为 null。 */
+export interface StreamResult {
+    code: number | null;
+}
 /** `env:VAR` 前缀从 process.env 取值；否则原样返回。 */
 export declare function resolveSecret(value: string | undefined): string | undefined;
 export declare function expandHome(path: string): string;
@@ -60,6 +70,15 @@ export declare function sshTarget(spec: SshSpec): string;
  * 命令都以 argv 数组构造，禁止把用户输入拼进字符串。
  */
 export declare function shJoin(argv: readonly string[]): string;
+/**
+ * 空闲回收判定：busy>0 的连接上挂着长流（docker logs --follow 可以几小时不结束），
+ * 期间 lastUsed 不会刷新——若只看 idle 就会把正在推送的流掐断，必须先看 busy。
+ * 抽成纯函数便于回归（sweeper 本体依赖定时器，难以直接驱动）。
+ */
+export declare function shouldRecycleConn(conn: {
+    lastUsed: number;
+    busy: number;
+}, now: number, idleMs?: number): boolean;
 /** 远程一次性命令执行器：懒连接池 + TOFU 指纹 + 输出上限。 */
 export declare class RemoteExec {
     private readonly logger;
@@ -71,6 +90,15 @@ export declare class RemoteExec {
     disposeAll(): void;
     /** 在远程执行一条命令（argv 形式，内部做 shell 转义）。 */
     run(spec: SshSpec, argv: readonly string[], options?: ExecOptions): Promise<ExecResult>;
+    /**
+     * 在远程开一条**长流**（docker logs --follow）：stdout/stderr 逐块回调，
+     * channel 关闭时 resolve 退出码。
+     *
+     * 与 run() 的差别：无总超时、无输出上限；外部 AbortSignal 触发停止时
+     * channel.signal('KILL') + channel.close()，**不 client.end()**——连接池里的
+     * 连接要留给后续请求复用。流存续期间连接计 busy，sweeper 不得按空闲回收。
+     */
+    stream(spec: SshSpec, argv: readonly string[], handlers: StreamHandlers, signal?: AbortSignal): Promise<StreamResult>;
     private ensureSweeper;
     private acquire;
     private dropConn;
@@ -92,3 +120,11 @@ export declare function applyHostKeyPolicy(options: {
  * 用于 kind=local 的目标：宿主所在机器的 docker CLI。
  */
 export declare function runLocal(argv: readonly string[], options?: ExecOptions): Promise<ExecResult>;
+/**
+ * 本机**长流**执行器（argv 数组，不经 shell）：stdout/stderr 逐块回调，
+ * 用于 `docker logs --follow` 这类不设总超时、不设输出上限的命令。
+ *
+ * 停止由外部 AbortSignal 触发，走 SIGTERM → 2s 未退出再 SIGKILL 的阶梯；
+ * child 'close' 时 resolve 退出码（被信号杀死时为 null）。
+ */
+export declare function runLocalStream(argv: readonly string[], handlers: StreamHandlers, signal?: AbortSignal): Promise<StreamResult>;

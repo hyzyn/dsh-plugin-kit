@@ -589,6 +589,11 @@ window.__ModuleLoader__.load({
           const preview = errors.slice(0, 2).map((e) => esc(e.source + ': ' + e.error)).join('；')
           parts.push('<div class="rss_banner" data-kind="warn">' + errors.length + ' 个订阅源抓取失败' + (preview ? '：' + preview : '') + (errors.length > 2 ? '…' : '') + '</div>')
         }
+        // AI 摘要整体不可用 / 全部失败时也要让用户看见原因（部分失败在弹窗条目标注里可感知）
+        if (digest.aiSummary && (digest.aiSummary.reason || digest.aiSummary.failed > 0)) {
+          const aiText = digest.aiSummary.reason || (digest.aiSummary.failed + ' 条失败，已回落到原文摘要')
+          parts.push('<div class="rss_banner" data-kind="warn">AI 摘要：' + esc(aiText) + '</div>')
+        }
         if (items.length === 0) {
           parts.push('<div class="rss_empty">今日暂无可展示条目。</div>')
         }
@@ -747,6 +752,28 @@ window.__ModuleLoader__.load({
       return parts.join('')
     }
 
+    function renderAiSection() {
+      const ai = state.config?.ai || {}
+      const parts = []
+      parts.push('<div class="rss_settingSection" id="rss-sec-ai">')
+      parts.push('<div class="rss_settingTitle">AI 摘要</div>')
+      parts.push('<label class="rss_checkRow"><input type="checkbox" data-field="rss-ai-enabled" ' + (ai.enabled === true ? 'checked' : '') + ' /> 启用 AI 摘要：生成 digest 时调用宿主模型为每条资讯生成一句话摘要（单条失败只回落原文摘要，不影响其它条目）</label>')
+      parts.push('<div class="rss_formGrid">')
+      parts.push('<div class="rss_field"><span class="rss_fieldLabel">模型 Provider</span><input class="rss_input" data-field="rss-ai-provider" value="' + esc(ai.provider || '') + '" placeholder="留空跟随宿主默认模型" autocomplete="off" spellcheck="false" /></div>')
+      parts.push('<div class="rss_field"><span class="rss_fieldLabel">模型 Model</span><input class="rss_input" data-field="rss-ai-model" value="' + esc(ai.model || '') + '" placeholder="留空跟随宿主默认模型" autocomplete="off" spellcheck="false" /></div>')
+      parts.push('<div class="rss_field"><span class="rss_fieldLabel">最多摘要条数</span><input class="rss_input" data-field="rss-ai-max-items" type="number" min="1" max="50" value="' + (ai.maxItems || 20) + '" /></div>')
+      parts.push('</div>')
+      parts.push('<div class="rss_settingHint">Provider / Model 需成对填写：都留空时跟随宿主默认模型，只填一个保存时整段 AI 配置会被忽略并提示。摘要结果按条目缓存 30 天（最多 500 条，存在 digest 目录的 ai-cache.json），重复条目不会重复请求。</div>')
+      parts.push('</div>')
+      return parts.join('')
+    }
+
+    /** 懒创建 state.config.ai：首次编辑 AI 字段时补上默认关闭的空壳。 */
+    function aiConfig() {
+      if (!state.config.ai) state.config.ai = { enabled: false }
+      return state.config.ai
+    }
+
     function renderPluginSection() {
       const config = state.config
       const parts = []
@@ -772,6 +799,7 @@ window.__ModuleLoader__.load({
         parts.push(renderChannelsSection())
         parts.push(renderCategoriesSection())
         parts.push(renderAggregateSection())
+        parts.push(renderAiSection())
       }
       parts.push('</div>')
       container.innerHTML = parts.join('')
@@ -862,7 +890,7 @@ window.__ModuleLoader__.load({
       return items.filter((item) => {
         if (state.modalCategory && (item.category || '未分类') !== state.modalCategory) return false
         if (!query) return true
-        const hay = [item.title, item.summary, item.source, item.category].filter(Boolean).join(' ').toLowerCase()
+        const hay = [item.title, item.aiSummary, item.summary, item.source, item.category].filter(Boolean).join(' ').toLowerCase()
         return hay.includes(query)
       })
     }
@@ -905,9 +933,11 @@ window.__ModuleLoader__.load({
             parts.push('<div class="rss_itemTitle">' + (item.link
               ? '<a href="' + esc(item.link) + '" target="_blank" rel="noreferrer">' + esc(title) + '</a>'
               : esc(title)) + (meta.length ? ' <span class="rss_itemMeta">' + meta.join(' / ') + '</span>' : '') + '</div>')
-            if (item.summary) {
-              const summary = item.summary.length > 120 ? item.summary.slice(0, 120) + '…' : item.summary
-              parts.push('<div class="rss_itemSummary">' + esc(summary) + '</div>')
+            // AI 摘要优先，无则退回原文摘要（两者都按 120 字截断展示）
+            const summary = item.aiSummary || item.summary
+            if (summary) {
+              const text = summary.length > 120 ? summary.slice(0, 120) + '…' : summary
+              parts.push('<div class="rss_itemSummary">' + esc(text) + '</div>')
             }
             parts.push('</div>')
             parts.push('</div>')
@@ -1485,6 +1515,27 @@ window.__ModuleLoader__.load({
         state.config.dailyTime = el.value
         markDirty()
       },
+      'rss-ai-enabled': (el) => {
+        if (!state.config) return
+        aiConfig().enabled = el.checked
+        markDirty()
+      },
+      'rss-ai-provider': (el) => {
+        if (!state.config) return
+        aiConfig().provider = el.value.trim()
+        markDirty()
+      },
+      'rss-ai-model': (el) => {
+        if (!state.config) return
+        aiConfig().model = el.value.trim()
+        markDirty()
+      },
+      'rss-ai-max-items': (el) => {
+        if (!state.config) return
+        const value = Number(el.value)
+        aiConfig().maxItems = Number.isFinite(value) && value > 0 ? Math.min(50, Math.round(value)) : undefined
+        markDirty()
+      },
     }
 
     function handleFieldEvent(event) {
@@ -1611,7 +1662,13 @@ window.__ModuleLoader__.load({
         state.newCategory = ''
         state.dirty = false
         syncEntryFromConfig(state.config)
-        toast('已保存，热生效', 'ok')
+        // 服务端归一化后的 AI 配置可能与输入不同（不成对被忽略、数值夹紧），重渲染该区块
+        updateSection('rss-sec-ai', renderAiSection())
+        if (data.warnings && data.warnings.length > 0) {
+          toast('已保存：' + data.warnings.join('；'), 'info')
+        } else {
+          toast('已保存，热生效', 'ok')
+        }
         await refresh()
         loadCatalog()
       } catch (error) {

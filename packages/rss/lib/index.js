@@ -7,14 +7,17 @@
  * - 每天在可配置时间（默认 08:00）自动生成当天 digest；插件启动时若当天 digest
  *   尚未生成也会自动补生成；
  * - 把当天 digest 注入 systemPrompt，模型在用户问“今日值得读”时可以直接引用；
+ * - 可选 AI 摘要：调用宿主 llm 服务为每条资讯生成一句话中文摘要（配置在设置卡片的
+ *   「AI 摘要」区块，写 ~/.dsh/rss.json 的 ai 字段；失败时逐条回落到原文摘要）；
  * - 生成的 Markdown 存放在 ~/.dsh/rss-digest/YYYY-MM-DD.md（可用 DSH_RSS_DIGEST_DIR
  *   或 Config.digestDir 覆盖），并同时写一份 latest.json 便于外部读取。
  */
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import z from '@deepseek-ai/schemastery';
-import { definePlugin } from '@hyzyn/dsh-kit';
+import { definePlugin, getService, writeFileAtomic } from '@hyzyn/dsh-kit';
 import { BUILTIN_CATALOG_NAME, getBuiltinCatalogEntries, getCatalogCategories, getCatalogSourceNames, getMergedCatalogEntries, searchCatalogEntries, catalogStatus, } from './catalog.js';
 export const name = 'rss-digest';
 export const inject = [];
@@ -51,6 +54,14 @@ const RSS_SETTINGS_SCHEMA = z.object({
     dailyTime: z.string(),
     autoGenerateOnMount: z.boolean(),
     announceToAgent: z.boolean(),
+    ai: z.object({
+        enabled: z.boolean(),
+        provider: z.string(),
+        model: z.string(),
+        maxItems: z.natural(),
+        concurrency: z.natural(),
+        timeoutMs: z.natural(),
+    }),
     updatedAt: z.string(),
 });
 /* ------------------------------------------------------------------ *
@@ -76,6 +87,27 @@ const DEFAULT_MAX_TOTAL_ITEMS = 30;
 const DEFAULT_DAILY_TIME = '08:00';
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_USER_AGENT = 'Mozilla/5.0 (compatible; dsh-rss-digest/0.1; +https://github.com/hyzyn/dsh-plugin-kit)';
+const DEFAULT_AI_MAX_ITEMS = 20;
+const AI_MAX_ITEMS_MIN = 1;
+const AI_MAX_ITEMS_MAX = 50;
+const DEFAULT_AI_CONCURRENCY = 3;
+const AI_CONCURRENCY_MIN = 1;
+const AI_CONCURRENCY_MAX = 6;
+const DEFAULT_AI_TIMEOUT_MS = 20_000;
+const AI_TIMEOUT_MIN_MS = 5_000;
+const AI_TIMEOUT_MAX_MS = 60_000;
+/** 单条摘要请求的输入正文上限（字符）。 */
+const AI_INPUT_TEXT_LIMIT = 1200;
+/** 摘要请求的 maxTokens：给一句 60 字中文留足余量。 */
+const AI_SUMMARY_MAX_TOKENS = 200;
+/** AI 缓存条目有效期：30 天。 */
+const AI_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+/** AI 缓存条目上限：超出按写入时间淘汰最旧。 */
+const AI_CACHE_MAX_ENTRIES = 500;
+/** systemPrompt 里单条 AI 摘要的截断长度。 */
+const AI_PROMPT_SUMMARY_LIMIT = 100;
+/** 宿主默认模型服务的 settings 命名空间（settings 兜底读取用）。 */
+const AGENT_DEFAULT_MODEL_NAMESPACE = 'agent-default-model';
 function dshHome() {
     const home = process.env.DSH_HOME?.trim();
     return home ? expandHome(home) : join(homedir(), '.dsh');
@@ -107,6 +139,42 @@ function latestJsonPath(config) {
 function rssConfigPath() {
     return process.env.DSH_RSS_CONFIG_FILE?.trim() || join(dshHome(), 'rss.json');
 }
+/** 夹紧整数配置：非有限数字返回 undefined（交给默认值），否则四舍五入后夹到 [min, max]。 */
+function clampAiInt(value, min, max) {
+    if (typeof value !== 'number' || !Number.isFinite(value))
+        return undefined;
+    return Math.min(max, Math.max(min, Math.round(value)));
+}
+/**
+ * 归一化 store 里的 ai 配置：provider / model 必须成对出现（都空 = 跟随宿主默认
+ * 模型），只填一个则整体忽略并给出告警；maxItems / concurrency / timeoutMs 缺省
+ * 填默认值、越界夹紧。readRssStore 与 validateRssStoreInput 共用，保证两条读路径一致。
+ */
+export function sanitizeAiConfig(raw) {
+    if (raw === undefined || raw === null)
+        return {};
+    if (typeof raw !== 'object' || Array.isArray(raw)) {
+        return { warning: 'ai 必须是对象，已忽略 AI 摘要配置' };
+    }
+    const input = raw;
+    const provider = typeof input.provider === 'string' ? input.provider.trim() : '';
+    const model = typeof input.model === 'string' ? input.model.trim() : '';
+    if ((provider === '') !== (model === '')) {
+        return { warning: 'ai.provider 与 ai.model 需要成对填写（都留空则跟随宿主默认模型），已忽略 AI 摘要配置' };
+    }
+    const warnings = [];
+    if (input.enabled !== undefined && typeof input.enabled !== 'boolean') {
+        warnings.push('ai.enabled 必须是布尔值，已按 false 处理');
+    }
+    const ai = {
+        enabled: input.enabled === true,
+        ...(provider !== '' ? { provider, model } : {}),
+        maxItems: clampAiInt(input.maxItems, AI_MAX_ITEMS_MIN, AI_MAX_ITEMS_MAX) ?? DEFAULT_AI_MAX_ITEMS,
+        concurrency: clampAiInt(input.concurrency, AI_CONCURRENCY_MIN, AI_CONCURRENCY_MAX) ?? DEFAULT_AI_CONCURRENCY,
+        timeoutMs: clampAiInt(input.timeoutMs, AI_TIMEOUT_MIN_MS, AI_TIMEOUT_MAX_MS) ?? DEFAULT_AI_TIMEOUT_MS,
+    };
+    return { ai, ...(warnings.length > 0 ? { warning: warnings.join('；') } : {}) };
+}
 function defaultRssStore(config) {
     return {
         enabled: config?.enabled,
@@ -127,6 +195,8 @@ export function readRssStore(config) {
         return base;
     try {
         const parsed = JSON.parse(readFileSync(file, 'utf8'));
+        // 非法 / 不成对的 ai 配置在这里静默丢弃，运行时按「未启用」处理
+        const parsedAi = sanitizeAiConfig(parsed.ai).ai;
         return {
             enabled: typeof parsed.enabled === 'boolean' ? parsed.enabled : base.enabled,
             sources: Array.isArray(parsed.sources) ? parsed.sources : base.sources,
@@ -139,6 +209,7 @@ export function readRssStore(config) {
             dailyTime: typeof parsed.dailyTime === 'string' && parsed.dailyTime.trim() ? parsed.dailyTime : base.dailyTime,
             autoGenerateOnMount: typeof parsed.autoGenerateOnMount === 'boolean' ? parsed.autoGenerateOnMount : base.autoGenerateOnMount,
             announceToAgent: typeof parsed.announceToAgent === 'boolean' ? parsed.announceToAgent : base.announceToAgent,
+            ...(parsedAi !== undefined ? { ai: parsedAi } : {}),
             ...(typeof parsed.updatedAt === 'string' ? { updatedAt: parsed.updatedAt } : {}),
         };
     }
@@ -151,11 +222,20 @@ export function writeRssStore(store) {
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, JSON.stringify({ ...store, updatedAt: new Date().toISOString() }, null, 2), { mode: 0o600 });
 }
-function validateRssStoreInput(raw) {
+/**
+ * 校验卡片提交的 store 输入（白名单）：返回归一化后的 RssStore 与告警列表。
+ * error 会拒绝保存；warnings 不影响保存（例如 ai 不成对被整体忽略），仅回传说明。
+ */
+export function validateRssStoreInput(raw) {
     if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
         return { error: '配置必须是对象' };
     }
     const input = raw;
+    // 白名单外的 ai 字段在下面单独归一化；不成对 / 非法值时整体忽略并进入告警
+    const warnings = [];
+    const sanitizedAi = input.ai !== undefined ? sanitizeAiConfig(input.ai) : {};
+    if (sanitizedAi.warning !== undefined)
+        warnings.push(sanitizedAi.warning);
     let sources;
     if (input.sources !== undefined) {
         if (!Array.isArray(input.sources))
@@ -248,7 +328,9 @@ function validateRssStoreInput(raw) {
             ...(dailyTime !== undefined ? { dailyTime } : {}),
             ...(autoGenerateOnMount !== undefined ? { autoGenerateOnMount } : {}),
             ...(announceToAgent !== undefined ? { announceToAgent } : {}),
+            ...(sanitizedAi.ai !== undefined ? { ai: sanitizedAi.ai } : {}),
         },
+        ...(warnings.length > 0 ? { warnings } : {}),
     };
 }
 /* ------------------------------------------------------------------ *
@@ -470,6 +552,268 @@ async function fetchFeed(source, config) {
         clearTimeout(timer);
     }
 }
+/** AI 缓存文件路径：与 digest 同目录，随 digestDir 迁移。 */
+export function aiCachePath(dir) {
+    return join(dir, 'ai-cache.json');
+}
+/** 缓存 key：与去重 key 同源（link || id || title，trim + 小写）的 sha1 十六进制。 */
+export function aiCacheKey(item) {
+    const raw = (item.link || item.id || item.title || '').trim().toLowerCase();
+    return createHash('sha1').update(raw).digest('hex');
+}
+/** 缓存条目是否在 30 天有效期内（结构与时间戳一并校验）。 */
+export function isAiCacheEntryFresh(entry, now = Date.now()) {
+    if (entry === undefined)
+        return false;
+    if (typeof entry.text !== 'string' || entry.text.trim() === '')
+        return false;
+    if (typeof entry.at !== 'number' || !Number.isFinite(entry.at))
+        return false;
+    return now - entry.at < AI_CACHE_TTL_MS;
+}
+/** 淘汰过期条目，并在超过上限时按 at 保留最新的 max 条（LRU 淘汰最旧）。 */
+export function pruneAiCacheEntries(entries, now = Date.now(), max = AI_CACHE_MAX_ENTRIES) {
+    const fresh = Object.entries(entries).filter(([, entry]) => isAiCacheEntryFresh(entry, now));
+    if (fresh.length <= max)
+        return Object.fromEntries(fresh);
+    fresh.sort((a, b) => a[1].at - b[1].at);
+    return Object.fromEntries(fresh.slice(fresh.length - max));
+}
+/** 读取 AI 缓存；文件缺失 / 损坏 / 版本不符时返回空表，过期条目顺手过滤。 */
+export function readAiCache(dir, now = Date.now()) {
+    const file = aiCachePath(dir);
+    if (!existsSync(file))
+        return {};
+    try {
+        const parsed = JSON.parse(readFileSync(file, 'utf8'));
+        if (parsed.version !== 1 || typeof parsed.entries !== 'object' || parsed.entries === null)
+            return {};
+        const entries = {};
+        for (const [key, value] of Object.entries(parsed.entries)) {
+            if (typeof value !== 'object' || value === null)
+                continue;
+            const entry = value;
+            if (typeof entry.text !== 'string' || typeof entry.at !== 'number')
+                continue;
+            entries[key] = { text: entry.text, model: typeof entry.model === 'string' ? entry.model : '', at: entry.at };
+        }
+        return pruneAiCacheEntries(entries, now);
+    }
+    catch {
+        return {};
+    }
+}
+/** 原子写回 AI 缓存（先淘汰过期 / 超限条目）。写失败由调用方兜底，不影响 digest 生成。 */
+export function writeAiCache(dir, entries, now = Date.now()) {
+    const payload = { version: 1, entries: pruneAiCacheEntries(entries, now) };
+    mkdirSync(dir, { recursive: true });
+    writeFileAtomic(aiCachePath(dir), JSON.stringify(payload, null, 2));
+}
+const AI_SUMMARY_SYSTEM_PROMPT = [
+    '你是资讯摘要助手。请用一句中文概括给定 JSON 中的资讯，供读者在聚合列表中快速浏览。',
+    '要求：不超过 60 字；不复述标题；保留关键实体（人名、公司、产品）与数字；只输出摘要正文，使用纯文本，不要 Markdown、不要引号、不要前缀或解释。',
+].join('\n');
+/** 构造单条摘要请求：system 为固定指令，user 用 JSON 框架（正文截断 1200 字）避免破坏结构。 */
+export function buildAiSummaryMessages(item) {
+    return {
+        system: AI_SUMMARY_SYSTEM_PROMPT,
+        user: JSON.stringify({
+            title: item.title,
+            source: item.source,
+            category: item.category ?? '',
+            text: (item.summary ?? '').slice(0, AI_INPUT_TEXT_LIMIT),
+        }),
+    };
+}
+/** 清洗模型输出：trim、去包裹引号、去 Markdown 加粗 / 列表前缀，换行压成空格；空串表示失败。 */
+export function cleanAiSummary(raw) {
+    const lines = raw
+        .split(/\r?\n/)
+        .map((line) => line
+        .trim()
+        .replace(/^["'“”‘’「」《》]+/, '')
+        .replace(/^[-*+•]\s+/, '')
+        .replace(/^\d+[.、)]\s*/, '')
+        .replace(/^#+\s*/, '')
+        .replace(/\*\*/g, '')
+        .trim())
+        .filter((line) => line !== '');
+    const joined = lines.join(' ').replace(/\s+/g, ' ').trim();
+    return joined.replace(/^["'“”‘’「」《》]+/, '').replace(/["'“”‘’「」《》]+$/, '').trim();
+}
+/** 从任意值里取 provider/model 对；不完整返回 null。 */
+function pickRoute(value) {
+    if (typeof value !== 'object' || value === null)
+        return null;
+    const record = value;
+    const provider = typeof record.provider === 'string' ? record.provider.trim() : '';
+    const model = typeof record.model === 'string' ? record.model.trim() : '';
+    return provider !== '' && model !== '' ? { provider, model } : null;
+}
+/**
+ * 解析模型路由：显式配置对 > 宿主默认模型（agentDefaultModel.source()，
+ * 兼容 currentSelection()）> settings 服务的 agent-default-model 命名空间；
+ * 全拿不到返回 null（本次生成跳过 AI 摘要）。
+ */
+export function resolveAiRoute(ctx, ai) {
+    const provider = ai?.provider?.trim();
+    const model = ai?.model?.trim();
+    if (provider && model)
+        return { provider, model };
+    if (ctx === undefined)
+        return null;
+    try {
+        const defaultModel = getService(ctx, 'agentDefaultModel');
+        if (defaultModel !== undefined && defaultModel !== null) {
+            const read = typeof defaultModel.source === 'function'
+                ? defaultModel.source
+                : typeof defaultModel.currentSelection === 'function'
+                    ? defaultModel.currentSelection
+                    : undefined;
+            if (read !== undefined) {
+                const picked = pickRoute(read.call(defaultModel));
+                if (picked !== null)
+                    return picked;
+            }
+        }
+        const settings = getService(ctx, 'settings');
+        if (settings !== undefined && settings !== null && typeof settings.get === 'function') {
+            const picked = pickRoute(settings.get(AGENT_DEFAULT_MODEL_NAMESPACE));
+            if (picked !== null)
+                return picked;
+        }
+    }
+    catch {
+        /* 服务异常 / 命名空间未注册（get 抛 TypeError）：当作解析不到，本次跳过 AI 摘要 */
+    }
+    return null;
+}
+/**
+ * 调用宿主 llm 服务生成一条摘要。
+ * 一次性调用模式：流式收集 text-delta，直到 finish；超时用 AbortController + setTimeout。
+ * finish.kind 不是 stop（error / aborted / max-tokens / tool-calls）、缺终止块、
+ * 输出清洗后为空都算失败。
+ */
+export async function callAiSummary(llm, route, item, timeoutMs) {
+    const { system, user } = buildAiSummaryMessages(item);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let text = '';
+    let finishKind;
+    let finishMessage;
+    try {
+        for await (const chunk of llm.stream({
+            provider: route.provider,
+            model: route.model,
+            system,
+            messages: [{ role: 'user', content: user }],
+            maxTokens: AI_SUMMARY_MAX_TOKENS,
+            temperature: 0.3,
+            signal: controller.signal,
+        })) {
+            if (chunk.type === 'text-delta' && typeof chunk.text === 'string') {
+                text += chunk.text;
+            }
+            else if (chunk.type === 'finish') {
+                finishKind = typeof chunk.kind === 'string' ? chunk.kind : 'unknown';
+                finishMessage = chunk.failure?.message;
+            }
+        }
+    }
+    catch (error) {
+        // 主动 abort 视作超时；其余错误原样抛出
+        if (controller.signal.aborted)
+            throw new Error(`请求超时（${timeoutMs}ms）`);
+        throw error instanceof Error ? error : new Error(String(error));
+    }
+    finally {
+        clearTimeout(timer);
+    }
+    if (finishKind === undefined)
+        throw new Error('模型未返回终止标记');
+    if (finishKind !== 'stop') {
+        throw new Error(finishMessage !== undefined ? `${finishKind}: ${finishMessage}` : `终止原因 ${finishKind}`);
+    }
+    const cleaned = cleanAiSummary(text);
+    if (!cleaned)
+        throw new Error('模型返回空摘要');
+    return cleaned;
+}
+/**
+ * 对截断后的条目做 AI 摘要：
+ * 1) 解析路由与 llm 服务，缺失则整体跳过并把原因记进 DigestResult；
+ * 2) 读 ai-cache.json，命中且未过期直接用（不再请求）；
+ * 3) 未命中的前 maxItems 条按 concurrency 并发请求，单条失败只回落该条；
+ * 4) 新增缓存原子写回（LRU 上限 500）。
+ */
+async function summarizeItems(items, ai, ctx, config) {
+    const route = resolveAiRoute(ctx, ai);
+    if (route === null) {
+        return {
+            items,
+            info: { enabled: true, summarized: 0, failed: 0, reason: '未解析到可用模型（可填写 provider/model，或先配置宿主默认模型）' },
+        };
+    }
+    const routeText = `${route.provider}/${route.model}`;
+    const llm = ctx !== undefined ? getService(ctx, 'llm') : undefined;
+    if (llm === undefined || llm === null || typeof llm.stream !== 'function') {
+        return { items, info: { enabled: true, route: routeText, summarized: 0, failed: 0, reason: '宿主 llm 服务不可用' } };
+    }
+    const maxItems = clampAiInt(ai.maxItems, AI_MAX_ITEMS_MIN, AI_MAX_ITEMS_MAX) ?? DEFAULT_AI_MAX_ITEMS;
+    const concurrency = clampAiInt(ai.concurrency, AI_CONCURRENCY_MIN, AI_CONCURRENCY_MAX) ?? DEFAULT_AI_CONCURRENCY;
+    const timeoutMs = clampAiInt(ai.timeoutMs, AI_TIMEOUT_MIN_MS, AI_TIMEOUT_MAX_MS) ?? DEFAULT_AI_TIMEOUT_MS;
+    const dir = digestDir(config);
+    const cache = readAiCache(dir);
+    const result = items.map((item) => ({ ...item }));
+    let summarized = 0;
+    const pending = [];
+    for (const item of result.slice(0, maxItems)) {
+        const key = aiCacheKey(item);
+        const cached = cache[key];
+        if (isAiCacheEntryFresh(cached)) {
+            item.aiSummary = cached.text;
+            summarized += 1;
+            continue;
+        }
+        pending.push({ item, key });
+    }
+    let failed = 0;
+    let firstError = '';
+    const queue = pending.slice();
+    const workerCount = Math.min(concurrency, queue.length);
+    const workers = Array.from({ length: workerCount }, async () => {
+        while (queue.length > 0) {
+            const task = queue.shift();
+            if (task === undefined)
+                return;
+            try {
+                const text = await callAiSummary(llm, route, task.item, timeoutMs);
+                task.item.aiSummary = text;
+                cache[task.key] = { text, model: route.model, at: Date.now() };
+                summarized += 1;
+            }
+            catch (error) {
+                failed += 1;
+                if (firstError === '')
+                    firstError = error instanceof Error ? error.message : String(error);
+            }
+        }
+    });
+    await Promise.all(workers);
+    if (pending.length > 0) {
+        try {
+            writeAiCache(dir, cache);
+        }
+        catch (error) {
+            console.warn('[dsh-rss-digest] 写入 AI 摘要缓存失败: %s', error instanceof Error ? error.message : String(error));
+        }
+    }
+    const info = { enabled: true, route: routeText, summarized, failed };
+    // 全部失败（无缓存命中、也无成功请求）时把首个错误原因带进 DigestResult
+    if (failed > 0 && summarized === 0)
+        info.reason = `全部 ${failed} 条失败：${firstError}`;
+    return { items: result, info };
+}
 /* ------------------------------------------------------------------ *
  * Digest 生成
  * ------------------------------------------------------------------ */
@@ -481,7 +825,7 @@ function formatShortDate(iso) {
         return '';
     return date.toISOString().slice(0, 10);
 }
-function renderDigestMarkdown(items, date, errors, sourceCount) {
+export function renderDigestMarkdown(items, date, errors, sourceCount, aiSummary) {
     const lines = [`# 今日值得读 · ${date}`, ''];
     lines.push(`> 来自 ${sourceCount} 个订阅源，共 ${items.length} 条。`, '');
     const byCategory = new Map();
@@ -503,18 +847,30 @@ function renderDigestMarkdown(items, date, errors, sourceCount) {
             if (shortDate)
                 meta.push(shortDate);
             lines.push(`- ${link}${meta.length > 0 ? ` — ${meta.join(' / ')}` : ''}`);
-            if (item.summary) {
+            // 有 AI 摘要优先用（本身已是一句话）；否则回落到原文摘要的 140 字截断
+            if (item.aiSummary) {
+                lines.push(`  ${item.aiSummary}`);
+            }
+            else if (item.summary) {
                 const summary = item.summary.length > 140 ? `${item.summary.slice(0, 140)}…` : item.summary;
                 lines.push(`  ${summary}`);
             }
         }
         lines.push('');
     }
-    if (errors.length > 0) {
+    // AI 摘要整体不可用或部分失败时，沿用「抓取失败」小节的列表格式补一行说明
+    const aiNote = aiSummary?.reason !== undefined
+        ? `- AI 摘要: ${aiSummary.reason}`
+        : aiSummary !== undefined && aiSummary.failed > 0
+            ? `- AI 摘要: ${aiSummary.failed} 条失败，已回落到原文摘要`
+            : undefined;
+    if (errors.length > 0 || aiNote !== undefined) {
         lines.push('## 抓取失败', '');
         for (const error of errors) {
             lines.push(`- ${error.source}: ${error.error}`);
         }
+        if (aiNote !== undefined)
+            lines.push(aiNote);
         lines.push('');
     }
     return lines.join('\n').trim() + '\n';
@@ -522,8 +878,9 @@ function renderDigestMarkdown(items, date, errors, sourceCount) {
 /**
  * 抓取所有订阅源并生成当天 digest。返回生成的摘要信息。
  * 即使部分源失败，也会把成功抓到的内容写成 digest。
+ * store 启用 ai 时，在去重 / 排序 / 截断之后、渲染之前为条目补 AI 摘要。
  */
-export async function generateDigest(config = {}) {
+export async function generateDigest(config = {}, runtime = {}) {
     const sources = normalizeSources(config);
     const settled = await Promise.allSettled(sources.map((source) => fetchFeed(source, config)));
     const items = [];
@@ -572,26 +929,36 @@ export async function generateDigest(config = {}) {
             return 1;
         return 0;
     });
-    const maxTotal = readRssStore(config).maxTotalItems ?? DEFAULT_MAX_TOTAL_ITEMS;
+    const store = readRssStore(config);
+    const maxTotal = store.maxTotalItems ?? DEFAULT_MAX_TOTAL_ITEMS;
     const selected = unique.slice(0, maxTotal);
+    // AI 摘要：只对最终入选的条目做，超出 maxItems 的部分保持原文摘要
+    let outputItems = selected;
+    let aiSummary;
+    if (store.ai?.enabled === true && selected.length > 0) {
+        const outcome = await summarizeItems(selected, store.ai, runtime.ctx, config);
+        outputItems = outcome.items;
+        aiSummary = outcome.info;
+    }
     const date = todayKey();
     const file = digestPath(date, config);
     const generatedAt = new Date().toISOString();
-    const markdown = renderDigestMarkdown(selected, date, errors, sources.length);
+    const markdown = renderDigestMarkdown(outputItems, date, errors, sources.length, aiSummary);
     mkdirSync(digestDir(config), { recursive: true });
     writeFileSync(file, markdown, 'utf8');
     writeFileSync(latestJsonPath(config), JSON.stringify({
         date,
         file,
-        items: selected,
+        items: outputItems,
         errors,
         generatedAt,
         sources: sourcesMeta,
+        ...(aiSummary !== undefined ? { aiSummary } : {}),
     }, null, 2), 'utf8');
-    return { date, file, items: selected, errors, generatedAt, sources: sourcesMeta };
+    return { date, file, items: outputItems, errors, generatedAt, sources: sourcesMeta, ...(aiSummary !== undefined ? { aiSummary } : {}) };
 }
 /** 如果当天 digest 已存在则直接返回，否则重新抓取生成。 */
-export async function ensureTodayDigest(config = {}) {
+export async function ensureTodayDigest(config = {}, runtime = {}) {
     const date = todayKey();
     const file = digestPath(date, config);
     if (existsSync(file)) {
@@ -606,7 +973,7 @@ export async function ensureTodayDigest(config = {}) {
             generatedAt: new Date().toISOString(),
         };
     }
-    return generateDigest(config);
+    return generateDigest(config, runtime);
 }
 /** 读取最近一次生成的 digest 元数据；没有则返回 null。 */
 export function readLatestDigest(config) {
@@ -690,7 +1057,9 @@ function digestMarkdown(digest) {
 }
 function makeRoutes(config, onDigestChanged, 
 /** 禁用闸门与配置保存回调：disabled 供数据路由短路（/config 例外），onStoreSaved 在保存成功后触发热应用。 */
-hooks) {
+hooks, 
+/** AI 摘要所需的宿主 Context（/refresh 触发的生成要用）。 */
+runtime = {}) {
     const disabledGuard = (res) => {
         if (hooks?.disabled() !== true)
             return false;
@@ -748,7 +1117,7 @@ hooks) {
                 if (disabledGuard(res))
                     return;
                 try {
-                    const digest = await generateDigest(config);
+                    const digest = await generateDigest(config, runtime);
                     onDigestChanged?.(digest);
                     writeJson(res, 200, { ok: true, ...digest, markdown: digestMarkdown(digest), digestDir: digestDir(config) });
                 }
@@ -780,6 +1149,10 @@ hooks) {
                     writeJson(res, 400, { error: validated.error ?? '配置校验失败' });
                     return;
                 }
+                // 告警不影响保存（例如 ai 字段不成对被整体忽略），只在响应里回传并记日志
+                if (validated.warnings !== undefined && validated.warnings.length > 0) {
+                    console.warn('[dsh-rss-digest] config warnings: %s', validated.warnings.join('；'));
+                }
                 // 自定义渠道保存前真实抓取一次（只校验新增的：存量渠道当初添加时已校验过，
                 // 全量重验会让任一外部源抽风就卡死整个保存——包括启用开关本身）
                 const previousStore = readRssStore(config);
@@ -807,7 +1180,13 @@ hooks) {
                 }
                 // 保存成功即热应用：enabled / announceToAgent 的开关变化立刻生效
                 hooks?.onStoreSaved();
-                writeJson(res, 200, { ok: true, config: readRssStore(config), builtins: BUILTIN_CHANNELS, file: rssConfigPath() });
+                writeJson(res, 200, {
+                    ok: true,
+                    config: readRssStore(config),
+                    builtins: BUILTIN_CHANNELS,
+                    file: rssConfigPath(),
+                    ...(validated.warnings !== undefined && validated.warnings.length > 0 ? { warnings: validated.warnings } : {}),
+                });
             },
         },
         {
@@ -904,7 +1283,11 @@ function buildSystemPromptText(digest) {
         for (const item of categoryItems) {
             const title = item.title || '(无标题)';
             const source = item.source ? `（${item.source}）` : '';
-            lines.push(`- ${item.link ? `[${title}](${item.link})` : title}${source}`);
+            // 有 AI 摘要时附在条目行尾部（≤100 字符），让模型可以直接引用
+            const ai = item.aiSummary
+                ? ` —— ${item.aiSummary.length > AI_PROMPT_SUMMARY_LIMIT ? `${item.aiSummary.slice(0, AI_PROMPT_SUMMARY_LIMIT)}…` : item.aiSummary}`
+                : '';
+            lines.push(`- ${item.link ? `[${title}](${item.link})` : title}${source}${ai}`);
         }
         lines.push('');
     }
@@ -924,6 +1307,8 @@ export function apply(ctx, config) {
     let latest = readLatestDigest(config);
     let systemPromptApi = null;
     let sectionDisposer = null;
+    // AI 摘要要经宿主 Context 解析 llm / 默认模型服务
+    const runtime = { ctx };
     const updateSystemPrompt = () => {
         // 先撤旧 section 再按开关决定是否重挂：禁用或关闭公告时这里就是「撤下」路径
         if (sectionDisposer !== null) {
@@ -949,7 +1334,7 @@ export function apply(ctx, config) {
     };
     const refresh = async (force) => {
         try {
-            latest = force ? await generateDigest(config) : await ensureTodayDigest(config);
+            latest = force ? await generateDigest(config, runtime) : await ensureTodayDigest(config, runtime);
             updateSystemPrompt();
         }
         catch (error) {
@@ -968,7 +1353,7 @@ export function apply(ctx, config) {
             updateSystemPrompt();
             console.log(`[dsh-rss-digest] config applied (enabled=${String(enabled)}, announceToAgent=${String(announce)})`);
         },
-    });
+    }, runtime);
     ctx.inject(['webServer'], (webCtx) => {
         webCtx.effect(() => {
             const server = webCtx.webServer;

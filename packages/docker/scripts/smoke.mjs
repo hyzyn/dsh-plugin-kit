@@ -240,6 +240,46 @@ test('shJoin：单引号转义（远程命令不得被拆开）', () => {
  * 5. 命令构造（用假 Runner 记录 argv）
  * ------------------------------------------------------------------ */
 
+const IMAGE_INSPECT_SAMPLE = JSON.stringify([{
+  Id: 'sha256:aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa7777bbbb8888',
+  RepoTags: ['nginx:1.27'],
+  RepoDigests: ['nginx@sha256:deadbeef'],
+  Size: 142000000,
+  VirtualSize: 142000000,
+  Created: '2026-08-20T09:00:00.123456789Z',
+  Architecture: 'amd64',
+  Os: 'linux',
+  Config: {
+    Entrypoint: ['/docker-entrypoint.sh'],
+    Cmd: ['nginx', '-g', 'daemon off;'],
+    WorkingDir: '/app',
+    User: 'www-data',
+    ExposedPorts: { '80/tcp': {}, '443/tcp': {} },
+    Volumes: { '/data': {} },
+    Labels: { maintainer: 'ops' },
+  },
+  RootFS: { Type: 'layers', Layers: ['sha256:l1', 'sha256:l2', 'sha256:l3'] },
+}])
+const IMAGE_HISTORY_LINE = JSON.stringify({ ID: 'sha256:l3', CreatedSince: '2 weeks ago', CreatedBy: '/bin/sh -c #(nop) CMD ["nginx"]', Size: '0B' })
+
+function makeStreamHandlers() {
+  return { onStdout: () => {}, onStderr: () => {} }
+}
+
+/** 只实现 stream 的假 Runner（stats / pull 流式路径用）。 */
+function fakeStreamApi() {
+  const calls = []
+  const runner = {
+    label: 'fake',
+    async run() { throw new Error('run 不应在流式路径被调用') },
+    async stream(argv, _handlers, signal) {
+      calls.push({ argv: [...argv], ...(signal === undefined ? {} : { signal }) })
+      return { code: 0 }
+    },
+  }
+  return { api: new docker.DockerApi(runner, 'docker', { timeoutMs: 1000, maxBytes: 1024 }), calls }
+}
+
 function fakeApi() {
   const calls = []
   const runner = {
@@ -247,6 +287,11 @@ function fakeApi() {
     async run(argv, options) {
       calls.push({ argv: [...argv], options })
       const joined = argv.join(' ')
+      if (joined.includes('image inspect')) return { code: 0, stdout: IMAGE_INSPECT_SAMPLE, stderr: '', timedOut: false, truncated: false, durationMs: 1 }
+      if (joined.includes('history')) return { code: 0, stdout: IMAGE_HISTORY_LINE, stderr: '', timedOut: false, truncated: false, durationMs: 1 }
+      if (joined.includes('image rm')) return { code: 0, stdout: 'Untagged: nginx:1.27\n', stderr: '', timedOut: false, truncated: false, durationMs: 1 }
+      if (joined.includes('image prune')) return { code: 0, stdout: 'Total reclaimed space: 1.2GB\n', stderr: '', timedOut: false, truncated: false, durationMs: 1 }
+      if (joined.includes('pull ')) return { code: 0, stdout: 'Pull complete\n', stderr: '', timedOut: false, truncated: false, durationMs: 1 }
       if (joined.includes('ps ')) return { code: 0, stdout: PS_SAMPLE.join('\n'), stderr: '', timedOut: false, truncated: false, durationMs: 1 }
       if (joined.includes('inspect')) return { code: 0, stdout: INSPECT_SAMPLE, stderr: '', timedOut: false, truncated: false, durationMs: 1 }
       if (joined.includes('stats')) return { code: 0, stdout: JSON.stringify({ ID: 'a', Name: 'n', CPUPerc: '0.00%', MemUsage: '1MiB / 2GiB', MemPerc: '0.05%', NetIO: '0B / 0B', BlockIO: '0B / 0B', PIDs: '1' }), stderr: '', timedOut: false, truncated: false, durationMs: 1 }
@@ -410,6 +455,157 @@ test('mergeTargetSecrets：卡片提交不含密码时保留已存凭证', () =>
   const fresh = host.mergeTargetSecrets(prev, [{ name: 'new', host: 'x' }])
   assert.equal(fresh[0].password, undefined)
   assert.equal(host.mergeTargetSecrets(prev, 'not-an-array'), 'not-an-array')
+})
+
+/* ------------------------------------------------------------------ *
+ * 6.5 镜像详情 / 拉取进度 / 统计流
+ * ------------------------------------------------------------------ */
+
+test('parseImageInspectJson：元数据 / 层 / 端口 / 标签', () => {
+  const rows = docker.parseImageInspectJson(IMAGE_INSPECT_SAMPLE)
+  assert.equal(rows.length, 1)
+  const d = rows[0]
+  assert.equal(d.shortId, 'aaaa1111bbbb')
+  assert.deepEqual(d.repoTags, ['nginx:1.27'])
+  assert.deepEqual(d.repoDigests, ['nginx@sha256:deadbeef'])
+  assert.equal(d.size, 142000000)
+  assert.equal(d.layerCount, 3)
+  assert.deepEqual(d.layers, ['sha256:l1', 'sha256:l2', 'sha256:l3'])
+  assert.equal(d.entrypoint, '/docker-entrypoint.sh')
+  assert.equal(d.command, 'nginx -g daemon off;')
+  assert.equal(d.workingDir, '/app')
+  assert.equal(d.user, 'www-data')
+  assert.deepEqual(d.exposedPorts, ['443/tcp', '80/tcp'])
+  assert.deepEqual(d.volumes, ['/data'])
+  assert.equal(d.labels.maintainer, 'ops')
+  // env 刻意不回传（inspect 的 Env 常含密钥）
+  assert.equal(Object.hasOwn(d, 'env'), false)
+})
+
+test('parseImageInspectJson：缺字段不抛异常（老版本 docker）', () => {
+  const rows = docker.parseImageInspectJson(JSON.stringify([{ Id: 'sha256:x', Config: {} }]))
+  assert.equal(rows[0].size, null)
+  assert.equal(rows[0].virtualSize, null)
+  assert.deepEqual(rows[0].layers, [])
+  assert.deepEqual(rows[0].repoTags, [])
+  assert.equal(rows[0].state, undefined)
+})
+
+test('parseImageHistoryJson：命令 / 大小 / shortId', () => {
+  const rows = docker.parseImageHistoryJson([
+    JSON.stringify({ ID: 'sha256:l3', CreatedSince: '2 weeks ago', CreatedBy: '/bin/sh -c #(nop) CMD ["nginx"]', Size: '0B', Comment: '' }),
+    JSON.stringify({ ID: '<missing>', CreatedSince: '2 weeks ago', CreatedBy: '/bin/sh -c #(nop) ADD file:abc in /', Size: '142MB' }),
+  ].join('\n'))
+  assert.equal(rows.length, 2)
+  assert.equal(rows[0].shortId, 'l3')
+  assert.equal(rows[0].size, 0)
+  assert.match(rows[0].createdBy, /CMD/)
+  assert.equal(rows[1].id, '<missing>')
+  assert.equal(rows[1].size, 142e6)
+})
+
+test('parseImageHistoryText：纯文本表格兜底（老 docker 无 --format）', () => {
+  const text = [
+    'IMAGE          CREATED       CREATED BY                                        SIZE      COMMENT',
+    'a2abf6c4d29d   2 weeks ago   /bin/sh -c #(nop)  CMD ["nginx" "-g" "daemon off;"]   0B',
+    '<missing>      2 weeks ago   /bin/sh -c #(nop) ADD file:abc in /                142MB',
+  ].join('\n')
+  const rows = docker.parseImageHistoryText(text)
+  assert.equal(rows.length, 2)
+  assert.equal(rows[0].shortId, 'a2abf6c4d29d')
+  assert.equal(rows[0].createdSince, '2 weeks ago')
+  assert.equal(rows[0].size, 0)
+  assert.match(rows[0].createdBy, /CMD/)
+  assert.equal(rows[1].id, '<missing>')
+  assert.equal(rows[1].size, 142e6)
+})
+
+test('assertImageRef：放行 registry / digest，拒绝 flag 与注入', () => {
+  assert.equal(docker.assertImageRef('nginx:1.27', 'image'), 'nginx:1.27')
+  assert.equal(docker.assertImageRef('ghcr.io/org/app@sha256:abc', 'image'), 'ghcr.io/org/app@sha256:abc')
+  assert.equal(docker.assertImageRef('sha256:aaaa', 'image'), 'sha256:aaaa')
+  for (const bad of ['-f', '--force', 'web; rm -rf /', 'a b', '$(id)', '`id`', '', '  ']) {
+    assert.throws(() => docker.assertImageRef(bad, 'image'), /image/, '应拒绝：' + JSON.stringify(bad))
+  }
+  assert.throws(() => docker.assertImageRef('a'.repeat(256), 'image'), /过长/)
+})
+
+test('formatBytes：十进制单位（与 docker images 的 SIZE 一致）', () => {
+  assert.equal(host.formatBytes(0), '0 B')
+  assert.equal(host.formatBytes(999), '999 B')
+  assert.equal(host.formatBytes(142000000), '142 MB')
+  assert.equal(host.formatBytes(1500000000), '1.5 GB')
+  assert.equal(host.formatBytes(Number.NaN), '—')
+})
+
+test('DockerApi：imageInspect 用 image inspect + history --format', async () => {
+  const { api, calls } = fakeApi()
+  const image = await api.imageInspect('nginx:1.27')
+  assert.deepEqual(calls[0].argv, ['docker', 'image', 'inspect', 'nginx:1.27'])
+  assert.deepEqual(calls[1].argv, ['docker', 'history', '--no-trunc', '--format', '{{json .}}', 'nginx:1.27'])
+  assert.equal(image.ref, 'nginx:1.27')
+  assert.equal(image.detail.layerCount, 3)
+  assert.equal(image.history.length, 1)
+  assert.equal(image.historyError, null)
+})
+
+test('DockerApi：history --format 失败时退回纯文本表格（老 docker）', async () => {
+  const calls = []
+  const plain = [
+    'IMAGE          CREATED       CREATED BY                       SIZE      COMMENT',
+    'abc123456789   2 weeks ago   /bin/sh -c #(nop) CMD ["nginx"]   0B',
+  ].join('\n')
+  const runner = {
+    label: 'fake',
+    async run(argv) {
+      calls.push([...argv])
+      const joined = argv.join(' ')
+      if (joined.includes('image inspect')) return { code: 0, stdout: IMAGE_INSPECT_SAMPLE, stderr: '', timedOut: false, truncated: false, durationMs: 1 }
+      if (joined.includes('--format')) return { code: 1, stdout: '', stderr: 'unknown flag: --format', timedOut: false, truncated: false, durationMs: 1 }
+      return { code: 0, stdout: plain, stderr: '', timedOut: false, truncated: false, durationMs: 1 }
+    },
+  }
+  const api = new docker.DockerApi(runner, 'docker', { timeoutMs: 1000, maxBytes: 1024 })
+  const image = await api.imageInspect('nginx:1.27')
+  assert.equal(image.history.length, 1)
+  assert.match(image.history[0].createdBy, /CMD/)
+  assert.equal(image.historyError, null)
+  // 第三次调用是不带 --format 的纯文本 history
+  assert.deepEqual(calls[2], ['docker', 'history', '--no-trunc', 'nginx:1.27'])
+})
+
+test('DockerApi：镜像删除 / prune / pull 的 argv（rm 不带 -f）', async () => {
+  const { api, calls } = fakeApi()
+  const removed = await api.imageRemove('nginx:1.27')
+  assert.deepEqual(calls[0].argv, ['docker', 'image', 'rm', 'nginx:1.27'])
+  assert.match(removed.message, /Untagged/)
+  const pruned = await api.imagePrune()
+  assert.deepEqual(calls[1].argv, ['docker', 'image', 'prune', '-f'])
+  assert.match(pruned.message, /Total reclaimed space/)
+  const pulled = await api.pull('nginx:1.27', 120000)
+  assert.deepEqual(calls[2].argv, ['docker', 'pull', 'nginx:1.27'])
+  assert.equal(pulled.code, 0)
+  assert.match(pulled.text, /Pull complete/)
+})
+
+test('DockerApi：statsStream 不带 --no-stream；pullStream 走 stream 通道', async () => {
+  const { api, calls } = fakeStreamApi()
+  await api.statsStream(['web'], makeStreamHandlers())
+  assert.deepEqual(calls[0].argv, ['docker', 'stats', '--format', '{{json .}}', 'web'])
+  await api.pullStream('nginx:1.27', makeStreamHandlers())
+  assert.deepEqual(calls[1].argv, ['docker', 'pull', 'nginx:1.27'])
+  // 快照仍是 --no-stream（两条路径只差这一个 flag）
+  const snap = fakeApi()
+  await snap.api.stats(['web'])
+  assert.deepEqual(snap.calls[0].argv, ['docker', 'stats', '--no-stream', '--format', '{{json .}}', 'web'])
+})
+
+test('DockerApi：imageInspect / imageRemove 拒绝非法引用（不触达执行器）', async () => {
+  const { api, calls } = fakeApi()
+  await assert.rejects(() => api.imageInspect('-f'), /image 含非法字符/)
+  await assert.rejects(() => api.imageRemove('nginx; rm -rf /'), /image 含非法字符/)
+  await assert.rejects(() => api.pullStream('', makeStreamHandlers()), /image 不能为空/)
+  assert.equal(calls.length, 0)
 })
 
 /* ------------------------------------------------------------------ *

@@ -363,7 +363,7 @@
   background: transparent;
   color: var(--dk-label-2);
   cursor: pointer;
-  transition: background var(--dk-dur) var(--dk-ease), color var(--dk-dur) var(--dk-ease);
+  transition: background var(--dk-dur) var(--dk-ease), color var(--dk-dur) var(--dk-ease), opacity var(--dk-dur) var(--dk-ease);
 }
 
 .dk_iconBtn:hover { background: var(--dk-hover); color: var(--dk-label); }
@@ -387,6 +387,18 @@
   flex-wrap: wrap;
   padding: var(--dk-gap-md) var(--dk-gap-lg);
   border-bottom: 1px solid var(--dk-border);
+}
+
+/*
+ * dock 模式下没有面板头部，刷新 / 只读徽标挂到工具条末尾并靠右：
+ * margin-left:auto 在不换行时把它推到整行最右，换行时贴到最后一行的右端——
+ * 与「过滤 / 筛选控件从左往右排」区分开，避免刷新被当成工具条的第一个筛选项。
+ */
+.dk_toolbarEnd {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--dk-gap-sm);
+  margin-left: auto;
 }
 
 .dk_select,
@@ -425,9 +437,21 @@
   border: 1px solid var(--dk-border);
   border-radius: var(--dk-r-md);
   background: var(--dk-surface-2);
+  /*
+   * 分段从三段长到五段（容器/镜像/Compose/网络/卷）后，520px 的 dock 窄栏里可能放不下：
+   * 允许这一段自己横向滚动，而不是整个工具条换行或做二级菜单（切页是高频动作，
+   * 多一次点击不划算）。滚动条隐藏，靠两端的裁切给出「还有内容」的暗示。
+   */
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
 }
 
+.dk_seg::-webkit-scrollbar { display: none; }
+
 .dk_segBtn {
+  /* 不参与压缩：否则窄栏里五段会被压成「容/镜/Co/网/卷」这种半截字 */
+  flex: none;
   height: var(--dk-h-sm);
   padding: 0 var(--dk-gap-md);
   border: none;
@@ -636,6 +660,8 @@
   font-size: 11px;
   line-height: 1;
   white-space: nowrap;
+  /* 启停后状态徽标会从「运行中」翻到「已停止」：给个过渡，别硬切 */
+  transition: background-color var(--dk-dur) var(--dk-ease), border-color var(--dk-dur) var(--dk-ease), color var(--dk-dur) var(--dk-ease);
 }
 
 .dk_badge::before {
@@ -741,6 +767,7 @@
 /* ============================ 日志视图 ============================ */
 
 .dk_logs {
+  position: relative; /* 「回到底部」浮层定位基准 */
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
@@ -781,6 +808,75 @@
   color: var(--dk-success);
   font-weight: 600;
 }
+
+/* 「聚合选择」激活态：这是「进入选择模式」而不是「某个开关已开」，用强调色 */
+.dk_pillPick[data-on="1"] {
+  border-color: color-mix(in srgb, var(--dk-accent) 52%, transparent);
+  background: color-mix(in srgb, var(--dk-accent) 18%, transparent);
+  color: var(--dk-accent);
+  font-weight: 600;
+}
+
+/* FOLLOW 激活态用强调色（与 AUTO REFRESH 的成功绿区分开：实时流在推 vs 轮询开着） */
+.dk_pillFollow[data-on="1"] {
+  border-color: color-mix(in srgb, var(--dk-accent) 52%, transparent);
+  background: color-mix(in srgb, var(--dk-accent) 18%, transparent);
+  color: var(--dk-accent);
+}
+
+.dk_pill:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+.dk_pill:disabled:hover { background: var(--dk-surface-2); }
+
+/* FOLLOW 连接状态行：小圆点 + 文案（连接错误只在这里表达，不弹横幅刷屏） */
+.dk_followState {
+  display: flex;
+  align-items: center;
+  gap: var(--dk-gap-sm);
+  flex: 0 0 auto;
+  padding: var(--dk-gap-xs) var(--dk-gap-lg);
+  border-bottom: 1px solid var(--dk-border);
+  background: var(--dk-surface-2);
+  color: var(--dk-label-3);
+  font-size: 11px;
+}
+
+.dk_followState::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dk-label-3);
+}
+
+.dk_followState[data-state="open"]::before { background: var(--dk-success); }
+.dk_followState[data-state="connecting"]::before,
+.dk_followState[data-state="reconnecting"]::before { background: var(--dk-warn); }
+.dk_followState[data-state="closed"]::before { background: var(--dk-danger); }
+
+/* FOLLOW 暂停自动滚动时的「回到底部」浮层（不占布局，出现/消失不挤动日志） */
+.dk_backToBottom {
+  position: absolute;
+  right: var(--dk-gap-lg);
+  bottom: var(--dk-gap-lg);
+  z-index: 2;
+  height: var(--dk-h-md);
+  padding: 0 var(--dk-gap-md);
+  border: 1px solid var(--dk-border-strong);
+  border-radius: var(--dk-r-pill);
+  background: var(--dk-surface-2);
+  color: var(--dk-label);
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .28);
+}
+
+.dk_backToBottom:hover { background: var(--dk-hover-solid); }
+.dk_backToBottom:focus-visible { outline: none; box-shadow: var(--dk-ring); }
 
 
 /* 过滤输入框常驻；清空按钮浮在框内右侧（绝对定位 → 出现/消失都不挤动布局） */
@@ -1006,6 +1102,209 @@
 .dk_images th { color: var(--dk-label-3); font-weight: 500; }
 .dk_images td.dk_mono { font-family: var(--dk-mono); }
 .dk_images tbody tr:hover { background: var(--dk-hover); }
+
+/* ============================ 临时多选聚合 ============================ */
+
+/*
+ * 勾选框：纯 CSS 画方框 + 勾（用真实 <input type="checkbox"> 会带进浏览器原生
+ * 尺寸/对齐差异，还要处理只读态）。未勾选时把勾的字色设成透明，形状仍然占位，
+ * 所以勾选/取消不会让卡片头部横向抖动。
+ */
+.dk_pick {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--dk-border-strong);
+  border-radius: var(--dk-r-xs);
+  background: var(--dk-input);
+  color: transparent;
+  font-size: 11px;
+  line-height: 1;
+  transition: background var(--dk-dur) var(--dk-ease), border-color var(--dk-dur) var(--dk-ease), color var(--dk-dur) var(--dk-ease);
+}
+
+.dk_pick::after { content: '✓'; }
+.dk_pick[data-on="1"] { background: var(--dk-accent); border-color: var(--dk-accent); color: #fff; }
+
+/* 选择态：整张卡片就是勾选开关，动作条收起（否则一边多选一边能点到启停删） */
+.dk_card[data-pick="1"] .dk_actionBar { display: none; }
+.dk_card[data-picked="1"] { border-color: var(--dk-accent); box-shadow: var(--dk-ring); }
+
+/* 聚合操作条：夹在工具条与正文之间的一条横栏，计数靠左、按钮靠右 */
+.dk_pickBar {
+  display: flex;
+  align-items: center;
+  gap: var(--dk-gap-md);
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  padding: var(--dk-gap-sm) var(--dk-gap-lg);
+  border-bottom: 1px solid var(--dk-border);
+  background: var(--dk-surface-2);
+}
+
+.dk_pickCount {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dk-label);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 提示在窄栏里可以换行，但不要撑破行 */
+.dk_pickHint { min-width: 0; }
+
+/* ============================ 事件活动条 ============================ */
+
+/*
+ * 活动条：贴在容器列表头部的一条窄栏。默认展开、可折叠——折叠只收起明细，
+ * 事件流照常跑（它不是暂停开关），所以折叠态也要留着标题与状态点。
+ */
+.dk_activity {
+  flex: 0 0 auto;
+  margin-bottom: var(--dk-gap-lg);
+  border: 1px solid var(--dk-border);
+  border-radius: var(--dk-r-md);
+  background: var(--dk-surface-2);
+  overflow: hidden;
+}
+
+.dk_activityHead {
+  display: flex;
+  align-items: center;
+  gap: var(--dk-gap-md);
+  width: 100%;
+  min-width: 0;
+  padding: var(--dk-gap-sm) var(--dk-gap-lg);
+  border: none;
+  background: transparent;
+  color: var(--dk-label);
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dk_activityHead:hover { background: var(--dk-hover); }
+.dk_activityHead:focus-visible { outline: none; box-shadow: var(--dk-ring); }
+.dk_activityTitle { flex: none; font-weight: 600; letter-spacing: .3px; }
+
+/* 状态点沿用 .dk_followState 的语义色，但内联在标题行里、不占整行也没有下边框 */
+.dk_activityState {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--dk-gap-sm);
+  flex: none;
+  color: var(--dk-label-3);
+  font-size: 11px;
+}
+
+.dk_activityState::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dk-label-3);
+}
+
+.dk_activityState[data-state="open"]::before { background: var(--dk-success); }
+.dk_activityState[data-state="connecting"]::before,
+.dk_activityState[data-state="reconnecting"]::before { background: var(--dk-warn); }
+.dk_activityState[data-state="closed"]::before,
+.dk_activityState[data-state="unsupported"]::before { background: var(--dk-danger); }
+
+.dk_activityChevron {
+  flex: none;
+  display: inline-flex;
+  color: var(--dk-label-3);
+  transition: transform var(--dk-dur) var(--dk-ease);
+}
+
+.dk_activity[data-open="1"] .dk_activityChevron { transform: rotate(180deg); }
+
+.dk_activityList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--dk-gap-sm);
+  padding: 0 var(--dk-gap-lg) var(--dk-gap-md);
+}
+
+.dk_activityEmpty {
+  padding: 0 var(--dk-gap-lg) var(--dk-gap-md);
+  color: var(--dk-label-3);
+  font-size: 11px;
+}
+
+.dk_activityItem {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--dk-gap-sm);
+  max-width: 100%;
+  padding: 2px var(--dk-gap-sm);
+  border: 1px solid var(--dk-border);
+  border-radius: var(--dk-r-xs);
+  background: var(--dk-surface-solid);
+  font-size: 11px;
+}
+
+.dk_activityTime {
+  color: var(--dk-label-3);
+  font-family: var(--dk-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.dk_activityName {
+  max-width: 200px;
+  color: var(--dk-label);
+  font-family: var(--dk-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dk_activityAction { color: var(--dk-label-2); }
+
+/* 动作着色：start 是「起来了」，die / oom / kill 是「出事了」，health 只陈述状态 */
+.dk_activityItem[data-action="start"] .dk_activityAction { color: var(--dk-success); font-weight: 600; }
+.dk_activityItem[data-action="die"] .dk_activityAction,
+.dk_activityItem[data-action="oom"] .dk_activityAction,
+.dk_activityItem[data-action="kill"] .dk_activityAction { color: var(--dk-danger); font-weight: 600; }
+.dk_activityItem[data-action="stop"] .dk_activityAction,
+.dk_activityItem[data-action="destroy"] .dk_activityAction { color: var(--dk-warn); }
+.dk_activityItem[data-action="health_status"] .dk_activityAction { color: var(--dk-label-2); font-style: italic; }
+
+/* ==================== 变更操作的「执行中」态 ==================== */
+
+/*
+ * 启停删在飞的时候（docker stop / rm 要等容器真的退出，秒级到十几秒）：
+ *   1. 正在跑的那个按钮把图标换成转圈（见 IconAction 的 busy）；
+ *   2. 同一张卡片的其它变更按钮置灰压暗，直观表示「这一组先别动」；
+ *   3. 卡片描边走强调色，扫列表时能看出哪几张正在处理。
+ * 置灰按钮本身有 opacity .45，busy 的那个要顶掉它，否则转圈也跟着变淡。
+ */
+.dk_iconBtn[data-busy="1"] { color: var(--dk-accent); }
+.dk_iconBtn[data-busy="1"]:disabled { opacity: 1; cursor: progress; }
+.dk_card[data-pending="1"] .dk_actionBar .dk_iconBtn:not([data-busy="1"]) { opacity: .4; }
+.dk_card[data-pending="1"] { border-color: color-mix(in srgb, var(--dk-accent) 45%, transparent); }
+
+/* 确认框里的「执行中…」：转圈 + 文案并排，不撑破按钮高度 */
+.dk_confirmBusy { display: inline-flex; align-items: center; gap: var(--dk-gap-sm); }
+
+/* 忙碌的确认键同样要顶掉 .dk_btn:disabled 的 .45，否则「执行中…」看不清（取消键保持置灰） */
+.dk_confirm[data-busy="1"] .dk_btnDanger { opacity: 1; cursor: progress; }
+
+/* ==================== 网络 / 卷列表 ==================== */
+
+/*
+ * 可点击的表格行（网络 / 卷列表：行 = 进详情的入口）。
+ * 只给 cursor + hover 提示，不加下划线——表格里满屏下划线会更难看。
+ */
+.dk_rowClickable { cursor: pointer; }
+.dk_rowClickable:hover { background: var(--dk-hover); }
+
+/* 挂载点列：路径很长，撑宽表格会把别的列挤没，这里限宽 + 省略号，title 里给全量 */
+.dk_pathCell { max-width: 420px; overflow: hidden; text-overflow: ellipsis; }
 
 /* ============================ 空态 / 提示 ============================ */
 
@@ -1285,4 +1584,139 @@
   .dk_targetInline > .dk_credential { grid-column: 1 / -1; }
   .dk_targetInline > .dk_check { grid-row: auto; grid-column: 2; }
   .dk_cardRow { grid-template-columns: 40px 1fr; }
+  .dk_projectRow { grid-template-columns: 96px 1fr auto; }
+  .dk_projectImage,
+  .dk_projectPorts { display: none; }
 }
+
+/* ============================ 镜像详情 ============================ */
+
+/* 镜像表最后一列（操作）：宽度收到内容、按钮右对齐，不跟数据列抢宽度 */
+.dk_colActions { width: 1%; white-space: nowrap; text-align: right; }
+.dk_rowActions { display: inline-flex; align-items: center; gap: var(--dk-gap-xs); }
+
+.dk_layerList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.dk_layerItem {
+  display: flex;
+  align-items: center;
+  gap: var(--dk-gap-md);
+  font-size: 12px;
+  color: var(--dk-label-2);
+}
+
+.dk_layerIndex {
+  flex: none;
+  width: 36px;
+  color: var(--dk-label-3);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.dk_layerId { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.dk_labelList { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+.dk_labelItem { display: grid; grid-template-columns: minmax(0, 240px) 1fr; gap: var(--dk-gap-md); }
+.dk_labelKey { color: var(--dk-label-3); font-family: var(--dk-mono); overflow-wrap: anywhere; }
+.dk_labelVal { color: var(--dk-label); font-family: var(--dk-mono); overflow-wrap: anywhere; }
+
+.dk_historyTable td { vertical-align: top; }
+.dk_historyCmd { max-width: 440px; overflow: hidden; text-overflow: ellipsis; }
+
+/* ============================ 镜像拉取进度 ============================ */
+
+.dk_pullBody { gap: var(--dk-gap-md); }
+
+.dk_pullBox {
+  flex: 1 1 auto;
+  min-height: 180px;
+  margin-top: var(--dk-gap-md);
+  padding: var(--dk-gap-md);
+  border: 1px solid var(--dk-border);
+  border-radius: var(--dk-r-md);
+  background: var(--dk-log-bg);
+  color: var(--dk-log-fg);
+  font-family: var(--dk-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.dk_pullLine { min-height: 1.5em; }
+/* 逐层状态行：层键由 data-key 标出，给层状态一点色彩区分 */
+.dk_pullLine[data-key] { color: color-mix(in srgb, var(--dk-log-fg) 82%, var(--dk-accent)); }
+
+/* ============================ 统计实时跟随 ============================ */
+
+.dk_statsView {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dk-gap-md);
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.dk_statsBar { display: flex; align-items: center; gap: var(--dk-gap-sm); flex-wrap: wrap; }
+.dk_trend { display: inline-flex; align-items: center; gap: var(--dk-gap-sm); }
+
+.dk_spark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 96px;
+  height: 22px;
+  color: var(--dk-accent);
+}
+
+.dk_spark svg { display: block; width: 96px; height: 22px; overflow: visible; }
+.dk_spark[data-alert="1"] { color: var(--dk-danger); }
+.dk_sparkEmpty { font-size: 11px; color: var(--dk-label-3); }
+
+/* ============================ Compose 项目 ============================ */
+
+.dk_projects { display: flex; flex-direction: column; gap: var(--dk-gap-lg); }
+
+.dk_project {
+  border: 1px solid var(--dk-border);
+  border-radius: var(--dk-r-md);
+  background: var(--dk-surface-2);
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color var(--dk-dur) var(--dk-ease), box-shadow var(--dk-dur) var(--dk-ease);
+}
+
+.dk_project:hover { border-color: var(--dk-border-strong); }
+.dk_project:focus-visible { outline: none; box-shadow: var(--dk-ring); }
+.dk_projectHead { display: flex; align-items: center; gap: var(--dk-gap-md); padding: var(--dk-gap-md) var(--dk-gap-lg); }
+.dk_projectIcon { display: inline-flex; align-items: center; color: var(--dk-accent); }
+.dk_projectName { font-size: 13px; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dk_projectRows { display: flex; flex-direction: column; border-top: 1px solid var(--dk-border); }
+
+.dk_projectRow {
+  display: grid;
+  grid-template-columns: 120px minmax(120px, 1.1fr) auto minmax(120px, 1.2fr) minmax(80px, 1fr);
+  align-items: center;
+  gap: var(--dk-gap-md);
+  padding: var(--dk-gap-sm) var(--dk-gap-lg);
+  font-size: 12px;
+  border-top: 1px solid var(--dk-border);
+}
+
+.dk_projectRow:first-child { border-top: none; }
+.dk_projectSvc { color: var(--dk-label-2); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dk_projectContainer { font-family: var(--dk-mono); color: var(--dk-label); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dk_projectImage { font-family: var(--dk-mono); color: var(--dk-label-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dk_projectPorts { color: var(--dk-label-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.dk_composeTable td { vertical-align: middle; }
+
+/* 聚合日志的 [service] 前缀（同一份日志着色，只多一个来源标签） */
+.dk_logSvc { margin-right: 6px; color: var(--dk-accent); font-weight: 600; }
