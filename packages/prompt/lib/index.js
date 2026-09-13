@@ -74,7 +74,7 @@ function nowIso() {
 function emptyStore() {
     return { activePromptId: null, prompts: [] };
 }
-function readManagedStore() {
+export function readManagedStore() {
     const file = promptFilePath();
     const existed = existsSync(file);
     const text = existed ? readFileSync(file, 'utf8') : '';
@@ -126,11 +126,11 @@ function readManagedStore() {
     return result;
 }
 /** 生成托管区块文本（不含首尾标记行）。 */
-function renderManagedBlock(store) {
+export function renderManagedBlock(store) {
     return yaml.dump(store, { lineWidth: -1, noRefs: true, noArrayIndent: false });
 }
 /** 把托管区块写回 prompts 文件（原子替换，保留文件其它内容与权限）。 */
-function writeManagedStore(store) {
+export function writeManagedStore(store) {
     const file = promptFilePath();
     const existed = existsSync(file);
     const mode = existed ? (statSync(file).mode & 0o777) : 0o600;

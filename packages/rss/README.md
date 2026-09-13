@@ -8,6 +8,7 @@ DSH 的 RSS / 新闻聚合插件：订阅多个 RSS / Atom 源，每天自动汇
 - 支持自定义渠道：填写自己的 RSS / Atom 地址，保存时真实抓取校验，抓不到内容的地址会提示且不保存；支持 **OPML 导入 / 导出**（从任意 RSS 阅读器或网站导入订阅）与**粘贴 URL 列表批量导入**（每行一个地址，或「名称, 地址」），自动跳过已订阅项，导入后可一键保存校验生效；
 - **订阅源目录（多来源）**：目录可来自多个来源——内置 [awesome-rsshub-routes](https://jackyst0.github.io/awesome-rsshub-routes/) 精选列表（官方 RSS 与 RSSHub 路由，快照 + 每 12 小时静默刷新）+ 任意数量自定义 OPML 目录（在设置卡片「订阅源目录」里添加 OPML 地址，名称 / URL 均可配置）；所有来源的结果统一汇总、标注「来自 xxx」并按来源筛选，支持搜索 / 按分类筛选 / 勾选多选后批量添加（全选 / 清空 / 一键添加选中），实时显示「已订阅 / 已选」计数；单个目录源失败不影响整个目录读取；
 - 零依赖解析 RSS 2.0 与 Atom，按链接 / id / 标题去重，并按时间倒序生成 Markdown；
+- **可选 AI 摘要**：启用后调用宿主 LLM 为每条资讯生成一句话中文摘要，显示在 digest / 弹窗里并追加进 systemPrompt；摘要按条目缓存 30 天（最多 500 条，`ai-cache.json`），重复条目不会重复请求；单条失败（超时 / 非 stop 终止 / 空输出）只回落原文摘要，不影响其它条目，路由缺失时本次生成整体跳过并在 digest 中记录原因；
 - 默认每天 `08:00` 自动生成当天 digest；插件启动时若当天 digest 不存在也会自动补生成；
 - 把当天 digest 注入 `systemPrompt`，模型在用户问“今日值得读”时可以直接引用；
 - 提供 Web GUI 卡片：设置 → 插件 →「RSS / 新闻聚合」，维护内置渠道开关 / 自定义渠道 / 新闻分类 / 聚合设置，保存后自动刷新当天 digest；自定义渠道支持按名称 / URL 筛选与计数，并对重复 URL 给出内联警告；卡片顶部直接预览今日 digest（条数 / 源数 / 生成时间 / 失败告警），可一键查看列表、刷新、复制 Markdown；
@@ -65,6 +66,33 @@ DSH 的 RSS / 新闻聚合插件：订阅多个 RSS / Atom 源，每天自动汇
 | `digestDir` | 输出目录 | `~/.dsh/rss-digest` |
 | `requestTimeoutMs` | 单次请求超时 | `10000` |
 
+## AI 摘要（可选）
+
+AI 摘要默认关闭，配置只走可编辑 store `~/.dsh/rss.json` 的 `ai` 字段（设置卡片「AI 摘要」区块可改，不新增 Config 字段）：
+
+```json
+{
+  "ai": {
+    "enabled": true,
+    "provider": "deepseek",
+    "model": "deepseek-chat",
+    "maxItems": 20,
+    "concurrency": 3,
+    "timeoutMs": 20000
+  }
+}
+```
+
+| 字段 | 说明 | 默认 |
+| --- | --- | --- |
+| `enabled` | 是否启用 AI 摘要 | `false` |
+| `provider` / `model` | 模型路由，**必须成对填写**；都留空则跟随宿主默认模型（`agentDefaultModel` / settings 的 `agent-default-model`；都取不到则本次生成跳过 AI 摘要） | 留空 |
+| `maxItems` | 单次 digest 最多摘要条数（列表前 N 条），夹紧 1..50 | `20` |
+| `concurrency` | 并发请求数，夹紧 1..6 | `3` |
+| `timeoutMs` | 单条请求超时毫秒数，夹紧 5000..60000 | `20000` |
+
+只填 `provider` / `model` 之一时整段 `ai` 配置会被忽略并在保存响应里给出告警。摘要结果写入 digest 目录的 `ai-cache.json`（`{ version: 1, entries: { <sha1(link|id|title)>: { text, model, at } } }`），命中且未过期（30 天）直接复用；超出 500 条按写入时间淘汰最旧。
+
 ## 开发
 
 ```bash
@@ -90,6 +118,7 @@ dsh plugin --profile web add link:$(pwd)/packages/rss
 | --- | --- |
 | `package.json` | `dsh.bundle.patch` 指向 cordis.patch.yml；`main` / `exports["."]` 指向 lib/index.js |
 | `cordis.patch.yml` | bundle 补丁：`insert: { id: rss-digest, name: '@hyzyn/dsh-rss' }` 把本插件行插入 profile 阵容 |
-| `src/index.ts` | 插件宿主半体：RSS/Atom 解析、抓取、digest 生成、定时调度、HTTP API、systemPrompt 注入 |
+| `src/index.ts` | 插件宿主半体：RSS/Atom 解析、抓取、digest 生成、AI 摘要、定时调度、HTTP API、systemPrompt 注入 |
 | `client.js` | 浏览器半体：设置 → 插件 →「RSS / 新闻聚合」卡片 |
+| `test/ai-summary.test.ts` | AI 摘要的回归测试（消息构造 / 清洗、缓存 TTL·LRU、路由解析、store 白名单、渲染、LLM 终止分支、生成降级路径） |
 | `tsconfig.json` | 继承根 tsconfig.base.json，tsc 产出 lib/ |

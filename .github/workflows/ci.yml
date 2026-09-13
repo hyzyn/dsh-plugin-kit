@@ -18,6 +18,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r build
       - run: pnpm -r typecheck
+      - run: pnpm test
       # 聚合层必须与各包的插件声明一致：有 diff 说明提交时忘了 pnpm aggregate
       - name: Check aggregate is up to date
         run: |

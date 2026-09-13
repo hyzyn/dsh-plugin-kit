@@ -17,8 +17,8 @@ npmjs.com → Access Tokens → Generate New Token（granular）生成：
 
 ## 发布门槛（每次 tag 前过一遍）
 
-1. `pnpm -r build && pnpm -r typecheck` 全绿。本地 `pnpm publish` 没有闸，全靠自觉——
-   CI 在发布前会再跑一遍兜底。
+1. `pnpm -r build && pnpm -r typecheck && pnpm test` 全绿。本地 `pnpm publish` 没有闸，
+   全靠自觉——CI 在发布前会再跑一遍兜底。
    **bump 完版本号先同步 lockfile**，且顺序必须是：**bump → `pnpm aggregate`（聚合层
    钉新版本）→ `pnpm install --lockfile-only`**。workspace 内部依赖是按版本号写进
    lockfile 的（`specifier:` 那一行），只改 package.json 不改 lockfile，CI 第一步
@@ -29,7 +29,7 @@ npmjs.com → Access Tokens → Generate New Token（granular）生成：
 
    ```bash
    pnpm aggregate && pnpm install --lockfile-only \
-     && pnpm -r build && pnpm -r typecheck
+     && pnpm -r build && pnpm -r typecheck && pnpm test
    git diff pnpm-lock.yaml   # 自查：应能看到本轮 specifier 变化；没有 = 没同步上
    ```
 2. `pnpm aggregate` 无 diff。聚合层（根 `cordis.patch.yml`、`packages/all`）必须钉住

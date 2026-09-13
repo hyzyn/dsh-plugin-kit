@@ -165,7 +165,7 @@ function includesText(haystack: string | undefined, query: string): boolean {
   return haystack.toLowerCase().includes(query)
 }
 
-function makeSnippet(text: string, query: string, radius = 60): string {
+export function makeSnippet(text: string, query: string, radius = 60): string {
   const lower = text.toLowerCase()
   // 多词查询与服务端正则一致按空白切分（正则把空格编译为 \s+）；单词查询即单词组。
   const terms = query.trim().split(/\s+/u).filter((term) => term !== '')
@@ -325,7 +325,7 @@ function setCachedResult(key: string, hits: SessionHit[]): void {
  * 生成本地扫描的文本过滤器，语义与宿主 compileSessionTextFilter 对齐：
  * 大小写不敏感、空白弹性、正则元字符转义。
  */
-function compileLocalTextFilter(query: string): RegExp {
+export function compileLocalTextFilter(query: string): RegExp {
   const pattern = query.trim().split(/\s+/u).map((part) => part.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')).join('\\s+')
   return new RegExp(pattern, 'iu')
 }
@@ -387,7 +387,7 @@ async function searchSessions(ctx: Context, rawQuery: string, limit: number, sig
  * time / updatedAt / createdAt / startTime，number 直接用，string 用
  * Date.parse（NaN 视为缺失），取能解析到的最大值；全部缺失返回 undefined。
  */
-function readRecordTime(record: unknown): number | undefined {
+export function readRecordTime(record: unknown): number | undefined {
   if (typeof record !== 'object' || record === null) return undefined
   const source = record as { header?: Record<string, unknown> } & Record<string, unknown>
   const header = typeof source.header === 'object' && source.header !== null ? source.header : {}
@@ -404,7 +404,7 @@ function readRecordTime(record: unknown): number | undefined {
  * subagent 会话不能作为主会话打开（sessions.open 只接受主会话或已编目的
  * 子会话地址，直接 open 子会话 id 视图是空白），搜索结果里必须排除。
  */
-function isSubagentHeader(header: unknown): boolean {
+export function isSubagentHeader(header: unknown): boolean {
   if (typeof header !== 'object' || header === null) return false
   const source = header as { origin?: unknown; delegationDepth?: unknown }
   if (source.origin === 'subagent') return true
@@ -415,7 +415,7 @@ function isSubagentHeader(header: unknown): boolean {
  * 记录按时间降序排列（最近优先）：没有时间的记录排在有时间记录之后并保持原有相对顺序，
  * 有时间记录之间用原索引做稳定 tie-break。
  */
-function sortRecordsByTimeDesc<T>(records: T[]): T[] {
+export function sortRecordsByTimeDesc<T>(records: T[]): T[] {
   return records
     .map((record, index) => ({ record, index, time: readRecordTime(record) }))
     .sort((a, b) => {

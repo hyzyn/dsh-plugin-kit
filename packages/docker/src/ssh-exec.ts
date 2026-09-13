@@ -9,11 +9,14 @@
  *
  * 与 tty 的差别：这里只开**非 PTY 的 exec channel**（RFC 4254 §6.5），
  * 每条命令一条 channel，收完 stdout/stderr 就关闭，不做交互式 shell。
+ * 一次性命令走 run()/runLocal()（超时 + 输出上限）；`docker logs --follow`
+ * 这类长流走 stream()/runLocalStream()（无总超时、无上限，靠 AbortSignal 停止）。
  */
 import { spawn } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { StringDecoder } from 'node:string_decoder'
 import { Client } from 'ssh2'
 import type { ClientChannel, ConnectConfig } from 'ssh2'
 
@@ -77,6 +80,18 @@ export interface ExecLogger {
   warn(msg: string): void
 }
 
+/** 长流（docker logs --follow）的分片回调；chunk 已按 utf8 解码，跨包的
+ *  多字节序列由 StringDecoder 兜住，调用方拿到的一定是完整文本。 */
+export interface StreamHandlers {
+  onStdout(chunk: string): void
+  onStderr(chunk: string): void
+}
+
+/** 长流结束结果：自然退出给退出码，被中止（signal）时为 null。 */
+export interface StreamResult {
+  code: number | null
+}
+
 /* ------------------------------------------------------------------ *
  * 通用工具
  * ------------------------------------------------------------------ */
@@ -123,16 +138,28 @@ function poolKey(spec: SshSpec): string {
 
 interface RuntimeConn {
   client: Client
-  /** 最近一次使用时间（空闲回收依据）。 */
+  /** 最近一次使用时间（空闲回收依据；长流结束时刷新）。 */
   lastUsed: number
   /** 连接建立中的 promise（并发首个请求去重）。 */
   ready: Promise<Client>
+  /** 正在推送的长流数量；>0 时 sweeper 不得回收（长流期间 lastUsed 不刷新）。 */
+  busy: number
 }
 
 const IDLE_MS = 120_000
 const SWEEP_MS = 30_000
 const DEFAULT_TIMEOUT_MS = 30_000
 const DEFAULT_MAX_BYTES = 512 * 1024
+
+/**
+ * 空闲回收判定：busy>0 的连接上挂着长流（docker logs --follow 可以几小时不结束），
+ * 期间 lastUsed 不会刷新——若只看 idle 就会把正在推送的流掐断，必须先看 busy。
+ * 抽成纯函数便于回归（sweeper 本体依赖定时器，难以直接驱动）。
+ */
+export function shouldRecycleConn(conn: { lastUsed: number; busy: number }, now: number, idleMs: number = IDLE_MS): boolean {
+  if (conn.busy > 0) return false
+  return now - conn.lastUsed >= idleMs
+}
 
 /** 远程一次性命令执行器：懒连接池 + TOFU 指纹 + 输出上限。 */
 export class RemoteExec {
@@ -246,6 +273,95 @@ export class RemoteExec {
     })
   }
 
+  /**
+   * 在远程开一条**长流**（docker logs --follow）：stdout/stderr 逐块回调，
+   * channel 关闭时 resolve 退出码。
+   *
+   * 与 run() 的差别：无总超时、无输出上限；外部 AbortSignal 触发停止时
+   * channel.signal('KILL') + channel.close()，**不 client.end()**——连接池里的
+   * 连接要留给后续请求复用。流存续期间连接计 busy，sweeper 不得按空闲回收。
+   */
+  async stream(spec: SshSpec, argv: readonly string[], handlers: StreamHandlers, signal?: AbortSignal): Promise<StreamResult> {
+    const command = shJoin(argv)
+    const client = await this.acquire(spec)
+    const rt = this.conns.get(poolKey(spec))
+    if (rt !== undefined) rt.busy += 1
+    let released = false
+    // try/finally 保证 busy 增减严格配对：异常路径也不能把连接永久标成 busy
+    const release = (): void => {
+      if (released) return
+      released = true
+      if (rt !== undefined) {
+        rt.busy = Math.max(0, rt.busy - 1)
+        rt.lastUsed = Date.now()
+      }
+    }
+    try {
+      if (signal?.aborted === true) return { code: null }
+      const channel = await new Promise<ClientChannel>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          reject(new Error(`SSH exec 打开 channel 超时（${String(DEFAULT_TIMEOUT_MS)}ms）：${sshTarget(spec)}`))
+        }, DEFAULT_TIMEOUT_MS)
+        client.exec(command, (error, ch) => {
+          clearTimeout(timer)
+          if (error !== undefined && error !== null) {
+            reject(new Error(`SSH exec 失败：${error.message}`))
+            return
+          }
+          resolve(ch)
+        })
+      })
+
+      return await new Promise<StreamResult>((resolve, reject) => {
+        const stdoutDecoder = new StringDecoder('utf8')
+        const stderrDecoder = new StringDecoder('utf8')
+        let settled = false
+        const onAbort = (): void => {
+          if (settled) return
+          try {
+            channel.signal('KILL')
+          } catch {
+            /* 远端可能已结束 */
+          }
+          channel.close()
+        }
+        const finish = (code: number | null): void => {
+          if (settled) return
+          settled = true
+          signal?.removeEventListener('abort', onAbort)
+          const stdoutTail = stdoutDecoder.end()
+          if (stdoutTail !== '') handlers.onStdout(stdoutTail)
+          const stderrTail = stderrDecoder.end()
+          if (stderrTail !== '') handlers.onStderr(stderrTail)
+          resolve({ code })
+        }
+        if (signal !== undefined) {
+          if (signal.aborted) onAbort()
+          else signal.addEventListener('abort', onAbort, { once: true })
+        }
+        channel.on('data', (chunk: Buffer) => {
+          const text = stdoutDecoder.write(chunk)
+          if (text !== '') handlers.onStdout(text)
+        })
+        channel.stderr.on('data', (chunk: Buffer) => {
+          const text = stderrDecoder.write(chunk)
+          if (text !== '') handlers.onStderr(text)
+        })
+        channel.on('close', (code: number | null) => {
+          finish(typeof code === 'number' ? code : null)
+        })
+        channel.on('error', (error: Error) => {
+          if (settled) return
+          settled = true
+          signal?.removeEventListener('abort', onAbort)
+          reject(new Error(`SSH exec channel 异常：${error.message}`))
+        })
+      })
+    } finally {
+      release()
+    }
+  }
+
   /* -------------------------------------------------------------- */
   /* 连接池                                                          */
   /* -------------------------------------------------------------- */
@@ -255,7 +371,8 @@ export class RemoteExec {
     this.sweeper = setInterval(() => {
       const now = Date.now()
       for (const [key, rt] of this.conns) {
-        if (now - rt.lastUsed < IDLE_MS) continue
+        // busy>0 = 上面有长流在推：空闲回收必须让路（lastUsed 不会被流刷新）
+        if (!shouldRecycleConn(rt, now)) continue
         this.conns.delete(key)
         try {
           rt.client.end()
@@ -319,7 +436,7 @@ export class RemoteExec {
     ready.catch(() => {
       /* 由调用方处理 */
     })
-    this.conns.set(key, { client, lastUsed: Date.now(), ready })
+    this.conns.set(key, { client, lastUsed: Date.now(), ready, busy: 0 })
     return ready
   }
 
@@ -459,5 +576,78 @@ export async function runLocal(argv: readonly string[], options?: ExecOptions): 
     })
     if (options?.input !== undefined) child.stdin.end(options.input)
     else child.stdin.end()
+  })
+}
+
+/**
+ * 本机**长流**执行器（argv 数组，不经 shell）：stdout/stderr 逐块回调，
+ * 用于 `docker logs --follow` 这类不设总超时、不设输出上限的命令。
+ *
+ * 停止由外部 AbortSignal 触发，走 SIGTERM → 2s 未退出再 SIGKILL 的阶梯；
+ * child 'close' 时 resolve 退出码（被信号杀死时为 null）。
+ */
+export function runLocalStream(argv: readonly string[], handlers: StreamHandlers, signal?: AbortSignal): Promise<StreamResult> {
+  const [bin, ...args] = argv
+  if (bin === undefined) throw new Error('runLocalStream 需要至少一个 argv 元素')
+
+  return new Promise<StreamResult>((resolve, reject) => {
+    const stdoutDecoder = new StringDecoder('utf8')
+    const stderrDecoder = new StringDecoder('utf8')
+    let settled = false
+    let killTimer: NodeJS.Timeout | null = null
+    const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'], env: process.env })
+
+    const onAbort = (): void => {
+      if (settled) return
+      try {
+        child.kill('SIGTERM')
+      } catch {
+        /* 进程可能已退出 */
+      }
+      if (killTimer === null) {
+        killTimer = setTimeout(() => {
+          if (settled) return
+          try {
+            child.kill('SIGKILL')
+          } catch {
+            /* 同上 */
+          }
+        }, 2000)
+        killTimer.unref?.()
+      }
+    }
+
+    if (signal !== undefined) {
+      if (signal.aborted) onAbort()
+      else signal.addEventListener('abort', onAbort, { once: true })
+    }
+
+    child.stdout.on('data', (chunk: Buffer) => {
+      const text = stdoutDecoder.write(chunk)
+      if (text !== '') handlers.onStdout(text)
+    })
+    child.stderr.on('data', (chunk: Buffer) => {
+      const text = stderrDecoder.write(chunk)
+      if (text !== '') handlers.onStderr(text)
+    })
+    child.once('error', (error: Error) => {
+      if (settled) return
+      settled = true
+      if (killTimer !== null) clearTimeout(killTimer)
+      signal?.removeEventListener('abort', onAbort)
+      // ENOENT 是最常见的失败：docker CLI 不在 PATH 里
+      reject(new Error(`无法执行 ${bin}：${error.message}`))
+    })
+    child.once('close', (code: number | null) => {
+      if (settled) return
+      settled = true
+      if (killTimer !== null) clearTimeout(killTimer)
+      signal?.removeEventListener('abort', onAbort)
+      const stdoutTail = stdoutDecoder.end()
+      if (stdoutTail !== '') handlers.onStdout(stdoutTail)
+      const stderrTail = stderrDecoder.end()
+      if (stderrTail !== '') handlers.onStderr(stderrTail)
+      resolve({ code })
+    })
   })
 }

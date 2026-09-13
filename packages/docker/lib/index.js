@@ -1,7 +1,7 @@
 import z from '@deepseek-ai/schemastery';
 import { definePlugin } from '@hyzyn/dsh-kit';
 import { defineTool } from '@deepseek-ai/dsh-tools';
-import { DockerApi, assertBin, createRunner, parseInspectJson, parsePsJson, parseStatsJson, } from './docker.js';
+import { DockerApi, assertBin, assertImageRef, assertRef, createRunner, parseImageHistoryJson, parseImageHistoryText, parseContainerEvent, parseEventsJson, parseImageInspectJson, parseInspectJson, parsePsJson, parseStatsJson, } from './docker.js';
 import { RemoteExec, sshTarget } from './ssh-exec.js';
 const TARGET_SCHEMA = z.object({
     name: z.string().required(),
@@ -57,7 +57,16 @@ const KNOWN_CONFIG_KEYS = new Set([
  * ------------------------------------------------------------------ */
 const ROUTE_PREFIX = '/api/dsh-docker';
 const BODY_LIMIT = 1024 * 1024;
-const DOCKER_GUIDANCE = '本机已安装 dsh-docker 插件（Docker 容器面板）：Web GUI 侧边栏「容器」入口可查看各目标（本机 / SSH 主机）上的容器列表、状态、端口、日志与资源占用，以及镜像列表；目标在 设置 → 插件 → Docker 容器面板 里维护（SSH 目标可直接引用 tty 终端面板的连接簿条目）。**默认只读**：启动/停止/重启/删除与 docker exec 需要用户在设置里显式打开「允许变更操作」「允许 exec」后才有对应工具与按钮。agent 侧配套只读工具 docker_targets（列目标）、docker_ps（列容器）、docker_inspect（容器详情）、docker_logs（日志）、docker_stats（CPU/内存/IO）、docker_images（镜像）；排障推荐顺序 docker_ps → docker_logs → docker_inspect → docker_stats。docker_action / docker_exec 仅在用户打开对应开关后可用，执行前须确认目标容器，破坏性操作（remove）要向用户复述后果。docker socket 等价于目标主机的 root 权限，不要在用户未明确要求时执行变更操作。';
+const DOCKER_GUIDANCE = '本机已安装 dsh-docker 插件（Docker 容器面板）：Web GUI 侧边栏「容器」入口可查看各目标（本机 / SSH 主机）上的容器列表（含 Compose 项目视图、事件「活动」条）、状态、端口、日志（含实时跟随）与资源占用（含实时跟随 + 迷你趋势图），以及镜像列表与镜像详情（层 / 大小 / 构建历史、拉取进度流）、网络与卷（列表 + 详情；删除 / 清理同样在开关之后）；目标在 设置 → 插件 → Docker 容器面板 里维护（SSH 目标可直接引用 tty 终端面板的连接簿条目）。**默认只读**：启动/停止/重启/删除容器、删除镜像 / 清理 dangling / 拉取镜像、docker exec，都需要用户在设置里显式打开「允许变更操作」「允许 exec」后才有对应工具与按钮。agent 侧配套只读工具 docker_targets（列目标）、docker_ps（列容器，含 compose 项目与服务）、docker_inspect（容器详情）、docker_logs（日志快照）、docker_stats（CPU/内存/IO 快照）、docker_images（镜像列表）、docker_image_inspect（镜像详情 + 构建历史）、docker_events（容器事件快照，见面板容器列表的「活动」条）、docker_networks（网络列表）、docker_volumes（卷列表）；排障推荐顺序 docker_ps → docker_logs → docker_inspect → docker_stats → docker_events，镜像排查用 docker_images → docker_image_inspect。docker_action（容器生命周期）、docker_image_remove（删镜像）、docker_image_prune（清理 dangling）、docker_image_pull（拉取镜像）、docker_exec 仅在用户打开对应开关后可用，执行前须确认目标，破坏性操作（容器 remove / 镜像删除与清理）要向用户复述后果。网络 / 卷的删除与 prune 目前只提供面板按钮（HTTP 端点），没有对应的 agent 工具——不要在 agent 侧绕过面板做这些变更。docker socket 等价于目标主机的 root 权限，不要在用户未明确要求时执行变更操作。';
+/**
+ * SSE 帧封装：data 一律 `JSON.stringify` 成**单行**——换行 / 引号被转义，
+ * 多字节字符也不会被 SSE 的 `\n` 行边界截断（客户端 JSON.parse 还原）。
+ */
+export function sseFrame(event, data) {
+    return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+}
+/** SSE 心跳间隔（毫秒）：注释帧只保活，客户端 EventSource 会忽略。 */
+const SSE_HEARTBEAT_MS = 15_000;
 /** HTTP 路由的 loopback 信任围栏（与 tty / dsh-mcp 同思路）。 */
 function isLoopbackHttp(req) {
     const address = req.socket.remoteAddress;
@@ -210,6 +219,32 @@ function clampInt(value, min, max, fallback) {
     if (typeof value !== 'number' || !Number.isInteger(value))
         return fallback;
     return Math.min(Math.max(value, min), max);
+}
+/**
+ * 事件时间（Unix 秒）→ 本机时区的 HH:MM:SS（agent 文本输出用）。
+ * 只回时间不回日期：事件快照窗口最多几小时，日期对排障没有信息量；
+ * 浏览器侧不用这个——那里用 Date 按用户本地时区现算。
+ */
+export function formatEventTime(seconds) {
+    const date = new Date(seconds * 1000);
+    if (Number.isNaN(date.getTime()))
+        return '--:--:--';
+    const pad = (value) => String(value).padStart(2, '0');
+    return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+/** 字节 → docker 风格的人类可读大小（十进制单位，与 `docker images` 的 SIZE 一致）。 */
+export function formatBytes(value) {
+    if (!Number.isFinite(value) || value < 0)
+        return '—';
+    const units = ['B', 'kB', 'MB', 'GB', 'TB'];
+    let size = value;
+    let unit = 0;
+    while (size >= 1000 && unit < units.length - 1) {
+        size /= 1000;
+        unit += 1;
+    }
+    const text = unit === 0 ? String(Math.round(size)) : size.toFixed(size >= 100 ? 0 : 1);
+    return `${text} ${units[unit] ?? 'B'}`;
 }
 /** 从 tty 的 settings 命名空间读取连接簿（只读；tty 未安装时为空表）。 */
 function readTtyBooks(settings) {
@@ -444,8 +479,126 @@ const plugin = definePlugin({
                 toolsRegistered: registeredNames,
             };
         };
+        /* ---------- 活跃 SSE 长流清点 ---------- */
+        /**
+         * 活跃的 SSE 长流句柄（日志 / 统计 / 拉取三条流共用）。流本身由 HTTP handler
+         * 持有并自清理；这里登记一份，供插件禁用 / 配置热更新 / 卸载时统一收尾
+         * （end + abort 执行器）。句柄是每个插件实例一份（不共享模块级集合），
+         * 多实例挂载时不会互相误杀。
+         */
+        const activeStreams = new Set();
+        const closeAllStreams = () => {
+            for (const stream of [...activeStreams]) {
+                try {
+                    stream.end();
+                }
+                catch {
+                    /* 连接已断开 */
+                }
+            }
+            activeStreams.clear();
+        };
+        /* ---------- 通用 SSE 长连接（三条流共用一份基建） ---------- */
+        /**
+         * 通用 SSE 长连接。日志流（`docker logs -f`）、统计流（`docker stats`）、
+         * 拉取流（`docker pull`）三者只差「执行器 + 结束原因 + end 附加字段」，
+         * 其余全部共用这一份实现：
+         *
+         *   - 响应头（text/event-stream / no-cache / keep-alive / x-accel-buffering）
+         *     统一在这里写，写完立即 flushHeaders（宿主 gzip 对 SSE 显式跳过）；
+         *   - 每 15s 一帧 `: ping` 注释心跳（SSE 规范里客户端忽略）；
+         *   - 活跃流登记：插件禁用 / 配置热更新 / 卸载时由 closeAllStreams 统一收尾；
+         *   - 客户端断开 → 静默清理（不写任何帧）+ abort 执行器；
+         *   - 执行器正常退出 → `end` 帧（带 reason / code / 附加字段）后关闭响应；
+         *   - 执行器抛错 → `error` 帧后关闭响应。
+         *
+         * 调用方负责「参数校验」——校验失败时写常规 JSON（4xx）并直接返回，不建流。
+         */
+        const openSseStream = async (res, options) => {
+            const write = res.write?.bind(res);
+            const flushHeaders = res.flushHeaders?.bind(res);
+            if (write === undefined || flushHeaders === undefined) {
+                writeJson(res, 500, { error: '宿主响应不支持 SSE 长连接' });
+                return;
+            }
+            res.writeHead(200, {
+                'content-type': 'text/event-stream; charset=utf-8',
+                'cache-control': 'no-cache',
+                connection: 'keep-alive',
+                'referrer-policy': 'no-referrer',
+                // 反代（nginx 等）默认缓冲响应体：不关掉的话流要等缓冲区满才到浏览器
+                'x-accel-buffering': 'no',
+            });
+            flushHeaders();
+            const controller = new AbortController();
+            let done = false;
+            let heartbeat = null;
+            const stopHeartbeat = () => {
+                if (heartbeat === null)
+                    return;
+                clearInterval(heartbeat);
+                heartbeat = null;
+            };
+            /** 客户端断开 / 写失败：静默清理（不写帧），中止执行器。 */
+            const clientGone = () => {
+                if (done)
+                    return;
+                done = true;
+                stopHeartbeat();
+                activeStreams.delete(handle);
+                controller.abort();
+            };
+            /** 服务端主动收尾（正常结束 / 出错 / 插件禁用 / 卸载）：关响应。 */
+            const finish = () => {
+                if (done)
+                    return;
+                done = true;
+                stopHeartbeat();
+                activeStreams.delete(handle);
+                controller.abort();
+                try {
+                    res.end();
+                }
+                catch {
+                    /* 连接已断开 */
+                }
+            };
+            const send = (frame) => {
+                if (done)
+                    return;
+                try {
+                    write(frame);
+                }
+                catch {
+                    // 写失败 = 连接已断：与 res close 同一收尾路径
+                    clientGone();
+                }
+            };
+            const sendEvent = (event, data) => send(sseFrame(event, data));
+            const handle = { end: finish };
+            activeStreams.add(handle);
+            res.on?.('close', clientGone);
+            heartbeat = setInterval(() => send(': ping\n\n'), SSE_HEARTBEAT_MS);
+            heartbeat.unref?.();
+            try {
+                const code = await options.run(sendEvent, controller.signal);
+                if (done)
+                    return;
+                sendEvent('end', { reason: options.reason, code, ...(options.endData?.(code) ?? {}) });
+                finish();
+            }
+            catch (error) {
+                if (done)
+                    return;
+                sendEvent('error', { message: error instanceof Error ? error.message : String(error) });
+                finish();
+            }
+        };
         /* ---------- 配置热应用 ---------- */
         const applySection = (section) => {
+            // 目标 / 凭证 / 启用态都可能变：已开的日志流按旧配置在跑，先统一收尾；
+            // 浏览器侧 EventSource 会自动重连（服务端已停机就停在断开态）
+            closeAllStreams();
             // hostKeys 只在显式传入时覆盖（避免把 TOFU 运行期新增的记录冲掉）
             const merged = { ...live, ...section };
             if (section.hostKeys === undefined)
@@ -484,6 +637,16 @@ const plugin = definePlugin({
                 return `目标 ${target}：没有运行中的容器。`;
             return `目标 ${target} 的资源占用：` + rows.map((row) => `\n- ${row.name} cpu=${row.cpuPercent === null ? '?' : String(row.cpuPercent) + '%'} mem=${row.memUsage} (${row.memPercent === null ? '?' : String(row.memPercent) + '%'}) net=${row.netIO} block=${row.blockIO} pids=${row.pids === null ? '?' : String(row.pids)}`).join('');
         };
+        const renderEvents = (target, since, rows) => {
+            if (rows.length === 0)
+                return `目标 ${target}：最近 ${since} 没有容器事件。`;
+            return `目标 ${target} 的容器事件（最近 ${since}，${String(rows.length)} 条）：` + rows.map((row) => {
+                const at = row.time === null ? '--:--:--' : formatEventTime(row.time);
+                const exit = row.exitCode === null ? '' : ` exit=${String(row.exitCode)}`;
+                const compose = row.composeProject === null ? '' : ` compose=${row.composeProject}`;
+                return `\n- ${at} ${row.name} ${row.action}${exit}${compose} image=${row.image}`;
+            }).join('');
+        };
         const renderDetail = (detail) => {
             const lines = [
                 `容器 ${detail.name}（${detail.shortId}）`,
@@ -500,10 +663,55 @@ const plugin = definePlugin({
                 lines.push(`- 最近健康检查：${detail.healthLogTail}`);
             return lines.join('\n');
         };
+        const renderNetworks = (target, rows) => {
+            if (rows.length === 0)
+                return `目标 ${target}：没有网络。`;
+            return `目标 ${target} 的网络（${String(rows.length)} 个）：` + rows.map((row) => {
+                const internal = row.internal ? ' internal=true' : '';
+                return `\n- ${row.name} driver=${row.driver} scope=${row.scope}${internal} id=${row.shortId}`;
+            }).join('');
+        };
+        const renderVolumes = (target, rows) => {
+            if (rows.length === 0)
+                return `目标 ${target}：没有卷。`;
+            return `目标 ${target} 的卷（${String(rows.length)} 个）：` + rows.map((row) => {
+                const mount = row.mountpoint === '' ? '' : ` mount=${row.mountpoint}`;
+                return `\n- ${row.name} driver=${row.driver} scope=${row.scope}${mount}`;
+            }).join('');
+        };
         const renderImages = (target, rows) => {
             if (rows.length === 0)
                 return `目标 ${target}：没有镜像。`;
             return `目标 ${target} 的镜像（${String(rows.length)} 个）：` + rows.map((row) => `\n- ${row.reference} ${row.sizeText}${row.createdSince === '' ? '' : ' (' + row.createdSince + ')'} id=${row.shortId}`).join('');
+        };
+        /** 镜像详情 + 构建历史（agent 工具 docker_image_inspect 的可读渲染）。 */
+        const renderImageDetail = (payload) => {
+            const d = payload.detail;
+            const title = d.repoTags.length === 0 ? `<none>（${d.shortId}）` : d.repoTags.join(', ');
+            const lines = [
+                `镜像 ${title}`,
+                `- ID：${d.id}`,
+                `- 大小：${d.size === null ? '—' : formatBytes(d.size)}${d.virtualSize === null || d.virtualSize === d.size ? '' : `（含父层 ${formatBytes(d.virtualSize)}）`}`,
+                `- 创建：${d.created === '' ? '—' : d.created}`,
+                `- 平台：${d.os === '' && d.architecture === '' ? '—' : `${d.os}/${d.architecture}`}`,
+                `- 层：${String(d.layerCount)} 层`,
+                `- 入口：${(d.entrypoint + ' ' + d.command).trim() || '—'}`,
+                ...(d.exposedPorts.length === 0 ? [] : [`- 暴露端口：${d.exposedPorts.join(', ')}`]),
+                ...(d.repoDigests.length === 0 ? [] : [`- digest：${d.repoDigests.join(', ')}`]),
+            ];
+            if (payload.historyError !== null)
+                lines.push(`- 构建历史：读取失败（${payload.historyError}）`);
+            else if (payload.history.length === 0)
+                lines.push('- 构建历史：无');
+            else {
+                lines.push(`- 构建历史（${String(payload.history.length)} 步，从新到旧）：`);
+                for (const step of payload.history.slice(0, 30)) {
+                    lines.push(`  · ${step.shortId} ${step.createdSince} ${step.sizeText} ${step.createdBy.slice(0, 160)}`);
+                }
+                if (payload.history.length > 30)
+                    lines.push(`  …（其余 ${String(payload.history.length - 30)} 步略）`);
+            }
+            return lines.join('\n');
         };
         /** 重新注册 agent 工具（能力开关变化时调用；幂等）。 */
         const refreshTools = () => {
@@ -791,6 +999,72 @@ const plugin = definePlugin({
                     };
                 },
             }));
+            add('docker_events', defineTool({
+                name: 'docker_events',
+                description: '读取某个目标最近的容器事件（docker events 快照）：start / die / stop / kill / oom / health_status / destroy / rename / update 八类，已过滤掉 exec_* 等噪音。默认看最近 10m。要持续观察请让用户打开面板容器列表的「活动」条。',
+                parameters: {
+                    target: targetParam,
+                    since: { type: 'string', description: '起始时间（docker --since 语法，如 30m、2h；默认 10m）' },
+                },
+                output: {
+                    schema: {
+                        type: 'object',
+                        additionalProperties: false,
+                        properties: {
+                            target: { type: 'string', required: true },
+                            since: { type: 'string', required: true },
+                            events: {
+                                type: 'array',
+                                required: true,
+                                items: {
+                                    type: 'object',
+                                    additionalProperties: false,
+                                    properties: {
+                                        action: { type: 'string', required: true },
+                                        name: { type: 'string', required: true },
+                                        image: { type: 'string', required: true },
+                                        composeProject: { type: 'string' },
+                                        time: { type: 'number' },
+                                        exitCode: { type: 'number' },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                    render: (_args, value) => {
+                        const v = value;
+                        return [{ type: 'text', text: renderEvents(v.target ?? '?', v.since ?? '10m', v.events ?? []) }];
+                    },
+                },
+                async execute(args) {
+                    const input = (args ?? {});
+                    const picked = pickTarget(input.target);
+                    if (picked.name === undefined)
+                        throw new Error(picked.error ?? '无效的 target');
+                    // since 直接进 argv（不是 shell 字符串），但仍限制字符集：它会被拼进
+                    // docker 的命令行，留个 ';' 之类只会得到一个难懂的 docker 报错
+                    const since = typeof input.since === 'string' && input.since.trim() !== '' ? input.since.trim() : '10m';
+                    if (!/^[0-9]+(ns|us|ms|s|m|h)?$/.test(since) && !/^[0-9]{4}-[0-9]{2}-[0-9]{2}([T ][0-9:.]+(Z|[+-][0-9:]{2,5})?)?$/.test(since)) {
+                        throw new Error('since 只支持时长（如 30m、2h）或时间戳（如 2026-09-13T10:00:00）');
+                    }
+                    const { api } = apiFor(picked.name);
+                    if (api === undefined)
+                        throw new Error(resolveByName(picked.name).error ?? '无法构造执行通道');
+                    const rows = await api.events(since);
+                    return {
+                        target: picked.name,
+                        since,
+                        events: rows.map((row) => ({
+                            action: row.action,
+                            name: row.name,
+                            image: row.image,
+                            ...(row.composeProject === null ? {} : { composeProject: row.composeProject }),
+                            ...(row.time === null ? {} : { time: row.time }),
+                            ...(row.exitCode === null ? {} : { exitCode: row.exitCode }),
+                        })),
+                    };
+                },
+            }));
             add('docker_images', defineTool({
                 name: 'docker_images',
                 description: '列出某个目标上的镜像（仓库:标签、大小、创建时间、短 ID）。',
@@ -842,6 +1116,146 @@ const plugin = definePlugin({
                     };
                 },
             }));
+            add('docker_image_inspect', defineTool({
+                name: 'docker_image_inspect',
+                description: '读取某个镜像的详情（docker image inspect）与构建历史（docker history）：大小 / 创建时间 / 平台 / 层数与层列表 / 入口与命令 / 暴露端口 / digest / 每步构建命令与大小。',
+                parameters: {
+                    target: targetParam,
+                    ref: { type: 'string', required: true, description: '镜像引用：repository:tag、镜像 ID（sha256:…）或 digest' },
+                },
+                output: {
+                    schema: {
+                        type: 'object',
+                        additionalProperties: false,
+                        properties: {
+                            target: { type: 'string', required: true },
+                            ref: { type: 'string', required: true },
+                            detail: { type: 'string', required: true },
+                        },
+                    },
+                    render: (_args, value) => {
+                        const v = value;
+                        return [{ type: 'text', text: v.detail ?? '' }];
+                    },
+                },
+                async execute(args) {
+                    const input = (args ?? {});
+                    const picked = pickTarget(input.target);
+                    if (picked.name === undefined)
+                        throw new Error(picked.error ?? '无效的 target');
+                    if (typeof input.ref !== 'string' || input.ref.trim() === '')
+                        throw new Error('ref 必填');
+                    const { api } = apiFor(picked.name);
+                    if (api === undefined)
+                        throw new Error(resolveByName(picked.name).error ?? '无法构造执行通道');
+                    const image = await api.imageInspect(input.ref);
+                    return { target: picked.name, ref: image.ref, detail: renderImageDetail(image) };
+                },
+            }));
+            add('docker_networks', defineTool({
+                name: 'docker_networks',
+                description: '列出某个目标上的 docker 网络（名称 / 驱动 / 范围 / 是否 internal / 短 ID）。接入的容器列表要进详情页看，不在列表里逐条 inspect。',
+                parameters: { target: targetParam },
+                output: {
+                    schema: {
+                        type: 'object',
+                        additionalProperties: false,
+                        properties: {
+                            target: { type: 'string', required: true },
+                            networks: {
+                                type: 'array',
+                                required: true,
+                                items: {
+                                    type: 'object',
+                                    additionalProperties: false,
+                                    properties: {
+                                        name: { type: 'string', required: true },
+                                        driver: { type: 'string', required: true },
+                                        scope: { type: 'string', required: true },
+                                        internal: { type: 'boolean' },
+                                        id: { type: 'string', required: true },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                    render: (_args, value) => {
+                        const v = value;
+                        return [{ type: 'text', text: renderNetworks(v.target ?? '?', v.networks ?? []) }];
+                    },
+                },
+                async execute(args) {
+                    const input = (args ?? {});
+                    const picked = pickTarget(input.target);
+                    if (picked.name === undefined)
+                        throw new Error(picked.error ?? '无效的 target');
+                    const { api } = apiFor(picked.name);
+                    if (api === undefined)
+                        throw new Error(resolveByName(picked.name).error ?? '无法构造执行通道');
+                    const rows = await api.networks();
+                    return {
+                        target: picked.name,
+                        networks: rows.map((row) => ({
+                            name: row.name,
+                            driver: row.driver,
+                            scope: row.scope,
+                            ...(row.internal ? { internal: true } : {}),
+                            id: row.shortId,
+                        })),
+                    };
+                },
+            }));
+            add('docker_volumes', defineTool({
+                name: 'docker_volumes',
+                description: '列出某个目标上的 docker 卷（名称 / 驱动 / 范围 / 挂载点）。',
+                parameters: { target: targetParam },
+                output: {
+                    schema: {
+                        type: 'object',
+                        additionalProperties: false,
+                        properties: {
+                            target: { type: 'string', required: true },
+                            volumes: {
+                                type: 'array',
+                                required: true,
+                                items: {
+                                    type: 'object',
+                                    additionalProperties: false,
+                                    properties: {
+                                        name: { type: 'string', required: true },
+                                        driver: { type: 'string', required: true },
+                                        scope: { type: 'string', required: true },
+                                        mountpoint: { type: 'string' },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                    render: (_args, value) => {
+                        const v = value;
+                        return [{ type: 'text', text: renderVolumes(v.target ?? '?', v.volumes ?? []) }];
+                    },
+                },
+                async execute(args) {
+                    const input = (args ?? {});
+                    const picked = pickTarget(input.target);
+                    if (picked.name === undefined)
+                        throw new Error(picked.error ?? '无效的 target');
+                    const { api } = apiFor(picked.name);
+                    if (api === undefined)
+                        throw new Error(resolveByName(picked.name).error ?? '无法构造执行通道');
+                    const rows = await api.volumes();
+                    return {
+                        target: picked.name,
+                        volumes: rows.map((row) => ({
+                            name: row.name,
+                            driver: row.driver,
+                            scope: row.scope,
+                            ...(row.mountpoint === '' ? {} : { mountpoint: row.mountpoint }),
+                        })),
+                    };
+                },
+            }));
             if (live.allowMutations) {
                 add('docker_action', defineTool({
                     name: 'docker_action',
@@ -885,6 +1299,125 @@ const plugin = definePlugin({
                             throw new Error(resolveByName(picked.name).error ?? '无法构造执行通道');
                         const result = await api.action({ action, id: input.id });
                         return { target: picked.name, id: result.id, action: result.action, message: result.message };
+                    },
+                }));
+                add('docker_image_remove', defineTool({
+                    name: 'docker_image_remove',
+                    description: '删除一个镜像（docker image rm，不带 -f）。**破坏性**：镜像被容器或子镜像引用时会失败；执行前须向用户确认目标镜像，并复述后果（需要重新拉取或构建才能恢复）。仅当用户在设置里打开「允许变更操作」时可用。',
+                    parameters: {
+                        target: targetParam,
+                        ref: { type: 'string', required: true, description: '镜像引用：repository:tag 或镜像 ID（sha256:…）' },
+                    },
+                    output: {
+                        schema: {
+                            type: 'object',
+                            additionalProperties: false,
+                            properties: {
+                                target: { type: 'string', required: true },
+                                ref: { type: 'string', required: true },
+                                message: { type: 'string', required: true },
+                            },
+                        },
+                        render: (_args, value) => {
+                            const v = value;
+                            return [{ type: 'text', text: '已删除镜像 ' + String(v.ref ?? '?') + '（目标 ' + String(v.target ?? '?') + '）：' + String(v.message ?? 'ok') }];
+                        },
+                    },
+                    async execute(args) {
+                        if (!live.allowMutations)
+                            throw new Error('变更操作未启用（设置 → 插件 → Docker 容器面板 → 允许变更操作）');
+                        const input = (args ?? {});
+                        const picked = pickTarget(input.target);
+                        if (picked.name === undefined)
+                            throw new Error(picked.error ?? '无效的 target');
+                        if (typeof input.ref !== 'string' || input.ref.trim() === '')
+                            throw new Error('ref 必填');
+                        const { api } = apiFor(picked.name);
+                        if (api === undefined)
+                            throw new Error(resolveByName(picked.name).error ?? '无法构造执行通道');
+                        const result = await api.imageRemove(input.ref);
+                        return { target: picked.name, ref: result.ref, message: result.message };
+                    },
+                }));
+                add('docker_image_prune', defineTool({
+                    name: 'docker_image_prune',
+                    description: '清理 dangling（无标签 <none>:<none>）镜像（docker image prune -f）。只删无标签镜像，不动有 tag 的镜像（刻意不加 --all，避免误删未使用的普通镜像）。返回删除列表与释放的空间。仅当用户在设置里打开「允许变更操作」时可用。',
+                    parameters: { target: targetParam },
+                    output: {
+                        schema: {
+                            type: 'object',
+                            additionalProperties: false,
+                            properties: {
+                                target: { type: 'string', required: true },
+                                message: { type: 'string', required: true },
+                            },
+                        },
+                        render: (_args, value) => {
+                            const v = value;
+                            return [{ type: 'text', text: '已清理 dangling 镜像（目标 ' + String(v.target ?? '?') + '）：\n' + String(v.message ?? 'ok') }];
+                        },
+                    },
+                    async execute(args) {
+                        if (!live.allowMutations)
+                            throw new Error('变更操作未启用（设置 → 插件 → Docker 容器面板 → 允许变更操作）');
+                        const input = (args ?? {});
+                        const picked = pickTarget(input.target);
+                        if (picked.name === undefined)
+                            throw new Error(picked.error ?? '无效的 target');
+                        const { api } = apiFor(picked.name);
+                        if (api === undefined)
+                            throw new Error(resolveByName(picked.name).error ?? '无法构造执行通道');
+                        const result = await api.imagePrune();
+                        return { target: picked.name, message: result.message };
+                    },
+                }));
+                add('docker_image_pull', defineTool({
+                    name: 'docker_image_pull',
+                    description: '拉取镜像（docker pull），例 nginx:1.27、ghcr.io/org/app:latest。**可能耗时数分钟**（逐层下载）；可用 timeoutSec 调整上限（10~1800 秒，默认 600）。仅当用户在设置里打开「允许变更操作」时可用。交互式观察进度请让用户到面板镜像页的「拉取」里看 SSE 进度流。',
+                    parameters: {
+                        target: targetParam,
+                        ref: { type: 'string', required: true, description: '镜像引用：repository:tag 或 digest' },
+                        timeoutSec: { type: 'number', description: '超时秒数（10~1800，默认 600）' },
+                    },
+                    output: {
+                        schema: {
+                            type: 'object',
+                            additionalProperties: false,
+                            properties: {
+                                target: { type: 'string', required: true },
+                                ref: { type: 'string', required: true },
+                                code: { type: 'number' },
+                                text: { type: 'string', required: true },
+                                truncated: { type: 'boolean' },
+                            },
+                        },
+                        render: (_args, value) => {
+                            const v = value;
+                            const head = '拉取 ' + String(v.ref ?? '?') + '（目标 ' + String(v.target ?? '?') + '）退出码 ' + String(v.code ?? '?') + (v.truncated === true ? ' · 输出已截断' : '') + '：\n\n';
+                            return [{ type: 'text', text: head + ((v.text ?? '') === '' ? '(无输出)' : (v.text ?? '')) }];
+                        },
+                    },
+                    async execute(args) {
+                        if (!live.allowMutations)
+                            throw new Error('变更操作未启用（设置 → 插件 → Docker 容器面板 → 允许变更操作）');
+                        const input = (args ?? {});
+                        const picked = pickTarget(input.target);
+                        if (picked.name === undefined)
+                            throw new Error(picked.error ?? '无效的 target');
+                        if (typeof input.ref !== 'string' || input.ref.trim() === '')
+                            throw new Error('ref 必填');
+                        const { api } = apiFor(picked.name);
+                        if (api === undefined)
+                            throw new Error(resolveByName(picked.name).error ?? '无法构造执行通道');
+                        const timeoutSec = typeof input.timeoutSec === 'number' && Number.isInteger(input.timeoutSec) ? input.timeoutSec : 600;
+                        const result = await api.pull(input.ref, timeoutSec * 1000);
+                        return {
+                            target: picked.name,
+                            ref: result.ref,
+                            ...(result.code === null ? {} : { code: result.code }),
+                            text: result.text,
+                            ...(result.truncated ? { truncated: true } : {}),
+                        };
                     },
                 }));
             }
@@ -993,6 +1526,276 @@ const plugin = definePlugin({
                 return;
             announcementDispose = systemPrompt.section({ name: 'plugin:dsh-docker', order: 152, text: DOCKER_GUIDANCE });
         };
+        /* ---------- 日志实时流（SSE） ---------- */
+        /**
+         * GET /logs/stream — 容器日志实时流（`docker logs --follow` → SSE）。
+         *
+         * 事件协议（每帧 `event:` + 单行 JSON `data:`）：
+         *   - `line`  `{"d":"..."}` stdout 分片 / `{"e":"..."}` stderr 分片
+         *   - `end`   `{"reason":"container-exit","code":N}` 容器停止、docker logs -f 自然退出
+         *   - `error` `{"message":"..."}` 后关闭（参数 / 执行失败）
+         * 心跳：每 15s 一帧 `: ping` 注释；客户端断开则静默中止执行器（SIGTERM 阶梯 /
+         * channel KILL），不写任何帧。安全语义与快照 /logs 一致：只读能力，不走
+         * allowMutations / allowExec 门控；loopback 围栏与容器 ID 白名单在外层校验。
+         */
+        const serveLogsStream = async (req, res, params) => {
+            const picked = pickTarget(params.get('target'));
+            if (picked.name === undefined) {
+                writeJson(res, 400, { error: picked.error ?? '无效的 target' });
+                return;
+            }
+            const idParam = params.get('id');
+            if (idParam === null || idParam.trim() === '') {
+                writeJson(res, 400, { error: 'id 必填' });
+                return;
+            }
+            let safeId;
+            try {
+                safeId = assertRef(idParam, 'container');
+            }
+            catch (error) {
+                writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+                return;
+            }
+            const built = apiFor(picked.name);
+            const api = built.api;
+            if (api === undefined) {
+                writeJson(res, 400, { error: built.error ?? '无法构造执行通道' });
+                return;
+            }
+            const tailParam = params.get('tail');
+            const tail = tailParam === null ? live.logTailDefault : Number(tailParam);
+            const timestampsParam = params.get('timestamps');
+            const since = params.get('since');
+            await openSseStream(res, {
+                reason: 'container-exit',
+                run: async (sendEvent, signal) => {
+                    // 事件协议与快照 /logs 完全一致，只多一个 end.reason
+                    const handlers = {
+                        onStdout: (chunk) => sendEvent('line', { d: chunk }),
+                        onStderr: (chunk) => sendEvent('line', { e: chunk }),
+                    };
+                    const result = await api.logsStream(safeId, {
+                        // 与 POST /logs 同一条取值规则：非法/越界交给 DockerApi 内的夹紧
+                        tail: Number.isInteger(tail) ? tail : live.logTailDefault,
+                        timestamps: timestampsParam === '1' || timestampsParam === 'true',
+                        ...(since !== null && since.trim() !== '' ? { since } : {}),
+                    }, handlers, signal);
+                    return result.code;
+                },
+            });
+        };
+        /**
+         * GET /stats/stream — 容器资源占用实时流（`docker stats` → SSE）。
+         *
+         * 与日志流的**本质差异**：这条流不会自然结束（容器在跑，docker stats 就每秒
+         * 出一行），关闭语义是「浏览器主动断」——EventSource.close() → res close →
+         * 静默 abort。docker stats 因全部容器退出而自行退出时，发 `end`
+         * （reason=stats-exit）让客户端回到快照轮询。
+         *
+         * 事件：`stats` 每行一个 ContainerStats JSON；`end` / `error` 同日志流。
+         * 只读能力：不受 allowMutations / allowExec 门控。
+         */
+        const serveStatsStream = async (req, res, params) => {
+            const picked = pickTarget(params.get('target'));
+            if (picked.name === undefined) {
+                writeJson(res, 400, { error: picked.error ?? '无效的 target' });
+                return;
+            }
+            const rawIds = params.get('ids');
+            let safeIds;
+            try {
+                safeIds = (rawIds === null || rawIds.trim() === '' ? [] : rawIds.split(','))
+                    .map((id) => id.trim())
+                    .filter((id) => id !== '')
+                    .map((id) => assertRef(id, 'container'));
+            }
+            catch (error) {
+                writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+                return;
+            }
+            const built = apiFor(picked.name);
+            const api = built.api;
+            if (api === undefined) {
+                writeJson(res, 400, { error: built.error ?? '无法构造执行通道' });
+                return;
+            }
+            await openSseStream(res, {
+                reason: 'stats-exit',
+                run: async (sendEvent, signal) => {
+                    /*
+                     * docker stats 的输出**不看 stdout 是不是 TTY**——它一律走 TTY 渲染器，
+                     * 每帧都被 ESC[H / ESC[K / ESC[J 包着，而且同一个采样会重复渲染两次：
+                     *   \x1b[H{"CPUPerc":"0.04%",...}\n\x1b[H{"CPUPerc":"0.04%",...} \x1b[K\n \x1b[K\n\x1b[J
+                     * 所以不能按行解析：行首是 ESC 不是 `{`，parseJsonLines 会把整行跳过，
+                     * 结果就是「流建上了、一个采样都不来」。这里直接抽取扁平的 {...} 对象——
+                     * docker stats 的 {{json .}} 字段全是标量、没有嵌套括号，抽取是安全的——
+                     * 再用与 /stats 快照同一个 parseStatsJson 归一，客户端拿到的形状与快照一致。
+                     * 同一 chunk 内的重复采样（键相同）只发一次，免得环形缓冲被重复点占掉半窗。
+                     */
+                    let pending = '';
+                    /*
+                     * 跨 chunk 去重：实测 docker stats 会把**同一个采样渲染两次**（约 500ms 一轮，
+                     * 0.04 / 0.04 / 0.16 / 0.16 …），两次是逐字节相同的 JSON 且可能落在不同 chunk 里。
+                     * 不去重的话，客户端 60 点环形缓冲会被重复点占掉一半窗口（实际只剩 ~30 秒）。
+                     * 用「与上一条完全相同的原始对象」作为去重键：值确实没变的相邻采样会少一个点，
+                     * 但那一个点的值与上一点相同，趋势形状不受影响，时间轴反而更接近真实采样间隔。
+                     */
+                    let lastRaw = '';
+                    const handlers = {
+                        onStdout: (chunk) => {
+                            pending += chunk;
+                            const re = /\{[^{}]*\}/g;
+                            const found = [];
+                            let consumed = 0;
+                            let hit;
+                            while ((hit = re.exec(pending)) !== null) {
+                                found.push(hit[0]);
+                                consumed = hit.index + hit[0].length;
+                            }
+                            // 只丢已消费的前缀：半截 JSON（未闭合的对象）留给下一个 chunk
+                            if (consumed > 0)
+                                pending = pending.slice(consumed);
+                            // 对方吐的不是我们认识的输出时别让缓冲无限涨（最多留 4KB 尾巴）
+                            if (pending.length > 64 * 1024)
+                                pending = pending.slice(-4096);
+                            for (const raw of found) {
+                                if (raw === lastRaw)
+                                    continue;
+                                lastRaw = raw;
+                                for (const row of parseStatsJson(raw))
+                                    sendEvent('stats', row);
+                            }
+                        },
+                        onStderr: (chunk) => sendEvent('line', { e: chunk }),
+                    };
+                    const result = await api.statsStream(safeIds, handlers, signal);
+                    // 收尾：最后一个对象可能还没闭合（进程退出前只写了半行），能解析就发
+                    if (pending !== '')
+                        for (const row of parseStatsJson(pending))
+                            sendEvent('stats', row);
+                    return result.code;
+                },
+            });
+        };
+        /**
+         * GET /events/stream — 容器事件活动流（`docker events` → SSE）。
+         *
+         * 与统计流同构：**不会自然结束**（docker events 会一直跟着 daemon 推），关闭
+         * 语义是浏览器主动断；docker events 自己退出时发 `end`（reason=events-exit）。
+         *
+         * 帧：`event` 一条一个 ContainerEvent（已在服务端过白名单，见 docker.ts 的
+         * EVENT_ACTIONS）；`line{e}` 透传 stderr；`end` / `error` 与其它流一致。
+         * 只读能力：不受 allowMutations / allowExec 门控。
+         */
+        const serveEventsStream = async (req, res, params) => {
+            const picked = pickTarget(params.get('target'));
+            if (picked.name === undefined) {
+                writeJson(res, 400, { error: picked.error ?? '无效的 target' });
+                return;
+            }
+            const built = apiFor(picked.name);
+            const api = built.api;
+            if (api === undefined) {
+                writeJson(res, 400, { error: built.error ?? '无法构造执行通道' });
+                return;
+            }
+            await openSseStream(res, {
+                reason: 'events-exit',
+                run: async (sendEvent, signal) => {
+                    /*
+                     * docker events 与 docker stats 不同：输出是老老实实一行一个 JSON，没有 TTY
+                     * 渲染器的转义码，所以按行合帧即可（stats 那边才需要抽扁平对象）。这里**不能**
+                     * 学 stats 做「相同行去重」——两条内容完全一样的 health_status 是两次真实事件，
+                     * 去重会把活动条吞掉一半。
+                     */
+                    let pending = '';
+                    /** 帧里省略值为 null 的字段（agent 工具那边同样处理），客户端按缺失判断。 */
+                    const frame = (event) => ({
+                        action: event.action,
+                        name: event.name,
+                        image: event.image,
+                        ...(event.composeProject === null ? {} : { composeProject: event.composeProject }),
+                        ...(event.time === null ? {} : { time: event.time }),
+                        ...(event.exitCode === null ? {} : { exitCode: event.exitCode }),
+                    });
+                    const handlers = {
+                        onStdout: (chunk) => {
+                            pending += chunk;
+                            const parts = pending.split('\n');
+                            pending = parts.pop() ?? '';
+                            for (const line of parts) {
+                                const event = parseContainerEvent(line);
+                                if (event !== null)
+                                    sendEvent('event', frame(event));
+                            }
+                            // 对方吐的不是我们认识的输出时别让缓冲无限涨（最多留 4KB 尾巴）
+                            if (pending.length > 64 * 1024)
+                                pending = pending.slice(-4096);
+                        },
+                        onStderr: (chunk) => sendEvent('line', { e: chunk }),
+                    };
+                    const result = await api.eventsStream(handlers, signal);
+                    // 收尾：最后一行可能没换行符（进程退出前只写半行），能解析就发
+                    if (pending !== '') {
+                        const tail = parseContainerEvent(pending);
+                        if (tail !== null)
+                            sendEvent('event', frame(tail));
+                    }
+                    return result.code;
+                },
+            });
+        };
+        /**
+         * GET /images/pull/stream — 镜像拉取进度流（`docker pull` → SSE）。
+         *
+         * **变更能力**：拉取会写入目标机的镜像存储、占用磁盘与带宽，因此与
+         * /action、/images/remove、/images/prune 同一把 allowMutations 门（未开启
+         * 时 403，且不建流）。逐层进度天然是流，直接复用 ssh-exec 的长流通道；
+         * 事件与日志流同构（line{d|e} / end{reason:pull-exit,code,ref} / error）。
+         */
+        const servePullStream = async (req, res, params) => {
+            if (!live.allowMutations) {
+                writeJson(res, 403, { error: '变更操作未启用（设置 → 插件 → Docker 容器面板 → 允许变更操作）' });
+                return;
+            }
+            const picked = pickTarget(params.get('target'));
+            if (picked.name === undefined) {
+                writeJson(res, 400, { error: picked.error ?? '无效的 target' });
+                return;
+            }
+            const refParam = params.get('ref');
+            if (refParam === null || refParam.trim() === '') {
+                writeJson(res, 400, { error: 'ref 必填' });
+                return;
+            }
+            let safeRef;
+            try {
+                safeRef = assertImageRef(refParam, 'image');
+            }
+            catch (error) {
+                writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+                return;
+            }
+            const built = apiFor(picked.name);
+            const api = built.api;
+            if (api === undefined) {
+                writeJson(res, 400, { error: built.error ?? '无法构造执行通道' });
+                return;
+            }
+            await openSseStream(res, {
+                reason: 'pull-exit',
+                endData: () => ({ ref: safeRef }),
+                run: async (sendEvent, signal) => {
+                    const handlers = {
+                        onStdout: (chunk) => sendEvent('line', { d: chunk }),
+                        onStderr: (chunk) => sendEvent('line', { e: chunk }),
+                    };
+                    const result = await api.pullStream(safeRef, handlers, signal);
+                    return result.code;
+                },
+            });
+        };
         /* ---------- HTTP 路由（loopback 围栏） ---------- */
         ctx.inject(['webServer'], (webCtx) => {
             webCtx.effect(() => {
@@ -1084,6 +1887,27 @@ const plugin = definePlugin({
                             });
                             return;
                         }
+                        // SSE 长连接（GET）：必须放在下面「非 POST 一律 405」之前，否则
+                        // GET 会被 method 检查拦掉。四条流共用 openSseStream，各自只做参数
+                        // 校验与执行器接线；响应由对应的 serve*Stream 长持有。
+                        const serveStream = sub === '/logs/stream'
+                            ? serveLogsStream
+                            : sub === '/stats/stream'
+                                ? serveStatsStream
+                                : sub === '/events/stream'
+                                    ? serveEventsStream
+                                    : sub === '/images/pull/stream'
+                                        ? servePullStream
+                                        : undefined;
+                        if (serveStream !== undefined) {
+                            if (req.method !== 'GET') {
+                                writeJson(res, 405, { error: 'method not allowed: ' + String(req.method) });
+                                return;
+                            }
+                            const params = new URL(req.url ?? '/', 'http://loopback').searchParams;
+                            await serveStream(req, res, params);
+                            return;
+                        }
                         if (req.method !== 'POST') {
                             writeJson(res, 405, { error: 'method not allowed: ' + String(req.method) });
                             return;
@@ -1145,6 +1969,98 @@ const plugin = definePlugin({
                                 }
                                 case '/images': {
                                     writeJson(res, 200, { ok: true, images: await api.images() });
+                                    return;
+                                }
+                                case '/images/inspect': {
+                                    if (typeof body.ref !== 'string' || body.ref.trim() === '') {
+                                        writeJson(res, 400, { error: 'ref 必填' });
+                                        return;
+                                    }
+                                    writeJson(res, 200, { ok: true, image: await api.imageInspect(body.ref) });
+                                    return;
+                                }
+                                case '/images/remove': {
+                                    if (!live.allowMutations) {
+                                        writeJson(res, 403, { error: '变更操作未启用（设置 → 插件 → Docker 容器面板 → 允许变更操作）' });
+                                        return;
+                                    }
+                                    if (typeof body.ref !== 'string' || body.ref.trim() === '') {
+                                        writeJson(res, 400, { error: 'ref 必填' });
+                                        return;
+                                    }
+                                    writeJson(res, 200, { ok: true, result: await api.imageRemove(body.ref) });
+                                    return;
+                                }
+                                case '/images/prune': {
+                                    if (!live.allowMutations) {
+                                        writeJson(res, 403, { error: '变更操作未启用（设置 → 插件 → Docker 容器面板 → 允许变更操作）' });
+                                        return;
+                                    }
+                                    writeJson(res, 200, { ok: true, result: await api.imagePrune() });
+                                    return;
+                                }
+                                case '/networks': {
+                                    writeJson(res, 200, { ok: true, networks: await api.networks() });
+                                    return;
+                                }
+                                case '/networks/inspect': {
+                                    if (typeof body.name !== 'string' || body.name.trim() === '') {
+                                        writeJson(res, 400, { error: 'name 必填' });
+                                        return;
+                                    }
+                                    writeJson(res, 200, { ok: true, network: await api.networkInspect(body.name) });
+                                    return;
+                                }
+                                case '/networks/remove': {
+                                    if (!live.allowMutations) {
+                                        writeJson(res, 403, { error: '变更操作未启用（设置 → 插件 → Docker 容器面板 → 允许变更操作）' });
+                                        return;
+                                    }
+                                    if (typeof body.name !== 'string' || body.name.trim() === '') {
+                                        writeJson(res, 400, { error: 'name 必填' });
+                                        return;
+                                    }
+                                    writeJson(res, 200, { ok: true, result: await api.networkRemove(body.name) });
+                                    return;
+                                }
+                                case '/networks/prune': {
+                                    if (!live.allowMutations) {
+                                        writeJson(res, 403, { error: '变更操作未启用（设置 → 插件 → Docker 容器面板 → 允许变更操作）' });
+                                        return;
+                                    }
+                                    writeJson(res, 200, { ok: true, result: await api.networkPrune() });
+                                    return;
+                                }
+                                case '/volumes': {
+                                    writeJson(res, 200, { ok: true, volumes: await api.volumes() });
+                                    return;
+                                }
+                                case '/volumes/inspect': {
+                                    if (typeof body.name !== 'string' || body.name.trim() === '') {
+                                        writeJson(res, 400, { error: 'name 必填' });
+                                        return;
+                                    }
+                                    writeJson(res, 200, { ok: true, volume: await api.volumeInspect(body.name) });
+                                    return;
+                                }
+                                case '/volumes/remove': {
+                                    if (!live.allowMutations) {
+                                        writeJson(res, 403, { error: '变更操作未启用（设置 → 插件 → Docker 容器面板 → 允许变更操作）' });
+                                        return;
+                                    }
+                                    if (typeof body.name !== 'string' || body.name.trim() === '') {
+                                        writeJson(res, 400, { error: 'name 必填' });
+                                        return;
+                                    }
+                                    writeJson(res, 200, { ok: true, result: await api.volumeRemove(body.name) });
+                                    return;
+                                }
+                                case '/volumes/prune': {
+                                    if (!live.allowMutations) {
+                                        writeJson(res, 403, { error: '变更操作未启用（设置 → 插件 → Docker 容器面板 → 允许变更操作）' });
+                                        return;
+                                    }
+                                    writeJson(res, 200, { ok: true, result: await api.volumePrune() });
                                     return;
                                 }
                                 case '/action': {
@@ -1240,6 +2156,8 @@ const plugin = definePlugin({
         /* ---------- 卸载清理 ---------- */
         ctx.effect(() => {
             return () => {
+                // 先收掉长流（结束响应 + 中止 docker logs -f），再关连接池
+                closeAllStreams();
                 remote.disposeAll();
             };
         }, 'dsh-docker: cleanup');
@@ -1250,5 +2168,5 @@ export const { name, inject, apply } = plugin;
 /* ------------------------------------------------------------------ *
  * 供 scripts/smoke.mjs 直接复用的纯函数（解析器回归）
  * ------------------------------------------------------------------ */
-export { parsePsJson, parseStatsJson, parseInspectJson, assertBin, DockerApi };
+export { parsePsJson, parseStatsJson, parseInspectJson, assertBin, assertImageRef, parseImageInspectJson, parseImageHistoryJson, parseImageHistoryText, DockerApi };
 //# sourceMappingURL=index.js.map

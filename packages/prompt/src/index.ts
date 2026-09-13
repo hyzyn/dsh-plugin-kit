@@ -135,7 +135,7 @@ function emptyStore(): PromptStore {
   return { activePromptId: null, prompts: [] }
 }
 
-function readManagedStore(): ManagedRead {
+export function readManagedStore(): ManagedRead {
   const file = promptFilePath()
   const existed = existsSync(file)
   const text = existed ? readFileSync(file, 'utf8') : ''
@@ -184,12 +184,12 @@ function readManagedStore(): ManagedRead {
 }
 
 /** 生成托管区块文本（不含首尾标记行）。 */
-function renderManagedBlock(store: PromptStore): string {
+export function renderManagedBlock(store: PromptStore): string {
   return yaml.dump(store, { lineWidth: -1, noRefs: true, noArrayIndent: false })
 }
 
 /** 把托管区块写回 prompts 文件（原子替换，保留文件其它内容与权限）。 */
-function writeManagedStore(store: PromptStore): void {
+export function writeManagedStore(store: PromptStore): void {
   const file = promptFilePath()
   const existed = existsSync(file)
   const mode = existed ? (statSync(file).mode & 0o777) : 0o600
