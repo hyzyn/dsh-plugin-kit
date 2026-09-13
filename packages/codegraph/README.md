@@ -13,6 +13,8 @@ DSH Web GUI 的 **Codegraph 集成插件**：官方 设置 → 插件 里的「C
 - **跟随当前项目**：控制台默认路径跟随当前活动会话的工作目录，切换项目会话自动切换；手动输入路径可临时覆盖。
 - **MCP 托管**：自动管理 codegraph MCP 服务器行，把 `codegraph serve --mcp` 的工作目录与默认项目路径对齐；卡片「设为默认项目」一键切换，保存即热重启 MCP 服务器（无需重启宿主）。
 
+![Codegraph 设置卡片：索引状态 / 符号搜索 / 一键同步](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-codegraph.png)
+
 ## 为什么要托管 MCP 的工作目录
 
 DSH 的 MCP 客户端不声明 MCP roots 能力，`codegraph serve --mcp` 启动后只能从**进程工作目录**向上查找 `.codegraph/`。而 `dsh web` 经常从家目录启动——这时模型调用 `mcp__codegraph__*` 一律拿到：

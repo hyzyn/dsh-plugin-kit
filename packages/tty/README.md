@@ -33,7 +33,7 @@ SSH 侧同理（远程 tmux）；0.12.0 起做了一轮**界面视觉 overhaul**
 `ttyTerminal.open`、就地嵌入终端 `ttyTerminal.mount`、面板内挂载位 `ttyPanel`
 （其他插件把自己的界面挂在终端右侧，终端保持可见，见下文「客户端服务」）。
 
-![终端面板：多标签页 xterm 弹窗，工具栏含搜索/清屏/复制/粘贴，标题栏含最小化「—」与关闭 ✕](../../docs/dsh-plugin-kit-tty.png)
+![终端面板：多标签页 xterm 弹窗，工具栏含搜索/清屏/复制/粘贴，标题栏含最小化「—」与关闭 ✕](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty.png)
 
 ## 安装
 
@@ -72,7 +72,7 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
   kill-session）；会话退出后点终端区域可重开；
 - 并发上限默认 4（配置 `maxSessions`，1~16）。
 
-![终端面板设置卡片：shell / TERM / 并发上限等保存即热生效](../../docs/dsh-plugin-kit-tty-setting.png)
+![终端面板设置卡片：shell / TERM / 并发上限等保存即热生效](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-setting.png)
 
 ## agent 工具（P1）
 
@@ -146,9 +146,9 @@ SSH 会话同表调度：`tty_list` 里 `kind: 'ssh'` 的条目按 `target`
 不动终端、不占会话名额，直接对 SSH 连接做远程文件操作（`ssh2` 的 sftp
 subsystem，宿主半体 `src/sftp.ts`）：
 
-![SFTP 单窗体（0.16.0 起挂在终端下方抽屉）：远程目录浏览，行内 下载/重命名/删除](../../docs/dsh-plugin-kit-tty-sftp-dialog.png)
+![SFTP 单窗体（0.16.0 起挂在终端下方抽屉）：远程目录浏览，行内 下载/重命名/删除](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-sftp-dialog.png)
 
-![SFTP 双栏（0.9.0；0.16.0 起挂在终端下方抽屉）：左本机 / 右远程，行内 ⇨/⇦ 服务端直传](../../docs/dsh-plugin-kit-tty-sftp-dual.png)
+![SFTP 双栏（0.9.0；0.16.0 起挂在终端下方抽屉）：左本机 / 右远程，行内 ⇨/⇦ 服务端直传](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-sftp-dual.png)
 
 - **落点（0.16.0）**：终端面板开着且挂载位空着时，文件浏览**挂在终端下方**——路径栏 /
   列表 / 传输进度占满整宽（文件列表是横向宽表，下方全宽比右侧窄栏好用，终端也保住

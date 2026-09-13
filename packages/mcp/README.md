@@ -24,6 +24,8 @@ MCP 服务器在 DSH 里是官方 `@deepseek-ai/dsh-mcp-client` 的插件实例�
 - agent 能力公告（systemPrompt section，order 150），用户提到「MCP 配置 / MCP 服务器」
   即指本插件
 
+![MCP 服务器配置卡片：添加 / 连接测试 / 热加载](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-mcp.png)
+
 ## 结构
 
 | 文件 | 说明 |

@@ -9,6 +9,8 @@ DSH Web GUI 的 **环境变量 / 密钥管理插件**：官方 设置 → 插件
 - 密钥标记：明文值迁入官方凭据存储（write-only），接口不下发到浏览器（list 返回 `value: null` 并带 `storage` 字段），GUI 以密码框显示、留空保存＝保持已存值；文件与接口均不做加密
 - 保存后默认写入当前进程的 `process.env`（凭据存储的值经 `resolve` 桥接），供宿主和后续启动的子进程使用
 
+![环境变量 / 密钥管理卡片](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-env.png)
+
 ## 路由
 
 仅限 loopback + 同源访问：

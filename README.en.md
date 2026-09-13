@@ -31,9 +31,9 @@ Repo gates: `pnpm typecheck` / `pnpm build` / `pnpm aggregate`.
 
 dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (DSH) Web GUI: MCP server configuration, Profile management, RSS / news aggregation, global search, Codegraph integration, a terminal panel, a Docker container panel (containers and images on the local or an SSH host, read-only by default), environment variable / secret management, and Prompt management, plus a one-command scaffolding tool for generating new plugins. Everything mounts into `dsh web` through the official profile mechanism, so no DSH source changes are needed. Install the plugins individually, or install everything at once with the aggregate package.
 
-![SFTP dual pane: local left / remote right, inline ⇨/⇦ server-side streaming transfer](docs/dsh-plugin-kit-tty-sftp-dual.png)
+![SFTP dual pane: local left / remote right, inline ⇨/⇦ server-side streaming transfer](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-sftp-dual.png)
 
-![Terminal panel: the sidebar entry opens a multi-tab xterm.js terminal](docs/dsh-plugin-kit-tty.png)
+![Terminal panel: the sidebar entry opens a multi-tab xterm.js terminal](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty.png)
 
 | Capability | Stock dsh web | dsh-plugin-kit family |
 | --- | --- | --- |
@@ -58,7 +58,7 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 - **Where it is stored**: the managed block of `~/.dsh/cordis.patch.yml`.
 - **Note**: **do not** manually append plugin lines to this file, otherwise DSH may fail to start with `duplicate loader entry id`.
 
-![MCP server configuration plugin](docs/dsh-plugin-kit-mcp.png)
+![MCP server configuration plugin](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-mcp.png)
 
 ### Profile Management (@hyzyn/dsh-profile)
 
@@ -68,9 +68,9 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 - **Where it is stored**: directly manages the `~/.dsh/profiles/<name>` directory.
 - **Note**: deletion is recursive — confirm twice before operating; the built-in `web` default profile cannot be deleted, while `headless` can be deleted; after creating a new profile, dependencies are installed on demand when you first run `dsh plugin --profile <name> add ...`.
 
-![Profile management configuration UI](docs/dsh-plugin-kit-profile.png)
+![Profile management configuration UI](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-profile.png)
 
-![Example of starting a headless profile from the command line](docs/dsh-plugin-kit-profile-example-headless1.png)
+![Example of starting a headless profile from the command line](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-profile-example-headless1.png)
 
 ### RSS / News Aggregation (@hyzyn/dsh-rss)
 
@@ -84,11 +84,11 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 - **Where it is stored**: `~/.dsh/rss-digest/YYYY-MM-DD.md` (override with `DSH_RSS_DIGEST_DIR`).
 - **Note**: the first startup will fetch feeds over the network; unreachable sources are listed in the digest’s “fetch failed” section and do not block the remaining sources.
 
-![RSS / News Aggregation settings card](docs/dsh-plugin-kit-rss-setting.png)
+![RSS / News Aggregation settings card](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-rss-setting.png)
 
-![Sidebar “Today’s Worth Reading” modal: grouped by category, each source links to its website](docs/dsh-plugin-kit-rss-view.png)
+![Sidebar “Today’s Worth Reading” modal: grouped by category, each source links to its website](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-rss-view.png)
 
-![Query today’s news: ask the model for “Today’s Worth Reading” and it cites the daily digest](docs/dsh-plugin-kit-rss-query-news.png)
+![Query today’s news: ask the model for “Today’s Worth Reading” and it cites the daily digest](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-rss-query-news.png)
 
 ### Global Search (@hyzyn/dsh-search)
 
@@ -98,9 +98,9 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 - **Where it is stored**: no separate config.
 - **Note**: requires the host `sessionQuery` service; if absent, session search returns an empty list. If the `session-query` full-text index is configured with `openAt: "never"`, session search automatically degrades to per-session scanning; session results are filtered to currently visible/jumpable sessions. “New session” reuses the GUI’s own `uiWorkspace.startSession()`; “Open folder” is hidden when no directory-picker plugin is installed.
 
-![Global search plugin](docs/dsh-plugin-kit-search.png)
+![Global search plugin](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-search.png)
 
-![Global search results (recent sessions / session hits / Prompt / MCP tools / settings)](docs/dsh-plugin-kit-search-query.png)
+![Global search results (recent sessions / session hits / Prompt / MCP tools / settings)](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-search-query.png)
 
 ### Codegraph Integration (@hyzyn/dsh-codegraph)
 
@@ -111,7 +111,7 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 - **Where it is stored**: the index lives in the project’s `.codegraph/` directory (created by `codegraph index`); the plugin has no config file of its own.
 - **Note**: the target project needs a Codegraph index first; unindexed projects return guidance to fall back to regular tools. Indexing / rebuilding are local CLI operations that consume real disk and CPU.
 
-![Codegraph settings card](docs/dsh-plugin-kit-codegraph.png)
+![Codegraph settings card](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-codegraph.png)
 
 ### Terminal Panel (@hyzyn/dsh-tty)
 
@@ -123,13 +123,13 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 - **Where it is stored**: no config file of its own; configuration lives in the “Settings → Plugins → Terminal Panel” card.
 - **Note**: resize relies on DSH’s internal terminal-handle shape (known limitation); output is a UTF-8 text stream, so `cat`-ing binary files shows replacement characters. See `packages/tty/README.md` for details.
 
-![Terminal panel: the sidebar entry opens a multi-tab xterm.js terminal with a compact two-row header (tabs + SSH connection bar)](docs/dsh-plugin-kit-tty.png)
+![Terminal panel: the sidebar entry opens a multi-tab xterm.js terminal with a compact two-row header (tabs + SSH connection bar)](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty.png)
 
-![SFTP dual pane: local left / remote right, inline ⇨/⇦ server-side streaming transfer (sftpStyle=dual)](docs/dsh-plugin-kit-tty-sftp-dual.png)
+![SFTP dual pane: local left / remote right, inline ⇨/⇦ server-side streaming transfer (sftpStyle=dual)](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-sftp-dual.png)
 
-![SFTP single-pane dialog: remote directory browsing with download / rename / delete](docs/dsh-plugin-kit-tty-sftp-dialog.png)
+![SFTP single-pane dialog: remote directory browsing with download / rename / delete](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-sftp-dialog.png)
 
-![Terminal panel settings card: shell / TERM / SFTP style / concurrency cap, saved and applied hot](docs/dsh-plugin-kit-tty-setting.png)
+![Terminal panel settings card: shell / TERM / SFTP style / concurrency cap, saved and applied hot](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-setting.png)
 
 ### Docker Container Panel (@hyzyn/dsh-docker)
 
@@ -151,7 +151,7 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 - **Where it is stored**: the managed block of `~/.dsh/env.yml` (auto-generated; do not edit by hand).
 - **Note**: key names may only contain letters, digits, and underscores, and must not be duplicated.
 
-![Environment variables / secrets management plugin](docs/dsh-plugin-kit-env.png)
+![Environment variables / secrets management plugin](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-env.png)
 
 ### Prompt Management (@hyzyn/dsh-prompt)
 
@@ -161,7 +161,7 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 - **Where it is stored**: the managed block of `~/.dsh/prompts.yml`.
 - **Note**: each Prompt must have at least one version, and a single version’s content must be ≤ 500KB.
 
-![Prompt management plugin](docs/dsh-plugin-kit-promat.png)
+![Prompt management plugin](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-promat.png)
 
 ## Quick Start
 

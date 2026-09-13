@@ -19,6 +19,8 @@ DSH Web GUI 的 **Prompt 管理插件**：官方 设置 → 插件 里的「Prom
   - 一键复制分享 JSON 到剪贴板
   - 支持从 JSON 文件导入
 
+![Prompt 管理卡片：可视化编辑 / 版本管理 / A/B 测试](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-promat.png)
+
 ## 路由
 
 仅限 loopback + 同源访问：
