@@ -31,6 +31,13 @@
  *   S→C  {t:'exit', sid, code, signal}         PTY 退出事实（恰好一次）
  *   S→C  {t:'error', sid?, m}                  错误
  *   S→C  {t:'sessions', list}                  会话快照（attachable=true 表示前连接已断、可 attach）
+ *   C→S  {t:'statsOn'|'statsOff', sid}        订阅/退订该会话的服务器状态条（0.17.0，
+ *                                              按标签可见性驱动：首个 statsOn 才启动采集，
+ *                                              退订清零即停表并关远端 exec channel）
+ *   S→C  {t:'stats', sid, stats}               资源指标帧（0.17.0）：cpuPct/cores/memUsed/
+ *                                              memTotal/memPct/diskUsed/diskTotal/diskPct/
+ *                                              uptimeSec/tcpConns/rxRate/txRate/tempC；缺失
+ *                                              即省略（best-effort），字节类为 bytes、速率为 B/s
  * 省略 sid 时按「该连接唯一会话」路由；连接上存在 0 或多个会话时省略 sid 报错。
  * 旧脚本（spawn 不带 sid）自动兼容：宿主生成 sid，响应帧多带 sid 字段。
  *
@@ -95,6 +102,8 @@ export interface Config {
     endOnPageClose?: boolean;
     /** SFTP 传输限制（0 = 不限）。 */
     sftpLimits?: Partial<SftpLimits>;
+    /** 服务器状态条（0.17.0）：是否采集并推送会话资源指标（CPU/内存/磁盘/uptime/TCP/网速/温度）。默认开。 */
+    statsEnabled?: boolean;
     /** 内部状态：SSH 持久会话名（远程 tmux 托管，本机 socket 清单看不到，随 settings 留存供新窗口恢复确认）。 */
     persistSessions?: Array<{
         tmuxName: string;

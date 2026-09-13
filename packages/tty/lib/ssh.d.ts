@@ -28,6 +28,17 @@ export interface TermHandle {
      * SSH 实现在远程连接内 exec（本机 tmux 看不到远程会话）。
      */
     tmuxRefresh?(): Promise<void>;
+    /**
+     * 服务器状态条（0.17.0）：在同一条 SSH 连接上另开一条**非 PTY 的 exec
+     * channel**（RFC 4254 §6.5）跑常驻采集脚本，按行回调 stdout。返回句柄的
+     * stop() 关闭 channel（远端循环随之结束）。任何失败（对端拒绝 exec、
+     * MaxSessions 超限、连接断开、采集进程自己退出）只回调 onError——采集是
+     * 附加能力，调用方静默停表，绝不写 PTY、绝不弹错。
+     * 只有 SSH 实现提供：本地会话由宿主自己采（见 stats.ts 的本地采样器）。
+     */
+    statsExec?(command: string, onLine: (line: string) => void, onError: () => void): {
+        stop(): void;
+    };
     /** spawn 后注入终端的灰字提示（如远程无 tmux 降级为普通会话）。 */
     startupNotice?: string;
 }

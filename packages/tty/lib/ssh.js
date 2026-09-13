@@ -23,8 +23,10 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
+import { StringDecoder } from 'node:string_decoder';
 import { TMUX_SOCKET } from './tmux.js';
 import { shSingleQuote } from './shell-integration.js';
+import { StatsLineBuffer } from './stats.js';
 /** `env:VAR` 前缀从 process.env 取值；否则原样返回。 */
 function resolveSecret(value) {
     if (value === undefined)
@@ -364,6 +366,66 @@ export async function spawnSsh(spec, options) {
         return nativeResume();
     };
     logger?.info(`[dsh-tty] ssh 会话就绪: ${target}${tmuxUsed ? '（tmux 持久）' : ''}`);
+    /**
+     * 服务器状态条（0.17.0）：同一条连接上的**独立** exec channel（不碰 PTY
+     * 那条）。stderr 必须消费掉——未读的 channel 数据会把远端发送窗口堵住，
+     * 采集脚本会卡在写 stdout 上；诊断内容不受我们控制，一律不进任何日志。
+     */
+    const statsExec = (command, onLine, onError) => {
+        let stopped = false;
+        let open = null;
+        const lines = new StatsLineBuffer();
+        const decoder = new StringDecoder('utf8');
+        try {
+            conn.exec(command, (error, ch) => {
+                // stop() 可能在 channel 打开前就被调用（订阅瞬断）：开了就立刻关掉
+                if (stopped) {
+                    try {
+                        ch.close();
+                    }
+                    catch {
+                        /* 已关闭 */
+                    }
+                    return;
+                }
+                if (error !== null && error !== undefined) {
+                    onError();
+                    return;
+                }
+                open = ch;
+                ch.on('data', (chunk) => {
+                    for (const line of lines.push(decoder.write(chunk)))
+                        onLine(line);
+                });
+                ch.stderr.on('data', () => {
+                    /* 丢弃：远端脚本自身的报错不进任何日志（防凭证/路径意外落到日志里） */
+                });
+                ch.on('close', () => {
+                    // 主动 stop() 之外的关闭 = 采集进程自己结束（远端无 /proc、被 kill）
+                    if (!stopped)
+                        onError();
+                });
+                ch.on('error', () => {
+                    if (!stopped)
+                        onError();
+                });
+            });
+        }
+        catch {
+            onError();
+        }
+        return {
+            stop: () => {
+                stopped = true;
+                try {
+                    open?.close();
+                }
+                catch {
+                    /* 已关闭 */
+                }
+            },
+        };
+    };
     return {
         kind: 'ssh',
         pid: null,
@@ -391,6 +453,7 @@ export async function spawnSsh(spec, options) {
             finish();
             return Promise.resolve(true);
         },
+        statsExec,
         ...(tmuxTeardown !== undefined ? { tmuxTeardown } : {}),
         ...(tmuxRefresh !== undefined ? { tmuxRefresh } : {}),
         ...(startupNotice !== undefined ? { startupNotice } : {}),

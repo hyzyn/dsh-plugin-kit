@@ -1,7 +1,7 @@
 {
   "name": "@hyzyn/dsh-tty",
   "version": "0.16.2",
-  "description": "DSH Web GUI 的终端面板插件：侧边栏「终端」大弹窗，xterm.js + PTY 全交互终端（路线1），ssh2 原生 SSH 远程连接（方案 C），tmux 会话持久化（0.10.0），连接栏扩展点 ttyConnbar（0.13.0）、终端服务 ttyTerminal（0.14.0 open / 0.15.0 mount 就地嵌入）、面板内挂载位 ttyPanel（0.16.0 右侧 dock）。",
+  "description": "DSH Web GUI 的终端面板插件：侧边栏「终端」大弹窗，xterm.js + PTY 全交互终端（路线1），ssh2 原生 SSH 远程连接（方案 C），tmux 会话持久化（0.10.0），连接栏扩展点 ttyConnbar（0.13.0）、终端服务 ttyTerminal（0.14.0 open / 0.15.0 mount 就地嵌入）、面板内挂载位 ttyPanel（0.16.0 右侧 dock）、服务器状态条（0.17.0：按标签可见性采端主机 CPU / 内存 / 磁盘 / 在线时长 / TCP / 网速 / 温度，SSH 走同连接的非 PTY exec channel、本地走 os/proc，best-effort、不碰 PTY 流）。",
   "keywords": [
     "dsh",
     "deepseek",
