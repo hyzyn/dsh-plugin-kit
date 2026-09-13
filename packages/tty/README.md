@@ -305,6 +305,8 @@ tmux server（专用 socket `dsh-tty`，与用户自己的 tmux 完全隔离）�
 
 ![终端面板（含服务器状态条）：终端上方一条 CPU / 内存 / 磁盘 / 核心 / 在线 / TCP / 网速的细监控条](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-stats.png)
 
+（图中是**本机会话**；SSH 会话的状态条同款同字段——见下方 SFTP 单窗体那张图，终端上方那条就是远端主机的指标。）
+
 每个**可见**标签在终端上方挂一条细状态条，实时展示该会话所属主机的资源指标
 （观感对齐 FinalShell 的会话监控条）：
 
