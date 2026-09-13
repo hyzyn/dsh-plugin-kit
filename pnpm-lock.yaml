@@ -86,8 +86,8 @@ importers:
         specifier: ^3.18.2
         version: 3.18.2
       '@hyzyn/dsh-kit':
-        specifier: 0.1.2
-        version: 0.1.2
+        specifier: 0.3.0
+        version: link:../kit
       js-yaml:
         specifier: ^4.1.0
         version: 4.3.2

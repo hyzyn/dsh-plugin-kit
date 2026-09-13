@@ -31,6 +31,21 @@ export interface Config {
      * 默认开。关闭时撤销本插件写入的托管行，不碰 MCP 卡片的托管区块。
      */
     mcpIntegration?: boolean;
+    /**
+     * 查询类命令（status/query/callers/callees/impact/node）的超时毫秒数。
+     * 默认 60000。超大仓库上 `status` 的首次数也会变慢，可按需调大。
+     */
+    cliTimeoutMs?: number;
+    /**
+     * 索引类命令（sync / index）的超时毫秒数，默认 600000（10 分钟）。
+     * 单独一档是因为 `codegraph index` 全量重建在大仓库上必然超过查询档的 60s。
+     */
+    indexTimeoutMs?: number;
+    /**
+     * 是否给 `codegraph index` 追加 `--force`。默认关。
+     * CLI 拒绝把家目录 / 文件系统根当项目索引，显式 `--force` 才继续。
+     */
+    indexForce?: boolean;
 }
 export interface McpSyncDecision {
     /** 期望的 MCP 服务器名（固定 codegraph）。 */
@@ -62,4 +77,27 @@ export interface McpSyncOutcome {
  * 无变化时返回原数组引用（changed=false）。文件不存在时传入 ['']。
  */
 export declare function syncManagedMcpRow(lines: string[], decision: McpSyncDecision): McpSyncOutcome;
+/** 解析后的 CLI 旋钮：超时 / 命令 / index 的 --force。 */
+export interface CliResolved {
+    command: string;
+    cliTimeoutMs: number;
+    indexTimeoutMs: number;
+    indexForce: boolean;
+}
+/**
+ * 纯函数：把插件配置规范化成 CLI 调用参数。
+ * `command` 去空白后为空则回落 `codegraph`；超时只认正有限数；`indexForce` 只认
+ * 严格的 `true`（避免 `"false"` 之类的字符串被当成真）。
+ */
+export declare function resolveCliConfig(config?: Config): CliResolved;
+/**
+ * `codegraph sync` 参数。`--` 之后的路径位在 commander 里按位置参数解析，
+ * 因此路径带 `-` 开头也安全。
+ */
+export declare function syncArgs(cwd: string): string[];
+/**
+ * `codegraph index` 参数。`--force` 必须排在 `--` 之前（`--` 之后一律按位置参数
+ * 处理）；顶层 help 把它藏起来了，但 `codegraph index --help` 里在。
+ */
+export declare function indexArgs(cwd: string, force: boolean): string[];
 export declare const name: string, inject: string[] | undefined, apply: (ctx: Context, config?: Config | undefined) => void;
