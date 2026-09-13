@@ -40,6 +40,8 @@ const shotsDir = join(previewDir, outName)
 
 const SCENARIOS = [
   ['local', '单标签本地终端'],
+  ['stats-off', '服务器状态条关闭（整条收起）'],
+  ['stats-broken', '服务器状态条坏数据兜底（不崩、不变形）'],
   ['multi', '多标签 + SSH 连接栏'],
   ['menu', '「+」新建菜单'],
   ['ssh', 'SSH 连接对话框'],

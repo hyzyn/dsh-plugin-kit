@@ -24,8 +24,10 @@ import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
+import { StringDecoder } from 'node:string_decoder'
 import { TMUX_SOCKET } from './tmux.js'
 import { shSingleQuote } from './shell-integration.js'
+import { StatsLineBuffer } from './stats.js'
 
 /* ------------------------------------------------------------------ *
  * 统一会话句柄：本地 PTY 与 SSH channel 共用同一形状
@@ -60,6 +62,15 @@ export interface TermHandle {
    * SSH 实现在远程连接内 exec（本机 tmux 看不到远程会话）。
    */
   tmuxRefresh?(): Promise<void>
+  /**
+   * 服务器状态条（0.17.0）：在同一条 SSH 连接上另开一条**非 PTY 的 exec
+   * channel**（RFC 4254 §6.5）跑常驻采集脚本，按行回调 stdout。返回句柄的
+   * stop() 关闭 channel（远端循环随之结束）。任何失败（对端拒绝 exec、
+   * MaxSessions 超限、连接断开、采集进程自己退出）只回调 onError——采集是
+   * 附加能力，调用方静默停表，绝不写 PTY、绝不弹错。
+   * 只有 SSH 实现提供：本地会话由宿主自己采（见 stats.ts 的本地采样器）。
+   */
+  statsExec?(command: string, onLine: (line: string) => void, onError: () => void): { stop(): void }
   /** spawn 后注入终端的灰字提示（如远程无 tmux 降级为普通会话）。 */
   startupNotice?: string
 }
@@ -474,6 +485,61 @@ export async function spawnSsh(spec: SshSpec, options: SshSpawnOptions): Promise
   }
 
   logger?.info(`[dsh-tty] ssh 会话就绪: ${target}${tmuxUsed ? '（tmux 持久）' : ''}`)
+  /**
+   * 服务器状态条（0.17.0）：同一条连接上的**独立** exec channel（不碰 PTY
+   * 那条）。stderr 必须消费掉——未读的 channel 数据会把远端发送窗口堵住，
+   * 采集脚本会卡在写 stdout 上；诊断内容不受我们控制，一律不进任何日志。
+   */
+  const statsExec = (command: string, onLine: (line: string) => void, onError: () => void): { stop(): void } => {
+    let stopped = false
+    let open: ClientChannel | null = null
+    const lines = new StatsLineBuffer()
+    const decoder = new StringDecoder('utf8')
+    try {
+      conn.exec(command, (error, ch) => {
+        // stop() 可能在 channel 打开前就被调用（订阅瞬断）：开了就立刻关掉
+        if (stopped) {
+          try {
+            ch.close()
+          } catch {
+            /* 已关闭 */
+          }
+          return
+        }
+        if (error !== null && error !== undefined) {
+          onError()
+          return
+        }
+        open = ch
+        ch.on('data', (chunk: Buffer) => {
+          for (const line of lines.push(decoder.write(chunk))) onLine(line)
+        })
+        ch.stderr.on('data', () => {
+          /* 丢弃：远端脚本自身的报错不进任何日志（防凭证/路径意外落到日志里） */
+        })
+        ch.on('close', () => {
+          // 主动 stop() 之外的关闭 = 采集进程自己结束（远端无 /proc、被 kill）
+          if (!stopped) onError()
+        })
+        ch.on('error', () => {
+          if (!stopped) onError()
+        })
+      })
+    } catch {
+      onError()
+    }
+    return {
+      stop: () => {
+        stopped = true
+        try {
+          open?.close()
+        } catch {
+          /* 已关闭 */
+        }
+      },
+    }
+  }
+
   return {
     kind: 'ssh',
     pid: null,
@@ -499,6 +565,7 @@ export async function spawnSsh(spec: SshSpec, options: SshSpawnOptions): Promise
       finish()
       return Promise.resolve(true)
     },
+    statsExec,
     ...(tmuxTeardown !== undefined ? { tmuxTeardown } : {}),
     ...(tmuxRefresh !== undefined ? { tmuxRefresh } : {}),
     ...(startupNotice !== undefined ? { startupNotice } : {}),

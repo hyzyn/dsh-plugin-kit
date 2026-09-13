@@ -232,6 +232,17 @@ let addMenuEl = null
 let sshDialogEl = null
 /** SSH 连接簿缓存：/api/dsh-tty/config 的 sshHosts（设置卡片保存后同步）。 */
 let sshHostsCache = []
+/* ---------- 服务器状态条（0.17.0） ---------- */
+/** 配置开关（/api/dsh-tty/config 的 statsEnabled；关掉后整条收起且不发订阅）。 */
+let statsEnabledCache = true
+/** 状态条 DOM（每个面板一条，跟随活动标签；挂在 .tt_body 里、终端容器之前）。 */
+let statsBarEl = null
+/** 当前已向宿主订阅的 sid（可见性驱动；null = 没订阅）。 */
+let statsSubSid = null
+/** 陈旧检测定时器：面板打开期间每秒复查（采集端静默停止时要能自己收起状态条）。 */
+let statsStaleTimer = null
+/** 「有数据」窗口：超过这么久没收到 stats 帧就整条隐藏（插件关闭、远端无 /proc、采集失败都走这里）。 */
+const STATS_STALE_MS = 3000
 /**
  * 连接栏按钮注册表（0.13.0）：内置动作（重新打开 / SFTP / 隧道）与第三方插件
  * 经客户端服务 `ttyConnbar` 注册的按钮走**同一条通道**，显示顺序 = 注册顺序。
@@ -279,6 +290,229 @@ function sendFrame(msg) {
   if (socket !== null && socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify(msg))
   }
+}
+
+/* ============================ 服务器状态条（0.17.0） ============================ */
+
+/** 进度条档位：<70 正常 / 70~90 黄 / >=90 红。 */
+function statsLevel(pct) {
+  if (!Number.isFinite(pct)) return ''
+  if (pct >= 90) return 'danger'
+  if (pct >= 70) return 'warn'
+  return ''
+}
+
+/** 速率：<1KB/s 直接用 B/s（采集端给的是 B/s），大值复用 formatRate 的 K/M/G。 */
+function statsRate(value) {
+  if (!Number.isFinite(value) || value < 0) return '无'
+  if (value < 1024) return Math.round(value) + ' B/s'
+  return formatRate(value) || '无'
+}
+
+/** uptime 秒 → FinalShell 风格（2w4d7h16m / 3h5m / 12m / 45s）。 */
+function formatUptime(sec) {
+  if (!Number.isFinite(sec) || sec < 0) return '无'
+  const total = Math.floor(sec)
+  const weeks = Math.floor(total / 604800)
+  const days = Math.floor((total % 604800) / 86400)
+  const hours = Math.floor((total % 86400) / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+  const parts = []
+  if (weeks > 0) parts.push(weeks + 'w')
+  if (weeks > 0 || days > 0) parts.push(days + 'd')
+  if (weeks > 0 || days > 0 || hours > 0) parts.push(hours + 'h')
+  if (weeks > 0 || days > 0 || hours > 0 || minutes > 0) parts.push(minutes + 'm')
+  return parts.length > 0 ? parts.join('') : total + 's'
+}
+
+/** 单个条目：标签 + 可选迷你进度条 + 值（值由调用方保证是数字或「无」）。 */
+function statsItemHtml(label, valueText, pct) {
+  const meter = Number.isFinite(pct)
+    ? '<span class="tt_statsMeter" data-level="' + statsLevel(pct) + '"><span class="tt_statsMeterFill" style="width:' + Math.max(0, Math.min(100, pct)).toFixed(1) + '%"></span></span>'
+    : ''
+  return '<span class="tt_statsItem"><span class="tt_statsLabel">' + label + '</span>' + meter + '<span class="tt_statsValue">' + valueText + '</span></span>'
+}
+
+/** 「已用/总量」对：任一侧缺失或总量为 0 都退化成「无」。 */
+function statsPair(used, total) {
+  if (!Number.isFinite(used) || !Number.isFinite(total) || total <= 0) return '无'
+  return (formatBytes(used) || '0 B') + '/' + (formatBytes(total) || '0 B')
+}
+
+/**
+ * 状态条 HTML：条目顺序固定（对齐 FinalShell 的会话监控条），单项拿不到就写
+ * 「无」；完全没有数据时整条不显示（见 statsBarVisible）。值只来自宿主发来的
+ * 数值帧，标签是本地常量，不需要额外转义。
+ */
+/**
+ * 帧字段的客户端兜底校验：宿主已经清洗过一遍（sanitizeStatsFrame），但旧版宿主、
+ * 第三方实现或调试用假数据都可能塞进任意值——不合法的一律当「无」，绝不让状态条
+ * 渲染出负数、NaN 或天文数字（界面不能因为数据坏而变形）。
+ */
+function statsNum(stats, key) {
+  const value = stats[key]
+  if (!Number.isFinite(value)) return null
+  // 边界与服务端 stats.ts 的 LIMITS 同口径：两边都挡，脏数据进不来也渲染不出去
+  if (key === 'tempC') return value > -100 && value < 200 ? value : null
+  if (key === 'cores') return value >= 1 && value <= 4096 ? value : null
+  if (key === 'cpuPct' || key === 'memPct' || key === 'diskPct') return value >= 0 && value <= 100 ? value : null
+  if (key === 'uptimeSec') return value >= 0 && value <= 100 * 365 * 24 * 3600 ? value : null
+  if (key === 'tcpConns') return value >= 0 && value <= 10000000 ? value : null
+  if (key === 'rxRate' || key === 'txRate') return value >= 0 && value <= 2 ** 40 ? value : null
+  return value >= 0 && value <= 2 ** 50 ? value : null // 字节类
+}
+
+/** stats 帧的字段全集（保持与服务端 STATS_KEYS 同序）。 */
+const STATS_FIELDS = ['cpuPct', 'cores', 'memUsed', 'memTotal', 'memPct', 'diskUsed', 'diskTotal', 'diskPct', 'uptimeSec', 'tcpConns', 'rxRate', 'txRate', 'tempC']
+
+/** 至少一个字段能用于渲染——否则视为「无数据」整条隐藏，而不是显示一排「无」。 */
+function hasUsableStats(stats) {
+  if (stats === null || typeof stats !== 'object' || Array.isArray(stats)) return false
+  return STATS_FIELDS.some((key) => statsNum(stats, key) !== null)
+}
+
+function renderStatsBarHtml(tab) {
+  const stats = tab !== undefined && tab.stats !== null && typeof tab.stats === 'object' ? tab.stats : {}
+  const num = (key) => statsNum(stats, key)
+  const pctText = (key) => {
+    const value = num(key)
+    return value === null ? '无' : Math.round(value) + '%'
+  }
+  const items = [
+    statsItemHtml('CPU', pctText('cpuPct'), num('cpuPct')),
+    statsItemHtml('内存', pctText('memPct'), num('memPct')),
+    statsItemHtml('磁盘', pctText('diskPct'), num('diskPct')),
+    statsItemHtml('核心', num('cores') === null ? '无' : String(num('cores')), null),
+    statsItemHtml('内存', statsPair(num('memUsed'), num('memTotal')), null),
+    statsItemHtml('在线', formatUptime(num('uptimeSec')), null),
+    statsItemHtml('TCP', num('tcpConns') === null ? '无' : String(num('tcpConns')), null),
+    statsItemHtml('磁盘', statsPair(num('diskUsed'), num('diskTotal')), null),
+    statsItemHtml('CPU温度', num('tempC') === null ? '无' : num('tempC').toFixed(1) + '°C', null),
+  ]
+  const rx = num('rxRate')
+  const tx = num('txRate')
+  const netText = rx === null && tx === null ? '无' : '↓' + statsRate(rx) + ' ↑' + statsRate(tx)
+  items.push(statsItemHtml('网络', netText, null))
+  return items.join('')
+}
+
+/** 状态条可见性：面板开着、没最小化、开关开、活动标签有新鲜数据。 */
+function statsBarVisible() {
+  if (modalEl === null || minimized || !statsEnabledCache) return false
+  const tab = activeTab()
+  if (tab === undefined || tab.embedded === true || tab.exited === true) return false
+  if (tab.stats === null || tab.stats === undefined) return false
+  return Date.now() - (tab.statsAt || 0) <= STATS_STALE_MS
+}
+
+/**
+ * 状态条显隐切换后的尺寸重算：条高改变了终端可用高度（.tt_term 的 top 偏移），
+ * 不重跑 fit 就会行数错位 / 底部被裁。复用 switchTab 同一条路径（fit + sendResize）。
+ */
+function refitActiveTab() {
+  const tab = activeTab()
+  if (tab === undefined || tab.embedded === true || tab.fit === null) return
+  try {
+    tab.fit.fit()
+  } catch {
+    return // 容器还没布局（隐藏标签/面板正在收）
+  }
+  // sendResize 里的 proposeDimensions 在终端已 dispose 时可能抛：绝不让它冒泡
+  try {
+    if (tab.spawned && !tab.exited) sendResize(tab)
+  } catch {
+    /* 忽略：尺寸同步失败不该影响状态条显隐 */
+  }
+}
+
+/**
+ * 重画状态条（对外入口）。整体兜底：任何意外都退回「不显示」——绝不能留下
+ * 半截偏移（.tt_body[data-stats] 加上了但条没出来）把终端顶歪或让面板抛崩。
+ */
+function applyStatsBar() {
+  try {
+    applyStatsBarInner()
+  } catch (error) {
+    console.warn('[dsh-tty] 状态条渲染失败（已收起）: ' + (error instanceof Error ? error.message : String(error)))
+    try {
+      if (statsBarEl !== null) {
+        statsBarEl.hidden = true
+        statsBarEl.textContent = ''
+      }
+      if (bodyEl !== null) delete bodyEl.dataset.stats
+    } catch {
+      /* 连兜底都失败：静默，至少不再抛 */
+    }
+  }
+}
+
+/** 重画状态条；只有「显隐翻转」时才需要 fit（数据每秒刷新不该反复抖动终端）。 */
+function applyStatsBarInner() {
+  if (bodyEl === null || statsBarEl === null) return
+  const visible = statsBarVisible()
+  const changed = (bodyEl.dataset.stats !== undefined) !== visible
+  if (!visible) {
+    if (changed) delete bodyEl.dataset.stats
+    statsBarEl.hidden = true
+    statsBarEl.textContent = ''
+    if (changed) refitActiveTab()
+    return
+  }
+  statsBarEl.hidden = false
+  statsBarEl.innerHTML = renderStatsBarHtml(activeTab())
+  if (changed) {
+    bodyEl.dataset.stats = ''
+    refitActiveTab()
+  }
+}
+
+/** 陈旧检测：采集端静默停止（无 /proc、exec 被拒、配置关闭）时前端要自己收起。 */
+function ensureStatsStaleTimer() {
+  if (statsStaleTimer !== null) return
+  statsStaleTimer = setInterval(() => applyStatsBar(), 1000)
+}
+
+function stopStatsStaleTimer() {
+  if (statsStaleTimer === null) return
+  clearInterval(statsStaleTimer)
+  statsStaleTimer = null
+}
+
+/** 需要订阅的 sid：只有可见标签才采（最小化/嵌入/已退出/开关关闭都不采）。 */
+function desiredStatsSid() {
+  if (modalEl === null || minimized || !statsEnabledCache) return null
+  const tab = activeTab()
+  if (tab === undefined || tab.embedded === true || tab.exited === true) return null
+  return tab.sid
+}
+
+/**
+ * 订阅对齐（幂等）：把宿主的采集器开关对齐到「当前可见标签」。tab 切换、面板
+ * 开合/最小化、开关热生效、断线重连（statsSubSid 置 null 后由 ready 重新对齐）
+ * 都调这里；退订后宿主侧会停表并关掉远端 exec channel。
+ */
+function syncStatsSubscription() {
+  const want = desiredStatsSid()
+  if (want === statsSubSid) return
+  if (statsSubSid !== null) sendFrame({ t: 'statsOff', sid: statsSubSid })
+  statsSubSid = want
+  if (want !== null) sendFrame({ t: 'statsOn', sid: want })
+}
+
+/**
+ * 会话就绪后补发订阅。新标签的 statsOn 是在 spawn 帧之前发的（switchTab 早于
+ * spawnTab），宿主那边会话还没登记，会被按「未知 sid」静默忽略；所以 ready 之后
+ * 必须再对齐一次（attach / 断线重连同理）。宿主侧订阅是 Set 语义，重复 statsOn
+ * 幂等，不会重复启动采集。
+ */
+function resubscribeStats(sid) {
+  if (sid !== desiredStatsSid()) {
+    syncStatsSubscription()
+    return
+  }
+  if (statsSubSid !== null && statsSubSid !== sid) sendFrame({ t: 'statsOff', sid: statsSubSid })
+  statsSubSid = sid
+  sendFrame({ t: 'statsOn', sid })
 }
 
 function activeTab() {
@@ -1101,6 +1335,9 @@ function switchTab(sid) {
   if (tab.embedded !== true && bodyEl !== null && tab.termEl !== null && tab.termEl.parentElement !== bodyEl) {
     bodyEl.appendChild(tab.termEl)
   }
+  // 状态条跟随活动标签：先对齐订阅（宿主懒启动采集），再按已有数据显示/收起
+  syncStatsSubscription()
+  applyStatsBar()
   renderTabbar()
   renderConnbar()
   try {
@@ -1412,9 +1649,15 @@ function setEntryVisible(visible) {
   if (entryGate !== null) entryGate.set(visible)
 }
 
-/** 由 config 推进入口显隐：仅「确认 enabled:false」收起。 */
+/** 由 config 推进入口显隐：仅「确认 enabled:false」收起；顺带热生效状态条开关。 */
 function syncEntryFromConfig(config) {
   setEntryVisible(!(config !== null && typeof config === 'object' && config.enabled === false))
+  if (config !== null && typeof config === 'object' && typeof config.statsEnabled === 'boolean' && config.statsEnabled !== statsEnabledCache) {
+    statsEnabledCache = config.statsEnabled
+    // 热生效：关闭即退订 + 收起（宿主侧同时停表）；打开即重新订阅（幂等）
+    syncStatsSubscription()
+    applyStatsBar()
+  }
 }
 
 function syncSshHostsCache(config) {
@@ -4034,6 +4277,8 @@ function connect() {
   socket.onopen = () => {
     connecting = false
     reconnectDelay = 1000
+    // 新连接上没有订阅记录：置空后由 ready / switchTab 重新对齐（幂等）
+    statsSubSid = null
     setStatus('已连接', 'connected')
     // 先补发挂起的创建帧（嵌入式终端冷启动时排在这里），再走面板的恢复流程
     for (const entry of [...pendingSpawns]) {
@@ -4078,6 +4323,8 @@ function connect() {
           Promise.race([fontsReady, new Promise((r) => setTimeout(r, 500))]).then(() => scheduleSettle(150))
         }
         syncEntryBadge() // 断线重连后徽标计数恢复
+        // 就绪/重连后对齐状态条订阅（spawn 前的 statsOn 会被宿主按未知 sid 忽略）
+        resubscribeStats(sid)
         persistTabs()
       }
     } else if (msg.t === 'data') {
@@ -4091,6 +4338,8 @@ function connect() {
       if (tab !== undefined) {
         tab.exited = true
         tab.live = false
+        tab.stats = null // 会话结束：状态条数据作废（宿主侧采集器也随会话停）
+        if (sid === activeSid) applyStatsBar()
         const code = msg.code !== null && msg.code !== undefined ? 'code=' + msg.code : ''
         const signal = msg.signal !== null && msg.signal !== undefined ? 'signal=' + msg.signal : ''
         setStatus('已退出 ' + [code, signal].filter(Boolean).join(' '), '')
@@ -4099,6 +4348,22 @@ function connect() {
         showTabOverlay(tab, '会话已退出', '点击重新打开', 'exited')
         syncEntryBadge() // 最小化时徽标计数同步减少
         persistTabs() // 已退出的标签不再持久化
+      }
+    } else if (msg.t === 'stats') {
+      // 服务器状态条（0.17.0）：只存数据 + 重画；显隐由 applyStatsBar 统一裁决。
+      // 整段兜底：一帧坏数据（旧版宿主/第三方实现/假数据）绝不能把 onmessage
+      // 抛崩——那会连带后面所有 WS 帧（data/exit）一起失效。
+      try {
+        const tab = tabs.get(sid)
+        if (tab !== undefined) {
+          const stats = msg.stats
+          // 结构不合法或一个可用字段都没有 → 按「无数据」处理（隐藏，而不是显示一排「无」）
+          tab.stats = hasUsableStats(stats) ? stats : null
+          tab.statsAt = Date.now()
+          if (sid === activeSid) applyStatsBar()
+        }
+      } catch (error) {
+        console.warn('[dsh-tty] stats 帧处理失败（已忽略）: ' + (error instanceof Error ? error.message : String(error)))
       }
     } else if (msg.t === 'error') {
       setStatus('错误：' + String(msg.m ?? ''), 'error')
@@ -4169,7 +4434,9 @@ function openModal() {
     // 终端区与「右侧挂载位」并排：其他插件（如 dsh-docker）经 ttyPanel.mountPane
     // 把界面挂进 .tt_work，终端保持可见——这是从 SSH 连接栏打开容器面板的主路径
     '<div class="tt_work">' +
-    '<div class="tt_body"><div class="tt_overlay"></div></div>' +
+    // 状态条（0.17.0）与终端容器同级：绝对定位在 body 顶部，显隐只改 .tt_term 的
+    // top 偏移——不能塞进 .tt_term 里，否则 FitAddon 会把条高算进行数
+    '<div class="tt_body"><div class="tt_statsBar" hidden></div><div class="tt_overlay"></div></div>' +
     '</div>' +
     '</div>'
   document.body.appendChild(modalEl)
@@ -4185,6 +4452,9 @@ function openModal() {
   connActionsEl = modalEl.querySelector('.tt_connActions')
   workEl = modalEl.querySelector('.tt_work')
   bodyEl = modalEl.querySelector('.tt_body')
+  statsBarEl = modalEl.querySelector('.tt_statsBar')
+  statsSubSid = null
+  ensureStatsStaleTimer()
   bodyOverlayEl = modalEl.querySelector('.tt_body > .tt_overlay')
   searchInputEl = modalEl.querySelector('.tt_searchInput')
 
@@ -4293,6 +4563,9 @@ function minimizeModal() {
   minimized = true
   if (searchInputEl !== null) searchInputEl.style.display = 'none'
   modalEl.dataset.minimized = ''
+  // 最小化 = 没有可见终端：退订（宿主侧停表、关远端 exec channel），收起状态条
+  syncStatsSubscription()
+  applyStatsBar()
   if (document.querySelector('[data-dsh-tty-entry]') !== null) {
     syncEntryBadge()
   } else {
@@ -4357,6 +4630,8 @@ function restoreModal() {
   dockStatusEl = null
   dockDotEl = null
   syncEntryBadge()
+  syncStatsSubscription()
+  applyStatsBar()
   const tab = activeTab()
   if (tab !== undefined && tab.fit !== undefined) {
     try {
@@ -4437,6 +4712,9 @@ function closeModal() {
   connBadgeEl = null
   connActionsEl = null
   closeTunnelPopover()
+  stopStatsStaleTimer()
+  statsBarEl = null
+  statsSubSid = null
   bodyEl = null
   bodyOverlayEl = null
   searchInputEl = null
@@ -4954,7 +5232,7 @@ function TtySettingsCard() {
     setMessage({ kind: '', text: '' })
     // 只提交配置项：快照里的 toolsRegistered 等非配置键会被宿主 normalizePatch 拒绝
     const body = {}
-    for (const key of ['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'shellIntegration', 'sftpStyle', 'persistence', 'endOnPageClose']) {
+    for (const key of ['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'shellIntegration', 'sftpStyle', 'persistence', 'endOnPageClose', 'statsEnabled']) {
       const value = (form || {})[key]
       if (value !== undefined && value !== '') body[key] = value
     }
@@ -5169,6 +5447,7 @@ function TtySettingsCard() {
                     }),
                     jsx('span', { className: 'tt_cardHint', children: '开启后所有新标签（本地/SSH 连接簿/SSH 连接对话框）默认由 tmux 托管、可跨宿主重启恢复；需本机/远程安装 tmux；SSH 对话框可对单次连接取消勾选；已有标签不受影响' }),
                     boolField('关闭页面后结束持久会话（不保活）', 'endOnPageClose'),
+                    boolField('服务器状态条（CPU / 内存 / 磁盘 / 在线 / TCP / 网速；采不到的项显示「无」）', 'statsEnabled'),
                     jsx('span', { className: 'tt_cardHint', children: '默认关闭：整个页面关闭时持久会话留存（保活期后可再恢复）；开启则页面断开且保活期结束时连 tmux 会话一起结束——注意刷新页面在保活期内不受影响' }),
                   ],
                 }),

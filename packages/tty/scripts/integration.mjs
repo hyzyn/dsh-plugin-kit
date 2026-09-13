@@ -1442,6 +1442,224 @@ async function run() {
     again.client.close()
   }
 
+  // B30: 服务器状态条（0.17.0）：SSH 会话的远端采集（非 PTY exec channel）
+  //      + 订阅驱动 + 开关热生效。刻意不用本地会话：本用例不依赖本机 PTY
+  //      （无 ptmx 的环境照样能跑），且远端采集正是该特性的主路径。
+  console.log('\n[30] 服务器状态条（SSH 远端采集 / 订阅 / 开关热生效）')
+  {
+    const ssh2mod = await import('ssh2')
+    const ssh2 = ssh2mod.default ?? ssh2mod
+    const { generateKeyPairSync } = await import('node:crypto')
+    const { privateKey } = generateKeyPairSync('rsa', {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+      privateKeyEncoding: { type: 'pkcs1', format: 'pem' },
+    })
+    /** 伪远端：只实现 shell + exec；exec 按真实采集脚本的输出形状回吐 JSON 行。 */
+    const execLog = []
+    const remote = new ssh2.Server({ hostKeys: [privateKey] }, (client) => {
+      client.on('authentication', (ctx) => {
+        if (ctx.method === 'password' && ctx.username === 'test' && ctx.password === 'secret') ctx.accept()
+        else ctx.reject()
+      })
+      client.on('ready', () => {
+        client.on('session', (accept) => {
+          const session = accept()
+          // 客户端的 conn.shell 会先发 pty-req：不接住的话 ssh2 服务端会自动拒绝，
+          // shell 根本开不起来（ssh-smoke 同一处坑）
+          session.on('pty', (acceptPty) => { acceptPty() })
+          session.on('window-change', () => {})
+          session.on('shell', (acceptShell) => {
+            const stream = acceptShell()
+            stream.write('dsh-integ:~$ ')
+            stream.on('data', () => {})
+          })
+          session.on('exec', (acceptExec, _rejectExec, info) => {
+            const stream = acceptExec()
+            execLog.push(typeof info?.command === 'string' ? info.command : '')
+            let tick = 0
+            const timer = setInterval(() => {
+              tick += 1
+              stream.write(JSON.stringify({
+                cpuPct: 30 + tick, cores: 4, memUsed: 1e9 * tick, memTotal: 4e9, memPct: 25 + tick,
+                diskTotal: 1e11, diskUsed: 5e10, diskPct: 50, uptimeSec: 1000 + tick,
+                tcpConns: 10 + tick, rxRate: 2048 * tick, txRate: 4096 * tick, tempC: 41.5,
+              }) + '\n')
+            }, 120)
+            const stop = () => clearInterval(timer)
+            stream.on('close', stop)
+            stream.on('end', stop)
+          })
+        })
+      })
+      client.on('error', () => {})
+    })
+    await new Promise((resolve) => remote.listen(0, '127.0.0.1', resolve))
+    const remotePort = remote.address().port
+    const postConfig = async (body) => {
+      const res = await fetch('http://127.0.0.1:' + String(port) + '/api/dsh-tty/config', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+      return { status: res.status, body: await res.json() }
+    }
+    const put = await postConfig({ sshHosts: [{ name: 'b30-ssh', host: '127.0.0.1', port: remotePort, username: 'test', auth: 'password', password: 'secret', keyPath: '', passphrase: '', agentForward: false }] })
+    if (put.status === 200) pass('B30a 内存 sshd + 连接簿就绪')
+    else fail('B30a 内存 sshd + 连接簿就绪', 'status=' + String(put.status))
+
+    const s = openSession(port)
+    const other = openSession(port)
+    await s.open()
+    await other.open()
+    s.client.send(JSON.stringify({ t: 'ssh', sid: 'b30', cols: 80, rows: 24, name: 'b30-ssh' }))
+    await s.waitFor(() => s.state.ready, 12000, 'ssh ready')
+    const statsFrames = () => s.state.frames.filter((f) => f.t === 'stats')
+    const otherStats = () => other.state.frames.filter((f) => f.t === 'stats')
+
+    // 懒启动：没有 statsOn 就不该开 exec channel
+    await sleep(900)
+    if (statsFrames().length === 0 && execLog.length === 0) pass('B30b 未订阅时不采集（懒启动，无 exec channel）')
+    else fail('B30b 未订阅时不采集（懒启动）', 'frames=' + String(statsFrames().length) + ' exec=' + String(execLog.length))
+
+    s.client.send(JSON.stringify({ t: 'statsOn', sid: 'b30' }))
+    await s.waitFor(() => statsFrames().length >= 2, 10000, 'stats 帧')
+    const frame = statsFrames()[statsFrames().length - 1]
+    const stats = frame.stats
+    const shapeOk = stats !== null && typeof stats === 'object' && stats.cores === 4 && Number.isFinite(stats.cpuPct) && stats.cpuPct >= 30 && stats.cpuPct <= 100 && Number.isFinite(stats.uptimeSec) && stats.tempC === 41.5
+    if (frame.sid === 'b30' && shapeOk) pass('B30c statsOn → 远端 exec 帧（逐行 JSON，cpuPct=' + String(stats.cpuPct) + ' cores=4 tempC=41.5）')
+    else fail('B30c statsOn → 远端 exec 帧', 'sid=' + String(frame.sid) + ' stats=' + JSON.stringify(stats).slice(0, 160))
+
+    const command = execLog[0] ?? ''
+    if (command.startsWith('sh -c ') && command.includes('/proc/stat')) pass('B30d 采集命令经 sh -c 单引号包裹（' + String(command.length) + ' 字符）')
+    else fail('B30d 采集命令形状', command.slice(0, 80))
+
+    await sleep(1200)
+    if (otherStats().length === 0) pass('B30e stats 帧只发给订阅者')
+    else fail('B30e stats 帧只发给订阅者', '旁路连接收到 ' + String(otherStats().length) + ' 帧')
+
+    const off = await postConfig({ statsEnabled: false })
+    if (off.status === 200 && off.body.config && off.body.config.statsEnabled === false) pass('B30f POST statsEnabled=false 生效')
+    else fail('B30f POST statsEnabled=false 生效', 'status=' + String(off.status))
+    const mark = statsFrames().length
+    await sleep(2000)
+    if (statsFrames().length === mark) pass('B30g 关闭后停表（远端 channel 关闭、不再发帧）')
+    else fail('B30g 关闭后停表', '多出 ' + String(statsFrames().length - mark) + ' 帧')
+
+    await postConfig({ statsEnabled: true })
+    await s.waitFor(() => statsFrames().length > mark, 10000, '重开后的 stats 帧')
+    pass('B30h 重开后按存留订阅自动恢复采集')
+
+    s.client.send(JSON.stringify({ t: 'statsOff', sid: 'b30' }))
+    await sleep(400)
+    const mark2 = statsFrames().length
+    await sleep(1600)
+    if (statsFrames().length === mark2) pass('B30i statsOff 后停表（无帧）')
+    else fail('B30i statsOff 后停表（无帧）', '多出 ' + String(statsFrames().length - mark2) + ' 帧')
+
+    s.client.send(JSON.stringify({ t: 'kill', sid: 'b30' }))
+    await s.waitFor(() => s.state.exited !== null, 12000, 'exit 帧')
+    s.client.close()
+    other.client.close()
+    await new Promise((resolve) => remote.close(resolve))
+    remote.closeAllConnections?.()
+    await postConfig({ sshHosts: [] })
+  }
+
+  // B31: 服务器状态条——Windows 远端的自动回退（POSIX 脚本被拒 → PowerShell 分支）
+  //      伪远端模拟 cmd.exe：sh -c 脚本立即非零退出且 stdout 一个字节都不吐，
+  //      只有 -EncodedCommand 才回吐帧。断言：回退生效、只回退一次、退订即停表。
+  console.log('\n[31] 服务器状态条：Windows 远端回退（POSIX → PowerShell）')
+  {
+    const ssh2mod = await import('ssh2')
+    const ssh2 = ssh2mod.default ?? ssh2mod
+    const { generateKeyPairSync } = await import('node:crypto')
+    const { privateKey } = generateKeyPairSync('rsa', {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+      privateKeyEncoding: { type: 'pkcs1', format: 'pem' },
+    })
+    const execLog = []
+    const remote = new ssh2.Server({ hostKeys: [privateKey] }, (client) => {
+      client.on('authentication', (ctx) => {
+        if (ctx.method === 'password' && ctx.username === 'test' && ctx.password === 'secret') ctx.accept()
+        else ctx.reject()
+      })
+      client.on('ready', () => {
+        client.on('session', (accept) => {
+          const session = accept()
+          session.on('pty', (acceptPty) => { acceptPty() })
+          session.on('window-change', () => {})
+          session.on('shell', (acceptShell) => {
+            const stream = acceptShell()
+            stream.write('PS> ')
+            stream.on('data', () => {})
+          })
+          session.on('exec', (acceptExec, _rejectExec, info) => {
+            const command = typeof info?.command === 'string' ? info.command : ''
+            execLog.push(command)
+            const stream = acceptExec()
+            if (command.includes('-EncodedCommand')) {
+              // Windows 分支：用可辨认的值（cores=12 / cpuPct>=70）与 POSIX 分支区分
+              let tick = 0
+              const timer = setInterval(() => {
+                tick += 1
+                stream.write(JSON.stringify({
+                  cpuPct: 70 + tick, cores: 12, memTotal: 17179869184, memUsed: 9663676416, memPct: 56,
+                  diskTotal: 511000000000, diskUsed: 302000000000, diskPct: 59, uptimeSec: 1000 + tick,
+                  tcpConns: 142 + tick, rxRate: 4096 * tick, txRate: 8192 * tick,
+                }) + '\n')
+              }, 120)
+              const stop = () => clearInterval(timer)
+              stream.on('close', stop)
+              stream.on('end', stop)
+              return
+            }
+            // POSIX 分支：cmd.exe 语义——非零退出、stdout 无输出
+            stream.exit(1)
+            stream.end()
+          })
+        })
+      })
+      client.on('error', () => {})
+    })
+    await new Promise((resolve) => remote.listen(0, '127.0.0.1', resolve))
+    const remotePort = remote.address().port
+    const postConfig = async (body) => {
+      const res = await fetch('http://127.0.0.1:' + String(port) + '/api/dsh-tty/config', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+      return { status: res.status, body: await res.json() }
+    }
+    await postConfig({ sshHosts: [{ name: 'b31-ssh', host: '127.0.0.1', port: remotePort, username: 'test', auth: 'password', password: 'secret', keyPath: '', passphrase: '', agentForward: false }] })
+    const s = openSession(port)
+    await s.open()
+    s.client.send(JSON.stringify({ t: 'ssh', sid: 'b31', cols: 80, rows: 24, name: 'b31-ssh' }))
+    await s.waitFor(() => s.state.ready, 12000, 'ssh ready')
+    const statsFrames = () => s.state.frames.filter((f) => f.t === 'stats')
+
+    s.client.send(JSON.stringify({ t: 'statsOn', sid: 'b31' }))
+    await s.waitFor(() => statsFrames().length >= 2, 12000, '回退后的 stats 帧')
+    const stats = statsFrames()[statsFrames().length - 1].stats
+    if (stats !== null && stats.cores === 12 && Number.isFinite(stats.cpuPct) && stats.cpuPct >= 70) pass('B31a POSIX 被拒后自动回退 PowerShell 分支并出帧（cores=12）')
+    else fail('B31a 回退后出帧', JSON.stringify(stats))
+
+    const orderOk = execLog.length >= 2 && execLog[0].startsWith('sh -c ') && execLog[0].includes('/proc/stat') && execLog[1].includes('-EncodedCommand')
+    if (orderOk) pass('B31b 两跳顺序正确：先 POSIX（sh -c），后 -EncodedCommand')
+    else fail('B31b 两跳顺序', execLog.map((c) => c.slice(0, 40)).join(' | '))
+    await sleep(1200)
+    if (execLog.length === 2) pass('B31c 只回退一次（不无限重试）')
+    else fail('B31c 只回退一次', 'exec 次数=' + String(execLog.length))
+
+    s.client.send(JSON.stringify({ t: 'statsOff', sid: 'b31' }))
+    await sleep(400)
+    const mark = statsFrames().length
+    await sleep(1600)
+    if (statsFrames().length === mark) pass('B31d statsOff 后停表（无帧）')
+    else fail('B31d statsOff 后停表', '多出 ' + String(statsFrames().length - mark) + ' 帧')
+
+    s.client.send(JSON.stringify({ t: 'kill', sid: 'b31' }))
+    await s.waitFor(() => s.state.exited !== null, 12000, 'exit 帧')
+    s.client.close()
+    await new Promise((resolve) => remote.close(resolve))
+    remote.closeAllConnections?.()
+    await postConfig({ sshHosts: [] })
+  }
+
   const failed = RESULTS.filter(([kind]) => kind === 'FAIL')
   console.log(`\n==== 集成测试：${RESULTS.length - failed.length}/${RESULTS.length} PASS ====`)
   for (const [kind, name, detail] of RESULTS) console.log(`  ${kind === 'PASS' ? '✔' : '✘'} ${name}${detail ? ' — ' + detail : ''}`)

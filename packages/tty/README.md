@@ -31,7 +31,7 @@ SSH 侧同理（远程 tmux）；0.12.0 起做了一轮**界面视觉 overhaul**
 （上传/下载百分比，服务端直传为不定进度脉冲，见下文 SFTP）；0.13.0 / 0.14.0 /
 0.15.0 / 0.16.0 依次开放客户端服务扩展点——连接栏按钮 `ttyConnbar`、命令标签
 `ttyTerminal.open`、就地嵌入终端 `ttyTerminal.mount`、面板内挂载位 `ttyPanel`
-（其他插件把自己的界面挂在终端右侧，终端保持可见，见下文「客户端服务」）。
+（其他插件把自己的界面挂在终端右侧，终端保持可见，见下文「客户端服务」）；0.17.0 起内置**服务器状态条**——按标签可见性采集/推送所属主机资源（SSH 走同一条连接的非 PTY exec channel，本地走宿主采样），best-effort 展示 CPU / 内存 / 磁盘 / 在线时长 / TCP / 网速 / CPU 温度（见下文）。
 
 ![终端面板：多标签页 xterm 弹窗，工具栏含搜索/清屏/复制/粘贴，标题栏含最小化「—」与关闭 ✕](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty.png)
 
@@ -301,6 +301,33 @@ tmux server（专用 socket `dsh-tty`，与用户自己的 tmux 完全隔离）�
 - **计入 `maxSessions` 并发上限**；关断与本地会话一致：标签 ✕ / `kill`
   帧关闭 ssh2 channel，`exit` 帧照常带回退出码 / 信号。
 
+## 服务器状态条（0.17.0）
+
+![终端面板（含服务器状态条）：终端上方一条 CPU / 内存 / 磁盘 / 核心 / 在线 / TCP / 网速的细监控条](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-stats.png)
+
+每个**可见**标签在终端上方挂一条细状态条，实时展示该会话所属主机的资源指标
+（观感对齐 FinalShell 的会话监控条）：
+
+    CPU ▮▮▯▯ 6% │ 内存 ▮▮▮▮ 78% │ 磁盘 ▮▮▮ 63% │ 核心 16 │ 内存 49.6G/62.3G │
+    在线 2w4d7h16m │ TCP 570 │ 磁盘 40.8G/68.8G │ CPU温度 无 │ 网络 ↓92.3K/s ↑93.1K/s
+
+- **两条采集路径，同一帧形状**：SSH 会话在**同一条 ssh2 连接**上另开一条
+  **非 PTY 的 exec channel**，远端跑常驻循环每秒吐一行 JSON（CPU%/网速等速率
+  在远端算好）；本地会话由宿主自己采（Linux 直读 /proc，macOS 走 os/netstat/
+  vm_stat）。两条路径都不碰 PTY 数据流。
+- **远端平台覆盖 Linux / Windows**：默认跑 POSIX sh + awk 脚本；若 channel 在
+  **一帧数据都没读过**时就结束（Windows 上 cmd.exe / PowerShell 解析不了脚本），
+  自动换 PowerShell 版再试一次（`-EncodedCommand` 递送、同样字段形状），两跳都
+  失败才判失败——macOS/BSD 远端就是这条路径（无 /proc 也无 PowerShell）。
+- **订阅制、懒启动**：客户端按标签可见性发 `{t:'statsOn'}` / `{t:'statsOff'}`，
+  宿主首个订阅才起采集；退订清零、会话退出、孤儿回收、插件禁用、配置关闭
+  都会停表并关掉远端 channel，不留定时器/远端循环。
+- **best-effort**：某项拿不到就省略该字段（前端显示「无」），采集失败静默停表、
+  状态条整条隐藏（3s 收不到新帧即收起）——绝不写 PTY、绝不弹错误。进度条阈值
+  配色：<70 正常 / 70~90 黄 / >90 红。
+- **热生效**：关掉 `statsEnabled` 立刻停采集（状态条消失、WS 不再发 stats 帧），
+  重新打开后按仍存留的订阅自动恢复，无需重启或用例重开标签。
+
 ## 配置（设置 → 插件 → 终端面板，保存即热生效）
 
 | 项 | 默认 | 说明 |
@@ -321,6 +348,7 @@ tmux server（专用 socket `dsh-tty`，与用户自己的 tmux 完全隔离）�
 | `persistence` | `off` | 会话持久化：`off` 会话随宿主生死（默认）；`tmux` 开启后**所有新开的标签默认由 tmux server 托管**、可跨宿主重启恢复（需本机/远程安装 tmux）；SSH 对话框可对单次连接取消 |
 | `endOnPageClose` | `false` | 页面（最后一个连接）断开且保活期结束时，是否连 tmux 持久会话一起结束。默认 `false` = 留存可恢复；`true` = 页面关了就不保活（保活期内刷新仍可无缝接回） |
 | `sftpLimits` | `{maxDownloadMb: 1024, maxUploadMb: 2048, maxUploadFiles: 1000}` | SFTP 传输限制（浏览器侧保护，均为 **0 = 不限**）：`maxDownloadMb` 单文件下载上限（超限中止并提示用双栏 `⇦`/终端 scp）、`maxUploadMb` 单文件上传上限、`maxUploadFiles` 一次批量/拖拽上传的文件数上限；大文件请走双栏 `⇨/⇦` 服务端直传（字节不经过浏览器，不占内存） |
+| `statsEnabled` | true | 服务器状态条（0.17.0）：按标签可见性采集并推送 CPU / 内存 / 磁盘 / 在线时长 / TCP 连接数 / 网速 / CPU 温度；关闭即停表（远端 exec channel 一并关闭），保存即热生效 |
 
 ## 连接栏扩展点（客户端服务 `ttyConnbar`，0.13.0）
 
@@ -474,8 +502,10 @@ ctx.inject(['ttyPanel'], (c) => {
 | C→S | `{t:'kill', sid?}` | 关闭会话（孤儿会话也允许跨连接 kill，防泄漏） |
 | C→S | `{t:'sessions'}` | 列出全局会话快照（`attachable` 标记可重连者） |
 | C→S | `{t:'attach', sid}` | 重连孤儿会话（保活窗口内）：`ready(reattached:true)` 后紧跟一帧 `data` 回放输出缓冲 |
+| C→S | `{t:'statsOn' \| 'statsOff', sid}` | 订阅/退订该会话的服务器状态条（0.17.0）：按标签可见性驱动，宿主只在有订阅时采集（懒启动 + 退订即停表并关远端 channel） |
 | S→C | `{t:'ready', sid, pid, kind, target?, persist?, reattached?}` | 会话就绪；`kind:'local'` 带 pid，`kind:'ssh'` 时 pid=null、target=user@host[:port]；attach 复用此帧并带 `reattached:true`；`persist:true` 表示 tmux 持久会话（0.10.0） |
 | S→C | `{t:'data', sid, d}` | 终端输出（utf8 文本，StringDecoder 兜跨帧多字节序列）；**12ms 窗口/64KB 阈值合并成帧**（0.4.1），exit/kill 前强制冲刷保证帧序 |
+| S→C | `{t:'stats', sid, stats}` | 资源指标帧（0.17.0）：`{cpuPct, cores, memUsed, memTotal, memPct, diskUsed, diskTotal, diskPct, uptimeSec, tcpConns, rxRate, txRate, tempC?}`；缺失字段即省略（best-effort，前端显示「无」），字节类为 bytes、速率为 B/s |
 | S→C | `{t:'exit', sid, code, signal}` | PTY 退出事实（恰好一次；attach 换连接后仍随当前连接送达） |
 | S→C | `{t:'error', sid?, m}` | 错误 |
 | S→C | `{t:'sessions', list, tmux?}` | 会话快照（`{sid, kind, target, pid?, cwd, startedAt, lastOutputAt, attachable, persist?}`）；`tmux` = 专用 socket 上现存的持久会话名 + SSH 持久会话留存名（0.10.1，可观测字段） |
@@ -569,6 +599,7 @@ node scripts/preview.mjs --theme=light   # 浅色主题
 - **SSH 密码 / 口令建议 `env:VAR` 引用**：连接簿随 settings 文件落盘，
   `password` / `passphrase` 明文入库有泄露面；建议 `env:VAR` +
   dsh-env-manager 托管，或直接用 `agent` 认证（凭证不落盘）。
+- **服务器状态条（0.17.0）边界**：远端靠两跳兜底：先 POSIX（要 `/proc` + `awk`），一帧未出则回退 PowerShell——**Windows 远端**由此覆盖（温度多数组件没有、显示「无」，磁盘取系统盘 `%SystemDrive%`，TCP 走 `netstat -an`，网速走 `Get-NetAdapterStatistics` 差值；只输出整数，从根上避开区域小数点与科学计数法），**macOS/BSD 远端**两跳都不成立、一个字段都拿不到、状态条整条隐藏；非 Linux 远端的每次（重新）订阅会多一跳注定失败的 exec（约百毫秒，不影响出帧延迟）；Linux 上 CPU 温度只在暴露 `/sys/class/thermal` 的机器上有（多数云主机/虚拟机没有，显示「无」）；磁盘固定取 `/`（Windows 取系统盘）所在文件系统（不做多挂载点）；远端脚本经 `sh -c` 单引号包裹（登录 shell 是 fish/csh 也能跑）；本地会话的指标属于**宿主机器**（多个本地标签共享同一份采样，CPU/网速差值窗口连续），macOS 没有 /proc、`ss`、sysfs，改用 os/netstat/vm_stat，故温度恒为「无」，内存按 vm_stat 的 active+wired+compressed 计（os.freemem 会把文件缓存算成已用、长期 99%）；指标是**瞬时值**，没有历史曲线，也不提供 agent 工具（agent 侧仍用 tty_* 命令粒度能力）。
 - **SSH 会话没有本地 pid**：ssh2 shell channel 不是本机进程，`ready.pid`
   为 `null`、`tty_list` 显示 `target` 而非 pid，本机 `ps` / `kill` 对远程
   进程无效——关闭请用标签 ✕ 或 `kill` 帧（关闭的是 ssh2 channel）。
