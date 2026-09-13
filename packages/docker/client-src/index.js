@@ -375,6 +375,138 @@ function pickItems(containers, ids) {
   return ids.map((id) => byId.get(id)).filter((item) => item !== undefined)
 }
 
+/* ========================= 列表写入闸（纯逻辑） ========================= */
+
+/*
+ * 「只有最新一次请求能写状态」——所有列表加载器共用同一个代数计数器。
+ *
+ * 为什么必须有它：旧请求会晚于新请求返回（切到别的目标时，目标1 那次 SSH 请求可能还
+ * 在等 readyTimeout 20s）。没有它时，目标1 的迟到响应会盖掉目标2 已经写好的状态——
+ * 失败原因串台只是难看，成功响应更糟：选择器显示目标2、卡片却是目标1 的容器（本插件
+ * 一直刻意避免的「张冠李戴」）。mountedRef 只挡「面板是否还挂着」，挡不住这个。
+ *
+ * 放在组件外是为了能不起浏览器直接回归（见 scripts/client-smoke.mjs）。
+ */
+function makeListSeq() {
+  let current = 0
+  return {
+    next() {
+      current += 1
+      return current
+    },
+    isCurrent(seq) {
+      return seq === current
+    },
+  }
+}
+
+/* ======================= 多目标总览（纯逻辑） ======================= */
+
+/*
+ * 「不选目标，一屏看全部主机」的折叠逻辑：N 个目标各一份容器列表 → 计数卡行 + 异常表。
+ *
+ * 为什么放到组件外：并行取数、单目标失败容错、异常排序全是纯数据变换，抽出来就能不起
+ * 浏览器直接回归（见 scripts/client-smoke.mjs）；组件只负责把结果接进 React 状态。
+ * 这个页面**只读**——不提供任何跨目标操作，启停删仍在单目标列表里做。
+ */
+
+/** 单个目标的失败文案上限：SSH 报错是好几行长串，N 个目标一起挂会把横幅撑爆。 */
+const OVERVIEW_ERROR_MAX = 120
+
+/*
+ * 「异常」只认两种**现在**就有问题的状态：健康检查不健康、以及还在重启循环里。
+ *
+ * 为什么不算 exited：all=true 只是把 exited 一起取回来，ContainerSummary 里没有
+ * exitCode，无法区分「崩溃退出」与「人工停掉」——把全部 exited 都塞进异常表等于让
+ * 「停过一次」的容器永久刷屏。所以死掉的容器靠计数卡的「已停止」体现，异常表只放
+ * 能确认有问题的。
+ */
+function overviewAbnormal(containers) {
+  return containers.filter((item) => item.health === 'unhealthy' || item.state === 'restarting')
+}
+
+/**
+ * 计数卡的口径。
+ *
+ * running 与列表页「运行中」筛选保持一致（docker ps 能列出来的都算，含 paused /
+ * restarting）——同一个词在两处含义不同会让人怀疑数字；restarting 的真相由异常表兜住。
+ * stopped 收下所有非运行状态（exited / dead / created），卡片只给一个「不在跑」的数。
+ */
+function overviewCounts(containers) {
+  let running = 0
+  let stopped = 0
+  let unhealthy = 0
+  for (const item of containers) {
+    if (item.state === 'running' || item.state === 'paused' || item.state === 'restarting') running += 1
+    else stopped += 1
+    if (item.health === 'unhealthy') unhealthy += 1
+  }
+  return { running, stopped, unhealthy }
+}
+
+/**
+ * 异常表排序：不健康（服务已经在报错）排在重启中（还在挣扎）之前；同级按目标在配置里
+ * 的顺序、再按容器名——同一份数据每轮询一次顺序都一致，表格不会自己跳行。
+ */
+function overviewSortRows(rows) {
+  const rank = (row) => (row.item.health === 'unhealthy' ? 0 : 1)
+  return rows.slice().sort((left, right) => {
+    const byRank = rank(left) - rank(right)
+    if (byRank !== 0) return byRank
+    if (left.targetIndex !== right.targetIndex) return left.targetIndex - right.targetIndex
+    if (left.item.name === right.item.name) return 0
+    return left.item.name < right.item.name ? -1 : 1
+  })
+}
+
+/** 失败原因压成一行（取首行 + 截断）：它会长在卡片里、也会拼进横幅。 */
+function overviewErrorText(error) {
+  const line = String(error ?? '').split('\n')[0].trim()
+  if (line === '') return '未知错误'
+  return line.length > OVERVIEW_ERROR_MAX ? line.slice(0, OVERVIEW_ERROR_MAX) + '…' : line
+}
+
+/**
+ * 一个目标的结果落地时只 patch 它自己那一格，其余格保持原引用。
+ * 这是「单个目标失败/慢不影响其余」的落点——不能等 Promise.all 汇总后一次性 setState。
+ */
+function overviewPatch(groups, name, patch) {
+  let hit = false
+  const next = groups.map((group) => {
+    if (group.name !== name) return group
+    hit = true
+    return { ...group, ...patch }
+  })
+  return hit ? next : groups
+}
+
+/** groups（每格一个目标）→ 总览正文要的纯数据：计数卡 / 异常表 / 不可达清单。 */
+function overviewData(groups) {
+  const cards = groups.map((group) => {
+    const counts = overviewCounts(group.containers)
+    return {
+      name: group.name,
+      kind: group.kind === 'ssh' ? 'ssh' : 'local',
+      label: typeof group.label === 'string' ? group.label : '',
+      error: group.error === '' ? '' : overviewErrorText(group.error),
+      loaded: group.loaded === true,
+      running: counts.running,
+      stopped: counts.stopped,
+      unhealthy: counts.unhealthy,
+    }
+  })
+  const rows = []
+  groups.forEach((group, targetIndex) => {
+    for (const item of overviewAbnormal(group.containers)) rows.push({ target: group.name, targetIndex, item })
+  })
+  return {
+    cards,
+    rows: overviewSortRows(rows),
+    unreachable: cards.filter((card) => card.error !== ''),
+    // 还有目标没落地：此时「一切正常」是「还不知道」，不能当成没问题显示
+    loading: groups.some((group) => group.loaded !== true),
+  }
+}
 /* ========================== 事件活动流（纯逻辑） ========================== */
 
 /*
@@ -508,6 +640,111 @@ window.__ModuleLoader__.load({
           props.action === undefined ? null : jsx('div', { className: 'dk_bannerAction', children: props.action }, 'action'),
         ],
       })
+    }
+
+    /**
+     * 总览计数卡里的一个数字（普通函数返回 jsx，不是组件）。
+     *
+     * 为什么不做成组件：离线冒烟的 React 桩**不执行函数组件体**（useState 的 setter 是
+     * 空函数、useEffect 根本不跑），组件式写法在那里只能断言到「元素类型是个函数」；
+     * 写成普通函数返回 jsx，冒烟就能遍历返回的树、直接读到「运行中 / 3」这些文本。
+     */
+    function overviewCountSpan(state, label, value) {
+      return jsxs('span', {
+        className: 'dk_ovCount',
+        'data-state': state,
+        // 0 也要显示（「不健康 0」本身就是结论），但 0 不该继续用危险色喊人
+        'data-zero': value === 0 ? '1' : undefined,
+        children: [
+          jsx('span', { className: 'dk_ovCountValue', children: String(value) }),
+          jsx('span', { className: 'dk_ovCountLabel', children: label }),
+        ],
+      }, state)
+    }
+
+    /**
+     * 总览正文——**纯函数**（入参是纯数据 + 两个回调，返回 jsx 树），刻意不做成组件：
+     * 理由同上（冒烟要能直接调用它并遍历这棵树）。容器面板的 body() 直接调它。
+     *
+     * 结构：不可达横幅 → 计数卡行（点卡片回到该目标的常规列表）→ 异常表（点行进详情）。
+     * 这里没有任何变更入口——总览是只读页。
+     */
+    function overviewBody(data, actions) {
+      if (data.cards.length === 0) {
+        return jsxs('div', { className: 'dk_empty', children: [
+          jsx('div', { className: 'dk_emptyTitle', children: '还没有配置 Docker 目标' }),
+          jsx('div', { className: 'dk_emptyHint', children: '到 设置 → 插件 → Docker 容器面板 添加目标后，总览会在这里一屏汇总全部主机。' }),
+        ] })
+      }
+      const abnormal = data.rows.length === 0
+        // 还有目标没答完时不能下「一切正常」的结论——那是「还不知道」
+        ? (data.loading
+          ? jsxs('div', { className: 'dk_empty dk_ovEmpty', children: [
+            jsx('span', { className: 'dk_spin' }),
+            jsx('div', { children: '读取中…' }),
+          ] }, 'loading')
+          : jsxs('div', { className: 'dk_empty dk_ovEmpty', children: [
+            jsx('div', { className: 'dk_emptyTitle', children: '一切正常' }),
+            jsx('div', { className: 'dk_emptyHint', children: '所有目标上都没有不健康或重启中的容器。' }),
+          ] }, 'empty'))
+        : jsx('div', { className: 'dk_tableWrap', children: jsxs('table', { className: 'dk_images dk_ovTable', children: [
+          jsx('thead', { children: jsxs('tr', { children: [
+            jsx('th', { children: '容器名' }),
+            jsx('th', { children: '目标' }),
+            jsx('th', { children: '状态' }),
+            jsx('th', { children: '镜像' }),
+          ] }) }),
+          jsx('tbody', { children: data.rows.map((row) => jsxs('tr', {
+            className: 'dk_rowClickable',
+            title: '打开容器详情',
+            onClick: () => actions.onOpenContainer(row.target, row.item),
+            children: [
+              jsx('td', { className: 'dk_mono', title: row.item.name, children: row.item.name }),
+              jsx('td', { children: row.target }),
+              jsx('td', { children: jsx(Badge, { state: row.item.state, health: row.item.health, status: row.item.status }) }),
+              jsx('td', { className: 'dk_mono dk_pathCell', title: row.item.image, children: row.item.image }),
+            ],
+          }, row.target + '\u0000' + row.item.id)) }),
+        ] }) }, 0)
+      return jsxs('div', { className: 'dk_imagesView dk_ovView', children: [
+        data.unreachable.length === 0 ? null : jsx(Banner, {
+          title: String(data.unreachable.length) + ' 个目标不可达',
+          hint: data.unreachable.map((card) => card.name + '：' + card.error).join('；') + '（其余目标的正常结果不受影响）',
+        }, 'unreachable'),
+        jsx('div', { className: 'dk_ovCards', children: data.cards.map((card) => jsxs('button', {
+          type: 'button',
+          className: 'dk_ovCard',
+          'data-state': card.error !== '' ? 'error' : (card.loaded === true ? 'ok' : 'loading'),
+          title: card.error === '' ? '切到该目标的容器列表' : card.error,
+          onClick: () => actions.onOpenTarget(card.name),
+          children: [
+            jsxs('div', { className: 'dk_ovCardHead', children: [
+              jsx('span', { className: 'dk_ovCardName', title: card.label === '' ? card.name : card.label, children: card.name }),
+              // local / ssh 是两套完全不同的执行通道，值得一眼区分
+              jsx('span', { className: 'dk_badge', 'data-state': 'paused', children: card.kind === 'local' ? '本机' : 'SSH' }),
+            ] }, 'head'),
+            card.error === ''
+              // 还没落地的目标不能显示 0/0/0——那会被读成「这台机器没有容器」，
+              // 而它其实只是还没答（SSH 目标不可达最长要等 readyTimeout 20s）
+              ? (card.loaded === true
+                ? jsxs('div', { className: 'dk_ovCardCounts', children: [
+                  overviewCountSpan('running', '运行中', card.running),
+                  overviewCountSpan('stopped', '已停止', card.stopped),
+                  overviewCountSpan('unhealthy', '不健康', card.unhealthy),
+                ] }, 'counts')
+                : jsxs('div', { className: 'dk_ovCardLoading', children: [
+                  jsx('span', { className: 'dk_spin' }),
+                  jsx('span', { children: '读取中…' }),
+                ] }, 'loading'))
+              : jsxs('div', { className: 'dk_ovCardError', children: [
+                jsx('span', { className: 'dk_badge', 'data-state': 'dead', children: '不可达' }),
+                jsx('span', { className: 'dk_ovCardErrorText', title: card.error, children: card.error }),
+              ] }, 'error'),
+          ],
+        }, card.name)) }, 1),
+        jsx('div', { className: 'dk_ovSection', children: data.rows.length === 0 ? '异常容器' : '异常容器（' + String(data.rows.length) + '）' }, 2),
+        abnormal,
+      ] })
     }
 
     /**
@@ -2342,6 +2579,11 @@ window.__ModuleLoader__.load({
       const sessionScoped = props.sessionHint !== undefined && (props.initialTarget ?? '') === ''
       const [view, setView] = useState('containers')
       const [containers, setContainers] = useState([])
+      /**
+       * 多目标总览：每个配置目标一格「容器 / 失败原因 / 是否已落地」。渐进式填格——
+       * 一个目标慢或挂了不影响其余。只在内存里，不落配置、不传宿主。
+       */
+      const [overviewGroups, setOverviewGroups] = useState([])
       const [images, setImages] = useState([])
       const [networks, setNetworks] = useState([])
       const [volumes, setVolumes] = useState([])
@@ -2395,6 +2637,13 @@ window.__ModuleLoader__.load({
       const [networkSearch, setNetworkSearch] = useState('')
       const [volumeSearch, setVolumeSearch] = useState('')
       const mountedRef = useRef(true)
+      /**
+       * 列表写入闸（见 makeListSeq）：容器 / 镜像 / 网络 / 卷 / 总览共用同一个计数器——
+       * 换页、换目标、「含已停止」开关都是「换了一个上下文」，旧请求一律作废。
+       * 懒初始化：只在首次渲染建一次，之后一直用同一个。
+       */
+      const listSeqRef = useRef(null)
+      if (listSeqRef.current === null) listSeqRef.current = makeListSeq()
       /**
        * 就地嵌入的交互式终端（tty ≥ 0.15 的 ttyTerminal.mount）：{ label, options }。
        * 非 null 时面板底部出现终端抽屉——不再「开标签 + 收起面板」，
@@ -2500,71 +2749,135 @@ window.__ModuleLoader__.load({
       // 否则会出现「转圈没了、状态还是旧的」空档
       const loadContainers = useCallback(() => {
         if (target === '') return Promise.resolve()
+        const seq = listSeqRef.current.next()
         setLoading(true)
         return api.containers(target, all)
           .then((payload) => {
-            if (!mountedRef.current) return
+            // 过闸：这一代已经被后来的请求取代时，这份数据属于别的目标 / 别的页
+            if (!mountedRef.current || !listSeqRef.current.isCurrent(seq)) return
             setContainers(payload.containers ?? [])
             setError('')
           })
           .catch((error_) => {
-            if (mountedRef.current) setError(error_.message)
+            // 失败分支同样要过闸：旧目标的超时正是从这条路径「迟到」地盖到新目标上的
+            if (mountedRef.current && listSeqRef.current.isCurrent(seq)) setError(error_.message)
           })
           .finally(() => {
-            if (mountedRef.current) setLoading(false)
+            // loading 也归最新那一代管，否则旧请求先回来会把新请求的转圈提前停掉
+            if (mountedRef.current && listSeqRef.current.isCurrent(seq)) setLoading(false)
           })
       }, [target, all])
 
       const loadImages = useCallback(() => {
         if (target === '') return Promise.resolve()
+        const seq = listSeqRef.current.next()
         setLoading(true)
         return api.images(target)
           .then((payload) => {
-            if (!mountedRef.current) return
+            // 过闸：这一代已经被后来的请求取代时，这份数据属于别的目标 / 别的页
+            if (!mountedRef.current || !listSeqRef.current.isCurrent(seq)) return
             setImages(payload.images ?? [])
             setError('')
           })
           .catch((error_) => {
-            if (mountedRef.current) setError(error_.message)
+            // 失败分支同样要过闸：旧目标的超时正是从这条路径「迟到」地盖到新目标上的
+            if (mountedRef.current && listSeqRef.current.isCurrent(seq)) setError(error_.message)
           })
           .finally(() => {
-            if (mountedRef.current) setLoading(false)
+            // loading 也归最新那一代管，否则旧请求先回来会把新请求的转圈提前停掉
+            if (mountedRef.current && listSeqRef.current.isCurrent(seq)) setLoading(false)
           })
       }, [target])
 
       const loadNetworks = useCallback(() => {
         if (target === '') return Promise.resolve()
+        const seq = listSeqRef.current.next()
         setLoading(true)
         return api.networks(target)
           .then((payload) => {
-            if (!mountedRef.current) return
+            // 过闸：这一代已经被后来的请求取代时，这份数据属于别的目标 / 别的页
+            if (!mountedRef.current || !listSeqRef.current.isCurrent(seq)) return
             setNetworks(payload.networks ?? [])
             setError('')
           })
           .catch((error_) => {
-            if (mountedRef.current) setError(error_.message)
+            // 失败分支同样要过闸：旧目标的超时正是从这条路径「迟到」地盖到新目标上的
+            if (mountedRef.current && listSeqRef.current.isCurrent(seq)) setError(error_.message)
           })
           .finally(() => {
-            if (mountedRef.current) setLoading(false)
+            // loading 也归最新那一代管，否则旧请求先回来会把新请求的转圈提前停掉
+            if (mountedRef.current && listSeqRef.current.isCurrent(seq)) setLoading(false)
           })
       }, [target])
 
       const loadVolumes = useCallback(() => {
         if (target === '') return Promise.resolve()
+        const seq = listSeqRef.current.next()
         setLoading(true)
         return api.volumes(target)
           .then((payload) => {
-            if (!mountedRef.current) return
+            // 过闸：这一代已经被后来的请求取代时，这份数据属于别的目标 / 别的页
+            if (!mountedRef.current || !listSeqRef.current.isCurrent(seq)) return
             setVolumes(payload.volumes ?? [])
             setError('')
           })
           .catch((error_) => {
-            if (mountedRef.current) setError(error_.message)
+            // 失败分支同样要过闸：旧目标的超时正是从这条路径「迟到」地盖到新目标上的
+            if (mountedRef.current && listSeqRef.current.isCurrent(seq)) setError(error_.message)
           })
           .finally(() => {
-            if (mountedRef.current) setLoading(false)
+            // loading 也归最新那一代管，否则旧请求先回来会把新请求的转圈提前停掉
+            if (mountedRef.current && listSeqRef.current.isCurrent(seq)) setLoading(false)
           })
       }, [target])
+
+      /**
+       * 总览取数：**并行**请求全部配置目标，每个目标独立落地。
+       *
+       * 两个刻意的决定：
+       *   1. all=true——计数卡要「已停止」，裸 docker ps 不返回 exited，那个数会永远是 0；
+       *      同一台机仍然只是一次 CLI 调用，贵的只是输出行数。
+       *   2. 不用 Promise.all 汇总后一次性 setState——SSH 目标不可达要等 readyTimeout
+       *      （20s），汇总就等于让整页静默 20s；「单个失败保留其余」要求结果**渐进**填进
+       *      对应的那一格（overviewPatch）。这里的 Promise.all 只是给调用方一个「这一轮
+       *      取完了」的信号，每个分支都已 catch，不会漏未处理拒绝。
+       */
+      const loadOverview = useCallback(() => {
+        if (targets.length === 0) {
+          setOverviewGroups([])
+          return Promise.resolve()
+        }
+        // 整轮共用一代：一轮没答完又来一轮（自动刷新 / 手动刷新）时，老那轮的格子别再往新轮里写
+        const seq = listSeqRef.current.next()
+        setLoading(true)
+        setOverviewGroups(targets.map((item) => ({
+          name: item.name,
+          kind: item.kind,
+          label: item.label,
+          containers: [],
+          error: '',
+          loaded: false,
+        })))
+        let pending = targets.length
+        const settle = () => {
+          pending -= 1
+          if (pending === 0 && mountedRef.current && listSeqRef.current.isCurrent(seq)) setLoading(false)
+        }
+        return Promise.all(targets.map((item) => api.containers(item.name, true)
+          .then((payload) => {
+            if (!mountedRef.current || !listSeqRef.current.isCurrent(seq)) return
+            // 连 error 一起写：上一轮失败、这一轮成功的目标不能留着旧的红色原因
+            setOverviewGroups((groups) => overviewPatch(groups, item.name, { containers: payload.containers ?? [], error: '', loaded: true }))
+          })
+          .catch((error_) => {
+            if (!mountedRef.current || !listSeqRef.current.isCurrent(seq)) return
+            setOverviewGroups((groups) => overviewPatch(groups, item.name, {
+              error: error_ instanceof Error ? error_.message : String(error_),
+              loaded: true,
+            }))
+          })
+          .finally(settle)))
+      }, [targets])
 
       // 事件流用 ref 取「最新的」列表加载器：它只依赖 [view, target]，不该因为
       // 用户切「含已停止」就重连一次 EventSource
@@ -2620,25 +2933,73 @@ window.__ModuleLoader__.load({
         setPickedIds((ids) => pickReconcile(ids, containers))
       }, [containers, pickMode])
 
+      /**
+       * 总览计数卡 → 该目标的常规容器列表。
+       * 换目标必须和列表页走同一套清理：勾选与「执行中」标记都只属于单目标列表。
+       */
+      const openTargetFromOverview = (name) => {
+        setTarget(name)
+        setError('')
+        setView('containers')
+        setDetail(null)
+        resetPick()
+        setPending({})
+        props.onTargetChange?.(targetLabel(name))
+      }
+
+      /**
+       * 总览异常表 → 容器详情。必须**同时**换目标、切回容器分段、开详情：
+       * 详情 / 日志 / 统计都按「当前 target」发请求，只 setDetail 会打到上一台主机。
+       * 切分段也顺带定了返回键的落点——返回后是该目标的常规列表，而不是总览。
+       */
+      const openContainerFromOverview = (name, item) => {
+        setTarget(name)
+        setError('')
+        setView('containers')
+        resetPick()
+        setPending({})
+        setDetail({ id: item.id, tab: 'overview', item })
+        props.onTargetChange?.(targetLabel(name))
+      }
+
       const refresh = useCallback(() => {
-        // 四个列表各有自己的加载器；容器以外的都变化慢，但都走同一条「切页 / 切目标即刷」
-        if (view === 'images') loadImages()
+        // 五个列表各有自己的加载器；容器以外的都变化慢，但都走同一条「切页 / 切目标即刷」
+        if (view === 'overview') loadOverview()
+        else if (view === 'images') loadImages()
         else if (view === 'networks') loadNetworks()
         else if (view === 'volumes') loadVolumes()
         else loadContainers()
         setRefreshToken((value) => value + 1)
-      }, [view, loadContainers, loadImages, loadNetworks, loadVolumes])
+      }, [view, loadOverview, loadContainers, loadImages, loadNetworks, loadVolumes])
 
       useEffect(() => {
+        // 总览有自己的取数 effect（它不依赖任何单个 target），这里只服务单目标视图
+        if (view === 'overview') return undefined
         if (target === '') return undefined
         refresh()
         return undefined
       }, [target, all, view])
 
-      // 自动刷新只服务容器列表（状态会变）；镜像列表变化慢，跟着每 5s 跑一次 docker images
-      // 纯属白烧目标机的 docker CLI，所以镜像页不轮询、也不显示这个开关
+      /*
+       * 目标清单的稳定签名：/targets 刚落地时 targets 会从空数组变成 N 条，总览要跟着补
+       * 一次取数；用名字拼接当依赖，免得每次渲染都因数组换了引用而重跑。
+       */
+      const overviewKey = targets.map((item) => item.name).join('\u0000')
       useEffect(() => {
-        if (!autoRefresh || target === '' || view === 'images') return undefined
+        if (view !== 'overview') return undefined
+        loadOverview()
+        return undefined
+      }, [view, overviewKey])
+
+      // 自动刷新只服务「状态会变」的页（容器 / Compose / 总览）；镜像列表变化慢，跟着每
+      // 5s 跑一次 docker images 纯属白烧目标机的 docker CLI，所以镜像页不轮询、也不显示开关
+      useEffect(() => {
+        if (!autoRefresh) return undefined
+        /*
+         * 总览轮询的是**全部**目标（N 个 target 各一次 docker ps，SSH 还要各开一条 exec
+         * channel），比任何单目标页都贵——所以它同样只认这一个开关，默认不开。
+         */
+        if (view !== 'overview' && (target === '' || view === 'images')) return undefined
         const timer = setInterval(refresh, Math.max(2, config?.pollIntervalSec ?? 5) * 1000)
         return () => clearInterval(timer)
       }, [autoRefresh, refresh, target, config, view])
@@ -3009,6 +3370,13 @@ window.__ModuleLoader__.load({
       }
 
       const body = () => {
+        if (view === 'overview') {
+          // 数据折叠与渲染都在纯函数里（见 overviewBody）：冒烟可以不进浏览器直接验证
+          return overviewBody(overviewData(overviewGroups), {
+            onOpenTarget: openTargetFromOverview,
+            onOpenContainer: openContainerFromOverview,
+          })
+        }
         if (view === 'images') {
           // 搜索框在工具条里（固定区，不随镜像列表滚走）；表体自己滚，表头钉住
           return jsxs('div', { className: 'dk_imagesView', children: [
@@ -3224,9 +3592,15 @@ window.__ModuleLoader__.load({
             selected !== null ? null : jsxs('div', { className: 'dk_toolbar', children: [
               jsx('select', {
                 className: 'dk_select',
-                value: target,
+                // 总览没有「当前目标」这回事：选择器回落成一条带说明的空值项
+                value: view === 'overview' ? '' : target,
                 onChange: (event) => {
                   setTarget(event.target.value)
+                  // 换目标 = 换了上下文：上一个目标的失败不该停在新目标的页面上（新的加载
+                  // 成功会自己清、失败会自己写，这里只是消掉中间那段「张冠李戴」的窗口）
+                  setError('')
+                  // 在总览里挑目标 = 离开总览去看那台主机（卡片点击走同一条语义）
+                  setView('containers')
                   setDetail(null)
                   // 勾选只属于「当前 target 的列表」：换目标即失效
                   resetPick()
@@ -3235,11 +3609,42 @@ window.__ModuleLoader__.load({
                   props.onTargetChange?.(targetLabel(event.target.value))
                 },
                 children: [
-                  // 会话主机未匹配目标时保持「未选择」，让用户显式挑一个，不替他默认
-                  ...(target === '' ? [jsx('option', { value: '', children: '（未选择目标）' }, '__none')] : []),
+                  ...(view === 'overview'
+                    ? [jsx('option', { value: '', children: '（总览 · 全部目标）' }, '__overview')]
+                    // 会话主机未匹配目标时保持「未选择」，让用户显式挑一个，不替他默认
+                    : (target === '' ? [jsx('option', { value: '', children: '（未选择目标）' }, '__none')] : [])),
                   ...(targets.length === 0 && target !== '' ? [{ name: target, label: undefined }] : targets)
                     .map((item) => jsx('option', { value: item.name, children: targetLabel(item.name) }, item.name)),
                 ],
+              }),
+              /*
+               * 总览入口：紧挨目标选择器（它取代的正是「选一个目标」这件事），与「聚合选择」
+               * 同款 pill。只在配了 ≥2 个目标时出现——单目标用户点进去和列表页没有区别，
+               * 多一个入口是纯噪音。再点一次退回容器列表（保持当前目标不变）。
+               */
+              targets.length < 2 ? null : jsx('button', {
+                type: 'button',
+                className: 'dk_pill dk_pillOverview',
+                'data-on': view === 'overview' ? '1' : '0',
+                title: view === 'overview' ? '退出总览，回到当前目标的容器列表' : '不选目标，一屏看全部目标的容器概况（只读）',
+                onClick: () => {
+                  if (view !== 'overview') {
+                    setView('overview')
+                    /*
+                     * 这条 error 槽属于「单目标列表页」（四个列表加载器写它）。从容器列表切
+                     * 过来时它常常是「刚才那个目标连不上」的残留——总览自己按目标归因，再留
+                     * 着这条会把同一个 SSH 超时讲两遍，看着像两台机器都挂了。
+                     */
+                    setError('')
+                    setDetail(null)
+                    resetPick()
+                    return
+                  }
+                  setView('containers')
+                  setDetail(null)
+                  resetPick()
+                },
+                children: '总览',
               }),
               /*
                * 五段：容器 / 镜像 / Compose / 网络 / 卷。都是短词，窄栏放得下；
@@ -3323,18 +3728,26 @@ window.__ModuleLoader__.load({
                 onClick: () => setStateFilter(key),
                 children: label,
               }, key))}) : null,
-              view === 'containers' || view === 'compose' ? jsx('label', { className: 'dk_check', children: [
-                jsx('input', { type: 'checkbox', checked: all, onChange: (event) => setAll(event.target.checked) }),
-                '含已停止',
-              ] }) : null,
               /*
-               * 自动刷新只服务「状态会变」的两个页（容器 / Compose）。镜像、网络、卷都是
-               * 低频变更的清单，按 5s 轮询纯属白烧目标机的 docker CLI——与镜像页现状一致，
-               * 这三页不显示该开关（切回来时原设置照旧生效）。
+               * 两个开关收成一组：工具条在宽面板里正好卡在「放得下 / 放不下」的边界上，分开排
+               * 的话末尾的「自动刷新」会被单独挤到第二行——一行只有一个复选框很难看。成组之后
+               * 要么都在第一行，要么整组换行，怎么都不会落单。
                */
-              view === 'containers' || view === 'compose' ? jsx('label', { className: 'dk_check', children: [
-                jsx('input', { type: 'checkbox', checked: autoRefresh, onChange: (event) => setAutoRefresh(event.target.checked) }),
-                '自动刷新',
+              view === 'containers' || view === 'compose' || view === 'overview' ? jsxs('div', { className: 'dk_toolbarToggles', children: [
+                view === 'containers' || view === 'compose' ? jsx('label', { className: 'dk_check', children: [
+                  jsx('input', { type: 'checkbox', checked: all, onChange: (event) => setAll(event.target.checked) }),
+                  '含已停止',
+                ] }, 'all') : null,
+                /*
+                 * 自动刷新只服务「状态会变」的页（容器 / Compose / 总览）。镜像、网络、卷都是
+                 * 低频变更的清单，按 5s 轮询纯属白烧目标机的 docker CLI——与镜像页现状一致，
+                 * 这三页不显示该开关（切回来时原设置照旧生效）。总览最贵（N 个目标各一次 docker
+                 * ps，SSH 还要各开一条 exec channel），所以它也只认这个开关，不自己偷偷轮询。
+                 */
+                jsx('label', { className: 'dk_check', children: [
+                  jsx('input', { type: 'checkbox', checked: autoRefresh, onChange: (event) => setAutoRefresh(event.target.checked) }),
+                  '自动刷新',
+                ] }, 'auto'),
               ] }) : null,
               /*
                * dock 模式没有面板头部，刷新 / 只读徽标放在工具条**末尾并靠右**：
@@ -3360,8 +3773,13 @@ window.__ModuleLoader__.load({
             /* 主体 */
             jsxs('div', { className: 'dk_body', children: [
               // 表格页（镜像 / 网络 / 卷）共用 dk_mainImages 的「表体自己滚、表头吸顶」布局
-              jsxs('div', { className: 'dk_main' + (view === 'images' || view === 'networks' || view === 'volumes' ? ' dk_mainImages' : ''), children: [
-                error === '' ? null : jsx(Banner, { title: '操作失败', hint: error }),
+              jsxs('div', { className: 'dk_main' + (view === 'images' || view === 'networks' || view === 'volumes' || view === 'overview' ? ' dk_mainImages' : ''), children: [
+                /*
+                 * 总览里不渲染这条：它讲的是「当前这一个目标」的加载失败，而总览的失败已经
+                 * 逐目标落在卡片的红色态与顶部「N 个目标不可达」横幅上——两条一起出现，
+                 * 同一个错误会被读成两个故障。
+                 */
+                error === '' || view === 'overview' ? null : jsx(Banner, { title: '操作失败', hint: error }),
                 notice === '' ? null : jsx(Banner, { kind: 'info', title: notice }),
                 props.sessionHint === undefined ? null : jsx(Banner, {
                   kind: 'info',
@@ -3901,6 +4319,25 @@ window.__ModuleLoader__.load({
       timeText: eventTimeText,
       debounce: makeDebounced,
     }
+    /*
+     * 同一类测试缝：总览的折叠逻辑与**正文渲染**都是纯函数（正文刻意写成普通函数而不是
+     * 组件，就是为了这里能直接调用并遍历返回的 jsx 树）。见 scripts/client-smoke.mjs。
+     */
+    exports.__overview = {
+      ERROR_MAX: OVERVIEW_ERROR_MAX,
+      counts: overviewCounts,
+      abnormal: overviewAbnormal,
+      sortRows: overviewSortRows,
+      patch: overviewPatch,
+      errorText: overviewErrorText,
+      data: overviewData,
+      body: overviewBody,
+    }
+    /*
+     * 列表写入闸：纯计数逻辑，「旧请求作废」的语义在这里回归。组件里那四个加载器与总览
+     * 共用同一个计数器（组件体没法在离线冒烟里跑，所以只能把闸本身拿出来测）。
+     */
+    exports.__listSeq = { make: makeListSeq }
     exports.apply = (ctx) => {
       ensureStyle()
       // 侧栏入口先按可见挂载（与旧行为一致），config 确认禁用后由闸门收起；

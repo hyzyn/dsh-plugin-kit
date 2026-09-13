@@ -426,7 +426,13 @@
   box-shadow: var(--dk-ring);
 }
 
-.dk_search { flex: 1 1 200px; min-width: 160px; }
+/*
+ * 搜索框是工具条里唯一可伸缩的项，它的 min-width 决定了「放不下时先挤谁」：给到 160px 时
+ * 空隙不够，浏览器宁可把末尾那个开关单独换行，也不肯把搜索框压窄一点——宽面板里因此多出
+ * 一行只有一个复选框。120px 让它先瘦下来兜住这点差距（flex-grow 仍是 1：空间富余时它照旧
+ * 填满整行，视觉宽度不变）。
+ */
+.dk_search { flex: 1 1 120px; min-width: 120px; }
 
 /* 工具条里的结果计数（镜像：23 / 23 个镜像）：别被压缩，数字等宽 */
 .dk_searchCount { flex: none; font-variant-numeric: tabular-nums; }
@@ -482,6 +488,17 @@
 }
 
 .dk_check input { accent-color: var(--dk-accent); }
+
+/*
+ * 工具条末尾的两个开关（含已停止 / 自动刷新）成组：它们是一个「开关簇」，工具条在宽面板里
+ * 恰好卡在放得下与放不下的边界上——分开排时最后一个会被单独挤到第二行（一行只有一个复选
+ * 框）。成组后换行以组为单位，最坏情况也是一整组一起下去。
+ */
+.dk_toolbarToggles {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--dk-gap-md);
+}
 
 /* ============================ 按钮 ============================ */
 
@@ -1305,6 +1322,125 @@
 
 /* 挂载点列：路径很长，撑宽表格会把别的列挤没，这里限宽 + 省略号，title 里给全量 */
 .dk_pathCell { max-width: 420px; overflow: hidden; text-overflow: ellipsis; }
+
+/* ====================== 多目标总览（只读） ========================= */
+
+/*
+ * 一屏看全部目标：上面一行计数卡，下面异常表。卡片行不滚（目标数是配置出来的，
+ * 通常个位数），异常表自己滚、表头吸顶——与镜像 / 网络 / 卷页同款，靠 .dk_mainImages
+ * 里那条 `.dk_tableWrap { flex: 1 }` 生效，所以正文外层必须是 flex 列的 .dk_imagesView。
+ */
+.dk_ovCards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: var(--dk-gap-md);
+  margin-bottom: var(--dk-gap-lg);
+}
+
+.dk_ovCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dk-gap-sm);
+  padding: var(--dk-gap-md) var(--dk-gap-lg);
+  border: 1px solid var(--dk-border);
+  border-radius: var(--dk-r-md);
+  background: var(--dk-surface-solid);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--dk-dur) var(--dk-ease), box-shadow var(--dk-dur) var(--dk-ease);
+}
+
+.dk_ovCard:hover { border-color: var(--dk-border-strong); box-shadow: var(--dk-shadow); }
+.dk_ovCard:focus-visible { outline: none; box-shadow: var(--dk-ring); }
+
+/* 不可达的卡要在一屏里第一眼被挑出来：危险色描边 + 淡底，和「数字都正常」的卡拉开 */
+.dk_ovCard[data-state="error"] {
+  border-color: color-mix(in srgb, var(--dk-danger) 40%, transparent);
+  background: color-mix(in srgb, var(--dk-danger) 8%, transparent);
+}
+
+.dk_ovCardHead {
+  display: flex;
+  align-items: center;
+  gap: var(--dk-gap-sm);
+  min-width: 0;
+}
+
+.dk_ovCardName {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dk_ovCardCounts { display: flex; flex-wrap: wrap; gap: var(--dk-gap-lg); }
+
+.dk_ovCount {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--dk-label-3);
+}
+
+.dk_ovCountValue {
+  font-size: 16px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--dk-label);
+}
+
+.dk_ovCount[data-state="running"] .dk_ovCountValue { color: var(--dk-success); }
+.dk_ovCount[data-state="unhealthy"] .dk_ovCountValue { color: var(--dk-danger); }
+/*
+ * 还没答完的卡：只给读取态，不出 0/0/0（那会被读成「这台机器没有容器」，而它只是还没
+ * 回答——SSH 目标不可达时要等 readyTimeout 20s）。整卡压暗一点，与已有结果区分开。
+ */
+.dk_ovCard[data-state="loading"] { opacity: .7; }
+
+.dk_ovCardLoading {
+  display: flex;
+  align-items: center;
+  gap: var(--dk-gap-sm);
+  font-size: 12px;
+  color: var(--dk-label-3);
+}
+
+/* 不健康为 0 时数字即结论，不该继续用危险色喊人 */
+.dk_ovCount[data-state="unhealthy"][data-zero="1"] .dk_ovCountValue { color: var(--dk-label-3); }
+
+.dk_ovCardError {
+  display: flex;
+  align-items: center;
+  gap: var(--dk-gap-sm);
+  min-width: 0;
+  font-size: 12px;
+}
+
+/* SSH 报错是一长串：卡片里只留一行，全量在 title 里 */
+.dk_ovCardErrorText {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--dk-label-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dk_ovSection {
+  margin: 0 0 var(--dk-gap-sm);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--dk-label-2);
+}
+
+/* 「一切正常」/「读取中」贴在卡片行下面，不需要满屏 48px 的留白 */
+.dk_ovEmpty { padding: 24px var(--dk-gap-lg); }
 
 /* ============================ 空态 / 提示 ============================ */
 
