@@ -458,6 +458,14 @@ await test('样式表内联进了 bundle（dk_ 前缀 + 侧边栏入口属性）
   assert.ok(code.includes('dk_toolbarEnd'), '缺少 dock 工具条尾部动作容器')
   const toolbarEndRule = /\.dk_toolbarEnd \{[^}]*\}/.exec(code)?.[0] ?? ''
   assert.ok(toolbarEndRule.includes('margin-left: auto'), '.dk_toolbarEnd 缺少 margin-left:auto（刷新必须靠右）')
+  // 工具条末尾两个开关必须成组：分开排时末尾那个会被单独挤到第二行（一行一个复选框）
+  assert.ok(code.includes('dk_toolbarToggles'), '缺少「含已停止 / 自动刷新」开关组容器')
+  const togglesRule = /\.dk_toolbarToggles \{[^}]*\}/.exec(code)?.[0] ?? ''
+  assert.ok(togglesRule.includes('inline-flex'), '.dk_toolbarToggles 必须是不可拆的 inline-flex 组')
+  // 搜索框是工具条里唯一可伸缩的项：min-width 太大时它会宁可把末尾开关挤到第二行
+  const searchRule = /\.dk_search \{[^}]*\}/.exec(code)?.[0] ?? ''
+  const searchMin = Number(/min-width:\s*(\d+)px/.exec(searchRule)?.[1] ?? '999')
+  assert.ok(searchMin <= 130, '.dk_search 的 min-width 太大（' + String(searchMin) + 'px）：工具条会多出一行只放开关')
   // esbuild 默认 charset=ascii，中文被写成 \uXXXX：解码后再断言文案
   const decoded = code.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
   assert.ok(decoded.includes('Docker 容器'))
@@ -709,6 +717,217 @@ await test('网络 / 卷：删除与 prune 的 gated 文案 + 卷清理的数据
   assert.ok(decoded.includes('卷里的数据会一起删除'), '缺少卷 prune 的数据丢失警告')
   // 网络删除失败时的可执行提示
   assert.ok(decoded.includes('还有容器接着'), '缺少网络被占用时的提示')
+})
+
+/* ------------------------------------------------------------------ *
+ * 多目标总览（不选目标，一屏看全部主机）
+ * ------------------------------------------------------------------ */
+
+/** 取当前 bundle 里的总览纯逻辑 / 正文渲染（factory 返回值上的 __overview 测试缝）。 */
+function overviewApi() {
+  const exports_ = registration.factory((spec) => SEED[spec])
+  assert.ok(exports_.__overview !== undefined, '缺少 __overview 测试缝')
+  return exports_.__overview
+}
+
+/** 造一格总览数据（默认一个 SSH 目标，且已经答完）。 */
+function ovGroup(name, containers, extra) {
+  return { name, kind: 'ssh', label: 'root@10.0.0.5:22', containers, error: '', loaded: true, ...(extra ?? {}) }
+}
+
+/**
+ * 遍历 bundle 返回的 jsx 树：它只是 { type, props } 的普通对象（见上面的 jsx/jsxs 桩），
+ * 所以离线冒烟真能「渲染」总览正文并断言，而不是只 grep bundle 里的字符串。
+ */
+function treeFind(node, predicate, out) {
+  const found = out ?? []
+  if (node === null || node === undefined || node === false) return found
+  if (Array.isArray(node)) {
+    for (const child of node) treeFind(child, predicate, found)
+    return found
+  }
+  if (typeof node !== 'object') return found
+  if (predicate(node)) found.push(node)
+  treeFind(node.props === undefined ? undefined : node.props.children, predicate, found)
+  return found
+}
+
+/** 树里所有文本拼起来（断言文案用）。 */
+function treeText(node) {
+  if (node === null || node === undefined || node === false) return ''
+  if (Array.isArray(node)) return node.map(treeText).join('')
+  if (typeof node === 'string') return node
+  if (typeof node === 'number') return String(node)
+  if (typeof node !== 'object') return ''
+  return treeText(node.props === undefined ? undefined : node.props.children)
+}
+
+await test('总览：入口与文案装配进 bundle（只读页，不做跨目标操作）', () => {
+  const decoded = decodeBundle(code)
+  assert.ok(decoded.includes('总览'), '缺少「总览」入口')
+  assert.ok(decoded.includes('（总览 · 全部目标）'), '缺少总览态的目标选择器说明项')
+  assert.ok(decoded.includes('个目标不可达'), '缺少不可达横幅标题')
+  assert.ok(decoded.includes('一切正常'), '缺少空态文案')
+  assert.ok(decoded.includes('所有目标上都没有不健康或重启中的容器'), '缺少空态说明')
+  assert.ok(decoded.includes('异常容器'), '缺少异常表标题')
+  assert.ok(code.includes('dk_ovCards'), '缺少计数卡行样式钩子')
+  assert.ok(code.includes('dk_ovCard'), '缺少计数卡钩子')
+  assert.ok(code.includes('dk_ovCount'), '缺少计数钩子')
+  assert.ok(code.includes('dk_pillOverview'), '缺少总览 pill 样式钩子')
+  assert.ok(code.includes('dk_ovTable'), '缺少异常表样式钩子')
+  assert.ok(code.includes('dk_rowClickable'), '缺少异常表的可点击行钩子')
+  const cardsRule = /\.dk_ovCards \{[^}]*\}/.exec(code)?.[0] ?? ''
+  assert.ok(cardsRule.includes('grid'), '.dk_ovCards 应该是网格（一屏多个目标）')
+  const errRule = /\.dk_ovCard\[data-state="error"\] \{[^}]*\}/.exec(code)?.[0] ?? ''
+  assert.ok(errRule.includes('--dk-danger'), '不可达的计数卡缺少危险色提示')
+  assert.ok(code.includes('dk_ovCardLoading'), '缺少计数卡读取态钩子')
+  const loadingRule = /\.dk_ovCard\[data-state="loading"\] \{[^}]*\}/.exec(code)?.[0] ?? ''
+  assert.ok(loadingRule.includes('opacity'), '读取中的计数卡应压暗，与已有结果区分')
+  /*
+   * 总览里不再渲染「操作失败」那条单目标失败横幅：它讲的是当前这一个目标，而总览自己按
+   * 目标归因（红卡 + 上方不可达横幅）——两条一起出现，同一个 SSH 超时会被看成两个故障。
+   * 这条正则贴着压缩后的形状（和其它静态断言一样），minifier 一变就会显式失败。
+   */
+  assert.match(decoded, /[\w$]+===""\|\|[\w$]+==="overview"\?null:[\s\S]{0,60}操作失败/, '总览里不该再渲染单目标失败横幅')
+})
+
+await test('总览：计数口径与列表页「运行中」一致，异常表只收 unhealthy / restarting', () => {
+  const api = overviewApi()
+  assert.deepEqual(api.counts([
+    { state: 'running', health: null },
+    { state: 'paused', health: null },
+    { state: 'restarting', health: null },
+    { state: 'exited', health: null },
+    { state: 'created', health: null },
+    { state: 'running', health: 'unhealthy' },
+  ]), { running: 4, stopped: 2, unhealthy: 1 })
+  assert.deepEqual(api.abnormal([
+    { name: 'a', state: 'running', health: 'unhealthy' },
+    { name: 'b', state: 'restarting', health: null },
+    { name: 'c', state: 'exited', health: null },
+    { name: 'd', state: 'running', health: 'starting' },
+  ]).map((item) => item.name), ['a', 'b'], 'exited 不算异常：没有 exitCode，无法区分崩溃退出与人工停掉')
+})
+
+await test('总览：不健康优先于重启中，同级按目标配置顺序；不可达目标独立成清单', () => {
+  const api = overviewApi()
+  const data = api.data([
+    ovGroup('prod', [
+      { id: 'p1', name: 'web', state: 'running', health: 'unhealthy', image: 'nginx:1.27', status: 'Up (unhealthy)' },
+      { id: 'p2', name: 'api', state: 'restarting', health: null, image: 'app:1', status: 'Restarting' },
+      { id: 'p3', name: 'ok', state: 'running', health: null, image: 'redis:7', status: 'Up' },
+    ]),
+    ovGroup('stg', [
+      { id: 's1', name: 'worker', state: 'restarting', health: null, image: 'app:1', status: 'Restarting' },
+      { id: 's2', name: 'db', state: 'running', health: 'unhealthy', image: 'pg:16', status: 'Up (unhealthy)' },
+    ]),
+    ovGroup('lab', [], { error: 'connect ETIMEDOUT 10.0.0.7:22' }),
+  ])
+  assert.deepEqual(data.rows.map((row) => row.target + '/' + row.item.name), ['prod/web', 'stg/db', 'prod/api', 'stg/worker'], '不健康置顶，同级按目标顺序')
+  assert.deepEqual(data.cards.map((card) => [card.name, card.running, card.stopped, card.unhealthy]), [
+    ['prod', 3, 0, 1],
+    ['stg', 2, 0, 1],
+    ['lab', 0, 0, 0],
+  ])
+  assert.deepEqual(data.unreachable.map((card) => card.name), ['lab'])
+  assert.equal(data.loading, false)
+})
+
+await test('总览：渐进式落地（一格失败不牵连其余）+ 失败文案压成一行', () => {
+  const api = overviewApi()
+  let groups = [
+    { name: 'prod', kind: 'ssh', label: 'root@10.0.0.5:22', containers: [], error: '', loaded: false },
+    { name: 'lab', kind: 'ssh', label: 'root@10.0.0.7:22', containers: [], error: '', loaded: false },
+  ]
+  groups = api.patch(groups, 'prod', { containers: [{ id: 'a', name: 'web', state: 'running', health: null }], loaded: true })
+  const untouched = api.patch(groups, 'nobody', { loaded: true })
+  assert.equal(untouched, groups, '目标名不匹配时必须返回原引用（自动刷新每轮都 setState 会白渲染）')
+  groups = api.patch(groups, 'lab', { error: ('BOOM ' + 'x'.repeat(400)), loaded: true })
+  const data = api.data(groups)
+  assert.equal(data.cards[0].error, '', 'prod 的成功结果不能被 lab 的失败污染')
+  assert.equal(data.cards[0].running, 1)
+  assert.equal(data.cards[1].error.length, api.ERROR_MAX + 1, '失败文案应截断到上限 + 省略号')
+  assert.equal(data.unreachable.length, 1)
+  assert.equal(data.loading, false)
+  assert.equal(api.errorText('first\nsecond'), 'first', 'SSH 报错只留首行')
+  assert.equal(api.errorText(''), '未知错误')
+})
+
+await test('总览：渲染多目标计数卡 + 异常置顶表 + 单目标失败横幅（遍历 jsx 树）', () => {
+  const api = overviewApi()
+  const opened = []
+  const tree = api.body(api.data([
+    ovGroup('本机', [{ id: 'l1', name: 'web', state: 'running', health: null, image: 'nginx:1.27', status: 'Up' }], { kind: 'local', label: '本机' }),
+    ovGroup('prod', [
+      { id: 'p1', name: 'api', state: 'restarting', health: null, image: 'app:1', status: 'Restarting' },
+      { id: 'p2', name: 'db', state: 'running', health: 'unhealthy', image: 'pg:16', status: 'Up (unhealthy)' },
+    ]),
+    ovGroup('lab', [], { error: 'connect ETIMEDOUT 10.0.0.7:22' }),
+  ]), {
+    onOpenTarget: (name) => opened.push(['target', name]),
+    onOpenContainer: (name, item) => opened.push(['container', name, item.name]),
+  })
+  const cards = treeFind(tree, (el) => el.props?.className === 'dk_ovCard')
+  assert.equal(cards.length, 3, '每个目标一张计数卡')
+  const texts = treeText(tree)
+  for (const expected of ['本机', '运行中', '已停止', '不健康', '异常容器（2）', 'api', 'db', '不可达']) {
+    assert.ok(texts.includes(expected), '渲染结果缺少 ' + expected)
+  }
+  // 横幅是组件元素（className 由 Banner 自己给），所以断言它的入参而不是 className
+  assert.equal(treeFind(tree, (el) => typeof el.props?.title === 'string' && el.props.title.includes('个目标不可达')).length, 1, '单个目标失败应出一条横幅')
+  assert.equal(cards.filter((card) => card.props['data-state'] === 'error').length, 1)
+  const rows = treeFind(tree, (el) => el.props?.className === 'dk_rowClickable')
+  assert.equal(rows.length, 2)
+  assert.equal(treeFind(tree, (el) => el.props?.className === 'dk_actionBar').length, 0, '总览是只读页，不该出现变更入口')
+  assert.equal(treeFind(tree, (el) => el.props?.className === 'dk_iconBtn').length, 0, '总览不该出现任何操作按钮')
+  rows[0].props.onClick()
+  assert.deepEqual(opened, [['container', 'prod', 'db']], '点第一行 = 不健康那条，且带的是它自己的 target')
+  cards[1].props.onClick()
+  assert.deepEqual(opened[1], ['target', 'prod'], '点计数卡 = 切到该目标的常规列表')
+  const badges = treeFind(tree, (el) => el.props !== undefined && Object.prototype.hasOwnProperty.call(el.props, 'health'))
+  assert.deepEqual(badges.map((el) => el.props.health), ['unhealthy', null], '状态格复用 Badge，拿到规范化后的 health')
+})
+
+await test('总览：空态分三种——一切正常 / 还没答完 / 没有目标', () => {
+  const api = overviewApi()
+  const actions = { onOpenTarget: () => {}, onOpenContainer: () => {} }
+  const clean = api.body(api.data([ovGroup('本机', [{ id: 'a', name: 'web', state: 'running', health: null, image: 'nginx', status: 'Up' }], { kind: 'local' }) ]), actions)
+  const cleanText = treeText(clean)
+  assert.ok(cleanText.includes('一切正常'), '没有异常时应显示「一切正常」')
+  assert.equal(treeFind(clean, (el) => el.props?.className === 'dk_ovTable').length, 0, '无异常时不该有异常表')
+  const pendingTree = api.body(api.data([
+    ovGroup('本机', [{ id: 'a', name: 'web', state: 'running', health: null, image: 'nginx', status: 'Up' }], { kind: 'local' }),
+    { name: 'prod', kind: 'ssh', label: '', containers: [], error: '', loaded: false },
+  ]), actions)
+  const pending = treeText(pendingTree)
+  assert.ok(!pending.includes('一切正常'), '还有目标没答完时不能下「一切正常」的结论')
+  assert.ok(pending.includes('读取中'), '未答完时应显示读取中')
+  // 还没答完的卡不能显示 0/0/0（会被读成「这台机器没有容器」）：只给读取态
+  const pendingCards = treeFind(pendingTree, (el) => el.props?.className === 'dk_ovCard')
+  assert.deepEqual(pendingCards.map((card) => card.props['data-state']), ['ok', 'loading'])
+  assert.equal(treeFind(pendingTree, (el) => el.props?.className === 'dk_ovCardLoading').length, 1)
+  assert.equal(treeFind(pendingTree, (el) => el.props?.className === 'dk_ovCardCounts').length, 1, '只有答完的那张卡出数字')
+  assert.ok(treeText(api.body(api.data([]), actions)).includes('还没有配置 Docker 目标'), '没有目标时应引导去设置卡片')
+})
+
+/* ------------------------------------------------------------------ *
+ * 列表写入闸（旧请求作废）
+ * ------------------------------------------------------------------ */
+
+await test('列表写入闸：被新请求取代的那一代作废（切目标 / 换页后迟到的响应不许写状态）', () => {
+  const exports_ = registration.factory((spec) => SEED[spec])
+  assert.ok(exports_.__listSeq !== undefined, '缺少 __listSeq 测试缝')
+  const seq = exports_.__listSeq.make()
+  const first = seq.next()
+  assert.ok(seq.isCurrent(first), '当前这一代有效')
+  const second = seq.next()
+  assert.ok(!seq.isCurrent(first), '被新请求取代的那一代必须作废（否则旧目标的数据会盖住新目标）')
+  assert.ok(seq.isCurrent(second))
+  assert.ok(!seq.isCurrent(0))
+  // 闸必须真的接在加载器上，而不是只活在测试缝里：属性名不会被压缩改名，按出现次数兜。
+  // 四个列表加载器 + 总览，各在 then / catch / finally(settle) 三处过闸。
+  const gateUses = code.split('.isCurrent(').length - 1
+  assert.ok(gateUses >= 15, '列表写入闸没接在加载器上（期望 ≥ 15 处，实际 ' + String(gateUses) + '）')
 })
 
 /* ------------------------------------------------------------------ *
