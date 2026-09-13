@@ -39,6 +39,7 @@
     sftpStyle: window.__PREVIEW_SFTP_STYLE || 'dialog',
     persistence: window.__PREVIEW_PERSISTENCE || 'off',
     endOnPageClose: false,
+    statsEnabled: true,
     sftpLimits: { maxDownloadMb: 1024, maxUploadMb: 2048, maxUploadFiles: 1000 },
     toolsRegistered: true,
     sshHosts: [
@@ -269,12 +270,63 @@
         }
         return
       }
+      if (msg.t === 'statsOn') {
+        // 与真实宿主同语义：宿主的订阅路由要求本连接上已有该 sid（会话已 ready）。
+        // 客户端若在 spawn 之前/之后就绪没重发，这里就什么都不回——状态条不出来。
+        if (!SESSIONS.some((entry) => entry.sid === sid)) {
+          window.__mockLog.push('in:statsOn(unknown)')
+          return
+        }
+        // 服务器状态条（0.17.0）：立刻回一帧再每秒推一帧，数值轻微浮动（截图里能看出"在动"）
+        this._statsSid = sid
+        this._statsTick = 0
+        if (this._statsTimer) clearInterval(this._statsTimer)
+        const push = () => {
+          this._statsTick += 1
+          const tick = this._statsTick
+          // 坏帧注入（stats-broken 场景）：字符串 / 数组 / null / 越界值轮流来
+          const junk = window.__PREVIEW_STATS_PAYLOAD
+          if (Array.isArray(junk) && junk.length > 0) {
+            this._deliver({ t: 'stats', sid, stats: junk[(tick - 1) % junk.length] })
+            return
+          }
+          this._deliver({ t: 'stats', sid, stats: {
+            cpuPct: 18 + (tick % 5) * 9,
+            cores: 16,
+            memUsed: Math.round(53.3e9 + (tick % 3) * 0.9e9),
+            memTotal: 64e9,
+            memPct: Math.round((83.2 + (tick % 3) * 1.4) * 10) / 10,
+            diskUsed: 40.8e9,
+            diskTotal: 68.8e9,
+            diskPct: 59.3,
+            uptimeSec: 2 * 604800 + 4 * 86400 + 7 * 3600 + 16 * 60 + tick,
+            tcpConns: 570 + (tick % 7),
+            rxRate: 92.3 * 1024,
+            txRate: 93.1 * 1024,
+            // tempC 缺席：走「CPU温度 无」的降级渲染（与 macOS 本机一致）
+          } })
+        }
+        push()
+        this._statsTimer = setInterval(push, 1000)
+        return
+      }
+      if (msg.t === 'statsOff') {
+        if (this._statsTimer) {
+          clearInterval(this._statsTimer)
+          this._statsTimer = null
+        }
+        return
+      }
       if (msg.t === 'kill') {
         const idx = SESSIONS.findIndex((s) => s.sid === sid)
         if (idx >= 0) SESSIONS.splice(idx, 1)
       }
     }
     close() {
+      if (this._statsTimer) {
+        clearInterval(this._statsTimer)
+        this._statsTimer = null
+      }
       this.readyState = MockSocket.CLOSED
       if (typeof this.onclose === 'function') this.onclose({ code: 1000, wasClean: true })
     }

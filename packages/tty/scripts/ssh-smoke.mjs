@@ -37,6 +37,7 @@ import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { spawnSsh } from '../lib/ssh.js'
+import { buildRemoteStatsCommand } from '../lib/stats.js'
 import { SftpManager } from '../lib/sftp.js'
 import { startSftpSshd, TEST_USER, TEST_PASSWORD } from './lib/test-sshd.mjs'
 
@@ -53,6 +54,8 @@ process.on('unhandledRejection', (reason) => {
   console.error('[unhandledRejection]', reason)
 })
 
+/** 内存 sshd 收到的 exec 记录（S10 验证：确为非 PTY、命令经 sh -c 单引号包裹）。 */
+const EXEC_LOG = []
 const RESULTS = []
 function pass(name) { RESULTS.push(['PASS', name]); console.log('  ✔ PASS  ' + name) }
 function fail(name, detail) { RESULTS.push(['FAIL', name, detail]); console.error('  ✘ FAIL  ' + name + (detail ? ' — ' + detail : '')) }
@@ -131,7 +134,9 @@ function onClientConnection(client) {
       const session = accept()
       // 终端尺寸：pty-req 给初值，window-change 跟进（resize 验证的数据源）
       const dims = { rows: 24, cols: 80 }
+      let ptySeen = false
       session.on('pty', (acceptPty, _rejectPty, info) => {
+        ptySeen = true
         if (Number.isFinite(info?.rows)) dims.rows = info.rows
         if (Number.isFinite(info?.cols)) dims.cols = info.cols
         acceptPty()
@@ -139,6 +144,32 @@ function onClientConnection(client) {
       session.on('window-change', (_accept, _reject, info) => {
         if (Number.isFinite(info?.rows)) dims.rows = info.rows
         if (Number.isFinite(info?.cols)) dims.cols = info.cols
+      })
+      // 服务器状态条（0.17.0）：非 PTY 的 exec channel。真实远端脚本见
+      // src/stats.ts 的 remoteStatsScript；这里按同一输出形状回吐 JSON 行，
+      // 供冒烟验证「同连接另开 channel + 逐行解析 + stop 关 channel」。
+      session.on('exec', (acceptExec, _rejectExec, info) => {
+        const command = typeof info?.command === 'string' ? info.command : ''
+        EXEC_LOG.push({ command, pty: ptySeen })
+        if (!command.includes('/proc/stat')) {
+          const stream = acceptExec()
+          stream.exit(127)
+          stream.end()
+          return
+        }
+        const stream = acceptExec()
+        let tick = 0
+        const timer = setInterval(() => {
+          tick += 1
+          stream.write(JSON.stringify({
+            cpuPct: 10 + tick, cores: 8, memUsed: 1e9 * tick, memTotal: 8e9, memPct: 12.5 * tick,
+            diskTotal: 1e11, diskUsed: 5e10, diskPct: 50, uptimeSec: 3600 * tick,
+            tcpConns: 100 + tick, rxRate: 1024 * tick, txRate: 2048 * tick, tempC: 45.5,
+          }) + '\n')
+        }, 40)
+        const stop = () => clearInterval(timer)
+        stream.on('close', stop)
+        stream.on('end', stop)
       })
       session.on('shell', (acceptShell) => {
         const stream = acceptShell()
@@ -500,6 +531,48 @@ async function main() {
     await sftpd.close()
     await fsp.rm(rootDir, { recursive: true, force: true })
     console.log('    sftp sshd 已关闭，临时目录已清理')
+  }
+
+  // ---- S10：服务器状态条（非 PTY exec channel + 逐行 JSON + stop 收尾）----
+  console.log('\n[10] 服务器状态条：同连接另开 exec channel')
+  {
+    // S8 已把前面那台 server 关掉（换密钥用例），这里另起一台（TOFU 接受式 store）
+    const statsServer = await startServer()
+    const statsPort = statsServer.address().port
+    const statsOptions = { ...options, hostKeyStore: { get: () => undefined, record: () => {} } }
+    let handle
+    try {
+      handle = await runSession(statsServer, statsPort, statsOptions, '10')
+      await expectOutput(handle, /dsh-ssh-smoke:~\$ /, 8000, 'prompt')
+      if (typeof handle.statsExec !== 'function') {
+        fail('S10 handle 暴露 statsExec（非 PTY exec channel）', 'statsExec 缺失')
+      } else {
+        const lines = []
+        let errors = 0
+        const collector = handle.statsExec(buildRemoteStatsCommand(), (line) => lines.push(line), () => { errors += 1 })
+        const deadline = Date.now() + 5000
+        while (lines.length < 2 && Date.now() < deadline) await sleep(50)
+        const entry = EXEC_LOG[EXEC_LOG.length - 1]
+        const nonPty = entry !== undefined && entry.pty === false
+        const wrapped = entry !== undefined && entry.command.startsWith('sh -c ') && entry.command.includes('/proc/stat')
+        if (lines.length >= 2 && nonPty && wrapped) pass('S10 独立 exec channel（无 PTY）+ 逐行 JSON：' + String(lines.length) + ' 行')
+        else fail('S10 独立 exec channel（无 PTY）+ 逐行 JSON', 'lines=' + String(lines.length) + ' nonPty=' + String(nonPty) + ' wrapped=' + String(wrapped) + ' cmd=' + String(entry && entry.command).slice(0, 60))
+        // stop() 关 channel → 远端循环结束（不再有新行），且不误报 onError
+        collector.stop()
+        await sleep(120)
+        const mark = lines.length
+        await sleep(300)
+        if (lines.length === mark) pass('S10b stop() 关闭 channel，远端不再产出行')
+        else fail('S10b stop() 关闭 channel，远端不再产出行', 'stop 后又收到 ' + String(lines.length - mark) + ' 行')
+        if (errors === 0) pass('S10c 主动 stop 不触发 onError（不算采集失败）')
+        else fail('S10c 主动 stop 不触发 onError', 'errors=' + String(errors))
+      }
+    } catch (error) {
+      fail('S10 服务器状态条 exec channel', error.message)
+    } finally {
+      try { await handle?.terminate() } catch { /* 忽略 */ }
+      await stopServer(statsServer)
+    }
   }
 
   {

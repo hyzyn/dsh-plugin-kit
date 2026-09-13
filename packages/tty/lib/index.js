@@ -22,6 +22,7 @@ import { parseKnownHosts } from './known-hosts.js';
 import { TunnelManager } from './tunnels.js';
 import { SftpManager } from './sftp.js';
 import { buildTmuxSpawnPlan, ensureTmuxAssets, killTmuxSession, listTmuxSessions, probeTmux, refreshTmuxClient, sanitizePersistName } from './tmux.js';
+import { buildRemoteStatsCommand, buildWindowsStatsCommand, hasStatsData, localStatsSampler, parseStatsLine } from './stats.js';
 /** SFTP 传输限制默认值。 */
 const DEFAULT_SFTP_LIMITS = { maxDownloadMb: 1024, maxUploadMb: 2048, maxUploadFiles: 1000 };
 const SSH_HOST_SCHEMA = z.object({
@@ -70,6 +71,7 @@ const TTY_SETTINGS_SCHEMA = z.object({
     sftpStyle: z.union([z.const('dialog'), z.const('dual')]).default('dialog'),
     persistence: z.union([z.const('off'), z.const('tmux')]).default('off'),
     endOnPageClose: z.boolean().default(false),
+    statsEnabled: z.boolean().default(true),
     sftpLimits: z.object({
         maxDownloadMb: z.natural().max(1024 * 1024).default(1024),
         maxUploadMb: z.natural().max(1024 * 1024).default(2048),
@@ -115,6 +117,8 @@ const BUFFER_CAP = 256 * 1024;
 const TERM_RE = /^[A-Za-z0-9_.+-]+$/;
 /** 孤儿会话回收器的扫描间隔。 */
 const REAPER_INTERVAL_MS = 10_000;
+/** 服务器状态条的采集/推送间隔（mvp 固定 1s，不做配置项）。 */
+const STATS_INTERVAL_MS = 1000;
 const TTY_GUIDANCE = '本机已安装 dsh-tty 插件（终端面板）：Web GUI 侧边栏的「终端」入口可打开交互终端（xterm.js + PTY），可运行任意命令与 TUI 程序（vim/htop 等），支持多标签页与断线自动重连（刷新页面/网络抖动后会话保活并恢复现场）；新标签默认在当前会话工作目录打开。标签栏「+」菜单还能开 SSH 标签页（ssh2 原生连接，连接簿在设置卡片维护，支持 agent forwarding 与主机指纹 TOFU 钉扎），像本地终端一样操作远程主机。设置卡片开启「会话持久化（tmux）」后，新开的本地/SSH 标签默认由 tmux server 托管（宿主重启/断线超时后重开即恢复现场），长任务建议在持久化开启时运行。长驻进程（dev server、watch、交互式程序）应引导用户到终端面板里运行，不要在 bash 工具里挂起等待；用户提到「开个终端 / 在终端里跑 / SSH 到某台机器」时引导其打开该面板。agent 侧配套工具：tty_list 列出活跃终端会话（含 SSH 的 target 与实时 cwd），tty_capture 读取近期输出（默认清洗 ANSI；last:true 拿「上一条命令」的输出+退出码），tty_screen 读取当前可见屏幕（可读懂 vim/htop 等 TUI），tty_expect 用正则等待输出中的就绪信号（如 dev server URL、构建完成），tty_send 发送按键，tunnel_list 列出端口转发隧道状态——操作会实时显示在用户终端里。SFTP 文件传输：面板内可对 SSH 连接簿条目（或 SSH 连接对话框当前填写的信息）打开文件浏览（上传/下载/建目录/重命名/删除），传输期间进度条右侧 ✕ 可取消（半截文件自动清理）；agent 配套 sftp_list 列远程目录、sftp_tree 递归看目录结构、sftp_read 读远程文本文件（≤1MB）、sftp_write 写远程文本文件（≤1MB，可追加）、sftp_mkdir 建目录（parents 可逐级补齐）、sftp_rename 重命名/移动、sftp_remove 删除（目录需 recursive），book 参数为连接簿条目名。端口转发：连接簿条目可配本地/远程隧道（如把远程数据库映射到本地端口），宿主自动保活重连，用户提到「转发端口 / 访问远程库」时引导其到终端面板设置卡片配置。推荐流程：tty_send 启动长任务 → tty_expect 等就绪标记 → tty_capture{last:true} 拿结果。';
 /** 本地 PTY 包装成 TermHandle（resize/kill 仍是透传 node-pty 的内部耦合；防御性降级）。 */
 function wrapLocalPty(handle) {
@@ -171,6 +175,8 @@ class LiveConfig {
     persistence;
     /** 页面断开且保活期结束时是否结束 tmux 持久会话（默认 false = 留存）。 */
     endOnPageClose;
+    /** 服务器状态条：是否采集并推送会话资源指标（默认 true）。 */
+    statsEnabled;
     /** SSH 持久会话名（远程 tmux 托管；本机 socket 清单看不到，随 settings 留存）。 */
     persistSessions;
     /** SFTP 传输限制（客户端浏览器侧执行）。 */
@@ -187,6 +193,8 @@ class LiveConfig {
         this.tunnels = init.tunnels ?? [];
         this.persistence = init.persistence === 'tmux' ? 'tmux' : 'off';
         this.endOnPageClose = init.endOnPageClose === true;
+        // 只有显式 false 才关（缺省/旧配置一律视为开）
+        this.statsEnabled = init.statsEnabled !== false;
         this.sftpLimits = sanitizeSftpLimits(init.sftpLimits);
         this.persistSessions = init.persistSessions ?? [];
     }
@@ -215,6 +223,8 @@ class LiveConfig {
             this.persistence = partial.persistence;
         if (typeof partial.endOnPageClose === 'boolean')
             this.endOnPageClose = partial.endOnPageClose;
+        if (typeof partial.statsEnabled === 'boolean')
+            this.statsEnabled = partial.statsEnabled;
         if (partial.sftpLimits !== undefined)
             this.sftpLimits = sanitizeSftpLimits({ ...this.sftpLimits, ...partial.sftpLimits });
         if (Array.isArray(partial.persistSessions))
@@ -701,6 +711,11 @@ class SessionManager {
             attachable: session.clients.size === 0 && !session.closed,
         }));
     }
+    /** 遍历全部会话（状态条采集器的批量收尾等按会话维度的操作）。 */
+    forEach(fn) {
+        for (const session of this.sessions.values())
+            fn(session);
+    }
     /** 按 tmux 持久会话名查找存活会话（跨窗口共享用）；不存在/已关闭返回 undefined。 */
     findByTmuxName(tmuxName) {
         for (const session of this.sessions.values()) {
@@ -774,6 +789,8 @@ class TtyServer {
     pendingTmux = new Map();
     /** WS 闸门（插件禁用时关闭）：拒绝新升级 + 断开存量连接。 */
     wsGateOpen = true;
+    /** 服务器状态条总开关（配置热生效；关闭时停掉全部采集，重开按订阅恢复）。 */
+    statsOn = true;
     constructor(ctx, sessions, options, hostKeyStore, 
     /** SSH 持久会话名留存回调（apply 闭包实现，settings 落盘）。 */
     trackPersist) {
@@ -782,6 +799,7 @@ class TtyServer {
         this.options = options;
         this.hostKeyStore = hostKeyStore;
         this.trackPersist = trackPersist;
+        this.statsOn = options.statsEnabled;
         this.wss.on('connection', (ws) => this.onConnection(ws));
     }
     /**
@@ -795,12 +813,170 @@ class TtyServer {
         this.wsGateOpen = open;
         if (open)
             return;
+        // 禁用：采集器先停（远端 exec channel / 本地定时器都不该活过闸门）
+        this.stopAllStats();
         for (const ws of this.wss.clients) {
             try {
                 ws.close(1001, 'dsh-tty disabled');
             }
             catch {
                 /* 已关闭 */
+            }
+        }
+    }
+    /* --------------------------- 服务器状态条（0.17.0） --------------------------- */
+    /**
+     * 配置热生效：关闭时停掉全部采集（本地定时器 + 远端 exec channel）；重新打开
+     * 时对**仍有订阅**的会话懒启动。订阅集合刻意不清——客户端只在标签可见性变化
+     * 时发 statsOn/statsOff，开关来回切不该要求它重发。
+     */
+    setStatsEnabled(enabled) {
+        this.statsOn = enabled;
+        if (!enabled) {
+            this.stopAllStats();
+            return;
+        }
+        this.sessions.forEach((session) => {
+            if (session.statsSubs.size > 0)
+                this.startStats(session);
+        });
+    }
+    /** 订阅/退订（tab 可见性驱动）：退到 0 即停表，任何路径都不会让采集器空转。 */
+    setStatsSub(session, clientSid, on) {
+        if (on) {
+            session.statsSubs.add(clientSid);
+            this.startStats(session);
+            return;
+        }
+        session.statsSubs.delete(clientSid);
+        if (session.statsSubs.size === 0)
+            this.stopStats(session);
+    }
+    /** 清掉指向已解绑客户端（WS 关闭 / 标签换 sid 重绑）的订阅，防采集器永不收尾。 */
+    pruneStatsSubs(session) {
+        for (const clientSid of [...session.statsSubs]) {
+            if (!session.clients.has(clientSid))
+                this.setStatsSub(session, clientSid, false);
+        }
+    }
+    /**
+     * 懒启动采集（首个 statsOn 才起）。两条路径产出同形状的帧：
+     *   - 本地：宿主进程就是那台机器，1s 定时器 + 进程级共享采样器（多个本地标签
+     *     共享一次 df/netstat）；
+     *   - SSH：远端 sh + awk 常驻循环，每秒一行 JSON 走**非 PTY** exec channel；
+     *     速率类由远端算好，宿主只解析 + 清洗。
+     * 任何失败都静默停表并置 statsFailed（粘性，避免每秒重启）：前端靠「无数据」
+     * 隐藏状态条，PTY 数据路径与终端体验完全不受影响。
+     */
+    startStats(session) {
+        if (!this.statsOn || session.closed || session.stats !== null || session.statsFailed)
+            return;
+        if (session.kind === 'local') {
+            const sampler = localStatsSampler();
+            let busy = false;
+            let timer = null;
+            const collector = {
+                stop: () => {
+                    if (timer !== null)
+                        clearInterval(timer);
+                    timer = null;
+                },
+            };
+            const tick = () => {
+                if (session.closed) {
+                    collector.stop(); // 会话已回收：定时器自收尾，不依赖外部钩子是否齐全
+                    return;
+                }
+                if (busy)
+                    return; // 上一拍还没回来（df 卡住）就跳过，不堆积
+                busy = true;
+                void sampler.sample().then((frame) => {
+                    busy = false;
+                    if (session.stats !== collector || session.closed)
+                        return;
+                    if (hasStatsData(frame))
+                        this.sendStats(session, frame);
+                });
+            };
+            timer = setInterval(tick, STATS_INTERVAL_MS);
+            timer.unref?.();
+            session.stats = collector;
+            tick(); // 首个订阅立刻出值，不让状态条空一个周期
+            return;
+        }
+        const statsExec = session.handle.statsExec;
+        if (statsExec === undefined) {
+            session.statsFailed = true;
+            return;
+        }
+        let stopped = false;
+        /** 本次采集是否读到过合法帧——决定「这一跳结束」算失败还是算远端自己收摊。 */
+        let sawFrame = false;
+        let handle = null;
+        const collector = {
+            stop: () => {
+                stopped = true;
+                handle?.stop();
+            },
+        };
+        /**
+         * 起一跳采集。远端平台事先不知道，所以先跑 POSIX 脚本；若 channel 在**一帧
+         * 数据都没读过**的情况下结束，说明对端不是 POSIX 平台（Windows 上 cmd.exe /
+         * PowerShell 根本解析不了 sh -c 脚本），再换 PowerShell 版（-EncodedCommand，
+         * 同帧形状）试一次。两跳都失败（如 macOS/BSD 远端：既无 /proc 也无 PowerShell）
+         * 才置粘性失败位，前端按「无数据」隐藏状态条。
+         */
+        const attempt = (command, powershell) => {
+            handle = statsExec(command, (line) => {
+                if (stopped || session.closed)
+                    return;
+                const frame = parseStatsLine(line);
+                if (frame === null)
+                    return;
+                sawFrame = true;
+                if (hasStatsData(frame))
+                    this.sendStats(session, frame);
+            }, () => {
+                if (stopped)
+                    return; // 我们自己停的，不算失败
+                if (!sawFrame && !powershell) {
+                    attempt(buildWindowsStatsCommand(), true);
+                    return;
+                }
+                // 读过帧 = 远端采集进程自己停了；一帧未读 = 彻底失败——都停表并置粘性失败位
+                session.statsFailed = true;
+                session.stats = null;
+                collector.stop();
+            });
+        };
+        // 先登记再起采集：同步失败（conn.exec 直接抛错）也走同一套收尾
+        session.stats = collector;
+        attempt(buildRemoteStatsCommand(), false);
+        // 双跳同步失败时 collector.stop() 已把当时在手的句柄停掉；conn.exec 直接抛错的
+        // 那一跳压根没建 channel，句柄是惰性的，不需要额外收尾。
+    }
+    /** 停表（幂等）：订阅清零 / 会话结束 / 插件禁用 / 配置关闭都走它。 */
+    stopStats(session) {
+        const collector = session.stats;
+        session.stats = null;
+        if (collector !== null)
+            collector.stop();
+    }
+    stopAllStats() {
+        this.sessions.forEach((session) => this.stopStats(session));
+    }
+    /** 帧只发给订阅了该会话的客户端（按各客户端自己的 sid 寻址，跨窗口共享也成立）。 */
+    sendStats(session, frame) {
+        for (const clientSid of session.statsSubs) {
+            const ws = session.clients.get(clientSid);
+            if (ws === undefined)
+                continue;
+            try {
+                send(ws, { t: 'stats', sid: clientSid, stats: frame });
+            }
+            catch {
+                // readyState 检查与 send 之间对端可能刚关：不 try 的话异常会落在 ws 事件
+                // 回调或采样 promise 里（未处理异常/未处理拒绝 → 宿主进程直接退出）
             }
         }
     }
@@ -829,6 +1005,8 @@ class TtyServer {
                     return;
                 // 解绑本连接的客户端；其余窗口仍绑定着（跨连接共享）时会话继续在线
                 session.clients.delete(clientSid);
+                // WS 关闭/转孤儿：该端的 stats 订阅一并解绑（退到 0 就停表关 channel）
+                this.pruneStatsSubs(session);
                 if (session.clients.size > 0) {
                     this.flushPendingOutput(session);
                     return;
@@ -888,6 +1066,7 @@ class TtyServer {
     rebindClient(session, sid, ws, local) {
         session.clients.set(sid, ws);
         session.orphanedAt = null;
+        this.pruneStatsSubs(session);
         if (session.paused) {
             session.paused = false;
             try {
@@ -929,6 +1108,9 @@ class TtyServer {
      * 会话会留在 tmux server 上）；2.5s 兜底 forceKill 防收尾悬挂。
      */
     killSessionNow(session) {
+        // 采集器先收（远端 exec channel 与本地定时器都不该活过会话）
+        session.statsSubs.clear();
+        this.stopStats(session);
         this.sessions.retire(session);
         const teardown = session.handle.tmuxTeardown;
         if (teardown !== undefined) {
@@ -1059,6 +1241,9 @@ class TtyServer {
                         pendingOutput: '',
                         flushTimer: null,
                         tmuxName,
+                        statsSubs: new Set(),
+                        stats: null,
+                        statsFailed: false,
                     };
                     local.set(sid, next);
                     this.sessions.add(next);
@@ -1165,6 +1350,9 @@ class TtyServer {
                         pendingOutput: '',
                         flushTimer: null,
                         tmuxName,
+                        statsSubs: new Set(),
+                        stats: null,
+                        statsFailed: false,
                     };
                     local.set(sid, next);
                     this.sessions.add(next);
@@ -1302,10 +1490,26 @@ class TtyServer {
                     send(ws, { t: 'data', sid: raw, d: session.buffer });
                 }
             }
+            else if (msg.t === 'statsOn' || msg.t === 'statsOff') {
+                this.handleStatsFrame(ws, msg, local);
+            }
         }
         catch (error) {
             send(ws, { t: 'error', m: error instanceof Error ? error.message : String(error) });
         }
+    }
+    /**
+     * 服务器状态条订阅（0.17.0）：按「标签可见性」驱动——只有可见标签才发
+     * statsOn。未知 sid（客户端竞态）静默忽略，不回错误帧。
+     */
+    handleStatsFrame(ws, msg, local) {
+        const resolved = this.resolveSid(ws, msg, local);
+        if (resolved === undefined || 'unknown' in resolved)
+            return;
+        const session = local.get(resolved.sid);
+        if (session === undefined || session.closed)
+            return;
+        this.setStatsSub(session, resolved.sid, msg.t === 'statsOn');
     }
     /** 会话退出事实 → exit 帧（恰好一次；本地 PTY 与 SSH 共用）。 */
     watchDone(session, local) {
@@ -1316,6 +1520,8 @@ class TtyServer {
                 return;
             session.exitSent = true;
             session.closed = true;
+            session.statsSubs.clear();
+            this.stopStats(session);
             local.delete(session.id);
             this.sessions.remove(session.id);
             if (session.kind === 'ssh' && session.tmuxName !== null)
@@ -1650,6 +1856,7 @@ const plugin = definePlugin({
             tunnels: Array.isArray(config?.tunnels) ? config.tunnels : [],
             persistence: config?.persistence === 'tmux' ? 'tmux' : 'off',
             endOnPageClose: config?.endOnPageClose === true,
+            statsEnabled: config?.statsEnabled !== false,
             sftpLimits: sanitizeSftpLimits(config?.sftpLimits),
             persistSessions: sanitizePersistSessions(config?.persistSessions) ?? [],
         });
@@ -1712,6 +1919,7 @@ const plugin = definePlugin({
             sftpStyle: stateRef.sftpStyle,
             persistence: live.persistence,
             endOnPageClose: live.endOnPageClose,
+            statsEnabled: live.statsEnabled,
             sftpLimits: live.sftpLimits,
             toolsRegistered: stateRef.toolsRegistered,
         });
@@ -1729,6 +1937,7 @@ const plugin = definePlugin({
                 tunnels: sanitizeTunnels(section.tunnels),
                 persistence: section.persistence === 'tmux' || section.persistence === 'off' ? section.persistence : undefined,
                 endOnPageClose: typeof section.endOnPageClose === 'boolean' ? section.endOnPageClose : undefined,
+                statsEnabled: typeof section.statsEnabled === 'boolean' ? section.statsEnabled : undefined,
                 sftpLimits: typeof section.sftpLimits === 'object' && section.sftpLimits !== null ? section.sftpLimits : undefined,
                 persistSessions: sanitizePersistSessions(section.persistSessions),
             });
@@ -1750,12 +1959,14 @@ const plugin = definePlugin({
             refreshToolsHook();
             refreshAnnouncementHook();
             server.setWsGate(stateRef.enabled);
+            // 状态条开关热生效：关的时候停掉全部采集（本地定时器 + 远端 exec channel）
+            server.setStatsEnabled(live.statsEnabled);
             console.log(`[dsh-tty] config applied (shell=${live.shell}, term=${live.term}, cwd=${live.cwd}, maxSessions=${sessions.limitValue}, sshHosts=${live.sshHosts.length}, enabled=${String(stateRef.enabled)})`);
         };
         /** 校验 HTTP POST 的配置体；返回规范化补丁或错误信息。 */
         const normalizePatch = (input) => {
             const patch = {};
-            const known = new Set(['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'sshHosts', 'hostKeys', 'tunnels', 'shellIntegration', 'sftpStyle', 'persistence', 'endOnPageClose', 'sftpLimits']);
+            const known = new Set(['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'sshHosts', 'hostKeys', 'tunnels', 'shellIntegration', 'sftpStyle', 'persistence', 'endOnPageClose', 'statsEnabled', 'sftpLimits']);
             for (const key of Object.keys(input)) {
                 if (!known.has(key))
                     return { error: '未知配置项: ' + key };
@@ -1801,6 +2012,11 @@ const plugin = definePlugin({
                 if (typeof input.endOnPageClose !== 'boolean')
                     return { error: 'endOnPageClose 必须是布尔值' };
                 patch.endOnPageClose = input.endOnPageClose;
+            }
+            if (input.statsEnabled !== undefined) {
+                if (typeof input.statsEnabled !== 'boolean')
+                    return { error: 'statsEnabled 必须是布尔值' };
+                patch.statsEnabled = input.statsEnabled;
             }
             for (const key of ['shell', 'term', 'colorTerm']) {
                 if (input[key] === undefined)

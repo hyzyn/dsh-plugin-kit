@@ -183,9 +183,72 @@
   }
 
   const SCENARIOS = {
-    /* 单标签本地终端 */
+    /* 单标签本地终端（含服务器状态条：订阅链路必须真的建立起来） */
     async local() {
       await openPanel()
+      await waitFor(() => q('.tt_statsBar') !== null)
+      // 状态条要等 1s 内的 stats 帧才显示；这里等到它带着内容出现
+      await waitFor(() => {
+        const bar = q('.tt_statsBar')
+        return bar !== null && bar.hidden !== true && /CPU/.test(bar.textContent)
+      }, 4000)
+      await sleep(200)
+      window.__previewAssert = async () => {
+        const bar = q('.tt_statsBar')
+        if (bar === null) return '状态条 DOM 缺失'
+        if (bar.hidden === true) return '状态条未显示（stats 订阅链路可能断开）'
+        const text = bar.textContent
+        if (!/CPU/.test(text) || !/内存/.test(text) || !/网络/.test(text)) return '状态条内容不完整：' + text
+        const logged = window.__mockLog || []
+        if (logged.some((entry) => entry === 'in:statsOn(unknown)')) return 'statsOn 发送过早被宿主忽略（ready 后未重发）'
+        return null
+      }
+    },
+    /* 服务器状态条关闭（statsEnabled=false）：整条收起，WS 也不该收到订阅 */
+    async 'stats-off'() {
+      // 必须在开面板（拉配置）之前改：客户端按 config 决定订阅与显隐
+      window.__PREVIEW_CONFIG.statsEnabled = false
+      await openPanel()
+      await waitFor(() => tabs().length === 1)
+      await sleep(400)
+      window.__previewAssert = async () => {
+        const bar = q('.tt_statsBar')
+        if (bar === null) return '服务器状态条 DOM 缺失'
+        if (bar.hidden !== true) return 'statsEnabled=false 时状态条仍然可见'
+        // 隐藏必须是「真的不占位」：author 的 display:flex 会压过 UA 的
+        // [hidden]{display:none}，一旦仍占 24px 就会盖住终端第一行（界面变形）
+        const height = bar.getBoundingClientRect().height
+        if (height > 0) return '隐藏状态下状态条仍占位（height=' + String(height) + '）'
+        if (document.querySelector('.tt_body[data-stats]') !== null) return '隐藏状态下仍给终端加了状态条偏移'
+        const logged = window.__mockLog || []
+        if (logged.some((entry) => entry === 'in:statsOn')) return '关闭状态下仍发送了 statsOn'
+        return null
+      }
+    },
+    /* 坏数据兜底：宿主发来的 stats 帧是垃圾（字符串/数组/null/越界值/缺字段），
+       面板必须既不抛异常也不出现非法渲染——最多整条隐藏 */
+    async 'stats-broken'() {
+      window.__PREVIEW_STATS_PAYLOAD = [
+        'not-an-object',
+        [1, 2, 3],
+        null,
+        { cpuPct: 'x', cores: -5, memUsed: 1e30, memTotal: 1e30, uptimeSec: Number.MAX_SAFE_INTEGER, tcpConns: -1, tempC: {} },
+        {},
+        { cpuPct: 12.5, cores: 8, memTotal: 17179869184, memUsed: 9663676416, memPct: 56, uptimeSec: 3600, tcpConns: 12 },
+      ]
+      await openPanel()
+      await waitFor(() => tabs().length === 1)
+      await sleep(1800) // 至少走两轮坏帧
+      window.__previewAssert = async () => {
+        const bar = q('.tt_statsBar')
+        if (bar === null) return '状态条 DOM 缺失'
+        const text = bar.textContent || ''
+        if (/-5|NaN|undefined|Infinity|e\+30|x%/.test(text)) return '坏数据被渲染出来了：' + text
+        const height = bar.getBoundingClientRect().height
+        if (bar.hidden === true && height > 0) return '隐藏态仍占位（height=' + String(height) + '）'
+        if (bar.hidden !== true && height <= 0) return '显示态却没有高度'
+        return null
+      }
     },
     /* 多标签（含 SSH 标签 → 连接栏；开启 tmux 持久化以展示持久徽标） */
     async multi() {
@@ -202,6 +265,21 @@
       await waitFor(() => tabs().length === 4)
       tabs()[1].click()
       await sleep(250)
+      // 切到另一个标签后状态条要跟着走：显示新标签的数据，且偏移与显隐一致
+      // （跨标签/跨平台混用时，这里出问题就会表现为终端被顶歪）
+      await waitFor(() => {
+        const bar = q('.tt_statsBar')
+        return bar !== null && bar.hidden !== true && /CPU/.test(bar.textContent)
+      }, 4000)
+      window.__previewAssert = async () => {
+        const bar = q('.tt_statsBar')
+        const body = q('.tt_body')
+        if (bar === null || body === null) return '状态条/终端容器缺失'
+        const shifted = body.dataset.stats !== undefined
+        const visible = bar.hidden !== true && bar.getBoundingClientRect().height > 0
+        if (visible !== shifted) return '显隐与终端偏移不一致（visible=' + String(visible) + ' shifted=' + String(shifted) + '）'
+        return null
+      }
     },
     /* 「+」菜单 */
     async menu() {
