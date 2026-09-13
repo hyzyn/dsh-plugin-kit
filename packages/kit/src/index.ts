@@ -1,6 +1,11 @@
 /**
  * @hyzyn/dsh-kit — dsh-plugin-kit 插件开发工具包。
- * 仅提供与 DSH SDK 正交的类型助手，不包含任何运行时行为。
+ *
+ * 两部分内容：
+ *   - 与 DSH SDK 正交的类型助手（definePlugin / DshPlugin / PluginConfig）；
+ *   - 宿主半体的共享工具库：服务读取与 DSH 目录（services）、HTTP 路由围栏与
+ *     响应（http）、!!js 表达式方言（js-expr）、通用托管区块读写（managed-block）。
+ * 全部为增量导出：0.2.0 的 definePlugin 等原样保留。
  */
 import type { Context } from '@deepseek-ai/cordis'
 
@@ -26,3 +31,8 @@ export function definePlugin<C extends PluginConfig = PluginConfig>(
 ): DshPlugin<C> {
   return plugin
 }
+
+export * from './services.js'
+export * from './http.js'
+export * from './js-expr.js'
+export * from './managed-block.js'

@@ -16,11 +16,11 @@
  *   显式打开。agent 工具同样受这两个开关约束（未开启时连工具都不注册）。
  */
 import type { Context } from '@deepseek-ai/cordis';
-import { DockerApi, assertBin, parseInspectJson, parsePsJson, parseStatsJson } from './docker.js';
+import { DockerApi, assertBin, assertImageRef, parseImageHistoryJson, parseImageHistoryText, parseImageInspectJson, parseInspectJson, parsePsJson, parseStatsJson } from './docker.js';
 import type { DockerTarget, ResolvedTarget } from './docker.js';
 import type { HostKeyRecord, SshSpec } from './ssh-exec.js';
 export type { HostKeyRecord } from './ssh-exec.js';
-export type { ContainerSummary, ContainerDetail, ContainerStats, ImageSummary, DockerTarget } from './docker.js';
+export type { ContainerSummary, ContainerDetail, ContainerStats, ContainerEvent, ImageSummary, NetworkSummary, NetworkDetail, VolumeSummary, VolumeDetail, DockerTarget } from './docker.js';
 export interface Config {
     /** 关闭整个插件。默认开。 */
     enabled?: boolean;
@@ -59,6 +59,11 @@ interface LiveConfig {
     targets: DockerTarget[];
     hostKeys: HostKeyRecord[];
 }
+/**
+ * SSE 帧封装：data 一律 `JSON.stringify` 成**单行**——换行 / 引号被转义，
+ * 多字节字符也不会被 SSE 的 `\n` 行边界截断（客户端 JSON.parse 还原）。
+ */
+export declare function sseFrame(event: string, data: unknown): string;
 /** 清洗一份 targets 输入（settings 存储 / 热更新路径共用）。 */
 export declare function sanitizeTargets(input: unknown): DockerTarget[] | undefined;
 /** 清洗一份 hostKeys 输入。 */
@@ -71,11 +76,19 @@ export declare function sanitizeHostKeys(input: unknown): HostKeyRecord[] | unde
 export declare function mergeTargetSecrets(prev: DockerTarget[], incoming: unknown): unknown;
 /** 把一份任意来源的配置归一成 LiveConfig。 */
 export declare function normalizeConfig(section: Record<string, unknown>): LiveConfig;
+/**
+ * 事件时间（Unix 秒）→ 本机时区的 HH:MM:SS（agent 文本输出用）。
+ * 只回时间不回日期：事件快照窗口最多几小时，日期对排障没有信息量；
+ * 浏览器侧不用这个——那里用 Date 按用户本地时区现算。
+ */
+export declare function formatEventTime(seconds: number): string;
+/** 字节 → docker 风格的人类可读大小（十进制单位，与 `docker images` 的 SIZE 一致）。 */
+export declare function formatBytes(value: number): string;
 /** 把一个配置目标解析成可连接的规格（连接簿查找在此完成）。 */
 export declare function resolveTarget(target: DockerTarget, books: Map<string, SshSpec>): {
     resolved?: ResolvedTarget;
     error?: string;
 };
 export declare const name: string, inject: string[] | undefined, apply: (ctx: Context, config?: Config | undefined) => void;
-export { parsePsJson, parseStatsJson, parseInspectJson, assertBin, DockerApi };
+export { parsePsJson, parseStatsJson, parseInspectJson, assertBin, assertImageRef, parseImageInspectJson, parseImageHistoryJson, parseImageHistoryText, DockerApi };
 export type { Runner } from './docker.js';

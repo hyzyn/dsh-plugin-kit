@@ -23,6 +23,17 @@ import { dirname, join } from 'node:path'
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const code = readFileSync(join(root, 'client.js'), 'utf8')
 
+/**
+ * 还原 esbuild 的 ASCII 转义，便于断言中文文案：
+ * 码位 ≥ 0x100 是 \uXXXX（中文），< 0x100 是 \xHH（间隔号 · 这类）。
+ * 只处理 \uXXXX 会漏掉后者，断言里会莫名差一个字符。
+ */
+function decodeBundle(text) {
+  return text
+    .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+    .replace(/\\x([0-9a-fA-F]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+}
+
 const results = []
 async function test(name, fn) {
   try {
@@ -427,13 +438,277 @@ await test('样式表：字段标签锁死 line-height（中英混排的行框�
   assert.ok(/line-height:\s*[0-9]/.test(rule), '.dk_label 缺少数值 line-height')
 })
 
+await test('日志 FOLLOW：bundle 内含 SSE 订阅与「回到底部」交互', () => {
+  // 静态断言锁住契约（真实点击路径需要浏览器，由手工清单覆盖）：
+  assert.ok(code.includes('/logs/stream'), '缺少 SSE 订阅 URL')
+  assert.ok(code.includes('EventSource'), '缺少 EventSource 订阅')
+  assert.ok(code.includes('dk_pillFollow'), '缺少 FOLLOW 激活态样式钩子')
+  assert.ok(code.includes('dk_backToBottom'), '缺少「回到底部」浮层')
+  // esbuild 默认 charset=ascii：中文在 bundle 里是 \uXXXX，先解码再断言
+  const decoded = code.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+  assert.ok(decoded.includes('实时跟随'), '缺少 FOLLOW 提示文案')
+  assert.ok(decoded.includes('回到底部'), '缺少回到底部文案')
+  assert.ok(decoded.includes('容器已退出'), '缺少流结束（容器退出）提示')
+})
+
 await test('样式表内联进了 bundle（dk_ 前缀 + 侧边栏入口属性）', () => {
   assert.ok(code.includes('dk_backdrop'))
   assert.ok(code.includes('data-dsh-docker-entry'))
+  // dock 模式下的刷新 / 只读徽标容器：必须靠右（margin-left:auto），不能回到工具条最左
+  assert.ok(code.includes('dk_toolbarEnd'), '缺少 dock 工具条尾部动作容器')
+  const toolbarEndRule = /\.dk_toolbarEnd \{[^}]*\}/.exec(code)?.[0] ?? ''
+  assert.ok(toolbarEndRule.includes('margin-left: auto'), '.dk_toolbarEnd 缺少 margin-left:auto（刷新必须靠右）')
   // esbuild 默认 charset=ascii，中文被写成 \uXXXX：解码后再断言文案
   const decoded = code.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
   assert.ok(decoded.includes('Docker 容器'))
   assert.ok(decoded.includes('只读模式'))
+})
+
+await test('镜像管理：bundle 内含详情 / 拉取 SSE / 删除 / prune 入口', () => {
+  // 静态断言锁住契约：路由与关键 DOM 钩子必须在 bundle 里（真实点击路径需浏览器）
+  for (const path of ['/images/inspect', '/images/remove', '/images/prune', '/images/pull/stream']) {
+    assert.ok(code.includes(path), '缺少路由 ' + path)
+  }
+  assert.ok(code.includes('dk_pullBox'), '缺少拉取进度容器')
+  // 拉取入口是图标按钮（文字会把窄栏挤换行）：用 ICON_PULL 独有的路径片段锁住
+  assert.ok(code.includes('M5.3 6.5L8 9.2l2.7-2.7'), '缺少拉取镜像图标')
+  assert.ok(code.includes('dk_historyTable'), '缺少构建历史表')
+  assert.ok(code.includes('dk_layerList'), '缺少层列表')
+  const decoded = code.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+  assert.ok(decoded.includes('构建历史'), '缺少构建历史文案')
+  assert.ok(decoded.includes('拉取镜像'), '缺少拉取镜像文案')
+  assert.ok(decoded.includes('清理 dangling 镜像'), '缺少 dangling 清理文案')
+  assert.ok(decoded.includes('删除镜像'), '缺少删除镜像文案')
+})
+
+await test('stats 实时跟随：SSE 订阅 + 60 点 sparkline', () => {
+  assert.ok(code.includes('/stats/stream'), '缺少统计流订阅 URL')
+  assert.ok(code.includes('dk_spark'), '缺少 sparkline 样式钩子')
+  assert.ok(code.includes('dk_sparkEmpty'), '缺少 sparkline 占位样式钩子')
+  assert.ok(code.includes('dk_statsBar'), '缺少统计工具条样式钩子')
+  const decoded = code.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+  assert.ok(decoded.includes('实时跟随资源占用'), '缺少 stats FOLLOW 提示文案')
+  assert.ok(decoded.includes('60 点'), '缺少 60 点窗口说明')
+  assert.ok(decoded.includes('已切回快照轮询'), '缺少统计流结束后的回落文案')
+})
+
+await test('Compose 项目视图：按项目分组 + 客户端聚合日志混流', () => {
+  assert.ok(code.includes('dk_project'), '缺少项目卡片样式钩子')
+  assert.ok(code.includes('dk_logSvc'), '缺少聚合日志来源前缀钩子')
+  assert.ok(code.includes('dk_projectRows'), '缺少项目容器行样式钩子')
+  assert.ok(code.includes('dk_composeTable'), '缺少项目服务表')
+  const decoded = code.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+  assert.ok(decoded.includes('聚合日志'), '缺少聚合日志页签')
+  assert.ok(decoded.includes('个项目'), '缺少项目计数文案')
+  assert.ok(decoded.includes('自动滚动'), '缺少聚合日志自动滚动开关')
+})
+
+/* ------------------------------------------------------------------ *
+ * 容器列表多选 → 临时聚合日志
+ * ------------------------------------------------------------------ */
+
+/** 取当前 bundle 里的选择态纯逻辑（factory 返回值上的 __pick 测试缝）。 */
+function pickApi() {
+  const exports_ = registration.factory((spec) => SEED[spec])
+  assert.ok(exports_.__pick !== undefined, '缺少 __pick 测试缝')
+  return exports_.__pick
+}
+
+await test('聚合选择：入口 / 勾选框 / 操作条装配进 bundle', () => {
+  // 交互契约用静态断言锁住（真实点击路径需要浏览器，由手工清单覆盖）：
+  // 同一个按钮在两种标签间切换、操作条计数与提示、聚合视图标题、Esc 退出。
+  const decoded = decodeBundle(code)
+  assert.ok(decoded.includes('聚合选择'), '缺少「聚合选择」入口')
+  assert.ok(decoded.includes('退出选择'), '缺少选择态下的退出标签（同一个按钮切换）')
+  assert.ok(decoded.includes('已选 '), '缺少「已选 N 个容器」计数')
+  assert.ok(decoded.includes('聚合日志 · '), '缺少聚合视图标题')
+  assert.ok(decoded.includes('至少选择 2 个容器'), '缺少 N<2 的提示')
+  assert.ok(decoded.includes('连接数较多，浏览器并发长连接有限制'), '缺少软上限提示')
+  // 硬上限文案里的数字由 PICK_MAX 拼出来（不写死常量），所以这里只锁静态部分，
+  // 「最多 8 个容器」由下面 pickDecide 的用例断言
+  assert.ok(decoded.includes('最多 ') && decoded.includes('个容器，浏览器并发长连接有限制'), '缺少硬上限提示')
+  assert.ok(decoded.includes('Escape'), '缺少 Esc 退出选择态')
+  assert.ok(code.includes('dk_pick'), '缺少勾选框样式钩子')
+  assert.ok(code.includes('dk_pickBar'), '缺少聚合操作条样式钩子')
+  assert.ok(code.includes('dk_pillPick'), '缺少「聚合选择」激活态样式钩子')
+})
+
+await test('聚合选择：N<2 置灰、2~6 可聚合、7~8 软提示、>8 置灰并提示上限', () => {
+  const pick = pickApi()
+  assert.equal(pick.MAX, 8)
+  assert.equal(pick.SOFT_MAX, 6)
+  assert.deepEqual(pick.decide(0), { canRun: false, hint: '' })
+  assert.deepEqual(pick.decide(1), { canRun: false, hint: '至少选择 2 个容器' })
+  assert.deepEqual(pick.decide(2), { canRun: true, hint: '' })
+  assert.deepEqual(pick.decide(6), { canRun: true, hint: '' })
+  assert.deepEqual(pick.decide(7), { canRun: true, hint: '连接数较多，浏览器并发长连接有限制' })
+  assert.deepEqual(pick.decide(8), { canRun: true, hint: '连接数较多，浏览器并发长连接有限制' })
+  const over = pick.decide(9)
+  assert.equal(over.canRun, false, '超过硬上限必须置灰')
+  assert.match(over.hint, /最多 8 个容器/)
+})
+
+await test('聚合选择：勾选增删保序 + 列表刷新按 id 对账', () => {
+  const pick = pickApi()
+  let ids = []
+  ids = pick.toggle(ids, 'a')
+  ids = pick.toggle(ids, 'b')
+  assert.deepEqual(ids, ['a', 'b'], '新勾选追加在末尾（= 流的打开顺序）')
+  ids = pick.toggle(ids, 'a')
+  assert.deepEqual(ids, ['b'], '再点一次 = 取消，剩余顺序不变')
+  assert.deepEqual(pick.toggle(ids, 'c'), ['b', 'c'])
+  // 列表刷新：c 已消失 → 自动剔除；没变化时必须返回原引用（自动刷新 5s 一次，
+  // 否则每次都会白触发一轮渲染）
+  const containers = [{ id: 'b' }, { id: 'd' }]
+  assert.deepEqual(pick.reconcile(['b', 'c'], containers), ['b'])
+  const untouched = ['b']
+  assert.equal(pick.reconcile(untouched, containers), untouched)
+})
+
+await test('聚合选择：聚合视图的 items = 所选容器集合（按勾选顺序）', () => {
+  const pick = pickApi()
+  const containers = [
+    { id: 'a', name: 'web' },
+    { id: 'b', name: 'api' },
+    { id: 'c', name: 'db' },
+  ]
+  assert.deepEqual(pick.items(containers, ['c', 'a']).map((item) => item.name), ['db', 'web'])
+  // 对账兜底：勾选里混进已消失的 id 时跳过（不抛错、不在结果里留空位）
+  assert.deepEqual(pick.items(containers, ['a', 'gone']).map((item) => item.name), ['web'])
+  assert.deepEqual(pick.items(containers, []), [])
+})
+
+/* ------------------------------------------------------------------ *
+ * 容器列表「活动」条（docker events）
+ * ------------------------------------------------------------------ */
+
+/** 取当前 bundle 里事件活动条的纯逻辑（factory 返回值上的 __events 测试缝）。 */
+function eventsApi() {
+  const exports_ = registration.factory((spec) => SEED[spec])
+  assert.ok(exports_.__events !== undefined, '缺少 __events 测试缝')
+  return exports_.__events
+}
+
+await test('活动条：bundle 内含 /events/stream + 活动条装配', () => {
+  assert.ok(code.includes('/events/stream'), '缺少事件流订阅 URL')
+  assert.ok(code.includes('dk_activity'), '缺少活动条样式钩子')
+  assert.ok(code.includes('dk_activityChevron'), '缺少折叠箭头样式钩子')
+  assert.ok(code.includes('data-action'), '缺少动作着色键')
+  const decoded = decodeBundle(code)
+  assert.ok(decoded.includes('活动'), '缺少「活动」标题')
+  assert.ok(decoded.includes('实时接收中（docker events）'), '缺少事件流连接态文案')
+  assert.ok(decoded.includes('暂无事件'), '缺少空态文案')
+  assert.ok(decoded.includes('事件流已结束'), '缺少事件流结束提示')
+  assert.ok(decoded.includes('正在自动重连'), '缺少重连文案')
+})
+
+await test('活动条：环形缓冲（新的在前、超限丢最旧）与动作标签', () => {
+  const api = eventsApi()
+  assert.equal(api.LIMIT, 50)
+  assert.equal(api.RECENT, 8)
+  let list = []
+  list = api.append(list, { action: 'start', name: 'a' }, api.LIMIT)
+  list = api.append(list, { action: 'die', name: 'b', exitCode: 137 }, api.LIMIT)
+  assert.deepEqual(list.map((event) => event.name), ['b', 'a'], '新事件排在最前')
+  // 超限丢最旧：塞 LIMIT + 5 条，留下的应是最新 LIMIT 条
+  let many = []
+  for (let index = 0; index < api.LIMIT + 5; index += 1) many = api.append(many, { action: 'start', name: 'c' + String(index) }, api.LIMIT)
+  assert.equal(many.length, api.LIMIT)
+  assert.equal(many[0].name, 'c' + String(api.LIMIT + 4))
+  assert.equal(many[many.length - 1].name, 'c5')
+  // die 带上退出码更好认；其它动作原样
+  assert.equal(api.actionText({ action: 'die', exitCode: 137 }), 'die(137)')
+  assert.equal(api.actionText({ action: 'die' }), 'die')
+  assert.equal(api.actionText({ action: 'start' }), 'start')
+  assert.equal(api.actionText({ action: 'health_status: healthy' }), 'health_status: healthy')
+  assert.equal(api.actionText({ action: '' }), '?')
+})
+
+await test('活动条：时间格式化（本地时区）与防抖（连续事件只刷一次列表）', async () => {
+  const api = eventsApi()
+  assert.equal(api.DEBOUNCE_MS, 500)
+  const at = new Date(1700000000 * 1000)
+  const pad = (value) => String(value).padStart(2, '0')
+  const expected = pad(at.getHours()) + ':' + pad(at.getMinutes()) + ':' + pad(at.getSeconds())
+  assert.equal(api.timeText(1700000000), expected)
+  assert.equal(api.timeText(null), '--:--:--')
+
+  // 防抖：一帧事件一次列表重取会把刚省掉的轮询成本原样搬回来，所以必须合并
+  let runs = 0
+  const debounced = api.debounce(20, () => { runs += 1 })
+  debounced.schedule()
+  debounced.schedule()
+  debounced.schedule()
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  assert.equal(runs, 1, '连续 3 次事件只应触发 1 次刷新')
+  debounced.schedule()
+  debounced.cancel()
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  assert.equal(runs, 1, 'cancel 后不应再触发（切 target / 关面板的清理路径）')
+})
+
+await test('变更操作执行中态：按钮转圈 + 卡片锁组 + 确认框不关', () => {
+  // 三处过渡态钩子：按钮 data-busy（图标换转圈）、卡片 data-pending（整组变更按钮压暗锁住）、
+  // 确认框 k_confirmBusy（保持打开 + 「执行中…」）。真实点击路径需要浏览器，这里锁契约。
+  assert.ok(code.includes('data-busy'), '缺少按钮执行中钩子')
+  assert.ok(code.includes('data-pending'), '缺少卡片执行中钩子')
+  assert.ok(code.includes('dk_confirmBusy'), '缺少确认框忙碌样式钩子')
+  const decoded = decodeBundle(code)
+  assert.ok(decoded.includes('执行中…'), '缺少确认框忙碌文案')
+  assert.ok(decoded.includes('正在执行 '), '缺少按钮「正在执行 …」提示')
+  assert.ok(decoded.includes('…请稍候'), '缺少「请稍候」提示')
+  // busy 按钮同时也是 disabled：必须把 disabled 的 opacity .45 顶回 1，否则转圈跟着变淡
+  const busyRule = /\.dk_iconBtn\[data-busy="1"\]:disabled \{[^}]*\}/.exec(code)?.[0] ?? ''
+  assert.ok(busyRule.includes('opacity: 1'), '.dk_iconBtn[data-busy] 没顶掉 disabled 的透明度')
+  const busyConfirmRule = /\.dk_confirm\[data-busy="1"\] \.dk_btnDanger \{[^}]*\}/.exec(code)?.[0] ?? ''
+  assert.ok(busyConfirmRule.includes('opacity: 1'), '忙碌确认键没顶掉 disabled 的透明度')
+})
+
+/* ------------------------------------------------------------------ *
+ * 网络 / 卷（列表 + 详情）
+ * ------------------------------------------------------------------ */
+
+await test('网络 / 卷：五段切换 + 两个列表 + 详情装配进 bundle', () => {
+  // 静态断言锁契约（真实点击路径需要浏览器，由手工清单覆盖）
+  const decoded = decodeBundle(code)
+  // 分段从三段长到五段
+  for (const label of ['容器', '镜像', 'Compose', '网络', '卷']) {
+    assert.ok(decoded.includes(label), '缺少分段标签 ' + label)
+  }
+  // 8 个新端点都在客户端有调用点
+  for (const path of ['/networks', '/networks/inspect', '/networks/remove', '/networks/prune', '/volumes', '/volumes/inspect', '/volumes/remove', '/volumes/prune']) {
+    assert.ok(code.includes(path), '缺少端点调用 ' + path)
+  }
+  // 样式钩子：可点击行 + 路径列省略
+  assert.ok(code.includes('dk_rowClickable'), '缺少可点击行样式钩子')
+  assert.ok(code.includes('dk_pathCell'), '缺少挂载点列样式钩子')
+  // 图标（ICON_NETWORK / ICON_VOLUME 独有的路径片段）
+  assert.ok(code.includes('M5.1 12.2h5.8'), '缺少网络图标')
+  assert.ok(code.includes('M3.4 4.2v7.6'), '缺少卷图标')
+  // 列表列名与详情页文案
+  assert.ok(decoded.includes('接入的容器'), '缺少「接入的容器」页签')
+  assert.ok(decoded.includes('子网'), '缺少子网一行')
+  assert.ok(decoded.includes('挂载点'), '缺少挂载点一行')
+  assert.ok(decoded.includes('搜索网络'), '缺少网络搜索框')
+  assert.ok(decoded.includes('搜索卷'), '缺少卷搜索框')
+  // 分段容器允许横向滚动（五段在 520px 窄栏里可能放不下）
+  const segRule = /\.dk_seg \{[^}]*\}/.exec(code)?.[0] ?? ''
+  assert.ok(segRule.includes('overflow-x: auto'), '.dk_seg 没允许横向滚动')
+})
+
+await test('网络 / 卷：删除与 prune 的 gated 文案 + 卷清理的数据警告', () => {
+  const decoded = decodeBundle(code)
+  // 每个 prune / 删除都有「需要打开允许变更操作」的两态文案（图标化后 title 是唯一入口）
+  assert.ok(decoded.includes('清理未使用的网络'), '缺少网络 prune 文案')
+  assert.ok(decoded.includes('清理未使用的卷'), '缺少卷 prune 文案')
+  assert.ok(decoded.includes('清理网络需要打开「允许变更操作」'), '缺少网络 prune 门控文案')
+  assert.ok(decoded.includes('清理卷需要打开「允许变更操作」'), '缺少卷 prune 门控文案')
+  assert.ok(decoded.includes('删除网络'), '缺少删除网络文案')
+  assert.ok(decoded.includes('删除卷'), '缺少删除卷文案')
+  // 卷 prune 是唯一会删数据的：确认文案必须写明
+  assert.ok(decoded.includes('卷里的数据会一起删除'), '缺少卷 prune 的数据丢失警告')
+  // 网络删除失败时的可执行提示
+  assert.ok(decoded.includes('还有容器接着'), '缺少网络被占用时的提示')
 })
 
 /* ------------------------------------------------------------------ *

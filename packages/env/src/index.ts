@@ -137,7 +137,7 @@ interface ManagedRead {
   file: string
 }
 
-function readManagedEntries(): ManagedRead {
+export function readManagedEntries(): ManagedRead {
   const file = envFilePath()
   const existed = existsSync(file)
   const text = existed ? readFileSync(file, 'utf8') : ''
@@ -179,7 +179,7 @@ function readManagedEntries(): ManagedRead {
 }
 
 /** 生成托管区块文本（不含首尾标记行）；undefined 值的键整体省略（ref 托管清单形态）。 */
-function renderManagedBlock(entries: EnvEntry[]): string {
+export function renderManagedBlock(entries: EnvEntry[]): string {
   const rows = entries.map((entry) => ({
     key: entry.key,
     ...(entry.value === undefined ? {} : { value: entry.value }),
@@ -189,7 +189,7 @@ function renderManagedBlock(entries: EnvEntry[]): string {
 }
 
 /** 把托管区块写回 env 文件（原子替换，保留文件其它内容；权限一律收紧为 0600）。 */
-function writeManagedEntries(entries: EnvEntry[]): void {
+export function writeManagedEntries(entries: EnvEntry[]): void {
   const file = envFilePath()
   const existed = existsSync(file)
   const text = existed ? readFileSync(file, 'utf8') : '# dsh env managed file\n'

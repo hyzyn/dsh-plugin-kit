@@ -7,7 +7,7 @@
  * 能力：
  *   - 目标切换（本机 / SSH 主机，来自宿主 /api/dsh-docker/targets）
  *   - 容器卡片：状态徽章、镜像、compose 项目、端口；搜索 + 状态筛选 + 含已停止
- *   - 详情抽屉：概览（inspect）/ 日志（tail、时间戳、过滤、下载）/ 统计（CPU/内存条）
+ *   - 详情抽屉：概览（inspect）/ 日志（tail、时间戳、过滤、下载、FOLLOW 实时流）/ 统计（CPU/内存条）
  *   - 生命周期操作（启动 / 停止 / 重启 / 删除）——默认只读，需在设置里开开关
  *   - 一次性 exec（默认关闭，需在设置里开开关）
  *   - 镜像列表（仓库:标签 / 大小 / 创建时间）
@@ -62,8 +62,24 @@ const api = {
   logs: (target, id, options) => request('/logs', { method: 'POST', body: JSON.stringify({ target, id, ...options }) }),
   stats: (target, ids) => request('/stats', { method: 'POST', body: JSON.stringify({ target, ids }) }),
   images: (target) => request('/images', { method: 'POST', body: JSON.stringify({ target }) }),
+  imageInspect: (target, ref) => request('/images/inspect', { method: 'POST', body: JSON.stringify({ target, ref }) }),
+  imageRemove: (target, ref) => request('/images/remove', { method: 'POST', body: JSON.stringify({ target, ref }) }),
+  imagePrune: (target) => request('/images/prune', { method: 'POST', body: JSON.stringify({ target }) }),
+  networks: (target) => request('/networks', { method: 'POST', body: JSON.stringify({ target }) }),
+  networkInspect: (target, name) => request('/networks/inspect', { method: 'POST', body: JSON.stringify({ target, name }) }),
+  networkRemove: (target, name) => request('/networks/remove', { method: 'POST', body: JSON.stringify({ target, name }) }),
+  networkPrune: (target) => request('/networks/prune', { method: 'POST', body: JSON.stringify({ target }) }),
+  volumes: (target) => request('/volumes', { method: 'POST', body: JSON.stringify({ target }) }),
+  volumeInspect: (target, name) => request('/volumes/inspect', { method: 'POST', body: JSON.stringify({ target, name }) }),
+  volumeRemove: (target, name) => request('/volumes/remove', { method: 'POST', body: JSON.stringify({ target, name }) }),
+  volumePrune: (target) => request('/volumes/prune', { method: 'POST', body: JSON.stringify({ target }) }),
   action: (target, action, id) => request('/action', { method: 'POST', body: JSON.stringify({ target, action, id }) }),
   exec: (target, id, command, timeoutSec) => request('/exec', { method: 'POST', body: JSON.stringify({ target, id, command, timeoutSec }) }),
+}
+
+/** SSE 订阅 URL 的唯一构造点（四条流都在这里拼 query）。 */
+function streamUrl(path, params) {
+  return API + path + '?' + new URLSearchParams(params).toString()
 }
 
 /* ================================ 格式化 ================================ */
@@ -96,6 +112,19 @@ function portsText(ports) {
 function fmtCreated(text) {
   const match = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})/.exec(text)
   return match === null ? text : match[1] + ' ' + match[2]
+}
+
+/** 字节 → 人类可读（十进制，与 docker images 的 SIZE 一致）。 */
+function fmtBytes(value) {
+  if (value === null || value === undefined || !Number.isFinite(value) || value < 0) return '—'
+  const units = ['B', 'kB', 'MB', 'GB', 'TB']
+  let size = value
+  let unit = 0
+  while (size >= 1000 && unit < units.length - 1) {
+    size /= 1000
+    unit += 1
+  }
+  return (unit === 0 ? String(Math.round(size)) : size.toFixed(size >= 100 ? 0 : 1)) + ' ' + units[unit]
 }
 
 function stateLabel(state) {
@@ -284,6 +313,133 @@ const ICON_BACK =
   '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.5 8h-9"/><path d="M7 4.5L3.5 8 7 11.5"/></svg>'
 const ICON_CHEVRON =
   '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5L8 10.5l4-4"/></svg>'
+const ICON_PULL =
+  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.6v6.4"/><path d="M5.3 6.5L8 9.2l2.7-2.7"/><path d="M3 11.4v1.2a.8.8 0 0 0 .8.8h8.4a.8.8 0 0 0 .8-.8v-1.2"/></svg>'
+const ICON_IMAGE =
+  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="3.5" width="11" height="9" rx="1.2"/><path d="M2.5 10.2L5.6 7.6l2.4 2 2.1-1.7 3.4 2.9"/><path d="M6 6.2h.01"/></svg>'
+const ICON_PRUNE =
+  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.4 12.6h9.2"/><path d="M5.2 9.6l3.1-3.1"/><path d="M8.4 3.6l2.4 2.4"/><path d="M10.6 6.2l1.8 1.8-3.2 1.2-1.2 3.2-1.8-1.8z"/></svg>'
+const ICON_PROJECT =
+  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.4 5.9L8 2.8l5.6 3.1L8 9z"/><path d="M2.4 8.4L8 11.5l5.6-3.1"/><path d="M2.4 10.9L8 14l5.6-3.1"/></svg>'
+const ICON_LAYER =
+  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4.5h10"/><path d="M3 8h10"/><path d="M3 11.5h6"/></svg>'
+/* 网络：三个节点 + 连线；不画成「网线插头」那种写实图形，16px 下看不清 */
+const ICON_NETWORK =
+  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="3.2" r="1.7"/><circle cx="3.4" cy="12.2" r="1.7"/><circle cx="12.6" cy="12.2" r="1.7"/><path d="M6.7 4.6L4.5 10.6"/><path d="M9.3 4.6l2.2 6"/><path d="M5.1 12.2h5.8"/></svg>'
+/* 卷：圆柱体（存储桶的通用记号） */
+const ICON_VOLUME =
+  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="8" cy="4.2" rx="4.6" ry="1.9"/><path d="M3.4 4.2v7.6c0 1 2.1 1.9 4.6 1.9s4.6-.9 4.6-1.9V4.2"/><path d="M3.4 8c0 1 2.1 1.9 4.6 1.9s4.6-.9 4.6-1.9"/></svg>'
+
+/* ========================== 临时多选聚合（纯逻辑） ========================== */
+
+/*
+ * 「容器列表多选 → 临时聚合日志」里唯一有分支的部分：按钮能不能点 / 提示什么、
+ * 勾选怎么增删、列表刷新后怎么对账、勾选怎么变回容器对象。
+ *
+ * 抽到组件外的原因：这几条可以不起浏览器直接回归（见 scripts/client-smoke.mjs），
+ * 组件只负责把它们接到 React 状态；勾选是**临时的**——不持久化、不命名组合、
+ * 不进 settings，也不新增任何服务端字段，刷新后按 id 对账即可。
+ */
+
+/** 超过这个数就给「浏览器并发长连接有限制」的软提示（仍可聚合）。 */
+const PICK_SOFT_MAX = 6
+/** 硬上限：再多就置灰——同源长连接排队后，聚合流反而会「看起来卡住」。 */
+const PICK_MAX = 8
+
+/** 由勾选数量推导「聚合日志」按钮是否可用 + 操作条提示文案。 */
+function pickDecide(count) {
+  if (count > PICK_MAX) return { canRun: false, hint: '最多 ' + String(PICK_MAX) + ' 个容器，浏览器并发长连接有限制' }
+  if (count > PICK_SOFT_MAX) return { canRun: true, hint: '连接数较多，浏览器并发长连接有限制' }
+  if (count < 2) return { canRun: false, hint: count === 0 ? '' : '至少选择 2 个容器' }
+  return { canRun: true, hint: '' }
+}
+
+/** 点一次勾选框：已选则取消，未选则追加（保持勾选顺序 = 流打开顺序）。 */
+function pickToggle(ids, id) {
+  return ids.includes(id) ? ids.filter((item) => item !== id) : [...ids, id]
+}
+
+/**
+ * 列表刷新后按 id 对账：已不在列表里的容器自动从勾选里剔除。
+ * 没变化时返回**原引用**，免得每次刷新（自动刷新 5s 一次）都白触发一轮渲染。
+ */
+function pickReconcile(ids, containers) {
+  const live = new Set(containers.map((item) => item.id))
+  const next = ids.filter((id) => live.has(id))
+  return next.length === ids.length ? ids : next
+}
+
+/** 勾选 → 容器对象（按勾选顺序），直接喂给 ComposeLogs 的 items。 */
+function pickItems(containers, ids) {
+  const byId = new Map(containers.map((item) => [item.id, item]))
+  return ids.map((id) => byId.get(id)).filter((item) => item !== undefined)
+}
+
+/* ========================== 事件活动流（纯逻辑） ========================== */
+
+/*
+ * docker events 的两个客户端动作：攒「活动」条的环形缓冲，以及**防抖**触发列表重取。
+ * 抽到组件外是为了能不起浏览器回归（见 scripts/client-smoke.mjs）——这两件事都是
+ * 纯函数，组件只负责把它们接到 React 状态与 EventSource 上。事件不落盘、不进配置。
+ */
+
+/** 内存里保留的事件条数（环形缓冲；活动条只展示最近几条，其余留着给折叠前的回看）。 */
+const EVENT_BUFFER_LIMIT = 50
+/** 活动条默认铺开显示最近几条。 */
+const EVENT_RECENT = 8
+/**
+ * 收到事件后合并刷新列表的防抖窗口。
+ * 为什么不每帧刷：一次 `docker compose up` 能在几百毫秒里推几十条 start/health，
+ * 每帧一次 POST /containers 等于把刚解决掉的轮询成本原样搬回来。
+ */
+const EVENTS_REFRESH_DEBOUNCE_MS = 500
+
+/** 新事件放最前（活动条按时间倒序读），超出上限丢最旧。 */
+function pushEvent(list, event, limit) {
+  const next = [event, ...list]
+  return next.length > limit ? next.slice(0, limit) : next
+}
+
+/** 事件时间（Unix 秒）→ 浏览器本地时区的 HH:MM:SS；缺失时留占位。 */
+function eventTimeText(seconds) {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds)) return '--:--:--'
+  const date = new Date(seconds * 1000)
+  if (Number.isNaN(date.getTime())) return '--:--:--'
+  const pad = (value) => String(value).padStart(2, '0')
+  return pad(date.getHours()) + ':' + pad(date.getMinutes()) + ':' + pad(date.getSeconds())
+}
+
+/** die 事件把退出码并进标签（die(137)）：异常退出才是活动条里最该被看见的一条。 */
+function eventActionText(event) {
+  const action = typeof event.action === 'string' ? event.action : ''
+  if (action === '') return '?'
+  if (action.indexOf('die') !== 0) return action
+  return event.exitCode === null || event.exitCode === undefined
+    ? action
+    : action + '(' + String(event.exitCode) + ')'
+}
+
+/**
+ * 最小可取消防抖（尾沿）：连续 schedule 只跑最后一次，cancel 用于 effect 清理。
+ * 不用 lodash 之类——这里只需要这一个行为，少一个依赖少一处版本面。
+ */
+function makeDebounced(ms, run) {
+  let timer = null
+  return {
+    schedule() {
+      if (timer !== null) clearTimeout(timer)
+      timer = setTimeout(() => {
+        timer = null
+        run()
+      }, ms)
+    },
+    cancel() {
+      if (timer === null) return
+      clearTimeout(timer)
+      timer = null
+    },
+  }
+}
 
 /* ================================ 注册 ================================ */
 
@@ -320,6 +476,19 @@ window.__ModuleLoader__.load({
      * 小部件
      * ------------------------------------------------------------------ */
 
+    /**
+     * 「标签 + 值」两列网格：镜像 / 网络 / 卷详情共用一份，别在三个组件里各抄一遍
+     * （mono 里的字段值用等宽字体：ID / 路径 / digest）。
+     */
+    function KvList(props) {
+      const rows = Array.isArray(props.rows) ? props.rows : []
+      const mono = Array.isArray(props.mono) ? props.mono : []
+      return jsxs('div', { className: 'dk_kv', children: rows.flatMap(([key, value], index) => [
+        jsx('div', { className: 'dk_kvKey', children: key }, 'k' + String(index)),
+        jsx('div', { className: 'dk_kvVal' + (mono.indexOf(key) >= 0 ? ' dk_kvValMono' : ''), children: value }, 'v' + String(index)),
+      ]) })
+    }
+
     function Badge(props) {
       const state = props.health === 'unhealthy' ? 'unhealthy' : props.state
       const label = props.health === 'unhealthy' ? '不健康' : stateLabel(props.state)
@@ -341,18 +510,36 @@ window.__ModuleLoader__.load({
       })
     }
 
+    /**
+     * 二次确认对话框。
+     *
+     * `busy`：命令已经发出去、还没回来（docker stop / rm 要等容器真的退出）。此时
+     * 对话框**不关**、两个按钮都锁上、确认键换成转圈——它是模态的，这样在命令飞行
+     * 期间用户既点不到列表上的其它操作，也点不出第二次「确定」。
+     */
     function ConfirmDialog(props) {
+      const busy = props.busy === true
       return jsxs('div', {
         className: 'dk_confirmBackdrop',
         onMouseDown: (event) => event.stopPropagation(),
         children: [jsxs('div', {
           className: 'dk_confirm',
+          'data-busy': busy ? '1' : undefined,
           children: [
             jsx('div', { className: 'dk_confirmTitle', children: props.title }),
             jsx('div', { className: 'dk_confirmText', children: props.text }),
             jsxs('div', { className: 'dk_confirmActions', children: [
-              jsx('button', { type: 'button', className: 'dk_btn', onClick: props.onCancel, children: '取消' }),
-              jsx('button', { type: 'button', className: 'dk_btn dk_btnDanger', onClick: props.onConfirm, children: props.confirmLabel }),
+              jsx('button', { type: 'button', className: 'dk_btn', disabled: busy, onClick: props.onCancel, children: '取消' }),
+              jsx('button', {
+                type: 'button',
+                className: 'dk_btn dk_btnDanger',
+                disabled: busy,
+                'aria-busy': busy ? 'true' : undefined,
+                onClick: props.onConfirm,
+                children: busy
+                  ? jsxs('span', { className: 'dk_confirmBusy', children: [jsx('span', { className: 'dk_spin' }), '执行中…'] })
+                  : props.confirmLabel,
+              }),
             ] }),
           ],
         })],
@@ -374,6 +561,63 @@ window.__ModuleLoader__.load({
     }
 
     /* ------------------------------------------------------------------ *
+     * 迷你趋势图（stats 实时跟随）
+     * ------------------------------------------------------------------ */
+
+    /** 环形缓冲上限：约 1 分钟（docker stats 每秒一行）。 */
+    const SPARK_POINTS = 60
+
+    /** 往环形缓冲里追加一个点，超限丢最旧。 */
+    function pushRing(list, value, limit) {
+      const next = list.concat([value])
+      return next.length > limit ? next.slice(next.length - limit) : next
+    }
+
+    /**
+     * CPU / 内存 sparkline。values 里允许 null（采样缺失）——null 直接跳过，
+     * 不画成 0，免得在趋势线上造出假谷。min/max 由调用方给（CPU 会超过 100%，
+     * 内存固定 0~100）；SVG 用 preserveAspectRatio=none 拉满容器宽度。
+     */
+    function Sparkline(props) {
+      const values = Array.isArray(props.values) ? props.values : []
+      const numeric = values.filter((value) => typeof value === 'number' && Number.isFinite(value))
+      const width = 96
+      const height = 22
+      const max = Math.max(Number(props.max) || 0, ...numeric, 1)
+      const step = values.length > 1 ? width / (values.length - 1) : 0
+      const points = []
+      values.forEach((value, index) => {
+        if (typeof value !== 'number' || !Number.isFinite(value)) return
+        const x = step === 0 ? width : index * step
+        const y = height - Math.min(1, Math.max(0, value / max)) * height
+        points.push(x.toFixed(1) + ',' + y.toFixed(1))
+      })
+      const last = numeric.length === 0 ? null : numeric[numeric.length - 1]
+      const alert = props.alertAt !== undefined && last !== null && last >= props.alertAt
+      return jsx('span', {
+        className: 'dk_spark',
+        'data-alert': alert ? '1' : undefined,
+        title: props.title ?? '',
+        children: points.length < 2
+          ? jsx('span', { className: 'dk_sparkEmpty', children: '采样中…' })
+          : jsx('svg', {
+            viewBox: '0 0 ' + String(width) + ' ' + String(height),
+            preserveAspectRatio: 'none',
+            'aria-hidden': 'true',
+            children: jsx('polyline', {
+              points: points.join(' '),
+              fill: 'none',
+              stroke: 'currentColor',
+              'stroke-width': '1.4',
+              'stroke-linejoin': 'round',
+              'stroke-linecap': 'round',
+              'vector-effect': 'non-scaling-stroke',
+            }),
+          }),
+      })
+    }
+
+    /* ------------------------------------------------------------------ *
      * 容器卡片
      * ------------------------------------------------------------------ */
 
@@ -388,12 +632,20 @@ window.__ModuleLoader__.load({
     /** 卡片/工具条上的图标按钮（无文字，hover 出 title）。 */
     function IconAction(props) {
       const disabled = props.disabled === true
+      /*
+       * `busy`：这个按钮对应的动作正在执行（docker stop / rm 等，秒级到十几秒）。
+       * 图标整体换成转圈而不是「让图标自己转」——删除键转一个垃圾桶很怪，
+       * 而且转圈是固定 13px，不会因为图标形状不同让按钮宽度抖动。
+       */
+      const busy = props.busy === true
       return jsx('button', {
         type: 'button',
         className: 'dk_iconBtn' + (props.danger === true ? ' dk_iconBtnDanger' : ''),
         'data-on': props.on === true ? '1' : undefined,
         // 刷新类按钮的 loading 态：图标自己转（见 docker.css）
         'data-spin': props.spin === true ? '1' : undefined,
+        'data-busy': busy ? '1' : undefined,
+        'aria-busy': busy ? 'true' : undefined,
         disabled,
         title: props.title,
         'aria-label': props.title,
@@ -402,29 +654,59 @@ window.__ModuleLoader__.load({
           if (disabled) return
           props.onClick()
         },
-        children: jsx('span', { className: 'dk_iconGlyph', dangerouslySetInnerHTML: { __html: props.icon } }),
+        children: busy
+          ? jsx('span', { className: 'dk_spin' })
+          : jsx('span', { className: 'dk_iconGlyph', dangerouslySetInnerHTML: { __html: props.icon } }),
       })
     }
 
     function ContainerCard(props) {
       const item = props.item
+      const pickMode = props.pickMode === true
+      const picked = props.picked === true
       const readOnly = props.allowMutations !== true
       const running = item.state === 'running' || item.state === 'paused' || item.state === 'restarting'
       const created = item.createdAt === null ? (item.runningFor === '' ? '—' : item.runningFor) : fmtCreated(item.createdAt)
+      /*
+       * 「正在执行」：这个容器的某个变更命令还在飞（stop / rm 要等容器真的退出）。
+       * 整组变更按钮锁上、正在跑的那个换转圈，否则连点会叠加出 stop + restart + remove
+       * 这种互相打架的命令（docker 侧只会看到一串互相打断的请求）。
+       */
+      const pendingAction = typeof props.pending === 'string' ? props.pending : ''
+      const busy = pendingAction !== ''
+      const actionTitle = (label) => (busy
+        ? '正在执行 ' + pendingAction + '…请稍候'
+        : (readOnly ? '需要打开「允许变更操作」' : label))
+      /*
+       * 选择态下卡片本体就是勾选开关（不再进详情）：点击 / 回车 / 空格都切换勾选，
+       * 角色也跟着换成 checkbox，读屏用户不会以为点进去是详情。
+       */
+      const activate = () => {
+        if (pickMode) {
+          props.onTogglePick(item)
+          return
+        }
+        props.onOpen(item, 'overview')
+      }
       return jsxs('div', {
         className: 'dk_card',
-        role: 'button',
+        role: pickMode ? 'checkbox' : 'button',
+        'aria-checked': pickMode ? (picked ? 'true' : 'false') : undefined,
         tabIndex: 0,
         'data-selected': props.selected === true ? '1' : '0',
-        onClick: () => props.onOpen(item, 'overview'),
+        'data-pick': pickMode ? '1' : undefined,
+        'data-picked': picked ? '1' : undefined,
+        'data-pending': busy ? '1' : undefined,
+        onClick: activate,
         onKeyDown: (event) => {
           if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault()
-            props.onOpen(item, 'overview')
+            activate()
           }
         },
         children: [
           jsxs('div', { className: 'dk_cardHead', children: [
+            pickMode ? jsx('span', { className: 'dk_pick', 'data-on': picked ? '1' : '0', 'aria-hidden': 'true' }, 'pick') : null,
             jsx('span', { className: 'dk_cardName', title: item.name, children: item.name }),
             jsx(Badge, { state: item.state, health: item.health, status: item.status }),
           ] }, 'head'),
@@ -441,15 +723,16 @@ window.__ModuleLoader__.load({
            *   右：变更（启停、重启、删除）——按破坏性递增排列，只读时整组禁用。
            * 混排（原先 停止|重启 夹在 终端 与 日志 之间）会让误点变更操作的概率变高，
            * 也让「哪些按钮在只读模式下会失效」看不出来。
+           * 选择态整条收起：一边勾选聚合、一边还能点到启停删，是纯粹的事故入口。
            */
-          jsxs('div', { className: 'dk_actionBar', children: [
+          pickMode ? null : jsxs('div', { className: 'dk_actionBar', children: [
             jsx(IconAction, { icon: ICON_TERM, title: '在容器内打开交互式终端（docker exec -it ' + item.name + ' sh）', onClick: () => props.onExec(item) }, 'exec'),
             jsx(IconAction, { icon: ICON_LOGS, title: '查看日志', onClick: () => props.onOpen(item, 'logs') }, 'logs'),
             jsx(IconAction, { icon: ICON_STATS, title: '资源占用', onClick: () => props.onOpen(item, 'stats') }, 'stats'),
             jsx('span', { className: 'dk_actionBarSep', 'aria-hidden': 'true' }, 'sep'),
-            jsx(IconAction, { icon: running ? ICON_STOP : ICON_PLAY, title: readOnly ? '需要打开「允许变更操作」' : (running ? '停止容器' : '启动容器'), disabled: readOnly, onClick: () => props.onAction(running ? 'stop' : 'start', item) }, 'power'),
-            jsx(IconAction, { icon: ICON_RESTART, title: readOnly ? '需要打开「允许变更操作」' : '重启容器', disabled: readOnly, onClick: () => props.onAction('restart', item) }, 'restart'),
-            jsx(IconAction, { icon: ICON_TRASH, danger: true, title: readOnly ? '需要打开「允许变更操作」' : '删除容器（不可恢复）', disabled: readOnly, onClick: () => props.onAction('remove', item) }, 'remove'),
+            jsx(IconAction, { icon: running ? ICON_STOP : ICON_PLAY, title: actionTitle(running ? '停止容器' : '启动容器'), disabled: readOnly || busy, busy: pendingAction === (running ? 'stop' : 'start'), onClick: () => props.onAction(running ? 'stop' : 'start', item) }, 'power'),
+            jsx(IconAction, { icon: ICON_RESTART, title: actionTitle('重启容器'), disabled: readOnly || busy, busy: pendingAction === 'restart', onClick: () => props.onAction('restart', item) }, 'restart'),
+            jsx(IconAction, { icon: ICON_TRASH, danger: true, title: actionTitle('删除容器（不可恢复）'), disabled: readOnly || busy, busy: pendingAction === 'remove', onClick: () => props.onAction('remove', item) }, 'remove'),
           ] }, 'actions'),
         ],
       })
@@ -469,8 +752,15 @@ window.__ModuleLoader__.load({
     const LOG_LEVEL_NAME_RE = /(TRACE|DEBUG|INFO|WARN|ERROR|FATAL)/
     /** 着色行数上限：超大日志整篇着色会拖慢渲染，超出只对尾部着色。 */
     const LOG_COLOR_LIMIT = 2000
+    /** FOLLOW 流式日志的环形缓冲上限：超出丢最旧并提示一次（防止长时间跟随吃内存）。 */
+    const FOLLOW_LINE_LIMIT = 5000
 
-    function renderLogLine(line, index, query) {
+    /**
+     * 日志行的「内容片段」（时间戳 + 级别 + 正文）。抽出来是为了让容器日志与
+     * Compose 聚合日志共用同一套着色：聚合日志只需要在这几个片段前再插一个
+     * `[service]` 前缀即可，不必复制一份正则与渲染逻辑。
+     */
+    function renderLogParts(line, index, query) {
       const nodes = []
       let rest = line
       // 最多吃掉两个前缀（时间戳 + 级别，顺序不限）
@@ -491,7 +781,19 @@ window.__ModuleLoader__.load({
         break
       }
       nodes.push(jsx('span', { className: 'dk_logText', children: highlight(rest, query, 'x' + String(index)) }, 'tx'))
-      return jsxs('div', { className: 'dk_logLine', children: nodes }, String(index))
+      return nodes
+    }
+
+    function renderLogLine(line, index, query) {
+      return jsxs('div', { className: 'dk_logLine', children: renderLogParts(line, index, query) }, String(index))
+    }
+
+    /** Compose 聚合日志行：在标准日志行前加一个 `[service]` 前缀。 */
+    function renderAggLine(entry, index, query) {
+      return jsxs('div', { className: 'dk_logLine', children: [
+        jsx('span', { className: 'dk_logSvc', children: '[' + entry.service + ']' }, 'svc'),
+        ...renderLogParts(entry.text, index, query),
+      ] }, String(index))
     }
 
     function ContainerView(props) {
@@ -507,8 +809,36 @@ window.__ModuleLoader__.load({
       const [logFilter, setLogFilter] = useState('')
       const [logAuto, setLogAuto] = useState(false)
       const [logIntervalSec, setLogIntervalSec] = useState(3)
+      /*
+       * 实时跟随（FOLLOW，docker logs -f → SSE）：
+       *   followLines 是环形缓冲（≤ FOLLOW_LINE_LIMIT 行），followPending 存
+       *   最后一段没等到 \n 的残行；followStatus 只表达连接状态（connecting /
+       *   open / reconnecting / closed），**连接错误不弹横幅**（EventSource 会
+       *   自动重连，弹一次就会刷屏），只有服务端 event:error 才进 followError。
+       */
+      const [follow, setFollow] = useState(false)
+      const [followLines, setFollowLines] = useState([])
+      const [followStatus, setFollowStatus] = useState('')
+      const [followError, setFollowError] = useState('')
+      const [followNotice, setFollowNotice] = useState('')
+      const [followDropped, setFollowDropped] = useState(false)
+      const [followAtBottom, setFollowAtBottom] = useState(true)
+      const followLinesRef = useRef([])
+      const followPendingRef = useRef('')
+      const logBodyRef = useRef(null)
       const [stats, setStats] = useState(null)
       const [statsError, setStatsError] = useState('')
+      /*
+       * 统计实时跟随（docker stats → SSE）。与日志 FOLLOW 的本质差异：
+       * docker stats 不会自然结束（容器在跑就每秒一行），所以**关闭语义由前端
+       * 主动断**——切页 / 关开关 / 关面板都会 close 掉 EventSource。浏览器侧留
+       * 60 个点的环形缓冲画 CPU / 内存 sparkline（约 1 分钟窗口）。
+       */
+      const [statsFollow, setStatsFollow] = useState(false)
+      const [statsStatus, setStatsStatus] = useState('')
+      const [statsNotice, setStatsNotice] = useState('')
+      const [statsSeries, setStatsSeries] = useState({ cpu: [], mem: [] })
+      const statsSeriesRef = useRef({ cpu: [], mem: [] })
       const [execCommand, setExecCommand] = useState('')
       const [execResult, setExecResult] = useState(null)
       const [execError, setExecError] = useState('')
@@ -541,15 +871,185 @@ window.__ModuleLoader__.load({
         return undefined
       }, [tab, loadLogs, props.refreshToken])
 
-      // 日志自动刷新（参考布局的 AUTO REFRESH + 间隔）：只在日志页且开关打开时轮询
+      // 日志自动刷新（参考布局的 AUTO REFRESH + 间隔）：只在日志页且开关打开时轮询；
+      // FOLLOW 打开时轮询让位（实时流已在推，再轮询纯属重复拉取）
       useEffect(() => {
-        if (tab !== 'logs' || !logAuto) return undefined
+        if (tab !== 'logs' || !logAuto || follow) return undefined
         const timer = setInterval(loadLogs, Math.max(1, logIntervalSec) * 1000)
         return () => clearInterval(timer)
-      }, [tab, logAuto, logIntervalSec, loadLogs])
+      }, [tab, logAuto, logIntervalSec, loadLogs, follow])
 
+      /**
+       * 日志实时流生命周期：FOLLOW 打开且有 EventSource 时订阅 SSE。
+       * 切页 / 关面板 / 换容器 / 关 FOLLOW 都会走到 effect 清理（es.close()），
+       * 不留悬挂连接。
+       */
       useEffect(() => {
-        if (tab !== 'stats') return undefined
+        if (tab !== 'logs' || !follow) return undefined
+        if (typeof EventSource !== 'function') {
+          setFollowError('当前环境不支持 EventSource，无法实时跟随')
+          setFollow(false)
+          return undefined
+        }
+        // 每次重开流都从空缓冲开始，避免把上一次的行混进来
+        followLinesRef.current = []
+        followPendingRef.current = ''
+        setFollowLines([])
+        setFollowDropped(false)
+        setFollowError('')
+        setFollowNotice('')
+        setFollowAtBottom(true)
+        setFollowStatus('connecting')
+
+        const params = new URLSearchParams({
+          target: props.target,
+          id: item.id,
+          tail: String(logOptions.tail),
+          ...(logOptions.timestamps ? { timestamps: '1' } : {}),
+        })
+        const es = new EventSource(API + '/logs/stream?' + params.toString())
+        let closed = false
+        const close = () => {
+          if (closed) return
+          closed = true
+          try { es.close() } catch { /* 已关闭 */ }
+        }
+
+        /** 分片 → 完整行：docker 的 chunk 不按行切，末段残行留给下一片。 */
+        const pushChunk = (text) => {
+          if (text === '') return
+          const parts = (followPendingRef.current + text).split('\n')
+          followPendingRef.current = parts.pop() ?? ''
+          if (parts.length === 0) return
+          const next = followLinesRef.current.concat(parts)
+          const trimmed = next.length > FOLLOW_LINE_LIMIT ? next.slice(next.length - FOLLOW_LINE_LIMIT) : next
+          followLinesRef.current = trimmed
+          if (trimmed.length !== next.length) setFollowDropped(true)
+          setFollowLines(trimmed)
+        }
+
+        const onLine = (event) => {
+          let payload = null
+          try { payload = JSON.parse(event.data) } catch { return }
+          if (payload === null || typeof payload !== 'object') return
+          if (typeof payload.d === 'string') pushChunk(payload.d)
+          else if (typeof payload.e === 'string') pushChunk(payload.e)
+        }
+
+        const onEnd = (event) => {
+          let payload = null
+          try { payload = JSON.parse(event.data) } catch { /* 畸形载荷按容器退出处理 */ }
+          const reason = payload !== null && typeof payload.reason === 'string' ? payload.reason : 'container-exit'
+          const code = payload !== null && typeof payload.code === 'number' ? payload.code : null
+          if (reason === 'container-exit') {
+            // 容器停止 → docker logs -f 自然退出：关流、切回快照并立即补一次刷新
+            setFollowNotice('容器已退出' + (code === null ? '' : '（退出码 ' + String(code) + '）') + '，日志流结束，已切回快照')
+            close()
+            setFollow(false)
+            loadLogs()
+            return
+          }
+          // 服务端主动停流（插件禁用 / 配置热更新）：交给 EventSource 自动重连
+          setFollowStatus('reconnecting')
+          setFollowNotice('服务端已停止日志流，正在重连…')
+        }
+
+        const onError = (event) => {
+          // 服务端 event:error 是带 data 的 MessageEvent；连接层错误是普通 Event
+          if (typeof event.data === 'string' && event.data !== '') {
+            let message = '日志流异常'
+            try {
+              const payload = JSON.parse(event.data)
+              if (payload !== null && typeof payload.message === 'string') message = payload.message
+            } catch { /* 用默认文案 */ }
+            setFollowError(message)
+            close()
+            setFollow(false)
+            loadLogs()
+            return
+          }
+          // 连接层错误：浏览器按 EventSource 语义自动重连，这里只更新状态，
+          // 不弹错误横幅（否则每次重试都会刷一条）
+          setFollowStatus(es.readyState === 2 ? 'closed' : 'reconnecting')
+        }
+
+        es.addEventListener('line', onLine)
+        es.addEventListener('end', onEnd)
+        es.addEventListener('error', onError)
+        es.onopen = () => {
+          setFollowStatus('open')
+          setFollowNotice('')
+        }
+        return close
+      }, [tab, follow, props.target, item.id, logOptions.tail, logOptions.timestamps, loadLogs])
+
+      // FOLLOW 自动贴底；用户往上滚后暂停，显示「回到底部」
+      useEffect(() => {
+        if (tab !== 'logs' || !follow || !followAtBottom) return
+        const body = logBodyRef.current
+        if (body === null) return
+        body.scrollTop = body.scrollHeight
+      }, [tab, follow, followAtBottom, followLines])
+
+      /** FOLLOW 与 AUTO REFRESH 互斥：开流停轮询；关流立即回快照。 */
+      const toggleFollow = () => {
+        if (follow) {
+          setFollow(false)
+          setFollowStatus('')
+          loadLogs()
+          return
+        }
+        setFollow(true)
+        setLogAuto(false)
+        setFollowError('')
+        setFollowNotice('')
+      }
+
+      /** 统计实时跟随开关：开流停轮询；关流回到快照（并立即拉一次）。 */
+      const toggleStatsFollow = () => {
+        if (statsFollow) {
+          setStatsFollow(false)
+          setStatsStatus('')
+          return
+        }
+        setStatsFollow(true)
+        setStatsNotice('')
+        setStatsError('')
+      }
+
+      /** 统计流连接状态文案（连接层错误只动这里，不进错误横幅）。 */
+      const statsStatusText = () => {
+        if (statsStatus === 'open') return '实时跟随中（docker stats）'
+        if (statsStatus === 'connecting') return '正在连接统计流…'
+        if (statsStatus === 'reconnecting') return '连接中断，正在自动重连…'
+        if (statsStatus === 'closed') return '统计流已断开'
+        return '统计流'
+      }
+
+      const scrollToBottom = () => {
+        const body = logBodyRef.current
+        if (body !== null) body.scrollTop = body.scrollHeight
+        setFollowAtBottom(true)
+      }
+
+      const onLogScroll = (event) => {
+        if (!follow) return
+        const body = event.currentTarget
+        setFollowAtBottom(body.scrollHeight - body.scrollTop - body.clientHeight < 24)
+      }
+
+      /** 连接状态文案（连接层错误只动这里，不进错误横幅）。 */
+      const followStatusText = () => {
+        if (followStatus === 'open') return '实时跟随中（docker logs -f）'
+        if (followStatus === 'connecting') return '正在连接日志流…'
+        if (followStatus === 'reconnecting') return '连接中断，正在自动重连…'
+        if (followStatus === 'closed') return '日志流已断开'
+        return '日志流'
+      }
+
+      // 快照轮询：FOLLOW 打开时让位（实时流已经在推），关闭即恢复
+      useEffect(() => {
+        if (tab !== 'stats' || statsFollow) return undefined
         let alive = true
         const tick = () => {
           api.stats(props.target, [item.id]).then((payload) => {
@@ -567,7 +1067,87 @@ window.__ModuleLoader__.load({
           alive = false
           clearInterval(timer)
         }
-      }, [tab, props.target, item.id, config.pollIntervalSec, props.refreshToken])
+      }, [tab, statsFollow, props.target, item.id, config.pollIntervalSec, props.refreshToken])
+
+      /**
+       * 统计实时流生命周期：FOLLOW 打开且有 EventSource 时订阅 SSE
+       * `docker stats`（每秒一行）。切页 / 关面板 / 换容器 / 关 FOLLOW 都走
+       * effect 清理（es.close()），不留悬挂连接。
+       *
+       * 事件协议与日志流同构，但事件名是 `stats`（每帧一个容器的一次采样）。
+       * 这条流**不会自然结束**：只有 docker stats 因容器全部退出而自行退出时
+       * 服务端才发 `end`（reason=stats-exit），客户端据此回到快照轮询。
+       */
+      useEffect(() => {
+        if (tab !== 'stats' || !statsFollow) return undefined
+        if (typeof EventSource !== 'function') {
+          setStatsNotice('当前环境不支持 EventSource，无法实时跟随')
+          setStatsFollow(false)
+          return undefined
+        }
+        statsSeriesRef.current = { cpu: [], mem: [] }
+        setStatsSeries({ cpu: [], mem: [] })
+        setStatsStatus('connecting')
+        setStatsNotice('')
+        setStatsError('')
+
+        const es = new EventSource(streamUrl('/stats/stream', { target: props.target, ids: item.id }))
+        let closed = false
+        const close = () => {
+          if (closed) return
+          closed = true
+          try { es.close() } catch { /* 已关闭 */ }
+        }
+        /** docker stats 的一行 = 一个容器的一次采样（`{{json .}}`）。 */
+        const onStats = (event) => {
+          let payload = null
+          try { payload = JSON.parse(event.data) } catch { return }
+          if (payload === null || typeof payload !== 'object') return
+          const cpu = typeof payload.cpuPercent === 'number' ? payload.cpuPercent : null
+          const mem = typeof payload.memPercent === 'number' ? payload.memPercent : null
+          setStats(payload)
+          setStatsError('')
+          const next = {
+            cpu: cpu === null ? statsSeriesRef.current.cpu : pushRing(statsSeriesRef.current.cpu, cpu, SPARK_POINTS),
+            mem: mem === null ? statsSeriesRef.current.mem : pushRing(statsSeriesRef.current.mem, mem, SPARK_POINTS),
+          }
+          statsSeriesRef.current = next
+          setStatsSeries(next)
+        }
+        const onEnd = (event) => {
+          let payload = null
+          try { payload = JSON.parse(event.data) } catch { /* 畸形载荷按自然结束处理 */ }
+          const reason = payload !== null && typeof payload.reason === 'string' ? payload.reason : 'stats-exit'
+          const code = payload !== null && typeof payload.code === 'number' ? payload.code : null
+          setStatsNotice('统计流已结束' + (reason === 'stats-exit' ? '（docker stats 退出' + (code === null ? '' : '，退出码 ' + String(code)) + '）' : '') + '，已切回快照轮询')
+          close()
+          setStatsFollow(false)
+        }
+        const onError = (event) => {
+          // 服务端 event:error 是带 data 的 MessageEvent；连接层错误是普通 Event
+          if (typeof event.data === 'string' && event.data !== '') {
+            let message = '统计流异常'
+            try {
+              const payload = JSON.parse(event.data)
+              if (payload !== null && typeof payload.message === 'string') message = payload.message
+            } catch { /* 用默认文案 */ }
+            setStatsError(message)
+            close()
+            setStatsFollow(false)
+            return
+          }
+          // 连接层错误：EventSource 自动重连，只更新状态
+          setStatsStatus(es.readyState === 2 ? 'closed' : 'reconnecting')
+        }
+        es.addEventListener('stats', onStats)
+        es.addEventListener('end', onEnd)
+        es.addEventListener('error', onError)
+        es.onopen = () => {
+          setStatsStatus('open')
+          setStatsNotice('')
+        }
+        return close
+      }, [tab, statsFollow, props.target, item.id])
 
       const runExec = () => {
         if (execCommand.trim() === '') return
@@ -631,22 +1211,26 @@ window.__ModuleLoader__.load({
         ] })
       }
 
-      /** 日志统计（工具条与正文共用）。 */
+      /** 日志统计（工具条与正文共用）：FOLLOW 时数据源是流缓冲，否则是快照。 */
       const logStats = () => {
         // 只认 string：宿主 /logs 的形状是 { id, text, truncated }，但客户端不该
         // 因为一个畸形/旧版响应就在渲染期抛错——那会连整块面板和 exec 终端一起被
         // React 卸载掉（一次日志请求赔进去一个正在跑的容器会话）。
-        const raw = logs !== null && typeof logs === 'object' && typeof logs.text === 'string' ? logs.text : ''
+        const raw = follow
+          ? followLines.join('\n')
+          : (logs !== null && typeof logs === 'object' && typeof logs.text === 'string' ? logs.text : '')
         const needle = logFilter.trim().toLowerCase()
         const allLines = raw === '' ? [] : raw.split('\n')
         const matchedLines = needle === '' ? allLines : allLines.filter((line) => line.toLowerCase().includes(needle))
         return { raw, needle, allLines, matchedLines }
       }
 
-      const logPill = (on, label, onClick) => jsx('button', {
+      const logPill = (on, label, onClick, options) => jsx('button', {
         type: 'button',
-        className: 'dk_pill',
+        className: 'dk_pill' + ((options?.className) ?? ''),
         'data-on': on ? '1' : '0',
+        disabled: options?.disabled === true,
+        title: options?.title ?? '',
         onClick,
         children: label,
       })
@@ -667,12 +1251,23 @@ window.__ModuleLoader__.load({
           }),
           jsx('span', { className: 'dk_toolLabel', children: 'TIMESTAMPS' }),
           logPill(logOptions.timestamps, logOptions.timestamps ? 'On' : 'Off', () => setLogOptions({ ...logOptions, timestamps: !logOptions.timestamps })),
+          jsx('span', { className: 'dk_toolLabel', children: 'FOLLOW' }),
+          logPill(follow, follow ? 'On' : 'Off', toggleFollow, {
+            className: ' dk_pillFollow',
+            title: follow ? '关闭实时跟随（回到日志快照）' : '实时跟随容器日志（docker logs -f）',
+          }),
           jsx('span', { className: 'dk_toolLabel', children: 'AUTO REFRESH' }),
-          logPill(logAuto, logAuto ? 'On' : 'Off', () => setLogAuto((value) => !value)),
+          // FOLLOW 已开时轮询无意义：置灰并给出原因（关闭 FOLLOW 后自动恢复可用）
+          logPill(logAuto, logAuto ? 'On' : 'Off', () => setLogAuto((value) => !value), {
+            disabled: follow,
+            title: follow ? 'FOLLOW 打开时暂停轮询' : '按下方间隔重新拉取日志快照',
+          }),
           jsx('select', {
             className: 'dk_select dk_selectSm',
             value: String(logIntervalSec),
-            // 间隔随时可改：关掉 AUTO REFRESH 时先选好、再开，不该被禁用
+            // 间隔随时可改：关掉 AUTO REFRESH 时先选好、再开，不该被禁用；
+            // 只有 FOLLOW 期间禁用（轮询已停）
+            disabled: follow,
             title: '自动刷新间隔（开启 AUTO REFRESH 后按此轮询）',
             onChange: (event) => setLogIntervalSec(Number(event.target.value)),
             children: [2, 3, 5, 10].map((value) => jsx('option', { value: String(value), children: String(value) + 's' }, String(value))),
@@ -734,25 +1329,62 @@ window.__ModuleLoader__.load({
             hint: logsError + (logsError.includes('Failed to fetch') ? '（网络请求没到宿主：宿主可能刚重启、或连接被中断）' : ''),
             action: jsx('button', { type: 'button', className: 'dk_btn', disabled: logsLoading, onClick: loadLogs, children: '重试' }),
           }),
-          logs !== null && logs.truncated === true ? jsx(Banner, { kind: 'warn', title: '日志输出超过上限，已截断', hint: '调小「LINES」或到设置卡片调大「单次命令输出上限」。' }) : null,
-          jsxs('div', { className: 'dk_logBody', children: [
-            matchedLines.length > shown.length
-              ? jsx('div', { className: 'dk_logLine dk_logMore', children: '（只显示最近 ' + String(LOG_COLOR_LIMIT) + ' 行，共 ' + String(matchedLines.length) + ' 行匹配）' }, 'more')
-              : null,
-            logsError !== ''
-              ? null
-              : logs === null
-                ? jsx('div', { className: 'dk_logLine', children: '读取中…' }, 'loading')
-                : (shown.length === 0
-                  ? jsx('div', { className: 'dk_logLine', children: needle === '' ? '(无日志)' : '(无匹配日志)' }, 'empty')
-                  : shown.map((line, index) => renderLogLine(line, index, needle))),
-          ] }),
+          // 流异常（服务端 event:error / 环境不支持）才弹横幅；连接层断线只进状态行
+          followError === '' ? null : jsx(Banner, {
+            title: '日志流中断',
+            hint: followError,
+            action: jsx('button', { type: 'button', className: 'dk_btn', onClick: toggleFollow, children: '重试' }),
+          }),
+          followNotice === '' ? null : jsx(Banner, { kind: 'info', title: followNotice }),
+          followDropped ? jsx(Banner, {
+            kind: 'warn',
+            title: '日志超过 ' + String(FOLLOW_LINE_LIMIT) + ' 行，已丢弃最早内容',
+            hint: '流式日志只保留最近的行；需要完整历史请用快照或「下载日志」。',
+          }) : null,
+          !follow && logs !== null && logs.truncated === true ? jsx(Banner, { kind: 'warn', title: '日志输出超过上限，已截断', hint: '调小「LINES」或到设置卡片调大「单次命令输出上限」。' }) : null,
+          follow ? jsx('div', { className: 'dk_followState', 'data-state': followStatus, children: followStatusText() }) : null,
+          jsxs('div', {
+            className: 'dk_logBody',
+            ref: logBodyRef,
+            onScroll: onLogScroll,
+            children: [
+              matchedLines.length > shown.length
+                ? jsx('div', { className: 'dk_logLine dk_logMore', children: '（只显示最近 ' + String(LOG_COLOR_LIMIT) + ' 行，共 ' + String(matchedLines.length) + ' 行匹配）' }, 'more')
+                : null,
+              logsError !== ''
+                ? null
+                : (!follow && logs === null)
+                  ? jsx('div', { className: 'dk_logLine', children: '读取中…' }, 'loading')
+                  : (shown.length === 0
+                    ? jsx('div', { className: 'dk_logLine', children: follow ? '等待日志…' : (needle === '' ? '(无日志)' : '(无匹配日志)') }, 'empty')
+                    : shown.map((line, index) => renderLogLine(line, index, needle))),
+            ],
+          }),
+          follow && !followAtBottom
+            ? jsx('button', { type: 'button', className: 'dk_backToBottom', onClick: scrollToBottom, children: '回到底部' })
+            : null,
         ] })
       }
 
       const statsView = () => {
-        if (statsError !== '') return jsx(Banner, { title: '读取统计失败', hint: statsError })
-        if (stats === null) return jsx('div', { className: 'dk_empty', children: [jsx('span', { className: 'dk_spin' }), jsx('div', { children: '读取中…' })] })
+        const following = statsFollow
+        const controls = jsxs('div', { className: 'dk_statsBar', children: [
+          jsx('span', { className: 'dk_toolLabel', children: 'FOLLOW' }),
+          logPill(following, following ? 'On' : 'Off', toggleStatsFollow, {
+            className: ' dk_pillFollow',
+            title: following ? '关闭实时跟随（回到 docker stats 快照）' : '实时跟随资源占用（docker stats 每秒一行）',
+          }),
+          jsx('span', { className: 'dk_hint', children: following ? '60 点 ≈ 最近 1 分钟' : '打开 FOLLOW 看实时趋势' }),
+          jsx('span', { className: 'dk_headerSpacer' }),
+          following ? jsx('span', { className: 'dk_followState', 'data-state': statsStatus, children: statsStatusText() }) : null,
+        ] })
+        const wrap = (body) => jsxs('div', { className: 'dk_statsView', children: [controls, body] })
+        if (statsNotice !== '') return wrap(jsxs('div', { children: [
+          jsx(Banner, { kind: 'info', title: statsNotice }),
+          statsError === '' ? null : jsx(Banner, { title: '读取统计失败', hint: statsError }),
+        ] }))
+        if (statsError !== '') return wrap(jsx(Banner, { title: '读取统计失败', hint: statsError }))
+        if (stats === null) return wrap(jsx('div', { className: 'dk_empty', children: [jsx('span', { className: 'dk_spin' }), jsx('div', { children: '读取中…' })] }))
         const cpu = stats.cpuPercent ?? 0
         const mem = stats.memPercent ?? 0
         const bar = (value) => jsxs('div', { className: 'dk_bar', children: [jsx('div', {
@@ -761,23 +1393,33 @@ window.__ModuleLoader__.load({
           'data-danger': value >= 85 ? '1' : undefined,
           style: { width: Math.min(100, Math.max(0, value)) + '%' },
         })] })
+        // CPU 单核 100% 上限，多核可以到 N×100%：趋势图上限跟着观测峰值走，
+        // 但至少 100，免得单核容器看起来永远是贴顶的
+        const cpuMax = Math.max(100, ...statsSeries.cpu)
         const row = (label, value, extra) => jsxs('tr', { children: [
           jsx('td', { children: label }),
           jsx('td', { className: 'dk_num', children: value }),
           jsx('td', { children: extra ?? null }),
         ] }, label)
-        return jsxs('table', { className: 'dk_stats', children: [
+        return wrap(jsxs('table', { className: 'dk_stats', children: [
           jsx('thead', { children: jsxs('tr', { children: [
-            jsx('th', { children: '指标' }), jsx('th', { children: '数值' }), jsx('th', { children: '占用' }),
+            jsx('th', { children: '指标' }), jsx('th', { children: '数值' }), jsx('th', { children: '占用 / 趋势' }),
           ] }) }),
           jsx('tbody', { children: [
-            row('CPU', fmtPercent(stats.cpuPercent), bar(cpu)),
-            row('内存', stats.memUsage, bar(mem)),
+            row('CPU', fmtPercent(stats.cpuPercent), jsxs('div', { className: 'dk_trend', children: [
+              bar(cpu),
+              // 没开过 FOLLOW 时没有采样点，别显示一个空趋势图（只留占用条）
+              following || statsSeries.cpu.length > 0 ? jsx(Sparkline, { values: statsSeries.cpu, max: cpuMax, alertAt: 85, title: 'CPU% 最近 60 个采样' }) : null,
+            ] })),
+            row('内存', stats.memUsage, jsxs('div', { className: 'dk_trend', children: [
+              bar(mem),
+              following || statsSeries.mem.length > 0 ? jsx(Sparkline, { values: statsSeries.mem, max: 100, alertAt: 85, title: '内存占用% 最近 60 个采样' }) : null,
+            ] })),
             row('网络 IO', stats.netIO, null),
             row('磁盘 IO', stats.blockIO, null),
             row('PIDs', stats.pids === null ? '—' : String(stats.pids), null),
           ] }),
-        ] })
+        ] }))
       }
 
       const tabs = [['overview', '概览'], ['logs', '日志'], ['stats', '统计']]
@@ -811,6 +1453,827 @@ window.__ModuleLoader__.load({
           tab === 'logs' ? logFilterBar() : null,
         ] }),
         jsx('div', { className: 'dk_detailBody', children: tab === 'overview' ? overview() : tab === 'logs' ? logsView() : statsView() }),
+      ] })
+    }
+
+    /* ------------------------------------------------------------------ *
+     * 镜像详情（概览 / 构建历史）
+     * ------------------------------------------------------------------ */
+
+    /** 镜像列表行 / 详情用的引用：dangling 镜像的 `<none>:<none>` 不能当引用传，改用 ID。 */
+    function imageRefOf(item) {
+      return item.dangling === true ? item.id : item.reference
+    }
+
+    function ImageView(props) {
+      const item = props.item
+      const ref = imageRefOf(item)
+      const [tab, setTab] = useState('overview')
+      const [data, setData] = useState(null)
+      const [error, setError] = useState('')
+      const [loading, setLoading] = useState(false)
+
+      const load = useCallback(() => {
+        setLoading(true)
+        setError('')
+        api.imageInspect(props.target, ref)
+          .then((payload) => setData(payload.image))
+          .catch((error_) => setError(error_.message))
+          .finally(() => setLoading(false))
+      }, [props.target, ref])
+
+      useEffect(() => { load() }, [load])
+
+      const kv = (rows) => jsxs('div', { className: 'dk_kv', children: rows.flatMap(([key, value], index) => [
+        jsx('div', { className: 'dk_kvKey', children: key }, 'k' + String(index)),
+        jsx('div', { className: 'dk_kvVal' + (['ID', '入口', 'digest'].indexOf(key) >= 0 ? ' dk_kvValMono' : ''), children: value }, 'v' + String(index)),
+      ]) })
+
+      const overview = () => {
+        if (error !== '') return jsx(Banner, { title: '读取镜像详情失败', hint: error, action: jsx('button', { type: 'button', className: 'dk_btn', onClick: load, children: '重试' }) })
+        if (data === null) return jsx('div', { className: 'dk_empty', children: [jsx('span', { className: 'dk_spin' }), jsx('div', { children: '读取中…' })] })
+        const d = data.detail
+        const rows = [
+          ['标签', d.repoTags.length === 0 ? '<none>（dangling）' : d.repoTags.join('\n')],
+          ['ID', d.id],
+          ['大小', d.size === null ? '—' : fmtBytes(d.size)],
+          ['含父层', d.virtualSize === null ? '—' : fmtBytes(d.virtualSize)],
+          ['创建', d.created === '' ? '—' : fmtCreated(d.created)],
+          ['平台', (d.os === '' && d.architecture === '') ? '—' : d.os + '/' + d.architecture],
+          ['层数', String(d.layerCount)],
+          ['入口', (d.entrypoint + ' ' + d.command).trim() || '—'],
+          ['工作目录', d.workingDir === '' ? '—' : d.workingDir],
+          ['用户', d.user === '' ? '—' : d.user],
+          ['暴露端口', d.exposedPorts.length === 0 ? '—' : d.exposedPorts.join(', ')],
+          ['digest', d.repoDigests.length === 0 ? '—' : d.repoDigests.join('\n')],
+        ]
+        const labelEntries = Object.entries(d.labels)
+        return jsxs('div', { children: [
+          kv(rows),
+          jsx('div', { className: 'dk_cardSection', style: { marginTop: 16 }, children: '层（' + String(d.layerCount) + '）' }),
+          d.layers.length === 0
+            ? jsx('span', { className: 'dk_hint', children: '该镜像没有层信息（scratch 构建或旧版 docker）。' })
+            : jsx('div', { className: 'dk_layerList', children: d.layers.map((layer, index) => jsxs('div', { className: 'dk_layerItem', children: [
+              jsx('span', { className: 'dk_layerIndex', children: '#' + String(index) }),
+              jsx('span', { className: 'dk_mono dk_layerId', title: layer, children: layer.replace(/^sha256:/, '') }),
+            ] }, layer + String(index))) }),
+          labelEntries.length === 0 ? null : jsxs('div', { children: [
+            jsx('div', { className: 'dk_cardSection', style: { marginTop: 16 }, children: '标签（' + String(labelEntries.length) + '）' }),
+            jsx('div', { className: 'dk_labelList', children: labelEntries.map(([key, value]) => jsxs('div', { className: 'dk_labelItem', children: [
+              jsx('span', { className: 'dk_labelKey', children: key }),
+              jsx('span', { className: 'dk_labelVal', title: value, children: value }),
+            ] }, key)) }),
+          ] }),
+        ] })
+      }
+
+      const history = () => {
+        if (error !== '') return jsx(Banner, { title: '读取镜像详情失败', hint: error })
+        if (data === null) return jsx('div', { className: 'dk_empty', children: [jsx('span', { className: 'dk_spin' }), jsx('div', { children: '读取中…' })] })
+        if (data.historyError !== null) return jsx(Banner, { kind: 'warn', title: '读取构建历史失败', hint: data.historyError })
+        if (data.history.length === 0) return jsxs('div', { className: 'dk_empty', children: [
+          jsx('div', { className: 'dk_emptyTitle', children: '没有构建历史' }),
+          jsx('div', { className: 'dk_emptyHint', children: '该 docker 版本既没有 history --format（需要 Docker ≥ 26），纯文本表格也没解析出内容。' }),
+        ] })
+        return jsx('div', { className: 'dk_tableWrap', children: jsxs('table', { className: 'dk_images dk_historyTable', children: [
+          jsx('thead', { children: jsxs('tr', { children: [
+            jsx('th', { children: '层 ID' }), jsx('th', { children: '创建' }), jsx('th', { children: '大小' }), jsx('th', { children: '构建命令' }),
+          ] }) }),
+          jsx('tbody', { children: data.history.map((step, index) => jsxs('tr', { children: [
+            jsx('td', { className: 'dk_mono', children: step.shortId }),
+            jsx('td', { children: step.createdSince === '' ? (step.created === '' ? '—' : fmtCreated(step.created)) : step.createdSince }),
+            jsx('td', { children: step.sizeText === '' ? (step.size === null ? '—' : fmtBytes(step.size)) : step.sizeText }),
+            jsx('td', { className: 'dk_mono dk_historyCmd', title: step.createdBy, children: step.createdBy === '' ? '—' : step.createdBy }),
+          ] }, String(index))) }),
+        ] }) })
+      }
+
+      const tabs = [['overview', '概览'], ['history', '构建历史']]
+      return jsxs('div', { className: 'dk_detail', children: [
+        jsxs('div', { className: 'dk_header dk_headerDetail', children: [
+          jsx(IconAction, { icon: ICON_BACK, title: '返回镜像列表', onClick: props.onBack }, 'back'),
+          jsx('span', { className: 'dk_detailTitle', title: ref, children: ref }),
+          item.dangling === true ? jsx('span', { className: 'dk_badge', 'data-state': 'paused', children: 'dangling' }) : null,
+          jsx('span', { className: 'dk_detailSub', children: props.targetLabel ?? '' }),
+          jsx('span', { className: 'dk_headerSpacer' }),
+          jsx(IconAction, { icon: ICON_REFRESH, title: '刷新镜像详情', spin: loading, onClick: load }, 'refresh'),
+          props.docked === true ? null : jsx('button', { type: 'button', className: 'dk_iconBtn', title: '关闭面板', onClick: props.onClose, children: jsx('span', { className: 'dk_iconGlyph', dangerouslySetInnerHTML: { __html: ICON_CLOSE } }) }, 'close'),
+        ] }),
+        jsx('div', { className: 'dk_tabs', children: tabs.map(([key, label]) => jsx('button', {
+          type: 'button', className: 'dk_tab', 'data-on': tab === key ? '1' : '0', onClick: () => setTab(key), children: label,
+        }, key)) }),
+        jsx('div', { className: 'dk_detailBody', children: tab === 'overview' ? overview() : history() }),
+      ] })
+    }
+
+    /* ------------------------------------------------------------------ *
+     * 网络 / 卷详情
+     * ------------------------------------------------------------------ */
+
+    /**
+     * 网络详情：一次 inspect 拿到子网 / 网关 / 选项 / 接入的容器。
+     * 「接入的容器」单独一页——它是排障时最常看的一栏（谁接着这个网络），
+     * 混进概览会把 kv 拉得很长。
+     *
+     * 删除按钮放在本组件里（而不是交回面板）：详情视图不渲染面板的 error/notice
+     * 横幅，删除失败（比如 403、还有容器接着）必须在本页看得见。
+     */
+    function NetworkView(props) {
+      const item = props.item
+      const name = item.name
+      const [tab, setTab] = useState('overview')
+      const [data, setData] = useState(null)
+      const [error, setError] = useState('')
+      const [loading, setLoading] = useState(false)
+      const [confirming, setConfirming] = useState(false)
+      const [removing, setRemoving] = useState(false)
+      const [removeError, setRemoveError] = useState('')
+
+      const load = useCallback(() => {
+        setLoading(true)
+        setError('')
+        api.networkInspect(props.target, name)
+          .then((payload) => setData(payload.network))
+          .catch((error_) => setError(error_.message))
+          .finally(() => setLoading(false))
+      }, [props.target, name])
+
+      useEffect(() => { load() }, [load])
+
+      const runRemove = () => {
+        setRemoving(true)
+        setRemoveError('')
+        api.networkRemove(props.target, name)
+          .then((payload) => props.onRemoved(payload.result.message))
+          .catch((error_) => { setConfirming(false); setRemoveError(error_.message) })
+          .finally(() => setRemoving(false))
+      }
+
+      const overview = () => {
+        if (error !== '') return jsx(Banner, { title: '读取网络详情失败', hint: error, action: jsx('button', { type: 'button', className: 'dk_btn', onClick: load, children: '重试' }) })
+        if (data === null) return jsx('div', { className: 'dk_empty', children: [jsx('span', { className: 'dk_spin' }), jsx('div', { children: '读取中…' })] })
+        const d = data.detail
+        const rows = [
+          ['名称', d.name],
+          ['ID', d.id],
+          ['驱动', d.driver === '' ? '—' : d.driver],
+          ['范围', d.scope === '' ? '—' : d.scope],
+          ['创建', d.created === '' ? '—' : fmtCreated(d.created)],
+          ['子网', d.subnets.length === 0 ? '—' : d.subnets.map((entry) => entry.subnet === '' ? '—' : entry.subnet).join('\n')],
+          ['网关', d.subnets.length === 0 ? '—' : d.subnets.map((entry) => entry.gateway === '' ? '—' : entry.gateway).join('\n')],
+          ['属性', [
+            d.internal ? 'internal' : '',
+            d.attachable ? 'attachable' : '',
+            d.ingress ? 'ingress' : '',
+            d.enableIpv6 ? 'ipv6' : '',
+          ].filter((text) => text !== '').join(' · ') || '—'],
+          ['选项', Object.keys(d.options).length === 0 ? '—' : Object.entries(d.options).map(([key, value]) => key + '=' + value).join('\n')],
+          ['标签', Object.keys(d.labels).length === 0 ? '—' : Object.entries(d.labels).map(([key, value]) => key + '=' + value).join('\n')],
+        ]
+        return jsx(KvList, { rows, mono: ['ID', '子网', '网关', '选项', '标签'] })
+      }
+
+      const containersTab = () => {
+        if (error !== '') return jsx(Banner, { title: '读取网络详情失败', hint: error })
+        if (data === null) return jsx('div', { className: 'dk_empty', children: [jsx('span', { className: 'dk_spin' }), jsx('div', { children: '读取中…' })] })
+        const rows = data.detail.containers
+        if (rows.length === 0) return jsx('div', { className: 'dk_empty', children: [jsx('div', { className: 'dk_emptyTitle', children: '没有容器接入这个网络' })] })
+        return jsx('div', { className: 'dk_tableWrap', children: jsxs('table', { className: 'dk_images', children: [
+          jsx('thead', { children: jsxs('tr', { children: [
+            jsx('th', { children: '容器' }), jsx('th', { children: 'IPv4' }), jsx('th', { children: 'IPv6' }), jsx('th', { children: 'MAC' }),
+          ] }) }),
+          jsx('tbody', { children: rows.map((row) => jsxs('tr', { children: [
+            jsx('td', { className: 'dk_mono', title: row.id, children: row.name === '' ? row.shortId : row.name }),
+            jsx('td', { className: 'dk_mono', children: row.ipv4 === '' ? '—' : row.ipv4 }),
+            jsx('td', { className: 'dk_mono', children: row.ipv6 === '' ? '—' : row.ipv6 }),
+            jsx('td', { className: 'dk_mono', children: row.mac === '' ? '—' : row.mac }),
+          ] }, row.id)) }),
+        ] }) })
+      }
+
+      const tabs = [['overview', '概览'], ['containers', '接入的容器' + (data === null ? '' : '（' + String(data.detail.containers.length) + '）')]]
+      return jsxs('div', { className: 'dk_detail', children: [
+        jsxs('div', { className: 'dk_header dk_headerDetail', children: [
+          jsx(IconAction, { icon: ICON_BACK, title: '返回网络列表', onClick: props.onBack }, 'back'),
+          jsx('span', { className: 'dk_projectIcon', dangerouslySetInnerHTML: { __html: ICON_NETWORK } }),
+          jsx('span', { className: 'dk_detailTitle', title: name, children: name }),
+          item.internal === true ? jsx('span', { className: 'dk_badge', 'data-state': 'paused', children: 'internal' }) : null,
+          jsx('span', { className: 'dk_detailSub', children: props.targetLabel ?? '' }),
+          jsx('span', { className: 'dk_headerSpacer' }),
+          jsx(IconAction, { icon: ICON_REFRESH, title: '刷新网络详情', spin: loading, onClick: load }, 'refresh'),
+          jsx(IconAction, {
+            icon: ICON_TRASH,
+            danger: true,
+            disabled: props.allowMutations !== true,
+            title: props.allowMutations === true ? '删除网络（不可恢复）' : '删除网络需要打开「允许变更操作」',
+            onClick: () => setConfirming(true),
+          }, 'remove'),
+          props.docked === true ? null : jsx('button', { type: 'button', className: 'dk_iconBtn', title: '关闭面板', onClick: props.onClose, children: jsx('span', { className: 'dk_iconGlyph', dangerouslySetInnerHTML: { __html: ICON_CLOSE } }) }, 'close'),
+        ] }),
+        jsx('div', { className: 'dk_tabs', children: tabs.map(([key, label]) => jsx('button', {
+          type: 'button', className: 'dk_tab', 'data-on': tab === key ? '1' : '0', onClick: () => setTab(key), children: label,
+        }, key)) }),
+        jsxs('div', { className: 'dk_detailBody', children: [
+          removeError === '' ? null : jsx(Banner, { title: '删除网络失败', hint: removeError }),
+          tab === 'overview' ? overview() : containersTab(),
+        ] }),
+        confirming ? jsx(ConfirmDialog, {
+          title: '删除网络',
+          text: '确定删除网络 ' + name + '？还有容器接着时 docker 会拒绝；删除后依赖它的容器会失去网络，需要重新创建或接入别的网络。',
+          confirmLabel: '删除',
+          busy: removing,
+          onCancel: () => setConfirming(false),
+          onConfirm: runRemove,
+        }, 'confirm') : null,
+      ] })
+    }
+
+    /**
+     * 卷详情。只有概览一页（卷没有「接入的容器」这类反向索引，inspect 不返回），
+     * 所以不铺标签页——空标签页比长一点的 kv 更碍眼。
+     */
+    function VolumeView(props) {
+      const item = props.item
+      const name = item.name
+      const [data, setData] = useState(null)
+      const [error, setError] = useState('')
+      const [loading, setLoading] = useState(false)
+      const [confirming, setConfirming] = useState(false)
+      const [removing, setRemoving] = useState(false)
+      const [removeError, setRemoveError] = useState('')
+
+      const load = useCallback(() => {
+        setLoading(true)
+        setError('')
+        api.volumeInspect(props.target, name)
+          .then((payload) => setData(payload.volume))
+          .catch((error_) => setError(error_.message))
+          .finally(() => setLoading(false))
+      }, [props.target, name])
+
+      useEffect(() => { load() }, [load])
+
+      const runRemove = () => {
+        setRemoving(true)
+        setRemoveError('')
+        api.volumeRemove(props.target, name)
+          .then((payload) => props.onRemoved(payload.result.message))
+          .catch((error_) => { setConfirming(false); setRemoveError(error_.message) })
+          .finally(() => setRemoving(false))
+      }
+
+      const body = () => {
+        if (error !== '') return jsx(Banner, { title: '读取卷详情失败', hint: error, action: jsx('button', { type: 'button', className: 'dk_btn', onClick: load, children: '重试' }) })
+        if (data === null) return jsx('div', { className: 'dk_empty', children: [jsx('span', { className: 'dk_spin' }), jsx('div', { children: '读取中…' })] })
+        const d = data.detail
+        const rows = [
+          ['名称', d.name],
+          ['驱动', d.driver === '' ? '—' : d.driver],
+          ['范围', d.scope === '' ? '—' : d.scope],
+          ['挂载点', d.mountpoint === '' ? '—' : d.mountpoint],
+          ['创建', d.created === '' ? '—' : fmtCreated(d.created)],
+          ['选项', Object.keys(d.options).length === 0 ? '—' : Object.entries(d.options).map(([key, value]) => key + '=' + value).join('\n')],
+          ['标签', Object.keys(d.labels).length === 0 ? '—' : Object.entries(d.labels).map(([key, value]) => key + '=' + value).join('\n')],
+        ]
+        return jsx(KvList, { rows, mono: ['挂载点', '选项', '标签'] })
+      }
+
+      return jsxs('div', { className: 'dk_detail', children: [
+        jsxs('div', { className: 'dk_header dk_headerDetail', children: [
+          jsx(IconAction, { icon: ICON_BACK, title: '返回卷列表', onClick: props.onBack }, 'back'),
+          jsx('span', { className: 'dk_projectIcon', dangerouslySetInnerHTML: { __html: ICON_VOLUME } }),
+          jsx('span', { className: 'dk_detailTitle', title: name, children: name }),
+          jsx('span', { className: 'dk_detailSub', children: props.targetLabel ?? '' }),
+          jsx('span', { className: 'dk_headerSpacer' }),
+          jsx(IconAction, { icon: ICON_REFRESH, title: '刷新卷详情', spin: loading, onClick: load }, 'refresh'),
+          jsx(IconAction, {
+            icon: ICON_TRASH,
+            danger: true,
+            disabled: props.allowMutations !== true,
+            title: props.allowMutations === true ? '删除卷（卷里的数据会一起没，不可恢复）' : '删除卷需要打开「允许变更操作」',
+            onClick: () => setConfirming(true),
+          }, 'remove'),
+          props.docked === true ? null : jsx('button', { type: 'button', className: 'dk_iconBtn', title: '关闭面板', onClick: props.onClose, children: jsx('span', { className: 'dk_iconGlyph', dangerouslySetInnerHTML: { __html: ICON_CLOSE } }) }, 'close'),
+        ] }),
+        jsxs('div', { className: 'dk_detailBody', children: [
+          removeError === '' ? null : jsx(Banner, { title: '删除卷失败', hint: removeError }),
+          body(),
+        ] }),
+        confirming ? jsx(ConfirmDialog, {
+          title: '删除卷',
+          text: '确定删除卷 ' + name + '？卷里的数据会一起删除且不可恢复；还有容器占用时 docker 会拒绝。',
+          confirmLabel: '删除',
+          busy: removing,
+          onCancel: () => setConfirming(false),
+          onConfirm: runRemove,
+        }, 'confirm') : null,
+      ] })
+    }
+
+    /* ------------------------------------------------------------------ *
+     * 镜像拉取（docker pull → SSE 进度流）
+     * ------------------------------------------------------------------ */
+
+    /** 拉取进度缓冲上限：够看全程，又不至于让长拉取吃内存。 */
+    const PULL_LINE_LIMIT = 2000
+
+    /**
+     * 拉取进度行归并：`docker pull` 有 TTY 时用 \r 原地刷新进度条、非 TTY 时按行
+     * 输出状态行（Pulling fs layer / Downloading / Extracting / Pull complete）。
+     * 这里把 \r 与 \n 都当分隔符，并按「层键」（行首到 `: ` 的 ID 或状态名）做
+     * upsert——同一层的新状态原地替换旧状态，进度条刷新不会越滚越长。
+     */
+    function mergeProgress(existing, chunk, pending) {
+      const combined = pending + chunk
+      const parts = combined.split(/\r\n|\r|\n/)
+      let nextPending = ''
+      if (!/[\r\n]$/.test(combined)) nextPending = parts.pop() ?? ''
+      const out = existing.slice()
+      for (const raw of parts) {
+        const line = raw.trim()
+        if (line === '') continue
+        const match = /^([0-9a-f]{6,}|[A-Za-z][A-Za-z0-9 _-]*?):\s/.exec(line)
+        const key = match === null ? null : match[1]
+        if (key !== null && out.length > 0 && out[out.length - 1].key === key) out[out.length - 1] = { key, text: line }
+        else out.push({ key, text: line })
+        if (out.length > PULL_LINE_LIMIT) out.shift()
+      }
+      return { lines: out, pending: nextPending }
+    }
+
+    function PullView(props) {
+      const [ref, setRef] = useState('')
+      const [running, setRunning] = useState(false)
+      const [lines, setLines] = useState([])
+      const [status, setStatus] = useState('')
+      const [error, setError] = useState('')
+      const [exitCode, setExitCode] = useState(null)
+      const startedRef = useRef('')
+      const linesRef = useRef([])
+      const pendingRef = useRef('')
+      const bodyRef = useRef(null)
+
+      useEffect(() => {
+        if (!running) return undefined
+        if (typeof EventSource !== 'function') {
+          setError('当前环境不支持 EventSource，无法显示拉取进度')
+          setRunning(false)
+          return undefined
+        }
+        setStatus('connecting')
+        const es = new EventSource(streamUrl('/images/pull/stream', { target: props.target, ref: startedRef.current }))
+        let closed = false
+        const close = () => {
+          if (closed) return
+          closed = true
+          try { es.close() } catch { /* 已关闭 */ }
+        }
+        const onLine = (event) => {
+          let payload = null
+          try { payload = JSON.parse(event.data) } catch { return }
+          if (payload === null || typeof payload !== 'object') return
+          const text = typeof payload.d === 'string' ? payload.d : (typeof payload.e === 'string' ? payload.e : '')
+          if (text === '') return
+          const merged = mergeProgress(linesRef.current, text, pendingRef.current)
+          linesRef.current = merged.lines
+          pendingRef.current = merged.pending
+          setLines(merged.lines)
+        }
+        const onEnd = (event) => {
+          let payload = null
+          try { payload = JSON.parse(event.data) } catch { /* 畸形载荷按失败处理 */ }
+          const code = payload !== null && typeof payload.code === 'number' ? payload.code : null
+          setExitCode(code)
+          setRunning(false)
+          setStatus(code === 0 ? '拉取完成' : '拉取结束（退出码 ' + String(code === null ? '?' : code) + '）')
+          if (code === 0) props.onDone?.()
+        }
+        const onError = (event) => {
+          if (typeof event.data === 'string' && event.data !== '') {
+            let message = '拉取失败'
+            try {
+              const payload = JSON.parse(event.data)
+              if (payload !== null && typeof payload.message === 'string') message = payload.message
+            } catch { /* 用默认文案 */ }
+            setError(message)
+            setRunning(false)
+            setStatus('')
+            return
+          }
+          setStatus(es.readyState === 2 ? 'closed' : 'reconnecting')
+        }
+        es.addEventListener('line', onLine)
+        es.addEventListener('end', onEnd)
+        es.addEventListener('error', onError)
+        es.onopen = () => setStatus('open')
+        return () => { close(); pendingRef.current = '' }
+      }, [running, props.target])
+
+      useEffect(() => {
+        const body = bodyRef.current
+        if (body !== null) body.scrollTop = body.scrollHeight
+      }, [lines])
+
+      const start = () => {
+        const value = ref.trim()
+        if (value === '' || running) return
+        startedRef.current = value
+        linesRef.current = []
+        pendingRef.current = ''
+        setLines([])
+        setError('')
+        setExitCode(null)
+        setStatus('')
+        setRunning(true)
+      }
+      const stop = () => {
+        setRunning(false)
+        setStatus('已停止')
+      }
+
+      const statusText = () => {
+        if (status === 'open') return '正在拉取（docker pull）…'
+        if (status === 'connecting') return '正在连接拉取流…'
+        if (status === 'reconnecting') return '连接中断，正在自动重连…'
+        if (status === 'closed') return '拉取流已断开'
+        return status
+      }
+
+      return jsxs('div', { className: 'dk_detail', children: [
+        jsxs('div', { className: 'dk_header dk_headerDetail', children: [
+          jsx(IconAction, { icon: ICON_BACK, title: '返回镜像列表', onClick: props.onBack }, 'back'),
+          jsx('span', { className: 'dk_detailTitle', children: '拉取镜像' }),
+          jsx('span', { className: 'dk_detailSub', children: props.targetLabel ?? '' }),
+          jsx('span', { className: 'dk_headerSpacer' }),
+          props.docked === true ? null : jsx('button', { type: 'button', className: 'dk_iconBtn', title: '关闭面板', onClick: props.onClose, children: jsx('span', { className: 'dk_iconGlyph', dangerouslySetInnerHTML: { __html: ICON_CLOSE } }) }, 'close'),
+        ] }),
+        jsxs('div', { className: 'dk_detailBody dk_pullBody', children: [
+          props.allowMutations !== true
+            ? jsx(Banner, { kind: 'info', title: '拉取镜像需要打开「允许变更操作」', hint: 'docker pull 会写入目标机的镜像存储并占用磁盘与带宽。到 设置 → 插件 → Docker 容器面板 打开「允许变更操作」后即可在此拉取。' })
+            : jsxs('div', { className: 'dk_row', children: [
+              jsx('input', {
+                className: 'dk_input',
+                style: { flex: '1 1 auto' },
+                placeholder: '镜像引用，如 nginx:1.27 或 ghcr.io/org/app:latest',
+                value: ref,
+                disabled: running,
+                onChange: (event) => setRef(event.target.value),
+                onKeyDown: (event) => { if (event.key === 'Enter') start() },
+              }),
+              running
+                ? jsx('button', { type: 'button', className: 'dk_btn dk_btnDanger', onClick: stop, children: '停止' })
+                : jsx('button', { type: 'button', className: 'dk_btn dk_btnPrimary', disabled: props.allowMutations !== true, onClick: start, children: '拉取' }),
+            ] }),
+          error === '' ? null : jsx(Banner, { title: '拉取失败', hint: error }),
+          status === '' ? null : jsx('div', { className: 'dk_hint', children: statusText() + (exitCode === null ? '' : ' · 退出码 ' + String(exitCode)) }),
+          jsxs('div', { className: 'dk_pullBox', ref: bodyRef, children: [
+            lines.length === 0
+              ? jsx('div', { className: 'dk_pullLine', children: running ? '等待 docker pull 输出…' : '填写镜像引用后点「拉取」，逐层进度会实时出现在这里。' })
+              : lines.map((line, index) => jsx('div', { className: 'dk_pullLine', 'data-key': line.key ?? undefined, children: line.text }, String(index))),
+          ] }),
+        ] }),
+      ] })
+    }
+
+    /* ------------------------------------------------------------------ *
+     * Compose 项目视图 + 项目级聚合日志
+     * ------------------------------------------------------------------ */
+
+    /** 按 compose 项目分组（保持首次出现顺序；无 compose 标签的归入 key=''）。 */
+    function groupCompose(containers) {
+      const groups = new Map()
+      for (const item of containers) {
+        const key = item.composeProject === null ? '' : item.composeProject
+        let group = groups.get(key)
+        if (group === undefined) {
+          group = { project: key, items: [] }
+          groups.set(key, group)
+        }
+        group.items.push(item)
+      }
+      return [...groups.values()]
+    }
+
+    const isRunningState = (state) => state === 'running' || state === 'paused' || state === 'restarting'
+
+    function ComposeView(props) {
+      return jsx('div', { className: 'dk_projects', children: props.groups.map((group) => {
+        const running = group.items.filter((item) => isRunningState(item.state)).length
+        const unhealthy = group.items.filter((item) => item.health === 'unhealthy').length
+        const services = [...new Set(group.items.map((item) => item.composeService === null ? item.name : item.composeService))]
+        const title = group.project === '' ? '（非 compose 容器）' : group.project
+        return jsxs('div', {
+          className: 'dk_project',
+          role: 'button',
+          tabIndex: 0,
+          onClick: () => props.onOpen(group.project),
+          onKeyDown: (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault()
+              props.onOpen(group.project)
+            }
+          },
+          children: [
+            jsxs('div', { className: 'dk_projectHead', children: [
+              jsx('span', { className: 'dk_projectIcon', dangerouslySetInnerHTML: { __html: ICON_PROJECT } }),
+              jsx('span', { className: 'dk_projectName', title, children: title }),
+              jsx('span', { className: 'dk_badge', 'data-state': running === group.items.length ? 'running' : (running === 0 ? 'exited' : 'paused'), children: String(running) + ' / ' + String(group.items.length) + ' 运行中' }),
+              unhealthy > 0 ? jsx('span', { className: 'dk_badge', 'data-state': 'unhealthy', children: String(unhealthy) + ' 不健康' }) : null,
+              jsx('span', { className: 'dk_headerSpacer' }),
+              jsx('span', { className: 'dk_hint', children: String(services.length) + ' 个服务' }),
+            ] }),
+            jsx('div', { className: 'dk_projectRows', children: group.items.map((item) => jsxs('div', { className: 'dk_projectRow', children: [
+              jsx('span', { className: 'dk_projectSvc', children: item.composeService === null ? '—' : item.composeService }),
+              jsx('span', { className: 'dk_projectContainer', title: item.name, children: item.name }),
+              jsx(Badge, { state: item.state, health: item.health, status: item.status }),
+              jsx('span', { className: 'dk_projectImage', title: item.image, children: item.image }),
+              jsx('span', { className: 'dk_projectPorts', children: portsText(item.ports) }),
+            ] }, item.id)) }),
+          ],
+        }, group.project === '' ? '__ungrouped' : group.project)
+      }) })
+    }
+
+    function ComposeProjectView(props) {
+      const [tab, setTab] = useState('services')
+      const items = props.items
+      const title = props.project === '' ? '（非 compose 容器）' : props.project
+      const running = items.filter((item) => isRunningState(item.state)).length
+
+      const servicesTab = () => jsx('div', { className: 'dk_tableWrap', children: jsxs('table', { className: 'dk_images dk_composeTable', children: [
+        jsx('thead', { children: jsxs('tr', { children: [
+          jsx('th', { children: '服务' }), jsx('th', { children: '容器' }), jsx('th', { children: '状态' }), jsx('th', { children: '端口' }), jsx('th', { children: '镜像' }),
+        ] }) }),
+        jsx('tbody', { children: items.map((item) => jsxs('tr', { children: [
+          jsx('td', { children: item.composeService === null ? '—' : item.composeService }),
+          jsx('td', { className: 'dk_mono', title: item.name, children: item.name }),
+          jsx('td', { children: jsx(Badge, { state: item.state, health: item.health, status: item.status }) }),
+          jsx('td', { children: portsText(item.ports) }),
+          jsx('td', { className: 'dk_mono', title: item.image, children: item.image }),
+        ] }, item.id)) }),
+      ] }) })
+
+      const tabs = [['services', '服务'], ['logs', '聚合日志']]
+      return jsxs('div', { className: 'dk_detail', children: [
+        jsxs('div', { className: 'dk_header dk_headerDetail', children: [
+          jsx(IconAction, { icon: ICON_BACK, title: '返回 Compose 列表', onClick: props.onBack }, 'back'),
+          jsx('span', { className: 'dk_projectIcon', dangerouslySetInnerHTML: { __html: ICON_PROJECT } }),
+          jsx('span', { className: 'dk_detailTitle', title, children: title }),
+          jsx('span', { className: 'dk_badge', 'data-state': running === items.length ? 'running' : (running === 0 ? 'exited' : 'paused'), children: String(running) + ' / ' + String(items.length) + ' 运行中' }),
+          jsx('span', { className: 'dk_detailSub', children: props.targetLabel ?? '' }),
+          jsx('span', { className: 'dk_headerSpacer' }),
+          props.docked === true ? null : jsx('button', { type: 'button', className: 'dk_iconBtn', title: '关闭面板', onClick: props.onClose, children: jsx('span', { className: 'dk_iconGlyph', dangerouslySetInnerHTML: { __html: ICON_CLOSE } }) }, 'close'),
+        ] }),
+        jsx('div', { className: 'dk_tabs', children: tabs.map(([key, label]) => jsx('button', {
+          type: 'button', className: 'dk_tab', 'data-on': tab === key ? '1' : '0', onClick: () => setTab(key), children: label,
+        }, key)) }),
+        jsx('div', { className: 'dk_detailBody', children: tab === 'services' ? servicesTab() : jsx(ComposeLogs, { target: props.target, items }) }),
+      ] })
+    }
+
+    /**
+     * 项目级聚合日志：**每个容器各开一条 /logs/stream**，客户端按 service 名前缀
+     * 混流（宿主侧 logsStream 本就支持任意容器，无需新接口）。混流是到达序，
+     * 不保证跨容器严格时序——排障要的是「一屏看全这个项目的动静」，不是精确排序。
+     * 某个容器流失败只标注状态，不影响其余流。
+     */
+    function ComposeLogs(props) {
+      const items = props.items
+      const [entries, setEntries] = useState([])
+      const [status, setStatus] = useState('connecting')
+      const [filter, setFilter] = useState('')
+      const [autoScroll, setAutoScroll] = useState(true)
+      const [dropped, setDropped] = useState(false)
+      const entriesRef = useRef([])
+      const pendingRef = useRef(new Map())
+      const bodyRef = useRef(null)
+      const itemIds = items.map((item) => item.id).join(',')
+
+      useEffect(() => {
+        if (items.length === 0) {
+          setStatus('empty')
+          return undefined
+        }
+        if (typeof EventSource !== 'function') {
+          setStatus('unsupported')
+          return undefined
+        }
+        setStatus('connecting')
+        entriesRef.current = []
+        pendingRef.current = new Map()
+        setEntries([])
+        setDropped(false)
+        let open = 0
+        let closed = 0
+        const sources = items.map((item) => {
+          const service = item.composeService === null ? item.name : item.composeService
+          const es = new EventSource(streamUrl('/logs/stream', { target: props.target, id: item.id, tail: 100 }))
+          const push = (text) => {
+            const pending = pendingRef.current.get(item.id) ?? ''
+            const parts = (pending + text).split('\n')
+            pendingRef.current.set(item.id, parts.pop() ?? '')
+            if (parts.length === 0) return
+            const next = entriesRef.current.concat(parts.map((line) => ({ service, text: line })))
+            const trimmed = next.length > FOLLOW_LINE_LIMIT ? next.slice(next.length - FOLLOW_LINE_LIMIT) : next
+            entriesRef.current = trimmed
+            if (trimmed.length !== next.length) setDropped(true)
+            setEntries(trimmed)
+          }
+          es.addEventListener('line', (event) => {
+            let payload = null
+            try { payload = JSON.parse(event.data) } catch { return }
+            if (payload === null || typeof payload !== 'object') return
+            if (typeof payload.d === 'string') push(payload.d)
+            else if (typeof payload.e === 'string') push(payload.e)
+          })
+          es.addEventListener('end', () => {
+            try { es.close() } catch { /* 已关闭 */ }
+            closed += 1
+            if (closed >= items.length) setStatus('closed')
+          })
+          es.addEventListener('error', (event) => {
+            // 服务端 event:error 会带 data；连接层错误交给 EventSource 自动重连
+            if (typeof event.data === 'string' && event.data !== '') setStatus('partial')
+            else setStatus('reconnecting')
+          })
+          es.onopen = () => {
+            open += 1
+            setStatus('open')
+          }
+          return () => { try { es.close() } catch { /* 已关闭 */ } }
+        })
+        void open
+        return () => { for (const close of sources) close() }
+      }, [props.target, itemIds])
+
+      useEffect(() => {
+        if (!autoScroll) return
+        const body = bodyRef.current
+        if (body !== null) body.scrollTop = body.scrollHeight
+      }, [autoScroll, entries])
+
+      const needle = filter.trim().toLowerCase()
+      const matched = needle === ''
+        ? entries
+        : entries.filter((entry) => entry.text.toLowerCase().indexOf(needle) >= 0 || entry.service.toLowerCase().indexOf(needle) >= 0)
+      const shown = matched.length > LOG_COLOR_LIMIT ? matched.slice(-LOG_COLOR_LIMIT) : matched
+
+      const statusText = () => {
+        if (status === 'open') return '已连接 ' + String(items.length) + ' 条容器日志流（docker logs -f）'
+        if (status === 'connecting') return '正在连接容器日志流…'
+        if (status === 'reconnecting') return '部分连接中断，正在自动重连…'
+        if (status === 'partial') return '部分容器日志流出错'
+        if (status === 'closed') return '全部容器日志流已结束'
+        if (status === 'unsupported') return '当前环境不支持 EventSource'
+        if (status === 'empty') return '该项目没有可聚合的容器'
+        return '聚合日志'
+      }
+
+      return jsxs('div', { className: 'dk_logs', children: [
+        dropped ? jsx(Banner, { kind: 'warn', title: '聚合日志超过 ' + String(FOLLOW_LINE_LIMIT) + ' 行，已丢弃最早内容' }) : null,
+        jsxs('div', { className: 'dk_filterBar', children: [
+          jsxs('div', { className: 'dk_filterWrap', children: [
+            jsx('input', {
+              className: 'dk_input dk_filterInput',
+              placeholder: '过滤服务名 / 日志内容…',
+              value: filter,
+              onChange: (event) => setFilter(event.target.value),
+              onKeyDown: (event) => {
+                if (event.key === 'Escape' && filter !== '') {
+                  event.stopPropagation()
+                  setFilter('')
+                }
+              },
+            }),
+            filter === '' ? null : jsx('button', {
+              type: 'button',
+              className: 'dk_filterClear',
+              title: '清空过滤',
+              onClick: () => setFilter(''),
+              children: jsx('span', { className: 'dk_iconGlyph', dangerouslySetInnerHTML: { __html: ICON_CLOSE } }),
+            }, 'clear'),
+          ] }),
+          jsx('button', {
+            type: 'button',
+            className: 'dk_pill dk_pillFollow',
+            'data-on': autoScroll ? '1' : '0',
+            title: autoScroll ? '暂停自动滚动（日志继续接收）' : '恢复自动滚动',
+            onClick: () => setAutoScroll((value) => !value),
+            children: autoScroll ? '自动滚动' : '已暂停',
+          }),
+          jsx('span', { className: 'dk_filterCount', children: needle === '' ? String(entries.length) + ' 行' : String(matched.length) + ' / ' + String(entries.length) + ' 行匹配' }),
+        ] }),
+        jsx('div', { className: 'dk_followState', 'data-state': status === 'open' ? 'open' : (status === 'closed' ? 'closed' : 'connecting'), children: statusText() }),
+        jsx('div', { className: 'dk_logBody', ref: bodyRef, children: [
+          shown.length === 0
+            ? jsx('div', { className: 'dk_logLine', children: status === 'open' ? '等待日志…' : statusText() }, 'empty')
+            : shown.map((entry, index) => renderAggLine(entry, index, needle)),
+        ] }),
+      ] })
+    }
+
+    /* ------------------------------------------------------------------ *
+     * 容器列表事件活动条（docker events）
+     * ------------------------------------------------------------------ */
+
+    /** 活动条里的一枚事件条目（拆出来是为了别把 map 的回调写成四层括号）。 */
+    function activityItem(event, index) {
+      // 帧里省略了值为 null 的字段（服务端行为），这里统一按「缺失 = 空串」处理，
+      // 免得 title 里冒出 undefined
+      const image = typeof event.image === 'string' ? event.image : ''
+      const project = typeof event.composeProject === 'string' ? event.composeProject : ''
+      return jsxs('span', {
+        className: 'dk_activityItem',
+        // 基础动作（health_status: healthy → health_status）当着色键，别让后缀分裂样式
+        'data-action': String(event.action ?? '').split(':')[0].trim(),
+        title: project === '' ? image : image + ' · ' + project,
+        children: [
+          jsx('span', { className: 'dk_activityTime', children: eventTimeText(event.time) }),
+          jsx('span', { className: 'dk_activityName', children: event.name }),
+          jsx('span', { className: 'dk_activityAction', children: eventActionText(event) }),
+        ],
+      }, String(index) + String(event.name) + String(event.time))
+    }
+
+    /**
+     * 列表头部的「活动」条：把事件流最近几条摊在列表上方。
+     * 折叠只影响展示（给列表腾高度），事件流与列表刷新照常跑——它不是暂停开关，
+     * 真正要停就别打开容器页 / 关面板。
+     */
+    function ActivityBar(props) {
+      const open = props.open === true
+      const events = Array.isArray(props.events) ? props.events : []
+      const recent = events.slice(0, EVENT_RECENT)
+      return jsxs('div', { className: 'dk_activity', 'data-open': open ? '1' : '0', children: [
+        jsx('button', {
+          type: 'button',
+          className: 'dk_activityHead',
+          'aria-expanded': open,
+          title: '容器事件活动（docker events）：点击折叠 / 展开',
+          onClick: props.onToggle,
+          children: [
+            jsx('span', { className: 'dk_activityTitle', children: '活动' }),
+            jsx('span', { className: 'dk_activityState', 'data-state': props.status ?? '', children: props.statusText ?? '' }),
+            jsx('span', { className: 'dk_headerSpacer' }),
+            jsx('span', { className: 'dk_hint', children: events.length === 0 ? '暂无事件' : '最近 ' + String(recent.length) + ' / ' + String(events.length) + ' 条' }),
+            jsx('span', { className: 'dk_activityChevron', dangerouslySetInnerHTML: { __html: ICON_CHEVRON } }),
+          ],
+        }),
+        open === false ? null : (
+          recent.length === 0
+            ? jsx('div', { className: 'dk_activityEmpty', children: '暂无事件（容器的 start / die / health 等动作会出现在这里）' })
+            : jsx('div', { className: 'dk_activityList', children: recent.map(activityItem) })
+        ),
+      ] })
+    }
+
+    /* ------------------------------------------------------------------ *
+     * 容器列表多选 → 临时聚合日志
+     * ------------------------------------------------------------------ */
+
+    /**
+     * 多选聚合操作条：选择态才渲染，夹在工具条与正文之间。
+     *
+     * 「聚合日志」能不能点由 pickDecide 决定：2~8 个可点，7~8 个给一条软提示
+     * （浏览器同源并发长连接有限），超过 8 个直接置灰——不禁止继续勾选，只是
+     * 别让用户点出一个注定连不上的视图。
+     */
+    function PickBar(props) {
+      const info = props.info
+      return jsxs('div', { className: 'dk_pickBar', children: [
+        jsx('span', { className: 'dk_pickCount', children: '已选 ' + String(props.count) + ' 个容器' }),
+        info.hint === '' ? null : jsx('span', { className: 'dk_hint dk_pickHint', children: info.hint }),
+        jsx('span', { className: 'dk_headerSpacer' }),
+        jsx('button', {
+          type: 'button',
+          className: 'dk_btn dk_btnPrimary',
+          disabled: info.canRun !== true,
+          // 0 个勾选时 pickDecide 不给提示（刚进选择态别一上来就飘一行灰字），
+          // 但按钮自己的 title 仍要说清为什么点不动
+          title: info.hint !== '' ? info.hint : (info.canRun === true ? '把所选容器的日志聚合成一条流' : '至少选择 2 个容器'),
+          onClick: props.onRun,
+          children: '聚合日志',
+        }),
+        jsx('button', { type: 'button', className: 'dk_btn', onClick: props.onCancel, children: '取消' }),
+      ] })
+    }
+
+    /**
+     * 临时多选聚合视图：直接复用 ComposeLogs——它的输入只是 items 数组，
+     * 与「这个集合是 compose 项目还是手勾的」无关，所以服务端一行都不用改。
+     * 只有外面这层头部（返回 / 标题 / 目标）是新的。
+     */
+    function AggregateLogsView(props) {
+      return jsxs('div', { className: 'dk_detail', children: [
+        jsxs('div', { className: 'dk_header dk_headerDetail', children: [
+          jsx(IconAction, { icon: ICON_BACK, title: '返回容器列表（退出选择态）', onClick: props.onBack }, 'back'),
+          jsx('span', { className: 'dk_projectIcon', dangerouslySetInnerHTML: { __html: ICON_LOGS } }),
+          jsx('span', { className: 'dk_detailTitle', children: '聚合日志 · ' + String(props.items.length) + ' 个容器' }),
+          jsx('span', { className: 'dk_detailSub', children: props.targetLabel ?? '' }),
+          jsx('span', { className: 'dk_headerSpacer' }),
+          props.docked === true ? null : jsx('button', { type: 'button', className: 'dk_iconBtn', title: '关闭面板', onClick: props.onClose, children: jsx('span', { className: 'dk_iconGlyph', dangerouslySetInnerHTML: { __html: ICON_CLOSE } }) }, 'close'),
+        ] }),
+        jsx('div', { className: 'dk_detailBody', children: jsx(ComposeLogs, { target: props.target, items: props.items }) }),
       ] })
     }
 
@@ -880,6 +2343,25 @@ window.__ModuleLoader__.load({
       const [view, setView] = useState('containers')
       const [containers, setContainers] = useState([])
       const [images, setImages] = useState([])
+      const [networks, setNetworks] = useState([])
+      const [volumes, setVolumes] = useState([])
+      /** 打开中的镜像详情（ImageSummary 快照；详情本体由 ImageView 自己拉）。 */
+      const [imageDetail, setImageDetail] = useState(null)
+      /** 打开中的网络 / 卷详情（列表行快照，详情由对应 View 自己 inspect）。 */
+      const [networkDetail, setNetworkDetail] = useState(null)
+      const [volumeDetail, setVolumeDetail] = useState(null)
+      /** 打开中的 Compose 项目（project 为空串 = 非 compose 容器分组）。 */
+      const [composeDetail, setComposeDetail] = useState(null)
+      /** 拉取镜像视图（docker pull → SSE 进度流）。 */
+      const [pullOpen, setPullOpen] = useState(false)
+      /*
+       * 列表多选 → 临时聚合日志。勾选只活在「当前 target 的容器列表页」里：
+       * 切 target / 切分段 / 关面板即失效，不做持久化、不落配置。
+       */
+      const [pickMode, setPickMode] = useState(false)
+      const [pickedIds, setPickedIds] = useState([])
+      /** 已进入聚合视图（items 由 pickItems(containers, pickedIds) 现算）。 */
+      const [aggregateOpen, setAggregateOpen] = useState(false)
       const [loading, setLoading] = useState(false)
       const [error, setError] = useState('')
       const [notice, setNotice] = useState('')
@@ -887,11 +2369,31 @@ window.__ModuleLoader__.load({
       const [search, setSearch] = useState('')
       const [stateFilter, setStateFilter] = useState('all')
       const [autoRefresh, setAutoRefresh] = useState(false)
+      /*
+       * 事件活动流（docker events）：events 是活动条的环形缓冲，eventsStatus 只表达
+       * 连接状态。事件流只服务容器列表页，是叠加在 AUTO REFRESH 之上的补充通道。
+       */
+      const [events, setEvents] = useState([])
+      const [eventsStatus, setEventsStatus] = useState('')
+      const [activityOpen, setActivityOpen] = useState(true)
+      /** 建流时用的列表加载器（用 ref 拿最新的，避免 all 一变就重连事件流）。 */
+      const loadContainersRef = useRef(null)
+      /** 事件流当前绑定的目标：换目标要清空活动条缓冲，免得混着两台主机的事件。 */
+      const eventsTargetRef = useRef('')
       /** 打开中的容器详情：{ id, tab, item }（item 为快照，列表刷新后优先用新数据）。 */
       const [detail, setDetail] = useState(null)
       const [refreshToken, setRefreshToken] = useState(0)
       const [confirm, setConfirm] = useState(null)
+      /**
+       * 确认对话框里那条命令是否还在飞。飞的时候对话框不关、按钮锁死（模态挡住列表），
+       * 是「避免中途触发其它操作」的第一道闸。
+       */
+      const [confirmBusy, setConfirmBusy] = useState(false)
+      /** 容器 id → 正在执行的变更动作：卡片据此锁住整组变更按钮并给对应按钮转圈。 */
+      const [pending, setPending] = useState({})
       const [imageSearch, setImageSearch] = useState('')
+      const [networkSearch, setNetworkSearch] = useState('')
+      const [volumeSearch, setVolumeSearch] = useState('')
       const mountedRef = useRef(true)
       /**
        * 就地嵌入的交互式终端（tty ≥ 0.15 的 ttyTerminal.mount）：{ label, options }。
@@ -994,10 +2496,12 @@ window.__ModuleLoader__.load({
         }).catch(() => { /* 目标列表失败时下面的容器加载会给出错误 */ })
       }, [])
 
+      // 返回 promise：变更操作完成后要「等这一次刷新落地」再收起卡片的执行中态，
+      // 否则会出现「转圈没了、状态还是旧的」空档
       const loadContainers = useCallback(() => {
-        if (target === '') return
+        if (target === '') return Promise.resolve()
         setLoading(true)
-        api.containers(target, all)
+        return api.containers(target, all)
           .then((payload) => {
             if (!mountedRef.current) return
             setContainers(payload.containers ?? [])
@@ -1012,9 +2516,9 @@ window.__ModuleLoader__.load({
       }, [target, all])
 
       const loadImages = useCallback(() => {
-        if (target === '') return
+        if (target === '') return Promise.resolve()
         setLoading(true)
-        api.images(target)
+        return api.images(target)
           .then((payload) => {
             if (!mountedRef.current) return
             setImages(payload.images ?? [])
@@ -1028,14 +2532,102 @@ window.__ModuleLoader__.load({
           })
       }, [target])
 
+      const loadNetworks = useCallback(() => {
+        if (target === '') return Promise.resolve()
+        setLoading(true)
+        return api.networks(target)
+          .then((payload) => {
+            if (!mountedRef.current) return
+            setNetworks(payload.networks ?? [])
+            setError('')
+          })
+          .catch((error_) => {
+            if (mountedRef.current) setError(error_.message)
+          })
+          .finally(() => {
+            if (mountedRef.current) setLoading(false)
+          })
+      }, [target])
+
+      const loadVolumes = useCallback(() => {
+        if (target === '') return Promise.resolve()
+        setLoading(true)
+        return api.volumes(target)
+          .then((payload) => {
+            if (!mountedRef.current) return
+            setVolumes(payload.volumes ?? [])
+            setError('')
+          })
+          .catch((error_) => {
+            if (mountedRef.current) setError(error_.message)
+          })
+          .finally(() => {
+            if (mountedRef.current) setLoading(false)
+          })
+      }, [target])
+
+      // 事件流用 ref 取「最新的」列表加载器：它只依赖 [view, target]，不该因为
+      // 用户切「含已停止」就重连一次 EventSource
+      useEffect(() => {
+        loadContainersRef.current = loadContainers
+      }, [loadContainers])
+
       /** 详情视图刷新：只让当前容器的 inspect / 日志 / 统计重取，不动列表。 */
       const refreshDetail = useCallback(() => setRefreshToken((value) => value + 1), [])
 
+      /**
+       * 退出选择态并清空勾选（工具条按钮 / 取消 / Esc / 切 target / 切分段 /
+       * 从聚合视图返回，全走这里）。
+       */
+      const resetPick = useCallback(() => {
+        setPickMode(false)
+        setPickedIds([])
+        setAggregateOpen(false)
+      }, [])
+
+      const togglePickMode = () => {
+        // 再点一次 = 退出并清空；进入时也清空，避免上次的勾选「复活」
+        if (pickMode) {
+          resetPick()
+          return
+        }
+        setPickedIds([])
+        setAggregateOpen(false)
+        setPickMode(true)
+      }
+
+      const togglePick = (item) => setPickedIds((ids) => pickToggle(ids, item.id))
+
+      /*
+       * 选择态是临时的：Esc 直接退出。只在选择态挂监听，不在选择态不占全局键盘；
+       * 日志页过滤框的 Esc 在详情视图里、且有 stopPropagation，两者不会打架。
+       */
+      useEffect(() => {
+        if (!pickMode) return undefined
+        const onKeyDown = (event) => {
+          if (event.key === 'Escape') resetPick()
+        }
+        document.addEventListener('keydown', onKeyDown)
+        return () => document.removeEventListener('keydown', onKeyDown)
+      }, [pickMode, resetPick])
+
+      /*
+       * 列表刷新后按 id 对账：已消失的容器自动从勾选里剔除（pickReconcile 在
+       * 没变化时返回原引用，所以自动刷新不会白触发渲染）。
+       */
+      useEffect(() => {
+        if (!pickMode) return
+        setPickedIds((ids) => pickReconcile(ids, containers))
+      }, [containers, pickMode])
+
       const refresh = useCallback(() => {
+        // 四个列表各有自己的加载器；容器以外的都变化慢，但都走同一条「切页 / 切目标即刷」
         if (view === 'images') loadImages()
+        else if (view === 'networks') loadNetworks()
+        else if (view === 'volumes') loadVolumes()
         else loadContainers()
         setRefreshToken((value) => value + 1)
-      }, [view, loadContainers, loadImages])
+      }, [view, loadContainers, loadImages, loadNetworks, loadVolumes])
 
       useEffect(() => {
         if (target === '') return undefined
@@ -1046,10 +2638,97 @@ window.__ModuleLoader__.load({
       // 自动刷新只服务容器列表（状态会变）；镜像列表变化慢，跟着每 5s 跑一次 docker images
       // 纯属白烧目标机的 docker CLI，所以镜像页不轮询、也不显示这个开关
       useEffect(() => {
-        if (!autoRefresh || target === '' || view !== 'containers') return undefined
+        if (!autoRefresh || target === '' || view === 'images') return undefined
         const timer = setInterval(refresh, Math.max(2, config?.pollIntervalSec ?? 5) * 1000)
         return () => clearInterval(timer)
       }, [autoRefresh, refresh, target, config, view])
+
+      /** 事件流连接状态文案（连接层错误只动这里，不弹横幅）。 */
+      const eventsStatusText = () => {
+        if (eventsStatus === 'open') return '实时接收中（docker events）'
+        if (eventsStatus === 'connecting') return '正在连接事件流…'
+        if (eventsStatus === 'reconnecting') return '连接中断，正在自动重连…'
+        if (eventsStatus === 'closed') return '事件流已断开'
+        if (eventsStatus === 'unsupported') return '当前环境不支持 EventSource'
+        return '事件流'
+      }
+
+      /**
+       * 事件流生命周期：只在容器列表页、且选了目标时开一条。
+       *
+       * 两个关键语义：
+       *   1. **防抖刷新**：一帧事件不刷一次列表，攒到 500ms 静默期再刷（见
+       *      EVENTS_REFRESH_DEBOUNCE_MS 的注释）；AUTO REFRESH 保持原样，两者叠加。
+       *   2. **重连补偿**：EventSource 断线会自动重连，但断线窗口里的事件已经漏了，
+       *      所以重连成功后先补一次全量列表刷新把状态对齐；首次 open 不补（列表刚加载过）。
+       *
+       * 切页 / 切 target / 关面板都会走 effect 清理：关流 + 取消防抖。
+       */
+      useEffect(() => {
+        if (view !== 'containers' || target === '') return undefined
+        if (typeof EventSource !== 'function') {
+          setEventsStatus('unsupported')
+          return undefined
+        }
+        // 换目标就清空缓冲：活动条里不该混着另一台主机的事件
+        if (eventsTargetRef.current !== target) {
+          eventsTargetRef.current = target
+          setEvents([])
+        }
+        setEventsStatus('connecting')
+        const debounced = makeDebounced(EVENTS_REFRESH_DEBOUNCE_MS, () => {
+          const load = loadContainersRef.current
+          if (load !== null) load()
+        })
+        let hadOpen = false
+        const es = new EventSource(streamUrl('/events/stream', { target }))
+        let closed = false
+        const close = () => {
+          if (closed) return
+          closed = true
+          try { es.close() } catch { /* 已关闭 */ }
+        }
+        const onEvent = (raw) => {
+          let payload = null
+          try { payload = JSON.parse(raw.data) } catch { return }
+          if (payload === null || typeof payload !== 'object') return
+          setEvents((list) => pushEvent(list, payload, EVENT_BUFFER_LIMIT))
+          debounced.schedule()
+        }
+        const onEnd = (raw) => {
+          let payload = null
+          try { payload = JSON.parse(raw.data) } catch { /* 畸形载荷按自然结束处理 */ }
+          const code = payload !== null && typeof payload.code === 'number' ? payload.code : null
+          setEventsStatus('closed')
+          // 这条流断了就不会自己回来：明确说一声，别让用户以为活动条只是「最近没动静」
+          setNotice('事件流已结束' + (code === null ? '' : '（退出码 ' + String(code) + '）') + '，列表回到 AUTO REFRESH / 手动刷新')
+          close()
+        }
+        const onError = (raw) => {
+          if (typeof raw.data === 'string' && raw.data !== '') {
+            setEventsStatus('closed')
+            close()
+            return
+          }
+          // 连接层错误：EventSource 会自己重连，这里只更新状态
+          setEventsStatus(es.readyState === 2 ? 'closed' : 'reconnecting')
+        }
+        es.addEventListener('event', onEvent)
+        es.addEventListener('end', onEnd)
+        es.addEventListener('error', onError)
+        es.onopen = () => {
+          setEventsStatus('open')
+          if (hadOpen) {
+            const load = loadContainersRef.current
+            if (load !== null) load()
+          }
+          hadOpen = true
+        }
+        return () => {
+          close()
+          debounced.cancel()
+        }
+      }, [view, target])
 
       useEffect(() => {
         if (notice === '') return undefined
@@ -1130,23 +2809,153 @@ window.__ModuleLoader__.load({
         }
       }
 
+      /** 清掉某个容器的「执行中」标记（幂等；没标就不动引用，省一次渲染）。 */
+      const clearPending = (id) => setPending((map) => {
+        if (map[id] === undefined) return map
+        const next = { ...map }
+        delete next[id]
+        return next
+      })
+
+      /**
+       * 确认后执行一条命令的统一入口，两段式过渡：
+       *
+       *   1. `command` 飞行期间（docker stop / rm 要等容器真的退出，最长十几秒）**对话框
+       *      不关**，两个按钮禁用、确认键换成转圈 +「执行中…」——它是模态的，这段时间
+       *      用户点不到列表上任何东西，也就叠不出 stop + restart + remove 这种互相打断
+       *      的命令。
+       *   2. `command` 落地后立刻关框，把「等列表刷新落地」这段交给卡片上的转圈（`after`）。
+       *      否则会出现「转圈没了、状态还是运行中」的空档，用户很容易在旧快照上再点一次。
+       */
+      const runConfirmed = (command, after) => {
+        setConfirmBusy(true)
+        const close = () => {
+          setConfirmBusy(false)
+          setConfirm(null)
+        }
+        Promise.resolve()
+          .then(command)
+          .then(
+            async () => {
+              close()
+              if (after !== undefined) {
+                try {
+                  await after()
+                } catch (error_) {
+                  // after 里的刷新失败也必须把忙碌态收干净，不能留下一直转圈的卡片
+                  setError(error_.message)
+                }
+              }
+            },
+            (error_) => {
+              close()
+              setError(error_.message)
+            },
+          )
+      }
+
       const doAction = (action, item) => {
+        // 按钮已经置灰，这里是兜底：同一容器的上一条命令还在飞就不接第二条
+        if (pending[item.id] !== undefined) return
         setConfirm({
           title: action === 'remove' ? '删除容器' : (action === 'stop' ? '停止容器' : (action === 'start' ? '启动容器' : '重启容器')),
           text: action === 'remove'
             ? `确定删除容器 ${item.name}？容器的可写层与配置会被删除（命名数据卷保留），此操作不可恢复。`
             : `确定对容器 ${item.name} 执行${action === 'stop' ? '停止' : action === 'start' ? '启动' : '重启'}操作？`,
           confirmLabel: action === 'remove' ? '删除' : '确定',
-          run: () => {
-            setConfirm(null)
-            api.action(target, action, item.id)
-              .then((payload) => {
+          run: () => runConfirmed(
+            async () => {
+              setPending((map) => ({ ...map, [item.id]: action }))
+              try {
+                const payload = await api.action(target, action, item.id)
                 setNotice(`${payload.result.action} ${item.name}：${payload.result.message}`)
-                refresh()
-              })
-              .catch((error_) => setError(error_.message))
-          },
+              } catch (error_) {
+                // 命令失败也要解锁，否则这张卡片会一直转圈
+                clearPending(item.id)
+                throw error_
+              }
+            },
+            async () => {
+              try {
+                await loadContainers()
+              } finally {
+                clearPending(item.id)
+              }
+            },
+          ),
         })
+      }
+
+      /** 删除镜像（破坏性，二次确认；dangling 用 ID 作引用）。 */
+      const doImageRemove = (item) => {
+        const ref = imageRefOf(item)
+        setConfirm({
+          title: '删除镜像',
+          text: '确定删除镜像 ' + ref + '？镜像被容器或子镜像引用时会失败；删除后需要重新拉取或构建才能恢复，且不可撤销。',
+          confirmLabel: '删除',
+          run: () => runConfirmed(async () => {
+            const payload = await api.imageRemove(target, ref)
+            setNotice('已删除 ' + ref + '：' + payload.result.message)
+            if (imageDetail !== null && imageRefOf(imageDetail) === ref) setImageDetail(null)
+            await loadImages()
+          }),
+        })
+      }
+
+      /** 清理 dangling 镜像（docker image prune -f；只删无标签镜像）。 */
+      const doImagePrune = () => {
+        setConfirm({
+          title: '清理 dangling 镜像',
+          text: '清理该目标上所有无标签（<none>:<none>）的镜像层，释放磁盘空间；不会删除有 tag 的镜像。',
+          confirmLabel: '清理',
+          run: () => runConfirmed(async () => {
+            const payload = await api.imagePrune(target)
+            const tail = String(payload.result.message).trim().split('\n').filter((line) => line !== '')
+            setNotice('已清理 dangling 镜像：' + (tail.length === 0 ? 'ok' : tail[tail.length - 1]))
+            await loadImages()
+          }),
+        })
+      }
+
+      /** 清理未使用的网络（docker network prune -f；compose 的自定义网络也会被清掉）。 */
+      const doNetworkPrune = () => {
+        setConfirm({
+          title: '清理未使用的网络',
+          text: '清理该目标上所有没有容器接入的网络。compose 创建的项目网络也在其中（下次 up 会重建），但正在跑的项目会短暂失去网络。',
+          confirmLabel: '清理',
+          run: () => runConfirmed(async () => {
+            const payload = await api.networkPrune(target)
+            const tail = String(payload.result.message).trim().split('\n').filter((line) => line !== '')
+            setNotice('已清理未使用网络：' + (tail.length === 0 ? 'ok' : tail[tail.length - 1]))
+            await loadNetworks()
+          }),
+        })
+      }
+
+      /**
+       * 清理未使用的卷（docker volume prune -f）。
+       * 这是四个 prune 里唯一会**删数据**的，所以确认文案必须把版本差异写出来：
+       * docker ≥ 23 不带 --all 时只删匿名卷；更老的版本会连命名卷一起删。
+       */
+      const doVolumePrune = () => {
+        setConfirm({
+          title: '清理未使用的卷',
+          text: '清理该目标上所有没有被容器使用的卷——卷里的数据会一起删除且不可恢复。docker ≥ 23 只删匿名卷（不带 --all），更老的版本会连命名卷一起删；执行前请确认没有需要保留的数据卷。',
+          confirmLabel: '清理',
+          run: () => runConfirmed(async () => {
+            const payload = await api.volumePrune(target)
+            const tail = String(payload.result.message).trim().split('\n').filter((line) => line !== '')
+            setNotice('已清理未使用卷：' + (tail.length === 0 ? 'ok' : tail[tail.length - 1]))
+            await loadVolumes()
+          }),
+        })
+      }
+
+      /** 详情页删除成功后的收尾：回列表 + 刷新 + 提示（详情视图自己弹的确认框）。 */
+      const afterDetailRemove = (close, reload) => (message) => {
+        close()
+        setNotice(message)
+        void reload()
       }
 
       const selected = detail === null
@@ -1163,6 +2972,14 @@ window.__ModuleLoader__.load({
       const filteredImages = images.filter((item) => {
         const needle = imageSearch.trim().toLowerCase()
         return needle === '' || item.reference.toLowerCase().includes(needle) || item.id.toLowerCase().includes(needle)
+      })
+      const filteredNetworks = networks.filter((item) => {
+        const needle = networkSearch.trim().toLowerCase()
+        return needle === '' || item.name.toLowerCase().includes(needle) || item.driver.toLowerCase().includes(needle) || item.id.toLowerCase().includes(needle)
+      })
+      const filteredVolumes = volumes.filter((item) => {
+        const needle = volumeSearch.trim().toLowerCase()
+        return needle === '' || item.name.toLowerCase().includes(needle) || item.driver.toLowerCase().includes(needle) || item.mountpoint.toLowerCase().includes(needle)
       })
 
       const targetLabel = (name) => {
@@ -1186,8 +3003,8 @@ window.__ModuleLoader__.load({
           ] })
         }
         return jsxs('div', { className: 'dk_empty', children: [
-          jsx('div', { className: 'dk_emptyTitle', children: view === 'images' ? '没有镜像' : '没有容器' }),
-          jsx('div', { className: 'dk_emptyHint', children: search.trim() === '' ? '目标上没有匹配的数据，或筛选条件过窄。' : '没有匹配「' + search.trim() + '」的结果。' }),
+          jsx('div', { className: 'dk_emptyTitle', children: view === 'images' ? '没有镜像' : (view === 'compose' ? '没有 Compose 项目' : (view === 'networks' ? '没有网络' : (view === 'volumes' ? '没有卷' : '没有容器'))) }),
+          jsx('div', { className: 'dk_emptyHint', children: (search.trim() === '' ? '目标上没有匹配的数据，或筛选条件过窄。' : '没有匹配「' + search.trim() + '」的结果。') }),
         ] })
       }
 
@@ -1199,14 +3016,70 @@ window.__ModuleLoader__.load({
               ? empty()
               : jsx('div', { className: 'dk_tableWrap', children: jsxs('table', { className: 'dk_images', children: [
                 jsx('thead', { children: jsxs('tr', { children: [
-                  jsx('th', { children: '镜像' }), jsx('th', { children: '大小' }), jsx('th', { children: '创建' }), jsx('th', { children: 'ID' }),
+                  jsx('th', { children: '镜像' }), jsx('th', { children: '大小' }), jsx('th', { children: '创建' }), jsx('th', { children: 'ID' }), jsx('th', { className: 'dk_colActions', children: '操作' }),
                 ] }) }),
                 jsx('tbody', { children: filteredImages.map((item) => jsxs('tr', { children: [
-                  jsx('td', { className: 'dk_mono', children: item.reference }),
-                  jsx('td', { children: item.sizeText }),
+                  jsx('td', { className: 'dk_mono', title: item.reference, children: item.dangling ? '<none>（dangling）' : item.reference }),
+                  jsx('td', { children: item.sizeText === '' ? (item.size === null ? '—' : fmtBytes(item.size)) : item.sizeText }),
                   jsx('td', { children: item.createdSince }),
                   jsx('td', { className: 'dk_mono', children: item.shortId }),
+                  jsx('td', { className: 'dk_colActions', children: jsxs('div', { className: 'dk_rowActions', children: [
+                    jsx(IconAction, { icon: ICON_IMAGE, title: '查看镜像详情（层 / 构建历史）', onClick: () => setImageDetail(item) }, 'inspect'),
+                    jsx(IconAction, { icon: ICON_TRASH, danger: true, disabled: config?.allowMutations !== true, title: config?.allowMutations === true ? '删除镜像（不可恢复）' : '需要打开「允许变更操作」', onClick: () => doImageRemove(item) }, 'remove'),
+                  ] }) }, 'actions'),
                 ] }, item.id + item.reference)) }),
+              ] }) }),
+          ] })
+        }
+        if (view === 'compose') {
+          const groups = groupCompose(filtered)
+          if (groups.length === 0) return empty()
+          return jsx(ComposeView, { groups, onOpen: (project) => setComposeDetail({ project }) })
+        }
+        if (view === 'networks') {
+          // 与镜像页同构：表体自己滚、表头吸顶，工具条里的搜索框不随列表滚走
+          return jsxs('div', { className: 'dk_imagesView', children: [
+            filteredNetworks.length === 0
+              ? empty()
+              : jsx('div', { className: 'dk_tableWrap', children: jsxs('table', { className: 'dk_images', children: [
+                jsx('thead', { children: jsxs('tr', { children: [
+                  jsx('th', { children: '名称' }), jsx('th', { children: '驱动' }), jsx('th', { children: '范围' }), jsx('th', { children: '属性' }), jsx('th', { children: 'ID' }),
+                ] }) }),
+                jsx('tbody', { children: filteredNetworks.map((item) => jsxs('tr', {
+                  className: 'dk_rowClickable',
+                  onClick: () => setNetworkDetail(item),
+                  title: '查看网络详情',
+                  children: [
+                    jsx('td', { className: 'dk_mono', title: item.name, children: item.name }),
+                    jsx('td', { children: item.driver === '' ? '—' : item.driver }),
+                    jsx('td', { children: item.scope === '' ? '—' : item.scope }),
+                    // internal 是网络最值得一眼看到的一个属性：它决定了容器能不能出网
+                    jsx('td', { children: item.internal ? jsx('span', { className: 'dk_badge', 'data-state': 'paused', children: 'internal' }) : '—' }),
+                    jsx('td', { className: 'dk_mono', title: item.id, children: item.shortId }),
+                  ],
+                }, item.id + item.name)) }),
+              ] }) }),
+          ] })
+        }
+        if (view === 'volumes') {
+          return jsxs('div', { className: 'dk_imagesView', children: [
+            filteredVolumes.length === 0
+              ? empty()
+              : jsx('div', { className: 'dk_tableWrap', children: jsxs('table', { className: 'dk_images', children: [
+                jsx('thead', { children: jsxs('tr', { children: [
+                  jsx('th', { children: '名称' }), jsx('th', { children: '驱动' }), jsx('th', { children: '范围' }), jsx('th', { children: '挂载点' }),
+                ] }) }),
+                jsx('tbody', { children: filteredVolumes.map((item) => jsxs('tr', {
+                  className: 'dk_rowClickable',
+                  onClick: () => setVolumeDetail(item),
+                  title: '查看卷详情',
+                  children: [
+                    jsx('td', { className: 'dk_mono', title: item.name, children: item.name }),
+                    jsx('td', { children: item.driver === '' ? '—' : item.driver }),
+                    jsx('td', { children: item.scope === '' ? '—' : item.scope }),
+                    jsx('td', { className: 'dk_mono dk_pathCell', title: item.mountpoint, children: item.mountpoint === '' ? '—' : item.mountpoint }),
+                  ],
+                }, item.name)) }),
               ] }) }),
           ] })
         }
@@ -1215,6 +3088,12 @@ window.__ModuleLoader__.load({
           item,
           selected: detail !== null && item.id === detail.id,
           allowMutations: config?.allowMutations === true,
+          // 选择态：卡片点击 = 切换勾选（onOpen 在 ContainerCard 里被让位）
+          pickMode,
+          picked: pickedIds.includes(item.id),
+          // 有变更命令在飞 → 卡片锁住整组变更按钮并给对上的那个转圈
+          pending: pending[item.id],
+          onTogglePick: togglePick,
           onOpen: (picked, tab) => setDetail({ id: picked.id, tab, item: picked }),
           onExec: openExec,
           onAction: doAction,
@@ -1225,23 +3104,104 @@ window.__ModuleLoader__.load({
       }
 
       const docked = props.docked === true
-      const panelChildren = [selected !== null ? [
-            jsx(ContainerView, {
-              item: selected,
+      const panelConfig = config ?? { pollIntervalSec: 5, logTailDefault: 200, allowExec: false, allowMutations: false, execTimeoutSec: 30 }
+      /*
+       * 勾选 → 容器对象（按勾选顺序）。计数与判定都用 aggregateItems 而不是
+       * pickedIds：列表刷新后对账 effect 还没跑的那一瞬，已消失的容器就已经
+       * 不算数了，不至于出现「已选 3 个」但只连出 2 条流。
+       */
+      const aggregateItems = pickItems(containers, pickedIds)
+      const pickInfo = pickDecide(aggregateItems.length)
+      const composeItems = composeDetail === null
+        ? []
+        : (groupCompose(containers).find((group) => group.project === composeDetail.project)?.items ?? [])
+      /*
+       * 整栏视图互斥：容器详情 > 镜像详情 > 拉取进度 > Compose 项目。
+       * 它们都占满正文（不叠列表工具条），同一个位置只挂一个。
+       */
+      const detailView = selected !== null
+        ? jsx(ContainerView, {
+          item: selected,
+          target,
+          targetLabel: targetLabel(target),
+          config: panelConfig,
+          initialTab: detail.tab,
+          refreshToken,
+          onBack: () => setDetail(null),
+          onRefresh: refreshDetail,
+          onClose: requestClose,
+          docked,
+        }, 'detail')
+        : imageDetail !== null
+          ? jsx(ImageView, {
+            item: (images.find((entry) => entry.id === imageDetail.id) ?? imageDetail),
+            target,
+            targetLabel: targetLabel(target),
+            onBack: () => setImageDetail(null),
+            onClose: requestClose,
+            docked,
+          }, 'imageDetail')
+          : pullOpen
+            ? jsx(PullView, {
               target,
               targetLabel: targetLabel(target),
-              config: config ?? { pollIntervalSec: 5, logTailDefault: 200, allowExec: false, execTimeoutSec: 30 },
-              initialTab: detail.tab,
-              refreshToken,
-              onBack: () => setDetail(null),
-              onRefresh: refreshDetail,
+              allowMutations: config?.allowMutations === true,
+              onBack: () => setPullOpen(false),
+              onDone: loadImages,
               onClose: requestClose,
               docked,
-            }, 'detail'),
+            }, 'pull')
+            : composeDetail !== null
+              ? jsx(ComposeProjectView, {
+                project: composeDetail.project,
+                items: composeItems,
+                target,
+                targetLabel: targetLabel(target),
+                onBack: () => setComposeDetail(null),
+                onClose: requestClose,
+                docked,
+              }, 'composeDetail')
+              : aggregateOpen
+                ? jsx(AggregateLogsView, {
+                  // items 是「勾选顺序」的容器集合，ComposeLogs 只认数组，不认识 compose
+                  items: aggregateItems,
+                  target,
+                  targetLabel: targetLabel(target),
+                  onBack: resetPick,
+                  onClose: requestClose,
+                  docked,
+                }, 'aggregate')
+                : networkDetail !== null
+                  ? jsx(NetworkView, {
+                    item: networkDetail,
+                    target,
+                    targetLabel: targetLabel(target),
+                    allowMutations: config?.allowMutations === true,
+                    onBack: () => setNetworkDetail(null),
+                    // 删除成功 → 回列表 + 刷新 + 提示（失败由详情页自己显示横幅）
+                    onRemoved: afterDetailRemove(() => setNetworkDetail(null), loadNetworks),
+                    onClose: requestClose,
+                    docked,
+                  }, 'networkDetail')
+                  : volumeDetail !== null
+                    ? jsx(VolumeView, {
+                      item: volumeDetail,
+                      target,
+                      targetLabel: targetLabel(target),
+                      allowMutations: config?.allowMutations === true,
+                      onBack: () => setVolumeDetail(null),
+                      onRemoved: afterDetailRemove(() => setVolumeDetail(null), loadVolumes),
+                      onClose: requestClose,
+                      docked,
+                    }, 'volumeDetail')
+                    : null
+      const panelChildren = [detailView !== null ? [
+            detailView,
             confirm === null ? null : jsx(ConfirmDialog, {
               title: confirm.title,
               text: confirm.text,
               confirmLabel: confirm.confirmLabel,
+              busy: confirmBusy,
               onCancel: () => setConfirm(null),
               onConfirm: confirm.run,
             }, 'confirm'),
@@ -1262,16 +3222,16 @@ window.__ModuleLoader__.load({
             ] }),
             /* 工具栏：只在列表视图显示；容器详情是整栏视图，列表筛选在这里没有意义 */
             selected !== null ? null : jsxs('div', { className: 'dk_toolbar', children: [
-              // dock 模式（没有头部那条）：刷新 / 只读徽标并到首行，别浪费一整行；
-              // 刷新中图标自己转，所以这里不再另挂一个 spinner
-              docked ? jsx('button', { type: 'button', className: 'dk_iconBtn', title: '刷新列表', 'data-spin': loading ? '1' : undefined, onClick: refresh, children: jsx('span', { className: 'dk_iconGlyph', dangerouslySetInnerHTML: { __html: ICON_REFRESH } }) }, 'refresh') : null,
-              docked && config?.allowMutations !== true ? jsx('span', { className: 'dk_badge', 'data-state': 'paused', children: '只读模式' }, 'readonly') : null,
               jsx('select', {
                 className: 'dk_select',
                 value: target,
                 onChange: (event) => {
                   setTarget(event.target.value)
                   setDetail(null)
+                  // 勾选只属于「当前 target 的列表」：换目标即失效
+                  resetPick()
+                  // 执行中态按容器 id 记账，换目标必须清掉：另一台主机可能恰好有同名 id
+                  setPending({})
                   props.onTargetChange?.(targetLabel(event.target.value))
                 },
                 children: [
@@ -1281,16 +3241,45 @@ window.__ModuleLoader__.load({
                     .map((item) => jsx('option', { value: item.name, children: targetLabel(item.name) }, item.name)),
                 ],
               }),
-              jsx('div', { className: 'dk_seg', children: [['containers', '容器'], ['images', '镜像']].map(([key, label]) => jsx('button', {
+              /*
+               * 五段：容器 / 镜像 / Compose / 网络 / 卷。都是短词，窄栏放得下；
+               * 真的溢出时 .dk_seg 允许横向滚动（见 docker.css），不做二级菜单——
+               * 二级菜单会把「一次点击切页」变成两次，而切页是这里最高频的动作。
+               */
+              jsx('div', { className: 'dk_seg', children: [['containers', '容器'], ['images', '镜像'], ['compose', 'Compose'], ['networks', '网络'], ['volumes', '卷']].map(([key, label]) => jsx('button', {
                 type: 'button',
                 className: 'dk_segBtn',
                 'data-on': view === key ? '1' : '0',
-                onClick: () => { setView(key); setDetail(null) },
+                onClick: () => {
+                  setView(key)
+                  setDetail(null)
+                  setImageDetail(null)
+                  setComposeDetail(null)
+                  setNetworkDetail(null)
+                  setVolumeDetail(null)
+                  setPullOpen(false)
+                  resetPick()
+                },
                 children: label,
               }, key)) }),
+              // 多选入口：只在容器列表页出现（镜像 / Compose 页没有「选容器」的语义）
+              view === 'containers' ? jsx('button', {
+                type: 'button',
+                className: 'dk_pill dk_pillPick',
+                'data-on': pickMode ? '1' : '0',
+                title: pickMode ? '退出选择并清空勾选（Esc）' : '多选容器，把它们的日志临时聚合成一条流',
+                onClick: togglePickMode,
+                children: pickMode ? '退出选择' : '聚合选择',
+              }) : null,
               view === 'containers' ? jsx('input', {
                 className: 'dk_input dk_search',
                 placeholder: '搜索名称 / 镜像 / ID',
+                value: search,
+                onChange: (event) => setSearch(event.target.value),
+              }) : null,
+              view === 'compose' ? jsx('input', {
+                className: 'dk_input dk_search',
+                placeholder: '搜索项目 / 服务 / 容器',
                 value: search,
                 onChange: (event) => setSearch(event.target.value),
               }) : null,
@@ -1302,6 +3291,31 @@ window.__ModuleLoader__.load({
                 onChange: (event) => setImageSearch(event.target.value),
               }) : null,
               view === 'images' ? jsx('span', { className: 'dk_hint dk_searchCount', children: String(filteredImages.length) + ' / ' + String(images.length) + ' 个镜像' }) : null,
+              /*
+               * 镜像的变更入口（拉取 = SSE 进度流；清理只删 dangling）：与容器动作一样受
+               * allowMutations 门控。两个都做成图标——镜像页工具条已经被搜索框 / 计数 /
+               * （dock 模式还有刷新）占满，文字的「拉取镜像」会把窄栏挤换行；
+               * 图标化后 title 就是唯一的可发现入口，所以两态的文案都带上动作名。
+               */
+              view === 'images' ? jsx(IconAction, { icon: ICON_PULL, disabled: config?.allowMutations !== true, title: config?.allowMutations === true ? '拉取镜像（docker pull，逐层实时进度）' : '拉取镜像需要打开「允许变更操作」', onClick: () => setPullOpen(true) }, 'pull') : null,
+              view === 'images' ? jsx(IconAction, { icon: ICON_PRUNE, danger: true, disabled: config?.allowMutations !== true, title: config?.allowMutations === true ? '清理 dangling（无标签）镜像' : '清理 dangling 需要打开「允许变更操作」', onClick: doImagePrune }, 'prune') : null,
+              view === 'networks' ? jsx('input', {
+                className: 'dk_input dk_search',
+                placeholder: '搜索网络（名称 / 驱动 / ID）',
+                value: networkSearch,
+                onChange: (event) => setNetworkSearch(event.target.value),
+              }) : null,
+              view === 'volumes' ? jsx('input', {
+                className: 'dk_input dk_search',
+                placeholder: '搜索卷（名称 / 驱动 / 挂载点）',
+                value: volumeSearch,
+                onChange: (event) => setVolumeSearch(event.target.value),
+              }) : null,
+              view === 'networks' ? jsx('span', { className: 'dk_hint dk_searchCount', children: String(filteredNetworks.length) + ' / ' + String(networks.length) + ' 个网络' }) : null,
+              view === 'volumes' ? jsx('span', { className: 'dk_hint dk_searchCount', children: String(filteredVolumes.length) + ' / ' + String(volumes.length) + ' 个卷' }) : null,
+              view === 'networks' ? jsx(IconAction, { icon: ICON_PRUNE, danger: true, disabled: config?.allowMutations !== true, title: config?.allowMutations === true ? '清理未使用的网络（docker network prune）' : '清理网络需要打开「允许变更操作」', onClick: doNetworkPrune }, 'prune') : null,
+              view === 'volumes' ? jsx(IconAction, { icon: ICON_PRUNE, danger: true, disabled: config?.allowMutations !== true, title: config?.allowMutations === true ? '清理未使用的卷（docker volume prune，会删数据）' : '清理卷需要打开「允许变更操作」', onClick: doVolumePrune }, 'prune') : null,
+              view === 'compose' ? jsx('span', { className: 'dk_hint dk_searchCount', children: String(groupCompose(filtered).length) + ' 个项目 · ' + String(filtered.length) + ' 个容器' }) : null,
               view === 'containers' ? jsx('div', { className: 'dk_seg', children: [['all', '全部'], ['running', '运行中'], ['stopped', '已停止'], ['unhealthy', '不健康']].map(([key, label]) => jsx('button', {
                 type: 'button',
                 className: 'dk_segBtn',
@@ -1309,19 +3323,44 @@ window.__ModuleLoader__.load({
                 onClick: () => setStateFilter(key),
                 children: label,
               }, key))}) : null,
-              view === 'containers' ? jsx('label', { className: 'dk_check', children: [
+              view === 'containers' || view === 'compose' ? jsx('label', { className: 'dk_check', children: [
                 jsx('input', { type: 'checkbox', checked: all, onChange: (event) => setAll(event.target.checked) }),
                 '含已停止',
               ] }) : null,
-              // 镜像页没有「状态」可轮询：开关只在容器页出现（切回容器页时原设置照旧生效）
-              view === 'containers' ? jsx('label', { className: 'dk_check', children: [
+              /*
+               * 自动刷新只服务「状态会变」的两个页（容器 / Compose）。镜像、网络、卷都是
+               * 低频变更的清单，按 5s 轮询纯属白烧目标机的 docker CLI——与镜像页现状一致，
+               * 这三页不显示该开关（切回来时原设置照旧生效）。
+               */
+              view === 'containers' || view === 'compose' ? jsx('label', { className: 'dk_check', children: [
                 jsx('input', { type: 'checkbox', checked: autoRefresh, onChange: (event) => setAutoRefresh(event.target.checked) }),
                 '自动刷新',
               ] }) : null,
+              /*
+               * dock 模式没有面板头部，刷新 / 只读徽标放在工具条**末尾并靠右**：
+               * 放最左会被当成「过滤器的一部分」，而且第一眼就是刷新容易误点；
+               * 右端才是「对整栏生效的动作」，也与非 dock 模式头部里的位置一致。
+               */
+              docked ? jsxs('div', { className: 'dk_toolbarEnd', children: [
+                config?.allowMutations !== true ? jsx('span', { className: 'dk_badge', 'data-state': 'paused', children: '只读模式' }, 'readonly') : null,
+                // 刷新中图标自己转，所以这里不再另挂 spinner
+                jsx('button', { type: 'button', className: 'dk_iconBtn', title: '刷新列表', 'data-spin': loading ? '1' : undefined, onClick: refresh, children: jsx('span', { className: 'dk_iconGlyph', dangerouslySetInnerHTML: { __html: ICON_REFRESH } }) }, 'refresh'),
+              ] }) : null,
             ] }),
+            /*
+             * 多选聚合操作条：只在容器列表页的选择态出现，夹在工具条与正文之间
+             * （不进正文滚动区，滚动列表时也始终可见）
+             */
+            view === 'containers' && pickMode ? jsx(PickBar, {
+              count: aggregateItems.length,
+              info: pickInfo,
+              onRun: () => setAggregateOpen(true),
+              onCancel: resetPick,
+            }, 'pickBar') : null,
             /* 主体 */
             jsxs('div', { className: 'dk_body', children: [
-              jsxs('div', { className: 'dk_main' + (view === 'images' ? ' dk_mainImages' : ''), children: [
+              // 表格页（镜像 / 网络 / 卷）共用 dk_mainImages 的「表体自己滚、表头吸顶」布局
+              jsxs('div', { className: 'dk_main' + (view === 'images' || view === 'networks' || view === 'volumes' ? ' dk_mainImages' : ''), children: [
                 error === '' ? null : jsx(Banner, { title: '操作失败', hint: error }),
                 notice === '' ? null : jsx(Banner, { kind: 'info', title: notice }),
                 props.sessionHint === undefined ? null : jsx(Banner, {
@@ -1334,8 +3373,20 @@ window.__ModuleLoader__.load({
                     + '，保存后回到这里刷新即可。',
                 }),
                 config !== null && config.allowMutations !== true
-                  ? jsx(Banner, { kind: 'info', title: '当前为只读模式', hint: '启动 / 停止 / 重启 / 删除需要到 设置 → 插件 → Docker 容器面板 打开「允许变更操作」。' })
+                  ? jsx(Banner, { kind: 'info', title: '当前为只读模式', hint: '容器的启动 / 停止 / 重启 / 删除，以及镜像、网络、卷的删除与清理，都需要到 设置 → 插件 → Docker 容器面板 打开「允许变更操作」。' })
                   : null,
+                /*
+                 * 活动条贴在列表头部（横幅之下、列表之上）：它讲的是「刚刚发生了什么」，
+                 * 放在会被长列表顶走的位置就失去意义了。只在容器页出现——镜像 / Compose
+                 * 页没有对应的事件语义。
+                 */
+                view === 'containers' ? jsx(ActivityBar, {
+                  events,
+                  status: eventsStatus,
+                  statusText: eventsStatusText(),
+                  open: activityOpen,
+                  onToggle: () => setActivityOpen((value) => !value),
+                }, 'activity') : null,
                 body(),
               ] }),
             ] }),
@@ -1343,6 +3394,7 @@ window.__ModuleLoader__.load({
               title: confirm.title,
               text: confirm.text,
               confirmLabel: confirm.confirmLabel,
+              busy: confirmBusy,
               onCancel: () => setConfirm(null),
               onConfirm: confirm.run,
             }),
@@ -1556,7 +3608,7 @@ window.__ModuleLoader__.load({
 
         sectionTitle('能力开关（默认关闭）'),
         jsxs('div', { className: 'dk_row', children: [
-          jsx('label', { className: 'dk_check', children: [jsx('input', { type: 'checkbox', checked: form.allowMutations, onChange: (event) => patch({ allowMutations: event.target.checked }) }), '允许变更操作（启动 / 停止 / 重启 / 删除）'] }),
+          jsx('label', { className: 'dk_check', children: [jsx('input', { type: 'checkbox', checked: form.allowMutations, onChange: (event) => patch({ allowMutations: event.target.checked }) }), '允许变更操作（容器启停删、镜像拉取 / 删除 / 清理）'] }),
           jsx('label', { className: 'dk_check', children: [jsx('input', { type: 'checkbox', checked: form.allowExec, onChange: (event) => patch({ allowExec: event.target.checked }) }), '允许 exec（在容器内执行命令）'] }),
         ] }),
         jsx('span', { className: 'dk_hint', children: 'docker socket 等价于目标主机的 root 权限。开启后，浏览器面板与 agent 都能执行对应操作，请只在可信环境下打开。' }),
@@ -1823,6 +3875,32 @@ window.__ModuleLoader__.load({
 
     const exports = {}
     exports.inject = ['slots']
+    /*
+     * 离线冒烟的纯逻辑测试缝（scripts/client-smoke.mjs）：真实 module loader 只读
+     * inject / apply，多出来的键不会被消费。选择态的判定与对账放在这里，才能不起
+     * 浏览器验证「几个才能点 / 超限怎么提示 / 刷新后怎么剔除」。
+     */
+    exports.__pick = {
+      MAX: PICK_MAX,
+      SOFT_MAX: PICK_SOFT_MAX,
+      decide: pickDecide,
+      toggle: pickToggle,
+      reconcile: pickReconcile,
+      items: pickItems,
+    }
+    /*
+     * 同一类测试缝：事件活动条的环形缓冲 / 动作标签 / 防抖都是纯逻辑，
+     * 挂在返回值上就能不起浏览器回归（真实 EventSource 时序没法在 Node 桩里驱动）。
+     */
+    exports.__events = {
+      LIMIT: EVENT_BUFFER_LIMIT,
+      RECENT: EVENT_RECENT,
+      DEBOUNCE_MS: EVENTS_REFRESH_DEBOUNCE_MS,
+      append: pushEvent,
+      actionText: eventActionText,
+      timeText: eventTimeText,
+      debounce: makeDebounced,
+    }
     exports.apply = (ctx) => {
       ensureStyle()
       // 侧栏入口先按可见挂载（与旧行为一致），config 确认禁用后由闸门收起；

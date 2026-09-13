@@ -6,7 +6,7 @@
  *   [id]    cordis 插件 id（默认与 <name> 相同）
  * 等价快捷方式：pnpm create-plugin <name> [id]
  */
-import { cpSync, existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
@@ -59,6 +59,11 @@ function rewrite(dir) {
   }
 }
 rewrite(destDir)
+
+// 模板测试文件名带 hello 字样；上面的文本替换只改内容不改文件名，这里同步改名，
+// 否则 packages/<name>/test/hello.test.ts 会一直叫 hello。
+const templateTest = join(destDir, 'test', 'hello.test.ts')
+if (existsSync(templateTest)) renameSync(templateTest, join(destDir, 'test', `${name}.test.ts`))
 
 console.log(`[create-plugin] packages/${name} 已生成（包 @hyzyn/dsh-${name}，插件 id ${id}）`)
 

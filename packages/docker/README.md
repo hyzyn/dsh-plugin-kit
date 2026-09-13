@@ -1,10 +1,12 @@
 # @hyzyn/dsh-docker
 
 DSH Web GUI 的 **Docker 容器面板**插件：侧边栏「容器」入口打开面板，查看
-**本机或 SSH 主机**上的容器列表 / 状态 / 端口 / 日志 / 资源占用与镜像，并在
-显式打开开关后执行启停删与一次性 `docker exec`。宿主半体用 `ssh2` 的
-**exec channel**（非 PTY）在远程跑 docker CLI，本机目标直接 spawn；agent 侧
-配套 `docker_*` 工具，**默认只读**。
+**本机或 SSH 主机**上的容器列表（含 **Compose 项目视图**）/ 状态 / 端口 /
+日志（`--tail` 快照 + **FOLLOW 实时流，SSE 推送**）/ **资源占用（实时跟随 +
+迷你趋势图）**，以及镜像列表、**镜像详情（层 / 大小 / 构建历史）与 `docker pull`
+进度流**；并在显式打开开关后执行容器启停删、镜像拉取 / 删除 / 清理与一次性
+`docker exec`。宿主半体用 `ssh2` 的 **exec channel**（非 PTY）在远程跑 docker
+CLI，本机目标直接 spawn；agent 侧配套 `docker_*` 工具，**默认只读**。
 
 ## 与 dsh-tty 的关系
 
@@ -58,8 +60,10 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
   （可拖宽、可折叠成窄条、✕ 收起），终端照常敲命令；tty 更旧或面板没开时才退回
   全屏模态。dock 模式下卡片「终端」按钮改为**在同一终端面板新开标签**执行
   `docker exec -it`（面板已经在一个终端里了，再嵌一层没有意义）；同时**不再渲染
-  面板自己的头部**——标题与 ✕ 由侧栏标题栏承担，刷新与只读徽标并进工具条首行
-  （刷新中图标自己转，不再另挂 spinner），520px 窄栏里不会白留一条空行。
+  面板自己的头部**——标题与 ✕ 由侧栏标题栏承担，刷新与只读徽标并到工具条
+  **末尾并靠右**（刷新中图标自己转，不再另挂 spinner）：左端留给目标 / 视图 /
+  搜索 / 筛选这些「过滤类」控件，刷新不会被当成第一个筛选项，位置也与非 dock
+  模式头部里一致；520px 窄栏里不会白留一条空行。
 
 面板内：
 
@@ -71,6 +75,26 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
   短 ID；支持按名称或镜像**搜索**、按状态**筛选**（运行中 / 已停止 / 全部），
   以及**自动刷新**（按 `pollIntervalSec` 轮询，切到镜像页会暂停且不显示该开关——
   镜像变化慢，没必要每 5s 跑一次 `docker images`；切回容器页原设置照旧生效）。
+- **「活动」条（docker events 事件流）**：容器列表头部的可折叠窄栏（默认展开），
+  跟着一条 SSE（`GET /api/dsh-docker/events/stream`，服务端跑
+  `docker events --filter type=container`）显示最近 8 条事件（时间 + 容器名 + 动作，
+  `die` 带退出码如 `die(137)`）。它是**事件驱动刷新**的入口：收到事件后 500ms
+  **防抖**触发一次列表重取（不是每帧一次请求），与原有 `AUTO REFRESH` 叠加而不互斥——
+  轮询负责兜底，事件负责「刚发生」。事件只留在内存（环形缓冲 50 条），切页即关流，
+  换目标清空缓冲。白名单只留八类生命周期动作（start / die / stop / kill / oom /
+  health_status / destroy / rename / update）：`exec_*`、`archive-path`（`docker cp`）
+  这类噪音在服务端就丢掉了——实测一台跑批机器 24 小时 47 条事件全是 exec，白名单
+  命中 0，所以只被 exec 的机器上活动条是空的，这是刻意的。
+- **聚合选择（临时多选聚合日志）**：工具条的 `聚合选择` 进入选择态——每张卡片
+  左侧出现勾选框，点卡片本体变成**勾选 / 取消**（不再进详情；动作条暂时收起，
+  免得一边多选一边误点启停删），工具条与列表之间出现操作条：「已选 N 个容器」+
+  `聚合日志` + `取消`。`聚合日志` 至少需要 2 个容器；选到 7~8 个时给一条软提示
+  （浏览器同源并发长连接有限制），超过 **8 个**按钮置灰并提示上限。点 `聚合日志`
+  进入聚合视图：直接复用 Compose 项目视图那套聚合日志（每容器一条 `/logs/stream`，
+  按 `[service]` / 容器名前缀混流，带过滤与自动滚动），返回即退出选择态并清空。
+  再点 `聚合选择` 或按 **Esc** 同样退出并清空。勾选是**临时的**：不持久化、不命名
+  组合、不进 settings；切目标 / 切「容器 · 镜像 · Compose」分段 / 关面板即失效，
+  列表刷新后已消失的容器按 id 自动剔除。
 - **容器卡片**：与参考布局一致的「标签 + 值」行（镜像 / ID / 端口 / 创建 /
   compose，值等宽、可省略）+ 一排图标操作按钮，**按「查看 / 变更」两组用竖线分隔**：
 
@@ -80,30 +104,83 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
   | 变更 | 启停、重启、删除 | 按破坏性递增排列；只在 `allowMutations` 开启后可用，未开启时整组置灰 |
 
   删除额外做了两点防护：破坏性配色 + 与「重启」之间留出间距，点击后仍需二次确认。
-  点卡片本体进入概览。
+  **命令飞行期间整组锁住**：`stop` / `rm` 要等容器真的退出（最长十几秒），这段时间
+  确认框保持打开并显示「执行中…」（两个按钮都禁用），卡片的其它变更按钮压暗置灰、
+  正在跑的那个图标换成转圈，等列表刷新落地后才恢复——避免中途连点叠出
+  stop + restart + remove 这类互相打断的命令。镜像的删除 / 清理走同一套确认框，
+  同样有执行中态。点卡片本体进入概览。
 - **容器详情（整栏视图）**：顶部为「返回 + 容器名 + 状态徽标 + 目标主机」，
   下方三个标签页——概览（`docker inspect` 权威数据 + 一次性 exec）、日志、
   统计。从卡片的日志 / 统计图标可直接落到对应标签页。
 - **日志视图（紧凑两行）**：第一行 = 返回 + 容器名 + 状态 + 目标主机 +
-  `LINES`（尾部行数）/ `TIMESTAMPS` / `AUTO REFRESH`（开关 + 2/3/5/10s 间隔，
-  仅日志页轮询）+ 刷新 / 下载 / 关闭；第二行 = 标签页 + **常驻**的「过滤日志」
+  `LINES`（尾部行数）/ `TIMESTAMPS` / **`FOLLOW`（实时跟随，见下）** /
+  `AUTO REFRESH`（开关 + 2/3/5/10s 间隔，仅日志页轮询）+ 刷新 / 下载 / 关闭；
+  第二行 = 标签页 + **常驻**的「过滤日志」
   输入框（右侧固定槽显示「N 行」/「N / M 行匹配」；有内容时框内浮出 ✕ 清空，
   Esc 也能清空）。输入框宽度与位置恒定，输入 / 清空都不会挤动这一行。日志正文按级别着色（`[INFO]` 与 `|INFO` 两种常见前缀
   都能识别），时间戳压暗，过滤命中高亮；超过 2000 行只对尾部着色并提示。
   详情视图下不再叠加列表工具条与面板头，每屏只有一个刷新入口。
+- **FOLLOW 实时日志流**：日志页 `FOLLOW` 开关打开后，界面从「定时拉快照」切换
+  为 **SSE 推送**（`GET /api/dsh-docker/logs/stream`，服务端跑
+  `docker logs --follow`）——新日志到达即追加，不再轮询；`FOLLOW` 与
+  `AUTO REFRESH` 互斥（开流自动停轮询、开关置灰），关闭即回到快照并立即刷新。
+  流式日志保留最近 **5000 行**（环形缓冲，超出丢最旧并提示一次）；过滤 / 级别
+  着色与快照完全共用一套渲染。自动滚动到底部，用户向上滚动时暂停并浮出
+  「回到底部」按钮；右上状态行显示连接状态，浏览器断线由 EventSource 自动
+  重连（只更新状态、不弹错误横幅），容器退出导致流自然结束时自动切回快照刷新。
+  连接 / 切页 / 关面板都会关闭 `EventSource`。
 - **概览**：`docker inspect` 的权威数据——状态与健康、退出码、重启次数与策略、
   端口映射、挂载（含只读标记）、网络与 IP、entrypoint 与命令、最近一次健康
   检查输出；下方可执行一次性 `docker exec`（需 `allowExec`）。
 - **日志**：`docker logs --tail` 的尾部快照（默认 `logTailDefault` 行），可切
-  时间戳与 `--since`；输出超过 `maxOutputKb` 会截断并标记。
+  时间戳与 `--since`；输出超过 `maxOutputKb` 会截断并标记。要持续观察新日志就
+  打开上面的 `FOLLOW`（同一份 argv 加 `--follow`，无总超时与输出上限，靠连接
+  生命周期收尾）。
 
 ![日志页：级别着色 + 常驻过滤框 + 行数统计](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-docker-logs.png)
 - **统计**：`docker stats --no-stream` 快照（CPU% / 内存用量与占比 / 网络 IO /
-  块 IO / PIDs），面板按 `pollIntervalSec` 轮询刷新。
+  块 IO / PIDs），面板按 `pollIntervalSec` 轮询刷新。统计页还有 **`FOLLOW` 实时
+  跟随**：打开后切到 `GET /api/dsh-docker/stats/stream`（服务端跑**不带
+  `--no-stream`** 的 `docker stats`，每秒一行），浏览器侧留 **60 个点的环形
+  缓冲**画 CPU / 内存**迷你趋势图**（sparkline）。与日志流不同，这条流**不会
+  自然结束**，关闭语义是前端主动断 `EventSource`；`docker stats` 自己退出时
+  服务端发 `end`（reason=`stats-exit`），界面提示并自动切回快照轮询。
+- **Compose 项目视图**：工具条第三段切换。把 `composeProject` / `composeService`
+  标签聚合成「项目 → 服务 → 容器」，每个项目一行看全运行数 / 不健康数 / 服务数与
+  各容器状态；点进项目可看服务表，或打开**项目级聚合日志**——对项目内每个容器各开
+  一条 `/logs/stream`，客户端按 `[service]` 前缀混流（宿主侧 `logsStream` 本
+  就支持任意容器，无需新接口），带自动滚动开关与过滤框。混流是到达序，不保证跨
+  容器严格时序。
 - **镜像**：`docker images` 列表（reference / 大小 / 创建时间 / 短 ID）；
-  `<none>:<none>` 的 dangling 镜像带 `dangling` 标记。**只有列表，没有删除 /
-  拉取 / 构建**。搜索框与「N / M 个镜像」计数**固定在工具条里**（不随列表滚走），
-  表头列名在表体内吸顶——镜像多的时候滚到哪都还知道自己在看什么列。
+  `<none>:<none>` 的 dangling 镜像带 `dangling` 标记。搜索框与「N / M 个镜像」
+  计数**固定在工具条里**（不随列表滚走），表头列名在表体内吸顶。
+  每行有「详情 / 删除」两个动作：**详情**打开整栏视图（概览：大小 / 含父层 /
+  创建 / 平台 / 层数 / 入口与命令 / 暴露端口 / digest / 标签；构建历史：
+  `docker history` 的逐层命令与大小）。**删除**（需 `allowMutations`）二次确认
+  后执行 `docker image rm`（不带 `-f`，镜像被引用时会失败并给出「先删相关
+  容器」的提示）。
+- **网络 / 卷（第五、六段）**：工具条分段扩到「容器 / 镜像 / Compose / 网络 / 卷」
+  （窄栏里放不下时分段容器自己横向滚动，不做二级菜单）。两页都是「表格 + 整栏详情」
+  的同构布局：
+  - **网络**：名称 / 驱动 / 范围 / internal 徽标 / ID，行点击进详情——概览（ID / 驱动 /
+    范围 / 创建 / 子网 / 网关 / internal·attachable·ingress·ipv6 / 选项 / 标签）与
+    「接入的容器」页签（容器 / IPv4 / IPv6 / MAC）。**容器数刻意不进列表行**：
+    `docker network inspect` 才能拿到接入列表，列表逐行 inspect 就是 N 次 docker 调用，
+    改成点进详情取一次。
+  - **卷**：名称 / 驱动 / 范围 / 挂载点（超长路径限宽省略，title 给全量），详情为
+    名称 / 驱动 / 范围 / 挂载点 / 创建 / 选项 / 标签（卷没有反向索引，只有概览一页）。
+  - 详情页头部有**删除**按钮，两页工具条各有 **prune 图标**，都受 `allowMutations`
+    门控（未开启时置灰 + title 说明），点击后二次确认；删除失败（网络还有容器接着 /
+    卷还被占用 / 403）在详情页就地弹横幅，不会静默。
+  - 自动刷新与镜像页一致：这两页**不轮询**（清单变化慢，5s 一次 docker CLI 是白烧），
+    切页 / 切目标时才刷。
+- **拉取镜像（SSE 进度流）**：镜像页工具条的拉取图标（需 `allowMutations`）
+  打开拉取视图，输入引用后走 `GET /api/dsh-docker/images/pull/stream`
+  （服务端跑 `docker pull`）——逐层进度（Pulling fs layer / Downloading /
+  Extracting / Pull complete）实时出现；进度行按「层键」原地更新，TTY 下的 `\r`
+  刷新也不会让缓冲区越滚越长。工具条上的「清理 dangling」执行
+  `docker image prune -f`，**只删无标签镜像**（刻意不加 `--all`，避免误删未
+  使用的普通镜像）。
 
 ![镜像页：搜索框固定在工具条，表头吸顶](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-docker-images.png)
 - **一次性 exec**：`allowExec` 开启后可输入命令，等价
@@ -165,7 +242,7 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
 | `enabled` | true | 关闭整个插件（**需重启 `dsh web` 生效**，与 tty 同语义） |
 | `announceToAgent` | true | 是否向 agent 注入能力公告（systemPrompt section `plugin:dsh-docker`） |
 | `dockerBin` | `docker` | docker CLI 可执行名或路径（podman 可填 `podman`）；只允许字母、数字与 `_ . / -` |
-| `allowMutations` | false | 允许 start / stop / restart / remove（面板按钮与 `docker_action` 工具；关闭时 `/action` 返回 403） |
+| `allowMutations` | false | 允许**变更操作**：容器 start / stop / restart / remove、镜像删除 / dangling 清理 / 拉取（面板按钮与 `docker_action`、`docker_image_remove`、`docker_image_prune`、`docker_image_pull` 工具；关闭时 `/action`、`/images/remove`、`/images/prune`、`/images/pull/stream` 返回 403，对应工具不注册） |
 | `allowExec` | false | 允许一次性 `docker exec`（面板 exec 输入与 `docker_exec` 工具；关闭时 `/exec` 返回 403） |
 | `execTimeoutSec` | 30 | exec 默认超时秒数（1~120） |
 | `pollIntervalSec` | 5 | 面板统计刷新间隔秒数（1~60） |
@@ -215,17 +292,25 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
 | `docker_ps` | 恒注册 | `target?`、`all?: boolean` | 列容器（名称 / 状态 / 健康 / 镜像 / 端口 / compose 项目与服务 / 短 ID）；默认只列运行中，`all:true` 含已停止。排障第一步 |
 | `docker_inspect` | 恒注册 | `target?`、`id`（必填） | `docker inspect` 的权威详情：状态 / 健康检查 / 退出码 / 重启次数 / 端口 / 挂载 / 网络 / 启动命令 |
 | `docker_logs` | 恒注册 | `target?`、`id`、`tail?`（1~5000，默认 `logTailDefault`）、`timestamps?`、`since?` | `docker logs --tail` 尾部；`since` 用 docker 语法（如 `10m`、`2026-09-09T10:00:00`）；超上限标记 `truncated` |
-| `docker_stats` | 恒注册 | `target?`、`ids?`（逗号分隔的容器名/ID） | `docker stats --no-stream` 快照：CPU% / 内存用量与占比 / 网络 IO / 块 IO / PIDs；`ids` 省略 = 全部运行中容器 |
+| `docker_stats` | 恒注册 | `target?`、`ids?`（逗号分隔的容器名/ID） | `docker stats --no-stream` 快照：CPU% / 内存用量与占比 / 网络 IO / 块 IO / PIDs；`ids` 省略 = 全部运行中容器。实时跟随是面板能力（SSE），工具保持单值快照语义 |
 | `docker_images` | 恒注册 | `target?` | 镜像列表（仓库:标签 / 大小 / 创建时间 / 短 ID） |
+| `docker_events` | 恒注册 | `target?`、`since?`（docker `--since` 语法，默认 `10m`） | 容器事件快照（`docker events --since <d> --until <now>`，同样过服务端白名单）：start / die / stop / kill / oom / health_status / destroy / rename / update 八类，`exec_*` 等噪音已在服务端丢掉。要持续观察请让用户看面板容器列表的「活动」条 |
+| `docker_networks` | 恒注册 | `target?` | 网络列表（名称 / 驱动 / 范围 / 是否 internal / 短 ID）。接入的容器列表不进列表行——详情页会连坐 inspect，列表逐行 inspect 就是 N 次 docker 调用 |
+| `docker_volumes` | 恒注册 | `target?` | 卷列表（名称 / 驱动 / 范围 / 挂载点） |
+| `docker_image_inspect` | 恒注册 | `target?`、`ref`（必填） | `docker image inspect` + `docker history`：大小 / 含父层大小 / 创建时间 / 平台 / 层数与层列表 / 入口与命令 / 暴露端口 / digest / 构建历史（每步命令与大小） |
 | `docker_action` | 仅 `allowMutations` | `target?`、`action`（`start` \| `stop` \| `restart` \| `remove`）、`id` | 容器生命周期操作。`remove` 是破坏性的：删除容器配置与可写层（数据卷不在其中），执行前必须向用户确认目标容器 |
+| `docker_image_remove` | 仅 `allowMutations` | `target?`、`ref`（必填） | 删除镜像（`docker image rm`，不带 `-f`）。**破坏性**：被容器或子镜像引用时会失败；执行前须确认目标镜像并复述后果 |
+| `docker_image_prune` | 仅 `allowMutations` | `target?` | 清理 dangling（无标签）镜像（`docker image prune -f`）。刻意不加 `--all`，只删无标签镜像 |
+| `docker_image_pull` | 仅 `allowMutations` | `target?`、`ref`（必填）、`timeoutSec?`（10~1800，默认 600） | `docker pull` 快照形态（**可能耗时数分钟**）；交互式看逐层进度请让用户到面板镜像页的拉取图标看 SSE 进度流 |
 | `docker_exec` | 仅 `allowExec` | `target?`、`id`、`command`（必填，经容器内 `sh -c` 执行）、`timeoutSec?`（1~120，默认 `execTimeoutSec`） | 一次性 `docker exec`，返回退出码 / stdout / stderr；无 TTY，交互式排障请让用户到 tty 面板跑 `docker exec -it <容器> sh` |
 
 - `target` 省略时回落到**唯一**已配置目标；配置了多个目标则必填，错误信息会
   列出可用目标名。
 - 两个开关变化会**立即重注册**工具：关掉 `allowMutations` / `allowExec` 后，
-  对应工具从 agent 侧消失，无需重启。
+  对应工具（含三个镜像变更工具）从 agent 侧消失，无需重启。
 - 推荐排障顺序：`docker_targets` → `docker_ps` → `docker_logs` →
-  `docker_inspect` → `docker_stats`。
+  `docker_inspect` → `docker_stats`；镜像排查 `docker_images` →
+  `docker_image_inspect`。
 - `announceToAgent` 开启时，插件向 systemPrompt 注入一段能力公告（含「默认
   只读」「docker socket ≈ 目标主机 root」的约束提醒），让模型先列目标再动手。
 
@@ -245,23 +330,77 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
 | `/inspect` | POST | `{target?, id}` | `{ok:true, details: ContainerDetail[]}` |
 | `/stats` | POST | `{target?, ids?: string[]}` | `{ok:true, stats: ContainerStats[]}` |
 | `/logs` | POST | `{target?, id, tail?, timestamps?, since?}` | `{ok:true, logs:{id, text, truncated}}` |
+| `/logs/stream` | GET | query：`target?`、`id`（必填）、`tail?`（1~5000）、`timestamps?`（`1`/`true`）、`since?` | `200 text/event-stream` 长连接，事件协议见下；参数错误 / 未知目标 / 非 loopback 返回常规 JSON 错误 |
+| `/stats/stream` | GET | query：`target?`、`ids?`（逗号分隔；省略 = 全部运行中） | `200 text/event-stream`：每秒一帧 `stats`（ContainerStats，形状与 /stats 快照一致）；不会自然结束，靠客户端断连收尾 |
+| `/events/stream` | GET | query：`target?` | `200 text/event-stream`：一帧 `event` 一个容器事件（服务端已过白名单，值缺失的字段省略）；不会自然结束，靠客户端断连收尾 |
 | `/images` | POST | `{target?}` | `{ok:true, images: ImageSummary[]}` |
+| `/images/inspect` | POST | `{target?, ref}`（必填） | `{ok:true, image:{ref, detail: ImageDetail, history: ImageHistoryEntry[], historyError}}`；history 优先 `--format '{{json .}}'`，老版本退回纯文本表格 |
+| `/images/remove` | POST | `{target?, ref}`（必填） | 需 `allowMutations`（否则 403）；`docker image rm`（不带 `-f`）；`{ok:true, result:{ref, message}}` |
+| `/images/prune` | POST | `{target?}` | 需 `allowMutations`（否则 403）；`docker image prune -f`（只删 dangling）；`{ok:true, result:{message}}` |
+| `/images/pull/stream` | GET | query：`target?`、`ref`（必填） | 需 `allowMutations`（否则 403 且不建流）；`200 text/event-stream`：`line` 逐层进度 + `end{reason:'pull-exit',code,ref}` |
+| `/networks` | POST | `{target?}` | `{ok:true, networks: NetworkSummary[]}` |
+| `/networks/inspect` | POST | `{target?, name}`（必填） | `{ok:true, network:{name, detail: NetworkDetail}}`（含子网 / 网关 / 选项 / 标签 / 接入的容器） |
+| `/networks/remove` | POST | `{target?, name}`（必填） | 需 `allowMutations`（否则 403）；`docker network rm`；`{ok:true, result:{name, message}}` |
+| `/networks/prune` | POST | `{target?}` | 需 `allowMutations`（否则 403）；`docker network prune -f`；`{ok:true, result:{message}}` |
+| `/volumes` | POST | `{target?}` | `{ok:true, volumes: VolumeSummary[]}` |
+| `/volumes/inspect` | POST | `{target?, name}`（必填） | `{ok:true, volume:{name, detail: VolumeDetail}}`（挂载点 / 选项 / 标签） |
+| `/volumes/remove` | POST | `{target?, name}`（必填） | 需 `allowMutations`（否则 403）；`docker volume rm`（**数据随卷一起没**）；`{ok:true, result:{name, message}}` |
+| `/volumes/prune` | POST | `{target?}` | 需 `allowMutations`（否则 403）；`docker volume prune -f`（**删数据**，见已知限制）；`{ok:true, result:{message}}` |
 | `/action` | POST | `{target?, action, id}` | 需 `allowMutations`（否则 403）；`{ok:true, result:{id, action, message}}` |
 | `/exec` | POST | `{target?, id, command, timeoutSec?}` | 需 `allowExec`（否则 403）；`{ok:true, result:{id, command, code, stdout, stderr, truncated, durationMs}}` |
 
-其余子路径 404（`unknown route: ...`）；`/config` 与 `/targets` 之外的 GET
-返回 405；执行失败（docker 报错、目标解析失败等）返回 500 或 400 加
-`{error}` 文本。
+其余子路径 404（`unknown route: ...`）；`/config`、`/targets`、上述三条
+`*/stream` 之外的 GET 返回 405；执行失败（docker 报错、目标解析失败等）返回
+500 或 400 加 `{error}` 文本。
+
+### SSE 事件协议（`/logs/stream`、`/stats/stream`、`/events/stream`、`/images/pull/stream`）
+
+四条长流共用同一份基建（`openSseStream`）：统一写头 + `flushHeaders()`、15s
+一帧 `: ping` 心跳、活跃流登记（插件禁用 / 配置热更新 / 卸载时统一 `end` +
+abort）、客户端断开静默中止。各自只差执行器与结束原因：
+
+每帧一行 `event:` + 一行 JSON `data:`（JSON 单行封装：换行 / 引号被转义，
+多字节字符不会被 SSE 行边界截断），随后空行：
+
+| 事件 | data | 说明 |
+| --- | --- | --- |
+| `line` | `{"d":"..."}` / `{"e":"..."}` | stdout / stderr 分片（不保证按行切，客户端自行拼行）。日志流与拉取流用 |
+| `stats` | `ContainerStats` | 统计流专用：每秒每个容器一帧，字段与 `/`stats` 快照完全一致。服务端按**扁平 `{...}` 抽取**（`docker stats` 即便 stdout 是管道也走 TTY 渲染器，帧里混着 `ESC[H/ESC[K/ESC[J`，按行解析会整行丢掉）并折叠同一采样的重复渲染，客户端不必再解析 docker 的 PascalCase 字符串 |
+| `event` | `{action, name, image, composeProject?, time?, exitCode?}` | 事件流专用：一帧一个容器事件（白名单外的事件行在服务端就丢了；值为 null 的字段省略） |
+| `end` | `{"reason":"container-exit"\|"stats-exit"\|"events-exit"\|"pull-exit","code":N, ...}` | 执行器自然退出。日志流附容器退出码、统计流 reason=`stats-exit`、事件流 reason=`events-exit`、拉取流附 `ref` |
+| `error` | `{"message":"..."}` | 参数 / 执行失败，随后关闭；连接层断路不会发这个事件 |
+
+四条流的差异只有「执行器 + 结束原因」：
+
+| 流 | 执行器 | 自然结束条件 | 关闭语义 |
+| --- | --- | --- | --- |
+| `/logs/stream` | `docker logs --follow` | 容器停止（`container-exit`） | 前端关 FOLLOW / 切页 / 关面板 |
+| `/stats/stream` | `docker stats`（**无** `--no-stream`） | 全部被统计容器退出（`stats-exit`） | **前端主动断**（这条流不会自己停） |
+| `/events/stream` | `docker events`（`--filter type=container`） | daemon 侧流结束（`events-exit`） | 切页 / 切目标 / 关面板 |
+| `/images/pull/stream` | `docker pull` | 拉取完成 / 失败（`pull-exit`） | 前端离开拉取视图 |
+
+- 响应头：`content-type: text/event-stream; charset=utf-8`、`cache-control:
+  no-cache`、`connection: keep-alive`，写头后立即 `flushHeaders()`（宿主 gzip
+  对 `text/event-stream` 显式跳过，不会缓冲）。
+- 心跳：每 15s 一帧 `: ping` 注释（SSE 规范里客户端忽略）。
+- 清理：客户端断开 → 立即中止执行器（本机 `SIGTERM`，2s 未退再 `SIGKILL`；
+  SSH 关闭该 exec channel、连接池连接保留复用），不写任何帧；插件禁用 / 配置
+  热更新 / 卸载 → 服务端主动收尾（abort + `end`）。
+- SSH 的长流会占用连接池里的连接（busy 计数），空闲回收（120s）不会误杀；
+  流结束后恢复回收。
 
 ## 安全模型
 
 **docker socket ≈ 目标主机的 root 权限。** 能访问 daemon 就能挂载宿主目录、
 以特权模式起容器、读容器里的密钥——因此本插件按「只读优先」设计：
 
-1. **默认只读**。`allowMutations` 未开启时，`/action` 返回 403，面板的启停删
-   不可用，`docker_action` 工具**根本不注册**；`allowExec` 未开启时，`/exec`
-   返回 403，`docker_exec` 工具同样不注册。两个开关互相独立，必须在设置卡片
-   由用户显式打开。
+1. **默认只读**。`allowMutations` 未开启时，`/action`、`/images/remove`、
+   `/images/prune`、`/images/pull/stream` 一律返回 403，面板的启停删 / 镜像
+   删除 / 清理 / 拉取不可用，`docker_action`、`docker_image_remove`、
+   `docker_image_prune`、`docker_image_pull` 工具**根本不注册**；`allowExec`
+   未开启时，`/exec` 返回 403，`docker_exec` 工具同样不注册。两个开关互相
+   独立，必须在设置卡片由用户显式打开。读取类路由（`/logs/stream`、
+   `/stats/stream`、`/events/stream`、`/images/inspect`）不受这两个开关影响。
 2. **破坏性操作要复述后果**。`remove` 映射为 `docker rm`（**不带 `-f`**），
    agent 公告要求执行前向用户确认目标容器；运行中容器会报错并附
    「容器仍在运行：先停止再删除」的提示，不会静默强删。
@@ -280,6 +419,11 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
 6. **输出有上限**。`maxOutputKb` 限制单次命令的 stdout/stderr 字节数，超出
    截断并标记，避免大日志撑爆内存或 agent 上下文。
 7. **HTTP 只对本机开放**。全部路由走 loopback 围栏，远程浏览器无法调用。
+8. **日志实时流是只读能力**。`GET /logs/stream` 与 `/logs` 一致：不受
+   `allowMutations` / `allowExec` 门控（它不改容器状态），但同样只放行 loopback、
+   `id` 过 `assertRef` 白名单、参数经同样的夹紧。与快照不同，长流没有
+   `maxOutputKb` 上限（跟随被截断就失去意义），内存防护由客户端的 5000 行
+   环形缓冲与 2000 行着色上限承担。
 
 ## 已知限制
 
@@ -287,14 +431,25 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
   不带 `-i` / `-t`），不能跑 vim / top / 交互式 shell，也不能喂 stdin 做
   对话。交互排障请到 tty 面板执行 `docker exec -it <容器> sh`（本机与 SSH
   目标都可以）。
-- **没有实时日志流**：日志是 `--tail` 快照，要看新内容需重新拉取；`stats`
-  是 `--no-stream` 单次快照，面板靠 `pollIntervalSec` 轮询。
+- **事件流有断线窗口**：`docker events` 是「从现在开始」的推流，浏览器断线重连期间
+  发生的事件服务端已经推过、不会补发。客户端用「重连成功后先做一次全量列表刷新」
+  来补偿（状态对齐，不是把事件补回来）；活动条里缺的那几条只能靠刷新后的最终状态
+  推断。要精确的完整事件历史请用 `docker_events` 工具（带 `--since` 的快照）。
+- **流式能力的四条边界**：日志页 `FOLLOW`（SSE + `docker logs -f`）、统计页
+  `FOLLOW`（SSE + `docker stats` + 60 点 sparkline）、容器列表的事件流
+  （SSE + `docker events`，驱动活动条与列表防抖刷新）、镜像页拉取进度流
+  （SSE + `docker pull`）；但 agent 工具 `docker_logs` / `docker_stats` /
+  `docker_image_pull` 一律保持**快照语义**（单值返回模型不适合无界流）。流式
+  日志在浏览器侧只保留最近 5000 行（丢最旧并提示），统计只保留 60 个采样点。
+  SSH 长流会占住连接池中的该连接（busy），同一主机上的其它命令仍复用同一条
+  连接、互不影响。**统计流不会自然结束**，关闭必须由前端主动断 `EventSource`。
 - **docker CLI 版本差异**：解析走 `--format '{{json .}}'`，字段随版本增减，
   解析器一律降级而不抛异常（例如 `State` 缺失就从 `Status` 推导状态，健康态
   从 `(healthy)` / `(unhealthy)` 提取）；缺字段时对应列可能为空，需要权威
   数据请用详情（`docker inspect`）。
-- **`docker rm` 不带 `-f`**：运行中的容器删除会失败，错误里附「先停止再删除」
-  提示；要强制删除得去 tty 面板手动 `docker rm -f`。
+- **`rm` 不带 `-f`**：容器 `remove` 映射 `docker rm`、镜像 `remove` 映射
+  `docker image rm`，都不加 `-f`——运行中的容器、被容器或子镜像引用的镜像会
+  失败并给出提示；要强制删除得去 tty 面板手动执行。
 - **SSH 目标需要免 sudo 的 docker**：账号不在 docker 组时 docker 报权限错误，
   面板与工具原样透出，不做自动 sudo 提权。
 - **远端未安装 docker**：`probe` 失败（`command not found` / 退出码 127），
@@ -302,15 +457,25 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
 - **podman 兼容靠 `dockerBin`**：填 `podman` 即可跑，但 `stats` 与
   `--format '{{json .}}'` 的字段和输出格式与 docker 有差异，只能依赖解析器
   的降级路径，未逐项验证。
-- **没有镜像删除 / 拉取 / 构建**：镜像区是只读列表。
+- **没有镜像构建 / Compose 编排变更**：镜像支持拉取 / 删除 / 清理 dangling，
+  但没有 `docker build`、`docker save` / `load`、`docker push`；Compose 是**只读**
+  项目视图（按项目分组 + 项目级聚合日志），不提供 `compose up` / `down` / `restart`。
+- **`volume prune` 会删数据，且行为随版本变**：docker ≥ 23 的 `docker volume prune`
+  有 `-a/--all`，**不带时只删匿名卷**（本插件就不带）；但 docker < 23 没有这个开关，
+  plain prune 会把未被使用的**命名卷**一起删掉。所以卷清理的确认文案把版本差异写明了，
+  执行前请确认没有要保留的数据卷。
+- **网络 / 卷的变更只有面板按钮，没有 agent 工具**：镜像的 remove / prune 有对应工具，
+  网络 / 卷这轮只补了 HTTP 端点（`/networks/remove` 等）与面板按钮——刻意不扩大 agent
+  侧的变更面。要让 agent 也能删，需要另外加工具（含确认约定）。
 - **没有多目标聚合视图**：一次只对一个目标操作，切目标需在面板或工具参数里
   显式选择。
 - **连接栏按钮需要一条匹配的目标才有数据**：按钮在 SSH 标签上一律显示，但若会话
   主机没有对应的 `kind=ssh` 目标（连接簿名或 `host:port` 都匹配不上），点开只会看到
   「尚未配置为 Docker 目标」的提示而不是容器列表；本地标签的连接栏本身隐藏。
   目标增删后最多 30 秒内刷新（设置卡片保存会立即刷新）。
-- **`enabled: false` 需重启**：关闭插件不会卸载已注册的路由与工具，重启
-  `dsh web` 才彻底停用。
+- **`enabled: false` 需重启**：关闭插件不会卸载已注册的路由与工具（进行中的
+  长流——日志 / 统计 / 拉取——会被立即收尾，但路由本身仍在），重启 `dsh web`
+  才彻底停用。
 - **变更操作无独立审计日志**：只有 docker 自身的记录与宿主 `ctx.logger` 的
   常规输出。
 
@@ -319,11 +484,23 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
 ```
 浏览器半体 (client.js)
   ├─ 侧边栏「容器」入口 → 面板：目标选择 / 容器列表（搜索 + 状态筛选）/
-  │   容器卡片（动作条分两组：查看=终端/日志/统计 ｜ 变更=启停/重启/删除）/ 镜像列表 / 一次性 exec
+  │   容器卡片（动作条分两组：查看=终端/日志/统计 ｜ 变更=启停/重启/删除）/
+  │   容器列表「活动」条（事件驱动刷新）+「聚合选择」多选 → 临时聚合日志/
+  │   Compose 项目视图（项目分组 / 服务表 / 项目级聚合日志）/
+  │   镜像列表（行内详情 · 删除）+ 镜像详情（层 / 构建历史）+ 拉取进度 /
+  │   网络列表 + 网络详情（子网 / 接入的容器）+ 卷列表 + 卷详情 / 一次性 exec
   │     └─ 终端抽屉：tty ≥ 0.15 时经 ttyTerminal.mount 就地嵌入 tty 的终端
   │        （面板不收起；折叠/拖拽只改尺寸，会话不中断；✕ 或关面板才 dispose，
   │        有活动会话时关面板先确认 → tty 那边结束会话并拆 DOM）
-  │     └─ fetch → /api/dsh-docker/*（loopback 围栏）
+  │     ├─ fetch → /api/dsh-docker/*（loopback 围栏）
+  │     ├─ FOLLOW → EventSource /logs/stream（SSE：5000 行环形缓冲 / 自动贴底 /
+  │     │   回到底部 / 断线自动重连 / 容器退出自动回快照）
+  │     ├─ 统计 FOLLOW → EventSource /stats/stream（SSE：60 点环形缓冲画
+  │     │   CPU / 内存 sparkline；**前端主动断**，docker stats 自己退出才收流）
+  │     ├─ 事件 → EventSource /events/stream（SSE：活动条环形缓冲 50 条 +
+  │     │   500ms 防抖触发列表重取；重连成功后补一次全量刷新）
+  │     ├─ 拉取 → EventSource /images/pull/stream（SSE：逐层进度按层键 upsert）
+  │     └─ 聚合日志 → 项目内每容器一条 /logs/stream，客户端按 [service] 混流
   ├─ 可选消费 tty 的 ttyConnbar 服务 → SSH 连接栏「容器」按钮
   │   （按 book 名 / host:port 匹配已配置目标，命中才出现）
   ├─ 可选消费 tty 的 ttyPanel 服务（0.16.0）→ 终端面板开着时挂右侧 dock
@@ -340,14 +517,31 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
   │   └─ 解析容错：{{json .}} 逐行/数组、字段名大小写兼容、缺字段降级
   ├─ RemoteExec（src/ssh-exec.ts）
   │   ├─ 懒连接池：同 user@host:port 复用一条连接，空闲 120s 回收
-  │   │   （每 30s 扫一次，连接超时 20s，keepalive 10s）
-  │   ├─ 非 PTY exec channel：一命令一 channel，收完 stdout/stderr 即关
+  │   │   （每 30s 扫一次，连接超时 20s，keepalive 10s；busy>0 的长流跳过回收）
+  │   ├─ 非 PTY exec channel：一命令一 channel，收完 stdout/stderr 即关；
+  │   │   长流（run()/stream()）不设总超时与输出上限，靠 AbortSignal 停止
   │   ├─ shJoin 单引号转义（远端 shell 解析）；env:VAR 取密
   │   └─ hostVerifier TOFU 钉扎（首次记录、变更拒绝）
-  ├─ runLocal：spawn(dockerBin, args)（不经 shell，本机目标）
+  ├─ runLocal / runLocalStream：spawn(dockerBin, args)（不经 shell，本机目标）
+  │   停止阶梯：SIGTERM → 2s 未退出 SIGKILL
+  ├─ 通用 SSE 长连接 openSseStream（src/index.ts，四条流共用一份基建）
+  │   ├─ loopback 围栏 + assertRef / assertImageRef + tail 夹紧（与快照路由一致）
+  │   ├─ 写头 + flushHeaders / 15s ping 心跳 / 活跃流登记 / 前端断开静默 abort
+  │   ├─ /logs/stream：docker logs -f → line{"d"|"e"} + end{container-exit,code}
+  │   ├─ /stats/stream（只读）：docker stats 逐行归一 → stats{ContainerStats}；
+  │   │   不会自然结束，前端断连即 abort，docker stats 自退则 end{stats-exit}
+  │   ├─ /events/stream（只读）：docker events --filter type=container →
+  │   │   event{action,name,image,...}（白名单过滤）；daemon 侧结束则 end{events-exit}
+  │   ├─ /images/pull/stream（allowMutations）：docker pull → line{d|e} +
+  │   │   end{pull-exit,code,ref}；未开启变更时 403 且不建流
+  │   └─ 插件禁用 / 配置热更新 / 卸载 → 四条流统一 end + abort
+  ├─ 镜像路由：/images/inspect（只读）· /images/remove · /images/prune（allowMutations）
+  ├─ 网络 / 卷路由：/networks · /volumes 与各自的 inspect（只读）、remove / prune（allowMutations）
   └─ agent 工具：docker_targets / docker_ps / docker_inspect /
-     docker_logs / docker_stats / docker_images（恒注册）
-     + docker_action（allowMutations）/ docker_exec（allowExec）
+     docker_logs（快照语义不变）/ docker_stats / docker_events / docker_images /
+     docker_image_inspect / docker_networks / docker_volumes（恒注册）
+     + docker_action / docker_image_remove / docker_image_prune / docker_image_pull
+       （allowMutations）/ docker_exec（allowExec）
 ```
 
 ## 开发与验收
@@ -356,28 +550,56 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
 pnpm --filter @hyzyn/dsh-docker build       # tsc → lib/（宿主半体）+ esbuild → client.js（浏览器半体）
 pnpm --filter @hyzyn/dsh-docker typecheck
 pnpm --filter @hyzyn/dsh-docker smoke       # 三套离线回归，都不需要 docker daemon
+pnpm test                                    # 仓库级 vitest（含本包 logs-stream / streams 两套）
 ```
 
-`scripts/smoke.mjs`（22 项，读取 `lib/` 构建产物）覆盖纯逻辑：ps 解析（字段映射 /
+`scripts/smoke.mjs`（33 项，读取 `lib/` 构建产物）覆盖纯逻辑：ps 解析（字段映射 /
 compose 标签 / 端口 / `State` 缺失推导 / 噪声行 / JSON 数组）、端口串解析与去重、
 stats 解析（百分比 / 内存 / IO / PIDs）、size 与 percent 的异常输入、images 解析
-（dangling）、inspect 解析（状态 / 健康 / 退出码 / 挂载 / 网络 / 端口 / 缺字段不抛
-异常）、`assertRef` 注入拒绝、`assertBin`、`shJoin` 转义、`DockerApi` 的 argv 构造
-（ps / logs / action / exec / probe 成败）、`normalizeConfig` 默认值与夹紧、
-`sanitizeTargets` / `sanitizeHostKeys`、`resolveTarget` 的四种路径、
-`mergeTargetSecrets` 的凭证保留语义。
+（dangling）、**image inspect / history（JSON 与纯文本表格两条路径）解析**、
+inspect 解析（状态 / 健康 / 退出码 / 挂载 / 网络 / 端口 / 缺字段不抛异常）、
+`assertRef` / **`assertImageRef`（放行 registry/digest、拒绝 flag 与注入）** 注入
+拒绝、`assertBin`、`formatBytes`、`shJoin` 转义、`DockerApi` 的 argv 构造
+（ps / logs / action / exec / probe 成败 / **image inspect·rm·prune·pull·statsStream·pullStream**）、
+`normalizeConfig` 默认值与夹紧、`sanitizeTargets` / `sanitizeHostKeys`、
+`resolveTarget` 的四种路径、`mergeTargetSecrets` 的凭证保留语义。
 
-`scripts/route-smoke.mjs`（28 项）用**假 cordis ctx + 假 docker CLI 脚本**跑端到端：
-插件挂载（settings / 工具 / 路由 / 能力公告注册）、11 条路由的实际调用与返回、
-`/config` 凭证脱敏、未知配置键 400、默认只读时 `/action` 与 `/exec` 403 且对应
-工具不注册、打开开关后（含 `settings/updated` 热更新路径）立即解锁、非 loopback
-403、容器名注入尝试被白名单拒绝、省略 `target` 的回落与多目标报错。
+`scripts/route-smoke.mjs`（54 项）用**假 cordis ctx + 假 docker CLI 脚本**跑端到端：
+插件挂载（settings / 工具 / 路由 / 能力公告注册）、**26 条路由**的实际调用与返回
+（含 `/logs/stream`、`/stats/stream`、`/events/stream`、`/images/pull/stream` 四条 SSE
+的事件序列与参数校验，事件流另断噪音被白名单丢掉）、`docker_events` 工具的快照
+输出与 `since` 字符集校验、`/images/inspect` 的详情 + 构建历史、`/config` 凭证脱敏、未知配置键
+400、默认只读时 `/action`、`/exec` 与镜像变更（remove / prune / pull 流）403 且
+对应工具不注册、打开开关后（含 `settings/updated` 热更新路径）立即解锁、非
+loopback 403（含三条流路由）、容器名 / 镜像引用注入尝试被白名单拒绝、省略
+`target` 的回落与多目标报错、禁用后流路由 403。
 
-`scripts/client-smoke.mjs`（11 项）在 Node 里用最小 DOM / React 桩执行构建产物
+`scripts/client-smoke.mjs`（27 项）在 Node 里用最小 DOM / React 桩执行构建产物
 `client.js`：验证注册 id 与 factory 形状、只 require 平台 seed 提供的模块
 （`react` / `react/jsx-runtime` / `react-dom/client`）、`apply` 注册的 settings
-卡片 key 等于命名空间 `docker`、找不到宿主侧边栏时安静降级且卸载可重复调用，ttyConnbar 集成的四条路径（连接簿名命中 / host:port 命中 / 未配置主机不加按钮 / tty 未安装静默跳过），以及侧边栏折叠态（`data-sidebar-collapsed`）隐藏入口标签的样式规则。
+卡片 key 等于命名空间 `docker`、找不到宿主侧边栏时安静降级且卸载可重复调用，ttyConnbar 集成的四条路径（连接簿名命中 / host:port 命中 / 未配置主机不加按钮 / tty 未安装静默跳过），FOLLOW 的 SSE 订阅与「回到底部」交互（静态断言），**镜像详情 / 拉取流 / 删除 / prune 入口**、**统计 FOLLOW + sparkline 钩子**、**Compose 分组与聚合日志**、**「活动」条装配 + 事件环形缓冲 / 动作标签 / 防抖**（纯逻辑经 `__events` 测试缝），以及侧边栏折叠态（`data-sidebar-collapsed`）隐藏入口标签的样式规则。
 需要真 daemon 的验证走下面的手工清单。
+
+`test/logs-stream.test.ts`（27 例，随根 `pnpm test` 跑）覆盖日志实时流的四层：
+`logsStream` 的 argv 构造与 `assertRef` 白名单、SSE 帧的单行 JSON 封装（换行 /
+多字节）、本地流生命周期（假 spawn：跨 chunk 多字节、SIGTERM→SIGKILL 阶梯、
+close resolve、spawn error）与 SSH 长流的 busy 计数配对 / sweeper 跳过、以及
+路由层的事件序列 / 心跳 / 客户端断开静默中止 / 插件禁用统一收尾。
+
+`test/streams.test.ts`（33 例）覆盖**统计流 / 事件流 / 拉取流 / 网络卷 / 通用 SSE 基建**：
+`statsStream` 不带 `--no-stream`（与快照同一构造点）、`pullStream` 的
+`assertImageRef` 白名单、`/stats/stream` 把逐行 JSON（含跨 chunk 的半行）归一成
+`stats` 事件且形状与 `/stats` 快照一致、心跳、客户端断开静默中止、
+`eventsStream` 的 argv（无 `--since` / `--until`，带 `type=container` 过滤）与
+`events()` 快照的 `--since` + `--until`（不传 until 会永不退出）、
+`parseContainerEvent` 的白名单 / 坏行丢弃 / health_status 后缀 / 字段抽取 /
+`status` 老字段兼容、`/events/stream` 的事件序列与跨 chunk 半行、
+`/images/pull/stream` 的 allowMutations 门禁（403 不建流）/ `pull-exit` 收尾 /
+禁用时统一收尾、**`assertName` 的校验矩阵（`/` 与 `:` 必须被拒——这两条正是
+`assertImageRef` 会放行的）、网络 / 卷的 ls·inspect·rm·prune argv（prune 必带 `-f`）、
+network / volume 的 ls·inspect 解析容错（字符串布尔、缺 `Mountpoint` 的老版本、
+空输出 / 坏行）、`/networks` 与 `/volumes` 八条端点的门控（未开门 remove/prune 403、
+缺 name 400、非法名 500）**，以及 `formatBytes`。
 
 ### 手工验收清单
 
@@ -386,29 +608,83 @@ stats 解析（百分比 / 内存 / IO / PIDs）、size 与 percent 的异常输
 2. **SSH 目标**：tty 连接簿里已有条目时，用 `book` 引用它 → 容器列表 / 详情 /
    日志正常；首次连接日志里出现「已记录 host key 指纹（TOFU）」，第二次不再
    提示；手动改掉 `hostKeys` 里的指纹后重连，应**被拒绝**并给出重置指引。
-3. **只读拦截**：两个开关都关时，`/action` 与 `/exec` 返回 403，agent 侧看不到
-   `docker_action` / `docker_exec`，面板对应按钮不可用。
+3. **只读拦截**：两个开关都关时，`/action`、`/exec`、`/images/remove`、
+   `/images/prune`、`/images/pull/stream` 全部 403；agent 侧只有 7 个只读工具，
+   面板的启停删 / 镜像删除 / 清理 / 拉取按钮置灰。打开「允许变更操作」后这些
+   路由与工具立即出现（无需重启）。
 4. **日志 / 统计 / 镜像**：`tail` 与 `timestamps` / `since` 生效；统计显示
    CPU、内存、网络与块 IO；镜像列表含 dangling 条目标记。
-5. **`allowMutations` 打开后**：stop / start / restart 成功；对运行中容器
-   remove 报错并附「先停止再删除」提示，先 stop 再 remove 成功。
-6. **`allowExec` 打开后**：`ls -la /app` 之类命令返回 stdout 与退出码；把命令
-   换成 `sleep 60`（`timeoutSec` 调小）应被中断并报超时；`command` 超过 8000
-   字符被拒绝。
-7. **exec 抽屉与正文共存**（tty ≥ 0.15）：卡片「终端」开抽屉后切到日志 / 统计 /
+5. **FOLLOW 实时日志流**：日志页打开 `FOLLOW` → 状态行先「正在连接」后
+   「实时跟随中」，`docker logs -f` 的新行即时出现（`docker run --rm alpine sh
+   -c 'i=0; while :; do echo line-$i; i=$((i+1)); sleep 1; done'` 可观察）；
+   开 FOLLOW 时 `AUTO REFRESH` 置灰、轮询停止；向上滚动出现「回到底部」、
+   点击回到底部并恢复自动贴底；关闭 FOLLOW 立即回到快照。停掉容器 → 流收到
+   `end` 提示「容器已退出（退出码 N）」并自动补一次快照。杀掉 `dsh web` 再拉起
+   （或热改插件配置）→ 状态行短暂「正在重连」后自愈，不弹错误横幅。SSH 目标
+   同样跑一遍，确认流跑着时同一主机的 `docker ps` 面板操作不受影响（连接复用），
+   且空闲回收（120s）不会掐断流。
+6. **统计实时跟随**：统计页打开 `FOLLOW` →「正在连接统计流…」→「实时跟随中
+   （docker stats）」，CPU / 内存 sparkline 每秒长一点（跑 `docker run --rm
+   alpine sh -c 'while :; do :; done'` 观察 CPU 起来）；关 FOLLOW 立即回快照并
+   恢复轮询。停掉被统计的容器 → 流收到 `end`（stats-exit）提示后自动回轮询。
+   注意**这条流不会自然结束**：切页 / 关面板必须断掉 `EventSource`（宿主侧应
+   看到 `docker stats` 被 SIGTERM）。
+7. **镜像详情 / 删除 / 清理**：镜像页点某行「详情」→ 概览里的层数与
+   `docker image inspect` 一致、构建历史与 `docker history` 一致（Docker ≥ 26
+   走 `--format`，老版本走纯文本表格兜底）；dangling 行用镜像 ID 查。点「删除」→
+   二次确认后执行 `docker image rm`；删除被容器引用的镜像应失败并给出提示。
+   「清理 dangling」只删无标签镜像，输出末尾带 `Total reclaimed space`。
+8. **拉取进度流**：镜像页工具条的拉取图标（悬停显示「拉取镜像」）→ 输入本地没有的小镜像（如 `alpine:3.20`）
+   → 逐层状态行实时出现且按层原地更新；完成后提示「拉取完成」并自动刷新列表。
+   拉取中点「停止」或离开视图 → `docker pull` 被 SIGTERM 结束，不残留进程。
+   未开启「允许变更操作」时该按钮置灰、直接访问 `/images/pull/stream` 返回 403。
+9. **Compose 项目视图**：用一份 compose 起两三个服务（`docker compose up -d`）→
+   工具条切到「Compose」→ 服务归到一个项目卡片下，运行数 / 服务数 / 状态正确；
+   点进项目看服务表，切「聚合日志」→ 各服务日志按 `[service]` 前缀混流出现
+   （`docker compose logs -f` 的等价物），过滤框可按服务名与内容过滤；关「自动
+   滚动」后新日志继续进缓冲但视图不跳。无 compose 标签的容器归入
+   「（非 compose 容器）」。
+10. **`allowMutations` 打开后**：stop / start / restart 成功；对运行中容器
+    remove 报错并附「先停止再删除」提示，先 stop 再 remove 成功。
+11. **`allowExec` 打开后**：`ls -la /app` 之类命令返回 stdout 与退出码；把命令
+    换成 `sleep 60`（`timeoutSec` 调小）应被中断并报超时；`command` 超过 8000
+    字符被拒绝。
+12. **exec 抽屉与正文共存**（tty ≥ 0.15）：卡片「终端」开抽屉后切到日志 / 统计 /
    另一台容器的详情，抽屉与终端会话都必须活着；**折叠**（箭头或双击顶边）把抽屉
    压成一条标题栏、会话继续跑（展开即回原样）；**拖拽顶边**能调高度且不超过面板
    的 75%；此时点 backdrop 空白处或面板 ✕ 应弹「结束容器终端会话」确认，取消后
    会话仍在，确认才结束（tty 侧收到 kill）。
    离线回归：`node packages/tty/scripts/preview.mjs docker-exec-logs`
    （无头 Chrome 跑真实客户端：抽屉 + 日志页 + 折叠展开，断言会话未被结束）。
-8. **从连接栏进容器面板（dock 模式，需 tty ≥ 0.16）**：tty 面板里开一个 SSH 标签 →
+13. **从连接栏进容器面板（dock 模式，需 tty ≥ 0.16）**：tty 面板里开一个 SSH 标签 →
    连接栏「容器」→ 容器面板应挂在**终端右侧**（不是全屏弹窗），终端仍可输入；
    拖左边缘可调宽（上限面板宽 72%）、标题栏箭头折叠成窄条（终端拿回全部宽度、
    容器面板不卸载）、✕ 收起面板且 SSH 标签不受影响；此时点卡片「终端」应在同一
    终端面板**新开一个 `<容器> · exec` 标签**，而不是再嵌一个终端抽屉。
    离线回归：`node packages/tty/scripts/preview.mjs docker-dock`
    （断言 docked / 无 backdrop / 折叠后终端变宽 / 容器面板存活）。
+14. **多选聚合日志**：容器列表点 `聚合选择` → 卡片左侧出现勾选框、卡片动作条收起；
+   勾 2~3 个容器 → 操作条显示「已选 3 个容器」，点 `聚合日志` → 聚合视图标题为
+   「聚合日志 · 3 个容器」，三条流按 `[service]` / 容器名前缀混流出现；只勾 1 个时
+   按钮置灰并提示「至少选择 2 个容器」，勾到 9 个时置灰并提示最多 8 个；列表里
+   停掉其中一个容器 → 该条流走原有 `end` 语义结束，其余流不受影响。
+15. **Esc 退出选择态**：选择态下按 Esc → 回到普通列表、勾选清空、动作条消失；
+   再点一次 `聚合选择`（此时标签是 `退出选择`）效果相同；切目标 / 切分段 / 关面板
+   也都会把选择态和勾选一起清掉。
+16. **事件活动条**：容器列表头部出现「活动」条，状态点先黄后绿、文案「实时接收中
+   （docker events）」；执行 `docker restart <容器>` / `docker stop`+`start` → 1 秒内
+   列表状态跟着变，活动条出现 `stop` / `start`（异常退出显示 `die(137)` 这种带码
+   形式）；点标题可折叠（事件流不中断，展开后仍是累积的最新 8 条）；
+   `docker exec` 连续几次**不产生任何事件**（`exec_*` 已被服务端白名单丢掉）；
+   断网 / 重启 `dsh web` 后恢复时状态点短暂黄色并自动补一次全量列表刷新。
+17. **网络 / 卷**：工具条分段出现「网络」「卷」。网络列表应含 `bridge` / `host` / `none`
+   与 compose 创建的项目网络；点某条进详情 → 概览里子网 / 网关与 `docker network
+   inspect` 一致、`internal` 网络带徽标，「接入的容器」页签列出容器名与 IPv4。
+   卷列表的挂载点与 `docker volume ls` 一致（超长路径省略、悬停看全量）。
+   未开「允许变更操作」时两个 prune 图标与详情里的删除键都是灰的；打开后：
+   删除一个没有容器接入的网络成功、删一个还在用的网络报错并给出提示；
+   卷清理会弹带「数据会一起删除」的确认框。**注意**：卷清理在 docker < 23 上会连
+   命名卷一起删，先在测试目标上确认为妙。
 
 ## 版本 / 许可证
 
