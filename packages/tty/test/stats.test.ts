@@ -9,7 +9,7 @@
  *      脚本会在第一行守卫处退出，这是刻意的降级路径。
  */
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -325,6 +325,74 @@ describe('远端采集脚本 / 命令拼接', () => {
     const quoted = command.slice('sh -c '.length)
     const printed = execFileSync('/bin/sh', ['-c', 'printf %s ' + quoted], { encoding: 'utf8' })
     expect(printed).toBe(remoteStatsScript())
+  })
+})
+
+/* ------------------------------------------------------------------ *
+ * 远端 TCP 计数：把 awk 函数抠出来，喂真实形状的 /proc 样本
+ * ------------------------------------------------------------------ */
+
+/**
+ * 从远端 awk 主体里抠出一个函数定义（本文件里函数体以行首的 } 结束）。
+ * 为什么要抠而不是整脚本跑：整脚本读的是绝对路径 /proc/*，本机（macOS）没有 /proc，
+ * 只有把 tcpest 的 base 参数指向夹具目录，才能在任意平台上跑到真实逻辑。
+ */
+function awkFunction(source: string, name: string): string {
+  const match = new RegExp('function ' + name + '\\([\\s\\S]*?\\n\\}').exec(source)
+  if (match === null) throw new Error('未找到 awk 函数 ' + name)
+  return match[0]
+}
+
+/** 把 awkFunction 抠出的片段组成一个可执行探针（调 fn(base) 并打印结果）。 */
+function runAwkProbe(fn: string, base: string): string {
+  const source = remoteStatsAwk()
+  const probe = [awkFunction(source, 'slurp'), awkFunction(source, fn), 'BEGIN { print ' + fn + '(base) }'].join('\n')
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-tty-awk-'))
+  try {
+    const file = join(dir, 'probe.awk')
+    writeFileSync(file, probe, 'utf8')
+    return execFileSync('awk', ['-v', 'base=' + base, '-f', file, '/dev/null'], { encoding: 'utf8' }).trim()
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+describe('远端 TCP 计数（tcpest + /proc 夹具）', () => {
+  it('established 只数状态码 01，且行首空白不能把状态列挤走', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-tty-tcp-'))
+    try {
+      mkdirSync(join(dir, 'net'), { recursive: true })
+      // 形状照抄真实 /proc/net/tcp：sl 列右对齐（行首有空格），状态码在第 4 列。
+      // 这条用例正是为了守住踩过的坑——之前用显式正则切分没去行首空白，状态码滑到第 5 列，
+      // 计数恒为 0（远端 TCP 一直显示 0，其余指标都正常）。
+      const header = '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode'
+      const row = (sl: string, local: string, rem: string, st: string, inode: string): string =>
+        sl + ': ' + local + ' ' + rem + ' ' + st + ' 00000000:00000000 00:00000000 00000000     0        0 ' + inode + ' 1 0000000000000000 100 0 0 10 0'
+      writeFileSync(join(dir, 'net/tcp'), [
+        header,
+        row('   0', '0100007F:1F90', '00000000:0000', '0A', '11'),   // LISTEN
+        row('   1', '0100007F:9C4C', '0100007F:1F90', '01', '12'),   // ESTABLISHED
+        row('   2', '0A000005:9C4D', 'C0A80001:01BB', '01', '13'),   // ESTABLISHED
+        row('   3', '0100007F:9C4E', '0100007F:1F90', '06', '14'),   // TIME_WAIT
+      ].join('\n') + '\n', 'utf8')
+      writeFileSync(join(dir, 'net/tcp6'), [
+        header,
+        row('   0', '00000000000000000000000001000000:1F90', '00000000000000000000000000000000:0000', '0A', '21'),
+        row('   1', '00000000000000000000000001000000:9C4F', '00000000000000000000000001000000:1F90', '01', '22'),
+      ].join('\n') + '\n', 'utf8')
+      expect(runAwkProbe('tcpest', dir)).toBe('3')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('两份 /proc 文件都读不到 → -1（调用方省略字段，而不是报 0）', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-tty-tcp-empty-'))
+    try {
+      expect(runAwkProbe('tcpest', dir)).toBe('-1')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 
