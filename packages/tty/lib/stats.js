@@ -306,6 +306,32 @@ function jput(key, val) {
   if (j != "") j = j ","
   j = j "\"" key "\":" val
 }
+# /proc/net/tcp{,6} 的 established 计数（状态码 01），读不到任何一份时返回 -1
+# ——调用方据此省略字段（前端显示「无」），而不是报 0（0 会被当成「没有连接」）。
+#
+# 为什么必须先 sub() 去掉行首空白：这两份文件的 sl 列是右对齐的（行首有空格），
+# 而 awk 的显式正则分隔符与默认 FS 不同——它不会吃掉行首空白，反而会为之产出一个
+# 空首字段，于是状态码从 f[4] 滑到 f[5]，f[4] == "01" 永不成立、计数恒为 0。
+# （真实踩过：只有远端 TCP 一直是 0，CPU / 内存 / 磁盘 / 网速全都正常。）
+function tcpest(base,   fi, tp, td, n, L, i, m, f, tcp, have, ln) {
+  tcp = 0
+  have = 0
+  for (fi = 1; fi <= 2; fi++) {
+    tp = (fi == 1) ? base "/net/tcp" : base "/net/tcp6"
+    td = slurp(tp)
+    if (td == "") continue
+    have = 1
+    n = split(td, L, "\n")
+    for (i = 2; i <= n; i++) {
+      ln = L[i]
+      sub(/^[ \t]+/, "", ln)
+      m = split(ln, f, /[ \t]+/)
+      if (m >= 4 && f[4] == "01") tcp++
+    }
+  }
+  if (have == 0) return -1
+  return tcp
+}
 BEGIN {
   seenCpu = 0
   seenNet = 0
@@ -401,20 +427,8 @@ BEGIN {
       seenNet = 1
     }
 
-    tcp = 0
-    haveTcp = 0
-    for (fi = 1; fi <= 2; fi++) {
-      tp = (fi == 1) ? "/proc/net/tcp" : "/proc/net/tcp6"
-      td = slurp(tp)
-      if (td == "") continue
-      haveTcp = 1
-      n = split(td, L, "\n")
-      for (i = 2; i <= n; i++) {
-        m = split(L[i], f, /[ \t]+/)
-        if (m >= 4 && f[4] == "01") tcp++
-      }
-    }
-    if (haveTcp == 1) jput("tcpConns", sprintf("%d", tcp))
+    tcp = tcpest("/proc")
+    if (tcp >= 0) jput("tcpConns", sprintf("%d", tcp))
 
     cmd = "df -kP / 2>/dev/null"
     dn = 0
