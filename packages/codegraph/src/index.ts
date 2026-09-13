@@ -16,11 +16,19 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { definePlugin } from '@hyzyn/dsh-kit'
+import {
+  definePlugin,
+  dshHome,
+  isLoopbackRequest,
+  jsYamlSchema,
+  readJsonBody,
+  writeFileAtomic,
+  writeJson,
+} from '@hyzyn/dsh-kit'
+import type { ReqLike, ResLike } from '@hyzyn/dsh-kit'
 import { execFile } from 'node:child_process'
-import { chmodSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { existsSync, readFileSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 import yaml from 'js-yaml'
 import { promisify } from 'node:util'
 
@@ -42,10 +50,31 @@ export interface Config {
    * 默认开。关闭时撤销本插件写入的托管行，不碰 MCP 卡片的托管区块。
    */
   mcpIntegration?: boolean
+  /**
+   * 查询类命令（status/query/callers/callees/impact/node）的超时毫秒数。
+   * 默认 60000。超大仓库上 `status` 的首次数也会变慢，可按需调大。
+   */
+  cliTimeoutMs?: number
+  /**
+   * 索引类命令（sync / index）的超时毫秒数，默认 600000（10 分钟）。
+   * 单独一档是因为 `codegraph index` 全量重建在大仓库上必然超过查询档的 60s。
+   */
+  indexTimeoutMs?: number
+  /**
+   * 是否给 `codegraph index` 追加 `--force`。默认关。
+   * CLI 拒绝把家目录 / 文件系统根当项目索引，显式 `--force` 才继续。
+   */
+  indexForce?: boolean
 }
 
 /* ------------------------------------------------------------------ *
  * settings 命名空间（让「设置 → 插件 → 插件配置」派发本插件卡片）
+ *
+ * 这里只列「卡片派发所需 + 允许用户在 settings 里覆盖」的字段：字段一律不带
+ * schema 默认值——settings 的 resolved 值里「undefined」才表示「用户没设过」，
+ * 有默认值就会把 settings 默认值误当成用户覆盖，反过来压掉 plugin config。
+ * 真正从 settings 读取的只有 defaultPath / mcpIntegration（见 resolveStored）。
+ * 安装级旋钮（command / 超时 / indexForce）只走 plugin config，不进本 schema。
  * ------------------------------------------------------------------ */
 
 const CODEGRAPH_SETTINGS_SCHEMA = z.object({
@@ -61,20 +90,13 @@ const CODEGRAPH_SETTINGS_SCHEMA = z.object({
  * 常量与类型
  * ------------------------------------------------------------------ */
 
+/** 请求体上限：卡片只发一个小 JSON，512KB 足够；kit 的默认值是 1MB，这里显式收紧。 */
 const MAX_JSON_BODY_BYTES = 512 * 1024
 const MAX_BUFFER = 20 * 1024 * 1024
-
-interface ReqLike {
-  method?: string
-  url?: string
-  headers: Record<string, string | string[] | undefined>
-  socket: { remoteAddress?: string }
-}
-
-interface ResLike {
-  writeHead(status: number, headers?: Record<string, string>): void
-  end(body?: string): void
-}
+/** 查询类命令的默认超时。 */
+const DEFAULT_CLI_TIMEOUT_MS = 60_000
+/** 索引类命令的默认超时：全量重建在大仓库上远超查询档。 */
+const DEFAULT_INDEX_TIMEOUT_MS = 600_000
 
 type RouteHandler = (req: ReqLike & AsyncIterable<Uint8Array>, res: ResLike) => Promise<void>
 
@@ -87,6 +109,15 @@ type RouteHandler = (req: ReqLike & AsyncIterable<Uint8Array>, res: ResLike) => 
  * 避免 serverName 重名导致第二个实例加载失败。写在区块外的手工行只
  * 检测不碰。目标路径没有 .codegraph/ 时绝不改写现有 cwd（不把好配置
  * 改坏），也不凭空建行。
+ *
+ * 为什么不用 @hyzyn/dsh-kit 的 spliceManagedBlock：那个通用实现按「整行精确
+ * 匹配」定位标记、以文本进出，而这里需要的是
+ *   1) 容错匹配（历史版本 / 手改过的标记行仍要认出来，避免追加出第二个区块）；
+ *   2) 保留原标记行文本（重写时 markerStart/markerEnd 原样回填）；
+ *   3) 在同一次决策里同时读改「本插件区块」与「dsh-mcp 卡片区块」两个区块并做
+ *      serverName 冲突判定。
+ * 换成通用版会在这三点上回归，因此这里保留自己的纯函数决策矩阵（有 10 条用例
+ * 覆盖）；区块的落盘仍走 kit 的 writeFileAtomic。
  * ------------------------------------------------------------------ */
 
 const MCP_CLIENT_PACKAGE = '@deepseek-ai/dsh-mcp-client'
@@ -98,20 +129,16 @@ const OWN_BLOCK_END = '# --- end dsh-codegraph mcp managed ---'
 const DSH_MCP_BLOCK_KEY = 'dsh-mcp-config managed'
 const DSH_MCP_BLOCK_END_KEY = 'end dsh-mcp-config managed'
 
-const dshHome = () => process.env.DSH_HOME?.trim() || join(homedir(), '.dsh')
 const homePatchPath = () => join(dshHome(), 'cordis.patch.yml')
 const isIndexedProject = (path: string) => existsSync(join(path, '.codegraph'))
 
-/** js-yaml 方言：与 dsh-app-boot / @hyzyn/dsh-mcp 相同的 !!js 表达式类型（保证含表达式的行无损往返）。 */
-const JsExprType = new yaml.Type('tag:yaml.org,2002:js', {
-  kind: 'scalar',
-  resolve: (data: unknown) => typeof data === 'string',
-  construct: (data: string) => ({ __jsExpr: data }),
-  predicate: (value: unknown): boolean =>
-    typeof value === 'object' && value !== null && typeof (value as { __jsExpr?: unknown }).__jsExpr === 'string',
-  represent: (value: { __jsExpr: string }) => value.__jsExpr,
-})
-const YAML_SCHEMA = yaml.JSON_SCHEMA.extend(JsExprType)
+/**
+ * js-yaml 方言：!!js 类型与 schema 都取自 kit（`jsYamlSchema` 即
+ * `JSON_SCHEMA.extend(JsExprType)`）。js-yaml 全仓锁在同一版本，kit 与本包解析到
+ * 同一个实例，schema 与 Type 不会跨副本；dsh-app-boot / dsh-mcp / loader 侧方言
+ * 一致，含 `!!js` 表达式的行 load → dump 无损往返。
+ */
+const YAML_SCHEMA = jsYamlSchema
 
 /** 托管区块里的一行（保留整行原始字段，只按需改 config.cwd）。 */
 interface McpPatchRow {
@@ -343,18 +370,18 @@ interface RuntimeSync {
 }
 let runtimeSyncRef: RuntimeSync | undefined
 
-/** 读 home 补丁 → 纯函数同步 → 有变化才原子写回。 */
+/** 读 home 补丁 → 纯函数同步 → 有变化才原子写回（同目录 tmp + rename，走 kit）。 */
 function syncMcpRowOnDisk(decision: McpSyncDecision): { changed: boolean; status: McpSyncStatus } {
   const patchFile = homePatchPath()
   const existed = existsSync(patchFile)
   const text = existed ? readFileSync(patchFile, 'utf8') : ''
   const outcome = syncManagedMcpRow(text.split('\n'), decision)
   if (outcome.changed) {
+    // 沿用原文件权限（新文件 0600）。writeFileAtomic 内部的 writeFileSync 只会在
+    // 创建临时文件时用这个 mode，umask 只会进一步收紧、不会放宽，所以写回后的
+    // 权限不会比写之前更松。
     const mode = existed ? (statSync(patchFile).mode & 0o777) : 0o600
-    const tmp = join(dirname(patchFile), '.cordis.patch.yml.codegraph.' + process.pid + '.tmp')
-    writeFileSync(tmp, outcome.lines.join('\n'), { mode })
-    renameSync(tmp, patchFile)
-    if (existed && (mode & 0o077) !== 0) chmodSync(patchFile, mode)
+    writeFileAtomic(patchFile, outcome.lines.join('\n'), mode)
   }
   return { changed: outcome.changed, status: outcome.status }
 }
@@ -363,52 +390,11 @@ function syncMcpRowOnDisk(decision: McpSyncDecision): { changed: boolean; status
  * 工具函数
  * ------------------------------------------------------------------ */
 
-function isLoopbackRequest(request: ReqLike): boolean {
-  const address = request.socket.remoteAddress
-  if (address !== '127.0.0.1' && address !== '::1' && address !== '::ffff:127.0.0.1') return false
-  const host = request.headers.host
-  if (typeof host !== 'string') return false
-  let hostUrl: URL
-  try {
-    hostUrl = new URL('http://' + host)
-  } catch {
-    return false
-  }
-  if (hostUrl.hostname !== '127.0.0.1' && hostUrl.hostname !== 'localhost' && hostUrl.hostname !== '[::1]') return false
-  if (request.headers['sec-fetch-site'] === 'cross-site') return false
-  const origin = request.headers.origin
-  if (origin === undefined) return true
-  try {
-    return new URL(origin).host === hostUrl.host
-  } catch {
-    return false
-  }
-}
-
-function writeJson(res: ResLike, status: number, body: unknown): void {
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'referrer-policy': 'no-referrer' })
-  res.end(JSON.stringify(body))
-}
-
-async function readJsonBody(req: ReqLike & AsyncIterable<Uint8Array>): Promise<Record<string, unknown> | undefined> {
-  const chunks: Uint8Array[] = []
-  let size = 0
-  try {
-    for await (const chunk of req) {
-      size += chunk.length
-      if (size > MAX_JSON_BODY_BYTES) return undefined
-      chunks.push(chunk)
-    }
-  } catch {
-    return undefined
-  }
-  try {
-    const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'))
-    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : undefined
-  } catch {
-    return undefined
-  }
-}
+/**
+ * 本插件统一的 JSON body 读取：上限 512KB（kit 默认 1MB，这里显式收紧）。
+ * loopback 围栏 / writeJson 直接用 kit 的共享实现（全仓 9 份副本的基准）。
+ */
+const readBody = (req: ReqLike & AsyncIterable<Uint8Array>) => readJsonBody(req, MAX_JSON_BODY_BYTES)
 
 function queryString(url: string | undefined): URLSearchParams {
   try {
@@ -418,14 +404,73 @@ function queryString(url: string | undefined): URLSearchParams {
   }
 }
 
+/* ------------------------------------------------------------------ *
+ * CLI 调用参数（安装级旋钮，走 plugin config）
+ * ------------------------------------------------------------------ */
+
+/** 解析后的 CLI 旋钮：超时 / 命令 / index 的 --force。 */
+export interface CliResolved {
+  command: string
+  cliTimeoutMs: number
+  indexTimeoutMs: number
+  indexForce: boolean
+}
+
+/** 只接受有限正数，其余（0 / 负数 / NaN / Infinity / 非数字）回落到默认值。 */
+function positiveOr(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback
+}
+
+/**
+ * 纯函数：把插件配置规范化成 CLI 调用参数。
+ * `command` 去空白后为空则回落 `codegraph`；超时只认正有限数；`indexForce` 只认
+ * 严格的 `true`（避免 `"false"` 之类的字符串被当成真）。
+ */
+export function resolveCliConfig(config?: Config): CliResolved {
+  return {
+    command: config?.command?.trim() || 'codegraph',
+    cliTimeoutMs: positiveOr(config?.cliTimeoutMs, DEFAULT_CLI_TIMEOUT_MS),
+    indexTimeoutMs: positiveOr(config?.indexTimeoutMs, DEFAULT_INDEX_TIMEOUT_MS),
+    indexForce: config?.indexForce === true,
+  }
+}
+
+/**
+ * `codegraph sync` 参数。`--` 之后的路径位在 commander 里按位置参数解析，
+ * 因此路径带 `-` 开头也安全。
+ */
+export function syncArgs(cwd: string): string[] {
+  return ['sync', '--', cwd]
+}
+
+/**
+ * `codegraph index` 参数。`--force` 必须排在 `--` 之前（`--` 之后一律按位置参数
+ * 处理）；顶层 help 把它藏起来了，但 `codegraph index --help` 里在。
+ */
+export function indexArgs(cwd: string, force: boolean): string[] {
+  return force ? ['index', '--force', '--', cwd] : ['index', '--', cwd]
+}
+
 /** 运行 codegraph CLI，返回 stdout；失败时抛错。 */
-async function runCodegraph(command: string, args: string[], cwd: string): Promise<string> {
+async function runCodegraph(command: string, args: string[], cwd: string, timeoutMs: number): Promise<string> {
   const { stdout } = await execFileAsync(command, args, {
     cwd,
     maxBuffer: MAX_BUFFER,
-    timeout: 60_000,
+    timeout: timeoutMs,
   })
   return stdout
+}
+
+/**
+ * 把 execFile 的错误翻成卡片上看得懂的文案：超时（killed/SIGTERM）单独指路到
+ * 对应的配置项，其余保留原 message（execFile 会把 stderr 拼进去）。
+ */
+function cliErrorMessage(error: unknown, timeoutMs: number, timeoutHint: string): string {
+  const failure = error as { killed?: boolean; signal?: string | null }
+  if (failure?.killed === true || (typeof failure?.signal === 'string' && failure.signal !== '')) {
+    return `codegraph 命令超时（>${timeoutMs}ms）：可用插件配置 ${timeoutHint} 调大`
+  }
+  return error instanceof Error ? error.message : String(error)
 }
 
 function tryParseJson(text: string): unknown {
@@ -440,7 +485,7 @@ function tryParseJson(text: string): unknown {
  * 路由
  * ------------------------------------------------------------------ */
 
-function makeRoutes(command: string, defaultPath: string): Array<{ kind: 'exact'; path: string; handler: RouteHandler }> {
+function makeRoutes(cli: CliResolved, defaultPath: string): Array<{ kind: 'exact'; path: string; handler: RouteHandler }> {
   const guard = (req: ReqLike, res: ResLike, method: string): boolean => {
     if (!isLoopbackRequest(req)) {
       writeJson(res, 403, { error: 'forbidden: loopback-only' })
@@ -453,18 +498,37 @@ function makeRoutes(command: string, defaultPath: string): Array<{ kind: 'exact'
     return true
   }
 
-  const resolvePath = (params: URLSearchParams): string => {
-    const fromQuery = params.get('path')?.trim()
-    return fromQuery || defaultPath || process.cwd()
+  /**
+   * 当前生效的默认项目路径：settings 里保存过的值优先，其次插件配置 / 进程 cwd。
+   * 读 runtimeSyncRef 而不是闭包里那份 config 值——「设为默认项目」之后，不带
+   * ?path= 的调用才会跟着切换（旧实现会一直停在宿主启动时的那份配置）。
+   */
+  const currentDefaultPath = (): string => {
+    const current = runtimeSyncRef?.current.defaultPath.trim()
+    return current !== undefined && current !== '' ? current : defaultPath || process.cwd()
   }
 
-  const run = async (args: string[], cwd: string): Promise<{ ok: true; output: string; data?: unknown }> => {
-    const output = await runCodegraph(command, args, cwd)
+  const resolvePath = (params: URLSearchParams): string => params.get('path')?.trim() || currentDefaultPath()
+
+  /** 查询类命令的失败响应：超时文案指向 cliTimeoutMs。 */
+  const failCli = (res: ResLike, cwd: string, error: unknown): void =>
+    writeJson(res, 500, { ok: false, error: cliErrorMessage(error, cli.cliTimeoutMs, 'cliTimeoutMs'), path: cwd })
+
+  /** 索引类命令的失败响应：超时文案指向 indexTimeoutMs。 */
+  const failIndex = (res: ResLike, cwd: string, error: unknown): void =>
+    writeJson(res, 500, { ok: false, error: cliErrorMessage(error, cli.indexTimeoutMs, 'indexTimeoutMs'), path: cwd })
+
+  const run = async (
+    args: string[],
+    cwd: string,
+    timeoutMs: number = cli.cliTimeoutMs,
+  ): Promise<{ ok: true; output: string; data?: unknown }> => {
+    const output = await runCodegraph(cli.command, args, cwd, timeoutMs)
     return { ok: true, output, data: tryParseJson(output) }
   }
 
   const runJson = async (args: string[], cwd: string): Promise<{ ok: true; output: string; data: unknown }> => {
-    const output = await runCodegraph(command, args, cwd)
+    const output = await runCodegraph(cli.command, args, cwd, cli.cliTimeoutMs)
     const data = tryParseJson(output)
     if (data === undefined) {
       return { ok: true, output, data: { raw: output } }
@@ -484,7 +548,7 @@ function makeRoutes(command: string, defaultPath: string): Array<{ kind: 'exact'
           const { output, data } = await runJson(['status', '--json', '--', cwd], cwd)
           writeJson(res, 200, { ok: true, path: cwd, status: data, raw: output })
         } catch (error) {
-          writeJson(res, 500, { ok: false, error: (error instanceof Error ? error.message : String(error)), path: cwd })
+          failCli(res, cwd, error)
         }
       },
     },
@@ -505,7 +569,7 @@ function makeRoutes(command: string, defaultPath: string): Array<{ kind: 'exact'
           const { output, data } = await runJson(['query', '--json', '--path', cwd, '--limit', limit, q], cwd)
           writeJson(res, 200, { ok: true, path: cwd, results: data, raw: output })
         } catch (error) {
-          writeJson(res, 500, { ok: false, error: (error instanceof Error ? error.message : String(error)), path: cwd })
+          failCli(res, cwd, error)
         }
       },
     },
@@ -525,7 +589,7 @@ function makeRoutes(command: string, defaultPath: string): Array<{ kind: 'exact'
           const { output, data } = await runJson(['callers', '--json', '--path', cwd, symbol], cwd)
           writeJson(res, 200, { ok: true, path: cwd, symbol, callers: data, raw: output })
         } catch (error) {
-          writeJson(res, 500, { ok: false, error: (error instanceof Error ? error.message : String(error)), path: cwd })
+          failCli(res, cwd, error)
         }
       },
     },
@@ -545,7 +609,7 @@ function makeRoutes(command: string, defaultPath: string): Array<{ kind: 'exact'
           const { output, data } = await runJson(['callees', '--json', '--path', cwd, symbol], cwd)
           writeJson(res, 200, { ok: true, path: cwd, symbol, callees: data, raw: output })
         } catch (error) {
-          writeJson(res, 500, { ok: false, error: (error instanceof Error ? error.message : String(error)), path: cwd })
+          failCli(res, cwd, error)
         }
       },
     },
@@ -566,7 +630,7 @@ function makeRoutes(command: string, defaultPath: string): Array<{ kind: 'exact'
           const { output, data } = await runJson(['impact', '--json', '--path', cwd, '--depth', depth, symbol], cwd)
           writeJson(res, 200, { ok: true, path: cwd, symbol, impact: data, raw: output })
         } catch (error) {
-          writeJson(res, 500, { ok: false, error: (error instanceof Error ? error.message : String(error)), path: cwd })
+          failCli(res, cwd, error)
         }
       },
     },
@@ -590,7 +654,7 @@ function makeRoutes(command: string, defaultPath: string): Array<{ kind: 'exact'
           const { output, data } = await run(args, cwd)
           writeJson(res, 200, { ok: true, path: cwd, name, node: data ?? output, raw: output })
         } catch (error) {
-          writeJson(res, 500, { ok: false, error: (error instanceof Error ? error.message : String(error)), path: cwd, name })
+          writeJson(res, 500, { ok: false, error: cliErrorMessage(error, cli.cliTimeoutMs, 'cliTimeoutMs'), path: cwd, name })
         }
       },
     },
@@ -599,13 +663,13 @@ function makeRoutes(command: string, defaultPath: string): Array<{ kind: 'exact'
       path: '/api/dsh-codegraph/sync',
       handler: async (req, res) => {
         if (!guard(req, res, 'POST')) return
-        const body = await readJsonBody(req)
-        const cwd = (typeof body?.path === 'string' && body.path.trim()) || defaultPath || process.cwd()
+        const body = await readBody(req)
+        const cwd = (typeof body?.path === 'string' && body.path.trim()) || currentDefaultPath()
         try {
-          const { output } = await run(['sync', '--', cwd], cwd)
+          const { output } = await run(syncArgs(cwd), cwd, cli.indexTimeoutMs)
           writeJson(res, 200, { ok: true, path: cwd, output })
         } catch (error) {
-          writeJson(res, 500, { ok: false, error: (error instanceof Error ? error.message : String(error)), path: cwd })
+          failIndex(res, cwd, error)
         }
       },
     },
@@ -614,13 +678,13 @@ function makeRoutes(command: string, defaultPath: string): Array<{ kind: 'exact'
       path: '/api/dsh-codegraph/index',
       handler: async (req, res) => {
         if (!guard(req, res, 'POST')) return
-        const body = await readJsonBody(req)
-        const cwd = (typeof body?.path === 'string' && body.path.trim()) || defaultPath || process.cwd()
+        const body = await readBody(req)
+        const cwd = (typeof body?.path === 'string' && body.path.trim()) || currentDefaultPath()
         try {
-          const { output } = await run(['index', '--', cwd], cwd)
+          const { output } = await run(indexArgs(cwd, cli.indexForce), cwd, cli.indexTimeoutMs)
           writeJson(res, 200, { ok: true, path: cwd, output })
         } catch (error) {
-          writeJson(res, 500, { ok: false, error: (error instanceof Error ? error.message : String(error)), path: cwd })
+          failIndex(res, cwd, error)
         }
       },
     },
@@ -633,7 +697,7 @@ function makeRoutes(command: string, defaultPath: string): Array<{ kind: 'exact'
           return
         }
         if (req.method === 'GET') {
-          const current = runtimeSyncRef?.current ?? { defaultPath: defaultPath || process.cwd(), manage: true }
+          const current = runtimeSyncRef?.current ?? { defaultPath: currentDefaultPath(), manage: true }
           writeJson(res, 200, {
             ok: true,
             defaultPath: current.defaultPath,
@@ -647,7 +711,7 @@ function makeRoutes(command: string, defaultPath: string): Array<{ kind: 'exact'
           writeJson(res, 405, { error: 'method not allowed: ' + String(req.method) })
           return
         }
-        const body = await readJsonBody(req)
+        const body = await readBody(req)
         const path = typeof body?.path === 'string' ? body.path.trim() : ''
         if (path === '') {
           writeJson(res, 400, { error: '缺少 path 参数' })
@@ -730,11 +794,12 @@ const plugin = definePlugin<Config>({
   inject: [],
   apply(ctx: Context, config?: Config) {
     if (config?.enabled === false) return
-    const command = config?.command?.trim() || 'codegraph'
+    const cli = resolveCliConfig(config)
+    const command = cli.command
     const announce = config?.announceToAgent !== false
     const manageEnabled = config?.mcpIntegration !== false
 
-    const routes = makeRoutes(command, config?.defaultPath?.trim() || process.cwd())
+    const routes = makeRoutes(cli, config?.defaultPath?.trim() || process.cwd())
     ctx.inject(['webServer'], (webCtx: Context) => {
       webCtx.effect(() => {
         const server = (webCtx as unknown as { webServer: { register(route: { kind: string; path: string; handler: RouteHandler }): () => void } }).webServer
