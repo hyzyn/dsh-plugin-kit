@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-docker",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "DSH Web GUI 的 Docker 容器面板插件：本机或 SSH 主机上的容器列表 / 启停删 / 日志 / 统计 / 镜像 / 一次性 exec，默认只读，配套只读优先的 agent 工具。",
   "keywords": [
     "dsh",

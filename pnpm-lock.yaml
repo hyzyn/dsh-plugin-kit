@@ -9,22 +9,22 @@ importers:
   .:
     dependencies:
       '@hyzyn/dsh-codegraph':
-        specifier: 0.1.9
+        specifier: 0.1.10
         version: link:packages/codegraph
       '@hyzyn/dsh-docker':
-        specifier: 0.3.2
+        specifier: 0.3.3
         version: link:packages/docker
       '@hyzyn/dsh-env':
-        specifier: 0.2.0
+        specifier: 0.2.1
         version: link:packages/env
       '@hyzyn/dsh-mcp':
-        specifier: 0.1.8
+        specifier: 0.1.9
         version: link:packages/mcp
       '@hyzyn/dsh-profile':
         specifier: 0.1.7
         version: link:packages/profile
       '@hyzyn/dsh-prompt':
-        specifier: 0.1.6
+        specifier: 0.1.7
         version: link:packages/prompt
       '@hyzyn/dsh-rss':
         specifier: 0.2.0
@@ -33,7 +33,7 @@ importers:
         specifier: 0.2.0
         version: link:packages/search
       '@hyzyn/dsh-tty':
-        specifier: 0.16.1
+        specifier: 0.16.2
         version: link:packages/tty
     devDependencies:
       typescript:
@@ -43,22 +43,22 @@ importers:
   packages/all:
     dependencies:
       '@hyzyn/dsh-codegraph':
-        specifier: 0.1.9
+        specifier: 0.1.10
         version: link:../codegraph
       '@hyzyn/dsh-docker':
-        specifier: 0.3.2
+        specifier: 0.3.3
         version: link:../docker
       '@hyzyn/dsh-env':
-        specifier: 0.2.0
+        specifier: 0.2.1
         version: link:../env
       '@hyzyn/dsh-mcp':
-        specifier: 0.1.8
+        specifier: 0.1.9
         version: link:../mcp
       '@hyzyn/dsh-profile':
         specifier: 0.1.7
         version: link:../profile
       '@hyzyn/dsh-prompt':
-        specifier: 0.1.6
+        specifier: 0.1.7
         version: link:../prompt
       '@hyzyn/dsh-rss':
         specifier: 0.2.0
@@ -67,7 +67,7 @@ importers:
         specifier: 0.2.0
         version: link:../search
       '@hyzyn/dsh-tty':
-        specifier: 0.16.1
+        specifier: 0.16.2
         version: link:../tty
     devDependencies:
       '@deepseek-ai/cordis':
