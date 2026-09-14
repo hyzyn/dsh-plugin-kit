@@ -1,5 +1,7 @@
 # @hyzyn/dsh-env
 
+中文 | [English](README.en.md)
+
 > DSH **设置 → 插件** 里的「环境变量 / 密钥管理」卡片：图形化管理 `~/.dsh/env.yml`（可用 `DSH_ENV_FILE` 覆盖），**密钥明文默认进官方凭据存储**，env 文件不落明文。
 
 ## 特性

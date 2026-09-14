@@ -1,5 +1,7 @@
 # @hyzyn/dsh-rss
 
+中文 | [English](README.en.md)
+
 > DSH 的 RSS / 新闻聚合插件：订阅多个 RSS / Atom 源，每天自动汇总一篇「今日值得读」，并把结果注入 systemPrompt 让模型直接引用。
 
 ## 特性
@@ -18,7 +20,8 @@
 - **两个 token 别混**（实测教训）：进度条流光的插值色必须用**强调色**
   `--dsw-alias-state-business-primary`（实测 `#4176e6`）；我一开始写的是
   `--dsw-alias-brand-primary`，而它在这个皮肤里是 `#0f1115`（品牌墨色、**近黑**），
-  于是「波纹」渲染成一条黑线。两者名字都像"主色"，但前者是品牌墨色、后者才是强调色。
+  于是「波纹」渲染成一条黑线。两者名字都像"主色"，但真正表示强调色的是
+  `--dsw-alias-state-business-primary`，而 `--dsw-alias-brand-primary` 是品牌墨色。
 - **观感与 dsh-docker 的 `dk_switchOverlay` 同一套**：蓝底（`color-mix(accent 12%, bg-base)`）、
   蓝描边（`accent 42%`）、文字与旋转图标走 `--dsw-alias-state-business-primary`，顶部同样一条
   2px 不定长流光进度条。实测两处胶囊的计算颜色完全一致（底色 `color(srgb .91 .94 .99)`、

@@ -1,5 +1,7 @@
 # @hyzyn/dsh-mcp
 
+中文 | [English](README.en.md)
+
 > DSH **设置 → 插件** 里的「MCP 服务器配置」卡片：图形化维护 MCP 服务器，**保存即热加载**，不用重启宿主。
 
 ## 特性
