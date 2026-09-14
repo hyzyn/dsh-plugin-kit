@@ -56,8 +56,8 @@
     "descriptionEn": "A graphical MCP server config center: manages the MCP block of ~/.dsh/cordis.patch.yml and hot-loads it via HMR into mcp__<server>__<tool> tools without a restart; supports stdio and streamable-http transports, js: expression prefixes for env vars and headers, connection tests, enable/disable and delete.",
     "repo": "https://github.com/hyzyn/dsh-plugin-kit/tree/main/packages/mcp",
     "npm": "@hyzyn/dsh-mcp",
-    "category": "integration",
-    "subcategory": "bridge"
+    "category": "tools",
+    "subcategory": "dev"
   },
   {
     "id": "dsh-profile",
