@@ -11,7 +11,10 @@
  * DSH_HOME 指到临时目录，并且默认项目路径指向一个没有 `.codegraph/` 的目录——
  * 决策矩阵在这种输入下 changed=false，不会写任何文件。
  *
- * 平台：stub 靠 shebang 执行，Windows 上跳过（CI 是 ubuntu，本地开发是 macOS/Linux）。
+ * 平台：stub 在 POSIX 上是带 shebang 的可执行脚本；Windows 上没有可执行位、
+ * 也不能直接 exec 脚本，所以复刻 npm / pnpm 的 `.cmd` shim 形状（node + %*），
+ * 顺带覆盖 runCodegraph 的 cmd.exe 分支——此前整个文件在 Windows 上跳过，
+ * 而 Windows 恰好是这条链路唯一出过 ENOENT 的平台。
  */
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -34,11 +37,26 @@ beforeAll(() => {
 afterAll(() => {
   if (originalDshHome === undefined) delete process.env.DSH_HOME
   else process.env.DSH_HOME = originalDshHome
-  rmSync(sandbox, { recursive: true, force: true })
+  try {
+    rmSync(sandbox, { recursive: true, force: true })
+  } catch (error) {
+    // Windows：execFile 的超时只能杀掉直接子进程（cmd.exe），shim 里那个被挂住的
+    // node 孙进程会多活几秒，并且在超时期间把本目录当 cwd——Windows 不允许删除
+    // 正在被进程用作 cwd 的目录。临时目录留给系统回收，别让清理失败掩盖测试结果。
+    if (POSIX) throw error
+  }
 })
 
 /** 写一个可执行的 stub CLI：把 argv 回显成 JSON 行，或挂住等到被杀。 */
 function stubCli(name: string, body: string): string {
+  if (!POSIX) {
+    // Windows：.cmd shim 的形状与 npm / pnpm 全局 bin 一致（node + %*），
+    // 正是 runCodegraph 需要经 cmd.exe 才能跑起来的那种命令。
+    writeFileSync(join(sandbox, `${name}.js`), `${body}\n`)
+    const shim = join(sandbox, `${name}.cmd`)
+    writeFileSync(shim, `@echo off\r\nnode "%~dp0${name}.js" %*\r\n`)
+    return shim
+  }
   const file = join(sandbox, `${name}.mjs`)
   writeFileSync(file, `#!/usr/bin/env node\n${body}\n`)
   chmodSync(file, 0o755)
@@ -46,7 +64,7 @@ function stubCli(name: string, body: string): string {
 }
 
 const echoCli = () => stubCli('echo-cli', 'console.log(JSON.stringify(process.argv.slice(2)))')
-const sleepCli = () => stubCli('sleep-cli', 'setTimeout(() => {}, 10_000)')
+const sleepCli = () => stubCli('sleep-cli', 'setTimeout(() => {}, 3_000)')
 
 interface CapturedRoute {
   kind: string
@@ -138,7 +156,7 @@ async function call(
   return capture
 }
 
-describe.skipIf(!POSIX)('宿主路由（stub CLI）', () => {
+describe('宿主路由（stub CLI）', () => {
   it('index：indexForce 打开时 --force 排在 -- 之前并透传到 CLI', async () => {
     const routes = mountRoutes(echoCli(), { indexForce: true })
     const capture = await call(routes, '/api/dsh-codegraph/index', { method: 'POST', body: { path: project } })
