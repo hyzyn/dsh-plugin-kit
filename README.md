@@ -113,7 +113,7 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 - **MCP 托管（默认开）**：DSH 的 MCP 客户端不声明 roots，`codegraph serve --mcp` 只能从工作目录向上找 `.codegraph/`——宿主若从家目录启动，模型调用 `mcp__codegraph__*` 会拿到 "No CodeGraph project is loaded"。本插件自动在 `~/.dsh/cordis.patch.yml` 托管 codegraph MCP 服务器行并把 cwd 对齐默认项目路径（卡片「设为默认项目」一键切换，保存即热重启 MCP 服务器）；已在 MCP 卡片配置过的行只补 cwd 不动其它字段。可用 `mcpIntegration: false` 关闭。
 - **存哪里**：索引在项目 `.codegraph/` 目录（由 `codegraph index` 生成）；默认项目路径持久化在 settings 命名空间 `codegraph`。
 - **注意**：查询目标项目需要先有 Codegraph 索引；未索引项目会返回指引改用常规工具。索引 / 重建为本地 CLI 操作，消耗真实磁盘与 CPU。一台 codegraph MCP 服务器同一时刻只挂载一个默认项目，其它已索引项目可在工具调用里传 `projectPath` 查询。
-- **兼容与调优**：已在 DSH `0.1.5-rc.2` + codegraph CLI `1.5.0` 上实测（声明 `engines.dsh: >=0.1.2-rc.1 <0.2.0`）；CLI 命令与旗标见包内 README。大仓库全量重建可调 `indexTimeoutMs`（默认 600s，查询档 `cliTimeoutMs` 默认 60s），CLI 拒绝索引家目录 / 文件系统根时开 `indexForce`。
+- **兼容与调优**：已在 DSH `0.1.5-rc.2` + codegraph CLI `1.5.0` 上实测（声明 `dsh.engines.dsh: >=0.1.2-rc.1`）；CLI 命令与旗标见包内 README。大仓库全量重建可调 `indexTimeoutMs`（默认 600s，查询档 `cliTimeoutMs` 默认 60s），CLI 拒绝索引家目录 / 文件系统根时开 `indexForce`。
 
 ![Codegraph 设置卡片](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-codegraph.png)
 
@@ -173,7 +173,7 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 ### 系统要求
 
 - 已安装 DeepSeek Harness，`dsh web` 可正常启动。当前实测基线为 DSH `0.1.5-rc.2`（宿主路由、浏览器半体、systemPrompt 注入、MCP 托管行全链路）。
-- 插件可用 `engines.dsh` 声明支持的 DSH 版本线（如 `@hyzyn/dsh-codegraph` 声明 `>=0.1.2-rc.1 <0.2.0`），插件市场据此显示兼容 / 不兼容；未声明的包在市场里显示为「未知」。
+- 每个可安装插件都在 `dsh.engines.dsh` 声明支持的 DSH 版本线（本仓库统一 `>=0.1.2-rc.1`），插件市场据此显示兼容 / 不兼容；未声明的包显示为「未知」。**只支持 `>=X.Y.Z[-预发布]` 一种形式**：`^0.1.2`、`~0.1.2`、两段式 `>=0.1.2-rc.1 <0.2.0` 都会被判成「无法验证」，而已声明却无法验证是 fail-closed——更新会被直接拦下，比不声明更糟。CI 跑 `node scripts/check-dsh-engines.mjs` 兜底。
 - npm 安装方式无额外要求；从仓库安装需要 Node.js >= 22.19 与 pnpm 10。
 
 ### 三步上手
