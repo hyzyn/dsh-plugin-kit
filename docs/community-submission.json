@@ -1,0 +1,110 @@
+[
+  {
+    "id": "dsh-tty",
+    "name": "终端面板",
+    "nameEn": "Terminal Panel",
+    "author": "hyzyn",
+    "description": "侧边栏「终端」大弹窗：xterm.js + PTY 全交互终端，多标签与断线自动重连，可选 tmux 会话持久化（宿主重启后恢复现场）；ssh2 原生 SSH 标签（agent forwarding、主机指纹 TOFU 钉扎），SFTP 上传下载与本地/远程端口转发隧道；agent 侧配套 tty_* / sftp_* / tunnel_* 工具。",
+    "descriptionEn": "A full terminal panel in the sidebar: xterm.js with a real PTY, multiple tabs, automatic reconnect and optional tmux-backed session persistence that survives host restarts; native ssh2 SSH tabs with agent forwarding and TOFU host-key pinning, SFTP transfer, and local/remote port-forward tunnels, with matching tty_* / sftp_* / tunnel_* tools for the agent.",
+    "repo": "https://github.com/hyzyn/dsh-plugin-kit/tree/main/packages/tty",
+    "npm": "@hyzyn/dsh-tty",
+    "category": "ui",
+    "subcategory": "terminal"
+  },
+  {
+    "id": "dsh-docker",
+    "name": "容器面板",
+    "nameEn": "Container Panel",
+    "author": "hyzyn",
+    "description": "Docker 容器面板：本机或 SSH 目标上的容器列表（含 Compose 项目视图）、启停删、日志与统计实时跟随、事件活动条、镜像与网络/卷详情。默认只读，变更操作与 docker exec 需在设置里显式开启，agent 侧配套只读优先的 docker_* 工具。",
+    "descriptionEn": "A Docker panel for local or SSH targets: container lists with a Compose project view, start/stop/remove, live log and stats streaming, an events feed, plus image, network and volume details. Read-only by default - mutations and docker exec need an explicit settings switch - with read-only-first docker_* tools for the agent.",
+    "repo": "https://github.com/hyzyn/dsh-plugin-kit/tree/main/packages/docker",
+    "npm": "@hyzyn/dsh-docker",
+    "category": "tools",
+    "subcategory": "dev"
+  },
+  {
+    "id": "dsh-codegraph",
+    "name": "代码图谱",
+    "nameEn": "Codegraph",
+    "author": "hyzyn",
+    "description": "Codegraph 集成：在设置 → 插件里查看索引状态、搜索符号、查看 callers/callees/impact，一键增量 sync 或全量重建；自动托管 codegraph MCP 服务器行并把 cwd 对齐默认项目路径，模型可直接用 mcp__codegraph__* 查询代码。",
+    "descriptionEn": "Codegraph integration: inspect index status, search symbols and walk callers/callees/impact from the settings card, with one-click incremental sync or full rebuild; manages the codegraph MCP server row and aligns its cwd with the default project so the model can query code through mcp__codegraph__*.",
+    "repo": "https://github.com/hyzyn/dsh-plugin-kit/tree/main/packages/codegraph",
+    "npm": "@hyzyn/dsh-codegraph",
+    "category": "tools",
+    "subcategory": "context"
+  },
+  {
+    "id": "dsh-env",
+    "name": "环境变量与密钥管理",
+    "nameEn": "Env & Secrets Manager",
+    "author": "hyzyn",
+    "description": "图形化管理环境变量与密钥：托管 ~/.dsh/env.yml 的区块，支持普通值与 js: 前缀表达式，密钥明文默认存入官方凭据存储而 env 文件只留清单；保存后写入当前进程环境，供宿主与后续子进程使用。",
+    "descriptionEn": "Graphical environment-variable and secret management: manages the managed block of ~/.dsh/env.yml with plain values and js: expression prefixes, keeps secret plaintext in the official credential store while the env file holds only the manifest, and applies changes to the running process for the host and later subprocesses.",
+    "repo": "https://github.com/hyzyn/dsh-plugin-kit/tree/main/packages/env",
+    "npm": "@hyzyn/dsh-env",
+    "category": "security",
+    "subcategory": "access"
+  },
+  {
+    "id": "dsh-mcp",
+    "name": "MCP 服务器配置",
+    "nameEn": "MCP Server Config",
+    "author": "hyzyn",
+    "description": "图形化 MCP 服务器配置中心：托管 ~/.dsh/cordis.patch.yml 的 MCP 区块，保存后经 HMR 热加载为 mcp__<server>__<tool> 工具、无需重启；支持 stdio 与 streamable-http 两种传输、js: 前缀的环境变量与请求头表达式、连接测试、启用停用与删除。",
+    "descriptionEn": "A graphical MCP server config center: manages the MCP block of ~/.dsh/cordis.patch.yml and hot-loads it via HMR into mcp__<server>__<tool> tools without a restart; supports stdio and streamable-http transports, js: expression prefixes for env vars and headers, connection tests, enable/disable and delete.",
+    "repo": "https://github.com/hyzyn/dsh-plugin-kit/tree/main/packages/mcp",
+    "npm": "@hyzyn/dsh-mcp",
+    "category": "integration",
+    "subcategory": "bridge"
+  },
+  {
+    "id": "dsh-profile",
+    "name": "Profile 管理",
+    "nameEn": "Profile Manager",
+    "author": "hyzyn",
+    "description": "可视化管理 DSH profile：查看、创建、复制、重命名、删除与端口配置。每个 profile 是 $DSH_HOME/profiles 下的独立目录，拥有自己的 bundle 层与补丁文件，多环境互不干扰。",
+    "descriptionEn": "Visual DSH profile management: inspect, create, duplicate, rename, delete and configure ports. Each profile is a standalone directory under $DSH_HOME/profiles with its own bundle layers and patch files, so multiple environments never interfere.",
+    "repo": "https://github.com/hyzyn/dsh-plugin-kit/tree/main/packages/profile",
+    "npm": "@hyzyn/dsh-profile",
+    "category": "tools",
+    "subcategory": "dev"
+  },
+  {
+    "id": "dsh-prompt",
+    "name": "Prompt 管理",
+    "nameEn": "Prompt Manager",
+    "author": "hyzyn",
+    "description": "systemPrompt 可视化管理：编辑、版本管理、A/B 测试与导出分享。配置保存在 ~/.dsh/prompts.yml 的托管区块，启用后作为 systemPrompt section 注入；A/B 开启时按比例随机命中版本。",
+    "descriptionEn": "Visual systemPrompt management: editing, versioning, A/B testing and export/share. Config lives in the managed block of ~/.dsh/prompts.yml; the active prompt is injected as a systemPrompt section, and in A/B mode sessions are routed to a variant by weight.",
+    "repo": "https://github.com/hyzyn/dsh-plugin-kit/tree/main/packages/prompt",
+    "npm": "@hyzyn/dsh-prompt",
+    "category": "tools",
+    "subcategory": "model"
+  },
+  {
+    "id": "dsh-rss",
+    "name": "新闻聚合",
+    "nameEn": "RSS Digest",
+    "author": "hyzyn",
+    "description": "RSS / 新闻聚合：订阅多个 RSS 与 Atom 源，每天自动汇总成一篇「今日值得读」Markdown 并注入 systemPrompt 供模型直接引用；支持分类分组，订阅都在设置卡片里管理。",
+    "descriptionEn": "RSS and news digest: subscribe to multiple RSS and Atom feeds and get a daily \"today's worth reading\" Markdown digest injected into the systemPrompt for the model to cite directly, with category grouping and all feed management in a settings card.",
+    "repo": "https://github.com/hyzyn/dsh-plugin-kit/tree/main/packages/rss",
+    "npm": "@hyzyn/dsh-rss",
+    "category": "knowledge",
+    "subcategory": "reading"
+  },
+  {
+    "id": "dsh-search",
+    "name": "全局搜索",
+    "nameEn": "Global Search",
+    "author": "hyzyn",
+    "description": "侧边栏「全局搜索」入口（⌘/Ctrl+K 也可唤出命令面板）：全文搜索历史会话、Prompt、MCP 工具与设置面板，一键跳转到命中的会话或设置项。",
+    "descriptionEn": "A sidebar Global Search entry with a ⌘/Ctrl+K command palette: full-text search across past sessions, prompts, MCP tools and settings panels, jumping straight to the matching session or setting.",
+    "repo": "https://github.com/hyzyn/dsh-plugin-kit/tree/main/packages/search",
+    "npm": "@hyzyn/dsh-search",
+    "category": "ui",
+    "subcategory": "panel"
+  }
+]
