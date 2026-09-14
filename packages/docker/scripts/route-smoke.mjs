@@ -29,6 +29,16 @@ const host = await import('../lib/index.js')
 const dir = mkdtempSync(join(tmpdir(), 'dsh-docker-smoke-'))
 const fakeBin = join(dir, 'fake-docker')
 
+/** 需关注用例：已退出且非零退出码（inspect 会补上 OOMKilled）。 */
+const PS_BAD_LINE = JSON.stringify({
+  ID: 'bad0c0ffee1234',
+  Image: 'app/broken:latest',
+  Labels: '',
+  Names: 'broken-worker',
+  Ports: '',
+  State: 'exited',
+  Status: 'Exited (137) 4 minutes ago',
+})
 const PS_LINE = JSON.stringify({
   ID: '9f2c1d4e5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d',
   Image: 'nginx:1.27',
@@ -48,6 +58,18 @@ const INSPECT_JSON = JSON.stringify([{
   HostConfig: { RestartPolicy: { Name: 'unless-stopped' } },
   Mounts: [],
   NetworkSettings: { Ports: { '80/tcp': [{ HostIp: '0.0.0.0', HostPort: '8080' }] }, Networks: {} },
+}])
+/** OOM 被杀容器的 inspect（ExitCode 137 + OOMKilled true）。 */
+const INSPECT_BAD_JSON = JSON.stringify([{
+  Id: 'bad0c0ffee1234',
+  Name: '/broken-worker',
+  Image: 'sha256:cafe',
+  RestartCount: 7,
+  State: { Status: 'exited', ExitCode: 137, OOMKilled: true, StartedAt: '2026-09-09T10:00:00Z', FinishedAt: '2026-09-09T10:05:00Z' },
+  Config: { Image: 'app/broken:latest', Cmd: ['node'], Labels: {} },
+  HostConfig: {},
+  Mounts: [],
+  NetworkSettings: { Ports: {}, Networks: {} },
 }])
 const STATS_LINE = JSON.stringify({ ID: '9f2c1d4e5a6b', Name: 'shop-web-1', CPUPerc: '0.50%', MemUsage: '128MiB / 7.66GiB', MemPerc: '1.60%', NetIO: '1kB / 2kB', BlockIO: '0B / 0B', PIDs: '5' })
 const IMAGES_LINE = JSON.stringify({ ID: 'sha256:aaaa1111bbbb2222', Repository: 'nginx', Tag: '1.27', Size: '142MB', CreatedSince: '2 weeks ago' })
@@ -90,8 +112,8 @@ writeFileSync(fakeBin, `#!/bin/sh
 cmd="$1"
 case "$cmd" in
   version) echo "27.3.1" ;;
-  ps) printf '%s\\n' '${PS_LINE}' ;;
-  inspect) printf '%s' '${INSPECT_JSON}' ;;
+  ps) printf '%s\\n' '${PS_LINE}'; printf '%s\\n' '${PS_BAD_LINE}' ;;
+  inspect) case "$*" in *bad0c0ffee*) printf '%s' '${INSPECT_BAD_JSON}' ;; *) printf '%s' '${INSPECT_JSON}' ;; esac ;;
   logs) echo "stdout line 1"; echo "stderr line 1" >&2 ;;
   stats) printf '%s\\n' '${STATS_LINE}' ;;
   images) printf '%s\\n' '${IMAGES_LINE}' ;;
@@ -320,9 +342,9 @@ function toolNames() {
  * 1. 挂载面
  * ------------------------------------------------------------------ */
 
-await test('挂载：注册 10 个只读 agent 工具', () => {
+await test('挂载：注册 11 个只读 agent 工具', () => {
   const names = toolNames().sort()
-  assert.deepEqual(names, ['docker_events', 'docker_image_inspect', 'docker_images', 'docker_inspect', 'docker_logs', 'docker_networks', 'docker_ps', 'docker_stats', 'docker_targets', 'docker_volumes'])
+  assert.deepEqual(names, ['docker_attention', 'docker_events', 'docker_image_inspect', 'docker_images', 'docker_inspect', 'docker_logs', 'docker_networks', 'docker_ps', 'docker_stats', 'docker_targets', 'docker_volumes'])
 })
 
 await test('挂载：注册能力公告 section', () => {
@@ -357,7 +379,7 @@ await test('GET /config：凭证脱敏 + 只读默认 + 复用 tty 连接簿名'
   const direct = config.targets.find((item) => item.name === '直连')
   assert.equal(direct.passwordSet, true)
   assert.equal(direct.passphraseSet, false)
-  assert.deepEqual(config.toolsRegistered.sort(), ['docker_events', 'docker_image_inspect', 'docker_images', 'docker_inspect', 'docker_logs', 'docker_networks', 'docker_ps', 'docker_stats', 'docker_targets', 'docker_volumes'])
+  assert.deepEqual(config.toolsRegistered.sort(), ['docker_attention', 'docker_events', 'docker_image_inspect', 'docker_images', 'docker_inspect', 'docker_logs', 'docker_networks', 'docker_ps', 'docker_stats', 'docker_targets', 'docker_volumes'])
 })
 
 await test('POST /config：未知键被拒绝', async () => {
@@ -397,8 +419,9 @@ await test('POST /containers：解析容器列表', async () => {
   const res = await call('POST', '/containers', { target: '本机', all: true })
   assert.equal(res.status, 200)
   const rows = res.body.containers
-  assert.equal(rows.length, 1)
-  assert.equal(rows[0].name, 'shop-web-1')
+  assert.equal(rows.length, 2) // 正常容器 + OOM 容器
+  const web = rows.find((row) => row.name === 'shop-web-1')
+  assert.ok(web !== undefined)
   assert.equal(rows[0].state, 'running')
   assert.equal(rows[0].health, 'healthy')
   assert.equal(rows[0].composeProject, 'shop')
@@ -797,6 +820,70 @@ await test('agent 工具：docker_targets 探测目标可达性', async () => {
   const remote = value.targets.find((item) => item.name === '远程')
   assert.equal(remote.ok, false)
   assert.ok(typeof remote.error === 'string' && remote.error !== '')
+})
+
+/* ------------------------------------------------------------------ *
+ * 5.5 跨目标聚合 + 需关注（0.15.0）
+ * ------------------------------------------------------------------ */
+
+await test('POST /containers：target=* 返回按目标分组的部分成功结果', async () => {
+  const res = await call('POST', '/containers', { target: '*', all: true })
+  assert.equal(res.status, 200)
+  const groups = res.body.groups
+  assert.equal(Array.isArray(groups), true)
+  assert.equal(groups.length, 3)
+  const local = groups.find((group) => group.target === '本机')
+  assert.equal(local.ok, true)
+  assert.equal(local.data.length, 2) // 正常容器 + OOM 容器
+  // 远程目标走真 SSH（不可达）→ 该组 ok:false，但不影响其他组
+  const remote = groups.find((group) => group.target === '远程')
+  assert.equal(remote.ok, false)
+  assert.ok(typeof remote.error === 'string' && remote.error !== '')
+  assert.equal(groups.find((group) => group.target === '直连').ok, false)
+})
+
+await test('POST /attention：单目标返回需关注列表（OOM 原因来自 inspect）', async () => {
+  const res = await call('POST', '/attention', { target: '本机' })
+  assert.equal(res.status, 200)
+  const items = res.body.items
+  assert.equal(items.length, 1)
+  assert.equal(items[0].name, 'broken-worker')
+  assert.deepEqual(items[0].reasons, ['oom'])
+  assert.equal(items[0].oomKilled, true)
+  assert.equal(items[0].exitCode, 137)
+  assert.equal(items[0].restartCount, 7)
+})
+
+await test('POST /attention：target=* 跨目标聚合，失败目标带 error', async () => {
+  const res = await call('POST', '/attention', { target: '*' })
+  assert.equal(res.status, 200)
+  const groups = res.body.groups
+  assert.equal(groups.length, 3)
+  const local = groups.find((group) => group.target === '本机')
+  assert.equal(local.ok, true)
+  assert.equal(local.data.length, 1)
+  assert.equal(groups.find((group) => group.target === '远程').ok, false)
+})
+
+await test('agent 工具：docker_ps 传 * 返回分组', async () => {
+  const tool = state.tools.find((item) => item.name === 'docker_ps')
+  const value = await tool.execute({ target: '*', all: true })
+  assert.equal(Array.isArray(value.groups), true)
+  const local = value.groups.find((group) => group.target === '本机')
+  assert.equal(local.ok, true)
+  assert.equal(local.containers.length, 2)
+  assert.equal(value.groups.find((group) => group.target === '远程').ok, false)
+})
+
+await test('agent 工具：docker_attention 单目标与跨目标', async () => {
+  const tool = state.tools.find((item) => item.name === 'docker_attention')
+  assert.ok(tool !== undefined, 'docker_attention 未注册')
+  const single = await tool.execute({ target: '本机' })
+  assert.equal(single.items.length, 1)
+  assert.deepEqual(single.items[0].reasons, ['oom'])
+  const all = await tool.execute({ target: '*' })
+  assert.equal(Array.isArray(all.groups), true)
+  assert.equal(all.groups.find((group) => group.target === '本机').items.length, 1)
 })
 
 /* ------------------------------------------------------------------ *

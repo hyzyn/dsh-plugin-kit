@@ -542,6 +542,8 @@
   display: flex;
   flex: 1 1 auto;
   min-height: 0;
+  /* 过渡浮层与顶部进度条的定位基准 */
+  position: relative;
 }
 
 .dk_main {
@@ -555,6 +557,113 @@
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: var(--dk-gap-lg);
+  /* 切目标时数据整批换掉：淡入 + 轻微上移，让「换了一批内容」看得见 */
+  animation: dk_dataIn .2s var(--dk-ease) both;
+}
+
+/*
+ * 「正在切目标」：正文压暗 + 锁住指针（pointer-events: none 只挡内容，外层 .dk_main
+ * 仍可滚动）。保留可读是刻意的——比起白屏，用户更希望还能看着刚才那批卡片，
+ * 只是知道「这不是新目标的」、此时点不动。
+ */
+/*
+ * 「正在切目标」的旧数据：82% + 轻度去色，而不是 42% 纯压暗。
+ * 语义差别——42% 读作「坏了 / 被禁用」，82% + 去色读作「这是另一批内容」，
+ * 与「正在换一批数据」是一回事；可读性也保住（还要能看清容器名）。
+ * pointer-events: none 是安全底线：不加锁时点「停止」会拿新目标当目标、
+ * 用旧列表的容器 ID 发命令。
+ */
+.dk_body[data-stale="1"] .dk_main {
+  opacity: .82;
+  filter: saturate(.55);
+  pointer-events: none;
+  user-select: none;
+}
+
+.dk_body .dk_main {
+  transition: opacity var(--dk-dur) var(--dk-ease), filter var(--dk-dur) var(--dk-ease);
+}
+
+/*
+ * 正文顶部的过渡层：一条 2px 流光进度条（::before）+ 一枚居中的蓝色状态胶囊。
+ * 绝对定位 → 不占文档流，切换时首卡位置与滚动高度都不变；自身不吃指针事件（不挡滚动）。
+ */
+.dk_switchOverlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 4;
+  display: flex;
+  justify-content: center;
+  padding-top: var(--dk-gap-sm);
+  pointer-events: none;
+}
+
+/* 顶部 2px 不定长进度条：面板级「正在取数」信号 */
+.dk_switchOverlay::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background-image: linear-gradient(90deg, transparent, var(--dk-accent), transparent);
+  background-size: 35% 100%;
+  background-repeat: no-repeat;
+  animation: dk_indeterminate 1.15s linear infinite;
+}
+
+/* 状态胶囊：蓝色（强调色）表达「进行中」，底色是强调色掺入当前表面 */
+.dk_switchPill {
+  display: flex;
+  align-items: center;
+  gap: var(--dk-gap-sm);
+  flex: none;
+  min-width: 0;
+  max-width: min(400px, 38vw);
+  padding: 4px var(--dk-gap-lg);
+  border: 1px solid color-mix(in srgb, var(--dk-accent) 42%, transparent);
+  border-radius: var(--dk-r-pill);
+  background: color-mix(in srgb, var(--dk-accent) 12%, var(--dk-surface-solid));
+  backdrop-filter: blur(6px);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .10);
+  font-size: 12px;
+  color: var(--dk-accent);
+}
+
+.dk_switchText {
+  display: flex;
+  align-items: baseline;
+  gap: var(--dk-gap-sm);
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dk_switchText strong { color: var(--dk-accent); font-weight: 600; }
+/* 「·」与「当前显示：」稍微压淡一点，与两个目标名区分层次（仍在蓝色系内） */
+.dk_switchDot,
+.dk_switchSub { color: color-mix(in srgb, var(--dk-accent) 72%, var(--dk-label-2)); }
+.dk_switchName { color: var(--dk-accent); }
+.dk_spinSm { width: 10px; height: 10px; color: var(--dk-accent); }
+
+/* 进入：8px 上滑 + 淡入，让「换了一批内容」有方向感（不是闪一下） */
+@keyframes dk_dataIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes dk_indeterminate {
+  from { background-position: -40% 0; }
+  to { background-position: 140% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dk_grid { animation: none; }
+  .dk_switchOverlay::before { animation: none; background-position: 50% 0; }
+  .dk_body .dk_main { transition: none; }
 }
 
 .dk_card {
@@ -709,6 +818,27 @@
   color: var(--dk-label-2);
   font-size: 11px;
 }
+
+/* 需关注原因徽标（总览异常表） */
+.dk_reasons { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+
+.dk_reason {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--dk-r-xs);
+  background: var(--dk-surface-3);
+  color: var(--dk-label-2);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.dk_reason[data-reason="oom"] { background: color-mix(in srgb, var(--dk-danger) 18%, transparent); color: var(--dk-danger); }
+.dk_reason[data-reason="dead"] { background: color-mix(in srgb, var(--dk-danger) 14%, transparent); color: var(--dk-danger); }
+.dk_reason[data-reason="unhealthy"] { background: color-mix(in srgb, var(--dk-danger) 12%, transparent); color: var(--dk-danger); }
+.dk_reason[data-reason="restarting"] { background: color-mix(in srgb, var(--dk-warn) 16%, transparent); color: var(--dk-warn); }
+.dk_reason[data-reason="exit-nonzero"] { background: color-mix(in srgb, var(--dk-warn) 12%, transparent); color: var(--dk-warn); }
 
 /* ============================ 容器详情（整栏） ============================ */
 
@@ -1151,16 +1281,55 @@
 .dk_card[data-picked="1"] { border-color: var(--dk-accent); box-shadow: var(--dk-ring); }
 
 /* 聚合操作条：夹在工具条与正文之间的一条横栏，计数靠左、按钮靠右 */
+/* 选择态操作条：第一行是计数 + 动作，第二行是「按条件选中」chips */
 .dk_pickBar {
   display: flex;
-  align-items: center;
-  gap: var(--dk-gap-md);
+  flex-direction: column;
+  gap: var(--dk-gap-sm);
   flex: 0 0 auto;
-  flex-wrap: wrap;
   padding: var(--dk-gap-sm) var(--dk-gap-lg);
   border-bottom: 1px solid var(--dk-border);
   background: var(--dk-surface-2);
 }
+
+.dk_pickRow {
+  display: flex;
+  align-items: center;
+  gap: var(--dk-gap-md);
+  flex-wrap: wrap;
+}
+
+.dk_pickPresets {
+  display: flex;
+  align-items: center;
+  gap: var(--dk-gap-sm);
+  flex-wrap: wrap;
+}
+
+.dk_pickPresetsLabel {
+  font-size: 11px;
+  color: var(--dk-label-3);
+}
+
+/* 条件 chip：与 pill 同族的轻量按钮（一行放得下 5~6 个） */
+.dk_chip {
+  height: var(--dk-h-sm);
+  padding: 0 var(--dk-gap-md);
+  border: 1px solid var(--dk-border-strong);
+  border-radius: var(--dk-r-pill);
+  background: var(--dk-surface-solid);
+  color: var(--dk-label-2);
+  font-size: 11px;
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background var(--dk-dur) var(--dk-ease), color var(--dk-dur) var(--dk-ease), border-color var(--dk-dur) var(--dk-ease);
+}
+
+.dk_chip:hover { background: var(--dk-hover); color: var(--dk-label); border-color: var(--dk-accent); }
+.dk_chip:focus-visible { outline: none; box-shadow: var(--dk-ring); }
+.dk_chipQuiet { border-color: var(--dk-border); color: var(--dk-label-3); }
+.dk_pickNotice { margin-left: auto; }
 
 .dk_pickCount {
   font-size: 12px;
@@ -1378,20 +1547,37 @@
   white-space: nowrap;
 }
 
-.dk_ovCardCounts { display: flex; flex-wrap: wrap; gap: var(--dk-gap-lg); }
+/*
+ * 计数区：**两列网格 + 固定宽度的数字槽**。
+ * 原来是 flex-wrap：四项换行后每项宽度随内容变（「21 运行中」比「0 不健康」宽），
+ * 第二列就跟着内容左右错开，看起来「文字没对齐」。
+ *   - 网格保证同一列的起点一致（两行两列对齐）；
+ *   - 数字槽固定宽 + 右对齐 + tabular-nums，保证「21」与「0」之后的标签也在同一 x
+ *     （12px 容器字号下 2.8ch ≈ 34px，够放三位数；真超过时标签右移一位，可接受）。
+ */
+.dk_ovCardCounts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--dk-gap-sm) var(--dk-gap-lg);
+}
 
 .dk_ovCount {
-  display: flex;
+  display: grid;
+  grid-template-columns: 2.8ch auto;
   align-items: baseline;
-  gap: 4px;
+  gap: var(--dk-gap-xs);
+  min-width: 0;
   font-size: 12px;
   color: var(--dk-label-3);
 }
+
+.dk_ovCountLabel { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .dk_ovCountValue {
   font-size: 16px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+  text-align: right;
   color: var(--dk-label);
 }
 

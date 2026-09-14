@@ -57,7 +57,7 @@ const KNOWN_CONFIG_KEYS = new Set([
  * ------------------------------------------------------------------ */
 const ROUTE_PREFIX = '/api/dsh-docker';
 const BODY_LIMIT = 1024 * 1024;
-const DOCKER_GUIDANCE = '本机已安装 dsh-docker 插件（Docker 容器面板）：Web GUI 侧边栏「容器」入口可查看各目标（本机 / SSH 主机）上的容器列表（含 Compose 项目视图、事件「活动」条）、状态、端口、日志（含实时跟随）与资源占用（含实时跟随 + 迷你趋势图），以及镜像列表与镜像详情（层 / 大小 / 构建历史、拉取进度流）、网络与卷（列表 + 详情；删除 / 清理同样在开关之后）；目标在 设置 → 插件 → Docker 容器面板 里维护（SSH 目标可直接引用 tty 终端面板的连接簿条目）。**默认只读**：启动/停止/重启/删除容器、删除镜像 / 清理 dangling / 拉取镜像、docker exec，都需要用户在设置里显式打开「允许变更操作」「允许 exec」后才有对应工具与按钮。agent 侧配套只读工具 docker_targets（列目标）、docker_ps（列容器，含 compose 项目与服务）、docker_inspect（容器详情）、docker_logs（日志快照）、docker_stats（CPU/内存/IO 快照）、docker_images（镜像列表）、docker_image_inspect（镜像详情 + 构建历史）、docker_events（容器事件快照，见面板容器列表的「活动」条）、docker_networks（网络列表）、docker_volumes（卷列表）；排障推荐顺序 docker_ps → docker_logs → docker_inspect → docker_stats → docker_events，镜像排查用 docker_images → docker_image_inspect。docker_action（容器生命周期）、docker_image_remove（删镜像）、docker_image_prune（清理 dangling）、docker_image_pull（拉取镜像）、docker_exec 仅在用户打开对应开关后可用，执行前须确认目标，破坏性操作（容器 remove / 镜像删除与清理）要向用户复述后果。网络 / 卷的删除与 prune 目前只提供面板按钮（HTTP 端点），没有对应的 agent 工具——不要在 agent 侧绕过面板做这些变更。docker socket 等价于目标主机的 root 权限，不要在用户未明确要求时执行变更操作。';
+const DOCKER_GUIDANCE = '本机已安装 dsh-docker 插件（Docker 容器面板）：Web GUI 侧边栏「容器」入口可查看各目标（本机 / SSH 主机）上的容器列表（含 Compose 项目视图、事件「活动」条）、状态、端口、日志（含实时跟随）与资源占用（含实时跟随 + 迷你趋势图），以及镜像列表与镜像详情（层 / 大小 / 构建历史、拉取进度流）、网络与卷（列表 + 详情；删除 / 清理同样在开关之后）；目标在 设置 → 插件 → Docker 容器面板 里维护（SSH 目标可直接引用 tty 终端面板的连接簿条目）。**默认只读**：启动/停止/重启/删除容器、删除镜像 / 清理 dangling / 拉取镜像、docker exec，都需要用户在设置里显式打开「允许变更操作」「允许 exec」后才有对应工具与按钮。agent 侧配套只读工具 docker_targets（列目标）、docker_ps（列容器，含 compose 项目与服务；**target 传 `*` 可一次列出所有目标**）、docker_attention（**需关注汇总**：unhealthy / 反复重启 / OOM / 非零退出 / 僵死，同样支持 `*` 跨目标）、docker_inspect（容器详情）、docker_logs（日志快照）、docker_stats（CPU/内存/IO 快照）、docker_images（镜像列表）、docker_image_inspect（镜像详情 + 构建历史）、docker_events（容器事件快照，见面板容器列表的「活动」条）、docker_networks（网络列表）、docker_volumes（卷列表）；排障推荐顺序：不确定从哪台/哪个容器看起时先 docker_attention（可 `*` 跨目标）→ docker_ps → docker_logs → docker_inspect → docker_stats → docker_events，镜像排查用 docker_images → docker_image_inspect。docker_action（容器生命周期）、docker_image_remove（删镜像）、docker_image_prune（清理 dangling）、docker_image_pull（拉取镜像）、docker_exec 仅在用户打开对应开关后可用，执行前须确认目标，破坏性操作（容器 remove / 镜像删除与清理）要向用户复述后果。网络 / 卷的删除与 prune 目前只提供面板按钮（HTTP 端点），没有对应的 agent 工具——不要在 agent 侧绕过面板做这些变更。docker socket 等价于目标主机的 root 权限，不要在用户未明确要求时执行变更操作。';
 /**
  * SSE 帧封装：data 一律 `JSON.stringify` 成**单行**——换行 / 引号被转义，
  * 多字节字符也不会被 SSE 的 `\n` 行边界截断（客户端 JSON.parse 还原）。
@@ -444,6 +444,65 @@ const plugin = definePlugin({
                 return { error: '尚未配置任何 Docker 目标（设置 → 插件 → Docker 容器面板）' };
             return { error: 'target 必填（已配置多个目标：' + list.map((item) => item.name).join('、') + '）' };
         };
+        /**
+         * 跨目标聚合（0.15.0）：所有目标的容器 / 需关注列表在面板与 agent 工具里共用同
+         * 一套逻辑。三个必须的性质：
+         *   - **并发上限**：ssh exec 扇出太多会互相挤（远端 sshd MaxStartups / 本机 fd）；
+         *   - **单目标超时**：一台网络不通不能把整个聚合页拖住；
+         *   - **错误隔离**：失败的组带上 error 照常返回，其余目标的结果照常可用。
+         */
+        const AGG_CONCURRENCY = 4;
+        const AGG_TIMEOUT_MS = 45_000;
+        async function mapLimit(items, limit, run) {
+            const results = new Array(items.length);
+            let cursor = 0;
+            const workers = new Array(Math.min(Math.max(limit, 1), Math.max(items.length, 1))).fill(null).map(async () => {
+                for (;;) {
+                    const index = cursor;
+                    cursor += 1;
+                    if (index >= items.length)
+                        return;
+                    results[index] = await run(items[index], index);
+                }
+            });
+            await Promise.all(workers);
+            return results;
+        }
+        /** 在所有（或指定）目标上跑同一件事，返回按目标分组的「部分成功」结果。 */
+        const aggregateAcrossTargets = async (names, run) => {
+            return await mapLimit(names, AGG_CONCURRENCY, async (name) => {
+                const built = apiFor(name);
+                const resolved = built.resolved;
+                const label = resolved === undefined
+                    ? name
+                    : (resolved.kind === 'local' ? '本机' : sshTarget(resolved.spec));
+                if (built.api === undefined)
+                    return { target: name, label, ok: false, error: built.error ?? '无法构造执行通道' };
+                const api = built.api;
+                let timer = null;
+                try {
+                    const timeout = new Promise((_resolve, reject) => {
+                        timer = setTimeout(() => reject(new Error(`聚合超时（>${String(AGG_TIMEOUT_MS / 1000)}s）`)), AGG_TIMEOUT_MS);
+                        timer.unref?.();
+                    });
+                    const data = await Promise.race([run(api, name), timeout]);
+                    return { target: name, label, ok: true, data };
+                }
+                catch (error) {
+                    return { target: name, label, ok: false, error: error instanceof Error ? error.message : String(error) };
+                }
+                finally {
+                    if (timer !== null)
+                        clearTimeout(timer);
+                }
+            });
+        };
+        /** 目标名列表：'*' / 空 表示全部（保持配置顺序）。 */
+        const targetsFor = (input) => {
+            if (typeof input === 'string' && input.trim() !== '' && input.trim() !== '*')
+                return [input.trim()];
+            return targetsNow().map((item) => item.name);
+        };
         /* ---------- 配置快照（凭证不外泄） ---------- */
         const snapshotTarget = (target) => ({
             name: target.name,
@@ -618,6 +677,55 @@ const plugin = definePlugin({
             return 'Docker 目标：' + rows.map((row) => {
                 const state = row.ok === undefined ? '' : row.ok ? ' [可达]' : ` [不可用：${row.error ?? '未知'}]`;
                 return `\n- ${row.name} (${row.kind}) ${row.label}${state}`;
+            }).join('');
+        };
+        /** 跨目标容器渲染：按目标分组，失败的目标单独一行说明（部分成功也要可读）。 */
+        const renderAggregatedContainers = (groups) => {
+            if (groups.length === 0)
+                return '尚未配置任何 Docker 目标（设置 → 插件 → Docker 容器面板）。';
+            const total = groups.reduce((sum, group) => sum + (group.containers?.length ?? 0), 0);
+            const failed = groups.filter((group) => !group.ok);
+            const head = `所有目标共 ${String(total)} 个容器（${String(groups.length)} 个目标${failed.length > 0 ? `，${String(failed.length)} 个不可达` : ''}）：`;
+            return head + groups.map((group) => {
+                if (!group.ok)
+                    return `\n\n■ ${group.target}（${group.label}）— 不可用：${group.error ?? '未知错误'}`;
+                const rows = group.containers ?? [];
+                return `\n\n■ ${group.target}（${group.label}）— ${String(rows.length)} 个容器` + rows.map((row) => {
+                    const ports = row.ports.length === 0
+                        ? ''
+                        : ' ports=' + row.ports.map((p) => (p.hostPort === undefined ? `${String(p.containerPort)}/${p.protocol}` : `${String(p.hostPort)}→${String(p.containerPort)}/${p.protocol}`)).join(',');
+                    const health = row.health === null ? '' : ` health=${row.health}`;
+                    return `\n- ${row.name} [${row.state}]${health} image=${row.image}${ports} id=${row.shortId}`;
+                }).join('');
+            }).join('');
+        };
+        const ATTENTION_LABEL = {
+            unhealthy: '不健康',
+            restarting: '反复重启',
+            oom: '被 OOM 杀',
+            'exit-nonzero': '非零退出',
+            dead: '僵死',
+        };
+        /** 需关注列表渲染（单目标 / 跨目标共用）。 */
+        const renderAttention = (groups) => {
+            const total = groups.reduce((sum, group) => sum + (group.items?.length ?? 0), 0);
+            if (total === 0 && groups.every((group) => group.ok))
+                return '所有目标上没有需要关注的容器（无 unhealthy / 重启中 / OOM / 非零退出）。';
+            return `需关注容器共 ${String(total)} 个：` + groups.map((group) => {
+                if (!group.ok)
+                    return `\n\n■ ${group.target}（${group.label}）— 不可用：${group.error ?? '未知错误'}`;
+                const items = group.items ?? [];
+                if (items.length === 0)
+                    return `\n\n■ ${group.target}（${group.label}）— 无异常`;
+                return `\n\n■ ${group.target}（${group.label}）` + items.map((item) => {
+                    const reasons = item.reasons.map((reason) => ATTENTION_LABEL[reason] ?? reason).join(' + ');
+                    const extra = [
+                        item.exitCode === null ? '' : `exit=${String(item.exitCode)}`,
+                        item.restartCount === null ? '' : `restarts=${String(item.restartCount)}`,
+                        item.oomKilled ? 'OOMKilled=true' : '',
+                    ].filter((part) => part !== '').join(' ');
+                    return `\n- ${item.name} [${item.state}${item.health === null ? '' : '/' + item.health}] ${reasons} image=${item.image}${extra === '' ? '' : ' ' + extra} id=${item.shortId}`;
+                }).join('');
             }).join('');
         };
         const renderContainers = (target, rows) => {
@@ -795,17 +903,19 @@ const plugin = definePlugin({
             }));
             add('docker_ps', defineTool({
                 name: 'docker_ps',
-                description: '列出某个目标上的容器（默认只列运行中的；all:true 含已停止）。返回名称/状态/健康/镜像/端口/compose 项目/短 ID。排障第一步。',
-                parameters: { target: targetParam, all: { type: 'boolean', description: 'true 时包含已停止容器（默认 false）' } },
+                description: '列出容器（默认只列运行中的；all:true 含已停止）。**target 传 `*` = 一次列出所有目标**（跨主机，按目标分组返回，单个目标不可达不影响其他目标）。排障第一步。',
+                parameters: {
+                    target: { type: 'string', description: '目标名；传 `*` 或省略（仅一个目标时）表示当前目标/全部目标（docker_targets 列出）' },
+                    all: { type: 'boolean', description: 'true 时包含已停止容器（默认 false）' },
+                },
                 output: {
                     schema: {
                         type: 'object',
                         additionalProperties: false,
                         properties: {
-                            target: { type: 'string', required: true },
+                            target: { type: 'string' },
                             containers: {
                                 type: 'array',
-                                required: true,
                                 items: {
                                     type: 'object',
                                     additionalProperties: false,
@@ -822,15 +932,73 @@ const plugin = definePlugin({
                                     },
                                 },
                             },
+                            groups: {
+                                type: 'array',
+                                items: {
+                                    type: 'object',
+                                    additionalProperties: false,
+                                    properties: {
+                                        target: { type: 'string', required: true },
+                                        label: { type: 'string', required: true },
+                                        ok: { type: 'boolean', required: true },
+                                        error: { type: 'string' },
+                                        containers: {
+                                            type: 'array',
+                                            items: {
+                                                type: 'object',
+                                                additionalProperties: false,
+                                                properties: {
+                                                    id: { type: 'string', required: true },
+                                                    name: { type: 'string', required: true },
+                                                    image: { type: 'string', required: true },
+                                                    state: { type: 'string', required: true },
+                                                    status: { type: 'string', required: true },
+                                                    health: { type: 'string' },
+                                                    ports: { type: 'string' },
+                                                    composeProject: { type: 'string' },
+                                                    composeService: { type: 'string' },
+                                                },
+                                            },
+                                        },
+                                    },
+                                },
+                            },
                         },
                     },
                     render: (_args, value) => {
                         const v = value;
+                        if (Array.isArray(v.groups))
+                            return [{ type: 'text', text: renderAggregatedContainers(v.groups) }];
                         return [{ type: 'text', text: renderContainers(v.target ?? '?', v.containers ?? []) }];
                     },
                 },
                 async execute(args) {
                     const input = (args ?? {});
+                    const isAll = typeof input.target === 'string' && input.target.trim() === '*';
+                    const toRow = (row) => ({
+                        id: row.id,
+                        name: row.name,
+                        image: row.image,
+                        state: row.state,
+                        status: row.status,
+                        ...(row.health === null ? {} : { health: row.health }),
+                        ports: row.ports.map((p) => (p.hostPort === undefined ? `${String(p.containerPort)}/${p.protocol}` : `${String(p.hostPort)}→${String(p.containerPort)}/${p.protocol}`)).join(','),
+                        ...(row.composeProject === null ? {} : { composeProject: row.composeProject }),
+                        ...(row.composeService === null ? {} : { composeService: row.composeService }),
+                    });
+                    if (isAll || (input.target === undefined && targetsNow().length > 1)) {
+                        const names = targetsFor('*');
+                        const collected = await aggregateAcrossTargets(names, (targetApi) => targetApi.listContainers(input.all === true));
+                        return {
+                            groups: collected.map((group) => ({
+                                target: group.target,
+                                label: group.label,
+                                ok: group.ok,
+                                ...(group.error === undefined ? {} : { error: group.error }),
+                                ...(group.data === undefined ? {} : { containers: group.data.map(toRow) }),
+                            })),
+                        };
+                    }
                     const picked = pickTarget(input.target);
                     if (picked.name === undefined)
                         throw new Error(picked.error ?? '无效的 target');
@@ -838,20 +1006,116 @@ const plugin = definePlugin({
                     if (api === undefined)
                         throw new Error(resolveByName(picked.name).error ?? '无法构造执行通道');
                     const containers = await api.listContainers(input.all === true);
-                    return {
-                        target: picked.name,
-                        containers: containers.map((row) => ({
-                            id: row.id,
-                            name: row.name,
-                            image: row.image,
-                            state: row.state,
-                            status: row.status,
-                            ...(row.health === null ? {} : { health: row.health }),
-                            ports: row.ports.map((p) => (p.hostPort === undefined ? `${String(p.containerPort)}/${p.protocol}` : `${String(p.hostPort)}→${String(p.containerPort)}/${p.protocol}`)).join(','),
-                            ...(row.composeProject === null ? {} : { composeProject: row.composeProject }),
-                            ...(row.composeService === null ? {} : { composeService: row.composeService }),
-                        })),
-                    };
+                    return { target: picked.name, containers: containers.map(toRow) };
+                },
+            }));
+            add('docker_attention', defineTool({
+                name: 'docker_attention',
+                description: '列出「需要关注」的容器：不健康（unhealthy）/ 反复重启 / 被 OOM 杀 / 非零退出 / 僵死。target 传 `*` 时**跨所有目标聚合**（单目标不可达不影响其他目标）。排障入口：不确定从哪台机器看起时先调它。',
+                parameters: {
+                    target: { type: 'string', description: '目标名；传 `*` 表示全部目标（docker_targets 列出）' },
+                    limit: { type: 'number', description: '每个目标最多返回多少条（1~500，默认 100）' },
+                },
+                output: {
+                    schema: {
+                        type: 'object',
+                        additionalProperties: false,
+                        properties: {
+                            target: { type: 'string' },
+                            items: {
+                                type: 'array',
+                                items: {
+                                    type: 'object',
+                                    additionalProperties: false,
+                                    properties: {
+                                        id: { type: 'string', required: true },
+                                        name: { type: 'string', required: true },
+                                        image: { type: 'string', required: true },
+                                        state: { type: 'string', required: true },
+                                        health: { type: 'string' },
+                                        reasons: { type: 'array', required: true, items: { type: 'string' } },
+                                        exitCode: { type: 'number' },
+                                        oomKilled: { type: 'boolean' },
+                                        restartCount: { type: 'number' },
+                                    },
+                                },
+                            },
+                            groups: {
+                                type: 'array',
+                                items: {
+                                    type: 'object',
+                                    additionalProperties: false,
+                                    properties: {
+                                        target: { type: 'string', required: true },
+                                        label: { type: 'string', required: true },
+                                        ok: { type: 'boolean', required: true },
+                                        error: { type: 'string' },
+                                        items: {
+                                            type: 'array',
+                                            items: {
+                                                type: 'object',
+                                                additionalProperties: false,
+                                                properties: {
+                                                    id: { type: 'string', required: true },
+                                                    name: { type: 'string', required: true },
+                                                    image: { type: 'string', required: true },
+                                                    state: { type: 'string', required: true },
+                                                    health: { type: 'string' },
+                                                    reasons: { type: 'array', required: true, items: { type: 'string' } },
+                                                    exitCode: { type: 'number' },
+                                                    oomKilled: { type: 'boolean' },
+                                                    restartCount: { type: 'number' },
+                                                },
+                                            },
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                    render: (_args, value) => {
+                        const v = value;
+                        if (Array.isArray(v.groups))
+                            return [{ type: 'text', text: renderAttention(v.groups) }];
+                        return [{ type: 'text', text: renderAttention([{ target: v.target ?? '?', label: v.target ?? '?', ok: true, items: v.items ?? [] }]) }];
+                    },
+                },
+                async execute(args) {
+                    const input = (args ?? {});
+                    const limit = typeof input.limit === 'number' && Number.isInteger(input.limit) ? input.limit : undefined;
+                    const toRow = (item) => ({
+                        id: item.shortId,
+                        name: item.name,
+                        image: item.image,
+                        state: item.state,
+                        ...(item.health === null ? {} : { health: item.health }),
+                        reasons: item.reasons,
+                        ...(item.exitCode === null ? {} : { exitCode: item.exitCode }),
+                        oomKilled: item.oomKilled,
+                        ...(item.restartCount === null ? {} : { restartCount: item.restartCount }),
+                    });
+                    const isAll = typeof input.target === 'string' && input.target.trim() === '*';
+                    if (isAll || (input.target === undefined && targetsNow().length > 1)) {
+                        const names = targetsFor('*');
+                        const collected = await aggregateAcrossTargets(names, (targetApi) => targetApi.attention(limit === undefined ? undefined : { limit }));
+                        return {
+                            groups: collected.map((group) => ({
+                                target: group.target,
+                                label: group.label,
+                                ok: group.ok,
+                                ...(group.error === undefined ? {} : { error: group.error }),
+                                ...(group.data === undefined ? {} : { items: group.data.map(toRow) }),
+                            })),
+                        };
+                    }
+                    const picked = pickTarget(input.target);
+                    if (picked.name === undefined)
+                        throw new Error(picked.error ?? '无效的 target');
+                    const { api } = apiFor(picked.name);
+                    if (api === undefined)
+                        throw new Error(resolveByName(picked.name).error ?? '无法构造执行通道');
+                    const items = await api.attention(limit === undefined ? undefined : { limit });
+                    return { target: picked.name, items: items.map(toRow) };
                 },
             }));
             add('docker_inspect', defineTool({
@@ -1917,6 +2181,25 @@ const plugin = definePlugin({
                             writeJson(res, 400, { error: 'invalid JSON body' });
                             return;
                         }
+                        // 跨目标聚合（0.15.0）：target='*' 不是目标名，必须在 pickTarget 之前分流，
+                        // 否则会被当成「未知目标」直接 400
+                        const wantsAllTargets = typeof body.target === 'string' && body.target.trim() === '*';
+                        if (wantsAllTargets && (sub === '/containers' || sub === '/attention')) {
+                            const names = targetsFor('*');
+                            try {
+                                if (sub === '/containers') {
+                                    const groups = await aggregateAcrossTargets(names, (targetApi) => targetApi.listContainers(body.all === true));
+                                    writeJson(res, 200, { ok: true, groups });
+                                    return;
+                                }
+                                const groups = await aggregateAcrossTargets(names, (targetApi) => targetApi.attention());
+                                writeJson(res, 200, { ok: true, groups });
+                            }
+                            catch (error) {
+                                writeJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+                            }
+                            return;
+                        }
                         const picked = pickTarget(body.target);
                         if (picked.name === undefined) {
                             writeJson(res, 400, { error: picked.error ?? '无效的 target' });
@@ -1936,6 +2219,10 @@ const plugin = definePlugin({
                                 }
                                 case '/containers': {
                                     writeJson(res, 200, { ok: true, containers: await api.listContainers(body.all === true) });
+                                    return;
+                                }
+                                case '/attention': {
+                                    writeJson(res, 200, { ok: true, items: await api.attention() });
                                     return;
                                 }
                                 case '/inspect': {

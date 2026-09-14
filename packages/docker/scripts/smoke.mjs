@@ -16,13 +16,17 @@ const host = await import('../lib/index.js')
 const exec = await import('../lib/ssh-exec.js')
 
 const results = []
+/** 测试注册表：同步与异步用例统一收集，末尾一起 await（异步断言不会被漏掉）。 */
+const pending = []
 function test(name, fn) {
-  try {
-    fn()
-    results.push({ name, ok: true })
-  } catch (error) {
-    results.push({ name, ok: false, message: error instanceof Error ? error.message : String(error) })
-  }
+  pending.push((async () => {
+    try {
+      await fn()
+      results.push({ name, ok: true })
+    } catch (error) {
+      results.push({ name, ok: false, message: error instanceof Error ? error.message : String(error) })
+    }
+  })())
 }
 
 /* ------------------------------------------------------------------ *
@@ -366,6 +370,76 @@ test('DockerApi：listContainers 失败时抛出可读错误', async () => {
 })
 
 /* ------------------------------------------------------------------ *
+ * 5.5 DockerApi.attention：口径与排序（0.15.0）
+ * ------------------------------------------------------------------ */
+
+test('attention：OOM 优先、同级按最近结束时间倒序、非零退出入列', async () => {
+  const psRows = [
+    JSON.stringify({ ID: 'old1', Names: 'old-exit', Image: 'app:1', State: 'exited', Status: 'Exited (143) 3 months ago' }),
+    JSON.stringify({ ID: 'new2', Names: 'recent-exit', Image: 'app:1', State: 'exited', Status: 'Exited (1) 2 minutes ago' }),
+    JSON.stringify({ ID: 'oom3', Names: 'oom-worker', Image: 'app:1', State: 'exited', Status: 'Exited (137) 1 hour ago' }),
+    JSON.stringify({ ID: 'ok4', Names: 'healthy', Image: 'app:1', State: 'running', Status: 'Up 3 days (healthy)' }),
+  ]
+  const inspect = (ids) => JSON.stringify(ids.map((id) => ({
+    Id: id,
+    Name: '/' + id,
+    Image: 'sha256:x',
+    RestartCount: id === 'oom3' ? 5 : 0,
+    State: {
+      Status: 'exited',
+      ExitCode: id === 'oom3' ? 137 : (id === 'new2' ? 1 : 143),
+      OOMKilled: id === 'oom3',
+      StartedAt: '2026-09-01T00:00:00Z',
+      FinishedAt: id === 'old1' ? '2026-06-01T00:00:00Z' : (id === 'new2' ? '2026-09-09T10:00:00Z' : '2026-09-09T08:00:00Z'),
+    },
+    Config: { Image: 'app:1' },
+    HostConfig: {},
+    Mounts: [],
+    NetworkSettings: { Ports: {}, Networks: {} },
+  })))
+  const runner = {
+    label: 'fake',
+    async run(argv) {
+      const joined = argv.join(' ')
+      if (joined.includes('ps ')) return { code: 0, stdout: psRows.join('\n'), stderr: '', timedOut: false, truncated: false, durationMs: 1 }
+      if (joined.includes('inspect')) {
+        const ids = argv.slice(3)
+        return { code: 0, stdout: inspect(ids), stderr: '', timedOut: false, truncated: false, durationMs: 1 }
+      }
+      return { code: 0, stdout: '', stderr: '', timedOut: false, truncated: false, durationMs: 1 }
+    },
+  }
+  const api = new docker.DockerApi(runner, 'docker', { timeoutMs: 1000, maxBytes: 65536 })
+  const items = await api.attention()
+  assert.deepEqual(items.map((item) => item.name), ['oom-worker', 'recent-exit', 'old-exit'], 'OOM 最前，其余按最近结束时间倒序')
+  assert.equal(items[0].oomKilled, true)
+  assert.equal(items[0].reasons.includes('oom'), true)
+  assert.equal(items[0].restartCount, 5)
+  assert.equal(items[1].exitCode, 1)
+  assert.deepEqual(items[1].reasons, ['exit-nonzero'])
+  // 健康的运行中容器不该入列
+  assert.equal(items.some((item) => item.name === 'healthy'), false)
+})
+
+test('attention：inspect 不可用时退回摘要口径（不抛错）', async () => {
+  const runner = {
+    label: 'fake',
+    async run(argv) {
+      const joined = argv.join(' ')
+      if (joined.includes('ps ')) {
+        return { code: 0, stdout: JSON.stringify({ ID: 'x', Names: 'unhealthy-web', Image: 'app:1', State: 'running', Status: 'Up 1m (unhealthy)' }), stderr: '', timedOut: false, truncated: false, durationMs: 1 }
+      }
+      return { code: 1, stdout: '', stderr: 'permission denied', timedOut: false, truncated: false, durationMs: 1 }
+    },
+  }
+  const api = new docker.DockerApi(runner, 'docker', { timeoutMs: 1000, maxBytes: 65536 })
+  const items = await api.attention()
+  assert.equal(items.length, 1)
+  assert.deepEqual(items[0].reasons, ['unhealthy'])
+  assert.equal(items[0].oomKilled, false)
+})
+
+/* ------------------------------------------------------------------ *
  * 6. 配置清洗与目标解析
  * ------------------------------------------------------------------ */
 
@@ -611,6 +685,8 @@ test('DockerApi：imageInspect / imageRemove 拒绝非法引用（不触达执�
 /* ------------------------------------------------------------------ *
  * 7. 结果
  * ------------------------------------------------------------------ */
+
+await Promise.all(pending)
 
 let failed = 0
 for (const result of results) {
