@@ -1,37 +1,14 @@
 # @hyzyn/dsh-tty
 
-DSH Web GUI 的**终端面板**插件：侧边栏「终端」入口打开一个大弹窗，内嵌
-xterm.js 全交互终端（node-pty 真实 PTY，WebGL 渲染器加速），支持**多标签页**，
-可运行任意命令与 TUI 程序（vim / htop / dev server 等）。浏览器半体打包了 xterm
-内核，宿主半体经 WebSocket 与 PTY 会话双向透传。0.2.0 起支持 **SSH 连接**：
-`ssh2` 原生直连远程主机，像本地终端一样交互；0.3.0 起支持
-**断线自动重连**与 **SSH 主机指纹 TOFU 钉扎**；0.4.0 起内置 **shell 集成
-（OSC 133/7）**——agent 能按「命令」粒度读写终端（`tty_capture{last}` /
-`tty_expect`），并支持 **agent forwarding**、**~/.ssh/config 导入** 等深化
-能力；0.5.0 起内置**端口转发管理**——连接簿条目配隧道（-L/-R 两向），宿主
-自持连接、断线自动重连、状态徽标（见下文）；0.6.0 起 **bash 3.2（macOS
-自带）补全命令开始标记**（DEBUG trap 兜底，`tty_capture{last}` /
-`tty_expect` 早停恢复可用），设置卡片 **Shell 路径可选可输入**；0.7.0 起内置
-**SFTP 文件传输**——SSH 连接的远程目录浏览与上传/下载/新建目录/重命名/删除
-（面板「文件浏览」对话框 + agent `sftp_*` 工具，见下文）；0.8.0 起面板支持
-**拖拽上传**（文件与文件夹直接拖入，递归展开目录结构逐级上传），agent 侧
-补齐**管理闭环**：`sftp_mkdir`（parents 逐级补齐）/ `sftp_rename`（跨目录
-移动）/ `sftp_remove`（递归删除）/ `sftp_tree`（限深递归列举）；0.9.0 起
-**SFTP 界面可选双栏风格**（左本机 / 右远程、行内直传，宿主服务端对拷），
-面板头部压缩为「标签行 + SSH 连接栏」两行；0.10.0 起支持**会话持久化
-（tmux）**——「持久终端」标签由 tmux server（专用 socket）托管，断线保活
-超时、甚至宿主重启后重开标签即按名接回原现场（正在跑的程序原样存活），
-SSH 侧同理（远程 tmux）；0.12.0 起做了一轮**界面视觉 overhaul**——样式表
-独立成 `client-src/tty.css` 并引入 `--tt-*` 令牌层（圆角/控件高度/间距/
-动效统一，颜色全部派生自 DSH 皮肤 token，明暗主题自动跟随）、图标全面矢量
-化、遮罩/toast/SFTP/连接栏等交互面重排，并新增 `pnpm preview` 截图回归
-工具（见「开发」）；0.11.0 起支持 **SSH 连接测试**——设置卡片连接簿
-条目行内「测试」与 SSH 连接对话框「试连」，按 TCP → 主机密钥（TOFU）→
-认证 逐段诊断连接（见下文 SSH 连接）；SFTP 传输增加**可视化进度条**
-（上传/下载百分比，服务端直传为不定进度脉冲，见下文 SFTP）；0.13.0 / 0.14.0 /
-0.15.0 / 0.16.0 依次开放客户端服务扩展点——连接栏按钮 `ttyConnbar`、命令标签
-`ttyTerminal.open`、就地嵌入终端 `ttyTerminal.mount`、面板内挂载位 `ttyPanel`
-（其他插件把自己的界面挂在终端右侧，终端保持可见，见下文「客户端服务」）；0.17.0 起内置**服务器状态条**——按标签可见性采集/推送所属主机资源（SSH 走同一条连接的非 PTY exec channel，本地走宿主采样），best-effort 展示 CPU / 内存 / 磁盘 / 在线时长 / TCP / 网速 / CPU 温度（见下文）。
+> DSH 侧边栏「终端」面板：xterm.js + **真实 PTY** 的完整终端，本地与 SSH 一视同仁，长任务可断线保活。
+
+## 特性
+
+- **是真终端**：node-pty 真实 PTY + WebGL 渲染，vim / htop / dev server 等 TUI 都能跑；多标签页。
+- **断线不掉现场**：可选 tmux 会话持久化，宿主重启 / 网络抖动后重开即恢复；docker exec 这类「命令标签」会自动重开。
+- **SSH 原生直连**：ssh2 + agent forwarding + 主机指纹 TOFU 钉扎，连接簿统一管理；另有 **SFTP** 上传下载与 **端口转发**（-L / -R，断线自动重连）。
+- **agent 能按「命令」粒度操作终端**：shell 集成（OSC 133/7）让 `tty_capture{last}` / `tty_expect` 拿到「上一条命令」的输出与退出码，而不是抓屏猜。
+- **别的插件可以接进来**：`ttyConnbar`（连接栏动作）与 `ttyTerminal`（就地开终端）两个客户端服务，dsh-docker 的「容器 / 终端」按钮就走它们。
 
 ![终端面板：多标签页 xterm 弹窗，工具栏含搜索/清屏/复制/粘贴，标题栏含最小化「—」与关闭 ✕](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty.png)
 
@@ -407,7 +384,6 @@ ctx.inject(['ttyTerminal'], (c) => {
   形状：非空、单行、长度 ≤2000（换行会破坏本地 `-c` 包装层）。
 - 服务名 `ttyTerminal` 同样未声明在 `Context` 类型面上，按可选依赖注入；tty 未安装
   或版本 < 0.14.0 时不会触发（dsh-docker 会退化为「复制命令」）。
-
 
 ### 就地嵌入终端（`ttyTerminal.mount`，0.15.0）
 

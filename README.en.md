@@ -163,7 +163,7 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 - **Where it is stored**: the managed block of `~/.dsh/prompts.yml`.
 - **Note**: each Prompt must have at least one version, and a single version’s content must be ≤ 500KB.
 
-![Prompt management plugin](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-promat.png)
+![Prompt management plugin](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-prompt.png)
 
 ## Quick Start
 
