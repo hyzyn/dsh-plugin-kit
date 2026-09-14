@@ -1,13 +1,14 @@
 # @hyzyn/dsh-env
 
-DSH Web GUI 的 **环境变量 / 密钥管理插件**：官方 设置 → 插件 里的「环境变量 / 密钥管理」卡片，提供图形化管理。浏览器半体通过核心 `settings.plugin.item` 插槽注册。
+> DSH **设置 → 插件** 里的「环境变量 / 密钥管理」卡片：图形化管理 `~/.dsh/env.yml`（可用 `DSH_ENV_FILE` 覆盖），**密钥明文默认进官方凭据存储**，env 文件不落明文。
 
-配置保存在 `~/.dsh/env.yml`（可用环境变量 `DSH_ENV_FILE` 覆盖）的托管区块中；**密钥条目的明文值默认存入官方凭据存储**（`~/.dsh/.credentials.yaml` 的 refs，经 `ctx.credentials` seam 读写），env 文件只保留清单不落密钥明文。支持：
+## 特性
 
-- 普通字符串值
-- `js:` 前缀的 `!!js` 表达式（如 `js:process.env.API_KEY`、`js:process.env.HOME + '/x'`）——本质是引用，保留在 env 文件
-- 密钥标记：明文值迁入官方凭据存储（write-only），接口不下发到浏览器（list 返回 `value: null` 并带 `storage` 字段），GUI 以密码框显示、留空保存＝保持已存值；文件与接口均不做加密
-- 保存后默认写入当前进程的 `process.env`（凭据存储的值经 `resolve` 桥接），供宿主和后续启动的子进程使用
+- **密钥不落明文**：密钥值写入官方凭据存储（`~/.dsh/.credentials.yaml` 的 refs），env 文件只留清单；接口不下发明文（`value: null`），GUI 以密码框显示，留空保存＝保持原值。
+- **`js:` 表达式当引用**：`js:process.env.API_KEY` 这类表达式留在文件里、由宿主求值（YAML `!!js` 方言，与 dsh 补丁文件一致），不必把密钥写死。
+- **保存即生效**：解析结果写入当前进程的 `process.env`，宿主与后续子进程立刻可用，无需重启。
+- **能整体回退**：宿主没有凭据 seam 或关掉 `secretsInCredentials` 时退回「env 文件单存储」，不会写一半。
+- **安全边界写清楚了**：路由仅 loopback + 同源、env 文件固定 0600，并明确提示不要把 GUI 端口经隧道 / 反代暴露。
 
 ![环境变量 / 密钥管理卡片](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-env.png)
 

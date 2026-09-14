@@ -1,28 +1,14 @@
 # @hyzyn/dsh-mcp
 
-DSH Web GUI 的 **MCP 服务器配置插件**：官方 设置 → 插件 里的「MCP 服务器配置」卡片，提供图形化管理。浏览器半体通过核心 `settings.plugin.item` 插槽注册，与官方终端 / Agent 循环 / 网页搜索卡片同级。
+> DSH **设置 → 插件** 里的「MCP 服务器配置」卡片：图形化维护 MCP 服务器，**保存即热加载**，不用重启宿主。
 
-MCP 服务器在 DSH 里是官方 `@deepseek-ai/dsh-mcp-client` 的插件实例。本插件在
-`~/.dsh/cordis.patch.yml`（home 补丁层，对所有 profile 生效）里维护一段带标记的
-托管区块，每条服务器是一行 `insert` patch；DSH 对该文件注册了 HMR 监听
-（`watchUserPatches`），所以**保存后无需重启宿主进程**即可热加载，工具以
-`mcp__<serverName>__<tool>` 注册给模型。
+## 特性
 
-## 能力
-
-- 设置 → 插件 里的「MCP 服务器配置」卡片（React 外壳 + 纯 DOM 面板，无构建步骤）
-- 两种传输：
-  - **stdio**：command / args / env / cwd（本地子进程服务器，如 `npx -y @modelcontextprotocol/server-filesystem`）
-  - **streamable-http**：url / headers（远程 MCP 服务，支持 SSE 与 session 头）
-- env / headers 值支持 `js:` 前缀的 `!!js` 表达式（如 `js:process.env.GITHUB_TOKEN`，
-  模板串也可用），与 dsh 补丁文件方言一致
-- 连接测试：宿主直说 JSON-RPC（initialize → tools/list），不依赖 MCP SDK，
-  返回协议版本、serverInfo、工具清单与耗时
-- 启用 / 停用（`disabled: true`）、编辑、删除
-- 存活状态徽章（从 loader fiber 读取：运行中 / 已停用 / 错误 / 加载中）
-- 与外部 mcp-client 实例的 serverName 冲突提示
-- agent 能力公告（systemPrompt section，order 150），用户提到「MCP 配置 / MCP 服务器」
-  即指本插件
+- **保存即生效**：改写 `~/.dsh/cordis.patch.yml` 的托管区块，DSH 的 HMR 监听自动重载，工具以 `mcp__<server>__<tool>` 注册给模型。
+- **两种传输都支持**：stdio（command / args / env / cwd）与 streamable-http（url / headers，含 SSE 与 session 头）；值可写 `js:` 表达式，密钥不落补丁文件。
+- **连接测试**：宿主直接说 JSON-RPC（initialize → tools/list），不依赖 MCP SDK，返回协议版本 / serverInfo / 工具清单 / 耗时。
+- **状态与冲突可见**：从 loader fiber 读存活状态（运行中 / 已停用 / 错误 / 加载中），并提示与外部 mcp-client 实例的 serverName 冲突；服务器可启用 / 停用（`disabled: true`）/ 编辑 / 删除。
+- **对 agent 自解释**：注入能力公告（systemPrompt section），提到「MCP 配置 / MCP 服务器」时模型知道指本插件。
 
 ![MCP 服务器配置卡片：添加 / 连接测试 / 热加载](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-mcp.png)
 
