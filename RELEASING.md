@@ -44,6 +44,11 @@ npmjs.com → Access Tokens → Generate New Token（granular）生成：
    只能靠用户来提 issue。写真实版本（如 `^0.1.2`）即可；本地开发靠根 `.npmrc` 的
    `link-workspace-packages=true` 仍然链接到 `packages/*`，体验不变。
    CI 与 Release workflow 都会跑 `node scripts/check-publishable.mjs` 兜底。
+5. 可安装插件的 `dsh.engines.dsh` 声明必须存在且形式正确：只支持 `>=X.Y.Z[-预发布]`
+   一种写法——`^0.1.2` / `~0.1.2` / 两段式 `>=0.1.2-rc.1 <0.2.0` 会被市场判成
+   「无法验证」，而已声明却无法验证是 **fail-closed**（更新被直接拦下），比不声明更糟。
+   SDK cohort 升级时同步提升**全部**包的该字段（新插件从 `templates/hello` 复制，模板
+   也要跟着改）。CI 与 Release workflow 都会跑 `node scripts/check-dsh-engines.mjs` 兜底。
 
 ## 攒批
 

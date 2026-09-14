@@ -38,6 +38,10 @@ jobs:
       # publish 期转换看不出问题），一旦发出去只能靠发新版本补救
       - name: Check no workspace protocol in publishable deps
         run: node scripts/check-publishable.mjs
+      # 发布前最后一道闸：dsh.engines.dsh 写错/写漏的后果在用户侧才暴露（市场显示
+      # 「未知」，或形式不受支持被判为无法验证而拦下更新），发出去只能靠新版本补救
+      - name: Check dsh.engines.dsh declarations
+        run: node scripts/check-dsh-engines.mjs
       - name: Publish to npm
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

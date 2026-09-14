@@ -111,7 +111,7 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 - **MCP integration (on by default)**: DSH’s MCP client does not declare roots, so `codegraph serve --mcp` can only look upward from its working directory for `.codegraph/` — when the host starts in the home directory, `mcp__codegraph__*` calls fail with “No CodeGraph project is loaded”. This plugin manages the codegraph MCP server row in `~/.dsh/cordis.patch.yml` and aligns its cwd with the default project path (the card’s “Set as default project” switches it in one click and the MCP server hot-restarts on save); a row already configured in the MCP card only gets its cwd filled in, other fields are left untouched. Disable with `mcpIntegration: false`.
 - **Where it is stored**: the index lives in the project’s `.codegraph/` directory (created by `codegraph index`); the plugin has no config file of its own.
 - **Note**: the target project needs a Codegraph index first; unindexed projects return guidance to fall back to regular tools. Indexing / rebuilding are local CLI operations that consume real disk and CPU.
-- **Compatibility and tuning**: verified end to end on DSH `0.1.5-rc.2` + codegraph CLI `1.5.0` (declares `engines.dsh: >=0.1.2-rc.1 <0.2.0`); the CLI commands and flags used are listed in the package README. For large repositories, raise `indexTimeoutMs` (default 600s; `cliTimeoutMs` covers query commands, default 60s), and enable `indexForce` when the CLI refuses to index a home directory / filesystem root.
+- **Compatibility and tuning**: verified end to end on DSH `0.1.5-rc.2` + codegraph CLI `1.5.0` (declares `dsh.engines.dsh: >=0.1.2-rc.1`); the CLI commands and flags used are listed in the package README. For large repositories, raise `indexTimeoutMs` (default 600s; `cliTimeoutMs` covers query commands, default 60s), and enable `indexForce` when the CLI refuses to index a home directory / filesystem root.
 
 ![Codegraph settings card](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-codegraph.png)
 
@@ -170,7 +170,7 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 ### System Requirements
 
 - DeepSeek Harness installed and `dsh web` starts normally. The current verified baseline is DSH `0.1.5-rc.2` (host routes, browser half, systemPrompt injections, and the managed MCP row, end to end).
-- Plugins may declare the DSH release line they support via `engines.dsh` (e.g. `@hyzyn/dsh-codegraph` declares `>=0.1.2-rc.1 <0.2.0`); the plugin market reads it to show compatible / incompatible, and an undeclared package shows as “unknown”.
+- Every installable plugin declares the DSH release line it supports via `dsh.engines.dsh` (this repository uses `>=0.1.2-rc.1` across the board); the plugin market reads it to show compatible / incompatible, and an undeclared package shows as “unknown”. **Only the `>=X.Y.Z[-prerelease]` form is supported**: `^0.1.2`, `~0.1.2` or a two-sided `>=0.1.2-rc.1 <0.2.0` all read as “cannot verify”, and a declared-but-unverifiable requirement fails closed — the update is refused outright, which is worse than declaring nothing. CI enforces this with `node scripts/check-dsh-engines.mjs`.
 - No extra requirements for npm installs; installing from this repository requires Node.js >= 22.19 and pnpm 10.
 
 ### Three-Step Setup
