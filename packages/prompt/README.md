@@ -1,25 +1,15 @@
 # @hyzyn/dsh-prompt
 
-DSH Web GUI 的 **Prompt 管理插件**：官方 设置 → 插件 里的「Prompt 管理」卡片，提供 systemPrompt 的可视化编辑、版本管理、A/B 测试、导出/分享。浏览器半体通过核心 `settings.plugin.item` 插槽注册。
+> DSH **设置 → 插件** 里的「Prompt 管理」卡片：可视化编辑 systemPrompt，带版本管理与 A/B 测试。配置存在 `~/.dsh/prompts.yml`（可用 `DSH_PROMPT_FILE` 覆盖）。
 
-配置保存在 `~/.dsh/prompts.yml`（可用环境变量 `DSH_PROMPT_FILE` 覆盖）的托管区块中。
+## 特性
 
-## 能力
+- **多 Prompt × 多版本**：一个 Prompt 可存多份版本，一键存为新版本 / 点一下回滚，旧版本完整保留。
+- **A/B 测试**：按比例随机命中 A/B 版本，用真实使用验证提示词改动。
+- **启用即注入**：选中的 Prompt 作为 `systemPrompt` section 注入，保存即热生效。
+- **导出与分享**：Prompt 可导出带走或分享给别人。
 
-- **可视化编辑 systemPrompt**：在卡片里维护多个 Prompt，每个 Prompt 可包含多份版本内容；启用某个 Prompt 后，其内容会作为 `systemPrompt` section 注入。
-- **版本管理**：
-  - 保存为新版本：编辑内容后一键存为新版本，旧版本完整保留
-  - 切换/回滚：在版本列表点击即可切换激活版本
-  - 版本标签与备注：方便区分 v1 / v2 / 简洁版等
-- **A/B 测试**：
-  - 为同一个 Prompt 选择 A/B 两个版本，设置 A 流量权重（0~100%）
-  - 启用后宿主按权重随机选择一个版本注入 systemPrompt，当前命中可通过 `GET /api/dsh-prompt/active` 查看
-- **导出 / 分享**：
-  - 导出单个或全部 Prompt 为 JSON / Markdown
-  - 一键复制分享 JSON 到剪贴板
-  - 支持从 JSON 文件导入
-
-![Prompt 管理卡片：可视化编辑 / 版本管理 / A/B 测试](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-promat.png)
+![Prompt 管理卡片：可视化编辑 / 版本管理 / A/B 测试](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-prompt.png)
 
 ## 路由
 

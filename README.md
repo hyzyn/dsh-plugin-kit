@@ -166,7 +166,7 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 - **存哪里**：`~/.dsh/prompts.yml` 的托管区块。
 - **注意**：每个 Prompt 至少一个版本，单版本内容 ≤ 500KB。
 
-![Prompt 管理插件](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-promat.png)
+![Prompt 管理插件](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-prompt.png)
 
 ## 快速开始
 

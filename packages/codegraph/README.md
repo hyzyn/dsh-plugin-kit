@@ -1,17 +1,14 @@
 # @hyzyn/dsh-codegraph
 
-DSH Web GUI 的 **Codegraph 集成插件**：官方 设置 → 插件 里的「Codegraph」卡片，提供代码图谱的图形化操作，并托管 codegraph MCP 服务器的项目目录。
+> DSH **设置 → 插件** 里的「Codegraph」卡片：把代码图谱的状态、符号搜索、调用链搬进 GUI，并替你把 codegraph MCP 服务器的项目目录对齐好。
 
-## 功能
+## 特性
 
-- **索引状态**：显示 Codegraph 是否已初始化、版本、文件/符号/边数量、最后索引时间、待同步变更。
-- **符号搜索**：按名字搜索函数、类、常量、接口等符号。
-- **符号详情**：点击搜索结果后自动加载源码、callers、callees、impact。
-- **一键同步**：调用 `codegraph sync` 增量更新索引。
-- **一键重建**：调用 `codegraph index` 全量重建索引。
-- **Agent 提示**：向 systemPrompt 注入 Codegraph 使用提示，模型知道可以用 Codegraph 卡片或 MCP 工具查代码。
-- **跟随当前项目**：控制台默认路径跟随当前活动会话的工作目录，切换项目会话自动切换；手动输入路径可临时覆盖。
-- **MCP 托管**：自动管理 codegraph MCP 服务器行，把 `codegraph serve --mcp` 的工作目录与默认项目路径对齐；卡片「设为默认项目」一键切换，保存即热重启 MCP 服务器（无需重启宿主）。
+- **索引状态一眼懂**：是否已初始化、版本、文件/符号/边数量、最后索引时间、待同步变更。
+- **调用链与影响面**：点搜索结果直接看源码与 callers / callees / impact，不用回命令行。
+- **一键 sync / index**：增量同步与全量重建都在卡片里。
+- **修掉「No CodeGraph project is loaded」**：托管 MCP 服务器行并把 cwd 对齐默认项目，保存即热重启 MCP（无需重启宿主）；目标路径没有 `.codegraph/` 时绝不动现有配置。
+- **跟随当前项目**：默认跟随当前会话的工作目录，切项目会话自动切；也能手动输入路径临时覆盖。
 
 ![Codegraph 设置卡片：索引状态 / 符号搜索 / 一键同步](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-codegraph.png)
 

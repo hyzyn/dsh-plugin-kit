@@ -1,8 +1,17 @@
 # @hyzyn/dsh-profile
 
-DSH Web GUI 的 **Profile 管理插件**：官方 设置 → 插件 里的「Profile 管理」卡片，提供 DSH profile 的图形化管理（查看、创建、复制、重命名、删除）。浏览器半体通过核心 `settings.plugin.item` 插槽注册。
+> DSH **设置 → 插件** 里的「Profile 管理」卡片：查看、创建、复制、重命名、删除 DSH profile，不用记命令。
 
-Profile 是 `$DSH_HOME/profiles`（默认 `~/.dsh/profiles`，可用环境变量 `DSH_HOME` 覆盖）下的独立目录，每个 profile 拥有自己的 bundle 层与补丁文件：
+## 特性
+
+- **建 profile 不用手抄命令**：三种模板一键创建（`@deepseek-ai/dsh-base` 仅核心，或再加 `dsh-web-app` / `dsh-headless`）；复制跳过 `node_modules` 与 lockfile 并自动 `pnpm install`。
+- **端口跟着 profile 存**：为每个 profile 记启动端口，复制启动命令自动带上 `--port`，多个 web profile 不再撞端口。
+- **重命名 / 删除一步到位**：目录移动 + manifest 改名一起做；删除有面板内二次确认（不可撤销）。
+- **状态与结构可见**：初始化徽章、bundle 层、依赖数、目录路径一目了然；缺 `cordis.patch.yml` 会提示。
+
+## Profile 是什么
+
+每个 profile 是 `$DSH_HOME/profiles`（默认 `~/.dsh/profiles`，可用环境变量 `DSH_HOME` 覆盖）下的独立目录，拥有自己的 bundle 层与补丁文件：
 
 ```
 ~/.dsh/profiles/<name>/
@@ -11,19 +20,6 @@ Profile 是 `$DSH_HOME/profiles`（默认 `~/.dsh/profiles`，可用环境变量
 ├── pnpm-workspace.yaml   # profile 工作区（nodeLinker: hoisted）
 └── profile.runtime.json  # （可选）本插件的运行配置，如启动端口
 ```
-
-## 能力
-
-- **列表**：展示全部 profile——名称、`已初始化` / `未初始化` 状态徽章、bundle 层、依赖数量、目录路径；缺少 `cordis.patch.yml` 会给出提示
-- **新建**：三种模板可选
-  - 基础模板：`@deepseek-ai/dsh-base`（仅核心，适合自定义开发）
-  - `web`：base + `@deepseek-ai/dsh-web-app`
-  - `headless`：base + `@deepseek-ai/dsh-headless`
-- **端口配置**：为每个 profile 保存启动端口；复制启动命令时自动带上 `--port`，避免多个 web profile 同时启动时端口冲突
-- **复制**：整目录复制（跳过 `node_modules` 与 `pnpm-lock.yaml`），manifest 同步改名为 `dsh-profile-<name>`，并自动执行 `pnpm install` 安装依赖
-- **重命名**：目录移动 + manifest 改名，一步完成
-- **删除**：递归删除整个 profile 目录（面板内二次确认，不可撤销）
-- agent 能力公告（systemPrompt section，order 150），用户提到「profile / 配置文件 / 多环境」即指本插件
 
 ## 结构
 
