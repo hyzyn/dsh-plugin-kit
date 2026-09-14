@@ -9,31 +9,31 @@ importers:
   .:
     dependencies:
       '@hyzyn/dsh-codegraph':
-        specifier: 0.2.0
+        specifier: 0.2.1
         version: link:packages/codegraph
       '@hyzyn/dsh-docker':
-        specifier: 0.4.0
+        specifier: 0.5.0
         version: link:packages/docker
       '@hyzyn/dsh-env':
-        specifier: 0.2.2
+        specifier: 0.2.3
         version: link:packages/env
       '@hyzyn/dsh-mcp':
-        specifier: 0.1.9
+        specifier: 0.1.10
         version: link:packages/mcp
       '@hyzyn/dsh-profile':
-        specifier: 0.1.7
+        specifier: 0.1.8
         version: link:packages/profile
       '@hyzyn/dsh-prompt':
-        specifier: 0.1.8
+        specifier: 0.1.9
         version: link:packages/prompt
       '@hyzyn/dsh-rss':
         specifier: 0.3.1
         version: link:packages/rss
       '@hyzyn/dsh-search':
-        specifier: 0.3.0
+        specifier: 0.3.1
         version: link:packages/search
       '@hyzyn/dsh-tty':
-        specifier: 0.17.0
+        specifier: 0.17.1
         version: link:packages/tty
     devDependencies:
       typescript:
@@ -46,31 +46,31 @@ importers:
   packages/all:
     dependencies:
       '@hyzyn/dsh-codegraph':
-        specifier: 0.2.0
+        specifier: 0.2.1
         version: link:../codegraph
       '@hyzyn/dsh-docker':
-        specifier: 0.4.0
+        specifier: 0.5.0
         version: link:../docker
       '@hyzyn/dsh-env':
-        specifier: 0.2.2
+        specifier: 0.2.3
         version: link:../env
       '@hyzyn/dsh-mcp':
-        specifier: 0.1.9
+        specifier: 0.1.10
         version: link:../mcp
       '@hyzyn/dsh-profile':
-        specifier: 0.1.7
+        specifier: 0.1.8
         version: link:../profile
       '@hyzyn/dsh-prompt':
-        specifier: 0.1.8
+        specifier: 0.1.9
         version: link:../prompt
       '@hyzyn/dsh-rss':
         specifier: 0.3.1
         version: link:../rss
       '@hyzyn/dsh-search':
-        specifier: 0.3.0
+        specifier: 0.3.1
         version: link:../search
       '@hyzyn/dsh-tty':
-        specifier: 0.17.0
+        specifier: 0.17.1
         version: link:../tty
     devDependencies:
       '@deepseek-ai/cordis':
