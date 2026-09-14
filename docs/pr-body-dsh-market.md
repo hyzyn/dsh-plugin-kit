@@ -55,7 +55,7 @@
 git fetch origin && git rebase origin/dev
 ```
 
-分支基于提交时的 `upstream/dev` 建立；已在上面的 rebase 之后重跑本 PR 的全部校验命令，结果见下。
+分支基于 `upstream/dev`（校验基线 `8f44fa4`）建立；提交前已 `git fetch origin && git rebase origin/dev`，并在 rebase 之后重跑本 PR 的全部校验命令，结果见下。
 
 ## 测试证据与上游同步（Test Evidence & Upstream Sync）
 
@@ -139,13 +139,20 @@ git diff --stat
 
 结果摘要：
 
-<!-- 提交前把下面三行替换成本机真实输出。 -->
+以下输出取自 dsh-web `dev` 分支在 `8f44fa4` 的干净克隆（该提交上 `community.json` 为 60 条，本 PR +9 → 69 条）：
 
-`node scripts/community-index` → `community-index: OK (69 entries)`（登记前 60 条，本 PR +9）。
-`node scripts/market-build` → `wrote <文件数> files (<皮肤数> skins, <宠物数> pets, 69 plugins)`。
-`node scripts/market-build --check` → `dist up to date (<文件数> files)`。
+`node scripts/community-index` → `community-index: OK (69 entries)`
+`node scripts/market-build` → `market-build: wrote 3068 files (35 skins, 7 pets, 69 plugins, 32 presets)`
+`node scripts/market-build --check` → `dist up to date (2276 files)`
 
-`git diff --stat` 仅两个文件：`packages/dsh-community-plugins/community.json`（+9 条记录）与 `market/dist/manifest/plugins.json`（对应派生条目），未改动其他条目，也未产生日期类噪声改动。
+`git diff --numstat` 仅两个文件，且无删除：
+
+```
+117  0  market/dist/manifest/plugins.json
+108  0  packages/dsh-community-plugins/community.json
+```
+
+9 条追加在 `community.json` 数组末尾，`rank` 顺延为 61–69，未被 `market-build` 改写；无其他条目改动，也未产生 `generated` 日期类噪声改动。
 
 ## 用户可见变更证据（Local Feature Evidence）
 
