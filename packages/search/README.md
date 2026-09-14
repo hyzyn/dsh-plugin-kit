@@ -1,5 +1,7 @@
 # @hyzyn/dsh-search
 
+中文 | [English](README.en.md)
+
 > DSH 侧边栏「全局搜索」入口（**⌘ / Ctrl + K** 同样唤出）：命令面板式搜索，一处找到历史会话、Prompt、MCP 工具与设置。
 
 ## 特性

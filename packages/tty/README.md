@@ -1,5 +1,7 @@
 # @hyzyn/dsh-tty
 
+中文 | [English](README.en.md)
+
 > DSH 侧边栏「终端」面板：xterm.js + **真实 PTY** 的完整终端，本地与 SSH 一视同仁，长任务可断线保活。
 
 ## 特性
