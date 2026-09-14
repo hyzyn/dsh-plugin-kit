@@ -110,7 +110,7 @@ window.__ModuleLoader__.load({
       '.rss_sourcesTitle{font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary);margin-top:4px}',
       '.rss_sources{display:flex;flex-wrap:wrap;gap:6px}',
       '.rss_sourceChip{display:inline-block;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:999px;padding:1px 8px;font-size:11px;line-height:1.6;white-space:nowrap}',
-      '.rss_settingSection{display:flex;flex-direction:column;gap:8px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);border-radius:10px;padding:12px}',
+      '.rss_settingSection{position:relative;display:flex;flex-direction:column;gap:8px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);border-radius:10px;padding:12px}',
       '.rss_checkRow{display:flex;gap:8px;align-items:flex-start;font-size:13px;line-height:1.5;color:var(--dsw-alias-label-primary);cursor:pointer}',
       '.rss_settingTitle{font-size:13px;font-weight:700}',
       '.rss_settingHint{color:var(--dsw-alias-label-tertiary);font-size:11.5px;line-height:1.5}',
@@ -171,9 +171,57 @@ window.__ModuleLoader__.load({
       '[data-sidebar-collapsed] .rss_sidebarEntry{justify-content:center;width:100%;padding:0}',
       '[data-sidebar-collapsed] .rss_sidebarEntryLabel{display:none}',
       '.rss_modalBackdrop{z-index:1300;background:var(--dsw-alias-bg-mask-1);justify-content:center;align-items:center;display:flex;position:fixed;inset:0}',
+      // 刷新中的过渡层：与 dsh-docker 的「切目标过渡」同一套语言——不推版、有方向感。
+      // 两者都是绝对定位：插入文档流会把标题/列表整块推下去（这正是要避免的跳动）。
+      '.rss_busyBar{position:absolute;top:0;left:0;right:0;height:2px;overflow:hidden;pointer-events:none;z-index:5}',
+      /*
+       * 流光用**强调色**，不是 brand-primary：实测这个皮肤里 `--dsw-alias-brand-primary`
+       * 是 #0f1115（品牌墨色、近黑），拿它画进度条就是一条黑波纹；
+       * 强调色 `--dsw-alias-state-business-primary` 实测 #4176e6，与胶囊同一个 token。
+       */
+      '.rss_busyBar::before{content:"";position:absolute;inset:0;background-image:linear-gradient(90deg,transparent,var(--dsw-alias-state-business-primary,#4d6bfe),transparent);background-size:35% 100%;background-repeat:no-repeat;animation:rss_busy 1.15s linear infinite}',
+      '@keyframes rss_busy{from{background-position:-40% 0}to{background-position:140% 0}}',
+      /*
+       * 胶囊外观：走这个弹窗自己的语汇——边框用 border-l2、文字用 label-secondary，
+       * 背景**取所在容器同一个表面 token**（弹窗是 bg-base、设置卡是 bg-layer-2）。
+       * 不用「层」token + color-mix：那在不同皮肤下会算出深色块，有的环境还不支持
+       * color-mix（整条声明失效 → 背景全无），两种都会跟白底对话框对不上。
+       */
+      '.rss_busyPill{flex:none;display:flex;align-items:center;gap:6px;max-width:min(420px,70%);padding:4px 12px;border:1px solid color-mix(in srgb,var(--dsw-alias-state-business-primary) 42%,transparent);border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 12%,var(--dsw-alias-bg-base));box-shadow:0 2px 10px rgba(0,0,0,.10);font-size:11.5px;line-height:1.6;color:var(--dsw-alias-state-business-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}',
+      '.rss_busyPill svg{flex:none;animation:rss_spin .9s linear infinite;color:var(--dsw-alias-state-business-primary)}',
+      '.rss_busyPill strong{color:var(--dsw-alias-state-business-primary);font-weight:600}',
+      '.rss_busyPill .rss_busyDim{color:color-mix(in srgb,var(--dsw-alias-state-business-primary) 72%,var(--dsw-alias-label-secondary))}',
+      // 弹窗里的位置：列表区**顶部居中**（与 dsh-docker 的过渡胶囊同一位置语言），
+      // 用零高度 sticky 锚点——不占文档流所以不推版，滚列表时也不会跟着滚走。
+      // margin-bottom 抵消 .rss_modalBody 的 flex gap(10px)，避免第一项被顶下去。
+      '.rss_modal{position:relative}',
+      /*
+       * 位置：**分类行右端**（那一带是空的）。
+       * 观感与 dsh-docker 的 dk_switchOverlay 同一套（蓝底、蓝描边、顶部 2px 流光），但位置
+       * 不能照搬它的「内容区顶部居中」：docker 那边背后是「活动」条、中间本来就空，而这里
+       * 列表第一项经常是失败横幅（整行文字），居中浮层会横跨那行字。
+       * 绝对定位在 .rss_modalFilter 上 → 不占文档流（不推版），也不压任何文字。
+       */
+      '.rss_modalFilter{position:relative}',
+      /*
+       * 进度条落在**分类行下面那条线**上（= 列表区顶部），胶囊骑在这条线上、水平居中——
+       * 与 dsh-docker 的 dk_switchOverlay 同一形态（内容区顶部一条线 + 居中胶囊）。
+       * 两者都绝对定位在 .rss_modalFilter 上：不占文档流（不推版），也不压到分类 chip。
+       */
+      '.rss_modalFilter .rss_busyBar{top:auto;bottom:0;z-index:6}',
+      '.rss_modalFilter .rss_busyPill{position:absolute;left:50%;right:auto;top:auto;bottom:-13px;transform:translateX(-50%);z-index:7;max-width:min(420px,80%)}',
+      // 设置卡：进度条贴区块顶边，胶囊落在区块标题行右侧（那边本来就是空的）
+      '.rss_settingSection{overflow:hidden}',
+      '.rss_settingSection .rss_busyPill{position:absolute;top:10px;right:12px}',
+      '.rss_settingSection .rss_busyBar{border-radius:10px 10px 0 0}',
+      // 数据落地：8px 上滑 + 淡入，让「换了一批内容」看得见
+      '.rss_modalBody[data-landed] > *{animation:rss_landIn .2s ease both}',
+      '.rss_settingSection[data-landed] > *{animation:rss_landIn .2s ease both}',
+      '@keyframes rss_landIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}',
+      '@media (prefers-reduced-motion:reduce){.rss_busyBar::before,.rss_busyPill svg{animation:none}.rss_modalBody[data-landed] > *{animation:none}}',
       '.rss_modal{background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);width:min(720px,100vw - 48px);max-height:calc(100vh - 96px);box-shadow:var(--dsw-shadow-lv3);color:var(--dsw-alias-label-primary);border-radius:14px;flex-direction:column;gap:12px;padding:16px;display:flex;overflow:hidden}',
       '.rss_modalHeader{flex:none;align-items:center;gap:10px;display:flex}',
-      '.rss_modalTitle{flex:1;margin:0;font-size:16px;font-weight:700}',
+      '.rss_modalTitle{flex:1;min-width:0;margin:0;font-size:16px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
       '.rss_modalClose{appearance:none;background:0 0;border:none;color:var(--dsw-alias-label-tertiary);border-radius:8px;width:30px;height:30px;cursor:pointer;font-size:18px;line-height:1}',
       '.rss_modalClose:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}',
       '.rss_modalBody{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:10px}',
@@ -266,6 +314,8 @@ window.__ModuleLoader__.load({
       newCategory: '',
       loading: false,
       refreshing: false,
+      /** 刷新超过消抖阈值（180ms）才置真：卡片上的过渡层只在慢刷新时出现，避免闪一下。 */
+      refreshSlow: false,
       saving: false,
       modalLoading: false,
       modalSlow: false,
@@ -414,6 +464,8 @@ window.__ModuleLoader__.load({
         parts.push('<div class="rss_disabledTitle">未启用内置渠道</div>')
         for (const builtin of disabledBuiltins) parts.push(renderDisabledBuiltinRow(builtin))
       }
+      // 慢刷新：进度条贴分类行下沿（列表区顶部那条线），胶囊骑在线上、水平居中
+      if (digest && state.modalLoading && state.modalSlow) parts.push(busyBarHtml() + busyPillHtml(digest))
       parts.push('</div>')
       return parts.join('')
     }
@@ -571,6 +623,8 @@ window.__ModuleLoader__.load({
       const digest = state.digest
       const parts = []
       parts.push('<div class="rss_settingSection" id="rss-sec-digest">')
+      // 慢刷新才出过渡层（顶部进度条 + 「当前显示：08:12 生成」胶囊），绝对定位不推版
+      if (state.refreshing && state.refreshSlow && digest) parts.push(busyCardHtml(digest))
       parts.push('<div class="rss_settingTitle">今日值得读</div>')
       if (!digest) {
         parts.push('<div class="rss_empty">还没有生成 digest，点击「刷新」抓取。</div>')
@@ -984,6 +1038,57 @@ window.__ModuleLoader__.load({
       return parts.join('')
     }
 
+    /**
+     * 「正在刷新订阅源」的过渡层（0.3.1）：顶部 2px 不定长进度条 + 浮层胶囊。
+     *
+     * 与 dsh-docker 的切目标过渡同一套语言，三条理由也一样：
+     *   - **不推版**：两者都绝对定位。插进文档流会把标题与列表整块推下去；
+     *   - **有归属**：胶囊写「当前显示：08:12 生成」——刷新期间看到的是旧数据这件事
+     *     要说清楚，否则用户会以为刷新没生效；
+     *   - **不抢眼**：可见文案只两段（状态 · 归属），完整解释放 title。
+     * 只在**慢加载**（沿用 180ms 消抖）时出现，毫秒级请求不会闪。
+     */
+    /** 只取时钟 HH:MM：胶囊里写「生成于 14:25」比带日期的全量时间戳利落。 */
+    function clockText(iso) {
+      const date = new Date(iso)
+      if (Number.isNaN(date.getTime())) return ''
+      return String(date.getHours()).padStart(2, '0') + ':' + String(date.getMinutes()).padStart(2, '0')
+    }
+
+    /** 胶囊文案：可见部分只两段（状态 · 归属），完整解释进 title。 */
+    function busyText(digest) {
+      const stamp = digest && digest.generatedAt ? fmtTime(digest.generatedAt) : ''
+      const clock = digest && digest.generatedAt ? clockText(digest.generatedAt) : ''
+      const label = clock === ''
+        ? '正在刷新订阅源'
+        : '正在刷新订阅源 · 当前数据生成于 ' + clock
+      // fmtTime 已经带了日期，不要再拼 digest.date（会变成「2026-09-14 2026/9/14 14:25」）
+      const full = '正在刷新订阅源：抓取全部订阅源并重新生成今日 digest。'
+        + (stamp === '' ? '' : '下面仍是 ' + stamp + ' 生成的数据，刷新完成后整体替换。')
+      return { label, full }
+    }
+
+    /** 顶部 2px 不定长进度条（绝对定位在容器顶边）。 */
+    function busyBarHtml() {
+      return '<div class="rss_busyBar" aria-hidden="true"></div>'
+    }
+
+    /** 胶囊本体（视觉由 CSS 按容器区分：弹窗行内 / 设置卡绝对定位）。 */
+    function busyPillHtml(digest) {
+      const { label, full } = busyText(digest)
+      // 层次与 docker 一致：状态与归属里的「值」用强调色，连接词压淡
+      const [head, tail] = label.split(' · ')
+      const text = tail === undefined
+        ? '<span class="rss_busyDim">' + esc(head) + '</span>'
+        : '<span class="rss_busyDim">' + esc(head) + ' · </span><strong>' + esc(tail) + '</strong>'
+      return '<div class="rss_busyPill" title="' + esc(full) + '" aria-busy="true">' + ICON_REFRESH + text + '</div>'
+    }
+
+    /** 设置卡用：进度条 + 绝对定位胶囊（都挂在区块上）。 */
+    function busyCardHtml(digest) {
+      return busyBarHtml() + busyPillHtml(digest)
+    }
+
     function renderModalBody() {
       const digest = state.digest
       const allItems = digest?.items || []
@@ -1026,6 +1131,17 @@ window.__ModuleLoader__.load({
             body.setAttribute('data-updating', '')
             body.setAttribute('aria-busy', 'true')
           }
+          /*
+           * 过渡层（进度条 + 胶囊）也是**只插入、不重渲染**：它俩是绝对定位的独立节点，
+           * 插进去不会动列表布局，正好绕开「重渲染会丢焦点/滚动」这个约束。
+           * （放在 renderDigestModal 里生成是不够的——这条路径根本不重渲染。）
+           */
+          const modal = modalEl !== undefined ? modalEl.querySelector('.rss_modal') : null
+          if (modal !== null && modal.querySelector('.rss_busyBar') === null) {
+            // 进度条 + 胶囊都挂在 .rss_modalFilter 上：条贴分类行下沿，胶囊骑线上居中
+            const filter = modal.querySelector('.rss_modalFilter')
+            if (filter !== null) filter.insertAdjacentHTML('beforeend', busyBarHtml() + busyPillHtml(state.digest))
+          }
           return
         }
         // 没数据可显示：重渲染以淡入骨架
@@ -1038,6 +1154,10 @@ window.__ModuleLoader__.load({
       modalSlowTimer = null
       state.modalLoading = false
       state.modalSlow = false
+      // 收掉过渡层。整树重渲染的路径会自然清掉，这里覆盖「只插节点、不重渲染」那条。
+      if (modalEl !== undefined) {
+        for (const node of modalEl.querySelectorAll('.rss_busyBar, .rss_busyPill')) node.remove()
+      }
     }
 
     /**
@@ -1103,7 +1223,13 @@ window.__ModuleLoader__.load({
               '<button class="rss_modalClose" data-action="modal-close" aria-label="关闭">×</button>' +
             '</div>' +
             renderModalFilter() +
-            '<div class="rss_modalBody"' + (updating ? ' data-updating aria-busy="true"' : '') + '>' + content + '</div>' +
+            // 过渡层（进度条 + 胶囊）在 renderModalFilter 里，绝对定位在 .rss_modalFilter 上；
+            // 正文照旧（stale-while-revalidate）
+            '<div class="rss_modalBody"' + (updating ? ' data-updating aria-busy="true"' : '')
+              // keepScroll=true 只出现在「数据落地」那次渲染（loadDigestModal / refreshDigestModal
+              // 的 finally），用它当落地信号做 8px 上滑淡入；搜索/筛选的重渲染不带这个标记
+              + (keepScroll ? ' data-landed' : '') + '>'
+              + content + '</div>' +
           '</div>' +
         '</div>'
       const search = modalEl.querySelector('[data-field="rss-modal-search"]')
@@ -1612,9 +1738,18 @@ window.__ModuleLoader__.load({
 
     async function refresh() {
       state.refreshing = true
+      state.refreshSlow = false
       state.error = ''
       updateHeader()
       updateError()
+      // 与弹窗同一套消抖：刷新是抓订阅源，通常不止 180ms，慢下来才给提示
+      clearTimeout(refreshSlowTimer)
+      refreshSlowTimer = setTimeout(() => {
+        refreshSlowTimer = null
+        if (!state.refreshing) return
+        state.refreshSlow = true
+        updateSection('rss-sec-digest', renderDigestSection())
+      }, LOADING_DEBOUNCE_MS)
       try {
         const data = await apiRequest(API.refresh, { method: 'POST' })
         state.digest = data
@@ -1624,11 +1759,18 @@ window.__ModuleLoader__.load({
         toast(error.message, 'error')
       } finally {
         state.refreshing = false
+        state.refreshSlow = false
+        clearTimeout(refreshSlowTimer)
+        refreshSlowTimer = null
         updateHeader()
         updateError()
-        updateSection('rss-sec-digest', renderDigestSection())
+        // 这一版渲染是「数据落地」→ 给区块加入场动画标记
+        updateSection('rss-sec-digest', renderDigestSection().replace('<div class="rss_settingSection" id="rss-sec-digest">', '<div class="rss_settingSection" id="rss-sec-digest" data-landed>'))
       }
     }
+
+    /** refreshSlow 的定时器（与弹窗的 modalSlowTimer 同构）。 */
+    let refreshSlowTimer = null
 
 
     function scheduleSave(delay) {
