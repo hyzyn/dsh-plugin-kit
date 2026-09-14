@@ -120,6 +120,8 @@ https://github.com/hyzyn/dsh-plugin-kit
 
 分类依据：与索引内同类插件的既有归属保持一致（`dsh-tty` 对齐 `dsh-tui` / `dsh-tianshu-tui` 的 `ui/terminal`，`dsh-codegraph` 对齐 `dsh-context` 的 `tools/context`，`dsh-rss` 对齐 `dsh-deepread` 的 `knowledge/reading`，`dsh-mcp` 对齐同功能的 `dsh-mcp-manager` 的 `tools/dev`）。如与评审意见不符，这三项以外的分类都容易调整。
 
+依赖：9 个包的运行时依赖都很轻——`@deepseek-ai/schemastery`（配置 schema，8 个包）、共享库 `@hyzyn/dsh-kit`（codegraph / docker / rss / search / tty）、`js-yaml`（codegraph / env / mcp / prompt / search）、`ssh2`（docker / tty）、`ws` 与 `@xterm/headless`（tty）。类型来源仅官方 `@deepseek-ai/*` NPM SDK（`cordis` 全包，`dsh-tools` / `dsh-host-webserver` 见 docker 与 tty，`dsh-subprocess` / `dsh-subprocess-local` 见 tty，均在 devDependencies），未修改 DSH 源码。
+
 已知限制：`dsh-tty` 的远端能力依赖目标机可用 ssh；`dsh-docker` 的变更操作与 `docker exec` 需在设置中显式开启（默认只读）；`dsh-codegraph` 查询目标项目需要先有 Codegraph 索引。运行环境要求 Node.js >= 22.19。
 
 - [x] 已按 [docs/plugins.md](../docs/plugins.md) 的登记说明在 `packages/dsh-community-plugins/community.json` 追加条目，并运行 `node scripts/community-index` 校验；已运行 `node scripts/market-build` 重新生成并提交 `market/dist/manifest/plugins.json`，`node scripts/market-build --check` 通过。
