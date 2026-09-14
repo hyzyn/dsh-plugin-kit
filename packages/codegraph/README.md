@@ -1,5 +1,7 @@
 # @hyzyn/dsh-codegraph
 
+中文 | [English](README.en.md)
+
 > DSH **设置 → 插件** 里的「Codegraph」卡片：把代码图谱的状态、符号搜索、调用链搬进 GUI，并替你把 codegraph MCP 服务器的项目目录对齐好。
 
 ## 特性

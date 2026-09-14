@@ -1,5 +1,7 @@
 # @hyzyn/dsh-docker
 
+中文 | [English](README.en.md)
+
 > DSH 侧边栏「容器」面板：本机与 SSH 主机的容器一屏巡检——读日志、看资源、进容器、启停删，**默认只读**。
 
 ## 特性
@@ -124,7 +126,7 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
   `die` 带退出码如 `die(137)`）。它是**事件驱动刷新**的入口：收到事件后 500ms
   **防抖**触发一次列表重取（不是每帧一次请求），与原有 `AUTO REFRESH` 叠加而不互斥——
   轮询负责兜底，事件负责「刚发生」。事件只留在内存（环形缓冲 50 条），切页即关流，
-  换目标清空缓冲。白名单只留八类生命周期动作（start / die / stop / kill / oom /
+  换目标清空缓冲。白名单只留九类生命周期动作（start / die / stop / kill / oom /
   health_status / destroy / rename / update）：`exec_*`、`archive-path`（`docker cp`）
   这类噪音在服务端就丢掉了——实测一台跑批机器 24 小时 47 条事件全是 exec，白名单
   命中 0，所以只被 exec 的机器上活动条是空的，这是刻意的。
@@ -389,7 +391,7 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
 | `docker_logs` | 恒注册 | `target?`、`id`、`tail?`（1~5000，默认 `logTailDefault`）、`timestamps?`、`since?` | `docker logs --tail` 尾部；`since` 用 docker 语法（如 `10m`、`2026-09-09T10:00:00`）；超上限标记 `truncated` |
 | `docker_stats` | 恒注册 | `target?`、`ids?`（逗号分隔的容器名/ID） | `docker stats --no-stream` 快照：CPU% / 内存用量与占比 / 网络 IO / 块 IO / PIDs；`ids` 省略 = 全部运行中容器。实时跟随是面板能力（SSE），工具保持单值快照语义 |
 | `docker_images` | 恒注册 | `target?` | 镜像列表（仓库:标签 / 大小 / 创建时间 / 短 ID） |
-| `docker_events` | 恒注册 | `target?`、`since?`（docker `--since` 语法，默认 `10m`） | 容器事件快照（`docker events --since <d> --until <now>`，同样过服务端白名单）：start / die / stop / kill / oom / health_status / destroy / rename / update 八类，`exec_*` 等噪音已在服务端丢掉。要持续观察请让用户看面板容器列表的「活动」条 |
+| `docker_events` | 恒注册 | `target?`、`since?`（docker `--since` 语法，默认 `10m`） | 容器事件快照（`docker events --since <d> --until <now>`，同样过服务端白名单）：start / die / stop / kill / oom / health_status / destroy / rename / update 九类，`exec_*` 等噪音已在服务端丢掉。要持续观察请让用户看面板容器列表的「活动」条 |
 | `docker_networks` | 恒注册 | `target?` | 网络列表（名称 / 驱动 / 范围 / 是否 internal / 短 ID）。接入的容器列表不进列表行——详情页会连坐 inspect，列表逐行 inspect 就是 N 次 docker 调用 |
 | `docker_volumes` | 恒注册 | `target?` | 卷列表（名称 / 驱动 / 范围 / 挂载点） |
 | `docker_image_inspect` | 恒注册 | `target?`、`ref`（必填） | `docker image inspect` + `docker history`：大小 / 含父层大小 / 创建时间 / 平台 / 层数与层列表 / 入口与命令 / 暴露端口 / digest / 构建历史（每步命令与大小） |

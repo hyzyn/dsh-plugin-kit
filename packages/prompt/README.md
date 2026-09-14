@@ -1,5 +1,7 @@
 # @hyzyn/dsh-prompt
 
+中文 | [English](README.en.md)
+
 > DSH **设置 → 插件** 里的「Prompt 管理」卡片：可视化编辑 systemPrompt，带版本管理与 A/B 测试。配置存在 `~/.dsh/prompts.yml`（可用 `DSH_PROMPT_FILE` 覆盖）。
 
 ## 特性
