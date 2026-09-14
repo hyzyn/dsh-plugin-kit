@@ -29,3 +29,8 @@ jobs:
       # （ERR_PNPM_WORKSPACE_PKG_NOT_FOUND），而 npm 产物因 publish 期转换看不出问题
       - name: Check no workspace protocol in publishable deps
         run: node scripts/check-publishable.mjs
+      # 防回归：每个可安装插件必须声明 dsh.engines.dsh，且只能是 dsh-web 解析器支持的
+      # `>=X.Y.Z[-rc.N]` 一种形式——写成 ^ / ~ / 两段式会被判为「无法验证」而 fail-closed
+      # （更新被直接拦下），比不声明更糟
+      - name: Check dsh.engines.dsh declarations
+        run: node scripts/check-dsh-engines.mjs

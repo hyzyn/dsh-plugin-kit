@@ -53,9 +53,9 @@ Searched for a .codegraph/ directory starting from: /Users/you
 
 ## 兼容性（DSH / codegraph CLI）
 
-- **DSH**：已在 `0.1.5-rc.2` 上实测全链路——宿主路由（status/query/callers/callees/impact/node 全 200）、浏览器半体（client 模块进 boot graph 并被 combo 路由正常供给）、两段 systemPrompt 注入、MCP 托管行形状（`@deepseek-ai/dsh-mcp-client` 的 `stdio` 配置）。`package.json` 声明 `engines.dsh: ">=0.1.2-rc.1 <0.2.0"`，插件市场据此给出兼容性结论。
-  - 为什么下限写成 `>=0.1.2-rc.1` 而不是更短的 `^0.1.2`：`^` 不包含**下限版本自身的预发布**，`0.1.2-rc.1` 这种已实测可用的宿主会被判成不兼容，而市场的更新路径对确认不兼容是**直接拒绝安装**（需 `force` 绕过）；`^0.1.5` 更会连 `0.1.5-rc.2` 一起误杀。DSH 长期以 `-rc.N` 发布，档位必须显式带上 RC 下限。
-  - 上限 `<0.2.0` 表示「0.1 线上不设验证点」：跨到 0.2 时市场会明确报 incompatible（而不是悄悄放行），提醒先复验再放宽。
+- **DSH**：已在 `0.1.5-rc.2` 上实测全链路——宿主路由（status/query/callers/callees/impact/node 全 200）、浏览器半体（client 模块进 boot graph 并被 combo 路由正常供给）、两段 systemPrompt 注入、MCP 托管行形状（`@deepseek-ai/dsh-mcp-client` 的 `stdio` 配置）。`package.json` 声明 `dsh.engines.dsh: ">=0.1.2-rc.1"`，插件市场据此给出兼容性结论。
+  - 为什么下限写成 `>=0.1.2-rc.1` 而不是更短的 `^0.1.2`：dsh-web 的解析器只认 `>=X.Y.Z[-预发布]` 一种形式，`^` / `~` / 光秃秃的版本号一律被判成「无法验证」；而 `^` 本身也不包含**下限版本自身的预发布**，`0.1.2-rc.1` 这种已实测可用的宿主会被判成不兼容，市场的更新路径对确认不兼容是**直接拒绝安装**（需 `force` 绕过）；`^0.1.5` 更会连 `0.1.5-rc.2` 一起误杀。DSH 长期以 `-rc.N` 发布，档位必须显式带上 RC 下限。
+  - 为什么不写上上限 `<0.2.0`：解析器只支持单个 `>=` 比较符，两段式范围（`>=0.1.2-rc.1 <0.2.0`）整体会被读成「无法验证」，而按该模块的契约，已声明却无法验证是 fail-closed——更新会被直接拦下，比不声明更糟。跨到 0.2 线时人工重新复验，再决定是否放宽下限。
 - **codegraph CLI**：已在 `1.5.0` 上实测；用到的子命令是 `status` / `query` / `callers` / `callees` / `impact` / `node` / `sync` / `index`，旗标逐个核对过。`codegraph serve --mcp` 仍可用（顶层 help 不列，`codegraph serve --help` 在），托管行无需改动。
 - **浏览器半体的 URL 形态**：当前 DSH 走 client-modules 的 combo 路由，单包直链 `/plugins/@hyzyn/dsh-codegraph/client.js` 已不再直接可用；浏览器只用 boot graph（`window.__DSH_BOOT__`）下发的 `/plugins/??<id>/client.js&rev=…`，插件侧无需改动。
 
