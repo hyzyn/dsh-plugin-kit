@@ -100,4 +100,15 @@ export declare function syncArgs(cwd: string): string[];
  * 处理）；顶层 help 把它藏起来了，但 `codegraph index --help` 里在。
  */
 export declare function indexArgs(cwd: string, force: boolean): string[];
+/** 命令名按 cmd.exe 规则转义（空格也是元字符，所以带空格的路径由 `^ ` 保护）。 */
+export declare function escapeCommand(command: string): string;
+/**
+ * 单个参数按 cmd.exe 规则转义成 `"..."`。算法同 cross-spawn，依据
+ * <https://qntm.org/cmd>：先按 Windows argv 规则双写「紧邻双引号的反斜杠」
+ * 与「结尾反斜杠」，再整体加引号，最后把包括这对引号在内的元字符逐个 `^`。
+ * 两层的次序不能换：`^` 由 cmd.exe 吃掉，引号留给子进程的 argv 解析。
+ */
+export declare function escapeArgument(value: string): string;
+/** 把一个 argv 拼成 `cmd.exe /d /s /c` 能直接执行的一整条命令行。 */
+export declare function windowsCommandLine(command: string, args: string[]): string;
 export declare const name: string, inject: string[] | undefined, apply: (ctx: Context, config?: Config | undefined) => void;

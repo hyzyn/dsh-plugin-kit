@@ -310,12 +310,65 @@ export function syncArgs(cwd) {
 export function indexArgs(cwd, force) {
     return force ? ['index', '--force', '--', cwd] : ['index', '--', cwd];
 }
-/** 运行 codegraph CLI，返回 stdout；失败时抛错。 */
+/* ------------------------------------------------------------------ *
+ * Windows 上的 CLI 调用
+ *
+ * npm / pnpm 全局安装的 CLI 在 Windows 上只有 `.cmd` / `.ps1` / 无扩展名的
+ * shim，没有真正的 `.exe`（codegraph 就是如此）。而 `execFile` 默认
+ * `shell: false`，走的是 CreateProcess 式的可执行文件查找：既不匹配 `.cmd`，
+ * Node 又因 CVE-2024-27980 加固拒绝在无 shell 时执行 `.cmd`——于是 Windows 上
+ * 每一次调用都固定失败成 `spawn codegraph ENOENT`，卡片整块不可用。
+ *
+ * 解法是把命令行交给 `%COMSPEC% /d /s /c`，由 cmd.exe 按 PATHEXT 解析出 shim。
+ * 这正是 cross-spawn（MCP 官方 SDK 的 stdio transport 用的就是它）在 Windows
+ * 的做法；这里不引依赖，只搬运那条转义规则。因为 cmd.exe 会重新解析整条命令行，
+ * 所以 argv 必须自己转义——否则符号名里的 `&` / `|` / `%` 会被当成命令分隔符，
+ * 变成命令注入（`?name=` 是外部可控输入）。
+ * ------------------------------------------------------------------ */
+/** Windows 上判定「无需 shell」的可执行后缀。 */
+const WINDOWS_EXECUTABLE_REGEXP = /\.(?:exe|com)$/i;
+/** cmd.exe 元字符：交给 shell 前逐个 `^` 转义。 */
+const CMD_META_CHARS_REGEXP = /([()\][%!^"`<>&|;, *?])/g;
+/** 命令名按 cmd.exe 规则转义（空格也是元字符，所以带空格的路径由 `^ ` 保护）。 */
+export function escapeCommand(command) {
+    return command.replace(CMD_META_CHARS_REGEXP, '^$1');
+}
+/**
+ * 单个参数按 cmd.exe 规则转义成 `"..."`。算法同 cross-spawn，依据
+ * <https://qntm.org/cmd>：先按 Windows argv 规则双写「紧邻双引号的反斜杠」
+ * 与「结尾反斜杠」，再整体加引号，最后把包括这对引号在内的元字符逐个 `^`。
+ * 两层的次序不能换：`^` 由 cmd.exe 吃掉，引号留给子进程的 argv 解析。
+ */
+export function escapeArgument(value) {
+    let arg = value;
+    arg = arg.replace(/(?=(\\+?)?)\1"/g, '$1$1\\"');
+    arg = arg.replace(/(?=(\\+?)?)\1$/, '$1$1');
+    arg = `"${arg}"`;
+    return arg.replace(CMD_META_CHARS_REGEXP, '^$1');
+}
+/** 把一个 argv 拼成 `cmd.exe /d /s /c` 能直接执行的一整条命令行。 */
+export function windowsCommandLine(command, args) {
+    return [escapeCommand(command), ...args.map(escapeArgument)].join(' ');
+}
+/**
+ * 运行 codegraph CLI，返回 stdout；失败时抛错。
+ *
+ * Windows 上命令不是 `.exe` 时改走 cmd.exe（见上方说明），其余平台与
+ * `.exe` 命令仍走原来的直连路径。两条分支共用 maxBuffer / timeout，所以
+ * `cliErrorMessage` 的超时判定（killed / signal）对两者一致。
+ *
+ * 已知限制（仅 Windows 的 shim 分支）：超时由 execFile 杀掉的只是直接子进程
+ * cmd.exe，shim 里真正的 CLI 孙进程会继续跑完——超时提示仍然准时，但大盘索引
+ * 不会立刻停下。要连孙进程一起杀需要改成 spawn + taskkill，超出本次修复范围。
+ */
 async function runCodegraph(command, args, cwd, timeoutMs) {
-    const { stdout } = await execFileAsync(command, args, {
+    const viaWindowsShim = process.platform === 'win32' && !WINDOWS_EXECUTABLE_REGEXP.test(command);
+    const { stdout } = await execFileAsync(viaWindowsShim ? process.env.ComSpec || 'cmd.exe' : command, viaWindowsShim ? ['/d', '/s', '/c', `"${windowsCommandLine(command, args)}"`] : args, {
         cwd,
         maxBuffer: MAX_BUFFER,
         timeout: timeoutMs,
+        // 命令行已经自己转义好了，让 Node 原样交给 CreateProcess，别再包一层引号。
+        ...(viaWindowsShim ? { windowsVerbatimArguments: true, windowsHide: true } : {}),
     });
     return stdout;
 }
