@@ -53,7 +53,33 @@ export interface ContainerSummary {
     composeService: string | null;
     /** ps 的 `.Size`（需 --size，缺省不请求，通常为空）。 */
     size: string;
+    /** 已退出容器的退出码（从 `.Status` 的 `Exited (137) …` 解析；非退出态为 null）。 */
+    exitCode: number | null;
 }
+/**
+ * 「需要关注」的容器（0.15.0）：由摘要筛出候选、再用一次 `docker inspect` 补权威
+ * 字段（OOM / 真实退出码 / 重启次数），供面板「需关注」页与 agent 工具使用。
+ */
+export interface AttentionItem {
+    id: string;
+    shortId: string;
+    name: string;
+    image: string;
+    state: string;
+    health: string | null;
+    status: string;
+    /** 关注原因（可多条；前端据此渲染徽标，agent 侧直出文本）。 */
+    reasons: AttentionReason[];
+    exitCode: number | null;
+    oomKilled: boolean;
+    restartCount: number | null;
+    startedAt: string | null;
+    finishedAt: string | null;
+}
+/** 关注原因：不健康 / 正在重启 / 被 OOM 杀 / 非零退出 / 僵死。 */
+export type AttentionReason = 'unhealthy' | 'restarting' | 'oom' | 'exit-nonzero' | 'dead';
+/** 从 ps 的 `.Status` 解析退出码：`Exited (137) 2 hours ago` → 137。 */
+export declare function parseExitCode(status: string): number | null;
 /** 从 ps 的 `.Status`（`Up 2 hours (healthy)`）推导状态。健康态单独由 deriveHealth 提供。 */
 export declare function deriveState(status: string): string;
 /** 从 ps 的 `.Status` 提取健康态（`Up 2 hours (healthy)` → healthy）。 */
@@ -333,6 +359,14 @@ export declare class DockerApi {
     probe(): Promise<ProbeResult>;
     listContainers(all: boolean): Promise<ContainerSummary[]>;
     inspect(ids: readonly string[]): Promise<ContainerDetail[]>;
+    /**
+     * 「需要关注」的容器（0.15.0）：先按摘要筛候选（不健康 / 重启中 / 僵死 /
+     * 非零退出），再**一次** `docker inspect` 补权威字段——OOM 与真实退出码在 ps
+     * 摘要里拿不到（137 也可能是手动 kill），只看摘要会误报。inspect 失败时退回摘要。
+     */
+    attention(options?: {
+        limit?: number;
+    }): Promise<AttentionItem[]>;
     stats(ids: readonly string[]): Promise<ContainerStats[]>;
     /**
      * 实时统计流：`docker stats`（**不带 --no-stream**）每秒为每个容器输出一行

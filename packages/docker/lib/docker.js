@@ -150,6 +150,14 @@ export function parseIOPair(text) {
 function firstLine(stderr, stdout, code) {
     return (stderr.trim() || stdout.trim() || `退出码 ${String(code)}`).split('\n')[0] ?? `退出码 ${String(code)}`;
 }
+/** 从 ps 的 `.Status` 解析退出码：`Exited (137) 2 hours ago` → 137。 */
+export function parseExitCode(status) {
+    const match = /^\s*exited\s*\((\d+)\)/i.exec(status);
+    if (match === null)
+        return null;
+    const code = Number(match[1]);
+    return Number.isInteger(code) ? code : null;
+}
 /** 从 ps 的 `.Status`（`Up 2 hours (healthy)`）推导状态。健康态单独由 deriveHealth 提供。 */
 export function deriveState(status) {
     const lower = status.toLowerCase();
@@ -246,6 +254,7 @@ export function parsePsJson(text) {
             composeProject: labels['com.docker.compose.project'] ?? null,
             composeService: labels['com.docker.compose.service'] ?? null,
             size: str(row, 'Size'),
+            exitCode: parseExitCode(status),
         };
     });
 }
@@ -722,6 +731,90 @@ export class DockerApi {
         });
         this.assertOk(result, '读取容器详情');
         return parseInspectJson(result.stdout);
+    }
+    /**
+     * 「需要关注」的容器（0.15.0）：先按摘要筛候选（不健康 / 重启中 / 僵死 /
+     * 非零退出），再**一次** `docker inspect` 补权威字段——OOM 与真实退出码在 ps
+     * 摘要里拿不到（137 也可能是手动 kill），只看摘要会误报。inspect 失败时退回摘要。
+     */
+    async attention(options) {
+        const containers = await this.listContainers(true);
+        const candidates = containers.filter((item) => {
+            if (item.health === 'unhealthy')
+                return true;
+            if (item.state === 'restarting' || item.state === 'dead')
+                return true;
+            if (item.state === 'exited' && item.exitCode !== null && item.exitCode !== 0)
+                return true;
+            return false;
+        });
+        if (candidates.length === 0)
+            return [];
+        const limit = Math.min(Math.max(Math.trunc(options?.limit ?? 100), 1), 500);
+        const picked = candidates.slice(0, limit);
+        const details = new Map();
+        try {
+            for (const detail of await this.inspect(picked.map((item) => item.id)))
+                details.set(detail.id, detail);
+        }
+        catch {
+            /* inspect 不可用（权限/超时）时退回摘要数据 */
+        }
+        const items = picked.map((item) => {
+            const detail = details.get(item.id);
+            const health = detail?.health ?? item.health;
+            const exitCode = detail?.exitCode ?? item.exitCode;
+            const oomKilled = detail?.oomKilled === true;
+            const reasons = [];
+            if (health === 'unhealthy')
+                reasons.push('unhealthy');
+            if (item.state === 'restarting' || detail?.state === 'restarting')
+                reasons.push('restarting');
+            if (oomKilled)
+                reasons.push('oom');
+            else if (exitCode !== null && exitCode !== 0)
+                reasons.push('exit-nonzero');
+            if (item.state === 'dead' || detail?.state === 'dead')
+                reasons.push('dead');
+            return {
+                id: item.id,
+                shortId: item.shortId,
+                name: item.name,
+                image: item.image,
+                state: detail?.state ?? item.state,
+                health,
+                status: item.status,
+                reasons,
+                exitCode,
+                oomKilled,
+                restartCount: detail?.restartCount ?? null,
+                startedAt: detail?.startedAt ?? null,
+                finishedAt: detail?.finishedAt ?? null,
+            };
+        });
+        // 严重度排序：OOM/僵死 > 不健康 > 重启中 > 非零退出；同级按名字稳定排序
+        const weight = (item) => {
+            if (item.reasons.includes('oom'))
+                return 0;
+            if (item.reasons.includes('dead'))
+                return 1;
+            if (item.reasons.includes('unhealthy'))
+                return 2;
+            if (item.reasons.includes('restarting'))
+                return 3;
+            return 4;
+        };
+        // 同权重内按「最近出事」排：一堆非零退出的历史容器里，刚刚崩的那个应该在最上面
+        const at = (item) => {
+            const iso = item.finishedAt ?? item.startedAt;
+            if (typeof iso !== 'string' || iso === '')
+                return 0;
+            const time = Date.parse(iso);
+            return Number.isFinite(time) ? time : 0;
+        };
+        return items
+            .filter((item) => item.reasons.length > 0)
+            .sort((a, b) => weight(a) - weight(b) || at(b) - at(a) || a.name.localeCompare(b.name));
     }
     async stats(ids) {
         const safe = ids.map((id) => assertRef(id, 'container'));
