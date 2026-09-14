@@ -2,14 +2,30 @@
 # 提交前强制重建：本仓库构建产物（packages/*/lib、packages/*/client.js）随源码
 # 入库，此钩子保证提交里的产物永远与源码同步；构建失败则中止提交。
 # 启用：git config core.hooksPath .githooks
+#
+# 路径通配的坑（实测）：git 的 pathspec 里 `packages/*/lib` **不会**递归匹配目录内容——
+# `git diff` 能匹配到已跟踪文件，`git add` 却直接
+# `fatal: pathspec 'packages/*/lib' did not match any files`。
+# 旧版因此从未真正暂存过产物（只把 fatal 漏到 stderr、还照打成功提示）。
+# 正确写法是 glob magic + `**`：`:(glob)packages/*/lib/**`。
+SPEC_CLIENT=':(glob)packages/*/client.js'
+SPEC_LIB=':(glob)packages/*/lib/**'
+
 if ! out=$(pnpm -r build 2>&1); then
   printf '%s\n' "$out"
   echo "✘ [pre-commit] 构建失败，提交中止"
   exit 1
 fi
-# 产物若有变化，自动并入本次提交（只暂存构建产物路径，不碰其他改动）
-if ! git diff --quiet -- 'packages/*/client.js' 'packages/*/lib' 2>/dev/null; then
-  git add -- 'packages/*/lib' 'packages/*/client.js'
+
+# 已跟踪产物的改动 + 新出现的未跟踪产物（新包首次构建时 lib/ 还没入库）
+changed=$(git diff --name-only -- "$SPEC_CLIENT" "$SPEC_LIB" 2>/dev/null || true)
+fresh=$(git ls-files --others --exclude-standard -- "$SPEC_CLIENT" "$SPEC_LIB" 2>/dev/null || true)
+if [ -n "$changed$fresh" ]; then
+  # 失败必须报出来并中止：静默失败会让提交里留下与源码不同步的产物
+  if ! git add -- "$SPEC_CLIENT" "$SPEC_LIB"; then
+    echo "✘ [pre-commit] 暂存构建产物失败，提交中止"
+    exit 1
+  fi
   echo "↻ [pre-commit] 构建产物已刷新并入本次提交"
 fi
 exit 0
