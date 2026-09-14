@@ -50,7 +50,7 @@
     "@hyzyn/dsh-mcp": "0.1.9",
     "@hyzyn/dsh-profile": "0.1.7",
     "@hyzyn/dsh-prompt": "0.1.8",
-    "@hyzyn/dsh-rss": "0.3.0",
+    "@hyzyn/dsh-rss": "0.3.1",
     "@hyzyn/dsh-search": "0.3.0",
     "@hyzyn/dsh-tty": "0.17.0"
   }
