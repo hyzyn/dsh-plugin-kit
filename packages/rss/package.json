@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-rss",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "DSH 的 RSS / 新闻聚合插件：订阅多个 RSS/Atom 源，每天自动汇总成一篇「今日值得读」Markdown，并注入 systemPrompt 供模型直接引用。",
   "type": "module",
   "engines": {
@@ -19,6 +19,9 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "engines": {
+      "dsh": ">=0.1.2-rc.1"
     },
     "client": {
       "platform": "web",
@@ -39,7 +42,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "smoke": "node scripts/client-smoke.mjs"
   },
   "files": [
     "lib",
