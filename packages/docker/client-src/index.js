@@ -58,6 +58,7 @@ const api = {
   targets: () => request('/targets'),
   probe: (target) => request('/probe', { method: 'POST', body: JSON.stringify({ target }) }),
   containers: (target, all) => request('/containers', { method: 'POST', body: JSON.stringify({ target, all }) }),
+  attention: (target) => request('/attention', { method: 'POST', body: JSON.stringify({ target }) }),
   inspect: (target, id) => request('/inspect', { method: 'POST', body: JSON.stringify({ target, id }) }),
   logs: (target, id, options) => request('/logs', { method: 'POST', body: JSON.stringify({ target, id, ...options }) }),
   stats: (target, ids) => request('/stats', { method: 'POST', body: JSON.stringify({ target, ids }) }),
@@ -160,6 +161,45 @@ function downloadText(filename, text) {
 function buildExecCommand(name) {
   const safe = String(name).replaceAll("'", "'\\''")
   return "docker exec -it '" + safe + "' sh"
+}
+
+/* ============================ 记住上次选的目标 ============================ */
+
+/**
+ * 上次打开面板时选的目标。存 localStorage（浏览器本地、不落配置、不进 settings）：
+ * 它是「这台机器的使用习惯」，不是一个需要区分环境同步的配置项；隐私模式 / 存储被
+ * 禁用时读写都会抛，全部吞掉静默降级——记不住只是少个便利，不能影响面板可用性。
+ */
+const LAST_TARGET_KEY = 'dsh-docker:last-target'
+
+function readLastTarget() {
+  try {
+    const value = window.localStorage.getItem(LAST_TARGET_KEY)
+    return typeof value === 'string' ? value : ''
+  } catch {
+    return ''
+  }
+}
+
+function writeLastTarget(name) {
+  try {
+    window.localStorage.setItem(LAST_TARGET_KEY, name)
+  } catch {
+    /* 忽略：记不住不影响功能 */
+  }
+}
+
+/**
+ * 初始目标的优先级：**连接栏指定 > 上次记住的（且仍然存在）> 列表第一个**。
+ * 记住的目标被删掉/改名后不能硬选（会立刻报「未知目标」），所以要对着当前列表校验。
+ * `sessionScoped`（从终端连接栏进来但没匹配到目标）时不自动选，避免张冠李戴。
+ */
+function chooseInitialTarget(list, current, remembered, sessionScoped) {
+  if (current !== '') return current
+  if (sessionScoped) return ''
+  const names = list.map((item) => item.name)
+  if (remembered !== '' && names.includes(remembered)) return remembered
+  return names.length > 0 ? names[0] : ''
 }
 
 /* ============================ 目标缓存（连接栏按钮匹配用） ============================ */
@@ -369,6 +409,66 @@ function pickReconcile(ids, containers) {
   return next.length === ids.length ? ids : next
 }
 
+/**
+ * 「按条件一键选择」的预设（0.15.0）。
+ * 为什么需要：跨 30+ 容器里挑 4 个不健康的，手动点既慢又容易漏；而聚合日志的上限是
+ * 8 条流，所以条件选择必须能**按上限截断并如实告知略过了几个**。
+ * `needsBase` 的项要先有勾选（拿第一个勾选的容器当基准：同镜像 / 同项目）。
+ */
+const PICK_PRESETS = [
+  { key: 'all', label: '全部可见', needsBase: false },
+  { key: 'unhealthy', label: '不健康', needsBase: false },
+  { key: 'abnormal', label: '需关注', needsBase: false },
+  { key: 'stopped', label: '已停止', needsBase: false },
+  { key: 'sameImage', label: '同镜像', needsBase: true },
+  { key: 'sameProject', label: '同项目', needsBase: true },
+]
+
+const isLiveState = (state) => state === 'running' || state === 'paused' || state === 'restarting'
+
+/** 预设 → 判定函数；base 为基准容器（同镜像 / 同项目用）。 */
+function pickPresetFilter(key, base) {
+  switch (key) {
+    case 'all': return () => true
+    case 'unhealthy': return (item) => item.health === 'unhealthy'
+    // 「需关注」用与总览同一套摘要口径（/attention 的权威结论不在这里，列表页没有）
+    case 'abnormal': return (item) => fallbackReasons(item).length > 0
+    case 'stopped': return (item) => !isLiveState(item.state)
+    case 'sameImage': return (item) => base !== null && item.image === base.image
+    case 'sameProject': return (item) => base !== null && base.composeProject !== null && item.composeProject === base.composeProject
+    default: return () => false
+  }
+}
+
+/**
+ * 应用一个预设：在**当前可见列表**里挑出未勾选且命中的容器，按剩余名额截断。
+ * 返回 added / skipped 是为了让 UI 说清「选中了 6 个，另有 3 个超出上限未选」，
+ * 而不是悄悄丢掉。
+ */
+function pickApply(visible, current, key, base, max) {
+  const match = pickPresetFilter(key, base)
+  const room = Math.max(max - current.length, 0)
+  const candidates = visible.filter((item) => !current.includes(item.id) && match(item))
+  const take = candidates.slice(0, room)
+  return { ids: current.concat(take.map((item) => item.id)), added: take.length, skipped: candidates.length - take.length }
+}
+
+/**
+ * 每个预设此刻能新增多少个（chip 上的计数；0 的项不显示，基准类无勾选也不显示）。
+ * 计数**按剩余名额截断**——chip 上写 8 就真的会选中 8 个，不出现「说 30 只选 8」的落差；
+ * 超出的部分用 over 带回，chip 的 title 里提示还有多少没选。
+ */
+function pickPresetCounts(visible, current, base, max) {
+  const room = Math.max(max - current.length, 0)
+  return PICK_PRESETS
+    .filter((preset) => !preset.needsBase || base !== null)
+    .map((preset) => {
+      const match = pickPresetFilter(preset.key, base)
+      const matched = visible.filter((item) => !current.includes(item.id) && match(item)).length
+      return { key: preset.key, label: preset.label, count: Math.min(matched, room), over: Math.max(matched - room, 0) }
+    })
+}
+
 /** 勾选 → 容器对象（按勾选顺序），直接喂给 ComposeLogs 的 items。 */
 function pickItems(containers, ids) {
   const byId = new Map(containers.map((item) => [item.id, item]))
@@ -421,8 +521,61 @@ const OVERVIEW_ERROR_MAX = 120
  * 「停过一次」的容器永久刷屏。所以死掉的容器靠计数卡的「已停止」体现，异常表只放
  * 能确认有问题的。
  */
+/**
+ * 需关注原因的展示口径（宿主 /attention 与摘要兜底共用同一套 reason key）。
+ * 严重度顺序同时用于排序：OOM > 僵死 > 不健康 > 反复重启 > 非零退出。
+ */
+const ATTENTION_REASONS = [
+  ['oom', '被 OOM 杀', 0],
+  ['dead', '僵死', 1],
+  ['unhealthy', '不健康', 2],
+  ['restarting', '反复重启', 3],
+  ['exit-nonzero', '非零退出', 4],
+]
+
+const reasonLabel = (reason) => {
+  const hit = ATTENTION_REASONS.find(([key]) => key === reason)
+  return hit === undefined ? reason : hit[1]
+}
+const reasonRank = (reason) => {
+  const hit = ATTENTION_REASONS.find(([key]) => key === reason)
+  return hit === undefined ? 9 : hit[2]
+}
+
+/**
+ * 摘要兜底：拿不到宿主 /attention（老版本 / 该目标请求失败）时，只能从 ps 摘要
+ * 推断——注意退化点：**OOM 与非零退出无法区分**（137 也可能是手动 kill），
+ * 所以只把明确异常的状态算进来。
+ */
+function fallbackReasons(item) {
+  const reasons = []
+  if (item.health === 'unhealthy') reasons.push('unhealthy')
+  if (item.state === 'restarting') reasons.push('restarting')
+  if (item.state === 'dead') reasons.push('dead')
+  if (item.state === 'exited' && typeof item.exitCode === 'number' && item.exitCode !== 0) reasons.push('exit-nonzero')
+  return reasons
+}
+
+/** 异常行 hover 提示：带上「最近一次结束/启动时间」，用于分辨历史容器与刚刚崩的。 */
+function attentionTitle(item) {
+  const at = (iso) => {
+    if (typeof iso !== 'string' || iso === '') return ''
+    const time = Date.parse(iso)
+    if (!Number.isFinite(time)) return ''
+    return new Date(time).toLocaleString()
+  }
+  const parts = ['打开容器详情']
+  const finished = at(item.finishedAt)
+  const started = at(item.startedAt)
+  if (finished !== '') parts.push('结束于 ' + finished)
+  else if (started !== '') parts.push('启动于 ' + started)
+  if (typeof item.restartCount === 'number') parts.push('重启次数 ' + String(item.restartCount))
+  if (typeof item.exitCode === 'number') parts.push('退出码 ' + String(item.exitCode))
+  return parts.join(' · ')
+}
+
 function overviewAbnormal(containers) {
-  return containers.filter((item) => item.health === 'unhealthy' || item.state === 'restarting')
+  return containers.filter((item) => fallbackReasons(item).length > 0)
 }
 
 /**
@@ -449,7 +602,12 @@ function overviewCounts(containers) {
  * 的顺序、再按容器名——同一份数据每轮询一次顺序都一致，表格不会自己跳行。
  */
 function overviewSortRows(rows) {
-  const rank = (row) => (row.item.health === 'unhealthy' ? 0 : 1)
+  // 行内已带 reasons（/attention 权威原因或摘要兜底）→ 取最严重的一条排序
+  const rank = (row) => {
+    const reasons = Array.isArray(row.reasons) ? row.reasons : []
+    if (reasons.length === 0) return row.item.health === 'unhealthy' ? 2 : 3
+    return Math.min(...reasons.map(reasonRank))
+  }
   return rows.slice().sort((left, right) => {
     const byRank = rank(left) - rank(right)
     if (byRank !== 0) return byRank
@@ -484,6 +642,9 @@ function overviewPatch(groups, name, patch) {
 function overviewData(groups) {
   const cards = groups.map((group) => {
     const counts = overviewCounts(group.containers)
+    // 需关注数优先用 /attention 的权威结果（含 OOM / 非零退出），拿不到时退回摘要口径
+    const fallback = overviewAbnormal(group.containers)
+    const authoritative = Array.isArray(group.attention) ? group.attention.length : null
     return {
       name: group.name,
       kind: group.kind === 'ssh' ? 'ssh' : 'local',
@@ -493,11 +654,21 @@ function overviewData(groups) {
       running: counts.running,
       stopped: counts.stopped,
       unhealthy: counts.unhealthy,
+      attention: authoritative === null ? fallback.length : authoritative,
+      attentionApprox: authoritative === null,
     }
   })
   const rows = []
   groups.forEach((group, targetIndex) => {
-    for (const item of overviewAbnormal(group.containers)) rows.push({ target: group.name, targetIndex, item })
+    if (Array.isArray(group.attention)) {
+      for (const item of group.attention) {
+        rows.push({ target: group.name, targetIndex, item, reasons: Array.isArray(item.reasons) ? item.reasons : [] })
+      }
+      return
+    }
+    for (const item of overviewAbnormal(group.containers)) {
+      rows.push({ target: group.name, targetIndex, item, reasons: fallbackReasons(item) })
+    }
   })
   return {
     cards,
@@ -685,23 +856,30 @@ window.__ModuleLoader__.load({
           ] }, 'loading')
           : jsxs('div', { className: 'dk_empty dk_ovEmpty', children: [
             jsx('div', { className: 'dk_emptyTitle', children: '一切正常' }),
-            jsx('div', { className: 'dk_emptyHint', children: '所有目标上都没有不健康或重启中的容器。' }),
+            jsx('div', { className: 'dk_emptyHint', children: '所有目标上都没有需要关注的容器（不健康 / 反复重启 / 被 OOM 杀 / 非零退出 / 僵死）。' }),
           ] }, 'empty'))
         : jsx('div', { className: 'dk_tableWrap', children: jsxs('table', { className: 'dk_images dk_ovTable', children: [
           jsx('thead', { children: jsxs('tr', { children: [
             jsx('th', { children: '容器名' }),
             jsx('th', { children: '目标' }),
             jsx('th', { children: '状态' }),
+            jsx('th', { children: '原因' }),
             jsx('th', { children: '镜像' }),
           ] }) }),
           jsx('tbody', { children: data.rows.map((row) => jsxs('tr', {
             className: 'dk_rowClickable',
-            title: '打开容器详情',
+            title: attentionTitle(row.item),
             onClick: () => actions.onOpenContainer(row.target, row.item),
             children: [
               jsx('td', { className: 'dk_mono', title: row.item.name, children: row.item.name }),
               jsx('td', { children: row.target }),
               jsx('td', { children: jsx(Badge, { state: row.item.state, health: row.item.health, status: row.item.status }) }),
+              // 原因徽标：/attention 的权威原因（OOM / 非零退出 / 僵死…）或摘要兜底
+              jsx('td', { children: jsx('span', { className: 'dk_reasons', children: (row.reasons ?? []).map((reason) => jsx('span', {
+                className: 'dk_reason',
+                'data-reason': reason,
+                children: reasonLabel(reason),
+              }, reason)) }) }),
               jsx('td', { className: 'dk_mono dk_pathCell', title: row.item.image, children: row.item.image }),
             ],
           }, row.target + '\u0000' + row.item.id)) }),
@@ -731,6 +909,7 @@ window.__ModuleLoader__.load({
                   overviewCountSpan('running', '运行中', card.running),
                   overviewCountSpan('stopped', '已停止', card.stopped),
                   overviewCountSpan('unhealthy', '不健康', card.unhealthy),
+                  overviewCountSpan('attention', card.attentionApprox ? '需关注（粗判）' : '需关注', card.attention),
                 ] }, 'counts')
                 : jsxs('div', { className: 'dk_ovCardLoading', children: [
                   jsx('span', { className: 'dk_spin' }),
@@ -742,7 +921,7 @@ window.__ModuleLoader__.load({
               ] }, 'error'),
           ],
         }, card.name)) }, 1),
-        jsx('div', { className: 'dk_ovSection', children: data.rows.length === 0 ? '异常容器' : '异常容器（' + String(data.rows.length) + '）' }, 2),
+        jsx('div', { className: 'dk_ovSection', children: data.rows.length === 0 ? '需关注容器' : '需关注容器（' + String(data.rows.length) + '）' }, 2),
         abnormal,
       ] })
     }
@@ -1026,9 +1205,13 @@ window.__ModuleLoader__.load({
     }
 
     /** Compose 聚合日志行：在标准日志行前加一个 `[service]` 前缀。 */
-    function renderAggLine(entry, index, query) {
+    function renderAggLine(entry, index, query, showTs) {
+      const ts = showTs === true && typeof entry.ts === 'number' && Number.isFinite(entry.ts)
+        ? jsx('span', { className: 'dk_logTs', children: new Date(entry.ts).toLocaleTimeString() }, 'ts')
+        : null
       return jsxs('div', { className: 'dk_logLine', children: [
         jsx('span', { className: 'dk_logSvc', children: '[' + entry.service + ']' }, 'svc'),
+        ts,
         ...renderLogParts(entry.text, index, query),
       ] }, String(index))
     }
@@ -2274,15 +2457,159 @@ window.__ModuleLoader__.load({
      * 不保证跨容器严格时序——排障要的是「一屏看全这个项目的动静」，不是精确排序。
      * 某个容器流失败只标注状态，不影响其余流。
      */
+    /**
+     * docker `logs --timestamps` 前缀（RFC3339）。聚合日志为了**跨容器按时间合并**必须
+     * 拿到它：`docker logs -f` 只在每行开头给时间戳，所以解析后即可还原真实时序。
+     */
+    /** 时间序合并窗口（毫秒）：太小会乱序，太大会让实时跟随有延迟。 */
+    const LOG_MERGE_WINDOW_MS = 350
+
+    const LOG_TS_PREFIX_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))\s/
+
+    /** 拆出时间戳（毫秒）与正文；没有前缀时 ts=null（正常不会发生，--timestamps 是本视图固定参数）。 */
+    function splitLogTimestamp(line) {
+      const match = LOG_TS_PREFIX_RE.exec(line)
+      if (match === null) return { ts: null, text: line }
+      const time = Date.parse(match[1])
+      return { ts: Number.isFinite(time) ? time : null, text: line.slice(match[0].length) }
+    }
+
+    /** 级别名 → 序（用于「WARN+ / ERROR+」过滤）。 */
+    const LOG_LEVEL_RANK = { TRACE: 0, DEBUG: 1, INFO: 2, WARN: 3, ERROR: 4, FATAL: 5 }
+
+    /**
+     * 从一行正文里取级别名。两种常见排布都要吃：
+     *   `[INFO] [2026-09-09 …] …`（级别在前）
+     *   `16:11:34,150 |ERROR in …`（Spring Boot：先时间戳再 ｜级别）
+     * 所以先剥掉行首时间戳，再在行首匹配级别——否则第二种永远判成「无级别」。
+     */
+    const LOG_LINE_TS_RE = /^\s*(\[\d{4}-\d{2}-\d{2}[ T][0-9:.,]+\]|\d{2}:\d{2}:\d{2}[,.]\d{3})\s*/
+    function logLineLevelName(text) {
+      const match = LOG_LEVEL_RE.exec(text.replace(LOG_LINE_TS_RE, ''))
+      if (match === null) return null
+      const name = LOG_LEVEL_NAME_RE.exec(match[1])
+      return name === null ? null : name[1]
+    }
+
+    /**
+     * 按时间戳稳定排序。没有时间戳的行沿用**前一行的时间**（保持相对顺序），
+     * 这样缺一个前缀不会让整行被甩到最前/最后。
+     */
+    function orderRowsByTimestamp(rows) {
+      let carried = 0
+      return rows
+        .map((row, index) => {
+          if (typeof row.ts === 'number' && Number.isFinite(row.ts)) carried = row.ts
+          return { row, index, key: carried }
+        })
+        .sort((left, right) => left.key - right.key || left.index - right.index)
+        .map((item) => item.row)
+    }
+
+    /**
+     * 「按时间」模式下把**尾部 N 行**与新到的行一起重排。
+     * 为什么不是简单追加窗口排序：各容器的 SSE 是先后建连的，A 的首屏历史可能整批先到，
+     * B 的历史随后才到——只对单批排序修不了这种跨批逆序。回填最近 N 行可以事后纠正，
+     * 又不必为了让首屏正确而先憋一段时间（那会让「打开就白屏 1 秒」）。
+     */
+    const LOG_REORDER_TAIL = 400
+
+    function reorderTailByTimestamp(entries, incoming, tail) {
+      if (incoming.length === 0) return entries
+      const keep = Math.max(tail, 0)
+      const headCount = Math.max(entries.length - keep, 0)
+      const tailRows = entries.slice(headCount).concat(incoming)
+      return entries.slice(0, headCount).concat(orderRowsByTimestamp(tailRows))
+    }
+
+    /**
+     * 级别过滤（minRank：0 全部 / 3 WARN+ / 4 ERROR+）。
+     *
+     * 关键语义：**无级别前缀的行是上一条日志的续行**（堆栈、折行文本），它继承上一条的
+     * 级别——否则「ERROR+」会把大段堆栈留在结果里、却把那条 ERROR 头行滤掉，筛选形同
+     * 虚设。窗口开头就出现的续行（其记录头在窗口之外）无从判断，保留。
+     */
+    function filterRowsByLevel(rows, minRank) {
+      if (typeof minRank !== 'number' || minRank <= 0) return rows
+      let inherited = null
+      const out = []
+      for (const row of rows) {
+        const level = logLineLevelName(row.text)
+        if (level !== null) inherited = level
+        const rank = inherited === null ? null : (LOG_LEVEL_RANK[inherited] ?? 0)
+        if (rank === null || rank >= minRank) out.push(row)
+      }
+      return out
+    }
+
+    /** 导出行文本：带时间戳时用 ISO（便于外部工具排序）。 */
+    function exportRowText(row) {
+      const stamp = typeof row.ts === 'number' && Number.isFinite(row.ts) ? new Date(row.ts).toISOString() + ' ' : ''
+      return '[' + row.service + '] ' + stamp + row.text
+    }
+
+    /**
+     * 导出聚合日志：`.log` 是纯行文本；`.md` 带一份可读表头（来源容器 / 行数 / 生成时间），
+     * 便于当工单附件或粘贴进文档。
+     */
+    function buildLogExport(rows, options) {
+      const body = rows.map(exportRowText).join('\n')
+      if (options?.format !== 'md') return body
+      const items = Array.isArray(options.items) ? options.items : []
+      const lines = [
+        '# 聚合日志',
+        '',
+        '- 来源：' + (typeof options.targetLabel === 'string' && options.targetLabel !== '' ? options.targetLabel + ' · ' : '') + (options.target ?? ''),
+        '- 容器（' + String(items.length) + '）：' + items.map((item) => item.name).join('、'),
+        '- 行数：' + String(rows.length),
+        '- 导出时间：' + new Date().toLocaleString(),
+        '',
+        '```text',
+        body,
+        '```',
+        '',
+      ]
+      return lines.join('\n')
+    }
+
+    /**
+     * 暂停期间攒下的行合并进主列表（环形上限）。抽成纯函数是为了能离线断言：
+     * 「暂停 → 恢复」不能丢行，也不能越界。
+     */
+    function mergeBufferedEntries(entries, buffered, limit) {
+      if (buffered.length === 0) return entries
+      const next = entries.concat(buffered)
+      return next.length > limit ? next.slice(next.length - limit) : next
+    }
+
     function ComposeLogs(props) {
       const items = props.items
       const [entries, setEntries] = useState([])
       const [status, setStatus] = useState('connecting')
       const [filter, setFilter] = useState('')
-      const [autoScroll, setAutoScroll] = useState(true)
+      /**
+       * 「已暂停」= 内容冻结：暂停期间新到的行进缓冲，DOM 不再追加（因此读屏不会被
+       * 顶走，也不会因超过显示上限而裁掉前部跳屏）；恢复时一次性并入并回到底部。
+       * 只停「自动滚动」是不够的——标签写「已暂停」而内容还在长，会让人以为开关坏了。
+       */
+      const [paused, setPaused] = useState(false)
+      const [bufferedCount, setBufferedCount] = useState(0)
       const [dropped, setDropped] = useState(false)
+      /** 显示每行时间戳（默认关：聚合看内容为主，时间戳会占宽度）。 */
+      const [showTs, setShowTs] = useState(false)
+      /** 排序：'arrival' 到达序（默认，零延迟）/ 'time' 按容器时间戳合并（窗口 350ms）。 */
+      const [orderMode, setOrderMode] = useState('arrival')
+      /** 级别过滤下限：0 全部 / 3 WARN+ / 4 ERROR+。 */
+      const [levelMin, setLevelMin] = useState(0)
       const entriesRef = useRef([])
       const pendingRef = useRef(new Map())
+      /** SSE 回调里读「最新暂停态」：闭包捕获的是连接建立那一刻的 state。 */
+      const pausedRef = useRef(false)
+      const bufferRef = useRef([])
+      const orderRef = useRef('arrival')
+      /** 时间序模式的合并窗口：攒 350ms 再按时间戳排序落地，避免逐行排序的乱序与抖动。 */
+      const timeBufRef = useRef([])
+      const flushTimerRef = useRef(null)
       const bodyRef = useRef(null)
       const itemIds = items.map((item) => item.id).join(',')
 
@@ -2298,23 +2625,64 @@ window.__ModuleLoader__.load({
         setStatus('connecting')
         entriesRef.current = []
         pendingRef.current = new Map()
+        bufferRef.current = []
         setEntries([])
+        setBufferedCount(0)
         setDropped(false)
+        timeBufRef.current = []
+        if (flushTimerRef.current !== null) {
+          clearTimeout(flushTimerRef.current)
+          flushTimerRef.current = null
+        }
         let open = 0
         let closed = 0
         const sources = items.map((item) => {
           const service = item.composeService === null ? item.name : item.composeService
-          const es = new EventSource(streamUrl('/logs/stream', { target: props.target, id: item.id, tail: 100 }))
+          // timestamps=1：聚合视图为「按时间合并」与可选显示时间戳固定带上的参数
+          const es = new EventSource(streamUrl('/logs/stream', { target: props.target, id: item.id, tail: 100, timestamps: 1 }))
+          const commit = (rows) => {
+            if (rows.length === 0) return
+            // 时间序：把最近 N 行连同新行一起重排（跨批次的历史错序也能被纠正）
+            const next = orderRef.current === 'time'
+              ? reorderTailByTimestamp(entriesRef.current, rows, LOG_REORDER_TAIL)
+              : entriesRef.current.concat(rows)
+            const trimmed = next.length > FOLLOW_LINE_LIMIT ? next.slice(next.length - FOLLOW_LINE_LIMIT) : next
+            entriesRef.current = trimmed
+            if (trimmed.length !== next.length) setDropped(true)
+            setEntries(trimmed)
+          }
+          /** 时间序：攒进窗口，到点整体按时间戳排序后落地（到达序则直接落地）。 */
+          const enqueue = (rows) => {
+            if (orderRef.current !== 'time') {
+              commit(rows)
+              return
+            }
+            timeBufRef.current = timeBufRef.current.concat(rows)
+            if (flushTimerRef.current !== null) return
+            flushTimerRef.current = setTimeout(() => {
+              flushTimerRef.current = null
+              const pendingRows = timeBufRef.current
+              timeBufRef.current = []
+              commit(orderRowsByTimestamp(pendingRows))
+            }, LOG_MERGE_WINDOW_MS)
+          }
           const push = (text) => {
             const pending = pendingRef.current.get(item.id) ?? ''
             const parts = (pending + text).split('\n')
             pendingRef.current.set(item.id, parts.pop() ?? '')
             if (parts.length === 0) return
-            const next = entriesRef.current.concat(parts.map((line) => ({ service, text: line })))
-            const trimmed = next.length > FOLLOW_LINE_LIMIT ? next.slice(next.length - FOLLOW_LINE_LIMIT) : next
-            entriesRef.current = trimmed
-            if (trimmed.length !== next.length) setDropped(true)
-            setEntries(trimmed)
+            const rows = parts.map((line) => {
+              const parsed = splitLogTimestamp(line)
+              return { service, text: parsed.text, ts: parsed.ts }
+            })
+            if (pausedRef.current) {
+              // 暂停：攒进缓冲，DOM 不动（恢复时并入并回到底部）
+              const buffered = bufferRef.current.concat(rows)
+              bufferRef.current = buffered.length > FOLLOW_LINE_LIMIT ? buffered.slice(buffered.length - FOLLOW_LINE_LIMIT) : buffered
+              setBufferedCount((current) => (bufferRef.current.length - current >= 5 || current === 0 ? bufferRef.current.length : current))
+              return
+            }
+            enqueue(rows)
           }
           es.addEventListener('line', (event) => {
             let payload = null
@@ -2344,16 +2712,76 @@ window.__ModuleLoader__.load({
       }, [props.target, itemIds])
 
       useEffect(() => {
-        if (!autoScroll) return
+        if (paused) return
         const body = bodyRef.current
         if (body !== null) body.scrollTop = body.scrollHeight
-      }, [autoScroll, entries])
+      }, [paused, entries])
+
+      /** 暂停 / 恢复：恢复那一刻把缓冲并入（环形上限）并回到底部。 */
+      const togglePause = () => {
+        const next = !pausedRef.current
+        pausedRef.current = next
+        setPaused(next)
+        if (next) return
+        const buffered = bufferRef.current
+        bufferRef.current = []
+        setBufferedCount(0)
+        if (buffered.length > 0) {
+          const merged = mergeBufferedEntries(entriesRef.current, buffered, FOLLOW_LINE_LIMIT)
+          entriesRef.current = merged
+          setEntries(merged)
+        }
+        // 等这一帧的 DOM 落地再贴底（否则滚到的是合并前的高度）
+        requestAnimationFrame(() => {
+          const body = bodyRef.current
+          if (body !== null) body.scrollTop = body.scrollHeight
+        })
+      }
 
       const needle = filter.trim().toLowerCase()
+      // 先按级别（WARN+ / ERROR+），再按文本/服务名，最后套显示上限
+      const leveled = filterRowsByLevel(entries, levelMin)
       const matched = needle === ''
-        ? entries
-        : entries.filter((entry) => entry.text.toLowerCase().indexOf(needle) >= 0 || entry.service.toLowerCase().indexOf(needle) >= 0)
+        ? leveled
+        : leveled.filter((entry) => entry.text.toLowerCase().indexOf(needle) >= 0 || entry.service.toLowerCase().indexOf(needle) >= 0)
       const shown = matched.length > LOG_COLOR_LIMIT ? matched.slice(-LOG_COLOR_LIMIT) : matched
+
+      /** 切换排序：先把待合并窗口落地，避免切模式时短暂的顺序错乱。 */
+      const toggleOrderMode = () => {
+        const next = orderMode === 'time' ? 'arrival' : 'time'
+        orderRef.current = next
+        setOrderMode(next)
+        if (flushTimerRef.current !== null) {
+          clearTimeout(flushTimerRef.current)
+          flushTimerRef.current = null
+        }
+        const pendingRows = timeBufRef.current
+        timeBufRef.current = []
+        if (pendingRows.length > 0) {
+          const merged = reorderTailByTimestamp(entriesRef.current, pendingRows, LOG_REORDER_TAIL)
+          const trimmed = merged.length > FOLLOW_LINE_LIMIT ? merged.slice(merged.length - FOLLOW_LINE_LIMIT) : merged
+          entriesRef.current = trimmed
+          setEntries(trimmed)
+        }
+        // 切到「按时间」时，把现有尾部也整体重排一次（历史批次之间的错序一次纠正）
+        if (next === 'time') {
+          const reordered = reorderTailByTimestamp([], entriesRef.current, entriesRef.current.length)
+          entriesRef.current = reordered
+          setEntries(reordered)
+        }
+      }
+
+      /** 导出当前显示内容（受级别 / 文本过滤影响）。 */
+      const doExport = (format) => {
+        const text = buildLogExport(shown, {
+          format,
+          target: props.target,
+          targetLabel: props.targetLabel,
+          items,
+        })
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+        downloadText('docker-logs-' + stamp + (format === 'md' ? '.md' : '.log'), text)
+      }
 
       const statusText = () => {
         if (status === 'open') return '已连接 ' + String(items.length) + ' 条容器日志流（docker logs -f）'
@@ -2393,18 +2821,68 @@ window.__ModuleLoader__.load({
           jsx('button', {
             type: 'button',
             className: 'dk_pill dk_pillFollow',
-            'data-on': autoScroll ? '1' : '0',
-            title: autoScroll ? '暂停自动滚动（日志继续接收）' : '恢复自动滚动',
-            onClick: () => setAutoScroll((value) => !value),
-            children: autoScroll ? '自动滚动' : '已暂停',
+            'data-on': paused ? '0' : '1',
+            'data-paused': paused ? '1' : undefined,
+            title: paused
+              ? '恢复实时（会一次性显示暂停期间攒下的 ' + String(bufferedCount) + ' 行并回到底部）'
+              : '暂停（冻结当前画面：新日志继续接收但不追加，避免读屏被顶走）',
+            onClick: togglePause,
+            children: paused
+              ? (bufferedCount > 0 ? '已暂停 +' + String(bufferedCount) : '已暂停')
+              : '实时',
           }),
-          jsx('span', { className: 'dk_filterCount', children: needle === '' ? String(entries.length) + ' 行' : String(matched.length) + ' / ' + String(entries.length) + ' 行匹配' }),
+          jsx('button', {
+            type: 'button',
+            className: 'dk_pill',
+            'data-on': showTs ? '1' : '0',
+            title: showTs ? '隐藏每行时间戳' : '显示每行时间戳（时间戳始终随流接收，只影响显示）',
+            onClick: () => setShowTs((value) => !value),
+            children: '时间戳',
+          }),
+          jsx('button', {
+            type: 'button',
+            className: 'dk_pill',
+            'data-on': orderMode === 'time' ? '1' : '0',
+            title: orderMode === 'time'
+              ? '按到达顺序显示（实时跟随零延迟）'
+              : '按容器时间戳合并（跨容器成一条真时间线，代价约 ' + String(LOG_MERGE_WINDOW_MS) + 'ms 延迟）',
+            onClick: () => toggleOrderMode(),
+            children: orderMode === 'time' ? '按时间' : '按到达',
+          }),
+          jsx('select', {
+            className: 'dk_select dk_selectSm',
+            value: String(levelMin),
+            title: '按日志级别过滤（无级别前缀的行始终保留）',
+            onChange: (event) => setLevelMin(Number(event.target.value)),
+            children: [
+              jsx('option', { value: '0', children: '全部级别' }, 'all'),
+              jsx('option', { value: '3', children: 'WARN+' }, 'warn'),
+              jsx('option', { value: '4', children: 'ERROR+' }, 'error'),
+            ],
+          }),
+          jsx('button', {
+            type: 'button',
+            className: 'dk_chip',
+            disabled: shown.length === 0,
+            title: '导出当前显示内容为 .log（纯文本）',
+            onClick: () => doExport('log'),
+            children: '⬇ .log',
+          }),
+          jsx('button', {
+            type: 'button',
+            className: 'dk_chip',
+            disabled: shown.length === 0,
+            title: '导出当前显示内容为 .md（带来源与行数表头，适合当工单附件）',
+            onClick: () => doExport('md'),
+            children: '⬇ .md',
+          }),
+          jsx('span', { className: 'dk_filterCount', children: needle === '' && levelMin === 0 ? String(entries.length) + ' 行' : String(matched.length) + ' / ' + String(entries.length) + ' 行' }),
         ] }),
         jsx('div', { className: 'dk_followState', 'data-state': status === 'open' ? 'open' : (status === 'closed' ? 'closed' : 'connecting'), children: statusText() }),
         jsx('div', { className: 'dk_logBody', ref: bodyRef, children: [
           shown.length === 0
             ? jsx('div', { className: 'dk_logLine', children: status === 'open' ? '等待日志…' : statusText() }, 'empty')
-            : shown.map((entry, index) => renderAggLine(entry, index, needle)),
+            : shown.map((entry, index) => renderAggLine(entry, index, needle, showTs)),
         ] }),
       ] })
     }
@@ -2477,21 +2955,45 @@ window.__ModuleLoader__.load({
      */
     function PickBar(props) {
       const info = props.info
+      const presets = Array.isArray(props.presets) ? props.presets : []
+      // 有可选项、或已经勾了东西时才出第二行（刚进选择态别先摆一排 0）
+      const showPresets = presets.some((preset) => preset.count > 0) || props.count > 0
       return jsxs('div', { className: 'dk_pickBar', children: [
-        jsx('span', { className: 'dk_pickCount', children: '已选 ' + String(props.count) + ' 个容器' }),
-        info.hint === '' ? null : jsx('span', { className: 'dk_hint dk_pickHint', children: info.hint }),
-        jsx('span', { className: 'dk_headerSpacer' }),
-        jsx('button', {
-          type: 'button',
-          className: 'dk_btn dk_btnPrimary',
-          disabled: info.canRun !== true,
-          // 0 个勾选时 pickDecide 不给提示（刚进选择态别一上来就飘一行灰字），
-          // 但按钮自己的 title 仍要说清为什么点不动
-          title: info.hint !== '' ? info.hint : (info.canRun === true ? '把所选容器的日志聚合成一条流' : '至少选择 2 个容器'),
-          onClick: props.onRun,
-          children: '聚合日志',
-        }),
-        jsx('button', { type: 'button', className: 'dk_btn', onClick: props.onCancel, children: '取消' }),
+        jsxs('div', { className: 'dk_pickRow', children: [
+          jsx('span', { className: 'dk_pickCount', children: '已选 ' + String(props.count) + ' 个容器' }),
+          info.hint === '' ? null : jsx('span', { className: 'dk_hint dk_pickHint', children: info.hint }),
+          jsx('span', { className: 'dk_headerSpacer' }),
+          jsx('button', {
+            type: 'button',
+            className: 'dk_btn dk_btnPrimary',
+            disabled: info.canRun !== true,
+            // 0 个勾选时 pickDecide 不给提示（刚进选择态别一上来就飘一行灰字），
+            // 但按钮自己的 title 仍要说清为什么点不动
+            title: info.hint !== '' ? info.hint : (info.canRun === true ? '把所选容器的日志聚合成一条流' : '至少选择 2 个容器'),
+            onClick: props.onRun,
+            children: '聚合日志',
+          }),
+          jsx('button', { type: 'button', className: 'dk_btn', onClick: props.onCancel, children: '取消' }),
+        ] }),
+        showPresets ? jsxs('div', { className: 'dk_pickPresets', children: [
+          jsx('span', { className: 'dk_pickPresetsLabel', children: '按条件选中' }),
+          ...presets.filter((preset) => preset.count > 0).map((preset) => jsx('button', {
+            type: 'button',
+            className: 'dk_chip',
+            title: '在当前筛选结果里勾选「' + preset.label + '」的容器（最多 ' + String(PICK_MAX) + ' 个流）'
+              + (preset.over > 0 ? '；另有 ' + String(preset.over) + ' 个超出上限不会选中' : ''),
+            onClick: () => props.onPreset(preset.key),
+            children: preset.label + ' ' + String(preset.count),
+          }, preset.key)),
+          props.count > 0 ? jsx('button', {
+            type: 'button',
+            className: 'dk_chip dk_chipQuiet',
+            title: '清空勾选',
+            onClick: props.onClear,
+            children: '清空',
+          }, 'clear') : null,
+          props.notice === '' ? null : jsx('span', { className: 'dk_hint dk_pickNotice', children: props.notice }),
+        ] }) : null,
       ] })
     }
 
@@ -2574,11 +3076,33 @@ window.__ModuleLoader__.load({
     function ContainerPanel(props) {
       const [config, setConfig] = useState(null)
       const [targets, setTargets] = useState([])
-      const [target, setTarget] = useState(props.initialTarget ?? '')
+      /*
+       * 初值先给「记住的目标」，列表到达后再用 chooseInitialTarget 校验一次
+       * （被删掉的目标要退回第一个，而不是停在「未知目标」上）。
+       *
+       * 注意不能写成 `props.initialTarget ?? readLastTarget()`：侧边栏入口传的是**空字符串**
+       * （不是 undefined/null），`??` 不会回落到记忆值——空串必须当「没指定」处理。
+       */
+      const requestedTarget = typeof props.initialTarget === 'string' ? props.initialTarget.trim() : ''
+      const rememberedTargetRef = useRef(requestedTarget !== '' ? requestedTarget : readLastTarget())
+      const [target, setTarget] = useState(rememberedTargetRef.current)
       /** 从 tty 连接栏进来、但会话主机没匹配到任何目标：不自动选目标，只提示去配置。 */
       const sessionScoped = props.sessionHint !== undefined && (props.initialTarget ?? '') === ''
       const [view, setView] = useState('containers')
       const [containers, setContainers] = useState([])
+      /**
+       * 当前屏上这份列表**属于哪个目标**（0.15.0）。
+       * 切目标时选择器立刻变，但新目标要等一次 CLI/SSH 往返（远端不可达最长 20s），
+       * 这期间下方仍是旧目标的卡片——既误导，又危险：点「停止」会拿新目标当目标、
+       * 用旧目标的容器 ID 发命令。所以按数据归属打标，不一致时锁住内容并说明。
+       */
+      const [listTarget, setListTarget] = useState('')
+      /** listTarget 的 ref 镜像：加载回调（尤其 catch）里要判断「这是不是一次目标切换」。 */
+      const listTargetRef = useRef('')
+      const markListTarget = useCallback((name) => {
+        listTargetRef.current = name
+        setListTarget(name)
+      }, [])
       /**
        * 多目标总览：每个配置目标一格「容器 / 失败原因 / 是否已落地」。渐进式填格——
        * 一个目标慢或挂了不影响其余。只在内存里，不落配置、不传宿主。
@@ -2602,6 +3126,8 @@ window.__ModuleLoader__.load({
        */
       const [pickMode, setPickMode] = useState(false)
       const [pickedIds, setPickedIds] = useState([])
+      /** 条件选择的结果提示（新增 N 个 / 超出上限略过 M 个）。 */
+      const [pickNotice, setPickNotice] = useState('')
       /** 已进入聚合视图（items 由 pickItems(containers, pickedIds) 现算）。 */
       const [aggregateOpen, setAggregateOpen] = useState(false)
       const [loading, setLoading] = useState(false)
@@ -2732,18 +3258,24 @@ window.__ModuleLoader__.load({
           setConfig(next)
           // 上下文入口（tty 连接栏）已指定目标时不覆盖；从连接栏进来但没匹配到目标时
           // 也不自动选第一个——否则面板会显示「另一台主机」的容器，误导性太强
-          if (!sessionScoped && Array.isArray(next.targets) && next.targets.length > 0) {
-            setTarget((current) => (current === '' ? next.targets[0].name : current))
+          if (Array.isArray(next.targets) && next.targets.length > 0) {
+            setTarget((current) => chooseInitialTarget(next.targets, current, rememberedTargetRef.current, sessionScoped))
           }
           primeTargetsCache(next)
         }).catch((error_) => setError(error_.message))
         api.targets().then((payload) => {
           setTargets(payload.targets ?? [])
           targetsCache = payload.targets ?? []
-          const first = (payload.targets ?? [])[0]
-          if (first !== undefined && !sessionScoped) setTarget((current) => (current === '' ? first.name : current))
+          setTarget((current) => chooseInitialTarget(payload.targets ?? [], current, rememberedTargetRef.current, sessionScoped))
+          // 校验过就清掉「记住值」的优先级：之后的重选一律以用户当前选择为准
+          rememberedTargetRef.current = ''
         }).catch(() => { /* 目标列表失败时下面的容器加载会给出错误 */ })
       }, [])
+
+      /** 记住用户当前选的目标（面板下次打开自动选中）。 */
+      useEffect(() => {
+        if (target !== '') writeLastTarget(target)
+      }, [target])
 
       // 返回 promise：变更操作完成后要「等这一次刷新落地」再收起卡片的执行中态，
       // 否则会出现「转圈没了、状态还是旧的」空档
@@ -2756,11 +3288,17 @@ window.__ModuleLoader__.load({
             // 过闸：这一代已经被后来的请求取代时，这份数据属于别的目标 / 别的页
             if (!mountedRef.current || !listSeqRef.current.isCurrent(seq)) return
             setContainers(payload.containers ?? [])
+            markListTarget(target)
             setError('')
           })
           .catch((error_) => {
             // 失败分支同样要过闸：旧目标的超时正是从这条路径「迟到」地盖到新目标上的
-            if (mountedRef.current && listSeqRef.current.isCurrent(seq)) setError(error_.message)
+            if (!mountedRef.current || !listSeqRef.current.isCurrent(seq)) return
+            // 目标切换后加载失败：不能继续显示上一个目标的列表（那是最危险的一种错配），
+            // 清空并列成新目标的错误态；同目标的刷新失败则保留现有列表。
+            if (listTargetRef.current !== target) setContainers([])
+            markListTarget(target)
+            setError(error_.message)
           })
           .finally(() => {
             // loading 也归最新那一代管，否则旧请求先回来会把新请求的转圈提前停掉
@@ -2777,11 +3315,17 @@ window.__ModuleLoader__.load({
             // 过闸：这一代已经被后来的请求取代时，这份数据属于别的目标 / 别的页
             if (!mountedRef.current || !listSeqRef.current.isCurrent(seq)) return
             setImages(payload.images ?? [])
+            markListTarget(target)
             setError('')
           })
           .catch((error_) => {
             // 失败分支同样要过闸：旧目标的超时正是从这条路径「迟到」地盖到新目标上的
-            if (mountedRef.current && listSeqRef.current.isCurrent(seq)) setError(error_.message)
+            if (!mountedRef.current || !listSeqRef.current.isCurrent(seq)) return
+            // 目标切换后加载失败：不能继续显示上一个目标的列表（那是最危险的一种错配），
+            // 清空并列成新目标的错误态；同目标的刷新失败则保留现有列表。
+            if (listTargetRef.current !== target) setImages([])
+            markListTarget(target)
+            setError(error_.message)
           })
           .finally(() => {
             // loading 也归最新那一代管，否则旧请求先回来会把新请求的转圈提前停掉
@@ -2798,11 +3342,17 @@ window.__ModuleLoader__.load({
             // 过闸：这一代已经被后来的请求取代时，这份数据属于别的目标 / 别的页
             if (!mountedRef.current || !listSeqRef.current.isCurrent(seq)) return
             setNetworks(payload.networks ?? [])
+            markListTarget(target)
             setError('')
           })
           .catch((error_) => {
             // 失败分支同样要过闸：旧目标的超时正是从这条路径「迟到」地盖到新目标上的
-            if (mountedRef.current && listSeqRef.current.isCurrent(seq)) setError(error_.message)
+            if (!mountedRef.current || !listSeqRef.current.isCurrent(seq)) return
+            // 目标切换后加载失败：不能继续显示上一个目标的列表（那是最危险的一种错配），
+            // 清空并列成新目标的错误态；同目标的刷新失败则保留现有列表。
+            if (listTargetRef.current !== target) setNetworks([])
+            markListTarget(target)
+            setError(error_.message)
           })
           .finally(() => {
             // loading 也归最新那一代管，否则旧请求先回来会把新请求的转圈提前停掉
@@ -2819,11 +3369,17 @@ window.__ModuleLoader__.load({
             // 过闸：这一代已经被后来的请求取代时，这份数据属于别的目标 / 别的页
             if (!mountedRef.current || !listSeqRef.current.isCurrent(seq)) return
             setVolumes(payload.volumes ?? [])
+            markListTarget(target)
             setError('')
           })
           .catch((error_) => {
             // 失败分支同样要过闸：旧目标的超时正是从这条路径「迟到」地盖到新目标上的
-            if (mountedRef.current && listSeqRef.current.isCurrent(seq)) setError(error_.message)
+            if (!mountedRef.current || !listSeqRef.current.isCurrent(seq)) return
+            // 目标切换后加载失败：不能继续显示上一个目标的列表（那是最危险的一种错配），
+            // 清空并列成新目标的错误态；同目标的刷新失败则保留现有列表。
+            if (listTargetRef.current !== target) setVolumes([])
+            markListTarget(target)
+            setError(error_.message)
           })
           .finally(() => {
             // loading 也归最新那一代管，否则旧请求先回来会把新请求的转圈提前停掉
@@ -2855,6 +3411,8 @@ window.__ModuleLoader__.load({
           kind: item.kind,
           label: item.label,
           containers: [],
+          // null = 尚无权威结果（→ 摘要兜底口径）；[] = 权威结果为空
+          attention: null,
           error: '',
           loaded: false,
         })))
@@ -2863,20 +3421,36 @@ window.__ModuleLoader__.load({
           pending -= 1
           if (pending === 0 && mountedRef.current && listSeqRef.current.isCurrent(seq)) setLoading(false)
         }
-        return Promise.all(targets.map((item) => api.containers(item.name, true)
+        // 需关注（/attention）与容器列表并行：它多带一次 inspect，覆盖 OOM / 非零退出 /
+        // 僵死这些摘要看不出来的情况。两者**各自落地**——容器列表先回来就先出卡片与
+        // 计数，attention 晚到只补异常表与「需关注」数；attention 失败不影响卡片。
+        const loadAttention = (name) => api.attention(name)
           .then((payload) => {
             if (!mountedRef.current || !listSeqRef.current.isCurrent(seq)) return
-            // 连 error 一起写：上一轮失败、这一轮成功的目标不能留着旧的红色原因
-            setOverviewGroups((groups) => overviewPatch(groups, item.name, { containers: payload.containers ?? [], error: '', loaded: true }))
+            setOverviewGroups((groups) => overviewPatch(groups, name, { attention: payload.items ?? [] }))
           })
-          .catch((error_) => {
+          .catch(() => {
+            // 老版本宿主没有 /attention，或该目标请求失败：留空数组 → 退回摘要口径
             if (!mountedRef.current || !listSeqRef.current.isCurrent(seq)) return
-            setOverviewGroups((groups) => overviewPatch(groups, item.name, {
-              error: error_ instanceof Error ? error_.message : String(error_),
-              loaded: true,
-            }))
+            setOverviewGroups((groups) => overviewPatch(groups, name, { attention: null }))
           })
-          .finally(settle)))
+        return Promise.all(targets.map((item) => {
+          void loadAttention(item.name)
+          return api.containers(item.name, true)
+            .then((payload) => {
+              if (!mountedRef.current || !listSeqRef.current.isCurrent(seq)) return
+              // 连 error 一起写：上一轮失败、这一轮成功的目标不能留着旧的红色原因
+              setOverviewGroups((groups) => overviewPatch(groups, item.name, { containers: payload.containers ?? [], error: '', loaded: true }))
+            })
+            .catch((error_) => {
+              if (!mountedRef.current || !listSeqRef.current.isCurrent(seq)) return
+              setOverviewGroups((groups) => overviewPatch(groups, item.name, {
+                error: error_ instanceof Error ? error_.message : String(error_),
+                loaded: true,
+              }))
+            })
+            .finally(settle)
+        }))
       }, [targets])
 
       // 事件流用 ref 取「最新的」列表加载器：它只依赖 [view, target]，不该因为
@@ -2895,6 +3469,7 @@ window.__ModuleLoader__.load({
       const resetPick = useCallback(() => {
         setPickMode(false)
         setPickedIds([])
+        setPickNotice('')
         setAggregateOpen(false)
       }, [])
 
@@ -3343,6 +3918,41 @@ window.__ModuleLoader__.load({
         return needle === '' || item.name.toLowerCase().includes(needle) || item.driver.toLowerCase().includes(needle) || item.mountpoint.toLowerCase().includes(needle)
       })
 
+      /**
+       * 切目标中的状态胶囊（标题行右侧）。可见文案只留「状态 · 归属」两段，不写成一句话；
+       * 完整解释与两侧主机的地址放 title，需要细节时 hover 就有。
+       */
+      const switchPill = () => jsxs('div', {
+        className: 'dk_switchPill',
+        title: '正在切换到 ' + target + titleHost(target)
+          + '。下面仍是 ' + listTarget + titleHost(listTarget) + '的数据，切换完成前不可操作。',
+        children: [
+          jsx('span', { className: 'dk_spin dk_spinSm' }),
+          jsxs('span', { className: 'dk_switchText', children: [
+            jsx('span', { children: '正在切换到' }),
+            jsx('strong', { children: target }),
+            jsx('span', { className: 'dk_switchDot', children: '·' }),
+            jsxs('span', { className: 'dk_switchSub', children: [
+              jsx('span', { children: '当前显示：' }),
+              jsx('span', { className: 'dk_switchName', children: listTarget }),
+            ] }),
+          ] }),
+        ],
+      }, 'switchPill')
+
+      /**
+       * 列表归属与当前目标不一致 = 处于「切换中」。首帧（listTarget 为空、什么都还没加载）
+       * 不算过期，否则刚打开面板就会闪一条「正在切换」。
+       */
+      /** title 里的目标补充说明：`（root@1.2.3.4）`；本机/未知目标时为空串。 */
+      const titleHost = (name) => {
+        const found = targets.find((item) => item.name === name)
+        const label = found === undefined || typeof found.label !== 'string' ? '' : found.label
+        return label === '' || label === name ? '' : '（' + label + '）'
+      }
+
+      const staleList = listTarget !== '' && listTarget !== target && !sessionScoped
+
       const targetLabel = (name) => {
         const found = targets.find((item) => item.name === name)
         if (found === undefined) return name
@@ -3361,6 +3971,14 @@ window.__ModuleLoader__.load({
           return jsxs('div', { className: 'dk_empty', children: [
             jsx('div', { className: 'dk_emptyTitle', children: '还没有配置 Docker 目标' }),
             jsx('div', { className: 'dk_emptyHint', children: '到 设置 → 插件 → Docker 容器面板 添加一个目标：本机直接选「本机」；远程主机可以引用 tty 终端面板的连接簿条目。' }),
+          ] })
+        }
+        // 读取失败时列表本来就会被清空（切目标失败尤其如此）：此时别把空列表说成
+        // 「筛选条件过窄」——那是两回事，会让人去反复改筛选器而看不到真正的错误。
+        if (error !== '' && containers.length === 0) {
+          return jsxs('div', { className: 'dk_empty', children: [
+            jsx('div', { className: 'dk_emptyTitle', children: '这个目标的数据没读到' }),
+            jsx('div', { className: 'dk_emptyHint', children: '上面的错误条里有原因（目标不可达 / docker 未运行 / 权限不足）。修好后点右上角刷新即可。' }),
           ] })
         }
         return jsxs('div', { className: 'dk_empty', children: [
@@ -3452,7 +4070,8 @@ window.__ModuleLoader__.load({
           ] })
         }
         if (filtered.length === 0) return empty()
-        return jsx('div', { className: 'dk_grid', children: filtered.map((item) => jsx(ContainerCard, {
+        // key=listTarget：数据换目标时整格重新挂载 → CSS 淡入，避免「瞬间跳成另一批卡片」
+        return jsx('div', { className: 'dk_grid', key: listTarget === '' ? 'first' : listTarget, children: filtered.map((item) => jsx(ContainerCard, {
           item,
           selected: detail !== null && item.id === detail.id,
           allowMutations: config?.allowMutations === true,
@@ -3480,6 +4099,23 @@ window.__ModuleLoader__.load({
        */
       const aggregateItems = pickItems(containers, pickedIds)
       const pickInfo = pickDecide(aggregateItems.length)
+      /**
+       * 条件选择的基准容器 = 第一个被勾选的容器（同镜像 / 同项目以它为准）。
+       * 计数按 aggregateItems 的口径算，避免列表刷新对账前拿到已消失的容器。
+       */
+      const pickBase = aggregateItems.length > 0 ? aggregateItems[0] : null
+      const pickPresetList = pickPresetCounts(filtered, pickedIds, pickBase, PICK_MAX)
+      const applyPreset = (key) => {
+        const next = pickApply(filtered, pickedIds, key, pickBase, PICK_MAX)
+        setPickedIds(next.ids)
+        if (next.skipped > 0) {
+          setPickNotice('已新增 ' + String(next.added) + ' 个，另有 ' + String(next.skipped) + ' 个超出上限（最多 ' + String(PICK_MAX) + ' 个流）未选')
+        } else if (next.added === 0) {
+          setPickNotice('没有可新增的容器（已被勾选或不在当前筛选结果里）')
+        } else {
+          setPickNotice('已新增 ' + String(next.added) + ' 个')
+        }
+      }
       const composeItems = composeDetail === null
         ? []
         : (groupCompose(containers).find((group) => group.project === composeDetail.project)?.items ?? [])
@@ -3764,14 +4400,31 @@ window.__ModuleLoader__.load({
              * 多选聚合操作条：只在容器列表页的选择态出现，夹在工具条与正文之间
              * （不进正文滚动区，滚动列表时也始终可见）
              */
+            /*
+             * 目标已切换、新数据还没到：明确写出「下面这份是谁的数据」，并锁住正文
+             * （pointer-events: none）——半透明的旧列表仍然可读（保留上下文），
+             * 但点不动，避免把命令发到错的主机上。
+             */
             view === 'containers' && pickMode ? jsx(PickBar, {
               count: aggregateItems.length,
               info: pickInfo,
+              presets: pickPresetList,
+              notice: pickNotice,
+              onPreset: applyPreset,
+              onClear: () => { setPickedIds([]); setPickNotice('') },
               onRun: () => setAggregateOpen(true),
               onCancel: resetPick,
             }, 'pickBar') : null,
             /* 主体 */
-            jsxs('div', { className: 'dk_body', children: [
+            jsxs('div', { className: 'dk_body', 'data-stale': staleList ? '1' : undefined, children: [
+              /*
+               * 切目标的过渡层（0.15.0）：**不占文档流**——顶部 2px 流光进度条给「面板在
+               * 取数」的全局信号，浮动胶囊把「在等谁 / 看的是谁的数据 / 为什么点不动」
+               * 压成一句话，并就近出现在选择器下方。原来是插一条横幅：会整块把内容推下去
+               * （顶部跳动），且 42% 纯压暗读起来像「坏了」，与「正在换一批内容」不是一回事。
+               */
+              // 切目标中：正文顶部一条 2px 流光进度条 + 居中浮出的蓝色状态胶囊
+              staleList ? jsx('div', { className: 'dk_switchOverlay', children: switchPill() }, 'stale') : null,
               // 表格页（镜像 / 网络 / 卷）共用 dk_mainImages 的「表体自己滚、表头吸顶」布局
               jsxs('div', { className: 'dk_main' + (view === 'images' || view === 'networks' || view === 'volumes' || view === 'overview' ? ' dk_mainImages' : ''), children: [
                 /*
@@ -4300,6 +4953,9 @@ window.__ModuleLoader__.load({
      */
     exports.__pick = {
       MAX: PICK_MAX,
+      PRESETS: PICK_PRESETS,
+      presetCounts: pickPresetCounts,
+      apply: pickApply,
       SOFT_MAX: PICK_SOFT_MAX,
       decide: pickDecide,
       toggle: pickToggle,
@@ -4338,6 +4994,22 @@ window.__ModuleLoader__.load({
      * 共用同一个计数器（组件体没法在离线冒烟里跑，所以只能把闸本身拿出来测）。
      */
     exports.__listSeq = { make: makeListSeq }
+    /*
+     * 聚合日志「暂停」的合并逻辑：暂停期间新行进缓冲、恢复时并入主列表（环形上限）。
+     * 组件体没法在离线冒烟里跑（要真 EventSource），所以把唯一的纯分支挂出来测。
+     */
+    exports.__panel = { chooseInitialTarget, readLastTarget, writeLastTarget, LAST_TARGET_KEY }
+    exports.__aggLogs = {
+      mergeBuffered: mergeBufferedEntries,
+      WINDOW_MS: LOG_MERGE_WINDOW_MS,
+      splitTs: splitLogTimestamp,
+      levelName: logLineLevelName,
+      orderByTs: orderRowsByTimestamp,
+      REORDER_TAIL: LOG_REORDER_TAIL,
+      reorderTail: reorderTailByTimestamp,
+      filterByLevel: filterRowsByLevel,
+      exportText: buildLogExport,
+    }
     exports.apply = (ctx) => {
       ensureStyle()
       // 侧栏入口先按可见挂载（与旧行为一致），config 确认禁用后由闸门收起；

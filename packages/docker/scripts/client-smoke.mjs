@@ -422,6 +422,228 @@ await test('ttyPanel：面板开着时挂进右侧侧栏（docked），没开则
   dispose2()
 })
 
+await test('按条件一键选择：preset 判定 / 计数截断 / 上限语义', () => {
+  const exports_ = registration.factory((spec) => SEED[spec])
+  const pick = exports_.__pick
+  assert.ok(typeof pick.apply === 'function' && typeof pick.presetCounts === 'function', '缺少 __pick 条件选择测试缝')
+  const visible = [
+    { id: 'a', name: 'web', image: 'nginx:1.27', state: 'running', health: 'unhealthy', composeProject: 'shop', exitCode: null },
+    { id: 'b', name: 'api', image: 'app:1', state: 'running', health: null, composeProject: 'shop', exitCode: null },
+    { id: 'c', name: 'cron', image: 'app:1', state: 'exited', health: null, composeProject: 'ops', exitCode: 137 },
+    { id: 'd', name: 'clean', image: 'app:2', state: 'exited', health: null, composeProject: 'ops', exitCode: 0 },
+  ]
+
+  // 不健康 → 只挑 a
+  assert.deepEqual(pick.apply(visible, [], 'unhealthy', null, 8).ids, ['a'])
+  // 需关注（摘要口径：unhealthy + 非零退出）→ a、c
+  assert.deepEqual(pick.apply(visible, [], 'abnormal', null, 8).ids, ['a', 'c'])
+  // 已停止 → c、d
+  assert.deepEqual(pick.apply(visible, [], 'stopped', null, 8).ids, ['c', 'd'])
+  // 已勾选的不重复选
+  assert.deepEqual(pick.apply(visible, ['a'], 'unhealthy', null, 8).ids, ['a'])
+  // 上限截断：全部可见但只剩 2 个名额 → 加 2 个、略过 2 个
+  const capped = pick.apply(visible, ['a', 'b'], 'all', null, 4)
+  assert.equal(capped.added, 2)
+  assert.equal(capped.skipped, 0)
+  const tight = pick.apply(visible, ['a'], 'all', null, 3)
+  assert.equal(tight.added, 2)
+  assert.equal(tight.skipped, 1)
+  assert.equal(tight.ids.length, 3)
+
+  // 同镜像 / 同项目：以第一个勾选的容器为基准
+  assert.deepEqual(pick.apply(visible, [], 'sameImage', visible[1], 8).ids, ['b', 'c'])
+  assert.deepEqual(pick.apply(visible, [], 'sameProject', visible[0], 8).ids, ['a', 'b'])
+  // 基准为非 compose 容器 → 同项目不选任何东西
+  assert.deepEqual(pick.apply(visible, [], 'sameProject', { id: 'x', composeProject: null }, 8).ids, [])
+
+  // 计数按剩余名额截断；over 如实报出被略过的数量
+  // 4 个可见、上限 2 → chip 显示 2、另有 2 个超出上限
+  const counts = pick.presetCounts(visible, [], null, 2)
+  const all = counts.find((item) => item.key === 'all')
+  assert.equal(all.count, 2)
+  assert.equal(all.over, 2)
+  // 已勾 1 个、上限 3 → 只剩 2 个名额
+  const tightCounts = pick.presetCounts(visible, ['a'], null, 3).find((item) => item.key === 'all')
+  assert.equal(tightCounts.count, 2)
+  assert.equal(tightCounts.over, 1)
+  // 基准类预设在没有勾选时不出现
+  assert.equal(pick.presetCounts(visible, [], null, 8).some((item) => item.key === 'sameImage'), false)
+})
+
+await test('聚合日志：暂停期间的缓冲合并（环形上限、不丢行）', () => {
+  const exports_ = registration.factory((spec) => SEED[spec])
+  const agg = exports_.__aggLogs
+  assert.ok(agg !== undefined && typeof agg.mergeBuffered === 'function', '缺少 __aggLogs 测试缝')
+  const entries = [{ service: 'a', text: '1' }, { service: 'a', text: '2' }]
+  // 无缓冲：原样返回（同一引用，避免无谓重渲染）
+  assert.equal(agg.mergeBuffered(entries, [], 5000), entries)
+  // 有缓冲：按到达顺序追加在后
+  const merged = agg.mergeBuffered(entries, [{ service: 'b', text: '3' }], 5000)
+  assert.deepEqual(merged.map((row) => row.text), ['1', '2', '3'])
+  // 超过上限：丢最旧、保最新（与 FOLLOW 的环形语义一致）
+  const many = Array.from({ length: 5 }, (_, index) => ({ service: 'a', text: String(index) }))
+  // 旧 1 行 + 新 5 行 = 6 行，上限 3 → 保留最新 3 行（[2,3,4]）
+  const capped = agg.mergeBuffered([{ service: 'a', text: 'old' }], many, 3)
+  assert.equal(capped.length, 3)
+  assert.deepEqual(capped.map((row) => row.text), ['2', '3', '4'])
+})
+
+await test('聚合日志增强：时间戳解析 / 级别过滤 / 按时间合并 / 导出', () => {
+  const exports_ = registration.factory((spec) => SEED[spec])
+  const agg = exports_.__aggLogs
+  assert.ok(agg !== undefined && typeof agg.orderByTs === 'function', '缺少 __aggLogs 增强测试缝')
+
+  // 时间戳：解析出毫秒并从正文里剥掉；无前缀的行保持原样
+  const a = agg.splitTs('2026-09-09T16:11:34.150123456Z hello')
+  assert.equal(a.text, 'hello')
+  assert.equal(a.ts, Date.parse('2026-09-09T16:11:34.150Z'))
+  const b = agg.splitTs('no-prefix line')
+  assert.equal(b.ts, null)
+  assert.equal(b.text, 'no-prefix line')
+  // 带时区偏移的写法
+  assert.equal(agg.splitTs('2026-09-09T16:11:34+08:00 x').ts, Date.parse('2026-09-09T16:11:34+08:00'))
+
+  // 级别：两种常见前缀都认
+  assert.equal(agg.levelName('[INFO] [2026-09-09 16:11:34] [main] x'), 'INFO')
+  assert.equal(agg.levelName('16:11:34,150 |ERROR in x'), 'ERROR')
+  assert.equal(agg.levelName('plain text'), null)
+
+  // 按时间合并：两个容器的行交错成一条真时间线
+  const rows = [
+    { service: 'a', text: 'a2', ts: 200 },
+    { service: 'b', text: 'b1', ts: 100 },
+    { service: 'a', text: 'a3', ts: 300 },
+    { service: 'b', text: 'b2', ts: 150 },
+  ]
+  assert.deepEqual(agg.orderByTs(rows).map((row) => row.text), ['b1', 'b2', 'a2', 'a3'])
+  // 尾部回填重排：先到的 A 历史批次、后到的 B 历史批次，能在最近 N 行内被纠正
+  const batch1 = [{ service: 'a', text: 'a-late', ts: 900 }, { service: 'a', text: 'a-early', ts: 100 }]
+  const afterBatch1 = agg.orderByTs(batch1)
+  assert.deepEqual(afterBatch1.map((r) => r.text), ['a-early', 'a-late'])
+  const batch2 = [{ service: 'b', text: 'b-mid', ts: 500 }]
+  const merged = agg.reorderTail(afterBatch1, batch2, agg.REORDER_TAIL)
+  assert.deepEqual(merged.map((r) => r.text), ['a-early', 'b-mid', 'a-late'], '后到的批次应把尾部重新排好')
+  // 超出尾部窗口的旧行保持不动（只回填最近 N 行）
+  const longTail = Array.from({ length: 5 }, (_, i) => ({ service: 'a', text: 'old' + String(i), ts: i }))
+  const kept = agg.reorderTail(longTail, [{ service: 'b', text: 'new', ts: 100 }], 2)
+  assert.deepEqual(kept.slice(0, 3).map((r) => r.text), ['old0', 'old1', 'old2'], '窗口外的旧行保持原序')
+
+  // 无时间戳的行沿用前一行的时间（不会被甩到最前/最后）
+  const withNull = [
+    { service: 'a', text: 'x', ts: 500 },
+    { service: 'b', text: 'no-ts', ts: null },
+    { service: 'a', text: 'y', ts: 100 },
+  ]
+  assert.deepEqual(agg.orderByTs(withNull).map((row) => row.text), ['y', 'x', 'no-ts'])
+
+  // 级别过滤：ERROR+ 只留 ERROR/FATAL 与**无级别前缀**的行（未知级别不误杀）
+  const mixed = [
+    { service: 'a', text: '[INFO] i', ts: 1 },
+    { service: 'a', text: '[WARN] w', ts: 2 },
+    { service: 'a', text: '[ERROR] e', ts: 3 },
+    { service: 'a', text: 'plain continuation', ts: 4 },
+  ]
+  // 续行继承上一条的级别：ERROR 后面的续行跟着留下，INFO 后面的续行被滤掉
+  assert.deepEqual(agg.filterByLevel(mixed, 4).map((row) => row.text), ['[ERROR] e', 'plain continuation'])
+  assert.deepEqual(agg.filterByLevel(mixed, 3).map((row) => row.text), ['[WARN] w', '[ERROR] e', 'plain continuation'])
+  assert.equal(agg.filterByLevel(mixed, 0).length, 4)
+  // Spring Boot 形态：时间戳在前、级别用竖线；其后的堆栈续行应继承 ERROR
+  const spring = [
+    { service: 'a', text: '16:11:34,150 |INFO in x', ts: 1 },
+    { service: 'a', text: '16:11:35,150 |ERROR in y', ts: 2 },
+    { service: 'a', text: '  at com.foo.Bar(baz.java:1)', ts: 3 },
+    { service: 'a', text: '  at com.foo.Qux(baz.java:2)', ts: 4 },
+    { service: 'a', text: '16:11:36,150 |DEBUG in z', ts: 5 },
+  ]
+  assert.deepEqual(agg.filterByLevel(spring, 4).map((row) => row.text), [
+    '16:11:35,150 |ERROR in y',
+    '  at com.foo.Bar(baz.java:1)',
+    '  at com.foo.Qux(baz.java:2)',
+  ])
+  // 窗口开头的续行（记录头在窗口外）无从判断 → 保留
+  assert.deepEqual(agg.filterByLevel([{ service: 'a', text: 'orphan continuation', ts: 1 }], 4).map((r) => r.text), ['orphan continuation'])
+
+  // 导出：.log 是纯行；.md 带来源表头且正文进围栏
+  const items = [{ name: 'web' }, { name: 'api' }]
+  const logText = agg.exportText(mixed.slice(0, 2), { format: 'log' })
+  assert.equal(logText.split('\n').length, 2)
+  assert.ok(logText.startsWith('[a] '), '每行应带服务前缀')
+  assert.ok(logText.includes(new Date(1).toISOString()), '.log 行内含 ISO 时间戳')
+  const md = agg.exportText(mixed.slice(0, 2), { format: 'md', target: '目标1', targetLabel: 'root@10.0.0.5', items })
+  assert.ok(md.startsWith('# 聚合日志'), 'md 应有标题')
+  assert.ok(md.includes('容器（2）：web、api'), 'md 应列出源容器')
+  assert.ok(md.includes('```text'), 'md 正文应在代码围栏里')
+  assert.ok(md.includes('- 行数：2'))
+})
+
+await test('记住上次选的目标：优先级与失效回退', () => {
+  const exports_ = registration.factory((spec) => SEED[spec])
+  const panel = exports_.__panel
+  assert.ok(panel !== undefined && typeof panel.chooseInitialTarget === 'function', '缺少 __panel 测试缝')
+  const list = [{ name: '本机' }, { name: 'prod' }, { name: 'lab' }]
+
+  // 连接栏指定（current 非空）优先于一切
+  assert.equal(panel.chooseInitialTarget(list, 'lab', 'prod', false), 'lab')
+  // 记住的目标仍在列表里 → 用它
+  assert.equal(panel.chooseInitialTarget(list, '', 'lab', false), 'lab')
+  // 记住的目标已被删/改名 → 退回第一个，而不是停在一个不存在的目标上
+  assert.equal(panel.chooseInitialTarget(list, '', 'gone', false), '本机')
+  // 没有记忆 → 第一个；列表为空 → 空串
+  assert.equal(panel.chooseInitialTarget(list, '', '', false), '本机')
+  assert.equal(panel.chooseInitialTarget([], '', 'prod', false), '')
+  // 连接栏进来但会话主机没匹配到目标（sessionScoped）→ 不自动选
+  assert.equal(panel.chooseInitialTarget(list, '', 'prod', true), '')
+
+  // 侧边栏入口传空串（不是 undefined）：必须当「没指定」处理，否则会盖掉记忆值
+  assert.equal(''.trim() !== '' ? '' : 'prod', 'prod')
+  // 存储不可用（Node 桩里没有 localStorage / 隐私模式）时必须静默降级，不抛异常
+  assert.equal(panel.readLastTarget(), '')
+  panel.writeLastTarget('prod')
+  assert.equal(panel.readLastTarget(), '')
+  assert.equal(panel.LAST_TARGET_KEY, 'dsh-docker:last-target')
+})
+
+await test('切目标的过渡：过期标注 / 内容锁定 / 淡入 / 失败清空', () => {
+  const decoded = decodeBundle(code)
+  // 归属不一致时出横幅并锁住正文；数据落地才解锁
+  // 可见文案：状态 + 归属两段，不写成一句话；完整解释在 title 里
+  assert.ok(decoded.includes('正在切换到'), '缺少切换状态文案')
+  assert.ok(decoded.includes('当前显示：'), '缺少数据归属文案')
+  assert.ok(decoded.includes('切换完成前不可操作'), '缺少 title 里的完整说明')
+  assert.ok(!decoded.includes('暂时点不动'), '不该再出现口语化的「点不动」')
+  assert.ok(code.includes('dk_switchOverlay'), '缺少切换过渡浮层钩子')
+  assert.ok(code.includes('dk_switchPill'), '缺少切换提示胶囊钩子')
+  assert.ok(code.includes('@keyframes dk_indeterminate'), '缺少顶部不定长进度条动画')
+  // esbuild 会把对象键统一成双引号，所以断言产出形态而不是源码写法
+  assert.ok(code.includes('data-stale":'), '缺少正文过期标记（JS 侧设置 data-stale 属性）')
+  const staleRule = /\.dk_body\[data-stale="1"\] \.dk_main \{[^}]*\}/.exec(code)?.[0] ?? ''
+  assert.ok(staleRule.includes('pointer-events: none'), '过期内容必须锁住指针（否则会把命令发到错的主机）')
+  assert.ok(staleRule.includes('opacity'), '过期内容要与当前数据区分')
+  // 过渡浮层必须是绝对定位（不推版：横幅会把内容整块推下去）
+  const overlayRule = /\.dk_switchOverlay \{[^}]*\}/.exec(code)?.[0] ?? ''
+  assert.ok(overlayRule.includes('position: absolute'), '过渡浮层要绝对定位，避免顶部跳动')
+  assert.ok(overlayRule.includes('pointer-events: none'), '浮层自身不能吃掉滚动事件')
+  // 浮层要水平居中（与 dsh-rss 的加载胶囊同一位置语言：内容区顶部居中）
+  assert.ok(overlayRule.includes('justify-content: center'), '胶囊应在内容区顶部居中')
+  const pillRule = /\.dk_switchPill \{[^}]*\}/.exec(code)?.[0] ?? ''
+  assert.ok(pillRule.includes('color-mix(in srgb, var(--dk-accent)'), '胶囊底色/描边走强调色（蓝色）')
+  assert.ok(pillRule.includes('color: var(--dk-accent)'), '胶囊文字走强调色')
+  assert.ok(pillRule.includes('backdrop-filter'), '压在旧内容上仍要可读')
+  // 淡入动画 + 尊重 reduced-motion
+  assert.ok(code.includes('@keyframes dk_dataIn'), '缺少数据落地淡入动画')
+  assert.ok(/\.dk_grid \{[^}]*dk_dataIn/.test(code), '网格应带淡入动画')
+  assert.ok(code.includes('prefers-reduced-motion'), '动效要尊重 reduced-motion')
+  /*
+   * 切换失败时清空上个目标的列表，而不是继续张冠李戴。
+   * 这条断言看**源码**而不是 bundle：bundle 里局部变量名已被压缩，grep 不到；
+   * 而「四个加载器的 catch 都清空自己那份列表」是需要被防回归的结构。
+   */
+  const source = readFileSync(new URL('../client-src/index.js', import.meta.url), 'utf8')
+  for (const clearer of ['setContainers([])', 'setImages([])', 'setNetworks([])', 'setVolumes([])']) {
+    assert.ok(source.includes('if (listTargetRef.current !== target) ' + clearer), '切换失败要清空：' + clearer)
+  }
+})
+
 await test('样式表：折叠态（data-sidebar-collapsed）隐藏入口标签', () => {
   // DSH 外壳（dsh-client-ui-layout）在侧边栏折叠时打这个属性；tty 入口同款规则。
   // 少了它，窄栏里会溢出一条竖排文字（真实踩过的回归）
@@ -768,8 +990,8 @@ await test('总览：入口与文案装配进 bundle（只读页，不做跨目�
   assert.ok(decoded.includes('（总览 · 全部目标）'), '缺少总览态的目标选择器说明项')
   assert.ok(decoded.includes('个目标不可达'), '缺少不可达横幅标题')
   assert.ok(decoded.includes('一切正常'), '缺少空态文案')
-  assert.ok(decoded.includes('所有目标上都没有不健康或重启中的容器'), '缺少空态说明')
-  assert.ok(decoded.includes('异常容器'), '缺少异常表标题')
+  assert.ok(decoded.includes('所有目标上都没有需要关注的容器'), '缺少空态说明')
+  assert.ok(decoded.includes('需关注容器'), '缺少异常表标题')
   assert.ok(code.includes('dk_ovCards'), '缺少计数卡行样式钩子')
   assert.ok(code.includes('dk_ovCard'), '缺少计数卡钩子')
   assert.ok(code.includes('dk_ovCount'), '缺少计数钩子')
@@ -870,9 +1092,12 @@ await test('总览：渲染多目标计数卡 + 异常置顶表 + 单目标失�
   const cards = treeFind(tree, (el) => el.props?.className === 'dk_ovCard')
   assert.equal(cards.length, 3, '每个目标一张计数卡')
   const texts = treeText(tree)
-  for (const expected of ['本机', '运行中', '已停止', '不健康', '异常容器（2）', 'api', 'db', '不可达']) {
+  for (const expected of ['本机', '运行中', '已停止', '不健康', '需关注容器（2）', 'api', 'db', '不可达']) {
     assert.ok(texts.includes(expected), '渲染结果缺少 ' + expected)
   }
+  // 原因徽标（摘要兜底口径）：restarting → 反复重启、unhealthy → 不健康
+  const reasons = treeFind(tree, (el) => el.props?.className === 'dk_reason')
+  assert.deepEqual(reasons.map((el) => el.props['data-reason']).sort(), ['restarting', 'unhealthy'], '异常行应带原因徽标')
   // 横幅是组件元素（className 由 Banner 自己给），所以断言它的入参而不是 className
   assert.equal(treeFind(tree, (el) => typeof el.props?.title === 'string' && el.props.title.includes('个目标不可达')).length, 1, '单个目标失败应出一条横幅')
   assert.equal(cards.filter((card) => card.props['data-state'] === 'error').length, 1)
@@ -886,6 +1111,40 @@ await test('总览：渲染多目标计数卡 + 异常置顶表 + 单目标失�
   assert.deepEqual(opened[1], ['target', 'prod'], '点计数卡 = 切到该目标的常规列表')
   const badges = treeFind(tree, (el) => el.props !== undefined && Object.prototype.hasOwnProperty.call(el.props, 'health'))
   assert.deepEqual(badges.map((el) => el.props.health), ['unhealthy', null], '状态格复用 Badge，拿到规范化后的 health')
+})
+
+await test('总览：/attention 权威结果优先于摘要兜底（OOM 可识别）', () => {
+  const api = overviewApi()
+  const tree = api.body(api.data([
+    ovGroup('prod', [
+      // 摘要层看不出问题（running + healthy），只有 inspect 才知道它刚被 OOM 杀过
+      { id: 'x1', name: 'worker', state: 'running', health: null, image: 'app:1', status: 'Up 3 seconds' },
+    ], {
+      attention: [{
+        id: 'x1',
+        name: 'worker',
+        state: 'running',
+        health: null,
+        status: 'Up 3 seconds',
+        image: 'app:1',
+        reasons: ['oom'],
+        oomKilled: true,
+        exitCode: 137,
+        restartCount: 9,
+      }],
+    }),
+  ]), { onOpenTarget: () => {}, onOpenContainer: () => {} })
+  const texts = treeText(tree)
+  assert.ok(texts.includes('被 OOM 杀'), '权威原因应渲染出「被 OOM 杀」')
+  assert.ok(texts.includes('需关注容器（1）'), '异常表应包含这条权威结果')
+  const reasons = treeFind(tree, (el) => el.props?.className === 'dk_reason')
+  assert.deepEqual(reasons.map((el) => el.props['data-reason']), ['oom'])
+
+  // 同一份容器，没有 attention 时摘要兜底认不出 → 一切正常（这是精度差异，不是 bug）
+  const fallbackTree = api.body(api.data([
+    ovGroup('prod', [{ id: 'x1', name: 'worker', state: 'running', health: null, image: 'app:1', status: 'Up 3 seconds' }]),
+  ]), { onOpenTarget: () => {}, onOpenContainer: () => {} })
+  assert.ok(treeText(fallbackTree).includes('一切正常'), '没有 attention 且摘要正常时应显示一切正常')
 })
 
 await test('总览：空态分三种——一切正常 / 还没答完 / 没有目标', () => {
