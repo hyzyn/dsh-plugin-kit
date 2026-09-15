@@ -4335,12 +4335,12 @@ window.__ModuleLoader__.load({
           copyExecCommand(item, '内联目标用了 key/password 认证，浏览器端拿不到凭证')
           return
         }
-        // 0) 嵌入式承载（dock / 右侧栏标签）都借 tty 面板开一个标签，不就地嵌抽屉：
+        // 0) 借 tty 面板开标签的两种情形——不就地嵌抽屉：
         //    - dock：面板已经长在 tty 面板里，再嵌一层就成了「终端套面板套终端」；
-        //    - tab ：栏宽通常不够跑 shell，而且 tab 会随会话切换卸载——内嵌的终端会被
-        //      连带杀掉（正在跑的 docker exec -it 就没了）。终端该由 tty 拥有：全尺寸、
-        //      可拖宽、切会话不丢。
-        if (props.docked === true || props.carrier === 'tab') {
+        //    - tab（**普通宽度**）：栏宽通常不够跑 shell，硬塞进去两头难受。
+        //    右侧栏**铺满**时走下面的就地嵌入：那时宽度够，而且日志与 shell 同屏
+        //    （看日志 → 进容器的上下文不断，这正是抽屉存在的意义）。
+        if (props.docked === true || (props.carrier === 'tab' && props.tabFullscreen !== true)) {
           try {
             terminalApi.open(options)
           } catch (error) {
@@ -5184,11 +5184,19 @@ window.__ModuleLoader__.load({
       const pin = lastTargetRef.current
       // tab.visible：折叠右侧栏时为 false。用它门控 SSE —— 隐藏时不该白占 SSH 通道。
       const active = info?.tab?.visible !== false
+      /*
+       * sidebar.fullscreen：右侧栏被铺满时为 true。容器卡片的「终端」按钮据此分流——
+       * 铺满时宽度够、且日志能同屏，就地嵌抽屉；普通宽度下栏太窄，改借 tty 开标签。
+       * 这是**当时**的宽度判定：抽屉一旦开着就不因为它变化而被拆掉（拆掉等于杀掉
+       * 正在跑的 docker exec -it，比窄一点糟糕得多）。
+       */
+      const tabFullscreen = info?.sidebar?.fullscreen === true
       return jsx(PanelActiveContext.Provider, {
         value: active,
         children: jsx(ContainerPanel, {
           key: pin === '' ? 'docker-tab' : pin,
           carrier: 'tab',
+          tabFullscreen,
           onClose: closeTab,
           initialTarget: pin === '' ? undefined : pin,
           sessionHint: params?.sessionHint,
