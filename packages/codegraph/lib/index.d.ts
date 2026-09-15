@@ -133,4 +133,13 @@ export declare function escapeCommand(command: string): string;
 export declare function escapeArgument(value: string): string;
 /** 把一个 argv 拼成 `cmd.exe /d /s /c` 能直接执行的一整条命令行。 */
 export declare function windowsCommandLine(command: string, args: string[]): string;
+/**
+ * Windows 上连子孙进程一起收：`taskkill /T` 杀掉以该 pid 为根的整棵树。
+ *
+ * 为什么不能只 `child.kill()`：shim 分支的直接子进程是 cmd.exe，真正的 CLI 是它的
+ * 孙进程；`execFile` 的 `timeout` 与 `child.kill()` 都只作用于直接子进程，大仓库的
+ * `index` 会继续跑完（十几分钟起），卡片却已经报超时。POSIX 分支不需要这个：直接
+ * 子进程就是 CLI，杀掉即可（它自己的 daemon 是设计上要长活的，不在此列）。
+ */
+export declare function taskkillArgs(pid: number): string[];
 export declare const name: string, inject: string[] | undefined, apply: (ctx: Context, config?: Config | undefined) => void;
