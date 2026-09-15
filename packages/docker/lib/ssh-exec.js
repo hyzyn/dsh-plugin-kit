@@ -62,6 +62,47 @@ const SWEEP_MS = 30_000;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_BYTES = 512 * 1024;
 /**
+ * 每个 SSH 目标上同时可持有的**长流**上限。
+ *
+ * 为什么需要它：一个目标只维持**一条** TCP 连接，所有 exec / stream 共用这条连接上的
+ * 通道，而 OpenSSH 的 `MaxSessions` 默认只有 10。长流（`docker logs -f` / `stats` /
+ * `events`）会一直占到用户关掉面板为止，聚合日志还能一次占 8 条——加上统计流与事件流
+ * 正好 10 条，于是紧接着一次 `docker ps`（刷新列表，短命令）就被远端拒绝。实测报的是
+ * `(SSH) Channel open failure: open failed`，而这条原始文案对用户没有任何指向性。
+ *
+ * 8 = 10 − 2：给「刷新列表 / inspect / exec」这类短命令留两条余量。上限只施加在 SSH
+ * 通道上——本地目标走子进程，没有这个约束（见 runLocalStream）。
+ */
+const MAX_STREAMS_PER_TARGET = 8;
+/**
+ * 长流配额判定（纯函数，便于回归）：`busy` 是连接上正在推送的长流数。
+ * @param target - 目标标签，只用于文案。
+ * @param busy - 当前长流数。
+ * @param max - 上限，默认 {@link MAX_STREAMS_PER_TARGET}。
+ * @returns null 表示可以开；否则返回拒绝原因（调用方直接拿它当错误文案）。
+ */
+export function streamBudgetError(target, busy, max = MAX_STREAMS_PER_TARGET) {
+    if (busy < max)
+        return null;
+    return `${target} 上已有 ${String(busy)} 条实时流（上限 ${String(max)}）：同一连接上的通道额度`
+        + `（OpenSSH MaxSessions 默认 10）被长流占满后，连「刷新列表」这类短命令都会被远端拒绝。`
+        + `请关掉部分实时跟随、把聚合容器数减到 6 个以内，或稍后重试。`;
+}
+/**
+ * 把 ssh2 的通道级错误翻成可操作的提示。
+ *
+ * `(SSH) Channel open failure: open failed` 实测出现过（成因见 {@link MAX_STREAMS_PER_TARGET}
+ * 的注释），偏偏出现在「刷新列表」这种日常操作上，而原始文案对用户没有任何指向性。
+ * @param message - ssh2 给出的原始错误文案。
+ * @returns 补了指向性说明的文案；不认识的原样返回。
+ */
+export function describeExecError(message) {
+    if (!/Channel open failure|open failed/i.test(message))
+        return message;
+    return `${message}（远端 sshd 拒绝了新通道：同一连接上的通道额度可能已被实时流占满——`
+        + `OpenSSH MaxSessions 默认 10；关掉部分实时跟随 / 减少聚合容器数后重试）`;
+}
+/**
  * 空闲回收判定：busy>0 的连接上挂着长流（docker logs --follow 可以几小时不结束），
  * 期间 lastUsed 不会刷新——若只看 idle 就会把正在推送的流掐断，必须先看 busy。
  * 抽成纯函数便于回归（sweeper 本体依赖定时器，难以直接驱动）。
@@ -111,7 +152,7 @@ export class RemoteExec {
             client.exec(command, (error, ch) => {
                 clearTimeout(timer);
                 if (error !== undefined && error !== null) {
-                    reject(new Error(`SSH exec 失败：${error.message}`));
+                    reject(new Error(`SSH exec 失败：${describeExecError(error.message)}`));
                     return;
                 }
                 resolve(ch);
@@ -193,8 +234,13 @@ export class RemoteExec {
         const command = shJoin(argv);
         const client = await this.acquire(spec);
         const rt = this.conns.get(poolKey(spec));
-        if (rt !== undefined)
+        if (rt !== undefined) {
+            // 配额判定放在自增**之前**：拒绝时没有自增，finally 里的 release 也就不会去减别人的计数
+            const denied = streamBudgetError(sshTarget(spec), rt.busy);
+            if (denied !== null)
+                throw new Error(denied);
             rt.busy += 1;
+        }
         let released = false;
         // try/finally 保证 busy 增减严格配对：异常路径也不能把连接永久标成 busy
         const release = () => {
@@ -216,7 +262,7 @@ export class RemoteExec {
                 client.exec(command, (error, ch) => {
                     clearTimeout(timer);
                     if (error !== undefined && error !== null) {
-                        reject(new Error(`SSH exec 失败：${error.message}`));
+                        reject(new Error(`SSH exec 失败：${describeExecError(error.message)}`));
                         return;
                     }
                     resolve(ch);
@@ -274,7 +320,7 @@ export class RemoteExec {
                         return;
                     settled = true;
                     signal?.removeEventListener('abort', onAbort);
-                    reject(new Error(`SSH exec channel 异常：${error.message}`));
+                    reject(new Error(`SSH exec channel 异常：${describeExecError(error.message)}`));
                 });
             });
         }

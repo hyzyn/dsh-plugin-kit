@@ -894,16 +894,19 @@ await test('聚合选择：入口 / 勾选框 / 操作条装配进 bundle', () =
   assert.ok(decoded.includes('聚合日志 · '), '缺少聚合视图标题')
   assert.ok(decoded.includes('至少选择 2 个容器'), '缺少 N<2 的提示')
   assert.ok(decoded.includes('连接数较多，浏览器并发长连接有限制'), '缺少软上限提示')
-  // 硬上限文案里的数字由 PICK_MAX 拼出来（不写死常量），所以这里只锁静态部分，
-  // 「最多 8 个容器」由下面 pickDecide 的用例断言
-  assert.ok(decoded.includes('最多 ') && decoded.includes('个容器，浏览器并发长连接有限制'), '缺少硬上限提示')
+  // 硬上限文案由「数字 + 后缀」拼出来（数字不写死），且 SSH 与本地后缀不同，
+  // 所以这里分开锁静态部分；具体数字由下面 pickDecide 的用例断言。
+  assert.ok(decoded.includes('最多 '), '缺少硬上限的「最多」前缀')
+  assert.ok(decoded.includes('个容器'), '缺少硬上限的「个容器」文案')
+  assert.ok(decoded.includes('，浏览器并发长连接有限制'), '缺少本地目标的硬上限后缀')
+  assert.ok(decoded.includes('（SSH 目标上一条连接要同时装实时流与刷新等短命令）'), '缺少 SSH 目标的硬上限后缀')
   assert.ok(decoded.includes('Escape'), '缺少 Esc 退出选择态')
   assert.ok(code.includes('dk_pick'), '缺少勾选框样式钩子')
   assert.ok(code.includes('dk_pickBar'), '缺少聚合操作条样式钩子')
   assert.ok(code.includes('dk_pillPick'), '缺少「聚合选择」激活态样式钩子')
 })
 
-await test('聚合选择：N<2 置灰、2~6 可聚合、7~8 软提示、>8 置灰并提示上限', () => {
+await test('聚合选择：N<2 置灰、2~6 可聚合、7~8 软提示、>8 置灰（SSH 目标上限收到 6）', () => {
   const pick = pickApi()
   assert.equal(pick.MAX, 8)
   assert.equal(pick.SOFT_MAX, 6)
@@ -916,6 +919,17 @@ await test('聚合选择：N<2 置灰、2~6 可聚合、7~8 软提示、>8 置�
   const over = pick.decide(9)
   assert.equal(over.canRun, false, '超过硬上限必须置灰')
   assert.match(over.hint, /最多 8 个容器/)
+
+  // SSH 目标更紧：一条 TCP 连接的通道额度（MaxSessions 默认 10）要同时装下聚合流、
+  // 统计流、事件流与「刷新列表」这类短命令，所以聚合上限收到 6（= 软提示线，于是 SSH
+  // 上不再有「可点但已偏多」的区间）。本地目标走子进程，没有这个约束。
+  assert.equal(pick.SSH_MAX, 6)
+  assert.deepEqual(pick.decide(6, true), { canRun: true, hint: '' })
+  const sshOver = pick.decide(7, true)
+  assert.equal(sshOver.canRun, false, 'SSH 目标上 7 个容器必须置灰')
+  assert.match(sshOver.hint, /最多 6 个容器/)
+  assert.match(sshOver.hint, /SSH 目标/, '提示必须说明 SSH 上为什么更紧')
+  assert.equal(pick.decide(7, false).canRun, true, '本地目标不受 SSH 上限影响')
 })
 
 await test('聚合选择：勾选增删保序 + 列表刷新按 id 对账', () => {

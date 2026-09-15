@@ -71,6 +71,23 @@ export declare function sshTarget(spec: SshSpec): string;
  */
 export declare function shJoin(argv: readonly string[]): string;
 /**
+ * 长流配额判定（纯函数，便于回归）：`busy` 是连接上正在推送的长流数。
+ * @param target - 目标标签，只用于文案。
+ * @param busy - 当前长流数。
+ * @param max - 上限，默认 {@link MAX_STREAMS_PER_TARGET}。
+ * @returns null 表示可以开；否则返回拒绝原因（调用方直接拿它当错误文案）。
+ */
+export declare function streamBudgetError(target: string, busy: number, max?: number): string | null;
+/**
+ * 把 ssh2 的通道级错误翻成可操作的提示。
+ *
+ * `(SSH) Channel open failure: open failed` 实测出现过（成因见 {@link MAX_STREAMS_PER_TARGET}
+ * 的注释），偏偏出现在「刷新列表」这种日常操作上，而原始文案对用户没有任何指向性。
+ * @param message - ssh2 给出的原始错误文案。
+ * @returns 补了指向性说明的文案；不认识的原样返回。
+ */
+export declare function describeExecError(message: string): string;
+/**
  * 空闲回收判定：busy>0 的连接上挂着长流（docker logs --follow 可以几小时不结束），
  * 期间 lastUsed 不会刷新——若只看 idle 就会把正在推送的流掐断，必须先看 busy。
  * 抽成纯函数便于回归（sweeper 本体依赖定时器，难以直接驱动）。
