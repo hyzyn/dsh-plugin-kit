@@ -20,6 +20,9 @@ import dockerCss from './docker.css'
 
 const API = '/api/dsh-docker'
 const PANEL_STYLE_ID = 'dsh-docker-style'
+/** 右侧栏标签的注册身份：id 是「实现」的名字（body 注册键用它，不是 kind）。 */
+const DOCKER_TAB_ID = '@hyzyn/dsh-docker'
+const DOCKER_TAB_KIND = 'docker'
 
 /* ================================ 基础 ================================ */
 
@@ -4629,6 +4632,13 @@ window.__ModuleLoader__.load({
       }
 
       const docked = props.docked === true
+      /**
+       * 承载形态（S1）：`props.docked` 是 tty 右侧挂载位，`carrier: 'tab'` 是右侧栏标签。
+       * 两者都不自带 backdrop，区别在标题行与工具栏的排布——tab 形态沿用模态那一套
+       * （有标题行、有 ✕、有工具条），所以 **`docked` 保持 false**，只有 CSS 外壳与
+       * backdrop 这两处按 `tabbed` 分流。这样面板内部一行都不用改。
+       */
+      const tabbed = props.carrier === 'tab'
       const panelConfig = config ?? { pollIntervalSec: 5, logTailDefault: 200, allowExec: false, allowMutations: false, execTimeoutSec: 30 }
       /*
        * 勾选 → 容器对象（按勾选顺序）。计数与判定都用 aggregateItems 而不是
@@ -5033,16 +5043,17 @@ window.__ModuleLoader__.load({
       ]
 
       const panel = jsxs('div', {
-        className: 'dk_panel' + (docked ? ' dk_panelDock' : ''),
+        className: 'dk_panel' + (docked ? ' dk_panelDock' : (tabbed ? ' dk_panelTab' : '')),
         'data-dock': docked ? '1' : undefined,
         ref: panelRef,
         onMouseDown: (event) => event.stopPropagation(),
         children: panelChildren,
       })
 
-      // dock 模式（0.3.0）：面板长在 tty 面板的右侧挂载位里，不再自带 backdrop——
-      // 终端就在旁边，必须保持可见、可点、可输入
-      if (docked) return panel
+      // 嵌入式承载都不自带 backdrop：
+      //   dock（0.3.0）—— 面板长在 tty 面板的右侧挂载位里，终端就在旁边，必须保持可见；
+      //   tab （S1）   —— 面板长在右侧栏标签里，外框与标签条由右侧栏提供。
+      if (docked || tabbed) return panel
 
       return jsxs('div', {
         className: 'dk_backdrop',
@@ -5056,6 +5067,31 @@ window.__ModuleLoader__.load({
         },
         children: [panel],
       })
+    }
+
+    /**
+     * 右侧栏标签承载（S1）。
+     *
+     * 只换宿主、不换面板：同一个 `ContainerPanel` 以 `carrier: 'tab'` 渲染，`docked`
+     * 保持 false，于是标题行 / ✕ / 工具条与各详情视图的动作全部照旧——唯一差别是
+     * 「✕ 关掉的是这个标签」。
+     *
+     * tab 是**会话作用域**的，且实测「切会话会卸载 body」：所以 target / 过滤词这类
+     * 界面状态在 S3 要提到按 sessionId 索引的 store 里。本阶段先只做承载。
+     */
+    function DockerTabBody(props) {
+      // 无条件调用（同一次注册里 hooks 恒在），失败只让 info 为空——条件式调用 hook
+      // 是坏味道：一旦条件在两次渲染间翻转，框架内的状态就错位了。
+      let info = null
+      try {
+        info = props.useTabInfo()
+      } catch { /* 契约变动时不连累面板渲染 */ }
+      const closeTab = () => {
+        try {
+          info?.tab?.actions?.close?.()
+        } catch { /* 标签已关 */ }
+      }
+      return jsx(ContainerPanel, { carrier: 'tab', onClose: closeTab })
     }
 
     /* ------------------------------------------------------------------ *
@@ -5601,6 +5637,32 @@ window.__ModuleLoader__.load({
       ctx.inject(['sessions'], (sessionCtx) => {
         sessionsSvc = sessionCtx.sessions ?? null
         return () => { sessionsSvc = null }
+      })
+
+      // 右侧栏标签承载（S1）：注册一个 page type 与它的 body。入口本阶段不动（S2 才切
+      // 入口），现在从右侧栏的指南页进入。宿主没有这两个服务时整段安静跳过——面板照旧
+      // 走模态，行为与今天完全一致。
+      ctx.inject(['sidebarRightTabs', 'sidebarRight'], (tabCtx) => {
+        const disposeType = tabCtx.sidebarRightTabs.register({
+          id: DOCKER_TAB_ID,
+          kind: DOCKER_TAB_KIND,
+          priority: 'extension',
+          title: () => 'Docker 容器',
+          guide: [{
+            order: 90,
+            title: () => 'Docker 容器',
+            description: () => '本机与 SSH 主机的容器、镜像、Compose、网络与卷',
+          }],
+        })
+        const disposeBody = tabCtx.slots.inject('sidebar.right.pane.tab', () => tabCtx.slots.register({
+          name: 'sidebar.right.pane.tab',
+          // 契约：body 注册在**实现 id** 下，不是 kind（写错的表现是「标签能开、body 空白」）
+          key: DOCKER_TAB_ID,
+        }, DockerTabBody))
+        return () => {
+          try { disposeBody() } catch { /* 已释放 */ }
+          try { disposeType() } catch { /* 已释放 */ }
+        }
       })
 
       let disposeConnbarAction = () => {}
