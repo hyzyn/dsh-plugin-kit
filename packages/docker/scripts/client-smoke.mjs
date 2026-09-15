@@ -404,26 +404,38 @@ await test('缓存尚未就绪时点击：现场重拉并锁定当前会话对�
   assert.equal(panel.props.sessionHint, undefined, '命中目标时不应再带未配置提示')
 })
 
-await test('承载分发（S2）：有右侧栏服务时入口开标签（带目标），不再弹模态', async () => {
-  let reg = null
-  const run = new Function('window', 'document', 'MutationObserver', 'fetch', code)
-  run({ __ModuleLoader__: { load: (entry) => { reg = entry } } }, documentStub, class { observe() {} disconnect() {} }, fetchStub)
-  const exports_ = reg.factory((spec) => SEED[spec])
-  const { ctx, state } = makeClientCtx({ ttyConnbar: true, sidebarRightTabs: true })
+await test('承载分发（S2）：框架侧入口开右侧栏标签（带目标），不再弹模态', () => {
+  const exports_ = registration.factory((spec) => SEED[spec])
+  const { ctx, state } = makeClientCtx({ sidebarRightTabs: true })
   exports_.apply(ctx)
 
-  const buttons = []
-  state.connbarFactory({ spec: { t: 'ssh', name: 'prod-a', host: '10.0.0.5', port: 2222 }, bookName: 'prod-a', addAction: (icon, label, title, onClick) => buttons.push({ title, onClick }) })
   const before = renders.length
-  buttons[0].onClick()
-  await new Promise((resolve) => setTimeout(resolve, 40))
+  // 走测试缝直接驱动分发：DOM 桩的 querySelector 返回 null，点不到页边栏那个入口
+  exports_.__carrier.open({ target: 'prod' })
   assert.equal(state.openTabs.length, 1, '有右侧栏服务时应开标签')
   assert.equal(state.openTabs[0].kind, 'docker', 'kind 必须与注册的 kind 一致')
   assert.equal(state.openTabs[0].options.params.target, 'prod', '目标应随 navigation params 带进标签')
   assert.equal(renders.length, before, '开标签时不应再渲染模态')
 })
 
-await test('承载分发（S2）：localStorage 置 modal 时退回模态（灰度回滚开关）', async () => {
+await test('承载分发（S2）：终端连接栏入口走 dock、不开标签（弹窗会挡住标签）', async () => {
+  let reg = null
+  const run = new Function('window', 'document', 'MutationObserver', 'fetch', code)
+  run({ __ModuleLoader__: { load: (entry) => { reg = entry } } }, documentStub, class { observe() {} disconnect() {} }, fetchStub)
+  const exports_ = reg.factory((spec) => SEED[spec])
+  // 连接栏按钮长在 tty 面板上 → 点击时弹窗一定开着，且它盖满视口
+  const { ctx, state } = makeClientCtx({ ttyConnbar: true, ttyPanel: true, sidebarRightTabs: true })
+  exports_.apply(ctx)
+
+  const buttons = []
+  state.connbarFactory({ spec: { t: 'ssh', name: 'prod-a', host: '10.0.0.5', port: 2222 }, bookName: 'prod-a', addAction: (icon, label, title, onClick) => buttons.push({ title, onClick }) })
+  buttons[0].onClick()
+  await new Promise((resolve) => setTimeout(resolve, 40))
+  assert.equal(state.openTabs.length, 0, '连接栏入口不该开标签 —— 它会被 tty 弹窗整个挡住')
+  assert.ok(state.paneCalls.length > 0, '应停靠到 tty 面板右侧的 dock')
+})
+
+await test('承载分发（S2）：localStorage 置 modal 时退回模态（灰度回滚开关）', () => {
   let reg = null
   const run = new Function('window', 'document', 'MutationObserver', 'fetch', code)
   // 偏好读的是 window.localStorage；harness 的 window 桩默认没有它（越界读取会被 try/catch 吃掉）
@@ -432,14 +444,11 @@ await test('承载分发（S2）：localStorage 置 modal 时退回模态（灰�
     localStorage: { getItem: () => 'modal' },
   }, documentStub, class { observe() {} disconnect() {} }, fetchStub)
   const exports_ = reg.factory((spec) => SEED[spec])
-  const { ctx, state } = makeClientCtx({ ttyConnbar: true, sidebarRightTabs: true })
+  const { ctx, state } = makeClientCtx({ sidebarRightTabs: true })
   exports_.apply(ctx)
 
-  const buttons = []
-  state.connbarFactory({ spec: { t: 'ssh', name: 'prod-a', host: '10.0.0.5', port: 2222 }, bookName: 'prod-a', addAction: (icon, label, title, onClick) => buttons.push({ title, onClick }) })
   const before = renders.length
-  buttons[0].onClick()
-  await new Promise((resolve) => setTimeout(resolve, 40))
+  exports_.__carrier.open({ target: 'prod' })
   assert.equal(state.openTabs.length, 0, '置 modal 后不应开标签')
   assert.ok(renders.length > before, '置 modal 后应走模态（渲染面板）')
 })

@@ -24,7 +24,7 @@ This plugin stands on its own: it imports no tty code, and tty needs no source c
 | Host fingerprints | This plugin keeps its own `hostKeys` (TOFU) and **prefers tty's already-recorded fingerprints as the seed** — the same host does not have to be confirmed in two places |
 | Execution channel | Its own pooled SSH exec (`src/ssh-exec.ts`), fully independent of tty's PTY sessions; neither takes the other's slots |
 | Context entry point | With tty ≥ 0.13.0 it can optionally consume tty's client service `ttyConnbar` and insert a "Containers" button in the SSH connection bar (next to SFTP) (**shown as soon as it is registered**), with the target resolved from the current session at click time; if tty is missing or too old this is skipped silently |
-| Panel hosting | **The default is a session right-sidebar tab** (`sidebar.right.pane.tab`): the panel and the conversation share the screen, so logs stay visible while the agent works; collapsing it leaves the viewport without leaving the session. The entries (sidebar "Containers" / the tty connection bar) only open or focus it, and **a page type deduplicates inside one column**, so clicking twice never opens a second tab. Without the right-sidebar services (older DSH), or with `localStorage['dsh-docker:carrier'] = 'modal'`, it falls back to the previous paths: with tty ≥ 0.16 and its panel open it docks to the right of the terminal via `ttyPanel.mountPane` (resize / collapse / ✕ provided by tty); otherwise a full-screen modal with its own backdrop. All three carriers are **one component**, differing only in shell and geometry |
+| Panel hosting | **The default is a session right-sidebar tab** (`sidebar.right.pane.tab`): the panel and the conversation share the screen, so logs stay visible while the agent works; collapsing it leaves the viewport without leaving the session. The **frame sidebar** entry only opens or focuses it, and **a page type deduplicates inside one column**, so clicking twice never opens a second tab. The **terminal connection bar** entry is the opposite — it sits on the viewport-covering tty modal, where a tab would be hidden, so that path docks to the right of the terminal via `ttyPanel.mountPane` (**the entry decides the carrier**). Without the right-sidebar services (older DSH), or with `localStorage['dsh-docker:carrier'] = 'modal'`, the sidebar entry also falls back to the dock (when tty is open) or to a full-screen modal with its own backdrop. All three carriers are **one component**, differing only in shell and geometry |
 | Terminal hosting | Interactive terminals are hosted by tty (it owns the PTY). Under the **right-sidebar tab and the dock**, the card's "Terminal" button runs `docker exec -it` via `ttyTerminal.open` — i.e. **a new tab in the terminal panel**: the column is usually too narrow for a shell, and a tab unmounts on session switch, which would kill an embedded terminal. Under the **modal** it is **embedded in place** into the drawer at the bottom of the panel via `ttyTerminal.mount` (reading logs into entering the container without losing context). Without tty, or below the required version, it copies the command. This plugin implements no PTY / xterm / reconnect stack |
 | Division of labour | **Interactive troubleshooting** (`docker exec -it`, a shell inside the container, TUIs) is hosted by tty (embedded drawer or tab); **read-only inspection and agent automation** use this plugin's own exec channel |
 
@@ -61,16 +61,19 @@ on the right, without getting in the way of watching it work.
   pick. The target is resolved at click time: when the session comes from the connection book it matches by entry
   name, otherwise it matches a resolved target by `host:port`; **no matching target does not hide the
   button** — the panel carries a hint naming the session host (including the connection-book name) and how to
-  configure it in the settings card. This path carries a target into the tab, and **a new target remounts the
-  panel** (state resets — which is exactly what "show me this host" means); the target-less main entry keeps
-  whatever state the panel had.
+  configure it in the settings card. This path goes to the **dock right of the terminal** rather than the tab —
+  the button lives on the tty modal, which covers the viewport, so a tab would be hidden behind it and feel like
+  "clicking did nothing". The target still travels into the panel and remounts it on that host. The rule is
+  therefore **"the entry decides the carrier"**: from the frame's sidebar → the right-sidebar tab (side by side
+  with the conversation); from inside the terminal modal → the dock right of the terminal (side by side with the
+  terminal).
 
 ### Carriers
 
 | Carrier | When | Behaviour |
 | --- | --- | --- |
 | **Session right-sidebar tab** (default) | the host provides `sidebarRight` / `sidebarRightTabs` | side by side with the conversation; collapsing hides it without losing state (panel-level state lives in a module store, see below); the right sidebar's fullscreen mode gives it the whole viewport |
-| **Dock right of the terminal** | no right-sidebar service, or `localStorage['dsh-docker:carrier'] = 'modal'`, with tty ≥ 0.16 and its panel open | docked to the right of the terminal panel (resize / collapse / ✕ provided by tty, the terminal stays usable); one dock at a time — docking this plugin takes down the previous occupant (for example tty's own SFTP) |
+| **Dock right of the terminal** | arriving from the **terminal connection bar's** "Containers" button (that button sits on the tty modal, which would hide a tab), or no right-sidebar service / `localStorage['dsh-docker:carrier'] = 'modal'` with tty ≥ 0.16 and its panel open | docked to the right of the terminal panel (resize / collapse / ✕ provided by tty, the terminal stays usable); one dock at a time — docking this plugin takes down the previous occupant (for example tty's own SFTP) |
 | **Full-screen modal** (fallback) | neither of the above | its own backdrop, closes on outside click; the panel sits above tty's modal in z-order |
 
 Rolling back to the old shape is one console line: `localStorage.setItem('dsh-docker:carrier', 'modal')`
