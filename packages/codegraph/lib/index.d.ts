@@ -142,4 +142,29 @@ export declare function windowsCommandLine(command: string, args: string[]): str
  * 子进程就是 CLI，杀掉即可（它自己的 daemon 是设计上要长活的，不在此列）。
  */
 export declare function taskkillArgs(pid: number): string[];
+/** 一次调用的结局：成功带 stdout，失败带错误。 */
+export type CliRunOutcome = {
+    ok: true;
+    stdout: string;
+} | {
+    ok: false;
+    error: Error;
+};
+/**
+ * 收尾判定（纯函数，便于在非 Windows 上覆盖「超时与 close 竞态」）。
+ *
+ * 为什么必须显式带 `timedOut`：超时时我们是先 `taskkill` 再抛错，而被杀的子进程会先
+ * 触发 `close`——不认这个标志的话，close 分支会抢先以「Command failed: …」结案，
+ * `cliErrorMessage` 就认不出超时，卡片报的错也不会点名 `cliTimeoutMs` /
+ * `indexTimeoutMs`（Windows CI 上实测到的就是这个）。
+ */
+export declare function settleCliRun(input: {
+    command: string;
+    args: string[];
+    timeoutMs: number;
+    timedOut: boolean;
+    code: number | null;
+    stdout: string;
+    stderr: string;
+}): CliRunOutcome;
 export declare const name: string, inject: string[] | undefined, apply: (ctx: Context, config?: Config | undefined) => void;
