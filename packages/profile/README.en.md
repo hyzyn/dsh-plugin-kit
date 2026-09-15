@@ -6,10 +6,10 @@
 
 ## Features
 
-- **No hand-copied commands to create a profile**: create one from three templates in one click (`@deepseek-ai/dsh-base` core only, or add `dsh-web-app` / `dsh-headless`); copying skips `node_modules` and lockfiles and runs `pnpm install` automatically.
-- **Ports are stored with the profile**: a startup port is recorded for each profile, copied startup commands automatically carry `--port`, and multiple web profiles no longer collide on ports.
-- **Rename / delete in one step**: the directory move and the manifest rename happen together; deletion asks for a second confirmation inside the panel (irreversible).
-- **Status and structure visible at a glance**: initialization badge, bundle layer, dependency count, and directory path; a missing `cordis.patch.yml` is flagged.
+- **Template-based creation, no hand-copied manifests**: create one from three templates in one click (`@deepseek-ai/dsh-base` core only, or add `dsh-web-app` / `dsh-headless`); copying skips `node_modules` and lockfiles and runs `pnpm install` automatically.
+- **The port is stored with the profile**: a startup port is recorded for each profile and copied startup commands carry `--port`, so multiple web profiles no longer collide on ports.
+- **Rename moves the directory and the manifest together**: one operation performs both the directory move and the `package.json` rename; deletion asks for a second confirmation inside the panel (irreversible).
+- **Status and structure read straight from disk**: initialization badge, bundle layer, dependency count and directory path; a missing `cordis.patch.yml` is flagged.
 
 ## What is a profile
 

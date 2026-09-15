@@ -6,11 +6,11 @@
 
 ## 特性
 
-- **保存即生效**：改写 `~/.dsh/cordis.patch.yml` 的托管区块，DSH 的 HMR 监听自动重载，工具以 `mcp__<server>__<tool>` 注册给模型。
-- **两种传输都支持**：stdio（command / args / env / cwd）与 streamable-http（url / headers，含 SSE 与 session 头）；值可写 `js:` 表达式，密钥不落补丁文件。
-- **连接测试**：宿主直接说 JSON-RPC（initialize → tools/list），不依赖 MCP SDK，返回协议版本 / serverInfo / 工具清单 / 耗时。
-- **状态与冲突可见**：从 loader fiber 读存活状态（运行中 / 已停用 / 错误 / 加载中），并提示与外部 mcp-client 实例的 serverName 冲突；服务器可启用 / 停用（`disabled: true`）/ 编辑 / 删除。
-- **对 agent 自解释**：注入能力公告（systemPrompt section），提到「MCP 配置 / MCP 服务器」时模型知道指本插件。
+- **保存即热加载**：改写 `~/.dsh/cordis.patch.yml` 的托管区块，DSH 的 HMR 监听自动重载，工具以 `mcp__<server>__<tool>` 注册给模型。
+- **stdio 与 streamable-http 双传输**：stdio（command / args / env / cwd）与 streamable-http（url / headers，含 SSE 与 session 头）；值可写 `js:` 表达式，密钥不落补丁文件。
+- **连接测试不经 MCP SDK**：宿主直接说 JSON-RPC（initialize → tools/list），返回协议版本 / serverInfo / 工具清单 / 耗时。
+- **存活状态与命名冲突可见**：从 loader fiber 读存活状态（运行中 / 已停用 / 错误 / 加载中），并提示与外部 mcp-client 实例的 serverName 冲突；服务器可启用 / 停用（`disabled: true`）/ 编辑 / 删除。
+- **能力公告注入 systemPrompt**：注入能力公告（systemPrompt section），提到「MCP 配置 / MCP 服务器」时模型知道指本插件。
 
 ![MCP 服务器配置卡片：添加 / 连接测试 / 热加载](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-mcp.png)
 

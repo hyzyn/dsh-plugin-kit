@@ -6,11 +6,11 @@
 
 ## 特性
 
-- **是真终端**：node-pty 真实 PTY + WebGL 渲染，vim / htop / dev server 等 TUI 都能跑；多标签页。
-- **断线不掉现场**：可选 tmux 会话持久化，宿主重启 / 网络抖动后重开即恢复；docker exec 这类「命令标签」会自动重开。
-- **SSH 原生直连**：ssh2 + agent forwarding + 主机指纹 TOFU 钉扎，连接簿统一管理；另有 **SFTP** 上传下载与 **端口转发**（-L / -R，断线自动重连）。
-- **agent 能按「命令」粒度操作终端**：shell 集成（OSC 133/7）让 `tty_capture{last}` / `tty_expect` 拿到「上一条命令」的输出与退出码，而不是抓屏猜。
-- **别的插件可以接进来**：`ttyConnbar`（连接栏动作）与 `ttyTerminal`（就地开终端）两个客户端服务，dsh-docker 的「容器 / 终端」按钮就走它们。
+- **真 PTY + WebGL 渲染**：node-pty 真实 PTY，vim / htop / dev server 等 TUI 均可运行；多标签页。
+- **可选 tmux 会话持久化**：宿主重启 / 网络抖动后重开即恢复现场；docker exec 这类「命令标签」自动重开。
+- **ssh2 原生连接**：agent forwarding + 主机指纹 TOFU 钉扎，连接簿统一管理；另有 **SFTP** 上传下载与 **端口转发**（-L / -R，断线自动重连）。
+- **agent 侧按「命令」粒度取数**：shell 集成（OSC 133/7）让 `tty_capture{last}` / `tty_expect` 拿到「上一条命令」的输出与退出码，而不是抓屏猜。
+- **对其它插件开放两个客户端服务**：`ttyConnbar`（连接栏动作）与 `ttyTerminal`（就地开终端）；dsh-docker 的「容器 / 终端」按钮即走这两个扩展点。
 
 ![终端面板：多标签页 xterm 弹窗，工具栏含搜索/清屏/复制/粘贴，标题栏含最小化「—」与关闭 ✕](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty.png)
 
