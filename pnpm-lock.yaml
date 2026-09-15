@@ -9,7 +9,7 @@ importers:
   .:
     dependencies:
       '@hyzyn/dsh-codegraph':
-        specifier: 0.2.2
+        specifier: 0.3.0
         version: link:packages/codegraph
       '@hyzyn/dsh-docker':
         specifier: 0.5.0
@@ -46,7 +46,7 @@ importers:
   packages/all:
     dependencies:
       '@hyzyn/dsh-codegraph':
-        specifier: 0.2.2
+        specifier: 0.3.0
         version: link:../codegraph
       '@hyzyn/dsh-docker':
         specifier: 0.5.0
