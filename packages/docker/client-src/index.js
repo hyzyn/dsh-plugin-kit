@@ -1744,6 +1744,8 @@ window.__ModuleLoader__.load({
       const item = props.item
       const config = props.config
       const [tab, setTab] = useState(props.initialTab ?? 'overview')
+      /** 面板是否可见（S3）：折叠的 tab 不建流。模态 / dock 形态下恒为 true。 */
+      const active = usePanelActive()
       const [detail, setDetail] = useState(null)
       const [detailError, setDetailError] = useState('')
       const [logOptions, setLogOptions] = useState({ tail: config.logTailDefault, timestamps: false })
@@ -1829,6 +1831,9 @@ window.__ModuleLoader__.load({
        * 不留悬挂连接。
        */
       useEffect(() => {
+        // active=false = tab 被折叠（S3）：隐藏时不该继续挂着 SSE，白占 SSH 通道；
+        // 展开后这个 effect 会重跑，而建流本来就带 tail，历史自己补回来。
+        if (!active) return undefined
         if (tab !== 'logs' || !follow) return undefined
         if (typeof EventSource !== 'function') {
           setFollowError('当前环境不支持 EventSource，无法实时跟随')
@@ -1933,7 +1938,7 @@ window.__ModuleLoader__.load({
         const body = logBodyRef.current
         if (body === null) return
         body.scrollTop = body.scrollHeight
-      }, [tab, follow, followAtBottom, followLines])
+      }, [active, tab, follow, followAtBottom, followLines])
 
       /** FOLLOW 与 AUTO REFRESH 互斥：开流停轮询；关流立即回快照。 */
       const toggleFollow = () => {
@@ -2023,6 +2028,8 @@ window.__ModuleLoader__.load({
        * 服务端才发 `end`（reason=stats-exit），客户端据此回到快照轮询。
        */
       useEffect(() => {
+        // 同日志流：折叠的 tab 不建流（S3）。这条流尤其占通道——它不会自然结束。
+        if (!active) return undefined
         if (tab !== 'stats' || !statsFollow) return undefined
         if (typeof EventSource !== 'function') {
           setStatsNotice('当前环境不支持 EventSource，无法实时跟随')
@@ -2091,7 +2098,7 @@ window.__ModuleLoader__.load({
           setStatsNotice('')
         }
         return close
-      }, [tab, statsFollow, props.target, item.id])
+      }, [active, tab, statsFollow, props.target, item.id])
 
       const runExec = () => {
         if (execCommand.trim() === '') return
@@ -3143,8 +3150,14 @@ window.__ModuleLoader__.load({
       const flushTimerRef = useRef(null)
       const bodyRef = useRef(null)
       const itemIds = items.map((item) => item.id).join(',')
+      /** 面板是否可见（S3）：聚合视图是**每容器一条流**，最占 SSH 通道，优先掐它。 */
+      const active = usePanelActive()
 
       useEffect(() => {
+        // 折叠的 tab 不建流（S3）。
+        // 刻意**不动 status**：隐藏时状态行停在原样（比如「已连接 N 条」），展开后
+        // effect 重跑、重新建流并回到 connecting —— 比闪一下「未连接」更不吓人。
+        if (!active) return undefined
         if (items.length === 0) {
           setStatus('empty')
           return undefined
@@ -3240,7 +3253,7 @@ window.__ModuleLoader__.load({
         })
         void open
         return () => { for (const close of sources) close() }
-      }, [props.target, itemIds])
+      }, [active, props.target, itemIds])
 
       useEffect(() => {
         if (paused) return
@@ -3616,6 +3629,41 @@ window.__ModuleLoader__.load({
       })
     }
 
+    /* ---------------- 面板级状态与可见性（S3） ---------------- */
+
+    /**
+     * 面板级界面状态。
+     *
+     * 为什么放模块级而不是按会话：tab body 会随会话切换卸载重挂（实测），而容器面板看的是
+     * **主机**、不是工作区——「切走再回来还是刚才那个视图」才符合「容器面板只有一个」的心智
+     * 模型。target 本来就有 LAST_TARGET_KEY 记忆，这里补齐视图 / 过滤 / 选中项。
+     *
+     * 刻意只放**面板级**状态：容器详情里的日志过滤、概览/日志/统计页签跟具体容器绑定，
+     * 跨容器共用会张冠李戴，所以仍随组件生命周期走。
+     */
+    const panelUi = { view: 'containers', search: '', stateFilter: 'all', all: true, detail: null, activityOpen: true }
+
+    /** 面板级 useState：值与 panelUi 同步，组件重挂后自动取回上次的值。 */
+    function usePanelState(key, initial) {
+      const [value, setValue] = useState(() => (key in panelUi ? panelUi[key] : initial))
+      useEffect(() => { panelUi[key] = value }, [key, value])
+      return [value, setValue]
+    }
+
+    /**
+     * 「面板此刻可见吗」。tab 承载下由 `tabInfo().tab.visible` 喂进来（折叠 = false）；
+     * 模态与 dock 形态没有人提供，默认 true —— 也就是行为不变。
+     *
+     * 为什么要它：tab 会**隐藏而非卸载**时，里面的 SSE 会继续挂着，白占 SSH 通道
+     * （一个目标只维持一条 TCP 连接，通道额度是共享的）。可见性一 false 就断流，
+     * 展开时依赖原有逻辑重新建流（单容器与聚合都带 tail，历史会自己补回来）。
+     */
+    const PanelActiveContext = React.createContext(true)
+
+    function usePanelActive() {
+      return React.useContext(PanelActiveContext)
+    }
+
     function ContainerPanel(props) {
       const [config, setConfig] = useState(null)
       const [targets, setTargets] = useState([])
@@ -3631,7 +3679,7 @@ window.__ModuleLoader__.load({
       const [target, setTarget] = useState(rememberedTargetRef.current)
       /** 从 tty 连接栏进来、但会话主机没匹配到任何目标：不自动选目标，只提示去配置。 */
       const sessionScoped = props.sessionHint !== undefined && (props.initialTarget ?? '') === ''
-      const [view, setView] = useState('containers')
+      const [view, setView] = usePanelState('view', 'containers')
       const [containers, setContainers] = useState([])
       /**
        * 当前屏上这份列表**属于哪个目标**（0.15.0）。
@@ -3676,23 +3724,25 @@ window.__ModuleLoader__.load({
       const [loading, setLoading] = useState(false)
       const [error, setError] = useState('')
       const [notice, setNotice] = useState('')
-      const [all, setAll] = useState(true)
-      const [search, setSearch] = useState('')
-      const [stateFilter, setStateFilter] = useState('all')
+      const [all, setAll] = usePanelState('all', true)
+      const [search, setSearch] = usePanelState('search', '')
+      const [stateFilter, setStateFilter] = usePanelState('stateFilter', 'all')
       const [autoRefresh, setAutoRefresh] = useState(false)
       /*
        * 事件活动流（docker events）：events 是活动条的环形缓冲，eventsStatus 只表达
        * 连接状态。事件流只服务容器列表页，是叠加在 AUTO REFRESH 之上的补充通道。
        */
       const [events, setEvents] = useState([])
+      /** 面板是否可见（S3）：折叠的 tab 不建流；模态 / dock 形态恒为 true。 */
+      const active = usePanelActive()
       const [eventsStatus, setEventsStatus] = useState('')
-      const [activityOpen, setActivityOpen] = useState(true)
+      const [activityOpen, setActivityOpen] = usePanelState('activityOpen', true)
       /** 建流时用的列表加载器（用 ref 拿最新的，避免 all 一变就重连事件流）。 */
       const loadContainersRef = useRef(null)
       /** 事件流当前绑定的目标：换目标要清空活动条缓冲，免得混着两台主机的事件。 */
       const eventsTargetRef = useRef('')
       /** 打开中的容器详情：{ id, tab, item }（item 为快照，列表刷新后优先用新数据）。 */
-      const [detail, setDetail] = useState(null)
+      const [detail, setDetail] = usePanelState('detail', null)
       const [refreshToken, setRefreshToken] = useState(0)
       const [confirm, setConfirm] = useState(null)
       /**
@@ -4144,6 +4194,9 @@ window.__ModuleLoader__.load({
        * 切页 / 切 target / 关面板都会走 effect 清理：关流 + 取消防抖。
        */
       useEffect(() => {
+        // 折叠的 tab 不建流（S3）。代价是隐藏期间的活动条事件会漏掉——但重连后本来就
+        // 会补一次全量列表刷新（见上面的「重连补偿」），列表状态不会因此失真。
+        if (!active) return undefined
         if (view !== 'containers' || target === '') return undefined
         if (typeof EventSource !== 'function') {
           setEventsStatus('unsupported')
@@ -4207,7 +4260,7 @@ window.__ModuleLoader__.load({
           close()
           debounced.cancel()
         }
-      }, [view, target])
+      }, [active, view, target])
 
       useEffect(() => {
         if (notice === '') return undefined
@@ -5103,12 +5156,17 @@ window.__ModuleLoader__.load({
       const lastTargetRef = useRef('')
       if (requested !== '') lastTargetRef.current = requested
       const pin = lastTargetRef.current
-      return jsx(ContainerPanel, {
-        key: pin === '' ? 'docker-tab' : pin,
-        carrier: 'tab',
-        onClose: closeTab,
-        initialTarget: pin === '' ? undefined : pin,
-        sessionHint: params?.sessionHint,
+      // tab.visible：折叠右侧栏时为 false。用它门控 SSE —— 隐藏时不该白占 SSH 通道。
+      const active = info?.tab?.visible !== false
+      return jsx(PanelActiveContext.Provider, {
+        value: active,
+        children: jsx(ContainerPanel, {
+          key: pin === '' ? 'docker-tab' : pin,
+          carrier: 'tab',
+          onClose: closeTab,
+          initialTarget: pin === '' ? undefined : pin,
+          sessionHint: params?.sessionHint,
+        }),
       })
     }
 
