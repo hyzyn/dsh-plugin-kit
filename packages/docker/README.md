@@ -693,10 +693,22 @@ abort）、客户端断开静默中止。各自只差执行器与结束原因：
 pnpm --filter @hyzyn/dsh-docker build       # tsc → lib/（宿主半体）+ esbuild → client.js（浏览器半体）
 pnpm --filter @hyzyn/dsh-docker typecheck
 pnpm --filter @hyzyn/dsh-docker smoke       # 三套离线回归，都不需要 docker daemon
-pnpm test                                    # 仓库级 vitest（含本包 logs-stream / streams 两套）
+pnpm test                                    # 仓库级 vitest（含本包 logs-stream / streams / ssh-stream-budget 三套）
 ```
 
-`scripts/smoke.mjs`（33 项，读取 `lib/` 构建产物）覆盖纯逻辑：ps 解析（字段映射 /
+> **改了哪一半、怎么才生效**（踩过两次的坑）：
+>
+> - `client-src/*`（浏览器半体）→ esbuild 出 `client.js`。宿主有 client HMR 轮询各插件的
+>   client bundle，**热更**，刷新页面即见；
+> - `src/*.ts`（宿主半体）→ tsc 出 `lib/`。**必须是新进程才生效**：运行中的 `dsh web`
+>   在启动时就把 `lib/` 载进内存，之后 `lib/` 再变它也不会重载。改完 `pnpm build` 记得
+>   重启：`dsh web --profile <name>`。
+>
+> 忘了重启的症状很迷惑：**客户端是对的、宿主是旧的**，于是错误文案、重试、配额这类宿主侧
+> 逻辑全都不生效，看起来像「改了没用」。判断依据是**文案**——宿主侧新增的提示语如果没出现，
+> 那就是旧进程。
+
+`scripts/smoke.mjs`（35 项，读取 `lib/` 构建产物）覆盖纯逻辑：ps 解析（字段映射 /
 compose 标签 / 端口 / `State` 缺失推导 / 噪声行 / JSON 数组）、端口串解析与去重、
 stats 解析（百分比 / 内存 / IO / PIDs）、size 与 percent 的异常输入、images 解析
 （dangling）、**image inspect / history（JSON 与纯文本表格两条路径）解析**、
