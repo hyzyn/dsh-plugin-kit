@@ -459,6 +459,19 @@ describe('跟随活动会话（POST /follow）', () => {
     expect(capture.status).toBe(200)
     expect(capture.body?.effectivePath).toBe(project_original)
     expect(capture.body?.sessionPath).toBe(plain)
+    expect(capture.body?.sessionPathState).toBe('missing')
+    expect(String(capture.body?.note)).toContain('回落到默认项目')
+  })
+
+  it('默认路径已索引、会话目录未索引：仍然要给回落提示（判定看上报路径，不是生效路径）', async () => {
+    const indexed = indexedProject('follow-default-indexed')
+    const plain = mkdtempSync(join(sandbox, 'follow-session-plain-'))
+    const mount = mountFull(echoCli(), { defaultPath: indexed })
+    const capture = await call(mount.routes, '/api/dsh-codegraph/follow', { method: 'POST', body: { path: plain } })
+    // 生效路径回落到已索引的默认项目 → indexed=true，但这次上报确实被回落了，必须说清楚
+    expect(capture.body?.effectivePath).toBe(indexed)
+    expect(capture.body?.indexed).toBe(true)
+    expect(capture.body?.sessionPathState).toBe('missing')
     expect(String(capture.body?.note)).toContain('回落到默认项目')
   })
 
