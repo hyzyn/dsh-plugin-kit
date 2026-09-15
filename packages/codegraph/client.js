@@ -56,6 +56,11 @@ window.__ModuleLoader__.load({
       '.cg_sectionTitle{margin:0;font-size:13px;font-weight:700;color:var(--dsw-alias-label-secondary)}',
       '.cg_mcpRow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}',
       '.cg_mcpMeta{color:var(--dsw-alias-label-tertiary);font-size:11.5px;line-height:1.5;min-width:0}',
+      '.cg_warn{color:var(--dsw-alias-state-warning-primary,var(--dsw-alias-state-error-primary));font-size:12px;line-height:1.55;margin:0;white-space:pre-wrap}',
+      '.cg_checks{display:flex;align-items:center;gap:16px;flex-wrap:wrap;font-size:12.5px;color:var(--dsw-alias-label-secondary)}',
+      '.cg_check{display:inline-flex;align-items:center;gap:6px;cursor:pointer}',
+      '.cg_check input{cursor:pointer}',
+      '.cg_check[data-off="1"]{opacity:.55;cursor:default}',
     ].join('\n')
 
     let styleEl
@@ -111,6 +116,9 @@ window.__ModuleLoader__.load({
       const [ok, setOk] = React.useState('')
       const [loading, setLoading] = React.useState(false)
       const [mcp, setMcp] = React.useState(null)
+      // GET /default-path 的索引态：默认项目（= 托管 MCP 的 cwd）是否真是有效索引。
+      // 只看 mcp.mode 会把「已对齐一个非项目目录」显示成一切正常。
+      const [defaultInfo, setDefaultInfo] = React.useState(null)
       const [settingDefault, setSettingDefault] = React.useState(false)
 
       // 当前活动会话的工作目录（随会话切换实时更新；无活动会话时为 ''）。
@@ -131,8 +139,19 @@ window.__ModuleLoader__.load({
         try {
           const data = await api('/api/dsh-codegraph/default-path')
           setMcp(data.mcp || null)
+          setDefaultInfo({
+            defaultPath: typeof data.defaultPath === 'string' ? data.defaultPath : '',
+            indexed: data.indexed === true,
+            indexState: typeof data.indexState === 'string' ? data.indexState : '',
+            // 提示词注入开关（settings 命名空间里的真值）+ CLI 探测结果
+            // （undefined = 宿主还没探测完，此时不提示不可用）。
+            announceToAgent: data.announceToAgent === true,
+            usageGuidance: data.usageGuidance === true,
+            cliAvailable: data.cliAvailable,
+          })
         } catch {
           setMcp(null)
+          setDefaultInfo(null)
         }
       }, [])
 
@@ -235,6 +254,7 @@ window.__ModuleLoader__.load({
           })
           setMcp(data.mcp || null)
           setOk('已把默认项目切到 ' + (data.defaultPath || effectivePath) + (data.persisted === false ? '（本次会话内生效）' : '') + '，codegraph MCP 服务器将热切换。')
+          await loadMcpStatus()
         } catch (err) {
           setError(err.message)
         } finally {
@@ -242,13 +262,53 @@ window.__ModuleLoader__.load({
         }
       }
 
+      // 提示词注入开关：写 settings 命名空间（宿主即时增删 systemPrompt section，
+      // 不需要重启）；CLI 探测失败时禁用——那时候两段本来就不会注入。
+      const toggleSetting = async (key, value) => {
+        setError('')
+        setOk('')
+        try {
+          await api('/api/dsh-codegraph/settings', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ [key]: value }),
+          })
+          await loadMcpStatus()
+          setOk(key === 'announceToAgent' ? '能力公告已更新' : '使用指引已更新')
+        } catch (err) {
+          setError(err.message)
+          await loadMcpStatus()
+        }
+      }
+
       const mcpText = React.useMemo(() => {
         if (!mcp) return 'MCP：状态未知'
-        if (mcp.mode === 'own') return 'MCP：已托管（本插件维护工作目录）· cwd ' + (mcp.cwd || '(未设置)') + (mcp.disabled ? ' · 已停用' : '')
-        if (mcp.mode === 'dsh-mcp') return 'MCP：已对齐 MCP 卡片里的行 · cwd ' + (mcp.cwd || '(未设置)') + (mcp.disabled ? ' · 已停用' : '')
+        // 所有模式都带上宿主给的 note：未索引 / 手工行 / 联动关闭这些「没有托管」的
+        // 情况必须说出来，否则「已对齐 cwd」看起来像一切正常。
+        const note = mcp.note ? ' · ' + mcp.note : ''
+        if (mcp.mode === 'own') return 'MCP：已托管（本插件维护工作目录）· cwd ' + (mcp.cwd || '(未设置)') + (mcp.disabled ? ' · 已停用' : '') + note
+        if (mcp.mode === 'dsh-mcp') return 'MCP：已对齐 MCP 卡片里的行 · cwd ' + (mcp.cwd || '(未设置)') + (mcp.disabled ? ' · 已停用' : '') + note
         if (mcp.mode === 'external') return 'MCP：检测到手工配置行，插件不接管'
         return 'MCP：' + (mcp.note || '未托管')
       }, [mcp])
+
+      // 默认项目不是有效索引时必须点名：MCP 服务器以它为 cwd，未加载项目时
+      // codegraph_* 工具会要求显式传 projectPath（家目录最常见——~/.codegraph 是
+      // codegraph CLI 自己的安装目录，插件不认它之后这里就会报警）。
+      const defaultWarning = React.useMemo(() => {
+        if (!defaultInfo || defaultInfo.indexed) return ''
+        const why = defaultInfo.indexState === 'not-a-project'
+          ? '它的 .codegraph/ 里没有索引库，不是 codegraph 项目（家目录最常见：~/.codegraph 是 CLI 自身的安装目录）'
+          : '它没有 .codegraph/ 索引'
+        const fix = status && status.initialized === true && effectivePath && effectivePath !== defaultInfo.defaultPath
+          ? '当前路径 ' + effectivePath + ' 已是有效索引，点「设为默认项目」即可修复。'
+          : '把默认项目切到已索引目录即可自动挂载。'
+        return '⚠ 默认项目 ' + (defaultInfo.defaultPath || '(未设置)') + ' 不是有效索引：' + why + '。未加载项目的 codegraph_* 工具需要显式传 projectPath；' + fix
+      }, [defaultInfo, status, effectivePath])
+
+      const cliWarning = defaultInfo && defaultInfo.cliAvailable === false
+        ? '⚠ 未检测到可执行的 codegraph CLI（`--version` 失败）：systemPrompt 的能力公告与使用指引都不会注入，卡片里的状态 / 搜索 / sync / 重建索引也会报错。装好 CLI 后刷新本卡片即可恢复。'
+        : ''
 
       const statusText = status ? JSON.stringify(status, null, 2) : ''
 
@@ -357,7 +417,46 @@ window.__ModuleLoader__.load({
                     jsx('span', { className: 'cg_mcpMeta', children: mcpText }),
                   ],
                 }),
+                jsxs('div', {
+                  className: 'cg_checks',
+                  children: [
+                    jsx('label', {
+                      className: 'cg_check',
+                      'data-off': !defaultInfo || defaultInfo.cliAvailable !== true ? '1' : undefined,
+                      title: defaultInfo && defaultInfo.cliAvailable === true
+                        ? '向 agent 注入本插件的能力公告（一段中文提示，告诉模型有这张卡片）'
+                        : 'codegraph CLI 不可用，公告不会注入',
+                      children: [
+                        jsx('input', {
+                          type: 'checkbox',
+                          checked: defaultInfo ? defaultInfo.announceToAgent === true : false,
+                          disabled: !defaultInfo || defaultInfo.cliAvailable !== true,
+                          onChange: (event) => toggleSetting('announceToAgent', event.target.checked),
+                        }),
+                        '向 agent 公告能力',
+                      ],
+                    }),
+                    jsx('label', {
+                      className: 'cg_check',
+                      'data-off': !defaultInfo || defaultInfo.cliAvailable !== true ? '1' : undefined,
+                      title: defaultInfo && defaultInfo.cliAvailable === true
+                        ? '注入 CodeGraph 使用指引（CODEGRAPH_START 区块：何时优先用 codegraph、失败怎么兜底）'
+                        : 'codegraph CLI 不可用，使用指引不会注入',
+                      children: [
+                        jsx('input', {
+                          type: 'checkbox',
+                          checked: defaultInfo ? defaultInfo.usageGuidance === true : false,
+                          disabled: !defaultInfo || defaultInfo.cliAvailable !== true,
+                          onChange: (event) => toggleSetting('usageGuidance', event.target.checked),
+                        }),
+                        '注入使用指引',
+                      ],
+                    }),
+                  ],
+                }),
                 error ? jsx('p', { className: 'cg_error', children: error }) : null,
+                cliWarning ? jsx('p', { className: 'cg_warn', children: cliWarning }) : null,
+                defaultWarning ? jsx('p', { className: 'cg_warn', children: defaultWarning }) : null,
                 ok ? jsx('p', { className: 'cg_ok', children: ok }) : null,
                 status ? jsx('pre', { className: 'cg_pre', children: statusText }) : null,
                 results.length > 0 ? jsxs('div', {

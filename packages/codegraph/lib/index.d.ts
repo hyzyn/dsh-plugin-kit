@@ -47,6 +47,26 @@ export interface Config {
      */
     indexForce?: boolean;
 }
+/**
+ * 目标目录的索引状态：
+ *   - `indexed`：`.codegraph/` 里有真索引库，可以当 MCP 服务器的工作目录；
+ *   - `missing`：连 `.codegraph/` 都没有；
+ *   - `not-a-project`：有 `.codegraph/` 却没有索引库——最典型的就是**家目录**，
+ *     因为 codegraph CLI 把自己的安装数据放在 `~/.codegraph`（`current ->
+ *     versions/<v>`、`bundles/`、`codegraph.lock`，没有任何 .db）。
+ */
+export type IndexState = 'indexed' | 'missing' | 'not-a-project';
+/**
+ * 判定项目索引。**不能只看 `.codegraph/` 目录是否存在**：codegraph CLI 的安装目录
+ * 就是 `~/.codegraph`，于是家目录永远「已索引」——插件会把 MCP 的 cwd 钉在家目录上
+ * 并报告一切正常，而 `codegraph status --json -- ~` 实际返回 `initialized:false`，
+ * MCP 工具照旧拿 "No CodeGraph project is loaded"（模块头描述的失败模式）。
+ *
+ * 判据取「目录里存在 .db 文件」而不是写死 `codegraph.db`：索引库文件名可能跨 CLI
+ * 版本变化，而安装目录里一个库文件都没有。读目录失败（权限等）按未索引处理——
+ * 宁可不动现有 cwd，也不把好配置改坏。
+ */
+export declare function indexState(path: string): IndexState;
 export interface McpSyncDecision {
     /** 期望的 MCP 服务器名（固定 codegraph）。 */
     serverName: string;
@@ -63,8 +83,10 @@ export interface McpSyncStatus {
     id?: string;
     cwd?: string;
     disabled?: boolean;
-    /** 目标路径是否已有 .codegraph/ 索引。 */
+    /** 目标路径是否已有真实索引库（等价于 indexState === 'indexed'）。 */
     indexed: boolean;
+    /** 目标路径的索引状态（区分「没有 .codegraph/」与「有但不是项目索引」）。 */
+    indexState: IndexState;
     note?: string;
 }
 export interface McpSyncOutcome {
