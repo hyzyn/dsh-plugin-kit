@@ -277,8 +277,11 @@ await test('tty 未安装时：可选注入不触发、apply 仍成功', () => {
   const exports_ = registration.factory(requireStub)
   const { ctx, state } = makeClientCtx({ ttyConnbar: false, ttyTerminal: false })
   const dispose = exports_.apply(ctx)
-  // 这张清单是「本插件注入过的服务」全集，加一个可选注入就要在此登记两处（本文件共两处）。
-  assert.deepEqual(state.injected.sort(), ['sessions', 'ttyConnbar', 'ttyPanel', 'ttyTerminal'])
+  // 这里只断言「那几个可选注入被尝试过」；*全集*清单在下面单独一条用例里锁，
+  // 于是以后新增一个可选注入只需改那一处，不再连带打断这条例外路径用例。
+  for (const name of ['ttyConnbar', 'ttyPanel', 'ttyTerminal']) {
+    assert.ok(state.injected.includes(name), '缺少可选注入 ' + name)
+  }
   assert.equal(state.connbarFactory, null)
   assert.equal(state.execCalls.length, 0)
   dispose()
@@ -384,11 +387,30 @@ await test('缓存尚未就绪时点击：现场重拉并锁定当前会话对�
   assert.equal(panel.props.sessionHint, undefined, '命中目标时不应再带未配置提示')
 })
 
+await test('注入清单快照：本插件注入过的服务全集（加可选注入时只改这一处）', () => {
+  const exports_ = registration.factory((spec) => SEED[spec])
+  const { ctx, state } = makeClientCtx({ ttyConnbar: false, ttyTerminal: false })
+  const dispose = exports_.apply(ctx)
+  assert.deepEqual(state.injected.sort(), ['sessions', 'sidebarRight', 'sidebarRightTabs', 'ttyConnbar', 'ttyPanel', 'ttyTerminal'])
+  dispose()
+})
+
+await test('右侧栏标签承载（S1）：类型 / body / 外壳样式装配进 bundle', () => {
+  assert.ok(code.includes('sidebar.right.pane.tab'), '缺少右侧栏标签 body 槽名')
+  assert.ok(code.includes('sidebarRightTabs'), '缺少右侧栏类型注册')
+  assert.ok(code.includes('dk_panelTab'), '缺少标签承载的面板外壳样式')
+  // 契约要求 body 注册在**实现 id** 下（不是 kind）：写错的表现是「标签能开、body 空白」
+  assert.ok(code.includes('"@hyzyn/dsh-docker"') || code.includes("'@hyzyn/dsh-docker'"), '缺少标签实现 id')
+  // esbuild 默认 charset=ascii：中文在 bundle 里是 \uXXXX，先解码再断言
+  const decoded = code.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+  assert.ok(decoded.includes('本机与 SSH 主机的容器、镜像、Compose、网络与卷'), '缺少指南页描述文案')
+})
+
 await test('ttyTerminal：可选注入成功，且 bundle 内含 exec 命令与复制兜底', () => {
   const exports_ = registration.factory((spec) => SEED[spec])
   const { ctx, state } = makeClientCtx({ ttyConnbar: false, ttyTerminal: true })
   const dispose = exports_.apply(ctx)
-  assert.deepEqual(state.injected.sort(), ['sessions', 'ttyConnbar', 'ttyPanel', 'ttyTerminal'])
+  assert.ok(state.injected.includes('ttyTerminal'), '缺少 ttyTerminal 可选注入')
   // 命令构造与兜底路径：静态断言（点击路径在真实应用里由端到端脚本覆盖）
   // esbuild 默认 charset=ascii：中文在 bundle 里是 \uXXXX，先解码再断言
   const decoded = code.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
