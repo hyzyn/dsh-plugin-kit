@@ -237,6 +237,20 @@ function makeClientCtx(options = {}) {
         }
         callback({ ttyTerminal: service })
       }
+      if (names.includes('sessions') && options.sessions !== false) {
+        // 会话桥：日志右键「问 Agent」经它拿**会话作用域**里的 conversation。
+        // 传 sessions: false 可模拟宿主未提供该服务（apply 不能崩，菜单运行期置灰）。
+        const conversation = {
+          send: () => Promise.resolve(),
+          input: { for: () => ({ setDraft() {}, notify() {} }) },
+        }
+        callback({
+          sessions: {
+            list: { getSnapshot: () => ({ current: 'session-smoke' }) },
+            scope: () => ({ get: (name) => (name === 'conversation' ? conversation : undefined) }),
+          },
+        })
+      }
       return () => {}
     },
   }
@@ -263,9 +277,21 @@ await test('tty 未安装时：可选注入不触发、apply 仍成功', () => {
   const exports_ = registration.factory(requireStub)
   const { ctx, state } = makeClientCtx({ ttyConnbar: false, ttyTerminal: false })
   const dispose = exports_.apply(ctx)
-  assert.deepEqual(state.injected.sort(), ['ttyConnbar', 'ttyPanel', 'ttyTerminal'])
+  // 这张清单是「本插件注入过的服务」全集，加一个可选注入就要在此登记两处（本文件共两处）。
+  assert.deepEqual(state.injected.sort(), ['sessions', 'ttyConnbar', 'ttyPanel', 'ttyTerminal'])
   assert.equal(state.connbarFactory, null)
   assert.equal(state.execCalls.length, 0)
+  dispose()
+})
+
+await test('日志 → 会话桥：宿主未提供 sessions 时 apply 仍成功（菜单运行期置灰）', () => {
+  const requireStub = (spec) => SEED[spec]
+  const exports_ = registration.factory(requireStub)
+  const { ctx, state } = makeClientCtx({ sessions: false })
+  const dispose = exports_.apply(ctx)
+  // 可选注入：服务缺失不能让 apply 抛错，面板其余功能（设置卡片）照常注册
+  assert.ok(state.cards.length > 0, 'sessions 缺失时设置卡片仍应注册')
+  assert.equal(state.connbarFactory, null)
   dispose()
 })
 
@@ -362,7 +388,7 @@ await test('ttyTerminal：可选注入成功，且 bundle 内含 exec 命令与�
   const exports_ = registration.factory((spec) => SEED[spec])
   const { ctx, state } = makeClientCtx({ ttyConnbar: false, ttyTerminal: true })
   const dispose = exports_.apply(ctx)
-  assert.deepEqual(state.injected.sort(), ['ttyConnbar', 'ttyPanel', 'ttyTerminal'])
+  assert.deepEqual(state.injected.sort(), ['sessions', 'ttyConnbar', 'ttyPanel', 'ttyTerminal'])
   // 命令构造与兜底路径：静态断言（点击路径在真实应用里由端到端脚本覆盖）
   // esbuild 默认 charset=ascii：中文在 bundle 里是 \uXXXX，先解码再断言
   const decoded = code.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
@@ -683,6 +709,29 @@ await test('日志 FOLLOW：bundle 内含 SSE 订阅与「回到底部」交互'
   assert.ok(decoded.includes('实时跟随'), '缺少 FOLLOW 提示文案')
   assert.ok(decoded.includes('回到底部'), '缺少回到底部文案')
   assert.ok(decoded.includes('容器已退出'), '缺少流结束（容器退出）提示')
+})
+
+await test('日志 → 会话桥：右键菜单 / 诊断包 / 投递面装配进 bundle', () => {
+  // 静态断言只锁**字符串字面量**：局部函数名会被 esbuild minify 改名，断在函数名
+  // 上必假（实测产物里查不到 buildAskPrompt / onLogContextMenu / askTarget）。
+  assert.ok(code.includes('data-log-ts'), '聚合日志行缺时间戳 dataset（诊断包时间窗的唯一来源）')
+  assert.ok(code.includes('dk_menu'), '缺少右键菜单样式钩子')
+  assert.ok(code.includes('dk_askCard'), '缺少预览卡片样式钩子')
+  assert.ok(code.includes('dk_askToast'), '缺少失败提示样式钩子')
+  // 投递必须经**会话作用域**取 conversation：写成根上的会在运行期抛
+  // （conversation.send requires a session scope）
+  assert.ok(code.includes('"conversation"') || code.includes("'conversation'"), '缺少 scope-addressed 的 conversation 解析')
+  assert.ok(code.includes('setDraft'), '缺少「只填输入框」的 setDraft 调用')
+  assert.ok(code.includes('.send('), '缺少「直接发送」的 send 调用')
+  assert.ok(code.includes('inject(["sessions"]') || code.includes("inject(['sessions']"), 'sessions 未按可选注入挂载')
+  // esbuild 默认 charset=ascii：中文在 bundle 里是 \uXXXX，先解码再断言
+  const decoded = code.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+  for (const label of ['问 Agent', '预览后发送', '直接发送到当前会话', '只填入输入框', '内容会进入模型上下文']) {
+    assert.ok(decoded.includes(label), '缺少文案：' + label)
+  }
+  // 拿不到会话时菜单项必须能置灰：降级原因要有可显示文案
+  assert.ok(decoded.includes('当前没有打开的会话'), '缺少「无当前会话」的降级原因')
+  assert.ok(decoded.includes('宿主未提供 sessions 服务'), '缺少「宿主无 sessions」的降级原因')
 })
 
 await test('样式表内联进了 bundle（dk_ 前缀 + 侧边栏入口属性）', () => {
