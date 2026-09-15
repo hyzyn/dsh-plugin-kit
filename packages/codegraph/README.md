@@ -6,12 +6,12 @@
 
 ## 特性
 
-- **`status --json` → 8 格状态面板**：`initialized` / `version` / `projectPath` / `fileCount` / `nodeCount` / `edgeCount` / `lastIndexed` / `pendingChanges` / `languages` / `dbSizeBytes` 分区铺开，原始 JSON 收进 `<details>`；符号下钻输出带行号的 verbatim 源码 + `callers` / `callees` / `impact` 三段关系列表。
-- **索引两条路径、两档超时**：`sync -- <path>` 增量、`index [--force] -- <path>` 全量重建走 `indexTimeoutMs`（默认 600s）；`status` / `query` / `callers` / `callees` / `impact` / `node` 走 `cliTimeoutMs`（默认 60s）。
-- **托管 MCP 服务器行**：dsh-mcp-client 不声明 MCP roots，`codegraph serve --mcp` 只从 `process.cwd()` 向上解析 `.codegraph/`；插件在 `~/.dsh/cordis.patch.yml` 维护 `@deepseek-ai/dsh-mcp-client` 行并写 `config.cwd`，改写经 watchUserPatches 热加载重建 MCP 连接。同一台服务器同一时刻挂载一个项目，其余项目用 `projectPath` 查询。
+- **`status --json` 字段分区呈现**：`initialized` / `version` / `projectPath` / `fileCount` / `nodeCount` / `edgeCount` / `lastIndexed` / `pendingChanges` / `languages` / `dbSizeBytes` 分区铺开，原始 JSON 收进 `<details>`；符号下钻输出带行号的 verbatim 源码 + `callers` / `callees` / `impact` 三段关系。
+- **索引两条路径、超时分两档**：`sync -- <path>` 增量、`index [--force] -- <path>` 全量重建走 `indexTimeoutMs`（默认 600s）；`status` / `query` / `callers` / `callees` / `impact` / `node` 走 `cliTimeoutMs`（默认 60s）。
+- **托管 MCP 服务器行**：dsh-mcp-client 不声明 MCP roots，`codegraph serve --mcp` 只从 `process.cwd()` 向上解析 `.codegraph/`；插件在 `~/.dsh/cordis.patch.yml` 维护 `@deepseek-ai/dsh-mcp-client` 行并写 `config.cwd`，改写经 watchUserPatches 热加载重建 MCP 连接。同一台服务器同一时刻只挂一个项目，其余项目用 `projectPath` 查询。
 - **索引判定取 `.codegraph/*.db`，不取目录存在**：目录存在会把 codegraph CLI 自身的安装目录 `~/.codegraph` 判成项目索引，托管行随之落在未索引 cwd 上——实测该状态下 `codegraph_explore` 的 required 由 `["query"]` 变为 `["query","projectPath"]`。非真索引时不改写现有 cwd，卡片给出 `indexState` 与原因。
 - **托管行 cwd 跟随活动会话**：`followSession`（默认开）在会话切到有效索引项目时对齐托管行，否则回落到绑定路径；绑定路径由「设为默认项目」写入 settings 命名空间 `codegraph` 并把 `followSession` 置 false（显式指定优先于会话跟随）。
-- **systemPrompt 两段，独立开关 + CLI 门禁**：`plugin:dsh-codegraph`（order 150）与 `plugin:dsh-codegraph:usage`（order 151）；两段均以 `<command> --version` 探测为前置，`announceToAgent` / `usageGuidance` 写 settings 命名空间后即时增删 section。
+- **systemPrompt 分两段，开关与门禁各自独立**：`plugin:dsh-codegraph`（order 150）与 `plugin:dsh-codegraph:usage`（order 151）；两段均以 `<command> --version` 探测为前置，`announceToAgent` / `usageGuidance` 写 settings 命名空间后即时增删 section。
 
 ![Codegraph 设置卡片：8 格状态面板、符号下钻、跟随开关](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-codegraph.png)
 

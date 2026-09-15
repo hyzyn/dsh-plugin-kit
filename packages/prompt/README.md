@@ -6,10 +6,10 @@
 
 ## 特性
 
-- **多 Prompt × 多版本**：一个 Prompt 可存多份版本，一键存为新版本 / 点一下回滚，旧版本完整保留。
-- **A/B 测试**：按比例随机命中 A/B 版本，用真实使用验证提示词改动。
-- **启用即注入**：选中的 Prompt 作为 `systemPrompt` section 注入，保存即热生效。
-- **导出与分享**：Prompt 可导出带走或分享给别人。
+- **Prompt 与版本两级模型**：一个 Prompt 存多份版本，存为新版本 / 回滚各一步，旧版本完整保留。
+- **A/B 按比例随机分流**：按比例命中 A/B 版本，用真实流量验证提示词改动。
+- **启用即作为 systemPrompt section 注入**：选中即注入，保存即热生效。
+- **可导出、可导入**：导出 `json` / `markdown`，导入 JSON，亦可一键复制分享。
 
 ![Prompt 管理卡片：可视化编辑 / 版本管理 / A/B 测试](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-prompt.png)
 

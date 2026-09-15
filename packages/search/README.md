@@ -6,10 +6,10 @@
 
 ## 特性
 
-- **打开即出内容**：不发请求、零延迟——先用本地缓存出结果，再补齐。
-- **搜得够杂**：历史会话、Prompt、MCP 工具、设置面板都在同一个面板里，分组呈现。
+- **本地缓存先出结果**：不发请求、零延迟——先用缓存渲染，再补齐远端结果。
+- **四类目标统一检索**：历史会话、Prompt、MCP 工具、设置面板在同一面板内分组呈现。
 - **键盘优先**：⌘/Ctrl+K 唤出；行 = 图标 + 标题（可带副标题）+ 右侧元信息 + 快捷键胶囊。
-- **不用记路径**：找到就能直接跳转，不用先想「这东西在哪个设置页」。
+- **结果可直接跳转**：命中即跳，不必先定位它在哪个设置页。
 
 ![全局搜索插件](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-search.png)
 ![全局搜索的检索结果（最近会话 / 历史会话 / Prompt / MCP 工具 / 设置分组）](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-search-query.png)

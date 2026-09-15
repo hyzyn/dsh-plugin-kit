@@ -6,11 +6,11 @@
 
 ## 特性
 
-- **密钥不落明文**：密钥值写入官方凭据存储（`~/.dsh/.credentials.yaml` 的 refs），env 文件只留清单；接口不下发明文（`value: null`），GUI 以密码框显示，留空保存＝保持原值。
-- **`js:` 表达式当引用**：`js:process.env.API_KEY` 这类表达式留在文件里、由宿主求值（YAML `!!js` 方言，与 dsh 补丁文件一致），不必把密钥写死。
-- **保存即生效**：解析结果写入当前进程的 `process.env`，宿主与后续子进程立刻可用，无需重启。
-- **能整体回退**：宿主没有凭据 seam 或关掉 `secretsInCredentials` 时退回「env 文件单存储」，不会写一半。
-- **安全边界写清楚了**：路由仅 loopback + 同源、env 文件固定 0600，并明确提示不要把 GUI 端口经隧道 / 反代暴露。
+- **密钥值不入 env 文件**：密钥值写入官方凭据存储（`~/.dsh/.credentials.yaml` 的 refs），env 文件只留清单；接口不下发明文（`value: null`），GUI 以密码框呈现，留空保存＝保持原值。
+- **`js:` 表达式由宿主延迟求值**：`js:process.env.API_KEY` 这类表达式留在文件里、由宿主求值（YAML `!!js` 方言，与 dsh 补丁文件一致），密钥不必写死。
+- **保存即写入当前进程**：解析结果写进当前进程的 `process.env`，宿主与后续子进程立刻可用，无需重启。
+- **存储降级是全有全无**：宿主没有凭据 seam 或关掉 `secretsInCredentials` 时退回「env 文件单存储」，不产生半迁移状态。
+- **围栏与文件权限显式约束**：路由仅 loopback + 同源，env 文件固定 0600；明确提示不要把 GUI 端口经隧道 / 反代暴露。
 
 ![环境变量 / 密钥管理卡片](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-env.png)
 

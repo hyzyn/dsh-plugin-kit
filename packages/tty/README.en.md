@@ -6,11 +6,11 @@
 
 ## Features
 
-- **A real terminal**: node-pty real PTY + WebGL rendering, so TUIs such as vim / htop / a dev server all run; multi-tab.
-- **A disconnect does not lose the scene**: optional tmux session persistence — reopen after a host restart / network blip and it is back; “command tabs” such as docker exec reopen automatically.
-- **Native SSH**: ssh2 + agent forwarding + host-key TOFU pinning, managed uniformly through the connection book; plus **SFTP** upload/download and **port forwarding** (-L / -R, reconnecting automatically after a drop).
-- **The agent can drive the terminal at “command” granularity**: shell integration (OSC 133/7) lets `tty_capture{last}` / `tty_expect` read the output and exit code of “the previous command” instead of capturing the screen and guessing.
-- **Other plugins can hook in**: two client services, `ttyConnbar` (connection-bar actions) and `ttyTerminal` (open a terminal in place); dsh-docker’s “Containers / Terminal” buttons go through them.
+- **Real PTY + WebGL rendering**: node-pty real PTY, so TUIs such as vim / htop / a dev server all run; multi-tab.
+- **Optional tmux session persistence**: reopen after a host restart / network blip and the scene is back; “command tabs” such as docker exec reopen automatically.
+- **Native ssh2 connections**: agent forwarding + host-key TOFU pinning, managed uniformly through the connection book; plus **SFTP** upload/download and **port forwarding** (-L / -R, reconnecting automatically after a drop).
+- **The agent reads the terminal at “command” granularity**: shell integration (OSC 133/7) lets `tty_capture{last}` / `tty_expect` read the output and exit code of “the previous command” instead of capturing the screen and guessing.
+- **Two client services exposed to other plugins**: `ttyConnbar` (connection-bar actions) and `ttyTerminal` (open a terminal in place); dsh-docker’s “Containers / Terminal” buttons go through them.
 
 ![Terminal panel: a multi-tab xterm modal, the toolbar has search/clear/copy/paste, and the title bar has the minimize “—” and close ✕](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty.png)
 

@@ -6,11 +6,11 @@
 
 ## Features
 
-- **Takes effect on save**: rewrites the managed block of `~/.dsh/cordis.patch.yml`; DSH’s HMR watcher reloads it automatically, and tools are registered to the model as `mcp__<server>__<tool>`.
-- **Both transports supported**: stdio (command / args / env / cwd) and streamable-http (url / headers, including SSE and session headers); values can be written as `js:` expressions, so secrets never land in the patch file.
-- **Connection Test**: the host speaks JSON-RPC directly (initialize → tools/list) without relying on the MCP SDK, returning protocol version / serverInfo / tool list / elapsed time.
-- **Visible status and conflicts**: reads liveness from the loader fiber (running / disabled / error / loading) and warns about serverName conflicts with external mcp-client instances; servers can be enabled / disabled (`disabled: true`) / edited / deleted.
-- **Self-describing to the agent**: injects a capability notice (systemPrompt section) so that when “MCP config / MCP server” comes up, the model knows it refers to this plugin.
+- **Hot-loaded on save**: rewrites the managed block of `~/.dsh/cordis.patch.yml`; DSH’s HMR watcher reloads it automatically, and tools are registered to the model as `mcp__<server>__<tool>`.
+- **stdio and streamable-http transports**: stdio (command / args / env / cwd) and streamable-http (url / headers, including SSE and session headers); values can be written as `js:` expressions, so secrets never land in the patch file.
+- **Connection Test without the MCP SDK**: the host speaks JSON-RPC directly (initialize → tools/list), returning protocol version / serverInfo / tool list / elapsed time.
+- **Liveness and name conflicts are visible**: reads liveness from the loader fiber (running / disabled / error / loading) and warns about serverName conflicts with external mcp-client instances; servers can be enabled / disabled (`disabled: true`) / edited / deleted.
+- **Capability notice injected into systemPrompt**: injects a capability notice (systemPrompt section) so that when “MCP config / MCP server” comes up, the model knows it refers to this plugin.
 
 ![MCP Server Configuration card: add / Connection Test / hot reload](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-mcp.png)
 
