@@ -1,0 +1,208 @@
+/**
+ * 卡片预览渲染器：把 client.js 的**真实标记与 CSS** 渲染成独立 HTML（可选再截图）。
+ *
+ * 为什么不用真实 GUI 截图：卡片要展开、面板要滚到位置，脚本化成本高；而 client.js 的
+ * CSS 与 React 元素树是可以离线渲染的——用一个最小 fake React 跑一遍组件（真实 hook
+ * 顺序、真实样式），把元素树序列化成 HTML，颜色用 @deepseek-ai/dsh-client-ui-theme 的
+ * 亮色 token 补齐，得到的就是卡片本身，而不是手写的近似 mock。
+ *
+ * 用法：
+ *   node packages/codegraph/scripts/preview-card.mjs            # 写 .preview/codegraph-card.html
+ *   node packages/codegraph/scripts/preview-card.mjs --png      # 再调本机 Chrome 渲染成 PNG
+ *
+ * 注意：无头 Chrome 在 DSH 文件沙箱里起不来（它要初始化自己的 sandbox），--png 需要在
+ * 普通终端里跑；也可以直接打开 HTML 手动截图。产物目录 .preview/ 已在 .gitignore 里。
+ */
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const here = dirname(fileURLToPath(import.meta.url))
+const pkgRoot = resolve(here, '..')
+const clientPath = join(pkgRoot, 'client.js')
+const outDir = join(pkgRoot, '.preview')
+const htmlPath = join(outDir, 'codegraph-card.html')
+const pngPath = join(outDir, 'codegraph-card.png')
+
+/** 预览用的假数据：跟随开启、会话目录与绑定路径不同，好让「跟随会话」这一行有内容。 */
+const RESPONSES = {
+  '/api/dsh-codegraph/default-path': {
+    ok: true,
+    defaultPath: '/Users/zz/code/pinned-app',
+    effectivePath: '/Users/zz/code/my-app',
+    sessionPath: '/Users/zz/code/my-app',
+    followSession: true,
+    manageEnabled: true,
+    announceToAgent: true,
+    usageGuidance: true,
+    cliAvailable: true,
+    command: 'codegraph',
+    indexed: true,
+    indexState: 'indexed',
+    mcp: { mode: 'own', cwd: '/Users/zz/code/my-app', note: '' },
+  },
+  '/api/dsh-codegraph/status': {
+    ok: true,
+    path: '/Users/zz/code/my-app',
+    status: {
+      initialized: true,
+      version: '1.5.0',
+      projectPath: '/Users/zz/code/my-app',
+      lastIndexed: '2026-09-15T02:21:26.167Z',
+      fileCount: 173,
+      nodeCount: 4553,
+      edgeCount: 21414,
+      dbSizeBytes: 32694272,
+      pendingChanges: { added: 2, modified: 5, removed: 0 },
+      languages: ['javascript', 'typescript', 'yaml'],
+    },
+  },
+}
+const SESSION = { byId: { s1: { cwd: '/Users/zz/code/my-app' } }, current: 's1' }
+
+/** 亮色主题 token（值取自 @deepseek-ai/dsh-client-ui-theme）。 */
+const TOKENS = `:root{
+  --dsw-font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  --dsw-alias-bg-layer-2:#fff; --dsw-alias-bg-layer-3:#fff;
+  --dsw-alias-border-l1:#0000000a; --dsw-alias-border-l2:#0000001a;
+  --dsw-alias-label-primary:#0f1115; --dsw-alias-label-secondary:#61666b; --dsw-alias-label-tertiary:#81858c;
+  --dsw-alias-label-dimmed:#e1e5ee; --dsw-alias-label-primary-foreground:#fff;
+  --dsw-alias-brand-primary:#0f1115; --dsw-alias-button-info-fill:#4176e6; --dsw-alias-button-info-hover:#5686fe;
+  --dsw-specific-input-major:#fff; --dsw-alias-interactive-bg-hover:#2631480f;
+  --dsw-alias-state-success-primary:#22c55e; --dsw-alias-state-error-primary:#ec1313;
+  --dsw-alias-state-warning-primary:#f59e0b; --dsw-alias-state-business-primary:#4176e6;
+}
+body{margin:0;padding:26px 30px 30px;background:#f5f6f7;font-family:var(--dsw-font-family);-webkit-font-smoothing:antialiased}
+.panel{max-width:820px;margin:0 auto}
+.panelTitle{color:#0f1115;font-size:18px;font-weight:700;margin:0 0 14px}
+ul{margin:0;padding:0}
+`
+
+/** 最小 fake React：够跑卡片用到的几个 hook，hook 顺序与真实一致。 */
+function makeReact() {
+  let hookIndex = 0
+  const states = []
+  let effects = []
+  return {
+    React: {
+      useState(init) {
+        const i = hookIndex++
+        if (!(i in states)) states[i] = typeof init === 'function' ? init() : init
+        return [states[i], (v) => { states[i] = typeof v === 'function' ? v(states[i]) : v }]
+      },
+      useMemo(fn) { hookIndex++; return fn() },
+      useCallback(fn) { hookIndex++; return fn },
+      useEffect(fn) { hookIndex++; effects.push(fn) },
+      useSyncExternalStore(_subscribe, get) { hookIndex++; return get() },
+    },
+    /** 开始一次渲染：重置 hook 游标与本次收集到的 effect。 */
+    start() { hookIndex = 0; effects = [] },
+    /** 取出并清空本次渲染收集到的 effect。 */
+    takeEffects() { const taken = effects; effects = []; return taken },
+  }
+}
+
+const VOID_TAGS = new Set(['input', 'br', 'img'])
+const escapeHtml = (value) => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+function toHtml(node) {
+  if (node === null || node === undefined || node === false || node === true) return ''
+  if (typeof node === 'string' || typeof node === 'number') return escapeHtml(node)
+  if (Array.isArray(node)) return node.map(toHtml).join('')
+  if (typeof node !== 'object') return ''
+  const { type, props = {} } = node
+  if (typeof type !== 'string') return toHtml(props.children)
+  const attrs = Object.entries(props)
+    .filter(([key, value]) => key !== 'children' && value !== undefined && value !== null && typeof value !== 'function' && typeof value !== 'object')
+    .map(([key, value]) => (key === 'className' ? ` class="${escapeHtml(value)}"` : ` ${key}="${escapeHtml(value)}"`))
+    .join('')
+  const inner = toHtml(props.children)
+  return VOID_TAGS.has(type) ? `<${type}${attrs}>` : `<${type}${attrs}>${inner}</${type}>`
+}
+
+async function renderCardHtml() {
+  const source = readFileSync(clientPath, 'utf8')
+  let capturedCss = ''
+  let Card = null
+  const fake = makeReact()
+
+  globalThis.fetch = async (url) => {
+    const key = Object.keys(RESPONSES).find((k) => String(url).startsWith(k))
+    return { ok: true, status: 200, json: async () => (key === undefined ? {} : RESPONSES[key]) }
+  }
+  globalThis.document = {
+    getElementById: () => null,
+    createElement: () => {
+      const el = { id: '', textContent: '', remove() {} }
+      // ensureStyle() 会把真实 CSS 写进这个 style 元素——顺路把它捞出来
+      queueMicrotask(() => { capturedCss = el.textContent })
+      return el
+    },
+    head: { appendChild() {} },
+  }
+  globalThis.window = { __ModuleLoader__: { load: (mod) => { globalThis.__codegraphModule = mod } } }
+  const requireShim = (name) => {
+    if (name === 'react') return fake.React
+    if (name === 'react/jsx-runtime') return { jsx: (type, props) => ({ type, props: props ?? {} }), jsxs: (type, props) => ({ type, props: props ?? {} }) }
+    throw new Error('unexpected require: ' + name)
+  }
+
+  eval(source)
+  const exports = globalThis.__codegraphModule.factory(requireShim)
+  exports.apply({
+    sessions: { list: { subscribe: () => () => {}, getSnapshot: () => SESSION } },
+    slots: { inject: (_ns, cb) => cb(), register: (_config, component) => { Card = component } },
+    effect: (fn) => fn(),
+  })
+  if (Card === null) throw new Error('卡片组件未注册')
+
+  const flatten = (node, acc = []) => {
+    if (node === null || node === undefined || typeof node !== 'object') return acc
+    if (Array.isArray(node)) { for (const child of node) flatten(child, acc); return acc }
+    if (node.type !== undefined) acc.push(node)
+    flatten(node.props?.children, acc)
+    return acc
+  }
+
+  // 第一次渲染：卡片折叠
+  fake.start()
+  const collapsed = Card()
+  // 展开卡片（点表头）后再渲染一次，让 body 出现并收集它的 effect
+  flatten(collapsed).find((n) => n.props?.className === 'cg_cardHeader').props.onClick()
+  fake.start()
+  let tree = Card()
+  for (const fn of fake.takeEffects()) {
+    const dispose = fn()
+    if (typeof dispose === 'function') dispose()
+  }
+  // 等 effect 里的 fetch 落地，再渲染出有数据的版本
+  await new Promise((r) => setTimeout(r, 30))
+  fake.start()
+  tree = Card()
+
+  return `<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"><style>${TOKENS}${capturedCss}</style></head>
+<body><div class="panel"><h1 class="panelTitle">设置 · 插件</h1><ul>${toHtml(tree)}</ul></div></body></html>`
+}
+
+const html = await renderCardHtml()
+mkdirSync(outDir, { recursive: true })
+writeFileSync(htmlPath, html)
+console.log('预览 HTML:', htmlPath)
+
+if (process.argv.includes('--png')) {
+  const chrome = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+  if (!existsSync(chrome)) {
+    console.log('未找到 Google Chrome，跳过 PNG；HTML 已生成，可在浏览器里打开截图。')
+  } else {
+    // 老版 headless + virtual-time-budget 是这里唯一能稳定退出的组合；
+    // --no-sandbox 是因为在受限环境里 Chrome 自己的 sandbox 起不来。
+    execFileSync(chrome, [
+      '--headless', '--disable-gpu', '--no-sandbox', '--disable-breakpad',
+      `--user-data-dir=${join(outDir, 'chrome-profile')}`,
+      '--virtual-time-budget=3000', '--window-size=860,600',
+      `--screenshot=${pngPath}`, `file://${htmlPath}`,
+    ], { stdio: 'inherit' })
+    console.log('截图 PNG:', pngPath)
+  }
+}

@@ -32,6 +32,14 @@ export interface Config {
      */
     mcpIntegration?: boolean;
     /**
+     * 是否让托管行的 cwd 跟随当前活动会话的项目（默认开）。
+     *
+     * 开：会话切到某个**已索引**项目时，托管行 cwd 自动对齐它；会话目录没有索引时
+     * 回落到 defaultPath。关：始终用 defaultPath（「设为默认项目」会把这一项关掉，
+     * 因为那是一次显式指定）。
+     */
+    followSession?: boolean;
+    /**
      * 查询类命令（status/query/callers/callees/impact/node）的超时毫秒数。
      * 默认 60000。超大仓库上 `status` 的首次数也会变慢，可按需调大。
      */
@@ -76,6 +84,14 @@ export interface McpSyncDecision {
     targetCwd: string;
     /** 联动开关：false 时撤销本插件自己的托管行。 */
     manageEnabled: boolean;
+    /**
+     * 只读快照：不落盘、也不要「如果写会写成什么」的推测状态。
+     *
+     * 卡片的状态行问的是「盘上现在是什么」，不是「下次同步会变成什么」。带上这个标志
+     * 后，本该新建托管行的分支返回 mode=none（文件里确实还没有行），避免出现「什么都没
+     * 写，卡片却显示已自动托管」的幻影状态。
+     */
+    dryRun?: boolean;
 }
 export interface McpSyncStatus {
     /** own=本插件区块托管；dsh-mcp=复用 MCP 卡片区块的行；external=区块外有手工行，跳过；none=无托管行。 */
