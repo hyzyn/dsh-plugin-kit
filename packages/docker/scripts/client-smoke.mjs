@@ -94,6 +94,14 @@ const ReactStub = {
   useEffect: () => {},
   useRef: (initial) => ({ current: initial }),
   useCallback: (fn) => fn,
+  /*
+   * 上下文（S3 的「面板是否可见」用）：桩不做真实渲染，所以 useContext 只能拿到
+   * createContext 的**默认值**。对本文件够用——既有用例全走「默认可见」的模态路径，
+   * 而门控真正的行为（visible=false → 断流）发生在 effect 里，本就不在这个桩的射程内，
+   * 那条路径由手工验收覆盖。
+   */
+  createContext: (initial) => ({ __context: true, initial }),
+  useContext: (context) => (context === null || context === undefined ? undefined : context.initial),
 }
 const jsx = (type, props, key) => ({ type, props: { ...(props ?? {}), key } })
 const jsxs = (type, props, key) => ({ type, props: { ...(props ?? {}), key } })
