@@ -88,6 +88,15 @@ export declare function streamBudgetError(target: string, busy: number, max?: nu
  */
 export declare function describeExecError(message: string): string;
 /**
+ * 这条 ssh2 错误是不是**传输层 / 连接层**的（而不是命令自己失败）。
+ *
+ * 为什么要分类：池里的连接可能已经死了（远端 sshd 重启、网络抖动、sshd 踢掉空闲连接），
+ * 而 `acquire()` 复用 memoized 的 `ready`、不会每次探活。这种时候唯一正确的动作是丢掉
+ * 这条连接、重连一次再试；反过来，「命令返回非零」「镜像不存在」这类业务失败**绝不能**
+ * 触发重连——那会把一次普通错误变成两条命令。
+ */
+export declare function isTransportError(message: string): boolean;
+/**
  * 空闲回收判定：busy>0 的连接上挂着长流（docker logs --follow 可以几小时不结束），
  * 期间 lastUsed 不会刷新——若只看 idle 就会把正在推送的流掐断，必须先看 busy。
  * 抽成纯函数便于回归（sweeper 本体依赖定时器，难以直接驱动）。
@@ -117,6 +126,13 @@ export declare class RemoteExec {
      */
     stream(spec: SshSpec, argv: readonly string[], handlers: StreamHandlers, signal?: AbortSignal): Promise<StreamResult>;
     private ensureSweeper;
+    /**
+     * 开一条 exec channel；**传输层**错误时丢掉连接、重连一次（见 `isTransportError`）。
+     *
+     * 只重试一次：重连之后还报同样的错，多半不是连接的问题（远端 MaxSessions 真满了、
+     * 或目标本身不可达），再试只是把失败拖长、还会多压一条命令过去。
+     */
+    private openChannel;
     private acquire;
     private dropConn;
 }
