@@ -181,7 +181,7 @@ await test('factory 只 require 平台 seed 提供的模块', () => {
 
 /** 造一个最小 client ctx：slots 恒有，ttyConnbar 可选。 */
 function makeClientCtx(options = {}) {
-  const state = { cards: [], injected: [], connbarFactory: null, renders: 0, unmounted: 0, execCalls: [], mountCalls: [], paneCalls: [] }
+  const state = { cards: [], injected: [], connbarFactory: null, renders: 0, unmounted: 0, execCalls: [], mountCalls: [], paneCalls: [], openTabs: [] }
   const ctx = {
     slots: {
       inject: (slot, callback) => {
@@ -249,6 +249,15 @@ function makeClientCtx(options = {}) {
             list: { getSnapshot: () => ({ current: 'session-smoke' }) },
             scope: () => ({ get: (name) => (name === 'conversation' ? conversation : undefined) }),
           },
+        })
+      }
+      // 默认**不提供**右侧栏服务，于是缺省路径仍是模态——这与「老版本 DSH」同形，
+      // 既有用例因此不必改。传 sidebarRightTabs: true 才模拟「有标签宿主」的新宿主。
+      if (names.includes('sidebarRightTabs') && options.sidebarRightTabs === true) {
+        callback({
+          slots: ctx.slots,
+          sidebarRightTabs: { register: () => () => {} },
+          sidebarRight: { openTab: (kind, openOptions) => { state.openTabs.push({ kind, options: openOptions ?? {} }) } },
         })
       }
       return () => {}
@@ -385,6 +394,46 @@ await test('缓存尚未就绪时点击：现场重拉并锁定当前会话对�
   const panel = renders[renders.length - 1]
   assert.equal(panel.props.initialTarget, 'prod', '应锁定当前会话对应的目标')
   assert.equal(panel.props.sessionHint, undefined, '命中目标时不应再带未配置提示')
+})
+
+await test('承载分发（S2）：有右侧栏服务时入口开标签（带目标），不再弹模态', async () => {
+  let reg = null
+  const run = new Function('window', 'document', 'MutationObserver', 'fetch', code)
+  run({ __ModuleLoader__: { load: (entry) => { reg = entry } } }, documentStub, class { observe() {} disconnect() {} }, fetchStub)
+  const exports_ = reg.factory((spec) => SEED[spec])
+  const { ctx, state } = makeClientCtx({ ttyConnbar: true, sidebarRightTabs: true })
+  exports_.apply(ctx)
+
+  const buttons = []
+  state.connbarFactory({ spec: { t: 'ssh', name: 'prod-a', host: '10.0.0.5', port: 2222 }, bookName: 'prod-a', addAction: (icon, label, title, onClick) => buttons.push({ title, onClick }) })
+  const before = renders.length
+  buttons[0].onClick()
+  await new Promise((resolve) => setTimeout(resolve, 40))
+  assert.equal(state.openTabs.length, 1, '有右侧栏服务时应开标签')
+  assert.equal(state.openTabs[0].kind, 'docker', 'kind 必须与注册的 kind 一致')
+  assert.equal(state.openTabs[0].options.params.target, 'prod', '目标应随 navigation params 带进标签')
+  assert.equal(renders.length, before, '开标签时不应再渲染模态')
+})
+
+await test('承载分发（S2）：localStorage 置 modal 时退回模态（灰度回滚开关）', async () => {
+  let reg = null
+  const run = new Function('window', 'document', 'MutationObserver', 'fetch', code)
+  // 偏好读的是 window.localStorage；harness 的 window 桩默认没有它（越界读取会被 try/catch 吃掉）
+  run({
+    __ModuleLoader__: { load: (entry) => { reg = entry } },
+    localStorage: { getItem: () => 'modal' },
+  }, documentStub, class { observe() {} disconnect() {} }, fetchStub)
+  const exports_ = reg.factory((spec) => SEED[spec])
+  const { ctx, state } = makeClientCtx({ ttyConnbar: true, sidebarRightTabs: true })
+  exports_.apply(ctx)
+
+  const buttons = []
+  state.connbarFactory({ spec: { t: 'ssh', name: 'prod-a', host: '10.0.0.5', port: 2222 }, bookName: 'prod-a', addAction: (icon, label, title, onClick) => buttons.push({ title, onClick }) })
+  const before = renders.length
+  buttons[0].onClick()
+  await new Promise((resolve) => setTimeout(resolve, 40))
+  assert.equal(state.openTabs.length, 0, '置 modal 后不应开标签')
+  assert.ok(renders.length > before, '置 modal 后应走模态（渲染面板）')
 })
 
 await test('注入清单快照：本插件注入过的服务全集（加可选注入时只改这一处）', () => {
