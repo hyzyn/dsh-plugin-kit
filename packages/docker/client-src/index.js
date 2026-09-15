@@ -390,10 +390,30 @@ const ICON_VOLUME =
 const PICK_SOFT_MAX = 6
 /** 硬上限：再多就置灰——同源长连接排队后，聚合流反而会「看起来卡住」。 */
 const PICK_MAX = 8
+/**
+ * SSH 目标的硬上限：一个目标只维持**一条** TCP 连接，通道额度（OpenSSH `MaxSessions`
+ * 默认 10）要同时装下聚合流、统计流、事件流与「刷新列表」这类短命令。留出余量之后
+ * 聚合最多 6 条——正好等于软提示线，于是 SSH 上不再有「可点但已偏多」的区间。
+ * 本地目标走子进程，没有这个约束，仍是 {@link PICK_MAX}。
+ */
+const PICK_MAX_SSH = 6
+
+/** 目标是不是 SSH —— 决定聚合流的上限。读模块级 configCache，任何组件都能问。 */
+function isSshTarget(name) {
+  const targets = configCache !== null && Array.isArray(configCache.targets) ? configCache.targets : []
+  return targets.some((item) => item.name === name && item.kind === 'ssh')
+}
 
 /** 由勾选数量推导「聚合日志」按钮是否可用 + 操作条提示文案。 */
-function pickDecide(count) {
-  if (count > PICK_MAX) return { canRun: false, hint: '最多 ' + String(PICK_MAX) + ' 个容器，浏览器并发长连接有限制' }
+function pickDecide(count, ssh = false) {
+  const max = ssh === true ? PICK_MAX_SSH : PICK_MAX
+  if (count > max) {
+    return {
+      canRun: false,
+      hint: '最多 ' + String(max) + ' 个容器'
+        + (ssh === true ? '（SSH 目标上一条连接要同时装实时流与刷新等短命令）' : '，浏览器并发长连接有限制'),
+    }
+  }
   if (count > PICK_SOFT_MAX) return { canRun: true, hint: '连接数较多，浏览器并发长连接有限制' }
   if (count < 2) return { canRun: false, hint: count === 0 ? '' : '至少选择 2 个容器' }
   return { canRun: true, hint: '' }
@@ -3536,7 +3556,7 @@ window.__ModuleLoader__.load({
           ...presets.filter((preset) => preset.count > 0).map((preset) => jsx('button', {
             type: 'button',
             className: 'dk_chip',
-            title: '在当前筛选结果里勾选「' + preset.label + '」的容器（最多 ' + String(PICK_MAX) + ' 个流）'
+            title: '在当前筛选结果里勾选「' + preset.label + '」的容器（最多 ' + String(props.max ?? PICK_MAX) + ' 个流）'
               + (preset.over > 0 ? '；另有 ' + String(preset.over) + ' 个超出上限不会选中' : ''),
             onClick: () => props.onPreset(preset.key),
             children: preset.label + ' ' + String(preset.count),
@@ -4701,18 +4721,21 @@ window.__ModuleLoader__.load({
        * 不算数了，不至于出现「已选 3 个」但只连出 2 条流。
        */
       const aggregateItems = pickItems(containers, pickedIds)
-      const pickInfo = pickDecide(aggregateItems.length)
+      // SSH 目标上一条连接要同时装下所有流与短命令，所以聚合上限更紧（见 PICK_MAX_SSH）
+      const pickTargetIsSsh = isSshTarget(target)
+      const pickMax = pickTargetIsSsh ? PICK_MAX_SSH : PICK_MAX
+      const pickInfo = pickDecide(aggregateItems.length, pickTargetIsSsh)
       /**
        * 条件选择的基准容器 = 第一个被勾选的容器（同镜像 / 同项目以它为准）。
        * 计数按 aggregateItems 的口径算，避免列表刷新对账前拿到已消失的容器。
        */
       const pickBase = aggregateItems.length > 0 ? aggregateItems[0] : null
-      const pickPresetList = pickPresetCounts(filtered, pickedIds, pickBase, PICK_MAX)
+      const pickPresetList = pickPresetCounts(filtered, pickedIds, pickBase, pickMax)
       const applyPreset = (key) => {
-        const next = pickApply(filtered, pickedIds, key, pickBase, PICK_MAX)
+        const next = pickApply(filtered, pickedIds, key, pickBase, pickMax)
         setPickedIds(next.ids)
         if (next.skipped > 0) {
-          setPickNotice('已新增 ' + String(next.added) + ' 个，另有 ' + String(next.skipped) + ' 个超出上限（最多 ' + String(PICK_MAX) + ' 个流）未选')
+          setPickNotice('已新增 ' + String(next.added) + ' 个，另有 ' + String(next.skipped) + ' 个超出上限（最多 ' + String(pickMax) + ' 个流）未选')
         } else if (next.added === 0) {
           setPickNotice('没有可新增的容器（已被勾选或不在当前筛选结果里）')
         } else {
@@ -5012,6 +5035,7 @@ window.__ModuleLoader__.load({
               count: aggregateItems.length,
               info: pickInfo,
               presets: pickPresetList,
+              max: pickMax,
               notice: pickNotice,
               onPreset: applyPreset,
               onClear: () => { setPickedIds([]); setPickNotice('') },
@@ -5646,6 +5670,8 @@ window.__ModuleLoader__.load({
      */
     exports.__pick = {
       MAX: PICK_MAX,
+      /** SSH 目标的上限（= MAX 之外更紧的一档）：一条连接要同时装实时流与短命令。 */
+      SSH_MAX: PICK_MAX_SSH,
       PRESETS: PICK_PRESETS,
       presetCounts: pickPresetCounts,
       apply: pickApply,
