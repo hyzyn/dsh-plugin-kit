@@ -5678,6 +5678,14 @@ window.__ModuleLoader__.load({
      * inject / apply，多出来的键不会被消费。选择态的判定与对账放在这里，才能不起
      * 浏览器验证「几个才能点 / 超限怎么提示 / 刷新后怎么剔除」。
      */
+    /*
+     * 承载分发的测试缝：分发本身在闭包里（由页边栏入口的点击触发），而 DOM 桩
+     * `querySelector` 返回 null、点不到那个入口，所以把入口函数本身挂出来。
+     */
+    exports.__carrier = {
+      open: openContainerPanel,
+      preference: carrierPreference,
+    }
     exports.__pick = {
       MAX: PICK_MAX,
       /** SSH 目标的上限（= MAX 之外更紧的一档）：一条连接要同时装实时流与短命令。 */
@@ -5846,7 +5854,16 @@ window.__ModuleLoader__.load({
             void (async () => {
               const resolved = await resolveTargetForSession(spec, bookName)
               const rawPort = Number(spec.port)
-              openContainerPanel({
+              /*
+               * 这里**刻意不走 openContainerPanel() 的标签分发**：这个按钮长在 tty 终端
+               * 面板的连接栏上，也就是说点击时那个弹窗一定开着且盖满视口——开右侧栏标签
+               * 会被弹窗整个挡住，用户会觉得「点了没反应」。openPanel() 本来就会优先停靠
+               * 到 tty 面板右侧的 dock，那才是这个入口该有的形态。
+               *
+               * 于是规则是「**入口决定承载**」：框架侧边栏点 → 右侧栏标签（与对话同屏）；
+               * 终端弹窗里点 → 终端右侧 dock（与终端同屏）。
+               */
+              openPanel({
                 target: resolved ?? '',
                 sessionHint: resolved === undefined
                   ? { host: typeof spec.host === 'string' ? spec.host : '', port: Number.isInteger(rawPort) && rawPort > 0 ? rawPort : 22, book: bookName }
