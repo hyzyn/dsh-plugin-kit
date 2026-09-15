@@ -887,6 +887,16 @@
   padding: var(--dk-gap-xs) 92px var(--dk-gap-xs) 0;
 }
 
+/**
+ * 同一条过滤行挂在两处，伸缩轴不同，必须分开对待：
+ *   - 单容器日志：它在 `.dk_tabs`（横向行）里，`flex: 1 1 auto` 是「横向占满剩余宽度」，正确；
+ *   - 聚合日志（ComposeLogs）：它是 `.dk_logs`（纵向 flex）的直接子项，此时 `flex: 1 1 auto`
+ *     会变成**纵向撑高**——过滤到少量行时日志体基准高度变小、剩余空间出现，工具条与
+ *     `.dk_logBody` 各分一半，整条工具条长成两百多像素的横条（输入框垂直居中、状态行被
+ *     顶到下面），也就是「输入文字后界面变形」。工具条是固定高度的一行，不该参与纵向伸缩。
+ */
+.dk_logs > .dk_filterBar { flex: 0 0 auto; }
+
 .dk_tab {
   height: var(--dk-h-lg);
   padding: 0 var(--dk-gap-md);
