@@ -203,3 +203,56 @@ describe('syncManagedMcpRow', () => {
     expect(outcome.status).toMatchObject({ mode: 'own', cwd: indexedDir, indexed: false, indexState: 'not-a-project' })
   })
 })
+
+describe('行尾（Windows CRLF 补丁文件）', () => {
+  /** 一份 CRLF 的补丁文本（Windows 编辑器写过的 cordis.patch.yml）。 */
+  const crlfBlock = (cwd: string) => [
+    '# dsh home patch layer',
+    MCP_MARK_START,
+    '- insert:',
+    '    - id: mcp-cg',
+    "      name: '@deepseek-ai/dsh-mcp-client'",
+    '      config:',
+    '        serverName: codegraph',
+    `        cwd: ${cwd}`,
+    MCP_MARK_END,
+    '',
+  ].join('\r\n')
+
+  it('CRLF 文件重写后不产生混合行尾（标记行 / 块体 / 结束标记一致）', () => {
+    const outcome = syncManagedMcpRow(crlfBlock('/old/path').split('\n'), decision(indexedDir))
+    expect(outcome.changed).toBe(true)
+    // 不出现 LF-only 的内容行：非空行一律带 \r（结尾的空串是文件末尾换行占位）
+    for (const line of outcome.lines) {
+      if (line !== '') expect(line.endsWith('\r')).toBe(true)
+    }
+    // 重写已有区块不改变文件行数（旧实现恒定补结尾空行，会多出一行）
+    expect(outcome.lines.length).toBe(crlfBlock('/old/path').split('\n').length)
+    // 不能写出 \r\r（标记行原样回填 + 补行尾时会双写）
+    expect(outcome.lines.some((line) => line.includes('\r\r'))).toBe(false)
+    expect(outcome.lines.join('\n')).toContain(`cwd: ${indexedDir}\r`)
+  })
+
+  it('CRLF 文件二次同步幂等', () => {
+    const first = syncManagedMcpRow(crlfBlock('/old/path').split('\n'), decision(indexedDir))
+    const second = syncManagedMcpRow(first.lines, decision(indexedDir))
+    expect(second.changed).toBe(false)
+    expect(second.lines).toBe(first.lines)
+  })
+
+  it('LF 文件不引入 \r（既有行为不变）', () => {
+    const lines = ['# dsh home patch layer', MCP_MARK_START, '- insert: []', MCP_MARK_END, '']
+    const outcome = syncManagedMcpRow(lines, decision(indexedDir))
+    expect(outcome.changed).toBe(true)
+    expect(outcome.lines.some((line) => line.includes('\r'))).toBe(false)
+  })
+
+  it('CRLF + 缺结束标记的损坏区块：自愈后不出现孤立 \r 行', () => {
+    const broken = ['# dsh home patch layer', MCP_MARK_START, '- insert: []', ''].join('\r\n')
+    const outcome = syncManagedMcpRow(broken.split('\n'), decision(indexedDir))
+    expect(outcome.changed).toBe(true)
+    expect(outcome.lines.join('\n')).toContain('# --- end dsh-codegraph mcp managed ---\r')
+    // 缺结束标记时 markerEnd 为空串，不能被补成一个只含 \r 的行
+    expect(outcome.lines.some((line) => line === '\r')).toBe(false)
+  })
+})

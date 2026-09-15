@@ -59,6 +59,11 @@ Searched for a .codegraph/ directory starting from: /Users/you
   - 为什么不写上上限 `<0.2.0`：解析器只支持单个 `>=` 比较符，两段式范围（`>=0.1.2-rc.1 <0.2.0`）整体会被读成「无法验证」，而按该模块的契约，已声明却无法验证是 fail-closed——更新会被直接拦下，比不声明更糟。跨到 0.2 线时人工重新复验，再决定是否放宽下限。
 - **codegraph CLI**：已在 `1.5.0` 上实测；用到的子命令是 `status` / `query` / `callers` / `callees` / `impact` / `node` / `sync` / `index`，旗标逐个核对过。`codegraph serve --mcp` 仍可用（顶层 help 不列，`codegraph serve --help` 在），托管行无需改动。
 - **浏览器半体的 URL 形态**：当前 DSH 走 client-modules 的 combo 路由，单包直链 `/plugins/@hyzyn/dsh-codegraph/client.js` 已不再直接可用；浏览器只用 boot graph（`window.__DSH_BOOT__`）下发的 `/plugins/??<id>/client.js&rev=…`，插件侧无需改动。
+- **操作系统**：Windows / macOS / Linux 都按同一份代码走，CI 已是三平台矩阵（`pnpm -r build` + `typecheck` + `test`）。
+  - **Windows**：CLI 走 `%COMSPEC% /d /s /c` + cmd 转义（npm / pnpm 全局安装只给 `.cmd` shim，`execFile` 直连会 `ENOENT`）；超时用 `taskkill /pid <pid> /T /F` **连 shim 里的孙进程一起收**（只杀 cmd.exe 的话大仓库 `index` 会继续跑完）；补丁文件重写沿用原文件行尾（CRLF 文件不会被写成混合行尾，重写也不改变行数）。
+  - **PATH**：探测与调用都用插件配置的 `command`（默认 `codegraph`，走 PATH）。从 Dock / 开始菜单这类**不继承 shell 环境**的入口启动宿主时，PATH 里可能没有 CLI——此时两段 systemPrompt 不注入、卡片点不出可用命令，把 `command` 写成绝对路径即可（卡片会直接报出被探测的命令名）。
+  - **MCP 行**：`dsh-mcp-client` 用官方 SDK 的 `StdioClientTransport`（SDK 依赖 `cross-spawn`），Windows 上 `.cmd` shim 由它自己解析，托管行无需平台分支。
+  - 上游 CLI 本身三平台 × x64/arm64 官方支持（自带 Node 运行时）；本插件侧的索引判定只看 `.codegraph/` 下的 `*.db`，不写死库文件名，上游改名也不受影响。
 
 ## 开发
 

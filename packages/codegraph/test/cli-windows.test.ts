@@ -12,7 +12,7 @@
  * 验证覆盖，见 PR 说明。
  */
 import { describe, expect, it } from 'vitest'
-import { escapeArgument, escapeCommand, windowsCommandLine } from '../src/index.js'
+import { escapeArgument, escapeCommand, taskkillArgs, windowsCommandLine } from '../src/index.js'
 
 describe('escapeCommand', () => {
   it('裸命令名原样保留', () => {
@@ -96,3 +96,9 @@ describe('windowsCommandLine', () => {
 function syncArgsForTest(): string[] {
   return ['sync', '--', 'D:\\dev\\newbi']
 }
+
+describe('taskkillArgs', () => {
+  it('/T 连子孙进程一起收：超时时 shim 里真正的 CLI 是 cmd.exe 的孙进程', () => {
+    expect(taskkillArgs(4321)).toEqual(['/pid', '4321', '/T', '/F'])
+  })
+})

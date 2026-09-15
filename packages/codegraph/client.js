@@ -148,6 +148,7 @@ window.__ModuleLoader__.load({
             announceToAgent: data.announceToAgent === true,
             usageGuidance: data.usageGuidance === true,
             cliAvailable: data.cliAvailable,
+            command: typeof data.command === 'string' ? data.command : '',
           })
         } catch {
           setMcp(null)
@@ -307,7 +308,8 @@ window.__ModuleLoader__.load({
       }, [defaultInfo, status, effectivePath])
 
       const cliWarning = defaultInfo && defaultInfo.cliAvailable === false
-        ? '⚠ 未检测到可执行的 codegraph CLI（`--version` 失败）：systemPrompt 的能力公告与使用指引都不会注入，卡片里的状态 / 搜索 / sync / 重建索引也会报错。装好 CLI 后刷新本卡片即可恢复。'
+        ? '⚠ 探测不到可执行的 CLI 命令 ' + (defaultInfo.command || 'codegraph') + '（`--version` 失败）：systemPrompt 的能力公告与使用指引都不会注入，卡片里的状态 / 搜索 / sync / 重建索引也会报错。'
+          + '常见原因是宿主没有继承 shell 的 PATH（从 Dock / 开始菜单启动时）——把插件配置里的 command 写成该 CLI 的绝对路径即可；已装好 CLI 时刷新本卡片重试。'
         : ''
 
       const statusText = status ? JSON.stringify(status, null, 2) : ''
