@@ -1,26 +1,38 @@
 /**
- * @hyzyn/dsh-codegraph — MCP 托管行同步（syncManagedMcpRow）的回归测试。
+ * @hyzyn/dsh-codegraph — MCP 托管行同步（syncManagedMcpRow）与索引判定的回归测试。
  *
  * 纯函数、不碰磁盘：决策矩阵覆盖「无托管行 / 本插件区块 / 复用 MCP 卡片区块 /
- * 区块外手工行 / 联动关闭」五种走向。indexed 由 targetCwd 下是否存在 .codegraph/
- * 决定，用临时目录真实构造两种目标路径。
+ * 区块外手工行 / 联动关闭」五种走向。indexed 由 targetCwd 下是否有**真索引库**
+ * 决定，用临时目录真实构造三种目标路径：
+ *   - 已索引（.codegraph/codegraph.db）；
+ *   - 完全没有 .codegraph/；
+ *   - 有 .codegraph/ 但没有索引库 —— 家目录形状（~/.codegraph 是 codegraph CLI 自己的
+ *     安装目录），旧实现只看目录存在，把家目录当成已索引项目（P0 假阳性）。
  */
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
-import { syncManagedMcpRow } from '../src/index.js'
+import { indexState, syncManagedMcpRow } from '../src/index.js'
 import type { McpSyncDecision } from '../src/index.js'
 
-/** 已索引目录（存在 .codegraph/）。 */
+/** 已索引目录（.codegraph/ 里有索引库）。 */
 const indexedDir = mkdtempSync(join(tmpdir(), 'dsh-cg-indexed-'))
 mkdirSync(join(indexedDir, '.codegraph'))
-/** 未索引目录。 */
+writeFileSync(join(indexedDir, '.codegraph', 'codegraph.db'), '')
+/** 完全没有索引目录的项目。 */
 const plainDir = mkdtempSync(join(tmpdir(), 'dsh-cg-plain-'))
+/** 家目录形状：.codegraph/ 是 codegraph CLI 的安装目录，没有索引库。 */
+const cliHomeDir = mkdtempSync(join(tmpdir(), 'dsh-cg-home-'))
+mkdirSync(join(cliHomeDir, '.codegraph', 'versions', 'v1.5.0'), { recursive: true })
+mkdirSync(join(cliHomeDir, '.codegraph', 'bundles'))
+writeFileSync(join(cliHomeDir, '.codegraph', 'codegraph.lock'), '')
+writeFileSync(join(cliHomeDir, '.codegraph', 'daemon.pid'), '')
 
 afterAll(() => {
   rmSync(indexedDir, { recursive: true, force: true })
   rmSync(plainDir, { recursive: true, force: true })
+  rmSync(cliHomeDir, { recursive: true, force: true })
 })
 
 function decision(targetCwd: string, manageEnabled = true): McpSyncDecision {
@@ -64,7 +76,8 @@ describe('syncManagedMcpRow', () => {
     expect(outcome.changed).toBe(false)
     expect(outcome.lines).toBe(input)
     expect(outcome.status.mode).toBe('none')
-    expect(outcome.status.note).toContain('缺少 .codegraph/')
+    expect(outcome.status.note).toContain('没有 .codegraph/ 索引')
+    expect(outcome.status.indexState).toBe('missing')
   })
 
   it('重复同步幂等：第二次 changed=false 且内容不变', () => {
@@ -79,6 +92,7 @@ describe('syncManagedMcpRow', () => {
     const first = syncManagedMcpRow([''], decision(indexedDir))
     const other = mkdtempSync(join(tmpdir(), 'dsh-cg-other-'))
     mkdirSync(join(other, '.codegraph'))
+    writeFileSync(join(other, '.codegraph', 'codegraph.db'), '')
     try {
       const updated = syncManagedMcpRow(first.lines, decision(other))
       expect(updated.changed).toBe(true)
@@ -95,7 +109,8 @@ describe('syncManagedMcpRow', () => {
     const outcome = syncManagedMcpRow(first.lines, decision(plainDir))
     expect(outcome.changed).toBe(false)
     expect(outcome.status.mode).toBe('own')
-    expect(outcome.status.note).toContain('缺少 .codegraph/')
+    expect(outcome.status.indexState).toBe('missing')
+    expect(outcome.status.note).toContain('没有 .codegraph/ 索引')
   })
 
   it('联动关闭：撤销本插件托管行，mode 归 none', () => {
@@ -150,6 +165,41 @@ describe('syncManagedMcpRow', () => {
 
     const notIndexed = syncManagedMcpRow(mcpBlock('/old/path'), decision(plainDir))
     expect(notIndexed.changed).toBe(false)
-    expect(notIndexed.status.note).toContain('缺少 .codegraph/')
+    expect(notIndexed.status.indexState).toBe('missing')
+    expect(notIndexed.status.note).toContain('没有 .codegraph/ 索引')
+  })
+
+  it('索引判定：索引库 / 无目录 / 只有安装目录三种形态', () => {
+    expect(indexState(indexedDir)).toBe('indexed')
+    expect(indexState(plainDir)).toBe('missing')
+    expect(indexState(cliHomeDir)).toBe('not-a-project')
+  })
+
+  it('家目录形状 + 无托管行：不建行，且提示点名「不是 codegraph 项目」', () => {
+    const input = ['# dsh home patch layer', '']
+    const outcome = syncManagedMcpRow(input, decision(cliHomeDir))
+    expect(outcome.changed).toBe(false)
+    expect(outcome.lines).toBe(input)
+    expect(outcome.status.mode).toBe('none')
+    expect(outcome.status.indexed).toBe(false)
+    expect(outcome.status.indexState).toBe('not-a-project')
+    expect(outcome.status.note).toContain('不是 codegraph 项目')
+    expect(outcome.status.note).toContain('~/.codegraph')
+  })
+
+  it('家目录形状 + 复用 MCP 区块：不把 cwd 改成没有索引库的目录', () => {
+    const outcome = syncManagedMcpRow(mcpBlock('/old/path'), decision(cliHomeDir))
+    expect(outcome.changed).toBe(false)
+    expect(outcome.status).toMatchObject({ mode: 'dsh-mcp', cwd: '/old/path', indexed: false, indexState: 'not-a-project' })
+    expect(outcome.status.note).toContain('不是 codegraph 项目')
+    expect(outcome.lines.join('\n')).toContain('cwd: /old/path')
+  })
+
+  it('家目录形状 + 已有本插件托管行：保持原 cwd 不发新行', () => {
+    const first = syncManagedMcpRow([''], decision(indexedDir))
+    const outcome = syncManagedMcpRow(first.lines, decision(cliHomeDir))
+    expect(outcome.changed).toBe(false)
+    expect(outcome.lines).toBe(first.lines)
+    expect(outcome.status).toMatchObject({ mode: 'own', cwd: indexedDir, indexed: false, indexState: 'not-a-project' })
   })
 })

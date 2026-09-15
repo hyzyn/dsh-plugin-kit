@@ -206,3 +206,203 @@ describe('宿主路由（stub CLI）', () => {
     expect(wrongMethod.status).toBe(405)
   })
 })
+
+/* ------------------------------------------------------------------ *
+ * 提示词注入门禁的测试脚手架
+ *
+ * 假上下文照抄真实 cordis 4.0.2 的形状：`ctx.events` 就是 Events 服务本身
+ * （own keys 只有 ctx / _hooks），`on` 挂在它自己身上。插件里那段
+ * `const events = settingsCtx` + `events.events.on('settings/updated', …)` 读的
+ * 正是这个服务（变量名就叫 events，容易看岔），所以订阅在这里能被真实覆盖。
+ * ------------------------------------------------------------------ */
+
+interface FakeSection {
+  name: string
+  order?: number
+  text: string
+}
+
+interface FullMount {
+  routes: Map<string, CapturedRoute>
+  sections: Map<string, FakeSection>
+  settingsStore: Record<string, unknown>
+  updates: Record<string, unknown>[]
+  /** 子 fiber 里被吞掉的异常（真实 cordis 也会吞，但要能断言「没有异常」）。 */
+  errors: unknown[]
+  /** 手工派发 settings/updated（模拟宿主 / 其它界面写 settings）。 */
+  dispatch: (ns: string, next: Record<string, unknown>) => void
+}
+
+function mountFull(command: string, extra: Record<string, unknown> = {}): FullMount {
+  const routes = new Map<string, CapturedRoute>()
+  const sections = new Map<string, FakeSection>()
+  const settingsStore: Record<string, unknown> = {}
+  const updates: Record<string, unknown>[] = []
+  const listeners: Array<(ns: unknown, next: unknown) => void> = []
+  const errors: unknown[] = []
+
+  const on = (name: string, listener: (...args: unknown[]) => void): (() => void) => {
+    if (name !== 'settings/updated') return () => {}
+    listeners.push(listener)
+    return () => {
+      const index = listeners.indexOf(listener)
+      if (index !== -1) listeners.splice(index, 1)
+    }
+  }
+  const settings = {
+    register(_ns: string, _schema: unknown) {
+      return {
+        get: () => ({ ...settingsStore }),
+        update: async (patch: Record<string, unknown>) => {
+          updates.push(patch)
+          Object.assign(settingsStore, patch)
+          for (const listener of [...listeners]) listener('codegraph', { ...settingsStore })
+          return settingsStore
+        },
+      }
+    },
+  }
+  const systemPrompt = {
+    section(section: FakeSection) {
+      sections.set(section.name, section)
+      return () => sections.delete(section.name)
+    },
+  }
+
+  const base = { events: { on }, on, effect: (fn: () => unknown) => fn() }
+  const ctx = {
+    ...base,
+    inject(names: string[], callback: (sub: unknown) => void) {
+      const sub: Record<string, unknown> = { ...base }
+      if (names.includes('webServer')) {
+        sub.webServer = {
+          register(route: CapturedRoute) {
+            routes.set(route.path, route)
+            return () => {}
+          },
+        }
+      }
+      if (names.includes('settings')) sub.settings = settings
+      if (names.includes('systemPrompt')) sub.systemPrompt = systemPrompt
+      try {
+        callback(sub)
+      } catch (error) {
+        // 真实 cordis：插件体抛错只让该子 fiber 失败（并写日志），父插件继续。
+        errors.push(error)
+      }
+    },
+  }
+
+  type ApplyArgs = Parameters<typeof apply>
+  apply(ctx as unknown as ApplyArgs[0], { command, defaultPath: project, ...extra } as ApplyArgs[1])
+  return {
+    routes,
+    sections,
+    settingsStore,
+    updates,
+    errors,
+    dispatch: (ns, next) => {
+      for (const listener of [...listeners]) listener(ns, { ...settingsStore, ...next })
+    },
+  }
+}
+
+/** 等异步 CLI 探测落地（探测是 execFile，几十毫秒量级）。 */
+async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 8_000): Promise<void> {
+  const start = Date.now()
+  while (!(await predicate())) {
+    if (Date.now() - start > timeoutMs) throw new Error('等待条件超时')
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+}
+
+const missingCli = () => join(sandbox, 'no-such-codegraph-cli')
+
+describe('systemPrompt 注入门禁（CLI 探测 + settings 开关）', () => {
+  it('CLI 可用：注入公告与使用指引两段，且没有子 fiber 异常', async () => {
+    const mount = mountFull(echoCli())
+    await waitFor(() => mount.sections.size === 2)
+    expect(mount.errors).toEqual([])
+    expect([...mount.sections.keys()].sort()).toEqual(['plugin:dsh-codegraph', 'plugin:dsh-codegraph:usage'])
+    expect(mount.sections.get('plugin:dsh-codegraph')?.order).toBe(150)
+    expect(mount.sections.get('plugin:dsh-codegraph:usage')?.order).toBe(151)
+  })
+
+  it('使用指引的触发条件与宿主同口径，shell 兜底用配置里的命令名', async () => {
+    const command = echoCli()
+    const mount = mountFull(command)
+    await waitFor(() => mount.sections.size === 2)
+    const usage = mount.sections.get('plugin:dsh-codegraph:usage')?.text ?? ''
+    // 触发条件必须落下「有索引库」这层（上游原话只写 directory exists at the repo
+    // root，与 indexState 的判定不一致，会把家目录里 CLI 自己的安装目录算成项目索引）。
+    expect(usage).toContain('index database')
+    expect(usage).not.toContain('directory exists at the repo root')
+    // 家目录陷阱要在文案里点破：~/.codegraph 是 CLI 自己的安装目录
+    expect(usage).toContain('install dir does not count')
+    // 两个 surface 与两条路径的参数名都要在：MCP projectPath / CLI --path
+    expect(usage).toContain(`${command} explore`)
+    expect(usage).toContain('projectPath')
+    expect(usage).toContain('--path')
+    expect(usage).toContain('codegraph init')
+    expect(usage).not.toContain('(always works)')
+  })
+
+  it('CLI 不可用：两段都不注入，GET /default-path 报 cliAvailable=false', async () => {
+    const mount = mountFull(missingCli())
+    // 探测未落地时 JSON 里没有 cliAvailable（区分「还没探测完」与「确认不可用」）
+    const first = await call(mount.routes, '/api/dsh-codegraph/default-path')
+    expect(first.body?.cliAvailable).toBeUndefined()
+    let cliAvailable: unknown
+    await waitFor(async () => {
+      cliAvailable = (await call(mount.routes, '/api/dsh-codegraph/default-path')).body?.cliAvailable
+      return cliAvailable === false
+    })
+    expect(cliAvailable).toBe(false)
+    expect(mount.sections.size).toBe(0)
+  })
+
+  it('安装级开关关闭：对应段落不注入', async () => {
+    const onlyUsage = mountFull(echoCli(), { announceToAgent: false })
+    await waitFor(() => onlyUsage.sections.size === 1)
+    expect([...onlyUsage.sections.keys()]).toEqual(['plugin:dsh-codegraph:usage'])
+
+    const onlyAnnounce = mountFull(echoCli(), { usageGuidance: false })
+    await waitFor(() => onlyAnnounce.sections.size === 1)
+    expect([...onlyAnnounce.sections.keys()]).toEqual(['plugin:dsh-codegraph'])
+
+    const none = mountFull(echoCli(), { announceToAgent: false, usageGuidance: false })
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    expect(none.sections.size).toBe(0)
+  })
+
+  it('settings/updated 订阅真的生效：外部写入收紧开关即撤销段落', async () => {
+    const mount = mountFull(echoCli())
+    await waitFor(() => mount.sections.size === 2)
+    mount.dispatch('codegraph', { usageGuidance: false })
+    await waitFor(() => mount.sections.size === 1)
+    expect([...mount.sections.keys()]).toEqual(['plugin:dsh-codegraph'])
+  })
+
+  it('卡片改开关：POST /settings 持久化并即时生效', async () => {
+    const mount = mountFull(echoCli())
+    await waitFor(() => mount.sections.size === 2)
+    const capture = await call(mount.routes, '/api/dsh-codegraph/settings', {
+      method: 'POST',
+      body: { announceToAgent: false, usageGuidance: true },
+    })
+    expect(capture.status).toBe(200)
+    expect(capture.body?.announceToAgent).toBe(false)
+    expect(mount.updates).toEqual([{ announceToAgent: false, usageGuidance: true }])
+    await waitFor(() => mount.sections.size === 1)
+    expect([...mount.sections.keys()]).toEqual(['plugin:dsh-codegraph:usage'])
+  })
+
+  it('POST /settings 只收布尔字段', async () => {
+    const mount = mountFull(echoCli())
+    const bad = await call(mount.routes, '/api/dsh-codegraph/settings', { method: 'POST', body: { announceToAgent: 'yes' } })
+    expect(bad.status).toBe(400)
+    const empty = await call(mount.routes, '/api/dsh-codegraph/settings', { method: 'POST', body: { defaultPath: '/tmp' } })
+    expect(empty.status).toBe(400)
+    expect(empty.body?.error).toContain('缺少可写字段')
+  })
+})
