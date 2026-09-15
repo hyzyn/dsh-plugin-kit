@@ -6,11 +6,12 @@
 
 ## Features
 
-- **Index status at a glance**: whether it is initialized, version, file / symbol / edge counts, last indexed time, and pending changes.
-- **Call chains and impact**: click a search result to inspect the source plus callers / callees / impact, without going back to the command line.
-- **One-click sync / index**: incremental sync and full rebuild both live in the card.
-- **Fixes "No CodeGraph project is loaded"**: it manages the MCP server row and aligns the cwd with the default project; saving hot-restarts the MCP server (no host restart needed); when the target path has no `.codegraph/`, the existing config is never touched.
-- **Follows the current project**: by default it follows the active session's working directory and switches when you switch project sessions; a manually typed path temporarily overrides it.
+- **Search through indexing, all in the card**: `status --json` reports `initialized` / `version` / `fileCount` / `nodeCount` / `edgeCount` / `lastIndexed` / `pendingChanges` as-is; a symbol result drills down through `node` / `callers` / `callees` / `impact` without leaving the GUI.
+- **Two index paths**: `sync -- <path>` for incremental, `index [--force] -- <path>` for a full rebuild; query commands use `cliTimeoutMs` (60 s) while `sync` / `index` use `indexTimeoutMs` (600 s by default).
+- **Managed MCP working directory**: dsh-mcp-client declares no MCP roots capability, so `codegraph serve --mcp` can only look upward for `.codegraph/` from `process.cwd()`. The plugin manages that server row in `~/.dsh/cordis.patch.yml` and aligns `config.cwd` with the default project; the rewrite hot-loads through watchUserPatches, so the MCP connection is rebuilt without a host restart.
+- **Index detection shares the CLI's `initialized` semantics**: an index database (`*.db`) must exist under `.codegraph/`. A directory-existence check treats the codegraph CLI's own install dir `~/.codegraph` as an indexed project, leaving the MCP server on an unindexed cwd — measured there, `codegraph_explore`'s required fields grow from `query` to `query` + `projectPath`, so every call needs an explicit path. Anything short of a real index leaves the existing cwd untouched, and the card reports `indexState` plus the reason.
+- **Card queries track the active session**: the path defaults to the current session's cwd and follows session switches; the default project (= the MCP cwd) is persisted explicitly by "Set as default project" into the `codegraph` settings namespace, and the path field overrides it for one call.
+- **Two independently switchable systemPrompt sections**: `plugin:dsh-codegraph` (order 150, capability announcement) and `plugin:dsh-codegraph:usage` (order 151, usage guideline), both gated behind a `<command> --version` probe (no injection on failure); the card's checkboxes write `announceToAgent` / `usageGuidance` into the settings namespace, adding or removing the sections live.
 
 ![Codegraph settings card: index status / symbol search / one-click sync](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-codegraph.png)
 
@@ -29,7 +30,7 @@ Behavior details:
 
 - It prefers reusing an existing codegraph row in the `@hyzyn/dsh-mcp` managed block (only the cwd is filled in; other fields, including the disabled state, are left untouched); only when there is none does it write this plugin's own block, avoiding a serverName collision.
 - Manual rows outside the block are only detected, never touched (to avoid conflicts).
-- When the target path has no `.codegraph/`, it never rewrites the existing cwd and never creates a row out of thin air — a working config is not broken.
+- A target path is only managed when it holds a **real index**: a `.db` index file must exist inside `.codegraph/`. A bare `.codegraph/` directory is not enough — the codegraph CLI keeps its own install data in `~/.codegraph` (`current -> versions/<v>`, `bundles/`, `codegraph.lock`, no index database), so the **home directory** used to be mistaken for an indexed project: the plugin pinned the MCP cwd to it and reported everything as fine, while `codegraph status --json -- ~` actually returns `initialized:false` and the tools keep answering "No CodeGraph project is loaded". When that happens the plugin leaves the existing cwd alone, creates no row, and the card shows "default project X is not a valid index" plus the one-click fix.
 - Multiple projects: one codegraph MCP server mounts one default project at a time; other indexed projects can be queried by passing `projectPath` on the tool call, or by switching with one click in the card.
 - How to turn it off: the plugin config `mcpIntegration: false` (this reverts the managed row written by this plugin).
 
@@ -45,8 +46,9 @@ Behavior details:
 | `/api/dsh-codegraph/node?name=&path=` | GET | Look up symbol / file details |
 | `/api/dsh-codegraph/sync` | POST | Incremental sync `{ path }` |
 | `/api/dsh-codegraph/index` | POST | Full rebuild `{ path }` |
-| `/api/dsh-codegraph/default-path` | GET | Default project path + MCP managed state |
-| `/api/dsh-codegraph/default-path` | POST | Set as default project `{ path }` (requires an existing `.codegraph/`), hot-switches the MCP at the same time |
+| `/api/dsh-codegraph/default-path` | GET | Default project path + `indexState` (`indexed` / `missing` / `not-a-project`) + prompt toggles + `cliAvailable` + MCP managed state |
+| `/api/dsh-codegraph/settings` | POST | Write the prompt toggles `{ announceToAgent?, usageGuidance?, mcpIntegration? }` (booleans), effective immediately |
+| `/api/dsh-codegraph/default-path` | POST | Set as default project `{ path }` (requires an index database inside `.codegraph/`), hot-switches the MCP at the same time |
 
 All routes are loopback-only, to prevent remote access.
 
@@ -105,7 +107,7 @@ export interface Config {
 }
 ```
 
-A `defaultPath` / `mcpIntegration` saved in the `codegraph` settings namespace takes precedence over the plugin config; that is exactly what the card's “Set as default project” writes.
+`defaultPath` / `mcpIntegration` / `announceToAgent` / `usageGuidance` saved in the `codegraph` settings namespace take precedence over the plugin config: the card's “Set as default project” writes the first, and the two prompt checkboxes write the latter two (`POST /api/dsh-codegraph/settings`).
 
 `command` / `cliTimeoutMs` / `indexTimeoutMs` / `indexForce` are **install-level knobs**: they only read the plugin config and never enter the settings namespace. Just override them by id in the profile patch, for example:
 
@@ -120,9 +122,12 @@ When a timeout is hit, the error shown in the card names the corresponding confi
 
 ## System prompt
 
-After installation, two prompt sections are injected into systemPrompt automatically:
+After installation, two prompt sections are injected into systemPrompt automatically (~310 tokens in total):
 
-- `plugin:dsh-codegraph` (order 150): the plugin capability announcement (in Chinese), so the model knows that a Codegraph card and MCP tools are available.
-- `plugin:dsh-codegraph:usage` (order 151): the CodeGraph usage guideline (the CODEGRAPH_START block), which tells the model to prefer `codegraph_explore` / `codegraph explore` over grep/read in indexed projects, and gives the self-healing path of retrying with `projectPath` when the "No CodeGraph project" error appears.
+- `plugin:dsh-codegraph` (order 150): the capability announcement (Chinese, ~130 characters) — only that the card exists and can be pointed at; which buttons the card has is UI detail and does not spend model context.
+- `plugin:dsh-codegraph:usage` (order 151): the CodeGraph usage guideline (the CODEGRAPH_START block). It fills the role upstream assigns to `CODEGRAPH_INSTRUCTIONS_BLOCK` (the short block for subagents and non-MCP harnesses, while the long playbook rides the MCP `initialize` `instructions`) — **but DSH's MCP client never reads `instructions`**, so upstream's "no root index → query per project via `projectPath`" variant never reaches the model. This block carries exactly that, plus three more: the **shell fallback** (the command name renders from the `command` config instead of a hardcoded `codegraph`, and `--path` is spelled out), **per-project `projectPath`**, and **skip unindexed projects without running `codegraph init`**. Its trigger condition matches the host's `indexState`: `.codegraph/` must contain an index database — upstream's own wording only checks that the directory exists, which mistakes the CLI's `~/.codegraph` install dir for a project index, so this block deliberately tightens it.
 
-Both can be turned off via config (`announceToAgent: false` / `usageGuidance: false`).
+Both blocks sit behind two gates:
+
+1. **CLI probe**: `<command> --version` runs once at mount; on failure neither block is injected (a `console.warn` explains it) — the prompt never advertises a capability that cannot work.
+2. **Toggles**: the card's two checkboxes write the settings namespace (`POST /api/dsh-codegraph/settings`) and add/remove the sections immediately; installation-level config can also disable them (`announceToAgent: false` / `usageGuidance: false`).

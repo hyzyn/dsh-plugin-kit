@@ -3,16 +3,21 @@
  * 运行：node packages/codegraph/scripts/verify-sync.mjs（构建后）
  */
 import { syncManagedMcpRow } from '../lib/index.js'
-import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-// 用临时目录模拟「已索引 / 未索引」目标路径
+// 用临时目录模拟「已索引 / 未索引 / 只有 CLI 安装目录」目标路径
 const tmp = mkdtempSync(join(tmpdir(), 'cg-sync-'))
 const indexedTarget = join(tmp, 'proj')
 mkdirSync(join(indexedTarget, '.codegraph'), { recursive: true })
+writeFileSync(join(indexedTarget, '.codegraph', 'codegraph.db'), '')
 const plainTarget = join(tmp, 'plain')
 mkdirSync(plainTarget, { recursive: true })
+// 家目录形状：.codegraph/ 是 codegraph CLI 自己的安装目录（没有索引库）
+const cliHomeTarget = join(tmp, 'home')
+mkdirSync(join(cliHomeTarget, '.codegraph', 'versions', 'v1.5.0'), { recursive: true })
+writeFileSync(join(cliHomeTarget, '.codegraph', 'codegraph.lock'), '')
 
 let failed = 0
 function check(name, cond, detail) {
@@ -74,6 +79,11 @@ check('3d idempotent', !syncManagedMcpRow(out3.lines, DECISION).changed)
 // ---- 用例 4：目标未索引 → 不动现有行 ----
 const out4 = syncManagedMcpRow(out1.lines, { ...DECISION, targetCwd: plainTarget })
 check('4 no rewrite when target unindexed', !out4.changed && out4.status.mode === 'dsh-mcp' && out4.status.cwd === indexedTarget && out4.status.indexed === false, JSON.stringify(out4.status))
+
+// ---- 用例 4b：.codegraph/ 只是 CLI 安装目录（家目录形状）→ 视为未索引，不动 cwd ----
+const out4b = syncManagedMcpRow(out1.lines, { ...DECISION, targetCwd: cliHomeTarget })
+check('4b cli-install dir never treated as indexed', !out4b.changed && out4b.status.indexed === false && out4b.status.indexState === 'not-a-project', JSON.stringify(out4b.status))
+check('4c note names the CLI install dir', typeof out4b.status.note === 'string' && out4b.status.note.includes('不是 codegraph 项目'), out4b.status.note)
 
 // ---- 用例 5：区块外手工行 → 跳过 ----
 const file5 = `# dsh home patch layer

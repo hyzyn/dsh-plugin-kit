@@ -1,7 +1,7 @@
 import z from '@deepseek-ai/schemastery';
 import { definePlugin, dshHome, isLoopbackRequest, jsYamlSchema, readJsonBody, writeFileAtomic, writeJson, } from '@hyzyn/dsh-kit';
 import { execFile } from 'node:child_process';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import yaml from 'js-yaml';
 import { promisify } from 'node:util';
@@ -33,6 +33,8 @@ const MAX_BUFFER = 20 * 1024 * 1024;
 const DEFAULT_CLI_TIMEOUT_MS = 60_000;
 /** 索引类命令的默认超时：全量重建在大仓库上远超查询档。 */
 const DEFAULT_INDEX_TIMEOUT_MS = 600_000;
+/** CLI 可用性探测的超时（毫秒）：只决定要不要注入提示词，慢/挂住一律当不可用。 */
+const CLI_PROBE_TIMEOUT_MS = 5_000;
 /* ------------------------------------------------------------------ *
  * MCP 服务器行托管（~/.dsh/cordis.patch.yml）
  *
@@ -61,7 +63,36 @@ const OWN_BLOCK_END = '# --- end dsh-codegraph mcp managed ---';
 const DSH_MCP_BLOCK_KEY = 'dsh-mcp-config managed';
 const DSH_MCP_BLOCK_END_KEY = 'end dsh-mcp-config managed';
 const homePatchPath = () => join(dshHome(), 'cordis.patch.yml');
-const isIndexedProject = (path) => existsSync(join(path, '.codegraph'));
+/** codegraph 的索引目录名（与其 CLI 约定一致）。 */
+const INDEX_DIR = '.codegraph';
+/** 索引库文件后缀：SQLite 主库 `codegraph.db` 与 `-wal` / `-shm` 都以此结尾。 */
+const INDEX_DB_SUFFIX = '.db';
+/**
+ * 判定项目索引。**不能只看 `.codegraph/` 目录是否存在**：codegraph CLI 的安装目录
+ * 就是 `~/.codegraph`，于是家目录永远「已索引」——插件会把 MCP 的 cwd 钉在家目录上
+ * 并报告一切正常，而 `codegraph status --json -- ~` 实际返回 `initialized:false`，
+ * MCP 工具照旧拿 "No CodeGraph project is loaded"（模块头描述的失败模式）。
+ *
+ * 判据取「目录里存在 .db 文件」而不是写死 `codegraph.db`：索引库文件名可能跨 CLI
+ * 版本变化，而安装目录里一个库文件都没有。读目录失败（权限等）按未索引处理——
+ * 宁可不动现有 cwd，也不把好配置改坏。
+ */
+export function indexState(path) {
+    try {
+        if (readdirSync(join(path, INDEX_DIR)).some((name) => name.endsWith(INDEX_DB_SUFFIX)))
+            return 'indexed';
+        return 'not-a-project';
+    }
+    catch {
+        return 'missing';
+    }
+}
+/** 未索引时拼进状态 note 的原因描述（点名家目录这个最常见的坑）。 */
+function indexProblem(state) {
+    return state === 'not-a-project'
+        ? '的 .codegraph/ 里没有索引库，不是 codegraph 项目（家目录最常见：~/.codegraph 是 CLI 自身的安装目录）'
+        : '没有 .codegraph/ 索引';
+}
 /**
  * js-yaml 方言：!!js 类型与 schema 都取自 kit（`jsYamlSchema` 即
  * `JSON_SCHEMA.extend(JsExprType)`）。js-yaml 全仓锁在同一版本，kit 与本包解析到
@@ -131,7 +162,8 @@ function isCodegraphServerRow(row) {
  * 无变化时返回原数组引用（changed=false）。文件不存在时传入 ['']。
  */
 export function syncManagedMcpRow(lines, decision) {
-    const indexed = isIndexedProject(decision.targetCwd);
+    const state = indexState(decision.targetCwd);
+    const indexed = state === 'indexed';
     const ownRange = findBlock(lines, 'dsh-codegraph mcp managed', 'end dsh-codegraph mcp managed');
     const mcpRange = findBlock(lines, DSH_MCP_BLOCK_KEY, DSH_MCP_BLOCK_END_KEY);
     const ownRows = ownRange ? parseBlockRows(lines, ownRange) : [];
@@ -162,6 +194,7 @@ export function syncManagedMcpRow(lines, decision) {
                             cwd: typeof handWritten.config?.cwd === 'string' ? handWritten.config.cwd : undefined,
                             disabled: handWritten.disabled === true,
                             indexed,
+                            indexState: state,
                             note: '检测到区块外手工配置的 codegraph MCP 行，跳过托管（避免 serverName 冲突）',
                         },
                     };
@@ -191,7 +224,8 @@ export function syncManagedMcpRow(lines, decision) {
             cwd: typeof mcpRow.config?.cwd === 'string' ? mcpRow.config.cwd : undefined,
             disabled: mcpRow.disabled === true,
             indexed,
-            ...(decision.manageEnabled && indexed ? {} : { note: decision.manageEnabled ? '目标路径缺少 .codegraph/，保持现有配置' : 'MCP 联动已关闭，保持现有配置' }),
+            indexState: state,
+            ...(decision.manageEnabled && indexed ? {} : { note: decision.manageEnabled ? `目标路径${indexProblem(state)}，保持现有配置` : 'MCP 联动已关闭，保持现有配置' }),
         };
     }
     else {
@@ -199,10 +233,10 @@ export function syncManagedMcpRow(lines, decision) {
         if (!decision.manageEnabled) {
             if (ownRowIndex !== -1 && ownRange) {
                 replacements.push({ range: ownRange, text: renderBlockLines(ownRange, ownRows.filter((row) => !isCodegraphServerRow(row))) });
-                status = { mode: 'none', indexed, note: 'MCP 联动已关闭，已撤销本插件托管行' };
+                status = { mode: 'none', indexed, indexState: state, note: 'MCP 联动已关闭，已撤销本插件托管行' };
             }
             else {
-                status = { mode: 'none', indexed, note: 'MCP 联动已关闭' };
+                status = { mode: 'none', indexed, indexState: state, note: 'MCP 联动已关闭' };
             }
         }
         else if (ownRowIndex !== -1 && ownRange) {
@@ -217,7 +251,8 @@ export function syncManagedMcpRow(lines, decision) {
                 cwd: typeof row.config?.cwd === 'string' ? row.config.cwd : undefined,
                 disabled: row.disabled === true,
                 indexed,
-                ...(indexed ? {} : { note: '目标路径缺少 .codegraph/，保持现有配置' }),
+                indexState: state,
+                ...(indexed ? {} : { note: `目标路径${indexProblem(state)}，保持现有配置` }),
             };
         }
         else if (indexed) {
@@ -233,10 +268,10 @@ export function syncManagedMcpRow(lines, decision) {
                 },
             };
             replacements.push({ range: { start: lines.length, end: lines.length, markerStart: OWN_BLOCK_START, markerEnd: OWN_BLOCK_END }, text: renderBlockLines(null, [row]) });
-            status = { mode: 'own', id: MCP_ROW_ID, cwd: decision.targetCwd, indexed, note: '已自动托管 codegraph MCP 服务器' };
+            status = { mode: 'own', id: MCP_ROW_ID, cwd: decision.targetCwd, indexed, indexState: state, note: '已自动托管 codegraph MCP 服务器' };
         }
         else {
-            status = { mode: 'none', indexed, note: '默认路径缺少 .codegraph/，未托管；把默认项目切到已索引目录即可自动挂载' };
+            status = { mode: 'none', indexed, indexState: state, note: `默认路径${indexProblem(state)}，未托管；把默认项目切到已索引目录即可自动挂载` };
         }
     }
     if (replacements.length === 0)
@@ -373,6 +408,23 @@ async function runCodegraph(command, args, cwd, timeoutMs) {
     return stdout;
 }
 /**
+ * 探测 CLI 是否真的可执行（`<command> --version`）。
+ *
+ * 只用于 systemPrompt 门禁：`command` 指向的 CLI 不存在时，不该向模型宣告
+ * 「本机已安装 Codegraph 插件 / 可以用 codegraph 工具」——那是让模型去撞必然
+ * 失败的调用。任何失败（ENOENT / 非零退出 / 超时）都按不可用处理，且不影响
+ * 卡片的其它功能（路由会把真实报错显示出来）。
+ */
+async function probeCli(command) {
+    try {
+        await runCodegraph(command, ['--version'], process.cwd(), CLI_PROBE_TIMEOUT_MS);
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+/**
  * 把 execFile 的错误翻成卡片上看得懂的文案：超时（killed/SIGTERM）单独指路到
  * 对应的配置项，其余保留原 message（execFile 会把 stderr 拼进去）。
  */
@@ -394,7 +446,13 @@ function tryParseJson(text) {
 /* ------------------------------------------------------------------ *
  * 路由
  * ------------------------------------------------------------------ */
-function makeRoutes(cli, defaultPath) {
+function makeRoutes(cli, defaultPath, 
+/**
+ * CLI 探测结果：true / false / undefined（未落地）。闭包读，因为探测是异步的、
+ * 可能晚于路由注册；undefined 序列化时会被 JSON 丢掉，卡片据此区分「还没探测完」
+ * 与「确认不可用」。
+ */
+isCliAvailable) {
     const guard = (req, res, method) => {
         if (!isLoopbackRequest(req)) {
             writeJson(res, 403, { error: 'forbidden: loopback-only' });
@@ -610,12 +668,23 @@ function makeRoutes(cli, defaultPath) {
                     return;
                 }
                 if (req.method === 'GET') {
-                    const current = runtimeSyncRef?.current ?? { defaultPath: currentDefaultPath(), manage: true };
+                    const current = runtimeSyncRef?.current ?? {
+                        defaultPath: currentDefaultPath(),
+                        manage: true,
+                        announce: true,
+                        usage: true,
+                    };
+                    const state = indexState(current.defaultPath);
                     writeJson(res, 200, {
                         ok: true,
                         defaultPath: current.defaultPath,
                         manageEnabled: current.manage,
-                        indexed: isIndexedProject(current.defaultPath),
+                        announceToAgent: current.announce,
+                        usageGuidance: current.usage,
+                        /** CLI 探测结果：false 时两段 systemPrompt 都不会注入；undefined = 还没探测完。 */
+                        cliAvailable: isCliAvailable(),
+                        indexed: state === 'indexed',
+                        indexState: state,
                         mcp: snapshotMcpStatus(),
                     });
                     return;
@@ -644,8 +713,13 @@ function makeRoutes(cli, defaultPath) {
                     writeJson(res, 400, { error: '路径不可访问: ' + (error instanceof Error ? error.message : String(error)) });
                     return;
                 }
-                if (!isIndexedProject(path)) {
-                    writeJson(res, 400, { error: '该目录没有 .codegraph/ 索引，请先在其根目录运行 codegraph init' });
+                const state = indexState(path);
+                if (state !== 'indexed') {
+                    writeJson(res, 400, {
+                        error: state === 'not-a-project'
+                            ? '该目录的 .codegraph/ 里没有索引库，不是 codegraph 项目（家目录最常见：~/.codegraph 是 CLI 自身的安装目录）；请先在项目根目录运行 codegraph init'
+                            : '该目录没有 .codegraph/ 索引，请先在其根目录运行 codegraph init',
+                    });
                     return;
                 }
                 // 官方持久化通道：写入 settings 命名空间 → settings/updated → 同步托管行。
@@ -670,11 +744,60 @@ function makeRoutes(cli, defaultPath) {
                 writeJson(res, 200, { ok: true, defaultPath: outcome.defaultPath, persisted, mcp: outcome.status });
             },
         },
+        {
+            kind: 'exact',
+            path: '/api/dsh-codegraph/settings',
+            handler: async (req, res) => {
+                if (!guard(req, res, 'POST'))
+                    return;
+                const body = await readBody(req);
+                // 只认这三个布尔键：defaultPath 走 /default-path（它有目录与索引校验），
+                // 其余安装级旋钮（command / 超时 / indexForce）故意不给写入口。
+                const patch = {};
+                for (const key of ['announceToAgent', 'usageGuidance', 'mcpIntegration']) {
+                    const value = body?.[key];
+                    if (value === undefined)
+                        continue;
+                    if (typeof value !== 'boolean') {
+                        writeJson(res, 400, { error: key + ' 必须是布尔值' });
+                        return;
+                    }
+                    patch[key] = value;
+                }
+                if (Object.keys(patch).length === 0) {
+                    writeJson(res, 400, { error: '缺少可写字段（announceToAgent / usageGuidance / mcpIntegration）' });
+                    return;
+                }
+                const runtime = runtimeSyncRef;
+                if (runtime === undefined || runtime.scope === undefined) {
+                    writeJson(res, 500, { error: '插件尚未完成挂载' });
+                    return;
+                }
+                try {
+                    await runtime.scope.update(patch);
+                }
+                catch (error) {
+                    writeJson(res, 500, { error: '保存失败: ' + (error instanceof Error ? error.message : String(error)) });
+                    return;
+                }
+                // settings/updated 已经触发过一次 sync；这里再显式同步一次只是兜底
+                // （同值幂等：MCP 行无变化不写盘，section 增删也按需跳过）。
+                const outcome = runtime.sync(runtime.scope.get());
+                writeJson(res, 200, {
+                    ok: true,
+                    announceToAgent: outcome.current.announce,
+                    usageGuidance: outcome.current.usage,
+                    manageEnabled: outcome.current.manage,
+                    cliAvailable: isCliAvailable(),
+                    mcp: outcome.status,
+                });
+            },
+        },
     ];
 }
 /** 不落盘的快照：用当前生效配置在内存行副本上做一次同步（丢弃结果）。 */
 function snapshotMcpStatus() {
-    const current = runtimeSyncRef?.current ?? { defaultPath: process.cwd(), manage: true };
+    const current = runtimeSyncRef?.current ?? { defaultPath: process.cwd(), manage: true, announce: true, usage: true };
     const patchFile = homePatchPath();
     const text = existsSync(patchFile) ? readFileSync(patchFile, 'utf8') : '';
     return syncManagedMcpRow(text.split('\n'), {
@@ -687,17 +810,33 @@ function snapshotMcpStatus() {
 /* ------------------------------------------------------------------ *
  * 插件本体
  * ------------------------------------------------------------------ */
-const CODEGRAPH_GUIDANCE = '本机已安装 dsh-codegraph 插件（Codegraph 集成）：Web GUI 的 设置 → 插件 里有「Codegraph」卡片，可查看索引状态、搜索符号、查看 callers/callees/impact，并手动 sync/index；卡片还能把当前项目一键设为默认项目。模型侧也可使用已配置的 codegraph MCP 工具（如 mcp__codegraph__codegraph_explore）直接查询代码，codegraph MCP 服务器的工作目录由本插件托管并跟随默认项目路径热切换。用户提到「Codegraph / 代码图谱 / 调用链 / 影响面 / 索引」时，可引导其打开 Codegraph 卡片或使用 MCP 工具。';
-const CODEGRAPH_USAGE_GUIDANCE = `<!-- CODEGRAPH_START -->
+/**
+ * 公告段（order 150）：只留模型用得上的部分——知道卡片存在、能引导用户。
+ * 卡片内部有哪些按钮是 UI 细节，模型不需要背（旧版把 6 个功能都列了一遍，
+ * 327 字），MCP 工具则交给使用指引段。同档 order 的 section 由
+ * dsh-system-prompt 按名字排序（comparePromptSections），所以不依赖注册顺序。
+ */
+const CODEGRAPH_GUIDANCE = '本机已安装 dsh-codegraph 插件（Codegraph 集成）：Web GUI 的 设置 → 插件 里有「Codegraph」卡片，可看索引状态、搜索符号、sync / 重建索引，并把当前项目一键设为默认项目。用户提到「Codegraph / 代码图谱 / 调用链 / 影响面 / 索引」时，可引导其打开该卡片。';
+/**
+ * 使用指引段（order 151）：只保留「何时用它 + 失败了怎么办」。
+ *
+ * 工具自述（返回什么、一次调用搞定、不要重复 Read）已经在 MCP 工具描述里，
+ * 这里不再复述；三条独有信息是 shell 兜底、projectPath 自愈、没索引就跳过。
+ *
+ * 两点与宿主实现对齐：
+ *   - 触发条件必须与 indexState 同口径：`.codegraph/` **里要有索引库**。
+ *     只看目录存在会把家目录也算成已索引项目（`~/.codegraph` 是 CLI 安装目录），
+ *     于是模型被诱导去调一个必然报 "No CodeGraph project is loaded" 的工具。
+ *   - shell 兜底里的命令名按 `command` 配置渲染，不写死 `codegraph`（安装级旋钮）。
+ */
+const codegraphUsageGuidance = (command) => `<!-- CODEGRAPH_START -->
 ## CodeGraph
 
-In repositories indexed by CodeGraph (a \`.codegraph/\` directory exists at the repo root), reach for it BEFORE grep/find or reading files when you need to understand or locate code:
+In repositories indexed by CodeGraph — a \`.codegraph/\` directory with an index database at the repo root (the CLI's own \`~/.codegraph\` install dir does not count) — reach for it BEFORE grep/find or reading files when you need to understand or locate code:
 
-- **MCP tool** (when available): \`mcp__codegraph__codegraph_explore\` answers most code questions in one call — the relevant symbols' verbatim source plus the call paths between them, including dynamic-dispatch hops grep can't follow. Name a file or symbol in the query to read its current line-numbered source. If it's listed but deferred, load it by name via tool search.
-- **Shell** (always works): \`codegraph explore "<symbol names or question>"\` prints the same output.
-- If a codegraph_* tool replies "No CodeGraph project is loaded for this session", retry once with \`projectPath\` set to the current project's absolute path; if that project has no \`.codegraph/\` either, fall back to normal search tools and let the user decide about running \`codegraph init\` there.
-
-If there is no \`.codegraph/\` directory, skip CodeGraph entirely — indexing is the user's decision.
+- **MCP tool**: \`mcp__codegraph__codegraph_explore\`; name a file or symbol in the query to also read its current line-numbered source. If it asks for \`projectPath\` (no default project loaded), pass the project's absolute path — one server answers for any number of projects.
+- **Shell** (no MCP needed): \`${command} explore "<symbol names or question>"\` prints the same output, and \`--path <dir>\` targets another project.
+- If a project has no \`.codegraph/\`, use your normal search tools there; don't run \`codegraph init\` — indexing is the user's decision.
 <!-- CODEGRAPH_END -->`;
 const plugin = definePlugin({
     name: 'codegraph',
@@ -707,9 +846,50 @@ const plugin = definePlugin({
             return;
         const cli = resolveCliConfig(config);
         const command = cli.command;
-        const announce = config?.announceToAgent !== false;
+        // 安装级默认值；settings 里存过同名键时以 settings 为准（见 resolveStored）。
+        const announceDefault = config?.announceToAgent !== false;
+        const usageDefault = config?.usageGuidance !== false;
         const manageEnabled = config?.mcpIntegration !== false;
-        const routes = makeRoutes(cli, config?.defaultPath?.trim() || process.cwd());
+        let promptApi;
+        let announceDisposer;
+        let usageDisposer;
+        let cliAvailable;
+        /** 按需登记 / 撤销一个 section；wanted 与实际状态一致时不动作。 */
+        const setSection = (disposer, wanted, register) => {
+            if (wanted && disposer === undefined && promptApi !== undefined)
+                return register(promptApi);
+            if (!wanted && disposer !== undefined) {
+                try {
+                    disposer();
+                }
+                catch {
+                    /* 撤销失败不阻塞：下次 refresh 还会看到旧引用 */
+                }
+                return undefined;
+            }
+            return disposer;
+        };
+        /** 按「CLI 可用 + settings 开关」刷新两段 section（幂等，可反复调用）。 */
+        const refreshGuidance = () => {
+            if (promptApi === undefined)
+                return;
+            const resolved = runtimeSyncRef?.current;
+            const announce = resolved?.announce ?? announceDefault;
+            const usage = resolved?.usage ?? usageDefault;
+            // 探测未落地（undefined）或已判定不可用时都不注入：宁可晚一轮，也不向模型
+            // 宣告一个跑不起来的能力。
+            const ready = cliAvailable === true;
+            announceDisposer = setSection(announceDisposer, ready && announce, (api) => api.section({ name: 'plugin:dsh-codegraph', order: 150, text: CODEGRAPH_GUIDANCE }));
+            usageDisposer = setSection(usageDisposer, ready && usage, (api) => api.section({ name: 'plugin:dsh-codegraph:usage', order: 151, text: codegraphUsageGuidance(command) }));
+        };
+        void probeCli(command).then((available) => {
+            cliAvailable = available;
+            if (!available) {
+                console.warn(`[dsh-codegraph] \`${command} --version\` 不可用：跳过 systemPrompt 的能力公告与使用指引（卡片与 MCP 托管不受影响）`);
+            }
+            refreshGuidance();
+        });
+        const routes = makeRoutes(cli, config?.defaultPath?.trim() || process.cwd(), () => cliAvailable);
         ctx.inject(['webServer'], (webCtx) => {
             webCtx.effect(() => {
                 const server = webCtx.webServer;
@@ -739,6 +919,8 @@ const plugin = definePlugin({
                     return {
                         defaultPath: storedPath ?? (config?.defaultPath?.trim() || process.cwd()),
                         manage: storedManage ?? manageEnabled,
+                        announce: (typeof stored?.announceToAgent === 'boolean' ? stored.announceToAgent : undefined) ?? announceDefault,
+                        usage: (typeof stored?.usageGuidance === 'boolean' ? stored.usageGuidance : undefined) ?? usageDefault,
                     };
                 };
                 const logOutcome = (changed, status) => {
@@ -749,7 +931,9 @@ const plugin = definePlugin({
                     const { changed, status } = syncMcpRowOnDisk({ serverName: MCP_SERVER_NAME, command, targetCwd: resolved.defaultPath, manageEnabled: resolved.manage });
                     runtime.current = resolved;
                     logOutcome(changed, status);
-                    return { defaultPath: resolved.defaultPath, status };
+                    // 提示词开关也随这次解析值走：卡片里改完即生效，不用重启宿主。
+                    refreshGuidance();
+                    return { defaultPath: resolved.defaultPath, status, current: resolved };
                 };
                 const runtime = { scope, current: resolveStored(scope.get()), sync };
                 runtimeSyncRef = runtime;
@@ -772,17 +956,25 @@ const plugin = definePlugin({
         ctx.effect(() => {
             if (runtimeSyncRef !== undefined)
                 return () => { };
-            const resolved = { defaultPath: config?.defaultPath?.trim() || process.cwd(), manage: manageEnabled };
+            const resolved = {
+                defaultPath: config?.defaultPath?.trim() || process.cwd(),
+                manage: manageEnabled,
+                announce: announceDefault,
+                usage: usageDefault,
+            };
             const runtime = {
                 current: resolved,
                 sync: (stored) => {
                     const next = {
                         defaultPath: typeof stored?.defaultPath === 'string' && stored.defaultPath.trim() !== '' ? stored.defaultPath.trim() : resolved.defaultPath,
                         manage: typeof stored?.mcpIntegration === 'boolean' ? stored.mcpIntegration : resolved.manage,
+                        announce: typeof stored?.announceToAgent === 'boolean' ? stored.announceToAgent : resolved.announce,
+                        usage: typeof stored?.usageGuidance === 'boolean' ? stored.usageGuidance : resolved.usage,
                     };
                     const result = syncMcpRowOnDisk({ serverName: MCP_SERVER_NAME, command, targetCwd: next.defaultPath, manageEnabled: next.manage });
                     runtime.current = next;
-                    return { defaultPath: next.defaultPath, status: result.status };
+                    refreshGuidance();
+                    return { defaultPath: next.defaultPath, status: result.status, current: next };
                 },
             };
             runtimeSyncRef = runtime;
@@ -793,22 +985,23 @@ const plugin = definePlugin({
                     runtimeSyncRef = undefined;
             };
         }, 'dsh-codegraph: mcp fallback');
-        if (announce) {
-            ctx.inject(['systemPrompt'], (promptCtx) => {
-                promptCtx.effect(() => {
-                    const systemPrompt = promptCtx.systemPrompt;
-                    return systemPrompt.section({ name: 'plugin:dsh-codegraph', order: 150, text: CODEGRAPH_GUIDANCE });
-                }, 'dsh-codegraph: announcement');
-            });
-        }
-        if (config?.usageGuidance !== false) {
-            ctx.inject(['systemPrompt'], (promptCtx) => {
-                promptCtx.effect(() => {
-                    const systemPrompt = promptCtx.systemPrompt;
-                    return systemPrompt.section({ name: 'plugin:dsh-codegraph:usage', order: 151, text: CODEGRAPH_USAGE_GUIDANCE });
-                }, 'dsh-codegraph: usage guidance');
-            });
-        }
+        ctx.inject(['systemPrompt'], (promptCtx) => {
+            promptApi = promptCtx.systemPrompt;
+            refreshGuidance();
+            return () => {
+                promptApi = undefined;
+                for (const dispose of [announceDisposer, usageDisposer]) {
+                    try {
+                        dispose?.();
+                    }
+                    catch {
+                        /* 卸载时释放失败不阻塞 */
+                    }
+                }
+                announceDisposer = undefined;
+                usageDisposer = undefined;
+            };
+        });
         console.log('[dsh-codegraph] mounted, command: ' + command);
     },
 });
