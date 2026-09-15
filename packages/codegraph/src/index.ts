@@ -1150,7 +1150,11 @@ function makeRoutes(
         // 有效索引」现算，这样索引被删/quinit 之后也会自动回落，不留陈旧状态。
         runtime.sessionPath = path === '' ? undefined : path
         const outcome = runtime.sync(runtime.scope?.get())
+        // 注意：`indexed` 报的是**生效路径**（托管行实际用的目录），而「回落」的判定必须
+        // 看**上报的会话目录**——生效路径在回落之后必然是默认路径，用它的索引态会得出
+        // 「已索引所以不用提示」，默认路径恰好已索引时就把回落这件事吞了。
         const state = indexState(outcome.effectivePath)
+        const sessionState = path === '' ? undefined : indexState(path)
         writeJson(res, 200, {
           ok: true,
           sessionPath: runtime.sessionPath ?? null,
@@ -1159,8 +1163,9 @@ function makeRoutes(
           defaultPath: outcome.defaultPath,
           indexed: state === 'indexed',
           indexState: state,
+          sessionPathState: sessionState,
           mcp: outcome.status,
-          ...(outcome.current.follow && path !== '' && state !== 'indexed'
+          ...(outcome.current.follow && sessionState !== undefined && sessionState !== 'indexed'
             ? { note: '会话目录没有可用的 .codegraph/ 索引，托管行 cwd 回落到默认项目' }
             : {}),
           ...(outcome.current.follow ? {} : { note: '跟随已关闭，托管行 cwd 保持默认项目' }),
