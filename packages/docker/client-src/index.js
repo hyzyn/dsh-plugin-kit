@@ -4335,10 +4335,12 @@ window.__ModuleLoader__.load({
           copyExecCommand(item, '内联目标用了 key/password 认证，浏览器端拿不到凭证')
           return
         }
-        // 0) dock 模式：面板已经长在 tty 面板里了，再嵌一层终端就成了「终端套面板
-        //    套终端」——同一面板新开一个标签才是这里的自然语义（标签会切到前台，
-        //    容器列表继续留在右侧）
-        if (props.docked === true) {
+        // 0) 嵌入式承载（dock / 右侧栏标签）都借 tty 面板开一个标签，不就地嵌抽屉：
+        //    - dock：面板已经长在 tty 面板里，再嵌一层就成了「终端套面板套终端」；
+        //    - tab ：栏宽通常不够跑 shell，而且 tab 会随会话切换卸载——内嵌的终端会被
+        //      连带杀掉（正在跑的 docker exec -it 就没了）。终端该由 tty 拥有：全尺寸、
+        //      可拖宽、切会话不丢。
+        if (props.docked === true || props.carrier === 'tab') {
           try {
             terminalApi.open(options)
           } catch (error) {

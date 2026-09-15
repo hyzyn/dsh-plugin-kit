@@ -103,6 +103,20 @@ export function describeExecError(message) {
         + `OpenSSH MaxSessions 默认 10；关掉部分实时跟随 / 减少聚合容器数后重试）`;
 }
 /**
+ * 这条 ssh2 错误是不是**传输层 / 连接层**的（而不是命令自己失败）。
+ *
+ * 为什么要分类：池里的连接可能已经死了（远端 sshd 重启、网络抖动、sshd 踢掉空闲连接），
+ * 而 `acquire()` 复用 memoized 的 `ready`、不会每次探活。这种时候唯一正确的动作是丢掉
+ * 这条连接、重连一次再试；反过来，「命令返回非零」「镜像不存在」这类业务失败**绝不能**
+ * 触发重连——那会把一次普通错误变成两条命令。
+ */
+export function isTransportError(message) {
+    // 前两条是我们自己的包装文案：回调迟迟不来 = 这条连接已经不响应了
+    if (/打开 channel 超时|SSH 连接超时/.test(message))
+        return true;
+    return /Channel open failure|open failed|Not connected|connection lost|ECONNRESET|EPIPE|ETIMEDOUT|keepalive|No response from server/i.test(message);
+}
+/**
  * 空闲回收判定：busy>0 的连接上挂着长流（docker logs --follow 可以几小时不结束），
  * 期间 lastUsed 不会刷新——若只看 idle 就会把正在推送的流掐断，必须先看 busy。
  * 抽成纯函数便于回归（sweeper 本体依赖定时器，难以直接驱动）。
@@ -141,23 +155,10 @@ export class RemoteExec {
     /** 在远程执行一条命令（argv 形式，内部做 shell 转义）。 */
     async run(spec, argv, options) {
         const command = shJoin(argv);
-        const client = await this.acquire(spec);
         const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
         const maxBytes = options?.maxBytes ?? DEFAULT_MAX_BYTES;
         const started = Date.now();
-        const channel = await new Promise((resolve, reject) => {
-            const timer = setTimeout(() => {
-                reject(new Error(`SSH exec 打开 channel 超时（${String(timeoutMs)}ms）：${sshTarget(spec)}`));
-            }, timeoutMs);
-            client.exec(command, (error, ch) => {
-                clearTimeout(timer);
-                if (error !== undefined && error !== null) {
-                    reject(new Error(`SSH exec 失败：${describeExecError(error.message)}`));
-                    return;
-                }
-                resolve(ch);
-            });
-        });
+        const channel = await this.openChannel(spec, command, timeoutMs, 0);
         return await new Promise((resolve, reject) => {
             let stdout = '';
             let stderr = '';
@@ -232,7 +233,8 @@ export class RemoteExec {
      */
     async stream(spec, argv, handlers, signal) {
         const command = shJoin(argv);
-        const client = await this.acquire(spec);
+        // 先确保连接已建立：下面的 rt.busy 与配额判定都依赖连接已存在于池里
+        await this.acquire(spec);
         const rt = this.conns.get(poolKey(spec));
         if (rt !== undefined) {
             // 配额判定放在自增**之前**：拒绝时没有自增，finally 里的 release 也就不会去减别人的计数
@@ -255,19 +257,7 @@ export class RemoteExec {
         try {
             if (signal?.aborted === true)
                 return { code: null };
-            const channel = await new Promise((resolve, reject) => {
-                const timer = setTimeout(() => {
-                    reject(new Error(`SSH exec 打开 channel 超时（${String(DEFAULT_TIMEOUT_MS)}ms）：${sshTarget(spec)}`));
-                }, DEFAULT_TIMEOUT_MS);
-                client.exec(command, (error, ch) => {
-                    clearTimeout(timer);
-                    if (error !== undefined && error !== null) {
-                        reject(new Error(`SSH exec 失败：${describeExecError(error.message)}`));
-                        return;
-                    }
-                    resolve(ch);
-                });
-            });
+            const channel = await this.openChannel(spec, command, DEFAULT_TIMEOUT_MS, 0);
             return await new Promise((resolve, reject) => {
                 const stdoutDecoder = new StringDecoder('utf8');
                 const stderrDecoder = new StringDecoder('utf8');
@@ -354,6 +344,38 @@ export class RemoteExec {
             }
         }, SWEEP_MS);
         this.sweeper.unref?.();
+    }
+    /**
+     * 开一条 exec channel；**传输层**错误时丢掉连接、重连一次（见 `isTransportError`）。
+     *
+     * 只重试一次：重连之后还报同样的错，多半不是连接的问题（远端 MaxSessions 真满了、
+     * 或目标本身不可达），再试只是把失败拖长、还会多压一条命令过去。
+     */
+    async openChannel(spec, command, timeoutMs, attempt) {
+        const client = await this.acquire(spec);
+        try {
+            return await new Promise((resolve, reject) => {
+                const timer = setTimeout(() => {
+                    reject(new Error(`SSH exec 打开 channel 超时（${String(timeoutMs)}ms）：${sshTarget(spec)}`));
+                }, timeoutMs);
+                client.exec(command, (error, ch) => {
+                    clearTimeout(timer);
+                    if (error !== undefined && error !== null) {
+                        reject(new Error(`SSH exec 失败：${describeExecError(error.message)}`));
+                        return;
+                    }
+                    resolve(ch);
+                });
+            });
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (attempt === 0 && isTransportError(message)) {
+                this.dropConn(poolKey(spec));
+                return await this.openChannel(spec, command, timeoutMs, 1);
+            }
+            throw error;
+        }
     }
     acquire(spec) {
         this.ensureSweeper();
