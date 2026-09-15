@@ -23,6 +23,8 @@ const PANEL_STYLE_ID = 'dsh-docker-style'
 /** 右侧栏标签的注册身份：id 是「实现」的名字（body 注册键用它，不是 kind）。 */
 const DOCKER_TAB_ID = '@hyzyn/dsh-docker'
 const DOCKER_TAB_KIND = 'docker'
+/** 右侧栏导航服务（S2 起用于「入口 → 打开标签」）；null = 宿主没提供，走模态兜底。 */
+let dockerTabApi = null
 
 /* ================================ 基础 ================================ */
 
@@ -5091,7 +5093,23 @@ window.__ModuleLoader__.load({
           info?.tab?.actions?.close?.()
         } catch { /* 标签已关 */ }
       }
-      return jsx(ContainerPanel, { carrier: 'tab', onClose: closeTab })
+      /*
+       * 入口带进来的导航参数（S2）：带 target 就用它当面板 key —— 换目标即重挂，
+       * 面板状态归零（这正是「从连接栏点某台主机」的预期）；不带 target 的入口
+       * （侧边栏「容器」）沿用上一次带过的值，key 不变，面板状态保留。
+       */
+      const params = info?.tab?.navigation?.params
+      const requested = typeof params?.target === 'string' ? params.target : ''
+      const lastTargetRef = useRef('')
+      if (requested !== '') lastTargetRef.current = requested
+      const pin = lastTargetRef.current
+      return jsx(ContainerPanel, {
+        key: pin === '' ? 'docker-tab' : pin,
+        carrier: 'tab',
+        onClose: closeTab,
+        initialTarget: pin === '' ? undefined : pin,
+        sessionHint: params?.sessionHint,
+      })
     }
 
     /* ------------------------------------------------------------------ *
@@ -5370,6 +5388,49 @@ window.__ModuleLoader__.load({
         && panelApi.isOpen() === true
     }
 
+    /* ---------------------- 承载分发（S2） ---------------------- */
+
+    /*
+     * 默认走右侧栏标签；拿不到服务、或用户显式要求时退回原模态。
+     *
+     * 为什么开关放 localStorage 而不是 settings：它是「发布后一个版本就删」的临时灰度
+     * 开关，塞进 settings schema 就得连带动宿主配置结构、设置卡片 UI 与 README——给一个
+     * 临时物留长期债。代价是只能在控制台改：
+     *   localStorage.setItem('dsh-docker:carrier', 'modal')   // 退回模态
+     *   localStorage.removeItem('dsh-docker:carrier')          // 回到默认（标签）
+     */
+    const CARRIER_KEY = 'dsh-docker:carrier'
+
+    function carrierPreference() {
+      try {
+        return window.localStorage.getItem(CARRIER_KEY) === 'modal' ? 'modal' : 'tab'
+      } catch {
+        // 隐私模式 / 存储被禁：按默认走——读不到偏好不该反过来把用户降级到旧形态
+        return 'tab'
+      }
+    }
+
+    /**
+     * 打开容器面板的**唯一入口**。`options.target` / `options.sessionHint` 会随
+     * navigation params 进入标签，由 `DockerTabBody` 取出喂给面板。
+     */
+    function openContainerPanel(options) {
+      if (carrierPreference() === 'tab' && dockerTabApi !== null) {
+        try {
+          const params = {}
+          if (typeof options?.target === 'string' && options.target !== '') params.target = options.target
+          if (options?.sessionHint !== undefined) params.sessionHint = options.sessionHint
+          // page type 在同一 pane 内去重：已在则聚焦，不会开出第二个「Docker 容器」标签
+          dockerTabApi.openTab(DOCKER_TAB_KIND, { params })
+          return
+        } catch (error) {
+          // 服务在、但开标签失败（契约变动等）：退回模态，用户至少还能继续干活
+          console.warn('[dsh-docker] 打开右侧栏标签失败，回退模态：' + (error instanceof Error ? error.message : String(error)))
+        }
+      }
+      openPanel(options)
+    }
+
     function openPanel(options) {
       closePanel()
       ensureStyle()
@@ -5445,7 +5506,7 @@ window.__ModuleLoader__.load({
         '<span class="dk_entryLabel">容器</span>'
       entry.addEventListener('click', (event) => {
         event.preventDefault()
-        openPanel()
+        openContainerPanel()
       })
       return entry
     }
@@ -5659,7 +5720,9 @@ window.__ModuleLoader__.load({
           // 契约：body 注册在**实现 id** 下，不是 kind（写错的表现是「标签能开、body 空白」）
           key: DOCKER_TAB_ID,
         }, DockerTabBody))
+        dockerTabApi = tabCtx.sidebarRight ?? null
         return () => {
+          dockerTabApi = null
           try { disposeBody() } catch { /* 已释放 */ }
           try { disposeType() } catch { /* 已释放 */ }
         }
@@ -5689,7 +5752,7 @@ window.__ModuleLoader__.load({
             void (async () => {
               const resolved = await resolveTargetForSession(spec, bookName)
               const rawPort = Number(spec.port)
-              openPanel({
+              openContainerPanel({
                 target: resolved ?? '',
                 sessionHint: resolved === undefined
                   ? { host: typeof spec.host === 'string' ? spec.host : '', port: Number.isInteger(rawPort) && rawPort > 0 ? rawPort : 22, book: bookName }
