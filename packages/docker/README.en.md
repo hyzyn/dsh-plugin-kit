@@ -6,11 +6,12 @@
 
 ## Features
 
+- **A resident session right-sidebar tab**: the panel lives as a session right-sidebar tab (`sidebar.right.pane.tab`) **side by side** with the conversation — after handing an error to the agent the logs stay on the right, without getting in the way of watching it work; collapsing it leaves the viewport. Panel-level state (target / view / filter text / selected container and its tab) is kept **across sessions**, and collapsing drops the live streams to hand the SSH channels back. Hosts without the right-sidebar services fall back to the original dock / modal, behaving exactly as before.
 - **Aggregated fetches across targets**: the Overview page fans out over every `targets[]` entry in parallel, and an unreachable target only spoils its own cell; the agent side exposes the same shape through `docker_ps target:"*"` / `docker_attention target:"*"`, so targets never block one another.
 - **"Needs attention" reads authoritative fields**: unhealthy / repeatedly restarting / OOM-killed / non-zero exit / dead; OOM and the real exit code come from one `docker inspect` — the 137 in a `docker ps` summary cannot separate an OOM kill from a manual kill, so filtering on the summary alone must misreport.
 - **Four long-lived SSE streams on one substrate**: log FOLLOW, `docker stats`, `docker events` and `docker pull` all run through the same `openSseStream` (heartbeat / active-stream registry / teardown on disconnect) and differ only in how they end — logs and pulls finish on their own, stats and events are aborted by the browser. Multi-select merged logs recover true cross-container ordering from the `--timestamps` prefix; "pause" freezes rendering only (the stream keeps receiving and flushes in one batch on resume).
 - **Read-only by default, capability switches in three tiers**: start / stop / remove, exec and image mutations are independent switches; while one is off the agent tools are **not registered** and the HTTP routes return 403 (the capability does not exist, rather than failing when called). Container names and IDs pass a whitelist, every command is built as argv with single-quote escaping, and passwords / passphrases are referenced as `env:VAR` and never sent back to the browser.
-- **Data-level reuse of dsh-tty, no code coupling**: no tty code is imported and tty needs no source change, so the two install and upgrade independently; with tty present three optional extension points are consumed — connection-bar actions (`ttyConnbar`), the right-side dock host (`ttyPanel.mountPane`) and the in-container terminal drawer (`ttyTerminal.mount`, embedded in place or opened as a tab by negotiated version) — and each degrades silently without tty or below the required version.
+- **Data-level reuse of dsh-tty, no code coupling**: no tty code is imported and tty needs no source change, so the two install and upgrade independently; with tty present three optional extension points are consumed — connection-bar actions (`ttyConnbar`), the terminal host (`ttyTerminal`: a new tab under the tab/dock carriers, an in-place drawer under the modal) and the terminal-side dock (`ttyPanel.mountPane`, used only by the fallback path) — and each degrades silently without tty or below the required version.
 
 ## Relationship with dsh-tty
 
@@ -23,8 +24,8 @@ This plugin stands on its own: it imports no tty code, and tty needs no source c
 | Host fingerprints | This plugin keeps its own `hostKeys` (TOFU) and **prefers tty's already-recorded fingerprints as the seed** — the same host does not have to be confirmed in two places |
 | Execution channel | Its own pooled SSH exec (`src/ssh-exec.ts`), fully independent of tty's PTY sessions; neither takes the other's slots |
 | Context entry point | With tty ≥ 0.13.0 it can optionally consume tty's client service `ttyConnbar` and insert a "Containers" button in the SSH connection bar (next to SFTP) (**shown as soon as it is registered**), with the target resolved from the current session at click time; if tty is missing or too old this is skipped silently |
-| Panel hosting | With tty ≥ 0.16 and the terminal panel open, the container panel is **docked to the right of the terminal** via `ttyPanel.mountPane` (resize / collapse / ✕ provided by tty) while the terminal stays visible and usable; otherwise it falls back to a full-screen modal with its own backdrop. The panel itself is the same component, only the host differs. The dock holds one panel at a time: when this plugin docks it takes down the previous one (for example tty's own SFTP), and conversely SFTP falls back to its own dialog when the mount slot is already taken |
-| Terminal hosting | Interactive terminals are hosted by tty (it owns the PTY): with tty ≥ 0.15 they are **embedded in place** into the terminal drawer at the bottom of this panel via `ttyTerminal.mount` (in dock mode this becomes a **new tab** in the same panel, avoiding a terminal inside a panel inside a terminal); with tty ≥ 0.14 it falls back to "open a tab + collapse this panel"; with neither it copies the command. This plugin implements no PTY / xterm / reconnect stack |
+| Panel hosting | **The default is a session right-sidebar tab** (`sidebar.right.pane.tab`): the panel and the conversation share the screen, so logs stay visible while the agent works; collapsing it leaves the viewport without leaving the session. The entries (sidebar "Containers" / the tty connection bar) only open or focus it, and **a page type deduplicates inside one column**, so clicking twice never opens a second tab. Without the right-sidebar services (older DSH), or with `localStorage['dsh-docker:carrier'] = 'modal'`, it falls back to the previous paths: with tty ≥ 0.16 and its panel open it docks to the right of the terminal via `ttyPanel.mountPane` (resize / collapse / ✕ provided by tty); otherwise a full-screen modal with its own backdrop. All three carriers are **one component**, differing only in shell and geometry |
+| Terminal hosting | Interactive terminals are hosted by tty (it owns the PTY). Under the **right-sidebar tab and the dock**, the card's "Terminal" button runs `docker exec -it` via `ttyTerminal.open` — i.e. **a new tab in the terminal panel**: the column is usually too narrow for a shell, and a tab unmounts on session switch, which would kill an embedded terminal. Under the **modal** it is **embedded in place** into the drawer at the bottom of the panel via `ttyTerminal.mount` (reading logs into entering the container without losing context). Without tty, or below the required version, it copies the command. This plugin implements no PTY / xterm / reconnect stack |
 | Division of labour | **Interactive troubleshooting** (`docker exec -it`, a shell inside the container, TUIs) is hosted by tty (embedded drawer or tab); **read-only inspection and agent automation** use this plugin's own exec channel |
 
 Reuse at the data level without coupling at the code level: the connection book and the fingerprint seed are "reading the same settings", and the connection-bar button is "consuming a generic extension point" — neither is "depending on tty's modules", so upgrading or uninstalling tty does not break this plugin along with it.
@@ -47,29 +48,54 @@ triggers re-resolution, with no restart needed).
 
 ## Usage
 
-Two entry points, one panel:
+Two entry points, one panel. **The default carrier is a session right-sidebar tab** — the entries only open or
+focus it, and the panel sits side by side with the conversation: after handing an error to the agent the logs stay
+on the right, without getting in the way of watching it work.
 
-- **Sidebar “Containers”** (the main entry point): works for any target, including local docker and switching between multiple targets.
+- **Sidebar "Containers"** (the main entry point): works for any target, including local docker and switching
+  between multiple targets. If it is already open it focuses (a page type deduplicates inside one column), so
+  clicking twice never opens a second "Docker containers" tab.
 - **SSH connection bar "Containers" button** (a contextual shortcut, tty ≥ 0.13.0): in an SSH tab of the tty
   terminal panel a "Containers" button appears next to the connection bar's SFTP button — **shown as soon as it is
   registered**, and clicking it opens the panel directly on **the host of the current session**, with no target to
   pick. The target is resolved at click time: when the session comes from the connection book it matches by entry
   name, otherwise it matches a resolved target by `host:port`; **no matching target does not hide the
   button** — the panel carries a hint naming the session host (including the connection-book name) and how to
-  configure it in the settings card.
+  configure it in the settings card. This path carries a target into the tab, and **a new target remounts the
+  panel** (state resets — which is exactly what "show me this host" means); the target-less main entry keeps
+  whatever state the panel had.
 
-  ![docker panel docked to the right of the terminal panel: the terminal stays visible and usable](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-docker-dock.png)
+### Carriers
 
-  A panel opened this way **never covers the terminal**: with tty ≥ 0.16 it docks to the right of the terminal
-  panel (draggable width, collapsible into a narrow strip, ✕ to tuck away) while you keep typing in the terminal;
-  only with an older tty or no open panel does it fall back to the full-screen modal. In dock mode the card's
-  "Terminal" button instead **opens a new tab in the same terminal panel** running
-  `docker exec -it` (the panel is already inside a terminal, so nesting one more layer makes no sense); it also
-  **stops rendering the panel's own header** — the title and ✕ are handled by the sidebar title bar, and the
-  refresh control and read-only badge move to the
-  **end of the toolbar, right-aligned** (while refreshing the icon spins itself, with no extra spinner): the left
-  end stays for the target / view / search / filter controls, so refresh is not mistaken for the first filter and
-  sits where it does in the non-dock header; a 520px narrow column does not leave a blank line behind.
+| Carrier | When | Behaviour |
+| --- | --- | --- |
+| **Session right-sidebar tab** (default) | the host provides `sidebarRight` / `sidebarRightTabs` | side by side with the conversation; collapsing hides it without losing state (panel-level state lives in a module store, see below); the right sidebar's fullscreen mode gives it the whole viewport |
+| **Dock right of the terminal** | no right-sidebar service, or `localStorage['dsh-docker:carrier'] = 'modal'`, with tty ≥ 0.16 and its panel open | docked to the right of the terminal panel (resize / collapse / ✕ provided by tty, the terminal stays usable); one dock at a time — docking this plugin takes down the previous occupant (for example tty's own SFTP) |
+| **Full-screen modal** (fallback) | neither of the above | its own backdrop, closes on outside click; the panel sits above tty's modal in z-order |
+
+Rolling back to the old shape is one console line: `localStorage.setItem('dsh-docker:carrier', 'modal')`
+(`removeItem` restores the default). That switch is a temporary grey-release knob, so it deliberately stays out of
+settings — not worth changing the host config schema, the settings card and the docs for it.
+
+**State retention**: the panel inspects hosts, not workspaces, so view / filter text / selected container
+(including its overview-logs-stats tab) / target are kept **across sessions**; the log filter and LINES switch
+inside a container detail belong to that container and are not kept. **Collapsing the tab drops every live
+stream** (handing the SSH channels back) and expanding reconnects — single-container and merged log streams
+already open with `tail`, so history refills itself.
+
+**Dock fallback carrier** (right of the terminal):
+
+![docker panel docked to the right of the terminal panel: the terminal stays visible and usable](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-docker-dock.png)
+
+A panel opened this way **never covers the terminal**: with tty ≥ 0.16 it docks to the right of the terminal
+panel (draggable width, collapsible into a narrow strip, ✕ to tuck away) while you keep typing in the terminal.
+In dock mode the card's "Terminal" button **opens a new tab in the same terminal panel** running
+`docker exec -it` (the panel is already inside a terminal, so nesting one more layer makes no sense); it also
+**stops rendering the panel's own header** — the title and ✕ are handled by the sidebar title bar, and the
+refresh control and read-only badge move to the
+**end of the toolbar, right-aligned** (while refreshing the icon spins itself, with no extra spinner): the left
+end stays for the target / view / search / filter controls, so refresh is not mistaken for the first filter and
+sits where it does in the non-dock header; a 520px narrow column does not leave a blank line behind.
 
 Inside the panel:
 

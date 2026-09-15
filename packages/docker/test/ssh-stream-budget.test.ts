@@ -12,7 +12,7 @@
  * `(SSH) Channel open failure: open failed`，对用户没有任何指向性。
  */
 import { describe, expect, it } from 'vitest'
-import { describeExecError, streamBudgetError } from '../src/ssh-exec.js'
+import { describeExecError, isTransportError, streamBudgetError } from '../src/ssh-exec.js'
 
 describe('SSH 长流配额', () => {
   it('未达上限放行', () => {
@@ -52,5 +52,33 @@ describe('ssh2 通道错误的可读化', () => {
   it('其它错误原样返回，不硬改文案', () => {
     expect(describeExecError('connection lost')).toBe('connection lost')
     expect(describeExecError('')).toBe('')
+  })
+})
+
+describe('传输层错误的识别（决定要不要丢连接重试一次）', () => {
+  it('通道级 / 连接级错误：该重连', () => {
+    for (const message of [
+      '(SSH) Channel open failure: open failed',
+      'Not connected',
+      'connection lost',
+      'read ECONNRESET',
+      'write EPIPE',
+      'No response from server',
+      'SSH exec 打开 channel 超时（30000ms）：目标1',
+      'SSH 连接超时（目标1）',
+    ]) {
+      expect(isTransportError(message), message).toBe(true)
+    }
+  })
+
+  it('业务失败绝不能被当成传输层错误 —— 否则一条命令会被重发一次', () => {
+    for (const message of [
+      'SSH exec 失败：docker: No such container: a1b2c3',
+      'SSH exec 失败：Error response from daemon: conflict',
+      'SSH exec 失败：退出码 1',
+      '',
+    ]) {
+      expect(isTransportError(message), message).toBe(false)
+    }
   })
 })
