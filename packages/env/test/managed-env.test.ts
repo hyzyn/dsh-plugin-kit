@@ -61,7 +61,9 @@ describe('writeManagedEntries + readManagedEntries 往返', () => {
     const text = readFileSync(file, 'utf8')
     expect(text.startsWith('# dsh env managed file\n\n' + MARK_START)).toBe(true)
     expect(text.endsWith(MARK_END + '\n')).toBe(true)
-    expect(statSync(file).mode & 0o777).toBe(0o600)
+    // POSIX 权限位只在 POSIX 上存在：Windows 的 writeFileSync mode 是 no-op，
+    // statSync().mode 恒为 0o666。断言放进平台分支，其余检查照常跑。
+    if (process.platform !== 'win32') expect(statSync(file).mode & 0o777).toBe(0o600)
     expect(readdirSync(dir)).toEqual(['env.yml'])
 
     const read = readManagedEntries()

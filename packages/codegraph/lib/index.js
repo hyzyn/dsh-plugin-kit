@@ -448,6 +448,21 @@ function timeoutError(command, timeoutMs) {
     return error;
 }
 /**
+ * 收尾判定（纯函数，便于在非 Windows 上覆盖「超时与 close 竞态」）。
+ *
+ * 为什么必须显式带 `timedOut`：超时时我们是先 `taskkill` 再抛错，而被杀的子进程会先
+ * 触发 `close`——不认这个标志的话，close 分支会抢先以「Command failed: …」结案，
+ * `cliErrorMessage` 就认不出超时，卡片报的错也不会点名 `cliTimeoutMs` /
+ * `indexTimeoutMs`（Windows CI 上实测到的就是这个）。
+ */
+export function settleCliRun(input) {
+    if (input.timedOut)
+        return { ok: false, error: timeoutError(input.command, input.timeoutMs) };
+    if (input.code === 0)
+        return { ok: true, stdout: input.stdout };
+    return { ok: false, error: new Error(`Command failed: ${input.command} ${input.args.join(' ')}\n${input.stderr}`) };
+}
+/**
  * Windows shim 分支的执行器：`spawn` + 自管超时，好在超时时拿到 pid 去 `taskkill /T`。
  * 命令行与转义规则和直连分支完全一致；stdout 上限同样按 MAX_BUFFER 卡。
  */
@@ -462,22 +477,29 @@ function runViaWindowsShim(command, args, cwd, timeoutMs) {
         let stdout = '';
         let stderr = '';
         let settled = false;
-        const finish = (run) => {
+        let timedOut = false;
+        const finish = (outcome) => {
             if (settled)
                 return;
             settled = true;
             clearTimeout(timer);
-            run();
+            if (outcome.ok)
+                resolve(outcome.stdout);
+            else
+                reject(outcome.error);
         };
+        const settle = (code) => settleCliRun({ command, args, timeoutMs, timedOut, code, stdout, stderr });
         const timer = setTimeout(() => {
-            // 先连进程树一起收，再抛出超时错误（否则孙进程还在跑）
-            void killProcessTree(child.pid).finally(() => finish(() => reject(timeoutError(command, timeoutMs))));
+            // 先置标志、再连进程树一起收：被杀的子进程会先触发 close，标志不到位就会被
+            // close 分支抢先结案，超时形状丢失
+            timedOut = true;
+            void killProcessTree(child.pid).finally(() => finish(settle(null)));
         }, timeoutMs);
         child.stdout?.on('data', (chunk) => {
             if (settled)
                 return;
             if (stdout.length + chunk.length > MAX_BUFFER) {
-                void killProcessTree(child.pid).finally(() => finish(() => reject(new Error(`stdout maxBuffer exceeded (${MAX_BUFFER} bytes)`))));
+                void killProcessTree(child.pid).finally(() => finish({ ok: false, error: new Error(`stdout maxBuffer exceeded (${MAX_BUFFER} bytes)`) }));
                 return;
             }
             stdout += chunk.toString();
@@ -488,15 +510,8 @@ function runViaWindowsShim(command, args, cwd, timeoutMs) {
             if (stderr.length < MAX_BUFFER)
                 stderr += chunk.toString();
         });
-        child.on('error', (error) => finish(() => reject(error)));
-        child.on('close', (code) => {
-            finish(() => {
-                if (code === 0)
-                    resolve(stdout);
-                else
-                    reject(new Error(`Command failed: ${command} ${args.join(' ')}\n${stderr}`));
-            });
-        });
+        child.on('error', (error) => finish({ ok: false, error }));
+        child.on('close', (code) => finish(settle(code)));
     });
 }
 /**

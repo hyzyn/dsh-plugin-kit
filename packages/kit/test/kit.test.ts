@@ -149,10 +149,12 @@ describe('managed-block', () => {
       writeFileSync(file, 'old')
       writeFileAtomic(file, 'new-content\n')
       expect(readFileSync(file, 'utf8')).toBe('new-content\n')
-      expect(statSync(file).mode & 0o777).toBe(0o600)
+      // POSIX 权限位只在 POSIX 上存在：Windows 的 writeFileSync mode 是 no-op，
+      // statSync().mode 恒为 0o666。断言放进平台分支，其余检查照常跑。
+      if (process.platform !== 'win32') expect(statSync(file).mode & 0o777).toBe(0o600)
       writeFileAtomic(file, 'again', 0o640)
       expect(readFileSync(file, 'utf8')).toBe('again')
-      expect(statSync(file).mode & 0o777).toBe(0o640)
+      if (process.platform !== 'win32') expect(statSync(file).mode & 0o777).toBe(0o640)
       // 临时文件已 rename 掉，目录里只剩目标文件
       expect(readdirSync(dir)).toEqual(['store.yml'])
     } finally {
