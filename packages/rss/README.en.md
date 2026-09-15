@@ -6,10 +6,10 @@
 
 ## Features
 
-- **The model can cite today's news directly**: the digest is injected as a `systemPrompt` section, so asking "what's worth reading today" returns real content.
-- **Generated automatically every day**: scheduled fetching + aggregation by category; the modal lets you search, filter by category, and copy the Markdown.
-- **Manage feeds in the GUI**: built-in channels + custom sources, one-click add from the curated RSSHub catalog, and OPML import/export.
-- **Failures are visible but not fatal**: when an individual source is down only that source is flagged and the rest still render; the optional AI summary falls back to the original excerpt and explains why.
+- **The digest is injected as a systemPrompt section**: the model can cite the day's items directly, so asking "what's worth reading today" returns real content.
+- **Scheduled fetching, aggregation by category**: generated daily; the modal lets you search, filter by category, and copy the Markdown.
+- **Feeds maintained inside the panel**: built-in channels + custom sources, one-click add from the curated RSSHub catalog, and OPML import/export.
+- **A failed source degrades in place**: when an individual source is down only that source is flagged and the rest still render; the optional AI summary falls back to the original excerpt and explains why.
 
 ## Transition layer while refreshing (0.3.1)
 

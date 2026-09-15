@@ -6,12 +6,12 @@
 
 ## Features
 
-- **`status --json` → an 8-cell status panel**: `initialized` / `version` / `projectPath` / `fileCount` / `nodeCount` / `edgeCount` / `lastIndexed` / `pendingChanges` / `languages` / `dbSizeBytes` laid out as cells with the raw JSON behind a `<details>`; a symbol drill-down returns its line-numbered verbatim source plus `callers` / `callees` / `impact` lists.
+- **`status --json` fields laid out per section**: `initialized` / `version` / `projectPath` / `fileCount` / `nodeCount` / `edgeCount` / `lastIndexed` / `pendingChanges` / `languages` / `dbSizeBytes` render as cells with the raw JSON behind a `<details>`; a symbol drill-down returns its line-numbered verbatim source plus `callers` / `callees` / `impact` lists.
 - **Two index paths, two timeout buckets**: `sync -- <path>` incremental and `index [--force] -- <path>` full rebuild run on `indexTimeoutMs` (600 s); `status` / `query` / `callers` / `callees` / `impact` / `node` run on `cliTimeoutMs` (60 s).
 - **Managed MCP server row**: dsh-mcp-client declares no MCP roots, so `codegraph serve --mcp` resolves `.codegraph/` upward from `process.cwd()` only; the plugin maintains the `@deepseek-ai/dsh-mcp-client` row in `~/.dsh/cordis.patch.yml` with `config.cwd`, and the rewrite hot-loads through watchUserPatches to rebuild the MCP connection. One server mounts one project at a time; other projects are queried with `projectPath`.
 - **Index detection reads `.codegraph/*.db`, not the directory**: directory existence mistakes the CLI's own install dir `~/.codegraph` for a project index, dropping the managed row on an unindexed cwd — measured there, `codegraph_explore`'s required grows from `["query"]` to `["query","projectPath"]`. Anything short of a real index leaves the existing cwd untouched, and the card reports `indexState` plus the reason.
 - **The managed row's cwd follows the active session**: `followSession` (on by default) aligns the row when a session switches to a project with a valid index, otherwise falls back to the pinned path; "Set as default project" writes that path into the `codegraph` settings namespace and sets `followSession` false (an explicit pin beats session following).
-- **Two systemPrompt sections, independent switches, CLI-gated**: `plugin:dsh-codegraph` (order 150) and `plugin:dsh-codegraph:usage` (order 151), both behind a `<command> --version` probe; `announceToAgent` / `usageGuidance` add or remove the sections live through the settings namespace.
+- **Two systemPrompt sections, switches and gating independent**: `plugin:dsh-codegraph` (order 150) and `plugin:dsh-codegraph:usage` (order 151), both behind a `<command> --version` probe; `announceToAgent` / `usageGuidance` add or remove the sections live through the settings namespace.
 
 ![Codegraph settings card: 8-cell status panel, symbol drill-down, follow toggle](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-codegraph.png)
 

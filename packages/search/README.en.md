@@ -6,10 +6,10 @@
 
 ## Features
 
-- **Content on open**: no request, zero latency — results come from the local cache first, then get filled in.
-- **Broad coverage**: past sessions, Prompts, MCP tools, and settings panels all live in the same palette, shown in groups.
+- **Local cache renders first**: no request, zero latency — the cache paints results first, then remote results fill in.
+- **Four target classes in one palette**: past sessions, Prompts, MCP tools and settings panels, shown in groups.
 - **Keyboard first**: open it with ⌘/Ctrl+K; a row = icon + title (with an optional subtitle) + metadata on the right + a shortcut chip.
-- **No need to remember paths**: jump straight to a result, without first working out "which settings page does this live on".
+- **Results jump directly**: hit a result and go, without first working out "which settings page does this live on".
 
 ![Global Search plugin](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-search.png)
 ![Global Search results (recent sessions / past sessions / Prompts / MCP tools / settings groups)](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-search-query.png)

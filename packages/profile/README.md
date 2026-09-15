@@ -6,10 +6,10 @@
 
 ## 特性
 
-- **建 profile 不用手抄命令**：三种模板一键创建（`@deepseek-ai/dsh-base` 仅核心，或再加 `dsh-web-app` / `dsh-headless`）；复制跳过 `node_modules` 与 lockfile 并自动 `pnpm install`。
-- **端口跟着 profile 存**：为每个 profile 记启动端口，复制启动命令自动带上 `--port`，多个 web profile 不再撞端口。
-- **重命名 / 删除一步到位**：目录移动 + manifest 改名一起做；删除有面板内二次确认（不可撤销）。
-- **状态与结构可见**：初始化徽章、bundle 层、依赖数、目录路径一目了然；缺 `cordis.patch.yml` 会提示。
+- **模板化创建，不手抄清单**：三种模板一键创建（`@deepseek-ai/dsh-base` 仅核心，或再加 `dsh-web-app` / `dsh-headless`）；复制跳过 `node_modules` 与 lockfile 并自动 `pnpm install`。
+- **端口随 profile 落盘**：为每个 profile 记录启动端口，复制出的启动命令自动带 `--port`，多个 web profile 不再撞端口。
+- **重命名同步目录与 manifest**：一次操作同时完成目录移动与 `package.json` 改名；删除在面板内二次确认（不可撤销）。
+- **状态与结构直读**：初始化徽章、bundle 层、依赖数、目录路径；缺 `cordis.patch.yml` 会提示。
 
 ## Profile 是什么
 

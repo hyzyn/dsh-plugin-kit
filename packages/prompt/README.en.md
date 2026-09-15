@@ -6,10 +6,10 @@
 
 ## Features
 
-- **Multiple Prompts × multiple versions**: one Prompt can hold many versions — save as a new version in one click / roll back in one click, with old versions fully preserved.
-- **A/B testing**: randomly hit the A/B versions by ratio, validating prompt changes with real usage.
-- **Enabled means injected**: the selected Prompt is injected as a `systemPrompt` section and takes effect hot as soon as it is saved.
-- **Export and sharing**: a Prompt can be exported to take away or share with others.
+- **Two-level model: Prompts and versions**: one Prompt holds many versions — one step to save a new version, one step to roll back, with old versions fully preserved.
+- **A/B split by ratio**: randomly hit the A/B versions by ratio, validating prompt changes on real traffic.
+- **Enabling injects it as a systemPrompt section**: the selected Prompt is injected as a `systemPrompt` section and takes effect hot as soon as it is saved.
+- **Exportable and importable**: export as `json` / `markdown`, import JSON, and copy a shareable form in one click.
 
 ![Prompt management card: visual editing / version management / A/B testing](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-prompt.png)
 

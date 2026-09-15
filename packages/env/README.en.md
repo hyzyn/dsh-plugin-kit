@@ -6,11 +6,11 @@
 
 ## Features
 
-- **Secrets are never stored as plaintext**: secret values are written into the official credential store (the refs of `~/.dsh/.credentials.yaml`), and the env file keeps only the manifest; the API never returns plaintext (`value: null`), the GUI shows a password field, and saving with an empty field means keeping the stored value.
-- **`js:` expressions act as references**: expressions such as `js:process.env.API_KEY` stay in the file and are evaluated by the host (the YAML `!!js` dialect, the same as dsh patch files), so secrets need not be hard-coded.
-- **Saving takes effect immediately**: the resolved values are written into the current process’s `process.env`, so the host and subsequently started child processes can use them at once — no restart needed.
-- **Fully reversible storage**: when the host has no credential seam or `secretsInCredentials` is turned off, the plugin falls back to “env-file-only storage” — it never writes a half-migrated state.
-- **Security boundaries are spelled out**: routes are loopback + same-origin only and the env file is always 0600, and the docs explicitly warn against exposing the GUI port through tunnels / reverse proxies.
+- **Secret values never enter the env file**: secret values are written into the official credential store (the refs of `~/.dsh/.credentials.yaml`) and the env file keeps only the manifest; the API never returns plaintext (`value: null`), the GUI renders a password field, and saving with an empty field keeps the stored value.
+- **`js:` expressions are evaluated late by the host**: expressions such as `js:process.env.API_KEY` stay in the file and are evaluated by the host (the YAML `!!js` dialect, the same as dsh patch files), so secrets need not be hard-coded.
+- **Saving writes into the current process**: the resolved values are written into the current process’s `process.env`, so the host and subsequently started child processes can use them at once — no restart needed.
+- **Storage fallback is all-or-nothing**: when the host has no credential seam or `secretsInCredentials` is turned off, the plugin falls back to “env-file-only storage” and never writes a half-migrated state.
+- **Fences and file permissions are explicit constraints**: routes are loopback + same-origin only, the env file is always 0600, and the docs explicitly warn against exposing the GUI port through tunnels / reverse proxies.
 
 ![Environment variables / secrets card](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-env.png)
 
