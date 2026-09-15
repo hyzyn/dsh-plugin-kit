@@ -1,6 +1,6 @@
 import z from '@deepseek-ai/schemastery';
 import { definePlugin, dshHome, isLoopbackRequest, jsYamlSchema, readJsonBody, writeFileAtomic, writeJson, } from '@hyzyn/dsh-kit';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import yaml from 'js-yaml';
@@ -145,14 +145,47 @@ function renderBlockBody(rows) {
     const patches = rows.map((row) => ({ insert: [row] }));
     return yaml.dump(patches, { schema: YAML_SCHEMA, lineWidth: -1, noRefs: true });
 }
-/** 区块整体（含标记行）切成行数组；结尾保留一个空串维持换行。 */
-function renderBlockLines(range, rows) {
-    const markerStart = range?.markerStart ?? OWN_BLOCK_START;
-    const markerEnd = range?.markerEnd ?? OWN_BLOCK_END;
+/**
+ * 文件主行尾是不是 CRLF。
+ *
+ * 调用方按 `\n` 切行，所以 CRLF 文件里每行末尾留着一个 `\r`。重写区块时必须沿用
+ * 这个行尾：否则在同一份文件里会写出「标记行 CRLF + 块体 LF」的混合行尾——YAML
+ * 照样能解析、二次同步也幂等，但在编辑器与 git 里整块显示成改动（Windows 上手工
+ * 编辑过 cordis.patch.yml 就会踩到）。空行不计票，避免结尾换行左右判定。
+ */
+function usesCarriageReturn(lines) {
+    let crlf = 0;
+    let lf = 0;
+    for (const line of lines) {
+        if (line === '')
+            continue;
+        if (line.endsWith('\r'))
+            crlf += 1;
+        else
+            lf += 1;
+    }
+    return crlf > lf;
+}
+/**
+ * 区块整体（含标记行）切成行数组。
+ *
+ * `trailingBlank` 只在区块被追加/正好落在文件末尾时才为 true：join('\n') 之后需要一个
+ * 结尾空行保住文件末尾换行。替换已有区块时不能补——区块后面本来就有行，再补一个空行会
+ * 让每次首次重写都凭空多出一行（旧实现恒定补，实测重写后文件多一个空行）。
+ */
+function renderBlockLines(range, rows, carriageReturn, trailingBlank) {
+    // 标记行沿用原文（可能带 \r），先剥掉再统一按目标行尾补，避免写出 `\r\r`
+    const markerStart = (range?.markerStart ?? OWN_BLOCK_START).replace(/\r$/, '');
+    const markerEnd = (range?.markerEnd ?? OWN_BLOCK_END).replace(/\r$/, '');
     const bodyLines = renderBlockBody(rows).split('\n');
     if (bodyLines[bodyLines.length - 1] === '')
         bodyLines.pop();
-    return [markerStart, ...bodyLines, markerEnd, ''];
+    // 空串是「文件结尾的换行」占位，不加行尾；markerEnd 为空串时（自愈缺结束标记的
+    // 区块）同样不能加成一行孤立的 \r
+    const suffix = carriageReturn ? '\r' : '';
+    const withEol = (line) => (line === '' ? '' : line + suffix);
+    const block = [withEol(markerStart), ...bodyLines.map(withEol), withEol(markerEnd)];
+    return trailingBlank ? [...block, ''] : block;
 }
 function isCodegraphServerRow(row) {
     return row.name === MCP_CLIENT_PACKAGE && row.config?.serverName === MCP_SERVER_NAME;
@@ -164,6 +197,7 @@ function isCodegraphServerRow(row) {
 export function syncManagedMcpRow(lines, decision) {
     const state = indexState(decision.targetCwd);
     const indexed = state === 'indexed';
+    const carriageReturn = usesCarriageReturn(lines);
     const ownRange = findBlock(lines, 'dsh-codegraph mcp managed', 'end dsh-codegraph mcp managed');
     const mcpRange = findBlock(lines, DSH_MCP_BLOCK_KEY, DSH_MCP_BLOCK_END_KEY);
     const ownRows = ownRange ? parseBlockRows(lines, ownRange) : [];
@@ -212,11 +246,11 @@ export function syncManagedMcpRow(lines, decision) {
         // 复用 MCP 卡片区块里的行：只对齐 cwd，其余字段（含 disabled）保持用户配置。
         if (decision.manageEnabled && indexed && mcpRow.config?.cwd !== decision.targetCwd) {
             mcpRow.config = { ...mcpRow.config, cwd: decision.targetCwd };
-            replacements.push({ range: mcpRange, text: renderBlockLines(mcpRange, mcpRows) });
+            replacements.push({ range: mcpRange, text: renderBlockLines(mcpRange, mcpRows, carriageReturn, mcpRange.end >= lines.length) });
         }
         // 本插件区块若还残留重复行则让位删除（防 serverName 冲突）。
         if (ownRange && ownRows.some((row) => isCodegraphServerRow(row))) {
-            replacements.push({ range: ownRange, text: renderBlockLines(ownRange, ownRows.filter((row) => !isCodegraphServerRow(row))) });
+            replacements.push({ range: ownRange, text: renderBlockLines(ownRange, ownRows.filter((row) => !isCodegraphServerRow(row)), carriageReturn, ownRange.end >= lines.length) });
         }
         status = {
             mode: 'dsh-mcp',
@@ -232,7 +266,7 @@ export function syncManagedMcpRow(lines, decision) {
         const ownRowIndex = ownRows.findIndex((row) => isCodegraphServerRow(row));
         if (!decision.manageEnabled) {
             if (ownRowIndex !== -1 && ownRange) {
-                replacements.push({ range: ownRange, text: renderBlockLines(ownRange, ownRows.filter((row) => !isCodegraphServerRow(row))) });
+                replacements.push({ range: ownRange, text: renderBlockLines(ownRange, ownRows.filter((row) => !isCodegraphServerRow(row)), carriageReturn, ownRange.end >= lines.length) });
                 status = { mode: 'none', indexed, indexState: state, note: 'MCP 联动已关闭，已撤销本插件托管行' };
             }
             else {
@@ -243,7 +277,7 @@ export function syncManagedMcpRow(lines, decision) {
             const row = ownRows[ownRowIndex];
             if (indexed && row.config?.cwd !== decision.targetCwd) {
                 row.config = { ...row.config, cwd: decision.targetCwd };
-                replacements.push({ range: ownRange, text: renderBlockLines(ownRange, ownRows) });
+                replacements.push({ range: ownRange, text: renderBlockLines(ownRange, ownRows, carriageReturn, ownRange.end >= lines.length) });
             }
             status = {
                 mode: 'own',
@@ -267,7 +301,7 @@ export function syncManagedMcpRow(lines, decision) {
                     cwd: decision.targetCwd,
                 },
             };
-            replacements.push({ range: { start: lines.length, end: lines.length, markerStart: OWN_BLOCK_START, markerEnd: OWN_BLOCK_END }, text: renderBlockLines(null, [row]) });
+            replacements.push({ range: { start: lines.length, end: lines.length, markerStart: OWN_BLOCK_START, markerEnd: OWN_BLOCK_END }, text: renderBlockLines(null, [row], carriageReturn, true) });
             status = { mode: 'own', id: MCP_ROW_ID, cwd: decision.targetCwd, indexed, indexState: state, note: '已自动托管 codegraph MCP 服务器' };
         }
         else {
@@ -386,25 +420,98 @@ export function windowsCommandLine(command, args) {
     return [escapeCommand(command), ...args.map(escapeArgument)].join(' ');
 }
 /**
+ * Windows 上连子孙进程一起收：`taskkill /T` 杀掉以该 pid 为根的整棵树。
+ *
+ * 为什么不能只 `child.kill()`：shim 分支的直接子进程是 cmd.exe，真正的 CLI 是它的
+ * 孙进程；`execFile` 的 `timeout` 与 `child.kill()` 都只作用于直接子进程，大仓库的
+ * `index` 会继续跑完（十几分钟起），卡片却已经报超时。POSIX 分支不需要这个：直接
+ * 子进程就是 CLI，杀掉即可（它自己的 daemon 是设计上要长活的，不在此列）。
+ */
+export function taskkillArgs(pid) {
+    return ['/pid', String(pid), '/T', '/F'];
+}
+async function killProcessTree(pid) {
+    if (process.platform !== 'win32' || pid === undefined)
+        return;
+    try {
+        await execFileAsync('taskkill', taskkillArgs(pid), { windowsHide: true });
+    }
+    catch {
+        /* 进程已经退出、或 taskkill 不可用：忽略，超时错误照常抛出 */
+    }
+}
+/** 一次 CLI 调用的超时错误：形状与 execFile 一致，让 `cliErrorMessage` 认出来。 */
+function timeoutError(command, timeoutMs) {
+    const error = new Error(`Command failed: ${command} (timeout after ${timeoutMs}ms)`);
+    error.killed = true;
+    error.signal = 'SIGTERM';
+    return error;
+}
+/**
+ * Windows shim 分支的执行器：`spawn` + 自管超时，好在超时时拿到 pid 去 `taskkill /T`。
+ * 命令行与转义规则和直连分支完全一致；stdout 上限同样按 MAX_BUFFER 卡。
+ */
+function runViaWindowsShim(command, args, cwd, timeoutMs) {
+    return new Promise((resolve, reject) => {
+        const child = spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `"${windowsCommandLine(command, args)}"`], {
+            cwd,
+            // 命令行已经自己转义好了，让 Node 原样交给 CreateProcess，别再包一层引号。
+            windowsVerbatimArguments: true,
+            windowsHide: true,
+        });
+        let stdout = '';
+        let stderr = '';
+        let settled = false;
+        const finish = (run) => {
+            if (settled)
+                return;
+            settled = true;
+            clearTimeout(timer);
+            run();
+        };
+        const timer = setTimeout(() => {
+            // 先连进程树一起收，再抛出超时错误（否则孙进程还在跑）
+            void killProcessTree(child.pid).finally(() => finish(() => reject(timeoutError(command, timeoutMs))));
+        }, timeoutMs);
+        child.stdout?.on('data', (chunk) => {
+            if (settled)
+                return;
+            if (stdout.length + chunk.length > MAX_BUFFER) {
+                void killProcessTree(child.pid).finally(() => finish(() => reject(new Error(`stdout maxBuffer exceeded (${MAX_BUFFER} bytes)`))));
+                return;
+            }
+            stdout += chunk.toString();
+        });
+        child.stderr?.on('data', (chunk) => {
+            if (settled)
+                return;
+            if (stderr.length < MAX_BUFFER)
+                stderr += chunk.toString();
+        });
+        child.on('error', (error) => finish(() => reject(error)));
+        child.on('close', (code) => {
+            finish(() => {
+                if (code === 0)
+                    resolve(stdout);
+                else
+                    reject(new Error(`Command failed: ${command} ${args.join(' ')}\n${stderr}`));
+            });
+        });
+    });
+}
+/**
  * 运行 codegraph CLI，返回 stdout；失败时抛错。
  *
- * Windows 上命令不是 `.exe` 时改走 cmd.exe（见上方说明），其余平台与
- * `.exe` 命令仍走原来的直连路径。两条分支共用 maxBuffer / timeout，所以
- * `cliErrorMessage` 的超时判定（killed / signal）对两者一致。
- *
- * 已知限制（仅 Windows 的 shim 分支）：超时由 execFile 杀掉的只是直接子进程
- * cmd.exe，shim 里真正的 CLI 孙进程会继续跑完——超时提示仍然准时，但大盘索引
- * 不会立刻停下。要连孙进程一起杀需要改成 spawn + taskkill，超出本次修复范围。
+ * Windows 上命令不是 `.exe` 时改走 cmd.exe（见上方说明），且用 `spawn` 自管超时
+ * 以便 `taskkill /T` 连孙进程一起收；其余平台与 `.exe` 命令仍走 `execFile` 直连
+ * （那边直接子进程就是 CLI，`timeout` 够用）。两条分支的失败都转成同一形状的错误，
+ * 所以 `cliErrorMessage` 的超时判定（killed / signal）对两者一致。
  */
 async function runCodegraph(command, args, cwd, timeoutMs) {
     const viaWindowsShim = process.platform === 'win32' && !WINDOWS_EXECUTABLE_REGEXP.test(command);
-    const { stdout } = await execFileAsync(viaWindowsShim ? process.env.ComSpec || 'cmd.exe' : command, viaWindowsShim ? ['/d', '/s', '/c', `"${windowsCommandLine(command, args)}"`] : args, {
-        cwd,
-        maxBuffer: MAX_BUFFER,
-        timeout: timeoutMs,
-        // 命令行已经自己转义好了，让 Node 原样交给 CreateProcess，别再包一层引号。
-        ...(viaWindowsShim ? { windowsVerbatimArguments: true, windowsHide: true } : {}),
-    });
+    if (viaWindowsShim)
+        return runViaWindowsShim(command, args, cwd, timeoutMs);
+    const { stdout } = await execFileAsync(command, args, { cwd, maxBuffer: MAX_BUFFER, timeout: timeoutMs });
     return stdout;
 }
 /**
@@ -683,6 +790,8 @@ isCliAvailable) {
                         usageGuidance: current.usage,
                         /** CLI 探测结果：false 时两段 systemPrompt 都不会注入；undefined = 还没探测完。 */
                         cliAvailable: isCliAvailable(),
+                        /** 实际调用的 CLI 命令（插件配置 command，默认 codegraph）：探测失败时卡片要报出来。 */
+                        command: cli.command,
                         indexed: state === 'indexed',
                         indexState: state,
                         mcp: snapshotMcpStatus(),
@@ -789,6 +898,7 @@ isCliAvailable) {
                     usageGuidance: outcome.current.usage,
                     manageEnabled: outcome.current.manage,
                     cliAvailable: isCliAvailable(),
+                    command: cli.command,
                     mcp: outcome.status,
                 });
             },

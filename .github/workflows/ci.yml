@@ -4,10 +4,27 @@ on:
   push:
     branches: [main]
   pull_request:
+  # 手动触发：用于在不动 main、也不开 PR 的分支上跑矩阵（workflow_dispatch 必须先
+  # 存在于默认分支才可调用，所以它随本文件一起进 main 之后才生效）。
+  # test_filter 留空 = 跑全量 pnpm test；填路径/文件名 = 只跑那部分（例如
+  # packages/codegraph/test/cli-route.test.ts，Windows 上的 shim spawn 用例）。
+  workflow_dispatch:
+    inputs:
+      test_filter:
+        description: '可选的 vitest 过滤（路径或文件名片段），留空跑全量'
+        required: false
+        default: ''
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # 三平台矩阵：插件里存在平台分支（Windows 经 cmd.exe 调 CLI shim、taskkill 收进程树、
+    # 补丁文件行尾），而这里历史上唯一的 Windows 事故（spawn codegraph ENOENT）就是
+    # 「CI 只跑 ubuntu + 该路径在 Windows 上被跳过」漏掉的。构建 / 类型 / 测试三平台都跑。
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -18,9 +35,22 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r build
       - run: pnpm -r typecheck
-      - run: pnpm test
+      # shell 显式指定 bash：三个 runner 上都有，免得 Windows 默认走 pwsh 而分叉行为
+      - name: Test
+        shell: bash
+        env:
+          TEST_FILTER: ${{ inputs.test_filter }}
+        run: |
+          if [ -n "$TEST_FILTER" ]; then
+            npx vitest run "$TEST_FILTER"
+          else
+            pnpm test
+          fi
+      # 下面三项是发布不变量检查，只跟仓库内容有关、与运行平台无关：留在 Linux 跑一次，
+      # 免得 Windows 的 shell / 行尾差异造成假红（发布 workflow 也是 ubuntu）。
       # 聚合层必须与各包的插件声明一致：有 diff 说明提交时忘了 pnpm aggregate
       - name: Check aggregate is up to date
+        if: matrix.os == 'ubuntu-latest'
         run: |
           pnpm aggregate
           git diff --exit-code -- cordis.patch.yml package.json packages/all/cordis.patch.yml packages/all/package.json \
@@ -28,9 +58,11 @@ jobs:
       # 防回归：workspace: 协议残留会让消费者从 git 子路径安装时直接失败
       # （ERR_PNPM_WORKSPACE_PKG_NOT_FOUND），而 npm 产物因 publish 期转换看不出问题
       - name: Check no workspace protocol in publishable deps
+        if: matrix.os == 'ubuntu-latest'
         run: node scripts/check-publishable.mjs
       # 防回归：每个可安装插件必须声明 dsh.engines.dsh，且只能是 dsh-web 解析器支持的
       # `>=X.Y.Z[-rc.N]` 一种形式——写成 ^ / ~ / 两段式会被判为「无法验证」而 fail-closed
       # （更新被直接拦下），比不声明更糟
       - name: Check dsh.engines.dsh declarations
+        if: matrix.os == 'ubuntu-latest'
         run: node scripts/check-dsh-engines.mjs

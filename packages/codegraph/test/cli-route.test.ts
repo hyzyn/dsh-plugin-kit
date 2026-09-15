@@ -358,6 +358,9 @@ describe('systemPrompt 注入门禁（CLI 探测 + settings 开关）', () => {
       return cliAvailable === false
     })
     expect(cliAvailable).toBe(false)
+    // 探测失败时卡片要报出被探测的命令名，便于让用户把 command 加成绝对路径
+    const withCommand = await call(mount.routes, '/api/dsh-codegraph/default-path')
+    expect(withCommand.body?.command).toBe(missingCli())
     expect(mount.sections.size).toBe(0)
   })
 
