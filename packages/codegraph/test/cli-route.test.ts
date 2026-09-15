@@ -47,8 +47,25 @@ afterAll(() => {
   }
 })
 
-/** 写一个可执行的 stub CLI：把 argv 回显成 JSON 行，或挂住等到被杀。 */
+/**
+ * 写一个可执行的 stub CLI：把 argv 回显成 JSON 行，或挂住等到被杀。
+ *
+ * 同名的 stub 只写一次（按名字缓存路径）：每个用例 mount 时都会异步起一次
+ * `<command> --version` 探测，而 Windows 上正在被 cmd.exe 打开的文件无法重写——
+ * 反复重写同一个 `.cmd` 会偶发 `EBUSY: resource busy or locked`（三平台矩阵上实测到）。
+ * 同名 stub 的内容本来就是固定的，缓存路径即可，顺带少写盘。
+ */
+const stubPaths = new Map<string, string>()
+
 function stubCli(name: string, body: string): string {
+  const cached = stubPaths.get(name)
+  if (cached !== undefined) return cached
+  const built = writeStubCli(name, body)
+  stubPaths.set(name, built)
+  return built
+}
+
+function writeStubCli(name: string, body: string): string {
   if (!POSIX) {
     // Windows：.cmd shim 的形状与 npm / pnpm 全局 bin 一致（node + %*），
     // 正是 runCodegraph 需要经 cmd.exe 才能跑起来的那种命令。
