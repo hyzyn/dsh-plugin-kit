@@ -409,3 +409,75 @@ describe('systemPrompt 注入门禁（CLI 探测 + settings 开关）', () => {
     expect(empty.body?.error).toContain('缺少可写字段')
   })
 })
+
+describe('跟随活动会话（POST /follow）', () => {
+  /** harness 里的默认项目路径（插件配置 defaultPath）。 */
+  const project_original = project
+
+  /** 造一个已索引项目目录。 */
+  function indexedProject(name: string): string {
+    const dir = mkdtempSync(join(sandbox, name))
+    mkdirSync(join(dir, '.codegraph'), { recursive: true })
+    writeFileSync(join(dir, '.codegraph', 'codegraph.db'), '')
+    return dir
+  }
+
+  it('会话切到已索引项目：托管行 cwd 对齐它，默认项目保持不变', async () => {
+    const project = indexedProject('follow-a')
+    const mount = mountFull(echoCli())
+    const capture = await call(mount.routes, '/api/dsh-codegraph/follow', { method: 'POST', body: { path: project } })
+    expect(capture.status).toBe(200)
+    expect(capture.body?.sessionPath).toBe(project)
+    expect(capture.body?.effectivePath).toBe(project)
+    expect(capture.body?.followSession).toBe(true)
+    expect(capture.body?.indexed).toBe(true)
+    // defaultPath 仍是插件配置里那个（未被跟随改写）
+    expect(capture.body?.defaultPath).toBe(project_original)
+  })
+
+  it('会话目录没有索引：回落到默认项目并给出 note', async () => {
+    const plain = mkdtempSync(join(sandbox, 'follow-plain-'))
+    const mount = mountFull(echoCli())
+    const capture = await call(mount.routes, '/api/dsh-codegraph/follow', { method: 'POST', body: { path: plain } })
+    expect(capture.status).toBe(200)
+    expect(capture.body?.effectivePath).toBe(project_original)
+    expect(capture.body?.sessionPath).toBe(plain)
+    expect(String(capture.body?.note)).toContain('回落到默认项目')
+  })
+
+  it('跟随关闭时：/follow 只记录，不改生效路径', async () => {
+    const project = indexedProject('follow-off')
+    const mount = mountFull(echoCli(), { followSession: false })
+    const capture = await call(mount.routes, '/api/dsh-codegraph/follow', { method: 'POST', body: { path: project } })
+    expect(capture.body?.followSession).toBe(false)
+    expect(capture.body?.effectivePath).toBe(project_original)
+    expect(String(capture.body?.note)).toContain('跟随已关闭')
+  })
+
+  it('空 path（无活动会话）：清掉上报值并回落', async () => {
+    const project = indexedProject('follow-clear')
+    const mount = mountFull(echoCli())
+    await call(mount.routes, '/api/dsh-codegraph/follow', { method: 'POST', body: { path: project } })
+    const cleared = await call(mount.routes, '/api/dsh-codegraph/follow', { method: 'POST', body: { path: '' } })
+    expect(cleared.body?.sessionPath).toBeNull()
+    expect(cleared.body?.effectivePath).toBe(project_original)
+  })
+
+  it('「设为默认项目」会关掉跟随（显式指定不被会话顶掉）', async () => {
+    const project = indexedProject('follow-pin')
+    const mount = mountFull(echoCli())
+    await call(mount.routes, '/api/dsh-codegraph/follow', { method: 'POST', body: { path: project } })
+    const pinned = await call(mount.routes, '/api/dsh-codegraph/default-path', { method: 'POST', body: { path: project } })
+    expect(pinned.status).toBe(200)
+    expect(pinned.body?.followSession).toBe(false)
+    expect(mount.updates.at(-1)).toMatchObject({ defaultPath: project, followSession: false })
+  })
+
+  it('settings 里可以开关 followSession', async () => {
+    const mount = mountFull(echoCli())
+    const capture = await call(mount.routes, '/api/dsh-codegraph/settings', { method: 'POST', body: { followSession: false } })
+    expect(capture.status).toBe(200)
+    expect(capture.body?.followSession).toBe(false)
+    expect(mount.settingsStore).toMatchObject({ followSession: false })
+  })
+})

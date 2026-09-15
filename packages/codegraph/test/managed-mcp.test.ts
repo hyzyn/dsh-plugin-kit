@@ -256,3 +256,29 @@ describe('行尾（Windows CRLF 补丁文件）', () => {
     expect(outcome.lines.some((line) => line === '\r')).toBe(false)
   })
 })
+
+describe('dryRun（只读快照，不推测下次写入）', () => {
+  it('没有托管行 + 目标已索引：dryRun 报 none，而不是「已自动托管」', () => {
+    const input = ['# dsh home patch layer', '']
+    const outcome = syncManagedMcpRow(input, { ...decision(indexedDir), dryRun: true })
+    expect(outcome.changed).toBe(false)
+    expect(outcome.lines).toBe(input)
+    expect(outcome.status.mode).toBe('none')
+    expect(outcome.status.indexed).toBe(true)
+    expect(outcome.status.note).toContain('还没有托管行')
+  })
+
+  it('已有托管行时 dryRun 与真实状态一致（该对齐 cwd 时不改盘）', () => {
+    const first = syncManagedMcpRow([''], decision(indexedDir))
+    const other = mkdtempSync(join(tmpdir(), 'dsh-cg-dry-'))
+    mkdirSync(join(other, '.codegraph'))
+    writeFileSync(join(other, '.codegraph', 'codegraph.db'), '')
+    try {
+      const snapshot = syncManagedMcpRow(first.lines, { ...decision(other), dryRun: true })
+      expect(snapshot.changed).toBe(false)
+      expect(snapshot.status).toMatchObject({ mode: 'own', cwd: indexedDir, indexed: true })
+    } finally {
+      rmSync(other, { recursive: true, force: true })
+    }
+  })
+})
