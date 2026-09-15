@@ -7,6 +7,12 @@
  *      sh -n 语法检查、awk 主体语法自检（把死循环换成 if(0) 后跑一遍）。
  *      真正的 /proc 取值只能在 Linux 真机上验证——本机（macOS）没有 /proc，
  *      脚本会在第一行守卫处退出，这是刻意的降级路径。
+ *
+ * 平台边界：第 2 类校验需要 POSIX 的 sh / awk，而且脚本里全是 `$z/temp` 这种 POSIX
+ * 路径语义。Windows runner 上 `/bin/sh` 解析成 `C:\bin\sh`（ENOENT），Git Bash 自带的
+ * awk 又会把 `-v base=C:\Users\…` 当普通字符串，probe 恒返回 -1——被测对象是**远端
+ * Linux 上的脚本**，本地没有可用的 POSIX 解释器就无从校验，因此这些用例显式跳过，
+ * 而不是假装通过。
  */
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
@@ -37,6 +43,22 @@ import {
   remoteWindowsStatsScript,
   sanitizeStatsFrame,
 } from '../src/stats.js'
+
+/** 探测某个 POSIX 工具能否真的跑起来（Windows 上 sh/awk 的路径语义不成立，见文件头）。 */
+function canRun(bin: string, args: string[]): boolean {
+  try {
+    execFileSync(bin, args, { stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** 远端采集脚本的本地校验前提：POSIX 平台 + 真的能跑 sh / awk。 */
+const CAN_PROBE_REMOTE_SCRIPT = process.platform !== 'win32'
+  && canRun('/bin/sh', ['-c', 'exit 0'])
+  && canRun('awk', ['BEGIN{exit 0}'])
+
 
 const PROC_STAT = [
   'cpu  10132153 290696 3084719 46828483 16683 0 25195 0 0 0',
@@ -297,7 +319,7 @@ describe('StatsLineBuffer / parseStatsLine', () => {
 })
 
 describe('远端采集脚本 / 命令拼接', () => {
-  it('脚本是 POSIX sh 可解析的（sh -n）', () => {
+  it.skipIf(!CAN_PROBE_REMOTE_SCRIPT)('脚本是 POSIX sh 可解析的（sh -n）', () => {
     const script = remoteStatsScript()
     expect(script).toContain('[ -r /proc/stat ] || exit 0')
     expect(script).toContain('exec awk -v tempf="$tempf" ')
@@ -306,7 +328,7 @@ describe('远端采集脚本 / 命令拼接', () => {
     execFileSync('/bin/sh', ['-n', '-c', script])
   })
 
-  it('awk 主体语法自检：死循环换成 if(0) 后能跑完', () => {
+  it.skipIf(!CAN_PROBE_REMOTE_SCRIPT)('awk 主体语法自检：死循环换成 if(0) 后能跑完', () => {
     const dir = mkdtempSync(join(tmpdir(), 'dsh-tty-stats-'))
     try {
       const file = join(dir, 'probe.awk')
@@ -317,7 +339,7 @@ describe('远端采集脚本 / 命令拼接', () => {
     }
   })
 
-  it('buildRemoteStatsCommand：sh -c 包裹 + 引号往返无损', () => {
+  it.skipIf(!CAN_PROBE_REMOTE_SCRIPT)('buildRemoteStatsCommand：sh -c 包裹 + 引号往返无损', () => {
     const command = buildRemoteStatsCommand()
     expect(command.startsWith('sh -c ')).toBe(true)
     // 让真实 sh 解析这段单引号（与 exec channel 上远端 shell 做的事完全一致），
@@ -358,7 +380,7 @@ function runAwkProbe(fn: string, base: string): string {
 }
 
 describe('远端 TCP 计数（tcpest + /proc 夹具）', () => {
-  it('established 只数状态码 01，且行首空白不能把状态列挤走', () => {
+  it.skipIf(!CAN_PROBE_REMOTE_SCRIPT)('established 只数状态码 01，且行首空白不能把状态列挤走', () => {
     const dir = mkdtempSync(join(tmpdir(), 'dsh-tty-tcp-'))
     try {
       mkdirSync(join(dir, 'net'), { recursive: true })
@@ -386,7 +408,7 @@ describe('远端 TCP 计数（tcpest + /proc 夹具）', () => {
     }
   })
 
-  it('两份 /proc 文件都读不到 → -1（调用方省略字段，而不是报 0）', () => {
+  it.skipIf(!CAN_PROBE_REMOTE_SCRIPT)('两份 /proc 文件都读不到 → -1（调用方省略字段，而不是报 0）', () => {
     const dir = mkdtempSync(join(tmpdir(), 'dsh-tty-tcp-empty-'))
     try {
       expect(runAwkProbe('tcpest', dir)).toBe('-1')
