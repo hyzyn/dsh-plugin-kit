@@ -458,6 +458,8 @@ await test('右侧栏标签承载（S1）：类型 / body / 外壳样式装配�
   assert.ok(code.includes('dk_panelTab'), '缺少标签承载的面板外壳样式')
   // 契约要求 body 注册在**实现 id** 下（不是 kind）：写错的表现是「标签能开、body 空白」
   assert.ok(code.includes('"@hyzyn/dsh-docker"') || code.includes("'@hyzyn/dsh-docker'"), '缺少标签实现 id')
+  // 卡片「终端」按钮要按右侧栏是否铺满分流，fullscreen 得透传进面板（属性名不会被 minify）
+  assert.ok(code.includes('tabFullscreen'), '缺少 sidebar.fullscreen 的透传')
   // esbuild 默认 charset=ascii：中文在 bundle 里是 \uXXXX，先解码再断言
   const decoded = code.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
   assert.ok(decoded.includes('本机与 SSH 主机的容器、镜像、Compose、网络与卷'), '缺少指南页描述文案')
