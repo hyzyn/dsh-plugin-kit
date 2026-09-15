@@ -660,6 +660,18 @@ await test('样式表：字段标签锁死 line-height（中英混排的行框�
   assert.ok(/line-height:\s*[0-9]/.test(rule), '.dk_label 缺少数值 line-height')
 })
 
+await test('样式表：聚合日志的过滤行不参与纵向伸缩（否则过滤后整条工具条被撑高）', () => {
+  // 同一条 .dk_filterBar 挂在两处：单容器视图在 .dk_tabs（横向行）里，flex:1 1 auto 是
+  // 「横向占满剩余宽度」，正确；聚合日志（ComposeLogs）里它是 .dk_logs（纵向 flex）的直接
+  // 子项，同一个 flex:1 1 auto 变成**纵向撑高**——过滤到少量行时日志体基准高度变小、剩余
+  // 空间出现，工具条与 .dk_logBody 各分一半，整条工具条长成两百多像素的横条（输入框垂直
+  // 居中、状态行被顶到下面），也就是「输入文字后界面变形」（真实踩过的回归）。
+  // 这里只守「规则还在」，真实布局需浏览器。
+  const rule = /\.dk_logs > \.dk_filterBar \{[^}]*\}/.exec(code)?.[0] ?? ''
+  assert.notEqual(rule, '', '缺少 .dk_logs > .dk_filterBar 规则')
+  assert.ok(/flex:\s*0\s+0\s+auto/.test(rule), '.dk_logs > .dk_filterBar 必须 flex:0 0 auto（否则工具条被纵向撑高）')
+})
+
 await test('日志 FOLLOW：bundle 内含 SSE 订阅与「回到底部」交互', () => {
   // 静态断言锁住契约（真实点击路径需要浏览器，由手工清单覆盖）：
   assert.ok(code.includes('/logs/stream'), '缺少 SSE 订阅 URL')
