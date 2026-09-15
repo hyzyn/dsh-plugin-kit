@@ -1209,11 +1209,530 @@ window.__ModuleLoader__.load({
       const ts = showTs === true && typeof entry.ts === 'number' && Number.isFinite(entry.ts)
         ? jsx('span', { className: 'dk_logTs', children: new Date(entry.ts).toLocaleTimeString() }, 'ts')
         : null
-      return jsxs('div', { className: 'dk_logLine', children: [
-        jsx('span', { className: 'dk_logSvc', children: '[' + entry.service + ']' }, 'svc'),
+      return jsxs('div', {
+        className: 'dk_logLine',
+        // 时间戳只在这里能拿到：entry.ts 是 epoch，而 showTs 关着时 DOM 里没有它。
+        // 右键「问 Agent」要用它组诊断包的时间窗，所以挂在 dataset 上（一个数字，代价可忽略）。
+        'data-log-ts': typeof entry.ts === 'number' && Number.isFinite(entry.ts) ? String(entry.ts) : undefined,
+        children: [
+          jsx('span', { className: 'dk_logSvc', children: '[' + entry.service + ']' }, 'svc'),
+          ts,
+          ...renderLogParts(entry.text, index, query),
+        ],
+      }, String(index))
+    }
+
+    /* ------------------------------------------------------------------ *
+     * 日志 → 会话桥：右键把选中的错误交给 Agent
+     *
+     * 三件事：把 DOM 选区映射回「日志行」；组装带上下文的诊断包；经 DSH 客户端
+     * 的 sessions / conversation 服务投递到会话。
+     *
+     * 刻意**不做行 id**：行在数据层是裸字符串（`followLines` / `logs.text.split('\n')`），
+     * 过滤一次渲染下标就整体位移。但右键动作是「开菜单 → 立刻执行」的同步过程，
+     * 需要的是**快照**而不是引用——所以在右键那一刻把行内容读下来带走，菜单里的
+     * 行数据此后与 DOM 无关。这样既躲开了给两个视图各加一套身份的开销，也不会
+     * 出现「点的那一行和发出去的那一行不是同一行」。
+     *
+     * 依赖是可选的：宿主没提供 sessions 时菜单项一律置灰并写明原因，面板其余功能
+     * 不受影响（与 ttyConnbar / ttyPanel 的降级策略一致）。
+     * ------------------------------------------------------------------ */
+
+    /** 由 apply 经 ctx.inject('sessions') 注入；null = 宿主未提供。 */
+    let sessionsSvc = null
+
+    /** 选中区间上下各带多少行上下文：报错常常只是堆栈的尾巴，没有前文问不出东西。 */
+    const ASK_CONTEXT_LINES = 20
+    /** 单次最多带走多少选中行：防整屏选中把 prompt 撑爆。 */
+    const ASK_MAX_LINES = 400
+
+    /**
+     * 当前会话的 scope-addressed conversation 门面。
+     * `conversation` 是按会话作用域寻址的（官方报错原文：`conversation.send requires a
+     * session scope — address one via ctx.sessions.scope(id).conversation`），所以必须
+     * 先 sessions.scope(id) 拿作用域，再从作用域里取服务。
+     */
+    function askTarget() {
+      if (sessionsSvc === null) return { ok: false, reason: '宿主未提供 sessions 服务' }
+      let id
+      try {
+        id = sessionsSvc.list?.getSnapshot?.()?.current
+      } catch (error) {
+        return { ok: false, reason: error instanceof Error ? error.message : String(error) }
+      }
+      if (typeof id !== 'string' || id === '') return { ok: false, reason: '当前没有打开的会话' }
+      try {
+        const actx = sessionsSvc.scope(id)
+        if (actx === undefined) return { ok: false, reason: '会话尚未就绪（作用域未挂载）' }
+        const conversation = actx.get?.('conversation') ?? actx.conversation ?? null
+        if (conversation === null) return { ok: false, reason: '宿主缺少 conversation 服务' }
+        return { ok: true, id, actx, conversation }
+      } catch (error) {
+        return { ok: false, reason: error instanceof Error ? error.message : String(error) }
+      }
+    }
+
+    /**
+     * 一行日志的结构化快照。DOM 是唯一真相：`renderLogParts` 已经把时间戳 / 级别
+     * 前缀从正文里剥到各自的 span，所以正文、级别、服务要分别取。
+     */
+    function readLogRow(row) {
+      const svcNode = row.querySelector('.dk_logSvc')
+      const lvNode = row.querySelector('.dk_logLevel')
+      const textNode = row.querySelector('.dk_logText')
+      let text = textNode === null ? (row.textContent ?? '') : (textNode.textContent ?? '')
+      let ts = Number(row.dataset.logTs)
+      if (!Number.isFinite(ts) || ts <= 0) ts = null
+      // 单容器视图开「时间戳」后是 ISO 前缀，而它落在正文里（LOG_TS_RE 只认
+      // `[YYYY-MM-DD …]` 与 `HH:MM:SS,mmm`，不认 ISO）：取出来当时间，同时从正文
+      // 里剪掉，免得诊断包里同一行出现两次时间。
+      if (ts === null) {
+        const match = LOG_TS_PREFIX_RE.exec(text)
+        if (match !== null) {
+          const parsed = Date.parse(match[1])
+          if (Number.isFinite(parsed)) {
+            ts = parsed
+            text = text.slice(match[0].length)
+          }
+        }
+      }
+      return {
+        svc: svcNode === null ? '' : svcNode.textContent.replace(/^\[|\]$/g, ''),
+        lv: lvNode === null ? '' : lvNode.textContent.trim(),
         ts,
-        ...renderLogParts(entry.text, index, query),
-      ] }, String(index))
+        text,
+      }
+    }
+
+    /** 诊断包里的行格式：`[service] ISO时间 级别 正文`。 */
+    function formatAskRow(row) {
+      const head = []
+      if (row.svc !== '') head.push('[' + row.svc + ']')
+      if (row.ts !== null) head.push(new Date(row.ts).toISOString())
+      if (row.lv !== '') head.push(row.lv)
+      return head.length === 0 ? row.text : head.join(' ') + ' ' + row.text
+    }
+
+    /** 正文里的真实日志行（占位行没有 `.dk_logText`，据此排除）。 */
+    function logRowElements(bodyEl) {
+      return Array.from(bodyEl.querySelectorAll('.dk_logLine'))
+        .filter((el) => el.querySelector('.dk_logText') !== null)
+    }
+
+    function rowElementOf(node) {
+      const el = node === null || node === undefined
+        ? null
+        : (node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement)
+      return el === null ? null : el.closest('.dk_logLine')
+    }
+
+    /**
+     * 右键落在哪一段：有拖选就用选区首尾行（跨行、跨半个行都吃），没有就退到鼠标
+     * 下那一行。返回的是**元素区间**，行内容由调用方快照。
+     */
+    function resolveRowRange(bodyEl, event) {
+      const rows = logRowElements(bodyEl)
+      if (rows.length === 0) return null
+      let first = null
+      let last = null
+      try {
+        const selection = window.getSelection()
+        if (selection !== null && selection.isCollapsed === false && selection.rangeCount > 0) {
+          const range = selection.getRangeAt(0)
+          if (bodyEl.contains(range.commonAncestorContainer)) {
+            first = rowElementOf(range.startContainer)
+            last = rowElementOf(range.endContainer)
+          }
+        }
+      } catch { /* 选区读失败：按「没有选区」处理，退到鼠标位置 */ }
+      if (first === null || last === null) {
+        first = rowElementOf(event.target)
+        last = first
+      }
+      let from = rows.indexOf(first)
+      let to = rows.indexOf(last)
+      if (from < 0 || to < 0) {
+        // 选区端点落在占位行 / 面板外：退到鼠标下那一行
+        first = rowElementOf(event.target)
+        from = rows.indexOf(first)
+        to = from
+      }
+      if (from < 0) return null
+      if (from > to) { const swap = from; from = to; to = swap }
+      return { rows, from, to }
+    }
+
+    /** 选中区间的可读描述，用于菜单标题（「6 行 · ems-service」）。 */
+    function describeSelection(context, range) {
+      const count = String(range.to - range.from + 1)
+      if (context.containers.length === 1) return count + ' 行 · ' + context.containers[0].name
+      const services = new Set()
+      for (let k = range.from; k <= range.to; k += 1) {
+        const svc = readLogRow(range.rows[k]).svc
+        if (svc !== '') services.add(svc)
+      }
+      return services.size === 0 ? count + ' 行' : count + ' 行 · ' + [...services].slice(0, 3).join('/')
+    }
+
+    /**
+     * 诊断包：不把选中的几行裸丢过去。模型不知道哪台机器、哪个容器、什么时间、
+     * 前后文是什么，只给几行等于让它猜。所以带目标 / 容器 / 时间窗 / 前后缓冲，
+     * 并明确告诉它「可以用 docker_logs / docker_inspect 自己补，不要臆测」——
+     * agent 侧本来就有这两个只读工具，让它自己拉比灌满 token 又准又省。
+     */
+    function buildAskPrompt(context, range) {
+      const rows = range.rows
+      const picked = []
+      for (let k = range.from; k <= range.to && picked.length < ASK_MAX_LINES; k += 1) picked.push(readLogRow(rows[k]))
+      const before = rows.slice(Math.max(0, range.from - ASK_CONTEXT_LINES), range.from).map(readLogRow)
+      const after = rows.slice(range.to + 1, Math.min(rows.length, range.to + 1 + ASK_CONTEXT_LINES)).map(readLogRow)
+
+      const stamps = picked.concat(before, after).map((row) => row.ts).filter((ts) => ts !== null)
+      const services = [...new Set(picked.map((row) => row.svc).filter((svc) => svc !== ''))]
+      const clipped = picked.length < range.to - range.from + 1
+
+      const out = []
+      out.push('[dsh-docker] 容器日志片段')
+      out.push('')
+      out.push('- 目标：' + (context.targetLabel !== '' ? context.targetLabel : (context.target !== '' ? context.target : '未知')))
+      for (const item of context.containers.slice(0, 3)) {
+        out.push('- 容器：' + item.name + '（' + String(item.id) + (item.image === undefined || item.image === '' ? '' : '，镜像 ' + String(item.image)) + '）')
+      }
+      if (context.containers.length > 3) {
+        out.push('- 容器：另有 ' + String(context.containers.length - 3) + ' 个，见各行的 [service] 前缀')
+      }
+      if (services.length > 0) out.push('- 涉及服务：' + services.join('、'))
+      out.push('- 时间窗：' + (stamps.length === 0
+        ? '未启用时间戳，无时间窗'
+        : new Date(Math.min(...stamps)).toISOString() + ' → ' + new Date(Math.max(...stamps)).toISOString()))
+      out.push('- 选中：' + String(picked.length) + ' 行'
+        + (clipped ? '（已截断，上限 ' + String(ASK_MAX_LINES) + ' 行）' : '')
+        + '，另附前后各 ' + String(ASK_CONTEXT_LINES) + ' 行上下文'
+        + (context.filtered === true ? '（上下文取自当前过滤后的视图）' : ''))
+
+      const block = (title, list) => {
+        if (list.length === 0) return
+        out.push('')
+        out.push('--- ' + title + ' ---')
+        for (const row of list) out.push(formatAskRow(row))
+      }
+      block('上下文（前 ' + String(before.length) + ' 行）', before)
+      block('选中（' + String(picked.length) + ' 行）', picked)
+      block('上下文（后 ' + String(after.length) + ' 行）', after)
+
+      out.push('')
+      out.push('需要更多上下文请自行拉取，不要臆测未给出的内容：'
+        + '`docker_logs` / `docker_inspect`，target=' + JSON.stringify(context.target)
+        + (context.containers.length === 1 ? '，id=' + JSON.stringify(context.containers[0].name) : '') + '。')
+      return out.join('\n')
+    }
+
+    /* ---------------------- 浮层（纯 DOM） ---------------------- */
+
+    /*
+     * 为什么不用 React portal：宿主只向浏览器半体注入 react / react/jsx-runtime /
+     * react-dom/client，**没有 react-dom**，也就没有 createPortal。而 `.dk_logBody`
+     * 是 overflow:auto，菜单内联渲染会跟着日志滚走。所以按 tty 的 `.tt_tunnelPop`
+     * 先例：body 追加 + position:fixed。`--dk-*` 令牌声明在 `:where(html, body)` 上，
+     * body 下的浮层自动继承，不需要额外搬令牌。
+     */
+    let logMenuEl = null
+    let logMenuOff = null
+    let askCardEl = null
+    let askCardOff = null
+
+    function closeLogMenu() {
+      if (logMenuOff !== null) { logMenuOff(); logMenuOff = null }
+      if (logMenuEl !== null) { logMenuEl.remove(); logMenuEl = null }
+    }
+
+    function closeAskCard() {
+      if (askCardOff !== null) { askCardOff(); askCardOff = null }
+      if (askCardEl !== null) { askCardEl.remove(); askCardEl = null }
+    }
+
+    /** 先把浮层放锚点上，越界就朝反方向翻——面板常贴着屏幕右 / 下边。 */
+    function placeFloating(el, x, y) {
+      const gap = 8
+      const rect = el.getBoundingClientRect()
+      let left = x
+      let top = y
+      if (left + rect.width > window.innerWidth - gap) left = Math.max(gap, x - rect.width)
+      if (top + rect.height > window.innerHeight - gap) top = Math.max(gap, y - rect.height)
+      el.style.left = String(Math.round(left)) + 'px'
+      el.style.top = String(Math.round(top)) + 'px'
+    }
+
+    /** 失败提示：成功回执走会话输入框，只有失败需要在这里喊一声。 */
+    function flashAskNotice(text) {
+      const toast = document.createElement('div')
+      toast.className = 'dk_askToast'
+      toast.textContent = text
+      document.body.appendChild(toast)
+      setTimeout(() => toast.remove(), 5000)
+    }
+
+    function reportDelivery(result) {
+      if (result.ok !== true) flashAskNotice('未能交给会话：' + result.message)
+    }
+
+    /**
+     * 右键菜单。关闭时机：Esc / 点外部 / 滚轮 / 触摸滑动 / 窗口尺寸变化。
+     * 刻意**不听 scroll**：FOLLOW 的自动滚底是程序触发的，听 scroll 会让菜单刚开
+     * 就被自己关掉。用户真要滚，wheel / 触摸 / 点外部任一条都会命中。
+     */
+    function openLogMenu(options) {
+      closeLogMenu()
+      const menu = document.createElement('div')
+      menu.className = 'dk_menu'
+      menu.setAttribute('role', 'menu')
+
+      const head = document.createElement('div')
+      head.className = 'dk_menuHead'
+      head.textContent = options.head
+      menu.appendChild(head)
+      const sub = document.createElement('div')
+      sub.className = 'dk_menuSub'
+      sub.textContent = options.sub
+      menu.appendChild(sub)
+
+      for (const item of options.items) {
+        const btn = document.createElement('button')
+        btn.type = 'button'
+        btn.className = 'dk_menuItem'
+        btn.setAttribute('role', 'menuitem')
+        btn.disabled = item.disabled === true
+        if (item.disabled === true) btn.title = item.reason
+        const label = document.createElement('span')
+        label.className = 'dk_menuItemLabel'
+        label.textContent = item.label
+        btn.appendChild(label)
+        const hint = document.createElement('span')
+        hint.className = 'dk_menuItemHint'
+        hint.textContent = item.disabled === true ? item.reason : (item.hint ?? '')
+        btn.appendChild(hint)
+        if (item.disabled !== true) {
+          btn.addEventListener('click', () => { closeLogMenu(); item.onPick() })
+        }
+        menu.appendChild(btn)
+      }
+
+      const note = document.createElement('div')
+      note.className = 'dk_menuNote'
+      note.textContent = options.note
+      menu.appendChild(note)
+
+      document.body.appendChild(menu)
+      placeFloating(menu, options.x, options.y)
+      logMenuEl = menu
+
+      const onKey = (event) => { if (event.key === 'Escape') closeLogMenu() }
+      const onDown = (event) => { if (!menu.contains(event.target)) closeLogMenu() }
+      const onMove = () => closeLogMenu()
+      document.addEventListener('keydown', onKey, true)
+      document.addEventListener('mousedown', onDown, true)
+      document.addEventListener('wheel', onMove, { capture: true, passive: true })
+      document.addEventListener('touchmove', onMove, { capture: true, passive: true })
+      window.addEventListener('resize', onMove)
+      logMenuOff = () => {
+        document.removeEventListener('keydown', onKey, true)
+        document.removeEventListener('mousedown', onDown, true)
+        document.removeEventListener('wheel', onMove, true)
+        document.removeEventListener('touchmove', onMove, true)
+        window.removeEventListener('resize', onMove)
+      }
+    }
+
+    /* ---------------------- 投递 ---------------------- */
+
+    /** 非安全上下文（远端 GUI 用 IP 访问）没有 navigator.clipboard，退回 textarea。 */
+    function copyToClipboard(text) {
+      if (navigator.clipboard !== undefined && navigator.clipboard !== null) {
+        return navigator.clipboard.writeText(text)
+      }
+      return new Promise((resolve, reject) => {
+        const area = document.createElement('textarea')
+        area.value = text
+        area.style.position = 'fixed'
+        area.style.opacity = '0'
+        document.body.appendChild(area)
+        area.select()
+        let ok = false
+        try { ok = document.execCommand('copy') } catch { ok = false }
+        area.remove()
+        if (ok) resolve()
+        else reject(new Error('浏览器拒绝了复制'))
+      })
+    }
+
+    /**
+     * 回执落在**会话输入框**上，而不是 docker 面板：用户点完菜单视线已经跟过去了，
+     * 反馈也该出现在那儿。
+     */
+    function notifySession(target, text) {
+      try {
+        const input = typeof target.conversation.input?.for === 'function'
+          ? target.conversation.input.for(target.actx)
+          : null
+        if (input !== null && typeof input.notify === 'function') input.notify('info', text)
+      } catch { /* 回执失败不影响主流程 */ }
+    }
+
+    /**
+     * 投递到当前会话。mode='send' 直接发一轮（消耗一次 turn），mode='draft' 只把
+     * 内容写进输入框等用户确认——这两个档位对应菜单里的两项，不能合并：前者是
+     * 「让 Agent 现在就看」，后者是「我要自己补两句再发」。
+     */
+    async function deliverToSession(prompt, mode) {
+      const target = askTarget()
+      if (target.ok !== true) return { ok: false, message: target.reason }
+      try {
+        if (mode === 'draft') {
+          const input = typeof target.conversation.input?.for === 'function'
+            ? target.conversation.input.for(target.actx)
+            : null
+          if (input === null || typeof input.setDraft !== 'function') {
+            return { ok: false, message: '宿主未提供会话输入门面，无法只填草稿' }
+          }
+          input.setDraft(prompt)
+          notifySession(target, '日志片段已填入输入框，确认后再发送')
+          return { ok: true, message: '已填入输入框' }
+        }
+        await target.conversation.send(prompt)
+        notifySession(target, '日志片段已发送到会话')
+        return { ok: true, message: '已发送' }
+      } catch (error) {
+        return { ok: false, message: error instanceof Error ? error.message : String(error) }
+      }
+    }
+
+    /* ---------------------- 预览卡片 ---------------------- */
+
+    /** 预览卡片：发送前可改。刻意**不因点外部而关闭**——里面可能已经改过字。 */
+    function openAskCard(options) {
+      closeAskCard()
+      const card = document.createElement('div')
+      card.className = 'dk_askCard'
+      card.setAttribute('role', 'dialog')
+
+      const head = document.createElement('div')
+      head.className = 'dk_askCardHead'
+      head.textContent = options.head
+      card.appendChild(head)
+
+      const area = document.createElement('textarea')
+      area.className = 'dk_askCardText'
+      area.spellcheck = false
+      area.value = options.prompt
+      card.appendChild(area)
+
+      const status = document.createElement('div')
+      status.className = 'dk_askCardStatus'
+      card.appendChild(status)
+
+      const foot = document.createElement('div')
+      foot.className = 'dk_askCardFoot'
+      const button = (label, kind, onClick) => {
+        const btn = document.createElement('button')
+        btn.type = 'button'
+        btn.className = 'dk_btn' + (kind === undefined ? '' : ' ' + kind)
+        btn.textContent = label
+        btn.addEventListener('click', onClick)
+        foot.appendChild(btn)
+        return btn
+      }
+      const sendBtn = button('发送', 'dk_btnPrimary', () => {
+        void run('send', sendBtn)
+      })
+      const draftBtn = button('只填输入框', undefined, () => {
+        void run('draft', draftBtn)
+      })
+      button('复制', undefined, () => {
+        copyToClipboard(area.value).then(
+          () => { status.textContent = '已复制诊断包'; status.dataset.kind = 'ok' },
+          (error) => { status.textContent = '复制失败：' + (error instanceof Error ? error.message : String(error)); status.dataset.kind = 'error' },
+        )
+      })
+      const cancelBtn = button('取消', undefined, () => closeAskCard())
+      card.appendChild(foot)
+
+      const hint = document.createElement('div')
+      hint.className = 'dk_askCardHint'
+      hint.textContent = '内容会进入模型上下文，请留意其中的凭证与用户数据。'
+      card.appendChild(hint)
+
+      const run = async (mode, btn) => {
+        sendBtn.disabled = true
+        draftBtn.disabled = true
+        cancelBtn.disabled = true
+        btn.textContent = mode === 'send' ? '发送中…' : '写入中…'
+        const result = await deliverToSession(area.value, mode)
+        if (result.ok === true) { closeAskCard(); return }
+        status.textContent = result.message
+        status.dataset.kind = 'error'
+        sendBtn.disabled = false
+        draftBtn.disabled = false
+        cancelBtn.disabled = false
+        btn.textContent = mode === 'send' ? '发送' : '只填输入框'
+      }
+
+      document.body.appendChild(card)
+      const rect = card.getBoundingClientRect()
+      card.style.left = String(Math.round(Math.max(8, (window.innerWidth - rect.width) / 2))) + 'px'
+      card.style.top = String(Math.round(Math.max(8, (window.innerHeight - rect.height) / 2))) + 'px'
+      area.focus()
+      askCardEl = card
+
+      const onKey = (event) => { if (event.key === 'Escape') closeAskCard() }
+      document.addEventListener('keydown', onKey, true)
+      askCardOff = () => document.removeEventListener('keydown', onKey, true)
+    }
+
+    /**
+     * 右键入口：解析行区间 → 弹菜单。`context` 由各视图给出（目标 / 目标标签 /
+     * 涉及容器 / 当前是否在过滤）。
+     */
+    function onLogContextMenu(event, bodyEl, context) {
+      const range = resolveRowRange(bodyEl, event)
+      if (range === null) return
+      event.preventDefault()
+      const target = askTarget()
+      const build = () => buildAskPrompt(context, range)
+      const disabled = target.ok !== true
+      const reason = disabled ? target.reason : ''
+      openLogMenu({
+        x: event.clientX,
+        y: event.clientY,
+        head: '问 Agent',
+        sub: describeSelection(context, range) + (disabled ? ' · ' + reason : ' · 当前会话'),
+        items: [
+          {
+            label: '预览后发送…',
+            hint: '可改完再发',
+            disabled,
+            reason,
+            onPick: () => openAskCard({
+              head: '发送日志片段到当前会话',
+              prompt: build(),
+            }),
+          },
+          {
+            label: '直接发送到当前会话',
+            hint: '立即开始分析',
+            disabled,
+            reason,
+            onPick: () => { void deliverToSession(build(), 'send').then(reportDelivery) },
+          },
+          {
+            label: '只填入输入框',
+            hint: '不发送',
+            disabled,
+            reason,
+            onPick: () => { void deliverToSession(build(), 'draft').then(reportDelivery) },
+          },
+        ],
+        note: '日志内容会进入模型上下文，请留意其中的凭证。',
+      })
     }
 
     function ContainerView(props) {
@@ -1767,6 +2286,13 @@ window.__ModuleLoader__.load({
             className: 'dk_logBody',
             ref: logBodyRef,
             onScroll: onLogScroll,
+            // 右键「问 Agent」：单容器视图里上下文就是当前这一条容器
+            onContextMenu: (event) => onLogContextMenu(event, logBodyRef.current, {
+              target: props.target,
+              targetLabel: props.targetLabel ?? '',
+              containers: [item],
+              filtered: needle !== '',
+            }),
             children: [
               matchedLines.length > shown.length
                 ? jsx('div', { className: 'dk_logLine dk_logMore', children: '（只显示最近 ' + String(LOG_COLOR_LIMIT) + ' 行，共 ' + String(matchedLines.length) + ' 行匹配）' }, 'more')
@@ -2447,7 +2973,7 @@ window.__ModuleLoader__.load({
         jsx('div', { className: 'dk_tabs', children: tabs.map(([key, label]) => jsx('button', {
           type: 'button', className: 'dk_tab', 'data-on': tab === key ? '1' : '0', onClick: () => setTab(key), children: label,
         }, key)) }),
-        jsx('div', { className: 'dk_detailBody', children: tab === 'services' ? servicesTab() : jsx(ComposeLogs, { target: props.target, items }) }),
+        jsx('div', { className: 'dk_detailBody', children: tab === 'services' ? servicesTab() : jsx(ComposeLogs, { target: props.target, targetLabel: props.targetLabel, items }) }),
       ] })
     }
 
@@ -2879,11 +3405,23 @@ window.__ModuleLoader__.load({
           jsx('span', { className: 'dk_filterCount', children: needle === '' && levelMin === 0 ? String(entries.length) + ' 行' : String(matched.length) + ' / ' + String(entries.length) + ' 行' }),
         ] }),
         jsx('div', { className: 'dk_followState', 'data-state': status === 'open' ? 'open' : (status === 'closed' ? 'closed' : 'connecting'), children: statusText() }),
-        jsx('div', { className: 'dk_logBody', ref: bodyRef, children: [
-          shown.length === 0
-            ? jsx('div', { className: 'dk_logLine', children: status === 'open' ? '等待日志…' : statusText() }, 'empty')
-            : shown.map((entry, index) => renderAggLine(entry, index, needle, showTs)),
-        ] }),
+        jsx('div', {
+          className: 'dk_logBody',
+          ref: bodyRef,
+          // 右键「问 Agent」：聚合视图把本次聚合的容器集合一起交出去，
+          // 具体是哪个容器由每行的 [service] 前缀决定
+          onContextMenu: (event) => onLogContextMenu(event, bodyRef.current, {
+            target: props.target,
+            targetLabel: props.targetLabel ?? '',
+            containers: items,
+            filtered: needle !== '',
+          }),
+          children: [
+            shown.length === 0
+              ? jsx('div', { className: 'dk_logLine', children: status === 'open' ? '等待日志…' : statusText() }, 'empty')
+              : shown.map((entry, index) => renderAggLine(entry, index, needle, showTs)),
+          ],
+        }),
       ] })
     }
 
@@ -3012,7 +3550,7 @@ window.__ModuleLoader__.load({
           jsx('span', { className: 'dk_headerSpacer' }),
           props.docked === true ? null : jsx('button', { type: 'button', className: 'dk_iconBtn', title: '关闭面板', onClick: props.onClose, children: jsx('span', { className: 'dk_iconGlyph', dangerouslySetInnerHTML: { __html: ICON_CLOSE } }) }, 'close'),
         ] }),
-        jsx('div', { className: 'dk_detailBody', children: jsx(ComposeLogs, { target: props.target, items: props.items }) }),
+        jsx('div', { className: 'dk_detailBody', children: jsx(ComposeLogs, { target: props.target, targetLabel: props.targetLabel, items: props.items }) }),
       ] })
     }
 
@@ -5054,6 +5592,15 @@ window.__ModuleLoader__.load({
       ctx.inject(['ttyPanel'], (panelCtx) => {
         panelApi = panelCtx.ttyPanel ?? null
         return () => { panelApi = null }
+      })
+
+      // 会话桥（可选）：日志右键「问 Agent」要的是**会话作用域**里的 conversation
+      // 服务（conversation 按 scope 寻址）。sessions 是 DSH 客户端核心服务，正常都在；
+      // 拿不到时菜单项一律置灰并写明原因，面板其余功能照常——与上面 ttyConnbar /
+      // ttyPanel 的降级策略一致。
+      ctx.inject(['sessions'], (sessionCtx) => {
+        sessionsSvc = sessionCtx.sessions ?? null
+        return () => { sessionsSvc = null }
       })
 
       let disposeConnbarAction = () => {}

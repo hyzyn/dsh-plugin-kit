@@ -1123,6 +1123,131 @@
 .dk_logText { color: inherit; }
 .dk_logMore { color: #7f8899; font-style: italic; }
 
+/* ------------------------------------------------------------------ *
+ * 日志 → 会话桥：右键菜单 / 预览卡片 / 失败提示
+ *
+ * 三者都挂在 document.body 上，而不是面板的 React 树里：`.dk_logBody` 是
+ * overflow:auto，内联渲染会跟着日志一起滚走；而宿主只向浏览器半体注入
+ * react / react/jsx-runtime / react-dom/client，没有 react-dom，也就拿不到
+ * createPortal。好在 `--dk-*` 令牌声明在 `:where(html, body)` 上，body 下的
+ * 浮层自动继承，不必搬令牌。
+ *
+ * z-index 必须高于 `.dk_backdrop` 的 2140：模态形态下面板整个在 backdrop 里，
+ * 菜单挂到 body 后若低于它就会被盖住、点不出来。
+ * ------------------------------------------------------------------ */
+
+.dk_menu {
+  position: fixed;
+  z-index: 2160;
+  min-width: 220px;
+  max-width: 320px;
+  padding: var(--dk-gap-xs);
+  border: 1px solid var(--dk-border-strong);
+  border-radius: var(--dk-r-md);
+  background: var(--dk-surface-solid);
+  box-shadow: var(--dk-shadow);
+  color: var(--dk-label);
+  font-size: 12px;
+}
+
+.dk_menuHead { padding: 6px 8px 2px; font-weight: 600; }
+.dk_menuSub {
+  padding: 0 8px 6px;
+  color: var(--dk-label-3);
+  font-size: 11px;
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+.dk_menuItem {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--dk-r-sm);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dk_menuItem:hover:not(:disabled) { background: var(--dk-hover); }
+.dk_menuItem:focus-visible { outline: none; box-shadow: var(--dk-ring); }
+.dk_menuItem:disabled { cursor: not-allowed; }
+.dk_menuItem:disabled .dk_menuItemLabel { color: var(--dk-label-3); }
+.dk_menuItemHint { color: var(--dk-label-3); font-size: 11px; }
+
+.dk_menuNote {
+  margin-top: var(--dk-gap-xs);
+  padding: 6px 8px 2px;
+  border-top: 1px solid var(--dk-border);
+  color: var(--dk-label-3);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.dk_askCard {
+  position: fixed;
+  z-index: 2170;
+  display: flex;
+  flex-direction: column;
+  gap: var(--dk-gap-sm);
+  width: min(680px, calc(100vw - 32px));
+  padding: var(--dk-gap-lg);
+  border: 1px solid var(--dk-border-strong);
+  border-radius: var(--dk-r-lg);
+  background: var(--dk-surface-solid);
+  box-shadow: var(--dk-shadow-lg);
+  color: var(--dk-label);
+}
+
+.dk_askCardHead { font-size: 13px; font-weight: 600; }
+
+.dk_askCardText {
+  width: 100%;
+  height: min(42vh, 340px);
+  padding: var(--dk-gap-md);
+  border: 1px solid var(--dk-border);
+  border-radius: var(--dk-r-sm);
+  background: var(--dk-log-bg);
+  color: var(--dk-log-fg);
+  font-family: var(--dk-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  resize: vertical;
+}
+
+.dk_askCardText:focus-visible { outline: none; box-shadow: var(--dk-ring); }
+
+.dk_askCardStatus { min-height: 16px; color: var(--dk-label-3); font-size: 11px; }
+.dk_askCardStatus[data-kind="error"] { color: var(--dk-danger); }
+.dk_askCardStatus[data-kind="ok"] { color: var(--dk-accent); }
+
+.dk_askCardFoot { display: flex; align-items: center; gap: var(--dk-gap-md); }
+/* 取消推到最右：与 .dk_confirmActions 的「动作在右」一致，避免误点主按钮 */
+.dk_askCardFoot .dk_btn:last-child { margin-left: auto; }
+
+.dk_askCardHint { color: var(--dk-label-3); font-size: 11px; line-height: 1.5; }
+
+.dk_askToast {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 2180;
+  max-width: 420px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--dk-danger) 40%, transparent);
+  border-radius: var(--dk-r-md);
+  background: var(--dk-surface-solid);
+  box-shadow: var(--dk-shadow);
+  color: var(--dk-danger);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 /* 键值行 */
 .dk_kv {
   display: grid;
