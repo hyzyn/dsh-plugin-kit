@@ -163,9 +163,29 @@ function downloadText(filename, text) {
  * 构造交互式进入容器的命令（单行）。容器名按 docker 命名规则只含
  * `[A-Za-z0-9_.-]`，这里仍加单引号包裹以防意外字符破坏远端 shell。
  */
+/**
+ * 交互式进入容器的命令。前缀单独抽出来，是为了让「生成」与「识别」共用同一个字符串——
+ * 两处各写一份格式，早晚会漂移（识别失效是静默的：按钮只是又冒出来了）。
+ */
+const EXEC_COMMAND_PREFIX = "docker exec -it '"
+
 function buildExecCommand(name) {
   const safe = String(name).replaceAll("'", "'\\''")
-  return "docker exec -it '" + safe + "' sh"
+  return EXEC_COMMAND_PREFIX + safe + "' sh"
+}
+
+/**
+ * 这个 spawnSpec 的命令是不是**本插件自己**开的 exec 会话——容器卡片「终端」按钮经
+ * `ttyTerminal.open` 开出来的那条（`docker exec -it '<容器>' sh`，见 buildExecCommand）。
+ *
+ * 用途：这种标签的连接栏不该再提供「容器」按钮。用户正是从容器面板点进来的，再从连接栏
+ * 给一个回到该面板的入口等于绕回原地，而且此刻那个面板就在旁边。
+ *
+ * 注意只认 spawnSpec.command（API 开的命令标签），**用户自己在 shell 里敲的
+ * `docker exec -it` 不会进 spawnSpec**，所以普通 SSH 标签照旧带按钮。
+ */
+function isOwnExecCommand(command) {
+  return typeof command === 'string' && command.startsWith(EXEC_COMMAND_PREFIX)
 }
 
 /* ============================ 记住上次选的目标 ============================ */
@@ -5685,6 +5705,9 @@ window.__ModuleLoader__.load({
     exports.__carrier = {
       open: openContainerPanel,
       preference: carrierPreference,
+      /** exec 标签的识别：连接栏据此不再提供「容器」按钮。纯函数，值得回归。 */
+      isOwnExec: isOwnExecCommand,
+      buildExec: buildExecCommand,
     }
     exports.__pick = {
       MAX: PICK_MAX,
@@ -5841,6 +5864,9 @@ window.__ModuleLoader__.load({
           if (!entryVisible) return
           const spec = payload?.spec ?? {}
           if (spec.t !== 'ssh') return
+          // 本插件自己开的 exec 标签不再提供「容器」入口：用户正是从那个面板点进来的，
+          // 连接栏里再给一个回去的按钮等于绕回原地（而面板此刻就在旁边）
+          if (isOwnExecCommand(spec.command)) return
           const bookName = typeof payload?.bookName === 'string' ? payload.bookName : ''
           const matched = matchTargetForSession(spec, bookName)
           const title = matched !== undefined

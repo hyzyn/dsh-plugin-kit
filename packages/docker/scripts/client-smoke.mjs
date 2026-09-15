@@ -435,6 +435,32 @@ await test('承载分发（S2）：终端连接栏入口走 dock、不开标签�
   assert.ok(state.paneCalls.length > 0, '应停靠到 tty 面板右侧的 dock')
 })
 
+await test('连接栏：本插件自己开的 exec 标签不再提供「容器」入口', async () => {
+  // 纯函数部分：只认 spawnSpec.command（API 开的命令标签），用户手敲的不算
+  const carrier = carrierApi()
+  assert.equal(carrier.isOwnExec(carrier.buildExec('ems-service-test')), true, '自家生成的命令必须认得出来')
+  assert.equal(carrier.isOwnExec("docker exec -it 'x' sh"), true)
+  assert.equal(carrier.isOwnExec(undefined), false, '普通 SSH 标签没有 command → 照旧带按钮')
+  assert.equal(carrier.isOwnExec(''), false)
+  assert.equal(carrier.isOwnExec('docker ps'), false)
+
+  // 端到端：连接栏工厂拿到的 spec 带 command 时不再插按钮
+  let reg = null
+  const run = new Function('window', 'document', 'MutationObserver', 'fetch', code)
+  run({ __ModuleLoader__: { load: (entry) => { reg = entry } } }, documentStub, class { observe() {} disconnect() {} }, fetchStub)
+  const exports_ = reg.factory((spec) => SEED[spec])
+  const { ctx, state } = makeClientCtx({ ttyConnbar: true })
+  exports_.apply(ctx)
+  const buttons = []
+  const push = (icon, label, title, onClick) => buttons.push({ label, onClick })
+  const base = { t: 'ssh', name: 'prod-a', host: '10.0.0.5', port: 2222 }
+  state.connbarFactory({ spec: base, bookName: 'prod-a', addAction: push })
+  assert.equal(buttons.length, 1, '普通 SSH 标签应带「容器」按钮')
+  buttons.length = 0
+  state.connbarFactory({ spec: { ...base, command: "docker exec -it 'ems-service-test' sh" }, bookName: 'prod-a', addAction: push })
+  assert.equal(buttons.length, 0, 'exec 标签不该再给「容器」入口')
+})
+
 await test('承载分发（S2）：localStorage 置 modal 时退回模态（灰度回滚开关）', () => {
   let reg = null
   const run = new Function('window', 'document', 'MutationObserver', 'fetch', code)
@@ -893,6 +919,12 @@ function pickApi() {
   const exports_ = registration.factory((spec) => SEED[spec])
   assert.ok(exports_.__pick !== undefined, '缺少 __pick 测试缝')
   return exports_.__pick
+}
+
+function carrierApi() {
+  const exports_ = registration.factory((spec) => SEED[spec])
+  assert.ok(exports_.__carrier !== undefined, '缺少 __carrier 测试缝')
+  return exports_.__carrier
 }
 
 await test('聚合选择：入口 / 勾选框 / 操作条装配进 bundle', () => {
