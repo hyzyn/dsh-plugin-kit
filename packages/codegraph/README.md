@@ -6,11 +6,11 @@
 
 ## 特性
 
-- **检索到索引全链路都在卡片里**：`status --json` 的 `initialized` / `version` / `fileCount` / `nodeCount` / `edgeCount` / `lastIndexed` / `pendingChanges` 原样呈现；符号结果可下钻 `node` / `callers` / `callees` / `impact`，不必离开 GUI。
+- **检索到索引全链路都在卡片里**：`status --json` 铺成紧凑字段（状态 / 版本 / 项目 / 规模 / 最后索引 / 待同步 / 语言 / 索引库），原始 JSON 收进可折叠区；符号结果给出带行号源码 + `callers` / `callees` / `impact` 三张关系列表，同样保留折叠的原始 JSON，不必离开 GUI。
 - **增量与全量两条索引路径**：`sync -- <path>` 走增量，`index [--force] -- <path>` 全量重建；查询类命令走 `cliTimeoutMs`（默认 60s），`sync` / `index` 走 `indexTimeoutMs`（默认 600s）。
 - **托管 MCP 服务器的工作目录**：dsh-mcp-client 不声明 MCP roots 能力，`codegraph serve --mcp` 只能从 `process.cwd()` 向上查找 `.codegraph/`。插件在 `~/.dsh/cordis.patch.yml` 托管该服务器行并把 `config.cwd` 对齐默认项目，改写经 watchUserPatches 热加载，无需重启宿主。
 - **索引判定与 CLI 的 `initialized` 同口径**：要求 `.codegraph/` 下存在索引库（`*.db`）。仅判目录存在会把 codegraph CLI 自身的安装目录 `~/.codegraph` 当作已索引项目，MCP 服务器于是以未索引目录为 cwd——实测此时 `codegraph_explore` 的必填项从 `query` 变成 `query` + `projectPath`，模型每次查询都得显式传路径。非真索引时不改写现有 cwd，并在卡片上给出 `indexState` 与原因。
-- **卡片查询路径随活动会话**：默认取当前会话的 cwd，会话切换即跟随；默认项目（= MCP 的 cwd）由「设为默认项目」显式持久化到 settings 命名空间 `codegraph`，路径输入框可临时覆盖。
+- **跟随当前项目（默认开）**：会话切到某个**已索引**项目时，MCP 托管行的 cwd 自动对齐它，不需要点按钮；会话目录没有可用索引时回落到绑定路径。绑定路径由「设为默认项目」显式持久化到 settings 命名空间 `codegraph`，该操作同时**关闭跟随**（显式指定不该被下一次会话切换顶掉），卡片上的「跟随当前项目」复选框可改回来。
 - **两段 systemPrompt 注入，各自独立开关**：`plugin:dsh-codegraph`（order 150，能力公告）与 `plugin:dsh-codegraph:usage`（order 151，使用指引）；两段均以 `<command> --version` 探测为前置（失败即不注入），卡片复选框写 `announceToAgent` / `usageGuidance` 到 settings 命名空间后即时增删 section。
 
 ![Codegraph 设置卡片：索引状态 / 符号搜索 / 一键同步](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-codegraph.png)
@@ -32,6 +32,8 @@ Searched for a .codegraph/ directory starting from: /Users/you
 - 区块外的手工行只检测不碰（避免冲突）。
 - 目标路径必须有**真索引**才托管：`.codegraph/` 里得存在索引库（`.db`）。只看目录存在是不够的——codegraph CLI 把自己的安装数据放在 `~/.codegraph`（`current -> versions/<v>`、`bundles/`、`codegraph.lock`，没有任何索引库），于是**家目录**会被误判成「已索引项目」，插件把 MCP 的 cwd 钉在家目录上并报告一切正常，而 `codegraph status --json -- ~` 实际返回 `initialized:false`，工具照旧拿 "No CodeGraph project is loaded"。命中这种情况时插件不改写现有 cwd、不凭空建行，并在卡片上提示「默认项目 X 不是有效索引」+ 一键修复路径。
 - 多项目使用：一台 codegraph MCP 服务器同一时刻挂载一个默认项目；其它已索引项目可在工具调用里传 `projectPath` 查询，或回卡片一键切换。
+- 跟随语义：托管行 cwd = 「跟随开启 + 会话目录是有效索引」时取会话目录，否则取绑定路径。有效索引按 `.codegraph/` 里**存在索引库**判定（不是目录存在），所以家目录那种 `~/.codegraph` 安装目录不会把 cwd 带偏；项目被 `uninit` 后也会自动回落，不留陈旧状态。
+- 跟随由**浏览器半体**上报（页面加载即订阅活动会话，与设置面板是否展开无关）：宿主侧没有「当前会话」这个信号，因此跟随只在有 GUI 页面打开时生效，其余情况用绑定路径。
 - 关闭方式：插件配置 `mcpIntegration: false`（会撤销本插件写入的托管行）。
 
 ## API
@@ -46,8 +48,9 @@ Searched for a .codegraph/ directory starting from: /Users/you
 | `/api/dsh-codegraph/node?name=&path=` | GET | 查符号/文件详情 |
 | `/api/dsh-codegraph/sync` | POST | 增量同步 `{ path }` |
 | `/api/dsh-codegraph/index` | POST | 全量重建 `{ path }` |
-| `/api/dsh-codegraph/default-path` | GET | 默认项目路径 + `indexState`（`indexed` / `missing` / `not-a-project`）+ 提示词开关 + `cliAvailable` + MCP 托管状态 |
-| `/api/dsh-codegraph/settings` | POST | 写提示词开关 `{ announceToAgent?, usageGuidance?, mcpIntegration? }`（布尔），即时生效 |
+| `/api/dsh-codegraph/default-path` | GET | 绑定路径 `defaultPath` + 生效路径 `effectivePath` + `sessionPath` + `followSession` + 提示词开关 + `cliAvailable` + MCP 托管状态（`indexState` 针对**生效路径**） |
+| `/api/dsh-codegraph/follow` | POST | 上报活动会话目录 `{ path }`（空 = 无活动会话）；宿主据此对齐托管行 cwd，非索引目录自动回落 |
+| `/api/dsh-codegraph/settings` | POST | 写开关 `{ announceToAgent?, usageGuidance?, mcpIntegration?, followSession? }`（布尔），即时生效 |
 | `/api/dsh-codegraph/default-path` | POST | 设为默认项目 `{ path }`（需 `.codegraph/` 里有索引库），同步热切换 MCP |
 
 所有路由均为 loopback-only，防止远程访问。
@@ -70,7 +73,8 @@ Searched for a .codegraph/ directory starting from: /Users/you
 ```bash
 pnpm --filter @hyzyn/dsh-codegraph build
 pnpm --filter @hyzyn/dsh-codegraph typecheck
-pnpm vitest run packages/codegraph          # 托管行决策矩阵 + CLI 旋钮
+pnpm vitest run packages/codegraph          # 托管行决策矩阵 + CLI 旋钮 + 跟随/门禁路由
+node packages/codegraph/scripts/preview-card.mjs        # 渲染卡片预览 HTML 到 .preview/（--png 需在普通终端跑，Chrome 起不来于受限环境）
 node packages/codegraph/scripts/verify-sync.mjs   # 托管行同步逻辑验证（需先 build）
 ```
 
@@ -112,7 +116,7 @@ export interface Config {
 }
 ```
 
-settings 命名空间 `codegraph` 里保存过的 `defaultPath` / `mcpIntegration` / `announceToAgent` / `usageGuidance` 优先于插件配置：卡片「设为默认项目」写第一个，两个提示词开关写后两个（`POST /api/dsh-codegraph/settings`）。
+settings 命名空间 `codegraph` 里保存过的 `defaultPath` / `mcpIntegration` / `followSession` / `announceToAgent` / `usageGuidance` 优先于插件配置：「设为默认项目」写 `defaultPath` 并把 `followSession` 关掉，三个复选框写其余三个（`POST /api/dsh-codegraph/settings`）。
 
 `command` / `cliTimeoutMs` / `indexTimeoutMs` / `indexForce` 是**安装级旋钮**，只读插件配置、不进 settings 命名空间。在 profile 的补丁里按 id 覆盖即可，例如：
 

@@ -19,6 +19,7 @@ const CODEGRAPH_SETTINGS_SCHEMA = z.object({
     enabled: z.boolean(),
     announceToAgent: z.boolean(),
     usageGuidance: z.boolean(),
+    followSession: z.boolean(),
     command: z.string(),
     defaultPath: z.string(),
     mcpIntegration: z.boolean(),
@@ -240,13 +241,21 @@ export function syncManagedMcpRow(lines, decision) {
         /* 区块外内容解析失败（如含其它 patch 操作形状）：按无手工行处理 */
     }
     const replacements = [];
+    const dryRun = decision.dryRun === true;
+    /** dryRun 下本该落盘、但被压住的改动（只写进 note，不写盘）。 */
+    let pendingNote;
     let status;
     const mcpRow = mcpRows.find((row) => isCodegraphServerRow(row));
     if (mcpRow !== undefined) {
         // 复用 MCP 卡片区块里的行：只对齐 cwd，其余字段（含 disabled）保持用户配置。
         if (decision.manageEnabled && indexed && mcpRow.config?.cwd !== decision.targetCwd) {
-            mcpRow.config = { ...mcpRow.config, cwd: decision.targetCwd };
-            replacements.push({ range: mcpRange, text: renderBlockLines(mcpRange, mcpRows, carriageReturn, mcpRange.end >= lines.length) });
+            if (dryRun) {
+                pendingNote = 'cwd 与默认项目不一致，下次同步会对齐';
+            }
+            else {
+                mcpRow.config = { ...mcpRow.config, cwd: decision.targetCwd };
+                replacements.push({ range: mcpRange, text: renderBlockLines(mcpRange, mcpRows, carriageReturn, mcpRange.end >= lines.length) });
+            }
         }
         // 本插件区块若还残留重复行则让位删除（防 serverName 冲突）。
         if (ownRange && ownRows.some((row) => isCodegraphServerRow(row))) {
@@ -259,7 +268,11 @@ export function syncManagedMcpRow(lines, decision) {
             disabled: mcpRow.disabled === true,
             indexed,
             indexState: state,
-            ...(decision.manageEnabled && indexed ? {} : { note: decision.manageEnabled ? `目标路径${indexProblem(state)}，保持现有配置` : 'MCP 联动已关闭，保持现有配置' }),
+            ...(pendingNote !== undefined
+                ? { note: pendingNote }
+                : decision.manageEnabled && indexed
+                    ? {}
+                    : { note: decision.manageEnabled ? `目标路径${indexProblem(state)}，保持现有配置` : 'MCP 联动已关闭，保持现有配置' }),
         };
     }
     else {
@@ -276,8 +289,13 @@ export function syncManagedMcpRow(lines, decision) {
         else if (ownRowIndex !== -1 && ownRange) {
             const row = ownRows[ownRowIndex];
             if (indexed && row.config?.cwd !== decision.targetCwd) {
-                row.config = { ...row.config, cwd: decision.targetCwd };
-                replacements.push({ range: ownRange, text: renderBlockLines(ownRange, ownRows, carriageReturn, ownRange.end >= lines.length) });
+                if (dryRun) {
+                    pendingNote = 'cwd 与默认项目不一致，下次同步会对齐';
+                }
+                else {
+                    row.config = { ...row.config, cwd: decision.targetCwd };
+                    replacements.push({ range: ownRange, text: renderBlockLines(ownRange, ownRows, carriageReturn, ownRange.end >= lines.length) });
+                }
             }
             status = {
                 mode: 'own',
@@ -286,8 +304,15 @@ export function syncManagedMcpRow(lines, decision) {
                 disabled: row.disabled === true,
                 indexed,
                 indexState: state,
-                ...(indexed ? {} : { note: `目标路径${indexProblem(state)}，保持现有配置` }),
+                ...(pendingNote !== undefined
+                    ? { note: pendingNote }
+                    : indexed
+                        ? {}
+                        : { note: `目标路径${indexProblem(state)}，保持现有配置` }),
             };
+        }
+        else if (indexed && dryRun) {
+            status = { mode: 'none', indexed, indexState: state, note: '文件中还没有托管行（下次同步会写入）' };
         }
         else if (indexed) {
             const row = {
@@ -308,13 +333,29 @@ export function syncManagedMcpRow(lines, decision) {
             status = { mode: 'none', indexed, indexState: state, note: `默认路径${indexProblem(state)}，未托管；把默认项目切到已索引目录即可自动挂载` };
         }
     }
-    if (replacements.length === 0)
+    // dryRun 是只读快照：即使某条分支漏了判断，也绝不返回改动过的行
+    if (dryRun || replacements.length === 0)
         return { lines, changed: false, status };
     const next = [...lines];
     for (const { range, text } of [...replacements].sort((a, b) => b.range.start - a.range.start)) {
         next.splice(range.start, range.end - range.start, ...text);
     }
     return { lines: next, changed: true, status };
+}
+/**
+ * 托管行实际使用的 cwd：跟随开启且会话目录是有效索引时用它，否则用绑定路径。
+ *
+ * 「有效索引」这个判定（而不是「目录存在」）是关键：家目录里有 codegraph CLI 自己的
+ * `~/.codegraph` 安装目录，按目录存在判会把托管行 cwd 钉在一个没有索引的目录上。
+ */
+function effectiveProjectPath(runtime) {
+    const current = runtime?.current;
+    if (current === undefined)
+        return process.cwd();
+    const sessionPath = runtime?.sessionPath;
+    if (current.follow && typeof sessionPath === 'string' && sessionPath !== '' && indexState(sessionPath) === 'indexed')
+        return sessionPath;
+    return current.defaultPath;
 }
 let runtimeSyncRef;
 /** 读 home 补丁 → 纯函数同步 → 有变化才原子写回（同目录 tmp + rename，走 kit）。 */
@@ -795,11 +836,18 @@ isCliAvailable) {
                         manage: true,
                         announce: true,
                         usage: true,
+                        follow: true,
                     };
-                    const state = indexState(current.defaultPath);
+                    // 卡片关心的是「托管行实际用哪个目录」：indexState 一律针对生效路径，
+                    // defaultPath 只是跟随关闭/会话目录无索引时的回落值。
+                    const effectivePath = effectiveProjectPath(runtimeSyncRef);
+                    const state = indexState(effectivePath);
                     writeJson(res, 200, {
                         ok: true,
                         defaultPath: current.defaultPath,
+                        effectivePath,
+                        sessionPath: runtimeSyncRef?.sessionPath,
+                        followSession: current.follow,
                         manageEnabled: current.manage,
                         announceToAgent: current.announce,
                         usageGuidance: current.usage,
@@ -809,7 +857,7 @@ isCliAvailable) {
                         command: cli.command,
                         indexed: state === 'indexed',
                         indexState: state,
-                        mcp: snapshotMcpStatus(),
+                        mcp: snapshotMcpStatus(cli.command),
                     });
                     return;
                 }
@@ -853,10 +901,11 @@ isCliAvailable) {
                     writeJson(res, 500, { error: '插件尚未完成挂载' });
                     return;
                 }
+                // 「设为默认项目」是一次显式指定：同时关掉跟随，否则下一个会话切换就会把它顶掉
                 let persisted = false;
                 if (runtime.scope !== undefined) {
                     try {
-                        await runtime.scope.update({ defaultPath: path });
+                        await runtime.scope.update({ defaultPath: path, followSession: false });
                         persisted = true;
                     }
                     catch (error) {
@@ -864,8 +913,54 @@ isCliAvailable) {
                         return;
                     }
                 }
-                const outcome = runtime.sync({ defaultPath: path });
-                writeJson(res, 200, { ok: true, defaultPath: outcome.defaultPath, persisted, mcp: outcome.status });
+                const outcome = runtime.sync({ defaultPath: path, followSession: false });
+                writeJson(res, 200, {
+                    ok: true,
+                    defaultPath: outcome.defaultPath,
+                    effectivePath: outcome.effectivePath,
+                    followSession: outcome.current.follow,
+                    persisted,
+                    mcp: outcome.status,
+                });
+            },
+        },
+        {
+            kind: 'exact',
+            path: '/api/dsh-codegraph/follow',
+            handler: async (req, res) => {
+                if (!guard(req, res, 'POST'))
+                    return;
+                const body = await readBody(req);
+                if (body === undefined) {
+                    writeJson(res, 400, { error: 'invalid JSON body' });
+                    return;
+                }
+                const path = typeof body.path === 'string' ? body.path.trim() : '';
+                const runtime = runtimeSyncRef;
+                if (runtime === undefined) {
+                    writeJson(res, 500, { error: '插件尚未完成挂载' });
+                    return;
+                }
+                // 空 path = 当前没有活动会话（或它没有工作目录）：清掉上报值，回落到绑定路径。
+                // 非空值不在这里做目录/索引校验——判定统一在 effectiveProjectPath 里按「是否
+                // 有效索引」现算，这样索引被删/quinit 之后也会自动回落，不留陈旧状态。
+                runtime.sessionPath = path === '' ? undefined : path;
+                const outcome = runtime.sync(runtime.scope?.get());
+                const state = indexState(outcome.effectivePath);
+                writeJson(res, 200, {
+                    ok: true,
+                    sessionPath: runtime.sessionPath ?? null,
+                    effectivePath: outcome.effectivePath,
+                    followSession: outcome.current.follow,
+                    defaultPath: outcome.defaultPath,
+                    indexed: state === 'indexed',
+                    indexState: state,
+                    mcp: outcome.status,
+                    ...(outcome.current.follow && path !== '' && state !== 'indexed'
+                        ? { note: '会话目录没有可用的 .codegraph/ 索引，托管行 cwd 回落到默认项目' }
+                        : {}),
+                    ...(outcome.current.follow ? {} : { note: '跟随已关闭，托管行 cwd 保持默认项目' }),
+                });
             },
         },
         {
@@ -878,7 +973,7 @@ isCliAvailable) {
                 // 只认这三个布尔键：defaultPath 走 /default-path（它有目录与索引校验），
                 // 其余安装级旋钮（command / 超时 / indexForce）故意不给写入口。
                 const patch = {};
-                for (const key of ['announceToAgent', 'usageGuidance', 'mcpIntegration']) {
+                for (const key of ['announceToAgent', 'usageGuidance', 'mcpIntegration', 'followSession']) {
                     const value = body?.[key];
                     if (value === undefined)
                         continue;
@@ -889,7 +984,7 @@ isCliAvailable) {
                     patch[key] = value;
                 }
                 if (Object.keys(patch).length === 0) {
-                    writeJson(res, 400, { error: '缺少可写字段（announceToAgent / usageGuidance / mcpIntegration）' });
+                    writeJson(res, 400, { error: '缺少可写字段（announceToAgent / usageGuidance / mcpIntegration / followSession）' });
                     return;
                 }
                 const runtime = runtimeSyncRef;
@@ -912,6 +1007,8 @@ isCliAvailable) {
                     announceToAgent: outcome.current.announce,
                     usageGuidance: outcome.current.usage,
                     manageEnabled: outcome.current.manage,
+                    followSession: outcome.current.follow,
+                    effectivePath: outcome.effectivePath,
                     cliAvailable: isCliAvailable(),
                     command: cli.command,
                     mcp: outcome.status,
@@ -920,16 +1017,17 @@ isCliAvailable) {
         },
     ];
 }
-/** 不落盘的快照：用当前生效配置在内存行副本上做一次同步（丢弃结果）。 */
-function snapshotMcpStatus() {
-    const current = runtimeSyncRef?.current ?? { defaultPath: process.cwd(), manage: true, announce: true, usage: true };
+/** 不落盘的快照：读盘上真实内容，回答「现在是什么状态」（不推测下次写入的结果）。 */
+function snapshotMcpStatus(command) {
+    const current = runtimeSyncRef?.current ?? { defaultPath: process.cwd(), manage: true, announce: true, usage: true, follow: true };
     const patchFile = homePatchPath();
     const text = existsSync(patchFile) ? readFileSync(patchFile, 'utf8') : '';
     return syncManagedMcpRow(text.split('\n'), {
         serverName: MCP_SERVER_NAME,
-        command: '',
-        targetCwd: current.defaultPath,
+        command,
+        targetCwd: effectiveProjectPath(runtimeSyncRef),
         manageEnabled: current.manage,
+        dryRun: true,
     }).status;
 }
 /* ------------------------------------------------------------------ *
@@ -975,6 +1073,7 @@ const plugin = definePlugin({
         const announceDefault = config?.announceToAgent !== false;
         const usageDefault = config?.usageGuidance !== false;
         const manageEnabled = config?.mcpIntegration !== false;
+        const followDefault = config?.followSession !== false;
         let promptApi;
         let announceDisposer;
         let usageDisposer;
@@ -1046,6 +1145,7 @@ const plugin = definePlugin({
                         manage: storedManage ?? manageEnabled,
                         announce: (typeof stored?.announceToAgent === 'boolean' ? stored.announceToAgent : undefined) ?? announceDefault,
                         usage: (typeof stored?.usageGuidance === 'boolean' ? stored.usageGuidance : undefined) ?? usageDefault,
+                        follow: (typeof stored?.followSession === 'boolean' ? stored.followSession : undefined) ?? followDefault,
                     };
                 };
                 const logOutcome = (changed, status) => {
@@ -1053,12 +1153,14 @@ const plugin = definePlugin({
                 };
                 const sync = (stored) => {
                     const resolved = resolveStored(stored);
-                    const { changed, status } = syncMcpRowOnDisk({ serverName: MCP_SERVER_NAME, command, targetCwd: resolved.defaultPath, manageEnabled: resolved.manage });
+                    // 先更新解析值再算生效路径（跟随判定读的就是它们）
                     runtime.current = resolved;
+                    const effectivePath = effectiveProjectPath(runtime);
+                    const { changed, status } = syncMcpRowOnDisk({ serverName: MCP_SERVER_NAME, command, targetCwd: effectivePath, manageEnabled: resolved.manage });
                     logOutcome(changed, status);
                     // 提示词开关也随这次解析值走：卡片里改完即生效，不用重启宿主。
                     refreshGuidance();
-                    return { defaultPath: resolved.defaultPath, status, current: resolved };
+                    return { defaultPath: resolved.defaultPath, effectivePath, status, current: resolved };
                 };
                 const runtime = { scope, current: resolveStored(scope.get()), sync };
                 runtimeSyncRef = runtime;
@@ -1086,6 +1188,7 @@ const plugin = definePlugin({
                 manage: manageEnabled,
                 announce: announceDefault,
                 usage: usageDefault,
+                follow: followDefault,
             };
             const runtime = {
                 current: resolved,
@@ -1095,11 +1198,13 @@ const plugin = definePlugin({
                         manage: typeof stored?.mcpIntegration === 'boolean' ? stored.mcpIntegration : resolved.manage,
                         announce: typeof stored?.announceToAgent === 'boolean' ? stored.announceToAgent : resolved.announce,
                         usage: typeof stored?.usageGuidance === 'boolean' ? stored.usageGuidance : resolved.usage,
+                        follow: typeof stored?.followSession === 'boolean' ? stored.followSession : resolved.follow,
                     };
-                    const result = syncMcpRowOnDisk({ serverName: MCP_SERVER_NAME, command, targetCwd: next.defaultPath, manageEnabled: next.manage });
                     runtime.current = next;
+                    const effectivePath = effectiveProjectPath(runtime);
+                    const result = syncMcpRowOnDisk({ serverName: MCP_SERVER_NAME, command, targetCwd: effectivePath, manageEnabled: next.manage });
                     refreshGuidance();
-                    return { defaultPath: next.defaultPath, status: result.status, current: next };
+                    return { defaultPath: next.defaultPath, effectivePath, status: result.status, current: next };
                 },
             };
             runtimeSyncRef = runtime;
