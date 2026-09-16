@@ -111,7 +111,10 @@ SSH 会话同表调度：`tty_list` 里 `kind: 'ssh'` 的条目按 `target`
 
 - **跟着保存走，不额外点一次**：勾选后由「保存修改」/「连接（并保存）」执行写入——没有
   "存了但没保存"的悬空引用。**没勾「保存到连接簿」时不会动存储**（那时没有配置可依附，
-  只会留下一个没人引用的孤儿）。
+  只会留下一个没人引用的孤儿）。**设置卡片的行内编辑是同一行、同一个默认值**，只是提交入口
+  叫「应用」（那张卡片的行级提交就是「应用」，随后随卡片「保存」落盘），所以勾选框文案是
+  「应用时存入凭据存储」；代价同一个：值先落存储，若此后放弃「保存」，存储里会留下一个
+  尚未被引用的名字（引用选择器里可见、可清）。
 - **默认勾选的两个副作用（知道就不会意外）**：① 编辑一条**明文密码**的老连接、只改别的字段
   再点「保存修改」，密码也会被搬进存储（设置里换成引用）——不想搬就取消勾选；② 存储拒绝
   写入时（典型是引用被只读源遮蔽）**保存会被中止**并把官方的原文错误显示出来，而不是偷偷
@@ -239,7 +242,12 @@ tmux server（专用 socket `dsh-tty`，与用户自己的 tmux 完全隔离）�
 - **入口（0.10.1 简化）**：设置卡片「会话持久化」选 `tmux` 即唯一开关——开启后
   **所有新开的标签默认持久化**：「+」菜单的「本地终端」、连接簿条目点击、
   SSH 连接对话框（「持久会话」默认勾选，单次连接可取消）。不再有单独的
-  「持久终端」菜单项与条目级勾选；
+  「持久终端」菜单项；
+- **条目级取消（`sshHosts[].persist`）**：连接簿条目上的「持久会话」勾选框存的是**取消项**
+  ——显式取消过（`persist: false`）的条目点开时不再 tmux 托管，其余条目（`true` /
+  没写过）跟随全局开关（所以 `~/.ssh/config` 导入的条目不受影响）。设置卡片与连接对话框
+  都只有全局开关开着时才显示这个勾选框；**在设置里编辑条目不再丢掉它**（0.17.x 之前只改
+  一个用户名就会静默把它清成 `false`）；
 - **机制**：spawn/ssh 帧带 `persist` + 客户端生成、随标签规格保存的稳定
   `persistName`——本地把 `-c` 包装层换成 `exec tmux -L dsh-tty -f
   <conf> new-session -A -s dsh-<名>`（cwd 由 node-pty spawn 继承）；SSH 则
@@ -289,9 +297,10 @@ tmux server（专用 socket `dsh-tty`，与用户自己的 tmux 完全隔离）�
   （表单手填 host / port / username / auth，连接前可勾选保存，对话框底部
   「文件浏览」可跳过终端直接以当前信息打开 SFTP）；
 - **连接簿**：SSH 连接对话框勾选「保存到连接簿」即存为条目（同名覆盖，
-  名称留空用主机名）；「+」菜单条目的 ✎ 与设置卡片里的 **编辑** 都走同一
-  编辑表单（行内改 host/port/username/auth/私钥/密码/agent forwarding，
-  支持改名，同名冲突校验，随「保存」写入配置）；
+  名称留空用主机名）；「+」菜单条目的 ✎ 与设置卡片里的 **编辑** 走的是**同一套表单**——
+  连接 / 认证 / 选项 三段分组 + 凭据存储 + 凭据引用选择器 + 试连 + 文件浏览，
+  支持改名、同名冲突校验。两者只差**提交方式**：菜单对话框是「保存修改 / 连接（并保存）」
+  立即落盘，设置卡片是「应用」进卡片表单、再随卡片「保存」写入配置；
 - **认证方式（auth）三选一**：
   - `agent`（默认）——走 ssh-agent（`SSH_AUTH_SOCK`），凭证不落盘，最推荐；
   - `key`——`keyPath` 私钥文件（`~` 开头可省略 home），`passphrase` 可选；
@@ -330,7 +339,9 @@ tmux server（专用 socket `dsh-tty`，与用户自己的 tmux 完全隔离）�
   宿主没有这条路由时，候选安静退回连接簿那一半。
   候选一个都没有时，这一行**整体退化成一行说明**（不再摆一个永远点不开的下拉——那看着就像坏
   了）：文案点明要么勾上面「保存时存入凭据存储」新建一个，要么在字段里直接手输 `env:NAME`；
-  口令那行上方没有勾选框，文案相应改成只提手输；
+  口令那行上方没有勾选框，文案相应改成只提手输。**设置卡片的编辑表单里有同一行、同一份候选**
+  （同样只在筛选框获得焦点时展开），差别只在呈现：卡片里是**内联**列表而非浮层——卡片本身是
+  可滚动的长表单，浮层在那边会被裁掉；
 - **主机指纹 TOFU 钉扎（0.3.0）**：首次连接成功后把该主机（host:port）的
   sha256 指纹记录进 `hostKeys`（随 settings 持久化）；之后每次连接校验，
   指纹一致放行，**指纹变更直接拒绝连接**（防中间人冒充），错误信息带重置
@@ -392,7 +403,7 @@ tmux server（专用 socket `dsh-tty`，与用户自己的 tmux 完全隔离）�
 | `colorTerm` | `truecolor` | COLORTERM 值 |
 | `cwd` | 宿主启动目录 | 兜底工作目录（客户端当前会话 cwd 优先） |
 | `reconnectGraceSec` | 120 | 异常断开后会话保活秒数（0~3600）：刷新页面/网络抖动后会话存活等待重连，超时由回收器结束；`0` = 旧行为，断开立即结束 |
-| `sshHosts` | `[]` | SSH 连接簿（面板「+」菜单可选）：条目 `{name, host, port=22, username, auth=agent\|key\|password, keyPath, passphrase, password, agentForward}`；保存时整体替换、同名覆盖；`password` / `passphrase` 支持 `env:VAR` 引用，避免明文入库；持久化开启时条目点击默认以 tmux 持久会话打开 |
+| `sshHosts` | `[]` | SSH 连接簿（面板「+」菜单可选）：条目 `{name, host, port=22, username, auth=agent\|key\|password, keyPath, passphrase, password, agentForward, persist=false}`；保存时整体替换、同名覆盖；`password` / `passphrase` 支持 `env:VAR` 引用，避免明文入库；持久化开启时条目点击默认以 tmux 持久会话打开，`persist=false` 是**取消项** |
 | `hostKeys` | `[]` | SSH 主机指纹记录（TOFU，自动维护）：条目 `{host, port, fingerprint}`；按 host:port 唯一，首次连接自动追加，指纹变更拒绝连接；设置卡片可删除重置 |
 | `shellIntegration` | true | 注入 OSC 133/7 shell 集成（命令边界标记 + cwd 上报；`tty_capture{last}` 依赖它）；zsh/bash 支持，其他 shell 自动跳过；出兼容问题时可关闭 |
 | `tunnels` | `[]` | 端口转发隧道：条目 `{name, bookName, direction=local\|remote, localPort?, remoteHost?, remotePort?, localTargetHost?, localTargetPort?, enabled}`；`bookName` 引用连接簿条目提供主机与认证；卡片「端口转发」区块可视化维护 |
@@ -636,6 +647,12 @@ node scripts/preview.mjs --theme=light   # 浅色主题
 设置卡片 / SFTP（单窗体、双栏）/ 最小化徽标 / 退出与错误遮罩 / 隧道弹层 /
 搜索框 / toast。夹具还会把 `--dsw-*` 皮肤变量与真实界面一并渲染，因此能验
 「明暗主题切换后是否还有白色面板」这类问题。产物目录 `.preview/` 已 gitignore。
+
+> 夹具里的 `ctx.inject` 与真实 cordis 同语义：**依赖里有一个服务不存在就不触发回调**，
+> 而不是把 `undefined` 塞进 scope。塞 `undefined` 的后果是一个可选依赖（例如 dsh-docker
+> 那条 `sidebarRight`/`sidebarRightTabs` 支路）就能让**所有**场景在挂载阶段炸掉
+> （`Cannot read properties of undefined (reading 'register')`）——夹具不提供宿主侧的
+> 侧栏服务时，那一支就该安静地不注册。
 
 > 夹具需要 Chrome/Chromium（默认找 playwright 缓存的 Chrome for Testing，
 > 也可用 `CHROME_PATH` 指定）。若宿主环境限制了 Chrome 的沙箱（子进程被

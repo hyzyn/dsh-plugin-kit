@@ -69,6 +69,10 @@
     },
     get: (name) => services.get(name),
     inject: (names, cb) => {
+      // 与真实 cordis 一致：依赖里有任何一个服务不存在时**不触发**回调，而不是塞一堆
+      // undefined 进去。塞 undefined 的后果是消费方（如 dsh-docker 的 sidebarRight 那一支）
+      // 在回调里直接 `scope.foo.register` 炸掉——一个可选依赖就能让整个预览场景全挂。
+      if (names.some((name) => !services.has(name))) return () => {}
       const scope = {}
       for (const name of names) scope[name] = services.get(name)
       cb(scope)
@@ -87,6 +91,9 @@
       },
     },
   }
+  // 宿主会话服务也进服务表：docker 那一半是经 ctx.inject(['sessions']) 取的（夹具里
+  // ctx.sessions 是直接属性、不走服务表，这里补一份，免得那条 inject 永远等不到依赖）
+  services.set('sessions', ctx.sessions)
   exports.apply(ctx)
 
   /**
