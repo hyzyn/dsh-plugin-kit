@@ -189,7 +189,7 @@ await test('factory 只 require 平台 seed 提供的模块', () => {
 
 /** 造一个最小 client ctx：slots 恒有，ttyConnbar 可选。 */
 function makeClientCtx(options = {}) {
-  const state = { cards: [], injected: [], connbarFactory: null, renders: 0, unmounted: 0, execCalls: [], mountCalls: [], paneCalls: [], openTabs: [] }
+  const state = { cards: [], injected: [], connbarFactory: null, renders: 0, unmounted: 0, execCalls: [], mountCalls: [], paneCalls: [], openTabs: [], sessionCurrent: 'session-smoke', sessionListeners: [] }
   const ctx = {
     slots: {
       inject: (slot, callback) => {
@@ -254,7 +254,11 @@ function makeClientCtx(options = {}) {
         }
         callback({
           sessions: {
-            list: { getSnapshot: () => ({ current: 'session-smoke' }) },
+            // current 走 state 便于用例模拟「切会话」；subscribe 收集订阅者，由用例手动通报
+            list: {
+              getSnapshot: () => ({ current: state.sessionCurrent }),
+              subscribe: (fn) => { state.sessionListeners.push(fn); return () => {} },
+            },
             scope: () => ({ get: (name) => (name === 'conversation' ? conversation : undefined) }),
           },
         })
@@ -477,6 +481,31 @@ await test('承载分发（S2）：localStorage 置 modal 时退回模态（灰�
   exports_.__carrier.open({ target: 'prod' })
   assert.equal(state.openTabs.length, 0, '置 modal 后不应开标签')
   assert.ok(renders.length > before, '置 modal 后应走模态（渲染面板）')
+})
+
+await test('粘性：切会话时自动把容器标签带过去（判定抽成纯函数）', () => {
+  const carrier = carrierApi()
+  assert.equal(carrier.shouldReopen(true, 'a', 'b', true), true, '切会话 + 有意图 + 有服务 → 重开')
+  assert.equal(carrier.shouldReopen(true, 'a', 'a', true), false, '当前会话没换（只是列表变了）→ 不动作')
+  assert.equal(carrier.shouldReopen(false, 'a', 'b', true), false, '用户没要过 / 已点 ✕ 关掉 → 不重开')
+  assert.equal(carrier.shouldReopen(true, 'a', 'b', false), false, '没有右侧栏服务 → 不重开')
+  assert.equal(carrier.shouldReopen(true, 'a', null, true), false, '没有当前会话 → 不重开')
+  assert.equal(carrier.shouldReopen(true, null, 'b', true), true, '首个会话 id 到达也算一次切换')
+})
+
+await test('粘性：订阅接线（打开 → 切会话重开 → 同会话不重复开）', () => {
+  const exports_ = registration.factory((spec) => SEED[spec])
+  const { ctx, state } = makeClientCtx({ sidebarRightTabs: true })
+  exports_.apply(ctx)
+  assert.equal(state.sessionListeners.length, 1, '应订阅一次会话列表')
+  exports_.__carrier.open({})
+  assert.equal(state.openTabs.length, 1, '打开时应开标签')
+  // 模拟切会话：改 current 再通报订阅者
+  state.sessionCurrent = 'session-two'
+  for (const notify of state.sessionListeners) notify()
+  assert.equal(state.openTabs.length, 2, '切会话应在新的会话里重开标签')
+  for (const notify of state.sessionListeners) notify()
+  assert.equal(state.openTabs.length, 2, '同一会话重复通报不该再开')
 })
 
 await test('注入清单快照：本插件注入过的服务全集（加可选注入时只改这一处）', () => {

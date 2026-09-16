@@ -5188,10 +5188,15 @@ window.__ModuleLoader__.load({
         info = props.useTabInfo()
       } catch { /* 契约变动时不连累面板渲染 */ }
       const closeTab = () => {
+        // 用户明确关掉标签 → 撤掉粘性意图：切会话时别再自己冒出来
+        dockerPanelWanted = false
         try {
           info?.tab?.actions?.close?.()
         } catch { /* 标签已关 */ }
       }
+      // 标签体挂载 == 面板确实开着 → 把粘性意图对齐为 true
+      // （宿主恢复标签之类的路径下自愈；关标签只走 closeTab，不会被这里重新点亮）
+      useEffect(() => { dockerPanelWanted = true }, [])
       /*
        * 入口带进来的导航参数（S2）：带 target 就用它当面板 key —— 换目标即重挂，
        * 面板状态归零（这正是「从连接栏点某台主机」的预期）；不带 target 的入口
@@ -5523,6 +5528,35 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 「用户希望容器面板开着吗」——粘性意图，模块级。
+     *
+     * 存在的原因：右侧栏的标签记录是**会话作用域**的（`sidebar.right.pane.tab` 声明
+     * `scope: 'session'`，内容槽 `rightbar.session` 也是），于是 A 会话开的标签在 B 会话
+     * 里并不存在。但容器面板看的是**主机**、跟会话没有语义关系，「切个会话它就没了」对
+     * 用户是纯损失。所以记下意图：切会话时自动在新会话里重开（见 shouldReopenTab）。
+     *
+     * 用户在标签上点 ✕ 时置 false（那是明确说「我不要了」）；标签体挂载时置 true
+     * （宿主恢复标签之类的路径下自愈）。
+     */
+    let dockerPanelWanted = false
+
+    /**
+     * 会话切换时要不要自动重开容器标签（纯函数，便于回归）。
+     *
+     * @param wanted - 用户的粘性意图。
+     * @param previousId - 上一次看到的当前会话 id。
+     * @param nextId - 本次的当前会话 id。
+     * @param apiAvailable - 右侧栏导航服务是否可用。
+     * @returns 是否应当重开。
+     */
+    function shouldReopenTab(wanted, previousId, nextId, apiAvailable) {
+      if (wanted !== true || apiAvailable !== true) return false
+      if (typeof nextId !== 'string' || nextId === '') return false
+      // 列表快照因标题变化 / 新会话等原因也会变，只在**当前会话真的换了**时动作
+      return nextId !== previousId
+    }
+
+    /**
      * 打开容器面板的**唯一入口**。`options.target` / `options.sessionHint` 会随
      * navigation params 进入标签，由 `DockerTabBody` 取出喂给面板。
      */
@@ -5532,6 +5566,8 @@ window.__ModuleLoader__.load({
           const params = {}
           if (typeof options?.target === 'string' && options.target !== '') params.target = options.target
           if (options?.sessionHint !== undefined) params.sessionHint = options.sessionHint
+          // 用户明确要开它 → 记下粘性意图：切会话时在新会话里自动重开
+          dockerPanelWanted = true
           // page type 在同一 pane 内去重：已在则聚焦，不会开出第二个「Docker 容器」标签
           dockerTabApi.openTab(DOCKER_TAB_KIND, { params })
           return
@@ -5708,6 +5744,8 @@ window.__ModuleLoader__.load({
       /** exec 标签的识别：连接栏据此不再提供「容器」按钮。纯函数，值得回归。 */
       isOwnExec: isOwnExecCommand,
       buildExec: buildExecCommand,
+      /** 会话切换时的重开判定（粘性）。纯函数。 */
+      shouldReopen: shouldReopenTab,
     }
     exports.__pick = {
       MAX: PICK_MAX,
@@ -5822,7 +5860,40 @@ window.__ModuleLoader__.load({
       // ttyPanel 的降级策略一致。
       ctx.inject(['sessions'], (sessionCtx) => {
         sessionsSvc = sessionCtx.sessions ?? null
-        return () => { sessionsSvc = null }
+        /*
+         * 会话切换时把容器标签带过去（粘性，见 dockerPanelWanted）。
+         *
+         * 为什么订阅在这里：标签记录是**会话作用域**的，切走即卸载；而容器面板看的是主机、
+         * 与会话无关，「切个会话它就没了」是纯损失。列表快照因标题变化等原因也会变，所以
+         * 只认「当前会话真的换了」（shouldReopenTab）。dockerTabApi 在另一个 inject 里赋值，
+         * 这里在**触发时**才读——不依赖两个 inject 的先后。
+         */
+        let lastSessionId = null
+        try {
+          lastSessionId = sessionsSvc?.list?.getSnapshot?.()?.current ?? null
+        } catch { /* 读不到就当没有上一个 */ }
+        const stopWatch = (typeof sessionsSvc?.list?.subscribe === 'function')
+          ? sessionsSvc.list.subscribe(() => {
+            let current = null
+            try {
+              current = sessionsSvc.list.getSnapshot()?.current ?? null
+            } catch { /* 快照读失败：这一轮不动作 */ }
+            if (shouldReopenTab(dockerPanelWanted, lastSessionId, current, dockerTabApi !== null)) {
+              try {
+                dockerTabApi.openTab(DOCKER_TAB_KIND, {})
+              } catch { /* 开不出来就算了，绝不打断会话切换 */ }
+            }
+            if (typeof current === 'string' && current !== '') lastSessionId = current
+          })
+          : null
+        return () => {
+          if (stopWatch !== null) {
+            try { stopWatch() } catch { /* 已释放 */ }
+          }
+          sessionsSvc = null
+          // 卸载 / 禁用时清掉粘性意图：免得重新启用后在别的会话里自己冒出来
+          dockerPanelWanted = false
+        }
       })
 
       // 右侧栏标签承载（S1）：注册一个 page type 与它的 body。入口本阶段不动（S2 才切
