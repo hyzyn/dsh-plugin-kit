@@ -1664,6 +1664,51 @@ function readManagedEnvKeys() {
     }
 }
 /**
+ * 凭据存储里**已知的引用名**（~/.dsh/.credentials.yaml 的 `refs:` 块键），只读给
+ * SSH 对话框的引用选择器当候选。
+ *
+ * 为什么必须读文件：官方把「引用半边」设计成**不可枚举**——
+ * `CredentialProvider.listRecords` 的注释原话是 "Unlike the reference half, which has no
+ * enumeration because configuration surfaces learn which references exist from settings
+ * schemas"，而浏览器侧 `ctx.remote.credentials`（dsh-api-settings-controller）只开
+ * `describe` / `set` / `unset`，连 `listRecords` 都没开。所以要让用户在下拉里看见
+ * "这本存储里已经有什么名字"，宿主侧读文件是唯一出路；**只要键名、不取值**（值只在本函数
+ * 的局部 `lines` 里路过，不进任何返回值，也不写日志）。
+ *
+ * 解析刻意最小（与上面 readManagedEnvKeys 同款，不为它引 YAML 依赖）：只认 `refs:` 顶层
+ * 区块内「恰好两个空格 + POSIX 标识符 + 冒号」的行。本地 provider 写入时用 `yaml` 严格
+ * 校验过（version: 1 / 值必须非空字符串 / 键必须是标识符），所以这个格式是稳的；真被手改
+ * 坏了也只是候选少几个 —— 引用最终仍由连接时的凭据层校验存在性。
+ *
+ * 路径解析与本地 provider 的默认一致（$DSH_HOME 优先，空串视为未设，再退 ~/.dsh）。边界：
+ * 若有人给 provider 配了自定义 `path` / `dshHome`，这里看不到那些引用（字段仍可手输名字）。
+ */
+function readCredentialRefNames() {
+    const dshHome = process.env.DSH_HOME?.trim() || join(homedir(), '.dsh');
+    const file = join(dshHome, '.credentials.yaml');
+    try {
+        const names = [];
+        let inRefs = false;
+        for (const line of readFileSync(file, 'utf8').split('\n')) {
+            // 顶层键（0 缩进）切换区块；`refs:` 之后的条目才是引用名
+            if (/^[A-Za-z_][A-Za-z0-9_]*:/.test(line)) {
+                inRefs = line.startsWith('refs:');
+                continue;
+            }
+            if (!inRefs)
+                continue;
+            const match = line.match(/^ {2}([A-Za-z_][A-Za-z0-9_]*):/);
+            if (match !== null)
+                names.push(match[1]);
+        }
+        return [...new Set(names)].sort().slice(0, 500);
+    }
+    catch {
+        // 没有存储文件（还没存过任何东西）/ 没有读权限：候选为空，不报错
+        return [];
+    }
+}
+/**
  * 设置卡片「Shell 路径」候选（可选可输入的数据源）：/etc/shells + $SHELL +
  * 常见安装路径，去重后过滤「存在且可执行」，$SHELL 排最前。只回路径，
  * 不做任何执行。
@@ -2177,6 +2222,25 @@ const plugin = definePlugin({
                             return;
                         }
                         writeJson(res, 200, { ok: true, names: readManagedEnvKeys() });
+                    },
+                });
+                // 凭据存储里已知的引用名（SSH 对话框选择器候选）：只回**名字**，绝不回值。
+                // 为什么不像其它设置界面那样只列"自己 schema 里的引用"：官方那条路对这本存储
+                // 来说列不全（引用半边不可枚举，见 readCredentialRefNames），而这个选择器的用途
+                // 恰恰就是"我存过什么、能不能复用"。
+                registerGated({
+                    kind: 'exact',
+                    path: '/api/dsh-tty/credential-refs',
+                    handler: async (req, res) => {
+                        if (!isLoopbackHttp(req)) {
+                            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+                            return;
+                        }
+                        if (req.method !== 'GET') {
+                            writeJson(res, 405, { error: 'method not allowed: ' + String(req.method) });
+                            return;
+                        }
+                        writeJson(res, 200, { ok: true, names: readCredentialRefNames() });
                     },
                 });
                 // known_hosts 指纹导入候选（TOFU 预填充）：hashed 条目用连接簿主机名还原

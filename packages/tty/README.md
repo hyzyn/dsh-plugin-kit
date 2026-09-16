@@ -127,6 +127,10 @@ SSH 会话同表调度：`tty_list` 里 `kind: 'ssh'` 的条目按 `target`
   已存的引用怎么办。
 - **共享**：引用是扁平命名空间，任何按同一套解析的消费方都能用——例如填进 dsh-docker 目标的
   `password`，同一个密码两处复用。
+- **可见性**：对话框的引用选择器会列出**存储里已有的名字**——宿主侧
+  `/api/dsh-tty/credential-refs` 只读 `refs:` 的键名回来（只要名字，值永远不出宿主）。为什么要自己
+  读：引用半边在协议上**不可枚举**（原因写在选择器那节），而"我存过哪些名字"正是这个选择器要回答
+  的问题。这也让**孤儿引用**（例如改了连接名/改过命名规则后留下的旧名字）重新可见、可选、可清。
 - **保守的边界（务必知道）**：`~/.credentials.yaml` 是 **0600 的普通文件，没有主密码、没有 OS
   keychain** —— 它挡的是**别的 OS 用户**，挡不住以你身份运行的进程与 agent；而且它**机器本地**，
   换机器要重存。所以业界共识仍然是：**能用密钥 / agent 就别存密码**（本插件两者都支持）。
@@ -288,15 +292,23 @@ tmux server（专用 socket `dsh-tty`，与用户自己的 tmux 完全隔离）�
   导入」——解析 `HostName/User/Port/IdentityFile` 生成候选条目（跳过通配符
   块与无 User 条目，`Include` 不展开），同名跳过，随「保存」写入；
 - **凭据引用选择器（0.4.0，0.17 起与 env 插件解耦）**：SSH 对话框的密码/口令字段旁有筛选框 +
-  限高列表，候选是**本机连接簿里已经在用的引用名**（只取名字，绝不含值）；点击即填
-  `env:NAME`，也可手输任意 `env:NAME`（连接时按凭据层校验存在性）。
-  **为什么不用 env 插件的托管清单**：引用的发现路径官方定的是"配置界面从**自己的 settings
-  schema** 得知有哪些引用"——引用半边**故意不可枚举**（`@deepseek-ai/dsh-credentials` 的类型
-  注释原话）。我们的 settings 就是这本连接簿，所以"列出别的连接在用的名字"既是官方口径，也让
-  这条链路与 env 插件无关：值存在 `~/.dsh/.credentials.yaml` 时同样能在别的连接里被复用。
-  还没有别的连接用过引用时，这一行**整体退化成一行说明**（不再摆一个永远点不开的下拉——那
-  看着就像坏了）：文案点明要么勾上面「保存时存入凭据存储」新建一个，要么在字段里直接手输
-  `env:NAME`；口令那行上方没有勾选框，文案相应改成只提手输；
+  限高列表，候选 = **凭据存储里已有的引用名**（宿主读 `.credentials.yaml` 的 `refs:` 键，
+  **只回名字、绝不含值**）∪ **本机连接簿里已经在用的引用名**；点击即填 `env:NAME`，也可手输
+  任意 `env:NAME`（连接时按凭据层校验存在性）。
+  **为什么读文件 / 为什么不用 env 插件的托管清单**：引用的发现路径官方定的是"配置界面从**自己的
+  settings schema** 得知有哪些引用"——引用半边**故意不可枚举**（`@deepseek-ai/dsh-credentials`
+  的 `listRecords` 注释原话："the reference half, which has no enumeration because configuration
+  surfaces learn which references exist from settings schemas"），浏览器侧的
+  `ctx.remote.credentials` 也只开 `describe` / `set` / `unset`，连 `listRecords` 都没开。于是
+  "这本存储里到底存过哪些名字"在浏览器侧根本问不到 ✗ —— 而选择器的用途恰恰就是"我存过什么、
+  能不能复用"。所以宿主侧开了一条**只读**通路 `/api/dsh-tty/credential-refs`（loopback 围栏，
+  只解析 `refs:` 的键名、不返回值，见 `readCredentialRefNames`）。这是**有意偏离**官方"引用不可
+  枚举"设计的一处（代价：引用名会进浏览器，值不会）；若要完全守官方口径，就只用连接簿那一半。
+  边界：本地 provider 若被配了自定义 `path` / `dshHome`，那些引用这里看不到；宿主读取失败或旧
+  宿主没有这条路由时，候选安静退回连接簿那一半。
+  候选一个都没有时，这一行**整体退化成一行说明**（不再摆一个永远点不开的下拉——那看着就像坏
+  了）：文案点明要么勾上面「保存时存入凭据存储」新建一个，要么在字段里直接手输 `env:NAME`；
+  口令那行上方没有勾选框，文案相应改成只提手输；
 - **主机指纹 TOFU 钉扎（0.3.0）**：首次连接成功后把该主机（host:port）的
   sha256 指纹记录进 `hostKeys`（随 settings 持久化）；之后每次连接校验，
   指纹一致放行，**指纹变更直接拒绝连接**（防中间人冒充），错误信息带重置
@@ -680,6 +692,7 @@ node scripts/preview.mjs --theme=light   # 浅色主题
   │  不认识的序列，shell 集成钩子检测 $TMUX 把 OSC 133/7 包 DCS passthrough
   │  信封，tmux ≥3.3 解包转发，宿主解析器零改动）
   ├─ 辅助路由：/api/dsh-tty/ssh-config（~/.ssh/config 导入候选）、
+  │  /api/dsh-tty/credential-refs（凭据存储里已知的引用名 —— 只要名字，见「凭据存储」）、
   │  /api/dsh-tty/env-vars（env 插件托管变量名）、/api/dsh-tty/known-hosts
   │  （TOFU 指纹预填充，src/known-hosts.ts 解析含 hashed 条目）、
   │  /api/dsh-tty/shells（Shell 路径候选）——均 loopback 围栏

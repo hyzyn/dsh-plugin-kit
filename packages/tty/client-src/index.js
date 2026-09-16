@@ -2158,14 +2158,18 @@ function openSshDialog(entry) {
   const passwordRow = fieldRow('password', '密码', { type: 'password' })
 
   /**
-   * 凭据引用选择器：筛选框 + 限高滚动列表（数据源为**连接簿里在用的引用名**，
-   * 见 loadCredentialNames——与 env 插件解耦）。点击项填入 env:NAME——目标为空或
-   * 已是 env: 引用时直接替换；有手输内容时首击只进确认态（4s 复位），再击
-   * 才覆盖（密码框是掩码显示，不该被一次误点静默清空）。
+   * 凭据引用选择器：筛选框 + 限高滚动列表（候选 = 凭据存储里的引用名 ∪ 连接簿里在用的
+   * 引用名，见下面的 applyCredentialNames）。点击项填入 env:NAME——目标为空或已是
+   * env: 引用时直接替换；有手输内容时首击只进确认态（4s 复位），再击才覆盖（密码框是
+   * 掩码显示，不该被一次误点静默清空）。
+   *
+   * **构造时这一行不显形**（filter 与 emptyEl 都 hidden）：候选要先问一次宿主，拿到答复后
+   * 由 `setNames` 一次定稿。所以调用方**必须调用一次 setNames**（宿主失败也要调，传空数组），
+   * 否则这一行永远不出现。
    *
    * **零候选时这一行整体退化成一行说明**（文案由调用方给 `emptyHint`：密码那行的上方有
-   * 勾选框可以新建，口令那行没有，措辞不一样）。为什么必须退化：候选只可能来自"别的连接
-   * 用过"，第一次打开对话框必然为空——那时摆一个永远点不开的输入框，看着就像坏了。
+   * 勾选框可以新建，口令那行没有，措辞不一样）。为什么必须退化：那时摆一个永远点不开的
+   * 输入框，看着就像坏了。
    */
   const envSelectRow = (targetInput, emptyHint) => {
     const row = document.createElement('div')
@@ -2173,8 +2177,8 @@ function openSshDialog(entry) {
     const filter = document.createElement('input')
     filter.type = 'text'
     filter.className = 'tt_cardInput'
-    filter.placeholder = '或：选择连接簿里在用的凭据引用'
-    filter.title = '候选是本机连接簿里已经在用的引用名'
+    filter.placeholder = '或：选择凭据存储里的引用名'
+    filter.title = '候选 = 凭据存储里已有的引用名 + 本机连接簿里在用的引用名'
     filter.autocomplete = 'off'
     filter.spellcheck = false
     // 零候选时顶替筛选框的那行说明（显隐见 setNames）
@@ -2182,6 +2186,9 @@ function openSshDialog(entry) {
     emptyEl.className = 'tt_cardHint tt_envEmpty'
     emptyEl.textContent = emptyHint
     emptyEl.hidden = true
+    // 初始两者都不显形：候选要先问一次宿主（存储里的名字），拿到答复后由 setNames 一次定稿——
+    // 免得先闪一下"零候选"的说明、或先出现一个点不开的输入框。
+    filter.hidden = true
     const list = document.createElement('div')
     list.className = 'tt_envList'
     // 默认收起：只在筛选框获得焦点时展开，避免对话框被一长条变量清单撑长
@@ -2420,17 +2427,25 @@ function openSshDialog(entry) {
   )
   const passwordCred = credentialRow(fields.password, 'PASSWORD')
   /*
-   * 候选引用名的**唯一来源**：本机连接簿里已经在用的 `env:` 引用。
+   * 候选引用名的**两个来源**：
+   *   1. 本机连接簿里已经在用的 `env:` 引用（我们的 settings 就是这本连接簿，官方口径
+   *      "配置界面从自己的 settings schema 得知有哪些引用"）；
+   *   2. 凭据存储里**已知的**名字（宿主 /api/dsh-tty/credential-refs，只回名字）。
    *
-   * 为什么不再去问 env 插件（原来打宿主 /api/dsh-tty/env-vars）：引用的发现路径，官方定的是
-   * 「配置界面从**自己的 settings schema** 得知有哪些引用」——引用半边**故意不可枚举**
-   * （`@deepseek-ai/dsh-credentials` 的类型注释原话）。而我们的 settings 就是这本连接簿，
-   * 所以"列出别的连接在用的名字"才是官方口径；顺带也把这条链路彻底与 env 插件解耦——值放
-   * `~/.dsh/.credentials.yaml` 时同样能在这里被复用。
+   * 为什么还要问宿主：官方把「引用半边」设计成**不可枚举**——`dsh-credentials` 的
+   * `listRecords` 注释原话是 "Unlike the reference half, which has no enumeration because
+   * configuration surfaces learn which references exist from settings schemas"，浏览器侧
+   * `ctx.remote.credentials`（dsh-api-settings-controller）也只开 describe / set / unset，
+   * 连 listRecords 都没开。所以"这本存储里已经存过哪些名字"在浏览器侧根本问不到 ✗——
+   * 只能让宿主读一次 `~/.dsh/.credentials.yaml` 把**键名**回给我们 ✓。
+   *
+   * 代价与边界（如实写在这，也写进 README）：这是**绕过官方"不可枚举"设计**的一条只读通路
+   * （你明确选的 B 方案）；回给浏览器的只有名字、永不含值 ✓；宿主侧若给 provider 配了自定义
+   * `path`，那些引用这里看不到 ✓。前端只把它当"候选"，最终能不能解析仍由连接时的凭据层判定 ✓。
    *
    * 只取名字、不取值：候选列表里永远不会出现密码本身。
    */
-  const loadCredentialNames = () => {
+  const bookCredentialNames = () => {
     const seen = new Set()
     for (const entry of sshHostsCache) {
       for (const value of [entry?.password, entry?.passphrase]) {
@@ -2440,11 +2455,28 @@ function openSshDialog(entry) {
         }
       }
     }
-    const names = [...seen].sort()
+    return [...seen]
+  }
+  const applyCredentialNames = (storeNames) => {
+    const names = [...new Set([...bookCredentialNames(), ...storeNames])].sort()
     passphraseEnv.setNames(names)
     passwordEnv.setNames(names)
   }
-  loadCredentialNames()
+  void (async () => {
+    let storeNames = []
+    try {
+      const res = await fetch('/api/dsh-tty/credential-refs', { cache: 'no-store' })
+      const data = await res.json()
+      if (data.ok && Array.isArray(data.names)) {
+        storeNames = data.names.filter((name) => typeof name === 'string' && name !== '')
+      }
+    } catch {
+      /* 路由不可用（旧宿主）/ 网络失败：候选退回连接簿里的那些，不报错 */
+    }
+    // 一次定稿：拿到宿主答复（或失败）后才第一次 setNames——那之前这一行不显形，
+    // 免得先闪一下"零候选"的说明再换成输入框。
+    applyCredentialNames(storeNames)
+  })()
 
   card.appendChild(keyRow)
   card.appendChild(passphraseRow)
