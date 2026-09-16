@@ -948,9 +948,25 @@ const plugin = definePlugin<Config>({
       }).join('')
     }
 
+    /**
+     * 容器行 → 一行文本。入参是**工具 schema 的扁平形状**（不是领域类型 `ContainerSummary`）：
+     * `ports` 已经是拼好的字符串、id 在 `id` 上、可省字段用 `undefined` 表示「无」。
+     *
+     * 这里踩过一次：渲染器按领域类型写（`row.ports.map(...)` / `row.shortId` /
+     * `row.health === null`），而工具返回的是扁平形状——于是 `ports.map is not a function`
+     * 直接崩、`id=undefined`。render 的入参是 `unknown` + 一个不受检查的 `as` 断言，
+     * 所以 tsc 抓不到。现在两侧共用下面这些 Tool*Row 类型，形状一变就编译报错。
+     */
+    const renderPsRow = (row: ToolPsRow): string => {
+      const ports = row.ports === undefined || row.ports === '' ? '' : ' ports=' + row.ports
+      const health = row.health === undefined ? '' : ` health=${row.health}`
+      const compose = row.composeProject === undefined ? '' : ` compose=${row.composeProject}/${row.composeService ?? '-'}`
+      return `\n- ${row.name} [${row.state}]${health} image=${row.image}${ports}${compose} id=${row.id}`
+    }
+
     /** 跨目标容器渲染：按目标分组，失败的目标单独一行说明（部分成功也要可读）。 */
     const renderAggregatedContainers = (
-      groups: Array<{ target: string; label: string; ok: boolean; error?: string; containers?: ContainerSummary[] }>,
+      groups: Array<{ target: string; label: string; ok: boolean; error?: string; containers?: ToolPsRow[] }>,
     ): string => {
       if (groups.length === 0) return '尚未配置任何 Docker 目标（设置 → 插件 → Docker 容器面板）。'
       const total = groups.reduce((sum, group) => sum + (group.containers?.length ?? 0), 0)
@@ -959,13 +975,7 @@ const plugin = definePlugin<Config>({
       return head + groups.map((group) => {
         if (!group.ok) return `\n\n■ ${group.target}（${group.label}）— 不可用：${group.error ?? '未知错误'}`
         const rows = group.containers ?? []
-        return `\n\n■ ${group.target}（${group.label}）— ${String(rows.length)} 个容器` + rows.map((row) => {
-          const ports = row.ports.length === 0
-            ? ''
-            : ' ports=' + row.ports.map((p) => (p.hostPort === undefined ? `${String(p.containerPort)}/${p.protocol}` : `${String(p.hostPort)}→${String(p.containerPort)}/${p.protocol}`)).join(',')
-          const health = row.health === null ? '' : ` health=${row.health}`
-          return `\n- ${row.name} [${row.state}]${health} image=${row.image}${ports} id=${row.shortId}`
-        }).join('')
+        return `\n\n■ ${group.target}（${group.label}）— ${String(rows.length)} 个容器` + rows.map(renderPsRow).join('')
       }).join('')
     }
 
@@ -977,9 +987,9 @@ const plugin = definePlugin<Config>({
       dead: '僵死',
     }
 
-    /** 需关注列表渲染（单目标 / 跨目标共用）。 */
+    /** 需关注列表渲染（单目标 / 跨目标共用）。入参同样是**工具扁平形状**，不是 AttentionItem。 */
     const renderAttention = (
-      groups: Array<{ target: string; label: string; ok: boolean; error?: string; items?: AttentionItem[] }>,
+      groups: Array<{ target: string; label: string; ok: boolean; error?: string; items?: ToolAttentionRow[] }>,
     ): string => {
       const total = groups.reduce((sum, group) => sum + (group.items?.length ?? 0), 0)
       if (total === 0 && groups.every((group) => group.ok)) return '所有目标上没有需要关注的容器（无 unhealthy / 重启中 / OOM / 非零退出）。'
@@ -990,38 +1000,32 @@ const plugin = definePlugin<Config>({
         return `\n\n■ ${group.target}（${group.label}）` + items.map((item) => {
           const reasons = item.reasons.map((reason) => ATTENTION_LABEL[reason] ?? reason).join(' + ')
           const extra = [
-            item.exitCode === null ? '' : `exit=${String(item.exitCode)}`,
-            item.restartCount === null ? '' : `restarts=${String(item.restartCount)}`,
+            item.exitCode === undefined ? '' : `exit=${String(item.exitCode)}`,
+            item.restartCount === undefined ? '' : `restarts=${String(item.restartCount)}`,
             item.oomKilled ? 'OOMKilled=true' : '',
           ].filter((part) => part !== '').join(' ')
-          return `\n- ${item.name} [${item.state}${item.health === null ? '' : '/' + item.health}] ${reasons} image=${item.image}${extra === '' ? '' : ' ' + extra} id=${item.shortId}`
+          const health = item.health === undefined ? '' : '/' + item.health
+          return `\n- ${item.name} [${item.state}${health}] ${reasons} image=${item.image}${extra === '' ? '' : ' ' + extra} id=${item.id}`
         }).join('')
       }).join('')
     }
 
-    const renderContainers = (target: string, rows: ContainerSummary[]): string => {
+    const renderContainers = (target: string, rows: ToolPsRow[]): string => {
       if (rows.length === 0) return `目标 ${target}：没有容器。`
-      return `目标 ${target} 的容器（${String(rows.length)} 个）：` + rows.map((row) => {
-        const ports = row.ports.length === 0
-          ? ''
-          : ' ports=' + row.ports.map((p) => (p.hostPort === undefined ? `${String(p.containerPort)}/${p.protocol}` : `${String(p.hostPort)}→${String(p.containerPort)}/${p.protocol}`)).join(',')
-        const health = row.health === null ? '' : ` health=${row.health}`
-        const compose = row.composeProject === null ? '' : ` compose=${row.composeProject}/${row.composeService ?? '-'}`
-        return `\n- ${row.name} [${row.state}]${health} image=${row.image}${ports}${compose} id=${row.shortId}`
-      }).join('')
+      return `目标 ${target} 的容器（${String(rows.length)} 个）：` + rows.map(renderPsRow).join('')
     }
 
-    const renderStats = (target: string, rows: ContainerStats[]): string => {
+    const renderStats = (target: string, rows: ToolStatRow[]): string => {
       if (rows.length === 0) return `目标 ${target}：没有运行中的容器。`
-      return `目标 ${target} 的资源占用：` + rows.map((row) => `\n- ${row.name} cpu=${row.cpuPercent === null ? '?' : String(row.cpuPercent) + '%'} mem=${row.memUsage} (${row.memPercent === null ? '?' : String(row.memPercent) + '%'}) net=${row.netIO} block=${row.blockIO} pids=${row.pids === null ? '?' : String(row.pids)}`).join('')
+      return `目标 ${target} 的资源占用：` + rows.map((row) => `\n- ${row.name} cpu=${row.cpuPercent === undefined ? '?' : String(row.cpuPercent) + '%'} mem=${row.memUsage} (${row.memPercent === undefined ? '?' : String(row.memPercent) + '%'}) net=${row.netIO} block=${row.blockIO} pids=${row.pids === undefined ? '?' : String(row.pids)}`).join('')
     }
 
-    const renderEvents = (target: string, since: string, rows: ContainerEvent[]): string => {
+    const renderEvents = (target: string, since: string, rows: ToolEventRow[]): string => {
       if (rows.length === 0) return `目标 ${target}：最近 ${since} 没有容器事件。`
       return `目标 ${target} 的容器事件（最近 ${since}，${String(rows.length)} 条）：` + rows.map((row) => {
-        const at = row.time === null ? '--:--:--' : formatEventTime(row.time)
-        const exit = row.exitCode === null ? '' : ` exit=${String(row.exitCode)}`
-        const compose = row.composeProject === null ? '' : ` compose=${row.composeProject}`
+        const at = row.time === undefined ? '--:--:--' : formatEventTime(row.time)
+        const exit = row.exitCode === undefined ? '' : ` exit=${String(row.exitCode)}`
+        const compose = row.composeProject === undefined ? '' : ` compose=${row.composeProject}`
         return `\n- ${at} ${row.name} ${row.action}${exit}${compose} image=${row.image}`
       }).join('')
     }
@@ -1042,25 +1046,28 @@ const plugin = definePlugin<Config>({
       return lines.join('\n')
     }
 
-    const renderNetworks = (target: string, rows: NetworkSummary[]): string => {
+    const renderNetworks = (target: string, rows: ToolNetworkRow[]): string => {
       if (rows.length === 0) return `目标 ${target}：没有网络。`
       return `目标 ${target} 的网络（${String(rows.length)} 个）：` + rows.map((row) => {
-        const internal = row.internal ? ' internal=true' : ''
-        return `\n- ${row.name} driver=${row.driver} scope=${row.scope}${internal} id=${row.shortId}`
+        const internal = row.internal === true ? ' internal=true' : ''
+        return `\n- ${row.name} driver=${row.driver} scope=${row.scope}${internal} id=${row.id}`
       }).join('')
     }
 
-    const renderVolumes = (target: string, rows: VolumeSummary[]): string => {
+    const renderVolumes = (target: string, rows: ToolVolumeRow[]): string => {
       if (rows.length === 0) return `目标 ${target}：没有卷。`
       return `目标 ${target} 的卷（${String(rows.length)} 个）：` + rows.map((row) => {
-        const mount = row.mountpoint === '' ? '' : ` mount=${row.mountpoint}`
+        const mount = row.mountpoint === undefined || row.mountpoint === '' ? '' : ` mount=${row.mountpoint}`
         return `\n- ${row.name} driver=${row.driver} scope=${row.scope}${mount}`
       }).join('')
     }
 
-    const renderImages = (target: string, rows: ImageSummary[]): string => {
+    const renderImages = (target: string, rows: ToolImageRow[]): string => {
       if (rows.length === 0) return `目标 ${target}：没有镜像。`
-      return `目标 ${target} 的镜像（${String(rows.length)} 个）：` + rows.map((row) => `\n- ${row.reference} ${row.sizeText}${row.createdSince === '' ? '' : ' (' + row.createdSince + ')'} id=${row.shortId}`).join('')
+      return `目标 ${target} 的镜像（${String(rows.length)} 个）：` + rows.map((row) => {
+        const created = row.createdSince === undefined || row.createdSince === '' ? '' : ' (' + row.createdSince + ')'
+        return `\n- ${row.reference} ${row.sizeText}${created} id=${row.id}`
+      }).join('')
     }
 
     /** 镜像详情 + 构建历史（agent 工具 docker_image_inspect 的可读渲染）。 */
@@ -1237,8 +1244,8 @@ const plugin = definePlugin<Config>({
           render: (_args: unknown, value: unknown) => {
             const v = value as {
               target?: string
-              containers?: ContainerSummary[]
-              groups?: Array<{ target: string; label: string; ok: boolean; error?: string; containers?: ContainerSummary[] }>
+              containers?: ToolPsRow[]
+              groups?: Array<{ target: string; label: string; ok: boolean; error?: string; containers?: ToolPsRow[] }>
             }
             if (Array.isArray(v.groups)) return [{ type: 'text', text: renderAggregatedContainers(v.groups) }]
             return [{ type: 'text', text: renderContainers(v.target ?? '?', v.containers ?? []) }]
@@ -1351,8 +1358,8 @@ const plugin = definePlugin<Config>({
           render: (_args: unknown, value: unknown) => {
             const v = value as {
               target?: string
-              items?: AttentionItem[]
-              groups?: Array<{ target: string; label: string; ok: boolean; error?: string; items?: AttentionItem[] }>
+              items?: ToolAttentionRow[]
+              groups?: Array<{ target: string; label: string; ok: boolean; error?: string; items?: ToolAttentionRow[] }>
             }
             if (Array.isArray(v.groups)) return [{ type: 'text', text: renderAttention(v.groups) }]
             return [{ type: 'text', text: renderAttention([{ target: v.target ?? '?', label: v.target ?? '?', ok: true, items: v.items ?? [] }]) }]
@@ -1508,7 +1515,7 @@ const plugin = definePlugin<Config>({
             },
           },
           render: (_args: unknown, value: unknown) => {
-            const v = value as { target?: string; stats?: ContainerStats[] }
+            const v = value as { target?: string; stats?: ToolStatRow[] }
             return [{ type: 'text', text: renderStats(v.target ?? '?', v.stats ?? []) }]
           },
         },
@@ -1571,7 +1578,7 @@ const plugin = definePlugin<Config>({
             },
           },
           render: (_args: unknown, value: unknown) => {
-            const v = value as { target?: string; since?: string; events?: ContainerEvent[] }
+            const v = value as { target?: string; since?: string; events?: ToolEventRow[] }
             return [{ type: 'text', text: renderEvents(v.target ?? '?', v.since ?? '10m', v.events ?? []) }]
           },
         },
@@ -1630,7 +1637,7 @@ const plugin = definePlugin<Config>({
             },
           },
           render: (_args: unknown, value: unknown) => {
-            const v = value as { target?: string; images?: ImageSummary[] }
+            const v = value as { target?: string; images?: ToolImageRow[] }
             return [{ type: 'text', text: renderImages(v.target ?? '?', v.images ?? []) }]
           },
         },
@@ -1715,7 +1722,7 @@ const plugin = definePlugin<Config>({
             },
           },
           render: (_args: unknown, value: unknown) => {
-            const v = value as { target?: string; networks?: NetworkSummary[] }
+            const v = value as { target?: string; networks?: ToolNetworkRow[] }
             return [{ type: 'text', text: renderNetworks(v.target ?? '?', v.networks ?? []) }]
           },
         },
@@ -1766,7 +1773,7 @@ const plugin = definePlugin<Config>({
             },
           },
           render: (_args: unknown, value: unknown) => {
-            const v = value as { target?: string; volumes?: VolumeSummary[] }
+            const v = value as { target?: string; volumes?: ToolVolumeRow[] }
             return [{ type: 'text', text: renderVolumes(v.target ?? '?', v.volumes ?? []) }]
           },
         },
