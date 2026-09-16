@@ -366,6 +366,37 @@ const ICON_COPY =
   '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.4"/><path d="M3.5 10.5h-1v-8h8v1"/></svg>'
 /* ========================== 临时多选聚合（纯逻辑） ========================== */
 
+const ICON_DOWNLOAD =
+  '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3v7.2"/><path d="M5 7.4L8 10.4l3-3"/><path d="M3.4 12.8h9.2"/></svg>'
+const ICON_WARN =
+  '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.6l5.8 10.4H2.2z"/><path d="M8 6.4v3.2"/><path d="M8 11.6h.01"/></svg>'
+const ICON_TERM =
+  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5l3.5 3L3 11"/><path d="M8.5 11H13"/></svg>'
+const ICON_LOGS =
+  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3 4.5h10"/><path d="M3 8h10"/><path d="M3 11.5h6"/></svg>'
+const ICON_STATS =
+  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3.5 12.5v-4"/><path d="M7 12.5v-8"/><path d="M10.5 12.5v-5"/><path d="M13 12.5v-2"/></svg>'
+const ICON_BACK =
+  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.5 8h-9"/><path d="M7 4.5L3.5 8 7 11.5"/></svg>'
+const ICON_CHEVRON =
+  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5L8 10.5l4-4"/></svg>'
+const ICON_PULL =
+  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.6v6.4"/><path d="M5.3 6.5L8 9.2l2.7-2.7"/><path d="M3 11.4v1.2a.8.8 0 0 0 .8.8h8.4a.8.8 0 0 0 .8-.8v-1.2"/></svg>'
+const ICON_IMAGE =
+  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="3.5" width="11" height="9" rx="1.2"/><path d="M2.5 10.2L5.6 7.6l2.4 2 2.1-1.7 3.4 2.9"/><path d="M6 6.2h.01"/></svg>'
+const ICON_PRUNE =
+  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.4 12.6h9.2"/><path d="M5.2 9.6l3.1-3.1"/><path d="M8.4 3.6l2.4 2.4"/><path d="M10.6 6.2l1.8 1.8-3.2 1.2-1.2 3.2-1.8-1.8z"/></svg>'
+const ICON_PROJECT =
+  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.4 5.9L8 2.8l5.6 3.1L8 9z"/><path d="M2.4 8.4L8 11.5l5.6-3.1"/><path d="M2.4 10.9L8 14l5.6-3.1"/></svg>'
+const ICON_LAYER =
+  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4.5h10"/><path d="M3 8h10"/><path d="M3 11.5h6"/></svg>'
+/* 网络：三个节点 + 连线；不画成「网线插头」那种写实图形，16px 下看不清 */
+const ICON_NETWORK =
+  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="3.2" r="1.7"/><circle cx="3.4" cy="12.2" r="1.7"/><circle cx="12.6" cy="12.2" r="1.7"/><path d="M6.7 4.6L4.5 10.6"/><path d="M9.3 4.6l2.2 6"/><path d="M5.1 12.2h5.8"/></svg>'
+/* 卷：圆柱体（存储桶的通用记号） */
+const ICON_VOLUME =
+  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="8" cy="4.2" rx="4.6" ry="1.9"/><path d="M3.4 4.2v7.6c0 1 2.1 1.9 4.6 1.9s4.6-.9 4.6-1.9V4.2"/><path d="M3.4 8c0 1 2.1 1.9 4.6 1.9s4.6-.9 4.6-1.9"/></svg>'
+
 /*
  * 「容器列表多选 → 临时聚合日志」里唯一有分支的部分：按钮能不能点 / 提示什么、
  * 勾选怎么增删、列表刷新后怎么对账、勾选怎么变回容器对象。
@@ -1184,6 +1215,17 @@ window.__ModuleLoader__.load({
     const LOG_COLOR_LIMIT = 2000
     /** FOLLOW 流式日志的环形缓冲上限：超出丢最旧并提示一次（防止长时间跟随吃内存）。 */
     const FOLLOW_LINE_LIMIT = 5000
+
+    /*
+     * 聚合视图的**每容器**初始行数。
+     *
+     * 比单容器日志页保守得多：那边一次只拉一条流，这里是 N 条流同时拉，而 `tail` 是**每容器**
+     * 的量——8 个容器 × 500 行 = 4000 行一次性灌进浏览器，还没算随后的实时增量。所以只给
+     * 50/100/200/500，默认 100（与之前写死的值一致，改成可调是为了「历史太短」时能加量）。
+     * 改它会重连全部流（effect 的 deps 里有它，重连时缓冲与状态都从头来）。
+     */
+    const AGG_TAIL_OPTIONS = [50, 100, 200, 500]
+    const AGG_TAIL_DEFAULT = 100
 
     /**
      * 日志行的「内容片段」（时间戳 + 级别 + 正文）。抽出来是为了让容器日志与
@@ -3165,6 +3207,8 @@ window.__ModuleLoader__.load({
       const [orderMode, setOrderMode] = useState('arrival')
       /** 级别过滤下限：0 全部 / 3 WARN+ / 4 ERROR+。 */
       const [levelMin, setLevelMin] = useState(0)
+      /** 每容器初始行数：改它触发重连（见 AGG_TAIL_OPTIONS 的注释）。 */
+      const [tail, setTail] = useState(AGG_TAIL_DEFAULT)
       const entriesRef = useRef([])
       const pendingRef = useRef(new Map())
       /** SSE 回调里读「最新暂停态」：闭包捕获的是连接建立那一刻的 state。 */
@@ -3209,7 +3253,7 @@ window.__ModuleLoader__.load({
         const sources = items.map((item) => {
           const service = item.composeService === null ? item.name : item.composeService
           // timestamps=1：聚合视图为「按时间合并」与可选显示时间戳固定带上的参数
-          const es = new EventSource(streamUrl('/logs/stream', { target: props.target, id: item.id, tail: 100, timestamps: 1 }))
+          const es = new EventSource(streamUrl('/logs/stream', { target: props.target, id: item.id, tail, timestamps: 1 }))
           const commit = (rows) => {
             if (rows.length === 0) return
             // 时间序：把最近 N 行连同新行一起重排（跨批次的历史错序也能被纠正）
@@ -3279,7 +3323,7 @@ window.__ModuleLoader__.load({
         })
         void open
         return () => { for (const close of sources) close() }
-      }, [active, props.target, itemIds])
+      }, [active, props.target, itemIds, tail])
 
       useEffect(() => {
         if (paused) return
@@ -3388,6 +3432,15 @@ window.__ModuleLoader__.load({
               children: jsx('span', { className: 'dk_iconGlyph', dangerouslySetInnerHTML: { __html: ICON_CLOSE } }),
             }, 'clear'),
           ] }),
+          jsx('span', { className: 'dk_toolLabel', children: 'LINES' }),
+          jsx('select', {
+            className: 'dk_select dk_selectSm',
+            value: String(tail),
+            // 说清"每容器"是这条控件最容易误解的地方：8 个容器 × 500 行 = 4000 行
+            title: '每容器拉取的初始行数（' + String(items.length) + ' 个容器 → 约 ' + String(items.length * tail) + ' 行）；改动会重连全部流',
+            onChange: (event) => setTail(Number(event.target.value)),
+            children: AGG_TAIL_OPTIONS.map((value) => jsx('option', { value: String(value), children: 'Last ' + String(value) }, String(value))),
+          }, 'aggTail'),
           jsx('button', {
             type: 'button',
             className: 'dk_pill dk_pillFollow',
@@ -5820,6 +5873,8 @@ window.__ModuleLoader__.load({
       filterByLevel: filterRowsByLevel,
       filterLinesByLevel,
       buildLogExport,
+      TAIL_OPTIONS: AGG_TAIL_OPTIONS,
+      TAIL_DEFAULT: AGG_TAIL_DEFAULT,
       exportText: buildLogExport,
     }
     exports.apply = (ctx) => {
@@ -5936,9 +5991,6 @@ window.__ModuleLoader__.load({
 
         return () => {
           dockerTabApi = null
-          sessionProbeSvc = null
-          try { disposeProbeBody() } catch { /* 已释放 */ }
-          try { disposeProbeType() } catch { /* 已释放 */ }
           try { disposeBody() } catch { /* 已释放 */ }
           try { disposeType() } catch { /* 已释放 */ }
         }
