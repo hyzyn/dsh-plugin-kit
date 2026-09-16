@@ -110,13 +110,17 @@ the **official credential store** and leaves only an `env:NAME` reference in the
   "credential set referenced by title" and iTerm2's "pick a named entry from the password manager". The
   implementation goes through DSH's official `ctx.remote.credentials` (`describe` / `set` / `unset`, where
   **values cross in one direction only — no read path exists**), exactly as the official settings cards do.
-- **Name**: derived from the connection-book name and **shown in the field**, so you can rename it to something
-  memorable. A pure-ASCII name yields `DSH_TTY_<name>_PASSWORD`; a name containing non-ASCII characters (CJK, for
-  instance) gets an extra short hash derived from the full name (e.g. `DSH_TTY_HK_B075E02B_PASSWORD`) — the
-  reference grammar only accepts ASCII identifiers, and without that step a CJK name sanitizes to nothing and
-  **every CJK-named connection collapses onto one reference and silently overwrites the others** (a bug found in
-  testing). An empty name is refused. Renaming a connection does not rewrite a stored reference (it leaves an
-  orphan; clear it with "clear stored credential", which acts on the reference in the field).
+- **Name** (the rule is fixed — do not optimise the hash away): `DSH_TTY_<ASCII part of the name>_<8-char hash>_PASSWORD`,
+  where identity = `host:port` + `|` + the entry name. The hash is **always** present because the reference grammar
+  accepts ASCII identifiers only, so `HS 248` / `lab-a` / `HS_248` sanitize to exactly the same string — omitting the
+  hash lets them share one reference and silently overwrite each other (the first version shipped that bug). Including
+  `host:port` in the identity separates same-named entries on different machines. An empty name is refused. The derived
+  name is **shown in the field**, so rename it to something memorable if you like.
+- **Derivation happens only at store time**: afterwards the `env:NAME` in the configuration is the single source of
+  truth and nothing re-derives it — so renaming a connection does **not** invalidate a stored value; it only leaves an
+  orphan reference (clear it with "clear stored credential", which acts on the reference in the field). The hash's
+  implementation details (UTF-16 code units, FNV-1a) are part of the rule: change them only after deciding what happens
+  to references already stored.
 - **Shared**: references live in one flat namespace, so any consumer resolving the same way can use it — put
   the same name in a dsh-docker target's `password` and one secret serves both.
 - **The conservative boundary (know this)**: `~/.credentials.yaml` is a **0600 plain file with no master
