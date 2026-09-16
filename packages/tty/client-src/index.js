@@ -2161,19 +2161,27 @@ function openSshDialog(entry) {
    * 凭据引用选择器：筛选框 + 限高滚动列表（数据源为**连接簿里在用的引用名**，
    * 见 loadCredentialNames——与 env 插件解耦）。点击项填入 env:NAME——目标为空或
    * 已是 env: 引用时直接替换；有手输内容时首击只进确认态（4s 复位），再击
-   * 才覆盖（密码框是掩码显示，不该被一次误点静默清空）；列表空时给
-   * 「去 env 插件托管」的提示。
+   * 才覆盖（密码框是掩码显示，不该被一次误点静默清空）。
+   *
+   * **零候选时这一行整体退化成一行说明**（文案由调用方给 `emptyHint`：密码那行的上方有
+   * 勾选框可以新建，口令那行没有，措辞不一样）。为什么必须退化：候选只可能来自"别的连接
+   * 用过"，第一次打开对话框必然为空——那时摆一个永远点不开的输入框，看着就像坏了。
    */
-  const envSelectRow = (targetInput) => {
+  const envSelectRow = (targetInput, emptyHint) => {
     const row = document.createElement('div')
-    row.className = 'tt_sshRow'
+    row.className = 'tt_sshRow tt_envRow'
     const filter = document.createElement('input')
     filter.type = 'text'
     filter.className = 'tt_cardInput'
     filter.placeholder = '或：选择连接簿里在用的凭据引用'
-    filter.title = '候选是本机连接簿里已经在用的引用名；还没有别的连接用过时就勾上面的「保存时存入凭据存储」新建一个'
+    filter.title = '候选是本机连接簿里已经在用的引用名'
     filter.autocomplete = 'off'
     filter.spellcheck = false
+    // 零候选时顶替筛选框的那行说明（显隐见 setNames）
+    const emptyEl = document.createElement('span')
+    emptyEl.className = 'tt_cardHint tt_envEmpty'
+    emptyEl.textContent = emptyHint
+    emptyEl.hidden = true
     const list = document.createElement('div')
     list.className = 'tt_envList'
     // 默认收起：只在筛选框获得焦点时展开，避免对话框被一长条变量清单撑长
@@ -2182,9 +2190,10 @@ function openSshDialog(entry) {
     const renderList = () => {
       list.textContent = ''
       if (names.length === 0) {
+        // 正常路径走不到这里（零候选时列表不展开，说明由 emptyEl 承担）；留着当兜底
         const hint = document.createElement('span')
         hint.className = 'tt_cardHint'
-        hint.textContent = '还没有别的连接用过凭据引用 — 勾上面的「保存时存入凭据存储」新建一个，或直接手输 env:NAME'
+        hint.textContent = emptyHint
         list.appendChild(hint)
         return
       }
@@ -2229,25 +2238,30 @@ function openSshDialog(entry) {
       } else if (hit.length === 0) {
         const none = document.createElement('span')
         none.className = 'tt_envMore'
-        none.textContent = '没有匹配的变量'
+        none.textContent = '没有匹配的引用'
         list.appendChild(none)
       }
     }
     filter.addEventListener('input', renderList)
     filter.addEventListener('focus', () => {
-      // 一个候选都没有时不展开：展开只会盖住下面的勾选框，而列表里没东西可点。
-      // 那种情况由占位符与 title 说明（见 openSshDialog 里的 loadCredentialNames）。
+      // 一个候选都没有时不展开（那时这一行已经换成 emptyEl 说明，见 setNames）：
+      // 展开只会盖住下面的内容，而列表里没东西可点。
       if (names.length > 0) delete list.dataset.hidden
     })
     filter.addEventListener('blur', () => {
       if (filter.value.trim() === '') list.dataset.hidden = ''
     })
     row.appendChild(filter)
+    row.appendChild(emptyEl)
     row.appendChild(list)
     return {
       row,
       setNames(next) {
         names = Array.isArray(next) ? next : []
+        // 零候选 = 这行退化成说明行：筛选框收起来，别摆一个点不开的下拉
+        const hasNames = names.length > 0
+        filter.hidden = !hasNames
+        emptyEl.hidden = hasNames
         renderList()
       },
     }
@@ -2395,8 +2409,15 @@ function openSshDialog(entry) {
     return { row, refresh, storeIfRequested }
   }
 
-  const passphraseEnv = envSelectRow(fields.passphrase)
-  const passwordEnv = envSelectRow(fields.password)
+  // 零候选时那行说明的文案：密码那行上方有勾选框可新建，口令那行没有，措辞分开写
+  const passphraseEnv = envSelectRow(
+    fields.passphrase,
+    '还没有别的连接用过凭据引用 — 可在私钥口令框直接手输 env:NAME',
+  )
+  const passwordEnv = envSelectRow(
+    fields.password,
+    '还没有别的连接用过凭据引用 — 勾上面的「保存时存入凭据存储」新建一个，或直接在密码框手输 env:NAME',
+  )
   const passwordCred = credentialRow(fields.password, 'PASSWORD')
   /*
    * 候选引用名的**唯一来源**：本机连接簿里已经在用的 `env:` 引用。
