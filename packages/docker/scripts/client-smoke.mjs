@@ -920,7 +920,8 @@ await test('日志 → 会话桥：右键菜单 / 诊断包 / 投递面装配进
   // 上必假（实测产物里查不到 buildAskPrompt / onLogContextMenu / askTarget）。
   assert.ok(code.includes('data-log-ts'), '聚合日志行缺时间戳 dataset（诊断包时间窗的唯一来源）')
   assert.ok(code.includes('dk_menu'), '缺少右键菜单样式钩子')
-  assert.ok(code.includes('dk_askCard'), '缺少预览卡片样式钩子')
+  // 菜单收成两项：卡片去掉后，编辑面收敛到会话输入框（卡片曾是"多开一个更弱的编辑器"）
+  assert.ok(!code.includes('dk_askCard'), '预览卡片样式应已删除')
   assert.ok(code.includes('dk_askToast'), '缺少失败提示样式钩子')
   // 投递必须经**会话作用域**取 conversation：写成根上的会在运行期抛
   // （conversation.send requires a session scope）
@@ -930,7 +931,7 @@ await test('日志 → 会话桥：右键菜单 / 诊断包 / 投递面装配进
   assert.ok(code.includes('inject(["sessions"]') || code.includes("inject(['sessions']"), 'sessions 未按可选注入挂载')
   // esbuild 默认 charset=ascii：中文在 bundle 里是 \uXXXX，先解码再断言
   const decoded = code.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
-  for (const label of ['问 Agent', '预览后发送', '直接发送到当前会话', '只填入输入框', '内容会进入模型上下文']) {
+  for (const label of ['问 Agent', '直接发送到当前会话', '填入输入框，我先改改', '内容会进入模型上下文']) {
     assert.ok(decoded.includes(label), '缺少文案：' + label)
   }
   // 拿不到会话时菜单项必须能置灰：降级原因要有可显示文案
