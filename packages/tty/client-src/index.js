@@ -2277,7 +2277,8 @@ function openSshDialog(entry) {
     remember.type = 'checkbox'
     remember.className = 'tt_cardCheckbox'
     const rememberText = document.createElement('span')
-    rememberText.textContent = '保存时存入凭据存储'
+    // 与上面的「筛选 env 托管变量」是**二选一**：那个选已有的名字，这个把刚输的明文存成新名字
+    rememberText.textContent = '或：保存时存入凭据存储'
     toggle.appendChild(remember)
     toggle.appendChild(rememberText)
     toggle.title = '勾选后，点「保存修改」或「连接（并保存）」时把密码写进官方凭据存储，'
