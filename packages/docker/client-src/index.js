@@ -1509,13 +1509,30 @@ window.__ModuleLoader__.load({
     }
 
     /** 失败提示：成功回执走会话输入框，只有失败需要在这里喊一声。 */
-    function flashAskNotice(text) {
+    /**
+     * 视口级回执：挂在 document.body 的 toast（z-index 2180，盖过面板与 tty 弹窗）。
+     *
+     * 为什么需要它：会话回执走 `input.for(actx).notify(...)`，落在**会话输入框**上；而
+     * 模态 / docked 承载下面板自己就盖着会话（docked 还被终端模态盖着），用户什么都看不到，
+     * 体感就是「点了没反应」。所以在视口级再喊一声——它不受「谁盖着谁」影响。
+     *
+     * @param text - 文案。
+     * @param kind - 'error'（默认，红）| 'ok'（绿）。
+     */
+    function flashAskNotice(text, kind = 'error') {
       const toast = document.createElement('div')
       toast.className = 'dk_askToast'
+      toast.dataset.kind = kind
       toast.textContent = text
       document.body.appendChild(toast)
       setTimeout(() => toast.remove(), 5000)
     }
+
+    /**
+     * 「会话在面板后面」的提示后缀，由面板按承载设置（见 ContainerPanel 里那个 effect）：
+     * tab 承载下右侧栏与对话同屏 → 空串；模态 / docked 下 → 补一句「去哪儿看」。
+     */
+    let conversationHiddenHint = ''
 
     function reportDelivery(result) {
       if (result.ok !== true) flashAskNotice('未能交给会话：' + result.message)
@@ -1641,10 +1658,12 @@ window.__ModuleLoader__.load({
           }
           input.setDraft(prompt)
           notifySession(target, '日志片段已填入输入框，确认后再发送')
+          flashAskNotice('已填入当前会话的输入框' + conversationHiddenHint, 'ok')
           return { ok: true, message: '已填入输入框' }
         }
         await target.conversation.send(prompt)
         notifySession(target, '日志片段已发送到会话')
+        flashAskNotice('已发送日志片段到当前会话' + conversationHiddenHint, 'ok')
         return { ok: true, message: '已发送' }
       } catch (error) {
         return { ok: false, message: error instanceof Error ? error.message : String(error) }
@@ -4308,6 +4327,15 @@ window.__ModuleLoader__.load({
         return () => clearTimeout(timer)
       }, [notice])
 
+      /**
+       * 告诉桥接层「会话此刻是否被面板挡住」——投递成功的视口回执据此补一句「去哪儿看」。
+       * tab 承载下右侧栏与对话同屏（不用补），模态 / docked 下会挡（补）。
+       */
+      useEffect(() => {
+        conversationHiddenHint = tabbed ? '' : ' · 会话在面板后面：关掉或最小化面板/终端即可看到'
+        return () => { conversationHiddenHint = '' }
+      }, [tabbed])
+
       /** 复制 docker exec 命令（终端能力不可用时的兜底）。 */
       const copyExecCommand = (item, reason) => {
         const command = buildExecCommand(item.name)
@@ -5746,6 +5774,8 @@ window.__ModuleLoader__.load({
       buildExec: buildExecCommand,
       /** 会话切换时的重开判定（粘性）。纯函数。 */
       shouldReopen: shouldReopenTab,
+      /** 投递（测试缝）：成功 / 失败的回执行为要能回归。 */
+      deliver: deliverToSession,
     }
     exports.__pick = {
       MAX: PICK_MAX,
