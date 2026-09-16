@@ -581,6 +581,31 @@ await test('抽屉核心：事件窗口 → 条目（增量归并 / 持久事件
   assert.match(feed.textOf({ 没有常见字段: 1 }), /没有常见字段/)
 })
 
+await test('样式命名空间：Agent 抽屉不得复用终端抽屉的 dk_drawer*', () => {
+  /*
+   * 实测踩过：Agent 栏最初复用了 `.dk_drawer`（那是**终端抽屉**的类名），于是
+   *   - 我的 30px 标题栏被套进终端抽屉的 `height: min(46%, 380px)`，栏下面凭空多出
+   *     380px 空盒（用户截图里那片空白）；
+   *   - 反过来我的规则也改了终端抽屉的配色。
+   * 两边都读源码断言，避免再犯：这类错误编译不报、渲染不抛，只有对着界面看才发现。
+   */
+  const css = readFileSync(join(root, 'client-src', 'docker.css'), 'utf8')
+  const cssFrom = css.indexOf('Agent 抽屉（方案 ④）')
+  const cssTo = css.indexOf('【SPIKE', cssFrom)
+  assert.ok(cssFrom > 0 && cssTo > cssFrom, '找不到 Agent 抽屉的样式段落')
+  const section = css.slice(cssFrom, cssTo)
+  assert.ok(!/\.dk_drawer/.test(section), 'Agent 抽屉的样式里出现了 dk_drawer*（终端抽屉的命名空间）')
+  assert.ok(section.includes('.dk_agentHead'), 'Agent 抽屉应定义自己的命名空间')
+
+  const src = readFileSync(join(root, 'client-src', 'index.js'), 'utf8')
+  const jsxFrom = src.indexOf('function AgentDrawerItem(')
+  const jsxTo = src.indexOf('function ContainerPanel(', jsxFrom)
+  assert.ok(jsxFrom > 0 && jsxTo > jsxFrom, '找不到 Agent 抽屉的组件段落')
+  const jsxSection = src.slice(jsxFrom, jsxTo)
+  assert.ok(!jsxSection.includes('dk_drawer'), 'Agent 抽屉的 JSX 里出现了 dk_drawer*')
+  assert.ok(jsxSection.includes('dk_agentHead'), 'Agent 抽屉应使用 dk_agent* 命名空间')
+})
+
 await test('抽屉数据：快照增量套用（append / replace / prepend / 上限）', () => {
   const feed = feedApi()
   const e = (n) => ({ type: 'event', event: { type: 'turn/end', seq: n, time: 0, data: { reason: { kind: 'k' + String(n) } } } })
