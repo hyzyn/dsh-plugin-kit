@@ -72,13 +72,14 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/build-client.mjs",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && node ../../scripts/client-lint.mjs",
     "probe": "node scripts/probe.mjs",
     "integration": "node scripts/integration.mjs",
     "live": "node scripts/live.mjs",
     "tui": "node scripts/tui-smoke.mjs",
     "preview": "node scripts/preview.mjs",
-    "ssh-smoke": "node scripts/ssh-smoke.mjs"
+    "ssh-smoke": "node scripts/ssh-smoke.mjs",
+    "lint:client": "node ../../scripts/client-lint.mjs"
   },
   "files": [
     "lib",
