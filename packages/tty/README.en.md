@@ -100,6 +100,28 @@ SSH sessions are scheduled on the same table: entries with `kind: 'ssh'` in `tty
 `target` (user@host[:port]), and `tty_capture` / `tty_expect` / `tty_send` are used exactly as for local
 sessions — dev server logs and key interactions on the remote machine remain available as usual.
 
+### Credential storage (a connection password need not stay plaintext)
+
+Under **Password** in the connection dialog sits a **credential storage** row: it stores the password in
+the **official credential store** and leaves only an `env:NAME` reference in the field (the value lives in
+`~/.dsh/.credentials.yaml`, never materialized into the environment and never sent back to the browser).
+
+- **Model**: configuration holds a **reference**, the store owns the value — the same family as SecureCRT's
+  "credential set referenced by title" and iTerm2's "pick a named entry from the password manager". The
+  implementation goes through DSH's official `ctx.remote.credentials` (`describe` / `set` / `unset`, where
+  **values cross in one direction only — no read path exists**), exactly as the official settings cards do.
+- **Name**: defaults to `DSH_TTY_<connection-book name>_PASSWORD` (sanitized) and is **shown in the field**,
+  so you can edit it. Renaming a connection does not rewrite a stored reference (it leaves an orphan; clear it
+  with "clear stored credential", which acts on the reference in the field).
+- **Shared**: references live in one flat namespace, so any consumer resolving the same way can use it — put
+  the same name in a dsh-docker target's `password` and one secret serves both.
+- **The conservative boundary (know this)**: `~/.credentials.yaml` is a **0600 plain file with no master
+  password and no OS keychain** — it keeps out **other OS users**, not processes running as you, and not the
+  agent; and it is **machine-local**, so a new machine means storing again. The industry consensus still
+  stands: **prefer keys / agent over stored passwords** (this plugin supports both).
+- **Degradation**: without `remote.credentials` (older host) the buttons disable with a reason and plaintext
+  saving still works.
+
 ## Port forwarding (0.5.0)
 
 Maintain tunnels in the “Port forwarding” block of the Settings → Plugins → Terminal Panel card; each tunnel
