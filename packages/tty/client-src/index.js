@@ -2170,7 +2170,8 @@ function openSshDialog(entry) {
     const filter = document.createElement('input')
     filter.type = 'text'
     filter.className = 'tt_cardInput'
-    filter.placeholder = '选择连接簿里在用的凭据引用'
+    filter.placeholder = '或：选择连接簿里在用的凭据引用'
+    filter.title = '候选是本机连接簿里已经在用的引用名；还没有别的连接用过时就勾上面的「保存时存入凭据存储」新建一个'
     filter.autocomplete = 'off'
     filter.spellcheck = false
     const list = document.createElement('div')
@@ -2183,7 +2184,7 @@ function openSshDialog(entry) {
       if (names.length === 0) {
         const hint = document.createElement('span')
         hint.className = 'tt_cardHint'
-        hint.textContent = '还没有别的连接用过凭据引用 — 勾下面的「保存时存入凭据存储」新建一个，或直接手输 env:NAME'
+        hint.textContent = '还没有别的连接用过凭据引用 — 勾上面的「保存时存入凭据存储」新建一个，或直接手输 env:NAME'
         list.appendChild(hint)
         return
       }
@@ -2234,7 +2235,9 @@ function openSshDialog(entry) {
     }
     filter.addEventListener('input', renderList)
     filter.addEventListener('focus', () => {
-      delete list.dataset.hidden
+      // 一个候选都没有时不展开：展开只会盖住下面的勾选框，而列表里没东西可点。
+      // 那种情况由占位符与 title 说明（见 openSshDialog 里的 loadCredentialNames）。
+      if (names.length > 0) delete list.dataset.hidden
     })
     filter.addEventListener('blur', () => {
       if (filter.value.trim() === '') list.dataset.hidden = ''
@@ -2277,8 +2280,9 @@ function openSshDialog(entry) {
     remember.type = 'checkbox'
     remember.className = 'tt_cardCheckbox'
     const rememberText = document.createElement('span')
-    // 与上面的「筛选 env 托管变量」是**二选一**：那个选已有的名字，这个把刚输的明文存成新名字
-    rememberText.textContent = '或：保存时存入凭据存储'
+    // 与**下面**的选择器是二选一：这个把刚输的明文存成新名字，那个选一个已有的名字。
+    // 顺序上勾选框在前——因为选择器的下拉是向下展开的，放它在上面才不会盖住这一行。
+    rememberText.textContent = '保存时存入凭据存储'
     toggle.appendChild(remember)
     toggle.appendChild(rememberText)
     toggle.title = '勾选后，点「保存修改」或「连接（并保存）」时把密码写进官方凭据存储，'
@@ -2425,8 +2429,8 @@ function openSshDialog(entry) {
   card.appendChild(passphraseRow)
   card.appendChild(passphraseEnv.row)
   card.appendChild(passwordRow)
-  card.appendChild(passwordEnv.row)
   card.appendChild(passwordCred.row)
+  card.appendChild(passwordEnv.row)
 
   card.appendChild(sectionLabel('选项'))
   const fwdRow = document.createElement('label')
