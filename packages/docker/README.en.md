@@ -26,7 +26,7 @@ This plugin stands on its own: it imports no tty code, and tty needs no source c
 | Execution channel | Its own pooled SSH exec (`src/ssh-exec.ts`), fully independent of tty's PTY sessions; neither takes the other's slots |
 | Context entry point | With tty ≥ 0.13.0 it can optionally consume tty's client service `ttyConnbar` and insert a "Containers" button in the SSH connection bar (next to SFTP) (**shown as soon as it is registered**), with the target resolved from the current session at click time; **except in exec tabs this plugin opened itself** — those tabs are where the user just came from, so offering a way back to the very same panel is a loop (recognised via `spawnSpec.command`; a `docker exec -it` the user typed by hand does not count); if tty is missing or too old this is skipped silently |
 | Panel hosting | **The default is a session right-sidebar tab** (`sidebar.right.pane.tab`): the panel and the conversation share the screen, so logs stay visible while the agent works; collapsing it leaves the viewport without leaving the session. The **frame sidebar** entry only opens or focuses it, and **a page type deduplicates inside one column**, so clicking twice never opens a second tab. The **terminal connection bar** entry is the opposite — it sits on the viewport-covering tty modal, where a tab would be hidden, so that path docks to the right of the terminal via `ttyPanel.mountPane` (**the entry decides the carrier**). Without the right-sidebar services (older DSH), or with `localStorage['dsh-docker:carrier'] = 'modal'`, the sidebar entry also falls back to the dock (when tty is open) or to a full-screen modal with its own backdrop. All three carriers are **one component**, differing only in shell and geometry |
-| Terminal hosting | Interactive terminals are hosted by tty (it owns the PTY). Under the **right-sidebar tab and the dock**, the card's "Terminal" button runs `docker exec -it` via `ttyTerminal.open` — i.e. **a new tab in the terminal panel**: the column is usually too narrow for a shell, and a tab unmounts on session switch, which would kill an embedded terminal. Under the **modal** it is **embedded in place** into the drawer at the bottom of the panel via `ttyTerminal.mount` (reading logs into entering the container without losing context). Without tty, or below the required version, it copies the command. This plugin implements no PTY / xterm / reconnect stack |
+| Terminal hosting | Interactive terminals are hosted by tty (it owns the PTY). **Right-sidebar tab**: when the panel is fullscreen (`sidebar.fullscreen`) the terminal is embedded in place via `ttyTerminal.mount` (enough width, logs and shell on one screen); otherwise a tab is opened in the terminal panel via `ttyTerminal.open` (too narrow to squeeze both). **Dock** carrier (the panel already lives inside tty) always opens a tab; **modal** embeds in place. Those command tabs (non-empty `spawnSpec.command`) show **no connection-bar extension area** on the tty side — SFTP / tunnels / third-party panes all act on the connection itself, which misleads on a `docker exec` tab (SFTP browses the host, not what the user believes is inside the container); this plugin adds a version-independent fallback that withholds the "Containers" entry in exec tabs it opened itself (matched by the `spawnSpec.command` prefix). Without tty, or below the required version, copying the command is the fallback. This plugin implements no PTY / xterm / reconnect stack |
 | Division of labour | **Interactive troubleshooting** (`docker exec -it`, a shell inside the container, TUIs) is hosted by tty (embedded drawer or tab); **read-only inspection and agent automation** use this plugin's own exec channel |
 
 Reuse at the data level without coupling at the code level: the connection book and the fingerprint seed are "reading the same settings", and the connection-bar button is "consuming a generic extension point" — neither is "depending on tty's modules", so upgrading or uninstalling tty does not break this plugin along with it.
@@ -52,6 +52,8 @@ triggers re-resolution, with no restart needed).
 Two entry points, one panel. **The default carrier is a session right-sidebar tab** — the entries only open or
 focus it, and the panel sits side by side with the conversation: after handing an error to the agent the logs stay
 on the right, without getting in the way of watching it work.
+
+![Right-sidebar tab carrier: conversation and container panel on one screen, panel full height; collapsing leaves the viewport](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-docker-tab.png)
 
 - **Sidebar "Containers"** (the main entry point): works for any target, including local docker and switching
   between multiple targets. If it is already open it focuses (a page type deduplicates inside one column), so
@@ -194,7 +196,10 @@ Inside the panel:
   (browsers limit same-origin concurrent long connections), and above **8** the button is greyed out with a hint
   about the cap. Clicking `merged logs` opens the merged view: it reuses exactly the merged logs of the Compose
   project view (one `/logs/stream` per container, mixed by the `[service]` / container-name prefix, with filtering
-  and auto-scroll), and going back exits selection mode and clears it.
+  and auto-scroll), and going back exits selection mode and clears it. The merged view's **content controls are
+  fully aligned with the single-container log view** (text filter + level threshold + `⬇ .log` / `⬇ .md` exporting
+  what is displayed + line count), plus two merged-only controls: **by time / by arrival** ordering and a **pause**
+  that freezes the view while the streams keep receiving (restoring flushes them in one go).
   Clicking `Select for merging` again or pressing **Esc** likewise exits and clears. Selection is **temporary**:
   not persisted, not named into groups, not written to settings; it is dropped when switching targets / switching
   the "Containers · Images · Compose" segment / closing the panel, and containers that disappeared after a list
@@ -225,10 +230,15 @@ Inside the panel:
   stats. The log / stats icons on a card land directly on the corresponding tab.
 - **Log view (a compact two-row layout)**: the first row = back + container name + status + target host +
   `LINES` (tail line count) / `TIMESTAMPS` / **`FOLLOW` (live follow, see below)** /
-  `AUTO REFRESH` (a switch plus 2/3/5/10s intervals, polling on the log page only) + refresh / download / close;
-  the second row = the tabs + an **always-present** "filter logs"
-  input (a fixed slot on the right shows "N lines" / "N / M lines matched"; when it has content an ✕ floats inside
-  to clear, and Esc clears too). The input's width and position never change, so typing or clearing never nudges
+  `AUTO REFRESH` (a switch plus 2/3/5/10s intervals, polling on the log page only) + refresh / close;
+  the second row = the tabs + an **always-present** "filter logs" input (an ✕ floats inside to clear when it has
+  content, and Esc clears too) + a **level threshold** (`all / WARN+ / ERROR+`) + **export**
+  (`⬇ .log` / `⬇ .md`, exporting **what is currently displayed**) + the line count in a fixed slot on the right.
+  **The split between the rows is deliberate**: the first row is *transport and display* (snapshot / stream /
+  polling), the second is *content* — and the second row is **exactly the same as the merged log view**: one level
+  kernel, one export builder, one count wording (`N lines`, or `N / M lines` while filtered). The level threshold
+  treats a line without a level prefix as a **continuation of the previous entry and follows its level** — otherwise
+  `ERROR+` would cut a stack trace in half. The input's width and position never change, so typing or clearing never nudges
   this row. The log body is coloured by level (both common prefixes, `[INFO]` and `|INFO`,
   are recognised), timestamps are dimmed, and filter hits are highlighted; beyond 2000 lines only the tail is
   coloured, with a hint. In the details view the list toolbar and panel header are no longer layered on top, so
