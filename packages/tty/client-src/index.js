@@ -275,7 +275,14 @@ registerConnbarAction(({ bookName, addAction }) => {
 
 function setStatus(text, state) {
   if (statusEl === null) return
-  statusEl.textContent = text
+  /*
+   * 胶囊只放**第一句**，完整说明进 tooltip：宿主那句「会话数已达上限（4）——每个窗口的每个
+   * 标签各占一个名额：关闭不用的窗口/标签，或在设置卡片调大「并发会话上限」」有六十多字，
+   * 即使有 max-width + 省略号也会把标签条吃掉三分之一（实测截图里活动标签被挤到只剩半个）。
+   * 本仓的状态文案用 `——` 分隔「结论」与「解释」，所以按它切一刀就够。
+   */
+  statusEl.textContent = text.split('——')[0]
+  statusEl.title = text
   statusDotEl.dataset.state = state
   // 单行头部常态不占位：state=connected 时收起状态块，异常/瞬时消息才点亮
   if (statusChipEl !== null) statusChipEl.style.display = state === 'connected' ? 'none' : ''
@@ -823,6 +830,30 @@ function createTerminal(tab) {
  * 传连接名或 user@host，缺省显示「终端 N」）。未指定 spawnSpec 时（默认本地
  * 终端），持久化开启则默认由 tmux 托管。
  */
+/**
+ * 同一个「连接 + 命令」的复用键。
+ *
+ * 键必须**稳定**：不能直接 `JSON.stringify(spec)`——键顺序不同就会漏判，而从 sessionStorage
+ * 恢复的 spec 与现场构造的 spec 顺序未必一致。所以按固定字段列表取值。
+ */
+function specReuseKey(spec) {
+  if (spec === null || typeof spec !== 'object') return ''
+  const fields = ['t', 'name', 'host', 'port', 'username', 'command', 'cwd', 'persist', 'persistName']
+  return fields.map((field) => field + '=' + String(spec[field] ?? '')).join('\u0000')
+}
+
+/** 找一个与 spec 同「连接 + 命令」且**还活着**的标签（复用它，而不是再堆一个重复的）。 */
+function findReusableTab(spec) {
+  const key = specReuseKey(spec)
+  if (key === '') return null
+  for (const tab of tabs.values()) {
+    if (tab.exited === true) continue
+    if (tab.embedded === true) continue
+    if (specReuseKey(tab.spawnSpec) === key) return tab
+  }
+  return null
+}
+
 function addTab(spawnSpec, label) {
   const sid = newSid()
   const tab = {
@@ -1404,6 +1435,12 @@ function renderTabbar() {
       switchTab(sid)
     })
     tabbarEl.appendChild(btn)
+  }
+  // 活动标签滚进视野：标签多了以后它可能被挤在可视区外，而「切过去了但看不见」比没切更迷惑。
+  // block/inline 都用 nearest → 已经可见时**不动**，所以不会跟用户的手动滚动打架。
+  const activeEl = tabbarEl.querySelector('[data-active]')
+  if (activeEl !== null && typeof activeEl.scrollIntoView === 'function') {
+    activeEl.scrollIntoView({ block: 'nearest', inline: 'nearest' })
   }
   const add = document.createElement('button')
   add.className = 'tt_tabAdd'
@@ -5721,13 +5758,14 @@ function TtySettingsCard() {
       //   mount —— 把终端挂进调用方自己的容器（就地嵌入，不弹面板、不进标签栏）
       // 契约见 README「客户端服务契约」；消费方应按 version 校验后再用。
       const disposeTerminal = ctx.provide('ttyTerminal', {
-        /** 契约版本：1 = 只有 open；2 = 增加 mount（就地嵌入）。 */
-        version: 2,
+        /** 契约版本：1 = open；2 = 增加 mount（就地嵌入）；3 = open 默认复用同连接同命令的标签。 */
+        version: 3,
         /**
          * 新开标签并执行命令。options：
          *   command（必填，单行）· book（连接簿条目名，走 SSH）·
-         *   spec（内联 SSH 字段，走 SSH）· label（标签名）· cwd（本地标签工作目录）
-         * 三者互斥：book > spec > 本地。
+         *   spec（内联 SSH 字段，走 SSH）· label（标签名）· cwd（本地标签工作目录）·
+         *   reuse（默认 true：同「连接 + 命令」已有活标签就聚焦它，不再新开）
+         * 三者互斥：book > spec > 本地。返回被打开或被复用的标签。
          */
         open(options) {
           // 插件禁用时不提供终端能力（服务端 WS 闸门也会拒绝 spawn）
@@ -5736,6 +5774,21 @@ function TtySettingsCard() {
           const spawnSpec = buildTerminalSpec(options, command)
           const label = typeof options?.label === 'string' && options.label !== '' ? options.label : undefined
           ensureStyle()
+          /*
+           * 复用：同一个「连接 + 命令」再开一次 = **聚焦已有标签**，不再堆一个重复的。
+           *
+           * 动机是实测：容器卡片「终端」按钮连点几下就冒出三个一模一样的 exec 标签，而每个
+           * 标签各占一个会话名额——并发上限被白白吃光，接着满屏都是「会话数已达上限」。
+           * 真想要并列两个同样的会话，传 `reuse: false` 显式声明。
+           */
+          if (options?.reuse !== false) {
+            const existing = findReusableTab(spawnSpec)
+            if (existing !== null) {
+              ensureModalVisible()
+              switchTab(existing.sid)
+              return existing
+            }
+          }
           // 最小化中也要恢复（否则标签加进隐藏的弹窗里，用户看到"点了没反应"）
           ensureModalVisible()
           addTab(spawnSpec, label)
