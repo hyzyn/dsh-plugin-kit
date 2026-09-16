@@ -130,6 +130,12 @@ lives in `~/.dsh/.credentials.yaml`, never materialized into the environment and
   to references already stored.
 - **Shared**: references live in one flat namespace, so any consumer resolving the same way can use it — put
   the same name in a dsh-docker target's `password` and one secret serves both.
+- **Visibility**: the dialog's reference picker lists **the names the store already holds** — the host-side
+  `/api/dsh-tty/credential-refs` reads back only the `refs:` keys (names only; values never leave the host).
+  Why read it ourselves: the reference half is **not enumerable** over the protocol (rationale in the picker
+  section), yet “which names have I stored” is exactly the question this picker answers. It also makes
+  **orphan references** (old names left behind by a rename or a naming-rule change) visible, selectable and
+  clearable again.
 - **The conservative boundary (know this)**: `~/.credentials.yaml` is a **0600 plain file with no master
   password and no OS keychain** — it keeps out **other OS users**, not processes running as you, and not the
   agent; and it is **machine-local**, so a new machine means storing again. The industry consensus still
@@ -308,15 +314,25 @@ and the agent tools all reuse the same scheduling.
   entries without a User; `Include` is not expanded), skips same names, and writes them on “save”;
 - **Credential-reference picker (0.4.0; decoupled from the env plugin since 0.17)**: next to the password /
   passphrase fields in the SSH dialog there is a filter box plus a height-limited list whose candidates are
-  **the reference names already in use by this machine's connection book** (names only, never values); clicking one
-  fills in `env:NAME`, and any `env:NAME` can still be typed by hand (existence is validated at connect time).
-  **Why not the env plugin's managed list**: the official discovery path for references is "a configuration surface
-  learns which references exist **from its own settings schema**" — the reference half is **deliberately not
-  enumerable** (the wording in `@deepseek-ai/dsh-credentials`' types). Our settings *are* this connection book, so
-  listing the names other connections use is both the sanctioned route and what makes this path independent of the
-  env plugin: a value living in `~/.dsh/.credentials.yaml` becomes reusable from other connections the same way.
-  When no other connection uses a reference yet, the row **degrades to a single explanatory line** (rather than an
-  input that can never open, which just looks broken): it says either to tick “store on save” above, or to type
+  **the reference names the credential store already knows** (the host reads the `refs:` keys of
+  `.credentials.yaml` — **names only, never values**) ∪ **the reference names this machine's connection book
+  already uses**; clicking one fills in `env:NAME`, and any `env:NAME` can still be typed by hand (existence is
+  validated at connect time).
+  **Why read the file / why not the env plugin's managed list**: the official discovery path for references is
+  "a configuration surface learns which references exist **from its own settings schema**" — the reference half is
+  **deliberately not enumerable** (the wording in `@deepseek-ai/dsh-credentials`'s `listRecords` docs: “the
+  reference half, which has no enumeration because configuration surfaces learn which references exist from
+  settings schemas”), and the browser-side `ctx.remote.credentials` opens only `describe` / `set` / `unset` — not
+  even `listRecords`. So “what names does this store actually hold” is unanswerable in the browser, while the
+  picker's whole purpose is exactly that question. The host therefore exposes a **read-only** route,
+  `/api/dsh-tty/credential-refs` (behind the loopback fence; it parses `refs:` keys and never returns values —
+  see `readCredentialRefNames`). This is a **deliberate departure** from the official “references are not
+  enumerable” design (cost: reference names reach the browser, values never do); to stay strictly on the official
+  route, use only the connection-book half. Boundaries: references behind a custom provider `path` / `dshHome` are
+  invisible here, and when the host read fails (or an older host lacks the route) the candidates quietly fall back
+  to the connection-book half.
+  When there are no candidates at all, the row **degrades to a single explanatory line** (rather than an input
+  that can never open, which just looks broken): it says either to tick “store on save” above, or to type
   `env:NAME` into the field. The passphrase row has no checkbox above it, so its wording only mentions typing;
 - **Host-key TOFU pinning (0.3.0)**: after the first successful connection the host’s (host:port) sha256
   fingerprint is recorded in `hostKeys` (persisted with settings); every later connection is verified, a
@@ -734,7 +750,8 @@ Host half (src/index.ts)
   │  does not recognize, so the shell-integration hook detects $TMUX and wraps OSC 133/7 in a DCS
   │  passthrough envelope, tmux ≥3.3 unwraps and forwards it, and the host parser needs no change)
   ├─ auxiliary routes: /api/dsh-tty/ssh-config (~/.ssh/config import candidates),
-  │  /api/dsh-tty/env-vars (variable names managed by the env plugin), /api/dsh-tty/known-hosts
+  │  /api/dsh-tty/credential-refs (reference names known to the credential store — names only, see
+  │  “Credential storage”), /api/dsh-tty/env-vars (variable names managed by the env plugin), /api/dsh-tty/known-hosts
   │  (TOFU fingerprint prefill, src/known-hosts.ts parses hashed entries too),
   │  /api/dsh-tty/shells (shell path candidates) — all behind the loopback fence
   ├─ SFTP (src/sftp.ts, 0.7.0): lazy connection pool (reclaimed after 120s idle, reconnected on
