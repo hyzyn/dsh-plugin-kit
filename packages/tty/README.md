@@ -465,8 +465,23 @@ ctx.inject(['ttyPanel'], (c) => {
 - 标题栏（标题 / 折叠 / ✕）由 tty 提供，消费方只管自己的正文；`onClose` 抛错只记
   `console.warn`，不影响面板关闭。
 
+**`minimize()`（契约 v2）** 把整个终端面板折进去：弹窗藏起来，但 DOM / WebSocket / xterm
+缓冲全保留、**会话继续跑**；恢复靠侧边栏「终端」入口上的徽标。消费方用它「把舞台让出去」
+——典型是 dsh-docker 把日志交给会话之后自动折起终端，让用户直接看到会话，而不是对着一个
+盖住会话的弹窗猜「点了没有反应」。返回值是调用后的最小化态，调用方据此决定提示文案里还要
+不要写「会话在面板后面」。
+
+```js
+ctx.inject(['ttyPanel'], (c) => {
+  if (Number(c.ttyPanel.version ?? 0) < 2 || typeof c.ttyPanel.minimize !== 'function') return false
+  if (c.ttyPanel.isOpen() !== true) return false
+  return c.ttyPanel.minimize()   // 折起终端，让会话露出来
+})
+```
+
 > 契约版本：`ttyConnbar.version === 1`、`ttyTerminal.version === 2`（1 = 只有 `open`，
-> 2 = 增加 `mount`）、`ttyPanel.version === 1`。消费方**按版本号判断能力**，不要用
+> 2 = 增加 `mount`）、`ttyPanel.version === 2`（1 = `mountPane` + `isOpen`，2 = 增加
+> `minimize`）。消费方**按版本号判断能力**，不要用
 > `typeof fn === 'function'` 之外的假设；老版本 tty 上 `inject` 依然会触发，但没有
 > 对应字段。
 

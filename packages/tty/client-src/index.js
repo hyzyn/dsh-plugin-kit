@@ -5727,8 +5727,8 @@ function TtySettingsCard() {
       // 面板内挂载位（0.16.0）：其他插件在终端面板右侧挂一块自己的界面（dsh-docker
       // 的容器面板就走这里），终端保持可见。契约见 README「客户端服务契约」。
       const disposePanel = ctx.provide('ttyPanel', {
-        /** 契约版本：1 = mountPane + isOpen。 */
-        version: 1,
+        /** 契约版本：2 = 增加 minimize()（1 = mountPane + isOpen）。 */
+        version: 2,
         /** 面板是否正开着（最小化不算）：调用方据此决定挂进来还是走自己的弹窗。 */
         isOpen() {
           return modalEl !== null && !minimized
@@ -5736,6 +5736,20 @@ function TtySettingsCard() {
         /** 挂一个右侧 pane（同一时刻只有一个，返回的 handle 见函数注释）。 */
         mountPane(options) {
           return mountDockPane(options)
+        },
+        /**
+         * 最小化整个终端面板：弹窗藏起来，但 DOM / WebSocket / xterm 缓冲全保留、会话继续
+         * 跑；恢复靠侧边栏「终端」入口（那上面会挂徽标与状态点）。
+         *
+         * 消费方用它「把舞台让出去」——典型是 dsh-docker 把日志交给会话之后，自动折起终端
+         * 让用户看到会话，而不是对着一个盖住会话的弹窗猜「点了没有反应」。
+         *
+         * @returns 调用之后面板是否处于最小化态（没开、已最小化、或状态不允许时返回 false，
+         *   调用方据此决定要不要把指引写进提示文案）。
+         */
+        minimize() {
+          minimizeModal()
+          return modalEl !== null && minimized
         },
       })
       return () => {
