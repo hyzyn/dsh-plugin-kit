@@ -110,9 +110,13 @@ the **official credential store** and leaves only an `env:NAME` reference in the
   "credential set referenced by title" and iTerm2's "pick a named entry from the password manager". The
   implementation goes through DSH's official `ctx.remote.credentials` (`describe` / `set` / `unset`, where
   **values cross in one direction only — no read path exists**), exactly as the official settings cards do.
-- **Name**: defaults to `DSH_TTY_<connection-book name>_PASSWORD` (sanitized) and is **shown in the field**,
-  so you can edit it. Renaming a connection does not rewrite a stored reference (it leaves an orphan; clear it
-  with "clear stored credential", which acts on the reference in the field).
+- **Name**: derived from the connection-book name and **shown in the field**, so you can rename it to something
+  memorable. A pure-ASCII name yields `DSH_TTY_<name>_PASSWORD`; a name containing non-ASCII characters (CJK, for
+  instance) gets an extra short hash derived from the full name (e.g. `DSH_TTY_HK_B075E02B_PASSWORD`) — the
+  reference grammar only accepts ASCII identifiers, and without that step a CJK name sanitizes to nothing and
+  **every CJK-named connection collapses onto one reference and silently overwrites the others** (a bug found in
+  testing). An empty name is refused. Renaming a connection does not rewrite a stored reference (it leaves an
+  orphan; clear it with "clear stored credential", which acts on the reference in the field).
 - **Shared**: references live in one flat namespace, so any consumer resolving the same way can use it — put
   the same name in a dsh-docker target's `password` and one secret serves both.
 - **The conservative boundary (know this)**: `~/.credentials.yaml` is a **0600 plain file with no master
