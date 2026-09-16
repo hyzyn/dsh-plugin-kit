@@ -315,7 +315,9 @@ and the agent tools all reuse the same scheduling.
   enumerable** (the wording in `@deepseek-ai/dsh-credentials`' types). Our settings *are* this connection book, so
   listing the names other connections use is both the sanctioned route and what makes this path independent of the
   env plugin: a value living in `~/.dsh/.credentials.yaml` becomes reusable from other connections the same way.
-  When no other connection uses a reference yet, the list says so and points at the checkbox that creates one;
+  When no other connection uses a reference yet, the row **degrades to a single explanatory line** (rather than an
+  input that can never open, which just looks broken): it says either to tick “store on save” above, or to type
+  `env:NAME` into the field. The passphrase row has no checkbox above it, so its wording only mentions typing;
 - **Host-key TOFU pinning (0.3.0)**: after the first successful connection the host’s (host:port) sha256
   fingerprint is recorded in `hostKeys` (persisted with settings); every later connection is verified, a
   matching fingerprint is allowed, and **a changed fingerprint rejects the connection outright** (defense
