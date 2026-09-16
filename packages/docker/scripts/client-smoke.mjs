@@ -508,6 +508,35 @@ await test('粘性：订阅接线（打开 → 切会话重开 → 同会话不�
   assert.equal(state.openTabs.length, 2, '同一会话重复通报不该再开')
 })
 
+await test('投递回执：成功也在视口级发声（以前只有失败才提示）', async () => {
+  const exports_ = registration.factory((spec) => SEED[spec])
+  const { ctx } = makeClientCtx({ sidebarRightTabs: true })
+  exports_.apply(ctx)
+
+  // 成功：应追加一枚绿色 toast。这条锁的是「模态 / docked 下面板盖着会话时，
+  // 用户至少能在视口右下角看到『已发送』」——以前成功是静默的，体感是「点了没反应」。
+  const before = documentStub.body.children.length
+  const ok = await exports_.__carrier.deliver('诊断包', 'send')
+  assert.equal(ok.ok, true, '会话桩应接受投递')
+  assert.equal(documentStub.body.children.length, before + 1, '成功要有视口级回执')
+  const toast = documentStub.body.children[documentStub.body.children.length - 1]
+  assert.equal(toast.dataset.kind, 'ok', '成功用绿色那套')
+  assert.match(toast.textContent, /已发送/)
+  // 「会话在面板后面」那半句由面板按承载设置（tab 下不该出现），不是写死在文案里；
+  // 这里面板没挂载，所以后缀应为空。
+  assert.ok(!toast.textContent.includes('面板后面'), '承载相关的后缀不该硬编码在投递层')
+
+  // 失败：deliver 只回结果，提示由调用方（右键菜单）负责，不该自己乱发 toast
+  const fresh = registration.factory((spec) => SEED[spec])
+  const { ctx: bare } = makeClientCtx({ sessions: false })
+  fresh.apply(bare)
+  const beforeFail = documentStub.body.children.length
+  const failed = await fresh.__carrier.deliver('诊断包', 'send')
+  assert.equal(failed.ok, false, '没有 sessions 服务应失败')
+  assert.match(failed.message, /sessions/)
+  assert.equal(documentStub.body.children.length, beforeFail, '失败不该由投递层自己发 toast')
+})
+
 await test('注入清单快照：本插件注入过的服务全集（加可选注入时只改这一处）', () => {
   const exports_ = registration.factory((spec) => SEED[spec])
   const { ctx, state } = makeClientCtx({ ttyConnbar: false, ttyTerminal: false })
