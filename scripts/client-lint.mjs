@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * @hyzyn/dsh-docker — 客户端源码的**定点**静态检查。
+ * 客户端源码的**定点**静态检查（仓库级：在包目录里跑，覆盖 `client-src/index.js`）。
  *
  * 为什么需要：`client-src/*.js` 是纯 JS，不参与 `tsc -p tsconfig.json`（那份只覆盖 src）。
  * 于是「引用了不存在的名字」这一类错误**编译不报**，冒烟也未必抓得到——只有真正渲染到那条
@@ -24,15 +24,21 @@ import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-const repoRoot = join(root, '..', '..')
+// 在「包目录」里调用（`pnpm -r typecheck` 就是这样跑的）：tsc 输出的路径也相对它，
+// 于是下面的解析与提示都是包内相对路径。
+const root = process.cwd()
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 /** 只把这几类当失败：见文件头的说明。 */
 const FATAL_CODES = new Set(['TS2304', 'TS2552', 'TS2448', 'TS2454'])
 
 const tsc = join(repoRoot, 'node_modules', '.bin', 'tsc')
+if (!existsSync(join(root, 'client-src', 'index.js'))) {
+  console.log('[client-lint] 本包没有 client-src/index.js —— 跳过')
+  process.exit(0)
+}
 if (!existsSync(tsc)) {
-  console.error('[dsh-docker] 找不到 tsc（' + tsc + '）——先在仓库根 pnpm install')
+  console.error('[client-lint] 找不到 tsc（' + tsc + '）——先在仓库根 pnpm install')
   process.exit(1)
 }
 
@@ -56,7 +62,7 @@ const fatal = found.filter((item) => FATAL_CODES.has(item.code))
 const noise = found.filter((item) => !FATAL_CODES.has(item.code))
 
 for (const item of fatal) {
-  console.error('[dsh-docker] client-src/index.js:' + String(item.line) + ':' + String(item.col) + ' ' + item.code + ' ' + item.text)
+  console.error('[client-lint] client-src/index.js:' + String(item.line) + ':' + String(item.col) + ' ' + item.code + ' ' + item.text)
 }
 
 if (fatal.length > 0) {
@@ -69,7 +75,7 @@ if (noise.length > 0) {
   const byCode = new Map()
   for (const item of noise) byCode.set(item.code, (byCode.get(item.code) ?? 0) + 1)
   const summary = [...byCode.entries()].map(([code, count]) => code + '×' + String(count)).join(' ')
-  console.log('[dsh-docker] 客户端静态检查通过（忽略 ' + String(noise.length) + ' 条已知噪音：' + summary + '）')
+  console.log('[client-lint] 客户端静态检查通过（忽略 ' + String(noise.length) + ' 条已知噪音：' + summary + '）')
 } else {
-  console.log('[dsh-docker] 客户端静态检查通过（无诊断）')
+  console.log('[client-lint] 客户端静态检查通过（无诊断）')
 }
