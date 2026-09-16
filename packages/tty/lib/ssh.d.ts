@@ -104,13 +104,50 @@ export interface HostKeyStore {
     /** 首次连接握手时记录指纹。 */
     record(host: string, port: number, fingerprint: string): void;
 }
+/**
+ * 官方凭据服务的**最小结构面**（结构类型，不把这个包加成本插件依赖）。
+ *
+ * 契约见 `@deepseek-ai/dsh-credentials`：`resolve(ref)` **每次操作重新解析、不得跨操作缓存**，
+ * 返回 `{ value, source }` 或 undefined。这里只声明用到的那一个方法——既不必引依赖，也能在
+ * 服务缺失时静态看出"没有它"。
+ */
+export interface CredentialResolver {
+    resolve(ref: string): Promise<{
+        value: string;
+    } | undefined>;
+}
+/** 由 index.ts 在可选注入里挂上（服务缺失即为 null，退回 process.env）。 */
+export declare function setCredentialResolver(resolver: CredentialResolver | null): void;
+/**
+ * 解析密钥引用（`env:NAME`）——**纯核心**，provider 由调用方给，便于离线断言。
+ *
+ * 顺序：官方凭据 provider **优先**（它自己叠 `file`（`$DSH_HOME/.credentials.yaml`）/ `env` /
+ * `project-env` / `user-env` 各层，而且"每次操作重新解析"——改完下一个操作即生效，不必重启
+ * 宿主）；服务不在、或它没有这个引用时，再退回 `process.env`。
+ *
+ * 为什么必须走 provider：凭据存储里的值**永远不会被 materialize 进环境**（provider README 原话：
+ * "a store the harness owns and never materializes into the environment"），所以只读
+ * `process.env` 等于"存进凭据存储的值连接时根本读不到" ✗ —— 这正是「存入凭据存储」这条链此前
+ * 断掉的地方（客户端那半切好了、宿主这半没切）。
+ *
+ * provider 抛错**不吞**：记下来，若环境变量也没有就把两个来源一起写进错误里。否则"凭据服务
+ * 坏了"会伪装成"你没配"，而那是最难查的一类。
+ */
+export declare function resolveSecretVia(provider: CredentialResolver | null, value: string | undefined): Promise<string | undefined>;
+/** 生产路径：用当前注入的 provider（`index.ts` 注入；没注入就是 null）。 */
+export declare function resolveSecret(value: string | undefined): Promise<string | undefined>;
 declare function expandHome(path: string): string;
 /** 供 ~/.ssh/config 导入路由使用（~ 与 ~/ 前缀展开 home）。 */
 export { expandHome };
 /** 展示用目标串：user@host（非默认端口时带 :port）。 */
 export declare function sshTarget(spec: SshSpec): string;
-/** 构造连接配置（认证三态 + keepalive + hostHash）；隧道管理器与 spawnSsh 共用。 */
-export declare function buildConnectConfig(spec: SshSpec): ConnectConfig;
+/**
+ * 构造连接配置（认证三态 + keepalive + hostHash）；spawnSsh / probeSsh / SFTP / 隧道共用。
+ *
+ * **async**：`env:NAME` 引用要经官方凭据 provider 解析（每操作重解析，不可缓存），见
+ * resolveSecretVia —— 这是"存入凭据存储"的值能被连接真正用到的唯一通路。
+ */
+export declare function buildConnectConfig(spec: SshSpec): Promise<ConnectConfig>;
 /** TOFU 主机指纹策略（hostVerifier 接线）；返回的 mismatchMessage() 供连接错误路径取人类可读拒绝原因。 */
 export declare function applyHostKeyPolicy(options: {
     connectConfig: ConnectConfig;

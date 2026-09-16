@@ -137,6 +137,13 @@ SSH 会话同表调度：`tty_list` 里 `kind: 'ssh'` 的条目按 `target`
   `/api/dsh-tty/credential-refs` 只读 `refs:` 的键名回来（只要名字，值永远不出宿主）。为什么要自己
   读：引用半边在协议上**不可枚举**（原因写在选择器那节），而"我存过哪些名字"正是这个选择器要回答
   的问题。这也让**孤儿引用**（例如改了连接名/改过命名规则后留下的旧名字）重新可见、可选、可清。
+- **解析路径（连接能真正用上存储里的值的关键）**：连接 / 试连 / SFTP / 端口转发都走同一个
+  `buildConnectConfig`，其中的 `env:NAME` 经**官方凭据 provider** 解析（`resolve`，每操作重解析，
+  改完下一个操作即生效、不必重启宿主）；provider 没有这个引用、或宿主没有该服务时才退回
+  `process.env`。**为什么必须走 provider**：凭据存储里的值**永远不会被 materialize 进环境**
+  （provider README 原话："a store the harness owns and never materializes into the environment"），
+  所以只读 `process.env` 等于"存进去的密码连接时读不到"。provider 抛错不吞 —— 环境变量也没有时，
+  错误里会把两个来源一起写出来（否则"凭据服务坏了"会伪装成"你没配"）。
 - **保守的边界（务必知道）**：`~/.credentials.yaml` 是 **0600 的普通文件，没有主密码、没有 OS
   keychain** —— 它挡的是**别的 OS 用户**，挡不住以你身份运行的进程与 agent；而且它**机器本地**，
   换机器要重存。所以业界共识仍然是：**能用密钥 / agent 就别存密码**（本插件两者都支持）。
@@ -281,9 +288,10 @@ tmux server（专用 socket `dsh-tty`，与用户自己的 tmux 完全隔离）�
   - `agent`（默认）——走 ssh-agent（`SSH_AUTH_SOCK`），凭证不落盘，最推荐；
   - `key`——`keyPath` 私钥文件（`~` 开头可省略 home），`passphrase` 可选；
   - `password`——密码认证，同时挂 keyboard-interactive（不少服务端只开这个）；
-- **密码 / 口令支持 `env:VAR`**：`password` / `passphrase` 填 `env:MY_SECRET`
-  时从宿主进程环境变量取值（配合 dsh-env-manager 插件托管密钥，避免明文
-  写进 settings 文件）；
+- **密码 / 口令支持 `env:VAR`**：`password` / `passphrase` 填 `env:MY_SECRET` 时按**凭据层**解析 ——
+  官方凭据 provider 优先（叠 `$DSH_HOME/.credentials.yaml` / 进程环境 / `project-env` /
+  `user-env`，每次连接重新解析），它没有才退回宿主进程环境变量（配合 dsh-env-manager 插件托管
+  密钥，避免明文写进 settings 文件）；解析不到时报错会同时点到"引用名"与"两处都没有"；
 - **端口**：默认 22，非 22 端口在 target 里显示为 `user@host:port`；
 - **标签与状态**：SSH 标签标题用连接名或 `user@host`（本地标签是
   「终端 N」）；连接中先回显灰字 `Connecting user@host …`，就绪后状态栏
@@ -300,7 +308,7 @@ tmux server（专用 socket `dsh-tty`，与用户自己的 tmux 完全隔离）�
 - **凭据引用选择器（0.4.0，0.17 起与 env 插件解耦）**：SSH 对话框的密码/口令字段旁有筛选框 +
   限高列表，候选 = **凭据存储里已有的引用名**（宿主读 `.credentials.yaml` 的 `refs:` 键，
   **只回名字、绝不含值**）∪ **本机连接簿里已经在用的引用名**；点击即填 `env:NAME`，也可手输
-  任意 `env:NAME`（连接时按凭据层校验存在性）。
+  任意 `env:NAME`（连接时按**凭据层**解析：provider 优先、`process.env` 兜底）。
   **为什么读文件 / 为什么不用 env 插件的托管清单**：引用的发现路径官方定的是"配置界面从**自己的
   settings schema** 得知有哪些引用"——引用半边**故意不可枚举**（`@deepseek-ai/dsh-credentials`
   的 `listRecords` 注释原话："the reference half, which has no enumeration because configuration
