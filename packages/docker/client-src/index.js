@@ -5495,7 +5495,7 @@ window.__ModuleLoader__.load({
         ] }, String(index) + item.name)),
         jsxs('div', { className: 'dk_row', children: [
           jsx('button', { type: 'button', className: 'dk_btn', onClick: addTarget, children: '添加目标' }),
-          jsx('span', { className: 'dk_hint', children: 'SSH 目标推荐直接选 tty 终端面板的连接簿条目（凭证只需维护一处）；手填时密码 / 口令建议写 env:VAR。' }),
+          jsx('span', { className: 'dk_hint', children: 'SSH 目标推荐直接选 tty 终端面板的连接簿条目（凭证只需维护一处）；手填时密码 / 口令建议写 env:NAME（凭据引用：由官方凭据存储解析，缺失时退回环境变量）。' }),
         ] }),
 
         sectionTitle('SSH 主机密钥记录（TOFU）'),
