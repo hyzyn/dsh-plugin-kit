@@ -3787,38 +3787,8 @@ window.__ModuleLoader__.load({
       }
     }
 
-    /**
-     * 【SPIKE】错误边界：把「某个 hook 抛错」隔离在它自己的子树里。
-     *
-     * 为什么必需：把 hook 调用包在 try/catch 里**不行**——被吞掉的异常会让 React 的 hook
-     * 顺序错位，下一次渲染就报 #310（Rendered more hooks than during the previous render）。
-     * v1 探针就是这么把自己的读数弄脏的。边界才是 React 认可的做法。
-     */
-    class ProbeBoundary extends React.Component {
-      constructor(props) {
-        super(props)
-        this.state = { message: '' }
-      }
-
-      static getDerivedStateFromError(error) {
-        return { message: error instanceof Error ? error.message : String(error) }
-      }
-
-      render() {
-        if (this.state.message !== '') return `抛错：${this.state.message}`
-        return this.props.children ?? null
-      }
-    }
-
-    /** 【SPIKE】单个钩子的探针：自己一个组件，抛错由外层边界兜住。 */
-    function HookProbe(props) {
-      const factory = props.factory
-      if (typeof factory !== 'function') return '不存在'
-      return describeValue(factory()) + ' ｜ ' + describeJson(factory())
-    }
-
-    /** 【SPIKE】每秒自走一格，只用来让「最近一次 X 秒前」动起来；它自己重渲染，
-     *  不会污染父组件的渲染计数（所以父组件的计数才是干净的活性证据）。 */
+    /** 【SPIKE】每秒自走一格，只用来让「距今 X 秒」动起来；它自己重渲染，
+     *  不污染父组件的渲染计数（所以父组件的计数才是干净的活性证据）。 */
     function TickProbe(props) {
       const [, setTick] = useState(0)
       useEffect(() => {
@@ -3829,6 +3799,15 @@ window.__ModuleLoader__.load({
       return String(Math.round((Date.now() - props.at) / 1000)) + ' 秒前'
     }
 
+    /**
+     * 【SPIKE v3】只问一件事：**会话事件窗口里到底有什么、它会不会变**。
+     *
+     * v2 已经查明 `binding.eventSource` 是个 ObservableSnapshot
+     * （键：listeners / window / snapshot；方法：subscribe(cb) / getSnapshot()），
+     * 也就是说它是「快照 + 变更通知」，不是逐条推流。但 v2 **没读快照内容**——那才是数据本体。
+     * 这一版把 `getSnapshot()` 摊开，并在每次 subscribe 回调里重读一次，看它有没有随
+     * Agent 输出变化。
+     */
     function SessionProbeBody(props) {
       const rendersRef = useRef(0)
       rendersRef.current += 1
@@ -3838,67 +3817,65 @@ window.__ModuleLoader__.load({
         info = props.useTabInfo()
       } catch { /* 契约变动不连累探针 */ }
       const sessionId = typeof props.sessionId === 'string' ? props.sessionId : ''
-      const propKeys = props === null || props === undefined ? [] : Object.keys(props)
 
-      // 每个 useXxx 的**形参个数**：0 = 普通 hook（直接调），>0 = 工厂（要喂参数）。
-      // v1 就是因为不知道这件事，直接 `useChat()` 才抛的。
-      const arity = (name) => (typeof props[name] === 'function' ? String(props[name].length) : '—')
-
-      // 根侧：binding / eventSource / session 的形状与方法签名
-      let bindingText = '未能读取'
-      let sourceText = '—'
-      let sessionText = '—'
-      try {
-        const binding = typeof sessionsSvc?.binding === 'function' ? sessionsSvc.binding(sessionId) : undefined
-        if (binding === undefined || binding === null) bindingText = 'binding 返回 ' + String(binding)
-        else {
-          bindingText = describeValue(binding)
-          const source = binding.eventSource
-          if (source === undefined || source === null) sourceText = '（无 eventSource）'
-          else {
-            const methods = ['subscribe', 'on', 'addEventListener', 'getSnapshot', 'close']
-              .map((name) => name + '=' + (typeof source[name] === 'function' ? String(source[name].length) + '参' : '无'))
-              .join(' ')
-            sourceText = describeValue(source) + ' ｜ ' + methods
+      /** 从快照里摘出「事件数组」：优先看常见的字段名，找不到就把键列出来。 */
+      const readWindow = (snapshot) => {
+        if (snapshot === null || snapshot === undefined) return { text: '快照是 ' + String(snapshot), count: null, last: '' }
+        if (Array.isArray(snapshot)) {
+          return {
+            text: '数组，长度 ' + String(snapshot.length),
+            count: snapshot.length,
+            last: snapshot.length === 0 ? '' : describeJson(snapshot[snapshot.length - 1]),
           }
-          const face = binding.session
-          sessionText = face === undefined || face === null ? '（无 session）' : describeValue(face)
         }
-      } catch (error) {
-        bindingText = '抛错：' + (error instanceof Error ? error.message : String(error))
+        if (typeof snapshot !== 'object') return { text: typeof snapshot + ' ' + String(snapshot).slice(0, 60), count: null, last: '' }
+        const keys = Object.keys(snapshot)
+        for (const name of ['events', 'entries', 'items', 'rows']) {
+          const value = snapshot[name]
+          if (Array.isArray(value)) {
+            return {
+              text: '快照键：' + keys.join(', ') + ' ｜ ' + name + '.length=' + String(value.length),
+              count: value.length,
+              last: value.length === 0 ? '' : describeJson(value[value.length - 1]),
+            }
+          }
+        }
+        return { text: '快照键：' + keys.join(', ') + '（没找到事件数组）', count: null, last: '' }
       }
 
-      // 真订阅：逐种形状试一遍，数事件 + 记最后一条的形状与时间
-      const [feed, setFeed] = useState({ mode: '未订阅', count: 0, last: '', at: 0, error: '' })
+      const [feed, setFeed] = useState({ mode: '未订阅', calls: 0, at: 0, window: null, session: null, error: '' })
       useEffect(() => {
         if (sessionId === '') return undefined
         let stop = null
         let stopped = false
-        const onEvent = (payload) => {
-          if (stopped) return
-          setFeed((current) => ({ ...current, count: current.count + 1, last: describeJson(payload), at: Date.now() }))
+        const readNow = () => {
+          const source = sessionsSvc?.binding?.(sessionId)?.eventSource
+          if (source === undefined || source === null) return { window: null, session: null }
+          let snapshot = null
+          try { snapshot = typeof source.getSnapshot === 'function' ? source.getSnapshot() : null } catch { snapshot = null }
+          let sessionSnap = null
+          try {
+            const face = sessionsSvc.binding(sessionId)?.session
+            if (face !== undefined && face !== null && typeof face.getSnapshot === 'function') sessionSnap = face.getSnapshot()
+          } catch { sessionSnap = null }
+          return { window: readWindow(snapshot), session: sessionSnap === null ? null : { text: describeValue(sessionSnap), last: describeJson(sessionSnap) } }
         }
         try {
           const source = sessionsSvc?.binding?.(sessionId)?.eventSource
-          if (source === undefined || source === null) {
-            setFeed({ mode: '（无 eventSource）', count: 0, last: '', at: 0, error: '' })
+          if (source === undefined || source === null || typeof source.subscribe !== 'function') {
+            setFeed((current) => ({ ...current, mode: '（拿不到 source.subscribe）' }))
             return undefined
           }
-          if (typeof source.subscribe === 'function') {
-            const un = source.subscribe(onEvent)
-            stop = typeof un === 'function' ? un : null
-            setFeed({ mode: 'subscribe(cb)', count: 0, last: '', at: 0, error: '' })
-          } else if (typeof source.on === 'function') {
-            source.on('event', onEvent)
-            setFeed({ mode: "on('event', cb)", count: 0, last: '', at: 0, error: '' })
-          } else if (typeof source.addEventListener === 'function') {
-            source.addEventListener('event', onEvent)
-            setFeed({ mode: "addEventListener('event', cb)", count: 0, last: '', at: 0, error: '' })
-          } else {
-            setFeed({ mode: '未发现可用的订阅方法', count: 0, last: '', at: 0, error: '' })
-          }
+          const initial = readNow()
+          setFeed({ mode: 'subscribe(cb)', calls: 0, at: 0, window: initial.window, session: initial.session, error: '' })
+          const un = source.subscribe(() => {
+            if (stopped) return
+            const next = readNow()
+            setFeed((current) => ({ mode: current.mode, calls: current.calls + 1, at: Date.now(), window: next.window, session: next.session, error: '' }))
+          })
+          stop = typeof un === 'function' ? un : null
         } catch (error) {
-          setFeed({ mode: '订阅抛错', count: 0, last: '', at: 0, error: error instanceof Error ? error.message : String(error) })
+          setFeed({ mode: '订阅抛错', calls: 0, at: 0, window: null, session: null, error: error instanceof Error ? error.message : String(error) })
         }
         return () => {
           stopped = true
@@ -3911,44 +3888,34 @@ window.__ModuleLoader__.load({
       const rows = [
         ['sessionId', sessionId === '' ? '（空）' : sessionId],
         ['tab.visible', info === null ? '—' : String(info.tab?.visible)],
-        ['本组件已渲染', String(rendersRef.current) + ' 次（**不含**定时器：它涨了才说明有东西在推）'],
-        ['———— 根侧：binding.eventSource（三种承载都能走） ————', ''],
-        ['binding 键', bindingText],
-        ['binding.session', sessionText],
-        ['eventSource 形状 / 方法', sourceText],
-        ['订阅方式', feed.mode + (feed.error === '' ? '' : '（' + feed.error + '）')],
-        ['收到会话事件', String(feed.count) + ' 条'],
-        ['最近一条', describeValue(feed.last) ],
-        ['最近一条内容', feed.last === '' ? '—' : feed.last],
-        ['———— 会话作用域侧（tab body 的注入钩子） ————', ''],
-        ['useChat 形参个数', arity('useChat')],
-        ['useConversation 形参个数', arity('useConversation')],
-        ['useTrajectory 形参个数', arity('useTrajectory')],
-        ['useProjection 形参个数', arity('useProjection')],
-        ['useSessions 形参个数', arity('useSessions')],
-        ['props 键', propKeys.join(', ')],
+        ['本组件已渲染', String(rendersRef.current) + ' 次（不含定时器）'],
+        ['———— 事件窗口快照（订阅那一刻读到的） ————', ''],
+        ['eventSource.getSnapshot()', feed.window === null ? '（未读到）' : feed.window.text],
+        ['窗口里的事件条数', feed.window === null || feed.window.count === null ? '—' : String(feed.window.count)],
+        ['最后一条事件', feed.window === null || feed.window.last === '' ? '—' : feed.window.last],
+        ['———— 订阅回调（它变过吗） ————', ''],
+        ['订阅方式 / 回调次数', feed.mode + ' ｜ 回调 ' + String(feed.calls) + ' 次' + (feed.error === '' ? '' : '（' + feed.error + '）')],
+        ['回调后的事件条数', feed.window === null || feed.window.count === null ? '—' : String(feed.window.count)],
+        ['回调后的最后一条', feed.window === null || feed.window.last === '' ? '—' : feed.window.last],
+        ['———— binding.session 的快照（若有） ————', ''],
+        ['session.getSnapshot()', feed.session === null ? '（没有这个方法）' : feed.session.text],
+        ['session 快照内容', feed.session === null ? '—' : feed.session.last],
+        ['———— 会话作用域钩子的形参个数（工厂，不是普通 hook） ————', ''],
+        ['useChat / useConversation', String(props.useChat?.length ?? '—') + ' / ' + String(props.useConversation?.length ?? '—')],
+        ['useTrajectory / useProjection', String(props.useTrajectory?.length ?? '—') + ' / ' + String(props.useProjection?.length ?? '—')],
       ]
 
       return jsxs('div', { className: 'dk_spike', children: [
-        jsx('div', { className: 'dk_spikeTitle', children: '会话订阅探针 v2（spike · 方案 B）' }),
-        jsx('div', { className: 'dk_spikeHint', children: '重点看「收到会话事件」：用日志右键「直接发送到当前会话」让 Agent 跑起来，它会随输出增长。' }),
+        jsx('div', { className: 'dk_spikeTitle', children: '会话事件窗口探针 v3（spike · 方案 B）' }),
+        jsx('div', { className: 'dk_spikeHint', children: '关键是「回调次数」与「回调后的条数」：用日志右键「直接发送到当前会话」让 Agent 跑起来，它们应当变化。' }),
         ...rows.map(([key, value]) => jsxs('div', { className: 'dk_spikeRow', children: [
           jsx('span', { className: 'dk_spikeKey', children: key }),
           jsx('span', { className: 'dk_spikeVal', children: value === '' ? '—' : String(value) }),
         ] }, key)),
         jsxs('div', { className: 'dk_spikeRow', children: [
-          jsx('span', { className: 'dk_spikeKey', children: '最近事件距今' }),
+          jsx('span', { className: 'dk_spikeKey', children: '最近一次回调距今' }),
           jsx('span', { className: 'dk_spikeVal', children: jsx(TickProbe, { at: feed.at }) }),
         ] }, 'age'),
-        // 每个钩子单独一个错误边界子树：一个抛错不影响其它读数（v1 的教训）
-        jsxs('div', { className: 'dk_spikeRow', children: [
-          jsx('span', { className: 'dk_spikeKey', children: 'useChat() 直接调' }),
-          jsx('span', { className: 'dk_spikeVal', children: jsx(ProbeBoundary, { children: jsx(HookProbe, { factory: props.useChat }) }) }),
-        ] }, 'chat'),
-        jsxs('div', { className: 'dk_spikeRow', children: [
-          jsx('span', { className: 'dk_spikeKey', children: 'useConversation()' }),
-          jsx('span', { className: 'dk_spikeVal', children: jsx(ProbeBoundary, { children: jsx(HookProbe, { factory: props.useConversation }) }) }),
-        ] }, 'conv'),
       ] })
     }
 
