@@ -11,7 +11,7 @@
 - **多目标聚合取数**：总览页对全部 `targets[]` 并行请求，单个目标不可达只污染自己那一格；agent 侧同一口径由 `docker_ps target:"*"` / `docker_attention target:"*"` 暴露，跨目标不互相阻塞。
 - **「需关注」读权威字段**：不健康 / 反复重启 / OOM 被杀 / 非零退出 / 僵死；OOM 与真实退出码由一次 `docker inspect` 补齐——`docker ps` 摘要里的 137 分不出 OOM 与手动 kill，只按摘要筛必然误报。
 - **四条 SSE 长流共用一套基建**：日志 FOLLOW、`docker stats`、`docker events`、`docker pull` 走同一个 `openSseStream`（心跳 / 活跃流登记 / 断开清理），差异只在收尾语义——日志与拉取自然结束，统计与事件由前端主动断。多选聚合日志按 `--timestamps` 前缀还原跨容器真实时序，「暂停」只冻结渲染（流继续接收，恢复时一次性补齐）。
-- **默认只读，能力开关分三级**：启停删 / exec / 镜像变更各自独立开关，未开启时 agent 工具**不注册**、HTTP 路由 403（能力不存在，而非调用后报错）；容器名与 ID 过白名单，命令一律 argv 构造 + 单引号转义，密码 / 口令以 `env:VAR` 引用且永不回传浏览器。
+- **默认只读，能力开关分三级**：启停删 / exec / 镜像变更各自独立开关，未开启时 agent 工具**不注册**、HTTP 路由 403（能力不存在，而非调用后报错）；容器名与 ID 过白名单，命令一律 argv 构造 + 单引号转义，密码 / 口令以 `env:NAME` **凭据引用**（官方凭据层解析，缺失时退回环境变量）且永不回传浏览器。
 - **与 dsh-tty 数据级复用、代码级不耦合**：不 import 任何 tty 代码，tty 也无需改一行源码，两者可各自安装与升级；装了 tty 则消费三个可选扩展点——连接栏动作（`ttyConnbar`）、终端承载（`ttyTerminal`：标签 / dock 承载下经 `open` 新开标签，模态下经 `mount` 就地嵌入抽屉）、以及只在兜底路径用到的终端右侧 dock（`ttyPanel.mountPane`）；未装或版本不足逐项静默降级。
 
 ## 与 dsh-tty 的关系
@@ -405,12 +405,20 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
 | `username` | `''` | 内联 SSH 用户名（无 `book` 时必填） |
 | `auth` | `agent` | `agent`（走 `SSH_AUTH_SOCK`）/ `key`（用 `keyPath`）/ `password`（用 `password`，同时挂 keyboard-interactive） |
 | `keyPath` | `''` | `auth=key` 的私钥路径（`~` 开头会展开为 home） |
-| `password` | `''` | `auth=password` 的密码；**建议填 `env:VAR`** 引用环境变量 |
-| `passphrase` | `''` | 私钥口令；**建议填 `env:VAR`** 引用环境变量 |
+| `password` | `''` | `auth=password` 的密码；**建议填 `env:NAME`** 凭据引用 |
+| `passphrase` | `''` | 私钥口令；**建议填 `env:NAME`** 凭据引用 |
 | `agentForward` | false | 是否转发本机 ssh-agent（`SSH_AUTH_SOCK` 存在时生效） |
 
-`password` / `passphrase` 里的 `env:VAR` 在连接时才解析（`process.env[VAR]`），
-变量缺失或为空会明确报 `环境变量未设置: VAR`。这两个值**永不回传浏览器**：
+`password` / `passphrase` 里的 `env:NAME` 是一个**凭据引用**（这正是官方模式：配置只持引用、
+值归 provider），**连接时才解析**，顺序是：
+
+1. **官方凭据层**（`ctx.credentials`，由 `@deepseek-ai/dsh-credentials` 提供）——它会叠
+   `file`（`$DSH_HOME/.credentials.yaml`）/ `env` / `project-env` / `user-env` 各层，且
+   「每次操作重新解析」，所以**改完下一个操作即生效、不必重启宿主**；
+2. 服务不可用（老宿主 / 未装该 bundle）或它没有这个引用时，退回 `process.env[NAME]`。
+
+两边都没有会明确报错并**点名两个来源**（服务报错也一并带上——否则"凭据服务坏了"会伪装成
+"你没配"，那是最难查的一类）。这两个值**永不回传浏览器**：
 配置快照里只给 `passwordSet` / `passphraseSet` 两个布尔位。
 
 ### `hostKeys[]`（SSH 主机指纹，TOFU）
@@ -546,8 +554,9 @@ abort）、客户端断开静默中止。各自只差执行器与结束原因：
 2. **破坏性操作要复述后果**。`remove` 映射为 `docker rm`（**不带 `-f`**），
    agent 公告要求执行前向用户确认目标容器；运行中容器会报错并附
    「容器仍在运行：先停止再删除」的提示，不会静默强删。
-3. **凭证不落明文（建议）**。`password` / `passphrase` 支持 `env:VAR` 引用，
-   配合 dsh-env-manager 托管密钥可避免明文写进 `settings.yaml`；`agent`
+3. **凭证不落明文（建议）**。`password` / `passphrase` 支持 `env:NAME` 凭据引用，
+   值存在**官方凭据存储**（`$DSH_HOME/.credentials.yaml`，由凭据层的 provider 托管）里，
+   避免明文写进 `settings.yaml`；不必依赖 env 插件当中间人。`agent`
    认证（`SSH_AUTH_SOCK`）则完全不落盘。配置快照只回「是否已设置」。
 4. **主机指纹 TOFU 钉扎**。首次连接记录 sha256 指纹，之后必须一致，变更即
    拒绝连接（防中间人）；tty 已确认过的主机会被当作种子直接信任并复制进
@@ -682,7 +691,7 @@ abort）、客户端断开静默中止。各自只差执行器与结束原因：
   │   │   （每 30s 扫一次，连接超时 20s，keepalive 10s；busy>0 的长流跳过回收）
   │   ├─ 非 PTY exec channel：一命令一 channel，收完 stdout/stderr 即关；
   │   │   长流（run()/stream()）不设总超时与输出上限，靠 AbortSignal 停止
-  │   ├─ shJoin 单引号转义（远端 shell 解析）；env:VAR 取密
+  │   ├─ shJoin 单引号转义（远端 shell 解析）；env:NAME 凭据解析（provider 优先 → 退回 env）
   │   └─ hostVerifier TOFU 钉扎（首次记录、变更拒绝）
   ├─ runLocal / runLocalStream：spawn(dockerBin, args)（不经 shell，本机目标）
   │   停止阶梯：SIGTERM → 2s 未退出 SIGKILL

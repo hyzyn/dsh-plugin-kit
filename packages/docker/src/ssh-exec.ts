@@ -96,14 +96,62 @@ export interface StreamResult {
  * 通用工具
  * ------------------------------------------------------------------ */
 
-/** `env:VAR` 前缀从 process.env 取值；否则原样返回。 */
-export function resolveSecret(value: string | undefined): string | undefined {
+/**
+ * 官方凭据服务的**最小结构面**（结构类型，不把这个包加成本插件依赖）。
+ *
+ * 契约见 `@deepseek-ai/dsh-credentials`：`resolve(ref)` **每次操作重新解析、不得跨操作缓存**，
+ * 返回 `{ value, source }` 或 undefined。这里只声明用到的那一个方法——既不必引依赖，也能在
+ * 服务缺失时静态看出"没有它"。
+ */
+export interface CredentialResolver {
+  resolve(ref: string): Promise<{ value: string } | undefined>
+}
+
+let credentialsProvider: CredentialResolver | null = null
+
+/** 由 index.ts 在可选注入里挂上（服务缺失即为 null，退回 process.env）。 */
+export function setCredentialResolver(resolver: CredentialResolver | null): void {
+  credentialsProvider = resolver
+}
+
+/**
+ * 解析密钥引用（`env:NAME`）——**纯核心**，provider 由调用方给，便于离线断言。
+ *
+ * 顺序：官方凭据 provider 优先（它自己会叠 `file` / `env` / `project-env` / `user-env` 各层，
+ * 而且"每次操作重新解析"——改完下一个操作即生效，不必重启宿主）；服务不在、或它没有这个引用
+ * 时，再退回 `process.env`。
+ *
+ * provider 抛错**不吞**：记下来，若环境变量也没有就把两个来源一起写进错误里。否则"凭据服务
+ * 坏了"会伪装成"你没配"，而那是最难查的一类。
+ */
+export async function resolveSecretVia(
+  provider: CredentialResolver | null,
+  value: string | undefined,
+): Promise<string | undefined> {
   if (value === undefined) return undefined
   if (!value.startsWith('env:')) return value
   const name = value.slice(4)
-  const resolved = process.env[name]
-  if (resolved === undefined || resolved === '') throw new Error(`环境变量未设置: ${name}`)
-  return resolved
+  let providerError: string | null = null
+  if (provider !== null && provider !== undefined && typeof provider.resolve === 'function') {
+    try {
+      const resolved = await provider.resolve(name)
+      if (resolved !== null && resolved !== undefined && typeof resolved.value === 'string' && resolved.value !== '') {
+        return resolved.value
+      }
+    } catch (error) {
+      providerError = error instanceof Error ? error.message : String(error)
+    }
+  }
+  const fromEnv = process.env[name]
+  if (fromEnv !== undefined && fromEnv !== '') return fromEnv
+  const detail = providerError === null ? '' : `（凭据服务报错：${providerError}）`
+  const missing = provider === null ? '凭据服务不可用，' : ''
+  throw new Error(`凭据未设置：${name}${detail} —— ${missing}环境变量里也没有`)
+}
+
+/** 生产路径：用当前注入的 provider。 */
+export async function resolveSecret(value: string | undefined): Promise<string | undefined> {
+  return resolveSecretVia(credentialsProvider, value)
 }
 
 export function expandHome(path: string): string {
@@ -457,7 +505,7 @@ export class RemoteExec {
     }
   }
 
-  private acquire(spec: SshSpec): Promise<Client> {
+  private async acquire(spec: SshSpec): Promise<Client> {
     this.ensureSweeper()
     const key = poolKey(spec)
     const existing = this.conns.get(key)
@@ -465,7 +513,7 @@ export class RemoteExec {
       existing.lastUsed = Date.now()
       return existing.ready
     }
-    const connectConfig = buildConnectConfig(spec)
+    const connectConfig = await buildConnectConfig(spec)
     const target = sshTarget(spec)
     const policy = applyHostKeyPolicy({ connectConfig, spec, store: this.store, logger: this.logger, target })
     const client = new Client()
@@ -515,7 +563,7 @@ export class RemoteExec {
 }
 
 /** 构造连接配置（认证三态 + keepalive + hostHash）；与 tty 的 ssh.ts 同策略。 */
-export function buildConnectConfig(spec: SshSpec): ConnectConfig {
+export async function buildConnectConfig(spec: SshSpec): Promise<ConnectConfig> {
   const auth = spec.auth ?? 'agent'
   const base: ConnectConfig = {
     host: spec.host,
@@ -534,11 +582,11 @@ export function buildConnectConfig(spec: SshSpec): ConnectConfig {
       throw new Error('auth=key 需要 keyPath（私钥路径）')
     }
     base.privateKey = readFileSync(expandHome(spec.keyPath.trim()))
-    const passphrase = resolveSecret(spec.passphrase)
+    const passphrase = await resolveSecret(spec.passphrase)
     if (passphrase !== undefined) base.passphrase = passphrase
   } else {
-    const password = resolveSecret(spec.password)
-    if (password === undefined) throw new Error('auth=password 需要 password（或 env:VAR 引用）')
+    const password = await resolveSecret(spec.password)
+    if (password === undefined) throw new Error('auth=password 需要 password（或 env:NAME 凭据引用）')
     base.password = password
     // 部分服务端（路由器 / 堡垒机）只开 keyboard-interactive
     base.tryKeyboard = true
