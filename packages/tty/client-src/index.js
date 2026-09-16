@@ -26,7 +26,7 @@
  *   - WebGL 渲染器（@xterm/addon-webgl，上下文丢失自动回退 DOM 渲染器）
  * v0.6 能力：
  *   - SSH 对话框：agent forwarding 勾选；密码/口令字段「从 env 插件变量填入」
- *     筛选选择器（宿主 /api/dsh-tty/env-vars，仅 env 插件托管变量名）
+ *     凭据引用选择器（候选来自连接簿里在用的引用名，与 env 插件解耦）
  *   - 「+」菜单连接簿条目带 ✎ 编辑：对话框编辑模式（预填全字段，可改名，
  *     「保存修改」按原名替换条目），连接照常可用
  *   - 设置卡片：从 ~/.ssh/config 导入连接簿（同名跳过）；从 known_hosts 导入
@@ -2158,8 +2158,8 @@ function openSshDialog(entry) {
   const passwordRow = fieldRow('password', '密码', { type: 'password' })
 
   /**
-   * env:VAR 选择器：筛选框 + 限高滚动列表（数据源为 env 插件托管的变量名，
-   * 宿主 /api/dsh-tty/env-vars 只回名字）。点击项填入 env:NAME——目标为空或
+   * 凭据引用选择器：筛选框 + 限高滚动列表（数据源为**连接簿里在用的引用名**，
+   * 见 loadCredentialNames——与 env 插件解耦）。点击项填入 env:NAME——目标为空或
    * 已是 env: 引用时直接替换；有手输内容时首击只进确认态（4s 复位），再击
    * 才覆盖（密码框是掩码显示，不该被一次误点静默清空）；列表空时给
    * 「去 env 插件托管」的提示。
@@ -2170,7 +2170,7 @@ function openSshDialog(entry) {
     const filter = document.createElement('input')
     filter.type = 'text'
     filter.className = 'tt_cardInput'
-    filter.placeholder = '筛选 env 托管变量后点击填入'
+    filter.placeholder = '选择连接簿里在用的凭据引用'
     filter.autocomplete = 'off'
     filter.spellcheck = false
     const list = document.createElement('div')
@@ -2183,7 +2183,7 @@ function openSshDialog(entry) {
       if (names.length === 0) {
         const hint = document.createElement('span')
         hint.className = 'tt_cardHint'
-        hint.textContent = 'env 插件还没有托管变量 — 在其设置卡片添加后这里可选，也可手输 env:NAME'
+        hint.textContent = '还没有别的连接用过凭据引用 — 勾下面的「保存时存入凭据存储」新建一个，或直接手输 env:NAME'
         list.appendChild(hint)
         return
       }
@@ -2394,22 +2394,32 @@ function openSshDialog(entry) {
   const passphraseEnv = envSelectRow(fields.passphrase)
   const passwordEnv = envSelectRow(fields.password)
   const passwordCred = credentialRow(fields.password, 'PASSWORD')
-  let envNamesLoaded = false
-  const loadEnvNames = async () => {
-    if (envNamesLoaded) return
-    envNamesLoaded = true
-    try {
-      const res = await fetch('/api/dsh-tty/env-vars', { cache: 'no-store' })
-      const data = await res.json()
-      if (data.ok && Array.isArray(data.names)) {
-        passphraseEnv.setNames(data.names)
-        passwordEnv.setNames(data.names)
+  /*
+   * 候选引用名的**唯一来源**：本机连接簿里已经在用的 `env:` 引用。
+   *
+   * 为什么不再去问 env 插件（原来打宿主 /api/dsh-tty/env-vars）：引用的发现路径，官方定的是
+   * 「配置界面从**自己的 settings schema** 得知有哪些引用」——引用半边**故意不可枚举**
+   * （`@deepseek-ai/dsh-credentials` 的类型注释原话）。而我们的 settings 就是这本连接簿，
+   * 所以"列出别的连接在用的名字"才是官方口径；顺带也把这条链路彻底与 env 插件解耦——值放
+   * `~/.dsh/.credentials.yaml` 时同样能在这里被复用。
+   *
+   * 只取名字、不取值：候选列表里永远不会出现密码本身。
+   */
+  const loadCredentialNames = () => {
+    const seen = new Set()
+    for (const entry of sshHostsCache) {
+      for (const value of [entry?.password, entry?.passphrase]) {
+        if (typeof value === 'string' && value.startsWith('env:')) {
+          const name = value.slice(4).trim()
+          if (name !== '') seen.add(name)
+        }
       }
-    } catch {
-      /* 网络失败：列表保持空态提示 */
     }
+    const names = [...seen].sort()
+    passphraseEnv.setNames(names)
+    passwordEnv.setNames(names)
   }
-  void loadEnvNames()
+  loadCredentialNames()
 
   card.appendChild(keyRow)
   card.appendChild(passphraseRow)

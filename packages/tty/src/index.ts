@@ -50,7 +50,7 @@
  * OSC 133/7 钩子（zsh ZDOTDIR 桩 / bash --rcfile 桩），输出流解析出命令
  * 边界（tty_capture{last} / tty_expect 早停）与实时 cwd（tty_list）。
  * 辅助路由：/api/dsh-tty/ssh-config（~/.ssh/config 导入候选）、
- * /api/dsh-tty/env-vars（SSH 对话框 env:VAR 下拉，仅变量名）、
+ * /api/dsh-tty/env-vars（env 插件托管变量名；SSH 对话框已改从连接簿取候选，此路由保留兼容）、
  * /api/dsh-tty/shells（设置卡片「Shell 路径」候选，仅路径）、
  * /api/dsh-tty/sftp/*（SFTP 文件传输 0.7.0：list/mkdir/rename/remove/
  * download/upload；0.8.0 起 mkdir 支持 parents 逐级补齐，spec 解析与
