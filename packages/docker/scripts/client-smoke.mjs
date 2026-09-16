@@ -521,134 +521,6 @@ await test('粘性：订阅接线（打开 → 切会话重开 → 同会话不�
   assert.equal(state.openTabs.length, 2, '同一会话重复通报不该再开')
 })
 
-await test('抽屉核心：事件窗口 → 条目（增量归并 / 持久事件 / 只取最后一轮）', () => {
-  const feed = feedApi()
-  // 事件形状全部按 SDK 类型造：transient 的 assistant/live-chunk（StreamChunk）、durable 的各类
-  const chunk = (type, extra) => ({ type: 'transient', event: { type: 'assistant/live-chunk', seq: 1, time: 0, data: { attemptId: 'a1', turn: 1, step: 1, chunk: { type, index: 0, ...extra } } } })
-  const durable = (type, data) => ({ type: 'event', event: { type, seq: 1, time: 0, data } })
-
-  // 1) 同一槽位的推理增量归并成一条 —— 否则 token 级 delta 会铺出几千行 DOM
-  let items = feed.projectFeed([chunk('reasoning-delta', { text: '先看' }), chunk('reasoning-delta', { text: '日志' })])
-  assert.equal(items.length, 1, '同一槽位的增量应归并')
-  assert.equal(items[0].kind, 'reasoning')
-  assert.equal(items[0].text, '先看日志')
-
-  // 2) 正文单独成条；工具调用的 name / 参数跨 delta 累积
-  items = feed.projectFeed([
-    chunk('text-delta', { text: '结论：' }),
-    chunk('tool-call-delta', { id: 'c1', name: 'docker_logs', argumentsDelta: '{"id"' }),
-    chunk('tool-call-delta', { id: 'c1', argumentsDelta: ':1}' }),
-  ])
-  assert.equal(items.length, 2)
-  assert.equal(items[0].kind, 'text')
-  assert.equal(items[1].kind, 'tool')
-  assert.equal(items[1].name, 'docker_logs')
-  assert.equal(items[1].args, '{"id":1}', '参数应跨 delta 拼起来')
-
-  // 3) 持久事件：tool/call、tool/result（失败标记）、turn/end 的 reason
-  items = feed.projectFeed([
-    durable('tool/call', { name: 'docker_logs', arguments: '{}' }),
-    durable('tool/result', { message: { content: [{ type: 'text', text: '日志正文' }] }, error: { name: 'x', code: 'y' } }),
-    durable('turn/end', { reason: { kind: 'completed' } }),
-  ])
-  assert.deepEqual(items.map((item) => item.kind), ['tool', 'result', 'end'])
-  assert.equal(items[1].text, '日志正文', 'content 块数组应被抽成正文')
-  assert.equal(items[1].failed, true)
-  assert.equal(items[2].reason, 'completed')
-
-  // 4) 只看最后一轮：抽屉回答的是「我刚丢给它那条日志怎么样了」
-  items = feed.projectFeed([
-    durable('user/message', { content: '上一轮' }),
-    durable('turn/end', { reason: { kind: 'completed' } }),
-    durable('turn/start', { turn: 2 }),
-    durable('user/message', { content: '这一轮' }),
-  ])
-  assert.deepEqual(items.map((item) => item.kind), ['user'])
-  assert.equal(items[0].text, '这一轮')
-
-  // 5) 无关事件与畸形输入不炸（窗口里 step/start、usage、system/message 都会出现）
-  assert.deepEqual(feed.projectFeed([durable('step/start', {}), durable('usage', {})]), [])
-  assert.deepEqual(feed.projectFeed(null), [])
-  assert.deepEqual(feed.projectFeed([null, {}, { type: 'event' }]), [])
-
-  // 6) 上限：只保留最后 N 条
-  const many = []
-  for (let i = 0; i < 50; i += 1) many.push(durable('turn/end', { reason: { kind: 'k' + String(i) } }))
-  assert.equal(feed.projectFeed(many, 10).length, 10)
-
-  // 7) 正文抽取的显式回退：取不到结构就退回 JSON 片段，而不是假装抽出了正文
-  assert.equal(feed.textOf('直接给字符串'), '直接给字符串')
-  assert.match(feed.textOf({ 没有常见字段: 1 }), /没有常见字段/)
-})
-
-await test('样式命名空间：Agent 抽屉不得复用终端抽屉的 dk_drawer*', () => {
-  /*
-   * 实测踩过：Agent 栏最初复用了 `.dk_drawer`（那是**终端抽屉**的类名），于是
-   *   - 我的 30px 标题栏被套进终端抽屉的 `height: min(46%, 380px)`，栏下面凭空多出
-   *     380px 空盒（用户截图里那片空白）；
-   *   - 反过来我的规则也改了终端抽屉的配色。
-   * 两边都读源码断言，避免再犯：这类错误编译不报、渲染不抛，只有对着界面看才发现。
-   */
-  const css = readFileSync(join(root, 'client-src', 'docker.css'), 'utf8')
-  const cssFrom = css.indexOf('Agent 抽屉（方案 ④）')
-  const cssTo = css.indexOf('【SPIKE', cssFrom)
-  assert.ok(cssFrom > 0 && cssTo > cssFrom, '找不到 Agent 抽屉的样式段落')
-  const section = css.slice(cssFrom, cssTo)
-  assert.ok(!/\.dk_drawer/.test(section), 'Agent 抽屉的样式里出现了 dk_drawer*（终端抽屉的命名空间）')
-  assert.ok(section.includes('.dk_agentHead'), 'Agent 抽屉应定义自己的命名空间')
-
-  const src = readFileSync(join(root, 'client-src', 'index.js'), 'utf8')
-  const jsxFrom = src.indexOf('function AgentDrawerItem(')
-  const jsxTo = src.indexOf('function ContainerPanel(', jsxFrom)
-  assert.ok(jsxFrom > 0 && jsxTo > jsxFrom, '找不到 Agent 抽屉的组件段落')
-  const jsxSection = src.slice(jsxFrom, jsxTo)
-  assert.ok(!jsxSection.includes('dk_drawer'), 'Agent 抽屉的 JSX 里出现了 dk_drawer*')
-  assert.ok(jsxSection.includes('dk_agentHead'), 'Agent 抽屉应使用 dk_agent* 命名空间')
-})
-
-await test('抽屉数据：快照增量套用（append / replace / prepend / 上限）', () => {
-  const feed = feedApi()
-  const e = (n) => ({ type: 'event', event: { type: 'turn/end', seq: n, time: 0, data: { reason: { kind: 'k' + String(n) } } } })
-
-  // append：正常推流，追加到尾部
-  let entries = feed.applyFeedSnapshot([e(1)], { entries: [e(1), e(2)], change: { kind: 'append', entries: [e(2)] } })
-  assert.equal(entries.length, 2, 'append 应只追加增量那几条')
-
-  // replace：整段替换（换会话 / 重建窗口）
-  entries = feed.applyFeedSnapshot([e(1), e(2)], { entries: [e(3)], change: { kind: 'replace', entries: [e(3)] } })
-  assert.equal(entries.length, 1)
-  assert.equal(entries[0].event.seq, 3)
-
-  // prepend：加载更早历史 —— 与抽屉无关，尾部原样保留（否则"最后一轮"会被推走）
-  entries = feed.applyFeedSnapshot([e(5)], { entries: [e(1), e(5)], change: { kind: 'prepend', entries: [e(1)] } })
-  assert.equal(entries.length, 1)
-  assert.equal(entries[0].event.seq, 5)
-
-  // 本地还是空的：整段取 entries（首次读）
-  entries = feed.applyFeedSnapshot([], { entries: [e(1), e(2)] })
-  assert.equal(entries.length, 2)
-
-  // 没有任何可用字段：保持原样，不炸
-  assert.deepEqual(feed.applyFeedSnapshot([e(1)], null).length, 1)
-  assert.deepEqual(feed.applyFeedSnapshot(null, undefined), [])
-
-  // 上限：只留尾部
-  const many = []
-  for (let i = 0; i < feed.MAX + 20; i += 1) many.push(e(i))
-  assert.equal(feed.applyFeedSnapshot(many, null).length, feed.MAX, '超上限应只保留尾部')
-})
-
-await test('抽屉状态：从条目推（收尾 / 进行中 / 空）', () => {
-  const feed = feedApi()
-  assert.equal(feed.feedStatusOf([]), 'idle')
-  assert.equal(feed.feedStatusOf([{ kind: 'text', text: 'x' }]), 'running')
-  assert.equal(feed.feedStatusOf([{ kind: 'end', reason: 'completed' }]), 'done')
-  assert.equal(feed.feedStatusOf([{ kind: 'end', reason: 'interrupted' }]), 'stopped')
-  assert.equal(feed.feedStatusOf(null), 'idle')
-  assert.equal(feed.feedStatusText('running'), '正在分析…')
-  assert.equal(feed.feedStatusText('unavailable'), '拿不到会话事件源')
-})
-
 await test('渲染期守卫：面板组件体直接跑一遍不能抛（TDZ 那类错误曾让面板整个空白）', () => {
   const exports_ = registration.factory((spec) => SEED[spec])
   assert.ok(exports_.__render !== undefined, '缺少 __render 测试缝')
@@ -656,9 +528,6 @@ await test('渲染期守卫：面板组件体直接跑一遍不能抛（TDZ 那�
     ['DockerTabBody', {}],
     ['ContainerPanel', { carrier: 'tab', onClose: () => {}, initialTarget: '' }],
     ['ContainerPanel', { onClose: () => {}, initialTarget: '' }], // 模态 / docked 形态（carrier 缺省）
-    ['SessionProbeBody', {}], // 探针（spike，验完随它一起删）
-    ['AgentDrawer', {}], // 抽屉：根侧承载（拿不到 props.sessionId，走全局读）
-    ['AgentDrawer', { sessionId: 'session-smoke', conversationHidden: true }],
   ]
   for (const [name, props] of cases) {
     const component = exports_.__render[name]
@@ -667,11 +536,6 @@ await test('渲染期守卫：面板组件体直接跑一遍不能抛（TDZ 那�
     assert.doesNotThrow(() => { element = component(props) }, name + ' 渲染期抛错')
     assert.ok(element !== null && element !== undefined, name + ' 返回了空')
   }
-})
-
-await test('【SPIKE】会话订阅探针装配进 bundle（验完应连同这条一起删）', () => {
-  assert.ok(code.includes('session-probe'), '缺少会话订阅探针 kind')
-  assert.ok(code.includes('sidebar.right.pane.tab'), '缺少右侧栏标签 body 槽名')
 })
 
 await test('投递回执：成功也在视口级发声（以前只有失败才提示）', async () => {
@@ -1143,12 +1007,6 @@ function pickApi() {
   const exports_ = registration.factory((spec) => SEED[spec])
   assert.ok(exports_.__pick !== undefined, '缺少 __pick 测试缝')
   return exports_.__pick
-}
-
-function feedApi() {
-  const exports_ = registration.factory((spec) => SEED[spec])
-  assert.ok(exports_.__feed !== undefined, '缺少 __feed 测试缝')
-  return exports_.__feed
 }
 
 function carrierApi() {

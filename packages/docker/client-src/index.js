@@ -1645,6 +1645,27 @@ window.__ModuleLoader__.load({
      * 内容写进输入框等用户确认——这两个档位对应菜单里的两项，不能合并：前者是
      * 「让 Agent 现在就看」，后者是「我要自己补两句再发」。
      */
+    /**
+     * 投递成功后「把舞台让给会话」：终端面板开着就把它**最小化**（弹窗藏起来，但 DOM /
+     * WebSocket / xterm 缓冲全保留、会话继续跑；恢复靠侧边栏「终端」入口的徽标）。
+     *
+     * 为什么需要：docked / 模态承载下面板自己盖着会话——发送成功在视觉上等于「什么都没
+     * 发生」。tty 的 `ttyPanel` 契约 **v2** 才提供 `minimize()`；老版本没有，于是退化成
+     * `conversationHiddenHint` 里那句「会话在面板后面…」的指引。
+     *
+     * @returns 追加到提示文案的后缀。
+     */
+    function revealSessionSuffix() {
+      try {
+        const api = panelApi
+        if (api === null || Number(api.version ?? 0) < 2 || typeof api.minimize !== 'function') return conversationHiddenHint
+        if (typeof api.isOpen === 'function' && api.isOpen() !== true) return conversationHiddenHint
+        return api.minimize() === true ? ' · 已折起终端，你在会话里' : conversationHiddenHint
+      } catch {
+        return conversationHiddenHint
+      }
+    }
+
     async function deliverToSession(prompt, mode) {
       const target = askTarget()
       if (target.ok !== true) return { ok: false, message: target.reason }
@@ -1658,14 +1679,12 @@ window.__ModuleLoader__.load({
           }
           input.setDraft(prompt)
           notifySession(target, '日志片段已填入输入框，确认后再发送')
-          flashAskNotice('已填入当前会话的输入框' + conversationHiddenHint, 'ok')
-          notifyFeedAttention()
+          flashAskNotice('已填入当前会话的输入框' + revealSessionSuffix(), 'ok')
           return { ok: true, message: '已填入输入框' }
         }
         await target.conversation.send(prompt)
         notifySession(target, '日志片段已发送到会话')
-        flashAskNotice('已发送日志片段到当前会话' + conversationHiddenHint, 'ok')
-        notifyFeedAttention()
+        flashAskNotice('已发送日志片段到当前会话' + revealSessionSuffix(), 'ok')
         return { ok: true, message: '已发送' }
       } catch (error) {
         return { ok: false, message: error instanceof Error ? error.message : String(error) }
@@ -1795,20 +1814,6 @@ window.__ModuleLoader__.load({
             disabled,
             reason,
             onPick: () => { void deliverToSession(build(), 'draft').then(reportDelivery) },
-          },
-          // 【SPIKE · 验完删除】入口：打开会话订阅探针（方案 B 的读数面板）
-          {
-            label: '会话订阅探针（spike）',
-            hint: '方案 B 读数',
-            disabled: sessionProbeSvc === null,
-            reason: '宿主未提供右侧栏服务（sidebarRight）',
-            onPick: () => {
-              try {
-                sessionProbeSvc?.openTab?.(SESSION_PROBE_KIND)
-              } catch (error) {
-                flashAskNotice('打开探针失败：' + (error instanceof Error ? error.message : String(error)))
-              }
-            },
           },
         ],
         note: '日志内容会进入模型上下文，请留意其中的凭证。',
@@ -3739,542 +3744,6 @@ window.__ModuleLoader__.load({
       return React.useContext(PanelActiveContext)
     }
 
-    /* ================================================================== *
-     * 【SPIKE · 验证完请整块删除】会话实时输出的订阅探针（方案 B）
-     *
-     * 要回答的问题：**从插件侧怎么订阅「当前会话的流式输出」**，以及它在三种承载下
-     * 是不是都拿得到。
-     *
-     * 静态读类型的结论（已经看过的）：
-     *   - `SessionFace` 上只有行为动词（prompt / cancel / rename…），**没有**读快照的字段；
-     *   - 会话的生命周期状态是经 `useSession` / `useChat` / `useConversation` 这类
-     *     **槽注入钩子**读的 —— 也就是说「读会话」天生是**会话作用域**的事；
-     *   - 右侧栏 tab body 恰好是会话作用域的，注入里就有 `useChat` / `useConversation` /
-     *     `useTrajectory` / `useProjection`。
-     *
-     * 但类型只描述声明、不描述落地形状（上次 `hooks.tabInfo` 就是这么被坑的），所以两侧都实测：
-     *   ① 会话作用域侧（tab body）：那几个钩子返回什么？**是不是增量**（渲染次数会随 Agent
-     *      输出持续增长）？
-     *   ② 根侧（docked / 模态面板只能走这条）：`sessions.binding(id)` 上有什么？
-     *      `session.projections.faceOf(key)` 能不能读到东西？
-     *
-     * 触发方式：用容器面板的日志右键「直接发送到当前会话」让 Agent 跑起来，然后回来看这里
-     * 的「已渲染 N 次 / 最近一次更新」是否在动。
-     * ================================================================== */
-
-    const SESSION_PROBE_ID = '@hyzyn/dsh-docker#session-probe'
-    const SESSION_PROBE_KIND = 'session-probe'
-    let sessionProbeSvc = null
-
-    /** 把一个值描述成一行（探针用：不看全量，只看形状）。 */
-    function describeValue(value) {
-      if (value === null || value === undefined) return String(value)
-      if (Array.isArray(value)) return '数组（长度 ' + String(value.length) + '）'
-      const type = typeof value
-      if (type !== 'object') return type + ' ' + String(value).slice(0, 40)
-      const keys = Object.keys(value)
-      if (keys.length === 0) return '对象（无键）'
-      const shown = keys.slice(0, 8).join(', ')
-      return '对象，键：' + shown + (keys.length > 8 ? ' … 共 ' + String(keys.length) : '')
-    }
-
-    /** 取值的 JSON 片段（探针用：形状之外再看一眼内容，超长截断）。 */
-    function describeJson(value) {
-      try {
-        const text = JSON.stringify(value)
-        if (text === undefined) return '（无法序列化）'
-        return text.length > 220 ? text.slice(0, 220) + '…' : text
-      } catch {
-        return '（序列化失败：可能有循环引用）'
-      }
-    }
-
-    /** 【SPIKE】每秒自走一格，只用来让「距今 X 秒」动起来；它自己重渲染，
-     *  不污染父组件的渲染计数（所以父组件的计数才是干净的活性证据）。 */
-    function TickProbe(props) {
-      const [, setTick] = useState(0)
-      useEffect(() => {
-        const timer = setInterval(() => setTick((value) => value + 1), 1000)
-        return () => clearInterval(timer)
-      }, [])
-      if (props.at === 0) return '（还没收到过）'
-      return String(Math.round((Date.now() - props.at) / 1000)) + ' 秒前'
-    }
-
-    /**
-     * 【SPIKE v3】只问一件事：**会话事件窗口里到底有什么、它会不会变**。
-     *
-     * v2 已经查明 `binding.eventSource` 是个 ObservableSnapshot
-     * （键：listeners / window / snapshot；方法：subscribe(cb) / getSnapshot()），
-     * 也就是说它是「快照 + 变更通知」，不是逐条推流。但 v2 **没读快照内容**——那才是数据本体。
-     * 这一版把 `getSnapshot()` 摊开，并在每次 subscribe 回调里重读一次，看它有没有随
-     * Agent 输出变化。
-     */
-    function SessionProbeBody(props) {
-      const rendersRef = useRef(0)
-      rendersRef.current += 1
-
-      let info = null
-      try {
-        info = props.useTabInfo()
-      } catch { /* 契约变动不连累探针 */ }
-      const sessionId = typeof props.sessionId === 'string' ? props.sessionId : ''
-
-      /** 从快照里摘出「事件数组」：优先看常见的字段名，找不到就把键列出来。 */
-      const readWindow = (snapshot) => {
-        if (snapshot === null || snapshot === undefined) return { text: '快照是 ' + String(snapshot), count: null, last: '' }
-        if (Array.isArray(snapshot)) {
-          return {
-            text: '数组，长度 ' + String(snapshot.length),
-            count: snapshot.length,
-            last: snapshot.length === 0 ? '' : describeJson(snapshot[snapshot.length - 1]),
-          }
-        }
-        if (typeof snapshot !== 'object') return { text: typeof snapshot + ' ' + String(snapshot).slice(0, 60), count: null, last: '' }
-        const keys = Object.keys(snapshot)
-        for (const name of ['events', 'entries', 'items', 'rows']) {
-          const value = snapshot[name]
-          if (Array.isArray(value)) {
-            return {
-              text: '快照键：' + keys.join(', ') + ' ｜ ' + name + '.length=' + String(value.length),
-              count: value.length,
-              last: value.length === 0 ? '' : describeJson(value[value.length - 1]),
-            }
-          }
-        }
-        return { text: '快照键：' + keys.join(', ') + '（没找到事件数组）', count: null, last: '' }
-      }
-
-      const [feed, setFeed] = useState({ mode: '未订阅', calls: 0, at: 0, window: null, session: null, error: '' })
-      useEffect(() => {
-        if (sessionId === '') return undefined
-        let stop = null
-        let stopped = false
-        const readNow = () => {
-          const source = sessionsSvc?.binding?.(sessionId)?.eventSource
-          if (source === undefined || source === null) return { window: null, session: null }
-          let snapshot = null
-          try { snapshot = typeof source.getSnapshot === 'function' ? source.getSnapshot() : null } catch { snapshot = null }
-          let sessionSnap = null
-          try {
-            const face = sessionsSvc.binding(sessionId)?.session
-            if (face !== undefined && face !== null && typeof face.getSnapshot === 'function') sessionSnap = face.getSnapshot()
-          } catch { sessionSnap = null }
-          return { window: readWindow(snapshot), session: sessionSnap === null ? null : { text: describeValue(sessionSnap), last: describeJson(sessionSnap) } }
-        }
-        try {
-          const source = sessionsSvc?.binding?.(sessionId)?.eventSource
-          if (source === undefined || source === null || typeof source.subscribe !== 'function') {
-            setFeed((current) => ({ ...current, mode: '（拿不到 source.subscribe）' }))
-            return undefined
-          }
-          const initial = readNow()
-          setFeed({ mode: 'subscribe(cb)', calls: 0, at: 0, window: initial.window, session: initial.session, error: '' })
-          const un = source.subscribe(() => {
-            if (stopped) return
-            const next = readNow()
-            setFeed((current) => ({ mode: current.mode, calls: current.calls + 1, at: Date.now(), window: next.window, session: next.session, error: '' }))
-          })
-          stop = typeof un === 'function' ? un : null
-        } catch (error) {
-          setFeed({ mode: '订阅抛错', calls: 0, at: 0, window: null, session: null, error: error instanceof Error ? error.message : String(error) })
-        }
-        return () => {
-          stopped = true
-          if (typeof stop === 'function') {
-            try { stop() } catch { /* 已释放 */ }
-          }
-        }
-      }, [sessionId])
-
-      const rows = [
-        ['sessionId', sessionId === '' ? '（空）' : sessionId],
-        ['tab.visible', info === null ? '—' : String(info.tab?.visible)],
-        ['本组件已渲染', String(rendersRef.current) + ' 次（不含定时器）'],
-        ['———— 事件窗口快照（订阅那一刻读到的） ————', ''],
-        ['eventSource.getSnapshot()', feed.window === null ? '（未读到）' : feed.window.text],
-        ['窗口里的事件条数', feed.window === null || feed.window.count === null ? '—' : String(feed.window.count)],
-        ['最后一条事件', feed.window === null || feed.window.last === '' ? '—' : feed.window.last],
-        ['———— 订阅回调（它变过吗） ————', ''],
-        ['订阅方式 / 回调次数', feed.mode + ' ｜ 回调 ' + String(feed.calls) + ' 次' + (feed.error === '' ? '' : '（' + feed.error + '）')],
-        ['回调后的事件条数', feed.window === null || feed.window.count === null ? '—' : String(feed.window.count)],
-        ['回调后的最后一条', feed.window === null || feed.window.last === '' ? '—' : feed.window.last],
-        ['———— binding.session 的快照（若有） ————', ''],
-        ['session.getSnapshot()', feed.session === null ? '（没有这个方法）' : feed.session.text],
-        ['session 快照内容', feed.session === null ? '—' : feed.session.last],
-        ['———— 会话作用域钩子的形参个数（工厂，不是普通 hook） ————', ''],
-        ['useChat / useConversation', String(props.useChat?.length ?? '—') + ' / ' + String(props.useConversation?.length ?? '—')],
-        ['useTrajectory / useProjection', String(props.useTrajectory?.length ?? '—') + ' / ' + String(props.useProjection?.length ?? '—')],
-      ]
-
-      return jsxs('div', { className: 'dk_spike', children: [
-        jsx('div', { className: 'dk_spikeTitle', children: '会话事件窗口探针 v3（spike · 方案 B）' }),
-        jsx('div', { className: 'dk_spikeHint', children: '关键是「回调次数」与「回调后的条数」：用日志右键「直接发送到当前会话」让 Agent 跑起来，它们应当变化。' }),
-        ...rows.map(([key, value]) => jsxs('div', { className: 'dk_spikeRow', children: [
-          jsx('span', { className: 'dk_spikeKey', children: key }),
-          jsx('span', { className: 'dk_spikeVal', children: value === '' ? '—' : String(value) }),
-        ] }, key)),
-        jsxs('div', { className: 'dk_spikeRow', children: [
-          jsx('span', { className: 'dk_spikeKey', children: '最近一次回调距今' }),
-          jsx('span', { className: 'dk_spikeVal', children: jsx(TickProbe, { at: feed.at }) }),
-        ] }, 'age'),
-      ] })
-    }
-
-    /* ================================================================== *
-     * Agent 抽屉（方案 ④）的纯核心：会话事件窗口 → 抽屉要渲染的条目
-     *
-     * 数据源由 spike 实测确认（读数见对话记录，图见 .preview/docker-agent-drawer.png）：
-     *   sessions.binding(sessionId).eventSource 是一个 ObservableSnapshot
-     *     快照 = { entries, hasMore, revision, change }
-     *       entries: { type:'event', event:SessionEvent }            ← 持久事件
-     *              | { type:'transient', event:AssistantLiveChunkEvent } ← 实时增量
-     *       change : { kind:'append'|'prepend'|'replace', entries:[…] } ← 精确增量，可 O(增量) 更新
-     *   状态：binding.session.getSnapshot().running
-     *
-     * 走根侧而不是 tab body 的 useChat / useConversation，是因为后两者是**工厂**
-     * （形参 2 个，要 (standard, context)），而 eventSource 根侧就拿得到——于是抽屉在
-     * **三种承载下都成立**（tab / docked / 模态）。这是这轮 spike 的主要收获。
-     *
-     * 事件形状（全部读自 SDK 类型，没有猜）：
-     *   transient  assistant/live-chunk → data.chunk: StreamChunk
-     *     · text-delta       { index, text }                  → 正文增量
-     *     · reasoning-delta  { index, text }                  → 推理增量
-     *     · tool-call-delta  { index, id, name?, argumentsDelta } → 工具调用（名字/参数流式到达）
-     *     · block-start / block-end / usage                   → 抽屉不需要
-     *   durable    turn/end      { turn, reason }             → 收尾状态
-     *              tool/call     { turn, step, callId, name, arguments }
-     *              tool/result   { turn, step, message, error? }
-     *              user/message / assistant/message            → 正文（形状按内容块抽取，见 textOf）
-     * ================================================================== */
-
-    /** 截断：抽屉是「看一眼」的地方，单条不设上限会把面板撑爆。 */
-    function clipText(text, limit) {
-      return text.length <= limit ? text : text.slice(0, limit) + ' …（截断）'
-    }
-
-    /**
-     * 从消息对象里抽正文。
-     *
-     * 增量的形状是确切的（`chunk.text`）；**持久消息的 `message` 结构没逐个读类型**，所以
-     * 这里按「content 块数组 → 拼 text」递归取，取不到就退回 JSON 片段——宁可显示原始
-     * 片段，也不假装抽出了正文（抽错会让人误读，比显式截断更糟）。
-     */
-    function textOf(value, limit = 600) {
-      if (typeof value === 'string') return clipText(value, limit)
-      if (Array.isArray(value)) {
-        const parts = value.map((part) => textOf(part, limit)).filter((part) => part !== '')
-        return clipText(parts.join('\n'), limit)
-      }
-      if (value === null || value === undefined || typeof value !== 'object') return ''
-      if (typeof value.text === 'string') return clipText(value.text, limit)
-      if (value.content !== undefined) return textOf(value.content, limit)
-      if (value.message !== undefined) return textOf(value.message, limit)
-      return clipText(describeJson(value), limit)
-    }
-
-    /**
-     * 事件窗口 → 抽屉条目。**纯函数**：同一个窗口每次算出同一个结果，便于回归。
-     *
-     * 只取**最后一轮**（最后一个 `turn/start` 之后）——抽屉要回答的是「我刚丢给它的那条
-     * 日志，它现在怎么样了」，不是整个会话历史。
-     *
-     * 增量按 (attemptId, step, index, 种类) 归并成一条：token 级的 delta 直接铺成几千行
-     * DOM 既慢又没法读。持久事件与增量可能同时存在（一行正文既有 delta 也有落定后的
-     * message），这里不做事后对账——按到达顺序呈现，落定那条会作为独立条目出现。
-     */
-    function projectFeed(entries, limit = 40) {
-      const list = Array.isArray(entries) ? entries : []
-      let start = 0
-      for (let i = list.length - 1; i >= 0; i -= 1) {
-        if (list[i]?.event?.type === 'turn/start') {
-          start = i
-          break
-        }
-      }
-      const items = []
-      const buffers = new Map()
-      const pushDelta = (key, kind, text) => {
-        const current = buffers.get(key)
-        if (current === undefined) {
-          const item = { kind, text }
-          buffers.set(key, item)
-          items.push(item)
-          return
-        }
-        current.text += text
-      }
-      for (let i = start; i < list.length; i += 1) {
-        const entry = list[i]
-        const event = entry?.event
-        if (event === null || event === undefined) continue
-        if (entry.type === 'transient') {
-          if (event.type !== 'assistant/live-chunk') continue
-          const data = event.data ?? {}
-          const chunk = data.chunk ?? {}
-          const slot = String(data.attemptId ?? '') + ':' + String(data.step ?? '') + ':' + String(chunk.index ?? '')
-          if (chunk.type === 'text-delta' && typeof chunk.text === 'string') pushDelta('t|' + slot, 'text', chunk.text)
-          else if (chunk.type === 'reasoning-delta' && typeof chunk.text === 'string') pushDelta('r|' + slot, 'reasoning', chunk.text)
-          else if (chunk.type === 'tool-call-delta') {
-            const key = 'c|' + String(chunk.id ?? slot)
-            const current = buffers.get(key)
-            if (current === undefined) {
-              const item = { kind: 'tool', name: typeof chunk.name === 'string' && chunk.name !== '' ? chunk.name : '（工具）', args: typeof chunk.argumentsDelta === 'string' ? chunk.argumentsDelta : '' }
-              buffers.set(key, item)
-              items.push(item)
-            } else {
-              if (typeof chunk.name === 'string' && chunk.name !== '') current.name = chunk.name
-              if (typeof chunk.argumentsDelta === 'string') current.args += chunk.argumentsDelta
-            }
-          }
-          continue
-        }
-        const data = event.data ?? {}
-        if (event.type === 'user/message') items.push({ kind: 'user', text: textOf(data) })
-        else if (event.type === 'assistant/message') items.push({ kind: 'text', text: textOf(data.message ?? data) })
-        else if (event.type === 'tool/call') items.push({ kind: 'tool', name: typeof data.name === 'string' ? data.name : '（工具）', args: typeof data.arguments === 'string' ? data.arguments : '' })
-        else if (event.type === 'tool/result') items.push({ kind: 'result', text: textOf(data.message ?? data), failed: data.error !== undefined })
-        else if (event.type === 'turn/end') items.push({ kind: 'end', reason: typeof data.reason?.kind === 'string' ? data.reason.kind : '结束' })
-      }
-      return items.length <= limit ? items : items.slice(items.length - limit)
-    }
-
-    /** 事件窗口的本地缓冲上限：抽屉只关心尾部，留太多没意义。 */
-    const FEED_ENTRIES_MAX = 600
-
-    /**
-     * 把一次快照套用到本地缓冲上（**纯函数**，便于回归）。
-     *
-     * 优先用快照里的 `change`（spike 确认它是精确增量）：
-     *   append  → 追加（正常推流）
-     *   replace → 整段替换
-     *   prepend → 加载了更早的历史：与抽屉无关，尾部原样保留
-     * 拿不到 change、或本地还是空的，就整段取 `entries`。
-     * 超上限时只留尾部——抽屉永远只关心"最近发生了什么"。
-     */
-    function applyFeedSnapshot(entries, snapshot) {
-      const current = Array.isArray(entries) ? entries : []
-      const change = snapshot?.change
-      const all = Array.isArray(snapshot?.entries) ? snapshot.entries : null
-      const changed = change !== undefined && change !== null && Array.isArray(change.entries)
-      let next
-      if (changed && current.length > 0) {
-        if (change.kind === 'append') next = current.concat(change.entries)
-        else if (change.kind === 'prepend') next = current
-        else next = change.entries.slice()
-      } else if (all !== null) {
-        next = all.slice()
-      } else if (changed) {
-        next = change.kind === 'append' ? current.concat(change.entries) : change.entries.slice()
-      } else {
-        next = current
-      }
-      return next.length > FEED_ENTRIES_MAX ? next.slice(next.length - FEED_ENTRIES_MAX) : next
-    }
-
-    /**
-     * 抽屉的「请展开」广播。
-     *
-     * 投递发生在 React 之外（右键菜单 → deliverToSession），没法直接 setState，所以用一个
-     * 极小的广播：桥接层投递成功后叫一声，抽屉订阅它自动展开。
-     */
-    const feedAttention = { revision: 0, listeners: new Set() }
-
-    function notifyFeedAttention() {
-      feedAttention.revision += 1
-      for (const listener of Array.from(feedAttention.listeners)) {
-        try {
-          listener(feedAttention.revision)
-        } catch { /* 单个订阅者出错不该影响别的 */ }
-      }
-    }
-
-    /** 当前会话 id（全局服务）。面板挂在根侧时（模态 / docked）拿不到 props.sessionId。 */
-    function readCurrentSessionId() {
-      try {
-        const current = sessionsSvc?.list?.getSnapshot?.()?.current
-        return typeof current === 'string' ? current : ''
-      } catch {
-        return ''
-      }
-    }
-
-    function useCurrentSessionId(preferred) {
-      const [id, setId] = useState(() => (typeof preferred === 'string' && preferred !== '' ? preferred : readCurrentSessionId()))
-      useEffect(() => {
-        if (typeof preferred === 'string' && preferred !== '') {
-          setId(preferred)
-          return undefined
-        }
-        const list = sessionsSvc?.list
-        if (list === undefined || typeof list.subscribe !== 'function') return undefined
-        const read = () => setId(readCurrentSessionId())
-        read()
-        return list.subscribe(read)
-      }, [preferred])
-      return id
-    }
-
-    /** 状态文案（纯函数）。 */
-    function feedStatusText(status) {
-      if (status === 'running') return '正在分析…'
-      if (status === 'done') return '已完成'
-      if (status === 'stopped') return '已中断'
-      if (status === 'unavailable') return '拿不到会话事件源'
-      return '等待中'
-    }
-
-    /** 从条目推状态（纯函数）：最后一条是收尾就是结束，否则进行中。 */
-    function feedStatusOf(items) {
-      const list = Array.isArray(items) ? items : []
-      const last = list.length === 0 ? null : list[list.length - 1]
-      if (last === null) return 'idle'
-      if (last.kind !== 'end') return 'running'
-      return last.reason === 'completed' ? 'done' : 'stopped'
-    }
-
-    /**
-     * 订阅一个会话的实时事件窗口 —— 抽屉的数据源。
-     *
-     * 门控与 S3 的流一致：面板不可见（标签折叠）时不订阅，展开后重订阅时先读一次快照，
-     * 内容自然补齐。`active` 因此也在 deps 里。
-     */
-    function useSessionFeed(sessionId, active) {
-      const [state, setState] = useState({ items: [], status: 'idle' })
-      useEffect(() => {
-        if (active !== true || sessionId === '') {
-          setState({ items: [], status: 'idle' })
-          return undefined
-        }
-        let source = null
-        try {
-          source = sessionsSvc?.binding?.(sessionId)?.eventSource ?? null
-        } catch {
-          source = null
-        }
-        if (source === null || typeof source.subscribe !== 'function') {
-          setState({ items: [], status: 'unavailable' })
-          return undefined
-        }
-        let entries = []
-        const apply = () => {
-          let snapshot = null
-          try {
-            snapshot = source.getSnapshot()
-          } catch {
-            snapshot = null
-          }
-          entries = applyFeedSnapshot(entries, snapshot)
-          const items = projectFeed(entries)
-          setState({ items, status: feedStatusOf(items) })
-        }
-        apply()
-        let stop = null
-        try {
-          const un = source.subscribe(apply)
-          stop = typeof un === 'function' ? un : null
-        } catch { /* 订阅失败：至少留下首次读到的内容 */ }
-        return () => {
-          if (typeof stop === 'function') {
-            try { stop() } catch { /* 已释放 */ }
-          }
-        }
-      }, [sessionId, active])
-      return state
-    }
-
-    const FEED_KIND_LABEL = { user: '我', reasoning: '推理', text: '正文', tool: '调用', result: '结果', end: '收尾' }
-
-    /** 抽屉里的单条。 */
-    function AgentDrawerItem(props) {
-      const item = props.item
-      const label = FEED_KIND_LABEL[item.kind] ?? item.kind
-      if (item.kind === 'end') {
-        return jsxs('div', { className: 'dk_agentItem', 'data-kind': 'end', children: [
-          jsx('span', { className: 'dk_agentTag', children: label }),
-          jsx('span', { className: 'dk_agentText', children: '完成（' + String(item.reason) + '）' }),
-        ] })
-      }
-      if (item.kind === 'tool') {
-        return jsxs('div', { className: 'dk_agentItem', 'data-kind': 'tool', children: [
-          jsx('span', { className: 'dk_agentTag', children: label }),
-          jsx('span', { className: 'dk_agentTool', children: item.name + (item.args === '' ? '' : ' ' + item.args) }),
-        ] })
-      }
-      return jsxs('div', { className: 'dk_agentItem', 'data-kind': item.kind, children: [
-        jsx('span', { className: 'dk_agentTag', children: label + (item.failed === true ? '（失败）' : '') }),
-        jsx('span', { className: 'dk_agentText', children: item.text === '' ? '（空）' : item.text }),
-      ] })
-    }
-
-    /**
-     * Agent 抽屉（方案 ④）：面板底部的实时回复区。
-     *
-     * 存在的理由：会话回执落在会话输入框上，而 docked / 模态承载下面板正盖着会话（docked
-     * 还被终端模态盖着）——投递成功也看不到任何进展。抽屉让"发出去的日志换回了什么"直接
-     * 出现在面板里，不必离开当前上下文。
-     *
-     * 默认**收起**，只在收到投递广播时自动展开；收起态只有一条 30px 的标题栏。
-     */
-    function AgentDrawer(props) {
-      const active = usePanelActive()
-      const sessionId = useCurrentSessionId(props.sessionId)
-      const feed = useSessionFeed(sessionId, active)
-      const [open, setOpen] = useState(false)
-      const bodyRef = useRef(null)
-
-      useEffect(() => {
-        const listener = () => setOpen(true)
-        feedAttention.listeners.add(listener)
-        return () => { feedAttention.listeners.delete(listener) }
-      }, [])
-
-      // 新条目落进来时贴底：抽屉是「看进展」的地方，停在中间没有意义
-      useEffect(() => {
-        const el = bodyRef.current
-        if (el !== null && el !== undefined && typeof el.scrollTop === 'number') el.scrollTop = el.scrollHeight
-      }, [feed.items.length, open])
-
-      const body = feed.items.length === 0
-        ? (feed.status === 'unavailable'
-          ? '拿不到会话事件源（binding.eventSource）——抽屉暂时只能显示这条状态。'
-          : '还没有内容。用日志右键「直接发送到当前会话」，这里会跟着滚。')
-        : feed.items.map((item, index) => jsx(AgentDrawerItem, { item }, 'item-' + String(index)))
-
-      return jsxs('div', {
-        className: 'dk_agent',
-        'data-status': feed.status,
-        'data-open': open ? '1' : undefined,
-        children: [
-        jsxs('div', { className: 'dk_agentHead', children: [
-          jsx('span', { className: 'dk_agentDot', 'data-status': feed.status }),
-          jsx('span', { className: 'dk_agentTitle', children: 'Agent' }),
-          jsx('span', { className: 'dk_agentSub', children: feedStatusText(feed.status) }),
-          jsx('span', { className: 'dk_agentGrow' }),
-          /*
-           * 「去哪儿看」放进 tooltip，**不占栏内文字**：dock 承载下面板只有五六百像素宽，
-           * 一句完整说明会把状态行挤没。投递那一刻的 toast 已经说过一遍，这里备查即可。
-           * （没做「跳到会话」按钮：tty 面板的公开契约只有 version / isOpen / mountPane，
-           * 关不掉也最小化不了，给个按不动的按钮不如把话说清。）
-           */
-          props.conversationHidden === true
-            ? jsx('span', {
-              className: 'dk_agentHint',
-              title: '会话在面板后面：关掉或最小化面板/终端即可看到',
-              children: '会话在别处',
-            })
-            : null,
-          jsx('button', {
-            type: 'button',
-            className: 'dk_btn dk_btnSm',
-            onClick: () => setOpen((value) => !value),
-            children: open ? '收起' : '展开',
-          }),
-        ] }),
-        jsx('div', { className: 'dk_agentBody', ref: bodyRef, hidden: open !== true, children: body }),
-      ] })
-    }
-
     function ContainerPanel(props) {
       const [config, setConfig] = useState(null)
       const [targets, setTargets] = useState([])
@@ -5725,12 +5194,6 @@ window.__ModuleLoader__.load({
               props.onClose()
             },
           }, 'closeConfirm') : null,
-        /*
-         * Agent 抽屉（方案 ④）：面板底部的实时回复区。
-         * 数据源是会话事件窗口（spike 实测：根侧的 binding.eventSource 就够），所以**三种
-         * 承载下都在**；不发日志时它只是一条细标题栏（收起态），不吃地方。
-         */
-        jsx(AgentDrawer, { sessionId: props.sessionId, conversationHidden: !tabbed }, 'agentDrawer'),
       ]
 
       const panel = jsxs('div', {
@@ -5812,7 +5275,6 @@ window.__ModuleLoader__.load({
           key: pin === '' ? 'docker-tab' : pin,
           carrier: 'tab',
           tabFullscreen,
-          sessionId: typeof props.sessionId === 'string' ? props.sessionId : undefined,
           onClose: closeTab,
           initialTarget: pin === '' ? undefined : pin,
           sessionHint: params?.sessionHint,
@@ -6347,19 +5809,9 @@ window.__ModuleLoader__.load({
      * 被卸载，docked 面板只剩 tty 画的外壳，看着就是「面板空白」。
      * 把组件体挂出来，用例直接调一次就能守住这一类。
      */
-    exports.__feed = {
-      projectFeed,
-      textOf,
-      applyFeedSnapshot,
-      feedStatusOf,
-      feedStatusText,
-      MAX: FEED_ENTRIES_MAX,
-    }
     exports.__render = {
       ContainerPanel,
       DockerTabBody,
-      SessionProbeBody,
-      AgentDrawer,
     }
     exports.__pick = {
       MAX: PICK_MAX,
@@ -6533,30 +5985,6 @@ window.__ModuleLoader__.load({
           key: DOCKER_TAB_ID,
         }, DockerTabBody))
         dockerTabApi = tabCtx.sidebarRight ?? null
-
-        // 【SPIKE · 验完删除】会话订阅探针：独立 try，探针失败不能连累真标签
-        let disposeProbeType = () => {}
-        let disposeProbeBody = () => {}
-        try {
-          disposeProbeType = tabCtx.sidebarRightTabs.register({
-            id: SESSION_PROBE_ID,
-            kind: SESSION_PROBE_KIND,
-            priority: 'extension',
-            title: () => '会话探针',
-            guide: [{
-              order: 95,
-              title: () => '会话探针（spike）',
-              description: () => '验证会话流式订阅：useChat / useConversation / projections',
-            }],
-          })
-          disposeProbeBody = tabCtx.slots.inject('sidebar.right.pane.tab', () => tabCtx.slots.register({
-            name: 'sidebar.right.pane.tab',
-            key: SESSION_PROBE_ID,
-          }, SessionProbeBody))
-          sessionProbeSvc = tabCtx.sidebarRight ?? null
-        } catch (error) {
-          console.warn('[dsh-docker][spike] 会话探针注册失败：' + (error instanceof Error ? error.message : String(error)))
-        }
 
         return () => {
           dockerTabApi = null
