@@ -786,6 +786,51 @@ await test('GET /images/pull/stream：非法 ref 400（不建流）/ 缺 ref 400
   assert.equal(wrongMethod.status, 405)
 })
 
+await test('agent 工具：每个工具的 render 都能跑，且输出里不出现 undefined', async () => {
+  /*
+   * 这一条是补课。以前所有用例只调 execute()、从不调 render()，于是渲染器与工具返回值
+   * 的形状失配一路溜到线上：docker_ps 直接 `row.ports.map is not a function` 崩掉、
+   * docker_networks / docker_images 打出 `id=undefined`——因为渲染器按**领域类型**写
+   * （ports 是数组、字段叫 shortId、可空字段是 null），而工具按 **schema 扁平形状**返回
+   * （ports 已是字符串、字段叫 id、可省字段是 undefined），中间只有一个不受检查的
+   * `as` 断言挡着，tsc 也看不见。
+   *
+   * 所以这里逐个渲染，并断言文本里不出现 `undefined`——它是这类形状失配最直接的探针。
+   */
+  const cases = [
+    ['docker_targets', {}],
+    ['docker_ps', { target: '本机' }],
+    ['docker_ps', { target: '*' }],
+    ['docker_attention', { target: '本机' }],
+    ['docker_inspect', { target: '本机', id: 'shop-web-1' }],
+    ['docker_logs', { target: '本机', id: 'shop-web-1', tail: 5 }],
+    ['docker_stats', { target: '本机' }],
+    ['docker_images', { target: '本机' }],
+    ['docker_image_inspect', { target: '本机', ref: 'nginx:1.27' }],
+    ['docker_events', { target: '本机' }],
+    ['docker_networks', { target: '本机' }],
+    ['docker_volumes', { target: '本机' }],
+    // 开关门禁的那几个：本用例跑在 allowMutations / allowExec 打开之后，所以它们此刻也注册着。
+    // 它们正是排障时最常用的（exec / 重启），渲染器同样要有覆盖。
+    ['docker_action', { target: '本机', action: 'restart', id: 'shop-web-1' }],
+    ['docker_exec', { target: '本机', id: 'shop-web-1', command: 'ls -la' }],
+    ['docker_image_pull', { target: '本机', ref: 'alpine:3.19' }],
+    ['docker_image_remove', { target: '本机', ref: 'alpine:3.19' }],
+    ['docker_image_prune', { target: '本机' }],
+  ]
+  for (const [name, args] of cases) {
+    const tool = state.tools.find((item) => item.name === name)
+    assert.ok(tool !== undefined, name + ' 未注册')
+    assert.equal(typeof tool.output.render, 'function', name + ' 缺少 render')
+    const value = await tool.execute(args)
+    const out = tool.output.render(args, value)
+    assert.ok(Array.isArray(out) && out.length > 0, name + ' 的 render 应返回非空数组')
+    const text = out.map((part) => part.text ?? '').join('\n')
+    assert.ok(text.trim() !== '', name + ' 渲染出空文本')
+    assert.ok(!text.includes('undefined'), name + ' 的渲染里出现 undefined：\n' + text.slice(0, 400))
+  }
+})
+
 await test('agent 工具：docker_ps 经假 CLI 返回容器', async () => {
   const tool = state.tools.find((item) => item.name === 'docker_ps')
   assert.ok(tool !== undefined)
