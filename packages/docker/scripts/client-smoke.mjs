@@ -521,6 +521,45 @@ await test('粘性：订阅接线（打开 → 切会话重开 → 同会话不�
   assert.equal(state.openTabs.length, 2, '同一会话重复通报不该再开')
 })
 
+await test('日志过滤对齐：级别门槛的「续行继承」对行对象与纯文本行是同一套', () => {
+  const pick = aggLogsApi()
+  const rows = [
+    { text: '16:11:34,150 |INFO boot' },
+    { text: '  at foo(Bar.java:1)' },
+    { text: '16:11:35,200 |ERROR boom' },
+    { text: '  at baz(Qux.java:2)' },
+    { text: 'plain continuation' },
+  ]
+  const warnPlus = pick.filterByLevel(rows, 3)
+  assert.deepEqual(
+    warnPlus.map((row) => row.text),
+    ['16:11:35,200 |ERROR boom', '  at baz(Qux.java:2)', 'plain continuation'],
+    'WARN+ 必须保留 ERROR 头行**及其续行**——否则堆栈被拦腰截断，筛选形同虚设',
+  )
+  const lines = rows.map((row) => row.text)
+  assert.deepEqual(pick.filterLinesByLevel(lines, 3), warnPlus.map((row) => row.text), '两种形状必须给出同一结果（共用内核）')
+  assert.equal(pick.filterByLevel(rows, 0), rows, '门槛 0 原样返回，不做无谓拷贝')
+  assert.equal(pick.filterLinesByLevel(lines, 0), lines)
+  assert.deepEqual(pick.filterLinesByLevel(['  at orphan(X.java:9)'], 4), ['  at orphan(X.java:9)'], '窗口开头就是续行 → 无从判断，保留')
+})
+
+await test('日志导出对齐：两种格式共用构建器，只有标题与作用域不同', () => {
+  const pick = aggLogsApi()
+  const rows = [{ service: 'web', ts: 1755000000000, text: 'ERROR boom' }]
+  const plain = pick.buildLogExport(rows, { format: 'log', target: '目标1' })
+  assert.ok(!plain.includes('# '), '.log 只是正文')
+  assert.match(plain, /\[web\] .*ERROR boom/)
+  const one = pick.buildLogExport(rows, { format: 'md', scope: '容器日志', target: '目标1', targetLabel: '目标1', items: [{ name: 'web' }] })
+  const many = pick.buildLogExport(rows, { format: 'md', target: '目标1', items: [{ name: 'web' }, { name: 'db' }] })
+  assert.match(one, /^# 容器日志/)
+  assert.match(many, /^# 聚合日志/)
+  for (const md of [one, many]) {
+    assert.match(md, /- 行数：1/)
+    assert.match(md, /```text/)
+  }
+  assert.match(many, /容器（2）：web、db/)
+})
+
 await test('渲染期守卫：面板组件体直接跑一遍不能抛（TDZ 那类错误曾让面板整个空白）', () => {
   const exports_ = registration.factory((spec) => SEED[spec])
   assert.ok(exports_.__render !== undefined, '缺少 __render 测试缝')
@@ -1008,6 +1047,12 @@ function pickApi() {
   const exports_ = registration.factory((spec) => SEED[spec])
   assert.ok(exports_.__pick !== undefined, '缺少 __pick 测试缝')
   return exports_.__pick
+}
+
+function aggLogsApi() {
+  const exports_ = registration.factory((spec) => SEED[spec])
+  assert.ok(exports_.__aggLogs !== undefined, '缺少 __aggLogs 测试缝')
+  return exports_.__aggLogs
 }
 
 function carrierApi() {
