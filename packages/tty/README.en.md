@@ -138,8 +138,10 @@ lacks that service the box is switched back off and disabled, with a note that o
   collision can only happen for **the same host, the same user, the same port**, which is the same password by
   definition (sharing it is correct behaviour). **The connection name never takes part in the key**, so renaming a
   connection or rewriting its label never changes the key. An empty host or username is refused (they are the key's
-  entire source; drop either and the derivation degenerates into a constant). The trade-off is readability — for a
-  memorable name, **edit the pre-filled name in the field before storing**.
+  entire source; drop either and the derivation degenerates into a constant). The trade-off is readability: this
+  dialog's "store" **names it by the rule above and offers no custom name** ✗ — to reuse a custom name, type
+  `env:name` into the field directly (the name must already resolve in the credential layer, e.g. managed by the
+  official settings or env card).
 - **Derivation happens only at store time**: afterwards the `env:NAME` in the configuration is the single source of
   truth and nothing re-derives it — so renaming a connection does **not** invalidate a stored value and no longer
   leaves an orphan (only the old hash-based rule did: with the name in the key, storing again after a rename left the
