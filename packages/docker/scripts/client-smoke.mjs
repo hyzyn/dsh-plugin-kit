@@ -102,6 +102,19 @@ const ReactStub = {
    */
   createContext: (initial) => ({ __context: true, initial }),
   useContext: (context) => (context === null || context === undefined ? undefined : context.initial),
+  /*
+   * 类组件基类（探针的错误边界用）：桩里缺这一项时 `class X extends React.Component`
+   * **直接死在工厂体**（extends undefined），整套用例一起挂——和当初漏 createContext 同因。
+   * 只提供构造与 props/state 的最小语义，不做真实挂载。
+   */
+  Component: class {
+    constructor(props) {
+      this.props = props
+      this.state = {}
+    }
+
+    setState() {}
+  },
 }
 const jsx = (type, props, key) => ({ type, props: { ...(props ?? {}), key } })
 const jsxs = (type, props, key) => ({ type, props: { ...(props ?? {}), key } })
@@ -515,6 +528,7 @@ await test('渲染期守卫：面板组件体直接跑一遍不能抛（TDZ 那�
     ['DockerTabBody', {}],
     ['ContainerPanel', { carrier: 'tab', onClose: () => {}, initialTarget: '' }],
     ['ContainerPanel', { onClose: () => {}, initialTarget: '' }], // 模态 / docked 形态（carrier 缺省）
+    ['SessionProbeBody', {}], // 探针（spike，验完随它一起删）
   ]
   for (const [name, props] of cases) {
     const component = exports_.__render[name]
