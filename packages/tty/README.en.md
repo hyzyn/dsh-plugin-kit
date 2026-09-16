@@ -127,24 +127,30 @@ lacks that service the box is switched back off and disabled, with a note that o
   "credential set referenced by title" and iTerm2's "pick a named entry from the password manager". The
   implementation goes through DSH's official `ctx.remote.credentials` (`describe` / `set` / `unset`, where
   **values cross in one direction only — no read path exists**), exactly as the official settings cards do.
-- **Name** (the rule is fixed — do not optimise the hash away): `DSH_TTY_<ASCII part of the name>_<8-char hash>_PASSWORD`,
-  where identity = `host:port` + `|` + the entry name. The hash is **always** present because the reference grammar
-  accepts ASCII identifiers only, so `HS 248` / `lab-a` / `HS_248` sanitize to exactly the same string — omitting the
-  hash lets them share one reference and silently overwrite each other (the first version shipped that bug). Including
-  `host:port` in the identity separates same-named entries on different machines. An empty name is refused. The derived
-  name is **shown in the field**, so rename it to something memorable if you like.
+- **Name** (the rule is fixed): `DSH_TTY_<username>_<host>[_<port>]_<field>`, where the port is omitted for the
+  default 22 and `field` is `PASSWORD` / `PASSPHRASE`; e.g. `hsadmin@192.0.2.10:22` →
+  `DSH_TTY_HSADMIN_192_168_80_248_PASSWORD`. It is **derived from the resource identity and carries no hash** — the
+  same school as git-credential-store's `protocol://username@host` and docker credential helpers'
+  `ServerURL` + `Username`: host and username **are ASCII identifiers already**, so nothing needs sanitizing and
+  nothing needs a hash to disambiguate. The old hash-based version was patching over "sanitize a human label into a
+  key": the reference grammar accepts ASCII only, so `HS 248` / `lab-a` / `HS_248` collapse to exactly the same
+  string and only a hash could stop them silently overwriting each other. A resource identity has no such trap — a
+  collision can only happen for **the same host, the same user, the same port**, which is the same password by
+  definition (sharing it is correct behaviour). **The connection name never takes part in the key**, so renaming a
+  connection or rewriting its label never changes the key. An empty host or username is refused (they are the key's
+  entire source; drop either and the derivation degenerates into a constant). The trade-off is readability — for a
+  memorable name, **edit the pre-filled name in the field before storing**.
 - **Derivation happens only at store time**: afterwards the `env:NAME` in the configuration is the single source of
-  truth and nothing re-derives it — so renaming a connection does **not** invalidate a stored value; it only leaves an
-  orphan reference (clear it with "clear stored credential", which acts on the reference in the field). The hash's
-  implementation details (UTF-16 code units, FNV-1a) are part of the rule: change them only after deciding what happens
-  to references already stored.
+  truth and nothing re-derives it — so renaming a connection does **not** invalidate a stored value and no longer
+  leaves an orphan (only the old hash-based rule did: with the name in the key, storing again after a rename left the
+  previous name behind; clear it with "clear stored credential", which acts on the reference in the field).
 - **Shared**: references live in one flat namespace, so any consumer resolving the same way can use it — put
   the same name in a dsh-docker target's `password` and one secret serves both.
 - **Visibility**: the dialog's reference picker lists **the names the store already holds** — the host-side
   `/api/dsh-tty/credential-refs` reads back only the `refs:` keys (names only; values never leave the host).
   Why read it ourselves: the reference half is **not enumerable** over the protocol (rationale in the picker
   section), yet “which names have I stored” is exactly the question this picker answers. It also makes
-  **orphan references** (old names left behind by a rename or a naming-rule change) visible, selectable and
+  **orphan references** (old names left behind by a naming-rule change) visible, selectable and
   clearable again.
 - **Resolution path (what makes a stored value actually usable when connecting)**: connecting, the probe, SFTP
   and port tunnels all funnel through one `buildConnectConfig`, whose `env:NAME` is resolved by the **official

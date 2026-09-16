@@ -98,48 +98,48 @@ function wsUrl() {
 }
 
 /**
- * FNV-1a（32 位）转 8 位十六进制。
+ * 把一段文本压成引用文法允许的 ASCII 标识符片段（非法字符折成 `_`，首尾修剪）。
  *
- * 用途只有一个：让派生出的引用名**在同一台机器上唯一**，不承担任何安全用途。
- * 实现细节（UTF-16 码元、`Math.imul`）是**规范的一部分**——派生规则必须逐字可复现，
- * 否则同一个连接在别人的重写里会得到另一个名字、把用户已存的值变成孤儿。要改这里，
- * 先想清楚"已存的引用怎么办"。
+ * 引用文法只认 POSIX 标识符，所以任何进名字的字段都必须过这一关。**只用于 host / username
+ * 这类本身就该是 ASCII 的资源标识**——**别拿人类起的连接名来过这里**（`HS 248` / `lab-a`
+ * 会折成同一个片段，那正是第一版静默覆盖的成因；见下）。
  */
-function fnv1aHex(text) {
-  let hash = 0x811c9dc5
-  for (let index = 0; index < text.length; index += 1) {
-    hash ^= text.charCodeAt(index)
-    hash = Math.imul(hash, 0x01000193) >>> 0
-  }
-  return hash.toString(16).padStart(8, '0').toUpperCase()
+function asciiRefToken(value) {
+  return String(value ?? '').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '')
 }
 
 /**
- * 由「主机:端口」+ 连接名派生一个**合法的凭据引用名**。
+ * 由**资源身份**（用户名 + 主机 + 非默认端口）派生一个合法的凭据引用名。
  *
  * 规则（**恒定不变，别按需省略**）：
- *   `DSH_TTY_<连接名的 ASCII 部分>_<identity 的 8 位哈希>_<字段>`
- *   identity = `小写去空的 host` + ':' + `端口` + '|' + `去空的连接名`
+ *   `DSH_TTY_<用户名>_<主机>[_<端口>]_<字段>`，端口为 22（默认）时省略；字段 = PASSWORD / PASSPHRASE
+ *   例：`hsadmin@192.0.2.10:22` → `DSH_TTY_HSADMIN_192_168_80_248_PASSWORD`
+ *       `root@192.0.2.10:2222` → `DSH_TTY_ROOT_192_168_80_248_2222_PASSWORD`
  *
- * 为什么**总是**带哈希，而不是"名字干净就省掉"：引用文法只认 ASCII 标识符，所以 `HS 248`
- * / `lab-a` / `HS_248` 清洗后**完全一样**——省略哈希就等于让它们共用同一个引用、后存的
- * 密码静默覆盖前面的（第一版就是这么漏的）。哈希兜住这一类，`host:port` 进 identity 则让
- * 不同机器上的同名条目也分得开。
+ * 为什么按资源身份、**不用连接名也不用哈希**（与 git-credential-store 的 `protocol://username@host`、
+ * docker credential helpers 的 `ServerURL` + `Username` 同一派）：host 与 username **本来就是 ASCII
+ * 标识符**，不需要清洗、也就不需要哈希兜底。曾经的哈希版是为了补救"把人类标签清洗成键"——
+ * 而 `HS 248` / `lab-a` / `HS_248` 折出来完全一样，只能靠哈希避免静默覆盖。资源身份没有这个死结：
+ * 撞名只可能发生在**同一主机、同一用户、同一端口**，而那本来就该是同一个密码（共享是正确行为）。
  *
- * 为什么拒绝空名：空名的派生会退化成常量，等于把所有无名连接挤到同一个引用上。
+ * 顺带的好处：**连接名完全不参与键**，所以改连接名/重新保存都不会产生孤儿引用（旧哈希版会）。
  *
- * 另：**派生只发生在"存入"那一刻**。存完以后，配置里那个 `env:NAME` 就是唯一事实来源，
- * 没有任何地方会再派生一次——所以改连接名不会让已存的值失效（只会留下一个孤儿引用，
- * 用「清除已存凭据」按字段里的引用清掉）。
+ * 代价（写出来免得日后惊讶）：名字可读性弱于人类标签（`DSH_TTY_ROOT_192_168_80_248_PASSWORD`）。
+ * 这是 git / docker 那派的共同取舍——要人读的名字，就在存入前把预填的名字改掉（对话框里可编辑）。
+ *
+ * 另：**派生只发生在"存入"那一刻**。存完以后，配置里那个 `env:NAME` 就是唯一事实来源，没有任何
+ * 地方会再派生一次——所以改连接名不会让已存的值失效（用「清除已存凭据」按字段里的引用清掉）。
+ *
+ * 为什么拒绝空主机 / 空用户名：两者是键的全部来源，缺一都会退化成常量（把所有条目挤到同一个引用上）。
  */
-function derivedCredentialRef(host, port, name, suffix) {
-  const entryName = String(name ?? '').trim()
-  if (entryName === '') return ''
-  const identity = String(host ?? '').trim().toLowerCase() + ':' + String(port ?? '').trim() + '|' + entryName
-  const ascii = entryName.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '')
-  const parts = ['DSH_TTY']
-  if (ascii !== '') parts.push(ascii)
-  parts.push(fnv1aHex(identity))
+function derivedCredentialRef(host, port, username, suffix) {
+  const user = asciiRefToken(username)
+  const server = asciiRefToken(host)
+  if (user === '' || server === '') return ''
+  const normalizedPort = asciiRefToken(port)
+  const parts = ['DSH_TTY', user, server]
+  // 默认端口不进键：同一主机上 22 与显式 22 是同一件事；非默认端口才区分（NAT 后面常是不同盒子）
+  if (normalizedPort !== '' && normalizedPort !== '22') parts.push(normalizedPort)
   parts.push(suffix)
   return parts.join('_')
 }
@@ -2403,9 +2403,12 @@ function openSshDialog(entry) {
 
     /**
      * 保存路径共用：勾了"存入"且字段还是明文时，把它写进凭据存储并返回引用。
+     *
+     * 不需要连接簿名称：引用名由**资源身份**（用户名 + 主机 + 非默认端口）派生，见
+     * derivedCredentialRef —— 所以改连接名不会换键、也不会留孤儿。
      * @returns `{ value }`（要写进配置的密码值，缺省表示保持原样）或 `{ error }`（要显示并中止保存）
      */
-    const storeIfRequested = async (nameSource) => {
+    const storeIfRequested = async () => {
       if (remember.checked !== true) return {}
       const value = input.value.trim()
       if (value === '' || value.startsWith('env:')) return {}
@@ -2413,8 +2416,8 @@ function openSshDialog(entry) {
       if (remote === null || typeof remote.set !== 'function') {
         return { error: '宿主未提供凭据服务（remote.credentials），无法存入' }
       }
-      const ref = derivedCredentialRef(fields.host.value, fields.port.value, nameSource, suffix)
-      if (ref === '') return { error: '先填「连接簿名称」再存入——引用名由它派生' }
+      const ref = derivedCredentialRef(fields.host.value, fields.port.value, fields.username.value, suffix)
+      if (ref === '') return { error: '先填「主机」和「用户名」再存入——引用名由这两者派生' }
       try {
         await remote.set(ref, value)
       } catch (error) {
@@ -2711,7 +2714,7 @@ function openSshDialog(entry) {
       }
       if (saveEditBtn !== null) saveEditBtn.disabled = true
       void (async () => {
-        const stored = await passwordCred.storeIfRequested(name)
+        const stored = await passwordCred.storeIfRequested()
         if (stored.error !== undefined) {
           errorEl.textContent = stored.error
           if (saveEditBtn !== null) saveEditBtn.disabled = false
@@ -2822,7 +2825,7 @@ function openSshDialog(entry) {
     const bookName = fields.name.value.trim() || host
     connectBtn.disabled = true
     void (async () => {
-      const stored = await passwordCred.storeIfRequested(bookName)
+      const stored = await passwordCred.storeIfRequested()
       if (stored.error !== undefined) {
         errorEl.textContent = stored.error
         connectBtn.disabled = false
