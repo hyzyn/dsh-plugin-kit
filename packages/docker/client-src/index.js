@@ -1659,11 +1659,13 @@ window.__ModuleLoader__.load({
           input.setDraft(prompt)
           notifySession(target, '日志片段已填入输入框，确认后再发送')
           flashAskNotice('已填入当前会话的输入框' + conversationHiddenHint, 'ok')
+          notifyFeedAttention()
           return { ok: true, message: '已填入输入框' }
         }
         await target.conversation.send(prompt)
         notifySession(target, '日志片段已发送到会话')
         flashAskNotice('已发送日志片段到当前会话' + conversationHiddenHint, 'ok')
+        notifyFeedAttention()
         return { ok: true, message: '已发送' }
       } catch (error) {
         return { ok: false, message: error instanceof Error ? error.message : String(error) }
@@ -4037,6 +4039,230 @@ window.__ModuleLoader__.load({
       return items.length <= limit ? items : items.slice(items.length - limit)
     }
 
+    /** 事件窗口的本地缓冲上限：抽屉只关心尾部，留太多没意义。 */
+    const FEED_ENTRIES_MAX = 600
+
+    /**
+     * 把一次快照套用到本地缓冲上（**纯函数**，便于回归）。
+     *
+     * 优先用快照里的 `change`（spike 确认它是精确增量）：
+     *   append  → 追加（正常推流）
+     *   replace → 整段替换
+     *   prepend → 加载了更早的历史：与抽屉无关，尾部原样保留
+     * 拿不到 change、或本地还是空的，就整段取 `entries`。
+     * 超上限时只留尾部——抽屉永远只关心"最近发生了什么"。
+     */
+    function applyFeedSnapshot(entries, snapshot) {
+      const current = Array.isArray(entries) ? entries : []
+      const change = snapshot?.change
+      const all = Array.isArray(snapshot?.entries) ? snapshot.entries : null
+      const changed = change !== undefined && change !== null && Array.isArray(change.entries)
+      let next
+      if (changed && current.length > 0) {
+        if (change.kind === 'append') next = current.concat(change.entries)
+        else if (change.kind === 'prepend') next = current
+        else next = change.entries.slice()
+      } else if (all !== null) {
+        next = all.slice()
+      } else if (changed) {
+        next = change.kind === 'append' ? current.concat(change.entries) : change.entries.slice()
+      } else {
+        next = current
+      }
+      return next.length > FEED_ENTRIES_MAX ? next.slice(next.length - FEED_ENTRIES_MAX) : next
+    }
+
+    /**
+     * 抽屉的「请展开」广播。
+     *
+     * 投递发生在 React 之外（右键菜单 → deliverToSession），没法直接 setState，所以用一个
+     * 极小的广播：桥接层投递成功后叫一声，抽屉订阅它自动展开。
+     */
+    const feedAttention = { revision: 0, listeners: new Set() }
+
+    function notifyFeedAttention() {
+      feedAttention.revision += 1
+      for (const listener of Array.from(feedAttention.listeners)) {
+        try {
+          listener(feedAttention.revision)
+        } catch { /* 单个订阅者出错不该影响别的 */ }
+      }
+    }
+
+    /** 当前会话 id（全局服务）。面板挂在根侧时（模态 / docked）拿不到 props.sessionId。 */
+    function readCurrentSessionId() {
+      try {
+        const current = sessionsSvc?.list?.getSnapshot?.()?.current
+        return typeof current === 'string' ? current : ''
+      } catch {
+        return ''
+      }
+    }
+
+    function useCurrentSessionId(preferred) {
+      const [id, setId] = useState(() => (typeof preferred === 'string' && preferred !== '' ? preferred : readCurrentSessionId()))
+      useEffect(() => {
+        if (typeof preferred === 'string' && preferred !== '') {
+          setId(preferred)
+          return undefined
+        }
+        const list = sessionsSvc?.list
+        if (list === undefined || typeof list.subscribe !== 'function') return undefined
+        const read = () => setId(readCurrentSessionId())
+        read()
+        return list.subscribe(read)
+      }, [preferred])
+      return id
+    }
+
+    /** 状态文案（纯函数）。 */
+    function feedStatusText(status) {
+      if (status === 'running') return '正在分析…'
+      if (status === 'done') return '已完成'
+      if (status === 'stopped') return '已中断'
+      if (status === 'unavailable') return '拿不到会话事件源'
+      return '等待中'
+    }
+
+    /** 从条目推状态（纯函数）：最后一条是收尾就是结束，否则进行中。 */
+    function feedStatusOf(items) {
+      const list = Array.isArray(items) ? items : []
+      const last = list.length === 0 ? null : list[list.length - 1]
+      if (last === null) return 'idle'
+      if (last.kind !== 'end') return 'running'
+      return last.reason === 'completed' ? 'done' : 'stopped'
+    }
+
+    /**
+     * 订阅一个会话的实时事件窗口 —— 抽屉的数据源。
+     *
+     * 门控与 S3 的流一致：面板不可见（标签折叠）时不订阅，展开后重订阅时先读一次快照，
+     * 内容自然补齐。`active` 因此也在 deps 里。
+     */
+    function useSessionFeed(sessionId, active) {
+      const [state, setState] = useState({ items: [], status: 'idle' })
+      useEffect(() => {
+        if (active !== true || sessionId === '') {
+          setState({ items: [], status: 'idle' })
+          return undefined
+        }
+        let source = null
+        try {
+          source = sessionsSvc?.binding?.(sessionId)?.eventSource ?? null
+        } catch {
+          source = null
+        }
+        if (source === null || typeof source.subscribe !== 'function') {
+          setState({ items: [], status: 'unavailable' })
+          return undefined
+        }
+        let entries = []
+        const apply = () => {
+          let snapshot = null
+          try {
+            snapshot = source.getSnapshot()
+          } catch {
+            snapshot = null
+          }
+          entries = applyFeedSnapshot(entries, snapshot)
+          const items = projectFeed(entries)
+          setState({ items, status: feedStatusOf(items) })
+        }
+        apply()
+        let stop = null
+        try {
+          const un = source.subscribe(apply)
+          stop = typeof un === 'function' ? un : null
+        } catch { /* 订阅失败：至少留下首次读到的内容 */ }
+        return () => {
+          if (typeof stop === 'function') {
+            try { stop() } catch { /* 已释放 */ }
+          }
+        }
+      }, [sessionId, active])
+      return state
+    }
+
+    const FEED_KIND_LABEL = { user: '我', reasoning: '推理', text: '正文', tool: '调用', result: '结果', end: '收尾' }
+
+    /** 抽屉里的单条。 */
+    function AgentDrawerItem(props) {
+      const item = props.item
+      const label = FEED_KIND_LABEL[item.kind] ?? item.kind
+      if (item.kind === 'end') {
+        return jsxs('div', { className: 'dk_drawerItem', 'data-kind': 'end', children: [
+          jsx('span', { className: 'dk_drawerTag', children: label }),
+          jsx('span', { className: 'dk_drawerText', children: '完成（' + String(item.reason) + '）' }),
+        ] })
+      }
+      if (item.kind === 'tool') {
+        return jsxs('div', { className: 'dk_drawerItem', 'data-kind': 'tool', children: [
+          jsx('span', { className: 'dk_drawerTag', children: label }),
+          jsx('span', { className: 'dk_drawerTool', children: item.name + (item.args === '' ? '' : ' ' + item.args) }),
+        ] })
+      }
+      return jsxs('div', { className: 'dk_drawerItem', 'data-kind': item.kind, children: [
+        jsx('span', { className: 'dk_drawerTag', children: label + (item.failed === true ? '（失败）' : '') }),
+        jsx('span', { className: 'dk_drawerText', children: item.text === '' ? '（空）' : item.text }),
+      ] })
+    }
+
+    /**
+     * Agent 抽屉（方案 ④）：面板底部的实时回复区。
+     *
+     * 存在的理由：会话回执落在会话输入框上，而 docked / 模态承载下面板正盖着会话（docked
+     * 还被终端模态盖着）——投递成功也看不到任何进展。抽屉让"发出去的日志换回了什么"直接
+     * 出现在面板里，不必离开当前上下文。
+     *
+     * 默认**收起**，只在收到投递广播时自动展开；收起态只有一条 30px 的标题栏。
+     */
+    function AgentDrawer(props) {
+      const active = usePanelActive()
+      const sessionId = useCurrentSessionId(props.sessionId)
+      const feed = useSessionFeed(sessionId, active)
+      const [open, setOpen] = useState(false)
+      const bodyRef = useRef(null)
+
+      useEffect(() => {
+        const listener = () => setOpen(true)
+        feedAttention.listeners.add(listener)
+        return () => { feedAttention.listeners.delete(listener) }
+      }, [])
+
+      // 新条目落进来时贴底：抽屉是「看进展」的地方，停在中间没有意义
+      useEffect(() => {
+        const el = bodyRef.current
+        if (el !== null && el !== undefined && typeof el.scrollTop === 'number') el.scrollTop = el.scrollHeight
+      }, [feed.items.length, open])
+
+      const body = feed.items.length === 0
+        ? (feed.status === 'unavailable'
+          ? '拿不到会话事件源（binding.eventSource）——抽屉暂时只能显示这条状态。'
+          : '还没有内容。用日志右键「直接发送到当前会话」，这里会跟着滚。')
+        : feed.items.map((item, index) => jsx(AgentDrawerItem, { item }, 'item-' + String(index)))
+
+      return jsxs('div', { className: 'dk_drawer', 'data-status': feed.status, children: [
+        jsxs('div', { className: 'dk_drawerHead', children: [
+          jsx('span', { className: 'dk_drawerDot', 'data-status': feed.status }),
+          jsx('span', { className: 'dk_drawerTitle', children: 'Agent' }),
+          jsx('span', { className: 'dk_drawerSub', children: feedStatusText(feed.status) }),
+          jsx('span', { className: 'dk_drawerGrow' }),
+          // 「跳到会话」在标签承载下没必要（同屏）；docked / 模态下 tty 面板没有关闭或最小化
+          // 的接口（契约只有 version / isOpen / mountPane），我们关不掉它，只能给一句指引
+          props.conversationHidden === true
+            ? jsx('span', { className: 'dk_drawerHint', children: '会话在面板后面：关掉或最小化面板/终端即可看到' })
+            : null,
+          jsx('button', {
+            type: 'button',
+            className: 'dk_btn dk_btnSm',
+            onClick: () => setOpen((value) => !value),
+            children: open ? '收起' : '展开',
+          }),
+        ] }),
+        jsx('div', { className: 'dk_drawerBody', ref: bodyRef, hidden: open !== true, children: body }),
+      ] })
+    }
+
     function ContainerPanel(props) {
       const [config, setConfig] = useState(null)
       const [targets, setTargets] = useState([])
@@ -5487,6 +5713,12 @@ window.__ModuleLoader__.load({
               props.onClose()
             },
           }, 'closeConfirm') : null,
+        /*
+         * Agent 抽屉（方案 ④）：面板底部的实时回复区。
+         * 数据源是会话事件窗口（spike 实测：根侧的 binding.eventSource 就够），所以**三种
+         * 承载下都在**；不发日志时它只是一条细标题栏（收起态），不吃地方。
+         */
+        jsx(AgentDrawer, { sessionId: props.sessionId, conversationHidden: !tabbed }, 'agentDrawer'),
       ]
 
       const panel = jsxs('div', {
@@ -5568,6 +5800,7 @@ window.__ModuleLoader__.load({
           key: pin === '' ? 'docker-tab' : pin,
           carrier: 'tab',
           tabFullscreen,
+          sessionId: typeof props.sessionId === 'string' ? props.sessionId : undefined,
           onClose: closeTab,
           initialTarget: pin === '' ? undefined : pin,
           sessionHint: params?.sessionHint,
@@ -6105,11 +6338,16 @@ window.__ModuleLoader__.load({
     exports.__feed = {
       projectFeed,
       textOf,
+      applyFeedSnapshot,
+      feedStatusOf,
+      feedStatusText,
+      MAX: FEED_ENTRIES_MAX,
     }
     exports.__render = {
       ContainerPanel,
       DockerTabBody,
       SessionProbeBody,
+      AgentDrawer,
     }
     exports.__pick = {
       MAX: PICK_MAX,
