@@ -2266,7 +2266,7 @@ function openSshDialog(entry) {
       saveBtn.disabled = remote === null || typeof remote.set !== 'function'
       clearBtn.disabled = true
       if (remote === null) {
-        setStatus(credentialsRemote === null ? '宿主未提供凭据服务，只能明文保存' : '凭据服务不完整，只能明文保存', 'muted')
+        setStatus(credentialsRemote === null ? '宿主未提供凭据服务（remote.credentials），只能明文保存' : '凭据服务不完整，只能明文保存', 'muted')
         return
       }
       const ref = refOfField()
@@ -5871,11 +5871,20 @@ function TtySettingsCard() {
     exports.apply = (ctx) => {
       sessionsService = ctx.sessions
       /*
-       * 官方凭据引用的浏览器侧命名空间（可选）。只依赖 `remote` 这一个必选服务，
-       * `credentials` 子命名空间在使用时再判——老宿主 / 未装 provider 时按钮自己禁用。
+       * 官方凭据引用的浏览器侧命名空间（可选）。
+       *
+       * **必须同时声明 `remote.credentials`**：命名空间不是 `remote` 上的普通属性，而是网关
+       * 安装的**独立服务**（`remoteServiceKey(ns)` = `remote.<ns>`，见 dsh-api-gateway）——
+       * 只声明 `remote` 时 `remote.credentials` 就是 undefined（实测踩过：界面会把锅甩给宿主，
+       * 显示"宿主未提供凭据服务"，其实是自己的依赖没声明）。
+       *
+       * 用 `ctx.inject` 而不是静态 `exports.inject`：没装 / 老宿主上回调不触发，插件照常加载，
+       * 对话框那一行自己降级。
        */
-      ctx.inject(['remote'], (remoteCtx) => {
-        credentialsRemote = remoteCtx.remote?.credentials ?? null
+      ctx.inject(['remote', 'remote.credentials'], (remoteCtx) => {
+        // 两种取值都试一遍：命名空间是**独立服务**（`remote.credentials`），网关同时把它挂在
+        // `remote` 上供消费方嵌套访问（官方设置卡片用的是 `ctx.remote.credentials.*`）。
+        credentialsRemote = remoteCtx.remote?.credentials ?? remoteCtx['remote.credentials'] ?? null
         return () => { credentialsRemote = null }
       })
       // 侧栏入口先按可见挂载（与旧行为一致），config 确认禁用后由闸门收起；
