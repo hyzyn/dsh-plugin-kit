@@ -1794,6 +1794,20 @@ window.__ModuleLoader__.load({
             reason,
             onPick: () => { void deliverToSession(build(), 'draft').then(reportDelivery) },
           },
+          // 【SPIKE · 验完删除】入口：打开会话订阅探针（方案 B 的读数面板）
+          {
+            label: '会话订阅探针（spike）',
+            hint: '方案 B 读数',
+            disabled: sessionProbeSvc === null,
+            reason: '宿主未提供右侧栏服务（sidebarRight）',
+            onPick: () => {
+              try {
+                sessionProbeSvc?.openTab?.(SESSION_PROBE_KIND)
+              } catch (error) {
+                flashAskNotice('打开探针失败：' + (error instanceof Error ? error.message : String(error)))
+              }
+            },
+          },
         ],
         note: '日志内容会进入模型上下文，请留意其中的凭证。',
       })
@@ -3721,6 +3735,146 @@ window.__ModuleLoader__.load({
 
     function usePanelActive() {
       return React.useContext(PanelActiveContext)
+    }
+
+    /* ================================================================== *
+     * 【SPIKE · 验证完请整块删除】会话实时输出的订阅探针（方案 B）
+     *
+     * 要回答的问题：**从插件侧怎么订阅「当前会话的流式输出」**，以及它在三种承载下
+     * 是不是都拿得到。
+     *
+     * 静态读类型的结论（已经看过的）：
+     *   - `SessionFace` 上只有行为动词（prompt / cancel / rename…），**没有**读快照的字段；
+     *   - 会话的生命周期状态是经 `useSession` / `useChat` / `useConversation` 这类
+     *     **槽注入钩子**读的 —— 也就是说「读会话」天生是**会话作用域**的事；
+     *   - 右侧栏 tab body 恰好是会话作用域的，注入里就有 `useChat` / `useConversation` /
+     *     `useTrajectory` / `useProjection`。
+     *
+     * 但类型只描述声明、不描述落地形状（上次 `hooks.tabInfo` 就是这么被坑的），所以两侧都实测：
+     *   ① 会话作用域侧（tab body）：那几个钩子返回什么？**是不是增量**（渲染次数会随 Agent
+     *      输出持续增长）？
+     *   ② 根侧（docked / 模态面板只能走这条）：`sessions.binding(id)` 上有什么？
+     *      `session.projections.faceOf(key)` 能不能读到东西？
+     *
+     * 触发方式：用容器面板的日志右键「直接发送到当前会话」让 Agent 跑起来，然后回来看这里
+     * 的「已渲染 N 次 / 最近一次更新」是否在动。
+     * ================================================================== */
+
+    const SESSION_PROBE_ID = '@hyzyn/dsh-docker#session-probe'
+    const SESSION_PROBE_KIND = 'session-probe'
+    let sessionProbeSvc = null
+
+    /** 把一个值描述成一行（探针用：不看全量，只看形状）。 */
+    function describeValue(value) {
+      if (value === null || value === undefined) return String(value)
+      if (Array.isArray(value)) return '数组（长度 ' + String(value.length) + '）'
+      const type = typeof value
+      if (type !== 'object') return type + ' ' + String(value).slice(0, 40)
+      const keys = Object.keys(value)
+      if (keys.length === 0) return '对象（无键）'
+      const shown = keys.slice(0, 8).join(', ')
+      return '对象，键：' + shown + (keys.length > 8 ? ' … 共 ' + String(keys.length) : '')
+    }
+
+    /** 取值的 JSON 片段（探针用：形状之外再看一眼内容，超长截断）。 */
+    function describeJson(value) {
+      try {
+        const text = JSON.stringify(value)
+        if (text === undefined) return '（无法序列化）'
+        return text.length > 220 ? text.slice(0, 220) + '…' : text
+      } catch {
+        return '（序列化失败：可能有循环引用）'
+      }
+    }
+
+    function SessionProbeBody(props) {
+      const rendersRef = useRef(0)
+      const lastRef = useRef(Date.now())
+      const [, setTick] = useState(0)
+      rendersRef.current += 1
+      lastRef.current = Date.now()
+      // 每秒推一次：静止时「最近一次更新」自己会走，才看得出「是在推」还是「压根没动」
+      useEffect(() => {
+        const timer = setInterval(() => setTick((value) => value + 1), 1000)
+        return () => clearInterval(timer)
+      }, [])
+
+      let info = null
+      try {
+        info = props.useTabInfo()
+      } catch { /* 契约变动不连累探针 */ }
+      const sessionId = typeof props.sessionId === 'string' ? props.sessionId : ''
+      const propKeys = props === null || props === undefined ? [] : Object.keys(props)
+
+      // 三个会话作用域钩子：**无条件、固定顺序**调用（hook 顺序必须稳定），异常只记不抛
+      let chatValue = null
+      let chatErr = ''
+      let convValue = null
+      let convErr = ''
+      let trajValue = null
+      let trajErr = ''
+      try { chatValue = props.useChat() } catch (error) { chatErr = error instanceof Error ? error.message : String(error) }
+      try { convValue = props.useConversation() } catch (error) { convErr = error instanceof Error ? error.message : String(error) }
+      try { trajValue = props.useTrajectory() } catch (error) { trajErr = error instanceof Error ? error.message : String(error) }
+
+      // 根侧：binding 与 projections（docked / 模态承载唯一可能的路）
+      let bindingText = '未能读取'
+      let sessionKeysText = '—'
+      let projectionsText = '—'
+      try {
+        const binding = typeof sessionsSvc?.binding === 'function' ? sessionsSvc.binding(sessionId) : undefined
+        if (binding === undefined || binding === null) {
+          bindingText = 'binding 返回 ' + String(binding)
+        } else {
+          bindingText = describeValue(binding)
+          const face = binding.session
+          sessionKeysText = face === undefined || face === null ? '（无 session）' : describeValue(face)
+          const projections = face?.projections
+          if (projections === undefined || projections === null) projectionsText = '（无 projections）'
+          else {
+            const tried = ['chat', 'conversation', 'timeline', 'turns', 'messages']
+            projectionsText = tried.map((key) => {
+              try {
+                const valueFace = projections.faceOf(key)
+                if (valueFace === undefined) return key + '=undefined'
+                const snap = valueFace.getSnapshot?.()
+                return key + '=' + describeValue(snap)
+              } catch (error) {
+                return key + '=抛错(' + (error instanceof Error ? error.message : String(error)).slice(0, 40) + ')'
+              }
+            }).join(' ｜ ')
+          }
+        }
+      } catch (error) {
+        bindingText = '抛错：' + (error instanceof Error ? error.message : String(error))
+      }
+
+      const idleSec = Math.round((Date.now() - lastRef.current) / 1000)
+      const rows = [
+        ['sessionId', sessionId === '' ? '（空）' : sessionId],
+        ['收到的 props 键', propKeys.length === 0 ? '（空）' : propKeys.join(', ')],
+        ['tab.visible', info === null ? '—' : String(info.tab?.visible)],
+        ['———— 会话作用域侧（tab body） ————', ''],
+        ['useChat()', chatErr !== '' ? '抛错：' + chatErr : describeValue(chatValue)],
+        ['useChat 内容片段', chatErr !== '' ? '—' : describeJson(chatValue)],
+        ['useConversation()', convErr !== '' ? '抛错：' + convErr : describeValue(convValue)],
+        ['useTrajectory()', trajErr !== '' ? '抛错：' + trajErr : describeValue(trajValue)],
+        ['已渲染', String(rendersRef.current) + ' 次（Agent 输出期间应持续增长）'],
+        ['最近一次渲染', idleSec + ' 秒前（静止时这个数会自己走，别被它骗）'],
+        ['———— 根侧（docked / 模态唯一可能的路） ————', ''],
+        ['sessions.binding(id)', bindingText],
+        ['binding.session 形状', sessionKeysText],
+        ['projections.faceOf(k)', projectionsText],
+      ]
+
+      return jsxs('div', { className: 'dk_spike', children: [
+        jsx('div', { className: 'dk_spikeTitle', children: '会话订阅探针（spike · 方案 B）' }),
+        jsx('div', { className: 'dk_spikeHint', children: '用容器面板日志右键「直接发送到当前会话」让 Agent 跑起来，再看上面的「已渲染」是否持续增长。' }),
+        ...rows.map(([key, value]) => jsxs('div', { className: 'dk_spikeRow', children: [
+          jsx('span', { className: 'dk_spikeKey', children: key }),
+          jsx('span', { className: 'dk_spikeVal', children: value === '' ? '—' : String(value) }),
+        ] }, key)),
+      ] })
     }
 
     function ContainerPanel(props) {
@@ -5926,9 +6080,11 @@ window.__ModuleLoader__.load({
         }
       })
 
-      // 右侧栏标签承载（S1）：注册一个 page type 与它的 body。入口本阶段不动（S2 才切
-      // 入口），现在从右侧栏的指南页进入。宿主没有这两个服务时整段安静跳过——面板照旧
-      // 走模态，行为与今天完全一致。
+      // 右侧栏标签承载（S1）：注册 page type 与 body。入口见 S2 的 openContainerPanel()。
+      // 宿主没有这两个服务时整段安静跳过——面板照旧走模态，行为与旧版一致。
+      //
+      // 探针（【SPIKE · 验完删除】）与真标签**共用这一次 inject**：同名服务注入两次会让
+      // 「注入清单」出现重复项，也让同一个依赖分散在两处。
       ctx.inject(['sidebarRightTabs', 'sidebarRight'], (tabCtx) => {
         const disposeType = tabCtx.sidebarRightTabs.register({
           id: DOCKER_TAB_ID,
@@ -5947,8 +6103,36 @@ window.__ModuleLoader__.load({
           key: DOCKER_TAB_ID,
         }, DockerTabBody))
         dockerTabApi = tabCtx.sidebarRight ?? null
+
+        // 【SPIKE · 验完删除】会话订阅探针：独立 try，探针失败不能连累真标签
+        let disposeProbeType = () => {}
+        let disposeProbeBody = () => {}
+        try {
+          disposeProbeType = tabCtx.sidebarRightTabs.register({
+            id: SESSION_PROBE_ID,
+            kind: SESSION_PROBE_KIND,
+            priority: 'extension',
+            title: () => '会话探针',
+            guide: [{
+              order: 95,
+              title: () => '会话探针（spike）',
+              description: () => '验证会话流式订阅：useChat / useConversation / projections',
+            }],
+          })
+          disposeProbeBody = tabCtx.slots.inject('sidebar.right.pane.tab', () => tabCtx.slots.register({
+            name: 'sidebar.right.pane.tab',
+            key: SESSION_PROBE_ID,
+          }, SessionProbeBody))
+          sessionProbeSvc = tabCtx.sidebarRight ?? null
+        } catch (error) {
+          console.warn('[dsh-docker][spike] 会话探针注册失败：' + (error instanceof Error ? error.message : String(error)))
+        }
+
         return () => {
           dockerTabApi = null
+          sessionProbeSvc = null
+          try { disposeProbeBody() } catch { /* 已释放 */ }
+          try { disposeProbeType() } catch { /* 已释放 */ }
           try { disposeBody() } catch { /* 已释放 */ }
           try { disposeType() } catch { /* 已释放 */ }
         }

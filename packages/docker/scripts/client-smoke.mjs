@@ -508,6 +508,11 @@ await test('粘性：订阅接线（打开 → 切会话重开 → 同会话不�
   assert.equal(state.openTabs.length, 2, '同一会话重复通报不该再开')
 })
 
+await test('【SPIKE】会话订阅探针装配进 bundle（验完应连同这条一起删）', () => {
+  assert.ok(code.includes('session-probe'), '缺少会话订阅探针 kind')
+  assert.ok(code.includes('sidebar.right.pane.tab'), '缺少右侧栏标签 body 槽名')
+})
+
 await test('投递回执：成功也在视口级发声（以前只有失败才提示）', async () => {
   const exports_ = registration.factory((spec) => SEED[spec])
   const { ctx } = makeClientCtx({ sidebarRightTabs: true })
