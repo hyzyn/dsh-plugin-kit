@@ -508,6 +508,23 @@ await test('粘性：订阅接线（打开 → 切会话重开 → 同会话不�
   assert.equal(state.openTabs.length, 2, '同一会话重复通报不该再开')
 })
 
+await test('渲染期守卫：面板组件体直接跑一遍不能抛（TDZ 那类错误曾让面板整个空白）', () => {
+  const exports_ = registration.factory((spec) => SEED[spec])
+  assert.ok(exports_.__render !== undefined, '缺少 __render 测试缝')
+  const cases = [
+    ['DockerTabBody', {}],
+    ['ContainerPanel', { carrier: 'tab', onClose: () => {}, initialTarget: '' }],
+    ['ContainerPanel', { onClose: () => {}, initialTarget: '' }], // 模态 / docked 形态（carrier 缺省）
+  ]
+  for (const [name, props] of cases) {
+    const component = exports_.__render[name]
+    assert.equal(typeof component, 'function', name + ' 未暴露')
+    let element = null
+    assert.doesNotThrow(() => { element = component(props) }, name + ' 渲染期抛错')
+    assert.ok(element !== null && element !== undefined, name + ' 返回了空')
+  }
+})
+
 await test('【SPIKE】会话订阅探针装配进 bundle（验完应连同这条一起删）', () => {
   assert.ok(code.includes('session-probe'), '缺少会话订阅探针 kind')
   assert.ok(code.includes('sidebar.right.pane.tab'), '缺少右侧栏标签 body 槽名')
