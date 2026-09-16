@@ -474,9 +474,19 @@
 }
 
 .dk_segBtn:hover { color: var(--dk-label); }
+/*
+ * 选中态**不能**用 --dk-surface-solid：它和分段条底色的 --dk-surface-2 解析到**同一个**宿主令牌
+ * （`--dsw-alias-bg-layer-2`），暗色下两者完全同色，只剩那层 1px 阴影可辨 —— 用户实测「暗色下选中
+ * 看不清」（浅色下能看见，靠的也只是阴影）。
+ *
+ * 改走**强调色淡染**：与 .dk_pillPick / .dk_pillFollow 的选中语言一致，靠色彩差而不是靠阴影，
+ * 两种主题下都可辨；文字仍用 --dk-label（不改强调色），避免 12px 小字撞对比度。
+ * 由 client-smoke 守「不得回到同底色」。
+ */
 .dk_segBtn[data-on="1"] {
-  background: var(--dk-surface-solid);
+  background: color-mix(in srgb, var(--dk-accent) 18%, transparent);
   color: var(--dk-label);
+  font-weight: 600;
   box-shadow: 0 1px 2px rgba(0, 0, 0, .12);
 }
 

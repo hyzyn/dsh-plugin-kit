@@ -961,6 +961,26 @@ await test('样式表：聚合日志的过滤行不参与纵向伸缩（否则�
   assert.ok(/flex:\s*0\s+0\s+auto/.test(rule), '.dk_logs > .dk_filterBar 必须 flex:0 0 auto（否则工具条被纵向撑高）')
 })
 
+await test('样式表：分段选中态不得与分段条同底色（暗色下会完全看不见）', () => {
+  /*
+   * 真实踩过的回归：分段条 `.dk_seg` 底色用 --dk-surface-2，选中态以前用 --dk-surface-solid ——
+   * 两者都解析到宿主同一个令牌 `--dsw-alias-bg-layer-2`，暗色主题里**完全同色**，选中态只剩一层
+   * 1px 阴影可辨（浅色下能看见，靠的也只是阴影）。改成强调色淡染后，暗色下才有可辨的色彩差。
+   *
+   * 这条只在无浏览器环境里守「规则形态」：底色差异必须来自色彩，不是来自阴影。
+   */
+  const barRule = /\.dk_seg \{[^}]*\}/.exec(code)?.[0] ?? ''
+  const onRule = /\.dk_segBtn\[data-on="1"\] \{[^}]*\}/.exec(code)?.[0] ?? ''
+  assert.notEqual(barRule, '', '找不到 .dk_seg 规则')
+  assert.notEqual(onRule, '', '找不到 .dk_segBtn[data-on="1"] 规则')
+  assert.ok(!onRule.includes('--dk-surface-solid'), '选中态不得用与分段条同源的 --dk-surface-solid（暗色下会与底色同色）')
+  assert.ok(onRule.includes('color-mix(in srgb, var(--dk-accent)'), '选中态要走强调色淡染，靠色彩差而非阴影')
+  // 分段条自己仍然可以走 surface-2（它是浅底槽），但两者不得落在同一个令牌上
+  const barToken = /background:\s*var\((--[a-z0-9-]+)/.exec(barRule)?.[1] ?? ''
+  const onToken = /background:\s*var\((--[a-z0-9-]+)/.exec(onRule)?.[1] ?? ''
+  assert.notEqual(barToken, onToken, `分段条与选中态不得同底色令牌（都是 ${barToken}）`)
+})
+
 await test('日志 FOLLOW：bundle 内含 SSE 订阅与「回到底部」交互', () => {
   // 静态断言锁住契约（真实点击路径需要浏览器，由手工清单覆盖）：
   assert.ok(code.includes('/logs/stream'), '缺少 SSE 订阅 URL')
