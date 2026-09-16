@@ -105,10 +105,20 @@ sessions — dev server logs and key interactions on the remote machine remain a
 Under **Password** in the connection dialog sits a **credential storage** row: tick "store when saving" and the
 password is written to the **official credential store**, leaving only an `env:NAME` reference in the field (the value
 lives in `~/.dsh/.credentials.yaml`, never materialized into the environment and never sent back to the browser).
+**That checkbox is ticked by default** (whenever the host provides `remote.credentials`): type a plaintext password,
+save, and the value goes to the store while the settings keep only a reference — better than writing the password
+plaintext into the settings file, which *is* shipped to the browser while the store's values never are. When the host
+lacks that service the box is switched back off and disabled, with a note that only plaintext saving is available.
 
 - **It rides along with saving — no extra click**: the tick is executed by "save changes" / "connect (and save)", so
   there is no dangling reference from "stored but not saved". **Without "save to the connection book" it never touches
   the store** — there would be no configuration to reference the value, only an orphan.
+- **Two side effects of the default (so neither is a surprise)**: (1) editing an older connection whose password is
+  **plaintext** and hitting "save changes" for an unrelated field also moves the password into the store (the settings
+  keep a reference instead) — untick the box if you do not want that; (2) when the store refuses the write (typically a
+  read-only source shadowing the reference) **saving is aborted** and the official verbatim error is shown, rather than
+  quietly falling back to plaintext (the derived name carries a `DSH_TTY_` prefix plus a hash, so shadowing is
+  practically impossible).
 - **Deliberately compact**: in plaintext mode the row is a single checkbox; only once the field holds a reference does
   it swap in "clear stored credential" and the status (`already stored (source file) · reference name`). The full
   security boundary lives in the checkbox's tooltip instead of taking up dialog space.
