@@ -98,7 +98,12 @@ function wsUrl() {
 }
 
 /**
- * FNV-1a（32 位）转 8 位十六进制：只用来让派生出的引用名**唯一**，不承担任何安全用途。
+ * FNV-1a（32 位）转 8 位十六进制。
+ *
+ * 用途只有一个：让派生出的引用名**在同一台机器上唯一**，不承担任何安全用途。
+ * 实现细节（UTF-16 码元、`Math.imul`）是**规范的一部分**——派生规则必须逐字可复现，
+ * 否则同一个连接在别人的重写里会得到另一个名字、把用户已存的值变成孤儿。要改这里，
+ * 先想清楚"已存的引用怎么办"。
  */
 function fnv1aHex(text) {
   let hash = 0x811c9dc5
@@ -110,27 +115,31 @@ function fnv1aHex(text) {
 }
 
 /**
- * 由连接名派生一个**合法的凭据引用名**（POSIX 标识符、大写）。
+ * 由「主机:端口」+ 连接名派生一个**合法的凭据引用名**。
  *
- * **中文名是必须处理的情况**：引用文法只认 ASCII 标识符（`isCredentialRefName` 那套），而连接簿
- * 名字常常是中文——只做 `[^A-Z0-9] → _` 会把它清空，于是所有中文名的连接都塌到同一个引用上，
- * 后存的密码**静默覆盖**前面的（实测发现）。所以含非 ASCII 时额外拼一段**由完整名字派生的稳定
- * 短哈希**：唯一性保住了，能读的部分照旧留着。
+ * 规则（**恒定不变，别按需省略**）：
+ *   `DSH_TTY_<连接名的 ASCII 部分>_<identity 的 8 位哈希>_<字段>`
+ *   identity = `小写去空的 host` + ':' + `端口` + '|' + `去空的连接名`
  *
- * 前缀 `DSH_TTY_` 有两个作用：避免与用户真实的环境变量撞名（引用是各插件共享的扁平命名空间），
- * 以及保证首字符不是数字（那也是引用文法的一部分）。
+ * 为什么**总是**带哈希，而不是"名字干净就省掉"：引用文法只认 ASCII 标识符，所以 `HS 248`
+ * / `lab-a` / `HS_248` 清洗后**完全一样**——省略哈希就等于让它们共用同一个引用、后存的
+ * 密码静默覆盖前面的（第一版就是这么漏的）。哈希兜住这一类，`host:port` 进 identity 则让
+ * 不同机器上的同名条目也分得开。
  *
- * 派生结果就摆在字段里，嫌哈希难看可以直接改成好记的名字——那正是「引用可见」的意义。
+ * 为什么拒绝空名：空名的派生会退化成常量，等于把所有无名连接挤到同一个引用上。
+ *
+ * 另：**派生只发生在"存入"那一刻**。存完以后，配置里那个 `env:NAME` 就是唯一事实来源，
+ * 没有任何地方会再派生一次——所以改连接名不会让已存的值失效（只会留下一个孤儿引用，
+ * 用「清除已存凭据」按字段里的引用清掉）。
  */
-function derivedCredentialRef(name, suffix) {
-  const raw = String(name ?? '')
-  if (raw.trim() === '') return ''
-  const ascii = raw.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '')
-  // 含非 ASCII 就补哈希；用 join 拼，避免出现连续下划线那种难看的名字
+function derivedCredentialRef(host, port, name, suffix) {
+  const entryName = String(name ?? '').trim()
+  if (entryName === '') return ''
+  const identity = String(host ?? '').trim().toLowerCase() + ':' + String(port ?? '').trim() + '|' + entryName
+  const ascii = entryName.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '')
   const parts = ['DSH_TTY']
   if (ascii !== '') parts.push(ascii)
-  // eslint-disable-next-line no-control-regex
-  if (/[^\x20-\x7E]/.test(raw)) parts.push(fnv1aHex(raw))
+  parts.push(fnv1aHex(identity))
   parts.push(suffix)
   return parts.join('_')
 }
@@ -2337,7 +2346,7 @@ function openSshDialog(entry) {
           setStatus('先填「连接簿名称」再存入——引用名由它派生', 'error')
           return
         }
-        const ref = derivedCredentialRef(nameSource, suffix)
+        const ref = derivedCredentialRef(fields.host.value, fields.port.value, nameSource, suffix)
         saveBtn.disabled = true
         try {
           await remote.set(ref, value)
