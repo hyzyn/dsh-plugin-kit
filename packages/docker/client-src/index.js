@@ -364,37 +364,6 @@ const ICON_TRASH =
   '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4.6h10"/><path d="M6.2 4.6V3.4a.8.8 0 0 1 .8-.8h2a.8.8 0 0 1 .8.8v1.2"/><path d="M4.6 4.6l.6 8a.9.9 0 0 0 .9.8h3.8a.9.9 0 0 0 .9-.8l.6-8"/></svg>'
 const ICON_COPY =
   '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.4"/><path d="M3.5 10.5h-1v-8h8v1"/></svg>'
-const ICON_DOWNLOAD =
-  '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3v7.2"/><path d="M5 7.4L8 10.4l3-3"/><path d="M3.4 12.8h9.2"/></svg>'
-const ICON_WARN =
-  '<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.6l5.8 10.4H2.2z"/><path d="M8 6.4v3.2"/><path d="M8 11.6h.01"/></svg>'
-const ICON_TERM =
-  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5l3.5 3L3 11"/><path d="M8.5 11H13"/></svg>'
-const ICON_LOGS =
-  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3 4.5h10"/><path d="M3 8h10"/><path d="M3 11.5h6"/></svg>'
-const ICON_STATS =
-  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3.5 12.5v-4"/><path d="M7 12.5v-8"/><path d="M10.5 12.5v-5"/><path d="M13 12.5v-2"/></svg>'
-const ICON_BACK =
-  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12.5 8h-9"/><path d="M7 4.5L3.5 8 7 11.5"/></svg>'
-const ICON_CHEVRON =
-  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5L8 10.5l4-4"/></svg>'
-const ICON_PULL =
-  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.6v6.4"/><path d="M5.3 6.5L8 9.2l2.7-2.7"/><path d="M3 11.4v1.2a.8.8 0 0 0 .8.8h8.4a.8.8 0 0 0 .8-.8v-1.2"/></svg>'
-const ICON_IMAGE =
-  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="3.5" width="11" height="9" rx="1.2"/><path d="M2.5 10.2L5.6 7.6l2.4 2 2.1-1.7 3.4 2.9"/><path d="M6 6.2h.01"/></svg>'
-const ICON_PRUNE =
-  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.4 12.6h9.2"/><path d="M5.2 9.6l3.1-3.1"/><path d="M8.4 3.6l2.4 2.4"/><path d="M10.6 6.2l1.8 1.8-3.2 1.2-1.2 3.2-1.8-1.8z"/></svg>'
-const ICON_PROJECT =
-  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.4 5.9L8 2.8l5.6 3.1L8 9z"/><path d="M2.4 8.4L8 11.5l5.6-3.1"/><path d="M2.4 10.9L8 14l5.6-3.1"/></svg>'
-const ICON_LAYER =
-  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4.5h10"/><path d="M3 8h10"/><path d="M3 11.5h6"/></svg>'
-/* 网络：三个节点 + 连线；不画成「网线插头」那种写实图形，16px 下看不清 */
-const ICON_NETWORK =
-  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="3.2" r="1.7"/><circle cx="3.4" cy="12.2" r="1.7"/><circle cx="12.6" cy="12.2" r="1.7"/><path d="M6.7 4.6L4.5 10.6"/><path d="M9.3 4.6l2.2 6"/><path d="M5.1 12.2h5.8"/></svg>'
-/* 卷：圆柱体（存储桶的通用记号） */
-const ICON_VOLUME =
-  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="8" cy="4.2" rx="4.6" ry="1.9"/><path d="M3.4 4.2v7.6c0 1 2.1 1.9 4.6 1.9s4.6-.9 4.6-1.9V4.2"/><path d="M3.4 8c0 1 2.1 1.9 4.6 1.9s4.6-.9 4.6-1.9"/></svg>'
-
 /* ========================== 临时多选聚合（纯逻辑） ========================== */
 
 /*
@@ -1737,6 +1706,8 @@ window.__ModuleLoader__.load({
       const [logsError, setLogsError] = useState('')
       const [logsLoading, setLogsLoading] = useState(false)
       const [logFilter, setLogFilter] = useState('')
+      /** 级别门槛：与聚合日志同一套（0 全部 / 3 WARN+ / 4 ERROR+，见 filterByLevelCore）。 */
+      const [levelMin, setLevelMin] = useState(0)
       const [logAuto, setLogAuto] = useState(false)
       const [logIntervalSec, setLogIntervalSec] = useState(3)
       /*
@@ -2156,8 +2127,10 @@ window.__ModuleLoader__.load({
           : (logs !== null && typeof logs === 'object' && typeof logs.text === 'string' ? logs.text : '')
         const needle = logFilter.trim().toLowerCase()
         const allLines = raw === '' ? [] : raw.split('\n')
-        const matchedLines = needle === '' ? allLines : allLines.filter((line) => line.toLowerCase().includes(needle))
-        return { raw, needle, allLines, matchedLines }
+        // 先级别、再文本——与聚合日志同一顺序、同一个内核（含"续行继承上一条级别"）
+        const leveled = filterLinesByLevel(allLines, levelMin)
+        const matchedLines = needle === '' ? leveled : leveled.filter((line) => line.toLowerCase().includes(needle))
+        return { raw, needle, allLines, leveled, matchedLines }
       }
 
       const logPill = (on, label, onClick, options) => jsx('button', {
@@ -2172,7 +2145,6 @@ window.__ModuleLoader__.load({
 
       /** 日志工具条：并入详情头部那一行（紧凑布局，参考 tabby-docker-console）。 */
       const logControls = () => {
-        const { raw } = logStats()
         const tailOptions = [...new Set([100, 200, 500, 1000, 5000, Number(config.logTailDefault) || 200, Number(logOptions.tail) || 200])]
           .filter((value) => Number.isInteger(value) && value > 0)
           .sort((a, b) => a - b)
@@ -2216,7 +2188,7 @@ window.__ModuleLoader__.load({
            * data-spin → 图标转 + 高亮当前色）。
            */
           jsx(IconAction, { icon: ICON_REFRESH, title: '刷新日志', spin: logsLoading, onClick: loadLogs }, 'refresh'),
-          jsx(IconAction, { icon: ICON_DOWNLOAD, title: '下载日志', disabled: raw === '', onClick: () => downloadText(item.name + '.log', raw) }, 'download'),
+          // 导出移到过滤条（与聚合日志同处、同两种格式）；工具条只留传输与显示控制
         ] })
       }
 
@@ -2251,13 +2223,68 @@ window.__ModuleLoader__.load({
               children: jsx('span', { className: 'dk_iconGlyph', dangerouslySetInnerHTML: { __html: ICON_CLOSE } }),
             }, 'clear'),
           ] }),
-          jsx('span', { className: 'dk_filterCount', children: needle === '' ? String(allLines.length) + ' 行' : String(matchedLines.length) + ' / ' + String(allLines.length) + ' 行匹配' }),
+          jsx('select', {
+            className: 'dk_select dk_selectSm',
+            value: String(levelMin),
+            title: '按日志级别过滤（无级别前缀的行是上一条的续行，跟随其级别）',
+            onChange: (event) => setLevelMin(Number(event.target.value)),
+            children: [
+              jsx('option', { value: '0', children: '全部级别' }, 'all'),
+              jsx('option', { value: '3', children: 'WARN+' }, 'warn'),
+              jsx('option', { value: '4', children: 'ERROR+' }, 'error'),
+            ],
+          }, 'level'),
+          jsx('button', {
+            type: 'button',
+            className: 'dk_chip',
+            disabled: logShown().length === 0,
+            title: '导出当前显示内容为 .log（纯文本）',
+            onClick: () => doLogExport('log'),
+            children: '⬇ .log',
+          }, 'exportLog'),
+          jsx('button', {
+            type: 'button',
+            className: 'dk_chip',
+            disabled: logShown().length === 0,
+            title: '导出当前显示内容为 .md（带来源与行数表头，适合当工单附件）',
+            onClick: () => doLogExport('md'),
+            children: '⬇ .md',
+          }, 'exportMd'),
+          jsx('span', {
+            className: 'dk_filterCount',
+            children: needle === '' && levelMin === 0
+              ? String(allLines.length) + ' 行'
+              : String(matchedLines.length) + ' / ' + String(allLines.length) + ' 行',
+          }, 'count'),
         ] })
+      }
+
+      /** 当前**显示**的行：受级别 / 文本过滤与显示上限影响——渲染与「导出当前显示内容」共用它。 */
+      const logShown = () => {
+        const { matchedLines } = logStats()
+        return matchedLines.length > LOG_COLOR_LIMIT ? matchedLines.slice(-LOG_COLOR_LIMIT) : matchedLines
+      }
+
+      /** 导出当前显示内容：与聚合日志同一个构建器、同样两种格式。 */
+      const doLogExport = (format) => {
+        const rows = logShown().map((line) => {
+          const split = splitLogTimestamp(line)
+          return { service: item.name, ts: split.ts, text: split.text }
+        })
+        const text = buildLogExport(rows, {
+          format,
+          scope: '容器日志',
+          target: props.target,
+          targetLabel: props.targetLabel,
+          items: [item],
+        })
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+        downloadText(item.name + '-' + stamp + (format === 'md' ? '.md' : '.log'), text)
       }
 
       const logsView = () => {
         const { needle, matchedLines } = logStats()
-        const shown = matchedLines.length > LOG_COLOR_LIMIT ? matchedLines.slice(-LOG_COLOR_LIMIT) : matchedLines
+        const shown = logShown()
         return jsxs('div', { className: 'dk_logs', children: [
           logsError === '' ? null : jsx(Banner, {
             title: '读取日志失败',
@@ -2274,7 +2301,7 @@ window.__ModuleLoader__.load({
           followDropped ? jsx(Banner, {
             kind: 'warn',
             title: '日志超过 ' + String(FOLLOW_LINE_LIMIT) + ' 行，已丢弃最早内容',
-            hint: '流式日志只保留最近的行；需要完整历史请用快照或「下载日志」。',
+            hint: '流式日志只保留最近的行；需要完整历史请关掉 FOLLOW 用快照，或调大「LINES」。',
           }) : null,
           !follow && logs !== null && logs.truncated === true ? jsx(Banner, { kind: 'warn', title: '日志输出超过上限，已截断', hint: '调小「LINES」或到设置卡片调大「单次命令输出上限」。' }) : null,
           follow ? jsx('div', { className: 'dk_followState', 'data-state': followStatus, children: followStatusText() }) : null,
@@ -3051,17 +3078,30 @@ window.__ModuleLoader__.load({
      * 级别——否则「ERROR+」会把大段堆栈留在结果里、却把那条 ERROR 头行滤掉，筛选形同
      * 虚设。窗口开头就出现的续行（其记录头在窗口之外）无从判断，保留。
      */
-    function filterRowsByLevel(rows, minRank) {
+    function filterByLevelCore(rows, minRank, textOf) {
       if (typeof minRank !== 'number' || minRank <= 0) return rows
-      let inherited = null
       const out = []
+      let inherited = null
       for (const row of rows) {
-        const level = logLineLevelName(row.text)
+        const level = logLineLevelName(textOf(row))
         if (level !== null) inherited = level
         const rank = inherited === null ? null : (LOG_LEVEL_RANK[inherited] ?? 0)
         if (rank === null || rank >= minRank) out.push(row)
       }
       return out
+    }
+
+    /*
+     * 两个适配器：聚合日志过滤**行对象**，单容器日志过滤**纯文本行**。共用内核的意义是
+     * 那套「续行继承」语义只存在一处——两边各写一份，迟早有一边漏掉继承，而漏掉的症状
+     * 很隐蔽：筛选看起来在工作，只是堆栈被拦腰截断。
+     */
+    function filterRowsByLevel(rows, minRank) {
+      return filterByLevelCore(rows, minRank, (row) => row.text)
+    }
+
+    function filterLinesByLevel(lines, minRank) {
+      return filterByLevelCore(lines, minRank, (line) => line)
     }
 
     /** 导出行文本：带时间戳时用 ISO（便于外部工具排序）。 */
@@ -3078,8 +3118,10 @@ window.__ModuleLoader__.load({
       const body = rows.map(exportRowText).join('\n')
       if (options?.format !== 'md') return body
       const items = Array.isArray(options.items) ? options.items : []
+      // scope：单容器日志传「容器日志」，不传即聚合（两边同一套表头，只有标题与容器数不同）
+      const scope = typeof options.scope === 'string' && options.scope !== '' ? options.scope : '聚合日志'
       const lines = [
-        '# 聚合日志',
+        '# ' + scope,
         '',
         '- 来源：' + (typeof options.targetLabel === 'string' && options.targetLabel !== '' ? options.targetLabel + ' · ' : '') + (options.target ?? ''),
         '- 容器（' + String(items.length) + '）：' + items.map((item) => item.name).join('、'),
@@ -3380,7 +3422,7 @@ window.__ModuleLoader__.load({
           jsx('select', {
             className: 'dk_select dk_selectSm',
             value: String(levelMin),
-            title: '按日志级别过滤（无级别前缀的行始终保留）',
+            title: '按日志级别过滤（无级别前缀的行是上一条的续行，跟随其级别）',
             onChange: (event) => setLevelMin(Number(event.target.value)),
             children: [
               jsx('option', { value: '0', children: '全部级别' }, 'all'),
@@ -5776,6 +5818,8 @@ window.__ModuleLoader__.load({
       REORDER_TAIL: LOG_REORDER_TAIL,
       reorderTail: reorderTailByTimestamp,
       filterByLevel: filterRowsByLevel,
+      filterLinesByLevel,
+      buildLogExport,
       exportText: buildLogExport,
     }
     exports.apply = (ctx) => {
