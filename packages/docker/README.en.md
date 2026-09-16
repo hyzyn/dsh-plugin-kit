@@ -10,7 +10,7 @@
 - **Aggregated fetches across targets**: the Overview page fans out over every `targets[]` entry in parallel, and an unreachable target only spoils its own cell; the agent side exposes the same shape through `docker_ps target:"*"` / `docker_attention target:"*"`, so targets never block one another.
 - **"Needs attention" reads authoritative fields**: unhealthy / repeatedly restarting / OOM-killed / non-zero exit / dead; OOM and the real exit code come from one `docker inspect` — the 137 in a `docker ps` summary cannot separate an OOM kill from a manual kill, so filtering on the summary alone must misreport.
 - **Four long-lived SSE streams on one substrate**: log FOLLOW, `docker stats`, `docker events` and `docker pull` all run through the same `openSseStream` (heartbeat / active-stream registry / teardown on disconnect) and differ only in how they end — logs and pulls finish on their own, stats and events are aborted by the browser. Multi-select merged logs recover true cross-container ordering from the `--timestamps` prefix; "pause" freezes rendering only (the stream keeps receiving and flushes in one batch on resume).
-- **Read-only by default, capability switches in three tiers**: start / stop / remove, exec and image mutations are independent switches; while one is off the agent tools are **not registered** and the HTTP routes return 403 (the capability does not exist, rather than failing when called). Container names and IDs pass a whitelist, every command is built as argv with single-quote escaping, and passwords / passphrases are referenced as `env:VAR` and never sent back to the browser.
+- **Read-only by default, capability switches in three tiers**: start / stop / remove, exec and image mutations are independent switches; while one is off the agent tools are **not registered** and the HTTP routes return 403 (the capability does not exist, rather than failing when called). Container names and IDs pass a whitelist, every command is built as argv with single-quote escaping, and passwords / passphrases are referenced as `env:NAME` (resolved through the official credential layer, falling back to the environment) and never sent back to the browser.
 - **Right-click a log into the agent**: select the failing lines in the log view, then right-click for "send to the current session / fill the input box so I can edit first" — the selection travels with its target, container, time window and 20 lines of context on each side (the menu states plainly that the content enters the model context and may carry credentials). Delivery reports itself twice: a **viewport-level toast** (attached to `body`, above the panel and the terminal modal), and — when the terminal panel is open — an **automatic fold of the terminal** (`minimize()` on the `ttyPanel` v2 contract; sessions keep running and the sidebar "Terminal" entry's badge restores it), so the conversation is simply there. On older tty without that call it degrades to the toast's "the conversation is behind the panel" hint. To edit first, use the draft action — **the session input box is the only editing surface** (multi-line, with the full context in view, and exactly what the agent receives), instead of a second, weaker card editor.
 - **Data-level reuse of dsh-tty, no code coupling**: no tty code is imported and tty needs no source change, so the two install and upgrade independently; with tty present three optional extension points are consumed — connection-bar actions (`ttyConnbar`), the terminal host (`ttyTerminal`: a new tab under the tab/dock carriers, an in-place drawer under the modal) and the terminal-side dock (`ttyPanel.mountPane`, used only by the fallback path) — and each degrades silently without tty or below the required version.
 
@@ -453,12 +453,20 @@ Out-of-range numbers are clamped to the boundary, and a value of the wrong type 
 | `username` | `''` | inline SSH username (required when there is no `book`) |
 | `auth` | `agent` | `agent` (uses `SSH_AUTH_SOCK`) / `key` (uses `keyPath`) / `password` (uses `password` and also attaches keyboard-interactive) |
 | `keyPath` | `''` | private key path for `auth=key` (a leading `~` expands to home) |
-| `password` | `''` | password for `auth=password`; **prefer `env:VAR`** to reference an environment variable |
-| `passphrase` | `''` | private key passphrase; **prefer `env:VAR`** to reference an environment variable |
+| `password` | `''` | password for `auth=password`; **prefer `env:NAME`**, a credential reference |
+| `passphrase` | `''` | private key passphrase; **prefer `env:NAME`**, a credential reference |
 | `agentForward` | false | whether to forward the local ssh-agent (takes effect when `SSH_AUTH_SOCK` exists) |
 
-An `env:VAR` inside `password` / `passphrase` is resolved only when connecting (`process.env[VAR]`), and a missing or
-empty variable reports `环境变量未设置: VAR` ("environment variable not set: VAR") explicitly. These two values are **never sent back to the browser**:
+An `env:NAME` inside `password` / `passphrase` is a **credential reference** — exactly the official shape, where
+configuration holds only the reference and a provider owns the value. It is resolved **only when connecting**, in this order:
+
+1. the **official credential layer** (`ctx.credentials`, from `@deepseek-ai/dsh-credentials`), which layers
+   `file` (`$DSH_HOME/.credentials.yaml`) / `env` / `project-env` / `user-env` and re-resolves per operation — so a
+   changed credential reaches the next operation **without a host restart**;
+2. when that service is unavailable (older host, bundle not installed) or holds no such reference, `process.env[NAME]`.
+
+With neither, the error names **both** sources and carries the credential service's own error too — otherwise a broken
+credential service would masquerade as "you did not configure it", which is the hardest kind to diagnose. These two values are **never sent back to the browser**:
 the config snapshot only provides the two booleans `passwordSet` / `passphraseSet`.
 
 ### `hostKeys[]` (SSH host fingerprints, TOFU)
@@ -599,9 +607,10 @@ read-only first:
 2. **Destructive operations restate their consequences**. `remove` maps to `docker rm` (**without `-f`**), and the
    agent announcement requires confirming the target container with the user before running; a running container
    errors with a hint that "the container is still running: stop it before removing", never a silent force-delete.
-3. **Credentials do not land in plaintext (recommended)**. `password` / `passphrase` support `env:VAR` references,
-   and hosting the secrets with dsh-env-manager avoids plaintext in `settings.yaml`; `agent`
-   auth (`SSH_AUTH_SOCK`) is not written to disk at all. The config snapshot only answers "is it set".
+3. **Credentials do not land in plaintext (recommended)**. `password` / `passphrase` support `env:NAME` credential
+   references; the value lives in the **official credential store** (`$DSH_HOME/.credentials.yaml`, owned by the
+   credential layer's provider), so no plaintext reaches `settings.yaml` — and no env-plugin middleman is required.
+   `agent` auth (`SSH_AUTH_SOCK`) is not written to disk at all. The config snapshot only answers "is it set".
 4. **Host fingerprint TOFU pinning**. The first connection records the sha256 fingerprint; every later one must
    match, and a change rejects the connection (MITM protection); a host tty has already confirmed is trusted directly
    as a seed and copied into this plugin's records. TOFU's inherent limits are that "if the first connection already

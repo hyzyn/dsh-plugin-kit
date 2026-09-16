@@ -101,6 +101,55 @@ test('parsePorts：多段映射与去重', () => {
   ])
 })
 
+await test('凭据解析：官方凭据服务优先，缺失/未命中再退回环境变量', async () => {
+  const { resolveSecretVia } = exec
+  assert.equal(typeof resolveSecretVia, 'function', '缺少 resolveSecretVia（纯核心）')
+  const NAME = 'DSH_DOCKER_SMOKE_SECRET'
+  delete process.env[NAME]
+  let calls = 0
+  const provider = (impl) => ({ resolve: async (ref) => { calls += 1; return impl(ref) } })
+
+  // 1) 非引用原样返回，且**不打扰**凭据服务
+  assert.equal(await resolveSecretVia(provider(() => ({ value: 'x' })), '明文密码'), '明文密码')
+  assert.equal(calls, 0, '不是 env: 引用就不该去问凭据服务')
+
+  // 2) 凭据服务命中：用它（这是"直接存在官方凭据存储里就能用"的那条路）
+  assert.equal(await resolveSecretVia(provider(() => ({ value: 'from-store' })), 'env:' + NAME), 'from-store')
+
+  // 3) 服务在、但这个引用没有 → 退回环境变量（老行为不丢）
+  process.env[NAME] = 'from-env'
+  assert.equal(await resolveSecretVia(provider(() => undefined), 'env:' + NAME), 'from-env')
+
+  // 4) 服务抛错时**不吞**：环境变量还在就继续用
+  assert.equal(await resolveSecretVia(provider(() => { throw new Error('service down') }), 'env:' + NAME), 'from-env')
+
+  // 5) 两边都没有 → 报错里要能看出「查过凭据服务」与「环境变量也没有」
+  delete process.env[NAME]
+  await assert.rejects(
+    () => resolveSecretVia(provider(() => undefined), 'env:' + NAME),
+    (error) => {
+      assert.match(error.message, new RegExp(NAME), '错误应点名引用名')
+      assert.match(error.message, /环境变量里也没有/, '错误应说清环境变量也查过')
+      return true
+    },
+  )
+
+  // 6) 服务抛错 + 环境变量也没有 → 错误里要带上服务那边的原因，否则"服务坏了"会伪装成"你没配"
+  await assert.rejects(
+    () => resolveSecretVia(provider(() => { throw new Error('service down') }), 'env:' + NAME),
+    (error) => {
+      assert.match(error.message, /凭据服务报错：service down/, '应带上凭据服务的原因')
+      return true
+    },
+  )
+
+  // 7) 服务不可用（未装 / 老宿主）时退回环境变量；undefined 输入仍是 undefined
+  process.env[NAME] = 'from-env'
+  assert.equal(await resolveSecretVia(null, 'env:' + NAME), 'from-env')
+  assert.equal(await resolveSecretVia(null, undefined), undefined)
+  delete process.env[NAME]
+})
+
 /* ------------------------------------------------------------------ *
  * 2. stats / images 解析
  * ------------------------------------------------------------------ */

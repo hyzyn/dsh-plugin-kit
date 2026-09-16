@@ -2,7 +2,7 @@ import z from '@deepseek-ai/schemastery';
 import { definePlugin } from '@hyzyn/dsh-kit';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { DockerApi, assertBin, assertImageRef, assertRef, createRunner, parseImageHistoryJson, parseImageHistoryText, parseContainerEvent, parseEventsJson, parseImageInspectJson, parseInspectJson, parsePsJson, parseStatsJson, } from './docker.js';
-import { RemoteExec, sshTarget } from './ssh-exec.js';
+import { RemoteExec, setCredentialResolver, sshTarget } from './ssh-exec.js';
 const TARGET_SCHEMA = z.object({
     name: z.string().required(),
     kind: z.union([z.const('local'), z.const('ssh')]).default('local'),
@@ -13,7 +13,7 @@ const TARGET_SCHEMA = z.object({
     username: z.string().default(''),
     auth: z.union([z.const('agent'), z.const('key'), z.const('password')]).default('agent'),
     keyPath: z.string().default(''),
-    /** 建议写 `env:VAR` 引用（env 插件托管），避免明文落盘。 */
+    /** 建议写 `env:NAME` 凭据引用（官方凭据层解析），避免明文落盘。 */
     password: z.string().default(''),
     passphrase: z.string().default(''),
     agentForward: z.boolean().default(false),
@@ -1755,6 +1755,21 @@ const plugin = definePlugin({
             }
         };
         // tools 服务（可选）：拿到后注册一次，能力开关变化时 refreshTools 重注册
+        /*
+         * 官方凭据层（可选，`@deepseek-ai/dsh-credentials` 提供的 `ctx.credentials`）。
+         *
+         * 配置里的 `env:NAME` 是一个**引用**（这正是官方的模式：配置只持引用，值归 provider），
+         * 而 provider 会叠 `file`（`$DSH_HOME/.credentials.yaml`）/ `env` / `project-env` /
+         * `user-env` 各层，并保证「每次操作重新解析」——改完下一个操作即生效，不必重启宿主。
+         * 我们从前直接读 `process.env`，等于只认其中一层，而且拿的是进程启动时的快照。
+         *
+         * 服务缺失（老宿主 / 未装该 bundle）时不注册，`resolveSecret` 自己退回 `process.env`，
+         * 行为与从前一致——所以这是**可选**依赖，不抬高 engines 下限。
+         */
+        ctx.inject(['credentials'], (credCtx) => {
+            setCredentialResolver(credCtx.credentials ?? null);
+            return () => { setCredentialResolver(null); };
+        });
         ctx.inject(['tools'], (toolsCtx) => {
             toolsCtx.effect(() => {
                 toolsApi = toolsCtx.tools;
