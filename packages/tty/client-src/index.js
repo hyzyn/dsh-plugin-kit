@@ -1212,7 +1212,7 @@ function teardownDockPane(notify) {
  * 文件列表、本地↔远程双栏）用 bottom —— 全宽摆得下更多列，也不挤终端宽度。
  */
 function mountDockPane(options) {
-  if (modalEl === null) openModal()
+  ensureModalVisible()
   if (workEl === null) throw new Error('ttyPanel.mountPane：终端面板未就绪')
   if (dockPane !== null) teardownDockPane(true)
   ensureStyle()
@@ -4414,6 +4414,18 @@ function showBodyOverlay(text) {
   bodyOverlayEl.textContent = text
 }
 
+/**
+ * 让终端面板**可见**：没有就创建，最小化中就恢复。
+ *
+ * 别把这里退回成 `if (modalEl === null) openModal()`：**最小化不是关闭**——`modalEl` 还在，
+ * 于是内容会被加进一个隐藏的弹窗，消费方（dsh-docker 卡片上的「终端」按钮）看到的是
+ * 「点了没反应」。`openModal()` 自己已经处理了「最小化中 → restoreModal()」，缺的只是有人叫它。
+ * 实测复现：开一个 exec 标签 → 再开一个终端标签 → 最小化 → 再点 exec，毫无反应。
+ */
+function ensureModalVisible() {
+  if (modalEl === null || minimized) openModal()
+}
+
 function openModal() {
   if (modalEl !== null) {
     // 已在运行：最小化中则从悬浮条恢复，否则保持现状
@@ -5724,7 +5736,8 @@ function TtySettingsCard() {
           const spawnSpec = buildTerminalSpec(options, command)
           const label = typeof options?.label === 'string' && options.label !== '' ? options.label : undefined
           ensureStyle()
-          if (modalEl === null) openModal()
+          // 最小化中也要恢复（否则标签加进隐藏的弹窗里，用户看到"点了没反应"）
+          ensureModalVisible()
           addTab(spawnSpec, label)
         },
         /**
