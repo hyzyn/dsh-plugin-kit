@@ -4190,20 +4190,20 @@ window.__ModuleLoader__.load({
       const item = props.item
       const label = FEED_KIND_LABEL[item.kind] ?? item.kind
       if (item.kind === 'end') {
-        return jsxs('div', { className: 'dk_drawerItem', 'data-kind': 'end', children: [
-          jsx('span', { className: 'dk_drawerTag', children: label }),
-          jsx('span', { className: 'dk_drawerText', children: '完成（' + String(item.reason) + '）' }),
+        return jsxs('div', { className: 'dk_agentItem', 'data-kind': 'end', children: [
+          jsx('span', { className: 'dk_agentTag', children: label }),
+          jsx('span', { className: 'dk_agentText', children: '完成（' + String(item.reason) + '）' }),
         ] })
       }
       if (item.kind === 'tool') {
-        return jsxs('div', { className: 'dk_drawerItem', 'data-kind': 'tool', children: [
-          jsx('span', { className: 'dk_drawerTag', children: label }),
-          jsx('span', { className: 'dk_drawerTool', children: item.name + (item.args === '' ? '' : ' ' + item.args) }),
+        return jsxs('div', { className: 'dk_agentItem', 'data-kind': 'tool', children: [
+          jsx('span', { className: 'dk_agentTag', children: label }),
+          jsx('span', { className: 'dk_agentTool', children: item.name + (item.args === '' ? '' : ' ' + item.args) }),
         ] })
       }
-      return jsxs('div', { className: 'dk_drawerItem', 'data-kind': item.kind, children: [
-        jsx('span', { className: 'dk_drawerTag', children: label + (item.failed === true ? '（失败）' : '') }),
-        jsx('span', { className: 'dk_drawerText', children: item.text === '' ? '（空）' : item.text }),
+      return jsxs('div', { className: 'dk_agentItem', 'data-kind': item.kind, children: [
+        jsx('span', { className: 'dk_agentTag', children: label + (item.failed === true ? '（失败）' : '') }),
+        jsx('span', { className: 'dk_agentText', children: item.text === '' ? '（空）' : item.text }),
       ] })
     }
 
@@ -4241,16 +4241,28 @@ window.__ModuleLoader__.load({
           : '还没有内容。用日志右键「直接发送到当前会话」，这里会跟着滚。')
         : feed.items.map((item, index) => jsx(AgentDrawerItem, { item }, 'item-' + String(index)))
 
-      return jsxs('div', { className: 'dk_drawer', 'data-status': feed.status, children: [
-        jsxs('div', { className: 'dk_drawerHead', children: [
-          jsx('span', { className: 'dk_drawerDot', 'data-status': feed.status }),
-          jsx('span', { className: 'dk_drawerTitle', children: 'Agent' }),
-          jsx('span', { className: 'dk_drawerSub', children: feedStatusText(feed.status) }),
-          jsx('span', { className: 'dk_drawerGrow' }),
-          // 「跳到会话」在标签承载下没必要（同屏）；docked / 模态下 tty 面板没有关闭或最小化
-          // 的接口（契约只有 version / isOpen / mountPane），我们关不掉它，只能给一句指引
+      return jsxs('div', {
+        className: 'dk_agent',
+        'data-status': feed.status,
+        'data-open': open ? '1' : undefined,
+        children: [
+        jsxs('div', { className: 'dk_agentHead', children: [
+          jsx('span', { className: 'dk_agentDot', 'data-status': feed.status }),
+          jsx('span', { className: 'dk_agentTitle', children: 'Agent' }),
+          jsx('span', { className: 'dk_agentSub', children: feedStatusText(feed.status) }),
+          jsx('span', { className: 'dk_agentGrow' }),
+          /*
+           * 「去哪儿看」放进 tooltip，**不占栏内文字**：dock 承载下面板只有五六百像素宽，
+           * 一句完整说明会把状态行挤没。投递那一刻的 toast 已经说过一遍，这里备查即可。
+           * （没做「跳到会话」按钮：tty 面板的公开契约只有 version / isOpen / mountPane，
+           * 关不掉也最小化不了，给个按不动的按钮不如把话说清。）
+           */
           props.conversationHidden === true
-            ? jsx('span', { className: 'dk_drawerHint', children: '会话在面板后面：关掉或最小化面板/终端即可看到' })
+            ? jsx('span', {
+              className: 'dk_agentHint',
+              title: '会话在面板后面：关掉或最小化面板/终端即可看到',
+              children: '会话在别处',
+            })
             : null,
           jsx('button', {
             type: 'button',
@@ -4259,7 +4271,7 @@ window.__ModuleLoader__.load({
             children: open ? '收起' : '展开',
           }),
         ] }),
-        jsx('div', { className: 'dk_drawerBody', ref: bodyRef, hidden: open !== true, children: body }),
+        jsx('div', { className: 'dk_agentBody', ref: bodyRef, hidden: open !== true, children: body }),
       ] })
     }
 

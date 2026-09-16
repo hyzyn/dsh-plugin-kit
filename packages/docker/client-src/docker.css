@@ -1258,14 +1258,28 @@
 }
 
 /* ---------- Agent 抽屉（方案 ④） ---------- */
-/* 面板底部的实时回复区；收起态只有一条标题栏 */
-.dk_drawer {
+/*
+ * 命名空间刻意用 dk_agent*：`dk_drawer*` 是**终端抽屉**（模态下就地嵌入的那个）的，
+ * 复用会让两边互改样式——实测踩过：Agent 栏被套进终端抽屉的 height: min(46%,380px)，
+ * 栏下面凭空多出 380px 空盒。有专门的用例守着这条（样式命名空间不得撞车）。
+ *
+ * 几何与终端抽屉保持同一套语言：收起态只有一条标题栏，展开态才要真实高度。
+ */
+.dk_agent {
   flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
   border-top: 1px solid var(--dk-border);
   background: var(--dk-surface-solid);
 }
 
-.dk_drawerHead {
+/* 展开：给它真实高度（窄承载下面板本来就不高，46% 上限 + 380px 封顶） */
+.dk_agent[data-open="1"] {
+  height: min(46%, 380px);
+  min-height: 160px;
+}
+
+.dk_agentHead {
   display: flex;
   align-items: center;
   gap: var(--dk-gap-sm);
@@ -1274,46 +1288,47 @@
   min-width: 0;
 }
 
-.dk_drawerDot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; background: var(--dk-label-3); }
-.dk_drawerDot[data-status="running"] { background: var(--dk-accent); }
-.dk_drawerDot[data-status="done"] { background: var(--dk-success); }
-.dk_drawerDot[data-status="stopped"] { background: var(--dk-danger); }
-.dk_drawerDot[data-status="unavailable"] { background: var(--dk-warn); }
+.dk_agentDot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; background: var(--dk-label-3); }
+.dk_agentDot[data-status="running"] { background: var(--dk-accent); }
+.dk_agentDot[data-status="done"] { background: var(--dk-success); }
+.dk_agentDot[data-status="stopped"] { background: var(--dk-danger); }
+.dk_agentDot[data-status="unavailable"] { background: var(--dk-warn); }
 
-.dk_drawerTitle { font-weight: 600; color: var(--dk-label); flex: 0 0 auto; }
-.dk_drawerSub { color: var(--dk-label-3); flex: 0 0 auto; }
-.dk_drawerHint { color: var(--dk-label-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dk_drawerGrow { flex: 1 1 auto; min-width: 0; }
+.dk_agentTitle { font-weight: 600; color: var(--dk-label); flex: 0 0 auto; }
+.dk_agentSub { color: var(--dk-label-3); flex: 0 0 auto; }
+.dk_agentHint { color: var(--dk-label-3); flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: help; }
+.dk_agentGrow { flex: 1 1 auto; min-width: 0; }
 
-.dk_drawerBody {
-  max-height: 200px;
+.dk_agentBody {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow: auto;
   display: flex;
   flex-direction: column;
   gap: var(--dk-gap-sm);
-  padding: var(--dk-gap-sm) var(--dk-gap-md) var(--dk-gap-md);
+  padding: var(--dk-gap-sm) var(--dk-gap-md) var(--dk-gap-lg);
   border-top: 1px solid var(--dk-border);
   font-size: 12px;
   line-height: 1.6;
 }
 
 /* 收起态：hidden 必须显式覆盖 display:flex，否则属性不起作用 */
-.dk_drawerBody[hidden] { display: none; }
+.dk_agentBody[hidden] { display: none; }
 
-.dk_drawerItem { display: flex; gap: var(--dk-gap-sm); align-items: baseline; min-width: 0; }
-.dk_drawerItem[data-kind="reasoning"] { color: var(--dk-label-3); font-style: italic; }
-.dk_drawerItem[data-kind="result"] { color: var(--dk-label-2); }
-.dk_drawerItem[data-kind="end"] { color: var(--dk-label-3); }
+.dk_agentItem { display: flex; gap: var(--dk-gap-sm); align-items: baseline; min-width: 0; }
+.dk_agentItem[data-kind="reasoning"] { color: var(--dk-label-3); font-style: italic; }
+.dk_agentItem[data-kind="result"] { color: var(--dk-label-2); }
+.dk_agentItem[data-kind="end"] { color: var(--dk-label-3); }
 
-.dk_drawerTag {
+.dk_agentTag {
   flex: 0 0 auto;
   min-width: 34px;
   color: var(--dk-label-3);
   font-size: 11px;
 }
 
-.dk_drawerText, .dk_drawerTool { white-space: pre-wrap; word-break: break-word; min-width: 0; }
-.dk_drawerTool { font-family: var(--dk-mono); color: var(--dk-accent); }
+.dk_agentText, .dk_agentTool { white-space: pre-wrap; word-break: break-word; min-width: 0; }
+.dk_agentTool { font-family: var(--dk-mono); color: var(--dk-accent); }
 
 /* 【SPIKE · 验完删除】探针的排版：把读数摊成两列 */
 .dk_spike {
