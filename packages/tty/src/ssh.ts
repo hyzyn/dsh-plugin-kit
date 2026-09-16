@@ -141,14 +141,67 @@ export interface HostKeyStore {
   record(host: string, port: number, fingerprint: string): void
 }
 
-/** `env:VAR` 前缀从 process.env 取值；否则原样返回。 */
-function resolveSecret(value: string | undefined): string | undefined {
+/**
+ * 官方凭据服务的**最小结构面**（结构类型，不把这个包加成本插件依赖）。
+ *
+ * 契约见 `@deepseek-ai/dsh-credentials`：`resolve(ref)` **每次操作重新解析、不得跨操作缓存**，
+ * 返回 `{ value, source }` 或 undefined。这里只声明用到的那一个方法——既不必引依赖，也能在
+ * 服务缺失时静态看出"没有它"。
+ */
+export interface CredentialResolver {
+  resolve(ref: string): Promise<{ value: string } | undefined>
+}
+
+let credentialsProvider: CredentialResolver | null = null
+
+/** 由 index.ts 在可选注入里挂上（服务缺失即为 null，退回 process.env）。 */
+export function setCredentialResolver(resolver: CredentialResolver | null): void {
+  credentialsProvider = resolver
+}
+
+/**
+ * 解析密钥引用（`env:NAME`）——**纯核心**，provider 由调用方给，便于离线断言。
+ *
+ * 顺序：官方凭据 provider **优先**（它自己叠 `file`（`$DSH_HOME/.credentials.yaml`）/ `env` /
+ * `project-env` / `user-env` 各层，而且"每次操作重新解析"——改完下一个操作即生效，不必重启
+ * 宿主）；服务不在、或它没有这个引用时，再退回 `process.env`。
+ *
+ * 为什么必须走 provider：凭据存储里的值**永远不会被 materialize 进环境**（provider README 原话：
+ * "a store the harness owns and never materializes into the environment"），所以只读
+ * `process.env` 等于"存进凭据存储的值连接时根本读不到" ✗ —— 这正是「存入凭据存储」这条链此前
+ * 断掉的地方（客户端那半切好了、宿主这半没切）。
+ *
+ * provider 抛错**不吞**：记下来，若环境变量也没有就把两个来源一起写进错误里。否则"凭据服务
+ * 坏了"会伪装成"你没配"，而那是最难查的一类。
+ */
+export async function resolveSecretVia(
+  provider: CredentialResolver | null,
+  value: string | undefined,
+): Promise<string | undefined> {
   if (value === undefined) return undefined
   if (!value.startsWith('env:')) return value
   const name = value.slice(4)
-  const resolved = process.env[name]
-  if (resolved === undefined || resolved === '') throw new Error(`环境变量未设置: ${name}`)
-  return resolved
+  let providerError: string | null = null
+  if (provider !== null && provider !== undefined && typeof provider.resolve === 'function') {
+    try {
+      const resolved = await provider.resolve(name)
+      if (resolved !== null && resolved !== undefined && typeof resolved.value === 'string' && resolved.value !== '') {
+        return resolved.value
+      }
+    } catch (error) {
+      providerError = error instanceof Error ? error.message : String(error)
+    }
+  }
+  const fromEnv = process.env[name]
+  if (fromEnv !== undefined && fromEnv !== '') return fromEnv
+  const detail = providerError === null ? '' : `（凭据服务报错：${providerError}）`
+  const missing = provider === null ? '凭据服务不可用，' : ''
+  throw new Error(`凭据未设置：${name}${detail} —— ${missing}环境变量里也没有`)
+}
+
+/** 生产路径：用当前注入的 provider（`index.ts` 注入；没注入就是 null）。 */
+export async function resolveSecret(value: string | undefined): Promise<string | undefined> {
+  return resolveSecretVia(credentialsProvider, value)
 }
 
 function expandHome(path: string): string {
@@ -170,8 +223,13 @@ export function sshTarget(spec: SshSpec): string {
  * 连接与 channel 包装
  * ------------------------------------------------------------------ */
 
-/** 构造连接配置（认证三态 + keepalive + hostHash）；隧道管理器与 spawnSsh 共用。 */
-export function buildConnectConfig(spec: SshSpec): ConnectConfig {  const auth = spec.auth ?? 'agent'
+/**
+ * 构造连接配置（认证三态 + keepalive + hostHash）；spawnSsh / probeSsh / SFTP / 隧道共用。
+ *
+ * **async**：`env:NAME` 引用要经官方凭据 provider 解析（每操作重解析，不可缓存），见
+ * resolveSecretVia —— 这是"存入凭据存储"的值能被连接真正用到的唯一通路。
+ */
+export async function buildConnectConfig(spec: SshSpec): Promise<ConnectConfig> {  const auth = spec.auth ?? 'agent'
   const base: ConnectConfig = {
     host: spec.host,
     port: spec.port ?? 22,
@@ -190,10 +248,10 @@ export function buildConnectConfig(spec: SshSpec): ConnectConfig {  const auth =
       throw new Error('auth=key 需要 keyPath（私钥路径）')
     }
     base.privateKey = readFileSync(expandHome(spec.keyPath.trim()))
-    const passphrase = resolveSecret(spec.passphrase)
+    const passphrase = await resolveSecret(spec.passphrase)
     if (passphrase !== undefined) base.passphrase = passphrase
   } else {
-    const password = resolveSecret(spec.password)
+    const password = await resolveSecret(spec.password)
     if (password === undefined) throw new Error('auth=password 需要 password（或 env:VAR 引用）')
     base.password = password
     // 大量服务端（如部分路由器/堡垒机）只开 keyboard-interactive
@@ -279,8 +337,8 @@ export async function spawnSsh(spec: SshSpec, options: SshSpawnOptions): Promise
     settleDone({ exitCode, signal: exitSignal })
   }
 
-  // 认证配置可能抛错（keyPath 读不到 / env 变量缺失）——先构造再连
-  const connectConfig = buildConnectConfig(spec)
+  // 认证配置可能抛错（keyPath 读不到 / 引用解析不到）——先构造再连
+  const connectConfig = await buildConnectConfig(spec)
   const policy = applyHostKeyPolicy({ connectConfig, spec, store: options.hostKeyStore, logger, target })
 
   /** 持久会话：远程 tmux 探测/降级提示（spawn 后由调用方注入终端）。 */

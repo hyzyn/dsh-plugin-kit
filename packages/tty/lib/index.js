@@ -14,7 +14,7 @@ import xtermHeadless from '@xterm/headless';
 const HeadlessTerminal = xtermHeadless.Terminal;
 import { definePlugin } from '@hyzyn/dsh-kit';
 import { defineTool } from '@deepseek-ai/dsh-tools';
-import { spawnSsh, sshTarget, expandHome } from './ssh.js';
+import { spawnSsh, sshTarget, expandHome, setCredentialResolver } from './ssh.js';
 import { probeSsh } from './probe.js';
 import { buildCommandSpawn, buildShellSpawn } from './shell-integration.js';
 import { parseSshConfig } from './ssh-config.js';
@@ -2120,6 +2120,22 @@ const plugin = definePlugin({
             }
             return { patch };
         };
+        /*
+         * credentials（**可选**依赖）：连接簿里的 `env:NAME` 是**引用**，值归官方凭据 provider ——
+         * 它自己叠 `file`（`$DSH_HOME/.credentials.yaml`）/ `env` / `project-env` / `user-env` 各层，
+         * 并保证「每次操作重新解析」（改完下一个操作即生效，不必重启宿主）。
+         *
+         * 为什么必须走它：凭据存储里的值**永远不会 materialize 进环境**（provider README 原话），
+         * 所以只读 `process.env` 等于"存进凭据存储的密码连接时读不到" —— 「保存时存入凭据存储」
+         * 那条链此前就是断在这里（客户端那半切好了、宿主这半没切）。
+         *
+         * 服务缺失（老宿主 / 未装该 bundle）时不注册，`resolveSecret` 自己退回 `process.env`，行为与
+         * 从前一致 —— 所以这是**可选**依赖，不抬高 engines 下限。
+         */
+        ctx.inject(['credentials'], (credCtx) => {
+            setCredentialResolver(credCtx.credentials ?? null);
+            return () => { setCredentialResolver(null); };
+        });
         // webServer：WS upgrade 路由 + 配置读写路由（/api/dsh-tty/config）
         ctx.inject(['webServer'], (webCtx) => {
             webCtx.effect(() => {

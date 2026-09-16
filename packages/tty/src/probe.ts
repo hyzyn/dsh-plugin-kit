@@ -203,7 +203,7 @@ export async function probeSsh(spec: SshSpec, store?: HostKeyStore): Promise<Pro
   // ---- 阶段 2+3：ssh2 握手（host key 交换 + 认证） ----
   let connectConfig: ConnectConfig
   try {
-    connectConfig = buildConnectConfig(spec)
+    connectConfig = await buildConnectConfig(spec)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     result.auth = { ok: false, error: classifyError(message) }

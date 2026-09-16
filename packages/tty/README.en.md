@@ -146,6 +146,15 @@ lacks that service the box is switched back off and disabled, with a note that o
   section), yet “which names have I stored” is exactly the question this picker answers. It also makes
   **orphan references** (old names left behind by a rename or a naming-rule change) visible, selectable and
   clearable again.
+- **Resolution path (what makes a stored value actually usable when connecting)**: connecting, the probe, SFTP
+  and port tunnels all funnel through one `buildConnectConfig`, whose `env:NAME` is resolved by the **official
+  credential provider** (`resolve`, re-resolved per operation — a change lands on the next operation, no host
+  restart). Only when the provider has no such reference, or the host has no such service, does it fall back to
+  `process.env`. **Why the provider is mandatory here**: values in the credential store are **never materialized
+  into the environment** (the provider README's own words: “a store the harness owns and never materializes into
+  the environment”), so reading `process.env` alone means “a stored password is unreadable at connect time”. A
+  provider error is never swallowed — when the environment lacks it too, the error names both sources (otherwise
+  “the credential service is broken” masquerades as “you did not configure it”).
 - **The conservative boundary (know this)**: `~/.credentials.yaml` is a **0600 plain file with no master
   password and no OS keychain** — it keeps out **other OS users**, not processes running as you, and not the
   agent; and it is **machine-local**, so a new machine means storing again. The industry consensus still
@@ -305,9 +314,12 @@ and the agent tools all reuse the same scheduling.
   - `agent` (default) — uses ssh-agent (`SSH_AUTH_SOCK`), credentials never touch disk, most recommended;
   - `key` — `keyPath` private key file (a leading `~` may omit home), `passphrase` optional;
   - `password` — password authentication, with keyboard-interactive attached as well (many servers only offer that);
-- **Passwords / passphrases support `env:VAR`**: when `password` / `passphrase` is `env:MY_SECRET`,
-  the value is read from the host process environment (pair it with the dsh-env-manager plugin to hold
-  secrets, keeping plaintext out of the settings file);
+- **Passwords / passphrases support `env:VAR`**: when `password` / `passphrase` is `env:MY_SECRET`, the value
+  is resolved through the **credential layer** — the official credential provider first (layering
+  `$DSH_HOME/.credentials.yaml`, the process environment, `project-env` and `user-env`, re-resolved on every
+  connection), falling back to the host process environment only when the provider has no such reference
+  (pair it with the dsh-env-manager plugin to hold secrets, keeping plaintext out of the settings file). A
+  failed resolution names both the reference and the fact that neither source had it;
 - **Port**: 22 by default; a non-22 port shows in the target as `user@host:port`;
 - **Tabs and status**: an SSH tab title uses the connection name or `user@host` (local tabs are
   “Terminal N”); while connecting it first echoes a grey `Connecting user@host …`, and once ready the status
@@ -326,8 +338,8 @@ and the agent tools all reuse the same scheduling.
   passphrase fields in the SSH dialog there is a filter box plus a height-limited list whose candidates are
   **the reference names the credential store already knows** (the host reads the `refs:` keys of
   `.credentials.yaml` — **names only, never values**) ∪ **the reference names this machine's connection book
-  already uses**; clicking one fills in `env:NAME`, and any `env:NAME` can still be typed by hand (existence is
-  validated at connect time).
+  already uses**; clicking one fills in `env:NAME`, and any `env:NAME` can still be typed by hand (resolution at
+  connect time goes through the **credential layer**: the provider first, `process.env` as the fallback).
   **Why read the file / why not the env plugin's managed list**: the official discovery path for references is
   "a configuration surface learns which references exist **from its own settings schema**" — the reference half is
   **deliberately not enumerable** (the wording in `@deepseek-ai/dsh-credentials`'s `listRecords` docs: “the
