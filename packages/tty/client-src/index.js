@@ -98,16 +98,41 @@ function wsUrl() {
 }
 
 /**
+ * FNV-1a（32 位）转 8 位十六进制：只用来让派生出的引用名**唯一**，不承担任何安全用途。
+ */
+function fnv1aHex(text) {
+  let hash = 0x811c9dc5
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index)
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+  return hash.toString(16).padStart(8, '0').toUpperCase()
+}
+
+/**
  * 由连接名派生一个**合法的凭据引用名**（POSIX 标识符、大写）。
  *
- * 引用是**被多个插件共享的扁平命名空间**（环境变量名那一套），所以加 `DSH_TTY_` 前缀，
- * 避免与用户真实的环境变量撞名——前缀同时保证首字符不是数字（那也是引用文法的一部分）。
- * 用户想换名字，直接改字段里的引用即可；改名连接不会回头改动已存的引用（会留下一个孤儿，
- * 用「清除已存凭据」按字段里的引用清掉）。
+ * **中文名是必须处理的情况**：引用文法只认 ASCII 标识符（`isCredentialRefName` 那套），而连接簿
+ * 名字常常是中文——只做 `[^A-Z0-9] → _` 会把它清空，于是所有中文名的连接都塌到同一个引用上，
+ * 后存的密码**静默覆盖**前面的（实测发现）。所以含非 ASCII 时额外拼一段**由完整名字派生的稳定
+ * 短哈希**：唯一性保住了，能读的部分照旧留着。
+ *
+ * 前缀 `DSH_TTY_` 有两个作用：避免与用户真实的环境变量撞名（引用是各插件共享的扁平命名空间），
+ * 以及保证首字符不是数字（那也是引用文法的一部分）。
+ *
+ * 派生结果就摆在字段里，嫌哈希难看可以直接改成好记的名字——那正是「引用可见」的意义。
  */
 function derivedCredentialRef(name, suffix) {
-  const base = String(name ?? '').toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '')
-  return 'DSH_TTY_' + (base === '' ? 'ENTRY' : base) + '_' + suffix
+  const raw = String(name ?? '')
+  if (raw.trim() === '') return ''
+  const ascii = raw.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+  // 含非 ASCII 就补哈希；用 join 拼，避免出现连续下划线那种难看的名字
+  const parts = ['DSH_TTY']
+  if (ascii !== '') parts.push(ascii)
+  // eslint-disable-next-line no-control-regex
+  if (/[^\x20-\x7E]/.test(raw)) parts.push(fnv1aHex(raw))
+  parts.push(suffix)
+  return parts.join('_')
 }
 
 function newSid() {
@@ -2305,8 +2330,14 @@ function openSshDialog(entry) {
         }
         const remote = api()
         if (remote === null || typeof remote.set !== 'function') return
-        // 名字优先取「连接簿名称」（用户看得见的身份），其次连接名、主机
-        const ref = derivedCredentialRef(fields.name.value.trim() || entry?.name || fields.host.value, suffix)
+        // 名字优先取「连接簿名称」（用户看得见的身份），其次连接名、主机。
+        // 名字为空就直接拒绝：派生名会退化成常量，等于把所有无名连接挤到同一个引用上。
+        const nameSource = String(fields.name.value.trim() || entry?.name || fields.host.value || '').trim()
+        if (nameSource === '') {
+          setStatus('先填「连接簿名称」再存入——引用名由它派生', 'error')
+          return
+        }
+        const ref = derivedCredentialRef(nameSource, suffix)
         saveBtn.disabled = true
         try {
           await remote.set(ref, value)
