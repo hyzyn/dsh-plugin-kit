@@ -97,6 +97,19 @@ function wsUrl() {
   return proto + '//' + location.host + WS_PATH
 }
 
+/**
+ * 由连接名派生一个**合法的凭据引用名**（POSIX 标识符、大写）。
+ *
+ * 引用是**被多个插件共享的扁平命名空间**（环境变量名那一套），所以加 `DSH_TTY_` 前缀，
+ * 避免与用户真实的环境变量撞名——前缀同时保证首字符不是数字（那也是引用文法的一部分）。
+ * 用户想换名字，直接改字段里的引用即可；改名连接不会回头改动已存的引用（会留下一个孤儿，
+ * 用「清除已存凭据」按字段里的引用清掉）。
+ */
+function derivedCredentialRef(name, suffix) {
+  const base = String(name ?? '').toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+  return 'DSH_TTY_' + (base === '' ? 'ENTRY' : base) + '_' + suffix
+}
+
 function newSid() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID()
   return 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10)
@@ -184,6 +197,17 @@ let sessionsService = null
 let socket = null
 let modalEl = null
 let statusChipEl = null
+
+/**
+ * 官方凭据引用的**浏览器侧命名空间**（`ctx.remote.credentials`）。
+ *
+ * 「记住密码」要落到官方凭据存储，而不是把明文写进设置文件——配置持引用、值归存储，
+ * 这既是 SecureCRT「命名凭据集按标题引用」那一派，也正是 DSH 自己设置卡片的做法
+ * （`describe` / `set` / `unset`，值**单向写入、没有任何读路径**）。
+ *
+ * 可选：老宿主没有 `remote` 时保持 null，对话框那一行会禁用按钮并说明原因。
+ */
+let credentialsRemote = null
 let statusEl = null
 let statusDotEl = null
 let tabbarEl = null
@@ -2191,8 +2215,136 @@ function openSshDialog(entry) {
       },
     }
   }
+  /**
+   * 「凭据存储」那一行：状态 + 存入 / 清除。
+   *
+   * 模型与**官方的设置卡片**一致（`ctx.remote.credentials`）：值**永不回显**——只有 describe
+   * 给的 configured / writable / source；而**引用是可见的**，存完字段里就是 `env:NAME`，
+   * 用户看得见发生了什么、也能直接改名字。
+   *
+   * 因为保存 / 试连 / 连接读的都是 `fields.*.value`，把字段换成引用之后下游一行都不用动。
+   */
+  const credentialRow = (input, suffix) => {
+    const row = document.createElement('div')
+    row.className = 'tt_sshRow tt_credRow'
+    const status = document.createElement('span')
+    status.className = 'tt_credStatus'
+    const actions = document.createElement('span')
+    actions.className = 'tt_credActions'
+    const saveBtn = document.createElement('button')
+    saveBtn.type = 'button'
+    saveBtn.className = 'tt_toolBtn'
+    saveBtn.textContent = '存入凭据存储'
+    const clearBtn = document.createElement('button')
+    clearBtn.type = 'button'
+    clearBtn.className = 'tt_toolBtn'
+    clearBtn.textContent = '清除已存凭据'
+    actions.appendChild(saveBtn)
+    actions.appendChild(clearBtn)
+    const note = document.createElement('span')
+    note.className = 'tt_cardHint'
+    note.textContent = '明文会写进设置文件；存入凭据存储后这里只留引用（值在 ~/.dsh/.credentials.yaml，'
+      + '不进环境、不回传浏览器；挡不住同用户进程与 agent）。能用密钥 / agent 就别存密码。'
+    row.appendChild(status)
+    row.appendChild(actions)
+    row.appendChild(note)
+
+    const messageOf = (error) => (error instanceof Error ? error.message : String(error))
+    const refOfField = () => {
+      const value = input.value.trim()
+      return value.startsWith('env:') ? value.slice(4) : ''
+    }
+    const setStatus = (text, kind) => {
+      status.textContent = text
+      status.dataset.kind = kind
+    }
+    const api = () => (credentialsRemote !== null && typeof credentialsRemote.describe === 'function' ? credentialsRemote : null)
+
+    /** 只问状态、不问值：`describe` 没有读路径。 */
+    const refresh = async () => {
+      const remote = api()
+      saveBtn.disabled = remote === null || typeof remote.set !== 'function'
+      clearBtn.disabled = true
+      if (remote === null) {
+        setStatus(credentialsRemote === null ? '宿主未提供凭据服务，只能明文保存' : '凭据服务不完整，只能明文保存', 'muted')
+        return
+      }
+      const ref = refOfField()
+      if (ref === '') {
+        // 空字段保持安静：新开连接时不该先吓人一跳
+        setStatus(input.value.trim() === '' ? '' : '当前为明文（未存入凭据存储）', 'plain')
+        return
+      }
+      try {
+        const response = await remote.describe([ref])
+        const view = response?.ok === true ? response.value?.[ref] : undefined
+        if (view === undefined) {
+          setStatus('引用 ' + ref + '：宿主未报告状态', 'plain')
+          return
+        }
+        const configured = view.configured === true
+        setStatus('引用 ' + ref + (configured
+          ? (typeof view.source === 'string' && view.source !== '' ? '（已存入，来源 ' + view.source + '）' : '（已存入）')
+          : '：存储里还没有这个值'), configured ? 'ok' : 'plain')
+        clearBtn.disabled = configured !== true || view.writable !== true
+      } catch (error) {
+        setStatus('读取凭据状态失败：' + messageOf(error), 'error')
+      }
+    }
+
+    saveBtn.addEventListener('click', () => {
+      void (async () => {
+        const value = input.value.trim()
+        if (value === '') {
+          setStatus('先在密码框里填上密码，再存入', 'error')
+          return
+        }
+        if (value.startsWith('env:')) {
+          setStatus('已经是凭据引用了，无需再存', 'plain')
+          return
+        }
+        const remote = api()
+        if (remote === null || typeof remote.set !== 'function') return
+        // 名字优先取「连接簿名称」（用户看得见的身份），其次连接名、主机
+        const ref = derivedCredentialRef(fields.name.value.trim() || entry?.name || fields.host.value, suffix)
+        saveBtn.disabled = true
+        try {
+          await remote.set(ref, value)
+        } catch (error) {
+          // 官方要求：拒绝要**原文**给用户看（典型是只读源遮蔽了这个引用）
+          setStatus('存入失败：' + messageOf(error), 'error')
+          saveBtn.disabled = false
+          return
+        }
+        input.value = 'env:' + ref
+        await refresh()
+      })()
+    })
+
+    clearBtn.addEventListener('click', () => {
+      void (async () => {
+        const ref = refOfField()
+        const remote = api()
+        if (ref === '' || remote === null || typeof remote.unset !== 'function') return
+        try {
+          await remote.unset(ref)
+        } catch (error) {
+          setStatus('清除失败：' + messageOf(error), 'error')
+          return
+        }
+        input.value = ''
+        await refresh()
+      })()
+    })
+
+    // 失焦时对一次状态（手改引用名也算）；不用 input 事件——密码框每敲一个字符都去问宿主没必要。
+    input.addEventListener('change', () => { void refresh() })
+    return { row, refresh }
+  }
+
   const passphraseEnv = envSelectRow(fields.passphrase)
   const passwordEnv = envSelectRow(fields.password)
+  const passwordCred = credentialRow(fields.password, 'PASSWORD')
   let envNamesLoaded = false
   const loadEnvNames = async () => {
     if (envNamesLoaded) return
@@ -2215,6 +2367,7 @@ function openSshDialog(entry) {
   card.appendChild(passphraseEnv.row)
   card.appendChild(passwordRow)
   card.appendChild(passwordEnv.row)
+  card.appendChild(passwordCred.row)
 
   card.appendChild(sectionLabel('选项'))
   const fwdRow = document.createElement('label')
@@ -2470,9 +2623,12 @@ function openSshDialog(entry) {
     passphraseEnv.row.style.display = fields.auth.value === 'key' ? '' : 'none'
     passwordRow.style.display = fields.auth.value === 'password' ? '' : 'none'
     passwordEnv.row.style.display = fields.auth.value === 'password' ? '' : 'none'
+    passwordCred.row.style.display = fields.auth.value === 'password' ? '' : 'none'
   }
   fields.auth.addEventListener('change', syncAuthRows)
   syncAuthRows()
+  // 新建连接也要对一次凭据状态：宿主没有凭据服务时，这一行得先禁用并说明原因
+  void passwordCred.refresh()
 
   cancelBtn.addEventListener('click', () => closeSshDialog())
   backdrop.addEventListener('mousedown', (event) => {
@@ -5714,6 +5870,14 @@ function TtySettingsCard() {
     exports.inject = ['slots', 'sessions']
     exports.apply = (ctx) => {
       sessionsService = ctx.sessions
+      /*
+       * 官方凭据引用的浏览器侧命名空间（可选）。只依赖 `remote` 这一个必选服务，
+       * `credentials` 子命名空间在使用时再判——老宿主 / 未装 provider 时按钮自己禁用。
+       */
+      ctx.inject(['remote'], (remoteCtx) => {
+        credentialsRemote = remoteCtx.remote?.credentials ?? null
+        return () => { credentialsRemote = null }
+      })
       // 侧栏入口先按可见挂载（与旧行为一致），config 确认禁用后由闸门收起；
       // 运行期显隐由 syncSshHostsCache（各处 config 拉取/保存共用出口）驱动
       let entryMounted = false
