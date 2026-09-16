@@ -232,7 +232,7 @@ Inside the panel:
   `LINES` (tail line count) / `TIMESTAMPS` / **`FOLLOW` (live follow, see below)** /
   `AUTO REFRESH` (a switch plus 2/3/5/10s intervals, polling on the log page only) + refresh / close;
   the second row = the tabs + an **always-present** "filter logs" input (an ✕ floats inside to clear when it has
-  content, and Esc clears too) + a **level threshold** (`all / WARN+ / ERROR+`) + **export**
+  content, and Esc clears too) + a **level threshold** (`all / INFO+ / WARN+ / ERROR+` — `INFO+` is the "quiet but keep what matters" step: the noise is almost always DEBUG and below, and `WARN+` would drop INFO along with it) + **export**
   (`⬇ .log` / `⬇ .md`, exporting **what is currently displayed**) + the line count in a fixed slot on the right.
   **The split between the rows is deliberate**: the first row is *transport and display* (snapshot / stream /
   polling), the second is *content* — and the second row is **exactly the same as the merged log view**: one level

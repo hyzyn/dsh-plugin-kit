@@ -543,6 +543,26 @@ await test('日志过滤对齐：级别门槛的「续行继承」对行对象�
   assert.deepEqual(pick.filterLinesByLevel(['  at orphan(X.java:9)'], 4), ['  at orphan(X.java:9)'], '窗口开头就是续行 → 无从判断，保留')
 })
 
+await test('日志级别档位：共用一份定义，含 INFO+（真实日志里最常用的那一档）', () => {
+  const agg = aggLogsApi()
+  const options = agg.LEVEL_OPTIONS
+  assert.ok(Array.isArray(options), '缺少 LEVEL_OPTIONS 测试缝')
+  // 档位：全部 / INFO+ / WARN+ / ERROR+（rank 2 = INFO）。没有 DEBUG+/TRACE+ 的理由见源码注释：
+  // 噪音几乎都在 DEBUG 及以下，而 INFO 往往正是要看的那档。
+  assert.deepEqual(options.map((option) => option.value), [0, 2, 3, 4])
+  assert.deepEqual(options.map((option) => option.label), ['全部级别', 'INFO+', 'WARN+', 'ERROR+'])
+
+  // INFO+ 的**行为**：留下 INFO 及以上，丢掉 DEBUG —— 这正是它存在的意义
+  const lines = ['[DEBUG] noise', '[INFO] useful', '[ERROR] boom']
+  assert.deepEqual(agg.filterLinesByLevel(lines, 2), ['[INFO] useful', '[ERROR] boom'])
+
+  // 「共用一份定义」不是口号：每个标签在产物里只能出现一次——两个视图各写一套必然出现两次
+  const decoded = code.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+  for (const option of options) {
+    assert.equal(decoded.split(option.label).length - 1, 1, option.label + ' 在产物里出现了多次（视图各写了一套选项？）')
+  }
+})
+
 await test('日志导出对齐：两种格式共用构建器，只有标题与作用域不同', () => {
   const pick = aggLogsApi()
   const rows = [{ service: 'web', ts: 1755000000000, text: 'ERROR boom' }]
