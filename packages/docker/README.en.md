@@ -86,6 +86,12 @@ inside a container detail belong to that container and are not kept. **Collapsin
 stream** (handing the SSH channels back) and expanding reconnects — single-container and merged log streams
 already open with `tail`, so history refills itself.
 
+**Stickiness across sessions**: DSH's right-sidebar tab records are **session-scoped** (`sidebar.right.pane.tab`
+and `rightbar.session` both declare `scope: 'session'`), so a tab opened in session A does not exist in session B.
+The panel inspects hosts, though, and losing it on a session switch is pure loss — so the plugin additionally
+keeps a "the user wants this open" intent: **switching sessions reopens the tab in the new session**, and only
+clicking the tab's ✕ stops that. The panel follows the person, not the session.
+
 **Dock fallback carrier** (right of the terminal):
 
 ![docker panel docked to the right of the terminal panel: the terminal stays visible and usable](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-docker-dock.png)
