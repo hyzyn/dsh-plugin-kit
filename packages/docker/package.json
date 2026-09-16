@@ -60,8 +60,9 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && node scripts/build-client.mjs",
-    "typecheck": "tsc --noEmit",
-    "smoke": "node scripts/smoke.mjs && node scripts/route-smoke.mjs && node scripts/client-smoke.mjs"
+    "typecheck": "tsc --noEmit && node scripts/client-lint.mjs",
+    "smoke": "node scripts/smoke.mjs && node scripts/route-smoke.mjs && node scripts/client-smoke.mjs",
+    "lint:client": "node scripts/client-lint.mjs"
   },
   "files": [
     "lib",
