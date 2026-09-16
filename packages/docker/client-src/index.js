@@ -3767,6 +3767,15 @@ window.__ModuleLoader__.load({
       const [target, setTarget] = useState(rememberedTargetRef.current)
       /** 从 tty 连接栏进来、但会话主机没匹配到任何目标：不自动选目标，只提示去配置。 */
       const sessionScoped = props.sessionHint !== undefined && (props.initialTarget ?? '') === ''
+      /**
+       * 「会话主机还不是 Docker 目标」那条横幅的**自愈开关**（见挂载时拉目标列表那段）。
+       *
+       * 为什么需要它：`sessionHint` 是**点连接栏按钮那一刻**解析出来的快照 —— 那一刻目标缓存
+       * 可能还没热（挂载时那次 /targets 仍在飞或失败过），于是判定"没匹配上"、面板带着提示打开；
+       * 等面板自己的列表到位、发现其实**能**匹配时，那个快照不会自动失效，横幅就成了一句假话
+       * （用户会看到"没配置为 Docker 目标"，而下面的目标选择器里明明就有它）。
+       */
+      const [sessionHintStale, setSessionHintStale] = useState(false)
       const [view, setView] = usePanelState('view', 'containers')
       const [containers, setContainers] = useState([])
       /**
@@ -3945,9 +3954,21 @@ window.__ModuleLoader__.load({
           primeTargetsCache(next)
         }).catch((error_) => setError(error_.message))
         api.targets().then((payload) => {
-          setTargets(payload.targets ?? [])
-          targetsCache = payload.targets ?? []
-          setTarget((current) => chooseInitialTarget(payload.targets ?? [], current, rememberedTargetRef.current, sessionScoped))
+          const rows = payload.targets ?? []
+          setTargets(rows)
+          targetsCache = rows
+          // 冷缓存竞态的自愈：打开时没匹配上（sessionHint 兜底），现在列表到了——再匹配一次。
+          // 匹配上就切到那个目标并撤掉那条横幅（否则横幅会一直说"还没配置为 Docker 目标"，
+          // 而列表里明明就有），这也正是「从连接栏进来」这个入口本来该有的行为。
+          const lateMatch = props.sessionHint === undefined
+            ? undefined
+            : matchTargetForSession({ host: props.sessionHint.host, port: props.sessionHint.port }, props.sessionHint.book)
+          if (lateMatch !== undefined) {
+            setSessionHintStale(true)
+            setTarget(lateMatch)
+          } else {
+            setTarget((current) => chooseInitialTarget(rows, current, rememberedTargetRef.current, sessionScoped))
+          }
           // 校验过就清掉「记住值」的优先级：之后的重选一律以用户当前选择为准
           rememberedTargetRef.current = ''
         }).catch(() => { /* 目标列表失败时下面的容器加载会给出错误 */ })
@@ -5144,7 +5165,7 @@ window.__ModuleLoader__.load({
                  */
                 error === '' || view === 'overview' ? null : jsx(Banner, { title: '操作失败', hint: error }),
                 notice === '' ? null : jsx(Banner, { kind: 'info', title: notice }),
-                props.sessionHint === undefined ? null : jsx(Banner, {
+                props.sessionHint === undefined || sessionHintStale ? null : jsx(Banner, {
                   kind: 'info',
                   title: '当前会话主机还没配置为 Docker 目标',
                   hint: '会话主机：' + props.sessionHint.host + (props.sessionHint.port === 22 ? '' : ':' + String(props.sessionHint.port))
