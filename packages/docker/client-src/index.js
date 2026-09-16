@@ -4483,12 +4483,16 @@ window.__ModuleLoader__.load({
 
       /**
        * 告诉桥接层「会话此刻是否被面板挡住」——投递成功的视口回执据此补一句「去哪儿看」。
-       * tab 承载下右侧栏与对话同屏（不用补），模态 / docked 下会挡（补）。
+       *
+       * 这里刻意读 `props.carrier`，**不用**下面那个 `tabbed`：`tabbed` 在几百行之后才声明，
+       * 而 deps 数组是**渲染时立即求值**的，写 `[tabbed]` 会撞 TDZ
+       * （`Cannot access 'tabbed' before initialization`）——整棵 React 树随之被卸载，docked
+       * 形态下只剩 tty 画的外壳，看起来就是「面板空白」。实测踩过，别改回去。
        */
       useEffect(() => {
-        conversationHiddenHint = tabbed ? '' : ' · 会话在面板后面：关掉或最小化面板/终端即可看到'
+        conversationHiddenHint = props.carrier === 'tab' ? '' : ' · 会话在面板后面：关掉或最小化面板/终端即可看到'
         return () => { conversationHiddenHint = '' }
-      }, [tabbed])
+      }, [props.carrier])
 
       /** 复制 docker exec 命令（终端能力不可用时的兜底）。 */
       const copyExecCommand = (item, reason) => {
@@ -5930,6 +5934,17 @@ window.__ModuleLoader__.load({
       shouldReopen: shouldReopenTab,
       /** 投递（测试缝）：成功 / 失败的回执行为要能回归。 */
       deliver: deliverToSession,
+    }
+    /*
+     * 渲染期守卫的测试缝：桩里 JSX 创建**不会执行组件体**（`jsx(Comp, ...)` 只是造个对象，
+     * `useEffect` 也是空实现），于是渲染期异常——TDZ、读未定义字段之类——一路溜过所有用例。
+     * 实测踩过一次：effect 的 deps 数组写了个几百行之后才声明的 const（TDZ），整棵 React 树
+     * 被卸载，docked 面板只剩 tty 画的外壳，看着就是「面板空白」。
+     * 把组件体挂出来，用例直接调一次就能守住这一类。
+     */
+    exports.__render = {
+      ContainerPanel,
+      DockerTabBody,
     }
     exports.__pick = {
       MAX: PICK_MAX,
