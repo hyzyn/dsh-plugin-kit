@@ -2268,13 +2268,9 @@ window.__ModuleLoader__.load({
           jsx('select', {
             className: 'dk_select dk_selectSm',
             value: String(levelMin),
-            title: '按日志级别过滤（无级别前缀的行是上一条的续行，跟随其级别）',
+            title: '按日志级别过滤（显示 ≥ 所选级别；无级别前缀的行是上一条的续行，跟随其级别）',
             onChange: (event) => setLevelMin(Number(event.target.value)),
-            children: [
-              jsx('option', { value: '0', children: '全部级别' }, 'all'),
-              jsx('option', { value: '3', children: 'WARN+' }, 'warn'),
-              jsx('option', { value: '4', children: 'ERROR+' }, 'error'),
-            ],
+            children: LOG_LEVEL_OPTIONS.map((option) => jsx('option', { value: String(option.value), children: option.label }, String(option.value))),
           }, 'level'),
           jsx('button', {
             type: 'button',
@@ -3069,6 +3065,23 @@ window.__ModuleLoader__.load({
     const LOG_LEVEL_RANK = { TRACE: 0, DEBUG: 1, INFO: 2, WARN: 3, ERROR: 4, FATAL: 5 }
 
     /**
+     * 级别门槛的可选项，**两个视图共用一份**（单容器日志页与聚合日志）。
+     *
+     * 为什么有 `INFO+` 而没有 `DEBUG+` / `TRACE+`：真实日志里噪音几乎都在 DEBUG 及以下，而
+     * INFO 往往正是要看的那一档——只有 `WARN+` 会把 INFO 一起滤掉，于是"想清静但别丢关键信息"
+     * 这个最常见诉求反而没有对应档位。再往上加档位（`DEBUG+` 只滤掉 TRACE、`FATAL+` 极少用）
+     * 不值一个下拉项，所以停在 4 档。
+     *
+     * 一份定义的另一个好处：两个视图不可能再各写一套选项而走岔（这正是上一轮刚对齐过的东西）。
+     */
+    const LOG_LEVEL_OPTIONS = [
+      { value: 0, label: '全部级别' },
+      { value: 2, label: 'INFO+' },
+      { value: 3, label: 'WARN+' },
+      { value: 4, label: 'ERROR+' },
+    ]
+
+    /**
      * 从一行正文里取级别名。两种常见排布都要吃：
      *   `[INFO] [2026-09-09 …] …`（级别在前）
      *   `16:11:34,150 |ERROR in …`（Spring Boot：先时间戳再 ｜级别）
@@ -3475,14 +3488,10 @@ window.__ModuleLoader__.load({
           jsx('select', {
             className: 'dk_select dk_selectSm',
             value: String(levelMin),
-            title: '按日志级别过滤（无级别前缀的行是上一条的续行，跟随其级别）',
+            title: '按日志级别过滤（显示 ≥ 所选级别；无级别前缀的行是上一条的续行，跟随其级别）',
             onChange: (event) => setLevelMin(Number(event.target.value)),
-            children: [
-              jsx('option', { value: '0', children: '全部级别' }, 'all'),
-              jsx('option', { value: '3', children: 'WARN+' }, 'warn'),
-              jsx('option', { value: '4', children: 'ERROR+' }, 'error'),
-            ],
-          }),
+            children: LOG_LEVEL_OPTIONS.map((option) => jsx('option', { value: String(option.value), children: option.label }, String(option.value))),
+          }, 'level'),
           jsx('button', {
             type: 'button',
             className: 'dk_chip',
@@ -5873,6 +5882,7 @@ window.__ModuleLoader__.load({
       filterByLevel: filterRowsByLevel,
       filterLinesByLevel,
       buildLogExport,
+      LEVEL_OPTIONS: LOG_LEVEL_OPTIONS,
       TAIL_OPTIONS: AGG_TAIL_OPTIONS,
       TAIL_DEFAULT: AGG_TAIL_DEFAULT,
       exportText: buildLogExport,
