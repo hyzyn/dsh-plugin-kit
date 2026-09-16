@@ -1483,17 +1483,10 @@ window.__ModuleLoader__.load({
      */
     let logMenuEl = null
     let logMenuOff = null
-    let askCardEl = null
-    let askCardOff = null
 
     function closeLogMenu() {
       if (logMenuOff !== null) { logMenuOff(); logMenuOff = null }
       if (logMenuEl !== null) { logMenuEl.remove(); logMenuEl = null }
-    }
-
-    function closeAskCard() {
-      if (askCardOff !== null) { askCardOff(); askCardOff = null }
-      if (askCardEl !== null) { askCardEl.remove(); askCardEl = null }
     }
 
     /** 先把浮层放锚点上，越界就朝反方向翻——面板常贴着屏幕右 / 下边。 */
@@ -1694,85 +1687,6 @@ window.__ModuleLoader__.load({
     /* ---------------------- 预览卡片 ---------------------- */
 
     /** 预览卡片：发送前可改。刻意**不因点外部而关闭**——里面可能已经改过字。 */
-    function openAskCard(options) {
-      closeAskCard()
-      const card = document.createElement('div')
-      card.className = 'dk_askCard'
-      card.setAttribute('role', 'dialog')
-
-      const head = document.createElement('div')
-      head.className = 'dk_askCardHead'
-      head.textContent = options.head
-      card.appendChild(head)
-
-      const area = document.createElement('textarea')
-      area.className = 'dk_askCardText'
-      area.spellcheck = false
-      area.value = options.prompt
-      card.appendChild(area)
-
-      const status = document.createElement('div')
-      status.className = 'dk_askCardStatus'
-      card.appendChild(status)
-
-      const foot = document.createElement('div')
-      foot.className = 'dk_askCardFoot'
-      const button = (label, kind, onClick) => {
-        const btn = document.createElement('button')
-        btn.type = 'button'
-        btn.className = 'dk_btn' + (kind === undefined ? '' : ' ' + kind)
-        btn.textContent = label
-        btn.addEventListener('click', onClick)
-        foot.appendChild(btn)
-        return btn
-      }
-      const sendBtn = button('发送', 'dk_btnPrimary', () => {
-        void run('send', sendBtn)
-      })
-      const draftBtn = button('只填输入框', undefined, () => {
-        void run('draft', draftBtn)
-      })
-      button('复制', undefined, () => {
-        copyToClipboard(area.value).then(
-          () => { status.textContent = '已复制诊断包'; status.dataset.kind = 'ok' },
-          (error) => { status.textContent = '复制失败：' + (error instanceof Error ? error.message : String(error)); status.dataset.kind = 'error' },
-        )
-      })
-      const cancelBtn = button('取消', undefined, () => closeAskCard())
-      card.appendChild(foot)
-
-      const hint = document.createElement('div')
-      hint.className = 'dk_askCardHint'
-      hint.textContent = '内容会进入模型上下文，请留意其中的凭证与用户数据。'
-      card.appendChild(hint)
-
-      const run = async (mode, btn) => {
-        sendBtn.disabled = true
-        draftBtn.disabled = true
-        cancelBtn.disabled = true
-        btn.textContent = mode === 'send' ? '发送中…' : '写入中…'
-        const result = await deliverToSession(area.value, mode)
-        if (result.ok === true) { closeAskCard(); return }
-        status.textContent = result.message
-        status.dataset.kind = 'error'
-        sendBtn.disabled = false
-        draftBtn.disabled = false
-        cancelBtn.disabled = false
-        btn.textContent = mode === 'send' ? '发送' : '只填输入框'
-      }
-
-      document.body.appendChild(card)
-      const rect = card.getBoundingClientRect()
-      card.style.left = String(Math.round(Math.max(8, (window.innerWidth - rect.width) / 2))) + 'px'
-      card.style.top = String(Math.round(Math.max(8, (window.innerHeight - rect.height) / 2))) + 'px'
-      area.focus()
-      askCardEl = card
-
-      const onKey = (event) => { if (event.key === 'Escape') closeAskCard() }
-      document.addEventListener('keydown', onKey, true)
-      askCardOff = () => document.removeEventListener('keydown', onKey, true)
-    }
-
     /**
      * 右键入口：解析行区间 → 弹菜单。`context` 由各视图给出（目标 / 目标标签 /
      * 涉及容器 / 当前是否在过滤）。
@@ -1792,16 +1706,6 @@ window.__ModuleLoader__.load({
         sub: describeSelection(context, range) + (disabled ? ' · ' + reason : ' · 当前会话'),
         items: [
           {
-            label: '预览后发送…',
-            hint: '可改完再发',
-            disabled,
-            reason,
-            onPick: () => openAskCard({
-              head: '发送日志片段到当前会话',
-              prompt: build(),
-            }),
-          },
-          {
             label: '直接发送到当前会话',
             hint: '立即开始分析',
             disabled,
@@ -1809,8 +1713,8 @@ window.__ModuleLoader__.load({
             onPick: () => { void deliverToSession(build(), 'send').then(reportDelivery) },
           },
           {
-            label: '只填入输入框',
-            hint: '不发送',
+            label: '填入输入框，我先改改',
+            hint: '不发送；终端折起，你在会话里改完再发',
             disabled,
             reason,
             onPick: () => { void deliverToSession(build(), 'draft').then(reportDelivery) },
