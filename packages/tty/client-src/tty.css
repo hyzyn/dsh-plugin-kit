@@ -1435,6 +1435,33 @@
   display: flex;
   flex-direction: column;
   gap: 5px;
+  /* env 变量选择器的浮层基准（见下面 .tt_sshRow > .tt_envList） */
+  position: relative;
+}
+
+/*
+ * 对话框里的 env 变量选择器做成**浮层**：展开时不再把「选项 / 连接簿名称 / 底部按钮」推下去。
+ * 实测症状是聚焦筛选框的一瞬间整块内容位移，看着像对话框在跳——列表本来是文档流里的
+ * flex 子项，长一截就撑长整张卡片。
+ *
+ * 只作用于 .tt_sshRow 内：同一个 .tt_envList 在**设置卡片**（React 侧）是内联的 shell 路径
+ * 候选，那里推动内容是正常的，别一起改。
+ *
+ * 已知边界：卡片是 `overflow-y: auto`，浮层如果贴到卡片下缘会被裁。当前两个选择器
+ * （私钥口令 / 密码）都在对话框中段，180px 放得下；真遇到贴底的位置，再改成 `position: fixed`
+ * + `getBoundingClientRect()` 定位——那反而天然逃出卡片的 overflow（backdrop 有
+ * `backdrop-filter`，fixed 会以它为包含块）。
+ */
+.tt_sshRow > .tt_envList {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 3;
+  margin-top: 4px;
+  max-height: 180px;
+  background: var(--tt-surface-2);
+  box-shadow: var(--tt-shadow);
 }
 .tt_sshSection {
   margin: 4px 0 -2px;
