@@ -102,9 +102,16 @@ sessions — dev server logs and key interactions on the remote machine remain a
 
 ### Credential storage (a connection password need not stay plaintext)
 
-Under **Password** in the connection dialog sits a **credential storage** row: it stores the password in
-the **official credential store** and leaves only an `env:NAME` reference in the field (the value lives in
-`~/.dsh/.credentials.yaml`, never materialized into the environment and never sent back to the browser).
+Under **Password** in the connection dialog sits a **credential storage** row: tick "store when saving" and the
+password is written to the **official credential store**, leaving only an `env:NAME` reference in the field (the value
+lives in `~/.dsh/.credentials.yaml`, never materialized into the environment and never sent back to the browser).
+
+- **It rides along with saving — no extra click**: the tick is executed by "save changes" / "connect (and save)", so
+  there is no dangling reference from "stored but not saved". **Without "save to the connection book" it never touches
+  the store** — there would be no configuration to reference the value, only an orphan.
+- **Deliberately compact**: in plaintext mode the row is a single checkbox; only once the field holds a reference does
+  it swap in "clear stored credential" and the status (`already stored (source file) · reference name`). The full
+  security boundary lives in the checkbox's tooltip instead of taking up dialog space.
 
 - **Model**: configuration holds a **reference**, the store owns the value — the same family as SecureCRT's
   "credential set referenced by title" and iTerm2's "pick a named entry from the password manager". The

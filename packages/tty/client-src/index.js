@@ -2258,30 +2258,41 @@ function openSshDialog(entry) {
    *
    * 因为保存 / 试连 / 连接读的都是 `fields.*.value`，把字段换成引用之后下游一行都不用动。
    */
+  /**
+   * 「保存时存入凭据存储」那一行。
+   *
+   * 交互刻意压到**明文态只有一行**：一个勾选框 + （有引用时才出现的）清除按钮与状态。
+   * 「存入」不再是一个独立动作——它跟着「保存修改 / 连接（并保存）」一起发生，省掉一次点击，
+   * 也不会出现"存了但没保存"的悬空引用。勾选框的 title 里写清边界，正文不再铺三行说明。
+   *
+   * 模型与**官方的设置卡片**一致（`ctx.remote.credentials`）：值永不回显，只有 describe 给的
+   * configured / writable / source；**引用是可见的**，存完字段里就是 `env:NAME`。
+   */
   const credentialRow = (input, suffix) => {
     const row = document.createElement('div')
     row.className = 'tt_sshRow tt_credRow'
-    const status = document.createElement('span')
-    status.className = 'tt_credStatus'
-    const actions = document.createElement('span')
-    actions.className = 'tt_credActions'
-    const saveBtn = document.createElement('button')
-    saveBtn.type = 'button'
-    saveBtn.className = 'tt_toolBtn'
-    saveBtn.textContent = '存入凭据存储'
+    const toggle = document.createElement('label')
+    toggle.className = 'tt_credToggle'
+    const remember = document.createElement('input')
+    remember.type = 'checkbox'
+    remember.className = 'tt_cardCheckbox'
+    const rememberText = document.createElement('span')
+    rememberText.textContent = '保存时存入凭据存储'
+    toggle.appendChild(remember)
+    toggle.appendChild(rememberText)
+    toggle.title = '勾选后，点「保存修改」或「连接（并保存）」时把密码写进官方凭据存储，'
+      + '字段里只留 env: 引用（值在 ~/.dsh/.credentials.yaml，不进环境、不回传浏览器；'
+      + '挡不住同用户进程与 agent）。不勾选则按现状明文写进设置文件。能用密钥 / agent 就别存密码。'
     const clearBtn = document.createElement('button')
     clearBtn.type = 'button'
-    clearBtn.className = 'tt_toolBtn'
+    clearBtn.className = 'tt_toolBtn tt_credClear'
     clearBtn.textContent = '清除已存凭据'
-    actions.appendChild(saveBtn)
-    actions.appendChild(clearBtn)
-    const note = document.createElement('span')
-    note.className = 'tt_cardHint'
-    note.textContent = '明文会写进设置文件；存入凭据存储后这里只留引用（值在 ~/.dsh/.credentials.yaml，'
-      + '不进环境、不回传浏览器；挡不住同用户进程与 agent）。能用密钥 / agent 就别存密码。'
+    clearBtn.dataset.hidden = ''
+    const status = document.createElement('span')
+    status.className = 'tt_credStatus'
+    row.appendChild(toggle)
+    row.appendChild(clearBtn)
     row.appendChild(status)
-    row.appendChild(actions)
-    row.appendChild(note)
 
     const messageOf = (error) => (error instanceof Error ? error.message : String(error))
     const refOfField = () => {
@@ -2297,16 +2308,23 @@ function openSshDialog(entry) {
     /** 只问状态、不问值：`describe` 没有读路径。 */
     const refresh = async () => {
       const remote = api()
-      saveBtn.disabled = remote === null || typeof remote.set !== 'function'
-      clearBtn.disabled = true
+      const ref = refOfField()
+      const refMode = ref !== ''
+      // 已是引用 = 值已经存过了：勾选框没有意义，换上「清除」与状态
+      toggle.hidden = refMode
+      clearBtn.hidden = !refMode
+      status.hidden = false
       if (remote === null) {
+        remember.disabled = true
+        clearBtn.disabled = true
         setStatus(credentialsRemote === null ? '宿主未提供凭据服务（remote.credentials），只能明文保存' : '凭据服务不完整，只能明文保存', 'muted')
         return
       }
-      const ref = refOfField()
-      if (ref === '') {
-        // 空字段保持安静：新开连接时不该先吓人一跳
-        setStatus(input.value.trim() === '' ? '' : '当前为明文（未存入凭据存储）', 'plain')
+      remember.disabled = false
+      if (!refMode) {
+        // 明文态保持安静：打开对话框不该先念一段说明
+        status.hidden = true
+        setStatus('', 'plain')
         return
       }
       try {
@@ -2317,49 +2335,14 @@ function openSshDialog(entry) {
           return
         }
         const configured = view.configured === true
-        setStatus('引用 ' + ref + (configured
-          ? (typeof view.source === 'string' && view.source !== '' ? '（已存入，来源 ' + view.source + '）' : '（已存入）')
-          : '：存储里还没有这个值'), configured ? 'ok' : 'plain')
+        setStatus(configured
+          ? '已存入' + (typeof view.source === 'string' && view.source !== '' ? '（来源 ' + view.source + '）' : '') + ' · ' + ref
+          : '引用 ' + ref + '：存储里还没有这个值', configured ? 'ok' : 'plain')
         clearBtn.disabled = configured !== true || view.writable !== true
       } catch (error) {
         setStatus('读取凭据状态失败：' + messageOf(error), 'error')
       }
     }
-
-    saveBtn.addEventListener('click', () => {
-      void (async () => {
-        const value = input.value.trim()
-        if (value === '') {
-          setStatus('先在密码框里填上密码，再存入', 'error')
-          return
-        }
-        if (value.startsWith('env:')) {
-          setStatus('已经是凭据引用了，无需再存', 'plain')
-          return
-        }
-        const remote = api()
-        if (remote === null || typeof remote.set !== 'function') return
-        // 名字优先取「连接簿名称」（用户看得见的身份），其次连接名、主机。
-        // 名字为空就直接拒绝：派生名会退化成常量，等于把所有无名连接挤到同一个引用上。
-        const nameSource = String(fields.name.value.trim() || entry?.name || fields.host.value || '').trim()
-        if (nameSource === '') {
-          setStatus('先填「连接簿名称」再存入——引用名由它派生', 'error')
-          return
-        }
-        const ref = derivedCredentialRef(fields.host.value, fields.port.value, nameSource, suffix)
-        saveBtn.disabled = true
-        try {
-          await remote.set(ref, value)
-        } catch (error) {
-          // 官方要求：拒绝要**原文**给用户看（典型是只读源遮蔽了这个引用）
-          setStatus('存入失败：' + messageOf(error), 'error')
-          saveBtn.disabled = false
-          return
-        }
-        input.value = 'env:' + ref
-        await refresh()
-      })()
-    })
 
     clearBtn.addEventListener('click', () => {
       void (async () => {
@@ -2377,9 +2360,34 @@ function openSshDialog(entry) {
       })()
     })
 
+    /**
+     * 保存路径共用：勾了"存入"且字段还是明文时，把它写进凭据存储并返回引用。
+     * @returns `{ value }`（要写进配置的密码值，缺省表示保持原样）或 `{ error }`（要显示并中止保存）
+     */
+    const storeIfRequested = async (nameSource) => {
+      if (remember.checked !== true) return {}
+      const value = input.value.trim()
+      if (value === '' || value.startsWith('env:')) return {}
+      const remote = api()
+      if (remote === null || typeof remote.set !== 'function') {
+        return { error: '宿主未提供凭据服务（remote.credentials），无法存入' }
+      }
+      const ref = derivedCredentialRef(fields.host.value, fields.port.value, nameSource, suffix)
+      if (ref === '') return { error: '先填「连接簿名称」再存入——引用名由它派生' }
+      try {
+        await remote.set(ref, value)
+      } catch (error) {
+        // 官方要求：拒绝要**原文**给用户看（典型是只读源遮蔽了这个引用）
+        return { error: '存入凭据存储失败：' + messageOf(error) }
+      }
+      input.value = 'env:' + ref
+      await refresh()
+      return { value: 'env:' + ref }
+    }
+
     // 失焦时对一次状态（手改引用名也算）；不用 input 事件——密码框每敲一个字符都去问宿主没必要。
     input.addEventListener('change', () => { void refresh() })
-    return { row, refresh }
+    return { row, refresh, storeIfRequested }
   }
 
   const passphraseEnv = envSelectRow(fields.passphrase)
@@ -2619,14 +2627,22 @@ function openSshDialog(entry) {
         return
       }
       if (saveEditBtn !== null) saveEditBtn.disabled = true
-      void saveSshHostUpdate(String(editing.name ?? ''), next).then((error) => {
+      void (async () => {
+        const stored = await passwordCred.storeIfRequested(name)
+        if (stored.error !== undefined) {
+          errorEl.textContent = stored.error
+          if (saveEditBtn !== null) saveEditBtn.disabled = false
+          return
+        }
+        if (stored.value !== undefined) next.password = stored.value
+        const error = await saveSshHostUpdate(String(editing.name ?? ''), next)
         if (saveEditBtn !== null) saveEditBtn.disabled = false
         if (error !== undefined) {
           errorEl.textContent = '保存失败：' + error
           return
         }
         closeSshDialog()
-      })
+      })()
     })
     actionsSecondary.appendChild(saveEditBtn)
   }
@@ -2715,30 +2731,40 @@ function openSshDialog(entry) {
       addTab(spec, bookName !== '' ? bookName : targetLabel)
     }
     if (!saveCheck.checked) {
+      // 没勾「保存到连接簿」就没有配置可依附：这时不存密码（否则留下一个没人引用的孤儿）。
+      // 凭据那一行的勾选框只对"会保存"的路径生效，label 里已写明「保存时存入」。
       proceed('')
       return
     }
     const bookName = fields.name.value.trim() || host
     connectBtn.disabled = true
-    void saveSshHostEntry({
-      name: bookName,
-      host,
-      port,
-      username,
-      auth,
-      keyPath: spec.keyPath ?? '',
-      passphrase: spec.passphrase ?? '',
-      password: spec.password ?? '',
-      agentForward: fwdCheck.checked,
-      persist: persistCheck.checked,
-    }).then((error) => {
+    void (async () => {
+      const stored = await passwordCred.storeIfRequested(bookName)
+      if (stored.error !== undefined) {
+        errorEl.textContent = stored.error
+        connectBtn.disabled = false
+        return
+      }
+      const password = stored.value ?? spec.password ?? ''
+      const error = await saveSshHostEntry({
+        name: bookName,
+        host,
+        port,
+        username,
+        auth,
+        keyPath: spec.keyPath ?? '',
+        passphrase: spec.passphrase ?? '',
+        password,
+        agentForward: fwdCheck.checked,
+        persist: persistCheck.checked,
+      })
       connectBtn.disabled = false
       if (error !== undefined) {
         errorEl.textContent = '保存连接簿失败：' + error
         return
       }
       proceed(bookName)
-    })
+    })()
   })
 
   backdrop.appendChild(card)
