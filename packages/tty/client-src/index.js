@@ -138,7 +138,9 @@ function derivedCredentialRef(host, port, username, suffix) {
   if (user === '' || server === '') return ''
   const normalizedPort = asciiRefToken(port)
   const parts = ['DSH_TTY', user, server]
-  // 默认端口不进键：同一主机上 22 与显式 22 是同一件事；非默认端口才区分（NAT 后面常是不同盒子）
+  // 默认端口不进键：**端口留空、写 22、写 " 22 " 都归成同一个键**（连接侧是 `spec.port ?? 22`，
+  // 留空就是 22，键必须与它一致——否则同一个账号会有两个名字、同一个密码存两份，改一处另一处
+  // 还指着旧值）。非默认端口才进键：同一主机不同端口常是不同盒子（NAT 后面），必须区分。
   if (normalizedPort !== '' && normalizedPort !== '22') parts.push(normalizedPort)
   parts.push(suffix)
   return parts.join('_')
