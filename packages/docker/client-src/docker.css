@@ -1257,6 +1257,29 @@
   color: var(--dk-success);
 }
 
+/* 【SPIKE · 验完删除】探针的排版：把读数摊成两列 */
+.dk_spike {
+  display: flex;
+  flex-direction: column;
+  gap: var(--dk-gap-sm);
+  padding: var(--dk-gap-lg);
+  color: var(--dk-label);
+  font-size: 12px;
+}
+
+.dk_spikeTitle { font-size: 13px; font-weight: 600; }
+.dk_spikeHint { color: var(--dk-label-3); line-height: 1.6; }
+
+.dk_spikeRow {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: var(--dk-gap-md);
+  align-items: baseline;
+}
+
+.dk_spikeKey { color: var(--dk-label-3); }
+.dk_spikeVal { word-break: break-all; }
+
 /* 键值行 */
 .dk_kv {
   display: grid;
