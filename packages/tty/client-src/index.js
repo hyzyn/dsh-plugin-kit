@@ -2229,6 +2229,10 @@ function openSshDialog(entry) {
             disarm()
             targetInput.value = ref
             targetInput.focus()
+            // 程序性赋值**不会**触发 change（浏览器的 dirty flag 只认用户输入），所以手动派一次：
+            // 密码框上挂着「凭据存储」那一行的 refresh —— 选完引用要立刻从"勾选框"换成
+            // "已存入 · 引用名"，否则勾选框会一直留在那儿、看着像"两件事都会发生"。
+            targetInput.dispatchEvent(new Event('change'))
             return
           }
           item.textContent = name + '（再点覆盖已填）'
