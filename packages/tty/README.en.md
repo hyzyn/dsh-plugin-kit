@@ -306,11 +306,16 @@ and the agent tools all reuse the same scheduling.
 - **`~/.ssh/config` import (0.4.0)**: “Import from ~/.ssh/config” in the connection-book area of the settings
   card — parses `HostName/User/Port/IdentityFile` into candidate entries (skipping wildcard blocks and
   entries without a User; `Include` is not expanded), skips same names, and writes them on “save”;
-- **env:VAR picker (0.4.0)**: next to the password/passphrase fields in the SSH dialog there is a filter box
-  + a height-limited list, fed by **the variable names in the env plugin’s managed file** (the managed block
-  of `~/.dsh/env.yml`; the host returns only names and never values); clicking fills in `env:NAME`. With no
-  managed variables it shows a hint, and any `env:VAR` can still be typed by hand (existence is validated at
-  connect time);
+- **Credential-reference picker (0.4.0; decoupled from the env plugin since 0.17)**: next to the password /
+  passphrase fields in the SSH dialog there is a filter box plus a height-limited list whose candidates are
+  **the reference names already in use by this machine's connection book** (names only, never values); clicking one
+  fills in `env:NAME`, and any `env:NAME` can still be typed by hand (existence is validated at connect time).
+  **Why not the env plugin's managed list**: the official discovery path for references is "a configuration surface
+  learns which references exist **from its own settings schema**" — the reference half is **deliberately not
+  enumerable** (the wording in `@deepseek-ai/dsh-credentials`' types). Our settings *are* this connection book, so
+  listing the names other connections use is both the sanctioned route and what makes this path independent of the
+  env plugin: a value living in `~/.dsh/.credentials.yaml` becomes reusable from other connections the same way.
+  When no other connection uses a reference yet, the list says so and points at the checkbox that creates one;
 - **Host-key TOFU pinning (0.3.0)**: after the first successful connection the host’s (host:port) sha256
   fingerprint is recorded in `hostKeys` (persisted with settings); every later connection is verified, a
   matching fingerprint is allowed, and **a changed fingerprint rejects the connection outright** (defense
