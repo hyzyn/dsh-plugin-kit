@@ -369,6 +369,14 @@ ctx.inject(['ttyConnbar'], (c) => {
 
 ### 终端命令标签（客户端服务 `ttyTerminal`，0.14.0）
 
+> **`open()` 默认复用**（契约 v3）：同一个「连接 + 命令」已经有活标签时，聚焦它而**不再新开**，
+> 返回被复用的那个标签。动机是实测——容器卡片「终端」按钮连点几下就是三个一模一样的
+> `docker exec` 标签，而**每个标签各占一个会话名额**，并发上限被白白吃光，接着满屏都是
+> 「会话数已达上限」。想要并列两个同样的会话，传 `reuse: false`。
+> （复用键按固定字段列表构造，不直接 `JSON.stringify`——从 sessionStorage 恢复的 spec 与现场
+> 构造的键顺序未必一致，用字符串化会漏判。）
+
+
 比连接栏按钮更进一步的扩展点：让其他插件**开一个标签直接跑一条命令**（典型用途
 是 dsh-docker 的卡片「终端」按钮 → `docker exec -it <容器> sh`）。
 
@@ -488,7 +496,7 @@ ctx.inject(['ttyPanel'], (c) => {
 ```
 
 > 契约版本：`ttyConnbar.version === 1`、`ttyTerminal.version === 2`（1 = 只有 `open`，
-> 2 = 增加 `mount`）、`ttyPanel.version === 2`（1 = `mountPane` + `isOpen`，2 = 增加
+> 2 = 增加 `mount`，3 = `open` 默认复用同「连接 + 命令」的活标签）、`ttyPanel.version === 2`（1 = `mountPane` + `isOpen`，2 = 增加
 > `minimize`）。消费方**按版本号判断能力**，不要用
 > `typeof fn === 'function'` 之外的假设；老版本 tty 上 `inject` 依然会触发，但没有
 > 对应字段。
