@@ -82,6 +82,12 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
 容器绑定，不保留。**折叠标签会断开全部实时流**（把 SSH 通道还回去），展开时重连——
 单容器与聚合建流本来就带 `tail`，历史会自己补回来。
 
+**跨会话粘性**：DSH 右侧栏的标签记录本身是**会话作用域**的（`sidebar.right.pane.tab` 与
+`rightbar.session` 都声明 `scope: 'session'`），A 会话开的标签在 B 会话里并不存在。可
+容器面板看的是主机，「切个会话它就没了」是纯损失，所以插件额外记了一个「用户希望它开着」
+的意图：**切会话时自动在新会话里把标签重开**，只有你点了标签的 ✕ 才停止——也就是
+「面板跟人走，而不是跟会话走」。
+
 **dock 兜底形态**（终端右侧栏）：
 
 ![docker 面板挂进终端面板右侧 dock：终端保持可见可用](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-docker-dock.png)
