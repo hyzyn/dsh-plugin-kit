@@ -1251,6 +1251,12 @@
   line-height: 1.6;
 }
 
+/* 成功回执：同一枚 toast 换配色（默认那套是「失败」的红） */
+.dk_askToast[data-kind="ok"] {
+  border-color: color-mix(in srgb, var(--dk-success) 42%, transparent);
+  color: var(--dk-success);
+}
+
 /* 键值行 */
 .dk_kv {
   display: grid;
