@@ -1480,6 +1480,20 @@ function renderConnbar() {
     btn.addEventListener('click', onClick)
     connActionsEl.appendChild(btn)
   }
+  /*
+   * 命令标签（spawnSpec.command 非空）不展示扩展按钮区。
+   *
+   * 那些扩展都作用于**连接本身**：SFTP 浏览这条连接、隧道状态、第三方注册的面板（如
+   * dsh-docker 的容器面板）。而命令标签的语义是「在那条连接上跑一条命令」——给它挂上
+   * SFTP 只会误导：用户以为在看容器里的文件，实际浏览的是宿主机。内置动作与第三方动作
+   * 走同一个工厂集合，所以拦住这一处即全覆盖。
+   *
+   * 退出态的重开入口**不靠这里**：终端体内的浮层本来就有「点击重新打开」。
+   *
+   * 判据用 spawnSpec.command，而不是新加一个标签字段：command 已经跟着标签持久化、规格
+   * 留存、刷新恢复、tmux 重跑全链路走；新字段只活在内存里，刷新一次按钮就又冒出来了。
+   */
+  if (typeof spec.command === 'string' && spec.command !== '') return
   // 内置动作与第三方扩展同一通道（见文件上方 connbarActions）；单个工厂抛错只记
   // 日志，不影响连接栏与其他按钮
   const bookName = typeof spec.name === 'string' ? spec.name : ''
