@@ -581,6 +581,49 @@ await test('抽屉核心：事件窗口 → 条目（增量归并 / 持久事件
   assert.match(feed.textOf({ 没有常见字段: 1 }), /没有常见字段/)
 })
 
+await test('抽屉数据：快照增量套用（append / replace / prepend / 上限）', () => {
+  const feed = feedApi()
+  const e = (n) => ({ type: 'event', event: { type: 'turn/end', seq: n, time: 0, data: { reason: { kind: 'k' + String(n) } } } })
+
+  // append：正常推流，追加到尾部
+  let entries = feed.applyFeedSnapshot([e(1)], { entries: [e(1), e(2)], change: { kind: 'append', entries: [e(2)] } })
+  assert.equal(entries.length, 2, 'append 应只追加增量那几条')
+
+  // replace：整段替换（换会话 / 重建窗口）
+  entries = feed.applyFeedSnapshot([e(1), e(2)], { entries: [e(3)], change: { kind: 'replace', entries: [e(3)] } })
+  assert.equal(entries.length, 1)
+  assert.equal(entries[0].event.seq, 3)
+
+  // prepend：加载更早历史 —— 与抽屉无关，尾部原样保留（否则"最后一轮"会被推走）
+  entries = feed.applyFeedSnapshot([e(5)], { entries: [e(1), e(5)], change: { kind: 'prepend', entries: [e(1)] } })
+  assert.equal(entries.length, 1)
+  assert.equal(entries[0].event.seq, 5)
+
+  // 本地还是空的：整段取 entries（首次读）
+  entries = feed.applyFeedSnapshot([], { entries: [e(1), e(2)] })
+  assert.equal(entries.length, 2)
+
+  // 没有任何可用字段：保持原样，不炸
+  assert.deepEqual(feed.applyFeedSnapshot([e(1)], null).length, 1)
+  assert.deepEqual(feed.applyFeedSnapshot(null, undefined), [])
+
+  // 上限：只留尾部
+  const many = []
+  for (let i = 0; i < feed.MAX + 20; i += 1) many.push(e(i))
+  assert.equal(feed.applyFeedSnapshot(many, null).length, feed.MAX, '超上限应只保留尾部')
+})
+
+await test('抽屉状态：从条目推（收尾 / 进行中 / 空）', () => {
+  const feed = feedApi()
+  assert.equal(feed.feedStatusOf([]), 'idle')
+  assert.equal(feed.feedStatusOf([{ kind: 'text', text: 'x' }]), 'running')
+  assert.equal(feed.feedStatusOf([{ kind: 'end', reason: 'completed' }]), 'done')
+  assert.equal(feed.feedStatusOf([{ kind: 'end', reason: 'interrupted' }]), 'stopped')
+  assert.equal(feed.feedStatusOf(null), 'idle')
+  assert.equal(feed.feedStatusText('running'), '正在分析…')
+  assert.equal(feed.feedStatusText('unavailable'), '拿不到会话事件源')
+})
+
 await test('渲染期守卫：面板组件体直接跑一遍不能抛（TDZ 那类错误曾让面板整个空白）', () => {
   const exports_ = registration.factory((spec) => SEED[spec])
   assert.ok(exports_.__render !== undefined, '缺少 __render 测试缝')
@@ -589,6 +632,8 @@ await test('渲染期守卫：面板组件体直接跑一遍不能抛（TDZ 那�
     ['ContainerPanel', { carrier: 'tab', onClose: () => {}, initialTarget: '' }],
     ['ContainerPanel', { onClose: () => {}, initialTarget: '' }], // 模态 / docked 形态（carrier 缺省）
     ['SessionProbeBody', {}], // 探针（spike，验完随它一起删）
+    ['AgentDrawer', {}], // 抽屉：根侧承载（拿不到 props.sessionId，走全局读）
+    ['AgentDrawer', { sessionId: 'session-smoke', conversationHidden: true }],
   ]
   for (const [name, props] of cases) {
     const component = exports_.__render[name]
