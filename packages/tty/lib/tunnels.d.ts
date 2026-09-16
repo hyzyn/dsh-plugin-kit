@@ -53,6 +53,10 @@ export declare class TunnelManager {
     /** ------------------------------------------------------------------ */
     private startTunnel;
     private stopTunnel;
+    /**
+     * 建连（**async**：认证配置要走凭据 provider 解析 `env:NAME` 引用）。错误仍在本方法内
+     * 收敛成 scheduleRetry / failTunnel，调用方不必关心返回的 Promise。
+     */
     private connectTunnel;
     /** remote 方向：让服务端监听端口（重连后必须重新调用，断线即失效）。 */
     private bindRemoteListen;

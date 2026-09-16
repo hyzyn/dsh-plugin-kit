@@ -109,7 +109,7 @@ export class TunnelManager {
             });
             rt.server = server;
         }
-        this.connectTunnel(rt);
+        void this.connectTunnel(rt);
     }
     stopTunnel(rt) {
         rt.dead = true;
@@ -138,7 +138,11 @@ export class TunnelManager {
         rt.lastForwardError = null;
         rt.state = 'stopped';
     }
-    connectTunnel(rt) {
+    /**
+     * 建连（**async**：认证配置要走凭据 provider 解析 `env:NAME` 引用）。错误仍在本方法内
+     * 收敛成 scheduleRetry / failTunnel，调用方不必关心返回的 Promise。
+     */
+    async connectTunnel(rt) {
         const spec = rt.spec;
         const book = this.resolveBook(spec.bookName);
         if (book === undefined) {
@@ -158,8 +162,8 @@ export class TunnelManager {
         rt.state = 'connecting';
         let conn;
         try {
-            // 认证配置可能抛错（keyPath 读不到 / env:VAR 变量缺失）——走重试等待配置修复
-            const connectConfig = buildConnectConfig(sshSpec);
+            // 认证配置可能抛错（keyPath 读不到 / 引用解析不到）——走重试等待配置修复
+            const connectConfig = await buildConnectConfig(sshSpec);
             const policy = applyHostKeyPolicy({ connectConfig, spec: sshSpec, store: this.store, logger: this.logger, target });
             conn = new Client();
             rt.conn = conn;
@@ -318,7 +322,7 @@ export class TunnelManager {
         const timer = setTimeout(() => {
             rt.retryTimer = null;
             if (!rt.dead && rt.spec.enabled)
-                this.connectTunnel(rt);
+                void this.connectTunnel(rt);
         }, delay);
         timer.unref?.();
         rt.retryTimer = timer;

@@ -579,7 +579,7 @@ export class SftpManager {
     const conn = new Client()
     let sftp: SFTPWrapper
     try {
-      const connectConfig = buildConnectConfig(spec)
+      const connectConfig = await buildConnectConfig(spec)
       const policy = applyHostKeyPolicy({ connectConfig, spec, store: this.store, logger: this.logger, target })
       // password 认证挂 keyboard-interactive 自动应答（同 spawnSsh；
       // tryKeyboard 只在 password 分支置位，见 buildConnectConfig）
