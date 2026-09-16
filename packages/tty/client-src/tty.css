@@ -1614,6 +1614,11 @@
   max-height: 208px;
   overflow-y: auto;
 }
+/* 展开编辑表单时放开高度：表单比列表高得多，困在 208px 滚动容器里会被裁掉底部按钮 */
+.tt_hostList[data-editing] {
+  max-height: none;
+  overflow: visible;
+}
 .tt_limitGrid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
@@ -1695,6 +1700,16 @@
 }
 .tt_shellList {
   margin-top: 6px;
+}
+/*
+ * 设置卡片（React 侧）编辑表单里的引用选择器：**内联**候选列表，不做浮层。
+ * 对话框那边靠 `.tt_sshRow > .tt_envList` 做浮层（见上）；这里刻意不复用 `.tt_sshRow`
+ * 包一层，免得列表被卡片/列表的 overflow 裁掉。
+ */
+.tt_credPicker {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
 }
 
 /* ======================= SFTP ======================= */

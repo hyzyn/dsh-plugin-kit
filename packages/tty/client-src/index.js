@@ -146,6 +146,138 @@ function derivedCredentialRef(host, port, username, suffix) {
   return parts.join('_')
 }
 
+/* ==================== 凭据引用（连接对话框与设置卡片共用） ==================== */
+
+/**
+ * 浏览器侧凭据服务（`ctx.remote.credentials`）。宿主没装 / 没提供时返回 null，
+ * 调用方据此降级成「只能明文保存」并说明原因，而不是抛错。
+ */
+function credentialStore() {
+  return credentialsRemote !== null && typeof credentialsRemote.describe === 'function' ? credentialsRemote : null
+}
+
+/** 字段值是不是 `env:` 引用；是则返回引用名（去掉 `env:` 前缀），否则空串。 */
+function credentialRefOfValue(value) {
+  const text = String(value ?? '').trim()
+  return text.startsWith('env:') ? text.slice(4).trim() : ''
+}
+
+/**
+ * 候选引用名的来源一：本机连接簿里**已经在用**的 `env:` 引用。
+ * 官方口径：配置界面从自己的 settings schema 得知有哪些引用。
+ */
+function bookCredentialRefNames() {
+  const seen = new Set()
+  for (const entry of sshHostsCache) {
+    for (const value of [entry?.password, entry?.passphrase]) {
+      const name = credentialRefOfValue(value)
+      if (name !== '') seen.add(name)
+    }
+  }
+  return [...seen]
+}
+
+/**
+ * 候选引用名的来源二：凭据存储里**已知的**名字（宿主 `/api/dsh-tty/credential-refs`，只要名字）。
+ * 路由不可用（旧宿主）/ 网络失败 → 空数组：候选退回连接簿里的那些，不报错。
+ */
+async function fetchCredentialStoreNames() {
+  try {
+    const res = await fetch('/api/dsh-tty/credential-refs', { cache: 'no-store' })
+    const data = await res.json()
+    if (data.ok && Array.isArray(data.names)) {
+      return data.names.filter((name) => typeof name === 'string' && name !== '')
+    }
+  } catch {
+    /* 见上：静默降级 */
+  }
+  return []
+}
+
+/** 两个来源合并去重、排序——对话框与设置卡片的引用选择器列的是同一份候选。 */
+async function credentialRefCandidates() {
+  const names = [...new Set([...bookCredentialRefNames(), ...(await fetchCredentialStoreNames())])]
+  return names.sort()
+}
+
+/**
+ * 问一条引用的状态。`describe` 只回 configured / writable / source，**永不回值**。
+ * @returns `{ view: { configured, writable, source } }`（宿主报告了状态）
+ *        | `{ unreported: true }`（宿主没报告这条引用）
+ *        | `{ error }`（服务缺位 / describe 抛错）
+ */
+async function describeCredentialRef(ref) {
+  const remote = credentialStore()
+  if (remote === null) {
+    return {
+      error: credentialsRemote === null
+        ? '宿主未提供凭据服务（remote.credentials）'
+        : '凭据服务不完整',
+    }
+  }
+  try {
+    const response = await remote.describe([ref])
+    const view = response?.ok === true ? response.value?.[ref] : undefined
+    if (view === undefined) return { unreported: true }
+    return {
+      view: {
+        configured: view.configured === true,
+        writable: view.writable === true,
+        source: typeof view.source === 'string' ? view.source : '',
+      },
+    }
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+/** 把一条明文写进凭据存储。@returns `{ value }`（要写进配置的 `env:NAME`）或 `{ error }` */
+async function storeCredentialRef(ref, value) {
+  const remote = credentialStore()
+  if (remote === null || typeof remote.set !== 'function') {
+    return { error: '宿主未提供凭据服务（remote.credentials），无法存入' }
+  }
+  try {
+    await remote.set(ref, value)
+    return { value: 'env:' + ref }
+  } catch (error) {
+    // 官方要求：拒绝要**原文**给用户看（典型是只读源遮蔽了这个引用）
+    return { error: '存入凭据存储失败：' + (error instanceof Error ? error.message : String(error)) }
+  }
+}
+
+/** 清掉一条已存凭据（`unset`）。@returns `{}` 或 `{ error }` */
+async function clearCredentialRef(ref) {
+  const remote = credentialStore()
+  if (remote === null || typeof remote.unset !== 'function') {
+    return { error: '宿主未提供凭据服务（remote.credentials），无法清除' }
+  }
+  try {
+    await remote.unset(ref)
+    return {}
+  } catch (error) {
+    return { error: '清除失败：' + (error instanceof Error ? error.message : String(error)) }
+  }
+}
+
+/**
+ * 「保存时存入凭据存储」的共用保存路径：勾了、且字段还是明文时写进存储，返回引用。
+ *
+ * 引用名由**资源身份**派生（derivedCredentialRef），与连接名无关——所以改连接名不会换键、
+ * 也不会留孤儿。两个界面（连接对话框的「保存修改 / 连接（并保存）」、设置卡片的「应用」）
+ * 走的是同一条路径，语义不会漂移。
+ *
+ * @returns `{ value }`（要写进配置的密码值，缺省 = 保持原样）或 `{ error }`（显示并中止保存）
+ */
+async function storeCredentialIfRequested(remember, inputValue, host, port, username, suffix) {
+  if (remember !== true) return {}
+  const value = String(inputValue ?? '').trim()
+  if (value === '' || value.startsWith('env:')) return {}
+  const ref = derivedCredentialRef(host, port, username, suffix)
+  if (ref === '') return { error: '先填「主机」和「用户名」再存入——引用名由这两者派生' }
+  return storeCredentialRef(ref, value)
+}
+
 function newSid() {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID()
   return 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10)
@@ -2036,8 +2168,9 @@ function renderAddMenuItems(menu) {
     item.addEventListener('click', async () => {
       if (await sessionLimitNotice()) return
       closeAddMenu()
-      // 持久化开启时条目点击默认 tmux 托管（无需条目级勾选）
-      const persistSpec = persistenceCache === 'tmux'
+      // 持久化：全局开关是总闸，条目级 persist 是**取消项**——显式取消过（false）的条目不再托管，
+      // 其余（true / 没写过）跟随全局。没写过这个字段的条目同样跟随全局，导入条目因此不受影响。
+      const persistSpec = persistenceCache === 'tmux' && entry.persist !== false
         ? { persist: true, persistName: newPersistName() }
         : {}
       addTab({ t: 'ssh', name: entry.name, ...persistSpec }, entry.name)
@@ -2335,27 +2468,20 @@ function openSshDialog(entry) {
     row.appendChild(clearBtn)
     row.appendChild(status)
 
-    const messageOf = (error) => (error instanceof Error ? error.message : String(error))
-    const refOfField = () => {
-      const value = input.value.trim()
-      return value.startsWith('env:') ? value.slice(4) : ''
-    }
     const setStatus = (text, kind) => {
       status.textContent = text
       status.dataset.kind = kind
     }
-    const api = () => (credentialsRemote !== null && typeof credentialsRemote.describe === 'function' ? credentialsRemote : null)
 
-    /** 只问状态、不问值：`describe` 没有读路径。 */
+    /** 只问状态、不问值：`describe` 没有读路径（共用助手见文件顶部「凭据引用」一节）。 */
     const refresh = async () => {
-      const remote = api()
-      const ref = refOfField()
+      const ref = credentialRefOfValue(input.value)
       const refMode = ref !== ''
       // 已是引用 = 值已经存过了：勾选框没有意义，换上「清除」与状态
       toggle.hidden = refMode
       clearBtn.hidden = !refMode
       status.hidden = false
-      if (remote === null) {
+      if (credentialStore() === null) {
         remember.disabled = true
         // 服务缺位时把默认勾选拨回去：勾着也存不成，只会让保存被错误挡住（见 storeIfRequested）
         remember.checked = false
@@ -2370,32 +2496,29 @@ function openSshDialog(entry) {
         setStatus('', 'plain')
         return
       }
-      try {
-        const response = await remote.describe([ref])
-        const view = response?.ok === true ? response.value?.[ref] : undefined
-        if (view === undefined) {
-          setStatus('引用 ' + ref + '：宿主未报告状态', 'plain')
-          return
-        }
-        const configured = view.configured === true
-        setStatus(configured
-          ? '已存入' + (typeof view.source === 'string' && view.source !== '' ? '（来源 ' + view.source + '）' : '') + ' · ' + ref
-          : '引用 ' + ref + '：存储里还没有这个值', configured ? 'ok' : 'plain')
-        clearBtn.disabled = configured !== true || view.writable !== true
-      } catch (error) {
-        setStatus('读取凭据状态失败：' + messageOf(error), 'error')
+      const probe = await describeCredentialRef(ref)
+      if (probe.unreported === true) {
+        setStatus('引用 ' + ref + '：宿主未报告状态', 'plain')
+        return
       }
+      if (probe.error !== undefined) {
+        setStatus('读取凭据状态失败：' + probe.error, 'error')
+        return
+      }
+      const view = probe.view
+      setStatus(view.configured
+        ? '已存入' + (view.source !== '' ? '（来源 ' + view.source + '）' : '') + ' · ' + ref
+        : '引用 ' + ref + '：存储里还没有这个值', view.configured ? 'ok' : 'plain')
+      clearBtn.disabled = view.configured !== true || view.writable !== true
     }
 
     clearBtn.addEventListener('click', () => {
       void (async () => {
-        const ref = refOfField()
-        const remote = api()
-        if (ref === '' || remote === null || typeof remote.unset !== 'function') return
-        try {
-          await remote.unset(ref)
-        } catch (error) {
-          setStatus('清除失败：' + messageOf(error), 'error')
+        const ref = credentialRefOfValue(input.value)
+        if (ref === '') return
+        const out = await clearCredentialRef(ref)
+        if (out.error !== undefined) {
+          setStatus(out.error, 'error')
           return
         }
         input.value = ''
@@ -2407,28 +2530,23 @@ function openSshDialog(entry) {
      * 保存路径共用：勾了"存入"且字段还是明文时，把它写进凭据存储并返回引用。
      *
      * 不需要连接簿名称：引用名由**资源身份**（用户名 + 主机 + 非默认端口）派生，见
-     * derivedCredentialRef —— 所以改连接名不会换键、也不会留孤儿。
+     * derivedCredentialRef —— 所以改连接名不会换键、也不会留孤儿。设置卡片走同一个助手。
      * @returns `{ value }`（要写进配置的密码值，缺省表示保持原样）或 `{ error }`（要显示并中止保存）
      */
     const storeIfRequested = async () => {
-      if (remember.checked !== true) return {}
-      const value = input.value.trim()
-      if (value === '' || value.startsWith('env:')) return {}
-      const remote = api()
-      if (remote === null || typeof remote.set !== 'function') {
-        return { error: '宿主未提供凭据服务（remote.credentials），无法存入' }
+      const out = await storeCredentialIfRequested(
+        remember.checked === true,
+        input.value,
+        fields.host.value,
+        fields.port.value,
+        fields.username.value,
+        suffix,
+      )
+      if (out.value !== undefined) {
+        input.value = out.value
+        await refresh()
       }
-      const ref = derivedCredentialRef(fields.host.value, fields.port.value, fields.username.value, suffix)
-      if (ref === '') return { error: '先填「主机」和「用户名」再存入——引用名由这两者派生' }
-      try {
-        await remote.set(ref, value)
-      } catch (error) {
-        // 官方要求：拒绝要**原文**给用户看（典型是只读源遮蔽了这个引用）
-        return { error: '存入凭据存储失败：' + messageOf(error) }
-      }
-      input.value = 'env:' + ref
-      await refresh()
-      return { value: 'env:' + ref }
+      return out
     }
 
     // 失焦时对一次状态（手改引用名也算）；不用 input 事件——密码框每敲一个字符都去问宿主没必要。
@@ -2447,7 +2565,7 @@ function openSshDialog(entry) {
   )
   const passwordCred = credentialRow(fields.password, 'PASSWORD')
   /*
-   * 候选引用名的**两个来源**：
+   * 候选引用名的**两个来源**（合并逻辑在文件顶部的 credentialRefCandidates）：
    *   1. 本机连接簿里已经在用的 `env:` 引用（我们的 settings 就是这本连接簿，官方口径
    *      "配置界面从自己的 settings schema 得知有哪些引用"）；
    *   2. 凭据存储里**已知的**名字（宿主 /api/dsh-tty/credential-refs，只回名字）。
@@ -2463,39 +2581,14 @@ function openSshDialog(entry) {
    * （你明确选的 B 方案）；回给浏览器的只有名字、永不含值 ✓；宿主侧若给 provider 配了自定义
    * `path`，那些引用这里看不到 ✓。前端只把它当"候选"，最终能不能解析仍由连接时的凭据层判定 ✓。
    *
-   * 只取名字、不取值：候选列表里永远不会出现密码本身。
+   * 只取名字、不取值：候选列表里永远不会出现密码本身。**设置卡片的编辑表单列的是同一份候选**。
    */
-  const bookCredentialNames = () => {
-    const seen = new Set()
-    for (const entry of sshHostsCache) {
-      for (const value of [entry?.password, entry?.passphrase]) {
-        if (typeof value === 'string' && value.startsWith('env:')) {
-          const name = value.slice(4).trim()
-          if (name !== '') seen.add(name)
-        }
-      }
-    }
-    return [...seen]
-  }
-  const applyCredentialNames = (storeNames) => {
-    const names = [...new Set([...bookCredentialNames(), ...storeNames])].sort()
-    passphraseEnv.setNames(names)
-    passwordEnv.setNames(names)
-  }
   void (async () => {
-    let storeNames = []
-    try {
-      const res = await fetch('/api/dsh-tty/credential-refs', { cache: 'no-store' })
-      const data = await res.json()
-      if (data.ok && Array.isArray(data.names)) {
-        storeNames = data.names.filter((name) => typeof name === 'string' && name !== '')
-      }
-    } catch {
-      /* 路由不可用（旧宿主）/ 网络失败：候选退回连接簿里的那些，不报错 */
-    }
     // 一次定稿：拿到宿主答复（或失败）后才第一次 setNames——那之前这一行不显形，
     // 免得先闪一下"零候选"的说明再换成输入框。
-    applyCredentialNames(storeNames)
+    const names = await credentialRefCandidates()
+    passphraseEnv.setNames(names)
+    passwordEnv.setNames(names)
   })()
 
   card.appendChild(keyRow)
@@ -5287,6 +5380,23 @@ function TtySettingsCard() {
   const [editing, setEditing] = React.useState(null)
   const [editForm, setEditForm] = React.useState(null)
   const [editError, setEditError] = React.useState('')
+  /**
+   * 编辑表单里的凭据引用候选（连接簿在用的 `env:` 名字 ∪ 凭据存储里的名字）：
+   * 进入编辑时拉一次，与连接对话框的引用选择器**同一份候选**（见 credentialRefCandidates）。
+   * `null` = 还没问到（这一行先不显形，免得先闪一下"零候选"再换成输入框）。
+   */
+  const [credNames, setCredNames] = React.useState(null)
+  /** 引用选择器展开在哪一行（'' = 不收）；筛选框内容与「再点覆盖」的确认态跟着它走。 */
+  const [credPicker, setCredPicker] = React.useState('')
+  const [credFilter, setCredFilter] = React.useState('')
+  const [credConfirm, setCredConfirm] = React.useState('')
+  const credConfirmTimer = React.useRef(null)
+  /** 「应用时存入凭据存储」：默认勾选（宿主提供 remote.credentials 时），与对话框同款默认。 */
+  const [credRemember, setCredRemember] = React.useState(false)
+  const [credStatus, setCredStatus] = React.useState({ text: '', kind: '' })
+  const [credClearable, setCredClearable] = React.useState(false)
+  /** 编辑表单里的试连结果（测的是**尚未应用**的填写，对话框「试连」同款）。 */
+  const [editProbe, setEditProbe] = React.useState({ running: false, ok: false, text: '' })
   /** 连接簿条目「测试」状态：{ [name]: { running:boolean, ok?:boolean, text:string } }。 */
   const [probeStates, setProbeStates] = React.useState({})
   /** 隧道实时状态（卡片展开期间 2s 轮询 /api/dsh-tty/tunnels）。 */
@@ -5393,6 +5503,12 @@ function TtySettingsCard() {
   const startEditSshHost = (host) => {
     setEditing(host?.name ?? null)
     setEditError('')
+    setEditProbe({ running: false, ok: false, text: '' })
+    setCredPicker('')
+    setCredFilter('')
+    disarmCredConfirm()
+    // 默认勾选与对话框一致：宿主提供了凭据服务才勾得上（缺位由 refreshCredStatus 拨回）
+    setCredRemember(credentialsRemote !== null)
     setEditForm({
       name: host?.name ?? '',
       host: host?.host ?? '',
@@ -5403,15 +5519,33 @@ function TtySettingsCard() {
       passphrase: host?.passphrase ?? '',
       password: host?.password ?? '',
       agentForward: host?.agentForward === true,
+      // persist 必须一起带出来：否则在设置里编辑一条 tmux 托管条目会**静默丢掉**持久化开关。
+      // 没写过这个字段的条目（如 ~/.ssh/config 导入的）默认跟随全局开关注：`!== false` 就是
+      // "显式取消过才算取消"，与「+」菜单的判定一致。
+      persist: host?.persist !== false,
     })
+    // 候选与状态都是异步问宿主：进来先问一次，不阻塞表单渲染
+    void credentialRefCandidates().then((names) => setCredNames(names))
+    void refreshCredStatus(host?.password ?? '')
   }
   const cancelEditSshHost = () => {
     setEditing(null)
     setEditForm(null)
     setEditError('')
+    setEditProbe({ running: false, ok: false, text: '' })
+    setCredPicker('')
+    setCredFilter('')
+    disarmCredConfirm()
   }
-  /** 应用编辑：按原始 name 替换条目（支持改名）；只改本地表单，随「保存」写入。 */
-  const applyEditSshHost = () => {
+  /**
+   * 应用编辑：按原始 name 替换条目（支持改名）；只改本地表单，随「保存」写入。
+   *
+   * 与对话框的「保存修改」走**同一条凭据路径**：勾了「应用时存入凭据存储」且密码还是明文时，
+   * 先写进官方凭据存储、字段里换成 `env:NAME`，写失败就中止应用并把官方原文显示出来
+   * （绝不偷偷退回明文）。**边界**：值先落存储、配置要等卡片「保存」才引用它——若此后放弃保存，
+   * 存储里会留下一个尚未被引用的名字（引用选择器里可见、可清）。
+   */
+  const applyEditSshHost = async () => {
     if (editForm === null) return
     const name = editForm.name.trim()
     const hostAddr = editForm.host.trim()
@@ -5430,6 +5564,16 @@ function TtySettingsCard() {
       setEditError('auth=key 需要私钥路径')
       return
     }
+    setEditError('')
+    let password = editForm.password
+    if (editForm.auth === 'password') {
+      const stored = await storeCredentialIfRequested(credRemember, editForm.password, hostAddr, port, username, 'PASSWORD')
+      if (stored.error !== undefined) {
+        setEditError(stored.error)
+        return
+      }
+      if (stored.value !== undefined) password = stored.value
+    }
     setForm((current) => ({
       ...(current || {}),
       sshHosts: (Array.isArray(current?.sshHosts) ? current.sshHosts : []).map((h) => h?.name === editing
@@ -5441,14 +5585,21 @@ function TtySettingsCard() {
             auth: editForm.auth,
             keyPath: editForm.keyPath.trim(),
             passphrase: editForm.passphrase,
-            password: editForm.password,
+            password,
             agentForward: editForm.agentForward,
+            persist: editForm.persist === true,
           }
         : h),
     }))
+    setProbeStates((current) => {
+      const next = { ...current }
+      delete next[name]
+      if (editing !== name) delete next[editing]
+      return next
+    })
     setEditing(null)
     setEditForm(null)
-    setEditError('')
+    setEditProbe({ running: false, ok: false, text: '' })
     setMessage({ kind: 'ok', text: '已修改条目「' + name + '」— 随「保存」写入配置' })
   }
   /** 删除连接簿条目（随「保存」一并提交）。 */
@@ -5640,10 +5791,260 @@ function TtySettingsCard() {
     setSaving(false)
   }
 
-  /** 连接簿编辑表单（行内展开；只改本地表单，随卡片「保存」写入）。 */
+  /* ---------------- 编辑表单里的凭据引用（React 版，语义与对话框逐条对齐） ---------------- */
+
+  const disarmCredConfirm = () => {
+    if (credConfirmTimer.current !== null) {
+      clearTimeout(credConfirmTimer.current)
+      credConfirmTimer.current = null
+    }
+    setCredConfirm('')
+  }
+
+  /**
+   * 问一次字段里那个引用的状态（只问状态、不问值）。文案与对话框**逐字一致**：
+   * 明文态保持安静；引用态显示 `已存入（来源 file）· 引用名` 或「存储里还没有这个值」。
+   */
+  const refreshCredStatus = async (rawValue) => {
+    const ref = credentialRefOfValue(rawValue)
+    if (credentialStore() === null) {
+      setCredRemember(false)
+      setCredClearable(false)
+      setCredStatus({
+        text: credentialsRemote === null ? '宿主未提供凭据服务（remote.credentials），只能明文保存' : '凭据服务不完整，只能明文保存',
+        kind: 'muted',
+      })
+      return
+    }
+    if (ref === '') {
+      setCredClearable(false)
+      setCredStatus({ text: '', kind: '' })
+      return
+    }
+    const probe = await describeCredentialRef(ref)
+    if (probe.unreported === true) {
+      setCredClearable(false)
+      setCredStatus({ text: '引用 ' + ref + '：宿主未报告状态', kind: 'plain' })
+      return
+    }
+    if (probe.error !== undefined) {
+      setCredClearable(false)
+      setCredStatus({ text: '读取凭据状态失败：' + probe.error, kind: 'error' })
+      return
+    }
+    const view = probe.view
+    setCredStatus({
+      text: view.configured
+        ? '已存入' + (view.source !== '' ? '（来源 ' + view.source + '）' : '') + ' · ' + ref
+        : '引用 ' + ref + '：存储里还没有这个值',
+      kind: view.configured ? 'ok' : 'plain',
+    })
+    setCredClearable(view.configured === true && view.writable === true)
+  }
+
+  /** 清除已存凭据（对话框同款）：清完把字段里的引用一并抹掉。 */
+  const clearStoredCredential = async () => {
+    const ref = credentialRefOfValue(editForm?.password ?? '')
+    if (ref === '') return
+    const out = await clearCredentialRef(ref)
+    if (out.error !== undefined) {
+      setCredStatus({ text: out.error, kind: 'error' })
+      return
+    }
+    setEditForm((current) => ({ ...(current || {}), password: '' }))
+    setCredStatus({ text: '', kind: '' })
+    setCredClearable(false)
+  }
+
+  /**
+   * 选中一个候选引用。目标为空或已是引用时直接替换；有手输内容时**首击只进确认态**
+   * （4s 复位），再击才覆盖——密码框是掩码显示，不该被一次误点静默清空（对话框同款）。
+   */
+  const pickCredential = (key, name) => {
+    const current = String(editForm?.[key] ?? '')
+    if (current === '' || current.startsWith('env:') || credConfirm === name) {
+      disarmCredConfirm()
+      setEditForm((form0) => ({ ...(form0 || {}), [key]: 'env:' + name }))
+      setCredPicker('')
+      if (key === 'password') void refreshCredStatus('env:' + name)
+      return
+    }
+    setCredConfirm(name)
+    if (credConfirmTimer.current !== null) clearTimeout(credConfirmTimer.current)
+    credConfirmTimer.current = setTimeout(() => {
+      credConfirmTimer.current = null
+      setCredConfirm('')
+    }, 4000)
+  }
+
+  /**
+   * 引用选择器。与对话框同一份候选（credentialRefCandidates）；差别只在**呈现**：卡片里
+   * 做成**内联**列表而不是浮层——卡片本身就是可滚动的长表单，浮层在这里只会被裁掉。
+   * 候选还没问到（credNames === null）时整行不显形，免得先闪一下"零候选"再换成输入框。
+   */
+  const renderCredPicker = (key, emptyHint) => {
+    if (credNames === null) return null
+    if (credNames.length === 0) {
+      return jsx('span', { className: 'tt_cardHint', children: emptyHint })
+    }
+    const open = credPicker === key
+    const kw = credFilter.trim().toUpperCase()
+    const hit = kw === '' ? credNames : credNames.filter((name) => name.toUpperCase().includes(kw))
+    return jsxs('div', {
+      className: 'tt_credPicker',
+      children: [
+        jsx('input', {
+          className: 'tt_cardInput',
+          value: open ? credFilter : '',
+          placeholder: '或：选择凭据存储里的引用名',
+          title: '候选 = 凭据存储里已有的引用名 + 本机连接簿里在用的引用名',
+          autoComplete: 'off',
+          spellCheck: false,
+          onFocus: () => {
+            setCredPicker(key)
+            setCredFilter('')
+          },
+          onBlur: (event) => {
+            // 焦点离开整个选择器（含候选列表）才收起；点候选由 mousedown preventDefault 保住焦点
+            if (!event.currentTarget.parentElement.contains(event.relatedTarget)) setCredPicker('')
+          },
+          onChange: (event) => {
+            setCredFilter(event.target.value)
+            setCredPicker(key)
+          },
+        }),
+        ...(open ? [jsx('div', {
+          className: 'tt_envList',
+          children: [
+            ...(hit.length === 0
+              ? [jsx('span', { className: 'tt_envMore', children: '没有匹配的引用' })]
+              : hit.slice(0, 30).map((name) => jsx('button', {
+                  type: 'button',
+                  className: 'tt_envItem',
+                  'data-danger': credConfirm === name ? '' : undefined,
+                  onMouseDown: (event) => event.preventDefault(),
+                  onClick: () => pickCredential(key, name),
+                  children: credConfirm === name ? name + '（再点覆盖已填）' : name,
+                }, name))),
+            ...(hit.length > 30
+              ? [jsx('span', { className: 'tt_envMore', children: '还有 ' + (hit.length - 30) + ' 个 — 继续输入筛选' })]
+              : []),
+          ],
+        }, 'cred-list-' + key)] : []),
+      ],
+    })
+  }
+
+  /** 「凭据存储」那一行（React 版）：明文态 = 勾选框；引用态 = 清除按钮 + 状态。 */
+  const renderCredentialRow = () => {
+    const ref = credentialRefOfValue(editForm?.password ?? '')
+    const refMode = ref !== ''
+    const missing = credentialStore() === null
+    return jsxs('div', {
+      className: 'tt_sshRow tt_credRow',
+      children: [
+        refMode
+          ? jsx('button', {
+              type: 'button',
+              className: 'tt_toolBtn tt_credClear',
+              disabled: credClearable !== true,
+              onClick: () => void clearStoredCredential(),
+              children: '清除已存凭据',
+            })
+          : jsx('label', {
+              className: 'tt_credToggle',
+              title: '勾选后，点「应用」时把密码写进官方凭据存储，字段里只留 env: 引用'
+                + '（值在 ~/.dsh/.credentials.yaml，不进环境、不回传浏览器；挡不住同用户进程与 agent）。'
+                + '不勾选则按现状明文写进设置文件。能用密钥 / agent 就别存密码。',
+              children: [
+                jsx('input', {
+                  type: 'checkbox',
+                  className: 'tt_cardCheckbox',
+                  checked: credRemember,
+                  disabled: missing,
+                  onChange: (event) => setCredRemember(event.target.checked),
+                }),
+                jsx('span', { children: '应用时存入凭据存储' }),
+              ],
+            }),
+        credStatus.text === ''
+          ? null
+          : jsx('span', { className: 'tt_credStatus', 'data-kind': credStatus.kind, children: credStatus.text }),
+        missing && credStatus.text === ''
+          ? jsx('span', { className: 'tt_credStatus', 'data-kind': 'muted', children: '宿主未提供凭据服务（remote.credentials），只能明文保存' })
+          : null,
+      ],
+    })
+  }
+
+  /** 从编辑器字段收集一份 SSH spec（不含 name/persist）；字段不齐返回 null 并写入 editError。 */
+  const collectEditSpec = () => {
+    const host = String(editForm?.host ?? '').trim()
+    const username = String(editForm?.username ?? '').trim()
+    let port = Number(editForm?.port)
+    if (!Number.isInteger(port) || port < 1 || port > 65535) port = 22
+    if (host === '' || username === '') {
+      setEditError('主机与用户名必填')
+      return null
+    }
+    const auth = editForm?.auth
+    const spec = { host, port, username, auth }
+    if (auth === 'key') {
+      const keyPath = String(editForm?.keyPath ?? '').trim()
+      if (keyPath === '') {
+        setEditError('auth=key 需要私钥路径')
+        return null
+      }
+      spec.keyPath = keyPath
+      if (editForm?.passphrase !== '') spec.passphrase = editForm.passphrase
+    }
+    if (auth === 'password') {
+      const password = String(editForm?.password ?? '')
+      if (password === '') {
+        setEditError('auth=password 需要密码')
+        return null
+      }
+      spec.password = password
+    }
+    if (editForm?.agentForward === true) spec.agentForward = true
+    return spec
+  }
+
+  /** 编辑器内的「试连」：测的是**当前填写**（含尚未应用的改动），不建会话、不落 TOFU。 */
+  const probeEditForm = () => {
+    setEditError('')
+    const spec = collectEditSpec()
+    if (spec === null) return
+    setEditProbe({ running: true, ok: false, text: '连接测试中…' })
+    void probeSshFetch(spec, false).then((out) => {
+      if (out.result) {
+        const ok = out.result.auth?.ok === true
+        setEditProbe({ running: false, ok, text: probeSummary(out.result) })
+        return
+      }
+      setEditProbe({ running: false, ok: false, text: '❌ 连接失败：' + String(out.error || '未知错误') })
+    })
+  }
+
+  /** 编辑器内的「文件浏览」：按当前填写直接开 SFTP（与对话框同款，不走连接簿）。 */
+  const browseEditForm = () => {
+    setEditError('')
+    const spec = collectEditSpec()
+    if (spec === null) return
+    openSftpBrowser(spec)
+  }
+
+  /**
+   * 连接簿编辑表单（行内展开；只改本地表单，随卡片「保存」写入）。
+   *
+   * 字段与分组**与终端「+」→ 编辑连接对话框对齐**（连接 / 认证 / 选项 + 凭据引用选择器 +
+   * 凭据存储 + 试连 + 文件浏览）：同一个连接在哪儿编辑都该是同一套能力，改字段不必换个地方。
+   * 差异只有两处，都是**有意**的：① 提交入口叫「应用」（写进卡片表单，再随「保存」落盘）；
+   * ② 引用候选列表内联展开，不做浮层（卡片会滚，浮层会被裁）。
+   */
   const renderSshHostEditor = () => {
     if (editForm === null) return null
-    const editField = (label, key, placeholder, type) => jsxs('label', {
+    const editField = (label, key, placeholder, type, extra) => jsxs('label', {
       className: 'tt_sshRow',
       children: [
         jsx('span', { className: 'tt_cardLabel', children: label }),
@@ -5654,19 +6055,25 @@ function TtySettingsCard() {
           placeholder: placeholder ?? '',
           autoComplete: 'off',
           spellCheck: false,
-          onChange: (event) => setEditForm((current) => ({ ...(current || {}), [key]: event.target.value })),
+          onChange: (event) => {
+            const value = event.target.value
+            setEditForm((current) => ({ ...(current || {}), [key]: value }))
+          },
+          ...(extra ?? {}),
         }),
       ],
     })
     return jsxs('div', {
       className: 'tt_sshEdit',
       children: [
+        jsx('div', { className: 'tt_sshSection', children: '连接' }),
         jsxs('div', { className: 'tt_sshGrid', children: [
           editField('名称', 'name', '同名冲突会被拒绝'),
           editField('端口', 'port', '22'),
         ] }),
         editField('主机', 'host', 'example.com 或 IP'),
         editField('用户名', 'username', 'root'),
+        jsx('div', { className: 'tt_sshSection', children: '认证' }),
         jsxs('label', { className: 'tt_sshRow', children: [
           jsx('span', { className: 'tt_cardLabel', children: '认证方式' }),
           jsxs('select', {
@@ -5680,16 +6087,51 @@ function TtySettingsCard() {
             ],
           }),
         ] }),
-        ...(editForm.auth === 'key' ? [editField('私钥路径', 'keyPath', '~/.ssh/id_ed25519'), editField('私钥口令（可空，支持 env:VAR）', 'passphrase', '', 'password')] : []),
-        ...(editForm.auth === 'password' ? [editField('密码（支持 env:VAR）', 'password', '', 'password')] : []),
+        ...(editForm.auth === 'key' ? [
+          editField('私钥路径', 'keyPath', '~/.ssh/id_ed25519'),
+          editField('私钥口令（可空）', 'passphrase', '', 'password'),
+          renderCredPicker('passphrase', '还没有别的连接用过凭据引用 — 可在私钥口令框直接手输 env:NAME'),
+        ] : []),
+        ...(editForm.auth === 'password' ? [
+          editField('密码', 'password', '', 'password', {
+            // 失焦对一次状态（手改引用名也算）：不用 onChange——密码框每敲一个字符都去问宿主没必要
+            onBlur: () => void refreshCredStatus(editForm.password),
+          }),
+          renderCredentialRow(),
+          renderCredPicker('password', '还没有别的连接用过凭据引用 — 勾上面的「应用时存入凭据存储」新建一个，或直接在密码框手输 env:NAME'),
+        ] : []),
+        jsx('div', { className: 'tt_sshSection', children: '选项' }),
         jsxs('label', { className: 'tt_cardRow', children: [
           jsx('input', { type: 'checkbox', className: 'tt_cardCheckbox', checked: editForm.agentForward === true, onChange: (event) => setEditForm((current) => ({ ...(current || {}), agentForward: event.target.checked })) }),
-          jsx('span', { className: 'tt_cardLabel', children: 'agent forwarding' }),
+          jsx('span', { className: 'tt_cardLabel', children: 'agent forwarding（远程可用本地 ssh-agent 钥匙，如远程 git clone）' }),
         ] }),
+        // 条目级持久化：只在设置里开着 tmux 持久化时才有意义（与对话框同款条件）；没写过的条目
+        // 跟随全局开关，显式取消过（persist:false）的条目保持取消——「+」菜单按这个值决定是否托管
+        persistenceCache === 'tmux'
+          ? jsxs('label', { className: 'tt_cardRow', children: [
+              jsx('input', {
+                type: 'checkbox',
+                className: 'tt_cardCheckbox',
+                checked: editForm.persist === true,
+                onChange: (event) => setEditForm((current) => ({ ...(current || {}), persist: event.target.checked })),
+              }),
+              jsx('span', { className: 'tt_cardLabel', children: '持久会话（tmux 托管，断线/重启后恢复现场；远程需安装 tmux）' }),
+            ] })
+          : null,
+        editProbe.text !== ''
+          ? jsx('div', { className: 'tt_sshProbeResult' + (!editProbe.running && editProbe.ok ? ' tt_sshProbeOk' : '') + (!editProbe.running && !editProbe.ok ? ' tt_sshProbeBad' : ''), children: editProbe.text })
+          : null,
         editError !== '' ? jsx('span', { className: 'tt_cardMessage tt_cardMessageError', children: editError }) : null,
-        jsxs('div', { className: 'tt_cardRow', children: [
-          jsx('button', { type: 'button', className: 'tt_cardSave', onClick: applyEditSshHost, children: '应用' }),
-          jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: cancelEditSshHost, children: '取消' }),
+        jsxs('div', { className: 'tt_sshActions', children: [
+          jsxs('div', { className: 'tt_sshActionsGroup', children: [
+            jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: cancelEditSshHost, children: '取消' }),
+            jsx('button', { type: 'button', className: 'tt_toolBtn', title: '不动终端，直接以当前填写的信息打开 SFTP 文件浏览', onClick: browseEditForm, children: '文件浏览' }),
+            jsx('button', { type: 'button', className: 'tt_toolBtn', disabled: editProbe.running, title: '按当前填写诊断连接（TCP → 主机密钥 → 认证）；不会新建会话，也不记录主机指纹', onClick: probeEditForm, children: editProbe.running ? '试连中…' : '试连' }),
+          ] }),
+          jsxs('div', { className: 'tt_sshActionsGroup', children: [
+            jsx('button', { type: 'button', className: 'tt_cardSave', onClick: () => void applyEditSshHost(), children: '应用' }),
+            jsx('span', { className: 'tt_cardHint', children: '随卡片「保存」写入配置' }),
+          ] }),
         ] }),
       ],
     })
@@ -5885,6 +6327,9 @@ function TtySettingsCard() {
                     ...(Array.isArray(form.sshHosts) && form.sshHosts.length > 0
                       ? [jsx('div', {
                           className: 'tt_hostList',
+                          // 展开编辑表单时取消 208px 滚动限制：编辑表单比列表高得多，
+                          // 困在滚动容器里会连着「应用/取消」一起被裁掉
+                          'data-editing': editing !== null ? '' : undefined,
                           children: form.sshHosts.map((host) => jsxs('div', {
                             children: [
                               jsxs('div', {
