@@ -3787,17 +3787,51 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function SessionProbeBody(props) {
-      const rendersRef = useRef(0)
-      const lastRef = useRef(Date.now())
+    /**
+     * 【SPIKE】错误边界：把「某个 hook 抛错」隔离在它自己的子树里。
+     *
+     * 为什么必需：把 hook 调用包在 try/catch 里**不行**——被吞掉的异常会让 React 的 hook
+     * 顺序错位，下一次渲染就报 #310（Rendered more hooks than during the previous render）。
+     * v1 探针就是这么把自己的读数弄脏的。边界才是 React 认可的做法。
+     */
+    class ProbeBoundary extends React.Component {
+      constructor(props) {
+        super(props)
+        this.state = { message: '' }
+      }
+
+      static getDerivedStateFromError(error) {
+        return { message: error instanceof Error ? error.message : String(error) }
+      }
+
+      render() {
+        if (this.state.message !== '') return `抛错：${this.state.message}`
+        return this.props.children ?? null
+      }
+    }
+
+    /** 【SPIKE】单个钩子的探针：自己一个组件，抛错由外层边界兜住。 */
+    function HookProbe(props) {
+      const factory = props.factory
+      if (typeof factory !== 'function') return '不存在'
+      return describeValue(factory()) + ' ｜ ' + describeJson(factory())
+    }
+
+    /** 【SPIKE】每秒自走一格，只用来让「最近一次 X 秒前」动起来；它自己重渲染，
+     *  不会污染父组件的渲染计数（所以父组件的计数才是干净的活性证据）。 */
+    function TickProbe(props) {
       const [, setTick] = useState(0)
-      rendersRef.current += 1
-      lastRef.current = Date.now()
-      // 每秒推一次：静止时「最近一次更新」自己会走，才看得出「是在推」还是「压根没动」
       useEffect(() => {
         const timer = setInterval(() => setTick((value) => value + 1), 1000)
         return () => clearInterval(timer)
       }, [])
+      if (props.at === 0) return '（还没收到过）'
+      return String(Math.round((Date.now() - props.at) / 1000)) + ' 秒前'
+    }
+
+    function SessionProbeBody(props) {
+      const rendersRef = useRef(0)
+      rendersRef.current += 1
 
       let info = null
       try {
@@ -3806,74 +3840,115 @@ window.__ModuleLoader__.load({
       const sessionId = typeof props.sessionId === 'string' ? props.sessionId : ''
       const propKeys = props === null || props === undefined ? [] : Object.keys(props)
 
-      // 三个会话作用域钩子：**无条件、固定顺序**调用（hook 顺序必须稳定），异常只记不抛
-      let chatValue = null
-      let chatErr = ''
-      let convValue = null
-      let convErr = ''
-      let trajValue = null
-      let trajErr = ''
-      try { chatValue = props.useChat() } catch (error) { chatErr = error instanceof Error ? error.message : String(error) }
-      try { convValue = props.useConversation() } catch (error) { convErr = error instanceof Error ? error.message : String(error) }
-      try { trajValue = props.useTrajectory() } catch (error) { trajErr = error instanceof Error ? error.message : String(error) }
+      // 每个 useXxx 的**形参个数**：0 = 普通 hook（直接调），>0 = 工厂（要喂参数）。
+      // v1 就是因为不知道这件事，直接 `useChat()` 才抛的。
+      const arity = (name) => (typeof props[name] === 'function' ? String(props[name].length) : '—')
 
-      // 根侧：binding 与 projections（docked / 模态承载唯一可能的路）
+      // 根侧：binding / eventSource / session 的形状与方法签名
       let bindingText = '未能读取'
-      let sessionKeysText = '—'
-      let projectionsText = '—'
+      let sourceText = '—'
+      let sessionText = '—'
       try {
         const binding = typeof sessionsSvc?.binding === 'function' ? sessionsSvc.binding(sessionId) : undefined
-        if (binding === undefined || binding === null) {
-          bindingText = 'binding 返回 ' + String(binding)
-        } else {
+        if (binding === undefined || binding === null) bindingText = 'binding 返回 ' + String(binding)
+        else {
           bindingText = describeValue(binding)
-          const face = binding.session
-          sessionKeysText = face === undefined || face === null ? '（无 session）' : describeValue(face)
-          const projections = face?.projections
-          if (projections === undefined || projections === null) projectionsText = '（无 projections）'
+          const source = binding.eventSource
+          if (source === undefined || source === null) sourceText = '（无 eventSource）'
           else {
-            const tried = ['chat', 'conversation', 'timeline', 'turns', 'messages']
-            projectionsText = tried.map((key) => {
-              try {
-                const valueFace = projections.faceOf(key)
-                if (valueFace === undefined) return key + '=undefined'
-                const snap = valueFace.getSnapshot?.()
-                return key + '=' + describeValue(snap)
-              } catch (error) {
-                return key + '=抛错(' + (error instanceof Error ? error.message : String(error)).slice(0, 40) + ')'
-              }
-            }).join(' ｜ ')
+            const methods = ['subscribe', 'on', 'addEventListener', 'getSnapshot', 'close']
+              .map((name) => name + '=' + (typeof source[name] === 'function' ? String(source[name].length) + '参' : '无'))
+              .join(' ')
+            sourceText = describeValue(source) + ' ｜ ' + methods
           }
+          const face = binding.session
+          sessionText = face === undefined || face === null ? '（无 session）' : describeValue(face)
         }
       } catch (error) {
         bindingText = '抛错：' + (error instanceof Error ? error.message : String(error))
       }
 
-      const idleSec = Math.round((Date.now() - lastRef.current) / 1000)
+      // 真订阅：逐种形状试一遍，数事件 + 记最后一条的形状与时间
+      const [feed, setFeed] = useState({ mode: '未订阅', count: 0, last: '', at: 0, error: '' })
+      useEffect(() => {
+        if (sessionId === '') return undefined
+        let stop = null
+        let stopped = false
+        const onEvent = (payload) => {
+          if (stopped) return
+          setFeed((current) => ({ ...current, count: current.count + 1, last: describeJson(payload), at: Date.now() }))
+        }
+        try {
+          const source = sessionsSvc?.binding?.(sessionId)?.eventSource
+          if (source === undefined || source === null) {
+            setFeed({ mode: '（无 eventSource）', count: 0, last: '', at: 0, error: '' })
+            return undefined
+          }
+          if (typeof source.subscribe === 'function') {
+            const un = source.subscribe(onEvent)
+            stop = typeof un === 'function' ? un : null
+            setFeed({ mode: 'subscribe(cb)', count: 0, last: '', at: 0, error: '' })
+          } else if (typeof source.on === 'function') {
+            source.on('event', onEvent)
+            setFeed({ mode: "on('event', cb)", count: 0, last: '', at: 0, error: '' })
+          } else if (typeof source.addEventListener === 'function') {
+            source.addEventListener('event', onEvent)
+            setFeed({ mode: "addEventListener('event', cb)", count: 0, last: '', at: 0, error: '' })
+          } else {
+            setFeed({ mode: '未发现可用的订阅方法', count: 0, last: '', at: 0, error: '' })
+          }
+        } catch (error) {
+          setFeed({ mode: '订阅抛错', count: 0, last: '', at: 0, error: error instanceof Error ? error.message : String(error) })
+        }
+        return () => {
+          stopped = true
+          if (typeof stop === 'function') {
+            try { stop() } catch { /* 已释放 */ }
+          }
+        }
+      }, [sessionId])
+
       const rows = [
         ['sessionId', sessionId === '' ? '（空）' : sessionId],
-        ['收到的 props 键', propKeys.length === 0 ? '（空）' : propKeys.join(', ')],
         ['tab.visible', info === null ? '—' : String(info.tab?.visible)],
-        ['———— 会话作用域侧（tab body） ————', ''],
-        ['useChat()', chatErr !== '' ? '抛错：' + chatErr : describeValue(chatValue)],
-        ['useChat 内容片段', chatErr !== '' ? '—' : describeJson(chatValue)],
-        ['useConversation()', convErr !== '' ? '抛错：' + convErr : describeValue(convValue)],
-        ['useTrajectory()', trajErr !== '' ? '抛错：' + trajErr : describeValue(trajValue)],
-        ['已渲染', String(rendersRef.current) + ' 次（Agent 输出期间应持续增长）'],
-        ['最近一次渲染', idleSec + ' 秒前（静止时这个数会自己走，别被它骗）'],
-        ['———— 根侧（docked / 模态唯一可能的路） ————', ''],
-        ['sessions.binding(id)', bindingText],
-        ['binding.session 形状', sessionKeysText],
-        ['projections.faceOf(k)', projectionsText],
+        ['本组件已渲染', String(rendersRef.current) + ' 次（**不含**定时器：它涨了才说明有东西在推）'],
+        ['———— 根侧：binding.eventSource（三种承载都能走） ————', ''],
+        ['binding 键', bindingText],
+        ['binding.session', sessionText],
+        ['eventSource 形状 / 方法', sourceText],
+        ['订阅方式', feed.mode + (feed.error === '' ? '' : '（' + feed.error + '）')],
+        ['收到会话事件', String(feed.count) + ' 条'],
+        ['最近一条', describeValue(feed.last) ],
+        ['最近一条内容', feed.last === '' ? '—' : feed.last],
+        ['———— 会话作用域侧（tab body 的注入钩子） ————', ''],
+        ['useChat 形参个数', arity('useChat')],
+        ['useConversation 形参个数', arity('useConversation')],
+        ['useTrajectory 形参个数', arity('useTrajectory')],
+        ['useProjection 形参个数', arity('useProjection')],
+        ['useSessions 形参个数', arity('useSessions')],
+        ['props 键', propKeys.join(', ')],
       ]
 
       return jsxs('div', { className: 'dk_spike', children: [
-        jsx('div', { className: 'dk_spikeTitle', children: '会话订阅探针（spike · 方案 B）' }),
-        jsx('div', { className: 'dk_spikeHint', children: '用容器面板日志右键「直接发送到当前会话」让 Agent 跑起来，再看上面的「已渲染」是否持续增长。' }),
+        jsx('div', { className: 'dk_spikeTitle', children: '会话订阅探针 v2（spike · 方案 B）' }),
+        jsx('div', { className: 'dk_spikeHint', children: '重点看「收到会话事件」：用日志右键「直接发送到当前会话」让 Agent 跑起来，它会随输出增长。' }),
         ...rows.map(([key, value]) => jsxs('div', { className: 'dk_spikeRow', children: [
           jsx('span', { className: 'dk_spikeKey', children: key }),
           jsx('span', { className: 'dk_spikeVal', children: value === '' ? '—' : String(value) }),
         ] }, key)),
+        jsxs('div', { className: 'dk_spikeRow', children: [
+          jsx('span', { className: 'dk_spikeKey', children: '最近事件距今' }),
+          jsx('span', { className: 'dk_spikeVal', children: jsx(TickProbe, { at: feed.at }) }),
+        ] }, 'age'),
+        // 每个钩子单独一个错误边界子树：一个抛错不影响其它读数（v1 的教训）
+        jsxs('div', { className: 'dk_spikeRow', children: [
+          jsx('span', { className: 'dk_spikeKey', children: 'useChat() 直接调' }),
+          jsx('span', { className: 'dk_spikeVal', children: jsx(ProbeBoundary, { children: jsx(HookProbe, { factory: props.useChat }) }) }),
+        ] }, 'chat'),
+        jsxs('div', { className: 'dk_spikeRow', children: [
+          jsx('span', { className: 'dk_spikeKey', children: 'useConversation()' }),
+          jsx('span', { className: 'dk_spikeVal', children: jsx(ProbeBoundary, { children: jsx(HookProbe, { factory: props.useConversation }) }) }),
+        ] }, 'conv'),
       ] })
     }
 
@@ -5945,6 +6020,7 @@ window.__ModuleLoader__.load({
     exports.__render = {
       ContainerPanel,
       DockerTabBody,
+      SessionProbeBody,
     }
     exports.__pick = {
       MAX: PICK_MAX,
