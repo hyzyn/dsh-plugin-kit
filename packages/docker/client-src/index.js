@@ -3919,6 +3919,124 @@ window.__ModuleLoader__.load({
       ] })
     }
 
+    /* ================================================================== *
+     * Agent 抽屉（方案 ④）的纯核心：会话事件窗口 → 抽屉要渲染的条目
+     *
+     * 数据源由 spike 实测确认（读数见对话记录，图见 .preview/docker-agent-drawer.png）：
+     *   sessions.binding(sessionId).eventSource 是一个 ObservableSnapshot
+     *     快照 = { entries, hasMore, revision, change }
+     *       entries: { type:'event', event:SessionEvent }            ← 持久事件
+     *              | { type:'transient', event:AssistantLiveChunkEvent } ← 实时增量
+     *       change : { kind:'append'|'prepend'|'replace', entries:[…] } ← 精确增量，可 O(增量) 更新
+     *   状态：binding.session.getSnapshot().running
+     *
+     * 走根侧而不是 tab body 的 useChat / useConversation，是因为后两者是**工厂**
+     * （形参 2 个，要 (standard, context)），而 eventSource 根侧就拿得到——于是抽屉在
+     * **三种承载下都成立**（tab / docked / 模态）。这是这轮 spike 的主要收获。
+     *
+     * 事件形状（全部读自 SDK 类型，没有猜）：
+     *   transient  assistant/live-chunk → data.chunk: StreamChunk
+     *     · text-delta       { index, text }                  → 正文增量
+     *     · reasoning-delta  { index, text }                  → 推理增量
+     *     · tool-call-delta  { index, id, name?, argumentsDelta } → 工具调用（名字/参数流式到达）
+     *     · block-start / block-end / usage                   → 抽屉不需要
+     *   durable    turn/end      { turn, reason }             → 收尾状态
+     *              tool/call     { turn, step, callId, name, arguments }
+     *              tool/result   { turn, step, message, error? }
+     *              user/message / assistant/message            → 正文（形状按内容块抽取，见 textOf）
+     * ================================================================== */
+
+    /** 截断：抽屉是「看一眼」的地方，单条不设上限会把面板撑爆。 */
+    function clipText(text, limit) {
+      return text.length <= limit ? text : text.slice(0, limit) + ' …（截断）'
+    }
+
+    /**
+     * 从消息对象里抽正文。
+     *
+     * 增量的形状是确切的（`chunk.text`）；**持久消息的 `message` 结构没逐个读类型**，所以
+     * 这里按「content 块数组 → 拼 text」递归取，取不到就退回 JSON 片段——宁可显示原始
+     * 片段，也不假装抽出了正文（抽错会让人误读，比显式截断更糟）。
+     */
+    function textOf(value, limit = 600) {
+      if (typeof value === 'string') return clipText(value, limit)
+      if (Array.isArray(value)) {
+        const parts = value.map((part) => textOf(part, limit)).filter((part) => part !== '')
+        return clipText(parts.join('\n'), limit)
+      }
+      if (value === null || value === undefined || typeof value !== 'object') return ''
+      if (typeof value.text === 'string') return clipText(value.text, limit)
+      if (value.content !== undefined) return textOf(value.content, limit)
+      if (value.message !== undefined) return textOf(value.message, limit)
+      return clipText(describeJson(value), limit)
+    }
+
+    /**
+     * 事件窗口 → 抽屉条目。**纯函数**：同一个窗口每次算出同一个结果，便于回归。
+     *
+     * 只取**最后一轮**（最后一个 `turn/start` 之后）——抽屉要回答的是「我刚丢给它的那条
+     * 日志，它现在怎么样了」，不是整个会话历史。
+     *
+     * 增量按 (attemptId, step, index, 种类) 归并成一条：token 级的 delta 直接铺成几千行
+     * DOM 既慢又没法读。持久事件与增量可能同时存在（一行正文既有 delta 也有落定后的
+     * message），这里不做事后对账——按到达顺序呈现，落定那条会作为独立条目出现。
+     */
+    function projectFeed(entries, limit = 40) {
+      const list = Array.isArray(entries) ? entries : []
+      let start = 0
+      for (let i = list.length - 1; i >= 0; i -= 1) {
+        if (list[i]?.event?.type === 'turn/start') {
+          start = i
+          break
+        }
+      }
+      const items = []
+      const buffers = new Map()
+      const pushDelta = (key, kind, text) => {
+        const current = buffers.get(key)
+        if (current === undefined) {
+          const item = { kind, text }
+          buffers.set(key, item)
+          items.push(item)
+          return
+        }
+        current.text += text
+      }
+      for (let i = start; i < list.length; i += 1) {
+        const entry = list[i]
+        const event = entry?.event
+        if (event === null || event === undefined) continue
+        if (entry.type === 'transient') {
+          if (event.type !== 'assistant/live-chunk') continue
+          const data = event.data ?? {}
+          const chunk = data.chunk ?? {}
+          const slot = String(data.attemptId ?? '') + ':' + String(data.step ?? '') + ':' + String(chunk.index ?? '')
+          if (chunk.type === 'text-delta' && typeof chunk.text === 'string') pushDelta('t|' + slot, 'text', chunk.text)
+          else if (chunk.type === 'reasoning-delta' && typeof chunk.text === 'string') pushDelta('r|' + slot, 'reasoning', chunk.text)
+          else if (chunk.type === 'tool-call-delta') {
+            const key = 'c|' + String(chunk.id ?? slot)
+            const current = buffers.get(key)
+            if (current === undefined) {
+              const item = { kind: 'tool', name: typeof chunk.name === 'string' && chunk.name !== '' ? chunk.name : '（工具）', args: typeof chunk.argumentsDelta === 'string' ? chunk.argumentsDelta : '' }
+              buffers.set(key, item)
+              items.push(item)
+            } else {
+              if (typeof chunk.name === 'string' && chunk.name !== '') current.name = chunk.name
+              if (typeof chunk.argumentsDelta === 'string') current.args += chunk.argumentsDelta
+            }
+          }
+          continue
+        }
+        const data = event.data ?? {}
+        if (event.type === 'user/message') items.push({ kind: 'user', text: textOf(data) })
+        else if (event.type === 'assistant/message') items.push({ kind: 'text', text: textOf(data.message ?? data) })
+        else if (event.type === 'tool/call') items.push({ kind: 'tool', name: typeof data.name === 'string' ? data.name : '（工具）', args: typeof data.arguments === 'string' ? data.arguments : '' })
+        else if (event.type === 'tool/result') items.push({ kind: 'result', text: textOf(data.message ?? data), failed: data.error !== undefined })
+        else if (event.type === 'turn/end') items.push({ kind: 'end', reason: typeof data.reason?.kind === 'string' ? data.reason.kind : '结束' })
+      }
+      return items.length <= limit ? items : items.slice(items.length - limit)
+    }
+
     function ContainerPanel(props) {
       const [config, setConfig] = useState(null)
       const [targets, setTargets] = useState([])
@@ -5984,6 +6102,10 @@ window.__ModuleLoader__.load({
      * 被卸载，docked 面板只剩 tty 画的外壳，看着就是「面板空白」。
      * 把组件体挂出来，用例直接调一次就能守住这一类。
      */
+    exports.__feed = {
+      projectFeed,
+      textOf,
+    }
     exports.__render = {
       ContainerPanel,
       DockerTabBody,

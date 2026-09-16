@@ -521,6 +521,66 @@ await test('粘性：订阅接线（打开 → 切会话重开 → 同会话不�
   assert.equal(state.openTabs.length, 2, '同一会话重复通报不该再开')
 })
 
+await test('抽屉核心：事件窗口 → 条目（增量归并 / 持久事件 / 只取最后一轮）', () => {
+  const feed = feedApi()
+  // 事件形状全部按 SDK 类型造：transient 的 assistant/live-chunk（StreamChunk）、durable 的各类
+  const chunk = (type, extra) => ({ type: 'transient', event: { type: 'assistant/live-chunk', seq: 1, time: 0, data: { attemptId: 'a1', turn: 1, step: 1, chunk: { type, index: 0, ...extra } } } })
+  const durable = (type, data) => ({ type: 'event', event: { type, seq: 1, time: 0, data } })
+
+  // 1) 同一槽位的推理增量归并成一条 —— 否则 token 级 delta 会铺出几千行 DOM
+  let items = feed.projectFeed([chunk('reasoning-delta', { text: '先看' }), chunk('reasoning-delta', { text: '日志' })])
+  assert.equal(items.length, 1, '同一槽位的增量应归并')
+  assert.equal(items[0].kind, 'reasoning')
+  assert.equal(items[0].text, '先看日志')
+
+  // 2) 正文单独成条；工具调用的 name / 参数跨 delta 累积
+  items = feed.projectFeed([
+    chunk('text-delta', { text: '结论：' }),
+    chunk('tool-call-delta', { id: 'c1', name: 'docker_logs', argumentsDelta: '{"id"' }),
+    chunk('tool-call-delta', { id: 'c1', argumentsDelta: ':1}' }),
+  ])
+  assert.equal(items.length, 2)
+  assert.equal(items[0].kind, 'text')
+  assert.equal(items[1].kind, 'tool')
+  assert.equal(items[1].name, 'docker_logs')
+  assert.equal(items[1].args, '{"id":1}', '参数应跨 delta 拼起来')
+
+  // 3) 持久事件：tool/call、tool/result（失败标记）、turn/end 的 reason
+  items = feed.projectFeed([
+    durable('tool/call', { name: 'docker_logs', arguments: '{}' }),
+    durable('tool/result', { message: { content: [{ type: 'text', text: '日志正文' }] }, error: { name: 'x', code: 'y' } }),
+    durable('turn/end', { reason: { kind: 'completed' } }),
+  ])
+  assert.deepEqual(items.map((item) => item.kind), ['tool', 'result', 'end'])
+  assert.equal(items[1].text, '日志正文', 'content 块数组应被抽成正文')
+  assert.equal(items[1].failed, true)
+  assert.equal(items[2].reason, 'completed')
+
+  // 4) 只看最后一轮：抽屉回答的是「我刚丢给它那条日志怎么样了」
+  items = feed.projectFeed([
+    durable('user/message', { content: '上一轮' }),
+    durable('turn/end', { reason: { kind: 'completed' } }),
+    durable('turn/start', { turn: 2 }),
+    durable('user/message', { content: '这一轮' }),
+  ])
+  assert.deepEqual(items.map((item) => item.kind), ['user'])
+  assert.equal(items[0].text, '这一轮')
+
+  // 5) 无关事件与畸形输入不炸（窗口里 step/start、usage、system/message 都会出现）
+  assert.deepEqual(feed.projectFeed([durable('step/start', {}), durable('usage', {})]), [])
+  assert.deepEqual(feed.projectFeed(null), [])
+  assert.deepEqual(feed.projectFeed([null, {}, { type: 'event' }]), [])
+
+  // 6) 上限：只保留最后 N 条
+  const many = []
+  for (let i = 0; i < 50; i += 1) many.push(durable('turn/end', { reason: { kind: 'k' + String(i) } }))
+  assert.equal(feed.projectFeed(many, 10).length, 10)
+
+  // 7) 正文抽取的显式回退：取不到结构就退回 JSON 片段，而不是假装抽出了正文
+  assert.equal(feed.textOf('直接给字符串'), '直接给字符串')
+  assert.match(feed.textOf({ 没有常见字段: 1 }), /没有常见字段/)
+})
+
 await test('渲染期守卫：面板组件体直接跑一遍不能抛（TDZ 那类错误曾让面板整个空白）', () => {
   const exports_ = registration.factory((spec) => SEED[spec])
   assert.ok(exports_.__render !== undefined, '缺少 __render 测试缝')
@@ -1013,6 +1073,12 @@ function pickApi() {
   const exports_ = registration.factory((spec) => SEED[spec])
   assert.ok(exports_.__pick !== undefined, '缺少 __pick 测试缝')
   return exports_.__pick
+}
+
+function feedApi() {
+  const exports_ = registration.factory((spec) => SEED[spec])
+  assert.ok(exports_.__feed !== undefined, '缺少 __feed 测试缝')
+  return exports_.__feed
 }
 
 function carrierApi() {
