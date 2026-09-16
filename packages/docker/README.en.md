@@ -11,6 +11,7 @@
 - **"Needs attention" reads authoritative fields**: unhealthy / repeatedly restarting / OOM-killed / non-zero exit / dead; OOM and the real exit code come from one `docker inspect` — the 137 in a `docker ps` summary cannot separate an OOM kill from a manual kill, so filtering on the summary alone must misreport.
 - **Four long-lived SSE streams on one substrate**: log FOLLOW, `docker stats`, `docker events` and `docker pull` all run through the same `openSseStream` (heartbeat / active-stream registry / teardown on disconnect) and differ only in how they end — logs and pulls finish on their own, stats and events are aborted by the browser. Multi-select merged logs recover true cross-container ordering from the `--timestamps` prefix; "pause" freezes rendering only (the stream keeps receiving and flushes in one batch on resume).
 - **Read-only by default, capability switches in three tiers**: start / stop / remove, exec and image mutations are independent switches; while one is off the agent tools are **not registered** and the HTTP routes return 403 (the capability does not exist, rather than failing when called). Container names and IDs pass a whitelist, every command is built as argv with single-quote escaping, and passwords / passphrases are referenced as `env:VAR` and never sent back to the browser.
+- **Right-click a log into the agent, plus an in-panel agent drawer**: select the failing lines in the log view, then right-click for "preview & send / send to the current session / fill the draft only" — the selection travels with its target, container, time window and 20 lines of context on each side (the menu states plainly that the content enters the model context and may carry credentials). At the bottom of the panel sits an **agent drawer**: collapsed by default, it opens itself on send and **streams the reply** — reasoning, assistant text and tool calls arrive in order, with a status line for running / completed / interrupted. It reads the session event window (`sessions.binding(id).eventSource`, including token-level deltas), so it works under **all three carriers**: you inspect the result without leaving the panel.
 - **Data-level reuse of dsh-tty, no code coupling**: no tty code is imported and tty needs no source change, so the two install and upgrade independently; with tty present three optional extension points are consumed — connection-bar actions (`ttyConnbar`), the terminal host (`ttyTerminal`: a new tab under the tab/dock carriers, an in-place drawer under the modal) and the terminal-side dock (`ttyPanel.mountPane`, used only by the fallback path) — and each degrades silently without tty or below the required version.
 
 ## Relationship with dsh-tty
@@ -55,6 +56,11 @@ on the right, without getting in the way of watching it work.
 - **Sidebar "Containers"** (the main entry point): works for any target, including local docker and switching
   between multiple targets. If it is already open it focuses (a page type deduplicates inside one column), so
   clicking twice never opens a second "Docker containers" tab.
+- **Agent drawer**: the `Agent` bar at the bottom of the panel. Collapsed by default; delivering a
+  log selection opens it automatically and it scrolls with the reply. The status dot reads running
+  (blue) / completed (green) / interrupted (red) / no event source (amber). Under the docked and modal
+  carriers it also points out that the conversation is behind the panel — the tty panel exposes no
+  close or minimize call, so pointing is all we can do.
 - **SSH connection bar "Containers" button** (a contextual shortcut, tty ≥ 0.13.0): in an SSH tab of the tty
   terminal panel a "Containers" button appears next to the connection bar's SFTP button — **shown as soon as it is
   registered**, and clicking it opens the panel directly on **the host of the current session**, with no target to
