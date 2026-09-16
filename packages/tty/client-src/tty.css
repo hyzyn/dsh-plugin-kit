@@ -1452,7 +1452,36 @@
  * + `getBoundingClientRect()` 定位——那反而天然逃出卡片的 overflow（backdrop 有
  * `backdrop-filter`，fixed 会以它为包含块）。
  */
-.tt_sshRow > .tt_envList {
+.tt_sshRow > /* ---- 连接对话框里的「凭据存储」行（引用 / 明文两种状态） ---- */
+.tt_credRow {
+  gap: 4px;
+}
+
+.tt_credActions {
+  display: flex;
+  gap: 6px;
+}
+
+.tt_credActions > button[disabled] {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+.tt_credStatus {
+  font-size: 11px;
+  line-height: 1.5;
+  min-height: 15px;
+}
+
+.tt_credStatus[data-kind=""] {
+  display: none;
+}
+.tt_credStatus[data-kind="ok"] { color: var(--tt-success); }
+.tt_credStatus[data-kind="plain"] { color: var(--tt-label-3); }
+.tt_credStatus[data-kind="muted"] { color: var(--tt-label-3); }
+.tt_credStatus[data-kind="error"] { color: var(--tt-danger); }
+
+.tt_envList {
   position: absolute;
   top: 100%;
   left: 0;
