@@ -2289,6 +2289,9 @@ function openSshDialog(entry) {
    * 「存入」不再是一个独立动作——它跟着「保存修改 / 连接（并保存）」一起发生，省掉一次点击，
    * 也不会出现"存了但没保存"的悬空引用。勾选框的 title 里写清边界，正文不再铺三行说明。
    *
+   * **默认勾选**（宿主提供 remote.credentials 时；服务缺位则拨回未勾 + 禁用）：明文密码存进
+   * 凭据存储比写进设置文件更好——设置会被送到浏览器，凭据存储的值永不回传。
+   *
    * 模型与**官方的设置卡片**一致（`ctx.remote.credentials`）：值永不回显，只有 describe 给的
    * configured / writable / source；**引用是可见的**，存完字段里就是 `env:NAME`。
    */
@@ -2306,6 +2309,12 @@ function openSshDialog(entry) {
     rememberText.textContent = '保存时存入凭据存储'
     toggle.appendChild(remember)
     toggle.appendChild(rememberText)
+    // **默认勾上**：输一个明文密码再保存时，值进凭据存储、字段里只留引用——这比把它明文写进
+    // 设置文件更好（设置会被送到浏览器，凭据存储的值永不回传）。两个前提：
+    //   · 宿主得真的提供 remote.credentials：没有的话勾着只会让保存被 storeIfRequested 的错误
+    //     挡住（下面 refresh 的 remote === null 分支会把它拨回未勾 + 禁用）；
+    //   · 字段已经是引用时这一行换成「清除」按钮，勾选框不参与（refMode 下 toggle 隐藏）。
+    remember.checked = credentialsRemote !== null
     toggle.title = '勾选后，点「保存修改」或「连接（并保存）」时把密码写进官方凭据存储，'
       + '字段里只留 env: 引用（值在 ~/.dsh/.credentials.yaml，不进环境、不回传浏览器；'
       + '挡不住同用户进程与 agent）。不勾选则按现状明文写进设置文件。能用密钥 / agent 就别存密码。'
@@ -2342,6 +2351,8 @@ function openSshDialog(entry) {
       status.hidden = false
       if (remote === null) {
         remember.disabled = true
+        // 服务缺位时把默认勾选拨回去：勾着也存不成，只会让保存被错误挡住（见 storeIfRequested）
+        remember.checked = false
         clearBtn.disabled = true
         setStatus(credentialsRemote === null ? '宿主未提供凭据服务（remote.credentials），只能明文保存' : '凭据服务不完整，只能明文保存', 'muted')
         return
