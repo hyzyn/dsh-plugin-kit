@@ -127,8 +127,11 @@ lacks that service the box is switched back off and disabled, with a note that o
   "credential set referenced by title" and iTerm2's "pick a named entry from the password manager". The
   implementation goes through DSH's official `ctx.remote.credentials` (`describe` / `set` / `unset`, where
   **values cross in one direction only — no read path exists**), exactly as the official settings cards do.
-- **Name** (the rule is fixed): `DSH_TTY_<username>_<host>[_<port>]_<field>`, where the port is omitted for the
-  default 22 and `field` is `PASSWORD` / `PASSPHRASE`; e.g. `hsadmin@192.168.80.248:22` →
+- **Name** (the rule is fixed): `DSH_TTY_<username>_<host>[_<port>]_<field>`, where the port is **omitted when
+  empty or 22 (the default)** — matching the connecting side's `spec.port ?? 22` (empty means 22), so
+  “empty / `22` / `" 22 "`” all collapse into one key and the same account never ends up with two names or one
+  password stored twice; a non-default port does take part (the same host on another port is often a different
+  box behind NAT). `field` is `PASSWORD` / `PASSPHRASE`; e.g. `hsadmin@192.168.80.248:22` →
   `DSH_TTY_HSADMIN_192_168_80_248_PASSWORD`. It is **derived from the resource identity and carries no hash** — the
   same school as git-credential-store's `protocol://username@host` and docker credential helpers'
   `ServerURL` + `Username`: host and username **are ASCII identifiers already**, so nothing needs sanitizing and
