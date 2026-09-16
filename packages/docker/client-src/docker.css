@@ -1192,49 +1192,6 @@
   line-height: 1.5;
 }
 
-.dk_askCard {
-  position: fixed;
-  z-index: 2170;
-  display: flex;
-  flex-direction: column;
-  gap: var(--dk-gap-sm);
-  width: min(680px, calc(100vw - 32px));
-  padding: var(--dk-gap-lg);
-  border: 1px solid var(--dk-border-strong);
-  border-radius: var(--dk-r-lg);
-  background: var(--dk-surface-solid);
-  box-shadow: var(--dk-shadow-lg);
-  color: var(--dk-label);
-}
-
-.dk_askCardHead { font-size: 13px; font-weight: 600; }
-
-.dk_askCardText {
-  width: 100%;
-  height: min(42vh, 340px);
-  padding: var(--dk-gap-md);
-  border: 1px solid var(--dk-border);
-  border-radius: var(--dk-r-sm);
-  background: var(--dk-log-bg);
-  color: var(--dk-log-fg);
-  font-family: var(--dk-mono);
-  font-size: 12px;
-  line-height: 1.6;
-  resize: vertical;
-}
-
-.dk_askCardText:focus-visible { outline: none; box-shadow: var(--dk-ring); }
-
-.dk_askCardStatus { min-height: 16px; color: var(--dk-label-3); font-size: 11px; }
-.dk_askCardStatus[data-kind="error"] { color: var(--dk-danger); }
-.dk_askCardStatus[data-kind="ok"] { color: var(--dk-accent); }
-
-.dk_askCardFoot { display: flex; align-items: center; gap: var(--dk-gap-md); }
-/* 取消推到最右：与 .dk_confirmActions 的「动作在右」一致，避免误点主按钮 */
-.dk_askCardFoot .dk_btn:last-child { margin-left: auto; }
-
-.dk_askCardHint { color: var(--dk-label-3); font-size: 11px; line-height: 1.5; }
-
 .dk_askToast {
   position: fixed;
   right: 16px;
