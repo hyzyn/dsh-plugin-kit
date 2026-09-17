@@ -15,13 +15,25 @@ export function assertRef(value, field) {
         throw new Error(`${field} 含非法字符（仅允许字母、数字、_ . -）：${trimmed}`);
     return trimmed;
 }
-/** docker CLI 可执行文件白名单（argv[0]，不设默认值以免误用其他程序）。 */
+/**
+ * docker CLI 可执行文件 / 路径的白名单（argv[0]，不设默认值以免误用其他程序）。
+ *
+ * 字符集必须容得下 **Windows 绝对路径**：`C:\Program Files\Docker\Docker\resources\
+ * bin\docker.exe` 里有盘符 `:`、分隔符 `\` 和空格。这三样缺任何一个，Windows 用户都
+ * 填不进自己的 docker —— 而填不进时拿到的是 400，却没有一句话解释为什么（真机实测）。
+ *
+ * 仍然拒绝：`;` `&` `|` `<` `>` 引号 反引号 `$` `%` `!` `^` 换行等 shell 元字符，
+ * 以及首字符 `-`（看起来像 flag 的值会被 docker 当选项解析）。空格只允许出现在
+ * 内部且不成串。本机通道一律以 argv 数组启动、不经 shell（远程走 shJoin），这层是纵深防御。
+ */
+const BIN_RE = /^(?!-)[A-Za-z0-9_./:\\-]+(?: [A-Za-z0-9_./:\\-]+)*$/;
+/** 校验 docker CLI 可执行文件路径；空值回落到 `docker`。 */
 export function assertBin(value) {
     if (typeof value !== 'string' || value.trim() === '')
         return 'docker';
     const trimmed = value.trim();
-    if (!/^[A-Za-z0-9_./-]+$/.test(trimmed))
-        throw new Error(`dockerBin 含非法字符：${trimmed}`);
+    if (!BIN_RE.test(trimmed))
+        throw new Error(`dockerBin 含非法字符（仅允许字母、数字与 _ . / \\ : - 及内部空格，且不能以 - 开头）：${trimmed}`);
     return trimmed;
 }
 /**
