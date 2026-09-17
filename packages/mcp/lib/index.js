@@ -755,7 +755,13 @@ async function probeHttp(config, timeoutMs) {
     catch (error) {
         if (error instanceof Error && error.name === 'AbortError')
             return finish({ ok: false, toolsCount: 0, error: '连接超时（' + timeoutMs + 'ms）' });
-        return finish({ ok: false, toolsCount: 0, error: error instanceof Error ? error.message : String(error) });
+        // fetch 在网络层失败时只给一句 "fetch failed"，真正的原因（ECONNREFUSED / DNS / TLS）
+        // 在 error.cause 里 —— 不带上它，用户看到的就是一句无从下手的「fetch failed」。
+        const cause = error instanceof Error && error.cause !== undefined
+            ? (error.cause instanceof Error ? error.cause.message : String(error.cause))
+            : undefined;
+        const base = error instanceof Error ? error.message : String(error);
+        return finish({ ok: false, toolsCount: 0, error: cause === undefined || cause === '' || base.includes(cause) ? base : base + '：' + cause });
     }
 }
 async function testServer(rawConfig) {
