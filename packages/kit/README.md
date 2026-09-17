@@ -24,6 +24,50 @@ const plugin = definePlugin<{ enabled?: boolean }>({
 export const { name, inject, apply } = plugin
 ```
 
+### Windows `.cmd` shim（`windows-shim`）
+
+Windows 上 npm / pnpm / 独立安装器给出的 CLI 往往只有 `.cmd` shim，没有真正的
+`.exe`。`spawn` / `execFile` 默认 `shell: false` 时：裸命令名解析不到 `.cmd`
+（`spawn codegraph ENOENT`），写绝对 `.cmd` 路径又被 Node 因 CVE-2024-27980 加固拒绝
+（`spawn … EINVAL`）。本模块把命令行交给 `%COMSPEC% /d /s /c`，转义规则同 cross-spawn
+（MCP 官方 SDK 的做法）。
+
+- `spawnPortable(command, args, options)` —— 跨平台启动外部命令；Windows 上非 `.exe` /
+  `.com` 自动套 cmd.exe。**参数转义由本模块负责，调用方只管传 argv**；
+- `portableSpawnPlan(command, args, { platform, comspec })` —— 纯函数，决定「直连」还是
+  「经 cmd.exe」。抽出来是为了能在任何平台断言这条分支（选错就等于命令注入或必然 ENOENT）；
+- `escapeCommand` / `escapeArgument` / `windowsCommandLine` —— cmd.exe 转义规则；
+- `taskkillArgs(pid)` / `killProcessTree(pid)` / `terminateChild(child)` —— Windows 上
+  `/T` 收整棵进程树：shim 里真正的程序是 cmd.exe 的**孙**进程，只 `child.kill()` 会留下孤儿。
+
+```ts
+import { spawnPortable, terminateChild } from '@hyzyn/dsh-kit'
+
+const child = spawnPortable('codegraph', ['serve', '--mcp'], { cwd: project })
+// ...
+await terminateChild(child)
+```
+
+### 子进程输出解码（`decode`）
+
+Windows 上 cmd.exe 自己的错误消息按**控制台代码页**（中文系统 CP936）写管道，而
+`Buffer#toString()` 默认 UTF-8 —— 卡片上的报错会整段变成 `���`。
+
+- `createOutputDecoder({ fallbackEncoding? })` —— 流式容错解码器：严格 UTF-8 优先，
+  遇到真正非法的字节就把**整条流**回落到控制台代码页重解一次；不完整的多字节尾巴留在
+  内部，所以**块边界切在字符中间也不会误判**；
+- `decodeOutput(buf, options)` —— 一次性版本（适合 `execFile` 的 `encoding: 'buffer'`）；
+- `consoleEncoding()` —— 当前控制台输出代码页对应的编码标签（Windows 上问 `chcp`，
+  其余平台恒为 `utf-8`），进程内缓存。
+
+```ts
+import { createOutputDecoder } from '@hyzyn/dsh-kit'
+
+const stderr = createOutputDecoder()
+child.stderr?.on('data', (chunk) => (tail += stderr.decode(chunk)))
+child.on('close', () => (tail += stderr.flush()))
+```
+
 ### 服务与 DSH 目录（`services`）
 
 - `getService(ctx, name): unknown` —— 读宿主服务：先 `ctx.get(name)`，取不到再回退
