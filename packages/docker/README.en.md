@@ -429,7 +429,7 @@ return 400).
 | --- | --- | --- |
 | `enabled` | true | disables the whole plugin (**takes effect after restarting `dsh web`**, same semantics as tty) |
 | `announceToAgent` | true | whether to inject a capability announcement into the agent (systemPrompt section `plugin:dsh-docker`) |
-| `dockerBin` | `docker` | the docker CLI executable name or path (`podman` works here); only letters, digits and `_ . / -` are allowed |
+| `dockerBin` | `docker` | the docker CLI executable name or path (`podman` works here); only letters, digits and `_ . / \ : -` plus interior spaces are allowed, and it may not start with `-` (**Windows drive letters and `\` must be allowed**, otherwise no absolute path can be entered at all) |
 | `allowMutations` | false | allows **mutating operations**: container start / stop / restart / remove, image removal / dangling pruning / pulling (the panel buttons and the `docker_action`, `docker_image_remove`, `docker_image_prune`, `docker_image_pull` tools; while off, `/action`, `/images/remove`, `/images/prune`, `/images/pull/stream` return 403 and the corresponding tools are not registered) |
 | `allowExec` | false | allows a one-shot `docker exec` (the panel's exec input and the `docker_exec` tool; while off, `/exec` returns 403) |
 | `execTimeoutSec` | 30 | default exec timeout in seconds (1–120) |
@@ -665,6 +665,14 @@ read-only first:
   error which the panel and the tools pass through verbatim, without attempting automatic sudo escalation.
 - **Docker not installed on the remote**: `probe` fails (`command not found` / exit code 127) and the panel shows
   the error; when PATH differs, fill `dockerBin` with an absolute path.
+- **`dockerBin` is validated before it is persisted**: an illegal value returns 400 with a reason and is never
+  written to `settings.yaml` (the earlier implementation validated after `scope.update`, so the illegal value was
+  stored anyway and the user only received a bodyless 400; the next start silently reverted the entire docker
+  section to defaults).
+- **A `dockerBin` pointing at a `.cmd` / `.bat` cannot start the local channel**: local execution goes through the
+  bare `spawn` in `runLocal` / `runLocalStream`, and Node refuses to execute `.cmd` directly on Windows
+  (`EINVAL`). Docker ships `docker.exe`, so this is not hit in practice; with a hand-written `.cmd` wrapper, use
+  an `.exe` instead, or wait for the local channel to move to kit's `spawnPortable` as well.
 - **Podman compatibility through `dockerBin`**: filling in `podman` runs, but the fields and output formats of
   `stats` and `--format '{{json .}}'` differ from docker's, so only the parser's degradation paths are relied on;
   this has not been verified item by item.

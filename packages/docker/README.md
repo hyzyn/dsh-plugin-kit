@@ -381,7 +381,7 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
 | --- | --- | --- |
 | `enabled` | true | 关闭整个插件（**需重启 `dsh web` 生效**，与 tty 同语义） |
 | `announceToAgent` | true | 是否向 agent 注入能力公告（systemPrompt section `plugin:dsh-docker`） |
-| `dockerBin` | `docker` | docker CLI 可执行名或路径（podman 可填 `podman`）；只允许字母、数字与 `_ . / -` |
+| `dockerBin` | `docker` | docker CLI 可执行名或路径（podman 可填 `podman`）；只允许字母、数字与 `_ . / \ : -` 及内部空格，且不能以 `-` 开头（**Windows 盘符与 `\` 必须放行**，否则任何绝对路径都填不进来） |
 | `allowMutations` | false | 允许**变更操作**：容器 start / stop / restart / remove、镜像删除 / dangling 清理 / 拉取（面板按钮与 `docker_action`、`docker_image_remove`、`docker_image_prune`、`docker_image_pull` 工具；关闭时 `/action`、`/images/remove`、`/images/prune`、`/images/pull/stream` 返回 403，对应工具不注册） |
 | `allowExec` | false | 允许一次性 `docker exec`（面板 exec 输入与 `docker_exec` 工具；关闭时 `/exec` 返回 403） |
 | `execTimeoutSec` | 30 | exec 默认超时秒数（1~120） |
@@ -616,6 +616,13 @@ abort）、客户端断开静默中止。各自只差执行器与结束原因：
   面板与工具原样透出，不做自动 sudo 提权。
 - **远端未安装 docker**：`probe` 失败（`command not found` / 退出码 127），
   面板显示错误；PATH 不一致时可把 `dockerBin` 填成绝对路径。
+- **`dockerBin` 的校验发生在落盘之前**：非法值直接 400 并带上原因，不会被写进
+  `settings.yaml`（早先的实现在 `scope.update` 之后才校验，于是非法值照样写盘、
+  用户只拿到一个没有正文的 400；下次启动整段 docker 配置会静默退回默认）。
+- **`dockerBin` 指向 `.cmd` / `.bat` 时本机通道起不来**：本机执行走
+  `runLocal` / `runLocalStream` 的裸 `spawn`，Windows 上 Node 会拒绝对 `.cmd` 的
+  直接执行（`EINVAL`）。docker 官方发行的是 `docker.exe`，日常不受影响；手写
+  `.cmd` 包装脚本时请改用 `.exe`，或等待本机通道也切到 kit 的 `spawnPortable`。
 - **podman 兼容靠 `dockerBin`**：填 `podman` 即可跑，但 `stats` 与
   `--format '{{json .}}'` 的字段和输出格式与 docker 有差异，只能依赖解析器
   的降级路径，未逐项验证。

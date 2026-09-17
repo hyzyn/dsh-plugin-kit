@@ -2138,6 +2138,24 @@ const plugin = definePlugin({
                             // 凭证补全必须在写盘之前：否则提交的 targets 会把密码清空
                             if (patch.targets !== undefined)
                                 patch.targets = mergeTargetSecrets(targetsNow(), patch.targets);
+                            // 校验必须在**落盘之前**。原先只有 applySection 会做校验，而它跑在
+                            // scope.update 之后：值不合法的 patch 已经被写进 settings.yaml，随后
+                            // applySection 抛出，异常穿到宿主 HTTP 层 → 用户收到一个**没有正文的
+                            // 400**，而配置里已经留下一个非法值；下次启动 normalizeConfig 再抛，
+                            // 整段 docker 配置（含目标列表）静默退回默认。这里先按同一套合并规则
+                            // 干跑一遍 normalizeConfig：不合法就地 400 并带上原因，不写盘。
+                            {
+                                const dryRun = { ...live, ...patch };
+                                if (patch.hostKeys === undefined)
+                                    dryRun.hostKeys = live.hostKeys;
+                                try {
+                                    normalizeConfig(dryRun);
+                                }
+                                catch (error) {
+                                    writeJson(res, 400, { error: '配置无效: ' + (error instanceof Error ? error.message : String(error)) });
+                                    return;
+                                }
+                            }
                             const scope = settingsScope;
                             if (scope !== undefined) {
                                 try {

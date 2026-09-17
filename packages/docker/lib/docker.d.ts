@@ -14,7 +14,7 @@ import { RemoteExec } from './ssh-exec.js';
 export type { StreamHandlers, StreamResult } from './ssh-exec.js';
 /** 校验一个 docker 引用（容器名 / ID / 镜像）。不合法直接抛错，绝不拼接进命令。 */
 export declare function assertRef(value: unknown, field: string): string;
-/** docker CLI 可执行文件白名单（argv[0]，不设默认值以免误用其他程序）。 */
+/** 校验 docker CLI 可执行文件路径；空值回落到 `docker`。 */
 export declare function assertBin(value: unknown): string;
 /** 校验一个镜像引用（tag / digest / ID）。不合法直接抛错，绝不拼接进命令。 */
 export declare function assertImageRef(value: unknown, field: string): string;
