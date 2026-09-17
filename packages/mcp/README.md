@@ -8,7 +8,7 @@
 
 - **保存即热加载**：改写 `~/.dsh/cordis.patch.yml` 的托管区块，DSH 的 HMR 监听自动重载，工具以 `mcp__<server>__<tool>` 注册给模型。
 - **stdio 与 streamable-http 双传输**：stdio（command / args / env / cwd）与 streamable-http（url / headers，含 SSE 与 session 头）；值可写 `js:` 表达式，密钥不落补丁文件。
-- **连接测试不经 MCP SDK**：宿主直接说 JSON-RPC（initialize → tools/list），返回协议版本 / serverInfo / 工具清单 / 耗时。
+- **连接测试不经 MCP SDK**：宿主直接说 JSON-RPC（initialize → tools/list），返回协议版本 / serverInfo / 工具清单 / 耗时。启动子进程走 `@hyzyn/dsh-kit` 的 `spawnPortable`——Windows 上 MCP 服务器常是 `.cmd` shim，裸 `spawn` 会 `EINVAL`（Node 对 `.cmd` 的加固），连接测试会永久报错并误导成「CLI 没装好」；探测进程的 stderr 也用同库的容错解码器（UTF-8 优先、遇非法字节回落控制台代码页）读，卡片上不会出现 `���`。注意这只影响本插件的探测：**真正的工具加载**走 DSH 核心的 `@deepseek-ai/dsh-mcp-client`（官方 SDK + cross-spawn），本来就没这个问题。
 - **存活状态与命名冲突可见**：从 loader fiber 读存活状态（运行中 / 已停用 / 错误 / 加载中），并提示与外部 mcp-client 实例的 serverName 冲突；服务器可启用 / 停用（`disabled: true`）/ 编辑 / 删除。
 - **能力公告注入 systemPrompt**：注入能力公告（systemPrompt section），提到「MCP 配置 / MCP 服务器」时模型知道指本插件。
 
