@@ -38,6 +38,9 @@ const repo = resolve(flag('--repo') ?? process.cwd())
 const hostUrl = flag('--host')
 const dshHome = flag('--dsh-home')
 const codegraphCli = flag('--codegraph-cli')
+const nodeExe = flag('--node')
+const dockerSshKey = flag('--docker-ssh-key') ?? 'C:\\cg-verify\\ssh\\id_ed25519'
+const dshBin = flag('--dsh-bin')
 const reportPath = flag('--report')
 
 const results = []
@@ -575,8 +578,14 @@ if (hostUrl === undefined) {
       const versions = row?.versions ?? []
       const version = versions.find((candidate) => candidate.content === content)
       record('B5 prompt：GET /list 读回内容逐字节相同（含 emoji 与多字节）', version !== undefined && versions.some((candidate) => candidate.content === contentB), `版本数=${versions.length}`)
-      const activated = await call('POST', '/api/dsh-prompt/activate', { id })
-      record('B5 prompt：POST /activate 切换生效 prompt', activated.status === 200, `status=${activated.status} body=${JSON.stringify(activated.body.slice(0, 120))}`)
+      // 字段名是 promptId：早先我用 { id } 传错，接口把 activePromptId 置成 null 却仍回 200，
+      // 于是「激活」这条其实是空转 —— 断言必须盯住 activePromptId 本身，不能只看状态码。
+      const activated = await call('POST', '/api/dsh-prompt/activate', { promptId: id })
+      record(
+        'B5 prompt：POST /activate 真的把 activePromptId 切到该 prompt',
+        activated.status === 200 && json(activated.body)?.activePromptId === id,
+        `status=${activated.status} activePromptId=${String(json(activated.body)?.activePromptId)} 期望=${id}`,
+      )
       if (versions.length >= 2) {
         const abtest = await call('POST', '/api/dsh-prompt/abtest', {
           promptId: id,
@@ -851,7 +860,11 @@ if (hostUrl === undefined) {
       `body=${JSON.stringify(JSON.stringify(containers).slice(0, 220))}`,
     )
     const config = json((await call('GET', '/api/dsh-docker/config')).body)
-    record('B9 docker：GET /config 返回配置快照（含 allowMutations/allowExec 开关位）', config?.config !== undefined && config.config.allowMutations === false, `keys=${JSON.stringify(Object.keys(config?.config ?? {}))}`)
+    record(
+  'B9 docker：GET /config 返回配置快照（含 allowMutations/allowExec 开关位）',
+  config?.config !== undefined && typeof config.config.allowMutations === 'boolean' && typeof config.config.allowExec === 'boolean',
+  `keys=${JSON.stringify(Object.keys(config?.config ?? {}))} allowMutations=${String(config?.config?.allowMutations)}`,
+)
     const targetsBefore = json((await call('GET', '/api/dsh-docker/targets')).body)
     record(
       'B9 docker：GET /targets 返回目标列表（干净机器上为空表，插件不自带目标）',
@@ -1049,6 +1062,277 @@ if (hostUrl === undefined) {
     const stray = ['app.js'].filter((name) => !existsSync(join(fresh, name)))
     record('B11 codegraph：索引只新增 .codegraph/，不碰源文件、不在根目录写 .gitignore', stray.length === 0 && !existsSync(join(fresh, '.gitignore')), `缺源文件=${JSON.stringify(stray)} 根 .gitignore 存在=${existsSync(join(fresh, '.gitignore'))}`)
   }
+
+/* ================================================================== *
+ * B12 codegraph /node（参数名是 name，不是 symbol —— 上一轮我给错了）
+ * ================================================================== */
+{
+  const node = await call('GET', `/api/dsh-codegraph/node${q({ path: PROJECT, name: 'gamma' })}`)
+  const body = json(node.body)
+  record(
+    'B12 codegraph GET /node?name=：拿到符号详情',
+    node.status === 200 && body?.node !== undefined,
+    `status=${node.status} name=${String(body?.name)} node=${JSON.stringify(body?.node).slice(0, 160)}`,
+  )
+  const missing = await call('GET', `/api/dsh-codegraph/node${q({ path: PROJECT })}`)
+  record('B12 codegraph /node：缺 name 时 400 并点名参数', missing.status === 400 && String(json(missing.body)?.error ?? '').includes('name'), `status=${missing.status} body=${JSON.stringify(missing.body.slice(0, 120))}`)
+}
+
+/* ================================================================== *
+ * B13 变更门禁的**拒绝**路径（allowMutations / allowExec 关掉时）
+ * ================================================================== */
+{
+  // 前置：把 u1 这个 SSH 目标装回去。B9 的复位（以及 `verify-docker-ssh.mjs` 自己的复位）
+  // 会用 clearTargets 把 targets 清空，之后所有数据路由都会回 400「未知目标」。
+  const restored = await call('POST', '/api/dsh-docker/config', {
+    dockerBin: 'docker',
+    targets: [{ name: 'u1', kind: 'ssh', host: '10.211.55.5', port: 22, username: 'parallels', auth: 'key', keyPath: dockerSshKey }],
+  })
+  record(
+    'B13 前置：重新装上 u1 这个 SSH 目标（否则后面所有 docker 数据路由都是 400 未知目标）',
+    json(restored.body)?.config?.targets?.length === 1,
+    `targets=${JSON.stringify(json(restored.body)?.config?.targets)}`,
+  )
+  const off = await call('POST', '/api/dsh-docker/config', { allowMutations: false, allowExec: false })
+  const gateCases = [
+    ['/action', { target: 'u1', id: 'dsh-probe-run', action: 'stop' }],
+    ['/images/remove', { target: 'u1', ref: 'nginx:latest' }],
+    ['/images/prune', { target: 'u1' }],
+    ['/networks/remove', { target: 'u1', name: 'x' }],
+    ['/networks/prune', { target: 'u1' }],
+    ['/volumes/remove', { target: 'u1', name: 'x' }],
+    ['/volumes/prune', { target: 'u1' }],
+    ['/exec', { target: 'u1', id: 'x', command: 'echo x' }],
+  ]
+  const notGated = []
+  for (const [sub, payload] of gateCases) {
+    const response = await call('POST', `/api/dsh-docker${sub}`, payload)
+    if (response.status !== 403) notGated.push(`${sub} → ${response.status}`)
+    else if (!String(response.body).includes('未启用')) notGated.push(`${sub} → 403 但文案不含「未启用」`)
+  }
+  record(
+    'B13 门禁：关掉 allowMutations / allowExec 后，8 条变更路由全部 403 且点名开关',
+    off.status === 200 && notGated.length === 0,
+    notGated.length === 0 ? '8/8 403' : notGated.join('；'),
+  )
+  // 只读路由不受影响
+  const stillRead = await call('POST', '/api/dsh-docker/containers', { target: 'u1' })
+  record('B13 门禁：只读路由在门禁关闭时照常可用（不是一刀切）', stillRead.status === 200, `status=${stillRead.status}`)
+  await call('POST', '/api/dsh-docker/config', { allowMutations: true, allowExec: true })
+}
+
+/* ================================================================== *
+ * B14 env 密钥条目 → 凭据存储分流
+ * ================================================================== */
+{
+  const secret = 'dsh-secret-9F3A-中文-ħ'
+  const saved = await call('POST', '/api/dsh-env/save', { entries: [{ key: 'DSH_WIN_SECRET', value: secret, secret: true }] })
+  const envFile = dshHome === undefined ? undefined : join(dshHome, 'env.yml')
+  const credFile = dshHome === undefined ? undefined : join(dshHome, '.credentials.yaml')
+  const envText = envFile !== undefined && existsSync(envFile) ? readFileSync(envFile, 'utf8') : ''
+  const credText = credFile !== undefined && existsSync(credFile) ? readFileSync(credFile, 'utf8') : undefined
+  record(
+    'B14 env：secret:true 的条目——明文不进 env 文件',
+    saved.status === 200 && envText.includes('DSH_WIN_SECRET') && !envText.includes(secret),
+    `status=${saved.status} env.yml 含键=${envText.includes('DSH_WIN_SECRET')} 含明文=${envText.includes(secret)}`,
+  )
+  if (credText === undefined) {
+    warn('B14 env：凭据存储文件未找到', `找不到 ${String(credFile)}（真机上 .credentials.yaml 由 dsh-credentials-local 落盘）`)
+  } else {
+    record(
+      'B14 env：明文被存进凭据存储（.credentials.yaml）',
+      credText.includes(secret),
+      `.credentials.yaml 含明文=${credText.includes(secret)}（${credText.length} 字节）`,
+    )
+  }
+  const listed = json((await call('GET', '/api/dsh-env/list')).body)
+  const row = (listed?.entries ?? []).find((entry) => entry.key === 'DSH_WIN_SECRET')
+  record(
+    'B14 env：读回时密钥条目不回明文',
+    row !== undefined && row.secret === true && String(row.value ?? '') !== secret,
+    `row=${JSON.stringify(row)}`,
+  )
+  await call('POST', '/api/dsh-env/save', { entries: [] })
+  const afterClear = envFile !== undefined && existsSync(envFile) ? readFileSync(envFile, 'utf8') : ''
+  record('B14 env：清空后 env.yml 里不再有探针键', !afterClear.includes('DSH_WIN_SECRET'), `仍在=${afterClear.includes('DSH_WIN_SECRET')}`)
+}
+
+/* ================================================================== *
+ * B15 mcp：保存后工具**真的**热加载（E2）+ codegraph 的托管行被真 MCP client 加载（E6）
+ * ================================================================== */
+if (codegraphCli === undefined) {
+  skip('B15 mcp：热加载', '未给 --codegraph-cli')
+} else {
+  const saved = await call('POST', '/api/dsh-mcp/servers/save', {
+    servers: [{ id: 'mcp-winprobe', config: { serverName: 'winprobe', transport: 'stdio', command: codegraphCli, args: ['serve', '--mcp'] } }],
+  })
+  let status = 'not-loaded'
+  const deadline = Date.now() + 30_000
+  while (Date.now() < deadline) {
+    const rows = json((await call('GET', '/api/dsh-mcp/servers')).body)?.servers ?? []
+    status = String(rows.find((row) => row.id === 'mcp-winprobe')?.status ?? 'not-loaded')
+    if (status === 'active' || status === 'error') break
+    await new Promise((resolve) => setTimeout(resolve, 800))
+  }
+  record(
+    'B15 mcp：保存后经 HMR 真的被 loader 挂起来（status=active，而不是停在 not-loaded）',
+    saved.status === 200 && status === 'active',
+    `保存=${saved.status} 最终 status=${status}（loader 树里的 fiber 状态）`,
+  )
+  // E6：codegraph 把「已索引的默认工程」写进 home 补丁的托管行；DSH 核心的 mcp-client
+  // 加载它之后，它会以「不受 mcp 插件管理的 mcp-client 条目」出现在 /servers 的 conflicts 里。
+  // 先确保默认路径就是 B1 里已经索引好的那个工程，托管行才会被写出来。
+  await call('POST', '/api/dsh-codegraph/default-path', { path: PROJECT })
+  await call('POST', '/api/dsh-codegraph/sync', { path: PROJECT })
+  await new Promise((resolve) => setTimeout(resolve, 1500))
+  const patchFile = dshHome === undefined ? undefined : join(dshHome, 'cordis.patch.yml')
+  const patchText = patchFile !== undefined && existsSync(patchFile) ? readFileSync(patchFile, 'utf8') : ''
+  record(
+    'B15 跨插件：codegraph 把托管 MCP 行写进了 home 补丁（含成对的开闭标记）',
+    patchText.includes('# --- dsh-codegraph mcp managed') && patchText.includes('# --- end dsh-codegraph mcp managed') && patchText.includes('dsh-mcp-client'),
+    `补丁文件=${String(patchFile)} 有开始=${patchText.includes('# --- dsh-codegraph mcp managed')} 有结束=${patchText.includes('# --- end dsh-codegraph mcp managed')}`,
+  )
+  const after = json((await call('GET', '/api/dsh-mcp/servers')).body)
+  const external = JSON.stringify(after?.conflicts ?? [])
+  record(
+    'B15 跨插件：codegraph 写的托管 MCP 行确实被 DSH 核心的 mcp-client 加载了（在 /servers 的 conflicts 里可见）',
+    external.includes('codegraph') || external.includes('mcp-codegraph'),
+    `conflicts=${external.slice(0, 240)}`,
+  )
+  await call('POST', '/api/dsh-mcp/servers/save', { servers: [] })
+}
+
+/* ================================================================== *
+ * B16 search：四个通道的真实命中（prompts / tools / panels / sessions）
+ * ================================================================== */
+{
+  const marker = 'DshSearchMarker9F3A'
+  const created = await call('POST', '/api/dsh-prompt/save', {
+    prompt: { name: marker, versions: [{ content: `搜索语料 ${marker}`, label: 'v1' }] },
+  })
+  const createdId = json(created.body)?.prompts?.filter((prompt) => prompt.name === marker).at(-1)?.id
+  const hit = async (needle) => {
+    const response = await call('GET', `/api/dsh-search/query${q({ q: needle })}`)
+    const body = json(response.body)
+    return { status: response.status, sessions: body?.sessions ?? [], prompts: body?.prompts ?? [], tools: body?.tools ?? [], panels: body?.panels ?? [] }
+  }
+  const promptHit = await hit(marker)
+  record(
+    'B16 search：prompts 通道真实命中（用刚建的 prompt 当语料）',
+    promptHit.status === 200 && promptHit.prompts.length > 0,
+    `命中 ${promptHit.prompts.length} 条：${JSON.stringify(promptHit.prompts).slice(0, 200)}`,
+  )
+  // tools 通道查的是 **MCP 工具**（ctx.tools.schemas()），不是内置 agent 工具
+  const toolHit = await hit('codegraph')
+  record(
+    'B16 search：tools 通道真实命中（查的是 MCP 工具；命中 mcp__codegraph__codegraph_explore 也正是 E6 的独立佐证）',
+    toolHit.status === 200 && toolHit.tools.length > 0,
+    `命中 ${toolHit.tools.length} 条：${JSON.stringify(toolHit.tools).slice(0, 240)}`,
+  )
+  const panelHit = await hit('Codegraph')
+  record('B16 search：panels 通道真实命中', panelHit.status === 200 && panelHit.panels.length > 0, `命中 ${panelHit.panels.length} 条：${JSON.stringify(panelHit.panels).slice(0, 200)}`)
+  // 缺陷：search 的 PANEL_DIRECTORY 里 6 个插件都有 registryName 门禁，唯独漏了 docker
+  const dockerPanelHit = await hit('Docker')
+  if (dockerPanelHit.panels.length === 0) {
+    warn(
+      'B16 search：搜不到 Docker 容器面板（search 的 PANEL_DIRECTORY 漏了 registryName: docker）',
+      `查 Docker → panels ${dockerPanelHit.panels.length} 条；而同样的插件卡片 env-manager / mcp-config / prompt-manager / profile-manager / rss-digest / codegraph 都在目录里`,
+    )
+  } else {
+    record('B16 search：Docker 卡片可被搜到', true, `命中 ${dockerPanelHit.panels.length} 条`)
+  }
+  const sessionHit = await hit('codegraph')
+  if (sessionHit.sessions.length > 0) {
+    record('B16 search：sessions 通道真实命中（语料是复制过来的真会话）', true, `命中 ${sessionHit.sessions.length} 条：${JSON.stringify(sessionHit.sessions.slice(0, 2)).slice(0, 240)}`)
+  } else {
+    warn(
+      'B16 search：sessions 通道未命中',
+      `在真机上往 scratch 的 sessions/ 放了一份真会话（原样复制的 .jsonl.zstd），重启后查 codegraph 仍 0 命中 —— 待查（会话是 Mac 上的 cwd 路径，可能被 store 按平台过滤）`,
+    )
+  }
+  if (typeof createdId === 'string') await call('POST', '/api/dsh-prompt/delete', { promptId: createdId })
+}
+
+/* ================================================================== *
+ * B17 profile：新建的 profile 真的能启动（--dump-config）
+ * ================================================================== */
+if (dshHome === undefined || nodeExe === undefined || dshBin === undefined) {
+  skip('B17 profile：新建 profile 真启动', '需要 --dsh-home / --node / --dsh-bin')
+} else {
+  await call('POST', '/api/dsh-profile/create', { name: 'dshbootprobe', template: 'web' })
+  const dumped = await new Promise((resolve) => {
+    const child = spawn(nodeExe, [dshBin, '--profile', 'dshbootprobe', '--dump-config'], { env: { ...process.env, DSH_HOME: dshHome }, windowsHide: true })
+    let out = ''
+    let err = ''
+    child.stdout?.on('data', (chunk) => (out += String(chunk)))
+    child.stderr?.on('data', (chunk) => (err += String(chunk)))
+    child.on('error', (error) => resolve({ code: null, out, err: String(error.message) }))
+    child.on('close', (code) => resolve({ code, out, err }))
+  })
+  record(
+    'B17 profile：新建的 profile 能被 dsh 真实解析（--dump-config 退出码 0 且含 bundle）',
+    dumped.code === 0 && dumped.out.includes('@deepseek-ai/dsh-base'),
+    `exit=${String(dumped.code)} stdout=${dumped.out.length} 字节 首行=${JSON.stringify(dumped.out.split('\n')[0] ?? '')} stderr=${JSON.stringify(dumped.err.slice(0, 160))}`,
+  )
+  await call('POST', '/api/dsh-profile/delete', { name: 'dshbootprobe' })
+}
+
+/* ================================================================== *
+ * B18 prompt：POST /import —— 非空导出往返 + 空导出被拒（两条都是要钉的行为）
+ * ================================================================== */
+{
+  const marker = '导入探针 9F3A'
+  const seedMarker = '导入种子 9F3A'
+  // 先建一条种子，否则导出是空的 —— 而空导出被拒恰恰是正确行为（下面单独断）
+  const seeded = await call('POST', '/api/dsh-prompt/save', { prompt: { name: seedMarker, versions: [{ content: `种子内容 ${seedMarker}`, label: 'v1' }] } })
+  const seedId = json(seeded.body)?.prompts?.filter((prompt) => prompt.name === seedMarker).at(-1)?.id
+
+  const exported = await call('GET', '/api/dsh-prompt/export')
+  const payload = json(exported.body)?.data
+  record(
+    'B18 prompt /export：返回 { ok, data:{ schema, version, prompts } }（载荷在 data 里）',
+    exported.status === 200 && payload !== undefined && Array.isArray(payload.prompts) && payload.prompts.length > 0,
+    `status=${exported.status} prompts=${payload?.prompts?.length ?? '?'} schema=${String(payload?.schema)} version=${String(payload?.version)}`,
+  )
+  record(
+    'B18 prompt /import：非空导出原样回灌成功（幂等往返）',
+    (await call('POST', '/api/dsh-prompt/import', { data: payload })).status === 200,
+    'export → import 同一份载荷',
+  )
+  const emptyRejected = await call('POST', '/api/dsh-prompt/import', { data: { prompts: [] } })
+  record(
+    'B18 prompt /import：空 prompts 被拒且文案清楚（不是静默清空）',
+    emptyRejected.status === 400 && String(json(emptyRejected.body)?.error ?? '').includes('没有 prompts'),
+    `status=${emptyRejected.status} error=${JSON.stringify(String(json(emptyRejected.body)?.error ?? ''))}`,
+  )
+
+  const before = ((json((await call('GET', '/api/dsh-prompt/list')).body)?.prompts) ?? []).map((prompt) => prompt.id)
+  const probe = {
+    id: 'p-import9f3a',
+    name: marker,
+    versions: [{ id: 'v-import9f3a', content: `导入内容 ${marker}`, createdAt: new Date().toISOString() }],
+    activeVersionId: 'v-import9f3a',
+    ab: { enabled: false, aVersionId: 'v-import9f3a', bVersionId: 'v-import9f3a', aWeight: 50 },
+  }
+  const imported = await call('POST', '/api/dsh-prompt/import', {
+    data: { ...payload, prompts: [...payload.prompts.filter((row) => row.id !== probe.id), probe], activePromptId: null },
+  })
+  const after = ((json((await call('GET', '/api/dsh-prompt/list')).body)?.prompts) ?? [])
+  const landed = after.find((prompt) => prompt.id === probe.id)
+  record(
+    'B18 prompt /import：在导出内容上追加一条新 prompt 后整体导入，新条目落地',
+    imported.status === 200 && landed !== undefined && landed.name === marker,
+    `status=${imported.status} 落地=${landed !== undefined} 名字=${String(landed?.name)}`,
+  )
+  record(
+    'B18 prompt /import：导入后原有的 prompt 没被冲掉',
+    before.every((id) => after.some((prompt) => prompt.id === id)),
+    `原有 ${before.length} 条全部保留=${before.every((id) => after.some((prompt) => prompt.id === id))}`,
+  )
+  await call('POST', '/api/dsh-prompt/delete', { promptId: probe.id })
+  if (typeof seedId === 'string') await call('POST', '/api/dsh-prompt/delete', { promptId: seedId })
+}
+
 }
 
 /* ================================================================== *
