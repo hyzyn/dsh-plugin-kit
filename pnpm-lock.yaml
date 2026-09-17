@@ -9,31 +9,31 @@ importers:
   .:
     dependencies:
       '@hyzyn/dsh-codegraph':
-        specifier: 0.3.0
+        specifier: 0.4.0
         version: link:packages/codegraph
       '@hyzyn/dsh-docker':
-        specifier: 0.6.0
+        specifier: 0.6.1
         version: link:packages/docker
       '@hyzyn/dsh-env':
         specifier: 0.2.4
         version: link:packages/env
       '@hyzyn/dsh-mcp':
-        specifier: 0.1.11
+        specifier: 0.1.12
         version: link:packages/mcp
       '@hyzyn/dsh-profile':
-        specifier: 0.1.9
+        specifier: 0.1.10
         version: link:packages/profile
       '@hyzyn/dsh-prompt':
         specifier: 0.1.10
         version: link:packages/prompt
       '@hyzyn/dsh-rss':
-        specifier: 0.3.2
+        specifier: 0.3.3
         version: link:packages/rss
       '@hyzyn/dsh-search':
-        specifier: 0.3.2
+        specifier: 0.3.3
         version: link:packages/search
       '@hyzyn/dsh-tty':
-        specifier: 0.18.1
+        specifier: 0.18.2
         version: link:packages/tty
     devDependencies:
       typescript:
@@ -46,31 +46,31 @@ importers:
   packages/all:
     dependencies:
       '@hyzyn/dsh-codegraph':
-        specifier: 0.3.0
+        specifier: 0.4.0
         version: link:../codegraph
       '@hyzyn/dsh-docker':
-        specifier: 0.6.0
+        specifier: 0.6.1
         version: link:../docker
       '@hyzyn/dsh-env':
         specifier: 0.2.4
         version: link:../env
       '@hyzyn/dsh-mcp':
-        specifier: 0.1.11
+        specifier: 0.1.12
         version: link:../mcp
       '@hyzyn/dsh-profile':
-        specifier: 0.1.9
+        specifier: 0.1.10
         version: link:../profile
       '@hyzyn/dsh-prompt':
         specifier: 0.1.10
         version: link:../prompt
       '@hyzyn/dsh-rss':
-        specifier: 0.3.2
+        specifier: 0.3.3
         version: link:../rss
       '@hyzyn/dsh-search':
-        specifier: 0.3.2
+        specifier: 0.3.3
         version: link:../search
       '@hyzyn/dsh-tty':
-        specifier: 0.18.1
+        specifier: 0.18.2
         version: link:../tty
     devDependencies:
       '@deepseek-ai/cordis':
@@ -86,7 +86,7 @@ importers:
         specifier: ^3.18.2
         version: 3.18.2
       '@hyzyn/dsh-kit':
-        specifier: 0.3.0
+        specifier: 0.4.0
         version: link:../kit
       js-yaml:
         specifier: ^4.1.0
@@ -111,7 +111,7 @@ importers:
         specifier: ^3.18.2
         version: 3.18.2
       '@hyzyn/dsh-kit':
-        specifier: 0.3.0
+        specifier: 0.4.0
         version: link:../kit
       ssh2:
         specifier: ^1.17.0
@@ -183,7 +183,7 @@ importers:
         specifier: ^3.18.2
         version: 3.18.2
       '@hyzyn/dsh-kit':
-        specifier: 0.3.0
+        specifier: 0.4.0
         version: link:../kit
       js-yaml:
         specifier: ^4.1.0
@@ -208,7 +208,7 @@ importers:
         specifier: ^3.18.2
         version: 3.18.2
       '@hyzyn/dsh-kit':
-        specifier: 0.3.0
+        specifier: 0.4.0
         version: link:../kit
       react:
         specifier: ^18.2.0
@@ -252,7 +252,7 @@ importers:
         specifier: ^3.18.2
         version: 3.18.2
       '@hyzyn/dsh-kit':
-        specifier: 0.3.0
+        specifier: 0.4.0
         version: link:../kit
       react:
         specifier: ^18.2.0
@@ -271,8 +271,8 @@ importers:
   packages/search:
     dependencies:
       '@hyzyn/dsh-kit':
-        specifier: 0.1.2
-        version: 0.1.2
+        specifier: 0.4.0
+        version: link:../kit
       js-yaml:
         specifier: ^4.1.0
         version: 4.3.2
@@ -293,8 +293,8 @@ importers:
         specifier: ^3.18.2
         version: 3.18.2
       '@hyzyn/dsh-kit':
-        specifier: 0.1.2
-        version: 0.1.2
+        specifier: 0.4.0
+        version: link:../kit
       '@xterm/headless':
         specifier: ^5.5.0
         version: 5.5.0
@@ -652,10 +652,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [win32]
-
-  '@hyzyn/dsh-kit@0.1.2':
-    resolution: {integrity: sha512-gyQ4XayRKaEIv5sIwe3syILHfWCd+wOdRaLFtv+Dm09XbNELSAUjwXWXuEDSYDvVpXDTm7hJSpZzA/A0NaC1JA==}
-    engines: {node: '>=22.19.0'}
 
   '@jridgewell/sourcemap-codec@1.6.0':
     resolution: {integrity: sha512-T7jf+5zgsZHwNJ4lvQ7/aezbyk0nNX+zJVWpmHA7VYsEx7a7qr5Rg5IbtJFqkgze5Y2sruq1RUY8Q837Od7iFw==}
@@ -1523,8 +1519,6 @@ snapshots:
 
   '@esbuild/win32-x64@0.28.2':
     optional: true
-
-  '@hyzyn/dsh-kit@0.1.2': {}
 
   '@jridgewell/sourcemap-codec@1.6.0': {}
 

@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-kit",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "dsh-plugin-kit 插件开发工具包：宿主半体共享工具库（HTTP 围栏、托管区块、!!js 表达式、服务读取）与 definePlugin 类型助手。",
   "type": "module",
   "engines": {
