@@ -16,8 +16,26 @@ export declare function pluginRuntimeDir(): string;
  * 信任级与插件本身相同；TERM / COLORTERM 仍走白名单值。
  * 命令必须单行（换行会破坏 -c 包装层），由调用方（src/index.ts 的帧解析）保证。
  */
-export declare function buildCommandSpawn(shell: string, term: string, colorTerm: string, command: string): ShellSpawnPlan;
-export declare function buildShellSpawn(shell: string, term: string, colorTerm: string, integration: boolean): ShellSpawnPlan;
+export declare function buildCommandSpawn(shell: string, term: string, colorTerm: string, command: string, platform?: NodeJS.Platform): ShellSpawnPlan;
+/**
+ * 本地终端默认 shell。
+ *
+ * POSIX 取 `$SHELL`（macOS 上通常 /bin/zsh）；**Windows 上根本没有 `$SHELL`** —— 旧实现
+ * 无条件回落 `/bin/zsh`，于是 Windows 宿主上每个本地标签都在 spawn 阶段 ENOENT（2026-09
+ * 在 Windows 11 ARM 上实测：`spawn /bin/zsh -> ENOENT`，而 `%COMSPEC%` 可用），整个面板
+ * 一条终端都开不起来。Windows 取 `%COMSPEC%`（系统保证存在），要 PowerShell 就在设置卡片
+ * 里把「Shell 路径」填成 powershell.exe / pwsh.exe。
+ */
+export declare function defaultShellPath(platform?: NodeJS.Platform, env?: NodeJS.ProcessEnv): string;
+/**
+ * PowerShell 家族（Windows PowerShell 5.1 与 PowerShell 7）——启动参数与 cmd 不同。
+ *
+ * 这里**不用 `path.basename`**：它按当前平台的规则切，在 POSIX 上拿到
+ * `C:\Program Files\PowerShell\7\pwsh.exe` 会整串返回（没有 `/`），判定就漏了。
+ * 两个分隔符一起切，任何平台上都对。
+ */
+export declare function isPowerShellShell(shell: string): boolean;
+export declare function buildShellSpawn(shell: string, term: string, colorTerm: string, integration: boolean, platform?: NodeJS.Platform): ShellSpawnPlan;
 /** POSIX 单引号安全包裹（路径/值进 inner.sh 与 -c 包装层用）。 */
 export declare function shSingleQuote(value: string): string;
 /**

@@ -1,0 +1,107 @@
+/**
+ * @hyzyn/dsh-tty — 本地终端的启动计划：POSIX 与 **Windows** 两条分支。
+ *
+ * 为什么单独立一档：Windows 宿主的失败是「装得上、起得来、但一条终端都开不了」——
+ *   1. `$SHELL` 在 Windows 上根本不存在，旧实现无条件回落 `/bin/zsh`，spawn 直接 ENOENT；
+ *   2. 包装层是 POSIX 语法（`-c 'export TERM=…; exec "$shell"'`），cmd.exe 不认 `-c`
+ *      （忽略整行、空跑一场就退出）、PowerShell 认 `-c` 但把 `export` 当不存在的 cmdlet 报错。
+ * 两条都在 Windows 11 ARM 上实测复现过（见 README「Windows 宿主」一节）。
+ *
+ * 平台用**参数注入**（默认 process.platform），所以两个分支都能在 macOS/Linux 上断言，
+ * 不必等 Windows runner —— 而 Windows runner 上跑同一份用例同样成立。
+ */
+import { describe, expect, it } from 'vitest'
+import {
+  buildCommandSpawn,
+  buildShellSpawn,
+  defaultShellPath,
+  isPowerShellShell,
+} from '../src/shell-integration.js'
+
+describe('defaultShellPath', () => {
+  it('POSIX 取 $SHELL，缺省 /bin/zsh', () => {
+    expect(defaultShellPath('darwin', { SHELL: '/opt/homebrew/bin/zsh' })).toBe('/opt/homebrew/bin/zsh')
+    expect(defaultShellPath('darwin', { SHELL: '  ' })).toBe('/bin/zsh')
+    expect(defaultShellPath('linux', {})).toBe('/bin/zsh')
+  })
+
+  it('Windows 取 %COMSPEC%，不再回落 /bin/zsh（回归）', () => {
+    expect(defaultShellPath('win32', { COMSPEC: 'C:\\WINDOWS\\system32\\cmd.exe' })).toBe('C:\\WINDOWS\\system32\\cmd.exe')
+    expect(defaultShellPath('win32', { COMSPEC: '  ' })).toBe('cmd.exe')
+    // 就算环境里塞了个 $SHELL（MSYS/Git Bash 会），Windows 也不该拿它当默认：
+    // 面板默认要的是「系统保证存在」的那个解释器
+    expect(defaultShellPath('win32', { SHELL: '/bin/zsh' })).not.toBe('/bin/zsh')
+  })
+})
+
+describe('isPowerShellShell', () => {
+  it('认得 Windows PowerShell 5.1 与 PowerShell 7（全路径 / 大小写都算）', () => {
+    expect(isPowerShellShell('powershell.exe')).toBe(true)
+    expect(isPowerShellShell('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe')).toBe(true)
+    expect(isPowerShellShell('C:\\Program Files\\PowerShell\\7\\pwsh.exe')).toBe(true)
+    expect(isPowerShellShell('PWSH')).toBe(true)
+    expect(isPowerShellShell('cmd.exe')).toBe(false)
+    expect(isPowerShellShell('/bin/zsh')).toBe(false)
+  })
+})
+
+describe('buildShellSpawn：Windows 分支', () => {
+  it('cmd 直接跑本体——没有 -c 包装层（cmd 会忽略 -c、空跑一场然后退出）', () => {
+    const plan = buildShellSpawn('C:\\WINDOWS\\system32\\cmd.exe', 'xterm-256color', 'truecolor', true, 'win32')
+    expect(plan.argv).toEqual(['C:\\WINDOWS\\system32\\cmd.exe'])
+    expect(plan.env).toEqual({})
+  })
+
+  it('PowerShell 补 -NoLogo；不补 -NoProfile（用户的 profile 正是别名与函数的来源）', () => {
+    const plan = buildShellSpawn('C:\\Program Files\\PowerShell\\7\\pwsh.exe', 'xterm-256color', 'truecolor', true, 'win32')
+    expect(plan.argv).toEqual(['C:\\Program Files\\PowerShell\\7\\pwsh.exe', '-NoLogo'])
+  })
+
+  it('integration=true 在 Windows 上也不注入（那边没有 POSIX 的 rc 桩）', () => {
+    const text = buildShellSpawn('powershell.exe', 'xterm-256color', 'truecolor', true, 'win32').argv.join(' ')
+    expect(text).not.toMatch(/export|ZDOTDIR|rcfile|DSH_TTY_ORIG/)
+  })
+})
+
+describe('buildCommandSpawn：Windows 分支', () => {
+  it('cmd 走 /c，PowerShell 走 -Command', () => {
+    expect(buildCommandSpawn('cmd.exe', 'xterm-256color', 'truecolor', 'docker ps', 'win32').argv)
+      .toEqual(['cmd.exe', '/c', 'docker ps'])
+    expect(buildCommandSpawn('pwsh.exe', 'xterm-256color', 'truecolor', 'docker ps', 'win32').argv)
+      .toEqual(['pwsh.exe', '-NoLogo', '-Command', 'docker ps'])
+  })
+
+  it('Windows 分支不带 POSIX 包装（回归：PowerShell 会报 export 不是 cmdlet）', () => {
+    const text = buildCommandSpawn('powershell.exe', 'xterm-256color', 'truecolor', 'ls', 'win32').argv.join(' ')
+    expect(text).not.toContain('export')
+    expect(text).not.toContain('exec ')
+  })
+})
+
+describe('POSIX 分支回归（改动不能碰现有的 zsh/bash 路径）', () => {
+  it('integration=false 时是最简包装层', () => {
+    expect(buildShellSpawn('/bin/zsh', 'xterm-256color', 'truecolor', false, 'linux').argv).toEqual([
+      '/bin/zsh',
+      '-c',
+      "export TERM='xterm-256color'; export COLORTERM='truecolor'; exec \"/bin/zsh\"",
+    ])
+  })
+
+  it('zsh + integration 仍走 ZDOTDIR 桩', () => {
+    const plan = buildShellSpawn('/bin/zsh', 'xterm-256color', 'truecolor', true, 'darwin')
+    expect(plan.argv[0]).toBe('/bin/zsh')
+    expect(plan.argv[1]).toBe('-c')
+    expect(plan.argv[2]).toContain('DSH_TTY_ORIG_ZDOTDIR')
+    expect(plan.argv[2]).toContain('ZDOTDIR=')
+    expect(plan.argv[2]).toContain('exec "/bin/zsh"')
+  })
+
+  it('带命令的本地 spawn 仍是 -c + export 包装（docker exec 这类标签依赖它）', () => {
+    const plan = buildCommandSpawn('/bin/zsh', 'xterm-256color', 'truecolor', 'docker exec -it web sh', 'darwin')
+    expect(plan.argv).toEqual([
+      '/bin/zsh',
+      '-c',
+      "export TERM='xterm-256color'; export COLORTERM='truecolor'; exec docker exec -it web sh",
+    ])
+  })
+})

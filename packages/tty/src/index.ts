@@ -88,7 +88,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { spawnSsh, sshTarget, expandHome, setCredentialResolver } from './ssh.js'
 import type { CredentialResolver, HostKeyRecord, SshHostEntry, SshSpec, TermHandle } from './ssh.js'
 import { probeSsh } from './probe.js'
-import { buildCommandSpawn, buildShellSpawn } from './shell-integration.js'
+import { buildCommandSpawn, buildShellSpawn, defaultShellPath } from './shell-integration.js'
 import { parseSshConfig } from './ssh-config.js'
 import { parseKnownHosts } from './known-hosts.js'
 import { TunnelManager } from './tunnels.js'
@@ -1858,9 +1858,10 @@ function readCredentialRefNames(): string[] {
 }
 
 /**
- * 设置卡片「Shell 路径」候选（可选可输入的数据源）：/etc/shells + $SHELL +
- * 常见安装路径，去重后过滤「存在且可执行」，$SHELL 排最前。只回路径，
- * 不做任何执行。
+ * 设置卡片「Shell 路径」候选（可选可输入的数据源）：POSIX 走 /etc/shells + $SHELL +
+ * 常见安装路径；**Windows 走 %COMSPEC% + Windows PowerShell + PowerShell 7**（原先这套
+ * 候选在 Windows 上恒为空——/bin/zsh 那批路径一个都不存在）。去重后过滤「存在且可执行」，
+ * 默认 shell 排最前。只回路径，不做任何执行。
  */
 function listCandidateShells(): string[] {
   const candidates: string[] = []
@@ -1868,21 +1869,35 @@ function listCandidateShells(): string[] {
     const path = value?.trim() ?? ''
     if (path !== '' && !candidates.includes(path)) candidates.push(path)
   }
-  try {
-    for (const line of readFileSync('/etc/shells', 'utf8').split('\n')) {
-      const path = line.trim()
-      if (path !== '' && !path.startsWith('#')) push(path)
+  const fallback = defaultShellPath()
+  if (process.platform === 'win32') {
+    const systemRoot = process.env.SystemRoot?.trim() || 'C:\\Windows'
+    const programFiles = process.env.ProgramFiles?.trim() || 'C:\\Program Files'
+    const localAppData = process.env.LOCALAPPDATA?.trim() || ''
+    // 全给**绝对路径**：候选的过滤口径是「存在且可执行」，裸命令名（pwsh.exe）在这里判不了，
+    // 而这三处覆盖了 Windows 上实际存在的 shell（%COMSPEC% 必在，Windows PowerShell 必在，
+    // PowerShell 7 装了才有）。
+    push(process.env.COMSPEC)
+    push(join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'))
+    push(join(programFiles, 'PowerShell', '7', 'pwsh.exe'))
+    if (localAppData !== '') push(join(localAppData, 'Microsoft', 'WindowsApps', 'pwsh.exe'))
+  } else {
+    try {
+      for (const line of readFileSync('/etc/shells', 'utf8').split('\n')) {
+        const path = line.trim()
+        if (path !== '' && !path.startsWith('#')) push(path)
+      }
+    } catch {
+      /* 无 /etc/shells 时跳过 */
     }
-  } catch {
-    /* 无 /etc/shells（如 Windows）时跳过 */
+    push(process.env.SHELL)
+    for (const path of [
+      '/bin/zsh', '/usr/bin/zsh', '/usr/local/bin/zsh', '/opt/homebrew/bin/zsh',
+      '/bin/bash', '/usr/bin/bash', '/usr/local/bin/bash', '/opt/homebrew/bin/bash',
+      '/bin/fish', '/usr/bin/fish', '/usr/local/bin/fish', '/opt/homebrew/bin/fish',
+      '/bin/sh', '/bin/dash', '/bin/ksh', '/bin/tcsh', '/bin/csh',
+    ]) push(path)
   }
-  push(process.env.SHELL)
-  for (const path of [
-    '/bin/zsh', '/usr/bin/zsh', '/usr/local/bin/zsh', '/opt/homebrew/bin/zsh',
-    '/bin/bash', '/usr/bin/bash', '/usr/local/bin/bash', '/opt/homebrew/bin/bash',
-    '/bin/fish', '/usr/bin/fish', '/usr/local/bin/fish', '/opt/homebrew/bin/fish',
-    '/bin/sh', '/bin/dash', '/bin/ksh', '/bin/tcsh', '/bin/csh',
-  ]) push(path)
   const usable = candidates.filter((path) => {
     try {
       accessSync(path, fsConstants.X_OK)
@@ -1891,8 +1906,7 @@ function listCandidateShells(): string[] {
       return false
     }
   })
-  const shell = process.env.SHELL?.trim() ?? ''
-  usable.sort((a, b) => (a === shell ? -1 : b === shell ? 1 : a.localeCompare(b)))
+  usable.sort((a, b) => (a === fallback ? -1 : b === fallback ? 1 : a.localeCompare(b)))
   return usable
 }
 
@@ -2067,6 +2081,8 @@ interface ConfigSnapshot {
   sftpLimits: Required<SftpLimits>
   /** agent 工具（tty_list / tty_capture / tty_screen / tty_expect / tty_send / tunnel_list / sftp_list / sftp_read / sftp_write / sftp_mkdir / sftp_rename / sftp_remove / sftp_tree）是否已注册到 harness。 */
   toolsRegistered: boolean
+  /** 宿主平台：客户端按平台写「Shell 路径 / shell 集成」的说明（Windows 那套见 defaultShellPath）。 */
+  platform: NodeJS.Platform
 }
 
 const plugin = definePlugin<Config>({
@@ -2077,14 +2093,19 @@ const plugin = definePlugin<Config>({
   apply(ctx: Context, config?: Config) {
     if (config?.enabled === false) return
     const live = new LiveConfig({
-      shell: config?.shell?.trim() || process.env.SHELL || '/bin/zsh',
+      // 默认 shell 按平台取（Windows 没有 $SHELL，回落 /bin/zsh 会让本地终端一条都开不起来；
+      // 见 defaultShellPath）。用户显式填了「Shell 路径」就照用。
+      shell: config?.shell?.trim() || defaultShellPath(),
       term: config?.term?.trim() || 'xterm-256color',
       colorTerm: config?.colorTerm?.trim() || 'truecolor',
       cwd: config?.cwd?.trim() || process.cwd(),
       reconnectGraceSec: typeof config?.reconnectGraceSec === 'number' && Number.isInteger(config.reconnectGraceSec) && config.reconnectGraceSec >= 0 ? config.reconnectGraceSec : DEFAULT_RECONNECT_GRACE_SEC,
       sshHosts: Array.isArray(config?.sshHosts) ? config.sshHosts : [],
       hostKeys: Array.isArray(config?.hostKeys) ? config.hostKeys : [],
-      shellIntegration: config?.shellIntegration !== false,
+      // shell 集成（OSC 133/7）靠 POSIX rc 注入 + `-c` 包装层：Windows 上的 cmd / PowerShell
+      // 两者都不成立（实测 cmd 忽略 -c 空跑、PowerShell 报 export 不存在），所以恒关。
+      // 配置项照旧留着（快照里会显示 false），界面上也说明原因。
+      shellIntegration: process.platform !== 'win32' && config?.shellIntegration !== false,
       tunnels: Array.isArray(config?.tunnels) ? config.tunnels : [],
       persistence: config?.persistence === 'tmux' ? 'tmux' : 'off',
       endOnPageClose: config?.endOnPageClose === true,
@@ -2159,6 +2180,11 @@ const plugin = definePlugin<Config>({
       statsEnabled: live.statsEnabled,
       sftpLimits: live.sftpLimits,
       toolsRegistered: stateRef.toolsRegistered,
+      /**
+       * 宿主平台（`process.platform`）：客户端据此把「Shell 路径 / shell 集成」的说明与候选
+       * 按平台写（Windows 上不提 zsh/bash 那套，也不摆一个恒关闭的集成开关）。
+       */
+      platform: process.platform,
     })
 
     /** 规范化并应用一份配置补丁（settings/updated 事件与 HTTP POST 共用；幂等）。 */

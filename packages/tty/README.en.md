@@ -53,6 +53,41 @@ After installing, restart `dsh web`; a “Terminal” entry appears in the sideb
 
 ![Terminal panel settings card: shell / TERM / concurrency limit and so on take effect on save](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-setting.png)
 
+## Windows hosts (0.18.1, best-effort)
+
+**Before 0.18.1 a Windows host could not open a single local terminal**, for two reasons on the same path:
+
+1. `$SHELL` **does not exist on Windows**, and the default shell fell back to `/bin/zsh` unconditionally →
+   `spawn` fails with ENOENT (measured: `spawn /bin/zsh -> ENOENT`, while `%COMSPEC%` works);
+2. the spawn plan was POSIX-shaped (`-c 'export TERM=…; export COLORTERM=…; exec "$shell"'`) — cmd.exe does
+   not understand `-c` (it ignores the whole line, runs an empty session and exits, so the tab appears and
+   vanishes), and PowerShell understands `-c` but rejects `export` as an unknown cmdlet.
+
+Both were reproduced on **Windows 11 ARM (24H2) + Node 22 ARM64**. The fix:
+
+- **Default shell is `%COMSPEC%`** (guaranteed to exist); for PowerShell put the full path to
+  `powershell.exe` / `pwsh.exe` in the settings card’s “Shell path”. On Windows the candidate list offers
+  `%COMSPEC%` + Windows PowerShell 5.1 + PowerShell 7 (when installed), with the default first;
+- **No wrapper layer on Windows**: plain `[shell]`; the PowerShell family gets `-NoLogo` (drops the copyright
+  banner) but deliberately **not `-NoProfile`** — the user’s profile is where aliases and functions come from.
+  TERM / COLORTERM are meaningless for ConPTY and are no longer injected;
+- **“Run one command” tabs** (docker exec, command tabs opened by the agent) use `cmd /c` or
+  `PowerShell -Command`;
+- **Three things are not supported** (the host turns them off and the settings card explains why):
+  - **Shell integration (OSC 133/7)**: injection relies on POSIX rc stubs plus the `-c` wrapper, neither of
+    which exists for cmd / PowerShell, so it is permanently off — **local** tabs therefore lose cwd tracking
+    (`tty_list.cwd` following `cd`), `tty_capture{last}` and command-granular `tty_expect` (remote Linux /
+    macOS hosts are unaffected);
+  - **tmux persistence**: there is no tmux on Windows, so local tabs open normally but are not managed
+    (SSH into a Linux host still works);
+  - **Server status bar**: locally only CPU / memory / uptime are available (`node:os`); disk / TCP / network
+    throughput / temperature show “无” (remote **Windows** hosts go through the PowerShell hop — see the
+    status-bar section);
+- **How far this was verified**: on Windows 11 ARM a full install (`dsh plugin add @hyzyn/dsh-all`), all nine
+  plugins mounting, `dsh web` serving, and the browser half being delivered (the same artifact macOS serves:
+  12,312,246 bytes, identical new-code markers), plus `[dsh-tty] mounted (shell=C:\WINDOWS\system32\cmd.exe)`.
+  x64 Windows is covered by the CI matrix (build / typecheck / test, see Development).
+
 ## Agent tools (P1)
 
 The plugin injects thirteen tools into the agent (with the same power as the bash tool; operations show up live in the user’s terminal):
@@ -695,10 +730,15 @@ verify things like “is there still a white panel after switching light/dark th
   passes through `(handle).terminal.resize(cols, rows)` directly (node-pty’s native API, reachable in the
   same process). If a DSH upgrade changes the internals, since 0.3.0 it warns once and degrades to a fixed
   size instead of throwing on every frame.
-- **TERM is injected through a `-c` wrapper layer**: DSH hardcodes node-pty `name:"dumb"`, and in
+- **TERM is injected through a `-c` wrapper layer (POSIX only)**: DSH hardcodes node-pty `name:"dumb"`, and in
   node-pty name takes precedence over env.TERM, so the shell is started as
   `sh -c 'export TERM=...; exec "$shell"'` (transparent to the user; the TERM /
-  COLORTERM values are whitelisted to avoid breaking the wrapper command).
+  COLORTERM values are whitelisted to avoid breaking the wrapper command). **There is no such layer on
+  Windows** — neither cmd nor PowerShell understands that syntax, and ConPTY does not need TERM (see the
+  “Windows hosts” section).
+- **Windows hosts**: local terminals work (default `%COMSPEC%`), but shell integration, tmux persistence and
+  disk / TCP / throughput / temperature are unsupported or unavailable — the full boundary and verification
+  scope are in the “Windows hosts” section.
 - **terminate() has a “survivor” race**: DSH’s tree-level cleanup occasionally reports
   `terminal cleanup failed; surviving pids`, which the plugin handles best-effort
   (on failure it degrades to SIGKILL on the top-level shell), and the exit code/signal may be null.

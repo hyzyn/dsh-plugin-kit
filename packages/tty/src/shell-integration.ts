@@ -266,12 +266,63 @@ function ensureBashStubRc(): string | undefined {
  * 信任级与插件本身相同；TERM / COLORTERM 仍走白名单值。
  * 命令必须单行（换行会破坏 -c 包装层），由调用方（src/index.ts 的帧解析）保证。
  */
-export function buildCommandSpawn(shell: string, term: string, colorTerm: string, command: string): ShellSpawnPlan {
+export function buildCommandSpawn(shell: string, term: string, colorTerm: string, command: string, platform: NodeJS.Platform = process.platform): ShellSpawnPlan {
+  if (platform === 'win32') return buildWindowsCommandSpawn(shell, command)
   const pre = `export TERM='${term}'; export COLORTERM='${colorTerm}';`
   return { argv: [shell, '-c', `${pre} exec ${command}`], env: {} }
 }
 
-export function buildShellSpawn(shell: string, term: string, colorTerm: string, integration: boolean): ShellSpawnPlan {
+/**
+ * 本地终端默认 shell。
+ *
+ * POSIX 取 `$SHELL`（macOS 上通常 /bin/zsh）；**Windows 上根本没有 `$SHELL`** —— 旧实现
+ * 无条件回落 `/bin/zsh`，于是 Windows 宿主上每个本地标签都在 spawn 阶段 ENOENT（2026-09
+ * 在 Windows 11 ARM 上实测：`spawn /bin/zsh -> ENOENT`，而 `%COMSPEC%` 可用），整个面板
+ * 一条终端都开不起来。Windows 取 `%COMSPEC%`（系统保证存在），要 PowerShell 就在设置卡片
+ * 里把「Shell 路径」填成 powershell.exe / pwsh.exe。
+ */
+export function defaultShellPath(platform: NodeJS.Platform = process.platform, env: NodeJS.ProcessEnv = process.env): string {
+  if (platform === 'win32') return env.COMSPEC?.trim() || 'cmd.exe'
+  return env.SHELL?.trim() || '/bin/zsh'
+}
+
+/**
+ * PowerShell 家族（Windows PowerShell 5.1 与 PowerShell 7）——启动参数与 cmd 不同。
+ *
+ * 这里**不用 `path.basename`**：它按当前平台的规则切，在 POSIX 上拿到
+ * `C:\Program Files\PowerShell\7\pwsh.exe` 会整串返回（没有 `/`），判定就漏了。
+ * 两个分隔符一起切，任何平台上都对。
+ */
+export function isPowerShellShell(shell: string): boolean {
+  const kind = shell.split(/[\\/]/).pop()?.toLowerCase() ?? ''
+  return kind === 'powershell' || kind === 'powershell.exe' || kind === 'pwsh' || kind === 'pwsh.exe'
+}
+
+/**
+ * Windows 宿主的启动计划：**直接跑 shell 本体，不做 `-c` 包装层**。
+ *
+ * 为什么不能沿用 POSIX 那层（`-c 'export TERM=…; exec "$shell"'`）：cmd.exe 不认 `-c`，
+ * 会把整行忽略掉、开一场空跑然后立刻退出（标签开了就消失）；PowerShell 认 `-c` 但把
+ * `export` 当不存在的 cmdlet 直接报错（两条都在 Windows 11 上实测过）。而且 TERM /
+ * COLORTERM 对 ConPTY 没有意义，OSC 133/7 那套集成是 POSIX rc 注入、Windows 上不做
+ * （宿主侧同时把 shellIntegration 拨成 false，见 index.ts）。
+ *
+ * PowerShell 补 `-NoLogo` 只是去掉启动横幅；**不补 `-NoProfile`** —— 用户的 profile 正是
+ * 别名与函数的来源，终端面板不该替用户把它关掉。
+ */
+function buildWindowsShellSpawn(shell: string): ShellSpawnPlan {
+  return { argv: isPowerShellShell(shell) ? [shell, '-NoLogo'] : [shell], env: {} }
+}
+
+/** Windows 宿主的「跑一条命令」计划：cmd 走 `/c`，PowerShell 走 `-Command`（都不再包 export/exec）。 */
+function buildWindowsCommandSpawn(shell: string, command: string): ShellSpawnPlan {
+  return isPowerShellShell(shell)
+    ? { argv: [shell, '-NoLogo', '-Command', command], env: {} }
+    : { argv: [shell, '/c', command], env: {} }
+}
+
+export function buildShellSpawn(shell: string, term: string, colorTerm: string, integration: boolean, platform: NodeJS.Platform = process.platform): ShellSpawnPlan {
+  if (platform === 'win32') return buildWindowsShellSpawn(shell)
   const pre = `export TERM='${term}'; export COLORTERM='${colorTerm}';`
   const exec = `exec "${shell}"`
   if (integration) {

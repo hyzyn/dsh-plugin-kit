@@ -53,6 +53,38 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
 
 ![终端面板设置卡片：shell / TERM / 并发上限等保存即热生效](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-setting.png)
 
+## Windows 宿主（0.18.1，best-effort）
+
+**0.18.1 之前，Windows 宿主上的本地终端一条都开不起来**，两处都在同一条路径上：
+
+1. `$SHELL` 在 Windows 上**根本不存在**，默认 shell 无条件回落 `/bin/zsh` → `spawn` 直接
+   ENOENT（实测：`spawn /bin/zsh -> ENOENT`，而 `%COMSPEC%` 可用）；
+2. 启动计划是 POSIX 形状的 `-c 'export TERM=…; export COLORTERM=…; exec "$shell"'` ——
+   cmd.exe 不认 `-c`（忽略整行、空跑一场就退出，标签开了就消失），PowerShell 认 `-c` 但把
+   `export` 当不存在的 cmdlet 报错。
+
+两条都在 **Windows 11 ARM（24H2）+ Node 22 ARM64** 上实测复现，修法：
+
+- **默认 shell = `%COMSPEC%`**（系统保证存在）；要 PowerShell 就在设置卡片把「Shell 路径」
+  填成 `powershell.exe` / `pwsh.exe` 的完整路径。Windows 上候选列表给的是 `%COMSPEC%` +
+  Windows PowerShell 5.1 + PowerShell 7（装了才有），默认项排最前；
+- **Windows 上不做包装层**：直接 `[shell]`；PowerShell 家族补 `-NoLogo`（去掉版权横幅），
+  **不补 `-NoProfile`** —— 用户的 profile 正是别名与函数的来源。TERM / COLORTERM 对 ConPTY
+  没有意义，也不再注入；
+- **「跑一条命令」的标签**（docker exec、agent 起的命令标签）走 `cmd /c` 或
+  `PowerShell -Command`；
+- **不支持的三项（宿主侧自动关掉，设置卡片里写明原因）**：
+  - **shell 集成（OSC 133/7）**：注入靠 POSIX rc 桩 + `-c` 包装层，cmd / PowerShell 上都不成立，
+    因此恒关 —— **本地标签**的 `tty_list.cwd` 跟随 `cd`、`tty_capture{last}` 与 `tty_expect`
+    的命令粒度不可用（远程 Linux / macOS 主机照旧支持）；
+  - **tmux 持久化**：Windows 上没有 tmux，本地标签照常打开但不受托管（SSH 到 Linux 主机仍可用）；
+  - **服务器状态条**：本地只拿得到 CPU / 内存 / 在线时长（`node:os`），磁盘 / TCP / 网速 / 温度
+    显示「无」（**远端** Windows 主机走 PowerShell 那一跳，见「服务器状态条」一节）；
+- **验证到什么程度**：Windows 11 ARM 上跑过完整安装（`dsh plugin add @hyzyn/dsh-all`）、九个插件
+  装载、`dsh web` 起服务与浏览器半体交付（与 macOS 上服务的是同一份产物：12 312 246 字节、
+  新代码标记一致）、`[dsh-tty] mounted (shell=C:\WINDOWS\system32\cmd.exe)`；x64 Windows 由 CI
+  的三平台矩阵覆盖（build / typecheck / test，见「开发」）。
+
 ## agent 工具（P1）
 
 插件向 agent 注入十三个工具（与 bash 工具同权，操作实时显示在用户终端里）：
@@ -664,10 +696,13 @@ node scripts/preview.mjs --theme=light   # 浅色主题
   插件直接透传 `(handle).terminal.resize(cols, rows)`（node-pty 原生 API，
   同进程可达）。DSH 升级若改内部结构，0.3.0 起会警告一次并退化为固定尺寸，
   不再逐帧抛错。
-- **TERM 注入用 `-c` 包装层**：DSH 硬编码 node-pty `name:"dumb"`，而
+- **TERM 注入用 `-c` 包装层（仅 POSIX）**：DSH 硬编码 node-pty `name:"dumb"`，而
   node-pty 里 name 优先于 env.TERM，因此 shell 以
   `sh -c 'export TERM=...; exec "$shell"'` 方式启动（对用户透明；TERM /
-  COLORTERM 值做白名单校验，防止破坏包装层命令）。
+  COLORTERM 值做白名单校验，防止破坏包装层命令）。**Windows 上没有这一层** —— cmd /
+  PowerShell 都不认这套语法，ConPTY 也不需要 TERM（见「Windows 宿主」一节）。
+- **Windows 宿主**：本地终端可用（默认 `%COMSPEC%`），但 shell 集成 / tmux 持久化 /
+  磁盘·TCP·网速·温度这几项不适用或拿不到 —— 完整边界与验证范围见「Windows 宿主」一节。
 - **terminate() 有「幸存者」竞态**：DSH 树级清理偶发报
   `terminal cleanup failed; surviving pids`，插件按 best-effort 处理
   （失败降级对顶层 shell 直接 SIGKILL），退出码/信号可能为 null。

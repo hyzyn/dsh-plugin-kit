@@ -6151,6 +6151,11 @@ function TtySettingsCard() {
       jsx('span', { className: 'tt_cardLabel', children: label }),
     ],
   })
+  /**
+   * 宿主平台（配置快照里的 `platform`）：Windows 上默认 shell、shell 集成、tmux 持久化
+   * 都是另一套说法，界面上分别给对应的说明，而不是让用户照着 POSIX 的文案去填。
+   */
+  const winHost = form?.platform === 'win32'
 
   return jsxs('li', {
     className: open ? 'tt_card tt_cardOpen' : 'tt_card',
@@ -6189,7 +6194,18 @@ function TtySettingsCard() {
                 sectionTitle('基础'),
                 boolField('启用插件（保存即热生效：工具与面板入口立刻收起，会话转保活）', 'enabled'),
                 boolField('向 agent 公告终端面板能力', 'announceToAgent'),
-                boolField('shell 集成（OSC 133/7 注入，tty_capture{last} 与 cwd 跟随依赖它）', 'shellIntegration'),
+                winHost
+                  ? jsxs('div', {
+                      className: 'tt_cardField',
+                      children: [
+                        jsxs('label', { className: 'tt_cardRow', children: [
+                          jsx('input', { type: 'checkbox', className: 'tt_cardCheckbox', checked: false, disabled: true }),
+                          jsx('span', { className: 'tt_cardLabel', children: 'shell 集成（OSC 133/7 注入）' }),
+                        ] }),
+                        jsx('span', { className: 'tt_cardHint', children: 'Windows 宿主上不适用：注入走的是 POSIX 的 `-c` 包装层与 rc 桩，cmd / PowerShell 上都不成立（实测 cmd 忽略 `-c` 空跑、PowerShell 报 export 不存在）。因此**本地**标签的 cwd 跟随与 tty_capture{last} 不可用；远程 Linux / macOS 主机照旧支持。' }),
+                      ],
+                    })
+                  : boolField('shell 集成（OSC 133/7 注入，tty_capture{last} 与 cwd 跟随依赖它）', 'shellIntegration'),
                 sectionTitle('SFTP 文件传输'),
                 jsxs('div', {
                   className: 'tt_cardField',
@@ -6260,7 +6276,7 @@ function TtySettingsCard() {
                         jsx('option', { value: 'tmux', children: 'tmux — 新开的终端/SSH 标签默认持久化' }),
                       ],
                     }),
-                    jsx('span', { className: 'tt_cardHint', children: '开启后所有新标签（本地/SSH 连接簿/SSH 连接对话框）默认由 tmux 托管、可跨宿主重启恢复；需本机/远程安装 tmux；SSH 对话框可对单次连接取消勾选；已有标签不受影响' }),
+                    jsx('span', { className: 'tt_cardHint', children: '开启后所有新标签（本地/SSH 连接簿/SSH 连接对话框）默认由 tmux 托管、可跨宿主重启恢复；需本机/远程安装 tmux；SSH 对话框可对单次连接取消勾选；已有标签不受影响' + (winHost ? '；Windows 宿主上 tmux 不可用，本地标签会照常打开但不受托管' : '') }),
                     boolField('关闭页面后结束持久会话（不保活）', 'endOnPageClose'),
                     boolField('服务器状态条（CPU / 内存 / 磁盘 / 在线 / TCP / 网速；采不到的项显示「无」）', 'statsEnabled'),
                     jsx('span', { className: 'tt_cardHint', children: '默认关闭：整个页面关闭时持久会话留存（保活期后可再恢复）；开启则页面断开且保活期结束时连 tmux 会话一起结束——注意刷新页面在保活期内不受影响' }),
@@ -6275,11 +6291,11 @@ function TtySettingsCard() {
                     if (!event.currentTarget.contains(event.relatedTarget)) setShellListOpen(false)
                   },
                   children: [
-                    jsx('span', { className: 'tt_cardLabel', children: 'Shell 路径（默认 $SHELL）' }),
+                    jsx('span', { className: 'tt_cardLabel', children: winHost ? 'Shell 路径（默认 %COMSPEC%）' : 'Shell 路径（默认 $SHELL）' }),
                     jsx('input', {
                       className: 'tt_cardInput',
                       value: form.shell ?? '',
-                      placeholder: '留空使用 $SHELL',
+                      placeholder: winHost ? '留空使用 %COMSPEC%（也可填 powershell.exe / pwsh.exe 完整路径）' : '留空使用 $SHELL',
                       autoComplete: 'off',
                       spellCheck: false,
                       onFocus: () => setShellListOpen(true),
@@ -6312,7 +6328,9 @@ function TtySettingsCard() {
                         }, path))
                       })(),
                     }, 'shell-list')] : []),
-                    jsx('span', { className: 'tt_cardHint', children: '可下拉选择本机已安装 shell（$SHELL 优先），也可直接输入任意路径；zsh / bash 支持 shell 集成' }),
+                    jsx('span', { className: 'tt_cardHint', children: winHost
+                      ? 'Windows 宿主：候选来自 %COMSPEC% 与已安装的 PowerShell（Windows PowerShell 5.1 / PowerShell 7），也可直接输入任意路径；cmd / PowerShell 没有 POSIX 的命令边界钩子，所以这两者不支持 shell 集成'
+                      : '可下拉选择本机已安装 shell（$SHELL 优先），也可直接输入任意路径；zsh / bash 支持 shell 集成' }),
                   ],
                 }, 'shell-field'),
                 textField('TERM', 'term', 'xterm-256color', 'TUI 程序依赖此值'),
