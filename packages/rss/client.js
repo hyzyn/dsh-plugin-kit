@@ -465,6 +465,9 @@ window.__ModuleLoader__.load({
         for (const builtin of disabledBuiltins) parts.push(renderDisabledBuiltinRow(builtin))
       }
       // 慢刷新：进度条贴分类行下沿（列表区顶部那条线），胶囊骑在线上、水平居中
+      // 注意 digest 必须从 state 取：这里原先直接引用了一个未绑定的 `digest`，
+      // 于是只要渲染到这一行就 ReferenceError（整张设置卡片挂掉）。见 scripts/client-lint.mjs 第 4 条。
+      const digest = state.digest
       if (digest && state.modalLoading && state.modalSlow) parts.push(busyBarHtml() + busyPillHtml(digest))
       parts.push('</div>')
       return parts.join('')
