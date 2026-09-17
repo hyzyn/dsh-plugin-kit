@@ -54,6 +54,17 @@ export interface AiSummaryInfo {
     failed: number;
     /** 整体不可用（路由 / llm 服务缺失）或全部失败时的原因文案。 */
     reason?: string;
+    /**
+     * 失败原因分布（按出现次数降序，最多 `AI_FAILURE_REASON_LIMIT` 类）。
+     *
+     * 为什么要有它：原先部分失败只留一个计数（「N 条失败，已回落到原文摘要」），
+     * 既看不出是超时、限流还是 provider 报错，也没法判断是不是插件自己的问题 ——
+     * 实测「20 条里 6 条成功」这种情况只能靠猜。
+     */
+    failures?: Array<{
+        error: string;
+        count: number;
+    }>;
 }
 export interface DigestResult {
     date: string;
@@ -125,17 +136,42 @@ export interface AiRoute {
  * text-delta 携带正文增量；finish 的 kind 为 stop 之外（error / aborted /
  * max-tokens / tool-calls）都按失败处理。
  */
+/**
+ * 宿主 llm 流的一个块。
+ *
+ * ⚠️ **finish 块的权威形状是 `{ type:'finish', reason: FinishReason }`**，而 `FinishReason`
+ * 是**以 `kind` 为判别式**的联合（`{kind:'stop'}` / `{kind:'tool-calls'}` /
+ * `{kind:'max-tokens'}` / `{kind:'aborted'}` / `{kind:'error', failure}`）——
+ * 也就是 **`kind` 与 `failure` 都在 `reason` 里面，不在块的顶层**（见 dsh-llm 的
+ * `lib/types/types.d.ts`：`type: 'finish'; reason: FinishReason`）。
+ *
+ * 这里曾经把 `kind` / `failure` 声明在顶层，于是读取处永远拿到 `undefined`、
+ * 把**每一次成功**都判成「终止原因 unknown」，AI 摘要 100% 失败；而单测的假 llm 又
+ * 照着同一个错误形状造数据，所以测试一路全绿。真机上的 digest 里那句
+ * 「AI 摘要：全部 20 条失败：终止原因 unknown」就是这么来的。
+ */
 export interface LlmStreamChunk {
     type?: string;
     text?: string;
-    kind?: string;
-    failure?: {
-        message?: string;
-        code?: string;
+    /** finish 块的权威字段：判别式 `kind`（以及 `kind==='error'` 时的 `failure`）都在这里。 */
+    reason?: {
+        kind?: string;
+        failure?: {
+            message?: string;
+            code?: string;
+        };
     };
     [key: string]: unknown;
 }
-/** 宿主 llm 服务的最小结构（cordis Context 上的 llm 服务）。 */
+/**
+ * 宿主 llm 服务的最小结构（cordis Context 上的 llm 服务）。
+ *
+ * ⚠️ `messages[].content` 是 **`ContentBlock[]`**（`{ type:'text', text }` 这类块的数组），
+ * 不是字符串 —— 见 dsh-llm 的 `lib/types/types.d.ts`：`UserMessage.content: ContentBlock[]`。
+ * 这里曾经声明成 `string`，于是传进去的字符串会在下游 `contentHasImage(content)` 之类
+ * 对 `content` 调用 `.some(...)` 的地方炸成
+ * `content.some is not a function`（表现为 AI 摘要每条都失败）。
+ */
 export interface LlmRuntimeLike {
     stream(options: {
         provider: string;
@@ -143,7 +179,10 @@ export interface LlmRuntimeLike {
         system?: string;
         messages: Array<{
             role: 'user';
-            content: string;
+            content: Array<{
+                type: 'text';
+                text: string;
+            }>;
         }>;
         maxTokens?: number;
         temperature?: number;

@@ -31,6 +31,8 @@ const BUILTIN_CHANNELS = [
     { key: '36kr', name: '36氪', url: 'https://rsshub.rssforever.com/36kr/newsflashes', category: '商业', site: 'https://36kr.com/', note: '官方 feed 被反爬拦截，此处为第三方 RSSHub 镜像，可能不稳定' },
 ];
 const BUILTIN_BY_KEY = new Map(BUILTIN_CHANNELS.map((channel) => [channel.key, channel]));
+/** `AiSummaryInfo.failures` 最多保留几类原因。 */
+const AI_FAILURE_REASON_LIMIT = 3;
 /* ------------------------------------------------------------------ *
  * settings 命名空间（让「设置 → 插件 → 插件配置」派发本插件卡片）
  * ------------------------------------------------------------------ */
@@ -98,8 +100,24 @@ const AI_TIMEOUT_MIN_MS = 5_000;
 const AI_TIMEOUT_MAX_MS = 60_000;
 /** 单条摘要请求的输入正文上限（字符）。 */
 const AI_INPUT_TEXT_LIMIT = 1200;
-/** 摘要请求的 maxTokens：给一句 60 字中文留足余量。 */
-const AI_SUMMARY_MAX_TOKENS = 200;
+/**
+ * 摘要请求的 maxTokens。
+ *
+ * 原先按「一句 60 字中文」估算成 200 —— 对**非推理模型**够用，对**推理模型**不够：
+ * 推理 token 与最终答案**共享**这个预算，模型往往还没写出正文就把预算耗在推理上，
+ * 于是 finish 是 `max-tokens`、本条摘要判失败。
+ *
+ * 真机实测（provider 路由 commandcode/deepseek/deepseek-v4.1-flash，20 条 / 并发 3 /
+ * 超时 20s，每次先清空 ai-cache.json）：
+ *
+ *   maxTokens=200   →  7 条成功 / 13 条失败（全是 max-tokens）
+ *   maxTokens=1024  → 12 条成功 /  8 条失败（仍全是 max-tokens）
+ *   maxTokens=4096  → 20 条成功 /  0 条失败（整轮 48s，单条约 7s，仍在超时内）
+ *
+ * 所以 4096 是这个模型的实测拐点：既容得下推理开销，又不会把整轮拖过超时。
+ * 换用更重的推理模型时若再出现 max-tokens，失败原因里会直接带上当前上限。
+ */
+const AI_SUMMARY_MAX_TOKENS = 4096;
 /** AI 缓存条目有效期：30 天。 */
 const AI_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 /** AI 缓存条目上限：超出按写入时间淘汰最旧。 */
@@ -706,7 +724,8 @@ export async function callAiSummary(llm, route, item, timeoutMs) {
             provider: route.provider,
             model: route.model,
             system,
-            messages: [{ role: 'user', content: user }],
+            // content 必须是 ContentBlock[]（字符串会在下游 .some(...) 上炸）
+            messages: [{ role: 'user', content: [{ type: 'text', text: user }] }],
             maxTokens: AI_SUMMARY_MAX_TOKENS,
             temperature: 0.3,
             signal: controller.signal,
@@ -715,8 +734,10 @@ export async function callAiSummary(llm, route, item, timeoutMs) {
                 text += chunk.text;
             }
             else if (chunk.type === 'finish') {
-                finishKind = typeof chunk.kind === 'string' ? chunk.kind : 'unknown';
-                finishMessage = chunk.failure?.message;
+                // kind / failure 在 reason 里面（顶层没有这两个字段，读错了会把每次成功都判成 unknown）
+                const reason = chunk.reason;
+                finishKind = typeof reason?.kind === 'string' ? reason.kind : 'unknown';
+                finishMessage = reason?.failure?.message;
             }
         }
     }
@@ -732,8 +753,14 @@ export async function callAiSummary(llm, route, item, timeoutMs) {
     if (finishKind === undefined)
         throw new Error('模型未返回终止标记');
     if (finishKind !== 'stop') {
+        // max-tokens 最容易被误读成「provider 有问题」：它的常见根因是预算被推理 token 吃掉，
+        // 所以把「该调什么」直接写进原因里，而不是只丢一个词。
+        if (finishKind === 'max-tokens') {
+            throw new Error(`终止原因 max-tokens（输出被 maxTokens=${String(AI_SUMMARY_MAX_TOKENS)} 截断；推理模型会先消耗推理 token，可提高上限）`);
+        }
         throw new Error(finishMessage !== undefined ? `${finishKind}: ${finishMessage}` : `终止原因 ${finishKind}`);
     }
+    // （finishKind === 'unknown' 只可能来自「finish 块没带 reason.kind」——此时上面那条会抛出）
     const cleaned = cleanAiSummary(text);
     if (!cleaned)
         throw new Error('模型返回空摘要');
@@ -779,6 +806,7 @@ async function summarizeItems(items, ai, ctx, config) {
     }
     let failed = 0;
     let firstError = '';
+    const failureCounts = new Map();
     const queue = pending.slice();
     const workerCount = Math.min(concurrency, queue.length);
     const workers = Array.from({ length: workerCount }, async () => {
@@ -794,8 +822,10 @@ async function summarizeItems(items, ai, ctx, config) {
             }
             catch (error) {
                 failed += 1;
+                const message = error instanceof Error ? error.message : String(error);
                 if (firstError === '')
-                    firstError = error instanceof Error ? error.message : String(error);
+                    firstError = message;
+                failureCounts.set(message, (failureCounts.get(message) ?? 0) + 1);
             }
         }
     });
@@ -809,6 +839,12 @@ async function summarizeItems(items, ai, ctx, config) {
         }
     }
     const info = { enabled: true, route: routeText, summarized, failed };
+    if (failed > 0) {
+        info.failures = [...failureCounts.entries()]
+            .sort((left, right) => right[1] - left[1])
+            .slice(0, AI_FAILURE_REASON_LIMIT)
+            .map(([error, count]) => ({ error, count }));
+    }
     // 全部失败（无缓存命中、也无成功请求）时把首个错误原因带进 DigestResult
     if (failed > 0 && summarized === 0)
         info.reason = `全部 ${failed} 条失败：${firstError}`;
@@ -859,10 +895,12 @@ export function renderDigestMarkdown(items, date, errors, sourceCount, aiSummary
         lines.push('');
     }
     // AI 摘要整体不可用或部分失败时，沿用「抓取失败」小节的列表格式补一行说明
+    // 失败原因分布：部分失败时原先只有计数、原因全丢，用户与排查者都无从下手
+    const aiFailureDetail = (aiSummary?.failures ?? []).map((row) => `${row.error}×${String(row.count)}`).join('；');
     const aiNote = aiSummary?.reason !== undefined
-        ? `- AI 摘要: ${aiSummary.reason}`
+        ? `- AI 摘要: ${aiSummary.reason}${aiFailureDetail === '' ? '' : `（${aiFailureDetail}）`}`
         : aiSummary !== undefined && aiSummary.failed > 0
-            ? `- AI 摘要: ${aiSummary.failed} 条失败，已回落到原文摘要`
+            ? `- AI 摘要: ${String(aiSummary.failed)} 条失败，已回落到原文摘要${aiFailureDetail === '' ? '' : `（原因：${aiFailureDetail}）`}`
             : undefined;
     if (errors.length > 0 || aiNote !== undefined) {
         lines.push('## 抓取失败', '');

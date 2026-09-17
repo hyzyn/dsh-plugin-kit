@@ -134,7 +134,18 @@ AI 摘要默认关闭，配置只走可编辑 store `~/.dsh/rss.json` 的 `ai` �
 | `concurrency` | 并发请求数，夹紧 1..6 | `3` |
 | `timeoutMs` | 单条请求超时毫秒数，夹紧 5000..60000 | `20000` |
 
-只填 `provider` / `model` 之一时整段 `ai` 配置会被忽略并在保存响应里给出告警。摘要结果写入 digest 目录的 `ai-cache.json`（`{ version: 1, entries: { <sha1(link|id|title)>: { text, model, at } } }`），命中且未过期（30 天）直接复用；超出 500 条按写入时间淘汰最旧。
+只填 `provider` / `model` 之一时整段 `ai` 配置会被忽略并在保存响应里给出告警。
+
+两个容易踩的点（都是真机上实测出来的）：
+
+- **`maxTokens` 写死在插件里（当前 4096），推理模型要留足推理预算**：推理 token 与最终答案
+  **共享**这个上限，太小会让模型还没写出正文就把预算耗在推理上，finish 变成 `max-tokens`、
+  该条摘要判失败。实测（`commandcode/deepseek/deepseek-v4.1-flash`，20 条）：200 → 7 条成功、
+  1024 → 12 条、4096 → **20 条全成功**（整轮 48s，单条约 7s，仍在 `timeoutMs` 内）。换更重的
+  推理模型若再撞上限，失败原因里会直接写出当前 `maxTokens` 值。
+- **失败原因会带出来**：部分失败时 `aiSummary.failures` 给出原因分布（最多 3 类，含次数），
+  Markdown 的「抓取失败」小节也会写上去（例：`原因：终止原因 max-tokens（…）×8`）。
+  早先只有一句「N 条失败」，既分不清超时 / 限流 / provider 报错，也无从判断是不是插件的问题。摘要结果写入 digest 目录的 `ai-cache.json`（`{ version: 1, entries: { <sha1(link|id|title)>: { text, model, at } } }`），命中且未过期（30 天）直接复用；超出 500 条按写入时间淘汰最旧。
 
 ## 开发
 
