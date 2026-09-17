@@ -27,7 +27,7 @@
 import { execFile } from 'node:child_process';
 import { buildTmuxInnerLauncher, pluginRuntimeDir, shSingleQuote } from './shell-integration.js';
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 /** 专用 tmux socket 名：与用户自己的 tmux server 完全隔离。 */
 export const TMUX_SOCKET = 'dsh-tty';
 let probeCache = null;
@@ -76,10 +76,7 @@ function writeIfChanged(file, content) {
     writeFileSync(tmp, content);
     renameSync(tmp, file);
 }
-function dirname(path) {
-    const index = path.lastIndexOf('/');
-    return index > 0 ? path.slice(0, index) : '/';
-}
+/** 同 shell-integration：本地路径要用认识 `\` 的 dirname（见那边的说明）。 */
 /** 组装 tmux.conf：状态栏关（防重绘污染 capture）、真色透传、内层启动器。 */
 function buildTmuxConf(passthrough, runtimeDir) {
     const lines = [
