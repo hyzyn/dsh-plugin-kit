@@ -499,15 +499,25 @@ describe('systemPrompt 注入门禁（CLI 探测 + settings 开关）', () => {
     expect(mount.sections.size).toBe(0)
   })
 
-  it('探测失败带出实测原因：命令不存在时是 ENOENT，不是泛泛一句「探测不到」', async () => {
+  it('探测失败带出实测原因：命令不存在时是「找不到命令」的实测原文，不是泛泛一句「探测不到」', async () => {
     // 缺陷报告 D3：probeCli 原先把 error 直接丢掉，于是卡片只能猜原因，
     // 用户与作者都分不清「没装 / 装错 / 超时」。
+    //
+    // 「命令不存在」的实测原文是**平台相关**的（真机实测，见脚本
+    // scripts/windows/verify-windows-e2e.mjs 的 D3 段）：
+    //   - POSIX：execFile 直接给 `spawn … ENOENT`；
+    //   - Windows：命令经 cmd.exe（见 runViaWindowsShim），找不到命令是 **cmd.exe
+    //     自己的报错**——中文区「不是内部或外部命令」，英文区「is not recognized as
+    //     an internal or external command」，两者都不含 ENOENT。
+    // 所以不能硬编码 ENOENT；两边共同的可断言点是「原因里带出了被探测的命令名」。
     const mount = mountFull(missingCli())
     await waitFor(async () => (await call(mount.routes, '/api/dsh-codegraph/default-path')).body?.cliAvailable === false)
     const capture = await call(mount.routes, '/api/dsh-codegraph/default-path')
     const detail = String(capture.body?.cliProbeError ?? '')
     expect(detail).not.toBe('')
-    expect(detail).toContain('ENOENT')
+    expect(detail).toContain('no-such-codegraph-cli')
+    if (POSIX) expect(detail).toContain('ENOENT')
+    else expect(detail).toMatch(/不是内部或外部命令|is not recognized as an internal or external command/)
     // 实测时刻要带出去：卡片据此显示「上次探测」，也让「重新探测」有可见反馈
     expect(typeof capture.body?.cliProbeAt).toBe('number')
   })
@@ -551,7 +561,8 @@ describe('systemPrompt 注入门禁（CLI 探测 + settings 开关）', () => {
     await waitFor(async () => (await call(mount.routes, '/api/dsh-codegraph/default-path')).body?.cliAvailable === false)
     const again = await call(mount.routes, '/api/dsh-codegraph/reprobe', { method: 'POST' })
     expect(again.body?.cliAvailable).toBe(false)
-    expect(String(again.body?.cliProbeError ?? '')).toContain('ENOENT')
+    // 同样不能硬编码 ENOENT：Windows 上走 cmd.exe，「找不到命令」是 cmd 自己的原文
+    expect(String(again.body?.cliProbeError ?? '')).toContain('no-such-codegraph-cli')
     // 重探会真的起一个子进程，所以只认 POST
     const viaGet = await call(mount.routes, '/api/dsh-codegraph/reprobe')
     expect(viaGet.status).toBe(405)
