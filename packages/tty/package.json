@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-tty",
-  "version": "0.18.1",
+  "version": "0.18.2",
   "description": "DSH Web GUI 的终端面板插件：侧边栏「终端」大弹窗，xterm.js + PTY 全交互终端（路线1），ssh2 原生 SSH 远程连接（方案 C），tmux 会话持久化（0.10.0），连接栏扩展点 ttyConnbar（0.13.0）、终端服务 ttyTerminal（0.14.0 open / 0.15.0 mount 就地嵌入）、面板内挂载位 ttyPanel（0.16.0 右侧 dock）、服务器状态条（0.17.0：按标签可见性采端主机 CPU / 内存 / 磁盘 / 在线时长 / TCP / 网速 / 温度，SSH 走同连接的非 PTY exec channel、本地走 os/proc，best-effort、不碰 PTY 流）、连接密码存入官方凭据存储（0.18.0：字段里只留 env: 引用、引用名按资源身份派生、候选来自凭据存储 ∪ 连接簿；设置卡片的连接编辑与连接对话框共用同一套表单）、Windows 宿主支持（0.18.1：默认 shell = %COMSPEC%、不做 POSIX 包装层、PowerShell 走 -NoLogo/-Command；shell 集成 / tmux / 状态条三项在 Windows 本地不适用，README 有完整边界）。",
   "keywords": [
     "dsh",
@@ -45,7 +45,7 @@
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.2",
-    "@hyzyn/dsh-kit": "0.1.2",
+    "@hyzyn/dsh-kit": "0.4.0",
     "@xterm/headless": "^5.5.0",
     "ssh2": "^1.17.0",
     "ws": "^8.18.0"
