@@ -1,0 +1,77 @@
+/**
+ * Windows 上启动「只有 `.cmd` / `.ps1` / 无扩展名 shim」的外部命令。
+ *
+ * 背景（两个包各自踩过同一个坑，所以搬到这里只留一份实现）：
+ *
+ * npm / pnpm / 独立安装器在 Windows 上给出的 CLI 往往**没有真正的 `.exe`**
+ * （codegraph 就是如此：`…\codegraph\current\bin\codegraph.cmd`）。而 `spawn` /
+ * `execFile` 默认 `shell: false`，走的是 CreateProcess 式的可执行文件查找：
+ *   - 裸命令名 `codegraph` 解析不到 `.cmd`，报 `spawn codegraph ENOENT`；
+ *   - 写绝对路径 `…\codegraph.cmd`，Node 又因 CVE-2024-27980 加固**拒绝**在无
+ *     shell 时执行 `.bat` / `.cmd`，报 `spawn … EINVAL`。
+ *
+ * 解法是把命令行交给 `%COMSPEC% /d /s /c`，由 cmd.exe 按 PATHEXT 解析出 shim。
+ * 这正是 cross-spawn（MCP 官方 SDK 的 stdio transport 用的就是它，DSH 核心的
+ * `@deepseek-ai/dsh-mcp-client` 因此不受影响）在 Windows 上的做法。本模块不引
+ * 依赖，只搬运那条转义规则。
+ *
+ * ⚠️ 因为 cmd.exe 会**重新解析整条命令行**，argv 必须自己转义——否则参数里的
+ * `&` / `|` / `%` 会被当成命令分隔符，变成命令注入。凡是外部可控的字符串
+ * （符号名、路径、配置里的 args）都要走 `spawnPortable`，别自己拼命令行。
+ */
+import type { ChildProcess, StdioOptions } from 'node:child_process';
+/** Windows 上判定「无需 shell」的可执行后缀：这两个交给 CreateProcess 就行。 */
+export declare const WINDOWS_EXECUTABLE_REGEXP: RegExp;
+/** 命令名按 cmd.exe 规则转义（空格也是元字符，所以带空格的路径由 `^ ` 保护）。 */
+export declare function escapeCommand(command: string): string;
+/**
+ * 单个参数按 cmd.exe 规则转义成 `"..."`。算法同 cross-spawn，依据
+ * <https://qntm.org/cmd>：先按 Windows argv 规则双写「紧邻双引号的反斜杠」
+ * 与「结尾反斜杠」，再整体加引号，最后把包括这对引号在内的元字符逐个 `^`。
+ * 两层的次序不能换：`^` 由 cmd.exe 吃掉，引号留给子进程的 argv 解析。
+ */
+export declare function escapeArgument(value: string): string;
+/** 把一个 argv 拼成 `cmd.exe /d /s /c` 能直接执行的一整条命令行。 */
+export declare function windowsCommandLine(command: string, args: string[]): string;
+/** 一次 spawn 的最终形状：交给哪个文件、argc 是什么、要不要 verbatim。 */
+export interface SpawnPlan {
+    file: string;
+    args: string[];
+    windowsVerbatimArguments?: boolean;
+}
+/**
+ * 纯函数：决定「直接 spawn」还是「经 `%COMSPEC% /d /s /c`」。
+ *
+ * 抽成纯函数是为了能在任何平台上断言这条分支（Windows 的真机行为在 CI 上跑不到，
+ * 而这里的分支选错就等于命令注入或必然 ENOENT）。
+ */
+export declare function portableSpawnPlan(command: string, args: string[], options?: {
+    platform?: NodeJS.Platform;
+    comspec?: string;
+}): SpawnPlan;
+export interface PortableSpawnOptions {
+    cwd?: string;
+    env?: NodeJS.ProcessEnv;
+    windowsHide?: boolean;
+    stdio?: StdioOptions;
+}
+/**
+ * 跨平台启动一个外部命令：非 Windows、或命令本身是 `.exe` / `.com` 时直连，
+ * 其余 Windows 情形经 cmd.exe shim。参数转义由本模块负责，调用方只管传 argv。
+ */
+export declare function spawnPortable(command: string, args: string[], options?: PortableSpawnOptions): ChildProcess;
+/**
+ * Windows 上连子孙进程一起收：`taskkill /T` 杀掉以该 pid 为根的整棵树。
+ *
+ * 为什么不能只 `child.kill()`：shim 分支的直接子进程是 cmd.exe，真正的 CLI 是它的
+ * **孙**进程；`execFile` 的 `timeout` 与 `child.kill()` 都只作用于直接子进程，大仓库的
+ * `codegraph index` 会继续跑完（十几分钟起），卡片却已经报超时。POSIX 分支不需要这个：
+ * 直接子进程就是 CLI，杀掉即可。
+ */
+export declare function taskkillArgs(pid: number): string[];
+export declare function killProcessTree(pid: number | undefined): Promise<void>;
+/**
+ * 结束一个可能带子孙进程的子进程：Windows 上先 `taskkill /T` 收树，再兜底 `kill`。
+ * 返回的 Promise 在树被收掉（或判定无需收树）后 resolve，不会抛。
+ */
+export declare function terminateChild(child: ChildProcess): Promise<void>;
