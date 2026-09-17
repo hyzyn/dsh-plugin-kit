@@ -11,6 +11,7 @@
 - **托管 MCP 服务器行**：dsh-mcp-client 不声明 MCP roots，`codegraph serve --mcp` 只从 `process.cwd()` 向上解析 `.codegraph/`；插件在 `~/.dsh/cordis.patch.yml` 维护 `@deepseek-ai/dsh-mcp-client` 行并写 `config.cwd`，改写经 watchUserPatches 热加载重建 MCP 连接。同一台服务器同一时刻只挂一个项目，其余项目用 `projectPath` 查询。
 - **索引判定取 `.codegraph/*.db`，不取目录存在**：目录存在会把 codegraph CLI 自身的安装目录 `~/.codegraph` 判成项目索引，托管行随之落在未索引 cwd 上——实测该状态下 `codegraph_explore` 的 required 由 `["query"]` 变为 `["query","projectPath"]`。非真索引时不改写现有 cwd，卡片给出 `indexState` 与原因。
 - **托管行 cwd 跟随活动会话**：`followSession`（默认开）在会话切到有效索引项目时对齐托管行，否则回落到绑定路径；绑定路径由「设为默认项目」写入 settings 命名空间 `codegraph` 并把 `followSession` 置 false（显式指定优先于会话跟随）。
+- **一键初始化**：未初始化的目录在卡片上直接点「初始化索引」跑 `codegraph init`（两步确认）——`index` / `sync` 都要求项目先 init 过，此前这是唯一还要把用户赶回终端的一步。
 - **systemPrompt 分两段，开关与门禁各自独立**：`plugin:dsh-codegraph`（order 150）与 `plugin:dsh-codegraph:usage`（order 151）；两段均以 `<command> --version` 探测为前置，`announceToAgent` / `usageGuidance` 写 settings 命名空间后即时增删 section。
 
 ![Codegraph 设置卡片：8 格状态面板、符号下钻、跟随开关](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-codegraph.png)
@@ -47,13 +48,15 @@ Searched for a .codegraph/ directory starting from: /Users/you
 | `/api/dsh-codegraph/impact?symbol=&path=&depth=` | GET | 查影响面 |
 | `/api/dsh-codegraph/node?name=&path=` | GET | 查符号/文件详情 |
 | `/api/dsh-codegraph/sync` | POST | 增量同步 `{ path }` |
-| `/api/dsh-codegraph/index` | POST | 全量重建 `{ path }` |
-| `/api/dsh-codegraph/default-path` | GET | 绑定路径 `defaultPath` + 生效路径 `effectivePath` + `sessionPath` + `followSession` + 提示词开关 + `cliAvailable` + MCP 托管状态（`indexState` 针对**生效路径**） |
+| `/api/dsh-codegraph/index` | POST | 全量重建 `{ path }`（要求项目**已经初始化过**，见下） |
+| `/api/dsh-codegraph/init` | POST | 在**未初始化**的目录跑一次 `codegraph init`（建 `.codegraph/` + 首次索引），成功后重算 MCP 托管行；已索引目录回 409 |
+| `/api/dsh-codegraph/default-path` | GET | 绑定路径 `defaultPath` + 生效路径 `effectivePath` + `sessionPath` + `followSession` + 提示词开关 + `cliAvailable` / `cliProbeError` / `cliProbeAt` + MCP 托管状态（`indexState` 针对**生效路径**） |
 | `/api/dsh-codegraph/follow` | POST | 上报活动会话目录 `{ path }`（空 = 无活动会话）；宿主据此对齐托管行 cwd，非索引目录自动回落 |
 | `/api/dsh-codegraph/settings` | POST | 写开关 `{ announceToAgent?, usageGuidance?, mcpIntegration?, followSession? }`（布尔），即时生效 |
 | `/api/dsh-codegraph/default-path` | POST | 设为默认项目 `{ path }`（需 `.codegraph/` 里有索引库），同步热切换 MCP |
+| `/api/dsh-codegraph/reprobe` | POST | 重跑一次 `<command> --version` 探测，回 `{ cliAvailable, cliProbeError, cliProbeAt }` 并同步 systemPrompt 门禁 |
 
-所有路由均为 loopback-only，防止远程访问。
+所有路由均为 loopback-only，防止远程访问。`reprobe` 只认 POST：它会真的起一个子进程，不该由 GET 顺带触发。
 
 ## 兼容性（DSH / codegraph CLI）
 
@@ -64,7 +67,14 @@ Searched for a .codegraph/ directory starting from: /Users/you
 - **浏览器半体的 URL 形态**：当前 DSH 走 client-modules 的 combo 路由，单包直链 `/plugins/@hyzyn/dsh-codegraph/client.js` 已不再直接可用；浏览器只用 boot graph（`window.__DSH_BOOT__`）下发的 `/plugins/??<id>/client.js&rev=…`，插件侧无需改动。
 - **操作系统**：Windows / macOS / Linux 都按同一份代码走，CI 已是三平台矩阵（`pnpm -r build` + `typecheck` + `test`）。
   - **Windows**：CLI 走 `%COMSPEC% /d /s /c` + cmd 转义（npm / pnpm 全局安装只给 `.cmd` shim，`execFile` 直连会 `ENOENT`）；超时用 `taskkill /pid <pid> /T /F` **连 shim 里的孙进程一起收**（只杀 cmd.exe 的话大仓库 `index` 会继续跑完）；补丁文件重写沿用原文件行尾（CRLF 文件不会被写成混合行尾，重写也不改变行数）。
-  - **PATH**：探测与调用都用插件配置的 `command`（默认 `codegraph`，走 PATH）。从 Dock / 开始菜单这类**不继承 shell 环境**的入口启动宿主时，PATH 里可能没有 CLI——此时两段 systemPrompt 不注入、卡片点不出可用命令，把 `command` 写成绝对路径即可（卡片会直接报出被探测的命令名）。
+  - **`index` 不会替你初始化**：`codegraph index --help` 写着「same result as a fresh init」，但那说的是**全量重建的结果**等同于刚 init 完，不是「index 会初始化」。对没有 `.codegraph/` 的目录，`index` / `sync` 都会直接报 `CodeGraph not initialized in <path>` + `Run "codegraph init" first`。故卡片的「初始化索引」按钮走的是 `init`。
+    - 参数固定为 `init -- <path>`：**不带 `-y`**——那是 CLI 1.6.0 才有的旗标，1.5.0 会 `error: unknown option '-y'`；而不带也不会挂起（运行器无 TTY，1.5.0 / 1.6.0 实测都自己取默认值跑完）。**也不带 `-f`**（CLI 用它兜住「家目录 / 文件系统根」这类误伤，不该由插件替用户绕过）。
+    - 这是本插件**唯一往用户项目里写东西**的动作：它只在 `.codegraph/` 下建 `codegraph.db` 与一个自忽略的 `.gitignore`（内容 `*` + `!.gitignore`），**不碰任何源文件、也不改项目根的 `.gitignore`**；`codegraph uninit` 可整体撤销。卡片上是两步确认，且**绝不会自动触发**。
+    - `init` / `index` 会触发 codegraph CLI 自己的匿名用量统计（上游会在输出里提示；`codegraph telemetry off` 或 `CODEGRAPH_TELEMETRY=0` 可关）。插件不改这个开关——那是用户的偏好。
+  - **PATH**：探测与调用都用插件配置的 `command`（默认 `codegraph`，走 PATH）。从 Dock / 开始菜单这类**不继承 shell 环境**的入口启动宿主时，PATH 里可能没有 CLI——此时两段 systemPrompt 不注入、卡片点不出可用命令。
+    - **PATH 是在宿主进程启动时读取的**，所以「刷新页面 / 重开卡片」改不了它，宿主自己也不会变。两条修法：① 把 `command` 写成 CLI 的绝对路径（改 profile 补丁会触发热重载并重新探测）；② 从新开的终端重启宿主，让新的环境块生效。
+    - 改完之后点卡片上的**重新探测**（`POST /reprobe`）即可就地确认，不必重启宿主。卡片会把探测失败的**实测原文**（`spawn codegraph ENOENT`、非零退出的 stderr、超时）显示出来，用来区分「没装 / 装错 / 命令不在 PATH」。
+    - 中文（及其它非 UTF-8 代码页）Windows 上，CLI 与 cmd.exe 的 stderr 按控制台代码页输出；插件用 `@hyzyn/dsh-kit` 的容错解码器（UTF-8 优先，遇非法字节整体回落代码页）解，卡片上的报错是中文原文而不是 `���`。
   - **MCP 行**：`dsh-mcp-client` 用官方 SDK 的 `StdioClientTransport`（SDK 依赖 `cross-spawn`），Windows 上 `.cmd` shim 由它自己解析，托管行无需平台分支。
   - 上游 CLI 本身三平台 × x64/arm64 官方支持（自带 Node 运行时）；本插件侧的索引判定只看 `.codegraph/` 下的 `*.db`，不写死库文件名，上游改名也不受影响。
 
@@ -138,5 +148,5 @@ settings 命名空间 `codegraph` 里保存过的 `defaultPath` / `mcpIntegratio
 
 两段都受两道门禁：
 
-1. **CLI 探测**：挂载时跑一次 `<command> --version`，失败就整段不注入（并 `console.warn`）——不向模型宣告跑不起来的能力。
+1. **CLI 探测**：挂载时跑一次 `<command> --version`，失败就整段不注入（并 `console.warn`，带上失败原文）——不向模型宣告跑不起来的能力。探测结果不是锁死的：卡片「重新探测」或 `POST /reprobe` 会重跑一次并即时刷新这两段 section（CLI 后装好、或 `command` 改成绝对路径之后不必重启宿主）。
 2. **开关**：卡片上的两个复选框写 settings 命名空间（`POST /api/dsh-codegraph/settings`），改完即时增删 section；也可以用安装级配置关掉（`announceToAgent: false` / `usageGuidance: false`）。

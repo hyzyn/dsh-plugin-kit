@@ -34,11 +34,15 @@ window.__ModuleLoader__.load({
       '.cg_panelTitle{margin:0;font-size:15px;font-weight:700;white-space:nowrap;flex:1}',
       '.cg_subtitle{color:var(--dsw-alias-label-tertiary);font-size:11.5px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:360px}',
       '.cg_toolbar{display:flex;align-items:center;gap:8px;flex:none;flex-wrap:wrap}',
-      '.cg_toolbarSpacer{flex:1}',
+      // 工具按钮整组：组内 nowrap，所以「放不下」时整组一起换行，而不是把最后一个按钮
+      // 单独甩到第二行。`flex-shrink:0` 保证按钮本身不被压扁（文字不换行）。
+      '.cg_toolbarBtns{display:flex;align-items:center;gap:8px;flex-wrap:nowrap;flex-shrink:0;margin-left:auto}',
       '.cg_btn{color:var(--dsw-alias-label-primary-foreground);background:var(--dsw-alias-button-info-fill);border:none;border-radius:8px;padding:6px 14px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}',
       '.cg_btn:hover:not(:disabled){background:var(--dsw-alias-button-info-hover)}',
       '.cg_btn:disabled{opacity:.5;cursor:default}',
       '.cg_btnGhost{color:var(--dsw-alias-label-primary);background:0 0;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:5px 12px;font-size:12px;cursor:pointer;white-space:nowrap}',
+      // 「初始化索引」的二次确认态：它会往用户项目里写 .codegraph/，用告警色区别于普通按钮
+      '.cg_btnDanger{color:var(--dsw-alias-state-error-primary);background:0 0;border:1px solid color-mix(in srgb,var(--dsw-alias-state-error-primary) 45%,transparent);border-radius:8px;padding:5px 12px;font-size:12px;cursor:pointer;white-space:nowrap}',
       '.cg_btnGhost:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}',
       '.cg_input{color:var(--dsw-alias-label-primary);background:var(--dsw-specific-input-major);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;outline:none;padding:6px 10px;font-family:inherit;font-size:13px;box-sizing:border-box;width:100%}',
       '.cg_input:focus{border-color:var(--dsw-alias-state-business-primary)}',
@@ -74,6 +78,9 @@ window.__ModuleLoader__.load({
       '.cg_mcpRow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}',
       '.cg_mcpMeta{color:var(--dsw-alias-label-tertiary);font-size:11.5px;line-height:1.5;min-width:0}',
       '.cg_warn{color:var(--dsw-alias-state-warning-primary,var(--dsw-alias-state-error-primary));font-size:12px;line-height:1.55;margin:0;white-space:pre-wrap}',
+      // 探测失败的实测原文：用等宽 + 淡色和上面的指引分开，让「ENOENT / 非零退出 / 超时」
+      // 一眼可辨，而不是混在说明文字里被当成人话略过去。
+      '.cg_probeDetail{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-base,#00000010);border-radius:6px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;line-height:1.5;margin:0;padding:6px 8px;white-space:pre-wrap;word-break:break-all}',
       '.cg_checks{display:flex;align-items:center;gap:16px;flex-wrap:wrap;font-size:12.5px;color:var(--dsw-alias-label-secondary)}',
       '.cg_check{display:inline-flex;align-items:center;gap:6px;cursor:pointer}',
       '.cg_check input{cursor:pointer}',
@@ -210,6 +217,10 @@ window.__ModuleLoader__.load({
       // 只看 mcp.mode 会把「已对齐一个非项目目录」显示成一切正常。
       const [defaultInfo, setDefaultInfo] = React.useState(null)
       const [settingDefault, setSettingDefault] = React.useState(false)
+      // 「初始化索引」是两步确认：它会**往用户的项目里写 `.codegraph/`**，是本卡片唯一
+      // 的写操作。第一次点只改成确认文案，第二次才真的发请求（比 window.confirm 可控，
+      // 也不用为一次动作引一套弹窗组件）。
+      const [confirmInit, setConfirmInit] = React.useState(false)
 
       // 当前活动会话的工作目录（随会话切换实时更新；无活动会话时为 ''）。
       const currentCwd = React.useSyncExternalStore(
@@ -238,6 +249,10 @@ window.__ModuleLoader__.load({
             announceToAgent: data.announceToAgent === true,
             usageGuidance: data.usageGuidance === true,
             cliAvailable: data.cliAvailable,
+            // 探测失败的实测原因（ENOENT / 非零退出 / 超时原文）与探测时刻。
+            // 有它才能把「常见原因是…」这种猜测换成用户一眼能判断的原文。
+            cliProbeError: typeof data.cliProbeError === 'string' ? data.cliProbeError : '',
+            cliProbeAt: typeof data.cliProbeAt === 'number' ? data.cliProbeAt : 0,
             command: typeof data.command === 'string' ? data.command : '',
             followSession: data.followSession === true,
             effectivePath: typeof data.effectivePath === 'string' ? data.effectivePath : '',
@@ -277,6 +292,12 @@ window.__ModuleLoader__.load({
         if (!open || manual) return
         setPath(currentCwd)
       }, [open, manual, currentCwd])
+
+      // 目标路径一换，上一个目录的「确认初始化」就不该还挂着——否则很容易在 A 目录点上
+      // 确认、切到 B 目录再点一次，把 B 给初始化了（那正是这个动作最该防的误伤）。
+      React.useEffect(() => {
+        setConfirmInit(false)
+      }, [effectivePath, open])
 
       const search = async () => {
         if (!query.trim()) return
@@ -334,6 +355,43 @@ window.__ModuleLoader__.load({
         }
       }
 
+      /**
+       * 在未初始化的项目里跑 `codegraph init`（建 `.codegraph/` + 首次索引）。
+       *
+       * 为什么需要它：`codegraph index` / `sync` 都要求项目**已经** init 过——对干净目录
+       * 直接报 `CodeGraph not initialized in <path>` / `Run "codegraph init" first`
+       * （`index --help` 那句「same result as a fresh init」说的是全量重建的结果，不是
+       * 「index 会替你初始化」）。没有这个按钮，本卡片是唯一还要把用户赶回终端的一步；
+       * 而 MCP 托管行也只在目标已是有效索引时才写，新项目等于整块功能不可用。
+       */
+      const runInit = async () => {
+        if (!confirmInit) {
+          setConfirmInit(true)
+          setError('')
+          setOk('')
+          return
+        }
+        setConfirmInit(false)
+        setLoading(true)
+        setError('')
+        setOk('')
+        try {
+          const data = await api('/api/dsh-codegraph/init', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ path: effectivePath }),
+          })
+          setOk('已初始化并建立索引：' + (data.output || '').slice(0, 200))
+          await loadStatus()
+          // 索引态变了 → MCP 托管行的决策也跟着变，必须重新取一次
+          await loadMcpStatus()
+        } catch (err) {
+          setError(err.message)
+        } finally {
+          setLoading(false)
+        }
+      }
+
       // 把当前有效路径设为默认项目：宿主会持久化并热切换 codegraph MCP 服务器
       const setDefaultProject = async () => {
         if (!effectivePath) return
@@ -379,6 +437,29 @@ window.__ModuleLoader__.load({
         }
       }
 
+      /**
+       * 重新探测 CLI。为什么必须是一个显式动作：探测结果原先是挂载时锁存的一个布尔，
+       * 刷新卡片只是再读一次同一个缓存——那句「刷新本卡片重试」在服务端不可能生效。
+       * 现在它真的会重跑 `<command> --version`，并把实测原因（含失败原文）取回来。
+       */
+      const reprobe = async () => {
+        setSettingDefault(true)
+        setError('')
+        setOk('')
+        try {
+          const data = await api('/api/dsh-codegraph/reprobe', { method: 'POST' })
+          await loadMcpStatus()
+          setOk(data.cliAvailable === true
+            ? '重新探测成功：CLI 可用，systemPrompt 两段已注入。'
+            : '重新探测完成：CLI 仍不可用，原因见下方。')
+        } catch (err) {
+          setError(err.message)
+          await loadMcpStatus()
+        } finally {
+          setSettingDefault(false)
+        }
+      }
+
       const mcpText = React.useMemo(() => {
         if (!mcp) return 'MCP：状态未知'
         // 所有模式都带上宿主给的 note：未索引 / 手工行 / 联动关闭这些「没有托管」的
@@ -407,13 +488,22 @@ window.__ModuleLoader__.load({
           : '（来自默认项目）'
         const fix = status && status.initialized === true && effectivePath && effectivePath !== shown
           ? '当前路径 ' + effectivePath + ' 已是有效索引，点「设为默认项目」即可修复。'
-          : '把默认项目切到已索引目录即可自动挂载。'
+          // 注意这里谈的是**托管行用的那个目录**（shown），它未必等于下面你正在看的路径；
+          // 所以只给不依赖「当前路径」的说法，别让人以为点卡片上的按钮就能修它。
+          : '把默认项目切到已索引目录即可自动挂载（也可以直接在该目录里运行 `codegraph init` 建索引）。'
         return '⚠ 托管行用的目录 ' + shown + source + ' 不是有效索引：' + why + '。未加载项目的 codegraph_* 工具需要显式传 projectPath；' + fix
       }, [defaultInfo, status, effectivePath])
 
       const cliWarning = defaultInfo && defaultInfo.cliAvailable === false
         ? '⚠ 探测不到可执行的 CLI 命令 ' + (defaultInfo.command || 'codegraph') + '（`--version` 失败）：systemPrompt 的能力公告与使用指引都不会注入，卡片里的状态 / 搜索 / sync / 重建索引也会报错。'
-          + '常见原因是宿主没有继承 shell 的 PATH（从 Dock / 开始菜单启动时）——把插件配置里的 command 写成该 CLI 的绝对路径即可；已装好 CLI 时刷新本卡片重试。'
+          + '\n修法二选一：① 把插件配置里的 command 写成该 CLI 的绝对路径（改 profile 补丁会触发热重载并重新探测）；② 从新开的终端重启宿主，让新的环境块生效。'
+          + '注意：宿主进程的 PATH 在它启动时就固定了，刷新页面 / 重开卡片都不会改变它——改完上面任一项后，点「重新探测」即可就地确认，不必重启宿主。'
+        : ''
+
+      /** 探测失败的实测原文：ENOENT / 非零退出 / 超时三种情况靠它区分。 */
+      const cliProbeDetail = defaultInfo && defaultInfo.cliAvailable === false && defaultInfo.cliProbeError
+        ? '实测原因：' + defaultInfo.cliProbeError
+          + (defaultInfo.cliProbeAt ? '\n上次探测：' + new Date(defaultInfo.cliProbeAt).toLocaleTimeString() : '')
         : ''
 
       // 状态区：能识别的 status 形状就铺成网格，否则回落到原始文本（CLI 报错时 status 可能是 {raw}）
@@ -465,27 +555,63 @@ window.__ModuleLoader__.load({
                   className: 'cg_panelHeader',
                   children: [
                     jsx('span', { className: 'cg_panelTitle', children: 'Codegraph 控制台' }),
-                    jsx('div', { className: 'cg_toolbarSpacer' }),
-                    jsx('button', {
-                      type: 'button',
-                      className: 'cg_btnGhost',
-                      disabled: loading,
-                      onClick: loadStatus,
-                      children: '刷新状态',
-                    }),
-                    jsx('button', {
-                      type: 'button',
-                      className: 'cg_btnGhost',
-                      disabled: loading,
-                      onClick: () => runAction('sync'),
-                      children: 'Sync',
-                    }),
-                    jsx('button', {
-                      type: 'button',
-                      className: 'cg_btnGhost',
-                      disabled: loading,
-                      onClick: () => runAction('index'),
-                      children: '重建索引',
+                    // 按钮整组包一层：`cg_panelHeader` 是 flex-wrap，若把 5 个按钮直接铺在
+                    // 里面，放不下时**最后一个会被单独挤到第二行**（一张卡片上孤零零一个按钮）。
+                    // 包成一组、组内 nowrap，要么整组留在标题右边，要么整组换行。
+                    jsxs('div', {
+                      className: 'cg_toolbarBtns',
+                      children: [
+                        // 只有「用户正看着的这个目录还不是有效索引」时才出现。放在最前面：
+                        // 那种情况下它就是这张卡片的主操作，也不该被挤到行尾。
+                        //
+                        // 判定必须用 `status.initialized === false`（= /status?path=<本卡片路径>），
+                        // **不能**用 `defaultInfo.indexed`：那个来自 /default-path，走的是后端的
+                        // effectiveProjectPath——「跟随当前项目」开着、而会话目录未索引时，它会回落到
+                        // **默认项目**，于是回一个 `indexed: true`（默认项目往往正是某个已索引的仓库），
+                        // 按钮就永远不出现。两个口径在这个场景下必然分叉，这里跟底部那句文案
+                        // （同一个条件）保持一致。
+                        status && status.initialized === false
+                          ? jsx('button', {
+                            type: 'button',
+                            className: confirmInit ? 'cg_btnDanger' : 'cg_btnGhost',
+                            disabled: loading,
+                            title: confirmInit
+                              ? '再点一次即在 ' + (effectivePath || '(默认项目)') + ' 里创建 .codegraph/ 并建立首次索引'
+                              : 'codegraph index / sync 都要求项目先初始化过（干净目录会报 “CodeGraph not initialized”）。这个按钮在该目录跑一次 `codegraph init`。',
+                            onClick: runInit,
+                            children: confirmInit ? '确认初始化？' : '初始化索引',
+                          })
+                          : null,
+                        jsx('button', {
+                          type: 'button',
+                          className: 'cg_btnGhost',
+                          disabled: loading,
+                          onClick: loadStatus,
+                          children: '刷新状态',
+                        }),
+                        jsx('button', {
+                          type: 'button',
+                          className: 'cg_btnGhost',
+                          disabled: settingDefault,
+                          title: '重跑一次 `<command> --version`：CLI 是后装的、或 command 改成了绝对路径时，无需重启宿主即可恢复',
+                          onClick: reprobe,
+                          children: '重新探测',
+                        }),
+                        jsx('button', {
+                          type: 'button',
+                          className: 'cg_btnGhost',
+                          disabled: loading,
+                          onClick: () => runAction('sync'),
+                          children: 'Sync',
+                        }),
+                        jsx('button', {
+                          type: 'button',
+                          className: 'cg_btnGhost',
+                          disabled: loading,
+                          onClick: () => runAction('index'),
+                          children: '重建索引',
+                        }),
+                      ],
                     }),
                   ],
                 }),
@@ -585,6 +711,7 @@ window.__ModuleLoader__.load({
                 }),
                 error ? jsx('p', { className: 'cg_error', children: error }) : null,
                 cliWarning ? jsx('p', { className: 'cg_warn', children: cliWarning }) : null,
+                cliProbeDetail ? jsx('p', { className: 'cg_probeDetail', children: cliProbeDetail }) : null,
                 defaultWarning ? jsx('p', { className: 'cg_warn', children: defaultWarning }) : null,
                 ok ? jsx('p', { className: 'cg_ok', children: ok }) : null,
                 status
@@ -593,7 +720,7 @@ window.__ModuleLoader__.load({
                       children: [
                         jsx('div', { className: 'cg_grid', children: statusCells(status) }),
                         status.initialized === false
-                          ? jsx('p', { className: 'cg_mcpMeta', children: '该目录还没有索引：在项目根运行 `codegraph init` 之后回到本卡片刷新（插件不会替你初始化）。' })
+                          ? jsx('p', { className: 'cg_mcpMeta', children: '该目录还没有索引：点上方「初始化索引」即可在本目录跑一次 `codegraph init`（只创建 .codegraph/，源文件不动；可用 `codegraph uninit` 撤销）。' })
                           : null,
                         statusRawText !== ''
                           ? jsxs('details', {

@@ -16,7 +16,7 @@
  * 顺带覆盖 runCodegraph 的 cmd.exe 分支——此前整个文件在 Windows 上跳过，
  * 而 Windows 恰好是这条链路唯一出过 ENOENT 的平台。
  */
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -28,9 +28,18 @@ const dshHome = join(sandbox, 'dsh-home')
 const project = join(sandbox, 'project')
 const originalDshHome = process.env.DSH_HOME
 
+// init 路由的夹具：一个干净目录（未初始化）、一个已索引目录、一个普通文件（用来撞
+// 「路径不是目录」）。都在 sandbox 下，随 afterAll 一起回收。
+const emptyDir = join(sandbox, 'empty-project')
+const indexedDir = join(sandbox, 'already-indexed')
+const someFile = join(sandbox, 'a-file.txt')
+
 beforeAll(() => {
   mkdirSync(dshHome, { recursive: true })
   mkdirSync(project, { recursive: true })
+  mkdirSync(emptyDir, { recursive: true })
+  mkdirSync(indexedDir, { recursive: true })
+  writeFileSync(someFile, 'not a directory\n')
   process.env.DSH_HOME = dshHome
 })
 
@@ -80,7 +89,47 @@ function writeStubCli(name: string, body: string): string {
   return file
 }
 
+/**
+ * 把 stub CLI 写到**指定的**路径（不按名字推导，也不进按名缓存）。
+ *
+ * 用于「CLI 在插件挂载之后才出现」的用例：那个路径必须先不存在、之后才被创建，
+ * 所以不能走 `stubCli` 的按名缓存。平台差异与 `writeStubCli` 保持一致。
+ */
+function writeStubCliAt(file: string, body: string): void {
+  if (!POSIX) {
+    // Windows：`.cmd` shim 与 npm / pnpm 全局 bin 同形（node + %*）
+    const base = file.replace(/\.cmd$/i, '')
+    writeFileSync(`${base}.js`, `${body}\n`)
+    writeFileSync(file, `@echo off\r\nnode "%~dp0${base.split(/[\\/]/).pop()}.js" %*\r\n`)
+    return
+  }
+  writeFileSync(file, `#!/usr/bin/env node\n${body}\n`)
+  chmodSync(file, 0o755)
+}
+
 const echoCli = () => stubCli('echo-cli', 'console.log(JSON.stringify(process.argv.slice(2)))')
+/**
+ * 冒充 `codegraph init`：真的把 `<target>/.codegraph/codegraph.db` 建出来。
+ *
+ * 需要它是因为「init 之后 MCP 托管行该出现」这条断言依赖 indexState 真的翻转，而 indexState
+ * 判定的是 `.codegraph/` 里有没有索引库——光回显 argv 的 stub 翻不过去。
+ *
+ * 两种模块形态各来一份：POSIX 上 stub 是 `.mjs`（ESM，没有 `require`），Windows 上是不带
+ * `type: module` 的 `.js`（CJS，没有顶层 `import`）。这是 `writeStubCli` 的平台差异决定的。
+ */
+const INIT_STUB_BODY = [
+  'const args = process.argv.slice(2)',
+  "if (args[0] === 'init') {",
+  '  const target = args[args.length - 1]',
+  "  fs.mkdirSync(path.join(target, '.codegraph'), { recursive: true })",
+  "  fs.writeFileSync(path.join(target, '.codegraph', 'codegraph.db'), '')",
+  '}',
+  'console.log(JSON.stringify(args))',
+]
+const initCli = () =>
+  stubCli('init-cli', POSIX
+    ? ["import fs from 'node:fs'", "import path from 'node:path'", ...INIT_STUB_BODY].join('\n')
+    : ["const fs = require('node:fs')", "const path = require('node:path')", ...INIT_STUB_BODY].join('\n'))
 const sleepCli = () => stubCli('sleep-cli', 'setTimeout(() => {}, 3_000)')
 
 interface CapturedRoute {
@@ -191,6 +240,75 @@ describe('宿主路由（stub CLI）', () => {
     const routes = mountRoutes(echoCli())
     const capture = await call(routes, '/api/dsh-codegraph/sync', { method: 'POST', body: { path: project } })
     expect(String(capture.body?.output)).toContain(JSON.stringify(['sync', '--', project]))
+  })
+
+  it('init：只走 `init -- <path>`，既不带 -y 也不带 -f', async () => {
+    // `-y` 是 CLI **1.6.0 才有的**旗标，1.5.0 上会 `error: unknown option '-y'` ——
+    // 无条件带上它，等于把 init 按钮在旧版 CLI 上做废（本机 Mac 装的正是 1.5.0）。
+    // 不带也不会挂起：运行器没有 TTY，两版实测都会自己取默认值跑完。
+    // `-f` 不能加：它绕开 CLI 对「家目录 / 文件系统根」的误伤保护，那是用户自己的事。
+    const routes = mountRoutes(echoCli())
+    const capture = await call(routes, '/api/dsh-codegraph/init', { method: 'POST', body: { path: emptyDir } })
+    expect(capture.status).toBe(200)
+    expect(String(capture.body?.output)).toContain(JSON.stringify(['init', '--', emptyDir]))
+    const argv = String(capture.body?.output)
+    expect(argv).not.toContain('-y')
+    expect(argv).not.toContain('--force')
+  })
+
+  it('init：已初始化过的目录不重复 init（409），提示改用重建索引', async () => {
+    mkdirSync(join(indexedDir, '.codegraph'), { recursive: true })
+    writeFileSync(join(indexedDir, '.codegraph', 'codegraph.db'), '')
+    const routes = mountRoutes(echoCli())
+    const capture = await call(routes, '/api/dsh-codegraph/init', { method: 'POST', body: { path: indexedDir } })
+    expect(capture.status).toBe(409)
+    expect(String(capture.body?.error)).toContain('重建索引')
+  })
+
+  it('init：路径不存在/不是目录时 400，不把字符串直接丢给 CLI', async () => {
+    // 这是本插件唯一往用户项目里写东西的入口，不能凭一个字符串就开工
+    const routes = mountRoutes(echoCli())
+    const missing = await call(routes, '/api/dsh-codegraph/init', { method: 'POST', body: { path: join(sandbox, 'no-such-dir') } })
+    expect(missing.status).toBe(400)
+    expect(String(missing.body?.error)).toContain('路径不存在')
+
+    const notDir = await call(routes, '/api/dsh-codegraph/init', { method: 'POST', body: { path: someFile } })
+    expect(notDir.status).toBe(400)
+    expect(String(notDir.body?.error)).toContain('路径不是目录')
+  })
+
+  it('init：只认 POST + 回环来源', async () => {
+    const routes = mountRoutes(echoCli())
+    expect((await call(routes, '/api/dsh-codegraph/init')).status).toBe(405)
+    expect((await call(routes, '/api/dsh-codegraph/init', { method: 'POST', remoteAddress: '10.0.0.9' })).status).toBe(403)
+  })
+
+  it('init 成功后重算 MCP 托管行：新项目从「未托管」变成「已托管」', async () => {
+    // 这是最容易漏掉的那一半：托管行决策读的是 indexState，未索引的目录**不写行**。
+    // 如果 init 路由不主动重算，用户初始化完仍然看不到 codegraph MCP 行，得再去动一次
+    // 设置才生效——缺口只补了一半。这里用一个「真的会建 .codegraph/codegraph.db」的
+    // stub 冒充 CLI，把这条链路整个跑一遍。
+    const target = join(sandbox, 'fresh-project')
+    mkdirSync(target, { recursive: true })
+    const patchFile = join(dshHome, 'cordis.patch.yml')
+    try {
+      rmSync(patchFile, { force: true })
+    } catch {
+      /* 不存在就算了 */
+    }
+
+    const mount = mountFull(initCli(), { defaultPath: target })
+    // 挂载时目录还没索引 → 托管行不该出现
+    expect(existsSync(patchFile) ? readFileSync(patchFile, 'utf8') : '').not.toContain('serverName: codegraph')
+
+    const capture = await call(mount.routes, '/api/dsh-codegraph/init', { method: 'POST', body: { path: target } })
+    expect(capture.status).toBe(200)
+    expect(capture.body?.indexed).toBe(true)
+
+    // 重算之后托管行应当落盘（stub 已把 .codegraph/codegraph.db 建出来）
+    const written = readFileSync(patchFile, 'utf8')
+    expect(written).toContain('serverName: codegraph')
+    expect(written).toContain('serve')
   })
 
   it('查询类超时：报错点名 cliTimeoutMs', async () => {
@@ -379,6 +497,67 @@ describe('systemPrompt 注入门禁（CLI 探测 + settings 开关）', () => {
     const withCommand = await call(mount.routes, '/api/dsh-codegraph/default-path')
     expect(withCommand.body?.command).toBe(missingCli())
     expect(mount.sections.size).toBe(0)
+  })
+
+  it('探测失败带出实测原因：命令不存在时是 ENOENT，不是泛泛一句「探测不到」', async () => {
+    // 缺陷报告 D3：probeCli 原先把 error 直接丢掉，于是卡片只能猜原因，
+    // 用户与作者都分不清「没装 / 装错 / 超时」。
+    const mount = mountFull(missingCli())
+    await waitFor(async () => (await call(mount.routes, '/api/dsh-codegraph/default-path')).body?.cliAvailable === false)
+    const capture = await call(mount.routes, '/api/dsh-codegraph/default-path')
+    const detail = String(capture.body?.cliProbeError ?? '')
+    expect(detail).not.toBe('')
+    expect(detail).toContain('ENOENT')
+    // 实测时刻要带出去：卡片据此显示「上次探测」，也让「重新探测」有可见反馈
+    expect(typeof capture.body?.cliProbeAt).toBe('number')
+  })
+
+  it('非零退出的失败原因与 ENOENT 可区分（不是同一句文案）', async () => {
+    const failing = stubCli('exit-cli', 'console.error("boom: not a codegraph CLI"); process.exit(3)')
+    const mount = mountFull(failing)
+    await waitFor(async () => (await call(mount.routes, '/api/dsh-codegraph/default-path')).body?.cliAvailable === false)
+    const capture = await call(mount.routes, '/api/dsh-codegraph/default-path')
+    const detail = String(capture.body?.cliProbeError ?? '')
+    expect(detail).toContain('boom: not a codegraph CLI')
+    expect(detail).not.toContain('ENOENT')
+  })
+
+  it('重新探测：CLI 在挂载之后才出现时，无需重启宿主即可恢复（报告 D1 的复现步骤）', async () => {
+    // 缺陷报告 D1 的确定性复现：挂载时 command 指向一个还不存在的绝对路径，
+    // 之后把 CLI 补上——原实现里 cliAvailable 是挂载时锁存的布尔，任何刷新都读同一个
+    // 缓存，用户会陷在「按提示刷新 → 永远不恢复」里。POST /reprobe 是那个出口。
+    const late = join(sandbox, POSIX ? 'late-cli.mjs' : 'late-cli.cmd')
+    const mount = mountFull(late)
+    await waitFor(async () => (await call(mount.routes, '/api/dsh-codegraph/default-path')).body?.cliAvailable === false)
+    expect(mount.sections.size).toBe(0)
+
+    // 只把 CLI 文件补上：不动补丁、不重启宿主
+    writeStubCliAt(late, 'console.log("9.9.9")')
+
+    const reprobed = await call(mount.routes, '/api/dsh-codegraph/reprobe', { method: 'POST' })
+    expect(reprobed.status).toBe(200)
+    expect(reprobed.body?.cliAvailable).toBe(true)
+    expect(reprobed.body?.cliProbeError).toBeUndefined()
+
+    // 探测结果要真的推到 systemPrompt 门禁上，而不是只回给卡片
+    const after = await call(mount.routes, '/api/dsh-codegraph/default-path')
+    expect(after.body?.cliAvailable).toBe(true)
+    await waitFor(() => mount.sections.size === 2)
+    expect([...mount.sections.keys()].sort()).toEqual(['plugin:dsh-codegraph', 'plugin:dsh-codegraph:usage'])
+  })
+
+  it('重新探测：仍然不可用时如实回报，且 GET 不允许触发（有副作用）', async () => {
+    const mount = mountFull(missingCli())
+    await waitFor(async () => (await call(mount.routes, '/api/dsh-codegraph/default-path')).body?.cliAvailable === false)
+    const again = await call(mount.routes, '/api/dsh-codegraph/reprobe', { method: 'POST' })
+    expect(again.body?.cliAvailable).toBe(false)
+    expect(String(again.body?.cliProbeError ?? '')).toContain('ENOENT')
+    // 重探会真的起一个子进程，所以只认 POST
+    const viaGet = await call(mount.routes, '/api/dsh-codegraph/reprobe')
+    expect(viaGet.status).toBe(405)
+    // 非回环来源一律拒绝
+    const remote = await call(mount.routes, '/api/dsh-codegraph/reprobe', { method: 'POST', remoteAddress: '10.0.0.9' })
+    expect(remote.status).toBe(403)
   })
 
   it('安装级开关关闭：对应段落不注入', async () => {
