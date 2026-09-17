@@ -49,6 +49,11 @@
 - `GET /api/dsh-search/query?q=<关键词>` —— 返回 `{ sessions, prompts, tools, panels }`：历史会话、Prompt、MCP 工具与设置面板搜索结果
 - `GET /api/dsh-search/catalog` —— 返回 `{ panels }`：当前可用的设置面板目录（含 `titles` / `keywords` / `description`），供浏览器半体做「打开即有内容」与即时筛选
 
+**新增插件卡片时记得改 `PANEL_DIRECTORY`**（`src/index.ts`）：那份目录是**硬编码**的，
+插件卡片靠 `registryName` 门禁按「settings 命名空间是否已注册」显隐。漏写一行的后果是
+「插件装了、卡片在设置里，但全局搜索搜不到它」—— `docker` 就漏过一次（真机测出来的），
+`packages/search/test/panel-catalog.test.ts` 现在把六个插件卡片的在场性钉住了。
+
 ## 安装
 
 ```bash

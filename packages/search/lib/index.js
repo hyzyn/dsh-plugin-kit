@@ -608,6 +608,17 @@ const PANEL_DIRECTORY = [
         description: '代码图谱索引、符号搜索与调用链分析',
         registryName: 'codegraph',
     },
+    // 补漏（真机测出来的）：目录里六个插件卡片都有 registryName 门禁，唯独漏了 docker，
+    // 于是「全局搜索」里搜 Docker 找不到那张卡片 —— 而插件确实装了（settings 命名空间
+    // 'docker' 已在册）。它和下面这些是同一类卡片，不该漏。
+    {
+        id: 'docker',
+        kind: 'card',
+        titles: ['Docker 容器面板', 'Docker Containers'],
+        keywords: ['docker', 'podman', '容器', 'container', '镜像', 'image', '网络', 'network', '卷', 'volume', 'compose', '日志'],
+        description: '容器 / 镜像 / 网络 / 卷的查看与变更，以及 SSH 远程 docker 目标',
+        registryName: 'docker',
+    },
 ];
 function getLoadedRegistryNames(ctx) {
     const names = new Set();
