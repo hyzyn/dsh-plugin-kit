@@ -138,26 +138,30 @@ export declare function syncArgs(cwd: string): string[];
  * 处理）；顶层 help 把它藏起来了，但 `codegraph index --help` 里在。
  */
 export declare function indexArgs(cwd: string, force: boolean): string[];
-/** 命令名按 cmd.exe 规则转义（空格也是元字符，所以带空格的路径由 `^ ` 保护）。 */
-export declare function escapeCommand(command: string): string;
 /**
- * 单个参数按 cmd.exe 规则转义成 `"..."`。算法同 cross-spawn，依据
- * <https://qntm.org/cmd>：先按 Windows argv 规则双写「紧邻双引号的反斜杠」
- * 与「结尾反斜杠」，再整体加引号，最后把包括这对引号在内的元字符逐个 `^`。
- * 两层的次序不能换：`^` 由 cmd.exe 吃掉，引号留给子进程的 argv 解析。
- */
-export declare function escapeArgument(value: string): string;
-/** 把一个 argv 拼成 `cmd.exe /d /s /c` 能直接执行的一整条命令行。 */
-export declare function windowsCommandLine(command: string, args: string[]): string;
-/**
- * Windows 上连子孙进程一起收：`taskkill /T` 杀掉以该 pid 为根的整棵树。
+ * `codegraph init` 参数——在项目里建 `.codegraph/` 并建好首次索引。
  *
- * 为什么不能只 `child.kill()`：shim 分支的直接子进程是 cmd.exe，真正的 CLI 是它的
- * 孙进程；`execFile` 的 `timeout` 与 `child.kill()` 都只作用于直接子进程，大仓库的
- * `index` 会继续跑完（十几分钟起），卡片却已经报超时。POSIX 分支不需要这个：直接
- * 子进程就是 CLI，杀掉即可（它自己的 daemon 是设计上要长活的，不在此列）。
+ * **刻意不带 `-y`**：那个「Non-interactive: skip every prompt」旗标是 CLI **1.6.0 才有**的，
+ * 1.5.0（README 的实测基线，也是不少用户装着的版本）会直接
+ * `error: unknown option '-y'` ——无条件带上它，等于把 init 按钮在旧版 CLI 上做废。
+ *
+ * 而不带它**也不会挂起**：我们的运行器永远是管道、没有 TTY，两个版本实测都自己取默认值跑完：
+ *   - 1.5.0（macOS，`codegraph init -- <tmp>`）→ `Done`，建出 `.codegraph/{codegraph.db,.gitignore}`；
+ *   - 1.6.0（Windows，`init -- <tmp>`，stdin 开着但不喂任何东西）→ `exited-ok`，同样建好索引。
+ * 万一将来某版在无 TTY 下也坚持提问，失败形状是**超时并点名 `indexTimeoutMs`**——看得见，
+ * 不会静默卡死。
+ *
+ * **也不带 `-f`**：CLI 用它兜住「家目录 / 文件系统根」这类误伤，插件不该替用户绕过——
+ * 真要强制是用户自己在终端里的事。
+ *
+ * 与 `index` 的关系（真机实测，别被 help 文案误导）：`index --help` 写着「same result as a
+ * fresh init」，但那说的是「全量重建的结果等同于刚 init 完」，**不是**「index 会替你初始化」：
+ * 对没有 `.codegraph/` 的目录，`codegraph index` 直接报
+ * `CodeGraph not initialized in <path>` + `Run "codegraph init" first`。所以「建立索引」在
+ * 未初始化项目上必须走 init，这也是本插件此前唯一还得让用户回终端的一步。
  */
-export declare function taskkillArgs(pid: number): string[];
+export declare function initArgs(cwd: string): string[];
+export { escapeArgument, escapeCommand, taskkillArgs, windowsCommandLine } from '@hyzyn/dsh-kit';
 /** 一次调用的结局：成功带 stdout，失败带错误。 */
 export type CliRunOutcome = {
     ok: true;
@@ -183,4 +187,30 @@ export declare function settleCliRun(input: {
     stdout: string;
     stderr: string;
 }): CliRunOutcome;
+/** CLI 探测结果：只判真假的实现会丢掉 ENOENT / 非零退出 / 超时的区别，卡片只能猜原因。 */
+export interface CliProbeResult {
+    ok: boolean;
+    /** 失败原因原文（已截断）；ok 时为 undefined。 */
+    error?: string;
+    /** 本次探测的时刻（epoch ms）：卡片据此显示「上次探测」，也让「重新探测」有可见反馈。 */
+    at: number;
+}
+/**
+ * 路由侧对探测状态的访问口。
+ *
+ * 为什么是「可重跑的探测」而不是一个 `() => boolean`：探测结果原先在插件挂载时锁存，
+ * 于是卡片上「刷新本卡片重试」这句指引**在服务端不可能生效**——刷新只是再读一次同一个
+ * 缓存，用户会一直刷到怀疑人生。显式给一个 reprobe 入口，语义比在 GET 里偷偷重探清楚
+ * （GET 不该有副作用：重探会顺带增删 systemPrompt section）。
+ */
+export interface CliProbeAccess {
+    /** 当前结果：available 为 undefined 表示还没探测完（JSON 里会整个字段消失）。 */
+    get(): {
+        available: boolean | undefined;
+        error: string | undefined;
+        at: number | undefined;
+    };
+    /** 立刻重跑一次探测，并把结果同步给 systemPrompt 门禁。 */
+    reprobe(): Promise<CliProbeResult>;
+}
 export declare const name: string, inject: string[] | undefined, apply: (ctx: Context, config?: Config | undefined) => void;

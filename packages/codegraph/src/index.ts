@@ -17,16 +17,21 @@
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import {
+  createOutputDecoder,
+  decodeOutput,
   definePlugin,
   dshHome,
   isLoopbackRequest,
   jsYamlSchema,
+  killProcessTree,
+  portableSpawnPlan,
   readJsonBody,
+  spawnPortable,
   writeFileAtomic,
   writeJson,
 } from '@hyzyn/dsh-kit'
 import type { ReqLike, ResLike } from '@hyzyn/dsh-kit'
-import { execFile, spawn } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import yaml from 'js-yaml'
@@ -611,72 +616,47 @@ export function indexArgs(cwd: string, force: boolean): string[] {
   return force ? ['index', '--force', '--', cwd] : ['index', '--', cwd]
 }
 
+/**
+ * `codegraph init` 参数——在项目里建 `.codegraph/` 并建好首次索引。
+ *
+ * **刻意不带 `-y`**：那个「Non-interactive: skip every prompt」旗标是 CLI **1.6.0 才有**的，
+ * 1.5.0（README 的实测基线，也是不少用户装着的版本）会直接
+ * `error: unknown option '-y'` ——无条件带上它，等于把 init 按钮在旧版 CLI 上做废。
+ *
+ * 而不带它**也不会挂起**：我们的运行器永远是管道、没有 TTY，两个版本实测都自己取默认值跑完：
+ *   - 1.5.0（macOS，`codegraph init -- <tmp>`）→ `Done`，建出 `.codegraph/{codegraph.db,.gitignore}`；
+ *   - 1.6.0（Windows，`init -- <tmp>`，stdin 开着但不喂任何东西）→ `exited-ok`，同样建好索引。
+ * 万一将来某版在无 TTY 下也坚持提问，失败形状是**超时并点名 `indexTimeoutMs`**——看得见，
+ * 不会静默卡死。
+ *
+ * **也不带 `-f`**：CLI 用它兜住「家目录 / 文件系统根」这类误伤，插件不该替用户绕过——
+ * 真要强制是用户自己在终端里的事。
+ *
+ * 与 `index` 的关系（真机实测，别被 help 文案误导）：`index --help` 写着「same result as a
+ * fresh init」，但那说的是「全量重建的结果等同于刚 init 完」，**不是**「index 会替你初始化」：
+ * 对没有 `.codegraph/` 的目录，`codegraph index` 直接报
+ * `CodeGraph not initialized in <path>` + `Run "codegraph init" first`。所以「建立索引」在
+ * 未初始化项目上必须走 init，这也是本插件此前唯一还得让用户回终端的一步。
+ */
+export function initArgs(cwd: string): string[] {
+  return ['init', '--', cwd]
+}
+
 /* ------------------------------------------------------------------ *
  * Windows 上的 CLI 调用
  *
- * npm / pnpm 全局安装的 CLI 在 Windows 上只有 `.cmd` / `.ps1` / 无扩展名的
- * shim，没有真正的 `.exe`（codegraph 就是如此）。而 `execFile` 默认
- * `shell: false`，走的是 CreateProcess 式的可执行文件查找：既不匹配 `.cmd`，
- * Node 又因 CVE-2024-27980 加固拒绝在无 shell 时执行 `.cmd`——于是 Windows 上
- * 每一次调用都固定失败成 `spawn codegraph ENOENT`，卡片整块不可用。
+ * npm / pnpm / 独立安装器给的 CLI 在 Windows 上往往只有 `.cmd` shim，没有真正的
+ * `.exe`（codegraph 就是如此）。`execFile` 默认 `shell: false` 时既不匹配 `.cmd`，
+ * Node 又因 CVE-2024-27980 加固拒绝执行它——于是 Windows 上每一次调用都固定失败成
+ * `spawn codegraph ENOENT`，卡片整块不可用。
  *
- * 解法是把命令行交给 `%COMSPEC% /d /s /c`，由 cmd.exe 按 PATHEXT 解析出 shim。
- * 这正是 cross-spawn（MCP 官方 SDK 的 stdio transport 用的就是它）在 Windows
- * 的做法；这里不引依赖，只搬运那条转义规则。因为 cmd.exe 会重新解析整条命令行，
- * 所以 argv 必须自己转义——否则符号名里的 `&` / `|` / `%` 会被当成命令分隔符，
- * 变成命令注入（`?name=` 是外部可控输入）。
+ * 转义规则与 `%COMSPEC% /d /s /c` 的启动方式已经搬到 `@hyzyn/dsh-kit` 的
+ * windows-shim：`@hyzyn/dsh-mcp` 的「连接测试」踩的是同一个坑（裸 spawn 拉 `.cmd`
+ * 报 EINVAL），两份实现放一起才不会漂移。这里保留四个同名导出，别让既有消费者
+ * （含本包的 Windows 回归测试）因为搬家而断掉。
  * ------------------------------------------------------------------ */
 
-/** Windows 上判定「无需 shell」的可执行后缀。 */
-const WINDOWS_EXECUTABLE_REGEXP = /\.(?:exe|com)$/i
-
-/** cmd.exe 元字符：交给 shell 前逐个 `^` 转义。 */
-const CMD_META_CHARS_REGEXP = /([()\][%!^"`<>&|;, *?])/g
-
-/** 命令名按 cmd.exe 规则转义（空格也是元字符，所以带空格的路径由 `^ ` 保护）。 */
-export function escapeCommand(command: string): string {
-  return command.replace(CMD_META_CHARS_REGEXP, '^$1')
-}
-
-/**
- * 单个参数按 cmd.exe 规则转义成 `"..."`。算法同 cross-spawn，依据
- * <https://qntm.org/cmd>：先按 Windows argv 规则双写「紧邻双引号的反斜杠」
- * 与「结尾反斜杠」，再整体加引号，最后把包括这对引号在内的元字符逐个 `^`。
- * 两层的次序不能换：`^` 由 cmd.exe 吃掉，引号留给子进程的 argv 解析。
- */
-export function escapeArgument(value: string): string {
-  let arg = value
-  arg = arg.replace(/(?=(\\+?)?)\1"/g, '$1$1\\"')
-  arg = arg.replace(/(?=(\\+?)?)\1$/, '$1$1')
-  arg = `"${arg}"`
-  return arg.replace(CMD_META_CHARS_REGEXP, '^$1')
-}
-
-/** 把一个 argv 拼成 `cmd.exe /d /s /c` 能直接执行的一整条命令行。 */
-export function windowsCommandLine(command: string, args: string[]): string {
-  return [escapeCommand(command), ...args.map(escapeArgument)].join(' ')
-}
-
-/**
- * Windows 上连子孙进程一起收：`taskkill /T` 杀掉以该 pid 为根的整棵树。
- *
- * 为什么不能只 `child.kill()`：shim 分支的直接子进程是 cmd.exe，真正的 CLI 是它的
- * 孙进程；`execFile` 的 `timeout` 与 `child.kill()` 都只作用于直接子进程，大仓库的
- * `index` 会继续跑完（十几分钟起），卡片却已经报超时。POSIX 分支不需要这个：直接
- * 子进程就是 CLI，杀掉即可（它自己的 daemon 是设计上要长活的，不在此列）。
- */
-export function taskkillArgs(pid: number): string[] {
-  return ['/pid', String(pid), '/T', '/F']
-}
-
-async function killProcessTree(pid: number | undefined): Promise<void> {
-  if (process.platform !== 'win32' || pid === undefined) return
-  try {
-    await execFileAsync('taskkill', taskkillArgs(pid), { windowsHide: true })
-  } catch {
-    /* 进程已经退出、或 taskkill 不可用：忽略，超时错误照常抛出 */
-  }
-}
+export { escapeArgument, escapeCommand, taskkillArgs, windowsCommandLine } from '@hyzyn/dsh-kit'
 
 /** 一次 CLI 调用的超时错误：形状与 execFile 一致，让 `cliErrorMessage` 认出来。 */
 function timeoutError(command: string, timeoutMs: number): Error {
@@ -717,16 +697,21 @@ export function settleCliRun(input: {
  */
 function runViaWindowsShim(command: string, args: string[], cwd: string, timeoutMs: number): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', `"${windowsCommandLine(command, args)}"`], {
-      cwd,
-      // 命令行已经自己转义好了，让 Node 原样交给 CreateProcess，别再包一层引号。
-      windowsVerbatimArguments: true,
-      windowsHide: true,
-    })
+    // 经 kit 的 spawnPortable：它按 portableSpawnPlan 决定要不要套 cmd.exe，转义也在那里。
+    const child = spawnPortable(command, args, { cwd, windowsHide: true })
     let stdout = ''
     let stderr = ''
     let settled = false
     let timedOut = false
+    // cmd.exe 自己的报错（`'codegraph' 不是内部或外部命令…`）按**控制台代码页**写管道，
+    // 中文系统是 CP936；直接 `chunk.toString()` 会把它解成 `���`，卡片上的报错就没法看了。
+    // 两条流各持一个解码器：CLI 的 stdout 是 UTF-8、cmd.exe 的 stderr 是 OEM，互不影响。
+    const stdoutDecoder = createOutputDecoder()
+    const stderrDecoder = createOutputDecoder()
+    const drainDecoders = (): void => {
+      stdout += stdoutDecoder.flush()
+      stderr += stderrDecoder.flush()
+    }
     const finish = (outcome: CliRunOutcome) => {
       if (settled) return
       settled = true
@@ -734,8 +719,10 @@ function runViaWindowsShim(command: string, args: string[], cwd: string, timeout
       if (outcome.ok) resolve(outcome.stdout)
       else reject(outcome.error)
     }
-    const settle = (code: number | null) =>
-      settleCliRun({ command, args, timeoutMs, timedOut, code, stdout, stderr })
+    const settle = (code: number | null) => {
+      drainDecoders()
+      return settleCliRun({ command, args, timeoutMs, timedOut, code, stdout, stderr })
+    }
     const timer = setTimeout(() => {
       // 先置标志、再连进程树一起收：被杀的子进程会先触发 close，标志不到位就会被
       // close 分支抢先结案，超时形状丢失
@@ -750,11 +737,11 @@ function runViaWindowsShim(command: string, args: string[], cwd: string, timeout
           finish({ ok: false, error: new Error(`stdout maxBuffer exceeded (${MAX_BUFFER} bytes)`) }))
         return
       }
-      stdout += chunk.toString()
+      stdout += stdoutDecoder.decode(chunk)
     })
     child.stderr?.on('data', (chunk: Buffer) => {
       if (settled) return
-      if (stderr.length < MAX_BUFFER) stderr += chunk.toString()
+      if (stderr.length < MAX_BUFFER) stderr += stderrDecoder.decode(chunk)
     })
     child.on('error', (error) => finish({ ok: false, error }))
     child.on('close', (code) => finish(settle(code)))
@@ -770,10 +757,69 @@ function runViaWindowsShim(command: string, args: string[], cwd: string, timeout
  * 所以 `cliErrorMessage` 的超时判定（killed / signal）对两者一致。
  */
 async function runCodegraph(command: string, args: string[], cwd: string, timeoutMs: number): Promise<string> {
-  const viaWindowsShim = process.platform === 'win32' && !WINDOWS_EXECUTABLE_REGEXP.test(command)
-  if (viaWindowsShim) return runViaWindowsShim(command, args, cwd, timeoutMs)
-  const { stdout } = await execFileAsync(command, args, { cwd, maxBuffer: MAX_BUFFER, timeout: timeoutMs })
-  return stdout
+  // 分支判定复用 kit 的 portableSpawnPlan（纯函数），别在这里再抄一份正则：
+  // 「要不要套 cmd.exe」只该有一个答案。
+  if (portableSpawnPlan(command, args).windowsVerbatimArguments === true) {
+    return runViaWindowsShim(command, args, cwd, timeoutMs)
+  }
+  // `encoding: 'buffer'` 而不是让 execFile 自己按 UTF-8 解：原生 `.exe` 在中文 Windows 上
+  // 同样可能按代码页写 stderr，交给同一个容错解码器才一致（否则这条分支的报错仍是乱码）。
+  try {
+    const { stdout } = await execFileAsync(command, args, {
+      cwd,
+      maxBuffer: MAX_BUFFER,
+      timeout: timeoutMs,
+      encoding: 'buffer',
+    })
+    return decodeOutput(stdout as unknown as Buffer)
+  } catch (error) {
+    throw repairExecFileError(error, command, args)
+  }
+}
+
+/**
+ * 修掉 execFile 自己拼出来的错误文本。
+ *
+ * `encoding: 'buffer'` 之后 `error.stderr` 是 Buffer，但 Node 仍然用模板字符串把它拼进
+ * `Command failed: …`——那一步走的是 `Buffer#toString()`，即 UTF-8。于是**同一个乱码问题
+ * 只是换了个地方**：容错解码器解对了 stdout，报错文本却仍是乱码。这里按 settleCliRun
+ * 的形状重拼 message（两条分支的失败形状保持一致），并保留原 error 对象，
+ * 免得丢掉 `killed` / `signal`——`cliErrorMessage` 的超时判定读的就是它们。
+ */
+function repairExecFileError(error: unknown, command: string, args: string[]): unknown {
+  const failure = error as { stderr?: unknown; message?: unknown }
+  if (Buffer.isBuffer(failure?.stderr) && failure.stderr.length > 0) {
+    const text = decodeOutput(failure.stderr)
+    failure.message = `Command failed: ${command} ${args.join(' ')}\n${text}`
+  }
+  return error
+}
+
+/** CLI 探测结果：只判真假的实现会丢掉 ENOENT / 非零退出 / 超时的区别，卡片只能猜原因。 */
+export interface CliProbeResult {
+  ok: boolean
+  /** 失败原因原文（已截断）；ok 时为 undefined。 */
+  error?: string
+  /** 本次探测的时刻（epoch ms）：卡片据此显示「上次探测」，也让「重新探测」有可见反馈。 */
+  at: number
+}
+
+/** 探测失败原因保留多长：够放下一整条 cmd.exe 报错，又不至于让路由响应无限大。 */
+const CLI_PROBE_ERROR_MAX = 600
+
+/**
+ * 路由侧对探测状态的访问口。
+ *
+ * 为什么是「可重跑的探测」而不是一个 `() => boolean`：探测结果原先在插件挂载时锁存，
+ * 于是卡片上「刷新本卡片重试」这句指引**在服务端不可能生效**——刷新只是再读一次同一个
+ * 缓存，用户会一直刷到怀疑人生。显式给一个 reprobe 入口，语义比在 GET 里偷偷重探清楚
+ * （GET 不该有副作用：重探会顺带增删 systemPrompt section）。
+ */
+export interface CliProbeAccess {
+  /** 当前结果：available 为 undefined 表示还没探测完（JSON 里会整个字段消失）。 */
+  get(): { available: boolean | undefined; error: string | undefined; at: number | undefined }
+  /** 立刻重跑一次探测，并把结果同步给 systemPrompt 门禁。 */
+  reprobe(): Promise<CliProbeResult>
 }
 
 /**
@@ -783,13 +829,18 @@ async function runCodegraph(command: string, args: string[], cwd: string, timeou
  * 「本机已安装 Codegraph 插件 / 可以用 codegraph 工具」——那是让模型去撞必然
  * 失败的调用。任何失败（ENOENT / 非零退出 / 超时）都按不可用处理，且不影响
  * 卡片的其它功能（路由会把真实报错显示出来）。
+ *
+ * 但**为什么失败**必须带出去：报告里那次排障之所以要翻注册表、比对进程环境，
+ * 就是因为卡片只说「探测不到」，而 `spawn codegraph ENOENT` 这句话被打进黑洞。
  */
-async function probeCli(command: string): Promise<boolean> {
+async function probeCli(command: string): Promise<CliProbeResult> {
+  const at = Date.now()
   try {
     await runCodegraph(command, ['--version'], process.cwd(), CLI_PROBE_TIMEOUT_MS)
-    return true
-  } catch {
-    return false
+    return { ok: true, at }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return { ok: false, error: message.slice(0, CLI_PROBE_ERROR_MAX), at }
   }
 }
 
@@ -821,11 +872,10 @@ function makeRoutes(
   cli: CliResolved,
   defaultPath: string,
   /**
-   * CLI 探测结果：true / false / undefined（未落地）。闭包读，因为探测是异步的、
-   * 可能晚于路由注册；undefined 序列化时会被 JSON 丢掉，卡片据此区分「还没探测完」
-   * 与「确认不可用」。
+   * CLI 探测状态访问口（见 CliProbeAccess）：闭包读，因为探测是异步的、可能晚于路由
+   * 注册；也可由卡片显式触发重探。
    */
-  isCliAvailable: () => boolean | undefined,
+  cliProbe: CliProbeAccess,
 ): Array<{ kind: 'exact'; path: string; handler: RouteHandler }> {
   const guard = (req: ReqLike, res: ResLike, method: string): boolean => {
     if (!isLoopbackRequest(req)) {
@@ -858,6 +908,20 @@ function makeRoutes(
   /** 索引类命令的失败响应：超时文案指向 indexTimeoutMs。 */
   const failIndex = (res: ResLike, cwd: string, error: unknown): void =>
     writeJson(res, 500, { ok: false, error: cliErrorMessage(error, cli.indexTimeoutMs, 'indexTimeoutMs'), path: cwd })
+
+  /**
+   * 目标必须真是个目录——`init` 会往这里写 `.codegraph/`，不能凭字符串就开工。
+   * 返回 undefined 表示通过；否则是给用户的 400 文案。与 default-path 的 POST 同一套判定。
+   */
+  const directoryError = (target: string): string | undefined => {
+    try {
+      if (!existsSync(target)) return '路径不存在: ' + target
+      if (!statSync(target).isDirectory()) return '路径不是目录: ' + target
+      return undefined
+    } catch (error) {
+      return '路径不可访问: ' + (error instanceof Error ? error.message : String(error))
+    }
+  }
 
   const run = async (
     args: string[],
@@ -1031,6 +1095,38 @@ function makeRoutes(
     },
     {
       kind: 'exact',
+      path: '/api/dsh-codegraph/init',
+      handler: async (req, res) => {
+        // 这是本插件**唯一往用户项目里写东西**的入口（建 `.codegraph/`），所以：
+        // loopback + POST 之外，还要先确认目标真是个目录——不能凭一个字符串就开工。
+        if (!guard(req, res, 'POST')) return
+        const body = await readBody(req)
+        const cwd = (typeof body?.path === 'string' && body.path.trim()) || currentDefaultPath()
+        const invalid = directoryError(cwd)
+        if (invalid !== undefined) {
+          writeJson(res, 400, { error: invalid })
+          return
+        }
+        // 已经初始化过就不重复 init（幂等靠 CLI 也能过，但让它明确走 index 更省事也更准）
+        if (indexState(cwd) === 'indexed') {
+          writeJson(res, 409, { ok: false, error: '该目录已有索引；要重建请用「重建索引」', path: cwd })
+          return
+        }
+        try {
+          const { output } = await run(initArgs(cwd), cwd, cli.indexTimeoutMs)
+          // init 把 indexState 从「未索引」翻成「已索引」，而 MCP 托管行的决策读的正是它
+          // （未索引时不写行）。不在这里重算的话，用户 init 完仍然看不到托管行，
+          // 得再动一次设置才生效——缺口就只补了一半。
+          const runtime = runtimeSyncRef
+          if (runtime !== undefined) runtime.sync(runtime.scope?.get())
+          writeJson(res, 200, { ok: true, path: cwd, output, indexed: true })
+        } catch (error) {
+          failIndex(res, cwd, error)
+        }
+      },
+    },
+    {
+      kind: 'exact',
       path: '/api/dsh-codegraph/default-path',
       handler: async (req, res) => {
         if (!isLoopbackRequest(req)) {
@@ -1059,7 +1155,15 @@ function makeRoutes(
             announceToAgent: current.announce,
             usageGuidance: current.usage,
             /** CLI 探测结果：false 时两段 systemPrompt 都不会注入；undefined = 还没探测完。 */
-            cliAvailable: isCliAvailable(),
+            cliAvailable: cliProbe.get().available,
+            /**
+             * 探测失败的**实测原因**（ENOENT / 非零退出 / 超时原文），卡片直接显示。
+             * 早先这里只有布尔，卡片只好把原因写成猜测（「常见原因是宿主没有继承
+             * shell 的 PATH」），排障只能靠翻注册表。
+             */
+            cliProbeError: cliProbe.get().error,
+            /** 上次探测时刻，卡片显示出来，好让「重新探测」有可见反馈。 */
+            cliProbeAt: cliProbe.get().at,
             /** 实际调用的 CLI 命令（插件配置 command，默认 codegraph）：探测失败时卡片要报出来。 */
             command: cli.command,
             indexed: state === 'indexed',
@@ -1078,17 +1182,9 @@ function makeRoutes(
           writeJson(res, 400, { error: '缺少 path 参数' })
           return
         }
-        try {
-          if (!existsSync(path)) {
-            writeJson(res, 400, { error: '路径不存在: ' + path })
-            return
-          }
-          if (!statSync(path).isDirectory()) {
-            writeJson(res, 400, { error: '路径不是目录: ' + path })
-            return
-          }
-        } catch (error) {
-          writeJson(res, 400, { error: '路径不可访问: ' + (error instanceof Error ? error.message : String(error)) })
+        const invalid = directoryError(path)
+        if (invalid !== undefined) {
+          writeJson(res, 400, { error: invalid })
           return
         }
         const state = indexState(path)
@@ -1215,9 +1311,28 @@ function makeRoutes(
           manageEnabled: outcome.current.manage,
           followSession: outcome.current.follow,
           effectivePath: outcome.effectivePath,
-          cliAvailable: isCliAvailable(),
+          cliAvailable: cliProbe.get().available,
+          cliProbeError: cliProbe.get().error,
+          cliProbeAt: cliProbe.get().at,
           command: cli.command,
           mcp: outcome.status,
+        })
+      },
+    },
+    {
+      kind: 'exact',
+      path: '/api/dsh-codegraph/reprobe',
+      handler: async (req, res) => {
+        // guard 已经把住 loopback + POST；重探会真的起一个子进程（<command> --version），
+        // 所以这里刻意只认 POST，不让 GET 顺带触发副作用。
+        if (!guard(req, res, 'POST')) return
+        const result = await cliProbe.reprobe()
+        writeJson(res, 200, {
+          ok: true,
+          cliAvailable: result.ok,
+          cliProbeError: result.error,
+          cliProbeAt: result.at,
+          command: cli.command,
         })
       },
     },
@@ -1293,7 +1408,17 @@ const plugin = definePlugin<Config>({
     let promptApi: PromptSectionApi | undefined
     let announceDisposer: (() => void) | undefined
     let usageDisposer: (() => void) | undefined
-    let cliAvailable: boolean | undefined
+
+    /**
+     * 探测状态。刻意是**可重跑**的（不是挂载时锁存一个布尔）：CLI 是后来才装好 / 补丁里的
+     * `command` 改成绝对路径之后，用户应当能就地恢复，而不必重启宿主。改的是这里，
+     * 卡片那句「刷新本卡片重试」才第一次真的成立。
+     */
+    const cliProbeState: {
+      available: boolean | undefined
+      error: string | undefined
+      at: number | undefined
+    } = { available: undefined, error: undefined, at: undefined }
 
     /** 按需登记 / 撤销一个 section；wanted 与实际状态一致时不动作。 */
     const setSection = (
@@ -1321,22 +1446,32 @@ const plugin = definePlugin<Config>({
       const usage = resolved?.usage ?? usageDefault
       // 探测未落地（undefined）或已判定不可用时都不注入：宁可晚一轮，也不向模型
       // 宣告一个跑不起来的能力。
-      const ready = cliAvailable === true
+      const ready = cliProbeState.available === true
       announceDisposer = setSection(announceDisposer, ready && announce, (api) =>
         api.section({ name: 'plugin:dsh-codegraph', order: 150, text: CODEGRAPH_GUIDANCE }))
       usageDisposer = setSection(usageDisposer, ready && usage, (api) =>
         api.section({ name: 'plugin:dsh-codegraph:usage', order: 151, text: codegraphUsageGuidance(command) }))
     }
 
-    void probeCli(command).then((available) => {
-      cliAvailable = available
-      if (!available) {
-        console.warn(`[dsh-codegraph] \`${command} --version\` 不可用：跳过 systemPrompt 的能力公告与使用指引（卡片与 MCP 托管不受影响）`)
+    /** 跑一次探测、更新状态、同步两段 section；返回本次结果。 */
+    const runProbe = async (): Promise<CliProbeResult> => {
+      const result = await probeCli(command)
+      cliProbeState.available = result.ok
+      cliProbeState.error = result.error
+      cliProbeState.at = result.at
+      if (!result.ok) {
+        console.warn(`[dsh-codegraph] \`${command} --version\` 不可用：跳过 systemPrompt 的能力公告与使用指引（卡片与 MCP 托管不受影响）—— ${result.error}`)
       }
       refreshGuidance()
-    })
+      return result
+    }
 
-    const routes = makeRoutes(cli, config?.defaultPath?.trim() || process.cwd(), () => cliAvailable)
+    void runProbe()
+
+    const routes = makeRoutes(cli, config?.defaultPath?.trim() || process.cwd(), {
+      get: () => ({ available: cliProbeState.available, error: cliProbeState.error, at: cliProbeState.at }),
+      reprobe: () => runProbe(),
+    })
     ctx.inject(['webServer'], (webCtx: Context) => {
       webCtx.effect(() => {
         const server = (webCtx as unknown as { webServer: { register(route: { kind: string; path: string; handler: RouteHandler }): () => void } }).webServer
