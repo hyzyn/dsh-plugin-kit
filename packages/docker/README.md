@@ -623,7 +623,17 @@ abort）、客户端断开静默中止。各自只差执行器与结束原因：
   `runLocal` / `runLocalStream` 的裸 `spawn`，Windows 上 Node 会拒绝对 `.cmd` 的
   直接执行（`EINVAL`）。docker 官方发行的是 `docker.exe`，日常不受影响；手写
   `.cmd` 包装脚本时请改用 `.exe`，或等待本机通道也切到 kit 的 `spawnPortable`。
-- **podman 兼容靠 `dockerBin`**：填 `podman` 即可跑，但 `stats` 与
+- **Compose 项目视图只认 `com.docker.compose.project`**：`docker stack deploy` 起的
+  swarm 服务带的是 `com.docker.stack.namespace` / `com.docker.swarm.service.name`，
+  于是它们的容器在面板里显示为「未分组」（真机实测：Ubuntu 24.04 + Docker 29.3.1 的
+  三节点 swarm，stack 容器 `composeProject` 全为 `null`）。要支持得另立一套 stack
+  分组语义，不能直接塞进 compose 口径。
+- **`volume prune` 在 Docker 29 只回收匿名未用卷**：命名卷即使在
+  `docker volume ls -f dangling=true` 里，`docker volume prune -f` 也不会删它
+  （真机实测：命名卷留着，回 `Total reclaimed space: 0B`；匿名卷被删并列出名字）。
+  这与本插件「刻意不加 `--all`、避免误删」的取向一致 —— 要删命名卷请用
+  `/volumes/remove`（面板的卷删除）。
+- **podman 兼容靠 `dockerBin`**：填 `podman` 即可跑，但 `stats` 与- **podman 兼容靠 `dockerBin`**：填 `podman` 即可跑，但 `stats` 与
   `--format '{{json .}}'` 的字段和输出格式与 docker 有差异，只能依赖解析器
   的降级路径，未逐项验证。
 - **没有镜像构建 / Compose 编排变更**：镜像支持拉取 / 删除 / 清理 dangling，

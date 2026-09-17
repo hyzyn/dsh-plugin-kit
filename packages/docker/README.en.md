@@ -673,7 +673,16 @@ read-only first:
   bare `spawn` in `runLocal` / `runLocalStream`, and Node refuses to execute `.cmd` directly on Windows
   (`EINVAL`). Docker ships `docker.exe`, so this is not hit in practice; with a hand-written `.cmd` wrapper, use
   an `.exe` instead, or wait for the local channel to move to kit's `spawnPortable` as well.
-- **Podman compatibility through `dockerBin`**: filling in `podman` runs, but the fields and output formats of
+- **The Compose project view only knows `com.docker.compose.project`**: a service deployed with
+  `docker stack deploy` carries `com.docker.stack.namespace` / `com.docker.swarm.service.name` instead, so its
+  containers show up as ungrouped (measured on a real three-node swarm, Ubuntu 24.04 + Docker 29.3.1, where every
+  stack container reported `composeProject: null`). Supporting it needs a separate stack-grouping notion rather
+  than being folded into the compose one.
+- **`volume prune` only reclaims anonymous unused volumes on Docker 29**: a named volume stays even while it
+  appears in `docker volume ls -f dangling=true`, and `docker volume prune -f` reports `Total reclaimed space: 0B`
+  (measured; an anonymous volume, by contrast, is deleted and named in the output). That matches this plugin's
+  deliberate refusal to pass `--all`; use `/volumes/remove` (the panel's volume delete) for named volumes.
+- **Podman compatibility through `dockerBin`**: filling in `podman` runs, but the fields and output formats of- **Podman compatibility through `dockerBin`**: filling in `podman` runs, but the fields and output formats of
   `stats` and `--format '{{json .}}'` differ from docker's, so only the parser's degradation paths are relied on;
   this has not been verified item by item.
 - **No image builds / Compose orchestration changes**: images support pulling / removal / dangling pruning, but there
