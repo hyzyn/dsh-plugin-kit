@@ -10,7 +10,7 @@
  * 浏览器半体（./client）通过 /api/dsh-mcp/* 路由读写配置；路由带
  * loopback-only 信任围栏。
  */
-import { spawn } from 'node:child_process';
+import { createOutputDecoder, spawnPortable, terminateChild } from '@hyzyn/dsh-kit';
 import { chmodSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { createRequire } from 'node:module';
@@ -507,6 +507,19 @@ function probeStdio(config, timeoutMs) {
         let settled = false;
         let buffer = '';
         let stderrTail = '';
+        // stderr 是给人看的诊断信息（Windows 上常来自 cmd.exe，按控制台代码页写），
+        // 硬编码 UTF-8 会让「连接测试失败」的原因变成 `���`——而那是用户唯一的线索。
+        // stdout 不走它：那边是 MCP 的 JSON-RPC 协议，被"容错"成别的编码就解析不了。
+        const stderrDecoder = createOutputDecoder();
+        let stderrFlushed = false;
+        /** 取 stderr 尾巴：先把解码器里残留的不完整字节吐出来，再截断。 */
+        const readStderrTail = () => {
+            if (!stderrFlushed) {
+                stderrFlushed = true;
+                stderrTail = (stderrTail + stderrDecoder.flush()).slice(-2000);
+            }
+            return stderrTail;
+        };
         let retried = false;
         let serverInfo;
         let protocolVersion;
@@ -516,18 +529,20 @@ function probeStdio(config, timeoutMs) {
                 return;
             settled = true;
             clearTimeout(timer);
-            try {
-                child.kill('SIGKILL');
-            }
-            catch {
-                /* 已退出 */
-            }
+            // 经 kit 收进程树：Windows 上直接子进程是 cmd.exe，真正的 MCP 服务器是它的孙进程，
+            // 只 kill 直接子进程会把服务器留成孤儿（连接测试反复点就会攒一堆）。
+            void terminateChild(child).catch(() => { });
             resolve({ ...result, transport: 'stdio', durationMs: Date.now() - startedAt });
         };
         const env = {};
         for (const [key, value] of Object.entries(config.env ?? {}))
             env[key] = evalValue(value);
-        child = spawn(config.command, config.args ?? [], {
+        // 不能裸 spawn：Windows 上 MCP 服务器常是 `.cmd` shim（codegraph 就是），裸 spawn 会
+        // 直接 `spawn … EINVAL`（Node 对 .cmd 的加固），连接测试于是永远失败并误导用户。
+        // 注意与**真正的**工具加载路径的区别：那条走 DSH 核心的
+        // `@deepseek-ai/dsh-mcp-client` → 官方 SDK 的 StdioClientTransport（内部用 cross-spawn），
+        // 本来就不受影响；这里修的只是本插件手写的这次探测。
+        child = spawnPortable(config.command, config.args ?? [], {
             env: { ...process.env, ...env },
             cwd: config.cwd || undefined,
             stdio: ['pipe', 'pipe', 'pipe'],
@@ -587,13 +602,14 @@ function probeStdio(config, timeoutMs) {
                 handleMessages(pulled.messages);
         });
         child.stderr?.on('data', (chunk) => {
-            stderrTail = (stderrTail + chunk.toString('utf8')).slice(-2000);
+            stderrTail = (stderrTail + stderrDecoder.decode(chunk)).slice(-2000);
         });
         child.on('error', (error) => finish({ ok: false, toolsCount: 0, error: '启动失败: ' + error.message }));
         child.on('exit', (code) => {
             if (settled)
                 return;
-            finish({ ok: false, toolsCount: 0, error: '进程提前退出（code ' + String(code) + '）' + (stderrTail ? '；stderr: ' + stderrTail : '') });
+            const tail = readStderrTail();
+            finish({ ok: false, toolsCount: 0, error: '进程提前退出（code ' + String(code) + '）' + (tail ? '；stderr: ' + tail : '') });
         });
         send(initRequest('2025-03-26'));
     });
