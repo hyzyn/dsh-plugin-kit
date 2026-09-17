@@ -42,7 +42,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && node ../../scripts/client-lint.mjs",
+    "lint:client": "node ../../scripts/client-lint.mjs"
   },
   "files": [
     "lib",
