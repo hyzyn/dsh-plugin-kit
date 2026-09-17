@@ -20,9 +20,10 @@
  *   node scripts/verify-client-ui.mjs --mode eval --expr "document.title"
  */
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+import { Chrome } from './chrome-cdp.mjs'
 
 const argv = process.argv.slice(2)
 const flag = (name) => {
@@ -49,151 +50,11 @@ const warn = (name, detail) => {
 }
 
 /* ------------------------------------------------------------------ *
- * 最小 CDP 客户端
- * ------------------------------------------------------------------ */
-
-class Chrome {
-  static async launch({ path, port, userDataDir }) {
-    const child = spawn(
-      path,
-      [
-        '--headless=new',
-        `--remote-debugging-port=${port}`,
-        `--user-data-dir=${userDataDir}`,
-        '--no-first-run',
-        '--no-default-browser-check',
-        '--disable-gpu',
-        '--disable-extensions',
-        '--window-size=1440,900',
-        'about:blank',
-      ],
-      { stdio: ['ignore', 'pipe', 'pipe'] },
-    )
-    let stderr = ''
-    child.stderr?.on('data', (chunk) => (stderr += String(chunk)))
-    // 等 CDP 端点起来
-    const deadline = Date.now() + 20_000
-    let version
-    while (Date.now() < deadline) {
-      try {
-        version = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json()
-        break
-      } catch {
-        await new Promise((resolve) => setTimeout(resolve, 250))
-      }
-    }
-    if (version === undefined) {
-      try {
-        child.kill()
-      } catch {
-        /* 已退 */
-      }
-      throw new Error(`Chrome 的 CDP 端点没起来；stderr=${stderr.slice(0, 400)}`)
-    }
-    return new Chrome(child, port, version)
-  }
-
-  constructor(child, port, version) {
-    this.child = child
-    this.port = port
-    this.version = version
-    this.nextId = 1
-    this.pending = new Map()
-    this.listeners = new Map()
-    this.socket = undefined
-  }
-
-  async attachToPage() {
-    const list = await (await fetch(`http://127.0.0.1:${this.port}/json/list`)).json()
-    const page = list.find((item) => item.type === 'page') ?? list[0]
-    if (page === undefined) throw new Error('没有可附加的 target')
-    await this.connect(page.webSocketDebuggerUrl)
-    return page
-  }
-
-  connect(url) {
-    return new Promise((resolve, reject) => {
-      const socket = new WebSocket(url)
-      this.socket = socket
-      socket.addEventListener('open', () => resolve())
-      socket.addEventListener('error', (event) => reject(new Error(`CDP WS error: ${String(event?.message ?? 'unknown')}`)))
-      socket.addEventListener('message', (event) => {
-        let message
-        try {
-          message = JSON.parse(String(event.data))
-        } catch {
-          return
-        }
-        if (message.id !== undefined) {
-          const pending = this.pending.get(message.id)
-          if (pending === undefined) return
-          this.pending.delete(message.id)
-          if (message.error !== undefined) pending.reject(new Error(JSON.stringify(message.error)))
-          else pending.resolve(message.result)
-          return
-        }
-        for (const listener of this.listeners.get(message.method) ?? []) listener(message.params)
-      })
-    })
-  }
-
-  send(method, params = {}) {
-    const id = this.nextId++
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject })
-      this.socket.send(JSON.stringify({ id, method, params }))
-      setTimeout(() => {
-        if (!this.pending.has(id)) return
-        this.pending.delete(id)
-        reject(new Error(`CDP ${method} 超时`))
-      }, 30_000)
-    })
-  }
-
-  on(method, listener) {
-    const list = this.listeners.get(method) ?? []
-    list.push(listener)
-    this.listeners.set(method, list)
-  }
-
-  async evaluate(expression, { awaitPromise = true } = {}) {
-    const result = await this.send('Runtime.evaluate', { expression, awaitPromise, returnByValue: true })
-    if (result.exceptionDetails !== undefined) {
-      throw new Error(`页面里抛错：${result.exceptionDetails.exception?.description ?? JSON.stringify(result.exceptionDetails)}`)
-    }
-    return result.result?.value
-  }
-
-  async screenshot(file) {
-    const shot = await this.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false })
-    writeFileSync(file, Buffer.from(shot.data, 'base64'))
-    return file
-  }
-
-  close() {
-    try {
-      this.socket?.close()
-    } catch {
-      /* 已关 */
-    }
-    try {
-      this.child.kill()
-    } catch {
-      /* 已退 */
-    }
-  }
-}
-
-/* ------------------------------------------------------------------ *
  * 启动
  * ------------------------------------------------------------------ */
 
-const userDataDir = join(tmpdir(), `dsh-ui-${String(process.pid)}`)
-rmSync(userDataDir, { recursive: true, force: true })
-mkdirSync(userDataDir, { recursive: true })
-
-const chrome = await Chrome.launch({ path: chromePath, port: debugPort, userDataDir })
-console.log(`# Chrome ${String(chrome.version.Browser)} / CDP :${String(debugPort)}`)
+const chrome = await Chrome.launch({ path: chromePath, port: debugPort })
+console.log(`# Chrome ${String(chrome.version.Browser)} / CDP :${String(chrome.port)}`)
 
 const consoleErrors = []
 const exceptions = []
@@ -496,11 +357,5 @@ try {
     console.log(`# 报告：${reportPath}`)
   }
   chrome.close()
-  // Chrome 可能还在收尾写 profile：清理失败不该影响退出码
-  try {
-    rmSync(userDataDir, { recursive: true, force: true, maxRetries: 3 })
-  } catch {
-    /* 临时目录交给系统回收 */
-  }
   process.exit(crashed === undefined && failed.length === 0 ? 0 : 1)
 }
