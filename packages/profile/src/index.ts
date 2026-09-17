@@ -1,12 +1,12 @@
 /**
  * @hyzyn/dsh-profile — DSH Web GUI 的 Profile 管理插件（宿主半体）。
  */
-import { spawnSync } from 'node:child_process'
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
+import { spawnPortable } from '@hyzyn/dsh-kit'
 
 export const name = 'profile-manager'
 export const inject: string[] = []
@@ -209,19 +209,38 @@ function createProfile(name: string, template?: string): void {
   }
 }
 
-function installProfileDependencies(dir: string): void {
-  const result = spawnSync('pnpm', ['install'], { cwd: dir, encoding: 'utf8' })
-  if (result.error !== undefined) {
-    throw new Error('复制后安装依赖失败: ' + result.error.message)
-  }
-  if (result.status !== 0) {
-    const detail = (result.stderr || result.stdout || '').toString().trim()
-    throw new Error('复制后安装依赖失败（pnpm 退出码 ' + String(result.status) + '）' + (detail ? ': ' + detail : ''))
+/**
+ * 在新 profile 目录里跑 `pnpm install`。
+ *
+ * 必须经 kit 的 `spawnPortable`：Windows 上 pnpm 是 `pnpm.CMD`（cmd shim），
+ * 裸 `spawn('pnpm')` 既不查 PATHEXT 解析 `.cmd`，写绝对路径又会因 Node 对
+ * `.cmd` 的加固报 EINVAL——真机实测原来的 `spawnSync('pnpm', …)` 直接
+ * `ENOENT`，于是「复制 Profile」在 Windows 上**一定失败**（与已修的
+ * codegraph / mcp 是同一类缺陷）。
+ */
+async function installProfileDependencies(dir: string): Promise<void> {
+  const outcome = await new Promise<{ code: number | null; error?: string; output: string }>((resolve) => {
+    let child: ReturnType<typeof spawnPortable>
+    try {
+      child = spawnPortable('pnpm', ['install'], { cwd: dir })
+    } catch (error) {
+      resolve({ code: null, error: error instanceof Error ? error.message : String(error), output: '' })
+      return
+    }
+    let output = ''
+    child.stdout?.on('data', (chunk: Buffer) => (output += chunk.toString()))
+    child.stderr?.on('data', (chunk: Buffer) => (output += chunk.toString()))
+    child.on('error', (error: Error) => resolve({ code: null, error: error.message, output }))
+    child.on('close', (code: number | null) => resolve({ code, output }))
+  })
+  if (outcome.error !== undefined) throw new Error('复制后安装依赖失败: ' + outcome.error)
+  if (outcome.code !== 0) {
+    const detail = outcome.output.trim()
+    throw new Error('复制后安装依赖失败（pnpm 退出码 ' + String(outcome.code) + '）' + (detail ? ': ' + detail.slice(-600) : ''))
   }
 }
 
-
-function copyProfile(source: string, target: string): void {
+async function copyProfile(source: string, target: string): Promise<void> {
   const src = profileDir(source)
   const dest = profileDir(target)
   if (!existsSync(join(src, 'package.json'))) {
@@ -253,7 +272,7 @@ function copyProfile(source: string, target: string): void {
       /* 复制后改名失败不阻塞，目录仍可用 */
     }
   }
-  installProfileDependencies(dest)
+  await installProfileDependencies(dest)
 }
 
 function deleteProfile(name: string): void {
@@ -434,8 +453,15 @@ function makeRoutes(): Array<{ kind: 'exact'; path: string; handler: RouteHandle
           return
         }
         try {
-          copyProfile(from, name)
+          await copyProfile(from, name)
         } catch (error) {
+          // 失败不留半成品：复制语义是「要么成功，要么什么都没发生」。
+          // 原先装依赖抛错时目录已经复制完，用户看到失败却多出一个 profile。
+          try {
+            rmSync(profileDir(name), { recursive: true, force: true })
+          } catch {
+            /* 目录可能还没建出来：忽略 */
+          }
           writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) })
           return
         }

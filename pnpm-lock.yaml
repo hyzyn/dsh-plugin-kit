@@ -207,6 +207,9 @@ importers:
       '@deepseek-ai/schemastery':
         specifier: ^3.18.2
         version: 3.18.2
+      '@hyzyn/dsh-kit':
+        specifier: 0.3.0
+        version: link:../kit
       react:
         specifier: ^18.2.0
         version: 18.3.1
