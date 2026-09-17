@@ -35,7 +35,7 @@
  */
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join, basename } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 
 /** shell 集成的 spawn 片段：argv（-c 包装层）与额外 env。 */
 export interface ShellSpawnPlan {
@@ -62,10 +62,14 @@ function writeIfChanged(file: string, content: string): void {
   renameSync(tmp, file)
 }
 
-function dirname(path: string): string {
-  const index = path.lastIndexOf('/')
-  return index > 0 ? path.slice(0, index) : '/'
-}
+/**
+ * ⚠️ 这里曾经是手写的 `dirname`（只按 `'/'` 找最后一段）。Windows 上传进来的本地
+ * 路径是 `C:\…\tty\shell\zsh`，`lastIndexOf('/')` 落到 -1 → 返回 `'/'`，于是桩文件
+ * 被往盘根写（`mkdirSync('/')` 成功、`writeFileSync('/.zshenv…')` 失败），异常被
+ * `ensureZshStubDir` 的 catch 吞掉 → shell 集成**静默降级**成最简包装层。
+ * 真机跑单测时正是这条露出水面：`POSIX 分支回归 > zsh + integration 仍走 ZDOTDIR 桩`
+ * 在 Windows 上拿到的是非集成形态。改用 `node:path` 的 dirname（两个分隔符都认）。
+ */
 
 /** 桩文件目录（稳定路径，zsh/bash 各一份；进程内缓存避免重复 stat）。 */
 const stubDirs = new Map<string, string>()
