@@ -323,6 +323,17 @@ try {
     const verify = await readConfig()
     const leaked = (verify?.sources ?? []).filter((source) => PROBE_URLS.includes(String(source.url)) && !baseline.sources.some((s) => s.url === source.url))
     record('C1 收尾：宿主配置恢复原状（测试源已清掉）', restored.status === 200 && leaked.length === 0, `写回 status=${String(restored.status)} 残留=${JSON.stringify(leaked.map((s) => s.url))}`)
+    // C2：**必须再刷一次 digest**。导入订阅源会触发 digest 重新生成，于是夹具条目会写进
+    // 今天的 digest 文件（`## 探针` 小节 + `探针条目 A/B`）—— 源复原了但产物留着，
+    // 用户会在 GUI 里看到它。这不是假设：我这边真发生过，事后手工刷了一次才清掉。
+    const refreshed = await api('POST', '/api/dsh-rss/refresh')
+    const digestText = refreshed.body?.markdown ?? ''
+    const leftover = PROBE_URLS.filter((probe) => digestText.includes(probe))
+    record(
+      'C2 收尾：重新生成 digest，夹具条目不再残留在产物里',
+      refreshed.status === 200 && leftover.length === 0,
+      `refresh status=${String(refreshed.status)}；digest 里残留探针 URL=${JSON.stringify(leftover)}`,
+    )
   }
   const failed = results.filter((item) => item.ok !== true)
   console.log(`\n# 汇总：PASS ${results.filter((r) => r.ok === true).length} / FAIL ${failed.length}`)
