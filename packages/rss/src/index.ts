@@ -105,7 +105,18 @@ export interface AiSummaryInfo {
   failed: number
   /** 整体不可用（路由 / llm 服务缺失）或全部失败时的原因文案。 */
   reason?: string
+  /**
+   * 失败原因分布（按出现次数降序，最多 `AI_FAILURE_REASON_LIMIT` 类）。
+   *
+   * 为什么要有它：原先部分失败只留一个计数（「N 条失败，已回落到原文摘要」），
+   * 既看不出是超时、限流还是 provider 报错，也没法判断是不是插件自己的问题 ——
+   * 实测「20 条里 6 条成功」这种情况只能靠猜。
+   */
+  failures?: Array<{ error: string; count: number }>
 }
+
+/** `AiSummaryInfo.failures` 最多保留几类原因。 */
+const AI_FAILURE_REASON_LIMIT = 3
 
 export interface DigestResult {
   date: string
@@ -178,21 +189,46 @@ export interface AiRoute {
  * text-delta 携带正文增量；finish 的 kind 为 stop 之外（error / aborted /
  * max-tokens / tool-calls）都按失败处理。
  */
+/**
+ * 宿主 llm 流的一个块。
+ *
+ * ⚠️ **finish 块的权威形状是 `{ type:'finish', reason: FinishReason }`**，而 `FinishReason`
+ * 是**以 `kind` 为判别式**的联合（`{kind:'stop'}` / `{kind:'tool-calls'}` /
+ * `{kind:'max-tokens'}` / `{kind:'aborted'}` / `{kind:'error', failure}`）——
+ * 也就是 **`kind` 与 `failure` 都在 `reason` 里面，不在块的顶层**（见 dsh-llm 的
+ * `lib/types/types.d.ts`：`type: 'finish'; reason: FinishReason`）。
+ *
+ * 这里曾经把 `kind` / `failure` 声明在顶层，于是读取处永远拿到 `undefined`、
+ * 把**每一次成功**都判成「终止原因 unknown」，AI 摘要 100% 失败；而单测的假 llm 又
+ * 照着同一个错误形状造数据，所以测试一路全绿。真机上的 digest 里那句
+ * 「AI 摘要：全部 20 条失败：终止原因 unknown」就是这么来的。
+ */
 export interface LlmStreamChunk {
   type?: string
   text?: string
-  kind?: string
-  failure?: { message?: string; code?: string }
+  /** finish 块的权威字段：判别式 `kind`（以及 `kind==='error'` 时的 `failure`）都在这里。 */
+  reason?: {
+    kind?: string
+    failure?: { message?: string; code?: string }
+  }
   [key: string]: unknown
 }
 
-/** 宿主 llm 服务的最小结构（cordis Context 上的 llm 服务）。 */
+/**
+ * 宿主 llm 服务的最小结构（cordis Context 上的 llm 服务）。
+ *
+ * ⚠️ `messages[].content` 是 **`ContentBlock[]`**（`{ type:'text', text }` 这类块的数组），
+ * 不是字符串 —— 见 dsh-llm 的 `lib/types/types.d.ts`：`UserMessage.content: ContentBlock[]`。
+ * 这里曾经声明成 `string`，于是传进去的字符串会在下游 `contentHasImage(content)` 之类
+ * 对 `content` 调用 `.some(...)` 的地方炸成
+ * `content.some is not a function`（表现为 AI 摘要每条都失败）。
+ */
 export interface LlmRuntimeLike {
   stream(options: {
     provider: string
     model: string
     system?: string
-    messages: Array<{ role: 'user'; content: string }>
+    messages: Array<{ role: 'user'; content: Array<{ type: 'text'; text: string }> }>
     maxTokens?: number
     temperature?: number
     signal?: AbortSignal
@@ -271,8 +307,24 @@ const AI_TIMEOUT_MIN_MS = 5_000
 const AI_TIMEOUT_MAX_MS = 60_000
 /** 单条摘要请求的输入正文上限（字符）。 */
 const AI_INPUT_TEXT_LIMIT = 1200
-/** 摘要请求的 maxTokens：给一句 60 字中文留足余量。 */
-const AI_SUMMARY_MAX_TOKENS = 200
+/**
+ * 摘要请求的 maxTokens。
+ *
+ * 原先按「一句 60 字中文」估算成 200 —— 对**非推理模型**够用，对**推理模型**不够：
+ * 推理 token 与最终答案**共享**这个预算，模型往往还没写出正文就把预算耗在推理上，
+ * 于是 finish 是 `max-tokens`、本条摘要判失败。
+ *
+ * 真机实测（provider 路由 commandcode/deepseek/deepseek-v4.1-flash，20 条 / 并发 3 /
+ * 超时 20s，每次先清空 ai-cache.json）：
+ *
+ *   maxTokens=200   →  7 条成功 / 13 条失败（全是 max-tokens）
+ *   maxTokens=1024  → 12 条成功 /  8 条失败（仍全是 max-tokens）
+ *   maxTokens=4096  → 20 条成功 /  0 条失败（整轮 48s，单条约 7s，仍在超时内）
+ *
+ * 所以 4096 是这个模型的实测拐点：既容得下推理开销，又不会把整轮拖过超时。
+ * 换用更重的推理模型时若再出现 max-tokens，失败原因里会直接带上当前上限。
+ */
+const AI_SUMMARY_MAX_TOKENS = 4096
 /** AI 缓存条目有效期：30 天。 */
 const AI_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000
 /** AI 缓存条目上限：超出按写入时间淘汰最旧。 */
@@ -945,7 +997,8 @@ export async function callAiSummary(
       provider: route.provider,
       model: route.model,
       system,
-      messages: [{ role: 'user', content: user }],
+      // content 必须是 ContentBlock[]（字符串会在下游 .some(...) 上炸）
+      messages: [{ role: 'user', content: [{ type: 'text', text: user }] }],
       maxTokens: AI_SUMMARY_MAX_TOKENS,
       temperature: 0.3,
       signal: controller.signal,
@@ -953,8 +1006,10 @@ export async function callAiSummary(
       if (chunk.type === 'text-delta' && typeof chunk.text === 'string') {
         text += chunk.text
       } else if (chunk.type === 'finish') {
-        finishKind = typeof chunk.kind === 'string' ? chunk.kind : 'unknown'
-        finishMessage = chunk.failure?.message
+        // kind / failure 在 reason 里面（顶层没有这两个字段，读错了会把每次成功都判成 unknown）
+        const reason = chunk.reason
+        finishKind = typeof reason?.kind === 'string' ? reason.kind : 'unknown'
+        finishMessage = reason?.failure?.message
       }
     }
   } catch (error) {
@@ -966,8 +1021,14 @@ export async function callAiSummary(
   }
   if (finishKind === undefined) throw new Error('模型未返回终止标记')
   if (finishKind !== 'stop') {
+    // max-tokens 最容易被误读成「provider 有问题」：它的常见根因是预算被推理 token 吃掉，
+    // 所以把「该调什么」直接写进原因里，而不是只丢一个词。
+    if (finishKind === 'max-tokens') {
+      throw new Error(`终止原因 max-tokens（输出被 maxTokens=${String(AI_SUMMARY_MAX_TOKENS)} 截断；推理模型会先消耗推理 token，可提高上限）`)
+    }
     throw new Error(finishMessage !== undefined ? `${finishKind}: ${finishMessage}` : `终止原因 ${finishKind}`)
   }
+  // （finishKind === 'unknown' 只可能来自「finish 块没带 reason.kind」——此时上面那条会抛出）
   const cleaned = cleanAiSummary(text)
   if (!cleaned) throw new Error('模型返回空摘要')
   return cleaned
@@ -1021,6 +1082,7 @@ async function summarizeItems(
 
   let failed = 0
   let firstError = ''
+  const failureCounts = new Map<string, number>()
   const queue = pending.slice()
   const workerCount = Math.min(concurrency, queue.length)
   const workers = Array.from({ length: workerCount }, async () => {
@@ -1034,7 +1096,9 @@ async function summarizeItems(
         summarized += 1
       } catch (error) {
         failed += 1
-        if (firstError === '') firstError = error instanceof Error ? error.message : String(error)
+        const message = error instanceof Error ? error.message : String(error)
+        if (firstError === '') firstError = message
+        failureCounts.set(message, (failureCounts.get(message) ?? 0) + 1)
       }
     }
   })
@@ -1049,6 +1113,12 @@ async function summarizeItems(
   }
 
   const info: AiSummaryInfo = { enabled: true, route: routeText, summarized, failed }
+  if (failed > 0) {
+    info.failures = [...failureCounts.entries()]
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, AI_FAILURE_REASON_LIMIT)
+      .map(([error, count]) => ({ error, count }))
+  }
   // 全部失败（无缓存命中、也无成功请求）时把首个错误原因带进 DigestResult
   if (failed > 0 && summarized === 0) info.reason = `全部 ${failed} 条失败：${firstError}`
   return { items: result, info }
@@ -1105,10 +1175,12 @@ export function renderDigestMarkdown(
   }
 
   // AI 摘要整体不可用或部分失败时，沿用「抓取失败」小节的列表格式补一行说明
+  // 失败原因分布：部分失败时原先只有计数、原因全丢，用户与排查者都无从下手
+  const aiFailureDetail = (aiSummary?.failures ?? []).map((row) => `${row.error}×${String(row.count)}`).join('；')
   const aiNote = aiSummary?.reason !== undefined
-    ? `- AI 摘要: ${aiSummary.reason}`
+    ? `- AI 摘要: ${aiSummary.reason}${aiFailureDetail === '' ? '' : `（${aiFailureDetail}）`}`
     : aiSummary !== undefined && aiSummary.failed > 0
-      ? `- AI 摘要: ${aiSummary.failed} 条失败，已回落到原文摘要`
+      ? `- AI 摘要: ${String(aiSummary.failed)} 条失败，已回落到原文摘要${aiFailureDetail === '' ? '' : `（原因：${aiFailureDetail}）`}`
       : undefined
   if (errors.length > 0 || aiNote !== undefined) {
     lines.push('## 抓取失败', '')

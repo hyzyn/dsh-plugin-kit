@@ -395,13 +395,13 @@ describe('callAiSummary', () => {
     let captured: Record<string, unknown> = {}
     const llm = mockLlm([
       { type: 'text-delta', text: ' "AI 摘要正文" ' },
-      { type: 'finish', kind: 'stop' },
+      { type: 'finish', reason: { kind: 'stop' } },
     ], (options) => { captured = options })
     await expect(callAiSummary(llm, route, item(), 1000)).resolves.toBe('AI 摘要正文')
     expect(captured.provider).toBe('p')
     expect(captured.model).toBe('m')
     expect(String(captured.system)).toContain('60 字')
-    expect(captured.messages).toEqual([{ role: 'user', content: expect.any(String) }])
+    expect(captured.messages).toEqual([{ role: 'user', content: [{ type: 'text', text: expect.any(String) }] }])
     expect(captured.maxTokens).toBeGreaterThan(0)
     expect(captured.signal).toBeInstanceOf(AbortSignal)
     // purpose 是宿主保留字段（compaction / session-title），本插件不得占用
@@ -411,19 +411,46 @@ describe('callAiSummary', () => {
   it('error / max-tokens / aborted 终止都算失败', async () => {
     const errorLlm = mockLlm([
       { type: 'text-delta', text: '部分正文' },
-      { type: 'finish', kind: 'error', failure: { message: 'provider boom', code: 'E1' } },
+      { type: 'finish', reason: { kind: 'error', failure: { message: 'provider boom', code: 'E1' } } },
     ])
     await expect(callAiSummary(errorLlm, route, item(), 1000)).rejects.toThrow(/error: provider boom/)
 
-    const maxTokensLlm = mockLlm([{ type: 'text-delta', text: '部分正文' }, { type: 'finish', kind: 'max-tokens' }])
+    const maxTokensLlm = mockLlm([{ type: 'text-delta', text: '部分正文' }, { type: 'finish', reason: { kind: 'max-tokens' } }])
     await expect(callAiSummary(maxTokensLlm, route, item(), 1000)).rejects.toThrow(/max-tokens/)
 
-    const abortedLlm = mockLlm([{ type: 'finish', kind: 'aborted' }])
+    const abortedLlm = mockLlm([{ type: 'finish', reason: { kind: 'aborted' } }])
     await expect(callAiSummary(abortedLlm, route, item(), 1000)).rejects.toThrow(/aborted/)
   })
 
+  it('messages[].content 必须是 ContentBlock[] —— 字符串会在下游 .some(...) 上炸', async () => {
+    let captured: Record<string, unknown> = {}
+    const llm = mockLlm(
+      [{ type: 'text-delta', text: '摘要' }, { type: 'finish', reason: { kind: 'stop' } }],
+      (options) => { captured = options },
+    )
+    await expect(callAiSummary(llm, route, item(), 1000)).resolves.toBe('摘要')
+    const first = (captured.messages as Array<{ content: unknown }>)[0]
+    // 事故形状是 content: '<字符串>'，下游 contentHasImage(content) 会抛
+    // `content.some is not a function`，表现为「AI 摘要每条都失败」
+    expect(Array.isArray(first.content)).toBe(true)
+    expect(first.content).toEqual([{ type: 'text', text: expect.any(String) }])
+  })
+
+  it('finish 块的判别式在 reason 里 —— 顶层 kind 不算数（AI 摘要整体失效那个 bug 的回归钉）', async () => {
+    // 权威形状（dsh-llm 的 types.d.ts：`type: 'finish'; reason: FinishReason`，
+    // 而 FinishReason 是以 kind 为判别式的联合）：
+    await expect(
+      callAiSummary(mockLlm([{ type: 'text-delta', text: '正文' }, { type: 'finish', reason: { kind: 'stop' } }]), route, item(), 1000),
+    ).resolves.toBe('正文')
+    // 事故形状：kind 写在块顶层 —— 必须**失败**。这条断言逼着实现去读 reason.kind；
+    // 谁要是把契约改回顶层，上面那条就会红，而不是让功能静默失效。
+    await expect(
+      callAiSummary(mockLlm([{ type: 'text-delta', text: '正文' }, { type: 'finish', kind: 'stop' } as never]), route, item(), 1000),
+    ).rejects.toThrow(/终止原因 unknown/)
+  })
+
   it('空输出 / 缺终止块 / 迭代器抛错都算失败', async () => {
-    await expect(callAiSummary(mockLlm([{ type: 'text-delta', text: '   ' }, { type: 'finish', kind: 'stop' }]), route, item(), 1000))
+    await expect(callAiSummary(mockLlm([{ type: 'text-delta', text: '   ' }, { type: 'finish', reason: { kind: 'stop' } }]), route, item(), 1000))
       .rejects.toThrow(/空摘要/)
     await expect(callAiSummary(mockLlm([{ type: 'text-delta', text: '正文' }]), route, item(), 1000))
       .rejects.toThrow(/终止标记/)
@@ -485,7 +512,7 @@ describe('generateDigest 的 AI 摘要', () => {
     stubFetch(FEED_XML)
     let calls = 0
     const ctx = mockCtx({
-      llm: mockLlm([{ type: 'text-delta', text: 'AI 一句话摘要' }, { type: 'finish', kind: 'stop' }], () => { calls += 1 }),
+      llm: mockLlm([{ type: 'text-delta', text: 'AI 一句话摘要' }, { type: 'finish', reason: { kind: 'stop' } }], () => { calls += 1 }),
       // 显式配置对应胜过宿主默认模型
       agentDefaultModel: { source: () => ({ provider: 'host', model: 'h' }) },
     })
@@ -524,7 +551,7 @@ describe('generateDigest 的 AI 摘要', () => {
     const digestDir = join(root, 'digest')
     storeWithAi({ enabled: true, provider: 'p', model: 'm' })
     stubFetch(FEED_XML_ONE)
-    const ctx = mockCtx({ llm: mockLlm([{ type: 'finish', kind: 'max-tokens' }]) })
+    const ctx = mockCtx({ llm: mockLlm([{ type: 'finish', reason: { kind: 'max-tokens' } }]) })
 
     const result = await generateDigest({ digestDir }, { ctx })
     expect(result.items[0].aiSummary).toBeUndefined()
@@ -538,6 +565,39 @@ describe('generateDigest 的 AI 摘要', () => {
     expect(markdown).toContain('- AI 摘要: 全部 1 条失败：终止原因 max-tokens')
     // 回落路径 = 原文摘要 140 字截断
     expect(markdown).toContain('长'.repeat(140) + '…')
+  })
+
+  it('部分失败：failures 给出原因分布，Markdown 也带上（原先只有计数、原因全丢）', async () => {
+    const digestDir = join(root, 'digest')
+    // concurrency=1 → 两条的顺序确定：第一条成功、第二条失败
+    storeWithAi({ enabled: true, provider: 'p', model: 'm', concurrency: 1 })
+    stubFetch(FEED_XML)
+    let calls = 0
+    const llm: LlmRuntimeLike = {
+      stream() {
+        const index = calls
+        calls += 1
+        return (async function* () {
+          if (index === 0) {
+            yield { type: 'text-delta', text: '第一条的 AI 摘要' } as never
+            yield { type: 'finish', reason: { kind: 'stop' } }
+          } else {
+            yield { type: 'finish', reason: { kind: 'max-tokens' } }
+          }
+        })()
+      },
+    }
+
+    const result = await generateDigest({ digestDir }, { ctx: mockCtx({ llm }) })
+    expect(result.aiSummary?.summarized).toBe(1)
+    expect(result.aiSummary?.failed).toBe(1)
+    // 关键：部分失败也要给出**原因分布**，而不是只留一个数字
+    expect(result.aiSummary?.failures?.[0]?.error).toContain('max-tokens')
+    expect(result.aiSummary?.failures?.[0]?.error).toContain('推理 token')
+
+    const markdown = readFileSync(join(digestDir, `${result.date}.md`), 'utf8')
+    expect(markdown).toContain('1 条失败，已回落到原文摘要（原因：终止原因 max-tokens')
+    expect(markdown).toContain('×1）')
   })
 
   it('启用 ai 但解析不到路由：整体跳过并记录原因', async () => {
@@ -556,7 +616,7 @@ describe('generateDigest 的 AI 摘要', () => {
     const digestDir = join(root, 'digest')
     storeWithAi()
     stubFetch(FEED_XML)
-    const ctx = mockCtx({ llm: mockLlm([{ type: 'text-delta', text: '不该出现' }, { type: 'finish', kind: 'stop' }]) })
+    const ctx = mockCtx({ llm: mockLlm([{ type: 'text-delta', text: '不该出现' }, { type: 'finish', reason: { kind: 'stop' } }]) })
 
     const result = await generateDigest({ digestDir }, { ctx })
     expect(result.aiSummary).toBeUndefined()
