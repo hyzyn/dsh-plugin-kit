@@ -1,6 +1,6 @@
 /* eslint-disable */
 /**
- * @hyzyn/dsh-mcp — 浏览器半体：官方设置 → 插件 里的「MCP 服务器配置」卡片。
+ * @hyzyn/dsh-mcp — 浏览器半体：官方插件配置里的「MCP 服务器配置」卡片。
  * 通过核心 slots 服务注册到 settings.plugin.item 插槽（与官方终端 / Agent 循环 /
  * 网页搜索卡片同级），不再占用侧边栏、不做全屏面板接管。
  * 纯 DOM 渲染（React 只承担卡片外壳与展开状态），无构建步骤，
@@ -18,6 +18,7 @@ window.__ModuleLoader__.load({
 
     const CSS = [
       // 设置插件卡片外壳（与官方 PluginCard 一致的轮廓）
+      '.mX_pageHost{display:block}',
       '.mX_pluginCard{list-style:none;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);border-radius:12px;transition:border-color .16s,background .16s}',
       '.mX_pluginCard:hover{border-color:var(--dsw-alias-label-dimmed)}',
       '.mX_pluginCardOpen{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-label-dimmed)}',
@@ -136,10 +137,12 @@ window.__ModuleLoader__.load({
     }
 
     const apiList = () => apiRequest(API.list)
-    const apiSave = (servers) => apiRequest(API.save, {
+    // clearAll 只在「用户明确删光」时带上：宿主对「空列表且无该标记」的保存会返回 400，
+    // 避免启动竞态 / 陈旧卡片拿到空列表时把已配置的服务器静默清空。
+    const apiSave = (servers, options) => apiRequest(API.save, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ servers }),
+      body: JSON.stringify({ servers, ...(options !== undefined && options.clearAll === true ? { clearAll: true } : {}) }),
     })
     const apiTest = (config) => apiRequest(API.test, {
       method: 'POST',
@@ -352,6 +355,9 @@ window.__ModuleLoader__.load({
       parts.push('</div>')
       parts.push('<p class="mX_formError" id="ed_error"></p>')
       parts.push('<div class="mX_hint">env/headers 的 VALUE 以 js: 开头会原样写入 !!js 表达式（例如 js:process.env.GITHUB_TOKEN）。保存后服务器会热加载，工具名形如 mcp__&lt;serverName&gt;__&lt;tool&gt;。</div>')
+      // 测试结果就地展示在编辑器里（容器固定，由 testEditor 直接改 innerHTML）：
+      // 这样「测试连接 → 保存」是一条连续动作，表单与已填内容都留着
+      parts.push('<div id="ed_testResult">' + (state.test ? renderTestHtml() : '') + '</div>')
       parts.push('</div>')
       parts.push('<div class="mX_modalFooter">')
       parts.push('<button class="mX_btnGhost" data-action="editor-cancel">取消</button>')
@@ -504,6 +510,15 @@ window.__ModuleLoader__.load({
         setEditorError('serverName 与已有服务器重复：' + row.config.serverName)
         return
       }
+      // 外部实例同名（别的插件托管的 mcp-client，如 codegraph 归 Codegraph 插件管）：本地先拦
+      // 一道给即时反馈；宿主侧还会再拦一次（权威）。已经是这一行原本的名字（历史遗留）不拦，
+      // 否则连它的其它字段都改不了 —— 宿主侧同样按「是否新引入」判定。
+      const clash = (state.conflicts || []).find((item) => item.serverName === row.config.serverName)
+      const original = state.editor !== null && state.editor.server !== null ? state.editor.server : null
+      if (clash !== undefined && !(original !== null && original.serverName === row.config.serverName)) {
+        setEditorError('serverName「' + row.config.serverName + '」已被本插件之外的 mcp-client 实例占用（' + clash.id + '）：两个实例会抢同一套工具名，其中一个必然加载失败。该行由别的插件托管，请到对应插件的设置里修改。')
+        return
+      }
       const servers = [...others, row]
       state.busy = true
       setEditorError('')
@@ -524,12 +539,17 @@ window.__ModuleLoader__.load({
     async function removeServer(id) {
       const server = state.servers.find((item) => item.id === id)
       if (server === undefined) return
-      if (!window.confirm('确定删除 MCP 服务器「' + server.serverName + '」？其注册的工具会立即被卸载。')) return
+      // 删掉最后一条＝清空托管区块，确认文案要说清这一点，保存时也要显式带 clearAll
+      const last = state.servers.length === 1
+      const question = last
+        ? '确定删除最后一条 MCP 服务器「' + server.serverName + '」？删除后托管区块会清空，其注册的工具会立即被卸载。'
+        : '确定删除 MCP 服务器「' + server.serverName + '」？其注册的工具会立即被卸载。'
+      if (!window.confirm(question)) return
       const servers = state.servers.filter((item) => item.id !== id)
       state.busy = true
       refresh()
       try {
-        await apiSave(servers)
+        await apiSave(servers, { clearAll: last })
         toast('已删除，正在热卸载…', 'ok')
         setTimeout(() => load(), 800)
       } catch (error) {
@@ -569,6 +589,17 @@ window.__ModuleLoader__.load({
       refresh()
     }
 
+    /**
+     * 编辑器里的「测试连接」。
+     *
+     * 两条硬约束（都是实测踩出来的）：
+     *   1. **不关编辑器**——测试只是确认配置能不能连上，紧接着就要点「保存」。早先这里把
+     *      `state.editor` 置空，而编辑器是整块替换渲染（`editor ? editorHtml : mainHtml`），
+     *      于是表单连同「保存」按钮一起消失，用户看到的就是「一点测试连接，保存就没了」。
+     *   2. **不整体重渲染**——用户的输入只活在 DOM 里（渲染始终以原始 config 为源），
+     *      `refresh()` 一次就把填好的内容冲回原样。所以结果只就地写进 `#ed_testResult`，
+     *      按钮的禁用/恢复也直接改 DOM。
+     */
     async function testEditor() {
       let row
       try {
@@ -578,17 +609,28 @@ window.__ModuleLoader__.load({
         return
       }
       setEditorError('')
-      state.busy = true
+      const setBusy = (busy) => {
+        state.busy = busy
+        for (const el of document.querySelectorAll('[data-action="editor-test"], [data-action="editor-save"]')) {
+          if (el instanceof HTMLButtonElement) el.disabled = busy
+        }
+      }
+      state.test = { serverName: row.config.serverName, running: true, result: null }
+      const running = document.getElementById('ed_testResult')
+      if (running !== null) running.innerHTML = renderTestHtml()
+      setBusy(true)
       try {
         const body = await apiTest(row.config)
         state.test = { serverName: row.config.serverName, running: false, result: body.result || {} }
-        state.editor = null
-        toast(body.result && body.result.ok ? '连接成功' : '连接失败', body.result && body.result.ok ? 'ok' : 'error')
+        toast(body.result && body.result.ok ? '连接成功（确认无误后点保存）' : '连接失败', body.result && body.result.ok ? 'ok' : 'error')
       } catch (error) {
+        // 请求本身失败（路由/网络）：清掉「正在连接…」，把原因写进编辑器错误行
+        state.test = null
         setEditorError(error instanceof Error ? error.message : String(error))
       } finally {
-        state.busy = false
-        refresh()
+        setBusy(false)
+        const host = document.getElementById('ed_testResult')
+        if (host !== null) host.innerHTML = state.test === null ? '' : renderTestHtml()
       }
     }
 
@@ -631,8 +673,12 @@ window.__ModuleLoader__.load({
 
     const CHEVRON_PATH = 'M11.8486 5.5L11.4238 5.92383L8.69727 8.65137C8.44157 8.90706 8.21562 9.13382 8.01172 9.29785C7.79912 9.46883 7.55595 9.61756 7.25 9.66602C7.08435 9.69222 6.91565 9.69222 6.75 9.66602C6.44405 9.61756 6.20088 9.46883 5.98828 9.29785C5.78438 9.13382 5.55843 9.13382 5.30273 8.65137L2.57617 5.92383L2.15137 5.5L3 4.65137L3.42383 5.07617L6.15137 7.80273C6.42595 8.07732 6.59876 8.24849 6.74023 8.3623C6.87291 8.46904 6.92272 8.47813 6.9375 8.48047C6.97895 8.48703 7.02105 8.48703 7.0625 8.48047C7.07728 8.47813 7.12709 8.46904 7.25977 8.3623C7.40124 8.24849 7.57405 8.07732 7.84863 7.80273L10.5762 5.07617L11 4.65137L11.8486 5.5Z'
 
-    function McpSettingsCard() {
-      const [open, setOpen] = React.useState(false)
+    function McpSettingsCard(props) {
+      // DSH ≥0.1.6 的插件配置页把同一条目按 view 渲染两次：summary 一句话摘要、page 完整表单。
+      // 旧版（≤0.1.5）的 settings.plugin.item 卡片不带 view，走原有可折叠卡片分支。
+      const view = props && props.view
+      const pageView = view === 'page'
+      const [open, setOpen] = React.useState(pageView)
       const hostRef = React.useRef(null)
       React.useEffect(() => {
         if (!open) return
@@ -641,10 +687,15 @@ window.__ModuleLoader__.load({
         mountDomPanel(host)
         load()
       }, [open])
-      return jsxs('li', {
-        className: open ? 'mX_pluginCard mX_pluginCardOpen' : 'mX_pluginCard',
+      if (view === 'summary') {
+        return '管理 MCP 服务器：stdio 本地进程或 streamable-http 远程服务；保存后热加载为 mcp__<server>__<tool> 工具。'
+      }
+
+      // page 视图：新页面自己画标题/图标/面包屑，这里只交表单本体，不渲染卡片头。
+      return jsxs(pageView ? 'div' : 'li', {
+        className: pageView ? 'mX_pageHost' : (open ? 'mX_pluginCard mX_pluginCardOpen' : 'mX_pluginCard'),
         children: [
-          jsxs('button', {
+          pageView ? null : jsxs('button', {
             type: 'button',
             className: 'mX_cardHeader',
             'aria-expanded': open,
@@ -669,7 +720,7 @@ window.__ModuleLoader__.load({
               }),
             ],
           }),
-          open ? jsx('div', {
+          (pageView || open) ? jsx('div', {
             className: 'mX_cardBody',
             children: jsx('div', { ref: hostRef, className: 'mX_cardHost' }),
           }) : null,
@@ -680,6 +731,16 @@ window.__ModuleLoader__.load({
     /* ================================ 插件入口 ================================ */
 
     exports.inject = ['slots']
+
+    /**
+     * DSH ≥0.1.6-alpha.2 的行配置 key：`<bundle 包名>#<行 id>`，行 id 取自 bundle 的
+     * cordis.patch.yml。独立安装时 bundle 是本包，装全家桶时是 @hyzyn/dsh-all —— 两个都注册，
+     * 未命中的那个只是躺在 ledger 里，不会渲染。
+     */
+    const ROW_CONFIG_KEYS = [
+      '@hyzyn/dsh-mcp#mcp-config',
+      '@hyzyn/dsh-all#mcp-config',
+    ]
 
     exports.apply = (ctx) => {
       ctx.effect(() => {
@@ -696,7 +757,24 @@ window.__ModuleLoader__.load({
           panelEl = undefined
         }
       })
-      // 注册到官方设置 → 插件 → 可配置 卡片列表（与终端 / Agent 循环 / 网页搜索同级）
+      // 注册到官方插件配置 → 可配置 卡片列表（与终端 / Agent 循环 / 网页搜索同级）
+      // DSH ≥0.1.6-alpha.2：侧边栏「插件」页里该行的配置页。插槽不存在时 inject 不会触发，
+      // 因此在旧版上完全无副作用，一份代码同时兼容两代。
+      for (const key of ROW_CONFIG_KEYS) {
+        ctx.slots.inject('plugins.row.config', () => ctx.slots.register({
+          name: 'plugins.row.config',
+          key,
+        }, McpSettingsCard))
+      }
+      // DSH ≥0.1.6：设置里与「通用设置」平级的「插件配置」页（子 slot 由
+      // @hyzyn/dsh-kit-settings 声明）。不传 view，卡片走各自原有的可折叠形态。
+      ctx.slots.inject('settings.kit.item', () => ctx.slots.register({
+        name: 'settings.kit.item',
+        id: 'mcp-config',
+        order: 20,
+        label: () => "MCP 服务器配置",
+      }, McpSettingsCard))
+      // DSH ≤0.1.5：设置 → 插件 的「插件配置」标签页，keyed 插槽按 settings 命名空间派发。
       ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
         name: 'settings.plugin.item',
         // settings.plugin.item 是 keyed 插槽：key 必须是该卡片所编辑的 settings 命名空间

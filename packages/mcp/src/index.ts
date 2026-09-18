@@ -30,7 +30,7 @@ export interface Config {
 }
 
 /* ------------------------------------------------------------------ *
- * settings 命名空间（让「设置 → 插件 → 插件配置」派发本插件卡片）
+ * settings 命名空间（让「插件配置 → 插件配置」派发本插件卡片）
  * ------------------------------------------------------------------ */
 
 /** 与 ~/.dsh/cordis.patch.yml 托管区块的服务器行形状对齐。 */
@@ -235,6 +235,53 @@ export function spliceManagedBlock(text: string, rows: McpRow[]): string {
     return [...lines.slice(0, start), ...block.split('\n'), ...lines.slice(start + 1)].join('\n')
   }
   return [...lines.slice(0, start), ...block.split('\n'), ...lines.slice(end + 1)].join('\n')
+}
+
+/**
+ * 保存前的「清空防护」判定：返回拒绝文案，放行则返回 undefined。
+ *
+ * 为什么需要：`/servers/save` 是**整表替换**语义——请求体里的 servers 就是全部内容，
+ * 空数组等于把托管区块清空。卡片若因启动竞态、陈旧快照或任何自动化拿到空列表，
+ * 一次保存就会把已配置的服务器全部抹掉，而文件里不会留下任何痕迹（实测踩过）。
+ *
+ * 因此空列表必须由调用方显式确认（`clearAll: true`）；卡片只在用户明确删光时才带。
+ * 区块本来就是空的（existing === 0）不构成破坏，放行——免得把「保存一张空卡片」
+ * 变成一个没必要的报错。
+ */
+export function emptyServersRejection(incoming: number, existing: number, clearAll: unknown): string | undefined {
+  if (incoming > 0 || clearAll === true || existing === 0) return undefined
+  return `这次保存会把 ${String(existing)} 条 MCP 服务器全部清空；若确认要清空，请带 clearAll: true 重发（卡片删除最后一条时会自动带上）。`
+}
+
+/**
+ * 提交前的「外部重名」检测：serverName 被**本插件之外**的 mcp-client 实例占用时拒绝。
+ *
+ * 为什么必须拦：mcp-client 的工具按 serverName 命名（`mcp__<serverName>__<tool>`），
+ * 同名两个实例抢同一套工具名，其中一个必然加载失败——而在文件里看不出谁失败了，
+ * 用户只会看到「加进去了但不生效」。外部实例（例如 Codegraph 插件自管的 codegraph）
+ * 不在本插件的托管区块里，本插件也不该把别人的行挪进自己的区块，所以正确动作是拒绝。
+ *
+ * **只拦「新引入」的重复**：某条已保存的行如果本来就带着这个外部同名实例（历史遗留），
+ * 放行——否则用户连别的字段都改不了，编辑另一行也会被这条历史问题挡住。用户真要清理，
+ * 应当删除或改名那条行本身。
+ *
+ * @param incoming 本次提交的行（id + serverName）。
+ * @param existing 当前文件里已保存的行（用于识别「本来就存在」的重复）。
+ * @param external 本插件之外的 mcp-client 实例（`externalMcpEntries` 的结果）。
+ */
+export function externalNameRejection(
+  incoming: Array<{ id: string; serverName: string }>,
+  existing: Array<{ id: string; serverName: string }>,
+  external: Array<{ id: string; serverName: string }>,
+): string | undefined {
+  const alreadySaved = new Map(existing.map((row) => [row.id, row.serverName]))
+  for (const row of incoming) {
+    const hit = external.find((entry) => entry.serverName === row.serverName)
+    if (hit === undefined) continue
+    if (alreadySaved.get(row.id) === row.serverName) continue
+    return `serverName「${row.serverName}」已被本插件之外的 mcp-client 实例占用（条目标识 ${hit.id}）：两个实例会抢同一套工具名 mcp__${row.serverName}__*，其中一个必然加载失败。这一行由别的插件托管（例如 codegraph 由 Codegraph 插件自管），请到对应插件的设置里修改，不要在这里重复添加。`
+  }
+  return undefined
 }
 
 /** 把托管区块写回 home 补丁文件（原子替换，保留文件其它内容与权限）。 */
@@ -950,6 +997,23 @@ function makeRoutes(ctx: Context): Array<{ kind: 'exact'; path: string; handler:
           seenNames.add(config.serverName)
           rows.push({ id, config, ...(input.disabled === true ? { disabled: true } : {}) })
         }
+        const managed = readManagedRows()
+        // 外部实例重名（别的插件托管的 mcp-client）——只拦新引入的重复，历史遗留放行
+        const clash = externalNameRejection(
+          rows.map((row) => ({ id: row.id, serverName: row.config.serverName })),
+          managed.rows.map((row) => ({ id: row.id, serverName: row.config.serverName })),
+          externalMcpEntries(ctx, new Set(managed.rows.map((row) => row.id))),
+        )
+        if (clash !== undefined) {
+          writeJson(res, 400, { error: clash })
+          return
+        }
+        // 空列表 = 清空全部：没有显式 clearAll 就拒绝，避免竞态 / 陈旧卡片静默抹掉配置。
+        const rejection = emptyServersRejection(rows.length, managed.rows.length, body.clearAll)
+        if (rejection !== undefined) {
+          writeJson(res, 400, { error: rejection })
+          return
+        }
         try {
           writeManagedRows(rows)
         } catch (error) {
@@ -981,7 +1045,7 @@ function makeRoutes(ctx: Context): Array<{ kind: 'exact'; path: string; handler:
  * 插件本体
  * ------------------------------------------------------------------ */
 
-const MCP_GUIDANCE = '本机已安装 dsh-mcp-config 插件（MCP 服务器配置中心）：Web GUI 的 设置 → 插件 里有「MCP 服务器配置」卡片，提供图形化管理。服务器配置保存在 ~/.dsh/cordis.patch.yml 的托管区块（auto-generated，勿手改），保存后经 HMR 热加载为 mcp__<serverName>__<tool> 工具，无需重启；支持 stdio（command/args/env/cwd）与 streamable-http（url/headers）传输、js: 前缀的环境变量/请求头表达式、连接测试、启用/停用与删除。用户提到「MCP 配置 / MCP 服务器」时即指本插件，请引导用户打开设置里的 MCP 卡片操作，而不是直接修改配置文件。'
+const MCP_GUIDANCE = '本机已安装 dsh-mcp-config 插件（MCP 服务器配置中心）：Web GUI 的 插件配置里有「MCP 服务器配置」卡片，提供图形化管理。服务器配置保存在 ~/.dsh/cordis.patch.yml 的托管区块（auto-generated，勿手改），保存后经 HMR 热加载为 mcp__<serverName>__<tool> 工具，无需重启；支持 stdio（command/args/env/cwd）与 streamable-http（url/headers）传输、js: 前缀的环境变量/请求头表达式、连接测试、启用/停用与删除。用户提到「MCP 配置 / MCP 服务器」时即指本插件，请引导用户打开设置里的 MCP 卡片操作，而不是直接修改配置文件。'
 
 export function apply(ctx: Context, config?: Config): void {
   if (config?.enabled === false) return
