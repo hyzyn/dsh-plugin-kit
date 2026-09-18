@@ -1,0 +1,62 @@
+{
+  "name": "@hyzyn/dsh-kit-settings",
+  "version": "0.1.0",
+  "description": "DSH Web GUI 的 kit 插件配置入口：在官方「设置」里补一行与「通用设置」平级的「插件配置」页，把 dsh-plugin-kit 各插件的配置表单收在一处。",
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "engines": {
+      "dsh": ">=0.1.2-rc.1"
+    },
+    "client": {
+      "platform": "web",
+      "inject": []
+    }
+  },
+  "peerDependencies": {
+    "react": "^18.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.0",
+    "typescript": "~5.9.3"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit && node ../../scripts/client-lint.mjs",
+    "lint:client": "node ../../scripts/client-lint.mjs"
+  },
+  "files": [
+    "lib",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hyzyn/dsh-plugin-kit.git",
+    "directory": "packages/kit-settings"
+  },
+  "homepage": "https://github.com/hyzyn/dsh-plugin-kit/tree/main/packages/kit-settings#readme",
+  "bugs": {
+    "url": "https://github.com/hyzyn/dsh-plugin-kit/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

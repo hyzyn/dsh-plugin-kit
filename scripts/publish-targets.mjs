@@ -3,6 +3,7 @@
 // 新增插件包时在这里补一行即可，两条发布路径同步生效。
 export const targets = [
   ['packages/kit', '@hyzyn/dsh-kit'],
+  ['packages/kit-settings', '@hyzyn/dsh-kit-settings'],
   ['packages/codegraph', '@hyzyn/dsh-codegraph'],
   ['packages/env', '@hyzyn/dsh-env'],
   ['packages/mcp', '@hyzyn/dsh-mcp'],
