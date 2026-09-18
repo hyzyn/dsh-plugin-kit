@@ -52,6 +52,7 @@ const SCENARIOS = [
   ['sftp', 'SFTP 单窗体（挂右侧挂载位）'],
   ['sftp-dual', 'SFTP 双栏（挂右侧挂载位）'],
   ['sftp-fallback', 'SFTP 落点回退（抽屉被容器面板占用 → 对话框）'],
+  ['dock-pane-tab', '挂载位跟着标签切（切走收起 / 切回恢复 / 不堵死另一个标签的入口）'],
   ['minimized', '最小化（侧边栏徽标）'],
   ['exited', '会话退出遮罩'],
   ['error', '连接错误遮罩'],
@@ -389,13 +390,45 @@ async function shoot(cdp, name, label) {
     }
     if (!ready) problems.push('场景未挂载（导航超时）')
     const outcome = await cdp.send('Runtime.evaluate', {
-      expression: 'window.__previewReady.then(() => ({ ok: true, diag: window.__previewDiag() })).catch((e) => ({ ok: false, error: String((e && e.message) || e), diag: window.__previewDiag() }))',
+      expression: 'window.__previewReady.then(() => ({ ok: true })).catch((e) => ({ ok: false, error: String((e && e.message) || e) }))',
       awaitPromise: true,
       returnByValue: true,
     })
     const value = outcome?.result?.value
     if (value && value.ok === false) problems.push('场景失败：' + value.error)
-    if (value && value.diag && process.env.PREVIEW_DIAG) log('   · diag ' + JSON.stringify(value.diag))
+    /*
+     * 场景可以挂一份**函数形态**的断言到 `window.__previewAssert`：返回 null 表示通过，
+     * 返回字符串/数组表示失败（与各场景既有写法一致）。截图工具顺手把它跑掉——否则
+     * 那些断言只有手工 CDP 取 diag 时才有人看，回归就白钉了。
+     *
+     * 单独发一条 evaluate：`window.__previewDiag()` 的返回值里带着函数
+     * （`assert: window.__previewAssert`），和断言结果混在一个 `returnByValue` 里会
+     * 让整条求值失败——那正是「断言看着跑了、其实一条都没生效」的由来。
+     * 对象形态的 `__previewAssert`（纯数据快照，供人工比对）不在此列。
+     */
+    const check = await cdp.send('Runtime.evaluate', {
+      expression: '(async () => {'
+        + ' const a = window.__previewAssert;'
+        + ' if (typeof a !== "function") return null;'
+        + ' const r = await a();'
+        + ' return Array.isArray(r) ? r.join("；") : (r == null ? null : String(r));'
+        + '})()',
+      awaitPromise: true,
+      returnByValue: true,
+    })
+    if (check?.exceptionDetails !== undefined) {
+      // 断言自己抛错（拼错选择器之类）也要算失败，不能悄悄变成「通过」
+      problems.push('断言执行出错：' + String(check.exceptionDetails.exception?.description ?? JSON.stringify(check.exceptionDetails)))
+    } else if (typeof check?.result?.value === 'string' && check.result.value !== '') {
+      problems.push('断言未通过：' + check.result.value)
+    }
+    if (process.env.PREVIEW_DIAG) {
+      const diag = await cdp.send('Runtime.evaluate', {
+        expression: 'JSON.stringify({ ...window.__previewDiag(), assert: undefined })',
+        returnByValue: true,
+      })
+      if (typeof diag?.result?.value === 'string') log('   · diag ' + diag.result.value)
+    }
     await sleep(500)
     const shot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false })
     const file = join(shotsDir, name + '.png')

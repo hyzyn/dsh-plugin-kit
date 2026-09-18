@@ -49,9 +49,14 @@
   const ctx = {
     sessions: {
       list: {
+        // 按**真实宿主**的形状桩（DSH 0.1.6）：会话列表快照没有 current，选中项靠
+        // retainedBy.mainView 表达——夹具要是照旧塞个 current，就又把新读法的 bug 遮住了
         getSnapshot: () => ({
-          byId: { s1: { cwd: window.__PREVIEW_CWD || '/home/user/project' } },
-          current: 's1',
+          ids: ['s1'],
+          byId: { s1: { id: 's1', cwd: window.__PREVIEW_CWD || '/home/user/project', retainedBy: { mainView: 1 } } },
+          phase: 'ready',
+          subagentsByParent: {},
+          jobsBySession: {},
         }),
       },
     },
@@ -206,8 +211,17 @@
         if (bar.hidden === true) return '状态条未显示（stats 订阅链路可能断开）'
         const text = bar.textContent
         if (!/CPU/.test(text) || !/内存/.test(text) || !/网络/.test(text)) return '状态条内容不完整：' + text
+        /*
+         * 订阅时序：客户端**故意**在 spawn 之前就发一次 statsOn（switchTab 早于 spawnTab），
+         * 宿主此时还没登记这个 sid，会按「未知 sid」忽略——这是设计里的正常现象，所以
+         * 断言不能要求「从没发过未知订阅」。要钉的是 ready 之后**重新对齐**过：最后一次
+         * 订阅必须被接受（否则状态条该出不来），且早期那次不该被重复轰炸。
+         */
         const logged = window.__mockLog || []
-        if (logged.some((entry) => entry === 'in:statsOn(unknown)')) return 'statsOn 发送过早被宿主忽略（ready 后未重发）'
+        const subscriptions = logged.filter((entry) => entry === 'in:statsOn' || entry === 'in:statsOn(unknown)')
+        if (subscriptions[subscriptions.length - 1] === 'in:statsOn(unknown)') return '最后一次 statsOn 仍被宿主按未知 sid 忽略（ready 后没有重新对齐）'
+        const ignored = logged.filter((entry) => entry === 'in:statsOn(unknown)').length
+        if (ignored > 1) return 'spawn 前的 statsOn 重复发送（' + String(ignored) + ' 次未对齐订阅）'
         return null
       }
     },
@@ -412,6 +426,94 @@
       await waitFor(() => qa('.tt_sftpRow').length > 2)
       await sleep(250)
       window.__previewAssert = sftpSurfaceAssert()
+    },
+    /* 挂载位跟着标签切（0.18.4）
+       复现：标签 A（prod-web-01）开 SFTP 文件浏览 → 切到标签 B（staging-db）→ 面板
+       此前**没跟着切**：标题仍是 A、底下文件列表是 A 那台主机的，而活动标签是 B。
+       同一 bug 也砸中 dsh-docker 挂进来的容器面板。修复=挂载位记归属标签，切换时收起
+       不属于当前标签的那块（收起 ≠ 关掉：DOM / 在途传输保活）；连带修掉「A 收起的面板
+       把 B 的『SFTP』按钮堵成哑按钮」。 */
+    async 'dock-pane-tab'() {
+      const dockState = () => {
+        const el = q('.tt_dockPane')
+        const body = q('.tt_body')
+        if (el === null) return { present: false, hidden: null, display: null, width: 0, height: 0, rows: 0, title: '', termWidth: 0, termHeight: 0 }
+        return {
+          present: true,
+          hidden: el.dataset.dockHidden === '1',
+          display: getComputedStyle(el).display,
+          width: Math.round(el.getBoundingClientRect().width),
+          height: Math.round(el.getBoundingClientRect().height),
+          rows: qa('.tt_dockPaneBody .tt_sftpRow').length,
+          title: q('.tt_dockPaneTitle') === null ? '' : q('.tt_dockPaneTitle').textContent,
+          // 挂载位在下方占高度、在右侧占宽度：收起后终端该拿回对应的那一轴
+          termWidth: body === null ? 0 : Math.round(body.getBoundingClientRect().width),
+          termHeight: body === null ? 0 : Math.round(body.getBoundingClientRect().height),
+        }
+      }
+      const sftpButton = () => {
+        const btn = qa('.tt_connAct').find((b) => b.textContent.includes('SFTP'))
+        if (btn === undefined) throw new Error('连接栏没有「SFTP」按钮')
+        return btn
+      }
+
+      await openPanel()
+      await clickAdd()
+      await clickMenuItem('prod-web-01')
+      await waitFor(() => tabs().length === 2)
+      await clickAdd()
+      await clickMenuItem('staging-db')
+      await waitFor(() => tabs().length === 3)
+      await sleep(250)
+
+      // A = prod-web-01（第二个标签）：在它上面开文件浏览
+      const tabA = tabs()[1]
+      const tabB = tabs()[2]
+      tabA.click()
+      await sleep(250)
+      const sidA = sidOf(tabA)
+      sftpButton().click()
+      await waitFor(() => q('.tt_dockPaneBody .tt_sftpRow'), 5000)
+      await sleep(300)
+      const onA = dockState()
+      const cardOnA = q('.tt_dockPaneBody > .tt_sftpCard')
+      if (cardOnA === null) throw new Error('SFTP 卡片没有挂进挂载位')
+
+      // 切到 B：必须收起（且只是收起——DOM 还在，在途传输不会被掐断）
+      tabB.click()
+      await sleep(450)
+      const onB = dockState()
+      const cardAliveAfterSwitch = cardOnA.isConnected === true
+      const sidB = sidOf(tabB)
+
+      // 在 B 点「SFTP」：A 收起的面板不该把 B 的入口堵死（旧实现这里是哑按钮）
+      sftpButton().click()
+      await waitFor(() => {
+        const el = q('.tt_dockPane')
+        return el !== null && el.dataset.dockHidden !== '1'
+      }, 5000)
+      await waitFor(() => qa('.tt_dockPaneBody .tt_sftpRow').length > 1, 5000)
+      await sleep(300)
+      const onBOpened = dockState()
+      // 被顶掉的那块（A 的）应当真的收掉了，不留僵尸
+      const oldCardGone = cardOnA.isConnected !== true
+
+      window.__previewAssert = () => {
+        const problems = []
+        if (onA.hidden === true || onA.rows < 1) problems.push('在归属标签上 SFTP 没挂进挂载位：' + JSON.stringify(onA))
+        if (onB.hidden !== true) problems.push('切到另一个标签后挂载位没跟着收起：' + JSON.stringify(onB))
+        if (onB.display !== 'none') problems.push('收起态不是 display:none（' + String(onB.display) + '）')
+        if (onB.height !== 0 || onB.width !== 0) problems.push('收起态仍占位（width=' + String(onB.width) + ' height=' + String(onB.height) + '）')
+        if (onB.termHeight <= onA.termHeight && onB.termWidth <= onA.termWidth) {
+          problems.push('挂载位收起后终端没有拿回空间（宽 ' + String(onA.termWidth) + '→' + String(onB.termWidth)
+            + ' 高 ' + String(onA.termHeight) + '→' + String(onB.termHeight) + '）')
+        }
+        if (cardAliveAfterSwitch !== true) problems.push('收起时把面板 DOM 摘掉了（在途传输会被打断）')
+        if (onBOpened.hidden === true || onBOpened.rows < 1) problems.push('另一个标签上「SFTP」是哑的：' + JSON.stringify(onBOpened))
+        if (oldCardGone !== true) problems.push('新面板没把上一块收起（同时挂了两块）')
+        return problems.length === 0 ? null : problems.join('；')
+      }
+      window.__previewAssert.data = { sidA, sidB, onA, onB, onBOpened, cardAliveAfterSwitch, oldCardGone }
     },
     /* SFTP 落点断言：挂载位（dock）还是退回了对话框 */
     async 'sftp-fallback'() {

@@ -82,6 +82,8 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import xtermCss from '@xterm/xterm/css/xterm.css'
 import ttyCss from './tty.css'
+import { resolveDockOwner, dockPaneVisible } from './dock-owner.js'
+import { currentSessionCwd } from './current-session.js'
 
 /* ================================ CSS ================================ */
 
@@ -455,7 +457,8 @@ registerConnbarAction(({ tab, addAction }) => {
 })
 registerConnbarAction(({ tab, addAction }) => {
   if (!entryVisible) return
-  addAction(ICON_SFTP, 'SFTP', '打开该连接的文件浏览（SFTP）', () => openSftpBrowser(tab.spawnSpec))
+  // 归属这个标签：切到别的标签时文件浏览跟着收起（它连的是这个标签的那台主机）
+  addAction(ICON_SFTP, 'SFTP', '打开该连接的文件浏览（SFTP）', () => openSftpBrowser(tab.spawnSpec, tab.sid))
 })
 registerConnbarAction(({ bookName, addAction }) => {
   if (!entryVisible) return
@@ -718,12 +721,14 @@ function activeTab() {
   return activeSid !== null ? tabs.get(activeSid) : undefined
 }
 
-/** 当前 DSH 会话的工作目录（sessions 客户端服务快照）。 */
+/**
+ * 当前 DSH 会话的工作目录（sessions 客户端服务快照）——新开的标签就落在这里，
+ * 而不是宿主的启动目录。0.1.6 起列表快照没有 current 字段，取法见 current-session.js
+ * （改看 retainedBy.mainView，官方 dsh-client-ui-session 与本地 codegraph 同一判据）。
+ */
 function currentCwd() {
   try {
-    const snapshot = sessionsService?.list?.getSnapshot?.()
-    const cwd = snapshot?.byId?.[snapshot?.current]?.cwd
-    return typeof cwd === 'string' && cwd !== '' ? cwd : undefined
+    return currentSessionCwd(sessionsService?.list?.getSnapshot?.())
   } catch {
     return undefined
   }
@@ -1172,6 +1177,10 @@ function respawnTab(oldSid) {
 function closeTab(sid) {
   const tab = tabs.get(sid)
   if (tab === undefined) return
+  // 挂载位归属这个标签：标签都没了，面板不能再留着——收起态的面板 DOM 还在，
+  // 里面的 SFTP 在途传输 / docker 轮询会继续对着已经关掉的连接干活，而且它的
+  // 归属标签永远回不来（切不回这个标签），等于一块看不见的僵尸面板。
+  if (dockPane !== null && dockPane.ownerKey === sid) teardownDockPane(true)
   if (!tab.exited) sendFrame({ t: 'kill', sid })
   tabs.delete(sid)
   embeddedSids.delete(sid) // 兜底：嵌入终端正常走 disposeEmbedded，这里防漏
@@ -1346,6 +1355,10 @@ function disposeEmbedded(controller) {
  *     unmount 自己的 React root 等），随后才摘 DOM；
  *   - 消费者主动收起用返回值的 dispose()（幂等，不会再触发 onClose）；
  *   - v1 同时只挂一个 pane：后来的 mountPane 会先收掉前一个（并通知它）。
+ *   - 0.18.4 起每块 pane 记「归属标签」（`options.ownerSid`，默认当前活动标签）：
+ *     切到别的标签时整块收起、切回来恢复现场；标签被关掉时面板一并收掉。
+ *     挂载位是**连接级**的——凭证 / 目标来自打开它的那个标签，不认标签就会在切换后
+ *     把 A 主机的文件列表留在 B 标签底下（标题与标签对不上，最坏往错主机上传）。
  */
 const DOCK_DEFAULT_WIDTH = 460
 const DOCK_MIN_WIDTH = 280
@@ -1427,6 +1440,7 @@ function teardownDockPane(notify) {
  * 挂一个 pane。options：
  *   title（标题）· hint（标题右侧灰字）· side（'right' 默认 | 'bottom'）·
  *   size（初始尺寸 px：右侧 = 宽度，底部 = 高度）· min（最小尺寸 px）·
+ *   ownerSid（归属标签：省略 = 当前活动标签，null = 不隶属任何标签）·
  *   onClose（被 tty 收掉时的回调）
  * 返回 handle：element（消费者 render 的宿主）· setTitle / setHint ·
  *   expand / collapse / toggle / isCollapsed · dispose()。
@@ -1439,6 +1453,10 @@ function mountDockPane(options) {
   if (workEl === null) throw new Error('ttyPanel.mountPane：终端面板未就绪')
   if (dockPane !== null) teardownDockPane(true)
   ensureStyle()
+
+  // 归属标签：默认 = 此刻的活动标签（连接栏 SFTP / dsh-docker 的「容器」都走这条）。
+  // ownerSid: null 显式声明「不隶属任何标签」（面板开着但一个标签都没有的入口）。
+  const ownerKey = resolveDockOwner(options?.ownerSid, activeSid)
 
   const side = options?.side === 'bottom' ? 'bottom' : 'right'
   const minSize = Math.max(side === 'bottom' ? 120 : 200, Math.round(typeof options?.min === 'number' && Number.isFinite(options.min) ? options.min : dockMinSize(side)))
@@ -1478,6 +1496,8 @@ function mountDockPane(options) {
     collapsed: false,
     side,
     minSize,
+    /** 归属标签（sid，或「不隶属任何标签」的全局面板）：切换标签时据此显隐，见 syncDockPaneVisibility。 */
+    ownerKey,
     onClose: typeof options?.onClose === 'function' ? options.onClose : null,
   }
 
@@ -1543,7 +1563,29 @@ function mountDockPane(options) {
   dockPane = pane
   // setCollapsed 里的 applyDockGeometry 此时还没认领到 pane：挂上后再落一次宽度
   applyDockGeometry()
+  // 归属别的标签时挂完就收起（消费方照样 render，只是先看不见）
+  syncDockPaneVisibility()
   return pane
+}
+
+/**
+ * 让挂载位跟着活动标签走（0.18.4）：归属当前标签（或全局）时显示，否则整块收起。
+ *
+ * 只改显隐（`data-dock-hidden`）与 `.tt_work` 的排布方向，**不动 DOM、不碰消费者状态**
+ * ——隐藏期间消费方的 React 树 / 在途传输都保活，切回该标签即恢复现场。终端区尺寸
+ * 变化由既有的 ResizeObserver 接住，自动 refit 并把新行列数同步给 PTY。
+ */
+function syncDockPaneVisibility() {
+  const pane = dockPane
+  if (pane === null) return
+  if (dockPaneVisible(pane.ownerKey, activeSid)) {
+    delete pane.el.dataset.dockHidden
+    if (workEl !== null) workEl.dataset.side = pane.side
+    return
+  }
+  pane.el.dataset.dockHidden = '1'
+  // 没有可见的 pane 时不留方向标记：否则终端区空着还按 column 排版
+  if (workEl !== null) delete workEl.dataset.side
 }
 
 function switchTab(sid) {
@@ -1563,6 +1605,9 @@ function switchTab(sid) {
   applyStatsBar()
   renderTabbar()
   renderConnbar()
+  // 挂载位跟着标签走：SFTP 文件浏览 / 容器面板都是连接级的（凭证 / 目标来自打开它的
+  // 那个标签），切到别的标签必须收起——否则标题写着 A、底下标签是 B，最坏会往错主机上传
+  syncDockPaneVisibility()
   try {
     tab.fit.fit()
   } catch {
@@ -1766,7 +1811,7 @@ function openTunnelPopover(anchor, bookName) {
   pop.appendChild(listEl)
   const hint = document.createElement('span')
   hint.className = 'tt_cardHint'
-  hint.textContent = '增删/启停在 设置 → 插件 → 终端面板 的端口转发区块维护'
+  hint.textContent = '增删/启停在 插件配置 → 终端面板 的端口转发区块维护'
   pop.appendChild(hint)
   document.body.appendChild(pop)
   tunnelPopoverEl = pop
@@ -2182,6 +2227,8 @@ function renderAddMenuItems(menu) {
     browse.innerHTML = ICON_FOLDER
     browse.addEventListener('click', () => {
       closeAddMenu()
+      // 归属当前活动标签（与连接栏那条同一个规则）：切走收起、切回恢复。这里刻意不传
+      // null —— 面板明明在眼前却「切了标签也不跟着走」，正是用户报的那个 bug
       openSftpBrowser({ name: entry.name })
     })
     const edit = document.createElement('button')
@@ -2770,6 +2817,7 @@ function openSshDialog(entry) {
     }
     if (fwdCheck.checked) spec.agentForward = true
     closeSshDialog()
+    // 连接对话框里填的临时规格：同样归属当前活动标签（规则统一，见「+」菜单那条）
     openSftpBrowser(spec)
   })
   actionsSecondary.appendChild(sftpBtn)
@@ -3008,8 +3056,9 @@ async function saveSshHostUpdate(originalName, entry) {
  * 字节不经过浏览器）；本机侧浏览/改名/删除走同路由，远程侧复用单窗体的
  * /api/dsh-tty/sftp/*。与单窗体共用 sftpDialogEl 互斥与 Esc 关闭。
  */
-function openSftpDual(spec, label) {
-  if (isSftpOpen()) return
+function openSftpDual(spec, label, ownerKey) {
+  const owner = resolveDockOwner(ownerKey, activeSid)
+  if (isSftpOpen(owner)) return
 
   const card = document.createElement('div')
   card.className = 'tt_sftpDualCard'
@@ -3026,7 +3075,7 @@ function openSftpDual(spec, label) {
   titleClose.className = 'tt_close'
   titleClose.title = '关闭'
   titleClose.innerHTML = ICON_CLOSE
-  titleClose.addEventListener('click', closeSftpDialog)
+  titleClose.addEventListener('click', () => closeSftpDialog(owner))
   titleRow.appendChild(title)
   titleRow.appendChild(titleClose)
   card.appendChild(titleRow)
@@ -3502,7 +3551,7 @@ function openSftpDual(spec, label) {
   // 双栏两栏并排，给足高度（面板卡片高度的 56%，还能自己拖高）
   const cardRect = panelCardRect()
   const dualSize = cardRect === null ? 420 : Math.round(cardRect.height * 0.56)
-  mountSftpSurface(card, 'SFTP 双栏 · ' + label, dualSize)
+  mountSftpSurface(card, 'SFTP 双栏 · ' + label, dualSize, owner)
   void panes.local.loadDir('')
   void panes.remote.loadDir('')
 }
@@ -3511,27 +3560,52 @@ function openSftpDual(spec, label) {
 
 /** 模态宿主（.tt_sshBackdrop，覆盖整个终端面板）。 */
 let sftpDialogEl = null
-/** 抽屉宿主（ttyPanel 的右侧 pane，0.16.0）：终端保持可见时走这条。 */
+/** 挂载位宿主（ttyPanel 的 pane，0.16.0）：终端保持可见时走这条。 */
 let sftpDockPane = null
 
-const isSftpOpen = () => sftpDialogEl !== null || sftpDockPane !== null
+/**
+ * 「眼前那块 SFTP 面板」的归属键。
+ *
+ * 省略参数的入口（Esc / 最小化 / 关面板 / 卡片的 ✕）都该关掉**看得见的那块**：
+ * 从「+」菜单按连接簿条目打开的面板归属是全局（ownerSid: null），此时活动标签的
+ * sid 对不上它——按活动标签去查会「装看不见」，于是 Esc 关不掉一块明晃晃的面板。
+ */
+function visibleSftpOwner() {
+  if (sftpDockPane !== null && dockPaneVisible(sftpDockPane.ownerKey, activeSid)) return sftpDockPane.ownerKey
+  return resolveDockOwner(undefined, activeSid)
+}
 
 /**
- * 把 SFTP 卡片放进宿主（0.16.0）：终端面板开着**且右侧挂载位空着**时挂成抽屉，
- * 终端继续可见可用；否则（面板没开 / 已被别的面板占用）退回原来的居中对话框。
- * 只挂不占用别人的位置——抽屉里已有 dsh-docker 面板时不会把它挤掉。
+ * 这个归属标签下的 SFTP 是否已经开着。
+ *
+ * 按归属判定（0.18.4）：A 标签收起的文件浏览**不该**让 B 标签连接栏的「SFTP」变成哑
+ * 按钮——在 A 开了 SFTP、切到 B 再点 SFTP 毫无反应，正是此前的现象之一。模态那份是
+ * 全局的（它盖住整个面板，谁点都得先关掉它）。
  */
-function mountSftpSurface(card, title, height) {
-  if (modalEl !== null && !minimized && workEl !== null && dockPane === null) {
+const isSftpOpen = (ownerKey = visibleSftpOwner()) =>
+  sftpDialogEl !== null || (sftpDockPane !== null && sftpDockPane.ownerKey === ownerKey)
+
+/**
+ * 把 SFTP 卡片放进宿主（0.16.0）：终端面板开着**且本标签的挂载位空着**时挂成挂载位，
+ * 终端继续可见可用；否则（面板没开 / 已被别的面板占用）退回原来的居中对话框。
+ * 只挂不占用别人的位置——同一标签上已有 dsh-docker 的容器面板时不会把它挤掉。
+ *
+ * 0.18.4：占用者若是**别的标签**收起的面板，不算占用——那块面板本来就不该在眼前，
+ * 挂载会把它收掉（`mountDockPane` 只保留一个 pane）。
+ */
+function mountSftpSurface(card, title, height, ownerKey) {
+  const owner = resolveDockOwner(ownerKey, activeSid)
+  const sameTabBusy = dockPane !== null && dockPane.ownerKey === owner
+  if (modalEl !== null && !minimized && workEl !== null && !sameTabBusy) {
     try {
       // 文件列表是横向宽表（双栏更是两栏并排）：挂**下方**全宽比右侧窄栏好用，
       // 终端也因此保住宽度（长命令行不会折行）
-      const pane = mountDockPane({ title, side: 'bottom', size: height, min: 200, onClose: () => closeSftpDialog() })
+      const pane = mountDockPane({ title, side: 'bottom', size: height, min: 200, ownerSid: owner, onClose: () => closeSftpDialog(owner) })
       pane.element.appendChild(card)
       sftpDockPane = pane
       return
     } catch (error) {
-      console.warn('[dsh-tty] SFTP 挂到右侧侧栏失败，回退对话框：' + (error instanceof Error ? error.message : String(error)))
+      console.warn('[dsh-tty] SFTP 挂到终端挂载位失败，回退对话框：' + (error instanceof Error ? error.message : String(error)))
     }
   }
   const backdrop = document.createElement('div')
@@ -3969,9 +4043,14 @@ async function collectDroppedFiles(dataTransfer) {
  * specInput = {name}（连接簿条目，服务端按连接簿解析凭证）或内联 SSH 字段
  * （SSH 连接对话框「文件浏览」带字段进来）；每个请求都带全 spec，凭证只走
  * loopback POST 体 / meta 头，不进 URL。下载经浏览器内存（大文件建议终端 scp）。
+ *
+ * ownerSid（0.18.4）：这次浏览归属哪个标签——**所有入口都归属「打开它的那一刻的活动标签」**
+ * （连接栏「SFTP」、连接簿条目的 📂、SSH 对话框 / 设置卡片的「文件浏览」用同一套规则，
+ * 例如切走收起、切回恢复）；面板开着但一个标签都没有时归为「不隶属任何标签」，永远可见。
  */
-function openSftpBrowser(specInput) {
-  if (isSftpOpen()) return
+function openSftpBrowser(specInput, ownerSid) {
+  const ownerKey = resolveDockOwner(ownerSid, activeSid)
+  if (isSftpOpen(ownerKey)) return
   const raw = specInput !== null && typeof specInput === 'object' ? specInput : {}
   const spec = {}
   if (typeof raw.name === 'string' && raw.name !== '') {
@@ -3987,7 +4066,7 @@ function openSftpBrowser(specInput) {
   const label = spec.name ?? (spec.username !== undefined ? spec.username + '@' + String(spec.host ?? '') : String(spec.host ?? ''))
   // 双栏风格（设置 sftpStyle=dual）：转交双栏浏览器，共用互斥锁与关闭逻辑
   if (sftpStyleCache === 'dual') {
-    openSftpDual(spec, label)
+    openSftpDual(spec, label, ownerKey)
     return
   }
 
@@ -4006,7 +4085,7 @@ function openSftpBrowser(specInput) {
   titleClose.className = 'tt_close'
   titleClose.title = '关闭'
   titleClose.innerHTML = ICON_CLOSE
-  titleClose.addEventListener('click', closeSftpDialog)
+  titleClose.addEventListener('click', () => closeSftpDialog(ownerKey))
   titleRow.appendChild(title)
   titleRow.appendChild(titleClose)
   card.appendChild(titleRow)
@@ -4506,19 +4585,27 @@ function openSftpBrowser(specInput) {
     void runTask('加载中…', () => loadDir(target))
   })
   const singleRect = panelCardRect()
-  mountSftpSurface(card, 'SFTP · ' + label, singleRect === null ? 340 : Math.round(singleRect.height * 0.46))
+  mountSftpSurface(card, 'SFTP · ' + label, singleRect === null ? 340 : Math.round(singleRect.height * 0.46), ownerKey)
   void runTask('连接中…', () => loadDir(''))
 }
 
-function closeSftpDialog() {
-  if (!isSftpOpen()) return
+/**
+ * 关掉这个归属标签下的 SFTP（挂载位或模态兜底）。
+ *
+ * ownerKey 省略 = 当前活动标签：Esc / 最小化 / 关面板这些「顺手关掉眼前的东西」的
+ * 入口都不用带参数。归属别的标签的**收起**面板不在这里被关掉——它不在眼前，关它
+ * 等于悄悄掐断用户在另一台机器上的上传。
+ */
+function closeSftpDialog(ownerKey) {
+  const owner = ownerKey === undefined ? visibleSftpOwner() : ownerKey
+  const dialogEl = sftpDialogEl
+  const pane = sftpDockPane !== null && sftpDockPane.ownerKey === owner ? sftpDockPane : null
+  if (dialogEl === null && pane === null) return
   // 在途传输随窗体一起收掉（否则关了界面、服务端还在写远端半截文件）
   cancelActiveTransfer()
-  const dialogEl = sftpDialogEl
-  const pane = sftpDockPane
   // 先清引用：pane 的 ✕ 会经 onClose 回到这里，重复调用要是幂等的
   sftpDialogEl = null
-  sftpDockPane = null
+  if (pane !== null) sftpDockPane = null
   if (dialogEl !== null) dialogEl.remove()
   if (pane !== null) pane.dispose()
 }
@@ -5329,8 +5416,12 @@ const CHEVRON_PATH = 'M11.8486 5.5L11.4238 5.92383L8.69727 8.65137C8.44157 8.907
  * 注意：React 必须取自 module loader 的 require（宿主 GUI 同一个 React 实例），
  * 不能把独立副本打进 bundle（hooks 依赖渲染器的 dispatcher）。
  */
-function TtySettingsCard() {
-  const [open, setOpen] = React.useState(false)
+function TtySettingsCard(props) {
+  // DSH ≥0.1.6 的插件配置页把同一条目按 view 渲染两次：summary 一句话摘要、page 完整表单。
+  // 旧版（≤0.1.5）的 settings.plugin.item 卡片不带 view，走原有可折叠卡片分支。
+  const view = props && props.view
+  const pageView = view === 'page'
+  const [open, setOpen] = React.useState(pageView)
   const [form, setForm] = React.useState(null)
   const [loaded, setLoaded] = React.useState(false)
   const [saving, setSaving] = React.useState(false)
@@ -6031,6 +6122,8 @@ function TtySettingsCard() {
     setEditError('')
     const spec = collectEditSpec()
     if (spec === null) return
+    // 设置卡片里按表单填的规格浏览：规则同上——归属当前活动标签（面板没开时本来就走
+    // 居中对话框，这条路径用不到归属）
     openSftpBrowser(spec)
   }
 
@@ -6157,10 +6250,15 @@ function TtySettingsCard() {
    */
   const winHost = form?.platform === 'win32'
 
-  return jsxs('li', {
-    className: open ? 'tt_card tt_cardOpen' : 'tt_card',
+  if (view === 'summary') {
+    return 'xterm 终端面板：多标签页、断线自动重连、cwd 跟随会话、SSH 连接簿与主机指纹钉扎、tmux 会话持久化。'
+  }
+
+  // page 视图：新页面自己画标题/图标/面包屑，这里只交表单本体，不渲染卡片头。
+  return jsxs(pageView ? 'div' : 'li', {
+    className: pageView ? 'tt_pageHost' : (open ? 'tt_card tt_cardOpen' : 'tt_card'),
     children: [
-      jsxs('button', {
+      pageView ? null : jsxs('button', {
         type: 'button',
         className: 'tt_cardHeader',
         'aria-expanded': open,
@@ -6185,7 +6283,7 @@ function TtySettingsCard() {
           }),
         ],
       }),
-      open ? jsxs('div', {
+      (pageView || open) ? jsxs('div', {
         className: 'tt_cardBody',
         children: [
           form === null
@@ -6485,6 +6583,16 @@ function TtySettingsCard() {
 
 
     exports.inject = ['slots', 'sessions']
+
+    /**
+     * DSH ≥0.1.6-alpha.2 的行配置 key：`<bundle 包名>#<行 id>`，行 id 取自 bundle 的
+     * cordis.patch.yml。独立安装时 bundle 是本包，装全家桶时是 @hyzyn/dsh-all —— 两个都注册，
+     * 未命中的那个只是躺在 ledger 里，不会渲染。
+     */
+    const ROW_CONFIG_KEYS = [
+      '@hyzyn/dsh-tty#tty',
+      '@hyzyn/dsh-all#tty',
+    ]
     exports.apply = (ctx) => {
       sessionsService = ctx.sessions
       /*
@@ -6526,6 +6634,23 @@ function TtySettingsCard() {
       setEntryVisible(true)
       // 挂载时拉一次 config：预热连接簿缓存 + 驱动入口显隐（失败静默，各入口打开时会再拉）
       void refreshSshHosts()
+      // DSH ≥0.1.6-alpha.2：侧边栏「插件」页里该行的配置页。插槽不存在时 inject 不会触发，
+      // 因此在旧版上完全无副作用，一份代码同时兼容两代。
+      for (const key of ROW_CONFIG_KEYS) {
+        ctx.slots.inject('plugins.row.config', () => ctx.slots.register({
+          name: 'plugins.row.config',
+          key,
+        }, TtySettingsCard))
+      }
+      // DSH ≥0.1.6：设置里与「通用设置」平级的「插件配置」页（子 slot 由
+      // @hyzyn/dsh-kit-settings 声明）。不传 view，卡片走各自原有的可折叠形态。
+      ctx.slots.inject('settings.kit.item', () => ctx.slots.register({
+        name: 'settings.kit.item',
+        id: 'tty',
+        order: 80,
+        label: () => "终端面板",
+      }, TtySettingsCard))
+      // DSH ≤0.1.5：设置 → 插件 的「插件配置」标签页，keyed 插槽按 settings 命名空间派发。
       ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
         name: 'settings.plugin.item',
         // settings.plugin.item 是 keyed 插槽：key 必须是该卡片所编辑的 settings 命名空间
@@ -6603,7 +6728,13 @@ function TtySettingsCard() {
         isOpen() {
           return modalEl !== null && !minimized
         },
-        /** 挂一个右侧 pane（同一时刻只有一个，返回的 handle 见函数注释）。 */
+        /**
+         * 挂一块 pane（同一时刻只有一个，返回的 handle 见函数注释）。
+         *
+         * `options.ownerSid`（0.18.4，可选）：这块 pane 归属哪个标签——默认当前活动
+         * 标签；切换标签时归属别的标签的 pane 会**收起**（DOM 与你 render 的树都保活，
+         * 切回来即恢复），传 `null` 表示不隶属任何标签（永远可见）。
+         */
         mountPane(options) {
           return mountDockPane(options)
         },

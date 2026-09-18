@@ -61,7 +61,7 @@ function classifyError(message) {
 /** 与 spawnSsh 的 applyHostKeyPolicy 一致的 TOFU 指引文案。 */
 function mismatchMessage(target, host, port, known, current) {
     return (`SSH 主机密钥指纹变更：${target} 已记录 sha256:${known}，本次为 sha256:${current}。` +
-        '可能是主机重装或换钥匙，也可能是中间人（MITM）冒充；确认安全后，到 设置 → 插件 → 终端面板 → SSH 主机密钥记录 删除该主机再重连。');
+        '可能是主机重装或换钥匙，也可能是中间人（MITM）冒充；确认安全后，到 插件配置 → 终端面板 → SSH 主机密钥记录 删除该主机再重连。');
 }
 /** 收集 hostVerifier 收到的指纹（ssh2 可能对多 host key 调用多次，取最后一次）。 */
 function makeHostKeyVerifier(options) {

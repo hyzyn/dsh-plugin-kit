@@ -293,7 +293,7 @@ export function applyHostKeyPolicy(options: {
     }
     hostKeyMismatch =
       `SSH 主机密钥指纹变更：${target} 已记录 sha256:${known}，本次为 sha256:${hash}。` +
-      '可能是主机重装或换钥匙，也可能是中间人（MITM）冒充；确认安全后，到 设置 → 插件 → 终端面板 → SSH 主机密钥记录 删除该主机再重连。'
+      '可能是主机重装或换钥匙，也可能是中间人（MITM）冒充；确认安全后，到 插件配置 → 终端面板 → SSH 主机密钥记录 删除该主机再重连。'
     logger?.warn(`[dsh-tty] ${hostKeyMismatch}`)
     return false
   }
