@@ -221,6 +221,8 @@ function makeClientCtx(options = {}) {
     sentPrompts: [],
     drafts: [],
     notices: [],
+    /** 宿主侧的标签关闭钩子（registerCloseHandler）：用例用它模拟用户点标签栏的 ✕。 */
+    closeHandlers: new Map(),
   }
   const ctx = {
     slots: {
@@ -326,7 +328,18 @@ function makeClientCtx(options = {}) {
         callback({
           slots: ctx.slots,
           sidebarRightTabs: { register: () => () => {} },
-          sidebarRight: { openTab: (kind, openOptions) => { state.openTabs.push({ kind, options: openOptions ?? {} }) } },
+          sidebarRight: {
+            openTab: (kind, openOptions) => { state.openTabs.push({ kind, options: openOptions ?? {} }) },
+            /*
+             * 宿主关闭标签时先回收插件资源（sidebarRight 的 closeIn → removeAfterCleanup）。
+             * 用例用它模拟「用户点了标签栏上的 ✕」——真实宿主里这是**唯一**能把关闭
+             * 通知到插件的地方：面板自己的 onClose 收不到这个动作。
+             * 传 sidebarRightCloseHook: false 可模拟没有该 API 的老宿主（≤0.1.5）。
+             */
+            ...(options.sidebarRightCloseHook === false
+              ? {}
+              : { registerCloseHandler: (kind, handler) => { state.closeHandlers.set(kind, handler); return () => { state.closeHandlers.delete(kind) } } }),
+          },
         })
       }
       return () => {}
@@ -578,6 +591,46 @@ await test('粘性：订阅接线（打开 → 切会话重开 → 同会话不�
   assert.equal(state.openTabs.length, 2, '切会话应在新的会话里重开标签')
   for (const notify of state.sessionListeners) notify()
   assert.equal(state.openTabs.length, 2, '同一会话重复通报不该再开')
+})
+
+await test('粘性：关掉标签后切会话不再把它带回来（标签 ✕ 由宿主关闭，插件收不到 onClose）', () => {
+  /*
+   * 实测的回归：用户点标签栏上的 ✕ 关掉 Docker，切会话它又冒出来；再关、切回原会话
+   * 又冒一次。原因是「已关闭」只写进了面板自己的 onClose，而标签栏的 ✕ 是宿主直接
+   * 摘标签的——插件必须登记 registerCloseHandler 才知道用户真的关掉了。
+   */
+  const exports_ = registration.factory((spec) => SEED[spec])
+  const { ctx, state } = makeClientCtx({ sidebarRightTabs: true })
+  exports_.apply(ctx)
+  exports_.__carrier.open({})
+  assert.equal(state.openTabs.length, 1, '打开时应开标签')
+
+  const closeHook = state.closeHandlers.get('docker')
+  assert.equal(
+    typeof closeHook,
+    'function',
+    '没登记关闭钩子：关掉标签后粘性意图还在，切会话会把它带回来',
+  )
+  closeHook('session-smoke', { id: 'tab', kind: 'docker' })
+
+  state.sessionCurrent = 'session-two'
+  for (const notify of state.sessionListeners) notify()
+  assert.equal(state.openTabs.length, 1, '用户已经关掉了，切会话不该再开')
+  // 再切一次也不该复活
+  state.sessionCurrent = 'session-three'
+  for (const notify of state.sessionListeners) notify()
+  assert.equal(state.openTabs.length, 1, '切第三次也不该复活')
+})
+
+await test('粘性：老宿主（没有 registerCloseHandler）不因缺 API 报错，行为保持原样', () => {
+  const exports_ = registration.factory((spec) => SEED[spec])
+  const { ctx, state } = makeClientCtx({ sidebarRightTabs: true, sidebarRightCloseHook: false })
+  assert.doesNotThrow(() => exports_.apply(ctx))
+  exports_.__carrier.open({})
+  assert.equal(state.openTabs.length, 1, '打开照常')
+  state.sessionCurrent = 'session-two'
+  for (const notify of state.sessionListeners) notify()
+  assert.equal(state.openTabs.length, 2, '拿不到钩子时保持既有行为（切会话仍带过去）')
 })
 
 await test('日志过滤对齐：级别门槛的「续行继承」对行对象与纯文本行是同一套', () => {

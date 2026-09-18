@@ -6065,9 +6065,28 @@ window.__ModuleLoader__.load({
           key: DOCKER_TAB_ID,
         }, DockerTabBody))
         dockerTabApi = tabCtx.sidebarRight ?? null
+        /*
+         * 标签被关掉 = 用户明确说「我不要了」→ 撤销粘性意图（dockerPanelWanted）。
+         *
+         * 为什么必须登记在宿主这里：标签栏上的 ✕ 是**宿主**（sidebarRight 的
+         * closeIn → removeAfterCleanup）直接把标签摘掉的，插件面板自己的 onClose
+         * 收不到通知。实测症状：关掉 Docker 标签后切会话，它又冒出来；再关、切回原
+         * 会话，又冒一次——「已关闭」没被记住，于是每次切会话都按「用户想要容器面板」
+         * 把它带过去。
+         *
+         * 宿主给的 registerCloseHandler(kind, handler) 覆盖所有**显式移除**路径
+         * （标签 ✕ / 被新标签顶掉），在这里置 false 才算数。DSH ≤0.1.5 没有这个 API
+         * （那时只有面板自己的 ✕ 能撤销），拿不到就保持原行为。
+         */
+        const disposeCloseIntent = typeof tabCtx.sidebarRight?.registerCloseHandler === 'function'
+          ? tabCtx.sidebarRight.registerCloseHandler(DOCKER_TAB_KIND, () => { dockerPanelWanted = false })
+          : null
 
         return () => {
           dockerTabApi = null
+          if (disposeCloseIntent !== null) {
+            try { disposeCloseIntent() } catch { /* 已释放 */ }
+          }
           try { disposeBody() } catch { /* 已释放 */ }
           try { disposeType() } catch { /* 已释放 */ }
         }
