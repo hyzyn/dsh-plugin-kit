@@ -97,7 +97,10 @@ already open with `tail`, so history refills itself.
 and `rightbar.session` both declare `scope: 'session'`), so a tab opened in session A does not exist in session B.
 The panel inspects hosts, though, and losing it on a session switch is pure loss — so the plugin additionally
 keeps a "the user wants this open" intent: **switching sessions reopens the tab in the new session**, and only
-clicking the tab's ✕ stops that. The panel follows the person, not the session.
+clicking the tab's ✕ stops that. The panel follows the person, not the session. That ✕ is executed by the
+**host** (`sidebarRight` closes the tab itself), so the plugin learns about it through
+`registerCloseHandler` — relying on the panel's own `onClose` alone would miss the close, and every session
+switch would bring the tab back after the user had just dismissed it.
 
 **Dock fallback carrier** (right of the terminal):
 
