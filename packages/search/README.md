@@ -101,6 +101,7 @@ pnpm --filter @hyzyn/dsh-search preview -- --list                # 列场景
 ## 说明
 
 - 浏览器半体依赖核心客户端 `sessions` 服务（读取最近会话、点击打开会话），并通过 DOM 注入侧边栏入口；
+- 「点会话打开」是**视图导航**：DSH 0.1.6 把它挪给了 `uiWorkspace.openSession(id)`（会话域的 `sessions.open()` 已从契约移除），老宿主仍走 `sessions.open()`——只认老路径的实现会在新宿主上把点会话变成一句「当前环境无法直接打开会话」，肉眼像「点了没反应」；
 - 关闭面板时会还原焦点，但**跳过侧边栏入口内部**的元素（入口的 `focusin` 就是打开路径，还焦点会给「刚关掉又弹回来」），并在 250ms 内屏蔽入口 focusin 兜底；
 - 「新会话」优先调用 GUI 自己的 `uiWorkspace.startSession()`（复用当前工作区的空会话 → 创建 → 选中，一步到位）；拿不到该服务时退回点侧边栏「新建会话」按钮，最后才自己 `sessions.create()` + `sessions.open()`——只 create 不 open 会表现为「点了没反应」；
 - 「打开文件夹」按侧边栏「添加工作区」按钮的 aria-label 定位，目录选择器插件缺席时按钮不存在，该行自动隐藏；

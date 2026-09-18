@@ -96,6 +96,7 @@ Scenes: `empty` (content on open), `query` (mixed results after a keyword is typ
 ## Notes
 
 - The browser half depends on the core client `sessions` service (to read recent sessions and to open a session on click), and injects the sidebar entry through the DOM;
+- "Click a session to open it" is **view navigation**: DSH 0.1.6 moved it to `uiWorkspace.openSession(id)` (the session domain's `sessions.open()` left the contract), while older hosts still go through `sessions.open()`. An implementation that only knows the legacy call turns a click into "cannot open a session in this environment" on a new host — indistinguishable from "nothing happened";
 - Closing the panel restores focus, but **skips elements inside the sidebar entry** (the entry's `focusin` is the open path, so restoring focus there would mean "closed it only for it to pop straight back"), and blocks the entry's focusin within 250ms as a fallback;
 - "New session" calls the GUI's own `uiWorkspace.startSession()` first (reuse the current workspace's empty session → create → select, all in one step); when that service is unavailable it falls back to clicking the sidebar "New Session" button, and only as a last resort does it call `sessions.create()` + `sessions.open()` itself — create without open shows up as "clicked but nothing happened";
 - "Open folder" is located by the aria-label of the sidebar "Add workspace" button; when the directory picker plugin is absent the button does not exist, and the row is hidden automatically;

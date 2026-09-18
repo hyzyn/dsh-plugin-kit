@@ -130,7 +130,16 @@
     },
   }
 
-  const opened = { id: null }
+  /*
+   * 会话域 / 视图导航的桩，**按真实宿主形状**分两代：
+   *   - 默认（DSH ≥0.1.6）：视图选中项搬去了 uiWorkspace，`sessions.open()` 也随之下线
+   *     —— 夹具要是照旧提供 sessions.open，客户端「只认 sessions.open」的 bug 就永远
+   *     照不出来（真机上表现为点会话只弹「当前环境无法直接打开会话」）；
+   *   - `scenario=legacy`（≤0.1.5 老宿主）：只有 sessions.open，没有 uiWorkspace.openSession。
+   * 两条路径都把 id 记进 opened 并标注 via，用例据此断言走的是哪一条。
+   */
+  const legacyHost = scenario === 'legacy'
+  const opened = { id: null, via: null }
   const calls = { newSession: 0, created: 0 }
   const ctx = {
     effect: (fn) => {
@@ -139,12 +148,13 @@
     },
     sessions: {
       list: sessionStore,
-      open: (id) => { opened.id = id },
+      ...(legacyHost ? { open: (id) => { opened.id = id; opened.via = 'sessions.open' } } : {}),
       create: () => { calls.created += 1; return Promise.resolve('sess-new') },
     },
-    // dsh-client-ui-workspace 注册的客户端服务：真正的「新会话」流程走这里
+    // dsh-client-ui-workspace 注册的客户端服务：真正的「新会话 / 打开会话」流程走这里
     uiWorkspace: {
       startSession: () => { calls.newSession += 1; return Promise.resolve() },
+      ...(legacyHost ? {} : { openSession: (id) => { opened.id = id; opened.via = 'uiWorkspace.openSession' } }),
     },
     // 客户端 slots 服务（SlotRegistry）：设置一级大类从 settings.section 列表槽实时枚举
     slots: {
@@ -261,6 +271,12 @@
       key(input, { key: 'Enter' })
       await sleep(80)
       check('↵ 打开首项', window.__previewOpened.id === (scenario === 'query' ? 'sess-a' : 'sess-1'))
+      // 打开会话是**视图导航**：新宿主走 uiWorkspace.openSession（会话域已无 open），
+      // 老宿主才回落 sessions.open —— 只认老路径的实现会在这儿露出来
+      check(
+        '打开会话的走法跟着宿主版本（0.1.6 走 uiWorkspace，老宿主回落 sessions.open）',
+        window.__previewOpened.via === (legacyHost ? 'sessions.open' : 'uiWorkspace.openSession'),
+      )
       check('打开后关闭面板', document.querySelector('.gs_palette') === null)
       input = await openPalette()
     }

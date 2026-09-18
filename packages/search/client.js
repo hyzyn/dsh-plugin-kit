@@ -396,9 +396,11 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * GUI 自己的「新会话」服务（dsh-client-ui-workspace 注册的 cordis Service）。
+     * GUI 自己的「新会话 / 打开会话」服务（dsh-client-ui-workspace 注册的 cordis Service）。
      * 它才会复用当前工作区的空会话、创建后选中并在主区切过去；只调 sessions.create()
      * 是「建了但不选」，用户看到的就是点击没反应。
+     *
+     * 0.1.6 起「打开会话」也归它（`openSession`）——会话域的 `sessions.open()` 已移除。
      */
     function uiWorkspaceService() {
       try {
@@ -406,7 +408,9 @@ window.__ModuleLoader__.load({
         if (!ctx) return undefined
         let service = typeof ctx.get === 'function' ? ctx.get('uiWorkspace') : undefined
         if (service === undefined) service = ctx.uiWorkspace
-        return service !== undefined && service !== null && typeof service.startSession === 'function' ? service : undefined
+        if (service === undefined || service === null) return undefined
+        // 两个能力任一可用即可（老版本 uiWorkspace 可能只有 startSession）
+        return typeof service.startSession === 'function' || typeof service.openSession === 'function' ? service : undefined
       } catch {
         return undefined
       }
@@ -560,7 +564,7 @@ window.__ModuleLoader__.load({
     const FALLBACK_SECTIONS = [
       { id: 's-general', kind: 'section', name: '通用设置', titles: ['通用设置', 'General'], keywords: ['general', '通用', '设置', '常规', '基础'], description: '界面与工具的通用选项' },
       { id: 's-models', kind: 'section', name: '模型', titles: ['模型', 'Models'], keywords: ['model', 'models', '模型', '提供商', 'provider', '推理'], description: '模型提供商与模型列表管理' },
-      { id: 's-plugins', kind: 'section', name: '插件', titles: ['插件', 'Plugins'], keywords: ['plugin', 'plugins', '插件', '扩展'], description: '插件配置与插件清单' },
+      { id: 's-plugins', kind: 'section', name: '内置插件', titles: ['内置插件', 'Built-in plugins'], keywords: ['plugin', 'plugins', '插件', '内置插件', '扩展'], description: '插件清单与插件管理' },
       { id: 's-agent-presets', kind: 'section', name: 'Agent 预设', titles: ['Agent 预设', 'Agent presets'], keywords: ['agent', 'preset', '预设', 'agent preset', 'agentpresets'], description: '预设方案与角色模板' },
     ]
 
@@ -899,15 +903,27 @@ window.__ModuleLoader__.load({
 
     /* ================================ 打开条目 ================================ */
 
+    /**
+     * 打开会话 = 一次**视图导航**。
+     *
+     * DSH 0.1.6 把视图选中项搬出了会话域（会话控制器自己的注释：「view selection remains
+     * outside the Controller」），`sessions.open()` 也随之从契约里消失——命令面板于是
+     * 全部走「当前环境无法直接打开会话」那条 toast，点会话没反应且看不出为什么。
+     * 新宿主用 `uiWorkspace.openSession(target)`；老宿主（≤0.1.5）仍只有 `sessions.open`。
+     */
     function openSession(id) {
+      const query = state.query
+      const uiWorkspace = uiWorkspaceService()
       const sessions = activeCtx && activeCtx.sessions
-      if (!sessions || typeof sessions.open !== 'function') {
+      const canOpenViaWorkspace = uiWorkspace !== undefined && typeof uiWorkspace.openSession === 'function'
+      const canOpenViaSessions = sessions !== undefined && sessions !== null && typeof sessions.open === 'function'
+      if (!canOpenViaWorkspace && !canOpenViaSessions) {
         toast('当前环境无法直接打开会话', 'error')
         return
       }
-      const query = state.query
       try {
-        sessions.open(id)
+        if (canOpenViaWorkspace) uiWorkspace.openSession(id)
+        else sessions.open(id)
         closePalette()
         jumpToSessionText(query)
       } catch (error) {
@@ -1346,7 +1362,70 @@ window.__ModuleLoader__.load({
       return null
     }
 
+    /**
+     * 命令面板里的「设置卡片」条目如何落到真实界面。
+     *
+     * DSH ≤0.1.5：插件的设置卡片在 **设置 → 插件 → 插件配置** 标签页里，按卡片标题点开折叠。
+     * DSH ≥0.1.6-alpha.2：配置搬到了**侧边栏「插件」页**（ui-plugin-manager）——每个插件是一条
+     * bundle 行，点进该插件后，行的「配置」入口（aria-label="配置 <行 id>"）打开配置页。
+     * 因此先走新路径，失败再退回旧路径，两代都能跳。
+     */
+
+    /** 命令面板条目标题 → 插件管理页里的插件短名。 */
+    const PLUGIN_MANAGER_IDS = [
+      ['MCP 服务器配置', 'mcp'],
+      ['Prompt 管理', 'prompt'],
+      ['环境变量 / 密钥管理', 'env'],
+      ['Profile 管理', 'profile'],
+      ['RSS / 新闻聚合', 'rss'],
+      ['Codegraph 集成', 'codegraph'],
+      ['Docker 容器面板', 'docker'],
+    ]
+
+    /** 文本**完全相等**的按钮（findButtonByText 是 includes，短名会误配，这里要精确）。 */
+    function findExactButton(texts, scope) {
+      const root = scope || document
+      for (const btn of root.querySelectorAll('button')) {
+        const text = (btn.textContent || '').replace(/\s+/g, ' ').trim()
+        if (text !== '' && texts.some((item) => text === item)) return btn
+      }
+      return null
+    }
+
+    /** 侧边栏一级入口（新版的「插件」页就在侧边栏，与终端 / 容器同级）。 */
+    function findSidebarEntry(texts) {
+      const scope = document.querySelector('[data-pane="sidebar"], [class*="sidebar"]') || document
+      return findExactButton(texts, scope) || findExactButton(texts, document)
+    }
+
+    /** 走 DSH ≥0.1.6 的侧边栏「插件」页打开某个插件的配置页。 */
+    async function openPluginManagerCard(titleTexts) {
+      const id = PLUGIN_MANAGER_IDS.find(([title]) => titleTexts.includes(title))
+      const entry = findSidebarEntry(['插件', 'Plugins'])
+      if (entry === null && id === undefined) return false
+      if (entry !== null) {
+        entry.click()
+        const ready = await waitFor(() => {
+          const text = document.body.textContent || ''
+          return text.includes('添加插件') || text.includes('Add plugin')
+        })
+        if (ready === null) return false
+      }
+      if (id === undefined) return false
+      const pkg = await waitFor(() => findExactButton([id[1]]))
+      if (pkg === null) return false
+      pkg.click()
+      const configure = await waitFor(() => (
+        document.querySelector('[aria-label^="配置 "]') || document.querySelector('[aria-label^="Configure "]')
+      ))
+      if (configure === null) return false
+      configure.click()
+      return true
+    }
+
     async function openSettingsCard(titleTexts) {
+      if (await openPluginManagerCard(titleTexts)) return true
+
       const trigger = findSettingsTrigger()
       if (trigger === null) {
         console.warn('[dsh-global-search] openSettingsCard: settings trigger not found')
