@@ -9,31 +9,34 @@ importers:
   .:
     dependencies:
       '@hyzyn/dsh-codegraph':
-        specifier: 0.4.0
+        specifier: 0.4.1
         version: link:packages/codegraph
       '@hyzyn/dsh-docker':
-        specifier: 0.6.1
+        specifier: 0.6.2
         version: link:packages/docker
       '@hyzyn/dsh-env':
-        specifier: 0.2.4
+        specifier: 0.2.5
         version: link:packages/env
+      '@hyzyn/dsh-kit-settings':
+        specifier: 0.1.0
+        version: link:packages/kit-settings
       '@hyzyn/dsh-mcp':
-        specifier: 0.1.12
+        specifier: 0.1.13
         version: link:packages/mcp
       '@hyzyn/dsh-profile':
-        specifier: 0.1.10
+        specifier: 0.1.11
         version: link:packages/profile
       '@hyzyn/dsh-prompt':
-        specifier: 0.1.10
+        specifier: 0.1.11
         version: link:packages/prompt
       '@hyzyn/dsh-rss':
-        specifier: 0.3.3
+        specifier: 0.3.4
         version: link:packages/rss
       '@hyzyn/dsh-search':
-        specifier: 0.3.3
+        specifier: 0.3.4
         version: link:packages/search
       '@hyzyn/dsh-tty':
-        specifier: 0.18.2
+        specifier: 0.18.3
         version: link:packages/tty
     devDependencies:
       typescript:
@@ -46,31 +49,34 @@ importers:
   packages/all:
     dependencies:
       '@hyzyn/dsh-codegraph':
-        specifier: 0.4.0
+        specifier: 0.4.1
         version: link:../codegraph
       '@hyzyn/dsh-docker':
-        specifier: 0.6.1
+        specifier: 0.6.2
         version: link:../docker
       '@hyzyn/dsh-env':
-        specifier: 0.2.4
+        specifier: 0.2.5
         version: link:../env
+      '@hyzyn/dsh-kit-settings':
+        specifier: 0.1.0
+        version: link:../kit-settings
       '@hyzyn/dsh-mcp':
-        specifier: 0.1.12
+        specifier: 0.1.13
         version: link:../mcp
       '@hyzyn/dsh-profile':
-        specifier: 0.1.10
+        specifier: 0.1.11
         version: link:../profile
       '@hyzyn/dsh-prompt':
-        specifier: 0.1.10
+        specifier: 0.1.11
         version: link:../prompt
       '@hyzyn/dsh-rss':
-        specifier: 0.3.3
+        specifier: 0.3.4
         version: link:../rss
       '@hyzyn/dsh-search':
-        specifier: 0.3.3
+        specifier: 0.3.4
         version: link:../search
       '@hyzyn/dsh-tty':
-        specifier: 0.18.2
+        specifier: 0.18.3
         version: link:../tty
     devDependencies:
       '@deepseek-ai/cordis':
@@ -170,6 +176,19 @@ importers:
       '@deepseek-ai/cordis':
         specifier: ^4.0.2
         version: 4.0.2
+      '@types/node':
+        specifier: ^22.20.0
+        version: 22.20.1
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+
+  packages/kit-settings:
+    dependencies:
+      react:
+        specifier: ^18.2.0
+        version: 18.3.1
+    devDependencies:
       '@types/node':
         specifier: ^22.20.0
         version: 22.20.1
