@@ -797,6 +797,10 @@
   background: var(--tt-surface-2);
 }
 
+/* 归属别的标签 → 整块收起（0.18.4）。只隐藏、不摘 DOM：消费方的 React 树与在途传输
+   （SFTP 上传 / 双栏直传）在隐藏期间继续活着，切回该标签即恢复现场。 */
+.tt_dockPane[data-dock-hidden] { display: none; }
+
 /* 拖拽条：贴在左边缘（悬停显形） */
 .tt_dockPaneResize {
   position: absolute;
@@ -2013,6 +2017,9 @@
   flex: none;
 }
 /* ======================= 设置卡片 ======================= */
+
+/* DSH ≥0.1.6 的插件配置页只取表单本体，页面自己画标题与卡片外壳，这里不再套一层卡片。 */
+.tt_pageHost { display: block; }
 
 .tt_card {
   border: 1px solid var(--tt-border-strong);

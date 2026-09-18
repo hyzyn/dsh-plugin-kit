@@ -31,7 +31,10 @@ After installing, restart `dsh web`; a “Terminal” entry appears in the sideb
   a tab; **double-clicking a tab renames it** (the name is persisted with the tab and survives a reconnect);
   each tab is an independent session (local PTY or SSH channel);
 - **The working directory follows the current DSH session**: new tabs open in the current session’s
-  working directory (the host `cwd` configuration is the fallback);
+  working directory (the host `cwd` configuration is the fallback). Since 0.1.6 the session list
+  snapshot no longer carries `current` (view selection moved to the workspace domain), so the client
+  reads `retainedBy.mainView > 0` to find the current session — trusting only the legacy field leaves
+  the cwd empty and new tabs fall back to the host’s start directory;
 - Supports TUIs such as vim / htop / less (TERM is injected as `xterm-256color`);
 - Panel size changes are resized automatically (xterm fit → native PTY resize);
 - **Ctrl+F searches inside the terminal** (Enter next / Shift+Enter previous / Esc closes only the search
@@ -241,17 +244,25 @@ slot (`ssh2`’s sftp subsystem, host half in `src/sftp.ts`):
 
 ![SFTP dual pane (0.9.0; docked in a drawer below the terminal since 0.16.0): local on the left / remote on the right, with inline ⇨/⇦ server-side direct transfer](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-sftp-dual.png)
 
-- **Placement (0.16.0)**: when the terminal panel is open and the mount slot is free, the File Browser
+- **Placement (0.16.0)**: when the terminal panel is open and **this tab’s** mount slot is free, the File Browser
   **docks below the terminal** — the path bar / list / transfer progress take the full width (a file list is
   a wide table, so full width below beats a narrow column on the right, and the terminal also keeps its width
   without wrapping; a dual pane side by side needs that width even more), and the terminal stays visible and
   usable. The height is draggable and can collapse into a single title bar (collapsing neither closes the
-  panel nor interrupts browsing); when the mount slot is already taken by another panel (such as the
-  containers panel) or the panel is not open, it falls back to the original centered dialog, **without
-  pushing anyone else’s panel out**. The title / collapse / ✕ come from tty’s mount slot;
+  panel nor interrupts browsing); when another panel (such as the containers panel) already holds the slot on
+  the same tab, or the panel is not open, it falls back to the original centered dialog, **without pushing
+  anyone else’s panel out**. The title / collapse / ✕ come from tty’s mount slot;
+- **Follows the tab (0.18.4)**: the File Browser talks to the host of the tab that opened it, so it belongs to
+  that tab: switching away hides it (in-flight transfers keep running and the scene is restored when you come
+  back), and closing the tab tears it down. **Every entry follows the same rule** — the connection bar’s
+  “SFTP”, the 📂 on a connection-book entry and “File Browser” in the SSH dialog / settings card all become
+  owned by whatever tab was active when they were opened; only “panel open with no tabs at all” counts as
+  owned by no tab (always visible). Before this, the pane stayed put across a tab switch — title reading host
+  A while the active tab was B, worst case uploading to the wrong host;
 - **Entries**: ① connection-book entries in the tab bar “+” menu carry a 📂 (open the File Browser for that
   entry); ② fill in host/authentication in the SSH connection dialog and click “File Browser” (you can
-  browse without saving to the connection book);
+  browse without saving to the connection book); ③ the “SFTP” button in an SSH tab’s connection bar (owned by
+  that tab, see the previous bullet);
 - **Operations**: directory browsing (Enter in the path box to jump, `.. (parent directory)`, a single click
   on a file downloads it), **upload** (multi-select files, XHR streaming + percentage progress; since 0.8.0
   **drag & drop** is supported — files and folders can be dropped straight into the dialog, folders are
@@ -589,14 +600,24 @@ ctx.inject(['ttyTerminal'], (c) => {
 
 ### In-panel mount slots (client service `ttyPanel`, 0.16.0)
 
-> tty’s own SFTP File Browser goes through this channel too (0.16.0): when the mount slot is free it docks on
-> the right, and when another panel has taken it, it falls back to the dialog.
+> tty’s own SFTP File Browser goes through this channel too (0.16.0): when the mount slot is free it docks
+> below, and when another panel on the same tab has taken it, it falls back to the dialog.
 
 `mount` solves “a consumer gives the host and tty puts a terminal in it”; `ttyPanel` is its **mirror** — tty
 gives consumers a slot inside the terminal panel to mount their own UI into. A typical case: dsh-docker opens
 “Containers” from the SSH connection bar and the containers panel docks to the **right** of the terminal,
 which stays visible, clickable and typable instead of being covered by a full-screen modal (which was exactly
 the pain before 0.15).
+
+A mount slot is **connection-scoped**: its credentials / target come from the terminal tab that opened it.
+So since 0.18.4 every pane records its **owner tab** (`options.ownerSid`, defaulting to the active tab at
+mount time): switching to another tab **hides** the pane (`data-dock-hidden`; its DOM and your rendered tree
+survive, in-flight transfers keep running) and switching back restores the scene; closing the owner tab tears
+the pane down. Without this, the pane stayed put across a tab switch — its title read `SFTP · lab-b`
+while the active tab was `192.0.2.10`, leaving **another host**’s file listing on screen (worst case:
+uploading to the wrong host). Passing `ownerSid: null` means “owned by no tab” (always visible); that is what
+happens automatically when the panel is open with no tabs at all, and a consumer can use it to declare “this
+pane has nothing to do with tabs, do not hide it on a switch”.
 
 ```js
 ctx.inject(['ttyPanel'], (c) => {
@@ -608,6 +629,7 @@ ctx.inject(['ttyPanel'], (c) => {
     side: 'right',         // 'right' (default, vertical list / list+detail) | 'bottom' (wide horizontal table)
     size: 520,             // initial size in px: right = width (default 460), bottom = height (default 320)
     min: 360,              // minimum size in px (optional, default 280 / 160)
+    ownerSid: tab.sid,     // owner tab (optional): omitted = current active tab, null = owned by no tab
     onClose: () => { /* called when tty tears the panel down: unmount your React root here */ },
   })
   createRoot(pane.element).render(<MyPanel />)
@@ -618,7 +640,7 @@ ctx.inject(['ttyPanel'], (c) => {
 | Member | Description |
 | --- | --- |
 | `isOpen()` | Whether the terminal panel is currently open (minimized does not count). Consumers use it to decide “mount in here” or “use my own modal” |
-| `mountPane(options)` | Mounts a slot on the right / at the bottom of the panel and returns a handle; **only one at a time**, and a later `mountPane` first tears the previous one down (calling its `onClose`). With `side:'bottom'` it spans the full width and is sized by height (drag the top edge), collapsing into a title bar |
+| `mountPane(options)` | Mounts a slot on the right / at the bottom of the panel and returns a handle; **only one at a time**, and a later `mountPane` first tears the previous one down (calling its `onClose`). With `side:'bottom'` it spans the full width and is sized by height (drag the top edge), collapsing into a title bar. `ownerSid` records the owner tab (default: the active one); panes owned by another tab are **hidden** on tab switch (DOM and your React tree survive, restored when you switch back — see “connection-scoped” above) |
 | `handle.element` | The host the consumer renders into (flex column, already `overflow:hidden`, filling the body area) |
 | `handle.setTitle(text)` / `setHint(text)` | Change the title / the grey hint |
 | `handle.expand() / collapse() / toggle() / isCollapsed()` | Collapse into a 32px strip (vertical title + expand/close buttons), and the terminal immediately gets its width back |
@@ -698,7 +720,7 @@ client-side changes.
 
 Styles should not be changed by “refresh the page and take a look”: the script loads `client.js` into a pure
 static fixture page (`scripts/preview/harness.html` + a fake DSH host from `mock-host.js`: module
-loader / fetch / WebSocket) and renders 14 UI states one by one with headless Chrome, screenshotting them to
+loader / fetch / WebSocket) and renders 29 UI states one by one with headless Chrome, screenshotting them to
 `packages/tty/.preview/shots/`:
 
 ```bash
@@ -708,9 +730,20 @@ node scripts/preview.mjs --list          # list scenes
 node scripts/preview.mjs --theme=light   # light theme
 ```
 
-Coverage: local terminal / multi-tab + SSH connection bar / the “+” menu / SSH dialog (new, edit)/
-settings card / SFTP (single pane, dual pane) / minimized badge / exit and error overlays / tunnel popover /
-search box / toast. The fixture also renders the `--dsw-*` skin variables together with the real UI, so it can
+Coverage: local terminal / multi-tab + SSH connection bar / the “+” menu / SSH dialog (new, edit, probe)/
+settings card (also side by side with docker)/ SFTP (single pane, dual pane, placement fallback)/
+**mount slot follows the tab** (`dock-pane-tab`, the 0.18.4 regression)/ minimized badge / exit and error
+overlays / tunnel popover / search box / toast / embedded terminals (alone and alongside the panel)/
+docker panel and “containers → terminal drawer”.
+
+A scene may attach a **function-shaped** assertion to `window.__previewAssert` (returning `null` means pass,
+a string / array means fail); the script runs it and folds the result into `✓/✗`. An assertion that only
+lives in the fixture, seen by nobody unless someone pulls `diag` by hand, is a regression that is not really
+pinned — which is exactly what bit the 0.18.4 “panel does not follow the tab” fix: the assertion was written
+already, but because it was mixed into a `diag` object containing a function, the whole evaluation failed
+silently and everything reported ✓.
+
+The fixture also renders the `--dsw-*` skin variables together with the real UI, so it can
 verify things like “is there still a white panel after switching light/dark themes”. The output directory
 `.preview/` is gitignored.
 

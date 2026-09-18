@@ -184,7 +184,7 @@ const TUNNEL_SCHEMA = z.object({
   enabled: z.boolean().default(true),
 })
 
-/** 与「设置 → 插件 → 终端面板」卡片表单对齐的 schema。 */
+/** 与「插件配置 → 终端面板」卡片表单对齐的 schema。 */
 const TTY_SETTINGS_SCHEMA = z.object({
   enabled: z.boolean().default(true),
   announceToAgent: z.boolean().default(true),
@@ -2352,7 +2352,7 @@ const plugin = definePlugin<Config>({
           (handler: (req: never, res: never) => unknown) =>
           (req: never, res: never): unknown => {
             if (!stateRef.enabled) {
-              writeJson(res as ResLike, 403, { error: '插件已禁用（设置 → 插件 → 终端面板 → 启用插件）' })
+              writeJson(res as ResLike, 403, { error: '插件已禁用（插件配置 → 终端面板 → 启用插件）' })
               return
             }
             return handler(req, res)
@@ -3149,7 +3149,7 @@ const plugin = definePlugin<Config>({
           })))
           activeDisposers.push(tools.register(defineTool({
             name: 'tunnel_list',
-            description: '列出端口转发隧道及其实时状态（活跃/连接中/错误/停止、规则、当前与累计连接数、最近错误）。用户说「隧道连不上 / 转发挂了 / 端口转发不通」时先用它诊断；隧道在 设置 → 插件 → 终端面板 卡片维护。',
+            description: '列出端口转发隧道及其实时状态（活跃/连接中/错误/停止、规则、当前与累计连接数、最近错误）。用户说「隧道连不上 / 转发挂了 / 端口转发不通」时先用它诊断；隧道在 插件配置 → 终端面板 卡片维护。',
             parameters: {},
             output: {
               schema: {
@@ -3179,7 +3179,7 @@ const plugin = definePlugin<Config>({
               render: (_args: unknown, value: unknown) => {
                 const v = value as { tunnels?: Array<{ name: string; direction: string; rule: string; state: string; error: string | null; lastForwardError?: string | null; connections: number }> }
                 const tunnels = v.tunnels ?? []
-                if (tunnels.length === 0) return [{ type: 'text', text: '当前没有配置端口转发隧道（设置 → 插件 → 终端面板 卡片可添加）' }]
+                if (tunnels.length === 0) return [{ type: 'text', text: '当前没有配置端口转发隧道（插件配置 → 终端面板 卡片可添加）' }]
                 const text = '端口转发隧道：' + tunnels.map((t) => {
                   const tail = t.error !== null && t.error !== undefined ? `（错误: ${t.error}）` : t.lastForwardError !== null && t.lastForwardError !== undefined ? `（最近转发失败: ${t.lastForwardError}）` : `（连接 ${String(t.connections)}）`
                   return `\n- ${t.name} [${t.direction}] ${t.rule} — ${t.state}${tail}`
@@ -3204,7 +3204,7 @@ const plugin = definePlugin<Config>({
             name: 'sftp_list',
             description: '列出 SSH 远程目录内容（名称/类型/大小/修改时间，目录在前）。book 为 SSH 连接簿条目名；path 缺省为远程登录 home。用于查找远程文件、确认上传下载结果。',
             parameters: {
-              book: { type: 'string', required: true, description: 'SSH 连接簿条目名（设置 → 插件 → 终端面板 维护）' },
+              book: { type: 'string', required: true, description: 'SSH 连接簿条目名（插件配置 → 终端面板 维护）' },
               path: { type: 'string', description: '远程目录路径（缺省 = 登录 home）' },
             },
             output: {
@@ -3341,7 +3341,7 @@ const plugin = definePlugin<Config>({
             name: 'sftp_mkdir',
             description: '在 SSH 远程创建目录（book 连接簿条目 + path）。parents:true 时逐级补齐缺失的父目录（等效 mkdir -p，默认 false，父目录缺失直接报错）。',
             parameters: {
-              book: { type: 'string', required: true, description: 'SSH 连接簿条目名（设置 → 插件 → 终端面板 维护）' },
+              book: { type: 'string', required: true, description: 'SSH 连接簿条目名（插件配置 → 终端面板 维护）' },
               path: { type: 'string', required: true, description: '要创建的远程目录路径' },
               parents: { type: 'boolean', description: 'true 逐级补齐缺失父目录（默认 false）' },
             },
