@@ -3,7 +3,7 @@
  *
  * 机制：本插件在宿主进程里调用 `codegraph` CLI，把索引状态、符号搜索、
  * 调用链、影响面等能力暴露成 /api/dsh-codegraph/* 路由；浏览器半体
- * （./client）把这些路由渲染成设置 → 插件 里的「Codegraph」卡片。
+ * （./client）把这些路由渲染成插件配置里的「Codegraph」卡片。
  *
  * 与 MCP 的关系：MCP 让模型直接调用 codegraph_explore / codegraph_node；
  * 本插件补上 Web GUI、人工操作（sync/index）和 systemPrompt 自动提示。

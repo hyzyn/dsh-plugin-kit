@@ -34,7 +34,7 @@ const BUILTIN_BY_KEY = new Map(BUILTIN_CHANNELS.map((channel) => [channel.key, c
 /** `AiSummaryInfo.failures` 最多保留几类原因。 */
 const AI_FAILURE_REASON_LIMIT = 3;
 /* ------------------------------------------------------------------ *
- * settings 命名空间（让「设置 → 插件 → 插件配置」派发本插件卡片）
+ * settings 命名空间（让「插件配置 → 插件配置」派发本插件卡片）
  * ------------------------------------------------------------------ */
 /** 与 ~/.dsh/rss.json 的可编辑 store 形状对齐。 */
 const RSS_SETTINGS_SCHEMA = z.object({
@@ -1101,7 +1101,7 @@ runtime = {}) {
     const disabledGuard = (res) => {
         if (hooks?.disabled() !== true)
             return false;
-        writeJson(res, 403, { error: '插件已禁用（设置 → 插件 → RSS / 新闻聚合 → 启用插件）' });
+        writeJson(res, 403, { error: '插件已禁用（插件配置 → RSS / 新闻聚合 → 启用插件）' });
         return true;
     };
     const guard = (req, res, method) => {

@@ -30,7 +30,7 @@ import yaml from 'js-yaml';
 export const name = 'env-manager';
 export const inject = [];
 /* ------------------------------------------------------------------ *
- * settings 命名空间（让「设置 → 插件 → 插件配置」派发本插件卡片）
+ * settings 命名空间（让「插件配置 → 插件配置」派发本插件卡片）
  * ------------------------------------------------------------------ */
 /** 与 ~/.dsh/env.yml 托管区块的条目形状对齐。 */
 const ENV_SETTINGS_SCHEMA = z.object({
@@ -458,7 +458,7 @@ function makeRoutes(ctx, applyOnSave, store) {
 /* ------------------------------------------------------------------ *
  * 插件本体
  * ------------------------------------------------------------------ */
-const ENV_GUIDANCE = '本机已安装 dsh-env-manager 插件（环境变量 / 密钥管理）：Web GUI 的 设置 → 插件 里有「环境变量 / 密钥管理」卡片，提供图形化管理。配置保存在 ~/.dsh/env.yml 的托管区块（auto-generated，勿手改），支持普通值与 js: 前缀表达式（如 js:process.env.XXX）；密钥条目的明文值默认存入官方凭据存储（~/.dsh/.credentials.yaml），env 文件只保留清单不落密钥明文。保存后默认写入当前进程的 process.env，供宿主和后续启动的子进程使用。用户提到「环境变量 / 密钥 / env / secret」时即指本插件，请引导用户打开设置里的环境变量卡片操作，而不是直接修改配置文件。';
+const ENV_GUIDANCE = '本机已安装 dsh-env-manager 插件（环境变量 / 密钥管理）：Web GUI 的 插件配置里有「环境变量 / 密钥管理」卡片，提供图形化管理。配置保存在 ~/.dsh/env.yml 的托管区块（auto-generated，勿手改），支持普通值与 js: 前缀表达式（如 js:process.env.XXX）；密钥条目的明文值默认存入官方凭据存储（~/.dsh/.credentials.yaml），env 文件只保留清单不落密钥明文。保存后默认写入当前进程的 process.env，供宿主和后续启动的子进程使用。用户提到「环境变量 / 密钥 / env / secret」时即指本插件，请引导用户打开设置里的环境变量卡片操作，而不是直接修改配置文件。';
 export function apply(ctx, config) {
     if (config?.enabled === false)
         return;

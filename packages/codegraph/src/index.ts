@@ -3,7 +3,7 @@
  *
  * 机制：本插件在宿主进程里调用 `codegraph` CLI，把索引状态、符号搜索、
  * 调用链、影响面等能力暴露成 /api/dsh-codegraph/* 路由；浏览器半体
- * （./client）把这些路由渲染成设置 → 插件 里的「Codegraph」卡片。
+ * （./client）把这些路由渲染成插件配置里的「Codegraph」卡片。
  *
  * 与 MCP 的关系：MCP 让模型直接调用 codegraph_explore / codegraph_node；
  * 本插件补上 Web GUI、人工操作（sync/index）和 systemPrompt 自动提示。
@@ -81,7 +81,7 @@ export interface Config {
 }
 
 /* ------------------------------------------------------------------ *
- * settings 命名空间（让「设置 → 插件 → 插件配置」派发本插件卡片）
+ * settings 命名空间（让「插件配置 → 插件配置」派发本插件卡片）
  *
  * 这里只列「卡片派发所需 + 允许用户在 settings 里覆盖」的字段：字段一律不带
  * schema 默认值——settings 的 resolved 值里「undefined」才表示「用户没设过」，
@@ -1363,7 +1363,7 @@ function snapshotMcpStatus(command: string): McpSyncStatus {
  * 327 字），MCP 工具则交给使用指引段。同档 order 的 section 由
  * dsh-system-prompt 按名字排序（comparePromptSections），所以不依赖注册顺序。
  */
-const CODEGRAPH_GUIDANCE = '本机已安装 dsh-codegraph 插件（Codegraph 集成）：Web GUI 的 设置 → 插件 里有「Codegraph」卡片，可看索引状态、搜索符号、sync / 重建索引，并把当前项目一键设为默认项目。用户提到「Codegraph / 代码图谱 / 调用链 / 影响面 / 索引」时，可引导其打开该卡片。'
+const CODEGRAPH_GUIDANCE = '本机已安装 dsh-codegraph 插件（Codegraph 集成）：Web GUI 的 插件配置里有「Codegraph」卡片，可看索引状态、搜索符号、sync / 重建索引，并把当前项目一键设为默认项目。用户提到「Codegraph / 代码图谱 / 调用链 / 影响面 / 索引」时，可引导其打开该卡片。'
 
 /**
  * 使用指引段（order 151）：只保留「何时用它 + 失败了怎么办」。
