@@ -7,7 +7,7 @@ import yaml from 'js-yaml';
 import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 /* ------------------------------------------------------------------ *
- * settings 命名空间（让「设置 → 插件 → 插件配置」派发本插件卡片）
+ * settings 命名空间（让「插件配置 → 插件配置」派发本插件卡片）
  *
  * 这里只列「卡片派发所需 + 允许用户在 settings 里覆盖」的字段：字段一律不带
  * schema 默认值——settings 的 resolved 值里「undefined」才表示「用户没设过」，
@@ -1137,7 +1137,7 @@ function snapshotMcpStatus(command) {
  * 327 字），MCP 工具则交给使用指引段。同档 order 的 section 由
  * dsh-system-prompt 按名字排序（comparePromptSections），所以不依赖注册顺序。
  */
-const CODEGRAPH_GUIDANCE = '本机已安装 dsh-codegraph 插件（Codegraph 集成）：Web GUI 的 设置 → 插件 里有「Codegraph」卡片，可看索引状态、搜索符号、sync / 重建索引，并把当前项目一键设为默认项目。用户提到「Codegraph / 代码图谱 / 调用链 / 影响面 / 索引」时，可引导其打开该卡片。';
+const CODEGRAPH_GUIDANCE = '本机已安装 dsh-codegraph 插件（Codegraph 集成）：Web GUI 的 插件配置里有「Codegraph」卡片，可看索引状态、搜索符号、sync / 重建索引，并把当前项目一键设为默认项目。用户提到「Codegraph / 代码图谱 / 调用链 / 影响面 / 索引」时，可引导其打开该卡片。';
 /**
  * 使用指引段（order 151）：只保留「何时用它 + 失败了怎么办」。
  *

@@ -1,7 +1,7 @@
 /* eslint-disable */
 /**
- * @hyzyn/dsh-profile — 浏览器半体：官方设置 → 插件 里的「Profile 管理」卡片。
- * 通过核心 slots 服务注册到 settings.plugin.item 插槽。
+ * @hyzyn/dsh-profile — 浏览器半体：官方插件配置里的「Profile 管理」卡片。
+ * 同时注册 DSH ≤0.1.5 的 settings.plugin.item 与 ≥0.1.6-alpha.2 的 plugins.row.config，跨版本兼容。
  * 纯前端 DOM 面板，宿主经 /plugins/@hyzyn/dsh-profile/client.js 提供。
  */
 window.__ModuleLoader__.load({
@@ -15,6 +15,7 @@ window.__ModuleLoader__.load({
     /* ================================ CSS ================================ */
 
     const CSS = [
+      '.pf_pageHost{display:block}',
       '.pf_pluginCard{list-style:none;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);border-radius:12px;transition:border-color .16s,background .16s}',
       '.pf_pluginCard:hover{border-color:var(--dsw-alias-label-dimmed)}',
       '.pf_pluginCardOpen{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-label-dimmed)}',
@@ -415,8 +416,12 @@ window.__ModuleLoader__.load({
 
     const CHEVRON_PATH = 'M11.8486 5.5L11.4238 5.92383L8.69727 8.65137C8.44157 8.90706 8.21562 9.13382 8.01172 9.29785C7.79912 9.46883 7.55595 9.61756 7.25 9.66602C7.08435 9.69222 6.91565 9.69222 6.75 9.66602C6.44405 9.61756 6.20088 9.46883 5.98828 9.29785C5.78438 9.13382 5.55843 9.13382 5.30273 8.65137L2.57617 5.92383L2.15137 5.5L3 4.65137L3.42383 5.07617L6.15137 7.80273C6.42595 8.07732 6.59876 8.24849 6.74023 8.3623C6.87291 8.46904 6.92272 8.47813 6.9375 8.48047C6.97895 8.48703 7.02105 8.48703 7.0625 8.48047C7.07728 8.47813 7.12709 8.46904 7.25977 8.3623C7.40124 8.24849 7.57405 8.07732 7.84863 7.80273L10.5762 5.07617L11 4.65137L11.8486 5.5Z'
 
-    function ProfileSettingsCard() {
-      const [open, setOpen] = React.useState(false)
+    function ProfileSettingsCard(props) {
+      // DSH ≥0.1.6 的插件配置页把同一条目按 view 渲染两次：summary 一句话摘要、page 完整表单。
+      // 旧版（≤0.1.5）的 settings.plugin.item 卡片不带 view，走原有可折叠卡片分支。
+      const view = props && props.view
+      const pageView = view === 'page'
+      const [open, setOpen] = React.useState(pageView)
       const hostRef = React.useRef(null)
       React.useEffect(() => {
         if (!open) return
@@ -425,10 +430,15 @@ window.__ModuleLoader__.load({
         panelEl = host
         load()
       }, [open])
-      return jsxs('li', {
-        className: open ? 'pf_pluginCard pf_pluginCardOpen' : 'pf_pluginCard',
+      if (view === 'summary') {
+        return '查看、创建、复制、重命名、删除、端口配置 DSH profile。'
+      }
+
+      // page 视图：新页面自己画标题/图标/面包屑，这里只交表单本体，不渲染卡片头。
+      return jsxs(pageView ? 'div' : 'li', {
+        className: pageView ? 'pf_pageHost' : (open ? 'pf_pluginCard pf_pluginCardOpen' : 'pf_pluginCard'),
         children: [
-          jsxs('button', {
+          pageView ? null : jsxs('button', {
             type: 'button',
             className: 'pf_cardHeader',
             'aria-expanded': open,
@@ -453,7 +463,7 @@ window.__ModuleLoader__.load({
               }),
             ],
           }),
-          open ? jsx('div', {
+          (pageView || open) ? jsx('div', {
             className: 'pf_cardBody',
             children: jsx('div', { ref: hostRef, className: 'pf_cardHost' }),
           }) : null,
@@ -464,6 +474,16 @@ window.__ModuleLoader__.load({
     /* ================================ 插件入口 ================================ */
 
     exports.inject = ['slots']
+
+    /**
+     * DSH ≥0.1.6-alpha.2 的行配置 key：`<bundle 包名>#<行 id>`，行 id 取自 bundle 的
+     * cordis.patch.yml。独立安装时 bundle 是本包，装全家桶时是 @hyzyn/dsh-all —— 两个都注册，
+     * 未命中的那个只是躺在 ledger 里，不会渲染。
+     */
+    const ROW_CONFIG_KEYS = [
+      '@hyzyn/dsh-profile#profile-manager',
+      '@hyzyn/dsh-all#profile-manager',
+    ]
 
     exports.apply = (ctx) => {
       ctx.effect(() => {
@@ -480,6 +500,23 @@ window.__ModuleLoader__.load({
           panelEl = undefined
         }
       })
+      // DSH ≥0.1.6-alpha.2：侧边栏「插件」页里该行的配置页。插槽不存在时 inject 不会触发，
+      // 因此在旧版上完全无副作用，一份代码同时兼容两代。
+      for (const key of ROW_CONFIG_KEYS) {
+        ctx.slots.inject('plugins.row.config', () => ctx.slots.register({
+          name: 'plugins.row.config',
+          key,
+        }, ProfileSettingsCard))
+      }
+      // DSH ≥0.1.6：设置里与「通用设置」平级的「插件配置」页（子 slot 由
+      // @hyzyn/dsh-kit-settings 声明）。不传 view，卡片走各自原有的可折叠形态。
+      ctx.slots.inject('settings.kit.item', () => ctx.slots.register({
+        name: 'settings.kit.item',
+        id: 'profile-manager',
+        order: 40,
+        label: () => "Profile 管理",
+      }, ProfileSettingsCard))
+      // DSH ≤0.1.5：设置 → 插件 的「插件配置」标签页，keyed 插槽按 settings 命名空间派发。
       ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
         name: 'settings.plugin.item',
         // settings.plugin.item 是 keyed 插槽：key 必须是该卡片所编辑的 settings 命名空间

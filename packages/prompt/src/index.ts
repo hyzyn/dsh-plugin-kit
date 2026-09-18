@@ -2,7 +2,7 @@
  * @hyzyn/dsh-prompt — DSH Web GUI 的 Prompt 管理插件（宿主半体）。
  *
  * 能力：
- * - 可视化编辑 systemPrompt：在设置 → 插件 的「Prompt 管理」卡片中维护多个
+ * - 可视化编辑 systemPrompt：在插件配置的「Prompt 管理」卡片中维护多个
  *   Prompt，每个 Prompt 包含多份版本内容。
  * - 版本管理：保存为新版本、回滚/切换激活版本、查看版本列表与说明。
  * - A/B 测试：为同一个 Prompt 配置 A/B 两个版本与流量比例；启用后宿主按比例
@@ -34,7 +34,7 @@ export interface Config {
 }
 
 /* ------------------------------------------------------------------ *
- * settings 命名空间（让「设置 → 插件 → 插件配置」派发本插件卡片）
+ * settings 命名空间（让「插件配置 → 插件配置」派发本插件卡片）
  * ------------------------------------------------------------------ */
 
 /** 与 ~/.dsh/prompts.yml 托管区块的 store 形状对齐。 */
@@ -747,7 +747,7 @@ function makeRoutes(
  * 插件本体
  * ------------------------------------------------------------------ */
 
-const PROMPT_GUIDANCE = '本机已安装 dsh-prompt-manager 插件（Prompt 管理）：Web GUI 的 设置 → 插件 里有「Prompt 管理」卡片，提供 systemPrompt 的可视化编辑、版本管理、A/B 测试、导出/分享。配置保存在 ~/.dsh/prompts.yml 的托管区块（auto-generated，勿手改）。启用某个 Prompt 后，其内容会作为 systemPrompt section 注入；A/B 测试开启时按比例随机命中 A/B 版本。用户提到「Prompt / systemPrompt / 提示词」时即指本插件，请引导用户打开设置里的 Prompt 卡片操作，而不是直接修改配置文件。'
+const PROMPT_GUIDANCE = '本机已安装 dsh-prompt-manager 插件（Prompt 管理）：Web GUI 的 插件配置里有「Prompt 管理」卡片，提供 systemPrompt 的可视化编辑、版本管理、A/B 测试、导出/分享。配置保存在 ~/.dsh/prompts.yml 的托管区块（auto-generated，勿手改）。启用某个 Prompt 后，其内容会作为 systemPrompt section 注入；A/B 测试开启时按比例随机命中 A/B 版本。用户提到「Prompt / systemPrompt / 提示词」时即指本插件，请引导用户打开设置里的 Prompt 卡片操作，而不是直接修改配置文件。'
 
 export function apply(ctx: Context, config?: Config): void {
   if (config?.enabled === false) return
