@@ -1,0 +1,10 @@
+# 本目录的目标平台是 Windows，行尾策略在这里单独约定（不污染仓库其余部分）。
+#
+# cmd.exe 对 LF-only 批处理里的 goto/标签处理不靠谱（它按字节偏移 seek），
+# 所以 .cmd 强制 CRLF；.ps1 一并统一，省得编辑器来回改。
+#
+# 注意：git 不会因为 text/eol 规范化去动 BOM——setup-dsh-testenv.ps1 的
+# UTF-8 BOM 会被原样保留（PS 5.1 读没有 BOM 的 UTF-8 脚本会按 ANSI 解释）。
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.md  text eol=lf

@@ -158,130 +158,152 @@ try {
       exceptions.length === 0,
       exceptions.length === 0 ? '0 条' : exceptions.slice(0, 3).join('\n      '),
     )
+    // 只把**插件自己**发起的失败请求算进门禁：宿主自身的接口（如 /api/changes.summary）在
+    // 会话跨版本时会 404，那是环境噪音，不该让插件回归变红。
+    const isPluginRequest = (url) => url.includes('/plugins/') || url.includes('/api/dsh-')
+    const pluginFailures = failedRequests.filter((item) => isPluginRequest(item))
+    const foreignFailures = failedRequests.filter((item) => !isPluginRequest(item))
+    // 「Failed to load resource」这类控制台噪音不带 URL，只有在本轮确有插件请求失败时才算数
+    const pluginConsoleErrors = consoleErrors.filter(
+      (text) => !/Failed to load resource/.test(text) || pluginFailures.length > 0,
+    )
     record(
       'UI5 加载期间控制台没有 error 级输出',
-      consoleErrors.length === 0,
-      consoleErrors.length === 0 ? '0 条' : consoleErrors.slice(0, 5).join('\n      '),
+      pluginConsoleErrors.length === 0,
+      pluginConsoleErrors.length === 0
+        ? foreignFailures.length === 0
+          ? '0 条'
+          : `0 条插件相关（忽略宿主自身 ${String(foreignFailures.length)} 条失败请求）`
+        : pluginConsoleErrors.slice(0, 5).join('\n      '),
     )
-    if (failedRequests.length > 0) {
-      warn('UI6 有失败的网络请求（可能是预期外的 404/5xx）', failedRequests.slice(0, 6).join('\n      '))
+    if (pluginFailures.length > 0) {
+      record('UI6 插件的子请求全部成功（无 4xx/5xx）', false, pluginFailures.slice(0, 6).join('\n      '))
+    } else if (foreignFailures.length > 0) {
+      warn('UI6 插件子请求全部成功；宿主自身有失败请求（与插件无关）', foreignFailures.slice(0, 6).join('\n      '))
     } else {
       record('UI6 所有子请求都成功（无 4xx/5xx）', true, '0 条失败请求')
     }
 
     if (mode === 'cards' || mode === 'full') {
-      /* ---------------- 点击级：设置 → 插件 → 逐个卡片 ---------------- */
+      /* ---------------- 点击级：侧边栏「插件」→ 逐个配置页 ----------------
+       * DSH ≥0.1.6-alpha.2 起，插件配置从「设置 → 插件 → 插件配置」搬到了侧边栏的「插件」页
+       * （ui-plugin-manager）：每个插件是一条 bundle 行，该行注册了 plugins.row.config 之后
+       * 才会出现「配置」入口（button[aria-label="配置 <行 id>"]）。断言链因此是：
+       * 打开插件页 → 找到该插件 → 该行有配置入口 → 点进去 summary / page 两视图都渲染、
+       * 有控件、不报错。缺任一环都说明注册 key 或两视图实现有问题。
+       */
 
-      // 页面里注入一组小助手（textContent 匹配 + 沿 DOM 找可点的行）
+      // 页面里注入 DOM 助手：按精确文案点按钮 + 在插件页与插件详情之间来回。
       await chrome.evaluate(`(() => {
         const exact = (t) => [...document.querySelectorAll('*')].filter((el) => (el.innerText ?? '').trim() === t)
         const clickExact = (t) => { const el = exact(t).pop(); if (el === undefined) return false; el.click(); return true }
-        const findCard = (t) => {
-          const hits = [...document.querySelectorAll('*')]
-            .filter((el) => (el.innerText ?? '').trim().startsWith(t) && (el.innerText ?? '').trim().length < t.length + 120)
-          if (hits.length === 0) return null
-          // 取最深（innerText 最短）的那个，再往上找整张卡片（LI.dk_settingsCard 那一层）
-          hits.sort((a, b) => (a.innerText ?? '').length - (b.innerText ?? '').length)
-          return hits[0].closest('li, [class*=settingsCard], [class*=card]') ?? hits[0]
-        }
-        const clickStartsWith = (t) => {
-          const leaf = (() => {
-            const hits = [...document.querySelectorAll('*')]
-              .filter((el) => (el.innerText ?? '').trim().startsWith(t) && (el.innerText ?? '').trim().length < t.length + 120)
-            if (hits.length === 0) return null
-            hits.sort((a, b) => (a.innerText ?? '').length - (b.innerText ?? '').length)
-            return hits[0]
-          })()
-          if (leaf === null) return false
-          // ⚠️ 选择器里**必须**有 button：卡片头是 BUTTON.dk_settingsHead，漏了它就会点到
-          // 外层 LI（不触发折叠）——Docker 卡片就是这样被漏掉的。
-          const row = leaf.closest('button, [role=button], [role=option], [role=tab], li, [class*=row], [class*=item], [class*=card]') ?? leaf
-          row.click()
-          return true
-        }
-        const openSettings = () => clickExact('设置')
-        const openPluginConfig = () => {
-          const nav = [...document.querySelectorAll('[class*=navLabel]')].find((el) => (el.innerText ?? '').trim() === '插件')
-          if (nav === undefined) return false
-          nav.click()
+        const clickText = (t) => {
+          const h = [...document.querySelectorAll('button')].filter((el) => (el.innerText ?? '').trim() === t)
+          if (h.length === 0) return false
+          h[h.length - 1].click()
           return true
         }
         const dialogText = () => {
           const dialog = document.querySelector('[role=dialog], [class*=settings]') ?? document.body
-          return (dialog.innerText ?? '').replace(/\s+/g, ' ')
+          return (dialog.innerText ?? '').replace(/\\s+/g, ' ')
         }
-        window.__dshUi = { exact, clickExact, clickStartsWith, findCard, openSettings, openPluginConfig, dialogText }
+        const onList = () => (document.body.innerText ?? '').includes('添加插件')
+        const back = () => {
+          // 面包屑：列表页那层 aria-label 是「返回插件列表」，行详情那层是「返回 <包短名>」，
+          // 唯一稳定的是 class 里的 crumb。两者都要认，否则会卡在行详情里出不去。
+          const b = document.querySelector('button[class*="crumb"]')
+            ?? [...document.querySelectorAll('button')].find((el) => (el.getAttribute('aria-label') ?? '').startsWith('返回'))
+          if (b === undefined || b === null) return false
+          b.click()
+          return true
+        }
+        window.__dshUi = {
+          exact, clickExact, clickText, dialogText, onList, back,
+          /** 已安装列表里的插件行 = 文本恰好是该插件短名的按钮。 */
+          openPlugin: async (id) => {
+            // 行详情（data-plugin-row-detail）→ 包页（data-plugin-detail）→ 列表：面包屑每层都叫
+            // 「返回插件列表」，所以要退到**两个详情标记都不在**为止，否则下一轮 clickText 找不到目标。
+            for (let i = 0; i < 4; i += 1) {
+              if (document.querySelector('[data-plugin-detail], [data-plugin-row-detail]') === null) break
+              back()
+              await new Promise((r) => setTimeout(r, 800))
+            }
+            if (!clickText(id)) return false
+            await new Promise((r) => setTimeout(r, 2200))
+            return true
+          },
+          /** 点开该 bundle 下第一个有配置入口的行；返回它的 aria-label。 */
+          openRow: () => {
+            const b = document.querySelector('[aria-label^="配置 "]')
+            if (b === null) return null
+            const label = b.getAttribute('aria-label')
+            b.click()
+            return label
+          },
+          rowDetailKey: () => document.querySelector('[data-plugin-row-detail]')?.getAttribute('data-plugin-row-detail') ?? null,
+          pageStats: () => {
+            const root = document.querySelector('[data-plugin-row-detail]') ?? document.body
+            return { textLength: (root.innerText ?? '').length, controls: root.querySelectorAll('input, select, textarea, button').length }
+          },
+        }
         return true
       })()`)
 
-      const openSettings = async () => {
-        await chrome.evaluate('window.__dshUi.openSettings()')
-        await new Promise((resolve) => setTimeout(resolve, 1500))
-        return await chrome.evaluate('window.__dshUi.openPluginConfig()')
-      }
-      const entered = await openSettings()
-      await new Promise((resolve) => setTimeout(resolve, 1500))
-      await chrome.evaluate("window.__dshUi.clickExact('插件配置')")
-      await new Promise((resolve) => setTimeout(resolve, 2000))
-
-      // 每张卡片配一个**只可能属于它**的文案当哨兵：这样断言的是「这张卡自己渲染了」，
-      // 而不是「整页某处有内容」（后者对每张卡都成立，等于没验）。
-      const CARDS = [
-        ['环境变量 / 密钥管理', '环境变量列表'],
-        ['Prompt 管理', '导出全部 JSON'],
-        ['MCP 服务器配置', '添加服务器'],
-        ['Profile 管理', '新建 profile'],
-        ['RSS / 新闻聚合', '订阅渠道'],
-        ['Docker 容器面板', '允许变更操作'],
-        ['Codegraph', 'Codegraph 控制台'],
-        ['终端面板', 'SSH 连接簿'],
-      ]
-      // 先确认列表页把这些卡片都列出来了（漏卡片 = 目录回归）
-      const listed = await chrome.evaluate(`(() => {
-        const text = window.__dshUi.dialogText()
-        return Object.fromEntries(${JSON.stringify(CARDS.map(([title]) => title))}.map((title) => [title, text.includes(title)]))
+      const onPlugins = await chrome.evaluate(`(async () => {
+        for (let i = 0; i < 4; i += 1) {
+          if (window.__dshUi.onList()) return true
+          window.__dshUi.clickText('插件')
+          await new Promise((r) => setTimeout(r, 2200))
+        }
+        return window.__dshUi.onList()
       })()`)
-      const missing = CARDS.map(([title]) => title).filter((title) => listed[title] !== true)
       record(
-        'UI7 插件配置页列出了全部 8 张插件卡片',
-        entered === true && missing.length === 0,
-        missing.length === 0 ? CARDS.map(([title]) => title).join(' / ') : `缺：${missing.join(', ')}`,
+        'UI7 侧边栏「插件」页可打开（DSH ≥0.1.6 的新版插件管理页）',
+        onPlugins === true,
+        onPlugins === true ? '已进入插件页' : '打不开插件页',
       )
 
+      // 插件短名 → 该 bundle 行的 plugins.row.config key（= `<bundle 包名>#<行 id>`）
+      const PLUGIN_ROWS = [
+        ['codegraph', '@hyzyn/dsh-codegraph#codegraph'],
+        ['docker', '@hyzyn/dsh-docker#docker'],
+        ['env', '@hyzyn/dsh-env#env-manager'],
+        ['mcp', '@hyzyn/dsh-mcp#mcp-config'],
+        ['profile', '@hyzyn/dsh-profile#profile-manager'],
+        ['prompt', '@hyzyn/dsh-prompt#prompt-manager'],
+        ['rss', '@hyzyn/dsh-rss#rss-digest'],
+        ['tty', '@hyzyn/dsh-tty#tty'],
+      ]
       const beforeErrors = consoleErrors.length + exceptions.length
-      for (const [title, marker] of CARDS) {
+      let configured = 0
+      for (const [id, expectedKey] of PLUGIN_ROWS) {
         const before = consoleErrors.length + exceptions.length
-        // 每次先回到卡片列表，再进这一张（DOM 里同时只有一张卡，必须先回列表）
-        await chrome.evaluate("window.__dshUi.clickExact('插件配置')")
-        await new Promise((resolve) => setTimeout(resolve, 800))
-        const clicked = await chrome.evaluate(`window.__dshUi.clickStartsWith(${JSON.stringify(title)})`)
-        await new Promise((resolve) => setTimeout(resolve, 1800))
-        const info = await chrome.evaluate(`(() => {
-          const text = window.__dshUi.dialogText()
-          const dialog = document.querySelector('[role=dialog], [class*=settings]') ?? document.body
-          return {
-            marker: text.includes(${JSON.stringify(marker)}),
-            controls: dialog.querySelectorAll('button, input, select, textarea').length,
-            length: text.length,
-            tail: text.slice(0, 200),
-          }
-        })()`)
+        const opened = await chrome.evaluate(`window.__dshUi.openPlugin(${JSON.stringify(id)})`)
+        if (opened !== true) {
+          record(`UI8 插件「${id}」：配置页可达、两视图渲染且有控件、不报错`, false, '详情页打不开')
+          continue
+        }
+        const label = await chrome.evaluate('window.__dshUi.openRow()')
+        await new Promise((resolve) => setTimeout(resolve, 2200))
+        const stats = await chrome.evaluate('window.__dshUi.pageStats()')
+        const key = await chrome.evaluate('window.__dshUi.rowDetailKey()')
         const newErrors = consoleErrors.length + exceptions.length - before
+        const ok = label !== null && key === expectedKey && stats.textLength > 40 && stats.controls > 0 && newErrors === 0
+        if (ok) configured += 1
         record(
-          `UI8 卡片「${title}」：点进去后这张卡自己的内容渲染出来了（哨兵「${marker}」）且不报错`,
-          clicked === true && info.marker === true && info.controls > 0 && newErrors === 0,
-          `哨兵命中=${String(info.marker)} 控件 ${info.controls} 个 文本 ${info.length} 字符 本次新增错误 ${newErrors}`,
+          `UI8 插件「${id}」：配置页可达、两视图渲染且有控件、不报错`,
+          ok,
+          `入口=${String(label)} 行 key=${String(key)}（期望 ${expectedKey}）控件 ${String(stats.controls)} 个 文本 ${String(stats.textLength)} 字符 本次新增错误 ${String(newErrors)}`,
         )
-        if (shotDir !== undefined) {
+        if (shotDir !== undefined && ok) {
           mkdirSync(shotDir, { recursive: true })
-          await chrome.screenshot(join(shotDir, `card-${title.replace(/[^\w\u4e00-\u9fa5]+/g, '_')}.png`))
+          await chrome.screenshot(join(shotDir, `plugin-${id}.png`))
         }
       }
-
       record(
-        'UI9 逐个点开 8 张卡片的过程中没有新增控制台错误/异常',
-        consoleErrors.length + exceptions.length === beforeErrors,
-        `点开前 ${beforeErrors} 条 → 点开后 ${consoleErrors.length + exceptions.length} 条`,
+        'UI9 全部 8 个插件都拿到了配置入口（plugins.row.config 注册生效）',
+        configured === PLUGIN_ROWS.length,
+        `${String(configured)}/${String(PLUGIN_ROWS.length)} 个配置页可用；整轮新增错误 ${String(consoleErrors.length + exceptions.length - beforeErrors)} 条`,
       )
 
       /* ---------------- 侧边栏：全局搜索（search 的客户端半体） ---------------- */
@@ -341,6 +363,45 @@ try {
         `xterm=${String(terminalState.xterm)} screen=${String(terminalState.screen)} textarea=${String(terminalState.textarea)} 屏幕文本=${JSON.stringify(terminalState.text.slice(0, 80))}`,
       )
       if (shotDir !== undefined) await chrome.screenshot(join(shotDir, 'terminal.png'))
+
+      /* ---------------- 设置里的一行「插件配置」（@hyzyn/dsh-kit-settings） ---------------- */
+
+      const kitRow = await chrome.evaluate(`(async () => {
+        const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+        const dialog = () => document.querySelector('[role=dialog]')
+        const readNav = () => [...(dialog() ?? document.body).querySelectorAll('[class*=navLabel]')]
+          .map((el) => (el.innerText ?? '').trim())
+          .filter(Boolean)
+        const waitForSettings = async () => {
+          for (let i = 0; i < 12; i += 1) {
+            if (dialog() !== null && readNav().length > 0) return true
+            await sleep(400)
+          }
+          return false
+        }
+        // ⚠️ 设置按钮是**开关式**的：只点一次再等，反复点会把自己点关（踩过）。
+        window.__dshUi.clickText('设置')
+        let ready = await waitForSettings()
+        if (!ready) {
+          window.__dshUi.clickText('设置')
+          ready = await waitForSettings()
+        }
+        const panel = dialog()
+        const nav = readNav()
+        const clicked = window.__dshUi.clickText('插件配置')
+        await sleep(1800)
+        const heads = [...(dialog() ?? document.body).querySelectorAll('li button')]
+          .map((el) => (el.innerText ?? '').replace(/\\s+/g, ' ').trim())
+          .filter(Boolean)
+        window.__dshUi.clickText('关闭')
+        return { opened: panel !== null, nav, clicked, heads }
+      })()`)
+      record(
+        'UI12 设置里有与「通用设置」平级的「插件配置」行，并列出 kit 插件卡片',
+        kitRow.opened === true && kitRow.nav.includes('插件配置') && kitRow.clicked === true && kitRow.heads.length >= 8,
+        `弹窗=${String(kitRow.opened)} 导航=${JSON.stringify(kitRow.nav)} 卡片 ${String(kitRow.heads.length)} 张：${kitRow.heads.map((h) => h.slice(0, 12)).join(' / ')}`,
+      )
+      if (shotDir !== undefined) await chrome.screenshot(join(shotDir, 'kit-settings-row.png'))
     }
   }
 } catch (error) {
