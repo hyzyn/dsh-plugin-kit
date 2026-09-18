@@ -28,7 +28,7 @@ export interface Config {
   includePrompts?: boolean
   /** 是否搜索 MCP 工具。默认 true。 */
   includeMcpTools?: boolean
-  /** 是否搜索设置面板（设置 → 插件 → 插件配置）。默认 true。 */
+  /** 是否搜索设置面板（插件配置 → 插件配置）。默认 true。 */
   includePanels?: boolean
   /** 是否向 agent 注入插件能力公告。默认开。 */
   announceToAgent?: boolean
@@ -597,7 +597,7 @@ function searchMcpTools(ctx: Context, rawQuery: string, limit: number): McpToolH
 }
 
 /* ------------------------------------------------------------------ *
- * 设置面板搜索（设置 → 插件 → 插件配置 里的可配置卡片）
+ * 设置面板搜索（插件配置 → 插件配置 里的可配置卡片）
  * ------------------------------------------------------------------ */
 
 interface PanelDefinition {
