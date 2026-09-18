@@ -21,6 +21,11 @@
     - id: env-manager
       name: '@hyzyn/dsh-env'
 
+# from ../kit-settings
+- insert:
+    - id: kit-settings
+      name: '@hyzyn/dsh-kit-settings'
+
 # from ../mcp
 - insert:
     - id: mcp-config
