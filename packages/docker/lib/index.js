@@ -57,7 +57,7 @@ const KNOWN_CONFIG_KEYS = new Set([
  * ------------------------------------------------------------------ */
 const ROUTE_PREFIX = '/api/dsh-docker';
 const BODY_LIMIT = 1024 * 1024;
-const DOCKER_GUIDANCE = '本机已安装 dsh-docker 插件（Docker 容器面板）：Web GUI 侧边栏「容器」入口可查看各目标（本机 / SSH 主机）上的容器列表（含 Compose 项目视图、事件「活动」条）、状态、端口、日志（含实时跟随）与资源占用（含实时跟随 + 迷你趋势图），以及镜像列表与镜像详情（层 / 大小 / 构建历史、拉取进度流）、网络与卷（列表 + 详情；删除 / 清理同样在开关之后）；目标在 设置 → 插件 → Docker 容器面板 里维护（SSH 目标可直接引用 tty 终端面板的连接簿条目）。**默认只读**：启动/停止/重启/删除容器、删除镜像 / 清理 dangling / 拉取镜像、docker exec，都需要用户在设置里显式打开「允许变更操作」「允许 exec」后才有对应工具与按钮。agent 侧配套只读工具 docker_targets（列目标）、docker_ps（列容器，含 compose 项目与服务；**target 传 `*` 可一次列出所有目标**）、docker_attention（**需关注汇总**：unhealthy / 反复重启 / OOM / 非零退出 / 僵死，同样支持 `*` 跨目标）、docker_inspect（容器详情）、docker_logs（日志快照）、docker_stats（CPU/内存/IO 快照）、docker_images（镜像列表）、docker_image_inspect（镜像详情 + 构建历史）、docker_events（容器事件快照，见面板容器列表的「活动」条）、docker_networks（网络列表）、docker_volumes（卷列表）；排障推荐顺序：不确定从哪台/哪个容器看起时先 docker_attention（可 `*` 跨目标）→ docker_ps → docker_logs → docker_inspect → docker_stats → docker_events，镜像排查用 docker_images → docker_image_inspect。docker_action（容器生命周期）、docker_image_remove（删镜像）、docker_image_prune（清理 dangling）、docker_image_pull（拉取镜像）、docker_exec 仅在用户打开对应开关后可用，执行前须确认目标，破坏性操作（容器 remove / 镜像删除与清理）要向用户复述后果。网络 / 卷的删除与 prune 目前只提供面板按钮（HTTP 端点），没有对应的 agent 工具——不要在 agent 侧绕过面板做这些变更。docker socket 等价于目标主机的 root 权限，不要在用户未明确要求时执行变更操作。';
+const DOCKER_GUIDANCE = '本机已安装 dsh-docker 插件（Docker 容器面板）：Web GUI 侧边栏「容器」入口可查看各目标（本机 / SSH 主机）上的容器列表（含 Compose 项目视图、事件「活动」条）、状态、端口、日志（含实时跟随）与资源占用（含实时跟随 + 迷你趋势图），以及镜像列表与镜像详情（层 / 大小 / 构建历史、拉取进度流）、网络与卷（列表 + 详情；删除 / 清理同样在开关之后）；目标在 插件配置 → Docker 容器面板 里维护（SSH 目标可直接引用 tty 终端面板的连接簿条目）。**默认只读**：启动/停止/重启/删除容器、删除镜像 / 清理 dangling / 拉取镜像、docker exec，都需要用户在设置里显式打开「允许变更操作」「允许 exec」后才有对应工具与按钮。agent 侧配套只读工具 docker_targets（列目标）、docker_ps（列容器，含 compose 项目与服务；**target 传 `*` 可一次列出所有目标**）、docker_attention（**需关注汇总**：unhealthy / 反复重启 / OOM / 非零退出 / 僵死，同样支持 `*` 跨目标）、docker_inspect（容器详情）、docker_logs（日志快照）、docker_stats（CPU/内存/IO 快照）、docker_images（镜像列表）、docker_image_inspect（镜像详情 + 构建历史）、docker_events（容器事件快照，见面板容器列表的「活动」条）、docker_networks（网络列表）、docker_volumes（卷列表）；排障推荐顺序：不确定从哪台/哪个容器看起时先 docker_attention（可 `*` 跨目标）→ docker_ps → docker_logs → docker_inspect → docker_stats → docker_events，镜像排查用 docker_images → docker_image_inspect。docker_action（容器生命周期）、docker_image_remove（删镜像）、docker_image_prune（清理 dangling）、docker_image_pull（拉取镜像）、docker_exec 仅在用户打开对应开关后可用，执行前须确认目标，破坏性操作（容器 remove / 镜像删除与清理）要向用户复述后果。网络 / 卷的删除与 prune 目前只提供面板按钮（HTTP 端点），没有对应的 agent 工具——不要在 agent 侧绕过面板做这些变更。docker socket 等价于目标主机的 root 权限，不要在用户未明确要求时执行变更操作。';
 /**
  * SSE 帧封装：data 一律 `JSON.stringify` 成**单行**——换行 / 引号被转义，
  * 多字节字符也不会被 SSE 的 `\n` 行边界截断（客户端 JSON.parse 还原）。
@@ -441,7 +441,7 @@ const plugin = definePlugin({
                 return { name: fallback };
             const list = targetsNow();
             if (list.length === 0)
-                return { error: '尚未配置任何 Docker 目标（设置 → 插件 → Docker 容器面板）' };
+                return { error: '尚未配置任何 Docker 目标（插件配置 → Docker 容器面板）' };
             return { error: 'target 必填（已配置多个目标：' + list.map((item) => item.name).join('、') + '）' };
         };
         /**
@@ -673,7 +673,7 @@ const plugin = definePlugin({
         let registeredNames = [];
         const renderTargets = (rows) => {
             if (rows.length === 0)
-                return '尚未配置任何 Docker 目标（设置 → 插件 → Docker 容器面板 → 目标）。';
+                return '尚未配置任何 Docker 目标（插件配置 → Docker 容器面板 → 目标）。';
             return 'Docker 目标：' + rows.map((row) => {
                 const state = row.ok === undefined ? '' : row.ok ? ' [可达]' : ` [不可用：${row.error ?? '未知'}]`;
                 return `\n- ${row.name} (${row.kind}) ${row.label}${state}`;
@@ -697,7 +697,7 @@ const plugin = definePlugin({
         /** 跨目标容器渲染：按目标分组，失败的目标单独一行说明（部分成功也要可读）。 */
         const renderAggregatedContainers = (groups) => {
             if (groups.length === 0)
-                return '尚未配置任何 Docker 目标（设置 → 插件 → Docker 容器面板）。';
+                return '尚未配置任何 Docker 目标（插件配置 → Docker 容器面板）。';
             const total = groups.reduce((sum, group) => sum + (group.containers?.length ?? 0), 0);
             const failed = groups.filter((group) => !group.ok);
             const head = `所有目标共 ${String(total)} 个容器（${String(groups.length)} 个目标${failed.length > 0 ? `，${String(failed.length)} 个不可达` : ''}）：`;
@@ -1553,7 +1553,7 @@ const plugin = definePlugin({
                     },
                     async execute(args) {
                         if (!live.allowMutations)
-                            throw new Error('变更操作未启用（设置 → 插件 → Docker 容器面板 → 允许变更操作）');
+                            throw new Error('变更操作未启用（插件配置 → Docker 容器面板 → 允许变更操作）');
                         const input = (args ?? {});
                         const picked = pickTarget(input.target);
                         if (picked.name === undefined)
@@ -1595,7 +1595,7 @@ const plugin = definePlugin({
                     },
                     async execute(args) {
                         if (!live.allowMutations)
-                            throw new Error('变更操作未启用（设置 → 插件 → Docker 容器面板 → 允许变更操作）');
+                            throw new Error('变更操作未启用（插件配置 → Docker 容器面板 → 允许变更操作）');
                         const input = (args ?? {});
                         const picked = pickTarget(input.target);
                         if (picked.name === undefined)
@@ -1629,7 +1629,7 @@ const plugin = definePlugin({
                     },
                     async execute(args) {
                         if (!live.allowMutations)
-                            throw new Error('变更操作未启用（设置 → 插件 → Docker 容器面板 → 允许变更操作）');
+                            throw new Error('变更操作未启用（插件配置 → Docker 容器面板 → 允许变更操作）');
                         const input = (args ?? {});
                         const picked = pickTarget(input.target);
                         if (picked.name === undefined)
@@ -1669,7 +1669,7 @@ const plugin = definePlugin({
                     },
                     async execute(args) {
                         if (!live.allowMutations)
-                            throw new Error('变更操作未启用（设置 → 插件 → Docker 容器面板 → 允许变更操作）');
+                            throw new Error('变更操作未启用（插件配置 → Docker 容器面板 → 允许变更操作）');
                         const input = (args ?? {});
                         const picked = pickTarget(input.target);
                         if (picked.name === undefined)
@@ -1728,7 +1728,7 @@ const plugin = definePlugin({
                     },
                     async execute(args) {
                         if (!live.allowExec)
-                            throw new Error('exec 未启用（设置 → 插件 → Docker 容器面板 → 允许 exec）');
+                            throw new Error('exec 未启用（插件配置 → Docker 容器面板 → 允许 exec）');
                         const input = (args ?? {});
                         const picked = pickTarget(input.target);
                         if (picked.name === undefined)
@@ -2041,7 +2041,7 @@ const plugin = definePlugin({
          */
         const servePullStream = async (req, res, params) => {
             if (!live.allowMutations) {
-                writeJson(res, 403, { error: '变更操作未启用（设置 → 插件 → Docker 容器面板 → 允许变更操作）' });
+                writeJson(res, 403, { error: '变更操作未启用（插件配置 → Docker 容器面板 → 允许变更操作）' });
                 return;
             }
             const picked = pickTarget(params.get('target'));
@@ -2098,7 +2098,7 @@ const plugin = definePlugin({
                         // UI 入口（不能一并关掉，否则卡片消失就没有恢复路径了）；其余数据路由一律
                         // 403——agent 工具已由 refreshTools 同步清空，这里只管 HTTP 半体。
                         if (!live.enabled && sub !== '/config') {
-                            writeJson(res, 403, { error: '插件已禁用（设置 → 插件 → Docker 容器面板 → 启用插件）' });
+                            writeJson(res, 403, { error: '插件已禁用（插件配置 → Docker 容器面板 → 启用插件）' });
                             return;
                         }
                         if (sub === '/config') {
@@ -2307,7 +2307,7 @@ const plugin = definePlugin({
                                 }
                                 case '/images/remove': {
                                     if (!live.allowMutations) {
-                                        writeJson(res, 403, { error: '变更操作未启用（设置 → 插件 → Docker 容器面板 → 允许变更操作）' });
+                                        writeJson(res, 403, { error: '变更操作未启用（插件配置 → Docker 容器面板 → 允许变更操作）' });
                                         return;
                                     }
                                     if (typeof body.ref !== 'string' || body.ref.trim() === '') {
@@ -2319,7 +2319,7 @@ const plugin = definePlugin({
                                 }
                                 case '/images/prune': {
                                     if (!live.allowMutations) {
-                                        writeJson(res, 403, { error: '变更操作未启用（设置 → 插件 → Docker 容器面板 → 允许变更操作）' });
+                                        writeJson(res, 403, { error: '变更操作未启用（插件配置 → Docker 容器面板 → 允许变更操作）' });
                                         return;
                                     }
                                     writeJson(res, 200, { ok: true, result: await api.imagePrune() });
@@ -2339,7 +2339,7 @@ const plugin = definePlugin({
                                 }
                                 case '/networks/remove': {
                                     if (!live.allowMutations) {
-                                        writeJson(res, 403, { error: '变更操作未启用（设置 → 插件 → Docker 容器面板 → 允许变更操作）' });
+                                        writeJson(res, 403, { error: '变更操作未启用（插件配置 → Docker 容器面板 → 允许变更操作）' });
                                         return;
                                     }
                                     if (typeof body.name !== 'string' || body.name.trim() === '') {
@@ -2351,7 +2351,7 @@ const plugin = definePlugin({
                                 }
                                 case '/networks/prune': {
                                     if (!live.allowMutations) {
-                                        writeJson(res, 403, { error: '变更操作未启用（设置 → 插件 → Docker 容器面板 → 允许变更操作）' });
+                                        writeJson(res, 403, { error: '变更操作未启用（插件配置 → Docker 容器面板 → 允许变更操作）' });
                                         return;
                                     }
                                     writeJson(res, 200, { ok: true, result: await api.networkPrune() });
@@ -2371,7 +2371,7 @@ const plugin = definePlugin({
                                 }
                                 case '/volumes/remove': {
                                     if (!live.allowMutations) {
-                                        writeJson(res, 403, { error: '变更操作未启用（设置 → 插件 → Docker 容器面板 → 允许变更操作）' });
+                                        writeJson(res, 403, { error: '变更操作未启用（插件配置 → Docker 容器面板 → 允许变更操作）' });
                                         return;
                                     }
                                     if (typeof body.name !== 'string' || body.name.trim() === '') {
@@ -2383,7 +2383,7 @@ const plugin = definePlugin({
                                 }
                                 case '/volumes/prune': {
                                     if (!live.allowMutations) {
-                                        writeJson(res, 403, { error: '变更操作未启用（设置 → 插件 → Docker 容器面板 → 允许变更操作）' });
+                                        writeJson(res, 403, { error: '变更操作未启用（插件配置 → Docker 容器面板 → 允许变更操作）' });
                                         return;
                                     }
                                     writeJson(res, 200, { ok: true, result: await api.volumePrune() });
@@ -2391,7 +2391,7 @@ const plugin = definePlugin({
                                 }
                                 case '/action': {
                                     if (!live.allowMutations) {
-                                        writeJson(res, 403, { error: '变更操作未启用（设置 → 插件 → Docker 容器面板 → 允许变更操作）' });
+                                        writeJson(res, 403, { error: '变更操作未启用（插件配置 → Docker 容器面板 → 允许变更操作）' });
                                         return;
                                     }
                                     if (typeof body.id !== 'string') {
@@ -2408,7 +2408,7 @@ const plugin = definePlugin({
                                 }
                                 case '/exec': {
                                     if (!live.allowExec) {
-                                        writeJson(res, 403, { error: 'exec 未启用（设置 → 插件 → Docker 容器面板 → 允许 exec）' });
+                                        writeJson(res, 403, { error: 'exec 未启用（插件配置 → Docker 容器面板 → 允许 exec）' });
                                         return;
                                     }
                                     if (typeof body.id !== 'string' || typeof body.command !== 'string') {

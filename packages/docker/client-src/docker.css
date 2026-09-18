@@ -1817,6 +1817,9 @@
  * 标题 14px/600、描述 12px/label-secondary。
  * 之前是内联的 10px 圆角 + 更浅的边框 + 13px 标题，在设置列表里一眼就是「另一套」。
  */
+/* DSH ≥0.1.6 的插件配置页只取表单本体，页面自己画标题与卡片外壳，这里不再套一层卡片。 */
+.dk_pageHost { display: block; }
+
 .dk_settingsCard {
   list-style: none;
   border: 1px solid var(--dk-border-strong);

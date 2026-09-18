@@ -202,7 +202,26 @@ await test('factory 只 require 平台 seed 提供的模块', () => {
 
 /** 造一个最小 client ctx：slots 恒有，ttyConnbar 可选。 */
 function makeClientCtx(options = {}) {
-  const state = { cards: [], injected: [], connbarFactory: null, renders: 0, unmounted: 0, execCalls: [], mountCalls: [], paneCalls: [], openTabs: [], sessionCurrent: 'session-smoke', sessionListeners: [] }
+  const state = {
+    cards: [],
+    injected: [],
+    connbarFactory: null,
+    renders: 0,
+    unmounted: 0,
+    execCalls: [],
+    mountCalls: [],
+    paneCalls: [],
+    openTabs: [],
+    // 会话桥的桩状态：默认按 DSH 0.1.6（快照无 current，靠 retainedBy.mainView 标记选中）
+    sessionCurrent: 'session-smoke',
+    sessionCwd: '/repo/current',
+    // 宿主形状：默认按 0.1.6（无 current，靠 mainView 标记）；'0.1.5' 走老读法
+    sessionShape: options.sessionShape ?? '0.1.6',
+    sessionListeners: [],
+    sentPrompts: [],
+    drafts: [],
+    notices: [],
+  }
   const ctx = {
     slots: {
       inject: (slot, callback) => {
@@ -259,17 +278,42 @@ function makeClientCtx(options = {}) {
         callback({ ttyTerminal: service })
       }
       if (names.includes('sessions') && options.sessions !== false) {
-        // 会话桥：日志右键「问 Agent」经它拿**会话作用域**里的 conversation。
-        // 传 sessions: false 可模拟宿主未提供该服务（apply 不能崩，菜单运行期置灰）。
+        /*
+         * 会话桥：日志右键「问 Agent」经它拿**会话作用域**里的 conversation。
+         * 传 sessions: false 可模拟宿主未提供该服务（apply 不能崩，菜单运行期置灰）。
+         *
+         * 快照形状必须跟真实宿主对齐，否则桩会把 bug 遮住：DSH 0.1.6 起会话列表快照
+         * **没有 current 字段**（视图选中项搬到了 workspace 域），客户端要用
+         * `retainedBy.mainView > 0` 判「主视图正在展示哪个会话」。默认就按 0.1.6 建模，
+         * `sessionShape: '0.1.5'` 才带 current —— 老宿主的兼容路径也要能过。
+         */
+        const sessionSnapshot = () => {
+          const current = typeof state.sessionCurrent === 'string' && state.sessionCurrent !== '' ? state.sessionCurrent : null
+          const ids = current === null ? [] : [current]
+          const byId = {}
+          if (current !== null) {
+            byId[current] = {
+              id: current,
+              cwd: state.sessionCwd,
+              running: false,
+              // ≤0.1.5 的宿主没有 retainedBy 这套引用计数
+              retainedBy: state.sessionShape === '0.1.5' ? {} : { mainView: 1 },
+            }
+          }
+          if (state.sessionShape === '0.1.5') {
+            return { ids, byId, phase: 'ready', current: current ?? undefined }
+          }
+          return { ids, byId, phase: 'ready', subagentsByParent: {}, jobsBySession: {} }
+        }
         const conversation = {
-          send: () => Promise.resolve(),
-          input: { for: () => ({ setDraft() {}, notify() {} }) },
+          send: (text) => { state.sentPrompts.push(text); return Promise.resolve() },
+          input: { for: () => ({ setDraft: (text) => { state.drafts.push(text) }, notify: (kind, text) => { state.notices.push({ kind, text }) } }) },
         }
         callback({
           sessions: {
-            // current 走 state 便于用例模拟「切会话」；subscribe 收集订阅者，由用例手动通报
+            // 选中哪个会话走 state 便于用例模拟「切会话」；subscribe 收集订阅者，由用例手动通报
             list: {
-              getSnapshot: () => ({ current: state.sessionCurrent }),
+              getSnapshot: () => sessionSnapshot(),
               subscribe: (fn) => { state.sessionListeners.push(fn); return () => {} },
             },
             scope: () => ({ get: (name) => (name === 'conversation' ? conversation : undefined) }),
@@ -291,15 +335,30 @@ function makeClientCtx(options = {}) {
   return { ctx, state }
 }
 
-await test('apply 注册 settings.plugin.item 卡片（key=docker）并挂载侧边栏入口', () => {
+await test('apply 注册设置卡片与配置入口（settings.plugin.item / settings.kit.item / plugins.row.config）并挂载侧边栏入口', () => {
   const requireStub = (spec) => SEED[spec]
   const exports_ = registration.factory(requireStub)
   const { ctx, state } = makeClientCtx()
   const dispose = exports_.apply(ctx)
-  assert.equal(state.cards.length, 1)
-  assert.equal(state.cards[0].options.name, 'settings.plugin.item')
-  assert.equal(state.cards[0].options.key, 'docker', 'settings 卡片 key 必须等于命名空间')
-  assert.equal(typeof state.cards[0].component, 'function')
+  /*
+   * 卡片注册面：三个入口是**并存**的，不是其一替代其一——
+   *   - settings.plugin.item：DSH ≤0.1.5 的设置页插件卡片；
+   *   - settings.kit.item：0.1.6 起设置里的「插件配置」行（kit-settings 提供的子槽）；
+   *   - plugins.row.config：0.1.6 侧边栏插件页的行详情（两个 key：独立包与聚合包）。
+   * 数量写死过 1，于是加了后两条注册之后就一直是红的——这里按名字/键列清单，
+   * 既锁全又不必每加一个入口改一次数字。
+   */
+  const names = state.cards.map((card) => card.options.name).sort()
+  assert.deepEqual(names, ['plugins.row.config', 'plugins.row.config', 'settings.kit.item', 'settings.plugin.item'])
+  const settingsCard = state.cards.find((card) => card.options.name === 'settings.plugin.item')
+  assert.equal(settingsCard.options.key, 'docker', 'settings 卡片 key 必须等于命名空间')
+  assert.equal(state.cards.find((card) => card.options.name === 'settings.kit.item').options.id, 'docker', '插件配置行 id')
+  assert.deepEqual(
+    state.cards.filter((card) => card.options.name === 'plugins.row.config').map((card) => card.options.key).sort(),
+    ['@hyzyn/dsh-all#docker', '@hyzyn/dsh-docker#docker'],
+    '插件页行配置要同时挂独立包与聚合包两个 key',
+  )
+  for (const card of state.cards) assert.equal(typeof card.component, 'function', card.options.name + ' 未暴露组件')
   // 宿主侧边栏找不到时安静降级（不抛异常），卸载可重复调用
   assert.equal(typeof dispose, 'function')
   dispose()
@@ -597,11 +656,43 @@ await test('渲染期守卫：面板组件体直接跑一遍不能抛（TDZ 那�
   }
 })
 
+await test('会话桥（DSH 0.1.6 形状）：右键「问 Agent」能解出当前会话，不再恒判「没有打开的会话」', async () => {
+  /*
+   * 实测的回归：0.1.6 起 `sessions.list` 快照不再带 `current`（视图选中项搬到了
+   * workspace 域），只读老字段的实现把「有会话」判成「当前没有打开的会话」——
+   * 日志右键的两个菜单项全灰，功能整体失效且不报错。
+   * 这里两种宿主形状都要解得出，且投递真的落到作用域里的 conversation 上。
+   */
+  for (const shape of ['0.1.6', '0.1.5']) {
+    const exports_ = registration.factory((spec) => SEED[spec])
+    const { ctx, state } = makeClientCtx({ sessionShape: shape })
+    assert.equal(state.sessionShape, shape)
+    exports_.apply(ctx)
+
+    const sent = await exports_.__carrier.deliver('诊断包', 'send')
+    assert.equal(sent.ok, true, shape + '：当前会话在场时不该判成「没有打开的会话」')
+    assert.deepEqual(state.sentPrompts, ['诊断包'], shape + '：应经会话作用域的 conversation 发出')
+
+    const drafted = await exports_.__carrier.deliver('诊断包', 'draft')
+    assert.equal(drafted.ok, true, shape + '：草稿档也应可用')
+    assert.deepEqual(state.drafts, ['诊断包'], shape + '：应落到会话输入门面的 setDraft')
+  }
+})
+
+await test('会话桥：没有打开的会话时给出明确原因（菜单据此置灰，而不是崩）', async () => {
+  const exports_ = registration.factory((spec) => SEED[spec])
+  const { ctx, state } = makeClientCtx({})
+  exports_.apply(ctx)
+  state.sessionCurrent = null // 列表空：0.1.6 形状下 byId 里没有任何一行带 mainView
+  const failed = await exports_.__carrier.deliver('诊断包', 'send')
+  assert.equal(failed.ok, false)
+  assert.match(failed.message, /当前没有打开的会话/)
+})
+
 await test('投递回执：成功也在视口级发声（以前只有失败才提示）', async () => {
   const exports_ = registration.factory((spec) => SEED[spec])
   const { ctx } = makeClientCtx({ sidebarRightTabs: true })
   exports_.apply(ctx)
-
   // 成功：应追加一枚绿色 toast。这条锁的是「模态 / docked 下面板盖着会话时，
   // 用户至少能在视口右下角看到『已发送』」——以前成功是静默的，体感是「点了没反应」。
   const before = documentStub.body.children.length

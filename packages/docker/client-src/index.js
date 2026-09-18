@@ -17,6 +17,8 @@
  * （宿主只回 passwordSet / passphraseSet 布尔）。
  */
 import dockerCss from './docker.css'
+import { pickTargetByHost, sessionHostPort } from './session-target.js'
+import { currentSessionIdOf } from './current-session.js'
 
 const API = '/api/dsh-docker'
 const PANEL_STYLE_ID = 'dsh-docker-style'
@@ -312,35 +314,32 @@ async function refreshTargetsCache() {
  * 连接栏按钮点击时的目标解析：先用缓存，命中不了就**现场再拉一次**再判定。
  * 否则挂载时那次 fetch 若失败，按钮会一直停在「未配置目标」分支。
  */
-async function resolveTargetForSession(spec, bookName) {
-  const cached = matchTargetForSession(spec, bookName)
+async function resolveTargetForSession(spec, bookName, liveTarget) {
+  const cached = matchTargetForSession(spec, bookName, liveTarget)
   if (cached !== undefined) return cached
   await refreshTargetsCache()
-  return matchTargetForSession(spec, bookName)
+  return matchTargetForSession(spec, bookName, liveTarget)
 }
 
 /**
- * 用 SSH 会话规格匹配已配置的 docker 目标：连接簿条目名优先（会话来自连接簿
- * 时最准确），其次用 /targets 的 label（user@host:port）按 host:port 匹配——
- * 这样即使目标本身是用连接簿配的，也能命中。
+ * 用 SSH 会话规格匹配已配置的 docker 目标：连接簿条目名优先（会话来自连接簿且
+ * 目标也引用同一条目时最准确），其次按 host:port 匹配 —— 这样「目标是按另一条
+ * 连接簿条目配的、甚至用的是别的账号」也能命中。
+ *
+ * host 的来源见 `sessionHostPort`：从连接簿打开的标签 spec 里没有 host，要靠
+ * 宿主回显的 `tab.target` 兜底，否则这一层匹配会整条失效。
+ *
+ * @param spec tty 传来的会话规格。
+ * @param bookName 会话所属的连接簿条目名（可能为空，如内联连接）。
+ * @param liveTarget 宿主回显的实际连接（tty 的 `tab.target`，形如 user@host[:port]）。
  */
-function matchTargetForSession(spec, bookName) {
+function matchTargetForSession(spec, bookName, liveTarget) {
   const targets = (configCache !== null && Array.isArray(configCache.targets)) ? configCache.targets : []
   if (typeof bookName === 'string' && bookName !== '') {
     const byBook = targets.find((item) => item.kind === 'ssh' && item.book === bookName)
     if (byBook !== undefined) return byBook.name
   }
-  const host = typeof spec?.host === 'string' ? spec.host : ''
-  if (host === '') return undefined
-  const rawPort = Number(spec?.port)
-  const port = Number.isInteger(rawPort) && rawPort > 0 ? rawPort : 22
-  for (const row of targetsCache) {
-    if (row.kind !== 'ssh' || typeof row.label !== 'string') continue
-    const parsed = /^([^@]+)@(.+?)(?::(\d+))?$/.exec(row.label)
-    if (parsed === null) continue
-    if (parsed[2] === host && Number(parsed[3] ?? 22) === port) return row.name
-  }
-  return undefined
+  return pickTargetByHost(targetsCache, sessionHostPort(spec, liveTarget))
 }
 
 /* ================================ 图标 ================================ */
@@ -889,7 +888,7 @@ window.__ModuleLoader__.load({
       if (data.cards.length === 0) {
         return jsxs('div', { className: 'dk_empty', children: [
           jsx('div', { className: 'dk_emptyTitle', children: '还没有配置 Docker 目标' }),
-          jsx('div', { className: 'dk_emptyHint', children: '到 设置 → 插件 → Docker 容器面板 添加目标后，总览会在这里一屏汇总全部主机。' }),
+          jsx('div', { className: 'dk_emptyHint', children: '到 插件配置 → Docker 容器面板 添加目标后，总览会在这里一屏汇总全部主机。' }),
         ] })
       }
       const abnormal = data.rows.length === 0
@@ -1306,13 +1305,17 @@ window.__ModuleLoader__.load({
      * 当前会话的 scope-addressed conversation 门面。
      * `conversation` 是按会话作用域寻址的（官方报错原文：`conversation.send requires a
      * session scope — address one via ctx.sessions.scope(id).conversation`），所以必须
-     * 先 sessions.scope(id) 拿作用域，再从作用域里取服务。
+     * 先 sessions.scope(id) 拿作用域，再从作用域里取服务——官方 0.1.6 的
+     * `dsh-client-ui-conversation` 也是这么解的（`scopedConversation`）。
+     *
+     * 「当前会话 id」的取法跨版本，见 current-session.js：0.1.6 起会话列表快照不再带
+     * `current`，改看 `retainedBy.mainView > 0`。
      */
     function askTarget() {
       if (sessionsSvc === null) return { ok: false, reason: '宿主未提供 sessions 服务' }
       let id
       try {
-        id = sessionsSvc.list?.getSnapshot?.()?.current
+        id = currentSessionIdOf(sessionsSvc.list?.getSnapshot?.())
       } catch (error) {
         return { ok: false, reason: error instanceof Error ? error.message : String(error) }
       }
@@ -2137,7 +2140,7 @@ window.__ModuleLoader__.load({
           kv,
           jsx('div', { className: 'dk_cardSection', style: { marginTop: 16 }, children: '一次性命令（docker exec）' }),
           config.allowExec !== true
-            ? jsx(Banner, { kind: 'info', title: 'exec 未启用', hint: '到 设置 → 插件 → Docker 容器面板 打开「允许 exec」，或直接复制卡片上的 exec 命令到终端面板交互式进入容器。' })
+            ? jsx(Banner, { kind: 'info', title: 'exec 未启用', hint: '到 插件配置 → Docker 容器面板 打开「允许 exec」，或直接复制卡片上的 exec 命令到终端面板交互式进入容器。' })
             : jsxs('div', { children: [
               jsxs('div', { className: 'dk_row', children: [
                 jsx('input', {
@@ -2916,7 +2919,7 @@ window.__ModuleLoader__.load({
         ] }),
         jsxs('div', { className: 'dk_detailBody dk_pullBody', children: [
           props.allowMutations !== true
-            ? jsx(Banner, { kind: 'info', title: '拉取镜像需要打开「允许变更操作」', hint: 'docker pull 会写入目标机的镜像存储并占用磁盘与带宽。到 设置 → 插件 → Docker 容器面板 打开「允许变更操作」后即可在此拉取。' })
+            ? jsx(Banner, { kind: 'info', title: '拉取镜像需要打开「允许变更操作」', hint: 'docker pull 会写入目标机的镜像存储并占用磁盘与带宽。到 插件配置 → Docker 容器面板 打开「允许变更操作」后即可在此拉取。' })
             : jsxs('div', { className: 'dk_row', children: [
               jsx('input', {
                 className: 'dk_input',
@@ -4685,12 +4688,12 @@ window.__ModuleLoader__.load({
           if (sessionScoped) {
             return jsxs('div', { className: 'dk_empty', children: [
               jsx('div', { className: 'dk_emptyTitle', children: '当前会话主机还不是 Docker 目标' }),
-              jsx('div', { className: 'dk_emptyHint', children: '按上面的提示到 设置 → 插件 → Docker 容器面板 添加一条目标（推荐直接选连接簿条目），保存后回到这里刷新。为避免张冠李戴，面板不会自动切到其他目标。' }),
+              jsx('div', { className: 'dk_emptyHint', children: '按上面的提示到 插件配置 → Docker 容器面板 添加一条目标（推荐直接选连接簿条目），保存后回到这里刷新。为避免张冠李戴，面板不会自动切到其他目标。' }),
             ] })
           }
           return jsxs('div', { className: 'dk_empty', children: [
             jsx('div', { className: 'dk_emptyTitle', children: '还没有配置 Docker 目标' }),
-            jsx('div', { className: 'dk_emptyHint', children: '到 设置 → 插件 → Docker 容器面板 添加一个目标：本机直接选「本机」；远程主机可以引用 tty 终端面板的连接簿条目。' }),
+            jsx('div', { className: 'dk_emptyHint', children: '到 插件配置 → Docker 容器面板 添加一个目标：本机直接选「本机」；远程主机可以引用 tty 终端面板的连接簿条目。' }),
           ] })
         }
         // 读取失败时列表本来就会被清空（切目标失败尤其如此）：此时别把空列表说成
@@ -5170,12 +5173,12 @@ window.__ModuleLoader__.load({
                   title: '当前会话主机还没配置为 Docker 目标',
                   hint: '会话主机：' + props.sessionHint.host + (props.sessionHint.port === 22 ? '' : ':' + String(props.sessionHint.port))
                     + (props.sessionHint.book === '' ? '' : '（连接簿：' + props.sessionHint.book + '）')
-                    + ' — 到 设置 → 插件 → Docker 容器面板 添加一条 kind=ssh 目标'
+                    + ' — 到 插件配置 → Docker 容器面板 添加一条 kind=ssh 目标'
                     + (props.sessionHint.book === '' ? '（填 host/username，或用连接簿条目）' : '，直接选连接簿条目「' + props.sessionHint.book + '」')
                     + '，保存后回到这里刷新即可。',
                 }),
                 config !== null && config.allowMutations !== true
-                  ? jsx(Banner, { kind: 'info', title: '当前为只读模式', hint: '容器的启动 / 停止 / 重启 / 删除，以及镜像、网络、卷的删除与清理，都需要到 设置 → 插件 → Docker 容器面板 打开「允许变更操作」。' })
+                  ? jsx(Banner, { kind: 'info', title: '当前为只读模式', hint: '容器的启动 / 停止 / 重启 / 删除，以及镜像、网络、卷的删除与清理，都需要到 插件配置 → Docker 容器面板 打开「允许变更操作」。' })
                   : null,
                 /*
                  * 活动条贴在列表头部（横幅之下、列表之上）：它讲的是「刚刚发生了什么」，
@@ -5315,8 +5318,12 @@ window.__ModuleLoader__.load({
      * 设置卡片
      * ------------------------------------------------------------------ */
 
-    function DockerSettingsCard() {
-      const [open, setOpen] = useState(false)
+    function DockerSettingsCard(props) {
+      // DSH ≥0.1.6 的插件配置页把同一条目按 view 渲染两次：summary 一句话摘要、page 完整表单。
+      // 旧版（≤0.1.5）的 settings.plugin.item 卡片不带 view，走原有可折叠卡片分支。
+      const view = props && props.view
+      const pageView = view === 'page'
+      const [open, setOpen] = useState(pageView)
       const [form, setForm] = useState(null)
       const [loaded, setLoaded] = useState(false)
       const [saving, setSaving] = useState(false)
@@ -5422,12 +5429,19 @@ window.__ModuleLoader__.load({
         onChange: (event) => patch({ [key]: Number(event.target.value) }),
       })
 
+      if (view === 'summary') {
+        return '本机与 SSH 主机的容器与镜像：容器 / 镜像 / 网络 / 卷查看，默认只读，变更操作需显式开启。'
+      }
+
       /*
        * 卡片外壳：整条 li 就是卡片（标题行 + 展开体在同一张卡里），
        * 与 DSH 内置卡片 / 其他插件卡片（pM_pluginCard、tt_card）用同一套度量，
        * 别再用内联样式自己捏一个「看起来是另一套」的头部。
+       * page 视图（DSH ≥0.1.6 的插件配置页）不渲染卡片头：新页面自己画标题/图标/面包屑。
        */
-      const card = (body) => jsxs('li', {
+      const card = (body) => pageView
+        ? jsx('div', { className: 'dk_pageHost', children: body })
+        : jsxs('li', {
         className: 'dk_settingsCard' + (open ? ' dk_settingsCardOpen' : ''),
         children: [
           jsxs('button', {
@@ -5811,6 +5825,16 @@ window.__ModuleLoader__.load({
 
     const exports = {}
     exports.inject = ['slots']
+
+    /**
+     * DSH ≥0.1.6-alpha.2 的行配置 key：`<bundle 包名>#<行 id>`，行 id 取自 bundle 的
+     * cordis.patch.yml。独立安装时 bundle 是本包，装全家桶时是 @hyzyn/dsh-all —— 两个都注册，
+     * 未命中的那个只是躺在 ledger 里，不会渲染。
+     */
+    const ROW_CONFIG_KEYS = [
+      '@hyzyn/dsh-docker#docker',
+      '@hyzyn/dsh-all#docker',
+    ]
     /*
      * 离线冒烟的纯逻辑测试缝（scripts/client-smoke.mjs）：真实 module loader 只读
      * inject / apply，多出来的键不会被消费。选择态的判定与对账放在这里，才能不起
@@ -5930,6 +5954,23 @@ window.__ModuleLoader__.load({
         },
       }
       setEntryVisible(true)
+      // DSH ≥0.1.6-alpha.2：侧边栏「插件」页里该行的配置页。插槽不存在时 inject 不会触发，
+      // 因此在旧版上完全无副作用，一份代码同时兼容两代。
+      for (const key of ROW_CONFIG_KEYS) {
+        ctx.slots.inject('plugins.row.config', () => ctx.slots.register({
+          name: 'plugins.row.config',
+          key,
+        }, DockerSettingsCard))
+      }
+      // DSH ≥0.1.6：设置里与「通用设置」平级的「插件配置」页（子 slot 由
+      // @hyzyn/dsh-kit-settings 声明）。不传 view，卡片走各自原有的可折叠形态。
+      ctx.slots.inject('settings.kit.item', () => ctx.slots.register({
+        name: 'settings.kit.item',
+        id: 'docker',
+        order: 70,
+        label: () => "Docker 容器面板",
+      }, DockerSettingsCard))
+      // DSH ≤0.1.5：设置 → 插件 的「插件配置」标签页，keyed 插槽按 settings 命名空间派发。
       const disposeCard = ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
         name: 'settings.plugin.item',
         // key 必须是该卡片所编辑的 settings 命名空间
@@ -5967,17 +6008,22 @@ window.__ModuleLoader__.load({
          * 与会话无关，「切个会话它就没了」是纯损失。列表快照因标题变化等原因也会变，所以
          * 只认「当前会话真的换了」（shouldReopenTab）。dockerTabApi 在另一个 inject 里赋值，
          * 这里在**触发时**才读——不依赖两个 inject 的先后。
+         *
+         * 当前会话 id 由 currentSessionIdOf 跨版本解析（0.1.6 起 list 快照没有 current，
+         * 改看 retainedBy.mainView）；subscribe 挂在 list 上就够：视图保留计数变化本身
+         * 就会让列表重新发布一版快照。
          */
-        let lastSessionId = null
-        try {
-          lastSessionId = sessionsSvc?.list?.getSnapshot?.()?.current ?? null
-        } catch { /* 读不到就当没有上一个 */ }
+        const readCurrentId = () => {
+          try {
+            return currentSessionIdOf(sessionsSvc?.list?.getSnapshot?.()) ?? null
+          } catch {
+            return null // 读不到就当这一轮没变
+          }
+        }
+        let lastSessionId = readCurrentId()
         const stopWatch = (typeof sessionsSvc?.list?.subscribe === 'function')
           ? sessionsSvc.list.subscribe(() => {
-            let current = null
-            try {
-              current = sessionsSvc.list.getSnapshot()?.current ?? null
-            } catch { /* 快照读失败：这一轮不动作 */ }
+            const current = readCurrentId()
             if (shouldReopenTab(dockerPanelWanted, lastSessionId, current, dockerTabApi !== null)) {
               try {
                 dockerTabApi.openTab(DOCKER_TAB_KIND, {})
@@ -6042,7 +6088,14 @@ window.__ModuleLoader__.load({
           // 连接栏里再给一个回去的按钮等于绕回原地（而面板此刻就在旁边）
           if (isOwnExecCommand(spec.command)) return
           const bookName = typeof payload?.bookName === 'string' ? payload.bookName : ''
-          const matched = matchTargetForSession(spec, bookName)
+          /*
+           * 宿主回显的实际连接（tty 挂在 tab.target 上的 `user@host[:port]`）。
+           * 从连接簿打开的 SSH 标签，spec 里只有条目名、没有 host；少了这一份，
+           * 「按 host 匹配目标」就整条失效——哪怕用户早就按同一台主机配过目标，
+           * 只是那条目标引用的是**另一条**连接簿条目（如 lab-a vs 192.0.2.10）。
+           */
+          const liveTarget = typeof payload?.tab?.target === 'string' ? payload.tab.target : ''
+          const matched = matchTargetForSession(spec, bookName, liveTarget)
           const title = matched !== undefined
             ? `打开该主机的 Docker 容器面板（目标：${matched}）`
             : configCache === null
@@ -6052,8 +6105,9 @@ window.__ModuleLoader__.load({
           payload.addAction(ICON_BOX_SM, '容器', title, () => {
             // 点击时以「现场解析」为准：缓存没命中就现拉一次，避免启动期竞态
             void (async () => {
-              const resolved = await resolveTargetForSession(spec, bookName)
-              const rawPort = Number(spec.port)
+              const resolved = await resolveTargetForSession(spec, bookName, liveTarget)
+              // 会话主机：spec 优先，缺失时用宿主回显的实际连接兜底（否则提示里会是空的）
+              const session = sessionHostPort(spec, liveTarget)
               /*
                * 这里**刻意不走 openContainerPanel() 的标签分发**：这个按钮长在 tty 终端
                * 面板的连接栏上，也就是说点击时那个弹窗一定开着且盖满视口——开右侧栏标签
@@ -6066,7 +6120,7 @@ window.__ModuleLoader__.load({
               openPanel({
                 target: resolved ?? '',
                 sessionHint: resolved === undefined
-                  ? { host: typeof spec.host === 'string' ? spec.host : '', port: Number.isInteger(rawPort) && rawPort > 0 ? rawPort : 22, book: bookName }
+                  ? { host: session?.host ?? '', port: session?.port ?? 22, book: bookName }
                   : undefined,
               })
             })()
