@@ -54,11 +54,16 @@ export async function resolveSecretVia(provider, value) {
         return value;
     const name = value.slice(4);
     let providerError = null;
+    /** provider 明确找到了该引用（哪怕值是空串）——与「引用不存在」分开报 */
+    let providerFound = false;
     if (provider !== null && provider !== undefined && typeof provider.resolve === 'function') {
         try {
             const resolved = await provider.resolve(name);
-            if (resolved !== null && resolved !== undefined && typeof resolved.value === 'string' && resolved.value !== '') {
-                return resolved.value;
+            if (resolved !== null && resolved !== undefined) {
+                providerFound = true;
+                if (typeof resolved.value === 'string' && resolved.value !== '') {
+                    return resolved.value;
+                }
             }
         }
         catch (error) {
@@ -68,6 +73,11 @@ export async function resolveSecretVia(provider, value) {
     const fromEnv = process.env[name];
     if (fromEnv !== undefined && fromEnv !== '')
         return fromEnv;
+    // 「存在但值为空」单独报：报成「未设置」会把用户引去新建同名引用——那只会再失败一次
+    if (providerFound || fromEnv === '') {
+        const detail = providerError === null ? '' : `（凭据服务报错：${providerError}）`;
+        throw new Error(`凭据 ${name} 的值是空串${detail}——请在凭据存储或环境变量里补上实际值，新建同名引用解决不了`);
+    }
     const detail = providerError === null ? '' : `（凭据服务报错：${providerError}）`;
     const missing = provider === null ? '凭据服务不可用，' : '';
     throw new Error(`凭据未设置：${name}${detail} —— ${missing}环境变量里也没有`);
@@ -89,6 +99,41 @@ export { expandHome };
 export function sshTarget(spec) {
     const port = spec.port ?? 22;
     return `${spec.username}@${spec.host}${port === 22 ? '' : ':' + String(port)}`;
+}
+/**
+ * 把 ssh2 的底层错误消息分类为人类可读诊断（0.19.0 自 probe.ts 上移至此统一
+ * 导出——终端 / 隧道 / 探测三条路径共用同一套文案，不再透传原始英文）。
+ * 分类串本身已含关键字段；无法识别时原样返回。
+ */
+export function classifyError(message) {
+    if (message === 'Host key verification failed') {
+        return '主机密钥校验失败（TOFU 不匹配，见 hostkey 指引）';
+    }
+    if (message.includes('All configured authentication methods failed')) {
+        return '认证被拒绝：所有认证方式均失败（用户名/密码/密钥是否正确，或服务端是否允许该认证方式）';
+    }
+    if (message.includes('Timed out')) {
+        return '超时：主机无响应或认证协商超时（检查地址 / 端口 / 防火墙 / 网络）';
+    }
+    const lower = message.toLowerCase();
+    if (lower.includes('econnrefused'))
+        return '连接被拒绝（ECONNREFUSED）：端口未监听或服务未启动';
+    if (lower.includes('enetunreach'))
+        return '网络不可达（ENETUNREACH）：路由不通或主机离线';
+    if (lower.includes('ehostunreach'))
+        return '主机不可达（EHOSTUNREACH）';
+    if (lower.includes('eai_again') || lower.includes('eai_noname') || lower.includes('enotfound'))
+        return 'DNS 解析失败：主机名无法解析';
+    if (lower.includes('getaddrinfo'))
+        return 'DNS 解析失败：主机名无法解析';
+    if (lower.includes('unable to exchange encryption keys') || lower.includes('encryption') || lower.includes('kex')) {
+        return '密钥交换失败：服务端可能不是 SSH 服务，或加密算法不兼容';
+    }
+    if (lower.includes('keepalive'))
+        return '连接保活超时（keepalive）';
+    if (lower.includes('protocol'))
+        return '协议错误：' + message;
+    return message;
 }
 /* ------------------------------------------------------------------ *
  * 连接与 channel 包装
@@ -113,6 +158,11 @@ export async function buildConnectConfig(spec) {
         hostHash: 'sha256',
     };
     if (auth === 'agent') {
+        // 预检（0.19.0）：缺 SSH_AUTH_SOCK 时 ssh2 只会报「All configured
+        // authentication methods failed」，用户根本想不到是 agent 没跑
+        if (process.env.SSH_AUTH_SOCK === undefined || process.env.SSH_AUTH_SOCK === '') {
+            throw new Error('auth=agent 需要 SSH_AUTH_SOCK（本机未运行 ssh-agent 或变量未设置）；在终端面板宿主环境起 agent，或改用 key / password 认证');
+        }
         base.agent = process.env.SSH_AUTH_SOCK;
     }
     else if (auth === 'key') {
@@ -147,17 +197,19 @@ export function applyHostKeyPolicy(options) {
     let hostKeyMismatch = null;
     connectConfig.hostVerifier = (hash) => {
         const known = store?.get(spec.host, port);
-        if (known === undefined) {
+        if (known === undefined || known.length === 0) {
             store?.record(spec.host, port, hash);
             logger?.info(`[dsh-tty] ssh ${target} 首次连接，已记录 host key 指纹 sha256:${hash}（TOFU）`);
             return true;
         }
-        if (known === hash) {
-            logger?.info(`[dsh-tty] ssh ${target} host key 指纹匹配（sha256:${hash}）`);
+        if (known.includes(hash)) {
+            logger?.info(`[dsh-tty] ssh ${target} host key 指纹匹配（sha256:${hash}，该主机共记录 ${String(known.length)} 把钥匙）`);
             return true;
         }
+        const shown = known.slice(0, 3).map((f) => `sha256:${f}`).join(' / ');
+        const more = known.length > 3 ? ` 等 ${String(known.length)} 把` : '';
         hostKeyMismatch =
-            `SSH 主机密钥指纹变更：${target} 已记录 sha256:${known}，本次为 sha256:${hash}。` +
+            `SSH 主机密钥指纹变更：${target} 已记录 ${shown}${more}，本次为 sha256:${hash}。` +
                 '可能是主机重装或换钥匙，也可能是中间人（MITM）冒充；确认安全后，到 插件配置 → 终端面板 → SSH 主机密钥记录 删除该主机再重连。';
         logger?.warn(`[dsh-tty] ${hostKeyMismatch}`);
         return false;
@@ -210,29 +262,71 @@ export async function spawnSsh(spec, options) {
     let tmuxUsed = false;
     const channel = await new Promise((resolve, reject) => {
         let settled = false;
+        let watchdog = null;
+        const clearWatchdog = () => {
+            if (watchdog !== null) {
+                clearTimeout(watchdog);
+                watchdog = null;
+            }
+        };
+        // channel 打开兜底（0.19.0）：readyTimeout 只覆盖到认证成功；对端不响应
+        // channel-open（堡垒机 / sshd 限制并发 channel）时 await 永不 settle——
+        // 连接活着、keepalive 正常，用户端「Connecting …」常驻且拿不到 handle
+        // 去取消。每个 channel 尝试挂 15s 计时（与 tmux 探测的 10s 同思路），
+        // 超时断开连接并明确报错。
+        const armWatchdog = (what) => {
+            clearWatchdog();
+            watchdog = setTimeout(() => {
+                if (settled)
+                    return;
+                settled = true;
+                try {
+                    conn.end();
+                }
+                catch {
+                    /* 已断开 */
+                }
+                reject(new Error(`SSH channel 打开超时（${what}15s 无响应）：对端可能限制了并发 channel 数或不响应，连接已断开`));
+            }, 15_000);
+            watchdog.unref?.();
+        };
+        const settleOk = (ch) => {
+            if (settled)
+                return;
+            settled = true;
+            clearWatchdog();
+            resolve(ch);
+        };
+        const settleErr = (error) => {
+            if (settled)
+                return;
+            settled = true;
+            clearWatchdog();
+            reject(error);
+        };
         const openShell = () => {
+            armWatchdog('shell channel ');
             // agentForward 走 per-channel 请求（@types/ssh2 的 ShellOptions 未声明，
             // 运行时支持；仅在本机 agent 存在时生效，见 buildConnectConfig）
             conn.shell({ term: options.term, cols: options.cols, rows: options.rows, agentForward: spec.agentForward === true }, (error, ch) => {
-                settled = true;
                 if (error !== undefined && error !== null) {
                     conn.end();
-                    reject(new Error(`shell channel 打开失败: ${error.message}`));
+                    settleErr(new Error(`shell channel 打开失败: ${error.message}`));
                     return;
                 }
-                resolve(ch);
+                settleOk(ch);
             });
         };
         /** 自定义命令（0.14.0）：`conn.exec(command, {pty})`，与 tmux 分支同形。 */
         const openCommand = () => {
+            armWatchdog('命令 channel ');
             conn.exec(options.command ?? '', { pty: { term: options.term, cols: options.cols, rows: options.rows } }, (error, ch) => {
-                settled = true;
                 if (error !== undefined && error !== null) {
                     conn.end();
-                    reject(new Error(`远程命令启动失败: ${error.message}`));
+                    settleErr(new Error(`远程命令启动失败: ${error.message}`));
                     return;
                 }
-                resolve(ch);
+                settleOk(ch);
             });
         };
         /** 持久会话：远程 `exec tmux new-session -A`（pty channel，语义与 shell 一致）。 */
@@ -245,6 +339,7 @@ export async function spawnSsh(spec, options) {
                 "';' set-option -g history-limit 20000",
                 "';' set-option -ga terminal-overrides ,*:RGB",
             ].join(' ');
+            armWatchdog('tmux channel ');
             conn.exec(cmd, { pty: { term: options.term, cols: options.cols, rows: options.rows } }, (error, ch) => {
                 if (error !== undefined && error !== null) {
                     // tmux 启动失败（存在但异常）：连接已建立，降级普通 shell 优于直接报错
@@ -253,9 +348,8 @@ export async function spawnSsh(spec, options) {
                     openShell();
                     return;
                 }
-                settled = true;
                 tmuxUsed = true;
-                resolve(ch);
+                settleOk(ch);
             });
         };
         const openWithPersist = () => {
@@ -303,12 +397,11 @@ export async function spawnSsh(spec, options) {
         });
         conn.on('error', (error) => {
             if (!settled) {
-                settled = true;
                 const mismatch = policy.mismatchMessage();
                 if (mismatch !== null)
-                    reject(new Error(mismatch));
+                    settleErr(new Error(mismatch));
                 else
-                    reject(new Error(`SSH 连接失败（${target}）: ${error.message}`));
+                    settleErr(new Error(`SSH 连接失败（${target}）: ${classifyError(error.message)}`));
             }
             else {
                 logger?.warn(`[dsh-tty] ssh ${target} 连接错误: ${error.message}`);
@@ -316,6 +409,8 @@ export async function spawnSsh(spec, options) {
             }
         });
         conn.on('close', () => {
+            // channel 建立前连接就断了：不能让 await 悬挂（0.19.0 兜底）
+            settleErr(new Error(`SSH 连接已关闭（${target}，channel 未建立）`));
             finish();
         });
         if (connectConfig.tryKeyboard === true) {
@@ -328,7 +423,7 @@ export async function spawnSsh(spec, options) {
             conn.connect(connectConfig);
         }
         catch (error) {
-            reject(error instanceof Error ? error : new Error(String(error)));
+            settleErr(error instanceof Error ? error : new Error(String(error)));
         }
     });
     channel.on('data', (chunk) => {

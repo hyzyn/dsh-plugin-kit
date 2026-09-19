@@ -16,8 +16,8 @@ export interface ProbeResult {
         state: 'unknown' | 'matched' | 'recorded' | 'mismatch';
         /** 服务端 host key 的 sha256 指纹（hostHash:'sha256' 下 hostVerifier 收到的原样值）。 */
         fingerprint: string;
-        /** 已记录指纹（mismatch 时展示对照）。 */
-        known?: string;
+        /** 已记录指纹集合（mismatch 时展示对照；0.19.0 起一机多指纹）。 */
+        known?: string[];
         /** mismatch 时的完整指引文案（与 spawnSsh 一致）。 */
         error?: string;
     };

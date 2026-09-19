@@ -13,11 +13,15 @@
  *     反解，仅在调用方提供 candidates（连接簿里的主机名及其 [host]:port
  *     变体）时按候选匹配还原；
  *   - `@cert-authority` / `@revoked` 行与注释跳过；无法识别的 keytype 跳过；
- *   - 同 host:port 多条（如 rsa + ed25519 两种类型）只保留第一条——hostKeys
- *     按 host:port 单指纹存储（见 README 已知限制）。
+ *   - 同 host:port 的多条（如 rsa + ed25519 两种类型）**并入同一条记录的多
+ *     指纹集合**（0.19.0 起）：ssh2 优先协商 ed25519，只留第一条时 RSA 在前
+ *     的老机器导入后必然假 MITM 告警；单机指纹上限 8。
  */
 import { createHash, createHmac } from 'node:crypto'
 import type { HostKeyRecord } from './ssh.js'
+
+/** 单个 host:port 保留的指纹上限（server 的 keytype 有限，正常 ≤4；防异常输入撑爆）。 */
+const MAX_FINGERPRINTS_PER_HOST = 8
 
 const KEY_TYPE_RE = /^(ssh-(rsa|dss)|ecdsa-sha2-[a-z0-9-]+|ssh-ed25519|sk-(rsa|ecdsa-sha2-[a-z0-9-]+)@openssh\.com)$/
 /** hashed 条目：|1|<base64 salt>|<base64 hmac> */
@@ -79,12 +83,18 @@ function matchHashedToken(token: string, candidates: string[]): { host: string; 
 
 /**
  * 解析 known_hosts 文本。candidates 用于还原 hashed 条目（传连接簿里的
- * 主机名即可；无 hashed 条目时可省略）。返回按 host:port 去重后的记录。
+ * 主机名即可；无 hashed 条目时可省略）。返回按 host:port 聚合的记录
+ * （同机的全部指纹进同一条记录的 fingerprints，保序去重）。
  */
 export function parseKnownHosts(text: string, candidates: string[] = []): HostKeyRecord[] {
-  const out: HostKeyRecord[] = []
-  const seen = new Set<string>()
-  for (const rawLine of text.split(/\r?\n/)) {
+  return parseKnownHostsDetailed(text, candidates).entries
+}
+
+/** 同 parseKnownHosts，另带 truncated 标记（导入 >500 条时 UI 明确提示有遗漏，不再静默）。 */
+export function parseKnownHostsDetailed(text: string, candidates: string[] = []): { entries: HostKeyRecord[]; truncated: boolean } {
+  const byKey = new Map<string, HostKeyRecord>()
+  let truncated = false
+  outer: for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.trim()
     if (line === '' || line.startsWith('#')) continue
     const tokens = line.split(/\s+/)
@@ -107,11 +117,19 @@ export function parseKnownHosts(text: string, candidates: string[] = []): HostKe
     }
     for (const { host, port } of resolved) {
       const key = `${host}:${port}`
-      if (seen.has(key)) continue
-      seen.add(key)
-      out.push({ host, port, fingerprint })
-      if (out.length >= 500) return out
+      const existing = byKey.get(key)
+      if (existing === undefined) {
+        if (byKey.size >= 500) {
+          truncated = true
+          break outer
+        }
+        byKey.set(key, { host, port, fingerprints: [fingerprint] })
+        continue
+      }
+      if (!existing.fingerprints.includes(fingerprint) && existing.fingerprints.length < MAX_FINGERPRINTS_PER_HOST) {
+        existing.fingerprints.push(fingerprint)
+      }
     }
   }
-  return out
+  return { entries: [...byKey.values()], truncated }
 }

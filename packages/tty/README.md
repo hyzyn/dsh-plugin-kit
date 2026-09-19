@@ -83,8 +83,8 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
   - **服务器状态条**：本地只拿得到 CPU / 内存 / 在线时长（`node:os`），磁盘 / TCP / 网速 / 温度
     显示「无」（**远端** Windows 主机走 PowerShell 那一跳，见「服务器状态条」一节）；
 - **验证到什么程度**：Windows 11 ARM 上跑过完整安装（`dsh plugin add @hyzyn/dsh-all`）、九个插件
-  装载、`dsh web` 起服务与浏览器半体交付（与 macOS 上服务的是同一份产物：12 312 246 字节、
-  新代码标记一致）、`[dsh-tty] mounted (shell=C:\WINDOWS\system32\cmd.exe)`；x64 Windows 由 CI
+  装载、`dsh web` 起服务与浏览器半体交付（与 macOS 上服务的是同一份产物，构建后比对大小与
+  内容标记一致；不写死字节数——每次重建都会变）、`[dsh-tty] mounted (shell=C:\WINDOWS\system32\cmd.exe)`；x64 Windows 由 CI
   的三平台矩阵覆盖（build / typecheck / test，见「开发」）。
 
 ## agent 工具（P1）
@@ -228,7 +228,7 @@ subsystem，宿主半体 `src/sftp.ts`）：
   一条标题栏（折叠不关面板、不中断浏览）；同一标签的挂载位已被别的面板（如容器面板）
   占用、或面板没开时，退回原来的居中对话框，**不会把别人的面板挤掉**。标题 / 折叠 / ✕ 由
   tty 的挂载位提供；
-- **跟着标签切（0.18.4）**：文件浏览连的是**打开它的那个标签**那台主机，所以它归属该标签：
+- **跟着标签切（0.19.0）**：文件浏览连的是**打开它的那个标签**那台主机，所以它归属该标签：
   切到别的标签时整块收起（在途传输照跑，切回来还在原地），标签关掉时一并收掉。**所有入口
   用同一条规则**——连接栏「SFTP」、连接簿条目的 📂、SSH 对话框 / 设置卡片的「文件浏览」都
   归属打开那一刻的活动标签；只有「面板开着但一个标签都没有」才算不隶属任何标签（永远可见）。
@@ -388,12 +388,14 @@ tmux server（专用 socket `dsh-tty`，与用户自己的 tmux 完全隔离）�
   可滚动的长表单，浮层在那边会被裁掉；
 - **主机指纹 TOFU 钉扎（0.3.0）**：首次连接成功后把该主机（host:port）的
   sha256 指纹记录进 `hostKeys`（随 settings 持久化）；之后每次连接校验，
-  指纹一致放行，**指纹变更直接拒绝连接**（防中间人冒充），错误信息带重置
-  指引。主机重装/换钥匙后，到 设置 → 插件 → 终端面板 → 「SSH 主机密钥
-  记录」删除对应记录再重连即可（记录列表支持删除）。**「从 known_hosts
-  导入」（0.4.1）**：一键解析 `~/.ssh/known_hosts` 把已有主机指纹批量
-  预填充（连接簿里的主机名还会用于还原 `|1|` hashed 条目，非默认端口按
-  `[host]:port` 解析）；
+  集合内任一指纹匹配即放行，**指纹变更直接拒绝连接**（防中间人冒充），错误
+  信息带重置指引。同一主机的多把钥匙（0.19.0，如 rsa + ed25519）各记一条
+  指纹、合并存于同一记录——算法协商变化不再误报变更。主机重装/换钥匙后，
+  到 设置 → 插件 → 终端面板 → 「SSH 主机密钥记录」删除对应记录再重连即可
+  （记录列表支持删除）。**「从 known_hosts 导入」（0.4.1）**：一键解析
+  `~/.ssh/known_hosts` 把已有主机指纹批量预填充，同主机的 rsa/ed25519 等多条
+  记录全部保留（不再只留首条）；连接簿里的主机名还会用于还原 `|1|` hashed
+  条目，非默认端口按 `[host]:port` 解析；
 - **连接测试（0.11.0）**：设置卡片连接簿条目行内「测试」按钮，SSH 连接
   对话框另有「试连」按钮——两者都只做**链路诊断**（不建会话、不占
   `maxSessions` 名额、不开 shell）：先 TCP 预检（DNS + 建连，失败分类为
@@ -448,7 +450,7 @@ tmux server（专用 socket `dsh-tty`，与用户自己的 tmux 完全隔离）�
 | `cwd` | 宿主启动目录 | 兜底工作目录（客户端当前会话 cwd 优先） |
 | `reconnectGraceSec` | 120 | 异常断开后会话保活秒数（0~3600）：刷新页面/网络抖动后会话存活等待重连，超时由回收器结束；`0` = 旧行为，断开立即结束 |
 | `sshHosts` | `[]` | SSH 连接簿（面板「+」菜单可选）：条目 `{name, host, port=22, username, auth=agent\|key\|password, keyPath, passphrase, password, agentForward, persist=false}`；保存时整体替换、同名覆盖；`password` / `passphrase` 支持 `env:VAR` 引用，避免明文入库；持久化开启时条目点击默认以 tmux 持久会话打开，`persist=false` 是**取消项** |
-| `hostKeys` | `[]` | SSH 主机指纹记录（TOFU，自动维护）：条目 `{host, port, fingerprint}`；按 host:port 唯一，首次连接自动追加，指纹变更拒绝连接；设置卡片可删除重置 |
+| `hostKeys` | `[]` | SSH 主机指纹记录（TOFU，自动维护）：条目 `{host, port, fingerprints[]}`（旧版单 `fingerprint` 字段读取时自动迁移合并）；按 host:port 唯一，一机多把钥匙共用一条记录，首次连接自动追加、任一指纹匹配放行、全部不匹配拒绝连接；设置卡片可删除重置 |
 | `shellIntegration` | true | 注入 OSC 133/7 shell 集成（命令边界标记 + cwd 上报；`tty_capture{last}` 依赖它）；zsh/bash 支持，其他 shell 自动跳过；出兼容问题时可关闭 |
 | `tunnels` | `[]` | 端口转发隧道：条目 `{name, bookName, direction=local\|remote, localPort?, remoteHost?, remotePort?, localTargetHost?, localTargetPort?, enabled}`；`bookName` 引用连接簿条目提供主机与认证；卡片「端口转发」区块可视化维护 |
 | `sftpStyle` | `dialog` | SFTP 文件浏览界面风格：`dialog` 单窗体（远程目录 + 上传/下载/拖拽）/ `dual` 双栏（左本机 / 右远程，行内 `⇨/⇦` 宿主服务端直传）；重新打开 SFTP 生效 |
@@ -568,7 +570,7 @@ ctx.inject(['ttyTerminal'], (c) => {
 连接栏点「容器」，容器面板挂在终端**右侧**，终端继续可见、可点、可输入，而不是被整屏
 弹窗盖住（0.15 之前那正是用户的痛点）。
 
-挂载位是**连接级**的：它的凭证 / 目标来自**打开它的那个终端标签**。所以 0.18.4 起每块
+挂载位是**连接级**的：它的凭证 / 目标来自**打开它的那个终端标签**。所以 0.19.0 起每块
 pane 记一个「归属标签」（`options.ownerSid`，默认 = 挂载那一刻的活动标签）：切到别的
 标签时整块**收起**（`data-dock-hidden`，DOM 与你 render 的树都保活，在途传输继续跑），
 切回来恢复现场；归属标签被关掉时 pane 一并收掉。不这么做的话，切完标签面板还停在原处
@@ -673,8 +675,8 @@ pnpm --filter @hyzyn/dsh-tty build        # tsc 宿主 + esbuild 浏览器半体
 pnpm --filter @hyzyn/dsh-tty typecheck
 pnpm --filter @hyzyn/dsh-tty probe        # M0 探针：PTY 原语验证（需真实 PTY）
 pnpm --filter @hyzyn/dsh-tty integration  # 集成测试：真实插件 × 真实 DSH 服务组合
-pnpm --filter @hyzyn/dsh-tty live         # 对运行中的 dsh web 做存活冒烟
-pnpm --filter @hyzyn/dsh-tty tui          # TUI 冒烟：vim/nano 全屏渲染
+pnpm --filter @hyzyn/dsh-tty live         # 存活冒烟：需先起 dsh web（默认连 ws://127.0.0.1:3080，DSH_TTY_WS_URL 可覆盖）
+pnpm --filter @hyzyn/dsh-tty tui          # TUI 冒烟：vim/htop 全屏渲染（需先起 dsh web，默认连 :3090，DSH_TTY_WS_URL 可覆盖）
 pnpm --filter @hyzyn/dsh-tty ssh-smoke    # SSH 冒烟：内存 SSH server（ssh2.Server）× 真实 spawnSsh 端到端（需先 build）
 pnpm --filter @hyzyn/dsh-tty preview      # 视觉预览：headless Chrome 逐场景截图（见下）
 ```
@@ -699,12 +701,12 @@ node scripts/preview.mjs --theme=light   # 浅色主题
 
 覆盖：本地终端 / 多标签 + SSH 连接栏 / 「+」菜单 / SSH 对话框（新建、编辑、试连）/
 设置卡片（含与 docker 并排对照）/ SFTP（单窗体、双栏、落点回退）/
-**挂载位跟着标签切**（`dock-pane-tab`，0.18.4 的回归）/ 最小化徽标 / 退出与错误遮罩 /
+**挂载位跟着标签切**（`dock-pane-tab`，0.19.0 的回归）/ 最小化徽标 / 退出与错误遮罩 /
 隧道弹层 / 搜索框 / toast / 嵌入式终端（单独与面板共存）/ docker 面板与「容器 → 终端抽屉」。
 
 场景可以把**函数形态**的断言挂到 `window.__previewAssert`（返回 `null` = 通过，返回
 字符串 / 数组 = 失败），脚本会跑掉它并把结果计入 `✓/✗`。断言光挂在夹具里、只有手工
-取 `diag` 时才有人看，回归等于没钉——0.18.4 修「面板不跟标签切」时就吃到这个亏：断言
+取 `diag` 时才有人看，回归等于没钉——0.19.0 修「面板不跟标签切」时就吃到这个亏：断言
 早写好了，但因为混在带函数的 `diag` 对象里，整条求值静默失败，一路都是 ✓。
 
 夹具还会把 `--dsw-*` 皮肤变量与真实界面一并渲染，因此能验
@@ -752,14 +754,18 @@ node scripts/preview.mjs --theme=light   # 浅色主题
   反馈补丁兼容。
 - **端口转发边界**：本地监听固定 127.0.0.1（不暴露局域网）；remote 方向服务端监听还受服务端 sshd `GatewayPorts` 限制；隧道的 SSH 连接与终端会话独立，均走 TOFU 钉扎与连接簿认证；隧道规格变更（端口/目标/启停）经「保存」热生效，热改连接簿凭证则在下次重连时生效。
 - **会话持久化（tmux）边界**：持久标签由 tmux server（专用 socket `dsh-tty`）托管——宿主被硬杀 / 保活回收 / 浏览器丢失标签规格时，tmux 会话会**留存**（这正是恢复能力的前提），直到机器重启或手动 `tmux -L dsh-tty kill-server`；agent 命令粒度工具（capture{last}/expect）依赖 tmux ≥3.3 的 DCS `allow-passthrough`，更低版本持久化可用但该能力降级（SSH 远程会话不注入 shell 集成钩子，capture{last} 本就不可用，与持久化无关）；恢复接回重画的是当前可见屏，断线前的滚动历史在 tmux 自己的 history buffer（copy-mode）里，不在外层 xterm 滚动区；持久标签的 `exit` 帧退出码是 tmux 客户端的（0），shell 退出码经 OSC 133;D 标记照常可用；`tmux.conf` 只在 tmux server 首启时读取（改配置后需 `tmux -L dsh-tty kill-server` 让下次 spawn 重建 server）；`grace=0` 的「断开立即结束」对持久标签同样会 kill-session（tmux 会话不存活）；持久 SSH 会话要求远程装有 tmux（未装自动降级普通会话，连接栏常驻「未持久化」标记），且远程 `~/.tmux.conf` 不影响专用 socket 的独立 conf（`-f /dev/null`）；SSH 持久会话名随 settings 留存；**两个窗口同时接回同一持久会话**时共享同一个宿主 PTY（0.10.1，单客户端扇出，名额不翻倍），两侧行数以最近调整尺寸的窗口为准（尺寸不一致时较大一侧由 onResize 自愈重画）。
-- **SFTP 边界**：文件权限 = 对应 SSH 账号的终端权限（无额外沙箱/chroot）；下载经浏览器内存（超大文件建议终端 `scp`/`rsync`）；agent 工具 `sftp_read` ≤1MB 且拒绝二进制、`sftp_write` 单次 ≤1MB（大内容走面板上传或终端）；`sftp_*` 工具只收连接簿条目名，内联凭证仅供面板对话框使用。
+- **SFTP 边界**：文件权限 = 对应 SSH 账号的终端权限（无额外沙箱/chroot）；下载经浏览器内存（超大文件建议终端 `scp`/`rsync`）；agent 工具 `sftp_read` ≤1MB 且拒绝二进制、`sftp_write` 单次 ≤1MB（大内容走面板上传或终端）；`sftp_*` 工具只收连接簿条目名，内联凭证仅供面板对话框使用；覆盖写走同目录临时分片 `.dsh-part-<uuid>` + rename 原子落盘——宿主进程崩溃 / 断电时可能留下分片孤儿（下次向同目录覆盖上传时会自动清理超过 24h 的残留）。
 - **SSH host key 为 TOFU 钉扎**：首次连接自动记录 sha256 指纹（trust on
-  first use），之后指纹一致放行、变更拒绝——不再是无条件放行的
+  first use），之后任一记录指纹匹配放行、全部不匹配拒绝——不再是无条件放行的
   accept-and-log。注意 TOFU 的固有边界：首次连接若已遭遇 MITM 则记录的
   就是伪指纹；`hostKeys` 随 settings 落盘，指纹变更需人工在设置卡片确认
-  并删除记录；`hostKeys` 按 host:port 只存**一条**指纹——同一主机提供多种
-  密钥类型（rsa/ed25519/ecdsa）且算法协商变化时可能误报变更，删除记录
-  重连即可重新校准；known_hosts 导入同为每主机首条优先。
+  并删除记录；同一主机的多把钥匙（rsa/ed25519/ecdsa）合并为一条记录的多
+  指纹集合（0.19.0），算法协商变化不再误报「指纹变更」；known_hosts 导入
+  同样保留同主机的全部指纹。
+- **浏览器标签持久化不含明文凭证**（0.19.0）：SSH 标签写入
+  sessionStorage / localStorage 的规格副本会剥掉明文 `password` / `passphrase`
+  （`env:` 引用保留），并打 `credsStripped` 标记——恢复/重开时终端里提示
+  重新输入。本会话内存里的规格不受影响。
 - **SSH 密码 / 口令建议 `env:VAR` 引用**：连接簿随 settings 文件落盘，
   `password` / `passphrase` 明文入库有泄露面；建议 `env:VAR` +
   dsh-env-manager 托管，或直接用 `agent` 认证（凭证不落盘）。

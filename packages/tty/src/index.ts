@@ -90,7 +90,7 @@ import type { CredentialResolver, HostKeyRecord, SshHostEntry, SshSpec, TermHand
 import { probeSsh } from './probe.js'
 import { buildCommandSpawn, buildShellSpawn, defaultShellPath } from './shell-integration.js'
 import { parseSshConfig } from './ssh-config.js'
-import { parseKnownHosts } from './known-hosts.js'
+import { parseKnownHostsDetailed } from './known-hosts.js'
 import { TunnelManager } from './tunnels.js'
 import type { TunnelSpec } from './tunnels.js'
 import { SftpManager } from './sftp.js'
@@ -169,7 +169,8 @@ const SSH_HOST_SCHEMA = z.object({
 const HOST_KEY_SCHEMA = z.object({
   host: z.string(),
   port: z.natural().max(65535).default(22),
-  fingerprint: z.string(),
+  fingerprints: z.array(z.string()).default([]),
+  fingerprint: z.string().default(''), // 旧版单指纹字段：仅作迁移输入，清洗后并入 fingerprints
 })
 
 const TUNNEL_SCHEMA = z.object({
@@ -309,12 +310,16 @@ interface TtySession {
   id: string
   handle: TermHandle
   /**
-   * 绑定的 WS 连接集合（clientSid → ws，0.10.1 起支持跨连接共享）：持久
-   * （tmux）会话可被多个窗口同时绑定——同 tmuxName 的 spawn 不再新建 PTY
-   * 而是重绑定到现有会话（单 PTY 多客户端扇出，名额不翻倍）。key = 该连接
-   * 侧标签的 sid（回帧按各客户端自己的 sid 寻址）；map 为空 = 孤儿状态。
+   * 绑定的 WS 连接集合（0.19.0 起支持跨连接共享）：持久（tmux）会话可被多个
+   * 窗口同时绑定——同 tmuxName 的 spawn 不再新建 PTY 而是重绑定到现有会话
+   * （单 PTY 多客户端扇出，名额不翻倍）。
+   *
+   * 键 = `<连接 id>:<该连接侧标签 sid>`，值 = { ws, sid }（帧寻址用连接侧
+   * sid）：只用 sid 做键时，「复制标签页」复制出的同 sid 第二连接会覆盖第一
+   * 连接的绑定（前者收不到输出还自以为在线），且前者关闭时误删后者的绑定。
+   * map 为空 = 孤儿状态。
    */
-  clients: Map<string, WebSocket>
+  clients: Map<string, { ws: WebSocket; sid: string }>
   closed: boolean
   paused: boolean
   /** exit 帧只发一次（kill 主动关闭与 shell 自然退出共用同一回调）。 */
@@ -326,6 +331,8 @@ interface TtySession {
   target: string
   startedAt: number
   lastOutputAt: number
+  /** 最近一次 PTY 输入（input 帧 / tty_send）的时间戳：tty_capture{last} 的在途判据之一。 */
+  lastInputAt: number
   /** 输出环形缓冲（尾部 256KB，供 tty_capture 与断线重连回放）。 */
   buffer: string
   /** utf8 分帧兜底：跨 chunk 的多字节序列由 StringDecoder 缓存补齐。 */
@@ -351,6 +358,12 @@ interface TtySession {
   stats: StatsCollector | null
   /** 采集已永久失败（远端无 /proc、exec 被拒、连接断开）：不再重启，前端隐藏状态条。 */
   statsFailed: boolean
+}
+
+/** 单条 WS 连接的上下文：绑定键的连接侧成分 + 存活标志（spawn 在途竞态用）。 */
+interface TtyConnContext {
+  id: string
+  open: boolean
 }
 
 interface ReqLike {
@@ -463,6 +476,73 @@ function send(ws: WebSocket | null, msg: unknown): void {
 }
 
 /**
+ * 文本判定（0.19.0，sftp_read）：NUL 之外再加「非法 UTF-8/控制字节占比」——
+ * 只看已读前缀是否含 NUL 时，>256KB 的二进制文件前段恰好没 NUL 就被当文本
+ * 返回乱码；UTF-16 文本（字节偶位 NUL）由 NUL 判据捕获。样本只取前 64KB。
+ */
+function looksLikeBinary(buf: Buffer): boolean {
+  if (buf.includes(0)) return true
+  const decoder = new TextDecoder('utf-8', { fatal: true })
+  try {
+    decoder.decode(buf)
+    return false
+  } catch {
+    let suspicious = 0
+    const sample = buf.subarray(0, 64 * 1024)
+    for (let i = 0; i < sample.length; i++) {
+      const b = sample[i]
+      // 控制字节（除 \t \n \r \f \e）：合法 UTF-8 文本里几乎不出现，二进制里大量出现
+      if (b < 0x20 && b !== 0x09 && b !== 0x0a && b !== 0x0d && b !== 0x0c && b !== 0x1b) suspicious += 1
+    }
+    return suspicious / sample.length > 0.02
+  }
+}
+
+/** 去掉截断点上的未完成 UTF-8 序列（≤3 字节残包）：解码不再在尾部出 U+FFFD。 */
+function trimIncompleteUtf8Tail(buf: Buffer): Buffer {
+  if (buf.length === 0) return buf
+  const start = Math.max(0, buf.length - 3)
+  for (let i = buf.length - 1; i >= start; i--) {
+    const b = buf[i]
+    if (b < 0x80) return buf // 末尾就是 ASCII：没有残包
+    if ((b & 0xc0) === 0x80) continue // 续字节：向前找 lead
+    const need = (b & 0xe0) === 0xc0 ? 2 : (b & 0xf0) === 0xe0 ? 3 : (b & 0xf8) === 0xf0 ? 4 : 0
+    if (need === 0) return buf // 非法字节：交给 decode 按错误处理
+    return buf.length - i >= need ? buf : buf.subarray(0, i)
+  }
+  return buf
+}
+
+function decodeUtf8ForAgent(buf: Buffer): string {
+  return trimIncompleteUtf8Tail(buf).toString('utf8')
+}
+
+/**
+ * 保尾截断并避开「切割点落在转义序列 / UTF-16 代理对中间」（0.19.0）：
+ * 环形回放缓冲按字符 slice 时，起点可能落进 ANSI 序列内部（回放首行出现
+ * 残破转义）或代理对之间（单个孤立代理）。找到安全边界后再切。
+ */
+function tailFromSafeBoundary(text: string, cap: number): string {
+  if (text.length <= cap) return text
+  let start = text.length - cap
+  // 截断点前 64 字符内的 ESC：序列若跨过截断点，把起点挪到终结符之后
+  const esc = text.lastIndexOf('\x1b', start)
+  if (esc !== -1 && esc >= start - 64) {
+    const m = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]/.exec(text.slice(esc, esc + 160))
+    if (m === null) {
+      start = esc // 窗口内不见终结符：整个序列丢弃（最多 ~64 字符）
+    } else if (esc + m.index + m[0].length > start) {
+      start = esc + m.index + m[0].length
+    }
+  }
+  if (start > 0 && start < text.length) {
+    const code = text.charCodeAt(start)
+    if (code >= 0xdc00 && code <= 0xdfff) start += 1 // 低位代理：跳过，避免孤立
+  }
+  return text.slice(start)
+}
+
+/**
  * tty_capture 的默认清洗：剥离 OSC/CSI/杂项转义序列，并把同行内 \r 覆盖
  * 收敛为最后一次覆盖结果（进度条不再刷屏）。逐行近似，不追求完整 VT 语义
  * （要完整画面用 tty_screen / xterm-headless 虚拟屏）。
@@ -489,14 +569,31 @@ const OSC133_RE = /\x1b\]133;([ABDCT])(?:;([^\x07\x1b]*))?(?:\x07|\x1b\\)/g
 const OSC7_RE = /\x1b\]7;([^\x07\x1b]*)(?:\x07|\x1b\\)/g
 /** 单条命令输出捕获上限（环形，超出丢头部）。 */
 const COMMAND_CAP = 256 * 1024
+/** 同一会话允许的在途 tty_expect 上限（每个都挂常驻 data 监听器直到 settle）。 */
+const MAX_EXPECT_PER_SESSION = 5
+/** 在途 tty_expect 计数（按会话弱引用，会话回收不泄漏）。 */
+const expectCounts = new WeakMap<TtySession, number>()
+
+/**
+ * 整数夹紧（0.19.0）：ws 帧输入零信任——`Number('abc')=NaN`、`-5`、`1.5`、
+ * `1e9` 都不能原样透传给 node-pty 的 ioctl 与 xterm-headless（后者曾在
+ * resize 帧路径直接炸出未捕获异常）。非法值回落 fallback，范围内取整。
+ */
+function clampInt(value: unknown, fallback: number, min: number, max: number): number {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return fallback
+  return Math.min(max, Math.max(min, Math.round(n)))
+}
 /** data 帧合并窗口（毫秒）：窗口内的 PTY chunk 合成一帧，显著降帧/降 CPU。 */
 const FLUSH_INTERVAL_MS = 12
 /** 待发输出超过该字符数时跳过窗口立即冲刷（防超长输出无限延迟）。 */
 const FLUSH_SIZE_CHARS = 64 * 1024
 
-/** shell 集成状态：OSC 133/7 解析产物（每会话一份）。 */
+/**
+ * shell 集成状态：OSC 133/7 解析产物（每会话一份）。
+ */
 interface ShellIntegrationState {
-  /** 跨 chunk 未闭合 OSC 序列的残包缓冲（≤64KB，超限丢弃；上限容纳 T 快照）。 */
+  /** 跨 chunk 未闭合 OSC 序列的残包缓冲（≤512KB，超限丢弃；上限容纳 T 快照——200 行 tmux capture-pane 的 base64 可到数百 KB）。 */
   carry: string
   /** B..D 之间：命令输出捕获中。 */
   inCommand: boolean
@@ -544,11 +641,13 @@ function feedShellIntegration(session: TtySession, text: string): void {
   if (lastOpen !== -1) {
     const tail = data.slice(lastOpen)
     if (!/\x07|\x1b\\/.test(tail)) {
-      if (tail.length <= 64 * 1024) {
+      // 上限按 T 快照量级（512KB）：200 行 tmux capture-pane 的 base64 可到
+      // 数百 KB，64KB 装不下时会整块照常处理，残余 base64 混进命令缓冲
+      if (tail.length <= 512 * 1024) {
         state.carry = tail
         data = data.slice(0, lastOpen)
       }
-      // 超过 64KB 仍不闭合视为垃圾：放弃扣留，整块照常处理（上限容纳 T 快照）
+      // 超过上限仍不闭合视为垃圾：放弃扣留，整块照常处理
     }
   }
   for (const match of data.matchAll(OSC7_RE)) {
@@ -717,23 +816,51 @@ function validateSshHosts(input: unknown): { hosts?: SshHostEntry[]; error?: str
   return { hosts: sanitizeSshHosts(input) }
 }
 
-/** 宽松清洗一份 hostKeys 输入；输入不是数组时返回 undefined（表示「未提供，保持原值」）。 */
+/** 单个 host:port 保留的指纹上限（与 known-hosts.ts / ssh.ts 的 TOFU 集合同参数）。 */
+const MAX_FINGERPRINTS_PER_HOST = 8
+
+/** 归集一条输入里的指纹（新 fingerprints 数组 + 旧版单指纹字段都收），去重保序。 */
+function collectFingerprints(raw: Record<string, unknown>): string[] {
+  const out: string[] = []
+  const push = (value: unknown): void => {
+    if (typeof value !== 'string') return
+    const trimmed = value.trim()
+    if (trimmed === '' || trimmed.length > 256 || out.includes(trimmed)) return
+    out.push(trimmed)
+  }
+  push(raw.fingerprint) // 旧版单指纹字段：兼容迁移
+  if (Array.isArray(raw.fingerprints)) for (const fp of raw.fingerprints) push(fp)
+  return out
+}
+
+/**
+ * 宽松清洗一份 hostKeys 输入；输入不是数组时返回 undefined（表示「未提供，
+ * 保持原值」）。0.19.0 起一机多指纹：同 host:port 的多条合并为一条
+ * （fingerprints 取并集，上限 8）；旧版 `{fingerprint}` 单指纹条目迁移读取。
+ */
 function sanitizeHostKeys(input: unknown): HostKeyRecord[] | undefined {
   if (!Array.isArray(input)) return undefined
-  const out: HostKeyRecord[] = []
+  const byKey = new Map<string, HostKeyRecord>()
   for (const item of input) {
     if (typeof item !== 'object' || item === null) continue
     const raw = item as Record<string, unknown>
     if (typeof raw.host !== 'string' || raw.host.trim() === '') continue
-    if (typeof raw.fingerprint !== 'string' || raw.fingerprint.trim() === '' || raw.fingerprint.length > 256) continue
-    const port = Number(raw.port)
-    out.push({
-      host: raw.host.trim().toLowerCase(),
-      port: Number.isInteger(port) && port >= 1 && port <= 65535 ? port : 22,
-      fingerprint: raw.fingerprint.trim(),
-    })
+    const fps = collectFingerprints(raw)
+    if (fps.length === 0) continue
+    const host = raw.host.trim().toLowerCase()
+    const portNum = Number(raw.port)
+    const port = Number.isInteger(portNum) && portNum >= 1 && portNum <= 65535 ? portNum : 22
+    const key = `${host}:${port}`
+    const existing = byKey.get(key)
+    if (existing === undefined) {
+      byKey.set(key, { host, port, fingerprints: fps.slice(0, MAX_FINGERPRINTS_PER_HOST) })
+      continue
+    }
+    for (const fp of fps) {
+      if (!existing.fingerprints.includes(fp) && existing.fingerprints.length < MAX_FINGERPRINTS_PER_HOST) existing.fingerprints.push(fp)
+    }
   }
-  return out
+  return [...byKey.values()]
 }
 
 /** 清洗一份 sftpLimits 输入：每项取 0~上限 的整数（0 = 不限），缺省回落默认值。 */
@@ -749,20 +876,17 @@ function sanitizeSftpLimits(input: Partial<SftpLimits> | undefined): Required<Sf
   }
 }
 
-/** 严格校验一份 hostKeys 输入（HTTP POST 路径）；返回错误信息或清洗后的数组。 */
+/** 严格校验一份 hostKeys 输入（HTTP POST 路径）；返回错误信息或清洗后的数组。
+ *  同 host:port 允许出现多条（清洗时合并为一条的多指纹集合，见 sanitizeHostKeys）。 */
 function validateHostKeys(input: unknown): { keys?: HostKeyRecord[]; error?: string } {
   if (!Array.isArray(input)) return { error: 'hostKeys 必须是数组' }
-  const seen = new Set<string>()
   for (const item of input) {
     if (typeof item !== 'object' || item === null) return { error: 'hostKeys 条目必须是对象' }
     const raw = item as Record<string, unknown>
     if (typeof raw.host !== 'string' || raw.host.trim() === '') return { error: 'hostKeys.host 必须是非空字符串' }
-    if (typeof raw.fingerprint !== 'string' || raw.fingerprint.trim() === '') return { error: 'hostKeys.fingerprint 必须是非空字符串' }
+    if (collectFingerprints(raw).length === 0) return { error: 'hostKeys 条目需要 fingerprint(s)（至少一个非空指纹）' }
     const port = Number(raw.port ?? 22)
     if (!Number.isInteger(port) || port < 1 || port > 65535) return { error: 'hostKeys.port 必须是 1~65535 的整数' }
-    const key = `${raw.host.trim().toLowerCase()}:${port}`
-    if (seen.has(key)) return { error: `hostKeys 主机重复: ${key}` }
-    seen.add(key)
   }
   return { keys: sanitizeHostKeys(input) }
 }
@@ -793,15 +917,25 @@ class HostKeyStore {
     return `${host.trim().toLowerCase()}:${port}`
   }
 
-  get(host: string, port: number): string | undefined {
+  get(host: string, port: number): string[] | undefined {
     const key = this.key(host, port)
-    return this.live.hostKeys.find((record) => `${record.host}:${record.port}` === key)?.fingerprint
+    const record = this.live.hostKeys.find((record) => `${record.host}:${record.port}` === key)
+    return record !== undefined && record.fingerprints.length > 0 ? record.fingerprints : undefined
   }
 
+  /** 记录指纹：同 host:port 已有记录则并入集合（一机多把钥匙），否则新建。 */
   record(host: string, port: number, fingerprint: string): void {
     const key = this.key(host, port)
-    const next = this.live.hostKeys.filter((record) => `${record.host}:${record.port}` !== key)
-    next.push({ host: host.trim().toLowerCase(), port, fingerprint })
+    const existing = this.live.hostKeys.find((record) => `${record.host}:${record.port}` === key)
+    if (existing !== undefined) {
+      if (!existing.fingerprints.includes(fingerprint)) {
+        if (existing.fingerprints.length >= MAX_FINGERPRINTS_PER_HOST) existing.fingerprints.shift()
+        existing.fingerprints.push(fingerprint)
+      }
+      this.persist(this.live.hostKeys)
+      return
+    }
+    const next = [...this.live.hostKeys, { host: host.trim().toLowerCase(), port, fingerprints: [fingerprint] }]
     this.live.hostKeys = next
     this.persist(next)
   }
@@ -939,12 +1073,16 @@ class SessionManager {
     await forceKill(session.handle)
   }
 
-  /** 回收超过保活期的孤儿会话（回收器定时调用；graceMs<=0 时不动作）。 */
+  /**
+   * 回收孤儿会话（回收器定时调用）：超过保活期的回收。graceMs<=0 时立即回收
+   * 全部孤儿——孤儿只在「断开瞬间 grace>0」时产生，热改 grace 为 0 不能只管
+   * 以后：已存在的孤儿会永久占 PTY 与名额，满额后新标签一直报「会话数已达上限」。
+   */
   async reapOrphans(graceMs: number): Promise<void> {
-    if (graceMs <= 0) return
     const now = Date.now()
     for (const session of [...this.sessions.values()]) {
-      if (session.orphanedAt !== null && now - session.orphanedAt >= graceMs) {
+      if (session.orphanedAt === null) continue
+      if (graceMs <= 0 || now - session.orphanedAt >= graceMs) {
         void this.destroy(session) // 后台收尾：terminate 最慢可达 ~20s，不阻塞回收器
       }
     }
@@ -970,7 +1108,9 @@ class SessionManager {
  * ------------------------------------------------------------------ */
 
 class TtyServer {
-  private readonly wss = new WebSocketServer({ noServer: true })
+  // maxPayload：ws 默认 100MiB，恶意/畸形帧会把内存打爆再 JSON.parse 复制一份；
+  // 最大的合法帧是 input（128KB 上限，见 input 分支），给 4MiB 余量
+  private readonly wss = new WebSocketServer({ noServer: true, maxPayload: 4 * 1024 * 1024 })
   /** 在途的持久会话创建（tmuxName → 创建 promise）：dsh 重启后多页面并发恢复时收敛竞态。 */
   private readonly pendingTmux = new Map<string, Promise<TtySession | null>>()
   /** WS 闸门（插件禁用时关闭）：拒绝新升级 + 断开存量连接。 */
@@ -1028,21 +1168,21 @@ class TtyServer {
     })
   }
 
-  /** 订阅/退订（tab 可见性驱动）：退到 0 即停表，任何路径都不会让采集器空转。 */
-  private setStatsSub(session: TtySession, clientSid: string, on: boolean): void {
+  /** 订阅/退订（tab 可见性驱动）：退到 0 即停表，任何路径都不会让采集器空转。键 = 绑定键（connId:sid）。 */
+  private setStatsSub(session: TtySession, bindingKey: string, on: boolean): void {
     if (on) {
-      session.statsSubs.add(clientSid)
+      session.statsSubs.add(bindingKey)
       this.startStats(session)
       return
     }
-    session.statsSubs.delete(clientSid)
+    session.statsSubs.delete(bindingKey)
     if (session.statsSubs.size === 0) this.stopStats(session)
   }
 
   /** 清掉指向已解绑客户端（WS 关闭 / 标签换 sid 重绑）的订阅，防采集器永不收尾。 */
   private pruneStatsSubs(session: TtySession): void {
-    for (const clientSid of [...session.statsSubs]) {
-      if (!session.clients.has(clientSid)) this.setStatsSub(session, clientSid, false)
+    for (const bindingKey of [...session.statsSubs]) {
+      if (!session.clients.has(bindingKey)) this.setStatsSub(session, bindingKey, false)
     }
   }
 
@@ -1145,13 +1285,13 @@ class TtyServer {
     this.sessions.forEach((session) => this.stopStats(session))
   }
 
-  /** 帧只发给订阅了该会话的客户端（按各客户端自己的 sid 寻址，跨窗口共享也成立）。 */
+  /** 帧只发给订阅了该会话的客户端（绑定键寻址，回帧带各连接自己的 sid，跨窗口共享也成立）。 */
   private sendStats(session: TtySession, frame: StatsFrame): void {
-    for (const clientSid of session.statsSubs) {
-      const ws = session.clients.get(clientSid)
-      if (ws === undefined) continue
+    for (const bindingKey of session.statsSubs) {
+      const client = session.clients.get(bindingKey)
+      if (client === undefined) continue
       try {
-        send(ws, { t: 'stats', sid: clientSid, stats: frame })
+        send(client.ws, { t: 'stats', sid: client.sid, stats: frame })
       } catch {
         // readyState 检查与 send 之间对端可能刚关：不 try 的话异常会落在 ws 事件
         // 回调或采样 promise 里（未处理异常/未处理拒绝 → 宿主进程直接退出）
@@ -1175,6 +1315,8 @@ class TtyServer {
   }
 
   private onConnection(ws: WebSocket): void {
+    /** 本连接的上下文：id 参与跨连接绑定键（D07）；open 供在途异步路径判「连接已死」（D06）。 */
+    const conn: TtyConnContext = { id: randomUUID(), open: true }
     /** 本连接上的会话表（sid → session）；单连接多会话（标签页）。 */
     const local = new Map<string, TtySession>()
 
@@ -1183,8 +1325,8 @@ class TtyServer {
       local.clear()
       await Promise.all(all.map(async ([clientSid, session]) => {
         if (session.closed) return
-        // 解绑本连接的客户端；其余窗口仍绑定着（跨连接共享）时会话继续在线
-        session.clients.delete(clientSid)
+        // 解绑本连接的客户端（键 = connId:sid）；其余窗口仍绑定着（跨连接共享）时会话继续在线
+        session.clients.delete(conn.id + ':' + clientSid)
         // WS 关闭/转孤儿：该端的 stats 订阅一并解绑（退到 0 就停表关 channel）
         this.pruneStatsSubs(session)
         if (session.clients.size > 0) {
@@ -1210,10 +1352,11 @@ class TtyServer {
       } catch {
         return
       }
-      void this.handleMessage(ws, msg, local, cleanupAll)
+      void this.handleMessage(ws, msg, local, cleanupAll, conn)
     })
 
     ws.on('close', () => {
+      conn.open = false
       void cleanupAll()
     })
     ws.on('error', (error) => {
@@ -1244,8 +1387,8 @@ class TtyServer {
   }
 
   /** 把一个客户端连接重绑定到既有会话（跨窗口共享 / 并发恢复收敛共用）。 */
-  private rebindClient(session: TtySession, sid: string, ws: WebSocket, local: Map<string, TtySession>): void {
-    session.clients.set(sid, ws)
+  private rebindClient(session: TtySession, sid: string, ws: WebSocket, local: Map<string, TtySession>, connId: string): void {
+    session.clients.set(connId + ':' + sid, { ws, sid })
     session.orphanedAt = null
     this.pruneStatsSubs(session)
     if (session.paused) {
@@ -1327,8 +1470,11 @@ class TtyServer {
     msg: WsMessage,
     local: Map<string, TtySession>,
     cleanupAll: () => Promise<void>,
+    conn: TtyConnContext,
   ): Promise<void> {
     try {
+      // 连接已关闭（close 后仍有在途帧排队）：任何绑定/创建都不再落到死连接上
+      if (!conn.open) return
       if (msg.t === 'spawn') {
         const sid = typeof msg.sid === 'string' && msg.sid !== '' ? msg.sid : randomUUID()
         if (!SID_RE.test(sid)) {
@@ -1359,7 +1505,8 @@ class TtyServer {
         if (persistName !== null) {
           const existing = (this.sessions.findByTmuxName(persistName) ?? (await this.waitPendingTmux(persistName))) ?? null
           if (existing !== null) {
-            this.rebindClient(existing, sid, ws, local)
+            if (!conn.open) return // 等待在途创建期间连接断了：不往死连接上绑
+            this.rebindClient(existing, sid, ws, local, conn.id)
             return
           }
         }
@@ -1395,8 +1542,8 @@ class TtyServer {
         const create = (async (): Promise<TtySession> => {
           const handle = wrapLocalPty(await subprocess.spawnTerminal({
             argv: spawnPlan.argv,
-            rows: Number(msg.rows) || 24,
-            cols: Number(msg.cols) || 80,
+            rows: clampInt(msg.rows, 24, 2, 200),
+            cols: clampInt(msg.cols, 80, 2, 500),
             cwd,
             env: { TERM: this.options.term, COLORTERM: this.options.colorTerm, ...spawnPlan.env },
             graceMs: 5000,
@@ -1408,7 +1555,7 @@ class TtyServer {
           const next: TtySession = {
             id: sid,
             handle,
-            clients: new Map([[sid, ws]]),
+            clients: new Map([[conn.id + ':' + sid, { ws, sid }]]),
             closed: false,
             paused: false,
             cwd,
@@ -1416,9 +1563,10 @@ class TtyServer {
             target: '',
             startedAt: Date.now(),
             lastOutputAt: Date.now(),
+            lastInputAt: Date.now(),
             buffer: '',
             decoder: new StringDecoder('utf8'),
-            screen: this.createScreen(Number(msg.cols) || 80, Number(msg.rows) || 24),
+            screen: this.createScreen(clampInt(msg.cols, 80, 2, 500), clampInt(msg.rows, 24, 2, 200)),
             orphanedAt: null,
             shellState: createShellState(),
             pendingOutput: '',
@@ -1430,6 +1578,14 @@ class TtyServer {
           }
           local.set(sid, next)
           this.sessions.add(next)
+          // spawn 在途连接断开（0.19.0）：cleanupAll 已跑过、扫不到此刻才入表的
+          // 会话——转孤儿（等重连 attach 或回收器清理）。不处理的话会话绑死已
+          // 关闭的 ws 且 orphanedAt 永为 null：回收器永不扫到，PTY 与名额永久泄漏，
+          // 重连 attach 还被拒并谎报「会话已连接到其它窗口」。
+          if (!conn.open || ws.readyState !== WebSocket.OPEN) {
+            next.clients.clear()
+            next.orphanedAt = Date.now()
+          }
           return next
         })()
         if (tmuxName !== null) {
@@ -1443,7 +1599,7 @@ class TtyServer {
         send(ws, { t: 'ready', sid, pid: next.handle.pid, kind: 'local', ...(tmuxName !== null ? { persist: true } : {}) })
         if (wantsPersist && tmuxName === null) {
           const notice = '\x1b[2m[dsh-tty] 未检测到 tmux，本标签以普通会话运行；安装 tmux 后持久化标签可跨宿主重启恢复现场\x1b[0m\r\n'
-          next.buffer = (next.buffer + notice).slice(-BUFFER_CAP)
+          next.buffer = tailFromSafeBoundary(next.buffer + notice, BUFFER_CAP)
           send(ws, { t: 'data', sid, d: notice })
         }
         this.attachOutput(next)
@@ -1472,7 +1628,8 @@ class TtyServer {
         if (persistName !== null) {
           const existing = (this.sessions.findByTmuxName(persistName) ?? (await this.waitPendingTmux(persistName))) ?? null
           if (existing !== null && existing.kind === 'ssh' && !existing.closed) {
-            this.rebindClient(existing, sid, ws, local)
+            if (!conn.open) return // 等待在途创建期间连接断了：不往死连接上绑
+            this.rebindClient(existing, sid, ws, local, conn.id)
             return
           }
         }
@@ -1499,8 +1656,8 @@ class TtyServer {
           try {
             handle = await spawnSsh(spec, {
               term: this.options.term,
-              cols: Number(msg.cols) || 80,
-              rows: Number(msg.rows) || 24,
+              cols: clampInt(msg.cols, 80, 2, 500),
+              rows: clampInt(msg.rows, 24, 2, 200),
               logger: { info: (m) => this.ctx.logger.info(m), warn: (m) => this.ctx.logger.warn(m) },
               hostKeyStore: this.hostKeyStore,
               ...(command !== null ? { command } : {}),
@@ -1514,7 +1671,7 @@ class TtyServer {
           const next: TtySession = {
             id: sid,
             handle,
-            clients: new Map([[sid, ws]]),
+            clients: new Map([[conn.id + ':' + sid, { ws, sid }]]),
             closed: false,
             paused: false,
             cwd: '',
@@ -1522,9 +1679,10 @@ class TtyServer {
             target,
             startedAt: Date.now(),
             lastOutputAt: Date.now(),
+            lastInputAt: Date.now(),
             buffer: '',
             decoder: new StringDecoder('utf8'),
-            screen: this.createScreen(Number(msg.cols) || 80, Number(msg.rows) || 24),
+            screen: this.createScreen(clampInt(msg.cols, 80, 2, 500), clampInt(msg.rows, 24, 2, 200)),
             orphanedAt: null,
             shellState: createShellState(),
             pendingOutput: '',
@@ -1536,11 +1694,17 @@ class TtyServer {
           }
           local.set(sid, next)
           this.sessions.add(next)
+          // spawn 在途连接断开（0.19.0）：转孤儿，理由与本地分支相同；SSH 连接
+          // （含远程 tmux 持久会话）保持存活等重连 attach，到点由回收器收尾
+          if (!conn.open || ws.readyState !== WebSocket.OPEN) {
+            next.clients.clear()
+            next.orphanedAt = Date.now()
+          }
           send(ws, { t: 'ready', sid, pid: null, kind: 'ssh', target, ...(tmuxName !== null ? { persist: true } : {}) })
           if (tmuxName !== null) this.trackPersist(tmuxName, true) // 留存：远程 tmux 本机清单看不到
           if (handle.startupNotice !== undefined) {
             const notice = `\x1b[2m[dsh-tty] ${handle.startupNotice}\x1b[0m\r\n`
-            next.buffer = (next.buffer + notice).slice(-BUFFER_CAP)
+            next.buffer = tailFromSafeBoundary(next.buffer + notice, BUFFER_CAP)
             send(ws, { t: 'data', sid, d: notice })
           }
           this.attachOutput(next)
@@ -1560,17 +1724,27 @@ class TtyServer {
           return // 错误帧已在创建闭包内发送
         }
       } else if (msg.t === 'input') {
+        const data = typeof msg.d === 'string' ? msg.d : ''
+        // 长度上限（对照 sanitizeCommand 的 2000）：粘贴大文本是正常用例，
+        // >128KB 的「按键输入」只能是畸形/滥用——拒绝而不是让它进 PTY
+        if (data.length > 128 * 1024) {
+          send(ws, { t: 'error', m: 'input 帧过大（>128K 字符），已拒绝' })
+          return
+        }
         const resolved = this.resolveSid(ws, msg, local)
         if (resolved === undefined || 'unknown' in resolved) return
         const session = local.get(resolved.sid)
-        if (session !== undefined && !session.closed) await session.handle.write(String(msg.d ?? ''))
+        if (session !== undefined && !session.closed) {
+          session.lastInputAt = Date.now()
+          await session.handle.write(data)
+        }
       } else if (msg.t === 'resize') {
         const resolved = this.resolveSid(ws, msg, local)
         if (resolved === undefined || 'unknown' in resolved) return
         const session = local.get(resolved.sid)
         if (session !== undefined) {
-          const cols = Number(msg.cols) || 80
-          const rows = Number(msg.rows) || 24
+          const cols = clampInt(msg.cols, 80, 2, 500)
+          const rows = clampInt(msg.rows, 24, 2, 200)
           session.handle.resize(cols, rows)
           try {
             session.screen?.resize(cols, rows)
@@ -1592,10 +1766,16 @@ class TtyServer {
         const resolved = this.resolveSid(ws, msg, local)
         if (resolved === undefined) return
         if ('unknown' in resolved) {
-          // 本连接没有该 sid：若是孤儿会话（前连接已断）也允许 kill，
-          // 避免「关闭面板杀不掉孤儿」泄漏到保活期结束
+          // 本连接没有该 sid：若是孤儿会话（前连接已断、无人绑定）也允许 kill，
+          // 避免「关闭面板杀不掉孤儿」泄漏到保活期结束。仍被任何连接绑定的会话
+          // 绝不在此路径杀——任意 loopback 帧（含失效旧 sid）凭 sid 就能 SIGKILL
+          // 别的窗口正在跑的构建，那是提权级事故（0.19.0 加前提）。
           const orphan = this.sessions.get(String(msg.sid ?? ''))
           if (orphan !== undefined && !orphan.closed) {
+            if (orphan.clients.size > 0) {
+              send(ws, { t: 'error', sid: String(msg.sid ?? ''), m: '该会话正连接在其它窗口：请到那个窗口关闭标签，或先在本窗口 attach' })
+              return
+            }
             this.flushPendingOutput(orphan)
             this.killSessionNow(orphan)
           }
@@ -1629,8 +1809,9 @@ class TtyServer {
           send(ws, { t: 'error', sid: raw, m: '会话已连接到其它窗口' })
           return
         }
-        // 重新绑定到本连接（key = 本连接侧的 sid）：解孤儿态，恢复被背压暂停的输出流
-        session.clients.set(raw, ws)
+        // 重新绑定到本连接（键 = connId:sid，连接侧 sid 供帧寻址）：解孤儿态，
+        // 恢复被背压暂停的输出流
+        session.clients.set(conn.id + ':' + raw, { ws, sid: raw })
         session.orphanedAt = null
         local.set(raw, session)
         if (session.paused) {
@@ -1652,7 +1833,7 @@ class TtyServer {
           send(ws, { t: 'data', sid: raw, d: session.buffer })
         }
       } else if (msg.t === 'statsOn' || msg.t === 'statsOff') {
-        this.handleStatsFrame(ws, msg, local)
+        this.handleStatsFrame(ws, msg, local, conn.id)
       }
     } catch (error) {
       send(ws, { t: 'error', m: error instanceof Error ? error.message : String(error) })
@@ -1661,14 +1842,15 @@ class TtyServer {
 
   /**
    * 服务器状态条订阅（0.17.0）：按「标签可见性」驱动——只有可见标签才发
-   * statsOn。未知 sid（客户端竞态）静默忽略，不回错误帧。
+   * statsOn。未知 sid（客户端竞态）静默忽略，不回错误帧。订阅键与客户端
+   * 绑定键同构（connId:sid），跨连接共享同一 sid 时互不踩。
    */
-  private handleStatsFrame(ws: WebSocket, msg: WsMessage, local: Map<string, TtySession>): void {
+  private handleStatsFrame(ws: WebSocket, msg: WsMessage, local: Map<string, TtySession>, connId: string): void {
     const resolved = this.resolveSid(ws, msg, local)
     if (resolved === undefined || 'unknown' in resolved) return
     const session = local.get(resolved.sid)
     if (session === undefined || session.closed) return
-    this.setStatsSub(session, resolved.sid, msg.t === 'statsOn')
+    this.setStatsSub(session, connId + ':' + resolved.sid, msg.t === 'statsOn')
   }
 
   /** 会话退出事实 → exit 帧（恰好一次；本地 PTY 与 SSH 共用）。 */
@@ -1691,8 +1873,8 @@ class TtyServer {
       }
       this.flushPendingOutput(session) // exit 前冲掉合并窗口里的尾巴，保序
       // exit 广播到所有绑定连接（跨窗口共享），各客户端按自己的 sid 收址
-      for (const [clientSid, clientWs] of session.clients) {
-        send(clientWs, { t: 'exit', sid: clientSid, code: outcome.exitCode, signal: outcome.signal })
+      for (const client of session.clients.values()) {
+        send(client.ws, { t: 'exit', sid: client.sid, code: outcome.exitCode, signal: outcome.signal })
       }
       session.clients.clear()
     }).catch(() => { /* spawn 级失败已在分支内处理 */ })
@@ -1707,14 +1889,14 @@ class TtyServer {
       if (session.closed || session.clients.size === 0 || pending === '') return
       session.pendingOutput = ''
       let maxBuffered = 0
-      for (const [clientSid, clientWs] of session.clients) {
+      for (const client of session.clients.values()) {
         try {
-          clientWs.send(JSON.stringify({ t: 'data', sid: clientSid, d: pending }), () => {
-            if (session.paused && clientWs.bufferedAmount < BACKPRESSURE_LOW && output.readableFlowing === false) {
+          client.ws.send(JSON.stringify({ t: 'data', sid: client.sid, d: pending }), () => {
+            if (session.paused && client.ws.bufferedAmount < BACKPRESSURE_LOW && output.readableFlowing === false) {
               output.resume()
             }
           })
-          maxBuffered = Math.max(maxBuffered, clientWs.bufferedAmount)
+          maxBuffered = Math.max(maxBuffered, client.ws.bufferedAmount)
         } catch {
           /* 客户端已断开 */
         }
@@ -1729,7 +1911,7 @@ class TtyServer {
       // StringDecoder 兜跨 chunk 多字节序列，再喂 shell 集成解析与虚拟屏
       const text = session.decoder.write(chunk)
       session.lastOutputAt = Date.now()
-      session.buffer = (session.buffer + text).slice(-BUFFER_CAP)
+      session.buffer = tailFromSafeBoundary(session.buffer + text, BUFFER_CAP)
       feedShellIntegration(session, text)
       try {
         session.screen?.write(text)
@@ -1763,8 +1945,8 @@ class TtyServer {
     const pending = session.pendingOutput
     session.pendingOutput = ''
     if (session.closed || session.clients.size === 0 || pending === '') return
-    for (const [clientSid, clientWs] of session.clients) {
-      send(clientWs, { t: 'data', sid: clientSid, d: pending })
+    for (const client of session.clients.values()) {
+      send(client.ws, { t: 'data', sid: client.sid, d: pending })
     }
   }
 
@@ -2052,6 +2234,13 @@ async function listLocalDir(rawPath: string): Promise<{ path: string; entries: L
     }
     entries.push({ name: dirent.name, isDir, isFile, isSymlink: dirent.isSymbolicLink(), size, mtime })
   }
+  // 与远程栏同一套排序（0.19.0，见 SftpManager.list）：目录优先 + localeCompare
+  // ——此前本机栏完全不排，同一面板左右两栏规则不一致，定位文件靠肉眼扫
+  entries.sort((a, b) => {
+    const kindDiff = (a.isDir ? 0 : 1) - (b.isDir ? 0 : 1)
+    if (kindDiff !== 0) return kindDiff
+    return a.name.localeCompare(b.name)
+  })
   return { path: resolved, entries }
 }
 
@@ -2479,7 +2668,9 @@ const plugin = definePlugin<Config>({
             try {
               const text = readFileSync(expandHome('~/.ssh/known_hosts'), 'utf8')
               const candidates = live.sshHosts.flatMap((entry) => [entry.host, `[${entry.host}]:${entry.port}`])
-              writeJson(res, 200, { ok: true, entries: parseKnownHosts(text, candidates) })
+              // truncated（0.19.0）：超 500 条截断时明确告知，用户不再蒙在鼓里
+              const parsedKnownHosts = parseKnownHostsDetailed(text, candidates)
+              writeJson(res, 200, { ok: true, entries: parsedKnownHosts.entries, truncated: parsedKnownHosts.truncated })
             } catch (error) {
               writeJson(res, 200, { ok: false, error: '无法读取 ~/.ssh/known_hosts: ' + (error instanceof Error ? error.message : String(error)) })
             }
@@ -2658,7 +2849,9 @@ const plugin = definePlugin<Config>({
                 stream.pipe(res)
                 return
               } catch (error) {
-                writeJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
+                const message = error instanceof Error ? error.message : String(error)
+                // 下载路径不存在 → 404（0.19.0：openDownload 现在会明确抛错而不是 200+断流）
+                writeJson(res, message.includes('远程路径不存在') ? 404 : 500, { error: message })
                 return
               }
             }
@@ -2691,27 +2884,33 @@ const plugin = definePlugin<Config>({
                 writeJson(res, 400, { error: parsed.error ?? '无效的 SSH 连接规格' })
                 return
               }
-              // 取消上传（0.12.0）：客户端 abort → req 'aborted' → 打断 pipeline
-              // 并删掉远端半截文件。不清理的话远端会留一个同名残留文件，用户
-              // 只看得到「已取消」，却有个打不开的文件占着位。
+              // 取消上传（0.12.0）：客户端中断 → 打断 pipeline 并清理远端半截产物。
+              // 判据用「close 时请求未完整收到」——req 'aborted' 事件已废弃。
+              // 0.19.0 起覆盖写走临时分片 + rename（见 openUpload）：取消清理删的
+              // 是分片（writePath），目标原文件不受影响；追加写内容已进目标尾部，
+              // 没有可回滚的半截，不删整个文件。
               const controller = new AbortController()
               let abortedByClient = false
-              req.on('aborted', () => {
-                abortedByClient = true
-                controller.abort()
+              let writePath = target
+              req.on('close', () => {
+                if (req.complete !== true && res.writableEnded !== true && !abortedByClient) {
+                  abortedByClient = true
+                  controller.abort()
+                }
               })
               try {
-                const { stream, done } = await sftpManager.openUpload(parsed.spec, target, meta.append === true)
+                const upload = await sftpManager.openUpload(parsed.spec, target, meta.append === true)
+                writePath = upload.writePath
                 let bytes = 0
                 req.on('data', (chunk: Buffer) => {
                   bytes += chunk.length
                 })
-                await pipeline(req, stream, { signal: controller.signal })
-                await done
+                await pipeline(req, upload.stream, { signal: controller.signal })
+                await upload.done
                 writeJson(res, 200, { ok: true, bytes })
               } catch (error) {
                 if (abortedByClient) {
-                  void sftpManager.deleteRemoteQuiet(parsed.spec, target)
+                  if (meta.append !== true) void sftpManager.deleteRemoteQuiet(parsed.spec, writePath)
                   return
                 }
                 const message = error instanceof Error ? error.message : String(error)
@@ -2956,7 +3155,7 @@ const plugin = definePlugin<Config>({
           })))
           activeDisposers.push(tools.register(defineTool({
             name: 'tty_capture',
-            description: '读取某个终端面板会话（tty_list 提供 sid）的近期输出。默认读取尾部 N 行（60，最多 500，已剥离 ANSI 转义序列并收敛同行覆盖）；last:true 时只返回「上一条已完成命令」的输出与退出码（依赖 shell 集成标记，更适合拿单条命令的结果）。',
+            description: '读取某个终端面板会话（tty_list 提供 sid）的近期输出。默认读取尾部 N 行（60，最多 500，已剥离 ANSI 转义序列并收敛同行覆盖）；last:true 时只返回「上一条已完成命令」的输出与退出码（依赖 shell 集成标记，更适合拿单条命令的结果）——若命令在途（刚发送/未收到完成标记）返回 inProgress:true 且不携带旧结果，请稍后重试或改用 tty_expect。',
             parameters: {
               sid: { type: 'string', required: true, description: '会话 id（来自 tty_list）' },
               lines: { type: 'number', description: '读取尾部行数（1~500，默认 60）；last:true 时忽略' },
@@ -2972,28 +3171,42 @@ const plugin = definePlugin<Config>({
                   tail: { type: 'string', required: true },
                   source: { type: 'string' },
                   exitCode: { type: 'number' },
+                  inProgress: { type: 'boolean' },
                 },
               },
               render: (_args: unknown, value: unknown) => {
-                const v = value as { sid?: string; tail?: string; source?: string; exitCode?: number }
+                const v = value as { sid?: string; tail?: string; source?: string; exitCode?: number; inProgress?: boolean }
+                if (v.inProgress === true) {
+                  return [{ type: 'text', text: `终端会话 ${v.sid ?? '?'} 有命令正在执行（尚未收到完成标记），当前取不到「上一条已完成命令」的结果：稍后重试，或改用 tty_expect 等待特定输出。` }]
+                }
                 const head = v.source === 'last'
                   ? `终端会话 ${v.sid ?? '?'} 上一条命令的输出（exitCode=${String(v.exitCode ?? '?')}）：\n\n`
                   : `终端会话 ${v.sid ?? '?'} 尾部输出：\n\n`
                 return [{ type: 'text', text: head + (v.tail ?? '') }]
               },
             },
-            async execute(args: unknown): Promise<{ sid: string; tail: string; source?: string; exitCode?: number }> {
+            async execute(args: unknown): Promise<{ sid: string; tail: string; source?: string; exitCode?: number; inProgress?: boolean }> {
               const input = args as { sid?: unknown; lines?: unknown; last?: unknown; raw?: unknown }
               if (typeof input.sid !== 'string' || input.sid === '') throw new Error('sid 必须是非空字符串')
               const session = sessions.get(input.sid)
               if (session === undefined || session.closed) throw new Error(`会话不存在或已退出: ${input.sid}`)
               const useRaw = input.raw === true
               if (input.last === true) {
-                const last = session.shellState.lastCommand
+                const state = session.shellState
+                const last = state.lastCommand
+                // 在途判定（0.19.0）：①命令的 D 标记未到（inCommand）；②D 到了但
+                // 之后又有 PTY 输入（新命令刚发、B 标记还在路上）。lastCommand
+                // 此时是上一条的旧结果——形状正常却答非所问，必须显式标出来，
+                // 否则 agent 拿旧结果当本次结果用（静默错数据）。
+                if (state.inCommand || (last !== null && last.endedAt < session.lastInputAt)) {
+                  return { sid: input.sid, source: 'last', inProgress: true, tail: '' }
+                }
                 if (last === null) {
                   throw new Error('暂无「上一条命令」记录（shell 集成未生效——shell 不受支持或被配置关闭——或尚未执行过命令）；可改用 lines 读尾部')
                 }
-                return { sid: input.sid, source: 'last', exitCode: last.exitCode ?? undefined, tail: (useRaw ? last.output : cleanAnsiTail(last.output)).slice(0, 128 * 1024) }
+                // 保尾截断：last.output 本身已是环形保尾（COMMAND_CAP），这里再
+                // 收一刀也保尾——最近输出才是 agent 要的
+                return { sid: input.sid, source: 'last', exitCode: last.exitCode ?? undefined, tail: (useRaw ? last.output : cleanAnsiTail(last.output)).slice(-128 * 1024) }
               }
               const lines = Math.max(1, Math.min(500, typeof input.lines === 'number' && Number.isInteger(input.lines) && input.lines >= 1 ? input.lines : 60))
               const rawTail = tailLines(session, lines)
@@ -3035,7 +3248,8 @@ const plugin = definePlugin<Config>({
                 lines.push(buffer.getLine(row)?.translateToString(true) ?? '')
               }
               while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop()
-              return { sid: input.sid, cols: screen.cols, rows: screen.rows, text: lines.join('\n').slice(0, 32 * 1024) }
+              // 保尾截断：屏幕末尾（提示符行）才是有效区，丢头部不丢尾部
+              return { sid: input.sid, cols: screen.cols, rows: screen.rows, text: lines.join('\n').slice(-32 * 1024) }
             },
           })))
           activeDisposers.push(tools.register(defineTool({
@@ -3078,9 +3292,17 @@ const plugin = definePlugin<Config>({
               }
               const timeoutSec = Math.max(1, Math.min(600, typeof input.timeoutSec === 'number' && Number.isInteger(input.timeoutSec) && input.timeoutSec >= 1 ? input.timeoutSec : 30))
               const timeoutMs = timeoutSec * 1000
+              // 并发上限：每次 expect 挂一个常驻 data 监听器（直到 settle），
+              // 无上限时批量调用会堆出 MaxListenersExceededWarning + 白耗 CPU
+              const inflight = expectCounts.get(session) ?? 0
+              if (inflight >= MAX_EXPECT_PER_SESSION) {
+                throw new Error(`该会话已有 ${String(inflight)} 个在途 tty_expect（上限 ${String(MAX_EXPECT_PER_SESSION)}）：等其中一个返回再发起新的`)
+              }
+              expectCounts.set(session, inflight + 1)
               return await new Promise<{ matched: boolean; timedOut: boolean; text: string; exitCode?: number }>((resolve) => {
                 const startedAt = Date.now()
                 const startedInCommand = session.shellState.inCommand
+                // 尾部窗口：匹配只看最近 16KB，acc 全量囤积对刷屏会话可涨到数百 MB
                 let acc = ''
                 let settled = false
                 const decoder = new StringDecoder('utf8')
@@ -3090,10 +3312,11 @@ const plugin = definePlugin<Config>({
                   settled = true
                   clearTimeout(timer)
                   output.off('data', onData)
+                  expectCounts.set(session, Math.max(0, (expectCounts.get(session) ?? 1) - 1))
                   resolve(result)
                 }
                 const onData = (chunk: Buffer): void => {
-                  acc += decoder.write(chunk)
+                  acc = (acc + decoder.write(chunk)).slice(-64 * 1024)
                   const hay = acc.length > 16 * 1024 ? acc.slice(-16 * 1024) : acc
                   if (re.test(hay)) {
                     finish({ matched: true, timedOut: false, text: cleanAnsiTail(hay.slice(-6 * 1024)) })
@@ -3143,6 +3366,7 @@ const plugin = definePlugin<Config>({
               if (typeof input.data !== 'string' || input.data === '') throw new Error('data 必须是非空字符串')
               const session = sessions.get(input.sid)
               if (session === undefined || session.closed) throw new Error(`会话不存在或已退出: ${input.sid}`)
+              session.lastInputAt = Date.now()
               await session.handle.write(input.data)
               return { ok: true, sent: input.data.length }
             },
@@ -3188,7 +3412,21 @@ const plugin = definePlugin<Config>({
               },
             },
             async execute(): Promise<{ tunnels: Array<{ name: string; bookName: string; direction: string; rule: string; state: string; error?: string; connections: number; totalConnections: number }> }> {
-              return { tunnels: tunnelManager.list().map((t) => ({ ...t, error: t.error ?? undefined })) }
+              // 显式挑字段（0.19.0）：list() 还带 enabled / lastForwardError，
+              // 整包展开会突破 schema 的 additionalProperties:false——PTC 生成的
+              // TS 类型会漏字段
+              return {
+                tunnels: tunnelManager.list().map((t) => ({
+                  name: t.name,
+                  bookName: t.bookName,
+                  direction: t.direction,
+                  rule: t.rule,
+                  state: t.state,
+                  error: t.error ?? undefined,
+                  connections: t.connections,
+                  totalConnections: t.totalConnections,
+                })),
+              }
             },
           })))
           // —— SFTP 文件传输工具（0.7.0）——
@@ -3202,10 +3440,11 @@ const plugin = definePlugin<Config>({
           }
           activeDisposers.push(tools.register(defineTool({
             name: 'sftp_list',
-            description: '列出 SSH 远程目录内容（名称/类型/大小/修改时间，目录在前）。book 为 SSH 连接簿条目名；path 缺省为远程登录 home。用于查找远程文件、确认上传下载结果。',
+            description: '列出 SSH 远程目录内容（名称/类型/大小/修改时间，目录在前；isSymlink 区分符号链接与真目录）。book 为 SSH 连接簿条目名；path 缺省为远程登录 home。默认最多列 500 项（超限 truncated:true，可按子目录分批）。',
             parameters: {
               book: { type: 'string', required: true, description: 'SSH 连接簿条目名（插件配置 → 终端面板 维护）' },
               path: { type: 'string', description: '远程目录路径（缺省 = 登录 home）' },
+              maxEntries: { type: 'number', description: '最大条目数（1~2000，默认 500）' },
             },
             output: {
               schema: {
@@ -3213,6 +3452,7 @@ const plugin = definePlugin<Config>({
                 additionalProperties: false,
                 properties: {
                   path: { type: 'string', required: true },
+                  truncated: { type: 'boolean', required: true },
                   entries: {
                     type: 'array',
                     required: true,
@@ -3222,6 +3462,7 @@ const plugin = definePlugin<Config>({
                       properties: {
                         name: { type: 'string', required: true },
                         isDir: { type: 'boolean', required: true },
+                        isSymlink: { type: 'boolean', required: true },
                         size: { type: 'number', required: true },
                         mtime: { type: 'number', required: true },
                       },
@@ -3230,27 +3471,31 @@ const plugin = definePlugin<Config>({
                 },
               },
               render: (_args: unknown, value: unknown) => {
-                const v = value as { path?: string; entries?: Array<{ name: string; isDir: boolean; size: number }> }
+                const v = value as { path?: string; entries?: Array<{ name: string; isDir: boolean; isSymlink: boolean; size: number }>; truncated?: boolean }
                 const entries = v.entries ?? []
                 if (entries.length === 0) return [{ type: 'text', text: `远程目录 ${v.path ?? '?'} 为空` }]
-                const text = `远程目录 ${v.path ?? '?'}（${String(entries.length)} 项）：` + entries.map((e) => `\n- ${e.name}${e.isDir ? '/' : ''} — ${e.isDir ? '目录' : humanFileSize(e.size)}`).join('')
+                const text = `远程目录 ${v.path ?? '?'}（${String(entries.length)} 项${v.truncated === true ? '，已截断——按子目录分批或加大 maxEntries' : ''}）：` + entries.map((e) => `\n- ${e.name}${e.isDir ? '/' : e.isSymlink ? '@' : ''} — ${e.isDir ? '目录' : e.isSymlink ? '符号链接' : humanFileSize(e.size)}`).join('')
                 return [{ type: 'text', text }]
               },
             },
-            async execute(args: unknown): Promise<{ path: string; entries: Array<{ name: string; isDir: boolean; size: number; mtime: number }> }> {
-              const input = args as { book?: unknown; path?: unknown }
+            async execute(args: unknown): Promise<{ path: string; truncated: boolean; entries: Array<{ name: string; isDir: boolean; isSymlink: boolean; size: number; mtime: number }> }> {
+              const input = args as { book?: unknown; path?: unknown; maxEntries?: unknown }
               const spec = sftpBookSpec(input.book)
+              const maxEntries = Math.max(1, Math.min(2000, typeof input.maxEntries === 'number' && Number.isInteger(input.maxEntries) && input.maxEntries >= 1 ? input.maxEntries : 500))
               const result = await sftpManager.list(spec, typeof input.path === 'string' ? input.path : '')
-              return { path: result.path, entries: result.entries.map((e) => ({ name: e.name, isDir: e.isDir, size: e.size, mtime: e.mtime })) }
+              const truncated = result.entries.length > maxEntries
+              const entries = result.entries.slice(0, maxEntries).map((e) => ({ name: e.name, isDir: e.isDir, isSymlink: e.isSymlink, size: e.size, mtime: e.mtime }))
+              return { path: result.path, truncated, entries }
             },
           })))
           activeDisposers.push(tools.register(defineTool({
             name: 'sftp_read',
-            description: '读取 SSH 远程文本文件（book 连接簿条目 + path）。默认最多 256KB（可调至 1MB），超出截断；检测到 NUL 字节按二进制文件拒绝。适合查看远程配置、小日志。',
+            description: '读取 SSH 远程文本文件（book 连接簿条目 + path）。默认最多 256KB（可调至 1MB，非法值直接报错）；offset 可从指定字节起读（配合 maxBytes 分页拿到大文件尾部）；二进制判定用 NUL + 非法 UTF-8 占比双重检测，拒绝时说明原因。',
             parameters: {
               book: { type: 'string', required: true, description: 'SSH 连接簿条目名' },
               path: { type: 'string', required: true, description: '远程文件路径' },
-              maxBytes: { type: 'number', description: '最大读取字节数（1~1048576，默认 262144）' },
+              maxBytes: { type: 'number', description: '最大读取字节数（1~1048576，默认 262144；非法值报错不再静默回落）' },
+              offset: { type: 'number', description: '起始字节偏移（0~2^53-1，默认 0；>0 时跳过前缀，适合读日志尾部）' },
             },
             output: {
               schema: {
@@ -3264,16 +3509,23 @@ const plugin = definePlugin<Config>({
               },
               render: (_args: unknown, value: unknown) => {
                 const v = value as { path?: string; content?: string; truncated?: boolean }
-                const head = `远程文件 ${v.path ?? '?'}${v.truncated === true ? '（已截断）' : ''}：`
+                const head = `远程文件 ${v.path ?? '?'}${v.truncated === true ? '（已截断——加大 maxBytes 或用 offset 分页）' : ''}：`
                 return [{ type: 'text', text: head + '\n' + String(v.content ?? '') }]
               },
             },
             async execute(args: unknown): Promise<{ path: string; content: string; truncated: boolean }> {
-              const input = args as { book?: unknown; path?: unknown; maxBytes?: unknown }
+              const input = args as { book?: unknown; path?: unknown; maxBytes?: unknown; offset?: unknown }
               const spec = sftpBookSpec(input.book)
               if (typeof input.path !== 'string' || input.path.trim() === '') throw new Error('path 必须是非空字符串')
-              const maxBytes = typeof input.maxBytes === 'number' && Number.isInteger(input.maxBytes) && input.maxBytes >= 1 && input.maxBytes <= 1024 * 1024 ? input.maxBytes : 256 * 1024
-              const { stream } = await sftpManager.openDownload(spec, input.path)
+              if (input.maxBytes !== undefined && (typeof input.maxBytes !== 'number' || !Number.isInteger(input.maxBytes) || input.maxBytes < 1 || input.maxBytes > 1024 * 1024)) {
+                throw new Error('maxBytes 必须是 1~1048576 的整数')
+              }
+              const maxBytes = input.maxBytes === undefined ? 256 * 1024 : input.maxBytes
+              if (input.offset !== undefined && (typeof input.offset !== 'number' || !Number.isInteger(input.offset) || input.offset < 0)) {
+                throw new Error('offset 必须是非负整数')
+              }
+              const offset = input.offset === undefined ? 0 : input.offset
+              const { stream } = await sftpManager.openDownload(spec, input.path, offset > 0 ? { offset } : undefined)
               const chunks: Buffer[] = []
               let total = 0
               try {
@@ -3289,8 +3541,8 @@ const plugin = definePlugin<Config>({
               const buf = Buffer.concat(chunks)
               const truncated = buf.length > maxBytes
               const sliced = truncated ? buf.subarray(0, maxBytes) : buf
-              if (sliced.includes(0)) throw new Error('疑似二进制文件（含 NUL 字节），sftp_read 只支持文本内容')
-              return { path: input.path.trim(), content: sliced.toString('utf8'), truncated }
+              if (looksLikeBinary(sliced)) throw new Error('疑似二进制文件（含 NUL 或非法 UTF-8 占比过高），sftp_read 只支持文本内容')
+              return { path: input.path.trim(), content: decodeUtf8ForAgent(sliced), truncated }
             },
           })))
           activeDisposers.push(tools.register(defineTool({
@@ -3401,7 +3653,7 @@ const plugin = definePlugin<Config>({
           })))
           activeDisposers.push(tools.register(defineTool({
             name: 'sftp_remove',
-            description: '删除 SSH 远程文件或目录（book 连接簿条目 + path）。文件直接删除；目录默认走 rmdir（非空明确报错），recursive:true 整目录递归删除（不可恢复，谨慎使用）。',
+            description: '删除 SSH 远程文件或目录（book 连接簿条目 + path）。文件直接删除；目录默认走 rmdir（非空明确报错），recursive:true 整目录递归删除（不可恢复，谨慎使用）。根目录 / home / 含 . .. 相对段的路径会被直接拒绝（防整树误删），请先解析出具体的绝对路径。',
             parameters: {
               book: { type: 'string', required: true, description: 'SSH 连接簿条目名' },
               path: { type: 'string', required: true, description: '要删除的远程路径' },
@@ -3427,6 +3679,7 @@ const plugin = definePlugin<Config>({
               const spec = sftpBookSpec(input.book)
               if (typeof input.path !== 'string' || input.path.trim() === '') throw new Error('path 必须是非空字符串')
               const recursive = input.recursive === true
+              // 护栏在 SftpManager.remove 里（agent 工具与面板 HTTP 路由共用同一道）
               await sftpManager.remove(spec, input.path, recursive)
               return { ok: true, path: input.path.trim(), recursive }
             },

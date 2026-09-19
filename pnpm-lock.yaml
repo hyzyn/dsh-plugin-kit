@@ -36,7 +36,7 @@ importers:
         specifier: 0.3.4
         version: link:packages/search
       '@hyzyn/dsh-tty':
-        specifier: 0.18.3
+        specifier: 0.19.0
         version: link:packages/tty
     devDependencies:
       typescript:
@@ -76,7 +76,7 @@ importers:
         specifier: 0.3.4
         version: link:../search
       '@hyzyn/dsh-tty':
-        specifier: 0.18.3
+        specifier: 0.19.0
         version: link:../tty
     devDependencies:
       '@deepseek-ai/cordis':

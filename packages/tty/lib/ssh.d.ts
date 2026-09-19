@@ -42,12 +42,17 @@ export interface TermHandle {
     /** spawn 后注入终端的灰字提示（如远程无 tmux 降级为普通会话）。 */
     startupNotice?: string;
 }
-/** TOFU 主机指纹记录。 */
+/**
+ * TOFU 主机指纹记录（0.19.0 起一机多指纹）：known_hosts 里同一 host:port 常
+ * 同时有 ssh-rsa 与 ssh-ed25519 两行，而 ssh2 优先协商 ed25519——只留一条
+ * 指纹时，RSA 行在前的老机器导入后必然「指纹不符 → 假 MITM 告警」。集合任一
+ * 命中即放行；同机指纹总量有上限（防止无界增长），上限内不做算法识别。
+ */
 export interface HostKeyRecord {
     host: string;
     port: number;
-    /** hostVerifier 收到的原样 sha256 十六进制指纹。 */
-    fingerprint: string;
+    /** hostVerifier 收到的原样 sha256 十六进制指纹（多把钥匙 = 多个）。 */
+    fingerprints: string[];
 }
 /** 内联 SSH 连接规格（ws 帧或连接簿条目共用）。 */
 export interface SshSpec {
@@ -97,11 +102,14 @@ export interface SshSpawnOptions {
      */
     command?: string;
 }
-/** 主机指纹钉扎存储（宿主半体实现为 LiveConfig + settings 持久化）。 */
+/**
+ * 主机指纹钉扎存储（宿主半体实现为 LiveConfig + settings 持久化）。
+ * get 返回 undefined 表示该 host:port 从未记录；返回数组（≥1 条）时任一命中放行。
+ */
 export interface HostKeyStore {
-    /** 已记录的指纹（hostVerifier 收到的原样十六进制串）；未记录返回 undefined。 */
-    get(host: string, port: number): string | undefined;
-    /** 首次连接握手时记录指纹。 */
+    /** 已记录的指纹集合（hostVerifier 收到的原样十六进制串）；未记录返回 undefined。 */
+    get(host: string, port: number): string[] | undefined;
+    /** 握手时记录指纹（已存在该 host:port 的记录则并入集合）。 */
     record(host: string, port: number, fingerprint: string): void;
 }
 /**
@@ -141,6 +149,12 @@ declare function expandHome(path: string): string;
 export { expandHome };
 /** 展示用目标串：user@host（非默认端口时带 :port）。 */
 export declare function sshTarget(spec: SshSpec): string;
+/**
+ * 把 ssh2 的底层错误消息分类为人类可读诊断（0.19.0 自 probe.ts 上移至此统一
+ * 导出——终端 / 隧道 / 探测三条路径共用同一套文案，不再透传原始英文）。
+ * 分类串本身已含关键字段；无法识别时原样返回。
+ */
+export declare function classifyError(message: string): string;
 /**
  * 构造连接配置（认证三态 + keepalive + hostHash）；spawnSsh / probeSsh / SFTP / 隧道共用。
  *

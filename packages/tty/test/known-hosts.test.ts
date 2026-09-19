@@ -27,12 +27,12 @@ function hashedToken(host: string): string {
 describe('parseKnownHosts', () => {
   it('解析裸主机 + keytype + base64，端口默认 22，主机名小写', () => {
     const entries = parseKnownHosts(`Example.COM ssh-ed25519 ${KEY}\n`)
-    expect(entries).toEqual([{ host: 'example.com', port: 22, fingerprint: FP }])
+    expect(entries).toEqual([{ host: 'example.com', port: 22, fingerprints: [FP] }])
   })
 
   it('[host]:port 形式解析非默认端口', () => {
     const entries = parseKnownHosts(`[a.example.com]:2222 ssh-rsa ${KEY}\n`)
-    expect(entries).toEqual([{ host: 'a.example.com', port: 2222, fingerprint: FP }])
+    expect(entries).toEqual([{ host: 'a.example.com', port: 2222, fingerprints: [FP] }])
   })
 
   it('逗号分隔的多 alias 每个单独成条', () => {
@@ -62,12 +62,13 @@ describe('parseKnownHosts', () => {
     expect(parseKnownHosts(text).map((entry) => entry.host)).toEqual(['good.example.com'])
   })
 
-  it('同 host:port 多条只保留第一条（rsa + ed25519 存储单指纹）', () => {
+  it('同 host:port 多条（rsa + ed25519）并入同一条记录的多指纹集合', () => {
     const other = Buffer.from('another-key').toString('base64')
+    const FP2 = fingerprint(other)
     const text = `h.example.com ssh-rsa ${KEY}\nh.example.com ssh-ed25519 ${other}\n`
     const entries = parseKnownHosts(text)
     expect(entries).toHaveLength(1)
-    expect(entries[0].fingerprint).toBe(FP)
+    expect(entries[0].fingerprints).toEqual([FP, FP2])
   })
 
   it('hashed 条目无候选主机名时无法反解（返回空）', () => {
@@ -76,11 +77,11 @@ describe('parseKnownHosts', () => {
 
   it('hashed 条目按候选主机名还原（含 [host]:port 变体）', () => {
     const entries = parseKnownHosts(`${hashedToken('secret.host')} ssh-ed25519 ${KEY}\n`, ['secret.host'])
-    expect(entries).toEqual([{ host: 'secret.host', port: 22, fingerprint: FP }])
+    expect(entries).toEqual([{ host: 'secret.host', port: 22, fingerprints: [FP] }])
 
     const token = hashedToken('[secret.host]:2222')
     const bracketed = parseKnownHosts(`${token} ssh-ed25519 ${KEY}\n`, ['[secret.host]:2222'])
-    expect(bracketed).toEqual([{ host: 'secret.host', port: 2222, fingerprint: FP }])
+    expect(bracketed).toEqual([{ host: 'secret.host', port: 2222, fingerprints: [FP] }])
   })
 
   it('candidates 大小写不敏感匹配，错误候选不产出', () => {

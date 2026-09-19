@@ -20,7 +20,7 @@
 import net from 'node:net'
 import { Client } from 'ssh2'
 import type { ConnectConfig } from 'ssh2'
-import { applyHostKeyPolicy, buildConnectConfig } from './ssh.js'
+import { applyHostKeyPolicy, buildConnectConfig, classifyError } from './ssh.js'
 import type { HostKeyStore, SshHostEntry, SshSpec } from './ssh.js'
 
 /** 隧道规格（settings 存储；bookName 引用连接簿条目提供主机与认证）。 */
@@ -83,6 +83,12 @@ interface RuntimeTunnel {
   dead: boolean
   /** 人工介入级故障（如监听端口 EACCES/被占）：SSH ready 不覆盖该错误态 */
   fatal: boolean
+  /**
+   * 在途转发的 socket / channel（0.19.0）：stop 时统一销毁——此前 stopTunnel
+   * 只 conn.end()，在途转发不可见也不可控；计数错乱（forwardOut 失败分支漏减）
+   * 也被 stop 的归零掩盖。条目是 net.Socket 或 ssh2 ClientChannel（都是 duplex）。
+   */
+  live: Set<NodeJS.ReadWriteStream>
 }
 
 const MAX_RETRY_DELAY_MS = 15_000
@@ -135,6 +141,7 @@ export class TunnelManager {
         retryAttempt: 0,
         dead: false,
         fatal: false,
+        live: new Set(),
       }
       this.tunnels.set(spec.name, rt)
       if (spec.enabled) this.startTunnel(rt)
@@ -200,6 +207,27 @@ export class TunnelManager {
     }
     rt.conn = null
     rt.ready = false
+    // 在途转发一并销毁（0.19.0）：停用/改规格时的在途 socket 与 channel
+    // 不再「不可见、不可控」。end/close/destroy 按对象类型择一可用。
+    for (const entry of rt.live) {
+      const anyEntry = entry as unknown as { end?(): void; close?(): void; destroy?(): void }
+      try {
+        anyEntry.end?.()
+      } catch {
+        /* 已关闭 */
+      }
+      try {
+        anyEntry.close?.()
+      } catch {
+        /* 已关闭 */
+      }
+      try {
+        anyEntry.destroy?.()
+      } catch {
+        /* 已关闭 */
+      }
+    }
+    rt.live.clear()
     rt.connections = 0
     rt.lastForwardError = null
     rt.state = 'stopped'
@@ -213,7 +241,10 @@ export class TunnelManager {
     const spec = rt.spec
     const book = this.resolveBook(spec.bookName)
     if (book === undefined) {
-      this.scheduleRetry(rt, `连接簿中不存在条目: ${spec.bookName}`)
+      // 配置级 fatal（0.19.0）：条目被删/改名后只有配置本身能修复，走重试只会
+      // 永远失败循环（每 ≤15s 建连一次）；failTunnel 后 reconcile 收到更新
+      // （bookName 改回/条目恢复）会按新签名重建隧道
+      this.failTunnel(rt, `连接簿中不存在条目: ${spec.bookName}（条目被删除或改名）——在 设置 → 插件 → 终端面板 → 端口转发 里更正 bookName 或恢复条目后保存`)
       return
     }
     const sshSpec: SshSpec = {
@@ -260,7 +291,7 @@ export class TunnelManager {
       })
       conn.on('error', (error) => {
         if (rt.dead || rt.conn !== conn) return
-        this.scheduleRetry(rt, policy.mismatchMessage() ?? `SSH 连接失败（${target}）: ${error.message}`)
+        this.scheduleRetry(rt, policy.mismatchMessage() ?? `SSH 连接失败（${target}）: ${classifyError(error.message)}`)
       })
       conn.on('close', () => {
         if (rt.conn !== conn) return
@@ -295,6 +326,7 @@ export class TunnelManager {
     rt.totalConnections += 1
     rt.connections += 1
     const stream = accept()
+    rt.live.add(stream)
     const local = net.connect(
       { host: spec.localTargetHost?.trim() || '127.0.0.1', port: spec.localTargetPort ?? 0 },
       () => {
@@ -302,8 +334,18 @@ export class TunnelManager {
         local.pipe(stream)
       },
     )
-    const teardown = () => {
+    rt.live.add(local)
+    // 计数恰好一次：stream 与 local 任何一侧结束都算这条转发完了
+    let counted = true
+    const finish = (): void => {
+      if (!counted) return
+      counted = false
       rt.connections = Math.max(0, rt.connections - 1)
+      rt.live.delete(stream)
+      rt.live.delete(local)
+    }
+    const kill = (): void => {
+      finish()
       try {
         stream.end()
       } catch {
@@ -315,9 +357,8 @@ export class TunnelManager {
         /* 已关闭 */
       }
     }
-    stream.on('close', teardown)
-    local.on('close', teardown)
-    const kill = () => teardown()
+    stream.on('close', finish)
+    local.on('close', finish)
     stream.on('error', kill)
     local.on('error', kill)
   }
@@ -332,20 +373,31 @@ export class TunnelManager {
     }
     rt.totalConnections += 1
     rt.connections += 1
+    rt.live.add(socket)
+    let channel: import('ssh2').ClientChannel | null = null
+    // 计数恰好一次：forwardOut 失败（原实现漏减、计数虚高）与正常收尾共用
+    let counted = true
+    const finish = (): void => {
+      if (!counted) return
+      counted = false
+      rt.connections = Math.max(0, rt.connections - 1)
+      rt.live.delete(socket)
+      if (channel !== null) rt.live.delete(channel)
+    }
     conn.forwardOut('127.0.0.1', 0, spec.remoteHost?.trim() ?? '', spec.remotePort ?? 0, (error, stream) => {
       if (error !== undefined && error !== null) {
         rt.lastForwardError = `目标 ${spec.remoteHost?.trim() ?? '?'}:${String(spec.remotePort ?? 0)} 拨号失败: ${error.message}`
         this.logger.warn(`[dsh-tty] 隧道 ${rt.spec.name} forwardOut 失败: ${error.message}`)
+        finish()
         socket.destroy()
         return
       }
-      const teardown = () => {
-        rt.connections = Math.max(0, rt.connections - 1)
-      }
-      stream.on('close', teardown)
-      socket.pipe(stream)
-      stream.pipe(socket)
-      const kill = () => {
+      channel = stream
+      rt.live.add(stream)
+      stream.on('close', finish)
+      socket.on('close', finish)
+      const kill = (): void => {
+        finish()
         try {
           socket.destroy()
         } catch {
@@ -359,6 +411,8 @@ export class TunnelManager {
       }
       socket.on('error', kill)
       stream.on('error', kill)
+      socket.pipe(stream)
+      stream.pipe(socket)
     })
   }
 

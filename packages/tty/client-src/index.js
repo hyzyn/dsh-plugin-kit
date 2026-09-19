@@ -580,12 +580,14 @@ function formatUptime(sec) {
   return parts.length > 0 ? parts.join('') : total + 's'
 }
 
-/** 单个条目：标签 + 可选迷你进度条 + 值（值由调用方保证是数字或「无」）。 */
+/** 单个条目：标签 + 可选迷你进度条 + 值（值由调用方保证是数字或「无」）。
+ *  整条带 title（0.19.0）：窄窗口溢出被裁时悬停仍能看到完整值。 */
 function statsItemHtml(label, valueText, pct) {
   const meter = Number.isFinite(pct)
     ? '<span class="tt_statsMeter" data-level="' + statsLevel(pct) + '"><span class="tt_statsMeterFill" style="width:' + Math.max(0, Math.min(100, pct)).toFixed(1) + '%"></span></span>'
     : ''
-  return '<span class="tt_statsItem"><span class="tt_statsLabel">' + label + '</span>' + meter + '<span class="tt_statsValue">' + valueText + '</span></span>'
+  const titleText = label + ': ' + String(valueText)
+  return '<span class="tt_statsItem" title="' + titleText.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;') + '"><span class="tt_statsLabel">' + label + '</span>' + meter + '<span class="tt_statsValue">' + valueText + '</span></span>'
 }
 
 /** 「已用/总量」对：任一侧缺失或总量为 0 都退化成「无」。 */
@@ -665,6 +667,7 @@ function statsBarVisible() {
  * 不重跑 fit 就会行数错位 / 底部被裁。复用 switchTab 同一条路径（fit + sendResize）。
  */
 function refitActiveTab() {
+  if (minimized) return // 最小化时容器不可见：fit 会算出退化尺寸并可能 sendResize（0.19.0）
   const tab = activeTab()
   if (tab === undefined || tab.embedded === true || tab.fit === null) return
   try {
@@ -814,20 +817,47 @@ function scheduleSettle(delay) {
   }, delay ?? 200)
 }
 
-/** 标签列表持久化（sessionStorage，随浏览器标签页生命周期）：只存未退出的标签。 */
+/**
+ * 持久化安全化（0.19.0）：SSH 明文凭证（password/passphrase）不落浏览器存储
+ * ——sessionStorage['dsh-tty:tabs'] 与 localStorage['dsh-tty:persist-specs']
+ * 同源脚本可读。只作用于持久化副本：`env:` 引用不是明文，保留；明文剥掉并
+ * 打 `credsStripped` 标记，恢复 / 重开时在终端提示重新输入。内存里的
+ * spawnSpec 保持原值，本次会话的连接 / respawn 不受影响。
+ */
+const SENSITIVE_SPEC_FIELDS = ['password', 'passphrase']
+function persistSafeSpec(spec) {
+  if (spec === null || typeof spec !== 'object' || spec.t !== 'ssh') return spec
+  let stripped = spec.credsStripped === true
+  const next = { ...spec }
+  for (const field of SENSITIVE_SPEC_FIELDS) {
+    const value = next[field]
+    if (typeof value === 'string' && value !== '' && !value.startsWith('env:')) {
+      delete next[field]
+      stripped = true
+    }
+  }
+  if (stripped) next.credsStripped = true
+  return next
+}
+
+/** 标签列表持久化（sessionStorage，随浏览器标签页生命周期）：只存未退出的标签。
+ *  载荷带版本号 v（0.19.0）：结构升级时按版本迁移或丢弃，旧数据不再按新语义误读；
+ *  写入失败（配额溢出等）不再静默——至少留下 console 警告。 */
+const PERSIST_VERSION = 1
 function persistTabs() {
   try {
     const data = [...tabs.values()]
       .filter((tab) => !tab.exited && tab.embedded !== true) // 嵌入会话不进标签持久化
-      .map((tab) => ({ sid: tab.sid, spawnSpec: tab.spawnSpec, label: tab.label }))
+      .map((tab) => ({ sid: tab.sid, spawnSpec: persistSafeSpec(tab.spawnSpec), label: tab.label }))
     if (data.length === 0 || modalEl === null) sessionStorage.removeItem(PERSIST_KEY)
-    else sessionStorage.setItem(PERSIST_KEY, JSON.stringify(data))
+    else sessionStorage.setItem(PERSIST_KEY, JSON.stringify({ v: PERSIST_VERSION, tabs: data }))
     // 持久规格独立留存：exit 帧（自然退出/回收器回收/宿主重启）不淘汰规格——
     // 那正是需要恢复的场景；规格只随「标签被主动关闭」（closeTab）淘汰。
     // 恢复时按规格 respawn：tmux 会话存活则接回原现场，已消失则新开 shell
-    syncPersistSpecStore([...tabs.values()].filter((tab) => tab.embedded !== true).map((tab) => ({ spawnSpec: tab.spawnSpec, label: tab.label })))
-  } catch {
-    /* 隐私模式等存储不可用：静默跳过 */
+    syncPersistSpecStore([...tabs.values()].filter((tab) => tab.embedded !== true).map((tab) => ({ spawnSpec: persistSafeSpec(tab.spawnSpec), label: tab.label })))
+  } catch (error) {
+    // 隐私模式存储不可用属正常；QuotaExceededError 等会被静默丢标签，必须留痕
+    console.warn('[dsh-tty] 标签持久化失败（本次刷新后标签列表可能丢失）: ' + (error instanceof Error ? error.message : String(error)))
   }
 }
 
@@ -864,14 +894,19 @@ function loadPersistSpecs() {
   }
 }
 
-/** 读取持久化标签（页面刷新后重开面板用）；结构不合法的条目直接丢弃。 */
+/** 读取持久化标签（页面刷新后重开面板用）；结构不合法的条目直接丢弃。
+ *  兼容两种载荷：v1 对象（{v, tabs}）与历史数组（读取后随下次 persistTabs 升级）。 */
 function loadPersistedTabs() {
   try {
     const raw = sessionStorage.getItem(PERSIST_KEY)
     if (raw === null) return []
     const parsed = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return []
-    return parsed.filter((item) => item !== null && typeof item === 'object' && typeof item.sid === 'string' && item.sid !== '' && item.spawnSpec !== null && typeof item.spawnSpec === 'object')
+    if (Array.isArray(parsed)) return parsed.filter((item) => item !== null && typeof item === 'object' && typeof item.sid === 'string' && item.sid !== '' && item.spawnSpec !== null && typeof item.spawnSpec === 'object')
+    if (parsed !== null && typeof parsed === 'object' && parsed.v === PERSIST_VERSION && Array.isArray(parsed.tabs)) {
+      return parsed.tabs.filter((item) => item !== null && typeof item === 'object' && typeof item.sid === 'string' && item.sid !== '' && item.spawnSpec !== null && typeof item.spawnSpec === 'object')
+    }
+    // 未知版本：结构可能已不兼容，按「丢弃」处理而不是猜
+    return []
   } catch {
     return []
   }
@@ -880,9 +915,15 @@ function loadPersistedTabs() {
 /**
  * 等待某一类型的第一帧（独立监听，主 onmessage 同时照常处理）；
  * 超时返回 null（宿主不支持该帧 / 网络异常）。
+ * socket 引用在进入时就捕获（0.19.0）：等待期间发生 connect()（先 close 旧
+ * socket 再新建）时，监听器清理必须对着当次实例——此前清理读模块级 socket
+ * 变量，旧监听器留在已关闭的 socket 上且必然 resolve(null)，恢复流程误判
+ * 「宿主一个会话都没有」，可重跑标签被 restoreTabAsNew 双开。
  */
 function waitFrame(type, timeoutMs) {
+  const ws = socket
   return new Promise((resolve) => {
+    let timer = null
     const onMsg = (event) => {
       let msg
       try {
@@ -890,17 +931,17 @@ function waitFrame(type, timeoutMs) {
       } catch {
         return
       }
-      if (msg.t === type) {
-        clearTimeout(timer)
-        socket.removeEventListener('message', onMsg)
-        resolve(msg)
-      }
+      if (msg.t !== type) return
+      if (timer !== null) clearTimeout(timer)
+      ws.removeEventListener('message', onMsg)
+      // 连接已被换掉：旧 socket 上的帧不再可信，按超时处理让调用方重新评估
+      resolve(ws === socket ? msg : null)
     }
-    const timer = setTimeout(() => {
-      socket.removeEventListener('message', onMsg)
+    timer = setTimeout(() => {
+      ws.removeEventListener('message', onMsg)
       resolve(null)
     }, timeoutMs)
-    socket.addEventListener('message', onMsg)
+    ws.addEventListener('message', onMsg)
   })
 }
 
@@ -1023,6 +1064,17 @@ function createTerminal(tab) {
     overlayEl.textContent = ''
     respawnTab(tab.sid)
   })
+  // 键盘可达（0.19.0）：退出/错误浮层此前 div+click，键盘用户重开不了会话
+  overlayEl.setAttribute('role', 'button')
+  overlayEl.setAttribute('aria-label', '重新打开会话')
+  overlayEl.tabIndex = 0
+  overlayEl.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar') {
+      event.preventDefault()
+      overlayEl.textContent = ''
+      respawnTab(tab.sid)
+    }
+  })
   termEl.appendChild(overlayEl)
 
   term.open(termEl)
@@ -1133,6 +1185,9 @@ function addTab(spawnSpec, label) {
  * 宿主保活的会话（不再 spawnTab）；attach 失败会走 error 浮层（点击 respawn）。
  */
 function restoreTab(saved) {
+  // 去重（0.19.0）：并发恢复 / 复制标签页场景下同一 sid 已在 tabs 里时不再重建
+  // ——重复的 xterm/termEl 永不 dispose（幽灵 DOM 叠在终端上）
+  if (tabs.has(saved.sid)) return tabs.get(saved.sid)
   const tab = {
     sid: saved.sid,
     term: null,
@@ -1153,8 +1208,19 @@ function restoreTab(saved) {
   sendFrame({ t: 'attach', sid: tab.sid })
 }
 
+/** 恢复 / 重开带 credsStripped 标记的 SSH 标签：明文凭证没被保留，先在终端里说明。 */
+function warnStrippedCredentials(tab) {
+  if (tab?.spawnSpec?.credsStripped !== true || tab.term === null) return
+  try {
+    tab.term.writeln('\x1b[2m[dsh-tty] 出于安全考虑，明文密码/口令不随浏览器存储保留，本次连接需要重新输入：重开标签时再填一次，或在设置卡片把凭据换成 env: 引用（值存宿主凭据存储）。\x1b[0m')
+  } catch {
+    /* 终端已释放 */
+  }
+}
+
 /** 按标签保存的 spawnSpec 发创建帧（sid/cols/rows 由本地补齐）。 */
 function spawnTab(tab) {
+  warnStrippedCredentials(tab)
   const dims = tab.fit !== null ? tab.fit.proposeDimensions() : undefined
   const frame = {
     ...tab.spawnSpec,
@@ -1249,7 +1315,11 @@ function closeTab(sid) {
   if (tab.termEl !== null) tab.termEl.remove()
   if (activeSid === sid) {
     activeSid = null
-    const next = [...tabs.keys()].pop() ?? null
+    // 只在普通标签里选邻居（0.19.0）：tabs 里还装着 dsh-docker 等挂进来的
+    // 嵌入会话，`[...keys()].pop()` 会选中它——标签栏没有它、普通终端全
+    // display:none（看起来是空面板），连接栏/胶囊还在描述一个不在标签栏
+    // 里的会话
+    const next = [...tabs.entries()].filter(([, t]) => t.embedded !== true).map(([key]) => key).pop() ?? null
     if (next !== null) switchTab(next)
   }
   renderTabbar()
@@ -1653,6 +1723,9 @@ function syncDockPaneVisibility() {
 function switchTab(sid) {
   const tab = tabs.get(sid)
   if (tab === undefined) return
+  // 嵌入会话不是标签页（0.19.0）：不进标签栏、由挂载方控制显隐——
+  // 拒绝把它设为 activeSid（否则面板空白、连接栏描述一个看不见的会话）
+  if (tab.embedded === true) return
   activeSid = sid
   for (const [otherSid, other] of tabs) {
     // 嵌入终端的显隐由挂载方（抽屉/面板）决定，这里不碰
@@ -1697,8 +1770,21 @@ function refreshTabDot(sid) {
   dot.dataset.state = tab.exited ? 'exited' : tab.live === true ? 'connected' : tab.errored === true ? 'error' : 'connecting'
 }
 
+let tabbarRenderPending = false
 function renderTabbar() {
   if (tabbarEl === null) return
+  // 行内重命名进行中延后重建（0.19.0）：ready 帧等触发的全量重建会移除正在
+  // 输入的 .tt_tabRename，未提交文本直接丢失；重命名结束后的下一次调用补上
+  if (tabbarEl.querySelector('.tt_tabRename') !== null) {
+    if (!tabbarRenderPending) {
+      tabbarRenderPending = true
+      setTimeout(() => {
+        tabbarRenderPending = false
+        renderTabbar()
+      }, 1000)
+    }
+    return
+  }
   tabbarEl.textContent = ''
   for (const [sid, tab] of tabs) {
     if (tab.embedded === true) continue // 嵌入终端不进标签栏
@@ -1724,6 +1810,17 @@ function renderTabbar() {
     closeEl.className = 'tt_tabClose'
     closeEl.title = '关闭'
     closeEl.textContent = '✕'
+    // 键盘可达（0.19.0）：✕ 此前只能鼠标点（tab 本身的 Enter 走 switchTab）
+    closeEl.setAttribute('role', 'button')
+    closeEl.setAttribute('aria-label', '关闭标签：' + (tab.label || ''))
+    closeEl.tabIndex = 0
+    closeEl.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar') {
+        event.preventDefault()
+        event.stopPropagation()
+        closeTab(sid)
+      }
+    })
     btn.title = labelEl.textContent
     btn.appendChild(labelEl)
     btn.appendChild(closeEl)
@@ -2579,7 +2676,7 @@ function openSshDialog(entry) {
     row.appendChild(clearBtn)
     row.appendChild(status)
 
-    const setStatus = (text, kind) => {
+    const setDialogStatus = (text, kind) => {
       status.textContent = text
       status.dataset.kind = kind
     }
@@ -2597,27 +2694,27 @@ function openSshDialog(entry) {
         // 服务缺位时把默认勾选拨回去：勾着也存不成，只会让保存被错误挡住（见 storeIfRequested）
         remember.checked = false
         clearBtn.disabled = true
-        setStatus(credentialsRemote === null ? '宿主未提供凭据服务（remote.credentials），只能明文保存' : '凭据服务不完整，只能明文保存', 'muted')
+        setDialogStatus(credentialsRemote === null ? '宿主未提供凭据服务（remote.credentials），只能明文保存' : '凭据服务不完整，只能明文保存', 'muted')
         return
       }
       remember.disabled = false
       if (!refMode) {
         // 明文态保持安静：打开对话框不该先念一段说明
         status.hidden = true
-        setStatus('', 'plain')
+        setDialogStatus('', 'plain')
         return
       }
       const probe = await describeCredentialRef(ref)
       if (probe.unreported === true) {
-        setStatus('引用 ' + ref + '：宿主未报告状态', 'plain')
+        setDialogStatus('引用 ' + ref + '：宿主未报告状态', 'plain')
         return
       }
       if (probe.error !== undefined) {
-        setStatus('读取凭据状态失败：' + probe.error, 'error')
+        setDialogStatus('读取凭据状态失败：' + probe.error, 'error')
         return
       }
       const view = probe.view
-      setStatus(view.configured
+      setDialogStatus(view.configured
         ? '已存入' + (view.source !== '' ? '（来源 ' + view.source + '）' : '') + ' · ' + ref
         : '引用 ' + ref + '：存储里还没有这个值', view.configured ? 'ok' : 'plain')
       clearBtn.disabled = view.configured !== true || view.writable !== true
@@ -2629,7 +2726,7 @@ function openSshDialog(entry) {
         if (ref === '') return
         const out = await clearCredentialRef(ref)
         if (out.error !== undefined) {
-          setStatus(out.error, 'error')
+          setDialogStatus(out.error, 'error')
           return
         }
         input.value = ''
@@ -3146,7 +3243,7 @@ function openSftpDual(spec, label, ownerKey) {
 
   const status = document.createElement('div')
   status.className = 'tt_sftpStatus'
-  const setStatus = (text, kind) => {
+  const setDialogStatus = (text, kind) => {
     status.textContent = text
     if (kind === undefined) delete status.dataset.state
     else status.dataset.state = kind
@@ -3158,7 +3255,7 @@ function openSftpDual(spec, label, ownerKey) {
     if (jointBusy || panes.local.busy || panes.remote.busy) return
     jointBusy = true
     for (const pane of [panes.local, panes.remote]) pane.setBusy(true)
-    setStatus(busyText, 'busy')
+    setDialogStatus(busyText, 'busy')
     Promise.resolve()
       .then(task)
       .catch((error) => {
@@ -3166,7 +3263,7 @@ function openSftpDual(spec, label, ownerKey) {
         if (error === null || typeof error !== 'object' || error.name !== 'TransferCanceledError') {
           progress.fail('失败')
         }
-        setStatus(String(error && error.message ? error.message : error), 'error')
+        setDialogStatus(String(error && error.message ? error.message : error), 'error')
       })
       .finally(() => {
         jointBusy = false
@@ -3252,14 +3349,19 @@ function openSftpDual(spec, label, ownerKey) {
     const runTask = (busyText, task) => {
       if (pane.busy || jointBusy) return
       setBusy(true)
-      setStatus(busyText, 'busy')
+      setDialogStatus(busyText, 'busy')
       return Promise.resolve()
         .then(task)
-        .catch((error) => setStatus(String(error && error.message ? error.message : error), 'error'))
+        .catch((error) => setDialogStatus(String(error && error.message ? error.message : error), 'error'))
         .finally(() => setBusy(false))
     }
 
-    const joinChild = (dir, name) => (dir.endsWith('/') || dir.endsWith('\\') ? dir + name : dir + '/' + name)
+    // base 为空（目录未定位）时抛错而不是拼出 "/name"（0.19.0：空 base 会被
+    // 服务端按相对路径/宿主 cwd 解析）
+    const joinChild = (dir, name) => {
+      if (dir === undefined || dir === '') throw new Error('目录尚未定位完成')
+      return dir.endsWith('/') || dir.endsWith('\\') ? dir + name : dir + '/' + name
+    }
 
     const rowOf = (entry) => {
       const full = joinChild(pane.path, entry.name)
@@ -3281,6 +3383,12 @@ function openSftpDual(spec, label, ownerKey) {
       // 0.12.0：服务端任务化——start 拿 jobId，轮询进度（真实字节百分比），
       // ✕ 打 cancel 中止（服务端销毁流并删半截文件）。
       appendAct(row, kind === 'local' ? ICON_ARROW_RIGHT : ICON_ARROW_LEFT, '传输到' + (kind === 'local' ? '远程' : '本机') + '：' + other.path, () => {
+        // 路径未就绪（0.19.0）：列表还没回包 / 本机 list 失败时 path 为空——
+        // 空路径发给宿主会被按宿主进程 cwd 解析，整树落到安装目录之类位置
+        if (pane.path === '' || other.path === '') {
+          setDialogStatus('两侧目录尚未定位完成，等列表加载后再传输', 'error')
+          return
+        }
         progress.reset()
         progress.pulse(0)
         runJoint('传输 ' + entry.name + '…', async () => {
@@ -3308,11 +3416,11 @@ function openSftpDual(spec, label, ownerKey) {
           const outcome = await trackTransfer(jobId, entry.name)
           if (outcome === 'canceled') {
             progress.reset()
-            setStatus('已取消传输 ' + entry.name)
+            setDialogStatus('已取消传输 ' + entry.name)
           } else {
             progress.done('完成')
             setTimeout(() => progress.reset(), 1500)
-            setStatus('已传输 ' + entry.name)
+            setDialogStatus('已传输 ' + entry.name)
           }
           await other.loadDir(other.path)
         })
@@ -3338,7 +3446,7 @@ function openSftpDual(spec, label, ownerKey) {
       appendDelete(row, () => pane.runTask('删除 ' + entry.name + '…', async () => {
         await api('remove', { path: full, recursive: entry.isDir === true })
         await reload()
-        setStatus('已删除 ' + entry.name)
+        setDialogStatus('已删除 ' + entry.name)
       }), entry)
       return row
     }
@@ -3348,7 +3456,11 @@ function openSftpDual(spec, label, ownerKey) {
       if (pane.path !== '' && pane.path !== '/' && /^[A-Za-z]:[\\/]?$/.test(pane.path) === false) {
         const up = listRow(ICON_UP, '..（上级目录）', '', 'up')
         up.addEventListener('click', () => {
-          void pane.loadDir(parentRemotePath(pane.path))
+          // 本机栏用独立的父级函数（0.19.0）：parentRemotePath 只按 '/' 切、
+          // index<=0 回 '/'——Windows 上 C:\Users\me 点「..」会请求 listLocalDir('/')
+          // 直接跳到盘根且再点出不去
+          const parent = kind === 'local' ? parentLocalPath(pane.path) : parentRemotePath(pane.path)
+          if (parent !== null) void pane.loadDir(parent)
         })
         list.appendChild(up)
       }
@@ -3360,9 +3472,18 @@ function openSftpDual(spec, label, ownerKey) {
         list.appendChild(empty)
         return
       }
-      for (const entry of rows) {
+      // 大目录截断渲染（0.19.0）：每行 3-5 个按钮 + 独立监听器，万级条目会把
+      // 面板卡死——先渲染前 500 行，其余用占位行提示（过滤/跳转即可定位）
+      const RENDER_CAP = 500
+      for (const entry of rows.slice(0, RENDER_CAP)) {
         if (entry === null || typeof entry !== 'object' || typeof entry.name !== 'string' || entry.name === '') continue
         list.appendChild(rowOf(entry))
+      }
+      if (rows.length > RENDER_CAP) {
+        const more = document.createElement('div')
+        more.className = 'tt_addMenuTitle'
+        more.textContent = `…其余 ${String(rows.length - RENDER_CAP)} 项未渲染（共 ${String(rows.length)} 项）——用上方路径框跳转到子目录定位`
+        list.appendChild(more)
       }
     }
 
@@ -3374,9 +3495,9 @@ function openSftpDual(spec, label, ownerKey) {
         const count = Array.isArray(data.entries) ? data.entries.length : 0
         renderRows(data.entries)
         headMeta.textContent = String(count) + ' 项'
-        setStatus(pane.path)
+        setDialogStatus(pane.path)
       } catch (error) {
-        setStatus(String(error && error.message ? error.message : error), 'error')
+        setDialogStatus(String(error && error.message ? error.message : error), 'error')
       }
     }
     pane.runTask = runTask
@@ -3531,7 +3652,7 @@ function openSftpDual(spec, label, ownerKey) {
     } catch (error) {
       if (isCanceled(error)) {
         progress.reset()
-        setStatus('已取消下载 ' + entry.name)
+        setDialogStatus('已取消下载 ' + entry.name)
         return
       }
       progress.fail('下载失败')
@@ -3540,7 +3661,7 @@ function openSftpDual(spec, label, ownerKey) {
     progress.done('完成')
     triggerBlobDownload(blob, entry.name)
     setTimeout(() => progress.reset(), 1500)
-    setStatus('已下载 ' + entry.name + '（' + (formatBytes(blob.size) || String(blob.size) + ' B') + '）')
+    setDialogStatus('已下载 ' + entry.name + '（' + (formatBytes(blob.size) || String(blob.size) + ' B') + '）')
   })
 
   const localWrap = buildPane('local', '本机')
@@ -3598,7 +3719,7 @@ function openSftpDual(spec, label, ownerKey) {
         if (job === null || typeof job !== 'object') throw new Error('服务端返回了非法的任务状态')
         if (job.state === 'running') {
           const name = typeof job.current === 'string' && job.current !== '' ? job.current : label
-          setStatus('传输 ' + name + '…', 'busy')
+          setDialogStatus('传输 ' + name + '…', 'busy')
           if (Number.isFinite(job.total) && job.total > 0) progress.set(Number(job.bytes) || 0, job.total)
           else progress.pulse(Number(job.bytes) || 0)
           continue
@@ -3747,6 +3868,39 @@ function parentRemotePath(path) {
   const index = trimmed.lastIndexOf('/')
   if (index <= 0) return '/'
   return trimmed.slice(0, index)
+}
+
+/**
+ * 本机路径的父级（0.19.0）：认 `\` 与 `/`、盘根与 UNC——已是根时返回 null
+ * （调用方隐藏/忽略「..」），绝不落到 '/' 让 Windows 跳盘根。
+ *   C:\Users\me → C:\Users → C:\ ；\\srv\share → \\srv\share（share 层是根）
+ */
+function parentLocalPath(path) {
+  let p = String(path).trim()
+  if (p === '') return null
+  p = p.replace(/[\\/]+$/, '')
+  if (p === '') return null // 根本身
+  // Windows 盘符：C:\... 或 C:...
+  const drive = p.match(/^([A-Za-z]:)(.*)$/)
+  if (drive !== null) {
+    const rest = drive[2]
+    if (rest === '') return null // 已是盘根（C:）
+    const idx = Math.max(rest.lastIndexOf('\\'), rest.lastIndexOf('/'))
+    if (idx <= 0) return drive[1] + '\\' // 下一层就是盘根
+    return drive[1] + rest.slice(0, idx)
+  }
+  // UNC：\\srv\share\...
+  if (p.startsWith('\\\\') || p.startsWith('//')) {
+    const body = p.slice(2)
+    const parts = body.split(/[\\/]/).filter((seg) => seg !== '')
+    if (parts.length <= 2) return null // \\srv 或 \\srv\share：已是根
+    const idx = Math.max(body.lastIndexOf('\\'), body.lastIndexOf('/'))
+    return p.slice(0, 2) + body.slice(0, idx)
+  }
+  // POSIX
+  const idx = p.lastIndexOf('/')
+  if (idx <= 0) return idx === 0 ? '/' : null
+  return p.slice(0, idx)
 }
 
 function joinRemotePath(dir, name) {
@@ -4241,7 +4395,7 @@ function openSftpBrowser(specInput, ownerSid) {
   card.appendChild(foot)
 
   const state = { path: '', busy: false }
-  const setStatus = (text, kind) => {
+  const setDialogStatus = (text, kind) => {
     status.textContent = text
     if (kind === undefined) delete status.dataset.state
     else status.dataset.state = kind
@@ -4267,11 +4421,11 @@ function openSftpBrowser(specInput, ownerSid) {
   const runTask = async (busyText, task) => {
     if (state.busy) return
     setBusy(true)
-    setStatus(busyText, 'busy')
+    setDialogStatus(busyText, 'busy')
     try {
       await task()
     } catch (error) {
-      setStatus(String(error && error.message ? error.message : error), 'error')
+      setDialogStatus(String(error && error.message ? error.message : error), 'error')
     } finally {
       setBusy(false)
     }
@@ -4332,7 +4486,7 @@ function openSftpBrowser(specInput, ownerSid) {
         void runTask('删除 ' + entry.name + '…', async () => {
           await api('remove', { path: full, recursive: entry.isDir === true })
           await loadDir(state.path)
-          setStatus('已删除 ' + entry.name)
+          setDialogStatus('已删除 ' + entry.name)
         })
         return
       }
@@ -4364,7 +4518,10 @@ function openSftpBrowser(specInput, ownerSid) {
       list.appendChild(empty)
       return
     }
-    for (const entry of rows) {
+    // 大目录截断渲染（0.19.0，与双栏 renderRows 的 RENDER_CAP 同参数）：每行
+    // 3-5 个按钮 + 独立监听器，万级条目把面板卡死——先渲染前 500 行，占位行提示
+    const RENDER_CAP = 500
+    for (const entry of rows.slice(0, RENDER_CAP)) {
       if (entry === null || typeof entry !== 'object' || typeof entry.name !== 'string' || entry.name === '') continue
       const full = joinRemotePath(state.path, entry.name)
       const metaParts = []
@@ -4405,6 +4562,12 @@ function openSftpBrowser(specInput, ownerSid) {
       appendDelete(row, entry, full)
       list.appendChild(row)
     }
+    if (rows.length > RENDER_CAP) {
+      const more = document.createElement('div')
+      more.className = 'tt_addMenuTitle'
+      more.textContent = `…其余 ${String(rows.length - RENDER_CAP)} 项未渲染（共 ${String(rows.length)} 项）——用上方路径框跳转到子目录定位`
+      list.appendChild(more)
+    }
   }
 
   /** 目录加载（busy 由调用方管）：path 为空时服务端 realpath 解析登录 home。 */
@@ -4415,9 +4578,9 @@ function openSftpBrowser(specInput, ownerSid) {
       pathInput.value = state.path
       const count = Array.isArray(data.entries) ? data.entries.length : 0
       renderRows(data.entries)
-      setStatus(state.path + ' — ' + String(count) + ' 项')
+      setDialogStatus(state.path + ' — ' + String(count) + ' 项')
     } catch (error) {
-      setStatus(String(error && error.message ? error.message : error), 'error')
+      setDialogStatus(String(error && error.message ? error.message : error), 'error')
     }
   }
 
@@ -4436,7 +4599,7 @@ function openSftpBrowser(specInput, ownerSid) {
       if (isCanceled(error)) {
         // 取消不是失败：灰色文案 + 留在目录里（服务端已回收读流）
         progress.reset()
-        setStatus('已取消下载 ' + entry.name)
+        setDialogStatus('已取消下载 ' + entry.name)
         return
       }
       progress.fail('下载失败')
@@ -4445,7 +4608,7 @@ function openSftpBrowser(specInput, ownerSid) {
     progress.done('完成')
     triggerBlobDownload(blob, entry.name)
     setTimeout(() => progress.reset(), 1500)
-    setStatus('已下载 ' + entry.name + '（' + (formatBytes(blob.size) || String(blob.size) + ' B') + '）')
+    setDialogStatus('已下载 ' + entry.name + '（' + (formatBytes(blob.size) || String(blob.size) + ' B') + '）')
   })
 
   /**
@@ -4464,7 +4627,7 @@ function openSftpBrowser(specInput, ownerSid) {
     xhr.setRequestHeader('x-dsh-sftp-meta', meta)
     const label = total > 1 ? String(index) + '/' + String(total) + ' ' : ''
     // 文件名/序号归状态行（进度条只显示百分比，两者不重复）
-    setStatus('上传 ' + label + relPath, 'busy')
+    setDialogStatus('上传 ' + label + relPath, 'busy')
     xhr.upload.addEventListener('progress', (event) => {
       if (event.lengthComputable) {
         progress.set(event.loaded, event.total)
@@ -4525,19 +4688,19 @@ function openSftpBrowser(specInput, ownerSid) {
     const limits = sftpLimitsCache
     // 拖拽收集途中已按 File 数/单文件上限拦截；这里兜底校验（file input 路径）
     if (limits.maxUploadFiles > 0 && items.length > limits.maxUploadFiles) {
-      setStatus('文件数超过上限（' + String(limits.maxUploadFiles) + '）：本次 ' + String(items.length) + ' 个，请分批上传', 'error')
+      setDialogStatus('文件数超过上限（' + String(limits.maxUploadFiles) + '）：本次 ' + String(items.length) + ' 个，请分批上传', 'error')
       progress.fail('超限')
       return
     }
     const maxBytes = limits.maxUploadMb > 0 ? limits.maxUploadMb * 1024 * 1024 : 0
     const tooBig = items.find((item) => maxBytes > 0 && (item.file?.size ?? 0) > maxBytes)
     if (tooBig !== undefined) {
-      setStatus('文件超过上传上限（' + formatBytes(maxBytes) + '）：' + String(tooBig.relPath ?? '') + '，请用双栏 ⇨ 直传或终端 scp/rsync', 'error')
+      setDialogStatus('文件超过上传上限（' + formatBytes(maxBytes) + '）：' + String(tooBig.relPath ?? '') + '，请用双栏 ⇨ 直传或终端 scp/rsync', 'error')
       progress.fail('超限')
       return
     }
     if (items._limitExceeded === true) {
-      setStatus('文件总大小超过上传上限：请分批上传（或用双栏 ⇨ 直传）', 'error')
+      setDialogStatus('文件总大小超过上传上限：请分批上传（或用双栏 ⇨ 直传）', 'error')
       progress.fail('超限')
       return
     }
@@ -4575,13 +4738,13 @@ function openSftpBrowser(specInput, ownerSid) {
     }
     if (cancelRef.stopped) {
       progress.reset()
-      setStatus('已取消上传（已传 ' + String(uploaded) + '/' + String(items.length) + ' 个）')
+      setDialogStatus('已取消上传（已传 ' + String(uploaded) + '/' + String(items.length) + ' 个）')
       await loadDir(state.path)
       return
     }
     progress.done('全部完成')
     setTimeout(() => progress.reset(), 1500)
-    setStatus('上传完成 ' + String(items.length) + ' 个文件')
+    setDialogStatus('上传完成 ' + String(items.length) + ' 个文件')
     await loadDir(state.path)
   })
 
@@ -4752,6 +4915,21 @@ function defaultLocalSpec() {
  *   - 都没有则新建首个标签。
  */
 async function afterSocketOpen() {
+  // 并发守卫（0.19.0）：socket.onopen 与 openModal「socket 已 OPEN」两个触发点
+  // 可在重连窗口内并发跑——同一 persistName 双开（两个标签 attach 同一 tmux
+  // 会话）、两次 restoreTab 用同一 sid 互相覆盖（前一个 xterm 永不 dispose）。
+  // 先到者做完全部恢复，后到者直接让路。
+  if (afterSocketRecovering) return
+  afterSocketRecovering = true
+  try {
+    await afterSocketOpenInner()
+  } finally {
+    afterSocketRecovering = false
+  }
+}
+let afterSocketRecovering = false
+
+async function afterSocketOpenInner() {
   // 先拉一次配置：persistenceCache（持久化开关）决定默认本地标签是否 tmux 托管，
   // 必须在恢复/新建标签之前就位
   await refreshSshHosts()
@@ -5017,6 +5195,71 @@ function ensureModalVisible() {
   if (modalEl === null || minimized) openModal()
 }
 
+/**
+ * 剪贴板降级（0.19.0）：`navigator.clipboard` 在非 secure context（如
+ * `http://<局域网IP>:3080`）下是 undefined——此前直接调 writeText/readText
+ * 会在「粘贴」处同步取属性抛 TypeError，整条复制/粘贴不可用（localhost 自测
+ * 发现不了）。降级路径：隐藏 textarea + execCommand（copy 普遍可用；paste 在
+ * 部分浏览器被禁，失败时提示用 Ctrl+V）。
+ */
+function clipboardAvailable() {
+  return typeof navigator !== 'undefined' && navigator.clipboard !== undefined && typeof navigator.clipboard.writeText === 'function'
+}
+
+async function copyTerminalText(text) {
+  if (clipboardAvailable()) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch {
+      /* 权限被拒等：落到降级 */
+    }
+  }
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+  let ok = false
+  try {
+    ok = document.execCommand('copy')
+  } catch {
+    ok = false
+  }
+  textarea.remove()
+  if (!ok) setStatus('复制失败：当前环境不允许访问剪贴板（http 访问时请改用 localhost 或终端内快捷键）', 'error')
+  return ok
+}
+
+async function pasteTerminalText(tab) {
+  if (clipboardAvailable() && typeof navigator.clipboard.readText === 'function') {
+    try {
+      const text = await navigator.clipboard.readText()
+      if (text !== '') sendFrame({ t: 'input', sid: tab.sid, d: text })
+      return true
+    } catch {
+      /* 无权限：落到降级 */
+    }
+  }
+  const textarea = document.createElement('textarea')
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.focus()
+  let ok = false
+  try {
+    ok = document.execCommand('paste')
+    const text = ok ? textarea.value : ''
+    if (text !== '') sendFrame({ t: 'input', sid: tab.sid, d: text })
+  } catch {
+    ok = false
+  }
+  textarea.remove()
+  if (!ok) setStatus('浏览器不允许网页读取剪贴板（http 访问时常见）：请在终端里按 Ctrl+V / Cmd+V 粘贴', 'error')
+  return ok
+}
+
 function openModal() {
   if (modalEl !== null) {
     // 已在运行：最小化中则从悬浮条恢复，否则保持现状
@@ -5104,14 +5347,12 @@ function openModal() {
     const tab = activeTab()
     if (tab === undefined || tab.term === null) return
     const selection = tab.term.getSelection()
-    if (selection !== '') navigator.clipboard.writeText(selection).catch(() => {})
+    if (selection !== '') void copyTerminalText(selection)
   })
   modalEl.querySelector('[data-act=paste]').addEventListener('click', () => {
     const tab = activeTab()
     if (tab === undefined) return
-    navigator.clipboard.readText().then((text) => {
-      sendFrame({ t: 'input', sid: tab.sid, d: text })
-    }).catch(() => {})
+    void pasteTerminalText(tab)
   })
   modalEl.querySelector('.tt_min').addEventListener('click', () => {
     minimizeModal()
@@ -5176,11 +5417,16 @@ function minimizeModal() {
   if (modalEl === null || minimized) return
   closeAddMenu()
   closeSshDialog()
-  closeSftpDialog()
+  // SFTP 不关（0.19.0）：挂载位 pane 随面板显隐走（挂载位契约「面板最小化 /
+  // 恢复跟着走，消费者不需要做任何事」），收起态的 SFTP 浮层藏起、恢复时放回
+  // ——最小化只是想看别的窗口，不该把在途传输取消掉（远端留半截文件）
   minimized = true
+  if (sftpDialogEl !== null) sftpDialogEl.style.display = 'none'
   if (searchInputEl !== null) searchInputEl.style.display = 'none'
   modalEl.dataset.minimized = ''
-  // 最小化 = 没有可见终端：退订（宿主侧停表、关远端 exec channel），收起状态条
+  // 最小化 = 没有可见终端：退订（宿主侧停表、关远端 exec channel），收起状态条，
+  // 陈旧检测定时器一并停（0.19.0：此前只在 closeModal 停，最小化期间空转）
+  stopStatsStaleTimer()
   syncStatsSubscription()
   applyStatsBar()
   if (document.querySelector('[data-dsh-tty-entry]') !== null) {
@@ -5238,6 +5484,8 @@ function restoreModal() {
   if (modalEl === null || !minimized) return
   minimized = false
   delete modalEl.dataset.minimized
+  // 最小化期间被藏起的 SFTP 浮层放回（传输进度还在原界面里）
+  if (sftpDialogEl !== null) sftpDialogEl.style.display = ''
   clearTimeout(dockActivityTimer)
   if (dockEl !== null) {
     dockEl.remove()
@@ -5247,6 +5495,7 @@ function restoreModal() {
   dockStatusEl = null
   dockDotEl = null
   syncEntryBadge()
+  ensureStatsStaleTimer() // 与 minimizeModal 成对（0.19.0）：恢复时重新起陈旧检测
   syncStatsSubscription()
   applyStatsBar()
   const tab = activeTab()
@@ -5390,10 +5639,18 @@ function createSidebarEntry() {
   entry.className = 'tt_sidebarEntry'
   entry.setAttribute('role', 'button')
   entry.setAttribute('aria-label', '终端')
+  // 键盘可达（0.19.0，WCAG 2.1.1）：纯键盘用户此前进不了面板
+  entry.tabIndex = 0
   entry.innerHTML = '<span class="tt_sidebarEntryIcon">' + TERMINAL_ICON + '</span><span class="tt_sidebarEntryLabel">终端</span>'
   entry.addEventListener('click', (event) => {
     event.preventDefault()
     openModal()
+  })
+  entry.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar') {
+      event.preventDefault()
+      openModal()
+    }
   })
   return entry
 }
@@ -5859,7 +6116,13 @@ function TtySettingsCard(props) {
       setMessage({ kind: 'error', text: String(error && error.message ? error.message : error) })
     }
   }
-  /** 从 ~/.ssh/known_hosts 导入指纹（TOFU 预填充）：立即 POST，同名 host:port 跳过。 */
+  /** 一条 hostKeys 记录的指纹集合（0.19.0 起一机多指纹；旧版单 fingerprint 字段兼容读取）。 */
+  const hostKeyFingerprints = (record) => {
+    if (record === null || typeof record !== 'object') return []
+    if (Array.isArray(record.fingerprints)) return record.fingerprints.filter((fp) => typeof fp === 'string' && fp !== '')
+    return typeof record.fingerprint === 'string' && record.fingerprint !== '' ? [record.fingerprint] : []
+  }
+  /** 从 ~/.ssh/known_hosts 导入指纹（TOFU 预填充）：立即 POST；同 host:port 并入已有记录的指纹集合，已存在同指纹跳过。 */
   const importKnownHosts = async () => {
     setMessage({ kind: '', text: '' })
     try {
@@ -5871,18 +6134,39 @@ function TtySettingsCard(props) {
       }
       const incoming = Array.isArray(data.entries) ? data.entries : []
       const merged = [...(Array.isArray(form?.hostKeys) ? form.hostKeys : [])]
-      const existing = new Set(merged.map((hk) => String(hk?.host ?? '') + ':' + String(hk?.port ?? 22)))
+      const byKey = new Map()
+      for (const record of merged) {
+        if (record === null || typeof record !== 'object') continue
+        byKey.set(String(record.host ?? '') + ':' + String(record.port ?? 22), { record, fps: new Set(hostKeyFingerprints(record)) })
+      }
       let added = 0
       let skipped = 0
       for (const record of incoming) {
-        if (record === null || typeof record !== 'object' || typeof record.host !== 'string' || typeof record.fingerprint !== 'string') continue
+        if (record === null || typeof record !== 'object' || typeof record.host !== 'string') continue
+        const fps = Array.isArray(record.fingerprints) ? record.fingerprints.filter((fp) => typeof fp === 'string' && fp !== '') : []
+        if (typeof record.fingerprint === 'string' && record.fingerprint !== '') fps.push(record.fingerprint)
+        if (fps.length === 0) continue
         const key = record.host + ':' + String(record.port ?? 22)
-        if (existing.has(key)) {
-          skipped += 1
+        const entry = byKey.get(key)
+        if (entry !== undefined) {
+          let mergedAny = false
+          for (const fp of fps) {
+            if (entry.fps.has(fp) || entry.fps.size >= 8) continue
+            entry.fps.add(fp)
+            mergedAny = true
+          }
+          if (!mergedAny) {
+            skipped += 1
+            continue
+          }
+          delete entry.record.fingerprint // 规范化为多指纹形态
+          entry.record.fingerprints = [...entry.fps]
+          added += 1
           continue
         }
-        existing.add(key)
-        merged.push({ host: record.host, port: Number(record.port) || 22, fingerprint: record.fingerprint })
+        const created = { host: record.host, port: Number(record.port) || 22, fingerprints: [...new Set(fps)].slice(0, 8) }
+        byKey.set(key, { record: created, fps: new Set(created.fingerprints) })
+        merged.push(created)
         added += 1
       }
       if (added === 0) {
@@ -5901,7 +6185,7 @@ function TtySettingsCard(props) {
           setMessage({ kind: 'error', text: String(saveData.error || '保存 hostKeys 失败') })
           return
         }
-        setMessage({ kind: 'ok', text: `已导入 ${added} 条指纹（跳过 ${skipped} 条已存在）` })
+        setMessage({ kind: 'ok', text: `已导入 ${added} 条主机的指纹（跳过 ${skipped} 条已存在）` + (data.truncated === true ? '；注意：known_hosts 超过 500 条主机，本次仅导入前 500 条' : '') })
       } catch (error) {
         setMessage({ kind: 'error', text: String(error && error.message ? error.message : error) })
       }
@@ -6619,19 +6903,19 @@ function TtySettingsCard(props) {
                     ...(Array.isArray(form.hostKeys) && form.hostKeys.length > 0
                       ? [jsx('div', {
                           className: 'tt_hostList',
-                          children: form.hostKeys.map((hk) => jsxs('div', {
+                          children: form.hostKeys.map((hk, index) => jsxs('div', {
                             className: 'tt_sshHostRow',
                             children: [
                               jsx('div', { className: 'tt_sshHostMeta', children: [
                                 jsx('span', { className: 'tt_sshHostName', children: String(hk?.host ?? '') + ':' + String(hk?.port ?? 22) }),
-                                jsx('span', { className: 'tt_sshHostTarget', children: 'sha256:' + String(hk?.fingerprint ?? '') }),
+                                jsx('span', { className: 'tt_sshHostTarget', children: hostKeyFingerprints(hk).map((fp) => 'sha256:' + fp).join(' / ') }),
                               ] }),
                               jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => void removeHostKey(hk), children: '删除' }),
                             ],
-                          }, String(hk?.host ?? '') + ':' + String(hk?.port ?? 22))),
+                          }, String(hk?.host ?? '') + ':' + String(hk?.port ?? 22) + '#' + String(index))),
                         })]
                       : [jsx('span', { className: 'tt_cardHint', children: '暂无记录 — 首次 SSH 连接成功后自动记录主机指纹' })]),
-                    jsx('span', { className: 'tt_cardHint', children: '主机指纹变更时连接会被拒绝（防中间人）；确认安全后删除对应记录即可重连' }),
+                    jsx('span', { className: 'tt_cardHint', children: '一机多把钥匙（如 rsa + ed25519）各记一条指纹，任一匹配即放行；指纹变更时连接会被拒绝（防中间人），确认安全后删除对应记录即可重连' }),
                   ],
                 }),
                 jsxs('div', {

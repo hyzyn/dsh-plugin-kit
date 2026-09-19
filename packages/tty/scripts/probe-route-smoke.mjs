@@ -66,7 +66,8 @@ async function run() {
   if (r3.ok === true && r3.result?.auth?.ok === true && r3.result?.hostkey?.state === 'recorded') pass('R3 连接簿测试：新指纹 TOFU 记录')
   else fail('R3 连接簿测试：新指纹 TOFU 记录', JSON.stringify(r3))
   const hostsAfter = (Array.isArray((await getConfig()).hostKeys) ? (await getConfig()).hostKeys : [])
-  const recordedKey = hostsAfter.some((hk) => hk.host === '127.0.0.1' && Number(hk.port) === sftpd.port && typeof hk.fingerprint === 'string')
+  // 0.19.0 起记录形态为 {host, port, fingerprints[]}（旧单 fingerprint 字段兼容读取）
+  const recordedKey = hostsAfter.some((hk) => hk.host === '127.0.0.1' && Number(hk.port) === sftpd.port && ((Array.isArray(hk.fingerprints) && hk.fingerprints.length > 0) || typeof hk.fingerprint === 'string'))
   if (recordedKey) pass('R4 指纹已持久化到 hostKeys')
   else fail('R4 指纹已持久化到 hostKeys', JSON.stringify(hostsAfter))
   const r5 = await probe({ ...spec, bookRecord: true })

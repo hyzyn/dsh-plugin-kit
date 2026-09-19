@@ -66,3 +66,20 @@ jobs:
       - name: Check dsh.engines.dsh declarations
         if: matrix.os == 'ubuntu-latest'
         run: node scripts/check-dsh-engines.mjs
+      # 防回归：入库产物必须与源码一致——曾发生过源码改了、产物没重建，修复在浏览器侧
+      # 完全无效。重建后对全部包的浏览器半体（client.js）与宿主半体（lib/）做 diff。
+      - name: Check build artifacts are up to date
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          pnpm -r build
+          git diff --exit-code -- 'packages/*/client.js' 'packages/*/lib' || { echo "::error::构建产物落后于源码：在本地跑 pnpm -r build 后重新提交"; exit 1; }
+      # 旗舰端到端脚本（自包含：内存 sshd / 本机 PTY，不依赖真实外部主机）。
+      # 此前完全不在 CI 里跑，SFTP / SSH 生命周期 / 工具路由的回归静默通过。
+      - name: dsh-tty end-to-end scripts
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          node packages/tty/scripts/integration.mjs
+          node packages/tty/scripts/ssh-smoke.mjs
+          node packages/tty/scripts/probe-smoke.mjs
+          node packages/tty/scripts/probe-route-smoke.mjs
+          node packages/tty/scripts/sftplimits-smoke.mjs

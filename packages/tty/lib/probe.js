@@ -22,45 +22,17 @@
  */
 import { Client } from 'ssh2';
 import { connect as netConnect } from 'node:net';
-import { buildConnectConfig, sshTarget } from './ssh.js';
+import { buildConnectConfig, classifyError, sshTarget } from './ssh.js';
 /** TCP 预检超时（毫秒）：DNS 解析 + 建连。 */
 export const PROBE_TCP_TIMEOUT_MS = 6_000;
 /** ssh2 握手/认证阶段超时（毫秒）；覆盖 buildConnectConfig 的 readyTimeout。 */
 export const PROBE_AUTH_TIMEOUT_MS = 8_000;
 /** 把底层错误分类为人类可读诊断；原文保留在返回串里便于对照排查。 */
-function classifyError(message) {
-    if (message === 'Host key verification failed') {
-        return '主机密钥校验失败（TOFU 不匹配，见 hostkey 指引）';
-    }
-    if (message.includes('All configured authentication methods failed')) {
-        return '认证被拒绝：所有认证方式均失败（用户名/密码/密钥是否正确，或服务端是否允许该认证方式）';
-    }
-    if (message.includes('Timed out')) {
-        return '超时：主机无响应或认证协商超时（检查地址 / 端口 / 防火墙 / 网络）';
-    }
-    const lower = message.toLowerCase();
-    if (lower.includes('econnrefused'))
-        return '连接被拒绝（ECONNREFUSED）：端口未监听或服务未启动';
-    if (lower.includes('enetunreach'))
-        return '网络不可达（ENETUNREACH）：路由不通或主机离线';
-    if (lower.includes('ehostunreach'))
-        return '主机不可达（EHOSTUNREACH）';
-    if (lower.includes('eai_again') || lower.includes('eai_noname') || lower.includes('enotfound'))
-        return 'DNS 解析失败：主机名无法解析';
-    if (lower.includes('getaddrinfo'))
-        return 'DNS 解析失败：主机名无法解析';
-    if (lower.includes('unable to exchange encryption keys') || lower.includes('encryption') || lower.includes('kex')) {
-        return '密钥交换失败：服务端可能不是 SSH 服务，或加密算法不兼容';
-    }
-    if (lower.includes('keepalive'))
-        return '连接保活超时（keepalive）';
-    if (lower.includes('protocol'))
-        return '协议错误：' + message;
-    return message;
-}
-/** 与 spawnSsh 的 applyHostKeyPolicy 一致的 TOFU 指引文案。 */
+/** 与 spawnSsh 的 applyHostKeyPolicy 一致的 TOFU 指引文案（多指纹集合版）。 */
 function mismatchMessage(target, host, port, known, current) {
-    return (`SSH 主机密钥指纹变更：${target} 已记录 sha256:${known}，本次为 sha256:${current}。` +
+    const shown = known.slice(0, 3).map((f) => `sha256:${f}`).join(' / ');
+    const more = known.length > 3 ? ` 等 ${String(known.length)} 把` : '';
+    return (`SSH 主机密钥指纹变更：${target} 已记录 ${shown}${more}，本次为 sha256:${current}。` +
         '可能是主机重装或换钥匙，也可能是中间人（MITM）冒充；确认安全后，到 插件配置 → 终端面板 → SSH 主机密钥记录 删除该主机再重连。');
 }
 /** 收集 hostVerifier 收到的指纹（ssh2 可能对多 host key 调用多次，取最后一次）。 */
@@ -72,7 +44,7 @@ function makeHostKeyVerifier(options) {
     return (hash) => {
         seen = hash;
         const known = store?.get(spec.host, port);
-        if (known === undefined) {
+        if (known === undefined || known.length === 0) {
             if (store !== undefined) {
                 // 完整 TOFU：新指纹当场持久化（与 spawnSsh 的 hostVerifier 同语义）
                 store.record(spec.host, port, hash);
@@ -84,7 +56,7 @@ function makeHostKeyVerifier(options) {
             }
             return true;
         }
-        if (known === hash) {
+        if (known.includes(hash)) {
             onResult({ state: 'matched', fingerprint: hash, known });
             return true;
         }
