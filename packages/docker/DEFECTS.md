@@ -56,6 +56,14 @@
 >   attention 补捞与分块 / 建连失败不留池条目）+ 3 条客户端总览断言；`auth=key` 用例名与断言对齐，
 >   并补了真实私钥分支。
 >
+> **发布**：docker **0.7.0**（minor——`/attention` 返回体新增 `total/truncated/degraded`（`items` 仍在，属增量）、
+> 变更端点与四条 SSE 新增同源证明、列表类截断改为报错、hostKeys 删除走显式 `hostKeysRemove` 且删除优先于并集、
+> 空 `since` 视为未传，都属行为变化）／`@hyzyn/dsh-all` **0.1.37**／`@hyzyn/dsh-plugin-kit` **0.1.31**。
+> 顺序按 `RELEASING.md`：bump → `pnpm aggregate`（重钉 0.7.0）→ `pnpm install --lockfile-only`
+> （lockfile 两处 `specifier` 0.6.4 → 0.7.0）→ `pnpm -r build && pnpm -r typecheck && pnpm test`
+> → `check-publishable` / `check-dsh-engines` / `check-dsh-home` 全过。tag 锚点是 `@hyzyn/dsh-all`
+> 的版本，实际 npm 发布由 Release workflow 在 tag 上执行（本地不 publish）。
+>
 > **怎么读**：① 先看「现状」与「索引」（一行一条，含位置与批次）；② 再按编号读详情 —— P1/P2 给完整证据、
 > 触发场景与修法，P3 是压缩条目；③ 详情是审计时点原文，修复实现以代码为准。
 >
