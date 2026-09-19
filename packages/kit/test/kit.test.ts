@@ -76,7 +76,10 @@ describe('dshHome', () => {
 
   it('DSH_HOME 优先并 trim', () => {
     process.env.DSH_HOME = '  /tmp/custom-dsh-home  '
-    expect(dshHome()).toBe('/tmp/custom-dsh-home')
+    // 实现返回的是 `resolve(expandHomePath(...))` 归一化后的路径，期望值必须走同一个
+    // 归一化：Windows 上 `/tmp/custom-dsh-home` 会被解析成 `D:\tmp\custom-dsh-home`
+    // （盘符来自当前工作目录），写死字面量会让这条用例只在 POSIX 上绿
+    expect(dshHome()).toBe(resolve('/tmp/custom-dsh-home'))
   })
 
   it('DSH_HOME 缺失或纯空白时回退 ~/.dsh', () => {
