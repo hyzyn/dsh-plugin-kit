@@ -354,7 +354,11 @@ tmux server（专用 socket `dsh-tty`，与用户自己的 tmux 完全隔离）�
   「终端 N」）；连接中先回显灰字 `Connecting user@host …`，就绪后状态栏
   显示 `SSH user@host 已连接`；连接失败（连接超时 / 认证被拒 / 主机
   不可达）以 `error` 帧带回原因，标签规格已随标签保存，点终端区域可按
-  原规格重开；
+  原规格重开；状态栏描述的是**当前活动标签**——切标签 / 关标签立刻换成
+  该标签自己的状态（失败原因、退出码都记在标签身上），所以关掉那个连不上
+  的标签后，红字不会继续挂在头上（宿主级消息如「连接断开 — 自动重连中」
+  不属于任何标签，不会被切标签抹掉）；反过来说，**后台标签自己的失败只记在
+  它身上**（标签栏状态点转红、终端区浮层带原文），不会顶掉活动标签的显示；
 - **agent forwarding（0.4.0）**：SSH 对话框勾选「agent forwarding」后远程
   可用本地 ssh-agent 的钥匙（远程 `git clone` 私有仓库等）。任意认证方式下
   都可开（凭证仍不落盘）；本机未运行 ssh-agent 时连接会明确报错而非静默
@@ -627,7 +631,7 @@ ctx.inject(['ttyPanel'], (c) => {
 })
 ```
 
-> 契约版本：`ttyConnbar.version === 1`、`ttyTerminal.version === 2`（1 = 只有 `open`，
+> 契约版本：`ttyConnbar.version === 1`、`ttyTerminal.version === 3`（1 = 只有 `open`，
 > 2 = 增加 `mount`，3 = `open` 默认复用同「连接 + 命令」的活标签）、`ttyPanel.version === 2`（1 = `mountPane` + `isOpen`，2 = 增加
 > `minimize`）。消费方**按版本号判断能力**，不要用
 > `typeof fn === 'function'` 之外的假设；老版本 tty 上 `inject` 依然会触发，但没有
