@@ -4,7 +4,8 @@
 > 范围：**只列缺陷**（会毁数据、会挂死/泄漏、会误导用户或 agent、文档与实现不符）。
 > 功能新增另见文末「功能缺口」，纯风格与可选优化不进本清单。
 >
-> **修复波（2026-09-19）**：D01–D37、D39–D44 已全部落地（D13 提前并入，D38/D45 部分——
+> **修复波（2026-09-19）**：D01–D37、D39–D44 已全部落地（D13 提前并入，D46/D47 由 CI 首跑
+> 发现后随修），D38/D45 部分——
 > 最小宿主冒烟与凭据链路回归已加，系统性覆盖仍待补，见各自条目内的「部分完成」注记）。
 > 修复统一以 **0.19.0** 为目标版本（三批合一次发布），代码注释与两份 README 的版本引用已对齐；
 > 发版前置三件套已完成：bump（tty 0.19.0 / dsh-all 0.1.35 / dsh-plugin-kit 0.1.29）→
@@ -15,6 +16,8 @@
 > 上传清理 >24h 残留」+ README 边界说明收尾。
 > 宿主侧回归：`tsc` / vitest 166 用例（13 文件）/ `probe-smoke` 7 / `probe-route-smoke` 9 /
 > `sftplimits-smoke` 6 / `ssh-smoke` / `integration.mjs` 全绿；client.js 已重建。
+> **CI 首跑（main 推送后）发现并修复**：D46（bash ≥4.4 的 shell 集成 D 标记永远不发——
+> macOS 自带 bash 3.2 走 DEBUG trap，本地测不出来）、D47（integration 的 tmux 列举竞态）。
 > 原审计四个「待验证」项的处置：D13/D14（abort 监听器告警、1e9 OOM）随修复从结构上消除，
 > 不再依赖实测；D17 两处（`$?` 污染方向、carry 上限）按修法前置 + 上限提到 512KB，
 > 桩文件内容有单测钉住（`test/shell-spawn.test.ts`）。
@@ -175,6 +178,21 @@
       [src/index.ts:546-552](src/index.ts)、[src/index.ts:560-571](src/index.ts)。
       （退出码污染程度、行宽阈值 待验证）修法：两处都改前置；carry 上限提到快照量级或识别 `133;T;`
       后按「丢弃到终结符」处理。
+- [x] **D46 bash ≥4.4 的 shell 集成不发 D 标记**（CI 首跑 ubuntu 发现，0.19.0 修）——
+      `PS0` 发的 B 到了，但 D 被 `__dsh_tty_precmd` 里的 `if [ "$__DSH_TTY_IN_CMD" = "1" ]`
+      挡住：这个 flag 只有 <4.4 的 DEBUG trap 会设，而 **PS0 的展开发生在子 shell 里**，
+      设不了父 shell 变量 → D 永远不发。后果：`tty_capture{last:true}` 恒返回 `inProgress`、
+      `tty_expect` 永远超时（命令结束早停失效）、tmux 持久标签里 `capture{last}` 也拿不到东西
+      ——影响**所有现代 Linux**（bash ≥4.4），而 macOS 自带 bash 3.2 走 DEBUG trap 分支，
+      所以本地怎么跑都测不出来。证据（CI ubuntu，5 条失败里的 4 条）：`B15a` / `B22a` /
+      `B22b`（`tty_expect` 超时 20.5s）/ `B25c`。修法：桩里 **D 标记无条件发**，配对交给宿主
+      解析器——没有配对 B 的 D 会被忽略，所以空回车不会造出假命令。
+      护栏：`test/shell-capture.test.ts`（B/D 配对、未配对 D 被忽略、非数字退出码、跨 chunk 残包）
+      + `test/shell-spawn.test.ts`（桩文本不得再用 IN_CMD 包住 D）。
+- [x] **D47 integration 的 tmux 列举竞态**（CI 首跑 ubuntu 发现，0.19.0 修）——
+      `ready` 只代表 channel 打开，而 tmux server 是 fork 出来的、会话出现更晚；测试立刻
+      `tmux -L dsh-tty list-sessions` 在慢 runner 上必然为空（`listed=[]`），本地机器快、
+      一次就中。修法：轮询到会话出现为止（最多 ~6s）。证据（CI）：`B25b`。
 
 ## P2 · 客户端行为与边界
 
