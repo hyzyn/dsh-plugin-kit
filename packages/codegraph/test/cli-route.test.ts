@@ -142,12 +142,16 @@ interface FakeReqInit {
   method?: string
   url?: string
   body?: unknown
+  /** 原样发送的请求体（用于畸形 / 非 JSON 对象的 body，CG01）。 */
+  rawBody?: string
   remoteAddress?: string
   host?: string
 }
 
 function fakeReq(init: FakeReqInit = {}): unknown {
-  const payload = init.body === undefined ? undefined : Buffer.from(JSON.stringify(init.body))
+  const payload = init.rawBody !== undefined
+    ? Buffer.from(init.rawBody)
+    : init.body === undefined ? undefined : Buffer.from(JSON.stringify(init.body))
   return {
     method: init.method ?? 'GET',
     url: init.url ?? '/',
@@ -159,7 +163,7 @@ function fakeReq(init: FakeReqInit = {}): unknown {
   }
 }
 
-function fakeRes(): { readonly status: number | undefined; readonly body: Record<string, unknown> | undefined; res: unknown } {
+function fakeRes(onEvent?: (event: string, listener: () => void) => void): { readonly status: number | undefined; readonly body: Record<string, unknown> | undefined; res: unknown } {
   const state: { status?: number; body?: Record<string, unknown> } = {}
   return {
     get status() {
@@ -174,6 +178,14 @@ function fakeRes(): { readonly status: number | undefined; readonly body: Record
       },
       end(body?: string) {
         state.body = body === undefined ? undefined : (JSON.parse(body) as Record<string, unknown>)
+        // 真实 ServerResponse 在 end() 后置位；CG30 的断连判定读的就是它
+        ;(state as { writableEnded?: boolean }).writableEnded = true
+      },
+      on(event: string, listener: () => void) {
+        onEvent?.(event, listener)
+      },
+      get writableEnded() {
+        return (state as { writableEnded?: boolean }).writableEnded === true
       },
     },
   }
@@ -699,5 +711,202 @@ describe('跟随活动会话（POST /follow）', () => {
     expect(capture.status).toBe(200)
     expect(capture.body?.followSession).toBe(false)
     expect(mount.settingsStore).toMatchObject({ followSession: false })
+  })
+})
+
+/* ------------------------------------------------------------------ *
+ * 0.4.2 修复回归（CG01 / CG02 / CG05 / CG07 / CG09 / CG10 / CG25 / CG27）
+ * ------------------------------------------------------------------ */
+
+describe('CG01：POST body 畸形/非对象一律 400，不再静默改用默认项目', () => {
+  it('sync / index / init / follow / default-path / settings 都拒收', async () => {
+    const routes = mountRoutes(echoCli())
+    for (const route of ['sync', 'index', 'init', 'follow', 'default-path', 'settings']) {
+      const malformed = await call(routes, `/api/dsh-codegraph/${route}`, { method: 'POST', rawBody: '{oops' })
+      expect(malformed.status, route).toBe(400)
+      expect(String(malformed.body?.error)).toContain('invalid JSON body')
+      const array = await call(routes, `/api/dsh-codegraph/${route}`, { method: 'POST', rawBody: '[1,2]' })
+      expect(array.status, route).toBe(400)
+    }
+  })
+
+  it('空对象仍是合法的「用户没指定路径」——走默认项目', async () => {
+    const routes = mountRoutes(echoCli())
+    const capture = await call(routes, '/api/dsh-codegraph/sync', { method: 'POST', body: {} })
+    expect(capture.status).toBe(200)
+    expect(String(capture.body?.output)).toContain(JSON.stringify(['sync', '--', project]))
+  })
+})
+
+describe('CG02：路由层的祖先口径', () => {
+  /** 造一个已索引的「仓库」与其子目录。 */
+  function repoWithSub(): { root: string; sub: string } {
+    const root = mkdtempSync(join(sandbox, 'cg02-root-'))
+    mkdirSync(join(root, '.codegraph'), { recursive: true })
+    writeFileSync(join(root, '.codegraph', 'codegraph.db'), '')
+    const sub = join(root, 'packages', 'app')
+    mkdirSync(sub, { recursive: true })
+    return { root, sub }
+  }
+
+  it('「设为默认项目」绑定的是索引所在的仓库根', async () => {
+    const { root, sub } = repoWithSub()
+    const mount = mountFull(echoCli(), { defaultPath: project })
+    const capture = await call(mount.routes, '/api/dsh-codegraph/default-path', { method: 'POST', body: { path: sub } })
+    expect(capture.status).toBe(200)
+    expect(capture.body?.defaultPath).toBe(root)
+    expect(mount.updates.at(-1)).toMatchObject({ defaultPath: root, followSession: false })
+  })
+
+  it('跟随命中子目录时托管行 cwd 对齐仓库根，且不再误报回落', async () => {
+    const { root, sub } = repoWithSub()
+    const mount = mountFull(echoCli())
+    const capture = await call(mount.routes, '/api/dsh-codegraph/follow', { method: 'POST', body: { path: sub } })
+    expect(capture.status).toBe(200)
+    expect(capture.body?.effectivePath).toBe(root)
+    expect(capture.body?.sessionPathState).toBe('indexed')
+    expect(capture.body?.note).toBeUndefined()
+  })
+
+  it('子目录里点「初始化索引」→ 409（祖先已有索引，不再诱导嵌套 init）', async () => {
+    const { sub } = repoWithSub()
+    const routes = mountRoutes(echoCli())
+    const capture = await call(routes, '/api/dsh-codegraph/init', { method: 'POST', body: { path: sub } })
+    expect(capture.status).toBe(409)
+    expect(String(capture.body?.error)).toContain('祖先')
+  })
+})
+
+describe('CG05：超时/取消的兜底', () => {
+  it('请求断连（res close 且未写完）会中止正在跑的索引命令（CG30）', async () => {
+    const routes = mountRoutes(sleepCli(), { indexTimeoutMs: 10_000 })
+    let fireClose: (() => void) | undefined
+    const capture = fakeRes((event, listener) => {
+      if (event === 'close') fireClose = listener
+    })
+    const pending = routes.get('/api/dsh-codegraph/index')!.handler(
+      fakeReq({ method: 'POST', body: { path: project } }),
+      capture.res,
+    )
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    expect(fireClose, '路由应在 res 上注册 close 监听').toBeTypeOf('function')
+    fireClose?.()
+    await pending
+    expect(capture.status).toBe(500)
+    expect(String(capture.body?.error)).toContain('已取消')
+  })
+
+  it('POST /cancel 能取消登记中的索引命令；空表时 cancelled=0', async () => {
+    const routes = mountRoutes(sleepCli(), { indexTimeoutMs: 10_000 })
+    const capture = fakeRes()
+    const pending = routes.get('/api/dsh-codegraph/index')!.handler(fakeReq({ method: 'POST', body: { path: project } }), capture.res)
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    const cancel = await call(routes, '/api/dsh-codegraph/cancel', { method: 'POST', body: { path: project } })
+    expect(cancel.status).toBe(200)
+    expect(cancel.body?.cancelled).toBe(1)
+    await pending
+    expect(capture.status).toBe(500)
+    expect(String(capture.body?.error)).toContain('已取消')
+    const again = await call(routes, '/api/dsh-codegraph/cancel', { method: 'POST', body: { path: project } })
+    expect(again.body?.cancelled).toBe(0)
+  })
+})
+
+describe('CG07：/follow 不再零校验落盘', () => {
+  it('路径不存在 → 400，sessionPath 不被污染', async () => {
+    const mount = mountFull(echoCli())
+    const missing = await call(mount.routes, '/api/dsh-codegraph/follow', { method: 'POST', body: { path: join(sandbox, 'no-such-dir-cg07') } })
+    expect(missing.status).toBe(400)
+    expect(String(missing.body?.error)).toContain('路径不存在')
+    // 合法但未索引的目录仍然接受（回落语义在 effectiveProjectPath 里）
+    const plain = mkdtempSync(join(sandbox, 'cg07-plain-'))
+    const ok = await call(mount.routes, '/api/dsh-codegraph/follow', { method: 'POST', body: { path: plain } })
+    expect(ok.status).toBe(200)
+  })
+})
+
+describe('CG09/CG10：查询族路由的 argv 与参数校验', () => {
+  it('位置参数前带 -- 终止符；node 刻意不带 --json（CG27 钉住）', async () => {
+    const routes = mountRoutes(echoCli())
+    const pathParam = `path=${encodeURIComponent(project)}`
+    const query = await call(routes, '/api/dsh-codegraph/query', { url: `/api/dsh-codegraph/query?q=-abc&${pathParam}` })
+    expect(query.status).toBe(200)
+    expect(String(query.body?.raw)).toContain(JSON.stringify(['query', '--json', '--path', project, '--limit', '10', '--', '-abc']))
+    const callers = await call(routes, '/api/dsh-codegraph/callers', { url: `/api/dsh-codegraph/callers?symbol=-h&${pathParam}` })
+    expect(String(callers.body?.raw)).toContain(JSON.stringify(['callers', '--json', '--path', project, '--', '-h']))
+    const callees = await call(routes, '/api/dsh-codegraph/callees', { url: `/api/dsh-codegraph/callees?symbol=-h&${pathParam}` })
+    expect(String(callees.body?.raw)).toContain(JSON.stringify(['callees', '--json', '--path', project, '--', '-h']))
+    const impact = await call(routes, '/api/dsh-codegraph/impact', { url: `/api/dsh-codegraph/impact?symbol=x&depth=3&${pathParam}` })
+    expect(String(impact.body?.raw)).toContain(JSON.stringify(['impact', '--json', '--path', project, '--depth', '3', '--', 'x']))
+    const node = await call(routes, '/api/dsh-codegraph/node', { url: `/api/dsh-codegraph/node?name=y&${pathParam}` })
+    expect(String(node.body?.raw)).toContain(JSON.stringify(['node', '--path', project, '--', 'y']))
+    expect(String(node.body?.raw)).not.toContain('--json')
+  })
+
+  it('limit/depth 非法值 400；limit 上限钳到 10000', async () => {
+    const routes = mountRoutes(echoCli())
+    const pathParam = `path=${encodeURIComponent(project)}`
+    for (const bad of ['-1', '0', 'abc']) {
+      expect((await call(routes, '/api/dsh-codegraph/query', { url: `/api/dsh-codegraph/query?q=x&limit=${bad}&${pathParam}` })).status).toBe(400)
+      expect((await call(routes, '/api/dsh-codegraph/impact', { url: `/api/dsh-codegraph/impact?symbol=x&depth=${bad}&${pathParam}` })).status).toBe(400)
+    }
+    // depth 不做上限钳制（CLI 自己夹到 10，实测）；limit 钳住，避免 99999999999 的静默空结果
+    const huge = await call(routes, '/api/dsh-codegraph/query', { url: `/api/dsh-codegraph/query?q=x&limit=99999999999&${pathParam}` })
+    expect(huge.status).toBe(200)
+    expect(String(huge.body?.raw)).toContain('"--limit","10000"')
+  })
+
+  it('路径不存在 → 400（CLI 对不存在的路径会静默回空结果）', async () => {
+    const routes = mountRoutes(echoCli())
+    const missing = `path=${encodeURIComponent(join(sandbox, 'no-such-dir-cg10'))}`
+    for (const route of ['status', 'query?q=x', 'callers?symbol=x', 'callees?symbol=x', 'impact?symbol=x', 'node?name=x']) {
+      const sep = route.includes('?') ? '&' : '?'
+      const capture = await call(routes, `/api/dsh-codegraph/${route.split('?')[0]}`, { url: `/api/dsh-codegraph/${route}${sep}${missing}` })
+      expect(capture.status, route).toBe(400)
+      expect(String(capture.body?.error)).toContain('路径不存在')
+    }
+  })
+})
+
+describe('CG25：并存实例（同名不同 id）的设置互不串台', () => {
+  it('第二份实例写 settings，第一份实例的路由读到的是自己的值', async () => {
+    const first = mountFull(echoCli())
+    const second = mountFull(echoCli())
+    await call(second.routes, '/api/dsh-codegraph/settings', { method: 'POST', body: { usageGuidance: false } })
+    const firstState = await call(first.routes, '/api/dsh-codegraph/default-path')
+    expect(firstState.body?.usageGuidance).toBe(true)
+    const secondState = await call(second.routes, '/api/dsh-codegraph/default-path')
+    expect(secondState.body?.usageGuidance).toBe(false)
+  })
+})
+
+describe('CG27：query/callers/callees/impact/node 的三态覆盖', () => {
+  it('缺参 400 / 正常 200', async () => {
+    const routes = mountRoutes(echoCli())
+    expect((await call(routes, '/api/dsh-codegraph/query')).status).toBe(400)
+    expect((await call(routes, '/api/dsh-codegraph/callers')).status).toBe(400)
+    expect((await call(routes, '/api/dsh-codegraph/callees')).status).toBe(400)
+    expect((await call(routes, '/api/dsh-codegraph/impact')).status).toBe(400)
+    expect((await call(routes, '/api/dsh-codegraph/node')).status).toBe(400)
+    const pathParam = `path=${encodeURIComponent(project)}`
+    for (const route of ['query?q=ok', 'callers?symbol=ok', 'callees?symbol=ok', 'impact?symbol=ok', 'node?name=ok']) {
+      const capture = await call(routes, `/api/dsh-codegraph/${route.split('?')[0]}`, { url: `/api/dsh-codegraph/${route}&${pathParam}` })
+      expect(capture.status, route).toBe(200)
+    }
+  })
+
+  it('CLI 非零退出 → 500 且 stderr 原文可见', async () => {
+    const failing = stubCli('exit-cli-cg27', 'console.error("boom-cg27"); process.exit(3)')
+    const routes = mountRoutes(failing)
+    const capture = await call(routes, '/api/dsh-codegraph/query', { url: `/api/dsh-codegraph/query?q=x&path=${encodeURIComponent(project)}` })
+    expect(capture.status).toBe(500)
+    expect(String(capture.body?.error)).toContain('boom-cg27')
+  })
+
+  it('node 的 file 参数以 - 开头 → 400（commander 会把它当值吃掉）', async () => {
+    const routes = mountRoutes(echoCli())
+    const capture = await call(routes, '/api/dsh-codegraph/node', { url: `/api/dsh-codegraph/node?name=x&file=-weird&path=${encodeURIComponent(project)}` })
+    expect(capture.status).toBe(400)
+    expect(String(capture.body?.error)).toContain('file 不能以 - 开头')
   })
 })

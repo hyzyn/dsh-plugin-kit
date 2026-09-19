@@ -6,7 +6,7 @@
  * 消费者已经依赖的契约，改动必须显式。
  */
 import { homedir, tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
@@ -84,6 +84,20 @@ describe('dshHome', () => {
     expect(dshHome()).toBe(join(homedir(), '.dsh'))
     process.env.DSH_HOME = '   '
     expect(dshHome()).toBe(join(homedir(), '.dsh'))
+  })
+
+  it('归一化：DSH_HOME 里的 ~ 展开为家目录（codegraph DEFECTS CG13）', () => {
+    // loader 侧读同一个变量时走 resolve(expandHomePath(...))；不展开的话插件写的
+    // 与 loader watch 的就是两个不同文件，热加载永远不会触发。
+    process.env.DSH_HOME = '~/x'
+    expect(dshHome()).toBe(join(homedir(), 'x'))
+    process.env.DSH_HOME = '~'
+    expect(dshHome()).toBe(homedir())
+  })
+
+  it('归一化：相对路径 resolve 成绝对路径', () => {
+    process.env.DSH_HOME = 'relative/dsh-home'
+    expect(dshHome()).toBe(resolve('relative/dsh-home'))
   })
 })
 

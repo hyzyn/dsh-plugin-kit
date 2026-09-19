@@ -66,6 +66,11 @@ jobs:
       - name: Check dsh.engines.dsh declarations
         if: matrix.os == 'ubuntu-latest'
         run: node scripts/check-dsh-engines.mjs
+      # 防回归：DSH_HOME 的推导（~ 展开 + resolve）只允许在 kit 里有一份；插件各写
+      # 各的 raw 副本会在 DSH_HOME=~/x 时写/读不同的配置目录（codegraph DEFECTS CG35）
+      - name: Check DSH_HOME derivation lives only in kit
+        if: matrix.os == 'ubuntu-latest'
+        run: node scripts/check-dsh-home.mjs
       # 防回归：入库产物必须与源码一致——曾发生过源码改了、产物没重建，修复在浏览器侧
       # 完全无效。重建后对全部包的浏览器半体（client.js）与宿主半体（lib/）做 diff。
       - name: Check build artifacts are up to date

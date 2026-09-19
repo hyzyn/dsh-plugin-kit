@@ -18,7 +18,12 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const spawnPortableMock = vi.hoisted(() => vi.fn())
-vi.mock('@hyzyn/dsh-kit', () => ({ spawnPortable: spawnPortableMock }))
+// 只覆盖 spawnPortable，其余（dshHome 等）用 kit 真身——CG35 后 profile 还从 kit
+// 拿 dshHome，整模块 mock 成 undefined 会让路由当场抛错。
+vi.mock('@hyzyn/dsh-kit', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  spawnPortable: spawnPortableMock,
+}))
 
 import { apply } from '../src/index.js'
 

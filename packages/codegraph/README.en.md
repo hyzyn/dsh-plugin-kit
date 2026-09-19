@@ -6,11 +6,11 @@
 
 ## Features
 
-- **`status --json` fields laid out per section**: `initialized` / `version` / `projectPath` / `fileCount` / `nodeCount` / `edgeCount` / `lastIndexed` / `pendingChanges` / `languages` / `dbSizeBytes` render as cells with the raw JSON behind a `<details>`; a symbol drill-down returns its line-numbered verbatim source plus `callers` / `callees` / `impact` lists.
-- **Two index paths, two timeout buckets**: `sync -- <path>` incremental and `index [--force] -- <path>` full rebuild run on `indexTimeoutMs` (600 s); `status` / `query` / `callers` / `callees` / `impact` / `node` run on `cliTimeoutMs` (60 s).
+- **`status --json` fields laid out per section**: `initialized` / `version` / `projectPath` / `fileCount` / `nodeCount` / `edgeCount` / `lastIndexed` / `pendingChanges` / `languages` / `dbSizeBytes` render as cells with the raw JSON behind a `<details>`; a symbol drill-down returns its line-numbered verbatim source plus `callers` / `callees` / `impact` lists. The CLI's staleness signals (`reindexRecommended` / `builtWithVersion` / extractor version gap / `worktreeMismatch`) surface as a warning line with "rebuild index" flagged as the suggested action.
+- **Two index paths, two timeout buckets**: `sync -- <path>` incremental and `index [--force] -- <path>` full rebuild run on `indexTimeoutMs` (600 s, `0` = unlimited); `status` / `query` / `callers` / `callees` / `impact` / `node` run on `cliTimeoutMs` (60 s, `0` = unlimited). Timeout and cancellation both follow a "SIGTERM → 3 s grace → SIGKILL" process-group escalation on every platform; index-class operations get a Cancel button on the card, and closing the page aborts the CLI too.
 - **Managed MCP server row**: dsh-mcp-client declares no MCP roots, so `codegraph serve --mcp` resolves `.codegraph/` upward from `process.cwd()` only; the plugin maintains the `@deepseek-ai/dsh-mcp-client` row in `~/.dsh/cordis.patch.yml` with `config.cwd`, and the rewrite hot-loads through watchUserPatches to rebuild the MCP connection. One server mounts one project at a time; other projects are queried with `projectPath`.
-- **Index detection reads `.codegraph/*.db`, not the directory**: directory existence mistakes the CLI's own install dir `~/.codegraph` for a project index, dropping the managed row on an unindexed cwd — measured there, `codegraph_explore`'s required grows from `["query"]` to `["query","projectPath"]`. Anything short of a real index leaves the existing cwd untouched, and the card reports `indexState` plus the reason.
-- **The managed row's cwd follows the active session**: `followSession` (on by default) aligns the row when a session switches to a project with a valid index, otherwise falls back to the pinned path; "Set as default project" writes that path into the `codegraph` settings namespace and sets `followSession` false (an explicit pin beats session following).
+- **Index detection reads `.codegraph/*.db` and walks upward like the CLI**: from the target directory up (stopping at the git root) it looks for the first `.codegraph/` holding an index database; the hit root is the project root, so sessions in monorepo subdirectories are no longer misread as "unindexed". Directory existence alone mistakes the CLI's own install dir `~/.codegraph` for a project index, dropping the managed row on an unindexed cwd — measured there, `codegraph_explore`'s required grows from `["query"]` to `["query","projectPath"]`. Anything short of a real index leaves the existing cwd untouched, and the card reports `indexState` plus the reason.
+- **The managed row's cwd follows the active session**: `followSession` (on by default) aligns the row when a session switches to a project with a valid index, otherwise falls back to the pinned path; "Set as default project" writes that path into the `codegraph` settings namespace and sets `followSession` false (an explicit pin beats session following). A failed session report retries with backoff instead of being silently lost forever.
 - **One-click initialisation**: an uninitialised directory gets an "Initialise index" button on the card that runs `codegraph init` (two-step confirm) — `index` / `sync` both require the project to be initialised first, and this was the last step that still forced users back to a terminal.
 - **Two systemPrompt sections, switches and gating independent**: `plugin:dsh-codegraph` (order 150) and `plugin:dsh-codegraph:usage` (order 151), both behind a `<command> --version` probe; `announceToAgent` / `usageGuidance` add or remove the sections live through the settings namespace.
 
@@ -55,15 +55,22 @@ Behavior details:
 | `/api/dsh-codegraph/settings` | POST | Write toggles `{ announceToAgent?, usageGuidance?, mcpIntegration?, followSession? }` (booleans), effective immediately |
 | `/api/dsh-codegraph/default-path` | POST | Set as default project `{ path }` (requires an index database inside `.codegraph/`), hot-switches the MCP at the same time |
 | `/api/dsh-codegraph/reprobe` | POST | Re-runs the `<command> --version` probe, returns `{ cliAvailable, cliProbeError, cliProbeAt }` and refreshes the systemPrompt gate |
+| `/api/dsh-codegraph/cancel` | POST | Cancels in-flight CLI calls `{ path? }` (omit = cancel all); a disconnecting page also aborts its call |
 
 All routes are loopback-only, to prevent remote access.
+
+Request semantics (since v0.4.2):
+
+- **POST routes answer 400 for malformed / oversized / non-object bodies** — an unreadable body is never treated as "no path given" and silently executed against the default project.
+- **Paths must exist and be directories**: `status` / `query` / `callers` / `callees` / `impact` / `node` return 400 for a nonexistent path (the CLI exits 0 with empty results there, which reads like "no matches"); `--limit` / `--depth` accept positive integers only (`limit` is capped at 10000; `depth`'s upper bound is clamped by the CLI itself to 10).
+- **Ancestor semantics**: `POST /default-path` binds the **repository root that holds the index** when invoked on a monorepo subdirectory; `/init` on such a subdirectory answers 409 (the ancestor already has an index, avoiding a nested one); `/follow` rejects reports of nonexistent directories.
 
 ## Compatibility (DSH / codegraph CLI)
 
 - **DSH**: the whole chain has been verified on `0.1.5-rc.2` — host routes (status/query/callers/callees/impact/node all return 200), the browser half (the client module enters the boot graph and is served correctly by the combo route), both systemPrompt injections, and the shape of the managed MCP row (`@deepseek-ai/dsh-mcp-client`'s `stdio` config). `package.json` declares `dsh.engines.dsh: ">=0.1.2-rc.1"`, and the plugin market derives its compatibility verdict from that.
   - Why the lower bound is written as `>=0.1.2-rc.1` rather than the shorter `^0.1.2`: the dsh-web resolver only accepts the single form `>=X.Y.Z[-prerelease]`, while `^` / `~` / a bare version number are all read as "cannot verify"; and `^` itself does not include **the lower bound version's own prerelease**, so a host that is already verified as working, such as `0.1.2-rc.1`, is judged incompatible, and the market's update path **refuses installation outright** once it confirms incompatibility (bypassing that requires `force`); `^0.1.5` would even wrongly kill `0.1.5-rc.2` as well. DSH has long shipped as `-rc.N`, so the range must explicitly carry the RC lower bound.
   - Why no upper bound `<0.2.0` is declared: the resolver only supports a single `>=` comparison operator, so a two-part range (`>=0.1.2-rc.1 <0.2.0`) as a whole is read as "cannot verify", and per that module's contract a declared-but-unverifiable requirement is fail-closed — the update is blocked outright, which is worse than declaring nothing. When crossing to the 0.2 line, re-verify by hand and then decide whether to relax the lower bound.
-- **Codegraph CLI**: verified on `1.5.0`; the subcommands used are `status` / `query` / `callers` / `callees` / `impact` / `node` / `sync` / `index`, with every flag checked one by one. `codegraph serve --mcp` still works (it is not listed in the top-level help, but `codegraph serve --help` has it), so the managed row needs no change.
+- **Codegraph CLI**: version matrix — the full chain has been verified on `1.5.0` (macOS) and `1.6.0` (Windows / macOS); the subcommands used are `status` / `query` / `callers` / `callees` / `impact` / `node` / `sync` / `index`, with every flag checked one by one. `codegraph serve --mcp` still works (it is not listed in the top-level help, but `codegraph serve --help` has it), so the managed row needs no change. Re-verify after upgrading the CLI: flags such as `-y` are version-dependent (this plugin deliberately omits it, see below).
 - **URL shape of the browser half**: DSH currently goes through client-modules' combo route, so the single-package direct link `/plugins/@hyzyn/dsh-codegraph/client.js` is no longer directly usable; the browser only uses `/plugins/??<id>/client.js&rev=…` handed down by the boot graph (`window.__DSH_BOOT__`), and the plugin side needs no change.
 - **Operating systems**: Windows / macOS / Linux run the same code path, and CI is a three-platform matrix (`pnpm -r build` + `typecheck` + `test`).
   - **Windows**: the CLI goes through `%COMSPEC% /d /s /c` with cmd escaping (a global npm / pnpm install only ships a `.cmd` shim, which `execFile` cannot start directly — `ENOENT`); a timeout kills the whole tree with `taskkill /pid <pid> /T /F`, **including the grandchild CLI inside the shim** (killing only cmd.exe lets a large `index` run to completion); rewriting the patch file keeps the file's own line endings (a CRLF file is not turned into mixed endings, and a rewrite does not change the line count).
@@ -83,10 +90,13 @@ All routes are loopback-only, to prevent remote access.
 ```bash
 pnpm --filter @hyzyn/dsh-codegraph build
 pnpm --filter @hyzyn/dsh-codegraph typecheck
-pnpm vitest run packages/codegraph          # managed-row decision matrix + CLI knobs + follow/gating routes
+pnpm test                                   # repository-wide vitest (or: vitest run packages/codegraph)
+pnpm --filter @hyzyn/dsh-codegraph test     # this package only (managed-row matrix + CLI knobs + route regressions)
 node packages/codegraph/scripts/preview-card.mjs        # render the card preview HTML into .preview/ (--png needs a normal terminal: Chrome cannot start under a restricted sandbox)
-node packages/codegraph/scripts/verify-sync.mjs   # managed-row sync logic verification (requires a build first)
+node scripts/verify-codegraph-indexforce.mjs --profile test --port 3086   # live end-to-end: does indexForce really spawn with --force (requires a local DSH)
 ```
+
+The browser half's source lives in `client-src/index.js`; `build` produces the package-root `client.js` via `scripts/build-client.mjs` — it drops index.js's import of `client-src/pure.js` and inlines pure.js (the DOM-free logic, unit-tested directly in `test/client-pure.test.ts`) into the factory with its `export` prefixes stripped, so the artifact stays a single import-free file. CI's artifact diff gates on byte-for-byte equality, so editing the source without rebuilding turns CI red.
 
 After upgrading the local DSH, re-link first and then typecheck — otherwise `packages/*/node_modules/@deepseek-ai/*` is still the old copy from the repository's
 `.pnpm`, and the plugin and the host each hold a different version of the library, so compatibility problems are masked:
@@ -117,9 +127,11 @@ export interface Config {
   defaultPath?: string
   /** Whether to manage the codegraph MCP server row. On by default; turning it off reverts the managed row written by this plugin. */
   mcpIntegration?: boolean
-  /** Timeout in milliseconds for query commands (status/query/callers/callees/impact/node). Defaults to 60000. */
+  /** Whether the managed row's cwd follows the active session. On by default; "Set as default project" turns it off (an explicit pin). */
+  followSession?: boolean
+  /** Timeout in milliseconds for query commands (status/query/callers/callees/impact/node). Defaults to 60000; 0 = unlimited. */
   cliTimeoutMs?: number
-  /** Timeout in milliseconds for index commands (sync/index). Defaults to 600000. A full rebuild of a large repository exceeds the query budget. */
+  /** Timeout in milliseconds for index commands (sync/index). Defaults to 600000; 0 = unlimited. A full rebuild of a large repository exceeds the query budget. */
   indexTimeoutMs?: number
   /** Append `--force` to `codegraph index` (used when the CLI refuses to index a home directory / filesystem root). Off by default. */
   indexForce?: boolean

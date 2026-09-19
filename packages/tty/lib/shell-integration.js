@@ -34,12 +34,12 @@
  *   OSC 133;D;<exit> —— 命令结束带退出码；OSC 7;file://<host><path> —— cwd 上报。
  */
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { dshHome } from '@hyzyn/dsh-kit';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 /** 插件运行时资产根目录（稳定路径；DSH_HOME 优先，与 env 插件同语义）。 */
 export function pluginRuntimeDir() {
-    const dshHome = process.env.DSH_HOME?.trim() || join(homedir(), '.dsh');
-    return join(dshHome, 'tty');
+    return join(dshHome(), 'tty');
 }
 /** 原子 write-if-changed：内容相同跳过；不同则写同目录临时文件后 rename（避免半截文件）。 */
 function writeIfChanged(file, content) {

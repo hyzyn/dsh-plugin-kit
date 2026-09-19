@@ -12,5 +12,11 @@ export declare function getService(ctx: Context, name: string): unknown;
  *
  * 用 homedir() 而非 process.env.HOME：Windows 上 HOME 常常未设置，homedir()
  * 走系统 API 更可靠；与全仓现有 8 处实现保持同一语义。
+ *
+ * 返回前做一层**归一化**（`~` 展开 + resolve）：DSH 的运行时 loader 读同一环境
+ * 变量时走的是 `resolve(expandHomePath(...))`，插件若拿原始字面量去拼
+ * `cordis.patch.yml`，`DSH_HOME=~/x` 时写的是字面 `~/x/…` 目录（相对 cwd 的一个
+ * 名叫 `~` 的目录），而 loader watch 的是展开后的 `/home/u/x/…`——两个不同文件，
+ * 热加载永远不会触发（codegraph DEFECTS CG13）。
  */
 export declare function dshHome(): string;

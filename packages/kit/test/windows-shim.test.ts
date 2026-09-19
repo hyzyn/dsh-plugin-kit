@@ -10,11 +10,14 @@
  * 参数里的 `&` / `|` 变成命令分隔符（注入）。断言固定的是 cross-spawn 的规则，
  * 也就是修好它的那条路径。
  */
+import { spawn } from 'node:child_process'
 import { describe, expect, it } from 'vitest'
 import {
   escapeArgument,
   escapeCommand,
+  killProcessTree,
   portableSpawnPlan,
+  spawnPortable,
   taskkillArgs,
   windowsCommandLine,
 } from '../src/index.js'
@@ -151,5 +154,68 @@ describe('portableSpawnPlan（要不要套 cmd.exe）', () => {
 
   it('Windows：不带参数的裸命令也不会漏掉最外层引号', () => {
     expect(portableSpawnPlan('codegraph', [], { platform: 'win32', comspec: 'cmd.exe' }).args[3]).toBe('"codegraph"')
+  })
+})
+
+/**
+ * 进程是否还活着（`kill(pid, 0)` 探活，ESRCH = 已退出）。
+ */
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** 轮询直到两个 pid 都退出（SIGTERM 是异步的，给足宽限）。 */
+async function waitForExit(...pids: number[]): Promise<void> {
+  const deadline = Date.now() + 5_000
+  while (Date.now() < deadline) {
+    if (pids.every((pid) => !isAlive(pid))) return
+    await new Promise((resolveTick) => setTimeout(resolveTick, 50))
+  }
+  throw new Error('进程在 5s 内没有退出: ' + pids.filter(isAlive).join(', '))
+}
+
+describe('killProcessTree（CG05：POSIX 不再是 no-op）', () => {
+  it('detached 组长连同组内孙进程一起收到信号', async () => {
+    if (process.platform === 'win32') return
+    // 组长自己再 spawn 一个孙进程（孙进程继承组长的进程组）。
+    // 以前这个函数在 POSIX 上什么都不做：超时只发了 SIGTERM，忽略它的 CLI（或它的
+    // 子孙）会把全量重建跑完。现在对 -pid 整组发信号，两边都必须死。
+    const leaderScript = [
+      "const { spawn } = require('node:child_process')",
+      "const grand = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' })",
+      'process.stdout.write(JSON.stringify({ grand: grand.pid }))',
+      'setInterval(() => {}, 1000)',
+    ].join('\n')
+    const leader = spawnPortable(process.execPath, ['-e', leaderScript], { detached: true })
+    const stdout: string[] = []
+    leader.stdout?.on('data', (chunk: Buffer) => stdout.push(chunk.toString('utf8')))
+    // 等组长把孙进程 pid 打出来（spawn 管道建立 + 子进程启动需几十毫秒）
+    await new Promise<void>((resolveLine) => {
+      const poll = setInterval(() => {
+        if (stdout.join('').includes('{')) {
+          clearInterval(poll)
+          resolveLine()
+        }
+      }, 20)
+    })
+    const { grand } = JSON.parse(stdout.join('')) as { grand: number }
+    expect(isAlive(leader.pid!)).toBe(true)
+    expect(isAlive(grand)).toBe(true)
+
+    await killProcessTree(leader.pid, 'SIGTERM', { group: true })
+    await waitForExit(leader.pid!, grand)
+  })
+
+  it('不是组长的普通子进程：默认只单杀（group 未开时绝不打 -pid，CG36）', async () => {
+    if (process.platform === 'win32') return
+    const plain = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' })
+    expect(isAlive(plain.pid!)).toBe(true)
+    await killProcessTree(plain.pid, 'SIGTERM')
+    await waitForExit(plain.pid!)
   })
 })
