@@ -86,6 +86,10 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
   装载、`dsh web` 起服务与浏览器半体交付（与 macOS 上服务的是同一份产物，构建后比对大小与
   内容标记一致；不写死字节数——每次重建都会变）、`[dsh-tty] mounted (shell=C:\WINDOWS\system32\cmd.exe)`；x64 Windows 由 CI
   的三平台矩阵覆盖（build / typecheck / test，见「开发」）。
+- **端到端覆盖（0.19.0）**：`scripts/windows-smoke.mjs` 在 CI 的 windows-latest 上跑真实 `cmd.exe`
+  的 spawn → 输入回显 → kill → 重开。它抓出并钉住了「强杀本地 PTY 会崩宿主」这类只在 Windows
+  出现的问题——node-pty 在 Windows 上不接受 signal，而它的 `_deferNoArgs` 会把这个异常推迟到
+  socket 回调里抛出，调用方的 try/catch 拦不住。
 
 ## agent 工具（P1）
 
@@ -94,16 +98,16 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
 | 工具 | 作用 |
 | --- | --- |
 | `tty_list` | 列出活跃终端会话（sid / kind（local\|ssh）/ target / pid / **cwd 实时跟随 cd** / 活动时间；tmux 持久会话带 `persist` 标记） |
-| `tty_capture` | 读取近期输出（尾部 N 行，默认清洗 ANSI，`raw:true` 取原始流）；**`last:true` 只返回上一条已完成命令的输出 + 退出码**（shell 集成标记，见下节） |
+| `tty_capture` | 读取近期输出（尾部 N 行，默认清洗 ANSI，`raw:true` 取原始流）；**`last:true` 只返回上一条已完成命令的输出 + 退出码**（shell 集成标记，见下节）；命令**在途**时（刚发送、完成标记未到）返回 `inProgress:true` 且不带旧结果——避免把上一条的输出当成这一条（0.19.0） |
 | `tty_screen` | 读取**当前可见屏幕**的渲染结果（xterm-headless 虚拟屏，纯文本）——能真正读懂 vim / htop / 菜单等 TUI 界面 |
-| `tty_expect` | 用正则**等待后续输出**中的就绪信号（dev server URL、构建完成等）；超时不抛错（`matched:false` + 尾部输出），命令提前结束也会带退出码早停 |
+| `tty_expect` | 用正则**等待后续输出**中的就绪信号（dev server URL、构建完成等）；超时不抛错（`matched:false` + 尾部输出），命令提前结束也会带退出码早停；同一会话在途调用最多 5 个，累积窗口只保留尾部 64KB（0.19.0） |
 | `tty_send` | 向指定会话发送按键/文本（如 dev server 的 q 键、菜单选择） |
-| `sftp_list` | 列出 SSH 远程目录内容（名称/类型/大小/修改时间，目录在前）；`book` 为连接簿条目名，`path` 缺省为登录 home |
-| `sftp_read` | 读取远程**文本**文件（默认 ≤256KB 可调至 1MB，超出截断；含 NUL 字节按二进制拒绝） |
+| `sftp_list` | 列出 SSH 远程目录内容（名称/类型/大小/修改时间，目录在前）；`book` 为连接簿条目名，`path` 缺省为登录 home；默认最多 500 项（超限 `truncated:true`），`isSymlink` 区分软链与真目录（0.19.0） |
+| `sftp_read` | 读取远程**文本**文件（默认 ≤256KB 可调至 1MB，超出截断）；`offset` 可从指定字节分页（适合读日志尾部），非法 `maxBytes` 直接报错，二进制判定 = NUL + 非法 UTF-8 占比双判据（0.19.0） |
 | `sftp_write` | 写远程文本文件（默认覆盖，`append:true` 追加；单次 ≤1MB） |
 | `sftp_mkdir` | 创建远程目录；`parents:true` 逐级补齐缺失父目录（等效 `mkdir -p`，自底向上创建，已存在目录幂等跳过） |
 | `sftp_rename` | 重命名/移动远程文件或目录（`to` 与 `from` 不同目录即移动；不覆盖已存在的目标） |
-| `sftp_remove` | 删除远程文件/目录；目录默认 rmdir（非空明确报错），`recursive:true` 整树删除（不可恢复） |
+| `sftp_remove` | 删除远程文件/目录；目录默认 rmdir（非空明确报错），`recursive:true` 整树删除（不可恢复）；会拒绝 `/`、`~`、含 `.`/`..` 段的路径（不可恢复操作的前置护栏，0.19.0） |
 | `sftp_tree` | 递归列举远程目录结构（深度优先、目录优先；`maxDepth` 1~8 / `maxEntries` 1~2000 限流，超限 `truncated:true`；symlink 不跟随防环） |
 | `tunnel_list` | 列出端口转发隧道及其实时状态（活跃/连接中/错误/停止、规则、连接数） |
 
@@ -678,6 +682,14 @@ pnpm --filter @hyzyn/dsh-tty integration  # 集成测试：真实插件 × 真�
 pnpm --filter @hyzyn/dsh-tty live         # 存活冒烟：需先起 dsh web（默认连 ws://127.0.0.1:3080，DSH_TTY_WS_URL 可覆盖）
 pnpm --filter @hyzyn/dsh-tty tui          # TUI 冒烟：vim/htop 全屏渲染（需先起 dsh web，默认连 :3090，DSH_TTY_WS_URL 可覆盖）
 pnpm --filter @hyzyn/dsh-tty ssh-smoke    # SSH 冒烟：内存 SSH server（ssh2.Server）× 真实 spawnSsh 端到端（需先 build）
+pnpm --filter @hyzyn/dsh-tty probe-smoke        # 试连分类与 TOFU（7 例，自包含）
+pnpm --filter @hyzyn/dsh-tty probe-route-smoke  # 试连 HTTP 路由 + 连接簿（9 例）
+pnpm --filter @hyzyn/dsh-tty sftplimits-smoke   # sftpLimits 配置归一化（6 例）
+pnpm --filter @hyzyn/dsh-tty windows-smoke      # Windows 端到端（只在 Windows 上有意义，其他平台打印原因后跳过）
+
+CI（`.github/workflows/ci.yml`）在 ubuntu 跑 `integration` + `ssh-smoke` + 三个 smoke，在
+windows-latest 跑 `windows-smoke`，另有一道「构建产物与源码一致」闸门（`client.js` + `lib/`）。
+0.19.0 的 48 项修复与审计索引见 [`DEFECTS.md`](./DEFECTS.md)。
 pnpm --filter @hyzyn/dsh-tty preview      # 视觉预览：headless Chrome 逐场景截图（见下）
 ```
 
