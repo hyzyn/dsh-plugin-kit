@@ -16,7 +16,7 @@
  * 用法：pnpm --filter @hyzyn/dsh-docker build && node scripts/route-smoke.mjs
  */
 import { strict as assert } from 'node:assert'
-import { mkdtempSync, writeFileSync, chmodSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -28,6 +28,13 @@ const host = await import('../lib/index.js')
 
 const dir = mkdtempSync(join(tmpdir(), 'dsh-docker-smoke-'))
 const fakeBin = join(dir, 'fake-docker')
+
+/*
+ * SSH 目标一律指向 127.0.0.1:1（D25）：连接被立即拒绝（ECONNREFUSED），
+ * 断言的是「错误路径要可用」而不是「某个内网 IP 不可达」。此前写死
+ * 10.0.0.5:2222 / 10.0.0.9 —— 每次运行都发起真实 SSH 握手、干等 20s readyTimeout
+ * （脚本号称离线，实测 2 分钟），在 10.0.0.5 真有主机的网段上还会假红。
+ */
 
 /** 需关注用例：已退出且非零退出码（inspect 会补上 OOMKilled）。 */
 const PS_BAD_LINE = JSON.stringify({
@@ -258,7 +265,7 @@ function makeReq(method, path, body, remoteAddress = '127.0.0.1') {
   return {
     method,
     url: path,
-    headers: { host: '127.0.0.1:3080', 'content-type': 'application/json' },
+    headers: { host: '127.0.0.1:3080', origin: 'http://127.0.0.1:3080', 'content-type': 'application/json' },
     socket: { remoteAddress },
     async *[Symbol.asyncIterator]() {
       for (const chunk of chunks) yield chunk
@@ -296,12 +303,33 @@ function makeRes() {
 }
 
 const results = []
+/*
+ * 看门狗（D71）：任一用例挂起不该把整个脚本永久挂住（CI 会一直转到超时被杀）。
+ * 两层：单用例 15s（挂起的用例标失败，其余继续跑）+ 全局 90s（兜底，直接退出 1）。
+ */
+// 25s > ssh 建连超时 20s（D122）：否则「目标不回 RST」的环境里，
+// 用例会被看门狗报成「用例超时」，把真因盖住
+const CASE_TIMEOUT_MS = 25_000
+const WATCHDOG_MS = 90_000
+const watchdog = setTimeout(() => {
+  const last = [...results].reverse().find((result) => result.ok)
+  console.error(`\n[dsh-docker] 看门狗超时（${String(WATCHDOG_MS / 1000)}s），脚本挂起；最后通过的用例：${last === undefined ? '(无)' : last.name}`)
+  process.exit(1)
+}, WATCHDOG_MS)
 async function test(name, fn) {
+  let timer = null
   try {
-    await fn()
+    await Promise.race([
+      Promise.resolve().then(fn),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`用例超时（${String(CASE_TIMEOUT_MS / 1000)}s）`)), CASE_TIMEOUT_MS)
+      }),
+    ])
     results.push({ name, ok: true })
   } catch (error) {
     results.push({ name, ok: false, message: error instanceof Error ? error.message : String(error) })
+  } finally {
+    if (timer !== null) clearTimeout(timer)
   }
 }
 
@@ -310,15 +338,15 @@ async function test(name, fn) {
  * ------------------------------------------------------------------ */
 
 const TTY_CONFIG = {
-  sshHosts: [{ name: 'prod-a', host: '10.0.0.5', port: 2222, username: 'root', auth: 'agent' }],
-  hostKeys: [{ host: '10.0.0.5', port: 2222, fingerprint: 'seeded-fingerprint' }],
+  sshHosts: [{ name: 'prod-a', host: '127.0.0.1', port: 1, username: 'root', auth: 'agent' }],
+  hostKeys: [{ host: '127.0.0.1', port: 1, fingerprint: 'seeded-fingerprint' }],
 }
 
 const MOUNT_TARGETS = [
   { name: '本机', kind: 'local' },
   { name: '远程', kind: 'ssh', book: 'prod-a' },
-  // 故意放一个明文密码（env: 引用）：验证 /config 不回显
-  { name: '直连', kind: 'ssh', host: '10.0.0.9', username: 'ops', auth: 'password', password: 'env:FAKE_PW' },
+  // 故意放一个明文密码（env: 引用）：验证 /config 不回显；端口 1 = 立即 ECONNREFUSED（D25）
+  { name: '直连', kind: 'ssh', host: '127.0.0.1', port: 1, username: 'ops', auth: 'password', password: 'env:FAKE_PW' },
 ]
 
 const { ctx, state } = makeCtx({ dockerBin: fakeBin, targets: MOUNT_TARGETS }, { ttyConfig: TTY_CONFIG })
@@ -394,8 +422,8 @@ await test('GET /targets：连接簿条目解析出 user@host', async () => {
   const rows = res.body.targets
   assert.equal(rows.length, 3)
   assert.equal(rows[0].label, '本机')
-  assert.equal(rows[1].label, 'root@10.0.0.5:2222')
-  assert.equal(rows[2].label, 'ops@10.0.0.9')
+  assert.equal(rows[1].label, 'root@127.0.0.1:1')
+  assert.equal(rows[2].label, 'ops@127.0.0.1:1')
 })
 
 await test('POST /targets：解析连接簿（与 GET 等价）', async () => {
@@ -493,12 +521,12 @@ await test('POST /images/inspect：镜像详情 + 构建历史', async () => {
   assert.match(res.body.image.history[0].createdBy, /CMD/)
 })
 
-await test('POST /images/inspect：缺 ref 400 / 非法 ref 500（不触达 docker）', async () => {
+await test('POST /images/inspect：缺 ref 400 / 非法 ref 400（不触达 docker；D37 前非法值会错报 500）', async () => {
   const missing = await call('POST', '/images/inspect', { target: '本机' })
   assert.equal(missing.status, 400)
   assert.match(missing.body.error, /ref 必填/)
   const bad = await call('POST', '/images/inspect', { target: '本机', ref: 'nginx; rm -rf /' })
-  assert.equal(bad.status, 500)
+  assert.equal(bad.status, 400)
   assert.match(bad.body.error, /image 含非法字符/)
 })
 
@@ -561,8 +589,8 @@ await test('agent 工具：docker_events 返回过滤后的事件快照', async 
   // 快照同样过白名单：exec_start 被丢掉，剩 start / die
   assert.deepEqual(value.events.map((row) => row.action), ['start', 'die'])
   assert.equal(value.events[1].exitCode, 137)
-  // since 走字符集校验，注入尝试在触达 docker 之前就被拒
-  await assert.rejects(() => tool.execute({ target: '本机', since: '10m; rm -rf /' }), /since 只支持/)
+  // since 走字符集校验，注入尝试在触达 docker 之前就被拒；错误里要**回显原文**（D99）
+  await assert.rejects(() => tool.execute({ target: '本机', since: '10m; rm -rf /' }), /since 无法识别：10m; rm -rf \//)
 })
 
 /* ------------------------------------------------------------------ *
@@ -600,7 +628,7 @@ await test('POST /volumes/inspect：标签与选项', async () => {
   assert.equal(res.body.volume.detail.labels.keep, 'true')
 })
 
-await test('网络 / 卷：缺 name 400，非法名 500（/ 与 : 都不允许）', async () => {
+await test('网络 / 卷：缺 name 400，非法名 400（/ 与 : 都不允许；D37 前非法值会错报 500）', async () => {
   // 只读的 inspect 走这里；remove 的门控在 name 校验之前（未开门时先 403，与镜像一致），
   // 它的 name 校验放在第 5 节（开门之后）
   for (const sub of ['/networks/inspect', '/volumes/inspect']) {
@@ -609,10 +637,10 @@ await test('网络 / 卷：缺 name 400，非法名 500（/ 与 : 都不允许�
     assert.match(missing.body.error, /name 必填/)
   }
   const slash = await call('POST', '/networks/inspect', { target: '本机', name: 'a/b' })
-  assert.equal(slash.status, 500)
+  assert.equal(slash.status, 400)
   assert.match(slash.body.error, /含非法字符/)
   const colon = await call('POST', '/volumes/inspect', { target: '本机', name: 'a:b' })
-  assert.equal(colon.status, 500)
+  assert.equal(colon.status, 400)
   assert.match(colon.body.error, /含非法字符/)
 })
 
@@ -666,9 +694,9 @@ await test('POST /containers：省略 target 且多目标时要求显式指定',
   assert.match(res.body.error, /target 必填/)
 })
 
-await test('POST /inspect：容器名注入尝试被白名单拒绝', async () => {
+await test('POST /inspect：容器名注入尝试被白名单拒绝（D37 起回 400 而不是 500）', async () => {
   const res = await call('POST', '/inspect', { target: '本机', id: 'shop-web-1; rm -rf /' })
-  assert.equal(res.status, 500)
+  assert.equal(res.status, 400)
   assert.match(res.body.error, /container 含非法字符/)
 })
 
@@ -861,7 +889,7 @@ await test('agent 工具：docker_targets 探测目标可达性', async () => {
   const value = await tool.execute({ probe: true })
   const local = value.targets.find((item) => item.name === '本机')
   assert.equal(local.ok, true)
-  // 远程目标走真 SSH（10.0.0.5 不可达）→ 应报不可用而不是抛异常
+  // 远程目标走真 SSH（127.0.0.1:1 立即 ECONNREFUSED，D25）→ 应报不可用而不是抛异常
   const remote = value.targets.find((item) => item.name === '远程')
   assert.equal(remote.ok, false)
   assert.ok(typeof remote.error === 'string' && remote.error !== '')
@@ -897,6 +925,9 @@ await test('POST /attention：单目标返回需关注列表（OOM 原因来自 
   assert.equal(items[0].oomKilled, true)
   assert.equal(items[0].exitCode, 137)
   assert.equal(items[0].restartCount, 7)
+  // 截断信号（D12）
+  assert.equal(res.body.total, 1)
+  assert.equal(res.body.truncated, false)
 })
 
 await test('POST /attention：target=* 跨目标聚合，失败目标带 error', async () => {
@@ -906,7 +937,9 @@ await test('POST /attention：target=* 跨目标聚合，失败目标带 error',
   assert.equal(groups.length, 3)
   const local = groups.find((group) => group.target === '本机')
   assert.equal(local.ok, true)
-  assert.equal(local.data.length, 1)
+  // attention() 现在返回 {items, total, truncated}（D12 截断信号）
+  assert.equal(local.data.items.length, 1)
+  assert.equal(local.data.total, 1)
   assert.equal(groups.find((group) => group.target === '远程').ok, false)
 })
 
@@ -1050,4 +1083,9 @@ for (const result of results) {
   }
 }
 console.log(`\n[dsh-docker] route-smoke: ${String(results.length - failed)}/${String(results.length)} 通过`)
-if (failed > 0) process.exit(1)
+// 清理假 CLI 临时目录（D25 顺带）：此前每次运行在 os.tmpdir() 留一份
+try { rmSync(dir, { recursive: true, force: true }) } catch { /* 忽略 */ }
+clearTimeout(watchdog)
+// 成功路径也要显式退出（D121）：主体结束后仍有周期句柄漏着的话，
+// 关掉看门狗就再也没人兜底了 —— 直接 exit 既保证退出也省掉排空等待
+process.exit(failed > 0 ? 1 : 0)

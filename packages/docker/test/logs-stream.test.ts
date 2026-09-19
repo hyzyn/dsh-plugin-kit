@@ -448,7 +448,7 @@ function makeReq(url: string, method = 'GET', remoteAddress = '127.0.0.1', body?
   return {
     method,
     url,
-    headers: { host: '127.0.0.1:3080', 'content-type': 'application/json' },
+    headers: { host: '127.0.0.1:3080', origin: 'http://127.0.0.1:3080', 'content-type': 'application/json' },
     socket: { remoteAddress },
     async *[Symbol.asyncIterator]() {
       for (const chunk of chunks) yield chunk

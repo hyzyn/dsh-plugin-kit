@@ -42,6 +42,14 @@ jobs:
       # 「未知」，或形式不受支持被判为无法验证而拦下更新），发出去只能靠新版本补救
       - name: Check dsh.engines.dsh declarations
         run: node scripts/check-dsh-engines.mjs
+      # 发布前最后一档：CI 会跑这些，但 tag 可以打在没过 CI 的提交上，发布闸自己也要
+      # 挡一次（docker DEFECTS D119：此前只有 CI 补了这套脚本，发布路径仍能整条绕过）
+      - name: Test (repo vitest + dsh-docker smoke scripts)
+        run: |
+          pnpm test
+          node packages/docker/scripts/smoke.mjs
+          node packages/docker/scripts/route-smoke.mjs
+          node packages/docker/scripts/client-smoke.mjs
       - name: Publish to npm
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

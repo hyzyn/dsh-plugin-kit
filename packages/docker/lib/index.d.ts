@@ -66,12 +66,30 @@ interface LiveConfig {
 export declare function sseFrame(event: string, data: unknown): string;
 /** 清洗一份 targets 输入（settings 存储 / 热更新路径共用）。 */
 export declare function sanitizeTargets(input: unknown): DockerTarget[] | undefined;
-/** 清洗一份 hostKeys 输入。 */
+/**
+ * 清洗一份 hostKeys 输入（settings 存储 / 热更新 / 种子复制共用）。
+ *
+ * 同时接受两种形状（D03）：
+ *   - tty 0.19.0+ 的 `{host, port, fingerprints: [...]}`（多指纹集合）；
+ *   - docker 0.6.x 自己落盘的 `{host, port, fingerprint}`（迁移输入）。
+ * host 统一 trim + 小写（与 tty 的落盘口径一致，否则种子命中与否取决于大小写），
+ * 同一 host:port 的多条记录合并成一组指纹。
+ */
 export declare function sanitizeHostKeys(input: unknown): HostKeyRecord[] | undefined;
+/**
+ * hostKeys **并集**合并（D10）：客户端表单快照回传的表不得整表覆盖 TOFU 运行期
+ * 新增的记录——面板一次无关保存就把钉扎回退掉，指纹变更检测随之失效。按
+ * host:port 合并指纹集合；删除某条记录走显式的 `hostKeysRemove`。
+ */
+export declare function mergeHostKeys(base: HostKeyRecord[], incoming: unknown): HostKeyRecord[];
 /**
  * 合并凭证：配置卡片从不回显密码 / 口令（只回 passwordSet），因此浏览器提交的
  * targets 里往往**没有** password/passphrase 字段。按目标名把已有值补回来，
  * 避免「改个名字就把密码清了」。（显式传空字符串仍然按清空处理。）
+ *
+ * 改名的目标按**连接身份**（book / host / port / username / auth / keyPath）认领
+ * 旧凭证（D15）：只按名字找的话，改名 = 凭证凭空消失。身份对不上就不继承——
+ * 「删一个目标、另建一个无关目标」不应该串密码，宁缺勿错。
  */
 export declare function mergeTargetSecrets(prev: DockerTarget[], incoming: unknown): unknown;
 /** 把一份任意来源的配置归一成 LiveConfig。 */

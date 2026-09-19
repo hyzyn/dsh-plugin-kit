@@ -885,6 +885,7 @@
   align-items: center;
   gap: var(--dk-gap-xs);
   flex: 0 0 auto;
+  flex-wrap: wrap; /* 窄面板下过滤行换行，而不是把右侧控件裁掉（D60） */
   padding: 0 var(--dk-gap-lg);
   border-bottom: 1px solid var(--dk-border);
 }
@@ -895,6 +896,7 @@
   align-items: center;
   gap: var(--dk-gap-md);
   flex: 1 1 auto;
+  flex-wrap: wrap; /* LINES + 三个 pill + 级别 + 两个导出 chip + 计数槽放不下时换行（D60） */
   min-width: 0;
   /* 右侧给计数留固定槽（92px ≈ 4 位数 + 「行匹配」），输入框宽度因此恒定 */
   padding: var(--dk-gap-xs) 92px var(--dk-gap-xs) 0;
@@ -1055,6 +1057,8 @@
   display: flex;
   flex: 1 1 200px;
   min-width: 0;
+  /* 换行后唯一可缩的是输入框：给个下限，别在窄面板塌成 0 宽（D60） */
+  min-width: 140px;
 }
 
 .dk_filterInput {
@@ -1112,6 +1116,22 @@
 .dk_logLine {
   white-space: pre-wrap;
   word-break: break-word;
+  /*
+   * 这里**刻意不用** content-visibility / contain-intrinsic-size（D91）。
+   *
+   * D63 曾用 content-visibility 跳过视口外行的布局绘制，并用 contain-intrinsic-size
+   * 给未渲染的行兜一个估算高度（19px）；代价是 `scrollHeight` 从此变成**估算值** ——
+   * 未渲染行按 19px 算，而折长的行实际 38px 起。FOLLOW 的整套贴底判定都建立在精确
+   * 高度上：
+   *   body.scrollTop = body.scrollHeight                                    （贴底）
+   *   scrollHeight - scrollTop - clientHeight < 24                          （判断用户是否上滚）
+   * 结果是贴底到不了底、自动跟随被误判成「用户上滚了」而静默停止、「回到底部」也回不到底 ——
+   * FOLLOW 的全部价值（贴着看最新行）直接归零，单容器与聚合两条路径同时中招。
+   *
+   * 于是 D63 的性能优化只保留 `logStats` 的 useMemo（见 index.js 的 logStatsValue），
+   * 恢复精确的 scrollHeight；真窗口化（DOM 节点数与缓冲行数解耦，不再依赖估算高度）
+   * 见 DEFECTS.md 待办「日志渲染性能（D63 的根治）」，落地前不要在这里再开 content-visibility。
+   */
 }
 
 .dk_logLine mark {
@@ -1233,7 +1253,9 @@
 }
 
 .dk_kvKey { color: var(--dk-label-3); }
-.dk_kvVal { color: var(--dk-label); word-break: break-all; }
+/* pre-line（D59）：多行值（多挂载 / 多网络 / 多标签）保留换行，仍可自动折行——
+   默认 normal 会把 '\n' 折叠成空格，多个条目挤成一行难以分辨边界 */
+.dk_kvVal { color: var(--dk-label); word-break: break-all; white-space: pre-line; }
 .dk_kvValMono { font-family: var(--dk-mono); }
 
 /* 日志 */

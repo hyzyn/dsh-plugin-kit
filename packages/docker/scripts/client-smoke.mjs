@@ -35,12 +35,33 @@ function decodeBundle(text) {
 }
 
 const results = []
+/*
+ * 看门狗（D71）：任一用例挂起不该把整个脚本永久挂住（CI 会一直转到超时被杀）。
+ * 两层：单用例 15s（挂起的用例标失败，其余继续跑）+ 全局 90s（兜底，直接退出 1）。
+ */
+// 25s > ssh 建连超时 20s（D122）：否则「目标不回 RST」的环境里，
+// 用例会被看门狗报成「用例超时」，把真因盖住
+const CASE_TIMEOUT_MS = 25_000
+const WATCHDOG_MS = 90_000
+const watchdog = setTimeout(() => {
+  const last = [...results].reverse().find((result) => result.ok)
+  console.error(`\n[dsh-docker] 看门狗超时（${String(WATCHDOG_MS / 1000)}s），脚本挂起；最后通过的用例：${last === undefined ? '(无)' : last.name}`)
+  process.exit(1)
+}, WATCHDOG_MS)
 async function test(name, fn) {
+  let timer = null
   try {
-    await fn()
+    await Promise.race([
+      Promise.resolve().then(fn),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`用例超时（${String(CASE_TIMEOUT_MS / 1000)}s）`)), CASE_TIMEOUT_MS)
+      }),
+    ])
     results.push({ name, ok: true })
   } catch (error) {
     results.push({ name, ok: false, message: error instanceof Error ? error.message : String(error) })
+  } finally {
+    if (timer !== null) clearTimeout(timer)
   }
 }
 
@@ -959,22 +980,24 @@ await test('按条件一键选择：preset 判定 / 计数截断 / 上限语义'
   assert.equal(pick.presetCounts(visible, [], null, 8).some((item) => item.key === 'sameImage'), false)
 })
 
-await test('聚合日志：暂停期间的缓冲合并（环形上限、不丢行）', () => {
+await test('聚合日志：暂停期间的缓冲合并（环形上限、不丢行、越界带 dropped 标志）', () => {
   const exports_ = registration.factory((spec) => SEED[spec])
   const agg = exports_.__aggLogs
   assert.ok(agg !== undefined && typeof agg.mergeBuffered === 'function', '缺少 __aggLogs 测试缝')
   const entries = [{ service: 'a', text: '1' }, { service: 'a', text: '2' }]
-  // 无缓冲：原样返回（同一引用，避免无谓重渲染）
-  assert.equal(agg.mergeBuffered(entries, [], 5000), entries)
+  // 无缓冲：原样返回（同一引用，避免无谓重渲染）且无截断
+  assert.deepEqual(agg.mergeBuffered(entries, [], 5000), { entries, dropped: false })
   // 有缓冲：按到达顺序追加在后
   const merged = agg.mergeBuffered(entries, [{ service: 'b', text: '3' }], 5000)
-  assert.deepEqual(merged.map((row) => row.text), ['1', '2', '3'])
-  // 超过上限：丢最旧、保最新（与 FOLLOW 的环形语义一致）
+  assert.deepEqual(merged.entries.map((row) => row.text), ['1', '2', '3'])
+  assert.equal(merged.dropped, false)
+  // 超过上限：丢最旧、保最新（与 FOLLOW 的环形语义一致），并置 dropped（D57）
   const many = Array.from({ length: 5 }, (_, index) => ({ service: 'a', text: String(index) }))
   // 旧 1 行 + 新 5 行 = 6 行，上限 3 → 保留最新 3 行（[2,3,4]）
   const capped = agg.mergeBuffered([{ service: 'a', text: 'old' }], many, 3)
-  assert.equal(capped.length, 3)
-  assert.deepEqual(capped.map((row) => row.text), ['2', '3', '4'])
+  assert.equal(capped.entries.length, 3)
+  assert.deepEqual(capped.entries.map((row) => row.text), ['2', '3', '4'])
+  assert.equal(capped.dropped, true)
 })
 
 await test('聚合日志增强：时间戳解析 / 级别过滤 / 按时间合并 / 导出', () => {
@@ -1024,6 +1047,14 @@ await test('聚合日志增强：时间戳解析 / 级别过滤 / 按时间合�
     { service: 'a', text: 'y', ts: 100 },
   ]
   assert.deepEqual(agg.orderByTs(withNull).map((row) => row.text), ['y', 'x', 'no-ts'])
+  // 窗口首行是无前缀续行时，继承**窗口外**前一行的时序种子（D56）：
+  // 它属于 400 那条记录，不能因为 carried 初值 0 被排到 ts=300 的行前面
+  const windowHead = [
+    { service: 'b', text: 'no-ts-head', ts: null },
+    { service: 'a', text: 'x', ts: 300 },
+  ]
+  assert.deepEqual(agg.orderByTs(windowHead, 400).map((row) => row.text), ['x', 'no-ts-head'])
+  assert.deepEqual(agg.orderByTs(windowHead).map((row) => row.text), ['no-ts-head', 'x'], '不传种子时是旧缺陷形态（续行被甩到窗口最前）')
 
   // 级别过滤：ERROR+ 只留 ERROR/FATAL 与**无级别前缀**的行（未知级别不误杀）
   const mixed = [
@@ -1216,7 +1247,7 @@ await test('日志 → 会话桥：右键菜单 / 诊断包 / 投递面装配进
   assert.ok(code.includes('inject(["sessions"]') || code.includes("inject(['sessions']"), 'sessions 未按可选注入挂载')
   // esbuild 默认 charset=ascii：中文在 bundle 里是 \uXXXX，先解码再断言
   const decoded = code.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
-  for (const label of ['问 Agent', '直接发送到当前会话', '填入输入框，我先改改', '内容会进入模型上下文']) {
+  for (const label of ['问 Agent', '直接发送到当前会话', '填入输入框，我先改改', '不构成对你的指令']) {
     assert.ok(decoded.includes(label), '缺少文案：' + label)
   }
   // 拿不到会话时菜单项必须能置灰：降级原因要有可显示文案
@@ -1767,6 +1798,40 @@ await test('列表写入闸：被新请求取代的那一代作废（切目标 /
 })
 
 /* ------------------------------------------------------------------ *
+ * 总览：/attention 的 total / truncated / degraded（D101）
+ * ------------------------------------------------------------------ */
+
+await test('总览：需关注计数用服务端 total，而不是被 limit 截断后的条数（D101）', () => {
+  const { data } = overviewApi()
+  const items = [{ name: 'a', reasons: ['oom'] }]
+  const groups = [ovGroup('prod', [], { attention: items, attentionTotal: 320, attentionTruncated: true })]
+  const value = data(groups)
+  assert.equal(value.cards[0].attention, 320, '计数必须是 total（320），不是 items.length（1）')
+  assert.equal(value.cards[0].attentionTruncated, true)
+  assert.equal(value.cards[0].attentionApprox, false, '有权威结果时不该标成摘要口径')
+  assert.match(value.attentionNotice, /实际共 320 条/)
+  assert.match(value.attentionNotice, /只列出前 1 条/)
+  // 异常表仍按实际行数渲染（与计数卡的差异由上面的提示解释）
+  assert.equal(value.rows.length, 1)
+})
+
+await test('总览：无 total 的旧宿主回落 items.length，行为与 D101 之前一致', () => {
+  const { data } = overviewApi()
+  const items = [{ name: 'a', reasons: ['oom'] }, { name: 'b', reasons: ['dead'] }]
+  const value = data([ovGroup('prod', [], { attention: items })])
+  assert.equal(value.cards[0].attention, 2)
+  assert.equal(value.cards[0].attentionTruncated, false)
+  assert.equal(value.attentionNotice, '')
+})
+
+await test('总览：degraded 目标出提示（inspect 降级 / 候选超预算）（D101）', () => {
+  const { data } = overviewApi()
+  const value = data([ovGroup('prod', [], { attention: [{ name: 'a', reasons: ['exit-nonzero'] }], attentionTotal: 1, attentionDegraded: true })])
+  assert.equal(value.cards[0].attentionDegraded, true)
+  assert.match(value.attentionNotice, /已降级/)
+})
+
+/* ------------------------------------------------------------------ *
  * 结果
  * ------------------------------------------------------------------ */
 
@@ -1780,4 +1845,7 @@ for (const result of results) {
   }
 }
 console.log(`\n[dsh-docker] client-smoke: ${String(results.length - failed)}/${String(results.length)} 通过`)
-if (failed > 0) process.exit(1)
+clearTimeout(watchdog)
+// 成功路径也要显式退出（D121）：主体结束后仍有周期句柄漏着的话，
+// 关掉看门狗就再也没人兜底了 —— 直接 exit 既保证退出也省掉排空等待
+process.exit(failed > 0 ? 1 : 0)

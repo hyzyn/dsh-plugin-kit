@@ -384,7 +384,7 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
 
 | 项 | 默认 | 说明 |
 | --- | --- | --- |
-| `enabled` | true | 关闭整个插件（**需重启 `dsh web` 生效**，与 tty 同语义） |
+| `enabled` | true | 关闭整个插件（**保存即热生效**：工具立即注销、公告撤下、除 `/config` 外的数据路由 403；`/config` 始终可读写——设置卡片就是重新启用的入口。与 tty 不同：tty 是重启生效） |
 | `announceToAgent` | true | 是否向 agent 注入能力公告（systemPrompt section `plugin:dsh-docker`） |
 | `dockerBin` | `docker` | docker CLI 可执行名或路径（podman 可填 `podman`）；只允许字母、数字与 `_ . / \ : -` 及内部空格，且不能以 `-` 开头（**Windows 盘符与 `\` 必须放行**，否则任何绝对路径都填不进来） |
 | `allowMutations` | false | 允许**变更操作**：容器 start / stop / restart / remove、镜像删除 / dangling 清理 / 拉取（面板按钮与 `docker_action`、`docker_image_remove`、`docker_image_prune`、`docker_image_pull` 工具；关闭时 `/action`、`/images/remove`、`/images/prune`、`/images/pull/stream` 返回 403，对应工具不注册） |
@@ -432,10 +432,12 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
 | --- | --- |
 | `host` | 主机名或 IP（必填） |
 | `port` | 端口，默认 22（按 host:port 唯一） |
-| `fingerprint` | `hostHash: 'sha256'` 回调收到的原样十六进制指纹（必填） |
+| `fingerprints` | **指纹集合**（必填，至少一条）：`hostHash: 'sha256'` 回调收到的原样十六进制指纹。同一 host:port 可含多把主机密钥（rsa / ed25519 …），命中任意一条即视为匹配 |
+| `fingerprint` | 旧版单指纹字段（字符串）：只作迁移输入，清洗时并入 `fingerprints`，新配置不要再用 |
 
 首次连接自动记录并落盘；之后每次连接必须匹配，**指纹变更直接拒绝连接**，
-错误信息带「删除该主机记录再重连」的指引。记录列表在设置卡片里可删除重置。
+错误信息带「删除该主机记录再重连」的指引。记录列表在设置卡片里可删除重置
+（删除会以显式的 `hostKeysRemove: [{host, port}]` 提交，不会被并集合并悄悄撤销）。
 
 ## agent 工具
 
@@ -470,9 +472,17 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
 
 ## HTTP 路由（`/api/dsh-docker` 前缀，全部 loopback 围栏）
 
-围栏校验 `remoteAddress`（127.0.0.1 / ::1 / ::ffff:127.0.0.1）、`Host`、
-`Origin` 与 `sec-fetch-site`；非本机请求一律 403 `forbidden: loopback-only`。
-请求体上限 1MB，响应统一 `application/json` + `referrer-policy: no-referrer`。
+围栏校验 `remoteAddress`（整个 127/8 + `::1` + `::ffff:` 映射）、`Host`（字面量环回、`localhost`，
+或**解析到本机的主机名 / `/etc/hosts` 别名**，解析带 500ms 超时与 60s 缓存）、`Origin` 与 `sec-fetch-site`；
+非本机请求一律 403 `forbidden: loopback-only`。请求体上限 1MB，响应统一 `application/json` +
+`referrer-policy: no-referrer`。
+
+**除 loopback 之外还有一道「同源证明」**：四条 SSE（`/logs/stream`、`/stats/stream`、`/events/stream`、
+`/images/pull/stream`）与八条变更子路由（`/action`、`/images/remove|prune`、`/networks/remove|prune`、
+`/volumes/remove|prune`、`/exec`）要求请求带 `Origin: <同源>` 或 `Sec-Fetch-Site: same-origin`，
+否则 403 `缺少同源证明`。这是为了挡住「恶意页面用 `<img src=.../images/pull/stream>` 触发一次真实拉取」
+这类跨站副作用；curl / 老 Safari / 部分 WebView 不带这两个头时会撞上它（浏览器正常使用不受影响）。
+只读路由不要求同源证明。
 
 | 路由 | 方法 | 请求体 | 返回 |
 | --- | --- | --- | --- |
@@ -481,7 +491,7 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
 | `/targets` | GET / POST | — | `{ok:true, targets:[{name, kind, label?\|error?}]}` |
 | `/probe` | POST | `{target?}` | `{ok:true, probe:{ok, bin, serverVersion, error, target}}` |
 | `/containers` | POST | `{target?, all?}` | `{ok:true, containers: ContainerSummary[]}`；`target:'*'` 时返回 `{ok:true, groups:[{target,label,ok,error?,data?}]}`（跨目标并发聚合） |
-| `/attention` | POST | `{target?}` | 单目标 `{ok:true, items: AttentionItem[]}`；`target:'*'` 时 `{ok:true, groups}` |
+| `/attention` | POST | `{target?, limit?}` | 单目标 `{ok:true, items: AttentionItem[], total, truncated, degraded}`（`limit` 在过滤 + 严重度排序**之后**生效，默认 100、上限 500）；`target:'*'` 时 `{ok:true, groups:[{target,label,ok,error?,data:{items,total,truncated,degraded}}]}` |
 | `/inspect` | POST | `{target?, id}` | `{ok:true, details: ContainerDetail[]}` |
 | `/stats` | POST | `{target?, ids?: string[]}` | `{ok:true, stats: ContainerStats[]}` |
 | `/logs` | POST | `{target?, id, tail?, timestamps?, since?}` | `{ok:true, logs:{id, text, truncated}}` |
@@ -520,7 +530,7 @@ abort）、客户端断开静默中止。各自只差执行器与结束原因：
 | 事件 | data | 说明 |
 | --- | --- | --- |
 | `line` | `{"d":"..."}` / `{"e":"..."}` | stdout / stderr 分片（不保证按行切，客户端自行拼行）。日志流与拉取流用 |
-| `stats` | `ContainerStats` | 统计流专用：每秒每个容器一帧，字段与 `/`stats` 快照完全一致。服务端按**扁平 `{...}` 抽取**（`docker stats` 即便 stdout 是管道也走 TTY 渲染器，帧里混着 `ESC[H/ESC[K/ESC[J`，按行解析会整行丢掉）并折叠同一采样的重复渲染，客户端不必再解析 docker 的 PascalCase 字符串 |
+| `stats` | `ContainerStats` | 统计流专用：每秒每个容器一帧，字段与 `/stats` 快照完全一致。服务端按**扁平 `{...}` 抽取**（`docker stats` 即便 stdout 是管道也走 TTY 渲染器，帧里混着 `ESC[H/ESC[K/ESC[J`，按行解析会整行丢掉）并折叠同一采样的重复渲染，客户端不必再解析 docker 的 PascalCase 字符串 |
 | `event` | `{action, name, image, composeProject?, time?, exitCode?}` | 事件流专用：一帧一个容器事件（白名单外的事件行在服务端就丢了；值为 null 的字段省略） |
 | `end` | `{"reason":"container-exit"\|"stats-exit"\|"events-exit"\|"pull-exit","code":N, ...}` | 执行器自然退出。日志流附容器退出码、统计流 reason=`stats-exit`、事件流 reason=`events-exit`、拉取流附 `ref` |
 | `error` | `{"message":"..."}` | 参数 / 执行失败，随后关闭；连接层断路不会发这个事件 |
@@ -638,7 +648,7 @@ abort）、客户端断开静默中止。各自只差执行器与结束原因：
   （真机实测：命名卷留着，回 `Total reclaimed space: 0B`；匿名卷被删并列出名字）。
   这与本插件「刻意不加 `--all`、避免误删」的取向一致 —— 要删命名卷请用
   `/volumes/remove`（面板的卷删除）。
-- **podman 兼容靠 `dockerBin`**：填 `podman` 即可跑，但 `stats` 与- **podman 兼容靠 `dockerBin`**：填 `podman` 即可跑，但 `stats` 与
+- **podman 兼容靠 `dockerBin`**：填 `podman` 即可跑，但 `stats` 与
   `--format '{{json .}}'` 的字段和输出格式与 docker 有差异，只能依赖解析器
   的降级路径，未逐项验证。
 - **没有镜像构建 / Compose 编排变更**：镜像支持拉取 / 删除 / 清理 dangling，
@@ -661,9 +671,10 @@ abort）、客户端断开静默中止。各自只差执行器与结束原因：
   主机没有对应的 `kind=ssh` 目标（连接簿名或 `host:port` 都匹配不上），点开只会看到
   「尚未配置为 Docker 目标」的提示而不是容器列表；本地标签的连接栏本身隐藏。
   目标增删后最多 30 秒内刷新（设置卡片保存会立即刷新）。
-- **`enabled: false` 需重启**：关闭插件不会卸载已注册的路由与工具（进行中的
-  长流——日志 / 统计 / 拉取——会被立即收尾，但路由本身仍在），重启 `dsh web`
-  才彻底停用。
+- **`enabled: false` 是热生效**：保存后工具立即注销、公告撤下、除 `/config` 外的
+  数据路由一律 403（进行中的长流——日志 / 统计 / 拉取——也会被立即收尾）。
+  路由对象本身不卸载、靠 403 拦截；`/config` 始终可读写，设置卡片就是重新
+  启用的入口，无需重启 `dsh web`。
 - **变更操作无独立审计日志**：只有 docker 自身的记录与宿主 `ctx.logger` 的
   常规输出。
 
@@ -742,8 +753,8 @@ abort）、客户端断开静默中止。各自只差执行器与结束原因：
 ```bash
 pnpm --filter @hyzyn/dsh-docker build       # tsc → lib/（宿主半体）+ esbuild → client.js（浏览器半体）
 pnpm --filter @hyzyn/dsh-docker typecheck
-pnpm --filter @hyzyn/dsh-docker smoke       # 三套离线回归，都不需要 docker daemon
-pnpm test                                    # 仓库级 vitest（含本包 logs-stream / streams / ssh-stream-budget 三套）
+pnpm --filter @hyzyn/dsh-docker smoke       # 三套离线回归，都不需要 docker daemon（项数以脚本尾部自报为准）
+pnpm test                                    # 仓库级 vitest（含本包 config-route / current-session / session-target / logs-stream / streams / ssh-stream-budget / ssh-connect 共七套）
 ```
 
 > **改了哪一半、怎么才生效**（踩过两次的坑）：
@@ -758,7 +769,7 @@ pnpm test                                    # 仓库级 vitest（含本包 logs
 > 逻辑全都不生效，看起来像「改了没用」。判断依据是**文案**——宿主侧新增的提示语如果没出现，
 > 那就是旧进程。
 
-`scripts/smoke.mjs`（35 项，读取 `lib/` 构建产物）覆盖纯逻辑：ps 解析（字段映射 /
+`scripts/smoke.mjs`（读取 `lib/` 构建产物，项数以脚本尾部自报为准）覆盖纯逻辑：ps 解析（字段映射 /
 compose 标签 / 端口 / `State` 缺失推导 / 噪声行 / JSON 数组）、端口串解析与去重、
 stats 解析（百分比 / 内存 / IO / PIDs）、size 与 percent 的异常输入、images 解析
 （dangling）、**image inspect / history（JSON 与纯文本表格两条路径）解析**、
@@ -769,7 +780,7 @@ inspect 解析（状态 / 健康 / 退出码 / 挂载 / 网络 / 端口 / 缺字
 `normalizeConfig` 默认值与夹紧、`sanitizeTargets` / `sanitizeHostKeys`、
 `resolveTarget` 的四种路径、`mergeTargetSecrets` 的凭证保留语义。
 
-`scripts/route-smoke.mjs`（54 项）用**假 cordis ctx + 假 docker CLI 脚本**跑端到端：
+`scripts/route-smoke.mjs` 用**假 cordis ctx + 假 docker CLI 脚本**跑端到端：
 插件挂载（settings / 工具 / 路由 / 能力公告注册）、**26 条路由**的实际调用与返回
 （含 `/logs/stream`、`/stats/stream`、`/events/stream`、`/images/pull/stream` 四条 SSE
 的事件序列与参数校验，事件流另断噪音被白名单丢掉）、`docker_events` 工具的快照
@@ -779,7 +790,7 @@ inspect 解析（状态 / 健康 / 退出码 / 挂载 / 网络 / 端口 / 缺字
 loopback 403（含三条流路由）、容器名 / 镜像引用注入尝试被白名单拒绝、省略
 `target` 的回落与多目标报错、禁用后流路由 403。
 
-`scripts/client-smoke.mjs`（27 项）在 Node 里用最小 DOM / React 桩执行构建产物
+`scripts/client-smoke.mjs` 在 Node 里用最小 DOM / React 桩执行构建产物
 `client.js`：验证注册 id 与 factory 形状、只 require 平台 seed 提供的模块
 （`react` / `react/jsx-runtime` / `react-dom/client`）、`apply` 注册的 settings
 卡片 key 等于命名空间 `docker`、找不到宿主侧边栏时安静降级且卸载可重复调用，ttyConnbar 集成的四条路径（连接簿名命中 / host:port 命中 / 未配置主机不加按钮 / tty 未安装静默跳过），FOLLOW 的 SSE 订阅与「回到底部」交互（静态断言），**镜像详情 / 拉取流 / 删除 / prune 入口**、**统计 FOLLOW + sparkline 钩子**、**Compose 分组与聚合日志**、**「活动」条装配 + 事件环形缓冲 / 动作标签 / 防抖**（纯逻辑经 `__events` 测试缝），以及侧边栏折叠态（`data-sidebar-collapsed`）隐藏入口标签的样式规则。
@@ -814,7 +825,9 @@ network / volume 的 ls·inspect 解析容错（字符串布尔、缺 `Mountpoin
    日志正常；首次连接日志里出现「已记录 host key 指纹（TOFU）」，第二次不再
    提示；手动改掉 `hostKeys` 里的指纹后重连，应**被拒绝**并给出重置指引。
 3. **只读拦截**：两个开关都关时，`/action`、`/exec`、`/images/remove`、
-   `/images/prune`、`/images/pull/stream` 全部 403；agent 侧只有 7 个只读工具，
+   `/images/prune`、`/images/pull/stream` 全部 403；agent 侧恒注册 11 个只读工具
+   （`docker_targets` / `ps` / `attention` / `inspect` / `logs` / `stats` / `events` /
+   `images` / `image_inspect` / `networks` / `volumes`，数量以工具表为准），
    面板的启停删 / 镜像删除 / 清理 / 拉取按钮置灰。打开「允许变更操作」后这些
    路由与工具立即出现（无需重启）。
 4. **日志 / 统计 / 镜像**：`tail` 与 `timestamps` / `since` 生效；统计显示

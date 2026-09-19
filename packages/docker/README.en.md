@@ -430,7 +430,7 @@ return 400).
 
 | Item | Default | Description |
 | --- | --- | --- |
-| `enabled` | true | disables the whole plugin (**takes effect after restarting `dsh web`**, same semantics as tty) |
+| `enabled` | true | disables the whole plugin (**takes effect on save**: tools are unregistered immediately, the announcement is withdrawn, and all data routes except `/config` return 403; `/config` stays readable and writable — the settings card is the way back in. Unlike tty, which needs a restart) |
 | `announceToAgent` | true | whether to inject a capability announcement into the agent (systemPrompt section `plugin:dsh-docker`) |
 | `dockerBin` | `docker` | the docker CLI executable name or path (`podman` works here); only letters, digits and `_ . / \ : -` plus interior spaces are allowed, and it may not start with `-` (**Windows drive letters and `\` must be allowed**, otherwise no absolute path can be entered at all) |
 | `allowMutations` | false | allows **mutating operations**: container start / stop / restart / remove, image removal / dangling pruning / pulling (the panel buttons and the `docker_action`, `docker_image_remove`, `docker_image_prune`, `docker_image_pull` tools; while off, `/action`, `/images/remove`, `/images/prune`, `/images/pull/stream` return 403 and the corresponding tools are not registered) |
@@ -478,11 +478,13 @@ the config snapshot only provides the two booleans `passwordSet` / `passphraseSe
 | --- | --- |
 | `host` | hostname or IP (required) |
 | `port` | port, default 22 (unique per host:port) |
-| `fingerprint` | the verbatim hex fingerprint received by the `hostHash: 'sha256'` callback (required) |
+| `fingerprints` | **fingerprint set** (required, at least one): the verbatim hex fingerprints received by the `hostHash: 'sha256'` callback. One host:port may hold several host keys (rsa / ed25519 …); matching any of them counts as a match |
+| `fingerprint` | legacy single-fingerprint field (string): migration input only, merged into `fingerprints` on load; do not use it in new configs |
 
 The first connection is recorded automatically and written to disk; every later connection must match, and
 **a changed fingerprint rejects the connection outright**, with guidance in the error to "delete this host's record
-and reconnect". The record list can be deleted / reset in the settings card.
+and reconnect". The record list can be deleted / reset in the settings card (deletion is submitted as the explicit
+`hostKeysRemove: [{host, port}]`, so a union merge cannot silently undo it).
 
 ## Agent tools
 
@@ -518,9 +520,19 @@ and reconnect". The record list can be deleted / reset in the settings card.
 
 ## HTTP routes (under the `/api/dsh-docker` prefix, all behind the loopback fence)
 
-The fence validates `remoteAddress` (127.0.0.1 / ::1 / ::ffff:127.0.0.1), `Host`,
-`Origin` and `sec-fetch-site`; any non-local request gets 403 `forbidden: loopback-only`.
-The request body is capped at 1MB, and responses are uniformly `application/json` + `referrer-policy: no-referrer`.
+The fence validates `remoteAddress` (the whole 127/8 range + `::1` + `::ffff:` mappings), `Host` (literal
+loopback, `localhost`, or a hostname / `/etc/hosts` alias that **resolves to this machine** — resolution has a
+500ms timeout and a 60s cache), `Origin` and `sec-fetch-site`; any non-local request gets 403
+`forbidden: loopback-only`. The request body is capped at 1MB, and responses are uniformly `application/json` +
+`referrer-policy: no-referrer`.
+
+**On top of loopback there is a second gate, the "same-origin proof"**: the four SSE streams (`/logs/stream`,
+`/stats/stream`, `/events/stream`, `/images/pull/stream`) and eight mutating sub-routes (`/action`,
+`/images/remove|prune`, `/networks/remove|prune`, `/volumes/remove|prune`, `/exec`) require either
+`Origin: <same origin>` or `Sec-Fetch-Site: same-origin`, otherwise 403 `缺少同源证明` (missing same-origin
+proof). This blocks cross-site side effects such as a malicious page using
+`<img src=.../images/pull/stream>` to trigger a real pull; curl, old Safari and some WebViews do not send those
+headers and will hit it (normal browser use is unaffected). Read-only routes do not require the proof.
 
 | Route | Method | Request body | Response |
 | --- | --- | --- | --- |
@@ -529,7 +541,7 @@ The request body is capped at 1MB, and responses are uniformly `application/json
 | `/targets` | GET / POST | — | `{ok:true, targets:[{name, kind, label?\|error?}]}` |
 | `/probe` | POST | `{target?}` | `{ok:true, probe:{ok, bin, serverVersion, error, target}}` |
 | `/containers` | POST | `{target?, all?}` | `{ok:true, containers: ContainerSummary[]}`; with `target:'*'` it returns `{ok:true, groups:[{target,label,ok,error?,data?}]}` (concurrent cross-target aggregation) |
-| `/attention` | POST | `{target?}` | for a single target `{ok:true, items: AttentionItem[]}`; with `target:'*'` `{ok:true, groups}` |
+| `/attention` | POST | `{target?, limit?}` | for a single target `{ok:true, items: AttentionItem[], total, truncated, degraded}` (`limit` applies **after** filtering + severity sorting; default 100, max 500); with `target:'*'` `{ok:true, groups:[{target,label,ok,error?,data:{items,total,truncated,degraded}}]}` |
 | `/inspect` | POST | `{target?, id}` | `{ok:true, details: ContainerDetail[]}` |
 | `/stats` | POST | `{target?, ids?: string[]}` | `{ok:true, stats: ContainerStats[]}` |
 | `/logs` | POST | `{target?, id, tail?, timestamps?, since?}` | `{ok:true, logs:{id, text, truncated}}` |
@@ -685,7 +697,7 @@ read-only first:
   appears in `docker volume ls -f dangling=true`, and `docker volume prune -f` reports `Total reclaimed space: 0B`
   (measured; an anonymous volume, by contrast, is deleted and named in the output). That matches this plugin's
   deliberate refusal to pass `--all`; use `/volumes/remove` (the panel's volume delete) for named volumes.
-- **Podman compatibility through `dockerBin`**: filling in `podman` runs, but the fields and output formats of- **Podman compatibility through `dockerBin`**: filling in `podman` runs, but the fields and output formats of
+- **Podman compatibility through `dockerBin`**: filling in `podman` runs, but the fields and output formats of
   `stats` and `--format '{{json .}}'` differ from docker's, so only the parser's degradation paths are relied on;
   this has not been verified item by item.
 - **No image builds / Compose orchestration changes**: images support pulling / removal / dangling pruning, but there
@@ -714,9 +726,10 @@ read-only first:
   connection bar on local tabs is hidden entirely.
   Target additions and removals are picked up within at most 30 seconds (saving the settings card refreshes
   immediately).
-- **`enabled: false` needs a restart**: disabling the plugin does not unload the registered routes and tools (long
-  streams in progress — logs / stats / pulling — are wrapped up immediately, but the routes themselves remain), and
-  only restarting `dsh web` disables it completely.
+- **`enabled: false` takes effect on save**: after saving, tools are unregistered immediately, the announcement is
+  withdrawn, and data routes other than `/config` return 403 (long streams in progress — logs / stats / pulling —
+  are wrapped up immediately too). The route objects themselves are not unloaded; they are blocked by the 403, and
+  `/config` stays readable and writable — the settings card is the way back in, with no restart of `dsh web` needed.
 - **Mutating operations have no separate audit log**: only docker's own records and the host `ctx.logger`'s
   ordinary output.
 
@@ -797,10 +810,10 @@ Host half (src/index.ts)
 pnpm --filter @hyzyn/dsh-docker build       # tsc → lib/ (host half) + esbuild → client.js (browser half)
 pnpm --filter @hyzyn/dsh-docker typecheck
 pnpm --filter @hyzyn/dsh-docker smoke       # three offline regression suites, none needing a docker daemon
-pnpm test                                    # repo-level vitest (including this package's logs-stream / streams suites)
+pnpm test                                    # repo-level vitest (including this package's config-route / current-session / session-target / logs-stream / streams / ssh-stream-budget suites — six in total)
 ```
 
-`scripts/smoke.mjs` (33 items, reading the `lib/` build output) covers pure logic: ps parsing (field mapping /
+`scripts/smoke.mjs` (reading the `lib/` build output; item counts are self-reported at the end of the script) covers pure logic: ps parsing (field mapping /
 compose labels / ports / deriving a missing `State` / noise lines / JSON arrays), port-string parsing and
 deduplication, stats parsing (percentages / memory / IO / PIDs), abnormal input for size and percent, images parsing
 (dangling), **image inspect / history parsing (both the JSON and the plain-text-table path)**,
@@ -811,7 +824,7 @@ injection)**, `assertBin`, `formatBytes`, `shJoin` escaping, `DockerApi`'s argv 
 `normalizeConfig` defaults and clamping, `sanitizeTargets` / `sanitizeHostKeys`,
 `resolveTarget`'s four paths, and `mergeTargetSecrets`' credential-preserving semantics.
 
-`scripts/route-smoke.mjs` (54 items) runs end to end with **a fake cordis ctx + a fake docker CLI script**: plugin
+`scripts/route-smoke.mjs` runs end to end with **a fake cordis ctx + a fake docker CLI script**: plugin
 mounting (settings / tools / routes / capability-announcement registration), the actual calls and returns of
 **26 routes** (including the event sequences and parameter validation of the four SSE streams `/logs/stream`,
 `/stats/stream`, `/events/stream`, `/images/pull/stream`, with the event stream additionally asserting that noise is
@@ -823,7 +836,7 @@ corresponding tools not being registered, immediate unlocking after the switches
 image references rejected by the allowlist when injection is attempted, the fallback when `target` is omitted and the
 error with several targets, and 403 on the stream routes after being disabled.
 
-`scripts/client-smoke.mjs` (27 items) executes the build artifact
+`scripts/client-smoke.mjs` executes the build artifact
 `client.js` in Node with minimal DOM / React stubs: verifying the registration id and factory shape, that it only
 requires modules provided by the platform seed
 (`react` / `react/jsx-runtime` / `react-dom/client`), that the settings card key registered by `apply` equals the
@@ -867,7 +880,9 @@ lines), and the gating of the eight `/networks` and `/volumes` endpoints (403 fo
    prompt again; after manually changing the fingerprint in `hostKeys` and reconnecting, the connection should
    **be rejected** with reset guidance.
 3. **Read-only interception**: with both switches off, `/action`, `/exec`, `/images/remove`,
-   `/images/prune`, `/images/pull/stream` all return 403; on the agent side there are only the 7 read-only tools, and
+   `/images/prune`, `/images/pull/stream` all return 403; on the agent side exactly 11 read-only tools are
+   registered (`docker_targets` / `ps` / `attention` / `inspect` / `logs` / `stats` / `events` / `images` /
+   `image_inspect` / `networks` / `volumes` — see the tool table for the authoritative list), and
    the panel's start / stop / remove, image removal, pruning and pull buttons are greyed out. After turning on
    "allow mutations" these routes and tools appear immediately (no restart needed).
 4. **Logs / stats / images**: `tail` and `timestamps` / `since` take effect; stats show

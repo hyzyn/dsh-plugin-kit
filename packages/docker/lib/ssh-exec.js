@@ -67,6 +67,11 @@ export function expandHome(path) {
         return homedir();
     if (path.startsWith('~/'))
         return join(homedir(), path.slice(2));
+    // `~user/...` 一律明确报错（D30）：原样返回会变成 readFileSync 的 ENOENT，路径还带着
+    // ~，用户容易误判成「文件真的不存在」。Windows 变量（%USERPROFILE%）不在展开范围。
+    if (path.startsWith('~')) {
+        throw new Error(`keyPath 仅支持 ~ 与 ~/ 展开（不支持 ${path.split(/[\\/]/)[0]}）；请写绝对路径或 ~/ 相对路径`);
+    }
     return path;
 }
 /** 展示用目标串：user@host（非默认端口时带 :port）。 */
@@ -82,14 +87,95 @@ export function sshTarget(spec) {
 export function shJoin(argv) {
     return argv.map((arg) => "'" + arg.replaceAll("'", "'\\''") + "'").join(' ');
 }
-/** 连接池键：同一主机同一账号复用一条 SSH 连接。 */
+/**
+ * 连接池键：同一主机同一账号复用一条 SSH 连接。
+ *
+ * host 要 trim + 小写（D111）：否则 `NAS.example` 与 `nas.example` 各建一条连接，而
+ * `MAX_STREAMS_PER_TARGET` 与 `shouldRecycleConn` 都是**按连接**计的 → 同一台主机的
+ * 长流额度被悄悄翻倍（恰好掩盖 D07 想暴露的 MaxSessions 问题）。口径与 TOFU 的
+ * hostVerifier（D03）保持一致：那里也用 `trim().toLowerCase()` 分组指纹。
+ */
 function poolKey(spec) {
-    return `${spec.username}@${spec.host}:${String(spec.port ?? 22)}`;
+    return `${spec.username}@${spec.host.trim().toLowerCase()}:${String(spec.port ?? 22)}`;
+}
+/**
+ * 有界输出收集器（短命令路径的 stdout / stderr 各持一个）。
+ *
+ * 为什么按字节收集、最后统一解码：逐 chunk `toString('utf8')` 会在 TCP 分片
+ * 正好落在多字节字符中间时产出 U+FFFD（D08）；长流路径早已用 StringDecoder，
+ * 这里把同样的解码方式带给一次性命令。
+ *
+ * 截断方向（D14）：`keepTail=false` 保留**头部**（JSONL 列表的前缀行可解析）；
+ * `keepTail=true` 保留**尾部**——logs 的最新行、pull 的 digest、prune 的总计
+ * 都在输出末尾，该丢的是头部。
+ */
+class ByteSink {
+    maxBytes;
+    keepTail;
+    chunks = [];
+    bytes = 0;
+    truncated = false;
+    constructor(maxBytes, keepTail) {
+        this.maxBytes = maxBytes;
+        this.keepTail = keepTail;
+    }
+    push(chunk) {
+        this.chunks.push(chunk);
+        this.bytes += chunk.length;
+        if (this.bytes <= this.maxBytes)
+            return;
+        this.truncated = true;
+        if (this.keepTail) {
+            let excess = this.bytes - this.maxBytes;
+            while (excess > 0 && this.chunks.length > 0) {
+                const head = this.chunks[0];
+                if (head.length <= excess) {
+                    excess -= head.length;
+                    this.chunks.shift();
+                }
+                else {
+                    this.chunks[0] = head.subarray(excess);
+                    excess = 0;
+                }
+            }
+        }
+        else {
+            let room = this.maxBytes;
+            const kept = [];
+            for (const item of this.chunks) {
+                if (room <= 0)
+                    break;
+                kept.push(room >= item.length ? item : item.subarray(0, room));
+                room -= item.length;
+            }
+            this.chunks = kept;
+        }
+        this.bytes = this.maxBytes;
+    }
+    /** 统一解码（调用方持有 decoder：跨 chunk 的多字节序列不会碎成 U+FFFD）。 */
+    decode(decoder) {
+        let text = '';
+        for (const chunk of this.chunks)
+            text += decoder.write(chunk);
+        return text + decoder.end();
+    }
 }
 const IDLE_MS = 120_000;
 const SWEEP_MS = 30_000;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_BYTES = 512 * 1024;
+/**
+ * SSH 建连超时（默认 20s）。
+ *
+ * `DSH_DOCKER_CONNECT_TIMEOUT_MS` 可覆盖，**只为测试与排障**：20s 这条路径没法在单测里等，
+ * 而「不可达目标（防火墙 DROP）」在真实网络里比 ECONNREFUSED 常见得多，D122 之前它在
+ * 脚本与单测里都没有回归。`acquire` 的兜底定时器与 `buildConnectConfig` 的 `readyTimeout`
+ * 共用它，避免两处漂移。
+ */
+function connectTimeoutMs() {
+    const raw = Number(process.env.DSH_DOCKER_CONNECT_TIMEOUT_MS);
+    return Number.isFinite(raw) && raw > 0 ? raw : 20_000;
+}
 /**
  * 每个 SSH 目标上同时可持有的**长流**上限。
  *
@@ -138,20 +224,26 @@ export function describeExecError(message) {
  * 而 `acquire()` 复用 memoized 的 `ready`、不会每次探活。这种时候唯一正确的动作是丢掉
  * 这条连接、重连一次再试；反过来，「命令返回非零」「镜像不存在」这类业务失败**绝不能**
  * 触发重连——那会把一次普通错误变成两条命令。
+ *
+ * 「Channel open failure / open failed」刻意**不在**传输层名单里：它是远端**拒绝开新
+ * 通道**，典型成因是同一连接的 MaxSessions 被长流占满——连接本身是健康的。把它当传输
+ * 错误会泄漏健康连接（摘出池却不关闭，keepalive 一直养着），还会把 `describeExecError`
+ * 补的可操作文案藏掉（重连后新连接额度是空的，命令反而成功）。见 D07。
  */
 export function isTransportError(message) {
     // 前两条是我们自己的包装文案：回调迟迟不来 = 这条连接已经不响应了
     if (/打开 channel 超时|SSH 连接超时/.test(message))
         return true;
-    return /Channel open failure|open failed|Not connected|connection lost|ECONNRESET|EPIPE|ETIMEDOUT|keepalive|No response from server/i.test(message);
+    return /Not connected|connection lost|ECONNRESET|EPIPE|ETIMEDOUT|keepalive|No response from server/i.test(message);
 }
 /**
  * 空闲回收判定：busy>0 的连接上挂着长流（docker logs --follow 可以几小时不结束），
- * 期间 lastUsed 不会刷新——若只看 idle 就会把正在推送的流掐断，必须先看 busy。
- * 抽成纯函数便于回归（sweeper 本体依赖定时器，难以直接驱动）。
+ * inflight>0 的连接上有一次性命令在跑（docker pull 默认 600s，期间没有任何请求
+ * 刷新 lastUsed）——两类都必须让空闲回收让路，否则在途命令会被 sweeper 掐断在半路
+ * （D01）。抽成纯函数便于回归（sweeper 本体依赖定时器，难以直接驱动）。
  */
 export function shouldRecycleConn(conn, now, idleMs = IDLE_MS) {
-    if (conn.busy > 0)
+    if (conn.busy > 0 || (conn.inflight ?? 0) > 0)
         return false;
     return now - conn.lastUsed >= idleMs;
 }
@@ -172,6 +264,9 @@ export class RemoteExec {
             this.sweeper = null;
         }
         for (const rt of this.conns.values()) {
+            // 先标记再关闭（D94）：建连途中的条目被 end() 后，它的 ready 仍会 resolve——
+            // 标记让 acquire() 认出「这条已被卸载摘掉」，改为关闭并 reject，不外泄脱管连接。
+            rt.disposed = true;
             try {
                 rt.client.end();
             }
@@ -188,69 +283,80 @@ export class RemoteExec {
         const maxBytes = options?.maxBytes ?? DEFAULT_MAX_BYTES;
         const started = Date.now();
         const channel = await this.openChannel(spec, command, timeoutMs, 0);
-        return await new Promise((resolve, reject) => {
-            let stdout = '';
-            let stderr = '';
-            let stdoutBytes = 0;
-            let stderrBytes = 0;
-            let truncated = false;
-            let timedOut = false;
-            let settled = false;
-            const cap = (text, current, chunk) => {
-                const room = maxBytes - current;
-                if (room <= 0) {
-                    truncated = true;
-                    return { text, bytes: current };
-                }
-                if (chunk.length > room) {
-                    truncated = true;
-                    return { text: text + chunk.subarray(0, room).toString('utf8'), bytes: maxBytes };
-                }
-                return { text: text + chunk.toString('utf8'), bytes: current + chunk.length };
-            };
-            const timer = setTimeout(() => {
-                timedOut = true;
-                try {
-                    channel.signal('KILL');
-                }
-                catch {
-                    /* 远端可能已结束 */
-                }
-                channel.close();
-            }, timeoutMs);
-            const finish = (code) => {
-                if (settled)
-                    return;
-                settled = true;
-                clearTimeout(timer);
-                const rt = this.conns.get(poolKey(spec));
-                if (rt !== undefined)
-                    rt.lastUsed = Date.now();
-                resolve({ code, stdout, stderr, timedOut, truncated, durationMs: Date.now() - started });
-            };
-            channel.on('data', (chunk) => {
-                const next = cap(stdout, stdoutBytes, chunk);
-                stdout = next.text;
-                stdoutBytes = next.bytes;
+        // 一次性命令也计入「在途」（D01）：docker pull 默认 600s，期间没有任何请求
+        // 刷新 lastUsed， sweeper 若只认 busy 会把跑了一半的命令连人带输出掐断。
+        const key = poolKey(spec);
+        const rt = this.conns.get(key);
+        if (rt !== undefined)
+            rt.inflight += 1;
+        try {
+            return await new Promise((resolve, reject) => {
+                const stdoutSink = new ByteSink(maxBytes, options?.keepTail === true);
+                const stderrSink = new ByteSink(maxBytes, options?.keepTail === true);
+                const stdoutDecoder = new StringDecoder('utf8');
+                const stderrDecoder = new StringDecoder('utf8');
+                let timedOut = false;
+                let settled = false;
+                let timer = null;
+                const finish = (code) => {
+                    if (settled)
+                        return;
+                    settled = true;
+                    if (timer !== null)
+                        clearTimeout(timer);
+                    const current = this.conns.get(key);
+                    if (current !== undefined)
+                        current.lastUsed = Date.now();
+                    resolve({
+                        code,
+                        stdout: stdoutSink.decode(stdoutDecoder),
+                        stderr: stderrSink.decode(stderrDecoder),
+                        timedOut,
+                        truncated: stdoutSink.truncated || stderrSink.truncated,
+                        durationMs: Date.now() - started,
+                    });
+                };
+                // 定时器放在 finish **之后**（D112）：超时除了打断远端命令，还要**直接 settle**。
+                // 原先只 signal('KILL') + close()，若通道静默不响应（既不 emit 'close' 也不 emit
+                // 'error'），promise 永不落定 → finally 里的 inflight 减不掉 → 该连接对
+                // shouldRecycleConn 永远是「在途」，sweeper 再也回收不了它。
+                // settled 守卫保证与随后的 'close' 事件不会重复 resolve（幂等）。
+                timer = setTimeout(() => {
+                    timedOut = true;
+                    try {
+                        channel.signal('KILL');
+                    }
+                    catch {
+                        /* 远端可能已结束 */
+                    }
+                    channel.close();
+                    finish(null);
+                }, timeoutMs);
+                channel.on('data', (chunk) => {
+                    stdoutSink.push(chunk);
+                });
+                channel.stderr.on('data', (chunk) => {
+                    stderrSink.push(chunk);
+                });
+                channel.on('close', (code) => {
+                    finish(typeof code === 'number' ? code : null);
+                });
+                channel.on('error', (error) => {
+                    if (settled)
+                        return;
+                    settled = true;
+                    if (timer !== null)
+                        clearTimeout(timer);
+                    reject(new Error(`SSH exec channel 异常：${error.message}`));
+                });
+                if (options?.input !== undefined)
+                    channel.end(options.input);
             });
-            channel.stderr.on('data', (chunk) => {
-                const next = cap(stderr, stderrBytes, chunk);
-                stderr = next.text;
-                stderrBytes = next.bytes;
-            });
-            channel.on('close', (code) => {
-                finish(typeof code === 'number' ? code : null);
-            });
-            channel.on('error', (error) => {
-                if (settled)
-                    return;
-                settled = true;
-                clearTimeout(timer);
-                reject(new Error(`SSH exec channel 异常：${error.message}`));
-            });
-            if (options?.input !== undefined)
-                channel.end(options.input);
-        });
+        }
+        finally {
+            if (rt !== undefined)
+                rt.inflight = Math.max(0, rt.inflight - 1);
+        }
     }
     /**
      * 在远程开一条**长流**（docker logs --follow）：stdout/stderr 逐块回调，
@@ -264,29 +370,57 @@ export class RemoteExec {
         const command = shJoin(argv);
         // 先确保连接已建立：下面的 rt.busy 与配额判定都依赖连接已存在于池里
         await this.acquire(spec);
-        const rt = this.conns.get(poolKey(spec));
-        if (rt !== undefined) {
+        const key = poolKey(spec);
+        let holder = this.conns.get(key);
+        if (holder === undefined) {
+            // acquire 之后条目必在（acquire 先占坑，见 acquire 内注释）；真发生说明池状态
+            // 被并发破坏——**fail-closed**（D26）：静默跳过配额判定会让长流绕开
+            // MAX_STREAMS_PER_TARGET，直冲 OpenSSH MaxSessions=10
+            throw new Error(`SSH 连接状态异常（${sshTarget(spec)}）：请重试；若持续出现请反馈`);
+        }
+        {
             // 配额判定放在自增**之前**：拒绝时没有自增，finally 里的 release 也就不会去减别人的计数
-            const denied = streamBudgetError(sshTarget(spec), rt.busy);
+            const denied = streamBudgetError(sshTarget(spec), holder.busy);
             if (denied !== null)
                 throw new Error(denied);
-            rt.busy += 1;
+            holder.busy += 1;
         }
+        /**
+         * 把计数从「开门之前那条条目」搬到「现在池里那条」（D88）。
+         *
+         * 为什么必须搬：openChannel 遇到传输错误会 dropConn + end() **另建一条**连接
+         * （见 openChannel 的重试分支），于是开门前 `busy += 1` 记的那条已被摘掉——新连接
+         * 的 busy 是 0 → ① 长流配额少算，MAX_STREAMS_PER_TARGET 的 fail-closed 保护在这条
+         * 路径失效；② 用户正在看的 `docker logs -f` 在 120s 后被 sweeper 当空闲连接掐断
+         * （sweeper 只看活条目的 busy/inflight），正是 D01 要消灭的症状。
+         * 配额判定与自增仍留在 openChannel **之前**：否则被拒的流已经白开了一条通道。
+         */
+        const moveBusyToLive = () => {
+            const live = this.conns.get(key);
+            if (live !== undefined && live !== holder) {
+                // holder 在下面的 undefined 守卫后必定有值；因为它在闭包里被重新赋值，
+                // TS 的窄化不会跨赋值保留，这里用 `!` 明确（不是新契约）
+                holder.busy = Math.max(0, holder.busy - 1);
+                live.busy += 1;
+                holder = live;
+            }
+        };
         let released = false;
         // try/finally 保证 busy 增减严格配对：异常路径也不能把连接永久标成 busy
+        //（一律作用于 holder：重连后计数已经搬过家，release 必须减现在这条）
         const release = () => {
             if (released)
                 return;
             released = true;
-            if (rt !== undefined) {
-                rt.busy = Math.max(0, rt.busy - 1);
-                rt.lastUsed = Date.now();
-            }
+            holder.busy = Math.max(0, holder.busy - 1);
+            holder.lastUsed = Date.now();
         };
         try {
             if (signal?.aborted === true)
                 return { code: null };
             const channel = await this.openChannel(spec, command, DEFAULT_TIMEOUT_MS, 0);
+            // 开门成功才可能发生「重连换条目」；开门抛错时条目仍是我占的那条，无需搬
+            moveBusyToLive();
             return await new Promise((resolve, reject) => {
                 const stdoutDecoder = new StringDecoder('utf8');
                 const stderrDecoder = new StringDecoder('utf8');
@@ -377,10 +511,12 @@ export class RemoteExec {
     /**
      * 开一条 exec channel；**传输层**错误时丢掉连接、重连一次（见 `isTransportError`）。
      *
-     * 只重试一次：重连之后还报同样的错，多半不是连接的问题（远端 MaxSessions 真满了、
-     * 或目标本身不可达），再试只是把失败拖长、还会多压一条命令过去。
+     * 只重试一次：重连之后还报同样的错，多半不是连接的问题（目标本身不可达），
+     * 再试只是把失败拖长、还会多压一条命令过去。
      */
     async openChannel(spec, command, timeoutMs, attempt) {
+        // acquire 放在 try **外面**（D27）：建连失败（目标不可达等）不该落在「传输错误
+        // 重试」的范围内——否则每次命令都要干等两轮 20s 的 readyTimeout。
         const client = await this.acquire(spec);
         try {
             return await new Promise((resolve, reject) => {
@@ -400,7 +536,15 @@ export class RemoteExec {
         catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             if (attempt === 0 && isTransportError(message)) {
-                this.dropConn(poolKey(spec));
+                // 丢掉这条连接并**关闭它**（D07）：只摘出池不 end() 的话，keepalive 会一直
+                // 养着一条死连接；dropConn 带身份校验，不会误摘同键上的新连接（D06）。
+                this.dropConn(poolKey(spec), client);
+                try {
+                    client.end();
+                }
+                catch {
+                    /* 连接已断开 */
+                }
                 return await this.openChannel(spec, command, timeoutMs, 1);
             }
             throw error;
@@ -414,54 +558,116 @@ export class RemoteExec {
             existing.lastUsed = Date.now();
             return existing.ready;
         }
-        const connectConfig = await buildConnectConfig(spec);
         const target = sshTarget(spec);
-        const policy = applyHostKeyPolicy({ connectConfig, spec, store: this.store, logger: this.logger, target });
         const client = new Client();
+        let resolveReady;
+        let rejectReady;
         const ready = new Promise((resolve, reject) => {
-            let settled = false;
-            const timer = setTimeout(() => {
-                if (settled)
-                    return;
-                settled = true;
-                this.dropConn(key);
-                try {
-                    client.end();
-                }
-                catch {
-                    /* 连接未建立 */
-                }
-                reject(new Error(`SSH 连接超时（${target}）`));
-            }, 20_000);
-            client.once('ready', () => {
-                if (settled)
-                    return;
-                settled = true;
-                clearTimeout(timer);
-                resolve(client);
-            });
-            client.once('error', (error) => {
-                this.dropConn(key);
-                if (settled)
-                    return;
-                settled = true;
-                clearTimeout(timer);
-                const mismatch = policy.mismatchMessage();
-                reject(new Error(mismatch ?? `SSH 连接失败（${target}）：${error.message}`));
-            });
-            client.once('close', () => {
-                this.dropConn(key);
-            });
-            client.connect(connectConfig);
+            resolveReady = resolve;
+            rejectReady = reject;
         });
+        // **先占坑再异步解析配置**（D02）：buildConnectConfig 会 await 凭据解析、让出事件
+        // 循环——若此时池里还没有条目，并发第二个请求会各自建连，先建好的那条立即脱管
+        //（回收不到、disposeAll 关不掉、配额记在别人头上），日后的 close/error 还会误摘
+        // 同键的新连接（D06）。占位后并发请求拿到的就是同一条 ready。
+        const entry = { client, lastUsed: Date.now(), ready, busy: 0, inflight: 0, disposed: false };
+        this.conns.set(key, entry);
         // ready 被拒时不要留下未处理 rejection（调用方 await 时会拿到）
         ready.catch(() => {
             /* 由调用方处理 */
         });
-        this.conns.set(key, { client, lastUsed: Date.now(), ready, busy: 0 });
+        let settled = false;
+        let timer = null;
+        /**
+         * 这条占位条目还是不是「我的」（D94）。
+         *
+         * 为什么要单独判：`disposeAll()`（插件卸载）与 sweeper 都能在**建连途中**把占位条目
+         * 摘掉并 `end()`。只判 settled 的话，随后到来的 `ready` / `error` 仍会走完正常流程——
+         * 前者 resolve 出一条不在池里的活连接（回收不到、disposeAll 再关不掉、keepalive 一直
+         * 养着，`run()` 的 inflight 保护也一并失效），后者丢掉真实错误原因只报「连接超时」。
+         * 归属口径 = 池里这个键仍指向这条条目，且它没有被 disposeAll 标记（先标记后 clear，
+         * 所以标记能覆盖「已摘出但还没被 clear」的窗口）。
+         */
+        const ownsEntry = () => this.conns.get(key) === entry && !entry.disposed;
+        /** 兜底关闭：ssh2 Client 的 `end()` 对「尚未建连」的实例未必有用，`destroy()` 再补一刀。 */
+        const forceClose = () => {
+            try {
+                client.end();
+            }
+            catch {
+                /* 连接未建立 / 已断开 */
+            }
+            try {
+                client.destroy();
+            }
+            catch {
+                /* 同上 */
+            }
+        };
+        const settleError = (error) => {
+            if (settled)
+                return;
+            settled = true;
+            if (timer !== null)
+                clearTimeout(timer);
+            // 归属校验同样落在错误路径：条目已被摘掉（多为 disposeAll）时，真正该报的是
+            // 「这条连接已被释放」，而不是此后某次 close 触发的「握手完成前关闭」或超时（D94）
+            const finalError = ownsEntry() ? error : new Error(`SSH 连接已在建立期间被释放（${target}）：请重试`);
+            this.dropConn(key, client);
+            forceClose();
+            rejectReady(finalError);
+        };
+        try {
+            const connectConfig = await buildConnectConfig(spec);
+            const policy = applyHostKeyPolicy({ connectConfig, spec, store: this.store, logger: this.logger, target });
+            /** 指纹变更优先于任何通用文案（含 D94 的「已释放」）：安全提示不能被噪音盖掉。 */
+            const describe = (error, fallback) => new Error(policy.mismatchMessage() ?? `${fallback}：${error.message}`);
+            timer = setTimeout(() => {
+                settleError(new Error(`SSH 连接超时（${target}）`));
+            }, connectTimeoutMs());
+            client.once('ready', () => {
+                if (settled)
+                    return;
+                settled = true;
+                if (timer !== null)
+                    clearTimeout(timer);
+                if (!ownsEntry()) {
+                    // 建连途中被 disposeAll / sweeper 摘掉：这条 client 不属于任何人，
+                    // 交出去就是脱管连接——关掉再拒绝（D94）
+                    this.dropConn(key, client);
+                    forceClose();
+                    rejectReady(new Error(`SSH 连接已被释放（${target}）：请重试`));
+                    return;
+                }
+                entry.lastUsed = Date.now();
+                resolveReady(client);
+            });
+            client.once('error', (error) => {
+                settleError(describe(error, `SSH 连接失败（${target}）`));
+            });
+            client.once('close', () => {
+                this.dropConn(key, client);
+                if (!settled)
+                    settleError(new Error(`SSH 连接失败（${target}）：连接在握手完成前关闭`));
+            });
+            try {
+                client.connect(connectConfig);
+            }
+            catch (error) {
+                // connect() 的同步异常（如加密私钥缺 passphrase）必须先出池再拒绝（D05）：
+                // 否则这条「永远假」的池条目会把同一句旧错误缓存到永远——改对配置也不恢复
+                settleError(error instanceof Error ? error : new Error(String(error)));
+            }
+        }
+        catch (error) {
+            settleError(error instanceof Error ? error : new Error(String(error)));
+        }
         return ready;
     }
-    dropConn(key) {
+    /** 从池里摘掉一条连接。带 client 时做身份校验：只摘自己这条（D06）。 */
+    dropConn(key, client) {
+        if (client !== undefined && this.conns.get(key)?.client !== client)
+            return;
         this.conns.delete(key);
     }
 }
@@ -472,13 +678,18 @@ export async function buildConnectConfig(spec) {
         host: spec.host,
         port: spec.port ?? 22,
         username: spec.username,
-        readyTimeout: 20_000,
+        readyTimeout: connectTimeoutMs(),
         keepaliveInterval: 10_000,
         keepaliveCountMax: 3,
         // hostVerifier 依赖 hostHash 计算指纹；放行与否由 TOFU 策略决定
         hostHash: 'sha256',
     };
     if (auth === 'agent') {
+        // 缺 SSH_AUTH_SOCK 时没有预检的话，ssh2 会报「All configured authentication
+        // methods failed」，把「agent 没跑」这个最可能的原因藏起来（D29；tty 同款已修）
+        if (process.env.SSH_AUTH_SOCK === undefined || process.env.SSH_AUTH_SOCK === '') {
+            throw new Error(`auth=agent 但 SSH_AUTH_SOCK 未设置（ssh-agent 没在跑？）：ssh-agent 是最可能的原因。可改用 auth=key / auth=password，或先启动 ssh-agent`);
+        }
         base.agent = process.env.SSH_AUTH_SOCK;
     }
     else if (auth === 'key') {
@@ -501,6 +712,19 @@ export async function buildConnectConfig(spec) {
     if (spec.agentForward === true && process.env.SSH_AUTH_SOCK !== undefined && process.env.SSH_AUTH_SOCK !== '') {
         base.agent = base.agent ?? process.env.SSH_AUTH_SOCK;
     }
+    // agentForward 配置要真正生效（D28）：ssh2 只认 cfg.agentForward === true 才会发
+    // auth-agent-req@openssh.com，只设 base.agent（认证用途）远端永远拿不到本地 agent。
+    //
+    // 但必须复用上面的「有没有 agent」判定（D81）：ssh2 在 connect() 里硬校验
+    // `agentForward === true && agent === undefined` → **同步 throw**
+    //「You must set a valid agent path to allow agent forwarding」。
+    // auth=key / auth=password 时 base.agent 只在有 SSH_AUTH_SOCK 时才会被设上，
+    // 于是「宿主无 sock（launchd/systemd/GUI 启动、Windows）+ 勾了转发」会把配置从
+    // 「等于没配」变成「整个目标不可用」——同目标每一次操作全失败，文案还是裸英文。
+    // README 承诺的是「SSH_AUTH_SOCK 存在时生效」，所以这里**静默降级**：agent 不可用
+    // 就当作没勾转发，连接照常建立（D29 已为 auth=agent 单独给出可读的预检错误）。
+    if (spec.agentForward === true && base.agent !== undefined)
+        base.agentForward = true;
     return base;
 }
 /** TOFU 主机指纹策略（hostVerifier 接线）；mismatchMessage() 供错误路径取人类可读拒绝原因。 */
@@ -509,16 +733,19 @@ export function applyHostKeyPolicy(options) {
     const port = spec.port ?? 22;
     let hostKeyMismatch = null;
     connectConfig.hostVerifier = (hash) => {
-        const known = store?.get(spec.host, port);
-        if (known === undefined) {
-            store?.record(spec.host, port, hash);
+        // host 键统一 trim + 小写（D03）：tty 落盘时把 host 小写化，比较口径必须一致
+        const host = spec.host.trim().toLowerCase();
+        const known = store?.get(host, port);
+        if (known === undefined || known.length === 0) {
+            store?.record(host, port, hash);
             logger?.info(`[dsh-docker] ssh ${target} 首次连接，已记录 host key 指纹 sha256:${hash}（TOFU）`);
             return true;
         }
-        if (known === hash)
+        // 命中集合内**任意**一条指纹即放行：同一主机的 rsa / ed25519 各记一条（D03）
+        if (known.includes(hash))
             return true;
         hostKeyMismatch =
-            `SSH 主机密钥指纹变更：${target} 已记录 sha256:${known}，本次为 sha256:${hash}。` +
+            `SSH 主机密钥指纹变更：${target} 已记录 sha256:${known.join(' / ')}，本次为 sha256:${hash}。` +
                 '可能是主机重装或换钥匙，也可能是中间人（MITM）冒充；确认安全后，到 插件配置 → Docker 容器面板 → SSH 主机密钥记录 删除该主机再重连。';
         logger?.warn(`[dsh-docker] ${hostKeyMismatch}`);
         return false;
@@ -540,39 +767,22 @@ export async function runLocal(argv, options) {
     if (bin === undefined)
         throw new Error('runLocal 需要至少一个 argv 元素');
     return await new Promise((resolve, reject) => {
-        let stdout = '';
-        let stderr = '';
-        let stdoutBytes = 0;
-        let stderrBytes = 0;
-        let truncated = false;
+        const stdoutSink = new ByteSink(maxBytes, options?.keepTail === true);
+        const stderrSink = new ByteSink(maxBytes, options?.keepTail === true);
+        const stdoutDecoder = new StringDecoder('utf8');
+        const stderrDecoder = new StringDecoder('utf8');
         let timedOut = false;
         let settled = false;
         const child = spawn(bin, args, { stdio: ['pipe', 'pipe', 'pipe'], env: process.env });
-        const cap = (text, current, chunk) => {
-            const room = maxBytes - current;
-            if (room <= 0) {
-                truncated = true;
-                return { text, bytes: current };
-            }
-            if (chunk.length > room) {
-                truncated = true;
-                return { text: text + chunk.subarray(0, room).toString('utf8'), bytes: maxBytes };
-            }
-            return { text: text + chunk.toString('utf8'), bytes: current + chunk.length };
-        };
         const timer = setTimeout(() => {
             timedOut = true;
             child.kill('SIGKILL');
         }, timeoutMs);
         child.stdout.on('data', (chunk) => {
-            const next = cap(stdout, stdoutBytes, chunk);
-            stdout = next.text;
-            stdoutBytes = next.bytes;
+            stdoutSink.push(chunk);
         });
         child.stderr.on('data', (chunk) => {
-            const next = cap(stderr, stderrBytes, chunk);
-            stderr = next.text;
-            stderrBytes = next.bytes;
+            stderrSink.push(chunk);
         });
         child.once('error', (error) => {
             if (settled)
@@ -587,7 +797,14 @@ export async function runLocal(argv, options) {
                 return;
             settled = true;
             clearTimeout(timer);
-            resolve({ code, stdout, stderr, timedOut, truncated, durationMs: Date.now() - started });
+            resolve({
+                code,
+                stdout: stdoutSink.decode(stdoutDecoder),
+                stderr: stderrSink.decode(stderrDecoder),
+                timedOut,
+                truncated: stdoutSink.truncated || stderrSink.truncated,
+                durationMs: Date.now() - started,
+            });
         });
         if (options?.input !== undefined)
             child.stdin.end(options.input);

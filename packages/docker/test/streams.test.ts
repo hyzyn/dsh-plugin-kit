@@ -109,7 +109,7 @@ function makeReq(url: string, method = 'GET', remoteAddress = '127.0.0.1', body?
   return {
     method,
     url,
-    headers: { host: '127.0.0.1:3080', 'content-type': 'application/json' },
+    headers: { host: '127.0.0.1:3080', origin: 'http://127.0.0.1:3080', 'content-type': 'application/json' },
     socket: { remoteAddress },
     async *[Symbol.asyncIterator]() {
       for (const chunk of chunks) yield chunk
@@ -620,7 +620,7 @@ describe('POST /networks 与 /volumes（门控与校验）', () => {
     expect((JSON.parse(String(vols.endBody)) as { volumes: Array<{ name: string }> }).volumes[0]?.name).toBe('pgdata')
   })
 
-  it('开启后：remove / prune 放行；缺 name 400；非法名 500（白名单在 DockerApi 里）', async () => {
+  it('开启后：remove / prune 放行；缺 name 400；非法名 400（D37：引用白名单前移到路由层）', async () => {
     const { route } = mountPlugin({ allowMutations: true })
     stubRun('Deleted network: x')
     const ok = makeRes()
@@ -640,9 +640,10 @@ describe('POST /networks 与 /volumes（门控与校验）', () => {
       expect(String(missing.endBody), sub).toMatch(/name 必填/)
     }
 
+    // 非法名是客户端错误：D37 之前白名单在 DockerApi 里抛、被外层 catch 写成 500
     const bad = makeRes()
     await route.handler(makeReq('/api/dsh-docker/networks/inspect', 'POST', '127.0.0.1', { target: '本机', name: 'a/b' }), bad)
-    expect(bad.status).toBe(500)
+    expect(bad.status).toBe(400)
     expect(String(bad.endBody)).toMatch(/含非法字符/)
   })
 
