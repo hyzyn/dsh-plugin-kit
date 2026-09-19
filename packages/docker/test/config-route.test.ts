@@ -77,7 +77,7 @@ interface Harness {
   updates: Array<Record<string, unknown>>
 }
 
-function mountPlugin(): Harness {
+function mountPlugin(options: { tty?: Record<string, unknown> } = {}): Harness {
   const state = {
     routes: [] as FakeRoute[],
     listeners: new Map<string, Array<(...args: unknown[]) => void>>(),
@@ -127,7 +127,8 @@ function mountPlugin(): Harness {
     if (names.includes('settings')) {
       child.settings = {
         register: (_ns: string, _schema: unknown, options_: { base?: Record<string, unknown> } | undefined) => scopeFor(options_?.base ?? {}),
-        get: () => undefined,
+        // readTtyBooks 只读 tty 命名空间；用例没给就是「tty 未安装」
+        get: (ns: string) => (ns === 'tty' ? options.tty : undefined),
       }
     }
     return child
@@ -249,5 +250,56 @@ describe('POST /api/dsh-docker/config：非法值不落盘', () => {
     expect(status).toBe(200)
     expect(json?.config?.dockerBin).toBe('C:\\tools\\docker.exe')
     expect(harness.settingsStored.logTailDefault).toBe(321)
+  })
+})
+
+/* ------------------------------------------------------------------ *
+ * 3. GET /config：连接簿条目 → host:port（凭据不出宿主）
+ * ------------------------------------------------------------------ */
+
+describe('GET /api/dsh-docker/config：ttyBookHosts', () => {
+  const tty = {
+    sshHosts: [
+      {
+        name: 'lab-a',
+        host: '192.0.2.10',
+        port: 2222,
+        username: 'root',
+        auth: 'password',
+        password: 'SUPER-SECRET-PASSWORD',
+        keyPath: '/Users/me/.ssh/id_ed25519',
+        passphrase: 'SUPER-SECRET-PASSPHRASE',
+      },
+      // 没填 host / username 的条目 readTtyBooks 会跳过（缺任何一项都连不上）
+      { name: '半成品', host: '', username: 'root' },
+    ],
+  }
+
+  it('带上 name/host/port（客户端靠它在连接失败时也能对上目标）', async () => {
+    const harness = mountPlugin({ tty })
+    const res = makeRes()
+    await harness.route.handler(makeReq('/api/dsh-docker/config', 'GET'), res)
+    const config = JSON.parse(res.endBody ?? '{}').config
+    expect(config.ttyBooks).toEqual(['lab-a'])
+    expect(config.ttyBookHosts).toEqual([{ name: 'lab-a', host: '192.0.2.10', port: 2222 }])
+  })
+
+  it('端口缺失按 22；任何凭据字段都不进响应', async () => {
+    const harness = mountPlugin({ tty: { sshHosts: [{ name: 'lab-b', host: '192.0.2.161', username: 'root', password: 'PWD', passphrase: 'PP', keyPath: '/k' }] } })
+    const res = makeRes()
+    await harness.route.handler(makeReq('/api/dsh-docker/config', 'GET'), res)
+    const body = res.endBody ?? ''
+    expect(JSON.parse(body).config.ttyBookHosts).toEqual([{ name: 'lab-b', host: '192.0.2.161', port: 22 }])
+    // 口令 / 私钥路径 / 口令短语都不能因为「顺手多回一个字段」泄漏到浏览器
+    for (const secret of ['PWD', 'PP', '/k']) expect(body).not.toContain(secret)
+  })
+
+  it('tty 未安装（settings 里没有 tty 命名空间）时是空表，不是 undefined', async () => {
+    const harness = mountPlugin()
+    const res = makeRes()
+    await harness.route.handler(makeReq('/api/dsh-docker/config', 'GET'), res)
+    const config = JSON.parse(res.endBody ?? '{}').config
+    expect(config.ttyBookHosts).toEqual([])
+    expect(config.ttyAvailable).toBe(false)
   })
 })

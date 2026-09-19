@@ -8,7 +8,7 @@
  * 兜底解析出 host:port。
  */
 import { describe, expect, it } from 'vitest'
-import { parseUserHostPort, pickTargetByHost, sessionHostPort } from '../client-src/session-target.js'
+import { bookSessionHost, parseUserHostPort, pickTargetByHost, sessionHostPort } from '../client-src/session-target.js'
 
 /** 用户实际的目标配置：目标1 引用连接簿 lab-a（→ root@192.0.2.10）。 */
 const TARGETS = [
@@ -81,5 +81,53 @@ describe('pickTargetByHost', () => {
   it('会话未知（undefined）或行集合不是数组时不匹配', () => {
     expect(pickTargetByHost(TARGETS, undefined)).toBeUndefined()
     expect(pickTargetByHost(undefined, { host: '192.0.2.10', port: 22 })).toBeUndefined()
+  })
+})
+
+/**
+ * 第二层兜底：连接**还没建立 / 建立失败**时，spec 没有 host、`tab.target` 也没有值
+ * （宿主只在连接成功后才回显），此时只能靠 `/config.ttyBookHosts` 里该连接簿条目
+ * 自己填的地址。实测踩过的坑：SSH 握手超时那一刻，面板判成「该主机没配目标」，
+ * 于是沿用了上一次的目标，把**另一台主机**的容器摆在屏幕上。
+ */
+describe('bookSessionHost（连接簿条目 → host:port）', () => {
+  /** 用户实际的连接簿：同一台机器 4 条，目标1 引用的是 lab-a。 */
+  const BOOKS = [
+    { name: 'lab-a', host: '192.0.2.10', port: 22 },
+    { name: '192.0.2.10', host: '192.0.2.10', port: 22 },
+    { name: 'lab-b', host: '192.0.2.161', port: 22 },
+    { name: 'HS_248_ADMIN', host: '192.0.2.10', port: 2222 },
+  ]
+
+  it('按条目名取出 host:port', () => {
+    expect(bookSessionHost('192.0.2.10', BOOKS)).toEqual({ host: '192.0.2.10', port: 22 })
+    expect(bookSessionHost('HS_248_ADMIN', BOOKS)).toEqual({ host: '192.0.2.10', port: 2222 })
+  })
+
+  it('端口缺失 / 非法一律按 22', () => {
+    expect(bookSessionHost('x', [{ name: 'x', host: '10.0.0.1' }])).toEqual({ host: '10.0.0.1', port: 22 })
+    expect(bookSessionHost('x', [{ name: 'x', host: '10.0.0.1', port: 0 }])).toEqual({ host: '10.0.0.1', port: 22 })
+    expect(bookSessionHost('x', [{ name: 'x', host: '10.0.0.1', port: 'nope' }])).toEqual({ host: '10.0.0.1', port: 22 })
+  })
+
+  it('条目不存在 / host 为空 / 名字为空时不猜', () => {
+    expect(bookSessionHost('没这条', BOOKS)).toBeUndefined()
+    expect(bookSessionHost('', BOOKS)).toBeUndefined()
+    expect(bookSessionHost(undefined, BOOKS)).toBeUndefined()
+    expect(bookSessionHost('x', [{ name: 'x', host: '  ' }])).toBeUndefined()
+    expect(bookSessionHost('x', undefined)).toBeUndefined()
+  })
+
+  it('【本 bug 的完整判定】连不上时：会话走「192.0.2.10」条目、目标1 引用「lab-a」→ 仍命中目标1', () => {
+    const spec = { t: 'ssh', name: '192.0.2.10', command: '' }
+    // 连接失败：宿主没回显 tab.target
+    expect(sessionHostPort(spec, '')).toBeUndefined()
+    const session = bookSessionHost(spec.name, BOOKS)
+    expect(pickTargetByHost(TARGETS, session)).toBe('目标1')
+  })
+
+  it('老宿主没有 ttyBookHosts 字段时退化为「匹配不上」（不抛、不猜）', () => {
+    expect(bookSessionHost('lab-a', undefined)).toBeUndefined()
+    expect(bookSessionHost('lab-a', [])).toBeUndefined()
   })
 })
