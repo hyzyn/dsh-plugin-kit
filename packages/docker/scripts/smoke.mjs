@@ -18,13 +18,34 @@ const exec = await import('../lib/ssh-exec.js')
 const results = []
 /** 测试注册表：同步与异步用例统一收集，末尾一起 await（异步断言不会被漏掉）。 */
 const pending = []
+/*
+ * 看门狗（D71）：任一用例挂起不该把整个脚本永久挂住（CI 会一直转到超时被杀）。
+ * 两层：单用例 15s（挂起的用例标失败，其余继续跑）+ 全局 90s（兜底，直接退出 1）。
+ */
+// 25s > ssh 建连超时 20s（D122）：否则「目标不回 RST」的环境里，
+// 用例会被看门狗报成「用例超时」，把真因盖住
+const CASE_TIMEOUT_MS = 25_000
+const WATCHDOG_MS = 90_000
+const watchdog = setTimeout(() => {
+  const last = [...results].reverse().find((result) => result.ok)
+  console.error(`\n[dsh-docker] 看门狗超时（${String(WATCHDOG_MS / 1000)}s），脚本挂起；最后通过的用例：${last === undefined ? '(无)' : last.name}`)
+  process.exit(1)
+}, WATCHDOG_MS)
 function test(name, fn) {
   pending.push((async () => {
+    let timer = null
     try {
-      await fn()
+      await Promise.race([
+        Promise.resolve().then(fn),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`用例超时（${String(CASE_TIMEOUT_MS / 1000)}s）`)), CASE_TIMEOUT_MS)
+        }),
+      ])
       results.push({ name, ok: true })
     } catch (error) {
       results.push({ name, ok: false, message: error instanceof Error ? error.message : String(error) })
+    } finally {
+      if (timer !== null) clearTimeout(timer)
     }
   })())
 }
@@ -452,15 +473,17 @@ test('attention：OOM 优先、同级按最近结束时间倒序、非零退出�
       const joined = argv.join(' ')
       if (joined.includes('ps ')) return { code: 0, stdout: psRows.join('\n'), stderr: '', timedOut: false, truncated: false, durationMs: 1 }
       if (joined.includes('inspect')) {
-        const ids = argv.slice(3)
+        const ids = argv.slice(2)
         return { code: 0, stdout: inspect(ids), stderr: '', timedOut: false, truncated: false, durationMs: 1 }
       }
       return { code: 0, stdout: '', stderr: '', timedOut: false, truncated: false, durationMs: 1 }
     },
   }
   const api = new docker.DockerApi(runner, 'docker', { timeoutMs: 1000, maxBytes: 65536 })
-  const items = await api.attention()
+  const { items, total, truncated } = await api.attention()
   assert.deepEqual(items.map((item) => item.name), ['oom-worker', 'recent-exit', 'old-exit'], 'OOM 最前，其余按最近结束时间倒序')
+  assert.equal(total, 3)
+  assert.equal(truncated, false)
   assert.equal(items[0].oomKilled, true)
   assert.equal(items[0].reasons.includes('oom'), true)
   assert.equal(items[0].restartCount, 5)
@@ -482,10 +505,78 @@ test('attention：inspect 不可用时退回摘要口径（不抛错）', async 
     },
   }
   const api = new docker.DockerApi(runner, 'docker', { timeoutMs: 1000, maxBytes: 65536 })
-  const items = await api.attention()
+  const { items } = await api.attention()
   assert.equal(items.length, 1)
   assert.deepEqual(items[0].reasons, ['unhealthy'])
   assert.equal(items[0].oomKilled, false)
+})
+
+test('attention：limit 在过滤 + 排序之后生效，带截断信号（D12）', async () => {
+  const psRows = [
+    JSON.stringify({ ID: 'oom3', Names: 'oom-worker', Image: 'app:1', State: 'exited', Status: 'Exited (137) 1 hour ago' }),
+    ...Array.from({ length: 150 }, (_, i) => JSON.stringify({ ID: 'old' + String(i), Names: 'old-exit-' + String(i), Image: 'app:1', State: 'exited', Status: 'Exited (143) 3 months ago' })),
+  ]
+  const runner = {
+    label: 'fake',
+    async run(argv) {
+      const joined = argv.join(' ')
+      if (joined.includes('ps ')) return { code: 0, stdout: psRows.join('\n'), stderr: '', timedOut: false, truncated: false, durationMs: 1 }
+      if (joined.includes('inspect')) {
+        const ids = argv.slice(2)
+        return { code: 0, stdout: JSON.stringify(ids.map((id) => ({
+          Id: id,
+          Name: '/' + id,
+          State: { Status: 'exited', ExitCode: id === 'oom3' ? 137 : 143, OOMKilled: id === 'oom3', StartedAt: '2026-09-01T00:00:00Z', FinishedAt: '2026-06-01T00:00:00Z' },
+          Config: { Image: 'app:1' },
+          HostConfig: {},
+          Mounts: [],
+          NetworkSettings: { Ports: {}, Networks: {} },
+        }))), stderr: '', timedOut: false, truncated: false, durationMs: 1 }
+      }
+      return { code: 0, stdout: '', stderr: '', timedOut: false, truncated: false, durationMs: 1 }
+    },
+  }
+  const api = new docker.DockerApi(runner, 'docker', { timeoutMs: 1000, maxBytes: 65536 })
+  const { items, total, truncated } = await api.attention({ limit: 5 })
+  // 旧的实现先切 5 条（ps 顺序）→ oom-worker 根本进不了名单；现在排序后再切
+  assert.equal(items[0].name, 'oom-worker')
+  assert.equal(items.length, 5)
+  assert.equal(total, 151)
+  assert.equal(truncated, true)
+})
+
+test('attention：crash-loop 补捞——运行中 + 刚启动 + 重启计数高（D11）', async () => {
+  const psRows = [
+    JSON.stringify({ ID: 'loop1', Names: 'crash-loop', Image: 'app:1', State: 'running', Status: 'Up 4 seconds' }),
+    JSON.stringify({ ID: 'ok1', Names: 'healthy', Image: 'app:1', State: 'running', Status: 'Up 3 days (healthy)' }),
+  ]
+  const runner = {
+    label: 'fake',
+    async run(argv) {
+      const joined = argv.join(' ')
+      if (joined.includes('ps ')) return { code: 0, stdout: psRows.join('\n'), stderr: '', timedOut: false, truncated: false, durationMs: 1 }
+      if (joined.includes('inspect')) {
+        const ids = argv.slice(2)
+        return { code: 0, stdout: JSON.stringify(ids.map((id) => ({
+          Id: id,
+          Name: '/' + id,
+          RestartCount: id === 'loop1' ? 17 : 0,
+          State: { Status: 'running', ExitCode: 0, Pid: 1, StartedAt: new Date().toISOString() },
+          Config: { Image: 'app:1' },
+          HostConfig: { RestartPolicy: { Name: 'unless-stopped' } },
+          Mounts: [],
+          NetworkSettings: { Ports: {}, Networks: {} },
+        }))), stderr: '', timedOut: false, truncated: false, durationMs: 1 }
+      }
+      return { code: 0, stdout: '', stderr: '', timedOut: false, truncated: false, durationMs: 1 }
+    },
+  }
+  const api = new docker.DockerApi(runner, 'docker', { timeoutMs: 1000, maxBytes: 65536 })
+  const { items } = await api.attention()
+  assert.equal(items.length, 1)
+  assert.equal(items[0].name, 'crash-loop')
+  assert.deepEqual(items[0].reasons, ['restarting'])
+  assert.equal(items[0].restartCount, 17)
 })
 
 /* ------------------------------------------------------------------ *
@@ -528,17 +619,35 @@ test('sanitizeTargets：丢弃无名/重名条目，保留合法目标', () => {
   assert.equal(targets[2].auth, 'agent')
 })
 
-test('sanitizeHostKeys：丢弃不完整记录', () => {
+test('sanitizeHostKeys：接受 fingerprints[] 与旧版单指纹，合并同 host:port，host 小写化', () => {
   const keys = host.sanitizeHostKeys([
     { host: 'a.example.com', port: 22, fingerprint: 'abc' },
+    { host: 'A.example.com', port: 22, fingerprints: ['def'] },
     { host: '', fingerprint: 'abc' },
     { host: 'b', fingerprint: '' },
-    { host: 'c', fingerprint: 'def' },
+    { host: 'c', fingerprints: ['def', 'def'] },
+    { host: 'NAS.example', port: 2222, fingerprints: ['fp1', ''] },
+    null,
   ])
   assert.deepEqual(keys, [
-    { host: 'a.example.com', port: 22, fingerprint: 'abc' },
-    { host: 'c', port: 22, fingerprint: 'def' },
+    { host: 'a.example.com', port: 22, fingerprints: ['abc', 'def'] },
+    { host: 'c', port: 22, fingerprints: ['def'] },
+    { host: 'nas.example', port: 2222, fingerprints: ['fp1'] },
   ])
+})
+
+test('mergeHostKeys：并集合并——客户端快照不得整表覆盖既有钉扎（D10）', () => {
+  const base = [
+    { host: 'nas.example', port: 22, fingerprints: ['pinned-1', 'pinned-2'] },
+    { host: 'old.local', port: 2222, fingerprints: ['pinned-3'] },
+  ]
+  const merged = host.mergeHostKeys(base, [{ host: 'NAS.example', port: 22, fingerprints: ['pinned-1'] }])
+  assert.deepEqual(merged, [
+    { host: 'nas.example', port: 22, fingerprints: ['pinned-1', 'pinned-2'] },
+    { host: 'old.local', port: 2222, fingerprints: ['pinned-3'] },
+  ])
+  // 空表（面板启动竞态拿到的快照）不清空既有记录
+  assert.deepEqual(host.mergeHostKeys(base, []), base)
 })
 
 test('resolveTarget：本机 / 连接簿命中 / 连接簿缺失 / 内联', () => {
@@ -578,6 +687,18 @@ test('mergeTargetSecrets：卡片提交不含密码时保留已存凭证', () =>
   const fresh = host.mergeTargetSecrets(prev, [{ name: 'new', host: 'x' }])
   assert.equal(fresh[0].password, undefined)
   assert.equal(host.mergeTargetSecrets(prev, 'not-an-array'), 'not-an-array')
+})
+
+test('mergeTargetSecrets：改名目标按连接身份继承凭证（D15）', () => {
+  const prev = [
+    { name: 'prod', kind: 'ssh', book: '', host: 'h', port: 22, username: 'u', auth: 'password', keyPath: '', password: 'env:SSH_PW', passphrase: '', agentForward: false },
+  ]
+  // 改名（prod → prod-1），连接字段不变 → 凭证继承
+  const renamed = host.mergeTargetSecrets(prev, [{ name: 'prod-1', kind: 'ssh', host: 'h', port: 22, username: 'u', auth: 'password', keyPath: '' }])
+  assert.equal(renamed[0].password, 'env:SSH_PW')
+  // 删一个、新建一个无关的（host 不同）→ 不串密码
+  const unrelated = host.mergeTargetSecrets(prev, [{ name: 'other', kind: 'ssh', host: 'elsewhere', username: 'u', auth: 'password', keyPath: '' }])
+  assert.equal(unrelated[0].password, undefined)
 })
 
 /* ------------------------------------------------------------------ *
@@ -747,4 +868,7 @@ for (const result of results) {
   }
 }
 console.log(`\n[dsh-docker] smoke: ${String(results.length - failed)}/${String(results.length)} 通过`)
-if (failed > 0) process.exit(1)
+clearTimeout(watchdog)
+// 成功路径也要显式退出（D121）：主体结束后仍有周期句柄漏着的话，
+// 关掉看门狗就再也没人兜底了 —— 直接 exit 既保证退出也省掉排空等待
+process.exit(failed > 0 ? 1 : 0)

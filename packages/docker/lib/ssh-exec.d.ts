@@ -1,16 +1,22 @@
 import type { ConnectConfig } from 'ssh2';
-/** TOFU 主机指纹记录（与 tty 同形状，便于人工比对）。 */
+/**
+ * TOFU 主机指纹记录（与 tty 0.19.0 同形状：同一 host:port 一组指纹）。
+ *
+ * 为什么要是一个集合：同一台主机往往同时有 rsa + ed25519 两把主机密钥，
+ * ssh2 握手时用哪把取决于算法协商——单指纹记录会在算法切换时把健康连接
+ * 误判成「指纹变更」（tty 修 D12 时引入多指纹，这里对齐）。
+ */
 export interface HostKeyRecord {
     host: string;
     port: number;
-    /** hostVerifier 收到的原样 sha256 十六进制指纹。 */
-    fingerprint: string;
+    /** hostVerifier 收到的原样 sha256 十六进制指纹集合。 */
+    fingerprints: string[];
 }
 /** 主机指纹钉扎存储（宿主半体实现为配置状态 + settings 持久化）。 */
 export interface HostKeyStore {
-    /** 已记录的指纹；未记录返回 undefined。 */
-    get(host: string, port: number): string | undefined;
-    /** 首次连接握手时记录指纹。 */
+    /** 已记录的指纹集合（同一 host:port 的全部主机密钥）；未记录返回 undefined / 空数组。 */
+    get(host: string, port: number): string[] | undefined;
+    /** 首次连接握手时记录一条指纹；该主机已有其他算法的指纹时并入集合。 */
     record(host: string, port: number, fingerprint: string): void;
 }
 /** 内联 SSH 连接规格（连接簿条目共用同一形状）。 */
@@ -32,7 +38,7 @@ export interface ExecResult {
     stderr: string;
     /** 超时被强制中断。 */
     timedOut: boolean;
-    /** 输出超过上限被截断。 */
+    /** 输出超过上限被截断（keepTail=true 时保留尾部，否则保留头部）。 */
     truncated: boolean;
     /** 实际耗时（毫秒）。 */
     durationMs: number;
@@ -44,6 +50,11 @@ export interface ExecOptions {
     maxBytes?: number;
     /** 追加到 stdin 的内容（如 `docker exec -i` 需要喂 stdin 时）。 */
     input?: string;
+    /**
+     * 截断时保留**尾部**（默认保留头部）。logs 的最新行、pull 的 digest、
+     * prune 的总计都在输出末尾——这类命令超出上限时该丢的是头部（D14）。
+     */
+    keepTail?: boolean;
 }
 export interface ExecLogger {
     info(msg: string): void;
@@ -119,16 +130,23 @@ export declare function describeExecError(message: string): string;
  * 而 `acquire()` 复用 memoized 的 `ready`、不会每次探活。这种时候唯一正确的动作是丢掉
  * 这条连接、重连一次再试；反过来，「命令返回非零」「镜像不存在」这类业务失败**绝不能**
  * 触发重连——那会把一次普通错误变成两条命令。
+ *
+ * 「Channel open failure / open failed」刻意**不在**传输层名单里：它是远端**拒绝开新
+ * 通道**，典型成因是同一连接的 MaxSessions 被长流占满——连接本身是健康的。把它当传输
+ * 错误会泄漏健康连接（摘出池却不关闭，keepalive 一直养着），还会把 `describeExecError`
+ * 补的可操作文案藏掉（重连后新连接额度是空的，命令反而成功）。见 D07。
  */
 export declare function isTransportError(message: string): boolean;
 /**
  * 空闲回收判定：busy>0 的连接上挂着长流（docker logs --follow 可以几小时不结束），
- * 期间 lastUsed 不会刷新——若只看 idle 就会把正在推送的流掐断，必须先看 busy。
- * 抽成纯函数便于回归（sweeper 本体依赖定时器，难以直接驱动）。
+ * inflight>0 的连接上有一次性命令在跑（docker pull 默认 600s，期间没有任何请求
+ * 刷新 lastUsed）——两类都必须让空闲回收让路，否则在途命令会被 sweeper 掐断在半路
+ * （D01）。抽成纯函数便于回归（sweeper 本体依赖定时器，难以直接驱动）。
  */
 export declare function shouldRecycleConn(conn: {
     lastUsed: number;
     busy: number;
+    inflight?: number;
 }, now: number, idleMs?: number): boolean;
 /** 远程一次性命令执行器：懒连接池 + TOFU 指纹 + 输出上限。 */
 export declare class RemoteExec {
@@ -154,11 +172,12 @@ export declare class RemoteExec {
     /**
      * 开一条 exec channel；**传输层**错误时丢掉连接、重连一次（见 `isTransportError`）。
      *
-     * 只重试一次：重连之后还报同样的错，多半不是连接的问题（远端 MaxSessions 真满了、
-     * 或目标本身不可达），再试只是把失败拖长、还会多压一条命令过去。
+     * 只重试一次：重连之后还报同样的错，多半不是连接的问题（目标本身不可达），
+     * 再试只是把失败拖长、还会多压一条命令过去。
      */
     private openChannel;
     private acquire;
+    /** 从池里摘掉一条连接。带 client 时做身份校验：只摘自己这条（D06）。 */
     private dropConn;
 }
 /** 构造连接配置（认证三态 + keepalive + hostHash）；与 tty 的 ssh.ts 同策略。 */

@@ -31,10 +31,29 @@ export declare function parseIOPair(text: string): {
     rx: number | null;
     tx: number | null;
 };
+/**
+ * `--since` 的统一口径（D45）：时长（docker 的 Go duration 语法，允许复合如
+ * `1h30m`）、Unix 秒或时间戳。events 与 logs 两条路径此前各有一套——events
+ * 白名单偏窄（复合 duration 被拒）、logs 完全不校验（docker 的参数错误变成
+ * 不可读的报错）。纯校验函数：合法返回原样串，不合法抛错。
+ *
+ * 与 docker 的口径**双向对齐**（D99）：
+ *   ① duration 支持小数与 `0`——Go 的 `time.ParseDuration` 接受 `1.5h` 与 `0`，
+ *      旧正则的 `\d+` 把它们当成非法输入拒了（用户明明写的是合法参数）；
+ *   ② 裸数字仍按 docker 语义当 Unix 秒（`--since 3600` = 一小时前）；
+ *   ③ 时间戳必须**带时间部分**——`2026-09-13` 这种裸日期此前被放行，docker
+ *      多半原样报参数错误，不如在这里拒绝；
+ *   ④ 报错回显原始值，否则调用方（尤其是 agent）不知道是哪一段没通过。
+ */
+export declare function assertSince(value: unknown, field?: string): string;
 export interface PortMapping {
     hostIp?: string;
     hostPort?: number;
+    /** 端口区间映射的宿主侧原文（`8000-8005`）；单端口映射无此字段。 */
+    hostPortRange?: [number, number];
     containerPort: number;
+    /** 端口区间映射的容器侧区间（`8000-8005`）；单端口映射无此字段。 */
+    containerPortRange?: [number, number];
     protocol: string;
 }
 export interface ContainerSummary {
@@ -84,7 +103,7 @@ export declare function parseExitCode(status: string): number | null;
 export declare function deriveState(status: string): string;
 /** 从 ps 的 `.Status` 提取健康态（`Up 2 hours (healthy)` → healthy）。 */
 export declare function deriveHealth(status: string): string | null;
-/** 解析 ps 的 `.Ports` 串：`0.0.0.0:8080->80/tcp, [::]:8080->80/tcp, 9000/tcp`。 */
+/** 解析 ps 的 `.Ports` 串：`0.0.0.0:8080->80/tcp, [::]:8080->80/tcp, 9000/tcp, 0.0.0.0:8000-8005->8000-8005/tcp`。 */
 export declare function parsePorts(text: string): PortMapping[];
 /** `docker ps --format '{{json .}}'` → ContainerSummary[]。 */
 export declare function parsePsJson(text: string): ContainerSummary[];
@@ -322,6 +341,7 @@ export interface Runner {
     run(argv: readonly string[], options?: {
         timeoutMs?: number;
         maxBytes?: number;
+        keepTail?: boolean;
     }): Promise<ExecResult>;
     /** 长流（logs --follow）：逐块回调，signal 中止；无总超时与输出上限。 */
     stream(argv: readonly string[], handlers: StreamHandlers, signal?: AbortSignal): Promise<StreamResult>;
@@ -357,16 +377,47 @@ export declare class DockerApi {
     });
     /** 探测：docker CLI 是否可用 + daemon 是否可达。 */
     probe(): Promise<ProbeResult>;
+    /**
+     * assertOk + 截断检查（D13）：列表 / 详情类方法拿到的必须是**完整**输出。
+     * 只检查 code 的话，「输出被截断」会被当成「本来就这么少」——面板静默少列
+     * 容器，inspect 系列更会把截断误报成「对象不存在」，把用户引向错误方向。
+     *
+     * `alternative` 是**这个调用方真正能执行的替代做法**（D105）：agent 改不了插件
+     * 设置，「请调大 maxOutputKb」对它不可执行——ps 能改 all、stats 能传 ids、
+     * events 能缩小 since。文案里还会回显当前上限（见 truncationHint）。
+     */
+    private assertComplete;
+    /**
+     * 截断提示的统一文案（D105）：带上当前上限（KB）与目标标签——只说「超过上限」
+     * 无法判断差多少；再拼上调用方的可执行替代做法。
+     * 不抛错的路径（imageInspect 的 history，D104）复用同一句话，保持口径一致。
+     */
+    private truncationHint;
     listContainers(all: boolean): Promise<ContainerSummary[]>;
     inspect(ids: readonly string[]): Promise<ContainerDetail[]>;
     /**
      * 「需要关注」的容器（0.15.0）：先按摘要筛候选（不健康 / 重启中 / 僵死 /
-     * 非零退出），再**一次** `docker inspect` 补权威字段——OOM 与真实退出码在 ps
-     * 摘要里拿不到（137 也可能是手动 kill），只看摘要会误报。inspect 失败时退回摘要。
+     * 非零退出），再**分块** `docker inspect` 补权威字段——OOM 与真实退出码在 ps
+     * 摘要里拿不到（137 也可能是手动 kill），只看摘要会误报。inspect 失败时退回摘要，
+     * 但一定带 `degraded` 信号（D85/D86）。
+     *
+     * 反复重启（D11）：crash-loop 的容器多数时间显示 Up（退避最长 1 分钟，其余
+     * 时间在跑），RestartCount 只在 inspect 里有——摘要筛不出来。这里把「刚刚
+     * 启动」的运行中容器一并送进 inspect，按「重启计数高 + 刚启动」补捞；补捞有
+     * 独立预算（D87）：合法候选再多也挤不掉它。
+     *
+     * 截断在过滤 + 排序**之后**（D12）：先切后拍的话，名额被一堆老的非零退出
+     * 容器占满时，最严重的 OOM / unhealthy 反而会被切掉；返回值带 total / truncated
+     * 截断信号，不静默。
      */
     attention(options?: {
         limit?: number;
-    }): Promise<AttentionItem[]>;
+    }): Promise<{
+        items: AttentionItem[];
+        total: number;
+        truncated: boolean;
+        degraded: boolean;
+    }>;
     stats(ids: readonly string[]): Promise<ContainerStats[]>;
     /**
      * 实时统计流：`docker stats`（**不带 --no-stream**）每秒为每个容器输出一行
@@ -484,7 +535,13 @@ export declare class DockerApi {
         truncated: boolean;
         durationMs: number;
     }>;
-    /** 日志：stdout / stderr 分别收，再按到达顺序合并（docker logs 两者都有内容）。 */
+    /**
+     * 日志：stdout / stderr 分别收，stdout 整段在前、stderr 在后。
+     *
+     * 注意这不是「按到达顺序合并」（D44 注释纠正）：一次性命令的两路输出在
+     * run() 里分别累积，时序信息已经丢了；容器交替写两路时快照日志的先后顺序
+     * 与真实到达序可能不同。要真实时序请用实时跟随（FOLLOW 流是逐块按到达序推的）。
+     */
     logs(id: string, options?: LogsOptions): Promise<{
         id: string;
         text: string;

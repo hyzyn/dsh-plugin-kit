@@ -56,9 +56,8 @@ describe('ssh2 通道错误的可读化', () => {
 })
 
 describe('传输层错误的识别（决定要不要丢连接重试一次）', () => {
-  it('通道级 / 连接级错误：该重连', () => {
+  it('连接级错误：该重连', () => {
     for (const message of [
-      '(SSH) Channel open failure: open failed',
       'Not connected',
       'connection lost',
       'read ECONNRESET',
@@ -69,6 +68,16 @@ describe('传输层错误的识别（决定要不要丢连接重试一次）', (
     ]) {
       expect(isTransportError(message), message).toBe(true)
     }
+  })
+
+  it('通道开满（MaxSessions）不是传输层错误 —— 连接是健康的，重连只会泄漏连接并藏掉可操作文案（D07）', () => {
+    expect(isTransportError('(SSH) Channel open failure: open failed')).toBe(false)
+  })
+
+  it('配额被拒时用户拿到的文案必须可操作（不是裸的 ssh2 报错）', () => {
+    const text = describeExecError('(SSH) Channel open failure: open failed')
+    expect(text).toContain('MaxSessions')
+    expect(text).toContain('实时跟随')
   })
 
   it('业务失败绝不能被当成传输层错误 —— 否则一条命令会被重发一次', () => {

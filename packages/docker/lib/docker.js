@@ -23,10 +23,11 @@ export function assertRef(value, field) {
  * 填不进自己的 docker —— 而填不进时拿到的是 400，却没有一句话解释为什么（真机实测）。
  *
  * 仍然拒绝：`;` `&` `|` `<` `>` 引号 反引号 `$` `%` `!` `^` 换行等 shell 元字符，
- * 以及首字符 `-`（看起来像 flag 的值会被 docker 当选项解析）。空格只允许出现在
+ * 以及**任何**以 `-` 开头的 token（看起来像 flag 的值会被 docker 当选项解析）——
+ * 校验的是每一个空格分隔的 token，不是只看整串首字符（D43）。空格只允许出现在
  * 内部且不成串。本机通道一律以 argv 数组启动、不经 shell（远程走 shJoin），这层是纵深防御。
  */
-const BIN_RE = /^(?!-)[A-Za-z0-9_./:\\-]+(?: [A-Za-z0-9_./:\\-]+)*$/;
+const BIN_RE = /^(?!-)[A-Za-z0-9_./:\\-]+(?: (?!-)[A-Za-z0-9_./:\\-]+)*$/;
 /** 校验 docker CLI 可执行文件路径；空值回落到 `docker`。 */
 export function assertBin(value) {
     if (typeof value !== 'string' || value.trim() === '')
@@ -162,6 +163,37 @@ export function parseIOPair(text) {
 function firstLine(stderr, stdout, code) {
     return (stderr.trim() || stdout.trim() || `退出码 ${String(code)}`).split('\n')[0] ?? `退出码 ${String(code)}`;
 }
+/**
+ * `--since` 的统一口径（D45）：时长（docker 的 Go duration 语法，允许复合如
+ * `1h30m`）、Unix 秒或时间戳。events 与 logs 两条路径此前各有一套——events
+ * 白名单偏窄（复合 duration 被拒）、logs 完全不校验（docker 的参数错误变成
+ * 不可读的报错）。纯校验函数：合法返回原样串，不合法抛错。
+ *
+ * 与 docker 的口径**双向对齐**（D99）：
+ *   ① duration 支持小数与 `0`——Go 的 `time.ParseDuration` 接受 `1.5h` 与 `0`，
+ *      旧正则的 `\d+` 把它们当成非法输入拒了（用户明明写的是合法参数）；
+ *   ② 裸数字仍按 docker 语义当 Unix 秒（`--since 3600` = 一小时前）；
+ *   ③ 时间戳必须**带时间部分**——`2026-09-13` 这种裸日期此前被放行，docker
+ *      多半原样报参数错误，不如在这里拒绝；
+ *   ④ 报错回显原始值，否则调用方（尤其是 agent）不知道是哪一段没通过。
+ */
+export function assertSince(value, field = 'since') {
+    const usage = '时长（如 30m、2h、1h30m、1.5h）、Unix 秒（如 3600）或含时间的时间戳（如 2026-09-13T10:00:00）';
+    if (typeof value !== 'string' || value.trim() === '')
+        throw new Error(`${field} 必填（${usage}）`);
+    const text = value.trim();
+    // Go duration：`0` 单独合法，其余每段「数字[.小数]+单位」，可复合。单位含
+    // µs（U+00B5，Go 文档里的写法）与 μs（U+03BC，常见的希腊字母替代）两种
+    if (text === '0' || /^(?:\d+(?:\.\d+)?(?:ns|us|µs|μs|ms|s|m|h))+$/.test(text))
+        return text;
+    // 裸数字：docker 按 Unix 秒解释
+    if (/^\d+$/.test(text))
+        return text;
+    // 时间戳：RFC3339 风格，但 `T` 可写成空格、秒与小数秒可省、时区可省
+    if (/^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?$/.test(text))
+        return text;
+    throw new Error(`${field} 无法识别：${text}（只支持 ${usage}）`);
+}
 /** 从 ps 的 `.Status` 解析退出码：`Exited (137) 2 hours ago` → 137。 */
 export function parseExitCode(status) {
     const match = /^\s*exited\s*\((\d+)\)/i.exec(status);
@@ -169,6 +201,64 @@ export function parseExitCode(status) {
         return null;
     const code = Number(match[1]);
     return Number.isInteger(code) ? code : null;
+}
+/* ------------------------------------------------------------------ *
+ * attention() 的判据常量（抽在模块级便于回归）
+ * ------------------------------------------------------------------ */
+/**
+ * 「反复重启」的判据阈值（D11）：重启计数 ≥ 该值且刚刚启动的运行中容器计入
+ * reasons。阈值不能太低——合法的重新部署也会重启一两次。
+ */
+const ATTENTION_RESTART_THRESHOLD = 3;
+/** crash-loop 疑似的「刚启动」窗口：重启退避最长 1 分钟，Up 时间几乎总是秒级。 */
+const ATTENTION_FRESH_MS = 120_000;
+/** inspect 批量上限（候选 + 补捞总量的保险丝）：防巨型主机把输出顶到 maxBytes。 */
+const ATTENTION_INSPECT_CAP = 300;
+/**
+ * crash-loop **补捞的独立预算**（D87）：合法三类候选（不健康 / 正在重启 / 非零退出）
+ * 先占 ATTENTION_INSPECT_CAP 的名额，补捞另有这 50 个名额。此前补捞与合法候选共用
+ * 同一个 300（`if (picked.length >= CAP) break`），主机越乱（300 个 unhealthy）
+ * 补捞越一个都进不去——与「反复重启最容易被忽略、才需要补捞」的初衷正好相反。
+ * 总量上限因此是 CAP + 本值（≈350），不会随主机规模放大。
+ */
+const ATTENTION_FRESH_BUDGET = 50;
+/**
+ * 单批 inspect 的 id 数硬上限（D86）：默认 512KB ÷ 40 ≈ 12.8KB/容器，容得下真实的
+ * inspect JSON（Config/Labels/Mounts/NetworkSettings/HostConfig，2–6KB）。旧写法一次
+ * 送 300 个 id（512KB ÷ 300 ≈ 1.7KB/容器）必然截断，而 assertComplete 一抛错，
+ * catch 就把**整批**详情丢掉——比修复前的「尾部静默丢弃」更糟。
+ */
+const ATTENTION_INSPECT_BATCH = 40;
+/** 估算单个容器 inspect JSON 的字节数（D86）：用于按 maxBytes 收缩单批大小。 */
+const ATTENTION_INSPECT_BYTES_PER_CONTAINER = 8 * 1024;
+/**
+ * 单批 inspect 的 id 数（D86）：既有硬上限，也按调用方配置的 maxBytes 收缩——
+ * 把 maxOutputKb 调小的人不该每一批都撞截断（分批的意义就是让失败只影响一批）。
+ *
+ * 下限 8（而不是 1）：`maxOutputKb` 被调到 1KB 这种极端值下，单容器 inspect 本身就会
+ * 超限，每批 1 个只会把「注定降级」变成最多 300 次串行 docker 调用；给个下限让调用次数
+ * 有界（≈38 批），降级信号照常由 `degraded` 给出、文案也会提示调大上限。
+ */
+const ATTENTION_INSPECT_MIN_BATCH = 8;
+function attentionInspectBatch(maxBytes) {
+    const byBudget = Math.floor(maxBytes / ATTENTION_INSPECT_BYTES_PER_CONTAINER);
+    return Math.min(ATTENTION_INSPECT_BATCH, Math.max(ATTENTION_INSPECT_MIN_BATCH, byBudget));
+}
+/**
+ * docker ps 的 Status 里「刚刚启动」的形状。**必须覆盖到 ATTENTION_FRESH_MS（D106）**：
+ * docker 的 HumanDuration 在 60–119s 给的是 `About a minute`，而判据窗口是 120s——
+ * 旧 RE 只认 `\d+ seconds?`（<60s），于是「跑 1–2 分钟才崩」的 crash-loop 在运行
+ * 阶段一次都不会入候选（只在刚好崩掉的那一瞬是 exited，很容易错过）。
+ * `\d+ minutes?` 由 RE 多放行、再由 freshStart 的 120s 判据挡回：多放行无害，
+ * 少放行才是静默漏报——两个窗口必须对齐。
+ */
+const FRESH_UP_RE = /^up (less than a second|\d+ seconds?|about a minute|\d+ minutes?)( \(|$)/i;
+/** `startedAt` 落在「刚启动」窗口内（crash-loop 容器最近一次拉起的时间）。 */
+function freshStart(iso) {
+    if (iso === null || iso === '')
+        return false;
+    const time = Date.parse(iso);
+    return Number.isFinite(time) && Date.now() - time < ATTENTION_FRESH_MS;
 }
 /** 从 ps 的 `.Status`（`Up 2 hours (healthy)`）推导状态。健康态单独由 deriveHealth 提供。 */
 export function deriveState(status) {
@@ -203,7 +293,17 @@ export function deriveHealth(status) {
     const value = match[1].toLowerCase();
     return value === 'health: starting' ? 'starting' : value;
 }
-/** 解析 ps 的 `.Ports` 串：`0.0.0.0:8080->80/tcp, [::]:8080->80/tcp, 9000/tcp`。 */
+/** 端口号 / 端口区间的解析结果（区间至少保留原文，不再整行丢弃）；port 区间时取下界。 */
+function parsePortToken(text) {
+    const single = Number(text);
+    if (Number.isInteger(single) && single > 0)
+        return { port: single };
+    const range = /^(\d+)-(\d+)$/.exec(text);
+    if (range !== null)
+        return { port: Number(range[1]), range: [Number(range[1]), Number(range[2])] };
+    return null;
+}
+/** 解析 ps 的 `.Ports` 串：`0.0.0.0:8080->80/tcp, [::]:8080->80/tcp, 9000/tcp, 0.0.0.0:8000-8005->8000-8005/tcp`。 */
 export function parsePorts(text) {
     const out = [];
     const seen = new Set();
@@ -215,34 +315,42 @@ export function parsePorts(text) {
         if (arrow.length === 2) {
             const [hostPart = '', containerPart = ''] = arrow;
             const [containerPortText = '', protocol = 'tcp'] = containerPart.split('/');
-            const containerPort = Number(containerPortText);
-            if (!Number.isInteger(containerPort))
+            const containerToken = parsePortToken(containerPortText);
+            if (containerToken === null)
                 continue;
             const hostPortText = hostPart.slice(hostPart.lastIndexOf(':') + 1);
-            const hostPort = Number(hostPortText);
+            const hostToken = parsePortToken(hostPortText);
             const hostIp = hostPart.slice(0, hostPart.lastIndexOf(':'));
             const key = `${hostIp}:${hostPortText}:${containerPortText}/${protocol}`;
             if (seen.has(key))
                 continue;
             seen.add(key);
+            // 端口区间（`8000-8005->8000-8005/tcp`）：保留区间字段（D40）——此前 Number 得
+            // NaN 直接 continue，整行端口凭空消失
             out.push({
                 ...(hostIp === '' ? {} : { hostIp }),
-                ...(Number.isInteger(hostPort) ? { hostPort } : {}),
-                containerPort,
+                ...(hostToken?.port !== undefined ? { hostPort: hostToken.port } : {}),
+                ...(hostToken?.range !== undefined ? { hostPortRange: hostToken.range } : {}),
+                containerPort: containerToken.port,
+                ...(containerToken.range !== undefined ? { containerPortRange: containerToken.range } : {}),
                 protocol,
             });
             continue;
         }
         // 仅暴露容器端口（未映射）：`9000/tcp`
         const [containerPortText = '', protocol = 'tcp'] = item.split('/');
-        const containerPort = Number(containerPortText);
-        if (!Number.isInteger(containerPort))
+        const containerToken = parsePortToken(containerPortText);
+        if (containerToken === null)
             continue;
         const key = `-:${containerPortText}/${protocol}`;
         if (seen.has(key))
             continue;
         seen.add(key);
-        out.push({ containerPort, protocol });
+        out.push({
+            containerPort: containerToken.port,
+            ...(containerToken.range !== undefined ? { containerPortRange: containerToken.range } : {}),
+            protocol,
+        });
     }
     return out;
 }
@@ -291,7 +399,10 @@ export function parseStatsJson(text) {
         const [memUsedText = '', memLimitText = ''] = mem.split('/');
         const net = parseIOPair(str(row, 'NetIO'));
         const block = parseIOPair(str(row, 'BlockIO'));
-        const pids = Number(str(row, 'PIDs'));
+        // PIDs 缺字段时是空串：Number('') === 0 会显示「0 个进程」（D39），与同函数里
+        // memUsed / memLimit 缺字段时给 null 的口径对齐
+        const pidsText = str(row, 'PIDs');
+        const pids = pidsText.trim() === '' ? Number.NaN : Number(pidsText);
         return {
             id,
             shortId: id.slice(0, 12),
@@ -633,8 +744,8 @@ export function parseInspectJson(text) {
             health: typeof health.Status === 'string' ? health.Status : null,
             healthLogTail: typeof lastHealth.Output === 'string' ? lastHealth.Output.trim() : null,
             created: typeof row.Created === 'string' ? row.Created : null,
-            startedAt: typeof state.StartedAt === 'string' ? state.StartedAt : null,
-            finishedAt: typeof state.FinishedAt === 'string' ? state.FinishedAt : null,
+            startedAt: dockerTime(state.StartedAt),
+            finishedAt: dockerTime(state.FinishedAt),
             exitCode: typeof state.ExitCode === 'number' ? state.ExitCode : null,
             oomKilled: state.OOMKilled === true,
             restartCount: typeof row.RestartCount === 'number' ? row.RestartCount : null,
@@ -669,33 +780,59 @@ export function parseInspectJson(text) {
 function asRecord(value) {
     return typeof value === 'object' && value !== null ? value : {};
 }
+/**
+ * docker 的零值时间不是有效时间（D41）：从未退出的容器 `FinishedAt` 是
+ * `0001-01-01T00:00:00Z`（不是空串），`Date.parse` 还能解析成功 → 「最近出事
+ * 优先」排序被打乱、详情/hover 显示公元 1 年。归一成 null。
+ */
+function dockerTime(value) {
+    if (typeof value !== 'string' || value === '')
+        return null;
+    if (value.startsWith('0001-01-01'))
+        return null;
+    return value;
+}
 /** inspect 的 `NetworkSettings.Ports`：`{ "80/tcp": [{HostIp, HostPort}] }`。 */
 export function parseInspectPorts(value) {
     const ports = asRecord(value);
     const out = [];
     for (const [key, mappings] of Object.entries(ports)) {
         const [containerPortText = '', protocol = 'tcp'] = key.split('/');
-        const containerPort = Number(containerPortText);
-        if (!Number.isInteger(containerPort))
+        // 键本身可能是**端口区间**（`8000-8005/tcp`）：复用 parsePortToken（D102）。
+        // 此前用 Number('8000-8005') 得 NaN → continue，整段端口凭空消失，详情页比
+        // 列表页（parsePorts 已在 D40 支持区间）少一条。
+        const containerToken = parsePortToken(containerPortText);
+        if (containerToken === null)
             continue;
+        const containerPort = containerToken.port;
+        const containerRange = containerToken.range === undefined ? {} : { containerPortRange: containerToken.range };
         const list = Array.isArray(mappings) ? mappings : [];
         if (list.length === 0) {
-            out.push({ containerPort, protocol });
+            out.push({ containerPort, ...containerRange, protocol });
             continue;
         }
         const seen = new Set();
         for (const item of list) {
             const map = asRecord(item);
             const hostIp = typeof map.HostIp === 'string' ? map.HostIp : '';
-            const hostPort = Number(map.HostPort);
-            const dedupe = `${hostPort}`;
+            const hostPortRaw = map.HostPort;
+            const hostPortText = hostPortRaw === undefined || hostPortRaw === null ? '' : String(hostPortRaw);
+            // HostPort 与键同口径（D102）：区间映射的 HostPort 也可能是 `8000-8005`；
+            // 缺失/空串时 parsePortToken 返回 null → 不产出 Number('') === 0 的幻影映射（D38）
+            const hostToken = parsePortToken(hostPortText);
+            const hostRange = hostToken === null || hostToken.range === undefined ? {} : { hostPortRange: hostToken.range };
+            // 去重键含 hostIp（D38）：`-p 8080:8080` 的 inspect 会给 `0.0.0.0` 与 `::` 两条，
+            // 只按端口去重会把 IPv6 那条并掉，详情页比列表页少端口
+            const dedupe = `${hostIp}:${hostPortText}`;
             if (seen.has(dedupe))
                 continue;
             seen.add(dedupe);
             out.push({
                 ...(hostIp === '' ? {} : { hostIp }),
-                ...(Number.isInteger(hostPort) ? { hostPort } : {}),
+                ...(hostToken === null ? {} : { hostPort: hostToken.port }),
+                ...hostRange,
                 containerPort,
+                ...containerRange,
                 protocol,
             });
         }
@@ -727,10 +864,37 @@ export class DockerApi {
             return { ok: false, serverVersion: null, error: error instanceof Error ? error.message : String(error), ...base };
         }
     }
+    /**
+     * assertOk + 截断检查（D13）：列表 / 详情类方法拿到的必须是**完整**输出。
+     * 只检查 code 的话，「输出被截断」会被当成「本来就这么少」——面板静默少列
+     * 容器，inspect 系列更会把截断误报成「对象不存在」，把用户引向错误方向。
+     *
+     * `alternative` 是**这个调用方真正能执行的替代做法**（D105）：agent 改不了插件
+     * 设置，「请调大 maxOutputKb」对它不可执行——ps 能改 all、stats 能传 ids、
+     * events 能缩小 since。文案里还会回显当前上限（见 truncationHint）。
+     */
+    assertComplete(result, what, alternative) {
+        this.assertOk(result, what);
+        if (result.truncated) {
+            throw new Error(`${what}的输出${this.truncationHint(alternative)}`);
+        }
+    }
+    /**
+     * 截断提示的统一文案（D105）：带上当前上限（KB）与目标标签——只说「超过上限」
+     * 无法判断差多少；再拼上调用方的可执行替代做法。
+     * 不抛错的路径（imageInspect 的 history，D104）复用同一句话，保持口径一致。
+     */
+    truncationHint(alternative) {
+        const limitKb = Math.round(this.limits.maxBytes / 1024);
+        const suggest = alternative === undefined || alternative === ''
+            ? '调大「单次命令输出上限」（maxOutputKb）'
+            : `${alternative}；或调大「单次命令输出上限」（maxOutputKb）`;
+        return `因超过上限被截断（目标 ${this.runner.label}，当前上限 ${limitKb} KB）：结果不完整。请${suggest}后重试`;
+    }
     async listContainers(all) {
         const argv = [this.bin, 'ps', ...(all ? ['-a'] : []), '--no-trunc', '--format', '{{json .}}'];
         const result = await this.runner.run(argv, { timeoutMs: this.limits.timeoutMs, maxBytes: this.limits.maxBytes });
-        this.assertOk(result, '列出容器');
+        this.assertComplete(result, '列出容器', '改传 all=false（默认只看运行中的容器）');
         return parsePsJson(result.stdout);
     }
     async inspect(ids) {
@@ -741,16 +905,29 @@ export class DockerApi {
             timeoutMs: this.limits.timeoutMs,
             maxBytes: this.limits.maxBytes,
         });
-        this.assertOk(result, '读取容器详情');
+        this.assertComplete(result, '读取容器详情', '改用更少的容器 id 分批读取');
         return parseInspectJson(result.stdout);
     }
     /**
      * 「需要关注」的容器（0.15.0）：先按摘要筛候选（不健康 / 重启中 / 僵死 /
-     * 非零退出），再**一次** `docker inspect` 补权威字段——OOM 与真实退出码在 ps
-     * 摘要里拿不到（137 也可能是手动 kill），只看摘要会误报。inspect 失败时退回摘要。
+     * 非零退出），再**分块** `docker inspect` 补权威字段——OOM 与真实退出码在 ps
+     * 摘要里拿不到（137 也可能是手动 kill），只看摘要会误报。inspect 失败时退回摘要，
+     * 但一定带 `degraded` 信号（D85/D86）。
+     *
+     * 反复重启（D11）：crash-loop 的容器多数时间显示 Up（退避最长 1 分钟，其余
+     * 时间在跑），RestartCount 只在 inspect 里有——摘要筛不出来。这里把「刚刚
+     * 启动」的运行中容器一并送进 inspect，按「重启计数高 + 刚启动」补捞；补捞有
+     * 独立预算（D87）：合法候选再多也挤不掉它。
+     *
+     * 截断在过滤 + 排序**之后**（D12）：先切后拍的话，名额被一堆老的非零退出
+     * 容器占满时，最严重的 OOM / unhealthy 反而会被切掉；返回值带 total / truncated
+     * 截断信号，不静默。
      */
     async attention(options) {
         const containers = await this.listContainers(true);
+        const limit = Math.min(Math.max(Math.trunc(options?.limit ?? 100), 1), 500);
+        // 合法三类候选（不健康 / 重启中 / 僵死 / 非零退出）：**不设总量闸**——超出的
+        // 部分仍然进 items（它们是真实的问题容器），只是拿不到详情，见下面的 uninspected
         const candidates = containers.filter((item) => {
             if (item.health === 'unhealthy')
                 return true;
@@ -760,28 +937,65 @@ export class DockerApi {
                 return true;
             return false;
         });
-        if (candidates.length === 0)
-            return [];
-        const limit = Math.min(Math.max(Math.trunc(options?.limit ?? 100), 1), 500);
-        const picked = candidates.slice(0, limit);
+        // crash-loop 补捞（D11）：合法候选优先，但补捞有**独立预算**（D87）——此前共用
+        // ATTENTION_INSPECT_CAP，300 个 unhealthy 一占满，真正的 crash-loop 一个都进不来
+        const candidateIds = new Set(candidates.map((item) => item.id));
+        const supplemented = [];
+        let droppedFresh = 0;
+        for (const item of containers) {
+            if (candidateIds.has(item.id))
+                continue;
+            if (!(item.state === 'running' && FRESH_UP_RE.test(item.status)))
+                continue;
+            if (supplemented.length >= ATTENTION_FRESH_BUDGET) {
+                // 预算吃满后仍然「刚启动」的容器没被检查：计入降级信号（D87），不静默
+                droppedFresh += 1;
+                continue;
+            }
+            supplemented.push(item);
+        }
+        const picked = [...candidates, ...supplemented];
+        if (picked.length === 0)
+            return { items: [], total: 0, truncated: false, degraded: false };
+        // inspect 集 = 合法候选的前 CAP 条 + **全部**补捞（总量 ≤ CAP + FRESH_BUDGET）
+        const inspectIds = [...candidates.slice(0, ATTENTION_INSPECT_CAP), ...supplemented].map((item) => item.id);
         const details = new Map();
-        try {
-            for (const detail of await this.inspect(picked.map((item) => item.id)))
-                details.set(detail.id, detail);
+        // inspect 失败必须有信号（D42）：静默退回摘要口径会把 OOM 降级成 exit-nonzero、
+        // 重启次数 / 时间全部缺失，调用方无法区分「没有 OOM」与「权威数据没取到」。
+        // 因此**分块** inspect、每块独立 catch（D86）：一块 300 个 id 时 512KB 必然截断，
+        // 旧写法一抛错就是整批详情全丢——分块后失败只丢那一块，其余块照常可用。
+        let uninspected = picked.length - inspectIds.length + droppedFresh;
+        const batch = attentionInspectBatch(this.limits.maxBytes);
+        for (let offset = 0; offset < inspectIds.length; offset += batch) {
+            const chunk = inspectIds.slice(offset, offset + batch);
+            try {
+                for (const detail of await this.inspect(chunk))
+                    details.set(detail.id, detail);
+            }
+            catch {
+                uninspected += chunk.length;
+            }
         }
-        catch {
-            /* inspect 不可用（权限/超时）时退回摘要数据 */
-        }
+        // 「有候选没取到详情」同样是降级（D85）：旧写法只在整批抛错时置位，于是 320 个
+        // 候选里第 301–320 条静默退回摘要口径（真 OOM 被降成 exit-nonzero、排到最后，
+        // 默认 limit 一截就没了），调用方却看到 degraded=false 而以为数据齐全
+        const degraded = uninspected > 0;
         const items = picked.map((item) => {
             const detail = details.get(item.id);
             const health = detail?.health ?? item.health;
             const exitCode = detail?.exitCode ?? item.exitCode;
             const oomKilled = detail?.oomKilled === true;
+            const restartCount = detail?.restartCount ?? null;
             const reasons = [];
             if (health === 'unhealthy')
                 reasons.push('unhealthy');
-            if (item.state === 'restarting' || detail?.state === 'restarting')
+            if (item.state === 'restarting' || detail?.state === 'restarting') {
                 reasons.push('restarting');
+            }
+            else if (restartCount !== null && restartCount >= ATTENTION_RESTART_THRESHOLD && freshStart(detail?.startedAt ?? null)) {
+                // 运行中但刚启动 + 重启计数高 = 疑似 crash-loop（D11）
+                reasons.push('restarting');
+            }
             if (oomKilled)
                 reasons.push('oom');
             else if (exitCode !== null && exitCode !== 0)
@@ -799,7 +1013,7 @@ export class DockerApi {
                 reasons,
                 exitCode,
                 oomKilled,
-                restartCount: detail?.restartCount ?? null,
+                restartCount,
                 startedAt: detail?.startedAt ?? null,
                 finishedAt: detail?.finishedAt ?? null,
             };
@@ -824,9 +1038,10 @@ export class DockerApi {
             const time = Date.parse(iso);
             return Number.isFinite(time) ? time : 0;
         };
-        return items
+        const sorted = items
             .filter((item) => item.reasons.length > 0)
             .sort((a, b) => weight(a) - weight(b) || at(b) - at(a) || a.name.localeCompare(b.name));
+        return { items: sorted.slice(0, limit), total: sorted.length, truncated: sorted.length > limit, degraded };
     }
     async stats(ids) {
         const safe = ids.map((id) => assertRef(id, 'container'));
@@ -834,7 +1049,7 @@ export class DockerApi {
             timeoutMs: Math.max(this.limits.timeoutMs, 20_000),
             maxBytes: this.limits.maxBytes,
         });
-        this.assertOk(result, '读取容器统计');
+        this.assertComplete(result, '读取容器统计', '传具体 ids（docker_stats 的 ids 参数）而不是全量');
         return parseStatsJson(result.stdout);
     }
     /**
@@ -873,7 +1088,7 @@ export class DockerApi {
             timeoutMs: Math.max(this.limits.timeoutMs, 30_000),
             maxBytes: this.limits.maxBytes,
         });
-        this.assertOk(result, '读取容器事件');
+        this.assertComplete(result, '读取容器事件', '缩小 since 窗口（如 10m）');
         return parseEventsJson(result.stdout);
     }
     /** 事件 argv 的唯一构造点：流式与快照只差 --since / --until。 */
@@ -894,7 +1109,7 @@ export class DockerApi {
             timeoutMs: this.limits.timeoutMs,
             maxBytes: this.limits.maxBytes,
         });
-        this.assertOk(result, '列出镜像');
+        this.assertComplete(result, '列出镜像', 'agent 侧没有分页参数，这是该目标的全量镜像列表');
         return parseImagesJson(result.stdout);
     }
     /**
@@ -911,7 +1126,7 @@ export class DockerApi {
             timeoutMs: this.limits.timeoutMs,
             maxBytes: this.limits.maxBytes,
         });
-        this.assertOk(result, '读取镜像详情');
+        this.assertComplete(result, '读取镜像详情');
         const detail = parseImageInspectJson(result.stdout)[0];
         if (detail === undefined)
             throw new Error(`镜像不存在或输出无法解析：${safe}`);
@@ -926,6 +1141,10 @@ export class DockerApi {
                 history = parseImageHistoryJson(jsonAttempt.stdout);
                 if (history.length === 0)
                     history = parseImageHistoryText(jsonAttempt.stdout);
+                // 截断必须留痕（D104）：层数多的镜像会静默「变短」，而 historyError 是这条
+                // 降级路径唯一的信号位——写进去而不是抛错（历史取不到不该整页报错）
+                if (jsonAttempt.truncated)
+                    historyError = `构建历史${this.truncationHint()}`;
             }
             else {
                 // 老 docker 没有 history --format：退回纯文本表格（仍带 --no-trunc 拿完整命令）
@@ -933,10 +1152,14 @@ export class DockerApi {
                     timeoutMs: this.limits.timeoutMs,
                     maxBytes: this.limits.maxBytes,
                 });
-                if (plainAttempt.code === 0)
+                if (plainAttempt.code === 0) {
                     history = parseImageHistoryText(plainAttempt.stdout);
-                else
+                    if (plainAttempt.truncated)
+                        historyError = `构建历史${this.truncationHint()}`;
+                }
+                else {
                     historyError = firstLine(plainAttempt.stderr, plainAttempt.stdout, plainAttempt.code);
+                }
             }
         }
         catch (error) {
@@ -970,6 +1193,7 @@ export class DockerApi {
         const result = await this.runner.run([this.bin, 'image', 'prune', '-f'], {
             timeoutMs: Math.max(this.limits.timeoutMs, 120_000),
             maxBytes: 256 * 1024,
+            keepTail: true, // Total reclaimed space 在输出末尾（D14）
         });
         this.assertOk(result, '清理 dangling 镜像');
         return { message: result.stdout.trim() || 'ok' };
@@ -980,7 +1204,7 @@ export class DockerApi {
             timeoutMs: this.limits.timeoutMs,
             maxBytes: this.limits.maxBytes,
         });
-        this.assertOk(result, '列出网络');
+        this.assertComplete(result, '列出网络', 'agent 侧没有分页参数，这是该目标的全量网络列表');
         return parseNetworksJson(result.stdout);
     }
     /**
@@ -993,7 +1217,7 @@ export class DockerApi {
             timeoutMs: this.limits.timeoutMs,
             maxBytes: this.limits.maxBytes,
         });
-        this.assertOk(result, '读取网络详情');
+        this.assertComplete(result, '读取网络详情');
         const detail = parseNetworkInspectJson(result.stdout)[0];
         if (detail === undefined)
             throw new Error(`网络不存在或输出无法解析：${safe}`);
@@ -1025,6 +1249,7 @@ export class DockerApi {
         const result = await this.runner.run([this.bin, 'network', 'prune', '-f'], {
             timeoutMs: Math.max(this.limits.timeoutMs, 120_000),
             maxBytes: 256 * 1024,
+            keepTail: true,
         });
         this.assertOk(result, '清理未使用的网络');
         return { message: result.stdout.trim() || 'ok' };
@@ -1035,7 +1260,7 @@ export class DockerApi {
             timeoutMs: this.limits.timeoutMs,
             maxBytes: this.limits.maxBytes,
         });
-        this.assertOk(result, '列出卷');
+        this.assertComplete(result, '列出卷', 'agent 侧没有分页参数，这是该目标的全量卷列表');
         return parseVolumesJson(result.stdout);
     }
     /** 卷详情（`docker volume inspect <name>`）。 */
@@ -1045,7 +1270,7 @@ export class DockerApi {
             timeoutMs: this.limits.timeoutMs,
             maxBytes: this.limits.maxBytes,
         });
-        this.assertOk(result, '读取卷详情');
+        this.assertComplete(result, '读取卷详情');
         const detail = parseVolumeInspectJson(result.stdout)[0];
         if (detail === undefined)
             throw new Error(`卷不存在或输出无法解析：${safe}`);
@@ -1078,6 +1303,7 @@ export class DockerApi {
         const result = await this.runner.run([this.bin, 'volume', 'prune', '-f'], {
             timeoutMs: Math.max(this.limits.timeoutMs, 120_000),
             maxBytes: 256 * 1024,
+            keepTail: true,
         });
         this.assertOk(result, '清理未使用的卷');
         return { message: result.stdout.trim() || 'ok' };
@@ -1098,16 +1324,29 @@ export class DockerApi {
         const result = await this.runner.run([this.bin, 'pull', safe], {
             timeoutMs: Math.min(Math.max(timeoutMs ?? 600_000, 10_000), 1_800_000),
             maxBytes: this.limits.maxBytes,
+            keepTail: true, // digest / Downloaded 结论在输出末尾（D14）
         });
+        // 超时必须报错而不是当成功返回（D16）：模型看到半截「Downloading 12MB/80MB」
+        // 且没有 error，会判定为已拉取，直到 start 才暴露 image not found
+        if (result.timedOut) {
+            throw new Error(`拉取 ${safe} 超时中止（已运行 ${String(Math.round(result.durationMs / 1000))}s），镜像未拉完。可加大 timeoutSec 后重试，或在面板镜像页用进度流观察`);
+        }
         const text = result.stdout + (result.stderr === '' ? '' : (result.stdout === '' ? '' : '\n') + result.stderr);
         return { ref: safe, code: result.code, text, truncated: result.truncated, durationMs: result.durationMs };
     }
-    /** 日志：stdout / stderr 分别收，再按到达顺序合并（docker logs 两者都有内容）。 */
+    /**
+     * 日志：stdout / stderr 分别收，stdout 整段在前、stderr 在后。
+     *
+     * 注意这不是「按到达顺序合并」（D44 注释纠正）：一次性命令的两路输出在
+     * run() 里分别累积，时序信息已经丢了；容器交替写两路时快照日志的先后顺序
+     * 与真实到达序可能不同。要真实时序请用实时跟随（FOLLOW 流是逐块按到达序推的）。
+     */
     async logs(id, options) {
         const safe = assertRef(id, 'container');
         const result = await this.runner.run(this.logsArgv(safe, options, false), {
             timeoutMs: this.limits.timeoutMs,
             maxBytes: this.limits.maxBytes,
+            keepTail: true, // 超限时该丢的是最旧的行，最新行在尾部（D14）
         });
         this.assertOk(result, '读取容器日志');
         const text = result.stdout + (result.stderr === '' ? '' : (result.stdout === '' ? '' : '\n') + result.stderr);

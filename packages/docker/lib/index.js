@@ -1,7 +1,8 @@
 import z from '@deepseek-ai/schemastery';
 import { definePlugin } from '@hyzyn/dsh-kit';
 import { defineTool } from '@deepseek-ai/dsh-tools';
-import { DockerApi, assertBin, assertImageRef, assertRef, createRunner, parseImageHistoryJson, parseImageHistoryText, parseContainerEvent, parseEventsJson, parseImageInspectJson, parseInspectJson, parsePsJson, parseStatsJson, } from './docker.js';
+import * as dns from 'node:dns';
+import { DockerApi, assertBin, assertImageRef, assertName, assertRef, assertSince, createRunner, parseImageHistoryJson, parseImageHistoryText, parseContainerEvent, parseEventsJson, parseImageInspectJson, parseInspectJson, parsePsJson, parseStatsJson, } from './docker.js';
 import { RemoteExec, setCredentialResolver, sshTarget } from './ssh-exec.js';
 const TARGET_SCHEMA = z.object({
     name: z.string().required(),
@@ -21,7 +22,10 @@ const TARGET_SCHEMA = z.object({
 const HOST_KEY_SCHEMA = z.object({
     host: z.string().required(),
     port: z.natural().max(65535).default(22),
-    fingerprint: z.string().required(),
+    /** 同一 host:port 的全部主机密钥指纹（rsa / ed25519 等各一条）。 */
+    fingerprints: z.array(z.string()).default([]),
+    /** 旧版单指纹字段：仅作迁移输入（sanitizeHostKeys 会并进 fingerprints）。 */
+    fingerprint: z.string().default(''),
 });
 const DOCKER_SETTINGS_SCHEMA = z.object({
     enabled: z.boolean().default(true),
@@ -51,12 +55,25 @@ const KNOWN_CONFIG_KEYS = new Set([
     'hostKeys',
     /** 显式清空全部目标的确认位（见 POST /config 的空数组防丢保护）。 */
     'clearTargets',
+    /** 显式删除 SSH 主机密钥记录：[{host, port}]（hostKeys 是并集合并，删除必须显式）。 */
+    'hostKeysRemove',
 ]);
 /* ------------------------------------------------------------------ *
  * 常量
  * ------------------------------------------------------------------ */
 const ROUTE_PREFIX = '/api/dsh-docker';
 const BODY_LIMIT = 1024 * 1024;
+/** 变更类子路由（D32）：要求同源证明（Origin 或 Sec-Fetch-Site: same-origin）。 */
+const MUTATION_SUBROUTES = new Set([
+    '/action',
+    '/images/remove',
+    '/images/prune',
+    '/networks/remove',
+    '/networks/prune',
+    '/volumes/remove',
+    '/volumes/prune',
+    '/exec',
+]);
 const DOCKER_GUIDANCE = '本机已安装 dsh-docker 插件（Docker 容器面板）：Web GUI 侧边栏「容器」入口可查看各目标（本机 / SSH 主机）上的容器列表（含 Compose 项目视图、事件「活动」条）、状态、端口、日志（含实时跟随）与资源占用（含实时跟随 + 迷你趋势图），以及镜像列表与镜像详情（层 / 大小 / 构建历史、拉取进度流）、网络与卷（列表 + 详情；删除 / 清理同样在开关之后）；目标在 插件配置 → Docker 容器面板 里维护（SSH 目标可直接引用 tty 终端面板的连接簿条目）。**默认只读**：启动/停止/重启/删除容器、删除镜像 / 清理 dangling / 拉取镜像、docker exec，都需要用户在设置里显式打开「允许变更操作」「允许 exec」后才有对应工具与按钮。agent 侧配套只读工具 docker_targets（列目标）、docker_ps（列容器，含 compose 项目与服务；**target 传 `*` 可一次列出所有目标**）、docker_attention（**需关注汇总**：unhealthy / 反复重启 / OOM / 非零退出 / 僵死，同样支持 `*` 跨目标）、docker_inspect（容器详情）、docker_logs（日志快照）、docker_stats（CPU/内存/IO 快照）、docker_images（镜像列表）、docker_image_inspect（镜像详情 + 构建历史）、docker_events（容器事件快照，见面板容器列表的「活动」条）、docker_networks（网络列表）、docker_volumes（卷列表）；排障推荐顺序：不确定从哪台/哪个容器看起时先 docker_attention（可 `*` 跨目标）→ docker_ps → docker_logs → docker_inspect → docker_stats → docker_events，镜像排查用 docker_images → docker_image_inspect。docker_action（容器生命周期）、docker_image_remove（删镜像）、docker_image_prune（清理 dangling）、docker_image_pull（拉取镜像）、docker_exec 仅在用户打开对应开关后可用，执行前须确认目标，破坏性操作（容器 remove / 镜像删除与清理）要向用户复述后果。网络 / 卷的删除与 prune 目前只提供面板按钮（HTTP 端点），没有对应的 agent 工具——不要在 agent 侧绕过面板做这些变更。docker socket 等价于目标主机的 root 权限，不要在用户未明确要求时执行变更操作。';
 /**
  * SSE 帧封装：data 一律 `JSON.stringify` 成**单行**——换行 / 引号被转义，
@@ -68,9 +85,81 @@ export function sseFrame(event, data) {
 /** SSE 心跳间隔（毫秒）：注释帧只保活，客户端 EventSource 会忽略。 */
 const SSE_HEARTBEAT_MS = 15_000;
 /** HTTP 路由的 loopback 信任围栏（与 tty / dsh-mcp 同思路）。 */
+/*
+ * 环回地址判定（D31）：接受 127/8 全段（BSD/Linux 惯例——整个 127.0.0.0/8 都是
+ * 环回，此前只认 127.0.0.1 一个字面量）与 IPv6 等价形式（::1、::ffff: 映射）。
+ */
+function isLoopbackAddress(address) {
+    if (address === undefined || address === '')
+        return false;
+    let text = address.toLowerCase();
+    if (text.startsWith('::ffff:'))
+        text = text.slice(7);
+    if (text === '::1')
+        return true;
+    const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(text);
+    return v4 !== null && v4[1] === '127';
+}
+/** 别名 Host 解析结果的缓存与超时（D110）：请求路径里的 DNS 不该每请求都打一次，也不该无限等。 */
+const HOST_LOOPBACK_TTL_MS = 60_000;
+const HOST_LOOPBACK_CACHE_MAX = 64;
+const HOST_LOOPBACK_TIMEOUT_MS = 500;
+const hostLoopbackCache = new Map();
+/**
+ * 解析一个主机名是否指向本机（D110）。带 500ms 超时与 60s 的 LRU（别名部署下每个请求都要过一次）。
+ * **失败与超时不缓存**：解析器恢复后要立刻生效，而不是把一次抖动钉 60 秒。
+ */
+async function lookupHostLoopback(host) {
+    const cached = hostLoopbackCache.get(host);
+    if (cached !== undefined && Date.now() - cached.at <= HOST_LOOPBACK_TTL_MS)
+        return cached.loopback;
+    let timer = null;
+    try {
+        const records = await Promise.race([
+            dns.promises.lookup(host, { all: true }),
+            new Promise((_resolve, reject) => {
+                timer = setTimeout(() => reject(new Error(`DNS 解析超时（>${String(HOST_LOOPBACK_TIMEOUT_MS)}ms）`)), HOST_LOOPBACK_TIMEOUT_MS);
+                timer.unref?.();
+            }),
+        ]);
+        const loopback = records.some((record) => isLoopbackAddress(record.address));
+        if (hostLoopbackCache.size >= HOST_LOOPBACK_CACHE_MAX) {
+            const oldest = hostLoopbackCache.keys().next().value;
+            if (oldest !== undefined)
+                hostLoopbackCache.delete(oldest);
+        }
+        hostLoopbackCache.set(host, { at: Date.now(), loopback });
+        return loopback;
+    }
+    catch {
+        return false;
+    }
+    finally {
+        if (timer !== null)
+            clearTimeout(timer);
+    }
+}
+/**
+ * Host 是否指向本机（D31）：字面量环回直接判；主机名 / /etc/hosts 别名走一次带超时的
+ * DNS 解析。判不出来就拒绝——围栏宁可误拦一个怪别名，不能放行一个能解析到公网的 Host。
+ */
+async function hostResolvesToLoopback(hostname) {
+    const host = hostname.toLowerCase().replace(/\.$/, '');
+    if (host === 'localhost' || host.endsWith('.localhost') || isLoopbackAddress(host))
+        return true;
+    return await lookupHostLoopback(host);
+}
+/**
+ * loopback 信任围栏（D31）：字面量环回（绝大多数请求）**同步**判定——保持
+ * 「请求进来即建流」的原有时序（SSE 测试与 EventSource 都依赖第一拍就写头）；
+ * 只有主机名 / /etc/hosts 别名才走异步 DNS 确认。
+ *
+ * **来源检查必须在解析 Host 之前**（D80）：别名主机名（`127.0.0.1.nip.io`、`/etc/hosts` 里
+ * 的别名）走的是异步分支，若在那里提前 return，`Sec-Fetch-Site` 与 Origin 两段检查会被
+ * 整段跳过 —— 围栏等于没设，跨站页面就能写 `/config`（它不要求同源证明）。
+ */
 function isLoopbackHttp(req) {
-    const address = req.socket.remoteAddress;
-    if (address !== '127.0.0.1' && address !== '::1' && address !== '::ffff:127.0.0.1')
+    if (!isLoopbackAddress(req.socket.remoteAddress))
         return false;
     const host = req.headers.host;
     if (typeof host !== 'string')
@@ -82,15 +171,44 @@ function isLoopbackHttp(req) {
     catch {
         return false;
     }
-    if (hostUrl.hostname !== '127.0.0.1' && hostUrl.hostname !== 'localhost' && hostUrl.hostname !== '[::1]')
-        return false;
     if (req.headers['sec-fetch-site'] === 'cross-site')
         return false;
     const origin = req.headers.origin;
-    if (origin === undefined)
+    if (origin !== undefined) {
+        let sameOrigin = false;
+        try {
+            sameOrigin = new URL(origin).host === hostUrl.host;
+        }
+        catch {
+            sameOrigin = false;
+        }
+        if (!sameOrigin)
+            return false;
+    }
+    const hostname = hostUrl.hostname.toLowerCase().replace(/\.$/, '');
+    if (hostname === 'localhost' || hostname.endsWith('.localhost') || isLoopbackAddress(hostname))
         return true;
+    return hostResolvesToLoopback(hostname);
+}
+/**
+ * 「同源证明」（D32）：变更类与长流端点要求请求带 Origin（浏览器 fetch 对
+ * cross-site 一定带）或 Sec-Fetch-Site: same-origin 之一。恶意页面可以用
+ * `<img src="GET /images/pull/stream?...">` 触发副作用 / 拉起 docker 子进程，
+ * 而旧 Safari / 部分 WebView 既不发 Origin 也不发 Sec-Fetch-Site——这两类端点
+ * 对「无来源证明」的请求拒绝；只读端点维持 loopback-only 的原信任模型。
+ */
+function hasSameOriginProof(req) {
+    const site = req.headers['sec-fetch-site'];
+    if (typeof site === 'string' && site === 'same-origin')
+        return true;
+    const origin = req.headers.origin;
+    if (typeof origin !== 'string' || origin === '')
+        return false;
+    const host = req.headers.host;
+    if (typeof host !== 'string')
+        return false;
     try {
-        return new URL(origin).host === hostUrl.host;
+        return new URL(origin).host === host;
     }
     catch {
         return false;
@@ -155,38 +273,106 @@ export function sanitizeTargets(input) {
     }
     return out;
 }
-/** 清洗一份 hostKeys 输入。 */
+/**
+ * 清洗一份 hostKeys 输入（settings 存储 / 热更新 / 种子复制共用）。
+ *
+ * 同时接受两种形状（D03）：
+ *   - tty 0.19.0+ 的 `{host, port, fingerprints: [...]}`（多指纹集合）；
+ *   - docker 0.6.x 自己落盘的 `{host, port, fingerprint}`（迁移输入）。
+ * host 统一 trim + 小写（与 tty 的落盘口径一致，否则种子命中与否取决于大小写），
+ * 同一 host:port 的多条记录合并成一组指纹。
+ */
 export function sanitizeHostKeys(input) {
     if (!Array.isArray(input))
         return undefined;
-    const out = [];
+    const byKey = new Map();
     for (const raw of input) {
         if (typeof raw !== 'object' || raw === null)
             continue;
         const item = raw;
-        const host = typeof item.host === 'string' ? item.host.trim() : '';
-        const fingerprint = typeof item.fingerprint === 'string' ? item.fingerprint.trim() : '';
-        if (host === '' || fingerprint === '')
-            continue;
+        const host = typeof item.host === 'string' ? item.host.trim().toLowerCase() : '';
         const port = typeof item.port === 'number' && Number.isInteger(item.port) && item.port >= 1 && item.port <= 65535 ? item.port : 22;
-        out.push({ host, port, fingerprint });
+        const list = Array.isArray(item.fingerprints) ? item.fingerprints : [];
+        const single = typeof item.fingerprint === 'string' && item.fingerprint.trim() !== '' ? [item.fingerprint.trim()] : [];
+        const fingerprints = [...new Set([
+                ...list.filter((fp) => typeof fp === 'string' && fp.trim() !== '').map((fp) => fp.trim()),
+                ...single,
+            ])];
+        if (host === '' || fingerprints.length === 0)
+            continue;
+        const key = `${host}:${String(port)}`;
+        const existing = byKey.get(key);
+        if (existing !== undefined) {
+            existing.fingerprints = [...new Set([...existing.fingerprints, ...fingerprints])];
+            continue;
+        }
+        byKey.set(key, { host, port, fingerprints });
     }
-    return out;
+    return [...byKey.values()];
+}
+/**
+ * hostKeys **并集**合并（D10）：客户端表单快照回传的表不得整表覆盖 TOFU 运行期
+ * 新增的记录——面板一次无关保存就把钉扎回退掉，指纹变更检测随之失效。按
+ * host:port 合并指纹集合；删除某条记录走显式的 `hostKeysRemove`。
+ */
+export function mergeHostKeys(base, incoming) {
+    const byKey = new Map();
+    for (const record of base) {
+        byKey.set(`${record.host}:${String(record.port)}`, { host: record.host, port: record.port, fingerprints: [...record.fingerprints] });
+    }
+    for (const record of sanitizeHostKeys(incoming) ?? []) {
+        const key = `${record.host}:${String(record.port)}`;
+        const existing = byKey.get(key);
+        if (existing === undefined) {
+            byKey.set(key, { host: record.host, port: record.port, fingerprints: [...record.fingerprints] });
+            continue;
+        }
+        existing.fingerprints = [...new Set([...existing.fingerprints, ...record.fingerprints])];
+    }
+    return [...byKey.values()];
 }
 /**
  * 合并凭证：配置卡片从不回显密码 / 口令（只回 passwordSet），因此浏览器提交的
  * targets 里往往**没有** password/passphrase 字段。按目标名把已有值补回来，
  * 避免「改个名字就把密码清了」。（显式传空字符串仍然按清空处理。）
+ *
+ * 改名的目标按**连接身份**（book / host / port / username / auth / keyPath）认领
+ * 旧凭证（D15）：只按名字找的话，改名 = 凭证凭空消失。身份对不上就不继承——
+ * 「删一个目标、另建一个无关目标」不应该串密码，宁缺勿错。
  */
 export function mergeTargetSecrets(prev, incoming) {
     if (!Array.isArray(incoming))
         return incoming;
+    const incomingNames = new Set();
+    for (const raw of incoming) {
+        if (typeof raw !== 'object' || raw === null)
+            continue;
+        const name = raw.name;
+        if (typeof name === 'string' && name.trim() !== '')
+            incomingNames.add(name.trim());
+    }
+    // 名字没出现在新表里的旧目标 = 改名 / 删除的候选
+    const renamed = prev.filter((target) => !incomingNames.has(target.name));
     return incoming.map((raw) => {
         if (typeof raw !== 'object' || raw === null)
             return raw;
         const item = raw;
         const name = typeof item.name === 'string' ? item.name.trim() : '';
-        const before = prev.find((target) => target.name === name);
+        let before = prev.find((target) => target.name === name);
+        if (before === undefined && renamed.length > 0) {
+            const book = typeof item.book === 'string' ? item.book.trim() : '';
+            const host = typeof item.host === 'string' ? item.host.trim() : '';
+            const username = typeof item.username === 'string' ? item.username.trim() : '';
+            const keyPath = typeof item.keyPath === 'string' ? item.keyPath.trim() : '';
+            const auth = item.auth === 'key' || item.auth === 'password' ? item.auth : 'agent';
+            const port = typeof item.port === 'number' && Number.isInteger(item.port) ? item.port : 22;
+            before = renamed.find((target) => (target.book ?? '') === book
+                && target.host === host
+                && (target.port ?? 22) === port
+                && target.username === username
+                && (target.auth ?? 'agent') === auth
+                && target.keyPath === keyPath);
+        }
         if (before === undefined)
             return item;
         const next = { ...item };
@@ -348,7 +534,7 @@ const plugin = definePlugin({
         const ttySeed = () => {
             const map = new Map();
             for (const record of readTtyHostKeys(settingsApi))
-                map.set(`${record.host}:${String(record.port)}`, record.fingerprint);
+                map.set(`${record.host}:${String(record.port)}`, record.fingerprints);
             return map;
         };
         const persistHostKeys = (records) => {
@@ -361,21 +547,35 @@ const plugin = definePlugin({
         };
         const hostKeyStore = {
             get(host, port) {
-                const own = live.hostKeys.find((record) => record.host === host && record.port === port);
-                if (own !== undefined)
-                    return own.fingerprint;
-                // tty 已确认过的主机不再重复确认：种子命中即视为可信，并复制进本插件的记录
-                const seeded = ttySeed().get(`${host}:${String(port)}`);
-                if (seeded !== undefined) {
-                    live.hostKeys = [...live.hostKeys, { host, port, fingerprint: seeded }];
+                // host 键统一 trim + 小写（D03）：tty 落盘时把 host 小写化，比较口径必须一致
+                const key = host.trim().toLowerCase();
+                const own = live.hostKeys.find((record) => record.host === key && record.port === port);
+                if (own !== undefined && own.fingerprints.length > 0)
+                    return own.fingerprints;
+                // tty 已确认过的主机不再重复确认：种子命中即视为可信，并**整组**复制进本插件的
+                // 记录（D03）——此前只认单数 fingerprint 字段，tty 0.19.0 改存 fingerprints[] 后
+                // 种子恒为空，对 tty 钉扎过的主机会静默重新 TOFU（指纹变更不再拒绝）。
+                const seeded = ttySeed().get(`${key}:${String(port)}`);
+                if (seeded !== undefined && seeded.length > 0) {
+                    live.hostKeys = [...live.hostKeys, { host: key, port, fingerprints: [...seeded] }];
                     persistHostKeys(live.hostKeys);
                     return seeded;
                 }
-                return undefined;
+                return own?.fingerprints;
             },
             record(host, port, fingerprint) {
-                const next = live.hostKeys.filter((record) => !(record.host === host && record.port === port));
-                next.push({ host, port, fingerprint });
+                const key = host.trim().toLowerCase();
+                const existing = live.hostKeys.find((record) => record.host === key && record.port === port);
+                if (existing !== undefined) {
+                    // 同一主机的第二把主机密钥（rsa + ed25519）：并入集合而不是覆盖（D03）
+                    if (!existing.fingerprints.includes(fingerprint)) {
+                        existing.fingerprints = [...existing.fingerprints, fingerprint];
+                        persistHostKeys(live.hostKeys);
+                    }
+                    return;
+                }
+                const next = live.hostKeys.filter((record) => !(record.host === key && record.port === port));
+                next.push({ host: key, port, fingerprints: [fingerprint] });
                 live.hostKeys = next;
                 persistHostKeys(next);
             },
@@ -434,8 +634,19 @@ const plugin = definePlugin({
         };
         /** 解析工具/路由里的 target 参数。 */
         const pickTarget = (input) => {
-            if (typeof input === 'string' && input.trim() !== '')
-                return { name: input.trim() };
+            if (typeof input === 'string' && input.trim() !== '') {
+                const name = input.trim();
+                // `*` 聚合只有 docker_ps / docker_attention 支持（D46）：到这里说明是单目标
+                // 工具传了 `*`——给专门文案，而不是一句「未知目标：*」
+                if (name === '*')
+                    return { error: '`*`（全部目标）只有 docker_ps / docker_attention 支持；请传具体目标名（docker_targets 列出）' };
+                return { name };
+            }
+            // 类型不对（数字 / 数组 / 对象）必须报错（D34）：静默回落到默认目标会让
+            // 破坏性操作打错主机的最后一道防线失效
+            if (input !== undefined && input !== null && typeof input !== 'string') {
+                return { error: 'target 必须是字符串（目标名见 docker_targets）' };
+            }
             const fallback = defaultTargetName();
             if (fallback !== undefined)
                 return { name: fallback };
@@ -603,6 +814,17 @@ const plugin = definePlugin({
             const controller = new AbortController();
             let done = false;
             let heartbeat = null;
+            /*
+             * 背压（D04）：write() 返回 false = socket 写缓冲已满。无视返回值继续写，
+             * 慢客户端（后台标签 / 慢链路）+ 话痨容器会让宿主侧缓冲无界增长直至 OOM。
+             * 处理：缓冲已满时把帧暂存进内存队列、等 drain 再续写；队列超过上限视为
+             * 客户端事实上已死（消费速度跟不上产出），主动收尾——宿主内存上限从
+             * 「无界」变成「每条流 ≤ MAX_PENDING_BYTES」。上游（docker logs -f 的
+             * stdout）由 finish/clientGone 里的 abort 停掉，不需要逐帧 pause。
+             */
+            const MAX_PENDING_BYTES = 8 * 1024 * 1024;
+            let pendingFrames = [];
+            let pendingBytes = 0;
             const stopHeartbeat = () => {
                 if (heartbeat === null)
                     return;
@@ -615,6 +837,8 @@ const plugin = definePlugin({
                     return;
                 done = true;
                 stopHeartbeat();
+                pendingFrames = [];
+                pendingBytes = 0;
                 activeStreams.delete(handle);
                 controller.abort();
             };
@@ -626,28 +850,59 @@ const plugin = definePlugin({
                 stopHeartbeat();
                 activeStreams.delete(handle);
                 controller.abort();
+                /*
+                 * 收尾前把没写完的帧交给 res.end 落地（D83）：直接清空队列会把已经入队、还没进
+                 * socket 的帧（含 end / error 帧）一起丢掉。客户端凭「连接关了但没有 end 帧」
+                 * 判定异常 → EventSource 自动重连 → **拉取流会把 docker pull 再跑一遍**。
+                 * 队列本身有 8MB 上限，这里一次 append 不会放大内存。
+                 */
+                const tail = pendingFrames.join('');
+                pendingFrames = [];
+                pendingBytes = 0;
                 try {
-                    res.end();
+                    res.end(tail === '' ? undefined : tail);
                 }
                 catch {
                     /* 连接已断开 */
                 }
             };
-            const send = (frame) => {
-                if (done)
-                    return;
+            const writeFrame = (frame) => {
                 try {
-                    write(frame);
+                    return write(frame) !== false;
                 }
                 catch {
                     // 写失败 = 连接已断：与 res close 同一收尾路径
                     clientGone();
+                    return false;
                 }
+            };
+            /** drain 后续写暂存的帧；中途再遇 false 就停手等下一次 drain。 */
+            const flushPending = () => {
+                while (!done && pendingFrames.length > 0) {
+                    const frame = pendingFrames[0];
+                    if (!writeFrame(frame))
+                        return;
+                    pendingBytes -= frame.length;
+                    pendingFrames.shift();
+                }
+            };
+            const send = (frame) => {
+                if (done)
+                    return;
+                if (pendingFrames.length === 0 && writeFrame(frame))
+                    return;
+                if (done)
+                    return;
+                pendingFrames.push(frame);
+                pendingBytes += frame.length;
+                if (pendingBytes > MAX_PENDING_BYTES)
+                    finish();
             };
             const sendEvent = (event, data) => send(sseFrame(event, data));
             const handle = { end: finish };
             activeStreams.add(handle);
             res.on?.('close', clientGone);
+            res.on?.('drain', flushPending);
             heartbeat = setInterval(() => send(': ping\n\n'), SSE_HEARTBEAT_MS);
             heartbeat.unref?.();
             try {
@@ -665,17 +920,63 @@ const plugin = definePlugin({
             }
         };
         /* ---------- 配置热应用 ---------- */
-        const applySection = (section) => {
-            // 目标 / 凭证 / 启用态都可能变：已开的日志流按旧配置在跑，先统一收尾；
-            // 浏览器侧 EventSource 会自动重连（服务端已停机就停在断开态）
-            closeAllStreams();
+        /**
+         * 逐字段比较目标列表（含凭证）：凭证变了，已开的流按旧凭据在跑，也要收尾。
+         * **顺序无关**（D108）：面板上重排一次目标不该被当成「目标变了」而收流 —— 那会把
+         * 在途的 docker pull 一起 abort 掉（正是 D09 要消除的「一次白拉」）。
+         */
+        const sameTargets = (a, b) => {
+            if (a.length !== b.length)
+                return false;
+            const byName = new Map(b.map((item) => [item.name, item]));
+            return a.every((item) => {
+                const other = byName.get(item.name);
+                if (other === undefined)
+                    return false;
+                return item.kind === other.kind
+                    && item.book === other.book
+                    && item.host === other.host
+                    && item.port === other.port
+                    && item.username === other.username
+                    && item.auth === other.auth
+                    && item.keyPath === other.keyPath
+                    && item.password === other.password
+                    && item.passphrase === other.passphrase
+                    && item.agentForward === other.agentForward;
+            });
+        };
+        const applySection = (section, options) => {
+            const before = live;
             // hostKeys 只在显式传入时覆盖（避免把 TOFU 运行期新增的记录冲掉）
             const merged = { ...live, ...section };
             if (section.hostKeys === undefined)
                 merged.hostKeys = live.hostKeys;
             live = normalizeConfig(merged);
-            refreshTools();
-            refreshAnnouncement();
+            /*
+             * 执行通道相关的键**变了**才收流（D09）：TOFU 落盘会走到这里（hostKeys 变化、
+             * 其余不变），此前无差别 closeAllStreams 会把刚开的日志 FOLLOW 掐断、把在途的
+             * docker pull abort 掉——一次白拉。浏览器侧 EventSource 虽会自动重连，但拉取
+             * 不会自己重来。
+             */
+            // 能力开关被**撤销**时也必须收流（D84）：在途的 /images/pull/stream 是写操作，
+            // 关掉「允许变更操作」就该立刻停手（旧代码无条件收流，D09 收窄条件时漏了这条）。
+            const mutationsRevoked = before.allowMutations && !live.allowMutations;
+            if (before.enabled !== live.enabled || before.dockerBin !== live.dockerBin || !sameTargets(before.targets, live.targets) || mutationsRevoked) {
+                closeAllStreams();
+            }
+            // 工具注册面只受启用态 / 能力开关影响；dockerBin 不改变工具清单但影响执行，
+            // 一起重注册是幂等的，保守带上。forceRefreshTools 给「保存路径」用：上一次注册
+            // 可能只成功了一部分，重存同一份配置也要能重试（D107）。
+            if (options?.forceRefreshTools === true
+                || before.enabled !== live.enabled
+                || before.dockerBin !== live.dockerBin
+                || before.allowMutations !== live.allowMutations
+                || before.allowExec !== live.allowExec) {
+                refreshTools();
+            }
+            if (before.enabled !== live.enabled || before.announceToAgent !== live.announceToAgent) {
+                refreshAnnouncement();
+            }
             console.log(`[dsh-docker] config applied (enabled=${String(live.enabled)}, bin=${live.dockerBin}, targets=${String(live.targets.length)}, allowMutations=${String(live.allowMutations)}, allowExec=${String(live.allowExec)})`);
         };
         /* ---------- agent 工具 ---------- */
@@ -687,7 +988,8 @@ const plugin = definePlugin({
                 return '尚未配置任何 Docker 目标（插件配置 → Docker 容器面板 → 目标）。';
             return 'Docker 目标：' + rows.map((row) => {
                 const state = row.ok === undefined ? '' : row.ok ? ' [可达]' : ` [不可用：${row.error ?? '未知'}]`;
-                return `\n- ${row.name} (${row.kind}) ${row.label}${state}`;
+                const version = row.serverVersion === undefined ? '' : ` docker ${row.serverVersion}`;
+                return `\n- ${row.name} (${row.kind}) ${row.label}${version}${state}`;
             }).join('');
         };
         /**
@@ -728,16 +1030,28 @@ const plugin = definePlugin({
         };
         /** 需关注列表渲染（单目标 / 跨目标共用）。入参同样是**工具扁平形状**，不是 AttentionItem。 */
         const renderAttention = (groups) => {
+            // 零目标不是「一切正常」（D53）：排障入口给出假阴性比报错更糟——与 docker_ps
+            // 的「尚未配置任何 Docker 目标」兜底同款
+            if (groups.length === 0)
+                return '尚未配置任何 Docker 目标（插件配置 → Docker 容器面板）。';
             const total = groups.reduce((sum, group) => sum + (group.items?.length ?? 0), 0);
             if (total === 0 && groups.every((group) => group.ok))
-                return '所有目标上没有需要关注的容器（无 unhealthy / 重启中 / OOM / 非零退出）。';
+                return '所有目标上没有需要关注的容器（无 unhealthy / 反复重启 / OOM / 非零退出 / 僵死）。';
             return `需关注容器共 ${String(total)} 个：` + groups.map((group) => {
                 if (!group.ok)
                     return `\n\n■ ${group.target}（${group.label}）— 不可用：${group.error ?? '未知错误'}`;
                 const items = group.items ?? [];
                 if (items.length === 0)
                     return `\n\n■ ${group.target}（${group.label}）— 无异常`;
-                return `\n\n■ ${group.target}（${group.label}）` + items.map((item) => {
+                // 降级信号的措辞要覆盖全部三种成因（D42/D85）：inspect 整体失败、候选超出检查预算、
+                // 补捞预算被吃满 —— 都是「权威字段按摘要口径」，而不是单纯的 inspect 失败
+                const warn = group.degraded === true ? '（部分条目未取到权威详情：inspect 失败或候选超出检查预算，OOM / 重启次数等按摘要口径）' : '';
+                // 截断信号（D12）：名额按严重度排序后切，超出的不静默
+                const cut = group.truncated === true && group.total !== undefined && group.total > items.length
+                    ? `（该目标实际共 ${String(group.total)} 条，已按严重度截断为 ${String(items.length)} 条，可传更大的 limit）`
+                    : '';
+                const notes = [warn, cut].filter((part) => part !== '').join(' ');
+                return `\n\n■ ${group.target}（${group.label}）${notes === '' ? '' : '\n' + notes}` + items.map((item) => {
                     const reasons = item.reasons.map((reason) => ATTENTION_LABEL[reason] ?? reason).join(' + ');
                     const extra = [
                         item.exitCode === undefined ? '' : `exit=${String(item.exitCode)}`,
@@ -856,10 +1170,24 @@ const plugin = definePlugin({
             // 插件禁用（设置卡片关掉「启用插件」）时不注册任何工具：运行期关掉也要立刻生效
             if (!live.enabled)
                 return;
-            const targetParam = { type: 'string', description: '目标名（docker_targets 列出；只有一个目标时可省略）' };
+            // 文案要跟语义一致（D46）：`*` 聚合只有 docker_ps / docker_attention 真支持，
+            // 其余 12 个单目标工具省略时只在「恰好一个目标」时回落、多目标则报 target 必填
+            const targetParam = { type: 'string', description: '目标名（docker_targets 列出；只有一个目标时可省略。`*` 仅 docker_ps / docker_attention 支持，其他工具请传具体目标名）' };
+            /*
+             * 单个工具注册失败不该把整批带下去（D107）：以前 add 直接抛，调用方（applySection）
+             * 也就抛了，结果是「旧工具已全拆 + 新工具只注册了一半」，而重存同一份配置又因为
+             * 差异判定不再触发 refreshTools —— 半套状态一直缺到重启。现在逐条兜住并汇总，
+             * 下次配置变更（或保存路径的 forceRefreshTools）会自然重试。
+             */
+            const failures = [];
             const add = (toolName, definition) => {
-                toolDisposers.push(tools.register(definition));
-                registeredNames.push(toolName);
+                try {
+                    toolDisposers.push(tools.register(definition));
+                    registeredNames.push(toolName);
+                }
+                catch (error) {
+                    failures.push(`${toolName}: ${error instanceof Error ? error.message : String(error)}`);
+                }
             };
             add('docker_targets', defineTool({
                 name: 'docker_targets',
@@ -882,6 +1210,7 @@ const plugin = definePlugin({
                                         label: { type: 'string', required: true },
                                         ok: { type: 'boolean' },
                                         error: { type: 'string' },
+                                        serverVersion: { type: 'string' },
                                     },
                                 },
                             },
@@ -913,7 +1242,15 @@ const plugin = definePlugin({
                             continue;
                         }
                         const probe = await api.probe();
-                        rows.push({ name: target.name, kind: target.kind, label, ok: probe.ok, ...(probe.ok ? {} : { error: probe.error ?? '未知错误' }) });
+                        // serverVersion 随 probe 回传（D48）：README 承诺「探测 docker 版本」，
+                        // probe() 本来就返回了它，只是这里被丢掉了
+                        rows.push({
+                            name: target.name,
+                            kind: target.kind,
+                            label,
+                            ok: probe.ok,
+                            ...(probe.ok ? { ...(probe.serverVersion === null ? {} : { serverVersion: probe.serverVersion }) } : { error: probe.error ?? '未知错误' }),
+                        });
                     }
                     return { targets: rows };
                 },
@@ -993,7 +1330,9 @@ const plugin = definePlugin({
                     const input = (args ?? {});
                     const isAll = typeof input.target === 'string' && input.target.trim() === '*';
                     const toRow = (row) => ({
-                        id: row.id,
+                        // 短 ID（D47）：docker_attention 已是 shortId，同一字段跨工具宽度要一致
+                        //（ps 带 --no-trunc，完整 64 位既与 README 的「短 ID」矛盾也多烧 token）
+                        id: row.shortId,
                         name: row.name,
                         image: row.image,
                         state: row.state,
@@ -1039,6 +1378,9 @@ const plugin = definePlugin({
                         additionalProperties: false,
                         properties: {
                             target: { type: 'string' },
+                            total: { type: 'number' },
+                            truncated: { type: 'boolean' },
+                            degraded: { type: 'boolean' },
                             items: {
                                 type: 'array',
                                 items: {
@@ -1067,6 +1409,9 @@ const plugin = definePlugin({
                                         label: { type: 'string', required: true },
                                         ok: { type: 'boolean', required: true },
                                         error: { type: 'string' },
+                                        total: { type: 'number' },
+                                        truncated: { type: 'boolean' },
+                                        degraded: { type: 'boolean' },
                                         items: {
                                             type: 'array',
                                             items: {
@@ -1094,7 +1439,23 @@ const plugin = definePlugin({
                         const v = value;
                         if (Array.isArray(v.groups))
                             return [{ type: 'text', text: renderAttention(v.groups) }];
-                        return [{ type: 'text', text: renderAttention([{ target: v.target ?? '?', label: v.target ?? '?', ok: true, items: v.items ?? [] }]) }];
+                        /*
+                         * 单目标分支也要把 total / truncated / degraded 带上（D100）：renderAttention 的
+                         * 「实际共 N 条、已截断」与「inspect 降级」两段提示读的就是这三个字段，漏传时
+                         * 最常用的单目标调用仍然静默截断 —— D12/D42 想消除的假阴性就还在。
+                         */
+                        return [{
+                                type: 'text',
+                                text: renderAttention([{
+                                        target: v.target ?? '?',
+                                        label: v.target ?? '?',
+                                        ok: true,
+                                        items: v.items ?? [],
+                                        ...(v.total === undefined ? {} : { total: v.total }),
+                                        ...(v.truncated === true ? { truncated: true } : {}),
+                                        ...(v.degraded === true ? { degraded: true } : {}),
+                                    }]),
+                            }];
                     },
                 },
                 async execute(args) {
@@ -1121,7 +1482,12 @@ const plugin = definePlugin({
                                 label: group.label,
                                 ok: group.ok,
                                 ...(group.error === undefined ? {} : { error: group.error }),
-                                ...(group.data === undefined ? {} : { items: group.data.map(toRow) }),
+                                ...(group.data === undefined ? {} : {
+                                    items: group.data.items.map(toRow),
+                                    total: group.data.total,
+                                    ...(group.data.truncated ? { truncated: true } : {}),
+                                    ...(group.data.degraded ? { degraded: true } : {}),
+                                }),
                             })),
                         };
                     }
@@ -1131,8 +1497,14 @@ const plugin = definePlugin({
                     const { api } = apiFor(picked.name);
                     if (api === undefined)
                         throw new Error(resolveByName(picked.name).error ?? '无法构造执行通道');
-                    const items = await api.attention(limit === undefined ? undefined : { limit });
-                    return { target: picked.name, items: items.map(toRow) };
+                    const attention = await api.attention(limit === undefined ? undefined : { limit });
+                    return {
+                        target: picked.name,
+                        items: attention.items.map(toRow),
+                        total: attention.total,
+                        ...(attention.truncated ? { truncated: true } : {}),
+                        ...(attention.degraded ? { degraded: true } : {}),
+                    };
                 },
             }));
             add('docker_inspect', defineTool({
@@ -1172,11 +1544,11 @@ const plugin = definePlugin({
             }));
             add('docker_logs', defineTool({
                 name: 'docker_logs',
-                description: '读取某个容器的日志尾部（docker logs --tail）。默认 200 行、不带时间戳；可加 timestamps / since。日志可能很大，优先用 tail 而不是全量。',
+                description: '读取某个容器的日志尾部（docker logs --tail）。默认行数取插件配置 logTailDefault（出厂 200）、不带时间戳；可加 timestamps / since。日志可能很大，优先用 tail 而不是全量。',
                 parameters: {
                     target: targetParam,
                     id: { type: 'string', required: true, description: '容器名或 ID' },
-                    tail: { type: 'number', description: '尾部行数（1~5000，默认 200）' },
+                    tail: { type: 'number', description: '尾部行数（1~5000，默认取配置 logTailDefault；越界值会被静默夹紧到边界）' },
                     timestamps: { type: 'boolean', description: 'true 时每行带时间戳' },
                     since: { type: 'string', description: '起始时间（docker --since 语法，如 10m、2026-09-09T10:00:00）' },
                 },
@@ -1210,7 +1582,10 @@ const plugin = definePlugin({
                     const result = await api.logs(input.id, {
                         tail: typeof input.tail === 'number' && Number.isInteger(input.tail) ? input.tail : live.logTailDefault,
                         timestamps: input.timestamps === true,
-                        ...(typeof input.since === 'string' ? { since: input.since } : {}),
+                        // since 统一口径（D45）：与 docker_events 同一个 assertSince——此前 logs
+                        // 完全不校验，docker 的参数错误会变成一句不可读的报错。空/纯空白按「未传」处理（D98）：
+                        // 否则模型传个空串会拿到「since 必填」这种与事实相反的提示。
+                        ...(typeof input.since === 'string' && input.since.trim() !== '' ? { since: assertSince(input.since) } : {}),
                     });
                     return { target: picked.name, id: result.id, text: result.text, truncated: result.truncated };
                 },
@@ -1261,6 +1636,11 @@ const plugin = definePlugin({
                     const ids = typeof input.ids === 'string'
                         ? input.ids.split(',').map((id) => id.trim()).filter((id) => id !== '')
                         : [];
+                    // 传了 ids 但解析为空（空串 / 纯空白 / 全是逗号）必须报错（D52）：静默变成
+                    // 「全部容器」会让模型把别的容器数据当成目标容器的
+                    if (typeof input.ids === 'string' && input.ids.trim() !== '' && ids.length === 0) {
+                        throw new Error('ids 只包含空白：请传容器名/ID（逗号分隔），或干脆省略 ids 表示全部运行中容器');
+                    }
                     const { api } = apiFor(picked.name);
                     if (api === undefined)
                         throw new Error(resolveByName(picked.name).error ?? '无法构造执行通道');
@@ -1282,7 +1662,7 @@ const plugin = definePlugin({
             }));
             add('docker_events', defineTool({
                 name: 'docker_events',
-                description: '读取某个目标最近的容器事件（docker events 快照）：start / die / stop / kill / oom / health_status / destroy / rename / update 八类，已过滤掉 exec_* 等噪音。默认看最近 10m。要持续观察请让用户打开面板容器列表的「活动」条。',
+                description: '读取某个目标最近的容器事件（docker events 快照）：start / die / stop / kill / oom / health_status / destroy / rename / update 九类，已过滤掉 exec_* 等噪音。默认看最近 10m。要持续观察请让用户打开面板容器列表的「活动」条。',
                 parameters: {
                     target: targetParam,
                     since: { type: 'string', description: '起始时间（docker --since 语法，如 30m、2h；默认 10m）' },
@@ -1322,12 +1702,9 @@ const plugin = definePlugin({
                     const picked = pickTarget(input.target);
                     if (picked.name === undefined)
                         throw new Error(picked.error ?? '无效的 target');
-                    // since 直接进 argv（不是 shell 字符串），但仍限制字符集：它会被拼进
-                    // docker 的命令行，留个 ';' 之类只会得到一个难懂的 docker 报错
-                    const since = typeof input.since === 'string' && input.since.trim() !== '' ? input.since.trim() : '10m';
-                    if (!/^[0-9]+(ns|us|ms|s|m|h)?$/.test(since) && !/^[0-9]{4}-[0-9]{2}-[0-9]{2}([T ][0-9:.]+(Z|[+-][0-9:]{2,5})?)?$/.test(since)) {
-                        throw new Error('since 只支持时长（如 30m、2h）或时间戳（如 2026-09-13T10:00:00）');
-                    }
+                    // since 统一口径（D45）：assertSince 接受复合 duration（1h30m）——旧白名单
+                    // 会拒掉 docker 明明支持的写法
+                    const since = assertSince(typeof input.since === 'string' && input.since.trim() !== '' ? input.since : '10m');
                     const { api } = apiFor(picked.name);
                     if (api === undefined)
                         throw new Error(resolveByName(picked.name).error ?? '无法构造执行通道');
@@ -1543,7 +1920,9 @@ const plugin = definePlugin({
                     description: '对容器执行生命周期操作：start / stop / restart / remove。**破坏性**：remove 会删除容器（数据卷不在其中，但容器配置与可写层丢失），执行前必须向用户确认目标容器。仅当用户在设置里打开「允许变更操作」时可用。',
                     parameters: {
                         target: targetParam,
-                        action: { type: 'string', required: true, description: 'start | stop | restart | remove' },
+                        // enum 把「四选一」前移到派发前（D51 残留）：实测 dsh-tools 的参数 DSL 支持 enum
+                        // （不支持的是 minimum/maximum），此前只在执行期拒绝，模型会先浪费一次往返
+                        action: { type: 'string', enum: ['start', 'stop', 'restart', 'remove'], required: true, description: 'start | stop | restart | remove（四选一）' },
                         id: { type: 'string', required: true, description: '容器名或 ID' },
                     },
                     output: {
@@ -1658,7 +2037,7 @@ const plugin = definePlugin({
                     parameters: {
                         target: targetParam,
                         ref: { type: 'string', required: true, description: '镜像引用：repository:tag 或 digest' },
-                        timeoutSec: { type: 'number', description: '超时秒数（10~1800，默认 600）' },
+                        timeoutSec: { type: 'number', description: '超时秒数（10~1800，默认 600；越界值会被静默夹紧）' },
                     },
                     output: {
                         schema: {
@@ -1710,7 +2089,7 @@ const plugin = definePlugin({
                         target: targetParam,
                         id: { type: 'string', required: true, description: '容器名或 ID' },
                         command: { type: 'string', required: true, description: '要执行的命令（经容器内 sh -c 执行）' },
-                        timeoutSec: { type: 'number', description: '超时秒数（1~120，默认取插件配置）' },
+                        timeoutSec: { type: 'number', description: '超时秒数（1~120，默认取插件配置 execTimeoutSec；越界值会被静默夹紧）' },
                     },
                     output: {
                         schema: {
@@ -1763,6 +2142,9 @@ const plugin = definePlugin({
                         };
                     },
                 }));
+            }
+            if (failures.length > 0) {
+                console.warn(`[dsh-docker] ${String(failures.length)} 个 agent 工具注册失败（下次配置变更会重试）：${failures.join('；')}`);
             }
         };
         // tools 服务（可选）：拿到后注册一次，能力开关变化时 refreshTools 重注册
@@ -1862,7 +2244,18 @@ const plugin = definePlugin({
             const tailParam = params.get('tail');
             const tail = tailParam === null ? live.logTailDefault : Number(tailParam);
             const timestampsParam = params.get('timestamps');
-            const since = params.get('since');
+            const sinceParam = params.get('since');
+            // SSE 与快照同一套 since 校验（D45）；非法直接 400（此处不在 POST 的 try 内）
+            let since;
+            if (sinceParam !== null && sinceParam.trim() !== '') {
+                try {
+                    since = assertSince(sinceParam);
+                }
+                catch (error) {
+                    writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+                    return;
+                }
+            }
             await openSseStream(res, {
                 reason: 'container-exit',
                 run: async (sendEvent, signal) => {
@@ -1875,7 +2268,7 @@ const plugin = definePlugin({
                         // 与 POST /logs 同一条取值规则：非法/越界交给 DockerApi 内的夹紧
                         tail: Number.isInteger(tail) ? tail : live.logTailDefault,
                         timestamps: timestampsParam === '1' || timestampsParam === 'true',
-                        ...(since !== null && since.trim() !== '' ? { since } : {}),
+                        ...(since !== undefined ? { since } : {}),
                     }, handlers, signal);
                     return result.code;
                 },
@@ -1934,10 +2327,10 @@ const plugin = definePlugin({
                      * 跨 chunk 去重：实测 docker stats 会把**同一个采样渲染两次**（约 500ms 一轮，
                      * 0.04 / 0.04 / 0.16 / 0.16 …），两次是逐字节相同的 JSON 且可能落在不同 chunk 里。
                      * 不去重的话，客户端 60 点环形缓冲会被重复点占掉一半窗口（实际只剩 ~30 秒）。
-                     * 用「与上一条完全相同的原始对象」作为去重键：值确实没变的相邻采样会少一个点，
-                     * 但那一个点的值与上一点相同，趋势形状不受影响，时间轴反而更接近真实采样间隔。
+                     * 去重键按**容器**记（D33）：此前只与紧邻上一条比较——单容器序列 A A 能去重，
+                     * 多容器交错 A B A B 就漏了；按 Name 各记上次值，交错情形同样覆盖。
                      */
-                    let lastRaw = '';
+                    const lastRawByName = new Map();
                     const handlers = {
                         onStdout: (chunk) => {
                             pending += chunk;
@@ -1956,10 +2349,14 @@ const plugin = definePlugin({
                             if (pending.length > 64 * 1024)
                                 pending = pending.slice(-4096);
                             for (const raw of found) {
-                                if (raw === lastRaw)
+                                const rows = parseStatsJson(raw);
+                                if (rows.length === 0)
                                     continue;
-                                lastRaw = raw;
-                                for (const row of parseStatsJson(raw))
+                                const key = rows[0]?.name === undefined || rows[0].name === '' ? raw : rows[0].name;
+                                if (lastRawByName.get(key) === raw)
+                                    continue;
+                                lastRawByName.set(key, raw);
+                                for (const row of rows)
                                     sendEvent('stats', row);
                             }
                         },
@@ -2100,7 +2497,15 @@ const plugin = definePlugin({
                     kind: 'prefix',
                     path: ROUTE_PREFIX,
                     handler: async (req, res) => {
-                        if (!isLoopbackHttp(req)) {
+                        const loopback = isLoopbackHttp(req);
+                        // 字面量环回同步判定（保持「第一拍就建流」的时序）；仅别名主机名才等 DNS
+                        if (loopback instanceof Promise) {
+                            if (!(await loopback)) {
+                                writeJson(res, 403, { error: 'forbidden: loopback-only' });
+                                return;
+                            }
+                        }
+                        else if (!loopback) {
                             writeJson(res, 403, { error: 'forbidden: loopback-only' });
                             return;
                         }
@@ -2133,7 +2538,7 @@ const plugin = definePlugin({
                                     writeJson(res, 400, { error: '未知配置项: ' + key });
                                     return;
                                 }
-                                if (key === 'clearTargets')
+                                if (key === 'clearTargets' || key === 'hostKeysRemove')
                                     continue;
                                 patch[key] = body[key];
                             }
@@ -2147,8 +2552,60 @@ const plugin = definePlugin({
                                 }
                             }
                             // 凭证补全必须在写盘之前：否则提交的 targets 会把密码清空
-                            if (patch.targets !== undefined)
+                            if (patch.targets !== undefined) {
+                                // 读路径会丢弃的条目（重名 / 空名 / 超 64 字符）要有信号（D35）：否则
+                                // 面板只看到留下来的那条，下一次保存把丢弃结果固化，另一台主机凭空消失
+                                const rawTargets = Array.isArray(patch.targets) ? patch.targets.length : 0;
                                 patch.targets = mergeTargetSecrets(targetsNow(), patch.targets);
+                                /*
+                                 * 计数必须取**真正会丢弃**的那一步（D89）：mergeTargetSecrets 是 1:1 的
+                                 * map（只补凭证、从不删条目），丢弃发生在 sanitizeTargets（读路径与
+                                 * normalizeConfig 都用它）—— 原来的判据恒为 false，warning 是死代码。
+                                 */
+                                const keptTargets = sanitizeTargets(patch.targets)?.length ?? 0;
+                                if (rawTargets > keptTargets) {
+                                    warning = [warning, `目标列表中有 ${String(rawTargets - keptTargets)} 条无效条目（重名 / 名称为空 / 超过 64 字符）已被丢弃。`].filter((part) => part !== undefined && part !== '').join(' ');
+                                }
+                            }
+                            /*
+                             * hostKeys 采用「并集合并 + 显式删除」（D10）：客户端表单快照里的
+                             * hostKeys 落后于运行期（打开卡片期间可能刚记录了新指纹），整表覆盖
+                             * 会把 TOFU 钉扎回退掉。传上来的记录按 host:port 并入现有记录；
+                             * 删除某条记录走显式的 hostKeysRemove: [{host, port}]。
+                             */
+                            if (patch.hostKeys !== undefined || body.hostKeysRemove !== undefined) {
+                                let removeRequested = false;
+                                const removeKeys = new Set();
+                                if (Array.isArray(body.hostKeysRemove)) {
+                                    for (const raw of body.hostKeysRemove) {
+                                        if (typeof raw !== 'object' || raw === null)
+                                            continue;
+                                        const item = raw;
+                                        const host = typeof item.host === 'string' ? item.host.trim().toLowerCase() : '';
+                                        const port = typeof item.port === 'number' && Number.isInteger(item.port) ? item.port : 22;
+                                        if (host !== '')
+                                            removeKeys.add(`${host}:${String(port)}`);
+                                    }
+                                    removeRequested = true;
+                                }
+                                else if (body.hostKeysRemove !== undefined) {
+                                    // 形状非法不能静默忽略（D109）：用户点了「删除」却什么都没发生，且没有任何反馈
+                                    warning = [warning, 'hostKeysRemove 必须是 [{host, port}] 数组，本条已忽略。'].filter((part) => part !== undefined && part !== '').join(' ');
+                                }
+                                patch.hostKeys = mergeHostKeys(live.hostKeys, patch.hostKeys ?? []);
+                                /*
+                                 * 删除在并集**之后**生效（D109）：同一请求既带 hostKeys 又带 hostKeysRemove 时，
+                                 * 「删除」必须赢 —— 否则手写请求 / 旧客户端会把刚删掉的指纹又并回来，同样没有提示。
+                                 */
+                                if (removeKeys.size > 0) {
+                                    const merged = patch.hostKeys;
+                                    const kept = merged.filter((record) => !removeKeys.has(`${record.host}:${String(record.port)}`));
+                                    patch.hostKeys = kept;
+                                    if (removeRequested && kept.length === merged.length) {
+                                        warning = [warning, '要删除的主机指纹记录不存在（可能已被别处删除）。'].filter((part) => part !== undefined && part !== '').join(' ');
+                                    }
+                                }
+                            }
                             // 校验必须在**落盘之前**。原先只有 applySection 会做校验，而它跑在
                             // scope.update 之后：值不合法的 patch 已经被写进 settings.yaml，随后
                             // applySection 抛出，异常穿到宿主 HTTP 层 → 用户收到一个**没有正文的
@@ -2178,7 +2635,17 @@ const plugin = definePlugin({
                                 }
                                 // settings/updated 会触发 applySection；无事件时也应用一次（幂等）
                             }
-                            applySection(patch);
+                            // applySection 也可能抛（tools.register / systemPrompt.section，D36）：
+                            // 此时配置已落盘，必须把原因带回给用户，而不是一个空 400/500。
+                            // forceRefreshTools：保存路径无条件重注册一次（幂等），这样「上一次只注册了
+                            // 一半」的状态能被用户的**重试**修复，而不是必须等到下一次真实配置变化（D107）。
+                            try {
+                                applySection(patch, { forceRefreshTools: true });
+                            }
+                            catch (error) {
+                                writeJson(res, 500, { error: '配置已保存但应用失败：' + (error instanceof Error ? error.message : String(error)) });
+                                return;
+                            }
                             writeJson(res, 200, { ok: true, config: snapshot(), ...(warning === undefined ? {} : { warning }) });
                             return;
                         }
@@ -2218,8 +2685,21 @@ const plugin = definePlugin({
                                 writeJson(res, 405, { error: 'method not allowed: ' + String(req.method) });
                                 return;
                             }
+                            // 四条 SSE 都要有「同源证明」（D32）：无 Origin 且无 Sec-Fetch-Site 的
+                            // 请求（旧 Safari / 部分 WebView / 裸 curl）在长流端点上拒绝——浏览器
+                            // 的 EventSource / fetch 同源请求都会带其中之一
+                            if (!hasSameOriginProof(req)) {
+                                writeJson(res, 403, { error: '缺少同源证明（需要 Origin 或 Sec-Fetch-Site: same-origin）：实时流端点拒绝无来源请求' });
+                                return;
+                            }
                             const params = new URL(req.url ?? '/', 'http://loopback').searchParams;
                             await serveStream(req, res, params);
+                            return;
+                        }
+                        // 变更类端点（写操作）同样要求同源证明（D32）；/config 刻意不在名单里：
+                        // 它是禁用状态下的唯一恢复入口，跨站 POST 已由 loopback + Origin 比对拦住
+                        if (req.method === 'POST' && MUTATION_SUBROUTES.has(sub) && !hasSameOriginProof(req)) {
+                            writeJson(res, 403, { error: '缺少同源证明（需要 Origin 或 Sec-Fetch-Site: same-origin）：变更端点拒绝无来源请求' });
                             return;
                         }
                         if (req.method !== 'POST') {
@@ -2261,6 +2741,33 @@ const plugin = definePlugin({
                             return;
                         }
                         const api = built.api;
+                        // 引用白名单在路由层先跑一次（D37）：非法引用是**客户端**错误，直接 400
+                        // 带原因——落到 DockerApi 里才抛的话会被外层 catch 统一写成 500。
+                        // D97：`/action` 的 id、`/stats` 的 ids[] 与 `/exec` 的空 command 原先漏在外，
+                        // 于是同一类错误在有的路由是 400、有的是 500。
+                        try {
+                            if ((sub === '/inspect' || sub === '/logs' || sub === '/exec' || sub === '/action') && typeof body.id === 'string')
+                                assertRef(body.id, 'container');
+                            if (sub === '/stats' && Array.isArray(body.ids)) {
+                                for (const id of body.ids)
+                                    if (typeof id === 'string')
+                                        assertRef(id, 'container');
+                            }
+                            if ((sub === '/images/inspect' || sub === '/images/remove') && typeof body.ref === 'string')
+                                assertImageRef(body.ref, 'image');
+                            if ((sub === '/networks/inspect' || sub === '/networks/remove') && typeof body.name === 'string')
+                                assertName(body.name, 'network');
+                            if ((sub === '/volumes/inspect' || sub === '/volumes/remove') && typeof body.name === 'string')
+                                assertName(body.name, 'volume');
+                            if (sub === '/exec' && typeof body.command === 'string' && body.command.trim() === '') {
+                                writeJson(res, 400, { error: 'command 不能为空' });
+                                return;
+                            }
+                        }
+                        catch (error) {
+                            writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+                            return;
+                        }
                         try {
                             switch (sub) {
                                 case '/probe': {
@@ -2272,7 +2779,13 @@ const plugin = definePlugin({
                                     return;
                                 }
                                 case '/attention': {
-                                    writeJson(res, 200, { ok: true, items: await api.attention() });
+                                    // limit 可由调用方给（D101）：面板想一次拿全量时不必被隐式钉在默认 100
+                                    const limitRaw = body.limit;
+                                    const limit = typeof limitRaw === 'number' && Number.isInteger(limitRaw)
+                                        ? Math.min(Math.max(limitRaw, 1), 500)
+                                        : undefined;
+                                    const attention = await api.attention(limit === undefined ? undefined : { limit });
+                                    writeJson(res, 200, { ok: true, items: attention.items, total: attention.total, truncated: attention.truncated, degraded: attention.degraded });
                                     return;
                                 }
                                 case '/inspect': {
@@ -2299,7 +2812,9 @@ const plugin = definePlugin({
                                         logs: await api.logs(body.id, {
                                             tail,
                                             timestamps: body.timestamps === true,
-                                            ...(typeof body.since === 'string' ? { since: body.since } : {}),
+                                            // `/logs` 此前裸透传（D98）：同一参数在 `/logs/stream` 与 agent 工具上是 400/抛错，
+                                            // 在快照路由上却变成 docker 的参数错误再被写成 500。空/纯空白 = 未传。
+                                            ...(typeof body.since === 'string' && body.since.trim() !== '' ? { since: assertSince(body.since) } : {}),
                                         }),
                                     });
                                     return;
