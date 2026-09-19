@@ -13,7 +13,7 @@
 > remove 护栏下沉到 `SftpManager.remove`（D25 纵深防御，面板 HTTP 路由同样被拦）；
 > CI 产物闸门扩展到 `packages/*/lib`；覆盖写分片孤儿（进程崩溃残留）由「下次同目录
 > 上传清理 >24h 残留」+ README 边界说明收尾。
-> 宿主侧回归：`tsc` / vitest 117 用例 / `probe-smoke` 7 / `probe-route-smoke` 9 /
+> 宿主侧回归：`tsc` / vitest 166 用例（13 文件）/ `probe-smoke` 7 / `probe-route-smoke` 9 /
 > `sftplimits-smoke` 6 / `ssh-smoke` / `integration.mjs` 全绿；client.js 已重建。
 > 原审计四个「待验证」项的处置：D13/D14（abort 监听器告警、1e9 OOM）随修复从结构上消除，
 > 不再依赖实测；D17 两处（`$?` 污染方向、carry 上限）按修法前置 + 上限提到 512KB，
@@ -302,12 +302,21 @@
 
 ## P3 · 工程与文档
 
-- [ ] **D38 宿主半体与浏览器半体在 CI 里零自动化**（**部分完成**：`test/host-smoke.test.ts` 已让
-      CI 至少 import 宿主插件模块 + 回归 D16 的凭据/预检文案，CI 也已挂产物闸门与端到端脚本，见 D39；
-      但 tunnels、SFTP 路由、credential-refs 路由、agent forwarding、帧协议、会话生命周期、客户端接线
-      仍无系统性覆盖）——
-      （`test/` 1057 行 vs `src` 7357 行 + `client-src` 7011 行）→ 帧协议、会话生命周期、tmux、SFTP 路由、
-      隧道、状态条采集、整块 UI 的回归静默通过。证据：[test/](test/)、[.github/workflows/ci.yml](../../.github/workflows/ci.yml)。
+- [x] **D38 宿主半体与浏览器半体在 CI 里零自动化**（0.19.0 关闭：CI 半边随 D39 落地——
+      integration/ssh-smoke/三个 smoke + client.js 与 lib 的产物闸门；单测半边补齐四刀——
+      `test/tunnels.test.ts`（reconcile 收敛 / 连接簿缺失 fatal 不重试 / live 集合清理 / 计数漏减，D15 护栏）、
+      `test/sftp.test.ts`（remove 护栏各形态 / openUpload 的 writableEnded 判据与 posix-rename 回退 /
+      分片 24h 回收阈值 / openDownload 404·目录·offset / tree 截断，假 SFTPWrapper 驱动）、
+      `test/host-frames.test.ts`（表驱动帧校验：非法 sid / 未知帧 / input 上限 / resize clamp（D14）+
+      kill 孤儿前提（D09）+ 断连孤儿·attach 回放·exit 广播（D06/D07）+ SessionManager 上限与 grace 回收（D08））、
+      `test/credential-refs.test.ts`（refs: 键名解析 + 值不外泄）。
+      四刀都是**假件驱动**：`vi.mock('ssh2')` 的假 Client / 假 SFTPWrapper、假 WS + 假
+      subprocess —— 不依赖真实 sshd 与 PTY，可在 CI 稳定跑；真实链路仍由 integration /
+      ssh-smoke 覆盖。
+      `test/` 2221 行 vs `src` 7962 行 + `client-src` 7306 行（0.19.0 时点）。
+      **遗留单独立项**：客户端接线（整块 UI / preview 29 场景）仍不在 CI——preview 需 Chrome，
+      挂 CI 或继续外抽 UI 纯逻辑见「功能缺口」末条。）——
+      证据：[test/](test/)、[.github/workflows/ci.yml](../../.github/workflows/ci.yml)。
 - [x] **D39 CI 不跑旗舰脚本，也没有「产物与源码一致」闸门** —— `integration.mjs`、
       `ssh-smoke.mjs`、三个 smoke 都不在 CI（它们自包含，不依赖真实 sshd / 外部主机，本地实测全绿）；
       `client.js` 落后于 `client-src` 这种情况没有任何检查能发现（`ci.yml` 的 `git diff --exit-code`
@@ -338,11 +347,10 @@
       修复：三处都已归位——版本引用统一为 0.19.0、tui 描述改为 vim/htop 并写明需先起 dsh web
       与默认端口、不可验证的字节数数字删除。
 - [ ] **D45 无测试的关键路径**（**部分完成**：`env:` 引用的空值/缺失区分、凭据 provider 链路、
-      auth=agent 预检已有回归用例，见 `test/host-smoke.test.ts`；`endOnPageClose`、Windows 端到端、
-      agent forwarding 转发链路、credential-refs HTTP 路由仍零覆盖）——
-      `endOnPageClose` 无任何覆盖；Windows 端到端只在单测里验证启动计划
-      字符串（README 自述为人工在 Win11 ARM 上验过）；`agent forwarding` 的转发链路只测了字段校验；
-      凭据存储 / `env:` 引用 / `/api/dsh-tty/credential-refs` 路由零测试。
+      auth=agent 预检见 `test/host-smoke.test.ts`；credential-refs 的数据源
+      （`readCredentialRefNames`，键名解析 + 值不外泄）见 `test/credential-refs.test.ts`；
+      仍零覆盖：`endOnPageClose`、Windows 端到端、agent forwarding 转发链路、
+      `/api/dsh-tty/credential-refs` HTTP 路由本身）——
       证据：[src/index.ts:2453](src/index.ts)、[test/probe.test.ts:59](test/probe.test.ts)。
 
 ---
@@ -358,6 +366,9 @@
 - SFTP 双栏：拖拽上传、排序 / 隐藏文件开关、大目录虚拟滚动、断点续传 / 增量（跳过两侧 size+mtime 相同的文件）。
 - 状态条窄屏布局；WebGL 上下文丢失后的重试恢复；磁盘多挂载点。
 - `HostKeyAlias` / 别名参与 TOFU 定位（可搭 D12 的 schema 改动一起做）。
+- （D38 遗留，单独立项）客户端接线进 CI：preview.mjs 的 29 个界面场景需要 Chrome——
+  要么加一个带浏览器的 CI job，要么继续把 UI 纯逻辑外抽成可单测模块（status-line /
+  dock-owner / current-session 同款）。
 
 ## 建议批次
 

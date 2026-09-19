@@ -67,7 +67,12 @@
  *     子进程），必须 best-effort：失败降级为对顶层 shell 直接 SIGKILL。
  */
 import type { Context } from '@deepseek-ai/cordis';
-import type { HostKeyRecord, SshHostEntry } from './ssh.js';
+import { StringDecoder } from 'node:string_decoder';
+import WebSocket from 'ws';
+import xtermHeadless from '@xterm/headless';
+declare const HeadlessTerminal: typeof xtermHeadless.Terminal;
+type HeadlessTerminal = InstanceType<typeof HeadlessTerminal>;
+import type { HostKeyRecord, SshHostEntry, TermHandle } from './ssh.js';
 import type { TunnelSpec } from './tunnels.js';
 export type { HostKeyRecord } from './ssh.js';
 export interface Config {
@@ -119,4 +124,332 @@ export interface SftpLimits {
     /** 一次批量/拖拽上传的文件数上限。默认 1000。 */
     maxUploadFiles: number;
 }
+/** 一次「会话 → 帧」采集器的句柄（本地 = 定时器，SSH = 远端长驻 exec channel）。 */
+interface StatsCollector {
+    stop(): void;
+}
+interface TtySession {
+    id: string;
+    handle: TermHandle;
+    /**
+     * 绑定的 WS 连接集合（0.19.0 起支持跨连接共享）：持久（tmux）会话可被多个
+     * 窗口同时绑定——同 tmuxName 的 spawn 不再新建 PTY 而是重绑定到现有会话
+     * （单 PTY 多客户端扇出，名额不翻倍）。
+     *
+     * 键 = `<连接 id>:<该连接侧标签 sid>`，值 = { ws, sid }（帧寻址用连接侧
+     * sid）：只用 sid 做键时，「复制标签页」复制出的同 sid 第二连接会覆盖第一
+     * 连接的绑定（前者收不到输出还自以为在线），且前者关闭时误删后者的绑定。
+     * map 为空 = 孤儿状态。
+     */
+    clients: Map<string, {
+        ws: WebSocket;
+        sid: string;
+    }>;
+    closed: boolean;
+    paused: boolean;
+    /** exit 帧只发一次（kill 主动关闭与 shell 自然退出共用同一回调）。 */
+    exitSent?: boolean;
+    /** agent 工具展示用的元数据。 */
+    cwd: string;
+    kind: 'local' | 'ssh';
+    /** SSH 会话的展示目标（user@host[:port]）；本地会话为空串。 */
+    target: string;
+    startedAt: number;
+    lastOutputAt: number;
+    /** 最近一次 PTY 输入（input 帧 / tty_send）的时间戳：tty_capture{last} 的在途判据之一。 */
+    lastInputAt: number;
+    /** 输出环形缓冲（尾部 256KB，供 tty_capture 与断线重连回放）。 */
+    buffer: string;
+    /** utf8 分帧兜底：跨 chunk 的多字节序列由 StringDecoder 缓存补齐。 */
+    decoder: StringDecoder;
+    /** 虚拟屏（xterm-headless）：tty_screen 的数据源；创建失败为 null。 */
+    screen: HeadlessTerminal | null;
+    /** 转入孤儿状态的时间戳；null 表示已连接（客户端在线）。 */
+    orphanedAt: number | null;
+    /** shell 集成状态（OSC 133/7 解析；本地与 SSH 会话都喂）。 */
+    shellState: ShellIntegrationState;
+    /** data 帧合并暂存区（flush 前不发）。 */
+    pendingOutput: string;
+    /** 合并冲刷定时器；null 表示无待冲刷窗口。 */
+    flushTimer: NodeJS.Timeout | null;
+    /** tmux 持久会话名（本地与 SSH 同语义）；null = 非持久会话。 */
+    tmuxName: string | null;
+    /**
+     * 服务器状态条（0.17.0）：已订阅该会话 stats 的客户端 sid 集合（tab 可见性
+     * 驱动）。空集合 = 该会话不需要采集，采集器必须停（防定时器/远程 channel 泄漏）。
+     */
+    statsSubs: Set<string>;
+    /** 采集器句柄；null = 未启动（懒启动：首个 statsOn 才起）。 */
+    stats: StatsCollector | null;
+    /** 采集已永久失败（远端无 /proc、exec 被拒、连接断开）：不再重启，前端隐藏状态条。 */
+    statsFailed: boolean;
+}
+interface ReqLike {
+    method?: string;
+    headers: Record<string, string | string[] | undefined>;
+    socket: {
+        remoteAddress?: string;
+    };
+    url?: string;
+}
+interface SocketLike {
+    destroy(): void;
+}
+/** 可热更新的运行时配置（settings/updated 动态应用）。 */
+declare class LiveConfig {
+    shell: string;
+    term: string;
+    colorTerm: string;
+    cwd: string;
+    /** 异常断开后会话保活毫秒数（0 = 立即结束）。 */
+    reconnectGraceMs: number;
+    sshHosts: SshHostEntry[];
+    hostKeys: HostKeyRecord[];
+    /** 是否注入 OSC 133/7 shell 集成。 */
+    shellIntegration: boolean;
+    /** 端口转发隧道规格。 */
+    tunnels: TunnelSpec[];
+    /** 会话持久化模式（off / tmux）。 */
+    persistence: 'off' | 'tmux';
+    /** 页面断开且保活期结束时是否结束 tmux 持久会话（默认 false = 留存）。 */
+    endOnPageClose: boolean;
+    /** 服务器状态条：是否采集并推送会话资源指标（默认 true）。 */
+    statsEnabled: boolean;
+    /** SSH 持久会话名（远程 tmux 托管；本机 socket 清单看不到，随 settings 留存）。 */
+    persistSessions: string[];
+    /** SFTP 传输限制（客户端浏览器侧执行）。 */
+    sftpLimits: Required<SftpLimits>;
+    constructor(init: {
+        shell: string;
+        term: string;
+        colorTerm: string;
+        cwd: string;
+        reconnectGraceSec: number;
+        sshHosts?: SshHostEntry[];
+        hostKeys?: HostKeyRecord[];
+        shellIntegration: boolean;
+        tunnels?: TunnelSpec[];
+        persistence?: 'off' | 'tmux';
+        endOnPageClose?: boolean;
+        statsEnabled?: boolean;
+        sftpLimits?: Partial<SftpLimits>;
+        persistSessions?: string[];
+    });
+    /** 合并部分更新；空字符串/undefined 保持原值；sshHosts/hostKeys/tunnels 传数组即整体替换。 */
+    apply(partial: Partial<{
+        shell: string;
+        term: string;
+        colorTerm: string;
+        cwd: string;
+        reconnectGraceSec: number;
+        sshHosts: SshHostEntry[];
+        hostKeys: HostKeyRecord[];
+        shellIntegration: boolean;
+        tunnels: TunnelSpec[];
+        persistence: 'off' | 'tmux';
+        endOnPageClose: boolean;
+        statsEnabled: boolean;
+        sftpLimits?: Partial<SftpLimits>;
+        persistSessions: string[];
+    }>): void;
+    findSshHost(name: string): SshHostEntry | undefined;
+}
+/**
+ * shell 集成状态：OSC 133/7 解析产物（每会话一份）。
+ */
+interface ShellIntegrationState {
+    /** 跨 chunk 未闭合 OSC 序列的残包缓冲（≤512KB，超限丢弃；上限容纳 T 快照——200 行 tmux capture-pane 的 base64 可到数百 KB）。 */
+    carry: string;
+    /** B..D 之间：命令输出捕获中。 */
+    inCommand: boolean;
+    cmdBuffer: string;
+    /** T 标记带来的 pane 快照（tmux 持久标签；D 时优先于 cmdBuffer）。 */
+    pendingT: string | null;
+    lastCommand: {
+        output: string;
+        exitCode: number | null;
+        endedAt: number;
+    } | null;
+}
+/**
+ * TOFU 主机指纹存储：get/record 面向 spawnSsh 的 hostVerifier；
+ * record 时经 persist 回调写入 settings（宿主重启后钉扎仍在）。
+ */
+declare class HostKeyStore {
+    private readonly live;
+    private readonly persist;
+    constructor(live: LiveConfig, persist: (records: HostKeyRecord[]) => void);
+    private key;
+    get(host: string, port: number): string[] | undefined;
+    /** 记录指纹：同 host:port 已有记录则并入集合（一机多把钥匙），否则新建。 */
+    record(host: string, port: number, fingerprint: string): void;
+}
+/** 导出仅供单测（test/host-frames.test.ts）：上限 / 孤儿回收 / grace 热改的行为护栏。 */
+export declare class SessionManager {
+    private readonly sessions;
+    private limit;
+    /** 回收器销毁孤儿时是否连 tmux 持久会话一起结束（endOnPageClose 策略）。 */
+    private endTmuxOnReap;
+    constructor(maxSessions: number, endTmuxOnReap?: () => boolean);
+    get limitValue(): number;
+    /** 配置热生效时调整上限（1~16）。 */
+    setLimit(maxSessions: number): void;
+    get count(): number;
+    canSpawn(): boolean;
+    add(session: TtySession): void;
+    remove(id: string): void;
+    get(id: string): TtySession | undefined;
+    /** 会话的只读快照（SSH 会话无本地 pid，该字段省略；tmux 持久会话带 persist）。 */
+    private snapshotOf;
+    /** agent 工具用的只读快照。 */
+    list(): Array<{
+        sid: string;
+        pid?: number;
+        cwd: string;
+        kind: 'local' | 'ssh';
+        target: string;
+        startedAt: number;
+        lastOutputAt: number;
+        persist?: true;
+    }>;
+    /** sessions 帧用：额外带 attachable（孤儿且未关闭的会话可被新连接 attach）。 */
+    listForAttach(): Array<{
+        sid: string;
+        pid?: number;
+        cwd: string;
+        kind: 'local' | 'ssh';
+        target: string;
+        startedAt: number;
+        lastOutputAt: number;
+        persist?: true;
+        attachable: boolean;
+    }>;
+    /** 遍历全部会话（状态条采集器的批量收尾等按会话维度的操作）。 */
+    forEach(fn: (session: TtySession) => void): void;
+    /** 按 tmux 持久会话名查找存活会话（跨窗口共享用）；不存在/已关闭返回 undefined。 */
+    findByTmuxName(tmuxName: string): TtySession | undefined;
+    /** 同步退役：移出全局表 + 释放虚拟屏（幂等，不杀进程）。 */
+    retire(session: TtySession): void;
+    /** 释放并销毁会话：退役 + 树级终止（等待 terminate 完成，最慢 ~20s）。
+     *  endOnPageClose 策略下，回收器销毁孤儿时连 tmux 持久会话一起结束。 */
+    destroy(session: TtySession): Promise<void>;
+    /**
+     * 回收孤儿会话（回收器定时调用）：超过保活期的回收。graceMs<=0 时立即回收
+     * 全部孤儿——孤儿只在「断开瞬间 grace>0」时产生，热改 grace 为 0 不能只管
+     * 以后：已存在的孤儿会永久占 PTY 与名额，满额后新标签一直报「会话数已达上限」。
+     */
+    reapOrphans(graceMs: number): Promise<void>;
+    disposeAll(): Promise<void>;
+}
+/** 导出仅供单测（test/host-frames.test.ts）：帧校验 / 绑定 / 孤儿语义的行为护栏。 */
+export declare class TtyServer {
+    private readonly ctx;
+    private readonly sessions;
+    private readonly options;
+    private readonly hostKeyStore;
+    /** SSH 持久会话名留存回调（apply 闭包实现，settings 落盘）。 */
+    private readonly trackPersist;
+    private readonly wss;
+    /** 在途的持久会话创建（tmuxName → 创建 promise）：dsh 重启后多页面并发恢复时收敛竞态。 */
+    private readonly pendingTmux;
+    /** WS 闸门（插件禁用时关闭）：拒绝新升级 + 断开存量连接。 */
+    private wsGateOpen;
+    /** 服务器状态条总开关（配置热生效；关闭时停掉全部采集，重开按订阅恢复）。 */
+    private statsOn;
+    constructor(ctx: Context, sessions: SessionManager, options: LiveConfig, hostKeyStore: HostKeyStore, 
+    /** SSH 持久会话名留存回调（apply 闭包实现，settings 落盘）。 */
+    trackPersist: (tmuxName: string, present: boolean) => void);
+    /**
+     * 按启用状态对齐 WS 闸门（幂等）。关闭时对存量连接发正常关闭帧：客户端走
+     * 既有重连循环，禁用期间升级被拒，重新启用后自动重连并 attach 孤儿会话。
+     * PTY 进程不受影响（转孤儿保活），不因禁用杀用户进程。
+     */
+    setWsGate(open: boolean): void;
+    /**
+     * 配置热生效：关闭时停掉全部采集（本地定时器 + 远端 exec channel）；重新打开
+     * 时对**仍有订阅**的会话懒启动。订阅集合刻意不清——客户端只在标签可见性变化
+     * 时发 statsOn/statsOff，开关来回切不该要求它重发。
+     */
+    setStatsEnabled(enabled: boolean): void;
+    /** 订阅/退订（tab 可见性驱动）：退到 0 即停表，任何路径都不会让采集器空转。键 = 绑定键（connId:sid）。 */
+    private setStatsSub;
+    /** 清掉指向已解绑客户端（WS 关闭 / 标签换 sid 重绑）的订阅，防采集器永不收尾。 */
+    private pruneStatsSubs;
+    /**
+     * 懒启动采集（首个 statsOn 才起）。两条路径产出同形状的帧：
+     *   - 本地：宿主进程就是那台机器，1s 定时器 + 进程级共享采样器（多个本地标签
+     *     共享一次 df/netstat）；
+     *   - SSH：远端 sh + awk 常驻循环，每秒一行 JSON 走**非 PTY** exec channel；
+     *     速率类由远端算好，宿主只解析 + 清洗。
+     * 任何失败都静默停表并置 statsFailed（粘性，避免每秒重启）：前端靠「无数据」
+     * 隐藏状态条，PTY 数据路径与终端体验完全不受影响。
+     */
+    private startStats;
+    /** 停表（幂等）：订阅清零 / 会话结束 / 插件禁用 / 配置关闭都走它。 */
+    private stopStats;
+    private stopAllStats;
+    /** 帧只发给订阅了该会话的客户端（绑定键寻址，回帧带各连接自己的 sid，跨窗口共享也成立）。 */
+    private sendStats;
+    /** registerUpgrade 的 handler（loopback 围栏 + ws 握手）。 */
+    handleUpgrade(req: ReqLike, socket: SocketLike, head: Buffer): void;
+    private onConnection;
+    /**
+     * 解析帧里的 sid。返回：
+     *   { sid }        目标会话；
+     *   { unknown }    显式 sid 但本连接无此会话（客户端竞态，如 resize 先于
+     *                  spawn 就绪到达；调用方应静默忽略，而不是报错）；
+     *   undefined      已发送错误帧（非法 sid / sid 缺省但无法唯一路由）。
+     */
+    private resolveSid;
+    /** 把一个客户端连接重绑定到既有会话（跨窗口共享 / 并发恢复收敛共用）。 */
+    private rebindClient;
+    /** 等待同 tmuxName 的在途创建完成；返回可重绑定的会话（null = 无在途/已失败）。 */
+    private waitPendingTmux;
+    /**
+     * 立即终止会话：同步退役 + 顶层 shell 直接 SIGKILL，让 done/exit 帧立刻可发；
+     * 树级子进程清理（SIGTERM→grace→SIGKILL，交互式 zsh 忽略 SIGTERM 时最慢
+     * 可拖 ~20s）由 terminate 在后台继续收尾，不阻塞 kill 帧处理。
+     * tmux 背书会话先向 tmux server 发 kill-session（杀客户端只会 detach，
+     * 会话会留在 tmux server 上）；2.5s 兜底 forceKill 防收尾悬挂。
+     */
+    private killSessionNow;
+    /** 每会话一块虚拟屏（xterm-headless）：tty_screen 的数据源；失败降级为 null。 */
+    private createScreen;
+    private handleMessage;
+    /**
+     * 服务器状态条订阅（0.17.0）：按「标签可见性」驱动——只有可见标签才发
+     * statsOn。未知 sid（客户端竞态）静默忽略，不回错误帧。订阅键与客户端
+     * 绑定键同构（connId:sid），跨连接共享同一 sid 时互不踩。
+     */
+    private handleStatsFrame;
+    /** 会话退出事实 → exit 帧（恰好一次；本地 PTY 与 SSH 共用）。 */
+    private watchDone;
+    /** 输出下行 + 基于 ws.bufferedAmount 的背压（暂停/恢复 PassThrough）。 */
+    private attachOutput;
+    /** 立即冲刷待发的合并输出（exit/kill 前调用，保证 exit 帧永远在最后一帧 data 之后）。 */
+    private flushPendingOutput;
+    close(): void;
+}
+/**
+ * 凭据存储里**已知的引用名**（~/.dsh/.credentials.yaml 的 `refs:` 块键），只读给
+ * SSH 对话框的引用选择器当候选。
+ *
+ * 为什么必须读文件：官方把「引用半边」设计成**不可枚举**——
+ * `CredentialProvider.listRecords` 的注释原话是 "Unlike the reference half, which has no
+ * enumeration because configuration surfaces learn which references exist from settings
+ * schemas"，而浏览器侧 `ctx.remote.credentials`（dsh-api-settings-controller）只开
+ * `describe` / `set` / `unset`，连 `listRecords` 都没开。所以要让用户在下拉里看见
+ * "这本存储里已经有什么名字"，宿主侧读文件是唯一出路；**只要键名、不取值**（值只在本函数
+ * 的局部 `lines` 里路过，不进任何返回值，也不写日志）。
+ *
+ * 解析刻意最小（与上面 readManagedEnvKeys 同款，不为它引 YAML 依赖）：只认 `refs:` 顶层
+ * 区块内「恰好两个空格 + POSIX 标识符 + 冒号」的行。本地 provider 写入时用 `yaml` 严格
+ * 校验过（version: 1 / 值必须非空字符串 / 键必须是标识符），所以这个格式是稳的；真被手改
+ * 坏了也只是候选少几个 —— 引用最终仍由连接时的凭据层校验存在性。
+ *
+ * 路径解析与本地 provider 的默认一致（$DSH_HOME 优先，空串视为未设，再退 ~/.dsh）。边界：
+ * 若有人给 provider 配了自定义 `path` / `dshHome`，这里看不到那些引用（字段仍可手输名字）。
+ */
+/** 导出仅供单测（test/credential-refs.test.ts）：只验键名解析，不取值。 */
+export declare function readCredentialRefNames(): string[];
 export declare const name: string, inject: string[] | undefined, apply: (ctx: Context, config?: Config | undefined) => void;

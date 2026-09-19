@@ -784,7 +784,8 @@ function isLoopbackUpgrade(req) {
 /* ------------------------------------------------------------------ *
  * 会话管理
  * ------------------------------------------------------------------ */
-class SessionManager {
+/** 导出仅供单测（test/host-frames.test.ts）：上限 / 孤儿回收 / grace 热改的行为护栏。 */
+export class SessionManager {
     sessions = new Map();
     limit;
     /** 回收器销毁孤儿时是否连 tmux 持久会话一起结束（endOnPageClose 策略）。 */
@@ -911,7 +912,8 @@ class SessionManager {
 /* ------------------------------------------------------------------ *
  * WebSocket 连接处理
  * ------------------------------------------------------------------ */
-class TtyServer {
+/** 导出仅供单测（test/host-frames.test.ts）：帧校验 / 绑定 / 孤儿语义的行为护栏。 */
+export class TtyServer {
     ctx;
     sessions;
     options;
@@ -1861,7 +1863,8 @@ function readManagedEnvKeys() {
  * 路径解析与本地 provider 的默认一致（$DSH_HOME 优先，空串视为未设，再退 ~/.dsh）。边界：
  * 若有人给 provider 配了自定义 `path` / `dshHome`，这里看不到那些引用（字段仍可手输名字）。
  */
-function readCredentialRefNames() {
+/** 导出仅供单测（test/credential-refs.test.ts）：只验键名解析，不取值。 */
+export function readCredentialRefNames() {
     const dshHome = process.env.DSH_HOME?.trim() || join(homedir(), '.dsh');
     const file = join(dshHome, '.credentials.yaml');
     try {
