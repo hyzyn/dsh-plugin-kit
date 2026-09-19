@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { readCredentialRefNames } from '../src/index.js'
+import { readCredentialRefNames, handleCredentialRefsRoute } from '../src/index.js'
 
 let home = ''
 const savedDshHome = process.env.DSH_HOME
@@ -64,5 +64,83 @@ describe('readCredentialRefNames（credential-refs 数据源）', () => {
 
   it('存储文件不存在 → 空数组（不报错）', () => {
     expect(readCredentialRefNames()).toEqual([])
+  })
+})
+
+/* ---------------------------------------------------------------- */
+/* 路由本身：loopback 闸门 / 方法闸门 / 载荷只带名字（D45 的这一面）      */
+/* ---------------------------------------------------------------- */
+
+interface FakeRes {
+  status: number
+  body: string
+  headers: Record<string, string>
+}
+
+/** 最小 req/res 替身：足够驱动 handleCredentialRefsRoute 的三条分支。 */
+function fakeReq(overrides: { method?: string; remoteAddress?: string; host?: string; origin?: string; secFetchSite?: string } = {}): unknown {
+  const headers: Record<string, string> = { host: overrides.host ?? '127.0.0.1:3080' }
+  if (overrides.origin !== undefined) headers.origin = overrides.origin
+  if (overrides.secFetchSite !== undefined) headers['sec-fetch-site'] = overrides.secFetchSite
+  return { method: overrides.method ?? 'GET', headers, socket: { remoteAddress: overrides.remoteAddress ?? '127.0.0.1' } }
+}
+
+function fakeRes(): FakeRes & { res: unknown } {
+  const captured: FakeRes = { status: 0, body: '', headers: {} }
+  const res = {
+    writeHead(status: number, headers?: Record<string, string>) {
+      captured.status = status
+      captured.headers = headers ?? {}
+    },
+    end(body?: string) {
+      captured.body = typeof body === 'string' ? body : ''
+    },
+  }
+  return Object.assign(captured, { res })
+}
+
+describe('handleCredentialRefsRoute（/api/dsh-tty/credential-refs）', () => {
+  it('loopback + GET → 200，载荷只含引用名', async () => {
+    writeStore(['refs:', `  DSH_TTY_ALPHA: ${SECRET_A}`].join('\n'))
+    const captured = fakeRes()
+    await handleCredentialRefsRoute(fakeReq() as never, captured.res as never)
+    expect(captured.status).toBe(200)
+    expect(captured.headers['content-type']).toContain('application/json')
+    expect(JSON.parse(captured.body)).toEqual({ ok: true, names: ['DSH_TTY_ALPHA'] })
+    expect(captured.body).not.toContain(SECRET_A)
+  })
+
+  it('非 loopback 来源 → 403，不回名字', async () => {
+    writeStore(['refs:', `  DSH_TTY_ALPHA: ${SECRET_A}`].join('\n'))
+    const captured = fakeRes()
+    await handleCredentialRefsRoute(fakeReq({ remoteAddress: '10.0.0.5' }) as never, captured.res as never)
+    expect(captured.status).toBe(403)
+    expect(captured.body).toContain('loopback-only')
+    expect(captured.body).not.toContain('DSH_TTY_ALPHA')
+  })
+
+  it('跨站发起的请求 → 403（sec-fetch-site: cross-site，挡 DNS rebinding 面）', async () => {
+    const captured = fakeRes()
+    await handleCredentialRefsRoute(fakeReq({ secFetchSite: 'cross-site' }) as never, captured.res as never)
+    expect(captured.status).toBe(403)
+  })
+
+  it('host 头不是 loopback → 403', async () => {
+    const captured = fakeRes()
+    await handleCredentialRefsRoute(fakeReq({ host: 'evil.example.com' }) as never, captured.res as never)
+    expect(captured.status).toBe(403)
+  })
+
+  it('origin 与 host 不一致 → 403', async () => {
+    const captured = fakeRes()
+    await handleCredentialRefsRoute(fakeReq({ origin: 'http://evil.example.com' }) as never, captured.res as never)
+    expect(captured.status).toBe(403)
+  })
+
+  it('非 GET（POST/DELETE）→ 405，方法名回显在错误里', async () => {
+    const captured = fakeRes()
+    await handleCredentialRefsRoute(fakeReq({ method: 'POST' }) as never, captured.res as never)
+    expect(captured.status).toBe(405)
+    expect(captured.body).toContain('POST')
   })
 })

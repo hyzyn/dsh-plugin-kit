@@ -450,6 +450,17 @@ export declare class TtyServer {
  * 路径解析与本地 provider 的默认一致（$DSH_HOME 优先，空串视为未设，再退 ~/.dsh）。边界：
  * 若有人给 provider 配了自定义 `path` / `dshHome`，这里看不到那些引用（字段仍可手输名字）。
  */
+/**
+ * `/api/dsh-tty/credential-refs` 的路由逻辑（导出仅供单测
+ * test/credential-refs.test.ts）：loopback 闸门 + 方法闸门 + 只回引用名的载荷。
+ * 值在任何分支都不进响应——SSH 对话框的选择器只需要「我存过哪些名字」。
+ */
+export declare function handleCredentialRefsRoute(req: ReqLike, res: ResLike): Promise<void>;
 /** 导出仅供单测（test/credential-refs.test.ts）：只验键名解析，不取值。 */
 export declare function readCredentialRefNames(): string[];
+interface ResLike {
+    writeHead(status: number, headers?: Record<string, string>): void;
+    /** 二进制响应（SFTP 下载）也走 end；Node 的 ServerResponse 原生接受 Uint8Array。 */
+    end(body?: string | Uint8Array): void;
+}
 export declare const name: string, inject: string[] | undefined, apply: (ctx: Context, config?: Config | undefined) => void;

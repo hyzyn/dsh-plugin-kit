@@ -313,7 +313,7 @@
       四刀都是**假件驱动**：`vi.mock('ssh2')` 的假 Client / 假 SFTPWrapper、假 WS + 假
       subprocess —— 不依赖真实 sshd 与 PTY，可在 CI 稳定跑；真实链路仍由 integration /
       ssh-smoke 覆盖。
-      `test/` 2221 行 vs `src` 7962 行 + `client-src` 7306 行（0.19.0 时点）。
+      `test/` 2527 行 vs `src` 7969 行 + `client-src` 7306 行（0.19.0 时点）。
       **遗留单独立项**：客户端接线（整块 UI / preview 29 场景）仍不在 CI——preview 需 Chrome，
       挂 CI 或继续外抽 UI 纯逻辑见「功能缺口」末条。）——
       证据：[test/](test/)、[.github/workflows/ci.yml](../../.github/workflows/ci.yml)。
@@ -346,11 +346,18 @@
       硬编码产物 12 312 246 字节，仓库里无此尺寸文件且每次重建都变。
       修复：三处都已归位——版本引用统一为 0.19.0、tui 描述改为 vim/htop 并写明需先起 dsh web
       与默认端口、不可验证的字节数数字删除。
-- [ ] **D45 无测试的关键路径**（**部分完成**：`env:` 引用的空值/缺失区分、凭据 provider 链路、
-      auth=agent 预检见 `test/host-smoke.test.ts`；credential-refs 的数据源
-      （`readCredentialRefNames`，键名解析 + 值不外泄）见 `test/credential-refs.test.ts`；
-      仍零覆盖：`endOnPageClose`、Windows 端到端、agent forwarding 转发链路、
-      `/api/dsh-tty/credential-refs` HTTP 路由本身）——
+- [ ] **D45 无测试的关键路径**（**部分完成**，0.19.0 已补三面：
+      ① `env:` 引用的空值/缺失区分、凭据 provider 链路、auth=agent 预检 —— `test/host-smoke.test.ts`；
+      ② credential-refs 的**数据源**（`readCredentialRefNames`，键名解析 + 值不外泄）与**路由本身**
+      （loopback 闸门 / 跨站 sec-fetch-site / host 与 origin 不一致 / 非 GET → 405 / 200 只回名字）
+      —— `test/credential-refs.test.ts`；为此把路由处理抽成 `handleCredentialRefsRoute` 导出供热；
+      ③ agent forwarding 链路 —— `test/agent-forward.test.ts`：缺 SOCK 时预检抛人话且不建连接、
+      勾转发时把 SOCK 挂成 `agent`（key/password 认证也一样）、不勾则不挂、`conn.shell` 的
+      per-channel `agentForward` 标志如实透传（变异验证：改成恒 false → 用例变红）；
+      ④ `endOnPageClose` 回收策略 —— `test/host-frames.test.ts`：策略 true 时回收孤儿连 tmux 会话
+      一起结束、false（默认）时 tmux 留存、非持久会话不碰 tmux 收尾、在线会话不受影响。
+      仍零覆盖：**Windows 端到端**——真实 `cmd.exe` / ConPTY 的 spawn→data→kill 只能在 Windows
+      runner 上跑（CI 的 windows-latest 目前只跑单测：启动计划字符串与命令标签分支已覆盖，整链路没有）。）——
       证据：[src/index.ts:2453](src/index.ts)、[test/probe.test.ts:59](test/probe.test.ts)。
 
 ---
