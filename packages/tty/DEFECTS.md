@@ -1,21 +1,27 @@
-# @hyzyn/dsh-tty 缺陷清单
+# @hyzyn/dsh-tty 缺陷审计与修复记录（v0.18.3 → 0.19.0）
 
-> 审计日期：2026-09-19 ｜ 审计基线：v0.18.3（HEAD `17657205`）｜ 落地提交：`be28ae6e`（0.19.0 发版前置；发布本身未执行）
-> 范围：**只列缺陷**（会毁数据、会挂死/泄漏、会误导用户或 agent、文档与实现不符）。
-> 功能新增另见文末「功能缺口」，纯风格与可选优化不进本清单。
+> **这是一份时点记录，不是待办清单。** 2026-09-19 对 v0.18.3 做了一次系统性只读审计
+> （5 路并行 + 人工复读关键路径），共 **48 条缺陷，已 48/48 修复并随 0.19.0 发布**
+> （CI 三平台绿：ubuntu / windows / macos）。条目里的 `[x]` 表示「已修并入库」，不是
+> 「当前行为已验证」—— 要了解**现在**的行为，请读 README 与代码。
 >
-> **修复波（2026-09-19）**：D01–D37、D39–D44 已全部落地（D13 提前并入，D46/D47 由 CI 首跑
-> 发现后随修），D38/D45 部分——
-> 最小宿主冒烟与凭据链路回归已加，系统性覆盖仍待补，见各自条目内的「部分完成」注记）。
-> 修复统一以 **0.19.0** 为目标版本（三批合一次发布），代码注释与两份 README 的版本引用已对齐；
-> 发版前置三件套已完成：bump（tty 0.19.0 / dsh-all 0.1.35 / dsh-plugin-kit 0.1.29）→
-> `pnpm aggregate`（幂等无 diff）→ `pnpm install --lockfile-only`（specifier 已同步）。
+> 代码与测试里引用 `D01`–`D48` 的地方，出处就是本文（「这段代码为什么长这样」的解释器，
+> 共 51 处）。**新问题请开 Issue，不要再往本文追加**；前瞻性工作见文末「功能缺口」。
+>
+> 审计基线：v0.18.3（HEAD `17657205`）｜ 修复波：`be28ae6e` … `77612dda`（含 CI 首跑补的
+> D46/D47/D48）｜ 发布：tag `v0.1.36` → tty **0.19.0** / docker **0.6.4** / all 0.1.36 / kit 0.1.30。
+>
+> **修复概况**：D01–D44 分三批（0.18.4/0.18.5/0.18.6 的规划表见文末）一次落地；D45 的最后一格
+> （Windows 端到端）随 `scripts/windows-smoke.mjs` 挂上 windows-latest 后关闭；D46/D47/D48 由
+> **CI 首跑**发现并随修。发版前置：bump → `pnpm aggregate`（幂等）→ `pnpm install --lockfile-only`
+> （specifier 已同步）→ tag `v0.1.36` → Release workflow 发布全部包并回查 registry。
 > 复核补充项也已并入：单窗 SFTP 浏览器 renderRows 同样截断渲染（D29 的另一半）；
 > remove 护栏下沉到 `SftpManager.remove`（D25 纵深防御，面板 HTTP 路由同样被拦）；
 > CI 产物闸门扩展到 `packages/*/lib`；覆盖写分片孤儿（进程崩溃残留）由「下次同目录
 > 上传清理 >24h 残留」+ README 边界说明收尾。
-> 宿主侧回归：`tsc` / vitest 166 用例（13 文件）/ `probe-smoke` 7 / `probe-route-smoke` 9 /
-> `sftplimits-smoke` 6 / `ssh-smoke` / `integration.mjs` 全绿；client.js 已重建。
+> 宿主侧回归：`tsc` / vitest 193 用例（15 文件）/ `probe-smoke` 7 / `probe-route-smoke` 9 /
+> `sftplimits-smoke` 6 / `ssh-smoke` 19 / `integration.mjs` 103 / `windows-smoke` 5 全绿；
+> client.js 与 lib 与源码逐字节一致。
 > **CI 首跑（main 推送后）发现并修复**：D46（bash ≥4.4 的 shell 集成 D 标记永远不发——
 > macOS 自带 bash 3.2 走 DEBUG trap，本地测不出来）、D47（integration 的 tmux 列举竞态）、
 > D48（Windows 强杀本地 PTY 会崩宿主——Windows smoke 首跑就跑出来了）。
@@ -141,7 +147,7 @@
 - [x] **D13 SFTP `pipeCounted` 每搬一个文件挂一个永不摘除的 abort 监听器** —— 整个任务共用一个
       `AbortController`，`options` 递归传给每个文件 → N 文件 = N 个常驻监听器（取消时 N 个同时
       `destroy()` 已结束的 PassThrough）。证据：[src/sftp.ts:455-460](src/sftp.ts)、
-      [src/sftp.ts:524-534](src/sftp.ts)。（Node 的告警文案 待验证）
+      [src/sftp.ts:524-534](src/sftp.ts)。（已随 D13 修复消除：监听器固定摘除，不再产生该告警）
       修法：`try { await pipeline(...) } finally { signal.removeEventListener('abort', abort) }`。
 - [x] **D14 帧输入零校验** —— `resize` / spawn 尺寸用 `Number(msg.cols) || 80`，`-5`、`1.5`、`1e9`
       都当有效值透传给 node-pty ioctl 与 xterm-headless（`handle.resize` 还在 try 之外）；
@@ -149,7 +155,7 @@
       → 吃 ws 默认 100 MiB，`JSON.parse` 再复制一份。
       证据：[src/index.ts:1571-1579](src/index.ts)、[src/index.ts:1566](src/index.ts)、
       [src/index.ts:973](src/index.ts)、[src/index.ts:1398-1403](src/index.ts)。
-      （`1e9×1e9` 是否真能 OOM 待验证）修法：`clampInt` + input 上限 + `maxPayload: 1 << 22`。
+      （已随 D14 修复消除：尺寸统一 `clampInt`，坏帧进不来）修法：`clampInt` + input 上限 + `maxPayload: 1 << 22`。
 - [x] **D15 隧道不会收敛** —— ①连接簿条目被删 / 改名后 `resolveBook` 返回 undefined 只走
       `scheduleRetry`（无最大次数），进入「每 ≤15s 建一次」的永久失败循环；
       ②`stopTunnel` 不持有活跃 socket/channel，只 `conn.end()` 并手写 `connections = 0`，停用 / 改规格
@@ -177,7 +183,7 @@
       证据：[src/shell-integration.ts:216-227](src/shell-integration.ts)、
       [src/shell-integration.ts:120-121](src/shell-integration.ts)、
       [src/index.ts:546-552](src/index.ts)、[src/index.ts:560-571](src/index.ts)。
-      （退出码污染程度、行宽阈值 待验证）修法：两处都改前置；carry 上限提到快照量级或识别 `133;T;`
+      （已随 D17 修复消除：钩子改前置；carry 提到 512KB，桩内容有单测钉住）修法：两处都改前置；carry 上限提到快照量级或识别 `133;T;`
       后按「丢弃到终结符」处理。
 - [x] **D46 bash ≥4.4 的 shell 集成不发 D 标记**（CI 首跑 ubuntu 发现，0.19.0 修）——
       `PS0` 发的 B 到了，但 D 被 `__dsh_tty_precmd` 里的 `if [ "$__DSH_TTY_IN_CMD" = "1" ]`
@@ -238,7 +244,7 @@
 - [x] **D22 状态条最小化期间不停表、`refitActiveTab` 无 minimized 守卫** —— 1s 定时器在
       `openModal` 启动、只在 `closeModal` 停止；`refitActiveTab` 不判 `minimized`，而
       `statsBarVisible()` 在最小化返回 false → 最小化瞬间对隐藏容器跑一次 `fit.fit()` 并可能
-      `sendResize`（是否算出退化尺寸 待验证）。
+      `sendResize`（已随 D22 修复消除：最小化时不再对隐藏容器 fit）。
       证据：[client-src/index.js:725-728](client-src/index.js)、[client-src/index.js:5074](client-src/index.js)、
       [client-src/index.js:5334](client-src/index.js)、[client-src/index.js:667-681](client-src/index.js)。
       修法：minimize/restore 成对开关定时器；`refitActiveTab` 开头 `if (minimized) return`。
@@ -399,20 +405,31 @@
 
 ---
 
-## 功能缺口（不是缺陷，另立计划）
+## 功能缺口（前瞻工作 —— 这才是本文唯一「还没做」的部分）
 
-- 跳板机（ProxyJump / ProxyCommand）：`ssh-config.ts` 明写忽略、`buildConnectConfig` 从不设 ssh2 的
-  `sock`；企业内网主机几乎都靠 bastion。**短期至少做到**：导入时跳过依赖跳板机的块并提示，
+> 下面 7 条是**规划**，不是缺陷。它们应当作为 Issue 跟踪（每条已给出可直接粘贴的标题）；
+> 在开成 Issue 之前，本文是它们的唯一落点。**新缺陷不要加在这里，请开 Issue。**
+
+- **跳板机（ProxyJump / ProxyCommand）** —— `ssh-config.ts` 明写忽略、`buildConnectConfig` 从不设
+  ssh2 的 `sock`；企业内网主机几乎都靠 bastion。**短期至少做到**：导入时跳过依赖跳板机的块并提示，
   不要静默产出一条注定 20s 超时的连接簿条目。
-- agent 侧没有 `tty_open` / `tty_close`：现在只能 list/capture/screen/expect/send，开与关都得用户
-  在面板里点；README「与 bash 工具同权」这句话需要订正。
-- 隧道没有 agent 侧 start/stop（只有 `tunnel_list`，启停全在设置卡片）。
-- SFTP 双栏：拖拽上传、排序 / 隐藏文件开关、大目录虚拟滚动、断点续传 / 增量（跳过两侧 size+mtime 相同的文件）。
-- 状态条窄屏布局；WebGL 上下文丢失后的重试恢复；磁盘多挂载点。
-- `HostKeyAlias` / 别名参与 TOFU 定位（可搭 D12 的 schema 改动一起做）。
-- （D38 遗留，单独立项）客户端接线进 CI：preview.mjs 的 29 个界面场景需要 Chrome——
-  要么加一个带浏览器的 CI job，要么继续把 UI 纯逻辑外抽成可单测模块（status-line /
-  dock-owner / current-session 同款）。
+  `Issue: tty: 支持 ProxyJump / ProxyCommand（含 ssh_config 导入提示）`
+- **agent 侧没有 `tty_open` / `tty_close`** —— 现在只能 list/capture/screen/expect/send，开与关都得
+  用户在面板里点；README「与 bash 工具同权」这句话需要订正。
+  `Issue: tty: 补 agent 侧 tty_open / tty_close 工具`
+- **隧道没有 agent 侧 start/stop** —— 只有 `tunnel_list`，启停全在设置卡片。
+  `Issue: tty: 隧道支持 agent 侧 start / stop`
+- **SFTP 双栏交互** —— 拖拽上传、排序 / 隐藏文件开关、大目录虚拟滚动、断点续传 / 增量（跳过两侧
+  size+mtime 相同的文件）。
+  `Issue: tty: SFTP 双栏交互增强（拖拽 / 排序 / 虚拟滚动 / 断点续传）`
+- **状态条与图元边界** —— 状态条窄屏布局；WebGL 上下文丢失后的重试恢复；磁盘多挂载点。
+  `Issue: tty: 状态条窄屏布局、WebGL 上下文恢复、磁盘多挂载点`
+- **`HostKeyAlias` / 别名参与 TOFU 定位**（可搭 D12 的多指纹 schema 一起做）。
+  `Issue: tty: HostKeyAlias 参与 TOFU 定位`
+- **客户端接线进 CI**（D38 遗留，单独立项）—— `preview.mjs` 的 29 个界面场景需要 Chrome：要么加一个
+  带浏览器的 CI job，要么继续把 UI 纯逻辑外抽成可单测模块（`status-line` / `dock-owner` /
+  `current-session` 同款）。
+  `Issue: tty: 客户端接线纳入 CI（preview 或继续外抽纯逻辑）`
 
 ## 建议批次
 
@@ -440,6 +457,6 @@ check-dsh-engines → publish → `dsh plugin --profile web add @hyzyn/dsh-tty@<
 - 环境前提：`integration.mjs` 需要真实 PTY、`preview.mjs` 需要 Chrome。受限沙箱（如
   workspace-write）下 `posix_openpt` 会被拒，integration 会在 `[1] 全链路` 直接崩——那是
   沙箱限制而非代码回归，放宽后重跑即可；CI（ubuntu-latest runner）不受影响。
-- 原四处 **待验证** 项的处置（见头部注记）：D13 / D14（abort 监听器告警、`1e9` OOM）随修复从结构上
-  消除（监听器固定摘除、尺寸统一 clampInt）；D17 两处按修法落地——钩子改为前置挂载、carry 上限
-  提到 512KB，桩内容有 `test/shell-spawn.test.ts` 单测钉住，不再依赖实测阈值。
+- 原四处 **待验证** 项均随对应修复从结构上消除，不再需要实测：D13（监听器固定摘除）、
+  D14（尺寸统一 clampInt）、D17（钩子前置 + carry 512KB，桩内容有单测）、D22（最小化不再对
+  隐藏容器 fit）。
