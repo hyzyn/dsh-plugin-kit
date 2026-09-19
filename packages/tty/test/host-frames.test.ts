@@ -405,3 +405,83 @@ describe('SessionManager', () => {
     expect(sm.findByTmuxName('dsh-missing')).toBeUndefined()
   })
 })
+
+describe('endOnPageClose × tmux 收尾（D45：孤儿回收策略）', () => {
+  /** 带 tmux 会话的替身：只补 destroy/retire 会碰到的字段 + tmuxTeardown 计数器。 */
+  function makeTmuxSession(tmuxName: string | null, spies: { tmux: number }): any {
+    return {
+      id: 'sid-' + String(tmuxName),
+      handle: {
+        kind: 'local',
+        pid: 9,
+        output: new PassThrough(),
+        done: new Promise(() => {}),
+        write: async () => {},
+        resize: () => {},
+        terminate: async () => true,
+        tmuxTeardown: async () => {
+          spies.tmux += 1
+        },
+      },
+      clients: new Map(),
+      closed: false,
+      paused: false,
+      cwd: '',
+      kind: 'local',
+      target: '',
+      startedAt: Date.now(),
+      lastOutputAt: Date.now(),
+      lastInputAt: Date.now(),
+      buffer: '',
+      decoder: null as never,
+      screen: null,
+      orphanedAt: Date.now() - 1000, // 已过保活期
+      shellState: { carry: '', inCommand: false, cmdBuffer: '', pendingT: null, lastCommand: null },
+      pendingOutput: '',
+      flushTimer: null,
+      tmuxName,
+      statsSubs: new Set(),
+      stats: null,
+      statsFailed: false,
+    }
+  }
+
+  it('endOnPageClose=true → 回收孤儿时连 tmux 会话一起结束（kill-session）', async () => {
+    const spies = { tmux: 0 }
+    const sm = new SessionManager(4, () => true)
+    sm.add(makeTmuxSession('dsh-a', spies))
+    await sm.reapOrphans(0)
+    await until(() => spies.tmux === 1)
+    expect(spies.tmux).toBe(1)
+    expect(sm.count).toBe(0)
+  })
+
+  it('endOnPageClose=false（默认）→ 回收孤儿但 tmux 会话留存，可再 attach 回来', async () => {
+    const spies = { tmux: 0 }
+    const sm = new SessionManager(4, () => false)
+    sm.add(makeTmuxSession('dsh-b', spies))
+    await sm.reapOrphans(0)
+    await until(() => sm.count === 0)
+    expect(spies.tmux).toBe(0) // 持久会话留在远程：下次同名 new-session -A 接回现场
+  })
+
+  it('非持久会话（tmuxName=null）→ 任何策略都不碰 tmux 收尾', async () => {
+    const spies = { tmux: 0 }
+    const sm = new SessionManager(4, () => true)
+    sm.add(makeTmuxSession(null, spies))
+    await sm.reapOrphans(0)
+    await until(() => sm.count === 0)
+    expect(spies.tmux).toBe(0)
+  })
+
+  it('在线会话（未转孤儿）不被回收器碰，也不结束其 tmux 会话', async () => {
+    const spies = { tmux: 0 }
+    const sm = new SessionManager(4, () => true)
+    const online = makeTmuxSession('dsh-c', spies)
+    online.orphanedAt = null
+    sm.add(online)
+    await sm.reapOrphans(0)
+    expect(sm.count).toBe(1)
+    expect(spies.tmux).toBe(0)
+  })
+})

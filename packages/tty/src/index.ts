@@ -2018,6 +2018,23 @@ function readManagedEnvKeys(): string[] {
  * 路径解析与本地 provider 的默认一致（$DSH_HOME 优先，空串视为未设，再退 ~/.dsh）。边界：
  * 若有人给 provider 配了自定义 `path` / `dshHome`，这里看不到那些引用（字段仍可手输名字）。
  */
+/**
+ * `/api/dsh-tty/credential-refs` 的路由逻辑（导出仅供单测
+ * test/credential-refs.test.ts）：loopback 闸门 + 方法闸门 + 只回引用名的载荷。
+ * 值在任何分支都不进响应——SSH 对话框的选择器只需要「我存过哪些名字」。
+ */
+export async function handleCredentialRefsRoute(req: ReqLike, res: ResLike): Promise<void> {
+  if (!isLoopbackHttp(req)) {
+    writeJson(res, 403, { error: 'forbidden: loopback-only' })
+    return
+  }
+  if (req.method !== 'GET') {
+    writeJson(res, 405, { error: 'method not allowed: ' + String(req.method) })
+    return
+  }
+  writeJson(res, 200, { ok: true, names: readCredentialRefNames() })
+}
+
 /** 导出仅供单测（test/credential-refs.test.ts）：只验键名解析，不取值。 */
 export function readCredentialRefNames(): string[] {
   const dshHome = process.env.DSH_HOME?.trim() || join(homedir(), '.dsh')
@@ -2643,17 +2660,7 @@ const plugin = definePlugin<Config>({
         registerGated({
           kind: 'exact',
           path: '/api/dsh-tty/credential-refs',
-          handler: async (req: ReqLike, res: ResLike) => {
-            if (!isLoopbackHttp(req)) {
-              writeJson(res, 403, { error: 'forbidden: loopback-only' })
-              return
-            }
-            if (req.method !== 'GET') {
-              writeJson(res, 405, { error: 'method not allowed: ' + String(req.method) })
-              return
-            }
-            writeJson(res, 200, { ok: true, names: readCredentialRefNames() })
-          },
+          handler: handleCredentialRefsRoute,
         })
         // known_hosts 指纹导入候选（TOFU 预填充）：hashed 条目用连接簿主机名还原
         registerGated({
