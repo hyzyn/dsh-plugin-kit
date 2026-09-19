@@ -75,16 +75,23 @@ const result = spawnSync(tsc, [
 ], { cwd: root, encoding: 'utf8' })
 
 const output = (result.stdout ?? '') + (result.stderr ?? '')
-// tsc 对相对目标输出的路径就是目标本身；把它转义后当锚点，避免误吃别的文件的诊断
-const escaped = target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-const found = [...output.matchAll(new RegExp(escaped + '\\((\\d+),(\\d+)\\): error (TS\\d+): (.*)', 'g'))]
-  .map((match) => ({ line: Number(match[1]), col: Number(match[2]), code: match[3], text: match[4].trim() }))
+/*
+ * 锚点（D74）：tsc 的 program 会经 import 拉进 client-src 的兄弟模块
+ * （如 docker 包的 session-target.js / current-session.js），它们的诊断此前因锚点
+ * 只认入口文件而被**静默丢弃**（合成诊断实测只命中 1/3）。源码模式下放宽到
+ * program 内的全部 client-src/**；裸 client.js 的包没有兄弟源码，维持原锚点。
+ */
+const anchor = target.startsWith('client-src/')
+  ? 'client-src/[^\\s()]+\\.js'
+  : target.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const found = [...output.matchAll(new RegExp('(' + anchor + ')\\((\\d+),(\\d+)\\): error (TS\\d+): (.*)', 'g'))]
+  .map((match) => ({ file: match[1], line: Number(match[2]), col: Number(match[3]), code: match[4], text: match[5].trim() }))
 
 const fatal = found.filter((item) => FATAL_CODES.has(item.code))
 const noise = found.filter((item) => !FATAL_CODES.has(item.code))
 
 for (const item of fatal) {
-  console.error('[client-lint] ' + target + ':' + String(item.line) + ':' + String(item.col) + ' ' + item.code + ' ' + item.text)
+  console.error('[client-lint] ' + item.file + ':' + String(item.line) + ':' + String(item.col) + ' ' + item.code + ' ' + item.text)
 }
 
 if (fatal.length > 0) {
