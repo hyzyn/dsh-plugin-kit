@@ -356,8 +356,13 @@
       per-channel `agentForward` 标志如实透传（变异验证：改成恒 false → 用例变红）；
       ④ `endOnPageClose` 回收策略 —— `test/host-frames.test.ts`：策略 true 时回收孤儿连 tmux 会话
       一起结束、false（默认）时 tmux 留存、非持久会话不碰 tmux 收尾、在线会话不受影响。
-      仍零覆盖：**Windows 端到端**——真实 `cmd.exe` / ConPTY 的 spawn→data→kill 只能在 Windows
-      runner 上跑（CI 的 windows-latest 目前只跑单测：启动计划字符串与命令标签分支已覆盖，整链路没有）。）——
+      ⑤ **Windows 端到端** —— 新增 `scripts/windows-smoke.mjs` 并挂进 CI 的 windows-latest job：
+      真实 `cmd.exe` / ConPTY 上走 spawn → ready（本机 pid）→ 输入回显（`%COMSPEC%` 证明跑的是 cmd、
+      没有被 POSIX 包装层吃掉）→ `%OS%` 展开证明命令真被执行 → kill → exit → 重开。脚本在非 Windows
+      平台优雅跳过（退出码 0）。**状态：待 windows-latest 首跑确认**——本地无 Windows 可验，改用
+      「POSIX 替身自检」验证了除 cmd 专有断言外的整条接线：把平台守卫关掉、断言换成 `$SHELL` /
+      `uname -s` 后，本机 **5/5 PASS**（挂载 → ws → spawn → 输入 → kill → 重开全通）；cmd 专有的
+      `%COMSPEC%` / `%OS%` / `\r\n` 三处只能由 runner 首跑给出结论。）——
       证据：[src/index.ts:2453](src/index.ts)、[test/probe.test.ts:59](test/probe.test.ts)。
 
 ---
@@ -398,6 +403,8 @@ check-dsh-engines → publish → `dsh plugin --profile web add @hyzyn/dsh-tty@<
 - 端到端脚本（**0.19.0 起已挂 CI**，仍可本地跑）：`node scripts/integration.mjs`（本机 PTY 全链路）、
   `node scripts/ssh-smoke.mjs`（内存 sshd，自包含）、`node scripts/preview.mjs`（Chrome，29 个界面场景；
   默认不重建产物，落后会报错，`--build` 显式重建）。
+- Windows：`node scripts/windows-smoke.mjs`（**只在 Windows 上有意义**，非 Windows 平台打印原因后
+  跳过并退出 0；CI 的 windows-latest job 会执行它）。
 - 环境前提：`integration.mjs` 需要真实 PTY、`preview.mjs` 需要 Chrome。受限沙箱（如
   workspace-write）下 `posix_openpt` 会被拒，integration 会在 `[1] 全链路` 直接崩——那是
   沙箱限制而非代码回归，放宽后重跑即可；CI（ubuntu-latest runner）不受影响。

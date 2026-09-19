@@ -83,3 +83,9 @@ jobs:
           node packages/tty/scripts/probe-smoke.mjs
           node packages/tty/scripts/probe-route-smoke.mjs
           node packages/tty/scripts/sftplimits-smoke.mjs
+      # Windows 端到端（DEFECTS D45 的最后一格）：真实 cmd.exe / ConPTY 的
+      # spawn → ready → 输入回显 → kill → 重开。脚本在非 Windows 上自行跳过，
+      # 所以只在这个 job 上有意义（integration.mjs 的 POSIX 用例在 Windows 上不适用）。
+      - name: dsh-tty Windows smoke
+        if: matrix.os == 'windows-latest'
+        run: node packages/tty/scripts/windows-smoke.mjs
