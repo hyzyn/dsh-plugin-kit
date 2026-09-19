@@ -145,7 +145,15 @@ const FAKE_CONFIG = {
     { name: 'inline', kind: 'ssh', book: '', host: '10.0.0.9', port: 2200, username: 'ops', auth: 'agent', keyPath: '', agentForward: false, passwordSet: false, passphraseSet: false },
   ],
   hostKeys: [],
-  ttyBooks: ['prod-a'],
+  ttyBooks: ['prod-a', 'prod-legacy'],
+  /*
+   * 连接簿条目 → host:port（宿主只回 name/host/port）。`prod-legacy` 不被任何目标的
+   * book 引用，但和目标是同一台主机：用它钉住「连接失败时按 host 兜底」这条路径。
+   */
+  ttyBookHosts: [
+    { name: 'prod-a', host: '10.0.0.5', port: 2222 },
+    { name: 'prod-legacy', host: '10.0.0.5', port: 2222 },
+  ],
   ttyAvailable: true,
   toolsRegistered: [],
 }
@@ -491,6 +499,54 @@ await test('缓存尚未就绪时点击：现场重拉并锁定当前会话对�
   const panel = renders[renders.length - 1]
   assert.equal(panel.props.initialTarget, 'prod', '应锁定当前会话对应的目标')
   assert.equal(panel.props.sessionHint, undefined, '命中目标时不应再带未配置提示')
+})
+
+await test('连接失败（没有 tab.target）：用连接簿自带的 host 兜底命中目标', async () => {
+  // 干净的模块级缓存：重新执行 bundle，再把挂载时那次 /config + /targets 放落地
+  let reg = null
+  const run = new Function('window', 'document', 'MutationObserver', 'fetch', code)
+  run({ __ModuleLoader__: { load: (entry) => { reg = entry } } }, documentStub, class { observe() {} disconnect() {} }, fetchStub)
+  const exports_ = reg.factory((spec) => SEED[spec])
+  const { ctx, state } = makeClientCtx({ ttyConnbar: true })
+  exports_.apply(ctx)
+  await new Promise((resolve) => setTimeout(resolve, 40))
+
+  const buttons = []
+  /*
+   * 用户实际场景：会话来自连接簿「prod-legacy」（目标 prod 引用的是另一条 prod-a），
+   * 而这台机器的 SSH **握手超时**——宿主只在连接成功后才回显 tab.target，所以这里
+   * 是空的。旧实现没有第二层兜底，会判成「该主机没配目标」，面板随后沿用上次记住的
+   * 目标，把另一台主机的容器显示出来。
+   */
+  state.connbarFactory({
+    spec: { t: 'ssh', name: 'prod-legacy', command: '' },
+    bookName: 'prod-legacy',
+    tab: { target: '' },
+    addAction: (icon, label, title, onClick) => buttons.push({ title, onClick }),
+  })
+  assert.match(buttons[0].title, /目标：prod/, '连接簿 host 应能把会话对到目标')
+
+  buttons[0].onClick()
+  await new Promise((resolve) => setTimeout(resolve, 40))
+  const panel = renders[renders.length - 1]
+  assert.equal(panel.props.initialTarget, 'prod', '应直接锁定按 host 命中的目标')
+  assert.equal(panel.props.sessionHint, undefined, '命中目标时不应再带「未配置」提示')
+
+  // 反例：连接簿条目和任何目标都不相干时，仍然判「未配置」，并带上解析出的主机地址
+  buttons.length = 0
+  state.connbarFactory({
+    spec: { t: 'ssh', name: '未知条目', command: '' },
+    bookName: '未知条目',
+    tab: { target: '' },
+    addAction: (icon, label, title, onClick) => buttons.push({ title, onClick }),
+  })
+  assert.match(buttons[0].title, /尚未配置为 Docker 目标/)
+  buttons[0].onClick()
+  await new Promise((resolve) => setTimeout(resolve, 40))
+  const unmatched = renders[renders.length - 1]
+  assert.equal(unmatched.props.initialTarget, '')
+  assert.equal(unmatched.props.sessionHint.book, '未知条目')
+  assert.equal(unmatched.props.sessionHint.host, '')
 })
 
 await test('承载分发（S2）：框架侧入口开右侧栏标签（带目标），不再弹模态', () => {
@@ -1026,6 +1082,12 @@ await test('记住上次选的目标：优先级与失效回退', () => {
   assert.equal(panel.chooseInitialTarget([], '', 'prod', false), '')
   // 连接栏进来但会话主机没匹配到目标（sessionScoped）→ 不自动选
   assert.equal(panel.chooseInitialTarget(list, '', 'prod', true), '')
+  /*
+   * 同上，但面板初值已经是「上次记住的目标」：**也不能沿用**。current 优先于
+   * sessionScoped 正是用户报的那个 bug —— 面板会显示另一台主机的容器，只留一条
+   * 浅色横幅，比空着更误导（空态文案明确说「不会自动切到其他目标」）。
+   */
+  assert.equal(panel.chooseInitialTarget(list, 'prod', 'prod', true), '')
 
   // 侧边栏入口传空串（不是 undefined）：必须当「没指定」处理，否则会盖掉记忆值
   assert.equal(''.trim() !== '' ? '' : 'prod', 'prod')

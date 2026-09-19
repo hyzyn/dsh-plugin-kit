@@ -17,7 +17,7 @@
  * （宿主只回 passwordSet / passphraseSet 布尔）。
  */
 import dockerCss from './docker.css'
-import { pickTargetByHost, sessionHostPort } from './session-target.js'
+import { bookSessionHost, pickTargetByHost, sessionHostPort } from './session-target.js'
 import { currentSessionIdOf } from './current-session.js'
 
 const API = '/api/dsh-docker'
@@ -219,11 +219,15 @@ function writeLastTarget(name) {
 /**
  * 初始目标的优先级：**连接栏指定 > 上次记住的（且仍然存在）> 列表第一个**。
  * 记住的目标被删掉/改名后不能硬选（会立刻报「未知目标」），所以要对着当前列表校验。
- * `sessionScoped`（从终端连接栏进来但没匹配到目标）时不自动选，避免张冠李戴。
+ * `sessionScoped`（从终端连接栏进来但没匹配到目标）时**一律不选**：连「上次记住的
+ * 目标」也不能沿用——那正是另一台主机，面板会把它的容器显示出来，只留一条浅色横幅，
+ * 比空着更误导（空态文案见 `empty()`：明确说「不会自动切到其他目标」）。
  */
 function chooseInitialTarget(list, current, remembered, sessionScoped) {
-  if (current !== '') return current
+  // sessionScoped 必须排在最前：`current` 的初值是 readLastTarget()，若让它优先，
+  // 从连接栏进来的「没匹配到目标」就等于直接沿用上次那台主机（实测踩过）。
   if (sessionScoped) return ''
+  if (current !== '') return current
   const names = list.map((item) => item.name)
   if (remembered !== '' && names.includes(remembered)) return remembered
   return names.length > 0 ? names[0] : ''
@@ -282,6 +286,16 @@ function primeTargetsCache(config) {
   syncEntryFromConfig(configCache)
 }
 
+/**
+ * `/config.ttyBookHosts`：连接簿条目 → host:port（老宿主没有这个字段时为空表）。
+ * 用于在**连接建立之前 / 失败之后**也能把「会话走的是哪条连接簿」换算成主机地址，
+ * 见 `bookSessionHost`。
+ */
+function ttyBookRows() {
+  const rows = configCache !== null && typeof configCache === 'object' ? configCache.ttyBookHosts : undefined
+  return Array.isArray(rows) ? rows : []
+}
+
 async function refreshTargetsCache() {
   let ok = true
   try {
@@ -326,8 +340,10 @@ async function resolveTargetForSession(spec, bookName, liveTarget) {
  * 目标也引用同一条目时最准确），其次按 host:port 匹配 —— 这样「目标是按另一条
  * 连接簿条目配的、甚至用的是别的账号」也能命中。
  *
- * host 的来源见 `sessionHostPort`：从连接簿打开的标签 spec 里没有 host，要靠
- * 宿主回显的 `tab.target` 兜底，否则这一层匹配会整条失效。
+ * host 的来源见 `sessionHostPort`：从连接簿打开的标签 spec 里没有 host，依次靠
+ * ① 宿主回显的 `tab.target`（要连上才有）、② `/config.ttyBookHosts` 里该条目
+ * 自己填的 host（连接失败时也能用）兜底。少了第 ② 层，握手超时那种「最需要面板」
+ * 的场景恰好匹配不上，面板就会沿用上一次的目标，显示另一台主机的容器。
  *
  * @param spec tty 传来的会话规格。
  * @param bookName 会话所属的连接簿条目名（可能为空，如内联连接）。
@@ -339,7 +355,16 @@ function matchTargetForSession(spec, bookName, liveTarget) {
     const byBook = targets.find((item) => item.kind === 'ssh' && item.book === bookName)
     if (byBook !== undefined) return byBook.name
   }
-  return pickTargetByHost(targetsCache, sessionHostPort(spec, liveTarget))
+  const session = sessionHostPort(spec, liveTarget) ?? bookSessionHost(bookName, ttyBookRows())
+  return pickTargetByHost(targetsCache, session)
+}
+
+/**
+ * 会话主机的 host:port：先按会话规格 / 宿主回显算，算不出来再用连接簿里该条目
+ * 自己填的地址（连接还没建立时的唯一信息源）。提示文案与匹配共用它。
+ */
+function sessionHostOf(spec, bookName, liveTarget) {
+  return sessionHostPort(spec, liveTarget) ?? bookSessionHost(bookName, ttyBookRows())
 }
 
 /* ================================ 图标 ================================ */
@@ -5915,7 +5940,18 @@ window.__ModuleLoader__.load({
      * 聚合日志「暂停」的合并逻辑：暂停期间新行进缓冲、恢复时并入主列表（环形上限）。
      * 组件体没法在离线冒烟里跑（要真 EventSource），所以把唯一的纯分支挂出来测。
      */
-    exports.__panel = { chooseInitialTarget, readLastTarget, writeLastTarget, LAST_TARGET_KEY }
+    exports.__panel = {
+      chooseInitialTarget,
+      readLastTarget,
+      writeLastTarget,
+      LAST_TARGET_KEY,
+      /*
+       * 「会话主机 ↔ 目标」的匹配（读 /config+/targets 缓存）在离线冒烟里只能这样测：
+       * 组件体要真 DOM/EventSource 跑不起来，但匹配本身是纯的 —— 用它钉住
+       * 「连接还没建立时靠连接簿 host 兜底」这条路径。
+       */
+      matchTargetForSession,
+    }
     exports.__aggLogs = {
       mergeBuffered: mergeBufferedEntries,
       WINDOW_MS: LOG_MERGE_WINDOW_MS,
@@ -6125,8 +6161,9 @@ window.__ModuleLoader__.load({
             // 点击时以「现场解析」为准：缓存没命中就现拉一次，避免启动期竞态
             void (async () => {
               const resolved = await resolveTargetForSession(spec, bookName, liveTarget)
-              // 会话主机：spec 优先，缺失时用宿主回显的实际连接兜底（否则提示里会是空的）
-              const session = sessionHostPort(spec, liveTarget)
+              // 会话主机：spec 优先 → 宿主回显的实际连接 → 连接簿条目自带的 host
+              //（最后一层专治「连接还没建立」：不补它，提示里只会剩下连接簿名）
+              const session = sessionHostOf(spec, bookName, liveTarget)
               /*
                * 这里**刻意不走 openContainerPanel() 的标签分发**：这个按钮长在 tty 终端
                * 面板的连接栏上，也就是说点击时那个弹窗一定开着且盖满视口——开右侧栏标签

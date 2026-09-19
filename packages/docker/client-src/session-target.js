@@ -59,3 +59,34 @@ export function pickTargetByHost(rows, session) {
   }
   return undefined
 }
+
+/**
+ * 用连接簿条目名解析出 host:port（宿主 `/config` 的 `ttyBookHosts`）。
+ *
+ * 这是 `sessionHostPort` 的第二层兜底，补的正是「**连接还没建立 / 建立失败**」这段窗口：
+ *
+ *   - 从连接簿打开的 SSH 标签，spec 里只有条目名（没有 host）；
+ *   - 宿主回显的 `tab.target` 要等连接成功才有值；
+ *   - 于是握手超时 / 主机没开机时，`sessionHostPort` 返回 undefined，面板判成
+ *     「该主机没配目标」，只能沿用上一次选的目标 → 屏幕上出现**另一台主机**的容器。
+ *
+ * 有了这一层，只要「会话走的那条连接簿」和「某条 docker 目标」指向同一台主机
+ * （哪怕两条目标的 book 字段引用的是**不同**条目，如 lab-a vs 192.0.2.10），
+ * 连接失败时也能对上目标——而那正是最需要面板的时候。
+ *
+ * @param bookName 会话所属的连接簿条目名（可能为空，如内联连接）。
+ * @param rows `/config.ttyBookHosts`：`[{ name, host, port }]`（宿主只回 name/host/port）。
+ * @returns `{ host, port }`；条目不存在或没填 host 时 undefined（不猜）。
+ */
+export function bookSessionHost(bookName, rows) {
+  if (typeof bookName !== 'string' || bookName === '') return undefined
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (row === null || typeof row !== 'object') continue
+    if (row.name !== bookName) continue
+    const host = typeof row.host === 'string' ? row.host.trim() : ''
+    if (host === '') return undefined
+    const rawPort = Number(row.port)
+    return { host, port: Number.isInteger(rawPort) && rawPort > 0 ? rawPort : 22 }
+  }
+  return undefined
+}

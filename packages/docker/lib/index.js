@@ -534,6 +534,17 @@ const plugin = definePlugin({
                 hostKeys: live.hostKeys,
                 // 只读复用 tty 连接簿：卡片用它渲染「从连接簿选择」下拉
                 ttyBooks: [...books.keys()],
+                /*
+                 * 连接簿条目 → 解析后的 host:port（**只 name/host/port，凭据永不出宿主**）。
+                 *
+                 * 客户端「当前会话主机 ↔ 目标」的匹配要在**连接之前**就能判定：从连接簿打开的
+                 * SSH 标签，spec 里只有条目名；宿主回显的 `tab.target` 只在**连接成功**后才
+                 * 有值，而连不上（握手超时 / 主机没开机）恰恰是最需要面板的时候。少了这张表，
+                 * 面板只能判成「该主机没配目标」，然后沿用上一次选的目标——把另一台主机的容器
+                 * 显示出来。有了它，按主机配的目标（如目标绑 lab-a 条目、会话走
+                 * 192.0.2.10 条目）在连接失败时也能对上。
+                 */
+                ttyBookHosts: [...books.entries()].map(([name, spec]) => ({ name, host: spec.host, port: spec.port })),
                 ttyAvailable: books.size > 0,
                 toolsRegistered: registeredNames,
             };
