@@ -968,7 +968,8 @@ function isLoopbackUpgrade(req: ReqLike): boolean {
  * 会话管理
  * ------------------------------------------------------------------ */
 
-class SessionManager {
+/** 导出仅供单测（test/host-frames.test.ts）：上限 / 孤儿回收 / grace 热改的行为护栏。 */
+export class SessionManager {
   private readonly sessions = new Map<string, TtySession>()
   private limit: number
   /** 回收器销毁孤儿时是否连 tmux 持久会话一起结束（endOnPageClose 策略）。 */
@@ -1107,7 +1108,8 @@ class SessionManager {
  * WebSocket 连接处理
  * ------------------------------------------------------------------ */
 
-class TtyServer {
+/** 导出仅供单测（test/host-frames.test.ts）：帧校验 / 绑定 / 孤儿语义的行为护栏。 */
+export class TtyServer {
   // maxPayload：ws 默认 100MiB，恶意/畸形帧会把内存打爆再 JSON.parse 复制一份；
   // 最大的合法帧是 input（128KB 上限，见 input 分支），给 4MiB 余量
   private readonly wss = new WebSocketServer({ noServer: true, maxPayload: 4 * 1024 * 1024 })
@@ -2016,7 +2018,8 @@ function readManagedEnvKeys(): string[] {
  * 路径解析与本地 provider 的默认一致（$DSH_HOME 优先，空串视为未设，再退 ~/.dsh）。边界：
  * 若有人给 provider 配了自定义 `path` / `dshHome`，这里看不到那些引用（字段仍可手输名字）。
  */
-function readCredentialRefNames(): string[] {
+/** 导出仅供单测（test/credential-refs.test.ts）：只验键名解析，不取值。 */
+export function readCredentialRefNames(): string[] {
   const dshHome = process.env.DSH_HOME?.trim() || join(homedir(), '.dsh')
   const file = join(dshHome, '.credentials.yaml')
   try {
