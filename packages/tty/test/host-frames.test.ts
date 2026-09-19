@@ -13,7 +13,7 @@ import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { tmpdir } from 'node:os'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { SessionManager, TtyServer } from '../src/index.js'
+import { SessionManager, TtyServer, killLocalShellTerminal } from '../src/index.js'
 import type { TermHandle } from '../src/ssh.js'
 
 /* ----------------------------- 假件 ----------------------------- */
@@ -483,5 +483,30 @@ describe('endOnPageClose × tmux 收尾（D45：孤儿回收策略）', () => {
     await sm.reapOrphans(0)
     expect(sm.count).toBe(1)
     expect(spies.tmux).toBe(0)
+  })
+})
+
+describe('killLocalShellTerminal（D48：Windows 不能带 signal）', () => {
+  it('win32 → 不带 signal 调 kill（带 signal 会同步 throw，还可能被 defer 到 socket 回调 → 宿主崩溃）', () => {
+    const calls: Array<string | undefined> = []
+    killLocalShellTerminal({ kill: (signal?: string) => calls.push(signal) }, 'win32')
+    expect(calls).toEqual([undefined])
+  })
+
+  it('linux / darwin → 带 SIGKILL（terminate 失败后的升级强杀）', () => {
+    for (const platform of ['linux', 'darwin'] as const) {
+      const calls: Array<string | undefined> = []
+      killLocalShellTerminal({ kill: (signal?: string) => calls.push(signal) }, platform)
+      expect(calls).toEqual(['SIGKILL'])
+    }
+  })
+
+  it('没有 terminal / 没有 kill → 安静返回（best-effort，不抛）', () => {
+    expect(() => killLocalShellTerminal(undefined, 'win32')).not.toThrow()
+    expect(() => killLocalShellTerminal({}, 'win32')).not.toThrow()
+  })
+
+  it('kill 自身抛错 → 被吞掉（会话可能已退出，不能把清理路径变成崩溃）', () => {
+    expect(() => killLocalShellTerminal({ kill: () => { throw new Error('boom') } }, 'linux')).not.toThrow()
   })
 })

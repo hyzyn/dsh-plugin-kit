@@ -124,6 +124,19 @@ export interface SftpLimits {
     /** 一次批量/拖拽上传的文件数上限。默认 1000。 */
     maxUploadFiles: number;
 }
+/**
+ * 本地 PTY 顶层 shell 的 best-effort 强杀（D48）。
+ *
+ * **Windows 绝不能带 signal**：node-pty 的 `WindowsTerminal.kill(signal)` 会同步
+ * `throw new Error('Signals not supported on windows.')`，而且它内部 `_deferNoArgs`
+ * 会把回调排进队列、稍后从 socket 回调里执行——调用方的 try/catch 拦不住，直接变成
+ * **宿主进程崩溃**。CI 的 windows-latest 上实测：spawn → kill 跑完就崩在
+ * `windowsTerminal.js:161`。不带 signal 时 node-pty 走 `_close()` + `agent.kill()`，
+ * 正是 Windows 上正确的终止语义。
+ *
+ * 导出仅供单测（test/host-frames.test.ts）：平台参数注入，两个分支都能在 macOS/Linux 断言。
+ */
+export declare function killLocalShellTerminal(terminal: unknown, platform?: NodeJS.Platform): void;
 /** 一次「会话 → 帧」采集器的句柄（本地 = 定时器，SSH = 远端长驻 exec channel）。 */
 interface StatsCollector {
     stop(): void;

@@ -115,8 +115,11 @@ async function run() {
   try {
     await s.waitFor(() => s.state.ready !== null, 20000, 'ready')
     const pid = s.state.ready.pid
-    if (typeof pid === 'number' && pid > 0) pass(`W1 spawn → ready（pid=${pid}）`)
-    else fail('W1 spawn → ready', `ready 帧没有本机 pid：${JSON.stringify(s.state.ready)}`)
+    // ConPTY 不给本机 pid：Windows 上 node-pty 的 pid 恒为 0（首个 CI 跑就是被这条
+    // 断言卡的，而 W2/W3 早已证明会话真的活着）。所以这里只要求「是数字且非负」，
+    // 会话是否真跑起来交给 W2/W3 的输出断言。
+    if (typeof pid === 'number' && pid >= 0) pass(`W1 spawn → ready（pid=${pid}${pid === 0 ? '（ConPTY 不暴露本机 pid）' : ''}）`)
+    else fail('W1 spawn → ready', `ready 帧的 pid 不是数字：${JSON.stringify(s.state.ready)}`)
   } catch (error) {
     fail('W1 spawn → ready', error.message)
   }

@@ -17,7 +17,8 @@
 > 宿主侧回归：`tsc` / vitest 166 用例（13 文件）/ `probe-smoke` 7 / `probe-route-smoke` 9 /
 > `sftplimits-smoke` 6 / `ssh-smoke` / `integration.mjs` 全绿；client.js 已重建。
 > **CI 首跑（main 推送后）发现并修复**：D46（bash ≥4.4 的 shell 集成 D 标记永远不发——
-> macOS 自带 bash 3.2 走 DEBUG trap，本地测不出来）、D47（integration 的 tmux 列举竞态）。
+> macOS 自带 bash 3.2 走 DEBUG trap，本地测不出来）、D47（integration 的 tmux 列举竞态）、
+> D48（Windows 强杀本地 PTY 会崩宿主——Windows smoke 首跑就跑出来了）。
 > 原审计四个「待验证」项的处置：D13/D14（abort 监听器告警、1e9 OOM）随修复从结构上消除，
 > 不再依赖实测；D17 两处（`$?` 污染方向、carry 上限）按修法前置 + 上限提到 512KB，
 > 桩文件内容有单测钉住（`test/shell-spawn.test.ts`）。
@@ -193,6 +194,17 @@
       `ready` 只代表 channel 打开，而 tmux server 是 fork 出来的、会话出现更晚；测试立刻
       `tmux -L dsh-tty list-sessions` 在慢 runner 上必然为空（`listed=[]`），本地机器快、
       一次就中。修法：轮询到会话出现为止（最多 ~6s）。证据（CI）：`B25b`。
+- [x] **D48 Windows 上强杀本地 PTY 会把宿主进程搞崩**（CI 的 Windows smoke 首跑发现，0.19.0 修）——
+      插件 best-effort 强杀是 `handle.terminal.kill('SIGKILL')`，而 node-pty 的
+      `WindowsTerminal.kill(signal)` 会同步 `throw new Error('Signals not supported on windows.')`；
+      更糟的是它内部 `_deferNoArgs` 会在终端尚未 ready 时把回调**排队**、稍后从 socket 回调里
+      执行——调用方的 try/catch 拦不住 → 未捕获异常 → **宿主进程退出**。CI windows-latest 实测：
+      spawn → kill 跑完就崩在 `windowsTerminal.js:161`。影响：Windows 上关面板 / 会话退出 /
+      回收器的每条清理路径都可能带走整个 dsh 进程。
+      修法：抽 `killLocalShellTerminal(terminal, platform)` —— win32 不带 signal 调 kill
+      （node-pty 走 `_close()` + `agent.kill()`，正是 Windows 的正确语义），POSIX 仍带 SIGKILL。
+      护栏：`test/host-frames.test.ts` 的平台参数化用例（win32 无参 / linux·darwin SIGKILL /
+      缺 kill 安静返回 / kill 抛错被吞）＋ Windows smoke（CI，这条路才是真环境）。
 
 ## P2 · 客户端行为与边界
 
