@@ -395,7 +395,13 @@ and the agent tools all reuse the same scheduling.
   “Terminal N”); while connecting it first echoes a grey `Connecting user@host …`, and once ready the status
   bar shows `SSH user@host connected`; a failed connection (connection timeout / authentication rejected /
   host unreachable) comes back in an `error` frame with the reason, and since the tab spec was saved with the
-  tab, clicking the terminal area reopens it from the original spec;
+  tab, clicking the terminal area reopens it from the original spec; the status bar describes the **currently
+  active tab** — switching or closing a tab immediately swaps in that tab’s own state (the failure reason and
+  the exit code are kept on the tab itself), so the red text no longer stays on screen after you close the tab
+  that could not connect (host-level messages such as “connection lost — reconnecting” belong to no tab and
+  are not wiped by a tab switch); conversely, **a background tab’s own failure is only recorded on that tab**
+  (its tab-bar status dot turns red and the terminal overlay carries the full text) and never takes over the
+  active tab’s status;
 - **Agent forwarding (0.4.0)**: with “agent forwarding” ticked in the SSH dialog, the remote side can use the
   local ssh-agent’s keys (such as `git clone` of a private repository remotely). It can be enabled with any
   authentication method (credentials still never touch disk); if no ssh-agent is running locally the
@@ -663,10 +669,11 @@ ctx.inject(['ttyPanel'], (c) => {
 - The title bar (title / collapse / ✕) is provided by tty, and consumers only own their own body; a throwing
   `onClose` is only logged with `console.warn`, without affecting closing the panel.
 
-> Contract versions: `ttyConnbar.version === 1`, `ttyTerminal.version === 2` (1 = `open` only,
-> 2 = adds `mount`), `ttyPanel.version === 1`. Consumers **decide capabilities by version number**; do not
-> rely on assumptions beyond `typeof fn === 'function'`; on an older tty the `inject` still fires, but the
-> corresponding fields are absent.
+> Contract versions: `ttyConnbar.version === 1`, `ttyTerminal.version === 3` (1 = `open` only,
+> 2 = adds `mount`, 3 = `open` reuses an existing live tab for the same connection + command by default),
+> `ttyPanel.version === 2` (1 = `mountPane` + `isOpen`, 2 = adds `minimize`). Consumers **decide capabilities
+> by version number**; do not rely on assumptions beyond `typeof fn === 'function'`; on an older tty the
+> `inject` still fires, but the corresponding fields are absent.
 
 ## Frame protocol (/api/dsh-tty/ws, JSON text frames; v3 = one connection with many sessions + reconnect)
 

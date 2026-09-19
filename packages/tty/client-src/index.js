@@ -84,6 +84,7 @@ import xtermCss from '@xterm/xterm/css/xterm.css'
 import ttyCss from './tty.css'
 import { resolveDockOwner, dockPaneVisible } from './dock-owner.js'
 import { currentSessionCwd } from './current-session.js'
+import { eventOwnsStatus, needsStatusResync, statusForTab } from './status-line.js'
 
 /* ================================ CSS ================================ */
 
@@ -369,6 +370,13 @@ let modalEl = null
 let statusChipEl = null
 
 /**
+ * 状态胶囊当前「讲的是哪个标签」：sid，或 null（面板级 / 宿主级消息，不属于任何标签）。
+ * 切标签 / 关标签后拿它跟活动标签比，不一致就用活动标签自己记下的状态重算——
+ * 否则失败标签的错误会一直挂在头上（见 status-line.js 的文件头）。
+ */
+let statusSid = null
+
+/**
  * 官方凭据引用的**浏览器侧命名空间**（`ctx.remote.credentials`）。
  *
  * 「记住密码」要落到官方凭据存储，而不是把明文写进设置文件——配置持引用、值归存储，
@@ -486,6 +494,51 @@ function setStatus(text, state) {
   if (dockDotEl !== null) dockDotEl.dataset.state = state
   const badgeDot = document.querySelector('[data-dsh-tty-entry] .tt_sidebarBadgeDot')
   if (badgeDot !== null) badgeDot.dataset.state = state
+}
+
+/**
+ * 标签级状态：把原文记在这个标签自己身上，并且**只在它是活动标签时**才占用胶囊。
+ *
+ * 记下来是为了「切走再切回来」能还原同一条消息（SSH 失败原因、退出码都在里面），
+ * 而不是退成一句泛泛的兜底文案；后台标签的事件只记不显示，免得它在别的主机上
+ * 顶掉你正看着的那个会话的状态（见 status-line.js 的 eventOwnsStatus）。
+ *
+ * @param sid 这条消息属于哪个标签；宿主级消息（没有 sid）传 undefined/null。
+ */
+function setTabStatus(sid, text, state) {
+  const owner = typeof sid === 'string' && sid !== '' ? sid : null
+  if (owner !== null) {
+    const tab = tabs.get(owner)
+    if (tab !== undefined) {
+      tab.statusText = text
+      tab.statusState = state
+    }
+  }
+  // 归属判定用归一化后的 owner（null = 宿主级），别再用原始 sid：
+  // 同一个函数里两套「空值」口径容易在后续改动里分叉
+  if (!eventOwnsStatus(owner, activeSid)) return
+  statusSid = owner
+  setStatus(text, state)
+}
+
+/** 面板级 / 宿主级状态（WebSocket 连接中、断开重连……）：不属于任何标签。 */
+function setPanelStatus(text, state) {
+  statusSid = null
+  setStatus(text, state)
+}
+
+/**
+ * 活动标签变了（切换 / 关闭 / 恢复）之后重算胶囊。
+ *
+ * 这是「窗口关了，错误迟迟不消失」的修复点：只在归属 ≠ 活动标签时才动，
+ * 免得盖掉刚写进去的瞬时消息（传输进度之类）。
+ */
+function syncStatusToActiveTab() {
+  if (!needsStatusResync(statusSid, activeSid)) return
+  const tab = activeSid === null ? undefined : tabs.get(activeSid)
+  statusSid = tab === undefined ? null : activeSid
+  const next = statusForTab(tab)
+  setStatus(next.text, next.state)
 }
 
 function sendFrame(msg) {
@@ -1200,6 +1253,9 @@ function closeTab(sid) {
     if (next !== null) switchTab(next)
   }
   renderTabbar()
+  // 关掉的正是胶囊「讲」的那个标签时，把文案换成剩下那个活动标签自己的——
+  // 否则用户关掉连不上的窗口后，那行红字还会一直挂在头上
+  syncStatusToActiveTab()
   // 注意判据是「没有自己的标签了」：嵌入终端不占标签位，不该因为它而留住空面板
   if (![...tabs.values()].some((tab) => tab.embedded !== true)) closeModal()
   else persistTabs()
@@ -1284,6 +1340,12 @@ function respawnEmbedded(old) {
     controller.observer = null
   }
   controller.tab = createEmbeddedTab(controller, old.spawnSpec, old.label)
+  // respawn 换了 sid：若活动标签/胶囊正指着旧 sid，改指新 sid 并重算，
+  // 否则 activeSid 悬垂、胶囊继续讲一个已经不存在的会话
+  if (activeSid === old.sid) {
+    activeSid = controller.tab.sid
+    syncStatusToActiveTab()
+  }
   return controller.tab
 }
 
@@ -1617,6 +1679,8 @@ function switchTab(sid) {
     sendResize(tab)
   }
   showTabOverlay(tab, tab.exited ? '会话已退出' : '', tab.exited ? '点击重新打开' : '', 'exited')
+  // 胶囊跟着活动标签走：上一个标签留下的错误（如 SSH 握手超时）不该跟着切过来
+  syncStatusToActiveTab()
 }
 
 /**
@@ -4805,12 +4869,12 @@ function connect() {
   clearTimeout(reconnectTimer)
   reconnectTimer = null
   connecting = true
-  setStatus('连接中…', '')
+  setPanelStatus('连接中…', '')
   try {
     socket = new WebSocket(wsUrl())
   } catch (error) {
     connecting = false
-    setStatus('连接失败：' + error.message, 'error')
+    setPanelStatus('连接失败：' + error.message, 'error')
     scheduleReconnect()
     return
   }
@@ -4820,7 +4884,7 @@ function connect() {
     reconnectDelay = 1000
     // 新连接上没有订阅记录：置空后由 ready / switchTab 重新对齐（幂等）
     statsSubSid = null
-    setStatus('已连接', 'connected')
+    setPanelStatus('已连接', 'connected')
     // 先补发挂起的创建帧（嵌入式终端冷启动时排在这里），再走面板的恢复流程
     for (const entry of [...pendingSpawns]) {
       pendingSpawns.delete(entry)
@@ -4840,7 +4904,7 @@ function connect() {
       // SSH 会话 ready 带 target（user@host[:port]，pid 为 null）；本地带 pid。
       // attach 重连也复用 ready 帧（多带 reattached:true），后跟一帧 data 回放缓冲
       const target = typeof msg.target === 'string' ? msg.target : ''
-      setStatus(msg.kind === 'ssh' ? 'SSH ' + (target !== '' ? target + ' ' : '') + '已连接' : '已连接 pid=' + msg.pid, 'connected')
+      setTabStatus(sid, msg.kind === 'ssh' ? 'SSH ' + (target !== '' ? target + ' ' : '') + '已连接' : '已连接 pid=' + msg.pid, 'connected')
       const tab = tabs.get(sid)
       if (tab !== undefined) {
         tab.exited = false
@@ -4883,7 +4947,7 @@ function connect() {
         if (sid === activeSid) applyStatsBar()
         const code = msg.code !== null && msg.code !== undefined ? 'code=' + msg.code : ''
         const signal = msg.signal !== null && msg.signal !== undefined ? 'signal=' + msg.signal : ''
-        setStatus('已退出 ' + [code, signal].filter(Boolean).join(' '), '')
+        setTabStatus(sid, '已退出 ' + [code, signal].filter(Boolean).join(' '), '')
         renderConnbar()
         refreshTabDot(sid)
         showTabOverlay(tab, '会话已退出', '点击重新打开', 'exited')
@@ -4907,7 +4971,7 @@ function connect() {
         console.warn('[dsh-tty] stats 帧处理失败（已忽略）: ' + (error instanceof Error ? error.message : String(error)))
       }
     } else if (msg.t === 'error') {
-      setStatus('错误：' + String(msg.m ?? ''), 'error')
+      setTabStatus(sid, '错误：' + String(msg.m ?? ''), 'error')
       if (typeof sid === 'string') {
         const tab = tabs.get(sid)
         if (tab !== undefined) {
@@ -4924,7 +4988,7 @@ function connect() {
   socket.onclose = () => {
     connecting = false
     if (intentionalClose) return
-    setStatus('连接断开 — 自动重连中', 'error')
+    setPanelStatus('连接断开 — 自动重连中', 'error')
     // 不再把未退出标签标记为 exited：会话在宿主保活，重连后 attach 恢复
     for (const tab of tabs.values()) {
       if (!tab.exited) showTabOverlay(tab, '连接断开', '自动重连中…', 'info')
@@ -5251,6 +5315,9 @@ function closeModal() {
     tabs.delete(sid)
   }
   activeSid = null
+  // 胶囊归属一并清空：不变式是「statusSid ∈ {null, activeSid}」，
+  // 只清 activeSid 会让它悬垂在一个已经关掉的标签上
+  statusSid = null
   document.removeEventListener('keydown', onModalKeydown)
   modalEl.remove()
   modalEl = null
@@ -6706,7 +6773,7 @@ function TtySettingsCard(props) {
           }
           // 最小化中也要恢复（否则标签加进隐藏的弹窗里，用户看到"点了没反应"）
           ensureModalVisible()
-          addTab(spawnSpec, label)
+          return addTab(spawnSpec, label)
         },
         /**
          * 把终端挂进 hostEl（就地嵌入，0.15.0）。options 与 open 相同，额外：
