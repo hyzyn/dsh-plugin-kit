@@ -17,7 +17,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import z from '@deepseek-ai/schemastery';
-import { definePlugin, getService, writeFileAtomic } from '@hyzyn/dsh-kit';
+import { definePlugin, dshHome, getService, writeFileAtomic } from '@hyzyn/dsh-kit';
 import { BUILTIN_CATALOG_NAME, getBuiltinCatalogEntries, getCatalogCategories, getCatalogSourceNames, getMergedCatalogEntries, searchCatalogEntries, catalogStatus, } from './catalog.js';
 export const name = 'rss-digest';
 export const inject = [];
@@ -126,10 +126,6 @@ const AI_CACHE_MAX_ENTRIES = 500;
 const AI_PROMPT_SUMMARY_LIMIT = 100;
 /** 宿主默认模型服务的 settings 命名空间（settings 兜底读取用）。 */
 const AGENT_DEFAULT_MODEL_NAMESPACE = 'agent-default-model';
-function dshHome() {
-    const home = process.env.DSH_HOME?.trim();
-    return home ? expandHome(home) : join(homedir(), '.dsh');
-}
 function expandHome(input) {
     const path = input.trim();
     if (path === '~')

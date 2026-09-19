@@ -12,7 +12,7 @@ import WebSocket, { WebSocketServer } from 'ws';
 // found），必须默认导入后取 Terminal；类型用 InstanceType 别名保持同名可用
 import xtermHeadless from '@xterm/headless';
 const HeadlessTerminal = xtermHeadless.Terminal;
-import { definePlugin } from '@hyzyn/dsh-kit';
+import { definePlugin, dshHome as resolveDshHome } from '@hyzyn/dsh-kit';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { spawnSsh, sshTarget, expandHome, setCredentialResolver } from './ssh.js';
 import { probeSsh } from './probe.js';
@@ -1841,7 +1841,7 @@ function readManagedEnvKeys() {
     // 托管区块标记（与 env 插件 MARK_START/MARK_END 逐字符一致）
     const MARK_START = '# --- dsh-env-manager managed (auto-generated; do not edit) ---';
     const MARK_END = '# --- end dsh-env-manager managed ---';
-    const dshHome = process.env.DSH_HOME?.trim() || join(homedir(), '.dsh');
+    const dshHome = resolveDshHome();
     const file = process.env.DSH_ENV_FILE?.trim() || join(dshHome, 'env.yml');
     try {
         const lines = readFileSync(file, 'utf8').split('\n');
@@ -1903,7 +1903,7 @@ export async function handleCredentialRefsRoute(req, res) {
 }
 /** 导出仅供单测（test/credential-refs.test.ts）：只验键名解析，不取值。 */
 export function readCredentialRefNames() {
-    const dshHome = process.env.DSH_HOME?.trim() || join(homedir(), '.dsh');
+    const dshHome = resolveDshHome();
     const file = join(dshHome, '.credentials.yaml');
     try {
         const names = [];

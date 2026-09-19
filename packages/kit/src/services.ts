@@ -6,7 +6,7 @@
  * 副本各自漂移——尤其 dshHome 推导的是同一份配置目录，路径必须一致。
  */
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 
 /**
@@ -25,12 +25,25 @@ export function getService(ctx: Context, name: string): unknown {
   return (ctx as unknown as Record<string, unknown>)[name]
 }
 
+/** 展开 `~` / `~\` 前缀（单独的 `~` = 家目录本身）。 */
+function expandHomePath(value: string): string {
+  if (value === '~') return homedir()
+  if (value.startsWith('~/') || value.startsWith('~\\')) return join(homedir(), value.slice(2))
+  return value
+}
+
 /**
  * DSH 主目录：DSH_HOME 环境变量优先（trim 后为空视为未设置），否则 ~/.dsh。
  *
  * 用 homedir() 而非 process.env.HOME：Windows 上 HOME 常常未设置，homedir()
  * 走系统 API 更可靠；与全仓现有 8 处实现保持同一语义。
+ *
+ * 返回前做一层**归一化**（`~` 展开 + resolve）：DSH 的运行时 loader 读同一环境
+ * 变量时走的是 `resolve(expandHomePath(...))`，插件若拿原始字面量去拼
+ * `cordis.patch.yml`，`DSH_HOME=~/x` 时写的是字面 `~/x/…` 目录（相对 cwd 的一个
+ * 名叫 `~` 的目录），而 loader watch 的是展开后的 `/home/u/x/…`——两个不同文件，
+ * 热加载永远不会触发（codegraph DEFECTS CG13）。
  */
 export function dshHome(): string {
-  return process.env.DSH_HOME?.trim() || join(homedir(), '.dsh')
+  return resolve(expandHomePath(process.env.DSH_HOME?.trim() || join(homedir(), '.dsh')))
 }

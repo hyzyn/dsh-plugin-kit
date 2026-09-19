@@ -6,11 +6,12 @@
 
 ## 特性
 
-- **`status --json` 字段分区呈现**：`initialized` / `version` / `projectPath` / `fileCount` / `nodeCount` / `edgeCount` / `lastIndexed` / `pendingChanges` / `languages` / `dbSizeBytes` 分区铺开，原始 JSON 收进 `<details>`；符号下钻输出带行号的 verbatim 源码 + `callers` / `callees` / `impact` 三段关系。
-- **索引两条路径、超时分两档**：`sync -- <path>` 增量、`index [--force] -- <path>` 全量重建走 `indexTimeoutMs`（默认 600s）；`status` / `query` / `callers` / `callees` / `impact` / `node` 走 `cliTimeoutMs`（默认 60s）。
+- **`status --json` 字段分区呈现**：`initialized` / `version` / `projectPath` / `fileCount` / `nodeCount` / `edgeCount` / `lastIndexed` / `pendingChanges` / `languages` / `dbSizeBytes` 分区铺开，原始 JSON 收进 `<details>`；符号下钻输出带行号的 verbatim 源码 + `callers` / `callees` / `impact` 三段关系。CLI 的过期信号（`reindexRecommended` / `builtWithVersion` / 提取器版本差 / `worktreeMismatch`）会在面板上给出一行警告并把「重建索引」标成建议动作。
+- **索引两条路径、超时分两档**：`sync -- <path>` 增量、`index [--force] -- <path>` 全量重建走 `indexTimeoutMs`（默认 600s，`0` = 不限时）；`status` / `query` / `callers` / `callees` / `impact` / `node` 走 `cliTimeoutMs`（默认 60s，`0` = 不限时）。超时与取消都走「SIGTERM → 3s 清理窗口 → SIGKILL」的进程组升级链，POSIX 与 Windows 同一套语义；索引类操作进行中卡片有「取消」按钮，关闭页面也会中止 CLI。
 - **托管 MCP 服务器行**：dsh-mcp-client 不声明 MCP roots，`codegraph serve --mcp` 只从 `process.cwd()` 向上解析 `.codegraph/`；插件在 `~/.dsh/cordis.patch.yml` 维护 `@deepseek-ai/dsh-mcp-client` 行并写 `config.cwd`，改写经 watchUserPatches 热加载重建 MCP 连接。同一台服务器同一时刻只挂一个项目，其余项目用 `projectPath` 查询。
-- **索引判定取 `.codegraph/*.db`，不取目录存在**：目录存在会把 codegraph CLI 自身的安装目录 `~/.codegraph` 判成项目索引，托管行随之落在未索引 cwd 上——实测该状态下 `codegraph_explore` 的 required 由 `["query"]` 变为 `["query","projectPath"]`。非真索引时不改写现有 cwd，卡片给出 `indexState` 与原因。
-- **托管行 cwd 跟随活动会话**：`followSession`（默认开）在会话切到有效索引项目时对齐托管行，否则回落到绑定路径；绑定路径由「设为默认项目」写入 settings 命名空间 `codegraph` 并把 `followSession` 置 false（显式指定优先于会话跟随）。
+- **索引判定取 `.codegraph/*.db` 且与 CLI 同口径向上解析**：从目标目录向上（到 git 根为止）找第一个带索引库的 `.codegraph/`，命中根即项目根——monorepo 子目录里的会话不再被误判「未索引」。只看目录存在会把 codegraph CLI 自身的安装目录 `~/.codegraph` 判成项目索引，托管行随之落在未索引 cwd 上——实测该状态下 `codegraph_explore` 的 required 由 `["query"]` 变为 `["query","projectPath"]`。非真索引时不改写现有 cwd，卡片给出 `indexState` 与原因。
+- **写入纪律**：对 `~/.dsh/cordis.patch.yml` 的每次写都带 mtime+size 盖章复核（dsh-mcp 同款 CAS，≤3 次重读）；复用 dsh-mcp 区块时只定点改 codegraph 行自己的 `cwd:` 一行，区块里的注释、其它服务器行、loader 合法的 override 条目逐字节保留；区块损坏时拒绝追加第二个区块（serverName 撞名会让 codegraph MCP 整体加载失败），把原因报给卡片。
+- **托管行 cwd 跟随活动会话**：`followSession`（默认开）在会话切到有效索引项目时对齐托管行，否则回落到绑定路径；绑定路径由「设为默认项目」写入 settings 命名空间 `codegraph` 并把 `followSession` 置 false（显式指定优先于会话跟随）。会话上报失败会退避重试，不再一次抖动就永久失效。
 - **一键初始化**：未初始化的目录在卡片上直接点「初始化索引」跑 `codegraph init`（两步确认）——`index` / `sync` 都要求项目先 init 过，此前这是唯一还要把用户赶回终端的一步。
 - **systemPrompt 分两段，开关与门禁各自独立**：`plugin:dsh-codegraph`（order 150）与 `plugin:dsh-codegraph:usage`（order 151）；两段均以 `<command> --version` 探测为前置，`announceToAgent` / `usageGuidance` 写 settings 命名空间后即时增删 section。
 
@@ -55,15 +56,22 @@ Searched for a .codegraph/ directory starting from: /Users/you
 | `/api/dsh-codegraph/settings` | POST | 写开关 `{ announceToAgent?, usageGuidance?, mcpIntegration?, followSession? }`（布尔），即时生效 |
 | `/api/dsh-codegraph/default-path` | POST | 设为默认项目 `{ path }`（需 `.codegraph/` 里有索引库），同步热切换 MCP |
 | `/api/dsh-codegraph/reprobe` | POST | 重跑一次 `<command> --version` 探测，回 `{ cliAvailable, cliProbeError, cliProbeAt }` 并同步 systemPrompt 门禁 |
+| `/api/dsh-codegraph/cancel` | POST | 取消进行中的 CLI 调用 `{ path? }`（缺省 = 全部）；关标签页的断连也会自动中止对应调用 |
 
 所有路由均为 loopback-only，防止远程访问。`reprobe` 只认 POST：它会真的起一个子进程，不该由 GET 顺带触发。
+
+请求语义（v0.4.2 起）：
+
+- **POST 路由对畸形 / 超限 / 非对象的 body 一律 400**——不会把「请求体没读出来」当成「没指定路径」而在默认项目上执行写操作。
+- **路径必须真实存在且是目录**：`status` / `query` / `callers` / `callees` / `impact` / `node` 对不存在的路径回 400（CLI 对不存在的路径会 exit 0 + 空结果，静默得像「没有匹配」）；`--limit` / `--depth` 只收正整数（`limit` 上限 10000，`depth` 的上限由 CLI 自己钳到 10）。
+- **祖先口径**：`/default-path` 的 POST 在 monorepo 子目录上会绑定**索引所在的仓库根**；对子目录调 `/init` 回 409（祖先已有索引，避免建出嵌套索引）；`/follow` 拒绝不存在目录的路径上报。
 
 ## 兼容性（DSH / codegraph CLI）
 
 - **DSH**：已在 `0.1.5-rc.2` 上实测全链路——宿主路由（status/query/callers/callees/impact/node 全 200）、浏览器半体（client 模块进 boot graph 并被 combo 路由正常供给）、两段 systemPrompt 注入、MCP 托管行形状（`@deepseek-ai/dsh-mcp-client` 的 `stdio` 配置）。`package.json` 声明 `dsh.engines.dsh: ">=0.1.2-rc.1"`，插件市场据此给出兼容性结论。
   - 为什么下限写成 `>=0.1.2-rc.1` 而不是更短的 `^0.1.2`：dsh-web 的解析器只认 `>=X.Y.Z[-预发布]` 一种形式，`^` / `~` / 光秃秃的版本号一律被判成「无法验证」；而 `^` 本身也不包含**下限版本自身的预发布**，`0.1.2-rc.1` 这种已实测可用的宿主会被判成不兼容，市场的更新路径对确认不兼容是**直接拒绝安装**（需 `force` 绕过）；`^0.1.5` 更会连 `0.1.5-rc.2` 一起误杀。DSH 长期以 `-rc.N` 发布，档位必须显式带上 RC 下限。
   - 为什么不写上上限 `<0.2.0`：解析器只支持单个 `>=` 比较符，两段式范围（`>=0.1.2-rc.1 <0.2.0`）整体会被读成「无法验证」，而按该模块的契约，已声明却无法验证是 fail-closed——更新会被直接拦下，比不声明更糟。跨到 0.2 线时人工重新复验，再决定是否放宽下限。
-- **codegraph CLI**：已在 `1.5.0` 上实测；用到的子命令是 `status` / `query` / `callers` / `callees` / `impact` / `node` / `sync` / `index`，旗标逐个核对过。`codegraph serve --mcp` 仍可用（顶层 help 不列，`codegraph serve --help` 在），托管行无需改动。
+- **codegraph CLI**：版本矩阵——`1.5.0`（macOS）与 `1.6.0`（Windows / macOS）实测过全链路；用到的子命令是 `status` / `query` / `callers` / `callees` / `impact` / `node` / `sync` / `index`，旗标逐个核对过。`codegraph serve --mcp` 仍可用（顶层 help 不列，`codegraph serve --help` 在），托管行无需改动。升级 CLI 后请重验：`-y` 这类旗标恰好是版本相关的（本插件刻意不带它，见下）。
 - **浏览器半体的 URL 形态**：当前 DSH 走 client-modules 的 combo 路由，单包直链 `/plugins/@hyzyn/dsh-codegraph/client.js` 已不再直接可用；浏览器只用 boot graph（`window.__DSH_BOOT__`）下发的 `/plugins/??<id>/client.js&rev=…`，插件侧无需改动。
 - **操作系统**：Windows / macOS / Linux 都按同一份代码走，CI 已是三平台矩阵（`pnpm -r build` + `typecheck` + `test`）。
   - **Windows**：CLI 走 `%COMSPEC% /d /s /c` + cmd 转义（npm / pnpm 全局安装只给 `.cmd` shim，`execFile` 直连会 `ENOENT`）；超时用 `taskkill /pid <pid> /T /F` **连 shim 里的孙进程一起收**（只杀 cmd.exe 的话大仓库 `index` 会继续跑完）；补丁文件重写沿用原文件行尾（CRLF 文件不会被写成混合行尾，重写也不改变行数）。
@@ -83,10 +91,13 @@ Searched for a .codegraph/ directory starting from: /Users/you
 ```bash
 pnpm --filter @hyzyn/dsh-codegraph build
 pnpm --filter @hyzyn/dsh-codegraph typecheck
-pnpm vitest run packages/codegraph          # 托管行决策矩阵 + CLI 旋钮 + 跟随/门禁路由
+pnpm test                                   # 仓库级 vitest（也可 vitest run packages/codegraph）
+pnpm --filter @hyzyn/dsh-codegraph test     # 只跑本包（托管行决策矩阵 + CLI 旋钮 + 路由回归）
 node packages/codegraph/scripts/preview-card.mjs        # 渲染卡片预览 HTML 到 .preview/（--png 需在普通终端跑，Chrome 起不来于受限环境）
-node packages/codegraph/scripts/verify-sync.mjs   # 托管行同步逻辑验证（需先 build）
+node scripts/verify-codegraph-indexforce.mjs --profile test --port 3086   # 真机端到端：indexForce 是否真的带 --force 起进程（需要本机装好 DSH）
 ```
+
+浏览器半体的源码在 `client-src/index.js`；`build` 经 `scripts/build-client.mjs` 产出包根的 `client.js`——删掉 index.js 对 `client-src/pure.js` 的 import、把 pure.js（纯逻辑，可在 vitest 里直接测，见 `test/client-pure.test.ts`）剥掉 `export` 后内联进 factory，产物仍是单文件无 import。CI 的 artifact-diff 以逐字节一致为闸，改源码后忘了重新 build 会直接红。
 
 升级本机 DSH 之后，先重链再 typecheck——否则 `packages/*/node_modules/@deepseek-ai/*` 还是仓库
 `.pnpm` 里那份旧副本，插件与宿主各持一份不同版本的库，兼容性问题会被掩盖：
@@ -117,9 +128,13 @@ export interface Config {
   defaultPath?: string
   /** 是否托管 codegraph MCP 服务器行。默认开；关闭时撤销本插件写入的托管行。 */
   mcpIntegration?: boolean
-  /** 查询类命令（status/query/callers/callees/impact/node）超时毫秒数，默认 60000。 */
+  /**
+   * 托管行 cwd 是否跟随活动会话。默认开；「设为默认项目」会把它关掉（那是一次显式指定）。
+   */
+  followSession?: boolean
+  /** 查询类命令（status/query/callers/callees/impact/node）超时毫秒数，默认 60000；0 = 不限时。 */
   cliTimeoutMs?: number
-  /** 索引类命令（sync/index）超时毫秒数，默认 600000。大仓库全量重建会超过查询档。 */
+  /** 索引类命令（sync/index）超时毫秒数，默认 600000；0 = 不限时。大仓库全量重建会超过查询档。 */
   indexTimeoutMs?: number
   /** 给 `codegraph index` 追加 `--force`（CLI 拒绝索引家目录/文件系统根时会用到）。默认关。 */
   indexForce?: boolean

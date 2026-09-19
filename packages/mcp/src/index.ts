@@ -10,9 +10,8 @@
  * 浏览器半体（./client）通过 /api/dsh-mcp/* 路由读写配置；路由带
  * loopback-only 信任围栏。
  */
-import { createOutputDecoder, spawnPortable, terminateChild } from '@hyzyn/dsh-kit'
+import { createOutputDecoder, dshHome, spawnPortable, terminateChild } from '@hyzyn/dsh-kit'
 import { chmodSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -73,7 +72,6 @@ const PROBE_TIMEOUT_MS = 25_000
 const MAX_JSON_BODY_BYTES = 512 * 1024
 const MAX_TOOLS_REPORTED = 200
 
-const dshHome = () => process.env.DSH_HOME?.trim() || join(homedir(), '.dsh')
 const homePatchPath = () => join(dshHome(), 'cordis.patch.yml')
 
 interface JsExpr {

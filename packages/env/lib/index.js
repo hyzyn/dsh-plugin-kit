@@ -23,8 +23,8 @@
  * loopback-only 信任围栏，密钥条目不下发明文（write-only）。
  */
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { dshHome } from '@hyzyn/dsh-kit';
 import z from '@deepseek-ai/schemastery';
 import yaml from 'js-yaml';
 export const name = 'env-manager';
@@ -47,7 +47,7 @@ const MARK_START = '# --- dsh-env-manager managed (auto-generated; do not edit) 
 const MARK_END = '# --- end dsh-env-manager managed ---';
 const KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const MAX_JSON_BODY_BYTES = 512 * 1024;
-const dshHome = () => process.env.DSH_HOME?.trim() || join(homedir(), '.dsh');
+// CG35：DSH_HOME 推导统一走 @hyzyn/dsh-kit（~ 展开 + resolve），别再手抄一份 raw 副本
 const envFilePath = () => process.env.DSH_ENV_FILE?.trim() || join(dshHome(), 'env.yml');
 /* ------------------------------------------------------------------ *
  * js-yaml 方言：与 dsh-app-boot 相同的 !!js 表达式类型

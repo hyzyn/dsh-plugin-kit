@@ -18,7 +18,7 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { definePlugin, getService, writeFileAtomic } from '@hyzyn/dsh-kit'
+import { definePlugin, dshHome, getService, writeFileAtomic } from '@hyzyn/dsh-kit'
 import {
   BUILTIN_CATALOG_NAME,
   getBuiltinCatalogEntries,
@@ -344,11 +344,6 @@ interface AgentDefaultModelLike {
 /** settings 服务的最小结构。 */
 interface SettingsLike {
   get?: (ns: string) => unknown
-}
-
-function dshHome(): string {
-  const home = process.env.DSH_HOME?.trim()
-  return home ? expandHome(home) : join(homedir(), '.dsh')
 }
 
 function expandHome(input: string): string {

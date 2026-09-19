@@ -11,10 +11,9 @@
  * 信任围栏。
  */
 import { readFileSync, statSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
-import { definePlugin } from '@hyzyn/dsh-kit'
+import { definePlugin, dshHome } from '@hyzyn/dsh-kit'
 import yaml from 'js-yaml'
 
 export interface Config {
@@ -36,7 +35,6 @@ export interface Config {
   maxScanSessions?: number
 }
 
-const dshHome = () => process.env.DSH_HOME?.trim() || join(homedir(), '.dsh')
 const promptFilePath = () => process.env.DSH_PROMPT_FILE?.trim() || join(dshHome(), 'prompts.yml')
 
 /* ------------------------------------------------------------------ *

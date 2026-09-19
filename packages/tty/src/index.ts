@@ -83,7 +83,7 @@ import WebSocket, { WebSocketServer } from 'ws'
 import xtermHeadless from '@xterm/headless'
 const HeadlessTerminal = xtermHeadless.Terminal
 type HeadlessTerminal = InstanceType<typeof HeadlessTerminal>
-import { definePlugin } from '@hyzyn/dsh-kit'
+import { definePlugin, dshHome as resolveDshHome } from '@hyzyn/dsh-kit'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { spawnSsh, sshTarget, expandHome, setCredentialResolver } from './ssh.js'
 import type { CredentialResolver, HostKeyRecord, SshHostEntry, SshSpec, TermHandle } from './ssh.js'
@@ -1997,7 +1997,7 @@ function readManagedEnvKeys(): string[] {
   // 托管区块标记（与 env 插件 MARK_START/MARK_END 逐字符一致）
   const MARK_START = '# --- dsh-env-manager managed (auto-generated; do not edit) ---'
   const MARK_END = '# --- end dsh-env-manager managed ---'
-  const dshHome = process.env.DSH_HOME?.trim() || join(homedir(), '.dsh')
+  const dshHome = resolveDshHome()
   const file = process.env.DSH_ENV_FILE?.trim() || join(dshHome, 'env.yml')
   try {
     const lines = readFileSync(file, 'utf8').split('\n')
@@ -2057,7 +2057,7 @@ export async function handleCredentialRefsRoute(req: ReqLike, res: ResLike): Pro
 
 /** 导出仅供单测（test/credential-refs.test.ts）：只验键名解析，不取值。 */
 export function readCredentialRefNames(): string[] {
-  const dshHome = process.env.DSH_HOME?.trim() || join(homedir(), '.dsh')
+  const dshHome = resolveDshHome()
   const file = join(dshHome, '.credentials.yaml')
   try {
     const names: string[] = []

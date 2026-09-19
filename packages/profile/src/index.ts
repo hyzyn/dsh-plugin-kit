@@ -2,11 +2,10 @@
  * @hyzyn/dsh-profile — DSH Web GUI 的 Profile 管理插件（宿主半体）。
  */
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { spawnPortable } from '@hyzyn/dsh-kit'
+import { dshHome, spawnPortable } from '@hyzyn/dsh-kit'
 
 export const name = 'profile-manager'
 export const inject: string[] = []
@@ -41,7 +40,6 @@ const PROFILE_TEMPLATES: Record<string, string[]> = {
   headless: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-headless'],
 }
 
-const dshHome = () => process.env.DSH_HOME?.trim() || join(homedir(), '.dsh')
 const profilesRoot = () => join(dshHome(), 'profiles')
 const profileDir = (name: string) => join(profilesRoot(), name)
 const runtimeFilePath = (name: string) => join(profileDir(name), RUNTIME_FILE)

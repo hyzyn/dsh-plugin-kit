@@ -38,12 +38,14 @@ describe('resolveCliConfig', () => {
     expect(resolveCliConfig({ command: '   ' }).command).toBe('codegraph')
   })
 
-  it('超时只认有限正数，其余回落默认值', () => {
+  it('超时只认非负有限数；0 = 不限时（CG23），负数/NaN/Infinity 回落默认值', () => {
     const fallback = { cliTimeoutMs: 60_000, indexTimeoutMs: 600_000 }
-    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+    for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
       expect(resolveCliConfig({ cliTimeoutMs: bad, indexTimeoutMs: bad })).toMatchObject(fallback)
     }
     expect(resolveCliConfig({ cliTimeoutMs: 1, indexTimeoutMs: 1 })).toMatchObject({ cliTimeoutMs: 1, indexTimeoutMs: 1 })
+    // 0 曾被静默回落成默认值（用户写 0 想表达「不限」，得到 60s 且无提示）
+    expect(resolveCliConfig({ cliTimeoutMs: 0, indexTimeoutMs: 0 })).toMatchObject({ cliTimeoutMs: 0, indexTimeoutMs: 0 })
   })
 
   it('indexForce 只认严格的 true', () => {
