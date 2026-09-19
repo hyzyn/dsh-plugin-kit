@@ -10,15 +10,35 @@
  * 平台用**参数注入**（默认 process.platform），所以两个分支都能在 macOS/Linux 上断言，
  * 不必等 Windows runner —— 而 Windows runner 上跑同一份用例同样成立。
  */
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
   buildCommandSpawn,
   buildShellSpawn,
   defaultShellPath,
   isPowerShellShell,
 } from '../src/shell-integration.js'
+
+/*
+ * 桩文件写在 $DSH_HOME/tty/shell/… 下。把它指到测试自己的临时目录，有两个好处：
+ *   1. 不依赖机器上 ~/.dsh 里那份桩是否恰好最新——`writeIfChanged` 只在内容变了才写，
+ *      若恰好一致就走 early-return，测试的成立条件会悄悄依赖外部状态；
+ *   2. 受限文件沙箱（写不了工作区之外）下不再假红。
+ */
+let savedDshHome: string | undefined
+let stubHome = ''
+beforeAll(() => {
+  savedDshHome = process.env.DSH_HOME
+  stubHome = mkdtempSync(join(tmpdir(), 'dsh-tty-stub-'))
+  process.env.DSH_HOME = stubHome
+})
+afterAll(() => {
+  if (savedDshHome === undefined) delete process.env.DSH_HOME
+  else process.env.DSH_HOME = savedDshHome
+  rmSync(stubHome, { recursive: true, force: true })
+})
 
 describe('defaultShellPath', () => {
   it('POSIX 取 $SHELL，缺省 /bin/zsh', () => {
@@ -138,5 +158,18 @@ describe('POSIX 分支回归（改动不能碰现有的 zsh/bash 路径）', () 
       '-c',
       "export TERM='xterm-256color'; export COLORTERM='truecolor'; exec docker exec -it web sh",
     ])
+  })
+
+  it('bash 的 D 标记必须无条件发（0.19.0 修 D46：PS0 的展开在子 shell 里，设不了 IN_CMD）', () => {
+    const plan = buildShellSpawn('/bin/bash', 'xterm-256color', 'truecolor', true, 'linux')
+    const stubRc = String(plan.argv[2]).match(/--rcfile '([^']+)'/)?.[1]
+    expect(stubRc).toBeDefined()
+    const rc = readFileSync(stubRc as string, 'utf8')
+    // 无条件发 D：不能再被 __DSH_TTY_IN_CMD 的 if 包住（否则 bash ≥4.4 上 D 永远不发，
+    // capture{last} 恒 inProgress、tty_expect 永远超时——CI 首跑 ubuntu 暴露）
+    expect(rc).toContain('printf "$__DSH_TTY_FMT_D" "$ec"; __DSH_TTY_IN_CMD=0')
+    expect(rc).not.toContain('if [ "$__DSH_TTY_IN_CMD" = "1" ]; then')
+    // <4.4 的 DEBUG trap 仍要设这个 flag（3.2 上它是 B 的唯一来源）
+    expect(rc).toContain('__DSH_TTY_IN_CMD=1')
   })
 })

@@ -405,7 +405,8 @@ function osc7Path(body) {
  * 命令捕获按「标记之间的文本段」累积——B、输出、D 常在同一 chunk 到达，
  * 先处理段再翻转状态，才能把 B..D 之间的输出完整收进 lastCommand。
  */
-function feedShellIntegration(session, text) {
+/** 导出仅供单测（test/shell-capture.test.ts）：B/D 配对与未配对 D 的忽略语义。 */
+export function feedShellIntegration(session, text) {
     const state = session.shellState;
     let data = state.carry + text;
     state.carry = '';

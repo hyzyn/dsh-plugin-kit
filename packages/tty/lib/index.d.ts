@@ -272,6 +272,15 @@ interface ShellIntegrationState {
     } | null;
 }
 /**
+ * 把一块输出喂进 shell 集成解析（cwd 跟随 + 命令边界捕获）。
+ * 残包处理：尾部若有未闭合的 OSC 序列（lastIndexOf('\x1b]') 起无终结符），
+ * 扣回 carry 等下一块拼齐；扣留部分不进命令捕获，避免半截序列混入。
+ * 命令捕获按「标记之间的文本段」累积——B、输出、D 常在同一 chunk 到达，
+ * 先处理段再翻转状态，才能把 B..D 之间的输出完整收进 lastCommand。
+ */
+/** 导出仅供单测（test/shell-capture.test.ts）：B/D 配对与未配对 D 的忽略语义。 */
+export declare function feedShellIntegration(session: TtySession, text: string): void;
+/**
  * TOFU 主机指纹存储：get/record 面向 spawnSsh 的 hostVerifier；
  * record 时经 persist 回调写入 settings（宿主重启后钉扎仍在）。
  */

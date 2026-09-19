@@ -1191,7 +1191,13 @@ async function run() {
       s.client.send(JSON.stringify({ t: 'spawn', sid: 'b25tmux', cols: 80, rows: 24, persist: true, persistName: 'b25persist' }))
       await s.waitFor(() => s.state.ready, 10000, 'ready')
       const ready = s.state.frames.find((f) => f.t === 'ready' && f.sid === 'b25tmux')
-      const listed = await tmuxList()
+      // ready 只代表 channel 打开；tmux server 是 fork 出来的，会话出现要晚一点。
+      // 本地（快）一次就中，CI runner 上会输给这个竞态——轮询到出现为止（最多 ~6s）。
+      let listed = await tmuxList()
+      for (let i = 0; i < 20 && !listed.includes('dsh-b25persist'); i++) {
+        await sleep(300)
+        listed = await tmuxList()
+      }
       if (ready !== undefined && ready.persist === true && listed.includes('dsh-b25persist')) pass('B25b persistence=tmux 持久 spawn（tmux 会话托管 + ready.persist）')
       else fail('B25b persistence=tmux 持久 spawn（tmux 会话托管 + ready.persist）', `persist=${String(ready?.persist)} listed=${JSON.stringify(listed)}`)
 
