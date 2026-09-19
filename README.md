@@ -125,6 +125,7 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 - **最小化（状态并入侧边栏入口）**：点弹窗外空白处、按 Esc 或标题栏「—」把面板收起，PTY 会话与输出缓冲保持存活；侧边栏「终端」入口显示会话数徽标与状态点，点击入口恢复；悬浮条 ✕ / 标题栏 ✕ 才真正关闭并结束全部会话。
 - **支持**：多标签页（单连接多会话）；cwd 跟随当前会话；TERM=xterm-256color 注入（TUI 应用不退化）；断线自动重连（会话保活 + 输出缓冲回放）；SSH agent / 密钥 / 密码认证，`env:VAR` 密钥引用不落盘；端口转发隧道（-L/-R，宿主自持重连）；下行背压保护；loopback 信任围栏；并发上限（默认 4）；配置保存即热生效；agent 工具集（`tty_list` / `tty_capture` / `tty_screen` / `tty_expect` / `tty_send` / `sftp_*` / `tunnel_list`）。
 - **存哪里**：无独立配置文件；配置走「插件配置 → 终端面板」卡片。
+- **0.19.0 修了什么**：48 项审计修复——SFTP 覆盖上传改为临时分片 + 原子 rename（失败不再毁原文件）、断线在途 spawn 不再留僵尸会话、known_hosts 导入不再误报「中间人」、明文口令不再落浏览器存储、Windows 强杀本地 PTY 不再崩宿主、现代 Linux（bash ≥4.4）的 `tty_capture{last}` / `tty_expect` 恢复可用。清单与索引见 `packages/tty/DEFECTS.md`。
 - **注意**：resize 依赖 DSH 内部 terminal handle 结构（已知限制）；输出为 utf8 文本流，`cat` 二进制文件会有替换字符。详细见 `packages/tty/README.md`。
 
 ![终端面板：侧边栏入口打开 xterm.js 多标签终端，紧凑两行头部（标签 + SSH 连接栏）](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty.png)

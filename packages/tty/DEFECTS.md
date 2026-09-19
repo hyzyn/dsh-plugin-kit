@@ -20,63 +20,66 @@
 
 ## 现状
 
-**已修 48 / 待修 0**（D01–D48）。被代码直接引用的 15 个编号在最后一列标 ✓ —— 改这些行为前
-请先读**代码里的对应注释**（「为什么」都写在那儿：`writableEnded` 不是 `finish`、PS0 展开在
-子 shell、node-pty `_deferNoArgs` 的异步抛出、`connId:sid` 绑定键、分片 24h 阈值……），
-索引表只负责把 `D编号` 与症状、位置对上。
+**已修 48 / 待修 0**（D01–D48）。索引表**不写行号** —— 修复后代码移了位、有的整段被删或重写，
+审计时点的行号只会误导；要定位实现请用：① 症状列的关键词 `git log -S'<关键词>'`；
+② 修复提交列（`git show <sha>`，提交信息按条目写了为什么）。被代码直接引用的 15 个编号
+在最后一列标 ✓ —— 改这些行为前先读**代码里的对应注释**（「为什么」都写在那儿：`writableEnded`
+不是 `finish`、PS0 展开在子 shell、node-pty `_deferNoArgs` 的异步抛出、`connId:sid` 绑定键、
+分片 24h 阈值……）。
 
 ## 索引
 
-| D | 严重度 | 症状（一句话） | 审计时证据位置（冻结） | 被代码引用 |
+| D | 严重度 | 症状（一句话） | 涉及文件 | 修复提交 | 被代码引用 |
+|---|---|---|---|---|---|
 |---|---|---|---|---|
-| D01 | P0 | SFTP 覆盖上传非原子，失败即毁原文件 | src/sftp.ts:343、src/index.ts:2712-2720 | ✓ |
-| D02 | P0 | 目录直传跟随符号链接 → 目录环无限递归 | src/sftp.ts:408-419、src/sftp.ts:493-505 |  |
-| D03 | P0 | SSH 明文口令落浏览器存储 | client-src/index.js:3009-3013、client-src/index.js:820-824 |  |
-| D04 | P0 | `tty_capture{last:true}` 无在途信号 → agent 拿到上一条命令的结果 | src/index.ts:2991-2997、src/index.ts:498-510 |  |
-| D05 | P0 | 两处截断方向相反，恰好丢最近输出 | src/index.ts:576、src/index.ts:2996 |  |
-| D06 | P1 | 在途 spawn 不与 WS 连接绑定 → 僵尸会话 | src/index.ts:1395-1442、src/index.ts:1497-1548 | ✓ |
-| D07 | P1 | `session.clients` 只用 clientSid 做键 → 跨连接互相踩 | src/index.ts:1247、src/index.ts:1633 | ✓ |
-| D08 | P1 | `reconnectGraceSec` 热改为 0 后老孤儿永不回收 | src/index.ts:943-944、src/index.ts:1194-1199 | ✓ |
-| D09 | P1 | `kill` 帧缺「孤儿」前提，可杀任意活跃会话 | src/index.ts:1591-1602 | ✓ |
-| D10 | P1 | `tty_expect` 的 acc 无界增长 + 并发无上限 | src/index.ts:3095-3101、src/index.ts:3086-3112 |  |
-| D11 | P1 | `spawnSsh` 的 channel Promise 无超时兜底，可永久挂起且无取消入口 | src/ssh.ts:348-462、src/ssh.ts:237 |  |
-| D12 | P1 | known_hosts 导入 → 假 MITM 告警并拒绝连接 | src/known-hosts.ts:108-114、src/ssh.ts:290-298 |  |
-| D13 | P1 | SFTP `pipeCounted` 每搬一个文件挂一个永不摘除的 abort 监听器 | src/sftp.ts:455-460、src/sftp.ts:524-534 |  |
-| D14 | P1 | 帧输入零校验 | src/index.ts:1571-1579、src/index.ts:1566 | ✓ |
-| D15 | P1 | 隧道不会收敛 | src/tunnels.ts:214-218、src/tunnels.ts:374-391 | ✓ |
-| D16 | P1 | SSH 认证与错误文案误导 | src/ssh.ts:182-199、src/ssh.ts:244-245 | ✓ |
-| D17 | P1 | shell 集成的两处静默错误 | src/shell-integration.ts:216-227、src/shell-integration.ts:120-121 |  |
-| D46 | P1 | bash ≥4.4 的 shell 集成不发 D 标记 | — | ✓ |
-| D47 | P1 | integration 的 tmux 列举竞态 | — |  |
-| D48 | P1 | Windows 上强杀本地 PTY 会把宿主进程搞崩 | — | ✓ |
-| D18 | P2 | 关活动标签可能选中嵌入式会话 → 面板空白 | client-src/index.js:1250-1254、client-src/index.js:1311-1317 |  |
-| D19 | P2 | `afterSocketOpen` 无并发 / 代际守卫 + `restoreTab` 不去重 | client-src/index.js:4754、client-src/index.js:4892 |  |
-| D20 | P2 | `waitFrame` 把监听挂在全局 socket 上 | client-src/index.js:884-905、client-src/index.js:4859-4865 |  |
-| D21 | P2 | 最小化终端面板会取消在途 SFTP 传输 | client-src/index.js:5175-5180、client-src/index.js:4662-4674 |  |
-| D22 | P2 | 状态条最小化期间不停表、`refitActiveTab` 无 minimized 守卫 | client-src/index.js:725-728、client-src/index.js:5074 |  |
-| D23 | P2 | 非 secure context 下剪贴板未判空 → 局域网访问点「粘贴」直接抛错 | client-src/index.js:5107、client-src/index.js:5112 |  |
-| D24 | P2 | 键盘可达性缺口 | client-src/index.js:5387-5393、client-src/index.js:1722-1725 |  |
-| D25 | P2 | `sftp_remove` 对根目录 / `..` 无任何护栏 | src/sftp.ts:690-715、src/index.ts:3428-3430 | ✓ |
-| D26 | P2 | 下载不存在的路径 / 把目录当文件下载 → 200 + 断流 | src/sftp.ts:328-337、src/index.ts:2644-2658 | ✓ |
-| D27 | P2 | 双栏直传在目标栏路径未解析时会写到宿主 cwd | client-src/index.js:3192、client-src/index.js:3294-3295 |  |
-| D28 | P2 | Windows 本机栏「..（上级目录）」失效并跳到盘根 | client-src/index.js:3347、client-src/index.js:3745-3750 |  |
-| D29 | P2 | 大目录不虚拟滚动，`sftp_list` 无条目上限 | client-src/index.js:3345-3366、client-src/index.js:4349-4407 |  |
-| D30 | P2 | `sftp_read` 的边界问题 | src/index.ts:3275、src/index.ts:3290-3293 | ✓ |
-| D31 | P2 | `sftp_list` 出参丢 `isSymlink`/`isFile` | src/index.ts:3216-3230、src/sftp.ts:184-190 |  |
-| D32 | P2 | 本机栏列表完全不排序 | src/index.ts:2034-2055、src/sftp.ts:191-195 |  |
-| D33 | P2 | 状态条在窄窗口静默裁掉右侧条目 | client-src/tty.css:1007-1035、client-src/index.js:636-651 |  |
-| D34 | P2 | 标签持久化载荷无版本字段 + `ready` 帧打断行内重命名 | client-src/index.js:868-878、client-src/index.js:818-832 |  |
-| D35 | P2 | 三处弹窗用局部 `const setStatus` 遮蔽模块级同名函数 | client-src/index.js:2582、client-src/index.js:3149 |  |
-| D36 | P2 | `tunnel_list` 出参 schema 与实现不符 | src/index.ts:3156-3191、src/tunnels.ts:144-157 |  |
-| D37 | P2 | 零碎但确凿的四条 | src/shell-integration.ts:177-183、src/shell-integration.ts:322-326 |  |
-| D38 | P3 | 宿主半体与浏览器半体在 CI 里零自动化 | — | ✓ |
-| D39 | P3 | CI 不跑旗舰脚本，也没有「产物与源码一致」闸门 | scripts/client-lint.mjs:45 |  |
-| D40 | P3 | `integration.mjs` 的失败信息掩盖真因 | scripts/integration.mjs:104 |  |
-| D41 | P3 | 三个 smoke 脚本无 npm script、README 零提及 | package.json |  |
-| D42 | P3 | 发布 `files` 不含 `scripts/`，但 package.json 仍 advertise 它们 | package.json |  |
-| D43 | P3 | `preview.mjs` 默认重建 `client.js`（隐式写入库产物） | scripts/preview.mjs:209、scripts/preview.mjs:211-212 |  |
-| D44 | P3 | 文档漂移 | — |  |
-| D45 | P3 | 无测试的关键路径 | src/index.ts:2453、test/probe.test.ts:59 | ✓ |
+| D01 | P0 | SFTP 覆盖上传非原子，失败即毁原文件 | src/sftp.ts、src/index.ts | be28ae6e | ✓ |
+| D02 | P0 | 目录直传跟随符号链接 → 目录环无限递归 | src/sftp.ts | be28ae6e |  |
+| D03 | P0 | SSH 明文口令落浏览器存储 | client-src/index.js | be28ae6e |  |
+| D04 | P0 | `tty_capture{last:true}` 无在途信号 → agent 拿到上一条命令的结果 | src/index.ts | be28ae6e |  |
+| D05 | P0 | 两处截断方向相反，恰好丢最近输出 | src/index.ts | be28ae6e |  |
+| D06 | P1 | 在途 spawn 不与 WS 连接绑定 → 僵尸会话 | src/index.ts | be28ae6e | ✓ |
+| D07 | P1 | `session.clients` 只用 clientSid 做键 → 跨连接互相踩 | src/index.ts | be28ae6e | ✓ |
+| D08 | P1 | `reconnectGraceSec` 热改为 0 后老孤儿永不回收 | src/index.ts | be28ae6e | ✓ |
+| D09 | P1 | `kill` 帧缺「孤儿」前提，可杀任意活跃会话 | src/index.ts | be28ae6e | ✓ |
+| D10 | P1 | `tty_expect` 的 acc 无界增长 + 并发无上限 | src/index.ts | be28ae6e |  |
+| D11 | P1 | `spawnSsh` 的 channel Promise 无超时兜底，可永久挂起且无取消入口 | src/ssh.ts | be28ae6e |  |
+| D12 | P1 | known_hosts 导入 → 假 MITM 告警并拒绝连接 | src/known-hosts.ts、src/ssh.ts | be28ae6e |  |
+| D13 | P1 | SFTP `pipeCounted` 每搬一个文件挂一个永不摘除的 abort 监听器 | src/sftp.ts | be28ae6e |  |
+| D14 | P1 | 帧输入零校验 | src/index.ts | be28ae6e | ✓ |
+| D15 | P1 | 隧道不会收敛 | src/tunnels.ts | be28ae6e | ✓ |
+| D16 | P1 | SSH 认证与错误文案误导 | src/ssh.ts | be28ae6e | ✓ |
+| D17 | P1 | shell 集成的两处静默错误 | src/shell-integration.ts | be28ae6e |  |
+| D46 | P1 | bash ≥4.4 的 shell 集成不发 D 标记 | src/shell-integration.ts、test/shell-capture.test.ts | 2335a485 | ✓ |
+| D47 | P1 | integration 的 tmux 列举竞态 | scripts/integration.mjs | 2335a485 |  |
+| D48 | P1 | Windows 上强杀本地 PTY 会把宿主进程搞崩 | src/index.ts、test/host-frames.test.ts | 77612dda | ✓ |
+| D18 | P2 | 关活动标签可能选中嵌入式会话 → 面板空白 | client-src/index.js | be28ae6e |  |
+| D19 | P2 | `afterSocketOpen` 无并发 / 代际守卫 + `restoreTab` 不去重 | client-src/index.js | be28ae6e |  |
+| D20 | P2 | `waitFrame` 把监听挂在全局 socket 上 | client-src/index.js | be28ae6e |  |
+| D21 | P2 | 最小化终端面板会取消在途 SFTP 传输 | client-src/index.js | be28ae6e |  |
+| D22 | P2 | 状态条最小化期间不停表、`refitActiveTab` 无 minimized 守卫 | client-src/index.js | be28ae6e |  |
+| D23 | P2 | 非 secure context 下剪贴板未判空 → 局域网访问点「粘贴」直接抛错 | client-src/index.js | be28ae6e |  |
+| D24 | P2 | 键盘可达性缺口 | client-src/index.js | be28ae6e |  |
+| D25 | P2 | `sftp_remove` 对根目录 / `..` 无任何护栏 | src/sftp.ts、src/index.ts | be28ae6e | ✓ |
+| D26 | P2 | 下载不存在的路径 / 把目录当文件下载 → 200 + 断流 | src/sftp.ts、src/index.ts | be28ae6e | ✓ |
+| D27 | P2 | 双栏直传在目标栏路径未解析时会写到宿主 cwd | client-src/index.js | be28ae6e |  |
+| D28 | P2 | Windows 本机栏「..（上级目录）」失效并跳到盘根 | client-src/index.js | be28ae6e |  |
+| D29 | P2 | 大目录不虚拟滚动，`sftp_list` 无条目上限 | client-src/index.js | be28ae6e |  |
+| D30 | P2 | `sftp_read` 的边界问题 | src/index.ts | be28ae6e | ✓ |
+| D31 | P2 | `sftp_list` 出参丢 `isSymlink`/`isFile` | src/index.ts、src/sftp.ts | be28ae6e |  |
+| D32 | P2 | 本机栏列表完全不排序 | src/index.ts、src/sftp.ts | be28ae6e |  |
+| D33 | P2 | 状态条在窄窗口静默裁掉右侧条目 | client-src/tty.css、client-src/index.js | be28ae6e |  |
+| D34 | P2 | 标签持久化载荷无版本字段 + `ready` 帧打断行内重命名 | client-src/index.js | be28ae6e |  |
+| D35 | P2 | 三处弹窗用局部 `const setStatus` 遮蔽模块级同名函数 | client-src/index.js | be28ae6e |  |
+| D36 | P2 | `tunnel_list` 出参 schema 与实现不符 | src/index.ts、src/tunnels.ts | be28ae6e |  |
+| D37 | P2 | 零碎但确凿的四条 | src/shell-integration.ts | be28ae6e |  |
+| D38 | P3 | 宿主半体与浏览器半体在 CI 里零自动化 | test/*.ts、.github/workflows/ci.yml | 5576e205 | ✓ |
+| D39 | P3 | CI 不跑旗舰脚本，也没有「产物与源码一致」闸门 | scripts/client-lint.mjs | be28ae6e |  |
+| D40 | P3 | `integration.mjs` 的失败信息掩盖真因 | scripts/integration.mjs | be28ae6e |  |
+| D41 | P3 | 三个 smoke 脚本无 npm script、README 零提及 | package.json | be28ae6e |  |
+| D42 | P3 | 发布 `files` 不含 `scripts/`，但 package.json 仍 advertise 它们 | package.json | be28ae6e |  |
+| D43 | P3 | `preview.mjs` 默认重建 `client.js`（隐式写入库产物） | scripts/preview.mjs | be28ae6e |  |
+| D44 | P3 | 文档漂移 | README.md、README.en.md | be28ae6e |  |
+| D45 | P3 | 无测试的关键路径 | src/index.ts、test/probe.test.ts | acbeaed3+b26f8dfe | ✓ |
 
 ## 待办 / 路线图（本文唯一「还没做」的部分）
 

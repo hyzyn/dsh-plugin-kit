@@ -91,6 +91,11 @@ Both were reproduced on **Windows 11 ARM (24H2) + Node 22 ARM64**. The fix:
   size and new-code markers compared after a build rather than pinning a byte count, which changes on every
   rebuild), plus `[dsh-tty] mounted (shell=C:\WINDOWS\system32\cmd.exe)`.
   x64 Windows is covered by the CI matrix (build / typecheck / test, see Development).
+- **End-to-end coverage (0.19.0)**: `scripts/windows-smoke.mjs` drives a real `cmd.exe` through
+  spawn → input echo → kill → respawn on the CI windows-latest runner. It caught and now pins a
+  Windows-only failure class: force-killing a local PTY crashed the host — node-pty rejects signals
+  on Windows, and its `_deferNoArgs` re-throws that error from a socket callback, where the caller’s
+  try/catch cannot see it.
 
 ## Agent tools (P1)
 
@@ -99,16 +104,16 @@ The plugin injects thirteen tools into the agent (with the same power as the bas
 | Tool | Purpose |
 | --- | --- |
 | `tty_list` | List active terminal sessions (sid / kind (`local\|ssh`) / target / pid / **cwd tracked live as you `cd`** / activity time; tmux persistent sessions carry a `persist` marker) |
-| `tty_capture` | Read recent output (last N lines, ANSI stripped by default, `raw:true` for the raw stream); **`last:true` returns only the output + exit code of the previous completed command** (shell integration markers, see the next section) |
+| `tty_capture` | Read recent output (last N lines, ANSI stripped by default, `raw:true` for the raw stream); **`last:true` returns only the output + exit code of the previous completed command** (shell integration markers, see the next section); when a command is **in flight** (just sent, completion marker not in yet) it returns `inProgress:true` without the stale result, so the previous command is never mistaken for this one (0.19.0) |
 | `tty_screen` | Read the **currently visible screen** as rendered (xterm-headless virtual screen, plain text) — it can genuinely read TUI interfaces such as vim / htop / menus |
-| `tty_expect` | Wait with a regex for a readiness signal in **subsequent output** (dev server URL, build finished, …); a timeout does not throw (`matched:false` + tail output), and a command that ends early also returns early with its exit code |
+| `tty_expect` | Wait with a regex for a readiness signal in **subsequent output** (dev server URL, build finished, …); a timeout does not throw (`matched:false` + tail output), and a command that ends early also returns early with its exit code; at most 5 in-flight calls per session, and the accumulated window keeps only the last 64KB (0.19.0) |
 | `tty_send` | Send keys/text to a given session (such as `q` to a dev server, or a menu selection) |
-| `sftp_list` | List a remote SSH directory (name/type/size/mtime, directories first); `book` is the connection-book entry name and `path` defaults to the login home |
-| `sftp_read` | Read a remote **text** file (≤256KB by default, adjustable to 1MB, truncated beyond that; files with NUL bytes are rejected as binary) |
+| `sftp_list` | List a remote SSH directory (name/type/size/mtime, directories first); `book` is the connection-book entry name and `path` defaults to the login home; at most 500 entries by default (`truncated:true` beyond that), and `isSymlink` distinguishes a symlink from a real directory (0.19.0) |
+| `sftp_read` | Read a remote **text** file (≤256KB by default, adjustable to 1MB, truncated beyond that); `offset` pages from a given byte (handy for log tails), an invalid `maxBytes` errors out instead of silently falling back, and binary detection is a double test (NUL + illegal-UTF-8 ratio) (0.19.0) |
 | `sftp_write` | Write a remote text file (overwrite by default, `append:true` appends; ≤1MB per call) |
 | `sftp_mkdir` | Create a remote directory; `parents:true` fills in missing parents level by level (equivalent to `mkdir -p`, created bottom-up, existing directories skipped idempotently) |
 | `sftp_rename` | Rename/move a remote file or directory (a `to` in a different directory means a move; never overwrites an existing target) |
-| `sftp_remove` | Delete a remote file/directory; a directory uses rmdir by default (a non-empty one errors explicitly), and `recursive:true` deletes the whole tree (irrecoverable) |
+| `sftp_remove` | Delete a remote file/directory; a directory uses rmdir by default (a non-empty one errors explicitly), and `recursive:true` deletes the whole tree (irrecoverable); paths pointing at `/`, `~`, or containing `.`/`..` segments are refused (guard for an irrecoverable operation, 0.19.0) |
 | `sftp_tree` | Recursively list a remote directory structure (depth-first, directories first; `maxDepth` 1~8 / `maxEntries` 1~2000 cap it, `truncated:true` when exceeded; symlinks are not followed, to avoid cycles) |
 | `tunnel_list` | List port-forwarding tunnels and their live state (active/connecting/error/stopped, rules, connection counts) |
 
@@ -719,6 +724,14 @@ pnpm --filter @hyzyn/dsh-tty integration  # integration tests: real plugin × re
 pnpm --filter @hyzyn/dsh-tty live         # liveness smoke: start dsh web first (default ws://127.0.0.1:3080; DSH_TTY_WS_URL overrides)
 pnpm --filter @hyzyn/dsh-tty tui          # TUI smoke: vim/htop full-screen rendering (start dsh web first, default :3090; DSH_TTY_WS_URL overrides)
 pnpm --filter @hyzyn/dsh-tty ssh-smoke    # SSH smoke: in-memory SSH server (ssh2.Server) × real spawnSsh end to end (build first)
+pnpm --filter @hyzyn/dsh-tty probe-smoke        # probe classification & TOFU (7 cases, self-contained)
+pnpm --filter @hyzyn/dsh-tty probe-route-smoke  # probe HTTP route + connection book (9 cases)
+pnpm --filter @hyzyn/dsh-tty sftplimits-smoke   # sftpLimits normalisation (6 cases)
+pnpm --filter @hyzyn/dsh-tty windows-smoke      # Windows end to end (only meaningful on Windows; skips elsewhere)
+
+CI (`.github/workflows/ci.yml`) runs `integration` + `ssh-smoke` + the three smokes on ubuntu and
+`windows-smoke` on windows-latest, plus a “build artifacts match sources” gate (`client.js` + `lib/`).
+The 48 fixes shipped in 0.19.0 and their audit index live in [`DEFECTS.md`](./DEFECTS.md).
 pnpm --filter @hyzyn/dsh-tty preview      # visual preview: headless Chrome screenshots per scene (see below)
 ```
 
