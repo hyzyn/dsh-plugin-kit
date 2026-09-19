@@ -376,7 +376,7 @@
       硬编码产物 12 312 246 字节，仓库里无此尺寸文件且每次重建都变。
       修复：三处都已归位——版本引用统一为 0.19.0、tui 描述改为 vim/htop 并写明需先起 dsh web
       与默认端口、不可验证的字节数数字删除。
-- [ ] **D45 无测试的关键路径**（**部分完成**，0.19.0 已补三面：
+- [x] **D45 无测试的关键路径**（0.19.0 关闭，五面齐：
       ① `env:` 引用的空值/缺失区分、凭据 provider 链路、auth=agent 预检 —— `test/host-smoke.test.ts`；
       ② credential-refs 的**数据源**（`readCredentialRefNames`，键名解析 + 值不外泄）与**路由本身**
       （loopback 闸门 / 跨站 sec-fetch-site / host 与 origin 不一致 / 非 GET → 405 / 200 只回名字）
@@ -392,7 +392,9 @@
       平台优雅跳过（退出码 0）。**状态：待 windows-latest 首跑确认**——本地无 Windows 可验，改用
       「POSIX 替身自检」验证了除 cmd 专有断言外的整条接线：把平台守卫关掉、断言换成 `$SHELL` /
       `uname -s` 后，本机 **5/5 PASS**（挂载 → ws → spawn → 输入 → kill → 重开全通）；cmd 专有的
-      `%COMSPEC%` / `%OS%` / `\r\n` 三处只能由 runner 首跑给出结论。）——
+      `%COMSPEC%` / `%OS%` / `\r\n` 三处只能由 runner 首跑给出结论。）
+      **已按此收尾**：首跑确实抓到了两条真问题（D48 的宿主崩溃、W1 的 pid 断言写错），
+      修完后 windows-latest 转绿（run 35430974807：ubuntu / windows / macos 三平台 success）。
       证据：[src/index.ts:2453](src/index.ts)、[test/probe.test.ts:59](test/probe.test.ts)。
 
 ---
