@@ -117,8 +117,10 @@ const ZSH_HOOKS = [
   '    __DSH_TTY_IN_CMD=1',
   '    printf "$__DSH_TTY_FMT_B"',
   '  }',
-  '  precmd_functions+=(__dsh_tty_precmd)',
-  '  preexec_functions+=(__dsh_tty_preexec)',
+  '  # 前置插入：后置追加（+=）会让前序钩子的返回码污染 $?，D 标记记到的',
+  '  # 就不是用户命令的退出码（preexec 同理前置，保持对称）',
+  '  precmd_functions=(__dsh_tty_precmd "${precmd_functions[@]}")',
+  '  preexec_functions=(__dsh_tty_preexec "${preexec_functions[@]}")',
   'fi',
   '# <<< dsh-tty shell integration <<<',
   '',
@@ -173,8 +175,10 @@ function ensureZshStubDir(): string | undefined {
   try {
     const dir = join(pluginRuntimeDir(), 'shell', 'zsh')
     // 桩只做「source 用户原文件 + 追加钩子」；DSH_TTY_ORIG_ZDOTDIR 在包装层里
-    // 固化为用户原 ZDOTDIR（无则 $HOME），保证用户 rc 链路不变
-    for (const name of ['.zshenv', '.zprofile', '.zlogin'] as const) {
+    // 固化为用户原 ZDOTDIR（无则 $HOME），保证用户 rc 链路不变。
+    // .zlogout 也要链（0.19.0）：ZDOTDIR 指到桩目录后，登录 shell 退出时只读
+    // ZDOTDIR 下的 .zlogout——缺了它用户的退出钩子被静默吞掉
+    for (const name of ['.zshenv', '.zprofile', '.zlogin', '.zlogout'] as const) {
       writeIfChanged(join(dir, name), [
         '# dsh-tty shell integration stub (chain to user file)',
         '[ -f "$DSH_TTY_ORIG_ZDOTDIR/' + name + '" ] && source "$DSH_TTY_ORIG_ZDOTDIR/' + name + '"',
@@ -212,12 +216,14 @@ function ensureBashStubRc(): string | undefined {
       "      *'133;B'*) ;;",
       '      *) PS0="$__DSH_TTY_FMT_B""$PS0" ;;',
       '    esac',
-      '    # PROMPT_COMMAND 挂钩：兼容字符串与数组（bash 5.1+）两种形态',
+      '    # PROMPT_COMMAND 挂钩：兼容字符串与数组（bash 5.1+）两种形态。',
+      '    # 两种形态都必须**前置**：后置追加会让前序条目的返回码污染 $?，',
+      '    # D 标记记到的就不是用户命令的退出码（数组形态的 += 恰好加在末尾）',
       '    case "$(declare -p PROMPT_COMMAND 2>/dev/null)" in',
       '      "declare -a"*)',
       '        case "${PROMPT_COMMAND[*]}" in',
       '          *__dsh_tty_precmd*) ;;',
-      '          *) PROMPT_COMMAND+=("__dsh_tty_precmd") ;;',
+      '          *) PROMPT_COMMAND=("__dsh_tty_precmd" "${PROMPT_COMMAND[@]}") ;;',
       '        esac ;;',
       '      *)',
       '        case "${PROMPT_COMMAND:-}" in',
@@ -318,11 +324,21 @@ function buildWindowsShellSpawn(shell: string): ShellSpawnPlan {
   return { argv: isPowerShellShell(shell) ? [shell, '-NoLogo'] : [shell], env: {} }
 }
 
-/** Windows 宿主的「跑一条命令」计划：cmd 走 `/c`，PowerShell 走 `-Command`（都不再包 export/exec）。 */
+/** Windows 宿主的「跑一条命令」计划：按 shell 家族选参数（0.19.0 前一律 /c，Git Bash / WSL 静默失败）。 */
 function buildWindowsCommandSpawn(shell: string, command: string): ShellSpawnPlan {
-  return isPowerShellShell(shell)
-    ? { argv: [shell, '-NoLogo', '-Command', command], env: {} }
-    : { argv: [shell, '/c', command], env: {} }
+  if (isPowerShellShell(shell)) {
+    return { argv: [shell, '-NoLogo', '-Command', command], env: {} }
+  }
+  const kind = shell.split(/[\\/]/).pop()?.toLowerCase() ?? ''
+  // Git Bash 等 POSIX shell 认 -c
+  if (kind === 'bash.exe' || kind === 'bash' || kind === 'sh.exe' || kind === 'sh' || kind === 'zsh.exe' || kind === 'zsh') {
+    return { argv: [shell, '-c', command], env: {} }
+  }
+  // WSL：-e 直跑默认发行版的 sh，再由它 -c（wsl.exe 自身不认 /c / -c）
+  if (kind === 'wsl.exe' || kind === 'wsl') {
+    return { argv: [shell, '-e', 'sh', '-c', command], env: {} }
+  }
+  return { argv: [shell, '/c', command], env: {} }
 }
 
 export function buildShellSpawn(shell: string, term: string, colorTerm: string, integration: boolean, platform: NodeJS.Platform = process.platform): ShellSpawnPlan {

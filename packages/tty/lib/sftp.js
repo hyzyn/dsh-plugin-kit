@@ -28,6 +28,29 @@ import { applyHostKeyPolicy, buildConnectConfig, sshTarget } from './ssh.js';
 const SFTP_IDLE_MS = 120_000;
 /** 扫描周期。 */
 const SFTP_SWEEP_MS = 30_000;
+/** 分片孤儿回收阈值：比这更老的 `.dsh-part-*` 视为崩溃残留，下次上传同目录时顺手清理。 */
+const STALE_PART_MS = 24 * 60 * 60 * 1000;
+/**
+ * remove 的路径护栏（0.19.0，纵深防御）：递归删除按账号权限生效、无二次确认、
+ * 无干跑——根目录 / home / 纯相对跳跃段一次调用就是整树删除。挂在 SftpManager
+ * 层而非只在 agent 工具层，loopback 上的构造请求（面板路由透传原始 path）同样
+ * 被拦；「必然是误操作」的形态才拒，具体某个子目录仍由调用方负责。
+ */
+export function assertRemovableRemotePath(raw) {
+    const path = raw.trim();
+    if (path === '')
+        throw new Error('path 必须是非空字符串');
+    if (path === '/' || path.replace(/\/+$/, '') === '')
+        throw new Error('拒绝删除：path 指向根目录（整树删除不可恢复）');
+    if (path === '~' || path.startsWith('~/') || path.replace(/\/+$/, '') === '/home') {
+        throw new Error('拒绝删除：path 指向 home 目录（~）——如确需删除其中内容，请指定具体子路径');
+    }
+    const segments = path.replace(/\/+$/, '').split('/').filter((seg) => seg !== '');
+    if (segments.some((seg) => seg === '.' || seg === '..')) {
+        throw new Error('拒绝删除：path 含 . / .. 相对段（按服务端语义会解析到意外位置）——请先解析出绝对路径');
+    }
+    return path;
+}
 /** OpenSSH 等 server 的 readdir 会带回 '.'/'..'：目录列表与递归删除都要跳过。 */
 const DOT_ENTRIES = new Set(['.', '..']);
 /** 远程路径拼接（POSIX 语义；本机路径拼接用 node:path）。 */
@@ -221,67 +244,207 @@ export class SftpManager {
     /**
      * 删除文件 / 目录。目录不带 recursive 时走 rmdir（非空会明确报错）；
      * 带 recursive 时 readdir 深度优先逐个 unlink/rmdir。符号链接一律按
-     * 文件 unlink（不跟随）。
+     * 文件 unlink（不跟随）。入口过 assertRemovableRemotePath 护栏（根目录 /
+     * home / 相对跳跃段直接拒绝——agent 工具与面板 HTTP 路由共用本方法）。
      */
     async remove(spec, path, recursive) {
         const sftp = await this.acquire(spec);
-        await this.removeEntry(sftp, path.trim(), recursive);
+        await this.removeEntry(sftp, assertRemovableRemotePath(path), recursive);
     }
-    /** 下载：返回只读流（路由负责 pipe 到 HTTP 响应与销毁）。 */
-    async openDownload(spec, path) {
+    /**
+     * 下载：返回只读流（路由负责 pipe 到 HTTP 响应与销毁）。
+     * 先 stat 探测（0.19.0）：「路径不存在 / 是目录」在这里变成明确报错——
+     * 此前 stat 失败被吞、路由已 writeHead(200)，客户端见 res.ok===true 后以
+     * TypeError 断流收场，状态行只剩「Failed to fetch」这类无信息文案。
+     */
+    async openDownload(spec, path, options) {
         const sftp = await this.acquire(spec);
         const target = path.trim();
-        let size = null;
-        try {
-            const stats = await new Promise((resolve, reject) => {
-                sftp.stat(target, (error, stats) => (error !== undefined ? reject(error) : resolve(stats)));
-            });
-            if (stats.isFile())
-                size = Number(stats.size ?? 0);
-        }
-        catch {
-            /* stat 失败不阻塞下载（content-length 缺省，流式传输照常） */
-        }
-        const stream = sftp.createReadStream(target);
+        const stats = await new Promise((resolve, reject) => {
+            sftp.stat(target, (error, found) => (error != null ? reject(new Error(`远程路径不存在或不可访问: ${target}（${error.message}）`)) : resolve(found)));
+        });
+        if (stats.isDirectory())
+            throw new Error(`${target} 是目录：单文件下载不支持目录，请用面板双栏「← 传输」或先打包`);
+        const size = stats.isFile() ? Number(stats.size ?? 0) : null;
+        const stream = options?.offset !== undefined && options.offset > 0
+            ? sftp.createReadStream(target, { start: options.offset })
+            : sftp.createReadStream(target);
         return { stream, size };
     }
-    /** 上传：返回可写流与完成信号（路由 pipe 请求体，await done 后回包）。 */
+    /**
+     * 上传：返回可写流与完成信号（路由 pipe 请求体，await done 后回包）。
+     *
+     * 覆盖写原子化（0.19.0）：`flags:'w'` 直接写目标会先截断原文件，途中任何
+     * 失败（磁盘满 / 权限变化 / 通道断 / 客户端断连）都留下「原文件被毁 + 半截
+     * 新文件」。改为写同目录临时分片 `.dsh-part-<uuid>`，流正常收尾后 posix-rename
+     * （不支持该扩展的 server 退 unlink+rename）覆盖目标；失败 / 取消统一清理
+     * 分片，原文件全程不受影响。done 只在分片真正落盘（rename 成功）后 resolve。
+     */
     async openUpload(spec, path, append = false) {
         const sftp = await this.acquire(spec);
-        const stream = sftp.createWriteStream(path.trim(), { flags: append ? 'a' : 'w' });
+        const target = path.trim();
+        if (append) {
+            const stream = sftp.createWriteStream(target, { flags: 'a' });
+            const done = this.streamDone(stream, () => { });
+            done.catch(() => { });
+            return { stream, done, writePath: target };
+        }
+        const partPath = `${target}.dsh-part-${randomUUID()}`;
+        // 顺手回收崩溃残留（0.19.0）：进程崩溃 / 断电时 dropPart 来不及执行，远端会
+        // 留下 `.dsh-part-*` 孤儿。只清同目标前缀且超过 STALE_PART_MS 的（并发中的
+        // 新分片不受影响）；readdir/unlink 失败静默——清理是尽力而为。
+        void this.reapStaleParts(sftp, target);
+        const stream = sftp.createWriteStream(partPath, { flags: 'w' });
         const done = new Promise((resolve, reject) => {
+            let settled = false;
+            const dropPart = () => {
+                // 分片清理是尽力而为：失败只留日志（下一次覆盖写不受影响）
+                sftp.unlink(partPath, (error) => {
+                    if (error !== undefined && error !== null) {
+                        this.logger.warn(`[dsh-tty] sftp 分片清理失败（${partPath}）: ${error.message}`);
+                    }
+                });
+            };
             stream.on('error', (error) => {
+                settled = true;
+                dropPart();
                 reject(new Error(`上传写入失败: ${error.message}`));
             });
-            stream.on('close', () => resolve());
+            stream.on('close', () => {
+                if (settled)
+                    return;
+                settled = true;
+                // 「写入完整」判据 = writableEnded（调用方走过 end()）。ssh2 的
+                // WriteStream 在 _final 里先 destroy 再 cb，'finish' 事件不会发出；
+                // 而它的 'close' 在正常路径上要等 server ack handle close 才发——
+                // 未 end 就 destroy（取消 / 管线中止）时 writableEnded 为 false，
+                // 据此区分「完整收尾」与「半途而废」，绝不把半截分片 rename 覆盖目标。
+                if (stream.writableEnded !== true) {
+                    dropPart();
+                    reject(new Error('上传中断（连接断开或流被销毁），目标原文件未受影响'));
+                    return;
+                }
+                this.renameOverwrite(sftp, partPath, target).then(resolve, (error) => {
+                    dropPart();
+                    reject(error);
+                });
+            });
         });
         // 必挂一个 no-op 分支：客户端中断 / 取消会让流以 destroy 收尾（不是正常
         // close），done 随之 reject——调用方可能已走别的路径返回，此时这个
         // rejection 无人处理会变成 unhandled rejection 并拖垮宿主进程。
         // 挂 handler 不改变语义：await done 仍会拿到同一个 rejection。
         done.catch(() => { });
-        return { stream, done };
+        return { stream, done, writePath: partPath };
+    }
+    /**
+     * 同目录崩溃残留分片回收：`<basename>.dsh-part-*` 且 mtime 超过阈值才删
+     * （并发上传的新分片 mtime 很新，不会被误删）；一切失败静默。
+     */
+    async reapStaleParts(sftp, target) {
+        try {
+            const dir = dirname(target);
+            const prefix = `${basename(target)}.dsh-part-`;
+            const list = await new Promise((resolve) => {
+                sftp.readdir(dir, (error, found) => (error !== undefined ? resolve([]) : resolve(found)));
+            });
+            const now = Date.now();
+            for (const entry of list) {
+                if (!entry.filename.startsWith(prefix))
+                    continue;
+                const age = now - Number(entry.attrs.mtime ?? 0) * 1000;
+                if (age < STALE_PART_MS)
+                    continue;
+                sftp.unlink(joinRemotePath(dir, entry.filename), () => { });
+                this.logger.info(`[dsh-tty] sftp 清理崩溃残留分片（${joinRemotePath(dir, entry.filename)}，${String(Math.round(age / 3600_000))}h 前）`);
+            }
+        }
+        catch {
+            /* 清理是尽力而为 */
+        }
+    }
+    /** WriteStream 的 done Promise（close 即 resolve，error reject）；onClose 钩子供覆盖写路径塞落盘逻辑。 */
+    streamDone(stream, onClose) {
+        return new Promise((resolve, reject) => {
+            stream.on('error', (error) => {
+                reject(new Error(`上传写入失败: ${error.message}`));
+            });
+            stream.on('close', () => {
+                onClose();
+                resolve();
+            });
+        });
+    }
+    /**
+     * 覆盖落盘：优先 posix-rename@openssh.com（原子覆盖，OpenSSH 系全支持）；
+     * server 不支持该扩展时退 unlink+rename——窗口极小（新内容已在分片里完整
+     * 落盘），不会出现「截断后写一半」的旧问题。
+     */
+    renameOverwrite(sftp, from, to) {
+        return new Promise((resolve, reject) => {
+            const posix = sftp.ext_openssh_rename;
+            if (typeof posix !== 'function') {
+                fallback();
+                return;
+            }
+            try {
+                // 不支持 posix-rename 的 server：ssh2 会**同步 throw**（而非回调错误）
+                posix.call(sftp, from, to, (error) => {
+                    if (error === undefined || error === null) {
+                        resolve();
+                        return;
+                    }
+                    fallback();
+                });
+            }
+            catch {
+                fallback();
+            }
+            function fallback() {
+                sftp.unlink(to, () => {
+                    sftp.rename(from, to, (renameError) => {
+                        if (renameError != null)
+                            reject(new Error(`落盘失败（rename ${from} → ${to}）: ${renameError.message}`));
+                        else
+                            resolve();
+                    });
+                });
+            }
+        });
     }
     /* -------------------------------------------------------------- */
     /* 双栏直传（0.9.0，0.12.0 任务化 + 可取消）：本机路径 ↔ 远程路径      */
     /* -------------------------------------------------------------- */
     /**
      * 本机文件 / 目录 → 远程（双栏「→ 传输」）。目录递归建目录后逐个上传；
-     * 同名文件直接覆盖（openUpload 'w'）。不经过浏览器，字节不出宿主进程。
-     * signal 中止时销毁读写流并删除半截的远程文件（删除失败只记日志）。
+     * 同名文件直接覆盖（openUpload 走临时分片 + rename，见其注释）。不经过
+     * 浏览器，字节不出宿主进程。signal 中止时销毁读写流并清理半截的远程
+     * 分片（删除失败只记日志）。
+     *
+     * 符号链接：根路径按用户显式选择跟随（fsStat）；子项一律跳过（含指到
+     * 文件的链接）——`current -> .` 这类环会让递归永不收敛，直到 ENAMETOOLONG
+     * 或磁盘灌满；depth 兜底只为防未来的回归，不是主防线。
      */
-    async uploadFromLocal(spec, localPath, remotePath, options) {
+    async uploadFromLocal(spec, localPath, remotePath, options, depth = 0) {
         const root = localPath.trim();
+        if (root === '')
+            throw new Error('本机路径为空（目录尚未定位）——拒绝按宿主进程 cwd 解析');
+        if (remotePath.trim() === '')
+            throw new Error('远程路径为空（目录尚未定位）——拒绝按登录目录解析');
         const info = await fsStat(root).catch(() => {
             throw new Error('本机路径不存在: ' + root);
         });
         throwIfCanceled(options);
         if (info.isDirectory()) {
+            if (depth >= 100)
+                throw new Error('目录嵌套过深（≥100 层），已停止传输: ' + root);
             await this.mkdir(spec, remotePath, true);
             const children = await fsReaddir(root, { withFileTypes: true });
             for (const child of children) {
+                if (child.isSymbolicLink())
+                    continue;
                 throwIfCanceled(options);
-                await this.uploadFromLocal(spec, pathJoin(root, child.name), joinRemotePath(remotePath, child.name), options);
+                await this.uploadFromLocal(spec, pathJoin(root, child.name), joinRemotePath(remotePath, child.name), options, depth + 1);
             }
             return;
         }
@@ -289,15 +452,15 @@ export class SftpManager {
             throw new Error('不支持传输的文件类型: ' + root);
         const label = basename(root);
         options?.onFile?.(label);
-        const { stream, done } = await this.openUpload(spec, remotePath, false);
+        const { stream, done, writePath } = await this.openUpload(spec, remotePath, false);
         try {
             await this.pipeCounted(createReadStream(root), stream, options);
         }
         catch (error) {
-            // 取消：pipeline 已收尾（写流随之销毁），此时删半截文件才不会有写入竞态。
+            // 取消：pipeline 已收尾（写流随之销毁），此时删分片才不会有写入竞态。
             // 不 await done——被 destroy 打断的写流不会走正常 close，等它只会挂住。
             if (options?.signal?.aborted === true) {
-                await this.deleteRemoteQuiet(spec, remotePath);
+                await this.deleteRemoteQuiet(spec, writePath);
                 throw new TransferCanceledError();
             }
             throw new Error(`上传失败（${label}）: ${error instanceof Error ? error.message : String(error)}`);
@@ -306,24 +469,36 @@ export class SftpManager {
     }
     /**
      * 远程文件 / 目录 → 本机（双栏「← 传输」）。目录递归建本地目录后逐个下载；
-     * 同名文件直接覆盖（'w' 写流）。远程符号链接按文件下载（跟随目标）。
+     * 同名文件直接覆盖（'w' 写流）。符号链接不作为目录下钻（readdir attrs 的
+     * isDirectory 跟随 isSymbolicLink 才算目录）——防 `current -> .` 环；根路径
+     * 是链接时按文件下载（读取跟随目标，指向目录则传输报错）。
      * signal 中止时销毁读写流并删除半截的本机文件（删除失败只记日志）。
      */
-    async downloadToLocal(spec, remotePath, localPath, options) {
+    async downloadToLocal(spec, remotePath, localPath, options, depth = 0) {
         const target = remotePath.trim();
+        if (target === '')
+            throw new Error('远程路径为空（目录尚未定位）——拒绝按登录目录解析');
+        if (localPath.trim() === '')
+            throw new Error('本机路径为空（目录尚未定位）——拒绝按宿主进程 cwd 解析');
         const sftp = await this.acquire(spec);
         const stats = await new Promise((resolve, reject) => {
-            sftp.stat(target, (error, found) => (error != null ? reject(new Error(`远程路径不存在: ${target}（${error.message}）`)) : resolve(found)));
+            sftp.lstat(target, (error, found) => (error != null ? reject(new Error(`远程路径不存在: ${target}（${error.message}）`)) : resolve(found)));
         });
         throwIfCanceled(options);
-        if (stats.isDirectory()) {
+        if (stats.isDirectory() && !stats.isSymbolicLink()) {
+            if (depth >= 100)
+                throw new Error('远程目录嵌套过深（≥100 层），已停止传输: ' + target);
             await fsMkdir(localPath, { recursive: true });
             const list = await this.list(spec, target);
             for (const entry of list.entries) {
                 if (DOT_ENTRIES.has(entry.name))
                     continue;
+                // 子项里的符号链接一律跳过（含指到文件的）：本侧无法原样重建链接，
+                // 跟随又有目录环风险——与上传方向（rsync 默认）语义对齐
+                if (entry.isSymlink)
+                    continue;
                 throwIfCanceled(options);
-                await this.downloadToLocal(spec, joinRemotePath(target, entry.name), pathJoin(localPath, entry.name), options);
+                await this.downloadToLocal(spec, joinRemotePath(target, entry.name), pathJoin(localPath, entry.name), options, depth + 1);
             }
             return;
         }
@@ -349,6 +524,9 @@ export class SftpManager {
      * 带字节计数与取消感知的 pipe：source→sink 之间插一个 PassThrough 只做
      * 「数了就转发」；取消时 destroy 它——pipeline 随即结束并销毁两端流，
      * 不留悬挂的 SFTP 句柄，也不会误报成「传输失败」。
+     * abort 监听器在管道收尾时摘除：signal 是整个任务共用的（每个文件都挂
+     * 一个），不摘的话 N 文件 = N 个常驻监听器，取消时 N 个已结束的 meter
+     * 齐刷刷被 destroy（Node 会报 MaxListenersExceededWarning）。
      */
     async pipeCounted(source, sink, options) {
         if (options === undefined || (options.signal === undefined && options.onBytes === undefined)) {
@@ -360,15 +538,26 @@ export class SftpManager {
             const onBytes = options.onBytes;
             meter.on('data', (chunk) => onBytes(chunk.length));
         }
+        let detachAbort = null;
         if (options.signal !== undefined) {
             const signal = options.signal;
-            const abort = () => meter.destroy();
-            if (signal.aborted)
-                abort();
-            else
+            if (signal.aborted) {
+                meter.destroy();
+            }
+            else {
+                const abort = () => {
+                    meter.destroy();
+                };
                 signal.addEventListener('abort', abort, { once: true });
+                detachAbort = () => signal.removeEventListener('abort', abort);
+            }
         }
-        await pipeline(source, meter, sink);
+        try {
+            await pipeline(source, meter, sink);
+        }
+        finally {
+            detachAbort?.();
+        }
     }
     /** 删远端文件（取消后的半截清理）：失败只记日志，不影响取消本身。 */
     async deleteRemoteQuiet(spec, path) {
@@ -386,9 +575,12 @@ export class SftpManager {
      * 预扫描总字节数（直传进度分母）：目录递归累加文件大小，只数「源头一侧」
      * ——up 数本机、down 数远程（对侧尚未创建，数不到也不该数）。目的是让
      * 进度条有真实百分比：纯统计（不搬运），单项失败按 0 计、不阻断传输。
+     * 与传输本体同一套符号链接规则（子项跳过）+ 取消检查——统计也会走环。
      */
-    async estimateBytes(spec, direction, localPath, remotePath) {
+    async estimateBytes(spec, direction, localPath, remotePath, options, depth = 0) {
         try {
+            if (depth >= 100)
+                return 0;
             if (direction === 'up') {
                 const info = await fsStat(localPath);
                 if (!info.isDirectory())
@@ -396,7 +588,10 @@ export class SftpManager {
                 let total = 0;
                 const children = await fsReaddir(localPath, { withFileTypes: true });
                 for (const child of children) {
-                    total += await this.estimateBytes(spec, direction, pathJoin(localPath, child.name), joinRemotePath(remotePath, child.name));
+                    if (child.isSymbolicLink())
+                        continue;
+                    throwIfCanceled(options);
+                    total += await this.estimateBytes(spec, direction, pathJoin(localPath, child.name), joinRemotePath(remotePath, child.name), options, depth + 1);
                 }
                 return total;
             }
@@ -411,13 +606,16 @@ export class SftpManager {
             let total = 0;
             const list = await this.list(spec, remotePath).catch(() => ({ entries: [] }));
             for (const entry of list.entries) {
-                if (DOT_ENTRIES.has(entry.name))
+                if (DOT_ENTRIES.has(entry.name) || entry.isSymlink)
                     continue;
-                total += await this.estimateBytes(spec, direction, pathJoin(localPath, entry.name), joinRemotePath(remotePath, entry.name));
+                throwIfCanceled(options);
+                total += await this.estimateBytes(spec, direction, pathJoin(localPath, entry.name), joinRemotePath(remotePath, entry.name), options, depth + 1);
             }
             return total;
         }
-        catch {
+        catch (error) {
+            if (error instanceof TransferCanceledError)
+                throw error;
             /* 统计是尽力而为：失败退化为不定进度，不影响传输本身 */
             return 0;
         }
@@ -447,7 +645,7 @@ export class SftpManager {
         };
         void (async () => {
             try {
-                job.total = await this.estimateBytes(spec, direction, localPath, remotePath);
+                job.total = await this.estimateBytes(spec, direction, localPath, remotePath, options);
                 if (direction === 'up')
                     await this.uploadFromLocal(spec, localPath, remotePath, options);
                 else
@@ -615,7 +813,9 @@ export class SftpManager {
         }
         if (!recursive) {
             await new Promise((resolve, reject) => {
-                sftp.rmdir(path, (error) => (error != null ? reject(new Error(`删除目录失败（非空目录需 recursive）: ${error.message}`)) : resolve()));
+                // 不预设原因：非空与权限拒绝在 SFTP 层都是笼统的 Failure，把两种可能
+                // 一并列出让用户自行分辨（此前一律归因为「非空」误导权限问题）
+                sftp.rmdir(path, (error) => (error != null ? reject(new Error(`删除目录失败: ${error.message}（目录非空时需 recursive:true；若非此原因，多为账号对该目录无写权限）`)) : resolve()));
             });
             return;
         }

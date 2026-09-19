@@ -268,7 +268,11 @@ async function main() {
   // TOFU 指纹存储（内存实现）：S1/S6 走 record + match，S8 用换密钥的服务端走 mismatch
   const fingerprintMap = new Map()
   const hostKeyStore = {
-    get: (host, p) => fingerprintMap.get(host + ':' + p),
+    // 0.19.0 起 get 返回指纹集合（一机多把钥匙）
+    get: (host, p) => {
+      const fp = fingerprintMap.get(host + ':' + p)
+      return fp === undefined ? undefined : [fp]
+    },
     record: (host, p, fp) => fingerprintMap.set(host + ':' + p, fp),
   }
   const options = { term: 'xterm-256color', cols: 80, rows: 24, hostKeyStore, logger: { info: (m) => console.log('  ' + m), warn: (m) => console.warn('  ' + m) } }
@@ -377,7 +381,7 @@ async function main() {
   {
     // S7：前两轮连接应已在 HostKeyStore 记录指纹
     const fp = hostKeyStore.get('127.0.0.1', port)
-    if (typeof fp === 'string' && fp.length > 0) pass('S7 首次连接经 HostKeyStore 记录 sha256 指纹（' + fp.slice(0, 16) + '…）')
+    if (Array.isArray(fp) && typeof fp[0] === 'string' && fp[0].length > 0) pass('S7 首次连接经 HostKeyStore 记录 sha256 指纹（' + fp[0].slice(0, 16) + '…）')
     else fail('S7 首次连接经 HostKeyStore 记录 sha256 指纹', String(fp))
 
     // S8：同 host:port 换一把服务器密钥 → 指纹变更必须拒绝连接
@@ -493,7 +497,7 @@ async function main() {
     // S9f TOFU：预置指纹与服务器不符 → SFTP 连接同样拒绝（与终端同源钉扎）
     try {
       const mismatchMap = new Map([[`127.0.0.1:${String(sftpd.port)}`, 'deadbeef'.repeat(8)]])
-      const strictStore = { get: (host, p) => mismatchMap.get(host + ':' + String(p)), record: () => {} }
+      const strictStore = { get: (host, p) => { const fp = mismatchMap.get(host + ':' + String(p)); return fp === undefined ? undefined : [fp] }, record: () => {} }
       const strictManager = new SftpManager(sftpLogger, strictStore)
       let mismatch = null
       try { await strictManager.list(spec, '') } catch (error) { mismatch = error.message }

@@ -1012,9 +1012,13 @@
   z-index: 4; /* 高于 .tt_term(1)、低于 .tt_overlay(5)：出错浮层仍能盖住 */
   display: flex;
   align-items: center;
+  /* 窄窗口（0.19.0）：条目可横向滚动到达（滚动条隐藏，滚轮/触控板横扫），
+  不再静默裁掉右侧；条目同时带 title。不换行——条高是终端 top 偏移的基准 */
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
   height: var(--tt-statsbar-h);
   padding: 0 var(--tt-gap-lg);
-  overflow: hidden;
   white-space: nowrap;
   font-family: var(--tt-mono);
   font-size: 11px;
@@ -1022,6 +1026,9 @@
   color: rgba(255, 255, 255, .82);
   background: rgba(255, 255, 255, .04);
   border-bottom: 1px solid rgba(255, 255, 255, .08);
+}
+.tt_statsBar::-webkit-scrollbar {
+  display: none;
 }
 /*
  * 显式兜底：上面的 display:flex 是作者样式，而 [hidden] 的 display:none 来自

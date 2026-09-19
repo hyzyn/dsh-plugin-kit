@@ -10,6 +10,8 @@
  * 平台用**参数注入**（默认 process.platform），所以两个分支都能在 macOS/Linux 上断言，
  * 不必等 Windows runner —— 而 Windows runner 上跑同一份用例同样成立。
  */
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   buildCommandSpawn,
@@ -71,6 +73,13 @@ describe('buildCommandSpawn：Windows 分支', () => {
       .toEqual(['pwsh.exe', '-NoLogo', '-Command', 'docker ps'])
   })
 
+  it('Git Bash / WSL 用 -c / -e sh -c，不再一律 /c（0.19.0：/c 对它们静默失败）', () => {
+    expect(buildCommandSpawn('C:\\Program Files\\Git\\bin\\bash.exe', 'xterm-256color', 'truecolor', 'docker ps', 'win32').argv)
+      .toEqual(['C:\\Program Files\\Git\\bin\\bash.exe', '-c', 'docker ps'])
+    expect(buildCommandSpawn('wsl.exe', 'xterm-256color', 'truecolor', 'docker ps', 'win32').argv)
+      .toEqual(['wsl.exe', '-e', 'sh', '-c', 'docker ps'])
+  })
+
   it('Windows 分支不带 POSIX 包装（回归：PowerShell 会报 export 不是 cmdlet）', () => {
     const text = buildCommandSpawn('powershell.exe', 'xterm-256color', 'truecolor', 'ls', 'win32').argv.join(' ')
     expect(text).not.toContain('export')
@@ -94,6 +103,32 @@ describe('POSIX 分支回归（改动不能碰现有的 zsh/bash 路径）', () 
     expect(plan.argv[2]).toContain('DSH_TTY_ORIG_ZDOTDIR')
     expect(plan.argv[2]).toContain('ZDOTDIR=')
     expect(plan.argv[2]).toContain('exec "/bin/zsh"')
+  })
+
+  it('zsh 桩链全四个 rc（含 .zlogout——ZDOTDIR 指过去后用户的退出钩子不该被吞）', () => {
+    const plan = buildShellSpawn('/bin/zsh', 'xterm-256color', 'truecolor', true, 'darwin')
+    const stubDir = String(plan.argv[2]).match(/ZDOTDIR='([^']+)'/)?.[1]
+    expect(stubDir).toBeDefined()
+    for (const name of ['.zshenv', '.zprofile', '.zlogin', '.zlogout']) {
+      const content = readFileSync(join(stubDir as string, name), 'utf8')
+      expect(content).toContain('DSH_TTY_ORIG_ZDOTDIR')
+    }
+  })
+
+  it('钩子必须前置挂载（0.19.0：后置追加会让前序钩子的返回码污染 $?）', () => {
+    const plan = buildShellSpawn('/bin/bash', 'xterm-256color', 'truecolor', true, 'linux')
+    const stubRc = String(plan.argv[2]).match(/--rcfile '([^']+)'/)?.[1]
+    expect(stubRc).toBeDefined()
+    const rc = readFileSync(stubRc as string, 'utf8')
+    // bash 数组形态：插到数组头部而不是 +=
+    expect(rc).toContain('PROMPT_COMMAND=("__dsh_tty_precmd" "${PROMPT_COMMAND[@]}")')
+    expect(rc).not.toContain('PROMPT_COMMAND+=')
+    // zsh：precmd/preexec 同样前置
+    const zshPlan = buildShellSpawn('/bin/zsh', 'xterm-256color', 'truecolor', true, 'linux')
+    const zshDir = String(zshPlan.argv[2]).match(/ZDOTDIR='([^']+)'/)?.[1]
+    const zshrc = readFileSync(join(zshDir as string, '.zshrc'), 'utf8')
+    expect(zshrc).toContain('precmd_functions=(__dsh_tty_precmd "${precmd_functions[@]}")')
+    expect(zshrc).not.toContain('precmd_functions+=')
   })
 
   it('带命令的本地 spawn 仍是 -c + export 包装（docker exec 这类标签依赖它）', () => {

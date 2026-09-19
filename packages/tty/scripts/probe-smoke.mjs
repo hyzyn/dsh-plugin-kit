@@ -58,10 +58,14 @@ const keyA = generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncodin
 const keyB = generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { type: 'pkcs1', format: 'pem' } }).privateKey
 
 /* 内存 hostKeyStore */
+// 0.19.0 起 HostKeyStore.get 返回该 host:port 的指纹集合（一机多把钥匙）
 function makeStore() {
   const map = new Map()
   return {
-    get: (host, port) => map.get(host + ':' + port),
+    get: (host, port) => {
+      const fps = map.get(host + ':' + port)
+      return fps === undefined ? undefined : [fps]
+    },
     record: (host, port, fingerprint) => { map.set(host + ':' + port, fingerprint) },
     _dump: () => map,
   }
@@ -101,7 +105,7 @@ async function main() {
   const sshdA2 = await startSshd(keyA, p6port) // 同 host:port 换回 keyA → 指纹与 store6 不一致
   const p6 = await probeSsh({ ...spec, port: p6port }, store6)
   const known = store6._dump().get(host + ':' + p6port)
-  if (p6.auth.ok === false && p6.hostkey.state === 'mismatch' && typeof p6.hostkey.error === 'string' && p6.hostkey.error.includes('MITM') && p6.hostkey.known === known) pass('P6 host key 变更 → mismatch + 指引')
+  if (p6.auth.ok === false && p6.hostkey.state === 'mismatch' && typeof p6.hostkey.error === 'string' && p6.hostkey.error.includes('MITM') && Array.isArray(p6.hostkey.known) && p6.hostkey.known.length === 1 && p6.hostkey.known[0] === known) pass('P6 host key 变更 → mismatch + 指引')
   else fail('P6 host key 变更', JSON.stringify(p6) + ' / known=' + String(known))
   await closeSshd(sshdA2)
 

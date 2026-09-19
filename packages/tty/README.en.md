@@ -87,8 +87,9 @@ Both were reproduced on **Windows 11 ARM (24H2) + Node 22 ARM64**. The fix:
     throughput / temperature show “无” (remote **Windows** hosts go through the PowerShell hop — see the
     status-bar section);
 - **How far this was verified**: on Windows 11 ARM a full install (`dsh plugin add @hyzyn/dsh-all`), all nine
-  plugins mounting, `dsh web` serving, and the browser half being delivered (the same artifact macOS serves:
-  12,312,246 bytes, identical new-code markers), plus `[dsh-tty] mounted (shell=C:\WINDOWS\system32\cmd.exe)`.
+  plugins mounting, `dsh web` serving, and the browser half being delivered (the same artifact macOS serves;
+  size and new-code markers compared after a build rather than pinning a byte count, which changes on every
+  rebuild), plus `[dsh-tty] mounted (shell=C:\WINDOWS\system32\cmd.exe)`.
   x64 Windows is covered by the CI matrix (build / typecheck / test, see Development).
 
 ## Agent tools (P1)
@@ -252,7 +253,7 @@ slot (`ssh2`’s sftp subsystem, host half in `src/sftp.ts`):
   panel nor interrupts browsing); when another panel (such as the containers panel) already holds the slot on
   the same tab, or the panel is not open, it falls back to the original centered dialog, **without pushing
   anyone else’s panel out**. The title / collapse / ✕ come from tty’s mount slot;
-- **Follows the tab (0.18.4)**: the File Browser talks to the host of the tab that opened it, so it belongs to
+- **Follows the tab (0.19.0)**: the File Browser talks to the host of the tab that opened it, so it belongs to
   that tab: switching away hides it (in-flight transfers keep running and the scene is restored when you come
   back), and closing the tab tears it down. **Every entry follows the same rule** — the connection bar’s
   “SFTP”, the 📂 on a connection-book entry and “File Browser” in the SSH dialog / settings card all become
@@ -436,14 +437,17 @@ and the agent tools all reuse the same scheduling.
   box takes focus); the only difference is presentation — there it is an **inline** list rather than an overlay,
   because that card is a long scrollable form where an overlay would be clipped;
 - **Host-key TOFU pinning (0.3.0)**: after the first successful connection the host’s (host:port) sha256
-  fingerprint is recorded in `hostKeys` (persisted with settings); every later connection is verified, a
-  matching fingerprint is allowed, and **a changed fingerprint rejects the connection outright** (defense
-  against impersonation), with a reset pointer in the error message. After a host reinstall or key change,
+  fingerprint is recorded in `hostKeys` (persisted with settings); every later connection is verified, any
+  fingerprint in the set matches, and **a changed fingerprint rejects the connection outright** (defense
+  against impersonation), with a reset pointer in the error message. A host’s multiple keys (0.19.0, e.g.
+  rsa + ed25519) are each recorded and merged into one record — algorithm negotiation changes no longer
+  cause false alarms. After a host reinstall or key change,
   delete the record under Settings → Plugins → Terminal Panel → “SSH host key
   records” and reconnect (the record list supports deletion). **“Import from known_hosts”
-  (0.4.1)**: parses `~/.ssh/known_hosts` in one click to pre-fill existing host fingerprints in bulk (host
+  (0.4.1)**: parses `~/.ssh/known_hosts` in one click to pre-fill existing host fingerprints in bulk, keeping
+  all of a host’s rsa/ed25519 entries (no longer first-entry-only); host
   names from the connection book are also used to restore `|1|` hashed entries, and non-default ports are
-  parsed as `[host]:port`);
+  parsed as `[host]:port`;
 - **Connection test (0.11.0)**: a “Test” button on each connection-book row of the settings card, plus a
   “Test connection” button in the SSH connection dialog — both perform **link diagnostics only** (no session,
   no `maxSessions` slot, no shell): first a TCP pre-check (DNS + connect, failures classified as
@@ -502,7 +506,7 @@ session belongs to (visually aligned with FinalShell’s session monitor bar):
 | `cwd` | host startup directory | Fallback working directory (the client’s current session cwd wins) |
 | `reconnectGraceSec` | 120 | Seconds a session is kept alive after an abnormal disconnect (0~3600): the session survives a page refresh/network blip waiting for a reconnect, and the reaper ends it on timeout; `0` = the old behavior, end immediately on disconnect |
 | `sshHosts` | `[]` | SSH connection book (selectable in the panel “+” menu): entries `{name, host, port=22, username, auth=agent\|key\|password, keyPath, passphrase, password, agentForward, persist=false}`; saved as a whole-set replacement, the same name overwrites; `password` / `passphrase` support `env:VAR` references so no plaintext is stored; with persistence on, clicking an entry opens a tmux persistent session by default, and `persist=false` is an **opt-out** |
-| `hostKeys` | `[]` | SSH host key records (TOFU, maintained automatically): entries `{host, port, fingerprint}`; unique by host:port, appended automatically on the first connection, and a changed fingerprint rejects the connection; the settings card can delete them to reset |
+| `hostKeys` | `[]` | SSH host key records (TOFU, maintained automatically): entries `{host, port, fingerprints[]}` (the legacy single `fingerprint` field is migrated and merged on read); unique by host:port, one record holds all of a host’s keys, appended automatically on the first connection, any matching fingerprint is allowed, and a full mismatch rejects the connection; the settings card can delete them to reset |
 | `shellIntegration` | true | Injects the OSC 133/7 shell integration (command boundary markers + cwd reporting; `tty_capture{last}` depends on it); zsh/bash supported, other shells skipped automatically; can be turned off when compatibility problems appear |
 | `tunnels` | `[]` | Port-forwarding tunnels: entries `{name, bookName, direction=local\|remote, localPort?, remoteHost?, remotePort?, localTargetHost?, localTargetPort?, enabled}`; `bookName` references a connection-book entry for host and authentication; maintained graphically in the “Port forwarding” block of the card |
 | `sftpStyle` | `dialog` | SFTP File Browser UI style: `dialog` single pane (remote directory + upload/download/drag & drop) / `dual` two panes (local left / remote right, inline `⇨/⇦` server-side direct transfer); reopen SFTP for it to take effect |
@@ -616,7 +620,7 @@ which stays visible, clickable and typable instead of being covered by a full-sc
 the pain before 0.15).
 
 A mount slot is **connection-scoped**: its credentials / target come from the terminal tab that opened it.
-So since 0.18.4 every pane records its **owner tab** (`options.ownerSid`, defaulting to the active tab at
+So since 0.19.0 every pane records its **owner tab** (`options.ownerSid`, defaulting to the active tab at
 mount time): switching to another tab **hides** the pane (`data-dock-hidden`; its DOM and your rendered tree
 survive, in-flight transfers keep running) and switching back restores the scene; closing the owner tab tears
 the pane down. Without this, the pane stayed put across a tab switch — its title read `SFTP · lab-b`
@@ -712,8 +716,8 @@ pnpm --filter @hyzyn/dsh-tty build        # tsc host + esbuild browser half (cli
 pnpm --filter @hyzyn/dsh-tty typecheck
 pnpm --filter @hyzyn/dsh-tty probe        # M0 probe: PTY primitive verification (needs a real PTY)
 pnpm --filter @hyzyn/dsh-tty integration  # integration tests: real plugin × real DSH service composition
-pnpm --filter @hyzyn/dsh-tty live         # liveness smoke against a running dsh web
-pnpm --filter @hyzyn/dsh-tty tui          # TUI smoke: vim/nano full-screen rendering
+pnpm --filter @hyzyn/dsh-tty live         # liveness smoke: start dsh web first (default ws://127.0.0.1:3080; DSH_TTY_WS_URL overrides)
+pnpm --filter @hyzyn/dsh-tty tui          # TUI smoke: vim/htop full-screen rendering (start dsh web first, default :3090; DSH_TTY_WS_URL overrides)
 pnpm --filter @hyzyn/dsh-tty ssh-smoke    # SSH smoke: in-memory SSH server (ssh2.Server) × real spawnSsh end to end (build first)
 pnpm --filter @hyzyn/dsh-tty preview      # visual preview: headless Chrome screenshots per scene (see below)
 ```
@@ -739,14 +743,14 @@ node scripts/preview.mjs --theme=light   # light theme
 
 Coverage: local terminal / multi-tab + SSH connection bar / the “+” menu / SSH dialog (new, edit, probe)/
 settings card (also side by side with docker)/ SFTP (single pane, dual pane, placement fallback)/
-**mount slot follows the tab** (`dock-pane-tab`, the 0.18.4 regression)/ minimized badge / exit and error
+**mount slot follows the tab** (`dock-pane-tab`, the 0.19.0 regression)/ minimized badge / exit and error
 overlays / tunnel popover / search box / toast / embedded terminals (alone and alongside the panel)/
 docker panel and “containers → terminal drawer”.
 
 A scene may attach a **function-shaped** assertion to `window.__previewAssert` (returning `null` means pass,
 a string / array means fail); the script runs it and folds the result into `✓/✗`. An assertion that only
 lives in the fixture, seen by nobody unless someone pulls `diag` by hand, is a regression that is not really
-pinned — which is exactly what bit the 0.18.4 “panel does not follow the tab” fix: the assertion was written
+pinned — which is exactly what bit the 0.19.0 “panel does not follow the tab” fix: the assertion was written
 already, but because it was mixed into a `diag` object containing a function, the whole evaluation failed
 silently and everything reported ✓.
 
@@ -825,15 +829,22 @@ verify things like “is there still a white panel after switching light/dark th
   sandbox/chroot); downloads go through browser memory (for very large files prefer `scp`/`rsync` in the
   terminal); the agent tool `sftp_read` is ≤1MB and rejects binaries, and `sftp_write` is ≤1MB per call (use
   panel upload or the terminal for larger content); the `sftp_*` tools accept only connection-book entry
-  names, and inline credentials are for the panel dialog only.
+  names, and inline credentials are for the panel dialog only; overwrite writes go through a same-directory
+  temp part `.dsh-part-<uuid>` + rename (atomic) — if the host process crashes / loses power, a part orphan
+  may remain, and the next overwrite upload to the same directory automatically cleans parts older than 24h.
 - **SSH host keys are TOFU-pinned**: the first connection records the sha256 fingerprint automatically
-  (trust on first use), after which a matching fingerprint is allowed and a change is rejected — no longer an
+  (trust on first use), after which any recorded fingerprint matching is allowed and a full mismatch is
+  rejected — no longer an
   unconditional accept-and-log. Note TOFU’s inherent boundary: if the first connection already met a MITM,
   what was recorded is a fake fingerprint; `hostKeys` is persisted with settings, and a fingerprint change
-  requires a human to confirm in the settings card and delete the record; `hostKeys` stores only **one**
-  fingerprint per host:port — when a host offers several key types (rsa/ed25519/ecdsa) and algorithm
-  negotiation changes, it may report a false change, and deleting the record and reconnecting recalibrates
-  it; known_hosts import likewise takes the first entry per host.
+  requires a human to confirm in the settings card and delete the record; a host’s multiple key types
+  (rsa/ed25519/ecdsa) are merged into one record’s fingerprint set (0.19.0), so algorithm negotiation
+  changes no longer report a false “fingerprint changed”; known_hosts import likewise keeps every
+  fingerprint of a host.
+- **Browser tab persistence contains no plaintext credentials** (0.19.0): the spec copies that SSH tabs
+  write into sessionStorage / localStorage have plaintext `password` / `passphrase` stripped (`env:`
+  references are kept) and are flagged with `credsStripped` — on restore/respawn the terminal asks for
+  re-entry. The in-memory spec of the live session is unaffected.
 - **SSH passwords / passphrases should use `env:VAR` references**: the connection book is persisted in the
   settings file, so plaintext `password` / `passphrase` is an exposure surface; prefer `env:VAR` +
   dsh-env-manager, or `agent` authentication outright (credentials never touch disk).

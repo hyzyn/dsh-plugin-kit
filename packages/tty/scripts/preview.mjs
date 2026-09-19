@@ -10,7 +10,7 @@
  *   node scripts/preview.mjs                    # 全场景截图
  *   node scripts/preview.mjs local multi        # 指定场景
  *   node scripts/preview.mjs --list             # 列出场景
- *   node scripts/preview.mjs --no-build         # 跳过 client.js 重新打包
+ *   node scripts/preview.mjs --build            # 顺带重建 client.js（默认不重建，产物落后直接报错）
  *   node scripts/preview.mjs --theme=light      # 浅色主题
  *
  * 需要本机有 Chrome/Chromium（默认找 playwright 缓存的 Chrome for Testing，
@@ -18,7 +18,7 @@
  */
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, readdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, readdirSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir, tmpdir } from 'node:os'
@@ -31,7 +31,9 @@ const argv = process.argv.slice(2)
 const flags = new Set(argv.filter((a) => a.startsWith('--')))
 const positional = argv.filter((a) => !a.startsWith('--'))
 const theme = (argv.find((a) => a.startsWith('--theme=')) || '--theme=dark').split('=')[1]
-const noBuild = flags.has('--no-build')
+// 默认不再重建（0.19.0）：此前隐式跑 build 会悄悄改掉必须入库的 client.js。
+// 需要重建时显式 `--build`；产物落后于源码时直接报错，绝不「对着旧产物截图」。
+const wantBuild = flags.has('--build')
 /** 输出子目录：--out=shots-light 之类，便于并排比较明暗主题。 */
 const outName = (argv.find((a) => a.startsWith('--out=')) || '--out=shots').split('=')[1]
 const shotsDir = join(previewDir, outName)
@@ -441,10 +443,29 @@ async function shoot(cdp, name, label) {
 
 /* --------------------------------- main --------------------------------- */
 
+/** client-src/ 下最新源码的 mtime（递归一层足够）。 */
+function newestSourceMtime() {
+  let newest = 0
+  const srcDir = join(root, 'client-src')
+  for (const entry of readdirSync(srcDir)) {
+    const st = statSync(join(srcDir, entry))
+    if (st.isFile()) newest = Math.max(newest, st.mtimeMs)
+  }
+  return newest
+}
+
 async function main() {
-  if (!noBuild) {
+  const artifact = join(root, 'client.js')
+  if (wantBuild) {
     log('重新打包 client.js')
     await buildClient()
+  } else {
+    if (!existsSync(artifact)) {
+      throw new Error('client.js 不存在：先跑 pnpm -r build，或用 --build 让 preview 重建')
+    }
+    if (newestSourceMtime() > statSync(artifact).mtimeMs) {
+      throw new Error('client.js 落后于 client-src/：先跑 pnpm -r build，或用 --build 让 preview 重建（不再默认隐式重建）')
+    }
   }
   prepare()
   await ensureVendor()

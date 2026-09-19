@@ -101,7 +101,15 @@ function openSession(port, headers) {
   const waitFor = async (pred, timeoutMs = 12000, label = '条件') => {
     const start = Date.now()
     while (!pred()) {
-      if (Date.now() - start > timeoutMs) throw new Error(`等待${label}超时；已收文本: ${JSON.stringify(state.text.slice(-200))}`)
+      if (Date.now() - start > timeoutMs) {
+        // 超时信息带上下文（0.19.0）：受限环境里 PTY spawn 被拒时此前只显示
+        // 「已收文本: ""」，排查者会误判成插件 bug——error 帧 / 退出事实一并打出
+        const details = [`已收文本: ${JSON.stringify(state.text.slice(-200))}`]
+        if (state.errors.length > 0) details.push(`error 帧: ${JSON.stringify(state.errors.slice(-3))}`)
+        if (state.exited !== null && state.exited !== undefined) details.push(`进程已退出: ${JSON.stringify(state.exited)}`)
+        if (state.closed) details.push('ws 已关闭')
+        throw new Error(`等待${label}超时（${details.join('；')}）`)
+      }
       await Promise.race([
         new Promise((resolve) => state.waiters.push(resolve)),
         sleep(200),
@@ -704,10 +712,14 @@ async function run() {
     const alias = entries.find((e) => e.host === 'alias')
     const db1 = entries.find((e) => e.host === 'db1.internal')
     const hashedReplayed = entries.filter((e) => e.host === 'web1.example.com').length
+    // 0.19.0 起解析结果按 host:port 聚合、指纹进 fingerprints 集合（一机多把钥匙）
+    // 0.19.0 起解析结果按 host:port 聚合、指纹进 fingerprints 集合（一机多把钥匙）：
+    // hashed 条目还原出的 web1 指纹并入 web1 记录（不再「只留首条」被丢弃）
+    const fp3 = createHash('sha256').update(Buffer.from('hashed-host-key-bytes')).digest('hex')
     const ok = entries.length === 3
-      && web1 !== undefined && web1.port === 22 && web1.fingerprint === fp1
-      && alias !== undefined && alias.port === 22 && alias.fingerprint === fp1
-      && db1 !== undefined && db1.port === 2222 && db1.fingerprint === fp2
+      && web1 !== undefined && web1.port === 22 && Array.isArray(web1.fingerprints) && web1.fingerprints.length === 2 && web1.fingerprints[0] === fp1 && web1.fingerprints[1] === fp3
+      && alias !== undefined && alias.port === 22 && Array.isArray(alias.fingerprints) && alias.fingerprints.length === 1 && alias.fingerprints[0] === fp1
+      && db1 !== undefined && db1.port === 2222 && Array.isArray(db1.fingerprints) && db1.fingerprints.length === 1 && db1.fingerprints[0] === fp2
       && hashedReplayed === 1
     if (ok) pass('B19 known_hosts 解析（别名拆分/[host]:port/@marker与通配跳过/hashed 候选还原+去重）')
     else fail('B19 known_hosts 解析（别名拆分/[host]:port/@marker与通配跳过/hashed 候选还原+去重）', JSON.stringify(entries))
@@ -1344,7 +1356,8 @@ async function run() {
     else fail('B28c 连接簿测试：新指纹 TOFU 记录', JSON.stringify(r2))
     const cfgAfter2 = await (await fetch(`http://127.0.0.1:${port}/api/dsh-tty/config`)).json()
     const hostsAfter2 = Array.isArray(cfgAfter2.config?.hostKeys) ? cfgAfter2.config.hostKeys : []
-    const recordedKey = hostsAfter2.some((hk) => hk.host === '127.0.0.1' && Number(hk.port) === sftpd.port && typeof hk.fingerprint === 'string')
+    // 0.19.0：记录形态为 {host, port, fingerprints[]}（旧单 fingerprint 字段兼容读取）
+    const recordedKey = hostsAfter2.some((hk) => hk.host === '127.0.0.1' && Number(hk.port) === sftpd.port && ((Array.isArray(hk.fingerprints) && hk.fingerprints.length > 0) || typeof hk.fingerprint === 'string'))
     if (recordedKey) pass('B28d 指纹已持久化到 hostKeys（可被后续连接校验）')
     else fail('B28d 指纹已持久化到 hostKeys', JSON.stringify(hostsAfter2))
     // 再连同主机 → matched（与记录一致放行）
