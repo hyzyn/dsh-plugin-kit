@@ -88,8 +88,8 @@ D50 才是用户看到的那一下（他补的描述是「整条状态条瞬间�
 | D43 | P3 | `preview.mjs` 默认重建 `client.js`（隐式写入库产物） | scripts/preview.mjs | be28ae6e |  |
 | D44 | P3 | 文档漂移 | README.md、README.en.md | be28ae6e |  |
 | D45 | P3 | 无测试的关键路径 | src/index.ts、test/probe.test.ts | acbeaed3+b26f8dfe | ✓ |
-| D49 | P2 | 状态条每秒整条重建两次 + 值位数变化推挤后续条目（用户报「定期闪动」） | client-src/stats-bar.js、client-src/index.js、client-src/tty.css、test/stats-bar.test.ts | 未提交 | ✓ |
-| D50 | P1 | 宿主采样一慢（macOS `netstat -ib` 挂 30s）→ 帧间隔 4s，被前端 3s 陈旧窗口判成「采集停了」→ **整条状态条每 4 秒消失又出现** | src/stats.ts、client-src/stats-bar.js、client-src/index.js、scripts/preview/harness.js | 未提交 | ✓ |
+| D49 | P2 | 状态条每秒整条重建两次 + 值位数变化推挤后续条目（用户报「定期闪动」） | client-src/stats-bar.js、client-src/index.js、client-src/tty.css、test/stats-bar.test.ts | c46909b6 | ✓ |
+| D50 | P1 | 宿主采样一慢（macOS `netstat -ib` 挂 30s）→ 帧间隔 4s，被前端 3s 陈旧窗口判成「采集停了」→ **整条状态条每 4 秒消失又出现** | src/stats.ts、client-src/stats-bar.js、client-src/index.js、scripts/preview/harness.js | c46909b6 | ✓ |
 
 ## 线上反馈条目（0.19.2 之后新编号的）
 
