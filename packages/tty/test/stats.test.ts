@@ -506,13 +506,38 @@ describe('createLocalSampler（本机 best-effort）', () => {
       calls.push(key)
       return Promise.resolve(DARWIN_FIXTURES[key] ?? '')
     }
-    const sampler = createLocalSampler({ platform: 'darwin', exec })
+    // readFile 返回 undefined = 这台机器上「没有 /proc」（darwin 的真实形状）。
+    // 不注入它，用例在 Linux 上会先命中 /proc 分支、根本不 exec —— ubuntu CI 首次就红在这。
+    const sampler = createLocalSampler({ platform: 'darwin', exec, readFile: () => undefined })
     const frame = await sampler.sample()
     expect(calls).toContain('netstat -ibn')
     expect(calls).not.toContain('netstat -ib') // 不带 -n 的那次调用绝不能再出现
     expect(frame.diskTotal).toBeGreaterThan(0) // 首帧仍然完整
     expect(frame.tcpConns).toBe(2)
     expect(frame.memUsed).toBeGreaterThan(0)
+  })
+
+  it('Linux 形状（/proc 在）不碰 netstat：可注入的 readFile 只影响「有没有 /proc」，不改平台判定', async () => {
+    const calls: string[] = []
+    const proc: Record<string, string> = {
+      '/proc/stat': 'cpu  100 0 100 800 0 0 0 0 0 0\ncpu0 100 0 100 800 0 0 0 0 0 0\n',
+      '/proc/meminfo': 'MemTotal: 1000000 kB\nMemAvailable: 400000 kB\n',
+      '/proc/net/dev': 'Inter-|   Receive                                                |  Transmit\n face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n  en0: 1000 10 0 0 0 0 0 0 2000 20 0 0 0 0 0 0\n',
+      '/proc/net/tcp': '  sl  local_address rem_address   st\n   0: 0100007F:1F90 00000000:0000 0A\n   1: 0100007F:1F90 0100007F:C350 01\n',
+      '/proc/uptime': '12345.67 999.0\n',
+    }
+    const sampler = createLocalSampler({
+      platform: 'linux',
+      readFile: (path) => proc[path],
+      exec: (command, args) => {
+        calls.push(command + ' ' + args.join(' '))
+        return Promise.resolve(DARWIN_FIXTURES[command + ' ' + args.join(' ')] ?? '')
+      },
+    })
+    const frame = await sampler.sample()
+    expect(calls.some((call) => call.startsWith('netstat'))).toBe(false)
+    expect(frame.uptimeSec).toBe(12345)
+    expect(frame.tcpConns).toBe(1)
   })
 
   it('【D50】某个子进程很慢时不再拖住出帧：后台刷新，帧照样秒回（用上一帧的值）', async () => {
@@ -524,7 +549,7 @@ describe('createLocalSampler（本机 best-effort）', () => {
       if (key === 'netstat -ibn' && slow) return new Promise((resolve) => setTimeout(() => resolve(text), 600))
       return Promise.resolve(text)
     }
-    const sampler = createLocalSampler({ platform: 'darwin', exec })
+    const sampler = createLocalSampler({ platform: 'darwin', exec, readFile: () => undefined })
     await sampler.sample() // 冷启动：这一次允许等（首帧要完整）
 
     slow = true

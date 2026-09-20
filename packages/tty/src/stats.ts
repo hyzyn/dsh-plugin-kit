@@ -800,11 +800,19 @@ function readThermalC(): number | undefined {
  * （`netstat -ibn`，8ms），但这个槽位是防备下一个「某台机器上某个命令很慢」的兜底：
  * 再慢也只能让自己那一格显示「无/旧值」，不能拖垮整条时间轴。
  *
- * @param deps 测试注入点：`exec` 替换子进程执行、`platform` 覆盖平台判定（默认取本进程）
+ * @param deps 测试注入点：`exec` 替换子进程执行、`platform` 覆盖平台判定、
+ *   `readFile` 覆盖「可选文件」读取（默认读真实文件系统）。
+ *
+ * 为什么 `readFile` 也要能注入：平台分支的第**一**判据是文件系统——darwin 分支只在
+ * `/proc/*` 读不到时才走。想在任何平台（CI 的 ubuntu 也在跑这套用例）上验 darwin 的命令，
+ * 就得能说「这里没有 /proc」，否则用例在 Linux 上会悄悄走成 /proc 路径、断言看似通过或
+ * 直接失败（D50 首次推送就打在这上面：ubuntu 红、macOS/Windows 绿）。
  */
-export function createLocalSampler(deps: { exec?: (command: string, args: string[]) => Promise<string>, platform?: NodeJS.Platform } = {}): LocalStatsSampler {
+export function createLocalSampler(deps: { exec?: (command: string, args: string[]) => Promise<string>, platform?: NodeJS.Platform, readFile?: (path: string) => string | undefined } = {}): LocalStatsSampler {
   const exec = deps.exec ?? execFileText
   const platform = deps.platform ?? process.platform
+  /** 「可选文件」读取（读不到 = undefined，与 tryRead 同语义）。 */
+  const readOptional = deps.readFile ?? tryRead
   let prevCpu: CpuCounters | null = null
   let prevNet: { rx: number; tx: number; at: number } | null = null
   const netSlot = emptySlot<{ rx: number; tx: number; at: number }>()
@@ -828,7 +836,7 @@ export function createLocalSampler(deps: { exec?: (command: string, args: string
   }
 
   const cpuCounters = (): CpuCounters | null => {
-    const stat = tryRead('/proc/stat')
+    const stat = readOptional('/proc/stat')
     const fromProc = stat !== undefined ? parseProcStat(stat) : null
     if (fromProc !== null) return fromProc
     const list = cpus()
@@ -867,7 +875,7 @@ export function createLocalSampler(deps: { exec?: (command: string, args: string
   }
 
   const memNow = async (): Promise<{ used: number; total: number; pct: number } | null> => {
-    const info = tryRead('/proc/meminfo')
+    const info = readOptional('/proc/meminfo')
     const fromProc = info !== undefined ? parseMeminfo(info) : null
     if (fromProc !== null) return fromProc // Linux：同步直读，每秒都是新的
     const total = totalmem()
@@ -883,7 +891,7 @@ export function createLocalSampler(deps: { exec?: (command: string, args: string
   }
 
   const uptimeNow = (): number | undefined => {
-    const raw = tryRead('/proc/uptime')
+    const raw = readOptional('/proc/uptime')
     const fromProc = raw !== undefined ? parseProcUptime(raw) : null
     if (fromProc !== null) return fromProc
     const value = osUptime()
@@ -892,7 +900,7 @@ export function createLocalSampler(deps: { exec?: (command: string, args: string
 
   /** /proc/net/dev（Linux，同步）或 netstat（macOS，子进程）。 */
   const netRun = async (): Promise<{ rx: number; tx: number; at: number } | null> => {
-    const dev = tryRead('/proc/net/dev')
+    const dev = readOptional('/proc/net/dev')
     if (dev !== undefined) return { ...parseNetDev(dev), at: Date.now() }
     if (platform === 'darwin') {
       /*
@@ -916,8 +924,8 @@ export function createLocalSampler(deps: { exec?: (command: string, args: string
   }
 
   const tcpRun = async (): Promise<number | null> => {
-    const v4 = tryRead('/proc/net/tcp')
-    const v6 = tryRead('/proc/net/tcp6')
+    const v4 = readOptional('/proc/net/tcp')
+    const v6 = readOptional('/proc/net/tcp6')
     if (v4 !== undefined || v6 !== undefined) {
       return countTcpEstablished(v4 ?? '') + countTcpEstablished(v6 ?? '')
     }

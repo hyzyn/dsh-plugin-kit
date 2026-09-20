@@ -173,10 +173,17 @@ export interface LocalStatsSampler {
  * （`netstat -ibn`，8ms），但这个槽位是防备下一个「某台机器上某个命令很慢」的兜底：
  * 再慢也只能让自己那一格显示「无/旧值」，不能拖垮整条时间轴。
  *
- * @param deps 测试注入点：`exec` 替换子进程执行、`platform` 覆盖平台判定（默认取本进程）
+ * @param deps 测试注入点：`exec` 替换子进程执行、`platform` 覆盖平台判定、
+ *   `readFile` 覆盖「可选文件」读取（默认读真实文件系统）。
+ *
+ * 为什么 `readFile` 也要能注入：平台分支的第**一**判据是文件系统——darwin 分支只在
+ * `/proc/*` 读不到时才走。想在任何平台（CI 的 ubuntu 也在跑这套用例）上验 darwin 的命令，
+ * 就得能说「这里没有 /proc」，否则用例在 Linux 上会悄悄走成 /proc 路径、断言看似通过或
+ * 直接失败（D50 首次推送就打在这上面：ubuntu 红、macOS/Windows 绿）。
  */
 export declare function createLocalSampler(deps?: {
     exec?: (command: string, args: string[]) => Promise<string>;
     platform?: NodeJS.Platform;
+    readFile?: (path: string) => string | undefined;
 }): LocalStatsSampler;
 export declare function localStatsSampler(): LocalStatsSampler;
