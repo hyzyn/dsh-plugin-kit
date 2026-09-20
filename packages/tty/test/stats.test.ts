@@ -483,4 +483,55 @@ describe('createLocalSampler（本机 best-effort）', () => {
       if (value !== undefined) expect(value).toBeGreaterThanOrEqual(0)
     }
   }, 15000)
+
+  /*
+   * D50 回归（用户报「整条状态条瞬间消失又出现」）：宿主侧某个采集子进程一慢，帧间隔就
+   * 从 1s 拉长——实测那台 macOS 上 `netstat -ib` 要 30s（缺 `-n` 会做地址反查，DNS 不响应
+   * 就一直等），被 3s 超时砍掉后每次采样都卡满 3s、每秒的 tick 被 busy 守卫跳过，帧变成
+   * **每 4 秒**一帧；前端「3s 没新帧就整条收起」的窗口正好卡在中间 → 状态条每 4 秒消失出现。
+   * 下面两条钉住宿主侧的两处修法：macOS 的网速命令必须带 `-n`；慢命令只能让自己那一格
+   * 变旧，不能拖散出帧节奏。
+   */
+  const DARWIN_FIXTURES: Record<string, string> = {
+    'netstat -ibn': 'Name  Mtu   Network       Address            Ipkts Ierrs     Ibytes    Opkts Oerrs     Obytes  Coll\nlo0   16384 <Link#1>                 100     0        500       100     0        500     0\nen0   1500  <Link#5>  aa:bb:cc:dd:ee:ff  200 0     900000     150     0     300000 0\n',
+    'netstat -an -p tcp': 'tcp4       0      0  127.0.0.1.5432     127.0.0.1.51000  ESTABLISHED\ntcp4       0      0  10.0.0.5.22        10.0.0.9.60001   ESTABLISHED\n',
+    'df -kP /': 'Filesystem 1024-blocks      Used Available Capacity Mounted on\n/dev/disk3s1s1   971350180 13312000 900000000      2%   /\n',
+    'vm_stat': 'Mach Virtual Memory Statistics: (page size of 16384 bytes)\nPages active:                                2048.\nPages wired down:                            1024.\nPages occupied by compressor:                 512.\n',
+  }
+
+  it('【D50】macOS 网速走 netstat -ibn（不带 -n 会反查地址、DNS 不响应时挂 30s）', async () => {
+    const calls: string[] = []
+    const exec = (command: string, args: string[]): Promise<string> => {
+      const key = command + ' ' + args.join(' ')
+      calls.push(key)
+      return Promise.resolve(DARWIN_FIXTURES[key] ?? '')
+    }
+    const sampler = createLocalSampler({ platform: 'darwin', exec })
+    const frame = await sampler.sample()
+    expect(calls).toContain('netstat -ibn')
+    expect(calls).not.toContain('netstat -ib') // 不带 -n 的那次调用绝不能再出现
+    expect(frame.diskTotal).toBeGreaterThan(0) // 首帧仍然完整
+    expect(frame.tcpConns).toBe(2)
+    expect(frame.memUsed).toBeGreaterThan(0)
+  })
+
+  it('【D50】某个子进程很慢时不再拖住出帧：后台刷新，帧照样秒回（用上一帧的值）', async () => {
+    let slow = false
+    const exec = (command: string, args: string[]): Promise<string> => {
+      const key = command + ' ' + args.join(' ')
+      const text = DARWIN_FIXTURES[key] ?? ''
+      // 网速命令变慢：拿真实机器那种「要等几秒」来演
+      if (key === 'netstat -ibn' && slow) return new Promise((resolve) => setTimeout(() => resolve(text), 600))
+      return Promise.resolve(text)
+    }
+    const sampler = createLocalSampler({ platform: 'darwin', exec })
+    await sampler.sample() // 冷启动：这一次允许等（首帧要完整）
+
+    slow = true
+    await new Promise((resolve) => setTimeout(resolve, 1100)) // 越过 900ms 结果 memo
+    const started = Date.now()
+    const frame = await sampler.sample()
+    expect(Date.now() - started).toBeLessThan(150) // 慢命令不再被 await
+    expect(hasStatsData(frame)).toBe(true) // 而且这一帧照常有数据（CPU/内存/磁盘/在线）
+  })
 })

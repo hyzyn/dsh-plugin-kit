@@ -491,12 +491,24 @@ session belongs to (visually aligned with FinalShell’s session monitor bar):
   session exit, orphan reaping, plugin disable and configuration off all stop the meter and close the remote
   channel, leaving no timers or remote loops.
 - **Best-effort**: a field that cannot be obtained is omitted (the frontend shows “n/a”); a collection
-  failure silently stops the meter and hides the whole status bar (it collapses after 3s without a new
-  frame) — it never writes to the PTY and never raises an error. Progress-bar thresholds:
-  <70 normal / 70~90 yellow / >90 red.
+  failure silently stops the meter and hides the whole status bar (it collapses after **8s** without a new
+  frame — not 3s: when a sampling subprocess on the host occasionally slows down, frames get further apart,
+  and too tight a window makes the whole bar blink) — it never writes to the PTY and never raises an error.
+  Progress-bar thresholds: <70 normal / 70~90 yellow / >90 red.
+- **A slow command cannot stall the cadence**: subprocess-backed fields (df / netstat / vm_stat) are awaited
+  only on the very first sample; afterwards the sampler uses the last known value and refreshes in the
+  background, so a command that hangs on some machine only leaves that one field briefly stale instead of
+  stretching the one-frame-per-second timeline (measured: 3000ms → 3~12ms per frame).
 - **Hot effect**: turning `statsEnabled` off stops collection at once (the status bar disappears and no more
   stats frames go over the WS), and turning it back on restores automatically from the subscriptions still in
   place — no restart and no need to reopen tabs.
+- **Fixed slots + incremental repaint**: every value owns a fixed-width character slot (right
+  aligned, so even the widest form only takes that one slot), and the items are built once — afterwards only
+  text that actually changed is written. Hence `CPU 5% → 12%`, `TCP 36 → 1024` and
+  `memory 9.2 GB → 17.8 GB` no longer push every following item sideways (which showed up as the whole bar
+  jumping once a second), the progress-bar width can finally animate through its CSS transition, and
+  horizontally scrolling to `Network` in a narrow window is no longer snapped back to the start by the next
+  refresh.
 
 ## Configuration (Settings → Plugins → “Terminal Panel”, saving takes effect immediately)
 

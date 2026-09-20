@@ -620,6 +620,40 @@ const LOCAL_MEMO_MS = 900;
 const SLOW_TTL_MS = 5000;
 /** df/netstat 单次执行上限（卡住的挂载点不能拖住采集）。 */
 const EXEC_TIMEOUT_MS = 3000;
+/** 子进程类字段「拿不到」后的退避：别每秒去敲同一台卡住的机器。 */
+const SLOT_FAILED_TTL_MS = 30_000;
+function emptySlot() {
+    return { value: null, at: 0, attempted: false, inflight: false };
+}
+/**
+ * 读槽里的值，必要时**顺手**起一次后台刷新（不 await）。
+ * 拿不到数据（value 还是 null）时用 `SLOT_FAILED_TTL_MS` 退避。
+ */
+function readSlot(slot, ttlMs, run) {
+    const now = Date.now();
+    const ttl = slot.value === null ? SLOT_FAILED_TTL_MS : ttlMs;
+    if (!slot.inflight && now - slot.at >= ttl) {
+        slot.inflight = true;
+        run()
+            .then((value) => {
+            slot.value = value;
+            slot.at = Date.now();
+            slot.inflight = false;
+        }, () => {
+            slot.at = Date.now();
+            slot.inflight = false;
+        });
+    }
+    return slot.value;
+}
+/** 冷启动那一次：等它跑完（首帧要完整），之后一律由 readSlot 走后台。 */
+async function primeSlot(slot, run) {
+    if (slot.attempted)
+        return;
+    slot.attempted = true;
+    slot.value = await run();
+    slot.at = Date.now();
+}
 function execFileText(command, args) {
     return new Promise((resolve) => {
         execFile(command, args, { timeout: EXEC_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 }, (error, stdout) => {
@@ -678,13 +712,27 @@ function readThermalC() {
  *   - macOS/BSD：node:os 的 cpus/内存/uptime + df -kP + netstat（TCP 计数与网卡
  *     累计字节）——macOS 没有 /proc、没有 ss、也没有 sysfs 温度，这几项天然缺席；
  *   - 其他平台：能拿多少拿多少（CPU/内存/uptime 来自 node:os）。
+ *
+ * **出帧节奏只由便宜字段决定（D50）**：走子进程的字段（df / netstat / vm_stat）一律经
+ * `AsyncSlot` 取值——首次采样等一次（首帧要完整），此后「用上一次的值 + 到点后台刷新」。
+ * 理由是一个实测过的线上现象：这台 macOS 上 `netstat -ib` 要 **30 秒**才返回（缺 `-n`
+ * 会做地址反查，DNS 不响应就一直等），被 `EXEC_TIMEOUT_MS` 砍在 3s —— 于是每次采样都要
+ * 3s、每秒的 tick 被 busy 守卫跳过，帧变成 **每 4 秒**才出一帧；前端「3s 收不到新帧就收起」
+ * 的陈旧窗口正好卡在中间 → 状态条每秒跳一下变成**整条每 4 秒消失又出现**。命令本身也修了
+ * （`netstat -ibn`，8ms），但这个槽位是防备下一个「某台机器上某个命令很慢」的兜底：
+ * 再慢也只能让自己那一格显示「无/旧值」，不能拖垮整条时间轴。
+ *
+ * @param deps 测试注入点：`exec` 替换子进程执行、`platform` 覆盖平台判定（默认取本进程）
  */
-export function createLocalSampler() {
+export function createLocalSampler(deps = {}) {
+    const exec = deps.exec ?? execFileText;
+    const platform = deps.platform ?? process.platform;
     let prevCpu = null;
     let prevNet = null;
-    let diskCache = null;
-    let tcpCache = null;
-    let vmCache = null;
+    const netSlot = emptySlot();
+    const diskSlot = emptySlot();
+    const tcpSlot = emptySlot();
+    const vmSlot = emptySlot();
     let memo = null;
     let inflight = null;
     /** 首次采样没有差值窗口：退化为 load1/核心数（明确标注的 best-effort 近似）。 */
@@ -727,32 +775,32 @@ export function createLocalSampler() {
         const pct = prev !== null ? cpuPctBetween(prev, next) : loadApprox(next.cores);
         return pct === undefined ? { cores: next.cores } : { pct, cores: next.cores };
     };
-    /** macOS 的内存口径：vm_stat（active + wired + compressed），失败退回 os.freemem。 */
-    const vmStatMem = async (total) => {
-        const now = Date.now();
-        if (vmCache !== null && now - vmCache.at < SLOW_TTL_MS)
-            return vmCache.value;
-        const text = await execFileText('vm_stat', []);
+    /**
+     * macOS 的内存口径：vm_stat（active + wired + compressed），失败退回 os.freemem。
+     * vm_stat 是子进程，所以走槽位（TTL 5s）；`total` 每次按当前值算，总量本来也不会变。
+     */
+    const vmStatMem = async () => {
+        const total = totalmem();
+        if (!Number.isFinite(total) || total <= 0)
+            return null;
+        const text = await exec('vm_stat', []);
         const vm = text !== '' ? parseVmStat(text) : null;
-        const value = vm === null
-            ? null
-            : (() => {
-                const used = Math.min(total, (vm.active + vm.wired + vm.compressed) * vm.pageSize);
-                return { used, total, pct: Math.round((used * 10000) / total) / 100 };
-            })();
-        vmCache = { at: now, value };
-        return value;
+        if (vm === null)
+            return null;
+        const used = Math.min(total, (vm.active + vm.wired + vm.compressed) * vm.pageSize);
+        return { used, total, pct: Math.round((used * 10000) / total) / 100 };
     };
     const memNow = async () => {
         const info = tryRead('/proc/meminfo');
         const fromProc = info !== undefined ? parseMeminfo(info) : null;
         if (fromProc !== null)
-            return fromProc;
+            return fromProc; // Linux：同步直读，每秒都是新的
         const total = totalmem();
         if (!Number.isFinite(total) || total <= 0)
             return null;
-        if (process.platform === 'darwin') {
-            const fromVmStat = await vmStatMem(total);
+        if (platform === 'darwin') {
+            await primeSlot(vmSlot, vmStatMem);
+            const fromVmStat = readSlot(vmSlot, SLOW_TTL_MS, vmStatMem);
             if (fromVmStat !== null)
                 return fromVmStat;
         }
@@ -768,44 +816,56 @@ export function createLocalSampler() {
         const value = osUptime();
         return Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
     };
-    const netNow = async () => {
+    /** /proc/net/dev（Linux，同步）或 netstat（macOS，子进程）。 */
+    const netRun = async () => {
         const dev = tryRead('/proc/net/dev');
         if (dev !== undefined)
             return { ...parseNetDev(dev), at: Date.now() };
-        if (process.platform === 'darwin') {
-            const text = await execFileText('netstat', ['-ib']);
+        if (platform === 'darwin') {
+            /*
+             * 必须带 `-n`：不带时 netstat 会对每个接口地址做反查，DNS 不响应就一直等
+             * （本机实测 `netstat -ib` 30s 不返回、`netstat -ibn` 8ms）。这正是 D50 的根因：
+             * 每次采样卡满 3s 超时 → 帧变成每 4s 一帧 → 前端 3s 陈旧窗口把状态条整条收起。
+             */
+            const text = await exec('netstat', ['-ibn']);
             if (text !== '')
                 return { ...parseNetstatIb(text), at: Date.now() };
         }
         return null;
     };
-    const tcpNow = async () => {
-        const now = Date.now();
-        if (tcpCache !== null && now - tcpCache.at < SLOW_TTL_MS)
-            return tcpCache.value;
-        let value = null;
+    /**
+     * 网速要的是「相邻两次读数之差」，所以 TTL = 0：每次都触发一次后台刷新，
+     * 新鲜计数一到就在下一帧算出差值（拿不到时用退避，别每秒敲）。
+     */
+    const netNow = async () => {
+        await primeSlot(netSlot, netRun);
+        return readSlot(netSlot, 0, netRun);
+    };
+    const tcpRun = async () => {
         const v4 = tryRead('/proc/net/tcp');
         const v6 = tryRead('/proc/net/tcp6');
         if (v4 !== undefined || v6 !== undefined) {
-            value = countTcpEstablished(v4 ?? '') + countTcpEstablished(v6 ?? '');
+            return countTcpEstablished(v4 ?? '') + countTcpEstablished(v6 ?? '');
         }
-        else if (process.platform === 'darwin') {
-            const text = await execFileText('netstat', ['-an', '-p', 'tcp']);
+        if (platform === 'darwin') {
+            const text = await exec('netstat', ['-an', '-p', 'tcp']);
             if (text !== '')
-                value = countNetstatEstablished(text);
+                return countNetstatEstablished(text);
         }
-        tcpCache = { at: now, value };
-        return value;
+        return null;
+    };
+    const tcpNow = async () => {
+        await primeSlot(tcpSlot, tcpRun);
+        return readSlot(tcpSlot, SLOW_TTL_MS, tcpRun);
+    };
+    const diskRun = async () => {
+        const text = await exec('df', ['-kP', '/']);
+        const parsed = text !== '' ? parseDfKb(text) : null;
+        return parsed === null ? null : { used: parsed.used, total: parsed.total };
     };
     const diskNow = async () => {
-        const now = Date.now();
-        if (diskCache !== null && now - diskCache.at < SLOW_TTL_MS)
-            return diskCache.value;
-        const text = await execFileText('df', ['-kP', '/']);
-        const parsed = text !== '' ? parseDfKb(text) : null;
-        const value = parsed === null ? null : { used: parsed.used, total: parsed.total };
-        diskCache = { at: now, value };
-        return value;
+        await primeSlot(diskSlot, diskRun);
+        return readSlot(diskSlot, SLOW_TTL_MS, diskRun);
     };
     const collect = async () => {
         const raw = {};

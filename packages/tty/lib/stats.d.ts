@@ -163,6 +163,20 @@ export interface LocalStatsSampler {
  *   - macOS/BSD：node:os 的 cpus/内存/uptime + df -kP + netstat（TCP 计数与网卡
  *     累计字节）——macOS 没有 /proc、没有 ss、也没有 sysfs 温度，这几项天然缺席；
  *   - 其他平台：能拿多少拿多少（CPU/内存/uptime 来自 node:os）。
+ *
+ * **出帧节奏只由便宜字段决定（D50）**：走子进程的字段（df / netstat / vm_stat）一律经
+ * `AsyncSlot` 取值——首次采样等一次（首帧要完整），此后「用上一次的值 + 到点后台刷新」。
+ * 理由是一个实测过的线上现象：这台 macOS 上 `netstat -ib` 要 **30 秒**才返回（缺 `-n`
+ * 会做地址反查，DNS 不响应就一直等），被 `EXEC_TIMEOUT_MS` 砍在 3s —— 于是每次采样都要
+ * 3s、每秒的 tick 被 busy 守卫跳过，帧变成 **每 4 秒**才出一帧；前端「3s 收不到新帧就收起」
+ * 的陈旧窗口正好卡在中间 → 状态条每秒跳一下变成**整条每 4 秒消失又出现**。命令本身也修了
+ * （`netstat -ibn`，8ms），但这个槽位是防备下一个「某台机器上某个命令很慢」的兜底：
+ * 再慢也只能让自己那一格显示「无/旧值」，不能拖垮整条时间轴。
+ *
+ * @param deps 测试注入点：`exec` 替换子进程执行、`platform` 覆盖平台判定（默认取本进程）
  */
-export declare function createLocalSampler(): LocalStatsSampler;
+export declare function createLocalSampler(deps?: {
+    exec?: (command: string, args: string[]) => Promise<string>;
+    platform?: NodeJS.Platform;
+}): LocalStatsSampler;
 export declare function localStatsSampler(): LocalStatsSampler;

@@ -246,6 +246,33 @@
         return null
       }
     },
+    /* 宿主采样慢（D50）：stats 帧 4 秒才来一次——旧代码的 3s 陈旧窗口会让状态条
+       每秒整条收起再出现（用户报的「瞬间消失又出现」）。这里连续采样 9 秒（跨两个
+       帧间隔），要求状态条**一次都没有**隐藏过。 */
+    async 'stats-slow'() {
+      window.__PREVIEW_STATS_INTERVAL_MS = 4000
+      await openPanel()
+      await waitFor(() => tabs().length === 1)
+      // 首帧立即推 → 状态条先出来
+      await waitFor(() => {
+        const bar = q('.tt_statsBar')
+        return bar !== null && bar.hidden !== true && /CPU/.test(bar.textContent)
+      }, 4000)
+      const visible = []
+      const timer = setInterval(() => {
+        const bar = q('.tt_statsBar')
+        visible.push(bar !== null && bar.hidden !== true)
+      }, 100)
+      await sleep(9000)
+      clearInterval(timer)
+      window.__previewAssert = async () => {
+        const hidden = visible.filter((value) => value !== true).length
+        if (hidden > 0) {
+          return '4s 一帧时状态条有 ' + String(hidden) + '/' + String(visible.length) + ' 次采样是隐藏的（整条消失又出现）'
+        }
+        return null
+      }
+    },
     /* 坏数据兜底：宿主发来的 stats 帧是垃圾（字符串/数组/null/越界值/缺字段），
        面板必须既不抛异常也不出现非法渲染——最多整条隐藏 */
     async 'stats-broken'() {

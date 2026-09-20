@@ -85,6 +85,7 @@ import ttyCss from './tty.css'
 import { resolveDockOwner, dockPaneVisible } from './dock-owner.js'
 import { currentSessionCwd } from './current-session.js'
 import { eventOwnsStatus, needsStatusResync, statusForTab } from './status-line.js'
+import { STATS_ITEM_SPECS, formatBytes, formatRate, hasUsableStats, statsFrameFresh, statsItemValues, statsLevel } from './stats-bar.js'
 
 /* ================================ CSS ================================ */
 
@@ -443,8 +444,15 @@ let statsBarEl = null
 let statsSubSid = null
 /** 陈旧检测定时器：面板打开期间每秒复查（采集端静默停止时要能自己收起状态条）。 */
 let statsStaleTimer = null
-/** 「有数据」窗口：超过这么久没收到 stats 帧就整条隐藏（插件关闭、远端无 /proc、采集失败都走这里）。 */
-const STATS_STALE_MS = 3000
+/**
+ * 状态条条目 DOM 引用（与 STATS_ITEM_SPECS 同序、等长；null = 还没建 / 已随面板作废）。
+ * 条目**只建一次**，之后每次刷新只写真的变了的文本——整条 innerHTML 重写会丢掉 CSS
+ * 过渡、把横向滚动位置弹回 0，且任何值位数变化都会推着后面所有条目横移（见 stats-bar.js
+ * 文件头：用户报的「定期闪动」）。
+ */
+let statsItemEls = null
+/** 已渲染的数据签名（sid + 帧时间）：同一条数据不重复渲染（1s 陈旧检测也走 applyStatsBar）。 */
+let statsRenderKey = null
 /**
  * 连接栏按钮注册表（0.13.0）：内置动作（重新打开 / SFTP / 隧道）与第三方插件
  * 经客户端服务 `ttyConnbar` 注册的按钮走**同一条通道**，显示顺序 = 注册顺序。
@@ -549,108 +557,81 @@ function sendFrame(msg) {
 
 /* ============================ 服务器状态条（0.17.0） ============================ */
 
-/** 进度条档位：<70 正常 / 70~90 黄 / >=90 红。 */
-function statsLevel(pct) {
-  if (!Number.isFinite(pct)) return ''
-  if (pct >= 90) return 'danger'
-  if (pct >= 70) return 'warn'
-  return ''
-}
-
-/** 速率：<1KB/s 直接用 B/s（采集端给的是 B/s），大值复用 formatRate 的 K/M/G。 */
-function statsRate(value) {
-  if (!Number.isFinite(value) || value < 0) return '无'
-  if (value < 1024) return Math.round(value) + ' B/s'
-  return formatRate(value) || '无'
-}
-
-/** uptime 秒 → FinalShell 风格（2w4d7h16m / 3h5m / 12m / 45s）。 */
-function formatUptime(sec) {
-  if (!Number.isFinite(sec) || sec < 0) return '无'
-  const total = Math.floor(sec)
-  const weeks = Math.floor(total / 604800)
-  const days = Math.floor((total % 604800) / 86400)
-  const hours = Math.floor((total % 86400) / 3600)
-  const minutes = Math.floor((total % 3600) / 60)
-  const parts = []
-  if (weeks > 0) parts.push(weeks + 'w')
-  if (weeks > 0 || days > 0) parts.push(days + 'd')
-  if (weeks > 0 || days > 0 || hours > 0) parts.push(hours + 'h')
-  if (weeks > 0 || days > 0 || hours > 0 || minutes > 0) parts.push(minutes + 'm')
-  return parts.length > 0 ? parts.join('') : total + 's'
-}
-
-/** 单个条目：标签 + 可选迷你进度条 + 值（值由调用方保证是数字或「无」）。
- *  整条带 title（0.19.0）：窄窗口溢出被裁时悬停仍能看到完整值。 */
-function statsItemHtml(label, valueText, pct) {
-  const meter = Number.isFinite(pct)
-    ? '<span class="tt_statsMeter" data-level="' + statsLevel(pct) + '"><span class="tt_statsMeterFill" style="width:' + Math.max(0, Math.min(100, pct)).toFixed(1) + '%"></span></span>'
-    : ''
-  const titleText = label + ': ' + String(valueText)
-  return '<span class="tt_statsItem" title="' + titleText.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;') + '"><span class="tt_statsLabel">' + label + '</span>' + meter + '<span class="tt_statsValue">' + valueText + '</span></span>'
-}
-
-/** 「已用/总量」对：任一侧缺失或总量为 0 都退化成「无」。 */
-function statsPair(used, total) {
-  if (!Number.isFinite(used) || !Number.isFinite(total) || total <= 0) return '无'
-  return (formatBytes(used) || '0 B') + '/' + (formatBytes(total) || '0 B')
-}
-
 /**
- * 状态条 HTML：条目顺序固定（对齐 FinalShell 的会话监控条），单项拿不到就写
- * 「无」；完全没有数据时整条不显示（见 statsBarVisible）。值只来自宿主发来的
- * 数值帧，标签是本地常量，不需要额外转义。
+ * 建状态条条目（每面板一次，DOM 结构与 STATS_ITEM_SPECS 一一对应）。
+ *
+ * 为什么不让每次 stats 帧重建 HTML（D49）：整条 `innerHTML` 重写会（a）丢掉
+ * `.tt_statsMeterFill` 的宽度过渡——元素每秒被重建，过渡永远没机会跑；（b）把横向
+ * 滚动位置弹回 0（窄窗口下 0.19.0 的 D33 允许横滚着看右侧条目）；（c）任何值的位数
+ * 变化都会把后面所有条目推着横移。第 (c) 条就是用户报的「状态条定期闪动」。
+ * 这里的固定槽位（`min-width: Nch`，值右对齐）配上「只写变化过的文本」，
+ * 让「CPU 5% → 12%」「TCP 36 → 1024」都不再改变任何条目的几何。
  */
-/**
- * 帧字段的客户端兜底校验：宿主已经清洗过一遍（sanitizeStatsFrame），但旧版宿主、
- * 第三方实现或调试用假数据都可能塞进任意值——不合法的一律当「无」，绝不让状态条
- * 渲染出负数、NaN 或天文数字（界面不能因为数据坏而变形）。
- */
-function statsNum(stats, key) {
-  const value = stats[key]
-  if (!Number.isFinite(value)) return null
-  // 边界与服务端 stats.ts 的 LIMITS 同口径：两边都挡，脏数据进不来也渲染不出去
-  if (key === 'tempC') return value > -100 && value < 200 ? value : null
-  if (key === 'cores') return value >= 1 && value <= 4096 ? value : null
-  if (key === 'cpuPct' || key === 'memPct' || key === 'diskPct') return value >= 0 && value <= 100 ? value : null
-  if (key === 'uptimeSec') return value >= 0 && value <= 100 * 365 * 24 * 3600 ? value : null
-  if (key === 'tcpConns') return value >= 0 && value <= 10000000 ? value : null
-  if (key === 'rxRate' || key === 'txRate') return value >= 0 && value <= 2 ** 40 ? value : null
-  return value >= 0 && value <= 2 ** 50 ? value : null // 字节类
-}
-
-/** stats 帧的字段全集（保持与服务端 STATS_KEYS 同序）。 */
-const STATS_FIELDS = ['cpuPct', 'cores', 'memUsed', 'memTotal', 'memPct', 'diskUsed', 'diskTotal', 'diskPct', 'uptimeSec', 'tcpConns', 'rxRate', 'txRate', 'tempC']
-
-/** 至少一个字段能用于渲染——否则视为「无数据」整条隐藏，而不是显示一排「无」。 */
-function hasUsableStats(stats) {
-  if (stats === null || typeof stats !== 'object' || Array.isArray(stats)) return false
-  return STATS_FIELDS.some((key) => statsNum(stats, key) !== null)
-}
-
-function renderStatsBarHtml(tab) {
-  const stats = tab !== undefined && tab.stats !== null && typeof tab.stats === 'object' ? tab.stats : {}
-  const num = (key) => statsNum(stats, key)
-  const pctText = (key) => {
-    const value = num(key)
-    return value === null ? '无' : Math.round(value) + '%'
+function buildStatsBarDom() {
+  const refs = []
+  const fragment = document.createDocumentFragment()
+  for (const spec of STATS_ITEM_SPECS) {
+    const item = document.createElement('span')
+    item.className = 'tt_statsItem'
+    const label = document.createElement('span')
+    label.className = 'tt_statsLabel'
+    label.textContent = spec.label
+    item.appendChild(label)
+    let meter = null
+    let fill = null
+    if (spec.kind === 'pct') {
+      meter = document.createElement('span')
+      meter.className = 'tt_statsMeter'
+      fill = document.createElement('span')
+      fill.className = 'tt_statsMeterFill'
+      meter.appendChild(fill)
+      item.appendChild(meter)
+    }
+    const value = document.createElement('span')
+    value.className = 'tt_statsValue'
+    item.appendChild(value)
+    fragment.appendChild(item)
+    // slot 先记 null（而不是 spec.slot）：网络条的槽位随「有没有速率」变（0 / 23），
+    // 首帧必须按实际值设一次，不能想当然套用 spec 里的默认值
+    refs.push({ item, value, meter, fill, slot: null })
   }
-  const items = [
-    statsItemHtml('CPU', pctText('cpuPct'), num('cpuPct')),
-    statsItemHtml('内存', pctText('memPct'), num('memPct')),
-    statsItemHtml('磁盘', pctText('diskPct'), num('diskPct')),
-    statsItemHtml('核心', num('cores') === null ? '无' : String(num('cores')), null),
-    statsItemHtml('内存', statsPair(num('memUsed'), num('memTotal')), null),
-    statsItemHtml('在线', formatUptime(num('uptimeSec')), null),
-    statsItemHtml('TCP', num('tcpConns') === null ? '无' : String(num('tcpConns')), null),
-    statsItemHtml('磁盘', statsPair(num('diskUsed'), num('diskTotal')), null),
-    statsItemHtml('CPU温度', num('tempC') === null ? '无' : num('tempC').toFixed(1) + '°C', null),
-  ]
-  const rx = num('rxRate')
-  const tx = num('txRate')
-  const netText = rx === null && tx === null ? '无' : '↓' + statsRate(rx) + ' ↑' + statsRate(tx)
-  items.push(statsItemHtml('网络', netText, null))
-  return items.join('')
+  if (statsBarEl !== null) statsBarEl.appendChild(fragment)
+  return refs
+}
+
+/**
+ * 把一帧数据写进已建好的条目——**只有真的变了才碰 DOM**（文本 / 进度宽度 / 档位 / title）。
+ *
+ * title 用 `setAttribute` 写：不再是拼字符串的 HTML 属性，值里出现 `"` `<` 也不会破坏结构。
+ * 最小值守卫：宿主清洗 + `statsItemValues` 兜底之后 pct 只可能是 0~100，这里仍夹一次，
+ * 免得第三方实现塞进来的越界值把进度条拉出容器。
+ */
+function updateStatsItems(refs, tab) {
+  const values = statsItemValues(tab !== undefined ? tab.stats : null)
+  for (let index = 0; index < refs.length; index += 1) {
+    const ref = refs[index]
+    const next = values[index]
+    if (next === undefined) continue
+    // 槽位本身也只在变的时候写：固定槽位是「更新不改布局」的根，写错/漏写都等于没修
+    if (ref.slot !== next.slot) {
+      ref.slot = next.slot
+      ref.value.style.minWidth = next.slot > 0 ? next.slot + 'ch' : ''
+    }
+    if (ref.value.textContent !== next.value) ref.value.textContent = next.value
+    if (ref.item.getAttribute('title') !== next.title) ref.item.setAttribute('title', next.title)
+    if (ref.fill !== null && ref.meter !== null) {
+      const width = next.pct === null ? '0%' : Math.max(0, Math.min(100, next.pct)).toFixed(1) + '%'
+      if (ref.fill.style.width !== width) ref.fill.style.width = width
+      const level = statsLevel(next.pct)
+      if (ref.meter.dataset.level !== level) ref.meter.dataset.level = level
+    }
+  }
+}
+
+/** 条目引用随状态条 DOM 一起作废（面板重建 / 关闭 / 隐藏清空时都要调用）。 */
+function discardStatsItems() {
+  statsItemEls = null
+  statsRenderKey = null
 }
 
 /** 状态条可见性：面板开着、没最小化、开关开、活动标签有新鲜数据。 */
@@ -659,7 +640,7 @@ function statsBarVisible() {
   const tab = activeTab()
   if (tab === undefined || tab.embedded === true || tab.exited === true) return false
   if (tab.stats === null || tab.stats === undefined) return false
-  return Date.now() - (tab.statsAt || 0) <= STATS_STALE_MS
+  return statsFrameFresh(tab.statsAt)
 }
 
 /**
@@ -697,6 +678,9 @@ function applyStatsBar() {
         statsBarEl.hidden = true
         statsBarEl.textContent = ''
       }
+      // 内容被清空 = 之前建的条目全不在文档里了：引用与数据签名必须一起作废，
+      // 否则下一次显示会往游离节点上写，状态条看着永远空着
+      discardStatsItems()
       if (bodyEl !== null) delete bodyEl.dataset.stats
     } catch {
       /* 连兜底都失败：静默，至少不再抛 */
@@ -712,12 +696,27 @@ function applyStatsBarInner() {
   if (!visible) {
     if (changed) delete bodyEl.dataset.stats
     statsBarEl.hidden = true
-    statsBarEl.textContent = ''
+    // 隐藏时把条目一起丢掉（省 DOM）：下次显示重建，也就自然拿到了新标签的数据
+    if (statsItemEls !== null) {
+      statsBarEl.textContent = ''
+      discardStatsItems()
+    }
     if (changed) refitActiveTab()
     return
   }
   statsBarEl.hidden = false
-  statsBarEl.innerHTML = renderStatsBarHtml(activeTab())
+  if (statsItemEls === null) statsItemEls = buildStatsBarDom()
+  const tab = activeTab()
+  /*
+   * 同一条数据不重复渲染：1s 陈旧检测定时器也走这里，但它的职责只是「数据停了就收起」。
+   * 原先每次调用都重写整条 innerHTML —— 于是状态条每秒被重建两次（stats 帧一次 +
+   * 定时器一次），这正是「定期闪动」的第二个放大器。
+   */
+  const key = tab === undefined ? '' : tab.sid + ':' + String(tab.statsAt || 0)
+  if (key !== statsRenderKey) {
+    statsRenderKey = key
+    updateStatsItems(statsItemEls, tab)
+  }
   if (changed) {
     bodyEl.dataset.stats = ''
     refitActiveTab()
@@ -3829,32 +3828,8 @@ function b64uEncode(text) {
   return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
-function formatBytes(n) {
-  if (!Number.isFinite(n) || n <= 0) return ''
-  if (n < 1024) return String(n) + ' B'
-  const units = ['KB', 'MB', 'GB', 'TB']
-  let value = n
-  let index = -1
-  do {
-    value /= 1024
-    index += 1
-  } while (value >= 1024 && index < units.length - 1)
-  return (value >= 100 ? value.toFixed(0) : value.toFixed(1)) + ' ' + units[index]
-}
-
-/** 速率格式化（bytes/s）：整数化避免「512.3 B/s」这类小数值。 */
-function formatRate(bytesPerSec) {
-  if (!Number.isFinite(bytesPerSec) || bytesPerSec <= 0) return ''
-  if (bytesPerSec < 1024) return '<1 KB/s'
-  const units = ['KB', 'MB', 'GB', 'TB']
-  let value = bytesPerSec
-  let index = -1
-  do {
-    value /= 1024
-    index += 1
-  } while (value >= 1024 && index < units.length - 1)
-  return (value >= 100 ? value.toFixed(0) : value.toFixed(1)) + ' ' + units[index] + '/s'
-}
+/* formatBytes / formatRate 见 client-src/stats-bar.js（状态条与 SFTP 共用同一份实现；
+   D49 修复时搬过去，顺带让这两个纯函数第一次有了测试覆盖）。 */
 
 function formatMtime(ms) {
   const date = new Date(ms)
@@ -5313,6 +5288,8 @@ function openModal() {
   workEl = modalEl.querySelector('.tt_work')
   bodyEl = modalEl.querySelector('.tt_body')
   statsBarEl = modalEl.querySelector('.tt_statsBar')
+  // 新面板 = 新的（空的）状态条节点：上一份条目引用与数据签名一起作废，下次显示重建
+  discardStatsItems()
   statsSubSid = null
   ensureStatsStaleTimer()
   bodyOverlayEl = modalEl.querySelector('.tt_body > .tt_overlay')
@@ -5583,6 +5560,7 @@ function closeModal() {
   closeTunnelPopover()
   stopStatsStaleTimer()
   statsBarEl = null
+  discardStatsItems()
   statsSubSid = null
   bodyEl = null
   bodyOverlayEl = null

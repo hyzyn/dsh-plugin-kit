@@ -1056,8 +1056,15 @@
   margin-right: 4px;
   color: rgba(255, 255, 255, .5);
 }
+/*
+ * 值槽位（D49）：每个值的**最小宽度**由 JS 按 STATS_ITEM_SPECS 的 slot 写成 inline
+ * `min-width: Nch`（mono 字体下 1ch = 1 字符），右对齐——`5%` ↔ `12%`、`36` ↔ `1024`
+ * 这些位数变化不再改变条目宽度，也就不会把后面的条目推着横移（用户报的「定期闪动」）。
+ * 这里只负责对齐；宽度是数据驱动的，写死在 CSS 里会随条目增删漂移。
+ */
 .tt_statsValue {
   color: rgba(255, 255, 255, .86);
+  text-align: right;
   font-variant-numeric: tabular-nums;
 }
 .tt_statsMeter {

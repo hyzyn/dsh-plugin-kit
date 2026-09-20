@@ -307,7 +307,9 @@
           } })
         }
         push()
-        this._statsTimer = setInterval(push, 1000)
+        // 推送间隔可调（stats-slow 场景用 4s 复现「宿主采样慢」：D50 里那台 macOS
+        // 的 netstat -ib 挂 3s、帧间隔被拉到 4s，旧的 3s 陈旧窗口于是每 4 秒闪一次）
+        this._statsTimer = setInterval(push, Number(window.__PREVIEW_STATS_INTERVAL_MS) || 1000)
         return
       }
       if (msg.t === 'statsOff') {
