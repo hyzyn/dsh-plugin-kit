@@ -71,6 +71,37 @@ jobs:
       - name: Check DSH_HOME derivation lives only in kit
         if: matrix.os == 'ubuntu-latest'
         run: node scripts/check-dsh-home.mjs
+      # 防回归：仓库里不得出现公网 IP（文件内容 + 提交信息）。钩子拦本地提交，CI 再兜一道
+      # ——`git commit --no-verify`、用别的工具提交、或在别的机器上提交都能绕过钩子，而历史
+      # 一旦脏了只能重写（所有 sha 变化 + 文档引用失效 + 远端 force push）。
+      # 自检先跑：闸门自身的分类器被改坏（假阳性暴增 → 人人 --no-verify）比没有闸更糟。
+      - name: Check no public IP addresses
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          node scripts/check-no-public-ip.mjs --self-test
+          node scripts/check-no-public-ip.mjs
+      - name: Check commit messages carry no public IP
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          # 只查本次推送 / PR 新增的提交信息（全历史已在 2026-09 重写清过，这里防新增）
+          base='${{ github.event.pull_request.base.sha }}'
+          head='${{ github.sha }}'
+          if [ -z "$base" ]; then base='${{ github.event.before }}'; fi
+          if [ -z "$base" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "无法确定比较基线（首次推送 / 新分支），跳过提交信息检查"
+            exit 0
+          fi
+          for sha in $(git rev-list "$base..$head"); do
+            msg_file=$(mktemp)
+            git log -1 --format=%B "$sha" > "$msg_file"
+            if ! node scripts/check-no-public-ip.mjs --message-file "$msg_file"; then
+              rm -f "$msg_file"
+              echo "::error::提交 $sha 的信息含公网 IP"
+              exit 1
+            fi
+            rm -f "$msg_file"
+          done
+          echo "提交信息检查通过（$base..$head）"
       # 防回归：入库产物必须与源码一致——曾发生过源码改了、产物没重建，修复在浏览器侧
       # 完全无效。重建后对全部包的浏览器半体（client.js）与宿主半体（lib/）做 diff。
       - name: Check build artifacts are up to date

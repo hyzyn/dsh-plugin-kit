@@ -15,6 +15,30 @@ npmjs.com → Access Tokens → Generate New Token（granular）生成：
 
 未配置时 Release workflow 会跳过 npm publish、只建 GitHub Release，并给出 warning。
 
+### 本地钩子（提交前闸门）
+
+```sh
+git config core.hooksPath .githooks    # 克隆后必做一次，否则钩子不生效
+```
+
+`.githooks/` 下两个钩子：
+
+| 钩子 | 作用 |
+| --- | --- |
+| `pre-commit` | ① `pnpm -r build` 重建产物并 `git add`（保证入库的 `lib/`、`client.js` 与源码同步）；② **按 index 扫公网 IP**（`scripts/check-no-public-ip.mjs --staged`） |
+| `commit-msg` | 扫**提交信息**里的公网 IP（`--message-file`） |
+
+**为什么提交信息也要扫**：`filter-repo` 的 `--replace-message` 默认不开，只重写工作区内容；
+提交信息是要入库的另一份内容，漏进历史只能**重写全部历史**来补救
+（所有 sha 变化、全部文档引用失效、远端必须 force push）。重写的代价远高于在入口拦一次。
+
+闸门按用途分类放行：私网 / 回环 / 链路本地 / CGN / ULA / RFC 5737 文档网段（`192.0.2.0/24`、
+`198.51.100.0/24`、`203.0.113.0/24`）/ RFC 2544 基准段 / 显式占位符白名单。文档与测试夹具
+**请用文档网段**，别写真实地址。
+
+CI 另有两道兜底（`--no-verify`、别的机器、别的工具提交都能绕过钩子）：自检分类器 + 全仓扫描，
+以及只查本次推送新增提交的信息。
+
 ## 发布门槛（每次 tag 前过一遍）
 
 1. `pnpm -r build && pnpm -r typecheck && pnpm test` 全绿。本地 `pnpm publish` 没有闸，
