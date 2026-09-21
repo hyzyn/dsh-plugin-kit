@@ -251,6 +251,18 @@ references one connection-book entry (host and authentication come with it), in 
 - **Status badges**: while the card is expanded it polls live status every 2s (active green/connecting
   blue/error red/stopped grey + last error); connection-book entries in the “+” menu show a `⇄N` tunnel
   badge; the agent can query status with the `tunnel_list` tool;
+- **Editing (0.20.0)**: “Edit” on a row loads it back into the form below and the button pair becomes
+  “Save changes / Cancel”. Saving locates the entry by its **original name** — a tunnel name is derived
+  (`<book>-L<localPort>`), so changing the port *is* changing the name and the new name cannot find the old
+  row; `enabled` **keeps its previous value** (editing a spec never silently enables a stopped tunnel); the
+  row being edited gets a left accent bar. **A name clash is reported explicitly** (no more silent `-2`
+  suffix, which used to spawn a second tunnel differing only by a trailing number).
+- **A failed local listen is sticky**: when the port is taken (`EADDRINUSE`) the state stays red `error`
+  with the reason kept, and is **not** rewritten to “connecting” by the SSH-side retry (fixed in 0.20.0).
+  Recover by changing the port (with the editor) or freeing it.
+  ⚠️ `~/.dsh/settings.yaml` is **shared across profiles**: with several profiles on one machine the same
+  tunnel gets started by each of them and they fight over the same local port — a configuration conflict,
+  not a plugin bug.
 - TOFU shares the same `hostKeys` pinning as terminal sessions; ports do not consume `maxSessions` slots.
 
 ## SFTP file transfer (0.7.0, enhanced in 0.8.0/0.9.0)

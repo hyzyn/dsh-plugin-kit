@@ -386,6 +386,87 @@
       await waitFor(() => q('#preview-settings .tt_cardBody'))
       await sleep(400)
     },
+    /* 端口转发：编辑一条隧道（此前隧道区块零界面回归，D53/D54/D56 就是这么潜伏的） */
+    async 'tunnel-edit'() {
+      const host = document.createElement('div')
+      host.id = 'preview-settings'
+      host.style.cssText = 'position:fixed;inset:24px 24px 24px 260px;overflow:auto;z-index:2000;background:var(--dsw-alias-bg-base);padding:8px;border-radius:16px'
+      document.body.appendChild(host)
+      const root = window.ReactDOM.createRoot(host)
+      root.render(window.React.createElement(cards[0].Component))
+      await waitFor(() => q('#preview-settings .tt_card'))
+      await sleep(80)
+      q('#preview-settings .tt_cardHeader').click()
+      await waitFor(() => q('#preview-settings .tt_cardBody'))
+      await sleep(400)
+
+      const rowOf = (name) => [...document.querySelectorAll('#preview-settings .tt_sshHostRow')]
+        .find((r) => (r.querySelector('.tt_sshHostName')?.textContent ?? '').startsWith(name))
+      const buttonsIn = (el) => [...el.querySelectorAll('button')]
+
+      // 「编辑」按钮是本次新增的能力：先在第一条隧道行上找到它
+      const firstRow = rowOf('staging-pg')
+      if (firstRow === undefined) throw new Error('找不到 staging-pg 行（fixture 应有该隧道）')
+      const editBtn = buttonsIn(firstRow).find((b) => b.textContent === '编辑')
+      if (editBtn === undefined) throw new Error('隧道行没有「编辑」按钮')
+      editBtn.click()
+      await sleep(150)
+
+      // 回填：本地转发那栏的第一个输入是本地端口
+      const localPortInput = [...document.querySelectorAll('#preview-settings .tt_tunnelGridLocal .tt_cardInput')][0]
+      if (localPortInput === undefined) throw new Error('本地转发表单没渲染')
+      if (localPortInput.value !== '15432') throw new Error('编辑未回填本地端口：' + String(localPortInput.value))
+
+      const body = q('#preview-settings .tt_cardBody')
+      if (buttonsIn(body).find((b) => b.textContent === '保存修改') === undefined) throw new Error('编辑态没有「保存修改」')
+      if (buttonsIn(body).find((b) => b.textContent === '取消') === undefined) throw new Error('编辑态没有「取消」')
+      if (buttonsIn(body).find((b) => b.textContent === '添加隧道') !== undefined) {
+        throw new Error('编辑态仍显示「添加隧道」（会误加一条而不是改这条）')
+      }
+      if (document.querySelectorAll('#preview-settings .tt_sshHostRow[data-editing]').length !== 1) {
+        throw new Error('正在编辑的行没有唯一标记（data-editing）')
+      }
+
+      // 改端口 → 保存：名字必须按规则**重新派生**（`<bookName>-L<localPort>`）。
+      //
+      // 注意 fixture 里那条叫 `staging-pg`（手写的假名字，不符合派生规则），
+      // bookName 是 `staging-db`——所以编辑后新名字是 `staging-db-L15433`。
+      // 真实数据里隧道名一律由规则派生（UI 没有"自定义名字"入口），编辑不会改名；
+      // 这里恰好顺带钉住了"名字按规则重算"这个语义。
+      //
+      // 直接 `input.value = x` 对 React 无效：React 在 input 上装了 value 的原生
+      // setter，直接赋值后它读到的还是旧值（受控组件状态不更新）。必须先取 prototype
+      // 上的原生 setter 赋值、再派发冒泡的 input 事件。harness 里此前没有"往输入框
+      // 打字"的场景，这是第一个（`setReactInput` 供后续场景复用）。
+      const setReactInput = (el, value) => {
+        const desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')
+        desc.set.call(el, value)
+        el.dispatchEvent(new window.Event('input', { bubbles: true }))
+      }
+      setReactInput(localPortInput, '15433')
+      await sleep(150)
+      buttonsIn(body).find((b) => b.textContent === '保存修改').click()
+      await sleep(400)
+
+      window.__previewAssert = async () => {
+        const problems = []
+        const names = [...document.querySelectorAll('#preview-settings .tt_sshHostName')].map((el) => el.textContent ?? '')
+        if (!names.some((n) => n.startsWith('staging-db-L15433'))) {
+          problems.push('改端口后名字没按规则重新派生：' + names.join(' | '))
+        }
+        if (names.some((n) => n.startsWith('staging-pg'))) {
+          problems.push('旧名字仍在（按原始名定位替换失败）')
+        }
+        // 另一条隧道不能受影响（编辑只动被编辑的那条）
+        if (!names.some((n) => n.startsWith('prod-redis'))) {
+          problems.push('编辑波及了别的隧道')
+        }
+        if (buttonsIn(document.querySelector('#preview-settings .tt_cardBody')).find((b) => b.textContent === '添加隧道') === undefined) {
+          problems.push('保存后没有退出编辑态')
+        }
+        return problems.length > 0 ? problems.join('；') : null
+      }
+    },
     /* 设置卡片：docker 与 tty 并排（同一张 ul 里），核对两家的观感是否一致 */
     async 'settings-docker'() {
       const host = document.createElement('div')

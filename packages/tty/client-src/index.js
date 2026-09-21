@@ -84,6 +84,7 @@ import xtermCss from '@xterm/xterm/css/xterm.css'
 import ttyCss from './tty.css'
 import { resolveDockOwner, dockPaneVisible } from './dock-owner.js'
 import { asciiRefToken, derivedCredentialRef } from './credential-ref.js'
+import { applyTunnelEdit, buildTunnelFromDraft as buildTunnelSpec, tunnelNameClash } from './tunnel-edit.js'
 import { currentSessionCwd } from './current-session.js'
 import { eventOwnsStatus, needsStatusResync, statusForTab } from './status-line.js'
 import { STATS_ITEM_SPECS, formatBytes, formatRate, hasUsableStats, statsFrameFresh, statsItemValues, statsLevel } from './stats-bar.js'
@@ -5836,6 +5837,14 @@ function TtySettingsCard(props) {
   /** 隧道实时状态（卡片展开期间 2s 轮询 /api/dsh-tty/tunnels）。 */
   const [tunnelStatus, setTunnelStatus] = React.useState([])
   const [tunnelDraft, setTunnelDraft] = React.useState({ direction: 'local', localPort: '', remoteHost: '', remotePort: '', localTargetPort: '', bookName: '' })
+  /**
+   * 正在编辑的隧道**原始 name**（null = 新增模式）。
+   *
+   * 为什么定位用原始 name 而不是索引：隧道名由规则派生（`<bookName>-L<localPort>`），
+   * 编辑端口就会换名字——拿新名字去列表里找是找不到的，必须按**进编辑时那个** name
+   * 定位（连接簿条目的 startEditSshHost 同款做法，改名/改端口都安全）。
+   */
+  const [editingTunnel, setEditingTunnel] = React.useState(null)
   React.useEffect(() => {
     if (!open) return undefined
     let alive = true
@@ -5880,47 +5889,81 @@ function TtySettingsCard(props) {
     }
   }
   /** 添加隧道（append 进 form.tunnels 并立即生效；重名自动加后缀）。 */
+  /**
+   * 从表单草稿拼出一条隧道规格（**新增与编辑共用**，实现在 client-src/tunnel-edit.js）。
+   * 校验与命名规则只有那一份——各写一份必然漂（"新增能过、编辑过不了"）。
+   */
+  const buildTunnelFromDraft = () => buildTunnelSpec(tunnelDraft, (Array.isArray(form?.sshHosts) ? form.sshHosts : []).map((h) => h?.name))
+
+  /** 进入隧道编辑：把该条回填到下方表单（编辑态按原始 name 定位）。 */
+  const startEditTunnel = (t) => {
+    setMessage({ kind: '', text: '' })
+    setEditingTunnel(String(t?.name ?? ''))
+    setTunnelDraft({
+      direction: t?.direction === 'remote' ? 'remote' : 'local',
+      bookName: String(t?.bookName ?? ''),
+      localPort: t?.localPort ? String(t.localPort) : '',
+      remoteHost: String(t?.remoteHost ?? ''),
+      remotePort: t?.remotePort ? String(t.remotePort) : '',
+      localTargetPort: t?.localTargetPort ? String(t.localTargetPort) : '',
+    })
+  }
+  const cancelEditTunnel = () => {
+    setEditingTunnel(null)
+    setMessage({ kind: '', text: '' })
+    setTunnelDraft((current) => ({ ...(current || {}), localPort: '', remoteHost: '', remotePort: '', localTargetPort: '' }))
+  }
+
   const addTunnel = () => {
     setMessage({ kind: '', text: '' })
-    const d = tunnelDraft || {}
-    const bookName = d.bookName || (Array.isArray(form?.sshHosts) ? form.sshHosts[0]?.name : '') || ''
-    if (bookName === '') {
-      setMessage({ kind: 'error', text: '请先在连接簿里添加 SSH 条目' })
+    const built = buildTunnelFromDraft()
+    if (!built.ok) {
+      setMessage({ kind: 'error', text: built.error })
       return
     }
-    const num = (v) => {
-      const n = Number(v)
-      return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : 0
+    const tunnel = built.tunnel
+    const list = Array.isArray(form?.tunnels) ? form.tunnels : []
+    // 名字冲突改为**提示**而不是静默加 `-2`（D56）：自动后缀会凭空多出一条同名不同尾的
+    // 隧道，用户以为在改/加同一条，实际得到两条，排查时极难看出。
+    if (tunnelNameClash(list, tunnel.name) !== undefined) {
+      setMessage({ kind: 'error', text: `已存在同名隧道「${tunnel.name}」——同一「连接簿条目 + 方向 + 端口」只能有一条。改端口会得到新名字，或先删掉旧的那条。` })
+      return
     }
-    let tunnel
-    if (d.direction === 'remote') {
-      tunnel = { name: '', bookName, direction: 'remote', remotePort: num(d.remotePort), localTargetHost: '', localTargetPort: num(d.localTargetPort), enabled: true }
-      if (tunnel.remotePort < 1 || tunnel.localTargetPort < 1) {
-        setMessage({ kind: 'error', text: '远程监听端口与本地目标端口必填（1~65535）' })
-        return
-      }
-      tunnel.name = `${bookName}-R${String(tunnel.remotePort)}`
-    } else {
-      tunnel = { name: '', bookName, direction: 'local', localPort: num(d.localPort), remoteHost: d.remoteHost.trim(), remotePort: num(d.remotePort), enabled: true }
-      if (tunnel.localPort < 1 || tunnel.remoteHost === '' || tunnel.remotePort < 1) {
-        setMessage({ kind: 'error', text: '本地端口、远程主机、远程端口必填' })
-        return
-      }
-      tunnel.name = `${bookName}-L${String(tunnel.localPort)}`
-    }
-    const existing = new Set((Array.isArray(form?.tunnels) ? form.tunnels : []).map((t) => t?.name))
-    let finalName = tunnel.name
-    let n = 2
-    while (existing.has(finalName)) {
-      finalName = `${tunnel.name}-${String(n)}`
-      n += 1
-    }
-    tunnel.name = finalName
-    const next = [...(Array.isArray(form?.tunnels) ? form.tunnels : []), tunnel]
+    const next = [...list, tunnel]
     setForm((current) => ({ ...(current || {}), tunnels: next }))
     setTunnelDraft((current) => ({ ...(current || {}), localPort: '', remoteHost: '', remotePort: '', localTargetPort: '' }))
     void pushTunnels(next).then((ok) => {
-      if (ok) setMessage({ kind: 'ok', text: `隧道「${finalName}」已生效` })
+      if (ok) setMessage({ kind: 'ok', text: `隧道「${tunnel.name}」已生效` })
+    })
+  }
+
+  /** 保存编辑：按**原始 name** 定位替换（名字/端口可能已变），失败回滚。 */
+  const saveTunnelEdit = () => {
+    if (editingTunnel === null) return
+    setMessage({ kind: '', text: '' })
+    const built = buildTunnelFromDraft()
+    if (!built.ok) {
+      setMessage({ kind: 'error', text: built.error })
+      return
+    }
+    const before = Array.isArray(form?.tunnels) ? form.tunnels : []
+    const applied = applyTunnelEdit(before, editingTunnel, built.tunnel)
+    if (!applied.ok) {
+      // 那条已不存在（另一个窗口删了）：退出编辑模式，别让表单留着一份改不动的草稿
+      if (applied.error.includes('已不存在')) setEditingTunnel(null)
+      setMessage({ kind: 'error', text: applied.error })
+      return
+    }
+    const next = applied.tunnels
+    setForm((current) => ({ ...(current || {}), tunnels: next }))
+    void pushTunnels(next).then((ok) => {
+      if (ok !== true) {
+        setForm((current) => ({ ...(current || {}), tunnels: before }))
+        return
+      }
+      setEditingTunnel(null)
+      setTunnelDraft((current) => ({ ...(current || {}), localPort: '', remoteHost: '', remotePort: '', localTargetPort: '' }))
+      setMessage({ kind: 'ok', text: `隧道「${built.tunnel.name}」已更新` })
     })
   }
   /**
@@ -5939,6 +5982,12 @@ function TtySettingsCard(props) {
   }
   const removeTunnel = (name) => {
     const before = Array.isArray(form?.tunnels) ? form.tunnels : []
+    // 删掉的正是正在编辑的那条：一并退出编辑态，否则表单留着一条已不存在的隧道的草稿，
+    // 点「保存」只会得到「已不存在」的错误（或更糟——被当成新增提交出去）
+    if (editingTunnel !== null && String(name ?? '') === editingTunnel) {
+      setEditingTunnel(null)
+      setTunnelDraft((current) => ({ ...(current || {}), localPort: '', remoteHost: '', remotePort: '', localTargetPort: '' }))
+    }
     commitTunnels(before.filter((t) => t?.name !== name), before)
   }
   const toggleTunnelEnabled = (name, checked) => {
@@ -6872,8 +6921,10 @@ function TtySettingsCard(props) {
                           children: form.tunnels.map((t) => {
                             const st = tunnelStatus.find((s) => s.name === t?.name)
                             const state = st?.state ?? 'stopped'
+                            const isEditing = editingTunnel !== null && String(t?.name ?? '') === editingTunnel
                             return jsxs('div', {
                               className: 'tt_sshHostRow',
+                              'data-editing': isEditing ? '' : undefined,
                               children: [
                                 jsx('span', { className: 'tt_tunnelDot', 'data-state': state, title: state }),
                                 jsx('div', { className: 'tt_sshHostMeta', children: [
@@ -6881,6 +6932,8 @@ function TtySettingsCard(props) {
                                   jsx('span', { className: 'tt_sshHostTarget', children: (t?.bookName ?? '') + (st?.error ? ' · ' + st.error : '') + (st?.lastForwardError ? ' · ' + st.lastForwardError : '') }),
                                 ] }),
                                 jsx('input', { type: 'checkbox', className: 'tt_cardCheckbox', checked: t?.enabled !== false, title: '启用', onChange: (event) => toggleTunnelEnabled(t?.name, event.target.checked) }),
+                                // 编辑：回填到下方表单（改端口/条目 = 换名字，按原始 name 定位保存）
+                                jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => startEditTunnel(t), children: '编辑' }),
                                 jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => removeTunnel(t?.name), children: '删除' }),
                               ],
                             }, String(t?.name ?? ''))
@@ -6917,8 +6970,15 @@ function TtySettingsCard(props) {
                               jsx('input', { className: 'tt_cardInput', placeholder: '本地目标端口', value: tunnelDraft.localTargetPort, autoComplete: 'off', onChange: setDraft('localTargetPort') }),
                             ] }),
                         jsx('div', { className: 'tt_cardRow', children: [
-                          jsx('button', { type: 'button', className: 'tt_cardSave', onClick: addTunnel, children: '添加隧道' }),
-                          jsx('span', { className: 'tt_cardHint', children: '添加后立即生效；断线自动重连；本地端口建议 1024 以上；远程主机由 SSH 服务器侧访问（127.0.0.1 = 服务器自身）' }),
+                          editingTunnel === null
+                            ? jsx('button', { type: 'button', className: 'tt_cardSave', onClick: addTunnel, children: '添加隧道' })
+                            : jsx('button', { type: 'button', className: 'tt_cardSave', onClick: saveTunnelEdit, children: '保存修改' }),
+                          editingTunnel === null
+                            ? null
+                            : jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: cancelEditTunnel, children: '取消' }),
+                          jsx('span', { className: 'tt_cardHint', children: editingTunnel === null
+                            ? '添加后立即生效；断线自动重连；本地端口建议 1024 以上；远程主机由 SSH 服务器侧访问（127.0.0.1 = 服务器自身）'
+                            : `正在编辑「${editingTunnel}」——改端口/条目会按规则生成新名字；保存后立即生效` }),
                         ] }),
                       ],
                     }),

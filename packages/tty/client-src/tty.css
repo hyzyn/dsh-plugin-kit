@@ -1637,6 +1637,12 @@
   max-height: none;
   overflow: visible;
 }
+/* 正在编辑的那条隧道：给个左侧标记——改了端口/条目后名字会变，光看表单里的名字对不上是哪条 */
+.tt_sshHostRow[data-editing] {
+  background: var(--tt-surface-2);
+  box-shadow: inset 2px 0 0 var(--tt-accent);
+  border-radius: var(--tt-r-sm);
+}
 .tt_limitGrid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));

@@ -52,6 +52,7 @@ const SCENARIOS = [
   ['ssh-edit', 'SSH 连接对话框（编辑）'],
   ['settings', '设置卡片'],
   ['settings-docker', '设置卡片（docker 与 tty 并排对照）'],
+  ['tunnel-edit', '端口转发：编辑隧道（回填 / 改端口换名 / 停用的不被启用）'],
   ['sftp', 'SFTP 单窗体（挂右侧挂载位）'],
   ['sftp-dual', 'SFTP 双栏（挂右侧挂载位）'],
   ['sftp-fallback', 'SFTP 落点回退（抽屉被容器面板占用 → 对话框）'],
