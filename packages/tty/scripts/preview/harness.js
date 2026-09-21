@@ -412,10 +412,95 @@
       editBtn.click()
       await sleep(150)
 
-      // 回填：本地转发那栏的第一个输入是本地端口
-      const localPortInput = [...document.querySelectorAll('#preview-settings .tt_tunnelGridLocal .tt_cardInput')][0]
-      if (localPortInput === undefined) throw new Error('本地转发表单没渲染')
+      // 把隧道区块滚进视口：截图要能拍到表单本身（设置卡片很长，隧道在下方）
+      const scrollTunnelIntoView = () => {
+        const anchor = document.querySelector('#preview-settings .tt_segmented') ?? document.querySelector('#preview-settings .tt_tunnelEndpoints')
+        if (anchor !== null) anchor.scrollIntoView({ block: 'center' })
+      }
+      scrollTunnelIntoView()
+      await sleep(120)
+
+      // 回填：本地转发那边「127.0.0.1:<端口>」成对呈现，端口输入带 aria-label 标识
+      const localPortInput = document.querySelector('#preview-settings [aria-label="本机监听端口"]')
+      if (localPortInput === null) throw new Error('本地转发表单没渲染（找不到本机监听端口输入）')
       if (localPortInput.value !== '15432') throw new Error('编辑未回填本地端口：' + String(localPortInput.value))
+
+      // 固定端必须是**静态文本**而不是输入框（宿主硬编码了 127.0.0.1，给个能改的框是骗人）
+      const staticEnd = document.querySelector('#preview-settings .tt_tunnelEndpointStatic')
+      if (staticEnd === null) throw new Error('固定端没有渲染成静态文本')
+      if (staticEnd.textContent !== '127.0.0.1') throw new Error('固定端文本不对：' + String(staticEnd.textContent))
+      if (staticEnd.tagName === 'INPUT') throw new Error('固定端是输入框（应为静态文本）')
+
+      // 端点必须是成对呈现（host+port 同组），且中间有方向箭头
+      const endpointCount = document.querySelectorAll('#preview-settings .tt_tunnelEndpoint').length
+      if (endpointCount !== 2) throw new Error('端点组数不为 2：' + String(endpointCount))
+      if (document.querySelector('#preview-settings .tt_tunnelArrow') === null) throw new Error('缺少方向箭头')
+
+      // 分段控件：本地/远程可切换，当前项高亮
+      const segBtns = [...document.querySelectorAll('#preview-settings .tt_segmentedBtn')]
+      if (segBtns.length !== 2) throw new Error('分段控件按钮数不为 2：' + String(segBtns.length))
+      const activeSeg = segBtns.filter((b) => b.hasAttribute('data-active'))
+      if (activeSeg.length !== 1) throw new Error('分段控件没有唯一高亮项：' + String(activeSeg.length))
+
+      // 切到「远程 -R」：固定端应换到**右侧**（本机拨号），左侧变成可填的服务器侧监听地址
+      // ——两个方向的固定端不同，这正是不能照搬单一形状的原因
+      segBtns.find((b) => (b.textContent ?? '').includes('远程')).click()
+      await sleep(200)
+      scrollTunnelIntoView()
+      const remoteEndpoints = [...document.querySelectorAll('#preview-settings .tt_tunnelEndpoint')]
+      if (remoteEndpoints.length !== 2) throw new Error('远程方向端点组数不为 2：' + String(remoteEndpoints.length))
+      const hasStaticInFirst = remoteEndpoints[0].querySelector('.tt_tunnelEndpointStatic') !== null
+      const hasStaticInSecond = remoteEndpoints[1].querySelector('.tt_tunnelEndpointStatic') !== null
+      if (hasStaticInFirst || !hasStaticInSecond) {
+        throw new Error('远程方向的固定端没有换到右侧（左静态=' + String(hasStaticInFirst) + ' 右静态=' + String(hasStaticInSecond) + '）')
+      }
+      // 箭头在远程方向应翻转（CSS 旋转 180°，data-direction 决定）
+      const arrow = document.querySelector('#preview-settings .tt_tunnelArrow')
+      if (arrow === null || arrow.getAttribute('data-direction') !== 'remote') {
+        throw new Error('远程方向的箭头没有翻转标记')
+      }
+      // 切回本地 -L，后续断言按本地方向的期望继续
+      segBtns.find((b) => (b.textContent ?? '').includes('本地')).click()
+      await sleep(200)
+      scrollTunnelIntoView()
+      await sleep(80)
+
+      /*
+       * 窄容器下的排布：端点用 flex-wrap，最怕的是"挤不下也不换行 → 内容溢出到卡片外"。
+       * 设置卡片在真实界面里可能只有一栏宽度，所以这里把容器压到 420px 验证：
+       * ① 端点该换行（不是硬挤一行）；② 没有任何子元素横向溢出容器。
+       */
+      {
+        const settingsHost = document.querySelector('#preview-settings')
+        const originalWidth = settingsHost.style.width
+        settingsHost.style.width = '420px'
+        await sleep(200)
+        const endpointsRow = document.querySelector('#preview-settings .tt_tunnelEndpoints')
+        const card = document.querySelector('#preview-settings .tt_card')
+        if (endpointsRow !== null && card !== null) {
+          const rowRect = endpointsRow.getBoundingClientRect()
+          const cardRect = card.getBoundingClientRect()
+          if (rowRect.right > cardRect.right + 1) {
+            throw new Error('窄容器下端点半点溢出卡片（右边界 ' + rowRect.right.toFixed(0) + ' > 卡片 ' + cardRect.right.toFixed(0) + '）')
+          }
+          // 两个端点必须真的换行（上下排布），而不是压成一行把内容挤扁
+          const groups = [...document.querySelectorAll('#preview-settings .tt_tunnelEndpoint')]
+          if (groups.length === 2) {
+            const a = groups[0].getBoundingClientRect()
+            const b = groups[1].getBoundingClientRect()
+            if (Math.abs(a.top - b.top) < 4) {
+              throw new Error('窄容器下两个端点没有换行（仍在同一行，会被挤扁）')
+            }
+          }
+        }
+        settingsHost.style.width = originalWidth
+        await sleep(200)
+        scrollTunnelIntoView()
+      }
+
+      // 方向切换会重渲表单：DOM 节点可能被替换，重新取一次（别用切换前的引用）
+      const localPortInput2 = document.querySelector('#preview-settings [aria-label="本机监听端口"]')
+      if (localPortInput2 === null) throw new Error('切回本地后表单没渲染')
 
       const body = q('#preview-settings .tt_cardBody')
       if (buttonsIn(body).find((b) => b.textContent === '保存修改') === undefined) throw new Error('编辑态没有「保存修改」')
@@ -443,7 +528,7 @@
         desc.set.call(el, value)
         el.dispatchEvent(new window.Event('input', { bubbles: true }))
       }
-      setReactInput(localPortInput, '15433')
+      setReactInput(localPortInput2, '15433')
       await sleep(150)
       buttonsIn(body).find((b) => b.textContent === '保存修改').click()
       await sleep(400)

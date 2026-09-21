@@ -251,6 +251,15 @@ references one connection-book entry (host and authentication come with it), in 
 - **Status badges**: while the card is expanded it polls live status every 2s (active green/connecting
   blue/error red/stopped grey + last error); connection-book entries in the “+” menu show a `⇄N` tunnel
   badge; the agent can query status with the `tunnel_list` tool;
+- **Form layout (0.20.0)**: direction uses a **segmented control** (local -L / remote -R — two values do
+  not deserve a dropdown); the two ends are shown in pairs as **host:port**, with an **arrow** between them
+  showing the data flow (it flips when you switch to -R). Each direction has **exactly one fixed end**
+  (the host hardcodes it) and that end renders as **static text rather than an input** — an input you cannot
+  change would be a lie:
+  - `-L`: the left end is fixed at `127.0.0.1` (bound locally, not exposed to the LAN); the right end takes
+    the SSH-server-side target;
+  - `-R`: the left end takes the SSH-server-side listen address; the right end is fixed at `127.0.0.1`
+    (the local service being reached).
 - **Editing (0.20.0)**: “Edit” on a row loads it back into the form below and the button pair becomes
   “Save changes / Cancel”. Saving locates the entry by its **original name** — a tunnel name is derived
   (`<book>-L<localPort>`), so changing the port *is* changing the name and the new name cannot find the old
