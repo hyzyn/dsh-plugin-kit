@@ -134,6 +134,9 @@
       { name: '目标1', kind: 'ssh', book: '', host: '192.0.2.10', port: 22, username: 'root', auth: 'agent', agentForward: false },
       { name: '目标2', kind: 'local', book: '', host: '', port: 22, username: '', auth: 'agent', agentForward: false },
       { name: 'prod-web-01', kind: 'ssh', book: 'prod-web-01', host: '', port: 22, username: '', auth: 'agent', agentForward: false },
+      // 刻意引用一个**不在 ttyBooks 里**的条目名：验证设置卡片能把"失效引用"标出来
+      // （不标的话那个 book 下拉渲染成空白，看不出错，要等真去连才报）
+      { name: '陈旧引用', kind: 'ssh', book: '已改名的条目', host: '', port: 22, username: '', auth: 'agent', agentForward: false },
     ],
   }
   window.__PREVIEW_DOCKER_CONTAINERS = [

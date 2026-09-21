@@ -90,3 +90,33 @@ export function bookSessionHost(bookName, rows) {
   }
   return undefined
 }
+
+/**
+ * 目标引用的连接簿条目是否**已失效**（引用的名字在 tty 连接簿里不存在）。
+ *
+ * 为什么需要它：`book` 那个下拉的候选项来自 `ttyBooks`，一旦引用的名字不在其中，
+ * 下拉会**渲染成空白**（没有任何 option 与之匹配）——界面上完全看不出"这里引用错了"，
+ * 直到真的去连才报「引用的连接簿条目不存在」。用户改了 tty 侧条目名（改名 / 重装 /
+ * 换机器）之后就会落到这个状态，且无从发现。
+ *
+ * 判定只针对 **ssh + 有 book** 的目标：本机目标不看连接簿；没填 book（走内联
+ * host/username）也不算失效——那是另一种合法配置。
+ *
+ * @param target 配置里的目标条目
+ * @param ttyBooks `/config.ttyBooks`：tty 连接簿的条目名数组
+ * @returns 引用的条目名（失效时），否则 undefined
+ */
+export function staleBookRef(target, ttyBooks) {
+  if (target === null || typeof target !== 'object') return undefined
+  if (target.kind !== 'ssh') return undefined
+  const book = typeof target.book === 'string' ? target.book.trim() : ''
+  if (book === '') return undefined
+  const books = Array.isArray(ttyBooks) ? ttyBooks : []
+  // tty 未安装 / 连接簿为空时**不算**引用失效：那是"宿主没装 tty"或"条目还没建"，
+  // 与"引用了一个不存在的名字"是两回事，标黄会误导（此时整体提示已在卡片顶部给过）。
+  if (books.length === 0) return undefined
+  for (const name of books) {
+    if (name === book) return undefined
+  }
+  return book
+}

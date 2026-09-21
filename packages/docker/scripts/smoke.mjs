@@ -662,6 +662,13 @@ test('resolveTarget：本机 / 连接簿命中 / 连接簿缺失 / 内联', () =
   const missing = host.resolveTarget({ name: 'prod', kind: 'ssh', book: 'nope' }, books)
   assert.equal(missing.resolved, undefined)
   assert.match(missing.error, /连接簿条目不存在：nope/)
+  /*
+   * 指引必须指向用户**真能做的动作**：旧文案让用户"去 tty 终端面板的设置卡片里添加"，
+   * 但那张卡片管的是 tty 自己的连接簿条目，改不了 docker 目标引用的名字——照着找只会扑空
+   * （实测：目标引用 HS-248、连接簿里只有 HS_248_ADMIN）。真正要改的是本卡片的「连接簿」下拉。
+   */
+  assert.match(missing.error, /本卡片/, '缺失引用时该指回本卡片的「连接簿」下拉')
+  assert.doesNotMatch(missing.error, /请在 tty 终端面板的设置卡片里添加/, '不该再让人去 tty 卡片做它做不到的事')
 
   const inline = host.resolveTarget({ name: 'inline', kind: 'ssh', host: 'h', username: 'u' }, books)
   assert.deepEqual(inline.resolved, { name: 'inline', kind: 'ssh', spec: { host: 'h', port: 22, username: 'u', auth: 'agent', keyPath: '', password: '', passphrase: '', agentForward: false } })

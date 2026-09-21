@@ -17,7 +17,7 @@
  * （宿主只回 passwordSet / passphraseSet 布尔）。
  */
 import dockerCss from './docker.css'
-import { bookSessionHost, pickTargetByHost, sessionHostPort } from './session-target.js'
+import { bookSessionHost, pickTargetByHost, sessionHostPort, staleBookRef } from './session-target.js'
 import { currentSessionIdOf } from './current-session.js'
 
 const API = '/api/dsh-docker'
@@ -5958,7 +5958,15 @@ window.__ModuleLoader__.load({
         jsx('span', { className: 'dk_hint', children: 'docker socket 等价于目标主机的 root 权限。开启后，浏览器面板与 agent 都能执行对应操作，请只在可信环境下打开。' }),
 
         sectionTitle('目标'),
-        ...form.targets.map((item, index) => jsxs('div', { className: 'dk_targetRow', children: [
+        ...form.targets.map((item, index) => {
+          /*
+           * 失效引用（引用的条目名不在 tty 连接簿里）：下拉会**渲染成空白**——没有任何
+           * option 与 item.book 匹配，界面上看不出"这里引用错了"，要等真去连才报错。
+           * 这里两件事一起做：给那一行标记 data-stale（标黄），并把失效的名字补成一个
+           * 显式 option，免得用户看到一个空白下拉、以为是"没选"。
+           */
+          const stale = staleBookRef(item, form.ttyBooks)
+          return jsxs('div', { className: 'dk_targetRow', 'data-stale': stale !== undefined ? '1' : undefined, children: [
           jsx('input', { className: 'dk_input', value: item.name, placeholder: '目标名', onChange: (event) => patchTarget(index, { name: event.target.value }) }),
           jsx('select', { className: 'dk_select', value: item.kind, onChange: (event) => patchTarget(index, { kind: event.target.value }), children: [
             jsx('option', { value: 'local', children: '本机' }),
@@ -5971,11 +5979,17 @@ window.__ModuleLoader__.load({
                 className: 'dk_select',
                 value: item.book ?? '',
                 onChange: (event) => patchTarget(index, { book: event.target.value }),
+                title: stale !== undefined ? `引用的连接簿条目「${stale}」不存在——请改选一个已有条目，或清空改为手填` : undefined,
                 children: [
                   jsx('option', { value: '', children: form.ttyBooks.length === 0 ? '（无 tty 连接簿，请填内联信息）' : '（不用连接簿，手填）' }),
+                  // 失效的名字排在最前并显式标注：否则它没有对应 option，下拉显示空白
+                  ...(stale !== undefined ? [jsx('option', { value: stale, children: '⚠ 条目已不存在：' + stale }, stale)] : []),
                   ...form.ttyBooks.map((name) => jsx('option', { value: name, children: '连接簿：' + name }, name)),
                 ],
               }),
+              stale !== undefined
+                ? jsx('span', { className: 'dk_hint dk_hintWarn', children: `引用的条目「${stale}」不在 tty 连接簿里——请改选，或清空后手填` })
+                : null,
             ] }),
           jsx('button', { type: 'button', className: 'dk_btn dk_btnDanger', onClick: () => removeTarget(index), children: '删除' }),
           /*
@@ -5995,7 +6009,8 @@ window.__ModuleLoader__.load({
             (item.auth ?? 'agent') === 'password' ? jsx('input', { className: 'dk_input dk_credential', type: 'password', placeholder: item.passwordSet === true ? '（已设置，留空保持不变）' : 'env:SSH_PASSWORD', value: item.password ?? '', onChange: (event) => patchTarget(index, { password: event.target.value }) }) : null,
             jsx('label', { className: 'dk_check', children: [jsx('input', { type: 'checkbox', checked: item.agentForward === true, onChange: (event) => patchTarget(index, { agentForward: event.target.checked }) }), 'agent forwarding'] }),
           ] }) : null,
-        ] }, String(index) + item.name)),
+          ] }, String(index) + item.name)
+        }),
         jsxs('div', { className: 'dk_row', children: [
           jsx('button', { type: 'button', className: 'dk_btn', onClick: addTarget, children: '添加目标' }),
           jsx('span', { className: 'dk_hint', children: 'SSH 目标推荐直接选 tty 终端面板的连接簿条目（凭证只需维护一处）；手填时密码 / 口令建议写 env:NAME（凭据引用：由官方凭据存储解析，缺失时退回环境变量）。' }),

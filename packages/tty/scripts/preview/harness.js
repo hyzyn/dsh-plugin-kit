@@ -590,6 +590,59 @@
         ttyDesc: getComputedStyle(q('.tt_cardDescription')).fontSize,
       }
     },
+    /*
+     * docker 设置卡片：失效的连接簿引用要**看得出来**。
+     *
+     * 背景：`book` 下拉的候选项来自 ttyBooks，引用的名字若不在其中，下拉会渲染成**空白**
+     * （没有匹配的 option）——界面上完全看不出错，直到真去连才报「引用的连接簿条目不存在」。
+     * 实测踩过：目标引用 HS-248，而连接簿里只有 HS_248_ADMIN（改名后残留的旧引用）。
+     * 这里钉住：失效行有 data-stale 标记 + 下拉里补了显式 option + 给出了提示文案。
+     */
+    async 'docker-stale-book'() {
+      const host = document.createElement('div')
+      host.id = 'preview-docker-settings'
+      host.style.cssText = 'position:fixed;inset:24px 24px 24px 260px;overflow:auto;z-index:2000;background:var(--dsw-alias-bg-base);padding:8px;border-radius:16px'
+      document.body.appendChild(host)
+      const docker = cards.find((c) => c.spec.key === 'docker')
+      if (docker === undefined) throw new Error('未注册 docker 设置卡片')
+      const root = window.ReactDOM.createRoot(host)
+      root.render(window.React.createElement(docker.Component))
+      await waitFor(() => q('#preview-docker-settings .dk_settingsCard'), 4000)
+      q('#preview-docker-settings .dk_settingsHead').click()
+      await waitFor(() => q('#preview-docker-settings .dk_settingsBody'), 4000)
+      await sleep(500)
+
+      window.__previewAssert = async () => {
+        const problems = []
+        const rows = [...document.querySelectorAll('#preview-docker-settings .dk_targetRow')]
+        if (rows.length === 0) return '目标行没渲染出来'
+        const staleRows = rows.filter((r) => r.hasAttribute('data-stale'))
+        if (staleRows.length !== 1) {
+          problems.push('应恰好有 1 行被标为失效引用，实得 ' + String(staleRows.length))
+        }
+        // 失效那一行的下拉必须**显示得出那个失效的名字**（否则是空白，看不出问题）。
+        // 注意一行里有**两个** select：第 1 个是「本机 / SSH 主机」的 kind，第 2 个才是
+        // 连接簿下拉——按 title 定位它（staleBookRef 命中时会给它加提示 title）。
+        const staleSelect = staleRows[0]?.querySelector('select[title]')
+        if (staleSelect === undefined || staleSelect === null) {
+          problems.push('失效引用那行的连接簿下拉没有提示 title')
+        } else {
+          const text = staleSelect.options[staleSelect.selectedIndex]?.textContent ?? ''
+          if (!text.includes('已改名的条目')) problems.push('失效引用的名字没在下拉里显式显示：' + text)
+          if (!text.includes('不存在')) problems.push('失效引用没有标注「不存在」：' + text)
+        }
+        // 提示文案要给出可执行的下一步
+        const warn = staleRows[0]?.querySelector('.dk_hintWarn')
+        if (warn === null || warn === undefined) problems.push('失效引用那行没有警示文案')
+        // 正常引用（prod-web-01）不能被误标
+        const healthy = rows.find((r) => {
+          const sel = r.querySelector('select[title], select')
+          return sel !== null && [...sel.options].some((o) => o.value === 'prod-web-01' && o.selected)
+        })
+        if (healthy !== undefined && healthy.hasAttribute('data-stale')) problems.push('正常引用被误标为失效')
+        return problems.length > 0 ? problems.join('；') : null
+      }
+    },
     /* SFTP 单窗体（0.16.0 起挂进右侧挂载位，终端保持可见） */
     async sftp() {
       await openPanel()

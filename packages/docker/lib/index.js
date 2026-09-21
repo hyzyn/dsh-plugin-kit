@@ -494,7 +494,13 @@ export function resolveTarget(target, books) {
     if (target.book !== undefined && target.book !== '') {
         const spec = books.get(target.book);
         if (spec === undefined) {
-            return { error: `目标「${target.name}」引用的连接簿条目不存在：${target.book}（请在 tty 终端面板的设置卡片里添加，或改为内联 host/username）` };
+            /*
+             * 指引必须指向**用户真能做的动作**。旧文案说"请在 tty 终端面板的设置卡片里添加"——
+             * 但那张卡片管的是 tty 自己的连接簿条目，改不了 docker 目标引用的名字：用户照着找
+             * 只会扑空（实测：目标引用 HS-248、连接簿里只有 HS_248_ADMIN，进 tty 卡片什么也改不了）。
+             * 真正要改的字段是**本卡片这条目标的「连接簿」下拉**，所以先把这里说清楚，再说备选。
+             */
+            return { error: `目标「${target.name}」引用的连接簿条目不存在：${target.book}（在本卡片这条目标的「连接簿」下拉里改选一个已有条目；或把 tty 终端面板的连接簿补一个同名条目；也可清空下拉改为手填 host/username）` };
         }
         return { resolved: { name: target.name, kind: 'ssh', spec } };
     }

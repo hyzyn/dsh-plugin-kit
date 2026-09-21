@@ -8,7 +8,7 @@
  * 兜底解析出 host:port。
  */
 import { describe, expect, it } from 'vitest'
-import { bookSessionHost, parseUserHostPort, pickTargetByHost, sessionHostPort } from '../client-src/session-target.js'
+import { bookSessionHost, parseUserHostPort, pickTargetByHost, sessionHostPort, staleBookRef } from '../client-src/session-target.js'
 
 /** 用户实际的目标配置：目标1 引用连接簿 lab-a（→ root@192.0.2.10）。 */
 const TARGETS = [
@@ -129,5 +129,46 @@ describe('bookSessionHost（连接簿条目 → host:port）', () => {
   it('老宿主没有 ttyBookHosts 字段时退化为「匹配不上」（不抛、不猜）', () => {
     expect(bookSessionHost('lab-a', undefined)).toBeUndefined()
     expect(bookSessionHost('lab-a', [])).toBeUndefined()
+  })
+})
+
+/*
+ * 失效的连接簿引用（staleBookRef）。
+ *
+ * 实测场景：目标引用 `HS-248`，而 tty 连接簿里只有 `HS_248_ADMIN`（改名后残留的
+ * 旧引用）。此时设置卡片里那个 book 下拉**渲染成空白**（没有匹配的 option），界面看不出
+ * 问题，要等真去连才报「引用的连接簿条目不存在」。这个函数就是让卡片能提前标出来。
+ */
+describe('staleBookRef（失效的连接簿引用）', () => {
+  const BOOKS = ['lab-a', 'staging-db']
+
+  it('引用存在 → 不算失效', () => {
+    expect(staleBookRef({ name: 't1', kind: 'ssh', book: 'lab-a' }, BOOKS)).toBeUndefined()
+  })
+
+  it('引用不存在 → 返回那个名字（调用方据此标黄 + 补显式 option）', () => {
+    expect(staleBookRef({ name: 't1', kind: 'ssh', book: 'HS-248' }, BOOKS)).toBe('HS-248')
+  })
+
+  it('前后空白按 trim 后比较（避免"看着一样却判定失效"）', () => {
+    expect(staleBookRef({ name: 't1', kind: 'ssh', book: '  lab-a  ' }, BOOKS)).toBeUndefined()
+    expect(staleBookRef({ name: 't1', kind: 'ssh', book: '  HS-248  ' }, BOOKS)).toBe('HS-248')
+  })
+
+  it('本机目标 / 没填 book（走内联）→ 都不算失效（那是另一种合法配置）', () => {
+    expect(staleBookRef({ name: 't1', kind: 'local' }, BOOKS)).toBeUndefined()
+    expect(staleBookRef({ name: 't1', kind: 'ssh', book: '' }, BOOKS)).toBeUndefined()
+    expect(staleBookRef({ name: 't1', kind: 'ssh' }, BOOKS)).toBeUndefined()
+  })
+
+  it('tty 未安装 / 连接簿为空 → **不**标失效（与"引用了一个不存在的名字"是两回事）', () => {
+    expect(staleBookRef({ name: 't1', kind: 'ssh', book: 'lab-a' }, [])).toBeUndefined()
+    expect(staleBookRef({ name: 't1', kind: 'ssh', book: 'lab-a' }, undefined)).toBeUndefined()
+  })
+
+  it('坏输入不抛（配置可能来自手改的 settings）', () => {
+    expect(staleBookRef(null, BOOKS)).toBeUndefined()
+    expect(staleBookRef(undefined, BOOKS)).toBeUndefined()
+    expect(staleBookRef({ kind: 'ssh', book: 123 }, BOOKS)).toBeUndefined()
   })
 })

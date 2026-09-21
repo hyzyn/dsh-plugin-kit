@@ -1981,6 +1981,19 @@
 /* 删除按钮靠右，不跟着列宽被拉长 */
 .dk_targetRow > .dk_btnDanger { justify-self: end; }
 
+/*
+ * 失效的连接簿引用（引用的条目名不在 tty 连接簿里）：标黄整行 + 左侧色条。
+ * 为什么必须可见：book 下拉的候选项来自 ttyBooks，失效的名字没有对应 option，
+ * 下拉会渲染成**空白**——界面上看不出错，直到真去连才报「引用的连接簿条目不存在」。
+ */
+.dk_targetRow[data-stale] {
+  border-color: var(--dk-warn);
+  box-shadow: inset 2px 0 0 var(--dk-warn);
+}
+.dk_hintWarn {
+  color: var(--dk-warn);
+}
+
 .dk_targetInline {
   display: grid;
   grid-column: 1 / -1;
