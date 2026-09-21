@@ -1,0 +1,19 @@
+#!/bin/sh
+# 提交信息里的公网 IP 闸门。
+#
+# 为什么单独一个 commit-msg 钩子：pre-commit 跑在**消息还不存在**的时候，而提交信息
+# 是同样要入库的内容——扫文件扫不到它。一旦漏进历史，只能重写全部历史来补救
+# （所有 sha 变化、文档引用失效、远端须 force push），入口拦一次远比事后清便宜。
+# 钩子收到 $1 = 本次提交信息文件（git 已把注释行写进去，脚本会自行忽略 # 开头的行）。
+#
+# 启用：git config core.hooksPath .githooks
+if [ -z "$1" ]; then
+  echo "✘ [commit-msg] 未收到提交信息文件路径"
+  exit 1
+fi
+
+if ! node scripts/check-no-public-ip.mjs --message-file "$1"; then
+  echo "✘ [commit-msg] 提交信息含公网 IP，已中止（详见上方指引）"
+  exit 1
+fi
+exit 0

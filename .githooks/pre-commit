@@ -28,4 +28,13 @@ if [ -n "$changed$fresh" ]; then
   fi
   echo "↻ [pre-commit] 构建产物已刷新并入本次提交"
 fi
+
+# 公网 IP 闸门：**必须放在重建之后**（上面会 git add 产物，那些内容也要被扫到）。
+# 为什么在 pre-commit 也要查文件内容：git 只在暂存内容上做提交，工作区里没暂存的脏内容
+# 不进历史；但反向也成立——**已暂存**的才是要进历史的，所以按 index 扫（--staged），
+# 而不是工作区。提交信息里的地址由 commit-msg 钩子查（那时消息才存在）。
+if ! node scripts/check-no-public-ip.mjs --staged; then
+  echo "✘ [pre-commit] 提交内容含公网 IP，已中止（详见上方指引）"
+  exit 1
+fi
 exit 0
