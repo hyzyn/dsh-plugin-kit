@@ -6009,7 +6009,7 @@ window.__ModuleLoader__.load({
             (item.auth ?? 'agent') === 'password' ? jsx('input', { className: 'dk_input dk_credential', type: 'password', placeholder: item.passwordSet === true ? '（已设置，留空保持不变）' : 'env:SSH_PASSWORD', value: item.password ?? '', onChange: (event) => patchTarget(index, { password: event.target.value }) }) : null,
             jsx('label', { className: 'dk_check', children: [jsx('input', { type: 'checkbox', checked: item.agentForward === true, onChange: (event) => patchTarget(index, { agentForward: event.target.checked }) }), 'agent forwarding'] }),
           ] }) : null,
-          ] }, String(index) + item.name)
+          ] }, String(index))
         }),
         jsxs('div', { className: 'dk_row', children: [
           jsx('button', { type: 'button', className: 'dk_btn', onClick: addTarget, children: '添加目标' }),

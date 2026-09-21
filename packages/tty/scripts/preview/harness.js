@@ -612,6 +612,41 @@
       await waitFor(() => q('#preview-docker-settings .dk_settingsBody'), 4000)
       await sleep(500)
 
+      /*
+       * 「目标名」输入框必须能连续打字。
+       *
+       * 实测 bug：那一行的 React key 写成 `String(index) + item.name`——key 里含 item.name，
+       * 于是每敲一个字符 key 就变一次，React 判定为"新元素"、卸载重建整行 DOM，输入框当场
+       * 失焦（表现就是"这个输入框无法聚焦"，只能输进去一个字）。修法是 key 只留 index
+       * （行是**按位置**编辑的，顺序变化由数组本身负责，名字不该参与身份）。
+       *
+       * 这里模拟真实输入：聚焦 → 逐个字符派发 input 事件 → 检查焦点是否还在同一个节点上、
+       * 且累积的文本完整（重建会让 value 回退/焦点丢失）。
+       */
+      const nameInput = document.querySelector('#preview-docker-settings .dk_targetRow .dk_input')
+      if (nameInput === null) throw new Error('找不到目标名输入框')
+      nameInput.focus()
+      if (document.activeElement !== nameInput) throw new Error('目标名输入框无法聚焦')
+      const setNative = (el, value) => {
+        const desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')
+        desc.set.call(el, value)
+        el.dispatchEvent(new window.Event('input', { bubbles: true }))
+      }
+      // 逐字符敲 "abc"：若 key 含 name，每次都会重建节点 → 焦点丢失
+      const typed = 'Xy9'
+      let accumulated = ''
+      for (const ch of typed) {
+        accumulated += ch
+        setNative(nameInput, accumulated)
+        await sleep(60)
+        if (document.activeElement !== nameInput) {
+          throw new Error('敲入第 ' + String(accumulated.length) + ' 个字符后输入框失焦（key 含可变字段导致 DOM 重建）')
+        }
+      }
+      if (nameInput.value !== typed) {
+        throw new Error('输入未累积完整（期望 ' + typed + '，实得 ' + String(nameInput.value) + '）')
+      }
+
       window.__previewAssert = async () => {
         const problems = []
         const rows = [...document.querySelectorAll('#preview-docker-settings .dk_targetRow')]
