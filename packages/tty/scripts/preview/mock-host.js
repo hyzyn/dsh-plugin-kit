@@ -45,6 +45,9 @@
     sshHosts: [
       { name: 'prod-web-01', host: '198.51.100.20', port: 22, username: 'deploy', auth: 'key', keyPath: '~/.ssh/id_ed25519', passphrase: '', password: '', agentForward: true, persist: false },
       { name: 'staging-db', host: 'db.staging.internal', port: 2222, username: 'root', auth: 'password', keyPath: '', passphrase: '', password: 'env:STAGING_DB_PASSWORD', agentForward: false, persist: false },
+      // 刻意**没有**任何隧道：验证「没配隧道时收进 ⋯ 更多」这条路径
+      // （上面两条都有隧道，走的是常驻「隧道 N」按钮）
+      { name: 'bare-host', host: 'bare.internal', port: 22, username: 'ops', auth: 'agent', keyPath: '', passphrase: '', password: '', agentForward: false, persist: false },
     ],
     hostKeys: [
       { host: '198.51.100.20', port: 22, fingerprint: 'SHA256:9xQ2mVr7Kp3sTf1cZbLd8uYwAe4nHjR6gPoXkMvQ2Bc' },

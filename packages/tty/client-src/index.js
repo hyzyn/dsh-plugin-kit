@@ -274,6 +274,9 @@ const ICON_SFTP =
   '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.8 12.8V4.2a1 1 0 0 1 1-1h3l1.4 1.6h6a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H2.8a1 1 0 0 1-1-1z"/></svg>'
 const ICON_TUNNEL =
   '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 5.5L2 8l2.5 2.5"/><path d="M11.5 5.5L14 8l-2.5 2.5"/><path d="M2.8 8h10.4"/></svg>'
+/** 连接栏「⋯」更多：低频入口（当前用于「没配隧道时」仍能找到端口转发）。 */
+const ICON_MORE =
+  '<svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" stroke="none" aria-hidden="true"><circle cx="3.4" cy="8" r="1.35"/><circle cx="8" cy="8" r="1.35"/><circle cx="12.6" cy="8" r="1.35"/></svg>'
 // 窗口按钮 / 通用（16 网格，线宽 1.6，统一视觉重量）
 const ICON_MIN =
   '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4 8h8"/></svg>'
@@ -437,8 +440,23 @@ registerConnbarAction(({ bookName, addAction }) => {
   if (!entryVisible) return
   const count = bookName !== '' ? tunnelCountFor(bookName) : 0
   if (count > 0) {
+    // 该连接有启用隧道：常驻按钮（带数量），一眼可见、可点开看实时状态
     addAction(ICON_TUNNEL, '隧道 ' + count, '查看该连接的端口转发隧道', (event) => openTunnelPopover(event.currentTarget, bookName))
+    return
   }
+  /*
+   * 该连接没有启用隧道：收进「⋯」更多，而不是常驻一个「隧道 0」。
+   *
+   * 为什么不常驻：连接栏紧挨着标签条，宽度是先被标签吃掉的（D24 那类"窄屏挤没"的教训），
+   * 而绝大多数连接确实没配隧道——常驻一个 0 是纯噪音。
+   * 为什么仍要留入口：此前**完全不可见**，用户只能自己摸到设置卡片才知道有这功能；
+   * 「⋯」是低频通道，既有发现路径、又不占常驻宽度。
+   *
+   * 前提：隧道必须引用连接簿条目，所以只有条目式连接（bookName 非空）才有这个入口；
+   * 「新建连接」对话框里未保存的临时连接配不了隧道（默认走第一个条目，语义不对）。
+   */
+  if (bookName === '') return
+  addAction(ICON_MORE, '更多', '更多操作（端口转发…）', (event) => openConnbarMoreMenu(event.currentTarget, bookName))
 })
 
 function setStatus(text, state) {
@@ -1977,8 +1995,60 @@ function renderConnbar() {
   }
 }
 
+/**
+ * 连接栏「⋯」更多菜单。
+ *
+ * 目前只有一个条目（端口转发），但它是**低频入口**的落脚点：连接栏宽度优先给标签条，
+ * 常驻按钮只留高频项（SFTP / 容器 / 已有隧道）。后续再有低频动作也加在这里，别再往
+ * 连接栏上堆。
+ */
+function openConnbarMoreMenu(anchor, bookName) {
+  if (connbarMoreEl !== null) {
+    closeConnbarMoreMenu()
+    return
+  }
+  const menu = document.createElement('div')
+  menu.className = 'tt_addMenu tt_connMore'
+  connbarMoreEl = menu
+  // 不给"跳转设置卡片"的假按钮：宿主没有开放程序化导航到设置面板的接口（实测
+  // dsh-client-ui-settings 没有暴露 openSettings / 路由 hash），做了也只能是个不动的
+  // 按钮。改成**把路径写清楚**——用户照着一句话就能找到，比一个点了没反应的跳转强。
+  addMenuItem(menu, '端口转发', '在 设置 → 插件 → 终端面板 里配置', () => {
+    closeConnbarMoreMenu()
+    openTunnelPopover(anchor, bookName)
+  }, undefined, ICON_TUNNEL)
+  document.body.appendChild(menu)
+  const rect = anchor.getBoundingClientRect()
+  const width = menu.offsetWidth
+  const preferRight = rect.left + width > window.innerWidth - 8
+  const left = preferRight ? rect.right - width : rect.left
+  menu.style.left = Math.max(8, Math.min(left, window.innerWidth - width - 8)) + 'px'
+  menu.style.top = rect.bottom + 6 + 'px'
+  const onDocMouseDown = (event) => {
+    if (connbarMoreEl !== menu) return
+    if (menu.contains(event.target) || anchor.contains(event.target)) return
+    closeConnbarMoreMenu()
+  }
+  connbarMoreDismiss = onDocMouseDown
+  setTimeout(() => document.addEventListener('mousedown', onDocMouseDown, true), 0)
+}
+
+function closeConnbarMoreMenu() {
+  if (connbarMoreDismiss !== null) {
+    document.removeEventListener('mousedown', connbarMoreDismiss, true)
+    connbarMoreDismiss = null
+  }
+  if (connbarMoreEl !== null) {
+    connbarMoreEl.remove()
+    connbarMoreEl = null
+  }
+}
+
 let tunnelPopoverEl = null
 let tunnelPopoverDismiss = null
+/** 连接栏「⋯」更多菜单的元素与外部点击卸载回调（同 tunnelPopover 的两件套）。 */
+let connbarMoreEl = null
+let connbarMoreDismiss = null
 
 function closeTunnelPopover() {
   if (tunnelPopoverDismiss !== null) {
@@ -5539,6 +5609,8 @@ function closeModal() {
   intentionalClose = !keepSocket
   minimized = false
   closeAddMenu()
+  closeConnbarMoreMenu()
+  closeTunnelPopover()
   closeSshDialog()
   closeSftpDialog()
   clearTimeout(dockActivityTimer)

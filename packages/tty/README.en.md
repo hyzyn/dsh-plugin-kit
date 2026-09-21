@@ -251,6 +251,13 @@ references one connection-book entry (host and authentication come with it), in 
 - **Status badges**: while the card is expanded it polls live status every 2s (active green/connecting
   blue/error red/stopped grey + last error); connection-book entries in the “+” menu show a `⇄N` tunnel
   badge; the agent can query status with the `tunnel_list` tool;
+- **Connbar entry (0.20.0)**: a connection **with enabled tunnels** gets a permanent “隧道 N” button
+  (click for live status); one **without** them folds into a “**⋯ More**” menu — previously such a
+  connection gave **no hint at all** that port forwarding existed, so the user had to stumble onto the
+  settings card. Folding it into “⋯” adds a discovery path without occupying permanent width (the connbar
+  gives its width to the tab strip first). Note a tunnel must reference a connection-book entry, so only
+  book-backed connections get this entry; an unsaved ad-hoc connection from the “new connection” dialog
+  cannot have tunnels.
 - **Form layout (0.20.0)**: direction uses a **segmented control** (local -L / remote -R — two values do
   not deserve a dropdown); the two ends are shown in pairs as **host:port**, with an **arrow** between them
   showing the data flow (it flips when you switch to -R). Each direction has **exactly one fixed end**

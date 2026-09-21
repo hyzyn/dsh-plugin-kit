@@ -61,6 +61,7 @@ const SCENARIOS = [
   ['exited', '会话退出遮罩'],
   ['error', '连接错误遮罩'],
   ['tunnel', '隧道状态弹层'],
+  ['connbar-more', '连接栏「⋯」更多（没配隧道的连接也能找到端口转发入口）'],
   ['search', '搜索框展开'],
   ['toast', 'toast 提醒'],
   ['embed', '嵌入式终端（ttyTerminal.mount）'],

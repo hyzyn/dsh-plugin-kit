@@ -1309,6 +1309,14 @@
   box-shadow: var(--tt-shadow);
   animation: ttPopIn .16s var(--tt-ease);
 }
+/*
+ * 连接栏「⋯」更多：只有一个条目，用不着「+」菜单那么宽（260px 的空白菜单看着像没加载完）。
+ * 复用 .tt_addMenu 的皮肤与条目样式，只收窄宽度。
+ */
+.tt_connMore {
+  min-width: 220px;
+  max-width: 300px;
+}
 .tt_addMenuItem {
   display: flex;
   flex-direction: row;

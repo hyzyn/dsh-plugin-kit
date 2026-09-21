@@ -756,6 +756,47 @@
       await waitFor(() => q('.tt_tunnelPop'))
       await sleep(300)
     },
+    /*
+     * 连接栏「⋯」更多（没有启用隧道的连接）。
+     *
+     * 这条路径此前**完全不可见**：隧道入口只在 `count > 0` 时出现，没配隧道的连接在界面上
+     * 没有任何线索能发现"这里可以配端口转发"。现在没隧道时收进「⋯」——既有发现路径、
+     * 又不占常驻宽度（连接栏宽度优先给标签条）。
+     */
+    async 'connbar-more'() {
+      await openPanel()
+      // bare-host 在 fixture 里刻意没有任何隧道
+      await clickAdd()
+      await clickMenuItem('bare-host')
+      await waitFor(() => tabs().length === 2)
+      await sleep(300)
+
+      const acts = qa('.tt_connAct')
+      // 没有隧道 ⇒ 不该出现常驻「隧道 N」按钮
+      if (acts.some((b) => b.textContent.includes('隧道'))) {
+        throw new Error('没有隧道的连接却出现了常驻「隧道」按钮')
+      }
+      const more = acts.find((b) => b.textContent.includes('更多'))
+      if (more === undefined) throw new Error('没有隧道的连接缺少「⋯ 更多」入口')
+      more.click()
+      await waitFor(() => q('.tt_connMore'))
+      await sleep(250)
+
+      // 闭环：菜单项必须真的可点、并给出可执行的信息（该连接没有启用隧道 + 去哪配）
+      const item = qa('.tt_connMore .tt_addMenuItem').find((el) => el.textContent.includes('端口转发'))
+      if (item === undefined) throw new Error('「⋯」菜单里没有端口转发项')
+      item.click()
+      await waitFor(() => q('.tt_tunnelPop'))
+      await sleep(300)
+      window.__previewAssert = async () => {
+        const pop = q('.tt_tunnelPop')
+        if (pop === null) return '点击菜单项后没有打开隧道弹层'
+        const text = pop.textContent ?? ''
+        if (!text.includes('暂无启用')) return '弹层没有说明「该连接暂无启用的隧道」：' + text
+        if (!text.includes('插件配置') && !text.includes('设置')) return '弹层没有告诉用户去哪配置'
+        return null
+      }
+    },
     /* 搜索框展开 */
     async search() {
       await openPanel()
