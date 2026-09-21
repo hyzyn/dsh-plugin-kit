@@ -74,6 +74,7 @@ declare const HeadlessTerminal: typeof xtermHeadless.Terminal;
 type HeadlessTerminal = InstanceType<typeof HeadlessTerminal>;
 import type { HostKeyRecord, SshHostEntry, TermHandle } from './ssh.js';
 import type { TunnelSpec } from './tunnels.js';
+import type { StatsFrame } from './stats.js';
 export type { HostKeyRecord } from './ssh.js';
 export interface Config {
     /** 关闭整个插件。默认开。 */
@@ -160,6 +161,16 @@ interface TtySession {
     }>;
     closed: boolean;
     paused: boolean;
+    /**
+     * 会话归属（agent 侧 tty_open）：'user' = 面板标签开的、有客户端绑定；
+     * 'agent' = agent 用 tty_open 开的，**可能长时间无客户端**。
+     *
+     * 为什么必须区分：孤儿回收器的判据是「无客户端绑定」（`orphanedAt !== null`），
+     * 而 agent 开的会话从出生起就没有客户端——不豁免的话会被回收器当孤儿秒收，
+     * 长驻任务（dev server / build）刚起来就没了。豁免之后关闭入口只有两个：
+     * agent 的 `tty_close`，或用户在面板里接管后照常关标签。
+     */
+    owner: 'user' | 'agent';
     /** exit 帧只发一次（kill 主动关闭与 shell 自然退出共用同一回调）。 */
     exitSent?: boolean;
     /** agent 工具展示用的元数据。 */
@@ -192,6 +203,8 @@ interface TtySession {
      * 驱动）。空集合 = 该会话不需要采集，采集器必须停（防定时器/远程 channel 泄漏）。
      */
     statsSubs: Set<string>;
+    /** 最近一帧服务器状态指标（tty_stats 的一条数据源；未采过为 null）。 */
+    lastStats: StatsFrame | null;
     /** 采集器句柄；null = 未启动（懒启动：首个 statsOn 才起）。 */
     stats: StatsCollector | null;
     /** 采集已永久失败（远端无 /proc、exec 被拒、连接断开）：不再重启，前端隐藏状态条。 */
@@ -333,6 +346,7 @@ export declare class SessionManager {
         startedAt: number;
         lastOutputAt: number;
         persist?: true;
+        owner: 'user' | 'agent';
     }>;
     /** sessions 帧用：额外带 attachable（孤儿且未关闭的会话可被新连接 attach）。 */
     listForAttach(): Array<{
@@ -344,6 +358,7 @@ export declare class SessionManager {
         startedAt: number;
         lastOutputAt: number;
         persist?: true;
+        owner: 'user' | 'agent';
         attachable: boolean;
     }>;
     /** 遍历全部会话（状态条采集器的批量收尾等按会话维度的操作）。 */
@@ -359,6 +374,10 @@ export declare class SessionManager {
      * 回收孤儿会话（回收器定时调用）：超过保活期的回收。graceMs<=0 时立即回收
      * 全部孤儿——孤儿只在「断开瞬间 grace>0」时产生，热改 grace 为 0 不能只管
      * 以后：已存在的孤儿会永久占 PTY 与名额，满额后新标签一直报「会话数已达上限」。
+     *
+     * agent 开的会话（owner:'agent'）不走这条：它从出生起就没有客户端，判据
+     * 「orphanedAt !== null」对它要么永不成立（不回收）要么被误当孤儿（一开就收）。
+     * 它的关闭入口是 agent 的 tty_close 或用户在面板里接管后关标签。
      */
     reapOrphans(graceMs: number): Promise<void>;
     disposeAll(): Promise<void>;
@@ -374,6 +393,8 @@ export declare class TtyServer {
     private readonly wss;
     /** 在途的持久会话创建（tmuxName → 创建 promise）：dsh 重启后多页面并发恢复时收敛竞态。 */
     private readonly pendingTmux;
+    /** 已接线的面板连接（sessions 帧广播用；比 wss.clients 更贴合「面板」语义，单测也可驱动）。 */
+    private readonly panels;
     /** WS 闸门（插件禁用时关闭）：拒绝新升级 + 断开存量连接。 */
     private wsGateOpen;
     /** 服务器状态条总开关（配置热生效；关闭时停掉全部采集，重开按订阅恢复）。 */
@@ -425,8 +446,67 @@ export declare class TtyServer {
     private resolveSid;
     /** 把一个客户端连接重绑定到既有会话（跨窗口共享 / 并发恢复收敛共用）。 */
     private rebindClient;
+    /**
+     * agent 开一个本地终端（tty_open 的实现）。
+     *
+     * 设计前提（与用户确认过）：**开成面板里的普通会话，不做隐形会话** ——
+     * 会话照常进 `sessions` 快照、面板能看见并接管、用户随时可以关。理由是
+     * D06 那类「僵尸会话」正是隐形会话的产物：用户不知道机器上跑着什么。
+     *
+     * 与 `spawn` 帧的差别只有两处：没有 ws（clients 空表）、owner:'agent'
+     * （逃过孤儿回收，见 reapOrphans）。
+     */
+    openAgentSession(input: {
+        cwd?: string;
+        command?: string | null;
+        persistName?: string | null;
+        cols?: unknown;
+        rows?: unknown;
+    }): Promise<{
+        sid: string;
+        persist: boolean;
+    }>;
+    /** agent 关掉一个会话（tty_close 的实现）：只允许关 agent 自己开的，用户标签不越权。 */
+    closeAgentSession(sid: string): Promise<{
+        ok: true;
+    }>;
+    /**
+     * 把当前会话清单推给所有已连接面板（agent 开关会话后让面板即时反映）。
+     *
+     * 用自己登记的连接集合而不是 `this.wss.clients`：后者只在真实 WS 服务器
+     * 接线时才有值（单测直接调 onConnection 时为空），且语义上我们要的是
+     * 「已接线的面板连接」。
+     */
+    private broadcastSessions;
+    /**
+     * 取一次会话所在机器的指标（tty_stats 的实现）。
+     *
+     * 按需采样、不依赖面板是否订阅状态条：本地会话直接跑本地采样器；SSH 会话在
+     * 同一连接上开一次性 exec channel 跑一帧脚本（statsExec 的常驻循环不适合
+     * 一次性取数，故用 handle.statsExec 的单帧变体——没有的话返回最近留档）。
+     * 失败不抛给 agent 的判断链：返回 available:false + 原因。
+     */
+    sampleStats(session: TtySession): Promise<{
+        available: boolean;
+        reason?: string;
+        frame?: StatsFrame;
+    }>;
     /** 等待同 tmuxName 的在途创建完成；返回可重绑定的会话（null = 无在途/已失败）。 */
     private waitPendingTmux;
+    /**
+     * 创建本地会话（0.20.0 抽出，供 WS `spawn` 帧与 agent `tty_open` 共用）。
+     *
+     * 与连接无关是这次抽出的全部意义：`spawn` 帧带一个 ws（用户开的标签要立刻
+     * ready + 收输出），`tty_open` 没有 ws（agent 开的会话从出生起就没有客户端，
+     * 靠 owner:'agent' 逃过孤儿回收）。两条路径共用同一套：
+     *   - tmux 持久化探测与资源准备（同 persistName 复用既有会话，名额不翻倍）；
+     *   - cwd 校验、spawnPlan 组装、并发在途收敛（pendingTmux）；
+     *   - 会话对象装配 + 输出下行挂载 + 退出收尾。
+     *
+     * 调用方负责：上限检查（canSpawn）、错误帧、ready/notice 的呈现。
+     * `client` 为 null 时创建无客户端的会话（agent 路径）。
+     */
+    private createLocalSession;
     /**
      * 立即终止会话：同步退役 + 顶层 shell 直接 SIGKILL，让 done/exit 帧立刻可发；
      * 树级子进程清理（SIGTERM→grace→SIGKILL，交互式 zsh 忽略 SIGTERM 时最慢

@@ -83,6 +83,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import xtermCss from '@xterm/xterm/css/xterm.css'
 import ttyCss from './tty.css'
 import { resolveDockOwner, dockPaneVisible } from './dock-owner.js'
+import { asciiRefToken, derivedCredentialRef } from './credential-ref.js'
 import { currentSessionCwd } from './current-session.js'
 import { eventOwnsStatus, needsStatusResync, statusForTab } from './status-line.js'
 import { STATS_ITEM_SPECS, formatBytes, formatRate, hasUsableStats, statsFrameFresh, statsItemValues, statsLevel } from './stats-bar.js'
@@ -101,54 +102,9 @@ function wsUrl() {
   return proto + '//' + location.host + WS_PATH
 }
 
-/**
- * 把一段文本压成引用文法允许的 ASCII 标识符片段（非法字符折成 `_`，首尾修剪）。
- *
- * 引用文法只认 POSIX 标识符，所以任何进名字的字段都必须过这一关。**只用于 host / username
- * 这类本身就该是 ASCII 的资源标识**——**别拿人类起的连接名来过这里**（`HS 248` / `lab-a`
- * 会折成同一个片段，那正是第一版静默覆盖的成因；见下）。
- */
-function asciiRefToken(value) {
-  return String(value ?? '').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '')
-}
-
-/**
- * 由**资源身份**（用户名 + 主机 + 非默认端口）派生一个合法的凭据引用名。
- *
- * 规则（**恒定不变，别按需省略**）：
- *   `DSH_TTY_<用户名>_<主机>[_<端口>]_<字段>`，端口为 22（默认）时省略；字段 = PASSWORD / PASSPHRASE
- *   例：`hsadmin@192.0.2.10:22` → `DSH_TTY_HSADMIN_192_168_80_248_PASSWORD`
- *       `root@192.0.2.10:2222` → `DSH_TTY_ROOT_192_168_80_248_2222_PASSWORD`
- *
- * 为什么按资源身份、**不用连接名也不用哈希**（与 git-credential-store 的 `protocol://username@host`、
- * docker credential helpers 的 `ServerURL` + `Username` 同一派）：host 与 username **本来就是 ASCII
- * 标识符**，不需要清洗、也就不需要哈希兜底。曾经的哈希版是为了补救"把人类标签清洗成键"——
- * 而 `HS 248` / `lab-a` / `HS_248` 折出来完全一样，只能靠哈希避免静默覆盖。资源身份没有这个死结：
- * 撞名只可能发生在**同一主机、同一用户、同一端口**，而那本来就该是同一个密码（共享是正确行为）。
- *
- * 顺带的好处：**连接名完全不参与键**，所以改连接名/重新保存都不会产生孤儿引用（旧哈希版会）。
- *
- * 代价（写出来免得日后惊讶）：名字可读性弱于人类标签（`DSH_TTY_ROOT_192_168_80_248_PASSWORD`）。
- * 这是 git / docker 那派的共同取舍——要人读的名字，就在存入前把预填的名字改掉（对话框里可编辑）。
- *
- * 另：**派生只发生在"存入"那一刻**。存完以后，配置里那个 `env:NAME` 就是唯一事实来源，没有任何
- * 地方会再派生一次——所以改连接名不会让已存的值失效（用「清除已存凭据」按字段里的引用清掉）。
- *
- * 为什么拒绝空主机 / 空用户名：两者是键的全部来源，缺一都会退化成常量（把所有条目挤到同一个引用上）。
- */
-function derivedCredentialRef(host, port, username, suffix) {
-  const user = asciiRefToken(username)
-  const server = asciiRefToken(host)
-  if (user === '' || server === '') return ''
-  const normalizedPort = asciiRefToken(port)
-  const parts = ['DSH_TTY', user, server]
-  // 默认端口不进键：**端口留空、写 22、写 " 22 " 都归成同一个键**（连接侧是 `spec.port ?? 22`，
-  // 留空就是 22，键必须与它一致——否则同一个账号会有两个名字、同一个密码存两份，改一处另一处
-  // 还指着旧值）。非默认端口才进键：同一主机不同端口常是不同盒子（NAT 后面），必须区分。
-  if (normalizedPort !== '' && normalizedPort !== '22') parts.push(normalizedPort)
-  parts.push(suffix)
-  return parts.join('_')
-}
+/* 凭据引用名的派生规则（asciiRefToken / derivedCredentialRef）已抽到
+ * client-src/credential-ref.js —— 那里是纯逻辑、带单测（test/credential-ref.test.ts），
+ * 也是文档示例的"事实来源"。此前规则只活在注释里，示例漂了两次都没人发现。 */
 
 /* ==================== 凭据引用（连接对话框与设置卡片共用） ==================== */
 
@@ -1177,6 +1133,86 @@ function addTab(spawnSpec, label) {
   spawnTab(tab)
   persistTabs()
   return tab
+}
+
+/**
+ * 采纳 agent 开的会话（0.20.0，tty_open）。
+ *
+ * 设计前提：agent 开的终端**必须对用户可见可接管**（不做隐形会话——D06 那类
+ * 僵尸会话正是隐形会话的产物：用户不知道机器上跑着什么）。宿主在 agent 开关
+ * 会话后推一帧 sessions，这里把还没有本地标签的 agent 会话建成标签并 attach。
+ *
+ * 与 restoreTab 的区别：那个走 sessionStorage 里的已知 sid，这个是**被通知**的
+ * 新 sid（宿主侧已存在，attach 即接回现场），所以 spawnSpec 用一个占位（本地
+ * spawn），标签标记 agentOwned 供 UI 区分。
+ */
+function adoptAgentSessions(list) {
+  if (!Array.isArray(list)) return
+  for (const entry of list) {
+    if (entry === null || typeof entry !== 'object') continue
+    if (entry.owner !== 'agent') continue // 只采纳 agent 开的
+    const sid = typeof entry.sid === 'string' ? entry.sid : ''
+    if (sid === '') continue
+    if (tabs.has(sid)) continue // 已经在本地有标签（用户已接管过）
+    const tab = {
+      sid,
+      term: null,
+      fit: null,
+      search: null,
+      termEl: null,
+      overlayEl: null,
+      exited: false,
+      spawned: false,
+      agentOwned: true,
+      spawnSpec: { t: 'spawn', cwd: typeof entry.cwd === 'string' ? entry.cwd : currentCwd() },
+      label: 'agent' + (entry.kind === 'ssh' && typeof entry.target === 'string' && entry.target !== '' ? ' · ' + entry.target : ''),
+    }
+    createTerminal(tab)
+    tabs.set(sid, tab)
+    tabCounter += 1
+    renderTabbar()
+    // 刻意不 switchTab：面板可能没打开（bodyEl 为 null），且 agent 开的终端
+    // 不该抢用户当前的焦点——它在后台待着，用户点标签才切过去。
+    if (panelVisible() && tab.termEl !== null && bodyEl !== null && activeSid === null) {
+      switchTab(sid)
+    }
+    sendFrame({ t: 'attach', sid })
+    persistTabsForAgent()
+  }
+}
+
+/** 面板当前是否可见（modalEl 存在且未最小化）——决定采纳 agent 标签时能否切过去。 */
+function panelVisible() {
+  return modalEl !== null && minimized !== true
+}
+
+/** agent 标签也要能在页面刷新后恢复（与普通标签同样的持久化）。 */
+function persistTabsForAgent() {
+  try {
+    persistTabs()
+  } catch {
+    /* 持久化失败不影响会话 */
+  }
+}
+
+/**
+ * 同步「agent 开的会话」标签集合：宿主推来的清单里 owner=agent 且本地没有的
+ * 建标签；本地有、宿主已不在的 agent 标签标记退出（用户可手动关掉）。
+ */
+function syncAgentTabs(list) {
+  adoptAgentSessions(list)
+  if (!Array.isArray(list)) return
+  const alive = new Set(list.filter((e) => e !== null && typeof e === 'object' && e.owner === 'agent').map((e) => e.sid))
+  for (const [sid, tab] of [...tabs]) {
+    if (tab.agentOwned !== true) continue
+    if (alive.has(sid)) continue
+    // 宿主侧已结束（agent 调了 tty_close 或进程退出）：标退出，等 exit 帧或用户关闭
+    if (tab.exited !== true && tab.live === true) {
+      tab.exited = true
+      tab.live = false
+      renderTabbar()
+    }
+  }
 }
 
 /**
@@ -5085,6 +5121,11 @@ function connect() {
         resubscribeStats(sid)
         persistTabs()
       }
+    } else if (msg.t === 'sessions') {
+      // agent 开关会话时宿主主动推的清单（0.20.0）：把 agent 开的会话建成可见标签。
+      // 注意 waitFrame('sessions') 的拉取路径也走这里（重复采纳是幂等的，见
+      // adoptAgentSessions 的 tabs.has 去重）。
+      syncAgentTabs(msg.list)
     } else if (msg.t === 'data') {
       const tab = tabs.get(sid)
       if (tab !== undefined && tab.term !== null) {
@@ -5882,15 +5923,27 @@ function TtySettingsCard(props) {
       if (ok) setMessage({ kind: 'ok', text: `隧道「${finalName}」已生效` })
     })
   }
-  const removeTunnel = (name) => {
-    const next = (Array.isArray(form?.tunnels) ? form.tunnels : []).filter((t) => t?.name !== name)
+  /**
+   * 提交隧道列表（乐观更新 → 失败回滚）。
+   *
+   * 回滚是必须的：宿主校验会拒（重名 / 连接簿条目不存在 / 端口非法），拒绝后
+   * 如果只弹一条错误、表单却停在「改过的样子」，用户以为已生效——列表与真实
+   * 配置就此不一致（而卡片上的勾选/行是唯一能看出的地方）。回滚到提交前的
+   * 快照，让界面重新等于真相。
+   */
+  const commitTunnels = (next, before) => {
     setForm((current) => ({ ...(current || {}), tunnels: next }))
-    void pushTunnels(next)
+    void pushTunnels(next).then((ok) => {
+      if (ok !== true) setForm((current) => ({ ...(current || {}), tunnels: before }))
+    })
+  }
+  const removeTunnel = (name) => {
+    const before = Array.isArray(form?.tunnels) ? form.tunnels : []
+    commitTunnels(before.filter((t) => t?.name !== name), before)
   }
   const toggleTunnelEnabled = (name, checked) => {
-    const next = (Array.isArray(form?.tunnels) ? form.tunnels : []).map((t) => (t?.name === name ? { ...t, enabled: checked } : t))
-    setForm((current) => ({ ...(current || {}), tunnels: next }))
-    void pushTunnels(next)
+    const before = Array.isArray(form?.tunnels) ? form.tunnels : []
+    commitTunnels(before.map((t) => (t?.name === name ? { ...t, enabled: checked } : t)), before)
   }
   /** 进入编辑：复制条目到表单（按原始 name 定位，改名也安全）。 */
   const startEditSshHost = (host) => {

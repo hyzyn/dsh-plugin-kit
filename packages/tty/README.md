@@ -93,11 +93,14 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
 
 ## agent 工具（P1）
 
-插件向 agent 注入十三个工具（与 bash 工具同权，操作实时显示在用户终端里）：
+插件向 agent 注入十六个工具（与 bash 工具同权，操作实时显示在用户终端里）：
 
 | 工具 | 作用 |
 | --- | --- |
-| `tty_list` | 列出活跃终端会话（sid / kind（local\|ssh）/ target / pid / **cwd 实时跟随 cd** / 活动时间；tmux 持久会话带 `persist` 标记） |
+| `tty_list` | 列出活跃终端会话（sid / kind（local\|ssh）/ target / pid / **cwd 实时跟随 cd** / 活动时间；tmux 持久会话带 `persist` 标记；agent 自己开的带 `owner: 'agent'`） |
+| `tty_open` | **自己开一个终端会话**（0.20.0）：本地 shell，或 `command` 直接跑一条长驻命令（dev server / watch），`persistName` 可要 tmux 持久化。**开出来的会话出现在用户的终端面板里**（普通标签、用户可见可接管），不做隐形会话 |
+| `tty_close` | 关掉一个由 `tty_open` 开的会话（0.20.0）。**只允许关 agent 自己开的**：用户在面板里开的标签会被拒绝——agent 不越权结束用户正在用的终端 |
+| `tty_stats` | 读会话所在机器的实时指标（0.20.0）：CPU / 内存 / 磁盘 / TCP 连接数 / 网速 / 温度 / 在线时长。本地会话取宿主机；SSH 会话取那台远程主机（另开一段非 PTY 通道，不影响终端）。部署、压测前先看它 |
 | `tty_capture` | 读取近期输出（尾部 N 行，默认清洗 ANSI，`raw:true` 取原始流）；**`last:true` 只返回上一条已完成命令的输出 + 退出码**（shell 集成标记，见下节）；命令**在途**时（刚发送、完成标记未到）返回 `inProgress:true` 且不带旧结果——避免把上一条的输出当成这一条（0.19.0） |
 | `tty_screen` | 读取**当前可见屏幕**的渲染结果（xterm-headless 虚拟屏，纯文本）——能真正读懂 vim / htop / 菜单等 TUI 界面 |
 | `tty_expect` | 用正则**等待后续输出**中的就绪信号（dev server URL、构建完成等）；超时不抛错（`matched:false` + 尾部输出），命令提前结束也会带退出码早停；同一会话在途调用最多 5 个，累积窗口只保留尾部 64KB（0.19.0） |
@@ -111,10 +114,16 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
 | `sftp_tree` | 递归列举远程目录结构（深度优先、目录优先；`maxDepth` 1~8 / `maxEntries` 1~2000 限流，超限 `truncated:true`；symlink 不跟随防环） |
 | `tunnel_list` | 列出端口转发隧道及其实时状态（活跃/连接中/错误/停止、规则、连接数） |
 
-典型 agent 流程（推荐）：`tty_send` 启动长任务 → `tty_expect` 等就绪标记 →
-`tty_capture{last:true}` 拿单条命令结果。此外 `systemPrompt` 里注册了动态
-context，每轮对话自动携带活跃终端快照（sid / kind / cwd），无需先调
-`tty_list` 也有上下文。
+典型 agent 流程（推荐）：`tty_open` 开一个会话（长驻进程用 `persistName` 要 tmux 持久化）
+→ `tty_send` 启动命令 → `tty_expect` 等就绪标记 → `tty_capture{last:true}` 拿单条命令结果
+→ 用完 `tty_close`。此外 `systemPrompt` 里注册了动态 context，每轮对话自动携带活跃终端快照
+（sid / kind / cwd / owner），无需先调 `tty_list` 也有上下文。
+
+**agent 开的会话边界（0.20.0）**：`tty_open` 开出来的会话是**面板里的普通标签**（带「agent」
+标识），用户看得见、点得开、接管得了、关得掉——刻意不做隐形会话，因为用户不知道机器上
+跑着什么正是僵尸会话的来源。它从出生起没有客户端绑定，因此**不被孤儿回收器回收**
+（回收器只收「断连的用户会话」），关闭入口是 agent 的 `tty_close` 或用户在面板里关标签；
+反过来说，agent 也**关不掉用户开的标签**（`tty_close` 会明确拒绝）。
 
 ### shell 集成（OSC 133/7，0.4.0）
 
@@ -167,11 +176,11 @@ SSH 会话同表调度：`tty_list` 里 `kind: 'ssh'` 的条目按 `target`
   —— 与连接侧的 `spec.port ?? 22` 一致（留空即 22），所以"留空 / `22` / `" 22 "`"三种写法归成同一个键，
   同一个账号不会有两个名字、同一个密码不会存两份；非默认端口进键（同一主机不同端口常是 NAT 后面的
   不同盒子）。字段 = `PASSWORD` / `PASSPHRASE`；例 `hsadmin@192.0.2.10:22` →
-  `DSH_TTY_HSADMIN_192_168_80_248_PASSWORD`。**按资源身份派生、不带哈希**——与
+  `DSH_TTY_HSADMIN_192_0_2_10_PASSWORD`（点分 IP 的 `.` 折成 `_`）。**按资源身份派生、不带哈希**——与
   git-credential-store 的 `protocol://username@host`、docker credential helpers 的
   `ServerURL` + `Username` 同一派：host 与 username **本来就是 ASCII 标识符**，不需要清洗、
   也就不需要哈希兜底。曾经的哈希版是在补救"把人类标签清洗成键"：引用文法只认 ASCII，
-  `HS 248` / `lab-a` / `HS_248` 折出来完全一样，只能靠哈希避免静默覆盖 ✗。资源身份没有这个
+  `web 01` / `web_01`（空格与下划线）折出来完全一样，只能靠哈希避免静默覆盖 ✗。资源身份没有这个
   死结——撞名只可能发生在**同一主机、同一用户、同一端口**，而那本来就该是同一个密码（共享是
   正确行为）。**连接名完全不参与键**，所以改连接名/改备注都不会换键。空主机或空用户名则拒绝
   存入（键的全部来源，缺一就退化成常量）。代价是可读性弱于人类标签：本对话框的「存入」**只按

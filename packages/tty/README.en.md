@@ -99,11 +99,14 @@ Both were reproduced on **Windows 11 ARM (24H2) + Node 22 ARM64**. The fix:
 
 ## Agent tools (P1)
 
-The plugin injects thirteen tools into the agent (with the same power as the bash tool; operations show up live in the user’s terminal):
+The plugin injects sixteen tools into the agent (with the same power as the bash tool; operations show up live in the user’s terminal):
 
 | Tool | Purpose |
 | --- | --- |
-| `tty_list` | List active terminal sessions (sid / kind (`local\|ssh`) / target / pid / **cwd tracked live as you `cd`** / activity time; tmux persistent sessions carry a `persist` marker) |
+| `tty_list` | List active terminal sessions (sid / kind (`local\|ssh`) / target / pid / **cwd tracked live as you `cd`** / activity time; tmux persistent sessions carry a `persist` marker; sessions the agent opened carry `owner: 'agent'`) |
+| `tty_open` | **Open a terminal session yourself** (0.20.0): a local shell, or a long-running command via `command` (dev server / watch), with optional tmux persistence via `persistName`. The session **shows up in the user’s terminal panel** as an ordinary tab the user can see and take over — never a hidden session |
+| `tty_close` | Close a session opened by `tty_open` (0.20.0). **Only the agent’s own sessions may be closed**: a tab the user opened is refused, so the agent never ends a terminal the user is working in |
+| `tty_stats` | Read live host metrics for a session’s machine (0.20.0): CPU / memory / disk / TCP connections / network rates / temperature / uptime. Local sessions report the host; SSH sessions report that remote host over a separate non-PTY channel that never touches the terminal. Check it before deploying or load-testing |
 | `tty_capture` | Read recent output (last N lines, ANSI stripped by default, `raw:true` for the raw stream); **`last:true` returns only the output + exit code of the previous completed command** (shell integration markers, see the next section); when a command is **in flight** (just sent, completion marker not in yet) it returns `inProgress:true` without the stale result, so the previous command is never mistaken for this one (0.19.0) |
 | `tty_screen` | Read the **currently visible screen** as rendered (xterm-headless virtual screen, plain text) — it can genuinely read TUI interfaces such as vim / htop / menus |
 | `tty_expect` | Wait with a regex for a readiness signal in **subsequent output** (dev server URL, build finished, …); a timeout does not throw (`matched:false` + tail output), and a command that ends early also returns early with its exit code; at most 5 in-flight calls per session, and the accumulated window keeps only the last 64KB (0.19.0) |
@@ -117,10 +120,19 @@ The plugin injects thirteen tools into the agent (with the same power as the bas
 | `sftp_tree` | Recursively list a remote directory structure (depth-first, directories first; `maxDepth` 1~8 / `maxEntries` 1~2000 cap it, `truncated:true` when exceeded; symlinks are not followed, to avoid cycles) |
 | `tunnel_list` | List port-forwarding tunnels and their live state (active/connecting/error/stopped, rules, connection counts) |
 
-Typical agent flow (recommended): `tty_send` starts a long-running task → `tty_expect` waits for the
-readiness marker → `tty_capture{last:true}` gets the result of that single command. In addition, a dynamic
+Typical agent flow (recommended): `tty_open` opens a session (pass `persistName` for tmux persistence on
+long-running work) → `tty_send` starts the command → `tty_expect` waits for the readiness marker →
+`tty_capture{last:true}` gets the result of that single command → `tty_close` when done. In addition, a dynamic
 context is registered in `systemPrompt` so that every turn automatically carries a snapshot of active
-terminals (sid / kind / cwd) — you have context without calling `tty_list` first.
+terminals (sid / kind / cwd / owner) — you have context without calling `tty_list` first.
+
+**Agent-opened session boundaries (0.20.0)**: a session opened by `tty_open` is an **ordinary tab in the
+panel** (marked “agent”) — the user can see it, switch to it, take it over and close it. Hidden sessions
+are deliberately not used, because “the user does not know what is running on the machine” is exactly
+where zombie sessions come from. Such a session has no client bound from birth, so it is **not reaped by
+the orphan collector** (which only reaps disconnected *user* sessions); it ends via the agent’s
+`tty_close` or the user closing the tab. Conversely the agent **cannot close a user-opened tab**
+(`tty_close` refuses explicitly).
 
 ### Shell integration (OSC 133/7, 0.4.0)
 
@@ -180,11 +192,11 @@ lacks that service the box is switched back off and disabled, with a note that o
   “empty / `22` / `" 22 "`” all collapse into one key and the same account never ends up with two names or one
   password stored twice; a non-default port does take part (the same host on another port is often a different
   box behind NAT). `field` is `PASSWORD` / `PASSPHRASE`; e.g. `hsadmin@192.0.2.10:22` →
-  `DSH_TTY_HSADMIN_192_168_80_248_PASSWORD`. It is **derived from the resource identity and carries no hash** — the
+  `DSH_TTY_HSADMIN_192_0_2_10_PASSWORD` (the dots of a dotted IP fold to `_`). It is **derived from the resource identity and carries no hash** — the
   same school as git-credential-store's `protocol://username@host` and docker credential helpers'
   `ServerURL` + `Username`: host and username **are ASCII identifiers already**, so nothing needs sanitizing and
   nothing needs a hash to disambiguate. The old hash-based version was patching over "sanitize a human label into a
-  key": the reference grammar accepts ASCII only, so `HS 248` / `lab-a` / `HS_248` collapse to exactly the same
+  key": the reference grammar accepts ASCII only, so `web 01` / `web_01` (space vs underscore) collapse to exactly the same
   string and only a hash could stop them silently overwriting each other. A resource identity has no such trap — a
   collision can only happen for **the same host, the same user, the same port**, which is the same password by
   definition (sharing it is correct behaviour). **The connection name never takes part in the key**, so renaming a

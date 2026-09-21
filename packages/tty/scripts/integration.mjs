@@ -53,7 +53,7 @@ import path from 'node:path'
 import { name, inject, apply } from '../lib/index.js'
 import { parseSshConfig } from '../lib/ssh-config.js'
 import { parseKnownHosts } from '../lib/known-hosts.js'
-import { assertSupportedJsonSchema } from '@deepseek-ai/dsh-tools'
+import { assertSupportedJsonSchema, validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
 import { startSftpSshd, TEST_USER, TEST_PASSWORD } from './lib/test-sshd.mjs'
 
 
@@ -139,6 +139,8 @@ async function run() {
   // 最小 settings 服务 stub：让插件的 settings 注入回调触发，并可手动派发
   // settings/updated 事件（与 dsh-settings 的 dispatch 方式一致）来测配置热生效。
   const toolDefs = []
+  /** 输出契约违约（§B33：返回值与声明的 output.schema 不符，真实宿主会直接判工具错）。 */
+  const outputViolations = []
   const promptParts = []
   const stubFiber = app.plugin({
     name: 'settings-stub',
@@ -146,6 +148,32 @@ async function run() {
       ctx.provide('settings', { register: () => ({ get: () => ({}), update: async () => {} }) })
       ctx.provide('tools', {
         register: (definition) => {
+          // 输出契约看门狗（§B33）：把 execute 的返回值按**声明的 output.schema**
+          // 校验一遍，把违约记进 outputViolations。
+          //
+          // 为什么在这里做：宿主真的会校验（dsh-tools 用 additionalProperties:false
+          // 判非法输出，工具直接返回 Error），而此前的 B12e 只校验「schema 形状是否
+          // 受支持」，校验不了「返回值是否符合 schema」——tty_list 加 owner 字段时
+          // 漏改 schema 就是这样溜过去的：schema 形状合法、返回值多一个字段，
+          // 只有在真实宿主里调用才炸。
+          const origin = definition.execute
+          if (typeof origin === 'function') {
+            definition.execute = async (args, ctx) => {
+              const value = await origin(args, ctx)
+              try {
+                const schema = definition.output?.schema
+                if (schema !== undefined) {
+                  const violations = validateJsonSchemaValue(schema, value)
+                  if (Array.isArray(violations) && violations.length > 0) {
+                    outputViolations.push(`${definition.name}: ${violations.join('; ')}`)
+                  }
+                }
+              } catch (error) {
+                outputViolations.push(`${definition.name}: 校验抛错 ${String(error && error.message ? error.message : error)}`)
+              }
+              return value
+            }
+          }
           toolDefs.push(definition)
           // dispose 必须真摘除：B29 禁用场景要断言「工具全部撤下」
           return () => {
@@ -463,6 +491,26 @@ async function run() {
       }
       if (captured !== null && typeof captured.tail === 'string' && captured.tail.includes('CAPTURE_OK')) pass('B12c tty_capture 读到会话输出')
       else fail('B12c tty_capture 读到会话输出', JSON.stringify(captured === null ? null : captured.tail).slice(0, 120))
+      // capture{last:true}：走「上一条已完成命令 + 退出码」分支。这条分支的返回值
+      // 带可选 exitCode（曾用 `?? undefined` 留下 undefined 键 → 宿主输出校验判错，
+      // 见 B33），此前 B12 只用 lines 路径、恰好绕过了它。这里跑一条会失败的命令，
+      // 退出码必然存在，同时也把该分支送进输出契约看门狗。
+      let lastResult = null
+      for (let i = 0; i < 16; i++) {
+        await sleep(250)
+        try {
+          lastResult = await capture.execute({ sid: 't12', last: true })
+        } catch {
+          lastResult = null // 命令在途时抛错（inProgress 语义），继续等
+          continue
+        }
+        if (lastResult !== null && lastResult.inProgress !== true) break
+      }
+      if (lastResult !== null && lastResult.inProgress !== true && typeof lastResult.tail === 'string' && lastResult.tail.includes('CAPTURE_OK')) {
+        pass('B12f tty_capture{last:true} 拿到上一条命令输出与退出码')
+      } else {
+        fail('B12f tty_capture{last:true} 拿到上一条命令输出与退出码', JSON.stringify(lastResult).slice(0, 140))
+      }
       let rejected = false
       try {
         await capture.execute({ sid: 'ghost-session' })
@@ -1259,14 +1307,23 @@ async function run() {
       else fail('B26c 恢复会话 kill 后 tmux 会话清理', JSON.stringify(listedFinal))
       w2.client.close()
 
-      // B26d: attach 不回放缓冲 —— 重连后现场由 tmux refresh-client 重画恰好一次
-      //（旧行为：回放缓冲 + tmux 重画 = 内容重影 + 幽灵滚动条）
+      // B26d: attach 不回放宿主环形缓冲。
+      //
+      // 判据（D51 修订）：**不能**数「marker 在屏幕上出现几次」——attach 天然有
+      // 两个重画来源（tmux `-A` 自身 + 宿主 refresh-client），偶尔都落帧就是 2 次，
+      // 而那是观感问题、不是本用例要锁的回归；旧断言因此在真实 PTY 下偶发假红。
+      //
+      // 真正要锁的是「回放 vs 不回放」。用一个滚出可见屏的 marker 区分：
+      //   · 回放宿主 256KB 环形缓冲 → 连历史一起送到 → marker 出现（回归）
+      //   · 跳过回放、只由 tmux 重画可见屏 → 历史不在屏上 → marker 不出现（正确）
+      // 尾部再打一个 B26TAIL 留在屏上，用它证明「确实重画过了」，避免把
+      // 「什么都没收到」误判成通过。
       const w3 = openSession(port)
       await w3.open()
       w3.client.send(JSON.stringify({ t: 'spawn', sid: 'b26d', cols: 80, rows: 24, persist: true, persistName: 'b26refresh' }))
       await w3.waitFor(() => w3.state.ready, 10000, 'b26d ready')
-      w3.client.send(JSON.stringify({ t: 'input', sid: 'b26d', d: 'printf "B26REFRESH-%s\\n" ok\n' }))
-      await w3.waitFor(() => /B26REFRESH-ok/.test(w3.state.text), 10000, 'b26d 输出')
+      w3.client.send(JSON.stringify({ t: 'input', sid: 'b26d', d: 'printf "B26REFRESH-%s\\n" ok; for i in $(seq 1 40); do echo "B26FILLER-$i"; done; printf "B26TAIL-%s\\n" ok\n' }))
+      await w3.waitFor(() => /B26TAIL-ok/.test(w3.state.text), 10000, 'b26d 输出（marker 已滚出可见屏）')
       await sleep(600) // 等 D 标记与重画尘埃落定
       w3.client.close() // 异常断开 → 孤儿（grace=1s，需在回收前尽快 attach）
       await sleep(200)
@@ -1274,16 +1331,20 @@ async function run() {
       await w4.open()
       w4.client.send(JSON.stringify({ t: 'attach', sid: 'b26d' }))
       await w4.waitFor(() => w4.state.ready, 10000, 'b26d attach ready')
-      await w4.waitFor(() => /B26REFRESH-ok/.test(w4.state.text), 10000, 'refresh-client 重画')
-      const occurrences = (w4.state.text.match(/B26REFRESH-ok/g) ?? []).length
-      if (occurrences === 1) pass('B26d attach 跳过缓冲回放（tmux 重画一次，无重影/幽灵滚动条）')
-      else fail('B26d attach 跳过缓冲回放（tmux 重画一次，无重影/幽灵滚动条）', `marker 出现 ${occurrences} 次`)
-      // refresh 帧：reset 后请宿主 refresh-client 重画（不碰尺寸）
+      // 等 tmux 把可见屏重画出来（尾部 marker 可见 = 重画确实发生了）
+      await w4.waitFor(() => /B26TAIL-ok/.test(w4.state.text), 10000, 'refresh-client 重画')
+      await sleep(600) // 重画可能多帧落定：等稳定后再判定
+      const replayed = /B26REFRESH-ok/.test(w4.state.text)
+      if (!replayed) pass('B26d attach 跳过缓冲回放（仅 tmux 重画可见屏，无重影/幽灵滚动条）')
+      else fail('B26d attach 跳过缓冲回放（仅 tmux 重画可见屏，无重影/幽灵滚动条）', 'attach 后收到了已滚出屏的历史（宿主环形缓冲被回放）')
+      // refresh 帧：reset 后请宿主 refresh-client 重画（不碰尺寸）。
+      // 判据用屏上可见的尾部 marker（B26REFRESH 已滚出屏，见上一条），且
+      // 只要求「重画后仍可见」——不数次数（多来源重画是正常观感，见 D51）。
       w4.client.send(JSON.stringify({ t: 'refresh', sid: 'b26d' }))
       await sleep(600)
-      const refreshedOk = (w4.state.text.match(/B26REFRESH-ok/g) ?? []).length >= 1 && w4.state.errors.length === 0
+      const refreshedOk = /B26TAIL-ok/.test(w4.state.text) && w4.state.errors.length === 0
       if (refreshedOk) pass('B26e refresh 帧（refresh-client 重画，无错误）')
-      else fail('B26e refresh 帧（refresh-client 重画，无错误）', `errors=${JSON.stringify(w4.state.errors)}`)
+      else fail('B26e refresh 帧（refresh-client 重画，无错误）', `errors=${JSON.stringify(w4.state.errors)} tailVisible=${String(/B26TAIL-ok/.test(w4.state.text))}`)
       w4.client.send(JSON.stringify({ t: 'kill', sid: 'b26d' }))
       await w4.waitFor(() => w4.state.exited !== null, 10000, 'b26d exit')
       w4.client.close()
@@ -1447,8 +1508,8 @@ async function run() {
     if (on.status === 200 && on.body.config?.enabled === true) pass('B29h 重新启用生效')
     else fail('B29h 重新启用生效', `status=${String(on.status)}`)
     await sleep(100)
-    if (toolDefs.length === 13) pass('B29i 重新启用后 13 个 agent 工具回归')
-    else fail('B29i 重新启用后 13 个 agent 工具回归', `当前 ${String(toolDefs.length)}`)
+    if (toolDefs.length === 16) pass('B29i 重新启用后 16 个 agent 工具回归')
+    else fail('B29i 重新启用后 16 个 agent 工具回归', `当前 ${String(toolDefs.length)}`)
     if (promptParts.length === 2) pass('B29j 重新启用后公告与动态快照恢复')
     else fail('B29j 重新启用后公告与动态快照恢复', `当前 ${String(promptParts.length)}`)
     const again = openSession(port)
@@ -1677,6 +1738,102 @@ async function run() {
     await new Promise((resolve) => remote.close(resolve))
     remote.closeAllConnections?.()
     await postConfig({ sshHosts: [] })
+  }
+
+  // B32: agent 自开终端（0.20.0 tty_open / tty_close / tty_stats）
+  //
+  // 锁的是「闭环」这件事：agent 能自己开一个会话（不必用户在面板里点）、
+  // 长了长驻进程能读到就绪信号、用完能自己关；同时锁住两条边界：
+  //   ① agent 开的会话不被孤儿回收器当孤儿收掉（否则长驻任务一开就没）；
+  //   ② tty_close 拒绝关用户开的会话（agent 不越权结束用户正在用的标签）。
+  console.log('\n[30] agent 自开终端')
+  {
+    const open = toolDefs.find((d) => d.name === 'tty_open')
+    const close = toolDefs.find((d) => d.name === 'tty_close')
+    const statsT = toolDefs.find((d) => d.name === 'tty_stats')
+    const list = toolDefs.find((d) => d.name === 'tty_list')
+    const expect = toolDefs.find((d) => d.name === 'tty_expect')
+    if (open === undefined || close === undefined || statsT === undefined) {
+      fail('B32 agent 自开终端工具集', '缺工具: ' + toolDefs.map((d) => d.name).join(','))
+    } else {
+      // 面板连接先开着：验证 agent 开的会话会被推到面板（用户可见）
+      const panel = openSession(port)
+      await panel.open()
+
+      const opened = await open.execute({ cwd: '/tmp' })
+      const sid = opened.sid
+      if (typeof sid === 'string' && sid !== '') pass('B32a tty_open 开出会话')
+      else fail('B32a tty_open 开出会话', JSON.stringify(opened))
+
+      // owner=agent 出现在 tty_list 里
+      const listed = await list.execute({})
+      const mine = (listed.sessions ?? []).find((x) => x.sid === sid)
+      if (mine !== undefined && mine.owner === 'agent') pass('B32b tty_list 标出 owner=agent')
+      else fail('B32b tty_list 标出 owner=agent', JSON.stringify(mine))
+
+      // 面板可见（sessions 帧广播带 owner=agent，且 attachable）
+      let visible = false
+      for (let i = 0; i < 20; i++) {
+        await sleep(150)
+        const frame = panel.state.frames.filter((f) => f.t === 'sessions').at(-1)
+        const entry = (frame?.list ?? []).find((x) => x.sid === sid)
+        if (entry !== undefined && entry.owner === 'agent' && entry.attachable === true) { visible = true; break }
+      }
+      if (visible) pass('B32c agent 开的会话对面板可见（owner=agent + attachable）')
+      else fail('B32c agent 开的会话对面板可见', '面板没收到该会话的 sessions 帧')
+
+      // 长驻任务闭环：起一个「先等一拍再打印就绪」的进程，用 tty_expect 等它
+      const send = toolDefs.find((d) => d.name === 'tty_send')
+      await send.execute({ sid, data: 'sleep 1; printf "B32READY-%s\\n" go\n' })
+      const waited = await expect.execute({ sid, pattern: 'B32READY-go', timeoutSec: 15 })
+      if (waited.matched === true) pass('B32d tty_open + tty_expect 长任务就绪闭环')
+      else fail('B32d tty_open + tty_expect 长任务就绪闭环', JSON.stringify(waited).slice(0, 120))
+
+      // 用户开一个会话，验证 agent 关不掉它
+      panel.client.send(JSON.stringify({ t: 'spawn', sid: 'b32user', cols: 80, rows: 24 }))
+      await panel.waitFor(() => panel.state.ready, 10000, 'b32user ready')
+      let refused = false
+      try {
+        await close.execute({ sid: 'b32user' })
+      } catch {
+        refused = true
+      }
+      const stillAlive = (await list.execute({})).sessions.some((x) => x.sid === 'b32user')
+      if (refused && stillAlive) pass('B32e tty_close 拒绝关用户开的会话（不越权）')
+      else fail('B32e tty_close 拒绝关用户开的会话', `refused=${String(refused)} alive=${String(stillAlive)}`)
+
+      // agent 关自己的会话
+      const closed = await close.execute({ sid })
+      if (closed.ok === true) pass('B32f tty_close 关掉 agent 自己的会话')
+      else fail('B32f tty_close 关掉 agent 自己的会话', JSON.stringify(closed))
+      await sleep(300)
+      const gone = !(await list.execute({})).sessions.some((x) => x.sid === sid)
+      if (gone) pass('B32g 关闭后会话从清单消失')
+      else fail('B32g 关闭后会话从清单消失', '仍在 sessions 里')
+
+      // tty_stats：本地会话取宿主机指标（本机是 macOS，部分字段可采；只要有数据即通过）
+      const stat = await statsT.execute({ sid: 'b32user' })
+      if (stat.available === true && (typeof stat.memPct === 'number' || typeof stat.cpuPct === 'number')) {
+        pass('B32h tty_stats 取到本机指标')
+      } else {
+        fail('B32h tty_stats 取到本机指标', JSON.stringify(stat).slice(0, 160))
+      }
+
+      panel.client.send(JSON.stringify({ t: 'kill', sid: 'b32user' }))
+      await panel.waitFor(() => panel.state.exited !== null, 10000, 'b32user exit')
+      panel.client.close()
+    }
+  }
+
+  // B33: 输出契约（所有已调用工具的真实返回值都符合各自声明的 output.schema）
+  //
+  // 这一条是 §B12e 的补充：B12e 只证明 schema 形状受支持，证明不了返回值合法。
+  // 真实宿主对输出做 additionalProperties:false 校验，违约会直接把工具调用变成
+  // Error（tty_list 加 owner 漏改 schema 即此）。
+  console.log('\n[31] 输出契约')
+  {
+    if (outputViolations.length === 0) pass('B33 工具返回值符合声明的 output.schema')
+    else fail('B33 工具返回值符合声明的 output.schema', outputViolations.slice(0, 3).join(' | '))
   }
 
   const failed = RESULTS.filter(([kind]) => kind === 'FAIL')

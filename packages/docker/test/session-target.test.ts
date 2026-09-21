@@ -96,12 +96,12 @@ describe('bookSessionHost（连接簿条目 → host:port）', () => {
     { name: 'lab-a', host: '192.0.2.10', port: 22 },
     { name: '192.0.2.10', host: '192.0.2.10', port: 22 },
     { name: 'lab-b', host: '192.0.2.161', port: 22 },
-    { name: 'HS_248_ADMIN', host: '192.0.2.10', port: 2222 },
+    { name: 'lab-c-gw', host: '192.0.2.10', port: 2222 },
   ]
 
   it('按条目名取出 host:port', () => {
     expect(bookSessionHost('192.0.2.10', BOOKS)).toEqual({ host: '192.0.2.10', port: 22 })
-    expect(bookSessionHost('HS_248_ADMIN', BOOKS)).toEqual({ host: '192.0.2.10', port: 2222 })
+    expect(bookSessionHost('lab-c-gw', BOOKS)).toEqual({ host: '192.0.2.10', port: 2222 })
   })
 
   it('端口缺失 / 非法一律按 22', () => {

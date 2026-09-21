@@ -362,6 +362,13 @@ export class TunnelManager {
     }
     /** 失败后按指数退避重连（1s→15s 封顶）；重连期间保持 error 态供 UI 展示原因。 */
     scheduleRetry(rt, message) {
+        // fatal（本地监听失败 / 连接簿条目缺失）不走重试：这两类故障重试一百次也是
+        // 同一个结果，而重试路径会 (a) 把 fatal 清回 false、(b) 经 connectTunnel 把
+        // 状态刷成 connecting —— 于是「本地端口压根没监听成功」被粉饰成「正在连接」，
+        // 且原来那条错误信息看起来像临时性的（D53）。保持 error 态与原因，等用户修配置
+        // （reconcile 收到新规格会重建隧道）。
+        if (rt.fatal)
+            return;
         rt.error = message;
         rt.state = 'error';
         rt.fatal = false;

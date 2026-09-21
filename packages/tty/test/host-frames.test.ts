@@ -510,3 +510,73 @@ describe('killLocalShellTerminal（D48：Windows 不能带 signal）', () => {
     expect(() => killLocalShellTerminal({ kill: () => { throw new Error('boom') } }, 'linux')).not.toThrow()
   })
 })
+
+/* ------------------- agent 侧会话（tty_open / tty_close / tty_stats，0.20.0） ------------------- */
+
+describe('agent 开的终端会话（tty_open / tty_close）', () => {
+  it('openAgentSession → 无客户端会话入表，且不被孤儿回收器收掉', async () => {
+    const h = makeHarness()
+    const { sid } = await h.server.openAgentSession({ cwd: tmpdir() })
+    const snapshot = h.sessions.list().find((s) => s.sid === sid)
+    expect(snapshot).toBeDefined()
+    expect(snapshot?.owner).toBe('agent')
+    // 关键：没有客户端绑定的 agent 会话，grace=0 的回收也不能杀它
+    // （否则长驻任务刚起来就被秒收）
+    await h.sessions.reapOrphans(0)
+    expect(h.sessions.get(sid)).toBeDefined()
+    expect(h.ptys[0].killCalls).toEqual([])
+    await h.sessions.disposeAll()
+  })
+
+  it('用户开的会话 owner=user；孤儿（断连）仍按 grace 回收——豁免只给 agent', async () => {
+    const h = makeHarness()
+    const ws = h.connect()
+    await spawnLocal(ws, 'user1')
+    expect(h.sessions.list()[0]?.owner).toBe('user')
+    ws.emit('close') // 断开 → 孤儿
+    await until(() => h.sessions.listForAttach()[0]?.attachable === true)
+    await h.sessions.reapOrphans(0)
+    expect(h.sessions.get('user1')).toBeUndefined()
+  })
+
+  it('closeAgentSession 关得掉 agent 自己的会话', async () => {
+    const h = makeHarness()
+    const { sid } = await h.server.openAgentSession({ cwd: tmpdir() })
+    await h.server.closeAgentSession(sid)
+    expect(h.sessions.get(sid)).toBeUndefined()
+  })
+
+  it('closeAgentSession 拒绝关用户的会话（agent 不越权结束用户正在用的标签）', async () => {
+    const h = makeHarness()
+    const ws = h.connect()
+    await spawnLocal(ws, 'user2')
+    await expect(h.server.closeAgentSession('user2')).rejects.toThrow(/owner=user/)
+    // 拒绝之后会话必须仍然活着
+    expect(h.sessions.get('user2')).toBeDefined()
+    expect(h.ptys[0].killCalls).toEqual([])
+    await h.sessions.disposeAll()
+  })
+
+  it('超过会话上限时 tty_open 报错而不是静默失败', async () => {
+    const h = makeHarness({ maxSessions: 1 })
+    const ws = h.connect()
+    await spawnLocal(ws, 'only')
+    await expect(h.server.openAgentSession({ cwd: tmpdir() })).rejects.toThrow(/上限/)
+    await h.sessions.disposeAll()
+  })
+
+  it('cwd 不存在 → 明确报错（不落到 node-pty 的难懂异常）', async () => {
+    const h = makeHarness()
+    await expect(h.server.openAgentSession({ cwd: '/definitely/not/here/xyz' })).rejects.toThrow(/cwd 不存在/)
+  })
+
+  it('agent 开的会话对面板可见（sessions 帧广播，带 owner=agent）', async () => {
+    const h = makeHarness()
+    const ws = h.connect() // 模拟已打开的面板
+    const { sid } = await h.server.openAgentSession({ cwd: tmpdir() })
+    const frame = await ws.waitFor('sessions')
+    const list = frame.list as Array<{ sid: string; owner: string }>
+    expect(list.some((s) => s.sid === sid && s.owner === 'agent')).toBe(true)
+    await h.sessions.disposeAll()
+  })
+})

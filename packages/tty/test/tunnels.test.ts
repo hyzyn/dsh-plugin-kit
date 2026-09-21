@@ -163,6 +163,53 @@ describe('TunnelManager 连接簿缺失 → fatal（D15 ①）', () => {
   })
 })
 
+describe('本地监听失败必须粘住（D53）', () => {
+  it('本地端口被占：不因 SSH 侧成功而谎报 active', async () => {
+    const occupied = net.createServer()
+    await new Promise<void>((resolve) => occupied.listen(0, '127.0.0.1', resolve))
+    const takenPort = (occupied.address() as AddressInfo).port
+    const t = makeHarness()
+    try {
+      t.manager.reconcile([specOf({ localPort: takenPort })])
+      await until(() => t.status()?.state === 'error')
+      expect(t.status()?.error).toContain('EADDRINUSE')
+      // 即便 SSH 侧随后 ready，也不能把「本地没监听成功」粉饰成 active
+      for (const c of t.clients) c.trigger('ready')
+      expect(t.status()?.state).toBe('error')
+      expect(t.status()?.error).toContain('EADDRINUSE')
+    } finally {
+      t.manager.disposeAll()
+      occupied.close()
+    }
+  })
+
+  it('本地监听失败后，SSH 侧的失败/重连不得把它刷回 connecting（生产时序）', async () => {
+    // 生产实测（SSH 目标不可达 + 本地端口被另一个 profile 的宿主占用）：
+    //   listen EADDRINUSE → error → SSH error → scheduleRetry（把 fatal 清回 false）
+    //   → 重试定时器 → connectTunnel → state='connecting' → 又挂 20s……
+    // 结果是状态几乎永远停在 connecting，而 error 文字还挂着——用户看到「点着
+    // 连接中、却明明有报错」。本地监听失败是 fatal，不该进这个循环。
+    const occupied = net.createServer()
+    await new Promise<void>((resolve) => occupied.listen(0, '127.0.0.1', resolve))
+    const takenPort = (occupied.address() as AddressInfo).port
+    const t = makeHarness()
+    try {
+      t.manager.reconcile([specOf({ localPort: takenPort })])
+      await until(() => t.status()?.state === 'error')
+      // SSH 侧失败（目标不可达的真实形态）
+      for (const c of t.clients) c.trigger('error', new Error('connect ETIMEDOUT'))
+      await until(() => t.clients.length >= 1)
+      // 越过首轮重试窗口（1000ms）——旧实现在这里会被 connectTunnel 改成 connecting
+      await new Promise((r) => setTimeout(r, 1300))
+      expect(t.status()?.state).toBe('error')
+      expect(t.status()?.error).toContain('EADDRINUSE')
+    } finally {
+      t.manager.disposeAll()
+      occupied.close()
+    }
+  })
+})
+
 describe('TunnelManager live 集合与计数（D15 ②③）', () => {
   let t: Harness
   let port: number

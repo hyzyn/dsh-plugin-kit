@@ -120,7 +120,7 @@ const TERM_RE = /^[A-Za-z0-9_.+-]+$/;
 const REAPER_INTERVAL_MS = 10_000;
 /** 服务器状态条的采集/推送间隔（mvp 固定 1s，不做配置项）。 */
 const STATS_INTERVAL_MS = 1000;
-const TTY_GUIDANCE = '本机已安装 dsh-tty 插件（终端面板）：Web GUI 侧边栏的「终端」入口可打开交互终端（xterm.js + PTY），可运行任意命令与 TUI 程序（vim/htop 等），支持多标签页与断线自动重连（刷新页面/网络抖动后会话保活并恢复现场）；新标签默认在当前会话工作目录打开。标签栏「+」菜单还能开 SSH 标签页（ssh2 原生连接，连接簿在设置卡片维护，支持 agent forwarding 与主机指纹 TOFU 钉扎），像本地终端一样操作远程主机。设置卡片开启「会话持久化（tmux）」后，新开的本地/SSH 标签默认由 tmux server 托管（宿主重启/断线超时后重开即恢复现场），长任务建议在持久化开启时运行。长驻进程（dev server、watch、交互式程序）应引导用户到终端面板里运行，不要在 bash 工具里挂起等待；用户提到「开个终端 / 在终端里跑 / SSH 到某台机器」时引导其打开该面板。agent 侧配套工具：tty_list 列出活跃终端会话（含 SSH 的 target 与实时 cwd），tty_capture 读取近期输出（默认清洗 ANSI；last:true 拿「上一条命令」的输出+退出码），tty_screen 读取当前可见屏幕（可读懂 vim/htop 等 TUI），tty_expect 用正则等待输出中的就绪信号（如 dev server URL、构建完成），tty_send 发送按键，tunnel_list 列出端口转发隧道状态——操作会实时显示在用户终端里。SFTP 文件传输：面板内可对 SSH 连接簿条目（或 SSH 连接对话框当前填写的信息）打开文件浏览（上传/下载/建目录/重命名/删除），传输期间进度条右侧 ✕ 可取消（半截文件自动清理）；agent 配套 sftp_list 列远程目录、sftp_tree 递归看目录结构、sftp_read 读远程文本文件（≤1MB）、sftp_write 写远程文本文件（≤1MB，可追加）、sftp_mkdir 建目录（parents 可逐级补齐）、sftp_rename 重命名/移动、sftp_remove 删除（目录需 recursive），book 参数为连接簿条目名。端口转发：连接簿条目可配本地/远程隧道（如把远程数据库映射到本地端口），宿主自动保活重连，用户提到「转发端口 / 访问远程库」时引导其到终端面板设置卡片配置。推荐流程：tty_send 启动长任务 → tty_expect 等就绪标记 → tty_capture{last:true} 拿结果。';
+const TTY_GUIDANCE = '本机已安装 dsh-tty 插件（终端面板）：Web GUI 侧边栏的「终端」入口可打开交互终端（xterm.js + PTY），可运行任意命令与 TUI 程序（vim/htop 等），支持多标签页与断线自动重连（刷新页面/网络抖动后会话保活并恢复现场）；新标签默认在当前会话工作目录打开。标签栏「+」菜单还能开 SSH 标签页（ssh2 原生连接，连接簿在设置卡片维护，支持 agent forwarding 与主机指纹 TOFU 钉扎），像本地终端一样操作远程主机。设置卡片开启「会话持久化（tmux）」后，新开的本地/SSH 标签默认由 tmux server 托管（宿主重启/断线超时后重开即恢复现场），长任务建议在持久化开启时运行。长驻进程（dev server、watch、交互式程序）用 tty_open 开一个会话跑（或引导用户到终端面板里运行），不要在 bash 工具里挂起等待；用户提到「开个终端 / 在终端里跑 / SSH 到某台机器」时引导其打开该面板。agent 侧配套工具：tty_list 列出活跃终端会话（含 SSH 的 target 与实时 cwd），tty_capture 读取近期输出（默认清洗 ANSI；last:true 拿「上一条命令」的输出+退出码），tty_screen 读取当前可见屏幕（可读懂 vim/htop 等 TUI），tty_expect 用正则等待输出中的就绪信号（如 dev server URL、构建完成），tty_send 发送按键，tunnel_list 列出端口转发隧道状态——操作会实时显示在用户终端里。SFTP 文件传输：面板内可对 SSH 连接簿条目（或 SSH 连接对话框当前填写的信息）打开文件浏览（上传/下载/建目录/重命名/删除），传输期间进度条右侧 ✕ 可取消（半截文件自动清理）；agent 配套 sftp_list 列远程目录、sftp_tree 递归看目录结构、sftp_read 读远程文本文件（≤1MB）、sftp_write 写远程文本文件（≤1MB，可追加）、sftp_mkdir 建目录（parents 可逐级补齐）、sftp_rename 重命名/移动、sftp_remove 删除（目录需 recursive），book 参数为连接簿条目名。端口转发：连接簿条目可配本地/远程隧道（如把远程数据库映射到本地端口），宿主自动保活重连，用户提到「转发端口 / 访问远程库」时引导其到终端面板设置卡片配置。推荐流程：tty_send 启动长任务 → tty_expect 等就绪标记 → tty_capture{last:true} 拿结果。';
 /** 本地 PTY 包装成 TermHandle（resize/kill 仍是透传 node-pty 的内部耦合；防御性降级）。 */
 function wrapLocalPty(handle) {
     let resizeWarned = false;
@@ -848,6 +848,7 @@ export class SessionManager {
             target: session.target,
             startedAt: session.startedAt,
             lastOutputAt: session.lastOutputAt,
+            owner: session.owner,
             ...(session.tmuxName !== null ? { persist: true } : {}),
         };
         return session.handle.pid === null ? base : { ...base, pid: session.handle.pid };
@@ -905,10 +906,16 @@ export class SessionManager {
      * 回收孤儿会话（回收器定时调用）：超过保活期的回收。graceMs<=0 时立即回收
      * 全部孤儿——孤儿只在「断开瞬间 grace>0」时产生，热改 grace 为 0 不能只管
      * 以后：已存在的孤儿会永久占 PTY 与名额，满额后新标签一直报「会话数已达上限」。
+     *
+     * agent 开的会话（owner:'agent'）不走这条：它从出生起就没有客户端，判据
+     * 「orphanedAt !== null」对它要么永不成立（不回收）要么被误当孤儿（一开就收）。
+     * 它的关闭入口是 agent 的 tty_close 或用户在面板里接管后关标签。
      */
     async reapOrphans(graceMs) {
         const now = Date.now();
         for (const session of [...this.sessions.values()]) {
+            if (session.owner === 'agent')
+                continue;
             if (session.orphanedAt === null)
                 continue;
             if (graceMs <= 0 || now - session.orphanedAt >= graceMs) {
@@ -946,6 +953,8 @@ export class TtyServer {
     wss = new WebSocketServer({ noServer: true, maxPayload: 4 * 1024 * 1024 });
     /** 在途的持久会话创建（tmuxName → 创建 promise）：dsh 重启后多页面并发恢复时收敛竞态。 */
     pendingTmux = new Map();
+    /** 已接线的面板连接（sessions 帧广播用；比 wss.clients 更贴合「面板」语义，单测也可驱动）。 */
+    panels = new Set();
     /** WS 闸门（插件禁用时关闭）：拒绝新升级 + 断开存量连接。 */
     wsGateOpen = true;
     /** 服务器状态条总开关（配置热生效；关闭时停掉全部采集，重开按订阅恢复）。 */
@@ -1126,6 +1135,9 @@ export class TtyServer {
     }
     /** 帧只发给订阅了该会话的客户端（绑定键寻址，回帧带各连接自己的 sid，跨窗口共享也成立）。 */
     sendStats(session, frame) {
+        // agent 侧 tty_stats 的数据源：不留档的话「没有面板订阅」的会话（agent 开的
+        // 终端天然没有面板订阅）永远拿不到指标
+        session.lastStats = frame;
         for (const bindingKey of session.statsSubs) {
             const client = session.clients.get(bindingKey);
             if (client === undefined)
@@ -1158,6 +1170,8 @@ export class TtyServer {
         const conn = { id: randomUUID(), open: true };
         /** 本连接上的会话表（sid → session）；单连接多会话（标签页）。 */
         const local = new Map();
+        this.panels.add(ws);
+        ws.on('close', () => { this.panels.delete(ws); });
         const cleanupAll = async () => {
             const all = [...local.entries()];
             local.clear();
@@ -1250,6 +1264,145 @@ export class TtyServer {
         if (session.tmuxName !== null)
             void session.handle.tmuxRefresh?.();
     }
+    /**
+     * agent 开一个本地终端（tty_open 的实现）。
+     *
+     * 设计前提（与用户确认过）：**开成面板里的普通会话，不做隐形会话** ——
+     * 会话照常进 `sessions` 快照、面板能看见并接管、用户随时可以关。理由是
+     * D06 那类「僵尸会话」正是隐形会话的产物：用户不知道机器上跑着什么。
+     *
+     * 与 `spawn` 帧的差别只有两处：没有 ws（clients 空表）、owner:'agent'
+     * （逃过孤儿回收，见 reapOrphans）。
+     */
+    async openAgentSession(input) {
+        if (!this.sessions.canSpawn()) {
+            throw new Error(`会话数已达上限（${this.sessions.limitValue}）——先在面板里关掉不用的标签，或调大「并发会话上限」`);
+        }
+        const cwd = typeof input.cwd === 'string' && input.cwd.trim() !== '' ? input.cwd.trim() : this.options.cwd;
+        if (!existsSync(cwd))
+            throw new Error(`cwd 不存在: ${cwd}`);
+        const sid = randomUUID();
+        const command = typeof input.command === 'string' && input.command.trim() !== '' ? input.command.trim() : null;
+        // 命令型会话不做 tmux 持久化（命令短命，与 spawn 帧同规则）
+        const persistName = command === null && typeof input.persistName === 'string' && input.persistName !== '' && this.options.persistence === 'tmux'
+            ? sanitizePersistName(input.persistName, sid)
+            : null;
+        // 同 persistName 已有存活会话：直接复用（跨窗口共享同语义），不新建 PTY
+        if (persistName !== null) {
+            const existing = this.sessions.findByTmuxName(persistName);
+            if (existing !== undefined)
+                return { sid: existing.id, persist: true };
+        }
+        const { session, degraded } = await this.createLocalSession({
+            sid,
+            cols: input.cols,
+            rows: input.rows,
+            cwd,
+            command,
+            persistName,
+            client: null, // agent 路径：无客户端
+            local: new Map(),
+            owner: 'agent',
+        });
+        // 面板可见性：新会话推给所有已连接的面板（客户端据此建「agent 开的」标签）
+        this.broadcastSessions();
+        return { sid: session.id, persist: session.tmuxName !== null && !degraded };
+    }
+    /** agent 关掉一个会话（tty_close 的实现）：只允许关 agent 自己开的，用户标签不越权。 */
+    async closeAgentSession(sid) {
+        const session = this.sessions.get(sid);
+        if (session === undefined || session.closed)
+            throw new Error(`会话不存在或已结束: ${sid}`);
+        if (session.owner !== 'agent') {
+            throw new Error(`会话 ${sid} 是用户在面板里开的（owner=user）：请在面板里关闭那个标签，不要由 agent 越权结束`);
+        }
+        this.flushPendingOutput(session);
+        this.killSessionNow(session);
+        this.broadcastSessions();
+        return { ok: true };
+    }
+    /**
+     * 把当前会话清单推给所有已连接面板（agent 开关会话后让面板即时反映）。
+     *
+     * 用自己登记的连接集合而不是 `this.wss.clients`：后者只在真实 WS 服务器
+     * 接线时才有值（单测直接调 onConnection 时为空），且语义上我们要的是
+     * 「已接线的面板连接」。
+     */
+    broadcastSessions() {
+        const list = this.sessions.listForAttach();
+        for (const ws of this.panels) {
+            send(ws, { t: 'sessions', list, tmux: [] });
+        }
+    }
+    /**
+     * 取一次会话所在机器的指标（tty_stats 的实现）。
+     *
+     * 按需采样、不依赖面板是否订阅状态条：本地会话直接跑本地采样器；SSH 会话在
+     * 同一连接上开一次性 exec channel 跑一帧脚本（statsExec 的常驻循环不适合
+     * 一次性取数，故用 handle.statsExec 的单帧变体——没有的话返回最近留档）。
+     * 失败不抛给 agent 的判断链：返回 available:false + 原因。
+     */
+    async sampleStats(session) {
+        if (session.kind === 'local') {
+            try {
+                const frame = await localStatsSampler().sample();
+                if (!hasStatsData(frame))
+                    return { available: false, reason: '本机未采到可用指标（平台不支持或字段全缺）' };
+                session.lastStats = frame;
+                return { available: true, frame };
+            }
+            catch (error) {
+                return { available: false, reason: `本机采样失败: ${error instanceof Error ? error.message : String(error)}` };
+            }
+        }
+        const statsExec = session.handle.statsExec;
+        if (statsExec === undefined) {
+            // 没有 exec 通道（或远端不支持）：退回最近留档（面板订阅过就有）
+            if (session.lastStats !== null)
+                return { available: true, frame: session.lastStats };
+            return { available: false, reason: '该 SSH 会话没有可用的采集通道，且没有历史留档' };
+        }
+        // 一次性取一帧：脚本是常驻循环，收到第一帧即 stop
+        return await new Promise((resolve) => {
+            let settled = false;
+            let handle = null;
+            const finish = (result) => {
+                if (settled)
+                    return;
+                settled = true;
+                try {
+                    handle?.stop();
+                }
+                catch {
+                    /* 已停 */
+                }
+                resolve(result);
+            };
+            const timer = setTimeout(() => { finish({ available: false, reason: '远端采集超时（3s）' }); }, 3000);
+            timer.unref?.();
+            try {
+                handle = statsExec(buildRemoteStatsCommand(), (line) => {
+                    const frame = parseStatsLine(line);
+                    if (frame === null)
+                        return;
+                    clearTimeout(timer);
+                    session.lastStats = frame;
+                    finish({ available: true, frame });
+                }, () => {
+                    clearTimeout(timer);
+                    // 一帧未读就结束：远端可能非 POSIX（Windows 远端走 PowerShell 版）
+                    if (session.lastStats !== null)
+                        finish({ available: true, frame: session.lastStats });
+                    else
+                        finish({ available: false, reason: '远端采集通道结束且未产出数据' });
+                });
+            }
+            catch (error) {
+                clearTimeout(timer);
+                finish({ available: false, reason: `远端采集启动失败: ${error instanceof Error ? error.message : String(error)}` });
+            }
+        });
+    }
     /** 等待同 tmuxName 的在途创建完成；返回可重绑定的会话（null = 无在途/已失败）。 */
     async waitPendingTmux(tmuxName) {
         const inflight = this.pendingTmux.get(tmuxName);
@@ -1261,6 +1414,109 @@ export class TtyServer {
         catch {
             return null;
         }
+    }
+    /**
+     * 创建本地会话（0.20.0 抽出，供 WS `spawn` 帧与 agent `tty_open` 共用）。
+     *
+     * 与连接无关是这次抽出的全部意义：`spawn` 帧带一个 ws（用户开的标签要立刻
+     * ready + 收输出），`tty_open` 没有 ws（agent 开的会话从出生起就没有客户端，
+     * 靠 owner:'agent' 逃过孤儿回收）。两条路径共用同一套：
+     *   - tmux 持久化探测与资源准备（同 persistName 复用既有会话，名额不翻倍）；
+     *   - cwd 校验、spawnPlan 组装、并发在途收敛（pendingTmux）；
+     *   - 会话对象装配 + 输出下行挂载 + 退出收尾。
+     *
+     * 调用方负责：上限检查（canSpawn）、错误帧、ready/notice 的呈现。
+     * `client` 为 null 时创建无客户端的会话（agent 路径）。
+     */
+    async createLocalSession(input) {
+        const { sid, cols, rows, cwd, command, persistName, client, local, owner } = input;
+        const subprocess = this.ctx.get('subprocess');
+        if (subprocess === undefined)
+            throw new Error('subprocess 服务不可用');
+        const wantsPersist = persistName !== null;
+        let spawnPlan = command !== null
+            ? buildCommandSpawn(this.options.shell, this.options.term, this.options.colorTerm, command)
+            : buildShellSpawn(this.options.shell, this.options.term, this.options.colorTerm, this.options.shellIntegration);
+        let tmuxName = null;
+        let degraded = false;
+        if (wantsPersist) {
+            const probe = await probeTmux();
+            if (probe.available) {
+                tmuxName = persistName;
+                ensureTmuxAssets({ shell: this.options.shell, colorTerm: this.options.colorTerm, shellIntegration: this.options.shellIntegration, passthrough: probe.passthrough });
+                spawnPlan = buildTmuxSpawnPlan({ shell: this.options.shell, term: this.options.term, colorTerm: this.options.colorTerm, tmuxName });
+            }
+            else {
+                degraded = true; // tmux 不在：降级普通会话，由调用方给灰字提示
+            }
+        }
+        const create = (async () => {
+            const handle = wrapLocalPty(await subprocess.spawnTerminal({
+                argv: spawnPlan.argv,
+                rows: clampInt(rows, 24, 2, 200),
+                cols: clampInt(cols, 80, 2, 500),
+                cwd,
+                env: { TERM: this.options.term, COLORTERM: this.options.colorTerm, ...spawnPlan.env },
+                graceMs: 5000,
+            }));
+            if (tmuxName !== null) {
+                handle.tmuxTeardown = () => killTmuxSession(tmuxName);
+                handle.tmuxRefresh = () => refreshTmuxClient(tmuxName);
+            }
+            const next = {
+                id: sid,
+                handle,
+                clients: new Map(),
+                closed: false,
+                paused: false,
+                owner,
+                cwd,
+                kind: 'local',
+                target: '',
+                startedAt: Date.now(),
+                lastOutputAt: Date.now(),
+                lastInputAt: Date.now(),
+                buffer: '',
+                decoder: new StringDecoder('utf8'),
+                screen: this.createScreen(clampInt(cols, 80, 2, 500), clampInt(rows, 24, 2, 200)),
+                orphanedAt: null,
+                shellState: createShellState(),
+                pendingOutput: '',
+                flushTimer: null,
+                tmuxName,
+                statsSubs: new Set(),
+                lastStats: null,
+                stats: null,
+                statsFailed: false,
+            };
+            // 绑定：有客户端才绑（agent 路径 client === null → 保持空表 = 无客户端会话）。
+            // 空表但 owner:'agent'，故不会被孤儿回收器当孤儿收掉。
+            if (client !== null)
+                next.clients.set(client.connId + ':' + sid, { ws: client.ws, sid });
+            local.set(sid, next);
+            this.sessions.add(next);
+            // spawn 在途连接断开（0.19.0）：cleanupAll 已跑过、扫不到此刻才入表的
+            // 会话——转孤儿（等重连 attach 或回收器清理）。不处理的话会话绑死已
+            // 关闭的 ws 且 orphanedAt 永为 null：回收器永不扫到，PTY 与名额永久泄漏，
+            // 重连 attach 还被拒并谎报「会话已连接到其它窗口」。
+            if (client !== null && (!client.ws.readyState || client.ws.readyState !== WebSocket.OPEN)) {
+                next.clients.clear();
+                next.orphanedAt = Date.now();
+            }
+            return next;
+        })();
+        if (tmuxName !== null) {
+            const registered = create.catch(() => null);
+            this.pendingTmux.set(tmuxName, registered);
+            void registered.finally(() => {
+                if (this.pendingTmux.get(tmuxName) === registered)
+                    this.pendingTmux.delete(tmuxName);
+            });
+        }
+        const session = await create;
+        this.attachOutput(session);
+        this.watchDone(session, local);
+        return { session, wantsPersist, degraded };
     }
     /**
      * 立即终止会话：同步退役 + 顶层 shell 直接 SIGKILL，让 done/exit 帧立刻可发；
@@ -1357,91 +1613,33 @@ export class TtyServer {
                     send(ws, { t: 'error', sid, m: `cwd 不存在: ${cwd}` });
                     return;
                 }
-                const subprocess = this.ctx.get('subprocess');
-                if (subprocess === undefined) {
-                    send(ws, { t: 'error', sid, m: 'subprocess 服务不可用' });
-                    return;
-                }
-                const wantsPersist = persistName !== null;
-                let spawnPlan = command !== null
-                    ? buildCommandSpawn(this.options.shell, this.options.term, this.options.colorTerm, command)
-                    : buildShellSpawn(this.options.shell, this.options.term, this.options.colorTerm, this.options.shellIntegration);
-                let tmuxName = null;
-                if (wantsPersist) {
-                    const probe = await probeTmux();
-                    if (probe.available) {
-                        tmuxName = persistName;
-                        ensureTmuxAssets({ shell: this.options.shell, colorTerm: this.options.colorTerm, shellIntegration: this.options.shellIntegration, passthrough: probe.passthrough });
-                        spawnPlan = buildTmuxSpawnPlan({ shell: this.options.shell, term: this.options.term, colorTerm: this.options.colorTerm, tmuxName });
-                    }
-                }
-                // 在途注册：tmuxName 相同的并发 spawn 等本次创建完成后重绑定（防竞态翻倍）
-                const create = (async () => {
-                    const handle = wrapLocalPty(await subprocess.spawnTerminal({
-                        argv: spawnPlan.argv,
-                        rows: clampInt(msg.rows, 24, 2, 200),
-                        cols: clampInt(msg.cols, 80, 2, 500),
+                // 会话创建走共用工厂（与 agent tty_open 同一套）；用户开的标签带连接，
+                // 立刻 ready + 收输出
+                let created;
+                try {
+                    created = await this.createLocalSession({
+                        sid,
+                        cols: msg.cols,
+                        rows: msg.rows,
                         cwd,
-                        env: { TERM: this.options.term, COLORTERM: this.options.colorTerm, ...spawnPlan.env },
-                        graceMs: 5000,
-                    }));
-                    if (tmuxName !== null) {
-                        handle.tmuxTeardown = () => killTmuxSession(tmuxName);
-                        handle.tmuxRefresh = () => refreshTmuxClient(tmuxName);
-                    }
-                    const next = {
-                        id: sid,
-                        handle,
-                        clients: new Map([[conn.id + ':' + sid, { ws, sid }]]),
-                        closed: false,
-                        paused: false,
-                        cwd,
-                        kind: 'local',
-                        target: '',
-                        startedAt: Date.now(),
-                        lastOutputAt: Date.now(),
-                        lastInputAt: Date.now(),
-                        buffer: '',
-                        decoder: new StringDecoder('utf8'),
-                        screen: this.createScreen(clampInt(msg.cols, 80, 2, 500), clampInt(msg.rows, 24, 2, 200)),
-                        orphanedAt: null,
-                        shellState: createShellState(),
-                        pendingOutput: '',
-                        flushTimer: null,
-                        tmuxName,
-                        statsSubs: new Set(),
-                        stats: null,
-                        statsFailed: false,
-                    };
-                    local.set(sid, next);
-                    this.sessions.add(next);
-                    // spawn 在途连接断开（0.19.0）：cleanupAll 已跑过、扫不到此刻才入表的
-                    // 会话——转孤儿（等重连 attach 或回收器清理）。不处理的话会话绑死已
-                    // 关闭的 ws 且 orphanedAt 永为 null：回收器永不扫到，PTY 与名额永久泄漏，
-                    // 重连 attach 还被拒并谎报「会话已连接到其它窗口」。
-                    if (!conn.open || ws.readyState !== WebSocket.OPEN) {
-                        next.clients.clear();
-                        next.orphanedAt = Date.now();
-                    }
-                    return next;
-                })();
-                if (tmuxName !== null) {
-                    const registered = create.catch(() => null);
-                    this.pendingTmux.set(tmuxName, registered);
-                    void registered.finally(() => {
-                        if (this.pendingTmux.get(tmuxName) === registered)
-                            this.pendingTmux.delete(tmuxName);
+                        command,
+                        persistName,
+                        client: { ws, connId: conn.id },
+                        local,
+                        owner: 'user',
                     });
                 }
-                const next = await create;
-                send(ws, { t: 'ready', sid, pid: next.handle.pid, kind: 'local', ...(tmuxName !== null ? { persist: true } : {}) });
-                if (wantsPersist && tmuxName === null) {
+                catch (error) {
+                    send(ws, { t: 'error', sid, m: error instanceof Error ? error.message : String(error) });
+                    return;
+                }
+                const next = created.session;
+                send(ws, { t: 'ready', sid, pid: next.handle.pid, kind: 'local', ...(next.tmuxName !== null ? { persist: true } : {}) });
+                if (created.wantsPersist && created.degraded) {
                     const notice = '\x1b[2m[dsh-tty] 未检测到 tmux，本标签以普通会话运行；安装 tmux 后持久化标签可跨宿主重启恢复现场\x1b[0m\r\n';
                     next.buffer = tailFromSafeBoundary(next.buffer + notice, BUFFER_CAP);
                     send(ws, { t: 'data', sid, d: notice });
                 }
-                this.attachOutput(next);
-                this.watchDone(next, local);
             }
             else if (msg.t === 'ssh') {
                 const sid = typeof msg.sid === 'string' && msg.sid !== '' ? msg.sid : randomUUID();
@@ -1515,6 +1713,7 @@ export class TtyServer {
                         clients: new Map([[conn.id + ':' + sid, { ws, sid }]]),
                         closed: false,
                         paused: false,
+                        owner: 'user',
                         cwd: '',
                         kind: 'ssh',
                         target,
@@ -1530,6 +1729,7 @@ export class TtyServer {
                         flushTimer: null,
                         tmuxName,
                         statsSubs: new Set(),
+                        lastStats: null,
                         stats: null,
                         statsFailed: false,
                     };
@@ -2054,6 +2254,18 @@ function remoteBasename(path) {
     return base === '' ? 'download' : base;
 }
 /** 人类可读文件大小（sftp_list render 用）。 */
+/** 人类可读时长（tty_stats 的「在线时长」用）。 */
+function humanDuration(seconds) {
+    const s = Math.max(0, Math.floor(seconds));
+    const d = Math.floor(s / 86400);
+    const h = Math.floor((s % 86400) / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    if (d > 0)
+        return `${String(d)} 天 ${String(h)} 小时`;
+    if (h > 0)
+        return `${String(h)} 小时 ${String(m)} 分`;
+    return `${String(m)} 分`;
+}
 function humanFileSize(bytes) {
     if (!Number.isFinite(bytes) || bytes <= 0)
         return '0 B';
@@ -2968,7 +3180,7 @@ const plugin = definePlugin({
                 };
             }, 'dsh-tty: settings');
         });
-        // agent 工具集（P1）：tty_list / tty_capture / tty_send。
+        // agent 工具集（P1）：tty_list / tty_open / tty_close / tty_stats / tty_capture / tty_send …
         // 信任模型：与 bash 工具同权（agent 本就能执行任意命令），不额外加确认层；
         // agent 对终端的操作会实时出现在浏览器面板里（同一 PTY），天然可被用户观察。
         // inject: ['tools'] 声明后（见上方），ctx.get('tools') 才能解析到服务。
@@ -3021,6 +3233,7 @@ const plugin = definePlugin({
                                                 startedAt: { type: 'number', required: true },
                                                 lastOutputAt: { type: 'number', required: true },
                                                 persist: { type: 'boolean' },
+                                                owner: { type: 'string', required: true },
                                             },
                                         },
                                     },
@@ -3029,17 +3242,138 @@ const plugin = definePlugin({
                             render: (_args, value) => {
                                 const sessions = value?.sessions ?? [];
                                 const text = sessions.length === 0
-                                    ? '当前没有活跃的终端面板会话（请引导用户先打开终端面板，或用户尚未打开）'
+                                    ? '当前没有活跃的终端面板会话（可用 tty_open 自己开一个，或引导用户打开终端面板）'
                                     : '终端面板会话：' + sessions.map((s) => {
                                         const where = s.kind === 'ssh' ? `ssh ${s.target}` : `pid=${String(s.pid ?? '?')} cwd=${s.cwd}`;
                                         const persist = s.persist === true ? ' [tmux 持久]' : '';
-                                        return `\n- sid=${s.sid} [${s.kind}]${persist} ${where} (启动于 ${new Date(s.startedAt).toLocaleString()})`;
+                                        const owner = s.owner === 'agent' ? ' [agent 开的]' : '';
+                                        return `\n- sid=${s.sid} [${s.kind}]${owner}${persist} ${where} (启动于 ${new Date(s.startedAt).toLocaleString()})`;
                                     }).join('');
                                 return [{ type: 'text', text }];
                             },
                         },
                         async execute() {
                             return { sessions: sessions.list() };
+                        },
+                    })));
+                    activeDisposers.push(tools.register(defineTool({
+                        name: 'tty_open',
+                        description: '开一个新的终端会话（本地 shell，或 `command` 直接跑一条长驻命令，如 dev server）。会话出现在用户的终端面板里、用户可见可接管，长驻进程与 watch 类任务应该用它（不要在 bash 工具里挂起等待）。开了之后用 tty_expect 等就绪信号、tty_capture{last:true} 拿结果；用完用 tty_close 关闭。cwd 缺省为插件配置的工作目录。',
+                        parameters: {
+                            cwd: { type: 'string', description: '工作目录（必须是已存在的绝对路径）；缺省用插件配置的 cwd' },
+                            command: { type: 'string', description: '直接执行的命令（非交互）；给出时不做 tmux 持久化。缺省 = 交互式 shell' },
+                            persistName: { type: 'string', description: 'tmux 持久会话名（开启「会话持久化」时有效；同名复用既有会话）。适合宿主重启后仍需存活的长任务' },
+                            cols: { type: 'number', description: '列数（2~500，默认 80）' },
+                            rows: { type: 'number', description: '行数（2~200，默认 24）' },
+                        },
+                        output: {
+                            schema: {
+                                type: 'object',
+                                additionalProperties: false,
+                                properties: {
+                                    sid: { type: 'string', required: true },
+                                    persist: { type: 'boolean', required: true },
+                                },
+                            },
+                            render: (_args, value) => {
+                                const v = value;
+                                return [{ type: 'text', text: `已开终端会话 sid=${v.sid ?? '?'}${v.persist === true ? '（tmux 持久）' : ''}。它在用户的终端面板里可见；下一步可用 tty_send 执行命令、tty_expect 等就绪信号。` }];
+                            },
+                        },
+                        async execute(args) {
+                            const input = args;
+                            return await server.openAgentSession({
+                                ...(typeof input.cwd === 'string' ? { cwd: input.cwd } : {}),
+                                ...(typeof input.command === 'string' ? { command: input.command } : {}),
+                                ...(typeof input.persistName === 'string' ? { persistName: input.persistName } : {}),
+                                cols: input.cols,
+                                rows: input.rows,
+                            });
+                        },
+                    })));
+                    activeDisposers.push(tools.register(defineTool({
+                        name: 'tty_close',
+                        description: '关闭一个由 tty_open 开的终端会话（结束其中的进程）。**只能关 agent 自己开的会话**：用户在面板里开的标签会被拒绝，请让用户自己在面板里关，不要越权结束用户正在用的终端。',
+                        parameters: {
+                            sid: { type: 'string', required: true, description: '会话 id（tty_open 或 tty_list 提供）' },
+                        },
+                        output: {
+                            schema: {
+                                type: 'object',
+                                additionalProperties: false,
+                                properties: { ok: { type: 'boolean', required: true } },
+                            },
+                            render: (_args, value) => {
+                                const v = value;
+                                return [{ type: 'text', text: v.ok === true ? '会话已关闭' : '会话未能关闭' }];
+                            },
+                        },
+                        async execute(args) {
+                            const input = args;
+                            if (typeof input.sid !== 'string' || input.sid === '')
+                                throw new Error('sid 必须是非空字符串');
+                            return await server.closeAgentSession(input.sid);
+                        },
+                    })));
+                    activeDisposers.push(tools.register(defineTool({
+                        name: 'tty_stats',
+                        description: '读取某个终端会话所在机器的实时指标（CPU / 内存 / 磁盘 / TCP 连接数 / 网速 / 温度 / 在线时长）——本地会话取宿主机，SSH 会话取那台远程主机（另开一条非 PTY 通道，不影响终端）。部署、压测、排查「机器是不是满了」之前先看它。仅 Linux 远端字段齐全，Windows 远端部分字段可采，macOS/BSD 远端取不到。',
+                        parameters: {
+                            sid: { type: 'string', required: true, description: '会话 id（tty_list 提供）' },
+                        },
+                        output: {
+                            schema: {
+                                type: 'object',
+                                additionalProperties: false,
+                                properties: {
+                                    sid: { type: 'string', required: true },
+                                    available: { type: 'boolean', required: true },
+                                    reason: { type: 'string' },
+                                    target: { type: 'string' },
+                                    cpuPct: { type: 'number' },
+                                    cores: { type: 'number' },
+                                    memPct: { type: 'number' },
+                                    memUsed: { type: 'number' },
+                                    memTotal: { type: 'number' },
+                                    diskPct: { type: 'number' },
+                                    diskUsed: { type: 'number' },
+                                    diskTotal: { type: 'number' },
+                                    tcpConns: { type: 'number' },
+                                    rxRate: { type: 'number' },
+                                    txRate: { type: 'number' },
+                                    tempC: { type: 'number' },
+                                    uptimeSec: { type: 'number' },
+                                },
+                            },
+                            render: (_args, value) => {
+                                const v = value;
+                                if (v.available !== true)
+                                    return [{ type: 'text', text: `会话 ${v.sid ?? '?'} 取不到指标：${v.reason ?? '未知原因'}` }];
+                                const parts = [
+                                    v.cpuPct !== undefined ? `CPU ${v.cpuPct.toFixed(0)}%${v.cores !== undefined ? `（${String(v.cores)} 核）` : ''}` : null,
+                                    v.memPct !== undefined ? `内存 ${v.memPct.toFixed(0)}%${v.memUsed !== undefined && v.memTotal !== undefined ? `（${humanFileSize(v.memUsed)} / ${humanFileSize(v.memTotal)}）` : ''}` : null,
+                                    v.diskPct !== undefined ? `磁盘 ${v.diskPct.toFixed(0)}%${v.diskUsed !== undefined && v.diskTotal !== undefined ? `（${humanFileSize(v.diskUsed)} / ${humanFileSize(v.diskTotal)}）` : ''}` : null,
+                                    v.tcpConns !== undefined ? `TCP 连接 ${String(v.tcpConns)}` : null,
+                                    v.rxRate !== undefined ? `网速 ↓${humanFileSize(v.rxRate)}/s ↑${humanFileSize(v.txRate ?? 0)}/s` : null,
+                                    v.tempC !== undefined ? `温度 ${v.tempC.toFixed(0)}°C` : null,
+                                    v.uptimeSec !== undefined ? `在线 ${humanDuration(v.uptimeSec)}` : null,
+                                ].filter((x) => x !== null);
+                                const head = `会话 ${v.sid ?? '?'}${v.target !== undefined && v.target !== '' ? `（${v.target}）` : ''} 指标：`;
+                                return [{ type: 'text', text: head + (parts.length > 0 ? parts.join(' · ') : '（无可用字段）') }];
+                            },
+                        },
+                        async execute(args) {
+                            const input = args;
+                            if (typeof input.sid !== 'string' || input.sid === '')
+                                throw new Error('sid 必须是非空字符串');
+                            const session = sessions.get(input.sid);
+                            if (session === undefined || session.closed)
+                                throw new Error(`会话不存在或已退出: ${input.sid}`);
+                            const result = await server.sampleStats(session);
+                            if (result.available !== true || result.frame === undefined) {
+                                return { sid: input.sid, available: false, reason: result.reason ?? '未知原因' };
+                            }
+                            return { sid: input.sid, available: true, ...(session.target !== '' ? { target: session.target } : {}), ...result.frame };
                         },
                     })));
                     activeDisposers.push(tools.register(defineTool({
@@ -3096,8 +3430,10 @@ const plugin = definePlugin({
                                     throw new Error('暂无「上一条命令」记录（shell 集成未生效——shell 不受支持或被配置关闭——或尚未执行过命令）；可改用 lines 读尾部');
                                 }
                                 // 保尾截断：last.output 本身已是环形保尾（COMMAND_CAP），这里再
-                                // 收一刀也保尾——最近输出才是 agent 要的
-                                return { sid: input.sid, source: 'last', exitCode: last.exitCode ?? undefined, tail: (useRaw ? last.output : cleanAnsiTail(last.output)).slice(-128 * 1024) };
+                                // 收一刀也保尾——最近输出才是 agent 要的。
+                                // exitCode 用「键不存在」表达缺失（`?? undefined` 会留下一个
+                                // undefined 键，不是无损 JSON 值，宿主输出校验会判工具错，见 B33）。
+                                return { sid: input.sid, source: 'last', ...(last.exitCode === null ? {} : { exitCode: last.exitCode }), tail: (useRaw ? last.output : cleanAnsiTail(last.output)).slice(-128 * 1024) };
                             }
                             const lines = Math.max(1, Math.min(500, typeof input.lines === 'number' && Number.isInteger(input.lines) && input.lines >= 1 ? input.lines : 60));
                             const rawTail = tailLines(session, lines);
@@ -3226,7 +3562,7 @@ const plugin = definePlugin({
                                     // 命令早停：注册时命令在飞（B..D 之间），如今 D 已到仍未匹配
                                     const state = session.shellState;
                                     if (startedInCommand && !state.inCommand && state.lastCommand !== null && state.lastCommand.endedAt >= startedAt) {
-                                        finish({ matched: false, timedOut: false, exitCode: state.lastCommand.exitCode ?? undefined, text: cleanAnsiTail(acc.slice(-6 * 1024)) });
+                                        finish({ matched: false, timedOut: false, ...(state.lastCommand.exitCode === null ? {} : { exitCode: state.lastCommand.exitCode }), text: cleanAnsiTail(acc.slice(-6 * 1024)) });
                                     }
                                 };
                                 const timer = setTimeout(() => {
@@ -3319,7 +3655,10 @@ const plugin = definePlugin({
                         async execute() {
                             // 显式挑字段（0.19.0）：list() 还带 enabled / lastForwardError，
                             // 整包展开会突破 schema 的 additionalProperties:false——PTC 生成的
-                            // TS 类型会漏字段
+                            // TS 类型会漏字段。
+                            // error 必须是「**键不存在**」而不是「键存在但值为 undefined」：后者
+                            // 保留了一个 undefined，不是无损 JSON 值，宿主校验会判
+                            // 「must be a lossless JSON object」直接把工具调用变成 Error（B33 抓到）。
                             return {
                                 tunnels: tunnelManager.list().map((t) => ({
                                     name: t.name,
@@ -3327,7 +3666,7 @@ const plugin = definePlugin({
                                     direction: t.direction,
                                     rule: t.rule,
                                     state: t.state,
-                                    error: t.error ?? undefined,
+                                    ...(t.error === null || t.error === undefined ? {} : { error: t.error }),
                                     connections: t.connections,
                                     totalConnections: t.totalConnections,
                                 })),
@@ -3676,7 +4015,7 @@ const plugin = definePlugin({
                         },
                     })));
                     stateRef.toolsRegistered = true;
-                    console.log('[dsh-tty] agent tools registered (tty_list, tty_capture, tty_screen, tty_expect, tty_send, tunnel_list, sftp_list, sftp_read, sftp_write, sftp_mkdir, sftp_rename, sftp_remove, sftp_tree)');
+                    console.log('[dsh-tty] agent tools registered (tty_list, tty_open, tty_close, tty_stats, tty_capture, tty_screen, tty_expect, tty_send, tunnel_list, sftp_list, sftp_read, sftp_write, sftp_mkdir, sftp_rename, sftp_remove, sftp_tree)');
                 };
                 refreshToolsHook = registerAll;
                 registerAll();
@@ -3731,10 +4070,11 @@ const plugin = definePlugin({
                         text: () => {
                             const list = sessions.list();
                             if (list.length === 0)
-                                return '当前没有活跃的终端面板会话（可引导用户打开「终端」面板，或用 spawn 类工作流替代）。';
-                            return '当前活跃的终端面板会话（可用 tty_capture / tty_screen / tty_expect / tty_send 操作，sid 如下）：\n' + list.map((s) => {
+                                return '当前没有活跃的终端面板会话（可用 tty_open 自己开一个，或引导用户打开「终端」面板）。';
+                            return '当前活跃的终端面板会话（可用 tty_capture / tty_screen / tty_expect / tty_send 操作，用 tty_open / tty_close 开关，sid 如下）：\n' + list.map((s) => {
                                 const where = s.kind === 'ssh' ? `ssh ${s.target}` : `pid=${String(s.pid ?? '?')} cwd=${s.cwd}`;
-                                return `- sid=${s.sid} [${s.kind}]${s.persist === true ? ' [tmux 持久]' : ''} ${where} (最后活动 ${new Date(s.lastOutputAt).toLocaleTimeString()})`;
+                                const owner = s.owner === 'agent' ? ' [agent 开的]' : '';
+                                return `- sid=${s.sid} [${s.kind}]${owner}${s.persist === true ? ' [tmux 持久]' : ''} ${where} (最后活动 ${new Date(s.lastOutputAt).toLocaleTimeString()})`;
                             }).join('\n');
                         },
                     });
