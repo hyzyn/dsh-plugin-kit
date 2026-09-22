@@ -76,6 +76,15 @@ describe('卡片预览渲染器：三种模式都要能跑出产物', () => {
     expect(html, '非活动按钮不该显示忙碌文案').toContain('>Sync<')
     expect(html, '非活动按钮不该显示忙碌文案').toContain('>重建索引<')
     expect(html).toContain('cg_btnBusy')
+    /*
+     * 顺带钉住「索引状态组无条件渲染」：--busy 让 /status 永不 resolve，于是 status
+     * 为 null——这一组仍必须在，否则「刷新」按钮（挂在它的组头）会连同整组一起消失，
+     * 用户就没有就地重试的入口。这是把刷新挪进组头时**必须**同时保证的前提。
+     */
+    expect(html, '索引状态组应无条件渲染').toContain('索引状态')
+    expect(html, '无数据时应给占位而不是空白').toContain('还没读取到索引状态')
+    // 组头右侧的刷新按钮（处于忙碌态：显示「刷新中…」）
+    expect(html).toMatch(/cg_sectionRule"><\/span><button[^>]*>.*?刷新中…/)
   })
 
   it('--result：点「文件」后结果出现在**搜索与查询下方**（不是面板最底部）', () => {

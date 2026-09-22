@@ -375,6 +375,39 @@ describe('UX 重构：面板信息架构（顺序 / 分层）守卫', () => {
     expect(diagnostics, '「查看与诊断」里不该再有文件按钮').not.toContain("busyOr('files'")
   })
 
+  it('「刷新」挂在「索引状态」组头（它刷的就是这一组，不该隔着一屏）', () => {
+    /*
+     * 用户反馈（截图）：「这个状态和刷新状态有关系吗」——箭头从「状态 ● 已索引」格
+     * 指到「刷新状态」按钮。有关系：那个按钮重新读取的正是填充本组网格的数据
+     * （`loadStatus` 只打 `/status`）。但它原先在「索引维护 → 查看与诊断」里，
+     * 与它刷新的东西隔着一整屏，而且两边都叫「状态」。
+     *
+     * 修法：挪进「索引状态」的**组头右侧**——「这个按钮属于这一组」一眼可见。
+     */
+    const refresh = pos("busyOr('status'")
+    expect(refresh, '刷新应在「索引状态」组内').toBeGreaterThan(pos("group('索引状态'"))
+    expect(refresh, '刷新应在「索引维护」之前（即属于索引状态组）').toBeLessThan(pos("group('索引维护'"))
+    // 「查看与诊断」里不该再有它
+    const diagnostics = src.slice(pos("'查看与诊断'"), pos("group('搜索与查询'"))
+    expect(diagnostics, '「查看与诊断」里不该再有刷新状态').not.toContain("busyOr('status'")
+  })
+
+  it('「索引状态」组无条件渲染（否则读取失败时连重试入口都没了）', () => {
+    // 刷新按钮挂在这个组的组头；整组若随 status 一起消失，status 读失败就无从重试
+    expect(src, '缺少无数据占位').toContain('还没读取到索引状态')
+    const groupAt = pos("group('索引状态'")
+    // 组调用前不能是「status ? ...」那种整体守卫
+    const before = src.slice(groupAt - 200, groupAt)
+    expect(before, '「索引状态」组不该被 status 守卫包住').not.toMatch(/status\s*\n\s*\?\s*$/)
+  })
+
+  it('组头尾随动作靠显式细线元素右对齐（::after 会让按钮跑到细线左边）', () => {
+    expect(src).toContain('cg_sectionRule')
+    expect(src, '::after 已换成显式元素').not.toContain('.cg_sectionHead::after')
+    // group 的第三个参数就是尾随动作槽
+    expect(src).toMatch(/const group = \(label, children, action\)/)
+  })
+
   it('诊断包默认折叠（展开的 260px 会把下方结果区推远）', () => {
     // report 的 details 不该带 open:true——它很长，自动展开会挡住结果
     const details = src.slice(pos('诊断包（可整段复制贴 issue）') - 400, pos('诊断包（可整段复制贴 issue）'))

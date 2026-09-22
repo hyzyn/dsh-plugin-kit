@@ -289,7 +289,7 @@ window.__ModuleLoader__.load({
       '.cg_section{display:flex;flex-direction:column;gap:8px}',
       '.cg_sectionHead{display:flex;align-items:center;gap:10px}',
       '.cg_sectionHeadText{font-size:11px;font-weight:700;letter-spacing:.08em;color:var(--dsw-alias-label-tertiary);white-space:nowrap}',
-      '.cg_sectionHead::after{content:"";flex:1;height:1px;background:var(--dsw-alias-border-l1)}',
+      '.cg_sectionRule{flex:1;height:1px;background:var(--dsw-alias-border-l1)}',
       '.cg_grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px}',
       '.cg_cell{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:8px 10px;min-width:0}',
       '.cg_k{color:var(--dsw-alias-label-tertiary);font-size:11px;letter-spacing:.02em}',
@@ -529,12 +529,26 @@ window.__ModuleLoader__.load({
           }))
         : jsx('pre', { className: 'cg_pre', children: (output.raw || '（无输出）').slice(0, 4000) }))
 
-    const group = (label, children) => jsxs('div', {
+    /**
+     * 面板分组：小标题 + 通栏细线 +（可选）尾随动作。
+     *
+     * `action` 是「属于本组的那个动作」——典型例子是「刷新状态」：它重新读取的正是
+     * 「索引状态」这一组的数据，原先却放在「索引维护 → 查看与诊断」里，隔着一整屏
+     * （用户直接问「这个状态和刷新状态有关系吗」）。放到组头右侧，关系一眼可见。
+     *
+     * 细线用显式元素而不是 `::after`：伪元素永远排在盒内最后，尾随按钮会跑到细线
+     * **左边**（贴着标签），右对齐就失效了。
+     */
+    const group = (label, children, action) => jsxs('div', {
       className: 'cg_section',
       children: [
-        jsx('div', {
+        jsxs('div', {
           className: 'cg_sectionHead',
-          children: jsx('span', { className: 'cg_sectionHeadText', children: label }),
+          children: [
+            jsx('span', { className: 'cg_sectionHeadText', children: label }),
+            jsx('span', { className: 'cg_sectionRule' }),
+            ...(action === undefined || action === null ? [] : [action]),
+          ],
         }),
         ...children,
       ],
@@ -1375,9 +1389,12 @@ window.__ModuleLoader__.load({
                 // 先越过两行输入框和 9 个按钮才知道「这个目录索引健不健康」。卡片回答的
                 // 第一个问题应该是「现在状态如何」，所以它紧跟目标项目；紧接着的索引维护
                 // 组就是「看到问题 → 修复它」的那一排按钮（过期警告与「重建索引」上下相邻）。
-                status
-                  ? statusIsStructured
-                    ? group('索引状态', [
+                // 本组**无条件渲染**（即使还没拿到数据）：「刷新」按钮挂在这个组的组头，
+                // 若整组随 status 一起消失，读取失败时用户就没有就地重试的入口了。
+                group('索引状态', status === null
+                  ? [jsx('p', { className: 'cg_mcpMeta', children: '还没读取到索引状态。' })]
+                  : statusIsStructured
+                    ? [
                         jsx('div', { className: 'cg_grid', children: statusCells(status) }),
                         // CG11：CLI 明说「建议重建」时不能只报「● 已索引」——MCP 这时给的是旧图。
                         // 实测补一句「Sync 修不了它」：codegraph 1.6.0 的 `sync` 对「提取器版本
@@ -1402,9 +1419,15 @@ window.__ModuleLoader__.load({
                             ],
                           })
                           : null,
-                      ])
-                    : jsx('pre', { className: 'cg_pre', children: statusRawText })
-                  : null,
+                      ]
+                    : [jsx('pre', { className: 'cg_pre', children: statusRawText })], jsx('button', {
+                  type: 'button',
+                  className: 'cg_btnGhost',
+                  disabled: loading,
+                  title: '重新读取 `codegraph status --json`，刷新本组的索引状态（不会重建索引）',
+                  onClick: loadStatus,
+                  children: busyOr('status', '刷新', '刷新中…'),
+                })),
                 // ── 索引维护（UX 重构：贴着索引状态，按钮分三层）──
                 // 原先把 9 个按钮无层级地铺在一行里：每天点的 Sync、排障用的诊断包、罕见的
                 // 解锁、破坏性的撤销索引完全同样式混排（用户看到的「乱」主要在这里）。
@@ -1500,13 +1523,6 @@ window.__ModuleLoader__.load({
                   jsxs('div', {
                     className: 'cg_toolbarBtns',
                     children: [
-                      jsx('button', {
-                        type: 'button',
-                        className: 'cg_btnGhost',
-                        disabled: loading,
-                        onClick: loadStatus,
-                        children: busyOr('status', '刷新状态', '刷新中…'),
-                      }),
                       jsx('button', {
                         type: 'button',
                         className: 'cg_btnGhost',
