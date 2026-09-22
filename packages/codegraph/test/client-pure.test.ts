@@ -489,6 +489,24 @@ describe('UX 重构：忙碌态指示器（在标题行，不在正文中间）'
     expect(src).toMatch(/prefers-reduced-motion:reduce\)\{\.cg_spinner,\.cg_iconBtn\[data-busy="1"\] svg\{animation:none\}\}/)
   })
 
+  it('问题警告排在数据之前，且不再留在「Agent 集成」里', () => {
+    /*
+     * 用户问「Agent 集成这个是否有必要放在前面」。设置项留在后面是对的，但那一节里
+     * 混着两条「什么都干不了」的警告，被埋在卡片最底部。现在它们进「问题区」，
+     * 位置在「目标项目」之后、「索引状态」之前。
+     */
+    expect(src).toContain('cg_alerts')
+    // 取 JSX 用法（className）而不是 CSS 定义——样式表里先出现该名字，
+    // 直接 indexOf 会把 CSS 那一处当成结构位置（第一版就是这么假失败的）。
+    const alerts = pos("className: 'cg_alerts'")
+    expect(alerts, '问题区应在目标项目之后').toBeGreaterThan(pos("group('目标项目'"))
+    expect(alerts, '问题区应在索引状态之前').toBeLessThan(pos("group('索引状态'"))
+    // Agent 集成里不该再有它们
+    const agent = src.slice(pos("group('Agent 集成'"))
+    expect(agent, 'Agent 集成里不该再有 CLI 警告').not.toContain('cliWarning ?')
+    expect(agent, 'Agent 集成里不该再有托管行警告').not.toContain('defaultWarning ?')
+  })
+
   it('三个查询按钮有就地说明（信息不能只藏在 title 悬停里）', () => {
     /*
      * 用户直接问「这两个按钮做啥的」（指 探索 / 上下文）。它们的信息原先只在 `title`

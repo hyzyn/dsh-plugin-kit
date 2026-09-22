@@ -129,6 +129,30 @@ describe('卡片预览渲染器：三种模式都要能跑出产物', () => {
     expect(telemetryAt, '遥测脚注应在诊断包行**之后**（原先在按钮与结果之间）').toBeGreaterThan(reportAt)
   })
 
+  it('--alert：两条「什么都干不了」的警告排在**数据之前**（不再埋在卡片最底部）', () => {
+    /*
+     * 用户问「Agent 集成这个是否有必要放在前面」。设置项留在后面是对的（配置一次、用很久），
+     * 但那一节里混着两条**问题警告**，它们的严重性是「什么都干不了」：
+     *   - CLI 探测不到 → systemPrompt 不注入，状态 / 搜索 / sync / 重建索引**全部报错**；
+     *   - 托管行指向的目录不是有效索引 → MCP 工具拿到错的/没有的项目上下文。
+     * 却渲染在「Agent 集成」——卡片的**最后一个分区**，要滚到底才看得见。
+     * 现在挪进页面最前的「问题区」；健康时该区完全不渲染。
+     */
+    const html = render(['--alert'], 'codegraph-card-alert.html')
+    const plain = html.replace(/<style[\s\S]*?<\/style>/, '')
+    // 用组头标记定位，不要用裸文本——卡片描述里也有「索引状态」四个字（第一版就是这么假失败的）
+    const head = (label) => plain.indexOf(`cg_sectionHeadText">${label}<`)
+    const alertsAt = plain.indexOf('class="cg_alerts"')
+    expect(alertsAt, '缺少问题区').toBeGreaterThan(-1)
+    expect(alertsAt, '问题区应在目标项目之后').toBeGreaterThan(head('目标项目'))
+    expect(alertsAt, '问题区应在索引状态之前（先看问题、再看数据）').toBeLessThan(head('索引状态'))
+    expect(plain).toContain('探测不到可执行的 CLI 命令')
+    expect(plain).toContain('不是有效索引')
+    // 「Agent 集成」里不该再有它们
+    const agentSection = plain.slice(head('Agent 集成'))
+    expect(agentSection, 'Agent 集成里不该再有 CLI 警告').not.toContain('探测不到可执行的 CLI 命令')
+  })
+
   it('三种模式写不同文件（互不覆盖）', () => {
     render([], 'codegraph-card.html')
     render(['--per-agent'], 'codegraph-card-per-agent.html')

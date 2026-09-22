@@ -15,6 +15,7 @@
  *   node packages/codegraph/scripts/preview-card.mjs --png --tall # 截更高的图（860×1500），看折叠线以下的按钮分组
  *   node packages/codegraph/scripts/preview-card.mjs --result    # 点一次「文件」，看结果区（页签）带内容的样子
  *   node packages/codegraph/scripts/preview-card.mjs --feedback  # 点「重新探测」「诊断包」，看反馈区与脚注的顺序
+ *   node packages/codegraph/scripts/preview-card.mjs --alert     # 让 CLI 探测失败，看页面最前的「问题区」
  *
  * 注意：无头 Chrome 在 DSH 文件沙箱里起不来（它要初始化自己的 sandbox），--png 需要在
  * 普通终端里跑；也可以直接打开 HTML 手动截图。产物目录 .preview/ 已在 .gitignore 里。
@@ -68,8 +69,15 @@ const result = process.argv.includes('--result')
  * 反馈区是空的。
  */
 const feedback = process.argv.includes('--feedback')
-const htmlPath = join(outDir, perAgent ? 'codegraph-card-per-agent.html' : fallback ? 'codegraph-card-fallback.html' : busy ? 'codegraph-card-busy.html' : result ? 'codegraph-card-result.html' : feedback ? 'codegraph-card-feedback.html' : 'codegraph-card.html')
-const pngPath = join(outDir, perAgent ? 'codegraph-card-per-agent.png' : fallback ? 'codegraph-card-fallback.png' : busy ? 'codegraph-card-busy.png' : result ? 'codegraph-card-result.png' : feedback ? 'codegraph-card-feedback.png' : 'codegraph-card.png')
+/**
+ * --alert：把 CLI 探测结果改成「不可用」，渲染出**问题区**（页面最前的那两条警告）。
+ *
+ * 为什么要单独一档：问题区健康时**完全不渲染**，默认预览里看不到——而它正是本次
+ * 改动的对象（把「什么都干不了」的警告从卡片最底部挪到最前面）。
+ */
+const alert = process.argv.includes('--alert')
+const htmlPath = join(outDir, perAgent ? 'codegraph-card-per-agent.html' : fallback ? 'codegraph-card-fallback.html' : busy ? 'codegraph-card-busy.html' : result ? 'codegraph-card-result.html' : feedback ? 'codegraph-card-feedback.html' : alert ? 'codegraph-card-alert.html' : 'codegraph-card.html')
+const pngPath = join(outDir, perAgent ? 'codegraph-card-per-agent.png' : fallback ? 'codegraph-card-fallback.png' : busy ? 'codegraph-card-busy.png' : result ? 'codegraph-card-result.png' : feedback ? 'codegraph-card-feedback.png' : alert ? 'codegraph-card-alert.png' : 'codegraph-card.png')
 
 /** 预览用的假数据：跟随开启、会话目录与绑定路径不同，好让「跟随会话」这一行有内容。 */
 const RESPONSES = {
@@ -87,6 +95,17 @@ const RESPONSES = {
     indexed: true,
     indexState: 'indexed',
     mcp: { mode: 'own', cwd: '/Users/zz/code/my-app', note: '' },
+    // --alert：CLI 探测失败（问题区第一条）+ 托管行指向非索引目录（第二条）
+    cliAvailable: alert ? false : true,
+    ...(alert
+      ? {
+          cliProbeError: 'spawn codegraph ENOENT（宿主进程的 PATH 在启动时就固定了）',
+          cliProbeAt: 1789000000000,
+          indexed: false,
+          indexState: 'not-a-project',
+          effectivePath: '/Users/zz',
+        }
+      : {}),
     // P0：默认 managed（保持原行为）。--per-agent 时改成「per-agent 生效」的形态，
     // 好把那条状态文案与勾选态也看一遍（卡片上新增的 UI 必须有办法离线看）。
     mcpScope: perAgent || fallback ? 'per-agent' : 'managed',

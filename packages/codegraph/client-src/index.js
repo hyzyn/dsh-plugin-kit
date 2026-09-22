@@ -108,6 +108,8 @@ window.__ModuleLoader__.load({
       // 反馈容器：面板统一 12px 间距，但「刚才那次操作的结果」这几条之间用 6px——
       // 收紧后它们读成一个整体，而不是几条互不相干的段落（用户反馈「这一块挺乱」）。
       '.cg_feedback{display:flex;flex-direction:column;gap:6px}',
+      // 问题区（页面最前）：与反馈区同样收紧间距，让几条警告读成一个整体。
+      '.cg_alerts{display:flex;flex-direction:column;gap:6px}',
       '.cg_error{color:var(--dsw-alias-state-error-primary);font-size:12px;margin:0;white-space:pre-wrap}',
       '.cg_ok{color:var(--dsw-alias-state-success-primary);font-size:12px;margin:0}',
       '.cg_sectionTitle{margin:0;font-size:13px;font-weight:700;color:var(--dsw-alias-label-secondary)}',
@@ -1240,6 +1242,24 @@ window.__ModuleLoader__.load({
                 // 先越过两行输入框和 9 个按钮才知道「这个目录索引健不健康」。卡片回答的
                 // 第一个问题应该是「现在状态如何」，所以它紧跟目标项目；紧接着的索引维护
                 // 组就是「看到问题 → 修复它」的那一排按钮（过期警告与「重建索引」上下相邻）。
+                // ── 问题（UX：只放**会让下面全部失效**的警告，且必须在最前面）──
+                //
+                // 这两条原先在「Agent 集成」里——那是卡片的**最后一个分区**，要滚到底才看得见。
+                // 但它们的严重性是「什么都干不了」：
+                //   - CLI 探测不到 → systemPrompt 不注入，状态 / 搜索 / sync / 重建索引**全部报错**；
+                //   - 托管行指向的目录不是有效索引 → MCP 工具拿到的是错的/没有的项目上下文。
+                // 有问题的东西必须排在数据与操作之前，否则用户会先看到一张「看着正常」的卡片，
+                // 点下去才发现全失败。健康时这一块**完全不渲染**，不占位。
+                (cliWarning || defaultWarning)
+                  ? jsxs('div', {
+                    className: 'cg_alerts',
+                    children: [
+                      cliWarning ? jsx('p', { className: 'cg_warn', children: cliWarning }) : null,
+                      cliProbeDetail ? jsx('p', { className: 'cg_probeDetail', children: cliProbeDetail }) : null,
+                      defaultWarning ? jsx('p', { className: 'cg_warn', children: defaultWarning }) : null,
+                    ],
+                  })
+                  : null,
                 // 本组**无条件渲染**（即使还没拿到数据）：「刷新」按钮挂在这个组的组头，
                 // 若整组随 status 一起消失，读取失败时用户就没有就地重试的入口了。
                 group('索引状态', status === null
@@ -1781,9 +1801,6 @@ window.__ModuleLoader__.load({
                         + ' 个 agent 的独立 MCP 进程。全局托管行已挂起（disabled: true），切回 managed 会自动恢复。',
                     })
                     : null,
-                  cliWarning ? jsx('p', { className: 'cg_warn', children: cliWarning }) : null,
-                  cliProbeDetail ? jsx('p', { className: 'cg_probeDetail', children: cliProbeDetail }) : null,
-                  defaultWarning ? jsx('p', { className: 'cg_warn', children: defaultWarning }) : null,
                   // P1 采纳率：模型到底用不用 codegraph。放在开关下面——它是「配置对不对」
                   // 之后的第二个问题（「配好了，模型买账吗」）。
                   adoptionText(adoption) !== ''
