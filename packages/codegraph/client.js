@@ -335,9 +335,12 @@ window.__ModuleLoader__.load({
       // 「生命周期 / 查看与诊断 / 危险」「符号查询 / 改动影响」「跟随与提示词 / MCP 挂载」。
       // 只留文字不带通栏线：组已经有自己的分隔线，组内再画一条就是噪音。
       '.cg_rowLabel{font-size:11px;font-weight:600;letter-spacing:.06em;color:var(--dsw-alias-label-tertiary);white-space:nowrap}',
-      // 危险动作行的起点标记：与上方常规按钮之间留一道缝 + 错误色左侧条，
-      // 让「这一格之后的东西会删数据」在视觉上先响一次（两步确认是第二次）。
-      '.cg_dangerRow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding-top:6px;margin-top:2px;border-top:1px dashed var(--dsw-alias-border-l1)}',
+      // 删除类动作的行内槽位：与左侧常规按钮之间一道**竖向虚线**。
+      // 为什么是行内槽而不是独立一行：独立成行会让「一个按钮 + 右侧大片空白」看起来
+      // 像换行 bug（用户实证提问），而它本来就属于「生命周期」这一档。竖向虚线保留
+      // 「这个与前面那几个不是一类」的标记，又不浪费一整行。
+      // 换行时它可能落到行首，那时左边虚线正好当行首标记，仍然成立。
+      '.cg_dangerSlot{display:inline-flex;align-items:center;padding-left:9px;margin-left:1px;border-left:1px dashed var(--dsw-alias-border-l2)}',
     ].join('\n')
 
     // CG08/CG37：样式引用计数。同一次挂载会把这张卡片注册进多个插槽（0.1.6 上
@@ -1360,6 +1363,31 @@ window.__ModuleLoader__.load({
                         onClick: () => runAction('unlock'),
                         children: busyOr('unlock', '解锁', '解锁中…'),
                       }),
+                      // 撤销索引（唯一的删除类动作）接在生命周期行尾，用**竖向虚线**与
+                      // 常规按钮隔开。
+                      //
+                      // 为什么不再单独占一行：上一版把它放进独立的 .cg_dangerRow，结果是
+                      // 「一个按钮 + 上方虚线 + 右侧大片空白」——用户直接问「为什么单独换行」，
+                      // 看起来像换行 bug 而不是有意的安全标记。而它**本来就是生命周期动作**
+                      // （写索引，与 Sync/重建/解锁同一档），不该另起一档。
+                      //
+                      // 安全上真正的防线是**两步确认**（第一次点击只进入红色确认态，
+                      // 单次误点删不掉任何东西）；视觉分隔只提供边际收益，不值得一整行。
+                      status && status.initialized === true
+                        ? jsx('span', {
+                          className: 'cg_dangerSlot',
+                          children: jsx('button', {
+                            type: 'button',
+                            className: confirmUninit ? 'cg_btnDanger' : 'cg_btnGhost',
+                            disabled: loading,
+                            title: confirmUninit
+                              ? '再点一次即删除 ' + (effectivePath || '(默认项目)') + ' 的 .codegraph/（索引数据全部丢失，源文件不动）'
+                              : 'codegraph uninit：删除该项目的 .codegraph/（索引数据全部丢失，源文件不动）。这是本卡片唯一的删除类动作',
+                            onClick: runUninit,
+                            children: busyOr('uninit', confirmUninit ? '确认撤销？' : '撤销索引', '撤销中…'),
+                          }),
+                        })
+                        : null,
                     ],
                   }),
                   // 查看与诊断：只读动作（刷新卡片数据 / 重新探测 CLI / 看文件结构 / 收诊断包）。
@@ -1406,24 +1434,6 @@ window.__ModuleLoader__.load({
                       }),
                     ],
                   }),
-                  // 危险行：删数据的动作用虚线与常规按钮隔开——「这一格之后会删索引」
-                  // 在视觉上先响一次（两步确认是第二次）。「取消」不在这里：它是进行中
-                  // 动作的急停，已挪到标题行紧挨进度提示（那里才是它被需要的地方）。
-                  status && status.initialized === true
-                    ? jsx('div', {
-                      className: 'cg_dangerRow',
-                      children: jsx('button', {
-                        type: 'button',
-                        className: confirmUninit ? 'cg_btnDanger' : 'cg_btnGhost',
-                        disabled: loading,
-                        title: confirmUninit
-                          ? '再点一次即删除 ' + (effectivePath || '(默认项目)') + ' 的 .codegraph/（索引数据全部丢失，源文件不动）'
-                          : 'codegraph uninit：删除该项目的 .codegraph/（索引数据全部丢失，源文件不动）。这是本卡片唯一的删除类动作',
-                        onClick: runUninit,
-                        children: busyOr('uninit', confirmUninit ? '确认撤销？' : '撤销索引', '撤销中…'),
-                      }),
-                    })
-                    : null,
                   // P2 遥测提示：`init` / `index` 会触发上游的匿名用量统计。只如实转达 CLI 的
                   // 状态并指出关闭方式，**不给开关**——那是用户的全局偏好，存在
                   // ~/.codegraph/telemetry.json，插件替他翻等于越权改别人的全局设置。

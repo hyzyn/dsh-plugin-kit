@@ -325,15 +325,21 @@ describe('UX 重构：面板信息架构（顺序 / 分层）守卫', () => {
     }
   })
 
-  it('索引维护按动作性质分三层（生命周期 / 查看与诊断 / 危险）', () => {
+  it('索引维护按动作性质分层（生命周期 / 查看与诊断），删除类动作带独立标记', () => {
     expect(src).toContain("'生命周期'")
     expect(src).toContain("'查看与诊断'")
-    // 危险动作必须与常规按钮视觉隔开（虚线分隔行），不能混在同一行里。
-    // 取 JSX 用法（className）而不是 CSS 定义——'cg_dangerRow' 先出现在样式表里，
-    // 直接 indexOf 会把 CSS 那一处当成结构位置。
-    expect(src).toContain('cg_dangerRow')
     expect(pos("'生命周期'")).toBeLessThan(pos("'查看与诊断'"))
-    expect(pos("'查看与诊断'")).toBeLessThan(pos("className: 'cg_dangerRow'"))
+    /*
+     * 删除类动作（撤销索引）的落点变过一次，这里钉住**现在**的设计：
+     *   - 它在「生命周期」行内（写索引的动作同档），不另起一行——独立成行会变成
+     *     「一个按钮 + 右侧大片空白」，用户直接问「为什么单独换行」，看起来像换行 bug；
+     *   - 但用竖向虚线槽（.cg_dangerSlot）与常规按钮隔开，排在它们之后。
+     * 取 JSX 用法（className）而不是 CSS 定义——样式表里先出现该名字。
+     */
+    expect(src).toContain('cg_dangerSlot')
+    const slotAt = pos("className: 'cg_dangerSlot'")
+    expect(slotAt, '危险槽应在生命周期行内（查看与诊断之前）').toBeLessThan(pos("'查看与诊断'"))
+    expect(slotAt, '危险槽应排在常规生命周期按钮之后').toBeGreaterThan(pos("busyOr('unlock'"))
   })
 
   it('Sync 是生命周期行的主按钮（cg_btn）：这张卡片最高频的安全操作要做视觉锚点', () => {
@@ -402,12 +408,12 @@ describe('UX 重构：忙碌态指示器（在标题行，不在正文中间）'
     }
   })
 
-  it('「取消」紧挨着它要停的那件事（在 cg_busy 里，不在危险行）', () => {
+  it('「取消」紧挨着它要停的那件事（在 cg_busy 里，不在删除类动作那一格）', () => {
     const busyAt = pos("className: 'cg_busy'")
     const cancelAt = pos("children: '取消'")
-    const dangerAt = pos("className: 'cg_dangerRow'")
+    const slotAt = pos("className: 'cg_dangerSlot'")
     expect(cancelAt, '取消应在忙碌指示器之后').toBeGreaterThan(busyAt)
-    expect(cancelAt, '取消不应在危险行（那是撤销索引的位置）').toBeLessThan(dangerAt)
+    expect(cancelAt, '取消不应与删除类动作同格（那是撤销索引的位置）').toBeLessThan(slotAt)
   })
 
   it('转圈是纯 CSS 且尊重「减少动态效果」', () => {

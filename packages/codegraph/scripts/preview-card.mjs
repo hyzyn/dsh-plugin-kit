@@ -12,6 +12,7 @@
  *   node packages/codegraph/scripts/preview-card.mjs --per-agent # 预览 P0 per-agent 生效态的卡片
  *   node packages/codegraph/scripts/preview-card.mjs --fallback  # 预览 P0「要 per-agent 但退回 managed」的卡片
  *   node packages/codegraph/scripts/preview-card.mjs --busy      # 预览忙碌态（/status 挂住 → 标题行指示器）
+ *   node packages/codegraph/scripts/preview-card.mjs --png --tall # 截更高的图（860×1500），看折叠线以下的按钮分组
  *
  * 注意：无头 Chrome 在 DSH 文件沙箱里起不来（它要初始化自己的 sandbox），--png 需要在
  * 普通终端里跑；也可以直接打开 HTML 手动截图。产物目录 .preview/ 已在 .gitignore 里。
@@ -40,6 +41,14 @@ const fallback = process.argv.includes('--fallback')
  * 这是唯一能在无头环境里离线看到忙碌态的办法（真机上它一闪而过）。
  */
 const busy = process.argv.includes('--busy')
+/**
+ * --tall：截图用更高的视口（860×1500）。
+ *
+ * 默认 860×600 只够看到卡片上半部分——而「索引维护 / 搜索与查询 / Agent 集成」这些
+ * 分组都在折叠线以下，改它们时截出来看不到（实测：验证「撤销索引」并入生命周期行时，
+ * 默认视口正好把那一行切掉）。只影响截图，不影响 HTML。
+ */
+const tall = process.argv.includes('--tall')
 const htmlPath = join(outDir, perAgent ? 'codegraph-card-per-agent.html' : fallback ? 'codegraph-card-fallback.html' : busy ? 'codegraph-card-busy.html' : 'codegraph-card.html')
 const pngPath = join(outDir, perAgent ? 'codegraph-card-per-agent.png' : fallback ? 'codegraph-card-fallback.png' : busy ? 'codegraph-card-busy.png' : 'codegraph-card.png')
 
@@ -233,7 +242,7 @@ if (process.argv.includes('--png')) {
     execFileSync(chrome, [
       '--headless', '--disable-gpu', '--no-sandbox', '--disable-breakpad',
       `--user-data-dir=${join(outDir, 'chrome-profile')}`,
-      '--virtual-time-budget=3000', '--window-size=860,600',
+      '--virtual-time-budget=3000', `--window-size=860,${tall ? '1500' : '600'}`,
       `--screenshot=${pngPath}`, `file://${htmlPath}`,
     ], { stdio: 'inherit' })
     console.log('截图 PNG:', pngPath)
