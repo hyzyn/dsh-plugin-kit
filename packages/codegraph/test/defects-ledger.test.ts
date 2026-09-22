@@ -19,6 +19,8 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
 const DEFECTS = readFileSync(new URL('../DEFECTS.md', import.meta.url), 'utf8')
+/** README 的兼容性矩阵与路由表：其中的数字必须与源码一致。 */
+const README = readFileSync(new URL('../README.md', import.meta.url), 'utf8')
 
 /** 表格里的主行编号（补零写法，含追记行——追记与主行同号）。 */
 const rowIds = [...DEFECTS.matchAll(/^\| CG(\d+)\s*(?:追记)?\s*\|/gm)].map((m) => Number(m[1]))
@@ -82,5 +84,31 @@ describe('DEFECTS.md：现状行必须与表格现算一致', () => {
       if (fix.length < 10) empties.push(`CG${m[1]}`)
     }
     expect(empties, `以下条目缺修复说明：${empties.join(', ')}`).toEqual([])
+  })
+})
+
+/**
+ * 路由条数：README 的兼容性矩阵里写着「N 条路由全在」，而路由会随功能增加。
+ * 这类「文档里的数字 vs 代码里的事实」漂移过两次（DEFECTS 现状行多算 1、
+ * README 路由数停在 24 而实际 25），所以一并钉住。
+ */
+describe('README 的兼容性矩阵：路由条数必须与源码一致', () => {
+  const SRC = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8')
+
+  it('README 声明的路由条数 == 源码里注册的路由数', () => {
+    const actual = [...SRC.matchAll(/path: '\/api\/dsh-codegraph\//g)].length
+    const m = /(\d+) 条路由全在/.exec(README)
+    expect(m, 'README 兼容性矩阵里找不到「N 条路由全在」').not.toBeNull()
+    const stated = Number(m[1])
+    expect(
+      stated,
+      `README 写「${String(stated)} 条路由」，源码里实际 ${String(actual)} 条——加/删路由后请同步 README。`,
+    ).toBe(actual)
+  })
+
+  it('README 的路由表覆盖了全部路由（新增路由必须进表）', () => {
+    const registered = [...SRC.matchAll(/path: '\/api\/dsh-codegraph\/([a-z-]+)'/g)].map((m) => m[1])
+    const missing = registered.filter((name) => !README.includes(`/api/dsh-codegraph/${name}`))
+    expect(missing, `以下路由没写进 README 路由表：${missing.join(', ')}`).toEqual([])
   })
 })

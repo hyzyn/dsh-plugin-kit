@@ -118,7 +118,7 @@ Searched for a .codegraph/ directory starting from: /Users/you
 ## 兼容性（DSH / codegraph CLI）
 
 - **DSH**：宿主版本矩阵（每一档都注明**验证方式**，别把回归测试说成兼容性声明）：
-  - **`0.1.6-alpha.2`（本机在跑，2026-09-22 实测）**：`node scripts/verify-codegraph-host-contract.mjs --profile test --port 3087` **31/31 通过**——24 条路由全在（含 `/projects`、`/metrics`、`/diagnose`、`/unlock`、`/files`、`/affected`、`/explore`、`/context`、`/uninit`、`/telemetry`）、POST 门禁与 loopback 门禁成立、`/diagnose` 输出分段完整、浏览器半体产物可供给且含最新 UI、MCP 托管行按真索引写入 home 补丁。宿主侧配套版本：cordis `4.0.2`、`dsh-tools` / `dsh-system-prompt` / `dsh-mcp-client` / `dsh-session` / `dsh-agent` 均为 `0.1.6-alpha.2`。
+  - **`0.1.6-alpha.2`（本机在跑，2026-09-22 实测）**：`node scripts/verify-codegraph-host-contract.mjs --profile test --port 3087` **40/40 通过**——25 条路由全在（含 `/projects`、`/metrics`、`/diagnose`、`/unlock`、`/files`、`/affected`、`/explore`、`/context`、`/uninit`、`/telemetry`、`/agents`）、POST 门禁与 loopback 门禁成立、`/diagnose` 输出分段完整、浏览器半体产物可供给且含最新 UI、MCP 托管行按真索引写入 home 补丁、P0 的 `mcpScope` 开关「切 per-agent → 全局行被挂起 → 切回 managed 恢复」全程可逆且真实 `~/.dsh/cordis.patch.yml` 逐字节未变。宿主侧配套版本：cordis `4.0.2`、`dsh-tools` / `dsh-system-prompt` / `dsh-mcp-client` / `dsh-session` / `dsh-agent` 均为 `0.1.6-alpha.2`。
   - **`0.1.5-rc.2`**：早前记录过「全链路实测」，但**当时的证据没有留下可复跑的脚本**；单测的 fake req/res 覆盖不到「浏览器半体进 boot graph」「combo 路由供给」这类供给面。现在这两件事由上面那个脚本的对应项代管（组合路由的 rev 是内容哈希、猜不出来，所以脚本验的是它的前置条件，真供给链路仍需人工开页面）。
   - **`0.1.0-rc.7`（DEFECTS.md 记的审计基线）**：那是审计当时的宿主，包自身（`npx` 缓存里那份）版本，与本机安装的 `0.1.6-alpha.2` **不是同一个**。凡涉及「loader / mcp-client 实际怎么消费」的结论换宿主版本后要重核——DEFECTS 第 10 行已这么写明，这里与之对齐。
   - `package.json` 声明 `dsh.engines.dsh: ">=0.1.2-rc.1"`，插件市场据此给出兼容性结论。下限的写法理由见下两条；**下限不等于下限已实测**——市场只做「版本范围」判定，实测覆盖见上面矩阵。
