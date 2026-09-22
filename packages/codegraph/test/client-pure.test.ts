@@ -489,6 +489,23 @@ describe('UX 重构：忙碌态指示器（在标题行，不在正文中间）'
     expect(src).toMatch(/prefers-reduced-motion:reduce\)\{\.cg_spinner,\.cg_iconBtn\[data-busy="1"\] svg\{animation:none\}\}/)
   })
 
+  it('组头槽只放单个辅助动作，不放主操作组（生命周期那排按钮不该上组头）', () => {
+    /*
+     * 被问过：「生命周期那几个按钮要不要也放到头上」。不该：
+     *   - 组头细线靠 flex:1 占满剩余宽度，塞进 4 个文字按钮（约 390px）会把细线挤没、
+     *     窄栏折行成两截，看起来像布局坏了；
+     *   - Sync 是主按钮（cg_btn 实心蓝），进组头就降级成与标签并排的小控件，主次颠倒；
+     *   - 「索引维护」这一节的**内容本来就是这些动作**，组头只负责命名。
+     * 判据：一个辅助动作 → 组头；一组动作 / 本节主体 → 组内。
+     */
+    // 组头的第三个参数不该是一整排按钮（cg_toolbarBtns）
+    expect(src, '组头槽里不该出现按钮行').not.toMatch(/\],\s*jsxs?\('div',\s*\{\s*className: 'cg_toolbarBtns'/)
+    // 生命周期那排必须在「索引维护」组**体内**
+    const sync = pos("busyOr('sync'")
+    expect(pos("group('索引维护'")).toBeLessThan(pos("'生命周期'"))
+    expect(pos("'生命周期'")).toBeLessThan(sync)
+  })
+
   it('结果区在「搜索与查询」下方、且在「Agent 集成」之前（不再沉到面板最底部）', () => {
     /*
      * 用户反馈：「点击文件看不到对应的列表」——结果区原先在 Agent 集成**之后**
