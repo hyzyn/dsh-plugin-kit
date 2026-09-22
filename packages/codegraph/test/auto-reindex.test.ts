@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+
+import { writeStubCli } from './stub-cli.js'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply } from '../src/index.js'
@@ -22,9 +24,7 @@ import { apply } from '../src/index.js'
 function stubCli(dir: string, statusJson: string): { command: string; logFile: string } {
   const logFile = join(dir, 'calls.log')
   writeFileSync(logFile, '')
-  const script = join(dir, 'cg-stub.mjs')
-  writeFileSync(script, `#!/usr/bin/env node
-import fs from 'node:fs'
+  const script = writeStubCli(dir, 'cg-stub', `
 const args = process.argv.slice(2)
 // 探测（--version）不进调用日志：它由 CLI 门禁在挂载时自动跑，与本用例无关
 if (args[0] === '--version') { process.stdout.write('1.6.0'); process.exit(0) }
@@ -35,7 +35,6 @@ if (args[0] === 'status') {
   process.stdout.write('done')
 }
 `)
-  chmodSync(script, 0o755)
   return { command: script, logFile }
 }
 
@@ -174,16 +173,13 @@ describe('P1 索引生命周期：自动重建', () => {
     const dir = indexedProject('cg-auto-fail-')
     const logFile = join(dir, 'calls.log')
     writeFileSync(logFile, '')
-    const script = join(dir, 'cg-fail.mjs')
-    writeFileSync(script, `#!/usr/bin/env node
-import fs from 'node:fs'
+    const script = writeStubCli(dir, 'cg-fail', `
 const args = process.argv.slice(2)
 if (args[0] === '--version') { process.stdout.write('1.6.0'); process.exit(0) }
 fs.appendFileSync(${JSON.stringify(logFile)}, args.join(' ') + '\\n')
 if (args[0] === 'status') { process.stdout.write(${JSON.stringify(STALE)}); process.exit(0) }
 process.exit(7)
 `)
-    chmodSync(script, 0o755)
     const mount_ = mount(script, dir, { autoReindex: true })
     // 不应抛出
     expect(() => mount_.userMessage(dir)).not.toThrow()

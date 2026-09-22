@@ -1121,7 +1121,12 @@ describe('P1-b：诊断包（GET /diagnose）', () => {
     writeFileSync(join(codegraphHome, 'daemon.log'), logLines.join('\n'))
 
     const originalHome = process.env.HOME
+    const originalUserProfile = process.env.USERPROFILE
     process.env.HOME = fakeHome
+    // Windows：`os.homedir()` 读 **USERPROFILE**，根本不看 HOME。只设 HOME 的话这条
+    // 用例在 windows-latest 上会去读**真实**的 ~/.codegraph，于是「daemon.pid: 存在」
+    // 之类的断言全错（v0.1.41 的 CI 实测：本文件唯一一条 Windows 失败）。
+    process.env.USERPROFILE = fakeHome
     try {
       const mount = mountFull(echoCli())
       await waitFor(async () => (await call(mount.routes, '/api/dsh-codegraph/default-path')).body?.cliAvailable === true)
@@ -1139,6 +1144,8 @@ describe('P1-b：诊断包（GET /diagnose）', () => {
     } finally {
       if (originalHome === undefined) delete process.env.HOME
       else process.env.HOME = originalHome
+      if (originalUserProfile === undefined) delete process.env.USERPROFILE
+      else process.env.USERPROFILE = originalUserProfile
     }
   })
 

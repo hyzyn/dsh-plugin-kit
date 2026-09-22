@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+
+import { writeStubCli } from './stub-cli.js'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -34,12 +36,15 @@ function indexedProject(name: string): string {
   return dir
 }
 
-/** stub CLI：回显 argv（JSON），init/uninit 真改目录，便于断言状态翻转。 */
+/**
+ * stub CLI：回显 argv（JSON），init/uninit 真改目录，便于断言状态翻转。
+ *
+ * 形态交给共享的 `writeStubCli`：POSIX 上 `.mjs`，Windows 上 `.cmd` shim —— 只写 `.mjs`
+ * 的版本在 windows-latest 上 spawn 不起来，10 条用例报
+ * `Unexpected end of JSON input`（v0.1.41 的 CI 实测）。
+ */
 function stubCli(name: string, body = 'console.log(JSON.stringify(process.argv.slice(2)))'): string {
-  const file = join(sandbox, `${name}.mjs`)
-  writeFileSync(file, `#!/usr/bin/env node\nimport fs from 'node:fs'\nimport path from 'node:path'\n${body}\n`)
-  chmodSync(file, 0o755)
-  return file
+  return writeStubCli(sandbox, name, body)
 }
 
 interface CapturedRoute { handler: (req: unknown, res: unknown) => Promise<unknown> }

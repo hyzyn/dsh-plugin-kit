@@ -17,16 +17,24 @@ export default defineConfig({
     globals: false,
     /**
      * 默认 5s 是按**纯单测**定的，而本仓库有一大批**集成型**用例要真的 spawn 进程
-     * （假 CLI、假宿主、卡片预览渲染器、docker smoke），它们在慢 runner 上远超 5s。
+     * （假 CLI、假宿主、卡片预览渲染器、docker smoke），在慢 runner 上需要更宽。
      *
-     * 实测（v0.1.41 的 CI，提交 689b6ab8）：同一份用例 ubuntu / macos **全绿**，
-     * windows-latest 上 `16 failed | 856 passed`——16 条**全部**是
-     * `Test timed out in 5000ms`，没有一条断言失败。根因是套件变大后（本轮 +3034 行测试，
-     * 其中 `preview-card.test.ts` 一个文件就要 spawn 8 次 node）在 2 核 Windows runner 上
-     * 与同样 spawn 进程的 `cli-route` / `cli-surface` / `auto-reindex` / `projects` 争抢；
-     * 本机单条最长约 1.5s，慢 runner 上被放大数倍即越线。
+     * 实测（v0.1.41 的 CI，提交 689b6ab8 / fa1f3a91，两轮对比）：
      *
-     * 20s 是「一个量级余量」与「仍然有界」之间的取舍：真挂死照样会被判失败，不会靠它蒙混。
+     *   - 5s：windows-latest `16 failed`，**全部**报 `Test timed out in 5000ms`
+     *     （ubuntu / macos 全绿）；
+     *   - 20s：同样环境变成 `15 failed`，其中 14 条是**真实断言失败**
+     *     （`Unexpected end of JSON input` 等）——即 5s 超时**把真 bug 伪装成了超时**。
+     *     那个真 bug 是 stub CLI 在 Windows 上没有 `.cmd` 形态（见 `test/stub-cli.ts`），
+     *     与超时无关，已单独修复。
+     *
+     * 所以这条配置有两个理由，都不是「把红的调绿」：
+     *   ① **别让超时掩盖真失败**——集成型用例慢过 5s 时，5s 只会吐出一堆
+     *      「timed out」，把真正的原因（spawn 起不来 / 断言错）盖掉；
+     *   ② 确实有用例在 2 核 Windows runner 上需要 >5s：`projects.test.ts` 在 20s 下
+     *      全过、在 5s 下超时，且它的 stub 形态本来就是对的。
+     *
+     * 20s 仍是**有界**的：真挂死照样判失败，只是晚 15 秒。
      */
     testTimeout: 20_000,
   },
