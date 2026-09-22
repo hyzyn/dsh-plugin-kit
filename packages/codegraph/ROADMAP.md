@@ -292,3 +292,16 @@ node scripts/check-dsh-home.mjs                  # 跨包 DSH_HOME 推导的防�
 涉及宿主事件面（P0 / P1 仪表）的改动，除单测外需要一次真机复跑：起 `dsh web`，在一个已索引仓库
 里开两个会话，确认两个 agent 各自拿到自己仓库的结果、`tool/call` 计数正确、退出后无残留
 `codegraph serve --mcp` 进程。
+
+**P0 已把这条「手工复跑」尽量固化成脚本**（2026-09-22 补齐）。原先只有前两层，第三层是真缺口：
+
+| 脚本 | 覆盖 |
+| --- | --- |
+| `scripts/verify-codegraph-agent-scope.mjs` | 机制（最小 Cordis 根，假 agent） |
+| `scripts/verify-codegraph-host-contract.mjs` | 路由 / 开关 / 托管行挂起恢复（真宿主） |
+| `scripts/verify-codegraph-agent-integration.mjs` | **集成**：真插件 + 真 `AgentRegistry` 驱动的真 `agent/created` |
+
+补第三层的理由：当时两个脚本全绿，却都**证明不了「用户开会话时 MCP 真的挂上了」**——机制脚本用假
+agent，宿主脚本那个宿主里没有 agent 被创建（每轮 `/agents` 都是 `mounted=0`）。而 P0 的全部价值就
+在那条路径上。仍然**不能**被脚本替代、只能手工确认的：GUI 里点开卡片看开关与「生效中」文案、
+以及两个真实会话各自给出自己仓库的结果（可以用 `preview-card.mjs --per-agent/--fallback` 离线看前者）。

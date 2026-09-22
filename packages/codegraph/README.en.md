@@ -118,9 +118,25 @@ pnpm --filter @hyzyn/dsh-codegraph typecheck
 pnpm test                                   # repository-wide vitest (or: vitest run packages/codegraph)
 pnpm --filter @hyzyn/dsh-codegraph test     # this package only (managed-row matrix + CLI knobs + route regressions)
 node packages/codegraph/scripts/preview-card.mjs        # render the card preview HTML into .preview/ (--png needs a normal terminal: Chrome cannot start under a restricted sandbox)
+                                                        # also --per-agent / --fallback: view the P0 "active" and "fell back to managed" states offline
 node scripts/verify-codegraph-indexforce.mjs --profile test --port 3086   # live end-to-end: does indexForce really spawn with --force (requires a local DSH)
-node scripts/verify-codegraph-host-contract.mjs --profile test --port 3087  # live end-to-end: host contract (18 routes + gates + served artifact + managed row); needs a local DSH
+node scripts/verify-codegraph-host-contract.mjs --profile test --port 3087  # live end-to-end: host contract (25 routes + gates + served artifact + managed row + P0 mode switch); needs a local DSH
 ```
+
+### P0 (per-agent): three layers of acceptance
+
+Each layer proves one thing; missing a layer leaves a real gap uncovered — gap-closing, not padding:
+
+| Script | Layer | What it proves |
+| --- | --- | --- |
+| `verify-codegraph-agent-scope.mjs` | mechanism | Minimal Cordis root: scopes can mount mcp-client, the same `serverName` does not collide across scopes, the global layer stays clean, disposal reclaims only its own |
+| `verify-codegraph-host-contract.mjs` | routes / switch | Real host: 25 routes, `mcpScope` switching, the global managed row getting suspended and restored, real patch byte-identical |
+| `verify-codegraph-agent-integration.mjs` | **integration** | Mounts the **real plugin**, drives a real `agent/created` through the real `AgentRegistry`, and asserts the tool lands on **that agent**, that an unindexed agent is not mounted, and that `agent/disposed` reclaims it |
+
+The third layer was added because the first two being green still could **not** prove "MCP actually mounts when a user opens a session": the mechanism script uses fake agents, and the host script's host never creates an agent (every `/agents` round reported `mounted=0`). That path is the entire value of P0.
+
+All three build their own temp projects, reclaim their own child processes, and assert the real `~/.dsh/cordis.patch.yml` is byte-identical; the latter two also give the system under test an isolated `DSH_HOME` (the earlier lesson: without isolation the plugin writes straight into the user's real config, CG45).
+
 
 The browser half's source lives in `client-src/index.js`; `build` produces the package-root `client.js` via `scripts/build-client.mjs` — it drops index.js's import of `client-src/pure.js` and inlines pure.js (the DOM-free logic, unit-tested directly in `test/client-pure.test.ts`) into the factory with its `export` prefixes stripped, so the artifact stays a single import-free file. CI's artifact diff gates on byte-for-byte equality, so editing the source without rebuilding turns CI red.
 

@@ -9,6 +9,8 @@
  * 用法：
  *   node packages/codegraph/scripts/preview-card.mjs            # 写 .preview/codegraph-card.html
  *   node packages/codegraph/scripts/preview-card.mjs --png      # 再调本机 Chrome 渲染成 PNG
+ *   node packages/codegraph/scripts/preview-card.mjs --per-agent # 预览 P0 per-agent 生效态的卡片
+ *   node packages/codegraph/scripts/preview-card.mjs --fallback  # 预览 P0「要 per-agent 但退回 managed」的卡片
  *
  * 注意：无头 Chrome 在 DSH 文件沙箱里起不来（它要初始化自己的 sandbox），--png 需要在
  * 普通终端里跑；也可以直接打开 HTML 手动截图。产物目录 .preview/ 已在 .gitignore 里。
@@ -22,8 +24,17 @@ const here = dirname(fileURLToPath(import.meta.url))
 const pkgRoot = resolve(here, '..')
 const clientPath = join(pkgRoot, 'client.js')
 const outDir = join(pkgRoot, '.preview')
-const htmlPath = join(outDir, 'codegraph-card.html')
-const pngPath = join(outDir, 'codegraph-card.png')
+
+/**
+ * 预览模式。**必须在 htmlPath 之前声明**（TDZ）：第一版把这两个 const 放在
+ * htmlPath 之后，`--fallback` 直接 `ReferenceError: Cannot access 'perAgent' before
+ * initialization` —— 与 `client-lint.mjs` 存在的理由（TS2448「块级变量先用后声明」）
+ * 是同一类错误，只是这个脚本不在客户端半体的检查范围内，所以没被闸门拦住。
+ */
+const perAgent = process.argv.includes('--per-agent')
+const fallback = process.argv.includes('--fallback')
+const htmlPath = join(outDir, perAgent ? 'codegraph-card-per-agent.html' : fallback ? 'codegraph-card-fallback.html' : 'codegraph-card.html')
+const pngPath = join(outDir, perAgent ? 'codegraph-card-per-agent.png' : fallback ? 'codegraph-card-fallback.png' : 'codegraph-card.png')
 
 /** 预览用的假数据：跟随开启、会话目录与绑定路径不同，好让「跟随会话」这一行有内容。 */
 const RESPONSES = {
@@ -41,6 +52,16 @@ const RESPONSES = {
     indexed: true,
     indexState: 'indexed',
     mcp: { mode: 'own', cwd: '/Users/zz/code/my-app', note: '' },
+    // P0：默认 managed（保持原行为）。--per-agent 时改成「per-agent 生效」的形态，
+    // 好把那条状态文案与勾选态也看一遍（卡片上新增的 UI 必须有办法离线看）。
+    mcpScope: perAgent || fallback ? 'per-agent' : 'managed',
+    effectiveMcpScope: perAgent ? 'per-agent' : 'managed',
+    mcpScopeReason: fallback
+      ? '要 per-agent 但宿主没有 agent 事件面（拿不到 agent/created），已退回 managed'
+      : perAgent
+        ? 'per-agent（每个 agent 一个 scoped MCP 进程）'
+        : 'managed（默认：托管行 + 按会话热切换）',
+    agentMounts: perAgent ? 2 : 0,
   },
   '/api/dsh-codegraph/status': {
     ok: true,

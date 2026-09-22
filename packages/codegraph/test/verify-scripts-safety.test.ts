@@ -50,6 +50,44 @@ describe('P0：agent-scope 机制脚本不得碰用户配置与真实仓库', ()
   })
 })
 
+describe('P0：agent-integration 集成脚本必须隔离 DSH_HOME（它会挂真插件）', () => {
+  const src = readFileSync(new URL('../../../scripts/verify-codegraph-agent-integration.mjs', import.meta.url), 'utf8')
+
+  it('挂真插件前就把 DSH_HOME 指向隔离目录', () => {
+    // 这个脚本与 agent-scope 的关键区别：它挂的是**真插件**，所以 apply() 会去写
+    // $DSH_HOME/cordis.patch.yml。第一版没设隔离，插件当场去写真实 ~/.dsh（被沙箱
+    // EPERM 拦下才发现）——所以这条断言必须钉住「隔离赋值发生在 import 插件之前」。
+    expect(src).toContain('process.env.DSH_HOME = isolatedHome')
+    const assignAt = src.indexOf('process.env.DSH_HOME = isolatedHome')
+    const importAt = src.indexOf("import(pathToFileURL(join(repoRoot, 'packages', 'codegraph', 'lib', 'index.js'))")
+    expect(assignAt, '找不到隔离赋值').toBeGreaterThan(-1)
+    expect(importAt, '找不到插件 import').toBeGreaterThan(-1)
+    expect(assignAt, 'DSH_HOME 必须在 import 插件之前设置').toBeLessThan(importAt)
+  })
+
+  it('收尾断言真实补丁未变 + 不产生托管行', () => {
+    expect(src).toContain('realPatchBefore')
+    expect(src).toMatch(/未被改动|逐字节/)
+    // per-agent 模式下插件只撤销、不新建托管行——断言方向不能写反
+    expect(src).toContain('mcp-codegraph-managed')
+  })
+
+  it('只在自己的临时目录里造项目，且从 mcp-client 同层解析运行时包', () => {
+    expect(src).toContain('mkdtempSync')
+    expect(src, '不该出现 codegraph init').not.toMatch(/['"]init['"]/)
+    expect(src, '不该硬编码用户机器上的真实仓库路径').not.toMatch(/\/Users\//)
+    expect(src).toMatch(/runtimeScopeDir/)
+  })
+
+  it('收尾回收自己拉起的 MCP 子进程（并排除 CLI 自带的常驻 daemon）', () => {
+    expect(src, '缺少兜底 SIGTERM').toContain("'SIGTERM'")
+    expect(src, '缺少临时目录清理').toContain('rmSync(workDir')
+    // CG46：同一 cwd 下有两个 pid，必须按 daemon.pid 排除，否则断言会把上游的正常
+    // 行为误判成「泄漏」
+    expect(src, '应按 daemon.pid 排除 CLI 常驻 daemon').toContain('daemon.pid')
+  })
+})
+
 describe('CG45：真机脚本必须隔离 DSH_HOME，不许写用户真实配置', () => {
   for (const rel of SCRIPTS) {
     const src = readFileSync(new URL(rel, import.meta.url), 'utf8')

@@ -147,10 +147,27 @@ pnpm --filter @hyzyn/dsh-codegraph typecheck
 pnpm test                                   # 仓库级 vitest（也可 vitest run packages/codegraph）
 pnpm --filter @hyzyn/dsh-codegraph test     # 只跑本包（托管行决策矩阵 + CLI 旋钮 + 路由回归）
 node packages/codegraph/scripts/preview-card.mjs        # 渲染卡片预览 HTML 到 .preview/（--png 需在普通终端跑，Chrome 起不来于受限环境）
+                                                        # 另有 --per-agent / --fallback：离线看 P0 的「生效中」与「已退回 managed」两态
 node scripts/verify-codegraph-indexforce.mjs --profile test --port 3086   # 真机端到端：indexForce 是否真的带 --force 起进程（需要本机装好 DSH）
-node scripts/verify-codegraph-host-contract.mjs --profile test --port 3087  # 真机端到端：宿主契约（18 路由 + 门禁 + 供给产物 + 托管行）；需要本机装好 DSH
+node scripts/verify-codegraph-host-contract.mjs --profile test --port 3087  # 真机端到端：宿主契约（25 路由 + 门禁 + 供给产物 + 托管行 + P0 模式开关）；需要本机装好 DSH
                                                                           # 注：DSH 要写 ~/.dsh/profiles/<profile>/cordis.yml，沙箱只读时会被 EPERM 拦住
 ```
+
+### P0（per-agent）的三层验收
+
+三层各测一件事，**缺一层就有一个真问题测不到**——这不是凑数，是补缺口：
+
+| 脚本 | 层次 | 测什么 |
+| --- | --- | --- |
+| `verify-codegraph-agent-scope.mjs` | 机制 | 最小 Cordis 根：scope 能挂 mcp-client、同名跨 scope 不冲突、全局层干净、释放只回收自己 |
+| `verify-codegraph-host-contract.mjs` | 路由/开关 | 起真宿主：25 条路由、`mcpScope` 切换、全局托管行挂起/恢复、真实补丁逐字节未变 |
+| `verify-codegraph-agent-integration.mjs` | **集成** | 挂**真插件**，用真 `AgentRegistry` 驱动一次真 `agent/created` → 断言工具落到**那个 agent**、无索引的 agent 不挂、`agent/disposed` 回收 |
+
+第三层是补出来的：前两层全绿也**证明不了**「用户开会话时 MCP 真的挂上了」——机制脚本用假 agent，
+宿主脚本那个宿主里**没有 agent 被创建**（每轮 `/agents` 都是 `mounted=0`）。而 P0 的全部价值就在那条路径上。
+
+三个脚本都自造临时项目、自收子进程，并断言真实 `~/.dsh/cordis.patch.yml` 逐字节未变；后两个还给被测对象
+隔离 `DSH_HOME`（前一版的教训：不隔离时插件当场去写用户真实配置，CG45）。
 
 浏览器半体的源码在 `client-src/index.js`；`build` 经 `scripts/build-client.mjs` 产出包根的 `client.js`——删掉 index.js 对 `client-src/pure.js` 的 import、把 pure.js（纯逻辑，可在 vitest 里直接测，见 `test/client-pure.test.ts`）剥掉 `export` 后内联进 factory，产物仍是单文件无 import。CI 的 artifact-diff 以逐字节一致为闸，改源码后忘了重新 build 会直接红。
 
