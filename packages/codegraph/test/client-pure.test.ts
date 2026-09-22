@@ -489,6 +489,23 @@ describe('UX 重构：忙碌态指示器（在标题行，不在正文中间）'
     expect(src).toMatch(/prefers-reduced-motion:reduce\)\{\.cg_spinner,\.cg_iconBtn\[data-busy="1"\] svg\{animation:none\}\}/)
   })
 
+  it('三个查询按钮有就地说明（信息不能只藏在 title 悬停里）', () => {
+    /*
+     * 用户直接问「这两个按钮做啥的」（指 探索 / 上下文）。它们的信息原先只在 `title`
+     * 悬停提示里，而卡片是要被「扫一眼」的——需要就地说明。
+     *
+     * 标签保持 CLI 子命令的对应关系（query/explore/context）不改名，改用一行说明把
+     * 「产物有什么不同」讲清楚。
+     */
+    expect(src, '缺少查询按钮说明行').toContain('搜索 = 符号列表')
+    expect(src).toContain('探索 = 相关符号源码 + 调用链')
+    expect(src).toContain('上下文 = 为任务组装上下文')
+    // 说明行必须紧跟这三个按钮之后、且在「其他查询」之前
+    const legend = pos('搜索 = 符号列表')
+    expect(legend, '说明应在三个按钮之后').toBeGreaterThan(pos("runQuery('context'"))
+    expect(legend, '说明应在「其他查询」之前').toBeLessThan(pos("'其他查询'"))
+  })
+
   it('反馈项包成一个整体（.cg_feedback 收紧间距），且遥测脚注排在它之后', () => {
     /*
      * 用户反馈「这一块交互 ui 挺乱的」：四段（成功提示 / 脚注 / 诊断包行）各 12px 堆着，
