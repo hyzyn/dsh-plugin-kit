@@ -15,8 +15,8 @@
 | 项 | 结果 |
 | --- | --- |
 | 包版本 | 0.4.2；registry `dist-tags.latest` = **0.4.2**（2026-09-19 发布）——DEFECTS.md「验收记录」一节里「0.4.2 仅存在于工作树」那句已过期 |
-| `npx vitest run packages/codegraph` | **166 passed / 8 files**（含 `test/adoption.test.ts`、`test/auto-reindex.test.ts`、`test/projects.test.ts`） |
-| `npx vitest run`（全仓） | **743 passed / 46 files** |
+| `npx vitest run packages/codegraph` | **186 passed / 9 files**（含 `test/cli-surface.test.ts`） |
+| `npx vitest run`（全仓） | **763 passed / 47 files** |
 | `npx tsc --noEmit -p packages/codegraph/tsconfig.json` | 干净 |
 | 本包可用的运行时依赖 | `packages/codegraph/node_modules/@deepseek-ai/` 目前只有 `cordis` + `schemastery`（其余靠 `scripts/link-dsh-runtime.mjs` 链接） |
 | 宿主事件面（本机 DSH 实测存在） | `agent/created`、`agent/disposed`、`agent/inbox/inserted`、`tool/call`、`tool/result`、`system-prompt/assemble` |
@@ -46,8 +46,8 @@
 | **P1** | ~~**一键诊断包**~~ **✅ 已完成**（见下） | 环境性故障的排查路径固化成一个按钮 | S | `GET /diagnose` + 卡片按钮 + 6 条用例 |
 | **P1** | ~~**采纳率仪表**~~ **✅ 已完成**（见下） | 把「提示词有没有用」从感觉变成数字；有数据才谈得上调提示词或做预注入 | S–M | `createMetricsCollector()` + `/api/dsh-codegraph/metrics` + 卡片一行 |
 | **P1** | ~~**索引生命周期**：`unlock` + 自动重建~~ **✅ 已完成**（见下；daemon 日志尾与陈旧 pid 判定随 `/diagnose` 已可见） | 把「模型拿到陈旧结果 / 被坏锁挡住」在发生前化解 | M | `unlockArgs()` / `staleReasonsFromStatus()` / `maybeAutoReindex()` + 卡片「解锁」按钮 |
-| **P2** | CLI 面补全：`explore`/`context`/`files`/`affected`/`uninit`/`unlock`/`daemon` | 功能完整度（详见 DEFECTS.md 路线图节） | M | `makeRoutes` + 卡片 |
-| **P2** | ~~已索引项目列表 + 一键切换~~ **✅ 已完成**（见下）；其余（查询参数面板、遥测提示、卡片 i18n、真机 E2E）未做 | 体验与工程面 | M | `/projects` + 卡片胶囊按钮 |
+| **P2** | ~~CLI 面补全~~ **✅ 已完成**（`explore`/`context`/`files`/`affected`/`uninit`/`unlock`/`telemetry` + 查询参数面板；`daemon` 仍缺） | 功能完整度 | M | `makeRoutes` + 卡片 |
+| **P2** | ~~已索引项目列表 + 一键切换 / 查询参数面板 / 遥测提示~~ **✅ 已完成**；其余（卡片 i18n）未做 | 体验与工程面 | M | `/projects` + 卡片胶囊按钮 |
 | **P3** | CG32–CG34 销号或补齐、~~宿主版本基线对齐~~ **✅ 已完成**（CG42，见下）、browser 半体测试 | 可信度与工程债 | S–M | `DEFECTS.md` / `README.md` / CI |
 
 ## 已完成（0.4.2 之后的工作树）
@@ -184,6 +184,33 @@ owner 判定；会话目录无有效索引时不写盘（现有行为，保持�
 2. **TDZ**：`loadProjects` 声明在 effect 之后，被仓库自己的 `client-lint`（TS2448）拦下——这正是那道闸门存在的理由（编译不报、只有真渲染到那条分支才炸）。
 
 ## P2 / P3
+
+### P2-b：CLI 面补全 + 查询参数面板 + 遥测提示 ✅
+
+**问题**：卡片只覆盖 9 个子命令，其余只能去终端。其中 `explore` 尤其讽刺——它正是 usage 指引让**模型**去用的那个能力（走 MCP），人在卡片上反而够不着。
+
+**先读真机 help 对齐契约**（五个子命令的参数与输出形态，全部实测）：
+
+| 子命令 | 关键契约（实测） |
+| --- | --- |
+| `files` | `--json` 回数组（path/language/nodeCount/size）；`--filter` / `--pattern` / `--max-depth` / `--no-metadata` 可选 |
+| `affected` | `--json` 回 `{ changedFiles, affectedTests, totalDependentsTraversed }`；**空列表时回 `No files provided` 且 exit 0**（不是错误） |
+| `explore` | **输出是 markdown 不是 JSON**，所以走 `run` 而非 `runJson` |
+| `context` | 默认 markdown；`--max-nodes` / `--no-code` / `--format` |
+| `uninit` | **不带 `-f` 时问 `Continue? (y/N)`，非 TTY 下读到 EOF 即中止且不删除**（安全但无效）→ 插件一律带 `-f`，确认交给卡片 |
+
+**做法**：新增 5 条路由 + 卡片 5 个按钮 + 查询参数面板。几个刻意的取舍：
+
+- **`uninit` 与 `init` 同级纪律**：loopback + POST + 目标真是目录 + **目标真有索引**（未索引回 409），且撤销的是**索引所在的根**（monorepo 子目录上点撤销，删的必须是仓库根那份）。成功后再 `rt.sync()` 重算托管行——否则卡片会继续显示「已托管」，而 MCP 指着一个不存在的索引。
+- **`affected` 不让插件猜改动列表**：不读 `git status`、不猜编辑器状态；待测文件从哪来是上游流程的事，卡片只把给定列表交给 CLI。
+- **遥测只读转达、不给开关**：那是用户的全局偏好（`~/.codegraph/telemetry.json`，CLI 自己的 `telemetry on|off` 管），插件替他翻等于越权改别人的全局设置。解析不出状态行时 `enabled` 为 `undefined`，**不猜**。
+- **`kind` 用自由文本而非下拉枚举**：上游加新 kind 时插件不必跟着改。
+
+**用例（20 条）**：五个 argv 纯函数契约（含 `--` 终止符位置、`uninit` 必带 `-f`）；files 的旋钮透传与 `maxDepth` 校验；affected 的重复 files / 空列表 / `-` 开头拒收；explore/context 缺 q 400 与 markdown 输出；uninit 的未索引 409 / 真删除 / 子目录归到根 / 只认 POST；telemetry 的 enabled/disabled 解析、无法识别不猜、老版本 500 带原文；query 的 `kind`+`limit` 与 callers/callees 的 `limit`。
+
+**真机验证**：`scripts/verify-codegraph-host-contract.mjs` 扩充到 **31 项、31/31 通过**（0.1.6-alpha.2）。
+
+
 
 ### P3-a：宿主版本基线对齐 + 宿主契约端到端 ✅
 

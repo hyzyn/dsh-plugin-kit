@@ -129,6 +129,12 @@ try {
     ['/api/dsh-codegraph/callees', 'GET', `/api/dsh-codegraph/callees?symbol=locateIndex&path=${encodeURIComponent(projectDir)}`],
     ['/api/dsh-codegraph/impact', 'GET', `/api/dsh-codegraph/impact?symbol=locateIndex&path=${encodeURIComponent(projectDir)}`],
     ['/api/dsh-codegraph/node', 'GET', `/api/dsh-codegraph/node?name=locateIndex&path=${encodeURIComponent(projectDir)}`],
+    // P2 新增的 CLI 面
+    ['/api/dsh-codegraph/files', 'GET', `/api/dsh-codegraph/files?path=${encodeURIComponent(projectDir)}`],
+    ['/api/dsh-codegraph/affected', 'GET', `/api/dsh-codegraph/affected?path=${encodeURIComponent(projectDir)}`],
+    ['/api/dsh-codegraph/explore', 'GET', `/api/dsh-codegraph/explore?q=locateIndex&path=${encodeURIComponent(projectDir)}`],
+    ['/api/dsh-codegraph/context', 'GET', `/api/dsh-codegraph/context?q=locateIndex&path=${encodeURIComponent(projectDir)}`],
+    ['/api/dsh-codegraph/telemetry', 'GET', '/api/dsh-codegraph/telemetry'],
   ]
   for (const [label, method, path] of routeSpecs) {
     const res = await request(path, { method })
@@ -139,6 +145,8 @@ try {
   // ---------- 2. POST 路由与门禁 ----------
   const postRoutes = [
     ['/api/dsh-codegraph/sync', { path: projectDir }],
+    // uninit 会真删索引：放在最后单独测，这里只验路由存在性时用一个未索引目录（回 409 也算「路由在」）
+    ['/api/dsh-codegraph/uninit', { path: join(workDir, 'not-indexed') }],
     ['/api/dsh-codegraph/index', { path: projectDir }],
     ['/api/dsh-codegraph/unlock', { path: projectDir }],
     ['/api/dsh-codegraph/settings', { followSession: true }],

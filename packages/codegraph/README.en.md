@@ -55,6 +55,12 @@ Behavior details:
 | `/api/dsh-codegraph/settings` | POST | Write toggles `{ announceToAgent?, usageGuidance?, mcpIntegration?, followSession? }` (booleans), effective immediately |
 | `/api/dsh-codegraph/default-path` | POST | Set as default project `{ path }` (requires an index database inside `.codegraph/`), hot-switches the MCP at the same time |
 | `/api/dsh-codegraph/reprobe` | POST | Re-runs the `<command> --version` probe, returns `{ cliAvailable, cliProbeError, cliProbeAt }` and refreshes the systemPrompt gate |
+| `/api/dsh-codegraph/files` | GET | File structure `{ path, files, raw }` (`codegraph files --json`); knobs `filter` / `pattern` / `maxDepth` |
+| `/api/dsh-codegraph/affected` | GET | Affected tests `{ path, affected, raw }` (`codegraph affected --json -- <files…>`); `files` may repeat |
+| `/api/dsh-codegraph/explore` | GET | Exploration `{ path, query, output }` (`codegraph explore`, same output as the MCP `codegraph_explore` tool, markdown); knob `maxFiles` |
+| `/api/dsh-codegraph/context` | GET | Task context `{ path, task, output }` (`codegraph context`, markdown); knob `maxNodes` |
+| `/api/dsh-codegraph/uninit` | POST | **Deletes `.codegraph/`** `{ path }` (`codegraph uninit -f`); 409 for an unindexed directory; undoes the index **root** |
+| `/api/dsh-codegraph/telemetry` | GET | Read-only relay of upstream anonymous-usage telemetry status `{ enabled, output }` |
 | `/api/dsh-codegraph/projects` | GET | Known-projects list `{ projects, indexedCount, effectivePath }` — candidates come from live sessions plus paths the plugin observed (`/follow` reports, directories whose `/status` was queried, the default project), each re-checked for index state; monorepo subdirectories collapse to the index root |
 | `/api/dsh-codegraph/unlock` | POST | Clears stale lock files blocking indexing `{ path }` (`codegraph unlock`; idempotent — exits 0 when there is no lock) |
 | `/api/dsh-codegraph/cancel` | POST | Cancels in-flight CLI calls `{ path? }` (omit = cancel all); a disconnecting page also aborts its call |

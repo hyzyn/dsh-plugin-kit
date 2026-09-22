@@ -38,6 +38,20 @@ Searched for a .codegraph/ directory starting from: /Users/you
 - 跟随由**浏览器半体**上报（页面加载即订阅活动会话，与设置面板是否展开无关）：宿主侧没有「当前会话」这个信号，因此跟随只在有 GUI 页面打开时生效，其余情况用绑定路径。
 - 关闭方式：插件配置 `mcpIntegration: false`（会撤销本插件写入的托管行）。
 
+## CLI 面（P2）
+
+卡片此前只覆盖 `status`/`query`/`callers`/`callees`/`impact`/`node`/`sync`/`index`/`init`，其余子命令只能去终端。P2 补齐了**旗舰与常用**的那几个：
+
+- **`explore`**：与 MCP 的 `codegraph_explore` 同输出（相关符号源码 + 调用路径）。模型那条路走 MCP，人在卡片上此前够不着同一个能力——这有点荒谬，现在补上了。
+- **`context`**：为一个**任务**组装上下文（与 explore 面向「区域」的区别）。
+- **`files`**：索引里的文件结构（语言 / 符号数 / 大小）。
+- **`affected`**：由改动文件反向查出**受影响的测试**（实测本仓库：改 `src/index.ts` → 5 个测试文件）。这条对「我改了这里，该跑哪些测试」特别实用。**插件刻意不替你猜改动列表**（不读 `git status`、不猜编辑器状态）：待测文件从哪来是上游流程的事，卡片只负责把你给的列表交给 CLI。
+- **`uninit`**：删除 `.codegraph/`——与 `init` 反向，是本卡片第二个破坏性动作，同样两步确认。实测**必须带 `-f`**：不带时 CLI 问 `Continue? (y/N)`，而运行器没有 TTY、读到 EOF 就中止且不删除（安全但无效），所以确认由卡片负责。
+- **`telemetry`**：只读转达上游匿名用量统计的状态。**刻意不给开关**——那是用户的全局偏好（`~/.codegraph/telemetry.json`，由 CLI 自己的 `telemetry on|off` 管），插件替他翻等于越权改别人的全局设置。
+- **查询参数面板**：`query -k/--kind`（类型过滤）、`callers|callees -l/--limit`（CLI 默认 20，会把大符号截断而卡片此前无从知道）。
+
+`kind` 用**自由文本**而不是下拉枚举：上游加新 kind 时插件不必跟着改，填错 CLI 自己回空结果。
+
 ## 项目列表（一键切换）
 
 一台 codegraph MCP 服务器同一时刻只挂一个项目，所以「换项目」是高频动作，而卡片此前只能手敲绝对路径。`GET /projects` + 卡片上一排胶囊按钮解决它。
@@ -64,6 +78,12 @@ Searched for a .codegraph/ directory starting from: /Users/you
 | `/api/dsh-codegraph/settings` | POST | 写开关 `{ announceToAgent?, usageGuidance?, mcpIntegration?, followSession? }`（布尔），即时生效 |
 | `/api/dsh-codegraph/default-path` | POST | 设为默认项目 `{ path }`（需 `.codegraph/` 里有索引库），同步热切换 MCP |
 | `/api/dsh-codegraph/reprobe` | POST | 重跑一次 `<command> --version` 探测，回 `{ cliAvailable, cliProbeError, cliProbeAt }` 并同步 systemPrompt 门禁 |
+| `/api/dsh-codegraph/files` | GET | 文件结构 `{ path, files, raw }`（`codegraph files --json`）；旋钮 `filter` / `pattern` / `maxDepth` |
+| `/api/dsh-codegraph/affected` | GET | 受影响测试 `{ path, affected, raw }`（`codegraph affected --json -- <files…>`）；`files` 可重复传 |
+| `/api/dsh-codegraph/explore` | GET | 探索 `{ path, query, output }`（`codegraph explore`，与 MCP 的 `codegraph_explore` 同输出，markdown）；旋钮 `maxFiles` |
+| `/api/dsh-codegraph/context` | GET | 任务上下文 `{ path, task, output }`（`codegraph context`，markdown）；旋钮 `maxNodes` |
+| `/api/dsh-codegraph/uninit` | POST | **删除 `.codegraph/`** `{ path }`（`codegraph uninit -f`）；未索引目录回 409；撤销的是索引所在的**根** |
+| `/api/dsh-codegraph/telemetry` | GET | 只读转达上游匿名用量统计状态 `{ enabled, output }` |
 | `/api/dsh-codegraph/projects` | GET | 已见项目列表 `{ projects, indexedCount, effectivePath }`——候选来自活跃会话与插件观察到的 cwd（`/follow` 上报、查过 status 的路径、默认项目），每条现算索引态；monorepo 子目录归并到索引根 |
 | `/api/dsh-codegraph/unlock` | POST | 清挡住索引的陈旧锁 `{ path }`（`codegraph unlock`，幂等：没锁时 exit 0） |
 | `/api/dsh-codegraph/cancel` | POST | 取消进行中的 CLI 调用 `{ path? }`（缺省 = 全部）；关标签页的断连也会自动中止对应调用 |
@@ -96,7 +116,7 @@ Searched for a .codegraph/ directory starting from: /Users/you
 ## 兼容性（DSH / codegraph CLI）
 
 - **DSH**：宿主版本矩阵（每一档都注明**验证方式**，别把回归测试说成兼容性声明）：
-  - **`0.1.6-alpha.2`（本机在跑，2026-09-22 实测）**：`node scripts/verify-codegraph-host-contract.mjs --profile test --port 3087` **25/25 通过**——18 条路由全在（含本轮新增的 `/projects`、`/metrics`、`/diagnose`、`/unlock`）、POST 门禁与 loopback 门禁成立、`/diagnose` 输出分段完整、浏览器半体产物可供给且含最新 UI、MCP 托管行按真索引写入 home 补丁。宿主侧配套版本：cordis `4.0.2`、`dsh-tools` / `dsh-system-prompt` / `dsh-mcp-client` / `dsh-session` / `dsh-agent` 均为 `0.1.6-alpha.2`。
+  - **`0.1.6-alpha.2`（本机在跑，2026-09-22 实测）**：`node scripts/verify-codegraph-host-contract.mjs --profile test --port 3087` **31/31 通过**——24 条路由全在（含 `/projects`、`/metrics`、`/diagnose`、`/unlock`、`/files`、`/affected`、`/explore`、`/context`、`/uninit`、`/telemetry`）、POST 门禁与 loopback 门禁成立、`/diagnose` 输出分段完整、浏览器半体产物可供给且含最新 UI、MCP 托管行按真索引写入 home 补丁。宿主侧配套版本：cordis `4.0.2`、`dsh-tools` / `dsh-system-prompt` / `dsh-mcp-client` / `dsh-session` / `dsh-agent` 均为 `0.1.6-alpha.2`。
   - **`0.1.5-rc.2`**：早前记录过「全链路实测」，但**当时的证据没有留下可复跑的脚本**；单测的 fake req/res 覆盖不到「浏览器半体进 boot graph」「combo 路由供给」这类供给面。现在这两件事由上面那个脚本的对应项代管（组合路由的 rev 是内容哈希、猜不出来，所以脚本验的是它的前置条件，真供给链路仍需人工开页面）。
   - **`0.1.0-rc.7`（DEFECTS.md 记的审计基线）**：那是审计当时的宿主，包自身（`npx` 缓存里那份）版本，与本机安装的 `0.1.6-alpha.2` **不是同一个**。凡涉及「loader / mcp-client 实际怎么消费」的结论换宿主版本后要重核——DEFECTS 第 10 行已这么写明，这里与之对齐。
   - `package.json` 声明 `dsh.engines.dsh: ">=0.1.2-rc.1"`，插件市场据此给出兼容性结论。下限的写法理由见下两条；**下限不等于下限已实测**——市场只做「版本范围」判定，实测覆盖见上面矩阵。

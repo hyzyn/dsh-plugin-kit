@@ -256,6 +256,47 @@ export declare function indexArgs(cwd: string, force: boolean): string[];
  */
 export declare function unlockArgs(cwd: string): string[];
 /**
+ * `codegraph files` 参数（P2）。只读：列索引里的文件结构。
+ * `--json` 走结构化输出，卡片按行渲染；`--filter` / `--pattern` / `--max-depth`
+ * 都是 CLI 自带的旋钮，透传即可（不替用户做取舍）。
+ */
+export declare function filesArgs(cwd: string, options?: {
+    filter?: string;
+    pattern?: string;
+    maxDepth?: number;
+}): string[];
+/**
+ * `codegraph affected` 参数（P2）：由改动文件反查受影响的测试。
+ *
+ * 位置参数用 `--` 终止（CG09 的同款理由：文件名以 `-` 开头会被 commander 当选项）。
+ * 实测：不给任何文件时 CLI 回 `No files provided. Use file arguments or --stdin.` 且
+ * exit 0——所以「空列表」不能当成错误，卡片要原样显示这句话。
+ */
+export declare function affectedArgs(cwd: string, files?: string[]): string[];
+/**
+ * `codegraph context` 参数（P2）：为一个任务话题组装上下文（相关符号 + 关系 + 代码块）。
+ * 与 `explore` 的区别是它面向「一个任务」而不是「一个区域」。
+ */
+export declare function contextArgs(cwd: string, task: string, options?: {
+    maxNodes?: number;
+}): string[];
+/**
+ * `codegraph explore` 参数（P2）：旗舰子命令，与 MCP 的 `codegraph_explore` 同输出。
+ * 卡片补它是因为**模型**那条路走 MCP、而人在卡片上此前够不着同一个能力。
+ */
+export declare function exploreArgs(cwd: string, query: string, options?: {
+    maxFiles?: number;
+}): string[];
+/**
+ * `codegraph uninit` 参数（P2）：删除 `.codegraph/`，是本插件第二个往用户项目里**写**
+ * 的动作（第一个是 init，方向相反）。
+ *
+ * **必须带 `-f`**：实测不带 `-f` 时 CLI 会问 `Continue? (y/N)`，运行器没有 TTY、读到
+ * EOF 就**中止且不删除**（安全但无效）。所以确认这一步由卡片负责（两步确认），
+ * CLI 侧一律 `-f`。
+ */
+export declare function uninitArgs(cwd: string): string[];
+/**
  * 读 `status --json` 输出里的过期信号（宿主侧版本）。
  *
  * 为什么要在宿主侧也实现一遍：卡片那侧（`client-src/pure.js` 的 `staleReasons`）只负责

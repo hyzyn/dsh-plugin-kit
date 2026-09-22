@@ -105,6 +105,12 @@ window.__ModuleLoader__.load({
       '.cg_projectBtn{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);border-radius:999px;padding:2px 10px;font-size:11.5px;cursor:pointer;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:nowrap;max-width:260px;overflow:hidden;text-overflow:ellipsis}',
       '.cg_projectBtn:hover:not(:disabled){border-color:var(--dsw-alias-state-business-primary)}',
       '.cg_projectBtn:disabled{opacity:.45;cursor:default}',
+      // P2 查询参数面板：小号输入 + 内联标签，跟搜索行区分开（搜索行是主操作）
+      '.cg_queryOpts{display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:12px}',
+      '.cg_opt{display:inline-flex;align-items:center;gap:6px;color:var(--dsw-alias-label-tertiary);white-space:nowrap}',
+      '.cg_optWide{flex:1;min-width:220px}',
+      '.cg_optWide .cg_inputSm{flex:1}',
+      '.cg_inputSm{width:150px;padding:4px 8px;font-size:12px}',
     ].join('\n')
 
     // CG08/CG37：样式引用计数。同一次挂载会把这张卡片注册进多个插槽（0.1.6 上
@@ -283,6 +289,15 @@ window.__ModuleLoader__.load({
       const [manual, setManual] = React.useState(false)
       const [status, setStatus] = React.useState(null)
       const [query, setQuery] = React.useState('')
+      // P2 查询参数面板：CLI 的 -k/--kind 与 -l/--limit 此前卡片够不着（limit 固定 20）。
+      // kind 刻意用**自由文本**而不是下拉枚举：上游加新 kind 时插件不必跟着改，
+      // 填错 CLI 自己会回空结果（与卡片上其它旋钮的取向一致）。
+      const [queryKind, setQueryKind] = React.useState('')
+      // P2「影响面」：affected 需要一份**改动文件**列表。刻意不让插件去猜（不读 git status、
+      // 不猜编辑器状态）——待测文件从哪来是用户/上游流程的事，插件只负责把给定的列表
+      // 交给 CLI。多行或逗号分隔都收。
+      const [changedFiles, setChangedFiles] = React.useState('')
+      const [queryLimit, setQueryLimit] = React.useState('20')
       const [results, setResults] = React.useState([])
       const [selected, setSelected] = React.useState(null)
       const [detail, setDetail] = React.useState(null)
@@ -305,6 +320,12 @@ window.__ModuleLoader__.load({
       const [adoption, setAdoption] = React.useState(null)
       // P2 项目列表：一键切换的候选（宿主侧登记表，只含工作过的目录）。
       const [projects, setProjects] = React.useState([])
+      // P2 CLI 面：explore / context 的文本输出（markdown），files / affected 的结构化结果。
+      const [output, setOutput] = React.useState(null)
+      // P2 遥测提示：上游 CLI 会为 init / index 发匿名用量统计，用户该看得见这件事。
+      const [telemetry, setTelemetry] = React.useState(null)
+      // 撤销索引是破坏性动作（删 .codegraph/）：与「初始化索引」一样两步确认
+      const [confirmUninit, setConfirmUninit] = React.useState(false)
       // CG05：sync / index / init 是可能跑 10 分钟的索引类操作，进行中给出「取消」。
       const [cancelable, setCancelable] = React.useState(false)
       // 「初始化索引」是两步确认：它会**往用户的项目里写 `.codegraph/`**，是本卡片唯一
@@ -384,6 +405,16 @@ window.__ModuleLoader__.load({
        * 拉项目列表（P2）。候选由宿主侧登记表给出——只含「用户真的在这里工作过」的目录
        * （活跃会话 / 跟随上报 / 查过状态的路径），每条现算索引态。
        */
+      const loadTelemetry = React.useCallback(async () => {
+        try {
+          const data = await api('/api/dsh-codegraph/telemetry')
+          setTelemetry({ enabled: data.enabled, output: typeof data.output === 'string' ? data.output : '' })
+        } catch {
+          // 旧版 CLI 没有 telemetry 子命令：不显示这一行，也不打扰用户
+          setTelemetry(null)
+        }
+      }, [])
+
       const loadProjects = React.useCallback(async () => {
         try {
           const data = await api('/api/dsh-codegraph/projects')
@@ -400,8 +431,9 @@ window.__ModuleLoader__.load({
           loadMcpStatus()
           loadAdoption()
           loadProjects()
+          loadTelemetry()
         }
-      }, [open, loadStatus, loadMcpStatus, loadAdoption, loadProjects])
+      }, [open, loadStatus, loadMcpStatus, loadAdoption, loadProjects, loadTelemetry])
 
       // 跟随当前项目：打开卡片或切换会话时，若用户未手动编辑过路径，
       // 自动采用当前活动会话的工作目录；手动编辑后停止跟随。
@@ -414,6 +446,7 @@ window.__ModuleLoader__.load({
       // 确认、切到 B 目录再点一次，把 B 给初始化了（那正是这个动作最该防的误伤）。
       React.useEffect(() => {
         setConfirmInit(false)
+        setConfirmUninit(false)
       }, [effectivePath, open])
 
       const search = async () => {
@@ -424,7 +457,13 @@ window.__ModuleLoader__.load({
         setSelected(null)
         setDetail(null)
         try {
-          const data = await api('/api/dsh-codegraph/query' + qs({ q: query.trim(), path: effectivePath, limit: 20 }))
+          const limit = Number(queryLimit)
+          const data = await api('/api/dsh-codegraph/query' + qs({
+            q: query.trim(),
+            path: effectivePath,
+            limit: Number.isInteger(limit) && limit > 0 ? String(limit) : '20',
+            ...(queryKind.trim() === '' ? {} : { kind: queryKind.trim() }),
+          }))
           setResults(Array.isArray(data.results) ? data.results : [])
         } catch (err) {
           setError(err.message)
@@ -478,6 +517,80 @@ window.__ModuleLoader__.load({
         } finally {
           setLoading(false)
           setCancelable(false)
+        }
+      }
+
+      /**
+       * 撤销索引（P2）：删除 `.codegraph/`。与 init 反向，是本卡片第二个破坏性动作，
+       * 所以同样两步确认；目标路径一换就重置确认态（同 init 的理由：避免在 A 目录
+       * 点上确认、切到 B 再点一次，把 B 给删了）。
+       */
+      const runUninit = async () => {
+        if (!confirmUninit) {
+          setConfirmUninit(true)
+          setError('')
+          setOk('')
+          setOutput(null)
+          return
+        }
+        setConfirmUninit(false)
+        setLoading(true)
+        setError('')
+        setOk('')
+        setCancelable(true)
+        try {
+          const data = await api('/api/dsh-codegraph/uninit', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ path: effectivePath }),
+          })
+          setOk('已撤销 ' + (data.path || effectivePath) + ' 的索引（.codegraph/ 已删除，源文件未动）：' + (data.output || '').slice(0, 160))
+          setStatus(null)
+          setOutput(null)
+          await Promise.all([loadStatus(), loadMcpStatus(), loadProjects()])
+        } catch (err) {
+          setError(err.message)
+        } finally {
+          setLoading(false)
+          setCancelable(false)
+        }
+      }
+
+      /** 把「改动文件」输入解析成数组（逗号 / 换行 / 空格分隔都收，去重去空）。 */
+      const manualFiles = () => {
+        const seen = new Set()
+        for (const piece of changedFiles.split(/[\n,]/)) {
+          const value = piece.trim()
+          if (value !== '') seen.add(value)
+        }
+        return [...seen]
+      }
+
+      /**
+       * 跑一个只读文本/结构化命令（P2）：files / affected / explore / context。
+       * 与 runAction 分开是因为它们**不改状态**，只需展示输出，不该触发 loadStatus。
+       */
+      const runQuery = async (route, params = {}) => {
+        setLoading(true)
+        setError('')
+        setOk('')
+        setOutput(null)
+        try {
+          const data = await api('/api/dsh-codegraph/' + route + qs({ path: effectivePath, ...params }))
+          // explore / context 回 markdown 文本；files / affected 回结构化数组
+          setOutput({
+            route,
+            text: typeof data.output === 'string' ? data.output : '',
+            json: data.files ?? data.affected ?? null,
+            raw: typeof data.raw === 'string' ? data.raw : '',
+          })
+          if (data.files !== undefined && (!Array.isArray(data.files) || data.files.length === 0)) {
+            setOk('索引里没有匹配的文件')
+          }
+        } catch (err) {
+          setError(err.message)
+        } finally {
+          setLoading(false)
         }
       }
 
@@ -840,6 +953,52 @@ window.__ModuleLoader__.load({
                           onClick: () => runAction('unlock'),
                           children: '解锁',
                         }),
+                        // P2：以下四个是只读子命令，此前只有命令行够得着
+                        jsx('button', {
+                          type: 'button',
+                          className: 'cg_btnGhost',
+                          disabled: loading,
+                          title: 'codegraph files --json：列出索引里的文件结构（语言 / 符号数 / 大小）',
+                          onClick: () => runQuery('files'),
+                          children: '文件',
+                        }),
+                        jsx('button', {
+                          type: 'button',
+                          className: 'cg_btnGhost',
+                          disabled: loading || !(status && status.projectPath),
+                          title: 'codegraph affected <files>：由改动文件反查受影响的测试。需先在下方填文件路径（或走 explore）',
+                          onClick: () => runQuery('affected', { files: manualFiles() }),
+                          children: '影响面',
+                        }),
+                        jsx('button', {
+                          type: 'button',
+                          className: 'cg_btnGhost',
+                          disabled: loading || !query.trim(),
+                          title: 'codegraph explore：与 MCP 的 codegraph_explore 同输出（相关符号源码 + 调用路径）。用搜索框里的关键词',
+                          onClick: () => runQuery('explore', { q: query.trim() }),
+                          children: '探索',
+                        }),
+                        jsx('button', {
+                          type: 'button',
+                          className: 'cg_btnGhost',
+                          disabled: loading || !query.trim(),
+                          title: 'codegraph context：为一个任务组装上下文（相关符号 + 关系 + 代码块）。用搜索框里的关键词',
+                          onClick: () => runQuery('context', { q: query.trim() }),
+                          children: '上下文',
+                        }),
+                        // 撤销索引是破坏性动作，放在最后并与「初始化」同样两步确认
+                        status && status.initialized === true
+                          ? jsx('button', {
+                            type: 'button',
+                            className: confirmUninit ? 'cg_btnDanger' : 'cg_btnGhost',
+                            disabled: loading,
+                            title: confirmUninit
+                              ? '再点一次即删除 ' + (effectivePath || '(默认项目)') + ' 的 .codegraph/（索引数据全部丢失，源文件不动）'
+                              : 'codegraph uninit：删除该项目的 .codegraph/（索引数据全部丢失，源文件不动）。这是本卡片唯一的删除类动作',
+                            onClick: runUninit,
+                            children: confirmUninit ? '确认撤销？' : '撤销索引',
+                          })
+                          : null,
                         // 一键诊断包（P1-b）：把 PATH / 托管行 / 索引 / daemon / 最近失败
                         // 的原文一次收齐，供排障与贴 issue。
                         jsx('button', {
@@ -890,6 +1049,60 @@ window.__ModuleLoader__.load({
                       disabled: loading || !query.trim(),
                       onClick: search,
                       children: '搜索',
+                    }),
+                  ],
+                }),
+                // P2 查询参数面板：kind 过滤 + 结果上限（CLI 的 -k / -l）。
+                jsxs('div', {
+                  className: 'cg_queryOpts',
+                  children: [
+                    jsx('label', {
+                      className: 'cg_opt',
+                      title: 'codegraph query -k/--kind：按节点类型过滤（function / class / method / interface / type_alias / constant / variable / property / file / import）',
+                      children: [
+                        '类型',
+                        jsx('input', {
+                          className: 'cg_input cg_inputSm',
+                          placeholder: '任意（function…）',
+                          value: queryKind,
+                          onChange: (event) => setQueryKind(event.target.value),
+                          onKeyDown: (event) => { if (event.key === 'Enter') search() },
+                        }),
+                      ],
+                    }),
+                    jsx('label', {
+                      className: 'cg_opt',
+                      title: 'codegraph query -l/--limit：返回条数上限（默认 20）。callers/callees 也吃这个值',
+                      children: [
+                        '上限',
+                        jsx('input', {
+                          className: 'cg_input cg_inputSm',
+                          value: queryLimit,
+                          onChange: (event) => setQueryLimit(event.target.value),
+                          onKeyDown: (event) => { if (event.key === 'Enter') search() },
+                        }),
+                      ],
+                    }),
+                  ],
+                }),
+                // P2「影响面」的输入：affected 要一份改动文件列表。多行/逗号分隔都收。
+                // 插件刻意不自己去猜这份列表（不读 git status、不猜编辑器状态）。
+                jsxs('div', {
+                  className: 'cg_queryOpts',
+                  children: [
+                    jsx('label', {
+                      className: 'cg_opt cg_optWide',
+                      title: 'codegraph affected <files…>：由改动文件反查受影响的测试。一行一个，也可用逗号分隔；留空则 CLI 回「No files provided」',
+                      children: [
+                        '改动文件',
+                        jsx('input', {
+                          className: 'cg_input cg_inputSm',
+                          placeholder: '如 packages/codegraph/src/index.ts（点「影响面」查询）',
+                          value: changedFiles,
+                          onChange: (event) => setChangedFiles(event.target.value),
+                          onKeyDown: (event) => { if (event.key === 'Enter') runQuery('affected', { files: manualFiles() }) },
+                        }),
+                      ],
                     }),
                   ],
                 }),
@@ -991,6 +1204,19 @@ window.__ModuleLoader__.load({
                     }),
                   ],
                 }),
+                // P2 遥测提示：`init` / `index` 会触发上游的匿名用量统计。只如实转达 CLI 的
+                // 状态并指出关闭方式，**不给开关**——那是用户的全局偏好，存在
+                // ~/.codegraph/telemetry.json，插件替他翻等于越权改别人的全局设置。
+                telemetry !== null
+                  ? jsx('p', {
+                    className: 'cg_mcpMeta',
+                    children: telemetry.enabled === true
+                      ? '匿名用量统计：已开启（init / 重建索引会向上游发送匿名用量数据）。要关掉运行 `codegraph telemetry off`，或设 CODEGRAPH_TELEMETRY=0。'
+                      : telemetry.enabled === false
+                        ? '匿名用量统计：已关闭。'
+                        : '匿名用量统计：状态未知（CLI 输出未含可识别的状态行）。',
+                  })
+                  : null,
                 error ? jsx('p', { className: 'cg_error', children: error }) : null,
                 cliWarning ? jsx('p', { className: 'cg_warn', children: cliWarning }) : null,
                 cliProbeDetail ? jsx('p', { className: 'cg_probeDetail', children: cliProbeDetail }) : null,
@@ -1056,6 +1282,40 @@ window.__ModuleLoader__.load({
                       ],
                     })
                     : jsx('pre', { className: 'cg_pre', children: statusRawText })
+                  : null,
+                // P2 CLI 面输出：explore / context 是 markdown，files / affected 是结构化数组。
+                // 用同一块区域渲染，避免五种命令各自摊开一堆面板把状态区挤到屏幕外。
+                output !== null
+                  ? jsxs('details', {
+                    className: 'cg_details',
+                    open: true,
+                    children: [
+                      jsxs('summary', {
+                        children: [
+                          {
+                            files: '文件结构（codegraph files --json）',
+                            affected: '受影响的测试（codegraph affected）',
+                            explore: '探索结果（codegraph explore）',
+                            context: '任务上下文（codegraph context）',
+                          }[output.route] || output.route,
+                        ],
+                      }),
+                      output.text !== ''
+                        // explore / context 的 markdown：原样按等宽显示（卡片不做 markdown 渲染，
+                        // 免得引一套 renderer；内容本身就是给模型读的源码 + 关系）
+                        ? jsx('pre', { className: 'cg_pre', children: output.text.slice(0, 4000) })
+                        : Array.isArray(output.json)
+                          ? output.json.length === 0
+                            ? jsx('p', { className: 'cg_mcpMeta', children: '（空）' })
+                            : jsx('pre', {
+                              className: 'cg_pre',
+                              children: output.json.map((item) => typeof item === 'string'
+                                ? item
+                                : (item.path ?? item.file ?? JSON.stringify(item))).join('\n'),
+                            })
+                          : jsx('pre', { className: 'cg_pre', children: (output.raw || '（无输出）').slice(0, 4000) }),
+                    ],
+                  })
                   : null,
                 results.length > 0 ? jsxs('div', {
                   className: 'cg_list',

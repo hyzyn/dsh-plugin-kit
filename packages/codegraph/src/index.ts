@@ -1433,6 +1433,63 @@ export function unlockArgs(cwd: string): string[] {
 }
 
 /**
+ * `codegraph files` 参数（P2）。只读：列索引里的文件结构。
+ * `--json` 走结构化输出，卡片按行渲染；`--filter` / `--pattern` / `--max-depth`
+ * 都是 CLI 自带的旋钮，透传即可（不替用户做取舍）。
+ */
+export function filesArgs(cwd: string, options: { filter?: string; pattern?: string; maxDepth?: number } = {}): string[] {
+  const args = ['files', '--json', '--path', cwd]
+  if (options.filter !== undefined && options.filter !== '') args.push('--filter', options.filter)
+  if (options.pattern !== undefined && options.pattern !== '') args.push('--pattern', options.pattern)
+  if (options.maxDepth !== undefined) args.push('--max-depth', String(options.maxDepth))
+  return args
+}
+
+/**
+ * `codegraph affected` 参数（P2）：由改动文件反查受影响的测试。
+ *
+ * 位置参数用 `--` 终止（CG09 的同款理由：文件名以 `-` 开头会被 commander 当选项）。
+ * 实测：不给任何文件时 CLI 回 `No files provided. Use file arguments or --stdin.` 且
+ * exit 0——所以「空列表」不能当成错误，卡片要原样显示这句话。
+ */
+export function affectedArgs(cwd: string, files: string[] = []): string[] {
+  const args = ['affected', '--json', '--path', cwd, '--']
+  return [...args, ...files]
+}
+
+/**
+ * `codegraph context` 参数（P2）：为一个任务话题组装上下文（相关符号 + 关系 + 代码块）。
+ * 与 `explore` 的区别是它面向「一个任务」而不是「一个区域」。
+ */
+export function contextArgs(cwd: string, task: string, options: { maxNodes?: number } = {}): string[] {
+  const args = ['context', '--path', cwd]
+  if (options.maxNodes !== undefined) args.push('--max-nodes', String(options.maxNodes))
+  return [...args, '--', task]
+}
+
+/**
+ * `codegraph explore` 参数（P2）：旗舰子命令，与 MCP 的 `codegraph_explore` 同输出。
+ * 卡片补它是因为**模型**那条路走 MCP、而人在卡片上此前够不着同一个能力。
+ */
+export function exploreArgs(cwd: string, query: string, options: { maxFiles?: number } = {}): string[] {
+  const args = ['explore', '--path', cwd]
+  if (options.maxFiles !== undefined) args.push('--max-files', String(options.maxFiles))
+  return [...args, '--', query]
+}
+
+/**
+ * `codegraph uninit` 参数（P2）：删除 `.codegraph/`，是本插件第二个往用户项目里**写**
+ * 的动作（第一个是 init，方向相反）。
+ *
+ * **必须带 `-f`**：实测不带 `-f` 时 CLI 会问 `Continue? (y/N)`，运行器没有 TTY、读到
+ * EOF 就**中止且不删除**（安全但无效）。所以确认这一步由卡片负责（两步确认），
+ * CLI 侧一律 `-f`。
+ */
+export function uninitArgs(cwd: string): string[] {
+  return ['uninit', '-f', '--', cwd]
+}
+
+/**
  * 读 `status --json` 输出里的过期信号（宿主侧版本）。
  *
  * 为什么要在宿主侧也实现一遍：卡片那侧（`client-src/pure.js` 的 `staleReasons`）只负责
@@ -2132,10 +2189,21 @@ function makeRoutes(
           return
         }
         const limit = Math.min(limitCheck.value ?? 10, MAX_QUERY_LIMIT)
+        // `-k/--kind`（P2 查询参数面板）：CLI 自带按节点类型过滤（function / class 等）。
+        // 值不做白名单——CLI 对未知 kind 自己会处理（回空结果），插件不该硬编码类型表
+        // （上游加新 kind 时这里不必跟着改）。
+        const kind = params.get('kind')?.trim()
+        if (kind !== undefined && kind !== '' && kind.startsWith('-')) {
+          writeJson(res, 400, { error: 'kind 不能以 - 开头: ' + kind })
+          return
+        }
         try {
           // 位置参数前补 `--`（CG09）：`-abc` 会撞上 commander 的 unknown option、
           // `-h` 更是 exit 0 + help 文本——卡片只能把它显示成「没有结果」
-          const { output, data } = await runJson(['query', '--json', '--path', cwd, '--limit', String(limit), '--', q], cwd)
+          const args = ['query', '--json', '--path', cwd, '--limit', String(limit)]
+          if (kind !== undefined && kind !== '') args.push('--kind', kind)
+          args.push('--', q)
+          const { output, data } = await runJson(args, cwd)
           writeJson(res, 200, { ok: true, path: cwd, results: data, raw: output })
         } catch (error) {
           failCli(res, cwd, error)
@@ -2159,9 +2227,19 @@ function makeRoutes(
           writeJson(res, 400, { error: invalid })
           return
         }
+        // `-l/--limit` 是 P2 补的旋钮（CLI 默认 20：大符号上默认值会把结果截断，
+        // 而卡片此前无从知道被截了）
+        const limitCheck = positiveIntParam(params.get('limit')?.trim(), 'limit')
+        if (limitCheck.error !== undefined) {
+          writeJson(res, 400, { error: limitCheck.error })
+          return
+        }
         try {
           // `--` 见 query 路由（CG09）
-          const { output, data } = await runJson(['callers', '--json', '--path', cwd, '--', symbol], cwd)
+          const args = ['callers', '--json', '--path', cwd]
+          if (limitCheck.value !== undefined) args.push('--limit', String(Math.min(limitCheck.value, MAX_QUERY_LIMIT)))
+          args.push('--', symbol)
+          const { output, data } = await runJson(args, cwd)
           writeJson(res, 200, { ok: true, path: cwd, symbol, callers: data, raw: output })
         } catch (error) {
           failCli(res, cwd, error)
@@ -2185,8 +2263,17 @@ function makeRoutes(
           writeJson(res, 400, { error: invalid })
           return
         }
+        // 同 callers：`-l/--limit` 是 P2 补的旋钮
+        const limitCheck = positiveIntParam(params.get('limit')?.trim(), 'limit')
+        if (limitCheck.error !== undefined) {
+          writeJson(res, 400, { error: limitCheck.error })
+          return
+        }
         try {
-          const { output, data } = await runJson(['callees', '--json', '--path', cwd, '--', symbol], cwd)
+          const args = ['callees', '--json', '--path', cwd]
+          if (limitCheck.value !== undefined) args.push('--limit', String(Math.min(limitCheck.value, MAX_QUERY_LIMIT)))
+          args.push('--', symbol)
+          const { output, data } = await runJson(args, cwd)
           writeJson(res, 200, { ok: true, path: cwd, symbol, callees: data, raw: output })
         } catch (error) {
           failCli(res, cwd, error)
@@ -2326,6 +2413,182 @@ function makeRoutes(
           writeJson(res, 200, { ok: true, path: cwd, output })
         } catch (error) {
           failCli(res, cwd, error)
+        }
+      },
+    },
+    {
+      kind: 'exact',
+      path: '/api/dsh-codegraph/files',
+      handler: async (req, res) => {
+        // 索引里的文件结构（P2）。只读；三个过滤旋钮（filter/pattern/max-depth）都是
+        // CLI 自带的，透传不替用户取舍。
+        if (!guard(req, res, 'GET')) return
+        const params = queryString(req.url)
+        const cwd = resolvePath(params)
+        const invalid = directoryError(cwd)
+        if (invalid !== undefined) {
+          writeJson(res, 400, { error: invalid })
+          return
+        }
+        const maxDepthCheck = positiveIntParam(params.get('maxDepth')?.trim(), 'maxDepth')
+        if (maxDepthCheck.error !== undefined) {
+          writeJson(res, 400, { error: maxDepthCheck.error })
+          return
+        }
+        try {
+          const args = filesArgs(cwd, {
+            filter: params.get('filter')?.trim(),
+            pattern: params.get('pattern')?.trim(),
+            maxDepth: maxDepthCheck.value,
+          })
+          const { output, data } = await runJson(args, cwd)
+          writeJson(res, 200, { ok: true, path: cwd, files: data, raw: output })
+        } catch (error) {
+          failCli(res, cwd, error)
+        }
+      },
+    },
+    {
+      kind: 'exact',
+      path: '/api/dsh-codegraph/affected',
+      handler: async (req, res) => {
+        // 由改动文件反查受影响的测试（P2）。实测：空文件列表时 CLI 回
+        // `No files provided. Use file arguments or --stdin.` 且 **exit 0**——
+        // 所以这里不能把它当错误，原样 200 + 文本带回去，由卡片显示。
+        if (!guard(req, res, 'GET')) return
+        const params = queryString(req.url)
+        const cwd = resolvePath(params)
+        const invalid = directoryError(cwd)
+        if (invalid !== undefined) {
+          writeJson(res, 400, { error: invalid })
+          return
+        }
+        // `files` 可重复传（?files=a&files=b）；含 `-` 开头的值会被 commander 吃掉，
+        // 位置参数前的 `--` 挡不住「值本身」这种形状，所以在这里先拒。
+        const files = params.getAll('files').map((f) => f.trim()).filter((f) => f !== '')
+        const bad = files.find((f) => f.startsWith('-'))
+        if (bad !== undefined) {
+          writeJson(res, 400, { error: '文件路径不能以 - 开头: ' + bad })
+          return
+        }
+        try {
+          const { output, data } = await runJson(affectedArgs(cwd, files), cwd)
+          writeJson(res, 200, { ok: true, path: cwd, affected: data, raw: output })
+        } catch (error) {
+          failCli(res, cwd, error)
+        }
+      },
+    },
+    {
+      kind: 'exact',
+      path: '/api/dsh-codegraph/explore',
+      handler: async (req, res) => {
+        // 旗舰子命令（P2）：与 MCP 的 codegraph_explore 同输出。模型走 MCP，
+        // 人在卡片上此前够不着同一个能力。
+        if (!guard(req, res, 'GET')) return
+        const params = queryString(req.url)
+        const cwd = resolvePath(params)
+        const query = params.get('q')?.trim() ?? ''
+        if (query === '') {
+          writeJson(res, 400, { error: '缺少 q 参数' })
+          return
+        }
+        const invalid = directoryError(cwd)
+        if (invalid !== undefined) {
+          writeJson(res, 400, { error: invalid })
+          return
+        }
+        const maxFilesCheck = positiveIntParam(params.get('maxFiles')?.trim(), 'maxFiles')
+        if (maxFilesCheck.error !== undefined) {
+          writeJson(res, 400, { error: maxFilesCheck.error })
+          return
+        }
+        try {
+          // explore 输出是 markdown（不是 JSON），所以走 run 而不是 runJson
+          const { output } = await run(exploreArgs(cwd, query, { maxFiles: maxFilesCheck.value }), cwd)
+          writeJson(res, 200, { ok: true, path: cwd, query, output })
+        } catch (error) {
+          failCli(res, cwd, error)
+        }
+      },
+    },
+    {
+      kind: 'exact',
+      path: '/api/dsh-codegraph/context',
+      handler: async (req, res) => {
+        // 为一个**任务**组装上下文（P2）：与 explore 的区别是面向任务而非区域。
+        // CLI 默认 markdown 输出，卡片直接渲染文本。
+        if (!guard(req, res, 'GET')) return
+        const params = queryString(req.url)
+        const cwd = resolvePath(params)
+        const task = params.get('q')?.trim() ?? ''
+        if (task === '') {
+          writeJson(res, 400, { error: '缺少 q 参数' })
+          return
+        }
+        const invalid = directoryError(cwd)
+        if (invalid !== undefined) {
+          writeJson(res, 400, { error: invalid })
+          return
+        }
+        const maxNodesCheck = positiveIntParam(params.get('maxNodes')?.trim(), 'maxNodes')
+        if (maxNodesCheck.error !== undefined) {
+          writeJson(res, 400, { error: maxNodesCheck.error })
+          return
+        }
+        try {
+          const { output } = await run(contextArgs(cwd, task, { maxNodes: maxNodesCheck.value }), cwd)
+          writeJson(res, 200, { ok: true, path: cwd, task, output })
+        } catch (error) {
+          failCli(res, cwd, error)
+        }
+      },
+    },
+    {
+      kind: 'exact',
+      path: '/api/dsh-codegraph/uninit',
+      handler: async (req, res) => {
+        // 删除 `.codegraph/`（P2）：与 init 反向，是本插件第二个**往用户项目里写**的动作。
+        // 纪律与 init 同级：loopback + POST + 目标必须真是目录 + 目标必须真的有索引
+        // （对没有索引的目录做 uninit 是无意义且容易误伤的）。
+        //
+        // CLI 侧一律 `-f`：实测不带 `-f` 时它会问 `Continue? (y/N)`，运行器没有 TTY、
+        // 读到 EOF 就**中止且不删除**——确认这一步由卡片负责（两步确认），不能指望 CLI 问。
+        if (!guard(req, res, 'POST')) return
+        const body = await readPostBody(req, res)
+        if (body === undefined) return
+        const cwd = (typeof body.path === 'string' && body.path.trim()) || currentDefaultPath()
+        const invalid = directoryError(cwd)
+        if (invalid !== undefined) {
+          writeJson(res, 400, { error: invalid })
+          return
+        }
+        const found = locateIndex(cwd)
+        if (found.state !== 'indexed') {
+          writeJson(res, 409, {
+            ok: false,
+            path: cwd,
+            error: `该目录${indexProblem(found.state)}，没有可撤销的索引`,
+          })
+          return
+        }
+        // 撤销的是**索引所在的根**（CG02 同口径）：在 monorepo 子目录上点撤销，
+        // 删掉的必须是仓库根那份索引，而不是凭空在子目录里找一个。
+        const target = found.projectPath ?? cwd
+        const controller = new AbortController()
+        const untrack = trackRun(target, controller)
+        abortOnDisconnect(res, controller)
+        try {
+          const { output } = await run(uninitArgs(target), target, cli.indexTimeoutMs, controller.signal)
+          // 索引没了 → 托管行决策跟着变（同 init 的反向）：不重算的话，卡片会继续
+          // 显示「已托管」，而 MCP 服务器指着一个不存在的索引。
+          const rt = runtime()
+          if (rt !== undefined) rt.sync(rt.scope?.get())
+          writeJson(res, 200, { ok: true, path: target, output, indexed: false })
+        } catch (error) {
+          failIndex(res, target, error)
+        } finally {
+          untrack()
         }
       },
     },
@@ -2714,6 +2977,33 @@ function makeRoutes(
           return
         }
         writeJson(res, 200, { ok: true, summaries: snapshot.summaries, grouped: snapshot.grouped, since: snapshot.since })
+      },
+    },
+    {
+      kind: 'exact',
+      path: '/api/dsh-codegraph/telemetry',
+      handler: async (req, res) => {
+        // 只读地转达 CLI 自己的遥测状态（P2）。`init` / `index` 会触发上游的匿名用量统计，
+        // 而卡片此前既不提示也不给开关——用户点了几十次重建索引，未必知道自己开了什么。
+        //
+        // 为什么只做**只读转达**而不是给一个开关：那是用户的全局偏好（存在
+        // `~/.codegraph/telemetry.json`），由 CLI 自己的 `telemetry on|off` 管；插件替用户
+        // 翻这个开关等于越权改别人的全局设置。这里只把「当前是什么」如实显示出来，
+        // 再告诉用户去哪儿关。
+        if (!guard(req, res, 'GET')) return
+        try {
+          const { output } = await run(['telemetry', 'status'], process.cwd(), cli.cliTimeoutMs)
+          // 输出形如「Telemetry: enabled (your saved choice)」「Config: /path/telemetry.json」
+          const enabledMatch = output.match(/Telemetry:\s*(enabled|disabled)/i)
+          writeJson(res, 200, {
+            ok: true,
+            enabled: enabledMatch === null ? undefined : enabledMatch[1].toLowerCase() === 'enabled',
+            output,
+          })
+        } catch (error) {
+          // 版本较旧没有 telemetry 子命令：如实回报，不猜
+          failCli(res, process.cwd(), error)
+        }
       },
     },
     {
