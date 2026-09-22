@@ -88,6 +88,35 @@ describe('P0：agent-integration 集成脚本必须隔离 DSH_HOME（它会挂�
   })
 })
 
+describe('CG49：真浏览器 UI 脚本（自起隔离宿主 + 真 Chrome）', () => {
+  const src = readFileSync(new URL('../../../scripts/verify-codegraph-client-ui.mjs', import.meta.url), 'utf8')
+
+  it('隔离 DSH_HOME，且拷 profile 前先清空目标（CG48 的教训）', () => {
+    expect(src).toContain('DSH_HOME: isolatedHome')
+    expect(src).toContain('cpSync')
+    // 目标先 rm 再拷：往已存在的目标上拷会让残留符号链接指回源树、cpSync 直接崩（CG48）
+    const helper = src.slice(src.indexOf('const syncIsolatedProfile'), src.indexOf('let host'))
+    expect(helper, '拷 profile 前应先清空目标').toMatch(/rmSync\(dest[\s\S]*cpSync\(/)
+  })
+
+  it('收尾断言真实补丁未变，并回收自己起的宿主', () => {
+    expect(src).toContain('realPatchBefore')
+    expect(src).toMatch(/未被改动|逐字节/)
+    expect(src, '缺少兜底 SIGKILL').toContain("'SIGKILL'")
+  })
+
+  it('受限环境要显式传 --no-sandbox（否则 CDP 只会报「超时」，指不到真因）', () => {
+    expect(src).toContain("'--no-sandbox'")
+    expect(src, '应透传给通用 UI 验证器').toContain("'--chrome-arg'")
+  })
+
+  it('用**真有索引**的项目（假索引会让 /status 按设计 500，UI8 假红）', () => {
+    // 第一版用「临时目录 + 空 codegraph.db」凑数，于是 status 500、控制台记一条错误、
+    // UI8 判「本次新增错误 1」而红——看起来像插件 bug，其实是夹具的
+    expect(src).toContain("existsSync(join(projectDir, '.codegraph'))")
+  })
+})
+
 describe('CG45：真机脚本必须隔离 DSH_HOME，不许写用户真实配置', () => {
   for (const rel of SCRIPTS) {
     const src = readFileSync(new URL(rel, import.meta.url), 'utf8')

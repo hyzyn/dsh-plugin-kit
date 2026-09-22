@@ -130,6 +130,26 @@ console.log(`# node ${process.version} / profile ${profile} / 端口 ${String(po
 
 let crashed
 try {
+  /**
+   * 把被测 profile 拷进隔离 home。
+   *
+   * **必须先清空目标**：本脚本对 `indexForce` 的两个取值各起一轮宿主，两轮共用同一个
+   * 隔离 home。第二轮若直接往已存在的目标上拷，目标里上一轮留下的**符号链接**会指回
+   * 源树，`cpSync` 于是报
+   *   `Cannot copy …/pkce-challenge to a subdirectory of self …/pkce-challenge`
+   * 并中止脚本（实测：第二轮必崩，且只跑到 F1 就退出）。
+   *
+   * 这个坑是「静态守卫测不出来」的典型：`test/verify-scripts-safety.test.ts` 只能断言
+   * 「脚本里有 cpSync / isolatedHome / realPatchBefore」，断言不了「拷两次不会崩」——
+   * 真机脚本的正确性只能靠**跑一遍**。CG48 记的就是这次：CG45 给本脚本加的隔离从没被
+   * 运行过，一跑就崩。
+   */
+  const syncIsolatedProfile = () => {
+    const dest = join(isolatedHome, 'profiles', profile)
+    rmSync(dest, { recursive: true, force: true })
+    cpSync(join(realDshHome, 'profiles', profile), dest, { recursive: true })
+  }
+
   for (const indexForce of [false, true]) {
     const logPath = join(workDir, `argv-${String(indexForce)}.log`)
     const overlay = join(workDir, `overlay-${String(indexForce)}.yml`)
@@ -148,7 +168,7 @@ try {
         '',
       ].join('\n'),
     )
-    cpSync(join(realDshHome, 'profiles', profile), join(isolatedHome, 'profiles', profile), { recursive: true })
+    syncIsolatedProfile()
     const child = spawn(dshBin, ['--profile', profile, '--patch', overlay], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: { ...process.env, DSH_HOME: isolatedHome, CG_FAKE_LOG: logPath },

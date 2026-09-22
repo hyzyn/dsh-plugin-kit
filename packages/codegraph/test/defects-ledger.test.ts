@@ -54,6 +54,21 @@ describe('DEFECTS.md：现状行必须与表格现算一致', () => {
     ).toBe(computed)
   })
 
+  it('「数字口径」注释里的算式也必须自洽（它漂过一轮没人发现）', () => {
+    /*
+     * 现状行有守卫了，但口径注释里那句 `当前 N − 3 = **M**` 是**散文**，守卫看不到它——
+     * 实测漂过一次：加 CG47 时现状行改成了 44，这句却还停在 `46 − 3 = 43`。
+     * 数字写在两处就一定会漂，所以把第二处也钉住。
+     */
+    const m = /当前 (\d+) − 3 = \*\*(\d+)\*\*/.exec(DEFECTS)
+    expect(m, '找不到「当前 N − 3 = **M**」算式').not.toBeNull()
+    const [, left, right] = m
+    const computed = distinctIds.length - CLOSED.length
+    expect(Number(left), `算式左边写的是 ${String(left)}，应为 ${String(distinctIds.length)}`).toBe(distinctIds.length)
+    expect(Number(right), `算式右边写的是 ${String(right)}，应为 ${String(computed)}`).toBe(computed)
+    expect(Number(right), '算式自身要成立').toBe(Number(left) - CLOSED.length)
+  })
+
   it('已关闭数就是台账里显式关闭的那几个', () => {
     expect(stated.closed).toBe(CLOSED.length)
   })

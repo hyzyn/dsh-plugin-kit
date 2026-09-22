@@ -18,6 +18,9 @@
  *   node scripts/verify-client-ui.mjs --url http://127.0.0.1:3082 --token <t> \
  *        --report /tmp/ui.json --shot-dir /tmp/ui-shots
  *   node scripts/verify-client-ui.mjs --mode eval --expr "document.title"
+ *
+ * 受限环境（文件沙箱 / CI 容器）加 `--chrome-arg --no-sandbox`，否则 Chrome 起不来、
+ * `Runtime.enable` 只会报超时。
  */
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -38,6 +41,18 @@ const reportPath = flag('--report')
 const shotDir = flag('--shot-dir')
 const chromePath = flag('--chrome') ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 const debugPort = Number(flag('--debug-port') ?? 9222 + Math.floor(Math.random() * 500))
+/**
+ * 额外传给 Chrome 的参数（可重复）。
+ *
+ * 为什么需要：受限环境（DSH 文件沙箱、多数 CI 容器）里 Chrome **自己的** sandbox 起不来，
+ * 必须 `--no-sandbox` 才连得上 CDP——否则 `Runtime.enable` 会一直挂到 30s 超时，
+ * 而报错只说「超时」，完全指不到「是 sandbox 起不来」。
+ * 刻意**不做成默认**：那会削弱所有调用方的浏览器隔离；需要的人显式传。
+ */
+const chromeArgs = []
+for (let i = 0; i < argv.length; i++) {
+  if (argv[i] === '--chrome-arg' && argv[i + 1] !== undefined) chromeArgs.push(argv[i + 1])
+}
 
 const results = []
 const record = (name, ok, detail) => {
@@ -53,7 +68,7 @@ const warn = (name, detail) => {
  * 启动
  * ------------------------------------------------------------------ */
 
-const chrome = await Chrome.launch({ path: chromePath, port: debugPort })
+const chrome = await Chrome.launch({ path: chromePath, port: debugPort, extraArgs: chromeArgs })
 console.log(`# Chrome ${String(chrome.version.Browser)} / CDP :${String(chrome.port)}`)
 
 const consoleErrors = []
