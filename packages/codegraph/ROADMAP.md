@@ -15,8 +15,8 @@
 | 项 | 结果 |
 | --- | --- |
 | 包版本 | 0.4.2；registry `dist-tags.latest` = **0.4.2**（2026-09-19 发布）——DEFECTS.md「验收记录」一节里「0.4.2 仅存在于工作树」那句已过期 |
-| `npx vitest run packages/codegraph` | **186 passed / 9 files**（含 `test/cli-surface.test.ts`） |
-| `npx vitest run`（全仓） | **763 passed / 47 files** |
+| `npx vitest run packages/codegraph` | **192 passed / 9 files** |
+| `npx vitest run`（全仓） | **769 passed / 47 files** |
 | `npx tsc --noEmit -p packages/codegraph/tsconfig.json` | 干净 |
 | 本包可用的运行时依赖 | `packages/codegraph/node_modules/@deepseek-ai/` 目前只有 `cordis` + `schemastery`（其余靠 `scripts/link-dsh-runtime.mjs` 链接） |
 | 宿主事件面（本机 DSH 实测存在） | `agent/created`、`agent/disposed`、`agent/inbox/inserted`、`tool/call`、`tool/result`、`system-prompt/assemble` |
@@ -48,7 +48,7 @@
 | **P1** | ~~**索引生命周期**：`unlock` + 自动重建~~ **✅ 已完成**（见下；daemon 日志尾与陈旧 pid 判定随 `/diagnose` 已可见） | 把「模型拿到陈旧结果 / 被坏锁挡住」在发生前化解 | M | `unlockArgs()` / `staleReasonsFromStatus()` / `maybeAutoReindex()` + 卡片「解锁」按钮 |
 | **P2** | ~~CLI 面补全~~ **✅ 已完成**（`explore`/`context`/`files`/`affected`/`uninit`/`unlock`/`telemetry` + 查询参数面板；`daemon` 仍缺） | 功能完整度 | M | `makeRoutes` + 卡片 |
 | **P2** | ~~已索引项目列表 + 一键切换 / 查询参数面板 / 遥测提示~~ **✅ 已完成**；其余（卡片 i18n）未做 | 体验与工程面 | M | `/projects` + 卡片胶囊按钮 |
-| **P3** | CG32–CG34 销号或补齐、~~宿主版本基线对齐~~ **✅ 已完成**（CG42，见下）、browser 半体测试 | 可信度与工程债 | S–M | `DEFECTS.md` / `README.md` / CI |
+| **P3** | ~~CG32–CG34 销号~~ **✅ 已关闭**（无原文，改为门禁矩阵复核）、~~宿主版本基线对齐~~ **✅ 已完成**（CG42）、~~browser 半体纯逻辑抽测~~ **✅ 已完成**（P3-b） | 可信度与工程债 | S–M | `DEFECTS.md` / `README.md` / CI |
 
 ## 已完成（0.4.2 之后的工作树）
 
@@ -183,6 +183,22 @@ owner 判定；会话目录无有效索引时不写盘（现有行为，保持�
 1. **`via` 被覆盖**：`/projects` 每次都会补登记默认项目与生效路径，于是 `/follow` 上报的项目来源被改写成「生效路径」——一个没有信息量的值。改成 `via` **只记第一次**（`at` 仍每次刷新）。
 2. **TDZ**：`loadProjects` 声明在 effect 之后，被仓库自己的 `client-lint`（TS2448）拦下——这正是那道闸门存在的理由（编译不报、只有真渲染到那条分支才炸）。
 
+### P3-b：收尾——CG32–CG34 关闭 + browser 半体纯逻辑抽测 ✅
+
+**CG32–CG34：关闭，而不是「补齐」。** 三条的评审原文从未随附，仓库与 git 全历史零命中（`git log -S` 复查），**无法补齐定义**。挂着它们会让「待修 N」长期失真——缺陷台账的价值在于每条都能落到代码，落不下来的条目不该永远占着待办位。
+
+关闭的同时不空手：新增**门禁矩阵用例**，覆盖那批判最可能涉及的一类（CG01 那一类：不可读的 body 静默回落到默认项目去执行**写操作**）——依赖 body 的 8 条 POST 路由逐一断言畸形体回 400；`reprobe` 因完全不依赖输入而不读 body（这是对的，读它反而引入「读失败 → 当成没给」的风险）；全路由回环门禁 403。**变异验证**：把 body 门禁改成「静默当空对象」，用例立刻红（`sync: expected 500 to be 400`——正好复现 CG01 的失败模式）。
+
+**browser 半体：继续沿仓库既有做法抽纯逻辑，不引入 devDependency。** 各包都没有 jsdom，而 `tty` 的先例是「纯判定抽成 `client-src/*.js` 进 vitest + 真渲染走 preview 夹具」。本轮把状态面板里三个**有真实边界**的格式化函数从组件闭包搬进 `pure.js`：
+
+- `fmtBytes`：1000 进制进位（999 B vs 1.0 kB）、`>= 100` 不留小数、TB 封顶、非法值占位符；
+- `fmtNum`：`NaN` / `Infinity` / 字符串 / `null` 一律占位符（状态字段缺失是常态）；
+- `fmtTime`：**解析不出来原样返回**（不是 `Invalid Date`、也不是 `—`）——这一列的语义是「CLI 说它何时被索引」，吞掉原串会让人以为索引从未建立。
+
+抽完复验产物：无残留 import、三个函数各只定义一次（内联没造成重复）、`node:vm` 里加载后 factory 连跑两次无重声明（HMR 场景）。
+
+**用例**：`test/cli-surface.test.ts` 3 条门禁矩阵 + `test/client-pure.test.ts` 3 条格式化边界。
+
 ## P2 / P3
 
 ### P2-b：CLI 面补全 + 查询参数面板 + 遥测提示 ✅
@@ -232,9 +248,10 @@ owner 判定；会话目录无有效索引时不写盘（现有行为，保持�
 - **P2 照 DEFECTS.md 的「待办 / 路线图」一节走**（那节比我列得全）：CLI 面补全、查询参数面板、
   **已索引项目列表 + 一键切换**（单服务器既成事实下最实用的补偿）、遥测提示、卡片 i18n、
   真机 `integration.mjs` / `*-smoke.mjs`。
-- **P3 债**：CG32–CG34 要么补齐原文要么销号；~~宿主版本基线~~ ✅ 见「已完成」（CG42）；browser 半体要
-  覆盖 CG08 / CG16 / CG17 需引入 react + jsdom（DEFECTS.md「补记」一节的『仍未覆盖』已明说刻意没加），
-  值得在 CI 单开一个 job。
+- **P3 债**：~~CG32–CG34~~ ✅ 已关闭（见「已完成」）；~~宿主版本基线~~ ✅ 见「已完成」（CG42）；
+  ~~browser 半体纯逻辑~~ ✅ 见「已完成」（P3-b）。**仍剩**：依赖 DOM 的那部分（CG08 样式引用计数、
+  CG16 清详情、CG17 渲染分支）要覆盖必须引入 react + jsdom，或走 `scripts/preview-card.mjs` 的真渲染
+  夹具——DEFECTS.md「补记」一节已明说刻意没加 devDependency。
 
 ## 建议开工顺序
 

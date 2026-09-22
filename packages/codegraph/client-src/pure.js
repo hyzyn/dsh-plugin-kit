@@ -130,3 +130,50 @@ export function seenAgoText(ms) {
   if (hours < 24) return hours + ' 小时前'
   return Math.floor(hours / 24) + ' 天前'
 }
+
+/**
+ * P3：把状态面板里三个**纯格式化**函数从组件闭包搬到此处——它们此前只能靠「真渲染到
+ * 那条分支」才发现写错，而每个都有真实的边界：
+ *
+ *   - `fmtBytes` 的单位阈值（999 B → 1 kB 还是 999 B？）与小数位切换（`size >= 100`
+ *     时不留小数）；
+ *   - `fmtNum` 对 `NaN` / `Infinity` / 字符串的处理（状态里出现 `null` 是常态）；
+ *   - `fmtTime` 对无法解析的时间串**原样返回**（CLI 换格式时不该显示 `Invalid Date`）。
+ *
+ * 抽出来之后这些边界进了 vitest（test/client-pure.test.ts）。留在闭包里的只有
+ * 「怎么摆 DOM」，那部分由卡片预览夹具（scripts/preview-card.mjs）走真渲染。
+ */
+
+/** 本地化数字；非有限值回落占位符（状态里字段缺失是常态，不能显示 NaN）。 */
+export function fmtNum(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString() : '—'
+}
+
+/**
+ * 字节数 → B/kB/MB/GB/TB（十进制 1000 进制，与 CLI 的 dbSizeBytes 口径一致）。
+ * 非法值（负数 / 非有限 / 非数字）→ 占位符。
+ */
+export function fmtBytes(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return '—'
+  const units = ['B', 'kB', 'MB', 'GB', 'TB']
+  let size = value
+  let unit = 0
+  while (size >= 1000 && unit < units.length - 1) {
+    size /= 1000
+    unit += 1
+  }
+  // 字节数本身取整；带单位的量值在 >= 100 时不留小数（`451 MB` 比 `451.0 MB` 好读）
+  return (unit === 0 ? String(Math.round(size)) : size.toFixed(size >= 100 ? 0 : 1)) + ' ' + units[unit]
+}
+
+/**
+ * ISO 时间 → 本地时间；**解析不出来就原样返回**。
+ *
+ * 为什么不是统一显示「—」或「Invalid Date」：这一列的语义是「CLI 说它何时被索引」，
+ * 原样透出才能让用户看出「CLI 换了格式」这件事；吞掉它会让人以为索引从未建立。
+ */
+export function fmtTime(value) {
+  if (typeof value !== 'string' || value === '') return '—'
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? new Date(parsed).toLocaleString() : value
+}

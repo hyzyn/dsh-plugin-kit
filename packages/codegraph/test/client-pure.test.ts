@@ -1,6 +1,17 @@
 import { describe, expect, it } from 'vitest'
 
-import { REL_LIMIT, adoptionText, nextRetryDelayMs, seenAgoText, shortPath, staleReasons, truncationNote } from '../client-src/pure.js'
+import {
+  REL_LIMIT,
+  adoptionText,
+  fmtBytes,
+  fmtNum,
+  fmtTime,
+  nextRetryDelayMs,
+  seenAgoText,
+  shortPath,
+  staleReasons,
+  truncationNote,
+} from '../client-src/pure.js'
 
 /*
  * 浏览器半体的纯逻辑测试（首次给 client-src 配上单测）。
@@ -190,5 +201,42 @@ describe('P2 项目列表：shortPath / seenAgoText', () => {
     expect(seenAgoText(-1)).toBe('')
     expect(seenAgoText(NaN)).toBe('')
     expect(seenAgoText('nope')).toBe('')
+  })
+})
+
+describe('P3 状态面板格式化：fmtNum / fmtBytes / fmtTime 的边界', () => {
+  it('fmtNum：非有限值与非数字一律占位符（状态里字段缺失是常态）', () => {
+    expect(fmtNum(6542)).toBe((6542).toLocaleString())
+    expect(fmtNum(0)).toBe('0')
+    for (const bad of [NaN, Infinity, -Infinity, '6542', null, undefined, {}]) {
+      expect(fmtNum(bad), String(bad)).toBe('—')
+    }
+  })
+
+  it('fmtBytes：1000 进制进位、>=100 不留小数、非法值占位符', () => {
+    expect(fmtBytes(0)).toBe('0 B')
+    expect(fmtBytes(999)).toBe('999 B')
+    // 1000 整就进位（十进制口径，与 CLI 的 dbSizeBytes 一致）
+    expect(fmtBytes(1000)).toBe('1.0 kB')
+    expect(fmtBytes(1500)).toBe('1.5 kB')
+    // >= 100 的带单位量值不留小数
+    expect(fmtBytes(99900)).toBe('99.9 kB')
+    expect(fmtBytes(100000)).toBe('100 kB')
+    expect(fmtBytes(45105152)).toBe('45.1 MB')
+    // 上限封在 TB，不越界
+    expect(fmtBytes(1e15)).toBe('1000 TB')
+    for (const bad of [-1, NaN, Infinity, '100', null, undefined]) {
+      expect(fmtBytes(bad), String(bad)).toBe('—')
+    }
+  })
+
+  it('fmtTime：解析不出来【原样返回】，不是 Invalid Date、也不是 —', () => {
+    // 这条是刻意的：吞掉原串会让人以为索引从未建立，而真相是 CLI 换了格式
+    expect(fmtTime('not-a-date')).toBe('not-a-date')
+    expect(fmtTime('2026-09-22T05:28:00.708Z')).not.toBe('—')
+    expect(fmtTime('2026-09-22T05:28:00.708Z')).not.toContain('Invalid')
+    for (const bad of ['', null, undefined, 42, {}]) {
+      expect(fmtTime(bad), String(bad)).toBe('—')
+    }
   })
 })

@@ -153,6 +153,53 @@ window.__ModuleLoader__.load({
       return Math.floor(hours / 24) + ' 天前'
     }
 
+    /**
+     * P3：把状态面板里三个**纯格式化**函数从组件闭包搬到此处——它们此前只能靠「真渲染到
+     * 那条分支」才发现写错，而每个都有真实的边界：
+     *
+     *   - `fmtBytes` 的单位阈值（999 B → 1 kB 还是 999 B？）与小数位切换（`size >= 100`
+     *     时不留小数）；
+     *   - `fmtNum` 对 `NaN` / `Infinity` / 字符串的处理（状态里出现 `null` 是常态）；
+     *   - `fmtTime` 对无法解析的时间串**原样返回**（CLI 换格式时不该显示 `Invalid Date`）。
+     *
+     * 抽出来之后这些边界进了 vitest（test/client-pure.test.ts）。留在闭包里的只有
+     * 「怎么摆 DOM」，那部分由卡片预览夹具（scripts/preview-card.mjs）走真渲染。
+     */
+
+    /** 本地化数字；非有限值回落占位符（状态里字段缺失是常态，不能显示 NaN）。 */
+    function fmtNum(value) {
+      return typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString() : '—'
+    }
+
+    /**
+     * 字节数 → B/kB/MB/GB/TB（十进制 1000 进制，与 CLI 的 dbSizeBytes 口径一致）。
+     * 非法值（负数 / 非有限 / 非数字）→ 占位符。
+     */
+    function fmtBytes(value) {
+      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return '—'
+      const units = ['B', 'kB', 'MB', 'GB', 'TB']
+      let size = value
+      let unit = 0
+      while (size >= 1000 && unit < units.length - 1) {
+        size /= 1000
+        unit += 1
+      }
+      // 字节数本身取整；带单位的量值在 >= 100 时不留小数（`451 MB` 比 `451.0 MB` 好读）
+      return (unit === 0 ? String(Math.round(size)) : size.toFixed(size >= 100 ? 0 : 1)) + ' ' + units[unit]
+    }
+
+    /**
+     * ISO 时间 → 本地时间；**解析不出来就原样返回**。
+     *
+     * 为什么不是统一显示「—」或「Invalid Date」：这一列的语义是「CLI 说它何时被索引」，
+     * 原样透出才能让用户看出「CLI 换了格式」这件事；吞掉它会让人以为索引从未建立。
+     */
+    function fmtTime(value) {
+      if (typeof value !== 'string' || value === '') return '—'
+      const parsed = Date.parse(value)
+      return Number.isFinite(parsed) ? new Date(parsed).toLocaleString() : value
+    }
+
     const React = require('react')
     const { jsx, jsxs } = require('react/jsx-runtime')
 
@@ -320,28 +367,8 @@ window.__ModuleLoader__.load({
 
     const CHEVRON_PATH = 'M11.8486 5.5L11.4238 5.92383L8.69727 8.65137C8.44157 8.90706 8.21562 9.13382 8.01172 9.29785C7.79912 9.46883 7.55595 9.61756 7.25 9.66602C7.08435 9.69222 6.91565 9.69222 6.75 9.66602C6.44405 9.61756 6.20088 9.46883 5.98828 9.29785C5.78438 9.13382 5.55843 9.13382 5.30273 8.65137L2.57617 5.92383L2.15137 5.5L3 4.65137L3.42383 5.07617L6.15137 7.80273C6.42595 8.07732 6.59876 8.24849 6.74023 8.3623C6.87291 8.46904 6.92272 8.47813 6.9375 8.48047C6.97895 8.48703 7.02105 8.48703 7.0625 8.48047C7.07728 8.47813 7.12709 8.46904 7.25977 8.3623C7.40124 8.24849 7.57405 8.07732 7.84863 7.80273L10.5762 5.07617L11 4.65137L11.8486 5.5Z'
 
-    /** 本地化数字；非有限值回落到占位符。 */
-    const fmtNum = (value) => (typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString() : '—')
-
-    /** 字节数 → B/kB/MB/GB。 */
-    const fmtBytes = (value) => {
-      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return '—'
-      const units = ['B', 'kB', 'MB', 'GB', 'TB']
-      let size = value
-      let unit = 0
-      while (size >= 1000 && unit < units.length - 1) {
-        size /= 1000
-        unit += 1
-      }
-      return (unit === 0 ? String(Math.round(size)) : size.toFixed(size >= 100 ? 0 : 1)) + ' ' + units[unit]
-    }
-
-    /** ISO 时间 → 本地时间；解析不出来就原样返回。 */
-    const fmtTime = (value) => {
-      if (typeof value !== 'string' || value === '') return '—'
-      const parsed = Date.parse(value)
-      return Number.isFinite(parsed) ? new Date(parsed).toLocaleString() : value
-    }
+    // P3：fmtNum / fmtBytes / fmtTime 已抽到 client-src/pure.js（可直接进 vitest），
+    // 构建时内联进本 factory；此处只留调用点。
 
     /** 一个「标签 + 值」的单元格。 */
     const cell = (key, value, options) => jsxs('div', {

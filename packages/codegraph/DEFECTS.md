@@ -17,7 +17,7 @@
 >
 > **第二轮（评审波，同日）**：对修复后工作树的独立评审确认 CG01–CG29 里 28 条落地，
 > 并新发现 **CG30–CG38**；其中 CG30/CG31/CG35/CG36/CG37/CG38 已修（CG15 的 4xx 判定
-> 过宽一并收窄），**CG32–CG34 评审原文未随附、仓库亦无记录，挂账待补定义**。评审里
+> 过宽一并收窄），**CG32–CG34 评审原文未随附、仓库亦无记录**（2026-09-22 复查 git 全历史，零命中）→ 见索引表，已关闭并改为可执行复核。评审里
 > 「README 引用不存在的 verify-codegraph-indexforce.mjs」一条为假阳性（该文件在仓库
 > 根且被 git 跟踪），已核实并记录在案。
 >
@@ -28,8 +28,8 @@
 
 ## 现状
 
-**已修 40 / 待修 3**（CG01–CG29 + CG30/31/35/36/37/38 修于 0.4.2；CG39 修于本轮；CG32–CG34 等评审
-原文补齐后编号推进）。索引表的「修复」列一句话记录改法与落点；行号已漂移，定位用
+**已修 40 / 已关闭 3 / 待修 0**（CG01–CG29 + CG30/31/35/36/37/38 修于 0.4.2；CG39–CG43 修于本轮；
+CG32–CG34 **因原文从未随附而关闭**，不再挂账）。索引表的「修复」列一句话记录改法与落点；行号已漂移，定位用
 `grep -n` 找符号（`locateIndex` / `locateCwdEdits` / `readPostBody` / `runViaSpawn` /
 `ensureStyle` / `installSessionReporter`）。代码里带 `CGxx` 注释的位置就是对应修复点，
 改到相关代码时请先读那里的注释。
@@ -80,9 +80,9 @@
 |---|---|---|---|
 | CG30 | P1 | 断连取消不成立：`req 'aborted'` 在 body 消费完之后**不触发**（真机 HTTP 实测：POST body 读完客户端断连，只有 `res:close` 且 `writableEnded=false` 会来）——CG05 的断连兜底是死代码 | `abortOnDisconnect` 改挂 `res.on('close')` + `writableEnded` 判定（写完才关 ≠ 断连）；三个索引类 POST 路由接的是它 |
 | CG31 | P1 | `locateCwdEdits` 只向下扫：`cwd:` 写在 `serverName:` **之前**时找不到、在后面补出第二个 `cwd:` → js-yaml 抛 `duplicated mapping key`，**整份 cordis.patch.yml 拒载**（比 CG03 原伤更重，真机复现实锤） | 扫描改双向（行内上下都找同缩进的 `cwd:`；缩进变小即离开条目，不跨行）；复现形状进回归测试（单 cwd + `yaml.load` 不抛 + 幂等） |
-| CG32 | — | **定义未获取**：评审消息未随附原文，仓库无记录 | 挂账，等原文补齐后编号推进 |
-| CG33 | — | **定义未获取**（同上） | 挂账 |
-| CG34 | — | **定义未获取**（同上） | 挂账 |
+| CG32 | — | **定义未获取**：评审原文未随附，仓库与 git 历史均无记录（2026-09-22 复查：`git log -S` 全历史零命中） | **关闭**：无法补齐定义。改为对该批判最可能涉及的面向做**可执行复核**——新增门禁矩阵用例（POST 路由的 body 门禁 + 全路由回环门禁，含变异验证） |
+| CG33 | — | **定义未获取**：评审原文未随附，仓库与 git 历史均无记录（2026-09-22 复查：`git log -S` 全历史零命中） | **关闭**：无法补齐定义。改为对该批判最可能涉及的面向做**可执行复核**——新增门禁矩阵用例（POST 路由的 body 门禁 + 全路由回环门禁，含变异验证） |
+| CG34 | — | **定义未获取**：评审原文未随附，仓库与 git 历史均无记录（2026-09-22 复查：`git log -S` 全历史零命中） | **关闭**：无法补齐定义。改为对该批判最可能涉及的面向做**可执行复核**——新增门禁矩阵用例（POST 路由的 body 门禁 + 全路由回环门禁，含变异验证） |
 | CG35 | P2 | kit 归一化成了「半仓统一」：`dshHome()` 归 kit，全仓还有 8 处 raw 副本（env:68 / profile:44 / prompt:79 / search:39 / mcp:76 / tty:2000+2060 / shell-integration:48）——`DSH_HOME=~/x` 时 codegraph 与 dsh-mcp 写**两个不同**的 cordis.patch.yml（改动前至少写同一个错的） | 8 处副本全部改走 kit 的 `dshHome()`（env / prompt 补 `@hyzyn/dsh-kit` 依赖并 bump）；新增 `scripts/check-dsh-home.mjs` 防回归闸（只认 kit 一份推导）接进 CI；连带 bump env/prompt/profile/mcp/search/rss/tty |
 | CG36 | P3 | kit `killProcessTree` POSIX 分支无条件先打 `-pid`，而 dsh-mcp 的连接测试子进程不是组长（mcp:646 无 detached）——正常 ESRCH 被吞，窄窗口是「子进程已退出且 pid 被复用为组长」；这是另一个包的行为改变 | kit 加 `{ group }` 选项且**默认关**：只有 codegraph 运行器（自己 detached 启动）显式 opt-in，dsh-mcp 经默认路径回到「只单杀」的原语义 |
 | CG37 | P3 | CG08 的引用计数在闭包里、节点却文档级共享：同一份 client.js 被再次执行（HMR / 重载不换 document）时，新一代 `ensureStyle` 命中旧节点早退、`styleEl` 恒 undefined 摘不掉；反向旧代卸载摘掉新代在用的节点 | 计数改挂在**元素 dataset** 上（`cgRefs`）：ensure/release 都按 id 找节点、增减 dataset——跨代共享的节点配跨代共享的计数 |
@@ -93,6 +93,8 @@
 | CG40 | P3 | **采纳率分类器错收**：第一版只匹配「read / search」词根，于是 `read_image`（真实历史 248 次）、`read_pdf`、`web_search`（19 次）被算成「代码探索」——读截图、搜网页跟 codegraph 毫无关系，单这一个错误把分母灌了 11%（2344 → 2077 次），采纳率 2.2% 被压到 2.0%；反向问题是宽口径把 `read` 全算进分母，而 `read` 真实占 1956 次（grep 只有 100 次），导致「2.2%」这种会误导人的数字 | 加 `NON_EXPLORATORY_PATTERNS`（媒体 / 网络 / 文档类先判 other，先于文件探索匹配）；新增窄口径 `discovery`（grep/glob/search/find/list，排除 read），`/metrics` 与卡片同时报两个口径并标注主口径。实测数据与结论见 [ADOPTION-AUDIT.md](./ADOPTION-AUDIT.md) |
 | CG39 | P3 | **「init 只走 `init -- <path>`」偶发失败（两个独立成因，第二个才是主因）**：① 共享夹具 `emptyDir` 被 stub 写过 `.codegraph/`，复用即 409；② **断言本身写错**——`expect(argvToString).not.toContain('-y')` 会在整串输出上做子串匹配，而 `mkdtempSync` 的后缀是随机的，实测路径 `…/dsh-cg-route-yoKvfJ/…` 里就带 `-y`，于是「十次里红一次」且每次红在不同机器/运行上，看起来像产品 bug（全仓并行运行时更易命中） | ① 该用例与 409 用例各自 `mkdtempSync` 现造目录，删掉共享夹具；② 改为**解析 argv 后逐项比对**：`argv.filter(a => a.startsWith('-') && a !== '--')` 必须为空 + 完整 argv 相等（`--` 是位置参数终止符不是选项）。两个成因都已验证：前者同进程连续两次 init → 200 后 409；后者用含 `-y` 的路径直接复现旧断言判红、新断言通过 |
 
+> **CG32–CG34 的关闭理由**：缺陷台账的价值在于「每条都能落到代码」，而三条没有定义的条目永远落不下来——挂着它们会让「待修 N」这个数字长期失真。关闭不等于「已修」，是**承认无法修复**，并用一条覆盖同类风险的用例顶上。
+>
 > **0.4.2 之后的增补**：前瞻项记在 `ROADMAP.md`，已落地三项（systemPrompt 注入加索引门禁、
 > `GET /diagnose` 诊断包、采纳率仪表），详见其「已完成」一节。**只有已确认的缺陷进本文编号**
 > （本轮新增 CG39 / CG40 / CG41 / CG42 / CG43），新发现的缺陷继续按编号往后续。

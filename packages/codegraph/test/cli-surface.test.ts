@@ -63,7 +63,7 @@ function mount(command: string, defaultPath: string) {
     },
   }
   apply(ctx as never, { command, defaultPath, announceToAgent: false, usageGuidance: false })
-  const call = async (path: string, init: { method?: string; url?: string; body?: unknown } = {}) => {
+  const call = async (path: string, init: { method?: string; url?: string; body?: unknown; rawBody?: string } = {}) => {
     const state: { status?: number; body?: Record<string, unknown> } = {}
     const res = {
       writeHead(status: number) { state.status = status },
@@ -71,7 +71,9 @@ function mount(command: string, defaultPath: string) {
       on() {},
       get writableEnded() { return true },
     }
-    const payload = init.body === undefined ? undefined : Buffer.from(JSON.stringify(init.body))
+    const payload = init.rawBody !== undefined
+      ? Buffer.from(init.rawBody)
+      : init.body === undefined ? undefined : Buffer.from(JSON.stringify(init.body))
     await routes.get(path)?.handler({
       method: init.method ?? 'GET',
       url: init.url ?? path,
@@ -81,7 +83,25 @@ function mount(command: string, defaultPath: string) {
     }, res)
     return state
   }
-  return { call }
+  /** 非回环来源（验证 loopback 门禁）。 */
+  const callRemote = async (path: string, method = 'GET') => {
+    const state: { status?: number; body?: Record<string, unknown> } = {}
+    const res = {
+      writeHead(status: number) { state.status = status },
+      end(body?: string) { state.body = body === undefined ? undefined : JSON.parse(body) },
+      on() {},
+      get writableEnded() { return true },
+    }
+    await routes.get(path)?.handler({
+      method,
+      url: path,
+      headers: { host: '127.0.0.1:3080' },
+      socket: { remoteAddress: '10.0.0.9' },
+      async *[Symbol.asyncIterator]() {},
+    }, res)
+    return state
+  }
+  return { call, callRemote }
 }
 
 const argvOf = (body: Record<string, unknown> | undefined) => JSON.parse(String(body?.output ?? body?.raw ?? '[]'))
@@ -289,5 +309,57 @@ describe('P2 查询参数：kind 与 limit', () => {
       url: `/api/dsh-codegraph/callees?path=${encodeURIComponent(sandbox)}&symbol=s`,
     })
     expect(argvOf(callees.body)).toEqual(['callees', '--json', '--path', sandbox, '--', 's'])
+  })
+})
+
+describe('P3 门禁矩阵：POST 路由的 body 与回环覆盖（CG32–CG34 的替代性复核）', () => {
+  /*
+   * CG32–CG34 的评审原文从未随附、仓库与 git 历史都没有记录，**无法补齐定义**。
+   * 与其让三条 `—` 行永久挂着，不如把「它们最可能涉及的那一类」变成可执行的复核：
+   * 路由矩阵（方法 / body 门禁 / 回环门禁）。CG01 正是这个矩阵能一次看住的东西——
+   * 不可读的 body 静默回落到**默认项目**去执行写操作。
+   *
+   * 判据是**性质**而非快照：依赖输入的路由必须挡下畸形体；完全不依赖输入的路由
+   * （reprobe）不读 body 才是对的。
+   */
+
+  /** 造一个「畸形 body」请求：body 不是合法 JSON。 */
+  const malformed = (path: string, method = 'POST') => ({ path, init: { method, rawBody: '{oops' as unknown as undefined } })
+
+  it('依赖 body 的 POST 路由：畸形体一律 400，绝不静默用默认项目', async () => {
+    // 这些路由都会从 body 取 path 并可能**落盘**（改托管行 / 删索引 / 写 settings），
+    // 所以「读不出来」必须与「没给」区分开（CG01）。
+    const needsBody = ['sync', 'index', 'unlock', 'uninit', 'init', 'follow', 'settings', 'default-path']
+    for (const name of needsBody) {
+      const { call } = mount(stubCli(`mb-${name}`), '/p')
+      const out = await call(`/api/dsh-codegraph/${name}`, { method: 'POST', rawBody: '{oops' })
+      expect(out.status, name).toBe(400)
+      expect(String(out.body?.error), name).toContain('invalid JSON body')
+    }
+    void malformed
+  })
+
+  it('reprobe 不依赖输入：凭空体也能工作；GET 仍被拒（它会真起子进程）', async () => {
+    const { call } = mount(stubCli('guard-reprobe'), '/p')
+    const out = await call('/api/dsh-codegraph/reprobe', { method: 'POST' })
+    expect(out.status).toBe(200)
+    expect((await call('/api/dsh-codegraph/reprobe')).status).toBe(405)
+  })
+
+  it('全部路由都过回环门禁：非回环来源一律 403（且门禁先于参数校验）', async () => {
+    const { call, callRemote } = mount(stubCli('guard-loopback'), '/p')
+    // 覆盖三条代表性路由：GET、POST、以及需要参数的 POST
+    expect((await callRemote('/api/dsh-codegraph/status')).status).toBe(403)
+    expect((await callRemote('/api/dsh-codegraph/projects')).status).toBe(403)
+    expect((await callRemote('/api/dsh-codegraph/metrics')).status).toBe(403)
+    expect((await callRemote('/api/dsh-codegraph/diagnose')).status).toBe(403)
+    expect((await callRemote('/api/dsh-codegraph/files')).status).toBe(403)
+    expect((await callRemote('/api/dsh-codegraph/affected')).status).toBe(403)
+    expect((await callRemote('/api/dsh-codegraph/explore')).status).toBe(403)
+    expect((await callRemote('/api/dsh-codegraph/context')).status).toBe(403)
+    expect((await callRemote('/api/dsh-codegraph/telemetry')).status).toBe(403)
+    expect((await callRemote('/api/dsh-codegraph/uninit', 'POST')).status).toBe(403)
+    expect((await callRemote('/api/dsh-codegraph/unlock', 'POST')).status).toBe(403)
+    void call
   })
 })
