@@ -47,6 +47,18 @@ window.__ModuleLoader__.load({
       // .cg_panelHeader 随之删除；.cg_panelTitle 原来的 flex:1 是给「标题 + 按钮组」
       // 那个 flex 行用的，单独成行后留着只会在列布局里引入无意义的伸缩。
       '.cg_panelTitle{margin:0;font-size:15px;font-weight:700;white-space:nowrap}',
+      // 面板标题行：标题 + 忙碌指示器（+ 取消）。忙碌指示器放在这里而不是正文中间，
+      // 是因为索引操作可能跑十分钟——放正文里会随滚动移出视野，而且插入/移除会让
+      // 下面整组控件上下跳动。标题行本来就在，挂在它右边是**零布局跳动**且常驻可见。
+      '.cg_panelHeader{display:flex;align-items:center;gap:10px;flex-wrap:wrap}',
+      // 忙碌指示器：转圈 + 「在做什么」+（可取消时）取消按钮，三者挨着——
+      // 「停」的对象就是左边那件事，不该分到另一行去。
+      '.cg_busy{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--dsw-alias-label-secondary);min-width:0}',
+      // 纯 CSS 转圈：不引图标、不加 DOM。用当前色描边 + 主题色顶边，跟着文字颜色走。
+      '.cg_spinner{flex:none;width:12px;height:12px;border:2px solid var(--dsw-alias-border-l2);border-top-color:var(--dsw-alias-state-business-primary);border-radius:50%;animation:cg_spin .7s linear infinite}',
+      '@keyframes cg_spin{to{transform:rotate(360deg)}}',
+      // 尊重「减少动态效果」：关掉旋转，靠文案与取消按钮继续表达「正在进行」。
+      '@media (prefers-reduced-motion:reduce){.cg_spinner{animation:none}}',
       '.cg_subtitle{color:var(--dsw-alias-label-tertiary);font-size:11.5px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:360px}',
       // 索引维护按钮组改成「可换行的行」而不是「整组 nowrap」：
       // 早先只有 5 个按钮，整组 nowrap + margin-left:auto 能让它们要么留在标题右边、
@@ -77,7 +89,11 @@ window.__ModuleLoader__.load({
       '.cg_itemName{font-weight:600;color:var(--dsw-alias-label-primary)}',
       '.cg_itemMeta{color:var(--dsw-alias-label-tertiary);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;margin-top:2px}',
       '.cg_pre{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:10px;max-height:320px;overflow:auto;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11.5px;white-space:pre-wrap;word-break:break-all;color:var(--dsw-alias-label-primary)}',
-      '.cg_empty,.cg_loading{text-align:center;color:var(--dsw-alias-label-tertiary);padding:24px 12px;font-size:12.5px}',
+      // 空态文案（列表为空时的占位）。`.cg_loading` 已退役：忙碌态改成标题行里的
+      // 内联指示器（见 .cg_busy / .cg_spinner）——原先它是**居中大块**
+      // （padding:24px 12px），既不说在加载什么、又把下面整组控件推下去（布局跳动），
+      // 而且 Sync 跑十分钟时它会随滚动移出视野。
+      '.cg_empty{text-align:center;color:var(--dsw-alias-label-tertiary);padding:24px 12px;font-size:12.5px}',
       '.cg_error{color:var(--dsw-alias-state-error-primary);font-size:12px;margin:0;white-space:pre-wrap}',
       '.cg_ok{color:var(--dsw-alias-state-success-primary);font-size:12px;margin:0}',
       '.cg_sectionTitle{margin:0;font-size:13px;font-weight:700;color:var(--dsw-alias-label-secondary)}',
@@ -332,6 +348,14 @@ window.__ModuleLoader__.load({
       const [error, setError] = React.useState('')
       const [ok, setOk] = React.useState('')
       const [loading, setLoading] = React.useState(false)
+      /**
+       * 忙碌指示器上那句「在做什么」（`''` = 不显示）。
+       *
+       * 为什么不能只有一个布尔：索引重建可能跑十分钟，而一句笼统的「加载中…」既让
+       * 用户不知道在等什么、也无法判断该不该按「取消」。各动作进入忙碌态时给一句
+       * 具体文案（同步中 / 重建索引中 / 搜索中…），由 {@link beginBusy} 统一设置。
+       */
+      const [busy, setBusy] = React.useState('')
       const [mcp, setMcp] = React.useState(null)
       // GET /default-path 的索引态：默认项目（= 托管 MCP 的 cwd）是否真是有效索引。
       // 只看 mcp.mode 会把「已对齐一个非项目目录」显示成一切正常。
@@ -406,8 +430,22 @@ window.__ModuleLoader__.load({
         }
       }, [])
 
-      const loadStatus = React.useCallback(async () => {
+      /**
+       * 进入 / 退出忙碌态。`loading` 管「禁用控件」，`busy` 管「在做什么」——
+       * 两个一起动，避免出现「控件灰着但不知道在等什么」或「提示说在忙但按钮还能点」。
+       * 文案一律具体到动作（不用笼统的「加载中」）。
+       */
+      const beginBusy = (label) => {
         setLoading(true)
+        setBusy(label)
+      }
+      const endBusy = () => {
+        setLoading(false)
+        setBusy('')
+      }
+
+      const loadStatus = React.useCallback(async () => {
+        beginBusy('读取索引状态…')
         setError('')
         setOk('')
         try {
@@ -417,7 +455,7 @@ window.__ModuleLoader__.load({
         } catch (err) {
           setError(err.message)
         } finally {
-          setLoading(false)
+          endBusy()
         }
       }, [effectivePath, manual, currentCwd])
 
@@ -486,7 +524,7 @@ window.__ModuleLoader__.load({
 
       const search = async () => {
         if (!query.trim()) return
-        setLoading(true)
+        beginBusy('搜索中…')
         setError('')
         setOk('')
         setSelected(null)
@@ -503,12 +541,12 @@ window.__ModuleLoader__.load({
         } catch (err) {
           setError(err.message)
         } finally {
-          setLoading(false)
+          endBusy()
         }
       }
 
       const loadSymbol = async (name) => {
-        setLoading(true)
+        beginBusy('加载符号详情…')
         setError('')
         setOk('')
         // CG16：先清掉上一个符号的详情——标题马上要换成新符号，面板还挂着旧的
@@ -526,12 +564,14 @@ window.__ModuleLoader__.load({
         } catch (err) {
           setError(err.message)
         } finally {
-          setLoading(false)
+          endBusy()
         }
       }
 
       const runAction = async (action) => {
-        setLoading(true)
+        // 忙碌文案按动作分派：重建索引可能跑十分钟，用户需要知道在等的是哪件事，
+        // 才能判断该不该按旁边的「取消」
+        beginBusy({ sync: '同步中…', index: '重建索引中…', unlock: '解锁中…' }[action] || '处理中…')
         setError('')
         setOk('')
         // unlock 是秒级操作，不给取消按钮（给了一个点完就消失的「取消」只会让人困惑）
@@ -550,7 +590,7 @@ window.__ModuleLoader__.load({
         } catch (err) {
           setError(err.message)
         } finally {
-          setLoading(false)
+          endBusy()
           setCancelable(false)
         }
       }
@@ -569,7 +609,7 @@ window.__ModuleLoader__.load({
           return
         }
         setConfirmUninit(false)
-        setLoading(true)
+        beginBusy('撤销索引中…')
         setError('')
         setOk('')
         setCancelable(true)
@@ -586,7 +626,7 @@ window.__ModuleLoader__.load({
         } catch (err) {
           setError(err.message)
         } finally {
-          setLoading(false)
+          endBusy()
           setCancelable(false)
         }
       }
@@ -606,7 +646,7 @@ window.__ModuleLoader__.load({
        * 与 runAction 分开是因为它们**不改状态**，只需展示输出，不该触发 loadStatus。
        */
       const runQuery = async (route, params = {}) => {
-        setLoading(true)
+        beginBusy({ files: '读取文件结构…', affected: '分析影响面…', explore: '探索中…', context: '组装上下文…' }[route] || '查询中…')
         setError('')
         setOk('')
         setOutput(null)
@@ -625,7 +665,7 @@ window.__ModuleLoader__.load({
         } catch (err) {
           setError(err.message)
         } finally {
-          setLoading(false)
+          endBusy()
         }
       }
 
@@ -661,7 +701,7 @@ window.__ModuleLoader__.load({
           return
         }
         setConfirmInit(false)
-        setLoading(true)
+        beginBusy('初始化索引中…')
         setError('')
         setOk('')
         setCancelable(true)
@@ -678,7 +718,7 @@ window.__ModuleLoader__.load({
         } catch (err) {
           setError(err.message)
         } finally {
-          setLoading(false)
+          endBusy()
           setCancelable(false)
         }
       }
@@ -864,6 +904,19 @@ window.__ModuleLoader__.load({
           + '注意：宿主进程的 PATH 在它启动时就固定了，刷新页面 / 重开卡片都不会改变它——改完上面任一项后，点「重新探测」即可就地确认，不必重启宿主。'
         : ''
 
+      /**
+       * 忙碌指示器文案。`loading` 的文案由各动作经 beginBusy 给出；「重新探测」与
+       * 「收集诊断包」有自己的忙态布尔（CG21：两个动作各有忙态，共用一个会把对方
+       * 一起禁掉），文案在这里补上，好让标题行统一显示「在做什么」。
+       */
+      const busyText = loading
+        ? (busy || '处理中…')
+        : reprobing
+          ? '重新探测 CLI…'
+          : diagnosing
+            ? '收集诊断信息…'
+            : ''
+
       /** 探测失败的实测原文：ENOENT / 非零退出 / 超时三种情况靠它区分。 */
       const cliProbeDetail = defaultInfo && defaultInfo.cliAvailable === false && defaultInfo.cliProbeError
         ? '实测原因：' + defaultInfo.cliProbeError
@@ -920,7 +973,40 @@ window.__ModuleLoader__.load({
             children: jsxs('div', {
               className: 'cg_panel',
               children: [
-                jsx('span', { className: 'cg_panelTitle', children: 'Codegraph 控制台' }),
+                // 面板标题行：标题 + 忙碌指示器（+ 取消）。
+                // 忙碌态放这里而不是正文中间——原先是一句**居中大块**的「加载中…」
+                // （padding:24px 12px）夹在用量统计与搜索之间（用户截图实证）：
+                //   ① 不说在加载什么；② 插入/移除把「搜索与查询」整块上下推（布局跳动）；
+                //   ③ 索引重建可能跑十分钟，而它会随滚动移出视野。
+                // 标题行本来就在 → 挂在它右边是**零布局跳动**且常驻可见。
+                jsxs('div', {
+                  className: 'cg_panelHeader',
+                  children: [
+                    jsx('span', { className: 'cg_panelTitle', children: 'Codegraph 控制台' }),
+                    busyText !== ''
+                      ? jsxs('span', {
+                        className: 'cg_busy',
+                        // 屏幕阅读器：进度文案变化时播报（视觉上转圈，非视觉上靠这句）
+                        'aria-live': 'polite',
+                        children: [
+                          jsx('span', { className: 'cg_spinner' }),
+                          jsx('span', { children: busyText }),
+                          // 「取消」紧挨着它要停的那件事。原先它在危险行里，与进度提示
+                          // 之间隔着用量统计——真要取消时找不到。
+                          cancelable && loading
+                            ? jsx('button', {
+                              type: 'button',
+                              className: 'cg_btnGhost',
+                              title: '终止正在跑的 codegraph CLI（SIGTERM，3s 后整组 SIGKILL）',
+                              onClick: cancelRun,
+                              children: '取消',
+                            })
+                            : null,
+                        ],
+                      })
+                      : null,
+                  ],
+                }),
                 // ── 目标项目 ──「在看哪个目录 / 设默认 / 托管行状态 / 见过哪些项目」
                 // 收进同一组。此前路径输入框在面板第二行、「设为默认项目」孤悬在查询
                 // 参数之后（截图实证：按钮和它作用的路径隔了两屏），托管行文案又挂在
@@ -1118,35 +1204,21 @@ window.__ModuleLoader__.load({
                     ],
                   }),
                   // 危险行：删数据的动作用虚线与常规按钮隔开——「这一格之后会删索引」
-                  // 在视觉上先响一次（两步确认是第二次）。「取消」也放这里：它是「进行中
-                  // 动作的急停」，同样属于非常规操作。
-                  (status && status.initialized === true) || (cancelable && loading)
-                    ? jsxs('div', {
+                  // 在视觉上先响一次（两步确认是第二次）。「取消」不在这里：它是进行中
+                  // 动作的急停，已挪到标题行紧挨进度提示（那里才是它被需要的地方）。
+                  status && status.initialized === true
+                    ? jsx('div', {
                       className: 'cg_dangerRow',
-                      children: [
-                        status && status.initialized === true
-                          ? jsx('button', {
-                            type: 'button',
-                            className: confirmUninit ? 'cg_btnDanger' : 'cg_btnGhost',
-                            disabled: loading,
-                            title: confirmUninit
-                              ? '再点一次即删除 ' + (effectivePath || '(默认项目)') + ' 的 .codegraph/（索引数据全部丢失，源文件不动）'
-                              : 'codegraph uninit：删除该项目的 .codegraph/（索引数据全部丢失，源文件不动）。这是本卡片唯一的删除类动作',
-                            onClick: runUninit,
-                            children: confirmUninit ? '确认撤销？' : '撤销索引',
-                          })
-                          : null,
-                        // CG05：索引类操作进行中给「取消」——以前连关标签页都止不住 10 分钟的全量重建
-                        cancelable && loading
-                          ? jsx('button', {
-                            type: 'button',
-                            className: 'cg_btnDanger',
-                            title: '终止正在跑的 codegraph CLI（SIGTERM，3s 后整组 SIGKILL）',
-                            onClick: cancelRun,
-                            children: '取消',
-                          })
-                          : null,
-                      ],
+                      children: jsx('button', {
+                        type: 'button',
+                        className: confirmUninit ? 'cg_btnDanger' : 'cg_btnGhost',
+                        disabled: loading,
+                        title: confirmUninit
+                          ? '再点一次即删除 ' + (effectivePath || '(默认项目)') + ' 的 .codegraph/（索引数据全部丢失，源文件不动）'
+                          : 'codegraph uninit：删除该项目的 .codegraph/（索引数据全部丢失，源文件不动）。这是本卡片唯一的删除类动作',
+                        onClick: runUninit,
+                        children: confirmUninit ? '确认撤销？' : '撤销索引',
+                      }),
                     })
                     : null,
                   // P2 遥测提示：`init` / `index` 会触发上游的匿名用量统计。只如实转达 CLI 的
@@ -1165,7 +1237,6 @@ window.__ModuleLoader__.load({
                 ]),
                 // 动作反馈（加载 / 出错 / 成功 / 诊断包）：紧跟索引维护组——大部分按钮在
                 // 这里，反馈落在按键下方最近的位置；来自搜索的报错也汇到同一条反馈区。
-                loading ? jsx('div', { className: 'cg_loading', children: '加载中…' }) : null,
                 error ? jsx('p', { className: 'cg_error', children: error }) : null,
                 ok ? jsx('p', { className: 'cg_ok', children: ok }) : null,
                 // 诊断包（P1-b）：展开态 + 复制按钮。用 details 而不是直接铺开——它很长

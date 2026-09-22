@@ -11,6 +11,7 @@
  *   node packages/codegraph/scripts/preview-card.mjs --png      # 再调本机 Chrome 渲染成 PNG
  *   node packages/codegraph/scripts/preview-card.mjs --per-agent # 预览 P0 per-agent 生效态的卡片
  *   node packages/codegraph/scripts/preview-card.mjs --fallback  # 预览 P0「要 per-agent 但退回 managed」的卡片
+ *   node packages/codegraph/scripts/preview-card.mjs --busy      # 预览忙碌态（/status 挂住 → 标题行指示器）
  *
  * 注意：无头 Chrome 在 DSH 文件沙箱里起不来（它要初始化自己的 sandbox），--png 需要在
  * 普通终端里跑；也可以直接打开 HTML 手动截图。产物目录 .preview/ 已在 .gitignore 里。
@@ -33,8 +34,14 @@ const outDir = join(pkgRoot, '.preview')
  */
 const perAgent = process.argv.includes('--per-agent')
 const fallback = process.argv.includes('--fallback')
-const htmlPath = join(outDir, perAgent ? 'codegraph-card-per-agent.html' : fallback ? 'codegraph-card-fallback.html' : 'codegraph-card.html')
-const pngPath = join(outDir, perAgent ? 'codegraph-card-per-agent.png' : fallback ? 'codegraph-card-fallback.png' : 'codegraph-card.png')
+/**
+ * --busy：把 `/status` 的响应**永远挂住**，于是组件的 `loading` 保持为 true，
+ * 好把标题行上的忙碌指示器（转圈 + 文案 + 取消）截出来看。
+ * 这是唯一能在无头环境里离线看到忙碌态的办法（真机上它一闪而过）。
+ */
+const busy = process.argv.includes('--busy')
+const htmlPath = join(outDir, perAgent ? 'codegraph-card-per-agent.html' : fallback ? 'codegraph-card-fallback.html' : busy ? 'codegraph-card-busy.html' : 'codegraph-card.html')
+const pngPath = join(outDir, perAgent ? 'codegraph-card-per-agent.png' : fallback ? 'codegraph-card-fallback.png' : busy ? 'codegraph-card-busy.png' : 'codegraph-card.png')
 
 /** 预览用的假数据：跟随开启、会话目录与绑定路径不同，好让「跟随会话」这一行有内容。 */
 const RESPONSES = {
@@ -150,6 +157,8 @@ async function renderCardHtml() {
 
   globalThis.fetch = async (url) => {
     const key = Object.keys(RESPONSES).find((k) => String(url).startsWith(k))
+    // --busy：让 /status 挂住不返回 → 组件停在 loading 态（见 busy 的注释）
+    if (busy && key === '/api/dsh-codegraph/status') return new Promise(() => {})
     return { ok: true, status: 200, json: async () => (key === undefined ? {} : RESPONSES[key]) }
   }
   globalThis.document = {

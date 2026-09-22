@@ -359,3 +359,56 @@ describe('UX 重构：面板信息架构（顺序 / 分层）守卫', () => {
     expect(pos("'注入使用指引'")).toBeLessThan(pos("'MCP 挂载'"))
   })
 })
+
+describe('UX 重构：忙碌态指示器（在标题行，不在正文中间）', () => {
+  /*
+   * 用户反馈（截图）：正文中间那句**居中大块**的「加载中…」不好——它夹在
+   * 「匿名用量统计」与「搜索与查询」之间，三个毛病：
+   *   ① 不说在加载**什么**（同步？重建？搜索？）；
+   *   ② 插入/移除会把下面整组控件上下推（布局跳动，约 70px）；
+   *   ③ 索引重建可能跑十分钟，而它会随滚动移出视野——最需要它的时候看不见。
+   *
+   * 改法：指示器提到**面板标题行**（常驻、零布局跳动），带动作文案，并把「取消」
+   * 挪到它旁边（原先在危险行，与进度隔着用量统计，真要取消时找不到）。
+   */
+  const src = readFileSync(new URL('../client-src/index.js', import.meta.url), 'utf8')
+  const pos = (needle: string): number => {
+    const at = src.indexOf(needle)
+    expect(at, `结构标记缺失：${needle}`).toBeGreaterThan(-1)
+    return at
+  }
+
+  it('不再有笼统的居中大块「加载中…」', () => {
+    expect(src, '旧的居中 loading 块应已删除').not.toContain("children: '加载中…'")
+    // 只查**实际用法**（className），不查任何提及——注释里会说明「cg_loading 已退役」，
+    // 直接断言源码不含该字样会把那条注释本身判红（第一版就是这么假失败的）。
+    expect(src, '.cg_loading 的用法应已移除').not.toContain("className: 'cg_loading'")
+  })
+
+  it('忙碌指示器在面板标题行里（标题之后、目标项目之前 = 常驻且零布局跳动）', () => {
+    expect(src).toContain('cg_panelHeader')
+    expect(src).toContain('cg_busy')
+    expect(pos('cg_panelHeader')).toBeLessThan(pos("group('目标项目'"))
+    expect(pos("children: 'Codegraph 控制台'")).toBeLessThan(pos("className: 'cg_busy'"))
+  })
+
+  it('忙碌文案具体到动作（不用笼统的「加载中」）', () => {
+    // 每个动作各给一句，用户才知道在等什么、该不该取消
+    for (const label of ['同步中…', '重建索引中…', '搜索中…', '初始化索引中…', '撤销索引中…', '读取索引状态…']) {
+      expect(src, `缺少动作文案：${label}`).toContain(label)
+    }
+  })
+
+  it('「取消」紧挨着它要停的那件事（在 cg_busy 里，不在危险行）', () => {
+    const busyAt = pos("className: 'cg_busy'")
+    const cancelAt = pos("children: '取消'")
+    const dangerAt = pos("className: 'cg_dangerRow'")
+    expect(cancelAt, '取消应在忙碌指示器之后').toBeGreaterThan(busyAt)
+    expect(cancelAt, '取消不应在危险行（那是撤销索引的位置）').toBeLessThan(dangerAt)
+  })
+
+  it('转圈是纯 CSS 且尊重「减少动态效果」', () => {
+    expect(src).toContain('@keyframes cg_spin')
+    expect(src).toContain('prefers-reduced-motion')
+  })
+})
