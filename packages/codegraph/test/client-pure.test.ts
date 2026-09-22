@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -238,5 +239,50 @@ describe('P3 状态面板格式化：fmtNum / fmtBytes / fmtTime 的边界', () 
     for (const bad of ['', null, undefined, 42, {}]) {
       expect(fmtTime(bad), String(bad)).toBe('—')
     }
+  })
+})
+
+describe('工具栏布局守卫：按钮组不许「整组不可断行」', () => {
+  /*
+   * 实测过的 bug（用户截图）：P2 把按钮从 5 个加到 12 个之后，「撤销索引」被裁掉。
+   *
+   * 根因不是按钮太多，而是 CSS 的选择错了：`.cg_toolbarBtns` 当时是
+   * `flex-wrap:nowrap` + `flex-shrink:0`——**整组不许断行**。5 个按钮（约 300px）时
+   * 这招是对的（要么整组留在标题右边、要么整组换行）；12 个按钮约 900px，而侧边栏
+   * 只有 ~360px，整组不许断行就只能溢出被裁。
+   *
+   * 这条守卫钉的是**性质**而不是像素：只要按钮数超出一行能放下的量，容器就必须允许
+   * 换行。它跑在源码文本上（不需要 DOM），所以在这个没有 jsdom / 无头 Chrome 的仓库里
+   * 也能挡住回归。
+   */
+  const src = readFileSync(new URL('../client-src/index.js', import.meta.url), 'utf8')
+  const cssOf = (cls: string): string => {
+    const m = src.match(new RegExp(`'\\.${cls}\\{([^}]*)\\}'`))
+    expect(m, `找不到 .${cls} 的样式定义`).not.toBeNull()
+    return m?.[1] ?? ''
+  }
+
+  it('.cg_toolbarBtns 必须允许换行（nowrap 是那条被裁的根因）', () => {
+    const css = cssOf('cg_toolbarBtns')
+    expect(css).toContain('flex-wrap:wrap')
+    expect(css).not.toContain('nowrap')
+  })
+
+  it('.cg_row 必须允许换行（P2 把探索/上下文放进这一行后列数变多）', () => {
+    const css = cssOf('cg_row')
+    expect(css).toContain('flex-wrap:wrap')
+    // 不能再是固定列数的 grid：4-5 列会把两个输入框挤到不可用
+    expect(css).not.toContain('grid-template-columns')
+  })
+
+  it('输入框在 flex 行里可伸缩（否则窄栏下会撑破容器）', () => {
+    expect(cssOf('cg_row .cg_input')).toContain('flex:1 1')
+  })
+
+  it('探索 / 上下文 与搜索按钮同处搜索行（它们吃搜索框的关键词）', () => {
+    // 结构断言的近似：这三个按钮的 onClick 都读 query，应当出现在同一区块里。
+    const searchBlock = src.slice(src.indexOf("children: '搜索'"), src.indexOf("children: '搜索'") + 1200)
+    expect(searchBlock).toContain("runQuery('explore'")
+    expect(searchBlock).toContain("runQuery('context'")
   })
 })

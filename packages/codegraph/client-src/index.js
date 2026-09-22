@@ -47,9 +47,12 @@ window.__ModuleLoader__.load({
       '.cg_panelTitle{margin:0;font-size:15px;font-weight:700;white-space:nowrap;flex:1}',
       '.cg_subtitle{color:var(--dsw-alias-label-tertiary);font-size:11.5px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:360px}',
       '.cg_toolbar{display:flex;align-items:center;gap:8px;flex:none;flex-wrap:wrap}',
-      // 工具按钮整组：组内 nowrap，所以「放不下」时整组一起换行，而不是把最后一个按钮
-      // 单独甩到第二行。`flex-shrink:0` 保证按钮本身不被压扁（文字不换行）。
-      '.cg_toolbarBtns{display:flex;align-items:center;gap:8px;flex-wrap:nowrap;flex-shrink:0;margin-left:auto}',
+      // 工具栏改成「可换行的行」而不是「整组 nowrap」：
+      // 早先只有 5 个按钮，整组 nowrap + margin-left:auto 能让它们要么留在标题右边、
+      // 要么整组换行；P2 加到 12 个之后这招失效——12 个按钮约 900px，而侧边栏只有
+      // ~360px，整组不许断行就只能溢出被裁（实测截图里「撤销索引」被切掉）。
+      // 现在：组内允许换行（按语义顺序自然折成两行），并让危险动作与只读动作分开。
+      '.cg_toolbarBtns{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-left:auto;justify-content:flex-end}',
       '.cg_btn{color:var(--dsw-alias-label-primary-foreground);background:var(--dsw-alias-button-info-fill);border:none;border-radius:8px;padding:6px 14px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}',
       '.cg_btn:hover:not(:disabled){background:var(--dsw-alias-button-info-hover)}',
       '.cg_btn:disabled{opacity:.5;cursor:default}',
@@ -60,7 +63,11 @@ window.__ModuleLoader__.load({
       '.cg_input{color:var(--dsw-alias-label-primary);background:var(--dsw-specific-input-major);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;outline:none;padding:6px 10px;font-family:inherit;font-size:13px;box-sizing:border-box;width:100%}',
       '.cg_input:focus{border-color:var(--dsw-alias-state-business-primary)}',
       '.cg_input::placeholder{color:var(--dsw-alias-label-tertiary)}',
-      '.cg_row{display:grid;grid-template-columns:minmax(120px,1fr) minmax(160px,2fr) auto;gap:8px;align-items:center}',
+      // 搜索行：原来固定 3 列 grid（路径输入 / 搜索输入 / 搜索按钮）。P2 把「探索」「上下文」
+      // 也放进这一行（它们吃搜索框的关键词），4-5 列会把两个输入框挤到无法使用，
+      // 所以改成 flex：输入框按 flex 比例伸缩，按钮按内容宽度、放不下就整行换行。
+      '.cg_row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}',
+      '.cg_row .cg_input{flex:1 1 160px;width:auto;min-width:120px}',
       '.cg_list{display:flex;flex-direction:column;gap:8px;max-height:360px;overflow-y:auto}',
       '.cg_item{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:8px 10px;cursor:pointer;font-size:12.5px}',
       '.cg_item:hover{border-color:var(--dsw-alias-label-dimmed)}',
@@ -825,7 +832,7 @@ window.__ModuleLoader__.load({
       }
 
       if (view === 'summary') {
-        return '代码图谱：索引状态、符号搜索、callers/callees/impact、一键 sync/index。'
+        return '代码图谱：索引状态、符号搜索、探索/上下文、影响面分析、一键 sync/index。'
       }
 
       // page 视图：新页面自己画标题/图标/面包屑，这里只交表单本体，不渲染卡片头。
@@ -866,9 +873,11 @@ window.__ModuleLoader__.load({
                   className: 'cg_panelHeader',
                   children: [
                     jsx('span', { className: 'cg_panelTitle', children: 'Codegraph 控制台' }),
-                    // 按钮整组包一层：`cg_panelHeader` 是 flex-wrap，若把 5 个按钮直接铺在
-                    // 里面，放不下时**最后一个会被单独挤到第二行**（一张卡片上孤零零一个按钮）。
-                    // 包成一组、组内 nowrap，要么整组留在标题右边，要么整组换行。
+                    // 按钮整组包一层，但**组内允许换行**（见上面 .cg_toolbarBtns 的注释）：
+                    // 早期 5 个按钮时用「组内 nowrap」把「最后一个按钮被单独挤到第二行」
+                    // 这个难看情形挡掉了；P2 加到 9-12 个之后 nowrap 反而导致整组溢出被裁
+                    // （约 900px 挤进 ~360px 的侧边栏），所以改成允许换行——宁可折成两行，
+                    // 也不能有按钮看不见。顺序按语义：索引维护 → 只读查询 → 危险动作。
                     jsxs('div', {
                       className: 'cg_toolbarBtns',
                       children: [
@@ -933,7 +942,7 @@ window.__ModuleLoader__.load({
                           onClick: () => runAction('unlock'),
                           children: '解锁',
                         }),
-                        // P2：以下四个是只读子命令，此前只有命令行够得着
+                        // P2 只读查询：文件结构 / 影响面（都不吃搜索框输入，留在工具栏）
                         jsx('button', {
                           type: 'button',
                           className: 'cg_btnGhost',
@@ -946,25 +955,20 @@ window.__ModuleLoader__.load({
                           type: 'button',
                           className: 'cg_btnGhost',
                           disabled: loading || !(status && status.projectPath),
-                          title: 'codegraph affected <files>：由改动文件反查受影响的测试。需先在下方填文件路径（或走 explore）',
+                          title: 'codegraph affected <files>：由改动文件反查受影响的测试。需先在下方「改动文件」里填路径',
                           onClick: () => runQuery('affected', { files: manualFiles() }),
                           children: '影响面',
                         }),
+                        // 一键诊断包（P1-b）：把 PATH / 托管行 / 索引 / daemon / 最近失败
+                        // 的原文一次收齐，供排障与贴 issue。它是**只读**动作，放在只读组
+                        // 的末尾；此前排在「撤销索引」之后、紧邻「取消」，语义上是错位的。
                         jsx('button', {
                           type: 'button',
                           className: 'cg_btnGhost',
-                          disabled: loading || !query.trim(),
-                          title: 'codegraph explore：与 MCP 的 codegraph_explore 同输出（相关符号源码 + 调用路径）。用搜索框里的关键词',
-                          onClick: () => runQuery('explore', { q: query.trim() }),
-                          children: '探索',
-                        }),
-                        jsx('button', {
-                          type: 'button',
-                          className: 'cg_btnGhost',
-                          disabled: loading || !query.trim(),
-                          title: 'codegraph context：为一个任务组装上下文（相关符号 + 关系 + 代码块）。用搜索框里的关键词',
-                          onClick: () => runQuery('context', { q: query.trim() }),
-                          children: '上下文',
+                          disabled: diagnosing,
+                          title: '收集一段可直接复制的诊断文本：CLI 探测实测原文、托管行与补丁区块（值已脱敏）、索引状态、codegraph daemon 与日志尾、最近一次 CLI 失败',
+                          onClick: loadReport,
+                          children: diagnosing ? '收集中…' : '诊断包',
                         }),
                         // 撤销索引是破坏性动作，放在最后并与「初始化」同样两步确认
                         status && status.initialized === true
@@ -979,16 +983,7 @@ window.__ModuleLoader__.load({
                             children: confirmUninit ? '确认撤销？' : '撤销索引',
                           })
                           : null,
-                        // 一键诊断包（P1-b）：把 PATH / 托管行 / 索引 / daemon / 最近失败
-                        // 的原文一次收齐，供排障与贴 issue。
-                        jsx('button', {
-                          type: 'button',
-                          className: 'cg_btnGhost',
-                          disabled: diagnosing,
-                          title: '收集一段可直接复制的诊断文本：CLI 探测实测原文、托管行与补丁区块（值已脱敏）、索引状态、codegraph daemon 与日志尾、最近一次 CLI 失败',
-                          onClick: loadReport,
-                          children: diagnosing ? '收集中…' : '诊断包',
-                        }),
+
                         // CG05：索引类操作进行中给「取消」——以前连关标签页都止不住 10 分钟的全量重建
                         cancelable && loading
                           ? jsx('button', {
@@ -1029,6 +1024,25 @@ window.__ModuleLoader__.load({
                       disabled: loading || !query.trim(),
                       onClick: search,
                       children: '搜索',
+                    }),
+                    // explore / context 吃的是**搜索框里的关键词**，所以放在搜索行而不是
+                    // 工具栏——放工具栏既错位（读者不知道它们依赖哪个输入），又让那一行
+                    // 长到溢出。这三个按钮共用 query，语义上是一组。
+                    jsx('button', {
+                      type: 'button',
+                      className: 'cg_btnGhost',
+                      disabled: loading || !query.trim(),
+                      title: 'codegraph explore：与 MCP 的 codegraph_explore 同输出（相关符号源码 + 调用路径）。用左侧搜索框里的关键词',
+                      onClick: () => runQuery('explore', { q: query.trim() }),
+                      children: '探索',
+                    }),
+                    jsx('button', {
+                      type: 'button',
+                      className: 'cg_btnGhost',
+                      disabled: loading || !query.trim(),
+                      title: 'codegraph context：为一个任务组装上下文（相关符号 + 关系 + 代码块）。用左侧搜索框里的关键词',
+                      onClick: () => runQuery('context', { q: query.trim() }),
+                      children: '上下文',
                     }),
                   ],
                 }),

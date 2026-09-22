@@ -134,7 +134,10 @@ async function renderCardHtml() {
   globalThis.document = {
     getElementById: () => null,
     createElement: () => {
-      const el = { id: '', textContent: '', remove() {} }
+      // CG37 之后 ensureStyle/releaseStyle 的引用计数挂在**元素 dataset** 上
+      // （跨代共享的节点要配跨代共享的计数），所以这个假元素必须带 dataset——
+      // 早前只有 { id, textContent, remove }，脚本会在这里 TypeError 直接崩。
+      const el = { id: '', textContent: '', dataset: /** @type {Record<string,string>} */ ({}), remove() {} }
       // ensureStyle() 会把真实 CSS 写进这个 style 元素——顺路把它捞出来
       queueMicrotask(() => { capturedCss = el.textContent })
       return el

@@ -15,8 +15,8 @@
 | 项 | 结果 |
 | --- | --- |
 | 包版本 | 0.4.2；registry `dist-tags.latest` = **0.4.2**（2026-09-19 发布）——DEFECTS.md「验收记录」一节里「0.4.2 仅存在于工作树」那句已过期 |
-| `npx vitest run packages/codegraph` | **192 passed / 9 files** |
-| `npx vitest run`（全仓） | **769 passed / 47 files** |
+| `npx vitest run packages/codegraph` | **196 passed / 9 files** |
+| `npx vitest run`（全仓） | **773 passed / 47 files** |
 | `npx tsc --noEmit -p packages/codegraph/tsconfig.json` | 干净 |
 | 本包可用的运行时依赖 | `packages/codegraph/node_modules/@deepseek-ai/` 目前只有 `cordis` + `schemastery`（其余靠 `scripts/link-dsh-runtime.mjs` 链接） |
 | 宿主事件面（本机 DSH 实测存在） | `agent/created`、`agent/disposed`、`agent/inbox/inserted`、`tool/call`、`tool/result`、`system-prompt/assemble` |
@@ -182,6 +182,14 @@ owner 判定；会话目录无有效索引时不写盘（现有行为，保持�
 **过程中修掉的两个真实问题**：
 1. **`via` 被覆盖**：`/projects` 每次都会补登记默认项目与生效路径，于是 `/follow` 上报的项目来源被改写成「生效路径」——一个没有信息量的值。改成 `via` **只记第一次**（`at` 仍每次刷新）。
 2. **TDZ**：`loadProjects` 声明在 effect 之后，被仓库自己的 `client-lint`（TS2448）拦下——这正是那道闸门存在的理由（编译不报、只有真渲染到那条分支才炸）。
+
+### P2-c：修工具栏溢出（CG44）✅
+
+用户截图实证：「撤销索引」被裁掉。根因不在按钮数量，而在 CSS 选错了语义——`.cg_toolbarBtns` 当时是 `nowrap`（整组不许断行），5 个按钮时正确、9 个时必然溢出。
+
+修法（详见 DEFECTS.md 的 CG44）：允许换行 + 搜索行改 flex + 把「探索/上下文」按语义移回搜索行 + 「诊断包」挪出破坏性动作邻位；并新增**布局守卫用例**（含变异验证），把这个仓库里没有 jsdom / 无头 Chrome 起不来的缺口用「读源码断言性质」补上。
+
+顺带修了 `scripts/preview-card.mjs` 的假 DOM 缺 `dataset`（CG37 把引用计数挪到元素 dataset 后该脚本一直崩，导致这个预览夹具长期不可用——正是它本该发现这次布局问题）。
 
 ### P3-b：收尾——CG32–CG34 关闭 + browser 半体纯逻辑抽测 ✅
 
