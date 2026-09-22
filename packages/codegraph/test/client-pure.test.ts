@@ -281,7 +281,10 @@ describe('工具栏布局守卫：按钮组不许「整组不可断行」', () =
 
   it('探索 / 上下文 与搜索按钮同处搜索行（它们吃搜索框的关键词）', () => {
     // 结构断言的近似：这三个按钮的 onClick 都读 query，应当出现在同一区块里。
-    const searchBlock = src.slice(src.indexOf("children: '搜索'"), src.indexOf("children: '搜索'") + 1200)
+    // 锚点用动作键（busyOr('search'）而不是按钮文案——文案会随 UX 调整变，
+    // 动作键是稳定标识（第一版锚在 "children: '搜索'" 上，加了忙碌态文案后立刻失效）。
+    const anchor = "busyOr('search'"
+    const searchBlock = src.slice(src.indexOf(anchor), src.indexOf(anchor) + 1400)
     expect(searchBlock).toContain("runQuery('explore'")
     expect(searchBlock).toContain("runQuery('context'")
   })
@@ -336,8 +339,8 @@ describe('UX 重构：面板信息架构（顺序 / 分层）守卫', () => {
   it('Sync 是生命周期行的主按钮（cg_btn）：这张卡片最高频的安全操作要做视觉锚点', () => {
     // 生命周期子行内，Sync 用 cg_btn 而其它用 cg_btnGhost
     const lifecycle = src.slice(pos("'生命周期'"), pos("'查看与诊断'"))
-    expect(lifecycle).toContain("children: 'Sync'")
-    const syncAt = lifecycle.indexOf("children: 'Sync'")
+    expect(lifecycle).toContain("busyOr('sync'")
+    const syncAt = lifecycle.indexOf("busyOr('sync'")
     expect(lifecycle.lastIndexOf("className: 'cg_btn'", syncAt), 'Sync 应使用 cg_btn 主样式').toBeGreaterThan(lifecycle.lastIndexOf("className: 'cg_btnGhost'", syncAt))
   })
 
@@ -346,7 +349,7 @@ describe('UX 重构：面板信息架构（顺序 / 分层）守卫', () => {
     // 改动文件输入必须在「改动影响」标记之后（原先与类型/上限混在一行）
     expect(pos("'改动影响'")).toBeLessThan(pos("'改动文件'"))
     // 「类型」「上限」贴着搜索按钮（它们是 query 的参数），不跟改动文件混
-    expect(pos("children: '搜索'")).toBeLessThan(pos("'类型'"))
+    expect(pos("busyOr('search'")).toBeLessThan(pos("'类型'"))
     expect(pos("'类型'")).toBeLessThan(pos("'改动影响'"))
   })
 
@@ -410,5 +413,25 @@ describe('UX 重构：忙碌态指示器（在标题行，不在正文中间）'
   it('转圈是纯 CSS 且尊重「减少动态效果」', () => {
     expect(src).toContain('@keyframes cg_spin')
     expect(src).toContain('prefers-reduced-motion')
+  })
+
+  it('每个动作按钮自己也要显示忙碌态（不能只靠标题行）', () => {
+    /*
+     * 用户反馈（截图）：「在这里点，会看不到加载的 loading」。根因是我上一轮把指示器
+     * 只放到了标题行——卡片很长，滚到下半部分时它已移出视野。修法是**两级反馈**：
+     * 按钮自己（busyOr）+ 标题行全局。
+     *
+     * 这条守卫钉住「每个动作按钮都接了 busyOr」：漏掉任何一个，那个按钮点了就没反馈。
+     */
+    expect(src, '缺少 busyAction 状态').toContain('busyAction')
+    expect(src, '缺少 busyOr 助手').toContain('const busyOr =')
+    expect(src, '缺少按钮内忙碌样式').toContain('cg_btnBusy')
+    // 11 个动作按钮：init / sync / index / unlock / status / files / uninit /
+    // search / explore / context / affected
+    const used = [...src.matchAll(/busyOr\('/g)].length
+    expect(used, `接了 busyOr 的按钮数 = ${String(used)}，应为 11`).toBe(11)
+    for (const action of ['init', 'sync', 'index', 'unlock', 'status', 'files', 'uninit', 'search', 'explore', 'context', 'affected']) {
+      expect(src, `缺少动作键：${action}`).toContain(`busyOr('${action}'`)
+    }
   })
 })

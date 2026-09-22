@@ -56,6 +56,10 @@ window.__ModuleLoader__.load({
       '.cg_busy{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--dsw-alias-label-secondary);min-width:0}',
       // 纯 CSS 转圈：不引图标、不加 DOM。用当前色描边 + 主题色顶边，跟着文字颜色走。
       '.cg_spinner{flex:none;width:12px;height:12px;border:2px solid var(--dsw-alias-border-l2);border-top-color:var(--dsw-alias-state-business-primary);border-radius:50%;animation:cg_spin .7s linear infinite}',
+      // 按钮内的忙碌内容（转圈 + 文案）。按钮本身是 inline 元素，包一层 inline-flex
+      // 才能让转圈与文字基线对齐；不设固定宽度——忙碌文案比静止时略长，按钮会宽一点，
+      // 这点局部位移远好过「点了没有任何反馈」。
+      '.cg_btnBusy{display:inline-flex;align-items:center;gap:6px}',
       '@keyframes cg_spin{to{transform:rotate(360deg)}}',
       // 尊重「减少动态效果」：关掉旋转，靠文案与取消按钮继续表达「正在进行」。
       '@media (prefers-reduced-motion:reduce){.cg_spinner{animation:none}}',
@@ -356,6 +360,14 @@ window.__ModuleLoader__.load({
        * 具体文案（同步中 / 重建索引中 / 搜索中…），由 {@link beginBusy} 统一设置。
        */
       const [busy, setBusy] = React.useState('')
+      /**
+       * 正在跑的是**哪个动作**（`''` = 没有）。用于让被点的那个按钮自己显示忙碌态。
+       *
+       * 为什么不能只靠标题行的全局指示器（用户截图实证）：卡片很长，滚到下半部分
+       * （搜索与查询 / Agent 集成）时标题行已经移出视野——在那里点「搜索」「影响面」
+       * 完全没有反馈。按钮就在手指底下，是唯一「无论滚到哪都看得见」的位置。
+       */
+      const [busyAction, setBusyAction] = React.useState('')
       const [mcp, setMcp] = React.useState(null)
       // GET /default-path 的索引态：默认项目（= 托管 MCP 的 cwd）是否真是有效索引。
       // 只看 mcp.mode 会把「已对齐一个非项目目录」显示成一切正常。
@@ -435,17 +447,28 @@ window.__ModuleLoader__.load({
        * 两个一起动，避免出现「控件灰着但不知道在等什么」或「提示说在忙但按钮还能点」。
        * 文案一律具体到动作（不用笼统的「加载中」）。
        */
-      const beginBusy = (label) => {
+      const beginBusy = (label, action) => {
         setLoading(true)
         setBusy(label)
+        setBusyAction(action)
       }
       const endBusy = () => {
         setLoading(false)
         setBusy('')
+        setBusyAction('')
       }
 
+      /**
+       * 按钮内容的忙碌呈现：正在跑的那个动作显示「转圈 + 忙碌文案」，其余保持原样。
+       * 局部反馈（这里）与全局指示器（标题行）**都要有**：前者保证「点哪看得见哪」，
+       * 后者保证「滚到顶时一眼看到在忙什么」。
+       */
+      const busyOr = (action, idle, active) => (busyAction === action
+        ? jsxs('span', { className: 'cg_btnBusy', children: [jsx('span', { className: 'cg_spinner' }), active] })
+        : idle)
+
       const loadStatus = React.useCallback(async () => {
-        beginBusy('读取索引状态…')
+        beginBusy('读取索引状态…', 'status')
         setError('')
         setOk('')
         try {
@@ -524,7 +547,7 @@ window.__ModuleLoader__.load({
 
       const search = async () => {
         if (!query.trim()) return
-        beginBusy('搜索中…')
+        beginBusy('搜索中…', 'search')
         setError('')
         setOk('')
         setSelected(null)
@@ -546,7 +569,7 @@ window.__ModuleLoader__.load({
       }
 
       const loadSymbol = async (name) => {
-        beginBusy('加载符号详情…')
+        beginBusy('加载符号详情…', 'symbol')
         setError('')
         setOk('')
         // CG16：先清掉上一个符号的详情——标题马上要换成新符号，面板还挂着旧的
@@ -571,7 +594,7 @@ window.__ModuleLoader__.load({
       const runAction = async (action) => {
         // 忙碌文案按动作分派：重建索引可能跑十分钟，用户需要知道在等的是哪件事，
         // 才能判断该不该按旁边的「取消」
-        beginBusy({ sync: '同步中…', index: '重建索引中…', unlock: '解锁中…' }[action] || '处理中…')
+        beginBusy({ sync: '同步中…', index: '重建索引中…', unlock: '解锁中…' }[action] || '处理中…', action)
         setError('')
         setOk('')
         // unlock 是秒级操作，不给取消按钮（给了一个点完就消失的「取消」只会让人困惑）
@@ -609,7 +632,7 @@ window.__ModuleLoader__.load({
           return
         }
         setConfirmUninit(false)
-        beginBusy('撤销索引中…')
+        beginBusy('撤销索引中…', 'uninit')
         setError('')
         setOk('')
         setCancelable(true)
@@ -646,7 +669,7 @@ window.__ModuleLoader__.load({
        * 与 runAction 分开是因为它们**不改状态**，只需展示输出，不该触发 loadStatus。
        */
       const runQuery = async (route, params = {}) => {
-        beginBusy({ files: '读取文件结构…', affected: '分析影响面…', explore: '探索中…', context: '组装上下文…' }[route] || '查询中…')
+        beginBusy({ files: '读取文件结构…', affected: '分析影响面…', explore: '探索中…', context: '组装上下文…' }[route] || '查询中…', route)
         setError('')
         setOk('')
         setOutput(null)
@@ -701,7 +724,7 @@ window.__ModuleLoader__.load({
           return
         }
         setConfirmInit(false)
-        beginBusy('初始化索引中…')
+        beginBusy('初始化索引中…', 'init')
         setError('')
         setOk('')
         setCancelable(true)
@@ -973,12 +996,15 @@ window.__ModuleLoader__.load({
             children: jsxs('div', {
               className: 'cg_panel',
               children: [
-                // 面板标题行：标题 + 忙碌指示器（+ 取消）。
-                // 忙碌态放这里而不是正文中间——原先是一句**居中大块**的「加载中…」
-                // （padding:24px 12px）夹在用量统计与搜索之间（用户截图实证）：
-                //   ① 不说在加载什么；② 插入/移除把「搜索与查询」整块上下推（布局跳动）；
-                //   ③ 索引重建可能跑十分钟，而它会随滚动移出视野。
-                // 标题行本来就在 → 挂在它右边是**零布局跳动**且常驻可见。
+                // 面板标题行：标题 + 忙碌指示器（+ 取消）。这是**全局**指示器。
+                //
+                // 分工（两级反馈都要有）：
+                //   - **按钮自己**（busyOr）负责「点哪看得见哪」——卡片很长，滚到下半部分
+                //     时标题行已移出视野，那时点「搜索 / 影响面」只有按钮上的反馈看得见；
+                //   - **这里**负责「滚到顶时一眼看到在忙什么」，以及承载「取消」。
+                //
+                // 这里也替代了原先正文中间那句**居中大块**的「加载中…」（padding:24px 12px）：
+                // 它既不说在加载什么、又把下面整组控件上下推（布局跳动，用户截图实证）。
                 jsxs('div', {
                   className: 'cg_panelHeader',
                   children: [
@@ -1031,7 +1057,7 @@ window.__ModuleLoader__.load({
                         disabled: settingDefault || loading || !effectivePath,
                         title: '把当前路径持久化为默认项目（同时关闭「跟随当前项目」，避免被会话切换顶掉），codegraph MCP 服务器的工作目录随之热切换',
                         onClick: setDefaultProject,
-                        children: '设为默认项目',
+                        children: settingDefault ? '切换中…' : '设为默认项目',
                       }),
                     ],
                   }),
@@ -1128,7 +1154,7 @@ window.__ModuleLoader__.load({
                             ? '再点一次即在 ' + (effectivePath || '(默认项目)') + ' 里创建 .codegraph/ 并建立首次索引'
                             : 'codegraph index / sync 都要求项目先初始化过（干净目录会报 “CodeGraph not initialized”）。这个按钮在该目录跑一次 `codegraph init`。',
                           onClick: runInit,
-                          children: confirmInit ? '确认初始化？' : '初始化索引',
+                          children: busyOr('init', confirmInit ? '确认初始化？' : '初始化索引', '初始化中…'),
                         })
                         : null,
                       jsx('button', {
@@ -1137,14 +1163,14 @@ window.__ModuleLoader__.load({
                         disabled: loading,
                         title: 'codegraph sync：增量同步索引（只更新改动的部分；全量重建用右边的「重建索引」）',
                         onClick: () => runAction('sync'),
-                        children: 'Sync',
+                        children: busyOr('sync', 'Sync', '同步中…'),
                       }),
                       jsx('button', {
                         type: 'button',
                         className: 'cg_btnGhost',
                         disabled: loading,
                         onClick: () => runAction('index'),
-                        children: '重建索引',
+                        children: busyOr('index', '重建索引', '重建中…'),
                       }),
                       // 清陈旧锁：一次被强杀的 index 留下的 codegraph.lock 会挡住后续
                       // **所有**索引操作，而在此之前卡片没有任何入口（只能去终端）。
@@ -1155,7 +1181,7 @@ window.__ModuleLoader__.load({
                         disabled: loading,
                         title: 'codegraph unlock：清掉挡住索引的陈旧锁文件（索引被强杀后常见）。没锁时什么也不做',
                         onClick: () => runAction('unlock'),
-                        children: '解锁',
+                        children: busyOr('unlock', '解锁', '解锁中…'),
                       }),
                     ],
                   }),
@@ -1170,7 +1196,7 @@ window.__ModuleLoader__.load({
                         className: 'cg_btnGhost',
                         disabled: loading,
                         onClick: loadStatus,
-                        children: '刷新状态',
+                        children: busyOr('status', '刷新状态', '刷新中…'),
                       }),
                       jsx('button', {
                         type: 'button',
@@ -1178,7 +1204,7 @@ window.__ModuleLoader__.load({
                         disabled: reprobing,
                         title: '重跑一次 `<command> --version`：CLI 是后装的、或 command 改成了绝对路径时，无需重启宿主即可恢复',
                         onClick: reprobe,
-                        children: '重新探测',
+                        children: reprobing ? '探测中…' : '重新探测',
                       }),
                       // P2 只读查询：文件结构。它不吃任何输入，所以留在这一组；「影响面」
                       // 吃「改动文件」输入，已挪到搜索与查询组里贴着它的输入框。
@@ -1188,7 +1214,7 @@ window.__ModuleLoader__.load({
                         disabled: loading,
                         title: 'codegraph files --json：列出索引里的文件结构（语言 / 符号数 / 大小）',
                         onClick: () => runQuery('files'),
-                        children: '文件',
+                        children: busyOr('files', '文件', '读取中…'),
                       }),
                       // 一键诊断包（P1-b）：把 PATH / 托管行 / 索引 / daemon / 最近失败
                       // 的原文一次收齐，供排障与贴 issue。它是**只读**动作，排在危险动作之前；
@@ -1217,7 +1243,7 @@ window.__ModuleLoader__.load({
                           ? '再点一次即删除 ' + (effectivePath || '(默认项目)') + ' 的 .codegraph/（索引数据全部丢失，源文件不动）'
                           : 'codegraph uninit：删除该项目的 .codegraph/（索引数据全部丢失，源文件不动）。这是本卡片唯一的删除类动作',
                         onClick: runUninit,
-                        children: confirmUninit ? '确认撤销？' : '撤销索引',
+                        children: busyOr('uninit', confirmUninit ? '确认撤销？' : '撤销索引', '撤销中…'),
                       }),
                     })
                     : null,
@@ -1288,7 +1314,7 @@ window.__ModuleLoader__.load({
                         className: 'cg_btn',
                         disabled: loading || !query.trim(),
                         onClick: search,
-                        children: '搜索',
+                        children: busyOr('search', '搜索', '搜索中…'),
                       }),
                       // explore / context 与「搜索」共用 query，语义上是一组（见上）。
                       jsx('button', {
@@ -1297,7 +1323,7 @@ window.__ModuleLoader__.load({
                         disabled: loading || !query.trim(),
                         title: 'codegraph explore：与 MCP 的 codegraph_explore 同输出（相关符号源码 + 调用路径）。用左侧搜索框里的关键词',
                         onClick: () => runQuery('explore', { q: query.trim() }),
-                        children: '探索',
+                        children: busyOr('explore', '探索', '探索中…'),
                       }),
                       jsx('button', {
                         type: 'button',
@@ -1305,7 +1331,7 @@ window.__ModuleLoader__.load({
                         disabled: loading || !query.trim(),
                         title: 'codegraph context：为一个任务组装上下文（相关符号 + 关系 + 代码块）。用左侧搜索框里的关键词',
                         onClick: () => runQuery('context', { q: query.trim() }),
-                        children: '上下文',
+                        children: busyOr('context', '上下文', '组装中…'),
                       }),
                       // kind / limit 是 query 的 -k/-l：贴着它们作用的搜索，不另起一行。
                       jsx('label', {
@@ -1364,7 +1390,7 @@ window.__ModuleLoader__.load({
                         disabled: loading || !(status && status.projectPath),
                         title: 'codegraph affected <files>：由改动文件反查受影响的测试。用左侧「改动文件」里的列表',
                         onClick: () => runQuery('affected', { files: manualFiles() }),
-                        children: '影响面',
+                        children: busyOr('affected', '影响面', '分析中…'),
                       }),
                     ],
                   }),

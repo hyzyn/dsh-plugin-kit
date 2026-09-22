@@ -58,6 +58,26 @@ describe('卡片预览渲染器：三种模式都要能跑出产物', () => {
     expect(html, '退回态下不该又说「生效中」').not.toContain('per-agent 生效中')
   })
 
+  it('--busy：两级反馈都要出现（按钮自己 + 标题行全局）', () => {
+    /*
+     * 用户反馈（截图）：「在这里点，会看不到加载的 loading」——滚到卡片下半部分
+     * （搜索与查询 / Agent 集成）时，标题行的全局指示器已经移出视野，点「搜索」
+     * 「影响面」就完全没有反馈。所以忙碌呈现必须**两级都有**：
+     *   - 被点的那个按钮自己显示（busyOr）：手指底下，无论滚到哪都看得见；
+     *   - 标题行的全局指示器：滚到顶时一眼看到在忙什么，并承载「取消」。
+     *
+     * --busy 让 /status 永不 resolve，于是 busyAction='status'：
+     * 「刷新状态」按钮应变成「刷新中…」，标题行应显示「读取索引状态…」。
+     */
+    const html = render(['--busy'], 'codegraph-card-busy.html')
+    expect(html, '按钮级反馈缺失（刷新状态应显示刷新中…）').toContain('刷新中…')
+    expect(html, '标题行全局指示器缺失').toContain('读取索引状态…')
+    // 只有正在跑的那个动作显示忙碌，其余按钮保持静止文案（否则整排都在转圈=噪音）
+    expect(html, '非活动按钮不该显示忙碌文案').toContain('>Sync<')
+    expect(html, '非活动按钮不该显示忙碌文案').toContain('>重建索引<')
+    expect(html).toContain('cg_btnBusy')
+  })
+
   it('三种模式写不同文件（互不覆盖）', () => {
     render([], 'codegraph-card.html')
     render(['--per-agent'], 'codegraph-card-per-agent.html')
