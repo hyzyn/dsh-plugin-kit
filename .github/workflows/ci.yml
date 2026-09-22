@@ -83,7 +83,7 @@ jobs:
       - name: Check commit messages carry no public IP
         if: matrix.os == 'ubuntu-latest'
         run: |
-          # 只查本次推送 / PR 新增的提交信息（全历史已在 2026-09 重写清过，这里防新增）
+          # 只查本次推送 / PR 新增的提交信息（历史不再重复扫描，这里防新增）
           base='${{ github.event.pull_request.base.sha }}'
           head='${{ github.sha }}'
           if [ -z "$base" ]; then base='${{ github.event.before }}'; fi
