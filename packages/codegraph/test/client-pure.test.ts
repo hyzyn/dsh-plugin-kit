@@ -286,3 +286,76 @@ describe('工具栏布局守卫：按钮组不许「整组不可断行」', () =
     expect(searchBlock).toContain("runQuery('context'")
   })
 })
+
+describe('UX 重构：面板信息架构（顺序 / 分层）守卫', () => {
+  /*
+   * 2026-09-22 的卡片重构：用户反馈「设置面板有点乱」。乱的具体形态是——
+   *   1. 「索引状态」沉在最底部：打开卡片要先越过两行输入框和 9 个按钮，才知道
+   *      这个目录索引健不健康。首屏应该回答「状态如何」，而不是先给一堆操作。
+   *   2. 索引维护 9 个按钮零层级：每天点的 Sync、排障用的诊断包、罕见的解锁、
+   *      破坏性的撤销索引完全同样式混在一行。
+   *   3. 查询区混了两个工作流：符号查询（搜索/探索/上下文）和「改动文件 → 影响面」
+   *      是两种不同心智，却共享一行参数。
+   *   4. Agent 集成四个开关视觉同权：轻量开关（跟随/公告/指引）与改 MCP 拓扑的
+   *      per-agent 隔离长得一样。
+   *
+   * 修法是**重排 + 分层**而不是删功能。下面钉的是这次重构的核心性质，
+   * 免得下次「顺手调一下」又把状态塞回底部、把按钮拍平。
+   */
+  const src = readFileSync(new URL('../client-src/index.js', import.meta.url), 'utf8')
+
+  /** 某个结构标记在源码里的位置（用源码文本顺序近似 DOM 顺序；所有标记都在同一个 children 数组里）。 */
+  const pos = (needle: string): number => {
+    const at = src.indexOf(needle)
+    expect(at, `结构标记缺失：${needle}`).toBeGreaterThan(-1)
+    return at
+  }
+
+  it('状态先于操作：索引状态 必须排在 索引维护 之前', () => {
+    expect(pos("group('索引状态'")).toBeLessThan(pos("group('索引维护'"))
+  })
+
+  it('自上而下顺序：目标项目 → 索引状态 → 索引维护 → 搜索与查询 → Agent 集成', () => {
+    const order = ["group('目标项目'", "group('索引状态'", "group('索引维护'", "group('搜索与查询'", "group('Agent 集成'"]
+    for (let index = 1; index < order.length; index++) {
+      expect(pos(order[index]), `${order[index - 1]} 应在 ${order[index]} 之前`).toBeGreaterThan(pos(order[index - 1]))
+    }
+  })
+
+  it('索引维护按动作性质分三层（生命周期 / 查看与诊断 / 危险）', () => {
+    expect(src).toContain("'生命周期'")
+    expect(src).toContain("'查看与诊断'")
+    // 危险动作必须与常规按钮视觉隔开（虚线分隔行），不能混在同一行里。
+    // 取 JSX 用法（className）而不是 CSS 定义——'cg_dangerRow' 先出现在样式表里，
+    // 直接 indexOf 会把 CSS 那一处当成结构位置。
+    expect(src).toContain('cg_dangerRow')
+    expect(pos("'生命周期'")).toBeLessThan(pos("'查看与诊断'"))
+    expect(pos("'查看与诊断'")).toBeLessThan(pos("className: 'cg_dangerRow'"))
+  })
+
+  it('Sync 是生命周期行的主按钮（cg_btn）：这张卡片最高频的安全操作要做视觉锚点', () => {
+    // 生命周期子行内，Sync 用 cg_btn 而其它用 cg_btnGhost
+    const lifecycle = src.slice(pos("'生命周期'"), pos("'查看与诊断'"))
+    expect(lifecycle).toContain("children: 'Sync'")
+    const syncAt = lifecycle.indexOf("children: 'Sync'")
+    expect(lifecycle.lastIndexOf("className: 'cg_btn'", syncAt), 'Sync 应使用 cg_btn 主样式').toBeGreaterThan(lifecycle.lastIndexOf("className: 'cg_btnGhost'", syncAt))
+  })
+
+  it('查询区拆成两个工作流：符号查询在上，「改动影响」单列子行', () => {
+    expect(src).toContain("'改动影响'")
+    // 改动文件输入必须在「改动影响」标记之后（原先与类型/上限混在一行）
+    expect(pos("'改动影响'")).toBeLessThan(pos("'改动文件'"))
+    // 「类型」「上限」贴着搜索按钮（它们是 query 的参数），不跟改动文件混
+    expect(pos("children: '搜索'")).toBeLessThan(pos("'类型'"))
+    expect(pos("'类型'")).toBeLessThan(pos("'改动影响'"))
+  })
+
+  it('Agent 集成拆两行：「跟随与提示词」与「MCP 挂载」分开', () => {
+    expect(src).toContain("'跟随与提示词'")
+    expect(src).toContain("'MCP 挂载'")
+    expect(pos("'跟随与提示词'")).toBeLessThan(pos("'MCP 挂载'"))
+    // per-agent 开关必须在 MCP 挂载子行里（不能在提示词那行）
+    expect(pos("'MCP 挂载'")).toBeLessThan(pos("'per-agent MCP 隔离'"))
+    expect(pos("'注入使用指引'")).toBeLessThan(pos("'MCP 挂载'"))
+  })
+})

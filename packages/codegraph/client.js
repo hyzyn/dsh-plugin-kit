@@ -220,16 +220,19 @@ window.__ModuleLoader__.load({
       '.cg_pluginCardOpen .cg_chevron{transform:rotate(180deg)}',
       '.cg_cardBody{padding:2px 16px 16px}',
       '.cg_panel{display:flex;flex-direction:column;gap:12px;color:var(--dsw-alias-label-primary);font-family:var(--dsw-font-family);box-sizing:border-box}',
-      '.cg_panelHeader{display:flex;align-items:center;gap:10px;flex:none;flex-wrap:wrap}',
-      '.cg_panelTitle{margin:0;font-size:15px;font-weight:700;white-space:nowrap;flex:1}',
+      // 面板头只剩标题（布局分组后工具栏自成分组，不再挤在标题旁边），包一层的
+      // .cg_panelHeader 随之删除；.cg_panelTitle 原来的 flex:1 是给「标题 + 按钮组」
+      // 那个 flex 行用的，单独成行后留着只会在列布局里引入无意义的伸缩。
+      '.cg_panelTitle{margin:0;font-size:15px;font-weight:700;white-space:nowrap}',
       '.cg_subtitle{color:var(--dsw-alias-label-tertiary);font-size:11.5px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:360px}',
-      '.cg_toolbar{display:flex;align-items:center;gap:8px;flex:none;flex-wrap:wrap}',
-      // 工具栏改成「可换行的行」而不是「整组 nowrap」：
+      // 索引维护按钮组改成「可换行的行」而不是「整组 nowrap」：
       // 早先只有 5 个按钮，整组 nowrap + margin-left:auto 能让它们要么留在标题右边、
       // 要么整组换行；P2 加到 12 个之后这招失效——12 个按钮约 900px，而侧边栏只有
       // ~360px，整组不许断行就只能溢出被裁（实测截图里「撤销索引」被切掉）。
-      // 现在：组内允许换行（按语义顺序自然折成两行），并让危险动作与只读动作分开。
-      '.cg_toolbarBtns{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-left:auto;justify-content:flex-end}',
+      // 布局分组后 margin-left:auto + 右对齐也一并去掉：按钮组不再和标题抢一行，
+      // 右对齐只会让折行后的行尾参差（截图实证：「诊断包 / 撤销索引」孤零零悬在
+      // 第二行右侧）。现在组自成分组、左对齐自然换行，阅读顺序 = 视觉顺序。
+      '.cg_toolbarBtns{display:flex;align-items:center;gap:8px;flex-wrap:wrap}',
       '.cg_btn{color:var(--dsw-alias-label-primary-foreground);background:var(--dsw-alias-button-info-fill);border:none;border-radius:8px;padding:6px 14px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}',
       '.cg_btn:hover:not(:disabled){background:var(--dsw-alias-button-info-hover)}',
       '.cg_btn:disabled{opacity:.5;cursor:default}',
@@ -255,6 +258,18 @@ window.__ModuleLoader__.load({
       '.cg_error{color:var(--dsw-alias-state-error-primary);font-size:12px;margin:0;white-space:pre-wrap}',
       '.cg_ok{color:var(--dsw-alias-state-success-primary);font-size:12px;margin:0}',
       '.cg_sectionTitle{margin:0;font-size:13px;font-weight:700;color:var(--dsw-alias-label-secondary)}',
+      // 面板分组（布局重构）：小标题 + 通栏细线。把原先「12 个按钮 + 5 类控件挤在一条
+      // 无分层长列」的面板（截图实证：按钮换行后行尾参差、复选框和说明文字混排、
+      // 「设为默认项目」孤悬在两组控件之间）按语义分组，每组内部仍是可换行的 flex 行。
+      //
+      // UX 重构后的自上而下顺序：目标项目 → 索引状态 → 索引维护 → 搜索与查询 →
+      // Agent 集成。此前「索引状态」沉在最底部，打开卡片要先越过两行输入框和 9 个
+      // 按钮才知道索引健不健康——状态先于操作，且「过期警告」与修它的「重建索引」
+      // 按钮上下相邻。
+      '.cg_section{display:flex;flex-direction:column;gap:8px}',
+      '.cg_sectionHead{display:flex;align-items:center;gap:10px}',
+      '.cg_sectionHeadText{font-size:11px;font-weight:700;letter-spacing:.08em;color:var(--dsw-alias-label-tertiary);white-space:nowrap}',
+      '.cg_sectionHead::after{content:"";flex:1;height:1px;background:var(--dsw-alias-border-l1)}',
       '.cg_grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px}',
       '.cg_cell{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:8px 10px;min-width:0}',
       '.cg_k{color:var(--dsw-alias-label-tertiary);font-size:11px;letter-spacing:.02em}',
@@ -272,7 +287,6 @@ window.__ModuleLoader__.load({
       '.cg_relItem{display:flex;gap:8px;align-items:baseline;font-size:12px;min-width:0}',
       '.cg_relName{color:var(--dsw-alias-label-primary);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
       '.cg_relMeta{color:var(--dsw-alias-label-tertiary);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
-      '.cg_mcpRow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}',
       '.cg_mcpMeta{color:var(--dsw-alias-label-tertiary);font-size:11.5px;line-height:1.5;min-width:0}',
       '.cg_warn{color:var(--dsw-alias-state-warning-primary,var(--dsw-alias-state-error-primary));font-size:12px;line-height:1.55;margin:0;white-space:pre-wrap}',
       // 探测失败的实测原文：用等宽 + 淡色和上面的指引分开，让「ENOENT / 非零退出 / 超时」
@@ -295,6 +309,15 @@ window.__ModuleLoader__.load({
       '.cg_optWide{flex:1;min-width:220px}',
       '.cg_optWide .cg_inputSm{flex:1}',
       '.cg_inputSm{width:150px;padding:4px 8px;font-size:12px}',
+      // 「上限」这类纯数字小输入用不着 150px，紧凑尺寸让参数行一行能多放一项
+      '.cg_inputXs{width:64px;padding:4px 8px;font-size:12px}',
+      // 组内小标题（UX 重构）：比 .cg_sectionHeadText 更轻，用于一个分组内部的子层级——
+      // 「生命周期 / 查看与诊断 / 危险」「符号查询 / 改动影响」「跟随与提示词 / MCP 挂载」。
+      // 只留文字不带通栏线：组已经有自己的分隔线，组内再画一条就是噪音。
+      '.cg_rowLabel{font-size:11px;font-weight:600;letter-spacing:.06em;color:var(--dsw-alias-label-tertiary);white-space:nowrap}',
+      // 危险动作行的起点标记：与上方常规按钮之间留一道缝 + 错误色左侧条，
+      // 让「这一格之后的东西会删数据」在视觉上先响一次（两步确认是第二次）。
+      '.cg_dangerRow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding-top:6px;margin-top:2px;border-top:1px dashed var(--dsw-alias-border-l1)}',
     ].join('\n')
 
     // CG08/CG37：样式引用计数。同一次挂载会把这张卡片注册进多个插槽（0.1.6 上
@@ -437,6 +460,24 @@ window.__ModuleLoader__.load({
         ],
       })
     }
+
+    /**
+     * 面板分组（布局重构）：小标题 + 通栏细线的分组头，下面挂该组的具体控件行。
+     * 为什么分组：控件涨到 P2 规模后（12 个工具按钮、4 个开关、3 类查询参数），
+     * 一条无分层的长列在窄栏里就是「按钮换行行尾参差、开关和说明文字混排、
+     * 「设为默认项目」孤悬两组之间」的乱（用户截图实证）；按「目标项目 / 搜索与
+     * 查询 / 索引维护 / Agent 集成 / 索引状态」分组后，每组语义单一，扫一眼能定位。
+     */
+    const group = (label, children) => jsxs('div', {
+      className: 'cg_section',
+      children: [
+        jsx('div', {
+          className: 'cg_sectionHead',
+          children: jsx('span', { className: 'cg_sectionHeadText', children: label }),
+        }),
+        ...children,
+      ],
+    }, 'cg-group-' + label)
 
     function CodegraphSettingsCard(props) {
       // DSH ≥0.1.6 的插件配置页把同一条目按 view 渲染两次：summary 一句话摘要、page 完整表单。
@@ -1056,108 +1097,210 @@ window.__ModuleLoader__.load({
             children: jsxs('div', {
               className: 'cg_panel',
               children: [
-                jsxs('div', {
-                  className: 'cg_panelHeader',
-                  children: [
-                    jsx('span', { className: 'cg_panelTitle', children: 'Codegraph 控制台' }),
-                    // 按钮整组包一层，但**组内允许换行**（见上面 .cg_toolbarBtns 的注释）：
-                    // 早期 5 个按钮时用「组内 nowrap」把「最后一个按钮被单独挤到第二行」
-                    // 这个难看情形挡掉了；P2 加到 9-12 个之后 nowrap 反而导致整组溢出被裁
-                    // （约 900px 挤进 ~360px 的侧边栏），所以改成允许换行——宁可折成两行，
-                    // 也不能有按钮看不见。顺序按语义：索引维护 → 只读查询 → 危险动作。
-                    jsxs('div', {
-                      className: 'cg_toolbarBtns',
+                jsx('span', { className: 'cg_panelTitle', children: 'Codegraph 控制台' }),
+                // ── 目标项目 ──「在看哪个目录 / 设默认 / 托管行状态 / 见过哪些项目」
+                // 收进同一组。此前路径输入框在面板第二行、「设为默认项目」孤悬在查询
+                // 参数之后（截图实证：按钮和它作用的路径隔了两屏），托管行文案又挂在
+                // 按钮后面——三件事散在三处，现在自上而下是一条「我在看哪个项目」的动线。
+                group('目标项目', [
+                  jsxs('div', {
+                    className: 'cg_row',
+                    children: [
+                      jsx('input', {
+                        className: 'cg_input',
+                        placeholder: '项目路径（留空使用默认）',
+                        value: path,
+                        onChange: (event) => {
+                          const value = event.target.value
+                          setManual(value !== '')
+                          setPath(value)
+                        },
+                      }),
+                      jsx('button', {
+                        type: 'button',
+                        className: 'cg_btnGhost',
+                        disabled: settingDefault || loading || !effectivePath,
+                        title: '把当前路径持久化为默认项目（同时关闭「跟随当前项目」，避免被会话切换顶掉），codegraph MCP 服务器的工作目录随之热切换',
+                        onClick: setDefaultProject,
+                        children: '设为默认项目',
+                      }),
+                    ],
+                  }),
+                  jsx('span', { className: 'cg_mcpMeta', children: mcpText }),
+                  // P2 项目列表：一台 MCP 服务器同一时刻只挂一个项目，所以「换项目」是
+                  // 高频动作；以前只能手敲绝对路径。只列「用户真在这里工作过」的目录
+                  // （活跃会话 / 跟随上报 / 查过状态），不做全盘扫描。
+                  // 未索引的也列出来并标灰——用户会想知道「这个项目还没索引」，但它不能
+                  // 作为切换目标（切换要求有效索引），所以按钮禁用而不是隐藏。
+                  projects.length > 0
+                    ? jsxs('div', {
+                      className: 'cg_projects',
                       children: [
-                        // 只有「用户正看着的这个目录还不是有效索引」时才出现。放在最前面：
-                        // 那种情况下它就是这张卡片的主操作，也不该被挤到行尾。
-                        //
-                        // 判定必须用 `status.initialized === false`（= /status?path=<本卡片路径>），
-                        // **不能**用 `defaultInfo.indexed`：那个来自 /default-path，走的是后端的
-                        // effectiveProjectPath——「跟随当前项目」开着、而会话目录未索引时，它会回落到
-                        // **默认项目**，于是回一个 `indexed: true`（默认项目往往正是某个已索引的仓库），
-                        // 按钮就永远不出现。两个口径在这个场景下必然分叉，这里跟底部那句文案
-                        // （同一个条件）保持一致。
-                        status && status.initialized === false
-                          ? jsx('button', {
-                            type: 'button',
-                            className: confirmInit ? 'cg_btnDanger' : 'cg_btnGhost',
-                            disabled: loading,
-                            title: confirmInit
-                              ? '再点一次即在 ' + (effectivePath || '(默认项目)') + ' 里创建 .codegraph/ 并建立首次索引'
-                              : 'codegraph index / sync 都要求项目先初始化过（干净目录会报 “CodeGraph not initialized”）。这个按钮在该目录跑一次 `codegraph init`。',
-                            onClick: runInit,
-                            children: confirmInit ? '确认初始化？' : '初始化索引',
+                        jsx('span', { className: 'cg_projectsLabel', children: '已见项目' }),
+                        ...projects.map((item) => jsx('button', {
+                          type: 'button',
+                          key: 'cg-project-' + item.path,
+                          className: 'cg_projectBtn',
+                          disabled: settingDefault || !item.indexed || item.path === effectivePath,
+                          title: item.indexed
+                            ? item.path + '（' + seenAgoText(item.seenAgoMs) + '见过，来自' + item.via + '）'
+                            : item.path + '：未索引，切换无效——先在该目录跑 codegraph init（' + item.via + '）',
+                          onClick: () => switchProject(item.path),
+                          children: shortPath(item.path) + (item.indexed ? '' : ' · 未索引'),
+                        })),
+                      ],
+                    })
+                    : null,
+                ]),
+                // ── 索引状态（UX 重构：状态先于操作）── 原先这组在面板最底部：打开卡片要
+                // 先越过两行输入框和 9 个按钮才知道「这个目录索引健不健康」。卡片回答的
+                // 第一个问题应该是「现在状态如何」，所以它紧跟目标项目；紧接着的索引维护
+                // 组就是「看到问题 → 修复它」的那一排按钮（过期警告与「重建索引」上下相邻）。
+                status
+                  ? statusIsStructured
+                    ? group('索引状态', [
+                        jsx('div', { className: 'cg_grid', children: statusCells(status) }),
+                        // CG11：CLI 明说「建议重建」时不能只报「● 已索引」——MCP 这时给的是旧图。
+                        // 实测补一句「Sync 修不了它」：codegraph 1.6.0 的 `sync` 对「提取器版本
+                        // 落后」这类过期返回 Already up to date 且不清除信号，只有「重建索引」能修。
+                        // 以前文案只说「点重建索引可修复」，用户很可能先点 Sync 然后发现没用。
+                        staleReasons(status).length > 0
+                          ? jsx('p', {
+                            className: 'cg_warn',
+                            children: '⚠ 索引可能过期：' + staleReasons(status).join('；')
+                              + '。MCP 工具此刻给的是旧提取器产出的图——点「重建索引」修复（实测此时 Sync 会报 Already up to date 且不解决问题）。',
                           })
                           : null,
-                        jsx('button', {
+                        status.initialized === false
+                          ? jsx('p', { className: 'cg_mcpMeta', children: '该目录还没有索引：点下方「初始化索引」即可在本目录跑一次 `codegraph init`（只创建 .codegraph/，源文件不动；可用 `codegraph uninit` 撤销）。' })
+                          : null,
+                        statusRawText !== ''
+                          ? jsxs('details', {
+                            className: 'cg_details',
+                            children: [
+                              jsx('summary', { children: '原始 JSON（status --json）' }),
+                              jsx('pre', { className: 'cg_pre', children: statusRawText }),
+                            ],
+                          })
+                          : null,
+                      ])
+                    : jsx('pre', { className: 'cg_pre', children: statusRawText })
+                  : null,
+                // ── 索引维护（UX 重构：贴着索引状态，按钮分三层）──
+                // 原先把 9 个按钮无层级地铺在一行里：每天点的 Sync、排障用的诊断包、罕见的
+                // 解锁、破坏性的撤销索引完全同样式混排（用户看到的「乱」主要在这里）。
+                // 现在按「动作性质」分三行并给 Sync 主按钮样式：
+                //   生命周期（会写索引）→ 查看与诊断（只读）→ 危险（删数据，视觉隔开）。
+                group('索引维护', [
+                  // 生命周期：改索引的动作。Sync 是这张卡片最高频的安全操作，给主按钮样式
+                  // 做视觉锚点；「初始化索引」在未索引时是唯一主操作，排在最前（判定见下）。
+                  jsx('div', { className: 'cg_rowLabel', children: '生命周期' }),
+                  // 按钮要包一层 .cg_toolbarBtns 行容器：group 本体是纵向 flex（分组头 +
+                  // 内容自上而下），按钮直接塞进去会被拉成一条条通栏；包一行容器才能
+                  // 左对齐横向排布、放不下再折行。
+                  jsxs('div', {
+                    className: 'cg_toolbarBtns',
+                    children: [
+                      // 只有「用户正看着的这个目录还不是有效索引」时才出现。放在最前面：
+                      // 那种情况下它就是这张卡片的主操作。
+                      //
+                      // 判定必须用 `status.initialized === false`（= /status?path=<本卡片路径>），
+                      // **不能**用 `defaultInfo.indexed`：那个来自 /default-path，走的是后端的
+                      // effectiveProjectPath——「跟随当前项目」开着、而会话目录未索引时，它会回落到
+                      // **默认项目**，于是回一个 `indexed: true`（默认项目往往正是某个已索引的仓库），
+                      // 按钮就永远不出现。两个口径在这个场景下必然分叉，这里跟底部那句文案
+                      // （同一个条件）保持一致。
+                      status && status.initialized === false
+                        ? jsx('button', {
                           type: 'button',
-                          className: 'cg_btnGhost',
+                          className: confirmInit ? 'cg_btnDanger' : 'cg_btnGhost',
                           disabled: loading,
-                          onClick: loadStatus,
-                          children: '刷新状态',
-                        }),
-                        jsx('button', {
-                          type: 'button',
-                          className: 'cg_btnGhost',
-                          disabled: reprobing,
-                          title: '重跑一次 `<command> --version`：CLI 是后装的、或 command 改成了绝对路径时，无需重启宿主即可恢复',
-                          onClick: reprobe,
-                          children: '重新探测',
-                        }),
-                        jsx('button', {
-                          type: 'button',
-                          className: 'cg_btnGhost',
-                          disabled: loading,
-                          onClick: () => runAction('sync'),
-                          children: 'Sync',
-                        }),
-                        jsx('button', {
-                          type: 'button',
-                          className: 'cg_btnGhost',
-                          disabled: loading,
-                          onClick: () => runAction('index'),
-                          children: '重建索引',
-                        }),
-                        // 清陈旧锁：一次被强杀的 index 留下的 codegraph.lock 会挡住后续
-                        // **所有**索引操作，而在此之前卡片没有任何入口（只能去终端）。
-                        // CLI 侧幂等（没锁时 exit 0），所以不需要二次确认。
-                        jsx('button', {
-                          type: 'button',
-                          className: 'cg_btnGhost',
-                          disabled: loading,
-                          title: 'codegraph unlock：清掉挡住索引的陈旧锁文件（索引被强杀后常见）。没锁时什么也不做',
-                          onClick: () => runAction('unlock'),
-                          children: '解锁',
-                        }),
-                        // P2 只读查询：文件结构 / 影响面（都不吃搜索框输入，留在工具栏）
-                        jsx('button', {
-                          type: 'button',
-                          className: 'cg_btnGhost',
-                          disabled: loading,
-                          title: 'codegraph files --json：列出索引里的文件结构（语言 / 符号数 / 大小）',
-                          onClick: () => runQuery('files'),
-                          children: '文件',
-                        }),
-                        jsx('button', {
-                          type: 'button',
-                          className: 'cg_btnGhost',
-                          disabled: loading || !(status && status.projectPath),
-                          title: 'codegraph affected <files>：由改动文件反查受影响的测试。需先在下方「改动文件」里填路径',
-                          onClick: () => runQuery('affected', { files: manualFiles() }),
-                          children: '影响面',
-                        }),
-                        // 一键诊断包（P1-b）：把 PATH / 托管行 / 索引 / daemon / 最近失败
-                        // 的原文一次收齐，供排障与贴 issue。它是**只读**动作，放在只读组
-                        // 的末尾；此前排在「撤销索引」之后、紧邻「取消」，语义上是错位的。
-                        jsx('button', {
-                          type: 'button',
-                          className: 'cg_btnGhost',
-                          disabled: diagnosing,
-                          title: '收集一段可直接复制的诊断文本：CLI 探测实测原文、托管行与补丁区块（值已脱敏）、索引状态、codegraph daemon 与日志尾、最近一次 CLI 失败',
-                          onClick: loadReport,
-                          children: diagnosing ? '收集中…' : '诊断包',
-                        }),
-                        // 撤销索引是破坏性动作，放在最后并与「初始化」同样两步确认
+                          title: confirmInit
+                            ? '再点一次即在 ' + (effectivePath || '(默认项目)') + ' 里创建 .codegraph/ 并建立首次索引'
+                            : 'codegraph index / sync 都要求项目先初始化过（干净目录会报 “CodeGraph not initialized”）。这个按钮在该目录跑一次 `codegraph init`。',
+                          onClick: runInit,
+                          children: confirmInit ? '确认初始化？' : '初始化索引',
+                        })
+                        : null,
+                      jsx('button', {
+                        type: 'button',
+                        className: 'cg_btn',
+                        disabled: loading,
+                        title: 'codegraph sync：增量同步索引（只更新改动的部分；全量重建用右边的「重建索引」）',
+                        onClick: () => runAction('sync'),
+                        children: 'Sync',
+                      }),
+                      jsx('button', {
+                        type: 'button',
+                        className: 'cg_btnGhost',
+                        disabled: loading,
+                        onClick: () => runAction('index'),
+                        children: '重建索引',
+                      }),
+                      // 清陈旧锁：一次被强杀的 index 留下的 codegraph.lock 会挡住后续
+                      // **所有**索引操作，而在此之前卡片没有任何入口（只能去终端）。
+                      // CLI 侧幂等（没锁时 exit 0），所以不需要二次确认。
+                      jsx('button', {
+                        type: 'button',
+                        className: 'cg_btnGhost',
+                        disabled: loading,
+                        title: 'codegraph unlock：清掉挡住索引的陈旧锁文件（索引被强杀后常见）。没锁时什么也不做',
+                        onClick: () => runAction('unlock'),
+                        children: '解锁',
+                      }),
+                    ],
+                  }),
+                  // 查看与诊断：只读动作（刷新卡片数据 / 重新探测 CLI / 看文件结构 / 收诊断包）。
+                  // 与「会写索引」的按钮分开，扫一眼就知道这排不会改任何东西。
+                  jsx('div', { className: 'cg_rowLabel', children: '查看与诊断' }),
+                  jsxs('div', {
+                    className: 'cg_toolbarBtns',
+                    children: [
+                      jsx('button', {
+                        type: 'button',
+                        className: 'cg_btnGhost',
+                        disabled: loading,
+                        onClick: loadStatus,
+                        children: '刷新状态',
+                      }),
+                      jsx('button', {
+                        type: 'button',
+                        className: 'cg_btnGhost',
+                        disabled: reprobing,
+                        title: '重跑一次 `<command> --version`：CLI 是后装的、或 command 改成了绝对路径时，无需重启宿主即可恢复',
+                        onClick: reprobe,
+                        children: '重新探测',
+                      }),
+                      // P2 只读查询：文件结构。它不吃任何输入，所以留在这一组；「影响面」
+                      // 吃「改动文件」输入，已挪到搜索与查询组里贴着它的输入框。
+                      jsx('button', {
+                        type: 'button',
+                        className: 'cg_btnGhost',
+                        disabled: loading,
+                        title: 'codegraph files --json：列出索引里的文件结构（语言 / 符号数 / 大小）',
+                        onClick: () => runQuery('files'),
+                        children: '文件',
+                      }),
+                      // 一键诊断包（P1-b）：把 PATH / 托管行 / 索引 / daemon / 最近失败
+                      // 的原文一次收齐，供排障与贴 issue。它是**只读**动作，排在危险动作之前；
+                      // 此前排在「撤销索引」之后、紧邻「取消」，语义上是错位的。
+                      jsx('button', {
+                        type: 'button',
+                        className: 'cg_btnGhost',
+                        disabled: diagnosing,
+                        title: '收集一段可直接复制的诊断文本：CLI 探测实测原文、托管行与补丁区块（值已脱敏）、索引状态、codegraph daemon 与日志尾、最近一次 CLI 失败',
+                        onClick: loadReport,
+                        children: diagnosing ? '收集中…' : '诊断包',
+                      }),
+                    ],
+                  }),
+                  // 危险行：删数据的动作用虚线与常规按钮隔开——「这一格之后会删索引」
+                  // 在视觉上先响一次（两步确认是第二次）。「取消」也放这里：它是「进行中
+                  // 动作的急停」，同样属于非常规操作。
+                  (status && status.initialized === true) || (cancelable && loading)
+                    ? jsxs('div', {
+                      className: 'cg_dangerRow',
+                      children: [
                         status && status.initialized === true
                           ? jsx('button', {
                             type: 'button',
@@ -1170,7 +1313,6 @@ window.__ModuleLoader__.load({
                             children: confirmUninit ? '确认撤销？' : '撤销索引',
                           })
                           : null,
-
                         // CG05：索引类操作进行中给「取消」——以前连关标签页都止不住 10 分钟的全量重建
                         cancelable && loading
                           ? jsx('button', {
@@ -1182,267 +1324,26 @@ window.__ModuleLoader__.load({
                           })
                           : null,
                       ],
-                    }),
-                  ],
-                }),
-                jsx('div', {
-                  className: 'cg_row',
-                  children: [
-                    jsx('input', {
-                      className: 'cg_input',
-                      placeholder: '项目路径（留空使用默认）',
-                      value: path,
-                      onChange: (event) => {
-                        const value = event.target.value
-                        setManual(value !== '')
-                        setPath(value)
-                      },
-                    }),
-                    jsx('input', {
-                      className: 'cg_input',
-                      placeholder: '搜索符号，例如 definePlugin',
-                      value: query,
-                      onChange: (event) => setQuery(event.target.value),
-                      onKeyDown: (event) => { if (event.key === 'Enter') search() },
-                    }),
-                    jsx('button', {
-                      type: 'button',
-                      className: 'cg_btn',
-                      disabled: loading || !query.trim(),
-                      onClick: search,
-                      children: '搜索',
-                    }),
-                    // explore / context 吃的是**搜索框里的关键词**，所以放在搜索行而不是
-                    // 工具栏——放工具栏既错位（读者不知道它们依赖哪个输入），又让那一行
-                    // 长到溢出。这三个按钮共用 query，语义上是一组。
-                    jsx('button', {
-                      type: 'button',
-                      className: 'cg_btnGhost',
-                      disabled: loading || !query.trim(),
-                      title: 'codegraph explore：与 MCP 的 codegraph_explore 同输出（相关符号源码 + 调用路径）。用左侧搜索框里的关键词',
-                      onClick: () => runQuery('explore', { q: query.trim() }),
-                      children: '探索',
-                    }),
-                    jsx('button', {
-                      type: 'button',
-                      className: 'cg_btnGhost',
-                      disabled: loading || !query.trim(),
-                      title: 'codegraph context：为一个任务组装上下文（相关符号 + 关系 + 代码块）。用左侧搜索框里的关键词',
-                      onClick: () => runQuery('context', { q: query.trim() }),
-                      children: '上下文',
-                    }),
-                  ],
-                }),
-                // P2 查询参数面板：kind 过滤 + 结果上限（CLI 的 -k / -l）。
-                jsxs('div', {
-                  className: 'cg_queryOpts',
-                  children: [
-                    jsx('label', {
-                      className: 'cg_opt',
-                      title: 'codegraph query -k/--kind：按节点类型过滤（function / class / method / interface / type_alias / constant / variable / property / file / import）',
-                      children: [
-                        '类型',
-                        jsx('input', {
-                          className: 'cg_input cg_inputSm',
-                          placeholder: '任意（function…）',
-                          value: queryKind,
-                          onChange: (event) => setQueryKind(event.target.value),
-                          onKeyDown: (event) => { if (event.key === 'Enter') search() },
-                        }),
-                      ],
-                    }),
-                    jsx('label', {
-                      className: 'cg_opt',
-                      title: 'codegraph query -l/--limit：返回条数上限（默认 20）。callers/callees 也吃这个值',
-                      children: [
-                        '上限',
-                        jsx('input', {
-                          className: 'cg_input cg_inputSm',
-                          value: queryLimit,
-                          onChange: (event) => setQueryLimit(event.target.value),
-                          onKeyDown: (event) => { if (event.key === 'Enter') search() },
-                        }),
-                      ],
-                    }),
-                  ],
-                }),
-                // P2「影响面」的输入：affected 要一份改动文件列表。多行/逗号分隔都收。
-                // 插件刻意不自己去猜这份列表（不读 git status、不猜编辑器状态）。
-                jsxs('div', {
-                  className: 'cg_queryOpts',
-                  children: [
-                    jsx('label', {
-                      className: 'cg_opt cg_optWide',
-                      title: 'codegraph affected <files…>：由改动文件反查受影响的测试。一行一个，也可用逗号分隔；留空则 CLI 回「No files provided」',
-                      children: [
-                        '改动文件',
-                        jsx('input', {
-                          className: 'cg_input cg_inputSm',
-                          placeholder: '如 packages/codegraph/src/index.ts（点「影响面」查询）',
-                          value: changedFiles,
-                          onChange: (event) => setChangedFiles(event.target.value),
-                          onKeyDown: (event) => { if (event.key === 'Enter') runQuery('affected', { files: manualFiles() }) },
-                        }),
-                      ],
-                    }),
-                  ],
-                }),
+                    })
+                    : null,
+                  // P2 遥测提示：`init` / `index` 会触发上游的匿名用量统计。只如实转达 CLI 的
+                  // 状态并指出关闭方式，**不给开关**——那是用户的全局偏好，存在
+                  // ~/.codegraph/telemetry.json，插件替他翻等于越权改别人的全局设置。
+                  telemetry !== null
+                    ? jsx('p', {
+                      className: 'cg_mcpMeta',
+                      children: telemetry.enabled === true
+                        ? '匿名用量统计：已开启（init / 重建索引会向上游发送匿名用量数据）。要关掉运行 `codegraph telemetry off`，或设 CODEGRAPH_TELEMETRY=0。'
+                        : telemetry.enabled === false
+                          ? '匿名用量统计：已关闭。'
+                          : '匿名用量统计：状态未知（CLI 输出未含可识别的状态行）。',
+                    })
+                    : null,
+                ]),
+                // 动作反馈（加载 / 出错 / 成功 / 诊断包）：紧跟索引维护组——大部分按钮在
+                // 这里，反馈落在按键下方最近的位置；来自搜索的报错也汇到同一条反馈区。
                 loading ? jsx('div', { className: 'cg_loading', children: '加载中…' }) : null,
-                jsxs('div', {
-                  className: 'cg_mcpRow',
-                  children: [
-                    jsx('button', {
-                      type: 'button',
-                      className: 'cg_btnGhost',
-                      disabled: settingDefault || loading || !effectivePath,
-                      title: '把当前路径持久化为默认项目（同时关闭「跟随当前项目」，避免被会话切换顶掉），codegraph MCP 服务器的工作目录随之热切换',
-                      onClick: setDefaultProject,
-                      children: '设为默认项目',
-                    }),
-                    jsx('span', { className: 'cg_mcpMeta', children: mcpText }),
-                  ],
-                }),
-                // P2 项目列表：一台 MCP 服务器同一时刻只挂一个项目，所以「换项目」是
-                // 高频动作；以前只能手敲绝对路径。只列「用户真在这里工作过」的目录
-                // （活跃会话 / 跟随上报 / 查过状态），不做全盘扫描。
-                // 未索引的也列出来并标灰——用户会想知道「这个项目还没索引」，但它不能
-                // 作为切换目标（切换要求有效索引），所以按钮禁用而不是隐藏。
-                projects.length > 0
-                  ? jsxs('div', {
-                    className: 'cg_projects',
-                    children: [
-                      jsx('span', { className: 'cg_projectsLabel', children: '已见项目' }),
-                      ...projects.map((item) => jsx('button', {
-                        type: 'button',
-                        key: 'cg-project-' + item.path,
-                        className: 'cg_projectBtn',
-                        disabled: settingDefault || !item.indexed || item.path === effectivePath,
-                        title: item.indexed
-                          ? item.path + '（' + seenAgoText(item.seenAgoMs) + '见过，来自' + item.via + '）'
-                          : item.path + '：未索引，切换无效——先在该目录跑 codegraph init（' + item.via + '）',
-                        onClick: () => switchProject(item.path),
-                        children: shortPath(item.path) + (item.indexed ? '' : ' · 未索引'),
-                      })),
-                    ],
-                  })
-                  : null,
-                // P1 采纳率：模型到底用不用 codegraph。放在 MCP 行下面、状态网格上面——
-                // 它是「配置对不对」之后的第二个问题（「配好了，模型买账吗」）。
-                adoptionText(adoption) !== ''
-                  ? jsx('p', {
-                    className: 'cg_subtitle',
-                    title: '来自宿主的内存计数（session/event 的 tool/call），宿主重启即归零；项目按索引根归并。「文件探索」= grep/glob/read 这类本可交给 codegraph 的工具，bash 等不计入',
-                    children: adoptionText(adoption),
-                  })
-                  : null,
-                jsxs('div', {
-                  className: 'cg_checks',
-                  children: [
-                    jsx('label', {
-                      className: 'cg_check',
-                      title: '开启后：会话切到某个已索引项目时，MCP 托管行的 cwd 自动对齐它；会话目录没有索引时回落到默认项目。「设为默认项目」会关掉它（那是一次显式指定）',
-                      children: [
-                        jsx('input', {
-                          type: 'checkbox',
-                          checked: defaultInfo ? defaultInfo.followSession === true : false,
-                          disabled: !defaultInfo,
-                          onChange: (event) => toggleSetting('followSession', event.target.checked),
-                        }),
-                        '跟随当前项目',
-                      ],
-                    }),
-                    jsx('label', {
-                      className: 'cg_check',
-                      'data-off': !defaultInfo || defaultInfo.cliAvailable !== true ? '1' : undefined,
-                      title: defaultInfo && defaultInfo.cliAvailable === true
-                        ? '向 agent 注入本插件的能力公告（一段中文提示，告诉模型有这张卡片）'
-                        : 'codegraph CLI 不可用，公告不会注入',
-                      children: [
-                        jsx('input', {
-                          type: 'checkbox',
-                          checked: defaultInfo ? defaultInfo.announceToAgent === true : false,
-                          disabled: !defaultInfo || defaultInfo.cliAvailable !== true,
-                          onChange: (event) => toggleSetting('announceToAgent', event.target.checked),
-                        }),
-                        '向 agent 公告能力',
-                      ],
-                    }),
-                    jsx('label', {
-                      className: 'cg_check',
-                      'data-off': !defaultInfo || defaultInfo.cliAvailable !== true ? '1' : undefined,
-                      title: defaultInfo && defaultInfo.cliAvailable === true
-                        ? '注入 CodeGraph 使用指引（CODEGRAPH_START 区块：何时优先用 codegraph、失败怎么兜底）'
-                        : 'codegraph CLI 不可用，使用指引不会注入',
-                      children: [
-                        jsx('input', {
-                          type: 'checkbox',
-                          checked: defaultInfo ? defaultInfo.usageGuidance === true : false,
-                          disabled: !defaultInfo || defaultInfo.cliAvailable !== true,
-                          onChange: (event) => toggleSetting('usageGuidance', event.target.checked),
-                        }),
-                        '注入使用指引',
-                      ],
-                    }),
-                  ],
-                }),
-                // P0：MCP 挂载模式。默认 managed（保持原行为），per-agent 是显式选择。
-                // 用户选了 per-agent 但前提不成立时，宿主会退回 managed 并给出原因——
-                // 卡片必须显示「已退回」，否则用户以为开了、实际没开。
-                defaultInfo
-                  ? jsxs('div', {
-                    className: 'cg_checks',
-                    children: [
-                      jsx('label', {
-                        className: 'cg_check',
-                        'data-off': defaultInfo.mcpScope !== 'per-agent' ? '1' : undefined,
-                        title: '每 agent 一个独立的 codegraph MCP 进程（cwd = 该 agent 会话的索引根）：多项目并行时不再共享一个全局 cwd，也不再需要写盘热切换。代价是每个 agent 一个子进程（约 40MB 内存 / 每个），且只有会话目录真的**有索引**时才挂。',
-                        children: [
-                          jsx('input', {
-                            type: 'checkbox',
-                            checked: defaultInfo.mcpScope === 'per-agent',
-                            disabled: !defaultInfo,
-                            onChange: (event) => toggleSetting('mcpScope', event.target.checked ? 'per-agent' : 'managed'),
-                          }),
-                          'per-agent MCP 隔离',
-                        ],
-                      }),
-                    ],
-                  })
-                  : null,
-                // 退回提示：只在「用户要 per-agent、实际不是」时出现。
-                defaultInfo && defaultInfo.mcpScope === 'per-agent' && defaultInfo.effectiveMcpScope !== 'per-agent'
-                  ? jsx('p', {
-                    className: 'cg_warn',
-                    children: '⚠ per-agent 未生效，已退回 managed：'
-                      + (defaultInfo.mcpScopeReason || '前提不成立')
-                      + '（当前仍是单服务器按会话热切换，功能正常）',
-                  })
-                  : null,
-                defaultInfo && defaultInfo.effectiveMcpScope === 'per-agent'
-                  ? jsx('p', {
-                    className: 'cg_mcpMeta',
-                    title: '每个 agent 一个独立的 codegraph MCP 进程；会话目录没有可用索引的 agent 不会挂载（避免拿到别的项目上下文）',
-                    children: 'per-agent 生效中：已挂载 ' + String(defaultInfo.agentMounts)
-                      + ' 个 agent 的独立 MCP 进程。全局托管行已挂起（disabled: true），切回 managed 会自动恢复。',
-                  })
-                  : null,
-                // P2 遥测提示：`init` / `index` 会触发上游的匿名用量统计。只如实转达 CLI 的
-                // 状态并指出关闭方式，**不给开关**——那是用户的全局偏好，存在
-                // ~/.codegraph/telemetry.json，插件替他翻等于越权改别人的全局设置。
-                telemetry !== null
-                  ? jsx('p', {
-                    className: 'cg_mcpMeta',
-                    children: telemetry.enabled === true
-                      ? '匿名用量统计：已开启（init / 重建索引会向上游发送匿名用量数据）。要关掉运行 `codegraph telemetry off`，或设 CODEGRAPH_TELEMETRY=0。'
-                      : telemetry.enabled === false
-                        ? '匿名用量统计：已关闭。'
-                        : '匿名用量统计：状态未知（CLI 输出未含可识别的状态行）。',
-                  })
-                  : null,
                 error ? jsx('p', { className: 'cg_error', children: error }) : null,
-                cliWarning ? jsx('p', { className: 'cg_warn', children: cliWarning }) : null,
-                cliProbeDetail ? jsx('p', { className: 'cg_probeDetail', children: cliProbeDetail }) : null,
-                defaultWarning ? jsx('p', { className: 'cg_warn', children: defaultWarning }) : null,
                 ok ? jsx('p', { className: 'cg_ok', children: ok }) : null,
                 // 诊断包（P1-b）：展开态 + 复制按钮。用 details 而不是直接铺开——它很长
                 // （补丁区块 + daemon 日志尾），铺开会把下面的状态面板挤到屏幕外。
@@ -1473,38 +1374,223 @@ window.__ModuleLoader__.load({
                     ],
                   })
                   : null,
-                status
-                  ? statusIsStructured
-                    ? jsxs('div', {
-                      children: [
-                        jsx('div', { className: 'cg_grid', children: statusCells(status) }),
-                        // CG11：CLI 明说「建议重建」时不能只报「● 已索引」——MCP 这时给的是旧图。
-                        // 实测补一句「Sync 修不了它」：codegraph 1.6.0 的 `sync` 对「提取器版本
-                        // 落后」这类过期返回 Already up to date 且不清除信号，只有「重建索引」能修。
-                        // 以前文案只说「点重建索引可修复」，用户很可能先点 Sync 然后发现没用。
-                        staleReasons(status).length > 0
-                          ? jsx('p', {
-                            className: 'cg_warn',
-                            children: '⚠ 索引可能过期：' + staleReasons(status).join('；')
-                              + '。MCP 工具此刻给的是旧提取器产出的图——点「重建索引」修复（实测此时 Sync 会报 Already up to date 且不解决问题）。',
-                          })
-                          : null,
-                        status.initialized === false
-                          ? jsx('p', { className: 'cg_mcpMeta', children: '该目录还没有索引：点上方「初始化索引」即可在本目录跑一次 `codegraph init`（只创建 .codegraph/，源文件不动；可用 `codegraph uninit` 撤销）。' })
-                          : null,
-                        statusRawText !== ''
-                          ? jsxs('details', {
-                            className: 'cg_details',
-                            children: [
-                              jsx('summary', { children: '原始 JSON（status --json）' }),
-                              jsx('pre', { className: 'cg_pre', children: statusRawText }),
-                            ],
-                          })
-                          : null,
-                      ],
+                // ── 搜索与查询（UX 重构：拆两个工作流）──
+                // 「搜索 / 探索 / 上下文」是符号查询（吃同一个关键词），「改动文件 + 影响面」
+                // 是「改动 → 受影响测试」的另一个工作流——原先两者混在一行参数里，
+                // 看起来像一回事。现在符号查询在上、「改动影响」单列一行小标题。
+                group('搜索与查询', [
+                  jsx('div', {
+                    className: 'cg_row',
+                    children: [
+                      jsx('input', {
+                        className: 'cg_input',
+                        placeholder: '搜索符号，例如 definePlugin',
+                        value: query,
+                        onChange: (event) => setQuery(event.target.value),
+                        onKeyDown: (event) => { if (event.key === 'Enter') search() },
+                      }),
+                      jsx('button', {
+                        type: 'button',
+                        className: 'cg_btn',
+                        disabled: loading || !query.trim(),
+                        onClick: search,
+                        children: '搜索',
+                      }),
+                      // explore / context 与「搜索」共用 query，语义上是一组（见上）。
+                      jsx('button', {
+                        type: 'button',
+                        className: 'cg_btnGhost',
+                        disabled: loading || !query.trim(),
+                        title: 'codegraph explore：与 MCP 的 codegraph_explore 同输出（相关符号源码 + 调用路径）。用左侧搜索框里的关键词',
+                        onClick: () => runQuery('explore', { q: query.trim() }),
+                        children: '探索',
+                      }),
+                      jsx('button', {
+                        type: 'button',
+                        className: 'cg_btnGhost',
+                        disabled: loading || !query.trim(),
+                        title: 'codegraph context：为一个任务组装上下文（相关符号 + 关系 + 代码块）。用左侧搜索框里的关键词',
+                        onClick: () => runQuery('context', { q: query.trim() }),
+                        children: '上下文',
+                      }),
+                      // kind / limit 是 query 的 -k/-l：贴着它们作用的搜索，不另起一行。
+                      jsx('label', {
+                        className: 'cg_opt',
+                        title: 'codegraph query -k/--kind：按节点类型过滤（function / class / method / interface / type_alias / constant / variable / property / file / import）',
+                        children: [
+                          '类型',
+                          jsx('input', {
+                            className: 'cg_input cg_inputSm',
+                            placeholder: '任意（function…）',
+                            value: queryKind,
+                            onChange: (event) => setQueryKind(event.target.value),
+                            onKeyDown: (event) => { if (event.key === 'Enter') search() },
+                          }),
+                        ],
+                      }),
+                      jsx('label', {
+                        className: 'cg_opt',
+                        title: 'codegraph query -l/--limit：返回条数上限（默认 20）。callers/callees 也吃这个值',
+                        children: [
+                          '上限',
+                          jsx('input', {
+                            className: 'cg_input cg_inputXs',
+                            value: queryLimit,
+                            onChange: (event) => setQueryLimit(event.target.value),
+                            onKeyDown: (event) => { if (event.key === 'Enter') search() },
+                          }),
+                        ],
+                      }),
+                    ],
+                  }),
+                  // 改动影响：affected 的输入与按钮。插件刻意不自己去猜改动列表
+                  // （不读 git status、不猜编辑器状态），所以需要用户手填；「影响面」
+                  // 按钮吃左边这份列表，依赖关系贴着输入框一眼可见。窄栏下自动折行。
+                  jsx('div', { className: 'cg_rowLabel', children: '改动影响' }),
+                  jsxs('div', {
+                    className: 'cg_queryOpts',
+                    children: [
+                      jsx('label', {
+                        className: 'cg_opt cg_optWide',
+                        title: 'codegraph affected <files…>：由改动文件反查受影响的测试。一行一个，也可用逗号分隔；留空则 CLI 回「No files provided」',
+                        children: [
+                          '改动文件',
+                          jsx('input', {
+                            className: 'cg_input cg_inputSm',
+                            placeholder: '如 packages/codegraph/src/index.ts（点「影响面」查询）',
+                            value: changedFiles,
+                            onChange: (event) => setChangedFiles(event.target.value),
+                            onKeyDown: (event) => { if (event.key === 'Enter') runQuery('affected', { files: manualFiles() }) },
+                          }),
+                        ],
+                      }),
+                      jsx('button', {
+                        type: 'button',
+                        className: 'cg_btnGhost',
+                        disabled: loading || !(status && status.projectPath),
+                        title: 'codegraph affected <files>：由改动文件反查受影响的测试。用左侧「改动文件」里的列表',
+                        onClick: () => runQuery('affected', { files: manualFiles() }),
+                        children: '影响面',
+                      }),
+                    ],
+                  }),
+                ]),
+                // ── Agent 集成 ── 提示词注入与 MCP 挂载的开关、相关警告收进一组。
+                // UX 重构：四个开关拆两行——「跟随与提示词」是轻量行为开关，
+                // 「per-agent MCP 隔离」是改 MCP 拓扑、有内存代价的决策，视觉同权正是
+                // 「乱」的来源之一。各自一行小标题，代价与后果各归各位。
+                group('Agent 集成', [
+                  // UX 重构：四个开关拆两行——「跟随与提示词」是轻量行为开关，
+                  // 「per-agent MCP 隔离」是改 MCP 拓扑、有内存代价的决策，两者视觉同权
+                  // 正是「乱」的来源之一。各自一行小标题，代价与后果各归各位。
+                  jsx('div', { className: 'cg_rowLabel', children: '跟随与提示词' }),
+                  jsxs('div', {
+                    className: 'cg_checks',
+                    children: [
+                      jsx('label', {
+                        className: 'cg_check',
+                        title: '开启后：会话切到某个已索引项目时，MCP 托管行的 cwd 自动对齐它；会话目录没有索引时回落到默认项目。「设为默认项目」会关掉它（那是一次显式指定）',
+                        children: [
+                          jsx('input', {
+                            type: 'checkbox',
+                            checked: defaultInfo ? defaultInfo.followSession === true : false,
+                            disabled: !defaultInfo,
+                            onChange: (event) => toggleSetting('followSession', event.target.checked),
+                          }),
+                          '跟随当前项目',
+                        ],
+                      }),
+                      jsx('label', {
+                        className: 'cg_check',
+                        'data-off': !defaultInfo || defaultInfo.cliAvailable !== true ? '1' : undefined,
+                        title: defaultInfo && defaultInfo.cliAvailable === true
+                          ? '向 agent 注入本插件的能力公告（一段中文提示，告诉模型有这张卡片）'
+                          : 'codegraph CLI 不可用，公告不会注入',
+                        children: [
+                          jsx('input', {
+                            type: 'checkbox',
+                            checked: defaultInfo ? defaultInfo.announceToAgent === true : false,
+                            disabled: !defaultInfo || defaultInfo.cliAvailable !== true,
+                            onChange: (event) => toggleSetting('announceToAgent', event.target.checked),
+                          }),
+                          '向 agent 公告能力',
+                        ],
+                      }),
+                      jsx('label', {
+                        className: 'cg_check',
+                        'data-off': !defaultInfo || defaultInfo.cliAvailable !== true ? '1' : undefined,
+                        title: defaultInfo && defaultInfo.cliAvailable === true
+                          ? '注入 CodeGraph 使用指引（CODEGRAPH_START 区块：何时优先用 codegraph、失败怎么兜底）'
+                          : 'codegraph CLI 不可用，使用指引不会注入',
+                        children: [
+                          jsx('input', {
+                            type: 'checkbox',
+                            checked: defaultInfo ? defaultInfo.usageGuidance === true : false,
+                            disabled: !defaultInfo || defaultInfo.cliAvailable !== true,
+                            onChange: (event) => toggleSetting('usageGuidance', event.target.checked),
+                          }),
+                          '注入使用指引',
+                        ],
+                      }),
+                    ],
+                  }),
+                  jsx('div', { className: 'cg_rowLabel', children: 'MCP 挂载' }),
+                  jsx('div', {
+                    className: 'cg_checks',
+                    children:
+                      // P0：MCP 挂载模式。默认 managed（保持原行为），per-agent 是显式选择。
+                      // 用户选了 per-agent 但前提不成立时，宿主会退回 managed 并给出原因——
+                      // 卡片必须显示「已退回」，否则用户以为开了、实际没开。
+                      // 与旧版一致，整个 label 仍以 defaultInfo 为前提（它直接读
+                      // defaultInfo.mcpScope；探测结果没回来时无从渲染，preview-card 的
+                      // null 探测用例盯的就是这条）。
+                      defaultInfo
+                        ? jsx('label', {
+                          className: 'cg_check',
+                          'data-off': defaultInfo.mcpScope !== 'per-agent' ? '1' : undefined,
+                          title: '每 agent 一个独立的 codegraph MCP 进程（cwd = 该 agent 会话的索引根）：多项目并行时不再共享一个全局 cwd，也不再需要写盘热切换。代价是每个 agent 一个子进程（约 40MB 内存 / 每个），且只有会话目录真的**有索引**时才挂。',
+                          children: [
+                            jsx('input', {
+                              type: 'checkbox',
+                              checked: defaultInfo.mcpScope === 'per-agent',
+                              disabled: !defaultInfo,
+                              onChange: (event) => toggleSetting('mcpScope', event.target.checked ? 'per-agent' : 'managed'),
+                            }),
+                            'per-agent MCP 隔离',
+                          ],
+                        })
+                        : null,
+                  }),
+                  // 退回提示：只在「用户要 per-agent、实际不是」时出现。
+                  defaultInfo && defaultInfo.mcpScope === 'per-agent' && defaultInfo.effectiveMcpScope !== 'per-agent'
+                    ? jsx('p', {
+                      className: 'cg_warn',
+                      children: '⚠ per-agent 未生效，已退回 managed：'
+                        + (defaultInfo.mcpScopeReason || '前提不成立')
+                        + '（当前仍是单服务器按会话热切换，功能正常）',
                     })
-                    : jsx('pre', { className: 'cg_pre', children: statusRawText })
-                  : null,
+                    : null,
+                  defaultInfo && defaultInfo.effectiveMcpScope === 'per-agent'
+                    ? jsx('p', {
+                      className: 'cg_mcpMeta',
+                      title: '每个 agent 一个独立的 codegraph MCP 进程；会话目录没有可用索引的 agent 不会挂载（避免拿到别的项目上下文）',
+                      children: 'per-agent 生效中：已挂载 ' + String(defaultInfo.agentMounts)
+                        + ' 个 agent 的独立 MCP 进程。全局托管行已挂起（disabled: true），切回 managed 会自动恢复。',
+                    })
+                    : null,
+                  cliWarning ? jsx('p', { className: 'cg_warn', children: cliWarning }) : null,
+                  cliProbeDetail ? jsx('p', { className: 'cg_probeDetail', children: cliProbeDetail }) : null,
+                  defaultWarning ? jsx('p', { className: 'cg_warn', children: defaultWarning }) : null,
+                  // P1 采纳率：模型到底用不用 codegraph。放在开关下面——它是「配置对不对」
+                  // 之后的第二个问题（「配好了，模型买账吗」）。
+                  adoptionText(adoption) !== ''
+                    ? jsx('p', {
+                      className: 'cg_subtitle',
+                      title: '来自宿主的内存计数（session/event 的 tool/call），宿主重启即归零；项目按索引根归并。「文件探索」= grep/glob/read 这类本可交给 codegraph 的工具，bash 等不计入',
+                      children: adoptionText(adoption),
+                    })
+                    : null,
+                ]),
                 // P2 CLI 面输出：explore / context 是 markdown，files / affected 是结构化数组。
                 // 用同一块区域渲染，避免五种命令各自摊开一堆面板把状态区挤到屏幕外。
                 output !== null
