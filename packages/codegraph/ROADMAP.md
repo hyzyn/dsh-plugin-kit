@@ -15,8 +15,8 @@
 | 项 | 结果 |
 | --- | --- |
 | 包版本 | 0.4.2；registry `dist-tags.latest` = **0.4.2**（2026-09-19 发布）——DEFECTS.md「验收记录」一节里「0.4.2 仅存在于工作树」那句已过期 |
-| `npx vitest run packages/codegraph` | **196 passed / 9 files** |
-| `npx vitest run`（全仓） | **773 passed / 47 files** |
+| `npx vitest run packages/codegraph` | **202 passed / 10 files** |
+| `npx vitest run`（全仓） | **779 passed / 48 files** |
 | `npx tsc --noEmit -p packages/codegraph/tsconfig.json` | 干净 |
 | 本包可用的运行时依赖 | `packages/codegraph/node_modules/@deepseek-ai/` 目前只有 `cordis` + `schemastery`（其余靠 `scripts/link-dsh-runtime.mjs` 链接） |
 | 宿主事件面（本机 DSH 实测存在） | `agent/created`、`agent/disposed`、`agent/inbox/inserted`、`tool/call`、`tool/result`、`system-prompt/assemble` |

@@ -8,14 +8,21 @@
  * 本脚本与 `scripts/verify-codegraph-indexforce.mjs` 同源（它只验 indexForce 一件事），
  * 这里把**路由面 + 供给面**整体验一遍。
  *
- * 安全：自己起一个独立端口与临时 profile 层（`--patch`），**不修改任何已有 profile /
- * settings 文件**，跑完 SIGTERM/SIGKILL 收尾。
+ * 安全（**这一点曾被写错**）：早先的声明是「不修改任何已有 profile / settings 文件」，
+ * 只挡住了 profile 补丁，却漏了**插件自己的副作用**——被测宿主会按 `dshHome()` 把
+ * codegraph 的托管行写进 `$DSH_HOME/cordis.patch.yml`（`DSH_HOME` 未设时就是真实的
+ * `~/.dsh/cordis.patch.yml`），而它指向的是本脚本的**临时项目目录**；脚本结束后那个
+ * 目录被删，用户真实配置里就留下一行指向不存在路径的陈旧托管行。
+ *
+ * 现在：脚本给被测宿主一个**隔离的 DSH_HOME**（临时目录 + 指回真实 profiles 的符号
+ * 链接），于是托管行只写在隔离目录里。收尾时再断言**真实 `~/.dsh/cordis.patch.yml`
+ * 逐字节未变**——把「不污染用户配置」从一句承诺变成一条会被执行的检查。
  *
  * 用法：
  *   node scripts/verify-codegraph-host-contract.mjs [--profile test] [--port 3087] [--report out.json]
  */
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -32,6 +39,17 @@ const port = Number(flag('--port') ?? 3087)
 const reportPath = flag('--report')
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const workDir = mkdtempSync(join(tmpdir(), 'cg-host-contract-'))
+/**
+ * 隔离的 DSH_HOME：被测宿主的 profile 仍从真实 `~/.dsh/profiles` 解析（符号链接），
+ * 但**所有 home 级写入**（插件的托管行、settings、profile 组装产物 cordis.yml）都落在
+ * 这个临时目录里。这样脚本无论怎么跑都不会碰用户的真实配置。
+ */
+const isolatedHome = join(workDir, 'dsh-home')
+mkdirSync(join(isolatedHome, 'profiles'), { recursive: true })
+const realDshHome = process.env.DSH_HOME?.trim() || join(process.env.HOME ?? '', '.dsh')
+const realPatchPath = join(realDshHome, 'cordis.patch.yml')
+/** 运行前的真实补丁快照（收尾时逐字节比对，证明没被改）。 */
+const realPatchBefore = existsSync(realPatchPath) ? readFileSync(realPatchPath, 'utf8') : undefined
 
 const results = []
 const record = (name, ok, detail) => {
@@ -112,7 +130,12 @@ console.log(`# 临时项目：${projectDir}\n`)
 let child
 let stderr = ''
 try {
-  child = spawn(dshBin, ['--profile', profile, '--patch', overlay], { stdio: ['ignore', 'pipe', 'pipe'] })
+  // 整份拷入被测 profile：插件/配置照旧，但组装产物与 home 级写入都落在隔离目录
+  cpSync(join(realDshHome, 'profiles', profile), join(isolatedHome, 'profiles', profile), { recursive: true })
+  child = spawn(dshBin, ['--profile', profile, '--patch', overlay], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, DSH_HOME: isolatedHome },
+  })
   child.stderr?.on('data', (chunk) => (stderr += String(chunk)))
   const up = await waitForPort(child)
   if (!up) throw new Error(`宿主没在 ${String(port)} 上就绪；stderr=${stderr.slice(-400)}`)
@@ -202,16 +225,28 @@ try {
     hasNewUi ? 'cg_projects / cg_projectBtn 均在' : '产物是旧版——先跑 pnpm --filter @hyzyn/dsh-codegraph build')
 
   // ---------- 5. MCP 托管行（真索引才写） ----------
-  const homePatch = join(process.env.HOME ?? '', '.dsh', 'cordis.patch.yml')
-  const patchText = existsSync(homePatch) ? readFileSync(homePatch, 'utf8') : ''
-  record('MCP 托管行已写入 home 补丁', patchText.includes('mcp-codegraph-managed'),
-    existsSync(homePatch) ? `补丁 ${String(patchText.length)} 字节` : '补丁文件不存在')
+  // 托管行应当写在**隔离** home 里（真实那份由收尾的断言守着）
+  const isolatedPatch = join(isolatedHome, 'cordis.patch.yml')
+  const patchText = existsSync(isolatedPatch) ? readFileSync(isolatedPatch, 'utf8') : ''
+  record('MCP 托管行已写入隔离 home 的补丁', patchText.includes('mcp-codegraph-managed'),
+    existsSync(isolatedPatch) ? `隔离补丁 ${String(patchText.length)} 字节` : '隔离补丁不存在（插件没写托管行？）')
 } catch (error) {
   record('整体执行', false, error instanceof Error ? error.message : String(error))
 } finally {
   try { child?.kill('SIGTERM') } catch { /* 已退 */ }
   await new Promise((resolve) => setTimeout(resolve, 1200))
   try { child?.kill('SIGKILL') } catch { /* 已退 */ }
+  // 收尾自证：真实 ~/.dsh/cordis.patch.yml 必须逐字节未变。
+  // 这条是「不污染用户配置」的执行版——没有它，隔离写错了也没人会发现。
+  const realPatchAfter = existsSync(realPatchPath) ? readFileSync(realPatchPath, 'utf8') : undefined
+  const untouched = realPatchAfter === realPatchBefore
+  record(
+    '真实 DSH_HOME 的 cordis.patch.yml 未被改动',
+    untouched,
+    untouched
+      ? `${realPatchPath}（${realPatchAfter === undefined ? '不存在→仍不存在' : String(realPatchAfter.length) + ' 字节，逐字节一致'}）`
+      : `❌ ${realPatchPath} 被改动了！before=${realPatchBefore === undefined ? '(不存在)' : String(realPatchBefore.length) + 'B'} after=${realPatchAfter === undefined ? '(不存在)' : String(realPatchAfter.length) + 'B'}`,
+  )
   rmSync(workDir, { recursive: true, force: true })
 }
 

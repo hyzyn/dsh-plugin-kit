@@ -14,13 +14,21 @@
  *     （`--` 之后一律按位置参数处理，顺序错了等于没加）。
  *
  * `indexForce` / `command` 都是安装级旋钮（不进 settings schema），所以脚本自己起两次宿主：
- * 用 `--patch` 临时层覆盖，**不修改任何 profile / settings 文件**，端口也独立于你正在用的实例。
+ * 用 `--patch` 临时层覆盖，端口也独立于你正在用的实例。
+ *
+ * 安全（**这一点曾被写错，与 host-contract 同因**）：仅靠 `--patch` 只挡住了 profile 补丁，
+ * 挡不住**插件自己的副作用**——本脚本没配 `defaultPath`，于是插件回落到 `process.cwd()`；
+ * 若当前目录恰好是已索引仓库，它就会把 codegraph 的托管行写进
+ * `$DSH_HOME/cordis.patch.yml`（未设 DSH_HOME 时即真实的 `~/.dsh/cordis.patch.yml`）。
+ * 现在给被测宿主一个**隔离的 DSH_HOME**：把被测 profile **整份拷进**临时目录（它只有
+ * 几十 KB），于是 profile 组装产物（cordis.yml）与插件写的托管行**全部落在临时目录**，
+ * 真实 `~/.dsh` 全程只读。收尾再断言真实补丁逐字节未变。
  *
  * 用法：
  *   node scripts/verify-codegraph-indexforce.mjs --profile test --port 3086 [--report out.json]
  */
 import { spawn } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -51,6 +59,12 @@ if (!existsSync(fakeCli)) {
 chmodSync(fakeCli, 0o755)
 
 const workDir = mkdtempSync(join(tmpdir(), 'cg-force-'))
+/** 隔离的 DSH_HOME：profile 仍从真实 ~/.dsh/profiles 解析，home 级写入全落在临时目录。 */
+const isolatedHome = join(workDir, 'dsh-home')
+mkdirSync(join(isolatedHome, 'profiles'), { recursive: true })
+const realDshHome = process.env.DSH_HOME?.trim() || join(process.env.HOME ?? '', '.dsh')
+const realPatchPath = join(realDshHome, 'cordis.patch.yml')
+const realPatchBefore = existsSync(realPatchPath) ? readFileSync(realPatchPath, 'utf8') : undefined
 // 目标目录：只要求「存在」（/index 本身不做目录校验，那是 /init 的事）
 const targetDir = join(workDir, 'target')
 mkdirSync(targetDir, { recursive: true })
@@ -134,9 +148,10 @@ try {
         '',
       ].join('\n'),
     )
+    cpSync(join(realDshHome, 'profiles', profile), join(isolatedHome, 'profiles', profile), { recursive: true })
     const child = spawn(dshBin, ['--profile', profile, '--patch', overlay], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, CG_FAKE_LOG: logPath },
+      env: { ...process.env, DSH_HOME: isolatedHome, CG_FAKE_LOG: logPath },
     })
     let stderr = ''
     child.stderr?.on('data', (chunk) => (stderr += String(chunk)))
