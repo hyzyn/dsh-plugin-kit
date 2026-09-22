@@ -489,6 +489,20 @@ describe('UX 重构：忙碌态指示器（在标题行，不在正文中间）'
     expect(src).toMatch(/prefers-reduced-motion:reduce\)\{\.cg_spinner,\.cg_iconBtn\[data-busy="1"\] svg\{animation:none\}\}/)
   })
 
+  it('反馈项包成一个整体（.cg_feedback 收紧间距），且遥测脚注排在它之后', () => {
+    /*
+     * 用户反馈「这一块交互 ui 挺乱的」：四段（成功提示 / 脚注 / 诊断包行）各 12px 堆着，
+     * 且脚注被夹在按钮与结果之间。
+     */
+    expect(src, '缺少反馈容器').toContain('cg_feedback')
+    expect(src, '反馈容器应收紧间距').toMatch(/\.cg_feedback\{[^}]*gap:6px/)
+    // 脚注在源码顺序上必须晚于反馈容器（= 晚于结果）
+    expect(pos('cg_feedback')).toBeLessThan(pos('匿名用量统计'))
+    // 且脚注不该再留在「索引维护」组内（那正是它夹在中间的原因）
+    const maintenance = src.slice(pos("group('索引维护'"), pos('cg_feedback'))
+    expect(maintenance, '遥测脚注不该留在索引维护组里').not.toContain('匿名用量统计')
+  })
+
   it('组头槽只放单个辅助动作，不放主操作组（生命周期那排按钮不该上组头）', () => {
     /*
      * 被问过：「生命周期那几个按钮要不要也放到头上」。不该：

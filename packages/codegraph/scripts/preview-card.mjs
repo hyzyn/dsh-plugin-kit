@@ -14,6 +14,7 @@
  *   node packages/codegraph/scripts/preview-card.mjs --busy      # 预览忙碌态（/status 挂住 → 标题行指示器）
  *   node packages/codegraph/scripts/preview-card.mjs --png --tall # 截更高的图（860×1500），看折叠线以下的按钮分组
  *   node packages/codegraph/scripts/preview-card.mjs --result    # 点一次「文件」，看结果区（页签）带内容的样子
+ *   node packages/codegraph/scripts/preview-card.mjs --feedback  # 点「重新探测」「诊断包」，看反馈区与脚注的顺序
  *
  * 注意：无头 Chrome 在 DSH 文件沙箱里起不来（它要初始化自己的 sandbox），--png 需要在
  * 普通终端里跑；也可以直接打开 HTML 手动截图。产物目录 .preview/ 已在 .gitignore 里。
@@ -58,8 +59,17 @@ const tall = process.argv.includes('--tall')
  * 的修复点。这里在渲染流程里真的去调一次那个按钮的 onClick，走完整条链路。
  */
 const result = process.argv.includes('--result')
-const htmlPath = join(outDir, perAgent ? 'codegraph-card-per-agent.html' : fallback ? 'codegraph-card-fallback.html' : busy ? 'codegraph-card-busy.html' : result ? 'codegraph-card-result.html' : 'codegraph-card.html')
-const pngPath = join(outDir, perAgent ? 'codegraph-card-per-agent.png' : fallback ? 'codegraph-card-fallback.png' : busy ? 'codegraph-card-busy.png' : result ? 'codegraph-card-result.png' : 'codegraph-card.png')
+/**
+ * --feedback：依次点「重新探测」与「诊断包」，把**反馈区**（成功提示 + 诊断包行）
+ * 连同它后面的遥测脚注一起渲染出来。
+ *
+ * 为什么要单独一档：用户反馈「这一块交互 ui 挺乱的」，而乱在**顺序**——遥测脚注原先
+ * 夹在按钮与它们自己的结果之间。这条顺序只有在「有反馈」时才看得见，默认预览里
+ * 反馈区是空的。
+ */
+const feedback = process.argv.includes('--feedback')
+const htmlPath = join(outDir, perAgent ? 'codegraph-card-per-agent.html' : fallback ? 'codegraph-card-fallback.html' : busy ? 'codegraph-card-busy.html' : result ? 'codegraph-card-result.html' : feedback ? 'codegraph-card-feedback.html' : 'codegraph-card.html')
+const pngPath = join(outDir, perAgent ? 'codegraph-card-per-agent.png' : fallback ? 'codegraph-card-fallback.png' : busy ? 'codegraph-card-busy.png' : result ? 'codegraph-card-result.png' : feedback ? 'codegraph-card-feedback.png' : 'codegraph-card.png')
 
 /** 预览用的假数据：跟随开启、会话目录与绑定路径不同，好让「跟随会话」这一行有内容。 */
 const RESPONSES = {
@@ -108,6 +118,12 @@ const RESPONSES = {
       { path: 'tsconfig.json', language: 'json', symbolCount: 0, sizeBytes: 610 },
       { path: 'README.md', language: 'markdown', symbolCount: 0, sizeBytes: 5240 },
     ],
+  },
+  // --feedback 用
+  '/api/dsh-codegraph/reprobe': { ok: true, cliAvailable: true },
+  '/api/dsh-codegraph/diagnose': {
+    ok: true,
+    report: '@hyzyn/dsh-codegraph 0.4.2 · node v22.23.2 · darwin arm64\n时间：2026-09-22T13:00:00.000Z\n\ncommand：codegraph\nCLI 探测：可用\n\n托管行生效路径：/Users/zz/code/my-app\n  索引状态：indexed\n（预览夹具：真实诊断包会含补丁区块与 daemon 日志尾，此处截断）',
   },
   '/api/dsh-codegraph/status': {
     ok: true,
@@ -267,6 +283,20 @@ async function renderCardHtml() {
       const dispose = fn()
       if (typeof dispose === 'function') dispose()
     }
+    await new Promise((r) => setTimeout(r, 30))
+    fake.start()
+    tree = Card()
+  }
+
+  if (feedback) {
+    // 点一次「诊断包」：走完整链路（busy → fetch → setReport）。
+    //
+    // 只点一个而不是连点两个：`loadReport` 开头就 `setOk('')`（新动作清掉上一次结果，
+    // 这是既有设计），连点的话成功提示会被清掉，看不到「成功 + 诊断包行」并存的样子。
+    // 诊断包行是反馈区里最高的一块，也最能看出脚注有没有被夹在中间。
+    const button = flatten(tree).find((n) => n.type === 'button' && n.props?.children === '诊断包')
+    if (button === undefined) throw new Error('预览：找不到「诊断包」按钮，--feedback 失效')
+    button.props.onClick()
     await new Promise((r) => setTimeout(r, 30))
     fake.start()
     tree = Card()

@@ -105,6 +105,9 @@ window.__ModuleLoader__.load({
       // （padding:24px 12px），既不说在加载什么、又把下面整组控件推下去（布局跳动），
       // 而且 Sync 跑十分钟时它会随滚动移出视野。
       '.cg_empty{text-align:center;color:var(--dsw-alias-label-tertiary);padding:24px 12px;font-size:12.5px}',
+      // 反馈容器：面板统一 12px 间距，但「刚才那次操作的结果」这几条之间用 6px——
+      // 收紧后它们读成一个整体，而不是几条互不相干的段落（用户反馈「这一块挺乱」）。
+      '.cg_feedback{display:flex;flex-direction:column;gap:6px}',
       '.cg_error{color:var(--dsw-alias-state-error-primary);font-size:12px;margin:0;white-space:pre-wrap}',
       '.cg_ok{color:var(--dsw-alias-state-success-primary);font-size:12px;margin:0}',
       '.cg_sectionTitle{margin:0;font-size:13px;font-weight:700;color:var(--dsw-alias-label-secondary)}',
@@ -1405,52 +1408,68 @@ window.__ModuleLoader__.load({
                       }),
                     ],
                   }),
-                  // P2 遥测提示：`init` / `index` 会触发上游的匿名用量统计。只如实转达 CLI 的
-                  // 状态并指出关闭方式，**不给开关**——那是用户的全局偏好，存在
-                  // ~/.codegraph/telemetry.json，插件替他翻等于越权改别人的全局设置。
-                  telemetry !== null
-                    ? jsx('p', {
-                      className: 'cg_mcpMeta',
-                      children: telemetry.enabled === true
-                        ? '匿名用量统计：已开启（init / 重建索引会向上游发送匿名用量数据）。要关掉运行 `codegraph telemetry off`，或设 CODEGRAPH_TELEMETRY=0。'
-                        : telemetry.enabled === false
-                          ? '匿名用量统计：已关闭。'
-                          : '匿名用量统计：状态未知（CLI 输出未含可识别的状态行）。',
-                    })
-                    : null,
                 ]),
-                // 动作反馈（加载 / 出错 / 成功 / 诊断包）：紧跟索引维护组——大部分按钮在
-                // 这里，反馈落在按键下方最近的位置；来自搜索的报错也汇到同一条反馈区。
-                error ? jsx('p', { className: 'cg_error', children: error }) : null,
-                ok ? jsx('p', { className: 'cg_ok', children: ok }) : null,
-                // 诊断包（P1-b）：**默认折叠** + 复制按钮。它很长（补丁区块 + daemon 日志尾，
-                // 上限 260px），自动展开会把下方的「搜索与查询 / 结果区」整块推远——用户
-                // 反馈的「文件与结果太割裂」里，这一块正是中间那道墙。摘要行本身（含「复制」）
-                // 出现就是「已生成」的反馈，要看内容点一下即可。
-                report !== ''
-                  ? jsxs('details', {
-                    className: 'cg_details',
+                // 动作反馈（出错 / 成功 / 诊断包）：紧跟索引维护组——大部分按钮在这里，
+                // 反馈落在按键下方最近的位置；来自搜索的报错也汇到同一条反馈区。
+                //
+                // 包一层 .cg_feedback 是为了**收紧内部间距**（面板统一 12px，这几条之间用
+                // 6px）：它们读起来才是一个整体（「刚才那次操作的结果」），而不是几条互不
+                // 相干的段落。
+                error || ok || report !== ''
+                  ? jsxs('div', {
+                    className: 'cg_feedback',
                     children: [
-                      jsxs('summary', {
-                        children: [
-                          '诊断包（可整段复制贴 issue）',
-                          jsx('button', {
-                            type: 'button',
-                            className: 'cg_btnGhost',
-                            style: { marginLeft: '8px' },
-                            onClick: (event) => {
-                              // details 的 summary 上放按钮：不拦住冒泡的话点「复制」
-                              // 会顺带把这块折叠起来
-                              event.preventDefault()
-                              event.stopPropagation()
-                              copyReport()
-                            },
-                            children: '复制',
-                          }),
-                        ],
-                      }),
-                      jsx('pre', { className: 'cg_pre', children: report }),
+                      error ? jsx('p', { className: 'cg_error', children: error }) : null,
+                      ok ? jsx('p', { className: 'cg_ok', children: ok }) : null,
+                      // 诊断包（P1-b）：**默认折叠** + 复制按钮。它很长（补丁区块 + daemon
+                      // 日志尾，上限 260px），自动展开会把下方的「搜索与查询 / 结果区」整块
+                      // 推远——用户反馈的「文件与结果太割裂」里，这一块正是中间那道墙。
+                      // 摘要行本身（含「复制」）出现就是「已生成」的反馈，要看内容点一下即可。
+                      report !== ''
+                        ? jsxs('details', {
+                          className: 'cg_details',
+                          children: [
+                            jsxs('summary', {
+                              children: [
+                                '诊断包（可整段复制贴 issue）',
+                                jsx('button', {
+                                  type: 'button',
+                                  className: 'cg_btnGhost',
+                                  style: { marginLeft: '8px' },
+                                  onClick: (event) => {
+                                    // details 的 summary 上放按钮：不拦住冒泡的话点「复制」
+                                    // 会顺带把这块折叠起来
+                                    event.preventDefault()
+                                    event.stopPropagation()
+                                    copyReport()
+                                  },
+                                  children: '复制',
+                                }),
+                              ],
+                            }),
+                            jsx('pre', { className: 'cg_pre', children: report }),
+                          ],
+                        })
+                        : null,
                     ],
+                  })
+                  : null,
+                // 遥测脚注：放在**反馈之后**。它原先在「索引维护」组的末尾，于是正好插在
+                // 「重新探测 / 诊断包」两个按钮与它们自己的结果之间——读起来是
+                // 「按钮 → 一段无关的说明 → 按钮的结果」（用户截图里的乱）。脚注属于
+                // 「背景说明」，就该排在结果之后。
+                //
+                // P2 遥测提示：`init` / `index` 会触发上游的匿名用量统计。只如实转达 CLI 的
+                // 状态并指出关闭方式，**不给开关**——那是用户的全局偏好，存在
+                // ~/.codegraph/telemetry.json，插件替他翻等于越权改别人的全局设置。
+                telemetry !== null
+                  ? jsx('p', {
+                    className: 'cg_mcpMeta',
+                    children: telemetry.enabled === true
+                      ? '匿名用量统计：已开启（init / 重建索引会上报）· 关闭：`codegraph telemetry off` 或 `CODEGRAPH_TELEMETRY=0`'
+                      : telemetry.enabled === false
+                        ? '匿名用量统计：已关闭'
+                        : '匿名用量统计：状态未知（CLI 输出未含可识别的状态行）',
                   })
                   : null,
                 // ── 搜索与查询（UX 重构：拆两个工作流）──

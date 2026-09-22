@@ -110,6 +110,25 @@ describe('卡片预览渲染器：三种模式都要能跑出产物', () => {
     expect(html.indexOf('class="cg_tabs"')).toBeLessThan(html.indexOf('Agent 集成'))
   })
 
+  it('--feedback：顺序必须是「按钮 → 结果 → 脚注」（脚注不再夹在中间）', () => {
+    /*
+     * 用户反馈（截图）：「这一块交互 ui 挺乱的」。乱在**顺序**：遥测脚注原先在
+     * 「索引维护」组的末尾，于是正好插在「重新探测 / 诊断包」两个按钮与它们自己的
+     * 结果之间——读起来是「按钮 → 一段无关的说明 → 按钮的结果」。
+     *
+     * 修法：① 反馈项包进 .cg_feedback（内部间距 12px→6px，读成一个整体）；
+     * ② 脚注移到反馈**之后**（脚注属于背景说明，就该排在结果之后）。
+     */
+    const html = render(['--feedback'], 'codegraph-card-feedback.html')
+    const plain = html.replace(/<style[\s\S]*?<\/style>/, '')
+    const feedbackAt = plain.indexOf('class="cg_feedback"')
+    const reportAt = plain.indexOf('诊断包（可整段复制贴 issue）')
+    const telemetryAt = plain.indexOf('匿名用量统计')
+    expect(feedbackAt, '缺少反馈容器').toBeGreaterThan(-1)
+    expect(reportAt, '反馈容器里应含诊断包行').toBeGreaterThan(feedbackAt)
+    expect(telemetryAt, '遥测脚注应在诊断包行**之后**（原先在按钮与结果之间）').toBeGreaterThan(reportAt)
+  })
+
   it('三种模式写不同文件（互不覆盖）', () => {
     render([], 'codegraph-card.html')
     render(['--per-agent'], 'codegraph-card-per-agent.html')
