@@ -416,6 +416,46 @@ describe('UX 重构：忙碌态指示器（在标题行，不在正文中间）'
     expect(cancelAt, '取消不应与删除类动作同格（那是撤销索引的位置）').toBeLessThan(slotAt)
   })
 
+  it('结果区在「搜索与查询」下方、且在「Agent 集成」之前（不再沉到面板最底部）', () => {
+    /*
+     * 用户反馈：「点击文件看不到对应的列表」——结果区原先在 Agent 集成**之后**
+     * （面板最底部），而触发按钮在索引维护 / 搜索与查询，点完要翻两屏。
+     */
+    expect(src).toContain("group('结果'")
+    const resultAt = pos("group('结果'")
+    expect(resultAt, '结果区应在搜索与查询之后').toBeGreaterThan(pos("group('搜索与查询'"))
+    expect(resultAt, '结果区应在 Agent 集成之前（这是本次修复的核心）').toBeLessThan(pos("group('Agent 集成'"))
+  })
+
+  it('结果按路由分槽保存（页签切回去还在，不是单槽覆盖）', () => {
+    // 单槽 output 会让「点文件 → 点探索 → 切回文件」变空白
+    expect(src).toContain('setOutputs((previous) =>')
+    expect(src).toContain('outputs[activeTab]')
+    expect(src, '单槽 output 应已退役').not.toContain('const [output, setOutput]')
+  })
+
+  it('每个触发按钮都会切到自己的页签', () => {
+    for (const key of ['search', 'files', 'affected', 'explore', 'context', 'detail']) {
+      expect(src, `缺少页签 key：${key}`).toContain(`key: '${key}'`)
+    }
+    // 查询路由用同一个 key 既当动作键又当页签键（busyOr(route) 与 setActiveTab(route) 同源）
+    expect(src).toContain('setActiveTab(route)')
+    expect(src).toContain("setActiveTab('search')")
+    expect(src).toContain("setActiveTab('detail')")
+  })
+
+  it('结果出来后滚到可见处，且对假 DOM 有守卫（block:nearest = 已在视野就不动）', () => {
+    expect(src).toContain('scrollIntoView')
+    expect(src).toContain("block: 'nearest'")
+    // 预览的假 DOM 没有 scrollIntoView：不守卫的话预览会直接崩
+    expect(src).toMatch(/typeof el\.scrollIntoView !== 'function'/)
+  })
+
+  it('索引被重建 / 撤销后清掉陈旧的结果（文件列表描述的是旧索引）', () => {
+    expect(src).toContain('clearIndexResults')
+    expect(src).toContain('INDEX_RESULT_TABS')
+  })
+
   it('转圈是纯 CSS 且尊重「减少动态效果」', () => {
     expect(src).toContain('@keyframes cg_spin')
     expect(src).toContain('prefers-reduced-motion')

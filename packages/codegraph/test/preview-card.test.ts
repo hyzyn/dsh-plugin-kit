@@ -78,6 +78,27 @@ describe('卡片预览渲染器：三种模式都要能跑出产物', () => {
     expect(html).toContain('cg_btnBusy')
   })
 
+  it('--result：点「文件」后结果出现在**搜索与查询下方**（不是面板最底部）', () => {
+    /*
+     * 用户反馈：「点击文件看不到对应的列表」。根因是结果区原先在面板**最底部**
+     * （Agent 集成之后），而触发按钮在「索引维护」——点完要往下翻两屏，中间还可能
+     * 横着一个展开的诊断包。
+     *
+     * 修法：① 结果区上移到「搜索与查询」正下方；② 各类结果做成页签，点哪个按钮切到
+     * 哪一页；③ outputs 按路由分槽，切页签不丢上一次的结果。
+     */
+    const html = render(['--result'], 'codegraph-card-result.html')
+    expect(html, '结果区缺少页签栏').toContain('cg_tabs')
+    expect(html, '缺少活动页签高亮').toContain('cg_tabOn')
+    expect(html, '缺少结果面板').toContain('cg_tabPanel')
+    // 「文件」页签被点亮（点了「文件」就应切到它）
+    expect(html).toMatch(/cg_tab cg_tabOn"[^>]*>文件</)
+    // 夹具里的文件列表真的渲染出来了（空态说明链路没走通）
+    expect(html).toContain('src/index.ts')
+    // 关键位置断言：结果区必须在「Agent 集成」**之前**（原先在它之后 = 最底部）
+    expect(html.indexOf('class="cg_tabs"')).toBeLessThan(html.indexOf('Agent 集成'))
+  })
+
   it('三种模式写不同文件（互不覆盖）', () => {
     render([], 'codegraph-card.html')
     render(['--per-agent'], 'codegraph-card-per-agent.html')

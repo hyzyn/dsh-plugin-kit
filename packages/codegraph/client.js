@@ -341,6 +341,13 @@ window.__ModuleLoader__.load({
       // 「这个与前面那几个不是一类」的标记，又不浪费一整行。
       // 换行时它可能落到行首，那时左边虚线正好当行首标记，仍然成立。
       '.cg_dangerSlot{display:inline-flex;align-items:center;padding-left:9px;margin-left:1px;border-left:1px dashed var(--dsw-alias-border-l2)}',
+      // 结果区页签栏：下划线的页签（比按钮更像「视图切换」），底部一条细线把整栏连起来。
+      '.cg_tabs{display:flex;align-items:center;gap:2px;flex-wrap:wrap;border-bottom:1px solid var(--dsw-alias-border-l1)}',
+      '.cg_tab{color:var(--dsw-alias-label-secondary);background:0 0;border:0;border-bottom:2px solid transparent;padding:5px 10px;font-size:12.5px;font-family:inherit;cursor:pointer;white-space:nowrap}',
+      '.cg_tab:hover{color:var(--dsw-alias-label-primary)}',
+      '.cg_tabOn{color:var(--dsw-alias-label-primary);font-weight:600;border-bottom-color:var(--dsw-alias-state-business-primary)}',
+      // 面板给个内边距，让内容与页签栏分开；min-height 避免空态时整块塌成一条线。
+      '.cg_tabPanel{padding-top:2px;min-height:20px}',
     ].join('\n')
 
     // CG08/CG37：样式引用计数。同一次挂载会把这张卡片注册进多个插槽（0.1.6 上
@@ -491,6 +498,37 @@ window.__ModuleLoader__.load({
      * 「设为默认项目」孤悬两组之间」的乱（用户截图实证）；按「目标项目 / 搜索与
      * 查询 / 索引维护 / Agent 集成 / 索引状态」分组后，每组语义单一，扫一眼能定位。
      */
+    /**
+     * 结果区的页签（顺序 = 展示顺序）。触发按钮用同一批 key 调 setActiveTab，
+     * 所以新增一种查询时只需在这里加一行、在按钮上接一次 busyOr/setActiveTab。
+     */
+    const RESULT_TABS = [
+      { key: 'search', label: '搜索结果' },
+      { key: 'files', label: '文件' },
+      { key: 'affected', label: '影响面' },
+      { key: 'explore', label: '探索' },
+      { key: 'context', label: '上下文' },
+      { key: 'detail', label: '符号详情' },
+    ]
+    /** 会被「索引变化」弄陈旧的那几个页签（重建 / 撤销后要清掉）。 */
+    const INDEX_RESULT_TABS = ['files', 'affected', 'explore', 'context']
+
+    /** 单个查询结果（files / affected / explore / context）的正文。 */
+    const renderOutputBody = (output) => (output.text !== ''
+      // explore / context 的 markdown：原样按等宽显示（卡片不做 markdown 渲染，
+      // 免得引一套 renderer；内容本身就是给模型读的源码 + 关系）
+      ? jsx('pre', { className: 'cg_pre', children: output.text.slice(0, 4000) })
+      : Array.isArray(output.json)
+        ? (output.json.length === 0
+          ? jsx('p', { className: 'cg_mcpMeta', children: '（空）' })
+          : jsx('pre', {
+            className: 'cg_pre',
+            children: output.json.map((item) => typeof item === 'string'
+              ? item
+              : (item.path ?? item.file ?? JSON.stringify(item))).join('\n'),
+          }))
+        : jsx('pre', { className: 'cg_pre', children: (output.raw || '（无输出）').slice(0, 4000) }))
+
     const group = (label, children) => jsxs('div', {
       className: 'cg_section',
       children: [
@@ -565,7 +603,20 @@ window.__ModuleLoader__.load({
       // P2 项目列表：一键切换的候选（宿主侧登记表，只含工作过的目录）。
       const [projects, setProjects] = React.useState([])
       // P2 CLI 面：explore / context 的文本输出（markdown），files / affected 的结构化结果。
-      const [output, setOutput] = React.useState(null)
+      /**
+       * 查询结果按**路由分槽**保存（`files` / `affected` / `explore` / `context` 各一格）。
+       *
+       * 为什么不再用单槽：结果区改成页签后，切回上一个页签必须还能看到那次的结果——
+       * 单槽会让「点文件 → 点探索 → 切回文件」变成空白。
+       */
+      const [outputs, setOutputs] = React.useState({})
+      /**
+       * 结果区当前显示的页签：`'search'` / `'detail'` / 四个查询路由之一。
+       * 由触发它的按钮设置，所以「点哪就跳到哪一页」。
+       */
+      const [activeTab, setActiveTab] = React.useState('')
+      /** 结果区容器：查询完成后若它不在视野里就滚过去（否则「点了看不到」）。 */
+      const resultRef = React.useRef(null)
       // P2 遥测提示：上游 CLI 会为 init / index 发匿名用量统计，用户该看得见这件事。
       const [telemetry, setTelemetry] = React.useState(null)
       // 撤销索引是破坏性动作（删 .codegraph/）：与「初始化索引」一样两步确认
@@ -701,6 +752,26 @@ window.__ModuleLoader__.load({
         }
       }, [])
 
+      /**
+       * 结果出来后，若结果区不在视野里就滚过去。
+       *
+       * 为什么需要：触发按钮与结果区隔着一段（「文件」在索引维护、结果区在搜索与查询
+       * 下方），窄面板 + 展开的诊断包会把结果推到视野外——用户报的「点击文件看不到
+       * 对应的列表」正是如此。`block:'nearest'` 的语义是**已经在视野里就不动**，
+       * 所以手动切页签时页面不会无故跳动。
+       */
+      React.useEffect(() => {
+        if (activeTab === '') return
+        const el = resultRef.current
+        // 预览的假 DOM 里 ref.current 恒为 null、节点也没有 scrollIntoView：静默跳过
+        if (el === null || el === undefined || typeof el.scrollIntoView !== 'function') return
+        try {
+          el.scrollIntoView({ block: 'nearest' })
+        } catch {
+          /* 老浏览器不认参数对象：忽略（不滚也比抛错好） */
+        }
+      }, [activeTab])
+
       React.useEffect(() => {
         if (open) {
           loadStatus()
@@ -741,6 +812,7 @@ window.__ModuleLoader__.load({
             ...(queryKind.trim() === '' ? {} : { kind: queryKind.trim() }),
           }))
           setResults(Array.isArray(data.results) ? data.results : [])
+          setActiveTab('search')
         } catch (err) {
           setError(err.message)
         } finally {
@@ -756,6 +828,7 @@ window.__ModuleLoader__.load({
         // callers/callees/impact，加载失败时就是张冠李戴（search() 清了，这里漏了）
         setDetail(null)
         setSelected(name)
+        setActiveTab('detail')
         try {
           const [node, callers, callees, impact] = await Promise.all([
             api('/api/dsh-codegraph/node' + qs({ name, path: effectivePath })),
@@ -769,6 +842,16 @@ window.__ModuleLoader__.load({
         } finally {
           endBusy()
         }
+      }
+
+      /**
+       * 索引被重建 / 撤销后，之前查的「文件 / 影响面 / 探索 / 上下文」结果就是陈旧的了
+       * （它们描述的是旧索引），清掉并把页签退出去——留着会让用户照着旧文件列表做判断。
+       * 搜索结果与符号详情不清：那是符号级查询，用户多半还要对照着看。
+       */
+      const clearIndexResults = () => {
+        setOutputs({})
+        setActiveTab((current) => (INDEX_RESULT_TABS.includes(current) ? '' : current))
       }
 
       const runAction = async (action) => {
@@ -808,7 +891,7 @@ window.__ModuleLoader__.load({
           setConfirmUninit(true)
           setError('')
           setOk('')
-          setOutput(null)
+          clearIndexResults()
           return
         }
         setConfirmUninit(false)
@@ -824,7 +907,7 @@ window.__ModuleLoader__.load({
           })
           setOk('已撤销 ' + (data.path || effectivePath) + ' 的索引（.codegraph/ 已删除，源文件未动）：' + (data.output || '').slice(0, 160))
           setStatus(null)
-          setOutput(null)
+          clearIndexResults()
           await Promise.all([loadStatus(), loadMcpStatus(), loadProjects()])
         } catch (err) {
           setError(err.message)
@@ -852,16 +935,20 @@ window.__ModuleLoader__.load({
         beginBusy({ files: '读取文件结构…', affected: '分析影响面…', explore: '探索中…', context: '组装上下文…' }[route] || '查询中…', route)
         setError('')
         setOk('')
-        setOutput(null)
         try {
           const data = await api('/api/dsh-codegraph/' + route + qs({ path: effectivePath, ...params }))
-          // explore / context 回 markdown 文本；files / affected 回结构化数组
-          setOutput({
-            route,
-            text: typeof data.output === 'string' ? data.output : '',
-            json: data.files ?? data.affected ?? null,
-            raw: typeof data.raw === 'string' ? data.raw : '',
-          })
+          // explore / context 回 markdown 文本；files / affected 回结构化数组。
+          // 按路由分槽保存，切页签回来还在（见 outputs 的注释）。
+          setOutputs((previous) => ({
+            ...previous,
+            [route]: {
+              route,
+              text: typeof data.output === 'string' ? data.output : '',
+              json: data.files ?? data.affected ?? null,
+              raw: typeof data.raw === 'string' ? data.raw : '',
+            },
+          }))
+          setActiveTab(route)
           if (data.files !== undefined && (!Array.isArray(data.files) || data.files.length === 0)) {
             setOk('索引里没有匹配的文件')
           }
@@ -915,6 +1002,7 @@ window.__ModuleLoader__.load({
             body: JSON.stringify({ path: effectivePath }),
           })
           setOk('已初始化并建立索引：' + (data.output || '').slice(0, 200))
+          clearIndexResults()
           await loadStatus()
           // 索引态变了 → MCP 托管行的决策也跟着变，必须重新取一次
           await loadMcpStatus()
@@ -1106,6 +1194,22 @@ window.__ModuleLoader__.load({
           + '\n修法二选一：① 把插件配置里的 command 写成该 CLI 的绝对路径（改 profile 补丁会触发热重载并重新探测）；② 从新开的终端重启宿主，让新的环境块生效。'
           + '注意：宿主进程的 PATH 在它启动时就固定了，刷新页面 / 重开卡片都不会改变它——改完上面任一项后，点「重新探测」即可就地确认，不必重启宿主。'
         : ''
+
+      /** 某个页签有没有内容（决定它是否出现在页签栏里）。 */
+      const hasResultTab = (key) => (key === 'search'
+        ? results.length > 0
+        : key === 'detail'
+          ? selected !== null
+          : outputs[key] !== undefined)
+
+      /**
+       * 结果区可见的页签 = **有内容的那些** + 当前活动那个。
+       *
+       * 为什么把 activeTab 也算进来：查询返回空结果时该页签没有内容，但用户刚点了
+       * 它——这时候页签栏不能整个消失（否则「点了没反应」），要让他看到
+       * 「没有匹配的符号」这种明确的空态。
+       */
+      const resultTabs = RESULT_TABS.filter((tab) => hasResultTab(tab.key) || tab.key === activeTab)
 
       /**
        * 忙碌指示器文案。`loading` 的文案由各动作经 beginBusy 给出；「重新探测」与
@@ -1582,6 +1686,87 @@ window.__ModuleLoader__.load({
                     ],
                   }),
                 ]),
+                // ── 结果（UX 重构：页签 + 上移）──
+                // 用户反馈：「点击文件看不到对应的列表」。根因是结果区原先在面板**最底部**
+                // （Agent 集成之后），而触发它的按钮在「索引维护 / 搜索与查询」——点完要往下
+                // 翻两屏，中间还可能横着一个展开的诊断包。
+                //
+                // 三处改动一起解决「看不到」：
+                //   ① 结果区上移到「搜索与查询」正下方（离触发按钮最近的位置）；
+                //   ② 各类结果做成**页签**，点哪个按钮就切到哪一页——位置固定，不用找；
+                //   ③ outputs 按路由分槽，切页签不会丢上一次的结果。
+                // 另有 useEffect 在结果出来且不在视野时滚过去（block:'nearest'，已在视野就不动）。
+                resultTabs.length > 0
+                  ? group('结果', [
+                      jsxs('div', {
+                        className: 'cg_tabs',
+                        children: resultTabs.map((tab) => jsx('button', {
+                          type: 'button',
+                          key: 'cg-tab-' + tab.key,
+                          className: tab.key === activeTab ? 'cg_tab cg_tabOn' : 'cg_tab',
+                          'aria-selected': tab.key === activeTab,
+                          onClick: () => setActiveTab(tab.key),
+                          children: tab.label,
+                        })),
+                      }),
+                      jsx('div', {
+                        className: 'cg_tabPanel',
+                        ref: resultRef,
+                        children: activeTab === 'search'
+                          // 搜索结果：点一行下钻到符号详情（同时切到「符号详情」页签）
+                          ? (results.length > 0
+                            ? jsx('div', {
+                              className: 'cg_list',
+                              children: results.map((item, index) => {
+                                const node = item && item.node ? item.node : item
+                                return jsxs('div', {
+                                  className: 'cg_item',
+                                  key: 'cg-result-' + index,
+                                  onClick: () => loadSymbol(node.qualifiedName || node.name),
+                                  children: [
+                                    jsx('div', { className: 'cg_itemName', children: node.qualifiedName || node.name || '(unnamed)' }),
+                                    jsx('div', { className: 'cg_itemMeta', children: (node.kind || '') + ' · ' + (node.filePath || '') + ':' + (node.startLine || '') }),
+                                  ],
+                                })
+                              }),
+                            })
+                            : jsx('p', { className: 'cg_mcpMeta', children: '没有匹配的符号。换个关键词，或去掉「类型」过滤。' }))
+                          : activeTab === 'detail'
+                            ? (detail
+                              ? jsxs('div', {
+                                children: [
+                                  jsx('p', { className: 'cg_sectionTitle', children: '符号详情：' + selected }),
+                                  // node 侧返回的是带行号的 markdown 源码/调用轨迹（不是 JSON），直接按文本显示
+                                  typeof detail.node?.node === 'string' && detail.node.node.trim() !== ''
+                                    ? jsx('pre', { className: 'cg_pre', children: detail.node.node })
+                                    : null,
+                                  relList('调用者 (callers)', relItems(detail.callers?.callers, 'callers'), '没有调用者'),
+                                  relList('被调用 (callees)', relItems(detail.callees?.callees, 'callees'), '没有下游调用'),
+                                  jsxs('div', {
+                                    children: [
+                                      jsx('p', {
+                                        className: 'cg_sectionTitle',
+                                        children: '影响面 (impact) · ' + fmtNum(detail.impact?.impact?.nodeCount) + ' 个节点 / ' + fmtNum(detail.impact?.impact?.edgeCount) + ' 条边',
+                                      }),
+                                      relList('受影响符号', relItems(detail.impact?.impact?.affected, 'affected'), '没有受影响的符号'),
+                                    ],
+                                  }),
+                                  jsxs('details', {
+                                    className: 'cg_details',
+                                    children: [
+                                      jsx('summary', { children: '原始 JSON（node / callers / callees / impact）' }),
+                                      jsx('pre', { className: 'cg_pre', children: JSON.stringify(detail, null, 2) }),
+                                    ],
+                                  }),
+                                ],
+                              })
+                              : jsx('p', { className: 'cg_mcpMeta', children: '正在加载符号详情…' }))
+                            : (outputs[activeTab] !== undefined
+                              ? renderOutputBody(outputs[activeTab])
+                              : jsx('p', { className: 'cg_mcpMeta', children: '（还没有结果）' })),
+                      }),
+                    ])
+                  : null,
                 // ── Agent 集成 ── 提示词注入与 MCP 挂载的开关、相关警告收进一组。
                 // UX 重构：四个开关拆两行——「跟随与提示词」是轻量行为开关，
                 // 「per-agent MCP 隔离」是改 MCP 拓扑、有内存代价的决策，视觉同权正是
@@ -1698,94 +1883,6 @@ window.__ModuleLoader__.load({
                     })
                     : null,
                 ]),
-                // P2 CLI 面输出：explore / context 是 markdown，files / affected 是结构化数组。
-                // 用同一块区域渲染，避免五种命令各自摊开一堆面板把状态区挤到屏幕外。
-                output !== null
-                  ? jsxs('details', {
-                    className: 'cg_details',
-                    open: true,
-                    children: [
-                      jsxs('summary', {
-                        children: [
-                          {
-                            files: '文件结构（codegraph files --json）',
-                            affected: '受影响的测试（codegraph affected）',
-                            explore: '探索结果（codegraph explore）',
-                            context: '任务上下文（codegraph context）',
-                          }[output.route] || output.route,
-                        ],
-                      }),
-                      output.text !== ''
-                        // explore / context 的 markdown：原样按等宽显示（卡片不做 markdown 渲染，
-                        // 免得引一套 renderer；内容本身就是给模型读的源码 + 关系）
-                        ? jsx('pre', { className: 'cg_pre', children: output.text.slice(0, 4000) })
-                        : Array.isArray(output.json)
-                          ? output.json.length === 0
-                            ? jsx('p', { className: 'cg_mcpMeta', children: '（空）' })
-                            : jsx('pre', {
-                              className: 'cg_pre',
-                              children: output.json.map((item) => typeof item === 'string'
-                                ? item
-                                : (item.path ?? item.file ?? JSON.stringify(item))).join('\n'),
-                            })
-                          : jsx('pre', { className: 'cg_pre', children: (output.raw || '（无输出）').slice(0, 4000) }),
-                    ],
-                  })
-                  : null,
-                results.length > 0 ? jsxs('div', {
-                  className: 'cg_list',
-                  children: [
-                    jsx('p', { className: 'cg_sectionTitle', children: '搜索结果' }),
-                    results.map((item, index) => {
-                      const node = item && item.node ? item.node : item
-                      return jsxs('div', {
-                        className: 'cg_item',
-                        key: 'cg-result-' + index,
-                        onClick: () => loadSymbol(node.qualifiedName || node.name),
-                        children: [
-                          jsx('div', { className: 'cg_itemName', children: node.qualifiedName || node.name || '(unnamed)' }),
-                          jsx('div', { className: 'cg_itemMeta', children: (node.kind || '') + ' · ' + (node.filePath || '') + ':' + (node.startLine || '') }),
-                        ],
-                      })
-                    }),
-                  ],
-                }) : null,
-                selected
-                  ? jsxs('div', {
-                    className: 'cg_panel',
-                    children: [
-                      jsx('p', { className: 'cg_sectionTitle', children: '符号详情：' + selected }),
-                      detail
-                        ? jsxs('div', {
-                          children: [
-                            // node 侧返回的是带行号的 markdown 源码/调用轨迹（不是 JSON），直接按文本显示
-                            typeof detail.node?.node === 'string' && detail.node.node.trim() !== ''
-                              ? jsx('pre', { className: 'cg_pre', children: detail.node.node })
-                              : null,
-                            relList('调用者 (callers)', relItems(detail.callers?.callers, 'callers'), '没有调用者'),
-                            relList('被调用 (callees)', relItems(detail.callees?.callees, 'callees'), '没有下游调用'),
-                            jsxs('div', {
-                              children: [
-                                jsx('p', {
-                                  className: 'cg_sectionTitle',
-                                  children: '影响面 (impact) · ' + fmtNum(detail.impact?.impact?.nodeCount) + ' 个节点 / ' + fmtNum(detail.impact?.impact?.edgeCount) + ' 条边',
-                                }),
-                                relList('受影响符号', relItems(detail.impact?.impact?.affected, 'affected'), '没有受影响的符号'),
-                              ],
-                            }),
-                            jsxs('details', {
-                              className: 'cg_details',
-                              children: [
-                                jsx('summary', { children: '原始 JSON（node / callers / callees / impact）' }),
-                                jsx('pre', { className: 'cg_pre', children: JSON.stringify(detail, null, 2) }),
-                              ],
-                            }),
-                          ],
-                        })
-                        : null,
-                    ],
-                  })
-                  : null,
               ],
             }),
           }) : null,

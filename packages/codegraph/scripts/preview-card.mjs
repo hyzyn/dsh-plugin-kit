@@ -13,6 +13,7 @@
  *   node packages/codegraph/scripts/preview-card.mjs --fallback  # 预览 P0「要 per-agent 但退回 managed」的卡片
  *   node packages/codegraph/scripts/preview-card.mjs --busy      # 预览忙碌态（/status 挂住 → 标题行指示器）
  *   node packages/codegraph/scripts/preview-card.mjs --png --tall # 截更高的图（860×1500），看折叠线以下的按钮分组
+ *   node packages/codegraph/scripts/preview-card.mjs --result    # 点一次「文件」，看结果区（页签）带内容的样子
  *
  * 注意：无头 Chrome 在 DSH 文件沙箱里起不来（它要初始化自己的 sandbox），--png 需要在
  * 普通终端里跑；也可以直接打开 HTML 手动截图。产物目录 .preview/ 已在 .gitignore 里。
@@ -49,8 +50,16 @@ const busy = process.argv.includes('--busy')
  * 默认视口正好把那一行切掉）。只影响截图，不影响 HTML。
  */
 const tall = process.argv.includes('--tall')
-const htmlPath = join(outDir, perAgent ? 'codegraph-card-per-agent.html' : fallback ? 'codegraph-card-fallback.html' : busy ? 'codegraph-card-busy.html' : 'codegraph-card.html')
-const pngPath = join(outDir, perAgent ? 'codegraph-card-per-agent.png' : fallback ? 'codegraph-card-fallback.png' : busy ? 'codegraph-card-busy.png' : 'codegraph-card.png')
+/**
+ * --result：点一次「文件」，让结果区带着真实内容出现。
+ *
+ * 为什么需要：结果区默认不渲染（没有查询结果就没有页签），于是「结果区上移到
+ * 搜索与查询下方」这条改动在预览里看不到——而它正是用户反馈「点击文件看不到列表」
+ * 的修复点。这里在渲染流程里真的去调一次那个按钮的 onClick，走完整条链路。
+ */
+const result = process.argv.includes('--result')
+const htmlPath = join(outDir, perAgent ? 'codegraph-card-per-agent.html' : fallback ? 'codegraph-card-fallback.html' : busy ? 'codegraph-card-busy.html' : result ? 'codegraph-card-result.html' : 'codegraph-card.html')
+const pngPath = join(outDir, perAgent ? 'codegraph-card-per-agent.png' : fallback ? 'codegraph-card-fallback.png' : busy ? 'codegraph-card-busy.png' : result ? 'codegraph-card-result.png' : 'codegraph-card.png')
 
 /** 预览用的假数据：跟随开启、会话目录与绑定路径不同，好让「跟随会话」这一行有内容。 */
 const RESPONSES = {
@@ -78,6 +87,27 @@ const RESPONSES = {
         ? 'per-agent（每个 agent 一个 scoped MCP 进程）'
         : 'managed（默认：托管行 + 按会话热切换）',
     agentMounts: perAgent ? 2 : 0,
+  },
+  // --result 用：点「文件」后结果区要有真实内容，否则只能看到「（无输出）」，
+  // 而这一档正是要验证「结果看得见」。
+  '/api/dsh-codegraph/files': {
+    ok: true,
+    path: '/Users/zz/code/my-app',
+    raw: '',
+    files: [
+      { path: 'src/index.ts', language: 'typescript', symbolCount: 42, sizeBytes: 18422 },
+      { path: 'src/router.ts', language: 'typescript', symbolCount: 18, sizeBytes: 6110 },
+      { path: 'src/store.ts', language: 'typescript', symbolCount: 27, sizeBytes: 9034 },
+      { path: 'src/components/App.tsx', language: 'typescript', symbolCount: 12, sizeBytes: 4210 },
+      { path: 'src/components/Header.tsx', language: 'typescript', symbolCount: 7, sizeBytes: 2380 },
+      { path: 'src/components/Sidebar.tsx', language: 'typescript', symbolCount: 9, sizeBytes: 3105 },
+      { path: 'src/utils/format.ts', language: 'typescript', symbolCount: 15, sizeBytes: 4022 },
+      { path: 'src/utils/request.ts', language: 'typescript', symbolCount: 11, sizeBytes: 3711 },
+      { path: 'src/styles/global.css', language: 'css', symbolCount: 0, sizeBytes: 1840 },
+      { path: 'package.json', language: 'json', symbolCount: 0, sizeBytes: 902 },
+      { path: 'tsconfig.json', language: 'json', symbolCount: 0, sizeBytes: 610 },
+      { path: 'README.md', language: 'markdown', symbolCount: 0, sizeBytes: 5240 },
+    ],
   },
   '/api/dsh-codegraph/status': {
     ok: true,
@@ -131,6 +161,9 @@ function makeReact() {
       useMemo(fn) { hookIndex++; return fn() },
       useCallback(fn) { hookIndex++; return fn },
       useEffect(fn) { hookIndex++; effects.push(fn) },
+      // 结果区自动滚到可见处用到它。假 DOM 里 ref.current 恒为 null（没有真实节点），
+      // 客户端的滚动调用有 typeof 守卫，所以预览下它是安全的空操作。
+      useRef(init) { hookIndex++; return { current: init } },
       useSyncExternalStore(_subscribe, get) { hookIndex++; return get() },
     },
     /** 开始一次渲染：重置 hook 游标与本次收集到的 effect。 */
@@ -222,6 +255,22 @@ async function renderCardHtml() {
   await new Promise((r) => setTimeout(r, 30))
   fake.start()
   tree = Card()
+
+  if (result) {
+    // 真的去点一次「文件」：走完整链路（busy → fetch → 写 outputs → 切页签 → 结果区出现）
+    const fileButton = flatten(tree).find((n) => n.type === 'button' && n.props?.children === '文件')
+    if (fileButton === undefined) throw new Error('预览：找不到「文件」按钮，--result 失效')
+    fileButton.props.onClick()
+    fake.start()
+    tree = Card()
+    for (const fn of fake.takeEffects()) {
+      const dispose = fn()
+      if (typeof dispose === 'function') dispose()
+    }
+    await new Promise((r) => setTimeout(r, 30))
+    fake.start()
+    tree = Card()
+  }
 
   return `<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"><style>${TOKENS}${capturedCss}</style></head>
 <body><div class="panel"><h1 class="panelTitle">设置 · 插件</h1><ul>${toHtml(tree)}</ul></div></body></html>`
