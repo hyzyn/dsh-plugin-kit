@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { REL_LIMIT, adoptionText, nextRetryDelayMs, staleReasons, truncationNote } from '../client-src/pure.js'
+import { REL_LIMIT, adoptionText, nextRetryDelayMs, seenAgoText, shortPath, staleReasons, truncationNote } from '../client-src/pure.js'
 
 /*
  * 浏览器半体的纯逻辑测试（首次给 client-src 配上单测）。
@@ -166,5 +166,29 @@ describe('P1 采纳率：adoptionText 的边界', () => {
   it('未索引项目要标明数字不代表提示词效果', () => {
     const text = adoptionText({ codegraph: 0, discovery: 2, discoveryTotal: 2, file: 2, other: 0, indexed: false })
     expect(text).toContain('该项目未索引')
+  })
+})
+
+describe('P2 项目列表：shortPath / seenAgoText', () => {
+  it('shortPath 保留最后两段（这是还能分辨的粒度），非字符串原样空串', () => {
+    expect(shortPath('/Users/czz/coding/project/cdc-manage')).toBe('…/project/cdc-manage')
+    expect(shortPath('/a/b')).toBe('/a/b')            // 两段以内不动
+    expect(shortPath('/a')).toBe('/a')
+    expect(shortPath('')).toBe('')
+    expect(shortPath(null)).toBe('')
+    expect(shortPath(undefined)).toBe('')
+    // 尾斜杠不该产生空段
+    expect(shortPath('/a/b/c/')).toBe('…/b/c')
+  })
+
+  it('seenAgoText 分档给人话，非法值返回空串', () => {
+    expect(seenAgoText(0)).toBe('刚刚')
+    expect(seenAgoText(30_000)).toBe('刚刚')
+    expect(seenAgoText(90_000)).toBe('1 分钟前')
+    expect(seenAgoText(3 * 3600_000)).toBe('3 小时前')
+    expect(seenAgoText(2 * 86400_000)).toBe('2 天前')
+    expect(seenAgoText(-1)).toBe('')
+    expect(seenAgoText(NaN)).toBe('')
+    expect(seenAgoText('nope')).toBe('')
   })
 })

@@ -103,3 +103,30 @@ export function adoptionText(summary) {
   const otherNote = other === 0 ? '' : `（另 ${other} 次其它工具）`
   return `采纳率：codegraph ${codegraph} 次 / 发现类 ${discovery} 次 → ${narrow}%${broadNote}${otherNote}${indexedNote}`
 }
+
+/**
+ * P2 项目列表：把绝对路径缩短到「读者还能分辨」的程度。
+ *
+ * 为什么不全显示：项目路径动辄 60+ 字符，而卡片一行要放好几个按钮——全显示会挤成
+ * 一坨省略号，反而谁也认不出。保留**最后两段**（通常是 `仓库/子目录` 或 `父/仓库`），
+ * 这是实测最容易区分的粒度；完整路径仍在按钮的 title 里，鼠标一悬停就能确认。
+ */
+export function shortPath(path) {
+  if (typeof path !== 'string' || path === '') return ''
+  const parts = path.split('/').filter((p) => p !== '')
+  if (parts.length <= 2) return path
+  return '…/' + parts.slice(-2).join('/')
+}
+
+/** P2 项目列表：「多久之前见过」的人话（秒 / 分 / 小时 / 天）。 */
+export function seenAgoText(ms) {
+  const value = Number(ms)
+  if (!Number.isFinite(value) || value < 0) return ''
+  const seconds = Math.floor(value / 1000)
+  if (seconds < 60) return '刚刚'
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return minutes + ' 分钟前'
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return hours + ' 小时前'
+  return Math.floor(hours / 24) + ' 天前'
+}

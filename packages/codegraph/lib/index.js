@@ -1355,6 +1355,52 @@ function tryParseJson(text) {
         return undefined;
     }
 }
+/** 有界登记表：容量固定，避免长期运行无限增长。 */
+const REGISTRY_LIMIT = 50;
+/**
+ * 项目登记表（内存态、每实例一份）。
+ *
+ * 边界处理：写满之后**淘汰最久未见的**，但**永不淘汰当前默认项目 / 当前会话项目**——
+ * 否则用户正在用的那个恰好被挤掉，列表里反而看不到自己。
+ */
+function createProjectRegistry() {
+    const seen = new Map();
+    const note = (path, via) => {
+        if (typeof path !== 'string')
+            return;
+        const trimmed = path.trim();
+        if (trimmed === '')
+            return;
+        // 只登记已索引的**根**：会话 cwd 可能是 monorepo 子目录，归到根才与切换语义一致；
+        // 未索引目录也记（用户会想知道「这个项目还没索引」），但键用原路径。
+        const key = resolveIndexedRoot(trimmed) ?? trimmed;
+        // `at` 每次都刷新（「最近见过」要的是最新时间），但 `via` **只记第一次**：
+        // 同一条路径会被多个路由反复 note（/projects 自己每次都会补登记默认项目与生效路径），
+        // 若每次都覆盖 via，用户看到的来源就会变成「生效路径」这种没有信息量的值——
+        // 实测正是如此（/follow 上报的项目显示成「生效路径」）。第一次的来源才是
+        // 「它是怎么进列表的」，那也正是排障时要问的。
+        const existing = seen.get(key);
+        seen.set(key, { at: Date.now(), firstVia: existing?.firstVia ?? via });
+        if (seen.size <= REGISTRY_LIMIT)
+            return;
+        // 淘汰最久未见的；至少保留一个，避免集合被清空
+        const oldest = [...seen.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+        if (oldest !== undefined)
+            seen.delete(oldest[0]);
+    };
+    const list = () => {
+        const now = Date.now();
+        return [...seen.entries()]
+            .map(([path, info]) => ({
+            path,
+            indexed: indexState(path) === 'indexed',
+            seenAgoMs: Math.max(0, now - info.at),
+            via: info.firstVia,
+        }))
+            .sort((a, b) => a.seenAgoMs - b.seenAgoMs);
+    };
+    return { note, list };
+}
 /**
  * 创建采纳率收集器：订阅会话事件、按键归并。
  *
@@ -1454,7 +1500,9 @@ runtime,
  * 采纳率收集器访问口（ROADMAP P1）。与 runtime 同理走闭包：collector 在 apply 里
  * 创建、可能晚于路由注册，且必须**每实例一份**（两个实例并存时不该共享计数）。
  */
-metrics) {
+metrics, 
+/** 已索引项目登记表（P2 项目列表）：路由上报候选，`/projects` 读它。 */
+projects) {
     const guard = (req, res, method) => {
         if (!isLoopbackRequest(req)) {
             writeJson(res, 403, { error: 'forbidden: loopback-only' });
@@ -1598,6 +1646,8 @@ metrics) {
                 }
                 try {
                     const { output, data } = await runJson(['status', '--json', '--', cwd], cwd);
+                    // 查过状态 = 用户正在关注这个项目 → 进项目列表（P2）
+                    projects.note(cwd, 'status 查询');
                     writeJson(res, 200, { ok: true, path: cwd, status: data, raw: output });
                 }
                 catch (error) {
@@ -2026,6 +2076,8 @@ metrics) {
                 }
                 // 空 path = 当前没有活动会话（或它没有工作目录）：清掉上报值，回落到绑定路径。
                 rt.sessionPath = path === '' ? undefined : path;
+                if (path !== '')
+                    projects.note(path, '活动会话');
                 const outcome = rt.sync(rt.scope?.get());
                 // 注意：`indexed` 报的是**生效路径**（托管行实际用的目录），而「回落」的判定必须
                 // 看**上报的会话目录**——生效路径在回落之后必然是默认路径，用它的索引态会得出
@@ -2252,6 +2304,33 @@ metrics) {
         },
         {
             kind: 'exact',
+            path: '/api/dsh-codegraph/projects',
+            handler: async (req, res) => {
+                // 项目列表（P2）：候选来自活跃会话与插件自己观察到的 cwd，每条现算索引态。
+                // 只读；列出的都是「用户真的在这里工作过」的目录，不做全盘扫描。
+                if (!guard(req, res, 'GET'))
+                    return;
+                const rt = runtime();
+                // 当前生效/默认/会话路径每次都补登记一次：它们必须始终在列表里，
+                // 否则「一键切换」的目标列表会缺掉用户此刻正在用的那个。
+                const current = rt?.current;
+                if (current !== undefined)
+                    projects.note(current.defaultPath, '默认项目');
+                if (rt?.sessionPath !== undefined)
+                    projects.note(rt.sessionPath, '活动会话');
+                const effective = effectiveProjectPath(rt);
+                projects.note(effective, '生效路径');
+                const items = projects.list();
+                writeJson(res, 200, {
+                    ok: true,
+                    projects: items,
+                    indexedCount: items.filter((item) => item.indexed).length,
+                    effectivePath: effective,
+                });
+            },
+        },
+        {
+            kind: 'exact',
             path: '/api/dsh-codegraph/reprobe',
             handler: async (req, res) => {
                 // guard 已经把住 loopback + POST；重探会真的起一个子进程（<command> --version），
@@ -2353,6 +2432,27 @@ const plugin = definePlugin({
          * effect 生命周期自动解绑，不需要额外 dispose。挂在这里而不是路由里，是因为
          * 事件从会话一开始就流，而路由可能直到用户打开卡片才被访问。
          */
+        /**
+         * 项目登记表（P2）：创建后立刻用活跃会话 seed 一次，之后由 /follow、/status、
+         * /projects 持续补充。seed 用 `sessions.list()`（宿主公开服务，见 registry 注释
+         * 里为什么不用 ~/.dsh/sessions 的内部格式）。
+         */
+        const projectRegistry = createProjectRegistry();
+        ctx.inject(['sessions'], (sessionCtx) => {
+            try {
+                const sessions = sessionCtx.sessions;
+                for (const session of sessions?.list?.() ?? []) {
+                    const cwd = session?.header?.cwd;
+                    if (typeof cwd === 'string')
+                        projectRegistry.note(cwd, '活跃会话');
+                }
+            }
+            catch (error) {
+                // 服务形状随版本可能变：拿不到就少几个候选，不影响其余功能
+                console.warn('[dsh-codegraph] 读取活跃会话以初始化项目列表失败（列表仍会随使用增长）：'
+                    + (error instanceof Error ? error.message : String(error)));
+            }
+        });
         const metricsCollector = createMetricsCollector();
         try {
             metricsCollector.attach(ctx);
@@ -2511,7 +2611,7 @@ const plugin = definePlugin({
         const routes = makeRoutes(cli, config?.defaultPath?.trim() || process.cwd(), {
             get: () => ({ available: cliProbeState.available, error: cliProbeState.error, at: cliProbeState.at }),
             reprobe: () => runProbe(),
-        }, getRuntime, () => metricsCollector.access);
+        }, getRuntime, () => metricsCollector.access, projectRegistry);
         ctx.inject(['webServer'], (webCtx) => {
             webCtx.effect(() => {
                 const server = webCtx.webServer;

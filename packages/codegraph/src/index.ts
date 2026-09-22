@@ -1726,6 +1726,92 @@ function tryParseJson(text: string): unknown {
 }
 
 /* ------------------------------------------------------------------ *
+ * 已索引项目登记表（ROADMAP P2：项目列表 + 一键切换）
+ *
+ * 要解决的问题：一台 codegraph MCP 服务器同一时刻只挂一个项目，可选项目却散在
+ * 用户硬盘各处——卡片此前只知道「当前默认项目」，用户想切到上周那个仓库只能手动
+ * 敲绝对路径。
+ *
+ * **数据源只用「界内」的**，这是本模块最重要的设计约束：
+ *
+ *   - `sessions.list()`（宿主公开服务）：活跃会话的 `header.cwd` 是权威路径。
+ *   - 本插件自己观察到的 cwd：`/follow` 的上报、`/default-path` 的绑定、
+ *     `/status` 查询过的路径。它们代表「用户正在这里工作」。
+ *
+ * **刻意不读 `~/.dsh/sessions/`**：那里确实有历史项目路径，但那是 DSH 的内部存储
+ * 格式（会话桶名是路径编码、日志是多帧 zstd），插件去解析它会在 DSH 改格式时静默
+ * 失效——实测按桶名解码 51 个目录，**一个都没解对**。宁可比用户记忆少几个项目，
+ * 也不要一个「有时准有时不准」的列表。
+ *
+ * 每个候选都要现算 `locateIndex`：只有**真索引**（`.codegraph/` 里有索引库）才进列表，
+ * 与托管行 cwd、注入门禁、采纳率同一口径。
+ * ------------------------------------------------------------------ */
+
+/** 登记表里的一项（给卡片用）。 */
+export interface ProjectEntry {
+  /** 索引所在的仓库根（不是会话 cwd——monorepo 子目录会归到根）。 */
+  path: string
+  /** 已索引 / 未索引（后者也列，但标出来，因为「一键切换」对它是无效操作）。 */
+  indexed: boolean
+  /** 多久之前见过它（毫秒）——列表按这个排序，「最近用过的」在最上面。 */
+  seenAgoMs: number
+  /** 最近一次是**怎么**被看到的（排障用，也解释它为何在列表里）。 */
+  via: string
+}
+
+/** 有界登记表：容量固定，避免长期运行无限增长。 */
+const REGISTRY_LIMIT = 50
+
+/**
+ * 项目登记表（内存态、每实例一份）。
+ *
+ * 边界处理：写满之后**淘汰最久未见的**，但**永不淘汰当前默认项目 / 当前会话项目**——
+ * 否则用户正在用的那个恰好被挤掉，列表里反而看不到自己。
+ */
+function createProjectRegistry(): {
+  /** 记一笔「这个目录被看到过」。非字符串 / 空串忽略。 */
+  note(path: unknown, via: string): void
+  /** 列出候选（已刷新索引态、按最近见过排序）。 */
+  list(): ProjectEntry[]
+} {
+  const seen = new Map<string, { at: number; firstVia: string }>()
+
+  const note = (path: unknown, via: string): void => {
+    if (typeof path !== 'string') return
+    const trimmed = path.trim()
+    if (trimmed === '') return
+    // 只登记已索引的**根**：会话 cwd 可能是 monorepo 子目录，归到根才与切换语义一致；
+    // 未索引目录也记（用户会想知道「这个项目还没索引」），但键用原路径。
+    const key = resolveIndexedRoot(trimmed) ?? trimmed
+    // `at` 每次都刷新（「最近见过」要的是最新时间），但 `via` **只记第一次**：
+    // 同一条路径会被多个路由反复 note（/projects 自己每次都会补登记默认项目与生效路径），
+    // 若每次都覆盖 via，用户看到的来源就会变成「生效路径」这种没有信息量的值——
+    // 实测正是如此（/follow 上报的项目显示成「生效路径」）。第一次的来源才是
+    // 「它是怎么进列表的」，那也正是排障时要问的。
+    const existing = seen.get(key)
+    seen.set(key, { at: Date.now(), firstVia: existing?.firstVia ?? via })
+    if (seen.size <= REGISTRY_LIMIT) return
+    // 淘汰最久未见的；至少保留一个，避免集合被清空
+    const oldest = [...seen.entries()].sort((a, b) => a[1].at - b[1].at)[0]
+    if (oldest !== undefined) seen.delete(oldest[0])
+  }
+
+  const list = (): ProjectEntry[] => {
+    const now = Date.now()
+    return [...seen.entries()]
+      .map(([path, info]) => ({
+        path,
+        indexed: indexState(path) === 'indexed',
+        seenAgoMs: Math.max(0, now - info.at),
+        via: info.firstVia,
+      }))
+      .sort((a, b) => a.seenAgoMs - b.seenAgoMs)
+  }
+
+  return { note, list }
+}
+
+/* ------------------------------------------------------------------ *
  * 采纳率收集器（有状态的那一半）
  * ------------------------------------------------------------------ */
 
@@ -1855,6 +1941,8 @@ function makeRoutes(
    * 创建、可能晚于路由注册，且必须**每实例一份**（两个实例并存时不该共享计数）。
    */
   metrics: () => MetricsAccess,
+  /** 已索引项目登记表（P2 项目列表）：路由上报候选，`/projects` 读它。 */
+  projects: { note(path: unknown, via: string): void; list(): ProjectEntry[] },
 ): Array<{ kind: 'exact'; path: string; handler: RouteHandler }> {
   const guard = (req: ReqLike, res: ResLike, method: string): boolean => {
     if (!isLoopbackRequest(req)) {
@@ -2013,6 +2101,8 @@ function makeRoutes(
         }
         try {
           const { output, data } = await runJson(['status', '--json', '--', cwd], cwd)
+          // 查过状态 = 用户正在关注这个项目 → 进项目列表（P2）
+          projects.note(cwd, 'status 查询')
           writeJson(res, 200, { ok: true, path: cwd, status: data, raw: output })
         } catch (error) {
           failCli(res, cwd, error)
@@ -2409,6 +2499,7 @@ function makeRoutes(
         }
         // 空 path = 当前没有活动会话（或它没有工作目录）：清掉上报值，回落到绑定路径。
         rt.sessionPath = path === '' ? undefined : path
+        if (path !== '') projects.note(path, '活动会话')
         const outcome = rt.sync(rt.scope?.get())
         // 注意：`indexed` 报的是**生效路径**（托管行实际用的目录），而「回落」的判定必须
         // 看**上报的会话目录**——生效路径在回落之后必然是默认路径，用它的索引态会得出
@@ -2627,6 +2718,30 @@ function makeRoutes(
     },
     {
       kind: 'exact',
+      path: '/api/dsh-codegraph/projects',
+      handler: async (req, res) => {
+        // 项目列表（P2）：候选来自活跃会话与插件自己观察到的 cwd，每条现算索引态。
+        // 只读；列出的都是「用户真的在这里工作过」的目录，不做全盘扫描。
+        if (!guard(req, res, 'GET')) return
+        const rt = runtime()
+        // 当前生效/默认/会话路径每次都补登记一次：它们必须始终在列表里，
+        // 否则「一键切换」的目标列表会缺掉用户此刻正在用的那个。
+        const current = rt?.current
+        if (current !== undefined) projects.note(current.defaultPath, '默认项目')
+        if (rt?.sessionPath !== undefined) projects.note(rt.sessionPath, '活动会话')
+        const effective = effectiveProjectPath(rt)
+        projects.note(effective, '生效路径')
+        const items = projects.list()
+        writeJson(res, 200, {
+          ok: true,
+          projects: items,
+          indexedCount: items.filter((item) => item.indexed).length,
+          effectivePath: effective,
+        })
+      },
+    },
+    {
+      kind: 'exact',
       path: '/api/dsh-codegraph/reprobe',
       handler: async (req, res) => {
         // guard 已经把住 loopback + POST；重探会真的起一个子进程（<command> --version），
@@ -2733,6 +2848,26 @@ const plugin = definePlugin<Config>({
      * effect 生命周期自动解绑，不需要额外 dispose。挂在这里而不是路由里，是因为
      * 事件从会话一开始就流，而路由可能直到用户打开卡片才被访问。
      */
+    /**
+     * 项目登记表（P2）：创建后立刻用活跃会话 seed 一次，之后由 /follow、/status、
+     * /projects 持续补充。seed 用 `sessions.list()`（宿主公开服务，见 registry 注释
+     * 里为什么不用 ~/.dsh/sessions 的内部格式）。
+     */
+    const projectRegistry = createProjectRegistry()
+    ctx.inject(['sessions'], (sessionCtx: Context) => {
+      try {
+        const sessions = (sessionCtx as unknown as { sessions?: { list?: () => unknown[] } }).sessions
+        for (const session of sessions?.list?.() ?? []) {
+          const cwd = (session as SessionLike | undefined)?.header?.cwd
+          if (typeof cwd === 'string') projectRegistry.note(cwd, '活跃会话')
+        }
+      } catch (error) {
+        // 服务形状随版本可能变：拿不到就少几个候选，不影响其余功能
+        console.warn('[dsh-codegraph] 读取活跃会话以初始化项目列表失败（列表仍会随使用增长）：'
+          + (error instanceof Error ? error.message : String(error)))
+      }
+    })
+
     const metricsCollector = createMetricsCollector()
     try {
       metricsCollector.attach(ctx as unknown as { on(name: string, listener: (...args: unknown[]) => unknown): unknown })
@@ -2913,7 +3048,7 @@ const plugin = definePlugin<Config>({
     const routes = makeRoutes(cli, config?.defaultPath?.trim() || process.cwd(), {
       get: () => ({ available: cliProbeState.available, error: cliProbeState.error, at: cliProbeState.at }),
       reprobe: () => runProbe(),
-    }, getRuntime, () => metricsCollector.access)
+    }, getRuntime, () => metricsCollector.access, projectRegistry)
     ctx.inject(['webServer'], (webCtx: Context) => {
       webCtx.effect(() => {
         const server = (webCtx as unknown as { webServer: { register(route: { kind: string; path: string; handler: RouteHandler }): () => void } }).webServer

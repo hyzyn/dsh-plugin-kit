@@ -15,8 +15,8 @@
 | 项 | 结果 |
 | --- | --- |
 | 包版本 | 0.4.2；registry `dist-tags.latest` = **0.4.2**（2026-09-19 发布）——DEFECTS.md「验收记录」一节里「0.4.2 仅存在于工作树」那句已过期 |
-| `npx vitest run packages/codegraph` | **155 passed / 7 files**（含 `test/adoption.test.ts`、`test/auto-reindex.test.ts`） |
-| `npx vitest run`（全仓） | **732 passed / 45 files** |
+| `npx vitest run packages/codegraph` | **166 passed / 8 files**（含 `test/adoption.test.ts`、`test/auto-reindex.test.ts`、`test/projects.test.ts`） |
+| `npx vitest run`（全仓） | **743 passed / 46 files** |
 | `npx tsc --noEmit -p packages/codegraph/tsconfig.json` | 干净 |
 | 本包可用的运行时依赖 | `packages/codegraph/node_modules/@deepseek-ai/` 目前只有 `cordis` + `schemastery`（其余靠 `scripts/link-dsh-runtime.mjs` 链接） |
 | 宿主事件面（本机 DSH 实测存在） | `agent/created`、`agent/disposed`、`agent/inbox/inserted`、`tool/call`、`tool/result`、`system-prompt/assemble` |
@@ -47,7 +47,7 @@
 | **P1** | ~~**采纳率仪表**~~ **✅ 已完成**（见下） | 把「提示词有没有用」从感觉变成数字；有数据才谈得上调提示词或做预注入 | S–M | `createMetricsCollector()` + `/api/dsh-codegraph/metrics` + 卡片一行 |
 | **P1** | ~~**索引生命周期**：`unlock` + 自动重建~~ **✅ 已完成**（见下；daemon 日志尾与陈旧 pid 判定随 `/diagnose` 已可见） | 把「模型拿到陈旧结果 / 被坏锁挡住」在发生前化解 | M | `unlockArgs()` / `staleReasonsFromStatus()` / `maybeAutoReindex()` + 卡片「解锁」按钮 |
 | **P2** | CLI 面补全：`explore`/`context`/`files`/`affected`/`uninit`/`unlock`/`daemon` | 功能完整度（详见 DEFECTS.md 路线图节） | M | `makeRoutes` + 卡片 |
-| **P2** | 查询参数面板、已索引项目列表 + 一键切换、遥测提示、卡片 i18n、真机 E2E | 体验与工程面 | M | `client-src/` + `scripts/` |
+| **P2** | ~~已索引项目列表 + 一键切换~~ **✅ 已完成**（见下）；其余（查询参数面板、遥测提示、卡片 i18n、真机 E2E）未做 | 体验与工程面 | M | `/projects` + 卡片胶囊按钮 |
 | **P3** | CG32–CG34 销号或补齐、宿主版本基线对齐、browser 半体测试 | 可信度与工程债 | S–M | `DEFECTS.md` / `README.md` / CI |
 
 ## 已完成（0.4.2 之后的工作树）
@@ -161,6 +161,27 @@ owner 判定；会话目录无有效索引时不写盘（现有行为，保持�
 **真机端到端**：造一个真过期索引（改 SQLite `project_metadata` 里的 `indexed_with_extraction_version`），派发 `user/message` → 自动重建触发 → 轮询第一次就变新鲜；另验证新鲜索引**不会**被误重建。
 
 **顺带修掉 CG41**：门禁原写成 `cliProbeState.available !== true`，而探测是挂载后异步跑的（200–300ms 窗口），会话第一条消息若落在这个窗口里会被**静默跳过**——写用例时才暴露（三次断言里有一次不查 status）。改为只在已确认不可用（`=== false`）时跳过。
+
+### P2-a：已索引项目列表 + 一键切换 ✅
+
+**问题**：一台 codegraph MCP 服务器同一时刻只挂一个项目，所以「换项目」是高频动作——而卡片此前只知道当前默认项目，想切到上周那个仓库只能手敲绝对路径。
+
+**做法**：`GET /projects` + 卡片一排胶囊按钮，切换复用「设为默认项目」那条链路（持久化 → 关跟随 → 热切换 MCP）。
+
+**数据源只用界内的**（这是本项最重要的约束，写进注释与 README）：
+
+- 宿主 `sessions.list()` 的活跃会话 `header.cwd`（公开服务）；
+- 插件自己观察到的路径：`/follow` 上报、查过 `/status` 的目录、当前默认项目。
+
+**刻意不读 `~/.dsh/sessions/`**：那里有历史项目路径，但它是 DSH 的内部存储格式（会话桶名是路径编码、日志是多帧 zstd）。我先试了按桶名解码——**51 个目录一个都没解对**，于是没把列表建在它上面。宁可比用户记忆少几个项目，也不要一个「有时准有时不准」的列表。
+
+**其余设计**：每条现算 `locateIndex`（与托管行 cwd、注入门禁、采纳率同一口径）；monorepo 子目录归并到索引根；未索引的也列出但禁用（用户会想知道「这个项目还没索引」）；按最近见过排序、容量 50 条淘汰最久未见者。
+
+**用例（11 条）**：只认 GET + 回环；活跃会话 seed 且子目录归并到根；未索引标记 `indexed=false`；当前默认项目始终在列；`/follow` 上报进列表；查过 status 的路径进列表；无 `sessions` 服务时仍可用；最近见过的排前面；`indexedCount` 与列表一致；`shortPath` / `seenAgoText` 的边界。
+
+**过程中修掉的两个真实问题**：
+1. **`via` 被覆盖**：`/projects` 每次都会补登记默认项目与生效路径，于是 `/follow` 上报的项目来源被改写成「生效路径」——一个没有信息量的值。改成 `via` **只记第一次**（`at` 仍每次刷新）。
+2. **TDZ**：`loadProjects` 声明在 effect 之后，被仓库自己的 `client-lint`（TS2448）拦下——这正是那道闸门存在的理由（编译不报、只有真渲染到那条分支才炸）。
 
 ## P2 / P3
 

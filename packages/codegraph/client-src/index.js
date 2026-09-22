@@ -14,7 +14,7 @@
  * 按 boot graph 下发的 URL 提供；单包直链 /plugins/@hyzyn/dsh-codegraph/client.js 在
  * 当前 DSH（0.1.5-rc.2）上不再直接可用。
  */
-import { REL_LIMIT, adoptionText, nextRetryDelayMs, staleReasons, truncationNote } from './pure.js'
+import { REL_LIMIT, adoptionText, nextRetryDelayMs, seenAgoText, shortPath, staleReasons, truncationNote } from './pure.js'
 
 window.__ModuleLoader__.load({
   id: '@hyzyn/dsh-codegraph',
@@ -98,6 +98,13 @@ window.__ModuleLoader__.load({
       '.cg_check{display:inline-flex;align-items:center;gap:6px;cursor:pointer}',
       '.cg_check input{cursor:pointer}',
       '.cg_check[data-off="1"]{opacity:.55;cursor:default}',
+      // P2 项目列表：一行横向滚动的胶囊按钮。flex-wrap 而不是滚动条——项目一般
+      // 个位数，换行比隐藏更利于发现；窄屏下自动堆成多行。
+      '.cg_projects{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px}',
+      '.cg_projectsLabel{color:var(--dsw-alias-label-tertiary);font-size:11px;white-space:nowrap}',
+      '.cg_projectBtn{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);border-radius:999px;padding:2px 10px;font-size:11.5px;cursor:pointer;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:nowrap;max-width:260px;overflow:hidden;text-overflow:ellipsis}',
+      '.cg_projectBtn:hover:not(:disabled){border-color:var(--dsw-alias-state-business-primary)}',
+      '.cg_projectBtn:disabled{opacity:.45;cursor:default}',
     ].join('\n')
 
     // CG08/CG37：样式引用计数。同一次挂载会把这张卡片注册进多个插槽（0.1.6 上
@@ -296,6 +303,8 @@ window.__ModuleLoader__.load({
       const [report, setReport] = React.useState('')
       // P1「采纳率仪表」：本会话/本项目里模型用 codegraph 还是用 grep/read。
       const [adoption, setAdoption] = React.useState(null)
+      // P2 项目列表：一键切换的候选（宿主侧登记表，只含工作过的目录）。
+      const [projects, setProjects] = React.useState([])
       // CG05：sync / index / init 是可能跑 10 分钟的索引类操作，进行中给出「取消」。
       const [cancelable, setCancelable] = React.useState(false)
       // 「初始化索引」是两步确认：它会**往用户的项目里写 `.codegraph/`**，是本卡片唯一
@@ -371,13 +380,28 @@ window.__ModuleLoader__.load({
         }
       }, [effectivePath])
 
+      /**
+       * 拉项目列表（P2）。候选由宿主侧登记表给出——只含「用户真的在这里工作过」的目录
+       * （活跃会话 / 跟随上报 / 查过状态的路径），每条现算索引态。
+       */
+      const loadProjects = React.useCallback(async () => {
+        try {
+          const data = await api('/api/dsh-codegraph/projects')
+          setProjects(Array.isArray(data.projects) ? data.projects : [])
+        } catch {
+          // 项目列表是便利功能：拿不到就不显示，不打扰用户
+          setProjects([])
+        }
+      }, [])
+
       React.useEffect(() => {
         if (open) {
           loadStatus()
           loadMcpStatus()
           loadAdoption()
+          loadProjects()
         }
-      }, [open, loadStatus, loadMcpStatus, loadAdoption])
+      }, [open, loadStatus, loadMcpStatus, loadAdoption, loadProjects])
 
       // 跟随当前项目：打开卡片或切换会话时，若用户未手动编辑过路径，
       // 自动采用当前活动会话的工作目录；手动编辑后停止跟随。
@@ -526,6 +550,34 @@ window.__ModuleLoader__.load({
           setMcp(data.mcp || null)
           setOk('已把默认项目切到 ' + (data.defaultPath || effectivePath) + (data.persisted === false ? '（本次会话内生效）' : '') + '，并关闭「跟随当前项目」；codegraph MCP 服务器将热切换。')
           await loadMcpStatus()
+        } catch (err) {
+          setError(err.message)
+        } finally {
+          setSettingDefault(false)
+        }
+      }
+
+      /**
+       * 切到某个项目：复用「设为默认项目」那条链路（它会持久化 defaultPath 并关掉跟随、
+       * 热切换 MCP 服务器）。与点「设为默认项目」的区别只是路径来自列表而不是输入框。
+       */
+      const switchProject = async (target) => {
+        if (!target) return
+        setSettingDefault(true)
+        setError('')
+        setOk('')
+        try {
+          const data = await api('/api/dsh-codegraph/default-path', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ path: target }),
+          })
+          // 切完把输入框也同步过去，否则卡片上「正在看的路径」还是旧的那个
+          setManual(true)
+          setPath(target)
+          setMcp(data.mcp || null)
+          setOk('已切换到 ' + (data.defaultPath || target) + '，并关闭「跟随当前项目」；codegraph MCP 服务器将热切换。')
+          await Promise.all([loadMcpStatus(), loadProjects()])
         } catch (err) {
           setError(err.message)
         } finally {
@@ -856,6 +908,30 @@ window.__ModuleLoader__.load({
                     jsx('span', { className: 'cg_mcpMeta', children: mcpText }),
                   ],
                 }),
+                // P2 项目列表：一台 MCP 服务器同一时刻只挂一个项目，所以「换项目」是
+                // 高频动作；以前只能手敲绝对路径。只列「用户真在这里工作过」的目录
+                // （活跃会话 / 跟随上报 / 查过状态），不做全盘扫描。
+                // 未索引的也列出来并标灰——用户会想知道「这个项目还没索引」，但它不能
+                // 作为切换目标（切换要求有效索引），所以按钮禁用而不是隐藏。
+                projects.length > 0
+                  ? jsxs('div', {
+                    className: 'cg_projects',
+                    children: [
+                      jsx('span', { className: 'cg_projectsLabel', children: '已见项目' }),
+                      ...projects.map((item) => jsx('button', {
+                        type: 'button',
+                        key: 'cg-project-' + item.path,
+                        className: 'cg_projectBtn',
+                        disabled: settingDefault || !item.indexed || item.path === effectivePath,
+                        title: item.indexed
+                          ? item.path + '（' + seenAgoText(item.seenAgoMs) + '见过，来自' + item.via + '）'
+                          : item.path + '：未索引，切换无效——先在该目录跑 codegraph init（' + item.via + '）',
+                        onClick: () => switchProject(item.path),
+                        children: shortPath(item.path) + (item.indexed ? '' : ' · 未索引'),
+                      })),
+                    ],
+                  })
+                  : null,
                 // P1 采纳率：模型到底用不用 codegraph。放在 MCP 行下面、状态网格上面——
                 // 它是「配置对不对」之后的第二个问题（「配好了，模型买账吗」）。
                 adoptionText(adoption) !== ''

@@ -38,6 +38,14 @@ Searched for a .codegraph/ directory starting from: /Users/you
 - 跟随由**浏览器半体**上报（页面加载即订阅活动会话，与设置面板是否展开无关）：宿主侧没有「当前会话」这个信号，因此跟随只在有 GUI 页面打开时生效，其余情况用绑定路径。
 - 关闭方式：插件配置 `mcpIntegration: false`（会撤销本插件写入的托管行）。
 
+## 项目列表（一键切换）
+
+一台 codegraph MCP 服务器同一时刻只挂一个项目，所以「换项目」是高频动作，而卡片此前只能手敲绝对路径。`GET /projects` + 卡片上一排胶囊按钮解决它。
+
+候选**只用界内的数据源**：宿主 `sessions.list()` 的活跃会话 `header.cwd`，以及插件自己观察到的路径（`/follow` 上报、查过 `/status` 的目录、当前默认项目）。**刻意不读 `~/.dsh/sessions/`**——那里确实有历史项目路径，但那是 DSH 的内部存储格式（会话桶名是路径编码、日志是多帧 zstd），插件解析它会在 DSH 改格式时静默失效；实测按桶名解码 51 个目录，**一个都没解对**。宁可比用户记忆少几个项目，也不要一个「有时准有时不准」的列表。
+
+每个候选现算 `locateIndex`：只有**真索引**才可作为切换目标；未索引的也列出但**禁用**（用户会想知道「这个项目还没索引」），点击无效。列表按「最近见过」排序，容量 50 条、淘汰最久未见者。切换复用「设为默认项目」那条链路（持久化 `defaultPath` → 关闭跟随 → 热切换 MCP）。
+
 ## API
 
 | 路由 | 方法 | 说明 |
@@ -56,6 +64,7 @@ Searched for a .codegraph/ directory starting from: /Users/you
 | `/api/dsh-codegraph/settings` | POST | 写开关 `{ announceToAgent?, usageGuidance?, mcpIntegration?, followSession? }`（布尔），即时生效 |
 | `/api/dsh-codegraph/default-path` | POST | 设为默认项目 `{ path }`（需 `.codegraph/` 里有索引库），同步热切换 MCP |
 | `/api/dsh-codegraph/reprobe` | POST | 重跑一次 `<command> --version` 探测，回 `{ cliAvailable, cliProbeError, cliProbeAt }` 并同步 systemPrompt 门禁 |
+| `/api/dsh-codegraph/projects` | GET | 已见项目列表 `{ projects, indexedCount, effectivePath }`——候选来自活跃会话与插件观察到的 cwd（`/follow` 上报、查过 status 的路径、默认项目），每条现算索引态；monorepo 子目录归并到索引根 |
 | `/api/dsh-codegraph/unlock` | POST | 清挡住索引的陈旧锁 `{ path }`（`codegraph unlock`，幂等：没锁时 exit 0） |
 | `/api/dsh-codegraph/cancel` | POST | 取消进行中的 CLI 调用 `{ path? }`（缺省 = 全部）；关标签页的断连也会自动中止对应调用 |
 | `/api/dsh-codegraph/diagnose` | GET | 收集诊断包 `{ path?, report }`：`report` 是一段纯文本，含版本/平台、CLI 探测实测原文、索引状态、托管行与**脱敏后**的补丁区块原文、`~/.codegraph` 的 daemon 登记与日志尾、最近一次 CLI 失败、以及采纳率 |

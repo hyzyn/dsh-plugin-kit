@@ -342,6 +342,17 @@ export interface CliProbeAccess {
     /** 立刻重跑一次探测，并把结果同步给 systemPrompt 门禁。 */
     reprobe(): Promise<CliProbeResult>;
 }
+/** 登记表里的一项（给卡片用）。 */
+export interface ProjectEntry {
+    /** 索引所在的仓库根（不是会话 cwd——monorepo 子目录会归到根）。 */
+    path: string;
+    /** 已索引 / 未索引（后者也列，但标出来，因为「一键切换」对它是无效操作）。 */
+    indexed: boolean;
+    /** 多久之前见过它（毫秒）——列表按这个排序，「最近用过的」在最上面。 */
+    seenAgoMs: number;
+    /** 最近一次是**怎么**被看到的（排障用，也解释它为何在列表里）。 */
+    via: string;
+}
 /** `/metrics` 访问口：路由只读快照。 */
 export interface MetricsAccess {
     snapshot(): {
