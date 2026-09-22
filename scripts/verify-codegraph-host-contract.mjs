@@ -127,6 +127,35 @@ writeFileSync(overlay, [
 console.log(`# node ${process.version} / profile ${profile} / 端口 ${String(port)}`)
 console.log(`# 临时项目：${projectDir}\n`)
 
+/**
+ * 预置一份**真实世界形状**的补丁：`dsh-mcp-config managed` 区块里已有一条 codegraph 行。
+ *
+ * 为什么必须预置：全新隔离 home 里没有任何区块，插件会走「本插件自己的区块」那条分支
+ * ——而那条分支在 per-agent 下是**删行**（自动生成的，无用户内容可保）。真正需要验证
+ * 互斥语义的是 **dsh-mcp 区块**那条路径（用户配置与注释必须保住、只能挂起），也就是
+ * 本机真实 `~/.dsh/cordis.patch.yml` 的形状。不预置的话这条断言永远测不到目标分支
+ * （首轮实测就是如此：报「disabled=false 标记=false」，其实是走错了分支）。
+ *
+ * 行里的 cwd 指向一个不存在的目录：managed 下插件会把它对齐到 projectDir，正好也验了
+ * 「复用 MCP 卡片区块里的行并只改 cwd」这条既有路径没被 P0 改坏。
+ */
+writeFileSync(join(isolatedHome, 'cordis.patch.yml'), [
+  '# --- dsh-mcp-config managed (auto-generated; do not edit) ---',
+  '- insert:',
+  '    - id: mcp-codegraph-managed',
+  "      name: '@deepseek-ai/dsh-mcp-client'",
+  '      config:',
+  '        serverName: codegraph',
+  '        transport: stdio',
+  '        command: codegraph',
+  '        args:',
+  '          - serve',
+  "          - '--mcp'",
+  '        cwd: /nonexistent/preseeded-project',
+  '# --- end dsh-mcp-config managed ---',
+  '',
+].join('\n'))
+
 let child
 let stderr = ''
 try {
@@ -203,6 +232,52 @@ try {
   record('/default-path 带 CLI 探测结果', dp.status === 200 && typeof dp.json?.cliAvailable === 'boolean',
     `cliAvailable=${String(dp.json?.cliAvailable)} command=${String(dp.json?.command)}`)
 
+  // ---------- 3b. P0：per-agent 模式面 ----------
+  //
+  // 这是 P0 的真机契约：模式开关要真的改到「盘上的托管行」与「宿主报的生效模式」，
+  // 而且**来回都要可逆**。单测只能覆盖纯函数与行手术，覆盖不到「宿主认不认 disabled」
+  // 这件事（loader 的 disabled 判定在运行时里）。
+  /** 隔离 home 的补丁路径：per-agent 的挂起 / 恢复都读它（真实那份由收尾断言守着）。 */
+  const isolatedPatch = join(isolatedHome, 'cordis.patch.yml')
+  const agents = await request('/api/dsh-codegraph/agents')
+  record('/agents 形状（默认 managed）',
+    agents.status === 200 && agents.json?.mode === 'managed' && typeof agents.json?.mounted === 'number',
+    `HTTP ${String(agents.status)} mode=${String(agents.json?.mode)} mounted=${String(agents.json?.mounted)} live=${String(agents.json?.live)}`)
+
+  record('/default-path 报出 mcpScope 与生效模式',
+    dp.status === 200 && dp.json?.mcpScope === 'managed' && dp.json?.effectiveMcpScope === 'managed',
+    `mcpScope=${String(dp.json?.mcpScope)} effective=${String(dp.json?.effectiveMcpScope)}`)
+
+  // 切到 per-agent：状态面必须立刻反映，且原因不含「退回」
+  const toPerAgent = await request('/api/dsh-codegraph/settings', { method: 'POST', body: { mcpScope: 'per-agent' } })
+  record('切到 per-agent：settings 接受并回报生效模式',
+    toPerAgent.status === 200 && toPerAgent.json?.mcpScope === 'per-agent' && toPerAgent.json?.effectiveMcpScope === 'per-agent',
+    `HTTP ${String(toPerAgent.status)} mcpScope=${String(toPerAgent.json?.mcpScope)} effective=${String(toPerAgent.json?.effectiveMcpScope)} reason=${String(toPerAgent.json?.mcpScopeReason ?? '')}`)
+
+  // 隔离 home 里的托管行必须被**挂起**（disabled: true + 标记），而不是删除
+  const suspendedPatch = existsSync(isolatedPatch) ? readFileSync(isolatedPatch, 'utf8') : ''
+  record('per-agent 生效：全局托管行被挂起（disabled: true）',
+    /disabled:\s*true/.test(suspendedPatch) && suspendedPatch.includes('dsh-codegraph: suspended'),
+    suspendedPatch === ''
+      ? '隔离补丁为空（托管行本就没建立？）'
+      : `disabled=${String(/disabled:\s*true/.test(suspendedPatch))} 标记=${String(suspendedPatch.includes('dsh-codegraph: suspended'))} mcp-codegraph-managed 仍在=${String(suspendedPatch.includes('mcp-codegraph-managed'))}`)
+
+  // /agents 在 per-agent 下也应报同一件事
+  const agentsPerAgent = await request('/api/dsh-codegraph/agents')
+  record('/agents 反映 per-agent', agentsPerAgent.status === 200 && agentsPerAgent.json?.mode === 'per-agent',
+    `mode=${String(agentsPerAgent.json?.mode)} reason=${String(agentsPerAgent.json?.reason ?? '')}`)
+
+  // 非法模式必须 400（不静默写进去一个不认识的值）
+  const badMode = await request('/api/dsh-codegraph/settings', { method: 'POST', body: { mcpScope: 'nonsense' } })
+  record('非法 mcpScope → 400', badMode.status === 400, `HTTP ${String(badMode.status)}`)
+
+  // 切回 managed：托管行必须恢复（disabled: false），而不是留着一个停用的行
+  const backToManaged = await request('/api/dsh-codegraph/settings', { method: 'POST', body: { mcpScope: 'managed' } })
+  const restoredPatch = existsSync(isolatedPatch) ? readFileSync(isolatedPatch, 'utf8') : ''
+  record('切回 managed：per-agent 的挂起被恢复（不残留 disabled: true）',
+    backToManaged.status === 200 && !/disabled:\s*true/.test(restoredPatch),
+    `HTTP ${String(backToManaged.status)} 残留 disabled:true=${String(/disabled:\s*true/.test(restoredPatch))} 残留标记=${String(restoredPatch.includes('dsh-codegraph: suspended'))}`)
+
   // ---------- 4. 浏览器半体供给（D10 的回归点） ----------
   //
   // 首页 `/` 在本机是 401（宿主鉴权，与插件无关）——照它的 HTML 找 boot graph 会必然
@@ -225,11 +300,14 @@ try {
     hasNewUi ? 'cg_projects / cg_projectBtn 均在' : '产物是旧版——先跑 pnpm --filter @hyzyn/dsh-codegraph build')
 
   // ---------- 5. MCP 托管行（真索引才写） ----------
-  // 托管行应当写在**隔离** home 里（真实那份由收尾的断言守着）
-  const isolatedPatch = join(isolatedHome, 'cordis.patch.yml')
+  // 托管行应当写在**隔离** home 里（真实那份由收尾的断言守着）。
+  // 上面 3b 结束时已切回 managed，所以这里应当看到一条**没有被挂起**的托管行——
+  // 顺带验证「切回 managed 之后托管行真的可用」，而不只是「没残留 disabled」。
   const patchText = existsSync(isolatedPatch) ? readFileSync(isolatedPatch, 'utf8') : ''
   record('MCP 托管行已写入隔离 home 的补丁', patchText.includes('mcp-codegraph-managed'),
     existsSync(isolatedPatch) ? `隔离补丁 ${String(patchText.length)} 字节` : '隔离补丁不存在（插件没写托管行？）')
+  record('切回 managed 后托管行处于启用态', !/disabled:\s*true/.test(patchText),
+    `disabled:true 残留=${String(/disabled:\s*true/.test(patchText))}`)
 } catch (error) {
   record('整体执行', false, error instanceof Error ? error.message : String(error))
 } finally {

@@ -528,6 +528,13 @@ window.__ModuleLoader__.load({
             followSession: data.followSession === true,
             effectivePath: typeof data.effectivePath === 'string' ? data.effectivePath : '',
             sessionPath: typeof data.sessionPath === 'string' ? data.sessionPath : '',
+            // P0：MCP 挂载模式。requested = 用户选的，effective = 实际生效的；
+            // 两者不等时说明前提不成立（宿主没有 agent 事件面 / 有区块外手工行），
+            // 原因由宿主给出，卡片照原样显示——静默退回等于骗用户。
+            mcpScope: typeof data.mcpScope === 'string' ? data.mcpScope : 'managed',
+            effectiveMcpScope: typeof data.effectiveMcpScope === 'string' ? data.effectiveMcpScope : 'managed',
+            mcpScopeReason: typeof data.mcpScopeReason === 'string' ? data.mcpScopeReason : '',
+            agentMounts: typeof data.agentMounts === 'number' ? data.agentMounts : 0,
           })
         } catch {
           setMcp(null)
@@ -878,6 +885,9 @@ window.__ModuleLoader__.load({
             announceToAgent: '能力公告已更新',
             usageGuidance: '使用指引已更新',
             followSession: value ? '已开启跟随当前项目' : '已关闭跟随，托管行使用默认项目',
+            mcpScope: value === 'per-agent'
+              ? '已切到 per-agent：新会话将各挂一个独立的 MCP 进程（已开的会话也会补挂）'
+              : '已切回 managed：全局托管行已恢复，per-agent 挂载已回收',
           }[key] || '设置已更新')
         } catch (err) {
           setError(err.message)
@@ -1375,6 +1385,47 @@ window.__ModuleLoader__.load({
                     }),
                   ],
                 }),
+                // P0：MCP 挂载模式。默认 managed（保持原行为），per-agent 是显式选择。
+                // 用户选了 per-agent 但前提不成立时，宿主会退回 managed 并给出原因——
+                // 卡片必须显示「已退回」，否则用户以为开了、实际没开。
+                defaultInfo
+                  ? jsxs('div', {
+                    className: 'cg_checks',
+                    children: [
+                      jsx('label', {
+                        className: 'cg_check',
+                        'data-off': defaultInfo.mcpScope !== 'per-agent' ? '1' : undefined,
+                        title: '每 agent 一个独立的 codegraph MCP 进程（cwd = 该 agent 会话的索引根）：多项目并行时不再共享一个全局 cwd，也不再需要写盘热切换。代价是每个 agent 一个子进程（约 40MB 内存 / 每个），且只有会话目录真的**有索引**时才挂。',
+                        children: [
+                          jsx('input', {
+                            type: 'checkbox',
+                            checked: defaultInfo.mcpScope === 'per-agent',
+                            disabled: !defaultInfo,
+                            onChange: (event) => toggleSetting('mcpScope', event.target.checked ? 'per-agent' : 'managed'),
+                          }),
+                          'per-agent MCP 隔离',
+                        ],
+                      }),
+                    ],
+                  })
+                  : null,
+                // 退回提示：只在「用户要 per-agent、实际不是」时出现。
+                defaultInfo && defaultInfo.mcpScope === 'per-agent' && defaultInfo.effectiveMcpScope !== 'per-agent'
+                  ? jsx('p', {
+                    className: 'cg_warn',
+                    children: '⚠ per-agent 未生效，已退回 managed：'
+                      + (defaultInfo.mcpScopeReason || '前提不成立')
+                      + '（当前仍是单服务器按会话热切换，功能正常）',
+                  })
+                  : null,
+                defaultInfo && defaultInfo.effectiveMcpScope === 'per-agent'
+                  ? jsx('p', {
+                    className: 'cg_mcpMeta',
+                    title: '每个 agent 一个独立的 codegraph MCP 进程；会话目录没有可用索引的 agent 不会挂载（避免拿到别的项目上下文）',
+                    children: 'per-agent 生效中：已挂载 ' + String(defaultInfo.agentMounts)
+                      + ' 个 agent 的独立 MCP 进程。全局托管行已挂起（disabled: true），切回 managed 会自动恢复。',
+                  })
+                  : null,
                 // P2 遥测提示：`init` / `index` 会触发上游的匿名用量统计。只如实转达 CLI 的
                 // 状态并指出关闭方式，**不给开关**——那是用户的全局偏好，存在
                 // ~/.codegraph/telemetry.json，插件替他翻等于越权改别人的全局设置。

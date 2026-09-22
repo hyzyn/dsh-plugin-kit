@@ -20,6 +20,36 @@ const SCRIPTS = [
   '../../../scripts/verify-codegraph-indexforce.mjs',
 ]
 
+describe('P0：agent-scope 机制脚本不得碰用户配置与真实仓库', () => {
+  const src = readFileSync(new URL('../../../scripts/verify-codegraph-agent-scope.mjs', import.meta.url), 'utf8')
+
+  it('只在自己的临时目录里造项目（不在真实仓库上跑 codegraph init）', () => {
+    // 它自造带 .codegraph/ 的临时项目；绝不能出现 init 子命令或真实仓库硬编码
+    expect(src).toContain('mkdtempSync')
+    expect(src, '不该出现 codegraph init（会在真实仓库上建索引）').not.toMatch(/['"]init['"]/)
+    expect(src, '不该硬编码用户机器上的真实仓库路径').not.toMatch(/\/Users\//)
+  })
+
+  it('不写 DSH_HOME（它不启动宿主，也不该碰 ~/.dsh）', () => {
+    // 与另两个脚本不同：本脚本建的是**最小 Cordis 根**，没有 DSH_HOME 语义。
+    // 一旦它开始写 DSH_HOME，就说明有人把它改成「起真宿主」了——那属于 host-contract 的职责。
+    expect(src).not.toMatch(/DSH_HOME\s*[:=]/)
+    expect(src).not.toContain('cordis.patch.yml')
+  })
+
+  it('收尾回收自己拉起的 MCP 子进程（不让临时项目的进程变成孤儿）', () => {
+    expect(src, '缺少兜底 SIGTERM').toContain("'SIGTERM'")
+    expect(src, '缺少临时目录清理').toContain('rmSync(workDir')
+  })
+
+  it('从 dsh-mcp-client 所在层解析其余运行时包（保证只加载一份 dsh-scope）', () => {
+    // kScope 是模块内局部 Symbol：第二份 dsh-scope 副本会让 scopeOf() 全返回
+    // undefined，隔离静默失效。这条断言守住「同源解析」这个前提。
+    expect(src).toContain('mcpClientPath')
+    expect(src, '应基于 mcp-client 的路径上溯解析').toMatch(/runtimeScopeDir/)
+  })
+})
+
 describe('CG45：真机脚本必须隔离 DSH_HOME，不许写用户真实配置', () => {
   for (const rel of SCRIPTS) {
     const src = readFileSync(new URL(rel, import.meta.url), 'utf8')

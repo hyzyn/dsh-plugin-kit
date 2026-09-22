@@ -1,8 +1,40 @@
-# P0 方案：agent 侧改 per-agent scoped MCP 挂载
+# P0：agent 侧改 per-agent scoped MCP 挂载
 
-> 2026-09-22。状态：**待你确认后动工**。本文只做方案，未改任何代码。
+> 2026-09-22。状态：**已实现**（默认 `managed`，`mcpScope: 'per-agent'` 显式开启）。
 >
-> 结论先说：**技术上可行，机制已逐条核实；但按你自己的使用数据，收益区间很窄，我建议降级为可选项而不是排期项**（依据见「值不值得做」一节，含一个我先算错、后修正的数字）。
+> 结论先说：机制已**实测**证实（不只是读源码），实现已完成；但按你自己的使用数据，收益区间很窄，
+> 所以**默认值保持现状**，per-agent 是显式选择（见「值不值得做」一节，含一个我先算错、后修正的数字）。
+
+## 零、开工前的实测结论（这一节是新增的，也是方案的依据）
+
+方案原先只靠**读源码**推断机制。开工前先做了一个可复跑的实验，用最小 Cordis 根 + 两个
+`createScope` 造的假 agent，各自挂一份真 `dsh-mcp-client`，实测 A–E 五个问题。
+脚本已固化为 [`scripts/verify-codegraph-agent-scope.mjs`](../../scripts/verify-codegraph-agent-scope.mjs)
+（**10/10 通过**，`node scripts/verify-codegraph-agent-scope.mjs` 可复跑）。
+
+| 问题 | 结论 |
+| --- | --- |
+| **A** scope 里的挂载只对该 scope 可见 | **成立**。`schemas(agentA)` / `schemas(agentB)` 都是 `mcp__codegraph__codegraph_explore`，但 `defA !== defB`、`defA.execute !== defB.execute`；真实调用各答各自的项目（A 回 plugin-kit 的 `packages/*`，B 回 cdqas 的 `*.java`）；两个不同 cwd 的子进程。 |
+| **B** 同一 `serverName` 跨 scope 不冲突 | **成立**。两处挂载都成功；**同一** scope 内重复则报 `serverName "codegraph" is already in use`（隔离的实证）。 |
+| **C** 全局层保持干净 | **成立**。两个 agent 都挂上之后，`schemas(undefined)` 仍为空；全局提示词装配里也没有 `mcp:codegraph` 段。 |
+| **D** 整包 namespace 对象能当插件 | **成立**（`Context.resolve` 的 `isApplicable` 认「有 apply 的对象」）。**踩坑点**：传 `McpClient.apply` 会失败（`cannot get property "tools" without inject`）——async 函数没有 `prototype`、且裸 `apply` 不带 `inject`。实现里传的是整包对象。 |
+| **E** 释放 scope 回收它自己的进程 | **成立**。释放 A 后 A 的子进程退出、A 的工具消失，B 照常工作。 |
+
+### 实测**推翻/补充**了读源码时的三条推断（都已落到实现里）
+
+1. **`agent.ctx` 本身就是 scope，不需要自己 `createScope`**。`dsh-agent-loop/lib/index.js:759-760`
+   就是 `createScope(loopCtx, this)`。于是 **`dsh-scope` 不必新增依赖**——方案里写的 3 个新依赖缩到 **1 个**。
+2. **scope 键是 agent 对象身份，不是 `agent.ctx`**。传错时 `tools.get(name, agent.ctx)` 会
+   **静默返回空层**（不报错）——踩坑时表现为「工具莫名不见了」，没有任何错误信息。
+   这条反过来验证了实现的写法（挂载只经 `agent.ctx.plugin`，读取一律用 agent 对象）。
+3. **`failOnStartupError: true` 拦不住「项目没有 `.codegraph/`」**。服务器照常启动（只打一行
+   `No .codegraph/ at or above …`），挂载成功、工具**可见**，失败被推迟到调用时且返回
+   **`isError: false`**——模型无法从结果区分「成功」和「没有项目上下文」。
+   这正好说明实现里那条门禁（没有有效索引就**不挂**，而不是回落）是**必要的**，
+   不能指望 `failOnStartupError` 兜底。
+4. **同一 cwd 下会看到两个 pid**：我们 spawn 的 `serve --mcp`，加上 codegraph CLI 自己
+   **detach 的常驻 daemon**（注册在项目 `.codegraph/daemon.pid`，dispose 后仍存活 >24s）。
+   验证脚本必须**按 `daemon.pid` 排除**，否则会把上游 CLI 的设计误判成「进程泄漏」。
 
 ## 一、要解决的问题
 
@@ -182,6 +214,35 @@ P0 的其余收益是**非并发**的，且仍然成立：
 5. 单测（决策矩阵 + 互斥 + 降级）→ 扩充真机脚本（两会话隔离）→ CI 三平台。
 6. 文档：README 兼容性矩阵补「per-agent 模式」、ROADMAP 回填、DEFECTS 若发现新缺陷按编号记。
 
+## 六、实现记录（已完成）
+
+按上面的顺序做完了，实际落地与方案的差异（都是实测/实现中发现的）：
+
+| 项 | 方案原写 | 实际 | 原因 |
+| --- | --- | --- | --- |
+| 新增依赖 | 3 个（`dsh-agent` / `dsh-scope` / `dsh-mcp-client`） | **1 个**（只 `dsh-mcp-client`，optional peer + devDep） | `agent.ctx` 本身就是 scope（不必 `createScope`）；agent 形状用结构化类型（本包既有的 `SessionLike` 同款），不必引 `dsh-agent` 类型 |
+| 互斥手段 | 「撤销本插件托管行」 | **挂起**（`disabled: true` + `codegraph: suspended` 标记） | loader 认 `disabled`（`cordis-plugin-loader:434-441` 对**活着的**条目会 `_dispose`，`:391` 跳过）。删行会丢用户在 MCP 卡片里留的注释与字段；挂起可逆。本插件**自己**区块里的行仍旧直接删（自动生成、无用户内容） |
+| 换项目 | 未提 | `attach` 里检测 cwd 变化 → `detachById` + 重挂 | 实测：同 scope 重挂同名会被拒，唯一路径是释放后重挂（等价于新 scope） |
+| 恢复的边界 | 未提 | 只恢复带**本插件标记**的行 | 用户自己用 MCP 卡片停用的行不能被插件偷偷打开（有单测 + 变异验证） |
+| 模式默认值 | 待你拍板 | `managed` | 行为变更 + 收益只覆盖 3.1% 时间，由用户显式开启 |
+
+新增/改动的文件：
+
+- `packages/codegraph/src/scope.ts`（新）：模式解析、单 agent 挂载决策、挂载器（纯决策 + 依赖注入，可单测）。
+- `packages/codegraph/src/index.ts`：`mcpScope` 配置项与 settings 字段、`apply()` 里接 `agent/created` / `agent/disposed`、`applyScopeMode`（含补挂与回收）、`/api/dsh-codegraph/agents`、`/default-path` 增加 `mcpScope` / `effectiveMcpScope` / `agentMounts`、`suspendGlobal` 分支。
+- `packages/codegraph/client-src/index.js` + `client.js`：卡片上的模式开关、生效状态、以及「已退回 managed」的原因提示。
+- `packages/codegraph/test/agent-scope.test.ts`（新，34 个用例）。
+- `scripts/verify-codegraph-agent-scope.mjs`（新）：运行时机制真机验证（10/10）。
+- `scripts/verify-codegraph-host-contract.mjs`：补 P0 契约（模式开关 → 挂起 → 恢复；非法值 400），39/40 → **40/40**。
+
+### 门槛（提交前全绿）
+
+`pnpm -r build` · `pnpm -r typecheck` · `npx vitest run`（**813 passed / 49 files**）·
+`client-lint` · `check-dsh-home` · `check-publishable` · `check-no-public-ip` · `check-dsh-engines` ·
+`verify-codegraph-agent-scope.mjs`（10/10）· `verify-codegraph-host-contract.mjs`（40/40，且收尾断言真实 `~/.dsh/cordis.patch.yml` **逐字节未变**）。
+
 ---
 
-**一句话**：机制上我能做，也验证了关键前提（scope 能挂、同名不冲突、shadow 不报错）；但按实测数据，它换来的并发收益只覆盖 3% 的时间，所以我把它摆在「可选」而不是「下一步」——建议先做其中**不写盘**的那一半，或维持现状。
+**一句话**：机制已实测证实（10/10），实现完成且默认关闭；per-agent 换来的是「多项目并发时不再共享一个全局 cwd」
+与「不再写盘热切换」，代价是每 agent 一个进程（约 40MB）——属于口味问题，所以交给你显式开启。
+

@@ -41,7 +41,7 @@
 
 | 级别 | 事项 | 影响 | 代价 | 落点 |
 | --- | --- | --- | --- | --- |
-| **P0** | agent 侧改 **per-agent scoped MCP 挂载**（托管行保留为无 `agents` 场景的回落） | 多项目真并行；删掉写盘 + 热加载 + 竞态整条链；跟随不再依赖 GUI 页面 | M–L | 新增 `src/scope.ts`；改造 `apply()` 里的三段 `ctx.inject`（webServer / settings / systemPrompt，`src/index.ts:1961-2060`） |
+| **P0** | ~~agent 侧改 **per-agent scoped MCP 挂载**~~ **✅ 已实现**（默认 `managed`，`mcpScope: 'per-agent'` 显式开启；托管行保留为回落） | 多项目真并行；删掉写盘 + 热加载 + 竞态整条链；跟随不再依赖 GUI 页面 | M–L | `src/scope.ts`（新）+ `apply()` 接线 + `/agents` + 卡片开关；见 [P0-PLAN.md](./P0-PLAN.md) |
 | **P1** | ~~**注入加索引门禁**~~ **✅ 已完成**（见下） | 无索引仓库里省掉约 310 token/轮，也不再诱导模型调必然失败的工具 | S | `refreshGuidance()` + 5 条门禁用例 |
 | **P1** | ~~**一键诊断包**~~ **✅ 已完成**（见下） | 环境性故障的排查路径固化成一个按钮 | S | `GET /diagnose` + 卡片按钮 + 6 条用例 |
 | **P1** | ~~**采纳率仪表**~~ **✅ 已完成**（见下） | 把「提示词有没有用」从感觉变成数字；有数据才谈得上调提示词或做预注入 | S–M | `createMetricsCollector()` + `/api/dsh-codegraph/metrics` + 卡片一行 |
@@ -72,29 +72,37 @@
 
 **真机实测**（本机 `codegraph 1.6.0`）立即抓到一个真实形态：`~/.codegraph/daemon.pid` 记着 pid 76609 / version **1.5.0**，而该进程早已 ESRCH、`current -> versions/v1.6.0`——diagnose 会把这行原文摆出来。
 
-## P0：agent 侧改 per-agent scoped MCP 挂载
+## P0：agent 侧改 per-agent scoped MCP 挂载 ✅
 
 一次性能解决五个问题，是唯一改到「上限」的项：
 
 1. 现在多项目是**时分复用**，靠工具入参 `projectPath` 补；
-2. `followSession` 的每次切换 = 重写补丁文件 → 热加载 → 重建 MCP 连接（`apply()` 内 settings 分支与回落分支里的 `syncMcpRowOnDisk()`，`src/index.ts:1999`、`:2049`），重且有时序；
+2. `followSession` 的每次切换 = 重写补丁文件 → 热加载 → 重建 MCP 连接（`apply()` 内 settings 分支与回落分支里的 `syncMcpRowOnDisk()`），重且有时序；
 3. 两台 `dsh web` / 两个 profile 并发写同一个文件时，CAS 只保证「不丢行」，**不保证语义**（最后写者赢 `cwd`）；
-4. 跟随由**浏览器半体**上报（`/follow` 上报，`client-src/index.js:945`），宿主侧没有 GUI 页面时不生效；
+4. 跟随由**浏览器半体**上报（`/follow` 上报），宿主侧没有 GUI 页面时不生效；
 5. 每个 agent 只该看到一个 `mcp__codegraph__codegraph_explore` —— per-agent 挂载天然满足；反之
    「多服务器行各挂一个项目」会把工具名炸成 `mcp__codegraph-a__explore`，破坏单工具约定，**不走那条路**。
 
-**做法**：`ctx.inject(['agents'])`，`agent/created` 时 `createScope(ctx, agent)` 并在该 scope 内
-`plugin(McpClient, { transport: 'stdio', serverName: 'codegraph', cwd })`；`agent/disposed` 与插件
-卸载时 dispose。托管行机制**保留**作为回落（无 `agents` 服务的 CLI 场景、用户手工行），两者需
-互斥开关：scope 挂载生效时不要同时托管同名 `serverName` 的行。
+**已实现**（2026-09-22，完整方案与实测见 [P0-PLAN.md](./P0-PLAN.md)）：`agent/created` 时在
+**`agent.ctx`**（它本身就是一个 scope，`dsh-agent-loop:759-760`）里 `plugin(McpClient, { cwd })`，
+`agent/disposed` 与插件卸载时 dispose；托管行**保留**为无 `agents` 场景的回落，两者互斥——
+per-agent 生效时全局行被**挂起**（`disabled: true`，loader 会跳过它，切回 managed 自动恢复）。
+
+**开工前的实测（10/10，`scripts/verify-codegraph-agent-scope.mjs`）推翻了方案里三处推断**：
+
+- **不需要 `dsh-scope`**：`agent.ctx` 已经是 scope，新建依赖从 3 个缩到 **1 个**（只 `dsh-mcp-client`，optional peer）；
+- **scope 键是 agent 对象身份，不是 `agent.ctx`**：传错会**静默**解析成空层（工具莫名消失、零报错）；
+- **`failOnStartupError` 拦不住「项目没有索引」**：服务器照常启动、工具可见，失败推迟到调用时且
+  `isError: false` ——所以「没有有效索引就不挂」这条门禁是**必要的**，不能指望它兜底。
 
 **代价与风险**：
 
-- 需要 `dsh-agent` / `dsh-scope` / `dsh-mcp-client` 作为 peer + devDependency（当前包内只有
-  `cordis` + `schemastery`，靠 `scripts/link-dsh-runtime.mjs` 链接，要一并扩）；
-- 每 agent 一进程，内存/句柄上升——这是该模型的固有代价，换来的是可预测的生命周期；
-- **索引判定照旧复用** `locateIndex`（`.codegraph/*.db` + 向上到 git 根），不要退回「目录存在即已索引」；
-- `dsh.engines` 下限需重新标定，并在三平台做真机验证。
+- 每 agent 一进程（实测空 Node 基线 ~40MB），内存**线性**增长；并发峰值 4 项目时约 +120MB。
+  性能实测（延迟、冷启动、内存）见 P0-PLAN.md「四之二」；
+- ~~`dsh.engines` 下限需重新标定~~：机制依赖 `dsh-tools` 的 `view(scope)` 分层与 `agent.ctx`
+  的 scope 语义，本机 `0.1.6-alpha.2` 已验证；三平台仍只有 CI 矩阵（无真机）；
+- 收益只覆盖「多项目并发」这一窄场景（**实测时间占比 3.1%**，峰值 4 个项目），因此
+  **默认值保持 `managed`**，由用户显式开启——属口味问题而非明显对错。
 
 **退一步的最小版本**（不动架构时至少做这三条）：写入去抖 / 合帧；`followSession` 加跨进程
 owner 判定；会话目录无有效索引时不写盘（现有行为，保持）。

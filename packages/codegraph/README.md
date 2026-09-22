@@ -12,6 +12,7 @@
 - **索引判定取 `.codegraph/*.db` 且与 CLI 同口径向上解析**：从目标目录向上（到 git 根为止）找第一个带索引库的 `.codegraph/`，命中根即项目根——monorepo 子目录里的会话不再被误判「未索引」。只看目录存在会把 codegraph CLI 自身的安装目录 `~/.codegraph` 判成项目索引，托管行随之落在未索引 cwd 上——实测该状态下 `codegraph_explore` 的 required 由 `["query"]` 变为 `["query","projectPath"]`。非真索引时不改写现有 cwd，卡片给出 `indexState` 与原因。
 - **写入纪律**：对 `~/.dsh/cordis.patch.yml` 的每次写都带 mtime+size 盖章复核（dsh-mcp 同款 CAS，≤3 次重读）；复用 dsh-mcp 区块时只定点改 codegraph 行自己的 `cwd:` 一行，区块里的注释、其它服务器行、loader 合法的 override 条目逐字节保留；区块损坏时拒绝追加第二个区块（serverName 撞名会让 codegraph MCP 整体加载失败），把原因报给卡片。
 - **托管行 cwd 跟随活动会话**：`followSession`（默认开）在会话切到有效索引项目时对齐托管行，否则回落到绑定路径；绑定路径由「设为默认项目」写入 settings 命名空间 `codegraph` 并把 `followSession` 置 false（显式指定优先于会话跟随）。会话上报失败会退避重试，不再一次抖动就永久失效。
+- **可选的 per-agent MCP 隔离**（`mcpScope: 'per-agent'`，默认 `'managed'`）：默认模式下**一台** MCP 服务器按时分复用服务所有项目（靠 `projectPath` 与跟随会话）。开启 per-agent 后，每个 agent 在**自己的 Cordis scope** 里挂一份独立的 `dsh-mcp-client`，`cwd` 固定为它自己会话目录解析出的索引根——多项目并行时不再共享一个全局 cwd，也不再需要「写盘 → 热加载 → 重建连接」那条链；全局托管行会被**挂起**（`disabled: true`，切回 managed 自动恢复）。代价是每个 agent 一个子进程（实测空 Node 基线约 40MB）。**会话目录没有可用索引时该 agent 不挂**（而不是回落到默认项目）——否则它会拿到别的项目的上下文，这正是「宣称避免、实现却没做到」的那类错误。机制实测与取舍见 [P0-PLAN.md](./P0-PLAN.md)。
 - **一键初始化**：未初始化的目录在卡片上直接点「初始化索引」跑 `codegraph init`（两步确认）——`index` / `sync` 都要求项目先 init 过，此前这是唯一还要把用户赶回终端的一步。
 - **systemPrompt 分两段，开关与门禁各自独立**：`plugin:dsh-codegraph`（order 150）与 `plugin:dsh-codegraph:usage`（order 151）；两段均以 `<command> --version` 探测为前置，`announceToAgent` / `usageGuidance` 写 settings 命名空间后即时增删 section。
 
@@ -75,7 +76,7 @@ Searched for a .codegraph/ directory starting from: /Users/you
 | `/api/dsh-codegraph/init` | POST | 在**未初始化**的目录跑一次 `codegraph init`（建 `.codegraph/` + 首次索引），成功后重算 MCP 托管行；已索引目录回 409 |
 | `/api/dsh-codegraph/default-path` | GET | 绑定路径 `defaultPath` + 生效路径 `effectivePath` + `sessionPath` + `followSession` + 提示词开关 + `cliAvailable` / `cliProbeError` / `cliProbeAt` + MCP 托管状态（`indexState` 针对**生效路径**） |
 | `/api/dsh-codegraph/follow` | POST | 上报活动会话目录 `{ path }`（空 = 无活动会话）；宿主据此对齐托管行 cwd，非索引目录自动回落 |
-| `/api/dsh-codegraph/settings` | POST | 写开关 `{ announceToAgent?, usageGuidance?, mcpIntegration?, followSession? }`（布尔），即时生效 |
+| `/api/dsh-codegraph/settings` | POST | 写开关 `{ announceToAgent?, usageGuidance?, mcpIntegration?, followSession? }`（布尔）与 `{ mcpScope? }`（`'managed'` / `'per-agent'`，非法值 400），即时生效 |
 | `/api/dsh-codegraph/default-path` | POST | 设为默认项目 `{ path }`（需 `.codegraph/` 里有索引库），同步热切换 MCP |
 | `/api/dsh-codegraph/reprobe` | POST | 重跑一次 `<command> --version` 探测，回 `{ cliAvailable, cliProbeError, cliProbeAt }` 并同步 systemPrompt 门禁 |
 | `/api/dsh-codegraph/files` | GET | 文件结构 `{ path, files, raw }`（`codegraph files --json`）；旋钮 `filter` / `pattern` / `maxDepth` |
@@ -85,6 +86,7 @@ Searched for a .codegraph/ directory starting from: /Users/you
 | `/api/dsh-codegraph/uninit` | POST | **删除 `.codegraph/`** `{ path }`（`codegraph uninit -f`）；未索引目录回 409；撤销的是索引所在的**根** |
 | `/api/dsh-codegraph/telemetry` | GET | 只读转达上游匿名用量统计状态 `{ enabled, output }` |
 | `/api/dsh-codegraph/projects` | GET | 已见项目列表 `{ projects, indexedCount, effectivePath }`——候选来自活跃会话与插件观察到的 cwd（`/follow` 上报、查过 status 的路径、默认项目），每条现算索引态；monorepo 子目录归并到索引根 |
+| `/api/dsh-codegraph/agents` | GET | per-agent MCP 挂载台账 `{ mode, requested, effective, reason, fallback, mounted, live, agents }`——每个 agent 挂没挂上、挂在哪个索引根、没挂的原因（只读） |
 | `/api/dsh-codegraph/unlock` | POST | 清挡住索引的陈旧锁 `{ path }`（`codegraph unlock`，幂等：没锁时 exit 0） |
 | `/api/dsh-codegraph/cancel` | POST | 取消进行中的 CLI 调用 `{ path? }`（缺省 = 全部）；关标签页的断连也会自动中止对应调用 |
 | `/api/dsh-codegraph/diagnose` | GET | 收集诊断包 `{ path?, report }`：`report` 是一段纯文本，含版本/平台、CLI 探测实测原文、索引状态、托管行与**脱敏后**的补丁区块原文、`~/.codegraph` 的 daemon 登记与日志尾、最近一次 CLI 失败、以及采纳率 |
@@ -189,8 +191,19 @@ export interface Config {
   mcpIntegration?: boolean
   /**
    * 托管行 cwd 是否跟随活动会话。默认开；「设为默认项目」会把它关掉（那是一次显式指定）。
+   * `mcpScope: 'per-agent'` 生效时本项无意义（每个 agent 直连自己的进程，没有「跟谁走」）。
    */
   followSession?: boolean
+  /**
+   * MCP 挂载模式，默认 `'managed'`。
+   * - `'managed'`：一行托管 + 按会话热切换（时分复用，一台服务器服务所有项目）。
+   * - `'per-agent'`：每个 agent 在自己的 scope 里挂一份 dsh-mcp-client，cwd = 它会话的索引根。
+   *
+   * 默认保持 managed：这是行为变更，且按实测只覆盖「多项目并发」这一窄场景（时间占比 3.1%）。
+   * 前提不成立时会退回 managed 并在卡片上说明原因（宿主没有 agent 事件面 / 存在区块外手工
+   * codegraph 行 / MCP 总开关关闭），不会静默退回。代价：每个 agent 一个子进程（约 40MB）。
+   */
+  mcpScope?: 'managed' | 'per-agent'
   /** 查询类命令（status/query/callers/callees/impact/node）超时毫秒数，默认 60000；0 = 不限时。 */
   cliTimeoutMs?: number
   /** 索引类命令（sync/index）超时毫秒数，默认 600000；0 = 不限时。大仓库全量重建会超过查询档。 */
@@ -206,7 +219,7 @@ export interface Config {
 }
 ```
 
-settings 命名空间 `codegraph` 里保存过的 `defaultPath` / `mcpIntegration` / `followSession` / `announceToAgent` / `usageGuidance` 优先于插件配置：「设为默认项目」写 `defaultPath` 并把 `followSession` 关掉，三个复选框写其余三个（`POST /api/dsh-codegraph/settings`）。
+settings 命名空间 `codegraph` 里保存过的 `defaultPath` / `mcpIntegration` / `followSession` / `mcpScope` / `announceToAgent` / `usageGuidance` 优先于插件配置：「设为默认项目」写 `defaultPath` 并把 `followSession` 关掉，其余复选框与模式开关写其余项（`POST /api/dsh-codegraph/settings`）。
 
 `command` / `cliTimeoutMs` / `indexTimeoutMs` / `indexForce` 是**安装级旋钮**，只读插件配置、不进 settings 命名空间。在 profile 的补丁里按 id 覆盖即可，例如：
 

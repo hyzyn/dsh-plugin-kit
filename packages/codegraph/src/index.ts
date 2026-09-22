@@ -34,6 +34,16 @@ import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import yaml from 'js-yaml'
+import {
+  DEFAULT_MCP_SCOPE,
+  MCP_SCOPE_MODES,
+  createAgentMounter,
+  normalizeMcpScope,
+  resolveScopeMode,
+} from './scope.js'
+import type { AgentLike, AgentMounter, McpScopeMode, ScopeModeDecision } from './scope.js'
+
+export type { McpScopeMode } from './scope.js'
 
 export interface Config {
   /** 关闭整个插件（不注册路由、不发布提示）。默认开。 */
@@ -57,8 +67,28 @@ export interface Config {
    * 开：会话切到某个**已索引**项目时，托管行 cwd 自动对齐它；会话目录没有索引时
    * 回落到 defaultPath。关：始终用 defaultPath（「设为默认项目」会把这一项关掉，
    * 因为那是一次显式指定）。
+   *
+   * 注意：`mcpScope: 'per-agent'` 生效时本项无意义——那种模式下每个 agent 直连自己的
+   * MCP 进程，没有「跟谁走」这回事（预设值仍原样保留，切回 managed 即恢复）。
    */
   followSession?: boolean
+  /**
+   * MCP 挂载模式（ROADMAP P0，默认 `'managed'`）。
+   *
+   * - `'managed'`（默认，现状）：在 `~/.dsh/cordis.patch.yml` 里维护**一行**托管，
+   *   cwd 按会话热切换。时分复用：一台 MCP 服务器同一时刻只服务一个项目。
+   * - `'per-agent'`：在每个 agent **自己的 scope** 里挂一份 `dsh-mcp-client`
+   *   （`cwd` = 该 agent 会话目录解析出的索引根），并用 `agent/disposed` 回收。
+   *   语义不再随全局 cwd 漂移、也不再写盘热重载；代价是每 agent 一个子进程
+   *   （实测空 Node 基线 ~40MB，见 P0-PLAN.md 的性能实测）。
+   *
+   * **默认保持现状**：这是行为变更，且按本机实测只覆盖「多项目并发」这一窄场景
+   * （时间占比 3.1%），所以由用户显式开启，而不是自动切换。
+   *
+   * 前提不成立时（宿主没有 agent 事件面 / 存在区块外手工 codegraph 行 / 宿主没有
+   * dsh-mcp-client）会**退回 managed 并在卡片上说明原因**，不会静默降级。
+   */
+  mcpScope?: McpScopeMode
   /**
    * 查询类命令（status/query/callers/callees/impact/node）的超时毫秒数。
    * 默认 60000。超大仓库上 `status` 的首次数也会变慢，可按需调大。
@@ -108,6 +138,13 @@ const CODEGRAPH_SETTINGS_SCHEMA = z.object({
   followSession: z.boolean(),
   defaultPath: z.string(),
   mcpIntegration: z.boolean(),
+  /**
+   * P0：MCP 挂载模式。刻意是 `z.string()` 而不是 `z.union([...])`——settings 的
+   * resolved 值把 schema 默认值也当成「用户设过」，用带默认的联合类型会让安装级配置的
+   * mcpScope 永远被压掉。合法性由 normalizeMcpScope 在读取处收口（非法值回落 managed，
+   * 与其它旋钮「配置面不让插件起不来」的约定一致）。
+   */
+  mcpScope: z.string(),
 })
 
 /* ------------------------------------------------------------------ *
@@ -784,6 +821,55 @@ interface McpPatchRow {
   [key: string]: unknown
 }
 
+/**
+ * 纯函数：区块**外**是否有手工写的 codegraph 行；有则返回它（含 id / cwd / disabled）。
+ *
+ * 抽出来是因为两个调用点需要同一个判定，而它们时机不同：
+ *   1. `syncManagedMcpRow` 里——有手工行就整个跳过托管（再写会 serverName 撞名）；
+ *   2. P0 的模式裁决——手写全局行与 per-agent 挂载同名，会让没有索引的 agent 继承到
+ *      「全局 cwd 的项目」，所以此时必须退回 managed。
+ *
+ * 拆成两份实现必然漂移：判定规则里有「区块外」这个容易写错的边界（区块内的行是
+ * 本插件与 MCP 卡片自己的，不算手工行）。
+ */
+function detectExternalCodegraphRow(lines: string[]): McpPatchRow | null {
+  const ownRange = findBlock(lines, 'dsh-codegraph mcp managed', 'end dsh-codegraph mcp managed')
+  const mcpRange = findBlock(lines, DSH_MCP_BLOCK_KEY, DSH_MCP_BLOCK_END_KEY)
+  const outsideLines = lines.filter((_, index) => {
+    const inOwn = ownRange !== null && index >= ownRange.start && index < ownRange.end
+    const inMcp = mcpRange !== null && index >= mcpRange.start && index < mcpRange.end
+    return !inOwn && !inMcp
+  })
+  try {
+    const parsed: unknown = yaml.load(outsideLines.join('\n'), { schema: YAML_SCHEMA })
+    if (!Array.isArray(parsed)) return null
+    for (const entry of parsed) {
+      if (typeof entry !== 'object' || entry === null) continue
+      const inserted = (entry as { insert?: unknown }).insert
+      if (!Array.isArray(inserted)) continue
+      const found = inserted.find((row) => typeof row === 'object' && row !== null && isCodegraphServerRow(row as McpPatchRow)) as McpPatchRow | undefined
+      if (found !== undefined) return found
+    }
+  } catch {
+    /* 区块外内容解析失败（如含其它 patch 操作形状）：按无手工行处理 */
+  }
+  return null
+}
+
+/**
+ * 读 home 补丁文本并判断有没有区块外手工 codegraph 行（供 P0 模式裁决用，只读不写）。
+ * 文件不存在 / 读不动时按「没有」处理——那种情况下托管还没建立，谈不上冲突。
+ */
+function hasExternalCodegraphRow(): boolean {
+  try {
+    const patchFile = homePatchPath()
+    if (!existsSync(patchFile)) return false
+    return detectExternalCodegraphRow(readFileSync(patchFile, 'utf8').split('\n')) !== null
+  } catch {
+    return false
+  }
+}
+
 export interface McpSyncDecision {
   /** 期望的 MCP 服务器名（固定 codegraph）。 */
   serverName: string
@@ -801,6 +887,21 @@ export interface McpSyncDecision {
    * 写，卡片却显示已自动托管」的幻影状态。
    */
   dryRun?: boolean
+  /**
+   * P0：把**全局** codegraph 行挂起（per-agent 模式生效时必用）。
+   *
+   * 为什么必须挂起而不能「都留着」：per-agent 模式下每个 agent 在自己的 scope 里注册
+   * `mcp__codegraph__codegraph_explore`，而全局那行会让**根 scope** 也注册同名工具。
+   * `dsh-tools` 的 `view(scope)` 先铺全局层、再用 scope 自己的层覆盖——覆盖是允许的
+   * （不报错），于是**没有索引的 agent 会继承到全局那份**，把「全局 cwd 指向的那个
+   * 项目」当成自己的上下文。那正是本方案要消除的语义漂移，所以两者只能留一个。
+   *
+   * 挂起手段是 `disabled: true` 而不是删行：loader 认这个字段
+   * （`cordis-plugin-loader:391` 直接跳过 disabled 条目），所以服务器不再挂载，但用户的
+   * 配置与注释一行不动——切回 managed 时只要把键改回去，是可逆的。本插件自己区块里的行
+   * 是自动生成的，直接删（与 `manageEnabled:false` 同路）。
+   */
+  suspendGlobal?: boolean
 }
 
 export interface McpSyncStatus {
@@ -969,6 +1070,63 @@ interface LineEdit {
  * null，调用方退回整块重写——那个形状下手写内容通常就一行，损失有限。
  */
 function locateCwdEdits(lines: string[], range: BlockRange, targetCwd: string): LineEdit[] | null {
+  return locateRowKeyEdits(lines, range, 'cwd', targetCwd)
+}
+
+/**
+ * 定点改写 codegraph 行里某个**标量键**（`cwd` / `disabled`，P0 的挂起用它），
+ * 返回行编辑列表；定位不到 codegraph 行时返回 null。
+ *
+ * 取 `cwd` 与 `disabled` 共用同一个定位器，是因为两者的定位规则完全一致、而且**都容易
+ * 写错**：都要在同一条目内、与 `serverName` 同缩进处找键，都要处理「键写在 serverName
+ * 之前」（YAML 键序自由）与「键还不存在则就地补一行」。拆成两份等于把这两处细节各写
+ * 一遍，日后只修一处就会留下一个只在某个键上发作的 bug。
+ */
+function locateRowKeyEdits(lines: string[], range: BlockRange, key: 'cwd' | 'disabled', value: string): LineEdit[] | null {
+  const hit = findRowKeyLine(lines, range, key)
+  if (hit === null) return null
+  const { serverNameIndex, indent, keyIndex } = hit
+  // 单个标量走 yaml.dump：路径里有特殊字符时它会自己加引号，别手拼
+  const scalar = yaml.dump(value, { schema: YAML_SCHEMA, lineWidth: -1, noRefs: true }).replace(/\n$/, '')
+  const eol = lines[serverNameIndex].endsWith('\r') ? '\r' : ''
+  if (keyIndex !== -1) {
+    const line = lines[keyIndex].replace(/\r$/, '')
+    const prefix = new RegExp('^(\\s*' + key + ':\\s*).*$').exec(line)?.[1] ?? ' '.repeat(indent) + key + ': '
+    return [{ index: keyIndex, text: prefix + scalar + eol }]
+  }
+  // 该行还没有这个键：插在 serverName 行后面（同层级），YAML 映射键顺序自由
+  return [{ index: serverNameIndex, text: ' '.repeat(indent) + key + ': ' + scalar + eol, insertAfter: true }]
+}
+
+/** 字符级注释起点：YAML 里 `#` 前要有空白（否则是标量的一部分，如 `a#b`）。 */
+function commentStartOf(line: string): number {
+  for (let index = 1; index < line.length; index++) {
+    if (line[index] === '#' && /\s/.test(line[index - 1])) return index
+  }
+  return -1
+}
+
+/** 一条 codegraph 行里某个同缩进键的定位结果。 */
+interface RowKeyLine {
+  /** `serverName: codegraph` 所在行号。 */
+  serverNameIndex: number
+  /** 该行的缩进（config 映射各键同缩进）。 */
+  indent: number
+  /** 目标键所在行号；该行还没有这个键时为 -1。 */
+  keyIndex: number
+}
+
+/**
+ * 在区块里定位 codegraph 行的 `serverName` 与某个同缩进键（cwd / disabled）。
+ *
+ * 缩进规则是这里唯一的硬约束：从 `serverName` 行向**上下两个方向**找，键必须与
+ * `serverName` **同缩进**（config 映射的兄弟键；更深层的是别的映射的键，比如 env 子映射里
+ * 恰好叫 cwd 的变量，不能误伤）；缩进变小即离开本行条目，所以不会跨进相邻的行。
+ * 上下都扫是 CG31 的教训：键写在 `serverName` **之前**（YAML 键序自由）时，只向下扫会
+ * 找不到、在 serverName 后面补出第二个同名键——js-yaml 对重复映射键直接抛错，
+ * 整份 cordis.patch.yml 拒载。
+ */
+function findRowKeyLine(lines: string[], range: BlockRange, key: 'cwd' | 'disabled'): RowKeyLine | null {
   const bodyEnd = range.end === range.start + 1 && range.markerEnd === '' ? range.start + 1 : range.end - 1
   const serverNamePattern = /^\s*serverName:\s*(['"]?)codegraph\1\s*(?:#.*)?$/
   let serverNameIndex = -1
@@ -981,33 +1139,84 @@ function locateCwdEdits(lines: string[], range: BlockRange, targetCwd: string): 
   if (serverNameIndex === -1) return null
   const serverLine = lines[serverNameIndex].replace(/\r$/, '')
   const indent = serverLine.length - serverLine.trimStart().length
-  // 在 [from, to) 区间里按 step 方向找与 serverName 同缩进的 cwd: 行；
-  // 缩进小于它即离开条目（行边界），空行/注释跳过
-  const scanCwd = (from: number, to: number, step: 1 | -1): number => {
+  const keyPattern = new RegExp('^\\s*' + key + ':\\s*')
+  const scanKey = (from: number, to: number, step: 1 | -1): number => {
     for (let index = from; step === 1 ? index < to : index > to; index += step) {
       const line = lines[index].replace(/\r$/, '')
       if (line.trim() === '' || line.trim().startsWith('#')) continue
       const lineIndent = line.length - line.trimStart().length
       if (lineIndent < indent) return -1
       if (lineIndent !== indent) continue
-      if (/^\s*cwd:\s*/.test(line)) return index
+      if (keyPattern.test(line)) return index
     }
     return -1
   }
-  // 单个标量走 yaml.dump：路径里有特殊字符时它会自己加引号，别手拼
-  const scalar = yaml.dump(targetCwd, { schema: YAML_SCHEMA, lineWidth: -1, noRefs: true }).replace(/\n$/, '')
-  const eol = lines[serverNameIndex].endsWith('\r') ? '\r' : ''
-  const cwdIndex = (() => {
-    const upIndex = scanCwd(serverNameIndex - 1, range.start, -1)
-    return upIndex !== -1 ? upIndex : scanCwd(serverNameIndex + 1, bodyEnd, 1)
-  })()
-  if (cwdIndex !== -1) {
-    const line = lines[cwdIndex].replace(/\r$/, '')
-    const prefix = /^(\s*cwd:\s*).*$/.exec(line)?.[1] ?? ' '.repeat(indent) + 'cwd: '
-    return [{ index: cwdIndex, text: prefix + scalar + eol }]
+  const upIndex = scanKey(serverNameIndex - 1, range.start, -1)
+  const keyIndex = upIndex !== -1 ? upIndex : scanKey(serverNameIndex + 1, bodyEnd, 1)
+  return { serverNameIndex, indent, keyIndex }
+}
+
+/**
+ * P0 挂起标记：写在 `disabled:` 行尾的注释里。
+ *
+ * 为什么需要它：`disabled: true` 有两个可能来源——本插件为了 per-agent 互斥挂起的，
+ * 或者**用户自己**用 MCP 卡片停用的。两者必须区分：切回 managed 时只能恢复前者，
+ * 否则插件会把用户显式停用的服务器偷偷打开。
+ *
+ * 用注释而不是新增 YAML 键：注释对 `dsh-mcp-client` 的 Config schema 零影响
+ * （schemastery 的联合类型遇到多余的键是风险），且行手术本来就按行改写、天然保留注释。
+ */
+const SUSPEND_MARKER = 'dsh-codegraph: suspended'
+const SUSPEND_MARKER_PATTERN = /dsh-codegraph:\s*suspended/
+/** 该键的标量是不是 true（容忍引号；大小写不敏感）。 */
+const isTrueScalar = (text: string): boolean => /^['"]?true['"]?$/i.test(text.trim())
+
+/**
+ * 读取一条 codegraph 行里的 `disabled` 现状。
+ *
+ * `absent`（没有这个键）与 `disabled: false` 对 loader 是同一件事（都不停用），但**恢复**
+ * 时要区别对待：我们只把「自己加过的」还原，用户原本没写这个键时不该凭空多出一行。
+ */
+function readDisabledState(lines: string[], range: BlockRange): { present: boolean; disabled: boolean; ours: boolean } | null {
+  const hit = findRowKeyLine(lines, range, 'disabled')
+  if (hit === null) return null
+  if (hit.keyIndex === -1) return { present: false, disabled: false, ours: false }
+  const line = lines[hit.keyIndex].replace(/\r$/, '')
+  const cut = commentStartOf(line)
+  const comment = cut === -1 ? '' : line.slice(cut)
+  const scalar = cut === -1 ? line : line.slice(0, cut)
+  return {
+    present: true,
+    disabled: isTrueScalar(scalar.replace(/^\s*disabled:\s*/, '')),
+    ours: SUSPEND_MARKER_PATTERN.test(comment),
   }
-  // 该行还没有 cwd 键：插在 serverName 行后面（同层级），YAML 映射键顺序自由
-  return [{ index: serverNameIndex, text: ' '.repeat(indent) + 'cwd: ' + scalar + eol, insertAfter: true }]
+}
+
+/**
+ * 生成「挂起 / 恢复」codegraph 行的行编辑（P0）。
+ *
+ * 只有本插件加过标记的行才恢复；用户自己停用的行原样不动（见 {@link SUSPEND_MARKER}）。
+ * 已经是目标状态时返回空数组（无变化 → 不写盘）。
+ */
+function locateSuspendEdits(lines: string[], range: BlockRange, suspend: boolean): LineEdit[] {
+  const hit = findRowKeyLine(lines, range, 'disabled')
+  if (hit === null) return []
+  const state = readDisabledState(lines, range)
+  /* v8 ignore next -- findRowKeyLine 命中时 readDisabledState 必然也命中 */
+  if (state === null) return []
+  const eol = lines[hit.serverNameIndex].endsWith('\r') ? '\r' : ''
+  const pad = ' '.repeat(hit.indent)
+  if (suspend) {
+    // 已停用就够了——不管是谁停用的，全局都不会再注册，无需再改（尤其不该抢用户的注释）
+    if (state.disabled) return []
+    const text = pad + 'disabled: true  # ' + SUSPEND_MARKER + eol
+    return [hit.keyIndex === -1
+      ? { index: hit.serverNameIndex, text, insertAfter: true }
+      : { index: hit.keyIndex, text }]
+  }
+  // 恢复：只认自己的标记
+  if (!state.ours) return []
+  return [{ index: hit.keyIndex, text: pad + 'disabled: false' + eol }]
 }
 
 /**
@@ -1052,38 +1261,21 @@ export function syncManagedMcpRow(lines: string[], decision: McpSyncDecision): M
   }
 
   // 区块外手工行：只检测不碰（再写托管行会与它 serverName 撞名，第二个实例必失败）。
-  const outsideLines = lines.filter((_, index) => {
-    const inOwn = ownRange !== null && index >= ownRange.start && index < ownRange.end
-    const inMcp = mcpRange !== null && index >= mcpRange.start && index < mcpRange.end
-    return !inOwn && !inMcp
-  })
-  try {
-    const parsed: unknown = yaml.load(outsideLines.join('\n'), { schema: YAML_SCHEMA })
-    if (Array.isArray(parsed)) {
-      for (const entry of parsed) {
-        if (typeof entry !== 'object' || entry === null) continue
-        const inserted = (entry as { insert?: unknown }).insert
-        if (!Array.isArray(inserted)) continue
-        const handWritten = inserted.find((row) => typeof row === 'object' && row !== null && isCodegraphServerRow(row as McpPatchRow)) as McpPatchRow | undefined
-        if (handWritten !== undefined) {
-          return {
-            lines,
-            changed: false,
-            status: withCwdHealth({
-              mode: 'external',
-              id: typeof handWritten.id === 'string' ? handWritten.id : undefined,
-              cwd: typeof handWritten.config?.cwd === 'string' ? handWritten.config.cwd : undefined,
-              disabled: handWritten.disabled === true,
-              indexed,
-              indexState: state,
-              note: '检测到区块外手工配置的 codegraph MCP 行，跳过托管（避免 serverName 冲突）',
-            }),
-          }
-        }
-      }
+  const handWritten = detectExternalCodegraphRow(lines)
+  if (handWritten !== null) {
+    return {
+      lines,
+      changed: false,
+      status: withCwdHealth({
+        mode: 'external',
+        id: typeof handWritten.id === 'string' ? handWritten.id : undefined,
+        cwd: typeof handWritten.config?.cwd === 'string' ? handWritten.config.cwd : undefined,
+        disabled: handWritten.disabled === true,
+        indexed,
+        indexState: state,
+        note: '检测到区块外手工配置的 codegraph MCP 行，跳过托管（避免 serverName 冲突）',
+      }),
     }
-  } catch {
-    /* 区块外内容解析失败（如含其它 patch 操作形状）：按无手工行处理 */
   }
 
   const replacements: BlockReplacement[] = []
@@ -1094,43 +1286,84 @@ export function syncManagedMcpRow(lines: string[], decision: McpSyncDecision): M
 
   const mcpRow = mcpRows.find((row) => isCodegraphServerRow(row))
   if (mcpRow !== undefined && mcpRange) {
-    // 复用 MCP 卡片区块里的行：只对齐 cwd，其余字段（含 disabled）保持用户配置。
-    if (decision.manageEnabled && indexed && mcpRow.config?.cwd !== decision.targetCwd) {
-      if (dryRun) {
-        pendingNote = 'cwd 与默认项目不一致，下次同步会对齐'
-      } else {
-        // status 里报的是**对齐后**的 cwd；行对象是解析产物，改它不影响文件内容
-        mcpRow.config = { ...mcpRow.config, cwd: decision.targetCwd }
-        const edits = locateCwdEdits(lines, mcpRange, decision.targetCwd)
-        if (edits !== null) {
-          replacements.push({ kind: 'lines', range: mcpRange, edits })
+    if (decision.suspendGlobal) {
+      // P0：per-agent 生效 → 挂起全局行。**不删**：这是 MCP 卡片里用户可见的行，
+      // 删掉就丢了用户的注释与字段；disabled:true 让 loader 跳过它
+      // （`cordis-plugin-loader:391`），切回 managed 时按标记还原。
+      if (!dryRun) {
+        const edits = locateSuspendEdits(lines, mcpRange, true)
+        if (edits.length > 0) replacements.push({ kind: 'lines', range: mcpRange, edits })
+      }
+      // 挂起期间不再对齐 cwd：那个字段此刻不生效，写它只是白改文件 + 触发热加载。
+      const suspended = readDisabledState(lines, mcpRange)?.disabled === true
+      status = {
+        mode: 'dsh-mcp',
+        id: typeof mcpRow.id === 'string' ? mcpRow.id : undefined,
+        cwd: typeof mcpRow.config?.cwd === 'string' ? mcpRow.config.cwd : undefined,
+        disabled: dryRun ? suspended : true,
+        indexed,
+        indexState: state,
+        note: suspended || dryRun
+          ? 'per-agent 模式生效：全局 codegraph 行已挂起（disabled: true）；切回 managed 会自动恢复'
+          : 'per-agent 模式生效：即将挂起全局 codegraph 行（disabled: true），切回 managed 会自动恢复',
+      }
+    } else {
+      // 切回 managed：先把上次挂起的行还原（只认本插件写下的标记——用户自己停用的
+      // 服务器不该被插件悄悄打开）
+      if (!dryRun) {
+        const restore = locateSuspendEdits(lines, mcpRange, false)
+        if (restore.length > 0) replacements.push({ kind: 'lines', range: mcpRange, edits: restore })
+      }
+      // 复用 MCP 卡片区块里的行：只对齐 cwd，其余字段（含 disabled）保持用户配置。
+      if (decision.manageEnabled && indexed && mcpRow.config?.cwd !== decision.targetCwd) {
+        if (dryRun) {
+          pendingNote = 'cwd 与默认项目不一致，下次同步会对齐'
         } else {
-          // flow style 等定位不到行的形状：退回整块重写（区块里的注释 / override 会
-          // 丢，但这个形状下内容通常就一行；放任 cwd 过期比丢注释更糟）
-          replacements.push({ kind: 'block', range: mcpRange, text: renderBlockLines(mcpRange, mcpRows, carriageReturn, mcpRange.end >= lines.length) })
+          // status 里报的是**对齐后**的 cwd；行对象是解析产物，改它不影响文件内容
+          mcpRow.config = { ...mcpRow.config, cwd: decision.targetCwd }
+          const edits = locateCwdEdits(lines, mcpRange, decision.targetCwd)
+          if (edits !== null) {
+            replacements.push({ kind: 'lines', range: mcpRange, edits })
+          } else {
+            // flow style 等定位不到行的形状：退回整块重写（区块里的注释 / override 会
+            // 丢，但这个形状下内容通常就一行；放任 cwd 过期比丢注释更糟）
+            replacements.push({ kind: 'block', range: mcpRange, text: renderBlockLines(mcpRange, mcpRows, carriageReturn, mcpRange.end >= lines.length) })
+          }
         }
       }
-    }
-    // 本插件区块若还残留重复行则让位删除（防 serverName 冲突）。
-    if (ownRange && ownRows.some((row) => isCodegraphServerRow(row))) {
-      replacements.push({ kind: 'block', range: ownRange, text: renderBlockLines(ownRange, ownRows.filter((row) => !isCodegraphServerRow(row)), carriageReturn, ownRange.end >= lines.length) })
-    }
-    status = {
-      mode: 'dsh-mcp',
-      id: typeof mcpRow.id === 'string' ? mcpRow.id : undefined,
-      cwd: typeof mcpRow.config?.cwd === 'string' ? mcpRow.config.cwd : undefined,
-      disabled: mcpRow.disabled === true,
-      indexed,
-      indexState: state,
-      ...(pendingNote !== undefined
-        ? { note: pendingNote }
-        : decision.manageEnabled && indexed
-          ? {}
-          : { note: decision.manageEnabled ? `目标路径${indexProblem(state)}，保持现有配置` : 'MCP 联动已关闭，保持现有配置' }),
+      // 本插件区块若还残留重复行则让位删除（防 serverName 冲突）。
+      if (ownRange && ownRows.some((row) => isCodegraphServerRow(row))) {
+        replacements.push({ kind: 'block', range: ownRange, text: renderBlockLines(ownRange, ownRows.filter((row) => !isCodegraphServerRow(row)), carriageReturn, ownRange.end >= lines.length) })
+      }
+      status = {
+        mode: 'dsh-mcp',
+        id: typeof mcpRow.id === 'string' ? mcpRow.id : undefined,
+        cwd: typeof mcpRow.config?.cwd === 'string' ? mcpRow.config.cwd : undefined,
+        disabled: mcpRow.disabled === true,
+        indexed,
+        indexState: state,
+        ...(pendingNote !== undefined
+          ? { note: pendingNote }
+          : decision.manageEnabled && indexed
+            ? {}
+            : { note: decision.manageEnabled ? `目标路径${indexProblem(state)}，保持现有配置` : 'MCP 联动已关闭，保持现有配置' }),
+      }
     }
   } else {
     const ownRowIndex = ownRows.findIndex((row) => isCodegraphServerRow(row))
-    if (!decision.manageEnabled) {
+    if (decision.suspendGlobal) {
+      // per-agent 生效：本插件自己的行直接**删掉**而不是挂起。它是自动生成的，
+      // 没有用户内容可保；而挂起会留下一个 `disabled: true` 的自有行——切回
+      // managed 时若标记被破坏，全局 MCP 就再也不注册了（那种坑极难诊断）。
+      if (ownRowIndex !== -1 && ownRange) {
+        if (!dryRun) {
+          replacements.push({ kind: 'block', range: ownRange, text: renderBlockLines(ownRange, ownRows.filter((row) => !isCodegraphServerRow(row)), carriageReturn, ownRange.end >= lines.length) })
+        }
+        status = { mode: 'none', indexed, indexState: state, note: 'per-agent 模式生效：已撤销本插件托管行（切回 managed 会自动重新托管）' }
+      } else {
+        status = { mode: 'none', indexed, indexState: state, note: 'per-agent 模式生效：全局托管行未启用' }
+      }
+    } else if (!decision.manageEnabled) {
       if (ownRowIndex !== -1 && ownRange) {
         replacements.push({ kind: 'block', range: ownRange, text: renderBlockLines(ownRange, ownRows.filter((row) => !isCodegraphServerRow(row)), carriageReturn, ownRange.end >= lines.length) })
         status = { mode: 'none', indexed, indexState: state, note: 'MCP 联动已关闭，已撤销本插件托管行' }
@@ -1275,6 +1508,8 @@ interface ResolvedSettings {
   usage: boolean
   /** 托管行 cwd 是否跟随活动会话（settings: followSession）。 */
   follow: boolean
+  /** MCP 挂载模式（settings: mcpScope）。'per-agent' 时托管行被挂起。 */
+  mcpScope: McpScopeMode
 }
 
 interface RuntimeSync {
@@ -1286,6 +1521,15 @@ interface RuntimeSync {
    * 只在已索引时生效，否则回落到 defaultPath。
    */
   sessionPath?: string
+  /**
+   * P0：per-agent 挂载器（mcpScope === 'per-agent' 时非空）。路由与 `/status` 经它读
+   * 挂载台账；agent/created、agent/disposed 与「切回 managed」都作用于它。
+   */
+  mounter?: AgentMounter | undefined
+  /**
+   * P0：per-agent 生效时的模式裁决（含「你要 per-agent 但前提不成立」的降级原因）。
+   */
+  scopeDecision?: ScopeModeDecision
   /** 应用一次（可带 settings 覆盖值），返回落盘后的默认路径、生效路径、托管状态与生效值。 */
   sync(stored?: Record<string, unknown>): {
     defaultPath: string
@@ -2000,6 +2244,11 @@ function makeRoutes(
   metrics: () => MetricsAccess,
   /** 已索引项目登记表（P2 项目列表）：路由上报候选，`/projects` 读它。 */
   projects: { note(path: unknown, via: string): void; list(): ProjectEntry[] },
+  /**
+   * P0：per-agent 挂载状态访问口（`/agents` 读它）。与 runtime / metrics 同理走闭包：
+   * 挂载器在 apply 里创建，而路由注册可能早于/晚于它。
+   */
+  agentScope: () => { mounter?: AgentMounter; decision?: ScopeModeDecision } | undefined,
 ): Array<{ kind: 'exact'; path: string; handler: RouteHandler }> {
   const guard = (req: ReqLike, res: ResLike, method: string): boolean => {
     if (!isLoopbackRequest(req)) {
@@ -2648,6 +2897,7 @@ function makeRoutes(
             announce: true,
             usage: true,
             follow: true,
+            mcpScope: DEFAULT_MCP_SCOPE,
           }
           // 卡片关心的是「托管行实际用哪个目录」：indexState 一律针对生效路径，
           // defaultPath 只是跟随关闭/会话目录无索引时的回落值。
@@ -2662,6 +2912,16 @@ function makeRoutes(
             manageEnabled: current.manage,
             announceToAgent: current.announce,
             usageGuidance: current.usage,
+            /**
+             * P0：MCP 挂载模式。`mcpScope` 是用户选的，`effectiveMcpScope` 是**实际
+             * 生效**的——两者不等时卡片必须说明原因（前提不成立会退回 managed，
+             * 而静默退回等于骗用户）。
+             */
+            mcpScope: current.mcpScope,
+            effectiveMcpScope: rt?.scopeDecision?.mode ?? current.mcpScope,
+            mcpScopeReason: rt?.scopeDecision?.reason,
+            /** per-agent 已挂载的 agent 数（仅 per-agent 模式有意义，卡片显示进度/台账）。 */
+            agentMounts: rt?.mounter?.liveCount() ?? 0,
             /** CLI 探测结果：false 时两段 systemPrompt 都不会注入；undefined = 还没探测完。 */
             cliAvailable: cliProbe.get().available,
             /**
@@ -2793,9 +3053,9 @@ function makeRoutes(
         if (!guard(req, res, 'POST')) return
         const body = await readPostBody(req, res)
         if (body === undefined) return
-        // 只认这三个布尔键：defaultPath 走 /default-path（它有目录与索引校验），
-        // 其余安装级旋钮（command / 超时 / indexForce）故意不给写入口。
-        const patch: Record<string, boolean> = {}
+        // 只认这三个布尔键 + mcpScope：defaultPath 走 /default-path（它有目录与索引
+        // 校验），其余安装级旋钮（command / 超时 / indexForce）故意不给写入口。
+        const patch: Record<string, boolean | string> = {}
         for (const key of ['announceToAgent', 'usageGuidance', 'mcpIntegration', 'followSession'] as const) {
           const value = body[key]
           if (value === undefined) continue
@@ -2805,8 +3065,17 @@ function makeRoutes(
           }
           patch[key] = value
         }
+        if (body.mcpScope !== undefined) {
+          // 非法模式**报错**而不是静默回落：这是用户显式选择，写进去一个不认识的值会让
+          // 卡片显示的模式与实际生效的不一致（实际由 normalizeMcpScope 回落）。
+          if (typeof body.mcpScope !== 'string' || !MCP_SCOPE_MODES.includes(body.mcpScope as McpScopeMode)) {
+            writeJson(res, 400, { error: 'mcpScope 必须是 ' + MCP_SCOPE_MODES.join(' / ') + ' 之一' })
+            return
+          }
+          patch.mcpScope = body.mcpScope
+        }
         if (Object.keys(patch).length === 0) {
-          writeJson(res, 400, { error: '缺少可写字段（announceToAgent / usageGuidance / mcpIntegration / followSession）' })
+          writeJson(res, 400, { error: '缺少可写字段（announceToAgent / usageGuidance / mcpIntegration / followSession / mcpScope）' })
           return
         }
         const rt = runtime()
@@ -2823,12 +3092,16 @@ function makeRoutes(
         // settings/updated 已经触发过一次 sync；这里再显式同步一次只是兜底
         // （同值幂等：MCP 行无变化不写盘，section 增删也按需跳过）。
         const outcome = rt.sync(rt.scope.get())
+        const decision = rt.scopeDecision
         writeJson(res, 200, {
           ok: true,
           announceToAgent: outcome.current.announce,
           usageGuidance: outcome.current.usage,
           manageEnabled: outcome.current.manage,
           followSession: outcome.current.follow,
+          mcpScope: outcome.current.mcpScope,
+          effectiveMcpScope: decision?.mode ?? outcome.current.mcpScope,
+          mcpScopeReason: decision?.reason,
           effectivePath: outcome.effectivePath,
           cliAvailable: cliProbe.get().available,
           cliProbeError: cliProbe.get().error,
@@ -3032,6 +3305,30 @@ function makeRoutes(
     },
     {
       kind: 'exact',
+      path: '/api/dsh-codegraph/agents',
+      handler: async (req, res) => {
+        // P0：per-agent MCP 挂载台账（只读）。回答的是「每个 agent 到底挂上了没、挂在哪个
+        // 目录、为什么没挂」——没这个界面时，per-agent 出问题只能靠翻宿主日志。
+        if (!guard(req, res, 'GET')) return
+        const rt = runtime()
+        const decision = agentScope()?.decision
+        const records = agentScope()?.mounter?.records() ?? []
+        writeJson(res, 200, {
+          ok: true,
+          mode: decision?.mode ?? rt?.current.mcpScope ?? DEFAULT_MCP_SCOPE,
+          reason: decision?.reason,
+          // 用户选了 per-agent 但前提不成立时 requested ≠ mode：卡片据此显示「已退回」。
+          requested: rt?.current.mcpScope ?? DEFAULT_MCP_SCOPE,
+          fallback: decision !== undefined && rt !== undefined && decision.mode !== rt.current.mcpScope,
+          mounted: records.filter((record) => record.mounted).length,
+          // 已挂 fiber 数：正常应等于 mounted；不等说明有 fiber 没回收（记录与实例不一致）。
+          live: agentScope()?.mounter?.liveCount() ?? 0,
+          agents: records,
+        })
+      },
+    },
+    {
+      kind: 'exact',
       path: '/api/dsh-codegraph/reprobe',
       handler: async (req, res) => {
         // guard 已经把住 loopback + POST；重探会真的起一个子进程（<command> --version），
@@ -3052,7 +3349,7 @@ function makeRoutes(
 
 /** 不落盘的快照：读盘上真实内容，回答「现在是什么状态」（不推测下次写入的结果）。 */
 function snapshotMcpStatus(command: string, rt: RuntimeSync | undefined): McpSyncStatus {
-  const current = rt?.current ?? { defaultPath: process.cwd(), manage: true, announce: true, usage: true, follow: true }
+  const current = rt?.current ?? { defaultPath: process.cwd(), manage: true, announce: true, usage: true, follow: true, mcpScope: DEFAULT_MCP_SCOPE }
   const patchFile = homePatchPath()
   const text = existsSync(patchFile) ? readFileSync(patchFile, 'utf8') : ''
   return syncManagedMcpRow(text.split('\n'), {
@@ -3060,6 +3357,9 @@ function snapshotMcpStatus(command: string, rt: RuntimeSync | undefined): McpSyn
     command,
     targetCwd: effectiveProjectPath(rt),
     manageEnabled: current.manage,
+    // P0：per-agent 生效时盘上就是「已挂起」，快照必须报同一件事，否则卡片会显示
+    // 「已在托管」而实际服务器没挂（诊断包也会给出错误的下一步）。
+    suspendGlobal: rt?.scopeDecision?.mode === 'per-agent',
     dryRun: true,
   }).status
 }
@@ -3122,6 +3422,7 @@ const plugin = definePlugin<Config>({
     const usageDefault = config?.usageGuidance !== false
     const manageEnabled = config?.mcpIntegration !== false
     const followDefault = config?.followSession !== false
+    const mcpScopeDefault = normalizeMcpScope(config?.mcpScope, DEFAULT_MCP_SCOPE)
 
     /**
      * 本实例的生效设置（CG25）：不再是模块级单例。路由 / 快照经下面的访问口读取
@@ -3165,6 +3466,120 @@ const plugin = definePlugin<Config>({
       // 订阅失败不该让整个插件起不来：仪表是观测功能，缺了它其余部分照常工作。
       console.warn('[dsh-codegraph] 采纳率订阅失败（仪表不可用，其余功能不受影响）：'
         + (error instanceof Error ? error.message : String(error)))
+    }
+
+    /* ---- P0：per-agent scoped MCP 挂载 ---- *
+     * 决策逻辑全在 ./scope.ts（纯函数，可单测）；这里只做三件事：
+     *   1. 探测宿主有没有 agent 事件面；
+     *   2. 把 agent/created、agent/disposed 接到挂载器上；
+     *   3. 模式切换时做互斥（per-agent 生效 → 挂起全局行；切回 managed → 恢复）。
+     *
+     * 为什么用 `ctx.get('agents')` 而不是 `ctx.inject(['agents'], …)`：本包 `inject: []`
+     * 是刻意的（插件在 agent 服务缺席的宿主里也要能挂），用 inject 会把「宿主没有 agents」
+     * 变成「整插件不加载」。get 拿不到就只是不启用 per-agent。
+     */
+    let mounter: AgentMounter | undefined
+    const getMounter = (): AgentMounter | undefined => mounter
+    let agentEventsAvailable = false
+    try {
+      const agents = (ctx as unknown as { get?(name: string): unknown }).get?.('agents') as
+        | { list?: () => AgentLike[] }
+        | undefined
+      agentEventsAvailable = agents !== undefined && typeof agents.list === 'function'
+    } catch {
+      /* 拿不到服务：保持 false，退 managed */
+    }
+
+    mounter = createAgentMounter({
+      // 可选依赖：宿主没装 dsh-mcp-client 时 undefined（走 managed 的宿主本来也就没有它）。
+      // 用变量式 specifier 而不是字面量 import()，让打包器别把它内联进产物——
+      // 这个包在本包的 peerDependenciesMeta 里是 optional。
+      //
+      // **必须是宿主那一份**（不是「随便一份」）：`dsh-mcp-client` 的 serverName 占用、
+      // 工具注册、scope 判定都经 `dsh-scope` 的 `kScope`，而那是**模块内局部 Symbol**
+      // （`dsh-scope/lib/index.js:229`）。解析到第二份 dsh-scope 副本时，所有 `scopeOf()`
+      // 都返回 undefined，per-agent 隔离会**静默退化成「都算根 scope」**——两个 agent
+      // 抢同一个 serverName，第二个必失败。实测本仓库的链接（plugins → 运行时 store）
+      // 两侧解析到同一个文件；`scripts/link-dsh-runtime.mjs` 负责维持这件事，所以
+      // 加依赖后必须重跑它（它按目录里已存在的包名遍历）。
+      loadClient: async () => {
+        try {
+          const specifier = '@deepseek-ai/dsh-mcp-client'
+          return await import(specifier)
+        } catch (error) {
+          console.warn('[dsh-codegraph] 载入 @deepseek-ai/dsh-mcp-client 失败（per-agent 不可用，可切回 managed）：'
+            + (error instanceof Error ? error.message : String(error)))
+          return undefined
+        }
+      },
+      serverName: MCP_SERVER_NAME,
+      command,
+      cliAvailable: () => cliProbeState.available,
+      resolveRoot: resolveIndexedRoot,
+      isIndexed: (cwd) => indexState(cwd) === 'indexed',
+      logger: { log: (message) => console.log(message), warn: (message) => console.warn(message) },
+    })
+
+    /**
+     * agent 事件接线。刻意**不 await**挂载：agent/created 是 serial 派发
+     * （`dsh-agent:545` 走 `ctx.serial`），在这里等一次 spawn+握手会拖慢会话创建，而
+     * codegraph 是可选能力。挂载失败只记日志（见 createAgentMounter 的注释）。
+     */
+    try {
+      const on = (ctx as unknown as { on(name: string, listener: (...args: unknown[]) => unknown): unknown }).on
+      on.call(ctx, 'agent/created', (...args: unknown[]) => {
+        const agent = (args[0] as { agent?: AgentLike } | undefined)?.agent
+        if (agent === undefined) return
+        const current = runtimeRef?.current
+        getMounter()?.attach(agent, current?.mcpScope ?? mcpScopeDefault)
+      })
+      on.call(ctx, 'agent/disposed', (...args: unknown[]) => {
+        const agent = (args[0] as { agent?: AgentLike } | undefined)?.agent
+        if (agent === undefined) return
+        getMounter()?.detach(agent)
+      })
+    } catch (error) {
+      agentEventsAvailable = false
+      console.warn('[dsh-codegraph] agent 事件订阅失败（per-agent 模式不可用，保持 managed）：'
+        + (error instanceof Error ? error.message : String(error)))
+    }
+
+    /**
+     * 模式切换的副作用：per-agent 生效时**已经活着**的 agent 也要补挂（不是只对之后
+     * 创建的 agent 生效），切回 managed 时立刻回收全部 scope 挂载。
+     *
+     * 只对「模式真的变了」动手：settings/updated 每次都调 sync，而补挂是幂等的但回收不是
+     * ——每次都 detachAll 会让 managed 模式下**刚刚**挂上的 agent 被反复拆掉。
+     * 判据用「上一次生效的模式」而不是「mounter.liveCount()>0」：后者会把「per-agent 下
+     * 一个 agent 都没挂上（都没索引）」误判成「没切过」。
+     */
+    let appliedScopeMode: McpScopeMode | undefined
+    const applyScopeMode = (runtime: RuntimeSync, wanted: McpScopeMode, decision: ScopeModeDecision): void => {
+      const effective = decision.mode
+      if (appliedScopeMode === effective) return
+      const previous = appliedScopeMode
+      appliedScopeMode = effective
+      const active = getMounter()
+      if (active === undefined) return
+      if (effective === 'per-agent') {
+        // 补挂已存在的 agent。用 ctx.get('agents')（而不是 sessions）：per-agent 要的是
+        // **活的 agent**（agent.ctx 才有 scope），会话列表里可能含没有 agent 的会话。
+        try {
+          const agents = (ctx as unknown as { get?(name: string): unknown }).get?.('agents') as
+            | { list?: () => AgentLike[] }
+            | undefined
+          for (const agent of agents?.list?.() ?? []) active.attach(agent, wanted)
+        } catch (error) {
+          console.warn('[dsh-codegraph] 补挂已有 agent 失败（之后新建的 agent 不受影响）：'
+            + (error instanceof Error ? error.message : String(error)))
+        }
+        console.log('[dsh-codegraph] per-agent 模式已生效：' + decision.reason)
+      } else {
+        active.detachAll()
+        if (previous === 'per-agent') {
+          console.log('[dsh-codegraph] 已切回 managed，per-agent 挂载已全部回收')
+        }
+      }
     }
 
     /**
@@ -3338,7 +3753,10 @@ const plugin = definePlugin<Config>({
     const routes = makeRoutes(cli, config?.defaultPath?.trim() || process.cwd(), {
       get: () => ({ available: cliProbeState.available, error: cliProbeState.error, at: cliProbeState.at }),
       reprobe: () => runProbe(),
-    }, getRuntime, () => metricsCollector.access, projectRegistry)
+    }, getRuntime, () => metricsCollector.access, projectRegistry, () => {
+      const rt = runtimeRef
+      return { mounter: rt?.mounter, decision: rt?.scopeDecision }
+    })
     ctx.inject(['webServer'], (webCtx: Context) => {
       webCtx.effect(() => {
         const server = (webCtx as unknown as { webServer: { register(route: { kind: string; path: string; handler: RouteHandler }): () => void } }).webServer
@@ -3372,6 +3790,7 @@ const plugin = definePlugin<Config>({
             announce: (typeof stored?.announceToAgent === 'boolean' ? stored.announceToAgent : undefined) ?? announceDefault,
             usage: (typeof stored?.usageGuidance === 'boolean' ? stored.usageGuidance : undefined) ?? usageDefault,
             follow: (typeof stored?.followSession === 'boolean' ? stored.followSession : undefined) ?? followDefault,
+            mcpScope: normalizeMcpScope(stored?.mcpScope ?? config?.mcpScope, DEFAULT_MCP_SCOPE),
           }
         }
         const logOutcome = (changed: boolean, status: McpSyncStatus) => {
@@ -3381,14 +3800,31 @@ const plugin = definePlugin<Config>({
           const resolved = resolveStored(stored)
           // 先更新解析值再算生效路径（跟随判定读的就是它们）
           runtime.current = resolved
+          // P0 模式裁决：要在写盘**之前**定下来——per-agent 时托管行必须挂起（互斥），
+          // 而挂起本身也要落盘。
+          const decision = resolveScopeMode({
+            config: config?.mcpScope,
+            stored: stored?.mcpScope,
+            manageEnabled: resolved.manage,
+            agentEvents: agentEventsAvailable,
+            externalRow: hasExternalCodegraphRow(),
+          })
+          runtime.scopeDecision = decision
+          applyScopeMode(runtime, resolved.mcpScope, decision)
           const effectivePath = effectiveProjectPath(runtime)
-          const { changed, status } = syncMcpRowOnDisk({ serverName: MCP_SERVER_NAME, command, targetCwd: effectivePath, manageEnabled: resolved.manage })
+          const { changed, status } = syncMcpRowOnDisk({
+            serverName: MCP_SERVER_NAME,
+            command,
+            targetCwd: effectivePath,
+            manageEnabled: resolved.manage,
+            suspendGlobal: decision.mode === 'per-agent',
+          })
           logOutcome(changed, status)
           // 提示词开关也随这次解析值走：卡片里改完即生效，不用重启宿主。
           refreshGuidance()
           return { defaultPath: resolved.defaultPath, effectivePath, status, current: resolved }
         }
-        const runtime: RuntimeSync = { scope, current: resolveStored(scope.get()), sync }
+        const runtime: RuntimeSync = { scope, current: resolveStored(scope.get()), sync, mounter: getMounter() }
         runtimeRef = runtime
 
         sync(scope.get())
@@ -3400,6 +3836,9 @@ const plugin = definePlugin<Config>({
         return () => {
           off()
           if (runtimeRef === runtime) runtimeRef = undefined
+          // 插件卸载（HMR / 停用）时回收 per-agent 挂载：agent.ctx 的 scope 会随 agent
+          // 回收，但插件被卸载时 agent 还活着，那些 MCP 子进程不该留到宿主的生命周期结束。
+          getMounter()?.detachAll()
         }
       }, 'dsh-codegraph: settings')
     })
@@ -3414,9 +3853,11 @@ const plugin = definePlugin<Config>({
         announce: announceDefault,
         usage: usageDefault,
         follow: followDefault,
+        mcpScope: mcpScopeDefault,
       }
       const runtime: RuntimeSync = {
         current: resolved,
+        mounter: getMounter(),
         sync: (stored) => {
           const next: ResolvedSettings = {
             defaultPath: typeof stored?.defaultPath === 'string' && stored.defaultPath.trim() !== '' ? stored.defaultPath.trim() : resolved.defaultPath,
@@ -3424,19 +3865,51 @@ const plugin = definePlugin<Config>({
             announce: typeof stored?.announceToAgent === 'boolean' ? stored.announceToAgent : resolved.announce,
             usage: typeof stored?.usageGuidance === 'boolean' ? stored.usageGuidance : resolved.usage,
             follow: typeof stored?.followSession === 'boolean' ? stored.followSession : resolved.follow,
+            mcpScope: normalizeMcpScope(stored?.mcpScope ?? config?.mcpScope, DEFAULT_MCP_SCOPE),
           }
           runtime.current = next
+          const decision = resolveScopeMode({
+            config: config?.mcpScope,
+            stored: stored?.mcpScope,
+            manageEnabled: next.manage,
+            agentEvents: agentEventsAvailable,
+            externalRow: hasExternalCodegraphRow(),
+          })
+          runtime.scopeDecision = decision
+          applyScopeMode(runtime, next.mcpScope, decision)
           const effectivePath = effectiveProjectPath(runtime)
-          const result = syncMcpRowOnDisk({ serverName: MCP_SERVER_NAME, command, targetCwd: effectivePath, manageEnabled: next.manage })
+          const result = syncMcpRowOnDisk({
+            serverName: MCP_SERVER_NAME,
+            command,
+            targetCwd: effectivePath,
+            manageEnabled: next.manage,
+            suspendGlobal: decision.mode === 'per-agent',
+          })
           refreshGuidance()
           return { defaultPath: next.defaultPath, effectivePath, status: result.status, current: next }
         },
       }
       runtimeRef = runtime
-      const { changed, status } = syncMcpRowOnDisk({ serverName: MCP_SERVER_NAME, command, targetCwd: resolved.defaultPath, manageEnabled: resolved.manage })
+      const fallbackDecision = resolveScopeMode({
+        config: config?.mcpScope,
+        manageEnabled: resolved.manage,
+        agentEvents: agentEventsAvailable,
+        externalRow: hasExternalCodegraphRow(),
+      })
+      runtime.scopeDecision = fallbackDecision
+      applyScopeMode(runtime, resolved.mcpScope, fallbackDecision)
+      const { changed, status } = syncMcpRowOnDisk({
+        serverName: MCP_SERVER_NAME,
+        command,
+        targetCwd: resolved.defaultPath,
+        manageEnabled: resolved.manage,
+        suspendGlobal: fallbackDecision.mode === 'per-agent',
+      })
       console.log(`[dsh-codegraph] mcp integration (config fallback): mode=${status.mode}, cwd=${status.cwd ?? '(未托管)'}${changed ? ' (patch updated)' : ''}${status.note ? ' — ' + status.note : ''}`)
       return () => {
         if (runtimeRef === runtime) runtimeRef = undefined
+        // 插件卸载（HMR / 停用）时回收全部 per-agent 挂载：不依赖 agent 自己的销毁时机
+        getMounter()?.detachAll()
       }
     }, 'dsh-codegraph: mcp fallback')
 

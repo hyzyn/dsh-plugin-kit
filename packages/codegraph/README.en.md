@@ -11,6 +11,7 @@
 - **Managed MCP server row**: dsh-mcp-client declares no MCP roots, so `codegraph serve --mcp` resolves `.codegraph/` upward from `process.cwd()` only; the plugin maintains the `@deepseek-ai/dsh-mcp-client` row in `~/.dsh/cordis.patch.yml` with `config.cwd`, and the rewrite hot-loads through watchUserPatches to rebuild the MCP connection. One server mounts one project at a time; other projects are queried with `projectPath`.
 - **Index detection reads `.codegraph/*.db` and walks upward like the CLI**: from the target directory up (stopping at the git root) it looks for the first `.codegraph/` holding an index database; the hit root is the project root, so sessions in monorepo subdirectories are no longer misread as "unindexed". Directory existence alone mistakes the CLI's own install dir `~/.codegraph` for a project index, dropping the managed row on an unindexed cwd — measured there, `codegraph_explore`'s required grows from `["query"]` to `["query","projectPath"]`. Anything short of a real index leaves the existing cwd untouched, and the card reports `indexState` plus the reason.
 - **The managed row's cwd follows the active session**: `followSession` (on by default) aligns the row when a session switches to a project with a valid index, otherwise falls back to the pinned path; "Set as default project" writes that path into the `codegraph` settings namespace and sets `followSession` false (an explicit pin beats session following). A failed session report retries with backoff instead of being silently lost forever.
+- **Optional per-agent MCP isolation** (`mcpScope: 'per-agent'`, default `'managed'`): in the default mode **one** MCP server time-shares across all projects (via `projectPath` and session following). With per-agent enabled, each agent mounts its own `dsh-mcp-client` inside **its own Cordis scope**, with `cwd` pinned to the index root of *that* agent's session directory — parallel multi-project work no longer shares a single global cwd, and the whole "write patch → hot reload → rebuild connection" chain disappears; the global managed row is **suspended** (`disabled: true`, restored automatically when you switch back to managed). The cost is one child process per agent (measured ~40MB idle Node baseline). An agent whose session directory has **no usable index is not mounted at all** (rather than falling back to the default project) — otherwise it would inherit another project's context, the exact class of error that gets claimed-but-not-implemented. Mechanism measurements and tradeoffs: [P0-PLAN.md](./P0-PLAN.md).
 - **One-click initialisation**: an uninitialised directory gets an "Initialise index" button on the card that runs `codegraph init` (two-step confirm) — `index` / `sync` both require the project to be initialised first, and this was the last step that still forced users back to a terminal.
 - **Two systemPrompt sections, switches and gating independent**: `plugin:dsh-codegraph` (order 150) and `plugin:dsh-codegraph:usage` (order 151), both behind a `<command> --version` probe; `announceToAgent` / `usageGuidance` add or remove the sections live through the settings namespace.
 
@@ -52,7 +53,8 @@ Behavior details:
 | `/api/dsh-codegraph/init` | POST | Runs `codegraph init` in a **not yet initialised** directory (creates `.codegraph/` plus the initial index) and then recomputes the managed MCP row; returns 409 for an already-indexed directory |
 | `/api/dsh-codegraph/default-path` | GET | Pinned `defaultPath` + `effectivePath` + `sessionPath` + `followSession` + prompt toggles + `cliAvailable` / `cliProbeError` / `cliProbeAt` + MCP managed state (`indexState` describes the **effective** path) |
 | `/api/dsh-codegraph/follow` | POST | Report the active session directory `{ path }` (empty = no active session); the host aligns the managed cwd and falls back for unindexed directories |
-| `/api/dsh-codegraph/settings` | POST | Write toggles `{ announceToAgent?, usageGuidance?, mcpIntegration?, followSession? }` (booleans), effective immediately |
+| `/api/dsh-codegraph/settings` | POST | Write toggles `{ announceToAgent?, usageGuidance?, mcpIntegration?, followSession? }` (booleans) and `{ mcpScope? }` (`'managed'` / `'per-agent'`, 400 otherwise), effective immediately |
+| `/api/dsh-codegraph/agents` | GET | Per-agent MCP mount ledger `{ mode, requested, effective, reason, fallback, mounted, live, agents }` — which agents mounted, on which index root, and why not (read-only) |
 | `/api/dsh-codegraph/default-path` | POST | Set as default project `{ path }` (requires an index database inside `.codegraph/`), hot-switches the MCP at the same time |
 | `/api/dsh-codegraph/reprobe` | POST | Re-runs the `<command> --version` probe, returns `{ cliAvailable, cliProbeError, cliProbeAt }` and refreshes the systemPrompt gate |
 | `/api/dsh-codegraph/files` | GET | File structure `{ path, files, raw }` (`codegraph files --json`); knobs `filter` / `pattern` / `maxDepth` |
@@ -156,8 +158,25 @@ export interface Config {
   defaultPath?: string
   /** Whether to manage the codegraph MCP server row. On by default; turning it off reverts the managed row written by this plugin. */
   mcpIntegration?: boolean
-  /** Whether the managed row's cwd follows the active session. On by default; "Set as default project" turns it off (an explicit pin). */
+  /**
+   * Whether the managed row's cwd follows the active session. On by default; "Set as default
+   * project" turns it off (an explicit pin). Meaningless while `mcpScope: 'per-agent'` is in
+   * effect (each agent talks to its own process, so there is nothing to follow).
+   */
   followSession?: boolean
+  /**
+   * MCP mounting mode, default `'managed'`.
+   * - `'managed'`: a single managed row plus session-driven hot switching (time-shared).
+   * - `'per-agent'`: each agent mounts its own dsh-mcp-client in its own scope, cwd = that
+   *   session's index root.
+   *
+   * `managed` stays the default: per-agent is a behaviour change, and per measurements it only
+   * helps the narrow "multiple projects at once" case (3.1% of the time). When a precondition
+   * fails (no agent event surface / a hand-written codegraph row outside the managed blocks /
+   * the MCP master switch off) it falls back to managed and says so on the card — never
+   * silently. Cost: one child process per agent (~40MB).
+   */
+  mcpScope?: 'managed' | 'per-agent'
   /** Timeout in milliseconds for query commands (status/query/callers/callees/impact/node). Defaults to 60000; 0 = unlimited. */
   cliTimeoutMs?: number
   /** Timeout in milliseconds for index commands (sync/index). Defaults to 600000; 0 = unlimited. A full rebuild of a large repository exceeds the query budget. */
@@ -167,7 +186,7 @@ export interface Config {
 }
 ```
 
-`defaultPath` / `mcpIntegration` / `followSession` / `announceToAgent` / `usageGuidance` saved in the `codegraph` settings namespace take precedence over the plugin config: “Set as default project” writes `defaultPath` and turns `followSession` off, and the three checkboxes write the rest (`POST /api/dsh-codegraph/settings`).
+`defaultPath` / `mcpIntegration` / `followSession` / `mcpScope` / `announceToAgent` / `usageGuidance` saved in the `codegraph` settings namespace take precedence over the plugin config: “Set as default project” writes `defaultPath` and turns `followSession` off, and the remaining checkboxes plus the mode switch write the rest (`POST /api/dsh-codegraph/settings`).
 
 `command` / `cliTimeoutMs` / `indexTimeoutMs` / `indexForce` are **install-level knobs**: they only read the plugin config and never enter the settings namespace. Just override them by id in the profile patch, for example:
 

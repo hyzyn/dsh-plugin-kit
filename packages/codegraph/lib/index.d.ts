@@ -15,6 +15,8 @@
  * 热加载后 MCP 服务器自动挂载到新项目。
  */
 import type { Context } from '@deepseek-ai/cordis';
+import type { McpScopeMode } from './scope.js';
+export type { McpScopeMode } from './scope.js';
 export interface Config {
     /** 关闭整个插件（不注册路由、不发布提示）。默认开。 */
     enabled?: boolean;
@@ -37,8 +39,28 @@ export interface Config {
      * 开：会话切到某个**已索引**项目时，托管行 cwd 自动对齐它；会话目录没有索引时
      * 回落到 defaultPath。关：始终用 defaultPath（「设为默认项目」会把这一项关掉，
      * 因为那是一次显式指定）。
+     *
+     * 注意：`mcpScope: 'per-agent'` 生效时本项无意义——那种模式下每个 agent 直连自己的
+     * MCP 进程，没有「跟谁走」这回事（预设值仍原样保留，切回 managed 即恢复）。
      */
     followSession?: boolean;
+    /**
+     * MCP 挂载模式（ROADMAP P0，默认 `'managed'`）。
+     *
+     * - `'managed'`（默认，现状）：在 `~/.dsh/cordis.patch.yml` 里维护**一行**托管，
+     *   cwd 按会话热切换。时分复用：一台 MCP 服务器同一时刻只服务一个项目。
+     * - `'per-agent'`：在每个 agent **自己的 scope** 里挂一份 `dsh-mcp-client`
+     *   （`cwd` = 该 agent 会话目录解析出的索引根），并用 `agent/disposed` 回收。
+     *   语义不再随全局 cwd 漂移、也不再写盘热重载；代价是每 agent 一个子进程
+     *   （实测空 Node 基线 ~40MB，见 P0-PLAN.md 的性能实测）。
+     *
+     * **默认保持现状**：这是行为变更，且按本机实测只覆盖「多项目并发」这一窄场景
+     * （时间占比 3.1%），所以由用户显式开启，而不是自动切换。
+     *
+     * 前提不成立时（宿主没有 agent 事件面 / 存在区块外手工 codegraph 行 / 宿主没有
+     * dsh-mcp-client）会**退回 managed 并在卡片上说明原因**，不会静默降级。
+     */
+    mcpScope?: McpScopeMode;
     /**
      * 查询类命令（status/query/callers/callees/impact/node）的超时毫秒数。
      * 默认 60000。超大仓库上 `status` 的首次数也会变慢，可按需调大。
@@ -197,6 +219,21 @@ export interface McpSyncDecision {
      * 写，卡片却显示已自动托管」的幻影状态。
      */
     dryRun?: boolean;
+    /**
+     * P0：把**全局** codegraph 行挂起（per-agent 模式生效时必用）。
+     *
+     * 为什么必须挂起而不能「都留着」：per-agent 模式下每个 agent 在自己的 scope 里注册
+     * `mcp__codegraph__codegraph_explore`，而全局那行会让**根 scope** 也注册同名工具。
+     * `dsh-tools` 的 `view(scope)` 先铺全局层、再用 scope 自己的层覆盖——覆盖是允许的
+     * （不报错），于是**没有索引的 agent 会继承到全局那份**，把「全局 cwd 指向的那个
+     * 项目」当成自己的上下文。那正是本方案要消除的语义漂移，所以两者只能留一个。
+     *
+     * 挂起手段是 `disabled: true` 而不是删行：loader 认这个字段
+     * （`cordis-plugin-loader:391` 直接跳过 disabled 条目），所以服务器不再挂载，但用户的
+     * 配置与注释一行不动——切回 managed 时只要把键改回去，是可逆的。本插件自己区块里的行
+     * 是自动生成的，直接删（与 `manageEnabled:false` 同路）。
+     */
+    suspendGlobal?: boolean;
 }
 export interface McpSyncStatus {
     /** own=本插件区块托管；dsh-mcp=复用 MCP 卡片区块的行；external=区块外有手工行，跳过；none=无托管行。 */
