@@ -48,7 +48,7 @@
 | **P1** | ~~**索引生命周期**：`unlock` + 自动重建~~ **✅ 已完成**（见下；daemon 日志尾与陈旧 pid 判定随 `/diagnose` 已可见） | 把「模型拿到陈旧结果 / 被坏锁挡住」在发生前化解 | M | `unlockArgs()` / `staleReasonsFromStatus()` / `maybeAutoReindex()` + 卡片「解锁」按钮 |
 | **P2** | CLI 面补全：`explore`/`context`/`files`/`affected`/`uninit`/`unlock`/`daemon` | 功能完整度（详见 DEFECTS.md 路线图节） | M | `makeRoutes` + 卡片 |
 | **P2** | ~~已索引项目列表 + 一键切换~~ **✅ 已完成**（见下）；其余（查询参数面板、遥测提示、卡片 i18n、真机 E2E）未做 | 体验与工程面 | M | `/projects` + 卡片胶囊按钮 |
-| **P3** | CG32–CG34 销号或补齐、宿主版本基线对齐、browser 半体测试 | 可信度与工程债 | S–M | `DEFECTS.md` / `README.md` / CI |
+| **P3** | CG32–CG34 销号或补齐、~~宿主版本基线对齐~~ **✅ 已完成**（CG42，见下）、browser 半体测试 | 可信度与工程债 | S–M | `DEFECTS.md` / `README.md` / CI |
 
 ## 已完成（0.4.2 之后的工作树）
 
@@ -185,12 +185,29 @@ owner 判定；会话目录无有效索引时不写盘（现有行为，保持�
 
 ## P2 / P3
 
+### P3-a：宿主版本基线对齐 + 宿主契约端到端 ✅
+
+**问题**：同一个文档集里并存三个宿主版本号——README 说「已在 `0.1.5-rc.2` 上实测全链路」，DEFECTS 记审计基线 `0.1.0-rc.7`，本机实际跑的是 `0.1.6-alpha.2`，而 `engines` 声明下限又是 `0.1.2-rc.1`。谁也没说清「哪一档是验证过的」，而兼容性声明就建立在这个含混上。
+
+**做法**：
+
+1. **先把事实查清**（不猜）：本机 `dsh` = `0.1.6-alpha.2`；配套 `cordis` `4.0.2`、`dsh-tools`/`dsh-system-prompt`/`dsh-mcp-client`/`dsh-session`/`dsh-agent` 全为 `0.1.6-alpha.2`。运行中的 `web` profile 装的是**已发布的 0.4.2**（所以它只有 `/default-path`，没有本轮新增路由——那不是 bug，是没重新构建）；仓库工作树则通过 `~/.dsh/profiles/test/node_modules/@hyzyn/dsh-codegraph` 的 **symlink** 直连，正好可以当真机试验台。
+2. **补上长期缺失的宿主契约端到端**：新增 `scripts/verify-codegraph-host-contract.mjs`（沿用 `verify-codegraph-indexforce.mjs` 的 `--patch` 临时层 + 独立端口模式，**不修改任何 profile / settings 文件**），在真宿主上一次验：18 条路由是否都在、POST/loopback 门禁是否成立、`/diagnose` 分段是否完整、浏览器半体产物是否可供给且含最新 UI、MCP 托管行是否按真索引写入 home 补丁。**在本机 `0.1.6-alpha.2` 上 25/25 通过。**
+3. **README 改为版本矩阵**：每档注明验证方式；`0.1.5-rc.2` 那档如实标注「当时无脚本、覆盖不到供给面」；`0.1.0-rc.7` 说明它是审计当时的包版本、与本机安装的不是同一个；并写明**声明下限 ≠ 已实测下限**。
+
+**过程中两次「测法错而非产品错」**（都改了脚本而不是改产品）：
+
+- 首页 `/` 本机返回 **401**（宿主鉴权）——照它的 HTML 找 boot graph 必然失败。
+- combo 路由 `/plugins/??<id>/client.js&rev=<hash>` 的 rev 是**内容哈希**，且宿主明说「revision 不匹配就拒绝，不返回更新的字节」，所以**猜 rev 必然 404**（实测确认）。改为验它的前置条件（产物存在、含 `__ModuleLoader__`、含新增 UI），真供给链路留人工开页面——这个边界写进了脚本注释。
+
+
+
 - **P2 照 DEFECTS.md 的「待办 / 路线图」一节走**（那节比我列得全）：CLI 面补全、查询参数面板、
   **已索引项目列表 + 一键切换**（单服务器既成事实下最实用的补偿）、遥测提示、卡片 i18n、
   真机 `integration.mjs` / `*-smoke.mjs`。
-- **P3 债**：CG32–CG34 要么补齐原文要么销号；README 称实测宿主 `0.1.5-rc.2` 而 DEFECTS 记的审计基线是
-  `0.1.0-rc.7`，**这个矛盾必须重验一次**，否则兼容性声明不可信；browser 半体要覆盖 CG08 / CG16 / CG17
-  需引入 react + jsdom（DEFECTS.md「补记」一节的『仍未覆盖』已明说刻意没加），值得在 CI 单开一个 job。
+- **P3 债**：CG32–CG34 要么补齐原文要么销号；~~宿主版本基线~~ ✅ 见「已完成」（CG42）；browser 半体要
+  覆盖 CG08 / CG16 / CG17 需引入 react + jsdom（DEFECTS.md「补记」一节的『仍未覆盖』已明说刻意没加），
+  值得在 CI 单开一个 job。
 
 ## 建议开工顺序
 

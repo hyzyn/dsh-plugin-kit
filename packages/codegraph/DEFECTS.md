@@ -7,7 +7,8 @@
 >
 > 审计基线：插件 0.4.1 / kit 0.4.0｜codegraph CLI **1.6.0**（两处安装，
 > 仓库自身有 41MB 索引）。跨包核对读到的运行时是 npx 缓存里那份 `@deepseek-ai/*`
-> （dsh 0.1.0-rc.7 / cordis 4.0.1），不是 README 声称实测过的 0.1.5-rc.2——凡涉及
+> （dsh 0.1.0-rc.7 / cordis 4.0.1），不是 README 声称实测过的 0.1.5-rc.2；本机当前装的
+> 又是 0.1.6-alpha.2（README 的兼容性一节已改为「版本矩阵 + 验证方式」，见 CG42）——凡涉及
 > 「loader / dsh-mcp-client 实际怎么消费」的结论换宿主版本后要重核。
 >
 > **本次连带改了 `@hyzyn/dsh-kit`（0.4.0 → 0.4.1）**：CG13 的 `dshHome()` 归一化与
@@ -27,7 +28,7 @@
 
 ## 现状
 
-**已修 38 / 待修 3**（CG01–CG29 + CG30/31/35/36/37/38 修于 0.4.2；CG39 修于本轮；CG32–CG34 等评审
+**已修 39 / 待修 3**（CG01–CG29 + CG30/31/35/36/37/38 修于 0.4.2；CG39 修于本轮；CG32–CG34 等评审
 原文补齐后编号推进）。索引表的「修复」列一句话记录改法与落点；行号已漂移，定位用
 `grep -n` 找符号（`locateIndex` / `locateCwdEdits` / `readPostBody` / `runViaSpawn` /
 `ensureStyle` / `installSessionReporter`）。代码里带 `CGxx` 注释的位置就是对应修复点，
@@ -86,13 +87,14 @@
 | CG36 | P3 | kit `killProcessTree` POSIX 分支无条件先打 `-pid`，而 dsh-mcp 的连接测试子进程不是组长（mcp:646 无 detached）——正常 ESRCH 被吞，窄窗口是「子进程已退出且 pid 被复用为组长」；这是另一个包的行为改变 | kit 加 `{ group }` 选项且**默认关**：只有 codegraph 运行器（自己 detached 启动）显式 opt-in，dsh-mcp 经默认路径回到「只单杀」的原语义 |
 | CG37 | P3 | CG08 的引用计数在闭包里、节点却文档级共享：同一份 client.js 被再次执行（HMR / 重载不换 document）时，新一代 `ensureStyle` 命中旧节点早退、`styleEl` 恒 undefined 摘不掉；反向旧代卸载摘掉新代在用的节点 | 计数改挂在**元素 dataset** 上（`cgRefs`）：ensure/release 都按 id 找节点、增减 dataset——跨代共享的节点配跨代共享的计数 |
 | CG38 | P3 | `build-client.mjs` 用**字符串** replace 内联 pure.js：内容里一旦出现 `$&` / `$'` / `$1` 会被当替换模式吃掉，且确定性、CI 照绿（当前 pure.js 零 `$`，潜伏） | 改函数替换 `replace(markerPattern, () => inlined)`；用含 `$& $1` 的探针实测穿透，pure.js 已还原 |
+| CG42 | P3 | **文档里的宿主版本基线自相矛盾**：README 称「已在 `0.1.5-rc.2` 上实测全链路」，DEFECTS 记的审计基线却是 `0.1.0-rc.7`，而本机实际在跑的是 **`0.1.6-alpha.2`**（`dsh.engines.dsh` 声明的下限 `>=0.1.2-rc.1` 又是第四个数）。三个版本号并存，谁也没说清「哪一档是验证过的」；且 `0.1.5-rc.2` 那句「实测」没有任何可复跑的脚本，而单测的 fake req/res 覆盖不到浏览器半体的供给面 | README 兼容性一节改为**版本矩阵**：每一档注明**验证方式**，`0.1.6-alpha.2` 挂 `scripts/verify-codegraph-host-contract.mjs`（真宿主 25/25），`0.1.5-rc.2` 如实标注「当时无脚本、覆盖不到供给面」，`0.1.0-rc.7` 说明它是审计当时的包版本、与本机安装的不是同一个；`0.1.2-rc.1` 明确为**声明下限 ≠ 已实测下限**。新增的真机脚本同时补上了长期缺失的「宿主契约」端到端（此前只有 indexForce 那一条） |
 | CG41 | P3 | **自动重建与 CLI 探测的竞态**：门禁写成 `cliProbeState.available !== true` 时，探测（挂载后异步跑，实测 200–300ms）尚未落地的窗口里，会话的第一条 `user/message` 会被静默跳过——表现为「自动重建时好时坏」。这是写用例时才暴露的：同一份代码三次断言里有一次不查 status | 判据改为只在**已确认不可用**（`=== false`）时跳过；代价是 CLI 真缺失时每项目多起一次注定失败的子进程，可接受。用例「每项目每次运行最多一次」与「索引新鲜」正是钉这个竞态的 |
 | CG40 | P3 | **采纳率分类器错收**：第一版只匹配「read / search」词根，于是 `read_image`（真实历史 248 次）、`read_pdf`、`web_search`（19 次）被算成「代码探索」——读截图、搜网页跟 codegraph 毫无关系，单这一个错误把分母灌了 11%（2344 → 2077 次），采纳率 2.2% 被压到 2.0%；反向问题是宽口径把 `read` 全算进分母，而 `read` 真实占 1956 次（grep 只有 100 次），导致「2.2%」这种会误导人的数字 | 加 `NON_EXPLORATORY_PATTERNS`（媒体 / 网络 / 文档类先判 other，先于文件探索匹配）；新增窄口径 `discovery`（grep/glob/search/find/list，排除 read），`/metrics` 与卡片同时报两个口径并标注主口径。实测数据与结论见 [ADOPTION-AUDIT.md](./ADOPTION-AUDIT.md) |
 | CG39 | P3 | **「init 只走 `init -- <path>`」偶发失败（两个独立成因，第二个才是主因）**：① 共享夹具 `emptyDir` 被 stub 写过 `.codegraph/`，复用即 409；② **断言本身写错**——`expect(argvToString).not.toContain('-y')` 会在整串输出上做子串匹配，而 `mkdtempSync` 的后缀是随机的，实测路径 `…/dsh-cg-route-yoKvfJ/…` 里就带 `-y`，于是「十次里红一次」且每次红在不同机器/运行上，看起来像产品 bug（全仓并行运行时更易命中） | ① 该用例与 409 用例各自 `mkdtempSync` 现造目录，删掉共享夹具；② 改为**解析 argv 后逐项比对**：`argv.filter(a => a.startsWith('-') && a !== '--')` 必须为空 + 完整 argv 相等（`--` 是位置参数终止符不是选项）。两个成因都已验证：前者同进程连续两次 init → 200 后 409；后者用含 `-y` 的路径直接复现旧断言判红、新断言通过 |
 
 > **0.4.2 之后的增补**：前瞻项记在 `ROADMAP.md`，已落地三项（systemPrompt 注入加索引门禁、
 > `GET /diagnose` 诊断包、采纳率仪表），详见其「已完成」一节。**只有已确认的缺陷进本文编号**
-> （本轮新增 CG39 / CG40 / CG41），新发现的缺陷继续按编号往后续。
+> （本轮新增 CG39 / CG40 / CG41 / CG42），新发现的缺陷继续按编号往后续。
 | CG15 追记 | P3 | 修复波把「4xx 一律视为明确拒绝、不再重试」定得过宽：宿主启动期路由未挂上时 `/follow` 得 404 → 永久放弃 | 404 与 5xx 同为瞬态，一并退避重试；其余 4xx（400 目录不存在等）保持记值不重试 |
 
 另有一条评审自报后自否的假阳性，留档防重查：「README 引用了不存在的

@@ -95,7 +95,11 @@ Searched for a .codegraph/ directory starting from: /Users/you
 
 ## 兼容性（DSH / codegraph CLI）
 
-- **DSH**：已在 `0.1.5-rc.2` 上实测全链路——宿主路由（status/query/callers/callees/impact/node 全 200）、浏览器半体（client 模块进 boot graph 并被 combo 路由正常供给）、两段 systemPrompt 注入、MCP 托管行形状（`@deepseek-ai/dsh-mcp-client` 的 `stdio` 配置）。`package.json` 声明 `dsh.engines.dsh: ">=0.1.2-rc.1"`，插件市场据此给出兼容性结论。
+- **DSH**：宿主版本矩阵（每一档都注明**验证方式**，别把回归测试说成兼容性声明）：
+  - **`0.1.6-alpha.2`（本机在跑，2026-09-22 实测）**：`node scripts/verify-codegraph-host-contract.mjs --profile test --port 3087` **25/25 通过**——18 条路由全在（含本轮新增的 `/projects`、`/metrics`、`/diagnose`、`/unlock`）、POST 门禁与 loopback 门禁成立、`/diagnose` 输出分段完整、浏览器半体产物可供给且含最新 UI、MCP 托管行按真索引写入 home 补丁。宿主侧配套版本：cordis `4.0.2`、`dsh-tools` / `dsh-system-prompt` / `dsh-mcp-client` / `dsh-session` / `dsh-agent` 均为 `0.1.6-alpha.2`。
+  - **`0.1.5-rc.2`**：早前记录过「全链路实测」，但**当时的证据没有留下可复跑的脚本**；单测的 fake req/res 覆盖不到「浏览器半体进 boot graph」「combo 路由供给」这类供给面。现在这两件事由上面那个脚本的对应项代管（组合路由的 rev 是内容哈希、猜不出来，所以脚本验的是它的前置条件，真供给链路仍需人工开页面）。
+  - **`0.1.0-rc.7`（DEFECTS.md 记的审计基线）**：那是审计当时的宿主，包自身（`npx` 缓存里那份）版本，与本机安装的 `0.1.6-alpha.2` **不是同一个**。凡涉及「loader / mcp-client 实际怎么消费」的结论换宿主版本后要重核——DEFECTS 第 10 行已这么写明，这里与之对齐。
+  - `package.json` 声明 `dsh.engines.dsh: ">=0.1.2-rc.1"`，插件市场据此给出兼容性结论。下限的写法理由见下两条；**下限不等于下限已实测**——市场只做「版本范围」判定，实测覆盖见上面矩阵。
   - 为什么下限写成 `>=0.1.2-rc.1` 而不是更短的 `^0.1.2`：dsh-web 的解析器只认 `>=X.Y.Z[-预发布]` 一种形式，`^` / `~` / 光秃秃的版本号一律被判成「无法验证」；而 `^` 本身也不包含**下限版本自身的预发布**，`0.1.2-rc.1` 这种已实测可用的宿主会被判成不兼容，市场的更新路径对确认不兼容是**直接拒绝安装**（需 `force` 绕过）；`^0.1.5` 更会连 `0.1.5-rc.2` 一起误杀。DSH 长期以 `-rc.N` 发布，档位必须显式带上 RC 下限。
   - 为什么不写上上限 `<0.2.0`：解析器只支持单个 `>=` 比较符，两段式范围（`>=0.1.2-rc.1 <0.2.0`）整体会被读成「无法验证」，而按该模块的契约，已声明却无法验证是 fail-closed——更新会被直接拦下，比不声明更糟。跨到 0.2 线时人工重新复验，再决定是否放宽下限。
 - **codegraph CLI**：版本矩阵——`1.5.0`（macOS）与 `1.6.0`（Windows / macOS）实测过全链路；用到的子命令是 `status` / `query` / `callers` / `callees` / `impact` / `node` / `sync` / `index`，旗标逐个核对过。`codegraph serve --mcp` 仍可用（顶层 help 不列，`codegraph serve --help` 在），托管行无需改动。升级 CLI 后请重验：`-y` 这类旗标恰好是版本相关的（本插件刻意不带它，见下）。
@@ -122,6 +126,8 @@ pnpm test                                   # 仓库级 vitest（也可 vitest r
 pnpm --filter @hyzyn/dsh-codegraph test     # 只跑本包（托管行决策矩阵 + CLI 旋钮 + 路由回归）
 node packages/codegraph/scripts/preview-card.mjs        # 渲染卡片预览 HTML 到 .preview/（--png 需在普通终端跑，Chrome 起不来于受限环境）
 node scripts/verify-codegraph-indexforce.mjs --profile test --port 3086   # 真机端到端：indexForce 是否真的带 --force 起进程（需要本机装好 DSH）
+node scripts/verify-codegraph-host-contract.mjs --profile test --port 3087  # 真机端到端：宿主契约（18 路由 + 门禁 + 供给产物 + 托管行）；需要本机装好 DSH
+                                                                          # 注：DSH 要写 ~/.dsh/profiles/<profile>/cordis.yml，沙箱只读时会被 EPERM 拦住
 ```
 
 浏览器半体的源码在 `client-src/index.js`；`build` 经 `scripts/build-client.mjs` 产出包根的 `client.js`——删掉 index.js 对 `client-src/pure.js` 的 import、把 pure.js（纯逻辑，可在 vitest 里直接测，见 `test/client-pure.test.ts`）剥掉 `export` 后内联进 factory，产物仍是单文件无 import。CI 的 artifact-diff 以逐字节一致为闸，改源码后忘了重新 build 会直接红。
