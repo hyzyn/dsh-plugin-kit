@@ -1560,6 +1560,38 @@ function effectiveProjectPath(runtime: RuntimeSync | undefined): string {
   // 绑定路径同样向上解析：显式绑定的若是已索引仓库的子目录，托管行也应对齐根
   return resolveIndexedRoot(current.defaultPath) ?? current.defaultPath
 }
+/** 写前复核的重读上限（与 dsh-mcp 的语义一致：避免活锁）。 */
+const PATCH_RECHECK_LIMIT = 3
+
+/**
+ * 补丁文件的「盖章」：mtime+size；文件不存在时是 `'absent'`。
+ *
+ * **`'absent'` 是一个可比较的值**，不是「没有值」——这正是 CG47 的关键：
+ * 复核必须能看出「原本不存在、现在被创建了」这一向。
+ */
+function patchStamp(stat?: { mtimeMs: number; size: number }): string {
+  return stat ? stat.mtimeMs + ':' + stat.size : 'absent'
+}
+
+/**
+ * 纯函数（CG04 / CG47）：写盘前是否该重读重做。
+ *
+ * 被别的进程写过就重读重做（≤{@link PATCH_RECHECK_LIMIT} 次，之后强写以免活锁）。
+ *
+ * **两个方向的比较都必须成立**：
+ *   - 存在 → 被改 / 被删：一直有的；
+ *   - **不存在 → 被创建**：CG47 修的就是这一向。原先条件是
+ *     `before !== undefined && stamp(after) !== stamp(before)`，前半个守卫把
+ *     「首次运行（补丁还没建）时另一个进程恰好创建了它」短路掉了——那正是 CG04
+ *     要治的「交叠即丢行」，只是漏在文件从无到有这一侧。而 `patchStamp` 特意为
+ *     「不存在」准备了 `'absent'`，说明本意就是要双向比较，那个守卫与它自相矛盾。
+ *
+ * 抽成纯函数是为了能直接测：真机上「恰好并发创建」极难复现，但**判定逻辑**可以穷举。
+ */
+export function shouldRecheckPatchWrite(beforeStamp: string, afterStamp: string, attempt: number): boolean {
+  return beforeStamp !== afterStamp && attempt < PATCH_RECHECK_LIMIT
+}
+
 /** 读 home 补丁 → 纯函数同步 → 有变化才原子写回（同目录 tmp + rename，走 kit）。 */
 function syncMcpRowOnDisk(decision: McpSyncDecision): { changed: boolean; status: McpSyncStatus } {
   const patchFile = homePatchPath()
@@ -1571,13 +1603,12 @@ function syncMcpRowOnDisk(decision: McpSyncDecision): { changed: boolean; status
       const text = before ? readFileSync(patchFile, 'utf8') : ''
       const outcome = syncManagedMcpRow(text.split('\n'), decision)
       if (!outcome.changed) return { changed: false, status: outcome.status }
-      // CG04：写前复核（盖章 mtime+size → 读 → 算 → 复核）。dsh-mcp 对这个文件做了
+      // CG04 + CG47：写前复核（盖章 mtime+size → 读 → 算 → 复核）。dsh-mcp 对这个文件做了
       // 同样的保护——它写前复核的是我们，我们却是裸 read→splice→rename，双方交叠时
       // 我们会整块覆盖它刚写的行（表现是 MCP 服务器莫名消失）。被写过就重读重做，
-      // ≤3 次后强写（与 dsh-mcp 的语义一致，避免活锁）。
+      // 判定见 shouldRecheckPatchWrite（含「不存在 → 被创建」那一向）。
       const after = existsSync(patchFile) ? statSync(patchFile) : undefined
-      const stamp = (stat?: { mtimeMs: number; size: number }): string => (stat ? stat.mtimeMs + ':' + stat.size : 'absent')
-      if (before !== undefined && stamp(after) !== stamp(before) && attempt < 3) continue
+      if (shouldRecheckPatchWrite(patchStamp(before), patchStamp(after), attempt)) continue
       // 沿用原文件权限（新文件 0600）。writeFileAtomic 内部的 writeFileSync 只会在
       // 创建临时文件时用这个 mode，umask 只会进一步收紧、不会放宽，所以写回后的
       // 权限不会比写之前更松。

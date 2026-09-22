@@ -262,6 +262,22 @@ export interface McpSyncOutcome {
  * 无变化时返回原数组引用（changed=false）。文件不存在时传入 ['']。
  */
 export declare function syncManagedMcpRow(lines: string[], decision: McpSyncDecision): McpSyncOutcome;
+/**
+ * 纯函数（CG04 / CG47）：写盘前是否该重读重做。
+ *
+ * 被别的进程写过就重读重做（≤{@link PATCH_RECHECK_LIMIT} 次，之后强写以免活锁）。
+ *
+ * **两个方向的比较都必须成立**：
+ *   - 存在 → 被改 / 被删：一直有的；
+ *   - **不存在 → 被创建**：CG47 修的就是这一向。原先条件是
+ *     `before !== undefined && stamp(after) !== stamp(before)`，前半个守卫把
+ *     「首次运行（补丁还没建）时另一个进程恰好创建了它」短路掉了——那正是 CG04
+ *     要治的「交叠即丢行」，只是漏在文件从无到有这一侧。而 `patchStamp` 特意为
+ *     「不存在」准备了 `'absent'`，说明本意就是要双向比较，那个守卫与它自相矛盾。
+ *
+ * 抽成纯函数是为了能直接测：真机上「恰好并发创建」极难复现，但**判定逻辑**可以穷举。
+ */
+export declare function shouldRecheckPatchWrite(beforeStamp: string, afterStamp: string, attempt: number): boolean;
 /** 解析后的 CLI 旋钮：超时 / 命令 / index 的 --force。 */
 export interface CliResolved {
     command: string;

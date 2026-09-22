@@ -28,7 +28,7 @@
 
 ## 现状
 
-**已修 43 / 已关闭 3 / 待修 0**（CG01–CG29 + CG30/31/35/36/37/38 修于 0.4.2；CG39–CG46 修于本轮；
+**已修 44 / 已关闭 3 / 待修 0**（CG01–CG29 + CG30/31/35/36/37/38 修于 0.4.2；CG39–CG47 修于本轮；
 CG32–CG34 **因原文从未随附而关闭**，不再挂账）。索引表的「修复」列一句话记录改法与落点；行号已漂移，定位用
 `grep -n` 找符号（`locateIndex` / `locateCwdEdits` / `readPostBody` / `runViaSpawn` /
 `ensureStyle` / `installSessionReporter`）。代码里带 `CGxx` 注释的位置就是对应修复点，
@@ -36,7 +36,7 @@ CG32–CG34 **因原文从未随附而关闭**，不再挂账）。索引表的�
 
 > 数字口径（**曾算错过一次，故写明**）：`已修 = 表内去重编号数 − 已关闭数`，实测复现过历史每一档
 > （`dd3de493` 35、`1dc45292` 40、`7b24ce2b` 41、`79658a8f` 42）。当前 46 − 3 = **43**。
-> 一处易错点：`CG15 追记` 是**同一编号的补充记录**（第 47 行表格行），不额外计入「已修」——
+> 一处易错点：`CG15 追记` 是**同一编号的补充记录**（表格第 47 行），不额外计入「已修」——
 > 按行数算会多 1，按去重编号算才对。P0 那轮我按「加了 1 条却 +2」写成了 44，已更正。
 
 > **CG46**（P0 实测时新发现并已修）：把上游 CLI 自己的**常驻 daemon** 误判成「我们没回收的
@@ -97,6 +97,7 @@ CG32–CG34 **因原文从未随附而关闭**，不再挂账）。索引表的�
 | CG36 | P3 | kit `killProcessTree` POSIX 分支无条件先打 `-pid`，而 dsh-mcp 的连接测试子进程不是组长（mcp:646 无 detached）——正常 ESRCH 被吞，窄窗口是「子进程已退出且 pid 被复用为组长」；这是另一个包的行为改变 | kit 加 `{ group }` 选项且**默认关**：只有 codegraph 运行器（自己 detached 启动）显式 opt-in，dsh-mcp 经默认路径回到「只单杀」的原语义 |
 | CG37 | P3 | CG08 的引用计数在闭包里、节点却文档级共享：同一份 client.js 被再次执行（HMR / 重载不换 document）时，新一代 `ensureStyle` 命中旧节点早退、`styleEl` 恒 undefined 摘不掉；反向旧代卸载摘掉新代在用的节点 | 计数改挂在**元素 dataset** 上（`cgRefs`）：ensure/release 都按 id 找节点、增减 dataset——跨代共享的节点配跨代共享的计数 |
 | CG38 | P3 | `build-client.mjs` 用**字符串** replace 内联 pure.js：内容里一旦出现 `$&` / `$'` / `$1` 会被当替换模式吃掉，且确定性、CI 照绿（当前 pure.js 零 `$`，潜伏） | 改函数替换 `replace(markerPattern, () => inlined)`；用含 `$& $1` 的探针实测穿透，pure.js 已还原 |
+| CG47 | P2 | **CG04 的写前复核漏了一个方向**（复核 CG04 时发现）：条件是 `before !== undefined && stamp(after) !== stamp(before)`，前半个守卫把「**补丁文件本来不存在、竞态期间被别的进程创建了**」这一向短路掉——首次运行时 `before` 恒为 undefined，于是**恰恰在最容易交叠的那一刻跳过复核、直接覆盖**，而这正是 CG04 要治的「交叠即丢行」。自相矛盾的证据：`stamp()` 特意把「不存在」编码成可比较的 `'absent'`，说明本意就是双向比较。真机难复现（要卡在文件从无到有的瞬间），所以此前没人发现 | 判据抽成纯函数 `shouldRecheckPatchWrite(before, after, attempt)`（可直接穷举四向），去掉 `before !== undefined` 守卫改为双向比较；补 5 条用例（不存在→被创建必须重做、仍不存在不重做、存在→被改/被删仍重做、上限 3 次强写）；变异验证：把守卫加回去，「不存在→被创建」一条立刻红 |
 | CG46 | P3 | **把上游 CLI 的常驻 daemon 误判成「未回收的进程」**（P0 开工实测时暴露）：同一 `cwd` 下 `pgrep -f 'serve.*--mcp'` 会看到**两个** pid——我们 spawn 的 MCP 子进程（dispose 后 ~3ms 内退出），与 codegraph CLI 自己 detach 的**常驻 daemon**（注册在项目 `.codegraph/daemon.pid`、socket `.codegraph/daemon.sock`，dispose 后存活 >24s，是上游跨会话复用索引的设计）。第一版 agent-scope 验证脚本按「cwd 下 pid 清空」断言，于是**假失败**：报告「A 残留 pid」并把上游的正常行为写成疑似泄漏。次生坑：`lsof` 报 realpath（`/private/var/...`）而临时目录是 `/var/folders/...`（macOS 符号链接），字符串直比会**永远不相等**，看起来像「进程压根没起来」 | ① 按 `daemon.pid` **排除** daemon 后只断言我们那一份（实测 dispose 后 3ms 消失）；② cwd 比较一律 `realpathSync` 归一；③ 断言改**条件轮询**（`waitFor`）而不是固定 sleep——CG43 的同一教训；④ 把这条写进脚本注释与 `verify-codegraph-agent-scope.mjs` 的头注释，避免下一个人重踩 |
 | CG45 | P2 | **两个真机验证脚本会污染用户真实配置**：脚本起被测宿主时继承真实 `DSH_HOME`，而插件按 `dshHome()` 把 codegraph 托管行写进 `$DSH_HOME/cordis.patch.yml`——**指向的却是脚本的临时项目目录**，脚本结束即 `rmSync` 那个目录，用户真实配置里就留下一行指向不存在路径的托管行。头注释当时写的是「不修改任何已有 profile / settings 文件」，只挡住了 profile 补丁，漏了插件自身的副作用。**实测复现**（去掉隔离后跑一次）：真实补丁 427B → 447B，`cwd` 被写成 `/var/folders/.../cg-host-contract-xxx/project` | ① 脚本给被测宿主**隔离的 DSH_HOME**：整份拷入被测 profile（几十 KB），组装产物与托管行全部落在临时目录，真实 `~/.dsh` 全程只读；② 收尾新增**自证断言**「真实补丁逐字节未变」，把「不污染用户配置」从承诺变成会被执行的检查（实测修复后跑一次：32/32 通过，且真实补丁哈希前后一致）；③ 新增 `test/verify-scripts-safety.test.ts`（6 条）静态守卫这两条性质——真机脚本进不了 CI，静态断言是这里唯一能常驻的防线；变异验证：去掉 `DSH_HOME: isolatedHome` 即红 |
 | CG44 | P2 | **工具栏按钮溢出被裁**（用户截图实证）：`.cg_toolbarBtns` 是 `flex-wrap:nowrap` + `flex-shrink:0`——**整组不许断行**。早期 5 个按钮（约 300px）时这招是对的（要么整组留在标题右边、要么整组换行）；P2 加到 9 个（约 637px）后侧边栏只有 ~360px，整组不许断行就只能溢出，**「撤销索引」被裁掉、点不到**。同因还有两处：搜索行仍是固定 3 列 `grid-template-columns`（P2 把「探索/上下文」放进这一行后变成 5 项，会把两个输入框挤到不可用）；「探索/上下文」原本放在工具栏，但它们吃的是**搜索框的关键词**，语义错位又让工具栏更长 | ① `.cg_toolbarBtns` 改 `flex-wrap:wrap` + `justify-content:flex-end`（折成两行，实测 2 行 357/272px）；② `.cg_row` 从固定 grid 改 `flex-wrap:wrap`，输入框 `flex:1 1 160px` 可压缩；③ 把「探索/上下文」移到搜索行（与「搜索」同组，共用 query），「诊断包」从「撤销索引」之后移到只读组末尾（只读动作不该紧邻破坏性动作）；④ 新增**布局守卫用例**（读源码断言这两处必须 `flex-wrap:wrap`、输入框必须可伸缩、探索/上下文必须与搜索同区），并做变异验证：还原成 nowrap / 固定 grid 时用例立刻红 |

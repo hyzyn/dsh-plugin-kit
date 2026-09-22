@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import yaml from 'js-yaml'
-import { indexState, locateIndex, syncManagedMcpRow } from '../src/index.js'
+import { indexState, locateIndex, shouldRecheckPatchWrite, syncManagedMcpRow } from '../src/index.js'
 import type { McpSyncDecision } from '../src/index.js'
 
 /** 已索引目录（.codegraph/ 里有索引库）。 */
@@ -555,5 +555,38 @@ describe('CG12：托管行现有 cwd 的健康度', () => {
     const gone = syncManagedMcpRow(stale, decision(plainDir))
     expect(gone.status.cwd).toBe('/no/such/dir-dsh-cg')
     expect(gone.status.cwdExists).toBe(false)
+  })
+})
+
+describe('CG47：写前复核必须双向（含「不存在 → 被创建」）', () => {
+  /*
+   * CG04 加的写前复核漏了一个方向：条件是
+   *   `before !== undefined && stamp(after) !== stamp(before)`
+   * 前半个守卫把「首次运行时补丁还没建（before=undefined）、竞态期间被别的进程创建了」
+   * 这一向短路掉——而这正是 CG04 要治的「交叠即丢行」。
+   *
+   * 真机上「恰好并发创建」极难复现，所以判据抽成了纯函数（shouldRecheckPatchWrite），
+   * 这里把四种组合穷举掉。
+   */
+  it('文件本来不存在 → 被创建：必须重读重做（CG47 修的就是这一向）', () => {
+    expect(shouldRecheckPatchWrite('absent', '1234.5:200', 0)).toBe(true)
+  })
+
+  it('文件本来不存在 → 仍不存在：不重做（没有别人动过）', () => {
+    expect(shouldRecheckPatchWrite('absent', 'absent', 0)).toBe(false)
+  })
+
+  it('文件本来就在 → 被改 / 被删：仍然重做（CG04 原有行为不能回退）', () => {
+    expect(shouldRecheckPatchWrite('1:10', '2:99', 0)).toBe(true)
+    expect(shouldRecheckPatchWrite('1:10', 'absent', 0)).toBe(true)
+  })
+
+  it('文件本来就在 → 没变：直接写（正常路径不重做）', () => {
+    expect(shouldRecheckPatchWrite('1:10', '1:10', 0)).toBe(false)
+  })
+
+  it('重读上限 3 次后强写（避免活锁）', () => {
+    expect(shouldRecheckPatchWrite('1:10', '2:20', 2)).toBe(true)
+    expect(shouldRecheckPatchWrite('1:10', '2:20', 3)).toBe(false)
   })
 })
