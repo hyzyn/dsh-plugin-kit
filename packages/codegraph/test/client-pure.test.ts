@@ -350,13 +350,35 @@ describe('UX 重构：面板信息架构（顺序 / 分层）守卫', () => {
     expect(lifecycle.lastIndexOf("className: 'cg_btn'", syncAt), 'Sync 应使用 cg_btn 主样式').toBeGreaterThan(lifecycle.lastIndexOf("className: 'cg_btnGhost'", syncAt))
   })
 
-  it('查询区拆成两个工作流：符号查询在上，「改动影响」单列子行', () => {
-    expect(src).toContain("'改动影响'")
-    // 改动文件输入必须在「改动影响」标记之后（原先与类型/上限混在一行）
-    expect(pos("'改动影响'")).toBeLessThan(pos("'改动文件'"))
+  it('查询区拆成两个工作流：符号查询（吃关键词）在上，「其他查询」单列子行', () => {
+    expect(src).toContain("'其他查询'")
+    // 改动文件输入必须在「其他查询」标记之后（原先与类型/上限混在一行）
+    expect(pos("'其他查询'")).toBeLessThan(pos("'改动文件'"))
     // 「类型」「上限」贴着搜索按钮（它们是 query 的参数），不跟改动文件混
     expect(pos("busyOr('search'")).toBeLessThan(pos("'类型'"))
-    expect(pos("'类型'")).toBeLessThan(pos("'改动影响'"))
+    expect(pos("'类型'")).toBeLessThan(pos("'其他查询'"))
+  })
+
+  it('「文件」按钮与它的结果同处一区（不再与结果区割裂）', () => {
+    /*
+     * 用户反馈：「上面的文件和下面的搜索是一个东西吗，现在太割裂了」。
+     * 上一轮我只把**结果区**上移，忘了「文件」的**按钮**还在「查看与诊断」里——
+     * 同一个东西的按钮与结果分居两处，中间还夹着一个展开的诊断包。
+     *
+     * 这条钉住：文件按钮在「搜索与查询」组内、且在结果区之前（= 与结果区同处一区）。
+     */
+    const fileButton = pos("busyOr('files'")
+    expect(fileButton, '文件按钮应在「搜索与查询」组内').toBeGreaterThan(pos("group('搜索与查询'"))
+    expect(fileButton, '文件按钮应在结果区之前（同处一区）').toBeLessThan(pos("group('结果'"))
+    // 且不该再出现在「查看与诊断」里（那是卡片/CLI 自检动作，不产生查询结果）
+    const diagnostics = src.slice(pos("'查看与诊断'"), pos("group('搜索与查询'"))
+    expect(diagnostics, '「查看与诊断」里不该再有文件按钮').not.toContain("busyOr('files'")
+  })
+
+  it('诊断包默认折叠（展开的 260px 会把下方结果区推远）', () => {
+    // report 的 details 不该带 open:true——它很长，自动展开会挡住结果
+    const details = src.slice(pos('诊断包（可整段复制贴 issue）') - 400, pos('诊断包（可整段复制贴 issue）'))
+    expect(details, '诊断包应默认折叠').not.toContain('open: true')
   })
 
   it('Agent 集成拆两行：「跟随与提示词」与「MCP 挂载」分开', () => {

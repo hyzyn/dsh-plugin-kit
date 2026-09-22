@@ -1338,16 +1338,6 @@ window.__ModuleLoader__.load({
                         onClick: reprobe,
                         children: reprobing ? '探测中…' : '重新探测',
                       }),
-                      // P2 只读查询：文件结构。它不吃任何输入，所以留在这一组；「影响面」
-                      // 吃「改动文件」输入，已挪到搜索与查询组里贴着它的输入框。
-                      jsx('button', {
-                        type: 'button',
-                        className: 'cg_btnGhost',
-                        disabled: loading,
-                        title: 'codegraph files --json：列出索引里的文件结构（语言 / 符号数 / 大小）',
-                        onClick: () => runQuery('files'),
-                        children: busyOr('files', '文件', '读取中…'),
-                      }),
                       // 一键诊断包（P1-b）：把 PATH / 托管行 / 索引 / daemon / 最近失败
                       // 的原文一次收齐，供排障与贴 issue。它是**只读**动作，排在危险动作之前；
                       // 此前排在「撤销索引」之后、紧邻「取消」，语义上是错位的。
@@ -1379,12 +1369,13 @@ window.__ModuleLoader__.load({
                 // 这里，反馈落在按键下方最近的位置；来自搜索的报错也汇到同一条反馈区。
                 error ? jsx('p', { className: 'cg_error', children: error }) : null,
                 ok ? jsx('p', { className: 'cg_ok', children: ok }) : null,
-                // 诊断包（P1-b）：展开态 + 复制按钮。用 details 而不是直接铺开——它很长
-                // （补丁区块 + daemon 日志尾），铺开会把下面的状态面板挤到屏幕外。
+                // 诊断包（P1-b）：**默认折叠** + 复制按钮。它很长（补丁区块 + daemon 日志尾，
+                // 上限 260px），自动展开会把下方的「搜索与查询 / 结果区」整块推远——用户
+                // 反馈的「文件与结果太割裂」里，这一块正是中间那道墙。摘要行本身（含「复制」）
+                // 出现就是「已生成」的反馈，要看内容点一下即可。
                 report !== ''
                   ? jsxs('details', {
                     className: 'cg_details',
-                    open: true,
                     children: [
                       jsxs('summary', {
                         children: [
@@ -1477,13 +1468,28 @@ window.__ModuleLoader__.load({
                       }),
                     ],
                   }),
-                  // 改动影响：affected 的输入与按钮。插件刻意不自己去猜改动列表
-                  // （不读 git status、不猜编辑器状态），所以需要用户手填；「影响面」
-                  // 按钮吃左边这份列表，依赖关系贴着输入框一眼可见。窄栏下自动折行。
-                  jsx('div', { className: 'cg_rowLabel', children: '改动影响' }),
+                  // 其他查询：**不用搜索框关键词**的几种查询。与上面那行分开是因为它们的
+                  // 心智不同（上面是「拿关键词查符号」），混在一起会让人以为「文件」也吃关键词。
+                  //
+                  // 「文件」原先在「查看与诊断」里，与它的结果分居两处——用户直接问
+                  // 「上面的文件和下面的搜索是一个东西吗，现在太割裂了」。按钮和它产生的
+                  // 结果必须挨着：结果区（页签）就在本组下方，所以它属于这一组。
+                  //
+                  // 「改动文件 / 影响面」：插件刻意不自己去猜改动列表（不读 git status、
+                  // 不猜编辑器状态），所以需要用户手填；「影响面」吃左边这份列表，
+                  // 依赖关系贴着输入框一眼可见。窄栏下自动折行。
+                  jsx('div', { className: 'cg_rowLabel', children: '其他查询' }),
                   jsxs('div', {
                     className: 'cg_queryOpts',
                     children: [
+                      jsx('button', {
+                        type: 'button',
+                        className: 'cg_btnGhost',
+                        disabled: loading,
+                        title: 'codegraph files --json：列出索引里的文件结构（语言 / 符号数 / 大小）。不吃搜索框的关键词',
+                        onClick: () => runQuery('files'),
+                        children: busyOr('files', '文件', '读取中…'),
+                      }),
                       jsx('label', {
                         className: 'cg_opt cg_optWide',
                         title: 'codegraph affected <files…>：由改动文件反查受影响的测试。一行一个，也可用逗号分隔；留空则 CLI 回「No files provided」',
