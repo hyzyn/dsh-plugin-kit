@@ -88,6 +88,33 @@ describe('P0：agent-integration 集成脚本必须隔离 DSH_HOME（它会挂�
   })
 })
 
+describe('per-agent 检查器：对**正在跑的宿主**，必须只读', () => {
+  const src = readFileSync(new URL('../../../scripts/check-codegraph-per-agent.mjs', import.meta.url), 'utf8')
+
+  it('不写任何文件、不发任何写请求', () => {
+    // 它对着用户正在用的实例跑，只许读：写配置会改用户状态，而它的职责只是「看」
+    expect(src, '不该写文件').not.toMatch(/writeFileSync|appendFileSync|mkdirSync|rmSync/)
+    expect(src, '不该发写请求').not.toMatch(/method:\s*['"]POST['"]|method:\s*['"]PUT['"]|method:\s*['"]DELETE['"]/)
+    expect(src, '只应 GET 插件路由').toContain('fetch(')
+  })
+
+  it('DSH_HOME 若已设置，它就是 ~/.dsh（多拼一层会静默 SKIP 掉互斥检查）', () => {
+    // 本脚本第一版写成 join(DSH_HOME ?? homedir(), '.dsh', ...)，在 DSH_HOME=~/.dsh 时
+    // 得到 ~/.dsh/.dsh/cordis.patch.yml → 文件不存在 → 整条互斥检查被 SKIP 成「通过」
+    //
+    // 断言只匹配**代码形态**（join(process.env.DSH_HOME…）：第一版写成宽松的
+    // `DSH_HOME[\s\S]{0,40}'\.dsh'`，结果被上面这段**记录踩坑的注释本身**命中而假红
+    // ——这个仓库里同一个坑踩过好几次（注释里引用了被禁的写法）。
+    expect(src, '不该在 DSH_HOME 后再拼 .dsh').not.toMatch(/join\(process\.env\.DSH_HOME/)
+    expect(src).toContain("join(dshHome, 'cordis.patch.yml')")
+  })
+
+  it('进程层用「宿主直接子进程」而不是全局按名匹配（CG46：daemon 会数出双倍）', () => {
+    expect(src).toContain("'-P'")
+    expect(src, '应注释说明为什么').toMatch(/daemon/)
+  })
+})
+
 describe('CG49：真浏览器 UI 脚本（自起隔离宿主 + 真 Chrome）', () => {
   const src = readFileSync(new URL('../../../scripts/verify-codegraph-client-ui.mjs', import.meta.url), 'utf8')
 
