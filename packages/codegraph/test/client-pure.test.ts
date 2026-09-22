@@ -384,12 +384,18 @@ describe('UX 重构：面板信息架构（顺序 / 分层）守卫', () => {
      *
      * 修法：挪进「索引状态」的**组头右侧**——「这个按钮属于这一组」一眼可见。
      */
-    const refresh = pos("busyOr('status'")
+    const refresh = pos('onClick: loadStatus')
     expect(refresh, '刷新应在「索引状态」组内').toBeGreaterThan(pos("group('索引状态'"))
     expect(refresh, '刷新应在「索引维护」之前（即属于索引状态组）').toBeLessThan(pos("group('索引维护'"))
+    // 组头里的辅助动作用**图标**而不是文字按钮（不抢组内主控件的视觉重量）
+    const button = src.slice(refresh - 700, refresh + 700)
+    expect(button, '刷新应是图标按钮').toContain('cg_iconBtn')
+    expect(button, '图标按钮必须带 aria-label').toContain("'aria-label'")
+    expect(button, '图标按钮必须带 title（悬停可读）').toContain('title:')
+    expect(button, '应使用刷新图标路径').toContain('REFRESH_PATH')
     // 「查看与诊断」里不该再有它
     const diagnostics = src.slice(pos("'查看与诊断'"), pos("group('搜索与查询'"))
-    expect(diagnostics, '「查看与诊断」里不该再有刷新状态').not.toContain("busyOr('status'")
+    expect(diagnostics, '「查看与诊断」里不该再有刷新').not.toContain('onClick: loadStatus')
   })
 
   it('「索引状态」组无条件渲染（否则读取失败时连重试入口都没了）', () => {
@@ -471,6 +477,18 @@ describe('UX 重构：忙碌态指示器（在标题行，不在正文中间）'
     expect(cancelAt, '取消不应与删除类动作同格（那是撤销索引的位置）').toBeLessThan(slotAt)
   })
 
+  it('刷新图标只在**本动作**在跑时自转（不是任何动作都转）', () => {
+    /*
+     * `loading` 是全局忙态：搜索时它也是 true。若图标跟着 loading 转，搜个符号就会看到
+     * 刷新图标在转——那不是「正在刷新」而是错误信息。所以自转由 busyAction === 'status'
+     * 驱动（busyAction 正是为「哪个动作在跑」引入的）。
+     */
+    expect(src).toContain("'data-busy': busyAction === 'status' ? '1' : undefined")
+    expect(src).toContain('.cg_iconBtn[data-busy="1"] svg')
+    // 减少动态效果时不自转，靠 aria/title 表达
+    expect(src).toMatch(/prefers-reduced-motion:reduce\)\{\.cg_spinner,\.cg_iconBtn\[data-busy="1"\] svg\{animation:none\}\}/)
+  })
+
   it('结果区在「搜索与查询」下方、且在「Agent 集成」之前（不再沉到面板最底部）', () => {
     /*
      * 用户反馈：「点击文件看不到对应的列表」——结果区原先在 Agent 集成**之后**
@@ -527,11 +545,13 @@ describe('UX 重构：忙碌态指示器（在标题行，不在正文中间）'
     expect(src, '缺少 busyAction 状态').toContain('busyAction')
     expect(src, '缺少 busyOr 助手').toContain('const busyOr =')
     expect(src, '缺少按钮内忙碌样式').toContain('cg_btnBusy')
-    // 11 个动作按钮：init / sync / index / unlock / status / files / uninit /
-    // search / explore / context / affected
+    // 10 个**文字**动作按钮走 busyOr：init / sync / index / unlock / files / uninit /
+    // search / explore / context / affected。
+    // 第 11 个（status = 索引状态组头的刷新）是**图标**按钮，文案换成 aria/title，
+    // 忙碌态用图标自转（data-busy）——见下一条断言。
     const used = [...src.matchAll(/busyOr\('/g)].length
-    expect(used, `接了 busyOr 的按钮数 = ${String(used)}，应为 11`).toBe(11)
-    for (const action of ['init', 'sync', 'index', 'unlock', 'status', 'files', 'uninit', 'search', 'explore', 'context', 'affected']) {
+    expect(used, `接了 busyOr 的按钮数 = ${String(used)}，应为 10`).toBe(10)
+    for (const action of ['init', 'sync', 'index', 'unlock', 'files', 'uninit', 'search', 'explore', 'context', 'affected']) {
       expect(src, `缺少动作键：${action}`).toContain(`busyOr('${action}'`)
     }
   })

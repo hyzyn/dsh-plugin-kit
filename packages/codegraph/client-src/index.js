@@ -62,7 +62,14 @@ window.__ModuleLoader__.load({
       '.cg_btnBusy{display:inline-flex;align-items:center;gap:6px}',
       '@keyframes cg_spin{to{transform:rotate(360deg)}}',
       // 尊重「减少动态效果」：关掉旋转，靠文案与取消按钮继续表达「正在进行」。
-      '@media (prefers-reduced-motion:reduce){.cg_spinner{animation:none}}',
+      // 组头里的图标按钮：紧凑、无边框，hover 才给底色——它是辅助动作，不抢视觉。
+      '.cg_iconBtn{display:inline-flex;align-items:center;justify-content:center;flex:none;width:24px;height:24px;padding:0;color:var(--dsw-alias-label-secondary);background:0 0;border:1px solid transparent;border-radius:6px;cursor:pointer}',
+      '.cg_iconBtn:hover:not(:disabled){color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}',
+      '.cg_iconBtn:disabled{opacity:.5;cursor:default}',
+      // 刷新进行中：图标自转（复用 cg_spin）。只在**本动作**在跑时转（data-busy 由
+      // busyAction 驱动），否则搜个符号也会让刷新图标转起来，等于报错信息。
+      '.cg_iconBtn[data-busy="1"] svg{animation:cg_spin .7s linear infinite}',
+      '@media (prefers-reduced-motion:reduce){.cg_spinner,.cg_iconBtn[data-busy="1"] svg{animation:none}}',
       '.cg_subtitle{color:var(--dsw-alias-label-tertiary);font-size:11.5px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:360px}',
       // 索引维护按钮组改成「可换行的行」而不是「整组 nowrap」：
       // 早先只有 5 个按钮，整组 nowrap + margin-left:auto 能让它们要么留在标题右边、
@@ -248,6 +255,13 @@ window.__ModuleLoader__.load({
 
     /* ================================ 设置卡片 ================================ */
 
+    /**
+     * 刷新图标（Material「refresh」的路径，viewBox 24×24）。
+     * 组头里的动作用图标而不是文字：它是「属于这一组」的辅助动作，不该和组内主控件
+     * 抢视觉重量（用户建议改成图标）。语义靠 `title` + `aria-label` 补足——
+     * 纯图标按钮对读屏与悬停都必须有话说。
+     */
+    const REFRESH_PATH = 'M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-8 8s3.58 8 8 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z'
     const CHEVRON_PATH = 'M11.8486 5.5L11.4238 5.92383L8.69727 8.65137C8.44157 8.90706 8.21562 9.13382 8.01172 9.29785C7.79912 9.46883 7.55595 9.61756 7.25 9.66602C7.08435 9.69222 6.91565 9.69222 6.75 9.66602C6.44405 9.61756 6.20088 9.46883 5.98828 9.29785C5.78438 9.13382 5.55843 9.13382 5.30273 8.65137L2.57617 5.92383L2.15137 5.5L3 4.65137L3.42383 5.07617L6.15137 7.80273C6.42595 8.07732 6.59876 8.24849 6.74023 8.3623C6.87291 8.46904 6.92272 8.47813 6.9375 8.48047C6.97895 8.48703 7.02105 8.48703 7.0625 8.48047C7.07728 8.47813 7.12709 8.46904 7.25977 8.3623C7.40124 8.24849 7.57405 8.07732 7.84863 7.80273L10.5762 5.07617L11 4.65137L11.8486 5.5Z'
 
     // P3：fmtNum / fmtBytes / fmtTime 已抽到 client-src/pure.js（可直接进 vitest），
@@ -1245,11 +1259,24 @@ window.__ModuleLoader__.load({
                       ]
                     : [jsx('pre', { className: 'cg_pre', children: statusRawText })], jsx('button', {
                   type: 'button',
-                  className: 'cg_btnGhost',
+                  className: 'cg_iconBtn',
                   disabled: loading,
-                  title: '重新读取 `codegraph status --json`，刷新本组的索引状态（不会重建索引）',
+                  // 只有**本动作**在跑时才转（busyAction），不是任何动作都转
+                  'data-busy': busyAction === 'status' ? '1' : undefined,
+                  'aria-label': busyAction === 'status' ? '正在读取索引状态' : '刷新索引状态',
+                  title: busyAction === 'status'
+                    ? '正在读取索引状态…'
+                    : '重新读取 `codegraph status --json`，刷新本组的索引状态（不会重建索引）',
                   onClick: loadStatus,
-                  children: busyOr('status', '刷新', '刷新中…'),
+                  children: jsx('svg', {
+                    width: '14',
+                    height: '14',
+                    viewBox: '0 0 24 24',
+                    fill: 'none',
+                    xmlns: 'http://www.w3.org/2000/svg',
+                    'aria-hidden': 'true',
+                    children: jsx('path', { d: REFRESH_PATH, fill: 'currentColor' }),
+                  }),
                 })),
                 // ── 索引维护（UX 重构：贴着索引状态，按钮分三层）──
                 // 原先把 9 个按钮无层级地铺在一行里：每天点的 Sync、排障用的诊断包、罕见的
