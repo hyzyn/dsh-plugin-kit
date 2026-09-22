@@ -65,3 +65,41 @@ export function nextRetryDelayMs(current) {
 export function truncationNote(total, shown) {
   return total > shown ? '已显示前 ' + shown + ' 条，共 ' + total + ' 条' : ''
 }
+
+/**
+ * P1 采纳率仪表：把 `/metrics` 的 summary 翻成一行卡片文案（无数据时返回 ''）。
+ *
+ * 三个刻意的取舍：
+ *   - **主口径是「发现类」**（grep/glob/search/find/list）：`read` 占宽口径分母的
+ *     绝大多数，而它多半是「打开已知道要改的文件」——codegraph 替代的是「找东西」。
+ *     实测宽口径 2.2% / 窄口径 28.8%，只报宽口径会让读者得出「codegraph 没用」的
+ *     错误结论。宽口径仍然报出来，但明确标注「含读取」。
+ *   - **分母为 0 不显示 0%**，而是明说「还没有发现类调用」——「一次都没探索」与
+ *     「探索了但全用 grep」是两回事。
+ *   - **未索引项目的数字要标明**：那种项目里模型本来就不该用 codegraph，拿它的
+ *     采纳率去评价提示词是错的。
+ */
+export function adoptionText(summary) {
+  if (!summary || typeof summary !== 'object') return ''
+  const codegraph = Number(summary.codegraph ?? 0)
+  const discovery = Number(summary.discovery ?? 0)
+  const file = Number(summary.file ?? 0)
+  const other = Number(summary.other ?? 0)
+  const discoveryTotal = Number(summary.discoveryTotal ?? discovery + codegraph)
+  const indexedNote = summary.indexed === false ? '（该项目未索引，这个数字不代表提示词效果）' : ''
+  // 完全没有记录（连其它工具都没有）才说「没有工具调用记录」；否则要区分
+  // 「只有 bash/edit 这类」与「有读取但没有发现类」——两者含义不同。
+  if (discoveryTotal === 0 && file === 0) {
+    return other === 0
+      ? '采纳率：本次宿主运行期间该项目还没有工具调用记录'
+      : `采纳率：还没有探索类调用（另 ${other} 次其它工具，如 bash / edit）`
+  }
+  if (discoveryTotal === 0) {
+    return `采纳率：还没有发现类调用（codegraph ${codegraph} 次 / 读取 ${file} 次；另 ${other} 次其它工具）${indexedNote}`
+  }
+  const narrow = Math.round((codegraph / discoveryTotal) * 100)
+  const broad = Math.round((codegraph / (codegraph + file)) * 100)
+  const broadNote = file === 0 ? '' : `（宽口径含读取 ${broad}%）`
+  const otherNote = other === 0 ? '' : `（另 ${other} 次其它工具）`
+  return `采纳率：codegraph ${codegraph} 次 / 发现类 ${discovery} 次 → ${narrow}%${broadNote}${otherNote}${indexedNote}`
+}

@@ -20,7 +20,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { apply } from '../src/index.js'
+import { apply, staleReasonsFromStatus } from '../src/index.js'
 
 const POSIX = process.platform !== 'win32'
 const sandbox = mkdtempSync(join(tmpdir(), 'dsh-cg-route-'))
@@ -28,17 +28,28 @@ const dshHome = join(sandbox, 'dsh-home')
 const project = join(sandbox, 'project')
 const originalDshHome = process.env.DSH_HOME
 
-// init 路由的夹具：一个干净目录（未初始化）、一个已索引目录、一个普通文件（用来撞
-// 「路径不是目录」）。都在 sandbox 下，随 afterAll 一起回收。
-const emptyDir = join(sandbox, 'empty-project')
-const indexedDir = join(sandbox, 'already-indexed')
+// init 路由的夹具只剩一个普通文件（用来撞「路径不是目录」）：init 的目标目录一律
+// 由用例自己现造——stub init 会真的写 `.codegraph/`，共享目录会让用例之间互相污染
+// （详见「init：只走 init -- <path>」那条的注释）。sandbox 随 afterAll 一起回收。
 const someFile = join(sandbox, 'a-file.txt')
+
+/**
+ * 造一个**已索引**项目目录（`.codegraph/` 里有索引库）。
+ *
+ * P1-a 之后 usage 段还受「生效路径是否真是有效索引」这道门禁，所以凡是要断言
+ * 「两段都注入」的用例，生效路径都必须落在这样的目录上；反过来，未索引目录
+ * 只该拿到公告段——那正是新增的门禁用例要钉的行为。
+ */
+function indexedProject(name: string): string {
+  const dir = mkdtempSync(join(sandbox, name))
+  mkdirSync(join(dir, '.codegraph'), { recursive: true })
+  writeFileSync(join(dir, '.codegraph', 'codegraph.db'), '')
+  return dir
+}
 
 beforeAll(() => {
   mkdirSync(dshHome, { recursive: true })
   mkdirSync(project, { recursive: true })
-  mkdirSync(emptyDir, { recursive: true })
-  mkdirSync(indexedDir, { recursive: true })
   writeFileSync(someFile, 'not a directory\n')
   process.env.DSH_HOME = dshHome
 })
@@ -259,20 +270,36 @@ describe('宿主路由（stub CLI）', () => {
     // 无条件带上它，等于把 init 按钮在旧版 CLI 上做废（本机 Mac 装的正是 1.5.0）。
     // 不带也不会挂起：运行器没有 TTY，两版实测都会自己取默认值跑完。
     // `-f` 不能加：它绕开 CLI 对「家目录 / 文件系统根」的误伤保护，那是用户自己的事。
+    //
+    // 目标目录**每次现造**，不用共享的 emptyDir：stub init 会真的写下
+    // `.codegraph/codegraph.db`（那条副作用正是「init 之后托管行该出现」用例要的），
+    // 于是 emptyDir 在第一次 init 之后就不再是空目录——任何复用它跑第二遍的路径
+    // （重跑本文件、或另一个进程在这个临时树里跑过同样的用例）都会拿到 409，
+    // 表现为「偶发失败」。自造目录让这条用例不再依赖执行顺序与残留状态。
+    const fresh = mkdtempSync(join(sandbox, 'init-fresh-'))
     const routes = mountRoutes(echoCli())
-    const capture = await call(routes, '/api/dsh-codegraph/init', { method: 'POST', body: { path: emptyDir } })
+    const capture = await call(routes, '/api/dsh-codegraph/init', { method: 'POST', body: { path: fresh } })
     expect(capture.status).toBe(200)
-    expect(String(capture.body?.output)).toContain(JSON.stringify(['init', '--', emptyDir]))
-    const argv = String(capture.body?.output)
-    expect(argv).not.toContain('-y')
-    expect(argv).not.toContain('--force')
+    expect(String(capture.body?.output)).toContain(JSON.stringify(['init', '--', fresh]))
+    // 断言要**解析 argv 再逐项比对**，不能在整串输出上做子串否定：
+    // `mkdtempSync` 的后缀是随机的，`argv.not.toContain('-y')` 会被路径里偶然出现的
+    // `-y`（实测撞到 `…/dsh-cg-route-yoKvfJ/…`）判红——一个「十次里红一次」的假失败，
+    // 每次红在不同机器/不同运行上，看起来像产品 bug。同理 `-f` 会被 `-force` 之类命中。
+    const argv = JSON.parse(String(capture.body?.output)) as string[]
+    expect(argv[0]).toBe('init')
+    expect(argv.at(-1)).toBe(fresh)
+    // `--` 是位置参数终止符，不是选项；要排除的是 `-y` / `-f` / `--force` 这类真选项
+    expect(argv.filter((a) => a.startsWith('-') && a !== '--')).toEqual([])
+    expect(argv).toEqual(['init', '--', fresh])
   })
 
   it('init：已初始化过的目录不重复 init（409），提示改用重建索引', async () => {
-    mkdirSync(join(indexedDir, '.codegraph'), { recursive: true })
-    writeFileSync(join(indexedDir, '.codegraph', 'codegraph.db'), '')
+    // 同样自造：409 的判定读的是目标目录的索引态，用共享夹具会与上一条互相污染
+    const already = mkdtempSync(join(sandbox, 'init-already-'))
+    mkdirSync(join(already, '.codegraph'), { recursive: true })
+    writeFileSync(join(already, '.codegraph', 'codegraph.db'), '')
     const routes = mountRoutes(echoCli())
-    const capture = await call(routes, '/api/dsh-codegraph/init', { method: 'POST', body: { path: indexedDir } })
+    const capture = await call(routes, '/api/dsh-codegraph/init', { method: 'POST', body: { path: already } })
     expect(capture.status).toBe(409)
     expect(String(capture.body?.error)).toContain('重建索引')
   })
@@ -465,9 +492,12 @@ async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 
 
 const missingCli = () => join(sandbox, 'no-such-codegraph-cli')
 
-describe('systemPrompt 注入门禁（CLI 探测 + settings 开关）', () => {
-  it('CLI 可用：注入公告与使用指引两段，且没有子 fiber 异常', async () => {
-    const mount = mountFull(echoCli())
+describe('systemPrompt 注入门禁（CLI 探测 + settings 开关 + 索引门禁）', () => {
+  /** 生效路径落在已索引项目上：两段都该注入。 */
+  const indexedDefault = () => indexedProject('gate-indexed-')
+
+  it('CLI 可用且生效路径已索引：注入公告与使用指引两段，且没有子 fiber 异常', async () => {
+    const mount = mountFull(echoCli(), { defaultPath: indexedDefault() })
     await waitFor(() => mount.sections.size === 2)
     expect(mount.errors).toEqual([])
     expect([...mount.sections.keys()].sort()).toEqual(['plugin:dsh-codegraph', 'plugin:dsh-codegraph:usage'])
@@ -477,7 +507,7 @@ describe('systemPrompt 注入门禁（CLI 探测 + settings 开关）', () => {
 
   it('使用指引的触发条件与宿主同口径，shell 兜底用配置里的命令名', async () => {
     const command = echoCli()
-    const mount = mountFull(command)
+    const mount = mountFull(command, { defaultPath: indexedDefault() })
     await waitFor(() => mount.sections.size === 2)
     const usage = mount.sections.get('plugin:dsh-codegraph:usage')?.text ?? ''
     // 触发条件必须落下「有索引库」这层（上游原话只写 directory exists at the repo
@@ -492,6 +522,53 @@ describe('systemPrompt 注入门禁（CLI 探测 + settings 开关）', () => {
     expect(usage).toContain('--path')
     expect(usage).toContain('codegraph init')
     expect(usage).not.toContain('(always works)')
+  })
+
+  it('P1-a 索引门禁：未索引目录只注入公告段，usage 段不注入', async () => {
+    // 判据是「生效路径真是有效索引」：project（harness 的 defaultPath）刻意没有
+    // `.codegraph/`。以前只判 CLI 探测 + 开关，于是在没有索引的仓库里也照注入约
+    // 300 token 的用法指引——而那段话讲的正是「这个仓库有索引时该怎么做」。
+    const mount = mountFull(echoCli())
+    await waitFor(() => mount.sections.size === 1)
+    expect([...mount.sections.keys()]).toEqual(['plugin:dsh-codegraph'])
+    // 公告段讲的是「有这张卡片」，与索引无关，不该跟着一起消失
+    expect(mount.sections.get('plugin:dsh-codegraph')?.order).toBe(150)
+  })
+
+  it('P1-a 索引门禁：init 之后门禁立刻打开（同一实例，无需重启宿主）', async () => {
+    const target = mkdtempSync(join(sandbox, 'gate-init-'))
+    const mount = mountFull(initCli(), { defaultPath: target })
+    await waitFor(() => mount.sections.size === 1)
+    expect([...mount.sections.keys()]).toEqual(['plugin:dsh-codegraph'])
+
+    const created = await call(mount.routes, '/api/dsh-codegraph/init', { method: 'POST', body: { path: target } })
+    expect(created.status).toBe(200)
+
+    // init 路由里那次 rt.sync() 会带上 refreshGuidance，门禁应当立刻打开
+    await waitFor(() => mount.sections.size === 2)
+    expect([...mount.sections.keys()].sort()).toEqual(['plugin:dsh-codegraph', 'plugin:dsh-codegraph:usage'])
+  })
+
+  it('P1-a 索引门禁：跟随会话切进/切出已索引项目时 usage 段跟着增删', async () => {
+    // 判据是**生效路径**（effectiveProjectPath）：这里默认项目刻意未索引，
+    // 于是「跟随到一个已索引的会话目录」= 生效路径变已索引 → usage 出现；
+    // 会话切回未索引目录 → 生效路径回落 → usage 撤回。
+    const plainDefault = mkdtempSync(join(sandbox, 'gate-follow-plain-'))
+    const indexed = indexedProject('gate-follow-indexed-')
+    const mount = mountFull(echoCli(), { defaultPath: plainDefault })
+    await waitFor(() => mount.sections.size === 1)
+    expect([...mount.sections.keys()]).toEqual(['plugin:dsh-codegraph'])
+
+    const followed = await call(mount.routes, '/api/dsh-codegraph/follow', { method: 'POST', body: { path: indexed } })
+    expect(followed.body?.effectivePath).toBe(indexed)
+    await waitFor(() => mount.sections.size === 2)
+    expect([...mount.sections.keys()].sort()).toEqual(['plugin:dsh-codegraph', 'plugin:dsh-codegraph:usage'])
+
+    // 切回未索引目录：生效路径回落到未索引的默认项目 → usage 段撤回
+    const back = await call(mount.routes, '/api/dsh-codegraph/follow', { method: 'POST', body: { path: plainDefault } })
+    expect(back.body?.effectivePath).toBe(plainDefault)
+    await waitFor(() => mount.sections.size === 1)
+    expect([...mount.sections.keys()]).toEqual(['plugin:dsh-codegraph'])
   })
 
   it('CLI 不可用：两段都不注入，GET /default-path 报 cliAvailable=false', async () => {
@@ -549,7 +626,8 @@ describe('systemPrompt 注入门禁（CLI 探测 + settings 开关）', () => {
     // 之后把 CLI 补上——原实现里 cliAvailable 是挂载时锁存的布尔，任何刷新都读同一个
     // 缓存，用户会陷在「按提示刷新 → 永远不恢复」里。POST /reprobe 是那个出口。
     const late = join(sandbox, POSIX ? 'late-cli.mjs' : 'late-cli.cmd')
-    const mount = mountFull(late)
+    const indexed = indexedProject('gate-late-')
+    const mount = mountFull(late, { defaultPath: indexed })
     await waitFor(async () => (await call(mount.routes, '/api/dsh-codegraph/default-path')).body?.cliAvailable === false)
     expect(mount.sections.size).toBe(0)
 
@@ -561,7 +639,8 @@ describe('systemPrompt 注入门禁（CLI 探测 + settings 开关）', () => {
     expect(reprobed.body?.cliAvailable).toBe(true)
     expect(reprobed.body?.cliProbeError).toBeUndefined()
 
-    // 探测结果要真的推到 systemPrompt 门禁上，而不是只回给卡片
+    // 探测结果要真的推到 systemPrompt 门禁上，而不是只回给卡片。
+    // 生效路径是已索引目录，所以两段都该出现。
     const after = await call(mount.routes, '/api/dsh-codegraph/default-path')
     expect(after.body?.cliAvailable).toBe(true)
     await waitFor(() => mount.sections.size === 2)
@@ -584,21 +663,22 @@ describe('systemPrompt 注入门禁（CLI 探测 + settings 开关）', () => {
   })
 
   it('安装级开关关闭：对应段落不注入', async () => {
-    const onlyUsage = mountFull(echoCli(), { announceToAgent: false })
+    const indexed = indexedDefault()
+    const onlyUsage = mountFull(echoCli(), { defaultPath: indexed, announceToAgent: false })
     await waitFor(() => onlyUsage.sections.size === 1)
     expect([...onlyUsage.sections.keys()]).toEqual(['plugin:dsh-codegraph:usage'])
 
-    const onlyAnnounce = mountFull(echoCli(), { usageGuidance: false })
+    const onlyAnnounce = mountFull(echoCli(), { defaultPath: indexed, usageGuidance: false })
     await waitFor(() => onlyAnnounce.sections.size === 1)
     expect([...onlyAnnounce.sections.keys()]).toEqual(['plugin:dsh-codegraph'])
 
-    const none = mountFull(echoCli(), { announceToAgent: false, usageGuidance: false })
+    const none = mountFull(echoCli(), { defaultPath: indexed, announceToAgent: false, usageGuidance: false })
     await new Promise((resolve) => setTimeout(resolve, 300))
     expect(none.sections.size).toBe(0)
   })
 
   it('settings/updated 订阅真的生效：外部写入收紧开关即撤销段落', async () => {
-    const mount = mountFull(echoCli())
+    const mount = mountFull(echoCli(), { defaultPath: indexedDefault() })
     await waitFor(() => mount.sections.size === 2)
     mount.dispatch('codegraph', { usageGuidance: false })
     await waitFor(() => mount.sections.size === 1)
@@ -606,7 +686,7 @@ describe('systemPrompt 注入门禁（CLI 探测 + settings 开关）', () => {
   })
 
   it('卡片改开关：POST /settings 持久化并即时生效', async () => {
-    const mount = mountFull(echoCli())
+    const mount = mountFull(echoCli(), { defaultPath: indexedDefault() })
     await waitFor(() => mount.sections.size === 2)
     const capture = await call(mount.routes, '/api/dsh-codegraph/settings', {
       method: 'POST',
@@ -632,14 +712,6 @@ describe('systemPrompt 注入门禁（CLI 探测 + settings 开关）', () => {
 describe('跟随活动会话（POST /follow）', () => {
   /** harness 里的默认项目路径（插件配置 defaultPath）。 */
   const project_original = project
-
-  /** 造一个已索引项目目录。 */
-  function indexedProject(name: string): string {
-    const dir = mkdtempSync(join(sandbox, name))
-    mkdirSync(join(dir, '.codegraph'), { recursive: true })
-    writeFileSync(join(dir, '.codegraph', 'codegraph.db'), '')
-    return dir
-  }
 
   it('会话切到已索引项目：托管行 cwd 对齐它，默认项目保持不变', async () => {
     const project = indexedProject('follow-a')
@@ -908,5 +980,265 @@ describe('CG27：query/callers/callees/impact/node 的三态覆盖', () => {
     const capture = await call(routes, '/api/dsh-codegraph/node', { url: `/api/dsh-codegraph/node?name=x&file=-weird&path=${encodeURIComponent(project)}` })
     expect(capture.status).toBe(400)
     expect(String(capture.body?.error)).toContain('file 不能以 - 开头')
+  })
+})
+
+/* ------------------------------------------------------------------ *
+ * P1-b：诊断包（GET /diagnose）
+ *
+ * 这个路由的价值全在「原文」上——CLI 探测失败的实测原因、补丁区块的形状、
+ * daemon 登记的 pid 与版本、最近一次 CLI 失败。所以测的重点是「该有的段落都在、
+ * 该带的原因都带出来了」，外加两条纪律：**只认 GET + 回环**，以及**补丁值必须脱敏**
+ * （它会被贴进 issue，而同一份文件里还有别的 MCP 服务器的 token）。
+ * ------------------------------------------------------------------ */
+
+describe('P1-b：诊断包（GET /diagnose）', () => {
+  it('汇总各段落：版本/平台、探测原文、索引状态、托管行、daemon、最近失败', async () => {
+    const indexed = indexedProject('diagnose-indexed-')
+    const mount = mountFull(echoCli(), { defaultPath: indexed })
+    await waitFor(async () => (await call(mount.routes, '/api/dsh-codegraph/default-path')).body?.cliAvailable === true)
+
+    const capture = await call(mount.routes, '/api/dsh-codegraph/diagnose', {
+      url: `/api/dsh-codegraph/diagnose?path=${encodeURIComponent(indexed)}`,
+    })
+    expect(capture.status).toBe(200)
+    const report = String(capture.body?.report ?? '')
+    expect(report).not.toBe('')
+    // 首行要能回答「你装的是哪个版本 / 什么平台」
+    expect(report).toContain('@hyzyn/dsh-codegraph')
+    expect(report).toContain(process.platform)
+    // CLI 与索引
+    expect(report).toContain('CLI 探测：可用')
+    expect(report).toContain(echoCli())
+    expect(report).toContain(`索引状态：indexed`)
+    // 托管行段落与补丁区块
+    expect(report).toContain('托管行')
+    expect(report).toContain('cordis.patch.yml')
+    // daemon 段落：本机 sandbox 里没有 ~/.codegraph，要如实说「不存在」而不是省略
+    expect(report).toContain('daemon')
+    // 没有失败记录时也要给出这句，而不是空着（空着会被读成「没这一项」）
+    expect(report).toContain('没有失败记录')
+    // 路径是原文，不做「友好化」裁剪
+    expect(report).toContain(indexed)
+  })
+
+  it('探测不可用时带出实测原文（含被探测的命令名）', async () => {
+    const mount = mountFull(missingCli())
+    await waitFor(async () => (await call(mount.routes, '/api/dsh-codegraph/default-path')).body?.cliAvailable === false)
+    const capture = await call(mount.routes, '/api/dsh-codegraph/diagnose')
+    const report = String(capture.body?.report ?? '')
+    expect(report).toContain('CLI 探测：不可用')
+    expect(report).toContain('实测原因：')
+    expect(report).toContain('no-such-codegraph-cli')
+  })
+
+  it('最近一次 CLI 失败被记进诊断包（含 kind 与路径）', async () => {
+    const failing = stubCli('exit-cli-diagnose', 'console.error("diag-boom"); process.exit(4)')
+    const mount = mountFull(failing)
+    const failed = await call(mount.routes, '/api/dsh-codegraph/query', {
+      url: `/api/dsh-codegraph/query?q=x&path=${encodeURIComponent(project)}`,
+    })
+    expect(failed.status).toBe(500)
+
+    const capture = await call(mount.routes, '/api/dsh-codegraph/diagnose')
+    const report = String(capture.body?.report ?? '')
+    expect(report).toContain('最近一次 CLI 失败')
+    expect(report).toContain('diag-boom')
+    expect(report).toContain('[cli]')
+    expect(report).toContain(project)
+  })
+
+  it('补丁区块按【键名】脱敏：要看的键留值，凭据键的值连子树一起抹掉', async () => {
+    // 写一份带别家服务器凭据的补丁。诊断包会被贴进 issue，同一份文件里的 token
+    // 绝不能跟着出去；但 serverName / cwd / command 这些**正是排查要看的东西**，
+    // 一并不许糊掉（第一版按「值一律替换」写，真机跑一遍才发现没法排障）。
+    const secret = 'sk-live-DO-NOT-LEAK-abcdef'
+    const envSecret = 'top-secret-env-value'
+    writeFileSync(join(dshHome, 'cordis.patch.yml'), [
+      '# --- dsh-mcp-config managed (auto-generated; do not edit) ---',
+      '- insert:',
+      '    - id: other-mcp',
+      "      name: '@deepseek-ai/dsh-mcp-client'",
+      '      config:',
+      '        serverName: other',
+      '        transport: stdio',
+      '        command: /usr/local/bin/other',
+      '        cwd: /Users/someone/project',
+      '        url: https://example.test/mcp?token=' + secret,
+      '        headers:',
+      `          authorization: Bearer ${secret}`,
+      '          x-trace: plain-value',
+      '        env:',
+      `          OTHER_API_KEY: ${envSecret}`,
+      '        args:',
+      '          - serve',
+      '          - --mcp',
+      '# --- end dsh-mcp-config managed ---',
+      '',
+    ].join('\n'))
+    try {
+      const mount = mountFull(echoCli())
+      await waitFor(async () => (await call(mount.routes, '/api/dsh-codegraph/default-path')).body?.cliAvailable === true)
+      const capture = await call(mount.routes, '/api/dsh-codegraph/diagnose')
+      const report = String(capture.body?.report ?? '')
+
+      // 形状与可排查的键：看得到
+      expect(report).toContain('dsh-mcp 卡片区块')
+      expect(report).toContain('serverName: other')
+      expect(report).toContain('command: /usr/local/bin/other')
+      expect(report).toContain('cwd: /Users/someone/project')
+      expect(report).toContain('- serve')
+      // 凭据：一个字节都不能漏——含 url 的查询串、headers 值、env 值
+      expect(report).not.toContain(secret)
+      expect(report).not.toContain(envSecret)
+      expect(report).not.toContain('plain-value')
+      expect(report).toContain('<redacted>')
+      // 键名本身不是凭据，且「配了哪些 header / 哪些环境变量」正是排查要看的，
+      // 所以名字留下、值抹掉（与 `env` dump 的惯例一致）
+      expect(report).toContain('headers:')
+      expect(report).toContain('authorization:')
+      expect(report).toContain('env:')
+      expect(report).toContain('OTHER_API_KEY:')
+    } finally {
+      rmSync(join(dshHome, 'cordis.patch.yml'), { force: true })
+    }
+  })
+
+  it('daemon 段落：登记、陈旧 pid 判定、日志只取尾部', async () => {
+    // 真机实测的形状（本机 ~/.codegraph）：`daemon.pid` 记的 pid 早已 ESRCH，而
+    // `daemons/<hash>.json` 里还留着按项目的第二个实例——「一次被强杀的 index
+    // 留下的坏锁」就长这样，所以这两条都要能看见。
+    //
+    // 日志用 5 万行：确认读的是**尾部**（只取最后 N 行），而不是把整份读进来。
+    const fakeHome = mkdtempSync(join(sandbox, 'fake-home-'))
+    const codegraphHome = join(fakeHome, '.codegraph')
+    mkdirSync(join(codegraphHome, 'daemons'), { recursive: true })
+    const deadPid = 2147483646 // 不可能存在的 pid
+    writeFileSync(join(codegraphHome, 'daemon.pid'), JSON.stringify({ pid: deadPid, version: '1.5.0', socketPath: join(codegraphHome, 'daemon.sock') }))
+    writeFileSync(join(codegraphHome, 'daemons', 'aaa.json'), JSON.stringify({ root: '/repo-x', pid: process.pid, version: '1.6.0' }))
+    writeFileSync(join(codegraphHome, 'daemons', 'bbb.json'), JSON.stringify({ root: '/repo-y', pid: deadPid, version: '1.6.0' }))
+    const logLines = Array.from({ length: 50000 }, (_, i) => `log line ${i}`)
+    writeFileSync(join(codegraphHome, 'daemon.log'), logLines.join('\n'))
+
+    const originalHome = process.env.HOME
+    process.env.HOME = fakeHome
+    try {
+      const mount = mountFull(echoCli())
+      await waitFor(async () => (await call(mount.routes, '/api/dsh-codegraph/default-path')).body?.cliAvailable === true)
+      const capture = await call(mount.routes, '/api/dsh-codegraph/diagnose')
+      const report = String(capture.body?.report ?? '')
+      expect(report).toContain('daemon.pid: 存在')
+      expect(report).toContain(`pid ${deadPid} 现在已不存在`)
+      expect(report).toContain('daemons/: 2 个登记项')
+      expect(report).toContain('root=/repo-x')
+      expect(report).toContain('root=/repo-y')
+      // 尾部 40 行：最后一行在、第一行不在
+      expect(report).toContain('log line 49999')
+      expect(report).not.toContain('log line 0\n')
+      expect(report).not.toContain('log line 10000')
+    } finally {
+      if (originalHome === undefined) delete process.env.HOME
+      else process.env.HOME = originalHome
+    }
+  })
+
+  it('只认 GET + 回环来源', async () => {
+    const routes = mountRoutes(echoCli())
+    expect((await call(routes, '/api/dsh-codegraph/diagnose', { method: 'POST' })).status).toBe(405)
+    const remote = await call(routes, '/api/dsh-codegraph/diagnose', { remoteAddress: '10.0.0.9' })
+    expect(remote.status).toBe(403)
+  })
+})
+
+/* ------------------------------------------------------------------ *
+ * P1「索引生命周期」：解锁 + 过期信号（含自动重建的判定核心）
+ * ------------------------------------------------------------------ */
+
+describe('P1 索引生命周期：unlock 与过期信号', () => {
+  it('unlock：走 `unlock -- <path>`，且目标必须真是目录', async () => {
+    const routes = mountRoutes(echoCli())
+    const ok = await call(routes, '/api/dsh-codegraph/unlock', { method: 'POST', body: { path: project } })
+    expect(ok.status).toBe(200)
+    expect(String(ok.body?.output)).toContain(JSON.stringify(['unlock', '--', project]))
+
+    const missing = await call(routes, '/api/dsh-codegraph/unlock', { method: 'POST', body: { path: join(sandbox, 'no-such-unlock') } })
+    expect(missing.status).toBe(400)
+    expect(String(missing.body?.error)).toContain('路径不存在')
+  })
+
+  it('unlock：只认 POST + 回环，CLI 失败如实回报', async () => {
+    const routes = mountRoutes(echoCli())
+    expect((await call(routes, '/api/dsh-codegraph/unlock')).status).toBe(405)
+    expect((await call(routes, '/api/dsh-codegraph/unlock', { method: 'POST', remoteAddress: '10.0.0.9' })).status).toBe(403)
+
+    const failing = stubCli('unlock-fail-cli', 'console.error("lock is held by pid 123"); process.exit(2)')
+    const bad = mountRoutes(failing)
+    const capture = await call(bad, '/api/dsh-codegraph/unlock', { method: 'POST', body: { path: project } })
+    expect(capture.status).toBe(500)
+    expect(String(capture.body?.error)).toContain('lock is held by pid 123')
+  })
+
+  it('unlock：也接受不存在的锁（CLI 幂等，exit 0）', async () => {
+    // 实测 codegraph 1.6.0：没锁时输出 "No stale lock files found" 且 exit 0
+    const idle = stubCli('unlock-idle-cli', 'console.log("No stale lock files found — nothing to do")')
+    const routes = mountRoutes(idle)
+    const capture = await call(routes, '/api/dsh-codegraph/unlock', { method: 'POST', body: { path: project } })
+    expect(capture.status).toBe(200)
+    expect(String(capture.body?.output)).toContain('No stale lock files')
+  })
+})
+
+describe('P1 索引生命周期：staleReasonsFromStatus（自动重建的判定核心）', () => {
+  it('四种过期信号都能读出来（顶层与 index.* 嵌套两种位置）', () => {
+    // 真实 status --json 的形状（本机 codegraph 1.6.0 实测）
+    expect(staleReasonsFromStatus({
+      initialized: true,
+      version: '1.6.0',
+      reindexRecommended: true,
+      worktreeMismatch: true,
+      index: {
+        builtWithVersion: '1.1.1',
+        builtWithExtractionVersion: 24,
+        currentExtractionVersion: 25,
+        reindexRecommended: true,
+      },
+    })).toEqual([
+      'CLI 建议重建索引（reindexRecommended）',
+      '索引由 CLI 1.1.1 构建，当前 CLI 是 1.6.0',
+      '索引的提取器版本 24 已落后于当前的 25',
+      '索引与当前 worktree 不匹配',
+    ])
+    // 嵌套在 index.* 下（CLI 版本间字段位置有差异）同样要读到
+    expect(staleReasonsFromStatus({
+      version: '1.6.0',
+      index: { reindexRecommended: true, builtWithVersion: '1.1.1' },
+    })).toHaveLength(2)
+  })
+
+  it('新鲜的索引：零信号（重建完的真实形状）', () => {
+    // 这也是自动重建「做完就不再触发」的判据——写完重建后 status 长这样
+    expect(staleReasonsFromStatus({
+      initialized: true,
+      version: '1.6.0',
+      lastIndexed: '2026-09-22T05:28:00.708Z',
+      index: {
+        builtWithVersion: '1.6.0',
+        builtWithExtractionVersion: 25,
+        currentExtractionVersion: 25,
+        reindexRecommended: false,
+        state: 'complete',
+      },
+    })).toEqual([])
+  })
+
+  it('畸形 / 缺字段输入不抛错', () => {
+    for (const bad of [null, undefined, 'nope', 42, {}, { index: 'not-an-object' }, { version: '1.6.0' }]) {
+      expect(() => staleReasonsFromStatus(bad)).not.toThrow()
+    }
+    expect(staleReasonsFromStatus({})).toEqual([])
+    // 版本相同不算过期（避免把「同版本」误报成需要重建）
+    expect(staleReasonsFromStatus({ version: '1.6.0', index: { builtWithVersion: '1.6.0' } })).toEqual([])
+    // 提取器版本相等也不算
+    expect(staleReasonsFromStatus({ index: { builtWithExtractionVersion: 25, currentExtractionVersion: 25 } })).toEqual([])
   })
 })

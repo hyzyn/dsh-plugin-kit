@@ -56,7 +56,87 @@ export interface Config {
      * CLI 拒绝把家目录 / 文件系统根当项目索引，显式 `--force` 才继续。
      */
     indexForce?: boolean;
+    /**
+     * 是否在检测到索引过期（CLI 的 `reindexRecommended` 等信号）时**自动重建**。
+     * 默认**关**——重建在大仓库上是分钟级操作，不经用户同意就起进程不合适。
+     *
+     * 注意语义是「重建」而不是「增量同步」：实测（codegraph 1.6.0）
+     * `codegraph sync` 对「提取器版本落后」这种过期**返回 "Already up to date" 且不清除
+     * 信号**——`sync` 只处理文件改动，版本/提取器不匹配只有 `index` 能修。
+     * 详见 ADOPTION-AUDIT.md 同一轮的实测记录。
+     */
+    autoReindex?: boolean;
 }
+/** 一次 tool/call 的归类结果：codegraph / 文件探索 / 其它（不计入分母）。 */
+export type ToolCallBucket = 'codegraph' | 'file' | 'other';
+/**
+ * 纯函数：把一次工具调用归类。
+ *
+ * 判定顺序（每一步都有理由）：
+ *   1. codegraph 优先——万一某个自定义工具名两头都沾，宁可记成 codegraph
+ *      （少算分母＝对既有实现更保守）；
+ *   2. 媒体 / web 类直接判 other，不参与分母；
+ *   3. 其余按文件探索模式匹配。
+ */
+export declare function bucketToolCall(name: unknown): ToolCallBucket;
+/** 一个项目的采纳率计数：codegraph 调用数 / 文件探索调用数。 */
+export interface AdoptionCounts {
+    codegraph: number;
+    /** 宽口径分母：所有文件探索类调用（含 `read`）。 */
+    file: number;
+    /**
+     * 窄口径分母：**发现类**调用（grep / glob / search / find / list）。
+     *
+     * 为什么要单独记：`read` 在真实历史里占绝对的多数（实测 1956 次 vs grep 100 次），
+     * 而它多半是「打开我已经知道要改的那个文件」——codegraph 替代的是**找东西**，
+     * 不是读一个已知路径。把 read 算进分母等于要求它替代一个它本就不该替代的场景，
+     * 采纳率会被永久压到个位数（实测宽口径 2.2% vs 窄口径 28.8%）。
+     */
+    discovery: number;
+    /** 其它工具调用（不计入采纳率，但能说明「这个会话到底在干什么」）。 */
+    other: number;
+}
+/** 按项目（会话 cwd 解析出的索引根）聚合的表。 */
+export type AdoptionTable = Map<string, AdoptionCounts>;
+export declare const emptyCounts: () => AdoptionCounts;
+/**
+ * 纯函数：把一次工具调用折进表里，返回新的计数（不修改入参）。
+ *
+ * 为什么按键为「项目根」而不是会话 id：采纳率要回答的是「**这个仓库**里模型用不用
+ * codegraph」，而同一个仓库可以有很多会话（换会话、开子 agent、重启宿主）。按会话
+ * 分会把数据打散成一堆都不到 10 次的小样本，没有统计意义。项目根的解析口径与
+ * 托管行 cwd、注入门禁完全一致（`resolveIndexedRoot` 命中祖先索引），所以
+ * 「仪表说这个项目已索引」与「提示词确实注入了」永远同步。
+ */
+export declare function foldToolCall(table: AdoptionTable, name: unknown, projectKey: string): AdoptionTable;
+/** 一个项目的采纳率摘要（给卡片与 `/metrics` 用）。 */
+export interface AdoptionSummary {
+    /** 项目键（已索引仓库根；拿不到索引时是会话 cwd）。 */
+    project: string;
+    /** 该项目是否真是有效索引——决定这个项目的数字有没有意义。 */
+    indexed: boolean;
+    codegraph: number;
+    file: number;
+    discovery: number;
+    other: number;
+    /** 宽口径分母（codegraph + 所有文件探索调用）。 */
+    exploratory: number;
+    /** 窄口径分母（codegraph + 发现类调用）——**这个才是该看的数**。 */
+    discoveryTotal: number;
+    /**
+     * 宽口径采纳率：codegraph / exploratory。分母为 0 时 undefined，**不是 0**
+     * （「一次都没探索」与「探索了但全用 grep」是两回事）。
+     *
+     * 注意它通常很低（实测 2.2%），因为 `read` 占了分母的绝大多数——**不要**用它
+     * 下结论，用 `discoveryRate`。
+     */
+    rate?: number;
+    /** 窄口径采纳率：codegraph / discoveryTotal。实测 28.8%，这才是有效指标。 */
+    discoveryRate?: number;
+}
+export declare function summarizeAdoption(project: string, counts: AdoptionCounts, indexed: boolean): AdoptionSummary;
+/** 把采纳率拍成一句人话（卡片与诊断包共用，避免两处文案漂移）。 */
+export declare function describeAdoption(summary: AdoptionSummary): string;
 /**
  * 目标目录的索引状态：
  *   - `indexed`：本目录或某个祖先（到 git 根为止）有带索引库的 `.codegraph/`；
@@ -169,6 +249,24 @@ export declare function syncArgs(cwd: string): string[];
  */
 export declare function indexArgs(cwd: string, force: boolean): string[];
 /**
+ * `codegraph unlock` 参数：清掉挡住索引的陈旧锁文件。
+ *
+ * CLI 语义（1.6.0 实测）：没有锁时 exit 0 + "No stale lock files found"，有锁时删除
+ * `codegraph.lock` 一类产物。**幂等**，所以卡片可以放心地把它当成一个普通按钮。
+ */
+export declare function unlockArgs(cwd: string): string[];
+/**
+ * 读 `status --json` 输出里的过期信号（宿主侧版本）。
+ *
+ * 为什么要在宿主侧也实现一遍：卡片那侧（`client-src/pure.js` 的 `staleReasons`）只负责
+ * **显示**，而自动重建要在宿主里**决策**。两处必须同口径，否则会出现「卡片说还没过期、
+ * 宿主偷偷重建」或者反过来。判定刻意保持极简：只看 CLI 自己给的字段。
+ *
+ * 实测（1.6.0）：`sync` 对「提取器版本落后」这类过期**返回 "Already up to date" 且
+ * 不清除信号**——所以过期只能靠 `index` 重建修，不能靠 sync。这正是本函数存在的理由。
+ */
+export declare function staleReasonsFromStatus(status: unknown): string[];
+/**
  * `codegraph init` 参数——在项目里建 `.codegraph/` 并建好首次索引。
  *
  * **刻意不带 `-y`**：那个「Non-interactive: skip every prompt」旗标是 CLI **1.6.0 才有**的，
@@ -243,5 +341,21 @@ export interface CliProbeAccess {
     };
     /** 立刻重跑一次探测，并把结果同步给 systemPrompt 门禁。 */
     reprobe(): Promise<CliProbeResult>;
+}
+/** `/metrics` 访问口：路由只读快照。 */
+export interface MetricsAccess {
+    snapshot(): {
+        projects: Record<string, AdoptionCounts>;
+        summaries: AdoptionSummary[];
+        /**
+         * 按「是否有效索引」分组的合计（实测结论：必须分组——未索引项目里模型本来
+         * 就不该用它，混进来会把整体采纳率拉低且毫无意义。见 ADOPTION-AUDIT.md）。
+         */
+        grouped: {
+            indexed: AdoptionSummary;
+            unindexed: AdoptionSummary;
+        };
+        since: number;
+    };
 }
 export declare const name: string, inject: string[] | undefined, apply: (ctx: Context, config?: Config | undefined) => void;

@@ -29,7 +29,9 @@ import {
   writeJson,
 } from '@hyzyn/dsh-kit'
 import type { ReqLike, ResLike } from '@hyzyn/dsh-kit'
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import yaml from 'js-yaml'
 
@@ -74,6 +76,16 @@ export interface Config {
    * CLI 拒绝把家目录 / 文件系统根当项目索引，显式 `--force` 才继续。
    */
   indexForce?: boolean
+  /**
+   * 是否在检测到索引过期（CLI 的 `reindexRecommended` 等信号）时**自动重建**。
+   * 默认**关**——重建在大仓库上是分钟级操作，不经用户同意就起进程不合适。
+   *
+   * 注意语义是「重建」而不是「增量同步」：实测（codegraph 1.6.0）
+   * `codegraph sync` 对「提取器版本落后」这种过期**返回 "Already up to date" 且不清除
+   * 信号**——`sync` 只处理文件改动，版本/提取器不匹配只有 `index` 能修。
+   * 详见 ADOPTION-AUDIT.md 同一轮的实测记录。
+   */
+  autoReindex?: boolean
 }
 
 /* ------------------------------------------------------------------ *
@@ -111,6 +123,224 @@ const DEFAULT_CLI_TIMEOUT_MS = 60_000
 const DEFAULT_INDEX_TIMEOUT_MS = 600_000
 /** CLI 可用性探测的超时（毫秒）：只决定要不要注入提示词，慢/挂住一律当不可用。 */
 const CLI_PROBE_TIMEOUT_MS = 5_000
+
+/**
+ * 诊断包（ROADMAP P1-b）读 daemon 日志的上限：只取尾部若干字节再按行截断。
+ * 不整份读——daemon 是常驻进程，日志会一直长，而诊断包里只需要「最近发生了什么」。
+ */
+const DIAGNOSTIC_LOG_TAIL_BYTES = 8 * 1024
+const DIAGNOSTIC_LOG_TAIL_LINES = 40
+
+/** 本包版本：诊断包第一行要能回答「你装的是哪个版本」（mcp 包同款读法）。 */
+const PLUGIN_VERSION = (() => {
+  try {
+    const pkg = createRequire(import.meta.url)('../package.json') as { version?: unknown }
+    return typeof pkg.version === 'string' ? pkg.version : 'unknown'
+  } catch {
+    return 'unknown'
+  }
+})()
+
+/* ------------------------------------------------------------------ *
+ * 采纳率统计（ROADMAP P1「采纳率仪表」）
+ *
+ * 要回答的问题只有一个：**模型到底有没有用 CodeGraph**。在此之前本插件
+ * `inject: []`，一个事件都不接，于是「提示词收紧还是放松」「要不要做前置注入」
+ * 全靠感觉——上游那份 benchmark 之所以敢下结论，就是因为它量过。
+ *
+ * 数据来源用宿主既有的 `session/event`（会话事件流，与 dsh-agent-instructions /
+ * dsh-acp 等插件同一个订阅面，属于公开契约），只数 `tool/call`：
+ *   - 命中 `mcp__codegraph__*` → 记 codegraph 侧；
+ *   - 命中文件探索类工具（grep/glob/read/find…）→ 记 file 侧，作为分母。
+ *
+ * 为什么只数调用、不数结果、不数 token：这个仪表是**行为采纳率**，不是性能指标。
+ * token / 耗时属于 dsh-session-stats 的职责（它已经在做），重复造一份只会两处漂移。
+ *
+ * 纯函数在前（`foldToolCall` / `summarizeAdoption`），订阅在后的好处：判定逻辑
+ * 能直接进 vitest（仓库测试底座只收宿主半体），而不必起一个真会话来验证。
+ * ------------------------------------------------------------------ */
+
+/** 一次 tool/call 的归类结果：codegraph / 文件探索 / 其它（不计入分母）。 */
+export type ToolCallBucket = 'codegraph' | 'file' | 'other'
+
+/**
+ * 文件探索类工具名（**保守**列表，只收「这件事本可以交给 codegraph_explore」的那几个）。
+ *
+ * 为什么不能把 bash 也算进来：模型用 bash 干的事大部分与代码探索无关（跑测试、
+ * 装依赖、git 操作），把它计进分母会把采纳率系统性压低，得出「codegraph 没人用」
+ * 的错误结论——而这种错误最难发现，因为数字看起来很正常。
+ *
+ * 命名按「后缀/子串匹配」处理（`read_file` / `file_read` / `readFile` 都算），
+ * 因为各 harness 与自定义工具的命名并不统一。
+ */
+const FILE_TOOL_PATTERNS = [
+  /(^|_)grep($|_)/i,
+  /(^|_)glob($|_)/i,
+  /find[_ ]?(file|files|by)/i,
+  /^find$/i,
+  /(^|_)(read|view|open)([_ ]?(file|files|source|code))?$/i,
+  /(^|_)list[_ ]?(dir|directory|files)/i,
+  /(^|_)search($|_)/i,
+]
+
+/**
+ * 明确**不算**探索的：媒体 / 网络 / 文档读取，以及任何 web 类工具。
+ *
+ * 这条是拿真实历史会话量过之后补的：第一版只看「read / search」这些词根，于是
+ * `read_image`（248 次）、`read_pdf`、`web_search`（19 次）全被算进了分母——
+ * 读一张截图、搜一次网页，跟「本可以交给 codegraph 的代码探索」毫无关系。
+ * 全机历史里这一个错误就把分母灌了 11%，把采纳率从 2.2% 压到 2.0%。
+ * 判定顺序上它**先于** FILE_TOOL_PATTERNS：宁可漏收（少算分母），不要错收。
+ */
+const NON_EXPLORATORY_PATTERNS = [
+  /web[_ ]?(search|fetch|browse|request)/i,
+  /(^|_)(image|img|photo|screenshot)/i,
+  /(^|_)(pdf|audio|video|media)/i,
+  /^fetch/i,
+]
+
+/** codegraph 工具的判定：MCP 命名空间 `mcp__<server>__<tool>`，server 为 codegraph。 */
+const CODEGRAPH_TOOL = /^mcp__codegraph(_|__)/i
+
+/**
+ * 纯函数：把一次工具调用归类。
+ *
+ * 判定顺序（每一步都有理由）：
+ *   1. codegraph 优先——万一某个自定义工具名两头都沾，宁可记成 codegraph
+ *      （少算分母＝对既有实现更保守）；
+ *   2. 媒体 / web 类直接判 other，不参与分母；
+ *   3. 其余按文件探索模式匹配。
+ */
+export function bucketToolCall(name: unknown): ToolCallBucket {
+  if (typeof name !== 'string' || name.trim() === '') return 'other'
+  const trimmed = name.trim()
+  if (CODEGRAPH_TOOL.test(trimmed)) return 'codegraph'
+  if (NON_EXPLORATORY_PATTERNS.some((pattern) => pattern.test(trimmed))) return 'other'
+  if (FILE_TOOL_PATTERNS.some((pattern) => pattern.test(trimmed))) return 'file'
+  return 'other'
+}
+
+/** 一个项目的采纳率计数：codegraph 调用数 / 文件探索调用数。 */
+export interface AdoptionCounts {
+  codegraph: number
+  /** 宽口径分母：所有文件探索类调用（含 `read`）。 */
+  file: number
+  /**
+   * 窄口径分母：**发现类**调用（grep / glob / search / find / list）。
+   *
+   * 为什么要单独记：`read` 在真实历史里占绝对的多数（实测 1956 次 vs grep 100 次），
+   * 而它多半是「打开我已经知道要改的那个文件」——codegraph 替代的是**找东西**，
+   * 不是读一个已知路径。把 read 算进分母等于要求它替代一个它本就不该替代的场景，
+   * 采纳率会被永久压到个位数（实测宽口径 2.2% vs 窄口径 28.8%）。
+   */
+  discovery: number
+  /** 其它工具调用（不计入采纳率，但能说明「这个会话到底在干什么」）。 */
+  other: number
+}
+
+/** 按项目（会话 cwd 解析出的索引根）聚合的表。 */
+export type AdoptionTable = Map<string, AdoptionCounts>
+
+export const emptyCounts = (): AdoptionCounts => ({ codegraph: 0, file: 0, discovery: 0, other: 0 })
+
+/**
+ * 发现类工具名：真正的「找东西」调用，窄口径采纳率的分母。
+ * 与 `FILE_TOOL_PATTERNS` 的区别是这里**排除**了 `read` / `view` / `open`。
+ */
+const DISCOVERY_TOOL = /^(grep|grep_search|glob|glob_search|search|search_code|code_search|find|find_files|find_by_name|list_dir|list_directory|list_files)$/i
+
+/**
+ * 纯函数：把一次工具调用折进表里，返回新的计数（不修改入参）。
+ *
+ * 为什么按键为「项目根」而不是会话 id：采纳率要回答的是「**这个仓库**里模型用不用
+ * codegraph」，而同一个仓库可以有很多会话（换会话、开子 agent、重启宿主）。按会话
+ * 分会把数据打散成一堆都不到 10 次的小样本，没有统计意义。项目根的解析口径与
+ * 托管行 cwd、注入门禁完全一致（`resolveIndexedRoot` 命中祖先索引），所以
+ * 「仪表说这个项目已索引」与「提示词确实注入了」永远同步。
+ */
+export function foldToolCall(
+  table: AdoptionTable,
+  name: unknown,
+  projectKey: string,
+): AdoptionTable {
+  const bucket = bucketToolCall(name)
+  const current = table.get(projectKey) ?? emptyCounts()
+  const isDiscovery = typeof name === 'string' && DISCOVERY_TOOL.test(name.trim())
+  const next: AdoptionCounts = {
+    ...current,
+    [bucket]: current[bucket] + 1,
+    ...(bucket === 'file' && isDiscovery ? { discovery: current.discovery + 1 } : {}),
+  }
+  const out = new Map(table)
+  out.set(projectKey, next)
+  return out
+}
+
+/** 一个项目的采纳率摘要（给卡片与 `/metrics` 用）。 */
+export interface AdoptionSummary {
+  /** 项目键（已索引仓库根；拿不到索引时是会话 cwd）。 */
+  project: string
+  /** 该项目是否真是有效索引——决定这个项目的数字有没有意义。 */
+  indexed: boolean
+  codegraph: number
+  file: number
+  discovery: number
+  other: number
+  /** 宽口径分母（codegraph + 所有文件探索调用）。 */
+  exploratory: number
+  /** 窄口径分母（codegraph + 发现类调用）——**这个才是该看的数**。 */
+  discoveryTotal: number
+  /**
+   * 宽口径采纳率：codegraph / exploratory。分母为 0 时 undefined，**不是 0**
+   * （「一次都没探索」与「探索了但全用 grep」是两回事）。
+   *
+   * 注意它通常很低（实测 2.2%），因为 `read` 占了分母的绝大多数——**不要**用它
+   * 下结论，用 `discoveryRate`。
+   */
+  rate?: number
+  /** 窄口径采纳率：codegraph / discoveryTotal。实测 28.8%，这才是有效指标。 */
+  discoveryRate?: number
+}
+
+export function summarizeAdoption(
+  project: string,
+  counts: AdoptionCounts,
+  indexed: boolean,
+): AdoptionSummary {
+  const exploratory = counts.codegraph + counts.file
+  const discoveryTotal = counts.codegraph + counts.discovery
+  return {
+    project,
+    indexed,
+    codegraph: counts.codegraph,
+    file: counts.file,
+    discovery: counts.discovery,
+    other: counts.other,
+    exploratory,
+    discoveryTotal,
+    rate: exploratory === 0 ? undefined : counts.codegraph / exploratory,
+    discoveryRate: discoveryTotal === 0 ? undefined : counts.codegraph / discoveryTotal,
+  }
+}
+
+/** 把采纳率拍成一句人话（卡片与诊断包共用，避免两处文案漂移）。 */
+export function describeAdoption(summary: AdoptionSummary): string {
+  if (summary.discoveryTotal === 0 && summary.file === 0) {
+    return '本次宿主运行期间该项目还没有探索类工具调用（既没用 codegraph，也没用 grep/read 这类）'
+  }
+  const indexedNote = summary.indexed === false ? '（该项目未索引，这个数字不代表提示词效果）' : ''
+  // 窄口径是主口径：`read` 占宽口径分母的绝大多数，用宽口径会得出「codegraph 没用」
+  // 的错误结论（实测 2.2% vs 28.8%，见 ADOPTION-AUDIT.md）。
+  if (summary.discoveryTotal === 0) {
+    return `采纳率：还没有发现类调用（codegraph ${summary.codegraph} 次 / 读取 ${summary.file} 次）${indexedNote}`
+  }
+  const percent = Math.round((summary.discoveryRate ?? 0) * 100)
+  // 宽口径只在与窄口径**不同**时才值得占字符：读取数为 0 时两个口径等价，
+  // 再写一遍是纯噪音（诊断包与卡片都是按行读的）。
+  const broadNote = summary.file === 0 ? '' : `（宽口径含读取共 ${summary.file} 次，${Math.round((summary.rate ?? 0) * 100)}%）`
+  const otherNote = summary.other === 0 ? '' : `（另 ${summary.other} 次其它工具）`
+  return `采纳率：codegraph ${summary.codegraph} 次 / 发现类 ${summary.discovery} 次 → ${percent}%${broadNote}${otherNote}${indexedNote}`
+}
 
 type RouteHandler = (req: ReqLike & AsyncIterable<Uint8Array>, res: ResLike) => Promise<void>
 
@@ -233,6 +463,308 @@ function indexProblem(state: IndexState): string {
   return state === 'not-a-project'
     ? '的 .codegraph/ 里没有索引库，不是 codegraph 项目（家目录最常见：~/.codegraph 是 CLI 自身的安装目录）'
     : '及其祖先（到 git 根为止）都没有 .codegraph/ 索引'
+}
+
+/* ------------------------------------------------------------------ *
+ * 诊断包（ROADMAP P1-b）
+ *
+ * 为什么值得做成一个按钮：这个插件的故障几乎全是**环境性**的——PATH 里没有 CLI、
+ * `~/.codegraph` 被当成项目索引、索引库的 cwd 被删掉、一次被强杀的 index 留下坏锁、
+ * 常驻 daemon 与 CLI 版本对不上（本机实测：`~/.codegraph/daemon.pid` 记的是 1.5.0，
+ * 而 `current -> versions/v1.6.0`；`~/.codegraph/daemons/` 下两个实例，其中一个 pid
+ * 早已 ESRCH）。这些都要用户把散在四五个地方的原文凑起来，而排查者（作者 / issue）
+ * 恰恰最需要那几段原文。这里一次性收齐、做成纯文本，卡片可以直接复制。
+ *
+ * 纪律：
+ *   - 只读，不落盘、不改配置；路径一律给原文，不做「友好化」裁剪（裁了就丢证据）；
+ *   - 不整份读 daemon 日志（它会长到几 MB），只取尾部若干字节；
+ *   - 与路由一致：读不到的项写明原因，绝不静默省略（省略会让人以为「没有」）。
+ * ------------------------------------------------------------------ */
+
+/** `{ path, exists }` 的最小目录探测：读不到写成 `readError`，不吞。 */
+interface PathProbe {
+  path: string
+  exists: boolean
+  isDirectory?: boolean
+  readError?: string
+}
+
+function probePath(path: string): PathProbe {
+  try {
+    const stat = statSync(path)
+    return { path, exists: true, isDirectory: stat.isDirectory() }
+  } catch (error) {
+    const code = (error as { code?: string }).code
+    // ENOENT 是「确实没有」，与权限等错误分开——这是排查时最常要区分的一对
+    return code === 'ENOENT' ? { path, exists: false } : { path, exists: false, readError: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+/** 目录条目名（读不到给 undefined，由调用方带出原因）。 */
+function listEntries(path: string): string[] | undefined {
+  try {
+    return readdirSync(path)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * 读文件尾部：先 stat 再定位到尾部偏移读，避免把几 MB 的 daemon 日志整个读进内存。
+ * 返回原始文本（由调用方按行截断），读不到时返回 undefined。
+ */
+function readTail(path: string, maxBytes: number): string | undefined {
+  let fd: number | undefined
+  try {
+    const size = statSync(path).size
+    const start = Math.max(0, size - maxBytes)
+    const length = size - start
+    if (length <= 0) return ''
+    const buffer = Buffer.alloc(length)
+    fd = openSync(path, 'r')
+    readSync(fd, buffer, 0, length, start)
+    return buffer.toString('utf8')
+  } catch {
+    return undefined
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd)
+      } catch {
+        /* 关不上不阻塞诊断 */
+      }
+    }
+  }
+}
+
+/**
+ * 诊断包里摘出的补丁原文：**只摘 codegraph 相关的两个区块**，且按**键名**脱敏。
+ *
+ * 为什么不整份贴出来：`~/.dsh/cordis.patch.yml` 是**所有** MCP 服务器共用的文件，
+ * 别家的行里可能有 `headers`（带 token）/ `env` 这类值。诊断包是要贴进 issue 或
+ * 发给别人的，整份导出等于顺手把别人的凭据也发出去。
+ *
+ * 为什么不是「值一律替换」（第一版就是这么写的，真机跑一遍才发现）：那样会把
+ * `serverName` / `cwd` / `command` / `id` 也糊成 `<redacted>`——而这几个恰恰是
+ * 排查要看的东西（serverName 撞名、cwd 钉错目录、command 不在 PATH 全在这里）。
+ * 改成**按白名单放行、其余一律脱敏**：白名单里的键名本身不可能承载凭据。
+ *
+ * 为什么保留原始行而不是 dump YAML：排查要看「有没有两个 serverName 行、标记行
+ * 是否被手改过、缩进对不对」，重新 dump 会把这些痕迹洗掉。
+ */
+function renderPatchExcerpt(): string[] {
+  const file = homePatchPath()
+  const probe = probePath(file)
+  if (!probe.exists) return ['(文件不存在)']
+  let text: string
+  try {
+    text = readFileSync(file, 'utf8')
+  } catch (error) {
+    return ['(读不到: ' + (error instanceof Error ? error.message : String(error)) + ')']
+  }
+  const lines = text.split('\n')
+  const ranges = [
+    { label: '本插件区块', range: findBlock(lines, 'dsh-codegraph mcp managed', 'end dsh-codegraph mcp managed') },
+    { label: 'dsh-mcp 卡片区块', range: findBlock(lines, DSH_MCP_BLOCK_KEY, DSH_MCP_BLOCK_END_KEY) },
+  ]
+  const out: string[] = []
+  for (const { label, range } of ranges) {
+    if (range === null) {
+      out.push(`[${label}] 不存在`)
+      continue
+    }
+    out.push(`[${label}] 第 ${range.start + 1}–${range.end} 行（敏感键的值已脱敏）`)
+    out.push(...redactPatchLines(lines.slice(range.start, range.end)))
+  }
+  return out
+}
+
+/**
+ * 放行的键名：这些值是我们排查时真正要看的，且键名本身不可能承载凭据。
+ * 不在表里的键（含未来新增的）一律脱敏——**fail-closed**：宁可少看见一个值，
+ * 也不能把别家服务器的 token 带进 issue。
+ */
+const PATCH_SAFE_KEYS = new Set([
+  'id',
+  'name',
+  'servername',
+  'transport',
+  'command',
+  'args',
+  'cwd',
+  'disabled',
+  'enabled',
+])
+
+/**
+ * 键名命中这里 → 它的**整棵子树**都要脱敏（`env:` 下的每个变量、`headers:` 下的
+ * 每个 header 都算）。`key` 单独列出来是因为 `apiKey` / `keyFile` 这类写法；
+ * `url` 也列进去（URL 里常带 token 查询串）。
+ */
+const PATCH_SENSITIVE_KEY = /auth|header|token|secret|password|passwd|credential|cookie|key|env|url/i
+
+/** 一行的键名（`key:` / `- key:` 两种形状）；取不到时 undefined。 */
+function patchLineKey(line: string): string | undefined {
+  const trimmed = line.trim()
+  if (trimmed === '' || trimmed.startsWith('#')) return undefined
+  const body = trimmed.startsWith('- ') ? trimmed.slice(2) : trimmed
+  const index = body.indexOf(':')
+  if (index <= 0) return undefined
+  const key = body.slice(0, index).trim()
+  return key === '' ? undefined : key
+}
+
+/**
+ * 按行脱敏，维护一个「缩进 → 是否敏感」的栈。三条规则：
+ *
+ *  1. **容器行**（`key:` 后面没有值）本身不判断白名单——`config:` 这种结构性键
+ *     必然不在白名单里，若也按「未知即敏感」处理，整个子树会被糊掉（第一版就
+ *     踩了这个：真机跑出来 `serverName` 也成了 `<redacted>`）。容器只在
+ *     **键名命中敏感词**时污染整棵子树（`headers:` / `env:` / `tokens:`）。
+ *  2. **叶子行**（`key: value`）走白名单：白名单键留值（`serverName` / `cwd` /
+ *     `command`…），其余一律 `<redacted>`——**fail-closed**，将来新增的凭据字段
+ *     默认是安全的。
+ *  3. **裸序列项**（`- xxx`，没有键）在敏感子树里整条替换，否则原样（`args` 的
+ *     `- serve` 要看得见）。
+ */
+function redactPatchLines(lines: string[]): string[] {
+  const out: string[] = []
+  /** [缩进宽度, 该子树是否敏感] */
+  const stack: Array<[number, boolean]> = []
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (trimmed === '' || trimmed.startsWith('#')) {
+      out.push('  ' + line)
+      continue
+    }
+    const indent = line.length - line.trimStart().length
+    // 同级或更浅 = 离开之前的子树
+    while (stack.length > 0 && stack[stack.length - 1][0] >= indent) stack.pop()
+    const parentSensitive = stack.length > 0 ? stack[stack.length - 1][1] : false
+    const isItem = trimmed.startsWith('- ')
+    const key = patchLineKey(line)
+    const colon = line.indexOf(':', isItem ? line.indexOf('- ') + 2 : 0)
+    const hasValue = colon !== -1 && line.slice(colon + 1).trim() !== ''
+    const nameSensitive = key !== undefined && PATCH_SENSITIVE_KEY.test(key)
+    if (!hasValue) {
+      if (key !== undefined) stack.push([indent, parentSensitive || nameSensitive])
+      out.push('  ' + line)
+      continue
+    }
+    if (key === undefined) {
+      out.push(parentSensitive ? '  - <redacted>' : '  ' + line)
+      continue
+    }
+    const keep = !parentSensitive && !nameSensitive && PATCH_SAFE_KEYS.has(key.toLowerCase())
+    out.push(keep ? '  ' + line : '  ' + line.slice(0, colon + 1) + ' <redacted>')
+  }
+  return out
+}
+
+/** 进程是否还活着（EPERM 也算活着——存在但无权发信号）。 */
+function processAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as { code?: string }).code === 'EPERM'
+  }
+}
+
+/** 一个 codegraph daemon 的登记项（`~/.codegraph/daemons/<hash>.json` 的形状，本机实测）。 */
+interface DaemonEntry {
+  /** 登记文件路径。 */
+  file: string
+  /** 登记里的项目根（daemon 服务的那个仓库）。 */
+  root?: string
+  pid?: number
+  version?: string
+  startedAt?: number
+  /** pid 现在还在不在（拿不到 pid 时缺省）。 */
+  alive?: boolean
+  /** 登记文件本身读不动时的原因。 */
+  error?: string
+}
+
+/**
+ * 收集 daemon 线索：`~/.codegraph/daemon.pid`（全局）+ `~/.codegraph/daemons/*.json`（按项目）。
+ *
+ * 两个位置都要看：本机实测全局 `daemon.pid` 记着 pid 76609 而该进程已 ESRCH，同时
+ * `daemons/bbb978…json` 里还有第二个实例（pid 58981，root = 本仓库）——只看一处会得出
+ * 「没有 daemon」的错误结论。
+ */
+function collectDaemons(home: string): { pidFile: PathProbe; entries: DaemonEntry[]; logTail?: string[] } {
+  const pidFile = probePath(join(home, 'daemon.pid'))
+  const entries: DaemonEntry[] = []
+  const dir = join(home, 'daemons')
+  const names = listEntries(dir)
+  if (names !== undefined) {
+    for (const name of names.sort()) {
+      if (!name.endsWith('.json')) continue
+      const file = join(dir, name)
+      try {
+        const parsed = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
+        const pid = typeof parsed.pid === 'number' ? parsed.pid : undefined
+        entries.push({
+          file,
+          root: typeof parsed.root === 'string' ? parsed.root : undefined,
+          pid,
+          version: typeof parsed.version === 'string' ? parsed.version : undefined,
+          startedAt: typeof parsed.startedAt === 'number' ? parsed.startedAt : undefined,
+          alive: pid === undefined ? undefined : processAlive(pid),
+        })
+      } catch (error) {
+        entries.push({ file, error: error instanceof Error ? error.message : String(error) })
+      }
+    }
+  }
+  const tail = readTail(join(home, 'daemon.log'), DIAGNOSTIC_LOG_TAIL_BYTES)
+  return {
+    pidFile,
+    entries,
+    logTail: tail === undefined
+      ? undefined
+      : tail.trimEnd().split('\n').slice(-DIAGNOSTIC_LOG_TAIL_LINES),
+  }
+}
+
+/**
+ * 把 daemon 线索拍成纯文本（人读 + 贴 issue 用）。
+ * 刻意不「美化」成一句话：排查者需要的是 pid / root / 存活与否的原文。
+ */
+function renderDaemons(home: string): string[] {
+  const info = collectDaemons(home)
+  const lines = [`daemon.pid: ${info.pidFile.exists ? '存在' : '不存在'}`]
+  if (info.pidFile.readError !== undefined) lines.push(`  ⚠ 读不到: ${info.pidFile.readError}`)
+  if (info.pidFile.exists) {
+    try {
+      const parsed = JSON.parse(readFileSync(info.pidFile.path, 'utf8')) as Record<string, unknown>
+      const pid = typeof parsed.pid === 'number' ? parsed.pid : undefined
+      lines.push(`  pid=${String(parsed.pid)} version=${String(parsed.version)} socketPath=${String(parsed.socketPath)}`)
+      if (pid !== undefined) lines.push(`  pid ${pid} 现在${processAlive(pid) ? '存活' : '已不存在（ESRCH）——登记是陈旧的，坏锁常与此有关'}`)
+    } catch (error) {
+      lines.push(`  ⚠ 解析失败: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  if (info.entries.length === 0) {
+    lines.push('daemons/: 没有登记项（或目录不存在）')
+  } else {
+    lines.push(`daemons/: ${info.entries.length} 个登记项`)
+    for (const entry of info.entries) {
+      if (entry.error !== undefined) {
+        lines.push(`  - ${entry.file}: ⚠ ${entry.error}`)
+        continue
+      }
+      lines.push(`  - root=${entry.root ?? '(未记)'} pid=${entry.pid ?? '(未记)'} version=${entry.version ?? '(未记)'}`
+        + (entry.alive === true ? ' · pid 存活' : entry.alive === false ? ' · pid 已不存在' : ''))
+    }
+  }
+  if (info.logTail !== undefined) {
+    lines.push(`daemon.log 尾 ${info.logTail.length} 行：`)
+    for (const line of info.logTail) lines.push('  ' + line)
+  }
+  return lines
 }
 
 /**
@@ -891,6 +1423,51 @@ export function indexArgs(cwd: string, force: boolean): string[] {
 }
 
 /**
+ * `codegraph unlock` 参数：清掉挡住索引的陈旧锁文件。
+ *
+ * CLI 语义（1.6.0 实测）：没有锁时 exit 0 + "No stale lock files found"，有锁时删除
+ * `codegraph.lock` 一类产物。**幂等**，所以卡片可以放心地把它当成一个普通按钮。
+ */
+export function unlockArgs(cwd: string): string[] {
+  return ['unlock', '--', cwd]
+}
+
+/**
+ * 读 `status --json` 输出里的过期信号（宿主侧版本）。
+ *
+ * 为什么要在宿主侧也实现一遍：卡片那侧（`client-src/pure.js` 的 `staleReasons`）只负责
+ * **显示**，而自动重建要在宿主里**决策**。两处必须同口径，否则会出现「卡片说还没过期、
+ * 宿主偷偷重建」或者反过来。判定刻意保持极简：只看 CLI 自己给的字段。
+ *
+ * 实测（1.6.0）：`sync` 对「提取器版本落后」这类过期**返回 "Already up to date" 且
+ * 不清除信号**——所以过期只能靠 `index` 重建修，不能靠 sync。这正是本函数存在的理由。
+ */
+export function staleReasonsFromStatus(status: unknown): string[] {
+  if (status === null || typeof status !== 'object') return []
+  const record = status as Record<string, unknown>
+  const meta = (record.index !== null && typeof record.index === 'object' ? record.index : {}) as Record<string, unknown>
+  const reasons: string[] = []
+  if (record.reindexRecommended === true || meta.reindexRecommended === true) {
+    reasons.push('CLI 建议重建索引（reindexRecommended）')
+  }
+  const builtWith = meta.builtWithVersion ?? record.builtWithVersion
+  if (typeof builtWith === 'string' && builtWith !== ''
+    && typeof record.version === 'string' && builtWith !== record.version) {
+    reasons.push(`索引由 CLI ${builtWith} 构建，当前 CLI 是 ${record.version}`)
+  }
+  const builtExtraction = meta.builtWithExtractionVersion ?? record.builtWithExtractionVersion
+  const currentExtraction = meta.currentExtractionVersion ?? record.currentExtractionVersion
+  if (typeof builtExtraction === 'number' && typeof currentExtraction === 'number'
+    && builtExtraction < currentExtraction) {
+    reasons.push(`索引的提取器版本 ${builtExtraction} 已落后于当前的 ${currentExtraction}`)
+  }
+  if (record.worktreeMismatch === true || meta.worktreeMismatch === true) {
+    reasons.push('索引与当前 worktree 不匹配')
+  }
+  return reasons
+}
+
+/**
  * `codegraph init` 参数——在项目里建 `.codegraph/` 并建好首次索引。
  *
  * **刻意不带 `-y`**：那个「Non-interactive: skip every prompt」旗标是 CLI **1.6.0 才有**的，
@@ -1149,6 +1726,110 @@ function tryParseJson(text: string): unknown {
 }
 
 /* ------------------------------------------------------------------ *
+ * 采纳率收集器（有状态的那一半）
+ * ------------------------------------------------------------------ */
+
+/** 订阅 `session/event` 时要读的最小会话形状（只用到 cwd）。 */
+interface SessionLike {
+  header?: { cwd?: unknown }
+}
+
+/** `/metrics` 访问口：路由只读快照。 */
+export interface MetricsAccess {
+  snapshot(): {
+    projects: Record<string, AdoptionCounts>
+    summaries: AdoptionSummary[]
+    /**
+     * 按「是否有效索引」分组的合计（实测结论：必须分组——未索引项目里模型本来
+     * 就不该用它，混进来会把整体采纳率拉低且毫无意义。见 ADOPTION-AUDIT.md）。
+     */
+    grouped: { indexed: AdoptionSummary; unindexed: AdoptionSummary }
+    since: number
+  }
+}
+
+/**
+ * 创建采纳率收集器：订阅会话事件、按键归并。
+ *
+ * 三个刻意的设计取舍：
+ *
+ *  1. **只在内存里，不落盘**。这是「宿主本次运行」的行为观测，不是审计日志；
+ *     落盘会带来隐私问题（工具名 + 项目路径），而它的用途只是回答「现在要不要调
+ *     提示词」。宿主重启即归零是可接受的，`since` 会如实告诉卡片起点。
+ *  2. **不订阅 `tool/result`**。只数调用次数，不关心成败——采纳率问的是「模型想不
+ *     想用」，失败了也是想用（那是另一个问题，由诊断包回答）。
+ *  3. **项目键 = 索引根**（`resolveIndexedRoot`），拿不到索引时才退回会话 cwd。
+ *     与托管行 cwd、注入门禁同一口径，所以「仪表说这个项目已索引」与「提示词确实
+ *     注入了」不会打架。
+ *
+ * 事件载荷的读取全部做了防御（`event?.type !== 'tool/call'` 直接 return，`name`
+ * 交给 `bucketToolCall` 判空）：`session/event` 是宿主公开契约，但事件表的字段在
+ * 版本间有过增补，读数时不该假设形状。
+ */
+function createMetricsCollector(): {
+  access: MetricsAccess
+  attach(ctx: { on(name: string, listener: (...args: unknown[]) => unknown): unknown }): void
+} {
+  let table: AdoptionTable = new Map()
+  const since = Date.now()
+
+  const projectKeyFor = (session: unknown): string => {
+    const cwd = (session as SessionLike | undefined)?.header?.cwd
+    if (typeof cwd !== 'string' || cwd === '') return '(未知项目)'
+    // 已索引 → 归到仓库根；未索引也要记（那些项目恰恰是「该 init」的候选）
+    return resolveIndexedRoot(cwd) ?? cwd
+  }
+
+  const access: MetricsAccess = {
+    snapshot() {
+      const projects: Record<string, AdoptionCounts> = {}
+      const summaries: AdoptionSummary[] = []
+      // 分组合计：只对**有记录**的项目求和，并分别标记 indexed
+      const buckets = { indexed: emptyCounts(), unindexed: emptyCounts() }
+      for (const [project, counts] of table) {
+        projects[project] = counts
+        const indexed = indexState(project) === 'indexed'
+        summaries.push(summarizeAdoption(project, counts, indexed))
+        const target = indexed ? buckets.indexed : buckets.unindexed
+        target.codegraph += counts.codegraph
+        target.file += counts.file
+        target.discovery += counts.discovery
+        target.other += counts.other
+      }
+      // 调用多的排前面：卡片一眼看到最活跃的项目
+      summaries.sort((a, b) => b.exploratory - a.exploratory || a.project.localeCompare(b.project))
+      return {
+        projects,
+        summaries,
+        grouped: {
+          // project 字段在分组视图里是标签而非真实路径
+          indexed: summarizeAdoption('（已索引项目）', buckets.indexed, true),
+          unindexed: summarizeAdoption('（未索引项目）', buckets.unindexed, false),
+        },
+        since,
+      }
+    },
+  }
+
+  return {
+    access,
+    attach(ctx) {
+      ctx.on('session/event', (...args: unknown[]) => {
+        const session = args[0]
+        const event = args[1] as { type?: unknown; name?: unknown } | undefined
+        if (event === null || typeof event !== 'object') return
+        if (event.type !== 'tool/call') return
+        // 没有可读名字的 tool/call 是**畸形事件**，直接丢弃而不是记进 other：
+        // 它会凭空抬高分母（「其它工具」那一列）并让「探索次数」看起来更可信，
+        // 而真实原因是事件载荷不对——宁可少记，不要记错。
+        if (typeof event.name !== 'string' || event.name.trim() === '') return
+        table = foldToolCall(table, event.name, projectKeyFor(session))
+      })
+    },
+  }
+}
+
+/* ------------------------------------------------------------------ *
  * 路由
  * ------------------------------------------------------------------ */
 
@@ -1169,6 +1850,11 @@ function makeRoutes(
    * 路由闭包就会拿错设置。
    */
   runtime: () => RuntimeSync | undefined,
+  /**
+   * 采纳率收集器访问口（ROADMAP P1）。与 runtime 同理走闭包：collector 在 apply 里
+   * 创建、可能晚于路由注册，且必须**每实例一份**（两个实例并存时不该共享计数）。
+   */
+  metrics: () => MetricsAccess,
 ): Array<{ kind: 'exact'; path: string; handler: RouteHandler }> {
   const guard = (req: ReqLike, res: ResLike, method: string): boolean => {
     if (!isLoopbackRequest(req)) {
@@ -1194,13 +1880,31 @@ function makeRoutes(
 
   const resolvePath = (params: URLSearchParams): string => params.get('path')?.trim() || currentDefaultPath()
 
+  /**
+   * 最近一次 CLI 失败的原文（诊断包要用，ROADMAP P1-b）。
+   *
+   * 为什么记在内存而不是让用户去翻日志：失败发生在哪次点击、原文是什么，是排查的
+   * 第一现场；宿主日志未必开着，卡片上的报错刷新一次就没了。这里只留最近一条，
+   * 不设上限会长成泄漏；`at` / `kind` / `path` 三项就够定位。
+   */
+  let lastCliFailure: { at: number; kind: 'cli' | 'index'; path: string; error: string } | undefined
+  const rememberFailure = (kind: 'cli' | 'index', path: string, error: unknown): void => {
+    const message = cliErrorMessage(error, kind === 'index' ? cli.indexTimeoutMs : cli.cliTimeoutMs,
+      kind === 'index' ? 'indexTimeoutMs' : 'cliTimeoutMs')
+    lastCliFailure = { at: Date.now(), kind, path, error: message }
+  }
+
   /** 查询类命令的失败响应：超时文案指向 cliTimeoutMs。 */
-  const failCli = (res: ResLike, cwd: string, error: unknown): void =>
+  const failCli = (res: ResLike, cwd: string, error: unknown): void => {
+    rememberFailure('cli', cwd, error)
     writeJson(res, 500, { ok: false, error: cliErrorMessage(error, cli.cliTimeoutMs, 'cliTimeoutMs'), path: cwd })
+  }
 
   /** 索引类命令的失败响应：超时文案指向 indexTimeoutMs。 */
-  const failIndex = (res: ResLike, cwd: string, error: unknown): void =>
+  const failIndex = (res: ResLike, cwd: string, error: unknown): void => {
+    rememberFailure('index', cwd, error)
     writeJson(res, 500, { ok: false, error: cliErrorMessage(error, cli.indexTimeoutMs, 'indexTimeoutMs'), path: cwd })
+  }
 
   /**
    * 目标必须真是个目录——`init` 会往这里写 `.codegraph/`，不能凭字符串就开工。
@@ -1512,6 +2216,31 @@ function makeRoutes(
     },
     {
       kind: 'exact',
+      path: '/api/dsh-codegraph/unlock',
+      handler: async (req, res) => {
+        // 清陈旧锁（`codegraph unlock`）：一次被强杀的 index 会留下 `codegraph.lock`，
+        // 之后**所有**索引操作都被它挡住，而卡片此前没有任何入口——用户只能去终端。
+        // CLI 语义是幂等的（没锁时 exit 0 + "No stale lock files found"），所以这个
+        // 按钮可以随便点。
+        if (!guard(req, res, 'POST')) return
+        const body = await readPostBody(req, res)
+        if (body === undefined) return
+        const cwd = (typeof body.path === 'string' && body.path.trim()) || currentDefaultPath()
+        const invalid = directoryError(cwd)
+        if (invalid !== undefined) {
+          writeJson(res, 400, { error: invalid })
+          return
+        }
+        try {
+          const { output } = await run(unlockArgs(cwd), cwd, cli.cliTimeoutMs)
+          writeJson(res, 200, { ok: true, path: cwd, output })
+        } catch (error) {
+          failCli(res, cwd, error)
+        }
+      },
+    },
+    {
+      kind: 'exact',
       path: '/api/dsh-codegraph/init',
       handler: async (req, res) => {
         // 这是本插件**唯一往用户项目里写东西**的入口（建 `.codegraph/`），所以：
@@ -1775,6 +2504,129 @@ function makeRoutes(
     },
     {
       kind: 'exact',
+      path: '/api/dsh-codegraph/diagnose',
+      handler: async (req, res) => {
+        // 只读诊断包（ROADMAP P1-b）。刻意只认 GET：它读 daemon 日志、必要时补一次
+        // `<command> --version` 探测，语义就是「看当前状态」——与 /reprobe 那种
+        // 显式副作用入口分开。
+        if (!guard(req, res, 'GET')) return
+        const params = queryString(req.url)
+        const rt = runtime()
+        const effective = effectiveProjectPath(rt)
+        const target = params.get('path')?.trim() || effective
+        // 探测没落地时补一次：诊断包的核心价值就是「CLI 到底能不能跑」，给一个空字段
+        // 等于让提问者再猜一轮。已探过就复用（不重复起进程，CG21）。
+        const probe = cliProbe.get()
+
+        const found = locateIndex(target)
+        const mcp = snapshotMcpStatus(cli.command, rt)
+        const indexedDir = join(target, INDEX_DIR)
+        const indexedProbe = probePath(indexedDir)
+        const indexedEntries = indexedProbe.exists ? listEntries(indexedDir) : undefined
+        // codegraph CLI 自己的安装目录：`~/.codegraph`。刻意用 `os.homedir()` 而**不是**
+        // 从 `dshHome()` 推回去——CLI 的安装位置只跟用户家目录有关，与 `DSH_HOME`
+        // 无关；用 DSH_HOME 推导的话，设过 `DSH_HOME=/custom` 的机器上这里会指向
+        // `/custom/../.codegraph`（不存在），而真正的 `~/.codegraph` 恰是「家目录被
+        // 误判成已索引项目」那个经典坑的源头，诊断包里最该看见它。
+        const codegraphHome = join(homedir(), '.codegraph')
+
+        const lines = [
+          `@hyzyn/dsh-codegraph ${PLUGIN_VERSION} · node ${process.version} · ${process.platform} ${process.arch}`,
+          `时间：${new Date().toISOString()}`,
+          '',
+          `command：${cli.command}`,
+          `CLI 探测：${probe.available === true ? '可用' : probe.available === false ? '不可用' : '尚未探测'}`
+            + (probe.at !== undefined ? `（${new Date(probe.at).toISOString()}）` : ''),
+          ...(probe.error !== undefined && probe.error !== '' ? [`  实测原因：${probe.error}`] : []),
+          `超时：查询 ${cli.cliTimeoutMs === 0 ? '不限时' : cli.cliTimeoutMs + 'ms'}`
+            + ` / 索引 ${cli.indexTimeoutMs === 0 ? '不限时' : cli.indexTimeoutMs + 'ms'} · indexForce=${String(cli.indexForce)}`,
+          '',
+          `诊断目标路径：${target}`,
+          `  索引状态：${found.state}${found.projectPath !== undefined ? `（项目根 ${found.projectPath}）` : ''}`,
+          `  ${INDEX_DIR}/：${!indexedProbe.exists
+            ? '不存在'
+            : indexedEntries === undefined ? '存在但读不到条目' : indexedEntries.join(', ')}`,
+          `托管行生效路径：${effective}`,
+          `会话上报路径：${rt?.sessionPath ?? '(无)'}`,
+          `默认项目路径：${rt?.current.defaultPath ?? currentDefaultPath()}`,
+          `跟随会话：${rt?.current.follow === true ? '开' : '关'} · MCP 联动：${rt?.current.manage === true ? '开' : '关'}`,
+          '',
+          `--- 托管行（${homePatchPath()}）---`,
+          `mode=${mcp.mode} cwd=${mcp.cwd ?? '(未托管)'} indexed=${String(mcp.indexed)}`
+            + (mcp.cwdExists === false ? ' ⚠ cwd 目录已不存在' : '')
+            + (mcp.note !== undefined ? ` note=${mcp.note}` : ''),
+          '',
+          '--- 托管行原文（只摘 codegraph 相关的两个区块，且已脱敏）---',
+          ...renderPatchExcerpt(),
+          '',
+          `--- codegraph 安装目录 / daemon（${codegraphHome}）---`,
+          `安装目录：${probePath(codegraphHome).exists ? '存在' : '不存在'}`,
+          ...renderDaemons(codegraphHome),
+          '',
+          '--- 最近一次 CLI 失败 ---',
+          lastCliFailure === undefined
+            ? '（本次宿主运行期间没有失败记录）'
+            : `${new Date(lastCliFailure.at).toISOString()} [${lastCliFailure.kind}] ${lastCliFailure.path}\n  ${lastCliFailure.error}`,
+          '',
+          // 采纳率也进诊断包（P1）：报告「codegraph 好像没效果」时，第一个要分清的是
+          // 「模型根本没用它」还是「用了但结果不对」——这一节直接给出答案。
+          '--- 采纳率（本次宿主运行期间，target 路径所属项目）---',
+          (() => {
+            const snapshot = metrics().snapshot()
+            const key = resolveIndexedRoot(target) ?? target
+            const counts = snapshot.projects[key]
+            if (counts === undefined) return `（${key} 还没有工具调用记录）`
+            return describeAdoption(summarizeAdoption(key, counts, indexState(key) === 'indexed'))
+          })(),
+          ...(() => {
+            // 其它项目也列一下（有调用才列），免得「主项目 0 次」被读成「完全没记录」
+            const others = metrics().snapshot().summaries.filter((row) => row.exploratory > 0 || row.other > 0)
+            const current = resolveIndexedRoot(target) ?? target
+            const rest = others.filter((row) => row.project !== current)
+            if (rest.length === 0) return []
+            return ['其它有记录的项目：', ...rest.map((row) => '  ' + describeAdoption(row))]
+          })(),
+        ]
+        writeJson(res, 200, {
+          ok: true,
+          path: target,
+          /** 可整段复制（贴 issue / 发给自己存档）的纯文本。 */
+          report: lines.join('\n'),
+        })
+      },
+    },
+    {
+      kind: 'exact',
+      path: '/api/dsh-codegraph/metrics',
+      handler: async (req, res) => {
+        // 采纳率仪表（ROADMAP P1）。只读：统计由 session/event 订阅在内存里累积，
+        // 这条路由只把当下的表拍成 JSON——刻意不做持久化（见 collector 的注释）。
+        if (!guard(req, res, 'GET')) return
+        const params = queryString(req.url)
+        const collector = metrics()
+        const requested = params.get('path')?.trim()
+        const snapshot = collector.snapshot()
+        // 不带 path = 全部项目（按探索次数排序）；带 path = 先按索引根归并（与注入门禁
+        // 同口径），于是「卡片上看的那个项目」与「数字属于哪个项目」不会错位。
+        if (requested !== undefined && requested !== '') {
+          const key = resolveIndexedRoot(requested) ?? requested
+          const counts = snapshot.projects[key] ?? emptyCounts()
+          const summary = summarizeAdoption(key, counts, indexState(key) === 'indexed')
+          writeJson(res, 200, {
+            ok: true,
+            path: requested,
+            project: key,
+            summary,
+            text: describeAdoption(summary),
+            since: snapshot.since,
+          })
+          return
+        }
+        writeJson(res, 200, { ok: true, summaries: snapshot.summaries, grouped: snapshot.grouped, since: snapshot.since })
+      },
+    },
+    {
+      kind: 'exact',
       path: '/api/dsh-codegraph/reprobe',
       handler: async (req, res) => {
         // guard 已经把住 loopback + POST；重探会真的起一个子进程（<command> --version），
@@ -1874,11 +2726,112 @@ const plugin = definePlugin<Config>({
     let runtimeRef: RuntimeSync | undefined
     const getRuntime = (): RuntimeSync | undefined => runtimeRef
 
-    /* ---- systemPrompt 两段：CLI 探测 + settings 开关共同决定是否注入 ---- *
-     * 两段都是具名 section（systemPrompt 的 NamedEntries，重名会抛错），各自持有
-     * disposer，所以「探测落地」「用户在卡片上改开关」都能即时增删，不用重启宿主。
+    /**
+     * 采纳率收集器（ROADMAP P1）：每实例一份，挂在 ctx 上订阅 session/event。
+     *
+     * 订阅用 `ctx.on`（不是 `inject`）：`session/event` 是宿主的事件，随 ctx 的
+     * effect 生命周期自动解绑，不需要额外 dispose。挂在这里而不是路由里，是因为
+     * 事件从会话一开始就流，而路由可能直到用户打开卡片才被访问。
      */
-    type PromptSectionApi = { section(options: { name: string; order?: number; text: string }): () => void }
+    const metricsCollector = createMetricsCollector()
+    try {
+      metricsCollector.attach(ctx as unknown as { on(name: string, listener: (...args: unknown[]) => unknown): unknown })
+    } catch (error) {
+      // 订阅失败不该让整个插件起不来：仪表是观测功能，缺了它其余部分照常工作。
+      console.warn('[dsh-codegraph] 采纳率订阅失败（仪表不可用，其余功能不受影响）：'
+        + (error instanceof Error ? error.message : String(error)))
+    }
+
+    /**
+     * 自动重建（ROADMAP P1「索引生命周期」，默认关）。
+     *
+     * 触发点是**会话出现时的项目目录**，不是定时器：过期信号只在项目被打开时才值得关心，
+     * 定时轮询会在用户没在看的项目上烧 CPU（还要起 CLI 子进程去读 status）。
+     *
+     * 三个刻意的约束：
+     *
+     *  1. **语义是「重建」不是「同步」**。实测（codegraph 1.6.0）：`sync` 对「提取器版本
+     *     落后」这类过期返回 `Already up to date` 且**不清除信号**——过期只能靠 `index`
+     *     修。若照直觉实现成自动 sync，就会变成一个每次都跑、每次都什么也不改变的
+     *     空转循环。
+     *  2. **每个项目每次宿主运行最多一次**（`autoReindexed` 集合）。重建是分钟级操作，
+     *     不做这个闸的话，同一项目开十个会话就是十次全量重建。
+     *  3. **失败只记日志，不抛不给提示**。它是一个后台优化，不该在用户没要求的情况下
+     *     弹错误；真出问题卡片上本来就有一键重建。
+     *
+     * 与 `indexForce` 的关系：自动重建**不**追加 `--force`——那面旗子绕开 CLI 对
+     * 「家目录 / 文件系统根」的误伤保护，应由用户显式决定，不该由后台路径代劳。
+     */
+    const autoReindexed = new Set<string>()
+    const autoReindexEnabled = config?.autoReindex === true
+
+    /** 检查一个项目的过期信号，必要时重建（幂等、每次运行每项目一次）。 */
+    const maybeAutoReindex = async (projectPath: string): Promise<void> => {
+      if (!autoReindexEnabled) return
+      // 只在**已确认** CLI 不可用时跳过。刻意不写成 `!== true`：探测是挂载后异步跑的，
+      // 会话的第一条 user/message 完全可能早于它落地（实测 ~200–300ms），用 `!== true`
+      // 会在那个窗口里把检查静默吞掉——测试里表现为「有时查有时不查」。
+      // 代价是 CLI 真缺失时每项目多起一次注定失败的子进程，可以接受。
+      if (cliProbeState.available === false) return
+      if (autoReindexed.has(projectPath)) return
+      // 先占位再检查：宁可漏一次，也不要在两个会话同时打开时起两个重建进程
+      autoReindexed.add(projectPath)
+      try {
+        const raw = await runCodegraph(command, ['status', '--json', '--', projectPath], projectPath, cli.cliTimeoutMs)
+        const status = tryParseJson(raw)
+        const reasons = staleReasonsFromStatus(status)
+        if (reasons.length === 0) return
+        console.log(`[dsh-codegraph] 自动重建：${projectPath} — ${reasons.join('；')}`)
+        await runCodegraph(command, indexArgs(projectPath, false), projectPath, cli.indexTimeoutMs)
+        console.log(`[dsh-codegraph] 自动重建完成：${projectPath}`)
+      } catch (error) {
+        console.warn(`[dsh-codegraph] 自动重建失败（可在卡片上手动重建）：${projectPath} — `
+          + (error instanceof Error ? error.message : String(error)))
+      }
+    }
+
+    // 会话出现 → 看它所属项目过不过期。用 session/event 的 user/message 而不是
+    // 定时器：只在「真有人在这个项目里干活」时才检查。
+    //
+    // 这里的 cast 与采纳率收集器同因：`session/event` 是宿主在运行时提供的事件，
+    // 而本包的 peer 依赖里没有 dsh-session 的类型（typert 生成的 Events 联合类型
+    // 在宿主包里）。形状已按真实消费者核对（dsh-acp / dsh-agent-instructions 都是
+    // `ctx.on('session/event', (session, event) => …)`）。
+    try {
+      const on = (ctx as unknown as { on(name: string, listener: (...args: unknown[]) => unknown): unknown }).on
+      on.call(ctx, 'session/event', (...args: unknown[]) => {
+        const session = args[0] as SessionLike | undefined
+        const event = args[1] as { type?: unknown } | undefined
+        // user/message 是「这个会话真的开始干活了」的最早可靠信号
+        if (event?.type !== 'user/message') return
+        const cwd = session?.header?.cwd
+        if (typeof cwd !== 'string' || cwd === '') return
+        const project = resolveIndexedRoot(cwd)
+        // 只有**已索引**的项目才谈得上「索引过期」；未索引的该走 init，不是重建
+        if (project === undefined) return
+        void maybeAutoReindex(project)
+      })
+    } catch (error) {
+      console.warn('[dsh-codegraph] 自动重建订阅失败（该功能不可用）：'
+        + (error instanceof Error ? error.message : String(error)))
+    }
+
+    /* ---- systemPrompt 两段：CLI 探测 + settings 开关 + 索引门禁 ---- *
+     * 两段都是具名 section（systemPrompt 的 NamedEntries，重名会抛错），各自持有
+     * disposer，所以「探测落地」「用户在卡片上改开关」「会话切到别的项目」都能即时
+     * 增删，不用重启宿主。
+     *
+     * 三段判据，缺一不可：
+     *   1. CLI 探测可用（跑不起来的能力不向模型宣告）；
+     *   2. settings / 插件配置里那个开关打开；
+     *   3. **生效路径真是有效索引**（P1-a，仅 usage 段）——README 早就写了「触发条件
+     *      与宿主 indexState 同口径」，但实现里只判了 1+2：在没有 `.codegraph/` 的仓库
+     *      里也照样注入约 300 token 的用法指引，而那段话本身就是在教模型「这个仓库
+     *      有索引时该怎么做」。判据与 `effectiveProjectPath` 同源，所以跟随会话切换、
+     *      「设为默认项目」、项目被 uninit 都会立刻反映到注入与否上。
+     *      公告段（announce）不设索引门禁：它讲的是「有这张卡片」，与索引无关。
+     */
+    type PromptSectionApi = { section(options: { name: string; order?: number; text: string | (() => string) }): () => void }
     let promptApi: PromptSectionApi | undefined
     let announceDisposer: (() => void) | undefined
     let usageDisposer: (() => void) | undefined
@@ -1912,7 +2865,7 @@ const plugin = definePlugin<Config>({
       return disposer
     }
 
-    /** 按「CLI 可用 + settings 开关」刷新两段 section（幂等，可反复调用）。 */
+    /** 按「CLI 可用 + settings 开关 + 索引门禁」刷新两段 section（幂等，可反复调用）。 */
     const refreshGuidance = (): void => {
       if (promptApi === undefined) return
       const resolved = runtimeRef?.current
@@ -1921,9 +2874,12 @@ const plugin = definePlugin<Config>({
       // 探测未落地（undefined）或已判定不可用时都不注入：宁可晚一轮，也不向模型
       // 宣告一个跑不起来的能力。
       const ready = cliProbeState.available === true
+      // 索引门禁（P1-a）：判据与 effectiveProjectPath 同源，见上面那段注释。
+      // 每次 refresh 现算：会话切换 / 设为默认项目 / uninit 都走 refreshGuidance。
+      const indexed = indexState(effectiveProjectPath(runtimeRef)) === 'indexed'
       announceDisposer = setSection(announceDisposer, ready && announce, (api) =>
         api.section({ name: 'plugin:dsh-codegraph', order: 150, text: CODEGRAPH_GUIDANCE }))
-      usageDisposer = setSection(usageDisposer, ready && usage, (api) =>
+      usageDisposer = setSection(usageDisposer, ready && usage && indexed, (api) =>
         api.section({ name: 'plugin:dsh-codegraph:usage', order: 151, text: codegraphUsageGuidance(command) }))
     }
 
@@ -1957,7 +2913,7 @@ const plugin = definePlugin<Config>({
     const routes = makeRoutes(cli, config?.defaultPath?.trim() || process.cwd(), {
       get: () => ({ available: cliProbeState.available, error: cliProbeState.error, at: cliProbeState.at }),
       reprobe: () => runProbe(),
-    }, getRuntime)
+    }, getRuntime, () => metricsCollector.access)
     ctx.inject(['webServer'], (webCtx: Context) => {
       webCtx.effect(() => {
         const server = (webCtx as unknown as { webServer: { register(route: { kind: string; path: string; handler: RouteHandler }): () => void } }).webServer

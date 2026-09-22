@@ -55,9 +55,25 @@ Behavior details:
 | `/api/dsh-codegraph/settings` | POST | Write toggles `{ announceToAgent?, usageGuidance?, mcpIntegration?, followSession? }` (booleans), effective immediately |
 | `/api/dsh-codegraph/default-path` | POST | Set as default project `{ path }` (requires an index database inside `.codegraph/`), hot-switches the MCP at the same time |
 | `/api/dsh-codegraph/reprobe` | POST | Re-runs the `<command> --version` probe, returns `{ cliAvailable, cliProbeError, cliProbeAt }` and refreshes the systemPrompt gate |
+| `/api/dsh-codegraph/unlock` | POST | Clears stale lock files blocking indexing `{ path }` (`codegraph unlock`; idempotent — exits 0 when there is no lock) |
 | `/api/dsh-codegraph/cancel` | POST | Cancels in-flight CLI calls `{ path? }` (omit = cancel all); a disconnecting page also aborts its call |
+| `/api/dsh-codegraph/diagnose` | GET | Collects a diagnostics bundle `{ path?, report }`: `report` is plain text covering versions/platform, the raw CLI probe failure, index state, the managed row plus the **redacted** patch blocks, the `~/.codegraph` daemon registrations and log tail, the most recent CLI failure, and the adoption rate |
+| `/api/dsh-codegraph/metrics` | GET | Adoption rate `{ path? }`: without `path` returns every project as `{ summaries, since }`; with `path` returns `{ project, summary, text, since }` for that project |
 
-All routes are loopback-only, to prevent remote access.
+All routes are loopback-only, to prevent remote access. `diagnose` is GET-only (read-only), but it may run a probe, so it is never reachable as a side effect of a write path.
+
+Redaction policy for the diagnostics bundle: `~/.dsh/cordis.patch.yml` is shared by every MCP server, so other entries may carry credentials under `headers` / `env`. The report therefore excerpts **only the two codegraph-related blocks** (this plugin's block and the dsh-mcp card block) and redacts **by key name**: `id` / `name` / `serverName` / `transport` / `command` / `args` / `cwd` / `disabled` keep their values (exactly what you need for diagnosis), every other key becomes `<redacted>`, and a sensitive key such as `headers:` / `env:` taints its whole subtree (the `authorization:` value is wiped while its name stays). Newly added fields are redacted by default (fail-closed).
+
+## Adoption metrics
+
+The adoption row on the card answers the question that comes *after* configuration: once it is set up, does the model actually use it?
+
+- **Source**: the host's existing `session/event` stream (counting `tool/call` only — the same public subscription surface `dsh-agent-instructions` and `dsh-acp` use). `tool/result` is deliberately not counted: adoption asks whether the model *wants* to use it, and a failed call still counts as wanting to (whether it worked is a different question, answered by the diagnostics bundle).
+- **Numerator/denominator**: `codegraph` matches `mcp__codegraph__*`; the denominator is file-exploration tools (`grep` / `glob` / `read_file` / `find` / `list_dir` / `search`, matched loosely across naming conventions). **`bash` is excluded** — most of what a model does with bash (running tests, installing deps, git) has nothing to do with code exploration, and counting it would systematically deflate the rate into a wrong "nobody uses codegraph" conclusion.
+- **A zero denominator reads "no exploratory calls yet", not 0%**: "never explored" and "explored but grepped everything" are different facts.
+- **The project key is the index root** (`resolveIndexedRoot`) — the same criterion as the managed row's cwd and the injection gate, so several sessions in one repository (new session, subagent, host restart) merge into one row instead of scattering into samples too small to mean anything. Unindexed projects are recorded too, but the wording states that the number says nothing about prompt effectiveness.
+- **In-memory only; a host restart resets it**, and `since` reports the starting point honestly. Not persisting is deliberate: this is an observation for deciding whether to tune the prompt, not an audit log, and persisting would leave tool names and project paths on disk indefinitely.
+- The same data also goes into the diagnostics bundle (`/diagnose`), because the first thing to separate when someone reports "codegraph doesn't seem to help" is "the model never used it" from "it used it and the results were wrong".
 
 Request semantics (since v0.4.2):
 
@@ -104,6 +120,11 @@ After upgrading the local DSH, re-link first and then typecheck — otherwise `p
 ```bash
 node scripts/link-dsh-runtime.mjs     # link packages/*'s @deepseek-ai/* and @hyzyn/dsh-kit to the dsh runtime / this repository's workspace
 ```
+
+Planning and defect records (neither ships with the package; both are Chinese-only and live in the repository, hence absolute links):
+
+- [ROADMAP.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/packages/codegraph/ROADMAP.md): enhancement roadmap — P0–P3 tiers, cost, architectural items (per-agent mount / adoption metrics / diagnostics bundle) and the suggested order of work.
+- [DEFECTS.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/packages/codegraph/DEFECTS.md): defect audit and fix log — `CG01`–`CG38`, acceptance records and the raw backlog.
 
 ## Install into DSH
 
@@ -153,12 +174,13 @@ When a timeout is hit, the error shown in the card names the corresponding confi
 
 ## System prompt
 
-After installation, two prompt sections are injected into systemPrompt automatically (~310 tokens in total):
+After installation, two prompt sections are injected into systemPrompt automatically (at most ~310 tokens in total; the usage section appears only when the effective path is indexed):
 
 - `plugin:dsh-codegraph` (order 150): the capability announcement (Chinese, ~130 characters) — only that the card exists and can be pointed at; which buttons the card has is UI detail and does not spend model context.
 - `plugin:dsh-codegraph:usage` (order 151): the CodeGraph usage guideline (the CODEGRAPH_START block). It fills the role upstream assigns to `CODEGRAPH_INSTRUCTIONS_BLOCK` (the short block for subagents and non-MCP harnesses, while the long playbook rides the MCP `initialize` `instructions`) — **but DSH's MCP client never reads `instructions`**, so upstream's "no root index → query per project via `projectPath`" variant never reaches the model. This block carries exactly that, plus three more: the **shell fallback** (the command name renders from the `command` config instead of a hardcoded `codegraph`, and `--path` is spelled out), **per-project `projectPath`**, and **skip unindexed projects without running `codegraph init`**. Its trigger condition matches the host's `indexState`: `.codegraph/` must contain an index database — upstream's own wording only checks that the directory exists, which mistakes the CLI's `~/.codegraph` install dir for a project index, so this block deliberately tightens it.
 
-Both blocks sit behind two gates:
+Both blocks sit behind two gates, and the usage block behind a third:
 
 1. **CLI probe**: `<command> --version` runs once at mount; on failure neither block is injected (a `console.warn` carries the failure text) — the prompt never advertises a capability that cannot work. The result is not latched: the card's re-probe button or `POST /reprobe` re-runs it and refreshes both sections immediately (useful after installing the CLI or switching `command` to an absolute path, with no host restart).
 2. **Toggles**: the card's two checkboxes write the settings namespace (`POST /api/dsh-codegraph/settings`) and add/remove the sections immediately; installation-level config can also disable them (`announceToAgent: false` / `usageGuidance: false`).
+3. **Index gate (usage block only)**: the usage guideline is injected only when the effective path (the directory the managed row actually uses) is a **valid index** — the same `indexState` criterion the host uses, where the mere existence of `.codegraph/` does not count. An unindexed repository therefore spends none of the ~300 tokens that guideline costs (it is, after all, telling the model what to do *when this repo has an index*) and the model is not pushed toward a tool that must fail. The criterion is recomputed on every `refreshGuidance`, so following the active session, "set as default project", a successful `init`, and `uninit` all change injection immediately. **The announcement block (order 150) is exempt**: it is about the card existing, not about the index.

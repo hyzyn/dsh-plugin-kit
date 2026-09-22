@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { REL_LIMIT, nextRetryDelayMs, staleReasons, truncationNote } from '../client-src/pure.js'
+import { REL_LIMIT, adoptionText, nextRetryDelayMs, staleReasons, truncationNote } from '../client-src/pure.js'
 
 /*
  * 浏览器半体的纯逻辑测试（首次给 client-src 配上单测）。
@@ -115,5 +115,56 @@ describe('CG17：truncationNote 不再静默截断', () => {
 
   it('上限是 30（与 relList 的 slice(0, REL_LIMIT) 同源，改一处即两边同步）', () => {
     expect(REL_LIMIT).toBe(30)
+  })
+})
+
+describe('P1 采纳率：adoptionText 的边界', () => {
+  it('无 summary / 非对象 → 空串（不渲染那一行）', () => {
+    expect(adoptionText(null)).toBe('')
+    expect(adoptionText(undefined)).toBe('')
+    expect(adoptionText('nope')).toBe('')
+  })
+
+  it('一次调用都没有：明说没有记录，而不是 0%', () => {
+    const text = adoptionText({ codegraph: 0, discovery: 0, discoveryTotal: 0, file: 0, other: 0 })
+    expect(text).toContain('还没有工具调用记录')
+    expect(text).not.toContain('0%')
+  })
+
+  it('只有其它工具：说「还没有探索类调用」，不显示 0%', () => {
+    const text = adoptionText({ codegraph: 0, discovery: 0, discoveryTotal: 0, file: 0, other: 5 })
+    expect(text).toContain('还没有探索类调用')
+    expect(text).toContain('5 次其它工具')
+    expect(text).not.toContain('0%')
+  })
+
+  it('有读取但没有发现类：与「只有其它工具」区分开', () => {
+    const onlyReads = adoptionText({ codegraph: 0, discovery: 0, discoveryTotal: 0, file: 4, other: 0 })
+    expect(onlyReads).toContain('还没有发现类调用')
+    expect(onlyReads).toContain('读取 4 次')
+    const onlyOther = adoptionText({ codegraph: 0, discovery: 0, discoveryTotal: 0, file: 0, other: 4 })
+    expect(onlyOther).toContain('还没有探索类调用')
+  })
+
+  it('有发现类调用：窄口径是主口径，宽口径仅在不同时带出', () => {
+    // grep 进 discovery；read 只进 file —— 两个口径给出不同的百分比
+    expect(adoptionText({ codegraph: 2, discovery: 1, discoveryTotal: 3, file: 1, other: 0, indexed: true }))
+      .toBe('采纳率：codegraph 2 次 / 发现类 1 次 → 67%（宽口径含读取 67%）')
+    // 只有读取时宽口径不同，必须标出来
+    expect(adoptionText({ codegraph: 0, discovery: 0, discoveryTotal: 0, file: 4, other: 2, indexed: true }))
+      .toBe('采纳率：还没有发现类调用（codegraph 0 次 / 读取 4 次；另 2 次其它工具）')
+    expect(adoptionText({ codegraph: 3, discovery: 0, discoveryTotal: 3, file: 0, other: 0, indexed: true }))
+      .toBe('采纳率：codegraph 3 次 / 发现类 0 次 → 100%')
+  })
+
+  it('两个口径确实是两个数（真实历史里差别巨大：2.2% vs 28.8%）', () => {
+    const text = adoptionText({ codegraph: 1, discovery: 3, discoveryTotal: 4, file: 20, other: 0, indexed: true })
+    expect(text).toContain('发现类 3 次 → 25%')
+    expect(text).toContain('宽口径含读取 5%')
+  })
+
+  it('未索引项目要标明数字不代表提示词效果', () => {
+    const text = adoptionText({ codegraph: 0, discovery: 2, discoveryTotal: 2, file: 2, other: 0, indexed: false })
+    expect(text).toContain('该项目未索引')
   })
 })

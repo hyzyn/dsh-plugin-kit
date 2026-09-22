@@ -88,6 +88,44 @@ window.__ModuleLoader__.load({
       return total > shown ? '已显示前 ' + shown + ' 条，共 ' + total + ' 条' : ''
     }
 
+    /**
+     * P1 采纳率仪表：把 `/metrics` 的 summary 翻成一行卡片文案（无数据时返回 ''）。
+     *
+     * 三个刻意的取舍：
+     *   - **主口径是「发现类」**（grep/glob/search/find/list）：`read` 占宽口径分母的
+     *     绝大多数，而它多半是「打开已知道要改的文件」——codegraph 替代的是「找东西」。
+     *     实测宽口径 2.2% / 窄口径 28.8%，只报宽口径会让读者得出「codegraph 没用」的
+     *     错误结论。宽口径仍然报出来，但明确标注「含读取」。
+     *   - **分母为 0 不显示 0%**，而是明说「还没有发现类调用」——「一次都没探索」与
+     *     「探索了但全用 grep」是两回事。
+     *   - **未索引项目的数字要标明**：那种项目里模型本来就不该用 codegraph，拿它的
+     *     采纳率去评价提示词是错的。
+     */
+    function adoptionText(summary) {
+      if (!summary || typeof summary !== 'object') return ''
+      const codegraph = Number(summary.codegraph ?? 0)
+      const discovery = Number(summary.discovery ?? 0)
+      const file = Number(summary.file ?? 0)
+      const other = Number(summary.other ?? 0)
+      const discoveryTotal = Number(summary.discoveryTotal ?? discovery + codegraph)
+      const indexedNote = summary.indexed === false ? '（该项目未索引，这个数字不代表提示词效果）' : ''
+      // 完全没有记录（连其它工具都没有）才说「没有工具调用记录」；否则要区分
+      // 「只有 bash/edit 这类」与「有读取但没有发现类」——两者含义不同。
+      if (discoveryTotal === 0 && file === 0) {
+        return other === 0
+          ? '采纳率：本次宿主运行期间该项目还没有工具调用记录'
+          : `采纳率：还没有探索类调用（另 ${other} 次其它工具，如 bash / edit）`
+      }
+      if (discoveryTotal === 0) {
+        return `采纳率：还没有发现类调用（codegraph ${codegraph} 次 / 读取 ${file} 次；另 ${other} 次其它工具）${indexedNote}`
+      }
+      const narrow = Math.round((codegraph / discoveryTotal) * 100)
+      const broad = Math.round((codegraph / (codegraph + file)) * 100)
+      const broadNote = file === 0 ? '' : `（宽口径含读取 ${broad}%）`
+      const otherNote = other === 0 ? '' : `（另 ${other} 次其它工具）`
+      return `采纳率：codegraph ${codegraph} 次 / 发现类 ${discovery} 次 → ${narrow}%${broadNote}${otherNote}${indexedNote}`
+    }
+
     const React = require('react')
     const { jsx, jsxs } = require('react/jsx-runtime')
 
@@ -355,6 +393,12 @@ window.__ModuleLoader__.load({
       // CG21：「重新探测」和「设为默认项目」是两个动作，各自有忙态——共用一个布尔
       // 会把对方一起禁掉（点一个灰另一个）。
       const [reprobing, setReprobing] = React.useState(false)
+      // P1-b：诊断包（GET /diagnose 回一段纯文本）。与其它忙态分开：它会读 daemon 日志，
+      // 不该把「刷新状态 / 重新探测」一起灰掉。
+      const [diagnosing, setDiagnosing] = React.useState(false)
+      const [report, setReport] = React.useState('')
+      // P1「采纳率仪表」：本会话/本项目里模型用 codegraph 还是用 grep/read。
+      const [adoption, setAdoption] = React.useState(null)
       // CG05：sync / index / init 是可能跑 10 分钟的索引类操作，进行中给出「取消」。
       const [cancelable, setCancelable] = React.useState(false)
       // 「初始化索引」是两步确认：它会**往用户的项目里写 `.codegraph/`**，是本卡片唯一
@@ -415,12 +459,28 @@ window.__ModuleLoader__.load({
         }
       }, [effectivePath, manual, currentCwd])
 
+      /**
+       * 取采纳率（P1）。刻意**不**并入 loadStatus：采纳率是宿主侧内存里的累计值，
+       * 与目标路径的索引状态是两件事——某个项目未索引也可能有数字（模型在这个目录里
+       * 用不用 codegraph），失败不该影响状态面板。
+       */
+      const loadAdoption = React.useCallback(async () => {
+        try {
+          const data = await api('/api/dsh-codegraph/metrics' + qs({ path: effectivePath }))
+          setAdoption(data && data.summary ? data.summary : null)
+        } catch {
+          // 采纳率是观测功能：拿不到就不显示，不打扰用户（也不覆盖已有的错误提示）
+          setAdoption(null)
+        }
+      }, [effectivePath])
+
       React.useEffect(() => {
         if (open) {
           loadStatus()
           loadMcpStatus()
+          loadAdoption()
         }
-      }, [open, loadStatus, loadMcpStatus])
+      }, [open, loadStatus, loadMcpStatus, loadAdoption])
 
       // 跟随当前项目：打开卡片或切换会话时，若用户未手动编辑过路径，
       // 自动采用当前活动会话的工作目录；手动编辑后停止跟随。
@@ -479,14 +539,18 @@ window.__ModuleLoader__.load({
         setLoading(true)
         setError('')
         setOk('')
+        // unlock 是秒级操作，不给取消按钮（给了一个点完就消失的「取消」只会让人困惑）
         setCancelable(action === 'sync' || action === 'index')
+        // 文案按动作分派；`unlock` 的 CLI 输出在「本来就没锁」时是
+        // "No stale lock files found"，原样带出来最诚实
+        const successLabel = { sync: '已同步', index: '已重建', unlock: '解锁完成' }[action] || '已完成'
         try {
           const data = await api('/api/dsh-codegraph/' + action, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ path: effectivePath }),
           })
-          setOk((action === 'sync' ? '已同步' : '已重建') + '：' + (data.output || '').slice(0, 200))
+          setOk(successLabel + '：' + (data.output || '').slice(0, 200))
           await loadStatus()
         } catch (err) {
           setError(err.message)
@@ -616,6 +680,44 @@ window.__ModuleLoader__.load({
           await loadMcpStatus()
         } finally {
           setReprobing(false)
+        }
+      }
+
+      /**
+       * 拉诊断包（P1-b）。为什么值得做成按钮：这个插件的故障几乎全是环境性的——
+       * PATH 里没有 CLI、`~/.codegraph` 被当成项目索引、托管行 cwd 被删、一次被强杀的
+       * index 留下坏锁、daemon 登记的是另一个版本。以前这些要用户从四五个地方凑原文，
+       * 而排查者最需要的就是那几段原文。结果是一整段纯文本，直接复制即可。
+       */
+      const loadReport = async () => {
+        setDiagnosing(true)
+        setError('')
+        setOk('')
+        try {
+          const data = await api('/api/dsh-codegraph/diagnose' + qs({ path: effectivePath }))
+          setReport(typeof data.report === 'string' ? data.report : '')
+        } catch (err) {
+          setError(err.message)
+        } finally {
+          setDiagnosing(false)
+        }
+      }
+
+      /** 复制诊断包到剪贴板：优先 Clipboard API，不可用（非安全上下文）时退回选中文本。 */
+      const copyReport = async () => {
+        setError('')
+        try {
+          const clipboard = typeof navigator !== 'undefined' ? navigator.clipboard : undefined
+          if (clipboard && typeof clipboard.writeText === 'function') {
+            await clipboard.writeText(report)
+            setOk('诊断包已复制到剪贴板。')
+            return
+          }
+          throw new Error('当前环境没有 navigator.clipboard（非安全上下文？）')
+        } catch (err) {
+          // 退回「让用户自己按 Ctrl/Cmd+C」：把一个可展开的 pre 放在眼前，比一句
+          // 「复制失败」有用——文本已经拿到了，差的只是一次系统级操作。
+          setOk('自动复制不可用（' + err.message + '）：诊断包已展开在下方，手动全选复制即可。')
         }
       }
 
@@ -778,6 +880,27 @@ window.__ModuleLoader__.load({
                           onClick: () => runAction('index'),
                           children: '重建索引',
                         }),
+                        // 清陈旧锁：一次被强杀的 index 留下的 codegraph.lock 会挡住后续
+                        // **所有**索引操作，而在此之前卡片没有任何入口（只能去终端）。
+                        // CLI 侧幂等（没锁时 exit 0），所以不需要二次确认。
+                        jsx('button', {
+                          type: 'button',
+                          className: 'cg_btnGhost',
+                          disabled: loading,
+                          title: 'codegraph unlock：清掉挡住索引的陈旧锁文件（索引被强杀后常见）。没锁时什么也不做',
+                          onClick: () => runAction('unlock'),
+                          children: '解锁',
+                        }),
+                        // 一键诊断包（P1-b）：把 PATH / 托管行 / 索引 / daemon / 最近失败
+                        // 的原文一次收齐，供排障与贴 issue。
+                        jsx('button', {
+                          type: 'button',
+                          className: 'cg_btnGhost',
+                          disabled: diagnosing,
+                          title: '收集一段可直接复制的诊断文本：CLI 探测实测原文、托管行与补丁区块（值已脱敏）、索引状态、codegraph daemon 与日志尾、最近一次 CLI 失败',
+                          onClick: loadReport,
+                          children: diagnosing ? '收集中…' : '诊断包',
+                        }),
                         // CG05：索引类操作进行中给「取消」——以前连关标签页都止不住 10 分钟的全量重建
                         cancelable && loading
                           ? jsx('button', {
@@ -836,6 +959,15 @@ window.__ModuleLoader__.load({
                     jsx('span', { className: 'cg_mcpMeta', children: mcpText }),
                   ],
                 }),
+                // P1 采纳率：模型到底用不用 codegraph。放在 MCP 行下面、状态网格上面——
+                // 它是「配置对不对」之后的第二个问题（「配好了，模型买账吗」）。
+                adoptionText(adoption) !== ''
+                  ? jsx('p', {
+                    className: 'cg_subtitle',
+                    title: '来自宿主的内存计数（session/event 的 tool/call），宿主重启即归零；项目按索引根归并。「文件探索」= grep/glob/read 这类本可交给 codegraph 的工具，bash 等不计入',
+                    children: adoptionText(adoption),
+                  })
+                  : null,
                 jsxs('div', {
                   className: 'cg_checks',
                   children: [
@@ -891,16 +1023,49 @@ window.__ModuleLoader__.load({
                 cliProbeDetail ? jsx('p', { className: 'cg_probeDetail', children: cliProbeDetail }) : null,
                 defaultWarning ? jsx('p', { className: 'cg_warn', children: defaultWarning }) : null,
                 ok ? jsx('p', { className: 'cg_ok', children: ok }) : null,
+                // 诊断包（P1-b）：展开态 + 复制按钮。用 details 而不是直接铺开——它很长
+                // （补丁区块 + daemon 日志尾），铺开会把下面的状态面板挤到屏幕外。
+                report !== ''
+                  ? jsxs('details', {
+                    className: 'cg_details',
+                    open: true,
+                    children: [
+                      jsxs('summary', {
+                        children: [
+                          '诊断包（可整段复制贴 issue）',
+                          jsx('button', {
+                            type: 'button',
+                            className: 'cg_btnGhost',
+                            style: { marginLeft: '8px' },
+                            onClick: (event) => {
+                              // details 的 summary 上放按钮：不拦住冒泡的话点「复制」
+                              // 会顺带把这块折叠起来
+                              event.preventDefault()
+                              event.stopPropagation()
+                              copyReport()
+                            },
+                            children: '复制',
+                          }),
+                        ],
+                      }),
+                      jsx('pre', { className: 'cg_pre', children: report }),
+                    ],
+                  })
+                  : null,
                 status
                   ? statusIsStructured
                     ? jsxs('div', {
                       children: [
                         jsx('div', { className: 'cg_grid', children: statusCells(status) }),
-                        // CG11：CLI 明说「建议重建」时不能只报「● 已索引」——MCP 这时给的是旧图
+                        // CG11：CLI 明说「建议重建」时不能只报「● 已索引」——MCP 这时给的是旧图。
+                        // 实测补一句「Sync 修不了它」：codegraph 1.6.0 的 `sync` 对「提取器版本
+                        // 落后」这类过期返回 Already up to date 且不清除信号，只有「重建索引」能修。
+                        // 以前文案只说「点重建索引可修复」，用户很可能先点 Sync 然后发现没用。
                         staleReasons(status).length > 0
                           ? jsx('p', {
                             className: 'cg_warn',
-                            children: '⚠ 索引可能过期：' + staleReasons(status).join('；') + '。MCP 工具此刻给的是旧提取器产出的图——点「重建索引」可修复。',
+                            children: '⚠ 索引可能过期：' + staleReasons(status).join('；')
+                              + '。MCP 工具此刻给的是旧提取器产出的图——点「重建索引」修复（实测此时 Sync 会报 Already up to date 且不解决问题）。',
                           })
                           : null,
                         status.initialized === false

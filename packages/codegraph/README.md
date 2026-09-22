@@ -56,9 +56,27 @@ Searched for a .codegraph/ directory starting from: /Users/you
 | `/api/dsh-codegraph/settings` | POST | 写开关 `{ announceToAgent?, usageGuidance?, mcpIntegration?, followSession? }`（布尔），即时生效 |
 | `/api/dsh-codegraph/default-path` | POST | 设为默认项目 `{ path }`（需 `.codegraph/` 里有索引库），同步热切换 MCP |
 | `/api/dsh-codegraph/reprobe` | POST | 重跑一次 `<command> --version` 探测，回 `{ cliAvailable, cliProbeError, cliProbeAt }` 并同步 systemPrompt 门禁 |
+| `/api/dsh-codegraph/unlock` | POST | 清挡住索引的陈旧锁 `{ path }`（`codegraph unlock`，幂等：没锁时 exit 0） |
 | `/api/dsh-codegraph/cancel` | POST | 取消进行中的 CLI 调用 `{ path? }`（缺省 = 全部）；关标签页的断连也会自动中止对应调用 |
+| `/api/dsh-codegraph/diagnose` | GET | 收集诊断包 `{ path?, report }`：`report` 是一段纯文本，含版本/平台、CLI 探测实测原文、索引状态、托管行与**脱敏后**的补丁区块原文、`~/.codegraph` 的 daemon 登记与日志尾、最近一次 CLI 失败、以及采纳率 |
+| `/api/dsh-codegraph/metrics` | GET | 采纳率 `{ path? }`：不带 `path` 回全部项目 `{ summaries, since }`；带 `path` 回该项目 `{ project, summary, text, since }` |
 
-所有路由均为 loopback-only，防止远程访问。`reprobe` 只认 POST：它会真的起一个子进程，不该由 GET 顺带触发。
+所有路由均为 loopback-only，防止远程访问。`reprobe` 只认 POST：它会真的起一个子进程，不该由 GET 顺带触发。`diagnose` 只认 GET（只读），但它可能补跑一次探测，所以不会在写路径上被顺手调用。
+
+诊断包的脱敏口径（`diagnose`）：`~/.dsh/cordis.patch.yml` 是所有 MCP 服务器共用的文件，别家的行里可能有 `headers` / `env` 这类凭据，所以**只摘 codegraph 相关的两个区块**（本插件区块 + dsh-mcp 卡片区块），并按**键名**处理——`id` / `name` / `serverName` / `transport` / `command` / `args` / `cwd` / `disabled` 留值（这些正是排查要看的东西），其余键一律 `<redacted>`，且 `headers:` / `env:` 这类敏感键会污染整棵子树（连 `authorization:` 的值一起抹掉，但键名保留）。新增字段默认脱敏（fail-closed）。
+
+## 采纳率仪表
+
+卡片上那行「采纳率」回答的是**配置之外**的问题：配好了之后，模型到底买不买账。
+
+- **数据来源**：宿主既有的 `session/event` 事件流（只数 `tool/call`，与 `dsh-agent-instructions` / `dsh-acp` 同一个公开订阅面）。不数 `tool/result`——采纳率问的是「模型想不想用」，失败了也是想用（那是另一个问题，由诊断包回答）。
+- **分子/分母（两个口径，窄口径是主口径）**：`codegraph` 命中 `mcp__codegraph__*`；**窄口径**分母是「发现类」调用（`grep` / `glob` / `search` / `find` / `list_dir`），**宽口径**分母还包含 `read` / `view` / `open`。之所以两个都报：真实历史里 `read` 占 1956 次而 `grep` 只有 100 次，而 `read` 多半是「打开已知道要改的文件」——codegraph 替代的是「找东西」，把 `read` 算进主口径会把数字永久压在个位数（实测宽口径 2.2% vs 窄口径 28.8%）。
+- **`bash` / 媒体 / 网络类不计入分母**：模型用 bash 干的事大部分（跑测试、装依赖、git）与代码探索无关；`read_image` / `read_pdf` / `web_search` 同理（这一条是拿真实历史量过之后补的，见下）。
+- **实测数字见 [ADOPTION-AUDIT.md](./ADOPTION-AUDIT.md)**：从 177 个真实历史会话回溯——会话级 23%、窄口径 28.8%、最近三天 47%，并给出 codegraph 调用 query 的质量抽样（34/47 带具体符号名）。
+- **分母为 0 显示「还没有探索类调用」而不是 0%**：「一次都没探索」与「探索了但全用 grep」是两回事。
+- **项目键 = 索引根**（`resolveIndexedRoot`），与托管行 cwd、注入门禁同一口径；所以同一个仓库的多个会话（换会话、子 agent、重启宿主）会归并成一条，而不是散成一堆没有统计意义的小样本。未索引项目也会记，但文案会标明「这个数字不代表提示词效果」，且 `/metrics` 额外给 `grouped.indexed` / `grouped.unindexed` 两组合计——未索引项目里模型本就不该用它，混进整体会得出没有意义的数字。
+- **只在内存里，宿主重启即归零**，`since` 会如实给出起点。不落盘是有意的：它是「现在要不要调提示词」的观测值，不是审计日志，落盘会把工具名与项目路径长期留在磁盘上。
+- 同一份数据也进诊断包（`/diagnose`），因为报告「codegraph 好像没效果」时，第一个要分清的就是「模型根本没用」还是「用了但结果不对」。
 
 请求语义（v0.4.2 起）：
 
@@ -106,6 +124,12 @@ node scripts/verify-codegraph-indexforce.mjs --profile test --port 3086   # 真�
 node scripts/link-dsh-runtime.mjs     # 把 packages/* 的 @deepseek-ai/* 与 @hyzyn/dsh-kit 链到 dsh 运行时 / 本仓库 workspace
 ```
 
+规划与缺陷记录（都不随包分发，只在仓库里，因此用绝对链接）：
+
+- [ROADMAP.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/packages/codegraph/ROADMAP.md)：增强路线图——P0–P3 分档、代价、架构项（per-agent 挂载 / 采纳率仪表 / 诊断包）与开工顺序。
+- [DEFECTS.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/packages/codegraph/DEFECTS.md)：缺陷审计与修复记录——`CG01`–`CG38`、验收记录与原始待办清单。
+- [ADOPTION-AUDIT.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/packages/codegraph/ADOPTION-AUDIT.md)：采纳率实测——从 177 个真实历史会话算出的数字、两个口径的取舍、以及对路线图的影响。
+
 ## 安装到 DSH
 
 ```bash
@@ -138,6 +162,12 @@ export interface Config {
   indexTimeoutMs?: number
   /** 给 `codegraph index` 追加 `--force`（CLI 拒绝索引家目录/文件系统根时会用到）。默认关。 */
   indexForce?: boolean
+  /**
+   * 检测到索引过期时**自动重建**（`session/event` 首次 `user/message` 时检查，每项目每次
+   * 宿主运行最多一次）。默认关——重建在大仓库上是分钟级操作。语义是重建而不是同步：
+   * 实测 `codegraph sync` 对「提取器版本落后」会返回 `Already up to date` 且不清除信号。
+   */
+  autoReindex?: boolean
 }
 ```
 
@@ -156,12 +186,13 @@ settings 命名空间 `codegraph` 里保存过的 `defaultPath` / `mcpIntegratio
 
 ## 系统提示词
 
-安装后自动向 systemPrompt 注入两段提示（合计约 310 token）：
+安装后自动向 systemPrompt 注入两段提示（合计最多约 310 token；usage 段只在生效路径已索引时出现）：
 
 - `plugin:dsh-codegraph`（order 150）：插件能力公告（中文，约 130 字），只说「有这张卡片、能引导用户去开」；卡片内部有哪些按钮是 UI 细节，不占模型上下文。
 - `plugin:dsh-codegraph:usage`（order 151）：CodeGraph 使用指引（CODEGRAPH_START 区块）。这块对应上游 `CODEGRAPH_INSTRUCTIONS_BLOCK` 的定位（上游把它定义为「给子 agent / 非 MCP harness 的短块」，长 playbook 走 MCP `initialize` 的 `instructions`）——**但 DSH 的 MCP 客户端不读 `instructions`**，上游那份「无根索引 → 按项目传 `projectPath`」的变体模型收不到，所以这块补的就是它，外加三条：**shell 兜底**（命令名按 `command` 配置渲染，不写死 `codegraph`，并给出 `--path`）、**`projectPath` 按项目查询**、**没索引就跳过且不要 `codegraph init`**。触发条件与宿主 `indexState` 同口径：`.codegraph/` 里要有索引库，只看目录存在会把家目录里 CLI 自己的 `~/.codegraph` 安装目录误判成已索引项目（上游原话就是后者，这块刻意收紧）。
 
-两段都受两道门禁：
+两段都受两道门禁，usage 段另有第三道：
 
 1. **CLI 探测**：挂载时跑一次 `<command> --version`，失败就整段不注入（并 `console.warn`，带上失败原文）——不向模型宣告跑不起来的能力。探测结果不是锁死的：卡片「重新探测」或 `POST /reprobe` 会重跑一次并即时刷新这两段 section（CLI 后装好、或 `command` 改成绝对路径之后不必重启宿主）。
 2. **开关**：卡片上的两个复选框写 settings 命名空间（`POST /api/dsh-codegraph/settings`），改完即时增删 section；也可以用安装级配置关掉（`announceToAgent: false` / `usageGuidance: false`）。
+3. **索引门禁（仅 usage 段）**：生效路径（`effectivePath`，即托管行实际用的那个目录）必须是**有效索引**才注入用法指引——判据与宿主 `indexState` 同口径，只是 `.codegraph/` 目录存在不算。所以在没有索引的仓库里不会白白占掉约 300 token 的用法指引（那段话本身讲的正是「本仓库有索引时该怎么做」），也不会诱导模型去调必然失败的工具。判据每次 `refreshGuidance` 现算，因此跟随会话切换、「设为默认项目」、`init` 成功、项目被 `uninit` 都会立刻反映到注入与否上。**公告段（order 150）不设这道门禁**：它讲的是「有这张卡片」，与索引无关。
