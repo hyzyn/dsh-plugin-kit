@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+
+import { rmStubDir, writeStubCli } from './stub-cli.js'
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply } from '../src/index.js'
@@ -120,7 +122,7 @@ describe('P2 项目列表', () => {
     const row = list.find((p) => p.path === repo)
     expect(row?.indexed).toBe(true)
     expect(row?.via).toContain('活跃会话')
-    rmSync(repo, { recursive: true, force: true })
+    rmStubDir(repo)
   })
 
   it('未索引目录也列出，但标记 indexed=false（前端据此禁用切换）', async () => {
@@ -130,7 +132,7 @@ describe('P2 项目列表', () => {
     const row = (out.body?.projects as Array<Record<string, unknown>>).find((p) => p.path === plain)
     expect(row).toBeDefined()
     expect(row?.indexed).toBe(false)
-    rmSync(plain, { recursive: true, force: true })
+    rmStubDir(plain)
   })
 
   it('当前默认项目始终在列表里（否则「切换」会缺掉正在用的那个）', async () => {
@@ -139,7 +141,7 @@ describe('P2 项目列表', () => {
     const out = await call('/api/dsh-codegraph/projects')
     expect((out.body?.projects as Array<Record<string, unknown>>).map((p) => p.path)).toContain(repo)
     expect(out.body?.effectivePath).toBe(repo)
-    rmSync(repo, { recursive: true, force: true })
+    rmStubDir(repo)
   })
 
   it('跟随上报的会话目录也进列表；空串不上报', async () => {
@@ -152,7 +154,7 @@ describe('P2 项目列表', () => {
     // via 只记**第一次**来源：/follow 是它进列表的原因，之后 /projects 的补登记
     // 不该把它改写成「生效路径」（实测过的真实问题）
     expect(row?.via).toContain('会话')
-    rmSync(repo, { recursive: true, force: true })
+    rmStubDir(repo)
   })
 
   it('查过状态的路径进列表（用户正在关注它）', async () => {
@@ -163,7 +165,7 @@ describe('P2 项目列表', () => {
     const row = (out.body?.projects as Array<Record<string, unknown>>).find((p) => p.path === repo)
     expect(row).toBeDefined()
     expect(row?.via).toContain('status')
-    rmSync(repo, { recursive: true, force: true })
+    rmStubDir(repo)
   })
 
   it('没提供 sessions 服务时也能工作（列表随使用增长）', async () => {
@@ -184,8 +186,8 @@ describe('P2 项目列表', () => {
     const out = await call('/api/dsh-codegraph/projects')
     const paths = (out.body?.projects as Array<Record<string, unknown>>).map((p) => p.path)
     expect(paths.indexOf(newer)).toBeLessThan(paths.indexOf(older))
-    rmSync(older, { recursive: true, force: true })
-    rmSync(newer, { recursive: true, force: true })
+    rmStubDir(older)
+    rmStubDir(newer)
   })
 
   it('indexedCount 与列表一致', async () => {
@@ -195,7 +197,7 @@ describe('P2 项目列表', () => {
     const out = await call('/api/dsh-codegraph/projects')
     const list = out.body?.projects as Array<Record<string, unknown>>
     expect(out.body?.indexedCount).toBe(list.filter((p) => p.indexed).length)
-    rmSync(repo, { recursive: true, force: true })
-    rmSync(plain, { recursive: true, force: true })
+    rmStubDir(repo)
+    rmStubDir(plain)
   })
 })

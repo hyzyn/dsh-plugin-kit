@@ -16,7 +16,7 @@
  * `body` 的约束：可以用下面注入的 `fs` / `path` 两个绑定，但**不能**写顶层
  * `import` / `export` —— Windows 那份是 CJS（`.js`，无 `type: module`）。
  */
-import { chmodSync, writeFileSync } from 'node:fs'
+import { chmodSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 /** 是不是 POSIX（非 Windows）。stub 的形态由它决定。 */
@@ -44,4 +44,27 @@ export function writeStubCli(dir: string, name: string, body: string): string {
   writeFileSync(file, `#!/usr/bin/env node\n${preamble}\n${body}\n`)
   chmodSync(file, 0o755)
   return file
+}
+
+/**
+ * 删除 stub 沙箱目录，**带退避重试**。
+ *
+ * Windows 上刚被 spawn 过的目录会被子进程的句柄占住（cwd 也算一份句柄），`rmSync`
+ * 立刻报 `EBUSY: resource busy or locked`；而句柄释放是**异步**的，所以收尾必须重试。
+ *
+ * 实测（v0.1.41 的 CI）：`auto-reindex.test.ts` 唯一一条 Windows 失败就是它——
+ * 用例的断言全部通过，倒在最后那行 `rmSync` 上。这类失败在 macOS / Linux 上永远看不到
+ * （POSIX 允许删除仍被占用的目录）。
+ */
+export function rmStubDir(dir: string): void {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      rmSync(dir, { recursive: true, force: true })
+      return
+    } catch (error) {
+      if (attempt >= 20) throw error
+      // 同步等待 50ms：这是测试收尾路径，不需要让出事件循环
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50)
+    }
+  }
 }

@@ -20,6 +20,10 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+
+// 只取 rmStubDir：本文件**自己**有 writeStubCli（带按名缓存与 writeStubCliAt），
+// 从 helper 再导一个同名函数会把它覆盖掉（实测：52 条用例全红）。
+import { rmStubDir } from './stub-cli.js'
 import { apply, staleReasonsFromStatus } from '../src/index.js'
 
 const POSIX = process.platform !== 'win32'
@@ -58,7 +62,7 @@ afterAll(() => {
   if (originalDshHome === undefined) delete process.env.DSH_HOME
   else process.env.DSH_HOME = originalDshHome
   try {
-    rmSync(sandbox, { recursive: true, force: true })
+    rmStubDir(sandbox)
   } catch (error) {
     // Windows：execFile 的超时只能杀掉直接子进程（cmd.exe），shim 里那个被挂住的
     // node 孙进程会多活几秒，并且在超时期间把本目录当 cwd——Windows 不允许删除

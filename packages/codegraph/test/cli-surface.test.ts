@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { writeStubCli } from './stub-cli.js'
+import { rmStubDir, writeStubCli } from './stub-cli.js'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -208,7 +208,7 @@ describe('P2 路由：uninit（破坏性）', () => {
     const out = await call('/api/dsh-codegraph/uninit', { method: 'POST', body: { path: plain } })
     expect(out.status).toBe(409)
     expect(String(out.body?.error)).toContain('没有可撤销的索引')
-    rmSync(plain, { recursive: true, force: true })
+    rmStubDir(plain)
   })
 
   it('已索引目录：真删除 .codegraph/ 并回报 indexed=false', async () => {
@@ -227,7 +227,7 @@ describe('P2 路由：uninit（破坏性）', () => {
     expect(out.status).toBe(200)
     expect(out.body?.indexed).toBe(false)
     expect(existsSync(join(dir, '.codegraph'))).toBe(false)
-    rmSync(dir, { recursive: true, force: true })
+    rmStubDir(dir)
   })
 
   it('monorepo 子目录：撤销的是索引所在的根（CG02 同口径）', async () => {
@@ -248,14 +248,14 @@ describe('P2 路由：uninit（破坏性）', () => {
     // 撤销的是**根**，不是子目录
     expect(out.body?.path).toBe(root)
     expect(existsSync(join(root, '.codegraph'))).toBe(false)
-    rmSync(root, { recursive: true, force: true })
+    rmStubDir(root)
   })
 
   it('只认 POST + 回环；畸形 body 400', async () => {
     const dir = indexedProject('uninit-guard-')
     const { call } = mount(stubCli('uninit-guard'), '/p')
     expect((await call('/api/dsh-codegraph/uninit', { body: { path: dir } })).status).toBe(405)
-    rmSync(dir, { recursive: true, force: true })
+    rmStubDir(dir)
   })
 })
 

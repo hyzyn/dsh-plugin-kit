@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { writeStubCli } from './stub-cli.js'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { rmStubDir, writeStubCli } from './stub-cli.js'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply } from '../src/index.js'
@@ -109,7 +109,7 @@ describe('P1 索引生命周期：自动重建', () => {
     // 反向断言（「什么都没发生」）：没有条件可轮询，只能给足时间再确认
     await wait(600)
     expect(readFileSync(logFile, 'utf8').trim()).toBe('')
-    rmSync(dir, { recursive: true, force: true })
+    rmStubDir(dir)
   })
 
   it('开启且索引过期：先 status 再 index（是重建，不是 sync）', async () => {
@@ -126,7 +126,7 @@ describe('P1 索引生命周期：自动重建', () => {
     expect(calls.join('\n')).not.toContain('sync')
     // 不带 --force：那面旗子绕开 CLI 的误伤保护，不该由后台路径代劳
     expect(calls[1]).not.toContain('--force')
-    rmSync(dir, { recursive: true, force: true })
+    rmStubDir(dir)
   })
 
   it('每项目每次运行最多一次：同一项目开三个会话只重建一次', async () => {
@@ -142,7 +142,7 @@ describe('P1 索引生命周期：自动重建', () => {
     expect(calls.filter((c) => c.startsWith('index')).length).toBe(1)
     // status 也只查一次（占位在检查之前）
     expect(calls.filter((c) => c.startsWith('status')).length).toBe(1)
-    rmSync(dir, { recursive: true, force: true })
+    rmStubDir(dir)
   })
 
   it('索引新鲜：查了 status 但不重建', async () => {
@@ -156,7 +156,7 @@ describe('P1 索引生命周期：自动重建', () => {
     const calls = callsIn(logFile)
     expect(calls.filter((c) => c.startsWith('status')).length).toBe(1)
     expect(calls.filter((c) => c.startsWith('index')).length).toBe(0)
-    rmSync(dir, { recursive: true, force: true })
+    rmStubDir(dir)
   })
 
   it('未索引项目：不检查也不重建（那该走 init）', async () => {
@@ -166,7 +166,7 @@ describe('P1 索引生命周期：自动重建', () => {
     mount_.userMessage(dir)
     await wait(600)
     expect(readFileSync(logFile, 'utf8').trim()).toBe('')
-    rmSync(dir, { recursive: true, force: true })
+    rmStubDir(dir)
   })
 
   it('重建失败只记日志，不影响其它功能（不抛给调用方）', async () => {
@@ -186,6 +186,6 @@ process.exit(7)
     expect(await waitFor(() => callsIn(logFile).some((c) => c.startsWith('index')))).toBe(true)
     await wait(200)
     expect(readFileSync(logFile, 'utf8')).toContain('index')
-    rmSync(dir, { recursive: true, force: true })
+    rmStubDir(dir)
   })
 })
