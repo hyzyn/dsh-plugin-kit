@@ -94,7 +94,9 @@ async function run() {
   const stubFiber = app.plugin({
     name: 'windows-smoke-stub',
     apply: (ctx) => {
-      ctx.provide('settings', { register: () => ({ get: () => ({}), update: async () => {} }) })
+      // DSH ≥0.1.7 的 settings 服务（SettingsForms）：describe / update / configure。
+      // 本用例不测配置持久化，空 describe 即可（插件的 settings effect 拿到空值）。
+      ctx.provide('settings', { describe: () => [], update: async () => {}, configure: () => () => {} })
       ctx.provide('tools', { register: () => () => {} })
     },
   })

@@ -136,8 +136,10 @@ async function run() {
   const app = new Context()
   const wsFiber = app.plugin(WebServerRuntime, { host: '127.0.0.1', port: 0 })
   const subFiber = app.plugin(LocalSubprocessRuntime)
-  // 最小 settings 服务 stub：让插件的 settings 注入回调触发，并可手动派发
-  // settings/updated 事件（与 dsh-settings 的 dispatch 方式一致）来测配置热生效。
+  // 最小 settings 服务 stub（DSH ≥0.1.7 的 SettingsForms：describe / update /
+  // configure）：让插件的 settings 注入回调触发；配置热生效经 loader 的
+  // volatile-update 事件派发（见 emitSettingsUpdated）。
+  let settingsValue = {}
   const toolDefs = []
   /** 输出契约违约（§B33：返回值与声明的 output.schema 不符，真实宿主会直接判工具错）。 */
   const outputViolations = []
@@ -145,7 +147,14 @@ async function run() {
   const stubFiber = app.plugin({
     name: 'settings-stub',
     apply: (ctx) => {
-      ctx.provide('settings', { register: () => ({ get: () => ({}), update: async () => {} }) })
+      ctx.provide('settings', {
+        describe: () => [{ ns: 'tty', value: settingsValue }],
+        update: async (ns, patch) => {
+          if (ns !== 'tty') throw new Error('未知的 entry: ' + ns)
+          settingsValue = { ...settingsValue, ...patch }
+        },
+        configure: () => () => {},
+      })
       ctx.provide('tools', {
         register: (definition) => {
           // 输出契约看门狗（§B33）：把 execute 的返回值按**声明的 output.schema**
@@ -202,8 +211,10 @@ async function run() {
     },
   })
   await stubFiber.await()
+  /** 模拟「外部改了本 entry 的配置」：更新 stub 值再派发 loader 的 volatile-update。 */
   const emitSettingsUpdated = (ns, next) => {
-    const args = ['settings/updated', ns, next, {}, 'test']
+    if (ns === 'tty') settingsValue = { ...next }
+    const args = ['loader/volatile-update', [], {}, 'test']
     for (const cb of app.events.dispatch('emit', args)) cb(...args)
   }
   const pluginFiber = app.plugin({ name, inject, apply }, { maxSessions: 2, term: 'xterm-256color', colorTerm: 'truecolor' })

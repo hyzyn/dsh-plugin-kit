@@ -100,7 +100,6 @@ function mountPlugin(): Map<string, FakeRoute> {
         },
       }
     }
-    if (names.includes('settings')) child.settings = { register: () => {} }
     if (names.includes('systemPrompt')) child.systemPrompt = { section: () => () => {} }
     return child
   }

@@ -457,24 +457,27 @@ function makeReq(url: string, method = 'GET', remoteAddress = '127.0.0.1', body?
 }
 
 /** 最小假 cordis ctx：与 scripts/route-smoke.mjs 同思路（这里只服务 SSE 用例）。 */
-function makeCtx(): { ctx: Record<string, unknown>; state: { routes: FakeRoute[]; tools: Array<Record<string, unknown>>; prompts: Array<Record<string, unknown>>; listeners: Map<string, Array<(...args: unknown[]) => void>>; settingsStored: Record<string, unknown> } } {
+function makeCtx(): { ctx: Record<string, unknown>; state: { routes: FakeRoute[]; tools: Array<Record<string, unknown>>; prompts: Array<Record<string, unknown>>; listeners: Map<string, Array<(...args: unknown[]) => void>>; settingsStored: Record<string, unknown>; baseConfig: Record<string, unknown> } } {
   const state = {
     routes: [] as FakeRoute[],
     tools: [] as Array<Record<string, unknown>>,
     prompts: [] as Array<Record<string, unknown>>,
     listeners: new Map<string, Array<(...args: unknown[]) => void>>(),
     settingsStored: {} as Record<string, unknown>,
+    /** 本插件 entry 的安装级配置（= apply 的 config），由 mountPlugin 回填。 */
+    baseConfig: {} as Record<string, unknown>,
   }
-  const scopeFor = (base: Record<string, unknown>) => ({
-    get: () => ({ ...base, ...state.settingsStored }),
-    update: async (patch: Record<string, unknown>) => {
-      Object.assign(state.settingsStored, patch)
-      for (const listener of state.listeners.get('settings/updated') ?? []) {
-        listener('docker', { ...base, ...state.settingsStored }, undefined, 'update')
-      }
-    },
-  })
+  /** loader 检出 volatile-only 变更后发的事件（测试里同步发，验证热更新路径）。 */
+  const emitVolatile = (): void => {
+    for (const listener of state.listeners.get('loader/volatile-update') ?? []) listener()
+  }
   const makeChild = (names: string[]): Record<string, unknown> => {
+    const on = (name: string, listener: (...args: unknown[]) => void): (() => void) => {
+      const list = state.listeners.get(name) ?? []
+      list.push(listener)
+      state.listeners.set(name, list)
+      return () => {}
+    }
     const child: Record<string, unknown> = {
       logger: { info: () => {}, warn: () => {} },
       effect: (callback: () => unknown) => {
@@ -485,14 +488,8 @@ function makeCtx(): { ctx: Record<string, unknown>; state: { routes: FakeRoute[]
         cb(makeChild(childNames))
         return () => {}
       },
-      events: {
-        on: (name: string, listener: (...args: unknown[]) => void) => {
-          const list = state.listeners.get(name) ?? []
-          list.push(listener)
-          state.listeners.set(name, list)
-          return () => {}
-        },
-      },
+      on,
+      events: { on },
     }
     if (names.includes('tools')) {
       child.tools = {
@@ -511,9 +508,15 @@ function makeCtx(): { ctx: Record<string, unknown>; state: { routes: FakeRoute[]
       }
     }
     if (names.includes('settings')) {
+      // DSH ≥0.1.7 的 settings 服务（SettingsForms）：describe / update / configure。
       child.settings = {
-        register: (_ns: string, _schema: unknown, options_: { base?: Record<string, unknown> } | undefined) => scopeFor(options_?.base ?? {}),
-        get: () => undefined,
+        describe: () => [{ ns: 'docker', value: { ...state.baseConfig, ...state.settingsStored } }],
+        update: async (ns: string, patch: Record<string, unknown>) => {
+          if (ns !== 'docker') throw new Error('未知的 entry: ' + ns)
+          Object.assign(state.settingsStored, patch)
+          emitVolatile()
+        },
+        configure: () => () => {},
       }
     }
     if (names.includes('systemPrompt')) {
@@ -539,6 +542,7 @@ const STREAM_PATH = '/api/dsh-docker/logs/stream?target=本机&id=web&tail=50&ti
 function mountPlugin(): { route: FakeRoute; state: ReturnType<typeof makeCtx>['state'] } {
   const { ctx, state } = makeCtx()
   const config = { dockerBin: 'docker', targets: [{ name: '本机', kind: 'local' }] }
+  state.baseConfig = config as Record<string, unknown>
   ;(apply as unknown as (ctx: unknown, config: unknown) => void)({ ...ctx }, config)
   const route = state.routes.find((item) => item.path === '/api/dsh-docker')
   if (route === undefined) throw new Error('未注册 /api/dsh-docker 路由')
