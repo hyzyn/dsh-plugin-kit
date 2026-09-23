@@ -13,7 +13,7 @@ import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { tmpdir } from 'node:os'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { SessionManager, TtyServer, killLocalShellTerminal } from '../src/index.js'
+import { SessionManager, TtyServer, killLocalShellTerminal, newScreenHeartbeat } from '../src/index.js'
 import type { TermHandle } from '../src/ssh.js'
 
 /* ----------------------------- 假件 ----------------------------- */
@@ -348,6 +348,8 @@ describe('SessionManager', () => {
       buffer: '',
       decoder: new (require('node:string_decoder').StringDecoder)('utf8'),
       screen: null,
+      screenHeartbeat: newScreenHeartbeat(),
+      screenDownReason: null,
       orphanedAt: overrides.orphanedAt ?? null,
       shellState: { carry: '', inCommand: false, cmdBuffer: '', pendingT: null, lastCommand: null },
       pendingOutput: '',
@@ -435,6 +437,8 @@ describe('endOnPageClose × tmux 收尾（D45：孤儿回收策略）', () => {
       buffer: '',
       decoder: null as never,
       screen: null,
+      screenHeartbeat: newScreenHeartbeat(),
+      screenDownReason: null,
       orphanedAt: Date.now() - 1000, // 已过保活期
       shellState: { carry: '', inCommand: false, cmdBuffer: '', pendingT: null, lastCommand: null },
       pendingOutput: '',
@@ -577,6 +581,57 @@ describe('agent 开的终端会话（tty_open / tty_close）', () => {
     const frame = await ws.waitFor('sessions')
     const list = frame.list as Array<{ sid: string; owner: string }>
     expect(list.some((s) => s.sid === sid && s.owner === 'agent')).toBe(true)
+    await h.sessions.disposeAll()
+  })
+})
+
+/* ------------------------- 虚拟屏退役接线（D57 跟进） ------------------------- */
+
+/**
+ * 兜底（`installXtermScreenCrashGuard`）只保证宿主不死；被吞掉异常的那块屏会**永久停摆**
+ * （出错那批数据留在写队列、`_bufferOffset` 不前进），`tty_screen` 会一直返回冻结画面。
+ * 这里走真实路径（onConnection → spawn → PTY 输出 → onData）验证接线：屏不可用时被退役，
+ * 且**只摘屏、不动会话**（PTY 与前端照常）。
+ *
+ * 停摆的两种触发都在 screen-crash.test.ts 里单测；这里用「写就抛」的假屏走**同步抛出**
+ * 那条，不必等 5s 窗口。
+ */
+describe('虚拟屏退役接线（D57）', () => {
+  it('虚拟屏写入被拒 → 只退役该屏（会话照旧活着），并记下原因', async () => {
+    const h = makeHarness()
+    const ws = h.connect()
+    await spawnLocal(ws, 'sess-d57')
+    const session = h.sessions.get('sess-d57')
+    expect(session).toBeDefined()
+    expect(session?.screen).not.toBeNull() // 生产参数建出来的屏（D57 后 scrollback=1）
+    expect(session?.screenDownReason).toBeNull()
+
+    // 注入一块「写就抛」的假屏：等价于写队列超限（5e7 字符）或屏已不可用
+    session!.screen = {
+      write() {
+        throw new Error('write data discarded, use flow control to avoid losing data')
+      },
+    } as never
+
+    h.ptys[0].output.write('hello\r\n')
+    await until(() => session!.screen === null)
+
+    expect(session?.screenDownReason).toContain('写入被拒')
+    expect(session?.closed).toBe(false) // 只摘屏，不杀会话
+    expect(h.sessions.count).toBe(1)
+    await h.sessions.disposeAll()
+  })
+
+  it('健康屏不被误退役：正常输出后屏还在、原因仍为 null', async () => {
+    const h = makeHarness()
+    const ws = h.connect()
+    await spawnLocal(ws, 'sess-ok')
+    const session = h.sessions.get('sess-ok')
+    h.ptys[0].output.write('正常输出\r\n')
+    await ws.waitFor('data')
+    await new Promise((r) => setTimeout(r, 50))
+    expect(session?.screen).not.toBeNull()
+    expect(session?.screenDownReason).toBeNull()
     await h.sessions.disposeAll()
   })
 })

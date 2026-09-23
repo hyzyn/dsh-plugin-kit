@@ -20,9 +20,13 @@ import { afterEach, describe, expect, it } from 'vitest'
 import xtermHeadless from '@xterm/headless'
 import {
   SCREEN_SCROLLBACK,
+  clearScreenWatchdog,
   createHeadlessScreen,
   installXtermScreenCrashGuard,
   isXtermScreenCrash,
+  newScreenHeartbeat,
+  swallowXtermScreenCrash,
+  writeToScreen,
   xtermScreenCrashCount,
 } from '../src/index.js'
 
@@ -128,6 +132,102 @@ describe('虚拟屏崩溃（D57）', () => {
       console.warn('[dsh-tty] D57 负控制未复现：@xterm/headless 可能已修，请复核虚拟屏构造参数')
       return
     }
+    expect(xtermScreenCrashCount()).toBe(before + 1)
+  })
+})
+
+/**
+ * 停摆退役（D57 跟进）：兜底吞掉异常之后，那块屏的解析器会**永久停摆**——出错的那批
+ * 数据留在写队列里、`_bufferOffset` 不前进，而 `write()` 只在队列空时才重新调度解析。
+ * 不管它，`tty_screen` 会一直返回冻结的旧画面（agent 据此行事），写队列还会堆到 5e7 上限。
+ * 心跳用 `write(data, cb)` 的回调当解析完成信号（`onWriteParsed` 在 5.5.0 不是公开 API），
+ * 超时窗口内没回调就判定停摆 → 退役该屏 → `tty_screen` 如实报「虚拟屏不可用」。
+ */
+describe('虚拟屏停摆心跳（D57 跟进）', () => {
+  /** 健康屏：同一条序列（用修复后的构造参数）不该被误判停摆。 */
+  it('健康屏不误报：回调归零、看门狗到期也不退役', async () => {
+    const screen = createHeadlessScreen(60, 3)
+    expect(screen).not.toBeNull()
+    const heartbeat = newScreenHeartbeat()
+    let stalls = 0
+    try {
+      for (const op of CRASH_OPS) {
+        if (op[0] === 'write') {
+          writeToScreen(screen as HeadlessTerminal, heartbeat, op[1], () => stalls++, 60)
+        } else {
+          ;(screen as HeadlessTerminal).resize(op[1], op[2])
+        }
+        await tick()
+      }
+      await new Promise((r) => setTimeout(r, 250)) // 远超 60ms 窗口
+      expect(stalls).toBe(0)
+      expect(heartbeat.inflight).toBe(0) // 每批都解析完了
+    } finally {
+      clearScreenWatchdog(heartbeat)
+      screen?.dispose()
+    }
+  })
+
+  /** 停摆屏：`scrollback: 0` 上崩溃被兜底吞掉 → 回调再也不来 → 看门狗判定停摆。 */
+  it('停摆屏被判出：崩溃后回调不再来，看门狗回调一次', async () => {
+    guard() // 先挂兜底，否则这条用例会把 vitest worker 打死
+    const hostile = new HeadlessTerminal({ cols: 60, rows: 3, scrollback: 0, allowProposedApi: true })
+    const heartbeat = newScreenHeartbeat()
+    let stalls = 0
+    try {
+      for (const op of CRASH_OPS) {
+        if (op[0] === 'write') writeToScreen(hostile, heartbeat, op[1], () => stalls++, 60)
+        else hostile.resize(op[1], op[2])
+        await tick()
+      }
+      expect(stalls).toBe(0) // 还没到窗口
+      await new Promise((r) => setTimeout(r, 250))
+      expect(stalls).toBe(1) // 判出且只回调一次
+      expect(heartbeat.inflight).toBeGreaterThan(0) // 出错那批的回调永远不会回来
+    } finally {
+      clearScreenWatchdog(heartbeat)
+      hostile.dispose()
+    }
+  })
+
+  /** 同步抛出（写队列超限 / 尺寸非法）：不用等窗口，立刻判定停摆。 */
+  it('写入同步抛出 → 立即判定停摆（不等窗口）', () => {
+    const heartbeat = newScreenHeartbeat()
+    let stalls = 0
+    writeToScreen(
+      { write() { throw new Error('write data discarded, use flow control to avoid losing data') } },
+      heartbeat,
+      'x',
+      () => stalls++,
+      10_000, // 窗口给得很大：只有「同步抛出」这条路能在 0ms 内判出
+    )
+    expect(stalls).toBe(1)
+    expect(heartbeat.inflight).toBe(0)
+    expect(heartbeat.watchdog).toBeNull() // 没留下悬空定时器
+  })
+
+  /** 会话结束时摘看门狗：定时器不该在会话死后误报。 */
+  it('clearScreenWatchdog 之后不再回调', async () => {
+    const heartbeat = newScreenHeartbeat()
+    let stalls = 0
+    writeToScreen({ write() { /* 永不回调：模拟停摆 */ } }, heartbeat, 'x', () => stalls++, 40)
+    expect(heartbeat.watchdog).not.toBeNull()
+    clearScreenWatchdog(heartbeat)
+    expect(heartbeat.watchdog).toBeNull()
+    await new Promise((r) => setTimeout(r, 150))
+    expect(stalls).toBe(0)
+  })
+
+  /** 记账入口本身：只吞虚拟屏异常，别的一律交回调用方。 */
+  it('swallowXtermScreenCrash 只吞虚拟屏异常', () => {
+    const before = xtermScreenCrashCount()
+    const xtermErr = new TypeError("Cannot set properties of undefined (setting 'isWrapped')")
+    xtermErr.stack = "TypeError: …\n    at E.lineFeed (/x/@xterm/headless/lib-headless/xterm-headless.js:1:28221)"
+    expect(swallowXtermScreenCrash(xtermErr)).toBe(true)
+    expect(xtermScreenCrashCount()).toBe(before + 1)
+    // 非虚拟屏异常：不记账、不吞（交回调用方决定）
+    expect(swallowXtermScreenCrash(new Error('别的插件炸了'))).toBe(false)
+    expect(swallowXtermScreenCrash(undefined)).toBe(false)
     expect(xtermScreenCrashCount()).toBe(before + 1)
   })
 })

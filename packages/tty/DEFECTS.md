@@ -358,8 +358,15 @@ D50 才是用户看到的那一下（他补的描述是「整条状态条瞬间�
   余量**不影响 `tty_screen` 读数**——它走 `buffer.getLine(row)`（内部 `ybase + row`，即视口）。
   ② **进程级兜底**：`installXtermScreenCrashGuard()`（apply 里挂 `ctx.effect`，卸载即摘）。
   只吞**堆栈命中 xterm-headless** 的未捕获异常并记账（`xtermScreenCrashCount()`）；
-  其余异常只在「我们是唯一的 `uncaughtException` 监听者」时**抛回**——保住「没有本兜底时
-  未捕获即退出」的语义，又不抢在宿主/其它插件的监听者前面把进程杀掉。
+  其余异常只在「我们是唯一的监听者」时**抛回**——保住「没有本兜底时未捕获即退出」的语义，
+  又不抢在宿主/其它插件的监听者前面把进程杀掉。覆盖 `uncaughtException` 与
+  `unhandledRejection` 两个入口（后者是复核后补的，见下）。
+  ③ **停摆退役**（复核后补）：兜底只保宿主不死——被吞掉异常的那块屏会**永久停摆**
+  （出错那批数据留在写队列、`_bufferOffset` 不前进，而 `write()` 只在队列空时才重新调度解析），
+  `tty_screen` 会一直返回**冻结的旧画面**、写队列还会堆到 5e7 字符上限。为此给每块屏挂心跳
+  （`writeToScreen()`，信号用 `write(data, cb)` 的回调——`onWriteParsed` 在 5.5.0 不是公开
+  API）：窗口内没有任何一批被解析完即判定停摆，`dropScreen()` **只摘屏、不动会话**，
+  `tty_screen` 改为如实报「虚拟屏不可用（原因）」。
 - **排除掉的假设（重要）**：上门报告的根因写的是「dispose 与在途写入竞态」，**实测不成立**：
   `write()` 后立刻 `dispose()`（在途数据仍在写队列里）不崩；`dispose()` 不清 `lines`
   （长度仍是 rows）、不清写队列（仍挂着待解析项）；`dispose()` 之后 `lineFeed`/`write` 也不崩。
@@ -367,14 +374,32 @@ D50 才是用户看到的那一下（他补的描述是「整条状态条瞬间�
   本次没有采纳；「方案 D：尺寸夹紧到 ≥2」早在 0.19.0 就由 `clampInt` 实现。
   报告里「不涉及 resize 帧」也与实测不符——resize（reflow）是复现的必要条件，实际发生过的
   resize 帧只是没被记下来（面板/标签/窗口变化都会发）。
-- **回归门槛**：`test/screen-crash.test.ts`（4 条）——构造参数必须留余量；兜底判据只认虚拟屏
+- **回归门槛**：`test/screen-crash.test.ts`（9 条）——构造参数必须留余量；兜底判据只认虚拟屏
   异常（按堆栈，不按 message）；**最小复现序列打不穿 `createHeadlessScreen()`**；负控制：
-  同一序列直建 `scrollback: 0` 必须仍能触发（钉住「序列本身有效」）。负控制在上游真修好时
-  只 `console.warn` 提示复核、不判红——正例才是护栏。
-- **验证**：`vitest` **252/252**（19 文件，+4）；`tsc --noEmit` 绿；`client-lint` 绿；
+  同一序列直建 `scrollback: 0` 必须仍能触发（钉住「序列本身有效」）；停摆心跳四条（健康屏
+  不误报 / 停摆屏判出且只回调一次 / 同步抛出立即判出 / 摘看门狗后不再回调）+ 记账入口只吞
+  虚拟屏异常。负控制在上游真修好时只 `console.warn` 提示复核、不判红——正例才是护栏。
+  接线层：`test/host-frames.test.ts` 两条（走真实 `onConnection → spawn → PTY 输出 → onData`）——
+  写入被拒时**只退役该屏**（`screenDownReason` 记原因、会话 `closed === false`、会话数不变），
+  健康屏不被误退役。
+- **验证**：`vitest` **259/259**（19 文件，+9）；`tsc --noEmit` 绿；`client-lint` 绿；
   `lib/` 与源码同步重建（`client.js` 无变化）。**反向验证有效**：把 `SCREEN_SCROLLBACK` 改回
   `0` → 两条正例**立即变红**（`expected 0 to be greater than 0` / `expected 1 to be +0`），
   恢复后转绿。
+- **复核后补的两项（同日 review，已修）**：
+  ① **`unhandledRejection` 入口**：原先只挂 `uncaughtException`。xterm 的异步 handler
+  （DCS/OSC）rejection 走 `unhandledRejection`，而宿主实测 **0 处**监听 → Node 15+ 直接杀进程。
+  现在两个入口同过滤；注意 `unhandledRejection` 还多一层必要性——**挂了监听器 Node 就不再走
+  默认致命处理**，所以非虚拟屏的 rejection 必须由我们抛出来还原默认行为（已实测：抛回后进程
+  照旧 `exit 1`）。
+  ② **停摆退役**（见修法③）：这是兜底的真实代价，原先没处理——只保宿主不死，屏冻住了没人知道。
+- **复核后记录在案、暂不改的两项**：
+  ① `scrollback 0 → 1` 是**行为微移**而非纯安全垫：`hasScrollback` getter 由 `maxLength > rows`
+  变为 true，个别依赖该标志的转义序列理论上可能差 1 行级。抽查（RI / HTS / 顶行）未发现差异，
+  但**没有逐序列比对**——`tty_screen` 是排障视图，这个偏差可接受。
+  ② 负控制用例在 vitest worker 里故意触发真 `uncaughtException`，靠「vitest 不因已被处理的
+  异常判红」才绿。vitest 大版本升级若改判定，这条会假红——届时按注释把它改成子进程断言
+  （spawn `scripts/screen-crash-repro.mjs`，断言 `exit 1`），天然隔离。
 - **遗留（不在本包范围）**：宿主侧仍建议加插件加载隔离 / 顶层兜底——现在任何一个第三方插件
   都能一击打死 harness；本包的兜底只覆盖自己的虚拟屏。
 
@@ -461,7 +486,8 @@ check-dsh-engines → publish → `dsh plugin --profile web add @hyzyn/dsh-tty@<
 > 当契约，看的是「全绿」。
 
 - 单测与静态检查：`pnpm --filter @hyzyn/dsh-tty test`（或根目录 `npx vitest run packages/tty`；
-  2026-09-23 实测 **252 通过 / 19 文件**，含 D57 的 `test/screen-crash.test.ts`）、
+  2026-09-23 实测 **259 通过 / 19 文件**，含 D57 的 `test/screen-crash.test.ts` 与
+  `test/host-frames.test.ts` 的接线用例）、
   `npx tsc --noEmit`、`node scripts/client-lint.mjs`。
 - 端到端脚本（**0.19.0 起已挂 CI**，仍可本地跑）：`node scripts/integration.mjs`（本机 PTY 全链路；
   **本次未复核**——受限沙箱下 `posix_openpt` 被拒，见下条）、`node scripts/ssh-smoke.mjs`（内存 sshd，

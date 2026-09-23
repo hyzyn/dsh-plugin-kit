@@ -188,6 +188,10 @@ interface TtySession {
     decoder: StringDecoder;
     /** 虚拟屏（xterm-headless）：tty_screen 的数据源；创建失败为 null。 */
     screen: HeadlessTerminal | null;
+    /** 虚拟屏心跳（D57 停摆检测）：在途批次 + 看门狗。 */
+    screenHeartbeat: ScreenHeartbeat;
+    /** 虚拟屏被退役的原因（停摆 / 写队列满）；null = 正常。tty_screen 据此如实报错。 */
+    screenDownReason: string | null;
     /** 转入孤儿状态的时间戳；null 表示已连接（客户端在线）。 */
     orphanedAt: number | null;
     /** shell 集成状态（OSC 133/7 解析；本地与 SSH 会话都喂）。 */
@@ -355,16 +359,66 @@ export declare function xtermScreenCrashCount(): number;
 /** 判定未捕获异常是否来自虚拟屏（xterm-headless）。导出仅供单测。 */
 export declare function isXtermScreenCrash(err: unknown): boolean;
 /**
- * 注册进程级虚拟屏异常兜底（D57）：把来自 xterm-headless 的未捕获异常吞掉并记账，
- * 让插件自己的 bug 不再拖垮整个 harness。幂等 + 引用计数，返回解绑函数。
+ * 记账并吞掉一个虚拟屏异常；返回 true 表示已吞（非虚拟屏异常返回 false，交回调用方）。
+ * 导出仅供单测。
+ */
+export declare function swallowXtermScreenCrash(err: unknown): boolean;
+/**
+ * 注册进程级虚拟屏异常兜底（D57）：把来自 xterm-headless 的未捕获异常 / 未处理 rejection
+ * 吞掉并记账，让插件自己的 bug 不再拖垮整个 harness。幂等 + 引用计数，返回解绑函数。
  *
- * 两条边界（刻意如此，不是随手 `process.on`）：
+ * 覆盖两个入口：
+ *   - `uncaughtException`：同步路径（`_innerWrite` 的定时器回调里抛出，见上）；
+ *   - `unhandledRejection`：xterm 的异步 handler（DCS/OSC）rejection 走这里，宿主实测
+ *     **0 处**监听，Node 15+ 下未处理 rejection 直接杀进程。
+ *
+ * 三条边界（刻意如此，不是随手 `process.on`）：
  *   1. **只吞虚拟屏异常**——`isXtermScreenCrash` 按堆栈判定；其余异常照旧。
- *   2. **其余异常只在「我们是唯一的 uncaughtException 监听者」时抛回**：没有本兜底
- *      时未捕获异常会让宿主退出，抛回保住这个语义；已经有别的监听者（宿主/其它插件）
- *      时保持沉默，由它们决定——此时抛回反而会抢在别人前面把进程杀掉。
+ *   2. **其余异常只在「我们是唯一的监听者」时抛回**：没有本兜底时未捕获异常会让宿主退出，
+ *      抛回保住这个语义；已经有别的监听者（宿主/其它插件）时保持沉默，由它们决定——
+ *      此时抛回反而会抢在别人前面把进程杀掉。
+ *   3. `unhandledRejection` 的「抛回」还有一层必要性：**只要挂了监听器，Node 就不再走
+ *      默认的致命处理**，所以非虚拟屏的 rejection 必须由我们抛出来还原默认行为
+ *      （已实测：抛回后进程照旧 exit 1）。
  */
 export declare function installXtermScreenCrashGuard(): () => void;
+/**
+ * 停摆判定窗口：写出去的数据超过这么久还没解析完，就认定那块屏的解析器已停摆。
+ * 正常屏的解析是毫秒级（回调随 `_innerWrite` 逐批回来），5s 不会误伤。
+ */
+export declare const SCREEN_STALL_MS = 5000;
+/** 退役原因①：写队列超限 / 尺寸非法导致的同步抛出。 */
+export declare const SCREEN_DOWN_WRITE_REJECTED = "\u5199\u5165\u88AB\u62D2\uFF08\u5199\u961F\u5217\u8D85\u9650\u6216\u5C3A\u5BF8\u975E\u6CD5\uFF09";
+/** 退役原因②：解析器停摆（超时窗口内没有任何一批数据被解析完）。 */
+export declare const SCREEN_DOWN_STALLED = "\u89E3\u6790\u505C\u6446\uFF08xterm \u5728\u8D85\u65F6\u7A97\u53E3\u5185\u672A\u56DE\u8C03\uFF09";
+/** 虚拟屏心跳：在途批次 + 看门狗（D57）。 */
+export interface ScreenHeartbeat {
+    /** 已写出、尚未被 xterm 解析完的批次（`write(data, cb)` 的回调未回来即 >0）。 */
+    inflight: number;
+    /** 看门狗；null = 当前没有挂着的窗口。 */
+    watchdog: NodeJS.Timeout | null;
+}
+/** 建一份空心跳。 */
+export declare function newScreenHeartbeat(): ScreenHeartbeat;
+/** 摘掉看门狗（会话结束 / 屏退役时调用，避免定时器在会话死后误报）。 */
+export declare function clearScreenWatchdog(heartbeat: ScreenHeartbeat): void;
+/**
+ * 写一帧到虚拟屏，并维护停摆看门狗（D57）。
+ *
+ * **为什么需要心跳**：xterm 的解析在 `WriteBuffer._innerWrite` 的 setTimeout 回调里跑，
+ * 异常被进程级兜底吞掉之后，那块屏的解析器**永久停摆**——出错的那批数据留在写队列里、
+ * `_bufferOffset` 不前进，而 `write()` 只在队列**空**时才重新调度解析。后果：`tty_screen`
+ * 一直返回**冻结的旧画面**（agent 会据此行事），写队列还会一路堆到 5e7 字符上限。
+ * 心跳把这种屏识别出来退役，`tty_screen` 改为如实报「虚拟屏不可用」。
+ *
+ * 信号用 `write(data, cb)` 的回调（xterm 解析完这批数据才回调）：停摆时回调永远不来 →
+ * `inflight` 不归零 → 看门狗判定。**不能用 `onWriteParsed` 事件**——它在 5.5.0 不是
+ * 公开 API（`Terminal` 只暴露 onBell/onBinary/onCursorMove/onData/onLineFeed/onResize/
+ * onScroll/onTitleChange）。
+ */
+export declare function writeToScreen(screen: {
+    write(data: string, callback?: () => void): void;
+}, heartbeat: ScreenHeartbeat, text: string, onStall: (reason: string) => void, stallMs?: number): void;
 /** 导出仅供单测（test/host-frames.test.ts）：上限 / 孤儿回收 / grace 热改的行为护栏。 */
 export declare class SessionManager {
     private readonly sessions;
@@ -564,6 +618,14 @@ export declare class TtyServer {
     /** 每会话一块虚拟屏（xterm-headless）：tty_screen 的数据源；失败降级为 null。
      *  构造参数在 createHeadlessScreen（D57：scrollback 不能是 0），这里只做委托。 */
     private createScreen;
+    /**
+     * 退役一块**不可用**的虚拟屏（D57）：解析停摆或写队列满时调用。
+     *
+     * 只摘虚拟屏，**不动会话**——PTY 还活着、浏览器面板照常收发（虚拟屏只是 `tty_screen`
+     * 的数据源）。退役后 `tty_screen` 会如实报「虚拟屏不可用（原因）」，而不是返回冻结的
+     * 旧画面让 agent 据此行事。
+     */
+    private dropScreen;
     private handleMessage;
     /**
      * 服务器状态条订阅（0.17.0）：按「标签可见性」驱动——只有可见标签才发
