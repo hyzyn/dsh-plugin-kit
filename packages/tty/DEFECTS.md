@@ -4,6 +4,8 @@
 > 关键路径），共 **48 条缺陷，已 48/48 修复并随 0.19.0 发布**（CI 三平台绿）；此后由线上反馈
 > 补的 **D49 / D50**（状态条闪动）已随 **0.19.3** 落地，2026-09-20 复核又补 **D51**（测试断言缺陷）。
 > 补的 **D49 / D50**（状态条闪动）已随 **0.19.3** 落地。
+> **D57**（虚拟屏未捕获异常打死宿主）是 2026-09-23 由用户带着 `dsh-safe` 崩溃日志上门的线上事故，
+> 已修在 `src/index.ts`（未发版）；它不在下面那次审计的范围内。
 >
 > **怎么读**：本文只保留「现状 / 索引 / 待办」（活的部分）。48 条的完整审计原文（逐条证据与
 > 修法讨论）已移出正文 —— 想看它：`git show 9e358db3:packages/tty/DEFECTS.md`
@@ -29,7 +31,7 @@
 
 ## 现状
 
-**已修 56 / 待修 0**（D01–D48 审计波 + D49/D50 线上反馈 + D51–D56 复核实测发现）。索引表**不写行号、也不保留修复提交
+**已修 57 / 待修 0**（D01–D48 审计波 + D49/D50 线上反馈 + D51–D56 复核实测发现 + D57 线上崩溃）。索引表**不写行号、也不保留修复提交
 sha** —— 修复后代码移了位、有的整段被删或重写，审计时点的行号只会误导；所以回溯入口统一改成
 按关键词检索（D49/D50 修在 `bd407352`）：`git log -S'<症状列的关键词>'`，提交信息按条目写
 为什么。被代码直接引用的编号在
@@ -105,6 +107,7 @@ D50 才是用户看到的那一下（他补的描述是「整条状态条瞬间�
 | D54 | P2 | 隧道列表**乐观更新失败不回滚**：`removeTunnel` / `toggleTunnelEnabled` 丢掉 `pushTunnels` 的失败返回值，宿主拒绝后界面仍停在「已改」的样子 → 界面与真实配置不一致（唯一能看出的地方就是这一行） | client-src/index.js | |
 | D55 | P3 | 凭据引用名的**文档示例与真实派生规则对不上**（示例 IP 换成文档网段、派生名没跟着改；「撞名」举例把不同组的名字写成一组）——规则本身无测试，示例只能靠人眼比对 | client-src/credential-ref.js、README.md、README.en.md、test/credential-ref.test.ts | |
 | D56 | P2 | 端口转发**没有编辑功能**：改端口/条目只能删掉重建（而名字由规则派生、改端口即换名），且撞名时静默加 `-2` 后缀凭空多出一条；错误文案却让用户去「更正 bookName」——UI 上根本没这个动作 | client-src/index.js、client-src/tunnel-edit.js、scripts/preview/harness.js | |
+| D57 | P0 | 虚拟屏用 `scrollback: 0` 建 → xterm 缓冲区长度跟不上 `ybase`，输出与 resize（reflow）交错时 `lineFeed()` 写 `undefined.isWrapped` → **未捕获 TypeError 打死整个 dsh 宿主进程**（GUI 掉线 / 会话表清空 / agent 全丢）；插件侧 try/catch 与宿主都没有兜底 | src/index.ts、test/screen-crash.test.ts | ✓ |
 
 ## 线上反馈条目（0.19.2 之后新编号的，已随 0.19.3 发布）
 
@@ -317,6 +320,65 @@ D50 才是用户看到的那一下（他补的描述是「整条状态条瞬间�
   **prototype 上的原生 value setter**（直接赋值 React 读不到），harness 里此前没有这类场景。
 
 
+### D57：虚拟屏未捕获异常打死整个宿主进程（2026-09-23 用户带崩溃日志上门，已修未发版）
+
+- **症状**：dsh 宿主**整个进程退出**——Web GUI 掉线、终端面板会话表清空、正在跑的 agent 全丢。
+  不是单个会话坏掉，是 harness 挂掉。`dsh-safe` 留档 `~/.dsh/dsh-safe/last-failure-web.log`
+  （本次写入时间 `2026-09-23 11:27:41`）：
+
+  ```
+  TypeError: Cannot set properties of undefined (setting 'isWrapped')
+      at E.lineFeed (…/@xterm/headless/lib-headless/xterm-headless.js:1:28221)
+      at Object.<anonymous> (…:1:18767)   ← C0.LF 的执行器
+      at c.parse (…:1:105826) … at n._innerWrite (…:1:93270)
+      at Timeout._onTimeout (…:1:93028)   ← 解析在定时器回调里
+  ```
+
+- **复现（确定性，10 步）**：`cols=60 rows=3` 的虚拟屏，喂
+  `'A'×300` → `\x1b[3;9r` → `\r\n` → `resize(70,40)` → `\r\n` → `resize(33,5)` →
+  `resize(118,8)` → `'A'×300` → `resize(21,11)` → `\n`（末步才崩）。
+  参数是 `scrollback: 0`（= 修复前 `createScreen` 的实参）时 **5/5 崩**；`scrollback: 1` **0/5 崩**。
+  **输出与 resize 交错是必要条件**：只灌输出不 resize，1500 块屏 × 80 操作一次都不崩。
+  堆栈与线上日志**逐帧一致**（同 offset，只有 xterm 的安装路径不同）。独立排查脚本：
+  `node scripts/screen-crash-repro.mjs`（默认打本包解析到的 `@xterm/headless`；换 6.0.0 仍崩）。
+- **根因**：`lines.maxLength = rows + scrollback`，而 `BufferService.scroll` 只在「没满」时才
+  `lines.push(...)` 与 `ybase++` **成对**发生。`scrollback: 0` 把 maxLength 钉死成 `rows`，
+  一旦有别的路径把 `ybase` 顶上去（resize 收缩 / reflow），`lines` 长度就再也追不上；
+  此时 `lineFeed()` 走 else 分支 `lines.get(ybase + y).isWrapped = false`——而
+  `CircularList.get` **没有越界检查**（`return this._array[this._getCyclicIndex(i)]`），
+  越界即 `undefined` → 写属性抛 `TypeError`。
+- **为什么写入路径的 try/catch 拦不住**：`Terminal.write()` 只是 `_writeBuffer.push` +
+  `setTimeout(() => this._innerWrite())`，真正的 `parse()` 在**稍后的定时器回调**里跑；
+  同步 try/catch 在 `write()` 返回时就退出了。同理，`_innerWrite` 里 promise 形态的
+  `_action` 失败还会被 `queueMicrotask(() => { throw e })` 抛回顶层。
+- **修法**：
+  ① **构造参数**：`scrollback: 0` → `SCREEN_SCROLLBACK = 1`（`src/index.ts`，抽出
+  `createHeadlessScreen()` 供单测同源调用）。留 1 行余量即 `maxLength = rows + 1`，
+  push/`ybase++` 的成对关系得以维持；700 块随机屏压测里 `ybase` 涨到 16 也没再越界。
+  余量**不影响 `tty_screen` 读数**——它走 `buffer.getLine(row)`（内部 `ybase + row`，即视口）。
+  ② **进程级兜底**：`installXtermScreenCrashGuard()`（apply 里挂 `ctx.effect`，卸载即摘）。
+  只吞**堆栈命中 xterm-headless** 的未捕获异常并记账（`xtermScreenCrashCount()`）；
+  其余异常只在「我们是唯一的 `uncaughtException` 监听者」时**抛回**——保住「没有本兜底时
+  未捕获即退出」的语义，又不抢在宿主/其它插件的监听者前面把进程杀掉。
+- **排除掉的假设（重要）**：上门报告的根因写的是「dispose 与在途写入竞态」，**实测不成立**：
+  `write()` 后立刻 `dispose()`（在途数据仍在写队列里）不崩；`dispose()` 不清 `lines`
+  （长度仍是 rows）、不清写队列（仍挂着待解析项）；`dispose()` 之后 `lineFeed`/`write` 也不崩。
+  所以报告建议的「方案 A/B：dispose 前 drain 写队列 / 先置 null」修的是**不存在的竞态**，
+  本次没有采纳；「方案 D：尺寸夹紧到 ≥2」早在 0.19.0 就由 `clampInt` 实现。
+  报告里「不涉及 resize 帧」也与实测不符——resize（reflow）是复现的必要条件，实际发生过的
+  resize 帧只是没被记下来（面板/标签/窗口变化都会发）。
+- **回归门槛**：`test/screen-crash.test.ts`（4 条）——构造参数必须留余量；兜底判据只认虚拟屏
+  异常（按堆栈，不按 message）；**最小复现序列打不穿 `createHeadlessScreen()`**；负控制：
+  同一序列直建 `scrollback: 0` 必须仍能触发（钉住「序列本身有效」）。负控制在上游真修好时
+  只 `console.warn` 提示复核、不判红——正例才是护栏。
+- **验证**：`vitest` **252/252**（19 文件，+4）；`tsc --noEmit` 绿；`client-lint` 绿；
+  `lib/` 与源码同步重建（`client.js` 无变化）。**反向验证有效**：把 `SCREEN_SCROLLBACK` 改回
+  `0` → 两条正例**立即变红**（`expected 0 to be greater than 0` / `expected 1 to be +0`），
+  恢复后转绿。
+- **遗留（不在本包范围）**：宿主侧仍建议加插件加载隔离 / 顶层兜底——现在任何一个第三方插件
+  都能一击打死 harness；本包的兜底只覆盖自己的虚拟屏。
+
+
 ## agent 会话（0.20.0：tty_open / tty_close / tty_stats）
 
 > 这一节记的是**设计决定**（不是缺陷）：agent 能自己开终端之后，会话的归属语义变了，
@@ -399,7 +461,8 @@ check-dsh-engines → publish → `dsh plugin --profile web add @hyzyn/dsh-tty@<
 > 当契约，看的是「全绿」。
 
 - 单测与静态检查：`pnpm --filter @hyzyn/dsh-tty test`（或根目录 `npx vitest run packages/tty`；
-  实测 **215 通过 / 16 文件**）、`npx tsc --noEmit`、`node scripts/client-lint.mjs`。
+  2026-09-23 实测 **252 通过 / 19 文件**，含 D57 的 `test/screen-crash.test.ts`）、
+  `npx tsc --noEmit`、`node scripts/client-lint.mjs`。
 - 端到端脚本（**0.19.0 起已挂 CI**，仍可本地跑）：`node scripts/integration.mjs`（本机 PTY 全链路；
   **本次未复核**——受限沙箱下 `posix_openpt` 被拒，见下条）、`node scripts/ssh-smoke.mjs`（内存 sshd，
   自包含，实测 38 个断言）、`node scripts/probe-smoke.mjs`（7）、`node scripts/probe-route-smoke.mjs`（9）、

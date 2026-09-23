@@ -804,6 +804,101 @@ function isLoopbackUpgrade(req) {
     }
 }
 /* ------------------------------------------------------------------ *
+ * 虚拟屏（xterm-headless）——构造与异常兜底（D57）
+ * ------------------------------------------------------------------ */
+/**
+ * 虚拟屏的 scrollback 余量（D57）。
+ *
+ * **不能是 0。** xterm 的 `Buffer` 在 `scrollback: 0` 时把 `lines.maxLength` 压成
+ * `rows`，但 normal buffer 的 `_hasScrollback` 仍是 true（reflow 照常开启）：输出与
+ * resize（列宽变化触发 reflow）交错时，`lines` 会短于 `ybase + y`，于是
+ * `lineFeed()` 里 `lines.get(ybase + y).isWrapped = false` 命中 `undefined` →
+ * 未捕获 `TypeError: Cannot set properties of undefined (setting 'isWrapped')`。
+ *
+ * 该异常抛在 `WriteBuffer._innerWrite` 的 `setTimeout` 回调里，写入路径的同步
+ * try/catch 结构性拦不住，会直接打死整个宿主进程（线上 `last-failure-web.log`
+ * 的堆栈即此）。
+ *
+ * 关键在 `lines.maxLength`（= rows + scrollback）：`BufferService.scroll` 只在「没满」时
+ * 才 `lines.push` + `ybase++`（成对）。`scrollback: 0` 把 maxLength 钉死成 rows，
+ * 一旦有别的路径把 `ybase` 顶上去（resize 收缩 / reflow），`lines` 长度就再也追不上，
+ * `ybase + y + 1` 越界只是时间问题。留 1 行余量（maxLength = rows + 1）即维持住成对增长：
+ * 同一最小序列 `scrollback: 0` 崩 5/5，`scrollback: 1` 崩 0/5；700 块随机屏压测里
+ * `ybase` 涨到 16 也没再出现越界（见 test/screen-crash.test.ts）。
+ *
+ * 余量不影响 `tty_screen` 读数——它走 `buffer.getLine(row)`（内部 `ybase + row`，
+ * 即视口），多出来的行只在回滚区，不进读数。
+ */
+export const SCREEN_SCROLLBACK = 1;
+/**
+ * 建一块虚拟屏（`tty_screen` 的数据源）；失败降级为 null。
+ *
+ * 导出仅供单测（test/screen-crash.test.ts）钉住构造参数——生产路径是
+ * `SessionManager.createScreen`，它必须与这里同源（就一行委托）。
+ */
+export function createHeadlessScreen(cols, rows) {
+    try {
+        // buffer 命名空间在 xterm 5.x 是提案 API，必须开 allowProposedApi
+        return new HeadlessTerminal({ cols, rows, scrollback: SCREEN_SCROLLBACK, allowProposedApi: true });
+    }
+    catch {
+        return null;
+    }
+}
+/** xterm-headless 的异常都带这个文件名（压缩产物的堆栈里也是它）。 */
+const XTERM_SCREEN_CRASH_RE = /xterm-headless|@xterm\/headless/;
+/** 累计吞掉的虚拟屏异常数（只增不减；排障可见 + 单测断言用）。 */
+let screenCrashTotal = 0;
+/** 读累计吞掉的虚拟屏异常数。 */
+export function xtermScreenCrashCount() {
+    return screenCrashTotal;
+}
+/** 判定未捕获异常是否来自虚拟屏（xterm-headless）。导出仅供单测。 */
+export function isXtermScreenCrash(err) {
+    const stack = err instanceof Error ? (err.stack ?? '') : String(err);
+    return XTERM_SCREEN_CRASH_RE.test(stack);
+}
+let xtermGuardRefs = 0;
+let xtermGuardHandler;
+/** 解绑兜底（引用计数归零才真正摘监听器）。 */
+function releaseXtermScreenCrashGuard() {
+    if (xtermGuardRefs === 0)
+        return;
+    if (--xtermGuardRefs > 0)
+        return;
+    if (xtermGuardHandler !== undefined) {
+        process.off('uncaughtException', xtermGuardHandler);
+        xtermGuardHandler = undefined;
+    }
+}
+/**
+ * 注册进程级虚拟屏异常兜底（D57）：把来自 xterm-headless 的未捕获异常吞掉并记账，
+ * 让插件自己的 bug 不再拖垮整个 harness。幂等 + 引用计数，返回解绑函数。
+ *
+ * 两条边界（刻意如此，不是随手 `process.on`）：
+ *   1. **只吞虚拟屏异常**——`isXtermScreenCrash` 按堆栈判定；其余异常照旧。
+ *   2. **其余异常只在「我们是唯一的 uncaughtException 监听者」时抛回**：没有本兜底
+ *      时未捕获异常会让宿主退出，抛回保住这个语义；已经有别的监听者（宿主/其它插件）
+ *      时保持沉默，由它们决定——此时抛回反而会抢在别人前面把进程杀掉。
+ */
+export function installXtermScreenCrashGuard() {
+    if (xtermGuardRefs++ > 0)
+        return releaseXtermScreenCrashGuard;
+    const handler = (err) => {
+        if (isXtermScreenCrash(err)) {
+            screenCrashTotal++;
+            const message = err instanceof Error ? err.message : String(err);
+            console.warn(`[dsh-tty] 虚拟屏（xterm-headless）未捕获异常已吞掉，不影响宿主（累计 ${screenCrashTotal} 次）：${message}`);
+            return;
+        }
+        if (process.listenerCount('uncaughtException') <= 1)
+            throw err;
+    };
+    xtermGuardHandler = handler;
+    process.on('uncaughtException', handler);
+    return releaseXtermScreenCrashGuard;
+}
+/* ------------------------------------------------------------------ *
  * 会话管理
  * ------------------------------------------------------------------ */
 /** 导出仅供单测（test/host-frames.test.ts）：上限 / 孤儿回收 / grace 热改的行为护栏。 */
@@ -1552,15 +1647,10 @@ export class TtyServer {
         }
         void forceKill(session.handle);
     }
-    /** 每会话一块虚拟屏（xterm-headless）：tty_screen 的数据源；失败降级为 null。 */
+    /** 每会话一块虚拟屏（xterm-headless）：tty_screen 的数据源；失败降级为 null。
+     *  构造参数在 createHeadlessScreen（D57：scrollback 不能是 0），这里只做委托。 */
     createScreen(cols, rows) {
-        try {
-            // buffer 命名空间在 xterm 5.x 是提案 API，必须开 allowProposedApi
-            return new HeadlessTerminal({ cols, rows, scrollback: 0, allowProposedApi: true });
-        }
-        catch {
-            return null;
-        }
+        return createHeadlessScreen(cols, rows);
     }
     async handleMessage(ws, msg, local, cleanupAll, conn) {
         try {
@@ -1982,7 +2072,7 @@ export class TtyServer {
                 session.screen?.write(text);
             }
             catch {
-                /* 虚拟屏异常不阻断输出链路 */
+                /* 同步抛出（尺寸非法等）；异步解析异常拦不住，由 installXtermScreenCrashGuard 兜底（D57） */
             }
             if (session.clients.size === 0)
                 return; // 孤儿会话：仅积累缓冲，等待重连 attach 回放
@@ -4110,6 +4200,10 @@ const plugin = definePlugin({
         }, REAPER_INTERVAL_MS);
         reaperTimer.unref?.();
         ctx.effect(() => () => clearInterval(reaperTimer), 'dsh-tty: orphan reaper');
+        // 虚拟屏异常兜底（D57）：xterm-headless 的解析跑在 WriteBuffer 的 setTimeout
+        // 回调里，写入路径的同步 try/catch 结构性拦不住；没有兜底时任何一处虚拟屏异常
+        // 都会直接打死宿主进程（Web GUI 掉线、会话表清空、agent 全丢）。插件卸载时摘掉。
+        ctx.effect(() => installXtermScreenCrashGuard(), 'dsh-tty: xterm crash guard');
         // 插件卸载时回收全部会话、隧道与 SFTP 连接
         ctx.effect(() => {
             return () => {
