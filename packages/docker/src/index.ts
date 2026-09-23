@@ -2,8 +2,9 @@
  * @hyzyn/dsh-docker — DSH Web GUI 的 Docker 容器面板（host 半体）。
  *
  * 与 dsh-tty 的关系（方案 A：独立插件，tty 零改动）：
- *   - **连接簿**：只读复用 tty 的 settings 命名空间（`ctx.settings.get('tty')`
- *     的 `sshHosts`）。tty 未安装时退化为「只支持本机 / 内联 SSH 字段」。
+ *   - **连接簿**：只读复用 tty 的 entry settings（DSH ≥0.1.7 的
+ *     `settings.describe()`，经 kit 的 `readSettingsEntry(ctx, 'tty')`）的
+ *     `sshHosts`。tty 未安装时退化为「只支持本机 / 内联 SSH 字段」。
  *   - **主机指纹**：本插件自持一份 `hostKeys`（TOFU），并优先读取 tty 已记录
  *     的指纹作为种子，避免同一主机在两处重复确认。
  *   - **执行通道**：自持池化 SSH exec（src/ssh-exec.ts），与 tty 的 PTY 会话
@@ -17,7 +18,8 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { definePlugin } from '@hyzyn/dsh-kit'
+import { definePlugin, plainConfig, readSettingsEntry, settingsEntryScope, suppressAutoSettingsPage } from '@hyzyn/dsh-kit'
+import type { SettingsEntryScope } from '@hyzyn/dsh-kit'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import * as dns from 'node:dns'
 import {
@@ -114,18 +116,26 @@ const HOST_KEY_SCHEMA = z.object({
   fingerprint: z.string().default(''),
 })
 
-const DOCKER_SETTINGS_SCHEMA = z.object({
-  enabled: z.boolean().default(true),
-  announceToAgent: z.boolean().default(true),
-  dockerBin: z.string().default('docker'),
-  allowMutations: z.boolean().default(false),
-  allowExec: z.boolean().default(false),
-  execTimeoutSec: z.natural().max(120).default(30),
-  pollIntervalSec: z.natural().max(60).default(5),
-  logTailDefault: z.natural().max(5000).default(200),
-  maxOutputKb: z.natural().max(8192).default(512),
-  targets: z.array(TARGET_SCHEMA).default([]),
-  hostKeys: z.array(HOST_KEY_SCHEMA).default([]),
+/**
+ * 运行时 Config schema——DSH ≥0.1.7 起同时就是本插件的 settings 存储。
+ *
+ * 全部字段都标 `.volatile()`：它们都是卡片可改项（见 KNOWN_CONFIG_KEYS），而
+ * `settings.update(entryId, patch)` 只接受 volatile 路径；loader 对 volatile-only
+ * 变更原地更新引用并发 `loader/volatile-update`，不重挂插件——插件订阅后走
+ * `applySection` 热应用（见 kit 的 settingsEntryScope）。
+ */
+export const Config: z = z.object({
+  enabled: z.boolean().default(true).volatile(),
+  announceToAgent: z.boolean().default(true).volatile(),
+  dockerBin: z.string().default('docker').volatile(),
+  allowMutations: z.boolean().default(false).volatile(),
+  allowExec: z.boolean().default(false).volatile(),
+  execTimeoutSec: z.natural().max(120).default(30).volatile(),
+  pollIntervalSec: z.natural().max(60).default(5).volatile(),
+  logTailDefault: z.natural().max(5000).default(200).volatile(),
+  maxOutputKb: z.natural().max(8192).default(512).volatile(),
+  targets: z.array(TARGET_SCHEMA).default([]).volatile(),
+  hostKeys: z.array(HOST_KEY_SCHEMA).default([]).volatile(),
 })
 
 /** 可经 HTTP POST 写入的配置键（白名单）。 */
@@ -649,8 +659,8 @@ export function formatBytes(value: number): string {
   return `${text} ${units[unit] ?? 'B'}`
 }
 
-/** 从 tty 的 settings 命名空间读取连接簿（只读；tty 未安装时为空表）。 */
-function readTtyBooks(settings: SettingsLike | undefined): Map<string, SshSpec> {
+/** 从 tty 的 entry settings 读取连接簿（只读；tty 未安装时为空表）。 */
+function readTtyBooks(settings: SettingsLookup | undefined): Map<string, SshSpec> {
   const out = new Map<string, SshSpec>()
   if (settings === undefined) return out
   let raw: unknown
@@ -684,7 +694,7 @@ function readTtyBooks(settings: SettingsLike | undefined): Map<string, SshSpec> 
 }
 
 /** 从 tty 的 hostKeys 读取已钉扎指纹（作为本插件 TOFU 的种子）。 */
-function readTtyHostKeys(settings: SettingsLike | undefined): HostKeyRecord[] {
+function readTtyHostKeys(settings: SettingsLookup | undefined): HostKeyRecord[] {
   if (settings === undefined) return []
   let raw: unknown
   try {
@@ -735,13 +745,8 @@ export function resolveTarget(target: DockerTarget, books: Map<string, SshSpec>)
  * 宿主服务的最小类型面（避免把 DSH 内部类型写进本包）
  * ------------------------------------------------------------------ */
 
-interface SettingsScopeLike {
-  get(): unknown
-  update(patch: object): Promise<unknown>
-}
-
-interface SettingsLike {
-  register(ns: string, schema: unknown, options?: { base?: unknown }): SettingsScopeLike
+/** 只读其它插件 entry 的 settings（旧 `settings.get(ns)` 的替代）。 */
+interface SettingsLookup {
   get(ns: string): unknown
 }
 
@@ -763,8 +768,10 @@ interface SystemPromptLike {
 
 const plugin = definePlugin<Config>({
   name: 'docker',
-  apply(ctx: Context, config?: Config) {
-    let live = normalizeConfig((config ?? {}) as Record<string, unknown>)
+  apply(ctx: Context, rawConfig?: Config) {
+    // volatile 字段解析后是 `{ get() }` 引用，先还原成纯数据（见 @hyzyn/dsh-kit 的 plainConfig）。
+    const config = plainConfig((rawConfig ?? {}) as Config)
+    let live = normalizeConfig(config as Record<string, unknown>)
     if (!live.enabled) return
 
     const logger: ExecLogger = {
@@ -774,8 +781,13 @@ const plugin = definePlugin<Config>({
 
     /* ---------- 主机指纹（TOFU，本插件自持；tty 记录作种子） ---------- */
 
-    let settingsScope: SettingsScopeLike | undefined
-    let settingsApi: SettingsLike | undefined
+    let settingsScope: SettingsEntryScope | undefined
+    /**
+     * 只读他人 entry（如 tty 的连接簿）：旧 `settings.get(ns)` 在新宿主已不存在，
+     * 改走 `settings.describe()` 的 entry 查找（kit 的 readSettingsEntry）。settings
+     * 子上下文就绪前保持 undefined，调用方当空表处理——与旧行为一致。
+     */
+    let settingsApi: SettingsLookup | undefined
     const ttySeed = (): Map<string, string[]> => {
       const map = new Map<string, string[]>()
       for (const record of readTtyHostKeys(settingsApi)) map.set(`${record.host}:${String(record.port)}`, record.fingerprints)
@@ -827,7 +839,7 @@ const plugin = definePlugin<Config>({
 
     /**
      * 当前生效的 targets：**以 settings 解析值为准**。
-     * 为什么不能只读内存里的 live：settings 命名空间注册是异步的，挂载后存在一个
+     * 为什么不能只读内存里的 live：settings 解析是异步的（服务就绪后才读一次），存在一个
      * 窗口期内 live 仍是 composition 配置（targets 为空）。若此时 GET /config 被
      * 调用，卡片会拿到空目标列表，用户随后保存就把空数组写回 → 目标被清空。
      */
@@ -2878,7 +2890,7 @@ const plugin = definePlugin<Config>({
                   writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) })
                   return
                 }
-                // settings/updated 会触发 applySection；无事件时也应用一次（幂等）
+                // volatile 更新事件会触发 applySection；无事件时也应用一次（幂等）
               }
               // applySection 也可能抛（tools.register / systemPrompt.section，D36）：
               // 此时配置已落盘，必须把原因带回给用户，而不是一个空 400/500。
@@ -3201,28 +3213,27 @@ const plugin = definePlugin<Config>({
       }, 'dsh-docker: web routes')
     })
 
-    /* ---------- settings 命名空间 ---------- */
+    /* ---------- settings ---------- */
 
     ctx.inject(['settings'], (settingsCtx: Context) => {
       settingsCtx.effect(() => {
-        const settings = (settingsCtx as unknown as { settings: SettingsLike }).settings
-        const scope = settings.register('docker', DOCKER_SETTINGS_SCHEMA, { base: live })
-        settingsApi = settings
+        const scope = settingsEntryScope(settingsCtx, 'docker')
+        if (scope === undefined) return () => {}
+        // 卡片是自定义页（plugins.row.config），别再让 DSH 为本 entry 自动生成一份。
+        const offAutoPage = suppressAutoSettingsPage(settingsCtx, ctx)
         settingsScope = scope
-        // 注册后立即读一次解析值（schema 默认值 ← composition base ← 用户层）
+        settingsApi = { get: (ns: string) => readSettingsEntry(settingsCtx, ns) }
+        // 立刻读一次 resolved 值（schema 默认值 ← composition base ← 用户层）
         const resolved = scope.get()
         if (typeof resolved === 'object' && resolved !== null) live = normalizeConfig(resolved as Record<string, unknown>)
         const diag = (resolved ?? {}) as Record<string, unknown>
         console.log(`[dsh-docker] settings resolved (keys=${Object.keys(diag).join('|')}, targets=${Array.isArray(diag.targets) ? String(diag.targets.length) : 'not-array'}, hostKeys=${Array.isArray(diag.hostKeys) ? String(diag.hostKeys.length) : 'not-array'})`)
         refreshTools()
         refreshAnnouncement()
-        const events = settingsCtx as unknown as { events: { on(name: string, listener: (...args: unknown[]) => void): () => void } }
-        const off = events.events.on('settings/updated', (ns: unknown, next: unknown) => {
-          if (ns !== 'docker' || typeof next !== 'object' || next === null) return
-          applySection(next as Record<string, unknown>)
-        })
+        const off = scope.onChanged(() => applySection(scope.get()))
         return () => {
           off()
+          offAutoPage()
           settingsScope = undefined
           settingsApi = undefined
         }

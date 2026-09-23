@@ -20,12 +20,15 @@
  *
  * 用法：
  *   node scripts/verify-codegraph-host-contract.mjs [--profile test] [--port 3087] [--report out.json]
+ *   # 用一份独立安装的 DSH（如新 cohort）验证，而不动本机全局安装：
+ *   node scripts/verify-codegraph-host-contract.mjs --dsh-bin /path/to/dsh \
+ *        --runtime-store /path/to/proj/node_modules/.pnpm/node_modules/@deepseek-ai
  */
 import { spawn } from 'node:child_process'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const argv = process.argv.slice(2)
@@ -37,6 +40,13 @@ const profile = flag('--profile') ?? 'test'
 const dshBin = flag('--dsh-bin') ?? 'dsh'
 const port = Number(flag('--port') ?? 3087)
 const reportPath = flag('--report')
+/**
+ * 把复制出来的 profile 里 `node_modules/@deepseek-ai/*` 重指到的运行时目录。
+ * 用途：本机全局 dsh 还是旧 cohort 时，用一份独立安装的新 cohort CLI（--dsh-bin）
+ * 验证——profile 里那些链接原本指向全局安装，不重指会让新 cohort 的兼容性
+ * preflight 把整套旧运行时行判成 incompatible 并全部禁用（宿主起不来）。
+ */
+const runtimeStore = flag('--runtime-store')
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const workDir = mkdtempSync(join(tmpdir(), 'cg-host-contract-'))
 /**
@@ -113,14 +123,15 @@ writeFileSync(join(projectDir, '.codegraph', 'codegraph.db'), '')
 
 const overlay = join(workDir, 'overlay.yml')
 writeFileSync(overlay, [
-  '# 临时层：独立端口 + 固定默认项目（不修改任何 profile / settings 文件）',
+  '# 临时层：只固定端口（不修改任何 profile / settings 文件）。',
+  '# 刻意**不**在这里覆盖 codegraph：DSH ≥0.1.7 起 settings 写的就是 profile entry 的',
+  '# config 层，而 config editor 拒绝写被命令行 overlay 覆盖过的 entry（保存失败:',
+  '# overridden by a command-line overlay）——那样会把「per-agent 切换」这条断言假红。',
+  '# 默认项目改由启动后经插件自己的 /default-path 写路径设置（顺带验证写路径可用）。',
   '- id: webserver',
   '  config:',
   "    host: '127.0.0.1'",
   `    port: ${String(port)}`,
-  '- id: codegraph',
-  '  config:',
-  `    defaultPath: '${projectDir}'`,
   '',
 ].join('\n'))
 
@@ -161,6 +172,22 @@ let stderr = ''
 try {
   // 整份拷入被测 profile：插件/配置照旧，但组装产物与 home 级写入都落在隔离目录
   cpSync(join(realDshHome, 'profiles', profile), join(isolatedHome, 'profiles', profile), { recursive: true })
+  if (runtimeStore !== undefined) {
+    const runtimeDir = resolve(runtimeStore)
+    if (!existsSync(runtimeDir)) throw new Error(`--runtime-store 不存在：${runtimeDir}`)
+    const linkDir = join(isolatedHome, 'profiles', profile, 'node_modules', '@deepseek-ai')
+    mkdirSync(linkDir, { recursive: true })
+    let linked = 0
+    for (const name of readdirSync(runtimeDir)) {
+      const target = join(runtimeDir, name)
+      if (!existsSync(join(target, 'package.json'))) continue
+      const link = join(linkDir, name)
+      rmSync(link, { recursive: true, force: true })
+      symlinkSync(target, link)
+      linked += 1
+    }
+    console.log(`# runtime store：${runtimeDir}（重指 ${String(linked)} 个运行时包）`)
+  }
   child = spawn(dshBin, ['--profile', profile, '--patch', overlay], {
     stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, DSH_HOME: isolatedHome },
@@ -168,6 +195,23 @@ try {
   child.stderr?.on('data', (chunk) => (stderr += String(chunk)))
   const up = await waitForPort(child)
   if (!up) throw new Error(`宿主没在 ${String(port)} 上就绪；stderr=${stderr.slice(-400)}`)
+
+  // ---------- 0. settings 写路径就绪 + 基线 ----------
+  //
+  // 不变量：settings 写的是 profile entry 的 config（见 kit 的 settingsEntryScope）。
+  // 插件挂载与 settings 服务就绪之间有窗口期：期间 `rt.scope` 还没装上，写会回 500。
+  // 这里先把它轮询到 200 再往下走，后续断言才是确定性的。
+  let baselineReady = false
+  for (let attempt = 0; attempt < 60 && !baselineReady; attempt += 1) {
+    const res = await request('/api/dsh-codegraph/settings', { method: 'POST', body: { mcpScope: 'managed' } })
+    baselineReady = res.status === 200
+    if (!baselineReady) await new Promise((resolveWait) => setTimeout(resolveWait, 250))
+  }
+  record('settings 写路径就绪（切回 managed 基线）', baselineReady, baselineReady ? 'HTTP 200' : '超时仍非 200')
+  if (baselineReady) {
+    const setPath = await request('/api/dsh-codegraph/default-path', { method: 'POST', body: { path: projectDir } })
+    record('默认项目切到临时项目（同样走 settings 写路径）', setPath.status === 200, `HTTP ${String(setPath.status)}`)
+  }
 
   // ---------- 1. 路由面：全部路由都在（挂载即注册） ----------
   const routeSpecs = [

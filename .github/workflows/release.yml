@@ -38,10 +38,10 @@ jobs:
       # publish 期转换看不出问题），一旦发出去只能靠发新版本补救
       - name: Check no workspace protocol in publishable deps
         run: node scripts/check-publishable.mjs
-      # 发布前最后一道闸：dsh.engines.dsh 写错/写漏的后果在用户侧才暴露（市场显示
-      # 「未知」，或形式不受支持被判为无法验证而拦下更新），发出去只能靠新版本补救
-      - name: Check dsh.engines.dsh declarations
-        run: node scripts/check-dsh-engines.mjs
+      # 发布前最后一道闸：DSH peer 声明写错/写漏的后果在用户侧才暴露（插件被判定
+      # incompatible-version 而装不上 / 启动即 disabled），发出去只能靠新版本补救
+      - name: Check dsh peer compatibility declarations
+        run: node scripts/check-dsh-peers.mjs
       # 发布前最后一档：CI 会跑这些，但 tag 可以打在没过 CI 的提交上，发布闸自己也要
       # 挡一次（docker DEFECTS D119：此前只有 CI 补了这套脚本，发布路径仍能整条绕过）
       - name: Test (repo vitest + dsh-docker smoke scripts)

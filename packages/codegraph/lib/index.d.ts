@@ -15,6 +15,7 @@
  * 热加载后 MCP 服务器自动挂载到新项目。
  */
 import type { Context } from '@deepseek-ai/cordis';
+import z from '@deepseek-ai/schemastery';
 import type { McpScopeMode } from './scope.js';
 export type { McpScopeMode } from './scope.js';
 export interface Config {
@@ -89,6 +90,21 @@ export interface Config {
      */
     autoReindex?: boolean;
 }
+/**
+ * 运行时 Config schema——DSH ≥0.1.7 起它**同时就是本插件的 settings 存储**：
+ * `settings.describe()` 读的就是它解析出的值，`settings.update(entryId, patch)` 把
+ * 用户在卡片上的改动合并进当前 profile 的 patch 用户层。
+ *
+ * 标 `.volatile()` 的字段是「卡片可改、且要求不重挂插件即生效」的那些：settings
+ * 只允许写 volatile 路径，而 loader 对 volatile-only 变更会原地更新配置引用并发
+ * `loader/volatile-update`（插件自己订阅重读，见 @hyzyn/dsh-kit 的 settingsEntryScope）。
+ * 安装级旋钮（command / 超时 / indexForce / autoReindex / enabled）刻意保持非 volatile：
+ * 它们只在挂载时生效，改动应走一次正常重挂。
+ *
+ * `mcpScope` 用 `z.string()` 而不是 `z.union([...])`：合法性由 `normalizeMcpScope`
+ * 在读取处收口（非法值回落 managed），与「配置面不让插件起不来」的约定一致。
+ */
+export declare const Config: z;
 /** 一次 tool/call 的归类结果：codegraph / 文件探索 / 其它（不计入分母）。 */
 export type ToolCallBucket = 'codegraph' | 'file' | 'other';
 /**

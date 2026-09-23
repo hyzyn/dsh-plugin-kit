@@ -84,19 +84,36 @@ function mountPlugin(options: { tty?: Record<string, unknown> } = {}): Harness {
     settingsStored: {} as Record<string, unknown>,
     updates: [] as Array<Record<string, unknown>>,
   }
-  const scopeFor = (base: Record<string, unknown>) => ({
-    get: () => ({ ...base, ...state.settingsStored }),
-    update: async (patch: Record<string, unknown>) => {
+  /** loader 检出 volatile-only 变更后发的事件（测试里同步发，省掉真实 loader 的异步）。 */
+  const emitVolatile = (): void => {
+    for (const listener of state.listeners.get('loader/volatile-update') ?? []) listener()
+  }
+  /**
+   * DSH ≥0.1.7 的 settings 服务（SettingsForms）：describe / update / configure。
+   * describe 里额外放一个 tty entry，模拟「tty 已安装、连接簿可读」。
+   */
+  const settingsService = {
+    describe: () => [
+      { ns: 'docker', value: { ...state.settingsStored } },
+      ...(options.tty === undefined ? [] : [{ ns: 'tty', value: options.tty }]),
+    ],
+    update: async (ns: string, patch: Record<string, unknown>) => {
+      if (ns !== 'docker') throw new Error('未知的 entry: ' + ns)
       // 真实 settings 层是「先落盘再广播」，所以这里也先记下来：测试要断言的就是
       // 「非法 patch 根本不该走到这一步」。
       state.updates.push(patch)
       Object.assign(state.settingsStored, patch)
-      for (const listener of state.listeners.get('settings/updated') ?? []) {
-        listener('docker', { ...base, ...state.settingsStored }, undefined, 'update')
-      }
+      emitVolatile()
     },
-  })
+    configure: () => () => {},
+  }
   const makeChild = (names: string[]): Record<string, unknown> => {
+    const on = (name: string, listener: (...args: unknown[]) => void): (() => void) => {
+      const list = state.listeners.get(name) ?? []
+      list.push(listener)
+      state.listeners.set(name, list)
+      return () => {}
+    }
     const child: Record<string, unknown> = {
       logger: { info: () => {}, warn: () => {} },
       effect: (callback: () => unknown) => {
@@ -107,14 +124,8 @@ function mountPlugin(options: { tty?: Record<string, unknown> } = {}): Harness {
         cb(makeChild(childNames))
         return () => {}
       },
-      events: {
-        on: (name: string, listener: (...args: unknown[]) => void) => {
-          const list = state.listeners.get(name) ?? []
-          list.push(listener)
-          state.listeners.set(name, list)
-          return () => {}
-        },
-      },
+      on,
+      events: { on },
     }
     if (names.includes('webServer')) {
       child.webServer = {
@@ -124,13 +135,7 @@ function mountPlugin(options: { tty?: Record<string, unknown> } = {}): Harness {
         },
       }
     }
-    if (names.includes('settings')) {
-      child.settings = {
-        register: (_ns: string, _schema: unknown, options_: { base?: Record<string, unknown> } | undefined) => scopeFor(options_?.base ?? {}),
-        // readTtyBooks 只读 tty 命名空间；用例没给就是「tty 未安装」
-        get: (ns: string) => (ns === 'tty' ? options.tty : undefined),
-      }
-    }
+    if (names.includes('settings')) child.settings = settingsService
     return child
   }
   const root = makeChild([])

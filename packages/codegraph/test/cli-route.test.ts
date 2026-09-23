@@ -388,10 +388,10 @@ describe('宿主路由（stub CLI）', () => {
 /* ------------------------------------------------------------------ *
  * 提示词注入门禁的测试脚手架
  *
- * 假上下文照抄真实 cordis 4.0.2 的形状：`ctx.events` 就是 Events 服务本身
- * （own keys 只有 ctx / _hooks），`on` 挂在它自己身上。插件里那段
- * `const events = settingsCtx` + `events.events.on('settings/updated', …)` 读的
- * 正是这个服务（变量名就叫 events，容易看岔），所以订阅在这里能被真实覆盖。
+ * 假上下文照抄真实 cordis 的形状：`on` 挂在 ctx 自身。DSH ≥0.1.7 的 settings 是
+ * `SettingsForms`（describe / update / configure），插件经 kit 的 settingsEntryScope
+ * 订阅 `loader/volatile-update`（loader 检出 volatile-only 变更后发的事件）；这里把
+ * 这个服务与事件一起假掉，`dispatch` 模拟「外部改了本 entry 的 profile 配置」。
  * ------------------------------------------------------------------ */
 
 interface FakeSection {
@@ -407,7 +407,7 @@ interface FullMount {
   updates: Record<string, unknown>[]
   /** 子 fiber 里被吞掉的异常（真实 cordis 也会吞，但要能断言「没有异常」）。 */
   errors: unknown[]
-  /** 手工派发 settings/updated（模拟宿主 / 其它界面写 settings）。 */
+  /** 模拟「外部改了本 entry 的 profile 配置」：写进 store 再发 volatile 事件。 */
   dispatch: (ns: string, next: Record<string, unknown>) => void
 }
 
@@ -416,29 +416,31 @@ function mountFull(command: string, extra: Record<string, unknown> = {}): FullMo
   const sections = new Map<string, FakeSection>()
   const settingsStore: Record<string, unknown> = {}
   const updates: Record<string, unknown>[] = []
-  const listeners: Array<(ns: unknown, next: unknown) => void> = []
+  const listeners: Array<() => void> = []
   const errors: unknown[] = []
 
   const on = (name: string, listener: (...args: unknown[]) => void): (() => void) => {
-    if (name !== 'settings/updated') return () => {}
-    listeners.push(listener)
+    if (name !== 'loader/volatile-update') return () => {}
+    const entry = listener as () => void
+    listeners.push(entry)
     return () => {
-      const index = listeners.indexOf(listener)
+      const index = listeners.indexOf(entry)
       if (index !== -1) listeners.splice(index, 1)
     }
   }
+  /** loader 检出 volatile-only 变更后发的事件；测试里同步发，省掉真实 loader 的异步。 */
+  const emitVolatile = (): void => {
+    for (const listener of [...listeners]) listener()
+  }
   const settings = {
-    register(_ns: string, _schema: unknown) {
-      return {
-        get: () => ({ ...settingsStore }),
-        update: async (patch: Record<string, unknown>) => {
-          updates.push(patch)
-          Object.assign(settingsStore, patch)
-          for (const listener of [...listeners]) listener('codegraph', { ...settingsStore })
-          return settingsStore
-        },
-      }
+    describe: () => [{ ns: 'codegraph', value: { ...settingsStore } }],
+    update: async (ns: string, patch: Record<string, unknown>) => {
+      if (ns !== 'codegraph') throw new Error('未知的 entry: ' + ns)
+      updates.push(patch)
+      Object.assign(settingsStore, patch)
+      emitVolatile()
     },
+    configure: () => () => {},
   }
   const systemPrompt = {
     section(section: FakeSection) {
@@ -479,8 +481,9 @@ function mountFull(command: string, extra: Record<string, unknown> = {}): FullMo
     settingsStore,
     updates,
     errors,
-    dispatch: (ns, next) => {
-      for (const listener of [...listeners]) listener(ns, { ...settingsStore, ...next })
+    dispatch: (_ns, next) => {
+      Object.assign(settingsStore, next)
+      emitVolatile()
     },
   }
 }

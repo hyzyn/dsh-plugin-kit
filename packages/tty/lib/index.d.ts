@@ -67,6 +67,7 @@
  *     子进程），必须 best-effort：失败降级为对顶层 shell 直接 SIGKILL。
  */
 import type { Context } from '@deepseek-ai/cordis';
+import z from '@deepseek-ai/schemastery';
 import { StringDecoder } from 'node:string_decoder';
 import WebSocket from 'ws';
 import xtermHeadless from '@xterm/headless';
@@ -125,6 +126,15 @@ export interface SftpLimits {
     /** 一次批量/拖拽上传的文件数上限。默认 1000。 */
     maxUploadFiles: number;
 }
+/**
+ * 运行时 Config schema——DSH ≥0.1.7 起同时就是本插件的 settings 存储。
+ *
+ * 全部字段都标 `.volatile()`：它们都是「插件配置 → 终端面板」卡片可改项，而
+ * `settings.update(entryId, patch)` 只接受 volatile 路径；loader 对 volatile-only
+ * 变更原地更新引用并发 `loader/volatile-update`，不重挂插件——插件订阅后走
+ * `applyPatch` 热应用（见 @hyzyn/dsh-kit 的 settingsEntryScope）。
+ */
+export declare const Config: z;
 /**
  * 本地 PTY 顶层 shell 的 best-effort 强杀（D48）。
  *
@@ -225,7 +235,7 @@ interface ReqLike {
 interface SocketLike {
     destroy(): void;
 }
-/** 可热更新的运行时配置（settings/updated 动态应用）。 */
+/** 可热更新的运行时配置（loader 的 volatile 更新事件动态应用）。 */
 declare class LiveConfig {
     shell: string;
     term: string;

@@ -1670,8 +1670,19 @@
 .tt_tunnelEndpoints {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 8px 10px;
   flex-wrap: wrap;
+}
+/*
+ * 一端 + 它的出向箭头（"跳"）。箭头必须跟源端点同组：留在外面时窄容器会先换行成
+ * 「端点 A / → / 端点 B」——箭头孤零零占一行，读不出它连的是哪两端。
+ */
+.tt_tunnelHop {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 /* 一个端点 = 主机 + 冒号 + 端口；用同一底色连成一体，看得出是一组 */
 .tt_tunnelEndpoint {
@@ -1705,7 +1716,9 @@
 /* 中间的分隔冒号 */
 .tt_tunnelColon {
   flex: none;
-  padding: 0 2px;
+  /* 4px 而不是 2px：占位符被裁短时，冒号与截断文本之间要有清楚的间隔，
+     否则「服务器侧主机（如 db」+「:」会读成一串 */
+  padding: 0 4px;
   color: var(--tt-label-3);
   user-select: none;
 }
@@ -1725,6 +1738,22 @@
 }
 .tt_tunnelArrow[data-direction='remote'] {
   transform: rotate(180deg);
+}
+/* 方向行（分段控件 + 连接簿下拉）：窄容器下让下拉可收缩并允许换行，别顶出卡片右缘 */
+.tt_tunnelHead .tt_cardInput {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+/* 动作行（保存 / 取消 + 说明）：按钮不参与收缩（否则文字会被挤成竖排），说明自己换行 */
+.tt_tunnelActions .tt_cardSave,
+.tt_tunnelActions .tt_toolBtn {
+  flex: none;
+  white-space: nowrap;
+}
+.tt_tunnelActions .tt_cardHint {
+  flex: 1 1 220px;
+  min-width: 0;
+  margin-top: 0;
 }
 /* 分段控件（本地 / 远程）：两个值不值得用下拉框，一次点击就能切 */
 .tt_segmented {
@@ -2289,6 +2318,8 @@
   flex-direction: row;
   align-items: center;
   gap: var(--tt-gap-md);
+  /* 窄容器里宁可换行也不横向溢出（下拉框默认 min-width:auto 会顶出卡片） */
+  flex-wrap: wrap;
 }
 .tt_cardHint {
   margin-top: 2px;

@@ -83,7 +83,8 @@ import WebSocket, { WebSocketServer } from 'ws'
 import xtermHeadless from '@xterm/headless'
 const HeadlessTerminal = xtermHeadless.Terminal
 type HeadlessTerminal = InstanceType<typeof HeadlessTerminal>
-import { definePlugin, dshHome as resolveDshHome } from '@hyzyn/dsh-kit'
+import { definePlugin, dshHome as resolveDshHome, plainConfig, settingsEntryScope, suppressAutoSettingsPage } from '@hyzyn/dsh-kit'
+import type { SettingsEntryScope } from '@hyzyn/dsh-kit'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { spawnSsh, sshTarget, expandHome, setCredentialResolver } from './ssh.js'
 import type { CredentialResolver, HostKeyRecord, SshHostEntry, SshSpec, TermHandle } from './ssh.js'
@@ -185,30 +186,37 @@ const TUNNEL_SCHEMA = z.object({
   enabled: z.boolean().default(true),
 })
 
-/** 与「插件配置 → 终端面板」卡片表单对齐的 schema。 */
-const TTY_SETTINGS_SCHEMA = z.object({
-  enabled: z.boolean().default(true),
-  announceToAgent: z.boolean().default(true),
-  maxSessions: z.natural().max(16).default(4),
-  shell: z.string().default(''),
-  term: z.string().default('xterm-256color'),
-  colorTerm: z.string().default('truecolor'),
-  cwd: z.string().default(''),
-  reconnectGraceSec: z.natural().max(3600).default(120),
-  sshHosts: z.array(SSH_HOST_SCHEMA).default([]),
-  hostKeys: z.array(HOST_KEY_SCHEMA).default([]),
-  tunnels: z.array(TUNNEL_SCHEMA).default([]),
-  shellIntegration: z.boolean().default(true),
-  sftpStyle: z.union([z.const('dialog'), z.const('dual')]).default('dialog'),
-  persistence: z.union([z.const('off'), z.const('tmux')]).default('off'),
-  endOnPageClose: z.boolean().default(false),
-  statsEnabled: z.boolean().default(true),
+/**
+ * 运行时 Config schema——DSH ≥0.1.7 起同时就是本插件的 settings 存储。
+ *
+ * 全部字段都标 `.volatile()`：它们都是「插件配置 → 终端面板」卡片可改项，而
+ * `settings.update(entryId, patch)` 只接受 volatile 路径；loader 对 volatile-only
+ * 变更原地更新引用并发 `loader/volatile-update`，不重挂插件——插件订阅后走
+ * `applyPatch` 热应用（见 @hyzyn/dsh-kit 的 settingsEntryScope）。
+ */
+export const Config: z = z.object({
+  enabled: z.boolean().default(true).volatile(),
+  announceToAgent: z.boolean().default(true).volatile(),
+  maxSessions: z.natural().max(16).default(4).volatile(),
+  shell: z.string().default('').volatile(),
+  term: z.string().default('xterm-256color').volatile(),
+  colorTerm: z.string().default('truecolor').volatile(),
+  cwd: z.string().default('').volatile(),
+  reconnectGraceSec: z.natural().max(3600).default(120).volatile(),
+  sshHosts: z.array(SSH_HOST_SCHEMA).default([]).volatile(),
+  hostKeys: z.array(HOST_KEY_SCHEMA).default([]).volatile(),
+  tunnels: z.array(TUNNEL_SCHEMA).default([]).volatile(),
+  shellIntegration: z.boolean().default(true).volatile(),
+  sftpStyle: z.union([z.const('dialog'), z.const('dual')]).default('dialog').volatile(),
+  persistence: z.union([z.const('off'), z.const('tmux')]).default('off').volatile(),
+  endOnPageClose: z.boolean().default(false).volatile(),
+  statsEnabled: z.boolean().default(true).volatile(),
   sftpLimits: z.object({
     maxDownloadMb: z.natural().max(1024 * 1024).default(1024),
     maxUploadMb: z.natural().max(1024 * 1024).default(2048),
     maxUploadFiles: z.natural().max(100000).default(1000),
-  }).default({ maxDownloadMb: 1024, maxUploadMb: 2048, maxUploadFiles: 1000 }),
-  persistSessions: z.array(z.object({ tmuxName: z.string() })).default([]),
+  }).default({ maxDownloadMb: 1024, maxUploadMb: 2048, maxUploadFiles: 1000 }).volatile(),
+  persistSessions: z.array(z.object({ tmuxName: z.string() })).default([]).volatile(),
 })
 
 /* ------------------------------------------------------------------ *
@@ -420,7 +428,7 @@ function sanitizeTermValue(value: string, fallback: string): string {
   return TERM_RE.test(trimmed) ? trimmed : fallback
 }
 
-/** 可热更新的运行时配置（settings/updated 动态应用）。 */
+/** 可热更新的运行时配置（loader 的 volatile 更新事件动态应用）。 */
 class LiveConfig {
   shell: string
   term: string
@@ -2783,7 +2791,9 @@ const plugin = definePlugin<Config>({
   // 声明 inject：tools 服务只有声明式 inject 才能解析（动态 ctx.inject/ctx.get
   // 均拿不到，实测 mcp-client 同款模式），声明后 ctx.get('tools') 才能取到。
   inject: ['tools'],
-  apply(ctx: Context, config?: Config) {
+  apply(ctx: Context, rawConfig?: Config) {
+    // volatile 字段解析后是 `{ get() }` 引用，先还原成纯数据（见 @hyzyn/dsh-kit 的 plainConfig）。
+    const config = plainConfig((rawConfig ?? {}) as Config)
     if (config?.enabled === false) return
     const live = new LiveConfig({
       // 默认 shell 按平台取（Windows 没有 $SHELL，回落 /bin/zsh 会让本地终端一条都开不起来；
@@ -2846,7 +2856,7 @@ const plugin = definePlugin<Config>({
     )
     const server = new TtyServer(ctx, sessions, live, hostKeyStore, trackPersistSession)
     const stateRef = { enabled: true, announceToAgent: config?.announceToAgent !== false, toolsRegistered: false, sftpStyle: config?.sftpStyle === 'dual' ? 'dual' : 'dialog' as 'dialog' | 'dual' }
-    let settingsScope: { get(): Record<string, unknown>; update(patch: Record<string, unknown>): Promise<unknown> } | undefined
+    let settingsScope: SettingsEntryScope | undefined
     // 工具/公告的重注册钩子：真正的实现由各自的注入 effect 挂载时回填。
     // applyPatch 定义在注入之前，只能先拿 noop——启动顺序无论是 settings 先行
     // （registerAll 读 stateRef 自行短路）还是 tools/announcement 先行（applyPatch
@@ -2880,7 +2890,7 @@ const plugin = definePlugin<Config>({
       platform: process.platform,
     })
 
-    /** 规范化并应用一份配置补丁（settings/updated 事件与 HTTP POST 共用；幂等）。 */
+    /** 规范化并应用一份配置补丁（volatile 更新事件与 HTTP POST 共用；幂等）。 */
     const applyPatch = (section: Record<string, unknown>): void => {
       live.apply({
         shell: typeof section.shell === 'string' ? section.shell : undefined,
@@ -3087,8 +3097,8 @@ const plugin = definePlugin<Config>({
             const scope = settingsScope
             if (scope !== undefined) {
               try {
-                // 官方持久化通道：写入 settings 命名空间（dsh-settings-file），
-                // 成功后触发 settings/updated → applyPatch 热应用
+                // 官方持久化通道：settings.update(entryId) 写进本插件 entry 的 profile
+                // patch（volatile 字段），成功后 loader 发 volatile 更新 → applyPatch 热应用
                 await scope.update(patch)
               } catch (error) {
                 writeJson(res, 500, { error: '保存配置失败: ' + (error instanceof Error ? error.message : String(error)) })
@@ -3527,13 +3537,15 @@ const plugin = definePlugin<Config>({
       }, 'dsh-tty: web routes')
     })
 
-    // settings 命名空间：注册 + 启动合并持久化值 + settings/updated 热应用
+    // settings：DSH ≥0.1.7 起存储就是本插件 entry 的 Config（导出为 `Config`，可写字段
+    // 标了 volatile）。启动合并一次持久化值，之后由 loader 的 volatile 更新事件热应用。
     ctx.inject(['settings'], (settingsCtx: Context) => {
       settingsCtx.effect(() => {
-        const settings = (settingsCtx as unknown as {
-          settings: { register(ns: string, schema: unknown): { get(): Record<string, unknown>; update(patch: Record<string, unknown>): Promise<unknown> } }
-        }).settings
-        const scope = settings.register('tty', TTY_SETTINGS_SCHEMA)
+        const scope = settingsEntryScope(settingsCtx, 'tty')
+        // 服务形态不符（老宿主 / 最小宿主）时不装 scope：卡片仍可看快照，只是不持久化。
+        if (scope === undefined) return () => {}
+        // 卡片是自定义页（plugins.row.config），别再让 DSH 为本 entry 自动生成一份。
+        const offAutoPage = suppressAutoSettingsPage(settingsCtx, ctx)
         settingsScope = scope
         // 启动合并：字符串字段非空才覆盖；maxSessions/布尔用「非默认值才覆盖」启发式
         //（schema 默认值会混入 resolved，无法区分「显式保存的 4」与「从未保存」）。
@@ -3562,13 +3574,10 @@ const plugin = definePlugin<Config>({
         const storedTunnels = sanitizeTunnels(stored.tunnels)
         if (storedTunnels !== undefined && storedTunnels.length > 0) startup.tunnels = storedTunnels
         if (Object.keys(startup).length > 0) applyPatch(startup)
-        const events = settingsCtx as unknown as { events: { on(name: string, listener: (...args: unknown[]) => void): () => void } }
-        const off = events.events.on('settings/updated', (ns: unknown, next: unknown) => {
-          if (ns !== 'tty' || typeof next !== 'object' || next === null) return
-          applyPatch(next as Record<string, unknown>)
-        })
+        const off = scope.onChanged(() => applyPatch(scope.get()))
         return () => {
           off()
+          offAutoPage()
           settingsScope = undefined
         }
       }, 'dsh-tty: settings')

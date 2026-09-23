@@ -16,7 +16,6 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import z from '@deepseek-ai/schemastery';
 import { definePlugin, dshHome, getService, writeFileAtomic } from '@hyzyn/dsh-kit';
 import { BUILTIN_CATALOG_NAME, getBuiltinCatalogEntries, getCatalogCategories, getCatalogSourceNames, getMergedCatalogEntries, searchCatalogEntries, catalogStatus, } from './catalog.js';
 export const name = 'rss-digest';
@@ -33,39 +32,6 @@ const BUILTIN_CHANNELS = [
 const BUILTIN_BY_KEY = new Map(BUILTIN_CHANNELS.map((channel) => [channel.key, channel]));
 /** `AiSummaryInfo.failures` 最多保留几类原因。 */
 const AI_FAILURE_REASON_LIMIT = 3;
-/* ------------------------------------------------------------------ *
- * settings 命名空间（让「插件配置 → 插件配置」派发本插件卡片）
- * ------------------------------------------------------------------ */
-/** 与 ~/.dsh/rss.json 的可编辑 store 形状对齐。 */
-const RSS_SETTINGS_SCHEMA = z.object({
-    enabled: z.boolean(),
-    sources: z.array(z.object({
-        name: z.string(),
-        url: z.string(),
-        category: z.string(),
-        limit: z.natural(),
-        builtin: z.string(),
-    })).default([]),
-    categories: z.array(z.string()).default([]),
-    catalogs: z.array(z.object({
-        name: z.string(),
-        url: z.string(),
-    })).default([]),
-    maxItemsPerSource: z.natural(),
-    maxTotalItems: z.natural(),
-    dailyTime: z.string(),
-    autoGenerateOnMount: z.boolean(),
-    announceToAgent: z.boolean(),
-    ai: z.object({
-        enabled: z.boolean(),
-        provider: z.string(),
-        model: z.string(),
-        maxItems: z.natural(),
-        concurrency: z.natural(),
-        timeoutMs: z.natural(),
-    }),
-    updatedAt: z.string(),
-});
 /* ------------------------------------------------------------------ *
  * 默认值 / 路径
  * ------------------------------------------------------------------ */
@@ -1403,11 +1369,6 @@ export function apply(ctx, config) {
                 }
             };
         }, 'dsh-rss-digest: routes');
-    });
-    // 注册 settings 命名空间：卡片 key 与命名空间同名，插件配置标签页才会派发它
-    ctx.inject(['settings'], (settingsCtx) => {
-        const settings = settingsCtx.settings;
-        settings.register('rss-digest', RSS_SETTINGS_SCHEMA);
     });
     if (announce) {
         ctx.inject(['systemPrompt'], (promptCtx) => {

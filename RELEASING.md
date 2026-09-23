@@ -68,11 +68,20 @@ CI 另有两道兜底（`--no-verify`、别的机器、别的工具提交都能�
    只能靠用户来提 issue。写真实版本（如 `^0.1.2`）即可；本地开发靠根 `.npmrc` 的
    `link-workspace-packages=true` 仍然链接到 `packages/*`，体验不变。
    CI 与 Release workflow 都会跑 `node scripts/check-publishable.mjs` 兜底。
-5. 可安装插件的 `dsh.engines.dsh` 声明必须存在且形式正确：只支持 `>=X.Y.Z[-预发布]`
-   一种写法——`^0.1.2` / `~0.1.2` / 两段式 `>=0.1.2-rc.1 <0.2.0` 会被市场判成
-   「无法验证」，而已声明却无法验证是 **fail-closed**（更新被直接拦下），比不声明更糟。
-   SDK cohort 升级时同步提升**全部**包的该字段（新插件从 `templates/hello` 复制，模板
-   也要跟着改）。CI 与 Release workflow 都会跑 `node scripts/check-dsh-engines.mjs` 兜底。
+5. 可安装插件必须用 `peerDependencies` 声明 DSH 兼容范围。DSH 0.1.7-rc.1 起
+   **安装前与启动时**都强制校验，且只看 `@deepseek-ai/dsh` / `@deepseek-ai/dsh-*`
+   的 peer（预发布参与范围匹配）。写法统一为
+   `"@deepseek-ai/dsh": "^<cohort>"`，并在 `peerDependenciesMeta` 里标
+   `optional`——只压 pnpm 的 unmet-peer 噪音，DSH 判定器不看它，照旧强制。
+   被判定不兼容的插件安装时抛 `incompatible-version`、启动时整行 `disabled`；
+   豁免要写进 profile 自己的 `compatibility.json`（`dsh plugin allow-version`）。
+   同时保留 `dsh.engines.dsh: ">=<cohort>"`（市场解析器唯一支持的 `>=X.Y.Z[-预发布]`
+   形式）作为**展示**位：rc.1 宿主不读它，但插件市场 / 社区条目仍按它展示兼容性——
+   两条下限必须一致，脚本会拦。
+   cohort 升级时同步提升**全部**包与 `scripts/check-dsh-peers.mjs` 里的 `DSH_COHORT`
+   （新插件从 `templates/hello` 复制，模板也要跟着改）。CI 与 Release workflow 都会跑
+   `node scripts/check-dsh-peers.mjs` 兜底；本机装了对应 cohort 时可用
+   `--app-boot <path>` 让 DSH 自己的判定器再核一遍。
 
 ## 攒批
 

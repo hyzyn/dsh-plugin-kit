@@ -1,5 +1,5 @@
 import z from '@deepseek-ai/schemastery';
-import { definePlugin } from '@hyzyn/dsh-kit';
+import { definePlugin, plainConfig, readSettingsEntry, settingsEntryScope, suppressAutoSettingsPage } from '@hyzyn/dsh-kit';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import * as dns from 'node:dns';
 import { DockerApi, assertBin, assertImageRef, assertName, assertRef, assertSince, createRunner, parseImageHistoryJson, parseImageHistoryText, parseContainerEvent, parseEventsJson, parseImageInspectJson, parseInspectJson, parsePsJson, parseStatsJson, } from './docker.js';
@@ -27,18 +27,26 @@ const HOST_KEY_SCHEMA = z.object({
     /** 旧版单指纹字段：仅作迁移输入（sanitizeHostKeys 会并进 fingerprints）。 */
     fingerprint: z.string().default(''),
 });
-const DOCKER_SETTINGS_SCHEMA = z.object({
-    enabled: z.boolean().default(true),
-    announceToAgent: z.boolean().default(true),
-    dockerBin: z.string().default('docker'),
-    allowMutations: z.boolean().default(false),
-    allowExec: z.boolean().default(false),
-    execTimeoutSec: z.natural().max(120).default(30),
-    pollIntervalSec: z.natural().max(60).default(5),
-    logTailDefault: z.natural().max(5000).default(200),
-    maxOutputKb: z.natural().max(8192).default(512),
-    targets: z.array(TARGET_SCHEMA).default([]),
-    hostKeys: z.array(HOST_KEY_SCHEMA).default([]),
+/**
+ * 运行时 Config schema——DSH ≥0.1.7 起同时就是本插件的 settings 存储。
+ *
+ * 全部字段都标 `.volatile()`：它们都是卡片可改项（见 KNOWN_CONFIG_KEYS），而
+ * `settings.update(entryId, patch)` 只接受 volatile 路径；loader 对 volatile-only
+ * 变更原地更新引用并发 `loader/volatile-update`，不重挂插件——插件订阅后走
+ * `applySection` 热应用（见 kit 的 settingsEntryScope）。
+ */
+export const Config = z.object({
+    enabled: z.boolean().default(true).volatile(),
+    announceToAgent: z.boolean().default(true).volatile(),
+    dockerBin: z.string().default('docker').volatile(),
+    allowMutations: z.boolean().default(false).volatile(),
+    allowExec: z.boolean().default(false).volatile(),
+    execTimeoutSec: z.natural().max(120).default(30).volatile(),
+    pollIntervalSec: z.natural().max(60).default(5).volatile(),
+    logTailDefault: z.natural().max(5000).default(200).volatile(),
+    maxOutputKb: z.natural().max(8192).default(512).volatile(),
+    targets: z.array(TARGET_SCHEMA).default([]).volatile(),
+    hostKeys: z.array(HOST_KEY_SCHEMA).default([]).volatile(),
 });
 /** 可经 HTTP POST 写入的配置键（白名单）。 */
 const KNOWN_CONFIG_KEYS = new Set([
@@ -432,7 +440,7 @@ export function formatBytes(value) {
     const text = unit === 0 ? String(Math.round(size)) : size.toFixed(size >= 100 ? 0 : 1);
     return `${text} ${units[unit] ?? 'B'}`;
 }
-/** 从 tty 的 settings 命名空间读取连接簿（只读；tty 未安装时为空表）。 */
+/** 从 tty 的 entry settings 读取连接簿（只读；tty 未安装时为空表）。 */
 function readTtyBooks(settings) {
     const out = new Map();
     if (settings === undefined)
@@ -526,8 +534,10 @@ export function resolveTarget(target, books) {
  * ------------------------------------------------------------------ */
 const plugin = definePlugin({
     name: 'docker',
-    apply(ctx, config) {
-        let live = normalizeConfig((config ?? {}));
+    apply(ctx, rawConfig) {
+        // volatile 字段解析后是 `{ get() }` 引用，先还原成纯数据（见 @hyzyn/dsh-kit 的 plainConfig）。
+        const config = plainConfig((rawConfig ?? {}));
+        let live = normalizeConfig(config);
         if (!live.enabled)
             return;
         const logger = {
@@ -536,6 +546,11 @@ const plugin = definePlugin({
         };
         /* ---------- 主机指纹（TOFU，本插件自持；tty 记录作种子） ---------- */
         let settingsScope;
+        /**
+         * 只读他人 entry（如 tty 的连接簿）：旧 `settings.get(ns)` 在新宿主已不存在，
+         * 改走 `settings.describe()` 的 entry 查找（kit 的 readSettingsEntry）。settings
+         * 子上下文就绪前保持 undefined，调用方当空表处理——与旧行为一致。
+         */
         let settingsApi;
         const ttySeed = () => {
             const map = new Map();
@@ -589,7 +604,7 @@ const plugin = definePlugin({
         const remote = new RemoteExec(logger, hostKeyStore);
         /**
          * 当前生效的 targets：**以 settings 解析值为准**。
-         * 为什么不能只读内存里的 live：settings 命名空间注册是异步的，挂载后存在一个
+         * 为什么不能只读内存里的 live：settings 解析是异步的（服务就绪后才读一次），存在一个
          * 窗口期内 live 仍是 composition 配置（targets 为空）。若此时 GET /config 被
          * 调用，卡片会拿到空目标列表，用户随后保存就把空数组写回 → 目标被清空。
          */
@@ -2639,7 +2654,7 @@ const plugin = definePlugin({
                                     writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
                                     return;
                                 }
-                                // settings/updated 会触发 applySection；无事件时也应用一次（幂等）
+                                // volatile 更新事件会触发 applySection；无事件时也应用一次（幂等）
                             }
                             // applySection 也可能抛（tools.register / systemPrompt.section，D36）：
                             // 此时配置已落盘，必须把原因带回给用户，而不是一个空 400/500。
@@ -2964,14 +2979,17 @@ const plugin = definePlugin({
                 return () => dispose();
             }, 'dsh-docker: web routes');
         });
-        /* ---------- settings 命名空间 ---------- */
+        /* ---------- settings ---------- */
         ctx.inject(['settings'], (settingsCtx) => {
             settingsCtx.effect(() => {
-                const settings = settingsCtx.settings;
-                const scope = settings.register('docker', DOCKER_SETTINGS_SCHEMA, { base: live });
-                settingsApi = settings;
+                const scope = settingsEntryScope(settingsCtx, 'docker');
+                if (scope === undefined)
+                    return () => { };
+                // 卡片是自定义页（plugins.row.config），别再让 DSH 为本 entry 自动生成一份。
+                const offAutoPage = suppressAutoSettingsPage(settingsCtx, ctx);
                 settingsScope = scope;
-                // 注册后立即读一次解析值（schema 默认值 ← composition base ← 用户层）
+                settingsApi = { get: (ns) => readSettingsEntry(settingsCtx, ns) };
+                // 立刻读一次 resolved 值（schema 默认值 ← composition base ← 用户层）
                 const resolved = scope.get();
                 if (typeof resolved === 'object' && resolved !== null)
                     live = normalizeConfig(resolved);
@@ -2979,14 +2997,10 @@ const plugin = definePlugin({
                 console.log(`[dsh-docker] settings resolved (keys=${Object.keys(diag).join('|')}, targets=${Array.isArray(diag.targets) ? String(diag.targets.length) : 'not-array'}, hostKeys=${Array.isArray(diag.hostKeys) ? String(diag.hostKeys.length) : 'not-array'})`);
                 refreshTools();
                 refreshAnnouncement();
-                const events = settingsCtx;
-                const off = events.events.on('settings/updated', (ns, next) => {
-                    if (ns !== 'docker' || typeof next !== 'object' || next === null)
-                        return;
-                    applySection(next);
-                });
+                const off = scope.onChanged(() => applySection(scope.get()));
                 return () => {
                     off();
+                    offAutoPage();
                     settingsScope = undefined;
                     settingsApi = undefined;
                 };

@@ -16,18 +16,19 @@
     "./package.json": "./package.json"
   },
   "dsh": {
+    "manifestVersion": 1,
     "bundle": {
       "patch": "./cordis.patch.yml"
     },
     "engines": {
-      "dsh": ">=0.1.2-rc.1"
+      "dsh": ">=0.1.7-rc.1"
     }
   },
   "dependencies": {
     "@hyzyn/dsh-kit": "0.3.0"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/cordis": "^4.0.4",
     "@types/node": "^22.20.0",
     "typescript": "~5.9.3"
   },
@@ -52,5 +53,13 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh": "^0.1.7-rc.1"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh": {
+      "optional": true
+    }
   }
 }

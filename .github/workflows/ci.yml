@@ -60,12 +60,12 @@ jobs:
       - name: Check no workspace protocol in publishable deps
         if: matrix.os == 'ubuntu-latest'
         run: node scripts/check-publishable.mjs
-      # 防回归：每个可安装插件必须声明 dsh.engines.dsh，且只能是 dsh-web 解析器支持的
-      # `>=X.Y.Z[-rc.N]` 一种形式——写成 ^ / ~ / 两段式会被判为「无法验证」而 fail-closed
-      # （更新被直接拦下），比不声明更糟
-      - name: Check dsh.engines.dsh declarations
+      # 防回归：每个可安装插件必须用 peerDependencies 声明与当前 cohort 一致的
+      # @deepseek-ai/dsh 范围。DSH 0.1.7-rc.1 起安装前/启动时的兼容性判定只看 peer
+      # （预发布参与匹配），engines.dsh 不再有任何读取方；声明错了用户侧才暴露
+      - name: Check dsh peer compatibility declarations
         if: matrix.os == 'ubuntu-latest'
-        run: node scripts/check-dsh-engines.mjs
+        run: node scripts/check-dsh-peers.mjs
       # 防回归：DSH_HOME 的推导（~ 展开 + resolve）只允许在 kit 里有一份；插件各写
       # 各的 raw 副本会在 DSH_HOME=~/x 时写/读不同的配置目录（codegraph DEFECTS CG35）
       - name: Check DSH_HOME derivation lives only in kit

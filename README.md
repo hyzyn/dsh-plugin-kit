@@ -111,9 +111,9 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 - **怎么用**：打开 插件配置里的「Codegraph」→ 查看索引状态、搜索符号、点击结果查看源码与调用链 / 影响面、手动 Sync / 重建索引。
 - **支持**：索引状态（版本、文件 / 符号 / 边数量、最后索引时间、待同步变更）；符号搜索与 node / callers / callees / impact 详情；**默认路径跟随当前活动会话的工作目录**（切换项目会话自动切换，手动输入可临时覆盖）；一键增量 sync 与全量重建。
 - **MCP 托管（默认开）**：DSH 的 MCP 客户端不声明 roots，`codegraph serve --mcp` 只能从工作目录向上找 `.codegraph/`——宿主若从家目录启动，模型调用 `mcp__codegraph__*` 会拿到 "No CodeGraph project is loaded"。本插件自动在 `~/.dsh/cordis.patch.yml` 托管 codegraph MCP 服务器行并把 cwd 对齐默认项目路径（卡片「设为默认项目」一键切换，保存即热重启 MCP 服务器）；已在 MCP 卡片配置过的行只补 cwd 不动其它字段。可用 `mcpIntegration: false` 关闭。
-- **存哪里**：索引在项目 `.codegraph/` 目录（由 `codegraph index` 生成）；默认项目路径持久化在 settings 命名空间 `codegraph`。
+- **存哪里**：索引在项目 `.codegraph/` 目录（由 `codegraph index` 生成）；默认项目路径与各开关持久化在本插件 entry 的 profile 配置（写进当前 profile 的 `cordis.patch.yml` 用户层）。
 - **注意**：查询目标项目需要先有 Codegraph 索引；未索引项目会返回指引改用常规工具。索引 / 重建为本地 CLI 操作，消耗真实磁盘与 CPU。一台 codegraph MCP 服务器同一时刻只挂载一个默认项目，其它已索引项目可在工具调用里传 `projectPath` 查询。
-- **兼容与调优**：已在 DSH `0.1.5-rc.2` 与 `0.1.6-alpha.2` + codegraph CLI `1.5.0` 上实测（声明 `dsh.engines.dsh: >=0.1.2-rc.1`）；CLI 命令与旗标见包内 README。大仓库全量重建可调 `indexTimeoutMs`（默认 600s，查询档 `cliTimeoutMs` 默认 60s），CLI 拒绝索引家目录 / 文件系统根时开 `indexForce`。
+- **兼容与调优**：当前适配基线 DSH `0.1.7-rc.1`（声明 `peerDependencies: @deepseek-ai/dsh ^0.1.7-rc.1`）+ codegraph CLI `1.5.0`；CLI 命令与旗标见包内 README。大仓库全量重建可调 `indexTimeoutMs`（默认 600s，查询档 `cliTimeoutMs` 默认 60s），CLI 拒绝索引家目录 / 文件系统根时开 `indexForce`。
 
 ![Codegraph 设置卡片](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-codegraph.png)
 
@@ -124,7 +124,7 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 - **SFTP 两种界面（设置可选）**：`dialog` 单窗体——远程目录浏览、多选/拖拽上传（文件夹递归）、下载、重命名、删除；`dual` 双栏——左本机 / 右远程，行内 `⇨ / ⇦` 由宿主服务端把两个路径流式直传（目录递归、同名覆盖，字节不经过浏览器）。
 - **最小化（状态并入侧边栏入口）**：点弹窗外空白处、按 Esc 或标题栏「—」把面板收起，PTY 会话与输出缓冲保持存活；侧边栏「终端」入口显示会话数徽标与状态点，点击入口恢复；悬浮条 ✕ / 标题栏 ✕ 才真正关闭并结束全部会话。
 - **支持**：多标签页（单连接多会话）；cwd 跟随当前会话；TERM=xterm-256color 注入（TUI 应用不退化）；断线自动重连（会话保活 + 输出缓冲回放）；SSH agent / 密钥 / 密码认证，`env:VAR` 密钥引用不落盘；端口转发隧道（-L/-R，宿主自持重连）；下行背压保护；loopback 信任围栏；并发上限（默认 4）；配置保存即热生效；agent 工具集（`tty_list` / `tty_capture` / `tty_screen` / `tty_expect` / `tty_send` / `sftp_*` / `tunnel_list`）。
-- **存哪里**：无独立配置文件；配置走「插件配置 → 终端面板」卡片。
+- **存哪里**：本插件 entry 的 profile 配置，写进当前 profile 的 `cordis.patch.yml` 用户层——「插件配置 → 终端面板」卡片读写的就是它。
 - **0.19.0 修了什么**：48 项审计修复——SFTP 覆盖上传改为临时分片 + 原子 rename（失败不再毁原文件）、断线在途 spawn 不再留僵尸会话、known_hosts 导入不再误报「中间人」、明文口令不再落浏览器存储、Windows 强杀本地 PTY 不再崩宿主、现代 Linux（bash ≥4.4）的 `tty_capture{last}` / `tty_expect` 恢复可用。清单与索引见 `packages/tty/DEFECTS.md`。
 - **注意**：resize 依赖 DSH 内部 terminal handle 结构（已知限制）；输出为 utf8 文本流，`cat` 二进制文件会有替换字符。详细见 `packages/tty/README.md`。
 
@@ -146,7 +146,7 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 - **跨目标与需关注**：总览页一屏汇总全部目标（计数卡 + 跨目标异常表，单目标失败不影响其余）；「需关注」口径覆盖不健康 / 反复重启 / **被 OOM 杀** / 非零退出 / 僵死，agent 侧 `docker_attention` 与 `docker_ps target:'*'` 同样支持跨目标聚合。
 - **支持**：容器列表（`all` 含已停止）、`docker inspect` 详情、日志（tail / 时间戳 / since）、**实时日志流**（FOLLOW 开关走 SSE `docker logs --follow`，本地与 SSH 目标都支持，自动滚动 / 过滤着色与快照共用，容器退出自动切回快照）、`docker stats` **快照 + 实时流**（SSE，60 点 sparkline 看 CPU / 内存趋势；这条流不会自然结束，前端主动断）、**Compose 项目视图**（按 `composeProject` / `composeService` 分组，项目级聚合日志在客户端按 `[service]` 前缀混流）、**容器事件活动流**（SSE `docker events` → 列表头部「活动」条 + 500ms 防抖刷新容器列表）、**网络与卷**（列表 + 详情：子网 / 网关 / 接入容器、挂载点 / 选项 / 标签；删除与 prune 需 `allowMutations`）、**多目标总览**（不选目标一屏看全部主机：计数卡 + 异常容器置顶表；并行取数、单目标失败只影响自己那一格；只读、无跨目标操作）、以及**容器列表多选的临时聚合日志**（勾 2~8 个容器即开混流；**SSH 目标上限 6**——一条连接要同时装下实时流与「刷新列表」这类短命令）、镜像列表 + **镜像详情**（`docker image inspect` 的层 / 大小 + `docker history` 构建历史）、**`docker pull` 进度流**（SSE 逐层）、镜像删除 / dangling 清理（需 `allowMutations`）、一次性 exec（返回退出码与 stdout/stderr）；`dockerBin` 可填 `podman`；输出超限自动截断。四条 SSE 长流（日志 / 统计 / 事件 / 拉取）共用同一份 `openSseStream` 基建（心跳 / 活跃流登记 / 断开清理）。
 - **安全模型（重点）**：docker socket ≈ 目标主机 root 权限，因此**默认只读**——`allowMutations` 未开启时启停删被拒（HTTP 403，工具不注册），`allowExec` 未开启时 exec 被拒；容器名 / ID 过白名单校验，命令一律 argv 构造 + 单引号转义；密码 / 口令建议 `env:VAR` 引用且永不回传浏览器。
-- **存哪里**：settings 命名空间 `docker`（`~/.dsh/settings.yaml`）。
+- **存哪里**：本插件 entry 的 profile 配置，写进当前 profile 的 `cordis.patch.yml` 用户层（旧的 `~/.dsh/settings.yaml` section 已由 DSH 一次性导入）。
 - **注意**：没有交互式 TTY（exec 是一次性命令，交互排障请到终端面板跑 `docker exec -it`），流式能力只在浏览器面板里（agent 的 `docker_logs` / `docker_stats` / `docker_image_pull` 保持快照语义），没有 `docker build` / `save` / `load` / `push`，Compose 是只读视图（不提供 `compose up/down`），多目标总览是**只读**汇总（没有跨目标操作，启停删仍需逐目标）；`docker rm` 与 `docker image rm` 都不带 `-f`，运行中容器 / 被引用的镜像会报错并给出提示。详细见 `packages/docker/README.md`。
 
 ### 环境变量 / 密钥管理（@hyzyn/dsh-env）
@@ -173,8 +173,8 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 
 ### 系统要求
 
-- 已安装 DeepSeek Harness，`dsh web` 可正常启动。当前实测基线为 DSH `0.1.5-rc.2` 与 `0.1.6-alpha.2`（宿主路由、浏览器半体、插件配置页、systemPrompt 注入、MCP 托管行全链路）。
-- 每个可安装插件都在 `dsh.engines.dsh` 声明支持的 DSH 版本线（本仓库统一 `>=0.1.2-rc.1`），插件市场据此显示兼容 / 不兼容；未声明的包显示为「未知」。**只支持 `>=X.Y.Z[-预发布]` 一种形式**：`^0.1.2`、`~0.1.2`、两段式 `>=0.1.2-rc.1 <0.2.0` 都会被判成「无法验证」，而已声明却无法验证是 fail-closed——更新会被直接拦下，比不声明更糟。CI 跑 `node scripts/check-dsh-engines.mjs` 兜底。
+- 已安装 DeepSeek Harness，`dsh web` 可正常启动。**当前适配基线为 DSH `0.1.7-rc.1`**：settings 存储改为「当前 profile 的插件 entry 配置」，兼容性改由 `peerDependencies` 在安装前与启动时强制校验；`0.1.6-alpha.2` 及更早不再支持。
+- 每个可安装插件都在 `peerDependencies` 声明 `@deepseek-ai/dsh: ^0.1.7-rc.1`。DSH 0.1.7-rc.1 起在**安装前**（`incompatible-version`）与**启动时**（该行整行 `disabled`）都用它判定兼容性，预发布参与范围匹配。同时保留 `dsh.engines.dsh: ">=0.1.7-rc.1"` 作为**市场展示位**：rc.1 宿主不读它（app-boot README 原文「这些检查使用 peer 声明，而不是 engines.dsh」），但插件市场 / 社区条目那类外部消费方仍按它展示兼容性——值必须与 peer 下限一致，否则就是一条与事实不符的声明。需要临时放行某个确切版本组合时，把豁免写进 profile 自己的 `compatibility.json`：`dsh plugin --profile <p> allow-version <pkg@ver> --dsh-version <ver> --accept-risk`。CI 跑 `node scripts/check-dsh-peers.mjs` 兜底：它同时校验 peer 下限、engines 下限与 `dsh.manifestVersion`，并可按 `--app-boot <path>` 直接调 DSH 官方判定器复核。
 - npm 安装方式无额外要求；从仓库安装需要 Node.js >= 22.19 与 pnpm 10。
 
 ### 三步上手

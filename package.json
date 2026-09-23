@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-plugin-kit",
-  "version": "0.1.36",
+  "version": "0.1.37",
   "type": "module",
   "description": "通用 DSH 插件库（pnpm monorepo）：模板插件、插件开发工具包、一键聚合安装包。根包同时是全家桶 bundle（dsh.bundle.patch），DSH 与插件市场可直接识别安装。",
   "main": "lib/index.js",
@@ -9,11 +9,12 @@
     "./package.json": "./package.json"
   },
   "dsh": {
+    "manifestVersion": 1,
     "bundle": {
       "patch": "./cordis.patch.yml"
     },
     "engines": {
-      "dsh": ">=0.1.2-rc.1"
+      "dsh": ">=0.1.7-rc.1"
     }
   },
   "scripts": {
@@ -47,15 +48,28 @@
     "access": "public"
   },
   "dependencies": {
-    "@hyzyn/dsh-codegraph": "0.5.1",
-    "@hyzyn/dsh-docker": "0.7.2",
-    "@hyzyn/dsh-env": "0.2.6",
-    "@hyzyn/dsh-kit-settings": "0.1.0",
-    "@hyzyn/dsh-mcp": "0.1.14",
-    "@hyzyn/dsh-profile": "0.1.12",
-    "@hyzyn/dsh-prompt": "0.1.12",
-    "@hyzyn/dsh-rss": "0.3.5",
-    "@hyzyn/dsh-search": "0.3.5",
-    "@hyzyn/dsh-tty": "0.20.1"
+    "@hyzyn/dsh-codegraph": "0.5.2",
+    "@hyzyn/dsh-docker": "0.7.3",
+    "@hyzyn/dsh-env": "0.2.7",
+    "@hyzyn/dsh-kit-settings": "0.1.1",
+    "@hyzyn/dsh-mcp": "0.1.15",
+    "@hyzyn/dsh-profile": "0.1.13",
+    "@hyzyn/dsh-prompt": "0.1.13",
+    "@hyzyn/dsh-rss": "0.3.6",
+    "@hyzyn/dsh-search": "0.3.6",
+    "@hyzyn/dsh-tty": "0.20.2"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh": "^0.1.7-rc.1"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh": {
+      "optional": true
+    }
+  },
+  "pnpm": {
+    "overrides": {
+      "@deepseek-ai/dsh": "link:scripts/dsh-peer-stub"
+    }
   }
 }

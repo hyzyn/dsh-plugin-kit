@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-docker",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "description": "DSH Web GUI 的 Docker 容器面板插件：本机或 SSH 主机上的容器列表 / 启停删 / 日志 / 统计 / 镜像 / 一次性 exec，默认只读，配套只读优先的 agent 工具。",
   "keywords": [
     "dsh",
@@ -31,28 +31,30 @@
     "./package.json": "./package.json"
   },
   "dsh": {
+    "manifestVersion": 1,
     "bundle": {
       "patch": "./cordis.patch.yml"
     },
     "engines": {
-      "dsh": ">=0.1.2-rc.1"
+      "dsh": ">=0.1.7-rc.1"
     },
     "client": {
       "platform": "web"
     }
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.2",
-    "@hyzyn/dsh-kit": "0.4.1",
+    "@deepseek-ai/schemastery": "^3.18.4",
+    "@hyzyn/dsh-kit": "0.4.2",
     "ssh2": "^1.17.0"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-tools": "^0.1.2-rc.1"
+    "@deepseek-ai/dsh": "^0.1.7-rc.1",
+    "@deepseek-ai/dsh-tools": "^0.1.7-rc.1"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.2",
-    "@deepseek-ai/dsh-host-webserver": "0.1.2-rc.1",
-    "@deepseek-ai/dsh-tools": "0.1.2-rc.1",
+    "@deepseek-ai/cordis": "^4.0.4",
+    "@deepseek-ai/dsh-host-webserver": "^0.1.7-rc.1",
+    "@deepseek-ai/dsh-tools": "^0.1.7-rc.1",
     "@types/node": "^22.20.0",
     "@types/ssh2": "^1.15.6",
     "esbuild": "^0.28.2",
@@ -84,5 +86,10 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh": {
+      "optional": true
+    }
   }
 }

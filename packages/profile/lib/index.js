@@ -3,17 +3,9 @@
  */
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import z from '@deepseek-ai/schemastery';
 import { dshHome, spawnPortable } from '@hyzyn/dsh-kit';
 export const name = 'profile-manager';
 export const inject = [];
-/* ------------------------------------------------------------------ *
- * settings 命名空间（让「插件配置 → 插件配置」派发本插件卡片）
- * ------------------------------------------------------------------ */
-const PROFILE_SETTINGS_SCHEMA = z.object({
-    enabled: z.boolean(),
-    announceToAgent: z.boolean(),
-});
 /* ------------------------------------------------------------------ *
  * 常量与类型
  * ------------------------------------------------------------------ */
@@ -543,11 +535,6 @@ export function apply(ctx, config) {
                 }
             };
         }, 'dsh-profile-manager: routes');
-    });
-    // 注册 settings 命名空间：卡片 key 与命名空间同名，插件配置标签页才会派发它
-    ctx.inject(['settings'], (settingsCtx) => {
-        const settings = settingsCtx.settings;
-        settings.register('profile-manager', PROFILE_SETTINGS_SCHEMA);
     });
     if (announce) {
         ctx.inject(['systemPrompt'], (promptCtx) => {

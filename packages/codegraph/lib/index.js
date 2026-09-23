@@ -7,40 +7,13 @@ var __rewriteRelativeImportExtension = (this && this.__rewriteRelativeImportExte
     return path;
 };
 import z from '@deepseek-ai/schemastery';
-import { createOutputDecoder, definePlugin, dshHome, isLoopbackRequest, jsYamlSchema, killProcessTree, readJsonBody, spawnPortable, writeFileAtomic, writeJson, } from '@hyzyn/dsh-kit';
+import { createOutputDecoder, definePlugin, dshHome, isLoopbackRequest, jsYamlSchema, killProcessTree, plainConfig, readJsonBody, settingsEntryScope, spawnPortable, suppressAutoSettingsPage, writeFileAtomic, writeJson, } from '@hyzyn/dsh-kit';
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import yaml from 'js-yaml';
 import { DEFAULT_MCP_SCOPE, MCP_SCOPE_MODES, createAgentMounter, normalizeMcpScope, resolveScopeMode, } from './scope.js';
-/* ------------------------------------------------------------------ *
- * settings 命名空间（让「插件配置 → 插件配置」派发本插件卡片）
- *
- * 这里只列「卡片派发所需 + 允许用户在 settings 里覆盖」的字段：字段一律不带
- * schema 默认值——settings 的 resolved 值里「undefined」才表示「用户没设过」，
- * 有默认值就会把 settings 默认值误当成用户覆盖，反过来压掉 plugin config。
- * 真正从 settings 读取的只有 defaultPath / mcpIntegration（见 resolveStored）。
- * 安装级旋钮（command / 超时 / indexForce）只走 plugin config，不进本 schema。
- *
- * schema 里**没有** enabled / command（CG24）：它们曾经被声明、却从未被
- * resolveStored 读取——同名两处、只有一处生效，是纯误导。真要开关整个插件，
- * 用插件配置里的 enabled。
- * ------------------------------------------------------------------ */
-const CODEGRAPH_SETTINGS_SCHEMA = z.object({
-    announceToAgent: z.boolean(),
-    usageGuidance: z.boolean(),
-    followSession: z.boolean(),
-    defaultPath: z.string(),
-    mcpIntegration: z.boolean(),
-    /**
-     * P0：MCP 挂载模式。刻意是 `z.string()` 而不是 `z.union([...])`——settings 的
-     * resolved 值把 schema 默认值也当成「用户设过」，用带默认的联合类型会让安装级配置的
-     * mcpScope 永远被压掉。合法性由 normalizeMcpScope 在读取处收口（非法值回落 managed，
-     * 与其它旋钮「配置面不让插件起不来」的约定一致）。
-     */
-    mcpScope: z.string(),
-});
 /* ------------------------------------------------------------------ *
  * 常量与类型
  * ------------------------------------------------------------------ */
@@ -53,6 +26,46 @@ const DEFAULT_CLI_TIMEOUT_MS = 60_000;
 const DEFAULT_INDEX_TIMEOUT_MS = 600_000;
 /** CLI 可用性探测的超时（毫秒）：只决定要不要注入提示词，慢/挂住一律当不可用。 */
 const CLI_PROBE_TIMEOUT_MS = 5_000;
+/**
+ * 运行时 Config schema——DSH ≥0.1.7 起它**同时就是本插件的 settings 存储**：
+ * `settings.describe()` 读的就是它解析出的值，`settings.update(entryId, patch)` 把
+ * 用户在卡片上的改动合并进当前 profile 的 patch 用户层。
+ *
+ * 标 `.volatile()` 的字段是「卡片可改、且要求不重挂插件即生效」的那些：settings
+ * 只允许写 volatile 路径，而 loader 对 volatile-only 变更会原地更新配置引用并发
+ * `loader/volatile-update`（插件自己订阅重读，见 @hyzyn/dsh-kit 的 settingsEntryScope）。
+ * 安装级旋钮（command / 超时 / indexForce / autoReindex / enabled）刻意保持非 volatile：
+ * 它们只在挂载时生效，改动应走一次正常重挂。
+ *
+ * `mcpScope` 用 `z.string()` 而不是 `z.union([...])`：合法性由 `normalizeMcpScope`
+ * 在读取处收口（非法值回落 managed），与「配置面不让插件起不来」的约定一致。
+ */
+export const Config = z.object({
+    /** 关闭整个插件（不注册路由、不发布提示）。默认开。 */
+    enabled: z.boolean().default(true),
+    /** 是否向 agent 注入插件能力公告。默认开。 */
+    announceToAgent: z.boolean().default(true).volatile(),
+    /** 是否向 systemPrompt 注入 CodeGraph 使用指引。默认开。 */
+    usageGuidance: z.boolean().default(true).volatile(),
+    /** 绑定/回落的默认项目路径，默认 `process.cwd()`。 */
+    defaultPath: z.string().default('').volatile(),
+    /** MCP 托管联动开关（托管行 cwd 对齐默认项目路径）。默认开。 */
+    mcpIntegration: z.boolean().default(true).volatile(),
+    /** 托管行 cwd 是否跟随活动会话。默认开。 */
+    followSession: z.boolean().default(true).volatile(),
+    /** MCP 挂载模式（`managed` / `per-agent`）。默认 `managed`。 */
+    mcpScope: z.string().default(DEFAULT_MCP_SCOPE).volatile(),
+    /** codegraph CLI 命令，默认 `codegraph`。 */
+    command: z.string().default('codegraph'),
+    /** 查询类命令超时毫秒数，默认 60000。 */
+    cliTimeoutMs: z.natural().default(DEFAULT_CLI_TIMEOUT_MS),
+    /** 索引类命令超时毫秒数，默认 600000。 */
+    indexTimeoutMs: z.natural().default(DEFAULT_INDEX_TIMEOUT_MS),
+    /** 是否给 `codegraph index` 追加 `--force`。默认关。 */
+    indexForce: z.boolean().default(false),
+    /** 索引过期时是否自动重建。默认关。 */
+    autoReindex: z.boolean().default(false),
+});
 /**
  * 诊断包（ROADMAP P1-b）读 daemon 日志的上限：只取尾部若干字节再按行截断。
  * 不整份读——daemon 是常驻进程，日志会一直长，而诊断包里只需要「最近发生了什么」。
@@ -2577,7 +2590,8 @@ agentScope) {
                 // CG02：绑定的是**索引所在的根**——用户在 monorepo 子目录上点「设为默认项目」，
                 // 真正的项目是仓库根；照旧绑定子目录等于把索引钉在半山腰。
                 const projectRoot = found.projectPath ?? path;
-                // 官方持久化通道：写入 settings 命名空间 → settings/updated → 同步托管行。
+                // 官方持久化通道：settings.update(entryId) 写进本插件 entry 的 profile patch
+                // （volatile 字段），loader 随即发 volatile 更新 → 同步托管行。
                 // settings 未就绪时只同步一次（不持久化，重启后回落）。
                 if (rt === undefined) {
                     writeJson(res, 500, { error: '插件尚未完成挂载' });
@@ -2718,7 +2732,7 @@ agentScope) {
                     writeJson(res, 500, { error: '保存失败: ' + (error instanceof Error ? error.message : String(error)) });
                     return;
                 }
-                // settings/updated 已经触发过一次 sync；这里再显式同步一次只是兜底
+                // volatile 更新已经触发过一次 sync；这里再显式同步一次只是兜底
                 // （同值幂等：MCP 行无变化不写盘，section 增删也按需跳过）。
                 const outcome = rt.sync(rt.scope.get());
                 const decision = rt.scopeDecision;
@@ -3057,7 +3071,10 @@ In repositories indexed by CodeGraph — a \`.codegraph/\` directory with an ind
 const plugin = definePlugin({
     name: 'codegraph',
     inject: [],
-    apply(ctx, config) {
+    apply(ctx, rawConfig) {
+        // settings 可写字段已标 volatile：schema 解析后 `config.<字段>` 是冻结引用
+        // `{ get() }` 而不是值本身。先还原成纯数据，后续所有读取按普通值处理。
+        const config = plainConfig((rawConfig ?? {}));
         if (config?.enabled === false) {
             // CG14：关闭插件时也要撤销托管行——卡片随路由一起消失后就再也没有撤销入口，
             // 用户只能手改 cordis.patch.yml。manageEnabled:false 的同步只删本插件区块里的行
@@ -3416,13 +3433,17 @@ const plugin = definePlugin({
                 };
             }, 'dsh-codegraph: routes');
         });
-        // settings 命名空间：卡片 key 与命名空间同名，插件配置标签页才会派发它。
-        // 同时是默认项目路径的持久化通道：scope 里保存过的 defaultPath 优先于插件
-        // 配置；变更经 settings/updated → 重写 MCP 托管行 → watchUserPatches 热切换。
+        // settings：DSH ≥0.1.7 起存储就是本插件 entry 的 Config（见导出的 `Config`，可写
+        // 字段标了 volatile）。scope.get() 给 resolved 值，scope.onChanged 订阅 loader 的
+        // volatile 更新（含卡片自己写与外部改 profile patch），随即重写 MCP 托管行。
         ctx.inject(['settings'], (settingsCtx) => {
             settingsCtx.effect(() => {
-                const settings = settingsCtx.settings;
-                const scope = settings.register('codegraph', CODEGRAPH_SETTINGS_SCHEMA);
+                const scope = settingsEntryScope(settingsCtx, 'codegraph');
+                // 服务形态不符（老宿主 / 最小宿主）时不装 scope，留给下面的 config 兜底 effect。
+                if (scope === undefined)
+                    return () => { };
+                // 卡片是自定义页（plugins.row.config），别再让 DSH 为本 entry 自动生成一份。
+                const offAutoPage = suppressAutoSettingsPage(settingsCtx, ctx);
                 const resolveStored = (stored) => {
                     const storedPath = typeof stored?.defaultPath === 'string' && stored.defaultPath.trim() !== '' ? stored.defaultPath.trim() : undefined;
                     const storedManage = typeof stored?.mcpIntegration === 'boolean' ? stored.mcpIntegration : undefined;
@@ -3469,14 +3490,10 @@ const plugin = definePlugin({
                 const runtime = { scope, current: resolveStored(scope.get()), sync, mounter: getMounter() };
                 runtimeRef = runtime;
                 sync(scope.get());
-                const events = settingsCtx;
-                const off = events.events.on('settings/updated', (ns, next) => {
-                    if (ns !== 'codegraph' || typeof next !== 'object' || next === null)
-                        return;
-                    sync(next);
-                });
+                const off = scope.onChanged(() => sync(scope.get()));
                 return () => {
                     off();
+                    offAutoPage();
                     if (runtimeRef === runtime)
                         runtimeRef = undefined;
                     // 插件卸载（HMR / 停用）时回收 per-agent 挂载：agent.ctx 的 scope 会随 agent

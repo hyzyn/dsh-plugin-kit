@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-search",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "description": "DSH Web GUI 的全局搜索插件：在侧边栏提供「全局搜索」入口，全文搜索历史会话。",
   "type": "module",
   "engines": {
@@ -17,11 +17,12 @@
     "./package.json": "./package.json"
   },
   "dsh": {
+    "manifestVersion": 1,
     "bundle": {
       "patch": "./cordis.patch.yml"
     },
     "engines": {
-      "dsh": ">=0.1.2-rc.1"
+      "dsh": ">=0.1.7-rc.1"
     },
     "client": {
       "platform": "web",
@@ -31,11 +32,11 @@
     }
   },
   "dependencies": {
-    "@hyzyn/dsh-kit": "0.4.1",
+    "@hyzyn/dsh-kit": "0.4.2",
     "js-yaml": "^4.1.0"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/cordis": "^4.0.4",
     "@types/node": "^22.20.0",
     "typescript": "~5.9.3"
   },
@@ -64,5 +65,13 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh": "^0.1.7-rc.1"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh": {
+      "optional": true
+    }
   }
 }

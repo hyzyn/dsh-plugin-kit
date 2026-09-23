@@ -2,8 +2,9 @@
  * @hyzyn/dsh-docker — DSH Web GUI 的 Docker 容器面板（host 半体）。
  *
  * 与 dsh-tty 的关系（方案 A：独立插件，tty 零改动）：
- *   - **连接簿**：只读复用 tty 的 settings 命名空间（`ctx.settings.get('tty')`
- *     的 `sshHosts`）。tty 未安装时退化为「只支持本机 / 内联 SSH 字段」。
+ *   - **连接簿**：只读复用 tty 的 entry settings（DSH ≥0.1.7 的
+ *     `settings.describe()`，经 kit 的 `readSettingsEntry(ctx, 'tty')`）的
+ *     `sshHosts`。tty 未安装时退化为「只支持本机 / 内联 SSH 字段」。
  *   - **主机指纹**：本插件自持一份 `hostKeys`（TOFU），并优先读取 tty 已记录
  *     的指纹作为种子，避免同一主机在两处重复确认。
  *   - **执行通道**：自持池化 SSH exec（src/ssh-exec.ts），与 tty 的 PTY 会话
@@ -16,6 +17,7 @@
  *   显式打开。agent 工具同样受这两个开关约束（未开启时连工具都不注册）。
  */
 import type { Context } from '@deepseek-ai/cordis';
+import z from '@deepseek-ai/schemastery';
 import { DockerApi, assertBin, assertImageRef, parseImageHistoryJson, parseImageHistoryText, parseImageInspectJson, parseInspectJson, parsePsJson, parseStatsJson } from './docker.js';
 import type { DockerTarget, ResolvedTarget } from './docker.js';
 import type { HostKeyRecord, SshSpec } from './ssh-exec.js';
@@ -45,6 +47,15 @@ export interface Config {
     /** SSH 主机指纹记录（TOFU，随 settings 落盘）。 */
     hostKeys?: HostKeyRecord[];
 }
+/**
+ * 运行时 Config schema——DSH ≥0.1.7 起同时就是本插件的 settings 存储。
+ *
+ * 全部字段都标 `.volatile()`：它们都是卡片可改项（见 KNOWN_CONFIG_KEYS），而
+ * `settings.update(entryId, patch)` 只接受 volatile 路径；loader 对 volatile-only
+ * 变更原地更新引用并发 `loader/volatile-update`，不重挂插件——插件订阅后走
+ * `applySection` 热应用（见 kit 的 settingsEntryScope）。
+ */
+export declare const Config: z;
 /** 解析后的运行期配置（settings 与 composition 两条来源统一到这一形状）。 */
 interface LiveConfig {
     enabled: boolean;

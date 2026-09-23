@@ -173,19 +173,26 @@ function makeCtx(config, options = {}) {
     settingsStored: {},
     ttyConfig: options.ttyConfig,
     disposers: [],
+    /**
+     * 本插件 entry 的安装级配置（= apply 拿到的 config）。DSH ≥0.1.7 的
+     * `settings.describe()` 返回的是「默认值 ← 组合 base ← 用户层」的 resolved 值，
+     * 这里用 base ∪ settingsStored 模拟同一件事。
+     */
+    baseConfig: config,
   }
 
-  const scopeFor = (base) => ({
-    get: () => ({ ...base, ...state.settingsStored }),
-    update: async (patch) => {
-      Object.assign(state.settingsStored, patch)
-      // 真实实现会 emit settings/updated；这里同步触发，验证热更新路径
-      const listeners = state.listeners.get('settings/updated') ?? []
-      for (const listener of listeners) listener('docker', { ...base, ...state.settingsStored }, undefined, 'update')
-    },
-  })
+  /** loader 检出 volatile-only 变更后发的事件（测试里同步发，验证热更新路径）。 */
+  const emitVolatile = () => {
+    for (const listener of state.listeners.get('loader/volatile-update') ?? []) listener()
+  }
 
   const makeChild = (names) => {
+    const on = (name, listener) => {
+      const list = state.listeners.get(name) ?? []
+      list.push(listener)
+      state.listeners.set(name, list)
+      return () => {}
+    }
     const child = {
       logger: { info: () => {}, warn: () => {} },
       effect: (callback, _name) => {
@@ -198,14 +205,8 @@ function makeCtx(config, options = {}) {
         cb(grand)
         return () => {}
       },
-      events: {
-        on: (name, listener) => {
-          const list = state.listeners.get(name) ?? []
-          list.push(listener)
-          state.listeners.set(name, list)
-          return () => {}
-        },
-      },
+      on,
+      events: { on },
     }
     if (names.includes('tools')) {
       child.tools = {
@@ -227,9 +228,19 @@ function makeCtx(config, options = {}) {
       }
     }
     if (names.includes('settings')) {
+      // DSH ≥0.1.7 的 settings 服务（SettingsForms）：describe / update / configure。
+      // describe 里额外放一个 tty entry，模拟「tty 已安装、连接簿可读」。
       child.settings = {
-        register: (ns, schema, options_) => scopeFor(options_?.base ?? {}),
-        get: (ns) => (ns === 'tty' ? state.ttyConfig : undefined),
+        describe: () => [
+          { ns: 'docker', value: { ...state.baseConfig, ...state.settingsStored } },
+          ...(state.ttyConfig === undefined ? [] : [{ ns: 'tty', value: state.ttyConfig }]),
+        ],
+        update: async (ns, patch) => {
+          if (ns !== 'docker') throw new Error('未知的 entry: ' + ns)
+          Object.assign(state.settingsStored, patch)
+          emitVolatile()
+        },
+        configure: () => () => {},
       }
     }
     if (names.includes('systemPrompt')) {

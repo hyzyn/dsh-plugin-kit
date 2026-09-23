@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-prompt",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "description": "DSH Web GUI 的 Prompt 管理插件：可视化编辑 systemPrompt、版本管理、A/B 测试、导出/分享，配置保存在 ~/.dsh/prompts.yml 的托管区块。",
   "type": "module",
   "engines": {
@@ -17,11 +17,12 @@
     "./package.json": "./package.json"
   },
   "dsh": {
+    "manifestVersion": 1,
     "bundle": {
       "patch": "./cordis.patch.yml"
     },
     "engines": {
-      "dsh": ">=0.1.2-rc.1"
+      "dsh": ">=0.1.7-rc.1"
     },
     "client": {
       "platform": "web",
@@ -29,16 +30,18 @@
     }
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.2",
+    "@deepseek-ai/schemastery": "^3.18.4",
     "js-yaml": "^4.1.0",
-    "@hyzyn/dsh-kit": "0.4.1"
+    "@hyzyn/dsh-kit": "0.4.2"
   },
   "peerDependencies": {
+    "@deepseek-ai/dsh": "^0.1.7-rc.1",
     "react": "^18.2.0"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/cordis": "^4.0.4",
     "@types/node": "^22.20.0",
+    "react": "^18.2.0",
     "typescript": "~5.9.3"
   },
   "scripts": {
@@ -64,5 +67,10 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh": {
+      "optional": true
+    }
   }
 }

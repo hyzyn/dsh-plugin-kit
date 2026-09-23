@@ -7018,7 +7018,7 @@ function TtySettingsCard(props) {
                       className: 'tt_sshEdit',
                       children: [
                         jsxs('div', {
-                          className: 'tt_cardRow',
+                          className: 'tt_cardRow tt_tunnelHead',
                           children: [
                             // 方向用分段控件：只有两个值，下拉太重；文案保留 -L/-R 便于对照 ssh 命令行
                             jsxs('div', { className: 'tt_segmented', role: 'group', 'aria-label': '转发方向', children: [
@@ -7059,25 +7059,29 @@ function TtySettingsCard(props) {
                          */
                         tunnelDraft.direction === 'local'
                           ? jsxs('div', { className: 'tt_tunnelEndpoints', children: [
-                              jsxs('div', { className: 'tt_tunnelEndpoint', children: [
-                                jsx('span', { className: 'tt_tunnelEndpointStatic', title: '本机监听地址固定 127.0.0.1（不暴露到局域网）', children: '127.0.0.1' }),
-                                jsx('span', { className: 'tt_tunnelColon', children: ':' }),
-                                jsx('input', { className: 'tt_cardInput tt_tunnelPort', placeholder: '本机端口', value: tunnelDraft.localPort, autoComplete: 'off', inputMode: 'numeric', 'aria-label': '本机监听端口', onChange: setDraft('localPort') }),
+                              jsxs('div', { className: 'tt_tunnelHop', children: [
+                                jsxs('div', { className: 'tt_tunnelEndpoint', children: [
+                                  jsx('span', { className: 'tt_tunnelEndpointStatic', title: '本机监听地址固定 127.0.0.1（不暴露到局域网）', children: '127.0.0.1' }),
+                                  jsx('span', { className: 'tt_tunnelColon', children: ':' }),
+                                  jsx('input', { className: 'tt_cardInput tt_tunnelPort', placeholder: '本机端口', value: tunnelDraft.localPort, autoComplete: 'off', inputMode: 'numeric', 'aria-label': '本机监听端口', onChange: setDraft('localPort') }),
+                                ] }),
+                                jsx('span', { className: 'tt_tunnelArrow', 'data-direction': 'local', title: '数据流向：本机 → SSH 服务器侧', 'aria-hidden': 'true', children: '→' }),
                               ] }),
-                              jsx('span', { className: 'tt_tunnelArrow', 'data-direction': 'local', title: '数据流向：本机 → SSH 服务器侧', 'aria-hidden': 'true', children: '→' }),
                               jsxs('div', { className: 'tt_tunnelEndpoint', children: [
-                                jsx('input', { className: 'tt_cardInput tt_tunnelHost', placeholder: '服务器侧主机（如 db.internal）', value: tunnelDraft.remoteHost, autoComplete: 'off', 'aria-label': '服务器侧目标主机', onChange: setDraft('remoteHost') }),
+                                jsx('input', { className: 'tt_cardInput tt_tunnelHost', placeholder: '服务器侧主机', title: '目标主机名或 IP（由 SSH 服务器侧访问；127.0.0.1 = 服务器自身）', value: tunnelDraft.remoteHost, autoComplete: 'off', 'aria-label': '服务器侧目标主机', onChange: setDraft('remoteHost') }),
                                 jsx('span', { className: 'tt_tunnelColon', children: ':' }),
                                 jsx('input', { className: 'tt_cardInput tt_tunnelPort', placeholder: '端口', value: tunnelDraft.remotePort, autoComplete: 'off', inputMode: 'numeric', 'aria-label': '服务器侧目标端口', onChange: setDraft('remotePort') }),
                               ] }),
                             ] })
                           : jsxs('div', { className: 'tt_tunnelEndpoints', children: [
-                              jsxs('div', { className: 'tt_tunnelEndpoint', children: [
-                                jsx('input', { className: 'tt_cardInput tt_tunnelHost', placeholder: '服务器侧监听地址（缺省 127.0.0.1）', value: tunnelDraft.remoteHost, autoComplete: 'off', 'aria-label': '服务器侧监听地址', onChange: setDraft('remoteHost') }),
-                                jsx('span', { className: 'tt_tunnelColon', children: ':' }),
-                                jsx('input', { className: 'tt_cardInput tt_tunnelPort', placeholder: '监听端口', value: tunnelDraft.remotePort, autoComplete: 'off', inputMode: 'numeric', 'aria-label': '服务器侧监听端口', onChange: setDraft('remotePort') }),
+                              jsxs('div', { className: 'tt_tunnelHop', children: [
+                                jsxs('div', { className: 'tt_tunnelEndpoint', children: [
+                                  jsx('input', { className: 'tt_cardInput tt_tunnelHost', placeholder: '服务器侧监听地址', title: '服务器侧监听地址（缺省 127.0.0.1；留空即只让服务器自己访问）', value: tunnelDraft.remoteHost, autoComplete: 'off', 'aria-label': '服务器侧监听地址', onChange: setDraft('remoteHost') }),
+                                  jsx('span', { className: 'tt_tunnelColon', children: ':' }),
+                                  jsx('input', { className: 'tt_cardInput tt_tunnelPort', placeholder: '监听端口', value: tunnelDraft.remotePort, autoComplete: 'off', inputMode: 'numeric', 'aria-label': '服务器侧监听端口', onChange: setDraft('remotePort') }),
+                                ] }),
+                                jsx('span', { className: 'tt_tunnelArrow', 'data-direction': 'remote', title: '数据流向：本机 ← SSH 服务器侧', 'aria-hidden': 'true', children: '→' }),
                               ] }),
-                              jsx('span', { className: 'tt_tunnelArrow', 'data-direction': 'remote', title: '数据流向：本机 ← SSH 服务器侧', 'aria-hidden': 'true', children: '→' }),
                               jsxs('div', { className: 'tt_tunnelEndpoint', children: [
                                 jsx('span', { className: 'tt_tunnelEndpointStatic', title: '本机拨号地址固定 127.0.0.1', children: '127.0.0.1' }),
                                 jsx('span', { className: 'tt_tunnelColon', children: ':' }),
@@ -7089,7 +7093,7 @@ function TtySettingsCard(props) {
                             ? '左：本机监听（固定 127.0.0.1）→ 右：由 SSH 服务器侧访问的目标'
                             : '左：SSH 服务器侧监听 → 右：本机被访问的服务（固定 127.0.0.1）' }),
                         ] }),
-                        jsx('div', { className: 'tt_cardRow', children: [
+                        jsx('div', { className: 'tt_cardRow tt_tunnelActions', children: [
                           editingTunnel === null
                             ? jsx('button', { type: 'button', className: 'tt_cardSave', onClick: addTunnel, children: '添加隧道' })
                             : jsx('button', { type: 'button', className: 'tt_cardSave', onClick: saveTunnelEdit, children: '保存修改' }),

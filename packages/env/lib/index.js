@@ -25,21 +25,9 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { dshHome } from '@hyzyn/dsh-kit';
-import z from '@deepseek-ai/schemastery';
 import yaml from 'js-yaml';
 export const name = 'env-manager';
 export const inject = [];
-/* ------------------------------------------------------------------ *
- * settings 命名空间（让「插件配置 → 插件配置」派发本插件卡片）
- * ------------------------------------------------------------------ */
-/** 与 ~/.dsh/env.yml 托管区块的条目形状对齐。 */
-const ENV_SETTINGS_SCHEMA = z.object({
-    entries: z.array(z.object({
-        key: z.string(),
-        value: z.union([z.string(), z.object({ __jsExpr: z.string() })]),
-        secret: z.boolean(),
-    })).default([]),
-});
 /* ------------------------------------------------------------------ *
  * 常量与类型
  * ------------------------------------------------------------------ */
@@ -510,11 +498,6 @@ export function apply(ctx, config) {
                 }
             };
         }, 'dsh-env-manager: routes');
-    });
-    // 注册 settings 命名空间：卡片 key 与命名空间同名，插件配置标签页才会派发它
-    ctx.inject(['settings'], (settingsCtx) => {
-        const settings = settingsCtx.settings;
-        settings.register('env-manager', ENV_SETTINGS_SCHEMA);
     });
     if (announce) {
         ctx.inject(['systemPrompt'], (promptCtx) => {

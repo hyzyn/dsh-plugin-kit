@@ -12,6 +12,8 @@
  *   node scripts/preview.mjs --list             # 列出场景
  *   node scripts/preview.mjs --build            # 顺带重建 client.js（默认不重建，产物落后直接报错）
  *   node scripts/preview.mjs --theme=light      # 浅色主题
+ *   node scripts/preview.mjs --width=560        # 压窄视口走查窄容器排版（默认 1680）
+ *   PREVIEW_CHROME_ARGS=--no-sandbox node scripts/preview.mjs   # 受限沙箱 / CI 里 Chrome 起不来时
  *
  * 需要本机有 Chrome/Chromium（默认找 playwright 缓存的 Chrome for Testing，
  * 也可用 CHROME_PATH 指定）。
@@ -37,6 +39,18 @@ const wantBuild = flags.has('--build')
 /** 输出子目录：--out=shots-light 之类，便于并排比较明暗主题。 */
 const outName = (argv.find((a) => a.startsWith('--out=')) || '--out=shots').split('=')[1]
 const shotsDir = join(previewDir, outName)
+/**
+ * 视口宽度（默认 1680）。真实宿主里这张卡片常挂在窄容器里（插件管理页 / 侧栏），
+ * 1680px 的宽视口会把「一行塞不塞得下」这类排版问题盖掉——走查窄排版时用
+ * `--width=560` 之类显式压窄。
+ */
+const viewportWidth = Number((argv.find((a) => a.startsWith('--width=')) || '--width=1680').split('=')[1]) || 1680
+/**
+ * 额外 Chrome 参数（空格分隔）。受限环境（文件沙箱 / CI 容器）里 Chrome 自己的
+ * sandbox 起不来，CDP 会一直卡在 `Page.enable` 直到超时——此时用
+ * `PREVIEW_CHROME_ARGS=--no-sandbox`。刻意不做默认：那会削弱所有调用方的隔离。
+ */
+const extraChromeArgs = (process.env.PREVIEW_CHROME_ARGS ?? '').split(' ').filter((a) => a !== '')
 
 /* ------------------------------- 场景清单 ------------------------------- */
 
@@ -331,6 +345,7 @@ async function launchChrome() {
     '--disable-webgl',
     '--force-color-profile=srgb',
     '--font-render-hinting=none',
+    ...extraChromeArgs,
     'about:blank',
   ], { stdio: ['ignore', 'ignore', 'pipe'] })
 
@@ -475,7 +490,7 @@ async function main() {
   await ensureVendor()
   log('启动 headless Chrome（' + theme + ' 主题）')
   const { child, cdp, userDataDir } = await launchChrome()
-  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1680, height: 1050, deviceScaleFactor: 2, mobile: false })
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: viewportWidth, height: 1050, deviceScaleFactor: 2, mobile: false })
   let failed = 0
   try {
     for (const name of wanted) {
