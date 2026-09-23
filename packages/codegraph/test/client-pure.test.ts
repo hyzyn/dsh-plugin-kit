@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import {
   REL_LIMIT,
   adoptionText,
+  buildQuery,
   fmtBytes,
   fmtNum,
   fmtTime,
@@ -193,6 +194,16 @@ describe('P2 项目列表：shortPath / seenAgoText', () => {
     expect(shortPath('/a/b/c/')).toBe('…/b/c')
   })
 
+  it('CG59：Windows 路径也缩短（分隔符要认 \\，否则整串是一段、永远不缩）', () => {
+    // 只按 '/' 切时，下面这些会整串命中 `parts.length <= 2` 而原样返回
+    expect(shortPath('C:\\Users\\me\\proj\\repo')).toBe('…/proj/repo')
+    expect(shortPath('C:\\repo')).toBe('C:\\repo')          // 两段以内仍不动
+    expect(shortPath('C:\\a\\b\\c\\')).toBe('…/b/c')         // 尾分隔符不产生空段
+    expect(shortPath('\\\\server\\share\\a\\b')).toBe('…/a/b') // UNC 前缀不产生空段
+    // 混合分隔符（编辑器 / git 在不同平台给出来的形状）
+    expect(shortPath('C:/Users/me/proj/repo')).toBe('…/proj/repo')
+  })
+
   it('seenAgoText 分档给人话，非法值返回空串', () => {
     expect(seenAgoText(0)).toBe('刚刚')
     expect(seenAgoText(30_000)).toBe('刚刚')
@@ -202,6 +213,28 @@ describe('P2 项目列表：shortPath / seenAgoText', () => {
     expect(seenAgoText(-1)).toBe('')
     expect(seenAgoText(NaN)).toBe('')
     expect(seenAgoText('nope')).toBe('')
+  })
+})
+
+describe('CG51：查询串拼装（数组必须逐个 append）', () => {
+  it('数组 → 重复参数；这是 affected 多文件的唯一正确形态', () => {
+    // 关键：不能是 `files=a.ts%2Cb.ts`（一个值）——宿主按 getAll('files') 收，
+    // 那样 CLI 会收到一个名叫 "a.ts,b.ts" 的、不存在的文件
+    expect(buildQuery({ files: ['a.ts', 'b.ts'] })).toBe('?files=a.ts&files=b.ts')
+    expect(buildQuery({ path: '/p', files: ['a.ts', 'b.ts'] })).toBe('?path=%2Fp&files=a.ts&files=b.ts')
+  })
+
+  it('空数组不产生参数；数组里的空值被跳过', () => {
+    expect(buildQuery({ path: '/p', files: [] })).toBe('?path=%2Fp')
+    expect(buildQuery({ files: ['a.ts', '', undefined, null, 'b.ts'] })).toBe('?files=a.ts&files=b.ts')
+  })
+
+  it('标量照旧；undefined / null / 空串整键跳过；没有参数时返回空串', () => {
+    expect(buildQuery({ q: 'x', limit: 20 })).toBe('?q=x&limit=20')
+    expect(buildQuery({ q: '', path: undefined, kind: null })).toBe('')
+    expect(buildQuery({})).toBe('')
+    expect(buildQuery()).toBe('')
+    expect(buildQuery({ n: 0 })).toBe('?n=0') // 0 是合法值，不该被当空
   })
 })
 

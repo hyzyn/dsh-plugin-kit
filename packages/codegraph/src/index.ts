@@ -360,7 +360,15 @@ export function summarizeAdoption(
   }
 }
 
-/** 把采纳率拍成一句人话（卡片与诊断包共用，避免两处文案漂移）。 */
+/**
+ * 把采纳率拍成一句人话（诊断包用）。
+ *
+ * CG55：注释此前写的是「卡片与诊断包共用，避免两处文案漂移」——**不成立**：卡片在
+ * 浏览器半体，import 不到宿主半体的函数，它用的是 `client-src/pure.js` 的 `adoptionText`
+ * （另一份实现）。两份各自有测试，措辞已经开始分叉（空态那句就不一样）。这里是宿主侧
+ * 那份，改文案时请同时看 pure.js 的 adoptionText——`test/adoption.test.ts` 里有一条
+ * 用例拿同一个 summary 比对两边的**百分比**，数字口径漂了会红，但文案措辞仍需人工同步。
+ */
 export function describeAdoption(summary: AdoptionSummary): string {
   if (summary.discoveryTotal === 0 && summary.file === 0) {
     return '本次宿主运行期间该项目还没有探索类工具调用（既没用 codegraph，也没用 grep/read 这类）'
@@ -1659,12 +1667,16 @@ export interface CliResolved {
 }
 
 /**
- * 超时限定的规范化：正数原样；**0 表示不限时**（CG23——旧实现把 0 和垃圾值一起
+ * 超时限定的规范化：正整数原样；**0 表示不限时**（CG23——旧实现把 0 和垃圾值一起
  * 静默回落到默认，用户写 `cliTimeoutMs: 0` 想表达「不限」，得到的却是 60s 且无提示）；
- * 负数 / NaN / Infinity / 非数字回落默认值。
+ * 负数 / 小数 / NaN / Infinity / 非数字回落默认值。
+ *
+ * CG58：以前只判 `>= 0`，于是 `cliTimeoutMs: 0.5` 会被原样收下——setTimeout 把它当
+ * 1ms，每一次 CLI 调用都立刻超时，而报错只会说「超时，请调大 cliTimeoutMs」，用户
+ * 看着自己写的 0.5 完全不明白。毫秒级配置本来就只该是整数。
  */
 function timeoutOr(value: unknown, fallback: number): number {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : fallback
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : fallback
 }
 
 /**
@@ -1903,6 +1915,17 @@ function runViaSpawn(command: string, args: string[], cwd: string, timeoutMs: nu
     const child = spawnPortable(command, args, { cwd, windowsHide: true, detached: true })
     let stdout = ''
     let stderr = ''
+    /**
+     * stdout 已收的**字节数**（CG60）。
+     *
+     * 为什么单独记：判定上限时用的是 `chunk.length`（Buffer 的字节数），而 `stdout.length`
+     * 是 JS 字符串的**字符**数——中文 / emoji 一个字节能占 3–4 个字节，混着加会让上限
+     * 系统性偏松（最多放到 4 倍）。MAX_BUFFER 是给「CLI 输出失控」兜底的护栏，护栏本身
+     * 不该有 4 倍的误差。
+     */
+    let stdoutBytes = 0
+    /** stderr 已收的字节数（同一口径，CG60）。 */
+    let stderrBytes = 0
     let settled = false
     let timedOut = false
     // cmd.exe 自己的报错（`'codegraph' 不是内部或外部命令…`）按**控制台代码页**写管道，
@@ -1959,7 +1982,9 @@ function runViaSpawn(command: string, args: string[], cwd: string, timeoutMs: nu
 
     child.stdout?.on('data', (chunk: Buffer) => {
       if (settled) return
-      if (stdout.length + chunk.length > MAX_BUFFER) {
+      // 字节数判定（CG60）：不能拿字符串长度与 Buffer 长度相加
+      stdoutBytes += chunk.length
+      if (stdoutBytes > MAX_BUFFER) {
         terminate()
         finish({ ok: false, error: new Error(`stdout maxBuffer exceeded (${MAX_BUFFER} bytes)`) })
         return
@@ -1968,7 +1993,11 @@ function runViaSpawn(command: string, args: string[], cwd: string, timeoutMs: nu
     })
     child.stderr?.on('data', (chunk: Buffer) => {
       if (settled) return
-      if (stderr.length < MAX_BUFFER) stderr += stderrDecoder.decode(chunk)
+      // stderr 不参与结果、只用于报错文案，所以不做杀进程，只停止累积（同样按字节计）
+      if (stderrBytes < MAX_BUFFER) {
+        stderrBytes += chunk.length
+        stderr += stderrDecoder.decode(chunk)
+      }
     })
     child.on('error', (error) => finish({ ok: false, error }))
     child.on('close', (code) => finish(settle(code)))
@@ -2097,8 +2126,13 @@ const REGISTRY_LIMIT = 50
 /**
  * 项目登记表（内存态、每实例一份）。
  *
- * 边界处理：写满之后**淘汰最久未见的**，但**永不淘汰当前默认项目 / 当前会话项目**——
- * 否则用户正在用的那个恰好被挤掉，列表里反而看不到自己。
+ * 边界处理：写满 {@link REGISTRY_LIMIT} 之后**淘汰最久未见的**。
+ *
+ * CG56：注释此前写「但**永不淘汰当前默认项目 / 当前会话项目**」——这条**本结构实现不了**：
+ * `note(path, via)` 只拿到一个路径，既不知道默认项目也不知道会话目录，无从判断该保护谁。
+ * 该性质目前靠**调用方约定**维持：`/projects` 每次 list 之前都会把默认项目 / 会话路径 /
+ * 生效路径重新 note 一遍（时间戳刷新 → 它们永远不是「最久未见」）。所以那条承诺属于
+ * `/projects` 路由，不属于这里——改调用方时别把那次重新 note 删掉。
  */
 function createProjectRegistry(): {
   /** 记一笔「这个目录被看到过」。非字符串 / 空串忽略。 */
@@ -2856,7 +2890,12 @@ function makeRoutes(
         // 删掉的必须是仓库根那份索引，而不是凭空在子目录里找一个。
         const target = found.projectPath ?? cwd
         const controller = new AbortController()
-        const untrack = trackRun(target, controller)
+        // CG52：**两个键都登记**（请求里的路径 + 索引根）。CLI 的 cwd 用根，但卡片上的
+        // 「取消」发的是它输入框里的那个路径（可能是 monorepo 子目录）——只登记根的话，
+        // 用户在子目录上点取消会拿到 cancelled=0，而界面照样说「已发送取消请求」。
+        // 其余索引类路由登记的就是请求路径，所以只有 uninit 有这个错位。
+        const untrackRequested = trackRun(cwd, controller)
+        const untrackTarget = target === cwd ? undefined : trackRun(target, controller)
         abortOnDisconnect(res, controller)
         try {
           const { output } = await run(uninitArgs(target), target, cli.indexTimeoutMs, controller.signal)
@@ -2868,7 +2907,8 @@ function makeRoutes(
         } catch (error) {
           failIndex(res, target, error)
         } finally {
-          untrack()
+          untrackRequested()
+          untrackTarget?.()
         }
       },
     },
@@ -3016,7 +3056,19 @@ function makeRoutes(
             return
           }
         }
-        const outcome = rt.sync({ defaultPath: projectRoot, followSession: false })
+        // CG62：必须把**完整的** stored 传进 sync。以前这里传的是
+        // `{ defaultPath: projectRoot, followSession: false }` 这个字面量，而 resolveStored
+        // 的语义是「传进来的对象里没有的键 → 回落插件配置默认值」——于是每点一次
+        // 「设为默认项目」/ 项目胶囊，mcpScope / mcpIntegration / announceToAgent /
+        // usageGuidance 四个键都会在**内存里**被静默重置。
+        //
+        // 为什么这条最阴：settings.yaml 里没丢（写的是合并），所以**重启又「好了」**——
+        // 表现为「时好时坏」，且卡片显示的内存值与文件里的用户选择长期不一致。实测
+        // （2026-09-23）：勾上 per-agent 后点一次项目胶囊，mcpScope 当场退回 managed、
+        // 全局托管行被重新写回、per-agent 挂载被回收；把「公告能力」关掉后同样被打回 true。
+        // 上面已经 update 过 settings，get() 拿到的是合并后的完整值；显式覆写这两个键
+        // 是为了在 scope.get() 尚未反映本次 update 时也不丢本次意图。
+        const outcome = rt.sync({ ...(rt.scope?.get() ?? {}), defaultPath: projectRoot, followSession: false })
         writeJson(res, 200, {
           ok: true,
           defaultPath: outcome.defaultPath,
@@ -3147,13 +3199,24 @@ function makeRoutes(
       path: '/api/dsh-codegraph/cancel',
       handler: async (req, res) => {
         // 取消正在跑的 CLI 调用（CG05）：卡片在 sync / index / init 进行中提供「取消」
-        // 按钮；关标签页的断连由 res close 兜底，这是显式入口。不带 path = 全部取消。
+        // 按钮；关标签页的断连由 res close 兜底，这是显式入口。`{}` = 全部取消。
+        //
+        // CG53：body 走 readPostBody（畸形 / 超限 / 空 body 一律 400），与其余 POST 路由
+        // 同一道门禁。此前它用裸 readBody 并把「body 没读出来」当成「没指定路径」——
+        // 于是一个被截断的 `{path:"x"}` 会**升级**成「取消全部」，把别的项目正在跑的
+        // 索引一起杀掉。CG01 立的规矩（畸形 body ≠ 没指定路径）在这里漏了一条。
         if (!guard(req, res, 'POST')) return
-        const body = await readBody(req)
-        const target = typeof body?.path === 'string' ? body.path.trim() : ''
+        const body = await readPostBody(req, res)
+        if (body === undefined) return
+        const target = typeof body.path === 'string' ? body.path.trim() : ''
         let cancelled = 0
+        // 同一个 controller 可能登记在多个键下（CG52 的 uninit：请求路径 + 索引根），
+        // 按 controller 去重，`cancelled` 报的才是「取消了几个运行」而不是「命中几个键」。
+        const aborted = new Set<AbortController>()
         for (const [cwd, controller] of [...activeRuns]) {
           if (target !== '' && cwd !== target) continue
+          if (aborted.has(controller)) continue
+          aborted.add(controller)
           controller.abort()
           cancelled += 1
         }
@@ -3174,6 +3237,13 @@ function makeRoutes(
         const target = params.get('path')?.trim() || effective
         // 探测没落地时补一次：诊断包的核心价值就是「CLI 到底能不能跑」，给一个空字段
         // 等于让提问者再猜一轮。已探过就复用（不重复起进程，CG21）。
+        //
+        // CG54：这一段此前只是注释——代码只读缓存，于是「探测尚未落地」时报告里就是
+        // `CLI 探测：尚未探测`，而那句「给一个空字段等于让提问者再猜一轮」正是要避免它
+        // （README 的兼容性一节也一直写着「它可能补跑一次探测」）。现在真的补：reprobe 是
+        // 幂等的（in-flight 复用同一个 Promise），所以最多起一个子进程；代价是有界的一次
+        // 探测等待（CLI_PROBE_TIMEOUT_MS 上限），而这条路由是用户显式点「诊断包」触发的。
+        if (cliProbe.get().available === undefined) await cliProbe.reprobe()
         const probe = cliProbe.get()
 
         const found = locateIndex(target)
@@ -3561,8 +3631,15 @@ const plugin = definePlugin<Config>({
       on.call(ctx, 'agent/created', (...args: unknown[]) => {
         const agent = (args[0] as { agent?: AgentLike } | undefined)?.agent
         if (agent === undefined) return
-        const current = runtimeRef?.current
-        getMounter()?.attach(agent, current?.mcpScope ?? mcpScopeDefault)
+        // CG50：挂载模式必须用**生效**的裁决（scopeDecision.mode），不是用户想要的
+        // （current.mcpScope）。两者不等时 resolveScopeMode 已经明确退回 managed 并给出
+        // 原因，此时再按 wanted 挂载，等于把「已退回」那句话当没说：
+        //   - mcpIntegration:false → 裁决是「两种模式都不挂」，实际却照挂；
+        //   - 区块外手工行 → 裁决是「插件无权顶掉用户的显式配置」，实际与手工行并存，
+        //     没有索引的 agent 照样会继承到全局那行的项目上下文（正是 P0 要消除的漂移）。
+        // 裁决未落地时回落 managed（保守：不挂载）。apply 里的兜底 effect 是同步跑的，
+        // 所以实际路径上裁决总是先于 agent/created 存在。
+        getMounter()?.attach(agent, runtimeRef?.scopeDecision?.mode ?? DEFAULT_MCP_SCOPE)
       })
       on.call(ctx, 'agent/disposed', (...args: unknown[]) => {
         const agent = (args[0] as { agent?: AgentLike } | undefined)?.agent

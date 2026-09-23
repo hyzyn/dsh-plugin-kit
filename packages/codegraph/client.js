@@ -132,12 +132,43 @@ window.__ModuleLoader__.load({
      * 为什么不全显示：项目路径动辄 60+ 字符，而卡片一行要放好几个按钮——全显示会挤成
      * 一坨省略号，反而谁也认不出。保留**最后两段**（通常是 `仓库/子目录` 或 `父/仓库`），
      * 这是实测最容易区分的粒度；完整路径仍在按钮的 title 里，鼠标一悬停就能确认。
+     *
+     * CG59：分隔符要认 `\`。以前只按 `/` 切，于是 `C:\Users\me\proj\repo` 整串是**一段**，
+     * `parts.length <= 2` 直接原样返回——Windows 上这一列从不缩短，60+ 字符把按钮撑满，
+     * 恰好是这条函数要解决的问题（而本包三平台都在 CI 里）。显示统一用 `/`，与卡片上
+     * 其它路径文案（都是 POSIX 风格）一致。
      */
     function shortPath(path) {
       if (typeof path !== 'string' || path === '') return ''
-      const parts = path.split('/').filter((p) => p !== '')
+      const parts = path.split(/[\\/]/).filter((p) => p !== '')
       if (parts.length <= 2) return path
       return '…/' + parts.slice(-2).join('/')
+    }
+
+    /**
+     * 查询串拼装（带前导 `?`，没有参数时返回 ''）。
+     *
+     * CG51：**数组要逐个 append**。以前统一走 `set(key, String(value))`，于是
+     * `{ files: ['a.ts', 'b.ts'] }` 被折成 `files=a.ts%2Cb.ts` 一个值——而宿主侧的
+     * `/affected` 是按**重复参数**收的（`getAll('files')`），CLI 于是收到一个名叫
+     * `a.ts,b.ts` 的、不存在的文件，多文件「影响面」静默返回空结果（单文件才碰巧对）。
+     * 抽到这里是因为它在 factory 闭包里测不到（见本文件头注释的取舍）。
+     */
+    function buildQuery(params) {
+      const search = new URLSearchParams()
+      for (const [key, value] of Object.entries(params ?? {})) {
+        if (value === undefined || value === null || value === '') continue
+        if (Array.isArray(value)) {
+          for (const item of value) {
+            if (item === undefined || item === null || item === '') continue
+            search.append(key, String(item))
+          }
+          continue
+        }
+        search.set(key, String(value))
+      }
+      const text = search.toString()
+      return text ? '?' + text : ''
     }
 
     /** P2 项目列表：「多久之前见过」的人话（秒 / 分 / 小时 / 天）。 */
@@ -397,14 +428,9 @@ window.__ModuleLoader__.load({
       return data
     }
 
-    const qs = (params) => {
-      const search = new URLSearchParams()
-      for (const [key, value] of Object.entries(params)) {
-        if (value !== undefined && value !== null && value !== '') search.set(key, String(value))
-      }
-      const text = search.toString()
-      return text ? ('?' + text) : ''
-    }
+    // CG51：查询串拼装已抽到 client-src/pure.js 的 buildQuery（数组逐个 append，
+    // 否则 affected 的多文件会被折成 "a.ts,b.ts" 一个值），构建时内联进本 factory。
+    const qs = (params) => buildQuery(params)
 
     /* ======================== 运行时会话引用 ======================== */
 
@@ -532,12 +558,36 @@ window.__ModuleLoader__.load({
     /** 会被「索引变化」弄陈旧的那几个页签（重建 / 撤销后要清掉）。 */
     const INDEX_RESULT_TABS = ['files', 'affected', 'explore', 'context']
 
+    /**
+     * explore / context / files 这类输出的渲染上限（字符）。
+     *
+     * CG61：超限以前是**静默** `slice(0, 4000)`——与本包自己的 CG17 纪律（「不再静默丢」，
+     * 关系列表截断要报计数）不一致：用户看到的是「输出就这么长」，真相是被截了，而
+     * explore 的 markdown 恰恰是「相关符号 + 调用链」，末尾被吃掉会误导判断。
+     * 现在超限时在下面补一行计数，并说明完整输出在宿主侧（`raw` 也在响应里）。
+     */
+    const OUTPUT_LIMIT = 4000
+
     /** 单个查询结果（files / affected / explore / context）的正文。 */
-    const renderOutputBody = (output) => (output.text !== ''
-      // explore / context 的 markdown：原样按等宽显示（卡片不做 markdown 渲染，
-      // 免得引一套 renderer；内容本身就是给模型读的源码 + 关系）
-      ? jsx('pre', { className: 'cg_pre', children: output.text.slice(0, 4000) })
-      : Array.isArray(output.json)
+    const renderOutputBody = (output) => {
+      if (output.text !== '') {
+        // explore / context 的 markdown：原样按等宽显示（卡片不做 markdown 渲染，
+        // 免得引一套 renderer；内容本身就是给模型读的源码 + 关系）
+        // 截断计数自己拼而不是复用 truncationNote：那个函数的量词是「条」（给关系列表用），
+        // 这里数的是字符，套上去会变成「已显示前 4000 条」。
+        return jsxs('div', {
+          children: [
+            jsx('pre', { className: 'cg_pre', children: output.text.slice(0, OUTPUT_LIMIT) }),
+            output.text.length > OUTPUT_LIMIT
+              ? jsx('p', {
+                className: 'cg_itemMeta',
+                children: '输出较长：只显示了前 ' + OUTPUT_LIMIT + ' 字符（共 ' + output.text.length + ' 字符）',
+              })
+              : null,
+          ],
+        })
+      }
+      return Array.isArray(output.json)
         ? (output.json.length === 0
           ? jsx('p', { className: 'cg_mcpMeta', children: '（空）' })
           : jsx('pre', {
@@ -546,7 +596,8 @@ window.__ModuleLoader__.load({
               ? item
               : (item.path ?? item.file ?? JSON.stringify(item))).join('\n'),
           }))
-        : jsx('pre', { className: 'cg_pre', children: (output.raw || '（无输出）').slice(0, 4000) }))
+        : jsx('pre', { className: 'cg_pre', children: (output.raw || '（无输出）').slice(0, OUTPUT_LIMIT) })
+    }
 
     /**
      * 面板分组：小标题 + 通栏细线 +（可选）尾随动作。
@@ -1947,7 +1998,11 @@ window.__ModuleLoader__.load({
                       defaultInfo
                         ? jsx('label', {
                           className: 'cg_check',
-                          'data-off': defaultInfo.mcpScope !== 'per-agent' ? '1' : undefined,
+                          // 不给「未开启」挂 data-off 灰显：勾选框本身已经表达了
+                          // 「没勾 = 关」，再叠 55% 透明度会被读成**禁用**（用户实测
+                          // 截图：看起来点不了，实际能点）。它只在状态未加载时禁用
+                          // （下面的 disabled）。data-off 语义保留给真正不可用的开关
+                          // ——CLI 探测失败的那两个（灰 = 确实注不了入）。
                           title: '每 agent 一个独立的 codegraph MCP 进程（cwd = 该 agent 会话的索引根）：多项目并行时不再共享一个全局 cwd，也不再需要写盘热切换。代价是每个 agent 一个子进程（约 40MB 内存 / 每个），且只有会话目录真的**有索引**时才挂。',
                           children: [
                             jsx('input', {

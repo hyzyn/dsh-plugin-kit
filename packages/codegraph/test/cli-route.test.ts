@@ -788,6 +788,37 @@ describe('跟随活动会话（POST /follow）', () => {
     expect(capture.body?.followSession).toBe(false)
     expect(mount.settingsStore).toMatchObject({ followSession: false })
   })
+
+  it('CG62：/default-path 只改 defaultPath 与跟随，不重置其它 settings 键', async () => {
+    // 旧实现把 `{ defaultPath, followSession:false }` 这个**部分对象**喂给 sync()，
+    // 而 resolveStored 的语义是「传进来的对象里没有的键 → 回落插件配置默认值」——
+    // 于是 mcpScope / mcpIntegration / announceToAgent / usageGuidance 四个键会在内存里
+    // 被静默重置（文件没丢 → 重启又「好了」，表现为时好时坏）。
+    // 实测复现：勾上 per-agent 后点一次项目胶囊，mcpScope 当场退回 managed 并把全局托管行写回。
+    const indexed = indexedProject('cg62-')
+    const mount = mountFull(echoCli())
+    const set = await call(mount.routes, '/api/dsh-codegraph/settings', {
+      method: 'POST',
+      body: { mcpScope: 'per-agent', mcpIntegration: false, announceToAgent: false, usageGuidance: false },
+    })
+    expect(set.status).toBe(200)
+    expect(set.body?.mcpScope).toBe('per-agent')
+
+    // 点一次「设为默认项目」/ 项目胶囊
+    const pinned = await call(mount.routes, '/api/dsh-codegraph/default-path', { method: 'POST', body: { path: indexed } })
+    expect(pinned.status).toBe(200)
+    expect(pinned.body?.defaultPath).toBe(indexed)
+    expect(pinned.body?.followSession).toBe(false)
+
+    // 四个键都必须还在（旧实现全被打回插件配置默认值：managed / true / true / true）
+    const after = await call(mount.routes, '/api/dsh-codegraph/default-path', { method: 'GET' })
+    expect(after.body?.mcpScope, 'mcpScope 不该被 /default-path 重置').toBe('per-agent')
+    expect(after.body?.manageEnabled, 'mcpIntegration 不该被重置').toBe(false)
+    expect(after.body?.announceToAgent, 'announceToAgent 不该被重置').toBe(false)
+    expect(after.body?.usageGuidance, 'usageGuidance 不该被重置').toBe(false)
+    // 生效路径仍然按本次绑定走
+    expect(after.body?.defaultPath).toBe(indexed)
+  })
 })
 
 /* ------------------------------------------------------------------ *
@@ -885,6 +916,77 @@ describe('CG05：超时/取消的兜底', () => {
     expect(String(capture.body?.error)).toContain('已取消')
     const again = await call(routes, '/api/dsh-codegraph/cancel', { method: 'POST', body: { path: project } })
     expect(again.body?.cancelled).toBe(0)
+  })
+
+  it('CG52：uninit 在子目录发起时，按「卡片发的那个路径」也能取消（且只算一次）', async () => {
+    // uninit 的 CLI cwd 用**索引根**（CG02），但卡片「取消」发的是它输入框里的路径——
+    // 只登记根的话，用户在 monorepo 子目录上点取消会拿到 cancelled=0，界面却照样说
+    // 「已发送取消请求」。所以两个键都登记；`cancelled` 再按 controller 去重。
+    const root = indexedProject('cg52-root-')
+    const sub = join(root, 'packages', 'sub')
+    mkdirSync(sub, { recursive: true })
+    const routes = mountRoutes(sleepCli(), { indexTimeoutMs: 10_000 })
+
+    const capture = fakeRes()
+    const pending = routes.get('/api/dsh-codegraph/uninit')!.handler(fakeReq({ method: 'POST', body: { path: sub } }), capture.res)
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    const bySubdir = await call(routes, '/api/dsh-codegraph/cancel', { method: 'POST', body: { path: sub } })
+    expect(bySubdir.status).toBe(200)
+    expect(bySubdir.body?.cancelled).toBe(1)
+    await pending
+    expect(String(capture.body?.error)).toContain('已取消')
+
+    // 不带 path（= 全部）：同一次运行登记在两个键下，只能算 1 次
+    const capture2 = fakeRes()
+    const pending2 = routes.get('/api/dsh-codegraph/uninit')!.handler(fakeReq({ method: 'POST', body: { path: sub } }), capture2.res)
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    const all = await call(routes, '/api/dsh-codegraph/cancel', { method: 'POST', body: {} })
+    expect(all.body?.cancelled).toBe(1)
+    await pending2
+  })
+
+  it('CG53：/cancel 的畸形 body 回 400，且**没有**顺手取消任何运行', async () => {
+    // 以前 /cancel 用裸 readBody，把「body 没读出来」当成「没指定 path」→ 一个被截断的
+    // `{path:"x"}` 会**升级**成「取消全部」，把别的项目正在跑的索引一起杀掉。
+    const routes = mountRoutes(sleepCli(), { indexTimeoutMs: 10_000 })
+    const capture = fakeRes()
+    const pending = routes.get('/api/dsh-codegraph/index')!.handler(fakeReq({ method: 'POST', body: { path: project } }), capture.res)
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    const bad = await call(routes, '/api/dsh-codegraph/cancel', { method: 'POST', rawBody: '{"path":' })
+    expect(bad.status).toBe(400)
+    expect(String(bad.body?.error)).toContain('invalid JSON body')
+    // 运行还在（证明 400 那一步没有把全部杀掉）：合法 body 才取消
+    const ok = await call(routes, '/api/dsh-codegraph/cancel', { method: 'POST', body: { path: project } })
+    expect(ok.body?.cancelled).toBe(1)
+    await pending
+    expect(String(capture.body?.error)).toContain('已取消')
+  })
+
+  it('CG53：`{}`（合法 JSON、未指定 path）仍然 = 取消全部', async () => {
+    const routes = mountRoutes(sleepCli(), { indexTimeoutMs: 10_000 })
+    const capture = fakeRes()
+    const pending = routes.get('/api/dsh-codegraph/index')!.handler(fakeReq({ method: 'POST', body: { path: project } }), capture.res)
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    const all = await call(routes, '/api/dsh-codegraph/cancel', { method: 'POST', body: {} })
+    expect(all.status).toBe(200)
+    expect(all.body?.cancelled).toBe(1)
+    await pending
+  })
+
+  it('CG54：探测尚未落地时 /diagnose 会补一次探测，报告给出确定结论', async () => {
+    // `--version` 故意慢：让「挂载期探测仍在途」这个窗口稳定可复现。
+    // 补探测之前，报告里会是 `CLI 探测：尚未探测`——正是注释说「给一个空字段等于让
+    // 提问者再猜一轮」要避免的那种状态（README 也一直写着「它可能补跑一次探测」）。
+    const slowProbe = stubCli('cg54-slow-cli', 'setTimeout(() => { console.log("1.6.0") }, 700)')
+    const routes = mountRoutes(slowProbe, { announceToAgent: false, usageGuidance: false })
+    const capture = await call(routes, '/api/dsh-codegraph/diagnose', {
+      method: 'GET',
+      url: '/api/dsh-codegraph/diagnose?path=' + encodeURIComponent(project),
+    })
+    expect(capture.status).toBe(200)
+    const report = String(capture.body?.report)
+    expect(report, '补探测之后不该再是「尚未探测」').not.toContain('尚未探测')
+    expect(report).toContain('CLI 探测：可用')
   })
 })
 

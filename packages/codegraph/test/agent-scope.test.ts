@@ -236,6 +236,73 @@ describe('P0：挂载器（createAgentMounter）', () => {
     expect(mounter.liveCount()).toBe(1)
   })
 
+  /*
+   * CG57：上面那条幂等用例**够不到**在途窗口——它在两次 attach 之间 `await settle()`，
+   * 而真实世界里 `loadClient` 是异步的（动态 import + 连接握手，实测 ~75ms），重复的
+   * agent/created 完全可能落在窗口里。那时记录是 `mounted: false`（"正在挂载…"），
+   * 旧判据（`mounted === true`）看不到它 → 再开一份：第二个实例被 dsh-mcp-client 以
+   * 「serverName 已占用」拒绝（白跑一次 spawn + 握手），而它的 fiber 覆盖 fibers 里
+   * 第一个的引用（第一个从此只靠 scope 回收）。下面两条用例把窗口钉住。
+   */
+  it('CG57：loadClient 在途时重复 attach → 不起第二份（注释承诺的「已在处理」）', async () => {
+    let called = 0
+    let release: (() => void) | undefined
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const mounter = createAgentMounter(makeDeps({
+      loadClient: async () => { await gate; return fakeClient },
+    }))
+    const agent = makeAgent('cg57-a', indexedDir, () => { called += 1; return { dispose: () => {} } })
+    const first = mounter.attach(agent, 'per-agent')   // 在途
+    const second = mounter.attach(agent, 'per-agent')  // 窗口内重复派发
+    // 两次拿到的是同一条记录（不是两份），且都还是「正在挂载」
+    expect(second).toBe(first)
+    release?.()
+    await settle()
+    expect(called).toBe(1)
+    expect(mounter.liveCount()).toBe(1)
+  })
+
+  it('CG57：在途时 detach（切回 managed / 插件卸载）→ 迟到的挂载必须作废', async () => {
+    let called = 0
+    let release: (() => void) | undefined
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const mounter = createAgentMounter(makeDeps({
+      loadClient: async () => { await gate; return fakeClient },
+    }))
+    const agent = makeAgent('cg57-b', indexedDir, () => { called += 1; return { dispose: () => {} } })
+    mounter.attach(agent, 'per-agent')
+    mounter.detachAll()   // 在途期间被撤销
+    release?.()
+    await settle()
+    // 进程一个都不该起：这条挂载已经被撤销了
+    expect(called).toBe(0)
+    expect(mounter.liveCount()).toBe(0)
+    expect(mounter.records()).toHaveLength(0)
+  })
+
+  it('CG57：在途时会话 cwd 变了 → 旧的那次作废，按新 cwd 重挂', async () => {
+    const seen: string[] = []
+    let release: (() => void) | undefined
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const mounter = createAgentMounter(makeDeps({
+      loadClient: async () => { await gate; return fakeClient },
+      resolveRoot: (cwd) => cwd,
+      isIndexed: () => true,
+    }))
+    const plugin = (_p: unknown, config: unknown) => {
+      seen.push(String((config as { cwd?: string }).cwd))
+      return { dispose: () => {} }
+    }
+    mounter.attach(makeAgent('cg57-c', indexedDir, plugin), 'per-agent')
+    mounter.attach(makeAgent('cg57-c', indexedDir2, plugin), 'per-agent') // 同一 id、新 cwd
+    release?.()
+    await settle()
+    // 只挂新的那份：旧续体作废（否则会留下一个指向旧项目的进程）
+    expect(seen).toEqual([indexedDir2])
+    expect(mounter.liveCount()).toBe(1)
+    expect(mounter.records()[0].cwd).toBe(indexedDir2)
+  })
+
   it('宿主没有 dsh-mcp-client（可选依赖）→ 记原因，不抛', async () => {
     const warn = vi.fn()
     const mounter = createAgentMounter(makeDeps({

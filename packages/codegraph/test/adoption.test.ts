@@ -13,6 +13,8 @@ import {
   type AdoptionTable,
 } from '../src/index.js'
 import { apply } from '../src/index.js'
+// CG55：卡片侧那份文案（两份实现的口径一致性用例要用）
+import { adoptionText } from '../client-src/pure.js'
 
 /*
  * 采纳率仪表（ROADMAP P1）的两半：
@@ -160,6 +162,33 @@ describe('P1 采纳率：折叠与汇总', () => {
     expect(s.discoveryTotal).toBe(0)
     expect(s.discoveryRate).toBeUndefined()
     expect(describeAdoption(s)).toContain('还没有发现类调用')
+  })
+
+  /**
+   * CG55：宿主侧 `describeAdoption`（诊断包用）与浏览器侧 `adoptionText`（卡片用）是
+   * **两份实现**——卡片在浏览器半体，import 不到宿主半体，所以「共用一份文案」做不到。
+   * 两边各自有测试，但没有任何东西盯着它们**口径一致**：改了一边、忘了另一边，用户会
+   * 在卡片与诊断包里看到两个不同的采纳率，而且都「看起来很正常」。
+   *
+   * 这条用例只钉**数字口径**（百分比与两个计数）——文案措辞仍允许两边不同（它们面向
+   * 的读者不同：诊断包是贴 issue 的原文，卡片是一行 UI）。数字漂了这里立刻红。
+   */
+  it('CG55：宿主与卡片两份文案的百分比口径必须一致', () => {
+    const cases = [
+      { codegraph: 1, file: 20, discovery: 3, other: 0 },
+      { codegraph: 0, file: 5, discovery: 5, other: 2 },
+      { codegraph: 7, file: 0, discovery: 0, other: 0 },
+      { codegraph: 3, file: 4, discovery: 1, other: 1 },
+    ]
+    const percentOf = (text: string): string | undefined => /→ (\d+)%/.exec(text)?.[1]
+    for (const counts of cases) {
+      const summary = summarizeAdoption('/repo', counts, true)
+      const host = describeAdoption(summary)
+      const card = adoptionText(summary)
+      expect(percentOf(host), `宿主文案没给出窄口径百分比：${host}`).toBeDefined()
+      expect(percentOf(card), `卡片文案没给出窄口径百分比：${card}`).toBeDefined()
+      expect(percentOf(card), `两份文案的百分比不一致：宿主「${host}」 vs 卡片「${card}」`).toBe(percentOf(host))
+    }
   })
 })
 

@@ -245,6 +245,29 @@ function agentIdOf(agent: AgentLike): string | undefined {
 export function createAgentMounter(deps: AgentMounterDeps): AgentMounter {
   const mounted = new Map<string, AgentMountRecord>()
   const fibers = new Map<string, PluginFiberLike>()
+  /**
+   * CG57：正在挂载中的 agent id（`loadClient` 是异步的）。
+   *
+   * 为什么需要：`mounted` 里那条记录在挂载完成前是 `mounted: false`（"正在挂载…"），
+   * 所以「已挂过就不再挂」那条判据（`mounted === true`）**看不到在途的那一份**——
+   * 重复的 attach 会再开一份：第二个实例被 dsh-mcp-client 以「serverName 已占用」
+   * 拒绝（白跑一次 spawn + 握手），而它的 fiber 会覆盖 `fibers` 里第一个的引用
+   * （第一个只靠 scope 回收，本模块再也 release 不到它）。
+   */
+  const pending = new Set<string>()
+  /**
+   * CG57：每个 agent 的挂载世代号。异步续体落地前先核对世代，不一致就放弃。
+   *
+   * 覆盖两种「挂载途中状态变了」：① 又来了一次 attach（会话 cwd 换了 → 该重挂）；
+   * ② detach / detachAll（切回 managed、插件卸载、agent 销毁）。没有它的话，迟到的
+   * 续体会把 MCP 进程挂到一个**已经被撤销**的 agent scope 上。
+   */
+  const generations = new Map<string, number>()
+  const bumpGeneration = (id: string): number => {
+    const next = (generations.get(id) ?? 0) + 1
+    generations.set(id, next)
+    return next
+  }
 
   const attach = (agent: AgentLike, mode: McpScopeMode): AgentMountRecord => {
     const id = agentIdOf(agent) ?? '(anonymous)'
@@ -264,6 +287,10 @@ export function createAgentMounter(deps: AgentMounterDeps): AgentMounter {
       if (existing.cwd === cwd) return existing
       detachById(id)
     }
+    // CG57：in-flight 幂等。上面的判据只看 `mounted === true`，而挂载在途时记录是
+    // `mounted: false`——重复的 attach 以前会再开一份（见 `pending` 的注释）。
+    // cwd 变了则不复用：那种情况本来就该重挂（同上面那条注释）。
+    if (existing !== undefined && pending.has(id) && existing.cwd === cwd) return existing
     // 未挂载的记录**不**复用：`codegraph init` 之后再开同一会话时，判定结果会变，而
     // 判定本身很便宜（locateIndex 只是几次 stat）。缓存它会把这个 agent 永久钉在
     // 「不挂」上，且没有任何重试入口（agent/created 只在会话开始/恢复/清理时触发）。
@@ -295,11 +322,15 @@ export function createAgentMounter(deps: AgentMounterDeps): AgentMounter {
     }
 
     // 记录先落：loadClient 是异步的，期间重复的 attach 应当看到「已在处理」而不是再开一份
+    const generation = bumpGeneration(id)
     const record: AgentMountRecord = { id, cwd, root: decision.root, mounted: false, reason: '正在挂载…', at: Date.now() }
     mounted.set(id, record)
+    pending.add(id)
 
     void deps.loadClient()
       .then((client) => {
+        // CG57：世代不符 = 期间又 attach（换 cwd）或 detach 过 → 这次挂载作废
+        if (generations.get(id) !== generation) return undefined
         if (client === undefined) {
           record.reason = '宿主没有 @deepseek-ai/dsh-mcp-client（可选依赖未安装），未挂载'
           deps.logger.warn(`[dsh-codegraph] ${record.reason}`)
@@ -332,10 +363,18 @@ export function createAgentMounter(deps: AgentMounterDeps): AgentMounter {
         })
       })
       .catch((error: unknown) => {
+        // CG57：已被取代的挂载失败不该记进记录、也不该刷日志（它不是「这个 agent 的
+        // 挂载失败」，只是一次作废的尝试）
+        if (generations.get(id) !== generation) return
         record.mounted = false
         record.error = error instanceof Error ? error.message : String(error)
         record.reason = '挂载失败：' + record.error
         deps.logger.warn(`[dsh-codegraph] per-agent MCP 挂载失败：agent=${id} — ${record.error}`)
+      })
+      .finally(() => {
+        // 只有「当前这一代」才有资格摘掉在途标记：更新的一代（换 cwd 重挂）正在途中，
+        // 摘掉会让下一次 attach 又开一份
+        if (generations.get(id) === generation) pending.delete(id)
       })
 
     return record
@@ -349,6 +388,10 @@ export function createAgentMounter(deps: AgentMounterDeps): AgentMounter {
     const fiber = fibers.get(id)
     fibers.delete(id)
     mounted.delete(id)
+    // CG57：让在途的挂载作废（并清掉 in-flight 标记）——否则它会在这个 agent 已经被
+    // 撤销之后把 MCP 进程挂上去
+    pending.delete(id)
+    bumpGeneration(id)
     if (fiber === undefined) return
     try {
       // 正常路径下 agent 销毁时 scope 会连子 fiber 一起释放（dsh-agent-loop:1659），
@@ -370,7 +413,10 @@ export function createAgentMounter(deps: AgentMounterDeps): AgentMounter {
     attach,
     detach,
     detachAll() {
-      for (const id of [...fibers.keys()]) detachById(id)
+      // CG57：在途的挂载还没有 fiber，但同样要作废（detachById 会 bump 世代号），
+      // 所以两边的 id 都要收——否则「切回 managed」之后，一个迟到的续体还会把
+      // per-agent 进程挂出来
+      for (const id of new Set([...fibers.keys(), ...pending])) detachById(id)
       // detachById 只在有 fiber 时才删记录；这里补上「没挂成的记录」也一并清掉。
       mounted.clear()
     },

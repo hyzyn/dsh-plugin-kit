@@ -157,7 +157,15 @@ export interface AdoptionSummary {
     discoveryRate?: number;
 }
 export declare function summarizeAdoption(project: string, counts: AdoptionCounts, indexed: boolean): AdoptionSummary;
-/** 把采纳率拍成一句人话（卡片与诊断包共用，避免两处文案漂移）。 */
+/**
+ * 把采纳率拍成一句人话（诊断包用）。
+ *
+ * CG55：注释此前写的是「卡片与诊断包共用，避免两处文案漂移」——**不成立**：卡片在
+ * 浏览器半体，import 不到宿主半体的函数，它用的是 `client-src/pure.js` 的 `adoptionText`
+ * （另一份实现）。两份各自有测试，措辞已经开始分叉（空态那句就不一样）。这里是宿主侧
+ * 那份，改文案时请同时看 pure.js 的 adoptionText——`test/adoption.test.ts` 里有一条
+ * 用例拿同一个 summary 比对两边的**百分比**，数字口径漂了会红，但文案措辞仍需人工同步。
+ */
 export declare function describeAdoption(summary: AdoptionSummary): string;
 /**
  * 目标目录的索引状态：

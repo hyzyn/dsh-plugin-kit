@@ -88,7 +88,7 @@ Searched for a .codegraph/ directory starting from: /Users/you
 | `/api/dsh-codegraph/projects` | GET | 已见项目列表 `{ projects, indexedCount, effectivePath }`——候选来自活跃会话与插件观察到的 cwd（`/follow` 上报、查过 status 的路径、默认项目），每条现算索引态；monorepo 子目录归并到索引根 |
 | `/api/dsh-codegraph/agents` | GET | per-agent MCP 挂载台账 `{ mode, requested, effective, reason, fallback, mounted, live, agents }`——每个 agent 挂没挂上、挂在哪个索引根、没挂的原因（只读） |
 | `/api/dsh-codegraph/unlock` | POST | 清挡住索引的陈旧锁 `{ path }`（`codegraph unlock`，幂等：没锁时 exit 0） |
-| `/api/dsh-codegraph/cancel` | POST | 取消进行中的 CLI 调用 `{ path? }`（缺省 = 全部）；关标签页的断连也会自动中止对应调用 |
+| `/api/dsh-codegraph/cancel` | POST | 取消进行中的 CLI 调用 `{ path? }`（合法 JSON body：`{}` = 全部；畸形 body 回 400，不会升级成「取消全部」）；关标签页的断连也会自动中止对应调用 |
 | `/api/dsh-codegraph/diagnose` | GET | 收集诊断包 `{ path?, report }`：`report` 是一段纯文本，含版本/平台、CLI 探测实测原文、索引状态、托管行与**脱敏后**的补丁区块原文、`~/.codegraph` 的 daemon 登记与日志尾、最近一次 CLI 失败、以及采纳率 |
 | `/api/dsh-codegraph/metrics` | GET | 采纳率 `{ path? }`：不带 `path` 回全部项目 `{ summaries, since }`；带 `path` 回该项目 `{ project, summary, text, since }` |
 
@@ -111,7 +111,7 @@ Searched for a .codegraph/ directory starting from: /Users/you
 
 请求语义（v0.4.2 起）：
 
-- **POST 路由对畸形 / 超限 / 非对象的 body 一律 400**——不会把「请求体没读出来」当成「没指定路径」而在默认项目上执行写操作。
+- **POST 路由对畸形 / 超限 / 非对象的 body 一律 400**——不会把「请求体没读出来」当成「没指定路径」而在默认项目上执行写操作。`/cancel` 也在这道门禁内：`{}`（合法 JSON、未指定 path）才是「取消全部」，畸形 body 不会顺带把别的项目正在跑的索引杀掉。
 - **路径必须真实存在且是目录**：`status` / `query` / `callers` / `callees` / `impact` / `node` 对不存在的路径回 400（CLI 对不存在的路径会 exit 0 + 空结果，静默得像「没有匹配」）；`--limit` / `--depth` 只收正整数（`limit` 上限 10000，`depth` 的上限由 CLI 自己钳到 10）。
 - **祖先口径**：`/default-path` 的 POST 在 monorepo 子目录上会绑定**索引所在的仓库根**；对子目录调 `/init` 回 409（祖先已有索引，避免建出嵌套索引）；`/follow` 拒绝不存在目录的路径上报。
 

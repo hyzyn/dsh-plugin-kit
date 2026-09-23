@@ -110,12 +110,43 @@ export function adoptionText(summary) {
  * 为什么不全显示：项目路径动辄 60+ 字符，而卡片一行要放好几个按钮——全显示会挤成
  * 一坨省略号，反而谁也认不出。保留**最后两段**（通常是 `仓库/子目录` 或 `父/仓库`），
  * 这是实测最容易区分的粒度；完整路径仍在按钮的 title 里，鼠标一悬停就能确认。
+ *
+ * CG59：分隔符要认 `\`。以前只按 `/` 切，于是 `C:\Users\me\proj\repo` 整串是**一段**，
+ * `parts.length <= 2` 直接原样返回——Windows 上这一列从不缩短，60+ 字符把按钮撑满，
+ * 恰好是这条函数要解决的问题（而本包三平台都在 CI 里）。显示统一用 `/`，与卡片上
+ * 其它路径文案（都是 POSIX 风格）一致。
  */
 export function shortPath(path) {
   if (typeof path !== 'string' || path === '') return ''
-  const parts = path.split('/').filter((p) => p !== '')
+  const parts = path.split(/[\\/]/).filter((p) => p !== '')
   if (parts.length <= 2) return path
   return '…/' + parts.slice(-2).join('/')
+}
+
+/**
+ * 查询串拼装（带前导 `?`，没有参数时返回 ''）。
+ *
+ * CG51：**数组要逐个 append**。以前统一走 `set(key, String(value))`，于是
+ * `{ files: ['a.ts', 'b.ts'] }` 被折成 `files=a.ts%2Cb.ts` 一个值——而宿主侧的
+ * `/affected` 是按**重复参数**收的（`getAll('files')`），CLI 于是收到一个名叫
+ * `a.ts,b.ts` 的、不存在的文件，多文件「影响面」静默返回空结果（单文件才碰巧对）。
+ * 抽到这里是因为它在 factory 闭包里测不到（见本文件头注释的取舍）。
+ */
+export function buildQuery(params) {
+  const search = new URLSearchParams()
+  for (const [key, value] of Object.entries(params ?? {})) {
+    if (value === undefined || value === null || value === '') continue
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (item === undefined || item === null || item === '') continue
+        search.append(key, String(item))
+      }
+      continue
+    }
+    search.set(key, String(value))
+  }
+  const text = search.toString()
+  return text ? '?' + text : ''
 }
 
 /** P2 项目列表：「多久之前见过」的人话（秒 / 分 / 小时 / 天）。 */

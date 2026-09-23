@@ -28,14 +28,14 @@
 
 ## 现状
 
-**已修 46 / 已关闭 3 / 待修 0**（CG01–CG29 + CG30/31/35/36/37/38 修于 0.4.2；CG39–CG49 修于本轮；
-CG32–CG34 **因原文从未随附而关闭**，不再挂账）。索引表的「修复」列一句话记录改法与落点；行号已漂移，定位用
+**已修 59 / 已关闭 3 / 待修 0**（CG01–CG29 + CG30/31/35/36/37/38 修于 0.4.2；CG39–CG49 修于其后一轮；
+CG50–CG62 修于本轮；CG32–CG34 **因原文从未随附而关闭**，不再挂账）。索引表的「修复」列一句话记录改法与落点；行号已漂移，定位用
 `grep -n` 找符号（`locateIndex` / `locateCwdEdits` / `readPostBody` / `runViaSpawn` /
 `ensureStyle` / `installSessionReporter`）。代码里带 `CGxx` 注释的位置就是对应修复点，
 改到相关代码时请先读那里的注释。
 
 > 数字口径（**曾算错过一次，故写明**）：`已修 = 表内去重编号数 − 已关闭数`，实测复现过历史每一档
-> （`dd3de493` 35、`1dc45292` 40、`7b24ce2b` 41、`79658a8f` 42）。当前 49 − 3 = **46**。
+> （`dd3de493` 35、`1dc45292` 40、`7b24ce2b` 41、`79658a8f` 42）。当前 62 − 3 = **59**。
 > 一处易错点：`CG15 追记` 是**同一编号的补充记录**（表格里多一行），不额外计入「已修」——
 > 按行数算会多 1，按去重编号算才对。P0 那轮我按「加了 1 条却 +2」写成了 44，已更正。
 
@@ -119,6 +119,40 @@ CG32–CG34 **因原文从未随附而关闭**，不再挂账）。索引表的�
 另有一条评审自报后自否的假阳性，留档防重查：「README 引用了不存在的
 `scripts/verify-codegraph-indexforce.mjs`」——该文件在**仓库根**且被 git 跟踪，
 README 开发节整块是仓库根相对路径，引用成立。
+
+## 第三轮（独立评审 + 实证复核）：CG50–CG62
+
+> 2026-09-23，对 0.5.0 工作树做了一次独立评审（宿主半体 / 浏览器半体 / scope / 构建脚本
+> 逐行读 + 全量测试复跑），产出 **CG50–CG61 共 12 条**；随后在**真机复核**（把插件装进 test profile、
+> 对着真宿主跑）时又暴露 **CG62** 一条——纯读代码看不出来，是「点一下才发作」的那类。与上一轮不同的是：**每一条都先被
+> 实测复现**（起真插件、假 CLI、假 req/res；不是只读代码下的结论），修完再做**变异验证**
+> ——把 bug 放回去，确认新用例立刻红（8 条关键修复全部被抓住）。
+>
+> 复核方法留档（可复跑）：`agent/created` 那条要挂**真插件**才能暴露（纯函数全是对的，
+> 错在接线），所以新增的 `test/agent-created-mode.test.ts` 用假 ctx + 真 `apply()`，
+> 三个分叉场景 + 一个对照组；卡片侧 `qs()` 在 factory 闭包里测不到，故抽成
+> `pure.js` 的 `buildQuery` 后进 vitest。
+
+| CG | 严重度 | 症状（一句话） | 修复（本轮） |
+|---|---|---|---|
+| CG50 | P1 | `agent/created` 按**用户想要的**模式挂载（`current.mcpScope`）而不是**生效的裁决**（`scopeDecision.mode`）：`mcpIntegration:false`（裁决「两种模式都不挂」）与「区块外手工行」（裁决「已退回 managed」）下都照挂 per-agent——实测日志同时出现「已退回」与「per-agent MCP 已挂载」 | 改用 `runtimeRef?.scopeDecision?.mode ?? DEFAULT_MCP_SCOPE`；新增 `test/agent-created-mode.test.ts`（真插件 + 真事件派发，三个分叉场景 + 对照组），变异验证：还原成 wanted 即 3 条红 |
+| CG51 | P2 | 卡片 `qs()` 对数组做 `String(value)`：`affected` 的多文件被折成 `files=a.ts,b.ts` **一个值**，而宿主按 `getAll('files')` 收 → CLI 收到一个名叫 `a.ts,b.ts` 的不存在文件，多文件「影响面」静默空结果（单文件才碰巧对） | 抽 `buildQuery` 进 `client-src/pure.js`（数组逐个 `append`），`qs` 改为它的别名；`client-pure.test.ts` 补 3 条（含「不得出现 `%2C`」的反向断言） |
+| CG52 | P3 | uninit 只把运行登记在**索引根**下，而卡片「取消」发的是输入框里的路径（monorepo 子目录）→ `cancelled=0`，界面却照样说「已发送取消请求」 | 两个键都登记（请求路径 + 索引根），`/cancel` 按 controller 去重（`cancelled` 报的是「取消了几个运行」）；补 2 条用例 |
+| CG53 | P3 | `/cancel` 用裸 `readBody`，把「body 没读出来」当成「没指定 path」→ 一个被截断的 `{path:"x"}` **升级**成「取消全部」，把别的项目正在跑的索引一起杀掉（CG01 立的规矩在这里漏了一条） | 改走 `readPostBody`（畸形 / 空 / 超限一律 400），`{}` 仍 = 取消全部；补 2 条用例（400 且运行未停 / `{}` 仍取消全部） |
+| CG54 | P3 | 注释与 README 都写「探测没落地时补一次探测」，实现只读缓存 → 慢 CLI 下诊断包报 `CLI 探测：尚未探测`（正是那句注释要避免的状态），实测 A/B 两态对照确认 | 路由里真的补：`available === undefined` 时 `await cliProbe.reprobe()`（幂等，最多一个子进程）；补用例（慢 stub 下报告必须是确定结论） |
+| CG55 | P3 | `describeAdoption` 注释称「卡片与诊断包共用」，实际卡片用 `client-src/pure.js` 的 `adoptionText`——两份实现、各自测试、无一致性闸，措辞已分叉（同一输入两个文案） | 注释改为如实描述两处实现；`adoption.test.ts` 补一条**跨半体**用例钉住百分比口径一致（措辞允许不同） |
+| CG56 | P3 | 登记表注释承诺「永不淘汰当前默认项目 / 会话项目」，而 `note(path, via)` 拿不到这两个值——结构上无法实现；该性质实际由 `/projects` 每次 list 前重新 note 维持 | 注释改为如实描述：容量 50 + 淘汰最久未见；「当前项目始终在列表里」标注为**调用方契约**，改 `/projects` 时别删那次重新 note |
+| CG57 | P3 | 挂载器注释称重复 attach 会看到「已在处理」，实现只判 `mounted === true`（在途记录是 `false`）→ 窗口内重复派发再开一份：第二个实例被 dsh-mcp-client 拒（白跑一次 spawn+握手），其 fiber 覆盖第一个的引用 | 加 `pending` 在途标记 + **世代号**：重复 attach 复用同一记录；detach / detachAll / 换 cwd 都让迟到的续体作废；补 3 条用例（含「在途 detach 后一个进程都不许起」） |
+| CG58 | P3 | `timeoutOr` 只判 `>= 0`：`cliTimeoutMs: 0.5` 被原样收下 → `setTimeout` 当 1ms → 每次调用立刻超时，报错只说「请调大 cliTimeoutMs」，用户看着自己写的 0.5 完全不明白 | 改判 `Number.isInteger`（0 仍 = 不限时）；`cli-config.test.ts` 补小数三档 |
+| CG59 | P3 | `shortPath` 只按 `/` 切：Windows 路径整串算**一段** → `parts.length <= 2` 直接原样返回，这一列从不缩短（60+ 字符把胶囊撑满，正是它要解决的问题） | 按 `[\\/]` 切、显示统一用 `/`；补 Windows / UNC / 混合分隔符用例 |
+| CG60 | P3 | `runViaSpawn` 的 maxBuffer 判定把字符串**字符**数与 Buffer **字节**数相加 → 上限最多偏松 4 倍（中文/emoji 场景），护栏本身带误差 | 单独记 `stdoutBytes` / `stderrBytes` 按字节判定；纯护栏修正，无行为变化 |
+| CG61 | P3 | `renderOutputBody` 对 explore/context 输出**静默** `slice(0, 4000)`，与本包自己的 CG17 纪律（截断要报计数）不一致——explore 的 markdown 末尾正是调用链 | 超限时补一行计数说明（复用 `truncationNote`）；`raw` 本来就在响应里，文案里也点明 |
+| CG62 | P1 | `/default-path`（项目胶囊 / 「设为默认项目」）把**部分对象** `{ defaultPath, followSession }` 喂给 `sync()`，而 `resolveStored` 对「对象里没有的键」回落插件配置默认值 → `mcpScope` / `mcpIntegration` / `announceToAgent` / `usageGuidance` 四个键**在内存里被静默重置**。settings.yaml 没丢（写的是合并）→ **重启又「好了」**，表现为「时好时坏」、卡片显示与文件里的用户选择长期不一致。实测：勾上 per-agent 后点一次项目胶囊，当场退回 managed、全局托管行被写回、per-agent 挂载被回收；关掉「公告能力」后同样被打回 true | 改成把**完整的** stored 传进 sync（`{ ...(rt.scope?.get() ?? {}), defaultPath, followSession: false }`）；补用例逐键断言（mcpScope / mcpIntegration / announceToAgent / usageGuidance），变异验证：还原成部分对象即红（实测报 `mcpScope 不该被 /default-path 重置: expected 'managed' to be 'per-agent'`） |
+
+本轮门槛（全绿，实测）：`npx tsc --noEmit -p packages/codegraph/tsconfig.json` 干净；
+`node scripts/client-lint.mjs` 通过（仅 1 条已知 TS2339 噪音）；
+`npx vitest run packages/codegraph` = **317 tests / 14 files**（本轮新增 17 条 / 1 文件）；
+`node packages/codegraph/scripts/build-client.mjs` 重建后 `client.js` 与仓库产物**逐字节一致**。
 
 ## 批次
 

@@ -38,10 +38,15 @@ describe('resolveCliConfig', () => {
     expect(resolveCliConfig({ command: '   ' }).command).toBe('codegraph')
   })
 
-  it('超时只认非负有限数；0 = 不限时（CG23），负数/NaN/Infinity 回落默认值', () => {
+  it('超时只认非负整数；0 = 不限时（CG23），负数/小数/NaN/Infinity 回落默认值', () => {
     const fallback = { cliTimeoutMs: 60_000, indexTimeoutMs: 600_000 }
     for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
       expect(resolveCliConfig({ cliTimeoutMs: bad, indexTimeoutMs: bad })).toMatchObject(fallback)
+    }
+    // CG58：小数毫秒曾被原样收下——`0.5` 被 setTimeout 当 1ms，每次 CLI 调用都立刻
+    // 超时，而报错只说「超时，请调大 cliTimeoutMs」，用户看着自己写的 0.5 完全不明白
+    for (const fractional of [0.5, 1.5, 999.99]) {
+      expect(resolveCliConfig({ cliTimeoutMs: fractional, indexTimeoutMs: fractional })).toMatchObject(fallback)
     }
     expect(resolveCliConfig({ cliTimeoutMs: 1, indexTimeoutMs: 1 })).toMatchObject({ cliTimeoutMs: 1, indexTimeoutMs: 1 })
     // 0 曾被静默回落成默认值（用户写 0 想表达「不限」，得到 60s 且无提示）
