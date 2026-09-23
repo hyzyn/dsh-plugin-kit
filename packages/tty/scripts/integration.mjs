@@ -289,7 +289,18 @@ async function run() {
     if (/sid 已存在/.test(s.state.errors[0])) pass('B3 同 sid 二次 spawn 被拒')
     else fail('B3 同 sid 二次 spawn 被拒', s.state.errors[0])
     s.client.send(JSON.stringify({ t: 'kill', sid: 'tab-a' }))
-    await s.waitFor(() => s.state.exited !== null, 10000, 'exit')
+    try {
+      await s.waitFor(() => s.state.exited !== null, 20000, 'exit')
+    } catch (error) {
+      // 诊断（CI 上 Linux 专属复现）：区分「kill 没生效（服务端仍列着它）」与
+      // 「会话已消失、只是 exit 帧没发（PTY 句柄的 done 未兑现）」。
+      s.client.send(JSON.stringify({ t: 'sessions' }))
+      await sleep(500)
+      const sessionsFrame = [...s.state.frames].reverse().find((f) => f.t === 'sessions')
+      console.error('    [diag] 收到的帧类型=' + JSON.stringify(s.state.frames.map((f) => f.t)))
+      console.error('    [diag] 服务端会话清单=' + JSON.stringify(sessionsFrame?.list ?? null))
+      throw error
+    }
     s.client.close()
   }
 
