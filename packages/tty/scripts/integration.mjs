@@ -1214,9 +1214,11 @@ async function run() {
         execFile(file, args, { timeout: 5000 }, (error, stdout, stderr) => resolve({ error, stdout: String(stdout), stderr: String(stderr) }))
       })
     })
+    let tmuxListError = null
     const tmuxList = async () => {
       const out = await execFileP('tmux', ['-L', 'dsh-tty', 'list-sessions', '-F', '#{session_name}'])
-      return out.error !== null && out.error !== undefined ? [] : out.stdout.trim().split('\n').filter(Boolean)
+      tmuxListError = out.error === null || out.error === undefined ? null : (out.stderr || String(out.error))
+      return tmuxListError !== null ? [] : out.stdout.trim().split('\n').filter(Boolean)
     }
     const post = async (body) => {
       const res = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
@@ -1309,7 +1311,9 @@ async function run() {
         const listedAfterSpawn = await tmuxList()
         console.error('    [diag] persistence=' + String(cfgBefore?.config?.persistence)
           + ' ready.persist=' + String(readyFrame?.persist)
-          + ' tmuxAfterSpawn=' + JSON.stringify(listedAfterSpawn))
+          + ' tmuxAfterSpawn=' + JSON.stringify(listedAfterSpawn)
+          + ' TMPDIR=' + JSON.stringify(process.env.TMPDIR ?? null)
+          + ' tmuxListError=' + JSON.stringify(tmuxListError))
       }
       w1.client.send(JSON.stringify({ t: 'input', sid: 'b26a', d: 'printf "B26MARK-%s\\n" resume\n' }))
       await w1.waitFor(() => /B26MARK-resume/.test(w1.state.text), 10000, '标记输出')
