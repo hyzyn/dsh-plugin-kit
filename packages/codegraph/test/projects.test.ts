@@ -166,7 +166,10 @@ describe('P2 项目列表', () => {
     expect(row).toBeDefined()
     expect(row?.via).toContain('status')
     rmStubDir(repo)
-  })
+    // win32 runner 上这条要起两次 node 子进程（挂载探测 + /status），20s 偶发不够：
+    // v0.1.43 的 CI 里同一提交红/绿交替（windows-latest）。与 v0.1.41 放宽全局限时的
+    // 做法一致，这里只给这条最慢的用例单独放宽。
+  }, 60_000)
 
   it('没提供 sessions 服务时也能工作（列表随使用增长）', async () => {
     const { call } = mount({ defaultPath: '/tmp' })   // 不传 sessions

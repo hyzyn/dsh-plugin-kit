@@ -140,6 +140,11 @@ async function run() {
   // configure）：让插件的 settings 注入回调触发；配置热生效经 loader 的
   // volatile-update 事件派发（见 emitSettingsUpdated）。
   let settingsValue = {}
+  /** 派发 loader 的 volatile-update：真实宿主在 settings.update 之后由 loader 发出。 */
+  const emitVolatile = () => {
+    const args = ['loader/volatile-update', [], {}, 'test']
+    for (const cb of app.events.dispatch('emit', args)) cb(...args)
+  }
   const toolDefs = []
   /** 输出契约违约（§B33：返回值与声明的 output.schema 不符，真实宿主会直接判工具错）。 */
   const outputViolations = []
@@ -152,6 +157,7 @@ async function run() {
         update: async (ns, patch) => {
           if (ns !== 'tty') throw new Error('未知的 entry: ' + ns)
           settingsValue = { ...settingsValue, ...patch }
+          emitVolatile()
         },
         configure: () => () => {},
       })
@@ -214,8 +220,7 @@ async function run() {
   /** 模拟「外部改了本 entry 的配置」：更新 stub 值再派发 loader 的 volatile-update。 */
   const emitSettingsUpdated = (ns, next) => {
     if (ns === 'tty') settingsValue = { ...next }
-    const args = ['loader/volatile-update', [], {}, 'test']
-    for (const cb of app.events.dispatch('emit', args)) cb(...args)
+    emitVolatile()
   }
   const pluginFiber = app.plugin({ name, inject, apply }, { maxSessions: 2, term: 'xterm-256color', colorTerm: 'truecolor' })
   await wsFiber.await()
@@ -1296,8 +1301,16 @@ async function run() {
       await post({ reconnectGraceSec: 1 })
       const w1 = openSession(port)
       await w1.open()
+      const cfgBefore = await (await fetch(`http://127.0.0.1:${port}/api/dsh-tty/config`)).json()
       w1.client.send(JSON.stringify({ t: 'spawn', sid: 'b26a', cols: 80, rows: 24, persist: true, persistName: 'b26resume' }))
       await w1.waitFor(() => w1.state.ready, 10000, 'b26a ready')
+      {
+        const readyFrame = w1.state.frames.find((f) => f.t === 'ready' && f.sid === 'b26a')
+        const listedAfterSpawn = await tmuxList()
+        console.error('    [diag] persistence=' + String(cfgBefore?.config?.persistence)
+          + ' ready.persist=' + String(readyFrame?.persist)
+          + ' tmuxAfterSpawn=' + JSON.stringify(listedAfterSpawn))
+      }
       w1.client.send(JSON.stringify({ t: 'input', sid: 'b26a', d: 'printf "B26MARK-%s\\n" resume\n' }))
       await w1.waitFor(() => /B26MARK-resume/.test(w1.state.text), 10000, '标记输出')
       // 异常断开 → 孤儿 → 保活 1s + 回收器扫描（≤10s）只杀 PTY；tmux 会话应存活
