@@ -397,6 +397,8 @@ export interface ScreenHeartbeat {
     inflight: number;
     /** 看门狗；null = 当前没有挂着的窗口。 */
     watchdog: NodeJS.Timeout | null;
+    /** 最近一次解析完成的时间戳（0 = 从未）。看门狗靠它区分「解析在途」与「真停摆」。 */
+    lastParseAt: number;
 }
 /** 建一份空心跳。 */
 export declare function newScreenHeartbeat(): ScreenHeartbeat;

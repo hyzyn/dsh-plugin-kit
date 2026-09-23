@@ -367,6 +367,12 @@ D50 才是用户看到的那一下（他补的描述是「整条状态条瞬间�
   （`writeToScreen()`，信号用 `write(data, cb)` 的回调——`onWriteParsed` 在 5.5.0 不是公开
   API）：窗口内没有任何一批被解析完即判定停摆，`dropScreen()` **只摘屏、不动会话**，
   `tty_screen` 改为如实报「虚拟屏不可用（原因）」。
+  ⚠️ 心跳的第一版（`ef1f94f2`）就带着一个**误杀**：看门狗按首次写入武装、到期只看 `inflight > 0`，
+  而连续输出下到期时几乎总有在途批次——实测 6s 连续输出误判 1 次，等于活跃会话一分钟内
+  必丢虚拟屏。单测没抓住，因为那条「健康屏不误报」写的是**一次性 10 帧突发**（全部解析完
+  才到期），恰好避开竞态。改为**双条件**判定（`inflight > 0` 且整个窗口内 `lastParseAt`
+  无解析进展），并补两条回归：连续输出不误报、持续输出下的真停摆照样判出（不能被连续写入
+  无限推迟）。
 - **排除掉的假设（重要）**：上门报告的根因写的是「dispose 与在途写入竞态」，**实测不成立**：
   `write()` 后立刻 `dispose()`（在途数据仍在写队列里）不崩；`dispose()` 不清 `lines`
   （长度仍是 rows）、不清写队列（仍挂着待解析项）；`dispose()` 之后 `lineFeed`/`write` 也不崩。
@@ -374,15 +380,15 @@ D50 才是用户看到的那一下（他补的描述是「整条状态条瞬间�
   本次没有采纳；「方案 D：尺寸夹紧到 ≥2」早在 0.19.0 就由 `clampInt` 实现。
   报告里「不涉及 resize 帧」也与实测不符——resize（reflow）是复现的必要条件，实际发生过的
   resize 帧只是没被记下来（面板/标签/窗口变化都会发）。
-- **回归门槛**：`test/screen-crash.test.ts`（9 条）——构造参数必须留余量；兜底判据只认虚拟屏
+- **回归门槛**：`test/screen-crash.test.ts`（11 条）——构造参数必须留余量；兜底判据只认虚拟屏
   异常（按堆栈，不按 message）；**最小复现序列打不穿 `createHeadlessScreen()`**；负控制：
-  同一序列直建 `scrollback: 0` 必须仍能触发（钉住「序列本身有效」）；停摆心跳四条（健康屏
-  不误报 / 停摆屏判出且只回调一次 / 同步抛出立即判出 / 摘看门狗后不再回调）+ 记账入口只吞
-  虚拟屏异常。负控制在上游真修好时只 `console.warn` 提示复核、不判红——正例才是护栏。
+  同一序列直建 `scrollback: 0` 必须仍能触发（钉住「序列本身有效」）；停摆心跳六条（健康屏
+  不误报 / 停摆屏判出且只回调一次 / 同步抛出立即判出 / 摘看门狗后不再回调 / **连续输出不误报**
+  / 持续输出下真停摆仍判出）+ 记账入口只吞虚拟屏异常。负控制在上游真修好时只 `console.warn` 提示复核、不判红——正例才是护栏。
   接线层：`test/host-frames.test.ts` 两条（走真实 `onConnection → spawn → PTY 输出 → onData`）——
   写入被拒时**只退役该屏**（`screenDownReason` 记原因、会话 `closed === false`、会话数不变），
   健康屏不被误退役。
-- **验证**：`vitest` **259/259**（19 文件，+9）；`tsc --noEmit` 绿；`client-lint` 绿；
+- **验证**：`vitest` **261/261**（19 文件，+11）；`tsc --noEmit` 绿；`client-lint` 绿；
   `lib/` 与源码同步重建（`client.js` 无变化）。**反向验证有效**：把 `SCREEN_SCROLLBACK` 改回
   `0` → 两条正例**立即变红**（`expected 0 to be greater than 0` / `expected 1 to be +0`），
   恢复后转绿。
@@ -486,7 +492,7 @@ check-dsh-engines → publish → `dsh plugin --profile web add @hyzyn/dsh-tty@<
 > 当契约，看的是「全绿」。
 
 - 单测与静态检查：`pnpm --filter @hyzyn/dsh-tty test`（或根目录 `npx vitest run packages/tty`；
-  2026-09-23 实测 **259 通过 / 19 文件**，含 D57 的 `test/screen-crash.test.ts` 与
+  2026-09-23 实测 **261 通过 / 19 文件**，含 D57 的 `test/screen-crash.test.ts` 与
   `test/host-frames.test.ts` 的接线用例）、
   `npx tsc --noEmit`、`node scripts/client-lint.mjs`。
 - 端到端脚本（**0.19.0 起已挂 CI**，仍可本地跑）：`node scripts/integration.mjs`（本机 PTY 全链路；

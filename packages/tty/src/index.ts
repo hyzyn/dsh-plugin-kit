@@ -1148,11 +1148,13 @@ export interface ScreenHeartbeat {
   inflight: number
   /** 看门狗；null = 当前没有挂着的窗口。 */
   watchdog: NodeJS.Timeout | null
+  /** 最近一次解析完成的时间戳（0 = 从未）。看门狗靠它区分「解析在途」与「真停摆」。 */
+  lastParseAt: number
 }
 
 /** 建一份空心跳。 */
 export function newScreenHeartbeat(): ScreenHeartbeat {
-  return { inflight: 0, watchdog: null }
+  return { inflight: 0, watchdog: null, lastParseAt: 0 }
 }
 
 /** 摘掉看门狗（会话结束 / 屏退役时调用，避免定时器在会话死后误报）。 */
@@ -1188,6 +1190,8 @@ export function writeToScreen(
   try {
     screen.write(text, () => {
       heartbeat.inflight = Math.max(0, heartbeat.inflight - 1)
+      heartbeat.lastParseAt = Date.now()
+      if (heartbeat.inflight === 0) clearScreenWatchdog(heartbeat)
     })
   } catch {
     // 同步抛出（写队列超限 5e7 / 尺寸非法）：屏已不可用，立刻判定停摆
@@ -1196,9 +1200,13 @@ export function writeToScreen(
     return
   }
   if (heartbeat.watchdog === null) {
+    const armedAt = Date.now()
     heartbeat.watchdog = setTimeout(() => {
       heartbeat.watchdog = null
-      if (heartbeat.inflight > 0) onStall(SCREEN_DOWN_STALLED)
+      // 停摆要**双条件**：还有批次没解析完，且整个窗口内**毫无**解析进展。
+      // 只看 inflight 会误杀连续输出的健康屏——看门狗按首次写入武装、5s 后到期时，
+      // 活跃会话几乎总有在途批次（实测：6s 连续输出误判 1 次，见 DEFECTS D57）。
+      if (heartbeat.inflight > 0 && heartbeat.lastParseAt < armedAt) onStall(SCREEN_DOWN_STALLED)
     }, stallMs)
     heartbeat.watchdog.unref?.()
   }

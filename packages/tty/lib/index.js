@@ -941,7 +941,7 @@ export const SCREEN_DOWN_WRITE_REJECTED = '写入被拒（写队列超限或尺�
 export const SCREEN_DOWN_STALLED = '解析停摆（xterm 在超时窗口内未回调）';
 /** 建一份空心跳。 */
 export function newScreenHeartbeat() {
-    return { inflight: 0, watchdog: null };
+    return { inflight: 0, watchdog: null, lastParseAt: 0 };
 }
 /** 摘掉看门狗（会话结束 / 屏退役时调用，避免定时器在会话死后误报）。 */
 export function clearScreenWatchdog(heartbeat) {
@@ -969,6 +969,9 @@ export function writeToScreen(screen, heartbeat, text, onStall, stallMs = SCREEN
     try {
         screen.write(text, () => {
             heartbeat.inflight = Math.max(0, heartbeat.inflight - 1);
+            heartbeat.lastParseAt = Date.now();
+            if (heartbeat.inflight === 0)
+                clearScreenWatchdog(heartbeat);
         });
     }
     catch {
@@ -978,9 +981,13 @@ export function writeToScreen(screen, heartbeat, text, onStall, stallMs = SCREEN
         return;
     }
     if (heartbeat.watchdog === null) {
+        const armedAt = Date.now();
         heartbeat.watchdog = setTimeout(() => {
             heartbeat.watchdog = null;
-            if (heartbeat.inflight > 0)
+            // 停摆要**双条件**：还有批次没解析完，且整个窗口内**毫无**解析进展。
+            // 只看 inflight 会误杀连续输出的健康屏——看门狗按首次写入武装、5s 后到期时，
+            // 活跃会话几乎总有在途批次（实测：6s 连续输出误判 1 次，见 DEFECTS D57）。
+            if (heartbeat.inflight > 0 && heartbeat.lastParseAt < armedAt)
                 onStall(SCREEN_DOWN_STALLED);
         }, stallMs);
         heartbeat.watchdog.unref?.();

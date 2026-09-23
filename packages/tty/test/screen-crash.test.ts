@@ -230,4 +230,34 @@ describe('虚拟屏停摆心跳（D57 跟进）', () => {
     expect(swallowXtermScreenCrash(undefined)).toBe(false)
     expect(xtermScreenCrashCount()).toBe(before + 1)
   })
+
+  /**
+   * 回归（复核 ef1f94f2 时发现的误杀）：看门狗只看 `inflight > 0` 会把连续输出的健康屏
+   * 判成停摆——它按首次写入武装，窗口到期时活跃会话几乎总有在途批次。实测 6s 连续输出
+   * 误判 1 次。停摆必须是双条件：`inflight > 0` **且** 整个窗口内毫无解析进展。
+   */
+  it('连续输出不误报：在途批次跨过窗口到期也不算停摆', async () => {
+    const heartbeat = newScreenHeartbeat()
+    let stalls = 0
+    // 健康屏模型：每 30ms 一帧、解析耗时 20ms——稳态下看门狗到期时几乎总有在途批次
+    const fake = { write(_data: string, cb?: () => void) { setTimeout(() => cb?.(), 20) } }
+    const writer = setInterval(() => writeToScreen(fake, heartbeat, 'x'.repeat(64), () => stalls++, 100), 30)
+    await new Promise((r) => setTimeout(r, 450))
+    clearInterval(writer)
+    expect(stalls).toBe(0)
+    await new Promise((r) => setTimeout(r, 120)) // 收尾：最后一帧解析完
+    expect(stalls).toBe(0)
+    expect(heartbeat.inflight).toBe(0)
+  })
+
+  it('连续输出下的真停摆照样判出（回调永远不来）', async () => {
+    const heartbeat = newScreenHeartbeat()
+    let stalls = 0
+    const wedged = { write() { /* 永不回调：模拟解析器卡死 */ } }
+    const writer = setInterval(() => writeToScreen(wedged, heartbeat, 'x', () => stalls++, 60), 30)
+    await new Promise((r) => setTimeout(r, 300))
+    clearInterval(writer)
+    expect(stalls).toBeGreaterThan(0) // 持续输出不能把停摆无限推迟
+    clearScreenWatchdog(heartbeat)
+  })
 })
