@@ -87,7 +87,7 @@ import { definePlugin, dshHome as resolveDshHome, plainConfig, settingsEntryScop
 import type { SettingsEntryScope } from '@hyzyn/dsh-kit'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { spawnSsh, sshTarget, expandHome, setCredentialResolver } from './ssh.js'
-import type { CredentialResolver, HostKeyRecord, SshHostEntry, SshSpec, TermHandle } from './ssh.js'
+import type { CredentialResolver, HostKeyRecord, SshHostEntry, SshSpec, TermExit, TermHandle } from './ssh.js'
 import { probeSsh } from './probe.js'
 import { buildCommandSpawn, buildShellSpawn, defaultShellPath } from './shell-integration.js'
 import { parseSshConfig } from './ssh-config.js'
@@ -230,6 +230,13 @@ const DEFAULT_RECONNECT_GRACE_SEC = 120
 /** 下行背压阈值（ws.bufferedAmount 字节）。 */
 const BACKPRESSURE_HIGH = 512 * 1024
 const BACKPRESSURE_LOW = 128 * 1024
+/**
+ * 显式 kill 后的 exit 帧兜底（毫秒）。PTY 句柄的 `done` 承诺「恰好 resolve 一次」，
+ * 但个别平台/后端上 forceKill 之后它迟迟不兑现（实测 rc.1 的 subprocess-local 在
+ * Linux 上会卡住），而「发过 kill 就必须收到一条 exit 帧」是前端契约（B1/B3 用例
+ * 钉的就是它）。超时即按 SIGKILL 结案；done 真回来时靠 session.exitSent 幂等忽略。
+ */
+const KILL_EXIT_FALLBACK_MS = 2000
 const SID_RE = /^[A-Za-z0-9_-]{1,64}$/
 /** 自定义命令标签（0.14.0）的长度上限：单条命令，防误传超长脚本。 */
 const COMMAND_MAX = 2000
@@ -1381,6 +1388,8 @@ export class TtyServer {
   private readonly pendingTmux = new Map<string, Promise<TtySession | null>>()
   /** 已接线的面板连接（sessions 帧广播用；比 wss.clients 更贴合「面板」语义，单测也可驱动）。 */
   private readonly panels = new Set<WebSocket>()
+  /** 会话 → 它所属连接的 sid 映射（kill 兜底结案时要从本地表里摘除）。 */
+  private readonly sessionLocals = new WeakMap<TtySession, Map<string, TtySession>>()
   /** WS 闸门（插件禁用时关闭）：拒绝新升级 + 断开存量连接。 */
   private wsGateOpen = true
   /** 服务器状态条总开关（配置热生效；关闭时停掉全部采集，重开按订阅恢复）。 */
@@ -1970,6 +1979,11 @@ export class TtyServer {
       /* 已退出 */
     }
     void forceKill(session.handle)
+    // 兜底：handle.done 不兑现时也要按「用户已 kill」结案（见 KILL_EXIT_FALLBACK_MS）。
+    const timer = setTimeout(() => {
+      this.finishSession(session, { exitCode: null, signal: 'SIGKILL' })
+    }, KILL_EXIT_FALLBACK_MS)
+    timer.unref?.()
   }
 
   /** 每会话一块虚拟屏（xterm-headless）：tty_screen 的数据源；失败降级为 null。
@@ -2335,30 +2349,39 @@ export class TtyServer {
 
   /** 会话退出事实 → exit 帧（恰好一次；本地 PTY 与 SSH 共用）。 */
   private watchDone(session: TtySession, local: Map<string, TtySession>): void {
+    this.sessionLocals.set(session, local)
     session.handle.done.then((outcome) => {
-      // kill 主动关闭时会话可能已被移出 local，用 exitSent 保证 exit 帧恰好一次；
-      // 发送走 session.ws 动态取值——attach 换连接后 exit 也能跟着新连接走
-      if (session.exitSent === true) return
-      session.exitSent = true
-      session.closed = true
-      session.statsSubs.clear()
-      this.stopStats(session)
-      local.delete(session.id)
-      this.sessions.remove(session.id)
-      if (session.kind === 'ssh' && session.tmuxName !== null) this.trackPersist(session.tmuxName, false)
-      clearScreenWatchdog(session.screenHeartbeat)
-      try {
-        session.screen?.dispose()
-      } catch {
-        /* 已释放 */
-      }
-      this.flushPendingOutput(session) // exit 前冲掉合并窗口里的尾巴，保序
-      // exit 广播到所有绑定连接（跨窗口共享），各客户端按自己的 sid 收址
-      for (const client of session.clients.values()) {
-        send(client.ws, { t: 'exit', sid: client.sid, code: outcome.exitCode, signal: outcome.signal })
-      }
-      session.clients.clear()
+      this.finishSession(session, outcome)
     }).catch(() => { /* spawn 级失败已在分支内处理 */ })
+  }
+
+  /**
+   * 会话终局的**唯一出口**：退役 + 清理 + 给所有绑定连接发 exit 帧（恰好一次）。
+   *
+   * `outcome` 正常来自 PTY 句柄的 done；显式 kill 的兜底（KILL_EXIT_FALLBACK_MS）
+   * 也走这里，带 code=null / signal=SIGKILL。exit 广播到所有绑定连接（跨窗口共享），
+   * 各客户端按自己的 sid 收址。
+   */
+  private finishSession(session: TtySession, outcome: TermExit): void {
+    if (session.exitSent === true) return
+    session.exitSent = true
+    session.closed = true
+    session.statsSubs.clear()
+    this.stopStats(session)
+    this.sessionLocals.get(session)?.delete(session.id)
+    this.sessions.remove(session.id)
+    if (session.kind === 'ssh' && session.tmuxName !== null) this.trackPersist(session.tmuxName, false)
+    clearScreenWatchdog(session.screenHeartbeat)
+    try {
+      session.screen?.dispose()
+    } catch {
+      /* 已释放 */
+    }
+    this.flushPendingOutput(session) // exit 前冲掉合并窗口里的尾巴，保序
+    for (const client of session.clients.values()) {
+      send(client.ws, { t: 'exit', sid: client.sid, code: outcome.exitCode, signal: outcome.signal })
+    }
+    session.clients.clear()
   }
 
   /** 输出下行 + 基于 ws.bufferedAmount 的背压（暂停/恢复 PassThrough）。 */

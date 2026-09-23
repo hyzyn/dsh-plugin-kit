@@ -290,7 +290,7 @@ async function run() {
     else fail('B3 同 sid 二次 spawn 被拒', s.state.errors[0])
     s.client.send(JSON.stringify({ t: 'kill', sid: 'tab-a' }))
     try {
-      await s.waitFor(() => s.state.exited !== null, 20000, 'exit')
+      await s.waitFor(() => s.state.exited !== null, 10000, 'exit')
     } catch (error) {
       // 诊断（CI 上 Linux 专属复现）：区分「kill 没生效（服务端仍列着它）」与
       // 「会话已消失、只是 exit 帧没发（PTY 句柄的 done 未兑现）」。

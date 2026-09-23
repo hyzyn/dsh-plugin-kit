@@ -507,6 +507,8 @@ export declare class TtyServer {
     private readonly pendingTmux;
     /** 已接线的面板连接（sessions 帧广播用；比 wss.clients 更贴合「面板」语义，单测也可驱动）。 */
     private readonly panels;
+    /** 会话 → 它所属连接的 sid 映射（kill 兜底结案时要从本地表里摘除）。 */
+    private readonly sessionLocals;
     /** WS 闸门（插件禁用时关闭）：拒绝新升级 + 断开存量连接。 */
     private wsGateOpen;
     /** 服务器状态条总开关（配置热生效；关闭时停掉全部采集，重开按订阅恢复）。 */
@@ -647,6 +649,14 @@ export declare class TtyServer {
     private handleStatsFrame;
     /** 会话退出事实 → exit 帧（恰好一次；本地 PTY 与 SSH 共用）。 */
     private watchDone;
+    /**
+     * 会话终局的**唯一出口**：退役 + 清理 + 给所有绑定连接发 exit 帧（恰好一次）。
+     *
+     * `outcome` 正常来自 PTY 句柄的 done；显式 kill 的兜底（KILL_EXIT_FALLBACK_MS）
+     * 也走这里，带 code=null / signal=SIGKILL。exit 广播到所有绑定连接（跨窗口共享），
+     * 各客户端按自己的 sid 收址。
+     */
+    private finishSession;
     /** 输出下行 + 基于 ws.bufferedAmount 的背压（暂停/恢复 PassThrough）。 */
     private attachOutput;
     /** 立即冲刷待发的合并输出（exit/kill 前调用，保证 exit 帧永远在最后一帧 data 之后）。 */

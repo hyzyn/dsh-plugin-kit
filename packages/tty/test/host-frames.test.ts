@@ -53,6 +53,8 @@ interface FakePty extends TermHandle {
   writes: string[]
   killCalls: string[]
   settle: (outcome: { exitCode: number | null; signal: string | null }) => void
+  /** terminate 时是否兑现 done（false 模拟「forceKill 后 done 迟迟不兑现」的后端）。 */
+  settleOnTerminate: boolean
 }
 
 function makePty(): FakePty {
@@ -82,7 +84,7 @@ function makePty(): FakePty {
       },
     },
     terminate: async () => {
-      settleDone({ exitCode: 0, signal: null })
+      if (fake.settleOnTerminate) settleDone({ exitCode: 0, signal: null })
       return true
     },
     forceKill: () => {
@@ -92,6 +94,7 @@ function makePty(): FakePty {
     writes: [],
     killCalls: pty.killCalls,
     settle: (outcome) => settleDone(outcome),
+    settleOnTerminate: true,
   }
   return fake
 }
@@ -260,6 +263,22 @@ describe('kill 的孤儿前提（D09）', () => {
     // 本连接 kill → 会话结束 + exit 帧
     wsA.emit('message', Buffer.from(JSON.stringify({ t: 'kill', sid: 'sess1' })))
     await wsA.waitFor('exit')
+    expect(h.sessions.count).toBe(0)
+    await h.sessions.disposeAll()
+  })
+
+  it('PTY 句柄的 done 不兑现时，显式 kill 仍按 SIGKILL 兜底结案并发 exit 帧', async () => {
+    // 背景（CI 实测）：rc.1 的 dsh-subprocess-local 在 Linux 上 forceKill 之后
+    // handle.done 迟迟不 resolve，exit 帧就永远发不出去（前端契约是「kill 必回 exit」）。
+    // 这里把 terminate 设成不兑现 done，钉住 2s 兜底结案。
+    const h = makeHarness()
+    const ws = h.connect()
+    await spawnLocal(ws, 'stuck')
+    h.ptys[0].settleOnTerminate = false
+    ws.emit('message', Buffer.from(JSON.stringify({ t: 'kill', sid: 'stuck' })))
+    const exit = await ws.waitFor('exit', 6000)
+    expect(exit.signal).toBe('SIGKILL')
+    expect(exit.code).toBeNull()
     expect(h.sessions.count).toBe(0)
     await h.sessions.disposeAll()
   })
