@@ -17,6 +17,7 @@ import { EventEmitter } from 'node:events'
 import type { PassThrough } from 'node:stream'
 import type { AddressInfo } from 'node:net'
 import { TunnelManager } from '../src/tunnels.js'
+import { setCredentialResolver } from '../src/ssh.js'
 import type { TunnelSpec, TunnelStatus } from '../src/tunnels.js'
 import type { SshHostEntry } from '../src/ssh.js'
 
@@ -206,6 +207,40 @@ describe('本地监听失败必须粘住（D53）', () => {
     } finally {
       t.manager.disposeAll()
       occupied.close()
+    }
+  })
+
+  it('反序时序：非 fatal 重试定时器先排、fatal 后到——不得被刷回 connecting（D58）', async () => {
+    // 与上一条**相反**的顺序（这才是生产实测的顺序，见 D58）：
+    //   ① 凭据解析失败（非 fatal）→ scheduleRetry 排下 1s 定时器
+    //   ② 本地监听 EADDRINUSE（fatal）后到
+    //   ③ ①的定时器到点 → connectTunnel → 旧实现在这里把 error 刷成 connecting，
+    //      而之后的失败又都被 scheduleRetry 的 fatal 短路挡住 → 永久 connecting
+    // 修前该用例必红（expected 'connecting' to be 'error'）；上一条覆盖的是反序，
+    // 所以它绿着也抓不到这条。
+    setCredentialResolver({ resolve: async () => undefined })
+    const occupied = net.createServer()
+    await new Promise<void>((resolve) => occupied.listen(0, '127.0.0.1', resolve))
+    const takenPort = (occupied.address() as AddressInfo).port
+    const t = makeHarness(() => ({ ...BOOK, password: 'env:MISSING_FOR_RACE_TEST' }))
+    try {
+      t.manager.reconcile([specOf({ localPort: takenPort })])
+      await until(() => t.log.some((l) => l.includes('后重连')) && t.log.some((l) => l.includes('EADDRINUSE')))
+      const retryAt = t.log.findIndex((l) => l.includes('后重连'))
+      const fatalAt = t.log.findIndex((l) => l.includes('EADDRINUSE'))
+      // 先钉住「反序」这个前提：否则本用例退化成上一条，抓不到东西
+      expect(retryAt, '重试定时器未先排：日志=' + JSON.stringify(t.log)).toBeGreaterThanOrEqual(0)
+      expect(fatalAt, '未出现 EADDRINUSE：日志=' + JSON.stringify(t.log)).toBeGreaterThan(retryAt)
+      expect(t.status()?.state).toBe('error')
+      expect(t.status()?.fatal).toBe(true)
+      // 越过首轮重试窗口：早先排下的定时器到点会重入 connectTunnel
+      await new Promise((r) => setTimeout(r, 1300))
+      expect(t.status()?.state, 'fatal 被定时器重入覆写成了 connecting').toBe('error')
+      expect(t.status()?.error).toContain('EADDRINUSE')
+    } finally {
+      t.manager.disposeAll()
+      occupied.close()
+      setCredentialResolver(null)
     }
   })
 })

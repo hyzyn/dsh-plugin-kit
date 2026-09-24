@@ -303,6 +303,19 @@ function parsePortToken(text) {
         return { port: Number(range[1]), range: [Number(range[1]), Number(range[2])] };
     return null;
 }
+/**
+ * 通配 hostIp 归一族（D130）：双栈发布（`0.0.0.0:8848->8848/tcp` 与
+ * `[::]:8848->8848/tcp`）是**同一次 -p** 的两种展开，不是两条映射。此前按原文参与
+ * 去重，两条都留下；而 ps 的渲染丢掉 hostIp 后就成了「8848→8848/tcp」重复两遍
+ * （docker_inspect 因为保留 hostIp 才看着正常）。
+ *
+ * 只归一化通配符这一族：`127.0.0.1:8080` 与 `0.0.0.0:8080` 并存是真实的两种绑定，
+ * 必须继续算两条——所以这里不做「同 hostPort 一律合并」。
+ */
+function hostIpDedupeKey(hostIp) {
+    const trimmed = hostIp.trim();
+    return trimmed === '' || trimmed === '0.0.0.0' || trimmed === '::' || trimmed === '[::]' ? '*' : trimmed;
+}
 /** 解析 ps 的 `.Ports` 串：`0.0.0.0:8080->80/tcp, [::]:8080->80/tcp, 9000/tcp, 0.0.0.0:8000-8005->8000-8005/tcp`。 */
 export function parsePorts(text) {
     const out = [];
@@ -318,10 +331,15 @@ export function parsePorts(text) {
             const containerToken = parsePortToken(containerPortText);
             if (containerToken === null)
                 continue;
-            const hostPortText = hostPart.slice(hostPart.lastIndexOf(':') + 1);
+            // hostPart 有两种形态：`0.0.0.0:8080` 与（少数驱动/版本的）裸 `8080`。后者用
+            // lastIndexOf(':') = -1 去 slice(0, -1) 会**砍掉最后一个字符**（`84` → hostIp
+            // `'8'`）——D130 同批修掉这个既有解析错误。
+            const colonAt = hostPart.lastIndexOf(':');
+            const hostPortText = colonAt >= 0 ? hostPart.slice(colonAt + 1) : hostPart;
             const hostToken = parsePortToken(hostPortText);
-            const hostIp = hostPart.slice(0, hostPart.lastIndexOf(':'));
-            const key = `${hostIp}:${hostPortText}:${containerPortText}/${protocol}`;
+            const hostIp = colonAt >= 0 ? hostPart.slice(0, colonAt) : '';
+            // 去重键用归一化后的 hostIp（D130）：双栈只留首条；hostIp 原文照旧写进结果
+            const key = `${hostIpDedupeKey(hostIp)}:${hostPortText}:${containerPortText}/${protocol}`;
             if (seen.has(key))
                 continue;
             seen.add(key);
@@ -371,12 +389,38 @@ export function parsePsJson(text) {
             createdAt: str(row, 'CreatedAt') === '' ? null : str(row, 'CreatedAt'),
             runningFor: str(row, 'RunningFor'),
             ports: parsePorts(str(row, 'Ports')),
+            // ps 的 `.Networks` 是逗号分隔串（host 网络容器为 `host`）
+            networks: str(row, 'Networks').split(',').map((name) => name.trim()).filter((name) => name !== ''),
             composeProject: labels['com.docker.compose.project'] ?? null,
             composeService: labels['com.docker.compose.service'] ?? null,
             size: str(row, 'Size'),
             exitCode: parseExitCode(status),
         };
     });
+}
+/**
+ * inspect 未命中时的候选名（D132）：把 `No such object: rmqnamesrv` 变成
+ * 「是否想找 607023340cbb_rmqnamesrv？」。
+ *
+ * 纯函数（名字列表由调用方取，便于离线断言）：前缀命中优先、其次包含；去重后最多 3 个。
+ * 精确名匹配是 docker 语义、不改；这里只是**在报错里补一句**，让人少猜一次。
+ */
+export function suggestContainerNames(id, names) {
+    const needle = id.trim().toLowerCase();
+    if (needle === '')
+        return [];
+    const prefix = [];
+    const contains = [];
+    for (const name of names) {
+        if (name === '')
+            continue;
+        const lower = name.toLowerCase();
+        if (lower.startsWith(needle))
+            prefix.push(name);
+        else if (lower.includes(needle))
+            contains.push(name);
+    }
+    return [...new Set([...prefix, ...contains])].slice(0, 3);
 }
 /** ps 的 `.Labels` 是 `k=v,k2=v2` 串。 */
 export function parseLabels(text) {

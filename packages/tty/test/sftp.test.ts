@@ -340,3 +340,45 @@ describe('tree 截断', () => {
     expect(result.truncated).toBe(true)
   })
 })
+
+describe('错误文案带对象（D59）', () => {
+  it('读不到目录：文案带 path；code=2 时点明「不存在」而不是让人猜英文 errno', async () => {
+    const { manager, fake } = await makeHarness()
+    // ssh2 会把 SFTP 状态码挂在 err.code 上（SFTP.js: err.code = errorCode）
+    fake.readdir = (path, cb) => {
+      const error = Object.assign(new Error('No such file'), { code: 2 })
+      cb(error)
+    }
+    await expect(manager.list(SPEC, '/etc/kubernetes')).rejects.toThrow(
+      '读取目录失败 /etc/kubernetes: 不存在（NO_SUCH_FILE）',
+    )
+  })
+
+  it('权限拒绝（code=3）也单独措辞', async () => {
+    const { manager, fake } = await makeHarness()
+    fake.readdir = (path, cb) => {
+      const error = Object.assign(new Error('Permission denied'), { code: 3 })
+      cb(error)
+    }
+    await expect(manager.list(SPEC, '/root')).rejects.toThrow('读取目录失败 /root: 权限不足（PERMISSION_DENIED）')
+  })
+
+  it('重命名失败：文案带 from → to（批量操作时才知道是哪一对）', async () => {
+    const { manager, fake } = await makeHarness()
+    fake.rename = (from, to, cb) => {
+      cb(new Error('failure'))
+    }
+    await expect(manager.rename(SPEC, '/a.txt', '/b.txt')).rejects.toThrow('重命名失败 /a.txt → /b.txt: failure')
+  })
+
+  it('删除目录失败：文案带 path，且保留原有的 recursive / 权限提示', async () => {
+    const { manager, fake } = await makeHarness()
+    fake.nodes.set('/d', { kind: 'dir', size: 0, mtime: 0 })
+    fake.rmdir = (path, cb) => {
+      cb(new Error('Failure'))
+    }
+    await expect(manager.remove(SPEC, '/d', false)).rejects.toThrow(
+      '删除目录失败 /d: Failure（目录非空时需 recursive:true；若非此原因，多为账号对该目录无写权限）',
+    )
+  })
+})

@@ -51,6 +51,8 @@ export interface TunnelStatus {
   enabled: boolean
   state: TunnelState
   error: string | null
+  /** 人工介入级故障（本地监听失败 / 连接簿缺失）：不会自动重试，改配置后重建（D58）。 */
+  fatal: boolean
   /** 规则的人类可读形式：`本机:5432 → db:5432` / `远程:8080 → 本机:3000` */
   rule: string
   /** 当前活跃连接数 */
@@ -156,6 +158,7 @@ export class TunnelManager {
       enabled: rt.spec.enabled,
       state: rt.state,
       error: rt.error,
+      fatal: rt.fatal,
       rule: ruleOf(rt.spec),
       connections: rt.connections,
       totalConnections: rt.totalConnections,
@@ -238,6 +241,14 @@ export class TunnelManager {
    * 收敛成 scheduleRetry / failTunnel，调用方不必关心返回的 Promise。
    */
   private async connectTunnel(rt: RuntimeTunnel): Promise<void> {
+    /*
+     * fatal 之后不得再进入（D58，补完 D53）：本地监听失败 / 连接簿缺失是人工介入级，
+     * 重试一百次也是同一结果。真正把生产打穿的那条路径是**定时器重入**（见
+     * scheduleRetry 的 timer 回调），入口这一道是纵深防御——挡住任何新增调用方把
+     * error 态刷回 connecting（那会让面板与 agent 永远以为「还在连」）。
+     * fatal 只在 reconcile 按新签名重建运行时归零，所以这里不会挡住「改配置后恢复」。
+     */
+    if (rt.dead || rt.fatal) return
     const spec = rt.spec
     const book = this.resolveBook(spec.bookName)
     if (book === undefined) {
@@ -444,7 +455,11 @@ export class TunnelManager {
     this.logger.warn(`[dsh-tty] 隧道 ${rt.spec.name} 将在 ${String(delay)}ms 后重连（第 ${String(rt.retryAttempt)} 次）：${message}`)
     const timer = setTimeout(() => {
       rt.retryTimer = null
-      if (!rt.dead && rt.spec.enabled) void this.connectTunnel(rt)
+      // fatal 必须一起挡（D58）：定时器可能在 fatal **之前**就排好了——凭据解析失败
+      // 先发生（非 fatal，排 1s 定时器）、本地监听 EADDRINUSE 后到（fatal）。放它进来
+      // 会把 error 覆写成 connecting，而随后的失败又都被本方法的 fatal 短路挡住，
+      // 于是状态永久卡在 connecting、还挂着那条致命错误（生产实测的顺序）。
+      if (!rt.dead && !rt.fatal && rt.spec.enabled) void this.connectTunnel(rt)
     }, delay)
     timer.unref?.()
     rt.retryTimer = timer

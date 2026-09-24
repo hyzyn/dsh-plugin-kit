@@ -3883,6 +3883,7 @@ const plugin = definePlugin({
                                                 bookName: { type: 'string', required: true },
                                                 state: { type: 'string', required: true },
                                                 error: { type: 'string' },
+                                                fatal: { type: 'boolean', required: true },
                                                 connections: { type: 'number', required: true },
                                                 totalConnections: { type: 'number', required: true },
                                             },
@@ -3896,7 +3897,10 @@ const plugin = definePlugin({
                                 if (tunnels.length === 0)
                                     return [{ type: 'text', text: '当前没有配置端口转发隧道（插件配置 → 终端面板 卡片可添加）' }];
                                 const text = '端口转发隧道：' + tunnels.map((t) => {
-                                    const tail = t.error !== null && t.error !== undefined ? `（错误: ${t.error}）` : t.lastForwardError !== null && t.lastForwardError !== undefined ? `（最近转发失败: ${t.lastForwardError}）` : `（连接 ${String(t.connections)}）`;
+                                    // fatal 单独措辞（D58）：这类故障不会自愈，不说清就会一直等「正在连」
+                                    const tail = t.error !== null && t.error !== undefined
+                                        ? (t.fatal === true ? `（错误: ${t.error} —— 不会自动重试，需修配置）` : `（错误: ${t.error}）`)
+                                        : t.lastForwardError !== null && t.lastForwardError !== undefined ? `（最近转发失败: ${t.lastForwardError}）` : `（连接 ${String(t.connections)}）`;
                                     return `\n- ${t.name} [${t.direction}] ${t.rule} — ${t.state}${tail}`;
                                 }).join('');
                                 return [{ type: 'text', text }];
@@ -3917,6 +3921,7 @@ const plugin = definePlugin({
                                     rule: t.rule,
                                     state: t.state,
                                     ...(t.error === null || t.error === undefined ? {} : { error: t.error }),
+                                    fatal: t.fatal,
                                     connections: t.connections,
                                     totalConnections: t.totalConnections,
                                 })),

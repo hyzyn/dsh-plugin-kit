@@ -92,13 +92,49 @@ test('parsePsJson：字段映射 / compose 标签 / 端口', () => {
   assert.equal(web.health, 'healthy')
   assert.equal(web.composeProject, 'shop')
   assert.equal(web.composeService, 'web')
+  // 双栈（0.0.0.0 + [::]）是同一次 -p 的两种展开，只留首条（D130）——此前这条断言
+  // 把「同一个端口出现两遍」当成期望值钉住了，所以线上一直没人发现（docker_ps 的
+  // 渲染又会丢掉 hostIp，看起来就是纯粹的重复）
   assert.deepEqual(web.ports, [
     { hostIp: '0.0.0.0', hostPort: 8080, containerPort: 80, protocol: 'tcp' },
-    { hostIp: '[::]', hostPort: 8080, containerPort: 80, protocol: 'tcp' },
   ])
   assert.equal(cache.state, 'exited')
   assert.equal(cache.composeProject, null)
   assert.deepEqual(cache.ports, [{ containerPort: 6379, protocol: 'tcp' }])
+  // 网络：ps 的 .Networks 是逗号分隔串（D131）——host 网络容器靠它才能说清「端口为什么空」
+  assert.deepEqual(web.networks, ['shop_default'])
+  assert.deepEqual(cache.networks, [])
+})
+
+test('suggestContainerNames：inspect 未命中的候选（D132）', () => {
+  const names = ['607023340cbb_rmqnamesrv', 'rmqbroker', 'redis', 'rocketmq-dashboard']
+  // 前缀优先于包含；compose 前缀过的真名排在前面
+  assert.deepEqual(docker.suggestContainerNames('rmqnamesrv', names), ['607023340cbb_rmqnamesrv'])
+  assert.deepEqual(docker.suggestContainerNames('rmq', names), ['rmqbroker', '607023340cbb_rmqnamesrv'])
+  // 完全无关 / 空输入 → 不给提示
+  assert.deepEqual(docker.suggestContainerNames('nope', names), [])
+  assert.deepEqual(docker.suggestContainerNames('   ', names), [])
+  // 最多 3 个
+  assert.equal(docker.suggestContainerNames('a', ['a1', 'a2', 'a3', 'a4']).length, 3)
+})
+
+test('parsePsJson：host 网络容器无端口但有网络（D131）', () => {
+  const rows = docker.parsePsJson(JSON.stringify({
+    ID: 'host1234567890abcdef',
+    Image: 'rmq:1',
+    Names: 'rocketmq-dashboard',
+    Networks: 'host',
+    Ports: '',
+    State: 'running',
+    Status: 'Up 2 days',
+  }))
+  assert.deepEqual(rows[0].ports, [])
+  assert.deepEqual(rows[0].networks, ['host'])
+})
+
+test('parsePsJson：多网络（逗号分隔 + 空格）', () => {
+  const rows = docker.parsePsJson(JSON.stringify({ ID: 'x', Names: 'a', Networks: 'net-a, net-b', State: 'running', Status: 'Up 1 minute' }))
+  assert.deepEqual(rows[0].networks, ['net-a', 'net-b'])
 })
 
 test('parsePsJson：State 缺失时从 Status 推导（老版本 docker）', () => {
@@ -119,6 +155,28 @@ test('parsePorts：多段映射与去重', () => {
     { hostIp: '0.0.0.0', hostPort: 80, containerPort: 80, protocol: 'tcp' },
     { containerPort: 443, protocol: 'tcp' },
     { containerPort: 53, protocol: 'udp' },
+  ])
+})
+
+test('parsePorts：双栈（IPv4/IPv6 通配）是同一次发布，只留一条（D130）', () => {
+  // 现场实测（redis / nacos / higress-ai）：ps 的 .Ports 里 0.0.0.0 与 [::] 各一份，
+  // 渲染丢掉 hostIp 后看起来像「同一个端口发布了两遍」
+  assert.deepEqual(docker.parsePorts('0.0.0.0:6379->6379/tcp, [::]:6379->6379/tcp'), [
+    { hostIp: '0.0.0.0', hostPort: 6379, containerPort: 6379, protocol: 'tcp' },
+  ])
+  // 无括号的 IPv6 通配（docker 某些版本/驱动输出）同样归一
+  assert.deepEqual(docker.parsePorts(':::8848->8848/tcp, [::]:8848->8848/tcp'), [
+    { hostIp: '::', hostPort: 8848, containerPort: 8848, protocol: 'tcp' },
+  ])
+  // 真实的两种绑定（回环 + 通配）必须继续算两条：只归一化通配符那一族
+  assert.deepEqual(docker.parsePorts('127.0.0.1:8080->80/tcp, 0.0.0.0:8080->80/tcp'), [
+    { hostIp: '127.0.0.1', hostPort: 8080, containerPort: 80, protocol: 'tcp' },
+    { hostIp: '0.0.0.0', hostPort: 8080, containerPort: 80, protocol: 'tcp' },
+  ])
+  // 「仅暴露未发布」的容器端口不是重复，别被一起吃掉
+  assert.deepEqual(docker.parsePorts('80/tcp, 84->84/tcp, 84->84/tcp'), [
+    { containerPort: 80, protocol: 'tcp' },
+    { hostPort: 84, containerPort: 84, protocol: 'tcp' },
   ])
 })
 

@@ -2122,7 +2122,8 @@ function openTunnelPopover(anchor, bookName) {
       const text = document.createElement('span')
       text.className = 'tt_connTarget'
       text.title = String(st?.error ?? st?.lastForwardError ?? '')
-      text.textContent = tunnelRuleText(t) + ' · ' + state
+      // fatal（本地监听失败等）不会自愈：只写 state 会让人一直等「连接中」（D58）
+      text.textContent = tunnelRuleText(t) + ' · ' + state + (st?.fatal === true ? '（不重试，需修配置）' : '')
       row.appendChild(dot)
       row.appendChild(text)
       listEl.appendChild(row)

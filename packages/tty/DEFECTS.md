@@ -410,6 +410,45 @@ D50 才是用户看到的那一下（他补的描述是「整条状态条瞬间�
   都能一击打死 harness；本包的兜底只覆盖自己的虚拟屏。
 
 
+### D58：隧道致命错误被「重试路径」覆写成 connecting，永久卡死（2026-09-24 用户带 tunnel_list 输出上门，已修）
+
+- **症状**：`tunnel_list` 回 `state: "connecting"` 却挂着一条**永久性**错误——
+  `connecting（错误: 本地监听 127.0.0.1:2222 失败: listen EADDRINUSE …）`。面板与 agent
+  都会一直以为「还在连」，而插件**根本不会重试**。
+- **生产时序（关键）**：`~/.dsh/logs/startup-…` 两行顺序是决定性的——
+  ① `凭据未设置：… 将在 1000ms 后重连（第 1 次）`（**非** fatal，`scheduleRetry` 已排定时器）
+  ② `错误: 本地监听 … EADDRINUSE`（fatal，`failTunnel`）
+  早先排下的定时器在 fatal 之后照常到点，重入 `connectTunnel`。
+- **根因**：`connectTunnel` 入口没有 `fatal` 短路、`rt.state = 'connecting'` 无条件执行；
+  定时器回调只判 `!dead && enabled`，**漏了 `!fatal`**。于是 fatal 状态被覆写成
+  `connecting`，随后所有失败又被 `scheduleRetry` 的 `if (rt.fatal) return` 挡住 →
+  永久停在 `connecting` + 旧错误文案。D53 当初只补了 `scheduleRetry` 与 ready 两处守卫，
+  这两处漏改（典型的「修复不完整」）。
+- **为什么既有测试没抓住**：`tunnels.test.ts` 那条注释写着「生产时序」，构造的却是
+  **相反**顺序（EADDRINUSE 先 → SSH 失败后）——此时 `scheduleRetry` 已被 fatal 挡住、
+  压根排不出定时器，所以永远绿。本次补了反序用例（修前必红）。
+- **修法**：① 定时器回调加 `!rt.fatal`（卡死的关键路径）；② `connectTunnel` 入口加
+  `if (rt.dead || rt.fatal) return`（纵深防御）；③ `TunnelStatus` 暴露 `fatal`，
+  `tunnel_list` 对 fatal 单独措辞（`—— 不会自动重试，需修配置`），客户端隧道弹层同步显示
+  「（不重试，需修配置）」。`fatal` 只在 `reconcile` 按新签名重建运行时时归零，
+  所以「改配置后恢复」不受影响。
+- **回归门槛**：`test/tunnels.test.ts` 两种时序各一条；反序用例**先断言**「重试定时器确实
+  排在 fatal 之前」，否则用例会退化成正序那条、失去意义。
+
+### D59：sftp_* 错误文案不带对象，批量调用时无法判断是哪一条失败（2026-09-24 用户上报，已修）
+
+- **症状**：`sftp_list {"book":"…","path":"/etc/kubernetes"}` →
+  `Error: 读取目录失败: No such file`。同一批发 4 个 `sftp_list` 只能靠事件序号回推；
+  而 agent 常把它当「这个路径存不存在」的探测用，语义全靠猜。
+- **根因**：底层 helper 的文案只有 `<动作>: <message>`，`path` / `from→to` 就在作用域里
+  却没写进去（readdir / realpath / mkdir / remove / rename / 上传写入共 11 处）。同文件里
+  删除目录那条**带了**补充说明（recursive / 权限），但同样没有 path。
+- **修法**：统一 `sftpFail(action, target, error, note?)` → `<动作> <对象>: <原因>`；
+  ssh2 会把 SFTP 状态码挂在 `err.code`（`SFTP.js: err.code = errorCode`），
+  `NO_SUCH_FILE(2)` / `PERMISSION_DENIED(3)` 单独点明，省得从英文 errno 猜；
+  删除目录那条保留原提示。
+- **回归门槛**：`test/sftp.test.ts` 四条（code=2 / code=3 / rename 带 from→to / remove 保留提示）。
+
 ## agent 会话（0.20.0：tty_open / tty_close / tty_stats）
 
 > 这一节记的是**设计决定**（不是缺陷）：agent 能自己开终端之后，会话的归属语义变了，

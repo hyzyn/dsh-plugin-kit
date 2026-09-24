@@ -67,6 +67,12 @@ export interface ContainerSummary {
     createdAt: string | null;
     runningFor: string;
     ports: PortMapping[];
+    /**
+     * 容器所在网络（ps 的 `.Networks`，逗号分隔）。为什么要采（D131）：host 网络容器
+     * 在 ps 里**没有端口映射**，`ports` 空与「确实没暴露端口」长得一模一样——只有
+     * inspect 才能看出是 host。这个字段让 docker_ps 自己就能说清那一列为什么空。
+     */
+    networks: string[];
     /** compose 项目 / 服务（有标签时）。 */
     composeProject: string | null;
     composeService: string | null;
@@ -107,6 +113,14 @@ export declare function deriveHealth(status: string): string | null;
 export declare function parsePorts(text: string): PortMapping[];
 /** `docker ps --format '{{json .}}'` → ContainerSummary[]。 */
 export declare function parsePsJson(text: string): ContainerSummary[];
+/**
+ * inspect 未命中时的候选名（D132）：把 `No such object: rmqnamesrv` 变成
+ * 「是否想找 607023340cbb_rmqnamesrv？」。
+ *
+ * 纯函数（名字列表由调用方取，便于离线断言）：前缀命中优先、其次包含；去重后最多 3 个。
+ * 精确名匹配是 docker 语义、不改；这里只是**在报错里补一句**，让人少猜一次。
+ */
+export declare function suggestContainerNames(id: string, names: string[]): string[];
 /** ps 的 `.Labels` 是 `k=v,k2=v2` 串。 */
 export declare function parseLabels(text: string): Record<string, string>;
 export interface ContainerStats {

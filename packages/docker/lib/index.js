@@ -2,7 +2,7 @@ import z from '@deepseek-ai/schemastery';
 import { definePlugin, plainConfig, readSettingsEntry, settingsEntryScope, suppressAutoSettingsPage } from '@hyzyn/dsh-kit';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import * as dns from 'node:dns';
-import { DockerApi, assertBin, assertImageRef, assertName, assertRef, assertSince, createRunner, parseImageHistoryJson, parseImageHistoryText, parseContainerEvent, parseEventsJson, parseImageInspectJson, parseInspectJson, parsePsJson, parseStatsJson, } from './docker.js';
+import { DockerApi, assertBin, assertImageRef, assertName, assertRef, assertSince, createRunner, parseImageHistoryJson, parseImageHistoryText, parseContainerEvent, parseEventsJson, parseImageInspectJson, parseInspectJson, parsePsJson, parseStatsJson, suggestContainerNames, } from './docker.js';
 import { RemoteExec, setCredentialResolver, sshTarget } from './ssh-exec.js';
 const TARGET_SCHEMA = z.object({
     name: z.string().required(),
@@ -82,7 +82,7 @@ const MUTATION_SUBROUTES = new Set([
     '/volumes/prune',
     '/exec',
 ]);
-const DOCKER_GUIDANCE = '本机已安装 dsh-docker 插件（Docker 容器面板）：Web GUI 侧边栏「容器」入口可查看各目标（本机 / SSH 主机）上的容器列表（含 Compose 项目视图、事件「活动」条）、状态、端口、日志（含实时跟随）与资源占用（含实时跟随 + 迷你趋势图），以及镜像列表与镜像详情（层 / 大小 / 构建历史、拉取进度流）、网络与卷（列表 + 详情；删除 / 清理同样在开关之后）；目标在 插件配置 → Docker 容器面板 里维护（SSH 目标可直接引用 tty 终端面板的连接簿条目）。**默认只读**：启动/停止/重启/删除容器、删除镜像 / 清理 dangling / 拉取镜像、docker exec，都需要用户在设置里显式打开「允许变更操作」「允许 exec」后才有对应工具与按钮。agent 侧配套只读工具 docker_targets（列目标）、docker_ps（列容器，含 compose 项目与服务；**target 传 `*` 可一次列出所有目标**）、docker_attention（**需关注汇总**：unhealthy / 反复重启 / OOM / 非零退出 / 僵死，同样支持 `*` 跨目标）、docker_inspect（容器详情）、docker_logs（日志快照）、docker_stats（CPU/内存/IO 快照）、docker_images（镜像列表）、docker_image_inspect（镜像详情 + 构建历史）、docker_events（容器事件快照，见面板容器列表的「活动」条）、docker_networks（网络列表）、docker_volumes（卷列表）；排障推荐顺序：不确定从哪台/哪个容器看起时先 docker_attention（可 `*` 跨目标）→ docker_ps → docker_logs → docker_inspect → docker_stats → docker_events，镜像排查用 docker_images → docker_image_inspect。docker_action（容器生命周期）、docker_image_remove（删镜像）、docker_image_prune（清理 dangling）、docker_image_pull（拉取镜像）、docker_exec 仅在用户打开对应开关后可用，执行前须确认目标，破坏性操作（容器 remove / 镜像删除与清理）要向用户复述后果。网络 / 卷的删除与 prune 目前只提供面板按钮（HTTP 端点），没有对应的 agent 工具——不要在 agent 侧绕过面板做这些变更。docker socket 等价于目标主机的 root 权限，不要在用户未明确要求时执行变更操作。';
+const DOCKER_GUIDANCE = '本机已安装 dsh-docker 插件（Docker 容器面板）：Web GUI 侧边栏「容器」入口可查看各目标（本机 / SSH 主机）上的容器列表（含 Compose 项目视图、事件「活动」条）、状态、端口、日志（含实时跟随）与资源占用（含实时跟随 + 迷你趋势图），以及镜像列表与镜像详情（层 / 大小 / 构建历史、拉取进度流）、网络与卷（列表 + 详情；删除 / 清理同样在开关之后）；目标在 插件配置 → Docker 容器面板 里维护（SSH 目标可直接引用 tty 终端面板的连接簿条目）。**默认只读**：启动/停止/重启/删除容器、删除镜像 / 清理 dangling / 拉取镜像、docker exec，都需要用户在设置里显式打开「允许变更操作」「允许 exec」后才有对应工具与按钮。agent 侧配套只读工具 docker_targets（列目标）、docker_ps（列容器，含 compose 项目与服务；**target 传 `*` 可一次列出所有目标**；端口已按 IPv4/IPv6 双栈归并，`ports` 为空时看 `net`——host 网络容器的端口即宿主机端口）、docker_attention（**需关注汇总**：unhealthy / 反复重启 / OOM / 非零退出 / 僵死，同样支持 `*` 跨目标）、docker_inspect（容器详情）、docker_logs（日志快照）、docker_stats（CPU/内存/IO 快照）、docker_images（镜像列表）、docker_image_inspect（镜像详情 + 构建历史）、docker_events（容器事件快照，见面板容器列表的「活动」条）、docker_networks（网络列表）、docker_volumes（卷列表）；排障推荐顺序：不确定从哪台/哪个容器看起时先 docker_attention（可 `*` 跨目标）→ docker_ps → docker_logs → docker_inspect → docker_stats → docker_events，镜像排查用 docker_images → docker_image_inspect。docker_action（容器生命周期）、docker_image_remove（删镜像）、docker_image_prune（清理 dangling）、docker_image_pull（拉取镜像）、docker_exec 仅在用户打开对应开关后可用，执行前须确认目标，破坏性操作（容器 remove / 镜像删除与清理）要向用户复述后果。网络 / 卷的删除与 prune 目前只提供面板按钮（HTTP 端点），没有对应的 agent 工具——不要在 agent 侧绕过面板做这些变更。docker socket 等价于目标主机的 root 权限，不要在用户未明确要求时执行变更操作。';
 /**
  * SSE 帧封装：data 一律 `JSON.stringify` 成**单行**——换行 / 引号被转义，
  * 多字节字符也不会被 SSE 的 `\n` 行边界截断（客户端 JSON.parse 还原）。
@@ -1278,7 +1278,7 @@ const plugin = definePlugin({
             }));
             add('docker_ps', defineTool({
                 name: 'docker_ps',
-                description: '列出容器（默认只列运行中的；all:true 含已停止）。**target 传 `*` = 一次列出所有目标**（跨主机，按目标分组返回，单个目标不可达不影响其他目标）。排障第一步。',
+                description: '列出容器（默认只列运行中的；all:true 含已停止）。**target 传 `*` = 一次列出所有目标**（跨主机，按目标分组返回，单个目标不可达不影响其他目标）。排障第一步。注意：`ports` 为空**不等于**「没暴露端口」——host 网络容器的端口就是宿主机端口、ps 里没有映射，这种情况会给 `net` 字段（如 `net:"host"`），别为此再逐个 docker_inspect。',
                 parameters: {
                     target: { type: 'string', description: '目标名；传 `*` 或省略（仅一个目标时）表示当前目标/全部目标（docker_targets 列出）' },
                     all: { type: 'boolean', description: 'true 时包含已停止容器（默认 false）' },
@@ -1302,6 +1302,7 @@ const plugin = definePlugin({
                                         status: { type: 'string', required: true },
                                         health: { type: 'string' },
                                         ports: { type: 'string' },
+                                        net: { type: 'string' },
                                         composeProject: { type: 'string' },
                                         composeService: { type: 'string' },
                                     },
@@ -1330,6 +1331,7 @@ const plugin = definePlugin({
                                                     status: { type: 'string', required: true },
                                                     health: { type: 'string' },
                                                     ports: { type: 'string' },
+                                                    net: { type: 'string' },
                                                     composeProject: { type: 'string' },
                                                     composeService: { type: 'string' },
                                                 },
@@ -1360,6 +1362,9 @@ const plugin = definePlugin({
                         status: row.status,
                         ...(row.health === null ? {} : { health: row.health }),
                         ports: row.ports.map((p) => (p.hostPort === undefined ? `${String(p.containerPort)}/${p.protocol}` : `${String(p.hostPort)}→${String(p.containerPort)}/${p.protocol}`)).join(','),
+                        // 端口为空才补 net（D131）：host 网络容器的端口即宿主机端口、ps 没有映射，
+                        // 空 ports 与「没暴露端口」否则无法区分。有映射时不加，避免每行都变长。
+                        ...(row.ports.length === 0 && row.networks.length > 0 ? { net: row.networks.join(',') } : {}),
                         ...(row.composeProject === null ? {} : { composeProject: row.composeProject }),
                         ...(row.composeService === null ? {} : { composeService: row.composeService }),
                     });
@@ -1556,7 +1561,26 @@ const plugin = definePlugin({
                     const { api } = apiFor(picked.name);
                     if (api === undefined)
                         throw new Error(resolveByName(picked.name).error ?? '无法构造执行通道');
-                    const details = await api.inspect([input.id]);
+                    let details;
+                    try {
+                        details = await api.inspect([input.id]);
+                    }
+                    catch (error) {
+                        // 未命中时给候选（D132）：`No such object: rmqnamesrv` 只说明这个名字不存在，
+                        // 而 docker_ps 里可能就躺着 `607023340cbb_rmqnamesrv`（compose 建过的容器名）。
+                        // 只在失败路径多花一次 ps；候选查不到就静默——提示是锦上添花，不能变成新错误。
+                        let hint = '';
+                        try {
+                            const rows = await api.listContainers(true);
+                            const hits = suggestContainerNames(input.id, rows.map((row) => row.name));
+                            if (hits.length > 0)
+                                hint = `（是否想找：${hits.join('、')}？）`;
+                        }
+                        catch {
+                            /* 候选获取失败不影响原错误 */
+                        }
+                        throw new Error((error instanceof Error ? error.message : String(error)) + hint);
+                    }
                     const detail = details[0];
                     if (detail === undefined)
                         throw new Error(`容器不存在：${input.id}`);

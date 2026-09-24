@@ -1313,7 +1313,11 @@ window.__ModuleLoader__.load({
           jsxs('div', { className: 'dk_cardRows', children: [
             jsx(CardRow, { label: '镜像', value: item.image }, 'image'),
             jsx(CardRow, { label: 'ID', value: item.shortId }, 'id'),
-            jsx(CardRow, { label: '端口', value: portsText(item.ports) }, 'ports'),
+            // host 网络容器在 ps 里没有端口映射：空值加说明，免得被读成「没暴露端口」（D131）
+            jsx(CardRow, {
+              label: '端口',
+              value: portsText(item.ports) + (item.ports.length === 0 && Array.isArray(item.networks) && item.networks.includes('host') ? '（host 网络：端口即宿主机端口）' : ''),
+            }, 'ports'),
             jsx(CardRow, { label: '创建', value: created }, 'created'),
             item.composeProject === null ? null : jsx(CardRow, { label: 'compose', value: item.composeProject + (item.composeService === null ? '' : '/' + item.composeService) }, 'compose'),
           ] }, 'rows'),

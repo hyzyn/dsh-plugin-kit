@@ -170,6 +170,9 @@
 | D127 | P2 | docker 设置卡片「目标名」输入框**打一个字就失焦**：`dk_targetRow` 的 React key 写成 `String(index) + item.name`，key 含被编辑的字段 → 每次输入 key 变化、React 卸载重建整行，输入框当场丢焦点（表现为"无法聚焦"） | client-src/index.js | 2026-09-21 用户实测上报 |
 | D128 | P1 | 日志大流量**逐 chunk 全量重渲染**（打开 FOLLOW 的 tail 突发即数百次全量 reconcile，且每 chunk 对全缓冲 join/split 大字符串）叠加**缓冲只限行数不限字节、残行无界** → 话痨 / 大行容器把渲染进程吃到 OOM，网页直接崩溃 | client-src/index.js、client-src/log-buffer.js（新增） | 2026-09-24 用户实测上报 |
 | D129 | P2 | 修 D128 时顺手把显示层截断到 400 行（并另设 2000 行导出上限）——`LINES` 选 5000 实际只显示 400 行，与「选多少看多少」的设计不符；且「行数闸」与设置卡片的「输出上限（KB）字节闸」在 UI 上没区分 | client-src/index.js | 2026-09-24 用户实测上报（D128 的过度修正） |
+| D130 | P2 | `docker_ps` 把双栈端口渲染成重复映射：去重键含 hostIp（`0.0.0.0` 与 `[::]` 不同），render 又丢掉 hostIp → `6379→6379/tcp,6379→6379/tcp`；顺带修掉裸 `84->84/tcp` 被切成 `hostIp:'8'` | src/docker.ts、scripts/smoke.mjs | 2026-09-24 用户实测上报 |
+| D131 | P2 | host 网络容器在 `docker_ps` 里 `ports` 为空，与「确实没暴露端口」无法区分（用户为此多 inspect 了 5 个容器） | src/docker.ts、src/index.ts、client-src/index.js | 2026-09-24 用户实测上报 |
+| D132 | P3 | `docker_inspect` 未命中只回 `No such object: <id>`，不给近似候选（如 `607023340cbb_rmqnamesrv`） | src/docker.ts、src/index.ts | 2026-09-24 用户建议 |
 ### D126：失效的连接簿引用在界面上看不出来（2026-09-21 用户实测上报）
 
 - **症状**：docker 面板顶部报「目标「目标1」引用的连接簿条目不存在：HS-248」，同时下方又有一条

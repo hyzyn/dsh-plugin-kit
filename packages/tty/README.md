@@ -112,7 +112,7 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
 | `sftp_rename` | 重命名/移动远程文件或目录（`to` 与 `from` 不同目录即移动；不覆盖已存在的目标） |
 | `sftp_remove` | 删除远程文件/目录；目录默认 rmdir（非空明确报错），`recursive:true` 整树删除（不可恢复）；会拒绝 `/`、`~`、含 `.`/`..` 段的路径（不可恢复操作的前置护栏，0.19.0） |
 | `sftp_tree` | 递归列举远程目录结构（深度优先、目录优先；`maxDepth` 1~8 / `maxEntries` 1~2000 限流，超限 `truncated:true`；symlink 不跟随防环） |
-| `tunnel_list` | 列出端口转发隧道及其实时状态（活跃/连接中/错误/停止、规则、连接数） |
+| `tunnel_list` | 列出端口转发隧道及其实时状态（活跃/连接中/错误/停止、规则、连接数）；`fatal:true` = 人工介入级故障（本地监听失败 / 连接簿缺失），**不会自动重试**，修配置后重建 |
 
 典型 agent 流程（推荐）：`tty_open` 开一个会话（长驻进程用 `persistName` 要 tmux 持久化）
 → `tty_send` 启动命令 → `tty_expect` 等就绪标记 → `tty_capture{last:true}` 拿单条命令结果
@@ -220,7 +220,9 @@ SSH 会话同表调度：`tty_list` 里 `kind: 'ssh'` 的条目按 `target`
   dev server 暴露给远程/内网；
 - **宿主自持生命周期**：隧道与终端标签互相独立（各有各的 SSH 连接），面板
   关了隧道照跑；SSH 断线自动指数退避重连（1s→15s 封顶），remote 方向重连
-  后自动重新 forwardIn；连接簿改密码后重连自动用新凭证；
+  后自动重新 forwardIn；连接簿改密码后重连自动用新凭证。**例外**：本地监听失败
+  （端口被占等）/ 连接簿条目缺失是人工介入级故障——状态停在 `error` 且
+  `fatal:true`、**不会自动重试**，改配置（或恢复条目）后按新规格重建（见 DEFECTS D58）；
 - **状态徽标**：卡片展开期间 2s 轮询实时状态（活跃绿/连接中蓝/错误红/停止
   灰 + 最近错误）；「+」菜单的连接簿条目显示 `⇄N` 隧道徽标；agent 可用
   `tunnel_list` 工具查询状态；

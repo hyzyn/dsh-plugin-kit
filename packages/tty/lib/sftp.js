@@ -53,6 +53,22 @@ export function assertRemovableRemotePath(raw) {
 }
 /** OpenSSH 等 server 的 readdir 会带回 '.'/'..'：目录列表与递归删除都要跳过。 */
 const DOT_ENTRIES = new Set(['.', '..']);
+/**
+ * SFTP 失败文案：`<动作> <对象>: <原因>`。
+ *
+ * 为什么必须带对象（D59）：agent 常把 sftp_list 当「这个路径存不存在」的探测用，
+ * 批量调用时只看到「读取目录失败: No such file」根本判断不出是哪一条失败——只能靠
+ * 事件序号回推。path / from→to 就在各调用点作用域里，没有理由不带。
+ *
+ * ssh2 把 SFTP 状态码挂在 `err.code` 上（SFTP.js `err.code = errorCode`）：
+ * NO_SUCH_FILE / PERMISSION_DENIED 单独点明，省得调用方从英文 errno 里猜语义。
+ */
+function sftpFail(action, target, error, note = '') {
+    const code = typeof error === 'object' && error !== null ? error.code : undefined;
+    const reason = error instanceof Error ? error.message : String(error);
+    const detail = code === 2 ? '不存在（NO_SUCH_FILE）' : code === 3 ? '权限不足（PERMISSION_DENIED）' : reason;
+    return new Error(`${action} ${target}: ${detail}${note}`);
+}
 /** 远程路径拼接（POSIX 语义；本机路径拼接用 node:path）。 */
 function joinRemotePath(base, name) {
     return (base.endsWith('/') ? base : base + '/') + name;
@@ -198,7 +214,7 @@ export class SftpManager {
             catch (error) {
                 // 请求的根目录读不到（不存在/权限）→ 明确报错；子目录失败记入 errors 继续
                 if (isRoot)
-                    throw new Error(`读取目录失败: ${error instanceof Error ? error.message : String(error)}`);
+                    throw sftpFail('读取目录失败', dir, error);
                 errors.push({ path: dir, message: error instanceof Error ? error.message : String(error) });
                 return;
             }
@@ -238,7 +254,7 @@ export class SftpManager {
     async rename(spec, from, to) {
         const sftp = await this.acquire(spec);
         await new Promise((resolve, reject) => {
-            sftp.rename(from.trim(), to.trim(), (error) => (error != null ? reject(new Error(`重命名失败: ${error.message}`)) : resolve()));
+            sftp.rename(from.trim(), to.trim(), (error) => (error != null ? reject(sftpFail('重命名失败', `${from.trim()} → ${to.trim()}`, error)) : resolve()));
         });
     }
     /**
@@ -285,7 +301,7 @@ export class SftpManager {
         const target = path.trim();
         if (append) {
             const stream = sftp.createWriteStream(target, { flags: 'a' });
-            const done = this.streamDone(stream, () => { });
+            const done = this.streamDone(stream, () => { }, target);
             done.catch(() => { });
             return { stream, done, writePath: target };
         }
@@ -308,7 +324,7 @@ export class SftpManager {
             stream.on('error', (error) => {
                 settled = true;
                 dropPart();
-                reject(new Error(`上传写入失败: ${error.message}`));
+                reject(sftpFail('上传写入失败', target, error));
             });
             stream.on('close', () => {
                 if (settled)
@@ -364,10 +380,10 @@ export class SftpManager {
         }
     }
     /** WriteStream 的 done Promise（close 即 resolve，error reject）；onClose 钩子供覆盖写路径塞落盘逻辑。 */
-    streamDone(stream, onClose) {
+    streamDone(stream, onClose, target) {
         return new Promise((resolve, reject) => {
             stream.on('error', (error) => {
-                reject(new Error(`上传写入失败: ${error.message}`));
+                reject(sftpFail('上传写入失败', target, error));
             });
             stream.on('close', () => {
                 onClose();
@@ -782,7 +798,7 @@ export class SftpManager {
     /* -------------------------------------------------------------- */
     realpath(sftp, path) {
         return new Promise((resolve, reject) => {
-            sftp.realpath(path, (error, absPath) => (error !== undefined ? reject(new Error(`realpath 失败: ${error.message}`)) : resolve(absPath)));
+            sftp.realpath(path, (error, absPath) => (error !== undefined ? reject(sftpFail('realpath 失败', path, error)) : resolve(absPath)));
         });
     }
     /** stat 的静默版：路径不存在等错误一律回 null（mkdir -p 的逐级探测用）。 */
@@ -793,21 +809,21 @@ export class SftpManager {
     }
     mkdirOne(sftp, path) {
         return new Promise((resolve, reject) => {
-            sftp.mkdir(path, (error) => (error != null ? reject(new Error(`创建目录失败: ${error.message}`)) : resolve()));
+            sftp.mkdir(path, (error) => (error != null ? reject(sftpFail('创建目录失败', path, error)) : resolve()));
         });
     }
     readdir(sftp, path) {
         return new Promise((resolve, reject) => {
-            sftp.readdir(path, (error, list) => (error !== undefined ? reject(new Error(`读取目录失败: ${error.message}`)) : resolve(list)));
+            sftp.readdir(path, (error, list) => (error !== undefined ? reject(sftpFail('读取目录失败', path, error)) : resolve(list)));
         });
     }
     async removeEntry(sftp, path, recursive) {
         const stats = await new Promise((resolve, reject) => {
-            sftp.lstat(path, (error, stats) => (error !== undefined ? reject(new Error(`删除失败: ${error.message}`)) : resolve(stats)));
+            sftp.lstat(path, (error, stats) => (error !== undefined ? reject(sftpFail('删除失败', path, error)) : resolve(stats)));
         });
         if (!stats.isDirectory()) {
             await new Promise((resolve, reject) => {
-                sftp.unlink(path, (error) => (error != null ? reject(new Error(`删除失败: ${error.message}`)) : resolve()));
+                sftp.unlink(path, (error) => (error != null ? reject(sftpFail('删除失败', path, error)) : resolve()));
             });
             return;
         }
@@ -815,7 +831,7 @@ export class SftpManager {
             await new Promise((resolve, reject) => {
                 // 不预设原因：非空与权限拒绝在 SFTP 层都是笼统的 Failure，把两种可能
                 // 一并列出让用户自行分辨（此前一律归因为「非空」误导权限问题）
-                sftp.rmdir(path, (error) => (error != null ? reject(new Error(`删除目录失败: ${error.message}（目录非空时需 recursive:true；若非此原因，多为账号对该目录无写权限）`)) : resolve()));
+                sftp.rmdir(path, (error) => (error != null ? reject(sftpFail('删除目录失败', path, error, '（目录非空时需 recursive:true；若非此原因，多为账号对该目录无写权限）')) : resolve()));
             });
             return;
         }
@@ -827,7 +843,7 @@ export class SftpManager {
             await this.removeEntry(sftp, base + child.filename, true);
         }
         await new Promise((resolve, reject) => {
-            sftp.rmdir(path, (error) => (error != null ? reject(new Error(`删除目录失败: ${error.message}`)) : resolve()));
+            sftp.rmdir(path, (error) => (error != null ? reject(sftpFail('删除目录失败', path, error)) : resolve()));
         });
     }
 }

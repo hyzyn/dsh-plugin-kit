@@ -25,6 +25,8 @@ export interface TunnelStatus {
     enabled: boolean;
     state: TunnelState;
     error: string | null;
+    /** 人工介入级故障（本地监听失败 / 连接簿缺失）：不会自动重试，改配置后重建（D58）。 */
+    fatal: boolean;
     /** 规则的人类可读形式：`本机:5432 → db:5432` / `远程:8080 → 本机:3000` */
     rule: string;
     /** 当前活跃连接数 */
