@@ -1126,11 +1126,11 @@
    * scrollHeight-scrollTop-clientHeight<24、「回到底部」），估算高度让三者全数失灵，
    * 单容器与聚合两条路径同时中招，于是被整个移除。
    *
-   * D63 根治（第二轮）走了另一条路：行 key 用单调 id + DOM 渲染窗口
-   * （LOG_RENDER_ROWS，见 index.js 与 log-buffer.js）——缓冲最多 5000 行，DOM
-   * 同一时刻只有最近 ~400 行，布局/绘制成本恒定；content-visibility 依旧没有
-   * 开的理由，而精确 scrollHeight 保住了贴底判定。再想压 DOM 就做真虚拟化
-   * （DEFECTS.md 待办），别走估算高度的回头路。
+   * D63 根治（第二轮）走了另一条路：行 key 用单调 id + 缓冲行数/字节双限 +
+   * 150ms 合帧（见 index.js 与 log-buffer.js）——渲染频率与 chunk 速率解耦、
+   * 内存有界，DOM 按 LINES 全量渲染（显示层不截断，D129），精确 scrollHeight
+   * 保住了贴底判定。content-visibility 依旧没有开的理由；再想压 DOM 就做真
+   * 虚拟化（DEFECTS.md 待办），别走估算高度的回头路。
    */
 }
 

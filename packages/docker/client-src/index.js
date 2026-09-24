@@ -1350,15 +1350,14 @@ window.__ModuleLoader__.load({
     const LOG_TS_RE = /^\s*(\[\d{4}-\d{2}-\d{2}[ T][0-9:.,]+\]|\d{2}:\d{2}:\d{2}[,.]\d{3})/
     const LOG_LEVEL_RE = /^\s*(\[(?:TRACE|DEBUG|INFO|WARN|ERROR|FATAL)\]|\|\s*(?:TRACE|DEBUG|INFO|WARN|ERROR|FATAL))/
     const LOG_LEVEL_NAME_RE = /(TRACE|DEBUG|INFO|WARN|ERROR|FATAL)/
-    /** 导出行数上限：导出与「匹配计数」语境的上限（DOM 渲染窗口已拆成 LOG_RENDER_ROWS）。 */
-    const LOG_COLOR_LIMIT = 2000
     /**
-     * DOM 渲染窗口（D63 根治的另一半）：缓冲最多 FOLLOW_LINE_LIMIT 行，但同一时刻
-     * 只把最近这若干行挂进 DOM——缓冲行数与 DOM 节点数解耦，滚动/贴底的重排成本
-     * 恒定。行 key 用单调 id（见 log-buffer.js），窗口滑动只挂载/卸载边界行，不重绘。
+     * FOLLOW 流式日志的环形缓冲行数上限：超出丢最旧并提示一次（防止长时间跟随吃内存）。
+     *
+     * 显示**不再另设截断**：LINES 选多少就渲染/导出多少——真正的闸是这里的缓冲
+     * （行数 + 字节）与宿主的「输出上限（KB）」，再多加一层「只显示最近 N 行」只会
+     * 让 LINES 说了不算。行 key 用单调 id（见 log-buffer.js），窗口滑动只挂载/卸载
+     * 边界行，行数本身不再触发全量重绘。
      */
-    const LOG_RENDER_ROWS = 400
-    /** FOLLOW 流式日志的环形缓冲行数上限：超出丢最旧并提示一次（防止长时间跟随吃内存）。 */
     const FOLLOW_LINE_LIMIT = 5000
     /**
      * FOLLOW 缓冲的字节上限（UTF-16 unit 数）：旧实现只限行数，容器吐大行（整段
@@ -1933,6 +1932,8 @@ window.__ModuleLoader__.load({
     function ContainerView(props) {
       const item = props.item
       const config = props.config
+      /** 宿主的单次输出字节上限（KB）：快照日志的第二个闸，文案里要说清是它截断的。 */
+      const outputCapKb = Number(config.maxOutputKb) || 0
       const [tab, setTab] = useState(props.initialTab ?? 'overview')
       /** 面板是否可见（S3）：折叠的 tab 不建流。模态 / dock 形态下恒为 true。 */
       const active = usePanelActive()
@@ -2459,6 +2460,8 @@ window.__ModuleLoader__.load({
           jsx('select', {
             className: 'dk_select dk_selectSm',
             value: String(logOptions.tail),
+            // 行数与字节是两个闸：快照还会被设置卡片的「输出上限（KB）」按字节截断
+            title: '拉取的尾部行数。快照另受设置卡片「输出上限（KB）」限制（当前 ' + String(outputCapKb) + 'KB）——行数够但字节超了仍会截断，实际行数可能更少；FOLLOW 流不受该字节上限约束（由本面板的缓冲上限收口）。',
             onChange: (event) => setLogOptions({ ...logOptions, tail: Number(event.target.value) }),
             children: tailOptions.map((value) => jsx('option', { value: String(value), children: value === 5000 ? 'Last 5000' : 'Last ' + String(value) }, String(value))),
           }),
@@ -2539,16 +2542,16 @@ window.__ModuleLoader__.load({
           jsx('button', {
             type: 'button',
             className: 'dk_chip',
-            disabled: logExportRows().length === 0,
-            title: '导出匹配内容为 .log（纯文本，最多最近 ' + String(LOG_COLOR_LIMIT) + ' 行）',
+            disabled: matched.length === 0,
+            title: '导出当前显示内容为 .log（纯文本）',
             onClick: () => doLogExport('log'),
             children: '⬇ .log',
           }, 'exportLog'),
           jsx('button', {
             type: 'button',
             className: 'dk_chip',
-            disabled: logExportRows().length === 0,
-            title: '导出匹配内容为 .md（带来源与行数表头，适合当工单附件，最多最近 ' + String(LOG_COLOR_LIMIT) + ' 行）',
+            disabled: matched.length === 0,
+            title: '导出当前显示内容为 .md（带来源与行数表头，适合当工单附件）',
             onClick: () => doLogExport('md'),
             children: '⬇ .md',
           }, 'exportMd'),
@@ -2561,21 +2564,13 @@ window.__ModuleLoader__.load({
         ] })
       }
 
-      /** 当前**渲染**的行：过滤结果里只把最近 LOG_RENDER_ROWS 行挂进 DOM（D63 根治）。 */
-      const logWindow = () => {
-        const { matched } = logStats()
-        return matched.length > LOG_RENDER_ROWS ? matched.slice(-LOG_RENDER_ROWS) : matched
-      }
-
-      /** 导出行集：仍按 LOG_COLOR_LIMIT 截断——比渲染窗口宽，导出能力不回退。 */
-      const logExportRows = () => {
-        const { matched } = logStats()
-        return matched.length > LOG_COLOR_LIMIT ? matched.slice(-LOG_COLOR_LIMIT) : matched
-      }
-
-      /** 导出当前匹配内容：与聚合日志同一个构建器、同样两种格式。 */
+      /**
+       * 导出当前显示内容：与聚合日志同一个构建器、同样两种格式。
+       * 显示与导出取**同一个集合**（LINES 选多少就渲染/导出多少）——上限由缓冲
+       * （行数 + 字节）与宿主「输出上限（KB）」决定，不在这里再截一刀。
+       */
       const doLogExport = (format) => {
-        const rows = logExportRows().map((entry) => {
+        const rows = logStats().matched.map((entry) => {
           const split = splitLogTimestamp(entry.text)
           return { service: item.name, ts: split.ts, text: split.text }
         })
@@ -2592,7 +2587,6 @@ window.__ModuleLoader__.load({
 
       const logsView = () => {
         const { needle, matched } = logStats()
-        const shown = logWindow()
         return jsxs('div', { className: 'dk_logs', children: [
           logsError === '' ? null : jsx(Banner, {
             title: '读取日志失败',
@@ -2611,7 +2605,11 @@ window.__ModuleLoader__.load({
             title: '日志超出缓冲上限（' + String(FOLLOW_LINE_LIMIT) + ' 行 / ' + String(Math.round(FOLLOW_BYTE_LIMIT / 1024 / 1024)) + 'MB），已丢弃最早内容',
             hint: '流式日志只保留最近的行；需要完整历史请关掉 FOLLOW 用快照，或调小「LINES」。',
           }) : null,
-          !follow && logs !== null && logs.truncated === true ? jsx(Banner, { kind: 'warn', title: '日志输出超过上限，已截断', hint: '调小「LINES」或到设置卡片调大「单次命令输出上限」。' }) : null,
+          !follow && logs !== null && logs.truncated === true ? jsx(Banner, {
+            kind: 'warn',
+            title: '日志输出超过「输出上限（' + String(outputCapKb) + 'KB）」，已截断',
+            hint: '这是**字节**上限，不是行数上限——所以 LINES 选了 5000 也可能只回来一部分。想多留日志请到设置卡片调大「输出上限（KB）」，或打开 FOLLOW（流式不受它约束）。',
+          }) : null,
           follow ? jsx('div', { className: 'dk_followState', 'data-state': followStatus, children: followStatusText() }) : null,
           jsxs('div', {
             className: 'dk_logBody',
@@ -2628,16 +2626,13 @@ window.__ModuleLoader__.load({
               filtered: needle !== '',
             }),
             children: [
-              matched.length > shown.length
-                ? jsx('div', { className: 'dk_logLine dk_logMore', children: '（只显示最近 ' + String(LOG_RENDER_ROWS) + ' 行，共 ' + String(matched.length) + ' 行匹配；导出最多 ' + String(LOG_COLOR_LIMIT) + ' 行）' }, 'more')
-                : null,
               logsError !== ''
                 ? null
                 : (!follow && logs === null)
                   ? jsx('div', { className: 'dk_logLine', children: '读取中…' }, 'loading')
-                  : (shown.length === 0
+                  : (matched.length === 0
                     ? jsx('div', { className: 'dk_logLine', children: follow ? '等待日志…' : (needle === '' ? '(无日志)' : '(无匹配日志)') }, 'empty')
-                    : shown.map((entry) => renderLogLine(entry, needle))),
+                    : matched.map((entry) => renderLogLine(entry, needle))),
             ],
           }),
           follow && !followAtBottom
@@ -3769,10 +3764,8 @@ window.__ModuleLoader__.load({
       const matched = needle === ''
         ? leveled
         : leveled.filter((entry) => entry.text.toLowerCase().indexOf(needle) >= 0 || entry.service.toLowerCase().indexOf(needle) >= 0)
-      // DOM 渲染窗口:与单容器视图同一条规则(缓冲行数与 DOM 节点数解耦,D63 根治)
-      const shown = matched.length > LOG_RENDER_ROWS ? matched.slice(-LOG_RENDER_ROWS) : matched
-      // 导出行集:仍按 LOG_COLOR_LIMIT 截断(比渲染窗口宽,导出能力不回退)
-      const exportRows = matched.length > LOG_COLOR_LIMIT ? matched.slice(-LOG_COLOR_LIMIT) : matched
+      // 与单容器视图一致:LINES 选多少就渲染/导出多少,显示层不再截断(缓冲与宿主
+      // 输出上限已是闸;再多一道「只显示最近 N 行」只会让选择说了不算)
 
       /** 切换排序：先把待合并窗口落地，避免切模式时短暂的顺序错乱。 */
       const toggleOrderMode = () => {
@@ -3797,9 +3790,9 @@ window.__ModuleLoader__.load({
         }
       }
 
-      /** 导出当前匹配内容（受级别 / 文本过滤影响;上限比渲染窗口宽）。 */
+      /** 导出当前显示内容（受级别 / 文本过滤影响;与渲染取同一集合）。 */
       const doExport = (format) => {
-        const text = buildLogExport(exportRows, {
+        const text = buildLogExport(matched, {
           format,
           target: props.target,
           targetLabel: props.targetLabel,
@@ -3894,16 +3887,16 @@ window.__ModuleLoader__.load({
           jsx('button', {
             type: 'button',
             className: 'dk_chip',
-            disabled: exportRows.length === 0,
-            title: '导出匹配内容为 .log（纯文本，最多最近 ' + String(LOG_COLOR_LIMIT) + ' 行）',
+            disabled: matched.length === 0,
+            title: '导出当前显示内容为 .log（纯文本）',
             onClick: () => doExport('log'),
             children: '⬇ .log',
           }),
           jsx('button', {
             type: 'button',
             className: 'dk_chip',
-            disabled: exportRows.length === 0,
-            title: '导出匹配内容为 .md（带来源与行数表头，适合当工单附件，最多最近 ' + String(LOG_COLOR_LIMIT) + ' 行）',
+            disabled: matched.length === 0,
+            title: '导出当前显示内容为 .md（带来源与行数表头，适合当工单附件）',
             onClick: () => doExport('md'),
             children: '⬇ .md',
           }),
@@ -3926,9 +3919,9 @@ window.__ModuleLoader__.load({
             filtered: needle !== '',
           }),
           children: [
-            shown.length === 0
+            matched.length === 0
               ? jsx('div', { className: 'dk_logLine', children: status === 'open' ? '等待日志…' : statusText() }, 'empty')
-              : shown.map((entry) => renderAggLine(entry, needle, showTs)),
+              : matched.map((entry) => renderAggLine(entry, needle, showTs)),
           ],
         }),
         !paused && !atBottom ? jsx('button', { type: 'button', className: 'dk_backToBottom', onClick: backToBottom, children: '回到底部' }) : null,
@@ -6070,8 +6063,8 @@ window.__ModuleLoader__.load({
         jsxs('div', { className: 'dk_fieldGrid', children: [
           field('docker CLI', jsx('input', { className: 'dk_input', value: form.dockerBin, onChange: (event) => patch({ dockerBin: event.target.value }) }), '默认 docker；podman 可填 podman'),
           field('统计刷新间隔（秒）', numberInput('pollIntervalSec', 1, 60)),
-          field('日志默认行数', numberInput('logTailDefault', 1, 5000)),
-          field('输出上限（KB）', numberInput('maxOutputKb', 1, 8192)),
+          field('日志默认行数', numberInput('logTailDefault', 1, 5000), '面板日志页 LINES 的初始值（面板内可临时改）；它只是**行数**上限——快照还要过下面那道字节闸，所以不保证一定拿得到这么多行'),
+          field('输出上限（KB）', numberInput('maxOutputKb', 1, 8192), '单次输出的**字节**上限：日志快照 / inspect / exec 共用；日志行数够但字节超了会被截断（面板会给出截断横幅）。FOLLOW 流式日志不受它约束'),
           field('exec 超时（秒）', numberInput('execTimeoutSec', 1, 120)),
         ] }),
 
@@ -6579,8 +6572,6 @@ window.__ModuleLoader__.load({
       BYTE_LIMIT: FOLLOW_BYTE_LIMIT,
       PENDING_MAX: LOG_PENDING_MAX,
       FLUSH_MS: FOLLOW_FLUSH_MS,
-      RENDER_ROWS: LOG_RENDER_ROWS,
-      EXPORT_ROWS: LOG_COLOR_LIMIT,
     }
     exports.__aggLogs = {
       mergeBuffered: mergeBufferedEntries,

@@ -250,7 +250,7 @@ Inside the panel:
   **SSE push** (`GET /api/dsh-docker/logs/stream`, where the server runs
   `docker logs --follow`) — new log lines are appended as they arrive and polling stops; `FOLLOW` and
   `AUTO REFRESH` are mutually exclusive (opening the stream stops polling and greys out the switch), and closing it
-  returns to snapshots with an immediate refresh. Streaming logs keep the last **5000 lines / 4MB** (a ring buffer that drops the oldest on either cap; newline-free oversized output is force-split so memory stays bounded). Chunks render at most every **150ms** (no per-chunk re-render on chatty containers) and only the last **400 lines** mount into the DOM (render window; export still caps at 2000). Auto-scroll to bottom,
+  returns to snapshots with an immediate refresh. Streaming logs keep the last **5000 lines / 4MB** (a ring buffer that drops the oldest on either cap; newline-free oversized output is force-split so memory stays bounded). Chunks render at most every **150ms** (no per-chunk re-render on chatty containers) and rows carry stable ids, so sliding the buffer only mounts/unmounts boundary nodes — the view no longer truncates: whatever `LINES` selects is rendered and exported (bounded by the buffer and the host output cap). Auto-scroll to bottom,
   drops the oldest and hints once); filtering / level colouring share exactly the same rendering as snapshots. It
   auto-scrolls to the bottom, pauses when the user scrolls up and floats a
   "back to bottom" button; a status line in the top right shows the connection state, a browser disconnect is
