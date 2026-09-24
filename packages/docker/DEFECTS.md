@@ -168,6 +168,7 @@
 | D125 | P3 | README（中）两处删「（N 项）」时吃掉了后面的空格 | README.md | 新引入（排版） |
 | D126 | P2 | 目标引用的连接簿条目失效时**界面上看不出来**：`book` 下拉的候选来自 ttyBooks，失效名字没有对应 option → 下拉渲染成**空白**；且错误文案让人「去 tty 终端面板的设置卡片里添加」，而那张卡片改不了 docker 目标的引用 | src/index.ts、client-src/index.js、client-src/session-target.js | 2026-09-21 用户实测上报 |
 | D127 | P2 | docker 设置卡片「目标名」输入框**打一个字就失焦**：`dk_targetRow` 的 React key 写成 `String(index) + item.name`，key 含被编辑的字段 → 每次输入 key 变化、React 卸载重建整行，输入框当场丢焦点（表现为"无法聚焦"） | client-src/index.js | 2026-09-21 用户实测上报 |
+| D128 | P1 | 日志大流量**逐 chunk 全量重渲染**（打开 FOLLOW 的 tail 突发即数百次全量 reconcile，且每 chunk 对全缓冲 join/split 大字符串）叠加**缓冲只限行数不限字节、残行无界** → 话痨 / 大行容器把渲染进程吃到 OOM，网页直接崩溃 | client-src/index.js、client-src/log-buffer.js（新增） | 2026-09-24 用户实测上报 |
 ### D126：失效的连接簿引用在界面上看不出来（2026-09-21 用户实测上报）
 
 - **症状**：docker 面板顶部报「目标「目标1」引用的连接簿条目不存在：HS-248」，同时下方又有一条
@@ -233,8 +234,10 @@
 - **agent 侧的网络 / 卷变更工具** —— 面板有 `networks/remove|prune`、`volumes/remove|prune` 的按钮，
   agent 侧一个都没有（当前是有意为之：这类删除最容易误伤）。若要做，必须与面板**同一把** `allowMutations`
   闸门 + 破坏性后果复述。
-- **日志真虚拟滚动** —— D63 只落地了 `logStats` 记忆化；`content-visibility` 那半档因打穿贴底判定已被
-  移除（D91）。要做就做「DOM 节点数与缓冲行数解耦」的真窗口化。
+- **日志真虚拟滚动（可选的后续项）** —— D63 已随 D128 根治：行 key 用单调 id + DOM 渲染窗口
+  （`LOG_RENDER_ROWS=400`）+ 缓冲行数/字节双限（`log-buffer.js`）+ FOLLOW 150ms 合帧——DOM 节点数与
+  缓冲行数、渲染频率与 chunk 速率都已解耦。绝对定位的真虚拟化只剩「再压 DOM」的边际收益，且要自己维护
+  高度缓存，没有实测痛点前不必做。`content-visibility` 依旧不要开（D91：估算高度打穿贴底判定）。
 - **跨目标聚合的取消语义** —— 45s 超时只 `race`，不 abort 底层命令（超时的目标仍在后台跑完）。
   要么把 AbortSignal 串下去，要么在文案里说明。
 - **变更端点的一次性 token** —— 当前信任模型是 loopback + 同源证明（D31/D32）；本机任意进程仍可直接

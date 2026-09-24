@@ -19,6 +19,7 @@
 import dockerCss from './docker.css'
 import { bookSessionHost, pickTargetByHost, sessionHostPort, staleBookRef } from './session-target.js'
 import { currentSessionIdOf } from './current-session.js'
+import { createLogBuffer } from './log-buffer.js'
 
 const API = '/api/dsh-docker'
 const PANEL_STYLE_ID = 'dsh-docker-style'
@@ -1349,10 +1350,30 @@ window.__ModuleLoader__.load({
     const LOG_TS_RE = /^\s*(\[\d{4}-\d{2}-\d{2}[ T][0-9:.,]+\]|\d{2}:\d{2}:\d{2}[,.]\d{3})/
     const LOG_LEVEL_RE = /^\s*(\[(?:TRACE|DEBUG|INFO|WARN|ERROR|FATAL)\]|\|\s*(?:TRACE|DEBUG|INFO|WARN|ERROR|FATAL))/
     const LOG_LEVEL_NAME_RE = /(TRACE|DEBUG|INFO|WARN|ERROR|FATAL)/
-    /** 着色行数上限：超大日志整篇着色会拖慢渲染，超出只对尾部着色。 */
+    /** 导出行数上限：导出与「匹配计数」语境的上限（DOM 渲染窗口已拆成 LOG_RENDER_ROWS）。 */
     const LOG_COLOR_LIMIT = 2000
-    /** FOLLOW 流式日志的环形缓冲上限：超出丢最旧并提示一次（防止长时间跟随吃内存）。 */
+    /**
+     * DOM 渲染窗口（D63 根治的另一半）：缓冲最多 FOLLOW_LINE_LIMIT 行，但同一时刻
+     * 只把最近这若干行挂进 DOM——缓冲行数与 DOM 节点数解耦，滚动/贴底的重排成本
+     * 恒定。行 key 用单调 id（见 log-buffer.js），窗口滑动只挂载/卸载边界行，不重绘。
+     */
+    const LOG_RENDER_ROWS = 400
+    /** FOLLOW 流式日志的环形缓冲行数上限：超出丢最旧并提示一次（防止长时间跟随吃内存）。 */
     const FOLLOW_LINE_LIMIT = 5000
+    /**
+     * FOLLOW 缓冲的字节上限（UTF-16 unit 数）：旧实现只限行数，容器吐大行（整段
+     * JSON / base64 / 压平的堆栈）时 5000 行能吃掉数百 MB——这是「日志多 → 崩溃」
+     * 的内存根因之一。超限丢最旧，与行数上限共用同一套 dropped 提示。
+     */
+    const FOLLOW_BYTE_LIMIT = 4 * 1024 * 1024
+    /** 单条残行上限：无换行输出超此长度强制落为分片行（否则 pending 无界增长）。 */
+    const LOG_PENDING_MAX = 1024 * 1024
+    /**
+     * FOLLOW 合帧间隔：SSE chunk 到达速率与渲染频率解耦——缓冲照单全收，React
+     * 每 150ms 至多消费一次快照。打开 FOLLOW 时的 tail 突发（docker logs -f 先把
+     * 历史一口气吐完）从「几百次全量重渲染」变成「几次」。
+     */
+    const FOLLOW_FLUSH_MS = 150
 
     /*
      * 聚合视图的**每容器**初始行数。
@@ -1370,7 +1391,7 @@ window.__ModuleLoader__.load({
      * Compose 聚合日志共用同一套着色：聚合日志只需要在这几个片段前再插一个
      * `[service]` 前缀即可，不必复制一份正则与渲染逻辑。
      */
-    function renderLogParts(line, index, query) {
+    function renderLogParts(line, keyBase, query) {
       const nodes = []
       let rest = line
       // 最多吃掉两个前缀（时间戳 + 级别，顺序不限）
@@ -1390,16 +1411,20 @@ window.__ModuleLoader__.load({
         }
         break
       }
-      nodes.push(jsx('span', { className: 'dk_logText', children: highlight(rest, query, 'x' + String(index)) }, 'tx'))
+      nodes.push(jsx('span', { className: 'dk_logText', children: highlight(rest, query, 'x' + String(keyBase)) }, 'tx'))
       return nodes
     }
 
-    function renderLogLine(line, index, query) {
-      return jsxs('div', { className: 'dk_logLine', children: renderLogParts(line, index, query) }, String(index))
+    /**
+     * 行 key = 行的单调 id（D63 根治）：旧实现用渲染下标当 key，环形缓冲一滑动
+     * 每行内容全变 → 每帧全量 reconcile；id 稳定后窗口滑动只挂载/卸载边界行。
+     */
+    function renderLogLine(entry, query) {
+      return jsxs('div', { className: 'dk_logLine', children: renderLogParts(entry.text, entry.id, query) }, String(entry.id))
     }
 
     /** Compose 聚合日志行：在标准日志行前加一个 `[service]` 前缀。 */
-    function renderAggLine(entry, index, query, showTs) {
+    function renderAggLine(entry, query, showTs) {
       const ts = showTs === true && typeof entry.ts === 'number' && Number.isFinite(entry.ts)
         ? jsx('span', { className: 'dk_logTs', children: new Date(entry.ts).toLocaleTimeString() }, 'ts')
         : null
@@ -1411,9 +1436,9 @@ window.__ModuleLoader__.load({
         children: [
           jsx('span', { className: 'dk_logSvc', children: '[' + entry.service + ']' }, 'svc'),
           ts,
-          ...renderLogParts(entry.text, index, query),
+          ...renderLogParts(entry.text, entry.id, query),
         ],
-      }, String(index))
+      }, String(entry.id))
     }
 
     /* ------------------------------------------------------------------ *
@@ -1926,10 +1951,13 @@ window.__ModuleLoader__.load({
       const [logIntervalSec, setLogIntervalSec] = useState(3)
       /*
        * 实时跟随（FOLLOW，docker logs -f → SSE）：
-       *   followLines 是环形缓冲（≤ FOLLOW_LINE_LIMIT 行），followPending 存
-       *   最后一段没等到 \n 的残行；followStatus 只表达连接状态（connecting /
-       *   open / reconnecting / closed），**连接错误不弹横幅**（EventSource 会
-       *   自动重连，弹一次就会刷屏），只有服务端 event:error 才进 followError。
+       *   followBuf 是环形缓冲（≤ FOLLOW_LINE_LIMIT 行且 ≤ FOLLOW_BYTE_LIMIT，
+       *   残行超 LOG_PENDING_MAX 强制分片，见 log-buffer.js），followLines 是它
+       *   按 FOLLOW_FLUSH_MS **合帧**后的快照——渲染频率与 chunk 速率解耦（D63
+       *   根治：旧实现逐 chunk setState，tail 突发即几百次全量重渲染）。
+       *   followStatus 只表达连接状态（connecting / open / reconnecting / closed），
+       *   **连接错误不弹横幅**（EventSource 会自动重连，弹一次就会刷屏），只有
+       *   服务端 event:error 才进 followError。
        */
       const [follow, setFollow] = useState(false)
       const [followLines, setFollowLines] = useState([])
@@ -1938,8 +1966,37 @@ window.__ModuleLoader__.load({
       const [followNotice, setFollowNotice] = useState('')
       const [followDropped, setFollowDropped] = useState(false)
       const [followAtBottom, setFollowAtBottom] = useState(true)
-      const followLinesRef = useRef([])
-      const followPendingRef = useRef('')
+      const followBufRef = useRef(null)
+      const followDirtyRef = useRef(false)
+      const followTimerRef = useRef(null)
+
+      /** 合帧落地：把缓冲快照交给 React；期间的淘汰只提示一次（dropped 读后清零）。 */
+      const flushFollow = () => {
+        followTimerRef.current = null
+        if (!followDirtyRef.current) return
+        followDirtyRef.current = false
+        const buffer = followBufRef.current
+        if (buffer === null) return
+        setFollowLines(buffer.snapshot())
+        if (buffer.takeDropped()) setFollowDropped(true)
+      }
+
+      /** 有完整新行才排渲染；残行增长不打扰 React（旧版逐 chunk setState 的病根）。 */
+      const scheduleFollowFlush = () => {
+        followDirtyRef.current = true
+        if (followTimerRef.current === null) {
+          followTimerRef.current = setTimeout(flushFollow, FOLLOW_FLUSH_MS)
+        }
+      }
+
+      /** 关流 / 切快照前收掉合帧：别让迟到的一次 flush 在切换后再动 state。 */
+      const cancelFollowFlush = () => {
+        followDirtyRef.current = false
+        if (followTimerRef.current !== null) {
+          clearTimeout(followTimerRef.current)
+          followTimerRef.current = null
+        }
+      }
       const logBodyRef = useRef(null)
       const [stats, setStats] = useState(null)
       const [statsError, setStatsError] = useState('')
@@ -2022,8 +2079,8 @@ window.__ModuleLoader__.load({
           return undefined
         }
         // 每次重开流都从空缓冲开始，避免把上一次的行混进来
-        followLinesRef.current = []
-        followPendingRef.current = ''
+        followBufRef.current = createLogBuffer({ maxLines: FOLLOW_LINE_LIMIT, maxBytes: FOLLOW_BYTE_LIMIT, maxPendingBytes: LOG_PENDING_MAX })
+        cancelFollowFlush()
         setFollowLines([])
         setFollowDropped(false)
         setFollowError('')
@@ -2045,17 +2102,14 @@ window.__ModuleLoader__.load({
           try { es.close() } catch { /* 已关闭 */ }
         }
 
-        /** 分片 → 完整行：docker 的 chunk 不按行切，末段残行留给下一片。 */
+        /**
+         * 分片 → 完整行：docker 的 chunk 不按行切，末段残行留给下一片。
+         * 切分/淘汰都在缓冲里做，这里只负责「有新行 → 排一次合帧」。
+         */
         const pushChunk = (text) => {
           if (text === '') return
-          const parts = (followPendingRef.current + text).split('\n')
-          followPendingRef.current = parts.pop() ?? ''
-          if (parts.length === 0) return
-          const next = followLinesRef.current.concat(parts)
-          const trimmed = next.length > FOLLOW_LINE_LIMIT ? next.slice(next.length - FOLLOW_LINE_LIMIT) : next
-          followLinesRef.current = trimmed
-          if (trimmed.length !== next.length) setFollowDropped(true)
-          setFollowLines(trimmed)
+          const result = followBufRef.current.pushChunk(text)
+          if (result.appended > 0) scheduleFollowFlush()
         }
 
         const onLine = (event) => {
@@ -2075,6 +2129,7 @@ window.__ModuleLoader__.load({
             // 容器停止 → docker logs -f 自然退出：关流、切回快照并立即补一次刷新
             setFollowNotice('容器已退出' + (code === null ? '' : '（退出码 ' + String(code) + '）') + '，日志流结束，已切回快照')
             close()
+            cancelFollowFlush()
             setFollow(false)
             loadLogs()
             return
@@ -2094,6 +2149,7 @@ window.__ModuleLoader__.load({
             } catch { /* 用默认文案 */ }
             setFollowError(message)
             close()
+            cancelFollowFlush()
             setFollow(false)
             loadLogs()
             return
@@ -2110,7 +2166,10 @@ window.__ModuleLoader__.load({
           setFollowStatus('open')
           setFollowNotice('')
         }
-        return close
+        return () => {
+          close()
+          cancelFollowFlush()
+        }
         // active 必须在 deps 里（D17）：折叠 tab / 切走会话时收掉 SSE，否则
         // `docker logs -f` 会一直占着共享的 SSH 通道额度——与 S3 的设计意图相反
       }, [active, tab, follow, props.target, item.id, logOptions.tail, logOptions.timestamps, loadLogs])
@@ -2126,6 +2185,7 @@ window.__ModuleLoader__.load({
       /** FOLLOW 与 AUTO REFRESH 互斥：开流停轮询；关流立即回快照。 */
       const toggleFollow = () => {
         if (follow) {
+          cancelFollowFlush()
           setFollow(false)
           setFollowStatus('')
           loadLogs()
@@ -2352,25 +2412,31 @@ window.__ModuleLoader__.load({
       }
 
       /**
-       * 日志统计（工具条与正文共用）：FOLLOW 时数据源是流缓冲，否则是快照。
-       * useMemo 到 [数据源, 过滤条件]（D63）：它在渲染期被 logFilterBar / logsView /
-       * logShown 调 2~3 次，每次都 join/split 最多 5000 行——渲染期重复重算是
-       * 消息密集时主线程占满的主因之一。
+       * 快照日志 → 行对象：每次 logs 载入只 split 一次（D63 根治——旧实现每次
+       * 渲染都 join/split 最多 5000 行的大字符串）。id 用 `s+下标`：同一次快照内
+       * 稳定，新快照整体换血（贴底/导出语义不受影响）。
        */
-      const logStatsValue = useMemo(() => {
+      const snapshotEntriesValue = useMemo(() => {
         // 只认 string：宿主 /logs 的形状是 { id, text, truncated }，但客户端不该
         // 因为一个畸形/旧版响应就在渲染期抛错——那会连整块面板和 exec 终端一起被
         // React 卸载掉（一次日志请求赔进去一个正在跑的容器会话）。
-        const raw = follow
-          ? followLines.join('\n')
-          : (logs !== null && typeof logs === 'object' && typeof logs.text === 'string' ? logs.text : '')
+        const text = logs !== null && typeof logs === 'object' && typeof logs.text === 'string' ? logs.text : ''
+        return text === '' ? [] : text.split('\n').map((line, index) => ({ id: 's' + String(index), text: line }))
+      }, [logs])
+
+      /**
+       * 级别/文本过滤结果（工具条与正文共用）：FOLLOW 时数据源是流缓冲的合帧快照，
+       * 否则是快照行对象。入口已是行数组，这里只做 O(行数) 的过滤；渲染频率由
+       * FOLLOW 合帧压到 ≤~7 次/秒，主线程不再被逐 chunk 重算占满。
+       */
+      const logStatsValue = useMemo(() => {
+        const allEntries = follow ? followLines : snapshotEntriesValue
         const needle = logFilter.trim().toLowerCase()
-        const allLines = raw === '' ? [] : raw.split('\n')
         // 先级别、再文本——与聚合日志同一顺序、同一个内核（含"续行继承上一条级别"）
-        const leveled = filterLinesByLevel(allLines, levelMin)
-        const matchedLines = needle === '' ? leveled : leveled.filter((line) => line.toLowerCase().includes(needle))
-        return { raw, needle, allLines, leveled, matchedLines }
-      }, [follow, followLines, logs, logFilter, levelMin])
+        const leveled = filterRowsByLevel(allEntries, levelMin)
+        const matched = needle === '' ? leveled : leveled.filter((entry) => entry.text.toLowerCase().includes(needle))
+        return { needle, total: allEntries.length, matched }
+      }, [follow, followLines, snapshotEntriesValue, logFilter, levelMin])
       const logStats = () => logStatsValue
 
       const logPill = (on, label, onClick, options) => jsx('button', {
@@ -2438,7 +2504,7 @@ window.__ModuleLoader__.load({
        * 绝对定位，不占布局，所以出现 / 消失都不会让任何东西位移。
        */
       const logFilterBar = () => {
-        const { needle, allLines, matchedLines } = logStats()
+        const { needle, total, matched } = logStats()
         return jsxs('div', { className: 'dk_filterBar', children: [
           jsxs('div', { className: 'dk_filterWrap', children: [
             jsx('input', {
@@ -2473,38 +2539,44 @@ window.__ModuleLoader__.load({
           jsx('button', {
             type: 'button',
             className: 'dk_chip',
-            disabled: logShown().length === 0,
-            title: '导出当前显示内容为 .log（纯文本）',
+            disabled: logExportRows().length === 0,
+            title: '导出匹配内容为 .log（纯文本，最多最近 ' + String(LOG_COLOR_LIMIT) + ' 行）',
             onClick: () => doLogExport('log'),
             children: '⬇ .log',
           }, 'exportLog'),
           jsx('button', {
             type: 'button',
             className: 'dk_chip',
-            disabled: logShown().length === 0,
-            title: '导出当前显示内容为 .md（带来源与行数表头，适合当工单附件）',
+            disabled: logExportRows().length === 0,
+            title: '导出匹配内容为 .md（带来源与行数表头，适合当工单附件，最多最近 ' + String(LOG_COLOR_LIMIT) + ' 行）',
             onClick: () => doLogExport('md'),
             children: '⬇ .md',
           }, 'exportMd'),
           jsx('span', {
             className: 'dk_filterCount',
             children: needle === '' && levelMin === 0
-              ? String(allLines.length) + ' 行'
-              : String(matchedLines.length) + ' / ' + String(allLines.length) + ' 行',
+              ? String(total) + ' 行'
+              : String(matched.length) + ' / ' + String(total) + ' 行',
           }, 'count'),
         ] })
       }
 
-      /** 当前**显示**的行：受级别 / 文本过滤与显示上限影响——渲染与「导出当前显示内容」共用它。 */
-      const logShown = () => {
-        const { matchedLines } = logStats()
-        return matchedLines.length > LOG_COLOR_LIMIT ? matchedLines.slice(-LOG_COLOR_LIMIT) : matchedLines
+      /** 当前**渲染**的行：过滤结果里只把最近 LOG_RENDER_ROWS 行挂进 DOM（D63 根治）。 */
+      const logWindow = () => {
+        const { matched } = logStats()
+        return matched.length > LOG_RENDER_ROWS ? matched.slice(-LOG_RENDER_ROWS) : matched
       }
 
-      /** 导出当前显示内容：与聚合日志同一个构建器、同样两种格式。 */
+      /** 导出行集：仍按 LOG_COLOR_LIMIT 截断——比渲染窗口宽，导出能力不回退。 */
+      const logExportRows = () => {
+        const { matched } = logStats()
+        return matched.length > LOG_COLOR_LIMIT ? matched.slice(-LOG_COLOR_LIMIT) : matched
+      }
+
+      /** 导出当前匹配内容：与聚合日志同一个构建器、同样两种格式。 */
       const doLogExport = (format) => {
-        const rows = logShown().map((line) => {
-          const split = splitLogTimestamp(line)
+        const rows = logExportRows().map((entry) => {
+          const split = splitLogTimestamp(entry.text)
           return { service: item.name, ts: split.ts, text: split.text }
         })
         const text = buildLogExport(rows, {
@@ -2519,8 +2591,8 @@ window.__ModuleLoader__.load({
       }
 
       const logsView = () => {
-        const { needle, matchedLines } = logStats()
-        const shown = logShown()
+        const { needle, matched } = logStats()
+        const shown = logWindow()
         return jsxs('div', { className: 'dk_logs', children: [
           logsError === '' ? null : jsx(Banner, {
             title: '读取日志失败',
@@ -2536,8 +2608,8 @@ window.__ModuleLoader__.load({
           followNotice === '' ? null : jsx(Banner, { kind: 'info', title: followNotice }),
           followDropped ? jsx(Banner, {
             kind: 'warn',
-            title: '日志超过 ' + String(FOLLOW_LINE_LIMIT) + ' 行，已丢弃最早内容',
-            hint: '流式日志只保留最近的行；需要完整历史请关掉 FOLLOW 用快照，或调大「LINES」。',
+            title: '日志超出缓冲上限（' + String(FOLLOW_LINE_LIMIT) + ' 行 / ' + String(Math.round(FOLLOW_BYTE_LIMIT / 1024 / 1024)) + 'MB），已丢弃最早内容',
+            hint: '流式日志只保留最近的行；需要完整历史请关掉 FOLLOW 用快照，或调小「LINES」。',
           }) : null,
           !follow && logs !== null && logs.truncated === true ? jsx(Banner, { kind: 'warn', title: '日志输出超过上限，已截断', hint: '调小「LINES」或到设置卡片调大「单次命令输出上限」。' }) : null,
           follow ? jsx('div', { className: 'dk_followState', 'data-state': followStatus, children: followStatusText() }) : null,
@@ -2556,8 +2628,8 @@ window.__ModuleLoader__.load({
               filtered: needle !== '',
             }),
             children: [
-              matchedLines.length > shown.length
-                ? jsx('div', { className: 'dk_logLine dk_logMore', children: '（只显示最近 ' + String(LOG_COLOR_LIMIT) + ' 行，共 ' + String(matchedLines.length) + ' 行匹配）' }, 'more')
+              matched.length > shown.length
+                ? jsx('div', { className: 'dk_logLine dk_logMore', children: '（只显示最近 ' + String(LOG_RENDER_ROWS) + ' 行，共 ' + String(matched.length) + ' 行匹配；导出最多 ' + String(LOG_COLOR_LIMIT) + ' 行）' }, 'more')
                 : null,
               logsError !== ''
                 ? null
@@ -2565,7 +2637,7 @@ window.__ModuleLoader__.load({
                   ? jsx('div', { className: 'dk_logLine', children: '读取中…' }, 'loading')
                   : (shown.length === 0
                     ? jsx('div', { className: 'dk_logLine', children: follow ? '等待日志…' : (needle === '' ? '(无日志)' : '(无匹配日志)') }, 'empty')
-                    : shown.map((line, index) => renderLogLine(line, index, needle))),
+                    : shown.map((entry) => renderLogLine(entry, needle))),
             ],
           }),
           follow && !followAtBottom
@@ -3477,7 +3549,14 @@ window.__ModuleLoader__.load({
       const [levelMin, setLevelMin] = useState(0)
       /** 每容器初始行数：改它触发重连（见 AGG_TAIL_OPTIONS 的注释）。 */
       const [tail, setTail] = useState(AGG_TAIL_DEFAULT)
-      const entriesRef = useRef([])
+      /**
+       * 聚合日志缓冲（D63 根治）：行对象带单调 id,行数 + 字节双限都在 log-buffer
+       * 里;entriesRef 退役——真相源是 aggBuf,snapshot() 即列表。到达序的合帧
+       * 暂存区也在这里(与单容器 FOLLOW 同节奏)。
+       */
+      const aggBufRef = useRef(null)
+      const arrivalRowsRef = useRef([])
+      const arrivalTimerRef = useRef(null)
       const pendingRef = useRef(new Map())
       /** SSE 回调里读「最新暂停态」：闭包捕获的是连接建立那一刻的 state。 */
       const pausedRef = useRef(false)
@@ -3502,6 +3581,63 @@ window.__ModuleLoader__.load({
         setAtBottom(true)
       }
 
+      /** 暂停期间的去处：攒进暂停缓冲,DOM 不动(与旧版 push 里的分支同一语义)。 */
+      const stashRows = (rows) => {
+        const buffered = bufferRef.current.concat(rows)
+        bufferRef.current = buffered.length > FOLLOW_LINE_LIMIT ? buffered.slice(buffered.length - FOLLOW_LINE_LIMIT) : buffered
+        setBufferedCount((current) => (bufferRef.current.length - current >= 5 || current === 0 ? bufferRef.current.length : current))
+      }
+
+      /**
+       * 落地一批行:真相源是 aggBuf(行数 + 字节双限);到达序 appendRows、「按时间」
+       * 整表重排后 replaceAll。N 条流 × 逐 chunk setState 的渲染风暴在这里收敛
+       * (D63 根治:到达序按 FOLLOW_FLUSH_MS 合帧,时间序本就有 350ms 窗口)。
+       */
+      const commit = (rows) => {
+        if (rows.length === 0) return
+        if (pausedRef.current) {
+          stashRows(rows)
+          return
+        }
+        const buffer = aggBufRef.current
+        if (buffer === null) return
+        const result = orderRef.current === 'time'
+          ? buffer.replaceAll(reorderTailByTimestamp(buffer.snapshot(), rows, LOG_REORDER_TAIL))
+          : buffer.appendRows(rows)
+        if (result.dropped) setDropped(true)
+        setEntries(buffer.snapshot())
+      }
+
+      /** 到达序合帧:150ms 内的多批并成一次 commit(与单容器 FOLLOW 同节奏)。 */
+      const scheduleArrivalCommit = (rows) => {
+        arrivalRowsRef.current = arrivalRowsRef.current.concat(rows)
+        if (arrivalTimerRef.current === null) {
+          arrivalTimerRef.current = setTimeout(() => {
+            arrivalTimerRef.current = null
+            const pendingRows = arrivalRowsRef.current
+            arrivalRowsRef.current = []
+            commit(pendingRows)
+          }, FOLLOW_FLUSH_MS)
+        }
+      }
+
+      /** 时间序：攒进窗口，到点整体按时间戳排序后落地（到达序走合帧）。 */
+      const enqueue = (rows) => {
+        if (orderRef.current !== 'time') {
+          scheduleArrivalCommit(rows)
+          return
+        }
+        timeBufRef.current = timeBufRef.current.concat(rows)
+        if (flushTimerRef.current !== null) return
+        flushTimerRef.current = setTimeout(() => {
+          flushTimerRef.current = null
+          const pendingRows = timeBufRef.current
+          timeBufRef.current = []
+          // 时序种子取自主列表（D56）：flush 窗口的首行可能是无前缀续行
+          commit(orderRowsByTimestamp(pendingRows, carriedTsBefore(aggBufRef.current.snapshot())))
+        }, LOG_MERGE_WINDOW_MS)
+      }
+
       useEffect(() => {
         // 折叠的 tab 不建流（S3）。
         // 刻意**不动 status**：隐藏时状态行停在原样（比如「已连接 N 条」），展开后
@@ -3516,7 +3652,12 @@ window.__ModuleLoader__.load({
           return undefined
         }
         setStatus('connecting')
-        entriesRef.current = []
+        aggBufRef.current = createLogBuffer({ maxLines: FOLLOW_LINE_LIMIT, maxBytes: FOLLOW_BYTE_LIMIT })
+        arrivalRowsRef.current = []
+        if (arrivalTimerRef.current !== null) {
+          clearTimeout(arrivalTimerRef.current)
+          arrivalTimerRef.current = null
+        }
         pendingRef.current = new Map()
         bufferRef.current = []
         setEntries([])
@@ -3538,33 +3679,11 @@ window.__ModuleLoader__.load({
           const service = item.composeService === null ? item.name : item.composeService
           // timestamps=1：聚合视图为「按时间合并」与可选显示时间戳固定带上的参数
           const es = new EventSource(streamUrl('/logs/stream', { target: props.target, id: item.id, tail, timestamps: 1 }))
-          const commit = (rows) => {
-            if (rows.length === 0) return
-            // 时间序：把最近 N 行连同新行一起重排（跨批次的历史错序也能被纠正）
-            const next = orderRef.current === 'time'
-              ? reorderTailByTimestamp(entriesRef.current, rows, LOG_REORDER_TAIL)
-              : entriesRef.current.concat(rows)
-            const trimmed = next.length > FOLLOW_LINE_LIMIT ? next.slice(next.length - FOLLOW_LINE_LIMIT) : next
-            entriesRef.current = trimmed
-            if (trimmed.length !== next.length) setDropped(true)
-            setEntries(trimmed)
-          }
-          /** 时间序：攒进窗口，到点整体按时间戳排序后落地（到达序则直接落地）。 */
-          const enqueue = (rows) => {
-            if (orderRef.current !== 'time') {
-              commit(rows)
-              return
-            }
-            timeBufRef.current = timeBufRef.current.concat(rows)
-            if (flushTimerRef.current !== null) return
-            flushTimerRef.current = setTimeout(() => {
-              flushTimerRef.current = null
-              const pendingRows = timeBufRef.current
-              timeBufRef.current = []
-              // 时序种子取自主列表（D56）：flush 窗口的首行可能是无前缀续行
-              commit(orderRowsByTimestamp(pendingRows, carriedTsBefore(entriesRef.current)))
-            }, LOG_MERGE_WINDOW_MS)
-          }
+          /**
+           * 分片 → 完整行：残行按 item 存（pendingRef）；行对象组出来时即取单调 id
+           * （之后重排/合并只是挪位置，key 不抖动），再交给 enqueue——commit/合帧
+           * 在组件作用域（见上），N 条流共享同一份。
+           */
           const push = (text) => {
             const pending = pendingRef.current.get(item.id) ?? ''
             const parts = (pending + text).split('\n')
@@ -3572,13 +3691,11 @@ window.__ModuleLoader__.load({
             if (parts.length === 0) return
             const rows = parts.map((line) => {
               const parsed = splitLogTimestamp(line)
-              return { service, text: parsed.text, ts: parsed.ts }
+              return { id: aggBufRef.current.nextId(), service, text: parsed.text, ts: parsed.ts, bytes: parsed.text.length }
             })
             if (pausedRef.current) {
               // 暂停：攒进缓冲，DOM 不动（恢复时并入并回到底部）
-              const buffered = bufferRef.current.concat(rows)
-              bufferRef.current = buffered.length > FOLLOW_LINE_LIMIT ? buffered.slice(buffered.length - FOLLOW_LINE_LIMIT) : buffered
-              setBufferedCount((current) => (bufferRef.current.length - current >= 5 || current === 0 ? bufferRef.current.length : current))
+              stashRows(rows)
               return
             }
             enqueue(rows)
@@ -3607,7 +3724,13 @@ window.__ModuleLoader__.load({
           return () => { try { es.close() } catch { /* 已关闭 */ } }
         })
         void open
-        return () => { for (const close of sources) close() }
+        return () => {
+          for (const close of sources) close()
+          if (arrivalTimerRef.current !== null) {
+            clearTimeout(arrivalTimerRef.current)
+            arrivalTimerRef.current = null
+          }
+        }
       }, [active, props.target, itemIds, tail])
 
       useEffect(() => {
@@ -3627,10 +3750,11 @@ window.__ModuleLoader__.load({
         bufferRef.current = []
         setBufferedCount(0)
         if (buffered.length > 0) {
-          const merged = mergeBufferedEntries(entriesRef.current, buffered, FOLLOW_LINE_LIMIT)
-          entriesRef.current = merged.entries
-          setEntries(merged.entries)
-          if (merged.dropped) setDropped(true)
+          const merged = mergeBufferedEntries(aggBufRef.current.snapshot(), buffered, FOLLOW_LINE_LIMIT)
+          // 行数上限由 mergeBufferedEntries 把关,字节上限由 replaceAll 的裁剪把关
+          const result = aggBufRef.current.replaceAll(merged.entries)
+          if (result.dropped) setDropped(true)
+          setEntries(aggBufRef.current.snapshot())
         }
         // 等这一帧的 DOM 落地再贴底（否则滚到的是合并前的高度）
         requestAnimationFrame(() => {
@@ -3640,12 +3764,15 @@ window.__ModuleLoader__.load({
       }
 
       const needle = filter.trim().toLowerCase()
-      // 先按级别（WARN+ / ERROR+），再按文本/服务名，最后套显示上限
+      // 先按级别（WARN+ / ERROR+），再按文本/服务名，最后套渲染窗口
       const leveled = filterRowsByLevel(entries, levelMin)
       const matched = needle === ''
         ? leveled
         : leveled.filter((entry) => entry.text.toLowerCase().indexOf(needle) >= 0 || entry.service.toLowerCase().indexOf(needle) >= 0)
-      const shown = matched.length > LOG_COLOR_LIMIT ? matched.slice(-LOG_COLOR_LIMIT) : matched
+      // DOM 渲染窗口:与单容器视图同一条规则(缓冲行数与 DOM 节点数解耦,D63 根治)
+      const shown = matched.length > LOG_RENDER_ROWS ? matched.slice(-LOG_RENDER_ROWS) : matched
+      // 导出行集:仍按 LOG_COLOR_LIMIT 截断(比渲染窗口宽,导出能力不回退)
+      const exportRows = matched.length > LOG_COLOR_LIMIT ? matched.slice(-LOG_COLOR_LIMIT) : matched
 
       /** 切换排序：先把待合并窗口落地，避免切模式时短暂的顺序错乱。 */
       const toggleOrderMode = () => {
@@ -3659,22 +3786,20 @@ window.__ModuleLoader__.load({
         const pendingRows = timeBufRef.current
         timeBufRef.current = []
         if (pendingRows.length > 0) {
-          const merged = reorderTailByTimestamp(entriesRef.current, pendingRows, LOG_REORDER_TAIL)
-          const trimmed = merged.length > FOLLOW_LINE_LIMIT ? merged.slice(merged.length - FOLLOW_LINE_LIMIT) : merged
-          entriesRef.current = trimmed
-          setEntries(trimmed)
+          commit(pendingRows)
         }
         // 切到「按时间」时，把现有尾部也整体重排一次（历史批次之间的错序一次纠正）
         if (next === 'time') {
-          const reordered = reorderTailByTimestamp([], entriesRef.current, entriesRef.current.length)
-          entriesRef.current = reordered
-          setEntries(reordered)
+          const snapshot = aggBufRef.current.snapshot()
+          const result = aggBufRef.current.replaceAll(reorderTailByTimestamp([], snapshot, snapshot.length))
+          if (result.dropped) setDropped(true)
+          setEntries(aggBufRef.current.snapshot())
         }
       }
 
-      /** 导出当前显示内容（受级别 / 文本过滤影响）。 */
+      /** 导出当前匹配内容（受级别 / 文本过滤影响;上限比渲染窗口宽）。 */
       const doExport = (format) => {
-        const text = buildLogExport(shown, {
+        const text = buildLogExport(exportRows, {
           format,
           target: props.target,
           targetLabel: props.targetLabel,
@@ -3696,7 +3821,7 @@ window.__ModuleLoader__.load({
       }
 
       return jsxs('div', { className: 'dk_logs', children: [
-        dropped ? jsx(Banner, { kind: 'warn', title: '聚合日志超过 ' + String(FOLLOW_LINE_LIMIT) + ' 行，已丢弃最早内容' }) : null,
+        dropped ? jsx(Banner, { kind: 'warn', title: '聚合日志超出缓冲上限（' + String(FOLLOW_LINE_LIMIT) + ' 行 / ' + String(Math.round(FOLLOW_BYTE_LIMIT / 1024 / 1024)) + 'MB），已丢弃最早内容' }) : null,
         jsxs('div', { className: 'dk_filterBar', children: [
           jsxs('div', { className: 'dk_filterWrap', children: [
             jsx('input', {
@@ -3769,16 +3894,16 @@ window.__ModuleLoader__.load({
           jsx('button', {
             type: 'button',
             className: 'dk_chip',
-            disabled: shown.length === 0,
-            title: '导出当前显示内容为 .log（纯文本）',
+            disabled: exportRows.length === 0,
+            title: '导出匹配内容为 .log（纯文本，最多最近 ' + String(LOG_COLOR_LIMIT) + ' 行）',
             onClick: () => doExport('log'),
             children: '⬇ .log',
           }),
           jsx('button', {
             type: 'button',
             className: 'dk_chip',
-            disabled: shown.length === 0,
-            title: '导出当前显示内容为 .md（带来源与行数表头，适合当工单附件）',
+            disabled: exportRows.length === 0,
+            title: '导出匹配内容为 .md（带来源与行数表头，适合当工单附件，最多最近 ' + String(LOG_COLOR_LIMIT) + ' 行）',
             onClick: () => doExport('md'),
             children: '⬇ .md',
           }),
@@ -3803,7 +3928,7 @@ window.__ModuleLoader__.load({
           children: [
             shown.length === 0
               ? jsx('div', { className: 'dk_logLine', children: status === 'open' ? '等待日志…' : statusText() }, 'empty')
-              : shown.map((entry, index) => renderAggLine(entry, index, needle, showTs)),
+              : shown.map((entry) => renderAggLine(entry, needle, showTs)),
           ],
         }),
         !paused && !atBottom ? jsx('button', { type: 'button', className: 'dk_backToBottom', onClick: backToBottom, children: '回到底部' }) : null,
@@ -6443,6 +6568,19 @@ window.__ModuleLoader__.load({
        * 「连接还没建立时靠连接簿 host 兜底」这条路径。
        */
       matchTargetForSession,
+    }
+    /*
+     * 日志缓冲的测试缝：环形上限 / 残行分片 / 单调 id 都是纯逻辑，离线冒烟直接驱动
+     * （真实 EventSource 时序进不了 Node 桩）。常量挂出来供用例对齐，避免两边漂移。
+     */
+    exports.__logBuffer = {
+      create: createLogBuffer,
+      MAX_LINES: FOLLOW_LINE_LIMIT,
+      BYTE_LIMIT: FOLLOW_BYTE_LIMIT,
+      PENDING_MAX: LOG_PENDING_MAX,
+      FLUSH_MS: FOLLOW_FLUSH_MS,
+      RENDER_ROWS: LOG_RENDER_ROWS,
+      EXPORT_ROWS: LOG_COLOR_LIMIT,
     }
     exports.__aggLogs = {
       mergeBuffered: mergeBufferedEntries,

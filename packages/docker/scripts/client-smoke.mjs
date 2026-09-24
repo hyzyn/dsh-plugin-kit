@@ -1832,6 +1832,55 @@ await test('总览：degraded 目标出提示（inspect 降级 / 候选超预算
 })
 
 /* ------------------------------------------------------------------ *
+ * 日志缓冲(D63 根治):环形上限 / 残行分片 / 单调 id——突发灌入的内存护栏。
+ * 真实 EventSource 时序进不了 Node 桩,但「缓冲吃多少、渲染信号发多少次」
+ * 是纯逻辑,在这里钉死。
+ * ------------------------------------------------------------------ */
+
+await test('日志缓冲:burst 灌入上行数/字节双限与单调 id(D63 根治)', () => {
+  const exports_ = registration.factory((spec) => SEED[spec])
+  const seam = exports_.__logBuffer
+  assert.ok(seam !== undefined && typeof seam.create === 'function', '缺少 __logBuffer 测试缝')
+  const { create, MAX_LINES, BYTE_LIMIT, PENDING_MAX, RENDER_ROWS, EXPORT_ROWS } = seam
+  // 常量在场:渲染窗口(LOG_RENDER_ROWS)与导出上限(EXPORT_ROWS)已拆分
+  assert.equal(MAX_LINES, 5000)
+  assert.equal(BYTE_LIMIT, 4 * 1024 * 1024)
+  assert.equal(PENDING_MAX, 1024 * 1024)
+  assert.equal(RENDER_ROWS, 400)
+  assert.equal(EXPORT_ROWS, 2000)
+
+  // burst:3 万行一次灌入,行数上限收口;id 严格递增(渲染 key 稳定性的前提)
+  const buffer = create({ maxLines: MAX_LINES, maxBytes: BYTE_LIMIT, maxPendingBytes: PENDING_MAX })
+  const lines = Array.from({ length: 30_000 }, (_, index) => 'line-' + String(index))
+  assert.equal(buffer.pushChunk(lines.join('\n') + '\n').appended, lines.length)
+  assert.equal(buffer.count(), MAX_LINES)
+  const snap = buffer.snapshot()
+  assert.equal(snap[0].text, 'line-' + String(lines.length - MAX_LINES))
+  for (let i = 1; i < snap.length; i++) assert.ok(snap[i].id > snap[i - 1].id, '行 id 必须单调递增')
+  assert.equal(buffer.takeDropped(), true)
+  assert.equal(buffer.takeDropped(), false)
+
+  // 大行:字节上限收口(旧行为只限行数,大行场景能吃掉数百 MB)
+  const bigLine = 'x'.repeat(64 * 1024)
+  const buffer2 = create({ maxLines: MAX_LINES, maxBytes: 1024 * 1024, maxPendingBytes: PENDING_MAX })
+  for (let i = 0; i < 64; i++) buffer2.pushChunk(bigLine + '\n')
+  const live = buffer2.snapshot().reduce((sum, entry) => sum + entry.bytes, 0)
+  assert.ok(live <= 1024 * 1024, '存活字节必须 ≤ maxBytes,实际 ' + String(live))
+})
+
+await test('日志缓冲:无换行的超长输出被残行分片钉在有界内存内', () => {
+  const exports_ = registration.factory((spec) => SEED[spec])
+  const { create, PENDING_MAX } = exports_.__logBuffer
+  const buffer = create({ maxLines: 100, maxBytes: 1024 * 1024, maxPendingBytes: PENDING_MAX })
+  // 模拟「永远不换行的输出」:32MB 连续灌入,残行每次到 1MB 强制落行
+  for (let i = 0; i < 32; i++) buffer.pushChunk('y'.repeat(PENDING_MAX))
+  const live = buffer.snapshot().reduce((sum, entry) => sum + entry.bytes, 0)
+  assert.ok(live <= 1024 * 1024 + PENDING_MAX, '存活字节必须有界,实际 ' + String(live))
+  assert.ok(buffer.pendingLength() <= PENDING_MAX)
+  assert.ok(buffer.takeDropped(), '持续超限必须置 dropped')
+})
+
+/* ------------------------------------------------------------------ *
  * 结果
  * ------------------------------------------------------------------ */
 

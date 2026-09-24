@@ -1117,20 +1117,20 @@
   white-space: pre-wrap;
   word-break: break-word;
   /*
-   * 这里**刻意不用** content-visibility / contain-intrinsic-size（D91）。
+   * 这里**刻意不用** content-visibility / contain-intrinsic-size（D91，结论维持）。
    *
-   * D63 曾用 content-visibility 跳过视口外行的布局绘制，并用 contain-intrinsic-size
-   * 给未渲染的行兜一个估算高度（19px）；代价是 `scrollHeight` 从此变成**估算值** ——
-   * 未渲染行按 19px 算，而折长的行实际 38px 起。FOLLOW 的整套贴底判定都建立在精确
-   * 高度上：
-   *   body.scrollTop = body.scrollHeight                                    （贴底）
-   *   scrollHeight - scrollTop - clientHeight < 24                          （判断用户是否上滚）
-   * 结果是贴底到不了底、自动跟随被误判成「用户上滚了」而静默停止、「回到底部」也回不到底 ——
-   * FOLLOW 的全部价值（贴着看最新行）直接归零，单容器与聚合两条路径同时中招。
+   * D63 第一轮曾用 content-visibility 跳过视口外行的布局绘制，并用
+   * contain-intrinsic-size 给未渲染的行兜一个估算高度（19px）；代价是 scrollHeight
+   * 从此变成**估算值**——未渲染行按 19px 算，而折长的行实际 38px 起。FOLLOW 的整套
+   * 贴底判定都建立在精确高度上（贴底 scrollTop=scrollHeight、上滚判定
+   * scrollHeight-scrollTop-clientHeight<24、「回到底部」），估算高度让三者全数失灵，
+   * 单容器与聚合两条路径同时中招，于是被整个移除。
    *
-   * 于是 D63 的性能优化只保留 `logStats` 的 useMemo（见 index.js 的 logStatsValue），
-   * 恢复精确的 scrollHeight；真窗口化（DOM 节点数与缓冲行数解耦，不再依赖估算高度）
-   * 见 DEFECTS.md 待办「日志渲染性能（D63 的根治）」，落地前不要在这里再开 content-visibility。
+   * D63 根治（第二轮）走了另一条路：行 key 用单调 id + DOM 渲染窗口
+   * （LOG_RENDER_ROWS，见 index.js 与 log-buffer.js）——缓冲最多 5000 行，DOM
+   * 同一时刻只有最近 ~400 行，布局/绘制成本恒定；content-visibility 依旧没有
+   * 开的理由，而精确 scrollHeight 保住了贴底判定。再想压 DOM 就做真虚拟化
+   * （DEFECTS.md 待办），别走估算高度的回头路。
    */
 }
 
