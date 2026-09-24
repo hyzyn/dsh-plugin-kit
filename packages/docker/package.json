@@ -64,6 +64,7 @@
     "build": "tsc -p tsconfig.json && node scripts/build-client.mjs",
     "typecheck": "tsc --noEmit && node ../../scripts/client-lint.mjs",
     "smoke": "node scripts/smoke.mjs && node scripts/route-smoke.mjs && node scripts/client-smoke.mjs",
+    "perf:logs": "node scripts/log-perf.mjs",
     "lint:client": "node ../../scripts/client-lint.mjs"
   },
   "files": [

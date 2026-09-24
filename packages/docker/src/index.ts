@@ -1106,6 +1106,9 @@ const plugin = definePlugin<Config>({
        * 客户端事实上已死（消费速度跟不上产出），主动收尾——宿主内存上限从
        * 「无界」变成「每条流 ≤ MAX_PENDING_BYTES」。上游（docker logs -f 的
        * stdout）由 finish/clientGone 里的 abort 停掉，不需要逐帧 pause。
+       *
+       * 溢出收尾会补一条 `end{reason:'output-limit'}`（D133）：客户端据此提示
+       * 「主机侧积压」而不是当成正常结束。
        */
       const MAX_PENDING_BYTES = 8 * 1024 * 1024
       let pendingFrames: string[] = []
@@ -1172,7 +1175,16 @@ const plugin = definePlugin<Config>({
         if (done) return
         pendingFrames.push(frame)
         pendingBytes += frame.length
-        if (pendingBytes > MAX_PENDING_BYTES) finish()
+        if (pendingBytes > MAX_PENDING_BYTES) {
+          /*
+           * 队列溢出 = 客户端消费速度跟不上产出（D133）：收尾前补一条 end，
+           * 让客户端知道「是主机侧积压」而不是把它当成正常结束。静默 res.end()
+           * 会被 EventSource 判为流正常结束并自动重连——而自动重连复用带 tail
+           * 的 URL，服务端就会把历史整段重推一遍（重复回填）。
+           */
+          pendingFrames.push(sseFrame('end', { reason: 'output-limit', code: null }))
+          finish()
+        }
       }
       const sendEvent = (event: string, data: unknown): void => send(sseFrame(event, data))
 
@@ -2497,9 +2509,13 @@ const plugin = definePlugin<Config>({
     /**
      * GET /logs/stream — 容器日志实时流（`docker logs --follow` → SSE）。
      *
+     * 参数：`tail`（0~5000，缺省取配置；**0 = 不补历史只跟随**，客户端断线重连用，
+     * 见 D133）、`timestamps`、`since`。
+     *
      * 事件协议（每帧 `event:` + 单行 JSON `data:`）：
      *   - `line`  `{"d":"..."}` stdout 分片 / `{"e":"..."}` stderr 分片
      *   - `end`   `{"reason":"container-exit","code":N}` 容器停止、docker logs -f 自然退出
+     *   - `end`   `{"reason":"output-limit"}` 宿主侧背压队列溢出（客户端消费跟不上，D133）
      *   - `error` `{"message":"..."}` 后关闭（参数 / 执行失败）
      * 心跳：每 15s 一帧 `: ping` 注释；客户端断开则静默中止执行器（SIGTERM 阶梯 /
      * channel KILL），不写任何帧。安全语义与快照 /logs 一致：只读能力，不走
@@ -2530,8 +2546,13 @@ const plugin = definePlugin<Config>({
         return
       }
 
+      /*
+       * tail=0 合法（D133）：客户端断线重连时不补历史、只要新行——否则服务端会把
+       * 最后 tail 行当新行重推，客户端重复回填。空值/纯空白按「未传」处理（取默认），
+       * 不要落进 Number('') === 0 的坑。
+       */
       const tailParam = params.get('tail')
-      const tail = tailParam === null ? live.logTailDefault : Number(tailParam)
+      const tail = tailParam === null || tailParam.trim() === '' ? live.logTailDefault : Number(tailParam)
       const timestampsParam = params.get('timestamps')
       const sinceParam = params.get('since')
       // SSE 与快照同一套 since 校验（D45）；非法直接 400（此处不在 POST 的 try 内）

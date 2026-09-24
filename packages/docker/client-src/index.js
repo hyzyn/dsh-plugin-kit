@@ -20,6 +20,7 @@ import dockerCss from './docker.css'
 import { bookSessionHost, pickTargetByHost, sessionHostPort, staleBookRef } from './session-target.js'
 import { currentSessionIdOf } from './current-session.js'
 import { createLogBuffer } from './log-buffer.js'
+import { subscribeLogStream, reconnectTail, LOG_RECONNECT_BASE_MS, LOG_RECONNECT_MAX_MS } from './log-stream.js'
 
 const API = '/api/dsh-docker'
 const PANEL_STYLE_ID = 'dsh-docker-style'
@@ -2093,20 +2094,6 @@ window.__ModuleLoader__.load({
         setFollowAtBottom(true)
         setFollowStatus('connecting')
 
-        const params = new URLSearchParams({
-          target: props.target,
-          id: item.id,
-          tail: String(logOptions.tail),
-          ...(logOptions.timestamps ? { timestamps: '1' } : {}),
-        })
-        const es = new EventSource(API + '/logs/stream?' + params.toString())
-        let closed = false
-        const close = () => {
-          if (closed) return
-          closed = true
-          try { es.close() } catch { /* 已关闭 */ }
-        }
-
         /**
          * 分片 → 完整行：docker 的 chunk 不按行切，末段残行留给下一片。
          * 切分/淘汰都在缓冲里做，这里只负责「有新行 → 排一次合帧」。
@@ -2117,62 +2104,58 @@ window.__ModuleLoader__.load({
           if (result.appended > 0) scheduleFollowFlush()
         }
 
-        const onLine = (event) => {
-          let payload = null
-          try { payload = JSON.parse(event.data) } catch { return }
-          if (payload === null || typeof payload !== 'object') return
-          if (typeof payload.d === 'string') pushChunk(payload.d)
-          else if (typeof payload.e === 'string') pushChunk(payload.e)
-        }
-
-        const onEnd = (event) => {
-          let payload = null
-          try { payload = JSON.parse(event.data) } catch { /* 畸形载荷按容器退出处理 */ }
-          const reason = payload !== null && typeof payload.reason === 'string' ? payload.reason : 'container-exit'
-          const code = payload !== null && typeof payload.code === 'number' ? payload.code : null
-          if (reason === 'container-exit') {
-            // 容器停止 → docker logs -f 自然退出：关流、切回快照并立即补一次刷新
-            setFollowNotice('容器已退出' + (code === null ? '' : '（退出码 ' + String(code) + '）') + '，日志流结束，已切回快照')
-            close()
-            cancelFollowFlush()
-            setFollow(false)
-            loadLogs()
-            return
-          }
-          // 服务端主动停流（插件禁用 / 配置热更新）：交给 EventSource 自动重连
-          setFollowStatus('reconnecting')
-          setFollowNotice('服务端已停止日志流，正在重连…')
-        }
-
-        const onError = (event) => {
-          // 服务端 event:error 是带 data 的 MessageEvent；连接层错误是普通 Event
-          if (typeof event.data === 'string' && event.data !== '') {
-            let message = '日志流异常'
-            try {
-              const payload = JSON.parse(event.data)
-              if (payload !== null && typeof payload.message === 'string') message = payload.message
-            } catch { /* 用默认文案 */ }
+        /** 订阅句柄：onEnd 里要能关掉自己，而它在 subscribeLogStream 返回之前就已定义。 */
+        let subscription = null
+        /*
+         * 断线重连交给 subscribeLogStream（D133）：首连带 tail 补历史，**重连带
+         * tail=0** 只补新行。EventSource 自带的自动重连会复用带 tail 的 URL —— 服务端
+         * 把最后 tail 行当新行再推一遍，客户端就会重复回填（还会挤掉真正的历史）。
+         */
+        subscription = subscribeLogStream({
+          buildUrl: (tailNow) => streamUrl('/logs/stream', {
+            target: props.target,
+            id: item.id,
+            tail: String(tailNow),
+            ...(logOptions.timestamps ? { timestamps: '1' } : {}),
+          }),
+          tail: logOptions.tail,
+          onStatus: (status) => {
+            if (status === 'open') setFollowNotice('')
+            setFollowStatus(status)
+          },
+          onLine: pushChunk,
+          onEnd: (payload, controls) => {
+            const reason = payload !== null && typeof payload.reason === 'string' ? payload.reason : 'container-exit'
+            const code = payload !== null && typeof payload.code === 'number' ? payload.code : null
+            if (reason === 'container-exit') {
+              // 容器停止 → docker logs -f 自然退出：关流、切回快照并立即补一次刷新
+              setFollowNotice('容器已退出' + (code === null ? '' : '（退出码 ' + String(code) + '）') + '，日志流结束，已切回快照')
+              subscription?.close()
+              cancelFollowFlush()
+              setFollow(false)
+              loadLogs()
+              return
+            }
+            if (reason === 'output-limit') {
+              // 宿主侧背压队列溢出（推送快过浏览器消费）：不是容器的问题，重连即可
+              setFollowNotice('主机侧日志积压超出上限（推送速度超过浏览器消费速度），已断开并重连；重连只补新行，不重复历史')
+              controls.reconnect()
+              return
+            }
+            // 服务端主动停流（插件禁用 / 配置热更新）：重连也会补新行
+            setFollowNotice('服务端已停止日志流，正在重连…')
+            controls.reconnect()
+          },
+          onError: (message) => {
             setFollowError(message)
-            close()
+            subscription?.close()
             cancelFollowFlush()
             setFollow(false)
             loadLogs()
-            return
-          }
-          // 连接层错误：浏览器按 EventSource 语义自动重连，这里只更新状态，
-          // 不弹错误横幅（否则每次重试都会刷一条）
-          setFollowStatus(es.readyState === 2 ? 'closed' : 'reconnecting')
-        }
-
-        es.addEventListener('line', onLine)
-        es.addEventListener('end', onEnd)
-        es.addEventListener('error', onError)
-        es.onopen = () => {
-          setFollowStatus('open')
-          setFollowNotice('')
-        }
+          },
+        })
         return () => {
-          close()
+          subscription?.close()
           cancelFollowFlush()
         }
         // active 必须在 deps 里（D17）：折叠 tab / 切走会话时收掉 SSE，否则
@@ -3122,6 +3105,30 @@ window.__ModuleLoader__.load({
       const linesRef = useRef([])
       const pendingRef = useRef('')
       const bodyRef = useRef(null)
+      /** 进度落地合帧定时器（D134）：拉到跑满带宽时这个流能到几百行/秒。 */
+      const flushTimerRef = useRef(null)
+
+      /**
+       * 合帧落地进度行（D134）：docker pull 逐层刷进度时这个流能有几百行/秒，而
+       * 每行都会走一次 mergeProgress（要 slice + 重建 key 索引表，O(行数)）再 setLines
+       * ——逐行落地就是「每行一次 2000 行重渲染」，与日志页原来的崩溃同一类写法，
+       * 只是量级小。这里把窗口内的多批并成一次：真相源仍是 linesRef.current（同步
+       * 更新，结束时不会丢行），DOM 按 150ms 节奏刷。
+       */
+      const flushLines = () => {
+        if (flushTimerRef.current !== null) return
+        flushTimerRef.current = setTimeout(() => {
+          flushTimerRef.current = null
+          setLines(linesRef.current)
+        }, FOLLOW_FLUSH_MS)
+      }
+      const flushNow = () => {
+        if (flushTimerRef.current !== null) {
+          clearTimeout(flushTimerRef.current)
+          flushTimerRef.current = null
+        }
+        setLines(linesRef.current)
+      }
 
       useEffect(() => {
         if (!running) return undefined
@@ -3148,12 +3155,14 @@ window.__ModuleLoader__.load({
           linesRef.current = merged.lines
           pendingRef.current = merged.pending
           if (merged.dropped) setDropped(true)
-          setLines(merged.lines)
+          flushLines()
         }
         const onEnd = (event) => {
           let payload = null
           try { payload = JSON.parse(event.data) } catch { /* 畸形载荷按失败处理 */ }
           const code = payload !== null && typeof payload.code === 'number' ? payload.code : null
+          // 结束前把还没落地的进度刷出去，别让最后几行卡在合帧窗口里
+          flushNow()
           setExitCode(code)
           setRunning(false)
           setStatus(code === 0 ? '拉取完成' : '拉取结束（退出码 ' + String(code === null ? '?' : code) + '）')
@@ -3177,7 +3186,14 @@ window.__ModuleLoader__.load({
         es.addEventListener('end', onEnd)
         es.addEventListener('error', onError)
         es.onopen = () => setStatus('open')
-        return () => { close(); pendingRef.current = '' }
+        return () => {
+          close()
+          pendingRef.current = ''
+          if (flushTimerRef.current !== null) {
+            clearTimeout(flushTimerRef.current)
+            flushTimerRef.current = null
+          }
+        }
       }, [running, props.target])
 
       useEffect(() => {
@@ -3674,10 +3690,13 @@ window.__ModuleLoader__.load({
         }
         let open = 0
         let closed = 0
+        /*
+         * 每条容器流各一个订阅句柄（D133）：首连带 tail 补历史，**重连带 tail=0** 只补
+         * 新行。聚合视图一条流断了就用 EventSource 自动重连的话，那条流的 tail 会被
+         * 整段重放，混进同一条列表里就是「凭空多出一段重复日志」。
+         */
         const sources = items.map((item) => {
           const service = item.composeService === null ? item.name : item.composeService
-          // timestamps=1：聚合视图为「按时间合并」与可选显示时间戳固定带上的参数
-          const es = new EventSource(streamUrl('/logs/stream', { target: props.target, id: item.id, tail, timestamps: 1 }))
           /**
            * 分片 → 完整行：残行按 item 存（pendingRef）；行对象组出来时即取单调 id
            * （之后重排/合并只是挪位置，key 不抖动），再交给 enqueue——commit/合帧
@@ -3699,28 +3718,38 @@ window.__ModuleLoader__.load({
             }
             enqueue(rows)
           }
-          es.addEventListener('line', (event) => {
-            let payload = null
-            try { payload = JSON.parse(event.data) } catch { return }
-            if (payload === null || typeof payload !== 'object') return
-            if (typeof payload.d === 'string') push(payload.d)
-            else if (typeof payload.e === 'string') push(payload.e)
+          // timestamps=1：聚合视图为「按时间合并」与可选显示时间戳固定带上的参数
+          const handle = subscribeLogStream({
+            buildUrl: (tailNow) => streamUrl('/logs/stream', { target: props.target, id: item.id, tail: String(tailNow), timestamps: '1' }),
+            tail,
+            onStatus: (next) => {
+              if (next === 'connecting') return
+              if (next === 'open') {
+                open += 1
+                setStatus('open')
+                return
+              }
+              if (next === 'reconnecting') setStatus('reconnecting')
+            },
+            onLine: push,
+            onEnd: (payload, controls) => {
+              const reason = payload !== null && typeof payload.reason === 'string' ? payload.reason : 'container-exit'
+              if (reason === 'container-exit') {
+                // 这个容器停了：这条流不会再有内容，计入「已结束」的条数
+                controls.close()
+                closed += 1
+                if (closed >= items.length) setStatus('closed')
+                return
+              }
+              // 服务端停流 / 宿主队列溢出：重连（只补新行）
+              controls.reconnect()
+            },
+            onError: () => {
+              // 服务端 event:error：只标记「部分出错」，其余流继续
+              setStatus('partial')
+            },
           })
-          es.addEventListener('end', () => {
-            try { es.close() } catch { /* 已关闭 */ }
-            closed += 1
-            if (closed >= items.length) setStatus('closed')
-          })
-          es.addEventListener('error', (event) => {
-            // 服务端 event:error 会带 data；连接层错误交给 EventSource 自动重连
-            if (typeof event.data === 'string' && event.data !== '') setStatus('partial')
-            else setStatus('reconnecting')
-          })
-          es.onopen = () => {
-            open += 1
-            setStatus('open')
-          }
-          return () => { try { es.close() } catch { /* 已关闭 */ } }
+          return () => handle.close()
         })
         void open
         return () => {
@@ -6576,6 +6605,17 @@ window.__ModuleLoader__.load({
       BYTE_LIMIT: FOLLOW_BYTE_LIMIT,
       PENDING_MAX: LOG_PENDING_MAX,
       FLUSH_MS: FOLLOW_FLUSH_MS,
+    }
+    /*
+     * 断线重连策略的测试缝（D133）：真实 EventSource 时序进不了 Node 桩，但「首连带
+     * tail、重连带 0」这条规则本身是纯的——用可注入的假 EventSource 驱动一遍，
+     * 把「重连不许重放历史」钉在用例里（否则退化成浏览器自动重连就没人发现）。
+     */
+    exports.__logStream = {
+      subscribe: subscribeLogStream,
+      RECONNECT_BASE_MS: LOG_RECONNECT_BASE_MS,
+      RECONNECT_MAX_MS: LOG_RECONNECT_MAX_MS,
+      reconnectTail,
     }
     exports.__aggLogs = {
       mergeBuffered: mergeBufferedEntries,

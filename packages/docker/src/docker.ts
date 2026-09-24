@@ -1696,8 +1696,9 @@ export class DockerApi {
 
   /**
    * 实时日志流：`docker logs --follow`，stdout/stderr 逐块回调，直到容器退出 /
-   * 远端关闭 / signal 中止。argv 与快照 logs() 共用同一构造（tail 夹紧
-   * 1..5000、timestamps / since 语义完全一致），只多一个 --follow。
+   * 远端关闭 / signal 中止。argv 与快照 logs() 共用同一构造（timestamps / since
+   * 语义完全一致），只多一个 --follow，且 **tail 允许 0**（D133：客户端断线重连时
+   * 只要新行、不要重放历史；`--tail 0` 正是不补历史、只跟随的原生语义）。
    */
   async logsStream(id: string, options: LogsOptions | undefined, handlers: StreamHandlers, signal?: AbortSignal): Promise<StreamResult> {
     const safe = assertRef(id, 'container')
@@ -1705,11 +1706,13 @@ export class DockerApi {
   }
 
   /**
-   * 日志 argv 的唯一构造点：快照与流式只在 `--follow` 上有差异，
+   * 日志 argv 的唯一构造点：快照与流式只在 `--follow` 与 tail 下限上有差异，
    * 校验与夹紧必须逐字一致（否则同一 id 在两条路径上行为漂移）。
    */
   private logsArgv(id: string, options: LogsOptions | undefined, follow: boolean): string[] {
-    const tail = Math.min(Math.max(Math.trunc(options?.tail ?? 200), 1), 5000)
+    // 流式允许 0（D133：重连只补新行）；快照路径保持 1 起步——「取 0 行快照」没有意义
+    const min = follow ? 0 : 1
+    const tail = Math.min(Math.max(Math.trunc(options?.tail ?? 200), min), 5000)
     return [
       this.bin,
       'logs',

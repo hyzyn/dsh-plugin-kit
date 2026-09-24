@@ -1867,6 +1867,138 @@ await test('日志缓冲:burst 灌入上行数/字节双限与单调 id(D63 根�
   assert.ok(live <= 1024 * 1024, '存活字节必须 ≤ maxBytes,实际 ' + String(live))
 })
 
+await test('日志流重连:首连带 tail、重连一律 tail=0（D133 不重放历史）', () => {
+  const exports_ = registration.factory((spec) => SEED[spec])
+  const seam = exports_.__logStream
+  assert.ok(seam !== undefined && typeof seam.subscribe === 'function', '缺少 __logStream 测试缝')
+  assert.equal(seam.RECONNECT_BASE_MS, 1000)
+  assert.equal(seam.RECONNECT_MAX_MS, 15000)
+  // 规则本身：首连保持调用方给的 tail,重连恒为 0
+  assert.equal(seam.reconnectTail(200, false), 200)
+  assert.equal(seam.reconnectTail(200, true), 0)
+  assert.equal(seam.reconnectTail(5000, true), 0)
+
+  // 用可注入的假 EventSource 真跑一遍订阅：首连 URL 带 200,断线重连后带 0
+  const urls = []
+  const instances = []
+  class FakeEventSource {
+    constructor(url) {
+      this.url = url
+      this.readyState = 0
+      this.listeners = new Map()
+      urls.push(url)
+      instances.push(this)
+    }
+    addEventListener(name, fn) {
+      const list = this.listeners.get(name) ?? []
+      list.push(fn)
+      this.listeners.set(name, list)
+    }
+    /** data 省略 = 连接层错误那种「没有 data 的普通 Event」。 */
+    emit(name, data) {
+      for (const fn of this.listeners.get(name) ?? []) fn(data === undefined ? {} : { data: JSON.stringify(data) })
+    }
+    open() {
+      this.readyState = 1
+      if (this.onopen) this.onopen()
+    }
+    close() {
+      this.readyState = 2
+    }
+  }
+  const previous = globalThis.EventSource
+  const previousSetTimeout = globalThis.setTimeout
+  globalThis.EventSource = FakeEventSource
+  // 退避定时器直接同步执行,免得用例等着真实 1s
+  globalThis.setTimeout = (fn) => {
+    fn()
+    return 0
+  }
+  try {
+    const lines = []
+    const handle = seam.subscribe({
+      buildUrl: (tail) => '/api/dsh-docker/logs/stream?tail=' + String(tail),
+      tail: 200,
+      onLine: (text) => lines.push(text),
+    })
+    assert.deepEqual(urls, ['/api/dsh-docker/logs/stream?tail=200'])
+    instances[0].open()
+    instances[0].emit('line', { d: 'first\n' })
+    // 连接层错误（无 data 的 Event）：触发手动重连,URL 必须换成 tail=0
+    instances[0].emit('error')
+    assert.deepEqual(urls, [
+      '/api/dsh-docker/logs/stream?tail=200',
+      '/api/dsh-docker/logs/stream?tail=0',
+    ])
+    instances[1].open()
+    instances[1].emit('line', { d: 'second\n' })
+    assert.deepEqual(lines, ['first\n', 'second\n'])
+    handle.close()
+  } finally {
+    globalThis.EventSource = previous
+    globalThis.setTimeout = previousSetTimeout
+  }
+})
+
+await test('日志流重连:服务端 end{output-limit} 交给调用方决定重连,不静默当成正常结束', () => {
+  const exports_ = registration.factory((spec) => SEED[spec])
+  const seam = exports_.__logStream
+  const urls = []
+  const instances = []
+  class FakeEventSource {
+    constructor(url) {
+      this.url = url
+      this.readyState = 0
+      this.listeners = new Map()
+      urls.push(url)
+      instances.push(this)
+    }
+    addEventListener(name, fn) {
+      const list = this.listeners.get(name) ?? []
+      list.push(fn)
+      this.listeners.set(name, list)
+    }
+    /** data 省略 = 连接层错误那种「没有 data 的普通 Event」。 */
+    emit(name, data) {
+      for (const fn of this.listeners.get(name) ?? []) fn(data === undefined ? {} : { data: JSON.stringify(data) })
+    }
+    open() {
+      this.readyState = 1
+      if (this.onopen) this.onopen()
+    }
+    close() {
+      this.readyState = 2
+    }
+  }
+  const previous = globalThis.EventSource
+  const previousSetTimeout = globalThis.setTimeout
+  globalThis.EventSource = FakeEventSource
+  globalThis.setTimeout = (fn) => {
+    fn()
+    return 0
+  }
+  try {
+    const seen = []
+    seam.subscribe({
+      buildUrl: (tail) => '/logs/stream?tail=' + String(tail),
+      tail: 50,
+      onEnd: (payload, controls) => {
+        seen.push(payload)
+        if (payload && payload.reason === 'output-limit') controls.reconnect()
+      },
+    })
+    instances[0].open()
+    instances[0].emit('end', { reason: 'output-limit' })
+    assert.equal(seen.length, 1)
+    assert.equal(seen[0].reason, 'output-limit')
+    // 溢出后重连:同样不许带历史(否则重复回填)
+    assert.deepEqual(urls, ['/logs/stream?tail=50', '/logs/stream?tail=0'])
+  } finally {
+    globalThis.EventSource = previous
+    globalThis.setTimeout = previousSetTimeout
+  }
+})
+
 await test('日志缓冲:无换行的超长输出被残行分片钉在有界内存内', () => {
   const exports_ = registration.factory((spec) => SEED[spec])
   const { create, PENDING_MAX } = exports_.__logBuffer

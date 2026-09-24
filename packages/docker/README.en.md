@@ -253,9 +253,14 @@ Inside the panel:
   returns to snapshots with an immediate refresh. Streaming logs keep the last **5000 lines / 4MB** (a ring buffer that drops the oldest on either cap; newline-free oversized output is force-split so memory stays bounded). Chunks render at most every **150ms** (no per-chunk re-render on chatty containers) and rows carry stable ids, so sliding the buffer only mounts/unmounts boundary nodes — the view no longer truncates: whatever `LINES` selects is rendered and exported (bounded by the buffer and the host output cap). Auto-scroll to bottom,
   drops the oldest and hints once); filtering / level colouring share exactly the same rendering as snapshots. It
   auto-scrolls to the bottom, pauses when the user scrolls up and floats a
-  "back to bottom" button; a status line in the top right shows the connection state, a browser disconnect is
-  auto-reconnected by EventSource (updating only the status, without an error banner), and a stream that ends
+  "back to bottom" button; a status line in the top right shows the connection state, and a stream that ends
   naturally because the container exited switches back to snapshot refresh automatically.
+  **Reconnection is managed by the plugin itself** (not by EventSource auto-reconnect): the first connection
+  carries `tail` to backfill history, while every reconnect uses `tail=0` — new lines only, **never replaying
+  history** (auto-reconnect reuses the URL with its `tail`, so the server pushes the last `tail` lines again as
+  if they were new, and the log grows a duplicated block). When the host-side backpressure queue (8MB)
+  overflows it first sends an `end` frame with `reason: output-limit` and then closes, so the UI says
+  "host-side backlog" and reconnects.
   Connecting / switching pages / closing the panel all close the `EventSource`.
 - **Overview**: `docker inspect`'s authoritative data — state and health, exit code, restart count and policy,
   port mappings, mounts (including read-only flags), networks and IPs, entrypoint and command, and the latest
@@ -545,7 +550,7 @@ headers and will hit it (normal browser use is unaffected). Read-only routes do 
 | `/inspect` | POST | `{target?, id}` | `{ok:true, details: ContainerDetail[]}` |
 | `/stats` | POST | `{target?, ids?: string[]}` | `{ok:true, stats: ContainerStats[]}` |
 | `/logs` | POST | `{target?, id, tail?, timestamps?, since?}` | `{ok:true, logs:{id, text, truncated}}` |
-| `/logs/stream` | GET | query: `target?`, `id` (required), `tail?` (1–5000), `timestamps?` (`1`/`true`), `since?` | `200 text/event-stream` long connection, event protocol below; bad parameters / unknown target / non-loopback return ordinary JSON errors |
+| `/logs/stream` | GET | query: `target?`, `id` (required), `tail?` (**0**–5000; `0` = follow only, no history backfill, used on client reconnect), `timestamps?` (`1`/`true`), `since?` | `200 text/event-stream` long connection, event protocol below; bad parameters / unknown target / non-loopback return ordinary JSON errors |
 | `/stats/stream` | GET | query: `target?`, `ids?` (comma-separated; omitted = all running) | `200 text/event-stream`: one `stats` frame per second (ContainerStats, same shape as the /stats snapshot); it does not end naturally and is finished off by the client disconnecting |
 | `/events/stream` | GET | query: `target?` | `200 text/event-stream`: one container event per `event` frame (already through the server-side allowlist, with missing-value fields omitted); it does not end naturally and is finished off by the client disconnecting |
 | `/images` | POST | `{target?}` | `{ok:true, images: ImageSummary[]}` |

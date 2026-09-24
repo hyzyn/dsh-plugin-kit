@@ -227,8 +227,11 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
   渲染（话痨容器也不再逐条重绘），行 key 用单调 id，缓冲滑动只挂载/卸载边界节点。
   显示层**不再另设截断**：`LINES` 选多少就渲染 / 导出多少（真正的闸是缓冲与宿主的
   「输出上限（KB）」）。自动滚动到底部，用户向上滚动时暂停并浮出
-  「回到底部」按钮；右上状态行显示连接状态，浏览器断线由 EventSource 自动
-  重连（只更新状态、不弹错误横幅），容器退出导致流自然结束时自动切回快照刷新。
+  「回到底部」按钮；右上状态行显示连接状态，容器退出导致流自然结束时自动切回快照刷新。**断线重连由插件自己管**（不依赖
+  EventSource 的自动重连）：首连带 tail 补历史，重连一律 tail=0——只补新行、**不
+  重放历史**（自动重连会复用带 tail 的 URL，服务端就会把最后 tail 行当新行重推一遍，
+  日志里凭空多出一段重复）。宿主侧背压队列（8MB）溢出时会先发一条 end 帧
+  （reason = output-limit）再收尾，界面明说「主机侧积压」并自动重连。
   连接 / 切页 / 关面板都会关闭 `EventSource`。
 - **概览**：`docker inspect` 的权威数据——状态与健康、退出码、重启次数与策略、
   端口映射、挂载（含只读标记）、网络与 IP、entrypoint 与命令、最近一次健康
@@ -500,7 +503,7 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
 | `/inspect` | POST | `{target?, id}` | `{ok:true, details: ContainerDetail[]}` |
 | `/stats` | POST | `{target?, ids?: string[]}` | `{ok:true, stats: ContainerStats[]}` |
 | `/logs` | POST | `{target?, id, tail?, timestamps?, since?}` | `{ok:true, logs:{id, text, truncated}}` |
-| `/logs/stream` | GET | query：`target?`、`id`（必填）、`tail?`（1~5000）、`timestamps?`（`1`/`true`）、`since?` | `200 text/event-stream` 长连接，事件协议见下；参数错误 / 未知目标 / 非 loopback 返回常规 JSON 错误 |
+| `/logs/stream` | GET | query：`target?`、`id`（必填）、`tail?`（**0**~5000；`0` = 不补历史只跟随，客户端重连用）、`timestamps?`（`1`/`true`）、`since?` | `200 text/event-stream` 长连接，事件协议见下；参数错误 / 未知目标 / 非 loopback 返回常规 JSON 错误 |
 | `/stats/stream` | GET | query：`target?`、`ids?`（逗号分隔；省略 = 全部运行中） | `200 text/event-stream`：每秒一帧 `stats`（ContainerStats，形状与 /stats 快照一致）；不会自然结束，靠客户端断连收尾 |
 | `/events/stream` | GET | query：`target?` | `200 text/event-stream`：一帧 `event` 一个容器事件（服务端已过白名单，值缺失的字段省略）；不会自然结束，靠客户端断连收尾 |
 | `/images` | POST | `{target?}` | `{ok:true, images: ImageSummary[]}` |
@@ -802,11 +805,18 @@ loopback 403（含三条流路由）、容器名 / 镜像引用注入尝试被�
 卡片 key 等于命名空间 `docker`、找不到宿主侧边栏时安静降级且卸载可重复调用，ttyConnbar 集成的四条路径（连接簿名命中 / host:port 命中 / 未配置主机不加按钮 / tty 未安装静默跳过），FOLLOW 的 SSE 订阅与「回到底部」交互（静态断言），**镜像详情 / 拉取流 / 删除 / prune 入口**、**统计 FOLLOW + sparkline 钩子**、**Compose 分组与聚合日志**、**「活动」条装配 + 事件环形缓冲 / 动作标签 / 防抖**（纯逻辑经 `__events` 测试缝），以及侧边栏折叠态（`data-sidebar-collapsed`）隐藏入口标签的样式规则。
 需要真 daemon 的验证走下面的手工清单。
 
-`test/logs-stream.test.ts`（27 例，随根 `pnpm test` 跑）覆盖日志实时流的四层：
+`test/logs-stream.test.ts`（30 例，随根 `pnpm test` 跑）覆盖日志实时流的四层：
 `logsStream` 的 argv 构造与 `assertRef` 白名单、SSE 帧的单行 JSON 封装（换行 /
 多字节）、本地流生命周期（假 spawn：跨 chunk 多字节、SIGTERM→SIGKILL 阶梯、
 close resolve、spawn error）与 SSH 长流的 busy 计数配对 / sweeper 跳过、以及
-路由层的事件序列 / 心跳 / 客户端断开静默中止 / 插件禁用统一收尾。
+路由层的事件序列 / 心跳 / 客户端断开静默中止 / 插件禁用统一收尾，以及
+**`tail=0` 只跟随不补历史**与**背压队列溢出补发 `end{reason:output-limit}`**（D133）。
+
+`pnpm --filter @hyzyn/dsh-docker perf:logs`（`scripts/log-perf.mjs`）是**日志页的浏览器侧
+性能门禁**：用真 Chrome 量「5000 行首屏耗时 / DOM 规模」与「FOLLOW 突发 20000 行时的处理
+耗时与事件循环最大延迟」，超预算即非零退出（当前实测约 234ms / 10000 节点、突发 930ms /
+最大延迟 55ms）。它依赖 tty 的预览夹具（`node packages/tty/scripts/preview.mjs` 生成），
+夹具或 Chrome 缺失时**跳过并 exit 0** —— 它是 npm script，不是 vitest 必跑项。
 
 `test/streams.test.ts`（33 例）覆盖**统计流 / 事件流 / 拉取流 / 网络卷 / 通用 SSE 基建**：
 `statsStream` 不带 `--no-stream`（与快照同一构造点）、`pullStream` 的

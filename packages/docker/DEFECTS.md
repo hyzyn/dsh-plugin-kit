@@ -21,7 +21,7 @@
 
 ## 现状
 
-**已修 127 / 待修 0**（P1×6、P2×38、P3×83；第一轮 79 + 第二轮 46 + 线上实测 2）。
+**已修 132 / 待修 0**（P1×6、P2×41、P3×85；第一轮 79 + 第二轮 46 + 线上实测 3 + 现场复核 4）。
 
 第一轮集中在三类：**长连接与长命令的生命周期**（空闲回收、并发首连、陈旧 close 事件、SSE 背压）、
 **静默的错误结果**（把截断当完整、把超时当成功、把「取不到权威数据」当「没有异常」）、
@@ -173,6 +173,54 @@
 | D130 | P2 | `docker_ps` 把双栈端口渲染成重复映射：去重键含 hostIp（`0.0.0.0` 与 `[::]` 不同），render 又丢掉 hostIp → `6379→6379/tcp,6379→6379/tcp`；顺带修掉裸 `84->84/tcp` 被切成 `hostIp:'8'` | src/docker.ts、scripts/smoke.mjs | 2026-09-24 用户实测上报 |
 | D131 | P2 | host 网络容器在 `docker_ps` 里 `ports` 为空，与「确实没暴露端口」无法区分（用户为此多 inspect 了 5 个容器） | src/docker.ts、src/index.ts、client-src/index.js | 2026-09-24 用户实测上报 |
 | D132 | P3 | `docker_inspect` 未命中只回 `No such object: <id>`，不给近似候选（如 `607023340cbb_rmqnamesrv`） | src/docker.ts、src/index.ts | 2026-09-24 用户建议 |
+| D133 | P2 | 日志流断线重连**重放历史**：EventSource 自动重连复用带 `tail` 的 URL，服务端把最后 tail 行当新行重推，客户端缓冲只在 effect 重跑时重建 → 日志里凭空多出一段重复并挤掉真正的历史；宿主侧 8MB 背压队列溢出走静默 `res.end()`，客户端把它当「流正常结束」再自动重连，同样触发重放 | src/docker.ts、src/index.ts、client-src/log-stream.js（新增）、client-src/index.js | 2026-09-24 test profile 现场复核复现 |
+| D134 | P3 | 镜像拉取进度流**逐行落地**：每个 SSE line 都跑一次 `mergeProgress`（slice + 重建 key 索引，O(行数)）再 `setLines` → 长拉取（多 GB / 数十层）时每秒数百次 2000 行重渲染，与 D128 同一类写法只是量级小 | client-src/index.js | 2026-09-24 代码复核（D128 同类反模式） |
+### D133：日志流断线重连重放历史（2026-09-24 test profile 现场复核复现）
+
+- **症状**：FOLLOW 打开着，网络抖一下 / 宿主 HMR / 宿主队列溢出之后，日志里**凭空多出一段
+  重复内容**，而在这之前滚上去看的历史被挤掉一截。断得越频繁、tail 越大，重复越明显。
+- **现场复现**（test profile，127.0.0.1:3082，对 目标2 / cdc-service 连两次同样的流）：
+
+      run1 window: 2026-09-24 21:00:00 -> 21:19:00
+      run2 window: 2026-09-24 21:00:00 -> 21:19:00
+      run1 tail == run2 head : True     （20 行逐字相同）
+
+  即：**同一 URL 的第二条连接会把最后 tail 行原样再推一遍**。这是 docker logs --tail N 的
+  本分，不是 bug；问题在客户端把它当新行 append。
+- **根因**（两半，缺一不可）：
+  1. 客户端原先依赖 EventSource 的**自动重连**，而自动重连**复用同一个 URL** —— URL 里的
+     tail 是首连用来补历史的。环形缓冲只在 effect 重跑时重建，重连不重跑 effect，于是重放
+     的行被当成新行追加。
+  2. 宿主 openSseStream 的背压队列越过 8MB 上限时直接 finish()（res.end()），
+     **不发 end 帧**。浏览器把「连接正常关闭」判为流结束并自动重连 —— 又回到第 1 条。
+- **修法**：
+  - 客户端新增 client-src/log-stream.js：把 EventSource 生命周期与重连收在一处，**首连带
+    tail、重连一律 tail=0**（--tail 0 = 不补历史、只跟随），单容器 FOLLOW 与 Compose
+    聚合两条路径共用（聚合视图每容器一条流，各自独立重连）。
+  - 宿主 logsArgv 允许**流式**的 tail=0（快照路径仍从 1 起算），SSE 路由把空值当「未传」
+    （否则 Number('') 会落进 0），并在背压溢出前补一条 end{reason:'output-limit'}，
+    客户端据此提示「主机侧积压」而不是静默重连。
+  - 单容器视图对 output-limit 给专门文案；聚合视图把它当「重连」而非「这条流结束」。
+- **回归**：test/logs-stream.test.ts（tail=0 argv、快照仍夹到 1、路由 tail=0、溢出补 end
+  帧）、scripts/client-smoke.mjs（用可注入假 EventSource 真跑一遍：首连 URL 带 200、
+  重连 URL 带 0；end{output-limit} 交给调用方重连）。
+- **代价说明**：--tail 0 依赖 docker CLI 语义（0 = 不补历史）。写这条时本机没有可用
+  daemon（docker logs 在连 daemon 前不校验 flag），因此**用 argv 断言钉住下发值**，
+  真机语义待首次现场验证。
+
+### D134：镜像拉取进度流逐行落地（2026-09-24 代码复核）
+
+- **症状**：拉大镜像（多 GB、数十层）时面板发卡；网络越快越明显。不崩，但拖。
+- **根因**：PullView 的 onLine 每收到一个 SSE 分片就跑一次 mergeProgress
+  （existing.slice() + 重建 key 索引表，O(行数)，上限 2000 行）再 setLines。
+  docker pull 逐层刷进度，这个流可以有几百行/秒 → 每秒数百次「2000 行列表重渲染」。
+  与 D128 是同一类反模式，只是量级小。
+- **修法**：真相源仍是 linesRef.current（同步更新，结束时不会丢行），DOM 改按
+  FOLLOW_FLUSH_MS（150ms）合帧落地；end 前 flushNow() 把窗口里剩余的行刷出去，
+  组件卸载清定时器。
+- **回归**：本期靠代码复核 + 既有 pull 相关 route-smoke；未在 test profile 现场触发真实
+  大镜像拉取（会改远端状态），属于**已修但未现场压测**。
+
 ### D126：失效的连接簿引用在界面上看不出来（2026-09-21 用户实测上报）
 
 - **症状**：docker 面板顶部报「目标「目标1」引用的连接簿条目不存在：HS-248」，同时下方又有一条

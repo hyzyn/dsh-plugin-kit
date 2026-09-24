@@ -136,8 +136,31 @@ describe('DockerApi.logsStream', () => {
     expect(calls[0]?.argv).toEqual(['docker', 'logs', '--follow', '--tail', '200', 'web'])
     await api.logsStream('web', { tail: 999_999 }, makeHandlers())
     expect(calls[1]?.argv).toEqual(['docker', 'logs', '--follow', '--tail', '5000', 'web'])
+    // 跟随路径的下限是 0（不补历史），负数越界到 0
     await api.logsStream('web', { tail: -5 }, makeHandlers())
-    expect(calls[2]?.argv).toEqual(['docker', 'logs', '--follow', '--tail', '1', 'web'])
+    expect(calls[2]?.argv).toEqual(['docker', 'logs', '--follow', '--tail', '0', 'web'])
+  })
+
+  it('tail=0 是流式专有语义：不补历史只跟随（D133 重连路径）', async () => {
+    const calls: string[][] = []
+    const runner: Runner = {
+      label: 'fake',
+      async run(argv) {
+        calls.push([...argv])
+        return { code: 0, stdout: '', stderr: '', truncated: false }
+      },
+      async stream(argv) {
+        calls.push([...argv])
+        return { code: 0 }
+      },
+    }
+    const api = new DockerApi(runner, 'docker', { timeoutMs: 1000, maxBytes: 1024 })
+    // 重连只补新行：--tail 0 原样下发，不被夹到 1
+    await api.logsStream('web', { tail: 0 }, makeHandlers())
+    expect(calls[0]).toEqual(['docker', 'logs', '--follow', '--tail', '0', 'web'])
+    // 快照路径的 0 仍然夹到 1：取 0 行快照没有意义
+    await api.logs('web', { tail: 0 })
+    expect(calls[1]).toEqual(['docker', 'logs', '--tail', '1', 'web'])
   })
 
   it('容器 ID 走 assertRef 白名单：注入尝试不触达执行器', async () => {
@@ -401,8 +424,11 @@ interface FakeRes {
   flushed: boolean
   ended: boolean
   closeListeners: Array<() => void>
+  drainListeners: Array<() => void>
+  /** 背压开关：true 时 write 一律返回 false（模拟 socket 写缓冲已满），帧进队列。 */
+  blocked: boolean
   writeHead(status: number, headers?: Record<string, string>): void
-  write(chunk: string): void
+  write(chunk: string): boolean
   flushHeaders(): void
   end(body?: string): void
   on(event: string, listener: () => void): void
@@ -418,12 +444,15 @@ function makeRes(): FakeRes {
     flushed: false,
     ended: false,
     closeListeners: [],
+    drainListeners: [],
+    blocked: false,
     writeHead(status, headers) {
       res.status = status
       res.headers = headers ?? {}
     },
     write(chunk) {
       res.frames.push(chunk)
+      return !res.blocked
     },
     flushHeaders() {
       res.flushed = true
@@ -434,6 +463,7 @@ function makeRes(): FakeRes {
     },
     on(event, listener) {
       if (event === 'close') res.closeListeners.push(listener)
+      if (event === 'drain') res.drainListeners.push(listener)
     },
     emitClose() {
       for (const listener of [...res.closeListeners]) listener()
@@ -550,6 +580,46 @@ function mountPlugin(): { route: FakeRoute; state: ReturnType<typeof makeCtx>['s
 }
 
 describe('GET /logs/stream（SSE 路由）', () => {
+  it('tail=0 → 不补历史只跟随（D133：客户端重连不带历史；空值仍取默认）', async () => {
+    const { route } = mountPlugin()
+    const child = makeChild()
+    spawnMock.mockReturnValue(child)
+    const res = makeRes()
+    const pending = route.handler(makeReq('/api/dsh-docker/logs/stream?target=本机&id=web&tail=0'), res)
+    expect(spawnMock.mock.calls[0]?.[1]).toEqual(['logs', '--follow', '--tail', '0', 'web'])
+    child.emit('close', 0)
+    await pending
+
+    // tail= 空值不能被 Number('') === 0 带偏，必须落回配置默认（200）
+    const res2 = makeRes()
+    const child2 = makeChild()
+    spawnMock.mockReturnValue(child2)
+    const pending2 = route.handler(makeReq('/api/dsh-docker/logs/stream?target=本机&id=web&tail='), res2)
+    expect(spawnMock.mock.calls[1]?.[1]).toEqual(['logs', '--follow', '--tail', '200', 'web'])
+    child2.emit('close', 0)
+    await pending2
+  })
+
+  it('背压队列溢出：补一条 end{reason:output-limit} 再收尾（D133，不再静默断流）', async () => {
+    const { route } = mountPlugin()
+    const child = makeChild()
+    spawnMock.mockReturnValue(child)
+    const res = makeRes()
+    res.blocked = true // 客户端不再消费：所有帧堆积在宿主队列里
+    const pending = route.handler(makeReq('/api/dsh-docker/logs/stream?target=本机&id=web&tail=0'), res)
+    // 每帧 ~9MB，两帧就超过 8MB 上限
+    const huge = 'x'.repeat(9 * 1024 * 1024)
+    child.stdout.emit('data', Buffer.from(huge + '\n'))
+    // 溢出收尾会 abort 上游：假 child 得补一次 close，runner 才能 resolve
+    child.emit('close', null)
+    await pending
+    expect(res.ended).toBe(true)
+    // 溢出的 end 帧走的是 finish() 的「收尾前把没写完的帧交给 res.end 落地」
+    const tail = res.frames.join('') + (res.endBody ?? '')
+    expect(tail).toContain('event: end')
+    expect(tail).toContain('"reason":"output-limit"')
+  })
+
   it('响应头 / flushHeaders / 事件序列：line(stdout) → line(stderr) → end', async () => {
     const { route } = mountPlugin()
     const child = makeChild()
