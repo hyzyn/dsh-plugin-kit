@@ -174,6 +174,9 @@ describe('本地监听失败必须粘住（D53）', () => {
       t.manager.reconcile([specOf({ localPort: takenPort })])
       await until(() => t.status()?.state === 'error')
       expect(t.status()?.error).toContain('EADDRINUSE')
+      // 文案要可行动（A 项）：多 profile 是最常见原因，并给出两条出路
+      expect(t.status()?.error).toContain('另一个 DSH profile')
+      expect(t.status()?.error).toContain('localPort')
       // 即便 SSH 侧随后 ready，也不能把「本地没监听成功」粉饰成 active
       for (const c of t.clients) c.trigger('ready')
       expect(t.status()?.state).toBe('error')

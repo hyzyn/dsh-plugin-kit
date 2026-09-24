@@ -67,6 +67,23 @@ export interface TunnelLogger {
   warn(msg: string): void
 }
 
+/**
+ * 本地监听失败的文案（D58 补充）：`EADDRINUSE` 在多 profile 场景下**几乎总是**
+ * 「另一个 profile 的宿主进程还占着这个端口」——端口转发是**机器级**资源，而配置是按
+ * profile 各存一份（复制 profile 会把隧道一起拷走，见 Profile 管理）。原样回一句
+ * `listen EADDRINUSE` 只会让人去翻 `lsof`，这里把原因与两条出路直接写出来。
+ */
+function localListenFailureMessage(port: number, error: NodeJS.ErrnoException): string {
+  const head = `本地监听 127.0.0.1:${String(port)} 失败: ${error.message}`
+  if (error.code === 'EADDRINUSE') {
+    return `${head} —— 该端口已被占用。端口转发是机器级资源，最常见的原因是**另一个 DSH profile 的宿主进程**还在运行同一条隧道（每个 profile 的隧道配置各自独立，复制 profile 会一并拷走）。两条出路：在本 profile 关掉这条隧道，或把它换成一个没被占用的 localPort。`
+  }
+  if (error.code === 'EACCES') {
+    return `${head} —— 1024 以下的端口需要特权；换一个 ≥1024 的 localPort。`
+  }
+  return head
+}
+
 interface RuntimeTunnel {
   spec: TunnelSpec
   signature: string
@@ -179,7 +196,7 @@ export class TunnelManager {
     if (rt.spec.direction === 'local') {
       const server = net.createServer((socket) => this.onLocalConnection(rt, socket))
       server.on('error', (error) => {
-        this.failTunnel(rt, `本地监听 127.0.0.1:${String(rt.spec.localPort ?? 0)} 失败: ${error.message}`)
+        this.failTunnel(rt, localListenFailureMessage(rt.spec.localPort ?? 0, error))
       })
       server.listen(rt.spec.localPort ?? 0, '127.0.0.1', () => {
         this.logger.info(`[dsh-tty] 隧道 ${rt.spec.name} 监听 127.0.0.1:${String(rt.spec.localPort ?? 0)}`)

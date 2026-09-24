@@ -223,6 +223,10 @@ SSH 会话同表调度：`tty_list` 里 `kind: 'ssh'` 的条目按 `target`
   后自动重新 forwardIn；连接簿改密码后重连自动用新凭证。**例外**：本地监听失败
   （端口被占等）/ 连接簿条目缺失是人工介入级故障——状态停在 `error` 且
   `fatal:true`、**不会自动重试**，改配置（或恢复条目）后按新规格重建（见 DEFECTS D58）；
+- **多 profile 同跑要错开 localPort**：端口转发是**机器级**资源，而配置按 profile
+  各存一份（复制 profile 会连隧道一起拷走）。两个 profile 同时跑同一条隧道 → 后起的
+  那个 `EADDRINUSE`，状态停在 `error` 且 `fatal:true`（**不重试**，改配置后按新规格
+  重建）；报错文案会直接点明「可能是另一个 DSH profile 的宿主进程」并给出两条出路；
 - **状态徽标**：卡片展开期间 2s 轮询实时状态（活跃绿/连接中蓝/错误红/停止
   灰 + 最近错误）；「+」菜单的连接簿条目显示 `⇄N` 隧道徽标；agent 可用
   `tunnel_list` 工具查询状态；
@@ -314,6 +318,10 @@ subsystem，宿主半体 `src/sftp.ts`）：
 的工作（dev server、build、训练任务），开**持久终端**——会话状态委托给
 tmux server（专用 socket `dsh-tty`，与用户自己的 tmux 完全隔离），断线保活
 超时、甚至宿主重启后都能接回：
+
+> ⚠️ **socket 是全 profile 共用的**（`tmux -L dsh-tty`，不随 profile 区分）。多 profile
+> 同跑时：`tty_list` 的持久会话清单会**跨 profile** 出现；而「改 tmux 配置后生效」用的
+> `tmux -L dsh-tty kill-server` 会**一并杀掉另一个 profile 的持久会话**。
 
 - **入口（0.10.1 简化）**：设置卡片「会话持久化」选 `tmux` 即唯一开关——开启后
   **所有新开的标签默认持久化**：「+」菜单的「本地终端」、连接簿条目点击、

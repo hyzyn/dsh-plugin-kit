@@ -449,6 +449,22 @@ D50 才是用户看到的那一下（他补的描述是「整条状态条瞬间�
   删除目录那条保留原提示。
 - **回归门槛**：`test/sftp.test.ts` 四条（code=2 / code=3 / rename 带 from→to / remove 保留提示）。
 
+### D60：机器级资源没有 profile 维度（2026-09-24 用户提出，本次只做「可诊断 + 文档」）
+
+- **现象**：web / test 两个 profile 同时运行，后起的那个隧道 `EADDRINUSE`；两个 profile 的
+  tty 设置（含 `tunnels[]`）**逐字相同**——是复制 profile 带过去的。
+- **核对**：不存在共享 settings.yaml；插件设置存在各 profile 自己的 `cordis.yml`；
+  Profile 管理的 `copyProfile` 是**整目录拷贝**（只跳过 `node_modules` / lockfile），
+  `profile.runtime.json`（webserver 端口）与隧道 `localPort` 都随复制走。
+- **判断（重要）**：把设置「集中共享」**不是**解法——端口是机器级资源，共享只会让两个
+  profile 永远抢同一个端口、且无法各自关闭。缺的是「机器级资源的 profile 维度处理」。
+- **本次做的**：① 隧道本地监听失败文案点明「可能是另一个 DSH profile 的宿主进程」并给出
+  两条出路（EADDRINUSE / EACCES 各自措辞）；② tty 与 profile 两份 README 写明多 profile
+  同跑要错开 webserver 端口与隧道 `localPort`，以及 tmux socket（`-L dsh-tty`）是全
+  profile 共用、`kill-server` 会跨 profile 生效。
+- **未做（待定，见「待办」）**：复制 profile 时自动错开 / 停用隧道端口；保存隧道时做端口
+  占用探测；tmux socket 按 profile 命名。
+
 ## agent 会话（0.20.0：tty_open / tty_close / tty_stats）
 
 > 这一节记的是**设计决定**（不是缺陷）：agent 能自己开终端之后，会话的归属语义变了，
@@ -486,6 +502,10 @@ D50 才是用户看到的那一下（他补的描述是「整条状态条瞬间�
 > 「已经做掉的 / 仍缺的」），1 条已整条做掉（agent 侧 `tty_open` / `tty_close`，见下方标注），
 > 其余 4 条与代码现状一致。
 
+- **机器级资源的 profile 维度（D60）** —— 复制 profile 会把固定端口（webserver / 隧道
+  `localPort`）一并拷走，且 tmux socket（`-L dsh-tty`）全 profile 共用。本次只做了
+  「可诊断 + 文档」。**待做**：复制时自动错开/停用隧道端口（或只提示）；保存隧道时探测端口
+  占用；tmux socket 按 profile 命名（`dsh-tty-<profile>`）。*（2026-09-24 新增）*
 - **跳板机（ProxyJump / ProxyCommand）** —— `ssh-config.ts` 明写忽略、`buildConnectConfig` 从不设
   ssh2 的 `sock`；企业内网主机几乎都靠 bastion。**短期至少做到**：导入时跳过依赖跳板机的块并提示，
   不要静默产出一条注定 20s 超时的连接簿条目。*（复核：仍未做，`ssh-config.ts:9` 的行为没变）*

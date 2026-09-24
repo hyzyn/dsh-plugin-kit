@@ -80,7 +80,13 @@ dsh --profile headless "run the tests"
 
 - 创建逻辑与 `dsh-app-boot` 的 `initProfile` 对齐：生成 `package.json`（`dsh.profile.bundles`）、空补丁文件 `cordis.patch.yml`（`[]`）与 `pnpm-workspace.yaml`
 - 名称只允许 `[A-Za-z0-9][A-Za-z0-9._-]*`，且不能是 `node_modules` / `.` / `..`
-- 复制自动跳过 `node_modules` 与 `pnpm-lock.yaml`，不搬运安装产物，但会自动执行 `pnpm install` 重建依赖；`profile.runtime.json` 会随目录一起复制。`pnpm` 经 `@hyzyn/dsh-kit` 的 `spawnPortable` 启动——Windows 上 pnpm 只有 `pnpm.CMD`，裸 spawn 既解析不到 `.cmd` 也会因 Node 的加固报 `EINVAL`（真机实测过 `spawnSync pnpm ENOENT`）；装依赖失败会把复制出来的目录回滚，语义是「要么复制成功，要么什么都没发生」
+- 复制自动跳过 `node_modules` 与 `pnpm-lock.yaml`，不搬运安装产物，但会自动执行 `pnpm install` 重建依赖；`profile.runtime.json` 会随目录一起复制。
+  ⚠️ **复制会把「机器级资源」一起带走**，多 profile 同跑前要各自错开：
+  webserver 端口（`profile.runtime.json`，复制后请到卡片改一个没被占的）、
+  终端面板的**端口转发 `localPort`**（存在该 profile `cordis.yml` 的 tty 设置里，
+  复制后建议先停用或改端口）。隧道撞端口是 `fatal`（不重试），改配置后重建。
+  另外 tmux 持久会话的 socket 是所有 profile 共用的（`-L dsh-tty`），
+  `kill-server` 会跨 profile 生效。`pnpm` 经 `@hyzyn/dsh-kit` 的 `spawnPortable` 启动——Windows 上 pnpm 只有 `pnpm.CMD`，裸 spawn 既解析不到 `.cmd` 也会因 Node 的加固报 `EINVAL`（真机实测过 `spawnSync pnpm ENOENT`）；装依赖失败会把复制出来的目录回滚，语义是「要么复制成功，要么什么都没发生」
 - 端口配置保存在 `profile.runtime.json`，只影响本插件生成的启动命令，不会写入 DSH 官方 `package.json` / `cordis.patch.yml`
 - 删除为递归删除、不可撤销，面板内会二次确认；内置的 `web` 默认 profile 不允许删除，`headless` 可以删除
 - 新建的 profile 首次使用前需按需安装依赖：`dsh plugin --profile <name> add <包>`（在 profile 目录内跑 pnpm）
