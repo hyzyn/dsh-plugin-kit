@@ -1,6 +1,6 @@
 {
   "name": "@deepseek-ai/dsh",
-  "version": "0.1.7-rc.1",
+  "version": "0.1.7-rc.2",
   "private": true,
-  "description": "pnpm override 用的占位包：本仓库的可安装插件要在 peerDependencies 里声明 @deepseek-ai/dsh 作为「cohort 钉子」，那是给 DSH 自己的兼容性判定器读 manifest 用的，本地不需要真的把整个 DSH CLI 依赖树装进来。根 package.json 的 pnpm.overrides 把 @deepseek-ai/dsh 指到这里。版本号必须满足插件声明的范围（^0.1.7-rc.1），否则 pnpm 会报 unmet peer。"
+  "description": "pnpm override 用的占位包：本仓库的可安装插件要在 peerDependencies 里声明 @deepseek-ai/dsh 作为「cohort 钉子」，那是给 DSH 自己的兼容性判定器读 manifest 用的，本地不需要真的把整个 DSH CLI 依赖树装进来。根 package.json 的 pnpm.overrides 把 @deepseek-ai/dsh 指到这里。版本号必须满足插件声明的范围（^0.1.7-rc.2），否则 pnpm 会报 unmet peer。"
 }

@@ -33,7 +33,7 @@ import { targets } from './publish-targets.mjs'
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 /** 本仓统一适配的 DSH cohort；升级 cohort 时改这一处 + 各包 peer 范围。 */
-const DSH_COHORT = '0.1.7-rc.1'
+const DSH_COHORT = '0.1.7-rc.2'
 /** 唯一支持的 peer 下限写法：`^<cohort>`（预发布参与匹配，见文件头）。 */
 const EXPECTED_RANGE = `^${DSH_COHORT}`
 /**
@@ -42,7 +42,7 @@ const EXPECTED_RANGE = `^${DSH_COHORT}`
  */
 const EXPECTED_ENGINES = `>=${DSH_COHORT}`
 
-/** 从 `^0.1.7-rc.1` / `>=0.1.7-rc.1` / `~0.1.7-rc.1` 取出版本号；其它形式返回 undefined。 */
+/** 从 `^0.1.7-rc.2` / `>=0.1.7-rc.2` / `~0.1.7-rc.2` 取出版本号；其它形式返回 undefined。 */
 function floorOf(range) {
   const match = /^(?:\^|~|>=)\s*(\S+)$/.exec(range.trim())
   return match === null ? undefined : match[1]

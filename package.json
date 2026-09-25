@@ -14,7 +14,7 @@
       "patch": "./cordis.patch.yml"
     },
     "engines": {
-      "dsh": ">=0.1.7-rc.1"
+      "dsh": ">=0.1.7-rc.2"
     }
   },
   "scripts": {
@@ -60,7 +60,7 @@
     "@hyzyn/dsh-tty": "0.20.2"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh": "^0.1.7-rc.1"
+    "@deepseek-ai/dsh": "^0.1.7-rc.2"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh": {

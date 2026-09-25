@@ -38,7 +38,7 @@
       "patch": "./cordis.patch.yml"
     },
     "engines": {
-      "dsh": ">=0.1.7-rc.1"
+      "dsh": ">=0.1.7-rc.2"
     },
     "client": {
       "platform": "web"
@@ -52,8 +52,8 @@
     "ws": "^8.18.0"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh": "^0.1.7-rc.1",
-    "@deepseek-ai/dsh-tools": "^0.1.7-rc.1"
+    "@deepseek-ai/dsh": "^0.1.7-rc.2",
+    "@deepseek-ai/dsh-tools": "^0.1.7-rc.2"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.4",

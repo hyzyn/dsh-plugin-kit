@@ -22,7 +22,7 @@
       "patch": "./cordis.patch.yml"
     },
     "engines": {
-      "dsh": ">=0.1.7-rc.1"
+      "dsh": ">=0.1.7-rc.2"
     },
     "client": {
       "platform": "web",
@@ -34,7 +34,7 @@
     "@hyzyn/dsh-kit": "0.4.2"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh": "^0.1.7-rc.1",
+    "@deepseek-ai/dsh": "^0.1.7-rc.2",
     "react": "^18.2.0"
   },
   "devDependencies": {
