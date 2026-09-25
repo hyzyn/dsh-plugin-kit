@@ -103,6 +103,183 @@ window.__ModuleLoader__.load({
       return date.toLocaleString()
     }
 
+    /* ================================ 国际化 ================================ */
+
+    /*
+     * 界面文案走宿主 `@deepseek-ai/dsh-client-locale` 的目录（方案见 docs/i18n.md）。
+     * 目录**内联在 client.js 里**（不是 client-src/）：本包没有构建步骤，client.js 就是源；
+     * 而且一旦凭空建出 client-src/，仓库级「宿主地址来源」静态规则会停止覆盖 client.js。
+     * 面板 DOM 是手写 HTML 字符串拼的：`t('…')` 的结果用 `esc()` 包住再进 innerHTML。
+     */
+    /* ==== dsh-i18n:begin ==== */
+    const I18N_NS = 'prompt'
+    const I18N_ZH = {
+      'card.name': 'Prompt 管理',
+      'card.desc': '可视化编辑 systemPrompt、版本管理、A/B 测试、导出/分享。',
+      'badge.active': '已启用',
+      'badge.activated': '激活',
+      'badge.versionCount': '{count} 个版本',
+      'btn.refresh': '刷新',
+      'btn.import': '导入',
+      'btn.exportJsonAll': '导出全部 JSON',
+      'btn.exportMdAll': '导出全部 MD',
+      'btn.create': '+ 新建 Prompt',
+      'btn.edit': '编辑',
+      'btn.activate': '启用',
+      'btn.deactivate': '停用',
+      'btn.abTest': 'A/B 测试',
+      'btn.exportJson': '导出 JSON',
+      'btn.exportMd': '导出 MD',
+      'btn.share': '分享',
+      'btn.delete': '删除',
+      'btn.back': '返回',
+      'btn.saveChanges': '保存修改',
+      'btn.saveAsVersion': '保存为新版本',
+      'btn.shareCopy': '复制分享',
+      'btn.saveAb': '保存 A/B',
+      'btn.setActive': '设为激活',
+      'list.loading': '加载中…',
+      'list.empty': '暂无 Prompt，点击“+ 新建 Prompt”开始。',
+      'editor.title': '编辑 Prompt',
+      'editor.newPrompt': '新 Prompt',
+      'field.name': '名称',
+      'field.namePlaceholder': 'Prompt 名称',
+      'field.description': '描述',
+      'field.descriptionPlaceholder': '可选描述',
+      'field.versionLabel': '版本标签',
+      'field.versionLabelPlaceholder': '例如 v2 简洁版',
+      'field.versionNote': '版本备注',
+      'field.versionNotePlaceholder': '这次改了什么',
+      'field.content': '内容（systemPrompt）',
+      'field.contentPlaceholder': '在这里编辑 system prompt…',
+      'field.abEnabled': ' 启用 A/B 测试',
+      'field.abA': 'A 版本',
+      'field.abB': 'B 版本',
+      'field.abWeight': 'A 流量权重：',
+      'hint.chars': '字符数：{count}。点击“保存为新版本”会把当前内容存成新版本，原版本保留。',
+      'ab.title': 'A/B 测试 · {name}',
+      'ab.banner': '启用后，宿主会按 A 权重随机选择一个版本注入 systemPrompt；当前命中可通过 /api/dsh-prompt/active 查看。',
+      'version.initialNote': '初始版本',
+      'msg.saved': '已保存',
+      'msg.savedNewVersion': '已保存为新版本',
+      'msg.activated': '已启用',
+      'msg.deactivated': '已停用',
+      'msg.abSaved': 'A/B 已保存',
+      'msg.deleted': '已删除',
+      'msg.exportedJson': '已导出 JSON',
+      'msg.exportedMd': '已导出 Markdown',
+      'msg.shareCopied': '分享 JSON 已复制到剪贴板',
+      'msg.imported': '导入成功',
+      'msg.markedActive': '已标记为激活，保存后生效',
+      'msg.switchedActive': '已切换激活版本',
+      'msg.versionDeleted': '已删除版本，点击“保存修改”生效',
+      'error.nameRequired': '名称不能为空',
+      'error.sameAbVersions': 'A/B 两个版本不能相同',
+      'error.contentRequired': '内容不能为空',
+      'error.exportFailed': '导出失败',
+      'error.shareDataFailed': '分享数据获取失败',
+      'error.keepOneVersion': '至少保留一个版本',
+      'confirm.deletePrompt': '确认删除 Prompt“{name}”？此操作不可恢复。',
+      'confirm.deleteVersion': '确认删除该版本？',
+    }
+    const I18N_EN = {
+      'card.name': 'Prompt management',
+      'card.desc': 'Visually edit systemPrompt, manage versions, run A/B tests and export/share.',
+      'badge.active': 'Enabled',
+      'badge.activated': 'Active',
+      'badge.versionCount': '{count} versions',
+      'btn.refresh': 'Refresh',
+      'btn.import': 'Import',
+      'btn.exportJsonAll': 'Export all JSON',
+      'btn.exportMdAll': 'Export all MD',
+      'btn.create': '+ New prompt',
+      'btn.edit': 'Edit',
+      'btn.activate': 'Enable',
+      'btn.deactivate': 'Disable',
+      'btn.abTest': 'A/B test',
+      'btn.exportJson': 'Export JSON',
+      'btn.exportMd': 'Export MD',
+      'btn.share': 'Share',
+      'btn.delete': 'Delete',
+      'btn.back': 'Back',
+      'btn.saveChanges': 'Save changes',
+      'btn.saveAsVersion': 'Save as new version',
+      'btn.shareCopy': 'Copy share data',
+      'btn.saveAb': 'Save A/B',
+      'btn.setActive': 'Set active',
+      'list.loading': 'Loading…',
+      'list.empty': 'No prompts yet — click “+ New prompt” to start.',
+      'editor.title': 'Edit prompt',
+      'editor.newPrompt': 'New prompt',
+      'field.name': 'Name',
+      'field.namePlaceholder': 'Prompt name',
+      'field.description': 'Description',
+      'field.descriptionPlaceholder': 'Optional description',
+      'field.versionLabel': 'Version label',
+      'field.versionLabelPlaceholder': 'e.g. v2 concise',
+      'field.versionNote': 'Version note',
+      'field.versionNotePlaceholder': 'What changed',
+      'field.content': 'Content (systemPrompt)',
+      'field.contentPlaceholder': 'Edit the system prompt here…',
+      'field.abEnabled': ' Enable A/B testing',
+      'field.abA': 'Version A',
+      'field.abB': 'Version B',
+      'field.abWeight': 'Version A traffic weight: ',
+      'hint.chars': '{count} characters. “Save as new version” stores the current content as a new version and keeps the original.',
+      'ab.title': 'A/B test · {name}',
+      'ab.banner': 'Once enabled, the host picks a version at random by the A weight and injects it into systemPrompt; the current pick is visible at /api/dsh-prompt/active.',
+      'version.initialNote': 'Initial version',
+      'msg.saved': 'Saved',
+      'msg.savedNewVersion': 'Saved as a new version',
+      'msg.activated': 'Enabled',
+      'msg.deactivated': 'Disabled',
+      'msg.abSaved': 'A/B settings saved',
+      'msg.deleted': 'Deleted',
+      'msg.exportedJson': 'Exported JSON',
+      'msg.exportedMd': 'Exported Markdown',
+      'msg.shareCopied': 'Share JSON copied to the clipboard',
+      'msg.imported': 'Imported',
+      'msg.markedActive': 'Marked active — takes effect after saving',
+      'msg.switchedActive': 'Switched the active version',
+      'msg.versionDeleted': 'Version deleted — click “Save changes” to apply',
+      'error.nameRequired': 'The name cannot be empty',
+      'error.sameAbVersions': 'The A and B versions must differ',
+      'error.contentRequired': 'The content cannot be empty',
+      'error.exportFailed': 'Export failed',
+      'error.shareDataFailed': 'Could not fetch the share data',
+      'error.keepOneVersion': 'Keep at least one version',
+      'confirm.deletePrompt': 'Delete prompt “{name}”? This cannot be undone.',
+      'confirm.deleteVersion': 'Delete this version?',
+    }
+    /* ==== dsh-i18n:end ==== */
+
+    /** 占位符替换：`{name}` → params.name（缺参留空，不抛错——文案不该打死界面）。 */
+    function i18nFormat(text, params) {
+      if (params === undefined) return text
+      return String(text).replace(/\{(\w+)\}/g, (_match, name) => (params[name] === undefined ? '' : String(params[name])))
+    }
+
+    /** 中文兜底：老宿主（DSH ≤0.1.5）没有 locale 服务时，界面不能变成一串键名。 */
+    function i18nFallback(key, params) {
+      return i18nFormat(I18N_ZH[key] !== undefined ? I18N_ZH[key] : key, params)
+    }
+
+    let t = i18nFallback
+
+    /** 注册目录并绑定翻译函数（动态 inject：老宿主上保持中文兜底，卡片照挂）。 */
+    function installI18n(ctx) {
+      ctx.inject(['locale'], (i18nCtx) => {
+        const disposeZh = i18nCtx.locale.register(I18N_NS, 'zh', I18N_ZH)
+        const disposeEn = i18nCtx.locale.register(I18N_NS, 'en', I18N_EN)
+        t = i18nCtx.locale.bind(I18N_NS)
+        return () => {
+          disposeEn()
+          disposeZh()
+          t = i18nFallback
+        }
+      })
+    }
+
     /* ================================ API ================================ */
 
     const API = {
@@ -219,9 +396,9 @@ window.__ModuleLoader__.load({
 
     function promptBadges(prompt, activePromptId) {
       const parts = []
-      if (prompt.id === activePromptId) parts.push(badge('已启用', 'active'))
+      if (prompt.id === activePromptId) parts.push(badge(t('badge.active'), 'active'))
       if (prompt.ab && prompt.ab.enabled) parts.push(badge('A/B ' + prompt.ab.aWeight + '%', 'ab'))
-      parts.push(badge(prompt.versions.length + ' 个版本'))
+      parts.push(badge(t('badge.versionCount', { count: prompt.versions.length })))
       return parts.join('')
     }
 
@@ -230,18 +407,18 @@ window.__ModuleLoader__.load({
       parts.push('<div class="pM_panel">')
       parts.push('<div class="pM_panelHeader">')
       parts.push('<div class="pM_toolbar">')
-      parts.push('<button class="pM_btnGhost" data-action="refresh"' + (state.loading ? ' disabled' : '') + '>刷新</button>')
-      parts.push('<button class="pM_btnGhost" data-action="import">导入</button>')
-      parts.push('<button class="pM_btnGhost" data-action="export-json-all">导出全部 JSON</button>')
-      parts.push('<button class="pM_btnGhost" data-action="export-md-all">导出全部 MD</button>')
-      parts.push('<button class="pM_btn" data-action="create">+ 新建 Prompt</button>')
+      parts.push('<button class="pM_btnGhost" data-action="refresh"' + (state.loading ? ' disabled' : '') + '>' + t('btn.refresh') + '</button>')
+      parts.push('<button class="pM_btnGhost" data-action="import">' + t('btn.import') + '</button>')
+      parts.push('<button class="pM_btnGhost" data-action="export-json-all">' + t('btn.exportJsonAll') + '</button>')
+      parts.push('<button class="pM_btnGhost" data-action="export-md-all">' + t('btn.exportMdAll') + '</button>')
+      parts.push('<button class="pM_btn" data-action="create">' + t('btn.create') + '</button>')
       parts.push('</div>')
       parts.push('</div>')
       if (state.fileError) parts.push('<div class="pM_banner" data-kind="error">' + esc(state.fileError) + '</div>')
       if (state.loading) {
-        parts.push('<div class="pM_loading">加载中…</div>')
+        parts.push('<div class="pM_loading">' + t('list.loading') + '</div>')
       } else if (state.prompts.length === 0) {
-        parts.push('<div class="pM_empty">暂无 Prompt，点击“+ 新建 Prompt”开始。</div>')
+        parts.push('<div class="pM_empty">' + esc(t('list.empty')) + '</div>')
       } else {
         parts.push('<div class="pM_list">')
         for (const prompt of state.prompts) {
@@ -252,17 +429,17 @@ window.__ModuleLoader__.load({
           parts.push('<span class="pM_cardSummary" title="' + esc(prompt.description || '') + '">' + esc(prompt.description || '') + '</span>')
           parts.push('</div>')
           parts.push('<div class="pM_cardActions">')
-          parts.push('<button class="pM_linkBtn" data-action="edit" data-id="' + esc(prompt.id) + '">编辑</button>')
+          parts.push('<button class="pM_linkBtn" data-action="edit" data-id="' + esc(prompt.id) + '">' + t('btn.edit') + '</button>')
           if (prompt.id !== state.activePromptId) {
-            parts.push('<button class="pM_linkBtn" data-action="activate" data-id="' + esc(prompt.id) + '">启用</button>')
+            parts.push('<button class="pM_linkBtn" data-action="activate" data-id="' + esc(prompt.id) + '">' + t('btn.activate') + '</button>')
           } else {
-            parts.push('<button class="pM_linkBtn" data-action="deactivate" data-id="' + esc(prompt.id) + '">停用</button>')
+            parts.push('<button class="pM_linkBtn" data-action="deactivate" data-id="' + esc(prompt.id) + '">' + t('btn.deactivate') + '</button>')
           }
-          parts.push('<button class="pM_linkBtn" data-action="ab" data-id="' + esc(prompt.id) + '">A/B 测试</button>')
-          parts.push('<button class="pM_linkBtn" data-action="export-json" data-id="' + esc(prompt.id) + '">导出 JSON</button>')
-          parts.push('<button class="pM_linkBtn" data-action="export-md" data-id="' + esc(prompt.id) + '">导出 MD</button>')
-          parts.push('<button class="pM_linkBtn" data-action="share" data-id="' + esc(prompt.id) + '">分享</button>')
-          parts.push('<button class="pM_linkBtn" data-danger="true" data-action="delete" data-id="' + esc(prompt.id) + '">删除</button>')
+          parts.push('<button class="pM_linkBtn" data-action="ab" data-id="' + esc(prompt.id) + '">' + t('btn.abTest') + '</button>')
+          parts.push('<button class="pM_linkBtn" data-action="export-json" data-id="' + esc(prompt.id) + '">' + t('btn.exportJson') + '</button>')
+          parts.push('<button class="pM_linkBtn" data-action="export-md" data-id="' + esc(prompt.id) + '">' + t('btn.exportMd') + '</button>')
+          parts.push('<button class="pM_linkBtn" data-action="share" data-id="' + esc(prompt.id) + '">' + t('btn.share') + '</button>')
+          parts.push('<button class="pM_linkBtn" data-danger="true" data-action="delete" data-id="' + esc(prompt.id) + '">' + t('btn.delete') + '</button>')
           parts.push('</div>')
           parts.push('</div>')
         }
@@ -281,43 +458,43 @@ window.__ModuleLoader__.load({
       const selected = prompt.versions.find((version) => version.id === editor.selectedVersionId) || prompt.versions[0]
       const parts = []
       parts.push('<div class="pM_panel">')
-      parts.push('<div class="pM_panelHeader"><h2 class="pM_panelTitle">编辑 Prompt</h2>')
-      parts.push('<span class="pM_subtitle">' + esc(prompt.id || '新 Prompt') + '</span>')
+      parts.push('<div class="pM_panelHeader"><h2 class="pM_panelTitle">' + t('editor.title') + '</h2>')
+      parts.push('<span class="pM_subtitle">' + esc(prompt.id || t('editor.newPrompt')) + '</span>')
       parts.push('<div class="pM_toolbar">')
-      parts.push('<button class="pM_btnGhost" data-action="editor-back">返回</button>')
-      parts.push('<button class="pM_btn" data-action="editor-save"' + (state.busy ? ' disabled' : '') + '>保存修改</button>')
+      parts.push('<button class="pM_btnGhost" data-action="editor-back">' + t('btn.back') + '</button>')
+      parts.push('<button class="pM_btn" data-action="editor-save"' + (state.busy ? ' disabled' : '') + '>' + t('btn.saveChanges') + '</button>')
       parts.push('</div>')
       parts.push('</div>')
-      parts.push('<div class="pM_field"><span class="pM_fieldLabel">名称</span><input class="pM_input" data-field="name" value="' + esc(prompt.name) + '" placeholder="Prompt 名称" /></div>')
-      parts.push('<div class="pM_field"><span class="pM_fieldLabel">描述</span><input class="pM_input" data-field="description" value="' + esc(prompt.description || '') + '" placeholder="可选描述" /></div>')
+      parts.push('<div class="pM_field"><span class="pM_fieldLabel">' + t('field.name') + '</span><input class="pM_input" data-field="name" value="' + esc(prompt.name) + '" placeholder="' + esc(t('field.namePlaceholder')) + '" /></div>')
+      parts.push('<div class="pM_field"><span class="pM_fieldLabel">' + t('field.description') + '</span><input class="pM_input" data-field="description" value="' + esc(prompt.description || '') + '" placeholder="' + esc(t('field.descriptionPlaceholder')) + '" /></div>')
       parts.push('<div class="pM_editor">')
       parts.push('<div class="pM_editorSide">')
       for (const version of prompt.versions) {
         const active = version.id === prompt.activeVersionId
         const selectedAttr = version.id === selected.id ? ' data-selected="true"' : ''
         parts.push('<div class="pM_versionItem"' + selectedAttr + ' data-action="select-version" data-id="' + esc(version.id) + '">')
-        parts.push('<span class="pM_versionTitle">' + esc(version.label || version.id) + (active ? ' ' + badge('激活', 'active') : '') + '</span>')
+        parts.push('<span class="pM_versionTitle">' + esc(version.label || version.id) + (active ? ' ' + badge(t('badge.activated'), 'active') : '') + '</span>')
         parts.push('<span class="pM_versionMeta">' + fmtTime(version.createdAt) + (version.note ? ' · ' + esc(version.note) : '') + '</span>')
         parts.push('<span class="pM_hint">' + esc(version.content.slice(0, 60)) + (version.content.length > 60 ? '…' : '') + '</span>')
         parts.push('<span class="pM_cardActions">')
-        parts.push('<button class="pM_linkBtn" data-action="set-active" data-id="' + esc(version.id) + '">设为激活</button>')
+        parts.push('<button class="pM_linkBtn" data-action="set-active" data-id="' + esc(version.id) + '">' + t('btn.setActive') + '</button>')
         if (prompt.versions.length > 1) {
-          parts.push('<button class="pM_linkBtn" data-danger="true" data-action="remove-version" data-id="' + esc(version.id) + '">删除</button>')
+          parts.push('<button class="pM_linkBtn" data-danger="true" data-action="remove-version" data-id="' + esc(version.id) + '">' + t('btn.delete') + '</button>')
         }
         parts.push('</span>')
         parts.push('</div>')
       }
       parts.push('</div>')
       parts.push('<div class="pM_editorMain">')
-      parts.push('<div class="pM_field"><span class="pM_fieldLabel">版本标签</span><input class="pM_input" data-field="label" value="' + esc(editor.draftLabel || '') + '" placeholder="例如 v2 简洁版" /></div>')
-      parts.push('<div class="pM_field"><span class="pM_fieldLabel">版本备注</span><input class="pM_input" data-field="note" value="' + esc(editor.draftNote || '') + '" placeholder="这次改了什么" /></div>')
-      parts.push('<div class="pM_field"><span class="pM_fieldLabel">内容（systemPrompt）</span><textarea class="pM_input pM_textarea" data-field="content" placeholder="在这里编辑 system prompt…">' + esc(selected.content) + '</textarea></div>')
-      parts.push('<div class="pM_hint">字符数：' + selected.content.length + '。点击“保存为新版本”会把当前内容存成新版本，原版本保留。</div>')
+      parts.push('<div class="pM_field"><span class="pM_fieldLabel">' + t('field.versionLabel') + '</span><input class="pM_input" data-field="label" value="' + esc(editor.draftLabel || '') + '" placeholder="' + esc(t('field.versionLabelPlaceholder')) + '" /></div>')
+      parts.push('<div class="pM_field"><span class="pM_fieldLabel">' + t('field.versionNote') + '</span><input class="pM_input" data-field="note" value="' + esc(editor.draftNote || '') + '" placeholder="' + esc(t('field.versionNotePlaceholder')) + '" /></div>')
+      parts.push('<div class="pM_field"><span class="pM_fieldLabel">' + t('field.content') + '</span><textarea class="pM_input pM_textarea" data-field="content" placeholder="' + esc(t('field.contentPlaceholder')) + '">' + esc(selected.content) + '</textarea></div>')
+      parts.push('<div class="pM_hint">' + esc(t('hint.chars', { count: selected.content.length })) + '</div>')
       parts.push('<div class="pM_toolbar">')
-      parts.push('<button class="pM_btnGhost" data-action="editor-save-new"' + (state.busy ? ' disabled' : '') + '>保存为新版本</button>')
-      parts.push('<button class="pM_btnGhost" data-action="editor-export-json" data-id="' + esc(prompt.id) + '">导出 JSON</button>')
-      parts.push('<button class="pM_btnGhost" data-action="editor-export-md" data-id="' + esc(prompt.id) + '">导出 MD</button>')
-      parts.push('<button class="pM_btnGhost" data-action="editor-share" data-id="' + esc(prompt.id) + '">复制分享</button>')
+      parts.push('<button class="pM_btnGhost" data-action="editor-save-new"' + (state.busy ? ' disabled' : '') + '>' + t('btn.saveAsVersion') + '</button>')
+      parts.push('<button class="pM_btnGhost" data-action="editor-export-json" data-id="' + esc(prompt.id) + '">' + t('btn.exportJson') + '</button>')
+      parts.push('<button class="pM_btnGhost" data-action="editor-export-md" data-id="' + esc(prompt.id) + '">' + t('btn.exportMd') + '</button>')
+      parts.push('<button class="pM_btnGhost" data-action="editor-share" data-id="' + esc(prompt.id) + '">' + t('btn.shareCopy') + '</button>')
       parts.push('</div>')
       parts.push('</div>')
       parts.push('</div>')
@@ -334,17 +511,17 @@ window.__ModuleLoader__.load({
       if (prompt === undefined) return ''
       const parts = []
       parts.push('<div class="pM_panel">')
-      parts.push('<div class="pM_panelHeader"><h2 class="pM_panelTitle">A/B 测试 · ' + esc(prompt.name) + '</h2>')
+      parts.push('<div class="pM_panelHeader"><h2 class="pM_panelTitle">' + esc(t('ab.title', { name: prompt.name })) + '</h2>')
       parts.push('<div class="pM_toolbar">')
-      parts.push('<button class="pM_btnGhost" data-action="ab-back">返回</button>')
-      parts.push('<button class="pM_btn" data-action="ab-save"' + (state.busy ? ' disabled' : '') + '>保存 A/B</button>')
+      parts.push('<button class="pM_btnGhost" data-action="ab-back">' + t('btn.back') + '</button>')
+      parts.push('<button class="pM_btn" data-action="ab-save"' + (state.busy ? ' disabled' : '') + '>' + t('btn.saveAb') + '</button>')
       parts.push('</div>')
       parts.push('</div>')
-      parts.push('<div class="pM_banner" data-kind="info">启用后，宿主会按 A 权重随机选择一个版本注入 systemPrompt；当前命中可通过 /api/dsh-prompt/active 查看。</div>')
-      parts.push('<label class="pM_checkRow"><input type="checkbox" data-field="ab-enabled"' + (ab.enabled ? ' checked' : '') + ' /> 启用 A/B 测试</label>')
-      parts.push('<div class="pM_field"><span class="pM_fieldLabel">A 版本</span><select class="pM_input" data-field="ab-a">' + prompt.versions.map((version) => '<option value="' + esc(version.id) + '"' + (version.id === ab.aVersionId ? ' selected' : '') + '>' + esc(version.label || version.id) + '</option>').join('') + '</select></div>')
-      parts.push('<div class="pM_field"><span class="pM_fieldLabel">B 版本</span><select class="pM_input" data-field="ab-b">' + prompt.versions.map((version) => '<option value="' + esc(version.id) + '"' + (version.id === ab.bVersionId ? ' selected' : '') + '>' + esc(version.label || version.id) + '</option>').join('') + '</select></div>')
-      parts.push('<div class="pM_field"><span class="pM_fieldLabel">A 流量权重：<span class="pM_mono">' + ab.aWeight + '%</span></span><input class="pM_input" type="range" min="0" max="100" step="1" data-field="ab-weight" value="' + ab.aWeight + '" /></div>')
+      parts.push('<div class="pM_banner" data-kind="info">' + t('ab.banner') + '</div>')
+      parts.push('<label class="pM_checkRow"><input type="checkbox" data-field="ab-enabled"' + (ab.enabled ? ' checked' : '') + ' />' + t('field.abEnabled') + '</label>')
+      parts.push('<div class="pM_field"><span class="pM_fieldLabel">' + t('field.abA') + '</span><select class="pM_input" data-field="ab-a">' + prompt.versions.map((version) => '<option value="' + esc(version.id) + '"' + (version.id === ab.aVersionId ? ' selected' : '') + '>' + esc(version.label || version.id) + '</option>').join('') + '</select></div>')
+      parts.push('<div class="pM_field"><span class="pM_fieldLabel">' + t('field.abB') + '</span><select class="pM_input" data-field="ab-b">' + prompt.versions.map((version) => '<option value="' + esc(version.id) + '"' + (version.id === ab.bVersionId ? ' selected' : '') + '>' + esc(version.label || version.id) + '</option>').join('') + '</select></div>')
+      parts.push('<div class="pM_field"><span class="pM_fieldLabel">' + t('field.abWeight') + '<span class="pM_mono">' + ab.aWeight + '%</span></span><input class="pM_input" type="range" min="0" max="100" step="1" data-field="ab-weight" value="' + ab.aWeight + '" /></div>')
       parts.push('</div>')
       return parts.join('')
     }
@@ -378,14 +555,14 @@ window.__ModuleLoader__.load({
           id: '',
           name: '',
           description: '',
-          versions: [{ id: '', label: 'v1', note: '初始版本', content: '', createdAt: now }],
+          versions: [{ id: '', label: 'v1', note: t('version.initialNote'), content: '', createdAt: now }],
           activeVersionId: null,
           ab: { enabled: false, aVersionId: '', bVersionId: '', aWeight: 50 },
           updatedAt: now,
         },
         selectedVersionId: '',
         draftLabel: 'v1',
-        draftNote: '初始版本',
+        draftNote: t('version.initialNote'),
       }
       state.view = 'editor'
       renderAll(panelEl)
@@ -421,11 +598,11 @@ window.__ModuleLoader__.load({
       if (editor === null) return
       const prompt = editor.prompt
       if (!prompt.name.trim()) {
-        toast('名称不能为空', 'error')
+        toast(t('error.nameRequired'), 'error')
         return
       }
       if (prompt.ab?.enabled && prompt.ab.aVersionId && prompt.ab.aVersionId === prompt.ab.bVersionId) {
-        toast('A/B 两个版本不能相同', 'error')
+        toast(t('error.sameAbVersions'), 'error')
         return
       }
       state.busy = true
@@ -437,7 +614,7 @@ window.__ModuleLoader__.load({
         state.fileError = data.fileError || ''
         state.view = 'list'
         state.editor = null
-        toast('已保存', 'ok')
+        toast(t('msg.saved'), 'ok')
       } catch (error) {
         toast(error.message, 'error')
       } finally {
@@ -452,11 +629,11 @@ window.__ModuleLoader__.load({
       const prompt = editor.prompt
       const selected = prompt.versions.find((version) => version.id === editor.selectedVersionId) || prompt.versions[0]
       if (selected === undefined || !selected.content.trim()) {
-        toast('内容不能为空', 'error')
+        toast(t('error.contentRequired'), 'error')
         return
       }
       if (prompt.ab?.enabled && prompt.ab.aVersionId && prompt.ab.aVersionId === prompt.ab.bVersionId) {
-        toast('A/B 两个版本不能相同', 'error')
+        toast(t('error.sameAbVersions'), 'error')
         return
       }
       prompt.versions = [...prompt.versions, {
@@ -483,7 +660,7 @@ window.__ModuleLoader__.load({
             draftNote: '',
           }
         }
-        toast('已保存为新版本', 'ok')
+        toast(t('msg.savedNewVersion'), 'ok')
       } catch (error) {
         toast(error.message, 'error')
       } finally {
@@ -496,7 +673,7 @@ window.__ModuleLoader__.load({
       try {
         await apiActivate(promptId, undefined)
         await load()
-        toast('已启用', 'ok')
+        toast(t('msg.activated'), 'ok')
       } catch (error) {
         toast(error.message, 'error')
       }
@@ -506,7 +683,7 @@ window.__ModuleLoader__.load({
       try {
         await apiActivate('', undefined)
         await load()
-        toast('已停用', 'ok')
+        toast(t('msg.deactivated'), 'ok')
       } catch (error) {
         toast(error.message, 'error')
       }
@@ -516,7 +693,7 @@ window.__ModuleLoader__.load({
       const ab = state.ab
       if (ab === null) return
       if (ab.enabled && ab.aVersionId === ab.bVersionId) {
-        toast('A/B 两个版本不能相同', 'error')
+        toast(t('error.sameAbVersions'), 'error')
         return
       }
       state.busy = true
@@ -529,7 +706,7 @@ window.__ModuleLoader__.load({
           aWeight: ab.aWeight,
         })
         await load()
-        toast('A/B 已保存', 'ok')
+        toast(t('msg.abSaved'), 'ok')
       } catch (error) {
         toast(error.message, 'error')
       } finally {
@@ -540,11 +717,11 @@ window.__ModuleLoader__.load({
 
     async function deletePrompt(promptId) {
       const prompt = state.prompts.find((item) => item.id === promptId)
-      if (!window.confirm('确认删除 Prompt“' + (prompt?.name || promptId) + '”？此操作不可恢复。')) return
+      if (!window.confirm(t('confirm.deletePrompt', { name: prompt?.name || promptId }))) return
       try {
         await apiDelete(promptId)
         await load()
-        toast('已删除', 'ok')
+        toast(t('msg.deleted'), 'ok')
       } catch (error) {
         toast(error.message, 'error')
       }
@@ -568,9 +745,9 @@ window.__ModuleLoader__.load({
       try {
         const res = await fetch(API.export + '?format=json' + (promptId ? '&promptId=' + encodeURIComponent(promptId) : ''))
         const body = await res.json()
-        if (!res.ok || !body.data) throw new Error(body.error || '导出失败')
+        if (!res.ok || !body.data) throw new Error(body.error || t('error.exportFailed'))
         download('dsh-prompt-' + (promptId || 'all') + '.json', JSON.stringify(body.data, null, 2), 'application/json')
-        toast('已导出 JSON', 'ok')
+        toast(t('msg.exportedJson'), 'ok')
       } catch (error) {
         toast(error.message, 'error')
       }
@@ -580,9 +757,9 @@ window.__ModuleLoader__.load({
       try {
         const res = await fetch(API.export + '?format=markdown' + (promptId ? '&promptId=' + encodeURIComponent(promptId) : ''))
         const text = await res.text()
-        if (!res.ok) throw new Error(text || '导出失败')
+        if (!res.ok) throw new Error(text || t('error.exportFailed'))
         download('dsh-prompt-' + (promptId || 'all') + '.md', text, 'text/markdown')
-        toast('已导出 Markdown', 'ok')
+        toast(t('msg.exportedMd'), 'ok')
       } catch (error) {
         toast(error.message, 'error')
       }
@@ -592,10 +769,10 @@ window.__ModuleLoader__.load({
       try {
         const res = await fetch(API.export + '?format=json' + (promptId ? '&promptId=' + encodeURIComponent(promptId) : ''))
         const body = await res.json()
-        if (!res.ok || !body.data) throw new Error(body.error || '分享数据获取失败')
+        if (!res.ok || !body.data) throw new Error(body.error || t('error.shareDataFailed'))
         const text = JSON.stringify(body.data, null, 2)
         await navigator.clipboard.writeText(text)
-        toast('分享 JSON 已复制到剪贴板', 'ok')
+        toast(t('msg.shareCopied'), 'ok')
       } catch (error) {
         toast(error.message, 'error')
       }
@@ -613,7 +790,7 @@ window.__ModuleLoader__.load({
           const data = JSON.parse(text)
           await apiImport(data)
           await load()
-          toast('导入成功', 'ok')
+          toast(t('msg.imported'), 'ok')
         } catch (error) {
           toast(error.message, 'error')
         }
@@ -627,14 +804,14 @@ window.__ModuleLoader__.load({
       if (!editor.prompt.id) {
         editor.prompt.activeVersionId = versionId
         editor.prompt.ab.enabled = false
-        toast('已标记为激活，保存后生效', 'ok')
+        toast(t('msg.markedActive'), 'ok')
         renderAll(panelEl)
         return
       }
       try {
         await apiActivate(editor.prompt.id, versionId)
         await load()
-        toast('已切换激活版本', 'ok')
+        toast(t('msg.switchedActive'), 'ok')
       } catch (error) {
         toast(error.message, 'error')
       }
@@ -644,10 +821,10 @@ window.__ModuleLoader__.load({
       const editor = state.editor
       if (editor === null) return
       if (editor.prompt.versions.length <= 1) {
-        toast('至少保留一个版本', 'error')
+        toast(t('error.keepOneVersion'), 'error')
         return
       }
-      if (!window.confirm('确认删除该版本？')) return
+      if (!window.confirm(t('confirm.deleteVersion'))) return
       editor.prompt.versions = editor.prompt.versions.filter((version) => version.id !== versionId)
       if (editor.selectedVersionId === versionId) {
         editor.selectedVersionId = editor.prompt.versions[0]?.id || ''
@@ -655,7 +832,7 @@ window.__ModuleLoader__.load({
       if (editor.prompt.activeVersionId === versionId) {
         editor.prompt.activeVersionId = editor.prompt.versions[0]?.id || null
       }
-      toast('已删除版本，点击“保存修改”生效', 'ok')
+      toast(t('msg.versionDeleted'), 'ok')
       renderAll(panelEl)
     }
 
@@ -765,7 +942,7 @@ window.__ModuleLoader__.load({
         load()
       }, [open])
       if (view === 'summary') {
-        return '可视化编辑 systemPrompt、版本管理、A/B 测试、导出/分享。'
+        return t('card.desc')
       }
 
       // page 视图：新页面自己画标题/图标/面包屑，这里只交表单本体，不渲染卡片头。
@@ -781,8 +958,8 @@ window.__ModuleLoader__.load({
               jsxs('span', {
                 className: 'pM_cardHeadText',
                 children: [
-                  jsx('span', { className: 'pM_cardName', children: 'Prompt 管理' }),
-                  jsx('span', { className: 'pM_cardDescription', children: '可视化编辑 systemPrompt、版本管理、A/B 测试、导出/分享。' }),
+                  jsx('span', { className: 'pM_cardName', children: t('card.name') }),
+                  jsx('span', { className: 'pM_cardDescription', children: t('card.desc') }),
                 ],
               }),
               jsx('span', { className: 'dshkit_badge', children: 'Kit' }),
@@ -820,6 +997,7 @@ window.__ModuleLoader__.load({
     ]
 
     exports.apply = (ctx) => {
+      installI18n(ctx)
       ctx.effect(() => {
         ensureStyle()
         document.addEventListener('click', handleClick, true)
@@ -847,7 +1025,7 @@ window.__ModuleLoader__.load({
         name: 'settings.kit.item',
         id: 'prompt-manager',
         order: 30,
-        label: () => "Prompt 管理",
+        label: () => t('card.name'),
       }, PromptSettingsCard))
       // DSH ≤0.1.5：设置 → 插件 的「插件配置」标签页，keyed 插槽按 settings 命名空间派发。
       ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({

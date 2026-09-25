@@ -17,20 +17,20 @@ import {
   checkClientHalf,
   checkCoverage,
   checkInstaller,
+  countCjkLiterals,
   listClientHalves,
   parseCatalogBlock,
   placeholders,
   rawCatalogKeys,
   scanUsage,
-  stripComments,
 } from '../check-i18n.mjs'
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 
 /** 一份最小可用的目录块（含标记，与 docs/i18n.md 的规范片段一致）。 */
 const catalog = (overrides = {}) => {
-  const zh = overrides.zh ?? { 'a.b': '甲 {n}', 'a.c': '丙' }
-  const en = overrides.en ?? { 'a.b': 'A {n}', 'a.c': 'C' }
+  const zh = overrides.zh ?? { 'card.b': '甲 {n}', 'card.c': '丙' }
+  const en = overrides.en ?? { 'card.b': 'A {n}', 'card.c': 'C' }
   const ns = overrides.ns ?? 'demo'
   const render = (dict) => Object.entries(dict).map(([key, value]) => `  '${key}': ${JSON.stringify(value)},`).join('\n')
   return [
@@ -54,8 +54,8 @@ describe('parseCatalogBlock · 目录块的解析与求值', () => {
     expect(parsed).toBeDefined()
     expect(parsed.error).toBeUndefined()
     expect(parsed.ns).toBe('demo')
-    expect(Object.keys(parsed.zh)).toEqual(['a.b', 'a.c'])
-    expect(parsed.en['a.b']).toBe('A {n}')
+    expect(Object.keys(parsed.zh)).toEqual(['card.b', 'card.c'])
+    expect(parsed.en['card.b']).toBe('A {n}')
   })
 
   it('目录里出现引号 / 反斜杠 / 花括号也能求值（不靠手写解析）', () => {
@@ -69,9 +69,10 @@ describe('parseCatalogBlock · 目录块的解析与求值', () => {
     expect(parse('/* dsh-i18n:begin */')).toBeUndefined()
   })
 
-  it('标记不在注释里 / 块求值失败 → 明确报错，而不是静默当没接入', () => {
+  it('标记不在注释里 / 目录块残缺 → 明确报错，而不是静默当没接入', () => {
     expect(parse('dsh-i18n:begin\ndsh-i18n:end').error).toContain('标记不完整')
-    expect(parse('/* ==== dsh-i18n:begin ==== */\nconst I18N_ZH = {\n/* ==== dsh-i18n:end ==== */').error).toContain('求值失败')
+    // 少了 I18N_EN：AST 逐条检查常量是否到位（第一版用 vm 求值，报的是「求值失败」）
+    expect(parse("/* ==== dsh-i18n:begin ==== */\nconst I18N_NS = 'demo'\nconst I18N_ZH = {}\n/* ==== dsh-i18n:end ==== */").error).toContain('I18N_EN')
   })
 
   it('I18N_NS 不是字符串 → 报错', () => {
@@ -85,31 +86,39 @@ describe('checkCatalog · 键集 / 占位符 / 重复键 / 空值', () => {
   })
 
   it('英文缺一条键 → 报错并点名（否则该语言下露出键名）', () => {
-    const result = checkCatalog(parse(catalog({ en: { 'a.b': 'A {n}' } })), 'demo')
-    expect(result.errors.some((line) => line.includes('英文目录缺 1 条键') && line.includes('a.c'))).toBe(true)
+    const result = checkCatalog(parse(catalog({ en: { 'card.b': 'A {n}' } })), 'demo')
+    expect(result.errors.some((line) => line.includes('英文目录缺 1 条键') && line.includes('card.c'))).toBe(true)
   })
 
   it('中文缺一条键同样报（两侧都要一致）', () => {
-    const result = checkCatalog(parse(catalog({ zh: { 'a.b': '甲 {n}' } })), 'demo')
+    const result = checkCatalog(parse(catalog({ zh: { 'card.b': '甲 {n}' } })), 'demo')
     expect(result.errors.some((line) => line.includes('中文目录缺 1 条键'))).toBe(true)
   })
 
   it('占位符只写在一边 → 报错（文案会静默少一个数）', () => {
-    const result = checkCatalog(parse(catalog({ en: { 'a.b': 'A', 'a.c': 'C' } })), 'demo')
-    expect(result.errors.some((line) => line.includes('占位符不一致') && line.includes('a.b'))).toBe(true)
+    const result = checkCatalog(parse(catalog({ en: { 'card.b': 'A', 'card.c': 'C' } })), 'demo')
+    expect(result.errors.some((line) => line.includes('占位符不一致') && line.includes('card.b'))).toBe(true)
   })
 
   it('重复键 → 报错（JS 后写覆盖前写，求值后看不出来，必须数字面量）', () => {
-    const text = '/* ==== dsh-i18n:begin ==== */\nconst I18N_NS = \'demo\'\nconst I18N_ZH = {\n  \'a.b\': \'甲\',\n  \'a.b\': \'乙\',\n}\nconst I18N_EN = {\n  \'a.b\': \'A\',\n}\n/* ==== dsh-i18n:end ==== */'
+    const text = '/* ==== dsh-i18n:begin ==== */\nconst I18N_NS = \'demo\'\nconst I18N_ZH = {\n  \'card.b\': \'甲\',\n  \'card.b\': \'乙\',\n}\nconst I18N_EN = {\n  \'card.b\': \'A\',\n}\n/* ==== dsh-i18n:end ==== */'
     const parsed = parse(text)
-    expect(Object.keys(parsed.zh)).toEqual(['a.b'])
-    expect(rawCatalogKeys(parsed.body, 'I18N_ZH')).toEqual(['a.b', 'a.b'])
+    expect(Object.keys(parsed.zh)).toEqual(['card.b'])
+    expect(rawCatalogKeys(parsed.body, 'I18N_ZH')).toEqual(['card.b', 'card.b'])
     expect(checkCatalog(parsed, 'demo').errors.some((line) => line.includes('重复键'))).toBe(true)
   })
 
-  it('空值 / 非字符串 → 报错', () => {
-    const result = checkCatalog(parse(catalog({ zh: { 'a.b': '   ', 'a.c': 1 } })), 'demo')
-    expect(result.errors.filter((line) => line.includes('空值或非字符串'))).toHaveLength(2)
+  it('空值 / 非字符串 → 报错（空值是「空值」，非字符串是「求值不出来」）', () => {
+    const result = checkCatalog(parse(catalog({ zh: { 'card.b': '   ', 'card.c': 1 } })), 'demo')
+    expect(result.errors.filter((line) => line.includes('空值或非字符串'))).toHaveLength(1)
+    expect(result.errors.some((line) => line.includes('未被求值出来') && line.includes('card.c'))).toBe(true)
+  })
+
+  it('键名域不在白名单 / 没有域前缀 → 报错（防止各包各自发明域）', () => {
+    const unknown = checkCatalog(parse(catalog({ zh: { 'oops.x': '丙' }, en: { 'oops.x': 'C' } })), 'demo')
+    expect(unknown.errors.some((line) => line.includes("域 'oops' 不在白名单"))).toBe(true)
+    const bare = checkCatalog(parse(catalog({ zh: { nodot: '丙' }, en: { nodot: 'C' } })), 'demo')
+    expect(bare.errors.some((line) => line.includes('没有域前缀'))).toBe(true)
   })
 
   it('命名空间必须等于包名（conventions § 命名）', () => {
@@ -122,19 +131,23 @@ describe('checkCatalog · 键集 / 占位符 / 重复键 / 空值', () => {
   })
 })
 
-describe('scanUsage / stripComments · 用法扫描', () => {
+describe('scanUsage · 用法扫描', () => {
   it('只认独立的 t(\'…\') 与 t("…")', () => {
-    expect(scanUsage("t('a.b')\nt(\"a.c\")").keys).toEqual(['a.b', 'a.c'])
+    expect(scanUsage("t('card.b')\nt(\"card.c\")").keys).toEqual(['card.b', 'card.c'])
   })
 
   it('注释里的示例不算（本仓注释里就写着 t(\'…\')）', () => {
-    expect(scanUsage(stripComments("// t('注释里')\n/* t('块注释里') */\nt('真调用')")).keys).toEqual(['真调用'])
+    expect(scanUsage("// t('注释里')\n/* t('块注释里') */\nt('真调用')").keys).toEqual(['真调用'])
   })
 
-  it('字符串里的注释符不会把后面的代码吞掉', () => {
-    const stripped = stripComments("const url = 'http://x//y'\nconst after = t('真调用')")
-    expect(stripped).not.toContain('t(真调用)')
-    expect(scanUsage(stripped).keys).toEqual(['真调用'])
+  it('正则字面量里的引号不干扰（第一版「去注释 + 正则」的扫描器就死在这）', () => {
+    // 本仓客户端半体里真实存在：String(v).replace(/[&<>"']/g, …)
+    const source = [
+      `const esc = (v) => String(v).replace(/[&<>"']/g, (c) => c)`,
+      `const after = t('真调用')`,
+    ].join('\n')
+    const usage = scanUsage(source)
+    expect(usage.keys).toEqual(['真调用'])
   })
 
   it('translate( / .transform( / CSS 里的 translate( 都不误命中', () => {
@@ -151,20 +164,20 @@ describe('scanUsage / stripComments · 用法扫描', () => {
 describe('checkCoverage · 用法与目录对账', () => {
   it('全部命中 → 零错误', () => {
     const parsed = parse(catalog())
-    expect(checkCoverage(parsed, scanUsage("t('a.b')\nt('a.c')")).errors).toEqual([])
+    expect(checkCoverage(parsed, scanUsage("t('card.b')\nt('card.c')")).errors).toEqual([])
   })
 
   it('用了没定义的键 → 报错并点名（这是这门闸门的主要理由）', () => {
     const parsed = parse(catalog())
-    const result = checkCoverage(parsed, scanUsage("t('a.zzz')"))
-    expect(result.errors.some((line) => line.includes('a.zzz') && line.includes('露出键名'))).toBe(true)
+    const result = checkCoverage(parsed, scanUsage("t('card.zzz')"))
+    expect(result.errors.some((line) => line.includes('card.zzz') && line.includes('露出键名'))).toBe(true)
   })
 
   it('定义了没用 → 只告警（可能是死键，也可能是动态拼接）', () => {
     const parsed = parse(catalog())
-    const result = checkCoverage(parsed, scanUsage("t('a.b')"))
+    const result = checkCoverage(parsed, scanUsage("t('card.b')"))
     expect(result.errors).toEqual([])
-    expect(result.warnings.some((line) => line.includes('a.c'))).toBe(true)
+    expect(result.warnings.some((line) => line.includes('card.c'))).toBe(true)
   })
 })
 
@@ -182,7 +195,31 @@ describe('checkInstaller · 安装片段不许抄歪', () => {
   })
 })
 
+describe('countCjkLiterals / stringLiterals · 迁移进度度量', () => {
+  it('只数字符串字面量里的中文（注释不算）', () => {
+    expect(countCjkLiterals("const a = '中文'\nconst b = 'ascii'\n// '注释里的中文'\n/* '块注释中文' */")).toBe(1)
+    expect(countCjkLiterals('const a = `中文 ${x}`')).toBe(1)
+    expect(countCjkLiterals("const a = 'plain'")).toBe(0)
+  })
+
+  it('转义引号不会截断字面量；全角标点也算「没翻」（只有汉字会漏）', () => {
+    expect(countCjkLiterals("const a = 'it\\'s 中文'")).toBe(1)
+    expect(countCjkLiterals("const a = 'web（base）'")).toBe(1)
+  })
+})
+
 describe('真实语料 · 全仓已接入的客户端半体（上线即绿的证明）', () => {
+  it('每个包都列出了全部客户端半体源（兄弟模块不能漏）', () => {
+    const halves = listClientHalves(join(repoRoot, 'packages'))
+    for (const half of halves) {
+      expect(half.sources.length, half.package).toBeGreaterThan(0)
+      expect(half.sources.some((source) => source.path === half.path), half.package).toBe(true)
+    }
+    // tty 的 UI 文案散在兄弟模块里：sources 必须把它们带上
+    const tty = halves.find((half) => half.package === 'tty')
+    expect(tty?.sources.map((source) => source.file)).toContain('client-src/stats-bar.js')
+  })
+
   it('每个接入目录的包都通过（键集 / 占位符 / 用法 / 安装片段）', () => {
     const halves = listClientHalves(join(repoRoot, 'packages'))
     expect(halves.length).toBeGreaterThan(0)

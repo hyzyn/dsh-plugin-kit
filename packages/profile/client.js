@@ -132,6 +132,150 @@ window.__ModuleLoader__.load({
       body: JSON.stringify({ name }),
     })
 
+    /* ================================ 国际化 ================================ */
+
+    /*
+     * 界面文案走宿主 `@deepseek-ai/dsh-client-locale` 的目录（方案见 docs/i18n.md）。
+     * 下面这一对目录由 `scripts/check-i18n.mjs` 静态校验：键集必须与英文一一对应、
+     * `{name}` 占位符两边一致、代码里 `t('…')` 用到的键必须在这里有定义。
+     * 目录**内联在 client.js 里**（不是 client-src/）：本包没有构建步骤，client.js 就是源；
+     * 而且一旦凭空建出 client-src/，仓库级「宿主地址来源」静态规则会停止覆盖 client.js。
+     */
+    /* ==== dsh-i18n:begin ==== */
+    const I18N_NS = 'profile'
+    const I18N_ZH = {
+      'card.name': 'Profile 管理',
+      'card.desc': '查看、创建、复制、重命名、删除、端口配置 DSH profile。',
+      'msg.working': '处理中…',
+      'list.loading': '加载中…',
+      'list.empty': '还没有 profile，先创建一个吧。',
+      'badge.initialized': '已初始化',
+      'badge.uninitialized': '未初始化',
+      'badge.builtin': '内置',
+      'panel.noBundle': '（无 bundle）',
+      'panel.port': '端口 {port}',
+      'panel.portUnset': '未设端口',
+      'panel.depCount': '{count} 个依赖',
+      'panel.missingPatch': ' · 缺少 cordis.patch.yml',
+      'panel.startHint': '启动: {cmd}',
+      'panel.createTitle': '新建 profile',
+      'panel.duplicateTitle': '复制 profile',
+      'btn.refresh': '刷新',
+      'btn.create': '创建',
+      'btn.copy': '复制',
+      'btn.delete': '删除',
+      'btn.deleteProtected': '默认 profile 不能删除',
+      'btn.port': '端口',
+      'btn.rename': '重命名',
+      'btn.copyCommand': '复制启动命令',
+      'option.baseTemplate': '基础模板（仅核心 / 自定义开发）',
+      'option.templateWeb': 'web（base + web-app）',
+      'option.templateHeadless': 'headless（base + headless）',
+      'option.noProfile': '（先创建 profile）',
+      'placeholder.name': '名称，如 dev',
+      'placeholder.port': '端口（可选）',
+      'placeholder.dupName': '新名称，如 dev-copy',
+      'prompt.port': '设置启动端口（留空清除，0 表示自动分配）：',
+      'prompt.rename': '新的 profile 名称：',
+      'confirm.delete': '确定删除 profile「{name}」？此操作不可撤销。',
+      'error.nameRequired': '请输入 profile 名称',
+      'error.sourceRequired': '请选择源 profile 并填写新名称',
+      'msg.created': '已创建 profile：{name}',
+      'msg.creating': '正在创建 profile…',
+      'msg.duplicated': '已复制 profile：{name}',
+      'msg.duplicating': '正在复制并安装依赖，请稍候…',
+      'msg.portUpdated': '已更新端口：{name}',
+      'msg.settingPort': '正在设置端口…',
+      'msg.copiedCommand': '已复制：{cmd}',
+      'msg.renamed': '已重命名 profile：{name}',
+      'msg.renaming': '正在重命名…',
+      'msg.deleted': '已删除 profile：{name}',
+      'msg.deleting': '正在删除…',
+    }
+    const I18N_EN = {
+      'card.name': 'Profile management',
+      'card.desc': 'View, create, duplicate, rename, delete and set the port of DSH profiles.',
+      'msg.working': 'Working…',
+      'list.loading': 'Loading…',
+      'list.empty': 'No profiles yet — create one below.',
+      'badge.initialized': 'Initialized',
+      'badge.uninitialized': 'Not initialized',
+      'badge.builtin': 'Built-in',
+      'panel.noBundle': '(no bundle)',
+      'panel.port': 'Port {port}',
+      'panel.portUnset': 'No port',
+      'panel.depCount': '{count} dependencies',
+      'panel.missingPatch': ' · missing cordis.patch.yml',
+      'panel.startHint': 'Start: {cmd}',
+      'panel.createTitle': 'New profile',
+      'panel.duplicateTitle': 'Duplicate profile',
+      'btn.refresh': 'Refresh',
+      'btn.create': 'Create',
+      'btn.copy': 'Duplicate',
+      'btn.delete': 'Delete',
+      'btn.deleteProtected': 'The default profile cannot be deleted',
+      'btn.port': 'Port',
+      'btn.rename': 'Rename',
+      'btn.copyCommand': 'Copy start command',
+      'option.baseTemplate': 'Base template (core only / custom development)',
+      'option.templateWeb': 'web (base + web-app)',
+      'option.templateHeadless': 'headless (base + headless)',
+      'option.noProfile': '(create a profile first)',
+      'placeholder.name': 'Name, e.g. dev',
+      'placeholder.port': 'Port (optional)',
+      'placeholder.dupName': 'New name, e.g. dev-copy',
+      'prompt.port': 'Startup port (leave empty to clear, 0 to auto-assign):',
+      'prompt.rename': 'New profile name:',
+      'confirm.delete': 'Delete profile “{name}”? This cannot be undone.',
+      'error.nameRequired': 'Enter a profile name',
+      'error.sourceRequired': 'Pick a source profile and enter a new name',
+      'msg.created': 'Created profile {name}',
+      'msg.creating': 'Creating the profile…',
+      'msg.duplicated': 'Duplicated profile {name}',
+      'msg.duplicating': 'Duplicating and installing dependencies, please wait…',
+      'msg.portUpdated': 'Updated the port of {name}',
+      'msg.settingPort': 'Setting the port…',
+      'msg.copiedCommand': 'Copied: {cmd}',
+      'msg.renamed': 'Renamed the profile to {name}',
+      'msg.renaming': 'Renaming…',
+      'msg.deleted': 'Deleted profile {name}',
+      'msg.deleting': 'Deleting…',
+    }
+    /* ==== dsh-i18n:end ==== */
+
+    /** 占位符替换：`{name}` → params.name（缺参留空，不抛错——文案不该打死界面）。 */
+    function i18nFormat(text, params) {
+      if (params === undefined) return text
+      return String(text).replace(/\{(\w+)\}/g, (_match, name) => (params[name] === undefined ? '' : String(params[name])))
+    }
+
+    /** 中文兜底：老宿主（DSH ≤0.1.5）没有 locale 服务时，界面不能变成一串键名。 */
+    function i18nFallback(key, params) {
+      return i18nFormat(I18N_ZH[key] !== undefined ? I18N_ZH[key] : key, params)
+    }
+
+    let t = i18nFallback
+
+    /**
+     * 注册目录并绑定翻译函数。**动态 inject**：老宿主上回调永不触发、`t` 保持中文兜底；
+     * 写成静态 `inject: ['locale']` 会让整张卡片在老宿主上根本不挂。
+     *
+     * 语言切换不用自己订阅：插槽 outlet 随 locale revision 重渲染（renderer 的
+     * `useLocaleRevision`），而 `bind()` 返回的翻译函数在**调用时**读当前语言。
+     */
+    function installI18n(ctx) {
+      ctx.inject(['locale'], (i18nCtx) => {
+        const disposeZh = i18nCtx.locale.register(I18N_NS, 'zh', I18N_ZH)
+        const disposeEn = i18nCtx.locale.register(I18N_NS, 'en', I18N_EN)
+        t = i18nCtx.locale.bind(I18N_NS)
+        return () => {
+          disposeEn()
+          disposeZh()
+          t = i18nFallback
+        }
+      })
+    }
+
     /* ================================ 面板状态 ================================ */
 
     const state = {
@@ -208,7 +352,7 @@ window.__ModuleLoader__.load({
     async function run(action, successMessage, busyMessage) {
       if (state.busy) return
       state.busy = true
-      state.busyText = busyMessage || '处理中…'
+      state.busyText = busyMessage || t('msg.working')
       state.error = ''
       state.ok = ''
       showBusy(state.busyText)
@@ -233,38 +377,38 @@ window.__ModuleLoader__.load({
     const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ESC_MAP[c])
 
     function renderProfiles() {
-      if (state.loading) return '<div class="pf_loading">加载中…</div>'
-      if (state.profiles.length === 0) return '<div class="pf_empty">还没有 profile，先创建一个吧。</div>'
+      if (state.loading) return '<div class="pf_loading">' + t('list.loading') + '</div>'
+      if (state.profiles.length === 0) return '<div class="pf_empty">' + t('list.empty') + '</div>'
       return '<div class="pf_list">' + state.profiles.map((profile) => {
         const status = profile.initialized
-          ? '<span class="pf_badge" data-kind="ok">已初始化</span>'
-          : '<span class="pf_badge" data-kind="warn">未初始化</span>'
+          ? '<span class="pf_badge" data-kind="ok">' + t('badge.initialized') + '</span>'
+          : '<span class="pf_badge" data-kind="warn">' + t('badge.uninitialized') + '</span>'
         const bundles = Array.isArray(profile.bundles) && profile.bundles.length > 0
           ? esc(profile.bundles.join(', '))
-          : '（无 bundle）'
+          : t('panel.noBundle')
         const deps = Object.keys(profile.dependencies || {}).length
-        const portText = profile.port != null ? '端口 ' + profile.port : '未设端口'
+        const portText = profile.port != null ? t('panel.port', { port: profile.port }) : t('panel.portUnset')
         const launchCmd = 'dsh --profile ' + profile.name + (profile.port != null ? ' --port ' + profile.port : '')
         const protectedProfile = profile.name === 'web'
         const deleteButton = protectedProfile
-          ? '<button class="pf_btnGhost pf_btnDanger" disabled title="默认 profile 不能删除">删除</button>'
-          : '<button class="pf_btnGhost pf_btnDanger" data-action="delete" data-name="' + esc(profile.name) + '">删除</button>'
+          ? '<button class="pf_btnGhost pf_btnDanger" disabled title="' + esc(t('btn.deleteProtected')) + '">' + t('btn.delete') + '</button>'
+          : '<button class="pf_btnGhost pf_btnDanger" data-action="delete" data-name="' + esc(profile.name) + '">' + t('btn.delete') + '</button>'
         return '<div class="pf_card">' +
           '<div class="pf_cardRow">' +
             '<span class="pf_cardName">' + esc(profile.name) + '</span>' +
             status +
-            (protectedProfile ? '<span class="pf_badge" data-kind="warn">内置</span>' : '') +
+            (protectedProfile ? '<span class="pf_badge" data-kind="warn">' + t('badge.builtin') + '</span>' : '') +
             '<span class="pf_badge">' + esc(portText) + '</span>' +
-            '<span class="pf_cardSummary">' + bundles + ' · ' + deps + ' 个依赖</span>' +
+            '<span class="pf_cardSummary">' + bundles + ' · ' + t('panel.depCount', { count: deps }) + '</span>' +
             '<span class="pf_cardActions">' +
-              '<button class="pf_btnGhost" data-action="port" data-name="' + esc(profile.name) + '">端口</button>' +
-              '<button class="pf_btnGhost" data-action="copy-command" data-name="' + esc(profile.name) + '">复制启动命令</button>' +
-              '<button class="pf_btnGhost" data-action="rename" data-name="' + esc(profile.name) + '">重命名</button>' +
-              '<button class="pf_btnGhost" data-action="dup" data-name="' + esc(profile.name) + '">复制</button>' +
+              '<button class="pf_btnGhost" data-action="port" data-name="' + esc(profile.name) + '">' + t('btn.port') + '</button>' +
+              '<button class="pf_btnGhost" data-action="copy-command" data-name="' + esc(profile.name) + '">' + t('btn.copyCommand') + '</button>' +
+              '<button class="pf_btnGhost" data-action="rename" data-name="' + esc(profile.name) + '">' + t('btn.rename') + '</button>' +
+              '<button class="pf_btnGhost" data-action="dup" data-name="' + esc(profile.name) + '">' + t('btn.copy') + '</button>' +
               deleteButton +
             '</span>' +
           '</div>' +
-          '<div class="pf_hint">' + esc(profile.dir) + (profile.patchExists ? '' : ' · 缺少 cordis.patch.yml') + '<br>启动: ' + esc(launchCmd) + '</div>' +
+          '<div class="pf_hint">' + esc(profile.dir) + (profile.patchExists ? '' : t('panel.missingPatch')) + '<br>' + esc(t('panel.startHint', { cmd: launchCmd })) + '</div>' +
         '</div>'
       }).join('') + '</div>'
     }
@@ -275,33 +419,33 @@ window.__ModuleLoader__.load({
       ).join('')
       return '<div class="pf_panel">' +
         '<div class="pf_panelHeader">' +
-          '<h3 class="pf_panelTitle">Profile 管理</h3>' +
+          '<h3 class="pf_panelTitle">' + t('card.name') + '</h3>' +
           '<span class="pf_subtitle">' + esc(state.profilesRoot || state.home + '/profiles') + '</span>' +
-          '<span class="pf_toolbar"><button class="pf_btnGhost" id="pfRefresh">刷新</button></span>' +
+          '<span class="pf_toolbar"><button class="pf_btnGhost" id="pfRefresh">' + t('btn.refresh') + '</button></span>' +
         '</div>' +
         (state.error ? '<div class="pf_banner" data-kind="error">' + esc(state.error) + '</div>' : '') +
         (state.ok ? '<div class="pf_banner" data-kind="ok">' + esc(state.ok) + '</div>' : '') +
         (state.busy ? '<div class="pf_banner" data-kind="info">' + esc(state.busyText) + '</div>' : '') +
         renderProfiles() +
         '<div class="pf_form">' +
-          '<div class="pf_formTitle">新建 profile</div>' +
+          '<div class="pf_formTitle">' + t('panel.createTitle') + '</div>' +
           '<div class="pf_formRow">' +
-            '<input class="pf_input" id="pfNewName" placeholder="名称，如 dev" value="' + esc(state.newName) + '">' +
+            '<input class="pf_input" id="pfNewName" placeholder="' + esc(t('placeholder.name')) + '" value="' + esc(state.newName) + '">' +
             '<select class="pf_select" id="pfNewTemplate">' +
-              '<option value="">基础模板（仅核心 / 自定义开发）</option>' +
-              '<option value="web">web（base + web-app）</option>' +
-              '<option value="headless">headless（base + headless）</option>' +
+              '<option value="">' + t('option.baseTemplate') + '</option>' +
+              '<option value="web">' + t('option.templateWeb') + '</option>' +
+              '<option value="headless">' + t('option.templateHeadless') + '</option>' +
             '</select>' +
-            '<input class="pf_input" id="pfNewPort" placeholder="端口（可选）" value="' + esc(state.newPort) + '">' +
-            '<button class="pf_btn" id="pfCreate" ' + (state.busy ? 'disabled' : '') + '>创建</button>' +
+            '<input class="pf_input" id="pfNewPort" placeholder="' + esc(t('placeholder.port')) + '" value="' + esc(state.newPort) + '">' +
+            '<button class="pf_btn" id="pfCreate" ' + (state.busy ? 'disabled' : '') + '>' + t('btn.create') + '</button>' +
           '</div>' +
         '</div>' +
         '<div class="pf_form">' +
-          '<div class="pf_formTitle">复制 profile</div>' +
+          '<div class="pf_formTitle">' + t('panel.duplicateTitle') + '</div>' +
           '<div class="pf_formRow">' +
-            '<select class="pf_select" id="pfDupFrom">' + (options || '<option value="">（先创建 profile）</option>') + '</select>' +
-            '<input class="pf_input" id="pfDupName" placeholder="新名称，如 dev-copy" value="' + esc(state.dupName) + '">' +
-            '<button class="pf_btn" id="pfDup" ' + (state.busy ? 'disabled' : '') + '>复制</button>' +
+            '<select class="pf_select" id="pfDupFrom">' + (options || '<option value="">' + t('option.noProfile') + '</option>') + '</select>' +
+            '<input class="pf_input" id="pfDupName" placeholder="' + esc(t('placeholder.dupName')) + '" value="' + esc(state.dupName) + '">' +
+            '<button class="pf_btn" id="pfDup" ' + (state.busy ? 'disabled' : '') + '>' + t('btn.copy') + '</button>' +
           '</div>' +
         '</div>' +
       '</div>'
@@ -330,14 +474,14 @@ window.__ModuleLoader__.load({
         state.newTemplate = templateSelect ? templateSelect.value : ''
         state.newPort = portInput ? portInput.value.trim() : ''
         if (!state.newName) {
-          state.error = '请输入 profile 名称'
+          state.error = t('error.nameRequired')
           renderAll(panelEl)
           return
         }
         const name = state.newName
         const template = state.newTemplate
         const port = state.newPort === '' ? null : state.newPort
-        run(() => apiCreate(name, template, port), '已创建 profile：' + name, '正在创建 profile…')
+        run(() => apiCreate(name, template, port), t('msg.created', { name }), t('msg.creating'))
         return
       }
       if (target.id === 'pfDup') {
@@ -346,13 +490,13 @@ window.__ModuleLoader__.load({
         state.dupFrom = fromSelect ? fromSelect.value : ''
         state.dupName = nameInput ? nameInput.value.trim() : ''
         if (!state.dupFrom || !state.dupName) {
-          state.error = '请选择源 profile 并填写新名称'
+          state.error = t('error.sourceRequired')
           renderAll(panelEl)
           return
         }
         const from = state.dupFrom
         const name = state.dupName
-        run(() => apiDuplicate(name, from), '已复制 profile：' + name, '正在复制并安装依赖，请稍候…')
+        run(() => apiDuplicate(name, from), t('msg.duplicated', { name }), t('msg.duplicating'))
         return
       }
       const action = target.dataset && target.dataset.action
@@ -371,10 +515,10 @@ window.__ModuleLoader__.load({
         if (!name) return
         const profile = state.profiles.find((item) => item.name === name)
         const current = profile && profile.port != null ? String(profile.port) : ''
-        const input = window.prompt('设置启动端口（留空清除，0 表示自动分配）：', current)
+        const input = window.prompt(t('prompt.port'), current)
         if (input === null) return
         const port = input.trim() === '' ? null : input.trim()
-        run(() => apiSetPort(name, port), '已更新端口：' + name, '正在设置端口…')
+        run(() => apiSetPort(name, port), t('msg.portUpdated', { name }), t('msg.settingPort'))
         return
       }
       if (action === 'copy-command') {
@@ -384,27 +528,27 @@ window.__ModuleLoader__.load({
         const cmd = 'dsh --profile ' + name + port
         if (navigator.clipboard && navigator.clipboard.writeText) {
           navigator.clipboard.writeText(cmd).then(() => {
-            toast('已复制：' + cmd, 'ok')
+            toast(t('msg.copiedCommand', { cmd }), 'ok')
           }).catch(() => {
-            window.prompt('复制启动命令', cmd)
+            window.prompt(t('btn.copyCommand'), cmd)
           })
         } else {
-          window.prompt('复制启动命令', cmd)
+          window.prompt(t('btn.copyCommand'), cmd)
         }
         return
       }
       if (action === 'rename') {
         if (!name) return
-        const newName = window.prompt('新的 profile 名称：', name)
+        const newName = window.prompt(t('prompt.rename'), name)
         if (!newName || newName.trim() === '' || newName === name) return
-        run(() => apiRename(name, newName.trim()), '已重命名 profile：' + newName.trim(), '正在重命名…')
+        run(() => apiRename(name, newName.trim()), t('msg.renamed', { name: newName.trim() }), t('msg.renaming'))
         return
       }
 
       if (action === 'delete') {
         if (!name) return
-        if (!window.confirm('确定删除 profile「' + name + '」？此操作不可撤销。')) return
-        run(() => apiDelete(name), '已删除 profile：' + name, '正在删除…')
+        if (!window.confirm(t('confirm.delete', { name }))) return
+        run(() => apiDelete(name), t('msg.deleted', { name }), t('msg.deleting'))
       }
     }
 
@@ -431,7 +575,7 @@ window.__ModuleLoader__.load({
         load()
       }, [open])
       if (view === 'summary') {
-        return '查看、创建、复制、重命名、删除、端口配置 DSH profile。'
+        return t('card.desc')
       }
 
       // page 视图：新页面自己画标题/图标/面包屑，这里只交表单本体，不渲染卡片头。
@@ -447,8 +591,8 @@ window.__ModuleLoader__.load({
               jsxs('span', {
                 className: 'pf_cardHeadText',
                 children: [
-                  jsx('span', { className: 'pf_cardName', children: 'Profile 管理' }),
-                  jsx('span', { className: 'pf_cardDescription', children: '查看、创建、复制、重命名、删除、端口配置 DSH profile。' }),
+                  jsx('span', { className: 'pf_cardName', children: t('card.name') }),
+                  jsx('span', { className: 'pf_cardDescription', children: t('card.desc') }),
                 ],
               }),
               jsx('span', { className: 'dshkit_badge', children: 'Kit' }),
@@ -486,6 +630,7 @@ window.__ModuleLoader__.load({
     ]
 
     exports.apply = (ctx) => {
+      installI18n(ctx)
       ctx.effect(() => {
         ensureStyle()
         bindEvents()
@@ -514,7 +659,7 @@ window.__ModuleLoader__.load({
         name: 'settings.kit.item',
         id: 'profile-manager',
         order: 40,
-        label: () => "Profile 管理",
+        label: () => t('card.name'),
       }, ProfileSettingsCard))
       // DSH ≤0.1.5：设置 → 插件 的「插件配置」标签页，keyed 插槽按 settings 命名空间派发。
       ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({

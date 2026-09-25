@@ -141,9 +141,39 @@
   const legacyHost = scenario === 'legacy'
   const opened = { id: null, via: null }
   const calls = { newSession: 0, created: 0 }
+
+  /*
+   * 假 locale 服务（`@deepseek-ai/dsh-client-locale`）：插件用 `ctx.inject(['locale'], cb)`
+   * **动态**取它（老宿主上取不到就保持中文兜底）。没有这个桩，`exports.apply` 第一句
+   * `installI18n(ctx)` 会直接抛 `ctx.inject is not a function`——迁移时真踩过。
+   * boot 前把 `window.__previewLocale` 设成 `'en'` 就能预览英文界面。
+   */
+  const localeDicts = new Map()
+  const localeStub = {
+    register: (ns, locale, dict) => {
+      const entry = localeDicts.get(ns) || {}
+      entry[locale] = dict
+      localeDicts.set(ns, entry)
+      return () => {}
+    },
+    bind: (ns) => (key, params) => {
+      const active = window.__previewLocale === 'en' ? 'en' : 'zh'
+      const dict = localeDicts.get(ns) || {}
+      const text = (dict[active] || {})[key] || key
+      if (params === undefined) return text
+      return String(text).replace(/\{(\w+)\}/g, (_match, name) => (params[name] === undefined ? '' : String(params[name])))
+    },
+  }
+
   const ctx = {
     effect: (fn) => {
       const dispose = fn()
+      return () => { if (typeof dispose === 'function') dispose() }
+    },
+    /** 动态依赖注入：本包只对 `locale` 用它（见上面的假 locale 服务） */
+    inject: (deps, cb) => {
+      const child = { locale: localeStub }
+      const dispose = cb(child)
       return () => { if (typeof dispose === 'function') dispose() }
     },
     sessions: {

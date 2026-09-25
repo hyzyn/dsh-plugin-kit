@@ -89,6 +89,148 @@ window.__ModuleLoader__.load({
       document.head.appendChild(styleEl)
     }
 
+    /* ================================ 国际化 ================================ */
+
+    /*
+     * 界面文案走宿主 `@deepseek-ai/dsh-client-locale` 的目录（方案见 docs/i18n.md）。
+     * 下面这一对目录由 `scripts/check-i18n.mjs` 静态校验：键集必须与英文一一对应、
+     * `{name}` 占位符两边一致、代码里 `t('…')` 用到的键必须在这里有定义。
+     * 目录**内联在 client.js 里**（不是 client-src/）：本包没有构建步骤，client.js 就是源；
+     * 而且一旦凭空建出 client-src/，仓库级「宿主地址来源」静态规则会停止覆盖 client.js。
+     */
+    /* ==== dsh-i18n:begin ==== */
+    const I18N_NS = 'search'
+    const I18N_ZH = {
+      'card.name': '全局搜索',
+      'card.prompt': 'Prompt 管理',
+      'card.mcp': 'MCP 服务器配置',
+      'panel.results': '搜索结果',
+      'panel.hintSelect': '选择',
+      'panel.hintOpen': '打开',
+      'panel.hintClose': '关闭',
+      'panel.recent': '最近',
+      'panel.recentSessions': '最近会话',
+      'panel.historySessions': '历史会话',
+      'panel.mcpTools': 'MCP 工具',
+      'panel.actions': '快捷操作',
+      'panel.settings': '设置',
+      'panel.untitled': '设置面板',
+      'panel.general': '通用设置',
+      'panel.generalDesc': '界面与工具的通用选项',
+      'panel.models': '模型',
+      'panel.modelsDesc': '模型提供商与模型列表管理',
+      'panel.plugins': '内置插件',
+      'panel.pluginsDesc': '插件清单与插件管理',
+      'panel.agentPresets': 'Agent 预设',
+      'panel.agentPresetsDesc': '预设方案与角色模板',
+      'btn.newSession': '新会话',
+      'btn.openFolder': '打开文件夹',
+      'btn.openSettings': '打开设置',
+      'list.justNow': '刚刚',
+      'list.minutesAgo': '{count} 分钟前',
+      'list.hoursAgo': '{count} 小时前',
+      'list.daysAgo': '{count} 天前',
+      'list.active': '启用中',
+      'list.searching': '搜索会话全文…',
+      'list.hintEmpty': '输入关键词，搜索历史会话、Prompt、MCP 工具和设置面板。',
+      'list.hintKeys': '↑↓ 选择，↵ 打开，esc 关闭。',
+      'list.empty': '没有找到匹配结果。',
+      'msg.copied': '已复制',
+      'msg.openedCard': '已打开「{name}」设置卡片',
+      'msg.openedSection': '已打开「{name}」设置分区',
+      'error.newSession': '新建会话失败',
+      'error.openSession': '打开会话失败',
+      'error.newSessionUnavailable': '当前环境无法新建会话',
+      'error.openSessionUnavailable': '当前环境无法直接打开会话',
+      'error.openFolderUnavailable': '当前环境无法打开文件夹',
+      'error.openSettingsUnavailable': '当前环境无法打开设置',
+      'error.copyFailed': '复制失败',
+      'placeholder.sidebar': '全局搜索…',
+      'placeholder.panel': '搜索会话、设置与工具…',
+    }
+    const I18N_EN = {
+      'card.name': 'Global search',
+      'card.prompt': 'Prompt management',
+      'card.mcp': 'MCP server configuration',
+      'panel.results': 'Search results',
+      'panel.hintSelect': 'Select',
+      'panel.hintOpen': 'Open',
+      'panel.hintClose': 'Close',
+      'panel.recent': 'Recent',
+      'panel.recentSessions': 'Recent sessions',
+      'panel.historySessions': 'Session matches',
+      'panel.mcpTools': 'MCP tools',
+      'panel.actions': 'Quick actions',
+      'panel.settings': 'Settings',
+      'panel.untitled': 'Settings panel',
+      'panel.general': 'General',
+      'panel.generalDesc': 'General options for the interface and tools',
+      'panel.models': 'Models',
+      'panel.modelsDesc': 'Manage model providers and the model list',
+      'panel.plugins': 'Built-in plugins',
+      'panel.pluginsDesc': 'Plugin list and plugin management',
+      'panel.agentPresets': 'Agent presets',
+      'panel.agentPresetsDesc': 'Presets and role templates',
+      'btn.newSession': 'New session',
+      'btn.openFolder': 'Open folder',
+      'btn.openSettings': 'Open settings',
+      'list.justNow': 'Just now',
+      'list.minutesAgo': '{count} minutes ago',
+      'list.hoursAgo': '{count} hours ago',
+      'list.daysAgo': '{count} days ago',
+      'list.active': 'Active',
+      'list.searching': 'Searching session contents…',
+      'list.hintEmpty': 'Type to search past sessions, prompts, MCP tools and settings panels.',
+      'list.hintKeys': '↑↓ to select, ↵ to open, esc to close.',
+      'list.empty': 'No matching results.',
+      'msg.copied': 'Copied',
+      'msg.openedCard': 'Opened the “{name}” settings card',
+      'msg.openedSection': 'Opened the “{name}” settings section',
+      'error.newSession': 'Failed to create a session',
+      'error.openSession': 'Failed to open the session',
+      'error.newSessionUnavailable': 'This environment cannot create sessions',
+      'error.openSessionUnavailable': 'This environment cannot open sessions directly',
+      'error.openFolderUnavailable': 'This environment cannot open folders',
+      'error.openSettingsUnavailable': 'This environment cannot open settings',
+      'error.copyFailed': 'Copy failed',
+      'placeholder.sidebar': 'Search…',
+      'placeholder.panel': 'Search sessions, settings and tools…',
+    }
+    /* ==== dsh-i18n:end ==== */
+
+    /** 占位符替换：`{name}` → params.name（缺参留空，不抛错——文案不该打死界面）。 */
+    function i18nFormat(text, params) {
+      if (params === undefined) return text
+      return String(text).replace(/\{(\w+)\}/g, (_match, name) => (params[name] === undefined ? '' : String(params[name])))
+    }
+
+    /** 中文兜底：老宿主（DSH ≤0.1.5）没有 locale 服务时，界面不能变成一串键名。 */
+    function i18nFallback(key, params) {
+      return i18nFormat(I18N_ZH[key] !== undefined ? I18N_ZH[key] : key, params)
+    }
+
+    let t = i18nFallback
+
+    /**
+     * 注册目录并绑定翻译函数。**动态 inject**：老宿主上回调永不触发、`t` 保持中文兜底；
+     * 写成静态 `inject: ['locale']` 会让整张卡片在老宿主上根本不挂。
+     *
+     * 语言切换不用自己订阅：插槽 outlet 随 locale revision 重渲染（renderer 的
+     * `useLocaleRevision`），而 `bind()` 返回的翻译函数在**调用时**读当前语言。
+     */
+    function installI18n(ctx) {
+      ctx.inject(['locale'], (i18nCtx) => {
+        const disposeZh = i18nCtx.locale.register(I18N_NS, 'zh', I18N_ZH)
+        const disposeEn = i18nCtx.locale.register(I18N_NS, 'en', I18N_EN)
+        t = i18nCtx.locale.bind(I18N_NS)
+        return () => {
+          disposeEn()
+          disposeZh()
+          t = i18nFallback
+        }
+      })
+    }
+
     /* ================================ 基础工具 ================================ */
 
     const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }
@@ -103,13 +245,13 @@ window.__ModuleLoader__.load({
       const date = new Date(value)
       if (Number.isNaN(date.getTime())) return ''
       const diff = Date.now() - date.getTime()
-      if (diff < 60 * 1000) return '刚刚'
+      if (diff < 60 * 1000) return t('list.justNow')
       const minutes = Math.floor(diff / (60 * 1000))
-      if (minutes < 60) return minutes + ' 分钟前'
+      if (minutes < 60) return t('list.minutesAgo', { count: minutes })
       const hours = Math.floor(minutes / 60)
-      if (hours < 24) return hours + ' 小时前'
+      if (hours < 24) return t('list.hoursAgo', { count: hours })
       const days = Math.floor(hours / 24)
-      if (days < 30) return days + ' 天前'
+      if (days < 30) return t('list.daysAgo', { count: days })
       return date.toLocaleDateString()
     }
 
@@ -270,8 +412,8 @@ window.__ModuleLoader__.load({
       entry.dataset.dshGlobalSearchEntry = ''
       entry.className = 'gs_sidebarSearch'
       entry.setAttribute('role', 'search')
-      entry.setAttribute('aria-label', '全局搜索')
-      entry.innerHTML = '<span class="gs_sidebarEntryIcon">' + ENTRY_ICON + '</span><input class="gs_sidebarSearchInput" placeholder="全局搜索…" readOnly />'
+      entry.setAttribute('aria-label', t('card.name'))
+      entry.innerHTML = '<span class="gs_sidebarEntryIcon">' + ENTRY_ICON + '</span><input class="gs_sidebarSearchInput" placeholder="' + esc(t('placeholder.sidebar')) + '" readOnly />'
       entry.addEventListener('click', (event) => {
         event.preventDefault()
         openPalette()
@@ -449,17 +591,17 @@ window.__ModuleLoader__.load({
           if (id !== undefined && id !== null && typeof sessions.open === 'function') sessions.open(id)
           return
         } catch (error) {
-          toast(error && error.message ? error.message : '新建会话失败', 'error')
+          toast(error && error.message ? error.message : t('error.newSession'), 'error')
           return
         }
       }
-      toast('当前环境无法新建会话', 'error')
+      toast(t('error.newSessionUnavailable'), 'error')
     }
 
     function runOpenFolder() {
       const button = findWorkspaceAddButton()
       if (button === null) {
-        toast('当前环境无法打开文件夹', 'error')
+        toast(t('error.openFolderUnavailable'), 'error')
         return
       }
       button.click()
@@ -468,7 +610,7 @@ window.__ModuleLoader__.load({
     function runOpenSettings() {
       const trigger = findSettingsTrigger()
       if (trigger === null) {
-        toast('当前环境无法打开设置', 'error')
+        toast(t('error.openSettingsUnavailable'), 'error')
         return
       }
       if (trigger.getAttribute('aria-expanded') !== 'true') trigger.click()
@@ -478,7 +620,7 @@ window.__ModuleLoader__.load({
     const QUICK_ACTIONS = [
       {
         id: 'new-session',
-        title: '新会话',
+        get title() { return t('btn.newSession') },
         icon: 'newChat',
         code: 'KeyN',
         chip: 'N',
@@ -488,7 +630,7 @@ window.__ModuleLoader__.load({
       },
       {
         id: 'open-folder',
-        title: '打开文件夹',
+        get title() { return t('btn.openFolder') },
         icon: 'folder',
         code: 'KeyO',
         chip: 'O',
@@ -498,7 +640,7 @@ window.__ModuleLoader__.load({
       },
       {
         id: 'open-settings',
-        title: '打开设置',
+        get title() { return t('btn.openSettings') },
         icon: 'sliders',
         code: 'Comma',
         chip: ',',
@@ -560,12 +702,16 @@ window.__ModuleLoader__.load({
      * 官方设置大类的兜底清单：只在宿主没提供 /api/dsh-search/catalog 时用
      * （宿主本体是旧版本、路由尚未注册，或目录请求失败）。五个大类都是 DSH 内置的，
      * 有它「设置」分组才不会空着；插件卡片仍由 /query 的 panels 补齐。
+     *
+     * `name` / `description` 是**要显示**的文案，必须走 t()，所以这里现取现建（不能做成
+     * 模块级常量——那时 `t` 还没绑定，语言一切换就露中文）；`titles` / `keywords` 是拿去匹配
+     * 宿主已渲染 DOM 的**宿主标签**，与语言无关，zh/en 都留着。
      */
-    const FALLBACK_SECTIONS = [
-      { id: 's-general', kind: 'section', name: '通用设置', titles: ['通用设置', 'General'], keywords: ['general', '通用', '设置', '常规', '基础'], description: '界面与工具的通用选项' },
-      { id: 's-models', kind: 'section', name: '模型', titles: ['模型', 'Models'], keywords: ['model', 'models', '模型', '提供商', 'provider', '推理'], description: '模型提供商与模型列表管理' },
-      { id: 's-plugins', kind: 'section', name: '内置插件', titles: ['内置插件', 'Built-in plugins'], keywords: ['plugin', 'plugins', '插件', '内置插件', '扩展'], description: '插件清单与插件管理' },
-      { id: 's-agent-presets', kind: 'section', name: 'Agent 预设', titles: ['Agent 预设', 'Agent presets'], keywords: ['agent', 'preset', '预设', 'agent preset', 'agentpresets'], description: '预设方案与角色模板' },
+    const fallbackSections = () => [
+      { id: 's-general', kind: 'section', name: t('panel.general'), titles: ['通用设置', 'General'], keywords: ['general', '通用', '设置', '常规', '基础'], description: t('panel.generalDesc') },
+      { id: 's-models', kind: 'section', name: t('panel.models'), titles: ['模型', 'Models'], keywords: ['model', 'models', '模型', '提供商', 'provider', '推理'], description: t('panel.modelsDesc') },
+      { id: 's-plugins', kind: 'section', name: t('panel.plugins'), titles: ['内置插件', 'Built-in plugins'], keywords: ['plugin', 'plugins', '插件', '内置插件', '扩展'], description: t('panel.pluginsDesc') },
+      { id: 's-agent-presets', kind: 'section', name: t('panel.agentPresets'), titles: ['Agent 预设', 'Agent presets'], keywords: ['agent', 'preset', '预设', 'agent preset', 'agentpresets'], description: t('panel.agentPresetsDesc') },
     ]
 
     /* ---------- 设置目录：实时 slots 注册表 + 宿主目录 + 兜底清单 ---------- */
@@ -633,7 +779,7 @@ window.__ModuleLoader__.load({
     function catalogPanels() {
       if (state.catalog.panels.length > 0) return state.catalog.panels
       if (state.catalog.ready) return []
-      return FALLBACK_SECTIONS
+      return fallbackSections()
     }
 
     /**
@@ -725,7 +871,7 @@ window.__ModuleLoader__.load({
 
       if (recents.length > 0) {
         groups.push({
-          label: searching ? '最近会话' : '最近',
+          label: searching ? t('panel.recentSessions') : t('panel.recent'),
           entries: recents.map((row, index) => ({
             kind: 'session',
             icon: 'chat',
@@ -739,7 +885,7 @@ window.__ModuleLoader__.load({
 
       if (searching && state.server.sessions.length > 0) {
         groups.push({
-          label: '历史会话',
+          label: t('panel.historySessions'),
           entries: state.server.sessions.map((item) => ({
             kind: 'session',
             icon: 'chat',
@@ -756,7 +902,7 @@ window.__ModuleLoader__.load({
           entries: state.server.prompts.map((item) => ({
             kind: 'prompt',
             icon: 'file',
-            title: highlightText(item.name, state.query) + (item.active ? '<span class="gs_badge">启用中</span>' : ''),
+            title: highlightText(item.name, state.query) + (item.active ? '<span class="gs_badge">' + t('list.active') + '</span>' : ''),
             subtitle: highlightText(item.snippet || item.description || '', state.query),
             payload: { copy: item.snippet || item.description || '' },
           })),
@@ -765,7 +911,7 @@ window.__ModuleLoader__.load({
 
       if (searching && state.server.tools.length > 0) {
         groups.push({
-          label: 'MCP 工具',
+          label: t('panel.mcpTools'),
           entries: state.server.tools.map((item) => ({
             kind: 'tool',
             icon: 'plug',
@@ -786,7 +932,7 @@ window.__ModuleLoader__.load({
       })
       if (actions.length > 0) {
         groups.push({
-          label: '快捷操作',
+          label: t('panel.actions'),
           entries: actions.map((action) => ({
             kind: 'action',
             icon: action.icon,
@@ -798,7 +944,7 @@ window.__ModuleLoader__.load({
       }
 
       const panels = panelEntries(searching)
-      if (panels.length > 0) groups.push({ label: '设置', entries: panels })
+      if (panels.length > 0) groups.push({ label: t('panel.settings'), entries: panels })
 
       return groups
     }
@@ -847,13 +993,13 @@ window.__ModuleLoader__.load({
       }
 
       if (state.loading) {
-        parts.push('<div class="gs_group"><div class="gs_row gs_rowGhost"><span class="gs_rowIcon"><span class="gs_spinner"></span></span><span class="gs_rowMain"><span class="gs_rowTitle">搜索会话全文…</span></span></div></div>')
+        parts.push('<div class="gs_group"><div class="gs_row gs_rowGhost"><span class="gs_rowIcon"><span class="gs_spinner"></span></span><span class="gs_rowMain"><span class="gs_rowTitle">' + t('list.searching') + '</span></span></div></div>')
       }
 
       if (currentEntries.length === 0 && !state.loading) {
         list.innerHTML = '<div class="gs_hint">' + (renderQuery === ''
-          ? '输入关键词，搜索历史会话、Prompt、MCP 工具和设置面板。<br />↑↓ 选择，↵ 打开，esc 关闭。'
-          : '没有找到匹配结果。') + '</div>'
+          ? t('list.hintEmpty') + '<br />' + t('list.hintKeys')
+          : t('list.empty')) + '</div>'
         return
       }
 
@@ -918,7 +1064,7 @@ window.__ModuleLoader__.load({
       const canOpenViaWorkspace = uiWorkspace !== undefined && typeof uiWorkspace.openSession === 'function'
       const canOpenViaSessions = sessions !== undefined && sessions !== null && typeof sessions.open === 'function'
       if (!canOpenViaWorkspace && !canOpenViaSessions) {
-        toast('当前环境无法直接打开会话', 'error')
+        toast(t('error.openSessionUnavailable'), 'error')
         return
       }
       try {
@@ -927,7 +1073,7 @@ window.__ModuleLoader__.load({
         closePalette()
         jumpToSessionText(query)
       } catch (error) {
-        toast(error && error.message ? error.message : '打开会话失败', 'error')
+        toast(error && error.message ? error.message : t('error.openSession'), 'error')
       }
     }
 
@@ -948,7 +1094,7 @@ window.__ModuleLoader__.load({
         closePalette()
         const jumped = await openSettingsCard(['Prompt 管理', 'Prompt Management'])
         if (jumped) {
-          toast('已打开「Prompt 管理」设置卡片', 'ok')
+          toast(t('msg.openedCard', { name: t('card.prompt') }), 'ok')
         } else {
           copyText(copy)
         }
@@ -959,7 +1105,7 @@ window.__ModuleLoader__.load({
         closePalette()
         const jumped = await openSettingsCard(['MCP 服务器配置', 'MCP Server Configuration'])
         if (jumped) {
-          toast('已打开「MCP 服务器配置」设置卡片', 'ok')
+          toast(t('msg.openedCard', { name: t('card.mcp') }), 'ok')
         } else {
           copyText(name)
         }
@@ -968,11 +1114,11 @@ window.__ModuleLoader__.load({
       if (entry.kind === 'panel') {
         const isSection = entry.payload.section === true
         const titles = entry.payload.titles
-        const label = titles[0] || '设置面板'
+        const label = titles[0] || t('panel.untitled')
         closePalette()
         const jumped = isSection ? await openSettingsSection(titles, entry.payload.index) : await openSettingsCard(titles)
         if (jumped) {
-          toast('已打开「' + label + '」设置' + (isSection ? '分区' : '卡片'), 'ok')
+          toast(isSection ? t('msg.openedSection', { name: label }) : t('msg.openedCard', { name: label }), 'ok')
         } else {
           copyText(label)
         }
@@ -981,8 +1127,8 @@ window.__ModuleLoader__.load({
 
     function copyText(text) {
       if (!text) return
-      const done = () => toast('已复制', 'ok')
-      const fail = () => toast('复制失败', 'error')
+      const done = () => toast(t('msg.copied'), 'ok')
+      const fail = () => toast(t('error.copyFailed'), 'error')
       if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
         navigator.clipboard.writeText(text).then(done, fail)
       } else {
@@ -1115,17 +1261,17 @@ window.__ModuleLoader__.load({
       panel.className = 'gs_palette'
       panel.setAttribute('role', 'dialog')
       panel.setAttribute('aria-modal', 'true')
-      panel.setAttribute('aria-label', '全局搜索')
+      panel.setAttribute('aria-label', t('card.name'))
       panel.innerHTML =
         '<div class="gs_inputRow">' +
           '<span class="gs_inputIcon">' + ICONS.search + '</span>' +
-          '<input class="gs_input" type="text" role="combobox" aria-autocomplete="list" aria-expanded="true" aria-controls="gs_list" placeholder="搜索会话、设置与工具…" autocomplete="off" spellcheck="false" />' +
+          '<input class="gs_input" type="text" role="combobox" aria-autocomplete="list" aria-expanded="true" aria-controls="gs_list" placeholder="' + esc(t('placeholder.panel')) + '" autocomplete="off" spellcheck="false" />' +
         '</div>' +
-        '<div class="gs_list" id="gs_list" role="listbox" aria-label="搜索结果"></div>' +
+        '<div class="gs_list" id="gs_list" role="listbox" aria-label="' + esc(t('panel.results')) + '"></div>' +
         '<div class="gs_footer">' +
-          '<span class="gs_footerItem"><kbd class="gs_key">↑</kbd><kbd class="gs_key">↓</kbd>选择</span>' +
-          '<span class="gs_footerItem"><kbd class="gs_key">↵</kbd>打开</span>' +
-          '<span class="gs_footerItem"><kbd class="gs_key">esc</kbd>关闭</span>' +
+          '<span class="gs_footerItem"><kbd class="gs_key">↑</kbd><kbd class="gs_key">↓</kbd>' + t('panel.hintSelect') + '</span>' +
+          '<span class="gs_footerItem"><kbd class="gs_key">↵</kbd>' + t('panel.hintOpen') + '</span>' +
+          '<span class="gs_footerItem"><kbd class="gs_key">esc</kbd>' + t('panel.hintClose') + '</span>' +
         '</div>'
 
       backdrop.appendChild(panel)
@@ -1585,6 +1731,7 @@ window.__ModuleLoader__.load({
     exports.inject = ['sessions']
 
     exports.apply = (ctx) => {
+      installI18n(ctx)
       activeCtx = ctx
       ctx.effect(() => {
         ensureStyle()
