@@ -31,7 +31,7 @@
 
 ## 现状
 
-**已修 57 / 待修 0**（D01–D48 审计波 + D49/D50 线上反馈 + D51–D56 复核实测发现 + D57 线上崩溃）。索引表**不写行号、也不保留修复提交
+**已修 61 / 待修 0**（D01–D48 审计波 + D49/D50 线上反馈 + D51–D56 复核实测发现 + D57 线上崩溃 + D58–D61 后续用户上报/复核）。索引表**不写行号、也不保留修复提交
 sha** —— 修复后代码移了位、有的整段被删或重写，审计时点的行号只会误导；所以回溯入口统一改成
 按关键词检索（D49/D50 修在 `bd407352`）：`git log -S'<症状列的关键词>'`，提交信息按条目写
 为什么。被代码直接引用的编号在
@@ -464,6 +464,50 @@ D50 才是用户看到的那一下（他补的描述是「整条状态条瞬间�
   profile 共用、`kill-server` 会跨 profile 生效。
 - **未做（待定，见「待办」）**：复制 profile 时自动错开 / 停用隧道端口；保存隧道时做端口
   占用探测；tmux socket 按 profile 命名。
+
+### D61：桌面版终端永远连不上——WS 地址只用 `location` 拼，桌面 origin 是 `dsh-app://app`（2026-09-24 用户上报，已修未发版）
+
+- **症状**：DeepSeek Harness **桌面版**（Electron，跑 `desktop` profile）里终端面板
+  **能打开、设置卡片 / SSH 连接簿 / 配置读写全好**，但终端永远出不来：状态条停在
+  「连接中…」→「连接断开 — 自动重连中」，按 1s→5s 退避无限重试，标签上盖
+  「连接断开 / 自动重连中…」。同一个插件在 `dsh web`（浏览器直连）下完全正常。
+- **根因**：`wsUrl()` 只用 `location.protocol` / `location.host` 拼地址。桌面渲染器的
+  origin 是 Electron 自定义协议 `dsh-app://app`（宿主以 `protocol.handle("dsh-app", …)`
+  把页面请求转发到真实宿主 origin `http://127.0.0.1:19387`），于是拼出
+  `ws://app/api/dsh-tty/ws`：① `app` 不是可解析主机名，连接必然失败；② 桌面壳的
+  cookie / Origin 拦截只覆盖 `ws://127.0.0.1/*`（`app.asar/lib/main.js` 的
+  `onBeforeSendHeaders`），这条 URL 拿不到宿主 cookie。
+- **为什么其余功能全好（症状的迷惑性来源）**：面板里除 WS 外**全部**是相对路径
+  `fetch('/api/dsh-tty/…')`，相对 `dsh-app://app/` 会被 `protocol.handle` 转发到宿主，
+  所以只有终端这一条通道断。宿主侧插件其实是好的：桌面宿主上
+  `GET /api/tty/config` 返回 **401**（路由已注册；404 才是没加载）。
+- **修法**：抽 `client-src/ws-url.js` 的纯函数 `deriveWsUrl(pageHref, streamBaseUrl)`，
+  来源改用宿主注入的 `globalThis.__DSH_TRANSPORT__.streamBaseUrl`（桌面 preload 注入真实
+  宿主 origin；核心 `dsh-client-connection` / `dsh-api-gateway` 同款写法
+  `globals.__DSH_TRANSPORT__?.streamBaseUrl ?? document.baseURI`），缺省退回
+  `document.baseURI` —— 浏览器直连下与旧的 `location.host` **逐字等价**。
+  改后正好命中桌面壳拦截条件：host `127.0.0.1:19387` ✓、Origin 被壳改写为
+  `http://127.0.0.1:19387` ✓（恰过宿主侧 `isLoopbackUpgrade` 的 origin/host 比对）、
+  `sec-fetch-site: same-origin` ✓。
+- **回归门槛**：`test/ws-url.test.ts` 五条（桌面用 streamBaseUrl 且不再出现 `//app` /
+  缺省与空串退化 / 浏览器与旧实现逐字等价 / https→wss / 相对 streamBaseUrl）。
+- **同类缺陷的防线（不只修了 tty 这一处）**：本条的根因「从 `location` 推宿主地址」**四层
+  防线全都抓不到**（vitest 不收浏览器半体、tsc 检查只看名字解析、CDP 冒烟驱动的是
+  `http://127.0.0.1:3082`、各包 preview harness 里是假 WebSocket），所以顺手把它变成了一条
+  **仓库级静态规则**，覆盖全部 10 个客户端半体（3 个有 `client-src/` 的查源码全量、7 个裸
+  `client.js` 的查产物）：
+  - 规则：`scripts/client-host-url.mjs`（TS AST，注释与字符串免疫；成因与「刻意不查
+    `http(s)` 字面量」的范围决定都写在文件头）。拦两类：读 `location` 的
+    `protocol`/`host`/`hostname`/`origin`/`port`、硬编码 `ws://`/`wss://` 字面量。
+  - 接线：`scripts/client-lint.mjs`（`pnpm -r typecheck` 里跑，失败即卡门禁）。
+  - 自测：`scripts/test/client-host-url.test.ts` 23 条，含**全量真实语料 0 命中**的断言
+    （规则上线即绿，并拦住以后有人把 `location` 写回去）。
+  - 写法固化进 `README.md` 的「客户端半体（浏览器侧）的两条硬规矩」与 `vitest.config.ts`
+    头部（说明为什么浏览器半体里要判对错的逻辑必须抽成纯模块）。
+- **没做的事**：桌面 profile 的 `cordis.patch.yml` 里**没有** `- id: tty` 配置块
+  （web / test 都有完整的 `sshHosts` / `hostKeys` / `persistence` / `cwd`），插件按 schema
+  默认值启用，所以**不是**本次故障原因，但桌面版终端目前跑的是纯默认配置（`cwd` 落在
+  profile 目录、无 SSH 连接簿、无 tmux 持久化）。
 
 ## agent 会话（0.20.0：tty_open / tty_close / tty_stats）
 

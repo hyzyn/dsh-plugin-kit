@@ -83,6 +83,7 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import xtermCss from '@xterm/xterm/css/xterm.css'
 import ttyCss from './tty.css'
 import { resolveDockOwner, dockPaneVisible } from './dock-owner.js'
+import { deriveWsUrl } from './ws-url.js'
 import { asciiRefToken, derivedCredentialRef } from './credential-ref.js'
 import { applyTunnelEdit, buildTunnelFromDraft as buildTunnelSpec, tunnelNameClash } from './tunnel-edit.js'
 import { currentSessionCwd } from './current-session.js'
@@ -96,11 +97,11 @@ import { STATS_ITEM_SPECS, formatBytes, formatRate, hasUsableStats, statsFrameFr
 
 /* ================================ 基础工具 ================================ */
 
-const WS_PATH = '/api/dsh-tty/ws'
-
+/* WS 地址的推导规则已抽到 client-src/ws-url.js —— 那里是纯逻辑、带单测
+ * （test/ws-url.test.ts）。原先这里只用 location 拼，桌面版（origin 是
+ * dsh-app://app）会拼出连不上的 ws://app/...；推导与成因见那个文件。 */
 function wsUrl() {
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return proto + '//' + location.host + WS_PATH
+  return deriveWsUrl(document.baseURI, globalThis.__DSH_TRANSPORT__?.streamBaseUrl)
 }
 
 /* 凭据引用名的派生规则（asciiRefToken / derivedCredentialRef）已抽到
