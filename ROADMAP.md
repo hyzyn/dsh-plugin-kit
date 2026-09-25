@@ -27,7 +27,10 @@
 ### 2. 跳板机（ProxyJump / ProxyCommand）
 
 > **短期那一半已做**（2026-09-25，见 [§ 已完成](#已完成落点--门槛)）：导入跳过 + 明说、
-> 超时/探测文案点出成因。**完整实现（真的经跳板机连）仍开着**，剩余工作与已知的六个坑见该节。
+> 超时/探测文案点出成因。**完整实现（真的经跳板机连）仍开着，方案已写进
+> [docs/proxyjump-plan.md](./docs/proxyjump-plan.md)**——字段形状、`forwardOut → sock` 的构造序列、
+> 生命周期与清理、连接池键、探针与 UI、约 20 处扁平白名单的清单、五步落地顺序与真机验收
+> 都在那边（本文不重复）。**动手前先读那份方案**，它是这项的唯一作业面。
 
 同一个根因，两个包各写了一遍，迁到这里合并（两段原文都保留）：
 
@@ -120,25 +123,13 @@
 （真 HOME 下走一遍路由，含围栏不放松）、`packages/tty/test/host-smoke.test.ts` 与
 `packages/docker/test/ssh-stream-budget.test.ts` 的超时文案断言。
 
-**完整实现仍开着**（真的经跳板机连）。2026-09-25 的复核把已知的坑摊开在这里，动手前先读：
-
-1. **两跳共用一份 `readyTimeout`**：ssh2 在 `cfg.sock` 分支同样武装它，报的是
-   `Timed out while waiting for handshake`，经 `classifyError` 后跳板机不可达与目标不可达
-   **长得一模一样**——归属要靠自己的计时器（tty 现在只有 channel 打开后才有的 15s 看门狗）。
-2. **docker 的 `poolKey` 只有 `user@host:port`**（`ssh-exec.ts:202`）：不同跳板机到同一目标
-   会并成一条连接，静默走错 bastion。加跳板机必须把它并进 key。
-3. **TOFU 指纹库的键只有 `(host, port)`**：跳板机与目标同 host:port（NAT 后的 `127.0.0.1:22`
-   很常见）会共用一套指纹 → 假 MISMATCH；两跳要各留一个 `mismatchMessage()` 句柄。
-4. **bastion Client 的生命周期没人管**：ssh2 的 `end()` / `destroy()` 只关借来的 channel，
-   不关跳板机传输；`disposeAll` 目前只 `end()` 目标 client。
-5. **`ProxyCommand` 的信任级不同**：它是「设置字段驱动的本地任意命令执行」，而本仓所有
-   邻近面都在回环围栏 + 显式开关之后——要做就得单独定闸门，且**不**在导入时自动带进来。
-6. **~20 处扁平白名单**会把新字段静默吃掉（`SSH_HOST_SCHEMA` / `sanitizeSshHosts` /
-   `validateSshHosts` / `mergeSshSpec` / `tunnels.ts` 的 spec 拷贝 / docker 的
-   `readTtyBooks` / 两侧客户端对话框…）——丢一处就是「配了等于没配」。
+**完整实现仍开着**（真的经跳板机连）：方案、七个坑（超时归属 / `poolKey` / TOFU 键 /
+bastion 生命周期 / `ProxyCommand` 信任级 / 约 20 处扁平白名单 / 导入的别名解析）、五步落地
+顺序与真机验收**全部在 [docs/proxyjump-plan.md](./docs/proxyjump-plan.md)**——那份文档是这项的
+唯一作业面，本文只留这句指针，避免两边各写一份（这一项立项的理由就是「三处各写一份必然漂」）。
 
 **刻意不做**：不做「只让 tty 能过 bastion、docker 不行」的半吊子（原文的判据：那比不做更糟）；
-本轮也不动 `ProxyCommand`。
+本轮也不动 `ProxyCommand`（信任级不同，要单独定闸门）。
 
 ### 4. ✅ `isConcurrencySafe` 未声明
 

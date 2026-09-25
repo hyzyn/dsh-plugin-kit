@@ -24,6 +24,7 @@
 | 跨包通用故障诊断路径 | L0 [`docs/troubleshooting.md`](./troubleshooting.md) |
 | **跨包行为约定**（回环围栏 / body 围栏 / 截断信号） | L0 [`docs/architecture.md` § 7](./architecture.md#7-一条请求经过什么) |
 | **面板端 GUI 的文案与语言（i18n）** | L0 [`docs/i18n.md`](./i18n.md)（方案 + 规范片段 + 进度表） |
+| **跳板机（ProxyJump / ProxyCommand）完整实现的方案**（未开工，**活**的作业面，不是冻结记录） | L0 [`docs/proxyjump-plan.md`](./proxyjump-plan.md) |
 | AI 真机测试约束 | L0 [`docs/agent-real-test.md`](./agent-real-test.md) |
 | 术语 | L0 [`docs/glossary.md`](./glossary.md) |
 | 发布流程 | L0 [`RELEASING.md`](../RELEASING.md) |
