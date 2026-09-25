@@ -174,15 +174,34 @@ bastion 生命周期 / `ProxyCommand` 信任级 / 约 20 处扁平白名单 / �
 空值 / 注释里的 `t('…')` 不得误报 / `translate(` 与 `.translate(` 不得误命中 / 动态键只能告警 /
 安装片段缺一处要点名），最后一组拿**真实语料**跑一遍并钉住「已接入的包不许退回未接入」。
 
-**逐包搬运进度（2026-09-25）**：**8/10 已接入** —— `env`(14) · `kit-settings`(4) · `search`(46) ·
-`profile`(47) · `mcp`(66) · `prompt`(67) · `rss`(132) · `codegraph`(204)，合计 **580 条键**，
-逐个都跑过闸门 + typecheck + 该包测试（rss 另有 client-smoke 7/7、codegraph 另有 317 条 vitest
-与二次构建 md5 不变的核验）。**仍待搬：`tty`（约 212 条，散在 8 个 client-src 模块）
-与 `docker`（约 186 条）**——两者都要重跑构建，docker 还要跑 CI 里的三套 smoke。
+**逐包搬运进度（2026-09-25）：10/10 全部接入，合计 1636 条键。**
 
-**每一个包的量与「剩余中文」的归类都记在 [docs/i18n.md § 进度表](./docs/i18n.md#进度表)**（那里的
-数字由闸门现算，不写死）；搬运顺序、HTML/占位符/标点三条经验、以及预览与 smoke 夹具要补什么，
-也都在那份文档里。剩下的两个包照那份文档照做即可，属各包自己的 L1 工作。
+| 包 | 键数 | 剩余中文字面量 | 备注 |
+|---|---|---|---|
+| `kit-settings` | 4 | 0 | |
+| `env` | 14 | 1 | 输入示例（语法示例不翻） |
+| `search` | 46 | 42 | 全是匹配/定位数据（keywords / 面板标题别名 / DOM 定位串） |
+| `profile` | 47 | 0 | 两条全角括号选项是「只数汉字看不见」的典型 |
+| `mcp` | 66 | 0 | HTML 串最多的一批 |
+| `prompt` | 67 | 0 | |
+| `rss` | 132 | 14 | BUILTIN_CHANNELS 数据（与宿主逐字镜像，builtinOf 还要用它匹配） |
+| `codegraph` | 204 | 0 | `pure.js` 的 4 个函数改成接 `t` 参数 |
+| `tty` | 339 | 5 | 目录放**模块作用域**；兄弟模块按参数注入 `t` |
+| `docker` | 450 | 35 | 4 条 console 日志 + 31 条「问 Agent」payload（**agent 面向，不翻**） |
+
+每个包都跑过：`node scripts/check-i18n.mjs`（键集 / 占位符 / 用法覆盖 / 域白名单 / 无死键）
++ `pnpm -r typecheck` + 该包 vitest（全仓 63 文件 1063 条）+ 有构建步骤的重建产物
+（`pnpm -r build && git diff --exit-code` 的产物闸门）+ 有 CI 冒烟的跑冒烟
+（docker 44/44 + 61/61 + 72/72，tty probe-route/ssh/sftplimits/probe/integration 全过）。
+
+**量、剩余中文的逐条归类、三条写法经验（匹配数据不翻 / HTML 串要 `esc(t(…))` / 值在句子里用
+占位符）、目录放哪、以及预览与 smoke 夹具要补什么，都在
+[docs/i18n.md](./docs/i18n.md)（数字由闸门现算，不写死）。**
+
+活越干越多不是意外：这一轮顺手修掉了两类**围栏加固（第 1 项）漏下的真实回归**——
+CI 真在跑的 `packages/tty/scripts/probe-route-smoke.mjs` / `integration.mjs` 与真机脚本
+`scripts/verify-mcp-*.mjs` 打变更端点时没有同源证明（403），按浏览器同源 fetch 的形状补了
+`sec-fetch-site: same-origin`。
 
 ## 已由 L0 资产承接（不再是待办）
 
