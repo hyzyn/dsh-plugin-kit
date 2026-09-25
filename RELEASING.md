@@ -13,7 +13,10 @@ npmjs.com → Access Tokens → Generate New Token（granular）生成：
 - **Permissions**：必须 **Read and write**（只读 token 发包会被拒）；
 - **2FA**：选 bypass（CI 没法输动态码）。
 
-未配置时 Release workflow 会跳过 npm publish、只建 GitHub Release，并给出 warning。
+未配置时 Release workflow **直接失败**（`::error::` + 退出 1），不会建 GitHub Release。
+早期行为是「warning + 跳过发布」，结果是 workflow 全绿、包一个没发上 npm、却照样建出
+Release 页——绿条里的假成功比红条难发现得多，所以改成硬失败。补上 secret 后重跑同一个
+tag 即可（幂等）。
 
 ### 本地钩子（提交前闸门）
 
@@ -113,10 +116,11 @@ build + typecheck + 聚合检查 → 按依赖序发布全部包（registry 上�
 兜底的手动发布：`node scripts/release-publish-all.mjs [6位OTP] [only=]包目录,...`
 （bypass-2FA token 不需要 OTP；经典 token 传 6 位动态码）。
 
-## 排错（CI 发布 403/404 时对照）
+## 排错（CI 发布出错时对照）
 
 | 症状 | 原因与处理 |
 | --- | --- |
+| workflow 绿了、但日志里有 `::warning::` 说「窗口内未核实 / 无法判定」 | publish 命令已退出 0（真失败会在发布那一步直接红），只是回查没在窗口内读到目标版本。**先别删 tag 重打**：`curl -s https://registry.npmjs.org/<包名>/<版本>` 直查，在就无需处理；确实不在才重跑（幂等）。回查用单版本小端点 + 随机 `?cb=`（详见 `scripts/release-publish-tag.mjs` 顶部注释），只有当权威文档**已刷新到本次发布之后**却仍没有该版本时才判红 |
 | `ERR_PNPM_OUTDATED_LOCKFILE ... specifiers in the lockfile don't match` | lockfile 与 package.json 脱节：aggregate 晚于 `install --lockfile-only`，聚合层重钉的 specifier 没进 lockfile（v0.1.24）。按「bump → aggregate → install --lockfile-only」顺序重跑；已发包的修复直接追加 lockfile 提交、删 tag 重打（幂等） |
 | `403 ... Two-factor authentication or granular access token with bypass 2fa` | 缺动态码或 token 不是 bypass-2FA：换 bypass granular token |
 | `404 Not found - PUT <包名>` / `404 ... install from a tarball` | token 对该包无发布权（npm 故意 404 隐藏存在性）：检查 granular token 的 Packages and scopes 是否勾到该包、权限是否 Read and write |

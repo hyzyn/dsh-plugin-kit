@@ -55,8 +55,12 @@ jobs:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           if [ -z "$NPM_TOKEN" ]; then
-            echo "::warning::NPM_TOKEN secret 未配置；跳过 npm publish（手动发布见 RELEASING.md）"
-            exit 0
+            # 这里必须红，不能 ::warning:: + exit 0：后面的 Create GitHub release 照跑，
+            # 于是留下一个「workflow 全绿、包一个都没发上 npm、却建了 Release 页」的假成功
+            # ——绿条里的假成功比红条难发现得多。补 secret（RELEASING.md「一次性配置」）
+            # 后重跑同一个 tag 即可，发布是幂等的。
+            echo "::error::NPM_TOKEN secret 未配置，发布中止；配置方法见 RELEASING.md「一次性配置」"
+            exit 1
           fi
           # token 明文写入 runner 的 ~/.npmrc 后由 pnpm publish 读取；
           # ${VAR} 占位符在 pnpm publish 下解析不可靠（会拿错凭证 → 403/404 乱象），不用
