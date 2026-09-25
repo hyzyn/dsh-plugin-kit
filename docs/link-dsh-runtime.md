@@ -61,3 +61,17 @@ tail node_modules/.dsh-links.log
 - 若某个包在 dsh 运行时里不存在（改名/下线），脚本会移除该链接并告警——运行期若仍被
   import 会直接报 `ERR_MODULE_NOT_FOUND`，这正是兼容性信号，不是 bug。
 - 该脚本只改 node_modules 里的 symlink，不改任何源码/package.json/锁文件。
+
+## Windows
+
+真机（Windows 11 ARM64）实测踩过的两点，脚本已处理：
+
+- **探测运行时不再用 `process.env.HOME`**（那在 Windows 上不存在，是 `USERPROFILE`），
+  改用 `os.homedir()`；候选里同时列了 npm 全局的两种布局——POSIX 是
+  `<prefix>/lib/node_modules/...`，Windows 直接在 `<prefix>/node_modules/...`。
+  旧版在**构造候选数组时**就抛 `ERR_INVALID_ARG_TYPE`，整个脚本第一步即死。
+- **链接用 junction 而不是符号链接**：Windows 建目录符号链接要「开发者模式」或管理员
+  （`SeCreateSymbolicLinkPrivilege`），普通用户直接 EPERM，而
+  `scripts/windows/README.md` 的流程正是让普通用户跑这一步。junction 只认绝对目标，
+  所以脚本内部统一按 resolve 后的路径建链、并按 resolve 后的路径判断「是否已指向」。
+  重复执行仍然幂等（第二次 `relinked 0`）。

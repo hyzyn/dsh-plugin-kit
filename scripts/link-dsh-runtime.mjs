@@ -1,6 +1,7 @@
 import { appendFileSync } from 'node:fs'
 import { execSync } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -13,13 +14,61 @@ const runtimeRoot = runtimeFlag >= 0
 const dryRun = args.includes('--dry-run')
 const logFile = join(root, 'node_modules', '.dsh-links.log')
 
+/**
+ * 目录链接：POSIX 用 symlink，Windows 用 **junction**。
+ *
+ * Windows 建**目录符号链接**要「开发者模式」或管理员（SeCreateSymbolicLinkPrivilege），
+ * 普通用户直接 EPERM；而 junction 谁都能建。本仓的 Windows 真机流程
+ * （scripts/windows/README.md）正是让普通用户跑这一步，用 symlink 会把整条链路卡在第一节。
+ *
+ * 代价：junction **只认绝对目标**，所以这里统一先 resolve；相应地「链接是否已指向目标」
+ * 的判断也必须比较 resolve 后的路径（见 sameTarget），不能比字符串。
+ */
+const LINK_KIND = process.platform === 'win32' ? 'junction' : undefined
+
+/** 建目录链接。target 可以是相对链接所在目录的路径（POSIX 下保持可搬迁的相对链接）。 */
+function linkDirectory(target, link) {
+  if (LINK_KIND === undefined) symlinkSync(target, link)
+  else symlinkSync(resolve(dirname(link), target), link, LINK_KIND)
+}
+
+/** 链接（symlink 或 junction）当前是否已经指向 target。 */
+function sameTarget(link, target) {
+  try {
+    if (!lstatSync(link).isSymbolicLink()) return false
+    // junction 的 readlink 是绝对路径，且可能带 `\\?\` 扩展前缀
+    const raw = readlinkSync(link).replace(/^\\\\\?\\/, '')
+    return resolve(dirname(link), raw) === resolve(dirname(link), target)
+  } catch {
+    return false
+  }
+}
+
 function findDshRuntime() {
-  const candidates = [
-    join(process.env.HOME, '.npm-global', 'lib', 'node_modules', '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai'),
-    join(process.env.HOME, '.dsh', 'profiles', 'node_modules', '@deepseek-ai'),
-  ]
-  const prefix = execSync('npm prefix -g', { encoding: 'utf8' }).trim()
-  candidates.unshift(join(prefix, 'lib', 'node_modules', '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai'))
+  /*
+   * HOME 在 Windows 上**不存在**（那边是 USERPROFILE），旧版直接 join(process.env.HOME, …)
+   * 会在**构造候选数组的那一刻**就抛 ERR_INVALID_ARG_TYPE：连先 push 进去的 npm prefix
+   * 候选都没机会被检查，脚本第一步就死（Windows 真机实测：就是这条）。
+   * os.homedir() 两个平台都对。
+   */
+  const home = homedir()
+  const candidates = []
+  // npm 全局前缀：POSIX 在 <prefix>/lib/node_modules，Windows 直接在 <prefix>/node_modules
+  try {
+    const prefix = execSync('npm prefix -g', { encoding: 'utf8' }).trim()
+    if (prefix !== '') {
+      candidates.push(
+        join(prefix, 'lib', 'node_modules', '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai'),
+        join(prefix, 'node_modules', '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai'),
+      )
+    }
+  } catch {
+    // npm 不在 PATH 时不致命：下面还有 home 兜底
+  }
+  candidates.push(
+    join(home, '.npm-global', 'lib', 'node_modules', '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai'),
+    join(home, '.dsh', 'profiles', 'node_modules', '@deepseek-ai'),
+  )
   for (const c of candidates) {
     if (existsSync(c)) return c
   }
@@ -64,7 +113,7 @@ if (existsSync(kitDir)) {
     if (!existsSync(link)) {
       if (!dryRun) {
         mkdirSync(dirname(link), { recursive: true })
-        symlinkSync(target, link)
+        linkDirectory(target, link)
         kitLinked++
         kitChanges.push({ pkg, before: '(missing)', after: target })
       }
@@ -72,7 +121,7 @@ if (existsSync(kitDir)) {
       continue
     }
     const stat = lstatSync(link)
-    if (stat.isSymbolicLink() && readlinkSync(link) === target) continue
+    if (sameTarget(link, target)) continue
     const before = stat.isSymbolicLink()
       ? readlinkSync(link)
       : stat.isDirectory()
@@ -88,7 +137,7 @@ if (existsSync(kitDir)) {
       rmSync(link, { force: true })
     }
     mkdirSync(dirname(link), { recursive: true })
-    symlinkSync(target, link)
+    linkDirectory(target, link)
     kitLinked++
     console.log(`- ${label}:\n    before: ${before}\n    after : ${target}`)
     kitChanges.push({ pkg, before, after: target })
@@ -110,7 +159,7 @@ for (const pkg of readdirSync(join(root, 'packages'))) {
       continue
     }
     const stat = lstatSync(link)
-    if (stat.isSymbolicLink() && readlinkSync(link) === target) continue
+    if (sameTarget(link, target)) continue
     const before = stat.isSymbolicLink()
       ? readlinkSync(link)
       : stat.isDirectory()
@@ -126,7 +175,7 @@ for (const pkg of readdirSync(join(root, 'packages'))) {
       rmSync(link, { force: true })
     }
     mkdirSync(dirname(link), { recursive: true })
-    symlinkSync(target, link)
+    linkDirectory(target, link)
     linked++
     console.log(`- ${label}:\n    before: ${before}\n    after : ${target}`)
     changes.push({ pkg, name, before, after: target })

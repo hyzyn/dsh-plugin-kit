@@ -20,20 +20,26 @@ import { apply } from '../src/index.js'
 /**
  * 挂载并捕获路由；`sessions` 服务可选（用来验 seed）。
  *
- * `command` 默认指向一个回显 argv 的 stub：真 `codegraph status --json` 在临时目录上
+ * `command` 默认指向一个回显固定 JSON 的 stub：真 `codegraph status --json` 在临时目录上
  * 会失败（无索引 → 非零退出），而 `/status` 路由**只有成功时**才登记项目——用真 CLI
  * 会让「查过状态进列表」这条用例假红。
+ *
+ * stub 的**形态**交给共享的 `writeStubCli`：POSIX 上带 shebang 的 `.mjs` + 0o755，
+ * Windows 上 `.cmd` shim + `.js`。这里原本自己内联写 `.mjs` + `chmod`，而 Windows
+ * 既没有可执行位、也不认 shebang，直接 spawn 报 `EFTYPE`（win-arm64 真机实测）——
+ * `/status` 整个失败，项目永远进不了列表，两条用例因此红。
+ *
+ * 这个文件当年把症状当成了「win32 上慢」并放了个 60s 超时（见下面那条用例），
+ * 其实是 spawn 根本起不来；`cli-surface` / `auto-reindex` / `agent-created-mode`
+ * 早已迁到 `writeStubCli`，只漏了这里。
  */
 function mount(opts: { defaultPath: string; sessions?: unknown[] } = { defaultPath: '/tmp' }) {
   const stubDir = mkdtempSync(join(tmpdir(), 'cg-proj-stub-'))
-  const stub = join(stubDir, 'cg-stub.mjs')
-  writeFileSync(stub, `#!/usr/bin/env node
-import fs from 'node:fs'
+  const stub = writeStubCli(stubDir, 'cg-stub', `
 const args = process.argv.slice(2)
 if (args[0] === '--version') { process.stdout.write('1.6.0'); process.exit(0) }
 process.stdout.write(JSON.stringify({ initialized: true, index: { reindexRecommended: false } }))
 `)
-  require('node:fs').chmodSync(stub, 0o755)
   const routes = new Map<string, { handler: (req: unknown, res: unknown) => Promise<unknown> }>()
   const base = { effect: (fn: () => unknown) => fn(), on: () => () => {} }
   const ctx = {
@@ -166,10 +172,14 @@ describe('P2 项目列表', () => {
     expect(row).toBeDefined()
     expect(row?.via).toContain('status')
     rmStubDir(repo)
-    // win32 runner 上这条要起两次 node 子进程（挂载探测 + /status），20s 偶发不够：
-    // v0.1.43 的 CI 里同一提交红/绿交替（windows-latest）。与 v0.1.41 放宽全局限时的
-    // 做法一致，这里只给这条最慢的用例单独放宽。
-  }, 60_000)
+    /*
+     * 这条曾单独挂 60_000 超时，理由是「win32 上要起两次 node 子进程（挂载探测 + /status），
+     * 20s 偶发不够」（v0.1.43 的 CI 同一提交红/绿交替）。win-arm64 真机复跑才发现**不是慢**：
+     * stub 是 POSIX 式的 `.mjs`，Windows 上 spawn 直接 EFTYPE，`/status` 压根没成功过——
+     * 超时只是把「起不来」拖成了「很久」。改用 writeStubCli 的 `.cmd` shim 后这条只要几百毫秒，
+     * 特殊超时随之删掉（真机上 692ms 跑完整个文件）。
+     */
+  })
 
   it('没提供 sessions 服务时也能工作（列表随使用增长）', async () => {
     const { call } = mount({ defaultPath: '/tmp' })   // 不传 sessions
