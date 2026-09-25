@@ -472,13 +472,32 @@ function makeRes(): FakeRes {
   return res
 }
 
-function makeReq(url: string, method = 'GET', remoteAddress = '127.0.0.1', body?: unknown): unknown {
+/**
+ * 假请求。`headers` 里的键覆盖默认头，值给 `undefined` 表示**删掉**该头——桌面壳的
+ * 转发链正是先删 `origin` / `sec-fetch-site`、再补宿主 `cookie`（D139）。
+ */
+function makeReq(
+  url: string,
+  method = 'GET',
+  remoteAddress = '127.0.0.1',
+  body?: unknown,
+  headers?: Record<string, string | undefined>,
+): unknown {
   const payload = body === undefined ? '' : JSON.stringify(body)
   const chunks = payload === '' ? [] : [Buffer.from(payload)]
+  const merged: Record<string, string | undefined> = {
+    host: '127.0.0.1:3080',
+    origin: 'http://127.0.0.1:3080',
+    'content-type': 'application/json',
+  }
+  for (const [name, value] of Object.entries(headers ?? {})) {
+    if (value === undefined) delete merged[name]
+    else merged[name] = value
+  }
   return {
     method,
     url,
-    headers: { host: '127.0.0.1:3080', origin: 'http://127.0.0.1:3080', 'content-type': 'application/json' },
+    headers: merged,
     socket: { remoteAddress },
     async *[Symbol.asyncIterator]() {
       for (const chunk of chunks) yield chunk
@@ -487,7 +506,7 @@ function makeReq(url: string, method = 'GET', remoteAddress = '127.0.0.1', body?
 }
 
 /** 最小假 cordis ctx：与 scripts/route-smoke.mjs 同思路（这里只服务 SSE 用例）。 */
-function makeCtx(): { ctx: Record<string, unknown>; state: { routes: FakeRoute[]; tools: Array<Record<string, unknown>>; prompts: Array<Record<string, unknown>>; listeners: Map<string, Array<(...args: unknown[]) => void>>; settingsStored: Record<string, unknown>; baseConfig: Record<string, unknown> } } {
+function makeCtx(): { ctx: Record<string, unknown>; state: { routes: FakeRoute[]; tools: Array<Record<string, unknown>>; prompts: Array<Record<string, unknown>>; listeners: Map<string, Array<(...args: unknown[]) => void>>; settingsStored: Record<string, unknown>; baseConfig: Record<string, unknown>; warnLog: string[] } } {
   const state = {
     routes: [] as FakeRoute[],
     tools: [] as Array<Record<string, unknown>>,
@@ -496,6 +515,8 @@ function makeCtx(): { ctx: Record<string, unknown>; state: { routes: FakeRoute[]
     settingsStored: {} as Record<string, unknown>,
     /** 本插件 entry 的安装级配置（= apply 的 config），由 mountPlugin 回填。 */
     baseConfig: {} as Record<string, unknown>,
+    /** ctx.logger.warn 收到的行（D139 的 403 成因摘要）。 */
+    warnLog: [] as string[],
   }
   /** loader 检出 volatile-only 变更后发的事件（测试里同步发，验证热更新路径）。 */
   const emitVolatile = (): void => {
@@ -509,7 +530,14 @@ function makeCtx(): { ctx: Record<string, unknown>; state: { routes: FakeRoute[]
       return () => {}
     }
     const child: Record<string, unknown> = {
-      logger: { info: () => {}, warn: () => {} },
+      logger: {
+        info: () => {},
+        // 403 的成因摘要（D139）是这次事故里最缺的东西：宿主侧原本一条日志都没有。
+        // 收进 state 以便断言「拒绝分支真的把原因写出来了」。
+        warn: (msg: string) => {
+          state.warnLog.push(msg)
+        },
+      },
       effect: (callback: () => unknown) => {
         callback()
         return () => {}
@@ -725,6 +753,74 @@ describe('GET /logs/stream（SSE 路由）', () => {
       await route.handler(makeReq(item.url, item.method ?? 'GET', item.remote ?? '127.0.0.1'), res)
       expect(res.status, item.url).toBe(item.status)
       expect(String(res.endBody), item.url).toMatch(item.pattern)
+      expect(spawnMock).not.toHaveBeenCalled()
+    }
+  })
+})
+
+/* ------------------------------------------------------------------ *
+ * 5. 同源证明的桌面版分支（D32 收紧 + D139 例外）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 桌面壳把 `dsh-app://app/api/…` 的请求转给真实宿主时会**删掉 `origin` 与
+ * `sec-fetch-site`**、只重写 `host` / `cookie`（`app.asar/lib/main.js` 的
+ * `forwardWebRequest`）。这组用例钉住双向：桌面版那条转发链必须放行，D32 的
+ * 拒绝分支一条都不能松。
+ */
+describe('同源证明：桌面壳转发（D139）', () => {
+  /** 桌面转发的头：无 origin、无 sec-fetch-site，带宿主会话 Cookie。 */
+  const desktopHeaders = { origin: undefined, 'sec-fetch-site': undefined, cookie: 'dsh=host-session' }
+
+  it('无 Origin / 无 Sec-Fetch-Site + 带宿主 Cookie（桌面版）→ 200 开流，不再 403', async () => {
+    const { route } = mountPlugin()
+    const child = makeChild()
+    spawnMock.mockReturnValue(child)
+    const res = makeRes()
+    const pending = route.handler(makeReq(STREAM_PATH, 'GET', '127.0.0.1', undefined, desktopHeaders), res)
+    expect(res.status).toBe(200)
+    expect(String(res.endBody ?? '')).not.toMatch(/同源证明/)
+    expect(spawnMock).toHaveBeenCalledTimes(1)
+    child.emit('close', null)
+    await pending
+  })
+
+  it('拒绝分支不放松：无来源证明且无 Cookie → 403 缺同源证明', async () => {
+    const { route, state } = mountPlugin()
+    const cases: Array<Record<string, string | undefined>> = [
+      { origin: undefined, 'sec-fetch-site': undefined }, // 裸 curl
+      { origin: undefined, 'sec-fetch-site': undefined, cookie: '   ' }, // 空白 Cookie 不算证明
+    ]
+    for (const headers of cases) {
+      const res = makeRes()
+      await route.handler(makeReq(STREAM_PATH, 'GET', '127.0.0.1', undefined, headers), res)
+      expect(res.status, JSON.stringify(headers)).toBe(403)
+      expect(String(res.endBody), JSON.stringify(headers)).toMatch(/同源证明/)
+      expect(spawnMock).not.toHaveBeenCalled()
+    }
+    // 403 不再静默（D139）：成因摘要进宿主日志，且绝不带 Cookie 的值。
+    // 用最后一个 case（空白 Cookie）断言，覆盖「有 cookie 头但不算证明」这条边界。
+    expect(state.warnLog).toEqual([
+      'dsh-docker: 拒绝无同源证明的实时流请求 /logs/stream（origin=无 sec-fetch-site=无 cookie=无）',
+      'dsh-docker: 拒绝无同源证明的实时流请求 /logs/stream（origin=无 sec-fetch-site=无 cookie=有）',
+    ])
+    expect(state.warnLog.join('')).not.toMatch(/   /) // 空白 Cookie 的值不许进日志
+  })
+
+  it('跨站 / 不同源 / 畸形 Origin 即使带 Cookie 仍拒（loopback 围栏在前）', async () => {
+    const { route } = mountPlugin()
+    const cases: Array<Record<string, string | undefined>> = [
+      { origin: undefined, 'sec-fetch-site': 'cross-site', cookie: 'dsh=host-session' },
+      { origin: 'http://evil.test', 'sec-fetch-site': 'cross-site', cookie: 'dsh=host-session' },
+      // 空 Origin 到不了同源闸：loopback 围栏的 `new URL('')` 解析失败就把它拒了
+      // （hasSameOriginProof 里那条 `origin === ''` 分支因此只是自守，路由上不可达）
+      { origin: '', 'sec-fetch-site': undefined, cookie: 'dsh=host-session' },
+    ]
+    for (const headers of cases) {
+      const res = makeRes()
+      await route.handler(makeReq(STREAM_PATH, 'GET', '127.0.0.1', undefined, headers), res)
+      expect(res.status, JSON.stringify(headers)).toBe(403)
+      expect(String(res.endBody), JSON.stringify(headers)).toMatch(/loopback-only/)
       expect(spawnMock).not.toHaveBeenCalled()
     }
   })

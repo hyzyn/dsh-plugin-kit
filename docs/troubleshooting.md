@@ -108,6 +108,8 @@ dsh plugin --profile <p> allow-version <pkg@ver> --dsh-version <ver> --accept-ri
 | 终端面板连不上（浏览器正常、桌面版永远「连接中…」） | 客户端半体从 `location` 拼了地址 → `tty D61`，跑 `node scripts/client-lint.mjs` 会拦 → [conventions.md § 客户端半体](./conventions.md#客户端半体两条硬规矩) |
 | 隧道一直显示「连接中」而底下挂着报错 | 致命错误被重试路径覆写 → `tty D58`；先看端口是否被另一个 profile 的宿主占用 → [tty](../packages/tty/README.md) |
 | 日志级别过滤「看着没生效」 | 级别前缀是 `%5p` 右填充（`[INFO ]`）→ `docker D135` → [docker](../packages/docker/README.md) |
+| 桌面版容器日志 / 统计 / 活动 / 拉取永远「连接中断，正在自动重连…」，浏览器（`dsh web`）正常 | 桌面壳转发会删掉 `Origin` / `Sec-Fetch-Site`，撞上 docker 的「同源证明」→ `docker D139`；宿主日志里现在会打 `拒绝无同源证明的…（origin=无 sec-fetch-site=无 cookie=有）` → [docker README § HTTP 路由](../packages/docker/README.md#http-路由apidsh-docker-前缀全部-loopback-围栏) |
+| 桌面版点「启动 / 停止 / 删除容器」「exec」报 `缺少同源证明` | 同 `docker D139`（变更类八条子路由与四条流同一道闸） |
 | docker 目标连不上，回 500 | 目标侧失败（SSH 不可达 / 私钥读不到 / docker 不在 PATH）→ `docker D138`，应为 200 + `ok:false` |
 | 同一个端口在两个 profile 里冲突 | 端口是**机器级资源**，profile 复制会把端口一并拷走 → `tty D60`；错开 webserver 端口与隧道 `localPort` |
 | 面板显示「已索引」但 CLI 说索引过期 | 卡片接的是 CLI 的 `reindexRecommended` / `builtWithVersion` 信号 → codegraph 卡片的警告行 |

@@ -539,6 +539,17 @@ proof). This blocks cross-site side effects such as a malicious page using
 `<img src=.../images/pull/stream>` to trigger a real pull; curl, old Safari and some WebViews do not send those
 headers and will hit it (normal browser use is unaffected). Read-only routes do not require the proof.
 
+**Exception: the Desktop app passes the gate with the Host cookie (D139).** DeepSeek Harness Desktop forwards
+page requests to `dsh-app://app/api/…` to the real Host after **deleting `Origin` and `Sec-Fetch-Site`** and
+rewriting only `Cookie` (`forwardWebRequest` in `app.asar/lib/main.js`), so "both proofs absent" is the *normal*
+shape there. Such a forward is recognised by its **Host session cookie** (the `set-cookie` the shell exchanges
+for the launch URL; without it the whole forward returns 503): **no `Origin`, no `Sec-Fetch-Site`, but a
+`Cookie` → allowed**; both absent *and* no cookie (bare curl / old Safari) → still 403. A browser page cannot
+forge the `Cookie` header, and a cross-site request always carries `sec-fetch-site: cross-site` (rejected by the
+loopback fence first), so the rejection branch was not relaxed. Before the fix all twelve of these routes
+returned 403 on Desktop — the symptom was the logs / stats / events / pull streams retrying forever with
+"connection lost, reconnecting…", while read-only routes kept working.
+
 | Route | Method | Request body | Response |
 | --- | --- | --- | --- |
 | `/config` | GET | — | `{ok:true, config}`: the config snapshot (targets expose only `passwordSet` / `passphraseSet`, plus the read-only `ttyBooks` / `ttyAvailable` / `toolsRegistered`) |

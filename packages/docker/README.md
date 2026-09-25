@@ -492,6 +492,16 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
 这类跨站副作用；curl / 老 Safari / 部分 WebView 不带这两个头时会撞上它（浏览器正常使用不受影响）。
 只读路由不要求同源证明。
 
+**例外：桌面版靠宿主 Cookie 过闸（D139）**。DeepSeek Harness 桌面版把页面发往
+`dsh-app://app/api/…` 的请求转给真实宿主时会**删掉 `Origin` 与 `Sec-Fetch-Site`**、只重写
+`Cookie`（`app.asar/lib/main.js` 的 `forwardWebRequest`），所以「两条证明都缺省」在桌面版是**常态**。
+这类转发的判定条件是**带着宿主会话 Cookie**（桌面壳用启动 URL 换来的 `set-cookie`，缺它整条转发
+直接 503）：**没有 `Origin`、没有 `Sec-Fetch-Site`、但有 `Cookie` → 放行**；两条都没有且**无** Cookie
+（裸 curl / 老 Safari）→ 仍 403。浏览器页面伪造不了 `Cookie` 头，而跨站请求一定带
+`sec-fetch-site: cross-site`（loopback 围栏先拒），所以拒绝分支没有被放松。修复前桌面版的这十二条
+路由**全部** 403——症状是日志 / 统计 / 活动 / 拉取四条流无限「连接中断，正在自动重连…」，而只读
+路由照常可用。
+
 | 路由 | 方法 | 请求体 | 返回 |
 | --- | --- | --- | --- |
 | `/config` | GET | — | `{ok:true, config}`：配置快照（targets 只给 `passwordSet` / `passphraseSet`，另附只读的 `ttyBooks` / `ttyAvailable` / `toolsRegistered`） |

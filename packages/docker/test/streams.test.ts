@@ -103,13 +103,32 @@ function makeRes(): FakeRes {
   return res
 }
 
-function makeReq(url: string, method = 'GET', remoteAddress = '127.0.0.1', body?: unknown): unknown {
+/**
+ * 假请求。`headers` 里的键覆盖默认头，值给 `undefined` 表示**删掉**该头——桌面壳的
+ * 转发链正是先删 `origin` / `sec-fetch-site`、再补宿主 `cookie`（D139）。
+ */
+function makeReq(
+  url: string,
+  method = 'GET',
+  remoteAddress = '127.0.0.1',
+  body?: unknown,
+  headers?: Record<string, string | undefined>,
+): unknown {
   const payload = body === undefined ? '' : JSON.stringify(body)
   const chunks = payload === '' ? [] : [Buffer.from(payload)]
+  const merged: Record<string, string | undefined> = {
+    host: '127.0.0.1:3080',
+    origin: 'http://127.0.0.1:3080',
+    'content-type': 'application/json',
+  }
+  for (const [name, value] of Object.entries(headers ?? {})) {
+    if (value === undefined) delete merged[name]
+    else merged[name] = value
+  }
   return {
     method,
     url,
-    headers: { host: '127.0.0.1:3080', origin: 'http://127.0.0.1:3080', 'content-type': 'application/json' },
+    headers: merged,
     socket: { remoteAddress },
     async *[Symbol.asyncIterator]() {
       for (const chunk of chunks) yield chunk
@@ -661,6 +680,21 @@ describe('POST /networks 与 /volumes（门控与校验）', () => {
     expect(payload.network.detail.name).toBe('shop_default')
     expect(payload.network.detail.subnets[0]?.gateway).toBe('172.20.0.1')
     expect(payload.network.detail.containers[0]?.name).toBe('web')
+  })
+
+  it('同源证明的桌面版分支（D139）：带宿主 Cookie 的无来源请求过闸落到业务层，无 Cookie 仍在闸上被拒', async () => {
+    const { route } = mountPlugin({ allowMutations: false })
+    // 桌面壳转发：无 origin / 无 sec-fetch-site + 宿主 Cookie → 过同源闸，被「变更操作未启用」拦住
+    const desktop = makeRes()
+    await route.handler(makeReq('/api/dsh-docker/networks/remove', 'POST', '127.0.0.1', { target: '本机', name: 'x' }, { origin: undefined, 'sec-fetch-site': undefined, cookie: 'dsh=host-session' }), desktop)
+    expect(desktop.status).toBe(403)
+    expect(String(desktop.endBody)).toMatch(/变更操作未启用/)
+    expect(String(desktop.endBody)).not.toMatch(/同源证明/)
+    // 同一个请求少了 Cookie：仍在同源闸被拒（D32 的拒绝分支没松）
+    const bare = makeRes()
+    await route.handler(makeReq('/api/dsh-docker/networks/remove', 'POST', '127.0.0.1', { target: '本机', name: 'x' }, { origin: undefined, 'sec-fetch-site': undefined }), bare)
+    expect(bare.status).toBe(403)
+    expect(String(bare.endBody)).toMatch(/同源证明/)
   })
 })
 
