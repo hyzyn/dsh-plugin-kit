@@ -70,29 +70,6 @@
 要收紧就得定一套全仓通用的机制（如一次性 token 交换），单包先做会在插件之间留下不一致的安全假设。
 与第 1 项同属「安全围栏」这条线，**建议合并规划**。
 
-### 6. CI 产物闸门的 `lib/` 半边失效（**本轮只登记，不改 CI**）
-
-> 2026-09-25 复核发现。用户已明确决定**本轮不动 `.github/`**，这里只登记事实与开工前的前置检查。
-
-`.github/workflows/ci.yml` 的产物闸门只覆盖 `client.js`：那条 step 用的是
-`git diff --exit-code -- 'packages/*/client.js' 'packages/*/lib'`，而 `'packages/*/lib'`
-在 git 默认 pathspec 下**命中 0 个文件**（`*` 不递归目录内容）→ 闸门对 `lib/` 恒绿。
-正确写法是 `':(glob)packages/*/lib/**'`。命中数、命令与完整说明见
-[docs/conventions.md § 真机脚本与 CI 接线](./docs/conventions.md#真机脚本与-ci-接线)。
-
-**为什么是 L0**：要动的是 **CI 资产**（仓库自己的边界判据），不是某一个包的事——
-单包改不了 workflow，也不该由某个包的 ROADMAP 认领。
-
-**现状差异（风险面到底有多大）**：`.githooks/pre-commit` 用的**是**正确写法，
-所以本地提交防得住。风险面限于**绕过钩子的提交**：浅克隆、`--no-verify`、
-或直接在 CI 环境里重建产物的人。也就是说这不是「已经漏了很多」，而是「兜底那层是空的」。
-
-**修法**：把那一行的 `'packages/*/lib'` 换成 `':(glob)packages/*/lib/**'`——**一个 token**。
-
-> ⚠️ **动它之前必须先验的一件事**：这条 CI step **一旦修好就真会拦**。若 `main` 上存在
-> **未重建的入库产物**，改完会立刻让整条 CI 判红。所以开工第一步是确认 `main` 是同步的
-> （本地 `pnpm -r build` 后按上面的正确命令自查一遍，干净了再改 workflow）。
-
 ## 已由 L0 资产承接（不再是待办）
 
 | 曾经的形态 | 现在的归属 |
@@ -100,3 +77,5 @@
 | 「客户端半体不许从 `location` 拼地址」散在各包注释里 | 已固化为仓库级静态规则 `scripts/client-host-url.mjs`（覆盖全部客户端半体）+ [conventions.md § 客户端半体](./docs/conventions.md#客户端半体两条硬规矩) |
 | 跨包 DSH_HOME 推导各自一份 | 全仓改走 `@hyzyn/dsh-kit` 的 `dshHome()`，`scripts/check-dsh-home.mjs` 守卫（**codegraph CG35**） |
 | bundle 补丁重复挂载 | [troubleshooting.md](./docs/troubleshooting.md#安装与挂载) 记症状与成因 |
+| CI 产物闸门对 `lib/` 恒绿（pathspec `'packages/*/lib'` 命中 0 个文件） | **2026-09-25 已修**：`.github/workflows/ci.yml` 换成 `':(glob)packages/*/lib/**'`，并在该 step 注释里记下这个坑。闸门细节与实测命中数见 [docs/conventions.md § 真机脚本与 CI 接线](./docs/conventions.md#真机脚本与-ci-接线) |
+| 文档链接闸门只能手动跑 | **2026-09-25 已接线**：`scripts/check-doc-links.mjs` 进 CI（ubuntu-only step），白名单 3 条跨仓相对链接 |

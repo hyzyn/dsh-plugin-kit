@@ -206,6 +206,11 @@ origin 上。从 `location` 推出来的地址在浏览器里完全正常、**�
 - **包内脚本不搬家**：`scripts/` 下的包内脚本与 `package.json` 的 `smoke` / CI step 直接接线，
   移动会打断它们。项目级 Runbook 见 [agent-real-test.md](./agent-real-test.md)。
 - **CI 与发布闸要成对**：只在 CI 补而漏了 `release.yml`，发布路径仍能整条绕过。
+- **文档链接闸门**：`node scripts/check-doc-links.mjs` 校验全仓 markdown 的**相对链接**与
+  **锚点**（跨文件与同文件都查）。**尚未进 CI**，目前手动跑（见 [ROADMAP.md](../ROADMAP.md) 第 7 项）。
+  已知的「相对的是别的仓库」的链接走脚本里的**精确白名单**（当前 3 条，属
+  `docs/pr-body-dsh-market.md`——它是提给市场仓库的 PR 正文副本，详见其文件头注释）。
+  **2026-09-25 起已接进 CI**（ubuntu-only step，与其它发布不变量检查同列）。
 - **产物闸门：`lib/` 那半边必须带 `:(glob)`**。git 默认 pathspec 下 `*` **不递归目录内容**，
   而 `'packages/*/lib'` 这个模式要求路径以 `lib` 结尾——它**命中 0 个文件**，闸门恒绿。
   实测命中数（命令如下，可随时重算）：
@@ -225,6 +230,7 @@ origin 上。从 `location` 推出来的地址在浏览器里完全正常、**�
   git diff --exit-code -- 'packages/*/client.js' ':(glob)packages/*/lib/**'
   ```
 
-  **现状差异**：`.githooks/pre-commit` 用的**是**正确写法（`SPEC_LIB=':(glob)packages/*/lib/**'`）；
-  `.github/workflows/ci.yml` 用的**仍是失效写法**——**本地防得住、CI 防不住**。
-  该洞已登记为 L0 待办（见 [ROADMAP.md](../ROADMAP.md)），本轮**不改 CI**。
+  **现状**：`.githooks/pre-commit` 与 `.github/workflows/ci.yml` **都用的是正确写法**。
+  CI 那处此前长期是失效写法（**本地防得住、CI 防不住**，风险面限于绕过钩子的提交：
+  浅克隆 / `--no-verify` / 直接在 CI 环境重建产物的人），2026-09-25 修好——
+  该 step 的注释里也记了这个坑，免得后人「顺手简化」回去。

@@ -71,6 +71,12 @@ jobs:
       - name: Check DSH_HOME derivation lives only in kit
         if: matrix.os == 'ubuntu-latest'
         run: node scripts/check-dsh-home.mjs
+      # 防回归：全仓 markdown 的相对链接要命中真实文件、锚点要命中真实标题。
+      # 三层文档改造那几轮里这类问题真实发生过三次（死锚点 / 自指链接 / 搬家后少一级），
+      # 而没有一次是测试发现的——仓库里唯一的文档耦合测试只读 codegraph 自己的两份文档。
+      - name: Check doc links and anchors
+        if: matrix.os == 'ubuntu-latest'
+        run: node scripts/check-doc-links.mjs
       # 防回归：仓库里不得出现公网 IP（文件内容 + 提交信息）。钩子拦本地提交，CI 再兜一道
       # ——`git commit --no-verify`、用别的工具提交、或在别的机器上提交都能绕过钩子，而历史
       # 一旦脏了只能重写（所有 sha 变化 + 文档引用失效 + 远端 force push）。
@@ -104,11 +110,15 @@ jobs:
           echo "提交信息检查通过（$base..$head）"
       # 防回归：入库产物必须与源码一致——曾发生过源码改了、产物没重建，修复在浏览器侧
       # 完全无效。重建后对全部包的浏览器半体（client.js）与宿主半体（lib/）做 diff。
+      # ⚠️ lib/ 那半边**必须**用 ':(glob)…/**'：默认 pathspec 下 `*` 不递归目录内容，写
+      # 'packages/*/lib' 会命中 0 个文件、闸门恒绿（2026-09-25 实测并修，详见
+      # docs/conventions.md § 真机脚本与 CI 接线）。也不要图省事写 'packages/*/lib/**'
+      # ——默认 pathspec 下 `*` 会跨 `/`，会多匹配 packages/tty/scripts/lib/test-sshd.mjs。
       - name: Check build artifacts are up to date
         if: matrix.os == 'ubuntu-latest'
         run: |
           pnpm -r build
-          git diff --exit-code -- 'packages/*/client.js' 'packages/*/lib' || { echo "::error::构建产物落后于源码：在本地跑 pnpm -r build 后重新提交"; exit 1; }
+          git diff --exit-code -- 'packages/*/client.js' ':(glob)packages/*/lib/**' || { echo "::error::构建产物落后于源码：在本地跑 pnpm -r build 后重新提交"; exit 1; }
       # 旗舰端到端脚本（自包含：内存 sshd / 本机 PTY，不依赖真实外部主机）。
       # 此前完全不在 CI 里跑，SFTP / SSH 生命周期 / 工具路由的回归静默通过。
       - name: dsh-tty end-to-end scripts
