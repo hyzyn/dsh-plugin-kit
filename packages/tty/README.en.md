@@ -97,7 +97,7 @@ Both were reproduced on **Windows 11 ARM (24H2) + Node 22 ARM64**. The fix:
   on Windows, and its `_deferNoArgs` re-throws that error from a socket callback, where the caller’s
   try/catch cannot see it.
 
-## Agent tools (P1)
+## Agent tools
 
 The plugin injects sixteen tools into the agent (with the same power as the bash tool; operations show up live in the user’s terminal):
 
@@ -248,6 +248,11 @@ references one connection-book entry (host and authentication come with it), in 
   SSH connection), and tunnels keep running with the panel closed; SSH disconnects reconnect automatically
   with exponential backoff (1s→15s cap), and the remote direction re-runs forwardIn after a reconnect; after
   the connection-book password changes, a reconnect uses the new credentials automatically;
+- **Profiles running side by side must offset their localPort**: port forwarding is a **machine-level**
+  resource, while the configuration is stored per profile (copying a profile copies its tunnels too). Two
+  profiles running the same tunnel at the same time leave the later one with `EADDRINUSE`, stuck in
+  `error` with `fatal:true` (**no retry**; changing the configuration rebuilds it from the new spec). The
+  error message names “possibly the host process of another DSH profile” and offers two ways out;
 - **Status badges**: while the card is expanded it polls live status every 2s (active green/connecting
   blue/error red/stopped grey + last error); connection-book entries in the “+” menu show a `⇄N` tunnel
   badge; the agent can query status with the `tunnel_list` tool;
@@ -597,6 +602,12 @@ ctx.inject(['ttyConnbar'], (c) => {
 | `requestRender()` | Asks tty to re-render the connection bar (for when a consumer has new data asynchronously and needs the button to appear immediately) |
 
 - It only fires on **SSH tabs**; the connection bar of a local tab is hidden anyway.
+- **Command tabs do not fire it** (`spawnSpec.command` non-empty, i.e. a tab running a command through
+  `ttyTerminal.open`, such as dsh-docker’s `docker exec -it …`): those connection-bar extensions act on
+  **the connection itself**, and hanging them on a command tab would mislead (SFTP would browse the host,
+  not the inside of the container the user has in mind). Built-in and third-party actions are hidden
+  together; the reopen entry point for an exited tab is not affected — the terminal body already carries a
+  “click to reopen” overlay.
 - A throwing factory is only logged with `console.warn`, without affecting the connection bar or the built-in buttons.
 - The service name `ttyConnbar` is not declared on tty’s `Context` type surface, so consumers can inject it by
   string; when tty is not installed or is older than 0.13.0 the injection never fires, so consumers must treat
@@ -729,6 +740,22 @@ ctx.inject(['ttyPanel'], (c) => {
   columns and does not squeeze the terminal’s width.
 - The title bar (title / collapse / ✕) is provided by tty, and consumers only own their own body; a throwing
   `onClose` is only logged with `console.warn`, without affecting closing the panel.
+
+**`minimize()` (contract v2)** folds the whole terminal panel away: the modal is hidden, but the DOM /
+WebSocket / xterm buffers are all kept and **the session keeps running**; restoring it goes through the badge
+on the sidebar’s “Terminal” entry. Consumers use it to “give the stage back” — the typical case is dsh-docker
+handing the logs over to the session and folding the terminal away automatically, so the user sees the session
+directly instead of staring at a modal covering it and guessing “did my click do nothing?”. The return value is
+the minimized state after the call, which the caller uses to decide whether its message still needs to say
+“the session is behind the panel”.
+
+```js
+ctx.inject(['ttyPanel'], (c) => {
+  if (Number(c.ttyPanel.version ?? 0) < 2 || typeof c.ttyPanel.minimize !== 'function') return false
+  if (c.ttyPanel.isOpen() !== true) return false
+  return c.ttyPanel.minimize()   // fold the terminal away so the session shows through
+})
+```
 
 > Contract versions: `ttyConnbar.version === 1`, `ttyTerminal.version === 3` (1 = `open` only,
 > 2 = adds `mount`, 3 = `open` reuses an existing live tab for the same connection + command by default),

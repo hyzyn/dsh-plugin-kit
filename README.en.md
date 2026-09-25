@@ -141,6 +141,7 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 - **Terminal button**: with tty ≥ 0.15.0 installed, the first icon on a card opens an **in-panel terminal drawer** (tty's `ttyTerminal.mount` embeds the terminal in place, so the panel stays open); with tty 0.14.0 it falls back to opening a new terminal tab and closing the panel, and without tty it copies the command `docker exec -it '<container>' sh` (falls back to copying the command when tty's terminal capability is unavailable).
 - **Contextual entry**: with tty ≥ 0.13.0 installed, the SSH tab’s connection bar (next to SFTP) shows a “Containers” button — it opens the panel straight for the host you are connected to (shown whenever the plugin is loaded; the target is resolved at click time by connection-book name or `host:port`, and a missing target shows how to configure it).
 - **Targets**: `kind=local` runs the host machine’s docker CLI; `kind=ssh` can **reference a tty connection-book entry by name** (data-level reuse, tty unchanged; inline host/username when tty is not installed) and runs docker on the remote host over an ssh2 exec channel, with TOFU host-key pinning seeded from tty’s existing records.
+- **Cross-target and “needs attention”**: the overview page summarises every target on one screen (count cards plus a cross-target anomaly table, where one failing target does not affect the rest); the “needs attention” criteria cover unhealthy / repeatedly restarting / **OOM-killed** / non-zero exit / zombie, and the agent-side `docker_attention` and `docker_ps target:'*'` support the same cross-target aggregation.
 - **Supports**: container list (`all` includes stopped containers), `docker inspect` details, logs (tail / timestamps / since), **live log streaming** (a FOLLOW toggle backed by SSE `docker logs --follow`, for both local and SSH targets, with auto-scroll and the same filtering/coloring as the snapshot; switches back to snapshot automatically when the container exits), `docker stats` **snapshots and a live stream** (SSE with a 60-point CPU / memory sparkline; this stream never ends on its own, so the front end closes it), a **Compose project view** (grouped by `composeProject` / `composeService`, with project-level logs merged client-side behind a `[service]` prefix), a **container event activity stream** (SSE `docker events` feeding an "Activity" bar in the list plus a 500 ms debounced list refresh), a **read-only multi-target overview** (one screen for every configured target: count cards plus a table of unhealthy / restarting containers, fetched in parallel with per-target failure tolerance and no cross-target actions), **networks and volumes** (lists plus details: subnets / gateways / attached containers, mountpoints / options / labels; removal and prune require `allowMutations`), plus **ephemeral multi-select merged logs from the container list** (2–8 containers), image list plus **image details** (`docker image inspect` layers / size and `docker history` build steps), a **`docker pull` progress stream** (per-layer, over SSE), image remove / dangling prune (requires `allowMutations`), and one-shot exec (exit code plus stdout/stderr); `dockerBin` can be set to `podman`; oversized output is truncated. All four SSE streams (logs / stats / events / pull) share one `openSseStream` foundation (heartbeat, active-stream registry, disconnect cleanup).
 - **Security model (important)**: the docker socket is equivalent to root on the target host, so the plugin is **read-only by default** — with `allowMutations` off, start / stop / remove are rejected (HTTP 403 and no agent tool registered); with `allowExec` off, exec is rejected. Container names/IDs pass a whitelist check, commands are always built as argv arrays with single-quote escaping, and passwords / passphrases should use `env:VAR` and are never sent back to the browser.
 - **Where it is stored**: this plugin entry’s profile configuration, written into the current profile’s `cordis.patch.yml` user layer (legacy `~/.dsh/settings.yaml` sections were imported once by DSH).
@@ -292,6 +293,26 @@ dsh plugin --profile web add link:$(pwd)/packages/<name>
 
 There are two ways to inject services: use `inject: ['tools', 'webServer']` and then access `ctx.tools` directly; or call `ctx.get('tools')` at runtime and check for null. Use schemastery to export a same-name `Config` schema for configuration.
 
+### The browser half: two hard rules
+
+**① For any address that connects to the host, the base may only come from the injected `__DSH_TRANSPORT__`.** Do not compose an address from `location.protocol` / `location.host` / `location.hostname` / `location.origin` / `location.port`, and do not hard-code `ws://` / `wss://`:
+
+```js
+// ❌ fine in a browser, but the desktop build computes an unreachable address
+const url = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/api/x/ws'
+// ✅ correct in both shapes
+const base = new URL(globalThis.__DSH_TRANSPORT__?.streamBaseUrl ?? document.baseURI, document.baseURI)
+const url = (base.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + base.host + '/api/x/ws'
+```
+
+Why: **the desktop build (DeepSeek Harness Desktop) does not serve the page over HTTP — its origin is the Electron custom scheme `dsh-app://app`**, and the real host lives on a different origin (`http://127.0.0.1:<dynamic port>`). An address derived from `location` works perfectly in a browser and **fails only on desktop**, while the CDP smoke drives `http://127.0.0.1:3082` (where `location` happens to be right) and each package’s preview harness uses a fake WebSocket — all four lines of defence are blind to it. That is exactly what **D61** in `packages/tty/DEFECTS.md` was: the terminal panel opened and the settings card / SSH book were fine, but the terminal itself could never connect. Relative-path `fetch('/api/dsh-x/...')` is unaffected and correct in both shapes.
+
+`scripts/client-lint.mjs`, run by `pnpm -r typecheck`, statically rejects both patterns (an AST check, immune to comments and strings; the rule and its rationale live in `scripts/client-host-url.mjs`).
+
+**② Client logic whose correctness matters must be extracted into a pure `client-src/*.js` module with a vitest case.** `client.js` is an esbuild artifact and is not tested at the vitest layer, and `client-lint` only checks static problems (name resolution, host-address provenance) — **it does not verify behaviour**. Logic left inside `client.js` therefore has no test entry point at all. Note that `client-lint` covers **all** of `client-src/**`, not just the entry point, so sibling modules are covered too.
+
+Example: `packages/tty/client-src/ws-url.js` + `packages/tty/test/ws-url.test.ts` (the cases must include a `dsh-app://app` scenario).
+
 ## FAQ
 
 <details>
@@ -336,6 +357,7 @@ A: There may be root-owned files in the local `~/.npm` cache (a historical npm b
 - Profile deletion is recursive and irreversible after the in-panel confirmation. The built-in `web` profile is protected; `headless` can be deleted.
 - RSS needs network access on first startup. An unreachable source does not block other sources, but that source may be missing from the day’s digest. AI summaries require a model configured on the host (`agent-default-model`, or a provider/model pair set in the card); when none is configured or a call fails, items fall back to the truncated original text.
 - The browser half depends on the official `dsh-web-app` settings panel slots service; non-official Web GUIs may not show the management cards.
+- Desktop (Electron) and `dsh web` have different page origins (`dsh-app://app` vs `http://127.0.0.1:<port>`), so **localStorage / IndexedDB are two independent stores** — “the desktop version cannot see tabs or config saved in the browser” is expected behaviour, not a bug. Desktop is a secure context (`dsh-app` is registered as a secure scheme), so `navigator.clipboard` / `crypto.subtle` are available; reaching a remote GUI by IP is not, and both branches have to work in the browser half.
 - The terminal panel (dsh-tty) resize passthrough relies on DSH’s internal terminal-handle shape, and TERM injection needs the `-c` wrapper layer (DSH hard-codes node-pty `name:"dumb"`); see `packages/tty/README.md`.
 - Installing from the repository requires Node.js >= 22.19 and pnpm 10; it is for development/debugging only. npm installs are not affected.
 

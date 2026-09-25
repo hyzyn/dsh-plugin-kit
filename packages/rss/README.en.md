@@ -136,6 +136,11 @@ AI summaries are off by default, and are configured only through the `ai` field 
 
 If only one of `provider` / `model` is filled in, the whole `ai` config is ignored and a warning is returned in the save response. Summary results are written to `ai-cache.json` in the digest directory (`{ version: 1, entries: { <sha1(link|id|title)>: { text, model, at } } }`); a hit that has not expired (30 days) is reused as-is, and beyond 500 entries the oldest are evicted by write time.
 
+Two easy pitfalls (both measured on real runs):
+
+- **`maxTokens` is hard-coded in the plugin (currently 4096), and reasoning models need room for their reasoning budget**: reasoning tokens and the final answer **share** this cap, so too small a value makes the model burn the budget on reasoning before it writes any prose, the finish reason becomes `max-tokens`, and that item's summary is marked failed. Measured (`commandcode/deepseek/deepseek-v4.1-flash`, 20 items): 200 → 7 succeed, 1024 → 12, 4096 → **all 20 succeed** (48 s for the whole run, ~7 s each, still inside `timeoutMs`). If a heavier reasoning model hits the cap again, the failure reason names the current `maxTokens` value.
+- **Failure reasons are surfaced**: on partial failure, `aiSummary.failures` gives the distribution of reasons (up to 3 kinds, with counts), and the Markdown “fetch failed” section states them too (e.g. `原因：终止原因 max-tokens（…）×8`). Previously there was only a bare “N failed”, which made it impossible to tell a timeout from rate limiting from a provider error — or to judge whether the plugin was at fault at all.
+
 ## Development
 
 ```bash

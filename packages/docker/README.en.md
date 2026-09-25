@@ -674,6 +674,16 @@ read-only first:
   A long SSH stream holds that connection in the pool (busy) while other commands on the same host still reuse the
   same connection without affecting each other. **The stats stream does not end naturally**, so closing it must be
   the frontend actively aborting the `EventSource`.
+- **The SSH channel budget is shared per target (`MaxSessions`)**: a target keeps only **one** TCP connection, and
+  every long stream and short command shares that connection's channels — while OpenSSH's `MaxSessions` defaults to
+  just 10. Long streams (logs / stats / events) hold a channel until the user closes the panel, and merged logs can
+  take 8 at once, which uses the budget up exactly; the next "refresh list" (a short command) is then rejected by the
+  far end with `(SSH) Channel open failure: open failed`. The plugin therefore caps each SSH target at **8 concurrent
+  long streams** (= 10 − 2, leaving two for short commands such as refresh / inspect), and the merged-log selection
+  cap on an **SSH target** drops from 8 to 6 (local targets go through subprocesses and are unaffected). Going over
+  the cap, and the far end refusing a channel, both produce pointed messages rather than ssh2's raw text. If your sshd
+  tunes `MaxSessions` (`sshd -T | grep maxsessions`), the current cap is a compile-time constant — file an issue if it
+  needs to follow.
 - **Docker CLI version differences**: parsing goes through `--format '{{json .}}'`, and fields come and go between
   versions; the parser always degrades instead of throwing (for example, a missing `State` has the state derived from
   `Status`, and health is extracted from `(healthy)` / `(unhealthy)`); with fields missing the corresponding columns

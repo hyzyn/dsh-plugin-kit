@@ -301,6 +301,26 @@ dsh plugin --profile web add link:$(pwd)/packages/<name>
 
 服务注入两种写法：`inject: ['tools', 'webServer']` 后直接 `ctx.tools`；或运行时 `ctx.get('tools')` 判空。配置用 schemastery 导出同名 `Config` schema。
 
+### 客户端半体（浏览器侧）的两条硬规矩
+
+**① 跟宿主建连的地址，基址只能来自宿主注入的 `__DSH_TRANSPORT__`。** 别从 `location.protocol` / `location.host` / `location.hostname` / `location.origin` / `location.port` 拼地址，也别硬编码 `ws://` / `wss://`：
+
+```js
+// ❌ 浏览器里一切正常，桌面版算出连不上的地址
+const url = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/api/x/ws'
+// ✅ 两种形态都对
+const base = new URL(globalThis.__DSH_TRANSPORT__?.streamBaseUrl ?? document.baseURI, document.baseURI)
+const url = (base.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + base.host + '/api/x/ws'
+```
+
+原因：**桌面版（DeepSeek Harness Desktop）的页面 origin 不是 HTTP，而是 Electron 自定义协议 `dsh-app://app`**，真实宿主在另一个 origin（`http://127.0.0.1:<动态端口>`）上。从 `location` 推出来的地址在浏览器里完全正常、**只有桌面版连不上**，而 CDP 冒烟驱动的是 `http://127.0.0.1:3082`（那里 `location` 恰好就是对的）、各包 preview harness 里又是假 WebSocket——四层防线都看不见它。`packages/tty/DEFECTS.md` 的 **D61** 就是这么发生的：终端面板能打开、设置卡片 / SSH 连接簿全好，只有终端永远连不上。相对路径的 `fetch('/api/dsh-x/...')` 不受影响，两种形态都对。
+
+`pnpm -r typecheck` 里的 `scripts/client-lint.mjs` 会静态拦下这两类写法（AST 检查，注释与字符串免疫；规则与成因见 `scripts/client-host-url.mjs`）。
+
+**② 要判对错的客户端逻辑，抽成 `client-src/*.js` 纯模块 + vitest 用例。** `client.js` 是 esbuild 产物、不在 vitest 层测，而 `client-lint` 只查静态问题（名字解析、宿主地址来源）、**不验行为**——逻辑留在 `client.js` 里就等于没有测试入口。注意 `client-lint` 查的是**全量** `client-src/**` 而不只是入口，兄弟模块同样受管。
+
+范例：`packages/tty/client-src/ws-url.js` + `packages/tty/test/ws-url.test.ts`（用例里必须有一条 `dsh-app://app` 场景）。
+
 ## 常见问题
 
 <details>
@@ -345,6 +365,7 @@ A: 本机 `~/.npm` 缓存存在 root-owned 文件（历史 npm bug），执行 `
 - Profile 删除为递归删除，面板内会二次确认，但一旦执行不可撤销；内置 `web` profile 受保护，`headless` 可删。
 - RSS 首次启动需要联网抓取；某个源不可达不会阻塞其它源，但当天 digest 可能缺少该源内容。AI 摘要依赖宿主已配置的模型（`agent-default-model` 或卡片里成对指定的 provider/model），未配置或调用失败时条目回落原文截断。
 - 浏览器半体依赖官方 `dsh-web-app` 的设置面板 slots 服务，非官方 Web GUI 可能不显示管理卡片。
+- 桌面版（Electron）与 `dsh web` 的页面 origin 不同（`dsh-app://app` vs `http://127.0.0.1:<port>`），因此 **localStorage / IndexedDB 是两套独立存储**——"桌面版看不到浏览器里存的标签/配置"是预期行为，不是 bug。桌面版是 secure context（`dsh-app` 已注册为 secure scheme），`navigator.clipboard` / `crypto.subtle` 可用；用 IP 访问远端 GUI 则不是，客户端半体两侧分支都要能跑。
 - 终端面板（dsh-tty）的 resize 透传依赖 DSH 内部 terminal handle 结构，TERM 注入需经 `-c` 包装层（DSH 硬编码 node-pty name:"dumb"）；详见 `packages/tty/README.md`。
 - 仓库安装需要 Node.js >= 22.19 与 pnpm 10，仅供开发调试；npm 安装不受影响。
 

@@ -91,7 +91,7 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
   出现的问题——node-pty 在 Windows 上不接受 signal，而它的 `_deferNoArgs` 会把这个异常推迟到
   socket 回调里抛出，调用方的 try/catch 拦不住。
 
-## agent 工具（P1）
+## agent 工具
 
 插件向 agent 注入十六个工具（与 bash 工具同权，操作实时显示在用户终端里）：
 

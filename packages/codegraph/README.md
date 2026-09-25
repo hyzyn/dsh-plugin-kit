@@ -39,9 +39,9 @@ Searched for a .codegraph/ directory starting from: /Users/you
 - 跟随由**浏览器半体**上报（页面加载即订阅活动会话，与设置面板是否展开无关）：宿主侧没有「当前会话」这个信号，因此跟随只在有 GUI 页面打开时生效，其余情况用绑定路径。
 - 关闭方式：插件配置 `mcpIntegration: false`（会撤销本插件写入的托管行）。
 
-## CLI 面（P2）
+## CLI 面
 
-卡片此前只覆盖 `status`/`query`/`callers`/`callees`/`impact`/`node`/`sync`/`index`/`init`，其余子命令只能去终端。P2 补齐了**旗舰与常用**的那几个：
+卡片此前只覆盖 `status`/`query`/`callers`/`callees`/`impact`/`node`/`sync`/`index`/`init`，其余子命令只能去终端。现在补齐了**旗舰与常用**的那几个：
 
 - **`explore`**：与 MCP 的 `codegraph_explore` 同输出（相关符号源码 + 调用路径）。模型那条路走 MCP，人在卡片上此前够不着同一个能力——这有点荒谬，现在补上了。
 - **`context`**：为一个**任务**组装上下文（与 explore 面向「区域」的区别）。
@@ -118,7 +118,7 @@ Searched for a .codegraph/ directory starting from: /Users/you
 ## 兼容性（DSH / codegraph CLI）
 
 - **DSH**：宿主版本矩阵（每一档都注明**验证方式**，别把回归测试说成兼容性声明）：
-  - **`0.1.7-rc.1`（当前适配基线，2026-09-23 实测）**：`node scripts/verify-codegraph-host-contract.mjs --profile test --port 3087 --dsh-bin <独立安装的 rc.1 dsh> --runtime-store <该安装的 .pnpm/node_modules/@deepseek-ai>` **42/42 通过**——25 条路由全在（含 `/projects`、`/metrics`、`/diagnose`、`/unlock`、`/files`、`/affected`、`/explore`、`/context`、`/uninit`、`/telemetry`、`/agents`）、POST 门禁与 loopback 门禁成立、`/diagnose` 输出分段完整、浏览器半体产物可供给且含最新 UI、MCP 托管行按真索引写入 home 补丁、P0 的 `mcpScope` 开关「切 per-agent → 全局行被挂起 → 切回 managed 恢复」全程可逆且真实 `~/.dsh/cordis.patch.yml` 逐字节未变。**新增的两项**专门验 0.1.7 的 settings 迁移：启动后经插件自己的写路径把 `mcpScope` 切回 managed 基线、并把默认项目切到临时项目，两项都要求 HTTP 200（旧 API 下这两步只会 500）。
+  - **`0.1.7-rc.1`（当前适配基线，2026-09-23 实测）**：`node scripts/verify-codegraph-host-contract.mjs --profile test --port 3087 --dsh-bin <独立安装的 rc.1 dsh> --runtime-store <该安装的 .pnpm/node_modules/@deepseek-ai>` **42/42 通过**——25 条路由全在（含 `/projects`、`/metrics`、`/diagnose`、`/unlock`、`/files`、`/affected`、`/explore`、`/context`、`/uninit`、`/telemetry`、`/agents`）、POST 门禁与 loopback 门禁成立、`/diagnose` 输出分段完整、浏览器半体产物可供给且含最新 UI、MCP 托管行按真索引写入 home 补丁、`mcpScope` 开关「切 per-agent → 全局行被挂起 → 切回 managed 恢复」全程可逆且真实 `~/.dsh/cordis.patch.yml` 逐字节未变。**新增的两项**专门验 0.1.7 的 settings 迁移：启动后经插件自己的写路径把 `mcpScope` 切回 managed 基线、并把默认项目切到临时项目，两项都要求 HTTP 200（旧 API 下这两步只会 500）。
     - 验证方式说明：本机全局 dsh 若不是 rc.1，可用 `--dsh-bin` 指向一份独立安装的 rc.1，并用 `--runtime-store` 把**复制出来**的临时 profile 的 `node_modules/@deepseek-ai/*` 重指到该安装的运行时——否则那些链接仍指向全局旧安装，新 cohort 的兼容性 preflight 会把整套旧运行时行判成 incompatible 而全部禁用（宿主根本起不来，与本插件无关）。
     - 另一条已跑过的真机证据：隔离 `DSH_HOME` 启动 test profile（同样做运行时重指）→ 10 个插件全部 mounted、0 行 `disabling profile plugin row`，`POST /api/dsh-codegraph/settings` 在 `per-agent` / `managed` 之间往返都是 200。
   - **`0.1.6-alpha.2` / `0.1.5-rc.2` / `0.1.0-rc.7`（历史基线，已不支持）**：这些档位的 `settings` 服务还是旧的 `register(ns, schema)` API，而 0.1.7 线已把它换成 `SettingsForms`（`describe/update` + 导出 volatile Config）；本包的 `peerDependencies` 下限 `^0.1.7-rc.1` 也会让新宿主在安装前/启动时拒绝加载到旧宿主上。旧档位当时的证据（`0.1.6-alpha.2` 40/40、`0.1.5-rc.2` 无脚本、`0.1.0-rc.7` 审计基线）保留在 git 历史里，仅作参考。
@@ -148,15 +148,15 @@ pnpm --filter @hyzyn/dsh-codegraph typecheck
 pnpm test                                   # 仓库级 vitest（也可 vitest run packages/codegraph）
 pnpm --filter @hyzyn/dsh-codegraph test     # 只跑本包（托管行决策矩阵 + CLI 旋钮 + 路由回归）
 node packages/codegraph/scripts/preview-card.mjs        # 渲染卡片预览 HTML 到 .preview/（--png 需在普通终端跑，Chrome 起不来于受限环境）
-                                                        # 另有 --per-agent / --fallback：离线看 P0 的「生效中」与「已退回 managed」两态
+                                                        # 另有 --per-agent / --fallback：离线看 per-agent 的「生效中」与「已退回 managed」两态
 node scripts/verify-codegraph-indexforce.mjs --profile test --port 3086   # 真机端到端：indexForce 是否真的带 --force 起进程（需要本机装好 DSH）
-node scripts/verify-codegraph-host-contract.mjs --profile test --port 3087  # 真机端到端：宿主契约 42/42（25 路由 + 门禁 + 供给产物 + 托管行 + P0 模式开关 + settings 写路径）；需要本机装好 DSH
+node scripts/verify-codegraph-host-contract.mjs --profile test --port 3087  # 真机端到端：宿主契约 42/42（25 路由 + 门禁 + 供给产物 + 托管行 + per-agent 模式开关 + settings 写路径）；需要本机装好 DSH
 #   全局 dsh 不是 rc.1 时，加 --dsh-bin <独立安装的 rc.1 dsh> --runtime-store <该安装的 .pnpm/node_modules/@deepseek-ai>
 #   —— 后者把复制出来的临时 profile 的运行时链接重指到该 cohort，否则会因兼容性 preflight 禁用整套旧运行时而起不来。
                                                                           # 注：DSH 要写 ~/.dsh/profiles/<profile>/cordis.yml，沙箱只读时会被 EPERM 拦住
 ```
 
-### P0（per-agent）的三层验收
+### per-agent 的三层验收
 
 三层各测一件事，**缺一层就有一个真问题测不到**——这不是凑数，是补缺口：
 
@@ -167,7 +167,7 @@ node scripts/verify-codegraph-host-contract.mjs --profile test --port 3087  # �
 | `verify-codegraph-agent-integration.mjs` | **集成** | 挂**真插件**，用真 `AgentRegistry` 驱动一次真 `agent/created` → 断言工具落到**那个 agent**、无索引的 agent 不挂、`agent/disposed` 回收 |
 
 第三层是补出来的：前两层全绿也**证明不了**「用户开会话时 MCP 真的挂上了」——机制脚本用假 agent，
-宿主脚本那个宿主里**没有 agent 被创建**（每轮 `/agents` 都是 `mounted=0`）。而 P0 的全部价值就在那条路径上。
+宿主脚本那个宿主里**没有 agent 被创建**（每轮 `/agents` 都是 `mounted=0`）。而 per-agent 的全部价值就在那条路径上。
 
 三个脚本都自造临时项目、自收子进程，并断言真实 `~/.dsh/cordis.patch.yml` 逐字节未变；后两个还给被测对象
 隔离 `DSH_HOME`（前一版的教训：不隔离时插件当场去写用户真实配置，CG45）。

@@ -71,5 +71,12 @@ is present), or you can first clear the server list in the panel and then manual
   entry tree) — be careful not to write a bare `[]`, which would break the top-level YAML document of the home
   patch file, making HMR config refresh fail to parse and deleted servers unable to unload
 - The save endpoint validates serverName (`[A-Za-z0-9_-]{1,32}`), required transport fields, and reconnect parameter bounds
+- **An empty list needs explicit confirmation to clear**: `/servers/save` replaces the whole table, so `servers: []`
+  means clearing the managed block. To stop a startup race or a stale card from silently wiping the servers you
+  already configured (measured: the file was left with nothing but `- insert: []`, and there was no way to tell
+  afterwards who cleared it), the host answers 400 for a save that is "an empty list without `clearAll: true`" and
+  says in the message how many entries would be removed; the card only sets that flag when the user explicitly
+  deletes the last row (the delete confirmation says so too). A block that was already empty (no entries to begin
+  with) is not destructive and is allowed through — saving an empty card does not error
 - The `!!js` expressions of a Connection Test are evaluated inside the host (the same trust model as the loader)
 - The browser half is hand-written ESM (the React shell is resolved through `__ModuleLoader__`’s `require`, and the panel itself is pure DOM), so no tsdown is needed; the host half emits ESM straight from tsc
