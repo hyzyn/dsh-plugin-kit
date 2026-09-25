@@ -204,7 +204,10 @@ node scripts\windows\verify-plugins.mjs --repo . `
 
 ## 真机验证踩过的坑（2026-09-25，Windows 11 ARM64）
 
-安装工具链那几条见上面「Windows 特有的坑」；这一节记的是**把宿主跑起来、把验证跑完**才暴露的。
+安装工具链那几条见上面「Windows 特有的坑」。这一节只记 **Windows 特有**的；
+从宿主机驱动虚拟机那一类（`prlctl` 的 SYSTEM 身份、无密码账户走计划任务、批处理里的
+`call`、`%VAR%` 解析期展开、代码页、共享目录只暴露六个标准目录）以及「什么算通过」，
+统一记在 [../../docs/agent-real-test.md](../../docs/agent-real-test.md)，这里不重复。
 
 1. **`npm i -g @deepseek-ai/dsh` 装到的是 `latest`，比 cohort 低。**
    症状不是报错而是**静默**：宿主起来了，每一行插件却被兼容性 preflight 判成 `incompatible`
@@ -219,40 +222,18 @@ node scripts\windows\verify-plugins.mjs --repo . `
    的快捷方式，报 `select a profile only once`）。用 `dsh --profile <p> --patch <port.yml>`。
 4. **`pnpm` 10 默认拦截原生模块的构建脚本**（esbuild / node-pty / ssh2 / koffi / cpu-features）。
    不补跑时 `pnpm -r build` 打不出浏览器半体、真 PTY 也起不来，而报错点离根因很远。
-5. **`dsh-docker route-smoke` 在 Windows 上只有 29/60 —— 这不是缺陷。** 它的假 docker 是
-   `#!/bin/sh` 脚本，Windows 上跑不了；CI 里这套本来就只在 ubuntu 跑
-   （`ci.yml` 的 `if: matrix.os == 'ubuntu-latest'`）。Windows 侧要看的是
-   `packages/tty/scripts/windows-smoke.mjs`（`windows-latest` 那步）。
+5. **这条不是缺陷，别去修**：`dsh-docker route-smoke` 在 Windows 上只有 29/60——它的假 docker
+   是 `#!/bin/sh` 脚本，跑不了。Windows 侧要看的是 `packages/tty/scripts/windows-smoke.mjs`
+   （CI 里 `windows-latest` 那步跑的就是它）。
 
-### 从宿主机驱动虚拟机时（Parallels / `prlctl`）
+### 验证脚本里别把「环境事实」写死
 
-真机也可以由 macOS 宿主机驱动，本轮就是这么跑的：
+这是对 [../../docs/agent-real-test.md](../../docs/agent-real-test.md)「什么算真机验证通过」
+第 3 点（数字要现算）的补充。本轮修掉的 5 处假红——A5 写死的依赖数、B7 缺 `clearAll`、
+B9 钉在已不存在的 `settings.yaml`、B6 假定宿主 profile 叫 `wintest`、B13 缺同源证明头
+——共同形状都是**把环境事实写死进断言**，红了却不指向任何真问题，久了就没人看这个闸门。
+除了「数字要现算」，还要避开这三类：
 
-1. **`prlctl exec` 以 SYSTEM 身份执行**：`%USERPROFILE%` 是
-   `C:\Windows\System32\config\systemprofile`，而交互用户装的那套 Node / dsh 对它
-   **Access denied**。于是「虚拟机里明明装了 node」和「`prlctl exec` 里 `node` 找不到」会同时成立。
-2. **切交互用户要么给密码，要么用计划任务**：`prlctl exec -u <user> --password …` 需要一个
-   **密码**；账户是 `Password required: No` 时这条路根本走不通（认证失败与密码对不对无关）。
-   账户已交互登录时，`schtasks /create /tn X /tr … /ru <user> /it /f` + `schtasks /run /tn X`
-   可以**不需要密码**地以该用户身份执行。
-3. **批处理里调 `.cmd` 必须写 `call`**：直接调 `dsh`（或任何 npm shim）会夺走控制权，
-   后面的行不再执行——症状是「脚本跑到一半就没了」，且没有任何报错。
-4. **cmd 的 `%VAR%` 与 `%ERRORLEVEL%` 在解析期展开**：`echo EXIT=%ERRORLEVEL%` 打的是
-   **上一条**命令的退出码；`schtasks /tr "...%USERPROFILE%..."` 里的变量会被外层 shell 先
-   展开再写进任务。两者都会让你把「失败」读成「成功」。
-5. **中文输出要看代码页**：`chcp 65001` 之后按 UTF-8 读文件，否则全是乱码——而乱码会让你
-   误判断言为什么失败（阶段 A 的 A1 用例就是为这件事存在的）。
-6. **仓库不在 Parallels 共享目录里**：`\\Mac\Home` 只暴露 Desktop / Documents / Downloads /
-   Movies / Music / Pictures 六个标准目录，`~/coding/…` 读不到。本轮是把仓库打成 tar，
-   从宿主起一个临时 HTTP 服务传进去的。
-
-### 让验证脚本别腐烂
-
-本轮修掉了 5 处**红了但不指向任何真问题**的断言：A5 写死的依赖数、B7 缺 `clearAll`、
-B9 钉在已不存在的 `settings.yaml`、B6 假定宿主 profile 叫 `wintest`、B13 缺同源证明头。
-共同形状是**把「环境事实」写死进断言**。写新用例时避开这几类：
-
-- **数量**：`deps.length === 9` → 改成「都解析得到」。数量会变，契约不会。
 - **名字 / 路径**：宿主跑在哪个 profile、设置落在哪个文件，由启动方式和 dsh 版本决定。
   B9 改成扫 `<dsh-home>/profiles/*/cordis.patch.yml`，B6 改成「新建的那个在列表里、
   且列表不止它一个」。

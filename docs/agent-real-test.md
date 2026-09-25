@@ -51,6 +51,8 @@ Windows 上按设计跑不了（CI 里也是 ubuntu-only）。
 
 ```sh
 node -v ; pnpm -v ; dsh --version
+# dsh 必须是**本仓 cohort**（= 各包 peer 下限），不是 npm 的 latest——低一档会让全部插件
+# 被兼容性 preflight **静默**整行 disabled（宿主照常启动，日志里才有一行 disabling）
 
 pnpm install
 pnpm -r build
@@ -60,9 +62,15 @@ pnpm -r typecheck
 node scripts/link-dsh-runtime.mjs --dry-run
 node scripts/link-dsh-runtime.mjs
 
+# 测试 profile = 根 bundle + **Web 应用**
 dsh plugin --profile <测试 profile> add link:$(pwd)
+dsh plugin --profile <测试 profile> add "@deepseek-ai/dsh-web-app@<cohort>"
+#   版本必须钉：裸包名解析到 npm 的 latest（0.0.1-rc.1），会被 preflight 正当地拒掉
 dsh --profile <测试 profile> --dump-config
-dsh --profile <测试 profile> web
+
+# 起宿主：用 patch 指定端口（`dsh --profile X web` 不是合法形式，见 scripts/windows/README.md）
+dsh --profile <测试 profile> --patch <port.yml>
+#   日志里出现 `dsh web: http://127.0.0.1:<port>/?token=…` 才算真起来了——「插件 mounted」不够
 ```
 
 - **`link-dsh-runtime` 是必需的**：插件从本地路径加载时，Node 会解析到仓库 `.pnpm` 里那套
@@ -70,10 +78,15 @@ dsh --profile <测试 profile> web
   `instanceof` / schema 对不上报出与真实无关的错，或插件继续用旧 API 悄悄跑通、掩盖真实兼容性问题。
   详见 [link-dsh-runtime.md](./link-dsh-runtime.md)。
 - ⚠️ **`pnpm install` 会重建 `node_modules`、冲掉这些链接**——装完依赖要重跑一次。
+  pnpm 10 还会默认拦掉原生模块的构建脚本（esbuild / node-pty / ssh2 …），不补跑
+  （`pnpm rebuild <pkgs>`）就打不出浏览器半体、真 PTY 也起不来。
 - ⚠️ 别同时装 `@hyzyn/dsh-all`（或任一子包）与根 bundle，插件行重复挂载会报
   `duplicate loader entry id`。
 - **用专门的测试 profile**（如 `compat` / `wintest`），不要用 `web`。
   **脚本里别写死 profile 名**——启动方式会变，写死会让断言在换 profile 时永久变红。
+- **profile 里没有 `dsh-web-app` 时，宿主会「起来但没端口」**：进程活着、插件全 mounted、
+  日志一切正常，`netstat` 里却什么都没有。阶段 B 的活体探针全部无从谈起——
+  所以上面第 4 步那两条 `dsh plugin add` 缺一不可。
 
 ## 各包真机入口
 
