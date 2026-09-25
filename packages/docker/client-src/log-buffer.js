@@ -26,6 +26,26 @@ export const DEFAULT_MAX_BYTES = 4 * 1024 * 1024
 /** 单条残行上限兜底值。 */
 export const DEFAULT_MAX_PENDING = 1024 * 1024
 
+/**
+ * 一次性日志文本 → 行(快照路径,POST /logs 的 `logs.text`)。
+ *
+ * 语义必须与 pushChunk 的切分**逐字一致**:一行 = 一个 `\n` 之前的全部内容,
+ * 结尾那个 `\n` 是**终止符**、不产生新行——pushChunk 把 `\n` 之后的尾巴留在
+ * pending 里、从不落地空行,快照路径也得给出同一个结论。
+ *
+ * 旧实现直接 `text.split('\n')`:docker logs 每行都以 `\n` 结尾,于是
+ * `--tail 201` 的 201 行(201 个 `\n`)被切成 **202** 段,最后一段是空串——
+ * 计数多 1、末尾多一条空行、导出也多一行;同一份日志在快照视图与 FOLLOW 视图
+ * 下因此行数不同。
+ *
+ * 只在结尾是 `\n` 时剥掉**一个**:真正以空行结尾的日志(`a\n\n` = 两行)要留住那个空行。
+ */
+export function splitLogLines(text) {
+  if (typeof text !== 'string' || text === '') return []
+  const body = text.endsWith('\n') ? text.slice(0, -1) : text
+  return body.split('\n')
+}
+
 const positiveIntOr = (value, fallback) =>
   Number.isInteger(value) && value > 0 ? value : fallback
 

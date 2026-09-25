@@ -10,10 +10,41 @@
  * 两边共用同一份实现,这里就是它的行为契约。
  */
 import { describe, expect, it } from 'vitest'
-import { createLogBuffer, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, DEFAULT_MAX_PENDING } from '../client-src/log-buffer.js'
+import { createLogBuffer, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, DEFAULT_MAX_PENDING, splitLogLines } from '../client-src/log-buffer.js'
 
 const text = (n) => 'x'.repeat(n)
 const ids = (buffer) => buffer.snapshot().map((entry) => entry.id)
+
+describe('splitLogLines 快照切分(与 pushChunk 同一套语义)', () => {
+  it('结尾的 \\n 是终止符,不多切一条空行(--tail N 的计数必须是 N)', () => {
+    // D136 现场:`--tail 201` 回 201 行、每行以 \n 结尾 → 旧的 text.split('\n') 切出 202 段
+    const text = Array.from({ length: 201 }, (_, i) => 'line ' + String(i)).join('\n') + '\n'
+    expect(splitLogLines(text)).toHaveLength(201)
+  })
+
+  it('没有结尾换行的最后一行照样算一行', () => {
+    expect(splitLogLines('a\nb')).toEqual(['a', 'b'])
+    expect(splitLogLines('a\nb\n')).toEqual(['a', 'b'])
+  })
+
+  it('真的以空行结尾时,那个空行要留住(只剥一个终止符)', () => {
+    expect(splitLogLines('a\n\n')).toEqual(['a', ''])
+    expect(splitLogLines('\n')).toEqual([''])
+  })
+
+  it('空文本没有行(不是「一行空行」)', () => {
+    expect(splitLogLines('')).toEqual([])
+  })
+
+  it('与 pushChunk 的结论逐字一致(同一份日志,两个视图不许给不同行数)', () => {
+    const text = 'first\nsecond\nthird\n'
+    const buffer = createLogBuffer()
+    buffer.pushChunk(text)
+    // pushChunk 把结尾 \n 之后的尾巴留在 pending → 落地 3 行;快照路径也必须给 3 行
+    expect(buffer.pendingLength()).toBe(0)
+    expect(buffer.snapshot().map((entry) => entry.text)).toEqual(splitLogLines(text))
+  })
+})
 
 describe('createLogBuffer pushChunk 行切分与残行', () => {
   it('跨 chunk 残行重组:与一次性到达等价', () => {

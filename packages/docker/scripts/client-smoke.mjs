@@ -2044,6 +2044,23 @@ await test('日志缓冲:无换行的超长输出被残行分片钉在有界内�
   assert.ok(buffer.takeDropped(), '持续超限必须置 dropped')
 })
 
+await test('日志缓冲:快照切分不把结尾换行算成一行(D136 —— --tail 201 必须显示 201 行)', () => {
+  const exports_ = registration.factory((spec) => SEED[spec])
+  const { splitLines, create } = exports_.__logBuffer
+  assert.equal(typeof splitLines, 'function', '缺少 __logBuffer.splitLines 测试缝')
+  // 现场:docker logs --tail 201 → 201 行、每行以 \n 结尾。旧的 text.split('\n') 会切出 202 段。
+  const text = Array.from({ length: 201 }, (_, i) => 'line ' + String(i)).join('\n') + '\n'
+  assert.equal(splitLines(text).length, 201, '计数必须等于 --tail 的行数')
+  assert.equal(splitLines(text).at(-1), 'line 200', '末尾不该多出一条空行')
+  // 与 FOLLOW 缓冲的结论一致:同一份文本,两个视图的行数不许不同
+  const buffer = create({ maxLines: 5000, maxBytes: 4 * 1024 * 1024 })
+  buffer.pushChunk(text)
+  assert.equal(buffer.snapshot().length, splitLines(text).length, '快照视图与 FOLLOW 视图必须同行数')
+  // 真正以空行结尾的日志要留住那个空行(只剥终止符)
+  assert.deepEqual(splitLines('a\n\n'), ['a', ''])
+  assert.deepEqual(splitLines(''), [])
+})
+
 /* ------------------------------------------------------------------ *
  * 结果
  * ------------------------------------------------------------------ */

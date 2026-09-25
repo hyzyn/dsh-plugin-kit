@@ -19,7 +19,7 @@
 import dockerCss from './docker.css'
 import { bookSessionHost, pickTargetByHost, sessionHostPort, staleBookRef } from './session-target.js'
 import { currentSessionIdOf } from './current-session.js'
-import { createLogBuffer } from './log-buffer.js'
+import { createLogBuffer, splitLogLines } from './log-buffer.js'
 import { subscribeLogStream, reconnectTail, LOG_RECONNECT_BASE_MS, LOG_RECONNECT_MAX_MS } from './log-stream.js'
 
 const API = '/api/dsh-docker'
@@ -2410,13 +2410,16 @@ window.__ModuleLoader__.load({
        * 快照日志 → 行对象：每次 logs 载入只 split 一次（D63 根治——旧实现每次
        * 渲染都 join/split 最多 5000 行的大字符串）。id 用 `s+下标`：同一次快照内
        * 稳定，新快照整体换血（贴底/导出语义不受影响）。
+       *
+       * 切分走 splitLogLines（D136）：它不是 `text.split('\n')`——结尾那个 `\n`
+       * 是终止符，不该多切出一条空行，否则 `--tail N` 的计数恒为 N+1。
        */
       const snapshotEntriesValue = useMemo(() => {
         // 只认 string：宿主 /logs 的形状是 { id, text, truncated }，但客户端不该
         // 因为一个畸形/旧版响应就在渲染期抛错——那会连整块面板和 exec 终端一起被
         // React 卸载掉（一次日志请求赔进去一个正在跑的容器会话）。
         const text = logs !== null && typeof logs === 'object' && typeof logs.text === 'string' ? logs.text : ''
-        return text === '' ? [] : text.split('\n').map((line, index) => ({ id: 's' + String(index), text: line }))
+        return splitLogLines(text).map((line, index) => ({ id: 's' + String(index), text: line }))
       }, [logs])
 
       /**
@@ -6603,11 +6606,12 @@ window.__ModuleLoader__.load({
       matchTargetForSession,
     }
     /*
-     * 日志缓冲的测试缝：环形上限 / 残行分片 / 单调 id 都是纯逻辑，离线冒烟直接驱动
-     * （真实 EventSource 时序进不了 Node 桩）。常量挂出来供用例对齐，避免两边漂移。
+     * 日志缓冲的测试缝：环形上限 / 残行分片 / 单调 id / 快照切分都是纯逻辑，离线冒烟
+     * 直接驱动（真实 EventSource 时序进不了 Node 桩）。常量挂出来供用例对齐，避免两边漂移。
      */
     exports.__logBuffer = {
       create: createLogBuffer,
+      splitLines: splitLogLines,
       MAX_LINES: FOLLOW_LINE_LIMIT,
       BYTE_LIMIT: FOLLOW_BYTE_LIMIT,
       PENDING_MAX: LOG_PENDING_MAX,

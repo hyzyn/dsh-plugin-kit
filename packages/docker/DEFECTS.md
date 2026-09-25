@@ -21,7 +21,7 @@
 
 ## 现状
 
-**已修 135 / 待修 0**（P1×7、P2×43、P3×85；第一轮 79 + 第二轮 46 + 用户实测 7 + 用户建议 1 + 现场复核 1 + 代码复核 1 —— 按索引表逐行重数，此前写的 132 少了 2）。
+**已修 136 / 待修 0**（P1×7、P2×43、P3×86；第一轮 79 + 第二轮 46 + 用户实测 8 + 用户建议 1 + 现场复核 1 + 代码复核 1 —— 按索引表逐行重数，此前写的 132 少了 2）。
 
 第一轮集中在三类：**长连接与长命令的生命周期**（空闲回收、并发首连、陈旧 close 事件、SSE 背压）、
 **静默的错误结果**（把截断当完整、把超时当成功、把「取不到权威数据」当「没有异常」）、
@@ -176,6 +176,27 @@
 | D133 | P2 | 日志流断线重连**重放历史**：EventSource 自动重连复用带 `tail` 的 URL，服务端把最后 tail 行当新行重推，客户端缓冲只在 effect 重跑时重建 → 日志里凭空多出一段重复并挤掉真正的历史；宿主侧 8MB 背压队列溢出走静默 `res.end()`，客户端把它当「流正常结束」再自动重连，同样触发重放 | src/docker.ts、src/index.ts、client-src/log-stream.js（新增）、client-src/index.js | 2026-09-24 test profile 现场复核复现 |
 | D134 | P3 | 镜像拉取进度流**逐行落地**：每个 SSE line 都跑一次 `mergeProgress`（slice + 重建 key 索引，O(行数)）再 `setLines` → 长拉取（多 GB / 数十层）时每秒数百次 2000 行重渲染，与 D128 同一类写法只是量级小 | client-src/index.js | 2026-09-24 代码复核（D128 同类反模式） |
 | D135 | P2 | 日志级别过滤对 `%5p` **右填充**的级别（`[INFO ]` / `[WARN ]`）完全失效：选到 `WARN+` 乃至 `ERROR+` 仍显示一屏 INFO，且这些行**没有分级着色** | client-src/index.js | 2026-09-25 用户实测上报 |
+| D136 | P3 | `LINES` 选 N 行、右侧计数显示 **N+1**：快照切分用 `text.split('\n')`，而 docker logs 每行都以 `\n` 结尾（终止符），于是多切出一条空行——计数多 1、末尾多一条不可见空行、导出也多一行；同一份日志在快照视图与 FOLLOW 视图下行数不同 | client-src/index.js、client-src/log-buffer.js | 2026-09-25 用户实测上报 |
+### D136：快照行数恒为 `--tail` 的值 +1（2026-09-25 用户实测上报）
+
+- **症状**（用户截图）：`LINES` 选「Last 201」，右侧计数却是 **202 行**。
+- **根因**：快照切分直接 `text.split('\n')`。docker logs 的每一行都以 `\n` **结尾**，那个 `\n`
+  是**终止符**——201 行 = 201 个 `\n` = `split` 出来 **202** 段，最后一段是空串。于是计数多 1、
+  末尾多一条不可见空行（仍会占一行 DOM）、`.log` / `.md` 导出也多一行。
+  更值得记的是**两个视图不一致**：FOLLOW 走 `log-buffer.js` 的 `pushChunk`，它把最后一个 `\n`
+  之后的尾巴留在 `pending`、从不落地空行，所以 FOLLOW 下同一份日志是**正确的 N 行**。
+  同一份数据两条路径给出两个答案，正是「切分规则存在两处」的典型代价。
+- **修法**：把切分收进 `log-buffer.js` 的 `splitLogLines()`（与 `pushChunk` 同模块、同一套语义），
+  快照路径改用它；只在结尾是 `\n` 时剥掉**一个**——真正以空行结尾的日志（`a\n\n` = 两行）要留住
+  那个空行。刻意**没有**顺手剥 `\r`：`pushChunk` 也不剥，两个视图必须继续给同一答案（一并处理是
+  另一件事）。
+- **回归**：`test/log-buffer.test.ts` 新增 5 例（201 行 → 201；无结尾换行照样算一行；`a\n\n` → 2 行
+  且留住空行；空文本 → 0 行；**与 `pushChunk` 的结论逐字一致**）。`client-smoke` 新增 1 例钉在
+  **产物**上（`__logBuffer.splitLines` 的 201 行、末尾不是空行、与 `create().snapshot()` 同行数，防
+  「源码改了但产物没重建」）。另用真 Chrome 夹具（`.preview/logcount-check.mjs`，**不入库**）驱动真实
+  面板核对三种形状：201 行 → 计数 **201 行**、50 行（无结尾换行）→ **50 行**、
+  `a\nb\n\n` → **3 行**（最后一行确实是空行）。
+
 ### D135：日志级别过滤对 `%5p` 右填充的级别完全失效（2026-09-25 用户实测上报）
 
 - **症状**（用户截图）：容器日志页把级别选到 `WARN+`，`[INFO ]` 行照样一屏——过滤看着"根本没生效"。
@@ -368,11 +389,11 @@
 
 ## 复核方式（0.7.0 基线）
 
-- **单测与静态检查**：`npx vitest run packages/docker`（**8 套 152 例**）、`npx tsc --noEmit`、
+- **单测与静态检查**：`npx vitest run packages/docker`（**8 套 157 例**）、`npx tsc --noEmit`、
   `node scripts/client-lint.mjs`（忽略 7 条已知噪音 TS2307×4 + TS2339×3）。
 - **旗舰脚本**（都需先 `pnpm --filter @hyzyn/dsh-docker build`，它们读 `lib/`）：
   `node scripts/smoke.mjs`（44/44）、`node scripts/route-smoke.mjs`（60/60，hermetic，实测 0.7s）、
-  `node scripts/client-smoke.mjs`（70/70，实测 0.6s）。三套都在 CI（ubuntu-only step）与发布闸里跑，
+  `node scripts/client-smoke.mjs`（71/71，实测 0.6s）。三套都在 CI（ubuntu-only step）与发布闸里跑，
   并带看门狗（单例 25s / 全局 90s；末尾 `process.exit` 保证退出）。
 - **产物与源码一致**：`pnpm -r build` 后 `git diff --exit-code -- 'packages/*/client.js' 'packages/*/lib'`
   （CI 闸门）；本次另用内存重建逐字节核对过 `client.js`（229759 字节，`identical: true`）。
