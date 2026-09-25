@@ -1348,12 +1348,19 @@ window.__ModuleLoader__.load({
      * ------------------------------------------------------------------ */
 
     /**
-     * 日志行前缀解析：时间戳与级别各自成 span，便于分级着色。两种常见格式都吃：
+     * 日志行前缀解析：时间戳与级别各自成 span，便于分级着色。三种常见格式都吃：
      *   `[INFO] [2026-09-09 18:05:52] ...`（级别在前）
+     *   `[INFO ] [2026-09-25 11:31:00] ...`（同上，但级别被 `%5p` 右填充到 5 字符）
      *   `16:11:34,150 |INFO in ...`（Spring Boot，时间戳在前、级别用竖线）
+     *
+     * 方括号里的 `\s*` 不是装饰：Logback / Spring 的 `%5p` 会把 INFO / WARN / DEBUG 右填充成
+     * `[INFO ]` / `[WARN ]`，而 ERROR / FATAL 恰好 5 字符不带空格。旧正则只认 `[INFO]`，
+     * 于是填充过的行全部判成「无级别」——分级着色丢掉，**级别门槛也整个失效**：
+     * `filterByLevelCore` 对未知级别走「不误杀」分支（rank=null 一律保留），
+     * 结果就是选了 WARN+ 仍能看到一屏 INFO。
      */
     const LOG_TS_RE = /^\s*(\[\d{4}-\d{2}-\d{2}[ T][0-9:.,]+\]|\d{2}:\d{2}:\d{2}[,.]\d{3})/
-    const LOG_LEVEL_RE = /^\s*(\[(?:TRACE|DEBUG|INFO|WARN|ERROR|FATAL)\]|\|\s*(?:TRACE|DEBUG|INFO|WARN|ERROR|FATAL))/
+    const LOG_LEVEL_RE = /^\s*(\[\s*(?:TRACE|DEBUG|INFO|WARN|ERROR|FATAL)\s*\]|\|\s*(?:TRACE|DEBUG|INFO|WARN|ERROR|FATAL))/
     const LOG_LEVEL_NAME_RE = /(TRACE|DEBUG|INFO|WARN|ERROR|FATAL)/
     /**
      * FOLLOW 流式日志的环形缓冲行数上限：超出丢最旧并提示一次（防止长时间跟随吃内存）。

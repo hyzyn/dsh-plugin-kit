@@ -752,6 +752,39 @@ await test('日志级别档位：共用一份定义，含 INFO+（真实日志�
   }
 })
 
+await test('日志级别过滤：`%5p` 右填充的 `[INFO ]` / `[WARN ]` 必须认出来（否则门槛整个失效）', () => {
+  const agg = aggLogsApi()
+  /*
+   * 回归现场（用户截图）：Logback / Spring 的 `%5p` 把级别右填充到 5 字符，
+   * 于是 INFO/WARN/DEBUG 写成 `[INFO ]`，而 ERROR/FATAL 恰好 5 字符不带空格。
+   * 旧正则只认 `[INFO]`，这些行被判成「无级别」——looks 无害，实则致命：
+   * filterByLevelCore 对未知级别走「不误杀」分支（rank=null 一律保留），
+   * 所以选了 WARN+ 仍会显示一屏 INFO，过滤像没生效。
+   */
+  assert.equal(agg.levelName('[INFO ] [2026-09-25 11:31:00] [scheduling-1] ==> x'), 'INFO')
+  assert.equal(agg.levelName('[WARN ] [2026-09-25 11:31:00] [scheduling-1] ==> x'), 'WARN')
+  assert.equal(agg.levelName('[DEBUG] [2026-09-25 11:31:00] [scheduling-1] ==> x'), 'DEBUG')
+  assert.equal(agg.levelName('[ERROR] [2026-09-25 11:31:00] [scheduling-1] ==> x'), 'ERROR')
+  // 既有形态不能被这次放宽改坏：未填充 / 前导空格 / Spring 竖线 / 无级别
+  assert.equal(agg.levelName('[INFO] [2026-09-09 18:05:52] unpadded'), 'INFO')
+  assert.equal(agg.levelName('[ INFO] leading pad'), 'INFO')
+  assert.equal(agg.levelName('16:11:34,150 |INFO in Spring'), 'INFO')
+  assert.equal(agg.levelName('没有待处理的考试，定时任务结束'), null)
+
+  // 端到端：WARN+ 滤掉填充过的 INFO 行，且紧邻的续行继承语义不受影响
+  const lines = [
+    '[INFO ] [2026-09-25 11:31:00] [scheduling-1] ==> 没有待处理的考试，定时任务结束',
+    '[WARN ] [2026-09-25 11:31:05] [scheduling-1] ==> 磁盘将满',
+    '  续行继承上一行的级别',
+  ]
+  assert.deepEqual(agg.filterLinesByLevel(lines, 3), [lines[1], lines[2]], 'WARN+ 必须滤掉填充过的 INFO')
+  assert.deepEqual(agg.filterLinesByLevel(lines, 2), lines, 'INFO+ 三行都该留下')
+  assert.deepEqual(agg.filterLinesByLevel(lines, 4), [], 'ERROR+ 该清空（续行继承 WARN）')
+  // 行对象适配器与纯文本适配器必须给出同一结论
+  const rows = lines.map((text) => ({ text }))
+  assert.deepEqual(agg.filterByLevel(rows, 3).map((row) => row.text), agg.filterLinesByLevel(lines, 3))
+})
+
 await test('日志导出对齐：两种格式共用构建器，只有标题与作用域不同', () => {
   const pick = aggLogsApi()
   const rows = [{ service: 'web', ts: 1755000000000, text: 'ERROR boom' }]

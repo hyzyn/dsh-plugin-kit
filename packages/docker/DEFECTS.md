@@ -21,7 +21,7 @@
 
 ## 现状
 
-**已修 132 / 待修 0**（P1×6、P2×41、P3×85；第一轮 79 + 第二轮 46 + 线上实测 3 + 现场复核 4）。
+**已修 135 / 待修 0**（P1×7、P2×43、P3×85；第一轮 79 + 第二轮 46 + 用户实测 7 + 用户建议 1 + 现场复核 1 + 代码复核 1 —— 按索引表逐行重数，此前写的 132 少了 2）。
 
 第一轮集中在三类：**长连接与长命令的生命周期**（空闲回收、并发首连、陈旧 close 事件、SSE 背压）、
 **静默的错误结果**（把截断当完整、把超时当成功、把「取不到权威数据」当「没有异常」）、
@@ -175,6 +175,29 @@
 | D132 | P3 | `docker_inspect` 未命中只回 `No such object: <id>`，不给近似候选（如 `607023340cbb_rmqnamesrv`） | src/docker.ts、src/index.ts | 2026-09-24 用户建议 |
 | D133 | P2 | 日志流断线重连**重放历史**：EventSource 自动重连复用带 `tail` 的 URL，服务端把最后 tail 行当新行重推，客户端缓冲只在 effect 重跑时重建 → 日志里凭空多出一段重复并挤掉真正的历史；宿主侧 8MB 背压队列溢出走静默 `res.end()`，客户端把它当「流正常结束」再自动重连，同样触发重放 | src/docker.ts、src/index.ts、client-src/log-stream.js（新增）、client-src/index.js | 2026-09-24 test profile 现场复核复现 |
 | D134 | P3 | 镜像拉取进度流**逐行落地**：每个 SSE line 都跑一次 `mergeProgress`（slice + 重建 key 索引，O(行数)）再 `setLines` → 长拉取（多 GB / 数十层）时每秒数百次 2000 行重渲染，与 D128 同一类写法只是量级小 | client-src/index.js | 2026-09-24 代码复核（D128 同类反模式） |
+| D135 | P2 | 日志级别过滤对 `%5p` **右填充**的级别（`[INFO ]` / `[WARN ]`）完全失效：选到 `WARN+` 乃至 `ERROR+` 仍显示一屏 INFO，且这些行**没有分级着色** | client-src/index.js | 2026-09-25 用户实测上报 |
+### D135：日志级别过滤对 `%5p` 右填充的级别完全失效（2026-09-25 用户实测上报）
+
+- **症状**（用户截图）：容器日志页把级别选到 `WARN+`，`[INFO ]` 行照样一屏——过滤看着"根本没生效"。
+  同一批行的级别前缀**也没有分级着色**（不像 `[ERROR]` 那样带色）。
+- **根因**：`LOG_LEVEL_RE` 只认紧贴右括号的 `[INFO]`，而 Logback / Spring 的 `%5p` 会把
+  TRACE / DEBUG / INFO / WARN **右填充到 5 字符**——实际写出来是 `[INFO ]` / `[WARN ]`。
+  （ERROR / FATAL 恰好 5 字符，所以只有它们侥幸认得出来，这也解释了为什么"看着像只对 ERROR 有效"。）
+  匹配失败后 `logLineLevelName` 返回 `null`，而 `filterByLevelCore` 对未知级别走的是**「不误杀」**
+  分支（`rank === null` → 一律保留，本意是别把窗口开头的堆栈续行丢掉）。两个设计各自都没错，
+  凑在一起就成了**整档过滤静默失效**：不报错、不提示行数异常，只是筛不动。
+- **修法**：方括号里允许空白 —— `/^\s*(\[\s*(?:TRACE|DEBUG|INFO|WARN|ERROR|FATAL)\s*\]|\|\s*(?:…))/`。
+  这处正则**同时**供 `renderLogParts`（分级着色）与 `logLineLevelName`（过滤）使用，所以一处修好两边。
+  刻意**没有**放宽到"裸级别名"（如 `INFO ...`）：那会把正文里以 ERROR 开头的行也吃成级别前缀，
+  宁可少认也不误认。
+- **回归**：`client-smoke` 新增 1 例 —— `agg.levelName` 要认出 `[INFO ]` / `[WARN ]` / `[DEBUG]`，
+  且既有四种形态（`[INFO]` / `[ INFO]` / `|INFO` / 无级别）不被这次放宽改坏；再断言
+  `filterLinesByLevel` 在 `WARN+` / `INFO+` / `ERROR+` 三档上的端到端结果，含堆栈续行的继承语义。
+  另用真 Chrome 夹具（`.preview/log-level-check.mjs`，**不入库**）驱动真实下拉核对：8 行样本
+  （`[INFO ]`×4、`[WARN ]`、`[ERROR]` + 2 条续行）下 `WARN+` 由 8 行滤到 **4 行**（INFO 全消失、
+  续行跟随 ERROR 保留）、`ERROR+` 滤到 **3 行**（WARN 及其续行也走），分级着色同步恢复
+  （`data-level` = INFO / WARN / ERROR）。
+
 ### D133：日志流断线重连重放历史（2026-09-24 test profile 现场复核复现）
 
 - **症状**：FOLLOW 打开着，网络抖一下 / 宿主 HMR / 宿主队列溢出之后，日志里**凭空多出一段
@@ -345,11 +368,11 @@
 
 ## 复核方式（0.7.0 基线）
 
-- **单测与静态检查**：`npx vitest run packages/docker`（**7 套 127 例**）、`npx tsc --noEmit`、
+- **单测与静态检查**：`npx vitest run packages/docker`（**8 套 152 例**）、`npx tsc --noEmit`、
   `node scripts/client-lint.mjs`（忽略 7 条已知噪音 TS2307×4 + TS2339×3）。
 - **旗舰脚本**（都需先 `pnpm --filter @hyzyn/dsh-docker build`，它们读 `lib/`）：
-  `node scripts/smoke.mjs`（40/40）、`node scripts/route-smoke.mjs`（60/60，hermetic，实测 0.7s）、
-  `node scripts/client-smoke.mjs`（65/65，实测 0.6s）。三套都在 CI（ubuntu-only step）与发布闸里跑，
+  `node scripts/smoke.mjs`（44/44）、`node scripts/route-smoke.mjs`（60/60，hermetic，实测 0.7s）、
+  `node scripts/client-smoke.mjs`（70/70，实测 0.6s）。三套都在 CI（ubuntu-only step）与发布闸里跑，
   并带看门狗（单例 25s / 全局 90s；末尾 `process.exit` 保证退出）。
 - **产物与源码一致**：`pnpm -r build` 后 `git diff --exit-code -- 'packages/*/client.js' 'packages/*/lib'`
   （CI 闸门）；本次另用内存重建逐字节核对过 `client.js`（229759 字节，`identical: true`）。
