@@ -56,6 +56,15 @@ import { parseKnownHosts } from '../lib/known-hosts.js'
 import { assertSupportedJsonSchema, validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
 import { startSftpSshd, TEST_USER, TEST_PASSWORD } from './lib/test-sshd.mjs'
 
+/*
+ * 变更端点要求「同源证明」（docker D32 口径，见 docs/architecture.md § 7 与
+ * packages/tty/src/index.ts 的 gateRoute）：浏览器同源 fetch 必带
+ * `sec-fetch-site: same-origin`——本脚本模拟的正是**面板**这条调用路径，所以照带。
+ * 少了它，/probe 与 /sftp 的写动作会被 403「缺少同源证明」（本脚本此前就踩在这里）。
+ */
+const SAME_ORIGIN = { 'sec-fetch-site': 'same-origin' }
+
+
 
 /* 全局看门狗：任何环节卡死时留痕退出（正常路径会先 process.exit）。 */
 setTimeout(() => {
@@ -432,11 +441,11 @@ async function run() {
     const d1 = await res1.json().catch(() => ({}))
     if (res1.status === 200 && d1.ok === true && typeof d1.config?.shell === 'string') pass('B10a GET 当前配置')
     else fail('B10a GET 当前配置', res1.status + ' ' + JSON.stringify(d1))
-    const res2 = await fetch(base, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ maxSessions: 3, term: 'xterm-256color' }) })
+    const res2 = await fetch(base, { method: 'POST', headers: { ...SAME_ORIGIN, 'content-type': 'application/json' }, body: JSON.stringify({ maxSessions: 3, term: 'xterm-256color' }) })
     const d2 = await res2.json().catch(() => ({}))
     if (res2.status === 200 && d2.ok === true && d2.config?.maxSessions === 3) pass('B10b POST 配置生效（maxSessions=3）')
     else fail('B10b POST 配置生效（maxSessions=3）', res2.status + ' ' + JSON.stringify(d2))
-    const res3 = await fetch(base, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ maxSessions: 99 }) })
+    const res3 = await fetch(base, { method: 'POST', headers: { ...SAME_ORIGIN, 'content-type': 'application/json' }, body: JSON.stringify({ maxSessions: 99 }) })
     const d3 = await res3.json().catch(() => ({}))
     if (res3.status === 400 && /maxSessions/.test(String(d3.error ?? ''))) pass('B10c 非法 maxSessions 被拒')
     else fail('B10c 非法 maxSessions 被拒', res3.status + ' ' + JSON.stringify(d3))
@@ -446,7 +455,7 @@ async function run() {
   console.log('\n[10] 超限恢复')
   {
     const base = `http://127.0.0.1:${port}/api/dsh-tty/config`
-    await fetch(base, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ maxSessions: 2 }) })
+    await fetch(base, { method: 'POST', headers: { ...SAME_ORIGIN, 'content-type': 'application/json' }, body: JSON.stringify({ maxSessions: 2 }) })
     await sleep(200)
     const s1 = openSession(port)
     await s1.open()
@@ -474,7 +483,7 @@ async function run() {
     s1.client.close()
     s2.client.close()
     s3.client.close()
-    await fetch(base, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ maxSessions: 4 }) })
+    await fetch(base, { method: 'POST', headers: { ...SAME_ORIGIN, 'content-type': 'application/json' }, body: JSON.stringify({ maxSessions: 4 }) })
   }
 
   // B12: agent 工具集（tty_list / tty_capture / tty_send）
@@ -858,7 +867,7 @@ async function run() {
     })
     const sshPort = sshServer.address().port
     const post = async (body) => {
-      const res = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+      const res = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/config`, { method: 'POST', headers: { ...SAME_ORIGIN, 'content-type': 'application/json' }, body: JSON.stringify(body) })
       return res.json()
     }
     const put = await post({
@@ -944,7 +953,7 @@ async function run() {
     } else {
       await fetch(`http://127.0.0.1:${port}/api/dsh-tty/config`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { ...SAME_ORIGIN, 'content-type': 'application/json' },
         body: JSON.stringify({ shell: '/bin/bash' }),
       })
       const s = openSession(port)
@@ -995,7 +1004,7 @@ async function run() {
     const rootDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'dsh-tty-b23-'))
     const sftpd = await startSftpSshd({ rootDir })
     const post = async (body) => {
-      const res = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+      const res = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/config`, { method: 'POST', headers: { ...SAME_ORIGIN, 'content-type': 'application/json' }, body: JSON.stringify(body) })
       return res.json()
     }
     const put = await post({ sshHosts: [{ name: 'b23-ssh', host: '127.0.0.1', port: sftpd.port, username: TEST_USER, auth: 'password', password: TEST_PASSWORD, keyPath: '', passphrase: '', agentForward: false }] })
@@ -1006,7 +1015,7 @@ async function run() {
     const sftpApi = async (action, payload) => {
       const res = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/sftp/${action}`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { ...SAME_ORIGIN, 'content-type': 'application/json' },
         body: JSON.stringify({ name: 'b23-ssh', ...payload }),
       })
       const data = await res.json().catch(() => ({}))
@@ -1027,7 +1036,7 @@ async function run() {
     const payload = Buffer.alloc(4096, 0x62)
     const up = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/sftp/upload`, {
       method: 'POST',
-      headers: { 'x-dsh-sftp-meta': Buffer.from(JSON.stringify({ name: 'b23-ssh', path: rootDir + '/b23dir/up.bin' })).toString('base64url') },
+      headers: { ...SAME_ORIGIN, 'x-dsh-sftp-meta': Buffer.from(JSON.stringify({ name: 'b23-ssh', path: rootDir + '/b23dir/up.bin' })).toString('base64url') },
       body: payload,
     })
     const upData = await up.json().catch(() => ({}))
@@ -1046,7 +1055,7 @@ async function run() {
     // d) download：流式响应 + content-disposition + 字节一致
     const dl = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/sftp/download`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { ...SAME_ORIGIN, 'content-type': 'application/json' },
       body: JSON.stringify({ name: 'b23-ssh', path: rootDir + '/b23dir/up.bin' }),
     })
     const dlBuf = Buffer.from(await dl.arrayBuffer())
@@ -1109,7 +1118,7 @@ async function run() {
     const rootDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'dsh-tty-b24-'))
     const sftpd = await startSftpSshd({ rootDir })
     const post = async (body) => {
-      const res = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+      const res = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/config`, { method: 'POST', headers: { ...SAME_ORIGIN, 'content-type': 'application/json' }, body: JSON.stringify(body) })
       return res.json()
     }
     const put = await post({ sshHosts: [{ name: 'b24-ssh', host: '127.0.0.1', port: sftpd.port, username: TEST_USER, auth: 'password', password: TEST_PASSWORD, keyPath: '', passphrase: '', agentForward: false }] })
@@ -1221,7 +1230,7 @@ async function run() {
       return tmuxListError !== null ? [] : out.stdout.trim().split('\n').filter(Boolean)
     }
     const post = async (body) => {
-      const res = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+      const res = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/config`, { method: 'POST', headers: { ...SAME_ORIGIN, 'content-type': 'application/json' }, body: JSON.stringify(body) })
       return res.json()
     }
     const probe = await execFileP('tmux', ['-V'])
@@ -1397,7 +1406,7 @@ async function run() {
   console.log('\n[24] 跨窗口共享持久会话')
   {
     const post = async (body) => {
-      const res = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+      const res = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/config`, { method: 'POST', headers: { ...SAME_ORIGIN, 'content-type': 'application/json' }, body: JSON.stringify(body) })
       return res.json()
     }
     await post({ persistence: 'tmux' })
@@ -1437,7 +1446,7 @@ async function run() {
     const probe = async (body) => {
       const res = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/probe`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { ...SAME_ORIGIN, 'content-type': 'application/json' },
         body: JSON.stringify(body),
       })
       return res.json()
@@ -1500,7 +1509,7 @@ async function run() {
   console.log('\n[29] 禁用热生效与恢复（enabled 开关）')
   {
     const configPost = async (body) => {
-      const res = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/config`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+      const res = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/config`, { method: 'POST', headers: { ...SAME_ORIGIN, 'content-type': 'application/json' }, body: JSON.stringify(body) })
       return { status: res.status, body: await res.json() }
     }
 
@@ -1516,7 +1525,7 @@ async function run() {
     else fail('B29b 禁用后 agent 工具全部撤下', `残留: ${toolDefs.map((d) => d.name).join(',')}`)
     if (promptParts.length === 0) pass('B29c 禁用后公告与动态快照撤下')
     else fail('B29c 禁用后公告与动态快照撤下', `残留 ${String(promptParts.length)}`)
-    const probeRes = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/probe`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ host: '127.0.0.1', username: 'u' }) })
+    const probeRes = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/probe`, { method: 'POST', headers: { ...SAME_ORIGIN, 'content-type': 'application/json' }, body: JSON.stringify({ host: '127.0.0.1', username: 'u' }) })
     if (probeRes.status === 403) pass('B29d 禁用后数据路由 403（/probe）')
     else fail('B29d 禁用后数据路由 403（/probe）', `status=${String(probeRes.status)}`)
     const cfgGet = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/config`)
@@ -1616,7 +1625,7 @@ async function run() {
     await new Promise((resolve) => remote.listen(0, '127.0.0.1', resolve))
     const remotePort = remote.address().port
     const postConfig = async (body) => {
-      const res = await fetch('http://127.0.0.1:' + String(port) + '/api/dsh-tty/config', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+      const res = await fetch('http://127.0.0.1:' + String(port) + '/api/dsh-tty/config', { method: 'POST', headers: { ...SAME_ORIGIN, 'content-type': 'application/json' }, body: JSON.stringify(body) })
       return { status: res.status, body: await res.json() }
     }
     const put = await postConfig({ sshHosts: [{ name: 'b30-ssh', host: '127.0.0.1', port: remotePort, username: 'test', auth: 'password', password: 'secret', keyPath: '', passphrase: '', agentForward: false }] })
@@ -1741,7 +1750,7 @@ async function run() {
     await new Promise((resolve) => remote.listen(0, '127.0.0.1', resolve))
     const remotePort = remote.address().port
     const postConfig = async (body) => {
-      const res = await fetch('http://127.0.0.1:' + String(port) + '/api/dsh-tty/config', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+      const res = await fetch('http://127.0.0.1:' + String(port) + '/api/dsh-tty/config', { method: 'POST', headers: { ...SAME_ORIGIN, 'content-type': 'application/json' }, body: JSON.stringify(body) })
       return { status: res.status, body: await res.json() }
     }
     await postConfig({ sshHosts: [{ name: 'b31-ssh', host: '127.0.0.1', port: remotePort, username: 'test', auth: 'password', password: 'secret', keyPath: '', passphrase: '', agentForward: false }] })

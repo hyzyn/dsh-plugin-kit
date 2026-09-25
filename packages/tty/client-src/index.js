@@ -88,12 +88,754 @@ import { asciiRefToken, derivedCredentialRef } from './credential-ref.js'
 import { applyTunnelEdit, buildTunnelFromDraft as buildTunnelSpec, tunnelNameClash } from './tunnel-edit.js'
 import { currentSessionCwd } from './current-session.js'
 import { eventOwnsStatus, needsStatusResync, statusForTab } from './status-line.js'
-import { STATS_ITEM_SPECS, formatBytes, formatRate, hasUsableStats, statsFrameFresh, statsItemValues, statsLevel } from './stats-bar.js'
+import { formatBytes, formatRate, hasUsableStats, statsFrameFresh, statsItemSpecs, statsItemValues, statsLevel } from './stats-bar.js'
 
 /* ================================ CSS ================================ */
 
 // 样式表独立成 client-src/tty.css，经 esbuild 的 text loader 内联进 client.js
 // （与 xterm.css 同一条路径），便于按组件维护。
+
+/* ================================ 国际化 ================================ */
+
+/*
+ * 界面文案走宿主 `@deepseek-ai/dsh-client-locale` 的目录（方案见 docs/i18n.md）。
+ * 目录**内联在 client-src/index.js**（不是单独一个模块）：本包用 esbuild 打成单文件 IIFE，
+ * 多一个模块就多一层「谁在什么时候加载」的不确定性，而 docs/i18n.md 明确要求目录住在主半体里。
+ *
+ * **目录与本段的 `t` 声明在模块作用域，不在 module-loader 的 factory 里**——这是本包与
+ * codegraph 的区别：tty 的界面代码绝大部分（连接栏 / SFTP / 状态条 / 面板骨架 / 状态行）
+ * 都在 factory 之前的模块顶层函数里，只有设置卡片与 `exports.apply` 在 factory 内。声明在
+ * 模块顶层，两边才都能看见同一个 `t`。sibling 模块（stats-bar / status-line / tunnel-edit）
+ * **不 import 这里的 `t`**（那会成环），而是把它当参数传进去——与 codegraph 的 pure.js 同一套。
+ *
+ * 下面这一对目录由 `scripts/check-i18n.mjs` 静态校验：zh/en 键集一致、`{name}` 占位符两边
+ * 一致、代码里 `t('…')` 用到的键必须在这里有定义。
+ *
+ * **模块级常量里的 `t()` 必须走 getter / 函数**：`t()` 在模块加载时求值等于把当前语言
+ * 冻住（`installI18n(ctx)` 要等 apply 才跑，语言切换也不会重算）——本包的 `STATS_ITEM_SPECS`
+ * 因此改成了 `statsItemSpecs(t)` 函数（见 client-src/stats-bar.js）。
+ *
+ * `tty_capture{last}` 这类**语法示例**里的花括号会被 `i18nFormat` 当成占位符——只在
+ * 传了 params 时才会替换，这几条键的调用一律不传 params，所以原样显示。
+ */
+/* ==== dsh-i18n:begin ==== */
+const I18N_NS = 'tty'
+const I18N_ZH = {
+  'error.credServiceMissing': '宿主未提供凭据服务（remote.credentials）',
+  'error.credServiceIncomplete': '凭据服务不完整',
+  'error.credStoreUnavailable': '宿主未提供凭据服务（remote.credentials），无法存入',
+  'error.credStoreFailed': '存入凭据存储失败：{error}',
+  'error.credClearUnavailable': '宿主未提供凭据服务（remote.credentials），无法清除',
+  'error.credClearFailed': '清除失败：{error}',
+  'error.credRefNeedsHost': '先填「主机」和「用户名」再存入——引用名由这两者派生',
+  'btn.reopen': '重新打开',
+  'btn.reopenTitle': '以原连接信息重开会话',
+  'btn.sftpTitle': '打开该连接的文件浏览（SFTP）',
+  'btn.tunnels': '隧道 {count}',
+  'btn.tunnelsTitle': '查看该连接的端口转发隧道',
+  'btn.more': '更多',
+  'btn.moreTitle': '更多操作（端口转发…）',
+  'btn.reopenSession': '重新打开会话',
+  'status.exited': '会话已退出',
+  'status.ended': '会话已结束',
+  'btn.clickReopen': '点击重新打开',
+  'btn.clickRerun': '点击重新执行',
+  'msg.passwordNotStored': '出于安全考虑，明文密码/口令不随浏览器存储保留，本次连接需要重新输入：重开标签时再填一次，或在设置卡片把凭据换成 env: 引用（值存宿主凭据存储）。',
+  'error.terminalNeedsCommand': 'ttyTerminal 需要 command',
+  'error.terminalCommandSingleLine': 'command 必须是单行',
+  'error.terminalNeedsHost': 'ttyTerminal.mount 需要 HTMLElement 作为挂载点',
+  'error.panelNotReady': 'ttyPanel.mountPane：终端面板未就绪',
+  'panel.dragHeight': '拖动调整高度',
+  'panel.dragWidth': '拖动调整宽度',
+  'btn.closePane': '关闭侧栏',
+  'btn.expandPane': '展开侧栏',
+  'btn.collapsePane': '收起侧栏',
+  'panel.tabLabel': '终端 {n}',
+  'btn.close': '关闭',
+  'btn.closeTabAria': '关闭标签：{label}',
+  'btn.newTab': '新建（本地 / SSH）',
+  'meta.tunnelRemote': '远程:{host}:{port} → 本机:{local}',
+  'meta.tunnelLocal': '本机:{local} → {host}:{port}',
+  'status.tmuxPersistedTitle': '已由 tmux 托管 — 断线 / 宿主重启后按名接回现场',
+  'status.notPersisted': '未持久化',
+  'status.tmuxUnavailableTitle': '请求了持久会话，但 tmux 不可用 — 当前为普通会话',
+  'status.connected': '已连接',
+  'status.connecting': '连接中',
+  'status.errored': '连接出错',
+  'panel.tunnels': '端口转发',
+  'hint.tunnelsSettings': '在 设置 → 插件 → 终端面板 里配置',
+  'panel.tunnelsFor': '端口转发 — {name}',
+  'list.loading': '加载中…',
+  'hint.tunnelsCard': '增删/启停在 插件配置 → 终端面板 的端口转发区块维护',
+  'list.noActiveTunnels': '该连接暂无启用的隧道',
+  'status.fatalSuffix': '（不重试，需修配置）',
+  'msg.maxSessions': '会话数已达上限（共 {live} 个 / 上限 {max}：本窗口 {own} 个{others}）——关闭不用的窗口/标签，或在设置卡片调大「并发会话上限」',
+  'msg.maxSessionsOthers': ' + 其他窗口 {count} 个',
+  'error.probeHttp': '连接测试失败（HTTP {status}）',
+  'msg.probing': '连接测试中…',
+  'meta.reachable': '通',
+  'meta.probeBanner': 'banner 正常',
+  'meta.hostKeyMatched': '主机密钥匹配',
+  'meta.hostKeyRecorded': '主机密钥已记录（TOFU）',
+  'meta.hostKeyMismatch': '主机密钥不匹配！',
+  'meta.authOkMs': '认证通过（{ms}ms）',
+  'meta.authOk': '认证通过',
+  'meta.probeOk': '✅ 连接成功：{detail}',
+  'error.unknown': '未知错误',
+  'btn.maxSessionsTitle': '会话数已达上限——点击查看怎么办',
+  'option.localTerminal': '本地终端',
+  'hint.tmuxHosted': 'tmux 托管 · 宿主重启后可恢复',
+  'hint.openInSessionCwd': '在当前会话工作目录打开',
+  'panel.sshBook': 'SSH 连接簿',
+  'btn.sftpFileBrowse': 'SFTP 文件浏览',
+  'btn.editConnection': '编辑连接',
+  'list.emptySshBook': '（空 — 在设置卡片或「SSH 连接…」里保存）',
+  'option.sshConnect': 'SSH 连接…',
+  'hint.sshConnect': '手动填写主机 / 用户 / 认证方式',
+  'panel.editConnection': '编辑连接 · {name}',
+  'panel.sshConnect': 'SSH 连接',
+  'section.connection': '连接',
+  'field.host': '主机',
+  'placeholder.host': 'example.com 或 IP',
+  'field.port': '端口',
+  'field.username': '用户名',
+  'section.auth': '认证',
+  'field.authMethod': '认证方式',
+  'option.authAgent': 'agent — 使用本机 ssh-agent',
+  'option.authKey': 'key — 私钥文件',
+  'option.authPassword': 'password — 密码',
+  'field.keyPath': '私钥路径',
+  'field.passphrase': '私钥口令（可空）',
+  'field.password': '密码',
+  'placeholder.credRef': '或：选择凭据存储里的引用名',
+  'hint.credRefCandidates': '候选 = 凭据存储里已有的引用名 + 本机连接簿里在用的引用名',
+  'list.credOverwrite': '{name}（再点覆盖已填）',
+  'list.moreMatches': '还有 {count} 个 — 继续输入筛选',
+  'list.noCredRef': '没有匹配的引用',
+  'check.rememberCredential': '保存时存入凭据存储',
+  'hint.rememberCredential': '勾选后，点「保存修改」或「连接（并保存）」时把密码写进官方凭据存储，字段里只留 env: 引用（值在 ~/.dsh/.credentials.yaml，不进环境、不回传浏览器；挡不住同用户进程与 agent）。不勾选则按现状明文写进设置文件。能用密钥 / agent 就别存密码。',
+  'btn.clearCredential': '清除已存凭据',
+  'error.credPlainUnavailable': '宿主未提供凭据服务（remote.credentials），只能明文保存',
+  'error.credPlainIncomplete': '凭据服务不完整，只能明文保存',
+  'status.credUnreported': '引用 {ref}：宿主未报告状态',
+  'error.credStatusFailed': '读取凭据状态失败：{error}',
+  'status.credStored': '已存入{source} · {ref}',
+  'meta.credSource': '（来源 {source}）',
+  'status.credUnknown': '引用 {ref}：存储里还没有这个值',
+  'hint.noCredRefPassphrase': '还没有别的连接用过凭据引用 — 可在私钥口令框直接手输 env:NAME',
+  'hint.noCredRefPassword': '还没有别的连接用过凭据引用 — 勾上面的「保存时存入凭据存储」新建一个，或直接在密码框手输 env:NAME',
+  'section.options': '选项',
+  'check.agentForward': 'agent forwarding（远程可用本地 ssh-agent 钥匙，如远程 git clone）',
+  'check.persist': '持久会话（tmux 托管，断线/重启后恢复现场；远程需安装 tmux）',
+  'check.saveToBook': '保存到连接簿（同名覆盖）',
+  'field.bookName': '连接簿名称',
+  'placeholder.bookName': '留空则用主机名',
+  'error.hostUserRequired': '主机与用户名必填',
+  'error.keyPathRequired': 'auth=key 需要私钥路径',
+  'error.passwordRequired': 'auth=password 需要密码',
+  'btn.cancel': '取消',
+  'btn.connect': '连接',
+  'btn.fileBrowse': '文件浏览',
+  'btn.browseTitle': '不动终端，直接以当前填写的信息打开 SFTP 文件浏览',
+  'btn.probe': '试连',
+  'btn.probeTitle': '按当前填写诊断连接（TCP → 主机密钥 → 认证）；不会新建会话，也不记录主机指纹',
+  'error.saveCredFailed': '保存失败：{error}',
+  'btn.saveEdit': '保存修改',
+  'error.saveBookFailed': '保存连接簿失败：{error}',
+  'error.bookNameTaken': '连接簿里已有同名条目: {name}',
+  'panel.sftpDual': 'SFTP 双栏 · {label}',
+  'status.failed': '失败',
+  'status.done': '完成',
+  'placeholder.localPath': '本机路径（回车跳转）',
+  'placeholder.remotePath': '远程路径（回车跳转）',
+  'btn.refresh': '刷新',
+  'btn.mkdir': '新建目录',
+  'error.dirNotReady': '目录尚未定位完成',
+  'meta.dir': '目录',
+  'btn.transferTo': '传输到{target}：{path}',
+  'meta.local': '本机',
+  'meta.remote': '远程',
+  'error.transferDirsNotReady': '两侧目录尚未定位完成，等列表加载后再传输',
+  'msg.transferring': '传输 {name}…',
+  'error.transferFailed': '传输失败',
+  'error.noTaskId': '服务端未返回任务 id',
+  'msg.transferCanceled': '已取消传输 {name}',
+  'msg.transferred': '已传输 {name}',
+  'btn.download': '下载 {name}',
+  'btn.rename': '重命名 {name}',
+  'placeholder.newName': '新名称',
+  'btn.deleteEntry': '删除 {name}',
+  'btn.deleteEntryDir': '删除 {name}（含内容）',
+  'msg.deleted': '已删除 {name}',
+  'list.parentDir': '..（上级目录）',
+  'list.emptyDir': '（空目录）',
+  'list.truncated': '…其余 {rest} 项未渲染（共 {total} 项）——用上方路径框跳转到子目录定位',
+  'list.itemCount': '{count} 项',
+  'placeholder.newDirName': '新目录名（相对当前目录）',
+  'msg.creatingDir': '创建目录 {name}…',
+  'btn.ok': '确定',
+  'btn.confirm': '确认?',
+  'btn.cancelTransfer': '取消传输',
+  'msg.downloadCanceled': '已取消下载 {name}',
+  'error.downloadFailed': '下载失败',
+  'msg.downloaded': '已下载 {name}（{size}）',
+  'error.downloadTooBig': '文件超过下载上限（{size}）：请用双栏 ⇦ 直传或终端 scp/rsync',
+  'msg.canceled': '已取消',
+  'btn.upload': '上传',
+  'btn.uploadTitle': '选择文件上传；也可以把文件 / 文件夹直接拖进列表',
+  'msg.uploading': '上传中…',
+  'msg.uploadDone': '上传完成',
+  'error.uploadFailed': '上传失败',
+  'error.networkError': '网络错误',
+  'error.uploadCountExceeded': '文件数超过上限（{max}）：本次 {count} 个，请分批上传',
+  'status.overLimit': '超限',
+  'error.uploadTooBig': '文件超过上传上限（{size}）：{name}，请用双栏 ⇨ 直传或终端 scp/rsync',
+  'error.uploadTotalTooBig': '文件总大小超过上传上限：请分批上传（或用双栏 ⇨ 直传）',
+  'msg.uploadCanceled': '已取消上传（已传 {done}/{total} 个）',
+  'status.allDone': '全部完成',
+  'msg.uploadDoneCount': '上传完成 {count} 个文件',
+  'error.connectFailed': '连接失败：{error}',
+  'status.connectingEllipsis': '连接中…',
+  'status.connectedPid': '已连接 pid={pid}',
+  'status.connectedSsh': 'SSH {target}已连接',
+  'status.exitedWith': '已退出 {detail}',
+  'status.error': '错误：{message}',
+  'status.retryHint': '{message} · 点击重试',
+  'btn.clickRetry': '点击重试',
+  'status.disconnectedReconnecting': '连接断开 — 自动重连中',
+  'status.disconnected': '连接断开',
+  'status.reconnecting': '自动重连中…',
+  'error.copyFailed': '复制失败：当前环境不允许访问剪贴板（http 访问时请改用 localhost 或终端内快捷键）',
+  'error.pasteFailed': '浏览器不允许网页读取剪贴板（http 访问时常见）：请在终端里按 Ctrl+V / Cmd+V 粘贴',
+  'status.initializing': '初始化…',
+  'placeholder.search': '搜索 (Enter 下一个, Shift+Enter 上一个)',
+  'btn.searchTitle': '搜索 (Ctrl+F)',
+  'btn.clearTitle': '清屏',
+  'btn.copyTitle': '复制选中内容',
+  'btn.pasteTitle': '粘贴',
+  'btn.minimizeTitle': '最小化（会话保持运行，状态并入侧边栏入口）',
+  'btn.closePanelTitle': '关闭面板（结束会话，标签保留，重开即恢复列表）',
+  'btn.restoreDock': '点击恢复终端窗口',
+  'panel.title': '终端',
+  'status.minimized': '终端已最小化 — 点击恢复',
+  'error.configLoadFailed': '读取配置失败',
+  'error.saveTunnelFailed': '保存隧道失败',
+  'error.tunnelNameTaken': '已存在同名隧道「{name}」——同一「连接簿条目 + 方向 + 端口」只能有一条。改端口会得到新名字，或先删掉旧的那条。',
+  'msg.tunnelApplied': '隧道「{name}」已生效',
+  'msg.tunnelUpdated': '隧道「{name}」已更新',
+  'error.nameHostUserRequired': '名称、主机、用户名必填',
+  'msg.hostEdited': '已修改条目「{name}」— 随「保存」写入配置',
+  'error.probeFailed': '❌ 连接失败：{error}',
+  'error.hostKeyDeleteFailed': '删除主机密钥记录失败',
+  'msg.hostKeyDeleted': '已删除主机密钥记录（下次连接重新记录指纹）',
+  'error.sshConfigReadFailed': '读取 ~/.ssh/config 失败',
+  'msg.proxySkipped': '{count} 条依赖跳板机（ProxyJump / ProxyCommand）未导入：{names}',
+  'list.separator': '、',
+  'meta.etc': ' 等',
+  'msg.importOverflow': '超过导入上限的 {count} 条未导入',
+  'list.separatorFull': '；',
+  'msg.noNewEntries': '没有新条目（{count} 条同名跳过）',
+  'msg.noImportableHosts': '~/.ssh/config 里没有可导入的具体主机',
+  'msg.importedHosts': '已导入 {added} 条（同名跳过 {skipped} 条），随「保存」写入配置',
+  'error.knownHostsReadFailed': '读取 ~/.ssh/known_hosts 失败',
+  'msg.noNewFingerprints': '没有新指纹（{count} 条已存在）',
+  'msg.noImportableKnownHosts': 'known_hosts 里没有可导入的具体主机',
+  'error.saveHostKeysFailed': '保存 hostKeys 失败',
+  'msg.importedFingerprints': '已导入 {added} 条主机的指纹（跳过 {skipped} 条已存在）',
+  'hint.knownHostsTruncated': '；注意：known_hosts 超过 500 条主机，本次仅导入前 500 条',
+  'error.saveFailed': '保存失败',
+  'msg.saved': '已保存并热生效',
+  'check.rememberCredentialApply': '应用时存入凭据存储',
+  'hint.appliedOnSave': '随卡片「保存」写入配置',
+  'card.name': '终端面板',
+  'card.desc': 'xterm 终端面板：多标签页、断线自动重连、cwd 跟随会话、SSH 连接簿与主机指纹钉扎、tmux 会话持久化。',
+  'card.descFull': 'xterm 终端面板：多标签页、断线自动重连、cwd 跟随会话、SSH 连接簿与主机指纹钉扎、tmux 会话持久化；shell / TERM / 并发上限等保存即热生效。',
+  'list.loadingConfig': '加载配置中…',
+  'section.basic': '基础',
+  'check.enabled': '启用插件（保存即热生效：工具与面板入口立刻收起，会话转保活）',
+  'check.announce': '向 agent 公告终端面板能力',
+  'check.shellIntegration': 'shell 集成（OSC 133/7 注入）',
+  'check.shellIntegrationWindows': 'shell 集成（OSC 133/7 注入，tty_capture{last} 与 cwd 跟随依赖它）',
+  'hint.shellIntegrationWindows': 'Windows 宿主上不适用：注入走的是 POSIX 的 `-c` 包装层与 rc 桩，cmd / PowerShell 上都不成立（实测 cmd 忽略 `-c` 空跑、PowerShell 报 export 不存在）。因此**本地**标签的 cwd 跟随与 tty_capture{last} 不可用；远程 Linux / macOS 主机照旧支持。',
+  'section.sftp': 'SFTP 文件传输',
+  'field.sftpStyle': 'SFTP 文件浏览风格',
+  'option.sftpDialog': '单窗体 — 远程目录 + 上传/下载/拖拽',
+  'option.sftpDual': '双栏 — 左本机 / 右远程，选中直传',
+  'hint.sftpDual': '双栏在本机与远程之间对拷文件（目录递归、同名覆盖）；重新打开 SFTP 后生效',
+  'field.sftpLimits': 'SFTP 传输限制（0 = 不限）',
+  'field.downloadLimit': '下载上限 (MB)',
+  'field.uploadLimit': '上传上限 (MB)',
+  'field.uploadCountLimit': '批量文件数上限',
+  'hint.sftpLimits': '浏览器侧保护：单个文件超过上限时中止下载/上传（大文件请用双栏 ⇨/⇦ 直传或终端 scp/rsync，不占浏览器内存）；文件数上限针对一次批量/拖拽上传；保存即热生效',
+  'section.session': '会话',
+  'field.persistence': '会话持久化（tmux）',
+  'option.persistOff': '关闭 — 会话随面板/宿主结束（默认）',
+  'option.persistTmux': 'tmux — 新开的终端/SSH 标签默认持久化',
+  'hint.persistence': '开启后所有新标签（本地/SSH 连接簿/SSH 连接对话框）默认由 tmux 托管、可跨宿主重启恢复；需本机/远程安装 tmux；SSH 对话框可对单次连接取消勾选；已有标签不受影响',
+  'hint.persistenceWindows': '；Windows 宿主上 tmux 不可用，本地标签会照常打开但不受托管',
+  'check.endOnPageClose': '关闭页面后结束持久会话（不保活）',
+  'check.statsEnabled': '服务器状态条（CPU / 内存 / 磁盘 / 在线 / TCP / 网速；采不到的项显示「无」）',
+  'hint.statsEnabled': '默认关闭：整个页面关闭时持久会话留存（保活期后可再恢复）；开启则页面断开且保活期结束时连 tmux 会话一起结束——注意刷新页面在保活期内不受影响',
+  'field.maxSessions': '并发会话上限（1~16）',
+  'hint.maxSessions': '超过上限的新标签会被拒绝；保存即热生效',
+  'field.shell': 'Shell 路径（默认 $SHELL）',
+  'field.shellWindows': 'Shell 路径（默认 %COMSPEC%）',
+  'placeholder.shell': '留空使用 $SHELL',
+  'placeholder.shellWindows': '留空使用 %COMSPEC%（也可填 powershell.exe / pwsh.exe 完整路径）',
+  'list.noShellCandidate': '没有匹配的候选 — 直接输入任意路径即可',
+  'hint.shellCandidatesWindows': 'Windows 宿主：候选来自 %COMSPEC% 与已安装的 PowerShell（Windows PowerShell 5.1 / PowerShell 7），也可直接输入任意路径；cmd / PowerShell 没有 POSIX 的命令边界钩子，所以这两者不支持 shell 集成',
+  'hint.shellCandidates': '可下拉选择本机已安装 shell（$SHELL 优先），也可直接输入任意路径；zsh / bash 支持 shell 集成',
+  'hint.term': 'TUI 程序依赖此值',
+  'field.cwd': '兜底工作目录（客户端当前会话 cwd 优先）',
+  'placeholder.cwd': '留空使用宿主进程启动目录',
+  'field.grace': '断线保活（秒，0 = 立即结束）',
+  'hint.grace': '刷新页面/网络抖动后会话保活等待重连，超时后结束；保存即热生效',
+  'section.ssh': 'SSH 连接',
+  'btn.probeRowTitle': '试连该条目：TCP → 主机密钥 → 认证逐段诊断',
+  'msg.testing': '测试中…',
+  'btn.test': '测试',
+  'btn.edit': '编辑',
+  'btn.delete': '删除',
+  'list.emptySshHosts': '暂无条目 — 终端面板「+」→ SSH 连接… 勾选「保存到连接簿」即可添加',
+  'btn.importSshConfig': '从 ~/.ssh/config 导入',
+  'hint.importSshConfig': '同名跳过；随「保存」写入配置',
+  'hint.sshBook': '随「保存」一并写入配置；密码/口令支持 env:VAR 引用，避免明文入库',
+  'check.tunnelEnabled': '启用',
+  'list.emptyTunnels': '暂无隧道 — 把远程数据库/内部服务映射到本地端口',
+  'field.direction': '转发方向',
+  'option.localForwardTitle': '本地转发 -L：本机监听，连到 SSH 服务器侧的目标',
+  'option.localForward': '本地 -L',
+  'option.remoteForwardTitle': '远程转发 -R：SSH 服务器侧监听，拨回本机服务',
+  'option.remoteForward': '远程 -R',
+  'option.selectBook': '选择连接簿条目',
+  'hint.tunnelViaBook': '经 {book} 连接 — 隧道的主机与认证取自该连接簿条目',
+  'hint.tunnelBookEmpty': '选择这条隧道要走哪台 SSH 连接（主机与认证取自连接簿）',
+  'hint.localListenFixed': '本机监听地址固定 127.0.0.1（不暴露到局域网）',
+  'placeholder.localPort': '本机端口',
+  'field.localListenPort': '本机监听端口',
+  'hint.flowLocalToRemote': '数据流向：本机 → SSH 服务器侧',
+  'placeholder.remoteHost': '服务器侧主机',
+  'hint.remoteHostTitle': '目标主机名或 IP（由 SSH 服务器侧访问；127.0.0.1 = 服务器自身）',
+  'field.remoteHost': '服务器侧目标主机',
+  'placeholder.port': '端口',
+  'field.remotePort': '服务器侧目标端口',
+  'placeholder.remoteListenHost': '服务器侧监听地址',
+  'hint.remoteListenHost': '服务器侧监听地址（缺省 127.0.0.1；留空即只让服务器自己访问）',
+  'field.remoteListenHost': '服务器侧监听地址',
+  'placeholder.listenPort': '监听端口',
+  'field.remoteListenPort': '服务器侧监听端口',
+  'hint.flowRemoteToLocal': '数据流向：本机 ← SSH 服务器侧',
+  'hint.localDialFixed': '本机拨号地址固定 127.0.0.1',
+  'placeholder.localTargetPort': '本机服务端口',
+  'field.localTargetPort': '本机目标端口',
+  'hint.tunnelLocalSummary': '左：本机监听（固定 127.0.0.1）→ 右：由 SSH 服务器侧访问的目标',
+  'hint.tunnelRemoteSummary': '左：SSH 服务器侧监听 → 右：本机被访问的服务（固定 127.0.0.1）',
+  'btn.addTunnel': '添加隧道',
+  'hint.tunnelAdd': '添加后立即生效；断线自动重连；本地端口建议 1024 以上；远程主机由 SSH 服务器侧访问（127.0.0.1 = 服务器自身）',
+  'hint.tunnelEditing': '正在编辑「{name}」——改端口/条目会按规则生成新名字；保存后立即生效',
+  'panel.hostKeys': 'SSH 主机密钥记录（TOFU）',
+  'btn.importKnownHosts': '从 known_hosts 导入',
+  'list.emptyHostKeys': '暂无记录 — 首次 SSH 连接成功后自动记录主机指纹',
+  'hint.hostKeys': '一机多把钥匙（如 rsa + ed25519）各记一条指纹，任一匹配即放行；指纹变更时连接会被拒绝（防中间人），确认安全后删除对应记录即可重连',
+  'msg.saving': '保存中…',
+  'btn.save': '保存',
+  'list.none': '无',
+  'meta.mem': '内存',
+  'meta.disk': '磁盘',
+  'meta.cores': '核心',
+  'meta.uptime': '在线',
+  'meta.temp': 'CPU温度',
+  'meta.net': '网络',
+  'error.tunnelNoBook': '请先在连接簿里添加 SSH 条目',
+  'error.tunnelRemotePortRequired': '远程监听端口与本地目标端口必填（1~65535）',
+  'error.tunnelLocalRequired': '本地端口、远程主机、远程端口必填',
+  'error.tunnelMissing': '隧道「{name}」已不存在（可能被另一个窗口删除）',
+  'error.tunnelClash': '已存在同名隧道「{name}」——请先处理那条同名的。',
+  'msg.renaming': '重命名 {name}…',
+  'msg.deleting': '删除 {name}…',
+  'msg.downloading': '下载 {name}…',
+  'msg.uploadingName': '上传 {name}',
+  'error.invalidTaskState': '服务端返回了非法的任务状态',
+  'hint.rememberCredentialApply': '勾选后，点「应用」时把密码写进官方凭据存储，字段里只留 env: 引用（值在 ~/.dsh/.credentials.yaml，不进环境、不回传浏览器；挡不住同用户进程与 agent）。不勾选则按现状明文写进设置文件。能用密钥 / agent 就别存密码。',
+  'hint.noCredRefPasswordApply': '还没有别的连接用过凭据引用 — 勾上面的「应用时存入凭据存储」新建一个，或直接在密码框手输 env:NAME',
+  'hint.bookNameConflict': '同名冲突会被拒绝',
+  'btn.apply': '应用',
+}
+const I18N_EN = {
+  'error.credServiceMissing': 'The host does not provide the credential service (remote.credentials)',
+  'error.credServiceIncomplete': 'The credential service is incomplete',
+  'error.credStoreUnavailable': 'The host does not provide the credential service (remote.credentials); cannot store',
+  'error.credStoreFailed': 'Failed to store the credential: {error}',
+  'error.credClearUnavailable': 'The host does not provide the credential service (remote.credentials); cannot clear',
+  'error.credClearFailed': 'Failed to clear: {error}',
+  'error.credRefNeedsHost': 'Fill in host and username first — the reference name is derived from them',
+  'btn.reopen': 'Reopen',
+  'btn.reopenTitle': 'Reopen the session with the original connection settings',
+  'btn.sftpTitle': 'Open the SFTP file browser for this connection',
+  'btn.tunnels': 'Tunnels {count}',
+  'btn.tunnelsTitle': 'View the port-forwarding tunnels of this connection',
+  'btn.more': 'More',
+  'btn.moreTitle': 'More actions (port forwarding…)',
+  'btn.reopenSession': 'Reopen session',
+  'status.exited': 'Session exited',
+  'status.ended': 'Session ended',
+  'btn.clickReopen': 'Click to reopen',
+  'btn.clickRerun': 'Click to run again',
+  'msg.passwordNotStored': 'For security, plaintext passwords/passphrases are not kept in browser storage, so this connection needs them again: re-enter them when reopening the tab, or switch the credential to an env: reference in the settings card (the value lives in the host credential store).',
+  'error.terminalNeedsCommand': 'ttyTerminal requires a command',
+  'error.terminalCommandSingleLine': 'command must be a single line',
+  'error.terminalNeedsHost': 'ttyTerminal.mount requires an HTMLElement as the mount point',
+  'error.panelNotReady': 'ttyPanel.mountPane: the terminal panel is not ready',
+  'panel.dragHeight': 'Drag to resize height',
+  'panel.dragWidth': 'Drag to resize width',
+  'btn.closePane': 'Close the side pane',
+  'btn.expandPane': 'Expand the side pane',
+  'btn.collapsePane': 'Collapse the side pane',
+  'panel.tabLabel': 'Terminal {n}',
+  'btn.close': 'Close',
+  'btn.closeTabAria': 'Close tab: {label}',
+  'btn.newTab': 'New (local / SSH)',
+  'meta.tunnelRemote': 'remote:{host}:{port} → local:{local}',
+  'meta.tunnelLocal': 'local:{local} → {host}:{port}',
+  'status.tmuxPersistedTitle': 'Hosted by tmux — the session is reattached by name after a disconnect or host restart',
+  'status.notPersisted': 'Not persisted',
+  'status.tmuxUnavailableTitle': 'A persistent session was requested but tmux is unavailable — this is a plain session',
+  'status.connected': 'Connected',
+  'status.connecting': 'Connecting',
+  'status.errored': 'Connection error',
+  'panel.tunnels': 'Port forwarding',
+  'hint.tunnelsSettings': 'Configure in Settings → Plugins → Terminal panel',
+  'panel.tunnelsFor': 'Port forwarding — {name}',
+  'list.loading': 'Loading…',
+  'hint.tunnelsCard': 'Add, remove, enable, or disable tunnels in the port-forwarding section of Settings → Plugins → Terminal panel',
+  'list.noActiveTunnels': 'No enabled tunnels for this connection',
+  'status.fatalSuffix': ' (no retry; fix the config)',
+  'msg.maxSessions': 'Session limit reached ({live} total / max {max}: {own} in this window{others}) — close unused windows or tabs, or raise “Concurrent session limit” in the settings card',
+  'msg.maxSessionsOthers': ' + {count} in other windows',
+  'error.probeHttp': 'Connection test failed (HTTP {status})',
+  'msg.probing': 'Testing the connection…',
+  'meta.reachable': 'reachable',
+  'meta.probeBanner': 'banner ok',
+  'meta.hostKeyMatched': 'Host key matched',
+  'meta.hostKeyRecorded': 'Host key recorded (TOFU)',
+  'meta.hostKeyMismatch': 'Host key mismatch!',
+  'meta.authOkMs': 'Authenticated ({ms}ms)',
+  'meta.authOk': 'Authenticated',
+  'meta.probeOk': '✅ Connected: {detail}',
+  'error.unknown': 'Unknown error',
+  'btn.maxSessionsTitle': 'Session limit reached — click to see what to do',
+  'option.localTerminal': 'Local terminal',
+  'hint.tmuxHosted': 'Hosted by tmux · recoverable after a host restart',
+  'hint.openInSessionCwd': 'Open in the current session working directory',
+  'panel.sshBook': 'SSH host book',
+  'btn.sftpFileBrowse': 'SFTP file browser',
+  'btn.editConnection': 'Edit connection',
+  'list.emptySshBook': '(empty — save one in the settings card or via “SSH connection…”)',
+  'option.sshConnect': 'SSH connection…',
+  'hint.sshConnect': 'Fill in host, user, and authentication manually',
+  'panel.editConnection': 'Edit connection · {name}',
+  'panel.sshConnect': 'SSH connection',
+  'section.connection': 'Connection',
+  'field.host': 'Host',
+  'placeholder.host': 'example.com or IP',
+  'field.port': 'Port',
+  'field.username': 'Username',
+  'section.auth': 'Authentication',
+  'field.authMethod': 'Auth method',
+  'option.authAgent': 'agent — use the local ssh-agent',
+  'option.authKey': 'key — private key file',
+  'option.authPassword': 'password — password',
+  'field.keyPath': 'Private key path',
+  'field.passphrase': 'Key passphrase (optional)',
+  'field.password': 'Password',
+  'placeholder.credRef': 'Or: pick a reference name from the credential store',
+  'hint.credRefCandidates': 'Candidates = reference names already in the credential store + those in use by the local host book',
+  'list.credOverwrite': '{name} (click again to overwrite)',
+  'list.moreMatches': '{count} more — keep typing to filter',
+  'list.noCredRef': 'No matching reference',
+  'check.rememberCredential': 'Store in the credential store on save',
+  'hint.rememberCredential': 'When checked, “Save changes” or “Connect (and save)” writes the password into the official credential store and leaves only an env: reference in the field (the value lives in ~/.dsh/.credentials.yaml; it is not put into the environment and is not sent back to the browser; it does not protect against same-user processes or the agent). Unchecked keeps today\'s plaintext write into the settings file. If a key or the agent works, do not store a password.',
+  'btn.clearCredential': 'Clear stored credential',
+  'error.credPlainUnavailable': 'The host does not provide the credential service (remote.credentials); plaintext save only',
+  'error.credPlainIncomplete': 'The credential service is incomplete; plaintext save only',
+  'status.credUnreported': 'Reference {ref}: the host reported no status',
+  'error.credStatusFailed': 'Failed to read the credential status: {error}',
+  'status.credStored': 'Stored{source} · {ref}',
+  'meta.credSource': ' (source: {source})',
+  'status.credUnknown': 'Reference {ref}: the store does not have this value yet',
+  'hint.noCredRefPassphrase': 'No other connection uses a credential reference yet — you can type env:NAME straight into the passphrase box',
+  'hint.noCredRefPassword': 'No other connection uses a credential reference yet — check “Store in the credential store on save” above to create one, or type env:NAME straight into the password box',
+  'section.options': 'Options',
+  'check.agentForward': 'agent forwarding (the remote side can use local ssh-agent keys, e.g. remote git clone)',
+  'check.persist': 'Persistent session (hosted by tmux, survives a disconnect/restart; tmux must be installed on the remote)',
+  'check.saveToBook': 'Save to the host book (overwrite the same name)',
+  'field.bookName': 'Host book name',
+  'placeholder.bookName': 'Leave empty to use the host name',
+  'error.hostUserRequired': 'Host and username are required',
+  'error.keyPathRequired': 'auth=key requires a private key path',
+  'error.passwordRequired': 'auth=password requires a password',
+  'btn.cancel': 'Cancel',
+  'btn.connect': 'Connect',
+  'btn.fileBrowse': 'File browser',
+  'btn.browseTitle': 'Open the SFTP file browser with the values currently filled in, without touching a terminal',
+  'btn.probe': 'Test',
+  'btn.probeTitle': 'Diagnose the connection with the values currently filled in (TCP → host key → authentication); no session is created and no host fingerprint is recorded',
+  'error.saveCredFailed': 'Save failed: {error}',
+  'btn.saveEdit': 'Save changes',
+  'error.saveBookFailed': 'Failed to save the host book: {error}',
+  'error.bookNameTaken': 'The host book already has an entry named: {name}',
+  'panel.sftpDual': 'SFTP dual pane · {label}',
+  'status.failed': 'Failed',
+  'status.done': 'Done',
+  'placeholder.localPath': 'Local path (Enter to go)',
+  'placeholder.remotePath': 'Remote path (Enter to go)',
+  'btn.refresh': 'Refresh',
+  'btn.mkdir': 'New folder',
+  'error.dirNotReady': 'The directory is not resolved yet',
+  'meta.dir': 'folder',
+  'btn.transferTo': 'Transfer to {target}: {path}',
+  'meta.local': 'local',
+  'meta.remote': 'remote',
+  'error.transferDirsNotReady': 'Both directories are not resolved yet; wait for the lists to load before transferring',
+  'msg.transferring': 'Transferring {name}…',
+  'error.transferFailed': 'Transfer failed',
+  'error.noTaskId': 'The server returned no task id',
+  'msg.transferCanceled': 'Transfer canceled: {name}',
+  'msg.transferred': 'Transferred {name}',
+  'btn.download': 'Download {name}',
+  'btn.rename': 'Rename {name}',
+  'placeholder.newName': 'New name',
+  'btn.deleteEntry': 'Delete {name}',
+  'btn.deleteEntryDir': 'Delete {name} (with contents)',
+  'msg.deleted': 'Deleted {name}',
+  'list.parentDir': '.. (parent folder)',
+  'list.emptyDir': '(empty folder)',
+  'list.truncated': '…{rest} more not rendered ({total} total) — use the path box above to jump to a subfolder',
+  'list.itemCount': '{count} items',
+  'placeholder.newDirName': 'New folder name (relative to the current folder)',
+  'msg.creatingDir': 'Creating folder {name}…',
+  'btn.ok': 'OK',
+  'btn.confirm': 'Confirm?',
+  'btn.cancelTransfer': 'Cancel transfer',
+  'msg.downloadCanceled': 'Download canceled: {name}',
+  'error.downloadFailed': 'Download failed',
+  'msg.downloaded': 'Downloaded {name} ({size})',
+  'error.downloadTooBig': 'The file exceeds the download limit ({size}); use dual-pane ⇦ direct transfer or scp/rsync in the terminal',
+  'msg.canceled': 'Canceled',
+  'btn.upload': 'Upload',
+  'btn.uploadTitle': 'Pick files to upload, or drag files/folders straight into the list',
+  'msg.uploading': 'Uploading…',
+  'msg.uploadDone': 'Upload finished',
+  'error.uploadFailed': 'Upload failed',
+  'error.networkError': 'Network error',
+  'error.uploadCountExceeded': 'Too many files (limit {max}): {count} this time — upload in batches',
+  'status.overLimit': 'Over the limit',
+  'error.uploadTooBig': 'The file exceeds the upload limit ({size}): {name} — use dual-pane ⇨ direct transfer or scp/rsync in the terminal',
+  'error.uploadTotalTooBig': 'The total size exceeds the upload limit: upload in batches (or use dual-pane ⇨ direct transfer)',
+  'msg.uploadCanceled': 'Upload canceled ({done}/{total} done)',
+  'status.allDone': 'All done',
+  'msg.uploadDoneCount': 'Uploaded {count} files',
+  'error.connectFailed': 'Connection failed: {error}',
+  'status.connectingEllipsis': 'Connecting…',
+  'status.connectedPid': 'Connected pid={pid}',
+  'status.connectedSsh': 'SSH {target}connected',
+  'status.exitedWith': 'Exited {detail}',
+  'status.error': 'Error: {message}',
+  'status.retryHint': '{message} · click to retry',
+  'btn.clickRetry': 'Click to retry',
+  'status.disconnectedReconnecting': 'Disconnected — reconnecting',
+  'status.disconnected': 'Disconnected',
+  'status.reconnecting': 'Reconnecting…',
+  'error.copyFailed': 'Copy failed: this environment does not allow clipboard access (over http, use localhost or the terminal\'s own shortcuts)',
+  'error.pasteFailed': 'The browser does not allow pages to read the clipboard (common over http): paste with Ctrl+V / Cmd+V inside the terminal',
+  'status.initializing': 'Initializing…',
+  'placeholder.search': 'Search (Enter next, Shift+Enter previous)',
+  'btn.searchTitle': 'Search (Ctrl+F)',
+  'btn.clearTitle': 'Clear',
+  'btn.copyTitle': 'Copy selection',
+  'btn.pasteTitle': 'Paste',
+  'btn.minimizeTitle': 'Minimize (sessions keep running; the status moves into the sidebar entry)',
+  'btn.closePanelTitle': 'Close the panel (ends sessions; tabs are kept and the list comes back on reopen)',
+  'btn.restoreDock': 'Click to restore the terminal window',
+  'panel.title': 'Terminal',
+  'status.minimized': 'Terminal minimized — click to restore',
+  'error.configLoadFailed': 'Failed to load the config',
+  'error.saveTunnelFailed': 'Failed to save the tunnel',
+  'error.tunnelNameTaken': 'A tunnel named “{name}” already exists — each “host book entry + direction + port” combination can appear once. Change the port to get a new name, or delete the old one first.',
+  'msg.tunnelApplied': 'Tunnel “{name}” is active',
+  'msg.tunnelUpdated': 'Tunnel “{name}” updated',
+  'error.nameHostUserRequired': 'Name, host, and username are required',
+  'msg.hostEdited': 'Entry “{name}” updated — written to the config on “Save”',
+  'error.probeFailed': '❌ Connection failed: {error}',
+  'error.hostKeyDeleteFailed': 'Failed to delete the host key record',
+  'msg.hostKeyDeleted': 'Host key record deleted (the fingerprint is recorded again on the next connection)',
+  'error.sshConfigReadFailed': 'Failed to read ~/.ssh/config',
+  'msg.proxySkipped': '{count} entries that use a jump host (ProxyJump / ProxyCommand) were not imported: {names}',
+  'list.separator': ', ',
+  'meta.etc': ' etc.',
+  'msg.importOverflow': '{count} entries beyond the import limit were not imported',
+  'list.separatorFull': '; ',
+  'msg.noNewEntries': 'No new entries ({count} skipped as duplicates)',
+  'msg.noImportableHosts': '~/.ssh/config has no concrete hosts to import',
+  'msg.importedHosts': 'Imported {added} (skipped {skipped} duplicates); written to the config on “Save”',
+  'error.knownHostsReadFailed': 'Failed to read ~/.ssh/known_hosts',
+  'msg.noNewFingerprints': 'No new fingerprints ({count} already exist)',
+  'msg.noImportableKnownHosts': 'known_hosts has no concrete hosts to import',
+  'error.saveHostKeysFailed': 'Failed to save hostKeys',
+  'msg.importedFingerprints': 'Imported fingerprints for {added} hosts (skipped {skipped} that already existed)',
+  'hint.knownHostsTruncated': '; note: known_hosts has more than 500 hosts — only the first 500 were imported',
+  'error.saveFailed': 'Save failed',
+  'msg.saved': 'Saved and applied live',
+  'check.rememberCredentialApply': 'Store in the credential store on apply',
+  'hint.appliedOnSave': 'Written to the config with the card\'s “Save”',
+  'card.name': 'Terminal panel',
+  'card.desc': 'xterm terminal panel: multiple tabs, automatic reconnect after a drop, cwd follows the session, SSH host book with host-key pinning, tmux session persistence.',
+  'card.descFull': 'xterm terminal panel: multiple tabs, automatic reconnect after a drop, cwd follows the session, SSH host book with host-key pinning, tmux session persistence; shell / TERM / concurrency limits apply live on save.',
+  'list.loadingConfig': 'Loading the config…',
+  'section.basic': 'Basics',
+  'check.enabled': 'Enable the plugin (applies live on save: tools and the panel entry are withdrawn immediately, sessions move to keepalive)',
+  'check.announce': 'Announce the terminal panel capabilities to the agent',
+  'check.shellIntegration': 'Shell integration (OSC 133/7 injection)',
+  'check.shellIntegrationWindows': 'Shell integration (OSC 133/7 injection; tty_capture{last} and cwd following depend on it)',
+  'hint.shellIntegrationWindows': 'Not applicable on Windows hosts: injection relies on the POSIX `-c` wrapper and rc stubs, which do not hold for cmd / PowerShell (cmd ignores `-c` and exits, PowerShell reports that export does not exist). So cwd following and tty_capture{last} are unavailable for **local** tabs; remote Linux / macOS hosts are unaffected.',
+  'section.sftp': 'SFTP file transfer',
+  'field.sftpStyle': 'SFTP file browser style',
+  'option.sftpDialog': 'Single pane — remote directory + upload/download/drag',
+  'option.sftpDual': 'Dual pane — local on the left, remote on the right, direct transfer on selection',
+  'hint.sftpDual': 'Dual pane copies files between local and remote (recursive, overwriting same names); takes effect after reopening SFTP',
+  'field.sftpLimits': 'SFTP transfer limits (0 = unlimited)',
+  'field.downloadLimit': 'Download limit (MB)',
+  'field.uploadLimit': 'Upload limit (MB)',
+  'field.uploadCountLimit': 'Batch file count limit',
+  'hint.sftpLimits': 'Browser-side guard: a single file over the limit aborts the download/upload (for large files use dual-pane ⇨/⇦ direct transfer or scp/rsync in the terminal; they do not consume browser memory); the file count limit applies to one batch/drag upload; applies live on save',
+  'section.session': 'Sessions',
+  'field.persistence': 'Session persistence (tmux)',
+  'option.persistOff': 'Off — sessions end with the panel/host (default)',
+  'option.persistTmux': 'tmux — new terminal/SSH tabs are persistent by default',
+  'hint.persistence': 'When on, all new tabs (local / SSH host book / SSH connection dialog) are hosted by tmux by default and survive a host restart; tmux must be installed locally/remotely; the SSH dialog can opt out per connection; existing tabs are unaffected',
+  'hint.persistenceWindows': '; tmux is unavailable on Windows hosts, so local tabs still open but are not hosted',
+  'check.endOnPageClose': 'End persistent sessions when the page closes (no keepalive)',
+  'check.statsEnabled': 'Server stats bar (CPU / memory / disk / uptime / TCP / network; items that cannot be sampled show “N/A”)',
+  'hint.statsEnabled': 'Off by default: persistent sessions survive closing the whole page (recoverable after the keepalive window); when on, they end together with the tmux session once the page disconnects and the keepalive window expires — note that refreshing the page within the keepalive window is unaffected',
+  'field.maxSessions': 'Concurrent session limit (1–16)',
+  'hint.maxSessions': 'New tabs beyond the limit are rejected; applies live on save',
+  'field.shell': 'Shell path (defaults to $SHELL)',
+  'field.shellWindows': 'Shell path (defaults to %COMSPEC%)',
+  'placeholder.shell': 'Leave empty to use $SHELL',
+  'placeholder.shellWindows': 'Leave empty to use %COMSPEC% (or enter the full path to powershell.exe / pwsh.exe)',
+  'list.noShellCandidate': 'No matching candidate — just type any path',
+  'hint.shellCandidatesWindows': 'Windows host: candidates come from %COMSPEC% and the installed PowerShell (Windows PowerShell 5.1 / PowerShell 7), and you can type any path; cmd / PowerShell have no POSIX command-boundary hooks, so shell integration is unsupported for them',
+  'hint.shellCandidates': 'Pick an installed shell from the list ($SHELL first) or type any path; zsh / bash support shell integration',
+  'hint.term': 'TUI programs depend on this value',
+  'field.cwd': 'Fallback working directory (the client\'s current session cwd wins)',
+  'placeholder.cwd': 'Leave empty to use the host process start directory',
+  'field.grace': 'Disconnect keepalive (seconds, 0 = end immediately)',
+  'hint.grace': 'Sessions are kept alive for reconnect after a page refresh or network hiccup and end on timeout; applies live on save',
+  'section.ssh': 'SSH connections',
+  'btn.probeRowTitle': 'Test this entry: per-stage diagnosis of TCP → host key → authentication',
+  'msg.testing': 'Testing…',
+  'btn.test': 'Test',
+  'btn.edit': 'Edit',
+  'btn.delete': 'Delete',
+  'list.emptySshHosts': 'No entries — add one via the terminal panel\'s “+” → SSH connection… and check “Save to the host book”',
+  'btn.importSshConfig': 'Import from ~/.ssh/config',
+  'hint.importSshConfig': 'Same names are skipped; written to the config on “Save”',
+  'hint.sshBook': 'Written to the config together with “Save”; passwords/passphrases support env:VAR references to avoid plaintext storage',
+  'check.tunnelEnabled': 'Enable',
+  'list.emptyTunnels': 'No tunnels — map a remote database or internal service to a local port',
+  'field.direction': 'Forwarding direction',
+  'option.localForwardTitle': 'Local forward -L: listen locally and connect to a target on the SSH server side',
+  'option.localForward': 'Local -L',
+  'option.remoteForwardTitle': 'Remote forward -R: listen on the SSH server side and dial back to a local service',
+  'option.remoteForward': 'Remote -R',
+  'option.selectBook': 'Pick a host book entry',
+  'hint.tunnelViaBook': 'Connects via {book} — the tunnel\'s host and credentials come from that host book entry',
+  'hint.tunnelBookEmpty': 'Pick which SSH connection this tunnel uses (host and credentials come from the host book)',
+  'hint.localListenFixed': 'The local listen address is fixed to 127.0.0.1 (not exposed to the LAN)',
+  'placeholder.localPort': 'Local port',
+  'field.localListenPort': 'Local listen port',
+  'hint.flowLocalToRemote': 'Traffic flow: local → SSH server side',
+  'placeholder.remoteHost': 'Server-side host',
+  'hint.remoteHostTitle': 'Target host name or IP (reached from the SSH server side; 127.0.0.1 = the server itself)',
+  'field.remoteHost': 'Server-side target host',
+  'placeholder.port': 'Port',
+  'field.remotePort': 'Server-side target port',
+  'placeholder.remoteListenHost': 'Server-side listen address',
+  'hint.remoteListenHost': 'Server-side listen address (defaults to 127.0.0.1; leave empty to allow only the server itself)',
+  'field.remoteListenHost': 'Server-side listen address',
+  'placeholder.listenPort': 'Listen port',
+  'field.remoteListenPort': 'Server-side listen port',
+  'hint.flowRemoteToLocal': 'Traffic flow: local ← SSH server side',
+  'hint.localDialFixed': 'The local dial address is fixed to 127.0.0.1',
+  'placeholder.localTargetPort': 'Local service port',
+  'field.localTargetPort': 'Local target port',
+  'hint.tunnelLocalSummary': 'Left: local listener (fixed 127.0.0.1) → Right: target reached from the SSH server side',
+  'hint.tunnelRemoteSummary': 'Left: SSH server-side listener → Right: local service being reached (fixed 127.0.0.1)',
+  'btn.addTunnel': 'Add tunnel',
+  'hint.tunnelAdd': 'Takes effect immediately; reconnects automatically after a drop; prefer local ports above 1024; remote hosts are reached from the SSH server side (127.0.0.1 = the server itself)',
+  'hint.tunnelEditing': 'Editing “{name}” — changing the port/entry derives a new name by rule; takes effect immediately on save',
+  'panel.hostKeys': 'SSH host key records (TOFU)',
+  'btn.importKnownHosts': 'Import from known_hosts',
+  'list.emptyHostKeys': 'No records — the host fingerprint is recorded automatically after the first successful SSH connection',
+  'hint.hostKeys': 'A host with several keys (e.g. rsa + ed25519) gets one fingerprint each and any match is accepted; a changed fingerprint rejects the connection (MITM protection) — delete that record once you are sure it is safe, then reconnect',
+  'msg.saving': 'Saving…',
+  'btn.save': 'Save',
+  'list.none': 'N/A',
+  'meta.mem': 'Memory',
+  'meta.disk': 'Disk',
+  'meta.cores': 'Cores',
+  'meta.uptime': 'Uptime',
+  'meta.temp': 'CPU temp',
+  'meta.net': 'Network',
+  'error.tunnelNoBook': 'Add an SSH entry to the host book first',
+  'error.tunnelRemotePortRequired': 'A remote listen port and a local target port are required (1–65535)',
+  'error.tunnelLocalRequired': 'Local port, remote host, and remote port are required',
+  'error.tunnelMissing': 'Tunnel “{name}” no longer exists (it may have been deleted by another window)',
+  'error.tunnelClash': 'A tunnel named “{name}” already exists — handle that one first.',
+  'msg.renaming': 'Renaming {name}…',
+  'msg.deleting': 'Deleting {name}…',
+  'msg.downloading': 'Downloading {name}…',
+  'msg.uploadingName': 'Uploading {name}',
+  'error.invalidTaskState': 'The server returned an invalid task state',
+  'hint.rememberCredentialApply': 'When checked, “Apply” writes the password into the official credential store and leaves only an env: reference in the field (the value lives in ~/.dsh/.credentials.yaml; it is not put into the environment and is not sent back to the browser; it does not protect against same-user processes or the agent). Unchecked keeps today\'s plaintext write into the settings file. If a key or the agent works, do not store a password.',
+  'hint.noCredRefPasswordApply': 'No other connection uses a credential reference yet — check “Store in the credential store on apply” above to create one, or type env:NAME straight into the password box',
+  'hint.bookNameConflict': 'A same-name conflict is rejected',
+  'btn.apply': 'Apply',
+}
+/* ==== dsh-i18n:end ==== */
+
+/** 占位符替换：`{name}` → params.name（缺参留空，不抛错——文案不该打死界面）。 */
+function i18nFormat(text, params) {
+  if (params === undefined) return text
+  return String(text).replace(/\{(\w+)\}/g, (_match, name) => (params[name] === undefined ? '' : String(params[name])))
+}
+
+/** 中文兜底：老宿主（DSH ≤0.1.5）没有 locale 服务时，界面不能变成一串键名。 */
+function i18nFallback(key, params) {
+  return i18nFormat(I18N_ZH[key] !== undefined ? I18N_ZH[key] : key, params)
+}
+
+let t = i18nFallback
+
+/**
+ * 注册目录并绑定翻译函数。**动态 inject**：老宿主上回调永不触发、`t` 保持中文兜底；
+ * 写成静态 `inject: ['locale']` 会让整张卡片在老宿主上根本不挂。
+ *
+ * 语言切换不用自己订阅：插槽 outlet 随 locale revision 重渲染（renderer 的
+ * `useLocaleRevision`），而 `bind()` 返回的翻译函数在**调用时**读当前语言。
+ */
+function installI18n(ctx) {
+  ctx.inject(['locale'], (i18nCtx) => {
+    const disposeZh = i18nCtx.locale.register(I18N_NS, 'zh', I18N_ZH)
+    const disposeEn = i18nCtx.locale.register(I18N_NS, 'en', I18N_EN)
+    t = i18nCtx.locale.bind(I18N_NS)
+    return () => {
+      disposeEn()
+      disposeZh()
+      t = i18nFallback
+    }
+  })
+}
 
 /* ================================ 基础工具 ================================ */
 
@@ -173,8 +915,8 @@ async function describeCredentialRef(ref) {
   if (remote === null) {
     return {
       error: credentialsRemote === null
-        ? '宿主未提供凭据服务（remote.credentials）'
-        : '凭据服务不完整',
+        ? t('error.credServiceMissing')
+        : t('error.credServiceIncomplete'),
     }
   }
   try {
@@ -197,14 +939,14 @@ async function describeCredentialRef(ref) {
 async function storeCredentialRef(ref, value) {
   const remote = credentialStore()
   if (remote === null || typeof remote.set !== 'function') {
-    return { error: '宿主未提供凭据服务（remote.credentials），无法存入' }
+    return { error: t('error.credStoreUnavailable') }
   }
   try {
     await remote.set(ref, value)
     return { value: 'env:' + ref }
   } catch (error) {
     // 官方要求：拒绝要**原文**给用户看（典型是只读源遮蔽了这个引用）
-    return { error: '存入凭据存储失败：' + (error instanceof Error ? error.message : String(error)) }
+    return { error: t('error.credStoreFailed', { error: error instanceof Error ? error.message : String(error) }) }
   }
 }
 
@@ -212,13 +954,13 @@ async function storeCredentialRef(ref, value) {
 async function clearCredentialRef(ref) {
   const remote = credentialStore()
   if (remote === null || typeof remote.unset !== 'function') {
-    return { error: '宿主未提供凭据服务（remote.credentials），无法清除' }
+    return { error: t('error.credClearUnavailable') }
   }
   try {
     await remote.unset(ref)
     return {}
   } catch (error) {
-    return { error: '清除失败：' + (error instanceof Error ? error.message : String(error)) }
+    return { error: t('error.credClearFailed', { error: error instanceof Error ? error.message : String(error) }) }
   }
 }
 
@@ -236,7 +978,7 @@ async function storeCredentialIfRequested(remember, inputValue, host, port, user
   const value = String(inputValue ?? '').trim()
   if (value === '' || value.startsWith('env:')) return {}
   const ref = derivedCredentialRef(host, port, username, suffix)
-  if (ref === '') return { error: '先填「主机」和「用户名」再存入——引用名由这两者派生' }
+  if (ref === '') return { error: t('error.credRefNeedsHost') }
   return storeCredentialRef(ref, value)
 }
 
@@ -406,7 +1148,7 @@ let statsSubSid = null
 /** 陈旧检测定时器：面板打开期间每秒复查（采集端静默停止时要能自己收起状态条）。 */
 let statsStaleTimer = null
 /**
- * 状态条条目 DOM 引用（与 STATS_ITEM_SPECS 同序、等长；null = 还没建 / 已随面板作废）。
+ * 状态条条目 DOM 引用（与 statsItemSpecs(t) 同序、等长；null = 还没建 / 已随面板作废）。
  * 条目**只建一次**，之后每次刷新只写真的变了的文本——整条 innerHTML 重写会丢掉 CSS
  * 过渡、把横向滚动位置弹回 0，且任何值位数变化都会推着后面所有条目横移（见 stats-bar.js
  * 文件头：用户报的「定期闪动」）。
@@ -430,19 +1172,19 @@ function registerConnbarAction(factory) {
 // 内置动作：与第三方扩展同一通道，因此顺序与权限完全一致（插件禁用时全部收起）
 registerConnbarAction(({ tab, addAction }) => {
   if (!entryVisible) return
-  if (tab.exited) addAction(ICON_RECONNECT, '重新打开', '以原连接信息重开会话', () => respawnTab(tab.sid))
+  if (tab.exited) addAction(ICON_RECONNECT, t('btn.reopen'), t('btn.reopenTitle'), () => respawnTab(tab.sid))
 })
 registerConnbarAction(({ tab, addAction }) => {
   if (!entryVisible) return
   // 归属这个标签：切到别的标签时文件浏览跟着收起（它连的是这个标签的那台主机）
-  addAction(ICON_SFTP, 'SFTP', '打开该连接的文件浏览（SFTP）', () => openSftpBrowser(tab.spawnSpec, tab.sid))
+  addAction(ICON_SFTP, 'SFTP', t('btn.sftpTitle'), () => openSftpBrowser(tab.spawnSpec, tab.sid))
 })
 registerConnbarAction(({ bookName, addAction }) => {
   if (!entryVisible) return
   const count = bookName !== '' ? tunnelCountFor(bookName) : 0
   if (count > 0) {
     // 该连接有启用隧道：常驻按钮（带数量），一眼可见、可点开看实时状态
-    addAction(ICON_TUNNEL, '隧道 ' + count, '查看该连接的端口转发隧道', (event) => openTunnelPopover(event.currentTarget, bookName))
+    addAction(ICON_TUNNEL, t('btn.tunnels', { count }), t('btn.tunnelsTitle'), (event) => openTunnelPopover(event.currentTarget, bookName))
     return
   }
   /*
@@ -457,7 +1199,7 @@ registerConnbarAction(({ bookName, addAction }) => {
    * 「新建连接」对话框里未保存的临时连接配不了隧道（默认走第一个条目，语义不对）。
    */
   if (bookName === '') return
-  addAction(ICON_MORE, '更多', '更多操作（端口转发…）', (event) => openConnbarMoreMenu(event.currentTarget, bookName))
+  addAction(ICON_MORE, t('btn.more'), t('btn.moreTitle'), (event) => openConnbarMoreMenu(event.currentTarget, bookName))
 })
 
 function setStatus(text, state) {
@@ -521,7 +1263,7 @@ function syncStatusToActiveTab() {
   if (!needsStatusResync(statusSid, activeSid)) return
   const tab = activeSid === null ? undefined : tabs.get(activeSid)
   statusSid = tab === undefined ? null : activeSid
-  const next = statusForTab(tab)
+  const next = statusForTab(tab, t)
   setStatus(next.text, next.state)
 }
 
@@ -534,7 +1276,7 @@ function sendFrame(msg) {
 /* ============================ 服务器状态条（0.17.0） ============================ */
 
 /**
- * 建状态条条目（每面板一次，DOM 结构与 STATS_ITEM_SPECS 一一对应）。
+ * 建状态条条目（每面板一次，DOM 结构与 statsItemSpecs(t) 一一对应）。
  *
  * 为什么不让每次 stats 帧重建 HTML（D49）：整条 `innerHTML` 重写会（a）丢掉
  * `.tt_statsMeterFill` 的宽度过渡——元素每秒被重建，过渡永远没机会跑；（b）把横向
@@ -546,7 +1288,7 @@ function sendFrame(msg) {
 function buildStatsBarDom() {
   const refs = []
   const fragment = document.createDocumentFragment()
-  for (const spec of STATS_ITEM_SPECS) {
+  for (const spec of statsItemSpecs(t)) {
     const item = document.createElement('span')
     item.className = 'tt_statsItem'
     const label = document.createElement('span')
@@ -583,7 +1325,7 @@ function buildStatsBarDom() {
  * 免得第三方实现塞进来的越界值把进度条拉出容器。
  */
 function updateStatsItems(refs, tab) {
-  const values = statsItemValues(tab !== undefined ? tab.stats : null)
+  const values = statsItemValues(tab !== undefined ? tab.stats : null, t)
   for (let index = 0; index < refs.length; index += 1) {
     const ref = refs[index]
     const next = values[index]
@@ -1041,7 +1783,7 @@ function createTerminal(tab) {
   })
   // 键盘可达（0.19.0）：退出/错误浮层此前 div+click，键盘用户重开不了会话
   overlayEl.setAttribute('role', 'button')
-  overlayEl.setAttribute('aria-label', '重新打开会话')
+  overlayEl.setAttribute('aria-label', t('btn.reopenSession'))
   overlayEl.tabIndex = 0
   overlayEl.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar') {
@@ -1267,7 +2009,7 @@ function restoreTab(saved) {
 function warnStrippedCredentials(tab) {
   if (tab?.spawnSpec?.credsStripped !== true || tab.term === null) return
   try {
-    tab.term.writeln('\x1b[2m[dsh-tty] 出于安全考虑，明文密码/口令不随浏览器存储保留，本次连接需要重新输入：重开标签时再填一次，或在设置卡片把凭据换成 env: 引用（值存宿主凭据存储）。\x1b[0m')
+    tab.term.writeln('\x1b[2m[dsh-tty] ' + t('msg.passwordNotStored') + '\x1b[0m')
   } catch {
     /* 终端已释放 */
   }
@@ -1394,8 +2136,8 @@ function closeTab(sid) {
  */
 function normalizeTerminalCommand(options) {
   const command = typeof options?.command === 'string' ? options.command.trim() : ''
-  if (command === '') throw new Error('ttyTerminal 需要 command')
-  if (/[\r\n\0]/.test(command)) throw new Error('command 必须是单行')
+  if (command === '') throw new Error(t('error.terminalNeedsCommand'))
+  if (/[\r\n\0]/.test(command)) throw new Error(t('error.terminalCommandSingleLine'))
   return command
 }
 
@@ -1484,7 +2226,7 @@ function respawnEmbedded(old) {
  * 返回 dispose()：结束会话并卸载 DOM——调用方在自己的抽屉关闭时调用它。
  */
 function mountTerminal(hostEl, options) {
-  if (!(hostEl instanceof HTMLElement)) throw new Error('ttyTerminal.mount 需要 HTMLElement 作为挂载点')
+  if (!(hostEl instanceof HTMLElement)) throw new Error(t('error.terminalNeedsHost'))
   const command = normalizeTerminalCommand(options)
   const spawnSpec = buildTerminalSpec(options, command)
   const label = typeof options?.label === 'string' && options.label !== '' ? options.label : undefined
@@ -1637,7 +2379,7 @@ function teardownDockPane(notify) {
  */
 function mountDockPane(options) {
   ensureModalVisible()
-  if (workEl === null) throw new Error('ttyPanel.mountPane：终端面板未就绪')
+  if (workEl === null) throw new Error(t('error.panelNotReady'))
   if (dockPane !== null) teardownDockPane(true)
   ensureStyle()
 
@@ -1658,13 +2400,13 @@ function mountDockPane(options) {
   el.dataset.side = side
   workEl.dataset.side = side
   el.innerHTML =
-    '<div class="tt_dockPaneResize" title="' + (side === 'bottom' ? '拖动调整高度' : '拖动调整宽度') + '"></div>' +
+    '<div class="tt_dockPaneResize" title="' + (side === 'bottom' ? t('panel.dragHeight') : t('panel.dragWidth')) + '"></div>' +
     '<div class="tt_dockPaneHead">' +
     '<span class="tt_dockPaneTitle"></span>' +
     '<span class="tt_dockPaneHint"></span>' +
     '<span class="tt_dockPaneSpacer"></span>' +
     '<button class="tt_dockPaneFold" type="button"></button>' +
-    '<button class="tt_dockPaneClose" type="button" title="关闭侧栏">' + ICON_CLOSE + '</button>' +
+    '<button class="tt_dockPaneClose" type="button" title="' + t('btn.closePane') + '">' + ICON_CLOSE + '</button>' +
     '</div>' +
     '<div class="tt_dockPaneBody"></div>'
   workEl.appendChild(el)
@@ -1698,7 +2440,7 @@ function mountDockPane(options) {
     if (pane.collapsed) el.dataset.collapsed = '1'
     else delete el.dataset.collapsed
     foldEl.innerHTML = foldIcon()
-    foldEl.title = pane.collapsed ? '展开侧栏' : '收起侧栏'
+    foldEl.title = pane.collapsed ? t('btn.expandPane') : t('btn.collapsePane')
     foldEl.setAttribute('aria-label', foldEl.title)
     applyDockGeometry()
   }
@@ -1806,7 +2548,7 @@ function switchTab(sid) {
   if (tab.spawned && !tab.exited) {
     sendResize(tab)
   }
-  showTabOverlay(tab, tab.exited ? '会话已退出' : '', tab.exited ? '点击重新打开' : '', 'exited')
+  showTabOverlay(tab, tab.exited ? t('status.exited') : '', tab.exited ? t('btn.clickReopen') : '', 'exited')
   // 胶囊跟着活动标签走：上一个标签留下的错误（如 SSH 握手超时）不该跟着切过来
   syncStatusToActiveTab()
 }
@@ -1855,7 +2597,7 @@ function renderTabbar() {
     // 标签标题：SSH 标签用 label（连接名 / target），本地标签用「终端 N」
     const labelEl = document.createElement('span')
     labelEl.className = 'tt_tabLabel'
-    labelEl.textContent = tab.label || '终端 ' + tabCounterLabel(sid)
+    labelEl.textContent = tab.label || t('panel.tabLabel', { n: tabCounterLabel(sid) })
     // 双击重命名：行内 input，Enter/失焦提交（空还原），Esc 取消
     labelEl.addEventListener('dblclick', (event) => {
       event.stopPropagation()
@@ -1863,11 +2605,11 @@ function renderTabbar() {
     })
     const closeEl = document.createElement('span')
     closeEl.className = 'tt_tabClose'
-    closeEl.title = '关闭'
+    closeEl.title = t('btn.close')
     closeEl.textContent = '✕'
     // 键盘可达（0.19.0）：✕ 此前只能鼠标点（tab 本身的 Enter 走 switchTab）
     closeEl.setAttribute('role', 'button')
-    closeEl.setAttribute('aria-label', '关闭标签：' + (tab.label || ''))
+    closeEl.setAttribute('aria-label', t('btn.closeTabAria', { label: tab.label || '' }))
     closeEl.tabIndex = 0
     closeEl.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar') {
@@ -1897,7 +2639,7 @@ function renderTabbar() {
   }
   const add = document.createElement('button')
   add.className = 'tt_tabAdd'
-  add.title = '新建（本地 / SSH）'
+  add.title = t('btn.newTab')
   add.innerHTML = ICON_PLUS
   add.addEventListener('click', () => {
     openAddMenu(add)
@@ -1908,10 +2650,10 @@ function renderTabbar() {
 /* ================================ 连接栏 ================================ */
 
 /** 隧道规则展示（与设置卡片同语义的轻量副本，供连接栏弹层使用）。 */
-function tunnelRuleText(t) {
-  return t?.direction === 'remote'
-    ? `远程:${t.remoteHost || '127.0.0.1'}:${String(t.remotePort ?? 0)} → 本机:${String(t.localTargetPort ?? 0)}`
-    : `本机:${String(t?.localPort ?? 0)} → ${t?.remoteHost ?? '?'}:${String(t?.remotePort ?? 0)}`
+function tunnelRuleText(tunnel) {
+  return tunnel?.direction === 'remote'
+    ? t('meta.tunnelRemote', { host: tunnel.remoteHost || '127.0.0.1', port: String(tunnel.remotePort ?? 0), local: String(tunnel.localTargetPort ?? 0) })
+    : t('meta.tunnelLocal', { local: String(tunnel?.localPort ?? 0), host: tunnel?.remoteHost ?? '?', port: String(tunnel?.remotePort ?? 0) })
 }
 
 /**
@@ -1945,11 +2687,11 @@ function renderConnbar() {
     if (tab.persistTmux === true) {
       connBadgeEl.textContent = 'tmux'
       connBadgeEl.dataset.state = 'ok'
-      connBadgeEl.title = '已由 tmux 托管 — 断线 / 宿主重启后按名接回现场'
+      connBadgeEl.title = t('status.tmuxPersistedTitle')
     } else if (spec.persist === true && tab.spawned === true) {
-      connBadgeEl.textContent = '未持久化'
+      connBadgeEl.textContent = t('status.notPersisted')
       connBadgeEl.dataset.state = 'warn'
-      connBadgeEl.title = '请求了持久会话，但 tmux 不可用 — 当前为普通会话'
+      connBadgeEl.title = t('status.tmuxUnavailableTitle')
     } else {
       connBadgeEl.textContent = ''
       delete connBadgeEl.dataset.state
@@ -1958,7 +2700,7 @@ function renderConnbar() {
   }
   const state = tab.exited ? 'exited' : tab.live === true ? 'connected' : tab.errored === true ? 'error' : 'connecting'
   connDotEl.dataset.state = state
-  connDotEl.title = state === 'connected' ? '已连接' : state === 'connecting' ? '连接中' : state === 'error' ? '连接出错' : '会话已退出'
+  connDotEl.title = state === 'connected' ? t('status.connected') : state === 'connecting' ? t('status.connecting') : state === 'error' ? t('status.errored') : t('status.exited')
   const action = (icon, label, title, onClick) => {
     const btn = document.createElement('button')
     btn.type = 'button'
@@ -2014,7 +2756,7 @@ function openConnbarMoreMenu(anchor, bookName) {
   // 不给"跳转设置卡片"的假按钮：宿主没有开放程序化导航到设置面板的接口（实测
   // dsh-client-ui-settings 没有暴露 openSettings / 路由 hash），做了也只能是个不动的
   // 按钮。改成**把路径写清楚**——用户照着一句话就能找到，比一个点了没反应的跳转强。
-  addMenuItem(menu, '端口转发', '在 设置 → 插件 → 终端面板 里配置', () => {
+  addMenuItem(menu, t('panel.tunnels'), t('hint.tunnelsSettings'), () => {
     closeConnbarMoreMenu()
     openTunnelPopover(anchor, bookName)
   }, undefined, ICON_TUNNEL)
@@ -2072,14 +2814,14 @@ function openTunnelPopover(anchor, bookName) {
   pop.className = 'tt_tunnelPop'
   const title = document.createElement('div')
   title.className = 'tt_tunnelPopTitle'
-  title.textContent = '端口转发 — ' + bookName
+  title.textContent = t('panel.tunnelsFor', { name: bookName })
   pop.appendChild(title)
   const listEl = document.createElement('div')
-  listEl.textContent = '加载中…'
+  listEl.textContent = t('list.loading')
   pop.appendChild(listEl)
   const hint = document.createElement('span')
   hint.className = 'tt_cardHint'
-  hint.textContent = '增删/启停在 插件配置 → 终端面板 的端口转发区块维护'
+  hint.textContent = t('hint.tunnelsCard')
   pop.appendChild(hint)
   document.body.appendChild(pop)
   tunnelPopoverEl = pop
@@ -2104,16 +2846,16 @@ function openTunnelPopover(anchor, bookName) {
     }
     if (tunnelPopoverEl !== pop) return // 弹层已被关闭
     listEl.textContent = ''
-    const mine = tunnelsCache.filter((t) => t?.bookName === bookName && t?.enabled !== false)
+    const mine = tunnelsCache.filter((tunnel) => tunnel?.bookName === bookName && tunnel?.enabled !== false)
     if (mine.length === 0) {
       const empty = document.createElement('span')
       empty.className = 'tt_cardHint'
-      empty.textContent = '该连接暂无启用的隧道'
+      empty.textContent = t('list.noActiveTunnels')
       listEl.appendChild(empty)
       return
     }
-    for (const t of mine) {
-      const st = statusList.find((s) => s?.name === t?.name)
+    for (const tunnel of mine) {
+      const st = statusList.find((s) => s?.name === tunnel?.name)
       const state = st?.state ?? 'stopped'
       const row = document.createElement('div')
       row.className = 'tt_tunnelPopRow'
@@ -2124,7 +2866,7 @@ function openTunnelPopover(anchor, bookName) {
       text.className = 'tt_connTarget'
       text.title = String(st?.error ?? st?.lastForwardError ?? '')
       // fatal（本地监听失败等）不会自愈：只写 state 会让人一直等「连接中」（D58）
-      text.textContent = tunnelRuleText(t) + ' · ' + state + (st?.fatal === true ? '（不重试，需修配置）' : '')
+      text.textContent = tunnelRuleText(tunnel) + ' · ' + state + (st?.fatal === true ? t('status.fatalSuffix') : '')
       row.appendChild(dot)
       row.appendChild(text)
       listEl.appendChild(row)
@@ -2150,7 +2892,7 @@ function startTabRename(sid, tabBtn) {
   if (labelEl === null) return
   const input = document.createElement('input')
   input.className = 'tt_tabRename'
-  input.value = tab.label || '终端 ' + tabCounterLabel(sid)
+  input.value = tab.label || t('panel.tabLabel', { n: tabCounterLabel(sid) })
   labelEl.replaceWith(input)
   input.focus()
   input.select()
@@ -2281,9 +3023,11 @@ async function sessionLimitNotice() {
   if (maxSessionsCache === null || liveSessionCount === null) return null
   if (liveSessionCount < maxSessionsCache) return null
   // 分账：本窗口标签数可数，其余来自其他窗口/页面（含待恢复会话）
-  const ownCount = [...tabs.values()].filter((t) => !t.exited).length
+  const ownCount = [...tabs.values()].filter((tab) => !tab.exited).length
   const othersCount = Math.max(0, liveSessionCount - ownCount)
-  const text = `会话数已达上限（共 ${liveSessionCount} 个 / 上限 ${maxSessionsCache}：本窗口 ${ownCount} 个${othersCount > 0 ? ' + 其他窗口 ' + othersCount + ' 个' : ''}）——关闭不用的窗口/标签，或在设置卡片调大「并发会话上限」`
+  // 分账里的「其他窗口」是可选的：值进句子中间、影响语序，所以整体交给目录（见 docs/i18n.md）
+  const others = othersCount > 0 ? t('msg.maxSessionsOthers', { count: othersCount }) : ''
+  const text = t('msg.maxSessions', { live: liveSessionCount, max: maxSessionsCache, own: ownCount, others })
   showToast(text)
   return text
 }
@@ -2304,7 +3048,7 @@ function newPersistName() {
 
 /** 连接簿条目名下的启用隧道数（「+」菜单徽标用）。 */
 function tunnelCountFor(bookName) {
-  return tunnelsCache.filter((t) => t?.bookName === bookName && t?.enabled !== false).length
+  return tunnelsCache.filter((tunnel) => tunnel?.bookName === bookName && tunnel?.enabled !== false).length
 }
 
 /** 连接簿条目的展示副标题：user@host[:port] · auth[ · fwd]。 */
@@ -2326,28 +3070,30 @@ async function probeSshFetch(spec, bookRecord) {
   const data = await res.json().catch(() => ({}))
   if (data && data.ok === false && data.error) return { error: String(data.error) }
   if (data && data.result) return { result: data.result }
-  return { error: String(data && data.error ? data.error : '连接测试失败（HTTP ' + res.status + '）') }
+  return { error: String(data && data.error ? data.error : t('error.probeHttp', { status: res.status })) }
 }
 
 /** 把 probe 结果压缩成一行摘要（按钮旁/卡片内提示用）。 */
 function probeSummary(probeResult, opts) {
-  if (!probeResult) return '连接测试…'
+  if (!probeResult) return t('msg.probing')
   const r = probeResult
   const tcpMs = typeof r.tcp?.ms === 'number' ? r.tcp.ms : null
   const authMs = typeof r.auth?.ms === 'number' ? r.auth.ms : null
   const tail = []
-  if (r.tcp?.ok) tail.push('TCP ' + (tcpMs !== null ? tcpMs + 'ms' : '通'))
-  if (r.banner?.ok) tail.push('banner 正常')
+  if (r.tcp?.ok) tail.push('TCP ' + (tcpMs !== null ? tcpMs + 'ms' : t('meta.reachable')))
+  if (r.banner?.ok) tail.push(t('meta.probeBanner'))
   const hk = r.hostkey?.state
-  if (hk === 'matched') tail.push('主机密钥匹配')
-  else if (hk === 'recorded') tail.push('主机密钥已记录（TOFU）')
-  else if (hk === 'mismatch') tail.push('主机密钥不匹配！')
+  if (hk === 'matched') tail.push(t('meta.hostKeyMatched'))
+  else if (hk === 'recorded') tail.push(t('meta.hostKeyRecorded'))
+  else if (hk === 'mismatch') tail.push(t('meta.hostKeyMismatch'))
   if (r.auth?.ok) {
-    const authText = authMs !== null ? '认证通过（' + authMs + 'ms）' : '认证通过'
-    return '✅ 连接成功：' + authText + (tail.length ? ' · ' + tail.join(' · ') : '')
+    const authText = authMs !== null ? t('meta.authOkMs', { ms: authMs }) : t('meta.authOk')
+    return t('meta.probeOk', { detail: authText + (tail.length ? ' · ' + tail.join(' · ') : '') })
   }
-  const failed = r.auth?.error || r.tcp?.error || '未知错误'
-  return (opts?.prefix || '❌ 连接失败：') + failed + (tail.length ? ' · ' + tail.join(' · ') : '')
+  const failed = r.auth?.error || r.tcp?.error || t('error.unknown')
+  const detail = failed + (tail.length ? ' · ' + tail.join(' · ') : '')
+  // `opts.prefix`：调用方要换前缀时用它（现无调用方传值，保留兼容）
+  return opts?.prefix !== undefined ? opts.prefix + detail : t('error.probeFailed', { detail })
 }
 
 /** 拉取连接簿（失败静默保留旧缓存）；菜单开着时原位刷新条目。 */
@@ -2411,7 +3157,7 @@ function addMenuItem(menu, label, sub, onClick, disabled, icon) {
     // 不用原生 disabled：禁用按钮不派发点击事件，用户点了没有任何反馈；
     // 视觉置灰 + 可点击 → 点击时弹 toast 说明
     item.setAttribute('data-soldout', '')
-    item.title = '会话数已达上限——点击查看怎么办'
+    item.title = t('btn.maxSessionsTitle')
   }
   if (icon !== undefined) {
     const iconEl = document.createElement('span')
@@ -2439,7 +3185,7 @@ function addMenuItem(menu, label, sub, onClick, disabled, icon) {
 function renderAddMenuItems(menu) {
   menu.textContent = ''
   const atLimit = atSessionLimit()
-  addMenuItem(menu, '本地终端', persistenceCache === 'tmux' ? 'tmux 托管 · 宿主重启后可恢复' : '在当前会话工作目录打开', async () => {
+  addMenuItem(menu, t('option.localTerminal'), persistenceCache === 'tmux' ? t('hint.tmuxHosted') : t('hint.openInSessionCwd'), async () => {
     if (await sessionLimitNotice()) return
     closeAddMenu()
     addTab()
@@ -2449,7 +3195,7 @@ function renderAddMenuItems(menu) {
   menu.appendChild(sep1)
   const bookTitle = document.createElement('div')
   bookTitle.className = 'tt_addMenuTitle'
-  bookTitle.textContent = 'SSH 连接簿'
+  bookTitle.textContent = t('panel.sshBook')
   menu.appendChild(bookTitle)
   for (const entry of sshHostsCache) {
     if (entry === null || typeof entry !== 'object' || typeof entry.name !== 'string' || entry.name === '') continue
@@ -2461,7 +3207,7 @@ function renderAddMenuItems(menu) {
     item.className = 'tt_addMenuItem'
     if (atLimit) {
       item.setAttribute('data-soldout', '')
-      item.title = '会话数已达上限——点击查看怎么办'
+      item.title = t('btn.maxSessionsTitle')
     }
     const iconEl = document.createElement('span')
     iconEl.className = 'tt_addMenuIcon'
@@ -2492,7 +3238,7 @@ function renderAddMenuItems(menu) {
     const browse = document.createElement('button')
     browse.type = 'button'
     browse.className = 'tt_addMenuEdit'
-    browse.title = 'SFTP 文件浏览'
+    browse.title = t('btn.sftpFileBrowse')
     browse.innerHTML = ICON_FOLDER
     browse.addEventListener('click', () => {
       closeAddMenu()
@@ -2503,7 +3249,7 @@ function renderAddMenuItems(menu) {
     const edit = document.createElement('button')
     edit.type = 'button'
     edit.className = 'tt_addMenuEdit'
-    edit.title = '编辑连接'
+    edit.title = t('btn.editConnection')
     edit.innerHTML = ICON_EDIT
     edit.addEventListener('click', () => {
       closeAddMenu()
@@ -2517,13 +3263,13 @@ function renderAddMenuItems(menu) {
   if (sshHostsCache.length === 0) {
     const empty = document.createElement('div')
     empty.className = 'tt_addMenuTitle'
-    empty.textContent = '（空 — 在设置卡片或「SSH 连接…」里保存）'
+    empty.textContent = t('list.emptySshBook')
     menu.appendChild(empty)
   }
   const sep2 = document.createElement('div')
   sep2.className = 'tt_addMenuSep'
   menu.appendChild(sep2)
-  addMenuItem(menu, 'SSH 连接…', '手动填写主机 / 用户 / 认证方式', () => {
+  addMenuItem(menu, t('option.sshConnect'), t('hint.sshConnect'), () => {
     closeAddMenu()
     openSshDialog()
   }, false, ICON_KEY)
@@ -2548,7 +3294,7 @@ function openSshDialog(entry) {
   const title = document.createElement('div')
   title.className = 'tt_sshTitle'
   title.innerHTML = ICON_KEY + '<span></span>'
-  title.lastElementChild.textContent = isEdit ? '编辑连接 · ' + String(editing.name ?? '') : 'SSH 连接'
+  title.lastElementChild.textContent = isEdit ? t('panel.editConnection', { name: String(editing.name ?? '') }) : t('panel.sshConnect')
   card.appendChild(title)
 
   /** 表单分组小标题：把「连接 / 认证 / 选项」三段分开，长表单不再糊成一片。 */
@@ -2589,24 +3335,24 @@ function openSshDialog(entry) {
     return row
   }
 
-  card.appendChild(sectionLabel('连接'))
+  card.appendChild(sectionLabel(t('section.connection')))
   const grid = document.createElement('div')
   grid.className = 'tt_sshGrid'
-  grid.appendChild(fieldRow('host', '主机', { placeholder: 'example.com 或 IP' }))
-  grid.appendChild(fieldRow('port', '端口', { placeholder: '22' }))
+  grid.appendChild(fieldRow('host', t('field.host'), { placeholder: t('placeholder.host') }))
+  grid.appendChild(fieldRow('port', t('field.port'), { placeholder: '22' }))
   card.appendChild(grid)
-  card.appendChild(fieldRow('username', '用户名', { placeholder: 'root' }))
-  card.appendChild(sectionLabel('认证'))
-  card.appendChild(fieldRow('auth', '认证方式', {
+  card.appendChild(fieldRow('username', t('field.username'), { placeholder: 'root' }))
+  card.appendChild(sectionLabel(t('section.auth')))
+  card.appendChild(fieldRow('auth', t('field.authMethod'), {
     select: [
-      { value: 'agent', label: 'agent — 使用本机 ssh-agent' },
-      { value: 'key', label: 'key — 私钥文件' },
-      { value: 'password', label: 'password — 密码' },
+      { value: 'agent', label: t('option.authAgent') },
+      { value: 'key', label: t('option.authKey') },
+      { value: 'password', label: t('option.authPassword') },
     ],
   }))
-  const keyRow = fieldRow('keyPath', '私钥路径', { placeholder: '~/.ssh/id_ed25519' })
-  const passphraseRow = fieldRow('passphrase', '私钥口令（可空）', { type: 'password' })
-  const passwordRow = fieldRow('password', '密码', { type: 'password' })
+  const keyRow = fieldRow('keyPath', t('field.keyPath'), { placeholder: '~/.ssh/id_ed25519' })
+  const passphraseRow = fieldRow('passphrase', t('field.passphrase'), { type: 'password' })
+  const passwordRow = fieldRow('password', t('field.password'), { type: 'password' })
 
   /**
    * 凭据引用选择器：筛选框 + 限高滚动列表（候选 = 凭据存储里的引用名 ∪ 连接簿里在用的
@@ -2628,8 +3374,8 @@ function openSshDialog(entry) {
     const filter = document.createElement('input')
     filter.type = 'text'
     filter.className = 'tt_cardInput'
-    filter.placeholder = '或：选择凭据存储里的引用名'
-    filter.title = '候选 = 凭据存储里已有的引用名 + 本机连接簿里在用的引用名'
+    filter.placeholder = t('placeholder.credRef')
+    filter.title = t('hint.credRefCandidates')
     filter.autocomplete = 'off'
     filter.spellcheck = false
     // 零候选时顶替筛选框的那行说明（显隐见 setNames）
@@ -2686,7 +3432,7 @@ function openSshDialog(entry) {
             targetInput.dispatchEvent(new Event('change'))
             return
           }
-          item.textContent = name + '（再点覆盖已填）'
+          item.textContent = t('list.credOverwrite', { name })
           item.dataset.danger = ''
           confirmTimer = setTimeout(disarm, 4000)
         })
@@ -2695,12 +3441,12 @@ function openSshDialog(entry) {
       if (hit.length > 30) {
         const more = document.createElement('span')
         more.className = 'tt_envMore'
-        more.textContent = '还有 ' + (hit.length - 30) + ' 个 — 继续输入筛选'
+        more.textContent = t('list.moreMatches', { count: hit.length - 30 })
         list.appendChild(more)
       } else if (hit.length === 0) {
         const none = document.createElement('span')
         none.className = 'tt_envMore'
-        none.textContent = '没有匹配的引用'
+        none.textContent = t('list.noCredRef')
         list.appendChild(none)
       }
     }
@@ -2761,7 +3507,7 @@ function openSshDialog(entry) {
     const rememberText = document.createElement('span')
     // 与**下面**的选择器是二选一：这个把刚输的明文存成新名字，那个选一个已有的名字。
     // 顺序上勾选框在前——因为选择器的下拉是向下展开的，放它在上面才不会盖住这一行。
-    rememberText.textContent = '保存时存入凭据存储'
+    rememberText.textContent = t('check.rememberCredential')
     toggle.appendChild(remember)
     toggle.appendChild(rememberText)
     // **默认勾上**：输一个明文密码再保存时，值进凭据存储、字段里只留引用——这比把它明文写进
@@ -2770,13 +3516,11 @@ function openSshDialog(entry) {
     //     挡住（下面 refresh 的 remote === null 分支会把它拨回未勾 + 禁用）；
     //   · 字段已经是引用时这一行换成「清除」按钮，勾选框不参与（refMode 下 toggle 隐藏）。
     remember.checked = credentialsRemote !== null
-    toggle.title = '勾选后，点「保存修改」或「连接（并保存）」时把密码写进官方凭据存储，'
-      + '字段里只留 env: 引用（值在 ~/.dsh/.credentials.yaml，不进环境、不回传浏览器；'
-      + '挡不住同用户进程与 agent）。不勾选则按现状明文写进设置文件。能用密钥 / agent 就别存密码。'
+    toggle.title = t('hint.rememberCredential')
     const clearBtn = document.createElement('button')
     clearBtn.type = 'button'
     clearBtn.className = 'tt_toolBtn tt_credClear'
-    clearBtn.textContent = '清除已存凭据'
+    clearBtn.textContent = t('btn.clearCredential')
     clearBtn.dataset.hidden = ''
     const status = document.createElement('span')
     status.className = 'tt_credStatus'
@@ -2802,7 +3546,7 @@ function openSshDialog(entry) {
         // 服务缺位时把默认勾选拨回去：勾着也存不成，只会让保存被错误挡住（见 storeIfRequested）
         remember.checked = false
         clearBtn.disabled = true
-        setDialogStatus(credentialsRemote === null ? '宿主未提供凭据服务（remote.credentials），只能明文保存' : '凭据服务不完整，只能明文保存', 'muted')
+        setDialogStatus(credentialsRemote === null ? t('error.credPlainUnavailable') : t('error.credPlainIncomplete'), 'muted')
         return
       }
       remember.disabled = false
@@ -2814,17 +3558,17 @@ function openSshDialog(entry) {
       }
       const probe = await describeCredentialRef(ref)
       if (probe.unreported === true) {
-        setDialogStatus('引用 ' + ref + '：宿主未报告状态', 'plain')
+        setDialogStatus(t('status.credUnreported', { ref }), 'plain')
         return
       }
       if (probe.error !== undefined) {
-        setDialogStatus('读取凭据状态失败：' + probe.error, 'error')
+        setDialogStatus(t('error.credStatusFailed', { error: probe.error }), 'error')
         return
       }
       const view = probe.view
       setDialogStatus(view.configured
-        ? '已存入' + (view.source !== '' ? '（来源 ' + view.source + '）' : '') + ' · ' + ref
-        : '引用 ' + ref + '：存储里还没有这个值', view.configured ? 'ok' : 'plain')
+        ? t('status.credStored', { ref, source: view.source !== '' ? t('meta.credSource', { source: view.source }) : '' })
+        : t('status.credUnknown', { ref }), view.configured ? 'ok' : 'plain')
       clearBtn.disabled = view.configured !== true || view.writable !== true
     }
 
@@ -2873,11 +3617,11 @@ function openSshDialog(entry) {
   // 零候选时那行说明的文案：密码那行上方有勾选框可新建，口令那行没有，措辞分开写
   const passphraseEnv = envSelectRow(
     fields.passphrase,
-    '还没有别的连接用过凭据引用 — 可在私钥口令框直接手输 env:NAME',
+    t('hint.noCredRefPassphrase'),
   )
   const passwordEnv = envSelectRow(
     fields.password,
-    '还没有别的连接用过凭据引用 — 勾上面的「保存时存入凭据存储」新建一个，或直接在密码框手输 env:NAME',
+    t('hint.noCredRefPassword'),
   )
   const passwordCred = credentialRow(fields.password, 'PASSWORD')
   /*
@@ -2914,7 +3658,7 @@ function openSshDialog(entry) {
   card.appendChild(passwordCred.row)
   card.appendChild(passwordEnv.row)
 
-  card.appendChild(sectionLabel('选项'))
+  card.appendChild(sectionLabel(t('section.options')))
   const fwdRow = document.createElement('label')
   fwdRow.className = 'tt_cardRow'
   const fwdCheck = document.createElement('input')
@@ -2922,7 +3666,7 @@ function openSshDialog(entry) {
   fwdCheck.className = 'tt_cardCheckbox'
   const fwdLabel = document.createElement('span')
   fwdLabel.className = 'tt_cardLabel'
-  fwdLabel.textContent = 'agent forwarding（远程可用本地 ssh-agent 钥匙，如远程 git clone）'
+  fwdLabel.textContent = t('check.agentForward')
   fwdRow.appendChild(fwdCheck)
   fwdRow.appendChild(fwdLabel)
   card.appendChild(fwdRow)
@@ -2936,7 +3680,7 @@ function openSshDialog(entry) {
   persistCheck.className = 'tt_cardCheckbox'
   const persistLabel = document.createElement('span')
   persistLabel.className = 'tt_cardLabel'
-  persistLabel.textContent = '持久会话（tmux 托管，断线/重启后恢复现场；远程需安装 tmux）'
+  persistLabel.textContent = t('check.persist')
   persistRow.appendChild(persistCheck)
   persistRow.appendChild(persistLabel)
   // 设置开关是唯一开关：开启时默认勾选（可对单次连接取消）
@@ -2950,11 +3694,11 @@ function openSshDialog(entry) {
   saveCheck.className = 'tt_cardCheckbox'
   const saveLabel = document.createElement('span')
   saveLabel.className = 'tt_cardLabel'
-  saveLabel.textContent = '保存到连接簿（同名覆盖）'
+  saveLabel.textContent = t('check.saveToBook')
   saveRow.appendChild(saveCheck)
   saveRow.appendChild(saveLabel)
   card.appendChild(saveRow)
-  const nameRow = fieldRow('name', '连接簿名称', { placeholder: '留空则用主机名' })
+  const nameRow = fieldRow('name', t('field.bookName'), { placeholder: t('placeholder.bookName') })
   nameRow.style.display = 'none'
   card.appendChild(nameRow)
   saveCheck.addEventListener('change', () => {
@@ -3003,7 +3747,7 @@ function openSshDialog(entry) {
     let port = Number(fields.port.value)
     if (!Number.isInteger(port) || port < 1 || port > 65535) port = 22
     if (host === '' || username === '') {
-      errorEl.textContent = '主机与用户名必填'
+      errorEl.textContent = t('error.hostUserRequired')
       return null
     }
     const auth = fields.auth.value
@@ -3011,7 +3755,7 @@ function openSshDialog(entry) {
     if (auth === 'key') {
       const keyPath = fields.keyPath.value.trim()
       if (keyPath === '') {
-        errorEl.textContent = 'auth=key 需要私钥路径'
+        errorEl.textContent = t('error.keyPathRequired')
         return null
       }
       spec.keyPath = keyPath
@@ -3021,7 +3765,7 @@ function openSshDialog(entry) {
     if (auth === 'password') {
       const password = fields.password.value
       if (password === '') {
-        errorEl.textContent = 'auth=password 需要密码'
+        errorEl.textContent = t('error.passwordRequired')
         return null
       }
       spec.password = password
@@ -3043,17 +3787,17 @@ function openSshDialog(entry) {
   const cancelBtn = document.createElement('button')
   cancelBtn.type = 'button'
   cancelBtn.className = 'tt_toolBtn'
-  cancelBtn.textContent = '取消'
+    cancelBtn.textContent = t('btn.cancel')
   const connectBtn = document.createElement('button')
   connectBtn.type = 'button'
   connectBtn.className = 'tt_cardSave'
-  connectBtn.textContent = '连接'
+    connectBtn.textContent = t('btn.connect')
   actionsSecondary.appendChild(cancelBtn)
   const sftpBtn = document.createElement('button')
   sftpBtn.type = 'button'
   sftpBtn.className = 'tt_toolBtn'
-  sftpBtn.textContent = '文件浏览'
-  sftpBtn.title = '不动终端，直接以当前填写的信息打开 SFTP 文件浏览'
+    sftpBtn.textContent = t('btn.fileBrowse')
+    sftpBtn.title = t('btn.browseTitle')
   sftpBtn.addEventListener('click', () => {
     errorEl.textContent = ''
     const host = fields.host.value.trim()
@@ -3061,7 +3805,7 @@ function openSshDialog(entry) {
     let port = Number(fields.port.value)
     if (!Number.isInteger(port) || port < 1 || port > 65535) port = 22
     if (host === '' || username === '') {
-      errorEl.textContent = '主机与用户名必填'
+      errorEl.textContent = t('error.hostUserRequired')
       return
     }
     const auth = fields.auth.value
@@ -3069,7 +3813,7 @@ function openSshDialog(entry) {
     if (auth === 'key') {
       const keyPath = fields.keyPath.value.trim()
       if (keyPath === '') {
-        errorEl.textContent = 'auth=key 需要私钥路径'
+        errorEl.textContent = t('error.keyPathRequired')
         return
       }
       spec.keyPath = keyPath
@@ -3079,7 +3823,7 @@ function openSshDialog(entry) {
     if (auth === 'password') {
       const password = fields.password.value
       if (password === '') {
-        errorEl.textContent = 'auth=password 需要密码'
+        errorEl.textContent = t('error.passwordRequired')
         return
       }
       spec.password = password
@@ -3095,13 +3839,13 @@ function openSshDialog(entry) {
     saveEditBtn = document.createElement('button')
     saveEditBtn.type = 'button'
     saveEditBtn.className = 'tt_toolBtn'
-    saveEditBtn.textContent = '保存修改'
+        saveEditBtn.textContent = t('btn.saveEdit')
     saveEditBtn.addEventListener('click', () => {
       errorEl.textContent = ''
       const host = fields.host.value.trim()
       const username = fields.username.value.trim()
       if (host === '' || username === '') {
-        errorEl.textContent = '主机与用户名必填'
+        errorEl.textContent = t('error.hostUserRequired')
         return
       }
       let port = Number(fields.port.value)
@@ -3121,7 +3865,7 @@ function openSshDialog(entry) {
         persist: persistCheck.checked,
       }
       if (auth === 'key' && next.keyPath === '') {
-        errorEl.textContent = 'auth=key 需要私钥路径'
+        errorEl.textContent = t('error.keyPathRequired')
         return
       }
       if (saveEditBtn !== null) saveEditBtn.disabled = true
@@ -3136,7 +3880,7 @@ function openSshDialog(entry) {
         const error = await saveSshHostUpdate(String(editing.name ?? ''), next)
         if (saveEditBtn !== null) saveEditBtn.disabled = false
         if (error !== undefined) {
-          errorEl.textContent = '保存失败：' + error
+                    errorEl.textContent = t('error.saveCredFailed', { error })
           return
         }
         closeSshDialog()
@@ -3148,13 +3892,13 @@ function openSshDialog(entry) {
   const probeBtn = document.createElement('button')
   probeBtn.type = 'button'
   probeBtn.className = 'tt_toolBtn'
-  probeBtn.textContent = '试连'
-  probeBtn.title = '按当前填写诊断连接（TCP → 主机密钥 → 认证）；不会新建会话，也不记录主机指纹'
+    probeBtn.textContent = t('btn.probe')
+    probeBtn.title = t('btn.probeTitle')
   probeBtn.addEventListener('click', () => {
     const spec = collectProbeSpec()
     if (spec === null) return
     probeEl.className = 'tt_sshProbeResult'
-    probeEl.textContent = '连接测试中…'
+        probeEl.textContent = t('msg.probing')
     probeBtn.disabled = true
     void probeSshFetch(spec, false).then((out) => {
       probeBtn.disabled = false
@@ -3163,7 +3907,7 @@ function openSshDialog(entry) {
         probeEl.textContent = probeSummary(out.result)
       } else {
         probeEl.className = 'tt_sshProbeResult tt_sshProbeBad'
-        probeEl.textContent = '❌ 连接失败：' + String(out.error || '未知错误')
+                probeEl.textContent = t('error.probeFailed', { detail: String(out.error || t('error.unknown')) })
       }
     })
   })
@@ -3202,7 +3946,7 @@ function openSshDialog(entry) {
     let port = Number(fields.port.value)
     if (!Number.isInteger(port) || port < 1 || port > 65535) port = 22
     if (host === '' || username === '') {
-      errorEl.textContent = '主机与用户名必填'
+      errorEl.textContent = t('error.hostUserRequired')
       return
     }
     const auth = fields.auth.value
@@ -3258,7 +4002,7 @@ function openSshDialog(entry) {
       })
       connectBtn.disabled = false
       if (error !== undefined) {
-        errorEl.textContent = '保存连接簿失败：' + error
+                errorEl.textContent = t('error.saveBookFailed', { error })
         return
       }
       proceed(bookName)
@@ -3298,7 +4042,7 @@ async function saveSshHostEntry(entry) {
 /** 编辑保存：按原始名称替换连接簿条目（支持改名，冲突校验）；返回错误信息或 undefined。 */
 async function saveSshHostUpdate(originalName, entry) {
   if (entry.name !== originalName && sshHostsCache.some((host) => host?.name === entry.name)) {
-    return '连接簿里已有同名条目: ' + entry.name
+        return t('error.bookNameTaken', { name: entry.name })
   }
   const next = sshHostsCache.map((host) => (host?.name === originalName ? entry : host))
   try {
@@ -3338,11 +4082,11 @@ function openSftpDual(spec, label, ownerKey) {
   const title = document.createElement('div')
   title.className = 'tt_sshTitle'
   title.innerHTML = ICON_FOLDER + '<span></span>'
-  title.lastElementChild.textContent = 'SFTP 双栏 · ' + label
+    title.lastElementChild.textContent = t('panel.sftpDual', { label })
   const titleClose = document.createElement('button')
   titleClose.type = 'button'
   titleClose.className = 'tt_close'
-  titleClose.title = '关闭'
+    titleClose.title = t('btn.close')
   titleClose.innerHTML = ICON_CLOSE
   titleClose.addEventListener('click', () => closeSftpDialog(owner))
   titleRow.appendChild(title)
@@ -3369,7 +4113,7 @@ function openSftpDual(spec, label, ownerKey) {
       .catch((error) => {
         // 传输任务失败也要让进度条着色（正常终态由任务内 done/reset 处理）
         if (error === null || typeof error !== 'object' || error.name !== 'TransferCanceledError') {
-          progress.fail('失败')
+                    progress.fail(t('status.failed'))
         }
         setDialogStatus(String(error && error.message ? error.message : error), 'error')
       })
@@ -3414,17 +4158,17 @@ function openSftpDual(spec, label, ownerKey) {
     const pathInput = document.createElement('input')
     pathInput.type = 'text'
     pathInput.className = 'tt_sftpPath'
-    pathInput.placeholder = kind === 'local' ? '本机路径（回车跳转）' : '远程路径（回车跳转）'
+        pathInput.placeholder = kind === 'local' ? t('placeholder.localPath') : t('placeholder.remotePath')
     pathInput.spellcheck = false
     pathInput.autocomplete = 'off'
     const refreshBtn = document.createElement('button')
     refreshBtn.type = 'button'
     refreshBtn.className = 'tt_toolBtn'
-    refreshBtn.innerHTML = ICON_REFRESH + '<span>刷新</span>'
+        refreshBtn.innerHTML = ICON_REFRESH + '<span>' + t('btn.refresh') + '</span>'
     const mkdirBtn = document.createElement('button')
     mkdirBtn.type = 'button'
     mkdirBtn.className = 'tt_toolBtn'
-    mkdirBtn.innerHTML = ICON_MKDIR + '<span>新建目录</span>'
+        mkdirBtn.innerHTML = ICON_MKDIR + '<span>' + t('btn.mkdir') + '</span>'
     bar.appendChild(pathInput)
     bar.appendChild(refreshBtn)
     bar.appendChild(mkdirBtn)
@@ -3467,14 +4211,14 @@ function openSftpDual(spec, label, ownerKey) {
     // base 为空（目录未定位）时抛错而不是拼出 "/name"（0.19.0：空 base 会被
     // 服务端按相对路径/宿主 cwd 解析）
     const joinChild = (dir, name) => {
-      if (dir === undefined || dir === '') throw new Error('目录尚未定位完成')
+            if (dir === undefined || dir === '') throw new Error(t('error.dirNotReady'))
       return dir.endsWith('/') || dir.endsWith('\\') ? dir + name : dir + '/' + name
     }
 
     const rowOf = (entry) => {
       const full = joinChild(pane.path, entry.name)
       const metaParts = []
-      if (entry.isDir === true) metaParts.push('目录')
+            if (entry.isDir === true) metaParts.push(t('meta.dir'))
       else metaParts.push(formatBytes(Number(entry.size)) || '—')
       const mtime = formatMtime(Number(entry.mtime))
       if (mtime !== '') metaParts.push(mtime)
@@ -3490,16 +4234,16 @@ function openSftpDual(spec, label, ownerKey) {
       // 直传：⇨ 本机→远程 / ⇦ 远程→本机（对面栏当前目录下；目录递归、同名覆盖）
       // 0.12.0：服务端任务化——start 拿 jobId，轮询进度（真实字节百分比），
       // ✕ 打 cancel 中止（服务端销毁流并删半截文件）。
-      appendAct(row, kind === 'local' ? ICON_ARROW_RIGHT : ICON_ARROW_LEFT, '传输到' + (kind === 'local' ? '远程' : '本机') + '：' + other.path, () => {
+            appendAct(row, kind === 'local' ? ICON_ARROW_RIGHT : ICON_ARROW_LEFT, t('btn.transferTo', { target: kind === 'local' ? t('meta.remote') : t('meta.local'), path: other.path }), () => {
         // 路径未就绪（0.19.0）：列表还没回包 / 本机 list 失败时 path 为空——
         // 空路径发给宿主会被按宿主进程 cwd 解析，整树落到安装目录之类位置
         if (pane.path === '' || other.path === '') {
-          setDialogStatus('两侧目录尚未定位完成，等列表加载后再传输', 'error')
+                    setDialogStatus(t('error.transferDirsNotReady'), 'error')
           return
         }
         progress.reset()
         progress.pulse(0)
-        runJoint('传输 ' + entry.name + '…', async () => {
+                runJoint(t('msg.transferring', { name: entry.name }), async () => {
           const res = await fetch('/api/dsh-tty/local-fs/transfer', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -3513,48 +4257,48 @@ function openSftpDual(spec, label, ownerKey) {
           })
           const data = await res.json().catch(() => ({}))
           if (!res.ok || data.ok !== true) {
-            progress.fail('传输失败')
+                        progress.fail(t('error.transferFailed'))
             throw new Error(String(data.error || 'HTTP ' + res.status))
           }
           const jobId = data.job?.id
           if (typeof jobId !== 'string' || jobId === '') {
-            progress.fail('传输失败')
-            throw new Error('服务端未返回任务 id')
+                        progress.fail(t('error.transferFailed'))
+                        throw new Error(t('error.noTaskId'))
           }
           const outcome = await trackTransfer(jobId, entry.name)
           if (outcome === 'canceled') {
             progress.reset()
-            setDialogStatus('已取消传输 ' + entry.name)
+                        setDialogStatus(t('msg.transferCanceled', { name: entry.name }))
           } else {
-            progress.done('完成')
+                        progress.done(t('status.done'))
             setTimeout(() => progress.reset(), 1500)
-            setDialogStatus('已传输 ' + entry.name)
+                        setDialogStatus(t('msg.transferred', { name: entry.name }))
           }
           await other.loadDir(other.path)
         })
       })
       if (kind !== 'local' && entry.isDir !== true) {
         // 远程文件保留浏览器下载（⬇）
-        appendAct(row, ICON_DOWNLOAD, '下载 ' + entry.name, () => void downloadRemoteEntry(entry, full))
+                appendAct(row, ICON_DOWNLOAD, t('btn.download', { name: entry.name }), () => void downloadRemoteEntry(entry, full))
       }
-      appendAct(row, ICON_EDIT, '重命名 ' + entry.name, () => {
-        editorInput.placeholder = '新名称'
+            appendAct(row, ICON_EDIT, t('btn.rename', { name: entry.name }), () => {
+                editorInput.placeholder = t('placeholder.newName')
         editorInput.value = entry.name
         showEditor(kind)
         editorCommit = async () => {
           const value = editorInput.value.trim()
           if (value === '' || value === entry.name) return
           closeEditor()
-          await pane.runTask('重命名 ' + entry.name + '…', async () => {
+                    await pane.runTask(t('msg.renaming', { name: entry.name }), async () => {
             await api('rename', { from: full, to: joinChild(pane.path, value) })
             await reload()
           })
         }
       })
-      appendDelete(row, () => pane.runTask('删除 ' + entry.name + '…', async () => {
+            appendDelete(row, () => pane.runTask(t('msg.deleting', { name: entry.name }), async () => {
         await api('remove', { path: full, recursive: entry.isDir === true })
         await reload()
-        setDialogStatus('已删除 ' + entry.name)
+                setDialogStatus(t('msg.deleted', { name: entry.name }))
       }), entry)
       return row
     }
@@ -3562,7 +4306,7 @@ function openSftpDual(spec, label, ownerKey) {
     const renderRows = (entries) => {
       list.textContent = ''
       if (pane.path !== '' && pane.path !== '/' && /^[A-Za-z]:[\\/]?$/.test(pane.path) === false) {
-        const up = listRow(ICON_UP, '..（上级目录）', '', 'up')
+                const up = listRow(ICON_UP, t('list.parentDir'), '', 'up')
         up.addEventListener('click', () => {
           // 本机栏用独立的父级函数（0.19.0）：parentRemotePath 只按 '/' 切、
           // index<=0 回 '/'——Windows 上 C:\Users\me 点「..」会请求 listLocalDir('/')
@@ -3576,7 +4320,7 @@ function openSftpDual(spec, label, ownerKey) {
       if (rows.length === 0) {
         const empty = document.createElement('div')
         empty.className = 'tt_addMenuTitle'
-        empty.textContent = '（空目录）'
+                empty.textContent = t('list.emptyDir')
         list.appendChild(empty)
         return
       }
@@ -3590,7 +4334,7 @@ function openSftpDual(spec, label, ownerKey) {
       if (rows.length > RENDER_CAP) {
         const more = document.createElement('div')
         more.className = 'tt_addMenuTitle'
-        more.textContent = `…其余 ${String(rows.length - RENDER_CAP)} 项未渲染（共 ${String(rows.length)} 项）——用上方路径框跳转到子目录定位`
+                more.textContent = t('list.truncated', { rest: rows.length - RENDER_CAP, total: rows.length })
         list.appendChild(more)
       }
     }
@@ -3602,7 +4346,7 @@ function openSftpDual(spec, label, ownerKey) {
         pathInput.value = pane.path
         const count = Array.isArray(data.entries) ? data.entries.length : 0
         renderRows(data.entries)
-        headMeta.textContent = String(count) + ' 项'
+                headMeta.textContent = t('list.itemCount', { count })
         setDialogStatus(pane.path)
       } catch (error) {
         setDialogStatus(String(error && error.message ? error.message : error), 'error')
@@ -3613,18 +4357,18 @@ function openSftpDual(spec, label, ownerKey) {
     panes[kind] = pane
 
     refreshBtn.addEventListener('click', () => {
-      void pane.runTask('加载中…', () => pane.loadDir(pane.path))
+            void pane.runTask(t('list.loading'), () => pane.loadDir(pane.path))
     })
     mkdirBtn.addEventListener('click', () => {
       if (pane.busy || jointBusy) return
-      editorInput.placeholder = '新目录名（相对当前目录）'
+            editorInput.placeholder = t('placeholder.newDirName')
       editorInput.value = ''
       showEditor(kind)
       editorCommit = async () => {
         const value = editorInput.value.trim()
         if (value === '') return
         closeEditor()
-        await pane.runTask('创建目录 ' + value + '…', async () => {
+        await pane.runTask(t('msg.creatingDir', { name: value }), async () => {
           await api('mkdir', { path: joinChild(pane.path, value), parents: true })
           await pane.loadDir(pane.path)
         })
@@ -3636,7 +4380,7 @@ function openSftpDual(spec, label, ownerKey) {
       if (pane.busy || jointBusy) return
       const target = pathInput.value.trim()
       if (target === '') return
-      void pane.runTask('加载中…', () => pane.loadDir(target))
+            void pane.runTask(t('list.loading'), () => pane.loadDir(target))
     })
 
     return wrap
@@ -3654,11 +4398,11 @@ function openSftpDual(spec, label, ownerKey) {
   const editorOk = document.createElement('button')
   editorOk.type = 'button'
   editorOk.className = 'tt_toolBtn'
-  editorOk.textContent = '确定'
+    editorOk.textContent = t('btn.ok')
   const editorCancel = document.createElement('button')
   editorCancel.type = 'button'
   editorCancel.className = 'tt_toolBtn'
-  editorCancel.textContent = '取消'
+    editorCancel.textContent = t('btn.cancel')
   editor.appendChild(editorInput)
   editor.appendChild(editorOk)
   editor.appendChild(editorCancel)
@@ -3722,7 +4466,7 @@ function openSftpDual(spec, label, ownerKey) {
     act.type = 'button'
     act.className = 'tt_sftpAct'
     act.innerHTML = ICON_TRASH
-    act.title = '删除 ' + entry.name + (entry.isDir ? '（含内容）' : '')
+        act.title = entry.isDir ? t('btn.deleteEntryDir', { name: entry.name }) : t('btn.deleteEntry', { name: entry.name })
     let confirmTimer = null
     act.addEventListener('click', (event) => {
       event.stopPropagation()
@@ -3734,7 +4478,7 @@ function openSftpDual(spec, label, ownerKey) {
         onConfirm()
         return
       }
-      act.textContent = '确认?'
+            act.textContent = t('btn.confirm')
       act.dataset.danger = ''
       confirmTimer = setTimeout(() => {
         confirmTimer = null
@@ -3746,7 +4490,7 @@ function openSftpDual(spec, label, ownerKey) {
   }
 
   /** 远程文件浏览器下载（双栏里保留；整传用 ⇦ 走服务端直传）。 */
-  const downloadRemoteEntry = (entry, full) => panes.remote.runTask('下载 ' + entry.name + '…', async () => {
+    const downloadRemoteEntry = (entry, full) => panes.remote.runTask(t('msg.downloading', { name: entry.name }), async () => {
     progress.reset()
     let blob
     try {
@@ -3760,20 +4504,20 @@ function openSftpDual(spec, label, ownerKey) {
     } catch (error) {
       if (isCanceled(error)) {
         progress.reset()
-        setDialogStatus('已取消下载 ' + entry.name)
+                setDialogStatus(t('msg.downloadCanceled', { name: entry.name }))
         return
       }
-      progress.fail('下载失败')
+            progress.fail(t('error.downloadFailed'))
       throw error
     }
-    progress.done('完成')
+                progress.done(t('status.done'))
     triggerBlobDownload(blob, entry.name)
     setTimeout(() => progress.reset(), 1500)
-    setDialogStatus('已下载 ' + entry.name + '（' + (formatBytes(blob.size) || String(blob.size) + ' B') + '）')
+        setDialogStatus(t('msg.downloaded', { name: entry.name, size: formatBytes(blob.size) || String(blob.size) + ' B' }))
   })
 
-  const localWrap = buildPane('local', '本机')
-  const remoteWrap = buildPane('remote', '远程')
+    const localWrap = buildPane('local', t('meta.local'))
+    const remoteWrap = buildPane('remote', t('meta.remote'))
   panes.local.wrap = localWrap
   panes.remote.wrap = remoteWrap
 
@@ -3824,16 +4568,16 @@ function openSftpDual(spec, label, ownerKey) {
           throw new Error(String(data.error || 'HTTP ' + res.status))
         }
         const job = data.job
-        if (job === null || typeof job !== 'object') throw new Error('服务端返回了非法的任务状态')
+                if (job === null || typeof job !== 'object') throw new Error(t('error.invalidTaskState'))
         if (job.state === 'running') {
           const name = typeof job.current === 'string' && job.current !== '' ? job.current : label
-          setDialogStatus('传输 ' + name + '…', 'busy')
+                    setDialogStatus(t('msg.transferring', { name }), 'busy')
           if (Number.isFinite(job.total) && job.total > 0) progress.set(Number(job.bytes) || 0, job.total)
           else progress.pulse(Number(job.bytes) || 0)
           continue
         }
         if (job.state === 'canceled') return 'canceled'
-        if (job.state !== 'done') throw new Error(String(job.error || '传输失败'))
+                if (job.state !== 'done') throw new Error(String(job.error || t('error.transferFailed')))
         return 'done'
       }
     } finally {
@@ -3844,7 +4588,7 @@ function openSftpDual(spec, label, ownerKey) {
   // 双栏两栏并排，给足高度（面板卡片高度的 56%，还能自己拖高）
   const cardRect = panelCardRect()
   const dualSize = cardRect === null ? 420 : Math.round(cardRect.height * 0.56)
-  mountSftpSurface(card, 'SFTP 双栏 · ' + label, dualSize, owner)
+    mountSftpSurface(card, t('panel.sftpDual', { label }), dualSize, owner)
   void panes.local.loadDir('')
   void panes.remote.loadDir('')
 }
@@ -4017,7 +4761,7 @@ function makeProgressBar() {
   const cancelBtn = document.createElement('button')
   cancelBtn.type = 'button'
   cancelBtn.className = 'tt_sftpCancel'
-  cancelBtn.title = '取消传输'
+    cancelBtn.title = t('btn.cancelTransfer')
   cancelBtn.textContent = '✕'
   cancelBtn.style.display = 'none'
   let onCancel = null
@@ -4129,13 +4873,13 @@ function makeProgressBar() {
       fill.style.width = '100%'
       lastWidth = 100
       hideCancel()
-      setTextOnce(label !== undefined && label !== '' ? label : '完成')
+            setTextOnce(label !== undefined && label !== '' ? label : t('status.done'))
     },
     fail(label) {
       el.dataset.active = ''
       el.dataset.state = 'error'
       hideCancel()
-      setTextOnce(label !== undefined && label !== '' ? label : '失败')
+            setTextOnce(label !== undefined && label !== '' ? label : t('status.failed'))
     },
     /** 文本状态（兼容仅文案提示）。 */
     text(text) {
@@ -4196,14 +4940,14 @@ async function fetchBlobWithProgress(url, init, onProgress, maxMb = 0, registerC
     } catch {
       /* 已取消 */
     }
-    throw new Error('文件超过下载上限（' + formatBytes(maxBytes) + '）：请用双栏 ⇦ 直传或终端 scp/rsync')
+    throw new Error(t('error.downloadTooBig', { size: formatBytes(maxBytes) }))
   }
   const body = res.body
   if (body === null || typeof body.getReader !== 'function') {
     // 极老浏览器无流式 body：退回一次性 blob（无进度）
     const blob = await res.blob()
     if (maxBytes > 0 && blob.size > maxBytes) {
-      throw new Error('文件超过下载上限（' + formatBytes(maxBytes) + '）：请用双栏 ⇦ 直传或终端 scp/rsync')
+      throw new Error(t('error.downloadTooBig', { size: formatBytes(maxBytes) }))
     }
     if (totalFinite) onProgress(total, total)
     return blob
@@ -4223,7 +4967,7 @@ async function fetchBlobWithProgress(url, init, onProgress, maxMb = 0, registerC
           } catch {
             /* 已取消 */
           }
-          throw new Error('文件超过下载上限（' + formatBytes(maxBytes) + '）：请用双栏 ⇦ 直传或终端 scp/rsync')
+          throw new Error(t('error.downloadTooBig', { size: formatBytes(maxBytes) }))
         }
         chunks.push(value)
         onProgress(received, totalFinite ? total : NaN)
@@ -4247,7 +4991,7 @@ async function fetchBlobWithProgress(url, init, onProgress, maxMb = 0, registerC
 /** 取消不是失败：单独一类，调用方据此走「已取消」文案而非红色错误态。 */
 class TransferCanceledError extends Error {
   constructor() {
-    super('已取消')
+        super(t('msg.canceled'))
     this.name = 'TransferCanceledError'
   }
 }
@@ -4385,7 +5129,7 @@ function openSftpBrowser(specInput, ownerSid) {
   const titleClose = document.createElement('button')
   titleClose.type = 'button'
   titleClose.className = 'tt_close'
-  titleClose.title = '关闭'
+    titleClose.title = t('btn.close')
   titleClose.innerHTML = ICON_CLOSE
   titleClose.addEventListener('click', () => closeSftpDialog(ownerKey))
   titleRow.appendChild(title)
@@ -4398,22 +5142,22 @@ function openSftpBrowser(specInput, ownerSid) {
   const pathInput = document.createElement('input')
   pathInput.type = 'text'
   pathInput.className = 'tt_sftpPath'
-  pathInput.placeholder = '远程路径（回车跳转）'
+  pathInput.placeholder = t('placeholder.remotePath')
   pathInput.spellcheck = false
   pathInput.autocomplete = 'off'
   const refreshBtn = document.createElement('button')
   refreshBtn.type = 'button'
   refreshBtn.className = 'tt_toolBtn'
-  refreshBtn.innerHTML = ICON_REFRESH + '<span>刷新</span>'
+      refreshBtn.innerHTML = ICON_REFRESH + '<span>' + t('btn.refresh') + '</span>'
   const mkdirBtn = document.createElement('button')
   mkdirBtn.type = 'button'
   mkdirBtn.className = 'tt_toolBtn'
-  mkdirBtn.innerHTML = ICON_MKDIR + '<span>新建目录</span>'
+      mkdirBtn.innerHTML = ICON_MKDIR + '<span>' + t('btn.mkdir') + '</span>'
   const uploadBtn = document.createElement('button')
   uploadBtn.type = 'button'
   uploadBtn.className = 'tt_toolBtn'
-  uploadBtn.innerHTML = ICON_UPLOAD + '<span>上传</span>'
-  uploadBtn.title = '选择文件上传；也可以把文件 / 文件夹直接拖进列表'
+  uploadBtn.innerHTML = ICON_UPLOAD + '<span>' + t('btn.upload') + '</span>'
+  uploadBtn.title = t('btn.uploadTitle')
   const fileInput = document.createElement('input')
   fileInput.type = 'file'
   fileInput.multiple = true
@@ -4437,11 +5181,11 @@ function openSftpBrowser(specInput, ownerSid) {
   const editorOk = document.createElement('button')
   editorOk.type = 'button'
   editorOk.className = 'tt_toolBtn'
-  editorOk.textContent = '确定'
+    editorOk.textContent = t('btn.ok')
   const editorCancel = document.createElement('button')
   editorCancel.type = 'button'
   editorCancel.className = 'tt_toolBtn'
-  editorCancel.textContent = '取消'
+    editorCancel.textContent = t('btn.cancel')
   editor.appendChild(editorInput)
   editor.appendChild(editorOk)
   editor.appendChild(editorCancel)
@@ -4557,7 +5301,7 @@ function openSftpBrowser(specInput, ownerSid) {
     act.type = 'button'
     act.className = 'tt_sftpAct'
     act.innerHTML = ICON_TRASH
-    act.title = '删除 ' + entry.name + (entry.isDir ? '（含内容）' : '')
+        act.title = entry.isDir ? t('btn.deleteEntryDir', { name: entry.name }) : t('btn.deleteEntry', { name: entry.name })
     let confirmTimer = null
     act.addEventListener('click', (event) => {
       event.stopPropagation()
@@ -4567,14 +5311,14 @@ function openSftpBrowser(specInput, ownerSid) {
         confirmTimer = null
         act.innerHTML = ICON_TRASH
         delete act.dataset.danger
-        void runTask('删除 ' + entry.name + '…', async () => {
+        void runTask(t('msg.deleting', { name: entry.name }), async () => {
           await api('remove', { path: full, recursive: entry.isDir === true })
           await loadDir(state.path)
-          setDialogStatus('已删除 ' + entry.name)
+                  setDialogStatus(t('msg.deleted', { name: entry.name }))
         })
         return
       }
-      act.textContent = '确认?'
+            act.textContent = t('btn.confirm')
       act.dataset.danger = ''
       confirmTimer = setTimeout(() => {
         confirmTimer = null
@@ -4588,9 +5332,9 @@ function openSftpBrowser(specInput, ownerSid) {
   const renderRows = (entries) => {
     list.textContent = ''
     if (state.path !== '' && state.path !== '/') {
-      const up = listRow(ICON_UP, '..（上级目录）', '', 'up')
+              const up = listRow(ICON_UP, t('list.parentDir'), '', 'up')
       up.addEventListener('click', () => {
-        void runTask('加载中…', () => loadDir(parentRemotePath(state.path)))
+        void runTask(t('list.loading'), () => loadDir(parentRemotePath(state.path)))
       })
       list.appendChild(up)
     }
@@ -4598,7 +5342,7 @@ function openSftpBrowser(specInput, ownerSid) {
     if (rows.length === 0) {
       const empty = document.createElement('div')
       empty.className = 'tt_addMenuTitle'
-      empty.textContent = '（空目录）'
+              empty.textContent = t('list.emptyDir')
       list.appendChild(empty)
       return
     }
@@ -4609,7 +5353,7 @@ function openSftpBrowser(specInput, ownerSid) {
       if (entry === null || typeof entry !== 'object' || typeof entry.name !== 'string' || entry.name === '') continue
       const full = joinRemotePath(state.path, entry.name)
       const metaParts = []
-      if (entry.isDir === true) metaParts.push('目录')
+            if (entry.isDir === true) metaParts.push(t('meta.dir'))
       else metaParts.push(formatBytes(Number(entry.size)) || '—')
       const mtime = formatMtime(Number(entry.mtime))
       if (mtime !== '') metaParts.push(mtime)
@@ -4617,7 +5361,7 @@ function openSftpBrowser(specInput, ownerSid) {
       if (entry.isDir === true) {
         row.addEventListener('click', (event) => {
           if (event.target instanceof Element && event.target.closest('.tt_sftpAct') !== null) return
-          void runTask('加载中…', () => loadDir(full))
+          void runTask(t('list.loading'), () => loadDir(full))
         })
       } else {
         // 文件单击即下载；行内按钮经 stopPropagation 不会二次触发
@@ -4625,10 +5369,10 @@ function openSftpBrowser(specInput, ownerSid) {
           if (event.target instanceof Element && event.target.closest('.tt_sftpAct') !== null) return
           void downloadEntry(entry, full)
         })
-        appendAct(row, ICON_DOWNLOAD, '下载 ' + entry.name, () => void downloadEntry(entry, full))
+        appendAct(row, ICON_DOWNLOAD, t('btn.download', { name: entry.name }), () => void downloadEntry(entry, full))
       }
-      appendAct(row, ICON_EDIT, '重命名 ' + entry.name, () => {
-        editorInput.placeholder = '新名称'
+            appendAct(row, ICON_EDIT, t('btn.rename', { name: entry.name }), () => {
+                editorInput.placeholder = t('placeholder.newName')
         editorInput.value = entry.name
         editor.style.display = ''
         editorInput.focus()
@@ -4637,7 +5381,7 @@ function openSftpBrowser(specInput, ownerSid) {
           const value = editorInput.value.trim()
           if (value === '' || value === entry.name) return
           closeEditor()
-          await runTask('重命名 ' + entry.name + '…', async () => {
+          await runTask(t('msg.renaming', { name: entry.name }), async () => {
             await api('rename', { from: full, to: joinRemotePath(state.path, value) })
             await loadDir(state.path)
           })
@@ -4649,7 +5393,7 @@ function openSftpBrowser(specInput, ownerSid) {
     if (rows.length > RENDER_CAP) {
       const more = document.createElement('div')
       more.className = 'tt_addMenuTitle'
-      more.textContent = `…其余 ${String(rows.length - RENDER_CAP)} 项未渲染（共 ${String(rows.length)} 项）——用上方路径框跳转到子目录定位`
+              more.textContent = t('list.truncated', { rest: rows.length - RENDER_CAP, total: rows.length })
       list.appendChild(more)
     }
   }
@@ -4662,13 +5406,13 @@ function openSftpBrowser(specInput, ownerSid) {
       pathInput.value = state.path
       const count = Array.isArray(data.entries) ? data.entries.length : 0
       renderRows(data.entries)
-      setDialogStatus(state.path + ' — ' + String(count) + ' 项')
+      setDialogStatus(state.path + ' — ' + t('list.itemCount', { count }))
     } catch (error) {
       setDialogStatus(String(error && error.message ? error.message : error), 'error')
     }
   }
 
-  const downloadEntry = (entry, full) => runTask('下载 ' + entry.name + '…', async () => {
+  const downloadEntry = (entry, full) => runTask(t('msg.downloading', { name: entry.name }), async () => {
     progress.reset()
     let blob
     try {
@@ -4683,16 +5427,16 @@ function openSftpBrowser(specInput, ownerSid) {
       if (isCanceled(error)) {
         // 取消不是失败：灰色文案 + 留在目录里（服务端已回收读流）
         progress.reset()
-        setDialogStatus('已取消下载 ' + entry.name)
+                setDialogStatus(t('msg.downloadCanceled', { name: entry.name }))
         return
       }
-      progress.fail('下载失败')
+            progress.fail(t('error.downloadFailed'))
       throw error
     }
-    progress.done('完成')
+                progress.done(t('status.done'))
     triggerBlobDownload(blob, entry.name)
     setTimeout(() => progress.reset(), 1500)
-    setDialogStatus('已下载 ' + entry.name + '（' + (formatBytes(blob.size) || String(blob.size) + ' B') + '）')
+        setDialogStatus(t('msg.downloaded', { name: entry.name, size: formatBytes(blob.size) || String(blob.size) + ' B' }))
   })
 
   /**
@@ -4711,7 +5455,7 @@ function openSftpBrowser(specInput, ownerSid) {
     xhr.setRequestHeader('x-dsh-sftp-meta', meta)
     const label = total > 1 ? String(index) + '/' + String(total) + ' ' : ''
     // 文件名/序号归状态行（进度条只显示百分比，两者不重复）
-    setDialogStatus('上传 ' + label + relPath, 'busy')
+    setDialogStatus(t('msg.uploadingName', { name: label + relPath }), 'busy')
     xhr.upload.addEventListener('progress', (event) => {
       if (event.lengthComputable) {
         progress.set(event.loaded, event.total)
@@ -4730,12 +5474,12 @@ function openSftpBrowser(specInput, ownerSid) {
     }
     xhr.addEventListener('load', () => {
       if (xhr.status === 200) {
-        if (total === 1) progress.done('上传完成')
+        if (total === 1) progress.done(t('msg.uploadDone'))
         finish(null)
         return
       }
       if (cancelRef.stopped) return
-      progress.fail('上传失败')
+      progress.fail(t('error.uploadFailed'))
       let message = 'HTTP ' + xhr.status
       try {
         const data = JSON.parse(xhr.responseText)
@@ -4750,8 +5494,8 @@ function openSftpBrowser(specInput, ownerSid) {
         finish(new TransferCanceledError())
         return
       }
-      progress.fail('上传失败')
-      finish(new Error('网络错误'))
+      progress.fail(t('error.uploadFailed'))
+      finish(new Error(t('error.networkError')))
     })
     // 用户点 ✕ 中断：XHR 以 abort 事件收尾，转成语义明确的信号
     xhr.addEventListener('abort', () => {
@@ -4768,24 +5512,24 @@ function openSftpBrowser(specInput, ownerSid) {
    * 0.12.0：整批可取消——✕ 中断在途那一个，剩下的直接跳过（半截文件由
    * 服务端删除）。
    */
-  const uploadFiles = async (items) => runTask('上传中…', async () => {
+  const uploadFiles = async (items) => runTask(t('msg.uploading'), async () => {
     const limits = sftpLimitsCache
     // 拖拽收集途中已按 File 数/单文件上限拦截；这里兜底校验（file input 路径）
     if (limits.maxUploadFiles > 0 && items.length > limits.maxUploadFiles) {
-      setDialogStatus('文件数超过上限（' + String(limits.maxUploadFiles) + '）：本次 ' + String(items.length) + ' 个，请分批上传', 'error')
-      progress.fail('超限')
+      setDialogStatus(t('error.uploadCountExceeded', { max: limits.maxUploadFiles, count: items.length }), 'error')
+      progress.fail(t('status.overLimit'))
       return
     }
     const maxBytes = limits.maxUploadMb > 0 ? limits.maxUploadMb * 1024 * 1024 : 0
     const tooBig = items.find((item) => maxBytes > 0 && (item.file?.size ?? 0) > maxBytes)
     if (tooBig !== undefined) {
-      setDialogStatus('文件超过上传上限（' + formatBytes(maxBytes) + '）：' + String(tooBig.relPath ?? '') + '，请用双栏 ⇨ 直传或终端 scp/rsync', 'error')
-      progress.fail('超限')
+      setDialogStatus(t('error.uploadTooBig', { size: formatBytes(maxBytes), name: String(tooBig.relPath ?? '') }), 'error')
+      progress.fail(t('status.overLimit'))
       return
     }
     if (items._limitExceeded === true) {
-      setDialogStatus('文件总大小超过上传上限：请分批上传（或用双栏 ⇨ 直传）', 'error')
-      progress.fail('超限')
+      setDialogStatus(t('error.uploadTotalTooBig'), 'error')
+      progress.fail(t('status.overLimit'))
       return
     }
     const dirs = new Set()
@@ -4822,22 +5566,22 @@ function openSftpBrowser(specInput, ownerSid) {
     }
     if (cancelRef.stopped) {
       progress.reset()
-      setDialogStatus('已取消上传（已传 ' + String(uploaded) + '/' + String(items.length) + ' 个）')
+      setDialogStatus(t('msg.uploadCanceled', { done: uploaded, total: items.length }))
       await loadDir(state.path)
       return
     }
-    progress.done('全部完成')
+    progress.done(t('status.allDone'))
     setTimeout(() => progress.reset(), 1500)
-    setDialogStatus('上传完成 ' + String(items.length) + ' 个文件')
+    setDialogStatus(t('msg.uploadDoneCount', { count: items.length }))
     await loadDir(state.path)
   })
 
   refreshBtn.addEventListener('click', () => {
-    void runTask('加载中…', () => loadDir(state.path))
+    void runTask(t('list.loading'), () => loadDir(state.path))
   })
   mkdirBtn.addEventListener('click', () => {
     if (state.busy) return
-    editorInput.placeholder = '新目录名（相对当前目录）'
+          editorInput.placeholder = t('placeholder.newDirName')
     editorInput.value = ''
     editor.style.display = ''
     editorInput.focus()
@@ -4845,7 +5589,7 @@ function openSftpBrowser(specInput, ownerSid) {
       const value = editorInput.value.trim()
       if (value === '') return
       closeEditor()
-      await runTask('创建目录 ' + value + '…', async () => {
+      await runTask(t('msg.creatingDir', { name: value }), async () => {
         await api('mkdir', { path: joinRemotePath(state.path, value) })
         await loadDir(state.path)
       })
@@ -4893,11 +5637,11 @@ function openSftpBrowser(specInput, ownerSid) {
     if (state.busy) return
     const target = pathInput.value.trim()
     if (target === '') return
-    void runTask('加载中…', () => loadDir(target))
+    void runTask(t('list.loading'), () => loadDir(target))
   })
   const singleRect = panelCardRect()
   mountSftpSurface(card, 'SFTP · ' + label, singleRect === null ? 340 : Math.round(singleRect.height * 0.46), ownerKey)
-  void runTask('连接中…', () => loadDir(''))
+  void runTask(t('status.connectingEllipsis'), () => loadDir(''))
 }
 
 /**
@@ -5113,7 +5857,7 @@ async function recoverEmbeddedTabs() {
     } else {
       tab.exited = true
       tab.live = false
-      showTabOverlay(tab, '会话已结束', '点击重新执行', 'exited')
+      showTabOverlay(tab, t('status.ended'), t('btn.clickRerun'), 'exited')
     }
   }
 }
@@ -5131,12 +5875,12 @@ function connect() {
   clearTimeout(reconnectTimer)
   reconnectTimer = null
   connecting = true
-  setPanelStatus('连接中…', '')
+  setPanelStatus(t('status.connectingEllipsis'), '')
   try {
     socket = new WebSocket(wsUrl())
   } catch (error) {
     connecting = false
-    setPanelStatus('连接失败：' + error.message, 'error')
+    setPanelStatus(t('error.connectFailed', { error: error.message }), 'error')
     scheduleReconnect()
     return
   }
@@ -5146,7 +5890,7 @@ function connect() {
     reconnectDelay = 1000
     // 新连接上没有订阅记录：置空后由 ready / switchTab 重新对齐（幂等）
     statsSubSid = null
-    setPanelStatus('已连接', 'connected')
+    setPanelStatus(t('status.connected'), 'connected')
     // 先补发挂起的创建帧（嵌入式终端冷启动时排在这里），再走面板的恢复流程
     for (const entry of [...pendingSpawns]) {
       pendingSpawns.delete(entry)
@@ -5166,7 +5910,7 @@ function connect() {
       // SSH 会话 ready 带 target（user@host[:port]，pid 为 null）；本地带 pid。
       // attach 重连也复用 ready 帧（多带 reattached:true），后跟一帧 data 回放缓冲
       const target = typeof msg.target === 'string' ? msg.target : ''
-      setTabStatus(sid, msg.kind === 'ssh' ? 'SSH ' + (target !== '' ? target + ' ' : '') + '已连接' : '已连接 pid=' + msg.pid, 'connected')
+      setTabStatus(sid, msg.kind === 'ssh' ? t('status.connectedSsh', { target: target !== '' ? target + ' ' : '' }) : t('status.connectedPid', { pid: msg.pid }), 'connected')
       const tab = tabs.get(sid)
       if (tab !== undefined) {
         tab.exited = false
@@ -5214,10 +5958,10 @@ function connect() {
         if (sid === activeSid) applyStatsBar()
         const code = msg.code !== null && msg.code !== undefined ? 'code=' + msg.code : ''
         const signal = msg.signal !== null && msg.signal !== undefined ? 'signal=' + msg.signal : ''
-        setTabStatus(sid, '已退出 ' + [code, signal].filter(Boolean).join(' '), '')
+        setTabStatus(sid, t('status.exitedWith', { detail: [code, signal].filter(Boolean).join(' ') }), '')
         renderConnbar()
         refreshTabDot(sid)
-        showTabOverlay(tab, '会话已退出', '点击重新打开', 'exited')
+        showTabOverlay(tab, t('status.exited'), t('btn.clickReopen'), 'exited')
         syncEntryBadge() // 最小化时徽标计数同步减少
         persistTabs() // 已退出的标签不再持久化
       }
@@ -5238,27 +5982,27 @@ function connect() {
         console.warn('[dsh-tty] stats 帧处理失败（已忽略）: ' + (error instanceof Error ? error.message : String(error)))
       }
     } else if (msg.t === 'error') {
-      setTabStatus(sid, '错误：' + String(msg.m ?? ''), 'error')
+      setTabStatus(sid, t('status.error', { message: String(msg.m ?? '') }), 'error')
       if (typeof sid === 'string') {
         const tab = tabs.get(sid)
         if (tab !== undefined) {
           if (!tab.live) tab.errored = true // spawn/attach 失败：连接栏状态点转错误色
           renderConnbar()
           refreshTabDot(sid)
-          showTabOverlay(tab, '连接出错', String(msg.m ?? '') + ' · 点击重试', 'error')
+          showTabOverlay(tab, t('status.errored'), t('status.retryHint', { message: String(msg.m ?? '') }), 'error')
         }
       } else {
-        showBodyOverlay('点击重试')
+        showBodyOverlay(t('btn.clickRetry'))
       }
     }
   }
   socket.onclose = () => {
     connecting = false
     if (intentionalClose) return
-    setPanelStatus('连接断开 — 自动重连中', 'error')
+    setPanelStatus(t('status.disconnectedReconnecting'), 'error')
     // 不再把未退出标签标记为 exited：会话在宿主保活，重连后 attach 恢复
     for (const tab of tabs.values()) {
-      if (!tab.exited) showTabOverlay(tab, '连接断开', '自动重连中…', 'info')
+      if (!tab.exited) showTabOverlay(tab, t('status.disconnected'), t('status.reconnecting'), 'info')
     }
     scheduleReconnect()
   }
@@ -5317,7 +6061,7 @@ async function copyTerminalText(text) {
     ok = false
   }
   textarea.remove()
-  if (!ok) setStatus('复制失败：当前环境不允许访问剪贴板（http 访问时请改用 localhost 或终端内快捷键）', 'error')
+  if (!ok) setStatus(t('error.copyFailed'), 'error')
   return ok
 }
 
@@ -5345,7 +6089,7 @@ async function pasteTerminalText(tab) {
     ok = false
   }
   textarea.remove()
-  if (!ok) setStatus('浏览器不允许网页读取剪贴板（http 访问时常见）：请在终端里按 Ctrl+V / Cmd+V 粘贴', 'error')
+  if (!ok) setStatus(t('error.pasteFailed'), 'error')
   return ok
 }
 
@@ -5365,17 +6109,17 @@ function openModal() {
     '<div class="tt_header">' +
     '<span class="tt_titleIcon">' + TERMINAL_ICON + '</span>' +
     '<div class="tt_tabs"></div>' +
-    '<div class="tt_status"><span class="tt_statusDot"></span><span class="tt_statusText">初始化…</span></div>' +
-    '<input class="tt_searchInput" style="display:none" placeholder="搜索 (Enter 下一个, Shift+Enter 上一个)" />' +
+    '<div class="tt_status"><span class="tt_statusDot"></span><span class="tt_statusText">' + t('status.initializing') + '</span></div>' +
+    '<input class="tt_searchInput" style="display:none" placeholder="' + t('placeholder.search') + '" />' +
     '<span class="tt_toolGroup">' +
-    '<button class="tt_toolBtn tt_iconBtn" data-act="search" title="搜索 (Ctrl+F)">' + ICON_SEARCH + '</button>' +
-    '<button class="tt_toolBtn tt_iconBtn" data-act="clear" title="清屏">' + ICON_CLEAR + '</button>' +
-    '<button class="tt_toolBtn tt_iconBtn" data-act="copy" title="复制选中内容">' + ICON_COPY + '</button>' +
-    '<button class="tt_toolBtn tt_iconBtn" data-act="paste" title="粘贴">' + ICON_PASTE + '</button>' +
+    '<button class="tt_toolBtn tt_iconBtn" data-act="search" title="' + t('btn.searchTitle') + '">' + ICON_SEARCH + '</button>' +
+    '<button class="tt_toolBtn tt_iconBtn" data-act="clear" title="' + t('btn.clearTitle') + '">' + ICON_CLEAR + '</button>' +
+    '<button class="tt_toolBtn tt_iconBtn" data-act="copy" title="' + t('btn.copyTitle') + '">' + ICON_COPY + '</button>' +
+    '<button class="tt_toolBtn tt_iconBtn" data-act="paste" title="' + t('btn.pasteTitle') + '">' + ICON_PASTE + '</button>' +
     '</span>' +
     '<span class="tt_winGroup">' +
-    '<button class="tt_min" title="最小化（会话保持运行，状态并入侧边栏入口）">' + ICON_MIN + '</button>' +
-    '<button class="tt_close" title="关闭面板（结束会话，标签保留，重开即恢复列表）">' + ICON_CLOSE + '</button>' +
+    '<button class="tt_min" title="' + t('btn.minimizeTitle') + '">' + ICON_MIN + '</button>' +
+    '<button class="tt_close" title="' + t('btn.closePanelTitle') + '">' + ICON_CLOSE + '</button>' +
     '</span>' +
     '</div>' +
     // 连接栏：左侧连接状态，右侧 SFTP / 扩展按钮；本地终端时隐藏（renderConnbar 控制）
@@ -5478,12 +6222,12 @@ function openModal() {
 function buildDock() {
   dockEl = document.createElement('div')
   dockEl.className = 'tt_dock'
-  dockEl.title = '点击恢复终端窗口'
+  dockEl.title = t('btn.restoreDock')
   dockEl.innerHTML =
-    '<span class="tt_dockTitle">' + TERMINAL_ICON + '<span>终端</span><span class="tt_dockCount"></span></span>' +
+    '<span class="tt_dockTitle">' + TERMINAL_ICON + '<span>' + t('panel.title') + '</span><span class="tt_dockCount"></span></span>' +
     '<span class="tt_dockStatus"></span>' +
     '<span class="tt_dockDot"></span>' +
-    '<button class="tt_dockClose" title="关闭面板（结束会话，标签保留，重开即恢复列表）">✕</button>'
+    '<button class="tt_dockClose" title="' + t('btn.closePanelTitle') + '">✕</button>'
   dockCountEl = dockEl.querySelector('.tt_dockCount')
   dockStatusEl = dockEl.querySelector('.tt_dockStatus')
   dockDotEl = dockEl.querySelector('.tt_dockDot')
@@ -5551,7 +6295,7 @@ function syncEntryBadge() {
   }
   // 入口的「已最小化」态（强调底色 + 显示徽标）靠这个属性驱动，别漏
   entry.dataset.minimized = ''
-  entry.title = '终端已最小化 — 点击恢复'
+  entry.title = t('status.minimized')
   const running = [...tabs.values()].filter((tab) => !tab.exited).length
   badge.querySelector('.tt_sidebarBadgeCount').textContent = running + '/' + tabs.size
   const dot = badge.querySelector('.tt_sidebarBadgeDot')
@@ -5732,10 +6476,10 @@ function createSidebarEntry() {
   entry.dataset.dshTtyEntry = ''
   entry.className = 'tt_sidebarEntry'
   entry.setAttribute('role', 'button')
-  entry.setAttribute('aria-label', '终端')
+  entry.setAttribute('aria-label', t('panel.title'))
   // 键盘可达（0.19.0，WCAG 2.1.1）：纯键盘用户此前进不了面板
   entry.tabIndex = 0
-  entry.innerHTML = '<span class="tt_sidebarEntryIcon">' + TERMINAL_ICON + '</span><span class="tt_sidebarEntryLabel">终端</span>'
+  entry.innerHTML = '<span class="tt_sidebarEntryIcon">' + TERMINAL_ICON + '</span><span class="tt_sidebarEntryLabel">' + t('panel.title') + '</span>'
   entry.addEventListener('click', (event) => {
     event.preventDefault()
     openModal()
@@ -5858,7 +6602,7 @@ function TtySettingsCard(props) {
       if (data.ok && typeof data.config === 'object' && data.config !== null) {
         setForm(data.config)
         syncSshHostsCache(data.config) // 连接簿缓存与设置保持一致（「+」菜单共用）
-      } else setMessage({ kind: 'error', text: String(data.error || '读取配置失败') })
+      } else setMessage({ kind: 'error', text: String(data.error || t('error.configLoadFailed')) })
     } catch (error) {
       setMessage({ kind: 'error', text: String(error && error.message ? error.message : error) })
     }
@@ -5941,9 +6685,9 @@ function TtySettingsCard(props) {
   const setDraft = (key) => (event) => setTunnelDraft((current) => ({ ...(current || {}), [key]: event.target.value }))
   /** 直接按值写草稿（分段控件这类不是 input 事件的场景用）。 */
   const setDraftValue = (key, value) => setTunnelDraft((current) => ({ ...(current || {}), [key]: value }))
-  const tunnelRule = (t) => (t?.direction === 'remote'
-    ? `远程:${t.remoteHost || '127.0.0.1'}:${String(t.remotePort ?? 0)} → 本机:${String(t.localTargetPort ?? 0)}`
-    : `本机:${String(t?.localPort ?? 0)} → ${t?.remoteHost ?? '?'}:${String(t?.remotePort ?? 0)}`)
+  const tunnelRule = (tunnel) => (tunnel?.direction === 'remote'
+    ? t('meta.tunnelRemote', { host: tunnel.remoteHost || '127.0.0.1', port: String(tunnel.remotePort ?? 0), local: String(tunnel.localTargetPort ?? 0) })
+    : t('meta.tunnelLocal', { local: String(tunnel?.localPort ?? 0), host: tunnel?.remoteHost ?? '?', port: String(tunnel?.remotePort ?? 0) }))
   const selectedBook = (form?.sshHosts ?? []).find((host) => host?.name === tunnelDraft?.bookName)
   /** 立即提交当前隧道列表（写 settings → reconcile 热生效）；失败回滚提示。 */
   const pushTunnels = async (next) => {
@@ -5955,7 +6699,7 @@ function TtySettingsCard(props) {
       })
       const data = await res.json().catch(() => ({}))
       if (!res.ok || !data.ok) {
-        setMessage({ kind: 'error', text: String(data.error || '保存隧道失败') })
+        setMessage({ kind: 'error', text: String(data.error || t('error.saveTunnelFailed')) })
         return false
       }
       return true
@@ -5969,19 +6713,19 @@ function TtySettingsCard(props) {
    * 从表单草稿拼出一条隧道规格（**新增与编辑共用**，实现在 client-src/tunnel-edit.js）。
    * 校验与命名规则只有那一份——各写一份必然漂（"新增能过、编辑过不了"）。
    */
-  const buildTunnelFromDraft = () => buildTunnelSpec(tunnelDraft, (Array.isArray(form?.sshHosts) ? form.sshHosts : []).map((h) => h?.name))
+  const buildTunnelFromDraft = () => buildTunnelSpec(tunnelDraft, (Array.isArray(form?.sshHosts) ? form.sshHosts : []).map((h) => h?.name), t)
 
   /** 进入隧道编辑：把该条回填到下方表单（编辑态按原始 name 定位）。 */
-  const startEditTunnel = (t) => {
+  const startEditTunnel = (tunnel) => {
     setMessage({ kind: '', text: '' })
-    setEditingTunnel(String(t?.name ?? ''))
+    setEditingTunnel(String(tunnel?.name ?? ''))
     setTunnelDraft({
-      direction: t?.direction === 'remote' ? 'remote' : 'local',
-      bookName: String(t?.bookName ?? ''),
-      localPort: t?.localPort ? String(t.localPort) : '',
-      remoteHost: String(t?.remoteHost ?? ''),
-      remotePort: t?.remotePort ? String(t.remotePort) : '',
-      localTargetPort: t?.localTargetPort ? String(t.localTargetPort) : '',
+      direction: tunnel?.direction === 'remote' ? 'remote' : 'local',
+      bookName: String(tunnel?.bookName ?? ''),
+      localPort: tunnel?.localPort ? String(tunnel.localPort) : '',
+      remoteHost: String(tunnel?.remoteHost ?? ''),
+      remotePort: tunnel?.remotePort ? String(tunnel.remotePort) : '',
+      localTargetPort: tunnel?.localTargetPort ? String(tunnel.localTargetPort) : '',
     })
   }
   const cancelEditTunnel = () => {
@@ -6002,14 +6746,14 @@ function TtySettingsCard(props) {
     // 名字冲突改为**提示**而不是静默加 `-2`（D56）：自动后缀会凭空多出一条同名不同尾的
     // 隧道，用户以为在改/加同一条，实际得到两条，排查时极难看出。
     if (tunnelNameClash(list, tunnel.name) !== undefined) {
-      setMessage({ kind: 'error', text: `已存在同名隧道「${tunnel.name}」——同一「连接簿条目 + 方向 + 端口」只能有一条。改端口会得到新名字，或先删掉旧的那条。` })
+      setMessage({ kind: 'error', text: t('error.tunnelNameTaken', { name: tunnel.name }) })
       return
     }
     const next = [...list, tunnel]
     setForm((current) => ({ ...(current || {}), tunnels: next }))
     setTunnelDraft((current) => ({ ...(current || {}), localPort: '', remoteHost: '', remotePort: '', localTargetPort: '' }))
     void pushTunnels(next).then((ok) => {
-      if (ok) setMessage({ kind: 'ok', text: `隧道「${tunnel.name}」已生效` })
+      if (ok) setMessage({ kind: 'ok', text: t('msg.tunnelApplied', { name: tunnel.name }) })
     })
   }
 
@@ -6023,10 +6767,10 @@ function TtySettingsCard(props) {
       return
     }
     const before = Array.isArray(form?.tunnels) ? form.tunnels : []
-    const applied = applyTunnelEdit(before, editingTunnel, built.tunnel)
+    const applied = applyTunnelEdit(before, editingTunnel, built.tunnel, t)
     if (!applied.ok) {
       // 那条已不存在（另一个窗口删了）：退出编辑模式，别让表单留着一份改不动的草稿
-      if (applied.error.includes('已不存在')) setEditingTunnel(null)
+      if (applied.reason === 'missing') setEditingTunnel(null)
       setMessage({ kind: 'error', text: applied.error })
       return
     }
@@ -6039,7 +6783,7 @@ function TtySettingsCard(props) {
       }
       setEditingTunnel(null)
       setTunnelDraft((current) => ({ ...(current || {}), localPort: '', remoteHost: '', remotePort: '', localTargetPort: '' }))
-      setMessage({ kind: 'ok', text: `隧道「${built.tunnel.name}」已更新` })
+      setMessage({ kind: 'ok', text: t('msg.tunnelUpdated', { name: built.tunnel.name }) })
     })
   }
   /**
@@ -6064,11 +6808,11 @@ function TtySettingsCard(props) {
       setEditingTunnel(null)
       setTunnelDraft((current) => ({ ...(current || {}), localPort: '', remoteHost: '', remotePort: '', localTargetPort: '' }))
     }
-    commitTunnels(before.filter((t) => t?.name !== name), before)
+    commitTunnels(before.filter((tunnel) => tunnel?.name !== name), before)
   }
   const toggleTunnelEnabled = (name, checked) => {
     const before = Array.isArray(form?.tunnels) ? form.tunnels : []
-    commitTunnels(before.map((t) => (t?.name === name ? { ...t, enabled: checked } : t)), before)
+    commitTunnels(before.map((tunnel) => (tunnel?.name === name ? { ...tunnel, enabled: checked } : tunnel)), before)
   }
   /** 进入编辑：复制条目到表单（按原始 name 定位，改名也安全）。 */
   const startEditSshHost = (host) => {
@@ -6122,17 +6866,17 @@ function TtySettingsCard(props) {
     const hostAddr = editForm.host.trim()
     const username = editForm.username.trim()
     if (name === '' || hostAddr === '' || username === '') {
-      setEditError('名称、主机、用户名必填')
+      setEditError(t('error.nameHostUserRequired'))
       return
     }
     let port = Number(editForm.port)
     if (!Number.isInteger(port) || port < 1 || port > 65535) port = 22
     if ((form?.sshHosts ?? []).some((h) => h?.name === name && name !== editing)) {
-      setEditError('连接簿里已有同名条目: ' + name)
+      setEditError(t('error.bookNameTaken', { name }))
       return
     }
     if (editForm.auth === 'key' && editForm.keyPath.trim() === '') {
-      setEditError('auth=key 需要私钥路径')
+      setEditError(t('error.keyPathRequired'))
       return
     }
     setEditError('')
@@ -6171,7 +6915,7 @@ function TtySettingsCard(props) {
     setEditing(null)
     setEditForm(null)
     setEditProbe({ running: false, ok: false, text: '' })
-    setMessage({ kind: 'ok', text: '已修改条目「' + name + '」— 随「保存」写入配置' })
+    setMessage({ kind: 'ok', text: t('msg.hostEdited', { name }) })
   }
   /** 删除连接簿条目（随「保存」一并提交）。 */
   const removeSshHost = (name) => {
@@ -6200,7 +6944,7 @@ function TtySettingsCard(props) {
       password: host?.password ?? '',
       agentForward: host?.agentForward === true,
     }
-    setProbeStates((current) => ({ ...current, [name]: { running: true, text: '连接测试中…' } }))
+    setProbeStates((current) => ({ ...current, [name]: { running: true, text: t('msg.probing') } }))
     const out = await probeSshFetch(spec, true)
     setProbeStates((current) => {
       const prev = current[name] || {}
@@ -6208,7 +6952,7 @@ function TtySettingsCard(props) {
         const ok = out.result.auth?.ok === true
         return { ...current, [name]: { running: false, ok, text: probeSummary(out.result) } }
       }
-      return { ...current, [name]: { running: false, ok: false, text: '❌ 连接失败：' + String(out.error || '未知错误') } }
+      return { ...current, [name]: { running: false, ok: false, text: t('error.probeFailed', { detail: String(out.error || t('error.unknown')) }) } }
     })
   }
   /** 立即删除一条 TOFU 主机指纹记录（指纹变更且确认安全后，删掉即可重连）。 */
@@ -6224,8 +6968,8 @@ function TtySettingsCard(props) {
         body: JSON.stringify({ hostKeys: next }),
       })
       const data = await res.json().catch(() => ({}))
-      if (!res.ok || !data.ok) setMessage({ kind: 'error', text: String(data.error || '删除主机密钥记录失败') })
-      else setMessage({ kind: 'ok', text: '已删除主机密钥记录（下次连接重新记录指纹）' })
+      if (!res.ok || !data.ok) setMessage({ kind: 'error', text: String(data.error || t('error.hostKeyDeleteFailed')) })
+      else setMessage({ kind: 'ok', text: t('msg.hostKeyDeleted') })
     } catch (error) {
       setMessage({ kind: 'error', text: String(error && error.message ? error.message : error) })
     }
@@ -6237,7 +6981,7 @@ function TtySettingsCard(props) {
       const res = await fetch('/api/dsh-tty/ssh-config', { cache: 'no-store' })
       const data = await res.json()
       if (!data.ok) {
-        setMessage({ kind: 'error', text: String(data.error || '读取 ~/.ssh/config 失败') })
+        setMessage({ kind: 'error', text: String(data.error || t('error.sshConfigReadFailed')) })
         return
       }
       const candidates = Array.isArray(data.entries) ? data.entries : []
@@ -6276,15 +7020,15 @@ function TtySettingsCard(props) {
       const others = Number.isInteger(data.skippedOther) ? data.skippedOther : 0
       const overflow = Number.isInteger(data.droppedOverflow) ? data.droppedOverflow : 0
       const extras = []
-      if (proxyCount > 0) extras.push(`${proxyCount} 条依赖跳板机（ProxyJump / ProxyCommand）未导入：${proxyNames.slice(0, 5).join('、')}${proxyCount > 5 ? ' 等' : ''}`)
+      if (proxyCount > 0) extras.push(t('msg.proxySkipped', { count: proxyCount, names: proxyNames.slice(0, 5).join(t('list.separator')) + (proxyCount > 5 ? t('meta.etc') : '') }))
       if (others > 0) extras.push(`${others} 条不是具体主机（通配 / 无 User）`)
-      if (overflow > 0) extras.push(`超过导入上限的 ${overflow} 条未导入`)
-      const tail = extras.length > 0 ? `；${extras.join('；')}` : ''
+      if (overflow > 0) extras.push(t('msg.importOverflow', { count: overflow }))
+      const tail = extras.length > 0 ? t('list.separatorFull') + extras.join(t('list.separatorFull')) : ''
       if (added === 0) {
-        const base = skipped > 0 ? `没有新条目（${skipped} 条同名跳过）` : '~/.ssh/config 里没有可导入的具体主机'
+        const base = skipped > 0 ? t('msg.noNewEntries', { count: skipped }) : t('msg.noImportableHosts')
         setMessage({ kind: extras.length > 0 ? 'error' : 'ok', text: base + tail })
       } else {
-        setMessage({ kind: extras.length > 0 ? 'error' : 'ok', text: `已导入 ${added} 条（同名跳过 ${skipped} 条），随「保存」写入配置${tail}` })
+        setMessage({ kind: extras.length > 0 ? 'error' : 'ok', text: t('msg.importedHosts', { added, skipped }) + tail })
       }
     } catch (error) {
       setMessage({ kind: 'error', text: String(error && error.message ? error.message : error) })
@@ -6303,7 +7047,7 @@ function TtySettingsCard(props) {
       const res = await fetch('/api/dsh-tty/known-hosts', { cache: 'no-store' })
       const data = await res.json()
       if (!data.ok) {
-        setMessage({ kind: 'error', text: String(data.error || '读取 ~/.ssh/known_hosts 失败') })
+        setMessage({ kind: 'error', text: String(data.error || t('error.knownHostsReadFailed')) })
         return
       }
       const incoming = Array.isArray(data.entries) ? data.entries : []
@@ -6344,7 +7088,7 @@ function TtySettingsCard(props) {
         added += 1
       }
       if (added === 0) {
-        setMessage({ kind: 'ok', text: skipped > 0 ? `没有新指纹（${skipped} 条已存在）` : 'known_hosts 里没有可导入的具体主机' })
+        setMessage({ kind: 'ok', text: skipped > 0 ? t('msg.noNewFingerprints', { count: skipped }) : t('msg.noImportableKnownHosts') })
         return
       }
       setForm((current) => ({ ...(current || {}), hostKeys: merged }))
@@ -6356,10 +7100,10 @@ function TtySettingsCard(props) {
         })
         const saveData = await saveRes.json().catch(() => ({}))
         if (!saveRes.ok || !saveData.ok) {
-          setMessage({ kind: 'error', text: String(saveData.error || '保存 hostKeys 失败') })
+          setMessage({ kind: 'error', text: String(saveData.error || t('error.saveHostKeysFailed')) })
           return
         }
-        setMessage({ kind: 'ok', text: `已导入 ${added} 条主机的指纹（跳过 ${skipped} 条已存在）` + (data.truncated === true ? '；注意：known_hosts 超过 500 条主机，本次仅导入前 500 条' : '') })
+        setMessage({ kind: 'ok', text: t('msg.importedFingerprints', { added, skipped }) + (data.truncated === true ? t('hint.knownHostsTruncated') : '') })
       } catch (error) {
         setMessage({ kind: 'error', text: String(error && error.message ? error.message : error) })
       }
@@ -6393,9 +7137,9 @@ function TtySettingsCard(props) {
         body: JSON.stringify(body),
       })
       const data = await res.json()
-      if (!res.ok || !data.ok) setMessage({ kind: 'error', text: String(data.error || '保存失败') })
+      if (!res.ok || !data.ok) setMessage({ kind: 'error', text: String(data.error || t('error.saveFailed')) })
       else {
-        setMessage({ kind: 'ok', text: '已保存并热生效' })
+        setMessage({ kind: 'ok', text: t('msg.saved') })
         if (data.config) {
           setForm(data.config)
           syncSshHostsCache(data.config)
@@ -6427,7 +7171,7 @@ function TtySettingsCard(props) {
       setCredRemember(false)
       setCredClearable(false)
       setCredStatus({
-        text: credentialsRemote === null ? '宿主未提供凭据服务（remote.credentials），只能明文保存' : '凭据服务不完整，只能明文保存',
+        text: credentialsRemote === null ? t('error.credPlainUnavailable') : t('error.credPlainIncomplete'),
         kind: 'muted',
       })
       return
@@ -6440,19 +7184,19 @@ function TtySettingsCard(props) {
     const probe = await describeCredentialRef(ref)
     if (probe.unreported === true) {
       setCredClearable(false)
-      setCredStatus({ text: '引用 ' + ref + '：宿主未报告状态', kind: 'plain' })
+      setCredStatus({ text: t('status.credUnreported', { ref }), kind: 'plain' })
       return
     }
     if (probe.error !== undefined) {
       setCredClearable(false)
-      setCredStatus({ text: '读取凭据状态失败：' + probe.error, kind: 'error' })
+      setCredStatus({ text: t('error.credStatusFailed', { error: probe.error }), kind: 'error' })
       return
     }
     const view = probe.view
     setCredStatus({
       text: view.configured
-        ? '已存入' + (view.source !== '' ? '（来源 ' + view.source + '）' : '') + ' · ' + ref
-        : '引用 ' + ref + '：存储里还没有这个值',
+        ? t('status.credStored', { ref, source: view.source !== '' ? t('meta.credSource', { source: view.source }) : '' })
+        : t('status.credUnknown', { ref }),
       kind: view.configured ? 'ok' : 'plain',
     })
     setCredClearable(view.configured === true && view.writable === true)
@@ -6512,8 +7256,8 @@ function TtySettingsCard(props) {
         jsx('input', {
           className: 'tt_cardInput',
           value: open ? credFilter : '',
-          placeholder: '或：选择凭据存储里的引用名',
-          title: '候选 = 凭据存储里已有的引用名 + 本机连接簿里在用的引用名',
+          placeholder: t('placeholder.credRef'),
+          title: t('hint.credRefCandidates'),
           autoComplete: 'off',
           spellCheck: false,
           onFocus: () => {
@@ -6533,17 +7277,17 @@ function TtySettingsCard(props) {
           className: 'tt_envList',
           children: [
             ...(hit.length === 0
-              ? [jsx('span', { className: 'tt_envMore', children: '没有匹配的引用' })]
+              ? [jsx('span', { className: 'tt_envMore', children: t('list.noCredRef') })]
               : hit.slice(0, 30).map((name) => jsx('button', {
                   type: 'button',
                   className: 'tt_envItem',
                   'data-danger': credConfirm === name ? '' : undefined,
                   onMouseDown: (event) => event.preventDefault(),
                   onClick: () => pickCredential(key, name),
-                  children: credConfirm === name ? name + '（再点覆盖已填）' : name,
+                  children: credConfirm === name ? t('list.credOverwrite', { name }) : name,
                 }, name))),
             ...(hit.length > 30
-              ? [jsx('span', { className: 'tt_envMore', children: '还有 ' + (hit.length - 30) + ' 个 — 继续输入筛选' })]
+              ? [jsx('span', { className: 'tt_envMore', children: t('list.moreMatches', { count: hit.length - 30 }) })]
               : []),
           ],
         }, 'cred-list-' + key)] : []),
@@ -6565,13 +7309,11 @@ function TtySettingsCard(props) {
               className: 'tt_toolBtn tt_credClear',
               disabled: credClearable !== true,
               onClick: () => void clearStoredCredential(),
-              children: '清除已存凭据',
+              children: t('btn.clearCredential'),
             })
           : jsx('label', {
               className: 'tt_credToggle',
-              title: '勾选后，点「应用」时把密码写进官方凭据存储，字段里只留 env: 引用'
-                + '（值在 ~/.dsh/.credentials.yaml，不进环境、不回传浏览器；挡不住同用户进程与 agent）。'
-                + '不勾选则按现状明文写进设置文件。能用密钥 / agent 就别存密码。',
+              title: t('hint.rememberCredentialApply'),
               children: [
                 jsx('input', {
                   type: 'checkbox',
@@ -6580,14 +7322,14 @@ function TtySettingsCard(props) {
                   disabled: missing,
                   onChange: (event) => setCredRemember(event.target.checked),
                 }),
-                jsx('span', { children: '应用时存入凭据存储' }),
+                jsx('span', { children: t('check.rememberCredentialApply') }),
               ],
             }),
         credStatus.text === ''
           ? null
           : jsx('span', { className: 'tt_credStatus', 'data-kind': credStatus.kind, children: credStatus.text }),
         missing && credStatus.text === ''
-          ? jsx('span', { className: 'tt_credStatus', 'data-kind': 'muted', children: '宿主未提供凭据服务（remote.credentials），只能明文保存' })
+          ? jsx('span', { className: 'tt_credStatus', 'data-kind': 'muted', children: t('error.credPlainUnavailable') })
           : null,
       ],
     })
@@ -6600,7 +7342,7 @@ function TtySettingsCard(props) {
     let port = Number(editForm?.port)
     if (!Number.isInteger(port) || port < 1 || port > 65535) port = 22
     if (host === '' || username === '') {
-      setEditError('主机与用户名必填')
+      setEditError(t('error.hostUserRequired'))
       return null
     }
     const auth = editForm?.auth
@@ -6608,7 +7350,7 @@ function TtySettingsCard(props) {
     if (auth === 'key') {
       const keyPath = String(editForm?.keyPath ?? '').trim()
       if (keyPath === '') {
-        setEditError('auth=key 需要私钥路径')
+        setEditError(t('error.keyPathRequired'))
         return null
       }
       spec.keyPath = keyPath
@@ -6617,7 +7359,7 @@ function TtySettingsCard(props) {
     if (auth === 'password') {
       const password = String(editForm?.password ?? '')
       if (password === '') {
-        setEditError('auth=password 需要密码')
+        setEditError(t('error.passwordRequired'))
         return null
       }
       spec.password = password
@@ -6631,14 +7373,14 @@ function TtySettingsCard(props) {
     setEditError('')
     const spec = collectEditSpec()
     if (spec === null) return
-    setEditProbe({ running: true, ok: false, text: '连接测试中…' })
+    setEditProbe({ running: true, ok: false, text: t('msg.probing') })
     void probeSshFetch(spec, false).then((out) => {
       if (out.result) {
         const ok = out.result.auth?.ok === true
         setEditProbe({ running: false, ok, text: probeSummary(out.result) })
         return
       }
-      setEditProbe({ running: false, ok: false, text: '❌ 连接失败：' + String(out.error || '未知错误') })
+      setEditProbe({ running: false, ok: false, text: t('error.probeFailed', { detail: String(out.error || t('error.unknown')) }) })
     })
   }
 
@@ -6684,44 +7426,44 @@ function TtySettingsCard(props) {
     return jsxs('div', {
       className: 'tt_sshEdit',
       children: [
-        jsx('div', { className: 'tt_sshSection', children: '连接' }),
+        jsx('div', { className: 'tt_sshSection', children: t('section.connection') }),
         jsxs('div', { className: 'tt_sshGrid', children: [
-          editField('名称', 'name', '同名冲突会被拒绝'),
-          editField('端口', 'port', '22'),
+          editField(t('field.bookName'), 'name', t('hint.bookNameConflict')),
+          editField(t('field.port'), 'port', '22'),
         ] }),
-        editField('主机', 'host', 'example.com 或 IP'),
-        editField('用户名', 'username', 'root'),
-        jsx('div', { className: 'tt_sshSection', children: '认证' }),
+        editField(t('field.host'), 'host', t('placeholder.host')),
+        editField(t('field.username'), 'username', 'root'),
+        jsx('div', { className: 'tt_sshSection', children: t('section.auth') }),
         jsxs('label', { className: 'tt_sshRow', children: [
-          jsx('span', { className: 'tt_cardLabel', children: '认证方式' }),
+          jsx('span', { className: 'tt_cardLabel', children: t('field.authMethod') }),
           jsxs('select', {
             className: 'tt_cardInput',
             value: editForm.auth,
             onChange: (event) => setEditForm((current) => ({ ...(current || {}), auth: event.target.value })),
             children: [
-              jsx('option', { value: 'agent', children: 'agent — 使用本机 ssh-agent' }),
-              jsx('option', { value: 'key', children: 'key — 私钥文件' }),
-              jsx('option', { value: 'password', children: 'password — 密码' }),
+              jsx('option', { value: 'agent', children: t('option.authAgent') }),
+              jsx('option', { value: 'key', children: t('option.authKey') }),
+              jsx('option', { value: 'password', children: t('option.authPassword') }),
             ],
           }),
         ] }),
         ...(editForm.auth === 'key' ? [
-          editField('私钥路径', 'keyPath', '~/.ssh/id_ed25519'),
-          editField('私钥口令（可空）', 'passphrase', '', 'password'),
-          renderCredPicker('passphrase', '还没有别的连接用过凭据引用 — 可在私钥口令框直接手输 env:NAME'),
+          editField(t('field.keyPath'), 'keyPath', '~/.ssh/id_ed25519'),
+          editField(t('field.passphrase'), 'passphrase', '', 'password'),
+          renderCredPicker('passphrase', t('hint.noCredRefPassphrase')),
         ] : []),
         ...(editForm.auth === 'password' ? [
-          editField('密码', 'password', '', 'password', {
+          editField(t('field.password'), 'password', '', 'password', {
             // 失焦对一次状态（手改引用名也算）：不用 onChange——密码框每敲一个字符都去问宿主没必要
             onBlur: () => void refreshCredStatus(editForm.password),
           }),
           renderCredentialRow(),
-          renderCredPicker('password', '还没有别的连接用过凭据引用 — 勾上面的「应用时存入凭据存储」新建一个，或直接在密码框手输 env:NAME'),
+          renderCredPicker('password', t('hint.noCredRefPasswordApply')),
         ] : []),
-        jsx('div', { className: 'tt_sshSection', children: '选项' }),
+        jsx('div', { className: 'tt_sshSection', children: t('section.options') }),
         jsxs('label', { className: 'tt_cardRow', children: [
           jsx('input', { type: 'checkbox', className: 'tt_cardCheckbox', checked: editForm.agentForward === true, onChange: (event) => setEditForm((current) => ({ ...(current || {}), agentForward: event.target.checked })) }),
-          jsx('span', { className: 'tt_cardLabel', children: 'agent forwarding（远程可用本地 ssh-agent 钥匙，如远程 git clone）' }),
+          jsx('span', { className: 'tt_cardLabel', children: t('check.agentForward') }),
         ] }),
         // 条目级持久化：只在设置里开着 tmux 持久化时才有意义（与对话框同款条件）；没写过的条目
         // 跟随全局开关，显式取消过（persist:false）的条目保持取消——「+」菜单按这个值决定是否托管
@@ -6733,7 +7475,7 @@ function TtySettingsCard(props) {
                 checked: editForm.persist === true,
                 onChange: (event) => setEditForm((current) => ({ ...(current || {}), persist: event.target.checked })),
               }),
-              jsx('span', { className: 'tt_cardLabel', children: '持久会话（tmux 托管，断线/重启后恢复现场；远程需安装 tmux）' }),
+              jsx('span', { className: 'tt_cardLabel', children: t('check.persist') }),
             ] })
           : null,
         editProbe.text !== ''
@@ -6742,13 +7484,13 @@ function TtySettingsCard(props) {
         editError !== '' ? jsx('span', { className: 'tt_cardMessage tt_cardMessageError', children: editError }) : null,
         jsxs('div', { className: 'tt_sshActions', children: [
           jsxs('div', { className: 'tt_sshActionsGroup', children: [
-            jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: cancelEditSshHost, children: '取消' }),
-            jsx('button', { type: 'button', className: 'tt_toolBtn', title: '不动终端，直接以当前填写的信息打开 SFTP 文件浏览', onClick: browseEditForm, children: '文件浏览' }),
-            jsx('button', { type: 'button', className: 'tt_toolBtn', disabled: editProbe.running, title: '按当前填写诊断连接（TCP → 主机密钥 → 认证）；不会新建会话，也不记录主机指纹', onClick: probeEditForm, children: editProbe.running ? '试连中…' : '试连' }),
+            jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: cancelEditSshHost, children: t('btn.cancel') }),
+            jsx('button', { type: 'button', className: 'tt_toolBtn', title: t('btn.browseTitle'), onClick: browseEditForm, children: t('btn.fileBrowse') }),
+            jsx('button', { type: 'button', className: 'tt_toolBtn', disabled: editProbe.running, title: t('btn.probeTitle'), onClick: probeEditForm, children: editProbe.running ? t('msg.probing') : t('btn.probe') }),
           ] }),
           jsxs('div', { className: 'tt_sshActionsGroup', children: [
-            jsx('button', { type: 'button', className: 'tt_cardSave', onClick: () => void applyEditSshHost(), children: '应用' }),
-            jsx('span', { className: 'tt_cardHint', children: '随卡片「保存」写入配置' }),
+            jsx('button', { type: 'button', className: 'tt_cardSave', onClick: () => void applyEditSshHost(), children: t('btn.apply') }),
+            jsx('span', { className: 'tt_cardHint', children: t('hint.appliedOnSave') }),
           ] }),
         ] }),
       ],
@@ -6776,7 +7518,7 @@ function TtySettingsCard(props) {
   const winHost = form?.platform === 'win32'
 
   if (view === 'summary') {
-    return 'xterm 终端面板：多标签页、断线自动重连、cwd 跟随会话、SSH 连接簿与主机指纹钉扎、tmux 会话持久化。'
+    return t('card.desc')
   }
 
   // page 视图：新页面自己画标题/图标/面包屑，这里只交表单本体，不渲染卡片头。
@@ -6792,8 +7534,8 @@ function TtySettingsCard(props) {
           jsxs('span', {
             className: 'tt_cardHeadText',
             children: [
-              jsx('span', { className: 'tt_cardName', children: '终端面板' }),
-              jsx('span', { className: 'tt_cardDescription', children: 'xterm 终端面板：多标签页、断线自动重连、cwd 跟随会话、SSH 连接簿与主机指纹钉扎、tmux 会话持久化；shell / TERM / 并发上限等保存即热生效。' }),
+              jsx('span', { className: 'tt_cardName', children: t('card.name') }),
+              jsx('span', { className: 'tt_cardDescription', children: t('card.descFull') }),
             ],
           }),
           jsx('span', { className: 'dshkit_badge', children: 'Kit' }),
@@ -6812,47 +7554,47 @@ function TtySettingsCard(props) {
         className: 'tt_cardBody',
         children: [
           form === null
-            ? jsx('div', { className: 'tt_cardMessage', children: '加载配置中…' })
+            ? jsx('div', { className: 'tt_cardMessage', children: t('list.loadingConfig') })
             : jsxs('div', { children: [
-                sectionTitle('基础'),
-                boolField('启用插件（保存即热生效：工具与面板入口立刻收起，会话转保活）', 'enabled'),
-                boolField('向 agent 公告终端面板能力', 'announceToAgent'),
+                sectionTitle(t('section.basic')),
+                boolField(t('check.enabled'), 'enabled'),
+                boolField(t('check.announce'), 'announceToAgent'),
                 winHost
                   ? jsxs('div', {
                       className: 'tt_cardField',
                       children: [
                         jsxs('label', { className: 'tt_cardRow', children: [
                           jsx('input', { type: 'checkbox', className: 'tt_cardCheckbox', checked: false, disabled: true }),
-                          jsx('span', { className: 'tt_cardLabel', children: 'shell 集成（OSC 133/7 注入）' }),
+                          jsx('span', { className: 'tt_cardLabel', children: t('check.shellIntegration') }),
                         ] }),
-                        jsx('span', { className: 'tt_cardHint', children: 'Windows 宿主上不适用：注入走的是 POSIX 的 `-c` 包装层与 rc 桩，cmd / PowerShell 上都不成立（实测 cmd 忽略 `-c` 空跑、PowerShell 报 export 不存在）。因此**本地**标签的 cwd 跟随与 tty_capture{last} 不可用；远程 Linux / macOS 主机照旧支持。' }),
+                        jsx('span', { className: 'tt_cardHint', children: t('hint.shellIntegrationWindows') }),
                       ],
                     })
-                  : boolField('shell 集成（OSC 133/7 注入，tty_capture{last} 与 cwd 跟随依赖它）', 'shellIntegration'),
-                sectionTitle('SFTP 文件传输'),
+                  : boolField(t('check.shellIntegrationWindows'), 'shellIntegration'),
+                sectionTitle(t('section.sftp')),
                 jsxs('div', {
                   className: 'tt_cardField',
                   children: [
-                    jsx('span', { className: 'tt_cardLabel', children: 'SFTP 文件浏览风格' }),
+                    jsx('span', { className: 'tt_cardLabel', children: t('field.sftpStyle') }),
                     jsxs('select', {
                       className: 'tt_cardInput',
                       value: form.sftpStyle === 'dual' ? 'dual' : 'dialog',
                       onChange: (event) => set('sftpStyle', event.target.value),
                       children: [
-                        jsx('option', { value: 'dialog', children: '单窗体 — 远程目录 + 上传/下载/拖拽' }),
-                        jsx('option', { value: 'dual', children: '双栏 — 左本机 / 右远程，选中直传' }),
+                        jsx('option', { value: 'dialog', children: t('option.sftpDialog') }),
+                        jsx('option', { value: 'dual', children: t('option.sftpDual') }),
                       ],
                     }),
-                    jsx('span', { className: 'tt_cardHint', children: '双栏在本机与远程之间对拷文件（目录递归、同名覆盖）；重新打开 SFTP 后生效' }),
+                    jsx('span', { className: 'tt_cardHint', children: t('hint.sftpDual') }),
                   ],
                 }),
                 jsxs('div', {
                   className: 'tt_cardField',
                   children: [
-                    jsx('span', { className: 'tt_cardLabel', children: 'SFTP 传输限制（0 = 不限）' }),
+                    jsx('span', { className: 'tt_cardLabel', children: t('field.sftpLimits') }),
                     jsxs('div', { className: 'tt_limitGrid', children: [
                       jsxs('label', { className: 'tt_sshRow', children: [
-                        jsx('span', { className: 'tt_cardLabel', children: '下载上限 (MB)' }),
+                        jsx('span', { className: 'tt_cardLabel', children: t('field.downloadLimit') }),
                         jsx('input', {
                           className: 'tt_cardInput',
                           type: 'number',
@@ -6862,7 +7604,7 @@ function TtySettingsCard(props) {
                         }),
                       ] }),
                       jsxs('label', { className: 'tt_sshRow', children: [
-                        jsx('span', { className: 'tt_cardLabel', children: '上传上限 (MB)' }),
+                        jsx('span', { className: 'tt_cardLabel', children: t('field.uploadLimit') }),
                         jsx('input', {
                           className: 'tt_cardInput',
                           type: 'number',
@@ -6872,7 +7614,7 @@ function TtySettingsCard(props) {
                         }),
                       ] }),
                       jsxs('label', { className: 'tt_sshRow', children: [
-                        jsx('span', { className: 'tt_cardLabel', children: '批量文件数上限' }),
+                        jsx('span', { className: 'tt_cardLabel', children: t('field.uploadCountLimit') }),
                         jsx('input', {
                           className: 'tt_cardInput',
                           type: 'number',
@@ -6882,30 +7624,30 @@ function TtySettingsCard(props) {
                         }),
                       ] }),
                     ] }),
-                    jsx('span', { className: 'tt_cardHint', children: '浏览器侧保护：单个文件超过上限时中止下载/上传（大文件请用双栏 ⇨/⇦ 直传或终端 scp/rsync，不占浏览器内存）；文件数上限针对一次批量/拖拽上传；保存即热生效' }),
+                    jsx('span', { className: 'tt_cardHint', children: t('hint.sftpLimits') }),
                   ],
                 }),
-                sectionTitle('会话'),
+                sectionTitle(t('section.session')),
                 jsxs('div', {
                   className: 'tt_cardField',
                   children: [
-                    jsx('span', { className: 'tt_cardLabel', children: '会话持久化（tmux）' }),
+                    jsx('span', { className: 'tt_cardLabel', children: t('field.persistence') }),
                     jsxs('select', {
                       className: 'tt_cardInput',
                       value: form.persistence === 'tmux' ? 'tmux' : 'off',
                       onChange: (event) => set('persistence', event.target.value),
                       children: [
-                        jsx('option', { value: 'off', children: '关闭 — 会话随面板/宿主结束（默认）' }),
-                        jsx('option', { value: 'tmux', children: 'tmux — 新开的终端/SSH 标签默认持久化' }),
+                        jsx('option', { value: 'off', children: t('option.persistOff') }),
+                        jsx('option', { value: 'tmux', children: t('option.persistTmux') }),
                       ],
                     }),
-                    jsx('span', { className: 'tt_cardHint', children: '开启后所有新标签（本地/SSH 连接簿/SSH 连接对话框）默认由 tmux 托管、可跨宿主重启恢复；需本机/远程安装 tmux；SSH 对话框可对单次连接取消勾选；已有标签不受影响' + (winHost ? '；Windows 宿主上 tmux 不可用，本地标签会照常打开但不受托管' : '') }),
-                    boolField('关闭页面后结束持久会话（不保活）', 'endOnPageClose'),
-                    boolField('服务器状态条（CPU / 内存 / 磁盘 / 在线 / TCP / 网速；采不到的项显示「无」）', 'statsEnabled'),
-                    jsx('span', { className: 'tt_cardHint', children: '默认关闭：整个页面关闭时持久会话留存（保活期后可再恢复）；开启则页面断开且保活期结束时连 tmux 会话一起结束——注意刷新页面在保活期内不受影响' }),
+                    jsx('span', { className: 'tt_cardHint', children: t('hint.persistence') + (winHost ? t('hint.persistenceWindows') : '') }),
+                    boolField(t('check.endOnPageClose'), 'endOnPageClose'),
+                    boolField(t('check.statsEnabled'), 'statsEnabled'),
+                    jsx('span', { className: 'tt_cardHint', children: t('hint.statsEnabled') }),
                   ],
                 }),
-                textField('并发会话上限（1~16）', 'maxSessions', '4', '超过上限的新标签会被拒绝；保存即热生效'),
+                textField(t('field.maxSessions'), 'maxSessions', '4', t('hint.maxSessions')),
                 jsxs('div', {
                   className: 'tt_cardField',
                   onBlur: (event) => {
@@ -6914,11 +7656,11 @@ function TtySettingsCard(props) {
                     if (!event.currentTarget.contains(event.relatedTarget)) setShellListOpen(false)
                   },
                   children: [
-                    jsx('span', { className: 'tt_cardLabel', children: winHost ? 'Shell 路径（默认 %COMSPEC%）' : 'Shell 路径（默认 $SHELL）' }),
+                    jsx('span', { className: 'tt_cardLabel', children: winHost ? t('field.shellWindows') : t('field.shell') }),
                     jsx('input', {
                       className: 'tt_cardInput',
                       value: form.shell ?? '',
-                      placeholder: winHost ? '留空使用 %COMSPEC%（也可填 powershell.exe / pwsh.exe 完整路径）' : '留空使用 $SHELL',
+                      placeholder: winHost ? t('placeholder.shellWindows') : t('placeholder.shell'),
                       autoComplete: 'off',
                       spellCheck: false,
                       onFocus: () => setShellListOpen(true),
@@ -6937,7 +7679,7 @@ function TtySettingsCard(props) {
                         const kw = (form.shell ?? '').trim().toLowerCase()
                         const hit = kw === '' ? shellOptions : shellOptions.filter((path) => path.toLowerCase().includes(kw))
                         if (hit.length === 0) {
-                          return jsx('span', { className: 'tt_envMore', children: '没有匹配的候选 — 直接输入任意路径即可' })
+                          return jsx('span', { className: 'tt_envMore', children: t('list.noShellCandidate') })
                         }
                         return hit.map((path) => jsx('button', {
                           type: 'button',
@@ -6952,19 +7694,19 @@ function TtySettingsCard(props) {
                       })(),
                     }, 'shell-list')] : []),
                     jsx('span', { className: 'tt_cardHint', children: winHost
-                      ? 'Windows 宿主：候选来自 %COMSPEC% 与已安装的 PowerShell（Windows PowerShell 5.1 / PowerShell 7），也可直接输入任意路径；cmd / PowerShell 没有 POSIX 的命令边界钩子，所以这两者不支持 shell 集成'
-                      : '可下拉选择本机已安装 shell（$SHELL 优先），也可直接输入任意路径；zsh / bash 支持 shell 集成' }),
+                      ? t('hint.shellCandidatesWindows')
+                      : t('hint.shellCandidates') }),
                   ],
                 }, 'shell-field'),
-                textField('TERM', 'term', 'xterm-256color', 'TUI 程序依赖此值'),
+                textField('TERM', 'term', 'xterm-256color', t('hint.term')),
                 textField('COLORTERM', 'colorTerm', 'truecolor', ''),
-                textField('兜底工作目录（客户端当前会话 cwd 优先）', 'cwd', '', '留空使用宿主进程启动目录'),
-                textField('断线保活（秒，0 = 立即结束）', 'reconnectGraceSec', '120', '刷新页面/网络抖动后会话保活等待重连，超时后结束；保存即热生效'),
-                sectionTitle('SSH 连接'),
+                textField(t('field.cwd'), 'cwd', '', t('placeholder.cwd')),
+                textField(t('field.grace'), 'reconnectGraceSec', '120', t('hint.grace')),
+                sectionTitle(t('section.ssh')),
                 jsxs('div', {
                   className: 'tt_cardField',
                   children: [
-                    jsx('span', { className: 'tt_cardLabel', children: 'SSH 连接簿' }),
+                    jsx('span', { className: 'tt_cardLabel', children: t('panel.sshBook') }),
                     ...(Array.isArray(form.sshHosts) && form.sshHosts.length > 0
                       ? [jsx('div', {
                           className: 'tt_hostList',
@@ -6980,9 +7722,9 @@ function TtySettingsCard(props) {
                                     jsx('span', { className: 'tt_sshHostName', children: host?.name ?? '' }),
                                     jsx('span', { className: 'tt_sshHostTarget', children: sshHostTargetLabel(host ?? {}) }),
                                   ] }),
-                                  jsx('button', { type: 'button', className: 'tt_toolBtn', disabled: probeStates[host?.name]?.running === true, onClick: () => void testSshHost(host), title: '试连该条目：TCP → 主机密钥 → 认证逐段诊断', children: probeStates[host?.name]?.running === true ? '测试中…' : '测试' }),
-                                  jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => startEditSshHost(host), children: '编辑' }),
-                                  jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => removeSshHost(host?.name), children: '删除' }),
+                                  jsx('button', { type: 'button', className: 'tt_toolBtn', disabled: probeStates[host?.name]?.running === true, onClick: () => void testSshHost(host), title: t('btn.probeRowTitle'), children: probeStates[host?.name]?.running === true ? t('msg.testing') : t('btn.test') }),
+                                  jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => startEditSshHost(host), children: t('btn.edit') }),
+                                  jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => removeSshHost(host?.name), children: t('btn.delete') }),
                                 ],
                               }),
                               probeStates[host?.name] && probeStates[host?.name].text
@@ -6992,15 +7734,15 @@ function TtySettingsCard(props) {
                             ],
                           }, String(host?.name ?? ''))),
                         })]
-                      : [jsx('span', { className: 'tt_cardHint', children: '暂无条目 — 终端面板「+」→ SSH 连接… 勾选「保存到连接簿」即可添加' })]),
+                      : [jsx('span', { className: 'tt_cardHint', children: t('list.emptySshHosts') })]),
                     jsxs('div', {
                       className: 'tt_cardRow',
                       children: [
-                        jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => void importSshConfig(), children: '从 ~/.ssh/config 导入' }),
-                        jsx('span', { className: 'tt_cardHint', children: '同名跳过；随「保存」写入配置' }),
+                        jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => void importSshConfig(), children: t('btn.importSshConfig') }),
+                        jsx('span', { className: 'tt_cardHint', children: t('hint.importSshConfig') }),
                       ],
                     }),
-                    jsx('span', { className: 'tt_cardHint', children: '随「保存」一并写入配置；密码/口令支持 env:VAR 引用，避免明文入库' }),
+                    jsx('span', { className: 'tt_cardHint', children: t('hint.sshBook') }),
                   ],
                 }),
                 jsxs('div', {
@@ -7009,31 +7751,31 @@ function TtySettingsCard(props) {
                 jsxs('div', {
                   className: 'tt_cardField',
                   children: [
-                    jsx('span', { className: 'tt_cardLabel', children: '端口转发' }),
+                    jsx('span', { className: 'tt_cardLabel', children: t('panel.tunnels') }),
                     ...(Array.isArray(form.tunnels) && form.tunnels.length > 0
                       ? [jsx('div', {
-                          children: form.tunnels.map((t) => {
-                            const st = tunnelStatus.find((s) => s.name === t?.name)
+                          children: form.tunnels.map((tunnel) => {
+                            const st = tunnelStatus.find((s) => s.name === tunnel?.name)
                             const state = st?.state ?? 'stopped'
-                            const isEditing = editingTunnel !== null && String(t?.name ?? '') === editingTunnel
+                            const isEditing = editingTunnel !== null && String(tunnel?.name ?? '') === editingTunnel
                             return jsxs('div', {
                               className: 'tt_sshHostRow',
                               'data-editing': isEditing ? '' : undefined,
                               children: [
                                 jsx('span', { className: 'tt_tunnelDot', 'data-state': state, title: state }),
                                 jsx('div', { className: 'tt_sshHostMeta', children: [
-                                  jsx('span', { className: 'tt_sshHostName', children: (t?.name ?? '') + ' · ' + tunnelRule(t ?? {}) }),
-                                  jsx('span', { className: 'tt_sshHostTarget', children: (t?.bookName ?? '') + (st?.error ? ' · ' + st.error : '') + (st?.lastForwardError ? ' · ' + st.lastForwardError : '') }),
+                                  jsx('span', { className: 'tt_sshHostName', children: (tunnel?.name ?? '') + ' · ' + tunnelRule(tunnel ?? {}) }),
+                                  jsx('span', { className: 'tt_sshHostTarget', children: (tunnel?.bookName ?? '') + (st?.error ? ' · ' + st.error : '') + (st?.lastForwardError ? ' · ' + st.lastForwardError : '') }),
                                 ] }),
-                                jsx('input', { type: 'checkbox', className: 'tt_cardCheckbox', checked: t?.enabled !== false, title: '启用', onChange: (event) => toggleTunnelEnabled(t?.name, event.target.checked) }),
+                                jsx('input', { type: 'checkbox', className: 'tt_cardCheckbox', checked: tunnel?.enabled !== false, title: t('check.tunnelEnabled'), onChange: (event) => toggleTunnelEnabled(tunnel?.name, event.target.checked) }),
                                 // 编辑：回填到下方表单（改端口/条目 = 换名字，按原始 name 定位保存）
-                                jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => startEditTunnel(t), children: '编辑' }),
-                                jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => removeTunnel(t?.name), children: '删除' }),
+                                jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => startEditTunnel(tunnel), children: t('btn.edit') }),
+                                jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => removeTunnel(tunnel?.name), children: t('btn.delete') }),
                               ],
-                            }, String(t?.name ?? ''))
+                            }, String(tunnel?.name ?? ''))
                           }),
                         })]
-                      : [jsx('span', { className: 'tt_cardHint', children: '暂无隧道 — 把远程数据库/内部服务映射到本地端口' })]),
+                      : [jsx('span', { className: 'tt_cardHint', children: t('list.emptyTunnels') })]),
                     jsxs('div', {
                       className: 'tt_sshEdit',
                       children: [
@@ -7041,33 +7783,33 @@ function TtySettingsCard(props) {
                           className: 'tt_cardRow tt_tunnelHead',
                           children: [
                             // 方向用分段控件：只有两个值，下拉太重；文案保留 -L/-R 便于对照 ssh 命令行
-                            jsxs('div', { className: 'tt_segmented', role: 'group', 'aria-label': '转发方向', children: [
+                            jsxs('div', { className: 'tt_segmented', role: 'group', 'aria-label': t('field.direction'), children: [
                               jsx('button', {
                                 type: 'button',
                                 className: 'tt_segmentedBtn',
                                 'data-active': tunnelDraft.direction !== 'remote' ? '' : undefined,
-                                title: '本地转发 -L：本机监听，连到 SSH 服务器侧的目标',
+                                title: t('option.localForwardTitle'),
                                 onClick: () => setDraftValue('direction', 'local'),
-                                children: '本地 -L',
+                                children: t('option.localForward'),
                               }),
                               jsx('button', {
                                 type: 'button',
                                 className: 'tt_segmentedBtn',
                                 'data-active': tunnelDraft.direction === 'remote' ? '' : undefined,
-                                title: '远程转发 -R：SSH 服务器侧监听，拨回本机服务',
+                                title: t('option.remoteForwardTitle'),
                                 onClick: () => setDraftValue('direction', 'remote'),
-                                children: '远程 -R',
+                                children: t('option.remoteForward'),
                               }),
                             ] }),
                             jsxs('select', { className: 'tt_cardInput', value: tunnelDraft.bookName, onChange: setDraft('bookName'), children: [
-                              jsx('option', { value: '', children: '选择连接簿条目' }),
+                              jsx('option', { value: '', children: t('option.selectBook') }),
                               ...(Array.isArray(form?.sshHosts) ? form.sshHosts.map((host) => jsx('option', { value: host?.name ?? '', children: host?.name ?? '' })) : []),
                             ] }),
                           ],
                         }),
                         jsx('span', { className: 'tt_cardHint', children: selectedBook !== undefined
-                          ? '经 ' + sshHostTargetLabel(selectedBook) + ' 连接 — 隧道的主机与认证取自该连接簿条目'
-                          : '选择这条隧道要走哪台 SSH 连接（主机与认证取自连接簿）' }),
+                          ? t('hint.tunnelViaBook', { book: sshHostTargetLabel(selectedBook) })
+                          : t('hint.tunnelBookEmpty') }),
                         /*
                          * 两端「地址:端口」成对呈现 + 箭头示明流向。
                          *
@@ -7081,48 +7823,48 @@ function TtySettingsCard(props) {
                           ? jsxs('div', { className: 'tt_tunnelEndpoints', children: [
                               jsxs('div', { className: 'tt_tunnelHop', children: [
                                 jsxs('div', { className: 'tt_tunnelEndpoint', children: [
-                                  jsx('span', { className: 'tt_tunnelEndpointStatic', title: '本机监听地址固定 127.0.0.1（不暴露到局域网）', children: '127.0.0.1' }),
+                                  jsx('span', { className: 'tt_tunnelEndpointStatic', title: t('hint.localListenFixed'), children: '127.0.0.1' }),
                                   jsx('span', { className: 'tt_tunnelColon', children: ':' }),
-                                  jsx('input', { className: 'tt_cardInput tt_tunnelPort', placeholder: '本机端口', value: tunnelDraft.localPort, autoComplete: 'off', inputMode: 'numeric', 'aria-label': '本机监听端口', onChange: setDraft('localPort') }),
+                                  jsx('input', { className: 'tt_cardInput tt_tunnelPort', placeholder: t('placeholder.localPort'), value: tunnelDraft.localPort, autoComplete: 'off', inputMode: 'numeric', 'aria-label': t('field.localListenPort'), onChange: setDraft('localPort') }),
                                 ] }),
-                                jsx('span', { className: 'tt_tunnelArrow', 'data-direction': 'local', title: '数据流向：本机 → SSH 服务器侧', 'aria-hidden': 'true', children: '→' }),
+                                jsx('span', { className: 'tt_tunnelArrow', 'data-direction': 'local', title: t('hint.flowLocalToRemote'), 'aria-hidden': 'true', children: '→' }),
                               ] }),
                               jsxs('div', { className: 'tt_tunnelEndpoint', children: [
-                                jsx('input', { className: 'tt_cardInput tt_tunnelHost', placeholder: '服务器侧主机', title: '目标主机名或 IP（由 SSH 服务器侧访问；127.0.0.1 = 服务器自身）', value: tunnelDraft.remoteHost, autoComplete: 'off', 'aria-label': '服务器侧目标主机', onChange: setDraft('remoteHost') }),
+                                jsx('input', { className: 'tt_cardInput tt_tunnelHost', placeholder: t('placeholder.remoteHost'), title: t('hint.remoteHostTitle'), value: tunnelDraft.remoteHost, autoComplete: 'off', 'aria-label': t('field.remoteHost'), onChange: setDraft('remoteHost') }),
                                 jsx('span', { className: 'tt_tunnelColon', children: ':' }),
-                                jsx('input', { className: 'tt_cardInput tt_tunnelPort', placeholder: '端口', value: tunnelDraft.remotePort, autoComplete: 'off', inputMode: 'numeric', 'aria-label': '服务器侧目标端口', onChange: setDraft('remotePort') }),
+                                jsx('input', { className: 'tt_cardInput tt_tunnelPort', placeholder: t('placeholder.port'), value: tunnelDraft.remotePort, autoComplete: 'off', inputMode: 'numeric', 'aria-label': t('field.remotePort'), onChange: setDraft('remotePort') }),
                               ] }),
                             ] })
                           : jsxs('div', { className: 'tt_tunnelEndpoints', children: [
                               jsxs('div', { className: 'tt_tunnelHop', children: [
                                 jsxs('div', { className: 'tt_tunnelEndpoint', children: [
-                                  jsx('input', { className: 'tt_cardInput tt_tunnelHost', placeholder: '服务器侧监听地址', title: '服务器侧监听地址（缺省 127.0.0.1；留空即只让服务器自己访问）', value: tunnelDraft.remoteHost, autoComplete: 'off', 'aria-label': '服务器侧监听地址', onChange: setDraft('remoteHost') }),
+                                  jsx('input', { className: 'tt_cardInput tt_tunnelHost', placeholder: t('placeholder.remoteListenHost'), title: t('hint.remoteListenHost'), value: tunnelDraft.remoteHost, autoComplete: 'off', 'aria-label': t('field.remoteListenHost'), onChange: setDraft('remoteHost') }),
                                   jsx('span', { className: 'tt_tunnelColon', children: ':' }),
-                                  jsx('input', { className: 'tt_cardInput tt_tunnelPort', placeholder: '监听端口', value: tunnelDraft.remotePort, autoComplete: 'off', inputMode: 'numeric', 'aria-label': '服务器侧监听端口', onChange: setDraft('remotePort') }),
+                                  jsx('input', { className: 'tt_cardInput tt_tunnelPort', placeholder: t('placeholder.listenPort'), value: tunnelDraft.remotePort, autoComplete: 'off', inputMode: 'numeric', 'aria-label': t('field.remoteListenPort'), onChange: setDraft('remotePort') }),
                                 ] }),
-                                jsx('span', { className: 'tt_tunnelArrow', 'data-direction': 'remote', title: '数据流向：本机 ← SSH 服务器侧', 'aria-hidden': 'true', children: '→' }),
+                                jsx('span', { className: 'tt_tunnelArrow', 'data-direction': 'remote', title: t('hint.flowRemoteToLocal'), 'aria-hidden': 'true', children: '→' }),
                               ] }),
                               jsxs('div', { className: 'tt_tunnelEndpoint', children: [
-                                jsx('span', { className: 'tt_tunnelEndpointStatic', title: '本机拨号地址固定 127.0.0.1', children: '127.0.0.1' }),
+                                jsx('span', { className: 'tt_tunnelEndpointStatic', title: t('hint.localDialFixed'), children: '127.0.0.1' }),
                                 jsx('span', { className: 'tt_tunnelColon', children: ':' }),
-                                jsx('input', { className: 'tt_cardInput tt_tunnelPort', placeholder: '本机服务端口', value: tunnelDraft.localTargetPort, autoComplete: 'off', inputMode: 'numeric', 'aria-label': '本机目标端口', onChange: setDraft('localTargetPort') }),
+                                jsx('input', { className: 'tt_cardInput tt_tunnelPort', placeholder: t('placeholder.localTargetPort'), value: tunnelDraft.localTargetPort, autoComplete: 'off', inputMode: 'numeric', 'aria-label': t('field.localTargetPort'), onChange: setDraft('localTargetPort') }),
                               ] }),
                             ] }),
                         jsx('div', { className: 'tt_tunnelEndpoints', children: [
                           jsx('span', { className: 'tt_tunnelEndLabel', children: tunnelDraft.direction === 'local'
-                            ? '左：本机监听（固定 127.0.0.1）→ 右：由 SSH 服务器侧访问的目标'
-                            : '左：SSH 服务器侧监听 → 右：本机被访问的服务（固定 127.0.0.1）' }),
+                            ? t('hint.tunnelLocalSummary')
+                            : t('hint.tunnelRemoteSummary') }),
                         ] }),
                         jsx('div', { className: 'tt_cardRow tt_tunnelActions', children: [
                           editingTunnel === null
-                            ? jsx('button', { type: 'button', className: 'tt_cardSave', onClick: addTunnel, children: '添加隧道' })
-                            : jsx('button', { type: 'button', className: 'tt_cardSave', onClick: saveTunnelEdit, children: '保存修改' }),
+                            ? jsx('button', { type: 'button', className: 'tt_cardSave', onClick: addTunnel, children: t('btn.addTunnel') })
+                            : jsx('button', { type: 'button', className: 'tt_cardSave', onClick: saveTunnelEdit, children: t('btn.saveEdit') }),
                           editingTunnel === null
                             ? null
-                            : jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: cancelEditTunnel, children: '取消' }),
+                            : jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: cancelEditTunnel, children: t('btn.cancel') }),
                           jsx('span', { className: 'tt_cardHint', children: editingTunnel === null
-                            ? '添加后立即生效；断线自动重连；本地端口建议 1024 以上；远程主机由 SSH 服务器侧访问（127.0.0.1 = 服务器自身）'
-                            : `正在编辑「${editingTunnel}」——改端口/条目会按规则生成新名字；保存后立即生效` }),
+                            ? t('hint.tunnelAdd')
+                            : t('hint.tunnelEditing', { name: editingTunnel }) }),
                         ] }),
                       ],
                     }),
@@ -7131,8 +7873,8 @@ function TtySettingsCard(props) {
                 jsxs('div', {
                   className: 'tt_cardField',
                   children: [
-                    jsx('span', { className: 'tt_cardLabel', children: 'SSH 主机密钥记录（TOFU）' }),
-                        jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => void importKnownHosts(), children: '从 known_hosts 导入' }),
+                    jsx('span', { className: 'tt_cardLabel', children: t('panel.hostKeys') }),
+                        jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => void importKnownHosts(), children: t('btn.importKnownHosts') }),
                       ],
                     }),
                     ...(Array.isArray(form.hostKeys) && form.hostKeys.length > 0
@@ -7145,18 +7887,18 @@ function TtySettingsCard(props) {
                                 jsx('span', { className: 'tt_sshHostName', children: String(hk?.host ?? '') + ':' + String(hk?.port ?? 22) }),
                                 jsx('span', { className: 'tt_sshHostTarget', children: hostKeyFingerprints(hk).map((fp) => 'sha256:' + fp).join(' / ') }),
                               ] }),
-                              jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => void removeHostKey(hk), children: '删除' }),
+                              jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => void removeHostKey(hk), children: t('btn.delete') }),
                             ],
                           }, String(hk?.host ?? '') + ':' + String(hk?.port ?? 22) + '#' + String(index))),
                         })]
-                      : [jsx('span', { className: 'tt_cardHint', children: '暂无记录 — 首次 SSH 连接成功后自动记录主机指纹' })]),
-                    jsx('span', { className: 'tt_cardHint', children: '一机多把钥匙（如 rsa + ed25519）各记一条指纹，任一匹配即放行；指纹变更时连接会被拒绝（防中间人），确认安全后删除对应记录即可重连' }),
+                      : [jsx('span', { className: 'tt_cardHint', children: t('list.emptyHostKeys') })]),
+                    jsx('span', { className: 'tt_cardHint', children: t('hint.hostKeys') }),
                   ],
                 }),
                 jsxs('div', {
                   className: 'tt_cardField tt_cardRow',
                   children: [
-                    jsx('button', { className: 'tt_cardSave', disabled: saving, onClick: () => void save(), children: saving ? '保存中…' : '保存' }),
+                    jsx('button', { className: 'tt_cardSave', disabled: saving, onClick: () => void save(), children: saving ? t('msg.saving') : t('btn.save') }),
                     jsx('span', { className: 'tt_cardMessage' + (message.kind === 'ok' ? ' tt_cardMessageOk' : message.kind === 'error' ? ' tt_cardMessageError' : ''), children: message.text }),
                   ],
                 }),
@@ -7180,6 +7922,7 @@ function TtySettingsCard(props) {
       '@hyzyn/dsh-all#tty',
     ]
     exports.apply = (ctx) => {
+      installI18n(ctx)
       sessionsService = ctx.sessions
       /*
        * 官方凭据引用的浏览器侧命名空间（可选）。
@@ -7234,7 +7977,7 @@ function TtySettingsCard(props) {
         name: 'settings.kit.item',
         id: 'tty',
         order: 80,
-        label: () => "终端面板",
+        label: () => t('card.name'),
       }, TtySettingsCard))
       // DSH ≤0.1.5：设置 → 插件 的「插件配置」标签页，keyed 插槽按 settings 命名空间派发。
       ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({

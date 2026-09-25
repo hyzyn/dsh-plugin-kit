@@ -24,6 +24,29 @@
   const q = (sel) => document.querySelector(sel)
   const qa = (sel) => [...document.querySelectorAll(sel)]
 
+  /*
+   * 预览语言：`?locale=en`（或 CDP 注入 `window.__previewLocale = 'en'`）预览英文界面，
+   * 默认 zh。与 search 的 mock-host / codegraph 的 preview-card 同一个开关形状
+   * （见 docs/i18n.md § 预览与 smoke 夹具）。夹具**提供**了 locale 服务，就必须能选语言，
+   * 否则它验的是一条不存在的路（「老宿主没有 locale 服务」那条路由中文兜底覆盖）。
+   */
+  try {
+    const wanted = new URLSearchParams(location.search).get('locale')
+    if (wanted === 'en' || wanted === 'zh') window.__previewLocale = wanted
+  } catch {
+    /* file:// 下 location.search 可能不可用 */
+  }
+
+  /*
+   * 按**界面文案**找元素：文案已经进目录（i18n），所以定位串必须**双语共存**——只认中文
+   * 会把英文界面下的走查挡在门外（同 search 的 `titles: ['通用设置', 'General']`）。
+   * 三个谓词都收「任一语言」，断言的失败信息仍是中文（开发者看的）。
+   */
+  const says = (el, ...names) => names.some((name) => (el.textContent || '').includes(name))
+  const saysExact = (el, ...names) => names.some((name) => (el.textContent || '').trim() === name)
+  const attributeSays = (el, attr, ...names) => names.some((name) => (el.getAttribute(attr) || '') === name)
+  const findByAria = (root, ...names) => [...root.querySelectorAll('[aria-label]')].find((el) => attributeSays(el, 'aria-label', ...names))
+
   /* ---------- 挂载插件 ---------- */
   // 场景之间共用同一个页面 target，必须先清掉上一个场景的标签持久化
   try {
@@ -99,6 +122,30 @@
   // 宿主会话服务也进服务表：docker 那一半是经 ctx.inject(['sessions']) 取的（夹具里
   // ctx.sessions 是直接属性、不走服务表，这里补一份，免得那条 inject 永远等不到依赖）
   services.set('sessions', ctx.sessions)
+
+  /*
+   * 假 locale 服务（`@deepseek-ai/dsh-client-locale`）：插件经 `ctx.inject(['locale'], cb)`
+   * **动态**取它，所以服务表里没有它时 callback 不触发、`t` 保持中文兜底（= 老宿主那条路）。
+   * 桩的形状与 search 的 mock-host 一致：`register(ns, locale, dict)` + `bind(ns)`，
+   * 词条按 `window.__previewLocale` 选语言。
+   */
+  const localeDicts = new Map()
+  const localeStub = {
+    register: (ns, locale, dict) => {
+      const entry = localeDicts.get(ns) || {}
+      entry[locale] = dict
+      localeDicts.set(ns, entry)
+      return () => {}
+    },
+    bind: (ns) => (key, params) => {
+      const active = window.__previewLocale === 'en' ? 'en' : 'zh'
+      const dict = localeDicts.get(ns) || {}
+      const text = (dict[active] || {})[key] || key
+      if (params === undefined) return text
+      return String(text).replace(/\{(\w+)\}/g, (_match, name) => (params[name] === undefined ? '' : String(params[name])))
+    },
+  }
+  services.set('locale', localeStub)
   exports.apply(ctx)
 
   /**
@@ -136,8 +183,9 @@
     await waitFor(() => q('.tt_addMenu'))
     await sleep(80)
   }
-  const clickMenuItem = async (label) => {
-    const item = await waitFor(() => qa('.tt_addMenuItem').find((el) => el.textContent.includes(label)))
+  // 菜单项按**双语**匹配（文案已进目录，见上面的 says）
+  const clickMenuItem = async (...labels) => {
+    const item = await waitFor(() => qa('.tt_addMenuItem').find((el) => says(el, ...labels)))
     item.click()
     await sleep(200)
     return item
@@ -210,7 +258,7 @@
         if (bar === null) return '状态条 DOM 缺失'
         if (bar.hidden === true) return '状态条未显示（stats 订阅链路可能断开）'
         const text = bar.textContent
-        if (!/CPU/.test(text) || !/内存/.test(text) || !/网络/.test(text)) return '状态条内容不完整：' + text
+        if (!/CPU/.test(text) || !/(内存|Memory)/.test(text) || !/(网络|Network)/.test(text)) return '状态条内容不完整：' + text
         /*
          * 订阅时序：客户端**故意**在 spawn 之前就发一次 statsOn（switchTab 早于 spawnTab），
          * 宿主此时还没登记这个 sid，会按「未知 sid」忽略——这是设计里的正常现象，所以
@@ -309,7 +357,7 @@
       await clickMenuItem('staging-db')
       await waitFor(() => tabs().length === 3)
       await clickAdd()
-      await clickMenuItem('本地终端')
+      await clickMenuItem('本地终端', 'Local terminal')
       await waitFor(() => tabs().length === 4)
       tabs()[1].click()
       await sleep(250)
@@ -338,7 +386,7 @@
     async ssh() {
       await openPanel()
       await clickAdd()
-      await clickMenuItem('SSH 连接…')
+      await clickMenuItem('SSH 连接…', 'SSH connection…')
       await waitFor(() => q('.tt_sshCard'))
       await sleep(150)
     },
@@ -346,16 +394,16 @@
     async 'ssh-probe'() {
       await openPanel()
       await clickAdd()
-      await clickMenuItem('SSH 连接…')
+      await clickMenuItem('SSH 连接…', 'SSH connection…')
       await waitFor(() => q('.tt_sshCard'))
       const inputs = qa('.tt_sshCard input')
       inputs[0].value = '192.0.2.10'
       inputs[1].value = '22'
       inputs[2].value = 'root'
-      const probeBtn = qa('.tt_sshActions .tt_toolBtn').find((b) => b.textContent.includes('试连'))
+      const probeBtn = qa('.tt_sshActions .tt_toolBtn').find((b) => says(b, '试连', 'Test'))
       probeBtn.click()
       const resultEl = () => q('.tt_sshProbeResult')
-      await waitFor(() => resultEl() && resultEl().textContent !== '' && !resultEl().textContent.includes('测试中'))
+      await waitFor(() => resultEl() && resultEl().textContent !== '' && !says(resultEl(), '测试中', 'Testing'))
       await sleep(250)
     },
     /* SSH 连接对话框（编辑连接簿条目，含 env 选择器） */
@@ -366,7 +414,7 @@
         const r = qa('.tt_addMenuRow')
         return r.length > 0 ? r : null
       })
-      const editBtn = rows[1].querySelector('.tt_addMenuEdit[title="编辑连接"]')
+      const editBtn = [...rows[1].querySelectorAll('.tt_addMenuEdit')].find((b) => attributeSays(b, 'title', '编辑连接', 'Edit connection'))
       editBtn.click()
       await waitFor(() => q('.tt_sshCard'))
       await sleep(200)
@@ -407,7 +455,7 @@
       // 「编辑」按钮是本次新增的能力：先在第一条隧道行上找到它
       const firstRow = rowOf('staging-pg')
       if (firstRow === undefined) throw new Error('找不到 staging-pg 行（fixture 应有该隧道）')
-      const editBtn = buttonsIn(firstRow).find((b) => b.textContent === '编辑')
+      const editBtn = buttonsIn(firstRow).find((b) => saysExact(b, '编辑', 'Edit'))
       if (editBtn === undefined) throw new Error('隧道行没有「编辑」按钮')
       editBtn.click()
       await sleep(150)
@@ -421,7 +469,7 @@
       await sleep(120)
 
       // 回填：本地转发那边「127.0.0.1:<端口>」成对呈现，端口输入带 aria-label 标识
-      const localPortInput = document.querySelector('#preview-settings [aria-label="本机监听端口"]')
+      const localPortInput = findByAria(document.querySelector('#preview-settings') || document, '本机监听端口', 'Local listen port')
       if (localPortInput === null) throw new Error('本地转发表单没渲染（找不到本机监听端口输入）')
       if (localPortInput.value !== '15432') throw new Error('编辑未回填本地端口：' + String(localPortInput.value))
 
@@ -444,7 +492,7 @@
 
       // 切到「远程 -R」：固定端应换到**右侧**（本机拨号），左侧变成可填的服务器侧监听地址
       // ——两个方向的固定端不同，这正是不能照搬单一形状的原因
-      segBtns.find((b) => (b.textContent ?? '').includes('远程')).click()
+      segBtns.find((b) => says(b, '远程 -R', 'Remote -R')).click()
       await sleep(200)
       scrollTunnelIntoView()
       const remoteEndpoints = [...document.querySelectorAll('#preview-settings .tt_tunnelEndpoint')]
@@ -460,7 +508,7 @@
         throw new Error('远程方向的箭头没有翻转标记')
       }
       // 切回本地 -L，后续断言按本地方向的期望继续
-      segBtns.find((b) => (b.textContent ?? '').includes('本地')).click()
+      segBtns.find((b) => says(b, '本地 -L', 'Local -L')).click()
       await sleep(200)
       scrollTunnelIntoView()
       await sleep(80)
@@ -499,13 +547,13 @@
       }
 
       // 方向切换会重渲表单：DOM 节点可能被替换，重新取一次（别用切换前的引用）
-      const localPortInput2 = document.querySelector('#preview-settings [aria-label="本机监听端口"]')
+      const localPortInput2 = findByAria(document.querySelector('#preview-settings') || document, '本机监听端口', 'Local listen port')
       if (localPortInput2 === null) throw new Error('切回本地后表单没渲染')
 
       const body = q('#preview-settings .tt_cardBody')
-      if (buttonsIn(body).find((b) => b.textContent === '保存修改') === undefined) throw new Error('编辑态没有「保存修改」')
-      if (buttonsIn(body).find((b) => b.textContent === '取消') === undefined) throw new Error('编辑态没有「取消」')
-      if (buttonsIn(body).find((b) => b.textContent === '添加隧道') !== undefined) {
+      if (buttonsIn(body).find((b) => saysExact(b, '保存修改', 'Save changes')) === undefined) throw new Error('编辑态没有「保存修改」')
+      if (buttonsIn(body).find((b) => saysExact(b, '取消', 'Cancel')) === undefined) throw new Error('编辑态没有「取消」')
+      if (buttonsIn(body).find((b) => saysExact(b, '添加隧道', 'Add tunnel')) !== undefined) {
         throw new Error('编辑态仍显示「添加隧道」（会误加一条而不是改这条）')
       }
       if (document.querySelectorAll('#preview-settings .tt_sshHostRow[data-editing]').length !== 1) {
@@ -530,7 +578,7 @@
       }
       setReactInput(localPortInput2, '15433')
       await sleep(150)
-      buttonsIn(body).find((b) => b.textContent === '保存修改').click()
+      buttonsIn(body).find((b) => saysExact(b, '保存修改', 'Save changes')).click()
       await sleep(400)
 
       window.__previewAssert = async () => {
@@ -546,7 +594,7 @@
         if (!names.some((n) => n.startsWith('prod-redis'))) {
           problems.push('编辑波及了别的隧道')
         }
-        if (buttonsIn(document.querySelector('#preview-settings .tt_cardBody')).find((b) => b.textContent === '添加隧道') === undefined) {
+        if (buttonsIn(document.querySelector('#preview-settings .tt_cardBody')).find((b) => saysExact(b, '添加隧道', 'Add tunnel')) === undefined) {
           problems.push('保存后没有退出编辑态')
         }
         return problems.length > 0 ? problems.join('；') : null
@@ -839,7 +887,7 @@
       await clickMenuItem('staging-db')
       await waitFor(() => tabs().length === 2)
       await sleep(200)
-      const btn = qa('.tt_connAct').find((b) => b.textContent.includes('隧道'))
+      const btn = qa('.tt_connAct').find((b) => says(b, '隧道', 'Tunnel'))
       if (btn) btn.click()
       await waitFor(() => q('.tt_tunnelPop'))
       await sleep(300)
@@ -861,17 +909,17 @@
 
       const acts = qa('.tt_connAct')
       // 没有隧道 ⇒ 不该出现常驻「隧道 N」按钮
-      if (acts.some((b) => b.textContent.includes('隧道'))) {
+      if (acts.some((b) => says(b, '隧道', 'Tunnel'))) {
         throw new Error('没有隧道的连接却出现了常驻「隧道」按钮')
       }
-      const more = acts.find((b) => b.textContent.includes('更多'))
+      const more = acts.find((b) => says(b, '更多', 'More'))
       if (more === undefined) throw new Error('没有隧道的连接缺少「⋯ 更多」入口')
       more.click()
       await waitFor(() => q('.tt_connMore'))
       await sleep(250)
 
       // 闭环：菜单项必须真的可点、并给出可执行的信息（该连接没有启用隧道 + 去哪配）
-      const item = qa('.tt_connMore .tt_addMenuItem').find((el) => el.textContent.includes('端口转发'))
+      const item = qa('.tt_connMore .tt_addMenuItem').find((el) => says(el, '端口转发', 'Port forwarding'))
       if (item === undefined) throw new Error('「⋯」菜单里没有端口转发项')
       item.click()
       await waitFor(() => q('.tt_tunnelPop'))
@@ -880,8 +928,8 @@
         const pop = q('.tt_tunnelPop')
         if (pop === null) return '点击菜单项后没有打开隧道弹层'
         const text = pop.textContent ?? ''
-        if (!text.includes('暂无启用')) return '弹层没有说明「该连接暂无启用的隧道」：' + text
-        if (!text.includes('插件配置') && !text.includes('设置')) return '弹层没有告诉用户去哪配置'
+        if (!text.includes('暂无启用') && !text.includes('No enabled tunnels')) return '弹层没有说明「该连接暂无启用的隧道」：' + text
+        if (!/插件配置|设置|Settings/.test(text)) return '弹层没有告诉用户去哪配置'
         return null
       }
     },
@@ -1081,7 +1129,7 @@
       await openPanel()
       window.__PREVIEW_AT_LIMIT = true
       await clickAdd()
-      await clickMenuItem('本地终端')
+      await clickMenuItem('本地终端', 'Local terminal')
       await waitFor(() => q('.tt_toast'))
       await sleep(200)
     },

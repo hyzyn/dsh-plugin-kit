@@ -38,20 +38,30 @@ export function deriveTunnelName(bookName, direction, port) {
  * （实测 +14 条，把 client-lint 的已知噪音从 24 推到 38）。JSDoc 的**字面量**类型能让
  * `if (!built.ok)` 正常收窄，噪音归零。
  *
+ * 校验文案走目录：`t` 由调用方传入——本文件是纯逻辑模块、要能进 vitest，而目录与 `t`
+ * 住在 `client-src/index.js`（浏览器 IIFE 入口，测试里 import 不动）。
+ *
  * @param {{ direction?: string, bookName?: string, localPort?: unknown, remoteHost?: unknown, remotePort?: unknown, localTargetPort?: unknown }} draft
  * @param {string[]} [books] 可用连接簿条目名（`bookName` 为空时回落第一个；与旧行为一致）
+ * @param {(key: string, params?: Record<string, unknown>) => string} t 翻译函数
  * @returns {{ ok: true, tunnel: object } | { ok: false, error: string }}
  */
-export function buildTunnelFromDraft(draft, books = []) {
+export function buildTunnelFromDraft(draft, books = [], t = (key) => key) {
+  /*
+   * `t` 带缺省值有两个原因：① 它是纯逻辑模块的**注入参数**（被 vitest 直接 import），
+   * 缺省回键让单测可以只断言「抛哪个键、带哪些参数」；② 形参顺序上 `books` 有默认值，
+   * `t` 不给默认值就是 TS1016（必选参数跟在可选参数之后）——client-lint 的已知噪音会多一条，
+   * 而那份噪音计数是**用来发现回归的**，不能涨。与 codegraph `client-src/pure.js` 同款处理。
+   */
   const d = draft ?? {}
   const bookName = String(d.bookName ?? '') || String(books[0] ?? '') || ''
-  if (bookName === '') return { ok: false, error: '请先在连接簿里添加 SSH 条目' }
+  if (bookName === '') return { ok: false, error: t('error.tunnelNoBook') }
 
   if (d.direction === 'remote') {
     const remotePort = parsePort(d.remotePort)
     const localTargetPort = parsePort(d.localTargetPort)
     if (remotePort < MIN_PORT || localTargetPort < MIN_PORT) {
-      return { ok: false, error: '远程监听端口与本地目标端口必填（1~65535）' }
+      return { ok: false, error: t('error.tunnelRemotePortRequired') }
     }
     return {
       ok: true,
@@ -71,7 +81,7 @@ export function buildTunnelFromDraft(draft, books = []) {
   const remoteHost = String(d.remoteHost ?? '').trim()
   const remotePort = parsePort(d.remotePort)
   if (localPort < MIN_PORT || remoteHost === '' || remotePort < MIN_PORT) {
-    return { ok: false, error: '本地端口、远程主机、远程端口必填' }
+    return { ok: false, error: t('error.tunnelLocalRequired') }
   }
   return {
     ok: true,
@@ -108,22 +118,25 @@ export function tunnelEditClash(tunnels, originalName, nextName) {
  * 定位必须用原始名字——名字由规则派生，「改端口」就等于换名字，用新名字在列表里找不到自己。
  * `enabled` 保留原值：编辑规格不该顺手把停用的隧道启用。
  *
- * 同样用判别式（`ok`）以便调用方收窄（理由见 `buildTunnelFromDraft`）。
+ * 同样用判别式（`ok`）以便调用方收窄（理由见 `buildTunnelFromDraft`）。失败时除了本地化的
+ * `error` 还回一个机器可读的 `reason`：调用方原先靠 `error.includes('已不存在')` 判断
+ * 「这条被别的窗口删了」，文案一进目录那个 `includes` 就断了——匹配**数据**不能跟着文案走。
  *
  * @param {object[]} tunnels
  * @param {string} originalName 进编辑时那条的**原始**名字
  * @param {{ name: string }} nextTunnel
- * @returns {{ ok: true, tunnels: object[] } | { ok: false, error: string }}
+ * @param {(key: string, params?: Record<string, unknown>) => string} t 翻译函数
+ * @returns {{ ok: true, tunnels: object[] } | { ok: false, reason: 'missing' | 'clash', error: string }}
  */
-export function applyTunnelEdit(tunnels, originalName, nextTunnel) {
+export function applyTunnelEdit(tunnels, originalName, nextTunnel, t) {
   const list = Array.isArray(tunnels) ? tunnels : []
   const original = list.find((t) => String(t?.name ?? '') === String(originalName))
   if (original === undefined) {
-    return { ok: false, error: `隧道「${String(originalName)}」已不存在（可能被另一个窗口删除）` }
+    return { ok: false, reason: 'missing', error: t('error.tunnelMissing', { name: String(originalName) }) }
   }
   const clash = tunnelEditClash(list, originalName, nextTunnel.name)
   if (clash !== undefined) {
-    return { ok: false, error: `已存在同名隧道「${String(nextTunnel.name)}」——请先处理那条同名的。` }
+    return { ok: false, reason: 'clash', error: t('error.tunnelClash', { name: String(nextTunnel.name) }) }
   }
   const merged = { ...nextTunnel, enabled: original.enabled !== false }
   return { ok: true, tunnels: list.map((t) => (String(t?.name ?? '') === String(originalName) ? merged : t)) }

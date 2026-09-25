@@ -62,6 +62,8 @@ const call = (method, path, body) =>
         method,
         headers: {
           host: `${target.hostname}:${String(port)}`,
+          // 变更端点要求同源证明（docker D32 口径）：浏览器同源 fetch 必带这个头，脚本照带
+          'sec-fetch-site': 'same-origin',
           ...(payload === undefined ? {} : { 'content-type': 'application/json', 'content-length': String(payload.length) }),
         },
       },

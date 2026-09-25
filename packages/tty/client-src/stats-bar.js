@@ -66,16 +66,22 @@ export function statsLevel(pct) {
   return ''
 }
 
-/** 速率条目用：<1KB/s 直接用 B/s（采集端给的就是 B/s），大值复用 formatRate 的 K/M/G。 */
-export function statsRate(value) {
-  if (!Number.isFinite(value) || value < 0) return '无'
+/**
+ * 速率条目用：<1KB/s 直接用 B/s（采集端给的就是 B/s），大值复用 formatRate 的 K/M/G。
+ *
+ * `t` 是**传进来的翻译函数**（不是 import 来的）：本文件是纯逻辑模块、要能进 vitest，
+ * 而目录与 `t` 住在 `client-src/index.js`（浏览器 IIFE 入口，测试里 import 不动）。
+ * 与 codegraph 的 pure.js 同一套做法——文案键由调用方注入，测试断言键而不是中文。
+ */
+export function statsRate(value, t) {
+  if (!Number.isFinite(value) || value < 0) return t('list.none')
   if (value < 1024) return Math.round(value) + ' B/s'
-  return formatRate(value) || '无'
+  return formatRate(value) || t('list.none')
 }
 
 /** uptime 秒 → FinalShell 风格（2w4d7h16m / 3h5m / 12m / 45s）。 */
-export function formatUptime(sec) {
-  if (!Number.isFinite(sec) || sec < 0) return '无'
+export function formatUptime(sec, t) {
+  if (!Number.isFinite(sec) || sec < 0) return t('list.none')
   const total = Math.floor(sec)
   const weeks = Math.floor(total / 604800)
   const days = Math.floor((total % 604800) / 86400)
@@ -90,8 +96,8 @@ export function formatUptime(sec) {
 }
 
 /** 「已用/总量」对：任一侧缺失或总量为 0 都退化成「无」。 */
-export function statsPair(used, total) {
-  if (!Number.isFinite(used) || !Number.isFinite(total) || total <= 0) return '无'
+export function statsPair(used, total, t) {
+  if (!Number.isFinite(used) || !Number.isFinite(total) || total <= 0) return t('list.none')
   return (formatBytes(used) || '0 B') + '/' + (formatBytes(total) || '0 B')
 }
 
@@ -151,22 +157,30 @@ const NET_SLOT = 23
  *
  * `kind` 决定值怎么算，`slot` 是**值槽位的固定字符宽**（0 = 不固定，见文件头）。
  * DOM 层（index.js 的 `buildStatsBarDom`）按这份描述建一次节点，之后只改文本。
+ *
+ * **必须是函数而不是模块级常量**：标签走 `t(…)`，而模块级常量在加载时求值等于把当前
+ * 语言冻住（`installI18n(ctx)` 要等 apply 才跑，语言切换也不会重算）——`STATUS_TEXT` /
+ * `QUICK_ACTIONS` / `RESULT_TABS` 都踩过这个坑。`t` 由调用方传入（见 `statsRate` 的说明）。
+ *
+ * @param {(key: string, params?: Record<string, unknown>) => string} t 翻译函数
  */
-export const STATS_ITEM_SPECS = [
-  { key: 'cpuPct', label: 'CPU', kind: 'pct', slot: 4 }, // 100% = 4
-  { key: 'memPct', label: '内存', kind: 'pct', slot: 4 },
-  { key: 'diskPct', label: '磁盘', kind: 'pct', slot: 4 },
-  { key: 'cores', label: '核心', kind: 'count', slot: 4 }, // 4096 = 4
-  { key: 'mem', label: '内存', kind: 'pair', slot: 17, used: 'memUsed', total: 'memTotal' }, // 999.9 GB/999.9 GB = 17
-  { key: 'uptimeSec', label: '在线', kind: 'uptime', slot: 13 }, // 上限 100 年 = 5217w6d23h59m = 13
-  { key: 'tcpConns', label: 'TCP', kind: 'count', slot: 6 }, // 999999 = 6（1000 万连接只存在于脏数据里）
-  { key: 'disk', label: '磁盘', kind: 'pair', slot: 17, used: 'diskUsed', total: 'diskTotal' },
-  { key: 'tempC', label: 'CPU温度', kind: 'temp', slot: 8 }, // 199.9°C = 7 字符，但「°」在部分字体里按全角渲染，留一位
-  { key: 'net', label: '网络', kind: 'net', slot: NET_SLOT }, // 有速率时用固定槽位；「无」时不留（见 statsItemValues）
-]
+export function statsItemSpecs(t) {
+  return [
+    { key: 'cpuPct', label: 'CPU', kind: 'pct', slot: 4 }, // 100% = 4
+    { key: 'memPct', label: t('meta.mem'), kind: 'pct', slot: 4 },
+    { key: 'diskPct', label: t('meta.disk'), kind: 'pct', slot: 4 },
+    { key: 'cores', label: t('meta.cores'), kind: 'count', slot: 4 }, // 4096 = 4
+    { key: 'mem', label: t('meta.mem'), kind: 'pair', slot: 17, used: 'memUsed', total: 'memTotal' }, // 999.9 GB/999.9 GB = 17
+    { key: 'uptimeSec', label: t('meta.uptime'), kind: 'uptime', slot: 13 }, // 上限 100 年 = 5217w6d23h59m = 13
+    { key: 'tcpConns', label: 'TCP', kind: 'count', slot: 6 }, // 999999 = 6（1000 万连接只存在于脏数据里）
+    { key: 'disk', label: t('meta.disk'), kind: 'pair', slot: 17, used: 'diskUsed', total: 'diskTotal' },
+    { key: 'tempC', label: t('meta.temp'), kind: 'temp', slot: 8 }, // 199.9°C = 7 字符，但「°」在部分字体里按全角渲染，留一位
+    { key: 'net', label: t('meta.net'), kind: 'net', slot: NET_SLOT }, // 有速率时用固定槽位；「无」时不留（见 statsItemValues）
+  ]
+}
 
 /**
- * 一帧 stats → 每条的显示值（与 `STATS_ITEM_SPECS` 同序、等长）。
+ * 一帧 stats → 每条的显示值（与 `statsItemSpecs(t)` 同序、等长）。
  *
  * 值只来自宿主发来的数值帧，标签 / 槽位是本地常量；`pct` 只有带迷你进度条的条目有，
  * 其余为 `null`。`slot` 允许被单条覆盖（网络：有速率才占槽位）。`title` 是悬停提示
@@ -174,8 +188,9 @@ export const STATS_ITEM_SPECS = [
  * **不做** HTML 转义。
  *
  * @param stats 宿主 stats 帧；`null` / 非对象 / 脏数据一律渲染成「无」（不抛）。
+ * @param t 翻译函数（标签与「无」走目录，见 `statsRate` 的说明）
  */
-export function statsItemValues(stats) {
+export function statsItemValues(stats, t) {
   const frame = stats !== null && typeof stats === 'object' && !Array.isArray(stats) ? stats : {}
   const num = (key) => statsNum(frame, key)
   /** 入口：值与槽位一起返回，DOM 层不必再回头查 spec。 */
@@ -188,24 +203,24 @@ export function statsItemValues(stats) {
     value,
     title: spec.label + ': ' + value,
   })
-  return STATS_ITEM_SPECS.map((spec) => {
+  return statsItemSpecs(t).map((spec) => {
     if (spec.kind === 'pct') {
       const value = num(spec.key)
-      return make(spec, value === null ? '无' : Math.round(value) + '%', value)
+      return make(spec, value === null ? t('list.none') : Math.round(value) + '%', value)
     }
-    if (spec.kind === 'pair') return make(spec, statsPair(num(spec.used), num(spec.total)), null)
-    if (spec.kind === 'uptime') return make(spec, formatUptime(num(spec.key)), null)
+    if (spec.kind === 'pair') return make(spec, statsPair(num(spec.used), num(spec.total), t), null)
+    if (spec.kind === 'uptime') return make(spec, formatUptime(num(spec.key), t), null)
     if (spec.kind === 'temp') {
       const value = num(spec.key)
-      return make(spec, value === null ? '无' : value.toFixed(1) + '°C', null)
+      return make(spec, value === null ? t('list.none') : value.toFixed(1) + '°C', null)
     }
     if (spec.kind === 'net') {
       const rx = num('rxRate')
       const tx = num('txRate')
-      if (rx === null && tx === null) return make(spec, '无', null, 0) // 没有速率：不给槽位（省 20 多字符）
-      return make(spec, '↓' + statsRate(rx) + ' ↑' + statsRate(tx), null, NET_SLOT)
+      if (rx === null && tx === null) return make(spec, t('list.none'), null, 0) // 没有速率：不给槽位（省 20 多字符）
+      return make(spec, '↓' + statsRate(rx, t) + ' ↑' + statsRate(tx, t), null, NET_SLOT)
     }
     const value = num(spec.key) // kind === 'count'：核心 / TCP
-    return make(spec, value === null ? '无' : String(value), null)
+    return make(spec, value === null ? t('list.none') : String(value), null)
   })
 }

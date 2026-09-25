@@ -143,7 +143,9 @@ function startServer(mode) {
 const callTest = async (config) => {
   const response = await fetch(`${hostUrl}/api/dsh-mcp/test`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    // 变更端点要求同源证明（docker D32 口径，见 docs/architecture.md § 7）：浏览器同源 fetch
+    // 必带这个头——脚本模拟的是**面板**那条调用路径，所以照带，否则会 403「缺少同源证明」
+    headers: { 'content-type': 'application/json', 'sec-fetch-site': 'same-origin' },
     body: JSON.stringify({ config }),
   })
   const text = await response.text()

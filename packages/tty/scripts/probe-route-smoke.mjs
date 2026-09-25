@@ -13,6 +13,15 @@ import net from 'node:net'
 import { name, inject, apply } from '../lib/index.js'
 import { startSftpSshd, TEST_USER, TEST_PASSWORD } from './lib/test-sshd.mjs'
 
+/*
+ * 变更端点要求「同源证明」（docker D32 口径，见 docs/architecture.md § 7 与
+ * packages/tty/src/index.ts 的 gateRoute）：浏览器同源 fetch 必带
+ * `sec-fetch-site: same-origin`——本脚本模拟的正是**面板**这条调用路径，所以照带。
+ * 少了它，/probe 与 /sftp 的写动作会被 403「缺少同源证明」（本脚本此前就踩在这里）。
+ */
+const SAME_ORIGIN = { 'sec-fetch-site': 'same-origin' }
+
+
 const RESULTS = []
 function pass(name) { RESULTS.push(['PASS', name]); console.log('  ✔ PASS  ' + name) }
 function fail(name, detail) { RESULTS.push(['FAIL', name, detail]); console.error('  ✘ FAIL  ' + name + (detail ? ' — ' + detail : '')) }
@@ -44,7 +53,7 @@ async function run() {
   const probe = async (body) => {
     const res = await fetch(`http://127.0.0.1:${port}/api/dsh-tty/probe`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { ...SAME_ORIGIN, 'content-type': 'application/json' },
       body: JSON.stringify(body),
     })
     return res.json()

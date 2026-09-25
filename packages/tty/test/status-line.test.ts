@@ -12,6 +12,12 @@
 import { describe, expect, it } from 'vitest'
 import { eventOwnsStatus, needsStatusResync, statusForTab } from '../client-src/status-line.js'
 
+/**
+ * 目录住在 `client-src/index.js`（浏览器 IIFE 入口，这里 import 不动），所以翻译函数
+ * 由测试注入。**断言键而不是中文文案**：文案可以改，键是契约（`t` 只回键名，参数忽略）。
+ */
+const t = (key: string) => key
+
 describe('eventOwnsStatus', () => {
   it('【本 bug】后台标签的失败不占胶囊（否则它在别的主机上顶掉你正看着的状态）', () => {
     // 实测：先在 lab-a 点连接，再开 lab-b 并连上，lab-a 的握手超时才失败
@@ -61,23 +67,23 @@ describe('statusForTab', () => {
     // 关键：错误文本记在失败标签自己身上（statusText），活动标签有自己的那条
     const failed = { sid: 'sess-failed', errored: true, statusText: '错误：SSH 连接失败（hsadmin@192.0.2.10）：Timed out while waiting for handshake', statusState: 'error' }
     const live = { sid: 'sess-live', live: true, statusText: 'SSH root@192.0.2.161 已连接', statusState: 'connected' }
-    expect(statusForTab(failed)).toEqual({ text: failed.statusText, state: 'error' })
-    expect(statusForTab(live)).toEqual({ text: 'SSH root@192.0.2.161 已连接', state: 'connected' })
+    expect(statusForTab(failed, t)).toEqual({ text: failed.statusText, state: 'error' })
+    expect(statusForTab(live, t)).toEqual({ text: 'SSH root@192.0.2.161 已连接', state: 'connected' })
   })
 
   it('没有活动标签（标签全关了）→ 清空', () => {
-    expect(statusForTab(undefined)).toEqual({ text: '', state: '' })
-    expect(statusForTab(null)).toEqual({ text: '', state: '' })
+    expect(statusForTab(undefined, t)).toEqual({ text: '', state: '' })
+    expect(statusForTab(null, t)).toEqual({ text: '', state: '' })
   })
 
   it('连上过又退出：退出不需要再报警', () => {
-    expect(statusForTab({ exited: true, live: false })).toEqual({ text: '会话已退出', state: '' })
-    expect(statusForTab({ exited: true, live: false, statusText: '已退出 code=0', statusState: '' })).toEqual({ text: '已退出 code=0', state: '' })
+    expect(statusForTab({ exited: true, live: false }, t)).toEqual({ text: 'status.exited', state: '' })
+    expect(statusForTab({ exited: true, live: false, statusText: '已退出 code=0', statusState: '' }, t)).toEqual({ text: '已退出 code=0', state: '' })
   })
 
   it('还没连上：连接中（没记过状态时的兜底文案）', () => {
-    expect(statusForTab({ sid: 's' })).toEqual({ text: '连接中…', state: '' })
-    expect(statusForTab({ sid: 's', live: true })).toEqual({ text: '已连接', state: 'connected' })
-    expect(statusForTab({ sid: 's', errored: true })).toEqual({ text: '连接出错', state: 'error' })
+    expect(statusForTab({ sid: 's' }, t)).toEqual({ text: 'status.connectingEllipsis', state: '' })
+    expect(statusForTab({ sid: 's', live: true }, t)).toEqual({ text: 'status.connected', state: 'connected' })
+    expect(statusForTab({ sid: 's', errored: true }, t)).toEqual({ text: 'status.errored', state: 'error' })
   })
 })

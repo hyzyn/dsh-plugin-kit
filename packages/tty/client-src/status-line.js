@@ -20,15 +20,20 @@
  * 优先用它自己记下的 `statusText` / `statusState`（ready / exit / error 帧写进来的
  * 原文，含 SSH 失败原因、退出码等细节），没记过才按会话状态给一句兜底文案。
  *
+ * 兜底文案走目录，`t` 由调用方传入——本文件是纯逻辑模块、要能进 vitest，而目录与 `t`
+ * 住在 `client-src/index.js`（浏览器 IIFE 入口，测试里 import 不动）。与 codegraph 的
+ * pure.js 同一套做法：测试断言键，不断言中文。
+ *
  * @param tab 活动标签对象（`tabs.get(activeSid)`）；没有活动标签时传 undefined。
+ * @param t 翻译函数（`{ key, params }`，见 `client-src/index.js` 的 `i18nFallback`）。
  * @returns `{ text, state }`，交给 `setStatus`。
  */
-export function statusForTab(tab) {
+export function statusForTab(tab, t) {
   if (tab === undefined || tab === null) return { text: '', state: '' }
-  if (tab.exited === true) return { text: tab.statusText ?? '会话已退出', state: tab.statusState ?? '' }
-  if (tab.live === true) return { text: tab.statusText ?? '已连接', state: tab.statusState ?? 'connected' }
-  if (tab.errored === true) return { text: tab.statusText ?? '连接出错', state: tab.statusState ?? 'error' }
-  return { text: tab.statusText ?? '连接中…', state: tab.statusState ?? '' }
+  if (tab.exited === true) return { text: tab.statusText ?? t('status.exited'), state: tab.statusState ?? '' }
+  if (tab.live === true) return { text: tab.statusText ?? t('status.connected'), state: tab.statusState ?? 'connected' }
+  if (tab.errored === true) return { text: tab.statusText ?? t('status.errored'), state: tab.statusState ?? 'error' }
+  return { text: tab.statusText ?? t('status.connectingEllipsis'), state: tab.statusState ?? '' }
 }
 
 /**

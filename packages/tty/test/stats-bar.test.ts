@@ -16,21 +16,35 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  STATS_ITEM_SPECS,
   STATS_STALE_MS,
   formatBytes,
   formatRate,
   formatUptime,
   hasUsableStats,
   statsFrameFresh,
+  statsItemSpecs,
   statsItemValues,
   statsNum,
   statsPair,
   statsRate,
 } from '../client-src/stats-bar.js'
 
-/** 一条「帧 → 值」的取值：槽位只认 order（与 STATS_ITEM_SPECS 同序），不认 key（内存/磁盘各有两条）。 */
-const valuesOf = (stats) => statsItemValues(stats)
+/**
+ * 目录住在 `client-src/index.js`（浏览器 IIFE 入口，这里 import 不动），所以翻译函数
+ * 由测试注入。**断言键而不是中文文案**：文案可以改，键是契约（`t` 只回键名，参数忽略）。
+ */
+const t = (key: string) => key
+
+/**
+ * 「值 ≤ 槽位」那条不变量量的是**渲染出来的文案**长度，不是键名长度（`list.none` 有 9 个
+ * 字符，拿它去量必然假红）。这里只把值兜底换成目录里那条英文文案（`N/A`，3 字符——与 zh 的
+ * 单字兜底同量级），其余键照旧回键名。英文文案若被改成宽过槽位的写法，这条仍会红。
+ */
+const tValue = (key: string) => (key === 'list.none' ? 'N/A' : key)
+const valuesOfLength = (stats: unknown) => statsItemValues(stats, tValue)
+
+/** 一条「帧 → 值」的取值：槽位只认 order（与 statsItemSpecs(t) 同序），不认 key（内存/磁盘各有两条）。 */
+const valuesOf = (stats) => statsItemValues(stats, t)
 
 /** 现实的极端帧：每一格都顶到该字段的边界（100% / 4096 核 / 99.9% 容量 / 100 年开机 / 199.9°C）。 */
 const EXTREME = {
@@ -74,7 +88,7 @@ const JITTER_FRAMES = [
 
 describe('状态条的固定槽位（本 bug：值位数变化不该推挤后面的条目）', () => {
   it('【本 bug】现实极端取值下，值文本的字符数都装得进自己的槽位', () => {
-    const values = valuesOf(EXTREME)
+    const values = valuesOfLength(EXTREME)
     for (const item of values) {
       if (item.slot === 0) continue // 0 = 不固定（网络：最后一条的活数据）
       expect(item.value.length, `${item.label}「${item.value}」超出槽位 ${String(item.slot)}ch`).toBeLessThanOrEqual(item.slot)
@@ -83,7 +97,7 @@ describe('状态条的固定槽位（本 bug：值位数变化不该推挤后面
 
   it('【本 bug】位数在变、槽位不变：CPU 5% ↔ 12% ↔ 100% 都不改任何条目的几何', () => {
     // 这些帧都没有速率 → 网络不占槽位；其余条目的槽位必须逐帧一致
-    const expectedSlots = STATS_ITEM_SPECS.map((spec) => (spec.key === 'net' ? 0 : spec.slot))
+    const expectedSlots = statsItemSpecs(t).map((spec) => (spec.key === 'net' ? 0 : spec.slot))
     for (const frame of JITTER_FRAMES) expect(valuesOf(frame).map((item) => item.slot)).toEqual(expectedSlots)
     // 值本身确实在变（否则这个用例就是空的），但宽度来源只有槽位
     const cpuTexts = JITTER_FRAMES.map((frame) => valuesOf(frame)[0].value)
@@ -91,7 +105,8 @@ describe('状态条的固定槽位（本 bug：值位数变化不该推挤后面
   })
 
   it('「网络」有速率才占槽位：活数据的宽度也不能每秒伸缩；没速率时不白留 20 多字符', () => {
-    const net = STATS_ITEM_SPECS[STATS_ITEM_SPECS.length - 1]
+    const specs = statsItemSpecs(t)
+    const net = specs[specs.length - 1]
     expect(net.key).toBe('net')
     expect(valuesOf(MACOS_LOCAL)[9].slot).toBe(0) // macOS 本地：网络 无
     const withRates = valuesOf({ ...MACOS_LOCAL, rxRate: 112.5 * 1024 ** 2, txRate: 112.5 * 1024 ** 2 })[9]
@@ -102,10 +117,10 @@ describe('状态条的固定槽位（本 bug：值位数变化不该推挤后面
 
   it('值与 spec 一一对应（DOM 层按同序建节点，错位就会写错格子）', () => {
     const values = valuesOf(MACOS_LOCAL)
-    expect(values.map((item) => item.key)).toEqual(STATS_ITEM_SPECS.map((spec) => spec.key))
-    expect(values.map((item) => item.label)).toEqual(STATS_ITEM_SPECS.map((spec) => spec.label))
+    expect(values.map((item) => item.key)).toEqual(statsItemSpecs(t).map((spec) => spec.key))
+    expect(values.map((item) => item.label)).toEqual(statsItemSpecs(t).map((spec) => spec.label))
     // 网络是唯一「槽位可以由单条值覆盖」的字段（有速率 = 占位，无速率 = 不占）
-    expect(values.map((item) => item.slot)).toEqual(STATS_ITEM_SPECS.map((spec) => (spec.key === 'net' ? 0 : spec.slot)))
+    expect(values.map((item) => item.slot)).toEqual(statsItemSpecs(t).map((spec) => (spec.key === 'net' ? 0 : spec.slot)))
   })
 })
 
@@ -121,15 +136,15 @@ describe('statsItemValues 的渲染口径', () => {
       '3w6d20h18m', // 在线
       '36', // TCP
       '12.7 GB/862 GB', // 磁盘 已用/总量
-      '无', // CPU温度（macOS 没有 sysfs）
-      '无', // 网络（macOS 本地取不到速率时）
+      'list.none', // CPU温度（macOS 没有 sysfs）
+      'list.none', // 网络（macOS 本地取不到速率时）
     ])
   })
 
   it('进度条的 pct 与值同源；「无」不给进度（pct=null，DOM 层画 0%）', () => {
     const values = valuesOf(MACOS_LOCAL)
     expect(values[0].pct).toBe(5)
-    expect(values[8].value).toBe('无')
+    expect(values[8].value).toBe('list.none')
     expect(values[8].pct).toBeNull()
     expect(values[9].pct).toBeNull()
   })
@@ -137,7 +152,7 @@ describe('statsItemValues 的渲染口径', () => {
   it('title 是「标签: 值」（窄窗口被裁时悬停可读全），不做 HTML 转义（DOM 层用 setAttribute）', () => {
     const values = valuesOf(MACOS_LOCAL)
     expect(values[0].title).toBe('CPU: 5%')
-    expect(values[5].title).toBe('在线: 3w6d20h18m')
+    expect(values[5].title).toBe('meta.uptime: 3w6d20h18m')
   })
 
   it('有速率时网络条显示 ↓/↑（B/s 走整数量级，KB/s 起复用 formatRate）', () => {
@@ -155,8 +170,8 @@ describe('脏数据兜底（旧版宿主 / 第三方实现 / 假数据）', () =
 
   it('任何垃圾帧都不抛，且渲染不出 NaN / undefined / 负数 / 天文数字', () => {
     for (const junk of JUNK) {
-      const values = valuesOf(junk)
-      expect(values).toHaveLength(STATS_ITEM_SPECS.length)
+      const values = valuesOfLength(junk)
+      expect(values).toHaveLength(statsItemSpecs(t).length)
       for (const item of values) {
         expect(item.value).not.toMatch(/NaN|undefined|Infinity|-5|e\+30/)
         expect(item.value.length).toBeLessThanOrEqual(item.slot === 0 ? 64 : item.slot)
@@ -167,7 +182,7 @@ describe('脏数据兜底（旧版宿主 / 第三方实现 / 假数据）', () =
   it('越界的 pct 拿不到进度（不会把进度条画出容器）', () => {
     expect(statsNum({ cpuPct: 120 }, 'cpuPct')).toBeNull()
     expect(statsNum({ cpuPct: -1 }, 'cpuPct')).toBeNull()
-    expect(valuesOf({ cpuPct: 120, cores: 8 })[0]).toMatchObject({ value: '无', pct: null })
+    expect(valuesOf({ cpuPct: 120, cores: 8 })[0]).toMatchObject({ value: 'list.none', pct: null })
   })
 
   it('hasUsableStats：一个可用字段算有数据，全脏则整条隐藏', () => {
@@ -229,18 +244,18 @@ describe('格式化函数（D49 修复时从 client-src/index.js 搬进来，顺
     expect(formatUptime(12 * 60)).toBe('12m')
     expect(formatUptime(3 * 3600 + 5 * 60)).toBe('3h5m')
     expect(formatUptime(2405880)).toBe('3w6d20h18m')
-    expect(formatUptime(Number.NaN)).toBe('无')
+    expect(formatUptime(Number.NaN, t)).toBe('list.none')
   })
 
   it('statsPair：任一侧缺失或总量为 0 都退化「无」', () => {
-    expect(statsPair(1024, 0)).toBe('无')
-    expect(statsPair(Number.NaN, 1024)).toBe('无')
+    expect(statsPair(1024, 0, t)).toBe('list.none')
+    expect(statsPair(Number.NaN, 1024, t)).toBe('list.none')
     expect(statsPair(0, 1024)).toBe('0 B/1.0 KB')
   })
 
   it('statsRate：非有限/负数 → 「无」', () => {
-    expect(statsRate(Number.NaN)).toBe('无')
-    expect(statsRate(-1)).toBe('无')
+    expect(statsRate(Number.NaN, t)).toBe('list.none')
+    expect(statsRate(-1, t)).toBe('list.none')
     expect(statsRate(0)).toBe('0 B/s')
   })
 })

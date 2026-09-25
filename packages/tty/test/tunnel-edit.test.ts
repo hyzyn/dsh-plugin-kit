@@ -16,6 +16,12 @@ import {
   tunnelNameClash,
 } from '../client-src/tunnel-edit.js'
 
+/**
+ * 目录住在 `client-src/index.js`（浏览器 IIFE 入口，这里 import 不动），所以翻译函数
+ * 由测试注入。**断言键而不是中文文案**：文案可以改，键是契约。
+ */
+const t = (key: string) => key
+
 const draftOf = (over = {}) => ({
   direction: 'local',
   bookName: 'lab-a',
@@ -50,7 +56,7 @@ describe('deriveTunnelName', () => {
 
 describe('buildTunnelFromDraft', () => {
   it('本地转发送：名字随「条目 + 端口」派生', () => {
-    const r = buildTunnelFromDraft(draftOf())
+    const r = buildTunnelFromDraft(draftOf(), [], t)
     expect(r.ok).toBe(true)
     expect(r.tunnel).toMatchObject({
       name: 'lab-a-L5432',
@@ -64,26 +70,26 @@ describe('buildTunnelFromDraft', () => {
   })
 
   it('远程转发送：只认 remotePort / localTargetPort，名字用 -R', () => {
-    const r = buildTunnelFromDraft(draftOf({ direction: 'remote', remotePort: '8080', localTargetPort: '3000' }))
+    const r = buildTunnelFromDraft(draftOf({ direction: 'remote', remotePort: '8080', localTargetPort: '3000' }), [], t)
     expect(r.ok).toBe(true)
     expect(r.tunnel).toMatchObject({ name: 'lab-a-R8080', direction: 'remote', remotePort: 8080, localTargetPort: 3000 })
   })
 
   it('缺必填 → 报错而不是拼出一条残规格', () => {
-    expect(buildTunnelFromDraft(draftOf({ localPort: '' })).ok).toBe(false)
-    expect(buildTunnelFromDraft(draftOf({ remoteHost: '  ' })).ok).toBe(false)
-    expect(buildTunnelFromDraft(draftOf({ remotePort: '99999' })).ok).toBe(false)
-    expect(buildTunnelFromDraft(draftOf({ direction: 'remote', localTargetPort: '' })).ok).toBe(false)
+    expect(buildTunnelFromDraft(draftOf({ localPort: '' }), [], t).ok).toBe(false)
+    expect(buildTunnelFromDraft(draftOf({ remoteHost: '  ' }), [], t).ok).toBe(false)
+    expect(buildTunnelFromDraft(draftOf({ remotePort: '99999' }), [], t).ok).toBe(false)
+    expect(buildTunnelFromDraft(draftOf({ direction: 'remote', localTargetPort: '' }), [], t).ok).toBe(false)
   })
 
   it('连接簿为空 → 明确提示（不是拼出一条 bookName="" 的隧道）', () => {
-    const r = buildTunnelFromDraft(draftOf({ bookName: '' }), [])
+    const r = buildTunnelFromDraft(draftOf({ bookName: '' }), [], t)
     expect(r.ok).toBe(false)
-    expect(r.error).toContain('连接簿')
+    expect(r.error).toBe('error.tunnelNoBook')
   })
 
   it('draft 没选条目但有候选 → 回落第一个（与旧行为一致）', () => {
-    const r = buildTunnelFromDraft(draftOf({ bookName: '' }), ['first', 'second'])
+    const r = buildTunnelFromDraft(draftOf({ bookName: '' }), ['first', 'second'], t)
     expect(r.ok).toBe(true)
     expect(r.tunnel.bookName).toBe('first')
   })
@@ -118,7 +124,7 @@ describe('applyTunnelEdit', () => {
 
   it('改端口：按**原始名字**定位替换，名字跟着换（这就是编辑功能的意义）', () => {
     const next = { name: 'lab-a-L5433', bookName: 'lab-a', direction: 'local', localPort: 5433, remoteHost: 'db', remotePort: 5432, enabled: true }
-    const r = applyTunnelEdit(list, 'lab-a-L5432', next)
+    const r = applyTunnelEdit(list, 'lab-a-L5432', next, t)
     expect(r.ok).toBe(true)
     expect(r.tunnels).toHaveLength(2)
     expect(r.tunnels[0].name).toBe('lab-a-L5433') // 旧名已被替换掉
@@ -127,26 +133,28 @@ describe('applyTunnelEdit', () => {
 
   it('编辑**不改变启用状态**：停用的隧道不会因为改规格而被顺手启用', () => {
     const next = { name: 'lab-a-L5433', bookName: 'lab-a', direction: 'local', localPort: 5433, remoteHost: 'db', remotePort: 5432, enabled: true }
-    const r = applyTunnelEdit(list, 'lab-a-L5432', next)
+    const r = applyTunnelEdit(list, 'lab-a-L5432', next, t)
     expect(r.ok).toBe(true)
     expect(r.tunnels[0].enabled).toBe(false) // 原值是 false，必须保持
   })
 
   it('条目已被别处删除 → 返回错误（调用方退出编辑态，而不是改错东西）', () => {
-    const r = applyTunnelEdit(list, 'ghost-L1', { name: 'ghost-L2' })
+    const r = applyTunnelEdit(list, 'ghost-L1', { name: 'ghost-L2' }, t)
     expect(r.ok).toBe(false)
-    expect(r.error).toContain('已不存在')
+    expect(r.reason).toBe('missing')
+    expect(r.error).toBe('error.tunnelMissing')
   })
 
   it('新名字撞别人 → 返回错误，列表原样不动', () => {
-    const r = applyTunnelEdit(list, 'lab-a-L5432', { name: 'lab-b-L6379', bookName: 'lab-a' })
+    const r = applyTunnelEdit(list, 'lab-a-L5432', { name: 'lab-b-L6379', bookName: 'lab-a' }, t)
     expect(r.ok).toBe(false)
-    expect(r.error).toContain('已存在同名隧道')
+    expect(r.reason).toBe('clash')
+    expect(r.error).toBe('error.tunnelClash')
   })
 
   it('只改 remoteHost（名字不变）也能保存', () => {
     const next = { name: 'lab-a-L5432', bookName: 'lab-a', direction: 'local', localPort: 5432, remoteHost: 'db2', remotePort: 5432, enabled: true }
-    const r = applyTunnelEdit(list, 'lab-a-L5432', next)
+    const r = applyTunnelEdit(list, 'lab-a-L5432', next, t)
     expect(r.ok).toBe(true)
     expect(r.tunnels[0].remoteHost).toBe('db2')
   })
