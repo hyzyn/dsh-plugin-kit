@@ -24,7 +24,7 @@
  * 退出码：0 = 无 FAIL（允许 WARN），1 = 有 FAIL。
  */
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -397,6 +397,24 @@ if (hostUrl === undefined) {
     }
   }
 
+  /**
+   * 安全序列化 + 截断。
+   *
+   * 为什么需要：`JSON.stringify(undefined)` 返回的是 **undefined**（不是字符串），
+   * 后面直接 `.slice(0, n)` 就抛 TypeError。这在「宿主中途没了 / 响应不是 JSON」时
+   * 必然触发——而那恰恰是最需要看到汇总的时候：真机实测就是这么把整个脚本打挂、
+   * 连 `# 汇总` 都没打印出来的。
+   */
+  const brief = (value, max = 200) => {
+    let text
+    try {
+      text = JSON.stringify(value)
+    } catch {
+      text = undefined
+    }
+    return (text ?? String(value)).slice(0, max)
+  }
+
   /* ---- B0. 宿主活着 ---- */
   const root = await call('GET', '/')
   record(
@@ -637,7 +655,17 @@ if (hostUrl === undefined) {
     )
     const listed = await call('GET', '/api/dsh-profile/list')
     const names = (json(listed.body)?.profiles ?? []).map((profile) => profile.name)
-    record('B6 profile：GET /list 能看到新建的 profile 与宿主自用的 wintest', names.includes('winprobe') && names.includes('wintest'), `profiles=${JSON.stringify(names)}`)
+    /*
+     * 这里曾额外断言 `names.includes('wintest')`——假定宿主跑在名为 wintest 的 profile 上。
+     * 那是**这台机器当时的启动方式**，不是插件的契约：换任何别的 profile 名（compat / web…）
+     * 都会假红。要断言的是「新建的 profile 出现在列表里，且列表不是只回了它一个」
+     * （宿主自己的 profile 也在），与宿主叫什么无关。
+     */
+    record(
+      'B6 profile：GET /list 能看到新建的 profile（以及宿主自用的那个）',
+      names.includes('winprobe') && names.length >= 2,
+      `profiles=${JSON.stringify(names)}`,
+    )
     const duplicated = await call('POST', '/api/dsh-profile/duplicate', { name: 'winprobe2', from: 'winprobe' })
     const dupOk = duplicated.status === 200 && existsSync(join(profilesRoot, 'winprobe2', 'package.json'))
     record('B6 profile：POST /duplicate 复制 profile 并装好依赖', dupOk, `status=${duplicated.status} body=${JSON.stringify(duplicated.body.slice(0, 200))}`)
@@ -732,8 +760,13 @@ if (hostUrl === undefined) {
     }
     const afterSave = await call('GET', '/api/dsh-mcp/servers')
     record('B7 mcp：保存后 GET /servers 能读到 winprobe', (json(afterSave.body)?.servers ?? []).some((row) => row.config?.serverName === 'winprobe'), `servers=${JSON.stringify((json(afterSave.body)?.servers ?? []).map((row) => row.config?.serverName))}`)
-    const cleared = await call('POST', '/api/dsh-mcp/servers/save', { servers: [] })
-    record('B7 mcp：清空服务器列表成功（托管区块可复位）', cleared.status === 200, `status=${cleared.status}`)
+    /*
+     * 清空要显式确认：插件对「把最后一条也删掉」要求 clearAll: true（防误清空），
+     * 卡片删最后一条时会自动带上；裸 { servers: [] } 会被 400 挡下——这不是缺陷，
+     * 是 0.2.x 之后加的护栏，脚本原先不知道。
+     */
+    const cleared = await call('POST', '/api/dsh-mcp/servers/save', { servers: [], clearAll: true })
+    record('B7 mcp：清空服务器列表成功（托管区块可复位）', cleared.status === 200, `status=${cleared.status} body=${JSON.stringify(cleared.body.slice(0, 160))}`)
   }
 
   /* ---- B8. tty：shell 候选、本机文件、SSH 探针、真 PTY ---- */
@@ -863,7 +896,7 @@ if (hostUrl === undefined) {
     record(
       'B9 docker：没有 docker 的机器上 /containers 给出结构化错误而不是 5xx',
       containers !== undefined && containers.ok !== undefined,
-      `body=${JSON.stringify(JSON.stringify(containers).slice(0, 220))}`,
+      `body=${JSON.stringify(brief(containers, 220))}`,
     )
     const config = json((await call('GET', '/api/dsh-docker/config')).body)
     record(
@@ -896,16 +929,31 @@ if (hostUrl === undefined) {
       setBin.status === 200 && json(setBin.body)?.config?.dockerBin === absBin,
       `status=${setBin.status} dockerBin=${JSON.stringify(json(setBin.body)?.config?.dockerBin)} 期望=${JSON.stringify(absBin)} body=${JSON.stringify(setBin.body.slice(0, 160))}`,
     )
-    const persisted = (() => {
-      const settingsFile = dshHome === undefined ? undefined : join(dshHome, 'settings.yaml')
-      if (settingsFile === undefined || !existsSync(settingsFile)) return undefined
-      const text = readFileSync(settingsFile, 'utf8')
-      return { dockerBin: text.includes(absBin), logTailDefault: text.includes('321') }
-    })()
+    /*
+     * 落盘位置：**当前 profile 的插件 entry 配置**，即 `<dsh-home>/profiles/<name>/cordis.patch.yml`。
+     * 0.1.7 起 settings 不再写 `<dsh-home>/settings.yaml`（那个文件已不存在），
+     * 而脚本原先钉的就是它——于是这两条断言在**任何** profile 名 / 任何 dsh ≥0.1.7 上恒红，
+     * 同时上面那条 API 往返却是绿的。宿主跑在哪个 profile 由启动方式决定，脚本不知道，
+     * 所以扫全部 profile 的 patch 文件：命中任意一个即视为已落盘。
+     */
+    const profilePatchText = () => {
+      if (dshHome === undefined) return ''
+      const profilesRoot = join(dshHome, 'profiles')
+      if (!existsSync(profilesRoot)) return ''
+      return readdirSync(profilesRoot)
+        .map((name) => join(profilesRoot, name, 'cordis.patch.yml'))
+        .filter((file) => existsSync(file))
+        .map((file) => readFileSync(file, 'utf8'))
+        .join('\n')
+    }
+    const persistedText = profilePatchText()
+    const persisted = persistedText === ''
+      ? undefined
+      : { dockerBin: persistedText.includes(absBin), logTailDefault: persistedText.includes('321') }
     record(
-      'B9 docker：settings.yaml 落下的就是合法值（非法值写盘 → 下次开机整段配置退回默认）',
+      'B9 docker：配置落下的就是合法值（非法值写盘 → 下次开机整段配置退回默认）',
       persisted !== undefined && persisted.dockerBin === true && persisted.logTailDefault === true,
-      `settings.yaml 含 dockerBin=${String(persisted?.dockerBin)} 含 logTailDefault=${String(persisted?.logTailDefault)}`,
+      `profile patch 含 dockerBin=${String(persisted?.dockerBin)} 含 logTailDefault=${String(persisted?.logTailDefault)}`,
     )
     // 非法值必须在**落盘之前**被拦下，且要带原因（原实现是无正文 400 + 照样写进文件）
     const rejected = await call('POST', '/api/dsh-docker/config', { dockerBin: 'C:\\bad;rm -rf\\.exe' })
@@ -915,12 +963,8 @@ if (hostUrl === undefined) {
       rejected.status === 400 && rejectReason !== '',
       `status=${rejected.status} error=${JSON.stringify(rejectReason.slice(0, 160))}`,
     )
-    const afterReject = (() => {
-      const settingsFile = dshHome === undefined ? undefined : join(dshHome, 'settings.yaml')
-      if (settingsFile === undefined || !existsSync(settingsFile)) return undefined
-      return readFileSync(settingsFile, 'utf8').includes('rm -rf')
-    })()
-    record('B9 docker：被拒的值没有留在 settings.yaml 里', afterReject === false, `settings.yaml 含被拒值=${String(afterReject)}`)
+    const afterReject = profilePatchText().includes('rm -rf')
+    record('B9 docker：被拒的值没有留在 profile 配置里', afterReject === false, `profile patch 含被拒值=${String(afterReject)}`)
     const targetsAfter = json((await call('GET', '/api/dsh-docker/targets')).body)
     record(
       'B9 docker：GET /targets 能看到刚加的本机目标',
@@ -1078,7 +1122,7 @@ if (hostUrl === undefined) {
   record(
     'B12 codegraph GET /node?name=：拿到符号详情',
     node.status === 200 && body?.node !== undefined,
-    `status=${node.status} name=${String(body?.name)} node=${JSON.stringify(body?.node).slice(0, 160)}`,
+    `status=${node.status} name=${String(body?.name)} node=${brief(body?.node, 160)}`,
   )
   const missing = await call('GET', `/api/dsh-codegraph/node${q({ path: PROJECT })}`)
   record('B12 codegraph /node：缺 name 时 400 并点名参数', missing.status === 400 && String(json(missing.body)?.error ?? '').includes('name'), `status=${missing.status} body=${JSON.stringify(missing.body.slice(0, 120))}`)
@@ -1100,6 +1144,14 @@ if (hostUrl === undefined) {
     `targets=${JSON.stringify(json(restored.body)?.config?.targets)}`,
   )
   const off = await call('POST', '/api/dsh-docker/config', { allowMutations: false, allowExec: false })
+  /*
+   * 变更端点有两道门禁，顺序是**先同源再开关**：`src/index.ts` 里
+   * `MUTATION_SUBROUTES.has(sub) && !hasSameOriginProof(req)` 在 switch **之前**，
+   * 而 allowMutations 检查在 switch 里面。所以不带同源证明的请求根本走不到「未启用」
+   * ——这也正是这个脚本原先红的原因：它用下面那个裸 call() 打，拿到的永远是
+   * 「缺少同源证明」。要测开关，就得先过同源这一关（浏览器 fetch 天然会带）。
+   */
+  const sameOrigin = { origin: `http://${target.hostname}:${String(port)}` }
   const gateCases = [
     ['/action', { target: 'u1', id: 'dsh-probe-run', action: 'stop' }],
     ['/images/remove', { target: 'u1', ref: 'nginx:latest' }],
@@ -1112,18 +1164,25 @@ if (hostUrl === undefined) {
   ]
   const notGated = []
   for (const [sub, payload] of gateCases) {
-    const response = await call('POST', `/api/dsh-docker${sub}`, payload)
+    const response = await call('POST', `/api/dsh-docker${sub}`, payload, { headers: sameOrigin })
     if (response.status !== 403) notGated.push(`${sub} → ${response.status}`)
-    else if (!String(response.body).includes('未启用')) notGated.push(`${sub} → 403 但文案不含「未启用」`)
+    else if (!String(response.body).includes('未启用')) notGated.push(`${sub} → 403 但文案不含「未启用」：${String(response.body).slice(0, 80)}`)
   }
   record(
     'B13 门禁：关掉 allowMutations / allowExec 后，8 条变更路由全部 403 且点名开关',
     off.status === 200 && notGated.length === 0,
     notGated.length === 0 ? '8/8 403' : notGated.join('；'),
   )
+  // 反向：**同样**的请求去掉同源证明后必须被同源门禁拦下（两道门禁都得真的成立）
+  const noProof = await call('POST', '/api/dsh-docker/action', { target: 'u1', id: 'x', action: 'stop' })
+  record(
+    'B13 门禁：不带同源证明的变更请求仍被拦（同源门禁在开关之前）',
+    noProof.status === 403 && String(noProof.body).includes('同源'),
+    `status=${noProof.status} body=${String(noProof.body).slice(0, 120)}`,
+  )
   // 只读路由不受影响
-  const stillRead = await call('POST', '/api/dsh-docker/containers', { target: 'u1' })
-  record('B13 门禁：只读路由在门禁关闭时照常可用（不是一刀切）', stillRead.status === 200, `status=${stillRead.status}`)
+  const stillRead = await call('POST', '/api/dsh-docker/containers', { target: 'u1' }, { headers: sameOrigin })
+  record('B13 门禁：只读路由在门禁关闭时照常可用（不是一刀切）', stillRead.status === 200, `status=${stillRead.status} body=${String(stillRead.body).slice(0, 120)}`)
   await call('POST', '/api/dsh-docker/config', { allowMutations: true, allowExec: true })
 }
 
@@ -1205,7 +1264,8 @@ if (codegraphCli === undefined) {
     external.includes('codegraph') || external.includes('mcp-codegraph'),
     `conflicts=${external.slice(0, 240)}`,
   )
-  await call('POST', '/api/dsh-mcp/servers/save', { servers: [] })
+  // 复位同样要 clearAll: true（理由见 B7 那段）
+  await call('POST', '/api/dsh-mcp/servers/save', { servers: [], clearAll: true })
 }
 
 /* ================================================================== *
@@ -1226,17 +1286,17 @@ if (codegraphCli === undefined) {
   record(
     'B16 search：prompts 通道真实命中（用刚建的 prompt 当语料）',
     promptHit.status === 200 && promptHit.prompts.length > 0,
-    `命中 ${promptHit.prompts.length} 条：${JSON.stringify(promptHit.prompts).slice(0, 200)}`,
+    `命中 ${promptHit.prompts.length} 条：${brief(promptHit.prompts)}`,
   )
   // tools 通道查的是 **MCP 工具**（ctx.tools.schemas()），不是内置 agent 工具
   const toolHit = await hit('codegraph')
   record(
     'B16 search：tools 通道真实命中（查的是 MCP 工具；命中 mcp__codegraph__codegraph_explore 也正是 E6 的独立佐证）',
     toolHit.status === 200 && toolHit.tools.length > 0,
-    `命中 ${toolHit.tools.length} 条：${JSON.stringify(toolHit.tools).slice(0, 240)}`,
+    `命中 ${toolHit.tools.length} 条：${brief(toolHit.tools, 240)}`,
   )
   const panelHit = await hit('Codegraph')
-  record('B16 search：panels 通道真实命中', panelHit.status === 200 && panelHit.panels.length > 0, `命中 ${panelHit.panels.length} 条：${JSON.stringify(panelHit.panels).slice(0, 200)}`)
+  record('B16 search：panels 通道真实命中', panelHit.status === 200 && panelHit.panels.length > 0, `命中 ${panelHit.panels.length} 条：${brief(panelHit.panels)}`)
   // 缺陷：search 的 PANEL_DIRECTORY 里 6 个插件都有 registryName 门禁，唯独漏了 docker
   const dockerPanelHit = await hit('Docker')
   if (dockerPanelHit.panels.length === 0) {

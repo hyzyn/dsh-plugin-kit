@@ -297,6 +297,49 @@ const MUTATION_SUBROUTES = new Set([
   '/exec',
 ])
 
+/** 「这条错误来自目标侧」的标记（见 guardTargetFailures）。 */
+const TARGET_FAILURE = Symbol('dsh-docker.target-failure')
+
+/**
+ * 给 `DockerApi` 包一层：**只有**从目标 API 抛出的错误才打上 `TARGET_FAILURE` 标记。
+ *
+ * 为什么需要这个标记：单目标数据路由原来是「api 抛什么，外层 catch 就统一回 500」。
+ * 而 SSH 连不上 / 私钥读不到 / docker 不在 PATH 这些都是**运维状况**，不是插件 bug——
+ * 多目标聚合路径对同一件事早就回 200 + `ok:false`（`aggregateAcrossTargets` 把 `run()`
+ * 的抛错收成每个目标一条 `ok:false`）。于是同一句 `EPERM: open '…id_ed25519'` 在
+ * `target='*'` 下是「可读原因」、在单目标下是「不透明 500」：面板点一个连不上的目标就长这样。
+ *
+ * 为什么不逐个调用点包 try/catch：那要改 20 处，而且**必然漏几个**——本仓「修到一半」
+ * 的老毛病（D80–D125 那批 29 条）。包一次就没有漏网之鱼。
+ *
+ * 为什么不是「把外层 catch 全改成 200 + ok:false」：那会把我们自己的 bug（比如某天
+ * 解析写错抛的 TypeError）也伪装成「目标不可达」，正是本仓最忌讳的**静默错误结果**。
+ * 打标记之后，没标记的错误仍旧 500。
+ */
+function guardTargetFailures<T extends object>(api: T): T {
+  return new Proxy(api, {
+    get(target, prop, receiver) {
+      const value: unknown = Reflect.get(target, prop, receiver)
+      if (typeof value !== 'function') return value
+      return async (...args: unknown[]): Promise<unknown> => {
+        try {
+          return await (value as (...rest: unknown[]) => Promise<unknown>).apply(target, args)
+        } catch (error) {
+          if (error !== null && typeof error === 'object') {
+            Object.defineProperty(error, TARGET_FAILURE, { value: true, configurable: true })
+          }
+          throw error
+        }
+      }
+    },
+  })
+}
+
+/** 这条错误是不是从目标 API 抛出来的（见 guardTargetFailures）。 */
+function isTargetFailure(error: unknown): boolean {
+  return error !== null && typeof error === 'object' && (error as Record<symbol, unknown>)[TARGET_FAILURE] === true
+}
+
 const DOCKER_GUIDANCE =
   '本机已安装 dsh-docker 插件（Docker 容器面板）：Web GUI 侧边栏「容器」入口可查看各目标（本机 / SSH 主机）上的容器列表（含 Compose 项目视图、事件「活动」条）、状态、端口、日志（含实时跟随）与资源占用（含实时跟随 + 迷你趋势图），以及镜像列表与镜像详情（层 / 大小 / 构建历史、拉取进度流）、网络与卷（列表 + 详情；删除 / 清理同样在开关之后）；目标在 插件配置 → Docker 容器面板 里维护（SSH 目标可直接引用 tty 终端面板的连接簿条目）。**默认只读**：启动/停止/重启/删除容器、删除镜像 / 清理 dangling / 拉取镜像、docker exec，都需要用户在设置里显式打开「允许变更操作」「允许 exec」后才有对应工具与按钮。agent 侧配套只读工具 docker_targets（列目标）、docker_ps（列容器，含 compose 项目与服务；**target 传 `*` 可一次列出所有目标**；端口已按 IPv4/IPv6 双栈归并，`ports` 为空时看 `net`——host 网络容器的端口即宿主机端口）、docker_attention（**需关注汇总**：unhealthy / 反复重启 / OOM / 非零退出 / 僵死，同样支持 `*` 跨目标）、docker_inspect（容器详情）、docker_logs（日志快照）、docker_stats（CPU/内存/IO 快照）、docker_images（镜像列表）、docker_image_inspect（镜像详情 + 构建历史）、docker_events（容器事件快照，见面板容器列表的「活动」条）、docker_networks（网络列表）、docker_volumes（卷列表）；排障推荐顺序：不确定从哪台/哪个容器看起时先 docker_attention（可 `*` 跨目标）→ docker_ps → docker_logs → docker_inspect → docker_stats → docker_events，镜像排查用 docker_images → docker_image_inspect。docker_action（容器生命周期）、docker_image_remove（删镜像）、docker_image_prune（清理 dangling）、docker_image_pull（拉取镜像）、docker_exec 仅在用户打开对应开关后可用，执行前须确认目标，破坏性操作（容器 remove / 镜像删除与清理）要向用户复述后果。网络 / 卷的删除与 prune 目前只提供面板按钮（HTTP 端点），没有对应的 agent 工具——不要在 agent 侧绕过面板做这些变更。docker socket 等价于目标主机的 root 权限，不要在用户未明确要求时执行变更操作。'
 
@@ -3043,7 +3086,8 @@ const plugin = definePlugin<Config>({
               writeJson(res, 400, { error: built.error ?? '无法构造执行通道' })
               return
             }
-            const api = built.api
+            // 目标级抛错打标记，由外层 catch 分流成 200 + ok:false（见 guardTargetFailures）
+            const api = guardTargetFailures(built.api)
 
             // 引用白名单在路由层先跑一次（D37）：非法引用是**客户端**错误，直接 400
             // 带原因——落到 DockerApi 里才抛的话会被外层 catch 统一写成 500。
@@ -3248,7 +3292,18 @@ const plugin = definePlugin<Config>({
                 }
               }
             } catch (error) {
-              writeJson(res, 500, { error: error instanceof Error ? error.message : String(error) })
+              const message = error instanceof Error ? error.message : String(error)
+              /*
+               * 目标级失败（SSH 不可达 / 密钥读不到 / docker 不在）不是服务端 bug：
+               * 按多目标聚合的同一口径回 200 + ok:false，客户端两条路都取 payload.error
+               * （client-src 的 request()：!response.ok 与 ok === false 都抛 error），
+               * 面板显示的文案不变，但语义对了——500 该留给真正的服务端故障。
+               */
+              if (isTargetFailure(error)) {
+                writeJson(res, 200, { ok: false, target: picked.name, error: message })
+                return
+              }
+              writeJson(res, 500, { error: message })
             }
           },
         })

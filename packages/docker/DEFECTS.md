@@ -21,7 +21,7 @@
 
 ## 现状
 
-**已修 137 / 待修 0**（P1×7、P2×43、P3×87；第一轮 79 + 第二轮 46 + 用户实测 8 + 用户建议 2 + 现场复核 1 + 代码复核 1 —— 按索引表逐行重数，此前写的 132 少了 2）。
+**已修 138 / 待修 0**（P1×7、P2×43、P3×88；第一轮 79 + 第二轮 46 + 用户实测 9 + 用户建议 2 + 现场复核 1 + 代码复核 1 —— 按索引表逐行重数，此前写的 132 少了 2）。
 
 第一轮集中在三类：**长连接与长命令的生命周期**（空闲回收、并发首连、陈旧 close 事件、SSE 背压）、
 **静默的错误结果**（把截断当完整、把超时当成功、把「取不到权威数据」当「没有异常」）、
@@ -178,6 +178,25 @@
 | D135 | P2 | 日志级别过滤对 `%5p` **右填充**的级别（`[INFO ]` / `[WARN ]`）完全失效：选到 `WARN+` 乃至 `ERROR+` 仍显示一屏 INFO，且这些行**没有分级着色** | client-src/index.js | 2026-09-25 用户实测上报 |
 | D136 | P3 | `LINES` 选 N 行、右侧计数显示 **N+1**：快照切分用 `text.split('\n')`，而 docker logs 每行都以 `\n` 结尾（终止符），于是多切出一条空行——计数多 1、末尾多一条不可见空行、导出也多一行；同一份日志在快照视图与 FOLLOW 视图下行数不同 | client-src/index.js、client-src/log-buffer.js | 2026-09-25 用户实测上报 |
 | D137 | P3 | 日志导出的两个格式（`.log` / `.md`）各占一个 chip，窄面板下 `.dk_filterBar` 一换行 `.md` 就被甩到第二行、把行数计数也带下去，工具条长成两行 | client-src/index.js、client-src/docker.css | 2026-09-25 用户建议 |
+| D138 | P3 | 单目标数据路由的目标侧失败（SSH 不可达 / 私钥读不到 / docker 不在）被统一写成 **500**，而 `target:'*'` 对同一件事回 200 + `groups[].ok:false`——同一句错误两种形状，「目标不可达」被当成服务端故障 | src/index.ts | 2026-09-25 Windows 真机实测 |
+### D138：单目标数据路由的目标侧失败被写成 500（2026-09-25 Windows 真机实测）
+
+- **症状**：Windows 真机验证里，`POST /containers { target: 'u1' }`（u1 的私钥读不到）回
+  **500** `{"error":"EPERM: …id_ed25519"}`；而同一句错误在 `{ target: '*' }` 下是
+  **200** `{"groups":[{"target":"u1","ok":false,"error":"同一句 EPERM"}]}`。同一件事两种形状。
+- **根因**：`target='*'` 走 `aggregateAcrossTargets`——它把每个目标的 `run()` 抛错收成
+  `ok:false`，路由再统一回 200；单目标路径则是「api 抛什么，外层 catch 就统一 500」。
+  于是「SSH 连不上 / 私钥读不到 / docker 不在 PATH」这类**运维状况**被记成服务端故障。
+- **修法**：给 `DockerApi` 包一层 `guardTargetFailures`——**只有从 `api.*` 抛出的错误**才打
+  `TARGET_FAILURE` 标记，外层 catch 据此分流：带标记 → 200 + `ok:false`（与聚合同口径），
+  没标记 → 仍旧 500。刻意**不是**「把外层 catch 全改成 200」：那会让我们自己的 bug
+  （比如哪天解析写错抛的 TypeError）伪装成「目标不可达」，正是本仓最忌讳的静默错误结果。
+  也没有逐个调用点包 try/catch（20 处，必然漏几个——D80–D125 那批 29 条就是这么来的）。
+  客户端不用改：`request()` 对 `!response.ok` 与 `ok === false` 都抛 `payload.error`。
+- **回归**：`route-smoke` 新增 1 例「单目标连不上：回 200 + ok:false——与 target=* 同一口径」
+  （用夹具里 127.0.0.1:1 的「直连」目标）。**反向验证有效**：把分流判断改成恒假后该例立刻红，
+  报的正是那句 500 形状。Windows 真机复验：阶段 B **117 PASS / 0 FAIL**（修前 110/6）。
+
 ### D137：导出的两个格式各占一个按钮，窄面板下工具条被挤成两行（2026-09-25 用户建议）
 
 - **症状**（用户截图）：docked / tab 承载下面板只有 ~1180px 宽，`.dk_filterBar` 一换行，
@@ -414,7 +433,7 @@
 - **单测与静态检查**：`npx vitest run packages/docker`（**8 套 157 例**）、`npx tsc --noEmit`、
   `node scripts/client-lint.mjs`（忽略 7 条已知噪音 TS2307×4 + TS2339×3）。
 - **旗舰脚本**（都需先 `pnpm --filter @hyzyn/dsh-docker build`，它们读 `lib/`）：
-  `node scripts/smoke.mjs`（44/44）、`node scripts/route-smoke.mjs`（60/60，hermetic，实测 0.7s）、
+  `node scripts/smoke.mjs`（44/44）、`node scripts/route-smoke.mjs`（61/61，hermetic，实测 0.7s）、
   `node scripts/client-smoke.mjs`（72/72，实测 0.6s）。三套都在 CI（ubuntu-only step）与发布闸里跑，
   并带看门狗（单例 25s / 全局 90s；末尾 `process.exit` 保证退出）。
 - **产物与源码一致**：`pnpm -r build` 后 `git diff --exit-code -- 'packages/*/client.js' 'packages/*/lib'`

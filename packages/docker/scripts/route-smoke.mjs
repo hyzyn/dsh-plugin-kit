@@ -711,6 +711,27 @@ await test('POST /inspect：容器名注入尝试被白名单拒绝（D37 起回
   assert.match(res.body.error, /container 含非法字符/)
 })
 
+await test('单目标连不上：回 200 + ok:false（不是不透明 500）——与 target=* 同一口径', async () => {
+  /*
+   * Windows 真机实测挖出来的不对称：同一句目标侧错误，`target:'*'` 走聚合路径回
+   * 200 + groups[].ok:false，单目标却一路冒到外层 catch 变成 500。
+   * 「直连」是 127.0.0.1:1 —— 连不上是**运维状况**，不是服务端 bug。
+   */
+  const one = await call('POST', '/containers', { target: '直连', all: true })
+  assert.equal(one.status, 200, '单目标失败不该是 5xx：' + JSON.stringify(one.body))
+  assert.equal(one.body.ok, false)
+  assert.equal(one.body.target, '直连')
+  assert.equal(typeof one.body.error, 'string')
+  assert.ok(one.body.error.length > 0, '必须带可读原因')
+  // 与聚合口径对照：同一次失败在 target='*' 下也是 ok:false
+  const all = await call('POST', '/containers', { target: '*', all: true })
+  assert.equal(all.status, 200)
+  const group = (all.body.groups ?? []).find((row) => row.target === '直连')
+  assert.equal(group?.ok, false, '聚合路径里这条目标也该是 ok:false')
+  // 载荷形状不能串：单目标失败时不该顺手给出一个空的 containers 列表
+  assert.equal(one.body.containers, undefined)
+})
+
 await test('非 loopback 请求 403', async () => {
   const res = await call('GET', '/config', undefined, '10.0.0.9')
   assert.equal(res.status, 403)
