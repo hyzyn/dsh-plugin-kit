@@ -1,21 +1,3 @@
-/**
- * @hyzyn/dsh-kit — 宿主半体 HTTP 路由的共用辅助。
- *
- * 每个插件的 HTTP 路由都重复了同一套围栏与响应样板（全仓 9 份 loopback 校验、
- * 9 份 writeJson、7 份 readJsonBody），差异只在 body 上限等常量。收敛到 kit 后
- * 安全围栏只有一份，修一处即全生态生效，新插件默认站在正确的一侧。
- *
- * 信任模型（loopback-only + 同源）：DSH Web GUI 的宿主半体监听本机回环，浏览器
- * 页面与插件路由同源。isLoopbackRequest 同时要求「TCP 来源是回环地址」「Host 头
- * 指向本机」「sec-fetch-site 不是 cross-site」「Origin（若有）与 Host 同源」——
- * 防的是本机其它进程 / 恶意网页借浏览器（DNS rebinding、跨站请求）打本机端口。
- * 任何一条不满足都拒绝；插件路由里拿它当第一道闸，403 走 writeJson 输出。
- *
- * 类型刻意用结构化的 ReqLike / ResLike（不 import node:http 类型）：
- *   - 宿主注入的 req/res 只需满足这些形状，不绑死 Node 版本；
- *   - 测试可以传极简假对象，不需要起真实 HTTP 服务；
- *   - client 半体 / 未来其它宿主实现也能直接复用同一函数。
- */
 /** 宿主路由请求的最小形状（node:http 的 IncomingMessage 结构上兼容）。 */
 export interface ReqLike {
     method?: string;
@@ -45,6 +27,56 @@ export declare const MAX_JSON_BODY_BYTES: number;
  *      完全一致（同源，含端口——不同端口的本机页面也不算同源）。
  */
 export declare function isLoopbackRequest(request: ReqLike): boolean;
+/**
+ * 环回地址判定（docker D31）：接受 127/8 **全段**（BSD/Linux 惯例——整个
+ * 127.0.0.0/8 都是环回，此前各包只认 `127.0.0.1` 一个字面量）与 IPv6 等价形式
+ * （`::1`、`::ffff:` 映射）。
+ *
+ * 与上面的 `LOOPBACK_ADDRESSES` 刻意分开：那个是 9 个插件在用的同步档的既有口径，
+ * 改它会同时改掉它们的放行面（属项目级 ROADMAP 第 5 项那类「全仓信任模型」的活）。
+ */
+export declare function isLoopbackAddress(address: string | undefined): boolean;
+/**
+ * loopback 信任围栏（加固档，docker D31/D80/D110）：字面量环回（绝大多数请求）**同步**
+ * 判定——保持「请求进来即建流」的原有时序（SSE 测试与 EventSource 都依赖第一拍就写头）；
+ * 只有主机名 / `/etc/hosts` 别名才走异步 DNS 确认，所以返回 `boolean | Promise<boolean>`，
+ * **调用方必须处理 Promise 那一支**（`await` 或按 docker 的写法分流）。
+ *
+ * **来源检查必须在解析 Host 之前**（docker D80）：别名主机名（`127.0.0.1.nip.io`、
+ * `/etc/hosts` 里的别名）走的是异步分支，若在那里提前 return，`Sec-Fetch-Site` 与 Origin
+ * 两段检查会被整段跳过——围栏等于没设，跨站页面就能写 `/config`（它不要求同源证明）。
+ */
+export declare function isLoopbackRequestStrict(request: ReqLike): boolean | Promise<boolean>;
+/**
+ * 「同源证明」（docker D32/D139）：变更类与长流端点要求请求带 Origin（浏览器 fetch 对
+ * cross-site 一定带）或 `Sec-Fetch-Site: same-origin` 之一。恶意页面可以用
+ * `<img src="GET /images/pull/stream?...">` 触发副作用 / 拉起子进程，而旧 Safari / 部分
+ * WebView 既不发 Origin 也不发 Sec-Fetch-Site——这两类端点对「无来源证明」的请求拒绝；
+ * 只读端点维持 loopback-only 的原信任模型。
+ *
+ * **桌面版例外（docker D139）**：桌面壳把页面发往 `dsh-app://app/api/…` 的请求转给真实
+ * 宿主时**会删掉 `origin` 与 `sec-fetch-site`**（`app.asar/lib/main.js` 的
+ * `forwardWebRequest`，只重写 `host` / `cookie`），于是要求证明的端点在桌面版全部 403
+ * ——症状是长流无限「连接中断，正在自动重连…」，而同一面板的只读路由照常可用（它们不
+ * 要求证明）。
+ *
+ * 桌面壳在这条转发链上**必带宿主会话 Cookie**：`hostCookie` 由 `authenticateWebHost()`
+ * 拿 `set-cookie` 换来，取不到时 `forwardWebRequest` 整体 503、根本走不到这里。而浏览器
+ * 页面**伪造不了 Cookie 头**——跨站请求带不带它由 SameSite 决定，且现代浏览器一定同时带
+ * `sec-fetch-site: cross-site`（已被上一条 loopback 围栏拒掉）。
+ *
+ * 所以把「两条证明都缺省」收窄成「都缺省 **且** 带宿主 Cookie」：桌面版放行、旧 Safari /
+ * 裸 curl 仍然拒。这不是 D32 的松动——本函数从来没挡住本机进程（它们随时可以自带
+ * `Origin: http://127.0.0.1:<port>` 过闸），防的一直是**浏览器**，而 Cookie 恰恰是浏览器
+ * 侧最不可伪造的那一件。
+ */
+export declare function hasSameOriginProof(request: ReqLike): boolean;
+/**
+ * 403 的成因摘要（docker D139）：那次桌面版长流全断，宿主侧**一条日志都没有**，只能靠读
+ * 客户端源码 + 拆 `app.asar` 反推。以后同类问题第一眼就能定位：只报这三个头「有没有」，
+ * **绝不落 Cookie 的值**（它是宿主会话凭据）。
+ */
+export declare function originProofHint(request: ReqLike): string;
 /**
  * JSON 响应基线：content-type / referrer-policy 是各包公共基线，cache-control
  * no-store 与 x-content-type-options nosniff 取自 env 的收紧版本（含配置与密钥

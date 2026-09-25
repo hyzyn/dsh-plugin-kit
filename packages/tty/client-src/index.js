@@ -6266,8 +6266,26 @@ function TtySettingsCard(props) {
         added += 1
       }
       setForm((current) => ({ ...(current || {}), sshHosts: merged }))
-      if (added === 0) setMessage({ kind: 'ok', text: skipped > 0 ? `没有新条目（${skipped} 条同名跳过）` : '~/.ssh/config 里没有可导入的具体主机' })
-      else setMessage({ kind: 'ok', text: `已导入 ${added} 条（同名跳过 ${skipped} 条），随「保存」写入配置` })
+      /*
+       * 丢弃要有信号（项目级 ROADMAP 第 2 项）：依赖跳板机（ProxyJump / ProxyCommand）
+       * 的块**不导入**——本版本不支持跳板机，导进来只会得到一条连不上、且只报通用超时的
+       * 条目。这里把它说清楚，用户才知道「我的生产机为什么没出现」。
+       */
+      const proxyNames = Array.isArray(data.proxy) ? data.proxy.filter((name) => typeof name === 'string') : []
+      const proxyCount = Number.isInteger(data.proxyCount) ? data.proxyCount : proxyNames.length
+      const others = Number.isInteger(data.skippedOther) ? data.skippedOther : 0
+      const overflow = Number.isInteger(data.droppedOverflow) ? data.droppedOverflow : 0
+      const extras = []
+      if (proxyCount > 0) extras.push(`${proxyCount} 条依赖跳板机（ProxyJump / ProxyCommand）未导入：${proxyNames.slice(0, 5).join('、')}${proxyCount > 5 ? ' 等' : ''}`)
+      if (others > 0) extras.push(`${others} 条不是具体主机（通配 / 无 User）`)
+      if (overflow > 0) extras.push(`超过导入上限的 ${overflow} 条未导入`)
+      const tail = extras.length > 0 ? `；${extras.join('；')}` : ''
+      if (added === 0) {
+        const base = skipped > 0 ? `没有新条目（${skipped} 条同名跳过）` : '~/.ssh/config 里没有可导入的具体主机'
+        setMessage({ kind: extras.length > 0 ? 'error' : 'ok', text: base + tail })
+      } else {
+        setMessage({ kind: extras.length > 0 ? 'error' : 'ok', text: `已导入 ${added} 条（同名跳过 ${skipped} 条），随「保存」写入配置${tail}` })
+      }
     } catch (error) {
       setMessage({ kind: 'error', text: String(error && error.message ? error.message : error) })
     }

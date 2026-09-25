@@ -460,7 +460,12 @@ and the agent tools all reuse the same scheduling.
   `agentForward` and show `· fwd` in the list;
 - **`~/.ssh/config` import (0.4.0)**: “Import from ~/.ssh/config” in the connection-book area of the settings
   card — parses `HostName/User/Port/IdentityFile` into candidate entries (skipping wildcard blocks and
-  entries without a User; `Include` is not expanded), skips same names, and writes them on “save”;
+  entries without a User; `Include` is not expanded), skips same names, and writes them on “save”.
+  **Every skip is now reported** (this round): blocks that depend on a jump host (`ProxyJump` /
+  `ProxyCommand`) are **not imported and are named** — this version does not support jump hosts, and
+  importing one would only produce an entry that cannot connect and reports a generic timeout; the
+  over-limit count and the “not a concrete host” count are reported too. `ProxyJump none` /
+  `ProxyCommand none` mean an explicit direct connection and are imported as usual;
 - **Credential-reference picker (0.4.0; decoupled from the env plugin since 0.17)**: next to the password /
   passphrase fields in the SSH dialog there is a filter box plus a height-limited list whose candidates are
   **the reference names the credential store already knows** (the host reads the `refs:` keys of
@@ -991,7 +996,13 @@ Host half (src/index.ts)
   │  /api/dsh-tty/credential-refs (reference names known to the credential store — names only, see
   │  “Credential storage”), /api/dsh-tty/env-vars (variable names managed by the env plugin), /api/dsh-tty/known-hosts
   │  (TOFU fingerprint prefill, src/known-hosts.ts parses hashed entries too),
-  │  /api/dsh-tty/shells (shell path candidates) — all behind the loopback fence
+  │  /api/dsh-tty/shells (shell path candidates) — all behind the loopback fence (hardened
+  │  tier: the whole 127/8 range + DNS confirmation for alias hostnames + source checks before
+  │  DNS; one implementation only, in @hyzyn/dsh-kit); **state-changing endpoints additionally
+  │  require a same-origin proof** (POST /probe, sftp mkdir/rename/remove/upload, local-fs
+  │  mkdir/rename/remove/transfer); read-only endpoints (including sftp /list and /download)
+  │  need no proof, so bare curl still works. POST /config is deliberately exempt — it is the
+  │  only recovery entry once the plugin is disabled
   ├─ SFTP (src/sftp.ts, 0.7.0): lazy connection pool (reclaimed after 120s idle, reconnected on
   │  demand when dropped, TOFU shared) → POST /api/dsh-tty/sftp/list|mkdir|rename|remove|download|
   │  upload (spec in body/headers, credentials never in the URL; uploads/downloads streamed via pipe) +

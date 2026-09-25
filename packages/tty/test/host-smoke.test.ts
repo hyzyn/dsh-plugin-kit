@@ -74,4 +74,14 @@ describe('classifyError（ssh2 原始错误 → 人话）', () => {
   it('无法识别时原样返回', () => {
     expect(classifyError('some exotic failure')).toBe('some exotic failure')
   })
+  /**
+   * 项目级 ROADMAP 第 2 项的短期一半：超时文案要点出跳板机这个成因。
+   * 企业内网主机几乎都要过 bastion，而「20s 后一句通用超时」正是原文点名的症状。
+   */
+  it('握手超时 → 文案里点出「跳板机本版本尚不支持」这个成因', () => {
+    const text = classifyError('Timed out while waiting for handshake')
+    expect(text).toContain('超时')
+    expect(text).toContain('跳板机')
+    expect(text).toContain('ROADMAP 第 2 项')
+  })
 })

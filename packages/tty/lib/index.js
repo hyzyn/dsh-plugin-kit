@@ -12,12 +12,12 @@ import WebSocket, { WebSocketServer } from 'ws';
 // found），必须默认导入后取 Terminal；类型用 InstanceType 别名保持同名可用
 import xtermHeadless from '@xterm/headless';
 const HeadlessTerminal = xtermHeadless.Terminal;
-import { definePlugin, dshHome as resolveDshHome, plainConfig, settingsEntryScope, suppressAutoSettingsPage } from '@hyzyn/dsh-kit';
+import { definePlugin, dshHome as resolveDshHome, hasSameOriginProof, isLoopbackRequestStrict, plainConfig, settingsEntryScope, suppressAutoSettingsPage } from '@hyzyn/dsh-kit';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { spawnSsh, sshTarget, expandHome, setCredentialResolver } from './ssh.js';
 import { probeSsh } from './probe.js';
 import { buildCommandSpawn, buildShellSpawn, defaultShellPath } from './shell-integration.js';
-import { parseSshConfig } from './ssh-config.js';
+import { parseSshConfigDetailed } from './ssh-config.js';
 import { parseKnownHostsDetailed } from './known-hosts.js';
 import { TunnelManager } from './tunnels.js';
 import { SftpManager } from './sftp.js';
@@ -788,34 +788,16 @@ class HostKeyStore {
         this.persist(next);
     }
 }
-/** upgrade 路由的 loopback 信任围栏（与 dsh-mcp 的 HTTP 围栏同思路，socket 版）。 */
+/**
+ * upgrade 路由的 loopback 信任围栏（socket 版）：直接用 kit 的加固档（docker D31/D80/D110）。
+ *
+ * 与 HTTP 路由的差别只有一处刻意为之：**不放开 Cookie 例外**。升级请求在浏览器里必带
+ * `Origin`，而加固档「Origin 有就必须与 Host 同源」这条已经等价于同源证明；而长连
+ * （PTY / 隧道帧）一旦建立就一直活着，没必要为桌面壳那种「只带 Cookie」的转发链开口子
+ * ——真要支持，也应该先在桌面壳上验一条真机链路（docker 的 D139 是那样定下来的）。
+ */
 function isLoopbackUpgrade(req) {
-    const address = req.socket.remoteAddress;
-    if (address !== '127.0.0.1' && address !== '::1' && address !== '::ffff:127.0.0.1')
-        return false;
-    const host = req.headers.host;
-    if (typeof host !== 'string')
-        return false;
-    let hostUrl;
-    try {
-        hostUrl = new URL('http://' + host);
-    }
-    catch {
-        return false;
-    }
-    if (hostUrl.hostname !== '127.0.0.1' && hostUrl.hostname !== 'localhost' && hostUrl.hostname !== '[::1]')
-        return false;
-    if (req.headers['sec-fetch-site'] === 'cross-site')
-        return false;
-    const origin = req.headers.origin;
-    if (origin === undefined)
-        return true;
-    try {
-        return new URL(origin).host === hostUrl.host;
-    }
-    catch {
-        return false;
-    }
+    return isLoopbackRequestStrict(req);
 }
 /* ------------------------------------------------------------------ *
  * 虚拟屏（xterm-headless）——构造与异常兜底（D57）
@@ -1361,10 +1343,26 @@ export class TtyServer {
     }
     /** registerUpgrade 的 handler（loopback 围栏 + ws 握手）。 */
     handleUpgrade(req, socket, head) {
-        if (!isLoopbackUpgrade(req)) {
+        const loopback = isLoopbackUpgrade(req);
+        // 字面量环回同步判定（绝大多数请求：握手第一拍就继续，不引入额外时序）；
+        // 只有主机名 / /etc/hosts 别名才等一次 DNS 确认（≤500ms），期间不碰 socket
+        if (loopback instanceof Promise) {
+            void loopback.then((ok) => {
+                if (ok)
+                    this.finishUpgrade(req, socket, head);
+                else
+                    socket.destroy();
+            }).catch(() => { socket.destroy(); });
+            return;
+        }
+        if (!loopback) {
             socket.destroy();
             return;
         }
+        this.finishUpgrade(req, socket, head);
+    }
+    /** 围栏放行之后的实际握手（与上面的异步分支共用）。 */
+    finishUpgrade(req, socket, head) {
         if (!this.wsGateOpen) {
             socket.destroy();
             return;
@@ -2335,8 +2333,7 @@ function readManagedEnvKeys() {
  * 值在任何分支都不进响应——SSH 对话框的选择器只需要「我存过哪些名字」。
  */
 export async function handleCredentialRefsRoute(req, res) {
-    if (!isLoopbackHttp(req)) {
-        writeJson(res, 403, { error: 'forbidden: loopback-only' });
+    if (!(await gateRoute(req, res))) {
         return;
     }
     if (req.method !== 'GET') {
@@ -2452,34 +2449,58 @@ function mergeSshSpec(findSshHost, name, inline) {
         return { error: 'SSH 会话需要 host 与 username（或用 name 引用连接簿）' };
     return { spec };
 }
-/** HTTP 路由的 loopback 信任围栏（与 dsh-mcp 同思路）。 */
-function isLoopbackHttp(req) {
-    const address = req.socket.remoteAddress;
-    if (address !== '127.0.0.1' && address !== '::1' && address !== '::ffff:127.0.0.1')
+/*
+ * 回环围栏与同源证明：**实现已收敛到 `@hyzyn/dsh-kit`**（2026-09-25，项目级 ROADMAP 第 1
+ * 项）。本包此前那份只认 `127.0.0.1` 一个字面量的同步围栏已删除，改走 kit 的加固档
+ * （docker D31/D80/D110），并给变更端点补上同源证明（docker D32/D139）——成因与桌面版
+ * 例外（桌面壳转发会删掉 Origin / Sec-Fetch-Site，但必带宿主 Cookie）的唯一归宿在
+ * `packages/kit/src/http.ts`，这里只留指针。
+ */
+/**
+ * 数据路由的统一闸门（**导出仅供单测**）：回环围栏（加固档）+ 变更端点的同源证明。
+ * 十二处路由此前各抄一遍 403 样板，`mutation` 这条判据一加就会各写各的——收敛成一处后
+ * 「拒绝分支」只有一份，负例也只测这一份。
+ *
+ * 哪些是变更端点（`mutation: true`）——**判据是「这次请求会不会改状态」**：
+ *   - `POST /probe`：真的拨号，且连接簿条目测试会当场 TOFU 记录主机指纹；
+ *   - `POST /sftp/{mkdir,rename,remove,upload}`、`POST /local-fs/{mkdir,rename,remove,transfer}`：
+ *     写远端 / 写本机 / 起传输任务；
+ *   - `POST /config`**刻意不在其列**（与 docker 同口径）：它是插件被禁用后唯一的恢复入口
+ *     ——卡片靠它渲染、也是重新启用的唯一 UI 入口；跨站 POST 已由上面那条围栏的
+ *     `sec-fetch-site: cross-site` 与 Origin 比对拦住。
+ * 只读端点（GET 全家 + `sftp /list` `/download`、`local-fs /list`）维持 loopback-only：
+ * 它们读的是用户自己主动要的东西，读路由加证明只会把旧 Safari / 裸 curl 一起挡在门外。
+ *
+ * **WS upgrade 不走这里**（那是 socket 握手，不是 req/res 路由）：见 `handleUpgrade`
+ * 用的 `isLoopbackRequestStrict`——它自带「Origin 有则必须同源」这条判据，等价于给
+ * 升级请求也上了证明，但**刻意不放开 Cookie 例外**：长连的生命周期比一次 POST 长得多。
+ */
+export async function gateRoute(req, res, options) {
+    if (!(await isLoopbackRequestStrict(req))) {
+        writeJson(res, 403, { error: 'forbidden: loopback-only' });
         return false;
-    const host = req.headers.host;
-    if (typeof host !== 'string')
-        return false;
-    let hostUrl;
-    try {
-        hostUrl = new URL('http://' + host);
     }
-    catch {
+    if (options?.mutation === true && !hasSameOriginProof(req)) {
+        writeJson(res, 403, { error: '缺少同源证明（需要 Origin 或 Sec-Fetch-Site: same-origin）：变更端点拒绝无来源请求' });
         return false;
     }
-    if (hostUrl.hostname !== '127.0.0.1' && hostUrl.hostname !== 'localhost' && hostUrl.hostname !== '[::1]')
-        return false;
-    if (req.headers['sec-fetch-site'] === 'cross-site')
-        return false;
-    const origin = req.headers.origin;
-    if (origin === undefined)
-        return true;
-    try {
-        return new URL(origin).host === hostUrl.host;
-    }
-    catch {
-        return false;
-    }
+    return true;
+}
+/** 变更动作的子路由（见 gateRoute 的判据）：前缀路由先取 sub、再连 mutation 一起过闸。 */
+const MUTATION_SUBROUTES = {
+    '/api/dsh-tty/sftp': new Set(['/mkdir', '/rename', '/remove', '/upload']),
+    '/api/dsh-tty/local-fs': new Set(['/mkdir', '/rename', '/remove', '/transfer']),
+};
+/**
+ * 这个前缀路由的子路径是否**会改状态**（导出仅供单测）。
+ *
+ * 为什么单独抽出来：`/list` 与 `/download` 也是 POST（凭证走 body、不进 URL），但它们只是
+ * 读——如果把「POST 就要求证明」一刀切下去，读路由会连带把旧 Safari / 裸 curl 挡在门外，
+ * 而它们本来就没有可被跨站利用的副作用。判据是**动作**不是**方法**，所以名单必须显式。
+ * 没见过的子路径一律 false（几步之后就是 404，不给它额外的信息量）。
+ */
+export function isMutationSubroute(prefix, sub) {
+    return MUTATION_SUBROUTES[prefix]?.has(sub) === true;
 }
 function writeJson(res, status, body) {
     res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'referrer-policy': 'no-referrer' });
@@ -2873,8 +2894,7 @@ const plugin = definePlugin({
                     kind: 'exact',
                     path: '/api/dsh-tty/config',
                     handler: async (req, res) => {
-                        if (!isLoopbackHttp(req)) {
-                            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+                        if (!(await gateRoute(req, res))) {
                             return;
                         }
                         if (req.method === 'GET') {
@@ -2913,13 +2933,15 @@ const plugin = definePlugin({
                         writeJson(res, 200, { ok: true, config: snapshot() });
                     },
                 }));
-                // ~/.ssh/config 导入候选（连接簿）：loopback 围栏，只回解析结果不落盘
+                // ~/.ssh/config 导入候选（连接簿）：loopback 围栏，只回解析结果不落盘。
+                // 除了候选，还**如实回报丢弃了什么**（依赖跳板机 / 通配 / 无 User / 超上限）：
+                // 静默少列是本仓反复出现的一类缺陷，而「导进来的条目注定连不上」更难排——见
+                // 项目级 ROADMAP 第 2 项。
                 registerGated({
                     kind: 'exact',
                     path: '/api/dsh-tty/ssh-config',
                     handler: async (req, res) => {
-                        if (!isLoopbackHttp(req)) {
-                            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+                        if (!(await gateRoute(req, res))) {
                             return;
                         }
                         if (req.method !== 'GET') {
@@ -2928,7 +2950,7 @@ const plugin = definePlugin({
                         }
                         try {
                             const text = readFileSync(expandHome('~/.ssh/config'), 'utf8');
-                            writeJson(res, 200, { ok: true, entries: parseSshConfig(text) });
+                            writeJson(res, 200, { ok: true, ...parseSshConfigDetailed(text) });
                         }
                         catch (error) {
                             writeJson(res, 200, { ok: false, error: '无法读取 ~/.ssh/config: ' + (error instanceof Error ? error.message : String(error)) });
@@ -2940,8 +2962,7 @@ const plugin = definePlugin({
                     kind: 'exact',
                     path: '/api/dsh-tty/env-vars',
                     handler: async (req, res) => {
-                        if (!isLoopbackHttp(req)) {
-                            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+                        if (!(await gateRoute(req, res))) {
                             return;
                         }
                         if (req.method !== 'GET') {
@@ -2965,8 +2986,7 @@ const plugin = definePlugin({
                     kind: 'exact',
                     path: '/api/dsh-tty/known-hosts',
                     handler: async (req, res) => {
-                        if (!isLoopbackHttp(req)) {
-                            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+                        if (!(await gateRoute(req, res))) {
                             return;
                         }
                         if (req.method !== 'GET') {
@@ -2994,8 +3014,8 @@ const plugin = definePlugin({
                     kind: 'exact',
                     path: '/api/dsh-tty/probe',
                     handler: async (req, res) => {
-                        if (!isLoopbackHttp(req)) {
-                            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+                        // 变更端点：这次请求真的拨号，且连接簿条目测试会当场记录主机指纹（TOFU）
+                        if (!(await gateRoute(req, res, { mutation: true }))) {
                             return;
                         }
                         if (req.method !== 'POST') {
@@ -3056,8 +3076,7 @@ const plugin = definePlugin({
                     kind: 'exact',
                     path: '/api/dsh-tty/shells',
                     handler: async (req, res) => {
-                        if (!isLoopbackHttp(req)) {
-                            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+                        if (!(await gateRoute(req, res))) {
                             return;
                         }
                         if (req.method !== 'GET') {
@@ -3072,8 +3091,7 @@ const plugin = definePlugin({
                     kind: 'exact',
                     path: '/api/dsh-tty/tunnels',
                     handler: async (req, res) => {
-                        if (!isLoopbackHttp(req)) {
-                            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+                        if (!(await gateRoute(req, res))) {
                             return;
                         }
                         if (req.method !== 'GET') {
@@ -3093,11 +3111,11 @@ const plugin = definePlugin({
                     kind: 'prefix',
                     path: '/api/dsh-tty/sftp',
                     handler: async (req, res) => {
-                        if (!isLoopbackHttp(req)) {
-                            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+                        const sub = new URL(req.url ?? '/', 'http://loopback').pathname.slice('/api/dsh-tty/sftp'.length);
+                        // 改状态的三个动作 + 上传要同源证明；/list 与 /download 只读（判据见 gateRoute）
+                        if (!(await gateRoute(req, res, { mutation: isMutationSubroute('/api/dsh-tty/sftp', sub) }))) {
                             return;
                         }
-                        const sub = new URL(req.url ?? '/', 'http://loopback').pathname.slice('/api/dsh-tty/sftp'.length);
                         const jsonAction = ['/list', '/mkdir', '/rename', '/remove', '/download'].find((action) => action === sub);
                         if (jsonAction !== undefined) {
                             if (req.method !== 'POST') {
@@ -3253,11 +3271,11 @@ const plugin = definePlugin({
                     kind: 'prefix',
                     path: '/api/dsh-tty/local-fs',
                     handler: async (req, res) => {
-                        if (!isLoopbackHttp(req)) {
-                            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+                        const sub = new URL(req.url ?? '/', 'http://loopback').pathname.slice('/api/dsh-tty/local-fs'.length);
+                        // 改状态的四个动作（含起一个传输任务）要同源证明；/list 只读（判据见 gateRoute）
+                        if (!(await gateRoute(req, res, { mutation: isMutationSubroute('/api/dsh-tty/local-fs', sub) }))) {
                             return;
                         }
-                        const sub = new URL(req.url ?? '/', 'http://loopback').pathname.slice('/api/dsh-tty/local-fs'.length);
                         if (req.method !== 'POST') {
                             writeJson(res, 405, { error: 'method not allowed: ' + String(req.method) });
                             return;
@@ -3458,6 +3476,8 @@ const plugin = definePlugin({
                     }
                     activeDisposers.push(tools.register(defineTool({
                         name: 'tty_list',
+                        // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
+                        isConcurrencySafe: () => true,
                         description: '列出当前活跃的终端面板会话（sid / kind(local|ssh) / target / pid / cwd / 创建与最后活动时间）。用户开了终端面板后，用 tty_capture 读取某个 sid 的终端输出，用 tty_send 向该终端发送按键。',
                         parameters: {},
                         output: {
@@ -3564,6 +3584,8 @@ const plugin = definePlugin({
                     })));
                     activeDisposers.push(tools.register(defineTool({
                         name: 'tty_stats',
+                        // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
+                        isConcurrencySafe: () => true,
                         description: '读取某个终端会话所在机器的实时指标（CPU / 内存 / 磁盘 / TCP 连接数 / 网速 / 温度 / 在线时长）——本地会话取宿主机，SSH 会话取那台远程主机（另开一条非 PTY 通道，不影响终端）。部署、压测、排查「机器是不是满了」之前先看它。仅 Linux 远端字段齐全，Windows 远端部分字段可采，macOS/BSD 远端取不到。',
                         parameters: {
                             sid: { type: 'string', required: true, description: '会话 id（tty_list 提供）' },
@@ -3625,6 +3647,8 @@ const plugin = definePlugin({
                     })));
                     activeDisposers.push(tools.register(defineTool({
                         name: 'tty_capture',
+                        // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
+                        isConcurrencySafe: () => true,
                         description: '读取某个终端面板会话（tty_list 提供 sid）的近期输出。默认读取尾部 N 行（60，最多 500，已剥离 ANSI 转义序列并收敛同行覆盖）；last:true 时只返回「上一条已完成命令」的输出与退出码（依赖 shell 集成标记，更适合拿单条命令的结果）——若命令在途（刚发送/未收到完成标记）返回 inProgress:true 且不携带旧结果，请稍后重试或改用 tty_expect。',
                         parameters: {
                             sid: { type: 'string', required: true, description: '会话 id（来自 tty_list）' },
@@ -3689,6 +3713,8 @@ const plugin = definePlugin({
                     })));
                     activeDisposers.push(tools.register(defineTool({
                         name: 'tty_screen',
+                        // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
+                        isConcurrencySafe: () => true,
                         description: '读取某个终端面板会话（tty_list 提供 sid）当前可见屏幕的渲染结果（纯文本，等价于用户此刻看到的画面）。适合查看全屏交互程序（vim / htop / 菜单选择）的当前界面状态；要历史滚动输出用 tty_capture。',
                         parameters: {
                             sid: { type: 'string', required: true, description: '会话 id（来自 tty_list）' },
@@ -3735,6 +3761,8 @@ const plugin = definePlugin({
                     })));
                     activeDisposers.push(tools.register(defineTool({
                         name: 'tty_expect',
+                        // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
+                        isConcurrencySafe: () => true,
                         description: '在某个终端面板会话（tty_list 提供 sid）的后续输出中等待一个正则出现（如 dev server 的 ready/URL、构建完成标记、交互提示）。匹配到立即返回 matched:true 与周边输出；超时不抛错，返回 matched:false + 尾部输出供判断重试或放弃；期间该命令若已结束（shell 集成标记）也会提前返回并带退出码。适合先 tty_send 启动长任务、再 tty_expect 等就绪信号的流程。',
                         parameters: {
                             sid: { type: 'string', required: true, description: '会话 id（来自 tty_list）' },
@@ -3863,6 +3891,8 @@ const plugin = definePlugin({
                     })));
                     activeDisposers.push(tools.register(defineTool({
                         name: 'tunnel_list',
+                        // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
+                        isConcurrencySafe: () => true,
                         description: '列出端口转发隧道及其实时状态（活跃/连接中/错误/停止、规则、当前与累计连接数、最近错误）。用户说「隧道连不上 / 转发挂了 / 端口转发不通」时先用它诊断；隧道在 插件配置 → 终端面板 卡片维护。',
                         parameters: {},
                         output: {
@@ -3941,6 +3971,8 @@ const plugin = definePlugin({
                     };
                     activeDisposers.push(tools.register(defineTool({
                         name: 'sftp_list',
+                        // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
+                        isConcurrencySafe: () => true,
                         description: '列出 SSH 远程目录内容（名称/类型/大小/修改时间，目录在前；isSymlink 区分符号链接与真目录）。book 为 SSH 连接簿条目名；path 缺省为远程登录 home。默认最多列 500 项（超限 truncated:true，可按子目录分批）。',
                         parameters: {
                             book: { type: 'string', required: true, description: 'SSH 连接簿条目名（插件配置 → 终端面板 维护）' },
@@ -3992,6 +4024,8 @@ const plugin = definePlugin({
                     })));
                     activeDisposers.push(tools.register(defineTool({
                         name: 'sftp_read',
+                        // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
+                        isConcurrencySafe: () => true,
                         description: '读取 SSH 远程文本文件（book 连接簿条目 + path）。默认最多 256KB（可调至 1MB，非法值直接报错）；offset 可从指定字节起读（配合 maxBytes 分页拿到大文件尾部）；二进制判定用 NUL + 非法 UTF-8 占比双重检测，拒绝时说明原因。',
                         parameters: {
                             book: { type: 'string', required: true, description: 'SSH 连接簿条目名' },
@@ -4199,6 +4233,8 @@ const plugin = definePlugin({
                     })));
                     activeDisposers.push(tools.register(defineTool({
                         name: 'sftp_tree',
+                        // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
+                        isConcurrencySafe: () => true,
                         description: '递归列举 SSH 远程目录结构（book 连接簿条目 + path）：深度优先、目录优先，maxDepth（1~8，默认 3）限层、maxEntries（1~2000，默认 500）限条数，超限 truncated:true；符号链接不跟随；读取失败的子目录列入 errors。适合先看远程项目结构再定位文件。',
                         parameters: {
                             book: { type: 'string', required: true, description: 'SSH 连接簿条目名' },

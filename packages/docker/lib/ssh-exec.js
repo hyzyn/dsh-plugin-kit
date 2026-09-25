@@ -211,7 +211,19 @@ export function streamBudgetError(target, busy, max = MAX_STREAMS_PER_TARGET) {
  * @param message - ssh2 给出的原始错误文案。
  * @returns 补了指向性说明的文案；不认识的原样返回。
  */
+/**
+ * SSH 超时文案里的**跳板机提示**（项目级 ROADMAP 第 2 项）。
+ *
+ * 为什么值得单独一句话：本插件经数据级复用读得到 tty 的连接簿，但**不读 `~/.ssh/config`**，
+ * 所以「配了跳板机的目标连不上」在 docker 侧只能表现为一句通用超时。企业内网主机几乎都
+ * 要过 bastion，用户需要的是「可能是什么原因、以及这个版本到底支不支持」——而不是 20 秒后
+ * 一句放之四海皆准的「主机无响应」。
+ */
+export const SSH_TIMEOUT_HINT = '若该主机只能经跳板机访问（~/.ssh/config 里的 ProxyJump / ProxyCommand），本版本尚不支持：'
+    + 'tty 的导入会跳过这类条目，请改用可直达的内网地址，或见项目级 ROADMAP 第 2 项';
 export function describeExecError(message) {
+    if (/Timed out|ETIMEDOUT/i.test(message))
+        return `${message}：${SSH_TIMEOUT_HINT}`;
     if (!/Channel open failure|open failed/i.test(message))
         return message;
     return `${message}（远端 sshd 拒绝了新通道：同一连接上的通道额度可能已被实时流占满——`
@@ -620,10 +632,19 @@ export class RemoteExec {
         try {
             const connectConfig = await buildConnectConfig(spec);
             const policy = applyHostKeyPolicy({ connectConfig, spec, store: this.store, logger: this.logger, target });
-            /** 指纹变更优先于任何通用文案（含 D94 的「已释放」）：安全提示不能被噪音盖掉。 */
-            const describe = (error, fallback) => new Error(policy.mismatchMessage() ?? `${fallback}：${error.message}`);
+            /**
+             * 指纹变更优先于任何通用文案（含 D94 的「已释放」）：安全提示不能被噪音盖掉。
+             * 握手超时则补上跳板机提示——那是「通用超时」最容易被误读的成因（ROADMAP 第 2 项）。
+             */
+            const describe = (error, fallback) => {
+                const mismatch = policy.mismatchMessage();
+                if (mismatch !== null)
+                    return new Error(mismatch);
+                const hint = /Timed out|ETIMEDOUT/i.test(error.message) ? `：${SSH_TIMEOUT_HINT}` : '';
+                return new Error(`${fallback}：${error.message}${hint}`);
+            };
             timer = setTimeout(() => {
-                settleError(new Error(`SSH 连接超时（${target}）`));
+                settleError(new Error(`SSH 连接超时（${target}）：${SSH_TIMEOUT_HINT}`));
             }, connectTimeoutMs());
             client.once('ready', () => {
                 if (settled)

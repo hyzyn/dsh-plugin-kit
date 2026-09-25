@@ -549,6 +549,8 @@ export declare class TtyServer {
     private sendStats;
     /** registerUpgrade 的 handler（loopback 围栏 + ws 握手）。 */
     handleUpgrade(req: ReqLike, socket: SocketLike, head: Buffer): void;
+    /** 围栏放行之后的实际握手（与上面的异步分支共用）。 */
+    private finishUpgrade;
     private onConnection;
     /**
      * 解析帧里的 sid。返回：
@@ -691,6 +693,37 @@ export declare class TtyServer {
 export declare function handleCredentialRefsRoute(req: ReqLike, res: ResLike): Promise<void>;
 /** 导出仅供单测（test/credential-refs.test.ts）：只验键名解析，不取值。 */
 export declare function readCredentialRefNames(): string[];
+/**
+ * 数据路由的统一闸门（**导出仅供单测**）：回环围栏（加固档）+ 变更端点的同源证明。
+ * 十二处路由此前各抄一遍 403 样板，`mutation` 这条判据一加就会各写各的——收敛成一处后
+ * 「拒绝分支」只有一份，负例也只测这一份。
+ *
+ * 哪些是变更端点（`mutation: true`）——**判据是「这次请求会不会改状态」**：
+ *   - `POST /probe`：真的拨号，且连接簿条目测试会当场 TOFU 记录主机指纹；
+ *   - `POST /sftp/{mkdir,rename,remove,upload}`、`POST /local-fs/{mkdir,rename,remove,transfer}`：
+ *     写远端 / 写本机 / 起传输任务；
+ *   - `POST /config`**刻意不在其列**（与 docker 同口径）：它是插件被禁用后唯一的恢复入口
+ *     ——卡片靠它渲染、也是重新启用的唯一 UI 入口；跨站 POST 已由上面那条围栏的
+ *     `sec-fetch-site: cross-site` 与 Origin 比对拦住。
+ * 只读端点（GET 全家 + `sftp /list` `/download`、`local-fs /list`）维持 loopback-only：
+ * 它们读的是用户自己主动要的东西，读路由加证明只会把旧 Safari / 裸 curl 一起挡在门外。
+ *
+ * **WS upgrade 不走这里**（那是 socket 握手，不是 req/res 路由）：见 `handleUpgrade`
+ * 用的 `isLoopbackRequestStrict`——它自带「Origin 有则必须同源」这条判据，等价于给
+ * 升级请求也上了证明，但**刻意不放开 Cookie 例外**：长连的生命周期比一次 POST 长得多。
+ */
+export declare function gateRoute(req: ReqLike, res: ResLike, options?: {
+    mutation?: boolean;
+}): Promise<boolean>;
+/**
+ * 这个前缀路由的子路径是否**会改状态**（导出仅供单测）。
+ *
+ * 为什么单独抽出来：`/list` 与 `/download` 也是 POST（凭证走 body、不进 URL），但它们只是
+ * 读——如果把「POST 就要求证明」一刀切下去，读路由会连带把旧 Safari / 裸 curl 挡在门外，
+ * 而它们本来就没有可被跨站利用的副作用。判据是**动作**不是**方法**，所以名单必须显式。
+ * 没见过的子路径一律 false（几步之后就是 404，不给它额外的信息量）。
+ */
+export declare function isMutationSubroute(prefix: string, sub: string): boolean;
 interface ResLike {
     writeHead(status: number, headers?: Record<string, string>): void;
     /** 二进制响应（SFTP 下载）也走 end；Node 的 ServerResponse 原生接受 Uint8Array。 */

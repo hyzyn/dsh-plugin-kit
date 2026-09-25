@@ -10,7 +10,7 @@
  * 浏览器半体（./client）通过 /api/dsh-mcp/* 路由读写配置；路由带
  * loopback-only 信任围栏。
  */
-import { createOutputDecoder, dshHome, spawnPortable, terminateChild } from '@hyzyn/dsh-kit';
+import { createOutputDecoder, dshHome, hasSameOriginProof, isLoopbackRequestStrict, originProofHint, spawnPortable, terminateChild } from '@hyzyn/dsh-kit';
 import { chmodSync, existsSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
@@ -788,34 +788,12 @@ async function testServer(rawConfig) {
         return probeStdio(config, PROBE_TIMEOUT_MS);
     return probeHttp(config, PROBE_TIMEOUT_MS);
 }
-function isLoopbackRequest(request) {
-    const address = request.socket.remoteAddress;
-    if (address !== '127.0.0.1' && address !== '::1' && address !== '::ffff:127.0.0.1')
-        return false;
-    const host = request.headers.host;
-    if (typeof host !== 'string')
-        return false;
-    let hostUrl;
-    try {
-        hostUrl = new URL('http://' + host);
-    }
-    catch {
-        return false;
-    }
-    if (hostUrl.hostname !== '127.0.0.1' && hostUrl.hostname !== 'localhost' && hostUrl.hostname !== '[::1]')
-        return false;
-    if (request.headers['sec-fetch-site'] === 'cross-site')
-        return false;
-    const origin = request.headers.origin;
-    if (origin === undefined)
-        return true;
-    try {
-        return new URL(origin).host === hostUrl.host;
-    }
-    catch {
-        return false;
-    }
-}
+/*
+ * 回环围栏与同源证明：**实现已收敛到 `@hyzyn/dsh-kit`**（2026-09-25，项目级 ROADMAP 第 1
+ * 项）。本包此前那份只认 `127.0.0.1` 一个字面量的同步围栏已删除，改走 kit 的加固档
+ * （docker D31/D80/D110），并给写操作补上同源证明（docker D32/D139）——成因与桌面版例外
+ * 的唯一归宿在 `packages/kit/src/http.ts`，这里只留指针。
+ */
 function writeJson(res, status, body) {
     res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'referrer-policy': 'no-referrer' });
     res.end(JSON.stringify(body));
@@ -842,24 +820,42 @@ async function readJsonBody(req) {
         return undefined;
     }
 }
+/**
+ * 路由闸门（导出仅供单测，与 tty 的 `gateRoute` 同思路）：**回环围栏（加固档，docker D31）
+ * + 方法闸门 + 写操作的同源证明（docker D32，含桌面壳例外 D139）**。三条路由共用它，
+ * 所以「拒绝分支」只有一份，负例也只测这一份。
+ *
+ * 顺序与 docker 一致：先回环 → 再方法 → 最后同源证明。跨站 GET 打到写路由仍是 405
+ * （方法不对就说方法不对），不会因为「没带证明」而多给一条信息。
+ *
+ * 本插件的 POST 只有两条：`/servers/save`（写 home 补丁文件）与 `/test`（起子进程探活），
+ * 都是货真价实的变更端点；GET `/servers` 只读，维持 loopback-only。
+ */
+export async function routeGate(req, res, method, logger) {
+    if (!(await isLoopbackRequestStrict(req))) {
+        writeJson(res, 403, { error: 'forbidden: loopback-only' });
+        return false;
+    }
+    if (req.method !== method) {
+        writeJson(res, 405, { error: 'method not allowed: ' + String(req.method) });
+        return false;
+    }
+    if (method === 'POST' && !hasSameOriginProof(req)) {
+        logger?.warn(`dsh-mcp-config: 拒绝无同源证明的变更请求 ${req.url ?? ''}（${originProofHint(req)}）`);
+        writeJson(res, 403, { error: '缺少同源证明（需要 Origin 或 Sec-Fetch-Site: same-origin）：变更端点拒绝无来源请求' });
+        return false;
+    }
+    return true;
+}
 function makeRoutes(ctx) {
-    const guard = (req, res, method) => {
-        if (!isLoopbackRequest(req)) {
-            writeJson(res, 403, { error: 'forbidden: loopback-only' });
-            return false;
-        }
-        if (req.method !== method) {
-            writeJson(res, 405, { error: 'method not allowed: ' + String(req.method) });
-            return false;
-        }
-        return true;
-    };
+    const logger = ctx.logger;
+    const guard = async (req, res, method) => await routeGate(req, res, method, logger);
     return [
         {
             kind: 'exact',
             path: '/api/dsh-mcp/servers',
             handler: async (req, res) => {
-                if (!guard(req, res, 'GET'))
+                if (!(await guard(req, res, 'GET')))
                     return;
                 const dto = buildServersDto(ctx);
                 writeJson(res, 200, { ok: true, ...dto });
@@ -869,7 +865,7 @@ function makeRoutes(ctx) {
             kind: 'exact',
             path: '/api/dsh-mcp/servers/save',
             handler: async (req, res) => {
-                if (!guard(req, res, 'POST'))
+                if (!(await guard(req, res, 'POST')))
                     return;
                 const body = await readJsonBody(req);
                 if (body === undefined) {
@@ -941,7 +937,7 @@ function makeRoutes(ctx) {
             kind: 'exact',
             path: '/api/dsh-mcp/test',
             handler: async (req, res) => {
-                if (!guard(req, res, 'POST'))
+                if (!(await guard(req, res, 'POST')))
                     return;
                 const body = await readJsonBody(req);
                 if (body === undefined) {

@@ -12,7 +12,7 @@
  * `(SSH) Channel open failure: open failed`，对用户没有任何指向性。
  */
 import { describe, expect, it } from 'vitest'
-import { describeExecError, isTransportError, streamBudgetError } from '../src/ssh-exec.js'
+import { SSH_TIMEOUT_HINT, describeExecError, isTransportError, streamBudgetError } from '../src/ssh-exec.js'
 
 describe('SSH 长流配额', () => {
   it('未达上限放行', () => {
@@ -52,6 +52,23 @@ describe('ssh2 通道错误的可读化', () => {
   it('其它错误原样返回，不硬改文案', () => {
     expect(describeExecError('connection lost')).toBe('connection lost')
     expect(describeExecError('')).toBe('')
+  })
+
+  /**
+   * 项目级 ROADMAP 第 2 项的短期一半：docker 不读 ~/.ssh/config，所以「配了跳板机的目标
+   * 连不上」在它这侧只能是通用超时——把最容易被误读的那个成因写进文案。
+   */
+  it('握手超时补上跳板机提示（通用超时最容易被误读的成因）', () => {
+    const text = describeExecError('Timed out while waiting for handshake')
+    expect(text).toContain('Timed out')
+    expect(text).toContain('跳板机')
+    expect(text).toContain('ROADMAP 第 2 项')
+    expect(describeExecError('connect ETIMEDOUT 203.0.113.1:22')).toContain('跳板机')
+  })
+
+  it('跳板机提示常量本身可复用（宿主侧超时分支引用的就是它）', () => {
+    expect(SSH_TIMEOUT_HINT).toContain('ProxyJump')
+    expect(SSH_TIMEOUT_HINT).toContain('ROADMAP 第 2 项')
   })
 })
 

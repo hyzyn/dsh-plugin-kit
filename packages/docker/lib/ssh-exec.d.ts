@@ -122,6 +122,15 @@ export declare function streamBudgetError(target: string, busy: number, max?: nu
  * @param message - ssh2 给出的原始错误文案。
  * @returns 补了指向性说明的文案；不认识的原样返回。
  */
+/**
+ * SSH 超时文案里的**跳板机提示**（项目级 ROADMAP 第 2 项）。
+ *
+ * 为什么值得单独一句话：本插件经数据级复用读得到 tty 的连接簿，但**不读 `~/.ssh/config`**，
+ * 所以「配了跳板机的目标连不上」在 docker 侧只能表现为一句通用超时。企业内网主机几乎都
+ * 要过 bastion，用户需要的是「可能是什么原因、以及这个版本到底支不支持」——而不是 20 秒后
+ * 一句放之四海皆准的「主机无响应」。
+ */
+export declare const SSH_TIMEOUT_HINT: string;
 export declare function describeExecError(message: string): string;
 /**
  * 这条 ssh2 错误是不是**传输层 / 连接层**的（而不是命令自己失败）。

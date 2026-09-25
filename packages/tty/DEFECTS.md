@@ -7,8 +7,8 @@
 > 知道**当年坏了什么**，再查 [§2 编号字典](#2-编号字典这段代码为什么长这样) 知道**所以代码
 > 为什么写成这样**。
 >
-> **编号是硬契约**：`D01–D61` 是 `packages/tty` 内部序列，与 `packages/docker/DEFECTS.md` 的
-> `D01–D138` **不共享**；跨包引用请写「tty D12 / docker D03」。新缺陷接在 `D61` 之后，
+> **编号是硬契约**：`D01–D63` 是 `packages/tty` 内部序列，与 `packages/docker/DEFECTS.md` 的
+> `D01–D138` **不共享**；跨包引用请写「tty D12 / docker D03」。新缺陷接在 `D63` 之后，
 > **不得重号、不得回收空号**——源码、测试与根 `README.md` 里已有引用指向它们。
 
 > **本文不含**：D49–D61 的逐条 postmortem（症状 / 现场复现 / 根因 / 修法 / 回归 / 反向验证），
@@ -38,9 +38,11 @@
 >    开头「回归门槛（0.19.0 时点）」记 `193 / 15`；「2026-09-20 复核实测」记 `215 / 16`。
 >    三组数字出自三个时点，**原样保留**（见 §3 的「历史基线」）。
 
+> 4. **⚠️ 2026-09-25 补记**：`D62` 是上一轮加进来的（Windows 冒烟吞掉失败原因），但当时**没同步更新本文的「现状」行**（仍写「已修 61 / 编号至 D61」）。本次既要让台账自洽（[conventions.md § 编号规范](../../docs/conventions.md#编号规范) 硬规矩 5），又要留住这段历史，于是把计数改成与表内一致（已修 63 / 编号至 D63），并在此记下漂移是怎么发生的。
+
 ## 现状
 
-**已修 61 / 待修 0**，编号至 `D61`。逐条症状见 §1，设计意图见 §2，**还没做的见
+**已修 63 / 待修 0**，编号至 `D63`。逐条症状见 §1，设计意图见 §2，**还没做的见
 [ROADMAP.md](./ROADMAP.md)**。
 
 **沿革（原文照录，未改）**：2026-09-19 对 v0.18.3 做了一次系统性只读审计（5 路并行 + 人工复读
@@ -51,7 +53,7 @@
 tag `v0.1.36` → tty **0.19.0**（docker 0.6.4 / all 0.1.36 / kit 0.1.30）——此后 `v0.1.37` →
 0.19.1、`v0.1.38` → 0.19.2、`v0.1.39` → **0.19.3**（本仓库 `packages/tty/package.json` 现为 0.19.3）。
 
-**已修 61 / 待修 0**（D01–D48 审计波 + D49/D50 线上反馈 + D51–D56 复核实测发现 + D57 线上崩溃 + D58–D61 后续用户上报/复核）。索引表**不写行号、也不保留修复提交
+**已修 63 / 待修 0**（D01–D48 审计波 + D49/D50 线上反馈 + D51–D56 复核实测发现 + D57 线上崩溃 + D58–D62 后续用户上报/复核 + D63 本轮统一安全围栏时顺手发现）。索引表**不写行号、也不保留修复提交
 sha** —— 修复后代码移了位、有的整段被删或重写，审计时点的行号只会误导；所以回溯入口统一改成
 按关键词检索（D49/D50 修在 `bd407352`）：`git log -S'<症状列的关键词>'`，提交信息按条目写
 为什么。被代码直接引用的编号在
@@ -142,6 +144,7 @@ D50 才是用户看到的那一下（他补的描述是「整条状态条瞬间�
 | D60 | 机器级资源没有 profile 维度：复制 profile 把固定端口（webserver / 隧道 `localPort`）一并拷走，tmux socket（`-L dsh-tty`）全 profile 共用 → 后起的宿主 `EADDRINUSE`（本次只做「可诊断 + 文档」） | src/tunnels.ts、README.md、README.en.md |  |
 | D61 | 桌面版终端**永远连不上**：WS 地址只用 `location` 拼，而桌面 origin 是 Electron 自定义协议 `dsh-app://app` → 拼出 `ws://app/…`；除 WS 外全是相对路径 fetch，所以只有终端这一条通道断 | client-src/ws-url.js（新增）、client-src/index.js、test/ws-url.test.ts、scripts/client-host-url.mjs |  |
 | D62 | Windows 冒烟的**失败原因被自己吞掉**：收尾的 `process.exit(1)` 丢掉管道里未 flush 的写（CI 上缓冲 64 KB）→ 日志里五条断言全 PASS、没有 ✘ 行、也没有汇总行，只剩 `exit code 1`；连带把「W5 第二次 exit 帧」这条偶发失败掩盖成不可诊断 | scripts/windows-smoke.mjs（同款写法另有 docker 三套 smoke，见 §2.3） | ✓ |
+| D63 | `~/.ssh/config` 导入的**四种丢弃此前全是静默的**：通配 / 无 User 的块无声消失、依赖跳板机（ProxyJump / ProxyCommand）的块被原样忽略、超过 100 条的块被丢——用户只看到「没有可导入的具体主机」，不知道自己的生产机被跳过了（跳板机那半边同时是项目级 ROADMAP 第 2 项） | src/ssh-config.ts、src/index.ts、client-src/index.js、test/ssh-config.test.ts、test/ssh-config-route.test.ts | ✓ |
 
 ## 2. 编号字典：这段代码为什么长这样
 
@@ -204,6 +207,7 @@ D50 才是用户看到的那一下（他补的描述是「整条状态条瞬间�
 | D60 | 把设置「集中共享」**不是**解法——端口是**机器级资源**，共享只会让两个 profile 永远抢同一个端口、且无法各自关闭；缺的是「机器级资源的 profile 维度处理」。本次只做「可诊断 + 文档」，未做项见 [ROADMAP.md](./ROADMAP.md) |
 | D61 | 来源改用宿主注入的 `globalThis.__DSH_TRANSPORT__.streamBaseUrl`，缺省退回 `document.baseURI`——浏览器直连下与旧的 `location.host` **逐字等价**。它同时是**仓库级静态规则**的由来：`scripts/client-host-url.mjs`（TS AST，注释与字符串免疫）拦「读 `location` 的 protocol/host/hostname/origin/port」与「硬编码 `ws://`/`wss://` 字面量」，覆盖全部 10 个客户端半体；接线在 `scripts/client-lint.mjs`。**没做**：桌面 profile 的 `cordis.patch.yml` 里没有 `- id: tty` 配置块（不是本次故障原因，但桌面版终端目前跑纯默认配置） |
 | D62 | 用**空串写入的回调**当 flush 屏障（实测：300 KB 输出直接 `exit` 只活 64 KB，加了屏障全活），**不用 `process.exitCode` 自然退出**——D121 的理由仍在：主体结束后可能有周期句柄漏着，看门狗又已经 clear，不显式退就会挂死。**刻意不做的**：① 不顺手改 docker 的 `smoke.mjs` / `route-smoke.mjs` / `client-smoke.mjs`（同款 `clearTimeout(watchdog)` + `process.exit(failed…)` 写法，同一类风险）——它们没loss过输出，本轮只修**证据覆盖到**的这一处，下轮要改就三处一起；② **没有**削弱 W5 的断言（「发过 kill 就必须收到 exit 帧」是 B1/B3 钉住的前端契约，socket 提前关掉**不算**通过）——本次只让失败可见，真正的偶发失败（W5 第二次 exit 帧）仍未复现、未定位 |
+| D63 | 解析器改成 `parseSshConfigDetailed()`：不仅回候选，还回 **proxy 块名 + 三种丢弃的计数**（`parseSshConfig()` 保留为薄包装，老调用点形状不变）。**`ProxyJump none` / `ProxyCommand none` 算显式直连**（OpenSSH 用它抵消上层 `Host *` 的设置），照常导入；键名大小写不敏感。`proxy` 名单截到 50 个但 **`proxyCount` 仍是准的**——截断不许把数报小。**刻意不做**：不真的经跳板机连（完整实现的六个坑见 [项目级 ROADMAP](../../ROADMAP.md) 第 2 项），也不在导入时把 `ProxyCommand` 带进来（那是设置字段驱动的本地任意命令执行，信任级与回环围栏后的路由不同） |
 
 ## 3. 复核方式
 

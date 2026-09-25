@@ -6,7 +6,7 @@
  * 首个同名选项生效、无 User 的块跳过、端口非法回退 22、最多 100 条。
  */
 import { describe, expect, it } from 'vitest'
-import { parseSshConfig } from '../src/ssh-config.js'
+import { MAX_PROXY_NAMES, parseSshConfig, parseSshConfigDetailed } from '../src/ssh-config.js'
 
 describe('parseSshConfig', () => {
   it('解析典型块：HostName / User / Port / IdentityFile（引号剥除）', () => {
@@ -127,5 +127,79 @@ Host prod
     expect(entries).toHaveLength(100)
     expect(entries[0].name).toBe('h0')
     expect(entries[99].name).toBe('h99')
+  })
+})
+
+/**
+ * 项目级 ROADMAP 第 2 项的「短期至少做到」：**依赖跳板机的块跳过并明说**。
+ * 此前 ProxyJump 被静默忽略——导入后得到一条直连条目，连不上时只有 20s 后一句通用超时，
+ * 用户得自己反推是堡垒机的问题。
+ */
+describe('parseSshConfigDetailed：每一种丢弃都要有信号', () => {
+  it('ProxyJump / ProxyCommand 的块整块跳过，并把块名报回去', () => {
+    const text = [
+      'Host direct',
+      '  User u',
+      'Host via-jump',
+      '  HostName 10.1.0.9',
+      '  User deploy',
+      '  ProxyJump bastion',
+      'Host via-cmd',
+      '  User deploy',
+      '  ProxyCommand ssh -W %h:%p bastion',
+    ].join('\n')
+    const result = parseSshConfigDetailed(text)
+    expect(result.entries.map((entry) => entry.name)).toEqual(['direct'])
+    expect(result.proxy).toEqual(['via-jump', 'via-cmd'])
+    expect(result.proxyCount).toBe(2)
+    expect(result.skippedOther).toBe(0)
+    expect(result.droppedOverflow).toBe(0)
+  })
+
+  it('ProxyJump none / ProxyCommand none 是显式的直连，照常导入', () => {
+    const text = ['Host direct', '  User u', '  ProxyJump none', 'Host direct2', '  User u', '  ProxyCommand none'].join('\n')
+    const result = parseSshConfigDetailed(text)
+    expect(result.entries.map((entry) => entry.name)).toEqual(['direct', 'direct2'])
+    expect(result.proxyCount).toBe(0)
+  })
+
+  it('键名大小写不敏感（proxyjump / PROXYCOMMAND 一样认）', () => {
+    const text = ['Host a', '  User u', '  PROXYJUMP bastion', 'Host b', '  User u', '  proxycommand ssh -W %h:%p j'].join('\n')
+    const result = parseSshConfigDetailed(text)
+    expect(result.entries).toEqual([])
+    expect(result.proxyCount).toBe(2)
+  })
+
+  it('通配 / 无 User 的块只计数（名字对用户没有意义），不与跳板机混为一谈', () => {
+    const text = ['Host *.corp', '  User u', 'Host wild-?', '  User u', 'Host no-user', '  HostName x', 'Host ok', '  User u'].join('\n')
+    const result = parseSshConfigDetailed(text)
+    expect(result.entries.map((entry) => entry.name)).toEqual(['ok'])
+    expect(result.skippedOther).toBe(3)
+    expect(result.proxy).toEqual([])
+  })
+
+  it('超过 100 条的部分报数（旧实现是静默丢弃——本仓「截断要有信号」那条硬规矩）', () => {
+    const blocks = Array.from({ length: 105 }, (_, index) => `Host h${index}\n  User u${index}`)
+    const result = parseSshConfigDetailed(blocks.join('\n'))
+    expect(result.entries).toHaveLength(100)
+    expect(result.droppedOverflow).toBe(5)
+  })
+
+  it('proxy 名单有上限，但计数仍然是准的（不许因为截断就把数报小）', () => {
+    const blocks = Array.from({ length: MAX_PROXY_NAMES + 7 }, (_, index) => `Host p${index}\n  User u\n  ProxyJump bastion`)
+    const result = parseSshConfigDetailed(blocks.join('\n'))
+    expect(result.proxy).toHaveLength(MAX_PROXY_NAMES)
+    expect(result.proxyCount).toBe(MAX_PROXY_NAMES + 7)
+  })
+
+  it('干净的配置：没有丢弃、没有跳过', () => {
+    const result = parseSshConfigDetailed('Host a\n  HostName a.local\n  User u\n')
+    expect(result).toEqual({
+      entries: [expect.objectContaining({ name: 'a', host: 'a.local' })],
+      proxy: [],
+      proxyCount: 0,
+      skippedOther: 0,
+      droppedOverflow: 0,
+    })
   })
 })

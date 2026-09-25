@@ -28,6 +28,14 @@ Routes (loopback + same-origin only):
 - `POST /api/dsh-mcp/servers/save` — save the whole set (after validation, write back to the managed block)
 - `POST /api/dsh-mcp/test` — run one Connection Test with the form configuration
 
+**Fence** (same tier as `docker` / `tty` since 2026-09-25): the loopback fence uses
+`isLoopbackRequestStrict` from `@hyzyn/dsh-kit` (the whole 127/8 range plus DNS confirmation for
+alias hostnames), and the two write routes above additionally require a **same-origin proof**
+(`Sec-Fetch-Site: same-origin` or a matching `Origin`; when both are absent, only requests carrying
+the host session cookie pass — that is the desktop shell's forwarding chain, see `docker D139`).
+The read-only `GET /servers` needs no proof, so bare curl still works. The rationale and the single
+implementation live in `packages/kit/src/http.ts`.
+
 ## Installation
 
 ```bash

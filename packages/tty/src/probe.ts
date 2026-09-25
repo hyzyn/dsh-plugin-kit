@@ -165,7 +165,9 @@ export async function probeSsh(spec: SshSpec, store?: HostKeyStore): Promise<Pro
       resolve({ ok, error, ms: Date.now() - tcpStart })
     }
     sock.setTimeout(PROBE_TCP_TIMEOUT_MS, () => {
-      done(false, 'TCP 连接超时：主机无响应（检查地址 / 防火墙 / 网络）')
+      // 跳板机提示（项目级 ROADMAP 第 2 项）：TCP 层不通是「只能经 bastion 访问」最典型的
+      // 表现——探针是用户遇到这类主机时第一个会点的按钮
+      done(false, 'TCP 连接超时：主机无响应（检查地址 / 防火墙 / 网络；若该主机只能经跳板机访问——~/.ssh/config 里的 ProxyJump / ProxyCommand——本版本尚不支持，见项目级 ROADMAP 第 2 项）')
     })
     sock.once('connect', () => done(true))
     sock.once('error', (error: NodeJS.ErrnoException) => {

@@ -28,6 +28,12 @@
 - `POST /api/dsh-mcp/servers/save` —— 整体保存（校验后写回托管区块）
 - `POST /api/dsh-mcp/test` —— 用表单配置做一次连接测试
 
+**围栏**（2026-09-25 起与 `docker` / `tty` 同一档）：回环围栏走 `@hyzyn/dsh-kit` 的
+`isLoopbackRequestStrict`（127/8 全段 + 别名主机名的 DNS 确认），上面两条写操作**另需同源证明**
+（`Sec-Fetch-Site: same-origin` 或同源 `Origin`；两者都缺省时只放行带宿主会话 Cookie 的请求，
+即桌面壳那条转发链——见 `docker D139`）。只读的 `GET /servers` 不要求证明，裸 curl 也能读。
+成因与实现只有一份，在 `packages/kit/src/http.ts`。
+
 ## 安装
 
 ```bash

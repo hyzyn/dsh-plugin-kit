@@ -75,5 +75,33 @@ export declare function externalNameRejection(incoming: Array<{
     id: string;
     serverName: string;
 }>): string | undefined;
+interface ReqLike {
+    method?: string;
+    url?: string;
+    headers: Record<string, string | string[] | undefined>;
+    socket: {
+        remoteAddress?: string;
+    };
+}
+interface ResLike {
+    writeHead(status: number, headers?: Record<string, string>): void;
+    end(body?: string): void;
+}
+/** 拒绝日志的最小形状（宿主 logger 结构上兼容）。 */
+interface RouteLogger {
+    warn(message: string): void;
+}
+/**
+ * 路由闸门（导出仅供单测，与 tty 的 `gateRoute` 同思路）：**回环围栏（加固档，docker D31）
+ * + 方法闸门 + 写操作的同源证明（docker D32，含桌面壳例外 D139）**。三条路由共用它，
+ * 所以「拒绝分支」只有一份，负例也只测这一份。
+ *
+ * 顺序与 docker 一致：先回环 → 再方法 → 最后同源证明。跨站 GET 打到写路由仍是 405
+ * （方法不对就说方法不对），不会因为「没带证明」而多给一条信息。
+ *
+ * 本插件的 POST 只有两条：`/servers/save`（写 home 补丁文件）与 `/test`（起子进程探活），
+ * 都是货真价实的变更端点；GET `/servers` 只读，维持 loopback-only。
+ */
+export declare function routeGate(req: ReqLike, res: ResLike, method: string, logger?: RouteLogger): Promise<boolean>;
 export declare function apply(ctx: Context, config?: Config): void;
 export {};

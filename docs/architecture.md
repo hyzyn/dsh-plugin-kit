@@ -130,8 +130,20 @@
 
 三条**跨包一致**的约定，改任何插件都适用：
 
-1. **回环围栏**：全部路由先过 `isLoopbackRequest`；变更端点另需**同源证明**（`Origin` / `Sec-Fetch-Site`），
-   且来源检查必须排在 DNS 等异步分支**之前**。
+1. **回环围栏**：全部路由先过回环围栏；变更端点另需**同源证明**（`Origin` / `Sec-Fetch-Site`），
+   且来源检查必须排在 DNS 等异步分支**之前**。围栏实现只有一份（`@hyzyn/dsh-kit`），
+   但**分两档**：同步档 `isLoopbackRequest`（9 个插件的历史口径，语义未动）与加固档
+   `isLoopbackRequestStrict` + `hasSameOriginProof`（127/8 全段、别名 DNS 确认、桌面壳
+   Cookie 例外）。**哪些包在哪一档**是安全假设的一部分，别按「顺手升级」改：
+
+   | 包 | 闸门 | 变更端点的同源证明 |
+   |---|---|---|
+   | `docker` · `tty` · `dsh-mcp` | `isLoopbackRequestStrict`（原子 `docker` 那份上提到 kit） | 有（按**动作**判定，不是按方法；`/config` 三处一致地豁免——它是禁用后唯一的恢复入口） |
+   | 其余 7 个插件 | `isLoopbackRequest`（同步档） | 无 |
+
+   为什么不一刀切：全仓收敛到加固档要连信任模型一起定（[ROADMAP.md](../ROADMAP.md) 第 5 项），
+   单包先升级只会让插件之间的安全假设不一致。加固档的成因与桌面版例外写在
+   `packages/kit/src/http.ts` 的注释里（那边是唯一归宿）。
 2. **body 围栏**：`readJsonBody` 对畸形 / 超限 / 空 body **返回 `undefined` 而不抛错**——
    调用方必须把 `undefined` 当 **400**，**不能**当「没传这个字段」。写操作尤其。
 3. **截断要有信号**：任何截断（列表、日志、输出）都要显式报 `truncated` / 计数说明，

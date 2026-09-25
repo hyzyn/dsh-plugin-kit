@@ -409,7 +409,11 @@ tmux server（专用 socket `dsh-tty`，与用户自己的 tmux 完全隔离）�
   失效。连接簿条目随 `agentForward` 保存，列表里显示 `· fwd`；
 - **`~/.ssh/config` 导入（0.4.0）**：设置卡片连接簿区「从 ~/.ssh/config
   导入」——解析 `HostName/User/Port/IdentityFile` 生成候选条目（跳过通配符
-  块与无 User 条目，`Include` 不展开），同名跳过，随「保存」写入；
+  块与无 User 条目，`Include` 不展开），同名跳过，随「保存」写入。
+  **每一种跳过都会当场说明**（本轮起）：依赖跳板机的块（`ProxyJump` / `ProxyCommand`）
+  **不导入并点名**——本版本不支持跳板机，导进来只会得到一条连不上、且只报通用超时的条目；
+  超过导入上限的条数与「非具体主机」的条数也各自报数。`ProxyJump none` /
+  `ProxyCommand none` 是显式直连，照常导入；
 - **凭据引用选择器（0.4.0，0.17 起与 env 插件解耦）**：SSH 对话框的密码/口令字段旁有筛选框 +
   限高列表，候选 = **凭据存储里已有的引用名**（宿主读 `.credentials.yaml` 的 `refs:` 键，
   **只回名字、绝不含值**）∪ **本机连接簿里已经在用的引用名**；点击即填 `env:NAME`，也可手输
@@ -866,7 +870,11 @@ node scripts/preview.mjs --theme=light   # 浅色主题
   │  /api/dsh-tty/credential-refs（凭据存储里已知的引用名 —— 只要名字，见「凭据存储」）、
   │  /api/dsh-tty/env-vars（env 插件托管变量名）、/api/dsh-tty/known-hosts
   │  （TOFU 指纹预填充，src/known-hosts.ts 解析含 hashed 条目）、
-  │  /api/dsh-tty/shells（Shell 路径候选）——均 loopback 围栏
+  │  /api/dsh-tty/shells（Shell 路径候选）——均 loopback 围栏（加固档：127/8 全段 +
+  │  别名主机名的 DNS 确认 + 来源检查在 DNS 之前，实现只有一份在 @hyzyn/dsh-kit）；
+  │  **改状态的端点另需同源证明**（POST /probe、sftp 的 mkdir/rename/remove/upload、
+  │  local-fs 的 mkdir/rename/remove/transfer）；只读端点（含 sftp /list 与 /download）
+  │  不要求证明，裸 curl 也能读。POST /config 刻意豁免——它是插件被禁用后唯一的恢复入口
   ├─ SFTP（src/sftp.ts，0.7.0）：懒连接池（空闲 120s 回收、断开按需重连、
   │  TOFU 共用）→ POST /api/dsh-tty/sftp/list|mkdir|rename|remove|download|
   │  upload（spec 走体/头，凭证不进 URL；上传下载流式 pipe）+

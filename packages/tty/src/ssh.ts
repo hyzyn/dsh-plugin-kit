@@ -250,7 +250,12 @@ export function classifyError(message: string): string {
     return '认证被拒绝：所有认证方式均失败（用户名/密码/密钥是否正确，或服务端是否允许该认证方式）'
   }
   if (message.includes('Timed out')) {
-    return '超时：主机无响应或认证协商超时（检查地址 / 端口 / 防火墙 / 网络）'
+    // 跳板机提示（项目级 ROADMAP 第 2 项）：企业内网主机几乎都要过 bastion，而本版本
+    // 不支持——「20s 后一句通用超时」正是原文点名的症状。导入侧已改为跳过并明说，
+    // 这里补上手工填地址那条路。
+    return '超时：主机无响应或认证协商超时（检查地址 / 端口 / 防火墙 / 网络。'
+      + '若该主机只能经跳板机访问（~/.ssh/config 里的 ProxyJump / ProxyCommand），本版本尚不支持，'
+      + '见项目级 ROADMAP 第 2 项）'
   }
   const lower = message.toLowerCase()
   if (lower.includes('econnrefused')) return '连接被拒绝（ECONNREFUSED）：端口未监听或服务未启动'

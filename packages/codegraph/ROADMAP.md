@@ -327,6 +327,17 @@ owner 判定；会话目录无有效索引时不写盘（现有行为，保持�
   CG16 清详情、CG17 渲染分支）要覆盖必须引入 react + jsdom，或走 `scripts/preview-card.mjs` 的真渲染
   夹具——DEFECTS.md §4「冻结记录」里那份「补记」已明说刻意没加 devDependency。
 
+## 项目级 ROADMAP 第 4 项（`isConcurrencySafe`）与本包的关系：**不成立**
+
+2026-09-25 复核：`packages/codegraph/src/**` 里**一个 `tools.register` 都没有**——本包只做
+两件事（往 systemPrompt 注入公告 / usage 段、维护 `~/.dsh/cordis.patch.yml` 里的 MCP 托管行），
+工具面全在别人那儿。
+
+模型看到的 `mcp__codegraph__codegraph_explore` 由宿主的 `@deepseek-ai/dsh-mcp-client` 注册
+（per-agent 挂载时也是它自己往 agent scope 里注册），而那份声明**不在本仓**；插件侧也够不到
+已注册的工具（没有改已注册条目的公开 API）。**结论：要它并发安全只能改上游**，本仓如实记录，
+不假装做了——见[项目级 ROADMAP](../../ROADMAP.md) 第 4 项。
+
 ## 建议开工顺序
 
 1. **S 级两件先做**（注入索引门禁 → 诊断包）：✅ 已完成（见「已完成」一节）。

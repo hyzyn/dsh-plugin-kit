@@ -90,7 +90,18 @@ const patchFile = join(dshHome(), 'cordis.patch.yml')
 
 - `isLoopbackRequest(req): boolean` —— loopback-only + 同源围栏：remoteAddress 必须是
   回环地址、Host 必须指向本机（防 DNS rebinding）、`sec-fetch-site: cross-site` 拒绝、
-  `Origin`（若有）必须与 Host 同源。9 个插件的重复围栏收敛于此。
+  `Origin`（若有）必须与 Host 同源。9 个插件的重复围栏收敛于此（**同步档**，语义未动）。
+- **加固档**（2026-09-25 自 `docker` 上提，`docker` · `tty` · `dsh-mcp` 三包在用；
+  两档的边界见 [architecture.md § 一条请求经过什么](../../docs/architecture.md#7-一条请求经过什么)）：
+  - `isLoopbackRequestStrict(req): boolean | Promise<boolean>` —— 127/8 全段 + `::1` +
+    IPv6 映射、`*.localhost` 与 `/etc/hosts` 别名的 DNS 确认（500ms 超时 / 60s LRU）、
+    **来源检查排在 DNS 之前**。字面量环回走同步分支（保持「第一拍就建流」的时序），
+    所以**调用方必须处理 Promise 那一支**；
+  - `hasSameOriginProof(req): boolean` —— 变更端点与长流端点的同源证明：`Sec-Fetch-Site:
+    same-origin` 或同源 `Origin`；两者都缺省时只放行**带宿主 Cookie** 的请求（桌面壳那条
+    转发链会删掉前两个头，见 `docker D139`）；
+  - `originProofHint(req): string` —— 403 的成因摘要（只报三个头的有无，**不落 Cookie 值**）；
+  - `isLoopbackAddress(address): boolean` —— 地址判定本身（127/8 全段 + IPv6 等价形式）。
 - `writeJson(res, status, body, headers?)` —— JSON 响应基线（content-type /
   referrer-policy / cache-control: no-store / x-content-type-options: nosniff），
   `headers` 可覆盖单条。
@@ -101,6 +112,14 @@ const patchFile = join(dshHome(), 'cordis.patch.yml')
 if (!isLoopbackRequest(req)) return writeJson(res, 403, { error: 'forbidden: loopback-only' })
 const body = await readJsonBody(req)
 if (body === undefined) return writeJson(res, 400, { error: 'invalid json body' })
+```
+
+```ts
+// 加固档：字面量环回同步、别名主机名才等 DNS——所以要处理两种返回
+const loopback = isLoopbackRequestStrict(req)
+const ok = loopback instanceof Promise ? await loopback : loopback
+if (!ok) return writeJson(res, 403, { error: 'forbidden: loopback-only' })
+if (!hasSameOriginProof(req)) return writeJson(res, 403, { error: '缺少同源证明' })
 ```
 
 ### !!js 表达式（`js-expr`）

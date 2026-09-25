@@ -1,7 +1,6 @@
 import z from '@deepseek-ai/schemastery';
-import { definePlugin, plainConfig, readSettingsEntry, settingsEntryScope, suppressAutoSettingsPage } from '@hyzyn/dsh-kit';
+import { definePlugin, hasSameOriginProof, isLoopbackRequestStrict, originProofHint, plainConfig, readSettingsEntry, settingsEntryScope, suppressAutoSettingsPage } from '@hyzyn/dsh-kit';
 import { defineTool } from '@deepseek-ai/dsh-tools';
-import * as dns from 'node:dns';
 import { DockerApi, assertBin, assertImageRef, assertName, assertRef, assertSince, createRunner, parseImageHistoryJson, parseImageHistoryText, parseContainerEvent, parseEventsJson, parseImageInspectJson, parseInspectJson, parsePsJson, parseStatsJson, suggestContainerNames, } from './docker.js';
 import { RemoteExec, setCredentialResolver, sshTarget } from './ssh-exec.js';
 const TARGET_SCHEMA = z.object({
@@ -134,170 +133,12 @@ export function sseFrame(event, data) {
 }
 /** SSE 心跳间隔（毫秒）：注释帧只保活，客户端 EventSource 会忽略。 */
 const SSE_HEARTBEAT_MS = 15_000;
-/** HTTP 路由的 loopback 信任围栏（与 tty / dsh-mcp 同思路）。 */
 /*
- * 环回地址判定（D31）：接受 127/8 全段（BSD/Linux 惯例——整个 127.0.0.0/8 都是
- * 环回，此前只认 127.0.0.1 一个字面量）与 IPv6 等价形式（::1、::ffff: 映射）。
+ * 回环围栏与同源证明：**实现已收敛到 `@hyzyn/dsh-kit`**（2026-09-25，项目级 ROADMAP
+ * 第 1 项）。本包是那段加固档的来源，行为一字未改；D31 / D32 / D80 / D110 / D139 五条
+ * 的成因、时序约束与桌面版例外随实现一起搬到了 `packages/kit/src/http.ts`——**那边的
+ * 注释是唯一归宿**，这里只留指针（否则又是「三处各写一份必然漂」）。
  */
-function isLoopbackAddress(address) {
-    if (address === undefined || address === '')
-        return false;
-    let text = address.toLowerCase();
-    if (text.startsWith('::ffff:'))
-        text = text.slice(7);
-    if (text === '::1')
-        return true;
-    const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(text);
-    return v4 !== null && v4[1] === '127';
-}
-/** 别名 Host 解析结果的缓存与超时（D110）：请求路径里的 DNS 不该每请求都打一次，也不该无限等。 */
-const HOST_LOOPBACK_TTL_MS = 60_000;
-const HOST_LOOPBACK_CACHE_MAX = 64;
-const HOST_LOOPBACK_TIMEOUT_MS = 500;
-const hostLoopbackCache = new Map();
-/**
- * 解析一个主机名是否指向本机（D110）。带 500ms 超时与 60s 的 LRU（别名部署下每个请求都要过一次）。
- * **失败与超时不缓存**：解析器恢复后要立刻生效，而不是把一次抖动钉 60 秒。
- */
-async function lookupHostLoopback(host) {
-    const cached = hostLoopbackCache.get(host);
-    if (cached !== undefined && Date.now() - cached.at <= HOST_LOOPBACK_TTL_MS)
-        return cached.loopback;
-    let timer = null;
-    try {
-        const records = await Promise.race([
-            dns.promises.lookup(host, { all: true }),
-            new Promise((_resolve, reject) => {
-                timer = setTimeout(() => reject(new Error(`DNS 解析超时（>${String(HOST_LOOPBACK_TIMEOUT_MS)}ms）`)), HOST_LOOPBACK_TIMEOUT_MS);
-                timer.unref?.();
-            }),
-        ]);
-        const loopback = records.some((record) => isLoopbackAddress(record.address));
-        if (hostLoopbackCache.size >= HOST_LOOPBACK_CACHE_MAX) {
-            const oldest = hostLoopbackCache.keys().next().value;
-            if (oldest !== undefined)
-                hostLoopbackCache.delete(oldest);
-        }
-        hostLoopbackCache.set(host, { at: Date.now(), loopback });
-        return loopback;
-    }
-    catch {
-        return false;
-    }
-    finally {
-        if (timer !== null)
-            clearTimeout(timer);
-    }
-}
-/**
- * Host 是否指向本机（D31）：字面量环回直接判；主机名 / /etc/hosts 别名走一次带超时的
- * DNS 解析。判不出来就拒绝——围栏宁可误拦一个怪别名，不能放行一个能解析到公网的 Host。
- */
-async function hostResolvesToLoopback(hostname) {
-    const host = hostname.toLowerCase().replace(/\.$/, '');
-    if (host === 'localhost' || host.endsWith('.localhost') || isLoopbackAddress(host))
-        return true;
-    return await lookupHostLoopback(host);
-}
-/**
- * loopback 信任围栏（D31）：字面量环回（绝大多数请求）**同步**判定——保持
- * 「请求进来即建流」的原有时序（SSE 测试与 EventSource 都依赖第一拍就写头）；
- * 只有主机名 / /etc/hosts 别名才走异步 DNS 确认。
- *
- * **来源检查必须在解析 Host 之前**（D80）：别名主机名（`127.0.0.1.nip.io`、`/etc/hosts` 里
- * 的别名）走的是异步分支，若在那里提前 return，`Sec-Fetch-Site` 与 Origin 两段检查会被
- * 整段跳过 —— 围栏等于没设，跨站页面就能写 `/config`（它不要求同源证明）。
- */
-function isLoopbackHttp(req) {
-    if (!isLoopbackAddress(req.socket.remoteAddress))
-        return false;
-    const host = req.headers.host;
-    if (typeof host !== 'string')
-        return false;
-    let hostUrl;
-    try {
-        hostUrl = new URL('http://' + host);
-    }
-    catch {
-        return false;
-    }
-    if (req.headers['sec-fetch-site'] === 'cross-site')
-        return false;
-    const origin = req.headers.origin;
-    if (origin !== undefined) {
-        let sameOrigin = false;
-        try {
-            sameOrigin = new URL(origin).host === hostUrl.host;
-        }
-        catch {
-            sameOrigin = false;
-        }
-        if (!sameOrigin)
-            return false;
-    }
-    const hostname = hostUrl.hostname.toLowerCase().replace(/\.$/, '');
-    if (hostname === 'localhost' || hostname.endsWith('.localhost') || isLoopbackAddress(hostname))
-        return true;
-    return hostResolvesToLoopback(hostname);
-}
-/**
- * 「同源证明」（D32）：变更类与长流端点要求请求带 Origin（浏览器 fetch 对
- * cross-site 一定带）或 Sec-Fetch-Site: same-origin 之一。恶意页面可以用
- * `<img src="GET /images/pull/stream?...">` 触发副作用 / 拉起 docker 子进程，
- * 而旧 Safari / 部分 WebView 既不发 Origin 也不发 Sec-Fetch-Site——这两类端点
- * 对「无来源证明」的请求拒绝；只读端点维持 loopback-only 的原信任模型。
- *
- * **桌面版例外（D139）**：桌面壳把页面发往 `dsh-app://app/api/…` 的请求转给真实宿主时
- * **会删掉 `origin` 与 `sec-fetch-site`**（`app.asar/lib/main.js` 的 `forwardWebRequest`，
- * 只重写 `host` / `cookie`，其余头原样带过去），于是这四条 SSE 与八条变更路由在桌面版
- * **全部** 403——症状是日志 / 统计 / 活动 / 拉取四条流无限「连接中断，正在自动重连…」，
- * 而同一个面板的只读路由（`/containers`、`/inspect`…）照常可用（它们不要求证明）。
- *
- * 桌面壳在这条转发链上**必带宿主会话 Cookie**：`hostCookie` 由 `authenticateWebHost()`
- * 拿 `set-cookie` 换来，取不到时 `forwardWebRequest` 整体 503、根本走不到这里。而浏览器
- * 页面**伪造不了 Cookie 头**——跨站请求带不带它由 SameSite 决定，且现代浏览器一定同时带
- * `sec-fetch-site: cross-site`（已被上一条 loopback 围栏拒掉）。
- *
- * 所以把「两条证明都缺省」收窄成「都缺省 **且** 带宿主 Cookie」：桌面版放行、旧 Safari /
- * 裸 curl 仍然拒。这不是 D32 的松动——本函数从来没挡住本机进程（它们随时可以自带
- * `Origin: http://127.0.0.1:<port>` 过闸），防的一直是**浏览器**，而 Cookie 恰恰是浏览器
- * 侧最不可伪造的那一件。
- */
-function hasSameOriginProof(req) {
-    const site = req.headers['sec-fetch-site'];
-    if (typeof site === 'string' && site === 'same-origin')
-        return true;
-    const origin = req.headers.origin;
-    if (origin !== undefined) {
-        // Origin 出现就一律以它为准：非字符串 / 空串 / 不同源都拒，**不回落**到 Cookie——
-        // 否则一个畸形 Origin 反倒成了绕过同源比对的入口
-        if (typeof origin !== 'string' || origin === '')
-            return false;
-        const host = req.headers.host;
-        if (typeof host !== 'string')
-            return false;
-        try {
-            return new URL(origin).host === host;
-        }
-        catch {
-            return false;
-        }
-    }
-    const cookie = req.headers.cookie;
-    return typeof cookie === 'string' && cookie.trim() !== '';
-}
-/**
- * 403 的成因摘要（D139）：这次桌面版四条流全断，宿主侧**一条日志都没有**，只能靠读客户端
- * 源码 + 拆 `app.asar` 反推。以后同类问题第一眼就能定位：只报这三个头「有没有」，
- * **绝不落 Cookie 的值**（它是宿主会话凭据）。
- */
-function originProofHint(req) {
-    const has = (name) => {
-        const value = req.headers[name];
-        return typeof value === 'string' && value !== '' ? '有' : '无';
-    };
-    return `origin=${has('origin')} sec-fetch-site=${has('sec-fetch-site')} cookie=${has('cookie')}`;
-}
 function writeJson(res, status, body) {
     res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'referrer-policy': 'no-referrer' });
     res.end(JSON.stringify(body));
@@ -583,8 +424,12 @@ export function resolveTarget(target, books) {
              * 但那张卡片管的是 tty 自己的连接簿条目，改不了 docker 目标引用的名字：用户照着找
              * 只会扑空（实测：目标引用 HS-248、连接簿里只有 HS_248_ADMIN，进 tty 卡片什么也改不了）。
              * 真正要改的字段是**本卡片这条目标的「连接簿」下拉**，所以先把这里说清楚，再说备选。
+             *
+             * 末句是给跳板机那类情况留的出口（项目级 ROADMAP 第 2 项）：tty 的 ~/.ssh/config
+             * 导入会**跳过**依赖 ProxyJump / ProxyCommand 的块，那种主机的条目根本不会进连接簿
+             * ——用户看到「条目不存在」时第一反应是「我明明配过」。
              */
-            return { error: `目标「${target.name}」引用的连接簿条目不存在：${target.book}（在本卡片这条目标的「连接簿」下拉里改选一个已有条目；或把 tty 终端面板的连接簿补一个同名条目；也可清空下拉改为手填 host/username）` };
+            return { error: `目标「${target.name}」引用的连接簿条目不存在：${target.book}（在本卡片这条目标的「连接簿」下拉里改选一个已有条目；或把 tty 终端面板的连接簿补一个同名条目；也可清空下拉改为手填 host/username。若该主机在 ~/.ssh/config 里配了 ProxyJump / ProxyCommand，导入会跳过它——跳板机本版本尚不支持，见项目级 ROADMAP 第 2 项）` };
         }
         return { resolved: { name: target.name, kind: 'ssh', spec } };
     }
@@ -1299,6 +1144,8 @@ const plugin = definePlugin({
             };
             add('docker_targets', defineTool({
                 name: 'docker_targets',
+                // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
+                isConcurrencySafe: () => true,
                 description: '列出已配置的 Docker 目标（本机 / SSH 主机），可选探测每个目标的 docker daemon 是否可达。其他 docker_* 工具的 target 参数取自这里。',
                 parameters: { probe: { type: 'boolean', description: 'true 时逐个探测 docker 版本与 daemon 可达性（SSH 目标会建连接，较慢）' } },
                 output: {
@@ -1365,6 +1212,8 @@ const plugin = definePlugin({
             }));
             add('docker_ps', defineTool({
                 name: 'docker_ps',
+                // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
+                isConcurrencySafe: () => true,
                 description: '列出容器（默认只列运行中的；all:true 含已停止）。**target 传 `*` = 一次列出所有目标**（跨主机，按目标分组返回，单个目标不可达不影响其他目标）。排障第一步。注意：`ports` 为空**不等于**「没暴露端口」——host 网络容器的端口就是宿主机端口、ps 里没有映射，这种情况会给 `net` 字段（如 `net:"host"`），别为此再逐个 docker_inspect。',
                 parameters: {
                     target: { type: 'string', description: '目标名；传 `*` 或省略（仅一个目标时）表示当前目标/全部目标（docker_targets 列出）' },
@@ -1480,6 +1329,8 @@ const plugin = definePlugin({
             }));
             add('docker_attention', defineTool({
                 name: 'docker_attention',
+                // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
+                isConcurrencySafe: () => true,
                 description: '列出「需要关注」的容器：不健康（unhealthy）/ 反复重启 / 被 OOM 杀 / 非零退出 / 僵死。target 传 `*` 时**跨所有目标聚合**（单目标不可达不影响其他目标）。排障入口：不确定从哪台机器看起时先调它。',
                 parameters: {
                     target: { type: 'string', description: '目标名；传 `*` 表示全部目标（docker_targets 列出）' },
@@ -1622,6 +1473,8 @@ const plugin = definePlugin({
             }));
             add('docker_inspect', defineTool({
                 name: 'docker_inspect',
+                // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
+                isConcurrencySafe: () => true,
                 description: '读取某个容器的权威详情（docker inspect）：状态/健康检查/退出码/重启次数/端口映射/挂载/网络/启动命令。',
                 parameters: { target: targetParam, id: { type: 'string', required: true, description: '容器名或 ID（来自 docker_ps）' } },
                 output: {
@@ -1676,6 +1529,8 @@ const plugin = definePlugin({
             }));
             add('docker_logs', defineTool({
                 name: 'docker_logs',
+                // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
+                isConcurrencySafe: () => true,
                 description: '读取某个容器的日志尾部（docker logs --tail）。默认行数取插件配置 logTailDefault（出厂 200）、不带时间戳；可加 timestamps / since。日志可能很大，优先用 tail 而不是全量。',
                 parameters: {
                     target: targetParam,
@@ -1724,6 +1579,8 @@ const plugin = definePlugin({
             }));
             add('docker_stats', defineTool({
                 name: 'docker_stats',
+                // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
+                isConcurrencySafe: () => true,
                 description: '读取容器实时资源占用（docker stats --no-stream）：CPU%、内存用量/上限、网络与磁盘 IO、PIDs。不传 ids 时返回该目标上全部运行中容器。',
                 parameters: {
                     target: targetParam,
@@ -1794,6 +1651,8 @@ const plugin = definePlugin({
             }));
             add('docker_events', defineTool({
                 name: 'docker_events',
+                // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
+                isConcurrencySafe: () => true,
                 description: '读取某个目标最近的容器事件（docker events 快照）：start / die / stop / kill / oom / health_status / destroy / rename / update 九类，已过滤掉 exec_* 等噪音。默认看最近 10m。要持续观察请让用户打开面板容器列表的「活动」条。',
                 parameters: {
                     target: targetParam,
@@ -1857,6 +1716,8 @@ const plugin = definePlugin({
             }));
             add('docker_images', defineTool({
                 name: 'docker_images',
+                // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
+                isConcurrencySafe: () => true,
                 description: '列出某个目标上的镜像（仓库:标签、大小、创建时间、短 ID）。',
                 parameters: { target: targetParam },
                 output: {
@@ -1908,6 +1769,8 @@ const plugin = definePlugin({
             }));
             add('docker_image_inspect', defineTool({
                 name: 'docker_image_inspect',
+                // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
+                isConcurrencySafe: () => true,
                 description: '读取某个镜像的详情（docker image inspect）与构建历史（docker history）：大小 / 创建时间 / 平台 / 层数与层列表 / 入口与命令 / 暴露端口 / digest / 每步构建命令与大小。',
                 parameters: {
                     target: targetParam,
@@ -1944,6 +1807,8 @@ const plugin = definePlugin({
             }));
             add('docker_networks', defineTool({
                 name: 'docker_networks',
+                // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
+                isConcurrencySafe: () => true,
                 description: '列出某个目标上的 docker 网络（名称 / 驱动 / 范围 / 是否 internal / 短 ID）。接入的容器列表要进详情页看，不在列表里逐条 inspect。',
                 parameters: { target: targetParam },
                 output: {
@@ -1997,6 +1862,8 @@ const plugin = definePlugin({
             }));
             add('docker_volumes', defineTool({
                 name: 'docker_volumes',
+                // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
+                isConcurrencySafe: () => true,
                 description: '列出某个目标上的 docker 卷（名称 / 驱动 / 范围 / 挂载点）。',
                 parameters: { target: targetParam },
                 output: {
@@ -2638,7 +2505,7 @@ const plugin = definePlugin({
                     kind: 'prefix',
                     path: ROUTE_PREFIX,
                     handler: async (req, res) => {
-                        const loopback = isLoopbackHttp(req);
+                        const loopback = isLoopbackRequestStrict(req);
                         // 字面量环回同步判定（保持「第一拍就建流」的时序）；仅别名主机名才等 DNS
                         if (loopback instanceof Promise) {
                             if (!(await loopback)) {
