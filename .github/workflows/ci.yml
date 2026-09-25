@@ -77,6 +77,14 @@ jobs:
       - name: Check doc links and anchors
         if: matrix.os == 'ubuntu-latest'
         run: node scripts/check-doc-links.mjs
+      # 防回归：面板端 i18n 的目录（zh/en）必须键集一致、占位符一致，且代码里 t('…')
+      # 用到的键全都有定义——第三条是主要理由：写错一个字母只会让界面露出键名，
+      # 没有任何测试会红。自检先跑（闸门自身的判据也要有反例）。
+      - name: Check panel i18n catalogs
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          node scripts/check-i18n.mjs --self-test
+          node scripts/check-i18n.mjs
       # 防回归：仓库里不得出现公网 IP（文件内容 + 提交信息）。钩子拦本地提交，CI 再兜一道
       # ——`git commit --no-verify`、用别的工具提交、或在别的机器上提交都能绕过钩子，而历史
       # 一旦脏了只能重写（所有 sha 变化 + 文档引用失效 + 远端 force push）。

@@ -116,6 +116,9 @@
   [conventions.md § 客户端半体](./conventions.md#客户端半体两条硬规矩)。
 - **三代插槽**：客户端半体同时注册 `plugins.row.config`（官方新版行配置）、
   `settings.kit.item`、`settings.plugin.item`，一份产物在各代宿主上都能用。
+- **界面文案的语言**：只认宿主提供的 `ctx.locale`（`@deepseek-ai/dsh-client-locale`），
+  每个包自带 zh/en 目录、按同一段片段注册——方案与闸门见
+  [i18n.md](./i18n.md)（本文不重复）。
 
 ## 7. 一条请求经过什么
 

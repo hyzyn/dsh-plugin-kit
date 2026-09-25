@@ -38,6 +38,56 @@ window.__ModuleLoader__.load({
       document.head.appendChild(styleEl)
     }
 
+    /* ================================ 国际化 ================================ */
+
+    /*
+     * 界面文案走宿主 `@deepseek-ai/dsh-client-locale` 的目录（方案见 docs/i18n.md，
+     * 静态校验见 `scripts/check-i18n.mjs`）。目录内联在 client.js 里——本包没有构建步骤，
+     * client.js 就是源；凭空建 client-src/ 反而会让「宿主地址来源」静态规则不再覆盖它。
+     */
+    /* ==== dsh-i18n:begin ==== */
+    const I18N_NS = 'kit-settings'
+    const I18N_ZH = {
+      'section.title': '插件配置',
+      'section.intro': 'dsh-plugin-kit 插件族的配置入口：环境变量、MCP、Prompt、Profile、RSS、Codegraph、Docker、终端面板。',
+      'list.empty': '暂无可用配置项：请先安装至少一个 kit 插件。',
+      'error.render': '配置项渲染失败：',
+    }
+    const I18N_EN = {
+      'section.title': 'Plugin configuration',
+      'section.intro': 'Configuration entries for the dsh-plugin-kit family: env, MCP, Prompt, Profile, RSS, Codegraph, Docker and the terminal panel.',
+      'list.empty': 'No configuration entries available — install at least one kit plugin first.',
+      'error.render': 'Failed to render the configuration entry: ',
+    }
+    /* ==== dsh-i18n:end ==== */
+
+    /** 占位符替换：`{name}` → params.name（缺参留空，不抛错——文案不该打死界面）。 */
+    function i18nFormat(text, params) {
+      if (params === undefined) return text
+      return String(text).replace(/\{(\w+)\}/g, (_match, name) => (params[name] === undefined ? '' : String(params[name])))
+    }
+
+    /** 中文兜底：老宿主（DSH ≤0.1.5）没有 locale 服务时，界面不能变成一串键名。 */
+    function i18nFallback(key, params) {
+      return i18nFormat(I18N_ZH[key] !== undefined ? I18N_ZH[key] : key, params)
+    }
+
+    let t = i18nFallback
+
+    /** 注册目录并绑定翻译函数（动态 inject：老宿主上保持中文兜底，卡片照挂）。 */
+    function installI18n(ctx) {
+      ctx.inject(['locale'], (i18nCtx) => {
+        const disposeZh = i18nCtx.locale.register(I18N_NS, 'zh', I18N_ZH)
+        const disposeEn = i18nCtx.locale.register(I18N_NS, 'en', I18N_EN)
+        t = i18nCtx.locale.bind(I18N_NS)
+        return () => {
+          disposeEn()
+          disposeZh()
+          t = i18nFallback
+        }
+      })
+    }
+
     /* ============================ 设置大类页面 ============================ */
 
     /**
@@ -53,7 +103,7 @@ window.__ModuleLoader__.load({
         } catch (error) {
           body = jsx('p', {
             className: 'kit_note',
-            children: '配置项渲染失败：' + String((error && error.message) || error),
+            children: t('error.render') + String((error && error.message) || error),
           })
         }
       }
@@ -63,17 +113,17 @@ window.__ModuleLoader__.load({
           jsxs('header', {
             className: 'kit_head',
             children: [
-              jsx('h2', { className: 'kit_title', children: '插件配置' }),
+              jsx('h2', { className: 'kit_title', children: t('section.title') }),
               jsx('p', {
                 className: 'kit_intro',
-                children: 'dsh-plugin-kit 插件族的配置入口：环境变量、MCP、Prompt、Profile、RSS、Codegraph、Docker、终端面板。',
+                children: t('section.intro'),
               }),
             ],
           }),
           jsx('ul', {
             className: 'kit_list',
             children: body === null
-              ? jsx('li', { className: 'kit_note', children: '暂无可用配置项：请先安装至少一个 kit 插件。' })
+              ? jsx('li', { className: 'kit_note', children: t('list.empty') })
               : body,
           }),
         ],
@@ -85,6 +135,7 @@ window.__ModuleLoader__.load({
     exports.inject = ['slots']
 
     exports.apply = (ctx) => {
+      installI18n(ctx)
       ctx.effect(() => {
         ensureStyle()
         return () => {
@@ -100,7 +151,7 @@ window.__ModuleLoader__.load({
         id: 'kit',
         // 15 = 官方「内置插件」，20 = 「Agent 预设」；16 让本行紧随内置插件之后。
         order: 16,
-        label: () => '插件配置',
+        label: () => t('section.title'),
         children: {
           'settings.kit.item': { kind: 'list', scope: 'root' },
         },

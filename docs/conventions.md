@@ -23,6 +23,7 @@
 | 跨包路线图 | L0 [`ROADMAP.md`](../ROADMAP.md) |
 | 跨包通用故障诊断路径 | L0 [`docs/troubleshooting.md`](./troubleshooting.md) |
 | **跨包行为约定**（回环围栏 / body 围栏 / 截断信号） | L0 [`docs/architecture.md` § 7](./architecture.md#7-一条请求经过什么) |
+| **面板端 GUI 的文案与语言（i18n）** | L0 [`docs/i18n.md`](./i18n.md)（方案 + 规范片段 + 进度表） |
 | AI 真机测试约束 | L0 [`docs/agent-real-test.md`](./agent-real-test.md) |
 | 术语 | L0 [`docs/glossary.md`](./glossary.md) |
 | 发布流程 | L0 [`RELEASING.md`](../RELEASING.md) |
@@ -197,6 +198,26 @@ origin 上。从 `location` 推出来的地址在浏览器里完全正常、**�
 （请求链路图 + 每条对应的历史事故），唯一归宿在
 [architecture.md § 一条请求经过什么](./architecture.md#7-一条请求经过什么) —— 那边上下文更完整，
 本文只留这个检索入口，不复制。
+
+## 面板端 i18n
+
+**界面文案的语言只认宿主**（`@deepseek-ai/dsh-client-locale` 的 `ctx.locale`），
+每个包自带 `zh` + `en` 两份目录、按同一段片段注册。**方案、规范片段、键名规范、
+目录放哪、范围纪律与迁移进度表全部在 [docs/i18n.md](./i18n.md)**——那边是唯一归宿，
+本文只留这四条硬规矩：
+
+1. **不引共享模块、不建新包、不给手写 `client.js` 的包加构建步骤**：插件之间不许互相
+   `import`，`kit` 是宿主半体库（入口 import 了 `node:*`），能在浏览器侧共享的通道只有
+   宿主服务本身。
+2. **不自己读 `navigator.language`**：语言来源（持久化偏好 / 浏览器推导 / 原生壳注入）
+   已经是宿主的职责，插件再推一遍就是两套不兼容的写法。
+3. **目录必须双份且机器对得上**：`node scripts/check-i18n.mjs` 是唯一闸门
+   （CI ubuntu step + pre-commit；纯逻辑用例在 `scripts/test/i18n.test.ts`）——
+   键集、占位符、以及**代码里 `t('…')` 用到的键必须有定义**。第三条是主要理由：
+   写错一个字母只会让界面露出键名，没有任何测试会红。
+4. **只翻浏览器半体的界面文案**：工具 `description:` / `*_GUIDANCE` / 工具输出是**模型
+   读的提示词**，翻它等于改提示词；宿主半体的报错正文保持中文（`ctx.locale` 是浏览器侧
+   服务，宿主半体看不到它）。
 
 ## 真机脚本与 CI 接线
 

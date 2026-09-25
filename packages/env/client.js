@@ -62,6 +62,84 @@ window.__ModuleLoader__.load({
       document.head.appendChild(styleEl)
     }
 
+    /* ================================ 国际化 ================================ */
+
+    /*
+     * 界面文案走宿主 `@deepseek-ai/dsh-client-locale` 的目录（方案见 docs/i18n.md）。
+     * 下面这一对目录由 `scripts/check-i18n.mjs` 静态校验：键集必须与英文一一对应、
+     * `{name}` 占位符两边一致、代码里 `t('…')` 用到的键必须在这里有定义。
+     * 目录**内联在 client.js 里**（不是 client-src/）：本包没有构建步骤，client.js 就是源；
+     * 而且一旦凭空建出 client-src/，仓库级「宿主地址来源」静态规则会停止覆盖 client.js。
+     */
+    /* ==== dsh-i18n:begin ==== */
+    const I18N_NS = 'env'
+    const I18N_ZH = {
+      'card.name': '环境变量 / 密钥管理',
+      'card.desc': '管理环境变量与密钥：普通值或 js: 表达式；密钥值存入官方凭据存储，保存后写入 process.env。',
+      'panel.title': '环境变量列表',
+      'btn.add': '+ 新增',
+      'btn.save': '保存',
+      'btn.saving': '保存中…',
+      'btn.remove': '删除',
+      'check.secret': '密钥',
+      'list.loading': '加载中…',
+      'list.empty': '暂无环境变量，点击“+ 新增”添加。',
+      'placeholder.secretStored': '已存入官方凭据存储，留空保持不变',
+      'placeholder.secretSaved': '已保存，留空保存＝保持不变',
+      'msg.saved': '已保存',
+      'msg.savedApplied': '已保存，并已写入 process.env',
+    }
+    const I18N_EN = {
+      'card.name': 'Environment & secrets',
+      'card.desc': 'Manage environment variables and secrets: plain values or js: expressions; secret values go into the official credential store and are written to process.env on save.',
+      'panel.title': 'Environment variables',
+      'btn.add': '+ Add',
+      'btn.save': 'Save',
+      'btn.saving': 'Saving…',
+      'btn.remove': 'Remove',
+      'check.secret': 'Secret',
+      'list.loading': 'Loading…',
+      'list.empty': 'No environment variables yet — click “+ Add”.',
+      'placeholder.secretStored': 'Stored in the official credential store; leave blank to keep it',
+      'placeholder.secretSaved': 'Saved; leave blank to keep it',
+      'msg.saved': 'Saved',
+      'msg.savedApplied': 'Saved and written to process.env',
+    }
+    /* ==== dsh-i18n:end ==== */
+
+    /** 占位符替换：`{name}` → params.name（缺参留空，不抛错——文案不该打死界面）。 */
+    function i18nFormat(text, params) {
+      if (params === undefined) return text
+      return String(text).replace(/\{(\w+)\}/g, (_match, name) => (params[name] === undefined ? '' : String(params[name])))
+    }
+
+    /** 中文兜底：老宿主（DSH ≤0.1.5）没有 locale 服务时，界面不能变成一串键名。 */
+    function i18nFallback(key, params) {
+      return i18nFormat(I18N_ZH[key] !== undefined ? I18N_ZH[key] : key, params)
+    }
+
+    let t = i18nFallback
+
+    /**
+     * 注册目录并绑定翻译函数。**动态 inject**：老宿主上回调永不触发、`t` 保持中文兜底；
+     * 写成静态 `inject: ['locale']` 会让整张卡片在老宿主上根本不挂。
+     *
+     * 语言切换不用自己订阅：插槽 outlet 随 locale revision 重渲染（renderer 的
+     * `useLocaleRevision`），而 `bind()` 返回的翻译函数在**调用时**读当前语言。
+     */
+    function installI18n(ctx) {
+      ctx.inject(['locale'], (i18nCtx) => {
+        const disposeZh = i18nCtx.locale.register(I18N_NS, 'zh', I18N_ZH)
+        const disposeEn = i18nCtx.locale.register(I18N_NS, 'en', I18N_EN)
+        t = i18nCtx.locale.bind(I18N_NS)
+        return () => {
+          disposeEn()
+          disposeZh()
+          t = i18nFallback
+        }
+      })
+    }
+
     /* ================================ API ================================ */
 
     async function api(path, options) {
@@ -133,7 +211,7 @@ window.__ModuleLoader__.load({
           })
           setEntries(data.entries || entries)
           setFile(data.file || file)
-          setOk('已保存' + (data.applied ? '，并已写入 process.env' : ''))
+          setOk(data.applied ? t('msg.savedApplied') : t('msg.saved'))
           if (Array.isArray(data.warnings) && data.warnings.length > 0) setError(data.warnings.join('\n'))
         } catch (err) {
           setError(err.message)
@@ -143,7 +221,7 @@ window.__ModuleLoader__.load({
       }
 
       if (view === 'summary') {
-        return '管理环境变量与密钥：普通值或 js: 表达式；密钥值存入官方凭据存储，保存后写入 process.env。'
+        return t('card.desc')
       }
 
       return jsxs(pageView ? 'div' : 'li', {
@@ -158,8 +236,8 @@ window.__ModuleLoader__.load({
               jsxs('span', {
                 className: 'env_cardHeadText',
                 children: [
-                  jsx('span', { className: 'env_cardName', children: '环境变量 / 密钥管理' }),
-                  jsx('span', { className: 'env_cardDescription', children: '管理环境变量与密钥：普通值或 js: 表达式；密钥值存入官方凭据存储，保存后写入 process.env。' }),
+                  jsx('span', { className: 'env_cardName', children: t('card.name') }),
+                  jsx('span', { className: 'env_cardDescription', children: t('card.desc') }),
                 ],
               }),
               jsx('span', { className: 'dshkit_badge', children: 'Kit' }),
@@ -182,28 +260,28 @@ window.__ModuleLoader__.load({
                 jsxs('div', {
                   className: 'env_panelHeader',
                   children: [
-                    jsx('span', { className: 'env_panelTitle', children: '环境变量列表' }),
+                    jsx('span', { className: 'env_panelTitle', children: t('panel.title') }),
                     jsx('span', { className: 'env_subtitle', children: file }),
                     jsx('div', { className: 'env_toolbarSpacer' }),
                     jsx('button', {
                       type: 'button',
                       className: 'env_btnGhost',
                       onClick: addEntry,
-                      children: '+ 新增',
+                      children: t('btn.add'),
                     }),
                     jsx('button', {
                       type: 'button',
                       className: 'env_btn',
                       disabled: saving,
                       onClick: save,
-                      children: saving ? '保存中…' : '保存',
+                      children: saving ? t('btn.saving') : t('btn.save'),
                     }),
                   ],
                 }),
-                loading ? jsx('div', { className: 'env_loading', children: '加载中…' }) : null,
+                loading ? jsx('div', { className: 'env_loading', children: t('list.loading') }) : null,
                 error ? jsx('p', { className: 'env_error', children: error }) : null,
                 ok ? jsx('p', { className: 'env_ok', children: ok }) : null,
-                entries.length === 0 && !loading ? jsx('div', { className: 'env_empty', children: '暂无环境变量，点击“+ 新增”添加。' }) : null,
+                entries.length === 0 && !loading ? jsx('div', { className: 'env_empty', children: t('list.empty') }) : null,
                 entries.length > 0 ? jsx('div', {
                   className: 'env_list',
                   children: entries.map((entry, index) => jsxs('div', {
@@ -219,7 +297,7 @@ window.__ModuleLoader__.load({
                       jsx('input', {
                         className: 'env_input',
                         placeholder: entry.secret && entry.value == null
-                          ? (entry.storage === 'refs' ? '已存入官方凭据存储，留空保持不变' : '已保存，留空保存＝保持不变')
+                          ? (entry.storage === 'refs' ? t('placeholder.secretStored') : t('placeholder.secretSaved'))
                           : 'value 或 js:process.env.XXX',
                         type: entry.secret ? 'password' : 'text',
                         value: entry.value ?? '',
@@ -233,14 +311,14 @@ window.__ModuleLoader__.load({
                             checked: entry.secret === true,
                             onChange: (event) => updateEntry(index, { secret: event.target.checked }),
                           }),
-                          '密钥',
+                          t('check.secret'),
                         ],
                       }),
                       jsx('button', {
                         type: 'button',
                         className: 'env_btnGhost env_btnDanger',
                         onClick: () => removeEntry(index),
-                        children: '删除',
+                        children: t('btn.remove'),
                       }),
                     ],
                   }, 'env-row-' + index)),
@@ -267,6 +345,7 @@ window.__ModuleLoader__.load({
     ]
 
     exports.apply = (ctx) => {
+      installI18n(ctx)
       ctx.effect(() => {
         ensureStyle()
         return () => {
@@ -288,7 +367,7 @@ window.__ModuleLoader__.load({
         name: 'settings.kit.item',
         id: 'env-manager',
         order: 10,
-        label: () => "环境变量 / 密钥管理",
+        label: () => t('card.name'),
       }, EnvSettingsCard))
       // DSH ≤0.1.5：设置 → 插件 的「插件配置」标签页，keyed 插槽按 settings 命名空间派发。
       ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
