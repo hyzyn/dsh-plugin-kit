@@ -306,6 +306,320 @@ window.__ModuleLoader__.load({
       return body
     }
 
+    /* ================================ 国际化 ================================ */
+
+    /*
+     * 界面文案走宿主 `@deepseek-ai/dsh-client-locale` 的目录（方案见 docs/i18n.md）。
+     * 下面这一对目录由 `scripts/check-i18n.mjs` 静态校验：键集必须与英文一一对应、
+     * `{name}` 占位符两边一致、代码里 `t('…')` 用到的键必须在这里有定义。
+     * 目录**内联在 client.js 里**（不是 client-src/）：本包没有构建步骤，client.js 就是源；
+     * 而且一旦凭空建出 client-src/，仓库级「宿主地址来源」静态规则会停止覆盖 client.js。
+     */
+    /* ==== dsh-i18n:begin ==== */
+    const I18N_NS = 'rss'
+    const I18N_ZH = {
+      'card.name': 'RSS / 新闻聚合',
+      'card.desc': '订阅 RSS/Atom，管理渠道与分类，每天自动汇总「今日值得读」。',
+      'panel.title': 'RSS 设置',
+      'panel.digest': '今日值得读',
+      'panel.unsaved': '未保存修改',
+      'panel.unsavedTitle': '有未保存的修改',
+      'panel.channels': '订阅渠道',
+      'panel.channelsHint': '内置渠道和自定义渠道统一管理；拖拽手柄可排序，常用修改会自动保存。',
+      'panel.channelCount': '{count} 个',
+      'panel.disabledBuiltins': '未启用内置渠道',
+      'panel.builtin': '内置',
+      'panel.custom': '自定义',
+      'panel.importHint': '支持从任何 RSS 阅读器 / 网站导入订阅（OPML 文件或 URL 列表），也可导出给其他应用使用；导入后会自动校验并保存。',
+      'panel.categories': '新闻分类',
+      'panel.categoriesHint': '维护分类标签；上方渠道的「分类」从这里选择，digest 按分类分组展示。',
+      'panel.aggregate': '聚合设置',
+      'panel.maxPerSource': '每源条数',
+      'panel.maxTotal': '每日总条数',
+      'panel.dailyTime': '每日生成时间',
+      'panel.aggregateHint': '修改后点击顶部「保存」，保存成功会自动重新抓取当天 digest。',
+      'panel.ai': 'AI 摘要',
+      'panel.aiEnabled': '启用 AI 摘要：生成 digest 时调用宿主模型为每条资讯生成一句话摘要（单条失败只回落原文摘要，不影响其它条目）',
+      'panel.aiProvider': '模型 Provider',
+      'panel.aiModel': '模型 Model',
+      'panel.aiMaxItems': '最多摘要条数',
+      'panel.aiHint': 'Provider / Model 需成对填写：都留空时跟随宿主默认模型，只填一个保存时整段 AI 配置会被忽略并提示。摘要结果按条目缓存 30 天（最多 500 条，存在 digest 目录的 ai-cache.json），重复条目不会重复请求。',
+      'panel.plugin': '插件',
+      'panel.pluginEnabled': '启用插件（保存后热生效：关闭即收起侧栏入口、停用每日汇总与 agent 公告；本卡片保持可用）',
+      'panel.entryCount': '{count} 条',
+      'panel.feedCount': '{count} 个订阅源',
+      'panel.generatedAt': '生成于 {time}',
+      'panel.dailyAt': '每日 {time} 自动生成',
+      'panel.visibleCount': '{visible} / {total} 条',
+      'panel.uncategorized': '未分类',
+      'panel.allCategories': '全部分类',
+      'panel.allSources': '全部来源',
+      'panel.catalogStats': '共 {total} 条 · 已订阅 {subscribed} · 已选 {selected}',
+      'panel.catalogHintBefore': '目录可来自多个来源：内置 ',
+      'panel.catalogHintAfter': ' 精选列表 + 你添加的其他 OPML 目录；搜索结果统一汇总并标注来源，可一键加入自定义渠道并保存。',
+      'panel.builtinSource': '内置 {name}',
+      'panel.fixed': '固定',
+      'panel.fromCatalogTitle': '来自目录 {name}',
+      'panel.fromCatalog': '来自 {name}',
+      'panel.unknownCatalog': '未知',
+      'panel.feedCatalog': '订阅源目录',
+      'panel.errorDetail': '：{error}',
+      'btn.refresh': '刷新',
+      'btn.discard': '放弃修改',
+      'btn.save': '保存',
+      'btn.viewList': '查看列表',
+      'btn.copyMarkdown': '复制 Markdown',
+      'btn.dragToSort': '拖拽排序',
+      'btn.delete': '删除',
+      'btn.addSource': '+ 添加源',
+      'btn.importOpml': '导入 OPML',
+      'btn.hidePasteImport': '收起粘贴导入',
+      'btn.pasteUrlList': '粘贴 URL 列表',
+      'btn.exportOpml': '导出 OPML',
+      'btn.feedCatalog': '订阅源目录',
+      'btn.import': '导入',
+      'btn.selectAll': '全选',
+      'btn.clear': '清空',
+      'btn.addSelected': '添加选中并保存',
+      'btn.add': '添加',
+      'btn.added': '已添加',
+      'btn.addCatalog': '添加目录',
+      'btn.cancel': '取消',
+      'btn.remove': '移除',
+      'btn.close': '关闭',
+      'btn.all': '全部',
+      'btn.viewMore': '查看更多',
+      'btn.removeCategory': '删除分类 {category}',
+      'btn.bulkSelect': '用于批量添加',
+      'placeholder.name': '名称',
+      'placeholder.filterChannels': '筛选名称 / URL…',
+      'placeholder.importList': '每行一个订阅地址；也可用「名称, 地址」格式：',
+      'placeholder.catalogSearch': '搜索目录，如 arxiv、Hacker News…',
+      'placeholder.catalogName': '目录名称，如：我的精选',
+      'placeholder.catalogUrl': 'OPML 目录 URL（https://…/feeds.opml）',
+      'placeholder.newCategory': '新分类，例如：AI',
+      'placeholder.modalSearch': '搜索标题 / 摘要 / 来源…',
+      'placeholder.aiModel': '留空跟随宿主默认模型',
+      'list.loading': '加载中…',
+      'list.loadingCatalog': '加载目录…',
+      'list.loadFailed': '加载失败',
+      'list.pendingSave': '待保存 · 保存后读取',
+      'list.emptyChannels': '没有匹配的渠道。',
+      'list.noCategories': '暂无分类。',
+      'list.noDigest': '还没有生成 digest，点击「刷新」抓取。',
+      'list.noDigestItems': '今日暂无可展示条目。',
+      'list.noItemsToday': '今天暂无条目。',
+      'list.noMatchingItems': '没有匹配的条目。',
+      'list.noMatchingFeeds': '没有匹配的订阅源。',
+      'list.catalogIdle': '输入关键词搜索精选订阅源，或勾选后批量添加。',
+      'list.catalogDisabled': '目录已停用（配置 includeCatalog: false）。',
+      'list.untitled': '(无标题)',
+      'msg.refreshing': '刷新中…',
+      'msg.refreshingFeeds': '正在刷新订阅源',
+      'msg.refreshingFeedsAt': '正在刷新订阅源 · 当前数据生成于 {clock}',
+      'msg.refreshingTitle': '正在刷新订阅源：抓取全部订阅源并重新生成今日 digest。',
+      'msg.refreshingTitleData': '下面仍是 {stamp} 生成的数据，刷新完成后整体替换。',
+      'msg.saving': '保存中…',
+      'msg.refreshed': '已刷新',
+      'msg.saved': '已保存，热生效',
+      'msg.savedWithWarnings': '已保存：{warnings}',
+      'msg.aiFallback': '{count} 条失败，已回落到原文摘要',
+      'msg.aiError': 'AI 摘要：{reason}',
+      'msg.fetchFailedCount': '{count} 个订阅源抓取失败',
+      'msg.fetchFailedCountDetail': '{count} 个订阅源抓取失败：{preview}',
+      'msg.fetchFailedList': '抓取失败：{list}',
+      'msg.nothingToCopy': '没有可复制的内容',
+      'msg.copied': '已复制',
+      'msg.copyFailed': '复制失败',
+      'msg.nothingToImport': '没有可导入的内容',
+      'msg.importParseFailed': '未能从内容中解析出订阅源，请检查格式',
+      'msg.noNewSources': '没有新增订阅源（{count} 个已订阅或无效）',
+      'msg.importSkipped': '，跳过 {count} 个已存在',
+      'msg.importedSaving': '已导入 {added} 个订阅源{skipped}，正在保存…',
+      'msg.importedPending': '已导入 {added} 个订阅源{skipped}，点击「保存」校验生效',
+      'msg.exportedCount': '已导出 {count} 个订阅源',
+      'msg.allSubscribed': '所选条目均已订阅',
+      'msg.nothingSelected': '未选择条目',
+      'msg.addSkipped': '，跳过 {count} 个已订阅',
+      'msg.addedSaving': '已添加 {added} 个订阅源{skipped}，正在保存…',
+      'msg.catalogExists': '该目录已存在',
+      'msg.catalogAdded': '目录已加入，正在保存…',
+      'msg.catalogRemoved': '目录已移除，正在保存…',
+      'msg.confirmDiscard': '放弃未保存的修改并重新加载？',
+      'msg.opmlTitle': 'DSH RSS 订阅源',
+      'error.catalogNameRequired': '请填写目录名称',
+      'error.catalogUrlRequired': '请填写 OPML 目录 URL',
+      'error.catalogUrlInvalid': '目录 URL 不合法',
+    }
+    const I18N_EN = {
+      'card.name': 'RSS / news aggregation',
+      'card.desc': 'Subscribe to RSS/Atom feeds, manage channels and categories, and get an automatic “Today’s picks” digest every day.',
+      'panel.title': 'RSS settings',
+      'panel.digest': 'Today’s picks',
+      'panel.unsaved': 'Unsaved changes',
+      'panel.unsavedTitle': 'You have unsaved changes',
+      'panel.channels': 'Subscriptions',
+      'panel.channelsHint': 'Built-in and custom feeds are managed in one place; drag the handle to reorder, and common edits are saved automatically.',
+      'panel.channelCount': '{count} channels',
+      'panel.disabledBuiltins': 'Built-in channels not enabled',
+      'panel.builtin': 'Built-in',
+      'panel.custom': 'Custom',
+      'panel.importHint': 'Import subscriptions from any RSS reader or website (OPML file or URL list), or export them for use in other apps; imports are validated and saved automatically.',
+      'panel.categories': 'News categories',
+      'panel.categoriesHint': 'Manage category tags; the Category field of each channel picks from this list, and the digest is grouped by category.',
+      'panel.aggregate': 'Aggregation',
+      'panel.maxPerSource': 'Items per feed',
+      'panel.maxTotal': 'Total items per day',
+      'panel.dailyTime': 'Daily generation time',
+      'panel.aggregateHint': 'After editing, click Save at the top; a successful save fetches the current digest again automatically.',
+      'panel.ai': 'AI summaries',
+      'panel.aiEnabled': 'Enable AI summaries: when generating the digest, ask the host model for a one-sentence summary of each item (a single failure just falls back to the original summary and does not affect other items)',
+      'panel.aiProvider': 'Model provider',
+      'panel.aiModel': 'Model',
+      'panel.aiMaxItems': 'Max summaries',
+      'panel.aiHint': 'Provider and Model must be filled in together: leave both empty to follow the host default model, and if only one is set the whole AI config is ignored on save and a warning is shown. Summaries are cached per item for 30 days (up to 500 entries, in ai-cache.json in the digest directory), so repeated items are not requested again.',
+      'panel.plugin': 'Plugin',
+      'panel.pluginEnabled': 'Enable the plugin (applied live after saving: turning it off hides the sidebar entry and stops the daily digest and the agent announcement; this card stays usable)',
+      'panel.entryCount': '{count} entries',
+      'panel.feedCount': '{count} feeds',
+      'panel.generatedAt': 'Generated at {time}',
+      'panel.dailyAt': 'Auto-generated daily at {time}',
+      'panel.visibleCount': '{visible} / {total} items',
+      'panel.uncategorized': 'Uncategorized',
+      'panel.allCategories': 'All categories',
+      'panel.allSources': 'All sources',
+      'panel.catalogStats': '{total} entries · {subscribed} subscribed · {selected} selected',
+      'panel.catalogHintBefore': 'Catalogs can come from several sources: the built-in ',
+      'panel.catalogHintAfter': ' curated list plus any OPML catalogs you add; search results are merged and labeled with their origin, and can be added to your custom channels and saved in one click.',
+      'panel.builtinSource': 'Built-in {name}',
+      'panel.fixed': 'fixed',
+      'panel.fromCatalogTitle': 'From catalog {name}',
+      'panel.fromCatalog': 'From {name}',
+      'panel.unknownCatalog': 'Unknown',
+      'panel.feedCatalog': 'Feed catalog',
+      'panel.errorDetail': ': {error}',
+      'btn.refresh': 'Refresh',
+      'btn.discard': 'Discard changes',
+      'btn.save': 'Save',
+      'btn.viewList': 'View list',
+      'btn.copyMarkdown': 'Copy Markdown',
+      'btn.dragToSort': 'Drag to reorder',
+      'btn.delete': 'Delete',
+      'btn.addSource': '+ Add feed',
+      'btn.importOpml': 'Import OPML',
+      'btn.hidePasteImport': 'Hide paste import',
+      'btn.pasteUrlList': 'Paste URL list',
+      'btn.exportOpml': 'Export OPML',
+      'btn.feedCatalog': 'Feed catalog',
+      'btn.import': 'Import',
+      'btn.selectAll': 'Select all',
+      'btn.clear': 'Clear',
+      'btn.addSelected': 'Add selected and save',
+      'btn.add': 'Add',
+      'btn.added': 'Added',
+      'btn.addCatalog': 'Add catalog',
+      'btn.cancel': 'Cancel',
+      'btn.remove': 'Remove',
+      'btn.close': 'Close',
+      'btn.all': 'All',
+      'btn.viewMore': 'View more',
+      'btn.removeCategory': 'Remove category {category}',
+      'btn.bulkSelect': 'Select for bulk add',
+      'placeholder.name': 'Name',
+      'placeholder.filterChannels': 'Filter by name / URL…',
+      'placeholder.importList': 'One feed URL per line; you can also use the “name, URL” format:',
+      'placeholder.catalogSearch': 'Search the catalog, e.g. arxiv, Hacker News…',
+      'placeholder.catalogName': 'Catalog name, e.g. My picks',
+      'placeholder.catalogUrl': 'OPML catalog URL (https://…/feeds.opml)',
+      'placeholder.newCategory': 'New category, e.g. AI',
+      'placeholder.modalSearch': 'Search title / summary / source…',
+      'placeholder.aiModel': 'Leave empty to use the host default model',
+      'list.loading': 'Loading…',
+      'list.loadingCatalog': 'Loading catalog…',
+      'list.loadFailed': 'Load failed',
+      'list.pendingSave': 'Pending save · read after saving',
+      'list.emptyChannels': 'No matching channels.',
+      'list.noCategories': 'No categories yet.',
+      'list.noDigest': 'No digest yet — click Refresh to fetch one.',
+      'list.noDigestItems': 'No items to show today.',
+      'list.noItemsToday': 'No items today.',
+      'list.noMatchingItems': 'No matching items.',
+      'list.noMatchingFeeds': 'No matching feeds.',
+      'list.catalogIdle': 'Type a keyword to search curated feeds, or check items to add them in bulk.',
+      'list.catalogDisabled': 'The catalog is disabled (config includeCatalog: false).',
+      'list.untitled': '(untitled)',
+      'msg.refreshing': 'Refreshing…',
+      'msg.refreshingFeeds': 'Refreshing feeds',
+      'msg.refreshingFeedsAt': 'Refreshing feeds · currently showing data generated at {clock}',
+      'msg.refreshingTitle': 'Refreshing feeds: fetching every feed and regenerating today’s digest.',
+      'msg.refreshingTitleData': 'The list below is still the data generated at {stamp}; it is replaced once the refresh completes.',
+      'msg.saving': 'Saving…',
+      'msg.refreshed': 'Refreshed',
+      'msg.saved': 'Saved, applied live',
+      'msg.savedWithWarnings': 'Saved: {warnings}',
+      'msg.aiFallback': '{count} items failed; fell back to the original summaries',
+      'msg.aiError': 'AI summaries: {reason}',
+      'msg.fetchFailedCount': '{count} feeds failed to fetch',
+      'msg.fetchFailedCountDetail': '{count} feeds failed to fetch: {preview}',
+      'msg.fetchFailedList': 'Fetch failed: {list}',
+      'msg.nothingToCopy': 'Nothing to copy',
+      'msg.copied': 'Copied',
+      'msg.copyFailed': 'Copy failed',
+      'msg.nothingToImport': 'Nothing to import',
+      'msg.importParseFailed': 'Could not parse any feeds from the content; please check the format',
+      'msg.noNewSources': 'No new feeds added ({count} already subscribed or invalid)',
+      'msg.importSkipped': ', skipped {count} already present',
+      'msg.importedSaving': 'Imported {added} feeds{skipped}, saving…',
+      'msg.importedPending': 'Imported {added} feeds{skipped} — click Save to validate',
+      'msg.exportedCount': 'Exported {count} feeds',
+      'msg.allSubscribed': 'All selected items are already subscribed',
+      'msg.nothingSelected': 'Nothing selected',
+      'msg.addSkipped': ', skipped {count} already subscribed',
+      'msg.addedSaving': 'Added {added} feeds{skipped}, saving…',
+      'msg.catalogExists': 'That catalog already exists',
+      'msg.catalogAdded': 'Catalog added, saving…',
+      'msg.catalogRemoved': 'Catalog removed, saving…',
+      'msg.confirmDiscard': 'Discard unsaved changes and reload?',
+      'msg.opmlTitle': 'DSH RSS subscriptions',
+      'error.catalogNameRequired': 'Enter a catalog name',
+      'error.catalogUrlRequired': 'Enter the OPML catalog URL',
+      'error.catalogUrlInvalid': 'Invalid catalog URL',
+    }
+    /* ==== dsh-i18n:end ==== */
+
+    /** 占位符替换：`{name}` → params.name（缺参留空，不抛错——文案不该打死界面）。 */
+    function i18nFormat(text, params) {
+      if (params === undefined) return text
+      return String(text).replace(/\{(\w+)\}/g, (_match, name) => (params[name] === undefined ? '' : String(params[name])))
+    }
+
+    /** 中文兜底：老宿主（DSH ≤0.1.5）没有 locale 服务时，界面不能变成一串键名。 */
+    function i18nFallback(key, params) {
+      return i18nFormat(I18N_ZH[key] !== undefined ? I18N_ZH[key] : key, params)
+    }
+
+    let t = i18nFallback
+
+    /**
+     * 注册目录并绑定翻译函数。**动态 inject**：老宿主上回调永不触发、`t` 保持中文兜底；
+     * 写成静态 `inject: ['locale']` 会让整张卡片在老宿主上根本不挂。
+     *
+     * 语言切换不用自己订阅：插槽 outlet 随 locale revision 重渲染（renderer 的
+     * `useLocaleRevision`），而 `bind()` 返回的翻译函数在**调用时**读当前语言。
+     */
+    function installI18n(ctx) {
+      ctx.inject(['locale'], (i18nCtx) => {
+        const disposeZh = i18nCtx.locale.register(I18N_NS, 'zh', I18N_ZH)
+        const disposeEn = i18nCtx.locale.register(I18N_NS, 'en', I18N_EN)
+        t = i18nCtx.locale.bind(I18N_NS)
+        return () => {
+          disposeEn()
+          disposeZh()
+          t = i18nFallback
+        }
+      })
+    }
+
     /* ================================ 面板状态 ================================ */
 
     const state = {
@@ -377,7 +691,7 @@ window.__ModuleLoader__.load({
     function categoryOptions(selected) {
       const options = new Set(state.config?.categories || [])
       if (selected) options.add(selected)
-      let html = '<option value="">未分类</option>'
+      let html = '<option value="">' + t('panel.uncategorized') + '</option>'
       for (const category of options) {
         html += '<option value="' + esc(category) + '"' + (category === selected ? ' selected' : '') + '>' + esc(category) + '</option>'
       }
@@ -386,7 +700,7 @@ window.__ModuleLoader__.load({
 
     function catalogCategoryOptions() {
       const selected = state.catalogCategory || ''
-      let html = '<option value="">全部分类</option>'
+      let html = '<option value="">' + t('panel.allCategories') + '</option>'
       for (const cat of state.catalogCategories || []) {
         html += '<option value="' + esc(cat) + '"' + (cat === selected ? ' selected' : '') + '>' + esc(cat) + '</option>'
       }
@@ -395,7 +709,7 @@ window.__ModuleLoader__.load({
 
     function catalogSourceOptions() {
       const selected = state.catalogSource || ''
-      let html = '<option value="">全部来源</option>'
+      let html = '<option value="">' + t('panel.allSources') + '</option>'
       const builtin = state.catalogBuiltin
       if (builtin && builtin.enabled) {
         html += '<option value="' + esc(builtin.name || 'awesome-rsshub-routes') + '"' + (selected === builtin.name ? ' selected' : '') + '>' + esc(builtin.name || 'awesome-rsshub-routes') + '</option>'
@@ -456,13 +770,13 @@ window.__ModuleLoader__.load({
         .filter((builtin) => findBuiltinSource(builtin) === null)
         .filter((builtin) => !query || (builtin.name || '').toLowerCase().includes(query) || (builtin.url || '').toLowerCase().includes(query))
       if (enabled.length === 0 && disabledBuiltins.length === 0) {
-        return '<div class="rss_empty">没有匹配的渠道。</div>'
+        return '<div class="rss_empty">' + t('list.emptyChannels') + '</div>'
       }
       const parts = []
       parts.push('<div class="rss_channelList" id="rss-channel-list">')
       for (const row of enabled) parts.push(renderChannelRow(row))
       if (disabledBuiltins.length > 0) {
-        parts.push('<div class="rss_disabledTitle">未启用内置渠道</div>')
+        parts.push('<div class="rss_disabledTitle">' + t('panel.disabledBuiltins') + '</div>')
         for (const builtin of disabledBuiltins) parts.push(renderDisabledBuiltinRow(builtin))
       }
       // 慢刷新：进度条贴分类行下沿（列表区顶部那条线），胶囊骑在线上、水平居中
@@ -479,23 +793,23 @@ window.__ModuleLoader__.load({
       if (builtin) {
         const category = source.category?.trim() || builtin.category
         return '<div class="rss_channelRow rss_builtinRow" data-channel-index="' + index + '">' +
-          '<span class="rss_dragHandle" draggable="true" data-drag-index="' + index + '" title="拖拽排序">⋮⋮</span>' +
+          '<span class="rss_dragHandle" draggable="true" data-drag-index="' + index + '" title="' + esc(t('btn.dragToSort')) + '">⋮⋮</span>' +
           '<input type="checkbox" data-action="builtin-toggle" data-key="' + esc(builtin.key) + '" checked />' +
           '<span class="rss_channelName" title="' + esc(builtin.name) + '">' + esc(builtin.name) + '</span>' +
           '<span class="rss_channelUrl" title="' + esc(builtin.url) + '">' + esc(builtin.url) + '</span>' +
           '<select class="rss_input rss_builtinCategory" data-field="rss-builtin-category" data-key="' + esc(builtin.key) + '">' + categoryOptions(category) + '</select>' +
-          '<span class="rss_channelType">内置</span>' +
+          '<span class="rss_channelType">' + t('panel.builtin') + '</span>' +
           '<span></span>' +
           '</div>'
       }
       return '<div class="rss_channelRow' + (dup ? ' rss_dupRow' : '') + '" data-channel-index="' + index + '">' +
-        '<span class="rss_dragHandle" draggable="true" data-drag-index="' + index + '" title="拖拽排序">⋮⋮</span>' +
+        '<span class="rss_dragHandle" draggable="true" data-drag-index="' + index + '" title="' + esc(t('btn.dragToSort')) + '">⋮⋮</span>' +
         '<span></span>' +
-        '<input class="rss_input" data-field="rss-source-name" data-index="' + index + '" value="' + esc(source.name || '') + '" placeholder="名称" />' +
+        '<input class="rss_input" data-field="rss-source-name" data-index="' + index + '" value="' + esc(source.name || '') + '" placeholder="' + esc(t('placeholder.name')) + '" />' +
         '<input class="rss_input" data-field="rss-source-url" data-index="' + index + '" value="' + esc(source.url || '') + '" placeholder="RSS/Atom URL" spellcheck="false" />' +
         '<select class="rss_input" data-field="rss-source-category" data-index="' + index + '">' + categoryOptions(source.category) + '</select>' +
-        '<span class="rss_channelType">自定义</span>' +
-        '<button class="rss_linkBtn" data-danger="true" data-action="config-remove-source" data-index="' + index + '">删除</button>' +
+        '<span class="rss_channelType">' + t('panel.custom') + '</span>' +
+        '<button class="rss_linkBtn" data-danger="true" data-action="config-remove-source" data-index="' + index + '">' + t('btn.delete') + '</button>' +
         '</div>'
     }
 
@@ -505,7 +819,7 @@ window.__ModuleLoader__.load({
         '<input type="checkbox" data-action="builtin-toggle" data-key="' + esc(builtin.key) + '" />' +
         '<span class="rss_channelName" title="' + esc(builtin.name) + '">' + esc(builtin.name) + '</span>' +
         '<span class="rss_channelUrl" title="' + esc(builtin.url) + '">' + esc(builtin.url) + '</span>' +
-        '<span class="rss_channelType">内置</span>' +
+        '<span class="rss_channelType">' + t('panel.builtin') + '</span>' +
         '<span></span><span></span>' +
         '</div>'
     }
@@ -514,25 +828,25 @@ window.__ModuleLoader__.load({
       const all = state.config?.sources || []
       const parts = []
       parts.push('<div class="rss_settingSection" id="rss-sec-channels">')
-      parts.push('<div class="rss_settingTitle">订阅渠道</div>')
-      parts.push('<div class="rss_settingHint">内置渠道和自定义渠道统一管理；拖拽手柄可排序，常用修改会自动保存。</div>')
+      parts.push('<div class="rss_settingTitle">' + t('panel.channels') + '</div>')
+      parts.push('<div class="rss_settingHint">' + t('panel.channelsHint') + '</div>')
       parts.push('<div class="rss_addRow" id="rss-custom-tools">')
-      parts.push('<input class="rss_input" data-field="rss-custom-query" value="' + esc(state.customQuery) + '" placeholder="筛选名称 / URL…" autocomplete="off" spellcheck="false" />')
-      parts.push('<span class="rss_customCount">' + all.length + ' 个</span>')
-      parts.push('<button class="rss_btnGhost" data-action="config-add-source">+ 添加源</button>')
+      parts.push('<input class="rss_input" data-field="rss-custom-query" value="' + esc(state.customQuery) + '" placeholder="' + esc(t('placeholder.filterChannels')) + '" autocomplete="off" spellcheck="false" />')
+      parts.push('<span class="rss_customCount">' + t('panel.channelCount', { count: all.length }) + '</span>')
+      parts.push('<button class="rss_btnGhost" data-action="config-add-source">' + t('btn.addSource') + '</button>')
       parts.push('</div>')
       parts.push('<div class="rss_customImport">')
       parts.push('<input type="file" id="rss-import-file" data-field="rss-import-file" accept=".opml,.xml,text/xml,application/xml" style="display:none" />')
-      parts.push('<button class="rss_btnGhost" data-action="custom-import-opml">导入 OPML</button>')
-      parts.push('<button class="rss_btnGhost" data-action="custom-import-paste">' + (state.importOpen ? '收起粘贴导入' : '粘贴 URL 列表') + '</button>')
-      parts.push('<button class="rss_btnGhost" data-action="custom-export-opml">导出 OPML</button>')
-      parts.push('<button class="rss_btnGhost" data-action="catalog-open">订阅源目录</button>')
-      parts.push('<span class="rss_customImportHint">支持从任何 RSS 阅读器 / 网站导入订阅（OPML 文件或 URL 列表），也可导出给其他应用使用；导入后会自动校验并保存。</span>')
+      parts.push('<button class="rss_btnGhost" data-action="custom-import-opml">' + t('btn.importOpml') + '</button>')
+      parts.push('<button class="rss_btnGhost" data-action="custom-import-paste">' + (state.importOpen ? t('btn.hidePasteImport') : t('btn.pasteUrlList')) + '</button>')
+      parts.push('<button class="rss_btnGhost" data-action="custom-export-opml">' + t('btn.exportOpml') + '</button>')
+      parts.push('<button class="rss_btnGhost" data-action="catalog-open">' + t('btn.feedCatalog') + '</button>')
+      parts.push('<span class="rss_customImportHint">' + t('panel.importHint') + '</span>')
       parts.push('</div>')
       if (state.importOpen) {
         parts.push('<div class="rss_importPaste">')
-        parts.push('<textarea class="rss_input rss_importTextarea" data-field="rss-import-text" placeholder="每行一个订阅地址；也可用「名称, 地址」格式：&#10;阮一峰的网络日志, https://www.ruanyifeng.com/blog/atom.xml&#10;https://example.com/feed">' + esc(state.importText) + '</textarea>')
-        parts.push('<button class="rss_btn" data-action="custom-import-paste-go">导入</button>')
+        parts.push('<textarea class="rss_input rss_importTextarea" data-field="rss-import-text" placeholder="' + esc(t('placeholder.importList')) + '&#10;阮一峰的网络日志, https://www.ruanyifeng.com/blog/atom.xml&#10;https://example.com/feed">' + esc(state.importText) + '</textarea>')
+        parts.push('<button class="rss_btn" data-action="custom-import-paste-go">' + t('btn.import') + '</button>')
         parts.push('</div>')
       }
       parts.push('<div id="rss-channel-list">' + channelListHtml() + '</div>')
@@ -605,14 +919,14 @@ window.__ModuleLoader__.load({
     function renderHeader() {
       const parts = []
       parts.push('<div class="rss_panelHeader" id="rss-header">')
-      parts.push('<h2 class="rss_panelTitle">RSS 设置</h2>')
+      parts.push('<h2 class="rss_panelTitle">' + t('panel.title') + '</h2>')
       if (state.dirty) {
-        parts.push('<span class="rss_dirtyChip" title="有未保存的修改">未保存修改</span>')
+        parts.push('<span class="rss_dirtyChip" title="' + esc(t('panel.unsavedTitle')) + '">' + t('panel.unsaved') + '</span>')
       }
       parts.push('<div class="rss_toolbar">')
-      parts.push('<button class="rss_btnGhost" data-action="digest-refresh"' + (state.refreshing ? ' disabled' : '') + '>' + (state.refreshing ? '刷新中…' : '刷新') + '</button>')
-      parts.push('<button class="rss_btnGhost" data-action="config-reset"' + (state.loading ? ' disabled' : '') + '>放弃修改</button>')
-      parts.push('<button class="rss_btn" data-action="config-save" title="Ctrl / Cmd + S"' + (state.saving ? ' disabled' : '') + '>' + (state.saving ? '保存中…' : '保存') + '</button>')
+      parts.push('<button class="rss_btnGhost" data-action="digest-refresh"' + (state.refreshing ? ' disabled' : '') + '>' + (state.refreshing ? t('msg.refreshing') : t('btn.refresh')) + '</button>')
+      parts.push('<button class="rss_btnGhost" data-action="config-reset"' + (state.loading ? ' disabled' : '') + '>' + t('btn.discard') + '</button>')
+      parts.push('<button class="rss_btn" data-action="config-save" title="Ctrl / Cmd + S"' + (state.saving ? ' disabled' : '') + '>' + (state.saving ? t('msg.saving') : t('btn.save')) + '</button>')
       parts.push('</div>')
       parts.push('</div>')
       return parts.join('')
@@ -629,36 +943,36 @@ window.__ModuleLoader__.load({
       parts.push('<div class="rss_settingSection" id="rss-sec-digest">')
       // 慢刷新才出过渡层（顶部进度条 + 「当前显示：08:12 生成」胶囊），绝对定位不推版
       if (state.refreshing && state.refreshSlow && digest) parts.push(busyCardHtml(digest))
-      parts.push('<div class="rss_settingTitle">今日值得读</div>')
+      parts.push('<div class="rss_settingTitle">' + t('panel.digest') + '</div>')
       if (!digest) {
-        parts.push('<div class="rss_empty">还没有生成 digest，点击「刷新」抓取。</div>')
+        parts.push('<div class="rss_empty">' + t('list.noDigest') + '</div>')
       } else {
         const items = digest.items || []
         const sources = digest.sources || []
         const errors = digest.errors || []
         const meta = []
         if (digest.date) meta.push(esc(digest.date))
-        meta.push(items.length + ' 条')
-        if (sources.length > 0) meta.push(sources.length + ' 个订阅源')
-        if (digest.generatedAt) meta.push('生成于 ' + esc(fmtTime(digest.generatedAt)))
-        if (state.config?.dailyTime) meta.push('每日 ' + esc(state.config.dailyTime) + ' 自动生成')
+        meta.push(t('panel.entryCount', { count: items.length }))
+        if (sources.length > 0) meta.push(t('panel.feedCount', { count: sources.length }))
+        if (digest.generatedAt) meta.push(t('panel.generatedAt', { time: esc(fmtTime(digest.generatedAt)) }))
+        if (state.config?.dailyTime) meta.push(t('panel.dailyAt', { time: esc(state.config.dailyTime) }))
         parts.push('<div class="rss_digestStats">' + meta.join(' · ') + '</div>')
         if (errors.length > 0) {
-          const preview = errors.slice(0, 2).map((e) => esc(e.source + ': ' + e.error)).join('；')
-          parts.push('<div class="rss_banner" data-kind="warn">' + errors.length + ' 个订阅源抓取失败' + (preview ? '：' + preview : '') + (errors.length > 2 ? '…' : '') + '</div>')
+          const preview = errors.slice(0, 2).map((e) => esc(e.source + ': ' + e.error)).join('; ')
+          parts.push('<div class="rss_banner" data-kind="warn">' + (preview ? t('msg.fetchFailedCountDetail', { count: errors.length, preview }) : t('msg.fetchFailedCount', { count: errors.length })) + (errors.length > 2 ? '…' : '') + '</div>')
         }
         // AI 摘要整体不可用 / 全部失败时也要让用户看见原因（部分失败在弹窗条目标注里可感知）
         if (digest.aiSummary && (digest.aiSummary.reason || digest.aiSummary.failed > 0)) {
-          const aiText = digest.aiSummary.reason || (digest.aiSummary.failed + ' 条失败，已回落到原文摘要')
-          parts.push('<div class="rss_banner" data-kind="warn">AI 摘要：' + esc(aiText) + '</div>')
+          const aiText = digest.aiSummary.reason || t('msg.aiFallback', { count: digest.aiSummary.failed })
+          parts.push('<div class="rss_banner" data-kind="warn">' + esc(t('msg.aiError', { reason: aiText })) + '</div>')
         }
         if (items.length === 0) {
-          parts.push('<div class="rss_empty">今日暂无可展示条目。</div>')
+          parts.push('<div class="rss_empty">' + t('list.noDigestItems') + '</div>')
         }
         parts.push('<div class="rss_digestActions">')
-        parts.push('<button class="rss_btnGhost" data-action="digest-view"' + (items.length === 0 ? ' disabled' : '') + '>查看列表</button>')
-        parts.push('<button class="rss_btnGhost rss_btnIcon" data-action="digest-refresh"' + (state.refreshing ? ' disabled data-loading aria-busy="true"' : '') + ' title="' + (state.refreshing ? '刷新中…' : '刷新') + '" aria-label="刷新">' + ICON_REFRESH + '</button>')
-        parts.push('<button class="rss_btnGhost rss_btnIcon" data-action="digest-copy"' + (items.length === 0 ? ' disabled' : '') + ' title="复制 Markdown" aria-label="复制 Markdown">' + ICON_COPY + '</button>')
+        parts.push('<button class="rss_btnGhost" data-action="digest-view"' + (items.length === 0 ? ' disabled' : '') + '>' + t('btn.viewList') + '</button>')
+        parts.push('<button class="rss_btnGhost rss_btnIcon" data-action="digest-refresh"' + (state.refreshing ? ' disabled data-loading aria-busy="true"' : '') + ' title="' + (state.refreshing ? t('msg.refreshing') : t('btn.refresh')) + '" aria-label="' + esc(t('btn.refresh')) + '">' + ICON_REFRESH + '</button>')
+        parts.push('<button class="rss_btnGhost rss_btnIcon" data-action="digest-copy"' + (items.length === 0 ? ' disabled' : '') + ' title="' + esc(t('btn.copyMarkdown')) + '" aria-label="' + esc(t('btn.copyMarkdown')) + '">' + ICON_COPY + '</button>')
         parts.push('</div>')
       }
       parts.push('</div>')
@@ -674,10 +988,10 @@ window.__ModuleLoader__.load({
       const subscribed = entries.filter((entry) => isSubscribed(entry.url)).length
       const selectedCount = entries.filter((entry) => state.catalogSelected.has(entry.url)).length
       let html = '<div class="rss_catalogToolbar" id="rss-catalog-tools">'
-      html += '<span class="rss_catalogStats">共 ' + entries.length + ' 条 · 已订阅 ' + subscribed + ' · 已选 ' + selectedCount + '</span>'
-      html += '<button class="rss_btnGhost" data-action="catalog-select-all">全选</button>'
-      html += '<button class="rss_btnGhost" data-action="catalog-clear"' + (selectedCount === 0 ? ' disabled' : '') + '>清空</button>'
-      html += '<button class="rss_btn" data-action="catalog-add-selected"' + (selectedCount === 0 ? ' disabled' : '') + '>添加选中并保存' + (selectedCount > 0 ? ' (' + selectedCount + ')' : '') + '</button>'
+      html += '<span class="rss_catalogStats">' + t('panel.catalogStats', { total: entries.length, subscribed, selected: selectedCount }) + '</span>'
+      html += '<button class="rss_btnGhost" data-action="catalog-select-all">' + t('btn.selectAll') + '</button>'
+      html += '<button class="rss_btnGhost" data-action="catalog-clear"' + (selectedCount === 0 ? ' disabled' : '') + '>' + t('btn.clear') + '</button>'
+      html += '<button class="rss_btn" data-action="catalog-add-selected"' + (selectedCount === 0 ? ' disabled' : '') + '>' + t('btn.addSelected') + (selectedCount > 0 ? ' (' + selectedCount + ')' : '') + '</button>'
       html += '</div>'
       return html
     }
@@ -687,16 +1001,16 @@ window.__ModuleLoader__.load({
         return '<div class="rss_banner" data-kind="error">' + esc(state.catalogError) + '</div>'
       }
       if (state.catalogLoading) {
-        return '<div class="rss_loading">加载目录…</div>'
+        return '<div class="rss_loading">' + t('list.loadingCatalog') + '</div>'
       }
       if (state.catalogDisabled) {
-        return '<div class="rss_empty">目录已停用（配置 includeCatalog: false）。</div>'
+        return '<div class="rss_empty">' + t('list.catalogDisabled') + '</div>'
       }
       const entries = state.catalogEntries || []
       if (entries.length === 0) {
         return state.catalogQuery || state.catalogCategory
-          ? '<div class="rss_empty">没有匹配的订阅源。</div>'
-          : '<div class="rss_empty">输入关键词搜索精选订阅源，或勾选后批量添加。</div>'
+          ? '<div class="rss_empty">' + t('list.noMatchingFeeds') + '</div>'
+          : '<div class="rss_empty">' + t('list.catalogIdle') + '</div>'
       }
       const parts = []
       parts.push(catalogToolsHtml())
@@ -706,12 +1020,13 @@ window.__ModuleLoader__.load({
         const added = isSubscribed(entry.url)
         parts.push('<div class="rss_item">')
         parts.push('<div class="rss_itemTop">')
-        parts.push('<input type="checkbox" data-action="catalog-toggle" data-url="' + esc(entry.url) + '" title="用于批量添加"' + (added ? ' disabled' : '') + (state.catalogSelected.has(entry.url) ? ' checked' : '') + ' />')
+        parts.push('<input type="checkbox" data-action="catalog-toggle" data-url="' + esc(entry.url) + '" title="' + esc(t('btn.bulkSelect')) + '"' + (added ? ' disabled' : '') + (state.catalogSelected.has(entry.url) ? ' checked' : '') + ' />')
         parts.push('<div class="rss_itemMain">')
-        parts.push('<div class="rss_itemTitle">' + esc(entry.name) + ' <span class="rss_sourceChip">' + esc(entry.category) + '</span><span class="rss_sourceChip rss_catalogOrigin" title="来自目录 ' + esc(entry.catalog || '') + '">来自 ' + esc(entry.catalog || '未知') + '</span></div>')
+        const originName = entry.catalog || ''
+        parts.push('<div class="rss_itemTitle">' + esc(entry.name) + ' <span class="rss_sourceChip">' + esc(entry.category) + '</span><span class="rss_sourceChip rss_catalogOrigin" title="' + esc(t('panel.fromCatalogTitle', { name: originName })) + '">' + esc(t('panel.fromCatalog', { name: originName || t('panel.unknownCatalog') })) + '</span></div>')
         parts.push('<div class="rss_itemMeta">' + esc(entry.url) + '</div>')
         parts.push('</div>')
-        parts.push('<button class="rss_linkBtn" data-action="catalog-add" data-index="' + i + '"' + (added ? ' disabled' : '') + '>' + (added ? '已添加' : '添加') + '</button>')
+        parts.push('<button class="rss_linkBtn" data-action="catalog-add" data-index="' + i + '"' + (added ? ' disabled' : '') + '>' + (added ? t('btn.added') : t('btn.add')) + '</button>')
         parts.push('</div>')
         parts.push('</div>')
       }
@@ -722,10 +1037,10 @@ window.__ModuleLoader__.load({
     function renderCatalogSection() {
       const parts = []
       parts.push('<div class="rss_settingSection" id="rss-sec-catalog">')
-      parts.push('<div class="rss_settingHint">目录可来自多个来源：内置 <a class="rss_linkBtn" href="https://jackyst0.github.io/awesome-rsshub-routes/" target="_blank" rel="noreferrer">awesome-rsshub-routes</a> 精选列表 + 你添加的其他 OPML 目录；搜索结果统一汇总并标注来源，可一键加入自定义渠道并保存。</div>')
+      parts.push('<div class="rss_settingHint">' + t('panel.catalogHintBefore') + '<a class="rss_linkBtn" href="https://jackyst0.github.io/awesome-rsshub-routes/" target="_blank" rel="noreferrer">awesome-rsshub-routes</a>' + t('panel.catalogHintAfter') + '</div>')
       parts.push('<div id="rss-catalog-sources">' + renderCatalogSourcesBlock() + '</div>')
       parts.push('<div class="rss_addRow rss_catalogSearchRow">')
-      parts.push('<input class="rss_input" data-field="rss-catalog-query" value="' + esc(state.catalogQuery) + '" placeholder="搜索目录，如 arxiv、Hacker News…" autocomplete="off" spellcheck="false" />')
+      parts.push('<input class="rss_input" data-field="rss-catalog-query" value="' + esc(state.catalogQuery) + '" placeholder="' + esc(t('placeholder.catalogSearch')) + '" autocomplete="off" spellcheck="false" />')
       parts.push('<select class="rss_input" data-field="rss-catalog-category">' + catalogCategoryOptions() + '</select>')
       parts.push('<select class="rss_input" data-field="rss-catalog-source">' + catalogSourceOptions() + '</select>')
       parts.push('</div>')
@@ -739,8 +1054,8 @@ window.__ModuleLoader__.load({
       parts.push('<div class="rss_catalogSources">')
       const builtin = state.catalogBuiltin
       parts.push('<div class="rss_catalogSourceRow">')
-      parts.push('<span class="rss_catalogSourceName">内置 ' + (builtin ? esc(builtin.name) : 'awesome-rsshub-routes') + '</span>')
-      parts.push('<span class="rss_catalogSourceMeta">' + (builtin ? builtin.entryCount + ' 条' : '…') + ' · 固定</span>')
+      parts.push('<span class="rss_catalogSourceName">' + t('panel.builtinSource', { name: builtin ? esc(builtin.name) : 'awesome-rsshub-routes' }) + '</span>')
+      parts.push('<span class="rss_catalogSourceMeta">' + (builtin ? t('panel.entryCount', { count: builtin.entryCount }) : '…') + ' · ' + t('panel.fixed') + '</span>')
       parts.push('<span class="rss_catalogSourceActions"></span>')
       parts.push('</div>')
       const catalogs = state.config?.catalogs || []
@@ -750,23 +1065,23 @@ window.__ModuleLoader__.load({
         let meta
         let stateText
         if (status !== undefined) {
-          meta = 'title="' + esc(catalog.url) + (status.error ? '：' + esc(status.error) : '') + '"'
+          meta = 'title="' + esc(catalog.url) + (status.error ? esc(t('panel.errorDetail', { error: status.error })) : '') + '"'
           stateText = status.ok
-            ? status.entryCount + ' 条'
-            : '<span class="rss_catalogSourceError">加载失败</span>' + (status.error ? ' · ' + esc(status.error) : '')
+            ? t('panel.entryCount', { count: status.entryCount })
+            : '<span class="rss_catalogSourceError">' + t('list.loadFailed') + '</span>' + (status.error ? ' · ' + esc(status.error) : '')
         } else {
-          stateText = '<span class="rss_catalogSourcePending">待保存 · 保存后读取</span>'
+          stateText = '<span class="rss_catalogSourcePending">' + t('list.pendingSave') + '</span>'
         }
         parts.push('<div class="rss_catalogSourceRow">')
         parts.push('<span class="rss_catalogSourceName" title="' + esc(catalog.name) + '">' + esc(catalog.name) + '</span>')
         parts.push('<span class="rss_catalogSourceMeta" ' + (meta || 'title="' + esc(catalog.url) + '"') + '>' + stateText + '</span>')
-        parts.push('<span class="rss_catalogSourceActions"><button class="rss_linkBtn" data-danger="true" data-action="catalog-remove-source" data-url="' + esc(catalog.url) + '">' + (status === undefined ? '取消' : '移除') + '</button></span>')
+        parts.push('<span class="rss_catalogSourceActions"><button class="rss_linkBtn" data-danger="true" data-action="catalog-remove-source" data-url="' + esc(catalog.url) + '">' + (status === undefined ? t('btn.cancel') : t('btn.remove')) + '</button></span>')
         parts.push('</div>')
       }
       parts.push('<div class="rss_addRow rss_catalogAddRow">')
-      parts.push('<input class="rss_input" data-field="rss-catalog-new-name" value="' + esc(state.catalogNewName) + '" placeholder="目录名称，如：我的精选" />')
-      parts.push('<input class="rss_input" data-field="rss-catalog-new-url" value="' + esc(state.catalogNewUrl) + '" placeholder="OPML 目录 URL（https://…/feeds.opml）" spellcheck="false" />')
-      parts.push('<button class="rss_btnGhost" data-action="catalog-add-source">添加目录</button>')
+      parts.push('<input class="rss_input" data-field="rss-catalog-new-name" value="' + esc(state.catalogNewName) + '" placeholder="' + esc(t('placeholder.catalogName')) + '" />')
+      parts.push('<input class="rss_input" data-field="rss-catalog-new-url" value="' + esc(state.catalogNewUrl) + '" placeholder="' + esc(t('placeholder.catalogUrl')) + '" spellcheck="false" />')
+      parts.push('<button class="rss_btnGhost" data-action="catalog-add-source">' + t('btn.addCatalog') + '</button>')
       parts.push('</div>')
       parts.push('</div>')
       return parts.join('')
@@ -775,21 +1090,21 @@ window.__ModuleLoader__.load({
     function renderCategoriesSection() {
       const parts = []
       parts.push('<div class="rss_settingSection" id="rss-sec-categories">')
-      parts.push('<div class="rss_settingTitle">新闻分类</div>')
-      parts.push('<div class="rss_settingHint">维护分类标签；上方渠道的「分类」从这里选择，digest 按分类分组展示。</div>')
+      parts.push('<div class="rss_settingTitle">' + t('panel.categories') + '</div>')
+      parts.push('<div class="rss_settingHint">' + t('panel.categoriesHint') + '</div>')
       const categories = state.config?.categories || []
       if (categories.length > 0) {
         parts.push('<div class="rss_categories">')
         for (const category of categories) {
-          parts.push('<span class="rss_categoryChip">' + esc(category) + '<button class="rss_categoryRemove" data-action="config-remove-category" data-value="' + esc(category) + '" aria-label="删除分类 ' + esc(category) + '">×</button></span>')
+          parts.push('<span class="rss_categoryChip">' + esc(category) + '<button class="rss_categoryRemove" data-action="config-remove-category" data-value="' + esc(category) + '" aria-label="' + esc(t('btn.removeCategory', { category })) + '">×</button></span>')
         }
         parts.push('</div>')
       } else {
-        parts.push('<div class="rss_empty">暂无分类。</div>')
+        parts.push('<div class="rss_empty">' + t('list.noCategories') + '</div>')
       }
       parts.push('<div class="rss_addRow">')
-      parts.push('<input class="rss_input" data-field="rss-new-category" value="' + esc(state.newCategory) + '" placeholder="新分类，例如：AI" />')
-      parts.push('<button class="rss_btnGhost" data-action="config-add-category">添加</button>')
+      parts.push('<input class="rss_input" data-field="rss-new-category" value="' + esc(state.newCategory) + '" placeholder="' + esc(t('placeholder.newCategory')) + '" />')
+      parts.push('<button class="rss_btnGhost" data-action="config-add-category">' + t('btn.add') + '</button>')
       parts.push('</div>')
       parts.push('</div>')
       return parts.join('')
@@ -799,13 +1114,13 @@ window.__ModuleLoader__.load({
       const config = state.config
       const parts = []
       parts.push('<div class="rss_settingSection" id="rss-sec-aggregate">')
-      parts.push('<div class="rss_settingTitle">聚合设置</div>')
+      parts.push('<div class="rss_settingTitle">' + t('panel.aggregate') + '</div>')
       parts.push('<div class="rss_formGrid">')
-      parts.push('<div class="rss_field"><span class="rss_fieldLabel">每源条数</span><input class="rss_input" data-field="rss-max-items" type="number" min="1" value="' + (config.maxItemsPerSource || 5) + '" /></div>')
-      parts.push('<div class="rss_field"><span class="rss_fieldLabel">每日总条数</span><input class="rss_input" data-field="rss-max-total" type="number" min="1" value="' + (config.maxTotalItems || 30) + '" /></div>')
-      parts.push('<div class="rss_field"><span class="rss_fieldLabel">每日生成时间</span><input class="rss_input" data-field="rss-daily-time" type="time" value="' + esc(config.dailyTime || '08:00') + '" /></div>')
+      parts.push('<div class="rss_field"><span class="rss_fieldLabel">' + t('panel.maxPerSource') + '</span><input class="rss_input" data-field="rss-max-items" type="number" min="1" value="' + (config.maxItemsPerSource || 5) + '" /></div>')
+      parts.push('<div class="rss_field"><span class="rss_fieldLabel">' + t('panel.maxTotal') + '</span><input class="rss_input" data-field="rss-max-total" type="number" min="1" value="' + (config.maxTotalItems || 30) + '" /></div>')
+      parts.push('<div class="rss_field"><span class="rss_fieldLabel">' + t('panel.dailyTime') + '</span><input class="rss_input" data-field="rss-daily-time" type="time" value="' + esc(config.dailyTime || '08:00') + '" /></div>')
       parts.push('</div>')
-      parts.push('<div class="rss_settingHint">修改后点击顶部「保存」，保存成功会自动重新抓取当天 digest。</div>')
+      parts.push('<div class="rss_settingHint">' + t('panel.aggregateHint') + '</div>')
       parts.push('</div>')
       return parts.join('')
     }
@@ -814,14 +1129,14 @@ window.__ModuleLoader__.load({
       const ai = state.config?.ai || {}
       const parts = []
       parts.push('<div class="rss_settingSection" id="rss-sec-ai">')
-      parts.push('<div class="rss_settingTitle">AI 摘要</div>')
-      parts.push('<label class="rss_checkRow"><input type="checkbox" data-field="rss-ai-enabled" ' + (ai.enabled === true ? 'checked' : '') + ' /> 启用 AI 摘要：生成 digest 时调用宿主模型为每条资讯生成一句话摘要（单条失败只回落原文摘要，不影响其它条目）</label>')
+      parts.push('<div class="rss_settingTitle">' + t('panel.ai') + '</div>')
+      parts.push('<label class="rss_checkRow"><input type="checkbox" data-field="rss-ai-enabled" ' + (ai.enabled === true ? 'checked' : '') + ' /> ' + t('panel.aiEnabled') + '</label>')
       parts.push('<div class="rss_formGrid">')
-      parts.push('<div class="rss_field"><span class="rss_fieldLabel">模型 Provider</span><input class="rss_input" data-field="rss-ai-provider" value="' + esc(ai.provider || '') + '" placeholder="留空跟随宿主默认模型" autocomplete="off" spellcheck="false" /></div>')
-      parts.push('<div class="rss_field"><span class="rss_fieldLabel">模型 Model</span><input class="rss_input" data-field="rss-ai-model" value="' + esc(ai.model || '') + '" placeholder="留空跟随宿主默认模型" autocomplete="off" spellcheck="false" /></div>')
-      parts.push('<div class="rss_field"><span class="rss_fieldLabel">最多摘要条数</span><input class="rss_input" data-field="rss-ai-max-items" type="number" min="1" max="50" value="' + (ai.maxItems || 20) + '" /></div>')
+      parts.push('<div class="rss_field"><span class="rss_fieldLabel">' + t('panel.aiProvider') + '</span><input class="rss_input" data-field="rss-ai-provider" value="' + esc(ai.provider || '') + '" placeholder="' + esc(t('placeholder.aiModel')) + '" autocomplete="off" spellcheck="false" /></div>')
+      parts.push('<div class="rss_field"><span class="rss_fieldLabel">' + t('panel.aiModel') + '</span><input class="rss_input" data-field="rss-ai-model" value="' + esc(ai.model || '') + '" placeholder="' + esc(t('placeholder.aiModel')) + '" autocomplete="off" spellcheck="false" /></div>')
+      parts.push('<div class="rss_field"><span class="rss_fieldLabel">' + t('panel.aiMaxItems') + '</span><input class="rss_input" data-field="rss-ai-max-items" type="number" min="1" max="50" value="' + (ai.maxItems || 20) + '" /></div>')
       parts.push('</div>')
-      parts.push('<div class="rss_settingHint">Provider / Model 需成对填写：都留空时跟随宿主默认模型，只填一个保存时整段 AI 配置会被忽略并提示。摘要结果按条目缓存 30 天（最多 500 条，存在 digest 目录的 ai-cache.json），重复条目不会重复请求。</div>')
+      parts.push('<div class="rss_settingHint">' + t('panel.aiHint') + '</div>')
       parts.push('</div>')
       return parts.join('')
     }
@@ -836,8 +1151,8 @@ window.__ModuleLoader__.load({
       const config = state.config
       const parts = []
       parts.push('<div class="rss_settingSection" id="rss-sec-plugin">')
-      parts.push('<div class="rss_settingTitle">插件</div>')
-      parts.push('<label class="rss_checkRow"><input type="checkbox" data-field="rss-enabled" ' + (config.enabled !== false ? 'checked' : '') + ' /> 启用插件（保存后热生效：关闭即收起侧栏入口、停用每日汇总与 agent 公告；本卡片保持可用）</label>')
+      parts.push('<div class="rss_settingTitle">' + t('panel.plugin') + '</div>')
+      parts.push('<label class="rss_checkRow"><input type="checkbox" data-field="rss-enabled" ' + (config.enabled !== false ? 'checked' : '') + ' /> ' + t('panel.pluginEnabled') + '</label>')
       parts.push('</div>')
       return parts.join('')
     }
@@ -850,7 +1165,7 @@ window.__ModuleLoader__.load({
       parts.push(renderHeader())
       parts.push(renderErrorNode())
       if (state.loading || !state.config) {
-        parts.push('<div class="rss_loading">加载中…</div>')
+        parts.push('<div class="rss_loading">' + t('list.loading') + '</div>')
       } else {
         parts.push(renderPluginSection())
         parts.push(renderDigestSection())
@@ -936,7 +1251,7 @@ window.__ModuleLoader__.load({
     function modalCategories() {
       const set = new Set()
       for (const item of state.digest?.items || []) {
-        set.add(item.category || '未分类')
+        set.add(item.category || t('panel.uncategorized'))
       }
       return Array.from(set)
     }
@@ -946,7 +1261,7 @@ window.__ModuleLoader__.load({
       const items = state.digest?.items || []
       if (!query && !state.modalCategory) return items
       return items.filter((item) => {
-        if (state.modalCategory && (item.category || '未分类') !== state.modalCategory) return false
+        if (state.modalCategory && (item.category || t('panel.uncategorized')) !== state.modalCategory) return false
         if (!query) return true
         const hay = [item.title, item.aiSummary, item.summary, item.source, item.category].filter(Boolean).join(' ').toLowerCase()
         return hay.includes(query)
@@ -954,11 +1269,11 @@ window.__ModuleLoader__.load({
     }
 
     function renderModalItems(items, sourceSites) {
-      if (!items || items.length === 0) return '<div class="rss_empty">今天暂无条目。</div>'
+      if (!items || items.length === 0) return '<div class="rss_empty">' + t('list.noItemsToday') + '</div>'
       const sites = sourceSites || {}
       const byCategory = {}
       for (const item of items) {
-        const key = item.category || '未分类'
+        const key = item.category || t('panel.uncategorized')
         if (!byCategory[key]) byCategory[key] = []
         byCategory[key].push(item)
       }
@@ -966,7 +1281,7 @@ window.__ModuleLoader__.load({
       for (const category of Object.keys(byCategory)) {
         const bySource = {}
         for (const item of byCategory[category]) {
-          const key = item.source || '未分类'
+          const key = item.source || t('panel.uncategorized')
           if (!bySource[key]) bySource[key] = []
           bySource[key].push(item)
         }
@@ -975,14 +1290,14 @@ window.__ModuleLoader__.load({
         for (const source of Object.keys(bySource)) {
           const site = sites[source]
           const siteLink = site
-            ? ' <a class="rss_linkBtn" href="' + esc(site) + '" target="_blank" rel="noreferrer">查看更多</a>'
+            ? ' <a class="rss_linkBtn" href="' + esc(site) + '" target="_blank" rel="noreferrer">' + t('btn.viewMore') + '</a>'
             : ''
           parts.push('<div class="rss_subSource">')
           parts.push('<span>' + esc(source) + '</span>' + siteLink)
           parts.push('</div>')
           parts.push('<div class="rss_list">')
           for (const item of bySource[source]) {
-            const title = item.title || '(无标题)'
+            const title = item.title || t('list.untitled')
             const meta = []
             if (item.date) meta.push(esc(String(item.date).slice(0, 10)))
             parts.push('<div class="rss_item">')
@@ -1024,15 +1339,15 @@ window.__ModuleLoader__.load({
       parts.push('<div class="rss_modalToolbar">')
       // 没有 digest 时不渲染搜索框（列表是空的，搜也没意义），只留动作
       if (digest) {
-        parts.push('<input class="rss_input" data-field="rss-modal-search" value="' + esc(state.modalQuery) + '" placeholder="搜索标题 / 摘要 / 来源…" autocomplete="off" spellcheck="false" />')
+        parts.push('<input class="rss_input" data-field="rss-modal-search" value="' + esc(state.modalQuery) + '" placeholder="' + esc(t('placeholder.modalSearch')) + '" autocomplete="off" spellcheck="false" />')
       }
-      parts.push('<span class="rss_modalCount">' + (digest ? visible + ' / ' + total + ' 条' : '') + '</span>')
-      parts.push('<button class="rss_btnGhost rss_btnIcon" data-action="modal-copy"' + (empty ? ' disabled' : '') + ' title="复制 Markdown" aria-label="复制 Markdown">' + ICON_COPY + '</button>')
-      parts.push('<button class="rss_btnGhost rss_btnIcon" data-action="modal-refresh"' + (state.modalLoading ? ' disabled data-loading aria-busy="true"' : '') + ' title="' + (state.modalLoading ? '刷新中…' : '刷新') + '" aria-label="刷新">' + ICON_REFRESH + '</button>')
+      parts.push('<span class="rss_modalCount">' + (digest ? t('panel.visibleCount', { visible, total }) : '') + '</span>')
+      parts.push('<button class="rss_btnGhost rss_btnIcon" data-action="modal-copy"' + (empty ? ' disabled' : '') + ' title="' + esc(t('btn.copyMarkdown')) + '" aria-label="' + esc(t('btn.copyMarkdown')) + '">' + ICON_COPY + '</button>')
+      parts.push('<button class="rss_btnGhost rss_btnIcon" data-action="modal-refresh"' + (state.modalLoading ? ' disabled data-loading aria-busy="true"' : '') + ' title="' + (state.modalLoading ? t('msg.refreshing') : t('btn.refresh')) + '" aria-label="' + esc(t('btn.refresh')) + '">' + ICON_REFRESH + '</button>')
       parts.push('</div>')
       if (cats.length > 1) {
         parts.push('<div class="rss_modalChips">')
-        parts.push('<button class="rss_modalChip' + (state.modalCategory === '' ? ' rss_modalChipActive' : '') + '" data-action="modal-cat" data-value="">全部</button>')
+        parts.push('<button class="rss_modalChip' + (state.modalCategory === '' ? ' rss_modalChipActive' : '') + '" data-action="modal-cat" data-value="">' + t('btn.all') + '</button>')
         for (const cat of cats) {
           parts.push('<button class="rss_modalChip' + (state.modalCategory === cat ? ' rss_modalChipActive' : '') + '" data-action="modal-cat" data-value="' + esc(cat) + '">' + esc(cat) + '</button>')
         }
@@ -1064,11 +1379,11 @@ window.__ModuleLoader__.load({
       const stamp = digest && digest.generatedAt ? fmtTime(digest.generatedAt) : ''
       const clock = digest && digest.generatedAt ? clockText(digest.generatedAt) : ''
       const label = clock === ''
-        ? '正在刷新订阅源'
-        : '正在刷新订阅源 · 当前数据生成于 ' + clock
+        ? t('msg.refreshingFeeds')
+        : t('msg.refreshingFeedsAt', { clock })
       // fmtTime 已经带了日期，不要再拼 digest.date（会变成「2026-09-14 2026/9/14 14:25」）
-      const full = '正在刷新订阅源：抓取全部订阅源并重新生成今日 digest。'
-        + (stamp === '' ? '' : '下面仍是 ' + stamp + ' 生成的数据，刷新完成后整体替换。')
+      const full = t('msg.refreshingTitle')
+        + (stamp === '' ? '' : t('msg.refreshingTitleData', { stamp }))
       return { label, full }
     }
 
@@ -1099,10 +1414,10 @@ window.__ModuleLoader__.load({
       const items = filteredModalItems()
       const parts = []
       if (digest?.errors && digest.errors.length) {
-        parts.push('<div class="rss_banner" data-kind="warn">抓取失败：' + digest.errors.map((e) => esc(e.source + ': ' + e.error)).join('；') + '</div>')
+        parts.push('<div class="rss_banner" data-kind="warn">' + t('msg.fetchFailedList', { list: digest.errors.map((e) => esc(e.source + ': ' + e.error)).join('; ') }) + '</div>')
       }
       if (items.length === 0) {
-        parts.push('<div class="rss_empty">' + (allItems.length === 0 ? '今天暂无条目。' : '没有匹配的条目。') + '</div>')
+        parts.push('<div class="rss_empty">' + (allItems.length === 0 ? t('list.noItemsToday') : t('list.noMatchingItems')) + '</div>')
       } else {
         parts.push(renderModalItems(items, sourceSiteMap(digest, state.config)))
       }
@@ -1204,12 +1519,12 @@ window.__ModuleLoader__.load({
         // 真没数据可显示：骨架先以透明态占位，过了消抖阈值才淡入（见 renderSkeleton）
         content = renderSkeleton(!state.modalSlow)
       } else {
-        content = '<div class="rss_empty">还没有生成 digest，点击「刷新」抓取。</div>'
+        content = '<div class="rss_empty">' + t('list.noDigest') + '</div>'
       }
       if (state.error) {
         content = '<div class="rss_banner" data-kind="error">' + esc(state.error) + '</div>' + content
       }
-      const title = '今日值得读' + (digest && digest.date ? ' · ' + esc(digest.date) : '')
+      const title = t('panel.digest') + (digest && digest.date ? ' · ' + esc(digest.date) : '')
       // 重渲染会重建整棵 DOM，两样东西要还回去：
       //  - 搜索框焦点/光标：刷新期间列表是活的，用户可能正在输入，落地时不能把人踢出去；
       //  - 列表滚动位置（仅 keepScroll）：刷新落地不该把读到一半的列表弹回顶部。
@@ -1224,7 +1539,7 @@ window.__ModuleLoader__.load({
           '<div class="rss_modal" role="dialog" aria-modal="true" aria-label="' + title + '">' +
             '<div class="rss_modalHeader">' +
               '<h3 class="rss_modalTitle">' + title + '</h3>' +
-              '<button class="rss_modalClose" data-action="modal-close" aria-label="关闭">×</button>' +
+              '<button class="rss_modalClose" data-action="modal-close" aria-label="' + esc(t('btn.close')) + '">×</button>' +
             '</div>' +
             renderModalFilter() +
             // 过渡层（进度条 + 胶囊）在 renderModalFilter 里，绝对定位在 .rss_modalFilter 上；
@@ -1347,7 +1662,7 @@ window.__ModuleLoader__.load({
       try {
         const data = await apiRequest(API.refresh, { method: 'POST' })
         state.digest = data
-        toast('已刷新', 'ok')
+        toast(t('msg.refreshed'), 'ok')
       } catch (error) {
         toast(error.message, 'error')
       } finally {
@@ -1364,15 +1679,15 @@ window.__ModuleLoader__.load({
 
     function renderCatalogModalHtml() {
       return '<div class="rss_modalBackdrop" data-action="catalog-backdrop">' +
-        '<div class="rss_modal rss_catalogModal" role="dialog" aria-modal="true" aria-label="订阅源目录">' +
+        '<div class="rss_modal rss_catalogModal" role="dialog" aria-modal="true" aria-label="' + esc(t('panel.feedCatalog')) + '">' +
           '<div class="rss_modalHeader">' +
-            '<h3 class="rss_modalTitle">订阅源目录</h3>' +
-            '<button class="rss_modalClose" data-action="catalog-close" aria-label="关闭">×</button>' +
+            '<h3 class="rss_modalTitle">' + t('panel.feedCatalog') + '</h3>' +
+            '<button class="rss_modalClose" data-action="catalog-close" aria-label="' + esc(t('btn.close')) + '">×</button>' +
           '</div>' +
           '<div class="rss_modalBody">' + renderCatalogSection() + '</div>' +
           '<div class="rss_modalFooter">' +
             '<span class="rss_modalCount"></span>' +
-            '<button class="rss_btnGhost" data-action="catalog-close">关闭</button>' +
+            '<button class="rss_btnGhost" data-action="catalog-close">' + t('btn.close') + '</button>' +
           '</div>' +
         '</div>' +
       '</div>'
@@ -1428,9 +1743,9 @@ window.__ModuleLoader__.load({
       entry.type = 'button'
       entry.dataset.dshRssEntry = ''
       entry.className = 'rss_sidebarEntry'
-      entry.setAttribute('aria-label', '今日值得读')
-      entry.title = '今日值得读'
-      entry.innerHTML = '<span class="rss_sidebarEntryIcon">' + RSS_SIDEBAR_ICON + '</span><span class="rss_sidebarEntryLabel">今日值得读</span>'
+      entry.setAttribute('aria-label', t('panel.digest'))
+      entry.title = t('panel.digest')
+      entry.innerHTML = '<span class="rss_sidebarEntryIcon">' + RSS_SIDEBAR_ICON + '</span><span class="rss_sidebarEntryLabel">' + t('panel.digest') + '</span>'
       entry.addEventListener('click', () => {
         openDigestModal()
       })
@@ -1757,7 +2072,7 @@ window.__ModuleLoader__.load({
       try {
         const data = await apiRequest(API.refresh, { method: 'POST' })
         state.digest = data
-        toast('已刷新', 'ok')
+        toast(t('msg.refreshed'), 'ok')
       } catch (error) {
         state.error = error.message
         toast(error.message, 'error')
@@ -1811,9 +2126,9 @@ window.__ModuleLoader__.load({
         // 服务端归一化后的 AI 配置可能与输入不同（不成对被忽略、数值夹紧），重渲染该区块
         updateSection('rss-sec-ai', renderAiSection())
         if (data.warnings && data.warnings.length > 0) {
-          toast('已保存：' + data.warnings.join('；'), 'info')
+          toast(t('msg.savedWithWarnings', { warnings: data.warnings.join('; ') }), 'info')
         } else {
-          toast('已保存，热生效', 'ok')
+          toast(t('msg.saved'), 'ok')
         }
         await refresh()
         loadCatalog()
@@ -1830,12 +2145,12 @@ window.__ModuleLoader__.load({
     async function copyText(text) {
       const value = text || ''
       if (!value) {
-        toast('没有可复制的内容', 'error')
+        toast(t('msg.nothingToCopy'), 'error')
         return
       }
       try {
         await navigator.clipboard.writeText(value)
-        toast('已复制', 'ok')
+        toast(t('msg.copied'), 'ok')
       } catch {
         try {
           const textarea = document.createElement('textarea')
@@ -1846,9 +2161,9 @@ window.__ModuleLoader__.load({
           textarea.select()
           document.execCommand('copy')
           textarea.remove()
-          toast('已复制', 'ok')
+          toast(t('msg.copied'), 'ok')
         } catch {
-          toast('复制失败', 'error')
+          toast(t('msg.copyFailed'), 'error')
         }
       }
     }
@@ -1966,12 +2281,12 @@ window.__ModuleLoader__.load({
 
     function importSourcesFromText(text, kind, autoSave) {
       if (!text || !text.trim()) {
-        toast('没有可导入的内容', 'error')
+        toast(t('msg.nothingToImport'), 'error')
         return
       }
       const items = kind === 'OPML' ? parseOpmlText(text) : parseUrlList(text)
       if (items.length === 0) {
-        toast('未能从内容中解析出订阅源，请检查格式', 'error')
+        toast(t('msg.importParseFailed'), 'error')
         return
       }
       const result = mergeSources(items)
@@ -1979,15 +2294,15 @@ window.__ModuleLoader__.load({
       state.importText = ''
       updateChannels()
       if (result.added === 0) {
-        toast('没有新增订阅源（' + result.skipped + ' 个已订阅或无效）', 'info')
+        toast(t('msg.noNewSources', { count: result.skipped }), 'info')
         return
       }
       markDirty()
       if (autoSave) {
-        toast('已导入 ' + result.added + ' 个订阅源' + (result.skipped > 0 ? '，跳过 ' + result.skipped + ' 个已存在' : '') + '，正在保存…', 'info')
+        toast(t('msg.importedSaving', { added: result.added, skipped: result.skipped > 0 ? t('msg.importSkipped', { count: result.skipped }) : '' }), 'info')
         saveConfig()
       } else {
-        toast('已导入 ' + result.added + ' 个订阅源' + (result.skipped > 0 ? '，跳过 ' + result.skipped + ' 个已存在' : '') + '，点击「保存」校验生效', 'ok')
+        toast(t('msg.importedPending', { added: result.added, skipped: result.skipped > 0 ? t('msg.importSkipped', { count: result.skipped }) : '' }), 'ok')
       }
     }
 
@@ -1995,7 +2310,7 @@ window.__ModuleLoader__.load({
       const lines = []
       lines.push('<?xml version="1.0" encoding="UTF-8"?>')
       lines.push('<opml version="2.0">')
-      lines.push('<head><title>DSH RSS 订阅源</title></head>')
+      lines.push('<head><title>' + t('msg.opmlTitle') + '</title></head>')
       lines.push('<body>')
       for (const source of state.config?.sources || []) {
         const name = source.name || hostnameOf(source.url)
@@ -2018,7 +2333,7 @@ window.__ModuleLoader__.load({
       a.click()
       a.remove()
       setTimeout(() => URL.revokeObjectURL(url), 1000)
-      toast('已导出 ' + (state.config?.sources?.length || 0) + ' 个订阅源', 'ok')
+      toast(t('msg.exportedCount', { count: state.config?.sources?.length || 0 }), 'ok')
     }
 
     /* ================================ 事件 ================================ */
@@ -2159,13 +2474,13 @@ window.__ModuleLoader__.load({
         }
         if (added === 0) {
           updateCatalogTools()
-          toast(skipped > 0 ? '所选条目均已订阅' : '未选择条目', 'info')
+          toast(skipped > 0 ? t('msg.allSubscribed') : t('msg.nothingSelected'), 'info')
           return
         }
         updateChannels()
         updateCatalogResults()
         markDirty()
-        toast('已添加 ' + added + ' 个订阅源' + (skipped > 0 ? '，跳过 ' + skipped + ' 个已订阅' : '') + '，正在保存…', 'info')
+        toast(t('msg.addedSaving', { added, skipped: skipped > 0 ? t('msg.addSkipped', { count: skipped }) : '' }), 'info')
         saveConfig()
       } else if (action === 'custom-import-opml') {
         const fileInput = panelEl !== undefined ? panelEl.querySelector('#rss-import-file') : null
@@ -2186,11 +2501,11 @@ window.__ModuleLoader__.load({
         const name = (state.catalogNewName || '').trim()
         const url = (state.catalogNewUrl || '').trim()
         if (!name) {
-          toast('请填写目录名称', 'error')
+          toast(t('error.catalogNameRequired'), 'error')
           return
         }
         if (!url) {
-          toast('请填写 OPML 目录 URL', 'error')
+          toast(t('error.catalogUrlRequired'), 'error')
           return
         }
         let valid = false
@@ -2201,12 +2516,12 @@ window.__ModuleLoader__.load({
           valid = false
         }
         if (!valid) {
-          toast('目录 URL 不合法', 'error')
+          toast(t('error.catalogUrlInvalid'), 'error')
           return
         }
         if (!state.config.catalogs) state.config.catalogs = []
         if (state.config.catalogs.some((item) => item.url === url)) {
-          toast('该目录已存在', 'info')
+          toast(t('msg.catalogExists'), 'info')
           return
         }
         state.config.catalogs.push({ name, url })
@@ -2214,7 +2529,7 @@ window.__ModuleLoader__.load({
         state.catalogNewUrl = ''
         updateCatalogSources()
         markDirty()
-        toast('目录已加入，正在保存…', 'info')
+        toast(t('msg.catalogAdded'), 'info')
         saveConfig()
       } else if (action === 'catalog-remove-source') {
         if (!state.config) return
@@ -2223,10 +2538,10 @@ window.__ModuleLoader__.load({
         state.config.catalogs = (state.config.catalogs || []).filter((item) => item.url !== url)
         updateCatalogSources()
         markDirty()
-        toast('目录已移除，正在保存…', 'info')
+        toast(t('msg.catalogRemoved'), 'info')
         saveConfig()
       } else if (action === 'config-reset') {
-        if (state.dirty && !window.confirm('放弃未保存的修改并重新加载？')) return
+        if (state.dirty && !window.confirm(t('msg.confirmDiscard'))) return
         state.dirty = false
         load()
       } else if (action === 'config-save') {
@@ -2267,7 +2582,7 @@ window.__ModuleLoader__.load({
         load()
       }, [open])
       if (view === 'summary') {
-        return '订阅 RSS/Atom，管理渠道与分类，每天自动汇总「今日值得读」。'
+        return t('card.desc')
       }
 
       // page 视图：新页面自己画标题/图标/面包屑，这里只交表单本体，不渲染卡片头。
@@ -2283,8 +2598,8 @@ window.__ModuleLoader__.load({
               jsxs('span', {
                 className: 'rss_cardHeadText',
                 children: [
-                  jsx('span', { className: 'rss_cardName', children: 'RSS / 新闻聚合' }),
-                  jsx('span', { className: 'rss_cardDescription', children: '订阅 RSS/Atom，管理渠道与分类，每天自动汇总「今日值得读」。' }),
+                  jsx('span', { className: 'rss_cardName', children: t('card.name') }),
+                  jsx('span', { className: 'rss_cardDescription', children: t('card.desc') }),
                 ],
               }),
               jsx('span', { className: 'dshkit_badge', children: 'Kit' }),
@@ -2322,6 +2637,7 @@ window.__ModuleLoader__.load({
     ]
 
     exports.apply = (ctx) => {
+      installI18n(ctx)
       ctx.effect(() => {
         ensureStyle()
         // 侧栏入口先按可见挂载（与旧行为一致），config 确认禁用后由闸门收起；
@@ -2400,7 +2716,7 @@ window.__ModuleLoader__.load({
         name: 'settings.kit.item',
         id: 'rss-digest',
         order: 50,
-        label: () => "RSS / 新闻聚合",
+        label: () => t('card.name'),
       }, RssSettingsCard))
       // DSH ≤0.1.5：设置 → 插件 的「插件配置」标签页，keyed 插槽按 settings 命名空间派发。
       ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({

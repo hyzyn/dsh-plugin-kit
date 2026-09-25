@@ -130,7 +130,6 @@ window.__ModuleLoader__.load({
     const I18N_ZH = {
       'card.name': 'MCP 服务器配置',
       'card.desc': '管理 MCP 服务器：stdio 本地进程或 streamable-http 远程服务；保存后热加载为 mcp__<server>__<tool> 工具，无需重启。',
-      'card.summary': '管理 MCP 服务器：stdio 本地进程或 streamable-http 远程服务；保存后热加载为 mcp__<server>__<tool> 工具。',
       'panel.title': 'MCP 服务器',
       'btn.refresh': '刷新',
       'btn.addServer': '+ 添加服务器',
@@ -142,64 +141,63 @@ window.__ModuleLoader__.load({
       'btn.cancel': '取消',
       'btn.testConnection': '测试连接',
       'btn.save': '保存',
-      'status.active': '运行中',
-      'status.disabled': '已停用',
-      'status.error': '错误',
-      'status.loading': '加载中',
-      'status.notLoaded': '未加载',
-      'badge.conflict': 'serverName 冲突',
-      'editor.createTitle': '添加 MCP 服务器',
-      'editor.editTitle': '编辑 MCP 服务器',
-      'field.serverName': 'serverName（模型侧命名空间，[A-Za-z0-9_-] 1~32 字符）',
+      'list.statusActive': '运行中',
+      'list.statusDisabled': '已停用',
+      'list.statusError': '错误',
+      'list.statusLoading': '加载中',
+      'list.statusNotLoaded': '未加载',
+      'list.conflict': 'serverName 冲突',
+      'panel.editorCreate': '添加 MCP 服务器',
+      'panel.editorEdit': '编辑 MCP 服务器',
+      'panel.fieldName': 'serverName（模型侧命名空间，[A-Za-z0-9_-] 1~32 字符）',
       'placeholder.serverName': '例如 github',
-      'field.transport': '传输方式',
-      'field.stdio': ' stdio（本地进程）',
-      'field.http': ' streamable-http（远程）',
-      'field.command': 'command（可执行文件）',
-      'field.cwd': 'cwd（工作目录，可选；目录需已存在）',
-      'field.args': 'args（JSON 数组，或每行一个参数）',
-      'field.env': 'env（每行 KEY=VALUE；js: 开头为 JS 表达式）',
-      'field.url': 'url（MCP 端点）',
-      'field.headers': 'headers（每行 KEY=VALUE；js: 开头为 JS 表达式，模板串可引用环境变量）',
-      'field.failOnStartupError': ' failOnStartupError（启动失败即拒绝加载）',
-      'field.enabled': ' 启用',
-      'field.reconnect': ' 断线自动重连',
-      'hint.editor': 'env/headers 的 VALUE 以 js: 开头会原样写入 !!js 表达式（例如 js:process.env.GITHUB_TOKEN）。保存后服务器会热加载，工具名形如 mcp__<serverName>__<tool>。',
-      'banner.fileError': '配置区块异常：',
-      'banner.fileErrorFix': '（保存一次即可修复）',
-      'banner.conflicts': '以下 serverName 与本插件托管之外的 mcp-client 实例重复，可能导致对应实例加载失败：',
-      'banner.hotReload': '改动写入 ~/.dsh/cordis.patch.yml 的托管区块后经 HMR 热加载（约 1~2 秒生效）。env/headers 值以 js: 开头会被当作 !!js 表达式（如 js:process.env.GITHUB_TOKEN）。',
-      'banner.connecting': '正在连接并列出工具…（最长 25 秒）',
-      'banner.connected': '连接成功',
-      'banner.connectFailed': '连接失败：',
-      'meta.duration': '耗时 ',
-      'meta.protocol': '协议 ',
-      'meta.server': '服务器 ',
-      'meta.tools': '工具数 ',
+      'panel.fieldTransport': '传输方式',
+      'panel.transportStdio': ' stdio（本地进程）',
+      'panel.transportHttp': ' streamable-http（远程）',
+      'panel.fieldCommand': 'command（可执行文件）',
+      'panel.fieldCwd': 'cwd（工作目录，可选；目录需已存在）',
+      'panel.fieldArgs': 'args（JSON 数组，或每行一个参数）',
+      'panel.fieldEnv': 'env（每行 KEY=VALUE；js: 开头为 JS 表达式）',
+      'panel.fieldUrl': 'url（MCP 端点）',
+      'panel.fieldHeaders': 'headers（每行 KEY=VALUE；js: 开头为 JS 表达式，模板串可引用环境变量）',
+      'panel.fieldFailOnStartupError': ' failOnStartupError（启动失败即拒绝加载）',
+      'panel.fieldEnabled': ' 启用',
+      'panel.fieldReconnect': ' 断线自动重连',
+      'panel.hint': 'env/headers 的 VALUE 以 js: 开头会原样写入 !!js 表达式（例如 js:process.env.GITHUB_TOKEN）。保存后服务器会热加载，工具名形如 mcp__<serverName>__<tool>。',
+      'msg.fileError': '配置区块异常：{error}（保存一次即可修复）',
+      'msg.conflicts': '以下 serverName 与本插件托管之外的 mcp-client 实例重复，可能导致对应实例加载失败：{names}',
+      'msg.hotReload': '改动写入 ~/.dsh/cordis.patch.yml 的托管区块后经 HMR 热加载（约 1~2 秒生效）。env/headers 值以 js: 开头会被当作 !!js 表达式（如 js:process.env.GITHUB_TOKEN）。',
+      'msg.testConnecting': '正在连接并列出工具…（最长 25 秒）',
+      'msg.testOk': '连接成功',
+      'msg.testFailed': '连接失败：{error}',
+      'msg.metaDuration': '耗时 {ms}ms',
+      'msg.metaProtocol': '协议 {version}',
+      'msg.metaServer': '服务器 {name}',
+      'msg.metaTools': '工具数 {count}',
       'list.loading': '加载中…',
       'list.empty': '还没有配置 MCP 服务器。',
       'list.emptyHint': '点击右上角「+ 添加服务器」开始：stdio 本地进程或 streamable-http 远程服务都支持。',
       'list.emptyReload': '保存后 DSH 会热加载为 mcp__<serverName>__<tool> 工具，无需重启。',
+      'list.separator': '、',
       'error.unknown': '未知错误',
       'error.argsNotArray': 'args 必须是 JSON 字符串数组',
-      'error.unparsableLine': '无法解析的行：',
-      'error.duplicateName': 'serverName 与已有服务器重复：',
+      'error.unparsableLine': '无法解析的行：{line}',
+      'error.duplicateName': 'serverName 与已有服务器重复：{name}',
       'error.externalClash': 'serverName「{name}」已被本插件之外的 mcp-client 实例占用（{id}）：两个实例会抢同一套工具名，其中一个必然加载失败。该行由别的插件托管，请到对应插件的设置里修改。',
-      'error.saveFailed': '保存失败：',
-      'error.removeFailed': '删除失败：',
-      'error.updateFailed': '更新失败：',
+      'msg.saveFailed': '保存失败：{error}',
+      'msg.removeFailed': '删除失败：{error}',
+      'msg.updateFailed': '更新失败：{error}',
       'msg.saved': '已保存，正在热加载…',
       'msg.deleted': '已删除，正在热卸载…',
       'msg.updated': '已更新，正在热加载…',
-      'msg.testOk': '连接成功（确认无误后点保存）',
-      'msg.testFailed': '连接失败',
-      'confirm.removeLast': '确定删除最后一条 MCP 服务器「{name}」？删除后托管区块会清空，其注册的工具会立即被卸载。',
-      'confirm.remove': '确定删除 MCP 服务器「{name}」？其注册的工具会立即被卸载。',
+      'msg.testOkHint': '连接成功（确认无误后点保存）',
+      'msg.testFailedToast': '连接失败',
+      'msg.confirmRemoveLast': '确定删除最后一条 MCP 服务器「{name}」？删除后托管区块会清空，其注册的工具会立即被卸载。',
+      'msg.confirmRemove': '确定删除 MCP 服务器「{name}」？其注册的工具会立即被卸载。',
     }
     const I18N_EN = {
       'card.name': 'MCP server configuration',
-      'card.desc': 'Manage MCP servers: stdio local processes or streamable-http remote services; saving hot-loads them as mcp__<server>__<tool> tools, no restart needed.',
-      'card.summary': 'Manage MCP servers: stdio local processes or streamable-http remote services; saving hot-loads them as mcp__<server>__<tool> tools.',
+      'card.desc': 'Manage MCP servers: stdio local processes or streamable-http remote services; saving hot-loads them as mcp__<server>__<tool> tools — no restart needed.',
       'panel.title': 'MCP servers',
       'btn.refresh': 'Refresh',
       'btn.addServer': '+ Add server',
@@ -211,59 +209,59 @@ window.__ModuleLoader__.load({
       'btn.cancel': 'Cancel',
       'btn.testConnection': 'Test connection',
       'btn.save': 'Save',
-      'status.active': 'Running',
-      'status.disabled': 'Disabled',
-      'status.error': 'Error',
-      'status.loading': 'Loading',
-      'status.notLoaded': 'Not loaded',
-      'badge.conflict': 'serverName conflict',
-      'editor.createTitle': 'Add MCP server',
-      'editor.editTitle': 'Edit MCP server',
-      'field.serverName': 'serverName (model-side namespace, [A-Za-z0-9_-], 1–32 chars)',
+      'list.statusActive': 'Running',
+      'list.statusDisabled': 'Disabled',
+      'list.statusError': 'Error',
+      'list.statusLoading': 'Loading',
+      'list.statusNotLoaded': 'Not loaded',
+      'list.conflict': 'serverName conflict',
+      'panel.editorCreate': 'Add MCP server',
+      'panel.editorEdit': 'Edit MCP server',
+      'panel.fieldName': 'serverName (model-side namespace, [A-Za-z0-9_-], 1–32 chars)',
       'placeholder.serverName': 'e.g. github',
-      'field.transport': 'Transport',
-      'field.stdio': ' stdio (local process)',
-      'field.http': ' streamable-http (remote)',
-      'field.command': 'command (executable)',
-      'field.cwd': 'cwd (working directory, optional; the directory must already exist)',
-      'field.args': 'args (JSON array, or one argument per line)',
-      'field.env': 'env (KEY=VALUE per line; a js: prefix is a JS expression)',
-      'field.url': 'url (MCP endpoint)',
-      'field.headers': 'headers (KEY=VALUE per line; a js: prefix is a JS expression, templates may reference env vars)',
-      'field.failOnStartupError': ' failOnStartupError (refuse to load when startup fails)',
-      'field.enabled': ' Enabled',
-      'field.reconnect': ' Reconnect automatically after a drop',
-      'hint.editor': 'An env/headers VALUE starting with js: is written as a !!js expression verbatim (e.g. js:process.env.GITHUB_TOKEN). Saving hot-loads the server; tool names look like mcp__<serverName>__<tool>.',
-      'banner.fileError': 'Malformed configuration block: ',
-      'banner.fileErrorFix': ' (saving once repairs it)',
-      'banner.conflicts': 'These serverNames clash with mcp-client instances managed outside this plugin, which may keep those instances from loading: ',
-      'banner.hotReload': 'Changes are written to the managed block of ~/.dsh/cordis.patch.yml and hot-loaded via HMR (effective in about 1–2 seconds). An env/headers value starting with js: is treated as a !!js expression (e.g. js:process.env.GITHUB_TOKEN).',
-      'banner.connecting': 'Connecting and listing tools… (up to 25 seconds)',
-      'banner.connected': 'Connected',
-      'banner.connectFailed': 'Connection failed: ',
-      'meta.duration': 'took ',
-      'meta.protocol': 'protocol ',
-      'meta.server': 'server ',
-      'meta.tools': 'tools ',
+      'panel.fieldTransport': 'Transport',
+      'panel.transportStdio': ' stdio (local process)',
+      'panel.transportHttp': ' streamable-http (remote)',
+      'panel.fieldCommand': 'command (executable)',
+      'panel.fieldCwd': 'cwd (working directory, optional; the directory must already exist)',
+      'panel.fieldArgs': 'args (JSON array, or one argument per line)',
+      'panel.fieldEnv': 'env (KEY=VALUE per line; a js: prefix is a JS expression)',
+      'panel.fieldUrl': 'url (MCP endpoint)',
+      'panel.fieldHeaders': 'headers (KEY=VALUE per line; a js: prefix is a JS expression, templates may reference env vars)',
+      'panel.fieldFailOnStartupError': ' failOnStartupError (refuse to load when startup fails)',
+      'panel.fieldEnabled': ' Enabled',
+      'panel.fieldReconnect': ' Reconnect automatically after a drop',
+      'panel.hint': 'An env/headers VALUE starting with js: is written as a !!js expression verbatim (e.g. js:process.env.GITHUB_TOKEN). Saving hot-loads the server; tool names look like mcp__<serverName>__<tool>.',
+      'msg.fileError': 'Malformed configuration block: {error} (saving once repairs it)',
+      'msg.conflicts': 'These serverNames clash with mcp-client instances managed outside this plugin, which may keep those instances from loading: {names}',
+      'msg.hotReload': 'Changes are written to the managed block of ~/.dsh/cordis.patch.yml and hot-loaded via HMR (effective in about 1–2 seconds). An env/headers value starting with js: is treated as a !!js expression (e.g. js:process.env.GITHUB_TOKEN).',
+      'msg.testConnecting': 'Connecting and listing tools… (up to 25 seconds)',
+      'msg.testOk': 'Connected',
+      'msg.testFailed': 'Connection failed: {error}',
+      'msg.metaDuration': 'took {ms}ms',
+      'msg.metaProtocol': 'protocol {version}',
+      'msg.metaServer': 'server {name}',
+      'msg.metaTools': '{count} tools',
       'list.loading': 'Loading…',
       'list.empty': 'No MCP servers configured yet.',
       'list.emptyHint': 'Click “+ Add server” in the top right to start: both stdio local processes and streamable-http services are supported.',
       'list.emptyReload': 'After saving, DSH hot-loads it as mcp__<serverName>__<tool> tools — no restart needed.',
+      'list.separator': ', ',
       'error.unknown': 'unknown error',
       'error.argsNotArray': 'args must be a JSON array of strings',
-      'error.unparsableLine': 'Unparsable line: ',
-      'error.duplicateName': 'serverName already exists: ',
+      'error.unparsableLine': 'Unparsable line: {line}',
+      'error.duplicateName': 'serverName already exists: {name}',
       'error.externalClash': 'serverName “{name}” is already taken by an mcp-client instance outside this plugin ({id}): the two instances would fight over the same tool names and one of them is bound to fail loading. That row is managed by another plugin — change it in that plugin’s settings.',
-      'error.saveFailed': 'Saving failed: ',
-      'error.removeFailed': 'Removing failed: ',
-      'error.updateFailed': 'Updating failed: ',
+      'msg.saveFailed': 'Could not save: {error}',
+      'msg.removeFailed': 'Could not remove: {error}',
+      'msg.updateFailed': 'Could not update: {error}',
       'msg.saved': 'Saved, hot-loading…',
       'msg.deleted': 'Removed, hot-unloading…',
       'msg.updated': 'Updated, hot-loading…',
-      'msg.testOk': 'Connected (click Save once it looks right)',
-      'msg.testFailed': 'Connection failed',
-      'confirm.removeLast': 'Remove the last MCP server “{name}”? The managed block will be emptied and its tools unloaded immediately.',
-      'confirm.remove': 'Remove MCP server “{name}”? Its tools will be unloaded immediately.',
+      'msg.testOkHint': 'Connected (click Save once it looks right)',
+      'msg.testFailedToast': 'Connection failed',
+      'msg.confirmRemoveLast': 'Remove the last MCP server “{name}”? The managed block will be emptied and its tools unloaded immediately.',
+      'msg.confirmRemove': 'Remove MCP server “{name}”? Its tools will be unloaded immediately.',
     }
     /* ==== dsh-i18n:end ==== */
 
@@ -370,11 +368,11 @@ window.__ModuleLoader__.load({
      * 首次求值的结果上。
      */
     const STATUS_TEXT = {
-      get active() { return t('status.active') },
-      get disabled() { return t('status.disabled') },
-      get error() { return t('status.error') },
-      get loading() { return t('status.loading') },
-      get 'not-loaded'() { return t('status.notLoaded') },
+      get active() { return t('list.statusActive') },
+      get disabled() { return t('list.statusDisabled') },
+      get error() { return t('list.statusError') },
+      get loading() { return t('list.statusLoading') },
+      get 'not-loaded'() { return t('list.statusNotLoaded') },
     }
     const STATUS_KIND = { active: 'ok', disabled: '', error: 'error', loading: 'warn', 'not-loaded': '' }
 
@@ -433,9 +431,9 @@ window.__ModuleLoader__.load({
       parts.push('<button class="mX_btnGhost" data-action="refresh"' + (state.loading ? ' disabled' : '') + '>' + t('btn.refresh') + '</button>')
       parts.push('<button class="mX_btn" data-action="add">' + t('btn.addServer') + '</button>')
       parts.push('</div>')
-      if (state.fileError) parts.push('<div class="mX_banner" data-kind="error">' + t('banner.fileError') + esc(state.fileError) + t('banner.fileErrorFix') + '</div>')
+      if (state.fileError) parts.push('<div class="mX_banner" data-kind="error">' + t('msg.fileError', { error: esc(state.fileError) }) + '</div>')
       if (state.conflicts && state.conflicts.length) {
-        parts.push('<div class="mX_banner" data-kind="warn">' + t('banner.conflicts') + esc(state.conflicts.map((c) => c.serverName).join(', ')) + '</div>')
+        parts.push('<div class="mX_banner" data-kind="warn">' + t('msg.conflicts', { names: esc(state.conflicts.map((c) => c.serverName).join(t('list.separator'))) }) + '</div>')
       }
       parts.push('<div class="mX_list">')
       if (state.loading) {
@@ -447,7 +445,7 @@ window.__ModuleLoader__.load({
       }
       parts.push('</div>')
       if (state.test) parts.push(renderTestHtml())
-      parts.push('<div class="mX_banner" data-kind="info">' + t('banner.hotReload') + '</div>')
+      parts.push('<div class="mX_banner" data-kind="info">' + t('msg.hotReload') + '</div>')
       parts.push('</div>')
       return parts.join('')
     }
@@ -459,7 +457,7 @@ window.__ModuleLoader__.load({
       parts.push(transportBadge(server.transport))
       parts.push('<span class="mX_cardName">' + esc(server.serverName) + '</span>')
       parts.push(statusBadge(server.status))
-      if (server.conflict) parts.push(badge(t('badge.conflict'), 'warn', ''))
+      if (server.conflict) parts.push(badge(t('list.conflict'), 'warn', ''))
       parts.push('<span class="mX_cardActions">')
       parts.push('<button class="mX_linkBtn" data-action="test" data-id="' + esc(server.id) + '"' + (state.busy ? ' disabled' : '') + '>' + t('btn.test') + '</button>')
       parts.push('<button class="mX_linkBtn" data-action="edit" data-id="' + esc(server.id) + '"' + (state.busy ? ' disabled' : '') + '>' + t('btn.edit') + '</button>')
@@ -477,15 +475,15 @@ window.__ModuleLoader__.load({
       const parts = []
       parts.push('<div class="mX_toolWrap">')
       if (test.running) {
-        parts.push('<div class="mX_banner" data-kind="info"><span class="mX_spinner"></span> ' + t('banner.connecting') + '</div>')
+        parts.push('<div class="mX_banner" data-kind="info"><span class="mX_spinner"></span> ' + t('msg.testConnecting') + '</div>')
       } else {
         const result = test.result || {}
-        parts.push(result.ok ? '<div class="mX_banner" data-kind="ok">' + t('banner.connected') + '</div>' : '<div class="mX_banner" data-kind="error">' + t('banner.connectFailed') + esc(result.error || t('error.unknown')) + '</div>')
+        parts.push(result.ok ? '<div class="mX_banner" data-kind="ok">' + t('msg.testOk') + '</div>' : '<div class="mX_banner" data-kind="error">' + t('msg.testFailed', { error: esc(result.error || t('error.unknown')) }) + '</div>')
         const meta = []
-        if (result.durationMs !== undefined) meta.push(t('meta.duration') + result.durationMs + 'ms')
-        if (result.protocolVersion) meta.push(t('meta.protocol') + esc(result.protocolVersion))
-        if (result.serverInfo && (result.serverInfo.name || result.serverInfo.version)) meta.push(t('meta.server') + esc([result.serverInfo.name, result.serverInfo.version].filter(Boolean).join(' ')))
-        meta.push(t('meta.tools') + (result.toolsCount || 0))
+        if (result.durationMs !== undefined) meta.push(t('msg.metaDuration', { ms: result.durationMs }))
+        if (result.protocolVersion) meta.push(t('msg.metaProtocol', { version: result.protocolVersion }))
+        if (result.serverInfo && (result.serverInfo.name || result.serverInfo.version)) meta.push(t('msg.metaServer', { name: [result.serverInfo.name, result.serverInfo.version].filter(Boolean).join(' ') }))
+        meta.push(t('msg.metaTools', { count: result.toolsCount || 0 }))
         parts.push('<div class="mX_toolHeader">' + esc(meta.join(' · ')) + '</div>')
         if (result.ok && result.tools && result.tools.length) {
           parts.push('<div class="mX_toolList">')
@@ -512,7 +510,7 @@ window.__ModuleLoader__.load({
       const editor = state.editor
       const server = editor.server
       const config = (server && server.config) || {}
-      const title = editor.mode === 'create' ? t('editor.createTitle') : t('editor.editTitle')
+      const title = editor.mode === 'create' ? t('panel.editorCreate') : t('panel.editorEdit')
       const transport = config.transport || 'stdio'
       const reconnect = config.reconnect || {}
       const parts = []
@@ -520,37 +518,37 @@ window.__ModuleLoader__.load({
       parts.push('<div class="mX_panelHeader"><h2 class="mX_panelTitle">' + esc(title) + '</h2></div>')
       parts.push('<div class="mX_modalBody">')
       parts.push('<div class="mX_formRow">')
-      parts.push('<div class="mX_field"><label class="mX_fieldLabel" for="ed_name">' + esc(t('field.serverName')) + '</label><input class="mX_input" id="ed_name" placeholder="' + esc(t('placeholder.serverName')) + '" value="' + esc(config.serverName || '') + '"></div>')
-      parts.push('<div class="mX_field"><span class="mX_fieldLabel">' + esc(t('field.transport')) + '</span><span class="mX_radioRow">')
-      parts.push('<label class="mX_radioLabel"><input type="radio" name="ed_transport" value="stdio"' + (transport === 'stdio' ? ' checked' : '') + '>' + esc(t('field.stdio')) + '</label>')
-      parts.push('<label class="mX_radioLabel"><input type="radio" name="ed_transport" value="streamable-http"' + (transport === 'streamable-http' ? ' checked' : '') + '>' + esc(t('field.http')) + '</label>')
+      parts.push('<div class="mX_field"><label class="mX_fieldLabel" for="ed_name">' + esc(t('panel.fieldName')) + '</label><input class="mX_input" id="ed_name" placeholder="' + esc(t('placeholder.serverName')) + '" value="' + esc(config.serverName || '') + '"></div>')
+      parts.push('<div class="mX_field"><span class="mX_fieldLabel">' + esc(t('panel.fieldTransport')) + '</span><span class="mX_radioRow">')
+      parts.push('<label class="mX_radioLabel"><input type="radio" name="ed_transport" value="stdio"' + (transport === 'stdio' ? ' checked' : '') + '>' + esc(t('panel.transportStdio')) + '</label>')
+      parts.push('<label class="mX_radioLabel"><input type="radio" name="ed_transport" value="streamable-http"' + (transport === 'streamable-http' ? ' checked' : '') + '>' + esc(t('panel.transportHttp')) + '</label>')
       parts.push('</span></div>')
       parts.push('</div>')
       parts.push('<div id="ed_stdio" style="display:' + (transport === 'stdio' ? 'flex' : 'none') + ';flex-direction:column;gap:10px">')
       parts.push('<div class="mX_formRow">')
-      parts.push('<div class="mX_field"><label class="mX_fieldLabel" for="ed_command">' + esc(t('field.command')) + '</label><input class="mX_input" id="ed_command" placeholder="npx" value="' + esc(config.command || '') + '"></div>')
-      parts.push('<div class="mX_field"><label class="mX_fieldLabel" for="ed_cwd">' + esc(t('field.cwd')) + '</label><input class="mX_input" id="ed_cwd" placeholder="/path/to/project" value="' + esc(config.cwd || '') + '"></div>')
+      parts.push('<div class="mX_field"><label class="mX_fieldLabel" for="ed_command">' + esc(t('panel.fieldCommand')) + '</label><input class="mX_input" id="ed_command" placeholder="npx" value="' + esc(config.command || '') + '"></div>')
+      parts.push('<div class="mX_field"><label class="mX_fieldLabel" for="ed_cwd">' + esc(t('panel.fieldCwd')) + '</label><input class="mX_input" id="ed_cwd" placeholder="/path/to/project" value="' + esc(config.cwd || '') + '"></div>')
       parts.push('</div>')
-      parts.push('<div class="mX_field"><label class="mX_fieldLabel" for="ed_args">' + esc(t('field.args')) + '</label><textarea class="mX_input mX_textarea" id="ed_args" placeholder="[-y, @modelcontextprotocol/server-filesystem]">' + esc(JSON.stringify(config.args || [])) + '</textarea></div>')
-      parts.push('<div class="mX_field"><label class="mX_fieldLabel" for="ed_env">' + esc(t('field.env')) + '</label><textarea class="mX_input mX_textarea" id="ed_env" placeholder="GITHUB_TOKEN=js:process.env.GITHUB_TOKEN">' + esc(kvToText(config.env)) + '</textarea></div>')
+      parts.push('<div class="mX_field"><label class="mX_fieldLabel" for="ed_args">' + esc(t('panel.fieldArgs')) + '</label><textarea class="mX_input mX_textarea" id="ed_args" placeholder="[-y, @modelcontextprotocol/server-filesystem]">' + esc(JSON.stringify(config.args || [])) + '</textarea></div>')
+      parts.push('<div class="mX_field"><label class="mX_fieldLabel" for="ed_env">' + esc(t('panel.fieldEnv')) + '</label><textarea class="mX_input mX_textarea" id="ed_env" placeholder="GITHUB_TOKEN=js:process.env.GITHUB_TOKEN">' + esc(kvToText(config.env)) + '</textarea></div>')
       parts.push('</div>')
       parts.push('<div id="ed_http" style="display:' + (transport === 'streamable-http' ? 'flex' : 'none') + ';flex-direction:column;gap:10px">')
-      parts.push('<div class="mX_field"><label class="mX_fieldLabel" for="ed_url">' + esc(t('field.url')) + '</label><input class="mX_input" id="ed_url" placeholder="http://localhost:3000/mcp" value="' + esc(config.url || '') + '"></div>')
-      parts.push('<div class="mX_field"><label class="mX_fieldLabel" for="ed_headers">' + esc(t('field.headers')) + '</label><textarea class="mX_input mX_textarea" id="ed_headers" placeholder="Authorization=js:process.env.MCP_TOKEN">' + esc(kvToText(config.headers)) + '</textarea></div>')
+      parts.push('<div class="mX_field"><label class="mX_fieldLabel" for="ed_url">' + esc(t('panel.fieldUrl')) + '</label><input class="mX_input" id="ed_url" placeholder="http://localhost:3000/mcp" value="' + esc(config.url || '') + '"></div>')
+      parts.push('<div class="mX_field"><label class="mX_fieldLabel" for="ed_headers">' + esc(t('panel.fieldHeaders')) + '</label><textarea class="mX_input mX_textarea" id="ed_headers" placeholder="Authorization=js:process.env.MCP_TOKEN">' + esc(kvToText(config.headers)) + '</textarea></div>')
       parts.push('</div>')
       parts.push('<div class="mX_formRow">')
       parts.push('<div class="mX_field"><label class="mX_fieldLabel" for="ed_timeout">toolCallTimeoutMs</label><input class="mX_input" id="ed_timeout" type="number" min="1" value="' + esc(String(config.toolCallTimeoutMs ?? 60000)) + '"></div>')
-      parts.push('<label class="mX_checkRow" style="padding-top:18px"><input type="checkbox" id="ed_failStartup"' + (config.failOnStartupError ? ' checked' : '') + '>' + esc(t('field.failOnStartupError')) + '</label>')
-      parts.push('<label class="mX_checkRow" style="padding-top:18px"><input type="checkbox" id="ed_enabled"' + (server && server.disabled ? '' : ' checked') + '>' + esc(t('field.enabled')) + '</label>')
+      parts.push('<label class="mX_checkRow" style="padding-top:18px"><input type="checkbox" id="ed_failStartup"' + (config.failOnStartupError ? ' checked' : '') + '>' + esc(t('panel.fieldFailOnStartupError')) + '</label>')
+      parts.push('<label class="mX_checkRow" style="padding-top:18px"><input type="checkbox" id="ed_enabled"' + (server && server.disabled ? '' : ' checked') + '>' + esc(t('panel.fieldEnabled')) + '</label>')
       parts.push('</div>')
       parts.push('<div class="mX_formRow" style="align-items:end">')
-      parts.push('<label class="mX_checkRow" style="padding-top:18px"><input type="checkbox" id="ed_rcEnabled"' + (reconnect.enabled !== false ? ' checked' : '') + '>' + esc(t('field.reconnect')) + '</label>')
+      parts.push('<label class="mX_checkRow" style="padding-top:18px"><input type="checkbox" id="ed_rcEnabled"' + (reconnect.enabled !== false ? ' checked' : '') + '>' + esc(t('panel.fieldReconnect')) + '</label>')
       parts.push('<div class="mX_field"><label class="mX_fieldLabel" for="ed_rcInitial">initialDelayMs</label><input class="mX_input" id="ed_rcInitial" type="number" min="1" value="' + esc(String(reconnect.initialDelayMs ?? 500)) + '"></div>')
       parts.push('<div class="mX_field"><label class="mX_fieldLabel" for="ed_rcMax">maxDelayMs</label><input class="mX_input" id="ed_rcMax" type="number" min="1" value="' + esc(String(reconnect.maxDelayMs ?? 30000)) + '"></div>')
       parts.push('<div class="mX_field"><label class="mX_fieldLabel" for="ed_rcAttempts">maxAttempts</label><input class="mX_input" id="ed_rcAttempts" type="number" min="1" value="' + esc(String(reconnect.maxAttempts ?? 10)) + '"></div>')
       parts.push('</div>')
       parts.push('<p class="mX_formError" id="ed_error"></p>')
-      parts.push('<div class="mX_hint">' + esc(t('hint.editor')) + '</div>')
+      parts.push('<div class="mX_hint">' + esc(t('panel.hint')) + '</div>')
       // 测试结果就地展示在编辑器里（容器固定，由 testEditor 直接改 innerHTML）：
       // 这样「测试连接 → 保存」是一条连续动作，表单与已填内容都留着
       parts.push('<div id="ed_testResult">' + (state.test ? renderTestHtml() : '') + '</div>')
@@ -596,7 +594,7 @@ window.__ModuleLoader__.load({
         const line = raw.trim()
         if (line === '' || line.startsWith('#')) continue
         const match = line.match(/^([A-Za-z_][A-Za-z0-9_.-]*)\s*[:=]\s*(.*)$/)
-        if (match === null) throw new Error(t('error.unparsableLine') + line)
+        if (match === null) throw new Error(t('error.unparsableLine', { line }))
         out[match[1]] = match[2]
       }
       return out
@@ -703,7 +701,7 @@ window.__ModuleLoader__.load({
       }
       const others = state.servers.filter((server) => server.id !== row.id)
       if (others.some((server) => server.serverName === row.config.serverName)) {
-        setEditorError(t('error.duplicateName') + row.config.serverName)
+        setEditorError(t('error.duplicateName', { name: row.config.serverName }))
         return
       }
       // 外部实例同名（别的插件托管的 mcp-client，如 codegraph 归 Codegraph 插件管）：本地先拦
@@ -725,7 +723,7 @@ window.__ModuleLoader__.load({
         setTimeout(() => load(), 800)
       } catch (error) {
         setEditorError(error instanceof Error ? error.message : String(error))
-        toast(t('error.saveFailed') + (error instanceof Error ? error.message : String(error)), 'error')
+        toast(t('msg.saveFailed', { error: error instanceof Error ? error.message : String(error) }), 'error')
       } finally {
         state.busy = false
         refresh()
@@ -738,8 +736,8 @@ window.__ModuleLoader__.load({
       // 删掉最后一条＝清空托管区块，确认文案要说清这一点，保存时也要显式带 clearAll
       const last = state.servers.length === 1
       const question = last
-        ? t('confirm.removeLast', { name: server.serverName })
-        : t('confirm.remove', { name: server.serverName })
+        ? t('msg.confirmRemoveLast', { name: server.serverName })
+        : t('msg.confirmRemove', { name: server.serverName })
       if (!window.confirm(question)) return
       const servers = state.servers.filter((item) => item.id !== id)
       state.busy = true
@@ -749,7 +747,7 @@ window.__ModuleLoader__.load({
         toast(t('msg.deleted'), 'ok')
         setTimeout(() => load(), 800)
       } catch (error) {
-        toast(t('error.removeFailed') + (error instanceof Error ? error.message : String(error)), 'error')
+        toast(t('msg.removeFailed', { error: error instanceof Error ? error.message : String(error) }), 'error')
       } finally {
         state.busy = false
         refresh()
@@ -765,7 +763,7 @@ window.__ModuleLoader__.load({
         toast(t('msg.updated'), 'ok')
         setTimeout(() => load(), 800)
       } catch (error) {
-        toast(t('error.updateFailed') + (error instanceof Error ? error.message : String(error)), 'error')
+        toast(t('msg.updateFailed', { error: error instanceof Error ? error.message : String(error) }), 'error')
       } finally {
         state.busy = false
         refresh()
@@ -818,7 +816,7 @@ window.__ModuleLoader__.load({
       try {
         const body = await apiTest(row.config)
         state.test = { serverName: row.config.serverName, running: false, result: body.result || {} }
-        toast(body.result && body.result.ok ? t('msg.testOk') : t('msg.testFailed'), body.result && body.result.ok ? 'ok' : 'error')
+        toast(body.result && body.result.ok ? t('msg.testOkHint') : t('msg.testFailedToast'), body.result && body.result.ok ? 'ok' : 'error')
       } catch (error) {
         // 请求本身失败（路由/网络）：清掉「正在连接…」，把原因写进编辑器错误行
         state.test = null
@@ -884,7 +882,7 @@ window.__ModuleLoader__.load({
         load()
       }, [open])
       if (view === 'summary') {
-        return t('card.summary')
+        return t('card.desc')
       }
 
       // page 视图：新页面自己画标题/图标/面包屑，这里只交表单本体，不渲染卡片头。
