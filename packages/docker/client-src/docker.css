@@ -896,7 +896,7 @@
   align-items: center;
   gap: var(--dk-gap-md);
   flex: 1 1 auto;
-  flex-wrap: wrap; /* LINES + 三个 pill + 级别 + 两个导出 chip + 计数槽放不下时换行（D60） */
+  flex-wrap: wrap; /* LINES + 三个 pill + 级别 + 导出（已合并成一个菜单按钮，D137）+ 计数槽放不下时换行（D60） */
   min-width: 0;
   /* 右侧给计数留固定槽（92px ≈ 4 位数 + 「行匹配」），输入框宽度因此恒定 */
   padding: var(--dk-gap-xs) 92px var(--dk-gap-xs) 0;

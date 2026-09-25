@@ -802,6 +802,34 @@ await test('日志导出对齐：两种格式共用构建器，只有标题与�
   assert.match(many, /容器（2）：web、db/)
 })
 
+await test('日志导出：两个格式合并成一个菜单按钮（D137 —— 窄面板下不再各占一格）', () => {
+  const exports_ = registration.factory((spec) => SEED[spec])
+  const agg = exports_.__aggLogs
+  const decoded = decodeBundle(code)
+
+  // 「一份定义」不是口号：按钮文案在产物里出现两次 = 两个视图又各写了一套
+  // （级别档位、过滤内核当初就是这么漂的）
+  assert.equal(typeof agg.EXPORT_LABEL, 'string', '缺少 __aggLogs.EXPORT_LABEL 测试缝')
+  assert.ok(decoded.includes(agg.EXPORT_LABEL), '产物里没有导出按钮文案')
+  assert.equal(
+    decoded.split(agg.EXPORT_LABEL).length - 1,
+    1,
+    agg.EXPORT_LABEL + ' 在产物里出现了多次（视图各写了一套按钮？）',
+  )
+  // 两个视图的按钮都必须是「菜单触发器」——否则「这是个菜单」对读屏用户不可知
+  assert.equal(decoded.split('aria-haspopup').length - 1, 2, '两个视图的导出按钮都要标 aria-haspopup')
+  // 旧的「一个格式一个按钮」不许回来（正是它把 .md 挤到第二行）
+  assert.ok(!decoded.includes('导出当前显示内容为 .log'), '旧的单格式按钮文案残留（又拆回两个按钮了？）')
+
+  // 菜单里两个格式都在，且各自把正确的 format 交回导出函数
+  const picked = []
+  const items = agg.exportMenuItems((format) => picked.push(format))
+  assert.equal(items.length, 2, '导出菜单必须恰好两个格式')
+  assert.deepEqual(items.map((item) => item.label), ['⬇ .log', '⬇ .md'])
+  for (const item of items) item.onPick()
+  assert.deepEqual(picked, ['log', 'md'], '菜单项必须把对应的 format 传回导出函数')
+})
+
 await test('渲染期守卫：面板组件体直接跑一遍不能抛（TDZ 那类错误曾让面板整个空白）', () => {
   const exports_ = registration.factory((spec) => SEED[spec])
   assert.ok(exports_.__render !== undefined, '缺少 __render 测试缝')
@@ -809,6 +837,9 @@ await test('渲染期守卫：面板组件体直接跑一遍不能抛（TDZ 那�
     ['DockerTabBody', {}],
     ['ContainerPanel', { carrier: 'tab', onClose: () => {}, initialTarget: '' }],
     ['ContainerPanel', { onClose: () => {}, initialTarget: '' }], // 模态 / docked 形态（carrier 缺省）
+    // 聚合日志视图（D137 也动了它的导出按钮）：它的工具条与单容器那条共用同一份定义，
+    // 但只在「多选聚合 / compose 详情」下才挂载，上面两个入口都盖不到它
+    ['ComposeLogs', { target: '目标1', targetLabel: '目标1', items: [{ id: 'a', name: 'web' }, { id: 'b', name: 'db' }] }],
   ]
   for (const [name, props] of cases) {
     const component = exports_.__render[name]

@@ -21,7 +21,7 @@
 
 ## 现状
 
-**已修 136 / 待修 0**（P1×7、P2×43、P3×86；第一轮 79 + 第二轮 46 + 用户实测 8 + 用户建议 1 + 现场复核 1 + 代码复核 1 —— 按索引表逐行重数，此前写的 132 少了 2）。
+**已修 137 / 待修 0**（P1×7、P2×43、P3×87；第一轮 79 + 第二轮 46 + 用户实测 8 + 用户建议 2 + 现场复核 1 + 代码复核 1 —— 按索引表逐行重数，此前写的 132 少了 2）。
 
 第一轮集中在三类：**长连接与长命令的生命周期**（空闲回收、并发首连、陈旧 close 事件、SSE 背压）、
 **静默的错误结果**（把截断当完整、把超时当成功、把「取不到权威数据」当「没有异常」）、
@@ -177,6 +177,28 @@
 | D134 | P3 | 镜像拉取进度流**逐行落地**：每个 SSE line 都跑一次 `mergeProgress`（slice + 重建 key 索引，O(行数)）再 `setLines` → 长拉取（多 GB / 数十层）时每秒数百次 2000 行重渲染，与 D128 同一类写法只是量级小 | client-src/index.js | 2026-09-24 代码复核（D128 同类反模式） |
 | D135 | P2 | 日志级别过滤对 `%5p` **右填充**的级别（`[INFO ]` / `[WARN ]`）完全失效：选到 `WARN+` 乃至 `ERROR+` 仍显示一屏 INFO，且这些行**没有分级着色** | client-src/index.js | 2026-09-25 用户实测上报 |
 | D136 | P3 | `LINES` 选 N 行、右侧计数显示 **N+1**：快照切分用 `text.split('\n')`，而 docker logs 每行都以 `\n` 结尾（终止符），于是多切出一条空行——计数多 1、末尾多一条不可见空行、导出也多一行；同一份日志在快照视图与 FOLLOW 视图下行数不同 | client-src/index.js、client-src/log-buffer.js | 2026-09-25 用户实测上报 |
+| D137 | P3 | 日志导出的两个格式（`.log` / `.md`）各占一个 chip，窄面板下 `.dk_filterBar` 一换行 `.md` 就被甩到第二行、把行数计数也带下去，工具条长成两行 | client-src/index.js、client-src/docker.css | 2026-09-25 用户建议 |
+### D137：导出的两个格式各占一个按钮，窄面板下工具条被挤成两行（2026-09-25 用户建议）
+
+- **症状**（用户截图）：docked / tab 承载下面板只有 ~1180px 宽，`.dk_filterBar` 一换行，
+  `⬇ .md` 就被甩到第二行、把「201 行」计数也带下去——工具条长成两行，看着像布局坏了。
+- **根因**：`.log` 与 `.md` 各一个 `dk_chip`，而且**两个视图各写一遍**。工具条本来就挤
+  （LINES + 三个 pill + 级别 + 两个导出 chip + 计数槽），`.dk_filterBar` 只能靠 `flex-wrap`
+  兜底（D60 加那条规则时就是这么写的注释）。
+- **修法**：两个格式合成**一个** `⬇ 导出` 按钮，点开复用既有的 `openLogMenu` 浮层——Esc /
+  点外部 / 滚轮 / 触摸 / resize 的关闭语义与右键「问 Agent」菜单完全一致，不另造一套下拉。
+  菜单里两个格式各一项并带 hint 说明差别，`sub` 顺带回显「哪个容器 / 几个容器 · 多少行」。
+  按用户的建议收成一份定义：`LOG_EXPORT_LABEL` + `exportMenuItems()` 同时供两个视图用。
+  顺带把 `openLogMenu` 的 head / sub / note 改成可省（导出菜单只有两行选项，套一层标题+注解
+  反而比菜单本身还高）。
+- **回归**：`client-smoke` 新增 1 例 —— 按钮文案在产物里**只出现一次**（两个视图各写一套必然
+  出现两次，这正是级别档位当初漂掉的那种病）、两个视图都标 `aria-haspopup`、旧的单格式按钮
+  文案不许残留、`exportMenuItems` 恰好两个格式且各自把对应的 `format` 传回导出函数。
+  另把 `ComposeLogs` 加进 `__render` 缝并纳入「渲染期守卫」——聚合日志的工具条这次也改了，
+  而原来那两个渲染入口都盖不到它。真 Chrome 夹具（`.preview/export-menu-check.mjs`，**不入库**）
+  在 1180×616 窄视口下核对：工具条只剩 **1 个 chip**、高度 **38px（单行）**、点开菜单两项齐全
+  且 `sub` 正确回显。
+
 ### D136：快照行数恒为 `--tail` 的值 +1（2026-09-25 用户实测上报）
 
 - **症状**（用户截图）：`LINES` 选「Last 201」，右侧计数却是 **202 行**。
@@ -393,7 +415,7 @@
   `node scripts/client-lint.mjs`（忽略 7 条已知噪音 TS2307×4 + TS2339×3）。
 - **旗舰脚本**（都需先 `pnpm --filter @hyzyn/dsh-docker build`，它们读 `lib/`）：
   `node scripts/smoke.mjs`（44/44）、`node scripts/route-smoke.mjs`（60/60，hermetic，实测 0.7s）、
-  `node scripts/client-smoke.mjs`（71/71，实测 0.6s）。三套都在 CI（ubuntu-only step）与发布闸里跑，
+  `node scripts/client-smoke.mjs`（72/72，实测 0.6s）。三套都在 CI（ubuntu-only step）与发布闸里跑，
   并带看门狗（单例 25s / 全局 90s；末尾 `process.exit` 保证退出）。
 - **产物与源码一致**：`pnpm -r build` 后 `git diff --exit-code -- 'packages/*/client.js' 'packages/*/lib'`
   （CI 闸门）；本次另用内存重建逐字节核对过 `client.js`（229759 字节，`identical: true`）。

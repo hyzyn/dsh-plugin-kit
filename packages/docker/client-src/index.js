@@ -1747,14 +1747,19 @@ window.__ModuleLoader__.load({
       menu.className = 'dk_menu'
       menu.setAttribute('role', 'menu')
 
-      const head = document.createElement('div')
-      head.className = 'dk_menuHead'
-      head.textContent = options.head
-      menu.appendChild(head)
-      const sub = document.createElement('div')
-      sub.className = 'dk_menuSub'
-      sub.textContent = options.sub
-      menu.appendChild(sub)
+      // head / sub / note 都可省：导出菜单只有两行选项，套一层标题+注解反而比菜单本身高
+      if (options.head !== undefined) {
+        const head = document.createElement('div')
+        head.className = 'dk_menuHead'
+        head.textContent = options.head
+        menu.appendChild(head)
+      }
+      if (options.sub !== undefined) {
+        const sub = document.createElement('div')
+        sub.className = 'dk_menuSub'
+        sub.textContent = options.sub
+        menu.appendChild(sub)
+      }
 
       for (const item of options.items) {
         const btn = document.createElement('button')
@@ -1777,10 +1782,12 @@ window.__ModuleLoader__.load({
         menu.appendChild(btn)
       }
 
-      const note = document.createElement('div')
-      note.className = 'dk_menuNote'
-      note.textContent = options.note
-      menu.appendChild(note)
+      if (options.note !== undefined) {
+        const note = document.createElement('div')
+        note.className = 'dk_menuNote'
+        note.textContent = options.note
+        menu.appendChild(note)
+      }
 
       document.body.appendChild(menu)
       placeFloating(menu, options.x, options.y)
@@ -1803,8 +1810,47 @@ window.__ModuleLoader__.load({
       }
     }
 
-    /* ---------------------- 投递 ---------------------- */
+    /**
+     * 日志导出：两个格式（`.log` / `.md`）与触发按钮文案的**唯一定义**，单容器日志与
+     * 聚合日志两个视图共用。
+     *
+     * 为什么收成一份：这两个视图已经因为「各写一套」栽过好几次（级别档位、过滤内核都
+     * 是这么对齐的）。格式集合、hint、按钮文案一旦分家，改一处忘一处，症状还很轻——
+     * 只是两个视图长得不一样，没人报 bug。
+     */
+    const LOG_EXPORT_LABEL = '⬇ 导出'
+    function exportMenuItems(onPick) {
+      return [
+        { label: '⬇ .log', hint: '纯文本，逐行原样', onPick: () => onPick('log') },
+        { label: '⬇ .md', hint: '带来源与行数表头，适合当工单附件', onPick: () => onPick('md') },
+      ]
+    }
 
+    /**
+     * 工具条上那个「导出」按钮的浮层菜单（D137）。
+     *
+     * 为什么合并：两个格式各占一个 chip，窄面板（或 docked / tab 承载）下 `.dk_filterBar`
+     * 一换行，`.md` 就被甩到第二行、把行数计数也带下去——工具条长成两行，视觉上像是
+     * 「布局坏了」。合成一个按钮后工具条少一格，两种格式仍在菜单里各有一项。
+     *
+     * 复用 openLogMenu：Esc / 点外部 / 滚轮 / 触摸 / resize 的关闭语义与右键菜单完全一致，
+     * 不另造一套。锚点取按钮自己的矩形（贴着下沿展开），越界由 placeFloating 夹回。
+     */
+    function openExportMenu(event, options) {
+      const target = event === null || event === undefined ? null : event.currentTarget
+      const rect = target !== null && target !== undefined && typeof target.getBoundingClientRect === 'function'
+        ? target.getBoundingClientRect()
+        : null
+      openLogMenu({
+        x: rect === null ? 0 : rect.left,
+        y: rect === null ? 0 : rect.bottom + 4,
+        head: '导出日志',
+        ...(options.sub === undefined ? {} : { sub: options.sub }),
+        items: exportMenuItems(options.onPick),
+      })
+    }
+
+    /* ---------------------- 投递 ---------------------- */
     /** 非安全上下文（远端 GUI 用 IP 访问）没有 navigator.clipboard，退回 textarea。 */
     function copyToClipboard(text) {
       if (navigator.clipboard !== undefined && navigator.clipboard !== null) {
@@ -2540,18 +2586,11 @@ window.__ModuleLoader__.load({
             type: 'button',
             className: 'dk_chip',
             disabled: matched.length === 0,
-            title: '导出当前显示内容为 .log（纯文本）',
-            onClick: () => doLogExport('log'),
-            children: '⬇ .log',
-          }, 'exportLog'),
-          jsx('button', {
-            type: 'button',
-            className: 'dk_chip',
-            disabled: matched.length === 0,
-            title: '导出当前显示内容为 .md（带来源与行数表头，适合当工单附件）',
-            onClick: () => doLogExport('md'),
-            children: '⬇ .md',
-          }, 'exportMd'),
+            'aria-haspopup': 'menu',
+            title: '导出当前显示内容：.log（纯文本）/ .md（带来源与行数表头，适合当工单附件）',
+            onClick: (event) => openExportMenu(event, { sub: item.name + ' · ' + String(matched.length) + ' 行', onPick: doLogExport }),
+            children: LOG_EXPORT_LABEL,
+          }, 'export'),
           jsx('span', {
             className: 'dk_filterCount',
             children: needle === '' && levelMin === 0
@@ -3931,18 +3970,11 @@ window.__ModuleLoader__.load({
             type: 'button',
             className: 'dk_chip',
             disabled: matched.length === 0,
-            title: '导出当前显示内容为 .log（纯文本）',
-            onClick: () => doExport('log'),
-            children: '⬇ .log',
-          }),
-          jsx('button', {
-            type: 'button',
-            className: 'dk_chip',
-            disabled: matched.length === 0,
-            title: '导出当前显示内容为 .md（带来源与行数表头，适合当工单附件）',
-            onClick: () => doExport('md'),
-            children: '⬇ .md',
-          }),
+            'aria-haspopup': 'menu',
+            title: '导出当前显示内容：.log（纯文本）/ .md（带来源与行数表头，适合当工单附件）',
+            onClick: (event) => openExportMenu(event, { sub: String(items.length) + ' 个容器 · ' + String(matched.length) + ' 行', onPick: doExport }),
+            children: LOG_EXPORT_LABEL,
+          }, 'export'),
           jsx('span', { className: 'dk_filterCount', children: needle === '' && levelMin === 0 ? String(entries.length) + ' 行' : String(matched.length) + ' / ' + String(entries.length) + ' 行' }),
         ] }),
         jsx('div', { className: 'dk_followState', 'data-state': status === 'open' ? 'open' : (status === 'closed' ? 'closed' : 'connecting'), children: statusText() }),
@@ -6543,6 +6575,7 @@ window.__ModuleLoader__.load({
     exports.__render = {
       ContainerPanel,
       DockerTabBody,
+      ComposeLogs,
     }
     exports.__pick = {
       MAX: PICK_MAX,
@@ -6639,6 +6672,9 @@ window.__ModuleLoader__.load({
       filterByLevel: filterRowsByLevel,
       filterLinesByLevel,
       buildLogExport,
+      /* 导出按钮文案与两个格式的菜单项：两个视图共用一份，产物里只该出现一次（D137）。 */
+      EXPORT_LABEL: LOG_EXPORT_LABEL,
+      exportMenuItems,
       LEVEL_OPTIONS: LOG_LEVEL_OPTIONS,
       TAIL_OPTIONS: AGG_TAIL_OPTIONS,
       TAIL_DEFAULT: AGG_TAIL_DEFAULT,
