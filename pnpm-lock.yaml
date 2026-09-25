@@ -18,7 +18,7 @@ importers:
         specifier: 0.5.2
         version: link:packages/codegraph
       '@hyzyn/dsh-docker':
-        specifier: 0.8.0
+        specifier: 0.8.1
         version: link:packages/docker
       '@hyzyn/dsh-env':
         specifier: 0.2.7
@@ -61,7 +61,7 @@ importers:
         specifier: 0.5.2
         version: link:../codegraph
       '@hyzyn/dsh-docker':
-        specifier: 0.8.0
+        specifier: 0.8.1
         version: link:../docker
       '@hyzyn/dsh-env':
         specifier: 0.2.7
