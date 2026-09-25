@@ -1,434 +1,267 @@
-# @hyzyn/dsh-docker 缺陷审计与修复记录（v0.6.4 → 0.7.0）
+# @hyzyn/dsh-docker 缺陷编号字典
 
-> **这是一份时点记录。** 2026-09-19 对 v0.6.4 做了两轮**只读**审计：第一轮 8 路并行
-> 审全包源码 → **79 条**（D01–D79）；修复波落地后，第二轮 5 路审**改动面**（15 文件 / +1517 −403）→
-> **46 条**（D80–D125，其中 29 条是第一轮「修到一半」、16 条是修复**新引入**的回归），另补掉第一轮唯一
-> 残留（D51 的 `enum`）。**125 条已全部修复，无待修**（随 docker 0.7.0 发布）。
+> **这份文件是代码注释的编号字典，不是审计报告。**
 >
-> **怎么读**：本文只保留「现状 / 索引 / 待办 / 修复记录摘要 / 复核方式」这些**活的部分**。125 条的逐条
-> 证据、触发场景与修法（约 1200 行）冻结在 git 历史里：`git show 96cf4305:packages/docker/DEFECTS.md`（1201 行，含审计原文与两轮修复记录）。
-> **索引不写行号** —— 修复后代码移了位，审计时点的行号只会误导（`packages/tty/DEFECTS.md` 在同一轮里
-> 也去掉了行号）；要定位实现请用症状列的关键词 `git log -S'<关键词>'`，或看代码里带编号的注释。
+> `src/` / `client-src/` / `test/` / `scripts/` 里有大量 `（Dxx）` 注释，含义是「这段代码为什么
+> 长这样」，编号的出处就是本文。拿到任意一个 `（Dxx）`：先查 [§1 编号索引表](#1-编号索引表)
+> 知道**当年坏了什么**，再查 [§2 编号字典](#2-编号字典这段代码为什么长这样) 知道**所以代码为什么
+> 写成这样**。
 >
-> **编号约定**：`D01…D125` 是 `packages/docker` 内部序列，与 `packages/tty/DEFECTS.md` 的 D01–D48
-> **不共享**；跨包引用请写「docker D03 / tty D12」。代码与测试里 `（Dxx）` 形式的注释解释的是
-> 「这段代码为什么长这样」，出处是本文 + 上面那个 sha。
->
-> **发布**：docker **0.7.0**（minor —— `/attention` 返回体新增 `total/truncated/degraded`（`items` 仍在）、
-> 变更端点与四条 SSE 新增同源证明、列表类截断从「静默少列」改为报错、hostKeys 的删除改为优先于并集、
-> 空 `since` 视为未传，都属行为变化）／`@hyzyn/dsh-all` 0.1.37／`@hyzyn/dsh-plugin-kit` 0.1.31；
-> tag `v0.1.37`。
+> **编号是硬契约**：`D01–D138` 是 `packages/docker` 内部序列，与 `packages/tty/DEFECTS.md` 的
+> `D01–D61` **不共享**；跨包引用请写「docker D03 / tty D12」。新缺陷接在 `D138` 之后，
+> **不得重号、不得回收空号**——源码里已有注释指向它们。
+
+> **本文不含**：逐条 postmortem（症状 / 现场复现 / 根因 / 修法 / 回归 / 反向验证）。
+> 那是 commit message / PR description 的内容；本文只留**结论与取舍**，正文在哪见
+> [§4 冻结记录](#4-冻结记录被移出正文的内容在哪)。
+
+## 维护规则
+
+1. **新缺陷只做两件事**：索引表加一行 + 在代码注释里落编号。详细的现场 / 根因 / 修法 / 反向验证
+   写进 **commit message**，正文不展开。
+2. **索引表超过约 80 行时**，把最老的 20 条整体移到 `DEFECTS-archive.md`。
+3. 索引表**不写行号、不保留修复提交 sha**：修复后代码移了位、有的整段被删或重写，审计时点的行号
+   只会误导。定位实现请用症状列的关键词 `git log -S'<关键词>'`，或读代码里带编号的注释。
+4. 阈值 / 口径 / 基线数字**只增不改**：发现过期或自相矛盾，就在原处加一行 `> ⚠️ 标注`
+   说明，**不擅自"修正"**。
+
+> ⚠️ **标注（本次未擅改）——规则 2 的阈值已被现状越过。**
+> 当前索引表 **138 行**，远超 80 行；但 `D01–D138` 里有 **115 个编号**被
+> `src/` / `client-src/` / `test/` / `scripts/` 引用（共 320 处 `（Dxx）`），
+> 整批搬去 archive 会让源码里的注释失去解析处。**归档只能针对"已不再被源码引用"的编号**，
+> 当前一个这样的编号都没有。故此处只记录规则与现状，不执行搬迁。
 
 ## 现状
 
-**已修 138 / 待修 0**（P1×7、P2×43、P3×88；第一轮 79 + 第二轮 46 + 用户实测 9 + 用户建议 2 + 现场复核 1 + 代码复核 1 —— 按索引表逐行重数，此前写的 132 少了 2）。
+**已修 138 / 待修 0**，编号至 `D138`。逐条症状见 §1，设计意图见 §2，**还没做的见
+[ROADMAP.md](./ROADMAP.md)**。
 
-第一轮集中在三类：**长连接与长命令的生命周期**（空闲回收、并发首连、陈旧 close 事件、SSE 背压）、
-**静默的错误结果**（把截断当完整、把超时当成功、把「取不到权威数据」当「没有异常」）、
-**跨插件与跨文件的约定漂移**（tty 的指纹结构、targets 与 hostKeys 的保护不对称、README 与实现互相打脸）。
-审计当时也确认了两件**没有问题**的事：默认只读的闸门逐条核对**没有绕过路径**，命令注入面
-（argv + `shJoin` + `assert*` 白名单）**没有洞**。
+> ⚠️ **标注（本次未擅改）——两处口径不一致，原文未改：**
+> 1. 本文原开头写「**125 条已全部修复**，随 docker 0.7.0 发布」；而编号已到 `D138`
+>    ——「125」是 0.7.0 时点的数字，此后用户实测 / 复核 / 真机波又加了 `D126–D138`（13 条）。
+> 2. §3 小节标题写「**0.7.0 基线**」，而 `packages/docker/package.json` 现为 `0.7.3`。
+>
+> 原始发布记录（照录，未改）：docker **0.7.0** 为 minor —— `/attention` 返回体新增
+> `total/truncated/degraded`（`items` 仍在）、变更端点与四条 SSE 新增同源证明、列表类截断
+> 从「静默少列」改为报错、hostKeys 的删除改为优先于并集、空 `since` 视为未传，均属行为变化；
+> 同批 `@hyzyn/dsh-all` 0.1.37 / `@hyzyn/dsh-plugin-kit` 0.1.31；tag `v0.1.37`。
 
-第二轮性质不同：它审的是**修复波自身** —— 29 条「修到一半」（症状换了个入口仍在）、16 条**新引入**的
-失败路径、1 条身份归一没跟上。值得记一笔的是：修复波当时的全绿基线（vitest / 三套脚本）**仍然成立**，
-第二轮里相当一部分正是这些测试**照不到**的地方 —— 最典型的是新加的同源证明闸门没有任何负例，
-把两处调用删掉、三套脚本 + 119 例单测**仍全绿**。
+## 1. 编号索引表
 
-工程面同步：三套脚本 hermetic 化（route-smoke 2m0.5s → 0.7s）并进 CI 与发布闸；三套加看门狗；
-`files` 补 `scripts` 与 `client-src`；vitest 6 套 103 例 → **7 套 127 例**；client-smoke 62 → **65**。
+> 只回答「当年坏了什么」。**症状列的关键词就是检索锚点**（如 `inflight`、`keepTail`、
+> `assertSince`、`dropConn`）——`git log -S'<关键词>'` 能直接落到修复提交。
+> 严重度（P1/P2/P3）与「第一轮 / 第二轮 / 新引入」的考古信息**已按维护规则 3 移出**：
+> 前者是按行重数的时点分档，后者是修复波的批次，两者都不参与「这段代码为什么长这样」。
 
-## 索引
+| D | 症状（一句话：当年坏了什么） | 涉及文件 |
+|---|---|---|
+| D01 | 空闲回收只看长流，`docker_image_pull` 这类在途的一次性长命令会被中途掐断 | src/ssh-exec.ts |
+| D02 | 同一目标的并发首个请求各建一条 SSH 连接，先建的那条立刻脱管 | src/ssh-exec.ts |
+| D03 | tty 的指纹种子恒为空（tty 已改用 `fingerprints[]`）→ 对 tty 钉扎过的主机静默重新 TOFU | src/index.ts |
+| D04 | SSE 无背压：`write()` 返回值被丢弃，慢客户端 + 话痨容器 → 宿主写缓冲无界增长 | src/index.ts |
+| D05 | `client.connect()` 的同步异常留下一条永假的池条目，改对配置也不恢复 | src/ssh-exec.ts |
+| D06 | `dropConn(key)` 无身份校验：旧连接的 close/error 会摘掉同键上的**新**连接 | src/ssh-exec.ts |
+| D07 | 传输错误重连丢连接却不 `end()`、配额类错误被判成传输错误 → 泄漏健康连接 + 可操作文案永不到达用户 | src/ssh-exec.ts |
+| D08 | 短命令路径逐 chunk `toString('utf8')`，跨分片的多字节字符变成 U+FFFD | src/ssh-exec.ts |
+| D09 | TOFU 记一条指纹会触发 `applySection` → `closeAllStreams()`：刚开的流被掐、在途 `docker pull` 被中止 | src/index.ts |
+| D10 | `POST /config` 整表覆盖 hostKeys（targets 有两重保护、hostKeys 没有）→ 面板一次无关保存即回退钉扎 | src/index.ts |
+| D11 | 「反复重启」判据缺失：`attention()` 取到 RestartCount 却从不参与判据，crash-loop 容器漏报 | src/docker.ts |
+| D12 | `attention()` 的 limit 先切后排且静默 → 最严重的容器可能被切掉，返回体无任何截断信号 | src/docker.ts |
+| D13 | 列表/详情类方法丢弃 `result.truncated`：静默少列容器/镜像/网络/卷、inspect 把「截断」误报成「不存在」 | src/docker.ts |
+| D14 | 截断保留头部、丢弃尾部：logs 丢最新行、pull 丢 digest、prune 丢总计 | src/ssh-exec.ts |
+| D15 | 改目标名会静默清掉已存的 password/passphrase（`mergeTargetSecrets` 按 name 匹配） | src/index.ts |
+| D16 | `docker_image_pull` 的超时被当成成功返回（`pull()` 丢 `timedOut`，`exec()` 会抛错） | src/docker.ts、1462 |
+| D17 | 日志 FOLLOW 的 effect 声明了 `active` 却漏进 deps → 折叠面板后 SSE 不断，白占 SSH 通道 | client-src/index.js |
+| D18 | 自动刷新 effect 不认 `active` → 折叠/隐藏后仍每 5s 轮询（总览页是 N 目标各两次 docker 调用） | client-src/index.js |
+| D19 | `chooseInitialTarget` 不校验 `current` → 目标被删/改名后面板每次打开都停在「未知目标」且不自愈 | client-src/index.js |
+| D20 | 两处「复制命令」直连 `navigator.clipboard`（非安全上下文同步抛错），已有的兜底函数是死代码 | client-src/index.js |
+| D21 | 面板 config 只在挂载时拉一次 → 设置里改「允许变更操作 / exec」对已打开面板不生效 | client-src/index.js |
+| D22 | 设置卡片保存无脏检查：请求飞行期间的编辑（含刚敲的密码）被响应整表回滚 | client-src/index.js |
+| D23 | `sessionScoped` 粘滞 → 从连接栏进入但未匹配到目标后，「切目标中」的锁与胶囊永久失效 | client-src/index.js |
+| D24 | `openContainerPanel` 的 tab 分支不 `closePanel()` → 两个 ContainerPanel 并存并共享模块级 `panelUi` | client-src/index.js、5703-5751 |
+| D25 | `route-smoke.mjs` 号称离线，实际向硬编码内网 IP 发起真实 SSH 连接并断言其「不可达」 | scripts/route-smoke.mjs |
+| D26 | `stream()` 在池里找不到条目时静默跳过配额判定与 busy 自增（fail-open） | src/ssh-exec.ts |
+| D27 | `acquire()` 的失败也落在「传输错误重试」范围内 → 不可达目标每次命令等两轮 20s | src/ssh-exec.ts |
+| D28 | `agentForward` 配了等于没配：从不给 `ConnectConfig.agentForward` 赋值 | src/ssh-exec.ts |
+| D29 | `auth=agent` 缺 `SSH_AUTH_SOCK` 时无预检（tty 已修，docker 未跟上） | src/ssh-exec.ts |
+| D30 | `expandHome` 只认 `~` 与 `~/`：`~user/...`、Windows 变量一律原样返回 | src/ssh-exec.ts |
+| D31 | loopback 围栏的 Host 白名单过窄：本机别名 / 非 127.0.0.1 环回地址让整个面板（含唯一的启用入口）403 | src/index.ts |
+| D32 | 无 `Origin` 的请求靠 `Sec-Fetch-Site` 兜底，而 `GET /images/pull/stream` 是「带副作用的 GET」 | src/index.ts |
+| D33 | 统计流去重只比较相邻上一条：多容器时同一轮重复采样不会被去掉 | src/index.ts |
+| D34 | `pickTarget` 对非字符串 `target` 静默回落到唯一目标（破坏性操作打错主机的最后一道防线） | src/index.ts |
+| D35 | `sanitizeTargets` 在读路径就去重/丢弃，下一次保存把丢弃结果固化 → 重名目标永久消失 | src/index.ts |
+| D36 | `applySection(patch)` 不在 try 内：`refreshTools` 抛错时用户拿到空 400，而配置已落盘 | src/index.ts |
+| D37 | 写路由对非法引用回 500（客户端错误报成服务端错误），4xx 校验只在少数几条入口做 | src/index.ts |
+| D38 | `parseInspectPorts` 的去重键只有 hostPort → 同端口多 IP 绑定的第二条被并掉，详情比列表少端口 | src/docker.ts、277 |
+| D39 | `parseStatsJson`：`PIDs` 字段缺失时得到 `0` 而不是 `null` | src/docker.ts |
+| D40 | `parsePorts` 静默丢弃端口区间（`8000-8005->8000-8005/tcp`）→ 端口整行消失 | src/docker.ts |
+| D41 | docker 的零值时间未归一（`0001-01-01T00:00:00Z`）→ 破坏「最近出事优先」排序，详情/hover 显示公元 1 年 | src/docker.ts |
+| D42 | `attention()` 静默吞掉 inspect 失败：OOM/退出码/重启次数/时间全降级且无任何标记 | src/docker.ts |
+| D43 | `assertBin` 只把关整串首字符：`docker --version` 能通过校验（不可注入，但报错退化为运行期 ENOENT） | src/docker.ts |
+| D44 | `logs()` 注释称「按到达顺序合并」，实现是 stdout 整段在前、stderr 在后 | src/docker.ts |
+| D45 | `since` 两套口径：events 有白名单（且窄于 docker 的 Go duration 语法），logs 完全不校验 | src/docker.ts、src/index.ts |
+| D46 | 共享 `targetParam` 文案向 12 个单目标工具暗示支持 `*` / 省略=全部，实际报错 | src/index.ts |
+| D47 | `docker_ps` 回完整 64 位 ID（README 写「短 ID」），且与 `docker_attention` 的短 ID 口径不一 | src/index.ts |
+| D48 | `docker_targets{probe:true}` 丢掉 `serverVersion`（README 承诺「探测 docker 版本」） | src/index.ts |
+| D49 | `docker_events` 描述写「八类」，白名单实为九类（README 写九类） | src/index.ts、src/docker.ts |
+| D50 | `docker_logs` 描述把默认行数写死 200，实际取配置 `logTailDefault` | src/index.ts |
+| D51 | 参数 schema 无 enum/边界：`action` 无 enum，`tail`/`timeoutSec` 越界被静默夹紧 | src/index.ts |
+| D52 | `docker_stats` 的 `ids` 传空串/纯空白静默变成「全部容器」 | src/index.ts |
+| D53 | `docker_attention` 在「零目标 + `target:'*'`」时渲染成「一切正常」（假阴性） | src/index.ts |
+| D54 | exec 输入框回车绕过 `execRunning` → 连敲回车会并发执行同一条命令 | client-src/index.js |
+| D55 | 统计流结束后 `statsNotice` 常驻并替换正文 → 快照数据到手也不显示 | client-src/index.js |
+| D56 | 「按时间」排序：尾部窗口首行若是无时间戳续行，会被排到窗口最前 | client-src/index.js |
+| D57 | 拉取进度「同层原地替换」只在相邻行成立、超限与暂停缓冲都静默丢行 | client-src/index.js |
+| D58 | 导出 .md 的代码围栏未转义：日志里出现 ``` 会截断代码块 | client-src/index.js |
+| D59 | `.dk_kvVal` 缺 `white-space: pre-line` → 多挂载/多网络等多行值被压成一行 | client-src/docker.css |
+| D60 | 日志过滤工具条无 `flex-wrap`：窄面板下输入框塌到 0 宽、右侧按钮被裁 | client-src/docker.css |
+| D61 | 聚合日志没有「用户上滚即暂停贴底」：读历史时每来一行都被拽回底部 | client-src/index.js |
+| D62 | 刷新竞态：快照轮询无请求序号（慢响应覆盖新响应）、重连补偿与防抖刷新共用同一代际闸 | client-src/index.js |
+| D63 | 日志无虚拟滚动：每个 chunk 全量重渲染最多 2000 行并重复重算过滤 | client-src/index.js |
+| D64 | 键盘可达性缺口（四处）：抽屉拖拽条 / 日志区不可聚焦 / 总览表行 / 键盘触发的菜单定位 | client-src/index.js |
+| D65 | 右键「问 Agent」浮层与 5 个 document/window 监听器没有卸载清理点 | client-src/index.js |
+| D66 | 目标缓存的「30s 过期刷新」不存在：`cacheAt` 只写不读，README 与注释都承诺了它 | client-src/index.js |
+| D67 | `downloadText` 固定 1s 后 revoke blob URL，且 `<a>` 从未插入 DOM | client-src/index.js |
+| D68 | 容器日志原文（不可信输入）整段进 agent prompt，只提示凭证风险、无「不构成指令」声明 | client-src/index.js |
+| D69 | 设置卡片的数字输入直接 `Number(...)`：`3.5` 被后端判非整数后静默退回默认值 | client-src/index.js |
+| D70 | 三套旗舰脚本（3586 行 / 158 断言）在 CI 与发布闸里零执行 | .github/workflows/ci.yml |
+| D71 | 三个 smoke 脚本没有超时/看门狗：任一挂起即整脚本永久挂住 | scripts/*.mjs（文件尾） |
+| D72 | `files` 不含 `scripts/`，但 package.json 仍 advertise `smoke`（tty 的 D42 在 docker 复现） | package.json |
+| D73 | 无测试的关键路径（tty D45 同款）：TOFU 指纹与 SSH 连接构造零自动化覆盖 | src/ssh-exec.ts |
+| D74 | `client-lint` 的锚点只认入口文件：client-src 兄弟模块的诊断被静默丢弃 | scripts/client-lint.mjs |
+| D75 | README（中英）说 `enabled: false` 需重启才生效，实现是保存即热生效（同包测试断言的就是热路径） | README.md |
+| D76 | README 中英三处「离线回归项数」与实测不符，且中英互相不一致（27 vs 62 最悬殊） | README.md |
+| D77 | README dev 段把本包 vitest 说成「三套」，实际 6 套 103 例 | README.md |
+| D78 | README 手工验收清单写「agent 侧只有 7 个只读工具」，实际恒注册 11 个 | README.md |
+| D79 | README 中英各有排版残迹：整段重复粘贴的残句 + 失衡的代码围栏 | README.md、README.en.md |
+| D80 | 别名 Host 走异步分支时提前 `return`，`cross-site`/Origin 检查被整段跳过 → 围栏被绕过 | src/index.ts |
+| D81 | `agentForward: true` + 宿主无 `SSH_AUTH_SOCK` → ssh2 同步抛错，该目标每次都连不上 | src/ssh-exec.ts |
+| D82 | 保存飞行期间删除的主机指纹被静默丢弃：钉扎删不掉，UI 却显示已删 | client-src/index.js |
+| D83 | `finish()` 清空背压队列：`end`/队尾帧被丢，慢客户端重连并**重拉镜像** | src/index.ts |
+| D84 | 关掉「允许变更操作」不终止在途的镜像拉取流 | src/index.ts |
+| D85 | attention 候选 >300 时第 301 条起没有 inspect 详情，`degraded` 仍为 false | src/docker.ts |
+| D86 | 300 id 单批 inspect × 默认 512KB：一截断就**整批**降级，D11 判据整体失效 | src/docker.ts |
+| D87 | crash-loop 补捞预算被合法候选吃光 → D11 在最需要时不出手且零信号 | src/docker.ts |
+| D88 | `stream()` 的 `busy` 记在重连前的废条目上：配额失效 + 长流 120s 后被 sweeper 掐断 | src/ssh-exec.ts |
+| D89 | D35 新增的「无效条目已丢弃」warning 是死代码，永不触发 | src/index.ts |
+| D90 | D21 只推 `config` 不推目标列表：下拉里有已删目标、缺新目标 | client-src/index.js |
+| D91 | `content-visibility` 让 `scrollHeight` 变估算值 → FOLLOW 贴底失效、「回到底部」也回不到底 | client-src/docker.css |
+| D92 | 聚合日志重建流时不复位 `atBottom`（D61 只做了一半） | client-src/index.js |
+| D93 | 重连补偿改走共享尾沿防抖，事件密集时被无限取消 | client-src/index.js |
+| D94 | 占位条目在建连途中被摘掉后，`ready` 仍 resolve 出一条脱管连接 | src/ssh-exec.ts |
+| D95 | `closePanel()` 管不到 tab 实例：从连接栏进入仍可并存两个面板 | client-src/index.js |
+| D96 | 新安全闸门的拒绝分支零回归（删掉调用，三套脚本 + 119 例仍全绿） | scripts/route-smoke.mjs |
+| D97 | `/action`、`/stats`、`/exec`（空 command）仍回 500 而非 400 | src/index.ts |
+| D98 | `POST /logs` 的 `since` 仍未过 `assertSince`、空串在工具侧报「必填」、在 SSE 侧被忽略 | src/index.ts |
+| D99 | `assertSince` 与 docker 口径两向不吻合（`1.5h`/`0` 被拒，裸日期被放行） | src/docker.ts |
+| D100 | 单目标 `docker_attention` 的渲染丢 `total/truncated/degraded` | src/index.ts |
+| D101 | 面板与 `/attention` 路由都没接 `total/truncated/degraded`，计数静默 ≤100 | src/index.ts |
+| D102 | `parseInspectPorts` 仍整段丢弃区间端口（详情比列表少端口） | src/docker.ts |
+| D103 | 区间端口字段无任何消费方：显示成单端口（`8000→8000/tcp`） | src/index.ts |
+| D104 | `imageInspect` 的两段 `docker history` 从不检查 `truncated` | src/docker.ts |
+| D105 | `assertComplete` 把「静默部分结果」变成「整体失败」，文案对 agent 不可执行 | src/docker.ts |
+| D106 | `FRESH_UP_RE` 只认 ≤59 秒，与 `ATTENTION_FRESH_MS`（120s）不一致 | src/docker.ts |
+| D107 | `refreshTools` 半套注册 + D09 差异判定 → 重存同一配置不自愈 | src/index.ts |
+| D108 | `sameTargets` 按下标比较：仅顺序变化即收流 | src/index.ts |
+| D109 | `hostKeysRemove` 与并集顺序：同一请求的删除被撤销、非法形状静默忽略 | src/index.ts |
+| D110 | 请求路径内的 DNS 判定无超时、无缓存，且发生在写响应之前 | src/index.ts |
+| D111 | `poolKey` 未小写化：同一主机建两条连接，通道额度被悄悄翻倍 | src/ssh-exec.ts |
+| D112 | `run()` 的 `inflight` 只靠 channel 事件释放，超时定时器不兜底 → 连接永不回收 | src/ssh-exec.ts |
+| D113 | 数字输入框无法「清空再重打」（空串被整数正则拒绝） | client-src/index.js |
+| D114 | `sessionScoped` state 化后，`deps: []` 的挂载 effect 仍读首帧闭包 | client-src/index.js |
+| D115 | README 的 `hostKeys[]` 表仍是单数 `fingerprint` | README.md |
+| D116 | README 路由表 `/attention` 行仍是旧形状（只有 `items`） | README.md |
+| D117 | README 未记录 D32 收紧的行为（缺同源证明 → 403） | README.md |
+| D118 | README 的 vitest 清单仍写「六套」，漏掉本波新增的 `ssh-connect` | README.md |
+| D119 | CI 补了、**发布闸没补**：`release.yml` 仍零执行三套脚本 | .github/workflows/release.yml |
+| D120 | `files` 加了 `scripts` 仍不够：`client-smoke` 读未发布的 `client-src/` → `npm run smoke` 仍坏 | package.json |
+| D121 | 三套看门狗在主体结束即 `clearTimeout`，退出前的排空期失去保护 | scripts/client-smoke.mjs |
+| D122 | 建连超时路径脚本/单测双双归零，且 15s 用例上限 < 20s 建连超时 | scripts/route-smoke.mjs |
+| D123 | 本波新行为（`inflight`/`keepTail`/无 sock 的 `agentForward`/`assertSince`）零自动化覆盖 | test/ssh-connect.test.ts |
+| D124 | 新测试里 `auth=key` 用例名与断言不符（实际走 password 分支） | test/ssh-connect.test.ts |
+| D125 | README（中）两处删「（N 项）」时吃掉了后面的空格 | README.md |
+| D126 | 目标引用的连接簿条目失效时**界面上看不出来**：`book` 下拉的候选来自 ttyBooks，失效名字没有对应 option → 下拉渲染成**空白**；且错误文案让人「去 tty 终端面板的设置卡片里添加」，而那张卡片改不了 docker 目标的引用 | src/index.ts、client-src/index.js、client-src/session-target.js |
+| D127 | docker 设置卡片「目标名」输入框**打一个字就失焦**：`dk_targetRow` 的 React key 写成 `String(index) + item.name`，key 含被编辑的字段 → 每次输入 key 变化、React 卸载重建整行，输入框当场丢焦点（表现为"无法聚焦"） | client-src/index.js |
+| D128 | 日志大流量**逐 chunk 全量重渲染**（打开 FOLLOW 的 tail 突发即数百次全量 reconcile，且每 chunk 对全缓冲 join/split 大字符串）叠加**缓冲只限行数不限字节、残行无界** → 话痨 / 大行容器把渲染进程吃到 OOM，网页直接崩溃 | client-src/index.js、client-src/log-buffer.js（新增） |
+| D129 | 修 D128 时顺手把显示层截断到 400 行（并另设 2000 行导出上限）——`LINES` 选 5000 实际只显示 400 行，与「选多少看多少」的设计不符；且「行数闸」与设置卡片的「输出上限（KB）字节闸」在 UI 上没区分 | client-src/index.js |
+| D130 | `docker_ps` 把双栈端口渲染成重复映射：去重键含 hostIp（`0.0.0.0` 与 `[::]` 不同），render 又丢掉 hostIp → `6379→6379/tcp,6379→6379/tcp`；顺带修掉裸 `84->84/tcp` 被切成 `hostIp:'8'` | src/docker.ts、scripts/smoke.mjs |
+| D131 | host 网络容器在 `docker_ps` 里 `ports` 为空，与「确实没暴露端口」无法区分（用户为此多 inspect 了 5 个容器） | src/docker.ts、src/index.ts、client-src/index.js |
+| D132 | `docker_inspect` 未命中只回 `No such object: <id>`，不给近似候选（如 `607023340cbb_rmqnamesrv`） | src/docker.ts、src/index.ts |
+| D133 | 日志流断线重连**重放历史**：EventSource 自动重连复用带 `tail` 的 URL，服务端把最后 tail 行当新行重推，客户端缓冲只在 effect 重跑时重建 → 日志里凭空多出一段重复并挤掉真正的历史；宿主侧 8MB 背压队列溢出走静默 `res.end()`，客户端把它当「流正常结束」再自动重连，同样触发重放 | src/docker.ts、src/index.ts、client-src/log-stream.js（新增）、client-src/index.js |
+| D134 | 镜像拉取进度流**逐行落地**：每个 SSE line 都跑一次 `mergeProgress`（slice + 重建 key 索引，O(行数)）再 `setLines` → 长拉取（多 GB / 数十层）时每秒数百次 2000 行重渲染，与 D128 同一类写法只是量级小 | client-src/index.js |
+| D135 | 日志级别过滤对 `%5p` **右填充**的级别（`[INFO ]` / `[WARN ]`）完全失效：选到 `WARN+` 乃至 `ERROR+` 仍显示一屏 INFO，且这些行**没有分级着色** | client-src/index.js |
+| D136 | `LINES` 选 N 行、右侧计数显示 **N+1**：快照切分用 `text.split('\n')`，而 docker logs 每行都以 `\n` 结尾（终止符），于是多切出一条空行——计数多 1、末尾多一条不可见空行、导出也多一行；同一份日志在快照视图与 FOLLOW 视图下行数不同 | client-src/index.js、client-src/log-buffer.js |
+| D137 | 日志导出的两个格式（`.log` / `.md`）各占一个 chip，窄面板下 `.dk_filterBar` 一换行 `.md` 就被甩到第二行、把行数计数也带下去，工具条长成两行 | client-src/index.js、client-src/docker.css |
+| D138 | 单目标数据路由的目标侧失败（SSH 不可达 / 私钥读不到 / docker 不在）被统一写成 **500**，而 `target:'*'` 对同一件事回 200 + `groups[].ok:false`——同一句错误两种形状，「目标不可达」被当成服务端故障 | src/index.ts |
 
-| D | 严重度 | 症状（一句话） | 涉及文件 | 性质 |
-|---|---|---|---|---|
-| D01 | P1 | 空闲回收只看长流，`docker_image_pull` 这类在途的一次性长命令会被中途掐断 | src/ssh-exec.ts | 第一轮 |
-| D02 | P1 | 同一目标的并发首个请求各建一条 SSH 连接，先建的那条立刻脱管 | src/ssh-exec.ts | 第一轮 |
-| D03 | P1 | tty 的指纹种子恒为空（tty 已改用 `fingerprints[]`）→ 对 tty 钉扎过的主机静默重新 TOFU | src/index.ts | 第一轮 |
-| D04 | P1 | SSE 无背压：`write()` 返回值被丢弃，慢客户端 + 话痨容器 → 宿主写缓冲无界增长 | src/index.ts | 第一轮 |
-| D05 | P2 | `client.connect()` 的同步异常留下一条永假的池条目，改对配置也不恢复 | src/ssh-exec.ts | 第一轮 |
-| D06 | P2 | `dropConn(key)` 无身份校验：旧连接的 close/error 会摘掉同键上的**新**连接 | src/ssh-exec.ts | 第一轮 |
-| D07 | P2 | 传输错误重连丢连接却不 `end()`、配额类错误被判成传输错误 → 泄漏健康连接 + 可操作文案永不到达用户 | src/ssh-exec.ts | 第一轮 |
-| D08 | P2 | 短命令路径逐 chunk `toString('utf8')`，跨分片的多字节字符变成 U+FFFD | src/ssh-exec.ts | 第一轮 |
-| D09 | P2 | TOFU 记一条指纹会触发 `applySection` → `closeAllStreams()`：刚开的流被掐、在途 `docker pull` 被中止 | src/index.ts | 第一轮 |
-| D10 | P2 | `POST /config` 整表覆盖 hostKeys（targets 有两重保护、hostKeys 没有）→ 面板一次无关保存即回退钉扎 | src/index.ts | 第一轮 |
-| D11 | P2 | 「反复重启」判据缺失：`attention()` 取到 RestartCount 却从不参与判据，crash-loop 容器漏报 | src/docker.ts | 第一轮 |
-| D12 | P2 | `attention()` 的 limit 先切后排且静默 → 最严重的容器可能被切掉，返回体无任何截断信号 | src/docker.ts | 第一轮 |
-| D13 | P2 | 列表/详情类方法丢弃 `result.truncated`：静默少列容器/镜像/网络/卷、inspect 把「截断」误报成「不存在」 | src/docker.ts | 第一轮 |
-| D14 | P2 | 截断保留头部、丢弃尾部：logs 丢最新行、pull 丢 digest、prune 丢总计 | src/ssh-exec.ts | 第一轮 |
-| D15 | P2 | 改目标名会静默清掉已存的 password/passphrase（`mergeTargetSecrets` 按 name 匹配） | src/index.ts | 第一轮 |
-| D16 | P2 | `docker_image_pull` 的超时被当成成功返回（`pull()` 丢 `timedOut`，`exec()` 会抛错） | src/docker.ts、1462 | 第一轮 |
-| D17 | P2 | 日志 FOLLOW 的 effect 声明了 `active` 却漏进 deps → 折叠面板后 SSE 不断，白占 SSH 通道 | client-src/index.js | 第一轮 |
-| D18 | P2 | 自动刷新 effect 不认 `active` → 折叠/隐藏后仍每 5s 轮询（总览页是 N 目标各两次 docker 调用） | client-src/index.js | 第一轮 |
-| D19 | P2 | `chooseInitialTarget` 不校验 `current` → 目标被删/改名后面板每次打开都停在「未知目标」且不自愈 | client-src/index.js | 第一轮 |
-| D20 | P2 | 两处「复制命令」直连 `navigator.clipboard`（非安全上下文同步抛错），已有的兜底函数是死代码 | client-src/index.js | 第一轮 |
-| D21 | P2 | 面板 config 只在挂载时拉一次 → 设置里改「允许变更操作 / exec」对已打开面板不生效 | client-src/index.js | 第一轮 |
-| D22 | P2 | 设置卡片保存无脏检查：请求飞行期间的编辑（含刚敲的密码）被响应整表回滚 | client-src/index.js | 第一轮 |
-| D23 | P2 | `sessionScoped` 粘滞 → 从连接栏进入但未匹配到目标后，「切目标中」的锁与胶囊永久失效 | client-src/index.js | 第一轮 |
-| D24 | P2 | `openContainerPanel` 的 tab 分支不 `closePanel()` → 两个 ContainerPanel 并存并共享模块级 `panelUi` | client-src/index.js、5703-5751 | 第一轮 |
-| D25 | P2 | `route-smoke.mjs` 号称离线，实际向硬编码内网 IP 发起真实 SSH 连接并断言其「不可达」 | scripts/route-smoke.mjs | 第一轮 |
-| D26 | P3 | `stream()` 在池里找不到条目时静默跳过配额判定与 busy 自增（fail-open） | src/ssh-exec.ts | 第一轮 |
-| D27 | P3 | `acquire()` 的失败也落在「传输错误重试」范围内 → 不可达目标每次命令等两轮 20s | src/ssh-exec.ts | 第一轮 |
-| D28 | P3 | `agentForward` 配了等于没配：从不给 `ConnectConfig.agentForward` 赋值 | src/ssh-exec.ts | 第一轮 |
-| D29 | P3 | `auth=agent` 缺 `SSH_AUTH_SOCK` 时无预检（tty 已修，docker 未跟上） | src/ssh-exec.ts | 第一轮 |
-| D30 | P3 | `expandHome` 只认 `~` 与 `~/`：`~user/...`、Windows 变量一律原样返回 | src/ssh-exec.ts | 第一轮 |
-| D31 | P3 | loopback 围栏的 Host 白名单过窄：本机别名 / 非 127.0.0.1 环回地址让整个面板（含唯一的启用入口）403 | src/index.ts | 第一轮 |
-| D32 | P3 | 无 `Origin` 的请求靠 `Sec-Fetch-Site` 兜底，而 `GET /images/pull/stream` 是「带副作用的 GET」 | src/index.ts | 第一轮 |
-| D33 | P3 | 统计流去重只比较相邻上一条：多容器时同一轮重复采样不会被去掉 | src/index.ts | 第一轮 |
-| D34 | P3 | `pickTarget` 对非字符串 `target` 静默回落到唯一目标（破坏性操作打错主机的最后一道防线） | src/index.ts | 第一轮 |
-| D35 | P3 | `sanitizeTargets` 在读路径就去重/丢弃，下一次保存把丢弃结果固化 → 重名目标永久消失 | src/index.ts | 第一轮 |
-| D36 | P3 | `applySection(patch)` 不在 try 内：`refreshTools` 抛错时用户拿到空 400，而配置已落盘 | src/index.ts | 第一轮 |
-| D37 | P3 | 写路由对非法引用回 500（客户端错误报成服务端错误），4xx 校验只在少数几条入口做 | src/index.ts | 第一轮 |
-| D38 | P3 | `parseInspectPorts` 的去重键只有 hostPort → 同端口多 IP 绑定的第二条被并掉，详情比列表少端口 | src/docker.ts、277 | 第一轮 |
-| D39 | P3 | `parseStatsJson`：`PIDs` 字段缺失时得到 `0` 而不是 `null` | src/docker.ts | 第一轮 |
-| D40 | P3 | `parsePorts` 静默丢弃端口区间（`8000-8005->8000-8005/tcp`）→ 端口整行消失 | src/docker.ts | 第一轮 |
-| D41 | P3 | docker 的零值时间未归一（`0001-01-01T00:00:00Z`）→ 破坏「最近出事优先」排序，详情/hover 显示公元 1 年 | src/docker.ts | 第一轮 |
-| D42 | P3 | `attention()` 静默吞掉 inspect 失败：OOM/退出码/重启次数/时间全降级且无任何标记 | src/docker.ts | 第一轮 |
-| D43 | P3 | `assertBin` 只把关整串首字符：`docker --version` 能通过校验（不可注入，但报错退化为运行期 ENOENT） | src/docker.ts | 第一轮 |
-| D44 | P3 | `logs()` 注释称「按到达顺序合并」，实现是 stdout 整段在前、stderr 在后 | src/docker.ts | 第一轮 |
-| D45 | P3 | `since` 两套口径：events 有白名单（且窄于 docker 的 Go duration 语法），logs 完全不校验 | src/docker.ts、src/index.ts | 第一轮 |
-| D46 | P3 | 共享 `targetParam` 文案向 12 个单目标工具暗示支持 `*` / 省略=全部，实际报错 | src/index.ts | 第一轮 |
-| D47 | P3 | `docker_ps` 回完整 64 位 ID（README 写「短 ID」），且与 `docker_attention` 的短 ID 口径不一 | src/index.ts | 第一轮 |
-| D48 | P3 | `docker_targets{probe:true}` 丢掉 `serverVersion`（README 承诺「探测 docker 版本」） | src/index.ts | 第一轮 |
-| D49 | P3 | `docker_events` 描述写「八类」，白名单实为九类（README 写九类） | src/index.ts、src/docker.ts | 第一轮 |
-| D50 | P3 | `docker_logs` 描述把默认行数写死 200，实际取配置 `logTailDefault` | src/index.ts | 第一轮 |
-| D51 | P3 | 参数 schema 无 enum/边界：`action` 无 enum，`tail`/`timeoutSec` 越界被静默夹紧 | src/index.ts | 第一轮 |
-| D52 | P3 | `docker_stats` 的 `ids` 传空串/纯空白静默变成「全部容器」 | src/index.ts | 第一轮 |
-| D53 | P3 | `docker_attention` 在「零目标 + `target:'*'`」时渲染成「一切正常」（假阴性） | src/index.ts | 第一轮 |
-| D54 | P3 | exec 输入框回车绕过 `execRunning` → 连敲回车会并发执行同一条命令 | client-src/index.js | 第一轮 |
-| D55 | P3 | 统计流结束后 `statsNotice` 常驻并替换正文 → 快照数据到手也不显示 | client-src/index.js | 第一轮 |
-| D56 | P3 | 「按时间」排序：尾部窗口首行若是无时间戳续行，会被排到窗口最前 | client-src/index.js | 第一轮 |
-| D57 | P3 | 拉取进度「同层原地替换」只在相邻行成立、超限与暂停缓冲都静默丢行 | client-src/index.js | 第一轮 |
-| D58 | P3 | 导出 .md 的代码围栏未转义：日志里出现 ``` 会截断代码块 | client-src/index.js | 第一轮 |
-| D59 | P3 | `.dk_kvVal` 缺 `white-space: pre-line` → 多挂载/多网络等多行值被压成一行 | client-src/docker.css | 第一轮 |
-| D60 | P3 | 日志过滤工具条无 `flex-wrap`：窄面板下输入框塌到 0 宽、右侧按钮被裁 | client-src/docker.css | 第一轮 |
-| D61 | P3 | 聚合日志没有「用户上滚即暂停贴底」：读历史时每来一行都被拽回底部 | client-src/index.js | 第一轮 |
-| D62 | P3 | 刷新竞态：快照轮询无请求序号（慢响应覆盖新响应）、重连补偿与防抖刷新共用同一代际闸 | client-src/index.js | 第一轮 |
-| D63 | P3 | 日志无虚拟滚动：每个 chunk 全量重渲染最多 2000 行并重复重算过滤 | client-src/index.js | 第一轮 |
-| D64 | P3 | 键盘可达性缺口（四处）：抽屉拖拽条 / 日志区不可聚焦 / 总览表行 / 键盘触发的菜单定位 | client-src/index.js | 第一轮 |
-| D65 | P3 | 右键「问 Agent」浮层与 5 个 document/window 监听器没有卸载清理点 | client-src/index.js | 第一轮 |
-| D66 | P3 | 目标缓存的「30s 过期刷新」不存在：`cacheAt` 只写不读，README 与注释都承诺了它 | client-src/index.js | 第一轮 |
-| D67 | P3 | `downloadText` 固定 1s 后 revoke blob URL，且 `<a>` 从未插入 DOM | client-src/index.js | 第一轮 |
-| D68 | P3 | 容器日志原文（不可信输入）整段进 agent prompt，只提示凭证风险、无「不构成指令」声明 | client-src/index.js | 第一轮 |
-| D69 | P3 | 设置卡片的数字输入直接 `Number(...)`：`3.5` 被后端判非整数后静默退回默认值 | client-src/index.js | 第一轮 |
-| D70 | P3 | 三套旗舰脚本（3586 行 / 158 断言）在 CI 与发布闸里零执行 | .github/workflows/ci.yml | 第一轮 |
-| D71 | P3 | 三个 smoke 脚本没有超时/看门狗：任一挂起即整脚本永久挂住 | scripts/*.mjs（文件尾） | 第一轮 |
-| D72 | P3 | `files` 不含 `scripts/`，但 package.json 仍 advertise `smoke`（tty 的 D42 在 docker 复现） | package.json | 第一轮 |
-| D73 | P3 | 无测试的关键路径（tty D45 同款）：TOFU 指纹与 SSH 连接构造零自动化覆盖 | src/ssh-exec.ts | 第一轮 |
-| D74 | P3 | `client-lint` 的锚点只认入口文件：client-src 兄弟模块的诊断被静默丢弃 | scripts/client-lint.mjs | 第一轮 |
-| D75 | P3 | README（中英）说 `enabled: false` 需重启才生效，实现是保存即热生效（同包测试断言的就是热路径） | README.md | 第一轮 |
-| D76 | P3 | README 中英三处「离线回归项数」与实测不符，且中英互相不一致（27 vs 62 最悬殊） | README.md | 第一轮 |
-| D77 | P3 | README dev 段把本包 vitest 说成「三套」，实际 6 套 103 例 | README.md | 第一轮 |
-| D78 | P3 | README 手工验收清单写「agent 侧只有 7 个只读工具」，实际恒注册 11 个 | README.md | 第一轮 |
-| D79 | P3 | README 中英各有排版残迹：整段重复粘贴的残句 + 失衡的代码围栏 | README.md、README.en.md | 第一轮 |
-| D80 | P1 | 别名 Host 走异步分支时提前 `return`，`cross-site`/Origin 检查被整段跳过 → 围栏被绕过 | src/index.ts | 新引入（D31） |
-| D81 | P1 | `agentForward: true` + 宿主无 `SSH_AUTH_SOCK` → ssh2 同步抛错，该目标每次都连不上 | src/ssh-exec.ts | 新引入（D28） |
-| D82 | P2 | 保存飞行期间删除的主机指纹被静默丢弃：钉扎删不掉，UI 却显示已删 | client-src/index.js | 新引入（D10×D22） |
-| D83 | P2 | `finish()` 清空背压队列：`end`/队尾帧被丢，慢客户端重连并**重拉镜像** | src/index.ts | 新引入（D04） |
-| D84 | P2 | 关掉「允许变更操作」不终止在途的镜像拉取流 | src/index.ts | 新引入（D09） |
-| D85 | P2 | attention 候选 >300 时第 301 条起没有 inspect 详情，`degraded` 仍为 false | src/docker.ts | 新引入（D11/D12/D42） |
-| D86 | P2 | 300 id 单批 inspect × 默认 512KB：一截断就**整批**降级，D11 判据整体失效 | src/docker.ts | 新引入（D13×D11） |
-| D87 | P2 | crash-loop 补捞预算被合法候选吃光 → D11 在最需要时不出手且零信号 | src/docker.ts | 修复不完整（D11） |
-| D88 | P2 | `stream()` 的 `busy` 记在重连前的废条目上：配额失效 + 长流 120s 后被 sweeper 掐断 | src/ssh-exec.ts | 修复不完整（D26/D01） |
-| D89 | P2 | D35 新增的「无效条目已丢弃」warning 是死代码，永不触发 | src/index.ts | 修复不完整（D35） |
-| D90 | P2 | D21 只推 `config` 不推目标列表：下拉里有已删目标、缺新目标 | client-src/index.js | 修复不完整（D21） |
-| D91 | P2 | `content-visibility` 让 `scrollHeight` 变估算值 → FOLLOW 贴底失效、「回到底部」也回不到底 | client-src/docker.css | 新引入（D63） |
-| D92 | P2 | 聚合日志重建流时不复位 `atBottom`（D61 只做了一半） | client-src/index.js | 修复不完整（D61） |
-| D93 | P2 | 重连补偿改走共享尾沿防抖，事件密集时被无限取消 | client-src/index.js | 新引入（D62） |
-| D94 | P2 | 占位条目在建连途中被摘掉后，`ready` 仍 resolve 出一条脱管连接 | src/ssh-exec.ts | 修复不完整（D02） |
-| D95 | P2 | `closePanel()` 管不到 tab 实例：从连接栏进入仍可并存两个面板 | client-src/index.js | 修复不完整（D24） |
-| D96 | P2 | 新安全闸门的拒绝分支零回归（删掉调用，三套脚本 + 119 例仍全绿） | scripts/route-smoke.mjs | 修复不完整（D32/D70） |
-| D97 | P3 | `/action`、`/stats`、`/exec`（空 command）仍回 500 而非 400 | src/index.ts | 修复不完整（D37） |
-| D98 | P3 | `POST /logs` 的 `since` 仍未过 `assertSince`、空串在工具侧报「必填」、在 SSE 侧被忽略 | src/index.ts | 修复不完整（D45） |
-| D99 | P3 | `assertSince` 与 docker 口径两向不吻合（`1.5h`/`0` 被拒，裸日期被放行） | src/docker.ts | 修复不完整（D45） |
-| D100 | P3 | 单目标 `docker_attention` 的渲染丢 `total/truncated/degraded` | src/index.ts | 修复不完整（D12/D42） |
-| D101 | P3 | 面板与 `/attention` 路由都没接 `total/truncated/degraded`，计数静默 ≤100 | src/index.ts | 修复不完整（D12） |
-| D102 | P3 | `parseInspectPorts` 仍整段丢弃区间端口（详情比列表少端口） | src/docker.ts | 修复不完整（D40） |
-| D103 | P3 | 区间端口字段无任何消费方：显示成单端口（`8000→8000/tcp`） | src/index.ts | 修复不完整（D40） |
-| D104 | P3 | `imageInspect` 的两段 `docker history` 从不检查 `truncated` | src/docker.ts | 修复不完整（D13） |
-| D105 | P3 | `assertComplete` 把「静默部分结果」变成「整体失败」，文案对 agent 不可执行 | src/docker.ts | 新引入（D13 代价） |
-| D106 | P3 | `FRESH_UP_RE` 只认 ≤59 秒，与 `ATTENTION_FRESH_MS`（120s）不一致 | src/docker.ts | 新引入（D11） |
-| D107 | P3 | `refreshTools` 半套注册 + D09 差异判定 → 重存同一配置不自愈 | src/index.ts | 修复不完整（D36） |
-| D108 | P3 | `sameTargets` 按下标比较：仅顺序变化即收流 | src/index.ts | 修复不完整（D09） |
-| D109 | P3 | `hostKeysRemove` 与并集顺序：同一请求的删除被撤销、非法形状静默忽略 | src/index.ts | 修复不完整（D10） |
-| D110 | P3 | 请求路径内的 DNS 判定无超时、无缓存，且发生在写响应之前 | src/index.ts | 新引入（D31） |
-| D111 | P3 | `poolKey` 未小写化：同一主机建两条连接，通道额度被悄悄翻倍 | src/ssh-exec.ts | 边界 |
-| D112 | P3 | `run()` 的 `inflight` 只靠 channel 事件释放，超时定时器不兜底 → 连接永不回收 | src/ssh-exec.ts | 新引入（D01） |
-| D113 | P3 | 数字输入框无法「清空再重打」（空串被整数正则拒绝） | client-src/index.js | 新引入（D69） |
-| D114 | P3 | `sessionScoped` state 化后，`deps: []` 的挂载 effect 仍读首帧闭包 | client-src/index.js | 修复不完整（D23） |
-| D115 | P3 | README 的 `hostKeys[]` 表仍是单数 `fingerprint` | README.md | 修复不完整（D03） |
-| D116 | P3 | README 路由表 `/attention` 行仍是旧形状（只有 `items`） | README.md | 修复不完整（D12/D42） |
-| D117 | P3 | README 未记录 D32 收紧的行为（缺同源证明 → 403） | README.md | 修复不完整（D32） |
-| D118 | P3 | README 的 vitest 清单仍写「六套」，漏掉本波新增的 `ssh-connect` | README.md | 修复不完整（D77） |
-| D119 | P3 | CI 补了、**发布闸没补**：`release.yml` 仍零执行三套脚本 | .github/workflows/release.yml | 修复不完整（D70） |
-| D120 | P3 | `files` 加了 `scripts` 仍不够：`client-smoke` 读未发布的 `client-src/` → `npm run smoke` 仍坏 | package.json | 修复不完整（D72） |
-| D121 | P3 | 三套看门狗在主体结束即 `clearTimeout`，退出前的排空期失去保护 | scripts/client-smoke.mjs | 修复不完整（D71） |
-| D122 | P3 | 建连超时路径脚本/单测双双归零，且 15s 用例上限 < 20s 建连超时 | scripts/route-smoke.mjs | 修复不完整（D25/D71） |
-| D123 | P3 | 本波新行为（`inflight`/`keepTail`/无 sock 的 `agentForward`/`assertSince`）零自动化覆盖 | test/ssh-connect.test.ts | 修复不完整（D73） |
-| D124 | P3 | 新测试里 `auth=key` 用例名与断言不符（实际走 password 分支） | test/ssh-connect.test.ts | 新引入 |
-| D125 | P3 | README（中）两处删「（N 项）」时吃掉了后面的空格 | README.md | 新引入（排版） |
-| D126 | P2 | 目标引用的连接簿条目失效时**界面上看不出来**：`book` 下拉的候选来自 ttyBooks，失效名字没有对应 option → 下拉渲染成**空白**；且错误文案让人「去 tty 终端面板的设置卡片里添加」，而那张卡片改不了 docker 目标的引用 | src/index.ts、client-src/index.js、client-src/session-target.js | 2026-09-21 用户实测上报 |
-| D127 | P2 | docker 设置卡片「目标名」输入框**打一个字就失焦**：`dk_targetRow` 的 React key 写成 `String(index) + item.name`，key 含被编辑的字段 → 每次输入 key 变化、React 卸载重建整行，输入框当场丢焦点（表现为"无法聚焦"） | client-src/index.js | 2026-09-21 用户实测上报 |
-| D128 | P1 | 日志大流量**逐 chunk 全量重渲染**（打开 FOLLOW 的 tail 突发即数百次全量 reconcile，且每 chunk 对全缓冲 join/split 大字符串）叠加**缓冲只限行数不限字节、残行无界** → 话痨 / 大行容器把渲染进程吃到 OOM，网页直接崩溃 | client-src/index.js、client-src/log-buffer.js（新增） | 2026-09-24 用户实测上报 |
-| D129 | P2 | 修 D128 时顺手把显示层截断到 400 行（并另设 2000 行导出上限）——`LINES` 选 5000 实际只显示 400 行，与「选多少看多少」的设计不符；且「行数闸」与设置卡片的「输出上限（KB）字节闸」在 UI 上没区分 | client-src/index.js | 2026-09-24 用户实测上报（D128 的过度修正） |
-| D130 | P2 | `docker_ps` 把双栈端口渲染成重复映射：去重键含 hostIp（`0.0.0.0` 与 `[::]` 不同），render 又丢掉 hostIp → `6379→6379/tcp,6379→6379/tcp`；顺带修掉裸 `84->84/tcp` 被切成 `hostIp:'8'` | src/docker.ts、scripts/smoke.mjs | 2026-09-24 用户实测上报 |
-| D131 | P2 | host 网络容器在 `docker_ps` 里 `ports` 为空，与「确实没暴露端口」无法区分（用户为此多 inspect 了 5 个容器） | src/docker.ts、src/index.ts、client-src/index.js | 2026-09-24 用户实测上报 |
-| D132 | P3 | `docker_inspect` 未命中只回 `No such object: <id>`，不给近似候选（如 `607023340cbb_rmqnamesrv`） | src/docker.ts、src/index.ts | 2026-09-24 用户建议 |
-| D133 | P2 | 日志流断线重连**重放历史**：EventSource 自动重连复用带 `tail` 的 URL，服务端把最后 tail 行当新行重推，客户端缓冲只在 effect 重跑时重建 → 日志里凭空多出一段重复并挤掉真正的历史；宿主侧 8MB 背压队列溢出走静默 `res.end()`，客户端把它当「流正常结束」再自动重连，同样触发重放 | src/docker.ts、src/index.ts、client-src/log-stream.js（新增）、client-src/index.js | 2026-09-24 test profile 现场复核复现 |
-| D134 | P3 | 镜像拉取进度流**逐行落地**：每个 SSE line 都跑一次 `mergeProgress`（slice + 重建 key 索引，O(行数)）再 `setLines` → 长拉取（多 GB / 数十层）时每秒数百次 2000 行重渲染，与 D128 同一类写法只是量级小 | client-src/index.js | 2026-09-24 代码复核（D128 同类反模式） |
-| D135 | P2 | 日志级别过滤对 `%5p` **右填充**的级别（`[INFO ]` / `[WARN ]`）完全失效：选到 `WARN+` 乃至 `ERROR+` 仍显示一屏 INFO，且这些行**没有分级着色** | client-src/index.js | 2026-09-25 用户实测上报 |
-| D136 | P3 | `LINES` 选 N 行、右侧计数显示 **N+1**：快照切分用 `text.split('\n')`，而 docker logs 每行都以 `\n` 结尾（终止符），于是多切出一条空行——计数多 1、末尾多一条不可见空行、导出也多一行；同一份日志在快照视图与 FOLLOW 视图下行数不同 | client-src/index.js、client-src/log-buffer.js | 2026-09-25 用户实测上报 |
-| D137 | P3 | 日志导出的两个格式（`.log` / `.md`）各占一个 chip，窄面板下 `.dk_filterBar` 一换行 `.md` 就被甩到第二行、把行数计数也带下去，工具条长成两行 | client-src/index.js、client-src/docker.css | 2026-09-25 用户建议 |
-| D138 | P3 | 单目标数据路由的目标侧失败（SSH 不可达 / 私钥读不到 / docker 不在）被统一写成 **500**，而 `target:'*'` 对同一件事回 200 + `groups[].ok:false`——同一句错误两种形状，「目标不可达」被当成服务端故障 | src/index.ts | 2026-09-25 Windows 真机实测 |
-### D138：单目标数据路由的目标侧失败被写成 500（2026-09-25 Windows 真机实测）
+## 2. 编号字典：这段代码为什么长这样
 
-- **症状**：Windows 真机验证里，`POST /containers { target: 'u1' }`（u1 的私钥读不到）回
-  **500** `{"error":"EPERM: …id_ed25519"}`；而同一句错误在 `{ target: '*' }` 下是
-  **200** `{"groups":[{"target":"u1","ok":false,"error":"同一句 EPERM"}]}`。同一件事两种形状。
-- **根因**：`target='*'` 走 `aggregateAcrossTargets`——它把每个目标的 `run()` 抛错收成
-  `ok:false`，路由再统一回 200；单目标路径则是「api 抛什么，外层 catch 就统一 500」。
-  于是「SSH 连不上 / 私钥读不到 / docker 不在 PATH」这类**运维状况**被记成服务端故障。
-- **修法**：给 `DockerApi` 包一层 `guardTargetFailures`——**只有从 `api.*` 抛出的错误**才打
-  `TARGET_FAILURE` 标记，外层 catch 据此分流：带标记 → 200 + `ok:false`（与聚合同口径），
-  没标记 → 仍旧 500。刻意**不是**「把外层 catch 全改成 200」：那会让我们自己的 bug
-  （比如哪天解析写错抛的 TypeError）伪装成「目标不可达」，正是本仓最忌讳的静默错误结果。
-  也没有逐个调用点包 try/catch（20 处，必然漏几个——D80–D125 那批 29 条就是这么来的）。
-  客户端不用改：`request()` 对 `!response.ok` 与 `ok === false` 都抛 `payload.error`。
-- **回归**：`route-smoke` 新增 1 例「单目标连不上：回 200 + ok:false——与 target=* 同一口径」
-  （用夹具里 127.0.0.1:1 的「直连」目标）。**反向验证有效**：把分流判断改成恒假后该例立刻红，
-  报的正是那句 500 形状。Windows 真机复验：阶段 B **117 PASS / 0 FAIL**（修前 110/6）。
+> 本节由原「修复记录摘要（第一轮 D01–D79 / 第二轮 D80–D125）」**重排**而来，「决策 / 机制」
+> 一列是原文，未改写；**「相关编号」一列是本次新加的逆向索引**（依据 §1 的症状列回填，
+> 非原文自带），用途是让 §1 的编号能反向查到设计意图。行号、提交号一律不写。
 
-### D137：导出的两个格式各占一个按钮，窄面板下工具条被挤成两行（2026-09-25 用户建议）
+| 主题 | 决策 / 机制（原文，未改写） | 相关编号 |
+|---|---|---|
+| 连接生命周期 | 空闲回收把**在途的一次性命令**计入 `inflight`——长流之外的一次性长命令不能被中途掐断 | D01、D112 |
+| | 并发首连**先占坑再 `await`** 建连配置，避免同目标并存两条连接、先建的那条脱管 | D02、D94 |
+| | `dropConn(key, client)` 带**身份校验**：陈旧 close/error 不得摘掉同键上的新连接 | D06 |
+| | 传输错误重连前先 `end()`；**配额类错误不再触发重连**（否则泄漏健康连接 + 可操作文案永不到达用户） | D07 |
+| | `ByteSink` + `StringDecoder` 统一解码，跨分片的多字节字符不再变 U+FFFD | D08 |
+| | `keepTail` 让 logs / pull / prune **保留尾部**（截断宁可丢开头，也不丢最新行与 digest） | D14 |
+| | SSH 池键小写化：同一主机不得建两条连接，把通道额度悄悄翻倍 | D111 |
+| SSE | 背压队列 + `drain` 续写 + 每流 **8MB** 上限（超限视为客户端已死）；收尾前把队列交给 `res.end` 落地，**队尾帧不能丢** | D04、D83 |
+| | 按 `enabled` / `dockerBin` / `targets` 的差异收流；**撤销 `allowMutations` 也收流** | D09、D84、D108 |
+| attention | 返回 `{items,total,truncated,degraded}`——**截断与降级必须有信号**，不许静默（含单目标渲染与面板计数） | D12、D42、D85、D100、D101 |
+| | **先按严重度排序再截断**；crash-loop 判据 = 重启 ≥3 且 2 分钟内刚启动 | D11、D12、D87、D106 |
+| | 分块 inspect + **补捞独立预算** + 未取到详情计入 `degraded` | D85、D86、D87 |
+| 解析与命令 | `assertComplete` **截断即抛**，并给出**可执行替代**（把「静默部分结果」换成明确失败） | D13、D104、D105 |
+| | docker 零值时间归一为 `null`，否则破坏「最近出事优先」排序、详情显示公元 1 年 | D41 |
+| | **端口区间不再丢弃**，列表与详情同口径 | D40、D102、D103 |
+| | `assertSince` **一处实现三处共用**；空 `since` 视为未传（而非 `Number('')` 落进 0） | D45、D98、D99 |
+| | `assertBin` **逐 token** 挡 `-` 开头 | D43 |
+| | inspect 端口去重键含 hostPort **与** IP，双栈绑定不得并成一条 | D38、D130、D131 |
+| 配置与凭据 | hostKeys **并集**合并 + 显式 `hostKeysRemove`（**删除优先于并集**） | D10、D109 |
+| | 凭证按「**连接身份**」而不是名字继承——改名不再静默清掉已存口令 | D15 |
+| | 指纹改 `fingerprints[]` 且 host 小写化 | D03、D115 |
+| 客户端 | `config` publish/subscribe：已打开的面板**即时跟随**开关变化 | D21、D90 |
+| | `active` 进 effect 依赖：**折叠 / 隐藏的面板不许继续占用 SSH 通道** | D17、D18 |
+| | 初始目标对列表校验：目标被删/改名后「每次打开都停在未知目标且不自愈」是坏的 | D19 |
+| | **请求序号**防旧响应覆盖；重连补偿**不共用**同一代际防抖（事件密集时会被无限取消） | D62、D93 |
+| | 目标缓存 TTL 必须**真读**（`cacheAt` 只写不读 = 对 README 与注释的死承诺） | D66 |
+| | 数字输入改**本地草稿**：飞行期间的编辑（含刚敲的密码）不被整表回滚 | D69、D113 |
+| | 键盘可达性：抽屉拖拽条 / 日志区可聚焦 / 总览表行 / 键盘触发菜单定位 | D64 |
+| | 日志渲染必须有上限（后被 D128/D129 改为**行数 + 字节双限、显示层不截断**） | D63、D128、D129 |
+| 工程闸门 | 三套脚本 **hermetic 化 + 看门狗 + 进 CI「与发布闸」**——只在 CI 跑等于没跑 | D25、D70、D71、D119、D121、D122 |
+| | `files` 补 `scripts` 与 `client-src`：advertise 的 `smoke` 必须**真能跑** | D72、D120 |
+| | `client-lint` 锚点放宽到**全部** client-src 模块（否则兄弟模块的诊断被静默丢弃） | D74 |
+| | TOFU 指纹与 SSH 连接构造补单测（无覆盖的关键路径） | D73、D123 |
+| 安全围栏 | loopback 白名单 127/8 + `::1` + IPv6 映射；**别名主机名不等于放行** | D31、D80 |
+| | 别名主机名走带 **500ms 超时与 60s 缓存**的 DNS，且来源检查（`Sec-Fetch-Site` / `Origin`）**提到 DNS 分支之前** | D80、D110 |
+| | 四条 SSE 与变更子路由要求**同源证明**；**新闸门必须带「拒绝分支」的负例**——差异化的回归测试 | D32、D96、D117 |
+| 通用反模式 | 「同一件事实现在两处」必然给出两个答案：切分规则 / 渲染路径 / 闸门判定都要**收成一份定义** | D44、D95、D108、D136、D137 |
 
-- **症状**（用户截图）：docked / tab 承载下面板只有 ~1180px 宽，`.dk_filterBar` 一换行，
-  `⬇ .md` 就被甩到第二行、把「201 行」计数也带下去——工具条长成两行，看着像布局坏了。
-- **根因**：`.log` 与 `.md` 各一个 `dk_chip`，而且**两个视图各写一遍**。工具条本来就挤
-  （LINES + 三个 pill + 级别 + 两个导出 chip + 计数槽），`.dk_filterBar` 只能靠 `flex-wrap`
-  兜底（D60 加那条规则时就是这么写的注释）。
-- **修法**：两个格式合成**一个** `⬇ 导出` 按钮，点开复用既有的 `openLogMenu` 浮层——Esc /
-  点外部 / 滚轮 / 触摸 / resize 的关闭语义与右键「问 Agent」菜单完全一致，不另造一套下拉。
-  菜单里两个格式各一项并带 hint 说明差别，`sub` 顺带回显「哪个容器 / 几个容器 · 多少行」。
-  按用户的建议收成一份定义：`LOG_EXPORT_LABEL` + `exportMenuItems()` 同时供两个视图用。
-  顺带把 `openLogMenu` 的 head / sub / note 改成可省（导出菜单只有两行选项，套一层标题+注解
-  反而比菜单本身还高）。
-- **回归**：`client-smoke` 新增 1 例 —— 按钮文案在产物里**只出现一次**（两个视图各写一套必然
-  出现两次，这正是级别档位当初漂掉的那种病）、两个视图都标 `aria-haspopup`、旧的单格式按钮
-  文案不许残留、`exportMenuItems` 恰好两个格式且各自把对应的 `format` 传回导出函数。
-  另把 `ComposeLogs` 加进 `__render` 缝并纳入「渲染期守卫」——聚合日志的工具条这次也改了，
-  而原来那两个渲染入口都盖不到它。真 Chrome 夹具（`.preview/export-menu-check.mjs`，**不入库**）
-  在 1180×616 窄视口下核对：工具条只剩 **1 个 chip**、高度 **38px（单行）**、点开菜单两项齐全
-  且 `sub` 正确回显。
+### 2.1 D126–D138（用户实测 / 现场复核 / 真机波）的**刻意取舍**
 
-### D136：快照行数恒为 `--tail` 的值 +1（2026-09-25 用户实测上报）
+这 13 条的 postmortem 正文已冻结进 git（见 §4）。**唯独"刻意不做什么"必须留在正文**——
+不写下来，下一个人会把它当成遗漏给"补上"。
 
-- **症状**（用户截图）：`LINES` 选「Last 201」，右侧计数却是 **202 行**。
-- **根因**：快照切分直接 `text.split('\n')`。docker logs 的每一行都以 `\n` **结尾**，那个 `\n`
-  是**终止符**——201 行 = 201 个 `\n` = `split` 出来 **202** 段，最后一段是空串。于是计数多 1、
-  末尾多一条不可见空行（仍会占一行 DOM）、`.log` / `.md` 导出也多一行。
-  更值得记的是**两个视图不一致**：FOLLOW 走 `log-buffer.js` 的 `pushChunk`，它把最后一个 `\n`
-  之后的尾巴留在 `pending`、从不落地空行，所以 FOLLOW 下同一份日志是**正确的 N 行**。
-  同一份数据两条路径给出两个答案，正是「切分规则存在两处」的典型代价。
-- **修法**：把切分收进 `log-buffer.js` 的 `splitLogLines()`（与 `pushChunk` 同模块、同一套语义），
-  快照路径改用它；只在结尾是 `\n` 时剥掉**一个**——真正以空行结尾的日志（`a\n\n` = 两行）要留住
-  那个空行。刻意**没有**顺手剥 `\r`：`pushChunk` 也不剥，两个视图必须继续给同一答案（一并处理是
-  另一件事）。
-- **回归**：`test/log-buffer.test.ts` 新增 5 例（201 行 → 201；无结尾换行照样算一行；`a\n\n` → 2 行
-  且留住空行；空文本 → 0 行；**与 `pushChunk` 的结论逐字一致**）。`client-smoke` 新增 1 例钉在
-  **产物**上（`__logBuffer.splitLines` 的 201 行、末尾不是空行、与 `create().snapshot()` 同行数，防
-  「源码改了但产物没重建」）。另用真 Chrome 夹具（`.preview/logcount-check.mjs`，**不入库**）驱动真实
-  面板核对三种形状：201 行 → 计数 **201 行**、50 行（无结尾换行）→ **50 行**、
-  `a\nb\n\n` → **3 行**（最后一行确实是空行）。
+| 编号 | 取舍（刻意不做 / 为什么这样写） |
+|---|---|
+| D126 | tty 未安装 / 连接簿为空时**不标失效**——那是「宿主没装 tty」，与「引用了一个不存在的名字」是两回事，标黄会误导 |
+| D127 | 只把 key 从 `String(index) + item.name` 改成 `String(index)`。`activity` 的 key（`index+name+time`）**不是 bug**：纯展示、不可就地编辑，key 变化打断不了任何输入，不一起改 |
+| D128 | 行 key 用**单调 id** + 缓冲**行数 / 字节双限**（`log-buffer.js`）+ FOLLOW **150ms 合帧**：渲染频率与 chunk 速率解耦、内存有界 |
+| D129 | **显示层不截断**——`LINES` 选多少渲染多少。D128 里"顺手"限成 400 行正是本案要撤销的过度修正 |
+| D130 | `docker_ps` 的去重键要含 hostIp，**并且 render 要真的输出 hostIp**；两者缺一，双栈就渲染成重复映射 |
+| D131 | host 网络容器的 `ports` 为空**必须**与「确实没暴露端口」可区分（否则用户只能逐个 inspect） |
+| D132 | 未命中时给近似候选，但**不改变「没找到」这个结论** |
+| D133 | **首连带 `tail`、重连一律 `tail=0`**（`--tail 0` = 不补历史、只跟随）；宿主在背压溢出前补 `end{reason:'output-limit'}`，客户端据此提示「主机侧积压」而不是静默重连。代价：真机语义（docker CLI 对 `--tail 0` 的处理）**首连时待现场验证** |
+| D134 | 真相源仍是 `linesRef.current`（同步更新、结束时不会丢行），**只把 DOM 落地改成 150ms 合帧**；`end` 前 `flushNow()` 把窗口里剩余的行刷出去，卸载时清定时器 |
+| D135 | 正则**只放宽方括号内的空白**，**不放宽到裸级别名**（`INFO ...`）——那会把正文里以 ERROR 开头的行也吃成级别前缀。**宁可少认，不可误认** |
+| D136 | 切分收进 `splitLogLines()`，**只剥结尾一个** `\n`（`a\n\n` 是两行，空行要留住）。**刻意不剥 `\r`**：`pushChunk` 也不剥，两个视图必须继续给同一答案 |
+| D137 | 复用既有 `openLogMenu` 浮层，**不另造下拉**——Esc / 点外部 / 滚轮 / 触摸 / resize 的关闭语义必须与右键「问 Agent」菜单一致；两个格式收成一份定义供两个视图共用 |
+| D138 | `guardTargetFailures` **只标「从 `api.*` 抛出的错误」**。刻意**不是**「把外层 catch 全改成 200」——那会让我们自己的 bug（如解析写错抛的 TypeError）伪装成「目标不可达」，正是本仓最忌讳的静默错误结果；也**没有**逐个调用点包 try/catch（20 处，必然漏几个——D80–D125 那批 29 条就是这么来的） |
 
-### D135：日志级别过滤对 `%5p` 右填充的级别完全失效（2026-09-25 用户实测上报）
-
-- **症状**（用户截图）：容器日志页把级别选到 `WARN+`，`[INFO ]` 行照样一屏——过滤看着"根本没生效"。
-  同一批行的级别前缀**也没有分级着色**（不像 `[ERROR]` 那样带色）。
-- **根因**：`LOG_LEVEL_RE` 只认紧贴右括号的 `[INFO]`，而 Logback / Spring 的 `%5p` 会把
-  TRACE / DEBUG / INFO / WARN **右填充到 5 字符**——实际写出来是 `[INFO ]` / `[WARN ]`。
-  （ERROR / FATAL 恰好 5 字符，所以只有它们侥幸认得出来，这也解释了为什么"看着像只对 ERROR 有效"。）
-  匹配失败后 `logLineLevelName` 返回 `null`，而 `filterByLevelCore` 对未知级别走的是**「不误杀」**
-  分支（`rank === null` → 一律保留，本意是别把窗口开头的堆栈续行丢掉）。两个设计各自都没错，
-  凑在一起就成了**整档过滤静默失效**：不报错、不提示行数异常，只是筛不动。
-- **修法**：方括号里允许空白 —— `/^\s*(\[\s*(?:TRACE|DEBUG|INFO|WARN|ERROR|FATAL)\s*\]|\|\s*(?:…))/`。
-  这处正则**同时**供 `renderLogParts`（分级着色）与 `logLineLevelName`（过滤）使用，所以一处修好两边。
-  刻意**没有**放宽到"裸级别名"（如 `INFO ...`）：那会把正文里以 ERROR 开头的行也吃成级别前缀，
-  宁可少认也不误认。
-- **回归**：`client-smoke` 新增 1 例 —— `agg.levelName` 要认出 `[INFO ]` / `[WARN ]` / `[DEBUG]`，
-  且既有四种形态（`[INFO]` / `[ INFO]` / `|INFO` / 无级别）不被这次放宽改坏；再断言
-  `filterLinesByLevel` 在 `WARN+` / `INFO+` / `ERROR+` 三档上的端到端结果，含堆栈续行的继承语义。
-  另用真 Chrome 夹具（`.preview/log-level-check.mjs`，**不入库**）驱动真实下拉核对：8 行样本
-  （`[INFO ]`×4、`[WARN ]`、`[ERROR]` + 2 条续行）下 `WARN+` 由 8 行滤到 **4 行**（INFO 全消失、
-  续行跟随 ERROR 保留）、`ERROR+` 滤到 **3 行**（WARN 及其续行也走），分级着色同步恢复
-  （`data-level` = INFO / WARN / ERROR）。
-
-### D133：日志流断线重连重放历史（2026-09-24 test profile 现场复核复现）
-
-- **症状**：FOLLOW 打开着，网络抖一下 / 宿主 HMR / 宿主队列溢出之后，日志里**凭空多出一段
-  重复内容**，而在这之前滚上去看的历史被挤掉一截。断得越频繁、tail 越大，重复越明显。
-- **现场复现**（test profile，127.0.0.1:3082，对 目标2 / cdc-service 连两次同样的流）：
-
-      run1 window: 2026-09-24 21:00:00 -> 21:19:00
-      run2 window: 2026-09-24 21:00:00 -> 21:19:00
-      run1 tail == run2 head : True     （20 行逐字相同）
-
-  即：**同一 URL 的第二条连接会把最后 tail 行原样再推一遍**。这是 docker logs --tail N 的
-  本分，不是 bug；问题在客户端把它当新行 append。
-- **根因**（两半，缺一不可）：
-  1. 客户端原先依赖 EventSource 的**自动重连**，而自动重连**复用同一个 URL** —— URL 里的
-     tail 是首连用来补历史的。环形缓冲只在 effect 重跑时重建，重连不重跑 effect，于是重放
-     的行被当成新行追加。
-  2. 宿主 openSseStream 的背压队列越过 8MB 上限时直接 finish()（res.end()），
-     **不发 end 帧**。浏览器把「连接正常关闭」判为流结束并自动重连 —— 又回到第 1 条。
-- **修法**：
-  - 客户端新增 client-src/log-stream.js：把 EventSource 生命周期与重连收在一处，**首连带
-    tail、重连一律 tail=0**（--tail 0 = 不补历史、只跟随），单容器 FOLLOW 与 Compose
-    聚合两条路径共用（聚合视图每容器一条流，各自独立重连）。
-  - 宿主 logsArgv 允许**流式**的 tail=0（快照路径仍从 1 起算），SSE 路由把空值当「未传」
-    （否则 Number('') 会落进 0），并在背压溢出前补一条 end{reason:'output-limit'}，
-    客户端据此提示「主机侧积压」而不是静默重连。
-  - 单容器视图对 output-limit 给专门文案；聚合视图把它当「重连」而非「这条流结束」。
-- **回归**：test/logs-stream.test.ts（tail=0 argv、快照仍夹到 1、路由 tail=0、溢出补 end
-  帧）、scripts/client-smoke.mjs（用可注入假 EventSource 真跑一遍：首连 URL 带 200、
-  重连 URL 带 0；end{output-limit} 交给调用方重连）。
-- **代价说明**：--tail 0 依赖 docker CLI 语义（0 = 不补历史）。写这条时本机没有可用
-  daemon（docker logs 在连 daemon 前不校验 flag），因此**用 argv 断言钉住下发值**，
-  真机语义待首次现场验证。
-
-### D134：镜像拉取进度流逐行落地（2026-09-24 代码复核）
-
-- **症状**：拉大镜像（多 GB、数十层）时面板发卡；网络越快越明显。不崩，但拖。
-- **根因**：PullView 的 onLine 每收到一个 SSE 分片就跑一次 mergeProgress
-  （existing.slice() + 重建 key 索引表，O(行数)，上限 2000 行）再 setLines。
-  docker pull 逐层刷进度，这个流可以有几百行/秒 → 每秒数百次「2000 行列表重渲染」。
-  与 D128 是同一类反模式，只是量级小。
-- **修法**：真相源仍是 linesRef.current（同步更新，结束时不会丢行），DOM 改按
-  FOLLOW_FLUSH_MS（150ms）合帧落地；end 前 flushNow() 把窗口里剩余的行刷出去，
-  组件卸载清定时器。
-- **回归**：本期靠代码复核 + 既有 pull 相关 route-smoke；未在 test profile 现场触发真实
-  大镜像拉取（会改远端状态），属于**已修但未现场压测**。
-
-### D126：失效的连接簿引用在界面上看不出来（2026-09-21 用户实测上报）
-
-- **症状**：docker 面板顶部报「目标「目标1」引用的连接簿条目不存在：HS-248」，同时下方又有一条
-  说「到 插件配置 → Docker 容器面板 添加一条目标」——**两条指引互相矛盾**；而设置卡片里那条
-  目标的「连接簿」下拉**显示为空白**，看不出引用错了。
-- **根因**（本机实测：目标 `book=HS-248`，tty 连接簿为 `cdc-test-161 / TEST / HS_248_ADMIN /
-  111 / 192.168.80.248`）：
-  1. **下拉的候选项来自 `ttyBooks`**，而 `item.book` 的值不在其中时，没有任何 `<option>` 与之
-     匹配 → React 渲染出**空白下拉**。用户无法从这里发现"引用的是个不存在的名字"，只会以为
-     "没选"；要等真去连才报错。
-  2. **错误文案指向了做不到的动作**：原文说「请在 tty 终端面板的设置卡片里添加，或改为内联
-     host/username」——但那张卡片管的是 **tty 自己的连接簿条目**，改不了 docker 目标引用的名字。
-     用户照它找，永远找不到"改引用"的地方。
-- **成因（历史）**：0.6.4 那次修复的测试夹具与提交信息里，条目名是 `HS-248`（说明当时连接簿里
-  确实有该条目）；后来 tty 侧条目改名成 `HS_248_ADMIN`，**docker 目标的引用没跟着
-  改**，于是成了悬空引用。这类"改名之后悬空"是结构性风险，不是一次性事故。
-- **修法**：① 错误文案改为指向**本卡片这条目标的「连接簿」下拉**（附备选：补同名条目 /
-  清空改手填）；② 设置卡片用新增的纯函数 `staleBookRef(target, ttyBooks)` 检测悬空引用，
-  命中时给该行加 `data-stale`（标黄 + 左侧色条）、在下拉里**补一个显式 option**
-  `⚠ 条目已不存在：<名字>`（否则就是空白），并在下方给可执行指引。
-- **刻意不做的**：tty 未安装 / 连接簿为空时**不标失效**——那是"宿主没装 tty / 条目还没建"，
-  与"引用了一个不存在的名字"是两回事，标黄会误导。
-- **回归门槛**：`test/session-target.test.ts` 新增 6 例（存在 / 悬空 / trim / 本机与内联不算 /
-  连接簿为空不算 / 坏输入不抛）；`scripts/smoke.mjs` 钉住新文案（含**反向断言**：不得再出现
-  「请在 tty 终端面板的设置卡片里添加」）；tty 预览新增 `docker-stale-book` 场景（渲染真实
-  卡片，断言恰好 1 行标黄、下拉显示得出失效名字、有警示文案、正常引用不被误标）。
-- **验证**：全仓 vitest **687/687**；docker smoke **40/40**、route-smoke **60/60**、
-  client-smoke **65/65**；tty 预览 **33/33**。**反向验证有效**：把 `staleBookRef` 的调用注回
-  旧行为（恒为 undefined）→ 场景立即变红并同时报出三条原因，恢复后转绿。
-
-
-### D127：目标名输入框打一个字就失焦（2026-09-21 用户实测上报）
-
-- **症状**：设置卡片 → 目标 → 「目标名」输入框**无法正常输入**——敲进第一个字符就掉焦，
-  看着像"点不进去 / 聚焦不了"。
-- **根因**：那一行的 React key 写成 `String(index) + item.name`。**key 里含正在被编辑的字段**，
-  于是每敲一个字符 `item.name` 一变，key 就跟着变——React 判定为"这是另一个元素"，**卸载旧
-  DOM、挂载新 DOM**，输入框随之丢失焦点。经典的反模式：key 必须在该元素的整个生命周期内稳定。
-- **修法**：key 只留 `String(index)`。目标行是**按位置**编辑的（`patchTarget(index, …)`），
-  行的身份就是它的下标；顺序变化由数组本身负责，名字不该参与身份判定。
-- **顺带排查**：全仓扫了同类模式，`activity` 那个 key（`String(index)+name+time`）**不是 bug**
-  ——活动条目是纯展示、不可就地编辑，key 变化不会打断任何输入。其余 map 的 key 都只用 index。
-- **为什么既有测试没抓到**：`client-smoke` 用的是 **stub React + stub DOM**（不出真实 DOM、
-  也没有焦点概念），所以"key 抖动导致失焦"这类问题它天然看不见；必须靠真实渲染（preview）
-  才能暴露。
-- **回归门槛**：tty 预览的 `docker-stale-book` 场景（渲染**真实** docker 设置卡片）新增焦点断言：
-  逐个字符派发 input 事件，**每敲一次都检查 `document.activeElement` 仍是同一个节点**，
-  最后校验文本累积完整。
-- **验证**：tty 预览 **33/33**、全仓 vitest **687/687**、docker smoke **40/40** /
-  route-smoke **60/60** / client-smoke **65/65**。**反向验证有效**：把 key 改回
-  `String(index) + item.name` → 场景立即变红，报出「敲入第 1 个字符后输入框失焦」，
-  与用户描述的现象完全一致。
-
-
-## 待办 / 路线图（本文唯一「还没做」的部分）
-
-> 下面都是**规划**，不是缺陷：单人项目不另开 Issue，待办记在这里，做完打勾。
-> 新发现的缺陷接着编号记进本文（索引表加行）。
-
-- **跳板机（ProxyJump / ProxyCommand）** —— `buildConnectConfig` 从不设 ssh2 的 `sock`，tty 的连接簿也不
-  支持跳板机条目；企业内网主机几乎都要过 bastion。短期至少做到：配了跳板机的目标连不上时给出明确文案，
-  而不是 20s 后一句通用超时。
-- **agent 侧的网络 / 卷变更工具** —— 面板有 `networks/remove|prune`、`volumes/remove|prune` 的按钮，
-  agent 侧一个都没有（当前是有意为之：这类删除最容易误伤）。若要做，必须与面板**同一把** `allowMutations`
-  闸门 + 破坏性后果复述。
-- **日志真虚拟滚动（可选的后续项）** —— D63 已随 D128 根治：行 key 用单调 id + 缓冲行数/字节双限
-  （`log-buffer.js`）+ FOLLOW 150ms 合帧——渲染频率与 chunk 速率解耦、内存有界；**显示层不截断**
-  （`LINES` 选多少渲染多少；曾被短暂限成 400 行，见 D129）。绝对定位的真虚拟化只剩「5000 行时再压
-  DOM 节点数」的边际收益，且要自己维护高度缓存，没有实测痛点前不必做。`content-visibility` 依旧
-  不要开（D91：估算高度打穿贴底判定）。
-- **跨目标聚合的取消语义** —— 45s 超时只 `race`，不 abort 底层命令（超时的目标仍在后台跑完）。
-  要么把 AbortSignal 串下去，要么在文案里说明。
-- **变更端点的一次性 token** —— 当前信任模型是 loopback + 同源证明（D31/D32）；本机任意进程仍可直接
-  读写配置（它能先 `POST /config {allowMutations:true}`）。docker socket 等价目标主机 root，值得再收紧。
-- **`isConcurrencySafe` 未声明** —— 所有 `docker_*` 工具都被宿主当作独占而串行化，只读工具本可并行。
-  这是本仓库各插件的共性（tty / codegraph 同样未声明），要改建议一起。
-- **面板端 i18n** —— 界面只有中文；`README.en.md` 与中文版手工同步（D76 那类「文档里写死计数」的漂移
-  已经去掉，但双份维护的风险仍在）。
-- **tty / dsh-mcp 的围栏口径未同步** —— 与 docker 同款的 loopback 围栏加固（D31/D32）尚未同步到这两个包。
-  这里只记**结论**，不在公开文档里展开具体手法；要做的话直接对齐 `src/index.ts` 里那两个函数。
-
-## 修复记录摘要
-
-> 逐条证据与修法见 `git show 96cf4305:packages/docker/DEFECTS.md`；这里只留「改成了什么」，
-> 供后来者判断设计意图（代码里的注释逐条带了编号）。
-
-**第一轮（D01–D79，四个批次一次做完）**
-
-- **连接生命周期**：空闲回收把在途的一次性命令计入 `inflight`；并发首连先占坑再 `await` 建连配置；
-  `dropConn(key, client)` 带身份校验、陈旧 close 不再摘掉新连接；传输错误重连前先 `end()` 且配额类错误
-  不再触发重连；`ByteSink` + `StringDecoder` 统一解码；`keepTail` 让 logs/pull/prune 保留尾部。
-- **SSE**：背压队列 + `drain` 续写 + 每流 8MB 上限（超限视为客户端已死）；收尾前把队列交给 `res.end` 落地；
-  按 enabled / dockerBin / targets 的差异收流；撤销 `allowMutations` 也收流。
-- **attention**：返回 `{items,total,truncated,degraded}`、先按严重度排序再截断、crash-loop 判据
-  （重启 ≥3 且 2 分钟内刚启动）、分块 inspect + 补捞独立预算 + 未取到详情计入 `degraded`。
-- **解析与命令**：`assertComplete` 截断即抛（并给出可执行替代）；docker 零值时间归一为 null；
-  端口区间不再丢弃；`assertSince` 一处实现三处共用；`assertBin` 逐 token 挡 `-` 开头。
-- **配置与凭据**：hostKeys 并集合并 + 显式 `hostKeysRemove`（删除优先于并集）；凭证按「连接身份」而不是
-  名字继承；指纹改 `fingerprints[]` 且 host 小写化。
-- **客户端**：config publish/subscribe 让已打开面板即时跟随开关；`active` 进 effect 依赖；
-  初始目标对列表校验；折叠面板不再占用 SSH 通道；请求序号防旧响应覆盖；目标缓存 TTL；
-  数字输入改本地草稿；键盘可达性；日志渲染上限。
-- **工程闸门**：三套脚本 hermetic 化 + 看门狗 + 进 CI 与发布闸；`files` 补齐；client-lint 锚点放宽到
-  全部 client-src 模块；TOFU / 连接构造补单测。
-- **安全围栏**：127/8 + `::1` + IPv6 映射；别名主机名走带 500ms 超时与 60s 缓存的 DNS；
-  四条 SSE 与变更子路由要求同源证明。
-
-**第二轮（D80–D125，修的是第一轮修出来的问题）**
-
-- **安全 / 回归**：别名的来源检查（`Sec-Fetch-Site` / Origin）提到 DNS 分支**之前**，不再被异步分支跳过；
-  `agentForward` 复用「有没有 agent」的同一个判定（无 `SSH_AUTH_SOCK` 时静默降级）。
-- **在途操作**：`stream()` 的 `busy` 跟着活条目搬家（重连后不再记在废条目上）；占位条目加 `disposed`
-  标记 + 归属校验 + `destroy()` 兜底；`run()` 的超时定时器直接 settle（`inflight` 有兜底释放）。
-- **配置 / 客户端**：hostKeys 删除只清「已发出」的那一批；config 订阅顺带同步目标列表；
-  去掉 `.dk_logLine` 的 `content-visibility`（恢复精确 `scrollHeight`）；聚合日志重建流时复位 `atBottom`；
-  重连补偿不再走事件驱动的防抖；tab 承载的实例可被 `openPanel` 收起。
-- **信号与展示**：单目标 `docker_attention` 的渲染也带 `total/truncated/degraded`；面板接入这三个信号
-  （计数用 `total`，截断 / 降级出提示行）；区间端口补齐消费方（不再只显示下界）。
-- **工程**：发布闸也跑 vitest + 三套脚本；`files` 补 `client-src`；看门狗退出路径 + 单例 25s 档；
-  新增 `DSH_DOCKER_CONNECT_TIMEOUT_MS`（**仅测试 / 排障用**，覆盖 20s 建连超时）；
-  新增 8 条宿主断言 + 3 条客户端断言。
-
-## 复核方式（0.7.0 基线）
+## 3. 复核方式（原文标称 0.7.0 基线，见 §现状的标注）
 
 - **单测与静态检查**：`npx vitest run packages/docker`（**8 套 157 例**）、`npx tsc --noEmit`、
   `node scripts/client-lint.mjs`（忽略 7 条已知噪音 TS2307×4 + TS2339×3）。
@@ -436,9 +269,33 @@
   `node scripts/smoke.mjs`（44/44）、`node scripts/route-smoke.mjs`（61/61，hermetic，实测 0.7s）、
   `node scripts/client-smoke.mjs`（72/72，实测 0.6s）。三套都在 CI（ubuntu-only step）与发布闸里跑，
   并带看门狗（单例 25s / 全局 90s；末尾 `process.exit` 保证退出）。
-- **产物与源码一致**：`pnpm -r build` 后 `git diff --exit-code -- 'packages/*/client.js' 'packages/*/lib'`
-  （CI 闸门）；本次另用内存重建逐字节核对过 `client.js`（229759 字节，`identical: true`）。
-- **真机 / 浏览器（本机无法验，见下）**：多容器 `docker stats` 的重复采样顺序、端口区间在
+- **产物与源码一致**：`pnpm -r build` 后
+  `git diff --exit-code -- 'packages/*/client.js' 'packages/*/lib'`（CI 闸门）；
+  0.7.0 时另用内存重建逐字节核对过 `client.js`（229759 字节，`identical: true`）。
+- **真机 / 浏览器（0.7.0 时本机无法验）**：多容器 `docker stats` 的重复采样顺序、端口区间在
   `docker ps` / `docker inspect` 里的输出形状、crash-loop 的实机形态、别名 Host 的部署形态、
-  移除 `content-visibility` 之后的贴底手感、窄面板下的过滤条像素。本机 docker daemon 未运行，
-  这些项以「可达性未经实测」为准。
+  移除 `content-visibility` 之后的贴底手感、窄面板下的过滤条像素。当时本机 docker daemon 未运行，
+  这些项以「可达性未经实测」为准。（后续 D130–D138 已用 test profile 与 Windows 真机补上部分现场。）
+
+## 4. 冻结记录：被移出正文的内容在哪
+
+> 「信息只搬家、不丢失」的检索入口。每条被移出的 postmortem 都**仍在它自己的修复提交里**，
+> 用 `git show <sha>:packages/docker/DEFECTS.md` 取回该时点的全文。
+
+| 范围 | 在哪 |
+|---|---|
+| **D01–D125** 逐条证据 / 触发场景 / 修法（约 1200 行，含两轮审计原文与「附录」） | `git show 96cf4305:packages/docker/DEFECTS.md` |
+| 修复波自身的落点（D01–D125 全量提交） | `git show a6c8b62d --stat` |
+| 本文上一次瘦身（1201 → 247 行，确立「索引不写行号」） | `git show a546e52c` |
+| D126 / D127 详细章节 | `git show 8fbd490f:packages/docker/DEFECTS.md`、`git show 6f6c5a03:packages/docker/DEFECTS.md` |
+| D133 / D134 详细章节 | `git show ac386ca2:packages/docker/DEFECTS.md` |
+| D135 / D136 详细章节 | `git show 4a6e9157:packages/docker/DEFECTS.md`、`git show d84fc837:packages/docker/DEFECTS.md` |
+| D137 / D138 详细章节 | `git show 504182cf:packages/docker/DEFECTS.md`、`git show c9d6d52e:packages/docker/DEFECTS.md` |
+| 被移出的「第一轮 / 第二轮修复记录摘要」逐条清单 | 本文 §2 已完整覆盖（决策原文 + 新增逆向索引） |
+
+> D128–D132 **从未有过详情节**（只有索引行），不是本次移出的。
+
+## 5. 待办 / 路线图
+
+**已拆分为独立文档：[ROADMAP.md](./ROADMAP.md)（8 项，一项未删）。**
+本文只放「已经发生的事」；「还没做的事」一律去那里。

@@ -185,7 +185,8 @@ node scripts/link-dsh-runtime.mjs     # 把 packages/* 的 @deepseek-ai/* 与 @h
 规划与缺陷记录（都不随包分发，只在仓库里，因此用绝对链接）：
 
 - [ROADMAP.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/packages/codegraph/ROADMAP.md)：增强路线图——P0–P3 分档、代价、架构项（per-agent 挂载 / 采纳率仪表 / 诊断包）与开工顺序。
-- [DEFECTS.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/packages/codegraph/DEFECTS.md)：缺陷审计与修复记录——`CG01`–`CG38`、验收记录与原始待办清单。
+- [DEFECTS.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/packages/codegraph/DEFECTS.md)：缺陷编号字典——`CG01`–`CG63` 的索引（症状 + 修复/设计意图）；逐条原文、验收记录与原始待办冻结在 git 历史里（见其 §4）。
+- [ROADMAP.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/packages/codegraph/ROADMAP.md)：前瞻规划与尚未开工的待办。
 - [ADOPTION-AUDIT.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/packages/codegraph/ADOPTION-AUDIT.md)：采纳率实测——从 177 个真实历史会话算出的数字、两个口径的取舍、以及对路线图的影响。
 
 ## 安装到 DSH

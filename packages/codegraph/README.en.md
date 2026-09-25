@@ -181,7 +181,7 @@ node scripts/link-dsh-runtime.mjs     # link packages/*'s @deepseek-ai/* and @hy
 Planning and defect records (neither ships with the package; both are Chinese-only and live in the repository, hence absolute links):
 
 - [ROADMAP.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/packages/codegraph/ROADMAP.md): enhancement roadmap — P0–P3 tiers, cost, architectural items (per-agent mount / adoption metrics / diagnostics bundle) and the suggested order of work.
-- [DEFECTS.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/packages/codegraph/DEFECTS.md): defect audit and fix log — `CG01`–`CG38`, acceptance records and the raw backlog.
+- [DEFECTS.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/packages/codegraph/DEFECTS.md): the defect number dictionary — an index of `CG01`–`CG63` (symptom + fix / design intent); the full write-ups, acceptance records and the raw backlog are frozen in git history (see its §4).
 - [ADOPTION-AUDIT.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/packages/codegraph/ADOPTION-AUDIT.md): adoption measurements — the numbers computed from 177 real historical sessions, the tradeoffs between the two denominators, and what they imply for the roadmap.
 
 ## Install into DSH

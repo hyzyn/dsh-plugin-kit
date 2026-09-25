@@ -3,8 +3,9 @@
 > 2026-09-22，基于 0.4.2 工作树的一次静态复核 + 本机实跑 + 与 per-agent 隔离模型
 > （`dsh-simple-codegraph`：每个 Agent 各自一个 scope 内挂 `dsh-mcp-client`）的对照分析产出。
 >
-> 本文只放**前瞻规划**；缺陷仍按 `CGxx` 编号记在 [DEFECTS.md](./DEFECTS.md)。本文每一项在
-> 动手前先转成可验收条目（做完回填「落点 + 门槛」），不要只停留在规划里。
+> 本文放**前瞻规划 + 尚未开工的待办**；**缺陷**仍按 `CGxx` 编号记在 [DEFECTS.md](./DEFECTS.md)。
+> 本文每一项在动手前先转成可验收条目（做完回填「落点 + 门槛」），不要只停留在规划里。
+> 2026-09-25 起，DEFECTS.md 的「待办 / 路线图」一节已并入本文（见下方同名小节）。
 >
 > 已被排除的候选：**跨包 `dshHome()` 归一**（CG35）在 0.4.2 已修完——`packages/*` 全部改走
 > `@hyzyn/dsh-kit`，走 `node scripts/check-dsh-home.mjs` 实测通过（「DSH_HOME 推导只存在于
@@ -14,7 +15,7 @@
 
 | 项 | 结果 |
 | --- | --- |
-| 包版本 | 0.4.2；registry `dist-tags.latest` = **0.4.2**（2026-09-19 发布）——DEFECTS.md「验收记录」一节里「0.4.2 仅存在于工作树」那句已过期 |
+| 包版本 | 0.4.2；registry `dist-tags.latest` = **0.4.2**（2026-09-19 发布）——DEFECTS.md §4「冻结记录」里那份「验收记录」中「0.4.2 仅存在于工作树」那句已过期 |
 | `npx vitest run packages/codegraph` | **202 passed / 10 files** |
 | `npx vitest run`（全仓） | **779 passed / 48 files** |
 | `npx tsc --noEmit -p packages/codegraph/tsconfig.json` | 干净 |
@@ -32,8 +33,45 @@
 3. **成熟度在环境健壮性**：坏锁、常驻 daemon、PATH / HOME / 控制台编码——这类故障占了实际问题的
    绝大多数，而卡片对它们几乎没有入口。
 
-功能面（CLI 子命令覆盖率）反而是最不缺的，且维护者已在 [DEFECTS.md](./DEFECTS.md) 的
-「待办 / 路线图」一节列全；本文不重复那些条目，只做分档、补架构项与开工顺序。
+功能面（CLI 子命令覆盖率）反而是最不缺的，且维护者已在审计时点列全——那批原始待办现由本文的
+「缺陷审计时点列出的原始待办」一节承接（自 DEFECTS.md 迁入，见该节的 ⚠️ 标注）。
+
+## 缺陷审计时点列出的原始待办（自 DEFECTS.md 迁入）
+
+> 2026-09-25 从 `DEFECTS.md` 的「待办 / 路线图」一节**逐字迁入**，一条未删——原文在那里与
+> 本文件的「已完成」一节并存、口径不一致，现在合并到一处，两边内容都保留。
+> **缺陷**仍按 `CGxx` 编号记在 [DEFECTS.md](./DEFECTS.md)，本文只放「还没做的事」。
+
+> ⚠️ **标注（本次未擅改）——下面 8 条与上文「已完成 / 优先级总表」存在口径冲突**：
+> 上文已把 **CLI 面补全**（`explore`/`context`/`files`/`affected`/`uninit`/`unlock`/`telemetry`）、
+> **查询参数面板**、**已索引项目列表 + 一键切换**、**遥测提示** 标为 ✅ 已完成（仅 `daemon` 仍缺），
+> 而下面这几条是**审计时点**的原始措辞、没有跟着更新。按维护规则「只标注、不擅自改」，
+> 原文照录，请以上文「已完成」一节的落点与用例为准。
+
+> 新发现的缺陷接着 `CG30` 往后编号记在本文，不要只留在对话里。
+>
+> **分档（P0–P3）、代价、架构项与开工顺序见 [ROADMAP.md](./ROADMAP.md)**——本节保留
+> 缺陷审计时点列出的原始待办（CLI 面 / 查询参数 / 多项目列表 / 遥测 / daemon / i18n / E2E），
+> 两者不重复：`ROADMAP.md` 只做分档与补充架构项。
+
+- **CLI 还有一多半没进 GUI**（实测 `codegraph --help`）：`explore`（旗舰，且 usage guidance
+  正是让模型用它）、`context`、`files`、`affected`、`uninit`、`unlock`、`daemon`。
+  README 把 `codegraph uninit` 写成「初始化按钮的撤销路径」，GUI 里却做不到 —— 要么补按钮，
+  要么改 README。`unlock` 尤其值得做：实测项目里确实有 `codegraph.lock` 与常驻 daemon
+  （`.codegraph/daemon.pid` + `daemon.sock` + `daemon.log`，`~/.codegraph/daemons/` 两个实例），
+  一次被强杀的 index 留下的坏锁会挡住后续索引，而卡片没有任何入口。
+- **查询参数面板**：`query -k/--kind`、`callers|callees -l/--limit`（CLI 默认 20）、
+  `node --offset/--limit/--symbols-only`、`impact --depth`（卡片固定 2）都是透传就能用的旋钮。
+- **多项目**：一台 codegraph MCP 服务器同一时刻只挂一个项目是既成事实，卡片却没有
+  「已索引项目列表 + 一键切换」；`files`/`status` 配合 `.codegraph` 扫描能做出这个列表。
+- **遥测**：`init`/`index` 会触发 CLI 自己的匿名用量统计，README 提了 `codegraph telemetry off`，
+  卡片既不提示也不给开关。（上游 CLI 的 1.6.0 输出里也带这句提示。）
+- **daemon 可见性**：`daemon.pid`/`daemon.log` 是排障第一现场，卡片可以显示「有没有常驻 daemon、
+  日志尾 N 行」，把「MCP 拿不到结果」这类问题从猜变成看。
+- **卡片 i18n**：全中文（含 `label: () => "Codegraph"` 旁边的所有文案），而包同时维护英文 README。
+- **端到端脚本**：`packages/codegraph` 仍没有 tty 那类 `integration.mjs` / `*-smoke.mjs`
+  （路由的 HTTP 层行为——并发、断连、body 超限——只有 vitest 里的 fake req/res）。
+  `verify-codegraph-indexforce.mjs` 是唯一真机端到端，需要本机装 DSH，跑不了 CI。
 
 ## 优先级总表
 
@@ -261,13 +299,13 @@ owner 判定；会话目录无有效索引时不写盘（现有行为，保持�
 
 
 
-- **P2 照 DEFECTS.md 的「待办 / 路线图」一节走**（那节比我列得全）：CLI 面补全、查询参数面板、
+- **P2 照本文「缺陷审计时点列出的原始待办」一节走**（那批条目比我列得全）：CLI 面补全、查询参数面板、
   **已索引项目列表 + 一键切换**（单服务器既成事实下最实用的补偿）、遥测提示、卡片 i18n、
   真机 `integration.mjs` / `*-smoke.mjs`。
 - **P3 债**：~~CG32–CG34~~ ✅ 已关闭（见「已完成」）；~~宿主版本基线~~ ✅ 见「已完成」（CG42）；
   ~~browser 半体纯逻辑~~ ✅ 见「已完成」（P3-b）。**仍剩**：依赖 DOM 的那部分（CG08 样式引用计数、
   CG16 清详情、CG17 渲染分支）要覆盖必须引入 react + jsdom，或走 `scripts/preview-card.mjs` 的真渲染
-  夹具——DEFECTS.md「补记」一节已明说刻意没加 devDependency。
+  夹具——DEFECTS.md §4「冻结记录」里那份「补记」已明说刻意没加 devDependency。
 
 ## 建议开工顺序
 

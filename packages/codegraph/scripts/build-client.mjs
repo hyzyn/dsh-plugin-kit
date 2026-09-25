@@ -4,7 +4,7 @@
  *
  * 本半体没有第三方依赖（React 由宿主的 require 提供），无需打包：把 client-src/index.js
  * 产成包根的 client.js 即可。但要处理 client-src/pure.js —— 纯逻辑单独成文件是为了能进
- * vitest（DEFECTS.md「验收记录」点名的覆盖空洞），而 client.js 必须是**单文件、无 import**
+ * vitest（DEFECTS.md §4 冻结的「验收记录」点名的覆盖空洞），而 client.js 必须是**单文件、无 import**
  * 的产物，所以这里做两步替换：
  *
  *   1. 删掉 index.js 顶部对 './pure.js' 的 import 行；

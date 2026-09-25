@@ -1,32 +1,48 @@
-# @hyzyn/dsh-codegraph 缺陷审计与修复记录
+# @hyzyn/dsh-codegraph 缺陷编号字典
 
-> 2026-09-19 对 v0.4.1 做了一次系统性审计（宿主半体与浏览器半体逐行复读 + 3 路并行核对
-> kit 契约 / dsh-mcp 与运行时 loader 的实际消费方 / CI 与测试面 + 真机 CLI 实测），
-> 产出 **CG01–CG29 共 29 条**；同日在工作树上把 **29 条全部修复**，随 **0.4.2** 发布。
-> 原计划的三批次（0.4.2 / 0.4.3 / 0.4.4）并入同一次发版，见「批次」一节。
+> **这份文件是代码注释的编号字典，不是审计报告。**
 >
-> 审计基线：插件 0.4.1 / kit 0.4.0｜codegraph CLI **1.6.0**（两处安装，
-> 仓库自身有 41MB 索引）。跨包核对读到的运行时是 npx 缓存里那份 `@deepseek-ai/*`
-> （dsh 0.1.0-rc.7 / cordis 4.0.1），不是 README 声称实测过的 0.1.5-rc.2；本机当前装的
-> 又是 0.1.6-alpha.2（README 的兼容性一节已改为「版本矩阵 + 验证方式」，见 CG42）——凡涉及
-> 「loader / dsh-mcp-client 实际怎么消费」的结论换宿主版本后要重核。
+> `src/` / `client-src/` / `test/` / `scripts/` 里带 `CGxx` 的注释，含义是「这段代码为什么
+> 长这样」，编号的出处就是本文。拿到任意一个 `CGxx`，直接查 [§1 编号索引表](#1-编号索引表)。
 >
-> **本次连带改了 `@hyzyn/dsh-kit`（0.4.0 → 0.4.1）**：CG13 的 `dshHome()` 归一化与
-> CG05 的 `killProcessTree()` POSIX 支持、`spawnPortable({ detached })`。全仓 7 个包
-> 的 kit 精确 pin 已同步 bump 并过 `pnpm aggregate` + `pnpm install --lockfile-only`。
+> **本包不拆「索引 / 字典」两张表**：本包的索引行历来一行同时带症状与修法（`修复` 列），
+> 没有 docker 那样的独立「修复记录摘要」节可拆；且原表没有「涉及文件」列（补一列就得靠猜，
+> 会发明事实）。所以 **§1 的「修复 / 设计意图」列就是意图字典**。理由与时点见 §4。
 >
-> **第二轮（评审波，同日）**：对修复后工作树的独立评审确认 CG01–CG29 里 28 条落地，
-> 并新发现 **CG30–CG38**；其中 CG30/CG31/CG35/CG36/CG37/CG38 已修（CG15 的 4xx 判定
-> 过宽一并收窄），**CG32–CG34 评审原文未随附、仓库亦无记录**（2026-09-22 复查 git 全历史，零命中）→ 见索引表，已关闭并改为可执行复核。评审里
-> 「README 引用不存在的 verify-codegraph-indexforce.mjs」一条为假阳性（该文件在仓库
-> 根且被 git 跟踪），已核实并记录在案。
+> **编号是硬契约**：`CG01–CG63` 是 `packages/codegraph` 内部序列，与 docker / tty 的 `Dxx`
+> **不共享**；跨包引用请写「codegraph CG02 / docker D03」。新缺陷接在 `CG63` 之后，
+> **不得重号、不得回收空号**——源码里已有注释指向它们。
+
+> **本文不含**：逐条 postmortem 的完整原文、独立验收复跑记录、原批次计划。
+> 它们冻结在自己那一版提交里，见 [§4 冻结记录](#4-冻结记录被移出正文的内容在哪)。
+
+## 维护规则
+
+1. **新缺陷只做两件事**：索引表加一行 + 在代码注释里落编号。详细的现场 / 根因 / 修法 / 反向验证
+   写进 **commit message**，正文不展开。
+2. **索引表超过约 80 行时**，把最老的 20 条整体移到 `DEFECTS-archive.md`。
+3. 索引表**不写行号**：修复后代码移了位、有的整段被删或重写，审计时点的行号只会误导。
+   定位实现请用症状列的关键词 `git log -S'<关键词>'`，或读代码里带 `CGxx` 的注释。
+4. 阈值 / 口径 / 基线数字**只增不改**：发现过期或自相矛盾，就在原处加一行 `> ⚠️ 标注`
+   说明，**不擅自"修正"**。
+
+> ⚠️ **标注（本次未擅改）——本次改动涉及的四处口径问题：**
 >
-> 修复后的回归门槛（全绿）：`tsc --noEmit -p packages/codegraph/tsconfig.json` 干净；
-> `npx vitest run packages/codegraph` = **110 tests / 5 files**（审计时 65）；全仓
-> `npx vitest run` = 618 tests / 40 files；`pnpm -r build` 后 artifact-diff 干净
-> （client.js 现在有了「产物 = 源码」闸，CG28）；`node scripts/check-dsh-home.mjs` 通过。
+> 1. **原「第二轮（评审波）：CG30–CG38」的标题与自己的内容不符**：那张表实际收录到 `CG49`
+>    （含 CG39–CG49，由后续几轮陆续追加），标题停留在最初那 9 条。本次按编号合并成一张表，
+>    标题错误随之消失，**原章节标题照录于此**：`## 第二轮（评审波）：CG30–CG38`。
+> 2. **`CG15 追记` 原本浮动在 blockquote 之后**（不紧贴任何表），看起来像正文里的一条游离表格行；
+>    本次并入 §1 并按编号落位。它与 `CG15` 是**同一编号的补充记录**，不额外计入「已修」。
+> 3. **基线数字多档并存，未合并**：本文 §3 记 `vitest 110 tests / 5 files`、全仓 `618 / 40`（0.4.2 时点）；
+>    第三轮段落记 `317 tests / 14 files`；[ROADMAP.md](./ROADMAP.md) 的「基线」表记 `202 / 10`、全仓 `779 / 48`。
+>    四组数字出自四个时点，**原样保留**。
+> 4. **待办与 ROADMAP 的口径不一致**：本文原「待办 / 路线图」一节的 8 项已迁入
+>    [ROADMAP.md](./ROADMAP.md)，而 ROADMAP 的「已完成」一节把其中多数标为 ✅。
+>    **两边原文都保留**，不替任何一边下结论。
 
 ## 现状
+
+**已修 60 / 已关闭 3 / 待修 0**，编号至 `CG63`。逐条见 §1；未做项见 [ROADMAP.md](./ROADMAP.md)。
 
 **已修 60 / 已关闭 3 / 待修 0**（CG01–CG29 + CG30/31/35/36/37/38 修于 0.4.2；CG39–CG49 修于其后一轮；
 CG50–CG62 修于上一轮；CG63（DSH 0.1.7-rc.1 的 settings 服务迁移）修于本轮；CG32–CG34 **因原文从未随附而关闭**，不再挂账）。索引表的「修复」列一句话记录改法与落点；行号已漂移，定位用
@@ -34,7 +50,7 @@ CG50–CG62 修于上一轮；CG63（DSH 0.1.7-rc.1 的 settings 服务迁移）
 `ensureStyle` / `installSessionReporter`）。代码里带 `CGxx` 注释的位置就是对应修复点，
 改到相关代码时请先读那里的注释。
 
-> 数字口径（**曾算错过一次，故写明**）：`已修 = 表内去重编号数 − 已关闭数`，实测复现过历史每一档
+> **数字口径（原文照录）**：`已修 = 表内去重编号数 − 已关闭数`，实测复现过历史每一档
 > （`dd3de493` 35、`1dc45292` 40、`7b24ce2b` 41、`79658a8f` 42）。当前 63 − 3 = **60**。
 > 一处易错点：`CG15 追记` 是**同一编号的补充记录**（表格里多一行），不额外计入「已修」——
 > 按行数算会多 1，按去重编号算才对。P0 那轮我按「加了 1 条却 +2」写成了 44，已更正。
@@ -50,146 +66,94 @@ CG50–CG62 修于上一轮；CG63（DSH 0.1.7-rc.1 的 settings 服务迁移）
 > 「14 条」是审计时点的数字，保留原样不改。剩余权限边界是「本机任意进程可驱动」——CG07 把任意字符串挡住了，但本机进程仍可上报
 一个真实存在的已索引目录；这是 loopback 模型的固有边界，不是缺陷。
 
-## 索引
+## 1. 编号索引表
 
-| CG | 严重度 | 症状（一句话） | 修复（0.4.2） |
-|---|---|---|---|
-| CG01 | P0 | POST body 畸形/超限时静默改用**默认项目**执行 sync/index/init | 六条 POST 路由统一走 `readPostBody`：`readJsonBody` 返 `undefined` 即 400（`/follow` 原有写法推广到全部） |
-| CG02 | P1 | 索引判定只看本目录，与 CLI 的向上解析分叉 → monorepo 子目录 followSession 永久回落、default-path 回 400、卡片自相矛盾 | 新增 `locateIndex()`：向上走祖先（git 根止步），命中根作为 `projectPath`；`effectiveProjectPath` 与 `/default-path` 绑定**根**；子目录 `/init` 回 409 |
-| CG03 | P1 | 重写 dsh-mcp 区块是有损往返：override 形状与注释被静默删除 | `locateCwdEdits()` 定点只改 codegraph 行的 `cwd:` 一行（含补插），区块内其余字节不动；flow style 定位不到才退回整块重写 |
-| CG04 | P1 | 与 dsh-mcp 并发写同一个 cordis.patch.yml 无 CAS，交叠即丢行 | `syncMcpRowOnDisk` 盖章复核（mtime+size → 读 → 算 → 复核，≤3 次重读后强写），与 dsh-mcp 的写前复核对偶 |
-| CG05 | P1 | 超时/取消在 POSIX 上没兜底：killProcessTree 是 no-op、无 /cancel、不监听断连 | 运行器统一成 spawn（POSIX `detached` 组长）；SIGTERM → 3s 清理窗 → SIGKILL；断连接线（CG30 修正为 res close）；新增 `POST /cancel` + 卡片「取消」按钮；kit 侧 killProcessTree 支持 POSIX（有真机进程组测试） |
-| CG06 | P1 | 区块解析失败被当「没有区块」→ 追加第二个区块 → serverName 撞名整体加载失败 | `parseBlockRows` 返回 `{ rows, error }`；任何区块解析失败即拒绝写并报原因；空块/被清空时把行**插进现有区块**（行编辑，不再造第二个块） |
-| CG07 | P1 | `/follow` 对上报路径零校验却立刻落盘改 MCP cwd | 非空 path 先过 `directoryError`（400）；索引有效性仍由 `locateIndex` 现算。loopback 内「本机进程可上报真实目录」是模型固有边界，记录在案 |
-| CG08 | P1 | 卡片 CSS 模块级单例：任一实例卸载即 remove，另一张卡片全裸 | `ensureStyle`/`releaseStyle` 引用计数（卡片 useEffect 挂钩），减到 0 才摘节点；apply 里全局注入/摘除的旧 effect 移除 |
-| CG09 | P2 | query/callers/callees/impact/node 位置参数无 `--` 终止符：`-h` → exit 0 + help → 卡片显示「没有结果」 | 五条路由位置参数前统一补 `--`（argv 快照测试钉住） |
-| CG10 | P2 | `limit` 零校验：`-1`/超大值 exit 0 + `[]`（静默空结果）；路径不存在也静默空 | `positiveIntParam` 校验（`limit` 钳 10000；`depth` 只挡垃圾值，上限留给 CLI 自己夹）；全部 GET CLI 路由先过 `directoryError` |
-| CG11 | P2 | 状态面板忽略 CLI 的过期信号（reindexRecommended / builtWithVersion / 提取器版本 / worktreeMismatch） | 卡片 `staleReasons()` 汇总四字段（顶层与 `index.*` 嵌套都读）→ 面板警告行 + 点名「重建索引」 |
-| CG12 | P2 | 托管行不校验 cwd 还在；项目被删后坏行长期留着且不可见 | `McpSyncStatus.cwdExists`（每次快照现算）+ 卡片「⚠ cwd 目录已不存在」 |
-| CG13 | P2 | `~/.dsh` 缺失时挂载期抛错整插件起不来；`DSH_HOME=~/x` 写的与 loader watch 的不是同一文件 | kit `dshHome()` 归一化（`~` 展开 + resolve，与 loader 同口径）；`syncMcpRowOnDisk` 包 try/catch，失败显式报错并把原因写进状态 note |
-| CG14 | P2 | `enabled:false` 早退时不撤销托管行，而卡片（唯一撤销入口）已消失 | 早退分支先跑一次 `manageEnabled:false` 的同步再 return |
-| CG15 | P2 | 会话上报失败永不重试（`lastSent` 写在 fetch 前） | `lastSent` 只在成功/4xx 后落位；网络错/5xx 指数退避重试（1s→30s） |
-| CG16 | P2 | `loadSymbol` 失败不清 `detail`：新符号标题配旧符号的 callers/callees | 进函数先 `setDetail(null)` |
-| CG17 | P2 | 关系列表静默截断 30 条 | 截断时显示「已显示前 30 条，共 N 条」 |
-| CG18 | P3 | 冲突判定要求 name 精确等于 `@deepseek-ai/dsh-mcp-client`，换包名检不出撞名 | `isCodegraphServerRow` 只按 `config.serverName` 判定 |
-| CG19 | P3 | `findBlock` 宽泛 substring：开始标记被删时孤立结束标记被当块头 | 开始行必须含 startKey **且不含** endKey；配套测试（孤儿标记 → 新建分支 + 幂等） |
-| CG20 | P3 | `INDEX_DB_SUFFIX` 注释与事实不符（`.db-wal`/`-shm` 不以 `.db` 结尾） | 注释纠偏；判据保持后缀匹配（上游改主库名仍兼容） |
-| CG21 | P3 | reprobe 无并发去重；卡片两个动作共用一个忙态互相禁用 | 服务端 `probeInFlight` 复用同一 Promise；卡片 `reprobing` 独立忙态 |
-| CG22 | P3 | 一切带 signal 的失败都报成「超时」，OOM 被引向调大超时 | 超时改用运行器置的 `timedOut` 标记判定；`cancelled` 单独文案 |
-| CG23 | P3 | `positiveOr` 把 0 静默回落默认：`cliTimeoutMs: 0`（想表达不限时）得 60s | `timeoutOr`：0 = 不限时（运行器不设计时器），负数/NaN/Infinity 才回落 |
-| CG24 | P3 | settings schema 声明了 `enabled`/`command` 但从不读取 | 从 schema 删除 |
-| CG25 | P3 | 模块级 `runtimeSyncRef` 单例：同名不同 id 的两实例串台 | runtime 改为 apply 内实例私有 `runtimeRef`，路由/快照经访问口读取（测试：两实例设置互不可见） |
-| CG26 | P3 | 工程闸门缺位：无 test script；verify-sync.mjs 与 vitest 重复；indexforce 脚本没接线 | 补 `test` script；删除 `scripts/verify-sync.mjs`（managed-mcp.test.ts 全覆盖）；`scripts/verify-codegraph-indexforce.mjs`（需真机 DSH，无法进 CI）写进 README 开发节与 tty 的 live 脚本同列 |
-| CG27 | P3 | 5/13 路由零测试；`/node` 不能带 `--json` 的真实约束无测试钉住 | 补 query/callers/callees/impact/node 三态（缺参 400 / 200 argv 快照 / 非零退出 500）+ node 无 `--json` 断言 |
-| CG28 | P3 | 手写 client.js（51KB）没有「产物 = 源码」闸门 | 拆 `client-src/index.js` + `scripts/build-client.mjs`（原样拷贝），`build` 产出 client.js，CI 既有 artifact-diff 覆盖 |
-| CG29 | P3 | 文档漂移：README Config 少 `followSession`；兼容性只写 1.5.0；`files` 不含 README.en.md | Config 补 `followSession` + 超时 `0` 语义；兼容性改版本矩阵（1.5.0 macOS / 1.6.0 Windows+macOS）；`files` 加 `README.en.md`；英文 README 同步 |
+> 一行一条，按 `CGxx` 编号升序（原来分三张表、按发现波次排列；合并后不必先知道「第几轮」才能查）。
+> 严重度（P0–P3）**已按维护规则 4 移出**：它只描述「当年多重」，不参与「这段代码为什么长这样」。
+> 原始分档（P0×1、P1×12、P2×16、P3×31，另 CG32–CG34 为 `—`）可从 §4 的版本取回。
 
-## 第二轮（评审波）：CG30–CG38
+| CG | 症状（一句话：当年坏了什么） | 修复 / 设计意图（这段代码为什么长这样） |
+|---|---|---|
+| CG01 | POST body 畸形/超限时静默改用**默认项目**执行 sync/index/init | 六条 POST 路由统一走 `readPostBody`：`readJsonBody` 返 `undefined` 即 400（`/follow` 原有写法推广到全部） |
+| CG02 | 索引判定只看本目录，与 CLI 的向上解析分叉 → monorepo 子目录 followSession 永久回落、default-path 回 400、卡片自相矛盾 | 新增 `locateIndex()`：向上走祖先（git 根止步），命中根作为 `projectPath`；`effectiveProjectPath` 与 `/default-path` 绑定**根**；子目录 `/init` 回 409 |
+| CG03 | 重写 dsh-mcp 区块是有损往返：override 形状与注释被静默删除 | `locateCwdEdits()` 定点只改 codegraph 行的 `cwd:` 一行（含补插），区块内其余字节不动；flow style 定位不到才退回整块重写 |
+| CG04 | 与 dsh-mcp 并发写同一个 cordis.patch.yml 无 CAS，交叠即丢行 | `syncMcpRowOnDisk` 盖章复核（mtime+size → 读 → 算 → 复核，≤3 次重读后强写），与 dsh-mcp 的写前复核对偶 |
+| CG05 | 超时/取消在 POSIX 上没兜底：killProcessTree 是 no-op、无 /cancel、不监听断连 | 运行器统一成 spawn（POSIX `detached` 组长）；SIGTERM → 3s 清理窗 → SIGKILL；断连接线（CG30 修正为 res close）；新增 `POST /cancel` + 卡片「取消」按钮；kit 侧 killProcessTree 支持 POSIX（有真机进程组测试） |
+| CG06 | 区块解析失败被当「没有区块」→ 追加第二个区块 → serverName 撞名整体加载失败 | `parseBlockRows` 返回 `{ rows, error }`；任何区块解析失败即拒绝写并报原因；空块/被清空时把行**插进现有区块**（行编辑，不再造第二个块） |
+| CG07 | `/follow` 对上报路径零校验却立刻落盘改 MCP cwd | 非空 path 先过 `directoryError`（400）；索引有效性仍由 `locateIndex` 现算。loopback 内「本机进程可上报真实目录」是模型固有边界，记录在案 |
+| CG08 | 卡片 CSS 模块级单例：任一实例卸载即 remove，另一张卡片全裸 | `ensureStyle`/`releaseStyle` 引用计数（卡片 useEffect 挂钩），减到 0 才摘节点；apply 里全局注入/摘除的旧 effect 移除 |
+| CG09 | query/callers/callees/impact/node 位置参数无 `--` 终止符：`-h` → exit 0 + help → 卡片显示「没有结果」 | 五条路由位置参数前统一补 `--`（argv 快照测试钉住） |
+| CG10 | `limit` 零校验：`-1`/超大值 exit 0 + `[]`（静默空结果）；路径不存在也静默空 | `positiveIntParam` 校验（`limit` 钳 10000；`depth` 只挡垃圾值，上限留给 CLI 自己夹）；全部 GET CLI 路由先过 `directoryError` |
+| CG11 | 状态面板忽略 CLI 的过期信号（reindexRecommended / builtWithVersion / 提取器版本 / worktreeMismatch） | 卡片 `staleReasons()` 汇总四字段（顶层与 `index.*` 嵌套都读）→ 面板警告行 + 点名「重建索引」 |
+| CG12 | 托管行不校验 cwd 还在；项目被删后坏行长期留着且不可见 | `McpSyncStatus.cwdExists`（每次快照现算）+ 卡片「⚠ cwd 目录已不存在」 |
+| CG13 | `~/.dsh` 缺失时挂载期抛错整插件起不来；`DSH_HOME=~/x` 写的与 loader watch 的不是同一文件 | kit `dshHome()` 归一化（`~` 展开 + resolve，与 loader 同口径）；`syncMcpRowOnDisk` 包 try/catch，失败显式报错并把原因写进状态 note |
+| CG14 | `enabled:false` 早退时不撤销托管行，而卡片（唯一撤销入口）已消失 | 早退分支先跑一次 `manageEnabled:false` 的同步再 return |
+| CG15 | 会话上报失败永不重试（`lastSent` 写在 fetch 前） | `lastSent` 只在成功/4xx 后落位；网络错/5xx 指数退避重试（1s→30s） |
+| CG15 追记 | 修复波把「4xx 一律视为明确拒绝、不再重试」定得过宽：宿主启动期路由未挂上时 `/follow` 得 404 → 永久放弃 | 404 与 5xx 同为瞬态，一并退避重试；其余 4xx（400 目录不存在等）保持记值不重试 |
+| CG16 | `loadSymbol` 失败不清 `detail`：新符号标题配旧符号的 callers/callees | 进函数先 `setDetail(null)` |
+| CG17 | 关系列表静默截断 30 条 | 截断时显示「已显示前 30 条，共 N 条」 |
+| CG18 | 冲突判定要求 name 精确等于 `@deepseek-ai/dsh-mcp-client`，换包名检不出撞名 | `isCodegraphServerRow` 只按 `config.serverName` 判定 |
+| CG19 | `findBlock` 宽泛 substring：开始标记被删时孤立结束标记被当块头 | 开始行必须含 startKey **且不含** endKey；配套测试（孤儿标记 → 新建分支 + 幂等） |
+| CG20 | `INDEX_DB_SUFFIX` 注释与事实不符（`.db-wal`/`-shm` 不以 `.db` 结尾） | 注释纠偏；判据保持后缀匹配（上游改主库名仍兼容） |
+| CG21 | reprobe 无并发去重；卡片两个动作共用一个忙态互相禁用 | 服务端 `probeInFlight` 复用同一 Promise；卡片 `reprobing` 独立忙态 |
+| CG22 | 一切带 signal 的失败都报成「超时」，OOM 被引向调大超时 | 超时改用运行器置的 `timedOut` 标记判定；`cancelled` 单独文案 |
+| CG23 | `positiveOr` 把 0 静默回落默认：`cliTimeoutMs: 0`（想表达不限时）得 60s | `timeoutOr`：0 = 不限时（运行器不设计时器），负数/NaN/Infinity 才回落 |
+| CG24 | settings schema 声明了 `enabled`/`command` 但从不读取 | 从 schema 删除 |
+| CG25 | 模块级 `runtimeSyncRef` 单例：同名不同 id 的两实例串台 | runtime 改为 apply 内实例私有 `runtimeRef`，路由/快照经访问口读取（测试：两实例设置互不可见） |
+| CG26 | 工程闸门缺位：无 test script；verify-sync.mjs 与 vitest 重复；indexforce 脚本没接线 | 补 `test` script；删除 `scripts/verify-sync.mjs`（managed-mcp.test.ts 全覆盖）；`scripts/verify-codegraph-indexforce.mjs`（需真机 DSH，无法进 CI）写进 README 开发节与 tty 的 live 脚本同列 |
+| CG27 | 5/13 路由零测试；`/node` 不能带 `--json` 的真实约束无测试钉住 | 补 query/callers/callees/impact/node 三态（缺参 400 / 200 argv 快照 / 非零退出 500）+ node 无 `--json` 断言 |
+| CG28 | 手写 client.js（51KB）没有「产物 = 源码」闸门 | 拆 `client-src/index.js` + `scripts/build-client.mjs`（原样拷贝），`build` 产出 client.js，CI 既有 artifact-diff 覆盖 |
+| CG29 | 文档漂移：README Config 少 `followSession`；兼容性只写 1.5.0；`files` 不含 README.en.md | Config 补 `followSession` + 超时 `0` 语义；兼容性改版本矩阵（1.5.0 macOS / 1.6.0 Windows+macOS）；`files` 加 `README.en.md`；英文 README 同步 |
+| CG30 | 断连取消不成立：`req 'aborted'` 在 body 消费完之后**不触发**（真机 HTTP 实测：POST body 读完客户端断连，只有 `res:close` 且 `writableEnded=false` 会来）——CG05 的断连兜底是死代码 | `abortOnDisconnect` 改挂 `res.on('close')` + `writableEnded` 判定（写完才关 ≠ 断连）；三个索引类 POST 路由接的是它 |
+| CG31 | `locateCwdEdits` 只向下扫：`cwd:` 写在 `serverName:` **之前**时找不到、在后面补出第二个 `cwd:` → js-yaml 抛 `duplicated mapping key`，**整份 cordis.patch.yml 拒载**（比 CG03 原伤更重，真机复现实锤） | 扫描改双向（行内上下都找同缩进的 `cwd:`；缩进变小即离开条目，不跨行）；复现形状进回归测试（单 cwd + `yaml.load` 不抛 + 幂等） |
+| CG32 | **定义未获取**：评审原文未随附，仓库与 git 历史均无记录（2026-09-22 复查：`git log -S` 全历史零命中） | **关闭**：无法补齐定义。改为对该批判最可能涉及的面向做**可执行复核**——新增门禁矩阵用例（POST 路由的 body 门禁 + 全路由回环门禁，含变异验证） |
+| CG33 | **定义未获取**：评审原文未随附，仓库与 git 历史均无记录（2026-09-22 复查：`git log -S` 全历史零命中） | **关闭**：无法补齐定义。改为对该批判最可能涉及的面向做**可执行复核**——新增门禁矩阵用例（POST 路由的 body 门禁 + 全路由回环门禁，含变异验证） |
+| CG34 | **定义未获取**：评审原文未随附，仓库与 git 历史均无记录（2026-09-22 复查：`git log -S` 全历史零命中） | **关闭**：无法补齐定义。改为对该批判最可能涉及的面向做**可执行复核**——新增门禁矩阵用例（POST 路由的 body 门禁 + 全路由回环门禁，含变异验证） |
+| CG35 | kit 归一化成了「半仓统一」：`dshHome()` 归 kit，全仓还有 8 处 raw 副本（env:68 / profile:44 / prompt:79 / search:39 / mcp:76 / tty:2000+2060 / shell-integration:48）——`DSH_HOME=~/x` 时 codegraph 与 dsh-mcp 写**两个不同**的 cordis.patch.yml（改动前至少写同一个错的） | 8 处副本全部改走 kit 的 `dshHome()`（env / prompt 补 `@hyzyn/dsh-kit` 依赖并 bump）；新增 `scripts/check-dsh-home.mjs` 防回归闸（只认 kit 一份推导）接进 CI；连带 bump env/prompt/profile/mcp/search/rss/tty |
+| CG36 | kit `killProcessTree` POSIX 分支无条件先打 `-pid`，而 dsh-mcp 的连接测试子进程不是组长（mcp:646 无 detached）——正常 ESRCH 被吞，窄窗口是「子进程已退出且 pid 被复用为组长」；这是另一个包的行为改变 | kit 加 `{ group }` 选项且**默认关**：只有 codegraph 运行器（自己 detached 启动）显式 opt-in，dsh-mcp 经默认路径回到「只单杀」的原语义 |
+| CG37 | CG08 的引用计数在闭包里、节点却文档级共享：同一份 client.js 被再次执行（HMR / 重载不换 document）时，新一代 `ensureStyle` 命中旧节点早退、`styleEl` 恒 undefined 摘不掉；反向旧代卸载摘掉新代在用的节点 | 计数改挂在**元素 dataset** 上（`cgRefs`）：ensure/release 都按 id 找节点、增减 dataset——跨代共享的节点配跨代共享的计数 |
+| CG38 | `build-client.mjs` 用**字符串** replace 内联 pure.js：内容里一旦出现 `$&` / `$'` / `$1` 会被当替换模式吃掉，且确定性、CI 照绿（当前 pure.js 零 `$`，潜伏） | 改函数替换 `replace(markerPattern, () => inlined)`；用含 `$& $1` 的探针实测穿透，pure.js 已还原 |
+| CG39 | **「init 只走 `init -- <path>`」偶发失败（两个独立成因，第二个才是主因）**：① 共享夹具 `emptyDir` 被 stub 写过 `.codegraph/`，复用即 409；② **断言本身写错**——`expect(argvToString).not.toContain('-y')` 会在整串输出上做子串匹配，而 `mkdtempSync` 的后缀是随机的，实测路径 `…/dsh-cg-route-yoKvfJ/…` 里就带 `-y`，于是「十次里红一次」且每次红在不同机器/运行上，看起来像产品 bug（全仓并行运行时更易命中） | ① 该用例与 409 用例各自 `mkdtempSync` 现造目录，删掉共享夹具；② 改为**解析 argv 后逐项比对**：`argv.filter(a => a.startsWith('-') && a !== '--')` 必须为空 + 完整 argv 相等（`--` 是位置参数终止符不是选项）。两个成因都已验证：前者同进程连续两次 init → 200 后 409；后者用含 `-y` 的路径直接复现旧断言判红、新断言通过 |
+| CG40 | **采纳率分类器错收**：第一版只匹配「read / search」词根，于是 `read_image`（真实历史 248 次）、`read_pdf`、`web_search`（19 次）被算成「代码探索」——读截图、搜网页跟 codegraph 毫无关系，单这一个错误把分母灌了 11%（2344 → 2077 次），采纳率 2.2% 被压到 2.0%；反向问题是宽口径把 `read` 全算进分母，而 `read` 真实占 1956 次（grep 只有 100 次），导致「2.2%」这种会误导人的数字 | 加 `NON_EXPLORATORY_PATTERNS`（媒体 / 网络 / 文档类先判 other，先于文件探索匹配）；新增窄口径 `discovery`（grep/glob/search/find/list，排除 read），`/metrics` 与卡片同时报两个口径并标注主口径。实测数据与结论见 [ADOPTION-AUDIT.md](./ADOPTION-AUDIT.md) |
+| CG41 | **自动重建与 CLI 探测的竞态**：门禁写成 `cliProbeState.available !== true` 时，探测（挂载后异步跑，实测 200–300ms）尚未落地的窗口里，会话的第一条 `user/message` 会被静默跳过——表现为「自动重建时好时坏」。这是写用例时才暴露的：同一份代码三次断言里有一次不查 status | 判据改为只在**已确认不可用**（`=== false`）时跳过；代价是 CLI 真缺失时每项目多起一次注定失败的子进程，可接受。用例「每项目每次运行最多一次」与「索引新鲜」正是钉这个竞态的 |
+| CG42 | **文档里的宿主版本基线自相矛盾**：README 称「已在 `0.1.5-rc.2` 上实测全链路」，DEFECTS 记的审计基线却是 `0.1.0-rc.7`，而本机实际在跑的是 **`0.1.6-alpha.2`**（`dsh.engines.dsh` 声明的下限 `>=0.1.2-rc.1` 又是第四个数）。三个版本号并存，谁也没说清「哪一档是验证过的」；且 `0.1.5-rc.2` 那句「实测」没有任何可复跑的脚本，而单测的 fake req/res 覆盖不到浏览器半体的供给面 | README 兼容性一节改为**版本矩阵**：每一档注明**验证方式**，`0.1.6-alpha.2` 挂 `scripts/verify-codegraph-host-contract.mjs`（真宿主 25/25），`0.1.5-rc.2` 如实标注「当时无脚本、覆盖不到供给面」，`0.1.0-rc.7` 说明它是审计当时的包版本、与本机安装的不是同一个；`0.1.2-rc.1` 明确为**声明下限 ≠ 已实测下限**。新增的真机脚本同时补上了长期缺失的「宿主契约」端到端（此前只有 indexForce 那一条） |
+| CG43 | **自动重建用例的固定 sleep 导致全仓偶发失败**：三条用例用 `await wait(300/400/500)` 等异步链（status → 判定 → index），而它跑在**真实子进程**上——单跑一个文件够，全仓并行（47 文件抢 CPU）时不够。实测表现为「索引新鲜」那条偶发断言到 `status 调用数 === 0`，且**只在全仓跑时出现、单跑必绿**（最容易被人当成「环境抖动」放过） | 加 `waitFor(check, timeout)` 条件轮询替代固定 sleep：正向断言一律等「事情真的发生过」；反向断言（默认关 / 未索引不该调用）没有条件可轮询，则给足时间并写明这是反向断言。连续 8 轮全仓全绿 |
+| CG44 | **工具栏按钮溢出被裁**（用户截图实证）：`.cg_toolbarBtns` 是 `flex-wrap:nowrap` + `flex-shrink:0`——**整组不许断行**。早期 5 个按钮（约 300px）时这招是对的（要么整组留在标题右边、要么整组换行）；P2 加到 9 个（约 637px）后侧边栏只有 ~360px，整组不许断行就只能溢出，**「撤销索引」被裁掉、点不到**。同因还有两处：搜索行仍是固定 3 列 `grid-template-columns`（P2 把「探索/上下文」放进这一行后变成 5 项，会把两个输入框挤到不可用）；「探索/上下文」原本放在工具栏，但它们吃的是**搜索框的关键词**，语义错位又让工具栏更长 | ① `.cg_toolbarBtns` 改 `flex-wrap:wrap` + `justify-content:flex-end`（折成两行，实测 2 行 357/272px）；② `.cg_row` 从固定 grid 改 `flex-wrap:wrap`，输入框 `flex:1 1 160px` 可压缩；③ 把「探索/上下文」移到搜索行（与「搜索」同组，共用 query），「诊断包」从「撤销索引」之后移到只读组末尾（只读动作不该紧邻破坏性动作）；④ 新增**布局守卫用例**（读源码断言这两处必须 `flex-wrap:wrap`、输入框必须可伸缩、探索/上下文必须与搜索同区），并做变异验证：还原成 nowrap / 固定 grid 时用例立刻红 |
+| CG45 | **两个真机验证脚本会污染用户真实配置**：脚本起被测宿主时继承真实 `DSH_HOME`，而插件按 `dshHome()` 把 codegraph 托管行写进 `$DSH_HOME/cordis.patch.yml`——**指向的却是脚本的临时项目目录**，脚本结束即 `rmSync` 那个目录，用户真实配置里就留下一行指向不存在路径的托管行。头注释当时写的是「不修改任何已有 profile / settings 文件」，只挡住了 profile 补丁，漏了插件自身的副作用。**实测复现**（去掉隔离后跑一次）：真实补丁 427B → 447B，`cwd` 被写成 `/var/folders/.../cg-host-contract-xxx/project` | ① 脚本给被测宿主**隔离的 DSH_HOME**：整份拷入被测 profile（几十 KB），组装产物与托管行全部落在临时目录，真实 `~/.dsh` 全程只读；② 收尾新增**自证断言**「真实补丁逐字节未变」，把「不污染用户配置」从承诺变成会被执行的检查（实测修复后跑一次：32/32 通过，且真实补丁哈希前后一致）；③ 新增 `test/verify-scripts-safety.test.ts`（6 条）静态守卫这两条性质——真机脚本进不了 CI，静态断言是这里唯一能常驻的防线；变异验证：去掉 `DSH_HOME: isolatedHome` 即红 |
+| CG46 | **把上游 CLI 的常驻 daemon 误判成「未回收的进程」**（P0 开工实测时暴露）：同一 `cwd` 下 `pgrep -f 'serve.*--mcp'` 会看到**两个** pid——我们 spawn 的 MCP 子进程（dispose 后 ~3ms 内退出），与 codegraph CLI 自己 detach 的**常驻 daemon**（注册在项目 `.codegraph/daemon.pid`、socket `.codegraph/daemon.sock`，dispose 后存活 >24s，是上游跨会话复用索引的设计）。第一版 agent-scope 验证脚本按「cwd 下 pid 清空」断言，于是**假失败**：报告「A 残留 pid」并把上游的正常行为写成疑似泄漏。次生坑：`lsof` 报 realpath（`/private/var/...`）而临时目录是 `/var/folders/...`（macOS 符号链接），字符串直比会**永远不相等**，看起来像「进程压根没起来」 | ① 按 `daemon.pid` **排除** daemon 后只断言我们那一份（实测 dispose 后 3ms 消失）；② cwd 比较一律 `realpathSync` 归一；③ 断言改**条件轮询**（`waitFor`）而不是固定 sleep——CG43 的同一教训；④ 把这条写进脚本注释与 `verify-codegraph-agent-scope.mjs` 的头注释，避免下一个人重踩 |
+| CG47 | **CG04 的写前复核漏了一个方向**（复核 CG04 时发现）：条件是 `before !== undefined && stamp(after) !== stamp(before)`，前半个守卫把「**补丁文件本来不存在、竞态期间被别的进程创建了**」这一向短路掉——首次运行时 `before` 恒为 undefined，于是**恰恰在最容易交叠的那一刻跳过复核、直接覆盖**，而这正是 CG04 要治的「交叠即丢行」。自相矛盾的证据：`stamp()` 特意把「不存在」编码成可比较的 `'absent'`，说明本意就是双向比较。真机难复现（要卡在文件从无到有的瞬间），所以此前没人发现 | 判据抽成纯函数 `shouldRecheckPatchWrite(before, after, attempt)`（可直接穷举四向），去掉 `before !== undefined` 守卫改为双向比较；补 5 条用例（不存在→被创建必须重做、仍不存在不重做、存在→被改/被删仍重做、上限 3 次强写）；变异验证：把守卫加回去，「不存在→被创建」一条立刻红 |
+| CG48 | **indexForce 真机脚本第二轮必崩，F2（`--force` 真传下去那一半）从未跑过**（本轮全量验收时暴露）：CG45 给它加的 `cpSync` 隔离**从没被运行过**——脚本对 `indexForce` 两个取值各起一轮宿主、两轮共用同一个隔离 home，第二轮往已存在的目标上拷时，目标里上一轮留下的**符号链接**指回源树，`cpSync` 报 `Cannot copy …/pkce-challenge to a subdirectory of self …/pkce-challenge` 并中止。实测：只跑到 F1（2 PASS）就退出，退出码 1——所以「indexForce 真机验证通过」对 F2 是**假的** | ① 抽出幂等助手 `syncIsolatedProfile()`：**先 `rmSync` 目标再拷**；② 注释写明这个坑；③ 修复后 4/4 PASS（F1 + F2 都真的跑了）。教训：`verify-scripts-safety.test.ts` 只能断言「脚本里有 cpSync / isolatedHome / realPatchBefore」，断言不了「拷两次不会崩」——**真机脚本的正确性只能靠跑一遍** |
+| CG49 | **真浏览器 UI 验证在受限环境里必然失败，且报错指不到真因**（本轮全量验收时暴露）：`scripts/chrome-cdp.mjs` 起 Chrome 时**不传 `--no-sandbox`**，而受限环境（DSH 文件沙箱、多数 CI 容器）里 Chrome **自己的** sandbox 起不来——表现为 `Runtime.enable` 挂到 30s 超时，报错只有「CDP Runtime.enable 超时」六个字，完全指不到「是 sandbox 起不来」。我为此先怀疑 `--headless=new`（Chrome 153 下它确实 SIGTRAP 崩溃），做对照才发现真因是缺 `--no-sandbox`（那次「复现」也是同一个原因，因为我的对照漏了这个参数） | ① `verify-client-ui.mjs` 新增 `--chrome-arg <arg>`（可重复）透传给 Chrome——**刻意不做成默认**，那会削弱所有调用方的浏览器隔离；② 新增 `scripts/verify-codegraph-client-ui.mjs` 把「自起隔离宿主 + 真 Chrome 驱动」串起来并显式传 `--no-sandbox`；③ 注释写明「报超时先想 sandbox」这个误导性失败模式 |
+| CG50 | `agent/created` 按**用户想要的**模式挂载（`current.mcpScope`）而不是**生效的裁决**（`scopeDecision.mode`）：`mcpIntegration:false`（裁决「两种模式都不挂」）与「区块外手工行」（裁决「已退回 managed」）下都照挂 per-agent——实测日志同时出现「已退回」与「per-agent MCP 已挂载」 | 改用 `runtimeRef?.scopeDecision?.mode ?? DEFAULT_MCP_SCOPE`；新增 `test/agent-created-mode.test.ts`（真插件 + 真事件派发，三个分叉场景 + 对照组），变异验证：还原成 wanted 即 3 条红 |
+| CG51 | 卡片 `qs()` 对数组做 `String(value)`：`affected` 的多文件被折成 `files=a.ts,b.ts` **一个值**，而宿主按 `getAll('files')` 收 → CLI 收到一个名叫 `a.ts,b.ts` 的不存在文件，多文件「影响面」静默空结果（单文件才碰巧对） | 抽 `buildQuery` 进 `client-src/pure.js`（数组逐个 `append`），`qs` 改为它的别名；`client-pure.test.ts` 补 3 条（含「不得出现 `%2C`」的反向断言） |
+| CG52 | uninit 只把运行登记在**索引根**下，而卡片「取消」发的是输入框里的路径（monorepo 子目录）→ `cancelled=0`，界面却照样说「已发送取消请求」 | 两个键都登记（请求路径 + 索引根），`/cancel` 按 controller 去重（`cancelled` 报的是「取消了几个运行」）；补 2 条用例 |
+| CG53 | `/cancel` 用裸 `readBody`，把「body 没读出来」当成「没指定 path」→ 一个被截断的 `{path:"x"}` **升级**成「取消全部」，把别的项目正在跑的索引一起杀掉（CG01 立的规矩在这里漏了一条） | 改走 `readPostBody`（畸形 / 空 / 超限一律 400），`{}` 仍 = 取消全部；补 2 条用例（400 且运行未停 / `{}` 仍取消全部） |
+| CG54 | 注释与 README 都写「探测没落地时补一次探测」，实现只读缓存 → 慢 CLI 下诊断包报 `CLI 探测：尚未探测`（正是那句注释要避免的状态），实测 A/B 两态对照确认 | 路由里真的补：`available === undefined` 时 `await cliProbe.reprobe()`（幂等，最多一个子进程）；补用例（慢 stub 下报告必须是确定结论） |
+| CG55 | `describeAdoption` 注释称「卡片与诊断包共用」，实际卡片用 `client-src/pure.js` 的 `adoptionText`——两份实现、各自测试、无一致性闸，措辞已分叉（同一输入两个文案） | 注释改为如实描述两处实现；`adoption.test.ts` 补一条**跨半体**用例钉住百分比口径一致（措辞允许不同） |
+| CG56 | 登记表注释承诺「永不淘汰当前默认项目 / 会话项目」，而 `note(path, via)` 拿不到这两个值——结构上无法实现；该性质实际由 `/projects` 每次 list 前重新 note 维持 | 注释改为如实描述：容量 50 + 淘汰最久未见；「当前项目始终在列表里」标注为**调用方契约**，改 `/projects` 时别删那次重新 note |
+| CG57 | 挂载器注释称重复 attach 会看到「已在处理」，实现只判 `mounted === true`（在途记录是 `false`）→ 窗口内重复派发再开一份：第二个实例被 dsh-mcp-client 拒（白跑一次 spawn+握手），其 fiber 覆盖第一个的引用 | 加 `pending` 在途标记 + **世代号**：重复 attach 复用同一记录；detach / detachAll / 换 cwd 都让迟到的续体作废；补 3 条用例（含「在途 detach 后一个进程都不许起」） |
+| CG58 | `timeoutOr` 只判 `>= 0`：`cliTimeoutMs: 0.5` 被原样收下 → `setTimeout` 当 1ms → 每次调用立刻超时，报错只说「请调大 cliTimeoutMs」，用户看着自己写的 0.5 完全不明白 | 改判 `Number.isInteger`（0 仍 = 不限时）；`cli-config.test.ts` 补小数三档 |
+| CG59 | `shortPath` 只按 `/` 切：Windows 路径整串算**一段** → `parts.length <= 2` 直接原样返回，这一列从不缩短（60+ 字符把胶囊撑满，正是它要解决的问题） | 按 `[\\/]` 切、显示统一用 `/`；补 Windows / UNC / 混合分隔符用例 |
+| CG60 | `runViaSpawn` 的 maxBuffer 判定把字符串**字符**数与 Buffer **字节**数相加 → 上限最多偏松 4 倍（中文/emoji 场景），护栏本身带误差 | 单独记 `stdoutBytes` / `stderrBytes` 按字节判定；纯护栏修正，无行为变化 |
+| CG61 | `renderOutputBody` 对 explore/context 输出**静默** `slice(0, 4000)`，与本包自己的 CG17 纪律（截断要报计数）不一致——explore 的 markdown 末尾正是调用链 | 超限时补一行计数说明（复用 `truncationNote`）；`raw` 本来就在响应里，文案里也点明 |
+| CG62 | `/default-path`（项目胶囊 / 「设为默认项目」）把**部分对象** `{ defaultPath, followSession }` 喂给 `sync()`，而 `resolveStored` 对「对象里没有的键」回落插件配置默认值 → `mcpScope` / `mcpIntegration` / `announceToAgent` / `usageGuidance` 四个键**在内存里被静默重置**。settings.yaml 没丢（写的是合并）→ **重启又「好了」**，表现为「时好时坏」、卡片显示与文件里的用户选择长期不一致。实测：勾上 per-agent 后点一次项目胶囊，当场退回 managed、全局托管行被写回、per-agent 挂载被回收；关掉「公告能力」后同样被打回 true | 改成把**完整的** stored 传进 sync（`{ ...(rt.scope?.get() ?? {}), defaultPath, followSession: false }`）；补用例逐键断言（mcpScope / mcpIntegration / announceToAgent / usageGuidance），变异验证：还原成部分对象即红（实测报 `mcpScope 不该被 /default-path 重置: expected 'managed' to be 'per-agent'`） |
+| CG63 | **DSH 0.1.7-rc.1 起 `ctx.settings.register(ns, schema)` / `settings.get(ns)` 已删除**（服务换成 `SettingsForms`：`describe/update/mutate/replace/configure`，设置存储改为「当前 profile 的插件 entry 配置」+ 导出带 `.volatile()` 的运行时 `Config`）。本包仍调旧 API：settings effect 抛错后静默走 config 兜底（`scope === undefined`），于是卡片开关 / 「设为默认项目」/ `per-agent` 切换全部回 500 `插件尚未完成挂载`。**单测与 tsc 都发现不了**——旧代码用 `as unknown as` 擦掉了服务类型。真机实测（rc.1 隔离装置）：`POST /api/dsh-codegraph/settings` 对合法 patch 回 500，`/default-path` 报 `effectiveMcpScope=managed` 且不落盘 | ① `@hyzyn/dsh-kit` 新增 settings 适配层：`settingsEntryScope`（读 `describe()` / 写 `update(entryId, patch)` / 订阅 `loader/volatile-update`）+ `plainConfig()`（还原 volatile 冻结引用）+ `readSettingsEntry` + `suppressAutoSettingsPage`；② 本包导出运行时 `Config` schema（卡片可改的 6 个字段标 `.volatile()`），settings effect 改用它，`apply()` 里先 `plainConfig()` 还原；③ 两处写入口改走适配层；④ 兼容性声明从 `dsh.engines.dsh` 换成 `peerDependencies["@deepseek-ai/dsh"] = ^0.1.7-rc.1`（rc.1 的安装前/启动时判定只认 peer；`engines.dsh` 已无读取方）。验收：真机宿主契约 **42/42**（含新增的两项 settings 写路径基线），`POST /settings` 在 per-agent / managed 间往返都是 200 |
 
-| CG | 严重度 | 症状（一句话） | 处置 |
-|---|---|---|---|
-| CG30 | P1 | 断连取消不成立：`req 'aborted'` 在 body 消费完之后**不触发**（真机 HTTP 实测：POST body 读完客户端断连，只有 `res:close` 且 `writableEnded=false` 会来）——CG05 的断连兜底是死代码 | `abortOnDisconnect` 改挂 `res.on('close')` + `writableEnded` 判定（写完才关 ≠ 断连）；三个索引类 POST 路由接的是它 |
-| CG31 | P1 | `locateCwdEdits` 只向下扫：`cwd:` 写在 `serverName:` **之前**时找不到、在后面补出第二个 `cwd:` → js-yaml 抛 `duplicated mapping key`，**整份 cordis.patch.yml 拒载**（比 CG03 原伤更重，真机复现实锤） | 扫描改双向（行内上下都找同缩进的 `cwd:`；缩进变小即离开条目，不跨行）；复现形状进回归测试（单 cwd + `yaml.load` 不抛 + 幂等） |
-| CG32 | — | **定义未获取**：评审原文未随附，仓库与 git 历史均无记录（2026-09-22 复查：`git log -S` 全历史零命中） | **关闭**：无法补齐定义。改为对该批判最可能涉及的面向做**可执行复核**——新增门禁矩阵用例（POST 路由的 body 门禁 + 全路由回环门禁，含变异验证） |
-| CG33 | — | **定义未获取**：评审原文未随附，仓库与 git 历史均无记录（2026-09-22 复查：`git log -S` 全历史零命中） | **关闭**：无法补齐定义。改为对该批判最可能涉及的面向做**可执行复核**——新增门禁矩阵用例（POST 路由的 body 门禁 + 全路由回环门禁，含变异验证） |
-| CG34 | — | **定义未获取**：评审原文未随附，仓库与 git 历史均无记录（2026-09-22 复查：`git log -S` 全历史零命中） | **关闭**：无法补齐定义。改为对该批判最可能涉及的面向做**可执行复核**——新增门禁矩阵用例（POST 路由的 body 门禁 + 全路由回环门禁，含变异验证） |
-| CG35 | P2 | kit 归一化成了「半仓统一」：`dshHome()` 归 kit，全仓还有 8 处 raw 副本（env:68 / profile:44 / prompt:79 / search:39 / mcp:76 / tty:2000+2060 / shell-integration:48）——`DSH_HOME=~/x` 时 codegraph 与 dsh-mcp 写**两个不同**的 cordis.patch.yml（改动前至少写同一个错的） | 8 处副本全部改走 kit 的 `dshHome()`（env / prompt 补 `@hyzyn/dsh-kit` 依赖并 bump）；新增 `scripts/check-dsh-home.mjs` 防回归闸（只认 kit 一份推导）接进 CI；连带 bump env/prompt/profile/mcp/search/rss/tty |
-| CG36 | P3 | kit `killProcessTree` POSIX 分支无条件先打 `-pid`，而 dsh-mcp 的连接测试子进程不是组长（mcp:646 无 detached）——正常 ESRCH 被吞，窄窗口是「子进程已退出且 pid 被复用为组长」；这是另一个包的行为改变 | kit 加 `{ group }` 选项且**默认关**：只有 codegraph 运行器（自己 detached 启动）显式 opt-in，dsh-mcp 经默认路径回到「只单杀」的原语义 |
-| CG37 | P3 | CG08 的引用计数在闭包里、节点却文档级共享：同一份 client.js 被再次执行（HMR / 重载不换 document）时，新一代 `ensureStyle` 命中旧节点早退、`styleEl` 恒 undefined 摘不掉；反向旧代卸载摘掉新代在用的节点 | 计数改挂在**元素 dataset** 上（`cgRefs`）：ensure/release 都按 id 找节点、增减 dataset——跨代共享的节点配跨代共享的计数 |
-| CG38 | P3 | `build-client.mjs` 用**字符串** replace 内联 pure.js：内容里一旦出现 `$&` / `$'` / `$1` 会被当替换模式吃掉，且确定性、CI 照绿（当前 pure.js 零 `$`，潜伏） | 改函数替换 `replace(markerPattern, () => inlined)`；用含 `$& $1` 的探针实测穿透，pure.js 已还原 |
-| CG49 | P2 | **真浏览器 UI 验证在受限环境里必然失败，且报错指不到真因**（本轮全量验收时暴露）：`scripts/chrome-cdp.mjs` 起 Chrome 时**不传 `--no-sandbox`**，而受限环境（DSH 文件沙箱、多数 CI 容器）里 Chrome **自己的** sandbox 起不来——表现为 `Runtime.enable` 挂到 30s 超时，报错只有「CDP Runtime.enable 超时」六个字，完全指不到「是 sandbox 起不来」。我为此先怀疑 `--headless=new`（Chrome 153 下它确实 SIGTRAP 崩溃），做对照才发现真因是缺 `--no-sandbox`（那次「复现」也是同一个原因，因为我的对照漏了这个参数）| ① `verify-client-ui.mjs` 新增 `--chrome-arg <arg>`（可重复）透传给 Chrome——**刻意不做成默认**，那会削弱所有调用方的浏览器隔离；② 新增 `scripts/verify-codegraph-client-ui.mjs` 把「自起隔离宿主 + 真 Chrome 驱动」串起来并显式传 `--no-sandbox`；③ 注释写明「报超时先想 sandbox」这个误导性失败模式 |
-| CG48 | P2 | **indexForce 真机脚本第二轮必崩，F2（`--force` 真传下去那一半）从未跑过**（本轮全量验收时暴露）：CG45 给它加的 `cpSync` 隔离**从没被运行过**——脚本对 `indexForce` 两个取值各起一轮宿主、两轮共用同一个隔离 home，第二轮往已存在的目标上拷时，目标里上一轮留下的**符号链接**指回源树，`cpSync` 报 `Cannot copy …/pkce-challenge to a subdirectory of self …/pkce-challenge` 并中止。实测：只跑到 F1（2 PASS）就退出，退出码 1——所以「indexForce 真机验证通过」对 F2 是**假的** | ① 抽出幂等助手 `syncIsolatedProfile()`：**先 `rmSync` 目标再拷**；② 注释写明这个坑；③ 修复后 4/4 PASS（F1 + F2 都真的跑了）。教训：`verify-scripts-safety.test.ts` 只能断言「脚本里有 cpSync / isolatedHome / realPatchBefore」，断言不了「拷两次不会崩」——**真机脚本的正确性只能靠跑一遍** |
-| CG47 | P2 | **CG04 的写前复核漏了一个方向**（复核 CG04 时发现）：条件是 `before !== undefined && stamp(after) !== stamp(before)`，前半个守卫把「**补丁文件本来不存在、竞态期间被别的进程创建了**」这一向短路掉——首次运行时 `before` 恒为 undefined，于是**恰恰在最容易交叠的那一刻跳过复核、直接覆盖**，而这正是 CG04 要治的「交叠即丢行」。自相矛盾的证据：`stamp()` 特意把「不存在」编码成可比较的 `'absent'`，说明本意就是双向比较。真机难复现（要卡在文件从无到有的瞬间），所以此前没人发现 | 判据抽成纯函数 `shouldRecheckPatchWrite(before, after, attempt)`（可直接穷举四向），去掉 `before !== undefined` 守卫改为双向比较；补 5 条用例（不存在→被创建必须重做、仍不存在不重做、存在→被改/被删仍重做、上限 3 次强写）；变异验证：把守卫加回去，「不存在→被创建」一条立刻红 |
-| CG46 | P3 | **把上游 CLI 的常驻 daemon 误判成「未回收的进程」**（P0 开工实测时暴露）：同一 `cwd` 下 `pgrep -f 'serve.*--mcp'` 会看到**两个** pid——我们 spawn 的 MCP 子进程（dispose 后 ~3ms 内退出），与 codegraph CLI 自己 detach 的**常驻 daemon**（注册在项目 `.codegraph/daemon.pid`、socket `.codegraph/daemon.sock`，dispose 后存活 >24s，是上游跨会话复用索引的设计）。第一版 agent-scope 验证脚本按「cwd 下 pid 清空」断言，于是**假失败**：报告「A 残留 pid」并把上游的正常行为写成疑似泄漏。次生坑：`lsof` 报 realpath（`/private/var/...`）而临时目录是 `/var/folders/...`（macOS 符号链接），字符串直比会**永远不相等**，看起来像「进程压根没起来」 | ① 按 `daemon.pid` **排除** daemon 后只断言我们那一份（实测 dispose 后 3ms 消失）；② cwd 比较一律 `realpathSync` 归一；③ 断言改**条件轮询**（`waitFor`）而不是固定 sleep——CG43 的同一教训；④ 把这条写进脚本注释与 `verify-codegraph-agent-scope.mjs` 的头注释，避免下一个人重踩 |
-| CG45 | P2 | **两个真机验证脚本会污染用户真实配置**：脚本起被测宿主时继承真实 `DSH_HOME`，而插件按 `dshHome()` 把 codegraph 托管行写进 `$DSH_HOME/cordis.patch.yml`——**指向的却是脚本的临时项目目录**，脚本结束即 `rmSync` 那个目录，用户真实配置里就留下一行指向不存在路径的托管行。头注释当时写的是「不修改任何已有 profile / settings 文件」，只挡住了 profile 补丁，漏了插件自身的副作用。**实测复现**（去掉隔离后跑一次）：真实补丁 427B → 447B，`cwd` 被写成 `/var/folders/.../cg-host-contract-xxx/project` | ① 脚本给被测宿主**隔离的 DSH_HOME**：整份拷入被测 profile（几十 KB），组装产物与托管行全部落在临时目录，真实 `~/.dsh` 全程只读；② 收尾新增**自证断言**「真实补丁逐字节未变」，把「不污染用户配置」从承诺变成会被执行的检查（实测修复后跑一次：32/32 通过，且真实补丁哈希前后一致）；③ 新增 `test/verify-scripts-safety.test.ts`（6 条）静态守卫这两条性质——真机脚本进不了 CI，静态断言是这里唯一能常驻的防线；变异验证：去掉 `DSH_HOME: isolatedHome` 即红 |
-| CG44 | P2 | **工具栏按钮溢出被裁**（用户截图实证）：`.cg_toolbarBtns` 是 `flex-wrap:nowrap` + `flex-shrink:0`——**整组不许断行**。早期 5 个按钮（约 300px）时这招是对的（要么整组留在标题右边、要么整组换行）；P2 加到 9 个（约 637px）后侧边栏只有 ~360px，整组不许断行就只能溢出，**「撤销索引」被裁掉、点不到**。同因还有两处：搜索行仍是固定 3 列 `grid-template-columns`（P2 把「探索/上下文」放进这一行后变成 5 项，会把两个输入框挤到不可用）；「探索/上下文」原本放在工具栏，但它们吃的是**搜索框的关键词**，语义错位又让工具栏更长 | ① `.cg_toolbarBtns` 改 `flex-wrap:wrap` + `justify-content:flex-end`（折成两行，实测 2 行 357/272px）；② `.cg_row` 从固定 grid 改 `flex-wrap:wrap`，输入框 `flex:1 1 160px` 可压缩；③ 把「探索/上下文」移到搜索行（与「搜索」同组，共用 query），「诊断包」从「撤销索引」之后移到只读组末尾（只读动作不该紧邻破坏性动作）；④ 新增**布局守卫用例**（读源码断言这两处必须 `flex-wrap:wrap`、输入框必须可伸缩、探索/上下文必须与搜索同区），并做变异验证：还原成 nowrap / 固定 grid 时用例立刻红 |
-| CG43 | P3 | **自动重建用例的固定 sleep 导致全仓偶发失败**：三条用例用 `await wait(300/400/500)` 等异步链（status → 判定 → index），而它跑在**真实子进程**上——单跑一个文件够，全仓并行（47 文件抢 CPU）时不够。实测表现为「索引新鲜」那条偶发断言到 `status 调用数 === 0`，且**只在全仓跑时出现、单跑必绿**（最容易被人当成「环境抖动」放过） | 加 `waitFor(check, timeout)` 条件轮询替代固定 sleep：正向断言一律等「事情真的发生过」；反向断言（默认关 / 未索引不该调用）没有条件可轮询，则给足时间并写明这是反向断言。连续 8 轮全仓全绿 |
-| CG42 | P3 | **文档里的宿主版本基线自相矛盾**：README 称「已在 `0.1.5-rc.2` 上实测全链路」，DEFECTS 记的审计基线却是 `0.1.0-rc.7`，而本机实际在跑的是 **`0.1.6-alpha.2`**（`dsh.engines.dsh` 声明的下限 `>=0.1.2-rc.1` 又是第四个数）。三个版本号并存，谁也没说清「哪一档是验证过的」；且 `0.1.5-rc.2` 那句「实测」没有任何可复跑的脚本，而单测的 fake req/res 覆盖不到浏览器半体的供给面 | README 兼容性一节改为**版本矩阵**：每一档注明**验证方式**，`0.1.6-alpha.2` 挂 `scripts/verify-codegraph-host-contract.mjs`（真宿主 25/25），`0.1.5-rc.2` 如实标注「当时无脚本、覆盖不到供给面」，`0.1.0-rc.7` 说明它是审计当时的包版本、与本机安装的不是同一个；`0.1.2-rc.1` 明确为**声明下限 ≠ 已实测下限**。新增的真机脚本同时补上了长期缺失的「宿主契约」端到端（此前只有 indexForce 那一条） |
-| CG41 | P3 | **自动重建与 CLI 探测的竞态**：门禁写成 `cliProbeState.available !== true` 时，探测（挂载后异步跑，实测 200–300ms）尚未落地的窗口里，会话的第一条 `user/message` 会被静默跳过——表现为「自动重建时好时坏」。这是写用例时才暴露的：同一份代码三次断言里有一次不查 status | 判据改为只在**已确认不可用**（`=== false`）时跳过；代价是 CLI 真缺失时每项目多起一次注定失败的子进程，可接受。用例「每项目每次运行最多一次」与「索引新鲜」正是钉这个竞态的 |
-| CG40 | P3 | **采纳率分类器错收**：第一版只匹配「read / search」词根，于是 `read_image`（真实历史 248 次）、`read_pdf`、`web_search`（19 次）被算成「代码探索」——读截图、搜网页跟 codegraph 毫无关系，单这一个错误把分母灌了 11%（2344 → 2077 次），采纳率 2.2% 被压到 2.0%；反向问题是宽口径把 `read` 全算进分母，而 `read` 真实占 1956 次（grep 只有 100 次），导致「2.2%」这种会误导人的数字 | 加 `NON_EXPLORATORY_PATTERNS`（媒体 / 网络 / 文档类先判 other，先于文件探索匹配）；新增窄口径 `discovery`（grep/glob/search/find/list，排除 read），`/metrics` 与卡片同时报两个口径并标注主口径。实测数据与结论见 [ADOPTION-AUDIT.md](./ADOPTION-AUDIT.md) |
-| CG39 | P3 | **「init 只走 `init -- <path>`」偶发失败（两个独立成因，第二个才是主因）**：① 共享夹具 `emptyDir` 被 stub 写过 `.codegraph/`，复用即 409；② **断言本身写错**——`expect(argvToString).not.toContain('-y')` 会在整串输出上做子串匹配，而 `mkdtempSync` 的后缀是随机的，实测路径 `…/dsh-cg-route-yoKvfJ/…` 里就带 `-y`，于是「十次里红一次」且每次红在不同机器/运行上，看起来像产品 bug（全仓并行运行时更易命中） | ① 该用例与 409 用例各自 `mkdtempSync` 现造目录，删掉共享夹具；② 改为**解析 argv 后逐项比对**：`argv.filter(a => a.startsWith('-') && a !== '--')` 必须为空 + 完整 argv 相等（`--` 是位置参数终止符不是选项）。两个成因都已验证：前者同进程连续两次 init → 200 后 409；后者用含 `-y` 的路径直接复现旧断言判红、新断言通过 |
+## 2. 台账纪律与长期结论
+
+> 这几条不是缺陷，是**为什么这份台账长成这样**，以及不随版本失效的结论。改台账格式前先读。
 
 > **CG32–CG34 的关闭理由**：缺陷台账的价值在于「每条都能落到代码」，而三条没有定义的条目永远落不下来——挂着它们会让「待修 N」这个数字长期失真。关闭不等于「已修」，是**承认无法修复**，并用一条覆盖同类风险的用例顶上。
->
+
 > **0.4.2 之后的增补**：前瞻项记在 `ROADMAP.md`，已落地三项（systemPrompt 注入加索引门禁、
 > `GET /diagnose` 诊断包、采纳率仪表），详见其「已完成」一节。**只有已确认的缺陷进本文编号**
 > （本轮新增 CG39–CG45），新发现的缺陷继续按编号往后续。
-| CG15 追记 | P3 | 修复波把「4xx 一律视为明确拒绝、不再重试」定得过宽：宿主启动期路由未挂上时 `/follow` 得 404 → 永久放弃 | 404 与 5xx 同为瞬态，一并退避重试；其余 4xx（400 目录不存在等）保持记值不重试 |
 
 另有一条评审自报后自否的假阳性，留档防重查：「README 引用了不存在的
 `scripts/verify-codegraph-indexforce.mjs`」——该文件在**仓库根**且被 git 跟踪，
 README 开发节整块是仓库根相对路径，引用成立。
 
-## 第三轮（独立评审 + 实证复核）：CG50–CG62
-
-> 2026-09-23，对 0.5.0 工作树做了一次独立评审（宿主半体 / 浏览器半体 / scope / 构建脚本
-> 逐行读 + 全量测试复跑），产出 **CG50–CG61 共 12 条**；随后在**真机复核**（把插件装进 test profile、
-> 对着真宿主跑）时又暴露 **CG62** 一条——纯读代码看不出来，是「点一下才发作」的那类。与上一轮不同的是：**每一条都先被
-> 实测复现**（起真插件、假 CLI、假 req/res；不是只读代码下的结论），修完再做**变异验证**
-> ——把 bug 放回去，确认新用例立刻红（8 条关键修复全部被抓住）。
->
-> 复核方法留档（可复跑）：`agent/created` 那条要挂**真插件**才能暴露（纯函数全是对的，
-> 错在接线），所以新增的 `test/agent-created-mode.test.ts` 用假 ctx + 真 `apply()`，
-> 三个分叉场景 + 一个对照组；卡片侧 `qs()` 在 factory 闭包里测不到，故抽成
-> `pure.js` 的 `buildQuery` 后进 vitest。
-
-| CG | 严重度 | 症状（一句话） | 修复（本轮） |
-|---|---|---|---|
-| CG50 | P1 | `agent/created` 按**用户想要的**模式挂载（`current.mcpScope`）而不是**生效的裁决**（`scopeDecision.mode`）：`mcpIntegration:false`（裁决「两种模式都不挂」）与「区块外手工行」（裁决「已退回 managed」）下都照挂 per-agent——实测日志同时出现「已退回」与「per-agent MCP 已挂载」 | 改用 `runtimeRef?.scopeDecision?.mode ?? DEFAULT_MCP_SCOPE`；新增 `test/agent-created-mode.test.ts`（真插件 + 真事件派发，三个分叉场景 + 对照组），变异验证：还原成 wanted 即 3 条红 |
-| CG51 | P2 | 卡片 `qs()` 对数组做 `String(value)`：`affected` 的多文件被折成 `files=a.ts,b.ts` **一个值**，而宿主按 `getAll('files')` 收 → CLI 收到一个名叫 `a.ts,b.ts` 的不存在文件，多文件「影响面」静默空结果（单文件才碰巧对） | 抽 `buildQuery` 进 `client-src/pure.js`（数组逐个 `append`），`qs` 改为它的别名；`client-pure.test.ts` 补 3 条（含「不得出现 `%2C`」的反向断言） |
-| CG52 | P3 | uninit 只把运行登记在**索引根**下，而卡片「取消」发的是输入框里的路径（monorepo 子目录）→ `cancelled=0`，界面却照样说「已发送取消请求」 | 两个键都登记（请求路径 + 索引根），`/cancel` 按 controller 去重（`cancelled` 报的是「取消了几个运行」）；补 2 条用例 |
-| CG53 | P3 | `/cancel` 用裸 `readBody`，把「body 没读出来」当成「没指定 path」→ 一个被截断的 `{path:"x"}` **升级**成「取消全部」，把别的项目正在跑的索引一起杀掉（CG01 立的规矩在这里漏了一条） | 改走 `readPostBody`（畸形 / 空 / 超限一律 400），`{}` 仍 = 取消全部；补 2 条用例（400 且运行未停 / `{}` 仍取消全部） |
-| CG54 | P3 | 注释与 README 都写「探测没落地时补一次探测」，实现只读缓存 → 慢 CLI 下诊断包报 `CLI 探测：尚未探测`（正是那句注释要避免的状态），实测 A/B 两态对照确认 | 路由里真的补：`available === undefined` 时 `await cliProbe.reprobe()`（幂等，最多一个子进程）；补用例（慢 stub 下报告必须是确定结论） |
-| CG55 | P3 | `describeAdoption` 注释称「卡片与诊断包共用」，实际卡片用 `client-src/pure.js` 的 `adoptionText`——两份实现、各自测试、无一致性闸，措辞已分叉（同一输入两个文案） | 注释改为如实描述两处实现；`adoption.test.ts` 补一条**跨半体**用例钉住百分比口径一致（措辞允许不同） |
-| CG56 | P3 | 登记表注释承诺「永不淘汰当前默认项目 / 会话项目」，而 `note(path, via)` 拿不到这两个值——结构上无法实现；该性质实际由 `/projects` 每次 list 前重新 note 维持 | 注释改为如实描述：容量 50 + 淘汰最久未见；「当前项目始终在列表里」标注为**调用方契约**，改 `/projects` 时别删那次重新 note |
-| CG57 | P3 | 挂载器注释称重复 attach 会看到「已在处理」，实现只判 `mounted === true`（在途记录是 `false`）→ 窗口内重复派发再开一份：第二个实例被 dsh-mcp-client 拒（白跑一次 spawn+握手），其 fiber 覆盖第一个的引用 | 加 `pending` 在途标记 + **世代号**：重复 attach 复用同一记录；detach / detachAll / 换 cwd 都让迟到的续体作废；补 3 条用例（含「在途 detach 后一个进程都不许起」） |
-| CG58 | P3 | `timeoutOr` 只判 `>= 0`：`cliTimeoutMs: 0.5` 被原样收下 → `setTimeout` 当 1ms → 每次调用立刻超时，报错只说「请调大 cliTimeoutMs」，用户看着自己写的 0.5 完全不明白 | 改判 `Number.isInteger`（0 仍 = 不限时）；`cli-config.test.ts` 补小数三档 |
-| CG59 | P3 | `shortPath` 只按 `/` 切：Windows 路径整串算**一段** → `parts.length <= 2` 直接原样返回，这一列从不缩短（60+ 字符把胶囊撑满，正是它要解决的问题） | 按 `[\\/]` 切、显示统一用 `/`；补 Windows / UNC / 混合分隔符用例 |
-| CG60 | P3 | `runViaSpawn` 的 maxBuffer 判定把字符串**字符**数与 Buffer **字节**数相加 → 上限最多偏松 4 倍（中文/emoji 场景），护栏本身带误差 | 单独记 `stdoutBytes` / `stderrBytes` 按字节判定；纯护栏修正，无行为变化 |
-| CG61 | P3 | `renderOutputBody` 对 explore/context 输出**静默** `slice(0, 4000)`，与本包自己的 CG17 纪律（截断要报计数）不一致——explore 的 markdown 末尾正是调用链 | 超限时补一行计数说明（复用 `truncationNote`）；`raw` 本来就在响应里，文案里也点明 |
-| CG62 | P1 | `/default-path`（项目胶囊 / 「设为默认项目」）把**部分对象** `{ defaultPath, followSession }` 喂给 `sync()`，而 `resolveStored` 对「对象里没有的键」回落插件配置默认值 → `mcpScope` / `mcpIntegration` / `announceToAgent` / `usageGuidance` 四个键**在内存里被静默重置**。settings.yaml 没丢（写的是合并）→ **重启又「好了」**，表现为「时好时坏」、卡片显示与文件里的用户选择长期不一致。实测：勾上 per-agent 后点一次项目胶囊，当场退回 managed、全局托管行被写回、per-agent 挂载被回收；关掉「公告能力」后同样被打回 true | 改成把**完整的** stored 传进 sync（`{ ...(rt.scope?.get() ?? {}), defaultPath, followSession: false }`）；补用例逐键断言（mcpScope / mcpIntegration / announceToAgent / usageGuidance），变异验证：还原成部分对象即红（实测报 `mcpScope 不该被 /default-path 重置: expected 'managed' to be 'per-agent'`） |
-| CG63 | P1 | **DSH 0.1.7-rc.1 起 `ctx.settings.register(ns, schema)` / `settings.get(ns)` 已删除**（服务换成 `SettingsForms`：`describe/update/mutate/replace/configure`，设置存储改为「当前 profile 的插件 entry 配置」+ 导出带 `.volatile()` 的运行时 `Config`）。本包仍调旧 API：settings effect 抛错后静默走 config 兜底（`scope === undefined`），于是卡片开关 / 「设为默认项目」/ `per-agent` 切换全部回 500 `插件尚未完成挂载`。**单测与 tsc 都发现不了**——旧代码用 `as unknown as` 擦掉了服务类型。真机实测（rc.1 隔离装置）：`POST /api/dsh-codegraph/settings` 对合法 patch 回 500，`/default-path` 报 `effectiveMcpScope=managed` 且不落盘 | ① `@hyzyn/dsh-kit` 新增 settings 适配层：`settingsEntryScope`（读 `describe()` / 写 `update(entryId, patch)` / 订阅 `loader/volatile-update`）+ `plainConfig()`（还原 volatile 冻结引用）+ `readSettingsEntry` + `suppressAutoSettingsPage`；② 本包导出运行时 `Config` schema（卡片可改的 6 个字段标 `.volatile()`），settings effect 改用它，`apply()` 里先 `plainConfig()` 还原；③ 两处写入口改走适配层；④ 兼容性声明从 `dsh.engines.dsh` 换成 `peerDependencies["@deepseek-ai/dsh"] = ^0.1.7-rc.1`（rc.1 的安装前/启动时判定只认 peer；`engines.dsh` 已无读取方）。验收：真机宿主契约 **42/42**（含新增的两项 settings 写路径基线），`POST /settings` 在 per-agent / managed 间往返都是 200 |
-
-本轮门槛（全绿，实测）：`npx tsc --noEmit -p packages/codegraph/tsconfig.json` 干净；
-`node scripts/client-lint.mjs` 通过（仅 1 条已知 TS2339 噪音）；
-`npx vitest run packages/codegraph` = **317 tests / 14 files**（本轮新增 17 条 / 1 文件）；
-`node packages/codegraph/scripts/build-client.mjs` 重建后 `client.js` 与仓库产物**逐字节一致**。
-
-## 批次
-
-原计划三批次（0.4.2 静默错误类 / 0.4.3 写入纪律 / 0.4.4 超时取消与工程闸门）在同一天
-全部修完，**并入 0.4.2 一次发布**。kit 0.4.1 随发（CG05 / CG13 的 kit 侧改动）；
-7 个消费包的精确 pin 同步 bump（流程：bump → `pnpm aggregate` → `pnpm install
---lockfile-only`，见 RELEASING.md）。
-
-## 待办 / 路线图（未做部分，仍是规划不是缺陷）
-
-> 新发现的缺陷接着 `CG30` 往后编号记在本文，不要只留在对话里。
->
-> **分档（P0–P3）、代价、架构项与开工顺序见 [ROADMAP.md](./ROADMAP.md)**——本节保留
-> 缺陷审计时点列出的原始待办（CLI 面 / 查询参数 / 多项目列表 / 遥测 / daemon / i18n / E2E），
-> 两者不重复：`ROADMAP.md` 只做分档与补充架构项。
-
-- **CLI 还有一多半没进 GUI**（实测 `codegraph --help`）：`explore`（旗舰，且 usage guidance
-  正是让模型用它）、`context`、`files`、`affected`、`uninit`、`unlock`、`daemon`。
-  README 把 `codegraph uninit` 写成「初始化按钮的撤销路径」，GUI 里却做不到 —— 要么补按钮，
-  要么改 README。`unlock` 尤其值得做：实测项目里确实有 `codegraph.lock` 与常驻 daemon
-  （`.codegraph/daemon.pid` + `daemon.sock` + `daemon.log`，`~/.codegraph/daemons/` 两个实例），
-  一次被强杀的 index 留下的坏锁会挡住后续索引，而卡片没有任何入口。
-- **查询参数面板**：`query -k/--kind`、`callers|callees -l/--limit`（CLI 默认 20）、
-  `node --offset/--limit/--symbols-only`、`impact --depth`（卡片固定 2）都是透传就能用的旋钮。
-- **多项目**：一台 codegraph MCP 服务器同一时刻只挂一个项目是既成事实，卡片却没有
-  「已索引项目列表 + 一键切换」；`files`/`status` 配合 `.codegraph` 扫描能做出这个列表。
-- **遥测**：`init`/`index` 会触发 CLI 自己的匿名用量统计，README 提了 `codegraph telemetry off`，
-  卡片既不提示也不给开关。（上游 CLI 的 1.6.0 输出里也带这句提示。）
-- **daemon 可见性**：`daemon.pid`/`daemon.log` 是排障第一现场，卡片可以显示「有没有常驻 daemon、
-  日志尾 N 行」，把「MCP 拿不到结果」这类问题从猜变成看。
-- **卡片 i18n**：全中文（含 `label: () => "Codegraph"` 旁边的所有文案），而包同时维护英文 README。
-- **端到端脚本**：`packages/codegraph` 仍没有 tty 那类 `integration.mjs` / `*-smoke.mjs`
-  （路由的 HTTP 层行为——并发、断连、body 超限——只有 vitest 里的 fake req/res）。
-  `verify-codegraph-indexforce.mjs` 是唯一真机端到端，需要本机装 DSH，跑不了 CI。
-
-## 复核方式
+## 3. 复核方式
 
 单测与静态检查（修复后全绿）：
 
@@ -229,130 +193,18 @@ d=$(mktemp -d); codegraph sync -- "$d"; echo $?                 # exit 1 + “Co
   `syncMcpRowOnDisk` 的兜底有日志与 note 路径；`DSH_HOME` 指向不存在目录的真机宿主
   实测仍待补。
 
-## 验收记录（2026-09-19，对 0.4.2 工作树的独立复跑）
+## 4. 冻结记录：被移出正文的内容在哪
 
-结论：**29 条全部落地、7 道门槛全绿、CLI 实测 8/8 复现**，未发现虚报或已回归的条目。
-下表是独立复跑的结果，不是上文的自述转抄：
+> 「信息只搬家、不丢失」的检索入口。以下内容全部**仍在原提交里**，
+> 用 `git show <sha>:packages/codegraph/DEFECTS.md` 取回该时点的全文。
 
-| 门槛 | 独立实测 |
+| 被移出的内容 | 在哪 |
 |---|---|
-| `npx tsc --noEmit -p packages/codegraph/tsconfig.json` | exit 0，零诊断 |
-| `npx vitest run packages/codegraph` | 93 passed / 4 files |
-| `npx vitest run`（全仓） | 587 passed / 38 files |
-| `pnpm -r build` 后产物比对 | 103 个 `client.js` / `lib` 产物构建前后**逐字节一致**（CG28 的「产物 = 源码」闸成立） |
-| `node scripts/client-lint.mjs` | exit 0，仅 1 条已知 TS2339 噪音 |
-| `pnpm aggregate` | 幂等，`package.json` 无变化 |
-| `pnpm install --lockfile-only --frozen-lockfile` | exit 0，7 个消费包 pin `0.4.1` → `link:../kit` |
+| **附录：审计原文**（CG01 / CG02 / CG03+CG04+CG06 / CG09+CG10 / CG11 五段逐条证据与实测输出，描述的是 0.4.1 状态） | `git show e21dbc70:packages/codegraph/DEFECTS.md` |
+| **验收记录**（2026-09-19 对 0.4.2 工作树的独立复跑：7 道门槛表 + 8 条真机 CLI 探针 + 路由面复核 + 「验收时点仍未闭环的项」） | 同上 |
+| **补记：验收后补齐浏览器半体的纯逻辑测试**（`client-src/pure.js` 抽取、内联锚点为什么必须放 factory 内、15 条用例） | 同上 |
+| **批次**（原计划 0.4.2 / 0.4.3 / 0.4.4 三批次并入一次发布 + kit 0.4.1 随发流程） | 同上 |
+| **合并前的三张表与原章节标题**（`## 索引` / `## 第二轮（评审波）：CG30–CG38` / `## 第三轮（独立评审 + 实证复核）：CG50–CG62`） | 同上 |
 
-真机 CLI（`codegraph 1.6.0`）8 条探针全部复现上面的「复核方式」：`--version`=1.6.0；
-`~/.codegraph` 无 `.db`；`status` 的 `projectPath` 指回仓库根；`callers -- -abc` exit 0 正常 JSON；
-`query --limit -1` exit 0 + `[]`；`node --json` exit 1 + `unknown option '--json'`；
-`impact --depth 99999` 自夹到 `depth: 10`；`sync -- <空目录>` exit 1 + `CodeGraph not initialized`。
-
-路由面复核：14 条路由全部过回环门禁（13 处 `guard()`；`/default-path` 因同时接受 GET/POST，
-内联 `isLoopbackRequest`），与「没有远程可达面」一致。
-
-**验收时点仍未闭环的项**（与上文「审计里当时没实测」同源，非新增缺陷，列出以便下次接手）：
-
-- **浏览器半体自动化测试从零到部分覆盖**（验收时点为零，见下面的补记）：CG08 / CG16 这类
-  只在渲染期暴露的 bug 仍无覆盖，CG11 / CG15 / CG17 已补上。
-- CG04 的 CAS 是竞态，静态阅读不能证明；CG14 / CG21 / CG22 同样无测试钉住，仅源码核验。
-- CG05「CLI 忽略 SIGTERM」、CG13「`DSH_HOME` 指向不存在目录的真机宿主」、
-  CG08「0.1.6 两插槽同屏渲染两张卡片」三项真机实测仍待补。
-- CG29 版本矩阵里 `1.5.0`（macOS）一档本机不可复现（只有 1.6.0）。
-- **0.4.2 仅存在于工作树**：HEAD 仍是审计基线，「随 0.4.2 发布」目前是待办；
-  且工作树里 codegraph 的改动与其他包的改动混在一起，尚未按「批次」一节的边界切分提交。
-
-### 补记：验收后补齐浏览器半体的纯逻辑测试（同日）
-
-上面点名的「浏览器半体零自动化测试」是验收时最大的空洞，随后按「抽纯函数 + 构建期内联」
-补掉了一半——不引入任何 devDependency，产物仍是单文件：
-
-- 新增 `client-src/pure.js`：把三段**无 DOM / React 依赖**的判定搬出组件闭包——
-  `staleReasons`（CG11）、`nextRetryDelayMs`（CG15）、`truncationNote` + `REL_LIMIT`（CG17）。
-  它们在闭包里时只能靠真渲染到那条分支才发现写错。
-- `scripts/build-client.mjs` 从「原样拷贝」变成两步替换：删掉 index.js 顶部对 `./pure.js`
-  的 import 行，剥掉 pure.js 的 `export` 前缀后内联到 factory 里的
-  `__CODEGRAPH_PURE_INLINE__` 锚点。**内联点必须在 factory 内**：放文件顶层的话，页面重载 /
-  HMR 再次执行同一份 client.js 会「Identifier has already been declared」。
-  脚本带两道自检（找不到 import / 找不到锚点 / 产物残留 import 都直接 exit 1）。
-- 新增 `test/client-pure.test.ts`，15 个用例覆盖上述三条判定（含嵌套 `index.*` 字段、
-  字符串 `"true"` 不误报、退避阶梯到顶后稳定、恰好等于上限不提示等边界）。
-
-实测（本轮）：
-
-| 项 | 结果 |
-|---|---|
-| `npx vitest run packages/codegraph` | **108 passed / 5 files**（验收时点 93 / 4） |
-| `npx tsc --noEmit -p packages/codegraph/tsconfig.json` | exit 0 |
-| `node scripts/client-lint.mjs` | exit 0；**反向验证**：往 pure.js 塞一个未定义名字 → exit 1 且点名该行，证明新抽出的文件真在这道防线内 |
-| `pnpm -r build` 后产物比对 | 逐字节一致（CG28 闸仍成立） |
-| 产物可执行性 | 在 `node:vm` 沙箱里跑构建产物：`load()` 正常注册、`factory` **连续执行两次不报重声明**、exports 仍是 `{inject, apply}` |
-
-仍未覆盖：`client-src/index.js` 里依赖 React / DOM 的部分（CG08 样式引用计数、CG16 清详情、
-CG17 的渲染分支）——要覆盖它们得引入 react + jsdom 或 happy-dom，本次刻意没加。
-
-> 注：本轮验收期间**另一个工作流正在同一工作树里改 docker 包**（D73/D74：19:20–19:32 间改了
-> `packages/docker/*` 与 `scripts/client-lint.mjs`）。上面全仓 587/38 的数字是 19:19 时点的
-> 快照；此后全仓变成 616/40，差额里含对方新增的 `docker/test/ssh-connect.test.ts`。本包自己的
-> 数字（108/5）不受影响。`scripts/client-lint.mjs` 的「兄弟模块锚点」能力也是对方在 19:22
-> 加的——本方案的静态检查正好依赖它。
-
-## 附录：审计原文（时点快照，描述的是 0.4.1 的状态，已被上文修复）
-
-### CG02 —— 索引判定的口径分叉，本仓库就能复现
-
-`indexState()` 的注释把「为什么不能只看 `.codegraph/` 存在」讲得很透（家目录的
-`~/.codegraph` 是 CLI 安装目录），这一条**实测成立**：`ls ~/.codegraph` 里只有
-`bundles/`、`codegraph.lock`、`current -> versions/v1.6.0`、`daemon.*`、`daemons/`，
-一个 `.db` 都没有 —— 插件把它判成 `not-a-project` 是对的。
-
-但它漏了另一半：CLI 自己**向上**解析项目。`codegraph status --json -- packages/codegraph`
-返回的 `projectPath` 是仓库根、`initialized:true`。于是同一个目录在两个口径下结论相反：
-
-- 会话 cwd 是 `packages/*`（monorepo 的日常）→ `effectiveProjectPath` 判它「非有效索引」→
-  托管行回落到默认项目，卡片附一句「会话目录没有可用的 .codegraph/ 索引」，而 CLI 用得好坏。
-  **`followSession` 在这类仓库里等于永久失效**，且失效得像是「目录没索引」。
-- `POST /default-path` 对同一目录回 400 并让用户「先在根目录 codegraph init」——
-  那个索引已经存在（就是父目录那份），照做只会在子目录里再建一份嵌套索引。
-- 卡片自己会前后矛盾：状态面板走 CLI 口径显示「● 已索引」，`defaultWarning` 走
-  `indexState` 口径说「不是有效索引」，两者同屏出现。
-
-### CG01 —— kit 的 `readJsonBody` 不抛错，所以「解析失败」长得像「没传 path」
-
-6 个 POST 路由都写 `(typeof body?.path === 'string' && body.path.trim()) || currentDefaultPath()`。
-kit 侧的契约（有测试）是：超过 `MAX_JSON_BODY_BYTES`、JSON 畸形、空 body、body 是数组/标量
-—— **全部返回 `undefined`，不抛错**。于是围栏只到「必须是布尔」那一条（`/settings`），
-写操作路由把「请求体没读出来」当成「用户没指定路径」，转而在默认项目上执行。
-
-`/follow` 是唯一做对的（`body === undefined → 400`），这本身就说明其余几处是漏而不是设计。
-注意超限那条还有个次要后果：kit 超限直接返回、不排空流（http.ts:93-94 自己写了），
-客户端拿到的是连接被断而不是 4xx。
-
-### CG03 / CG04 / CG06 —— 同一个文件的三个写者，只有 codegraph 不做保护
-
-`~/.dsh/cordis.patch.yml` 上同时有 dsh-mcp（`spliceManagedBlock` + mtime+size 弱 CAS，≤3 次重试后
-**仍然强写**）和 codegraph（裸 read→splice→rename）。codegraph 的写触发点比想象密：挂载、
-`settings/updated`、卡片每次 `/follow`（切会话）、`/init` 成功后、`/settings`、`/default-path`。
-一次「打开设置页 + 切会话 + MCP 卡片点保存」就是三次读改写，其中任意两次交叠就丢行。
-
-而 CG03 是比丢行更安静的一类：`parseBlockRows` 只认 `- insert: [...]`，
-`renderBlockBody` 用 `yaml.dump` 整块重写 —— 区块里一条 loader 合法的 override 行
-（`- id: x` + `config:`）或任何注释，都会在一次「只是改了下 cwd」的同步里消失。
-它改的还是**别人的**区块（复用 dsh-mcp 行时）。
-
-### CG09 / CG10 —— 实测出来的「静默空结果」比报错更糟
-
-`codegraph query --json --path . --limit 2 -h` 的实测结果是 **exit 0 + 一段 help 文本**。
-路由 `runJson` 解析不出 JSON，回落 `{raw: output}`，客户端 `Array.isArray(data.results)` 为假 →
-渲染成「没有结果」。用户看到的是「这个仓库里没有匹配的符号」，真相是「你把我当命令行玩了」。
-同样 exit 0 + `[]` 的还有 `--limit -1` 和 `--limit 99999999999`。
-反过来 `--depth 99999` 是安全的：CLI 自己夹到 10（实测），所以 depth 不构成 DoS。
-
-### CG11 —— 卡片缺的不是字段，是「索引可信吗」这个判断
-
-实测本仓库的 `status --json` 里躺着四个可用性字段，`statusCells` 一个都没用：
-`index.reindexRecommended:true`、`index.builtWithVersion:"1.1.1"`（对 CLI `version:"1.6.0"`）、
-`builtWithExtractionVersion:24 < currentExtractionVersion:25`、`worktreeMismatch`。
-CLI 明说「建议重建」，卡片说「● 已索引」，MCP 工具继续给基于旧提取器的图 ——
-这是最容易被当成「codegraph 结果不准」的那类状态，而它本可以在卡片上一句话讲清。
+> 本包**从未**有过 docker 那种「逐条 postmortem 详情节」（症状 / 现场复现 / 根因 / 修法 / 回归 /
+> 反向验证六段式）——它的索引行本身就是结论，所以 §4 比其他包短。

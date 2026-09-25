@@ -93,8 +93,10 @@ describe('DEFECTS.md：现状行必须与表格现算一致', () => {
       const m = /^\| CG(\d+)\s*(?:追记)?\s*\|/.exec(line)
       if (m === null) continue
       const cells = line.split('|').map((c) => c.trim())
-      // cells: ['', 'CGxx', 级别, 现象, 修复, '']
-      const fix = cells[4] ?? ''
+      // 列结构见 DEFECTS.md §1：['', 'CGxx', 症状, 修复/设计意图, '']。
+      // 取「最后一个非空单元格」而不是写死下标——2026-09-25 去掉「严重度」列时，
+      // 写死的 cells[4] 让这条守卫把所有行都误报成空壳（列变了，性质没变）。
+      const fix = [...cells].reverse().find((c) => c.length > 0) ?? ''
       // 已关闭的三条以「**关闭**」开头，同样算有说明
       if (fix.length < 10) empties.push(`CG${m[1]}`)
     }
