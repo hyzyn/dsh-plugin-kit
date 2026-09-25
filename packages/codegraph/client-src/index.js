@@ -147,6 +147,22 @@ window.__ModuleLoader__.load({
       'list.outputTruncated': '输出较长：只显示了前 {shown} 字符（共 {total} 字符）',
       'list.loadingSymbol': '正在加载符号详情…',
       'list.separator': '；',
+      'list.truncatedShown': '已显示前 {shown} 条，共 {total} 条',
+      'status.reasonReindex': 'CLI 建议重建索引（reindexRecommended）',
+      'status.reasonBuiltWith': '索引由 CLI {built} 构建，当前 CLI 是 {current}',
+      'status.reasonExtraction': '索引的提取器版本 {built} 已落后于当前的 {current}',
+      'status.reasonWorktree': '索引与当前 worktree 不匹配',
+      'meta.adoptionNoRecords': '采纳率：本次宿主运行期间该项目还没有工具调用记录',
+      'meta.adoptionNoDiscoveryCalls': '采纳率：还没有探索类调用（另 {other} 次其它工具，如 bash / edit）',
+      'meta.adoptionNoDiscovery': '采纳率：还没有发现类调用（codegraph {codegraph} 次 / 读取 {file} 次；另 {other} 次其它工具）',
+      'meta.adoptionUnindexed': '（该项目未索引，这个数字不代表提示词效果）',
+      'meta.adoptionMain': '采纳率：codegraph {codegraph} 次 / 发现类 {discovery} 次 → {narrow}%',
+      'meta.adoptionBroad': '（宽口径含读取 {broad}%）',
+      'meta.adoptionOther': '（另 {other} 次其它工具）',
+      'meta.seenJustNow': '刚刚',
+      'meta.seenMinutes': '{count} 分钟前',
+      'meta.seenHours': '{count} 小时前',
+      'meta.seenDays': '{count} 天前',
       'badge.notIndexed': ' · 未索引',
       'status.mcpUnknown': 'MCP：状态未知',
       'status.mcpOwn': 'MCP：已托管（本插件维护工作目录）· cwd {cwd}{disabled}{deadCwd}{following}{note}',
@@ -337,6 +353,22 @@ window.__ModuleLoader__.load({
       'list.outputTruncated': 'Long output: showing only the first {shown} characters (of {total})',
       'list.loadingSymbol': 'Loading symbol details…',
       'list.separator': '; ',
+      'list.truncatedShown': 'Showing the first {shown} of {total}',
+      'status.reasonReindex': 'CLI recommends rebuilding the index (reindexRecommended)',
+      'status.reasonBuiltWith': 'The index was built by CLI {built}, while the current CLI is {current}',
+      'status.reasonExtraction': 'The index extractor version {built} is behind the current {current}',
+      'status.reasonWorktree': 'The index does not match the current worktree',
+      'meta.adoptionNoRecords': 'Adoption: no tool calls recorded for this project during this host run',
+      'meta.adoptionNoDiscoveryCalls': 'Adoption: no exploration calls yet ({other} other tool calls, e.g. bash / edit)',
+      'meta.adoptionNoDiscovery': 'Adoption: no discovery calls yet (codegraph {codegraph} / reads {file}; {other} other tool calls)',
+      'meta.adoptionUnindexed': ' (this project is not indexed, so the number does not reflect prompt effectiveness)',
+      'meta.adoptionMain': 'Adoption: codegraph {codegraph} / discovery {discovery} → {narrow}%',
+      'meta.adoptionBroad': ' (broad, reads included: {broad}%)',
+      'meta.adoptionOther': ' ({other} other tool calls)',
+      'meta.seenJustNow': 'just now',
+      'meta.seenMinutes': '{count} minutes ago',
+      'meta.seenHours': '{count} hours ago',
+      'meta.seenDays': '{count} days ago',
       'badge.notIndexed': ' · not indexed',
       'status.mcpUnknown': 'MCP: status unknown',
       'status.mcpOwn': 'MCP: managed (this plugin maintains the working directory) · cwd {cwd}{disabled}{deadCwd}{following}{note}',
@@ -733,7 +765,7 @@ window.__ModuleLoader__.load({
 
     /** 关系列表（callers / callees / affected 共用）；超过 REL_LIMIT 条给出截断计数（CG17）。 */
     const relList = (title, items, emptyText) => {
-      const truncated = truncationNote(items.length, REL_LIMIT)
+      const truncated = truncationNote(items.length, REL_LIMIT, t)
       return jsxs('div', {
         children: [
           jsx('p', { className: 'cg_sectionTitle', children: title }),
@@ -1695,7 +1727,7 @@ window.__ModuleLoader__.load({
                           className: 'cg_projectBtn',
                           disabled: settingDefault || !item.indexed || item.path === effectivePath,
                           title: item.indexed
-                            ? t('status.projectSeen', { path: item.path, ago: seenAgoText(item.seenAgoMs), via: item.via })
+                            ? t('status.projectSeen', { path: item.path, ago: seenAgoText(item.seenAgoMs, t), via: item.via })
                             : t('status.projectNotIndexed', { path: item.path, via: item.via }),
                           onClick: () => switchProject(item.path),
                           children: shortPath(item.path) + (item.indexed ? '' : t('badge.notIndexed')),
@@ -1737,10 +1769,10 @@ window.__ModuleLoader__.load({
                         // 实测补一句「Sync 修不了它」：codegraph 1.6.0 的 `sync` 对「提取器版本
                         // 落后」这类过期返回 Already up to date 且不清除信号，只有「重建索引」能修。
                         // 以前文案只说「点重建索引可修复」，用户很可能先点 Sync 然后发现没用。
-                        staleReasons(status).length > 0
+                        staleReasons(status, t).length > 0
                           ? jsx('p', {
                             className: 'cg_warn',
-                            children: t('status.staleWarning', { reasons: staleReasons(status).join(t('list.separator')) }),
+                            children: t('status.staleWarning', { reasons: staleReasons(status, t).join(t('list.separator')) }),
                           })
                           : null,
                         status.initialized === false
@@ -2272,11 +2304,11 @@ window.__ModuleLoader__.load({
                     : null,
                   // P1 采纳率：模型到底用不用 codegraph。放在开关下面——它是「配置对不对」
                   // 之后的第二个问题（「配好了，模型买账吗」）。
-                  adoptionText(adoption) !== ''
+                  adoptionText(adoption, t) !== ''
                     ? jsx('p', {
                       className: 'cg_subtitle',
                       title: t('panel.adoptionTitle'),
-                      children: adoptionText(adoption),
+                      children: adoptionText(adoption, t),
                     })
                     : null,
                 ]),
@@ -2328,7 +2360,7 @@ window.__ModuleLoader__.load({
           lastSent = cwd
           retryDelayMs = 0
         } catch (error) {
-          console.warn('[dsh-codegraph] 上报活动会话目录失败，将重试：' + (error instanceof Error ? error.message : String(error)))
+          console.warn('[dsh-codegraph] failed to report the active session directory; will retry: ' + (error instanceof Error ? error.message : String(error)))
           if (disposed) return
           retryDelayMs = nextRetryDelayMs(retryDelayMs)
           if (retryTimer !== null) clearTimeout(retryTimer)

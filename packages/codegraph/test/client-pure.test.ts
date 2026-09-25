@@ -27,6 +27,18 @@ import {
  * artifact-diff（构建前后 git diff）与 scripts/build-client.mjs 里的残留 import 检查兜住。
  */
 
+/**
+ * 断言用的翻译桩：把「键 + 参数」渲染成一行可读文本。
+ *
+ * 为什么不用一份中文夹具：文案的唯一归宿是目录（`client-src/index.js` 的 `I18N_ZH`，
+ * 键集与占位符由 `scripts/check-i18n.mjs` 校验）。测试再抄一份中文就是本仓最忌讳的
+ * 「同一件事实现在两处」。所以这批函数只断言**抛哪个键、带哪些参数**，措辞归目录。
+ */
+const t = (key: string, params?: Record<string, unknown>): string =>
+  params === undefined
+    ? key
+    : key + '(' + Object.entries(params).map(([name, value]) => name + '=' + String(value)).join(',') + ')'
+
 describe('CG11：staleReasons 汇总 CLI 的过期信号', () => {
   it('四个信号全在顶层时报全四条', () => {
     expect(staleReasons({
@@ -36,11 +48,11 @@ describe('CG11：staleReasons 汇总 CLI 的过期信号', () => {
       builtWithExtractionVersion: 24,
       currentExtractionVersion: 25,
       worktreeMismatch: true,
-    })).toEqual([
-      'CLI 建议重建索引（reindexRecommended）',
-      '索引由 CLI 1.1.1 构建，当前 CLI 是 1.6.0',
-      '索引的提取器版本 24 已落后于当前的 25',
-      '索引与当前 worktree 不匹配',
+    }, t)).toEqual([
+      'status.reasonReindex',
+      'status.reasonBuiltWith(built=1.1.1,current=1.6.0)',
+      'status.reasonExtraction(built=24,current=25)',
+      'status.reasonWorktree',
     ])
   })
 
@@ -80,8 +92,8 @@ describe('CG11：staleReasons 汇总 CLI 的过期信号', () => {
   })
 
   it('index 字段不是对象时退回顶层读，不抛错', () => {
-    expect(staleReasons({ index: 'oops', reindexRecommended: true })).toEqual([
-      'CLI 建议重建索引（reindexRecommended）',
+    expect(staleReasons({ index: 'oops', reindexRecommended: true }, t)).toEqual([
+      'status.reasonReindex',
     ])
   })
 })
@@ -113,8 +125,8 @@ describe('CG15：nextRetryDelayMs 的退避阶梯', () => {
 
 describe('CG17：truncationNote 不再静默截断', () => {
   it('超出上限时报出「已显示前 N 条，共 M 条」', () => {
-    expect(truncationNote(31, REL_LIMIT)).toBe('已显示前 30 条，共 31 条')
-    expect(truncationNote(500, REL_LIMIT)).toBe('已显示前 30 条，共 500 条')
+    expect(truncationNote(31, REL_LIMIT, t)).toBe('list.truncatedShown(shown=30,total=31)')
+    expect(truncationNote(500, REL_LIMIT, t)).toBe('list.truncatedShown(shown=30,total=500)')
   })
 
   it('恰好等于上限时不提示（全部都在，没有截断）', () => {
@@ -139,46 +151,47 @@ describe('P1 采纳率：adoptionText 的边界', () => {
   })
 
   it('一次调用都没有：明说没有记录，而不是 0%', () => {
-    const text = adoptionText({ codegraph: 0, discovery: 0, discoveryTotal: 0, file: 0, other: 0 })
-    expect(text).toContain('还没有工具调用记录')
+    const text = adoptionText({ codegraph: 0, discovery: 0, discoveryTotal: 0, file: 0, other: 0 }, t)
+    expect(text).toContain('meta.adoptionNoRecords')
     expect(text).not.toContain('0%')
   })
 
   it('只有其它工具：说「还没有探索类调用」，不显示 0%', () => {
-    const text = adoptionText({ codegraph: 0, discovery: 0, discoveryTotal: 0, file: 0, other: 5 })
-    expect(text).toContain('还没有探索类调用')
-    expect(text).toContain('5 次其它工具')
+    const text = adoptionText({ codegraph: 0, discovery: 0, discoveryTotal: 0, file: 0, other: 5 }, t)
+    expect(text).toContain('meta.adoptionNoDiscoveryCalls')
+    expect(text).toContain('other=5')
     expect(text).not.toContain('0%')
   })
 
   it('有读取但没有发现类：与「只有其它工具」区分开', () => {
-    const onlyReads = adoptionText({ codegraph: 0, discovery: 0, discoveryTotal: 0, file: 4, other: 0 })
-    expect(onlyReads).toContain('还没有发现类调用')
-    expect(onlyReads).toContain('读取 4 次')
-    const onlyOther = adoptionText({ codegraph: 0, discovery: 0, discoveryTotal: 0, file: 0, other: 4 })
-    expect(onlyOther).toContain('还没有探索类调用')
+    const onlyReads = adoptionText({ codegraph: 0, discovery: 0, discoveryTotal: 0, file: 4, other: 0 }, t)
+    expect(onlyReads).toContain('meta.adoptionNoDiscovery')
+    expect(onlyReads).toContain('file=4')
+    const onlyOther = adoptionText({ codegraph: 0, discovery: 0, discoveryTotal: 0, file: 0, other: 4 }, t)
+    expect(onlyOther).toContain('meta.adoptionNoDiscoveryCalls')
   })
 
   it('有发现类调用：窄口径是主口径，宽口径仅在不同时带出', () => {
     // grep 进 discovery；read 只进 file —— 两个口径给出不同的百分比
-    expect(adoptionText({ codegraph: 2, discovery: 1, discoveryTotal: 3, file: 1, other: 0, indexed: true }))
-      .toBe('采纳率：codegraph 2 次 / 发现类 1 次 → 67%（宽口径含读取 67%）')
+    expect(adoptionText({ codegraph: 2, discovery: 1, discoveryTotal: 3, file: 1, other: 0, indexed: true }, t))
+      .toBe('meta.adoptionMain(codegraph=2,discovery=1,narrow=67)meta.adoptionBroad(broad=67)')
     // 只有读取时宽口径不同，必须标出来
-    expect(adoptionText({ codegraph: 0, discovery: 0, discoveryTotal: 0, file: 4, other: 2, indexed: true }))
-      .toBe('采纳率：还没有发现类调用（codegraph 0 次 / 读取 4 次；另 2 次其它工具）')
-    expect(adoptionText({ codegraph: 3, discovery: 0, discoveryTotal: 3, file: 0, other: 0, indexed: true }))
-      .toBe('采纳率：codegraph 3 次 / 发现类 0 次 → 100%')
+    expect(adoptionText({ codegraph: 0, discovery: 0, discoveryTotal: 0, file: 4, other: 2, indexed: true }, t))
+      .toBe('meta.adoptionNoDiscovery(codegraph=0,file=4,other=2)')
+    expect(adoptionText({ codegraph: 3, discovery: 0, discoveryTotal: 3, file: 0, other: 0, indexed: true }, t))
+      .toBe('meta.adoptionMain(codegraph=3,discovery=0,narrow=100)')
   })
 
   it('两个口径确实是两个数（真实历史里差别巨大：2.2% vs 28.8%）', () => {
-    const text = adoptionText({ codegraph: 1, discovery: 3, discoveryTotal: 4, file: 20, other: 0, indexed: true })
-    expect(text).toContain('发现类 3 次 → 25%')
-    expect(text).toContain('宽口径含读取 5%')
+    const text = adoptionText({ codegraph: 1, discovery: 3, discoveryTotal: 4, file: 20, other: 0, indexed: true }, t)
+    expect(text).toContain('discovery=3')
+    expect(text).toContain('narrow=25')
+    expect(text).toContain('broad=5')
   })
 
   it('未索引项目要标明数字不代表提示词效果', () => {
-    const text = adoptionText({ codegraph: 0, discovery: 2, discoveryTotal: 2, file: 2, other: 0, indexed: false })
-    expect(text).toContain('该项目未索引')
+    const text = adoptionText({ codegraph: 0, discovery: 2, discoveryTotal: 2, file: 2, other: 0, indexed: false }, t)
+    expect(text).toContain('meta.adoptionUnindexed')
   })
 })
 
@@ -205,11 +218,11 @@ describe('P2 项目列表：shortPath / seenAgoText', () => {
   })
 
   it('seenAgoText 分档给人话，非法值返回空串', () => {
-    expect(seenAgoText(0)).toBe('刚刚')
-    expect(seenAgoText(30_000)).toBe('刚刚')
-    expect(seenAgoText(90_000)).toBe('1 分钟前')
-    expect(seenAgoText(3 * 3600_000)).toBe('3 小时前')
-    expect(seenAgoText(2 * 86400_000)).toBe('2 天前')
+    expect(seenAgoText(0, t)).toBe('meta.seenJustNow')
+    expect(seenAgoText(30_000, t)).toBe('meta.seenJustNow')
+    expect(seenAgoText(90_000, t)).toBe('meta.seenMinutes(count=1)')
+    expect(seenAgoText(3 * 3600_000, t)).toBe('meta.seenHours(count=3)')
+    expect(seenAgoText(2 * 86400_000, t)).toBe('meta.seenDays(count=2)')
     expect(seenAgoText(-1)).toBe('')
     expect(seenAgoText(NaN)).toBe('')
     expect(seenAgoText('nope')).toBe('')

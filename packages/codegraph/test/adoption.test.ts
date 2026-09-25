@@ -181,10 +181,18 @@ describe('P1 采纳率：折叠与汇总', () => {
       { codegraph: 3, file: 4, discovery: 1, other: 1 },
     ]
     const percentOf = (text: string): string | undefined => /→ (\d+)%/.exec(text)?.[1]
+    /*
+     * `adoptionText` 现在把文案交给调用方（最后一个参数是翻译函数，缺省回键），
+     * 而这条用例比的是**两份文案里的同一个数字**（`→ N%`），所以卡片侧必须真渲染一次。
+     * 夹具只覆盖本用例要解析的那一条键：措辞不必与目录一致（目录由
+     * scripts/check-i18n.mjs 管），这里要的只是 `→ {narrow}%` 这个形状。
+     */
+    const cardT = (key: string, params?: Record<string, unknown>): string =>
+      key === 'meta.adoptionMain' && params !== undefined ? '采纳率 → ' + String(params.narrow) + '%' : key
     for (const counts of cases) {
       const summary = summarizeAdoption('/repo', counts, true)
       const host = describeAdoption(summary)
-      const card = adoptionText(summary)
+      const card = adoptionText(summary, cardT)
       expect(percentOf(host), `宿主文案没给出窄口径百分比：${host}`).toBeDefined()
       expect(percentOf(card), `卡片文案没给出窄口径百分比：${card}`).toBeDefined()
       expect(percentOf(card), `两份文案的百分比不一致：宿主「${host}」 vs 卡片「${card}」`).toBe(percentOf(host))

@@ -25,24 +25,39 @@ export const REL_LIMIT = 30
  * 旧提取器产出的图——这是最容易被当成「codegraph 结果不准」的那类状态。字段
  * 位置随 CLI 版本可能有顶层 / 嵌套差异，两处都读。
  */
-export function staleReasons(status) {
+/* ------------------------------------------------------------------ *
+ * 文案：交给调用方（本文件不 import 目录）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 缺省翻译函数：**原样回键**。
+ *
+ * 本文件是纯判定模块（被 vitest 直接 import，node 环境、没有宿主 locale 服务），
+ * 而目录住在 index.js 的 factory 里——在这里 import 目录会成环，也不该让纯模块
+ * 依赖 React 侧的绑定时机。所以下面四个函数把「可翻译文案」用**最后一个参数**
+ * 交给调用方（index.js 传它绑定的 `t`）；缺省值让单测可以断言「抛哪个键、带哪些
+ * 参数」，而文案的唯一归宿仍是目录（由 scripts/check-i18n.mjs 管键集与占位符）。
+ */
+const identityT = (key, params) => (params === undefined ? key : key)
+
+export function staleReasons(status, t = identityT) {
   if (!status || typeof status !== 'object') return []
   const meta = status.index && typeof status.index === 'object' ? status.index : {}
   const reasons = []
   if (status.reindexRecommended === true || meta.reindexRecommended === true) {
-    reasons.push('CLI 建议重建索引（reindexRecommended）')
+    reasons.push(t('status.reasonReindex'))
   }
   const builtWith = meta.builtWithVersion ?? status.builtWithVersion
   if (typeof builtWith === 'string' && builtWith !== '' && typeof status.version === 'string' && builtWith !== status.version) {
-    reasons.push('索引由 CLI ' + builtWith + ' 构建，当前 CLI 是 ' + status.version)
+    reasons.push(t('status.reasonBuiltWith', { built: builtWith, current: status.version }))
   }
   const builtExtraction = meta.builtWithExtractionVersion ?? status.builtWithExtractionVersion
   const currentExtraction = meta.currentExtractionVersion ?? status.currentExtractionVersion
   if (typeof builtExtraction === 'number' && typeof currentExtraction === 'number' && builtExtraction < currentExtraction) {
-    reasons.push('索引的提取器版本 ' + builtExtraction + ' 已落后于当前的 ' + currentExtraction)
+    reasons.push(t('status.reasonExtraction', { built: builtExtraction, current: currentExtraction }))
   }
   if (status.worktreeMismatch === true || meta.worktreeMismatch === true) {
-    reasons.push('索引与当前 worktree 不匹配')
+    reasons.push(t('status.reasonWorktree'))
   }
   return reasons
 }
@@ -62,8 +77,8 @@ export function nextRetryDelayMs(current) {
  * CG17：关系列表的截断提示；未截断时返回 ''（调用方据此决定要不要渲染那一行）。
  * 以前是静默 slice(0, 30)——用户看到的是「就这么多」，真相是被截了。
  */
-export function truncationNote(total, shown) {
-  return total > shown ? '已显示前 ' + shown + ' 条，共 ' + total + ' 条' : ''
+export function truncationNote(total, shown, t = identityT) {
+  return total > shown ? t('list.truncatedShown', { shown, total }) : ''
 }
 
 /**
@@ -79,29 +94,29 @@ export function truncationNote(total, shown) {
  *   - **未索引项目的数字要标明**：那种项目里模型本来就不该用 codegraph，拿它的
  *     采纳率去评价提示词是错的。
  */
-export function adoptionText(summary) {
+export function adoptionText(summary, t = identityT) {
   if (!summary || typeof summary !== 'object') return ''
   const codegraph = Number(summary.codegraph ?? 0)
   const discovery = Number(summary.discovery ?? 0)
   const file = Number(summary.file ?? 0)
   const other = Number(summary.other ?? 0)
   const discoveryTotal = Number(summary.discoveryTotal ?? discovery + codegraph)
-  const indexedNote = summary.indexed === false ? '（该项目未索引，这个数字不代表提示词效果）' : ''
+  const indexedNote = summary.indexed === false ? t('meta.adoptionUnindexed') : ''
   // 完全没有记录（连其它工具都没有）才说「没有工具调用记录」；否则要区分
   // 「只有 bash/edit 这类」与「有读取但没有发现类」——两者含义不同。
   if (discoveryTotal === 0 && file === 0) {
     return other === 0
-      ? '采纳率：本次宿主运行期间该项目还没有工具调用记录'
-      : `采纳率：还没有探索类调用（另 ${other} 次其它工具，如 bash / edit）`
+      ? t('meta.adoptionNoRecords')
+      : t('meta.adoptionNoDiscoveryCalls', { other })
   }
   if (discoveryTotal === 0) {
-    return `采纳率：还没有发现类调用（codegraph ${codegraph} 次 / 读取 ${file} 次；另 ${other} 次其它工具）${indexedNote}`
+    return t('meta.adoptionNoDiscovery', { codegraph, file, other }) + indexedNote
   }
   const narrow = Math.round((codegraph / discoveryTotal) * 100)
   const broad = Math.round((codegraph / (codegraph + file)) * 100)
-  const broadNote = file === 0 ? '' : `（宽口径含读取 ${broad}%）`
-  const otherNote = other === 0 ? '' : `（另 ${other} 次其它工具）`
-  return `采纳率：codegraph ${codegraph} 次 / 发现类 ${discovery} 次 → ${narrow}%${broadNote}${otherNote}${indexedNote}`
+  const broadNote = file === 0 ? '' : t('meta.adoptionBroad', { broad })
+  const otherNote = other === 0 ? '' : t('meta.adoptionOther', { other })
+  return t('meta.adoptionMain', { codegraph, discovery, narrow }) + broadNote + otherNote + indexedNote
 }
 
 /**
@@ -150,16 +165,16 @@ export function buildQuery(params) {
 }
 
 /** P2 项目列表：「多久之前见过」的人话（秒 / 分 / 小时 / 天）。 */
-export function seenAgoText(ms) {
+export function seenAgoText(ms, t = identityT) {
   const value = Number(ms)
   if (!Number.isFinite(value) || value < 0) return ''
   const seconds = Math.floor(value / 1000)
-  if (seconds < 60) return '刚刚'
+  if (seconds < 60) return t('meta.seenJustNow')
   const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return minutes + ' 分钟前'
+  if (minutes < 60) return t('meta.seenMinutes', { count: minutes })
   const hours = Math.floor(minutes / 60)
-  if (hours < 24) return hours + ' 小时前'
-  return Math.floor(hours / 24) + ' 天前'
+  if (hours < 24) return t('meta.seenHours', { count: hours })
+  return t('meta.seenDays', { count: Math.floor(hours / 24) })
 }
 
 /**
