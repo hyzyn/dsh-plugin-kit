@@ -178,4 +178,27 @@ const failed = RESULTS.filter((row) => row[0] === 'FAIL')
 console.log('\n==== Windows 冒烟：' + String(RESULTS.length - failed.length) + '/' + String(RESULTS.length) + ' PASS ====')
 for (const row of failed) console.error('  ✘ ' + row[1] + (row[2] ? ' — ' + row[2] : ''))
 clearTimeout(watchdog)
+/**
+ * 先把两条流排空再退（D62）。
+ *
+ * `process.exit()` 会**丢掉管道里还没 flush 的写**（Node 文档原话：尽快退出，不等
+ * 未完成的异步操作）。CI 上 stdout 正是管道，缓冲 64 KB：实测「写 300 KB 后直接
+ * exit」只活下来 65 536 字节。所以 2026-09-25 那次 CI 只留下
+ * `##[error]Process completed with exit code 1.` —— 五条断言全是 PASS、没有 ✘ 行、
+ * 也没有末尾的汇总行，失败原因整段被吞掉，只能靠拆发布记录反推"大概是哪一步"。
+ *
+ * 空串写入的回调在**前面那些写都落盘之后**才触发，等于一个 flush 屏障；拿到它再退，
+ * 输出就一定完整。仍然用 exit 而不是 `process.exitCode`（D121：主体结束后可能有
+ * 周期句柄漏着，不显式退就会挂死，而看门狗已经 clear 了）。
+ */
+await new Promise((resolve) => {
+  process.stdout.write('', () => {
+    resolve()
+  })
+})
+await new Promise((resolve) => {
+  process.stderr.write('', () => {
+    resolve()
+  })
+})
 process.exit(failed.length === 0 ? 0 : 1)

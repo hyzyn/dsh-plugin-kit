@@ -141,6 +141,7 @@ D50 才是用户看到的那一下（他补的描述是「整条状态条瞬间�
 | D59 | `sftp_*` 错误文案不带对象（只有 `<动作>: <原因>`，11 处）→ 批量调用时无法判断是哪一条失败，而 agent 常把它当「路径存不存在」的探测用 | src/sftp.ts、test/sftp.test.ts | ✓ |
 | D60 | 机器级资源没有 profile 维度：复制 profile 把固定端口（webserver / 隧道 `localPort`）一并拷走，tmux socket（`-L dsh-tty`）全 profile 共用 → 后起的宿主 `EADDRINUSE`（本次只做「可诊断 + 文档」） | src/tunnels.ts、README.md、README.en.md |  |
 | D61 | 桌面版终端**永远连不上**：WS 地址只用 `location` 拼，而桌面 origin 是 Electron 自定义协议 `dsh-app://app` → 拼出 `ws://app/…`；除 WS 外全是相对路径 fetch，所以只有终端这一条通道断 | client-src/ws-url.js（新增）、client-src/index.js、test/ws-url.test.ts、scripts/client-host-url.mjs |  |
+| D62 | Windows 冒烟的**失败原因被自己吞掉**：收尾的 `process.exit(1)` 丢掉管道里未 flush 的写（CI 上缓冲 64 KB）→ 日志里五条断言全 PASS、没有 ✘ 行、也没有汇总行，只剩 `exit code 1`；连带把「W5 第二次 exit 帧」这条偶发失败掩盖成不可诊断 | scripts/windows-smoke.mjs（同款写法另有 docker 三套 smoke，见 §2.3） | ✓ |
 
 ## 2. 编号字典：这段代码为什么长这样
 
@@ -182,9 +183,9 @@ D50 才是用户看到的那一下（他补的描述是「整条状态条瞬间�
 - **验证（真实 PTY，3 轮）**：`integration.mjs` **111/111 全绿**（新增 B32a–B32h 八项）；
   单测 **222/222**（新增 7 条 agent 会话护栏）。
 
-### 2.3 D49–D61 的刻意取舍 / 容易踩的坑
+### 2.3 D49–D62 的刻意取舍 / 容易踩的坑
 
-这 13 条的 postmortem 正文已冻结进 git（见 §4）。**唯独"刻意不做什么"与"排除了哪些假设"必须
+这 14 条的 postmortem 正文已冻结进 git（见 §4）。**唯独"刻意不做什么"与"排除了哪些假设"必须
 留在正文**——不写下来，下一个人会把它们当成遗漏给"补上"。
 
 | 编号 | 取舍 / 结论（刻意不做 / 为什么这样写） |
@@ -202,6 +203,7 @@ D50 才是用户看到的那一下（他补的描述是「整条状态条瞬间�
 | D59 | 统一 `sftpFail(action, target, error, note?)` → `<动作> <对象>: <原因>`；ssh2 把 SFTP 状态码挂在 `err.code`，`NO_SUCH_FILE(2)` / `PERMISSION_DENIED(3)` 单独点明，省得从英文 errno 猜 |
 | D60 | 把设置「集中共享」**不是**解法——端口是**机器级资源**，共享只会让两个 profile 永远抢同一个端口、且无法各自关闭；缺的是「机器级资源的 profile 维度处理」。本次只做「可诊断 + 文档」，未做项见 [ROADMAP.md](./ROADMAP.md) |
 | D61 | 来源改用宿主注入的 `globalThis.__DSH_TRANSPORT__.streamBaseUrl`，缺省退回 `document.baseURI`——浏览器直连下与旧的 `location.host` **逐字等价**。它同时是**仓库级静态规则**的由来：`scripts/client-host-url.mjs`（TS AST，注释与字符串免疫）拦「读 `location` 的 protocol/host/hostname/origin/port」与「硬编码 `ws://`/`wss://` 字面量」，覆盖全部 10 个客户端半体；接线在 `scripts/client-lint.mjs`。**没做**：桌面 profile 的 `cordis.patch.yml` 里没有 `- id: tty` 配置块（不是本次故障原因，但桌面版终端目前跑纯默认配置） |
+| D62 | 用**空串写入的回调**当 flush 屏障（实测：300 KB 输出直接 `exit` 只活 64 KB，加了屏障全活），**不用 `process.exitCode` 自然退出**——D121 的理由仍在：主体结束后可能有周期句柄漏着，看门狗又已经 clear，不显式退就会挂死。**刻意不做的**：① 不顺手改 docker 的 `smoke.mjs` / `route-smoke.mjs` / `client-smoke.mjs`（同款 `clearTimeout(watchdog)` + `process.exit(failed…)` 写法，同一类风险）——它们没loss过输出，本轮只修**证据覆盖到**的这一处，下轮要改就三处一起；② **没有**削弱 W5 的断言（「发过 kill 就必须收到 exit 帧」是 B1/B3 钉住的前端契约，socket 提前关掉**不算**通过）——本次只让失败可见，真正的偶发失败（W5 第二次 exit 帧）仍未复现、未定位 |
 
 ## 3. 复核方式
 
