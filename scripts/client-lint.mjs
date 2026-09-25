@@ -20,18 +20,36 @@
  * search）的客户端是**裸 `client.js`**，于是它们从来没被这道防线覆盖过 —— 第 4 条就落在里面。
  * 现在两者都查：有 `client-src/index.js` 就查源码，否则查 `client.js`。
  *
- * 做法：用仓库**已有**的 tsc 对目标跑 `--checkJs`，然后**只把"真 bug"那几个诊断码当失败**：
+ * ## 两道检查
+ *
+ * **① 名字解析（tsc --checkJs）**：用仓库**已有**的 tsc 对目标跑 `--checkJs`，然后**只把
+ * "真 bug"那几个诊断码当失败**：
  *
  *   TS2304 找不到名字          TS2552 找不到名字（"是否想用 X"）
  *   TS2448 块级变量先用后声明   TS2454 变量未赋值就使用
  *
  * 其余诊断（`--checkJs` 下没有类型声明就来的模块解析、DOM 事件类型收窄等）在本项目的打包
  * 方式下是**噪音**：不判失败，但照样打印出来，免得它们悄悄积累成一片看不见的红。
+ *
+ * **② 宿主地址来源（AST，规则与成因见 `scripts/client-host-url.mjs`）**：禁止从
+ * `location` 读 `protocol` / `host` / `hostname` / `origin` / `port` 拼地址，禁止硬编码
+ * `ws://` / `wss://` 字面量。桌面版的页面 origin 是 Electron 自定义协议 `dsh-app://app`，
+ * 这么算出来的地址连不上宿主；而浏览器直连（`dsh web`）下**完全正常**——所以它同时躲过了
+ * vitest（浏览器半体不在本层测）、第 ① 道检查（名字解析零信号）、CDP 冒烟（驱动的是
+ * `http://127.0.0.1:3082`，那里 `location` 恰好就是对的）和各包的 preview harness
+ * （mock 里是假 WebSocket）。实测代价见 `packages/tty/DEFECTS.md` **D61**。
+ *
+ * 正确写法：基址取 `globalThis.__DSH_TRANSPORT__?.streamBaseUrl ?? document.baseURI`，
+ * 并且**凡是要跟宿主建连的地址都要抽成 `client-src/*.js` 纯模块 + vitest 覆盖
+ * `dsh-app://app` 场景**（范例：`packages/tty/client-src/ws-url.js` +
+ * `packages/tty/test/ws-url.test.ts`）。规矩比测试重要：它决定下一个人会不会再踩。
  */
 import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
+import { dirname, join, relative } from 'node:path'
+
+import { describeHostUrlUse, HOST_URL_RULE_HINT, listClientSourceFiles, scanHostUrlUses } from './client-host-url.mjs'
 
 // 在「包目录」里调用（`pnpm -r typecheck` 就是这样跑的）：tsc 输出的路径也相对它，
 // 于是下面的解析与提示都是包内相对路径。
@@ -48,12 +66,6 @@ if (target === undefined) {
   process.exit(0)
 }
 
-const tsc = join(repoRoot, 'node_modules', '.bin', 'tsc')
-if (!existsSync(tsc)) {
-  console.error('[client-lint] 找不到 tsc（' + tsc + '）——先在仓库根 pnpm install')
-  process.exit(1)
-}
-
 const packageName = (() => {
   try {
     return String(JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).name ?? 'this package')
@@ -61,6 +73,29 @@ const packageName = (() => {
     return 'this package'
   }
 })()
+
+/* ------------------------------------------------------------------ *
+ * 检查一：宿主地址来源（AST）
+ * ------------------------------------------------------------------ */
+
+/*
+ * 扫描集合（口径见 listClientSourceFiles 的说明）：有 client-src/ 就查**源码全量**
+ * ——tsc 的 program 会经 import 拉进兄弟模块，规则检查也不能只看入口；裸 client.js
+ * 的包查构建产物。收在模块里而不是写在这儿：CLI 与 scripts/test 的单测必须查同一批
+ * 文件，两处各写一份迟早漂。
+ */
+const hostUrlFindings = listClientSourceFiles(root).flatMap((file) =>
+  scanHostUrlUses(relative(root, file).replaceAll('\\', '/'), readFileSync(file, 'utf8')))
+
+/* ------------------------------------------------------------------ *
+ * 检查二：名字解析（tsc --checkJs）
+ * ------------------------------------------------------------------ */
+
+const tsc = join(repoRoot, 'node_modules', '.bin', 'tsc')
+if (!existsSync(tsc)) {
+  console.error('[client-lint] 找不到 tsc（' + tsc + '）——先在仓库根 pnpm install')
+  process.exit(1)
+}
 
 const result = spawnSync(tsc, [
   '--noEmit',
@@ -90,8 +125,23 @@ const found = [...output.matchAll(new RegExp('(' + anchor + ')\\((\\d+),(\\d+)\\
 const fatal = found.filter((item) => FATAL_CODES.has(item.code))
 const noise = found.filter((item) => !FATAL_CODES.has(item.code))
 
+/* ------------------------------------------------------------------ *
+ * 汇总
+ * ------------------------------------------------------------------ */
+
 for (const item of fatal) {
   console.error('[client-lint] ' + item.file + ':' + String(item.line) + ':' + String(item.col) + ' ' + item.code + ' ' + item.text)
+}
+
+for (const item of hostUrlFindings) {
+  console.error('[client-lint] ' + item.file + ':' + String(item.line) + ':' + String(item.col) + ' ' + describeHostUrlUse(item))
+}
+
+if (hostUrlFindings.length > 0) {
+  console.error('\n[' + packageName + '] 宿主地址来源检查失败：' + String(hostUrlFindings.length) + ' 处。')
+  console.error('  ' + HOST_URL_RULE_HINT)
+  console.error('  桌面版页面 origin 是 dsh-app://app（Electron 自定义协议）而不是 HTTP：这些写法在浏览器里'
+    + '一切正常、只有桌面版暴露——所以别指望冒烟能替你发现（详见 packages/tty/DEFECTS.md D61）。')
 }
 
 if (fatal.length > 0) {
@@ -100,11 +150,14 @@ if (fatal.length > 0) {
   process.exit(1)
 }
 
+if (hostUrlFindings.length > 0) process.exit(1)
+
+const verdict = '宿主地址来源 0 处'
 if (noise.length > 0) {
   const byCode = new Map()
   for (const item of noise) byCode.set(item.code, (byCode.get(item.code) ?? 0) + 1)
   const summary = [...byCode.entries()].map(([code, count]) => code + '×' + String(count)).join(' ')
-  console.log('[client-lint] ' + target + ' 通过（忽略 ' + String(noise.length) + ' 条已知噪音：' + summary + '）')
+  console.log('[client-lint] ' + target + ' 通过（' + verdict + '；忽略 ' + String(noise.length) + ' 条已知噪音：' + summary + '）')
 } else {
-  console.log('[client-lint] ' + target + ' 通过（无诊断）')
+  console.log('[client-lint] ' + target + ' 通过（' + verdict + '；无诊断）')
 }
