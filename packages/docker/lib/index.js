@@ -246,23 +246,57 @@ function isLoopbackHttp(req) {
  * `<img src="GET /images/pull/stream?...">` 触发副作用 / 拉起 docker 子进程，
  * 而旧 Safari / 部分 WebView 既不发 Origin 也不发 Sec-Fetch-Site——这两类端点
  * 对「无来源证明」的请求拒绝；只读端点维持 loopback-only 的原信任模型。
+ *
+ * **桌面版例外（D139）**：桌面壳把页面发往 `dsh-app://app/api/…` 的请求转给真实宿主时
+ * **会删掉 `origin` 与 `sec-fetch-site`**（`app.asar/lib/main.js` 的 `forwardWebRequest`，
+ * 只重写 `host` / `cookie`，其余头原样带过去），于是这四条 SSE 与八条变更路由在桌面版
+ * **全部** 403——症状是日志 / 统计 / 活动 / 拉取四条流无限「连接中断，正在自动重连…」，
+ * 而同一个面板的只读路由（`/containers`、`/inspect`…）照常可用（它们不要求证明）。
+ *
+ * 桌面壳在这条转发链上**必带宿主会话 Cookie**：`hostCookie` 由 `authenticateWebHost()`
+ * 拿 `set-cookie` 换来，取不到时 `forwardWebRequest` 整体 503、根本走不到这里。而浏览器
+ * 页面**伪造不了 Cookie 头**——跨站请求带不带它由 SameSite 决定，且现代浏览器一定同时带
+ * `sec-fetch-site: cross-site`（已被上一条 loopback 围栏拒掉）。
+ *
+ * 所以把「两条证明都缺省」收窄成「都缺省 **且** 带宿主 Cookie」：桌面版放行、旧 Safari /
+ * 裸 curl 仍然拒。这不是 D32 的松动——本函数从来没挡住本机进程（它们随时可以自带
+ * `Origin: http://127.0.0.1:<port>` 过闸），防的一直是**浏览器**，而 Cookie 恰恰是浏览器
+ * 侧最不可伪造的那一件。
  */
 function hasSameOriginProof(req) {
     const site = req.headers['sec-fetch-site'];
     if (typeof site === 'string' && site === 'same-origin')
         return true;
     const origin = req.headers.origin;
-    if (typeof origin !== 'string' || origin === '')
-        return false;
-    const host = req.headers.host;
-    if (typeof host !== 'string')
-        return false;
-    try {
-        return new URL(origin).host === host;
+    if (origin !== undefined) {
+        // Origin 出现就一律以它为准：非字符串 / 空串 / 不同源都拒，**不回落**到 Cookie——
+        // 否则一个畸形 Origin 反倒成了绕过同源比对的入口
+        if (typeof origin !== 'string' || origin === '')
+            return false;
+        const host = req.headers.host;
+        if (typeof host !== 'string')
+            return false;
+        try {
+            return new URL(origin).host === host;
+        }
+        catch {
+            return false;
+        }
     }
-    catch {
-        return false;
-    }
+    const cookie = req.headers.cookie;
+    return typeof cookie === 'string' && cookie.trim() !== '';
+}
+/**
+ * 403 的成因摘要（D139）：这次桌面版四条流全断，宿主侧**一条日志都没有**，只能靠读客户端
+ * 源码 + 拆 `app.asar` 反推。以后同类问题第一眼就能定位：只报这三个头「有没有」，
+ * **绝不落 Cookie 的值**（它是宿主会话凭据）。
+ */
+function originProofHint(req) {
+    const has = (name) => {
+        const value = req.headers[name];
+        return typeof value === 'string' && value !== '' ? '有' : '无';
+    };
+    return `origin=${has('origin')} sec-fetch-site=${has('sec-fetch-site')} cookie=${has('cookie')}`;
 }
 function writeJson(res, status, body) {
     res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'referrer-policy': 'no-referrer' });
@@ -2794,8 +2828,10 @@ const plugin = definePlugin({
                             }
                             // 四条 SSE 都要有「同源证明」（D32）：无 Origin 且无 Sec-Fetch-Site 的
                             // 请求（旧 Safari / 部分 WebView / 裸 curl）在长流端点上拒绝——浏览器
-                            // 的 EventSource / fetch 同源请求都会带其中之一
+                            // 的 EventSource / fetch 同源请求都会带其中之一；桌面壳的转发链只带
+                            // Cookie，由 hasSameOriginProof 内的例外放行（D139）
                             if (!hasSameOriginProof(req)) {
+                                ctx.logger.warn(`dsh-docker: 拒绝无同源证明的实时流请求 ${sub}（${originProofHint(req)}）`);
                                 writeJson(res, 403, { error: '缺少同源证明（需要 Origin 或 Sec-Fetch-Site: same-origin）：实时流端点拒绝无来源请求' });
                                 return;
                             }
@@ -2806,6 +2842,7 @@ const plugin = definePlugin({
                         // 变更类端点（写操作）同样要求同源证明（D32）；/config 刻意不在名单里：
                         // 它是禁用状态下的唯一恢复入口，跨站 POST 已由 loopback + Origin 比对拦住
                         if (req.method === 'POST' && MUTATION_SUBROUTES.has(sub) && !hasSameOriginProof(req)) {
+                            ctx.logger.warn(`dsh-docker: 拒绝无同源证明的变更请求 ${sub}（${originProofHint(req)}）`);
                             writeJson(res, 403, { error: '缺少同源证明（需要 Origin 或 Sec-Fetch-Site: same-origin）：变更端点拒绝无来源请求' });
                             return;
                         }

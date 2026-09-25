@@ -18,11 +18,11 @@ scripts/windows/
 | --- | --- | --- |
 | `engines.node` | `>= 22.19.0` | 所有 `packages/*/package.json` |
 | `packageManager` | `pnpm@10.30.3` | 根 `package.json` |
-| `dsh.engines.dsh` | `>= 0.1.2-rc.1` | 每个可安装插件的 `dsh` 字段 |
+| `dsh.engines.dsh` | `>= 0.1.7-rc.2` | 每个可安装插件的 `dsh` 字段 |
 
 `engines.node` 是三个里唯一**本机 macOS 测不了**的东西（macOS 上跑的是同一份代码，但真实用户
-装的是 Windows 版 Node）。而 `dsh.engines.dsh` 拼错了比不写更糟：写成 `^0.1.2` / `~0.1.2` /
-两段式区间会被 dsh-web 的解析器判成「无法验证」而 **fail-closed**，更新直接被拦下。
+装的是 Windows 版 Node）。而 `dsh.engines.dsh` 拼错了比不写更糟：写成 `^0.1.7-rc.2` /
+`~0.1.7-rc.2` / 两段式区间会被 dsh-web 的解析器判成「无法验证」而 **fail-closed**，更新直接被拦下。
 
 ## 用法
 
