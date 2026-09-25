@@ -306,9 +306,15 @@ console.log('--- 阶段 A：静态探针（已构建的 lib/，不需要宿主�
   const manifest = JSON.parse(readFileSync(join(repo, 'packages', 'all', 'package.json'), 'utf8'))
   const deps = Object.keys(manifest.dependencies ?? {})
   const missing = deps.filter((name) => !existsSync(join(repo, 'node_modules', ...name.split('/'))))
+  /*
+   * 这里曾写死 `deps.length === 9`。聚合包后来多了一个依赖（kit-settings）变成 10，
+   * 断言就永久变红——而 `missing` 其实是空的，也就是**没有任何东西解析不到**。
+   * 这正是本仓反复吃过的「脚本里写死计数」那类漂移：闸门红了却没指向任何真问题，
+   * 久而久之就没人再看它。该断言的是「声明的依赖都能解析」，不是「恰好有 N 个」。
+   */
   record(
-    'A5 聚合包：@hyzyn/dsh-all 的 9 个依赖在 Windows 上都能解析到目录',
-    deps.length === 9 && missing.length === 0,
+    'A5 聚合包：@hyzyn/dsh-all 声明的依赖在 Windows 上都能解析到目录',
+    deps.length > 0 && missing.length === 0,
     `deps=${deps.length} missing=[${missing.join(', ')}]`,
   )
   if (yaml === undefined) {
