@@ -30,11 +30,17 @@ export function reconnectTail(initialTail, isReconnect) {
  *   onEnd?: (payload: Record<string, unknown> | null, controls: { reconnect: () => void }) => void,
  *   onError?: (message: string, controls: { close: () => void, reconnect: () => void }) => void,
  *   onStatus?: (status: 'connecting' | 'open' | 'reconnecting' | 'closed') => void,
+ *   t?: (key: string) => string,
  * }} options
  * @returns {{ close: () => void, reconnect: () => void }}
  */
 export function subscribeLogStream(options) {
   const { buildUrl, tail } = options
+  /*
+   * 翻译函数由调用方**当参数传进来**（见 docs/i18n.md）：目录内联在 client-src/index.js，
+   * 兄弟模块 import 它就会成环。没有传（离线冒烟）时退回「键名原样」，不抛错。
+   */
+  const t = typeof options.t === 'function' ? options.t : (key) => key
   let source = null
   let closed = false
   let attempt = 0
@@ -116,7 +122,7 @@ export function subscribeLogStream(options) {
       if (source !== next) return
       // 服务端 event:error 是带 data 的 MessageEvent；连接层错误是普通 Event
       if (typeof event.data === 'string' && event.data !== '') {
-        let message = '日志流异常'
+        let message = t('error.logStream')
         try {
           const payload = JSON.parse(event.data)
           if (payload !== null && typeof payload.message === 'string') message = payload.message

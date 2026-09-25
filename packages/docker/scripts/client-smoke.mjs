@@ -915,7 +915,9 @@ await test('注入清单快照：本插件注入过的服务全集（加可选�
   const exports_ = registration.factory((spec) => SEED[spec])
   const { ctx, state } = makeClientCtx({ ttyConnbar: false, ttyTerminal: false })
   const dispose = exports_.apply(ctx)
-  assert.deepEqual(state.injected.sort(), ['sessions', 'sidebarRight', 'sidebarRightTabs', 'ttyConnbar', 'ttyPanel', 'ttyTerminal'])
+  // locale 是 i18n 的动态注入（docs/i18n.md）：夹具**刻意不为它回调** = 老宿主那条路，
+  // 渲染走 zh 兜底，所以本文件里的中文断言照旧成立。
+  assert.deepEqual(state.injected.sort(), ['locale', 'sessions', 'sidebarRight', 'sidebarRightTabs', 'ttyConnbar', 'ttyPanel', 'ttyTerminal'])
   dispose()
 })
 
@@ -1681,8 +1683,12 @@ await test('总览：入口与文案装配进 bundle（只读页，不做跨目�
    * 总览里不再渲染「操作失败」那条单目标失败横幅：它讲的是当前这一个目标，而总览自己按
    * 目标归因（红卡 + 上方不可达横幅）——两条一起出现，同一个 SSH 超时会被看成两个故障。
    * 这条正则贴着压缩后的形状（和其它静态断言一样），minifier 一变就会显式失败。
+   *
+   * i18n 迁移后文案进了目录：这里从「钉中文字面量」改成「钉键名」——断言的**结构**没变
+   * （仍然是「总览短路在横幅之前」），只是横幅标题从内联字符串变成了 `t('banner.actionFailed')`。
+   * 渲染出来的文案由上面的 catalog 断言与各视图用例覆盖。
    */
-  assert.match(decoded, /[\w$]+===""\|\|[\w$]+==="overview"\?null:[\s\S]{0,60}操作失败/, '总览里不该再渲染单目标失败横幅')
+  assert.match(decoded, /[\w$]+===""\|\|[\w$]+==="overview"\?null:[\s\S]{0,60}actionFailed/, '总览里不该再渲染单目标失败横幅')
 })
 
 await test('总览：计数口径与列表页「运行中」一致，异常表只收 unhealthy / restarting', () => {
