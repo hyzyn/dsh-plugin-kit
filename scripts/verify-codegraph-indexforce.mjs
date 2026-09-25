@@ -141,7 +141,7 @@ try {
    *
    * 这个坑是「静态守卫测不出来」的典型：`test/verify-scripts-safety.test.ts` 只能断言
    * 「脚本里有 cpSync / isolatedHome / realPatchBefore」，断言不了「拷两次不会崩」——
-   * 真机脚本的正确性只能靠**跑一遍**。CG48 记的就是这次：CG45 给本脚本加的隔离从没被
+   * 真机脚本的正确性只能靠**跑一遍**。codegraph CG48 记的就是这次：codegraph CG45 给本脚本加的隔离从没被
    * 运行过，一跑就崩。
    */
   const syncIsolatedProfile = () => {

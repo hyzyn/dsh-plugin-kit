@@ -5,8 +5,12 @@
 > 包括原文里 2026-09-20 复核时逐项标注的「已经做掉的 / 仍缺的」。
 > 缺陷仍按 `Dxx` 编号记在 DEFECTS.md 的索引表里；本文每一项在动手前先转成可验收条目
 > （做完回填「落点 + 门槛」），不要只停留在规划里。
+>
+> **2026-09-25 分档**：跳板机一项**要同时改 tty 与 docker 两套连接构造**，已按
+> [docs/conventions.md 的边界判据](../../docs/conventions.md#l0--l1-的边界判据)上提到项目级
+> [ROADMAP.md](../../ROADMAP.md)（两包原文都在那里逐字保留）。本文只留「改 tty 一个包就能做完」的项。
 
-## 待办（8 项）
+## 待办（7 项）
 
 > 下面 7 条是**规划**，不是缺陷——单人项目不另开 Issue，待办就记在这里，做完打勾。
 > 新发现的缺陷也接着编号记在本文，不要只留在对话里。
@@ -18,9 +22,6 @@
   `localPort`）一并拷走，且 tmux socket（`-L dsh-tty`）全 profile 共用。本次只做了
   「可诊断 + 文档」。**待做**：复制时自动错开/停用隧道端口（或只提示）；保存隧道时探测端口
   占用；tmux socket 按 profile 命名（`dsh-tty-<profile>`）。*（2026-09-24 新增）*
-- **跳板机（ProxyJump / ProxyCommand）** —— `ssh-config.ts` 明写忽略、`buildConnectConfig` 从不设
-  ssh2 的 `sock`；企业内网主机几乎都靠 bastion。**短期至少做到**：导入时跳过依赖跳板机的块并提示，
-  不要静默产出一条注定 20s 超时的连接簿条目。*（复核：仍未做，`ssh-config.ts:9` 的行为没变）*
 - **agent 侧没有 `tty_open` / `tty_close`** —— ✅ **已做（0.20.0）**：`tty_open` 开本地会话
   （可带 `command` / `persistName`），`tty_close` 关自己开的；agent 开的会话是**面板里的普通
   标签**（用户可见可接管），并豁免孤儿回收（理由见 [DEFECTS.md](./DEFECTS.md) §2.2「设计决定：agent 自开终端」）。同时补了
@@ -41,3 +42,7 @@
   带浏览器的 CI job，要么继续把 UI 纯逻辑外抽成可单测模块。*（复核：CI 仍未跑 `preview.mjs`；
   「外抽」这条路已多一个——D49 落地的 `client-src/stats-bar.js` 带 17 条单测，现在这类模块共
   4 个：`stats-bar` / `status-line` / `dock-owner` / `current-session`，各有同名测试文件）*
+
+## 已上提到项目级（不在本文展开）
+
+跳板机（ProxyJump / ProxyCommand）—— 与 docker 侧同因，见 [项目级 ROADMAP.md](../../ROADMAP.md) 第 2 项。

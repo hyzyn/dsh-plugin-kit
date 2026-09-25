@@ -12,7 +12,7 @@
 - **索引判定取 `.codegraph/*.db` 且与 CLI 同口径向上解析**：从目标目录向上（到 git 根为止）找第一个带索引库的 `.codegraph/`，命中根即项目根——monorepo 子目录里的会话不再被误判「未索引」。只看目录存在会把 codegraph CLI 自身的安装目录 `~/.codegraph` 判成项目索引，托管行随之落在未索引 cwd 上——实测该状态下 `codegraph_explore` 的 required 由 `["query"]` 变为 `["query","projectPath"]`。非真索引时不改写现有 cwd，卡片给出 `indexState` 与原因。
 - **写入纪律**：对 `~/.dsh/cordis.patch.yml` 的每次写都带 mtime+size 盖章复核（dsh-mcp 同款 CAS，≤3 次重读）；复用 dsh-mcp 区块时只定点改 codegraph 行自己的 `cwd:` 一行，区块里的注释、其它服务器行、loader 合法的 override 条目逐字节保留；区块损坏时拒绝追加第二个区块（serverName 撞名会让 codegraph MCP 整体加载失败），把原因报给卡片。
 - **托管行 cwd 跟随活动会话**：`followSession`（默认开）在会话切到有效索引项目时对齐托管行，否则回落到绑定路径；绑定路径由「设为默认项目」写入 settings 命名空间 `codegraph` 并把 `followSession` 置 false（显式指定优先于会话跟随）。会话上报失败会退避重试，不再一次抖动就永久失效。
-- **可选的 per-agent MCP 隔离**（`mcpScope: 'per-agent'`，默认 `'managed'`）：默认模式下**一台** MCP 服务器按时分复用服务所有项目（靠 `projectPath` 与跟随会话）。开启 per-agent 后，每个 agent 在**自己的 Cordis scope** 里挂一份独立的 `dsh-mcp-client`，`cwd` 固定为它自己会话目录解析出的索引根——多项目并行时不再共享一个全局 cwd，也不再需要「写盘 → 热加载 → 重建连接」那条链；全局托管行会被**挂起**（`disabled: true`，切回 managed 自动恢复）。代价是每个 agent 一个子进程（实测空 Node 基线约 40MB）。**会话目录没有可用索引时该 agent 不挂**（而不是回落到默认项目）——否则它会拿到别的项目的上下文，这正是「宣称避免、实现却没做到」的那类错误。机制实测与取舍见 [P0-PLAN.md](./P0-PLAN.md)。
+- **可选的 per-agent MCP 隔离**（`mcpScope: 'per-agent'`，默认 `'managed'`）：默认模式下**一台** MCP 服务器按时分复用服务所有项目（靠 `projectPath` 与跟随会话）。开启 per-agent 后，每个 agent 在**自己的 Cordis scope** 里挂一份独立的 `dsh-mcp-client`，`cwd` 固定为它自己会话目录解析出的索引根——多项目并行时不再共享一个全局 cwd，也不再需要「写盘 → 热加载 → 重建连接」那条链；全局托管行会被**挂起**（`disabled: true`，切回 managed 自动恢复）。代价是每个 agent 一个子进程（实测空 Node 基线约 40MB）。**会话目录没有可用索引时该 agent 不挂**（而不是回落到默认项目）——否则它会拿到别的项目的上下文，这正是「宣称避免、实现却没做到」的那类错误。机制实测与取舍见 [docs/p0-plan.md](./docs/p0-plan.md)。
 - **一键初始化**：未初始化的目录在卡片上直接点「初始化索引」跑 `codegraph init`（两步确认）——`index` / `sync` 都要求项目先 init 过，此前这是唯一还要把用户赶回终端的一步。
 - **systemPrompt 分两段，开关与门禁各自独立**：`plugin:dsh-codegraph`（order 150）与 `plugin:dsh-codegraph:usage`（order 151）；两段均以 `<command> --version` 探测为前置，`announceToAgent` / `usageGuidance` 写 settings 命名空间后即时增删 section。
 
@@ -103,7 +103,7 @@ Searched for a .codegraph/ directory starting from: /Users/you
 - **数据来源**：宿主既有的 `session/event` 事件流（只数 `tool/call`，与 `dsh-agent-instructions` / `dsh-acp` 同一个公开订阅面）。不数 `tool/result`——采纳率问的是「模型想不想用」，失败了也是想用（那是另一个问题，由诊断包回答）。
 - **分子/分母（两个口径，窄口径是主口径）**：`codegraph` 命中 `mcp__codegraph__*`；**窄口径**分母是「发现类」调用（`grep` / `glob` / `search` / `find` / `list_dir`），**宽口径**分母还包含 `read` / `view` / `open`。之所以两个都报：真实历史里 `read` 占 1956 次而 `grep` 只有 100 次，而 `read` 多半是「打开已知道要改的文件」——codegraph 替代的是「找东西」，把 `read` 算进主口径会把数字永久压在个位数（实测宽口径 2.2% vs 窄口径 28.8%）。
 - **`bash` / 媒体 / 网络类不计入分母**：模型用 bash 干的事大部分（跑测试、装依赖、git）与代码探索无关；`read_image` / `read_pdf` / `web_search` 同理（这一条是拿真实历史量过之后补的，见下）。
-- **实测数字见 [ADOPTION-AUDIT.md](./ADOPTION-AUDIT.md)**：从 177 个真实历史会话回溯——会话级 23%、窄口径 28.8%、最近三天 47%，并给出 codegraph 调用 query 的质量抽样（34/47 带具体符号名）。
+- **实测数字见 [docs/adoption-audit.md](./docs/adoption-audit.md)**：从 177 个真实历史会话回溯——会话级 23%、窄口径 28.8%、最近三天 47%，并给出 codegraph 调用 query 的质量抽样（34/47 带具体符号名）。
 - **分母为 0 显示「还没有探索类调用」而不是 0%**：「一次都没探索」与「探索了但全用 grep」是两回事。
 - **项目键 = 索引根**（`resolveIndexedRoot`），与托管行 cwd、注入门禁同一口径；所以同一个仓库的多个会话（换会话、子 agent、重启宿主）会归并成一条，而不是散成一堆没有统计意义的小样本。未索引项目也会记，但文案会标明「这个数字不代表提示词效果」，且 `/metrics` 额外给 `grouped.indexed` / `grouped.unindexed` 两组合计——未索引项目里模型本就不该用它，混进整体会得出没有意义的数字。
 - **只在内存里，宿主重启即归零**，`since` 会如实给出起点。不落盘是有意的：它是「现在要不要调提示词」的观测值，不是审计日志，落盘会把工具名与项目路径长期留在磁盘上。
@@ -122,6 +122,13 @@ Searched for a .codegraph/ directory starting from: /Users/you
     - 验证方式说明：本机全局 dsh 若不是 rc.1，可用 `--dsh-bin` 指向一份独立安装的 rc.1，并用 `--runtime-store` 把**复制出来**的临时 profile 的 `node_modules/@deepseek-ai/*` 重指到该安装的运行时——否则那些链接仍指向全局旧安装，新 cohort 的兼容性 preflight 会把整套旧运行时行判成 incompatible 而全部禁用（宿主根本起不来，与本插件无关）。
     - 另一条已跑过的真机证据：隔离 `DSH_HOME` 启动 test profile（同样做运行时重指）→ 10 个插件全部 mounted、0 行 `disabling profile plugin row`，`POST /api/dsh-codegraph/settings` 在 `per-agent` / `managed` 之间往返都是 200。
   - **`0.1.7-rc.2`（当前适配基线，2026-09-25 实测）**：cohort 从 rc.1 提到 rc.2，`peerDependencies` 与 `dsh.engines.dsh` 的下限同步提升。`node scripts/verify-codegraph-host-contract.mjs --profile test --port 3087`（本机全局就是 rc.2，无需 `--dsh-bin` / `--runtime-store`）**42/42 通过**——25 条路由、POST / loopback 门禁、`/diagnose` 分段、浏览器半体可供给、MCP 托管行写入隔离 home 补丁、`mcpScope` 在 `per-agent` / `managed` 间往返可逆且真实 `~/.dsh/cordis.patch.yml` 逐字节未变。另两项：真宿主加载 test profile 时 **10 个插件全部 mounted、0 行 `disabling profile plugin row`**；工作区 `pnpm -r typecheck` 全绿、`vitest` **960/960**、`pnpm -r build` 绿。本轮未改任何插件运行行为（只有兼容性声明、文档与 lockfile）。rc.1 → rc.2 的 lib 产物逐文件比对：`dsh-tools` 仅新增可选 `PreToolDecision.displayReason`（本仓不构造该决策）、`dsh-session-query` 仅 JSDoc、`dsh-client-ui-theme` 仅设计 token 增补，`dsh-mcp-client` / `dsh-host-webserver` / `dsh-subprocess-local` / `dsh-credentials` / `dsh-base` / `dsh-settings` / `dsh-web-app` / `dsh-headless` 逐字节相同；`dsh-app-boot` 删除了 `skippedProfileBundles` 并改了 `generateConfigSchema` 签名（去掉首参 `binName`），但那是 DSH 自己的 CLI 与 app-boot 之间的内部面，本仓无任何引用。
+
+    > ⚠️ **标注（本次未擅改）——两个测试总数不是同一次运行的产物**：本条写的是 **rc.2 那一轮验证
+    > 时点**的用例数（`960/960`）；本轮项目级文档改造之后，当前值为全仓 **56 files / 965 tests**
+    > （`packages/codegraph` 本包 14 files / 317 tests）。**两个数都不改**——当前值以
+    > [ROADMAP.md 的「2026-09-25 复测」表](./ROADMAP.md#基线本次实测)为准。
+    >
+    > 本条的「25 条路由」同理：**以命令现算为准**，别把它当契约（现算命令见 ROADMAP 复测表）。
   - **`0.1.6-alpha.2` / `0.1.5-rc.2` / `0.1.0-rc.7`（历史基线，已不支持）**：这些档位的 `settings` 服务还是旧的 `register(ns, schema)` API，而 0.1.7 线已把它换成 `SettingsForms`（`describe/update` + 导出 volatile Config）；本包的 `peerDependencies` 下限 `^0.1.7-rc.2` 也会让新宿主在安装前/启动时拒绝加载到旧宿主上。旧档位当时的证据（`0.1.6-alpha.2` 40/40、`0.1.5-rc.2` 无脚本、`0.1.0-rc.7` 审计基线）保留在 git 历史里，仅作参考。
   - `package.json` 声明 `peerDependencies: { "@deepseek-ai/dsh": "^0.1.7-rc.2" }`（并在 `peerDependenciesMeta` 标 `optional`，只压 pnpm 的 unmet-peer 噪音）。DSH 0.1.7-rc.1 起**安装前**与**启动时**都据此判定兼容性：不兼容时安装抛 `incompatible-version`、启动时该行整行 `disabled`。同时保留 `dsh.engines.dsh: ">=0.1.7-rc.2"` 作为**市场展示位**（宿主不读它，见下条），两条下限由 `scripts/check-dsh-peers.mjs` 校验一致。
   - **为什么是 peer 而不是 `engines.dsh`**：`dsh-app-boot` 只遍历 `peerDependencies` 里名为 `@deepseek-ai/dsh` 或以 `@deepseek-ai/dsh-` 开头的项，用 `semver.satisfies(runtime, range, { includePrerelease: true })` 判定（**预发布参与范围匹配**）。**但 `engines.dsh` 仍然声明**——宿主不读它，插件市场 / 社区条目却按它展示兼容性，所以保留为标准形式 `>=0.1.7-rc.2`（市场解析器只认 `>=X.Y.Z[-预发布]`），且与 peer 下限一致。证据：`dsh-app-boot/lib/index.js` 的 `evaluatePluginCompatibility`，以及 app-boot README 原文「这些检查使用 peer 声明，而不是 `engines.dsh`」。
@@ -184,10 +191,10 @@ node scripts/link-dsh-runtime.mjs     # 把 packages/* 的 @deepseek-ai/* 与 @h
 
 规划与缺陷记录（都不随包分发，只在仓库里，因此用绝对链接）：
 
-- [ROADMAP.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/packages/codegraph/ROADMAP.md)：增强路线图——P0–P3 分档、代价、架构项（per-agent 挂载 / 采纳率仪表 / 诊断包）与开工顺序。
 - [DEFECTS.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/packages/codegraph/DEFECTS.md)：缺陷编号字典——`CG01`–`CG63` 的索引（症状 + 修复/设计意图）；逐条原文、验收记录与原始待办冻结在 git 历史里（见其 §4）。
-- [ROADMAP.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/packages/codegraph/ROADMAP.md)：前瞻规划与尚未开工的待办。
-- [ADOPTION-AUDIT.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/packages/codegraph/ADOPTION-AUDIT.md)：采纳率实测——从 177 个真实历史会话算出的数字、两个口径的取舍、以及对路线图的影响。
+- [ROADMAP.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/packages/codegraph/ROADMAP.md)：增强路线图——P0–P3 分档、代价、架构项（per-agent 挂载 / 采纳率仪表 / 诊断包）与开工顺序。
+- [docs/p0-plan.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/packages/codegraph/docs/p0-plan.md)：per-agent scoped MCP 挂载的完整方案与实测（已完成项的设计文档，**移入包内 `docs/`**）。
+- [docs/adoption-audit.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/packages/codegraph/docs/adoption-audit.md)：采纳率实测——从 177 个真实历史会话算出的数字、两个口径的取舍、以及对路线图的影响（**移入包内 `docs/`**）。
 
 ## 安装到 DSH
 

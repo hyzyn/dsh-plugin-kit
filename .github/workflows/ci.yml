@@ -121,14 +121,14 @@ jobs:
           node packages/tty/scripts/sftplimits-smoke.mjs
       # dsh-docker 的三套端到端脚本（docker DEFECTS D70）：解析 / 路由 / 浏览器半体
       # 此前只在本机手跑，client.js 在 CI 里从未被执行过。三套都已 hermetic
-      # （假 ctx + 假 docker CLI + 127.0.0.1:1 立即拒绝连接，见 docker D25）且带看门狗（D71）。
+      # （假 ctx + 假 docker CLI + 127.0.0.1:1 立即拒绝连接，见 docker D25）且带看门狗（docker D71）。
       - name: dsh-docker smoke scripts
         if: matrix.os == 'ubuntu-latest'
         run: |
           node packages/docker/scripts/smoke.mjs
           node packages/docker/scripts/route-smoke.mjs
           node packages/docker/scripts/client-smoke.mjs
-      # Windows 端到端（DEFECTS D45 的最后一格）：真实 cmd.exe / ConPTY 的
+      # Windows 端到端（tty DEFECTS D45 的最后一格）：真实 cmd.exe / ConPTY 的
       # spawn → ready → 输入回显 → kill → 重开。脚本在非 Windows 上自行跳过，
       # 所以只在这个 job 上有意义（integration.mjs 的 POSIX 用例在 Windows 上不适用）。
       - name: dsh-tty Windows smoke

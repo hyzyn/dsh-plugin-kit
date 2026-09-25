@@ -25,17 +25,18 @@
 
 <p align="center">
 
-[是什么](#是什么) · [功能插件](#功能插件) · [快速开始](#快速开始) · [开发新插件](#开发新插件) · [常见问题](#常见问题) · [已知限制](#已知限制) · [参与贡献](#参与贡献)
+[是什么](#是什么) · [包索引](#包索引) · [快速开始](#快速开始) · [开发新插件](#开发新插件) · [文档地图](#文档地图) · [参与贡献](#参与贡献)
 
 </p>
 
 ## 是什么
 
-dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合：MCP 服务器配置、Profile 管理、RSS / 新闻聚合、全局搜索、Codegraph 集成、终端面板（本地 + SSH 终端、SFTP 文件传输）、Docker 容器面板（本机 / SSH 主机上的容器与镜像查看，默认只读）、环境变量 / 密钥管理、Prompt 管理，外加一条命令生成新插件的开发脚手架。所有插件都走官方 profile 机制挂载到 `dsh web`，不改 DSH 源码；可以逐个安装，也可以用聚合包一次装齐。
+dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合。所有插件都走官方 profile
+机制挂载到 `dsh web`，**不改 DSH 源码**；可以逐个安装，也可以用聚合包一次装齐。
 
 ![SFTP 双栏：左本机 / 右远程，行内直传](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-sftp-dual.png)
 
-![终端面板：侧边栏入口打开 xterm.js 多标签终端](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty.png)
+![Docker 容器面板：会话右侧栏标签，与对话同屏](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-docker-dock.png)
 
 | 能力 | 原生 dsh web | dsh-plugin-kit 全家桶 |
 | --- | --- | --- |
@@ -44,182 +45,76 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 | RSS 聚合 | 无 | 多源订阅 + 每日「今日值得读」+ 可选 AI 摘要（跟随宿主默认模型，零配置） |
 | 全局搜索 | 仅会话标题/内容 | 侧边栏统一全文搜索历史会话、Prompt、MCP 工具与设置面板 |
 | Codegraph 集成 | 无 | 代码图谱卡片：索引状态 / 符号搜索 / 调用链 / 影响面 / 一键 sync-index |
-| 终端面板 | 无 | 侧边栏「终端」入口 + xterm.js 多标签真实 PTY 终端（vim/htop/dev server）；SSH 直连远程主机（连接簿、指纹钉扎、断线重连）；**SFTP 文件传输**（单窗体 / 左本机右远程双栏直传、拖拽上传）；agent 配套 `tty_*` / `sftp_*` 工具 |
-| Docker 容器面板 | 无 | 侧边栏「容器」入口 + 多目标（本机 / SSH）容器列表（搜索 / 状态筛选）、启停删、详情、日志（快照 + **SSE 实时跟随**）、资源占用（快照 + **实时跟随 + sparkline**）、**多目标总览（只读）**、**Compose 项目视图 + 项目级聚合日志**、镜像列表与详情（层 / 构建历史）、**`docker pull` 进度流**、删除 / dangling 清理；**默认只读**，变更与 exec 需显式开关；agent 配套 `docker_*` 工具 |
+| 终端面板 | 无 | xterm.js 多标签真实 PTY（vim/htop/dev server）；SSH 直连（连接簿、指纹钉扎、断线重连）；SFTP 单窗体 / 双栏直传；`tty_*` / `sftp_*` 工具 |
+| Docker 容器面板 | 无 | 容器 / 镜像 / Compose / 实时日志与统计 / 多目标总览；**默认只读**，变更与 exec 需显式开关；`docker_*` 工具 |
 | 环境变量管理 | 命令行 / 手改配置 | Web GUI 卡片，保存即写入 `process.env` |
 | Prompt 管理 | 手改配置 | 可视化编辑 + 版本管理 / A/B 测试 / 导出分享 |
-| 插件开发 | 手写样板 | `pnpm create-plugin` 脚手架 + `@hyzyn/dsh-kit` 类型助手与宿主半体共享工具库（HTTP 围栏 / 托管区块 / !!js 表达式） |
+| 插件开发 | 手写样板 | `pnpm create-plugin` 脚手架 + `@hyzyn/dsh-kit` 共享工具库 |
 
-## 功能插件
+> **每个插件的完整功能、截图与注意事项在它自己的 README 里**（见下表）。本文件只讲「是什么 + 装哪个」。
 
-### MCP 服务器配置（@hyzyn/dsh-mcp）
+## 包索引
 
-- **做什么**：给 DSH 添加 MCP 服务器，保存后 1~2 秒内热加载为 `mcp__<服务器名>__<工具名>` 工具，模型即可直接调用，无需重启。
-- **怎么用**：打开 插件配置里的「MCP 服务器配置」→ 添加服务器（选传输方式）→（建议先点「连接测试」）→ 保存。
-- **支持**：两种传输——stdio（本地子进程，如 `npx -y @modelcontextprotocol/server-filesystem`）与 streamable-http（远程服务）；`js:` 前缀表达式（如 `js:process.env.GITHUB_TOKEN`）；启用 / 停用、编辑、删除；状态徽章。
-- **存哪里**：`~/.dsh/cordis.patch.yml` 的托管区块。
-- **注意**：**不要**手工往该文件里追加插件行，否则启动时报 `duplicate loader entry id` 直接退出。
+**1 个共享库 + 10 个功能插件 + 1 个聚合包**；包之间的关系、依赖方向与跨插件协作见
+[docs/architecture.md](docs/architecture.md)。
 
-![MCP 服务器配置插件](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-mcp.png)
-
-### Profile 管理（@hyzyn/dsh-profile）
-
-- **做什么**：可视化查看 `~/.dsh/profiles` 下的全部 DSH profile，支持创建、复制、重命名、删除，方便维护多套 DSH 环境。
-- **怎么用**：打开 插件配置里的「Profile 管理」→ 查看 profile 列表 → 新建 / 复制 / 重命名 / 删除；可为每个 profile 设置端口并复制带 `--port` 的启动命令。
-- **支持**：初始化状态、bundle 层与依赖展示；基础模板 / `web` / `headless` 模板新建；复制排除 `node_modules` 与锁文件并自动安装依赖；重命名；端口配置与复制启动命令。
-- **存哪里**：直接管理 `~/.dsh/profiles/<name>` 目录。
-- **注意**：删除为递归删除，操作前请二次确认；内置的 `web` 默认 profile 不允许删除，`headless` 可以删除；新建后首次使用 `dsh plugin --profile <name> add ...` 时按需安装依赖。
-
-![Profile 管理配置界面](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-profile.png)
-
-![命令行启动 headless profile 示例](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-profile-example-headless1.png)
-
-### RSS / 新闻聚合（@hyzyn/dsh-rss）
-
-- **做什么**：订阅多个 RSS / Atom 源，每天自动汇总成一篇「今日值得读」Markdown，并注入 systemPrompt 供模型直接引用。
-- **怎么用**：安装后可在侧边栏「新建会话」下方点击「今日值得读」直接查看新闻；也可打开 插件配置里的「RSS / 新闻聚合」勾选内置渠道、添加自定义渠道（保存时即时校验地址）、从 [awesome-rsshub-routes](https://jackyst0.github.io/awesome-rsshub-routes/) 订阅源目录搜索并一键添加，维护新闻分类与聚合设置，保存后自动刷新。
-- **内置渠道**：阮一峰、少数派、Solidot、Hacker News、掘金、IT之家、36氪（36氪官方 feed 被反爬拦截，内置为第三方 RSSHub 镜像），勾选即展示、取消勾选即不抓取。
-- **自定义渠道**：填写任意 RSS / Atom 地址，保存时真实抓取校验——官网首页、非 feed、抓不到内容的地址会报错且不保存。
-- **订阅源目录**：内置 awesome-rsshub-routes 精选目录（官方 RSS 与 RSSHub 路由，98 条 / 12 分类），可搜索 / 按分类筛选并一键加入自定义渠道；快照随插件内置，运行时每 12 小时从上游 OPML 静默刷新。
-- **新闻分类**：渠道的分类从「新闻分类」列表里选择；digest（Markdown、systemPrompt、弹窗）按分类分组展示，保存时自动把使用中的分类合并进列表。
-- **AI 摘要（可选）**：卡片里开启后，每天 digest 的条目由宿主已配置的默认模型各生成一句中文摘要（无需填 API key；也可在卡片里成对指定 provider/model 用别的模型）。结果按条目缓存 30 天，重复生成不重复计费；单条失败自动回落原文截断，不影响其它条目。摘要同时进 Markdown、弹窗、搜索与 systemPrompt。
-- **支持**：RSS 2.0 / Atom 解析、按来源去重、每源条数限制、每日定时生成、启动补生成、自定义输出目录、内置渠道库。
-- **存哪里**：`~/.dsh/rss-digest/YYYY-MM-DD.md`（可用 `DSH_RSS_DIGEST_DIR` 覆盖）。
-- **注意**：首次安装启动时会联网抓取一次；某个源不可达时会在 digest 的「抓取失败」里列出，不影响其它源。AI 摘要开启时生成耗时取决于模型响应（失败条目回落，不会卡死生成）。
-
-![RSS / 新闻聚合设置卡片](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-rss-setting.png)
-
-![侧边栏「今日值得读」弹窗：按分类分组，来源带「查看更多」直达官网](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-rss-view.png)
-
-![查询今日新闻：向模型提问「今日值得读」直接引用当天 digest](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-rss-query-news.png)
-
-### 全局搜索（@hyzyn/dsh-search）
-
-- **做什么**：在 Web GUI 侧边栏加一个「全局搜索」入口（⌘/Ctrl+K 同样唤出），打开的是命令面板式搜索窗：分组列出最近会话、历史会话全文命中、Prompt、MCP 工具、快捷操作与设置大类。
-- **怎么用**：点侧边栏搜索框或按 ⌘/Ctrl+K 打开——**打开即出内容**（最近会话 + 快捷操作 + 设置大类，零延迟，不发请求）；输入关键词后本地候选即时过滤、宿主全文命中异步补齐。↑↓ 选择、↵ 打开、esc 关闭；⌥1-9 直接打开第 N 条最近会话，⌥N / ⌥O / ⌥, 触发新会话 / 打开文件夹 / 打开设置。点会话会打开并尝试定位到匹配文字；点 Prompt / MCP 工具跳对应设置卡片；点设置大类跳到设置窗对应分区。
-- **支持**：历史会话全文搜索（走 DSH 自带的 sessionQuery 索引）+ 会话标题即时候选；设置大类实时读客户端 slots 注册表（第三方插件注册的「皮肤」「宠物」「侧边卡片」等同样在列，顺序与设置窗导航一致）；Prompt 读 `~/.dsh/prompts.yml` 托管区块；MCP 工具按 `mcp__` 前缀枚举并标注所属 server；结果关键词高亮；结果数量可配置。
-- **存哪里**：无独立配置。
-- **注意**：需要宿主已安装 `sessionQuery` 服务；缺失时会话搜索返回空列表。若 `session-query` 全文索引配置为 `openAt: "never"`，历史会话会自动降级为逐会话扫描；会话结果会过滤为当前可跳转的可见会话。「新会话」复用 GUI 自己的 `uiWorkspace.startSession()`；「打开文件夹」在未安装目录选择器插件时不出现。
-
-![全局搜索插件](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-search.png)
-
-![全局搜索的检索结果（最近会话 / 历史会话 / Prompt / MCP 工具 / 设置分组）](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-search-query.png)
-
-### Codegraph 集成（@hyzyn/dsh-codegraph）
-
-- **做什么**：代码图谱集成——插件配置里的「Codegraph」卡片提供索引状态、符号搜索、callers / callees / impact 查看和一键 sync / index；安装后自动向 systemPrompt 注入 CodeGraph 使用指引，模型在已索引项目里优先用 `codegraph_explore` / `codegraph explore` 查询代码而不是 grep / read。
-- **怎么用**：打开 插件配置里的「Codegraph」→ 查看索引状态、搜索符号、点击结果查看源码与调用链 / 影响面、手动 Sync / 重建索引。
-- **支持**：索引状态（版本、文件 / 符号 / 边数量、最后索引时间、待同步变更）；符号搜索与 node / callers / callees / impact 详情；**默认路径跟随当前活动会话的工作目录**（切换项目会话自动切换，手动输入可临时覆盖）；一键增量 sync 与全量重建。
-- **MCP 托管（默认开）**：DSH 的 MCP 客户端不声明 roots，`codegraph serve --mcp` 只能从工作目录向上找 `.codegraph/`——宿主若从家目录启动，模型调用 `mcp__codegraph__*` 会拿到 "No CodeGraph project is loaded"。本插件自动在 `~/.dsh/cordis.patch.yml` 托管 codegraph MCP 服务器行并把 cwd 对齐默认项目路径（卡片「设为默认项目」一键切换，保存即热重启 MCP 服务器）；已在 MCP 卡片配置过的行只补 cwd 不动其它字段。可用 `mcpIntegration: false` 关闭。
-- **存哪里**：索引在项目 `.codegraph/` 目录（由 `codegraph index` 生成）；默认项目路径与各开关持久化在本插件 entry 的 profile 配置（写进当前 profile 的 `cordis.patch.yml` 用户层）。
-- **注意**：查询目标项目需要先有 Codegraph 索引；未索引项目会返回指引改用常规工具。索引 / 重建为本地 CLI 操作，消耗真实磁盘与 CPU。一台 codegraph MCP 服务器同一时刻只挂载一个默认项目，其它已索引项目可在工具调用里传 `projectPath` 查询。
-- **兼容与调优**：当前适配基线 DSH `0.1.7-rc.2`（声明 `peerDependencies: @deepseek-ai/dsh ^0.1.7-rc.2`）+ codegraph CLI `1.5.0`；CLI 命令与旗标见包内 README。大仓库全量重建可调 `indexTimeoutMs`（默认 600s，查询档 `cliTimeoutMs` 默认 60s），CLI 拒绝索引家目录 / 文件系统根时开 `indexForce`。
-
-![Codegraph 设置卡片](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-codegraph.png)
-
-### 终端面板（@hyzyn/dsh-tty）
-
-- **做什么**：在 Web GUI 侧边栏加一个「终端」入口，点击打开大弹窗，内嵌 xterm.js 全交互终端（node-pty 真实 PTY），支持多标签页，可运行任意命令与 TUI 程序（vim / htop / dev server 等）；还能 **SSH 直连远程主机**（连接簿 / 主机指纹钉扎 / 断线自动重连 / 端口转发隧道），以及 **SFTP 文件传输**——单窗体或「左本机 / 右远程」双栏两种界面，上传 / 下载 / 重命名 / 删除一应俱全。
-- **怎么用**：安装后重启 `dsh web`，侧边栏点击「终端」→ 自动创建第一个终端（默认 `$SHELL`）→ 标签栏「+」新建（本地终端 / SSH 连接簿 / SSH 连接…）、✕ 关闭；新标签默认在当前 DSH 会话工作目录打开；SSH 标签的连接栏提供 SFTP / 隧道入口；Ctrl+F 终端内搜索，工具栏清屏/复制/粘贴。
-- **SFTP 两种界面（设置可选）**：`dialog` 单窗体——远程目录浏览、多选/拖拽上传（文件夹递归）、下载、重命名、删除；`dual` 双栏——左本机 / 右远程，行内 `⇨ / ⇦` 由宿主服务端把两个路径流式直传（目录递归、同名覆盖，字节不经过浏览器）。
-- **最小化（状态并入侧边栏入口）**：点弹窗外空白处、按 Esc 或标题栏「—」把面板收起，PTY 会话与输出缓冲保持存活；侧边栏「终端」入口显示会话数徽标与状态点，点击入口恢复；悬浮条 ✕ / 标题栏 ✕ 才真正关闭并结束全部会话。
-- **支持**：多标签页（单连接多会话）；cwd 跟随当前会话；TERM=xterm-256color 注入（TUI 应用不退化）；断线自动重连（会话保活 + 输出缓冲回放）；SSH agent / 密钥 / 密码认证，`env:VAR` 密钥引用不落盘；端口转发隧道（-L/-R，宿主自持重连）；下行背压保护；loopback 信任围栏；并发上限（默认 4）；配置保存即热生效；agent 工具集（`tty_list` / `tty_capture` / `tty_screen` / `tty_expect` / `tty_send` / `sftp_*` / `tunnel_list`）。
-- **存哪里**：本插件 entry 的 profile 配置，写进当前 profile 的 `cordis.patch.yml` 用户层——「插件配置 → 终端面板」卡片读写的就是它。
-- **0.19.0 修了什么**：48 项审计修复——SFTP 覆盖上传改为临时分片 + 原子 rename（失败不再毁原文件）、断线在途 spawn 不再留僵尸会话、known_hosts 导入不再误报「中间人」、明文口令不再落浏览器存储、Windows 强杀本地 PTY 不再崩宿主、现代 Linux（bash ≥4.4）的 `tty_capture{last}` / `tty_expect` 恢复可用。清单与索引见 `packages/tty/DEFECTS.md`。
-- **注意**：resize 依赖 DSH 内部 terminal handle 结构（已知限制）；输出为 utf8 文本流，`cat` 二进制文件会有替换字符。详细见 `packages/tty/README.md`。
-
-![终端面板：侧边栏入口打开 xterm.js 多标签终端，紧凑两行头部（标签 + SSH 连接栏）](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty.png)
-
-![SFTP 双栏：左本机 / 右远程，行内 ⇨/⇦ 服务端直传（sftpStyle=dual）](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-sftp-dual.png)
-
-![SFTP 单窗体：远程目录浏览 + 下载/重命名/删除](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-sftp-dialog.png)
-
-![终端面板设置卡片：shell / TERM / SFTP 风格 / 并发上限等保存即热生效](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-setting.png)
-
-### Docker 容器面板（@hyzyn/dsh-docker）
-
-- **做什么**：在 Web GUI 侧边栏加一个「容器」入口，面板**作为会话右侧栏标签与对话同屏**（老宿主自动退回 dock / 模态），查看**本机或 SSH 主机**上的容器列表（状态 / 健康 / 端口 / compose 项目）、**Compose 项目视图（项目 → 服务 → 容器 + 项目级聚合日志）**、容器详情、日志尾部、资源占用（**实时跟随 + 迷你趋势图**）、**多目标总览**（一屏汇总全部目标的容器计数与异常容器）与镜像（列表 + 详情：层 / 构建历史）；显式打开开关后可启停删容器、拉取 / 删除 / 清理镜像、执行一次性 `docker exec`。
-- **怎么用**：安装后重启 `dsh web`，侧边栏点击「容器」→ 选择目标（本机 / SSH）→ 工具条三段切换「容器 / 镜像 / Compose」：容器卡片（镜像 / ID / 端口 / 创建 + 图标操作条）支持搜索与状态筛选，点卡片进整栏详情（概览 / 日志 / 统计，统计页有 **FOLLOW 实时跟随 + 迷你趋势图**），日志页有 LINES / TIMESTAMPS / AUTO REFRESH / **FOLLOW（实时跟随）** 工具条与过滤行；镜像页每行可看**详情（层 / 构建历史）**、删除，工具条有**拉取镜像（图标，SSE 逐层进度）**与「清理 dangling」；Compose 页按项目分组，点进项目看服务表或**项目级聚合日志**（客户端按 `[service]` 前缀混流）。插件配置里的「Docker 容器面板」维护目标与开关，保存即热生效。
-- **终端按钮**：装了 tty ≥ 0.15.0 时，卡片第一个图标是「终端」——点击在**面板底部弹出终端抽屉**（tty 的 `ttyTerminal.mount` 就地嵌入），看着日志直接进容器敲命令，面板不收起；tty 为 0.14.0 时退回「新开终端标签 + 收面板」，更旧或未装则退化为复制命令。
-- **上下文入口**：装了 tty ≥ 0.13.0 时，SSH 标签的连接栏（SFTP 旁）会出现「容器」按钮——点击直接用当前会话那台主机打开面板（插件加载期间一直显示；目标在点击时按连接簿名 / `host:port` 解析，没配目标会提示怎么配）。
-- **目标**：`kind=local` 走宿主所在机器的 docker CLI；`kind=ssh` 可直接**引用 tty 连接簿条目名**（数据级复用，tty 零改动；未装 tty 时用内联 host/username），经 ssh2 exec channel 在远端执行，主机指纹 TOFU 钉扎并以 tty 已有记录作种子。
-- **跨目标与需关注**：总览页一屏汇总全部目标（计数卡 + 跨目标异常表，单目标失败不影响其余）；「需关注」口径覆盖不健康 / 反复重启 / **被 OOM 杀** / 非零退出 / 僵死，agent 侧 `docker_attention` 与 `docker_ps target:'*'` 同样支持跨目标聚合。
-- **支持**：容器列表（`all` 含已停止）、`docker inspect` 详情、日志（tail / 时间戳 / since）、**实时日志流**（FOLLOW 开关走 SSE `docker logs --follow`，本地与 SSH 目标都支持，自动滚动 / 过滤着色与快照共用，容器退出自动切回快照）、`docker stats` **快照 + 实时流**（SSE，60 点 sparkline 看 CPU / 内存趋势；这条流不会自然结束，前端主动断）、**Compose 项目视图**（按 `composeProject` / `composeService` 分组，项目级聚合日志在客户端按 `[service]` 前缀混流）、**容器事件活动流**（SSE `docker events` → 列表头部「活动」条 + 500ms 防抖刷新容器列表）、**网络与卷**（列表 + 详情：子网 / 网关 / 接入容器、挂载点 / 选项 / 标签；删除与 prune 需 `allowMutations`）、**多目标总览**（不选目标一屏看全部主机：计数卡 + 异常容器置顶表；并行取数、单目标失败只影响自己那一格；只读、无跨目标操作）、以及**容器列表多选的临时聚合日志**（勾 2~8 个容器即开混流；**SSH 目标上限 6**——一条连接要同时装下实时流与「刷新列表」这类短命令）、镜像列表 + **镜像详情**（`docker image inspect` 的层 / 大小 + `docker history` 构建历史）、**`docker pull` 进度流**（SSE 逐层）、镜像删除 / dangling 清理（需 `allowMutations`）、一次性 exec（返回退出码与 stdout/stderr）；`dockerBin` 可填 `podman`；输出超限自动截断。四条 SSE 长流（日志 / 统计 / 事件 / 拉取）共用同一份 `openSseStream` 基建（心跳 / 活跃流登记 / 断开清理）。
-- **安全模型（重点）**：docker socket ≈ 目标主机 root 权限，因此**默认只读**——`allowMutations` 未开启时启停删被拒（HTTP 403，工具不注册），`allowExec` 未开启时 exec 被拒；容器名 / ID 过白名单校验，命令一律 argv 构造 + 单引号转义；密码 / 口令建议 `env:VAR` 引用且永不回传浏览器。
-- **存哪里**：本插件 entry 的 profile 配置，写进当前 profile 的 `cordis.patch.yml` 用户层（旧的 `~/.dsh/settings.yaml` section 已由 DSH 一次性导入）。
-- **注意**：没有交互式 TTY（exec 是一次性命令，交互排障请到终端面板跑 `docker exec -it`），流式能力只在浏览器面板里（agent 的 `docker_logs` / `docker_stats` / `docker_image_pull` 保持快照语义），没有 `docker build` / `save` / `load` / `push`，Compose 是只读视图（不提供 `compose up/down`），多目标总览是**只读**汇总（没有跨目标操作，启停删仍需逐目标）；`docker rm` 与 `docker image rm` 都不带 `-f`，运行中容器 / 被引用的镜像会报错并给出提示。详细见 `packages/docker/README.md`。
-
-### 环境变量 / 密钥管理（@hyzyn/dsh-env）
-
-- **做什么**：在 Web GUI 里增删改环境变量和密钥，保存后立即写入当前进程的 `process.env`，宿主和之后启动的子进程都能读到，无需重启。
-- **怎么用**：打开 插件配置里的「环境变量 / 密钥管理」→ 添加键值 →（敏感条目勾选「密钥」，值不回传浏览器，留空保存＝保持已存值）→ 保存。
-- **支持**：普通字符串；`js:` 前缀表达式（如 `js:process.env.API_KEY`）；密钥值自动迁入官方凭据存储 `.credentials.yaml`（write-only：接口不回明文，env 文件只留清单；refs 已有同名键不覆盖，留文件并提示）。
-- **存哪里**：`~/.dsh/env.yml` 的托管区块（自动生成，请勿手改）。
-- **注意**：键名只允许字母 / 数字 / 下划线，且不能重复。
-
-![环境变量 / 密钥管理插件](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-env.png)
-
-### Prompt 管理（@hyzyn/dsh-prompt）
-
-- **做什么**：可视化编辑 systemPrompt，启用后其内容作为 systemPrompt section 注入，保存即生效。
-- **怎么用**：打开 插件配置里的「Prompt 管理」→ 新建 / 编辑 Prompt（可保存多个版本）→ 启用。
-- **支持**：版本切换 / 回滚；A/B 测试（为同一 Prompt 选 A/B 两版并按权重随机命中）；导出 JSON / Markdown、一键复制分享、从 JSON 导入。
-- **存哪里**：`~/.dsh/prompts.yml` 的托管区块。
-- **注意**：每个 Prompt 至少一个版本，单版本内容 ≤ 500KB。
-
-![Prompt 管理插件](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-prompt.png)
+| 包 | 干什么 | 文档 |
+|---|---|---|
+| `@hyzyn/dsh-kit` | **库**（非插件）：宿主半体共享工具——HTTP 回环围栏、托管区块、`!!js` 表达式、服务读取 | [README](packages/kit/README.md) · [DEFECTS](packages/kit/DEFECTS.md) |
+| `@hyzyn/dsh-mcp` | MCP 服务器配置卡片，保存后热加载 | [README](packages/mcp/README.md) |
+| `@hyzyn/dsh-env` | 环境变量 / 密钥管理 | [README](packages/env/README.md) |
+| `@hyzyn/dsh-prompt` | systemPrompt 编辑 / 版本 / A/B | [README](packages/prompt/README.md) |
+| `@hyzyn/dsh-profile` | `~/.dsh/profiles` 图形化管理 | [README](packages/profile/README.md) |
+| `@hyzyn/dsh-rss` | RSS 聚合 → 每日「今日值得读」 | [README](packages/rss/README.md) |
+| `@hyzyn/dsh-search` | 侧边栏全局搜索 | [README](packages/search/README.md) |
+| `@hyzyn/dsh-codegraph` | 代码图谱卡片 + MCP 托管 + 采纳率测量 | [README](packages/codegraph/README.md) · [DEFECTS](packages/codegraph/DEFECTS.md) · [ROADMAP](packages/codegraph/ROADMAP.md) |
+| `@hyzyn/dsh-tty` | 终端面板（PTY / SSH / SFTP / 隧道） | [README](packages/tty/README.md) · [DEFECTS](packages/tty/DEFECTS.md) · [ROADMAP](packages/tty/ROADMAP.md) |
+| `@hyzyn/dsh-docker` | Docker 容器面板（本机 / SSH），默认只读 | [README](packages/docker/README.md) · [DEFECTS](packages/docker/DEFECTS.md) · [ROADMAP](packages/docker/ROADMAP.md) |
+| `@hyzyn/dsh-kit-settings` | 在官方「设置」里补一行「插件配置」入口 | [README](packages/kit-settings/README.md) |
+| `@hyzyn/dsh-all` | 聚合安装包：一条 bundle patch 挂载上面 10 个插件 | [README](packages/all/README.md) |
 
 ## 快速开始
 
 ### 系统要求
 
-- 已安装 DeepSeek Harness，`dsh web` 可正常启动。**当前适配基线为 DSH `0.1.7-rc.2`**：settings 存储改为「当前 profile 的插件 entry 配置」，兼容性改由 `peerDependencies` 在安装前与启动时强制校验；`0.1.6-alpha.2` 及更早不再支持。
-- 每个可安装插件都在 `peerDependencies` 声明 `@deepseek-ai/dsh: ^0.1.7-rc.2`。DSH 0.1.7-rc.1 起在**安装前**（`incompatible-version`）与**启动时**（该行整行 `disabled`）都用它判定兼容性，预发布参与范围匹配。同时保留 `dsh.engines.dsh: ">=0.1.7-rc.2"` 作为**市场展示位**：宿主不读它（app-boot README 原文「这些检查使用 peer 声明，而不是 engines.dsh」），但插件市场 / 社区条目那类外部消费方仍按它展示兼容性——值必须与 peer 下限一致，否则就是一条与事实不符的声明。需要临时放行某个确切版本组合时，把豁免写进 profile 自己的 `compatibility.json`：`dsh plugin --profile <p> allow-version <pkg@ver> --dsh-version <ver> --accept-risk`。CI 跑 `node scripts/check-dsh-peers.mjs` 兜底：它同时校验 peer 下限、engines 下限与 `dsh.manifestVersion`，并可按 `--app-boot <path>` 直接调 DSH 官方判定器复核。
+- 已安装 DeepSeek Harness，`dsh web` 可正常启动。**当前适配基线为 DSH `0.1.7-rc.2`**：
+  settings 存储改为「当前 profile 的插件 entry 配置」，兼容性改由 `peerDependencies`
+  在安装前与启动时强制校验；`0.1.6-alpha.2` 及更早不再支持。
+- 每个可安装插件都在 `peerDependencies` 声明 `@deepseek-ai/dsh: ^0.1.7-rc.2`，DSH 在**安装前**与
+  **启动时**都用它判定兼容性；同时保留 `dsh.engines.dsh` 作**市场展示位**（值必须与 peer 下限一致）。
+  机制细节、被拦下怎么办、怎么临时放行 → [docs/troubleshooting.md § 兼容性校验](docs/troubleshooting.md#兼容性校验)。
 - npm 安装方式无额外要求；从仓库安装需要 Node.js >= 22.19 与 pnpm 10。
 
-### 三步上手
-
-1. 安装聚合包：`dsh plugin --profile web add @hyzyn/dsh-all`
-2. 重启 `dsh web`，插件配置页里出现全部管理条目
-3. 打开插件配置页按需使用各条目，保存后即时生效
-
-> **配置入口在哪一版**：DSH ≥ `0.1.6-alpha.2` 有**两个**入口，指向同一份配置——侧边栏
-> **「插件」**→ 选插件 → 该行的「配置」（官方新版两视图页面），以及**设置 →「插件配置」**
-> （与「通用设置」平级的一行，由 `@hyzyn/dsh-kit-settings` 提供，0.1.5 时代那种可折叠卡片）。
-> DSH ≤ `0.1.5` 是**设置 → 插件 →「插件配置」**标签页里的卡片。
-> 客户端半体同时注册三代插槽（`plugins.row.config`、`settings.kit.item`、`settings.plugin.item`），
-> 一份产物在各代上都能用。
-
 ### 从 npm 安装（推荐）
-
-插件已发布到 npm（`@hyzyn` scope），一条命令装齐——两种等价方式任选：
 
 ```sh
 dsh plugin --profile web add @hyzyn/dsh-all              # 聚合安装包
 dsh plugin --profile web add @hyzyn/dsh-plugin-kit       # 仓库根 bundle（同样挂载全家桶）
 ```
 
-装完重启 `dsh web`，打开插件配置页（见上方「配置入口在哪一版」）即可看到全部条目。只想用某一个插件，见下文「单独安装某个插件」。
+装完**重启** `dsh web`，插件配置页里出现全部条目即生效。只想用某一个插件，见下方「单独安装某个插件」。
+条目没出现多半是没重启；也可以用 `dsh --profile web --dump-config` 确认插件配置层已挂载。
+卸载：`dsh plugin --profile web remove @hyzyn/dsh-all`（或对应子包名），再重启。
+
+> **配置入口在哪一版**：DSH ≥ `0.1.6-alpha.2` 有**两个**入口，指向同一份配置——侧边栏
+> **「插件」**→ 选插件 → 该行的「配置」（官方新版两视图页面），以及**设置 →「插件配置」**
+> （与「通用设置」平级的一行，由 `@hyzyn/dsh-kit-settings` 提供）。
+> DSH ≤ `0.1.5` 是**设置 → 插件 →「插件配置」**标签页里的卡片。
+> 客户端半体同时注册三代插槽（`plugins.row.config`、`settings.kit.item`、`settings.plugin.item`），
+> 一份产物在各代上都能用。
 
 ### 从 GitHub 仓库安装（开发调试）
 
-插件包已在 npm 发布，仓库安装仅供开发调试（需要 Node.js >= 22.19 与 pnpm 10）。
-仓库根目录本身也是一个 DSH bundle（`package.json#dsh.bundle.patch`，由 `pnpm aggregate` 生成），
-`dsh plugin add link:$(pwd)` 即可把整个全家桶识别并挂载为一个插件：
+需要 Node.js >= 22.19 与 pnpm 10。仓库根目录本身也是一个 DSH bundle
+（`package.json#dsh.bundle.patch`，由 `pnpm aggregate` 生成）：
 
 ```sh
-# 1. 克隆仓库
 git clone https://github.com/hyzyn/dsh-plugin-kit.git
 cd dsh-plugin-kit
-
-# 2. 安装依赖并构建
 pnpm install
 pnpm build
 
-# 3. 把全家桶链接进 web profile（根包即 bundle，等价于安装 @hyzyn/dsh-all）
-dsh plugin --profile web add link:$(pwd)
-
-# 4. 重启 dsh web
+dsh plugin --profile web add link:$(pwd)   # 根包即 bundle，等价于安装 @hyzyn/dsh-all
 dsh web
 ```
 
@@ -227,50 +122,21 @@ dsh web
 > 不要再 add 根包（或 `packages/all`），否则插件行重复挂载会在启动时报
 > `duplicate loader entry id`。
 
-> 只想用某个子包：第 3 步改为 `dsh plugin --profile web add link:$(pwd)/packages/<name>` 即可，例如 `packages/mcp`。
+> 只想用某个子包：第 3 步改为 `dsh plugin --profile web add link:$(pwd)/packages/<name>`。
 
-> 根包声明了 `dsh` 字段后，GitHub 的 DSH 插件市场（如 DSH-Plugins-Marketplace，
-> 按 `dsh.bundle` / `@deepseek-ai/*` 依赖识别）会把本仓库识别为 DSH 插件
-> （cordis-plugin），不再标记「非 DSH 插件」。
+> 根包声明了 `dsh` 字段后，GitHub 的 DSH 插件市场会把本仓库识别为 DSH 插件（cordis-plugin）。
 
 ### 单独安装某个插件
 
-不想装全家桶时，可单独安装任意插件（npm 已发布，直接用包名）：
+不想装全家桶时，把包名换成上表里的任意一个即可（`@hyzyn/dsh-all` → `@hyzyn/dsh-<包名>`）：
 
 ```sh
-dsh plugin --profile web add @hyzyn/dsh-env     # 环境变量 / 密钥管理
-dsh plugin --profile web add @hyzyn/dsh-mcp     # MCP 服务器配置
-dsh plugin --profile web add @hyzyn/dsh-prompt  # Prompt 管理
-dsh plugin --profile web add @hyzyn/dsh-profile # Profile 管理
-dsh plugin --profile web add @hyzyn/dsh-rss     # RSS / 新闻聚合
-dsh plugin --profile web add @hyzyn/dsh-search  # 全局搜索
-dsh plugin --profile web add @hyzyn/dsh-codegraph # Codegraph 集成
-dsh plugin --profile web add @hyzyn/dsh-tty     # 终端面板
-dsh plugin --profile web add @hyzyn/dsh-docker  # Docker 容器面板
+dsh plugin --profile web add @hyzyn/dsh-env       # 环境变量 / 密钥管理
+dsh plugin --profile web add @hyzyn/dsh-tty       # 终端面板
+dsh plugin --profile web add @hyzyn/dsh-docker    # Docker 容器面板
 ```
 
-### 验证与卸载
-
-装好重启 `dsh web`，插件配置页里出现对应条目就是生效了；也可以用 `dsh --profile web --dump-config` 确认插件配置层已挂载。条目没出现，多半是装完没重启 `dsh web`。
-
-卸载：`dsh plugin --profile web remove @hyzyn/dsh-all`（或对应的 `@hyzyn/dsh-<包名>`），然后重启 `dsh web`。
-
-### 安装排障
-
-<details>
-<summary><strong>展开查看常见安装问题</strong></summary>
-
-<br>
-
-> **卡片没出现？** 重启 `dsh web`；确认用的是官方 `dsh-web-app` 设置面板（浏览器半体依赖核心 slots 服务）。
-
-> **MCP 服务器保存后没有工具？** 等 1~2 秒 HMR；在卡片里看状态徽章与冲突提示；保存前先点「连接测试」。
-
-> **报 `duplicate loader entry id`？** 多半是手工往 `~/.dsh/cordis.patch.yml` 加了插件行。删掉重复行——插件行只由 bundle 补丁挂载，托管区块只放服务器配置。
-
-> **`npm install` / `npm view` 报 EPERM？** 本机 `~/.npm` 缓存存在 root-owned 文件（历史 npm bug），执行 `sudo chown -R $(id -u):$(id -g) ~/.npm` 修复。pnpm 不受影响。
-
-</details>
+装不上 / 卡片不出现 / 接口报 401、403 → [docs/troubleshooting.md](docs/troubleshooting.md)。
 
 ## 开发新插件
 
@@ -280,101 +146,43 @@ pnpm create-plugin <name> [id]
 # 例：pnpm create-plugin pet-tracker pt → packages/pet-tracker（插件 id: pt）
 ```
 
-脚本会复制 `templates/hello` 模板、替换包名与插件 id，并自动更新聚合包。然后：
-
-1. 编辑 `packages/<name>/src/index.ts` 写插件逻辑；
-2. 构建并本地安装调试：
+脚本会复制 `templates/hello` 模板、替换包名与插件 id，并自动更新聚合包。然后编辑
+`packages/<name>/src/index.ts`，构建后本地调试：
 
 ```sh
 pnpm --filter @hyzyn/dsh-<name> build
 dsh plugin --profile web add link:$(pwd)/packages/<name>
 ```
 
-### 插件包长什么样（以 hello 为例）
+**新包要建哪些文档、多长、编号怎么起**，**插件包的解剖**（`dsh.bundle.patch` / `cordis.patch.yml` /
+`src/index.ts` / `dsh.client`），以及**两条容易踩的硬规矩**（客户端半体的地址来源、纯逻辑抽模块）
+→ [docs/conventions.md](docs/conventions.md)。
 
-| 文件 / 字段 | 作用 |
-| --- | --- |
-| `package.json#dsh.bundle.patch` | 指向 `cordis.patch.yml`，声明本包是 bundle 补丁层 |
-| `cordis.patch.yml` | `insert` 一行，把插件挂进 profile 阵容 |
-| `src/index.ts` | 宿主半体：导出 `{ name, inject, apply }` 形状的 Cordis 插件 |
-| `package.json#dsh.client` | 可选：声明浏览器半体，Web GUI 以 `/plugins/<id>/client.js` 加载 |
+## 文档地图
 
-服务注入两种写法：`inject: ['tools', 'webServer']` 后直接 `ctx.tools`；或运行时 `ctx.get('tools')` 判空。配置用 schemastery 导出同名 `Config` schema。
-
-### 客户端半体（浏览器侧）的两条硬规矩
-
-**① 跟宿主建连的地址，基址只能来自宿主注入的 `__DSH_TRANSPORT__`。** 别从 `location.protocol` / `location.host` / `location.hostname` / `location.origin` / `location.port` 拼地址，也别硬编码 `ws://` / `wss://`：
-
-```js
-// ❌ 浏览器里一切正常，桌面版算出连不上的地址
-const url = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/api/x/ws'
-// ✅ 两种形态都对
-const base = new URL(globalThis.__DSH_TRANSPORT__?.streamBaseUrl ?? document.baseURI, document.baseURI)
-const url = (base.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + base.host + '/api/x/ws'
-```
-
-原因：**桌面版（DeepSeek Harness Desktop）的页面 origin 不是 HTTP，而是 Electron 自定义协议 `dsh-app://app`**，真实宿主在另一个 origin（`http://127.0.0.1:<动态端口>`）上。从 `location` 推出来的地址在浏览器里完全正常、**只有桌面版连不上**，而 CDP 冒烟驱动的是 `http://127.0.0.1:3082`（那里 `location` 恰好就是对的）、各包 preview harness 里又是假 WebSocket——四层防线都看不见它。`packages/tty/DEFECTS.md` 的 **D61** 就是这么发生的：终端面板能打开、设置卡片 / SSH 连接簿全好，只有终端永远连不上。相对路径的 `fetch('/api/dsh-x/...')` 不受影响，两种形态都对。
-
-`pnpm -r typecheck` 里的 `scripts/client-lint.mjs` 会静态拦下这两类写法（AST 检查，注释与字符串免疫；规则与成因见 `scripts/client-host-url.mjs`）。
-
-**② 要判对错的客户端逻辑，抽成 `client-src/*.js` 纯模块 + vitest 用例。** `client.js` 是 esbuild 产物、不在 vitest 层测，而 `client-lint` 只查静态问题（名字解析、宿主地址来源）、**不验行为**——逻辑留在 `client.js` 里就等于没有测试入口。注意 `client-lint` 查的是**全量** `client-src/**` 而不只是入口，兄弟模块同样受管。
-
-范例：`packages/tty/client-src/ws-url.js` + `packages/tty/test/ws-url.test.ts`（用例里必须有一条 `dsh-app://app` 场景）。
-
-## 常见问题
-
-<details>
-<summary><strong>装完重启了，插件配置页里还是没有条目？</strong></summary>
-
-A: 先确认插件装进了 `web` profile（命令里的 `--profile web`），再用 `dsh --profile web --dump-config` 确认插件配置层已挂载；还不行就看上文「安装排障」。注意页面刷新不够，要重启 `dsh web` 进程。
-
-</details>
-
-<details>
-<summary><strong>改了插件代码不生效？</strong></summary>
-
-A: 重新 `pnpm build` 后重启 `dsh web`。如果改的是浏览器半体，可能还需要清一下浏览器缓存或硬刷新。
-
-</details>
-
-<details>
-<summary><strong>MCP 服务器保存后没有工具？</strong></summary>
-
-A: 等 1~2 秒 HMR；在卡片里看状态徽章与冲突提示；保存前先点「连接测试」。仍不行就检查服务器进程是否真的能启动、地址是否可达。
-
-</details>
-
-<details>
-<summary><strong>报 `duplicate loader entry id`？</strong></summary>
-
-A: 多半是手工往 `~/.dsh/cordis.patch.yml` 加了插件行。删掉重复行——插件行只由 bundle 补丁挂载，托管区块只放服务器配置。
-
-</details>
-
-<details>
-<summary><strong>`npm install` / `npm view` 报 EPERM？</strong></summary>
-
-A: 本机 `~/.npm` 缓存存在 root-owned 文件（历史 npm bug），执行 `sudo chown -R $(id -u):$(id -g) ~/.npm` 修复。pnpm 不受影响。
-
-</details>
-
-## 已知限制
-
-- MCP 的 `~/.dsh/cordis.patch.yml` 里托管区块只应放服务器配置；手工追加插件行会导致 `duplicate loader entry id` 启动失败。
-- Codegraph 的 MCP 托管只对齐 codegraph 一个服务器的工作目录；DSH 的 MCP 客户端暂不声明 roots，切换项目需在 Codegraph 卡片「设为默认项目」或调用工具时传 `projectPath`。
-- Profile 删除为递归删除，面板内会二次确认，但一旦执行不可撤销；内置 `web` profile 受保护，`headless` 可删。
-- RSS 首次启动需要联网抓取；某个源不可达不会阻塞其它源，但当天 digest 可能缺少该源内容。AI 摘要依赖宿主已配置的模型（`agent-default-model` 或卡片里成对指定的 provider/model），未配置或调用失败时条目回落原文截断。
-- 浏览器半体依赖官方 `dsh-web-app` 的设置面板 slots 服务，非官方 Web GUI 可能不显示管理卡片。
-- 桌面版（Electron）与 `dsh web` 的页面 origin 不同（`dsh-app://app` vs `http://127.0.0.1:<port>`），因此 **localStorage / IndexedDB 是两套独立存储**——"桌面版看不到浏览器里存的标签/配置"是预期行为，不是 bug。桌面版是 secure context（`dsh-app` 已注册为 secure scheme），`navigator.clipboard` / `crypto.subtle` 可用；用 IP 访问远端 GUI 则不是，客户端半体两侧分支都要能跑。
-- 终端面板（dsh-tty）的 resize 透传依赖 DSH 内部 terminal handle 结构，TERM 注入需经 `-c` 包装层（DSH 硬编码 node-pty name:"dumb"）；详见 `packages/tty/README.md`。
-- 仓库安装需要 Node.js >= 22.19 与 pnpm 10，仅供开发调试；npm 安装不受影响。
+| 想知道 | 看 |
+|---|---|
+| 项目是什么、装哪个 | 本文件 |
+| 12 个包怎么协作、依赖方向、谁写哪个配置文件 | [docs/architecture.md](docs/architecture.md) |
+| 命名 / 提交 / 文档分层 / 编号规范 / 插件解剖 | [docs/conventions.md](docs/conventions.md) |
+| 术语（宿主半体、托管区块、TOFU、三代插槽…） | [docs/glossary.md](docs/glossary.md) |
+| 装不上、卡片不出现、接口 401/403、已知限制 | [docs/troubleshooting.md](docs/troubleshooting.md) |
+| 真机测试怎么跑、什么算通过 | [docs/agent-real-test.md](docs/agent-real-test.md) |
+| Windows 11 真机环境搭建 | [scripts/windows/README.md](scripts/windows/README.md) |
+| 跨包待办 | [ROADMAP.md](ROADMAP.md) |
+| 发版流程 | [RELEASING.md](RELEASING.md) |
+| 开发环境里插件与宿主的 runtime 链接 | [docs/link-dsh-runtime.md](docs/link-dsh-runtime.md) |
+| 某个包怎么用 | `packages/<pkg>/README.md` |
+| 某个编号是什么意思 | `packages/<pkg>/DEFECTS.md` |
 
 ## 参与贡献
 
 - 新插件用脚手架生成：`pnpm create-plugin <name> [id]`，避免手写样板。
-- 提交信息遵循 Conventional Commits（如 `fix(mcp): 修复连接测试超时`），用户可见变更请附截图或验证证据。
-- 提交前过门禁：`pnpm typecheck && pnpm build && pnpm test && pnpm aggregate`。
-- 增删插件后记得跑 `pnpm aggregate` 重新生成 `packages/all` 聚合清单。
+- 提交信息遵循 Conventional Commits（如 `fix(mcp): 修复连接测试超时`），
+  用户可见变更请附截图或验证证据。
+- 提交前过门禁：`pnpm typecheck && pnpm build && pnpm test && pnpm aggregate`；
+  增删插件后必须跑 `pnpm aggregate` 重新生成 `packages/all` 聚合清单。
+- 命名 / 编号 / 文档分层等完整规范见 [docs/conventions.md](docs/conventions.md)。
 
 ## 许可证
 

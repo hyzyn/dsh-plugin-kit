@@ -3,7 +3,7 @@
  *
  * 为什么要单独一个脚本：`per-agent` 的「生效」不是一个布尔值，而是五件事同时成立——
  * 模式解析、全局行互斥、每 agent 一进程、cwd 是各自的索引根、无索引不回落。
- * 卡片上只能看到其中一部分；`/agents` 只给记录、不给进程；进程层还埋着 CG46 那个坑
+ * 卡片上只能看到其中一部分；`/agents` 只给记录、不给进程；进程层还埋着 codegraph CG46 那个坑
  * （CLI 自己的常驻 daemon 也匹配 `serve --mcp`，按名字数会数出双倍）。
  *
  * 五层判据（本脚本逐条查，每条都打印实际值与期望）：
@@ -162,7 +162,7 @@ if (hostPid === undefined) {
   skip('④ 进程层', `拿不到监听 ${port} 的宿主 pid（lsof 不可用？）`)
 } else {
   // **直接子进程**：CLI 自己的常驻 daemon（.codegraph/daemon.pid）不是宿主的直接子进程，
-  // 这样查天然把它排除掉——按进程名全局 pgrep 会把它算进来（CG46）。
+  // 这样查天然把它排除掉——按进程名全局 pgrep 会把它算进来（codegraph CG46）。
   const pgrep = spawnSync('pgrep', ['-P', hostPid, '-f', 'codegraph'], { encoding: 'utf8' })
   const pids = (pgrep.stdout ?? '').trim().split('\n').filter((line) => line !== '')
   const cwds = pids.map((pid) => {

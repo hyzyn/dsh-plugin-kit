@@ -198,7 +198,7 @@ export function describeAdoption(summary) {
     }
     const indexedNote = summary.indexed === false ? '（该项目未索引，这个数字不代表提示词效果）' : '';
     // 窄口径是主口径：`read` 占宽口径分母的绝大多数，用宽口径会得出「codegraph 没用」
-    // 的错误结论（实测 2.2% vs 28.8%，见 ADOPTION-AUDIT.md）。
+    // 的错误结论（实测 2.2% vs 28.8%，见 docs/adoption-audit.md）。
     if (summary.discoveryTotal === 0) {
         return `采纳率：还没有发现类调用（codegraph ${summary.codegraph} 次 / 读取 ${summary.file} 次）${indexedNote}`;
     }

@@ -37,7 +37,7 @@
  * 这么算出来的地址连不上宿主；而浏览器直连（`dsh web`）下**完全正常**——所以它同时躲过了
  * vitest（浏览器半体不在本层测）、第 ① 道检查（名字解析零信号）、CDP 冒烟（驱动的是
  * `http://127.0.0.1:3082`，那里 `location` 恰好就是对的）和各包的 preview harness
- * （mock 里是假 WebSocket）。实测代价见 `packages/tty/DEFECTS.md` **D61**。
+ * （mock 里是假 WebSocket）。实测代价见 `packages/tty/DEFECTS.md` **tty D61**。
  *
  * 正确写法：基址取 `globalThis.__DSH_TRANSPORT__?.streamBaseUrl ?? document.baseURI`，
  * 并且**凡是要跟宿主建连的地址都要抽成 `client-src/*.js` 纯模块 + vitest 覆盖
@@ -111,7 +111,7 @@ const result = spawnSync(tsc, [
 
 const output = (result.stdout ?? '') + (result.stderr ?? '')
 /*
- * 锚点（D74）：tsc 的 program 会经 import 拉进 client-src 的兄弟模块
+ * 锚点（docker D74）：tsc 的 program 会经 import 拉进 client-src 的兄弟模块
  * （如 docker 包的 session-target.js / current-session.js），它们的诊断此前因锚点
  * 只认入口文件而被**静默丢弃**（合成诊断实测只命中 1/3）。源码模式下放宽到
  * program 内的全部 client-src/**；裸 client.js 的包没有兄弟源码，维持原锚点。
@@ -141,7 +141,7 @@ if (hostUrlFindings.length > 0) {
   console.error('\n[' + packageName + '] 宿主地址来源检查失败：' + String(hostUrlFindings.length) + ' 处。')
   console.error('  ' + HOST_URL_RULE_HINT)
   console.error('  桌面版页面 origin 是 dsh-app://app（Electron 自定义协议）而不是 HTTP：这些写法在浏览器里'
-    + '一切正常、只有桌面版暴露——所以别指望冒烟能替你发现（详见 packages/tty/DEFECTS.md D61）。')
+    + '一切正常、只有桌面版暴露——所以别指望冒烟能替你发现（详见 packages/tty/DEFECTS.md 的 tty D61）。')
 }
 
 if (fatal.length > 0) {

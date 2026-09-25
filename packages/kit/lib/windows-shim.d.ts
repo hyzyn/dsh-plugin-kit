@@ -80,7 +80,7 @@ export declare function taskkillArgs(pid: number): string[];
 /** killProcessTree 的选项。 */
 export interface KillTreeOptions {
     /**
-     * 是否对**进程组**（-pid）发信号（CG36）。只有目标确实是经
+     * 是否对**进程组**（-pid）发信号（codegraph CG36）。只有目标确实是经
      * `spawnPortable({ detached: true })` 启动的组长时才开：对普通子进程打 -pid，
      * 正常情况只是 ESRCH（被吞掉后仍有单杀兜底），但在「子进程已退出且 pid 被复用为
      * 另一个组长」的窄窗口里会误杀无辜。默认关——调用方（如 dsh-mcp 的连接测试）
@@ -96,7 +96,7 @@ export interface KillTreeOptions {
  *   进程组）发信号——直接子进程必须是经 spawnPortable({ detached: true }) 启动的
  *   组长，组里才有它的子孙。以前本函数在非 Windows 是**什么都不做的 no-op**，
  *   execFile 超时后的 CLI 会无视一次性的 SIGTERM 继续跑完整个全量重建
- *   （codegraph DEFECTS CG05）；引入进程组击杀后又因 CG36 收窄成显式 opt-in。
+ *   （codegraph DEFECTS CG05）；引入进程组击杀后又因 codegraph CG36 收窄成显式 opt-in。
  *
  * 返回的 Promise 在信号发出后 resolve，不等待进程真正退出（close 事件负责收尾）。
  */

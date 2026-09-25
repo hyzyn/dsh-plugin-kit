@@ -22,6 +22,24 @@
 | 本包可用的运行时依赖 | `packages/codegraph/node_modules/@deepseek-ai/` 目前只有 `cordis` + `schemastery`（其余靠 `scripts/link-dsh-runtime.mjs` 链接） |
 | 宿主事件面（本机 DSH 实测存在） | `agent/created`、`agent/disposed`、`agent/inbox/inserted`、`tool/call`、`tool/result`、`system-prompt/assemble` |
 
+**2026-09-25 复测**（只列与上表**不同**的项；上表是 2026-09-22 的时点快照，**原值保留不改**）：
+
+| 项 | 2026-09-22（上表） | 2026-09-25（复测） |
+| --- | --- | --- |
+| 包版本 | `0.4.2` | **`0.5.2`**（本机 `package.json`）。⚠️ **registry 的 `dist-tags.latest` 本次未能复核**——`npm view` 在本机因 `~/.npm` 缓存 EPERM 失败，上表那句「= 0.4.2」未经验证、也未改动 |
+| `npx vitest run packages/codegraph` | 202 passed / 10 files | **14 files / 317 tests**（该时点输出）<br>`npx vitest run packages/codegraph --reporter=dot` |
+| `npx vitest run`（全仓） | 779 passed / 48 files | **56 files / 965 tests**（该时点输出）<br>`pnpm test` |
+| 本包可用的运行时依赖 | `cordis` + `schemastery` | **`cordis` + `dsh-mcp-client` + `schemastery`**（`dsh-mcp-client` 是 optional peer，pnpm 已装） |
+| 宿主基线 | 本机 `0.1.6-alpha.2`；`engines` 下限 `0.1.2-rc.1` | 本机 **`0.1.7-rc.2`**；peer `^0.1.7-rc.2`；`dsh.engines.dsh` `>=0.1.7-rc.2` |
+| host-contract 真机 | P3-a 记 25/25、P2-b 记 31/31（均 `0.1.6-alpha.2`） | **42/42**（`0.1.7-rc.1` 与 `0.1.7-rc.2` 各一次，见 [README § 兼容性](./README.md#兼容性dsh--codegraph-cli)） |
+| 路由条数 | P3-a 时点记 18 条 | **25**（该时点输出）<br>`grep -oE "/api/dsh-codegraph/[a-z-]+" packages/codegraph/src/index.ts \| sort -u \| wc -l` |
+
+> 下文的 P2-b / P3-a 两节是**当时的落点记录**，其中的 31 / 25 / 18 是历史值，按维护规则**保留不改**。
+>
+> **本表只留「必须真机才有」的值**（`42/42`、包版本、本机宿主版本、依赖面）；可现算的项一律写成
+> **命令 + 该时点输出**——写死成数字就一定会漂，而本文件已经有三份快照了（09-22 表、本表、
+> P2-b / P3-a 正文）。**下次复测请重跑上面这些命令，不要再新增一张对照表。**
+
 ## 判断
 
 这个插件**不缺功能**，缺的是三层上的东西：
@@ -48,11 +66,11 @@
 > 而下面这几条是**审计时点**的原始措辞、没有跟着更新。按维护规则「只标注、不擅自改」，
 > 原文照录，请以上文「已完成」一节的落点与用例为准。
 
-> 新发现的缺陷接着 `CG30` 往后编号记在本文，不要只留在对话里。
+> 新发现的缺陷接着 `CG63` 往后编号记在 [DEFECTS.md](./DEFECTS.md) 的索引表，不要只留在对话里。
 >
-> **分档（P0–P3）、代价、架构项与开工顺序见 [ROADMAP.md](./ROADMAP.md)**——本节保留
-> 缺陷审计时点列出的原始待办（CLI 面 / 查询参数 / 多项目列表 / 遥测 / daemon / i18n / E2E），
-> 两者不重复：`ROADMAP.md` 只做分档与补充架构项。
+> **分档（P0–P3）、代价、架构项与开工顺序见本文的 [「优先级总表」](#优先级总表) 与
+> [「建议开工顺序」](#建议开工顺序)**——本节保留缺陷审计时点列出的原始待办
+> （CLI 面 / 查询参数 / 多项目列表 / 遥测 / daemon / i18n / E2E），与那两节不重复。
 
 - **CLI 还有一多半没进 GUI**（实测 `codegraph --help`）：`explore`（旗舰，且 usage guidance
   正是让模型用它）、`context`、`files`、`affected`、`uninit`、`unlock`、`daemon`。
@@ -79,7 +97,7 @@
 
 | 级别 | 事项 | 影响 | 代价 | 落点 |
 | --- | --- | --- | --- | --- |
-| **P0** | ~~agent 侧改 **per-agent scoped MCP 挂载**~~ **✅ 已实现**（默认 `managed`，`mcpScope: 'per-agent'` 显式开启；托管行保留为回落） | 多项目真并行；删掉写盘 + 热加载 + 竞态整条链；跟随不再依赖 GUI 页面 | M–L | `src/scope.ts`（新）+ `apply()` 接线 + `/agents` + 卡片开关；见 [P0-PLAN.md](./P0-PLAN.md) |
+| **P0** | ~~agent 侧改 **per-agent scoped MCP 挂载**~~ **✅ 已实现**（默认 `managed`，`mcpScope: 'per-agent'` 显式开启；托管行保留为回落） | 多项目真并行；删掉写盘 + 热加载 + 竞态整条链；跟随不再依赖 GUI 页面 | M–L | `src/scope.ts`（新）+ `apply()` 接线 + `/agents` + 卡片开关；见 [docs/p0-plan.md](./docs/p0-plan.md) |
 | **P1** | ~~**注入加索引门禁**~~ **✅ 已完成**（见下） | 无索引仓库里省掉约 310 token/轮，也不再诱导模型调必然失败的工具 | S | `refreshGuidance()` + 5 条门禁用例 |
 | **P1** | ~~**一键诊断包**~~ **✅ 已完成**（见下） | 环境性故障的排查路径固化成一个按钮 | S | `GET /diagnose` + 卡片按钮 + 6 条用例 |
 | **P1** | ~~**采纳率仪表**~~ **✅ 已完成**（见下） | 把「提示词有没有用」从感觉变成数字；有数据才谈得上调提示词或做预注入 | S–M | `createMetricsCollector()` + `/api/dsh-codegraph/metrics` + 卡片一行 |
@@ -121,7 +139,7 @@
 5. 每个 agent 只该看到一个 `mcp__codegraph__codegraph_explore` —— per-agent 挂载天然满足；反之
    「多服务器行各挂一个项目」会把工具名炸成 `mcp__codegraph-a__explore`，破坏单工具约定，**不走那条路**。
 
-**已实现**（2026-09-22，完整方案与实测见 [P0-PLAN.md](./P0-PLAN.md)）：`agent/created` 时在
+**已实现**（2026-09-22，完整方案与实测见 [docs/p0-plan.md](./docs/p0-plan.md)）：`agent/created` 时在
 **`agent.ctx`**（它本身就是一个 scope，`dsh-agent-loop:759-760`）里 `plugin(McpClient, { cwd })`，
 `agent/disposed` 与插件卸载时 dispose；托管行**保留**为无 `agents` 场景的回落，两者互斥——
 per-agent 生效时全局行被**挂起**（`disabled: true`，loader 会跳过它，切回 managed 自动恢复）。
@@ -136,7 +154,7 @@ per-agent 生效时全局行被**挂起**（`disabled: true`，loader 会跳过�
 **代价与风险**：
 
 - 每 agent 一进程（实测空 Node 基线 ~40MB），内存**线性**增长；并发峰值 4 项目时约 +120MB。
-  性能实测（延迟、冷启动、内存）见 P0-PLAN.md「四之二」；
+  性能实测（延迟、冷启动、内存）见 [docs/p0-plan.md](./docs/p0-plan.md)「四之二」；
 - ~~`dsh.engines` 下限需重新标定~~：机制依赖 `dsh-tools` 的 `view(scope)` 分层与 `agent.ctx`
   的 scope 语义，本机 `0.1.6-alpha.2` 已验证；三平台仍只有 CI 矩阵（无真机）；
 - 收益只覆盖「多项目并发」这一窄场景（**实测时间占比 3.1%**，峰值 4 个项目），因此
@@ -169,7 +187,7 @@ owner 判定；会话目录无有效索引时不写盘（现有行为，保持�
 
 **只在内存、宿主重启归零**：它是「现在要不要调提示词」的观测值，不是审计日志；落盘会把工具名 + 项目路径长期留在磁盘上。`since` 如实给出起点。
 
-**② 拿真实历史量过一遍（同一轮做的，见 [ADOPTION-AUDIT.md](./ADOPTION-AUDIT.md)）**：不等「跑一天」，直接解码
+**② 拿真实历史量过一遍（同一轮做的，见 [docs/adoption-audit.md](./docs/adoption-audit.md)）**：不等「跑一天」，直接解码
 `~/.dsh/sessions/**/session.v3.jsonl.zstd`（177 个会话 / 12.1 万条事件）算真实采纳率。结论与两个连带修复：
 
 - **会话级 23%**（已索引项目的 118 个会话里 27 个用过）、**窄口径 28.8%**（45 次 codegraph vs 111 次发现类调用）；
@@ -299,6 +317,8 @@ owner 判定；会话目录无有效索引时不写盘（现有行为，保持�
 
 
 
+### 仍剩的项（P2 / P3）
+
 - **P2 照本文「缺陷审计时点列出的原始待办」一节走**（那批条目比我列得全）：CLI 面补全、查询参数面板、
   **已索引项目列表 + 一键切换**（单服务器既成事实下最实用的补偿）、遥测提示、卡片 i18n、
   真机 `integration.mjs` / `*-smoke.mjs`。
@@ -317,15 +337,18 @@ owner 判定；会话目录无有效索引时不写盘（现有行为，保持�
 
 ## 复核门槛
 
-改完任一项后，本包的最低门槛（当前全绿，见「基线」表）：
+改完任一项后，本包的最低门槛（当前全绿，见上方「基线」表的 **2026-09-25 复测**行）：
 
 ```bash
 npx tsc --noEmit -p packages/codegraph/tsconfig.json
 npx vitest run packages/codegraph
 npx vitest run                                   # 全仓，防跨包回归
-pnpm -r build && git diff --stat                 # 产物 = 源码闸（CG28）
+pnpm -r build && git diff --exit-code -- 'packages/*/client.js' ':(glob)packages/*/lib/**'   # 产物 = 源码闸（CG28）
 node scripts/check-dsh-home.mjs                  # 跨包 DSH_HOME 推导的防回归闸（CG35 已修，保持绿）
 ```
+
+> ⚠️ **`lib/` 那半边必须带 `:(glob)`**——pathspec 的坑、实测命中数与「pre-commit 已正确、CI 未正确」
+> 的现状差异，见 [conventions.md § 真机脚本与 CI 接线](../../docs/conventions.md#真机脚本与-ci-接线)。本次**不改 CI**。
 
 涉及宿主事件面（P0 / P1 仪表）的改动，除单测外需要一次真机复跑：起 `dsh web`，在一个已索引仓库
 里开两个会话，确认两个 agent 各自拿到自己仓库的结果、`tool/call` 计数正确、退出后无残留

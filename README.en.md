@@ -11,366 +11,197 @@
   &nbsp;
   <img src="https://img.shields.io/npm/v/@hyzyn%2Fdsh-all?style=flat-square&label=npm" alt="npm">
   &nbsp;
+  <img src="https://img.shields.io/npm/dt/@hyzyn%2Fdsh-all?style=flat-square&label=downloads" alt="Downloads">
+  &nbsp;
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square" alt="License">
 </p>
 
 Repo gates: `pnpm typecheck` / `pnpm build` / `pnpm test` / `pnpm aggregate`.
 
 <p align="center">
-  <strong>The plugin family for the DeepSeek Harness (DSH) Web GUI</strong><br>
-  <em>Environment variables · MCP servers · Prompt · Profile · RSS · Global search · Codegraph · Terminal panel · Container panel · Plugin scaffolding</em>
+  <strong>A plugin family for the DeepSeek Harness (DSH) Web GUI</strong><br>
+  <em>Environment · MCP servers · Prompt · Profile · RSS · Global search · Codegraph · Terminal panel · Container panel · Scaffolding</em>
 </p>
 
 <p align="center">
 
-[What It Is](#what-it-is) · [Feature Plugins](#feature-plugins) · [Quick Start](#quick-start) · [Developing a New Plugin](#developing-a-new-plugin) · [FAQ](#faq) · [Known Limitations](#known-limitations) · [Contributing](#contributing)
+[What it is](#what-it-is) · [Packages](#packages) · [Quick start](#quick-start) · [Writing a new plugin](#writing-a-new-plugin) · [Documentation map](#documentation-map) · [Contributing](#contributing)
 
 </p>
 
-## What It Is
+## What it is
 
-dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (DSH) Web GUI: MCP server configuration, Profile management, RSS / news aggregation, global search, Codegraph integration, a terminal panel, a Docker container panel (containers and images on the local or an SSH host, read-only by default), environment variable / secret management, and Prompt management, plus a one-command scaffolding tool for generating new plugins. Everything mounts into `dsh web` through the official profile mechanism, so no DSH source changes are needed. Install the plugins individually, or install everything at once with the aggregate package.
+dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (DSH) Web GUI.
+Every plugin mounts through the official profile mechanism — **DSH itself is never patched** —
+and you can install them one by one or all at once with the aggregate package.
 
-![SFTP dual pane: local left / remote right, inline ⇨/⇦ server-side streaming transfer](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-sftp-dual.png)
+![SFTP dual pane: local on the left, remote on the right, inline transfer](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-sftp-dual.png)
 
-![Terminal panel: the sidebar entry opens a multi-tab xterm.js terminal](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty.png)
+![Docker container panel: docked as a sidebar tab next to the conversation](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-docker-dock.png)
 
-| Capability | Stock dsh web | dsh-plugin-kit family |
+| Capability | Plain `dsh web` | The dsh-plugin-kit family |
 | --- | --- | --- |
-| MCP servers | Manual patch / CLI | Visual card + connection test + hot reload after saving |
-| Profile management | CLI | Visual create / copy / rename / delete |
-| RSS aggregation | None | Multiple sources + daily “Today’s Worth Reading” digest + optional AI summaries (follows the host default model, zero config) |
-| Global search | Session titles/content only | Unified sidebar full-text search over historical sessions |
-| Codegraph integration | None | Code-graph card: index status / symbol search / callers-callees-impact / one-click sync-index |
-| Terminal panel | None | Sidebar “Terminal” entry + xterm.js modal: multi-tab real PTY terminal (vim / htop / dev servers), cwd follows session, hot-reload config |
-| Docker container panel | None | Sidebar “Containers” entry + multi-target (local / SSH) container list with search and state filter, start / stop / remove, details, logs (snapshot + **live follow via SSE**), resource usage (snapshot + **live follow with sparklines**), a **Compose project view with merged logs**, a **read-only multi-target overview**, image list plus details (layers / build history), a **`docker pull` progress stream**, and image remove / dangling prune; **read-only by default**, mutations and exec gated behind explicit switches; `docker_*` agent tools |
-| Environment variables | CLI / manual config | Web GUI card, saves directly into `process.env` |
-| Prompt management | Manual config | Visual editing + versioning / A/B testing / export & sharing |
-| Plugin development | Hand-written boilerplate | `pnpm create-plugin` scaffolding + `@hyzyn/dsh-kit` type helpers and host-side shared utilities (HTTP fence / managed blocks / `!!js` expressions) |
+| MCP servers | edit the patch file / CLI | visual card + connection test + hot reload after saving |
+| Profile management | CLI | visual create / copy / rename / delete |
+| RSS aggregation | none | multi-source subscriptions + a daily digest + optional AI summaries (uses the host’s default model, zero config) |
+| Global search | session titles/content only | one full-text search over past sessions, Prompts, MCP tools and settings panels |
+| Codegraph integration | none | code graph card: index status / symbol search / call chain / impact / one-click sync-index |
+| Terminal panel | none | real xterm.js multi-tab PTY (vim/htop/dev server); native SSH (connection book, host-key pinning, auto reconnect); SFTP single-dialog / dual-pane transfer; `tty_*` / `sftp_*` agent tools |
+| Docker container panel | none | containers / images / Compose / live logs and stats / multi-target overview; **read-only by default**, mutations and exec behind explicit switches; `docker_*` agent tools |
+| Environment variables | CLI / hand-edited config | Web GUI card, written into `process.env` on save |
+| Prompt management | hand-edited config | visual editing + versioning / A/B testing / export & share |
+| Plugin development | boilerplate by hand | `pnpm create-plugin` scaffolding + the `@hyzyn/dsh-kit` shared library |
 
-## Feature Plugins
+> **Each plugin’s full feature set, screenshots and caveats live in its own README** (table below).
+> This file only covers *what it is* and *what to install*.
 
-### MCP Server Configuration (@hyzyn/dsh-mcp)
+## Packages
 
-- **What it does**: add MCP servers to DSH. After saving, they hot-load into `mcp__<server name>__<tool name>` tools within 1–2 seconds, so models can call them directly without restarting.
-- **How to use**: open Settings → Plugins → “MCP Server Configuration” → add a server (choose transport) → (it is recommended to click “Connection Test” first) → save.
-- **Supports**: two transports — stdio (local subprocess, e.g. `npx -y @modelcontextprotocol/server-filesystem`) and streamable-http (remote service); `js:` prefixed expressions (e.g. `js:process.env.GITHUB_TOKEN`); enable/disable, edit, delete; status badges.
-- **Where it is stored**: the managed block of `~/.dsh/cordis.patch.yml`.
-- **Note**: **do not** manually append plugin lines to this file, otherwise DSH may fail to start with `duplicate loader entry id`.
+**1 shared library + 10 feature plugins + 1 aggregate package.** How they relate, their dependency
+direction and how they cooperate: [docs/architecture.md](docs/architecture.md) (Chinese).
 
-![MCP server configuration plugin](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-mcp.png)
+| Package | What it does | Docs |
+|---|---|---|
+| `@hyzyn/dsh-kit` | **Library** (not a plugin): shared host-half utilities — HTTP loopback fence, managed blocks, `!!js` expressions, service access | [README](packages/kit/README.md) · [DEFECTS](packages/kit/DEFECTS.md) |
+| `@hyzyn/dsh-mcp` | MCP server configuration card, hot-reloaded on save | [README](packages/mcp/README.md) |
+| `@hyzyn/dsh-env` | Environment variables / secrets management | [README](packages/env/README.md) |
+| `@hyzyn/dsh-prompt` | systemPrompt editing / versions / A-B testing | [README](packages/prompt/README.md) |
+| `@hyzyn/dsh-profile` | Graphical management of `~/.dsh/profiles` | [README](packages/profile/README.md) |
+| `@hyzyn/dsh-rss` | RSS aggregation → a daily digest | [README](packages/rss/README.md) |
+| `@hyzyn/dsh-search` | Sidebar global search | [README](packages/search/README.md) |
+| `@hyzyn/dsh-codegraph` | Code graph card + MCP management + adoption measurement | [README](packages/codegraph/README.md) · [DEFECTS](packages/codegraph/DEFECTS.md) · [ROADMAP](packages/codegraph/ROADMAP.md) |
+| `@hyzyn/dsh-tty` | Terminal panel (PTY / SSH / SFTP / tunnels) | [README](packages/tty/README.md) · [DEFECTS](packages/tty/DEFECTS.md) · [ROADMAP](packages/tty/ROADMAP.md) |
+| `@hyzyn/dsh-docker` | Docker container panel (local / SSH), read-only by default | [README](packages/docker/README.md) · [DEFECTS](packages/docker/DEFECTS.md) · [ROADMAP](packages/docker/ROADMAP.md) |
+| `@hyzyn/dsh-kit-settings` | Adds a “Plugin configuration” row next to “General settings” | [README](packages/kit-settings/README.md) |
+| `@hyzyn/dsh-all` | Aggregate package: one bundle patch that mounts the 10 plugins above | [README](packages/all/README.md) |
 
-### Profile Management (@hyzyn/dsh-profile)
+## Quick start
 
-- **What it does**: visually view all DSH profiles under `~/.dsh/profiles`, with create, copy, rename, and delete operations for maintaining multiple DSH environments.
-- **How to use**: open Settings → Plugins → “Profile Management” → view the profile list → create / copy / rename / delete; set a port for each profile and copy a startup command with `--port`.
-- **Supports**: initialization status, bundle layer and dependency display; create from basic / `web` / `headless` templates; copy excludes `node_modules` and lock files and automatically installs dependencies; rename; port configuration and startup command copy.
-- **Where it is stored**: directly manages the `~/.dsh/profiles/<name>` directory.
-- **Note**: deletion is recursive — confirm twice before operating; the built-in `web` default profile cannot be deleted, while `headless` can be deleted; after creating a new profile, dependencies are installed on demand when you first run `dsh plugin --profile <name> add ...`.
+### System requirements
 
-![Profile management configuration UI](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-profile.png)
-
-![Example of starting a headless profile from the command line](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-profile-example-headless1.png)
-
-### RSS / News Aggregation (@hyzyn/dsh-rss)
-
-- **What it does**: subscribe to multiple RSS / Atom sources and automatically compile a daily “Today’s Worth Reading” Markdown digest, injected into systemPrompt for the model to reference.
-- **How to use**: after installing, click “Today’s Worth Reading” in the sidebar below “New Session” to view news directly; you can also open Settings → Plugins → “RSS / News Aggregation” to toggle built-in channels, add custom channels (validated on save), search and one-click add feeds from the [awesome-rsshub-routes](https://jackyst0.github.io/awesome-rsshub-routes/) catalog, and manage categories and aggregation settings. Saving refreshes the digest automatically.
-- **Built-in channels**: Ruanyifeng, sspai, Solidot, Hacker News, Juejin, ITHome, 36Kr (36Kr’s official feed is blocked by anti-bot protection, so the built-in entry uses a third-party RSSHub mirror) — check to show, uncheck to stop fetching.
-- **Custom channels**: enter any RSS / Atom URL; it is validated with a real fetch on save — homepages, non-feed pages, and empty feeds are rejected with a clear error and not saved.
-- **Source catalog**: ships the awesome-rsshub-routes curated catalog (official RSS and RSSHub routes, 98 feeds / 12 categories), searchable and filterable by category with one-click add to custom channels; bundled snapshot silently refreshes from the upstream OPML every 12 hours at runtime (falling back to the snapshot when offline).
-- **Categories**: a channel’s category is picked from the category list, and the digest (Markdown, systemPrompt, modal) is grouped by category; categories in use are merged into the list automatically on save.
-- **AI summaries (optional)**: once enabled in the card, each digest item gets a one-sentence Chinese summary generated by the host’s configured default model (no API key needed; you can also pair a custom provider / model in the card). Results are cached per item for 30 days so regenerating does not re-bill; a failed item falls back to the truncated original text without blocking the rest. Summaries flow into the Markdown digest, the modal, search, and systemPrompt.
-- **Supports**: RSS 2.0 / Atom parsing, deduplication, per-source item limits, daily scheduled generation, startup catch-up generation, custom output directory, and the built-in channel library.
-- **Where it is stored**: `~/.dsh/rss-digest/YYYY-MM-DD.md` (override with `DSH_RSS_DIGEST_DIR`).
-- **Note**: the first startup will fetch feeds over the network; unreachable sources are listed in the digest’s “fetch failed” section and do not block the remaining sources. With AI summaries enabled, generation time depends on model responses (failed items fall back instead of blocking).
-
-![RSS / News Aggregation settings card](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-rss-setting.png)
-
-![Sidebar “Today’s Worth Reading” modal: grouped by category, each source links to its website](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-rss-view.png)
-
-![Query today’s news: ask the model for “Today’s Worth Reading” and it cites the daily digest](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-rss-query-news.png)
-
-### Global Search (@hyzyn/dsh-search)
-
-- **What it does**: adds a “Global Search” entry to the Web GUI sidebar (⌘/Ctrl+K also opens it) that presents a command-palette window: grouped rows for recent sessions, full-text session hits, Prompts, MCP tools, quick actions, and settings sections.
-- **How to use**: click the sidebar search box or press ⌘/Ctrl+K — the palette **opens with content already in it** (recent sessions + quick actions + settings sections, rendered locally with no request); typing filters local candidates instantly while host full-text hits stream in. ↑/↓ select, ↵ opens, esc closes; ⌥1-9 opens the Nth recent session, and ⌥N / ⌥O / ⌥, trigger New session / Open folder / Open settings. Clicking a session result opens it and tries to locate the matching text; Prompt and MCP tool rows jump to their settings cards; settings sections jump to the corresponding section of the settings dialog.
-- **Supports**: full-text session search via DSH’s built-in `sessionQuery` plus instant title candidates from the client session list; settings sections enumerated live from the client slot registry (`settings.section`, so third-party sections such as “Skins” or “Pets” are listed too, in the same order as the settings navigation); Prompts read from the `~/.dsh/prompts.yml` managed block; MCP tools enumerated by the `mcp__` prefix with their server shown; keyword highlighting; configurable result limits.
-- **Where it is stored**: no separate config.
-- **Note**: requires the host `sessionQuery` service; if absent, session search returns an empty list. If the `session-query` full-text index is configured with `openAt: "never"`, session search automatically degrades to per-session scanning; session results are filtered to currently visible/jumpable sessions. “New session” reuses the GUI’s own `uiWorkspace.startSession()`; “Open folder” is hidden when no directory-picker plugin is installed.
-
-![Global search plugin](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-search.png)
-
-![Global search results (recent sessions / session hits / Prompt / MCP tools / settings)](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-search-query.png)
-
-### Codegraph Integration (@hyzyn/dsh-codegraph)
-
-- **What it does**: code-graph integration — the “Codegraph” card under Settings → Plugins shows index status, symbol search, callers / callees / impact, and one-click sync / index. On install it automatically injects a CodeGraph usage guideline into systemPrompt so the model prefers `codegraph_explore` / `codegraph explore` over grep / read in indexed projects.
-- **How to use**: open Settings → Plugins → “Codegraph” → view index status, search symbols, click a result to inspect source and call chains / impact, or run Sync / rebuild index manually.
-- **Supports**: index status (version, file / symbol / edge counts, last indexed time, pending changes); symbol search with node / callers / callees / impact details; **the default path follows the active session’s workspace directory** (switches when you switch projects; a manual input temporarily overrides it); one-click incremental sync and full rebuild.
-- **MCP integration (on by default)**: DSH’s MCP client does not declare roots, so `codegraph serve --mcp` can only look upward from its working directory for `.codegraph/` — when the host starts in the home directory, `mcp__codegraph__*` calls fail with “No CodeGraph project is loaded”. This plugin manages the codegraph MCP server row in `~/.dsh/cordis.patch.yml` and aligns its cwd with the default project path (the card’s “Set as default project” switches it in one click and the MCP server hot-restarts on save); a row already configured in the MCP card only gets its cwd filled in, other fields are left untouched. Disable with `mcpIntegration: false`.
-- **Where it is stored**: the index lives in the project’s `.codegraph/` directory (created by `codegraph index`); the default path and the switches persist in this plugin entry’s profile configuration, written into the current profile’s `cordis.patch.yml` user layer.
-- **Note**: the target project needs a Codegraph index first; unindexed projects return guidance to fall back to regular tools. Indexing / rebuilding are local CLI operations that consume real disk and CPU.
-- **Compatibility and tuning**: current baseline DSH `0.1.7-rc.2` (declares `peerDependencies: @deepseek-ai/dsh ^0.1.7-rc.2`) + codegraph CLI `1.5.0`; the CLI commands and flags used are listed in the package README. For large repositories, raise `indexTimeoutMs` (default 600s; `cliTimeoutMs` covers query commands, default 60s), and enable `indexForce` when the CLI refuses to index a home directory / filesystem root.
-
-![Codegraph settings card](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-codegraph.png)
-
-### Terminal Panel (@hyzyn/dsh-tty)
-
-- **What it does**: adds a “Terminal” entry to the Web GUI sidebar that opens a large modal with an embedded xterm.js interactive terminal (real PTY via node-pty) and multi-tab support, capable of running arbitrary commands and TUI programs (vim / htop / dev servers). It also does **direct SSH to remote hosts** (connection book / host-key pinning / automatic reconnect / port-forward tunnels) and **SFTP file transfer** — either the single-pane dialog or the “local left / remote right” dual pane, with upload / download / rename / delete.
-- **How to use**: install, then restart `dsh web`; click “Terminal” in the sidebar → the first terminal is created automatically (default `$SHELL`) → use “+” in the tab bar for a new tab (local terminal / SSH connection book / SSH connection…) and ✕ to close; new tabs default to the current DSH session’s working directory; SSH tabs expose SFTP and tunnel entries in their connection bar; Ctrl+F searches inside the terminal, and the toolbar offers clear / copy / paste.
-- **Two SFTP layouts (configurable)**: `dialog` — a single pane with remote directory browsing, multi-select / drag-and-drop upload (recursive folders), download, rename, delete; `dual` — local pane on the left, remote on the right, where the inline `⇨ / ⇦` buttons stream both paths through the host server (recursive folders, same-name overwrite, bytes never pass through the browser).
-- **Minimize (state folded into the sidebar entry)**: clicking outside the modal, pressing Esc, or the title-bar “—” collapses the panel while PTY sessions and their output buffers stay alive; the sidebar “Terminal” entry then shows a session-count badge and a status dot, and clicking it brings the panel back. Only the floating bar’s ✕ or the title-bar ✕ really closes it and ends every session.
-- **Supports**: multi-tab sessions (multiple sessions per connection); working directory follows the current session; TERM=xterm-256color injection (TUI apps don’t degrade); automatic reconnect after a drop (session keep-alive + output-buffer replay); SSH agent / key / password auth with `env:VAR` secret references that never touch disk; port-forward tunnels (-L / -R, kept alive by the host); downstream backpressure protection; loopback trust fence; concurrency cap (default 4); settings hot-reload; agent tools (`tty_list` / `tty_capture` / `tty_screen` / `tty_expect` / `tty_send` / `sftp_*` / `tunnel_list`).
-- **Where it is stored**: this plugin entry’s profile configuration, written into the current profile’s `cordis.patch.yml` user layer — the “Settings → Plugins → Terminal Panel” card reads and writes it.
-- **What 0.19.0 fixed**: 48 audited defects — SFTP overwrites now go through a temp part + atomic rename (a failed upload no longer destroys the target), in-flight spawns no longer leave zombie sessions, importing known_hosts no longer raises a false “man-in-the-middle”, plaintext passwords never reach browser storage, force-killing a local PTY no longer crashes the host on Windows, and `tty_capture{last}` / `tty_expect` work again on modern Linux (bash ≥4.4). See `packages/tty/DEFECTS.md` for the list and index.
-- **Note**: resize relies on DSH’s internal terminal-handle shape (known limitation); output is a UTF-8 text stream, so `cat`-ing binary files shows replacement characters. See `packages/tty/README.md` for details.
-
-![Terminal panel: the sidebar entry opens a multi-tab xterm.js terminal with a compact two-row header (tabs + SSH connection bar)](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty.png)
-
-![SFTP dual pane: local left / remote right, inline ⇨/⇦ server-side streaming transfer (sftpStyle=dual)](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-sftp-dual.png)
-
-![SFTP single-pane dialog: remote directory browsing with download / rename / delete](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-sftp-dialog.png)
-
-![Terminal panel settings card: shell / TERM / SFTP style / concurrency cap, saved and applied hot](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-setting.png)
-
-### Docker Container Panel (@hyzyn/dsh-docker)
-
-- **What it does**: adds a “Containers” entry to the Web GUI sidebar for inspecting containers on the **local machine or an SSH host** — list with state / health / ports / compose project, a **read-only multi-target overview**, a **Compose project view (project → service → containers, plus project-level merged logs)**, container details, log tails, resource usage (**live follow + mini sparklines**), and images (list plus details: layers / build history). Once you explicitly enable the switches, it can also start / stop / remove containers, pull / remove / prune images, and run a one-shot `docker exec`.
-- **How to use**: install, restart `dsh web`, then click “Containers” in the sidebar → pick a target (local / SSH) → the container list supports search and state filtering → open a card for details / logs / stats, or start / stop / remove (requires “allow mutations”); manage targets and switches under Settings → Plugins → “Docker Container Panel”, saved and applied hot.
-- **Terminal button**: with tty ≥ 0.15.0 installed, the first icon on a card opens an **in-panel terminal drawer** (tty's `ttyTerminal.mount` embeds the terminal in place, so the panel stays open); with tty 0.14.0 it falls back to opening a new terminal tab and closing the panel, and without tty it copies the command `docker exec -it '<container>' sh` (falls back to copying the command when tty's terminal capability is unavailable).
-- **Contextual entry**: with tty ≥ 0.13.0 installed, the SSH tab’s connection bar (next to SFTP) shows a “Containers” button — it opens the panel straight for the host you are connected to (shown whenever the plugin is loaded; the target is resolved at click time by connection-book name or `host:port`, and a missing target shows how to configure it).
-- **Targets**: `kind=local` runs the host machine’s docker CLI; `kind=ssh` can **reference a tty connection-book entry by name** (data-level reuse, tty unchanged; inline host/username when tty is not installed) and runs docker on the remote host over an ssh2 exec channel, with TOFU host-key pinning seeded from tty’s existing records.
-- **Cross-target and “needs attention”**: the overview page summarises every target on one screen (count cards plus a cross-target anomaly table, where one failing target does not affect the rest); the “needs attention” criteria cover unhealthy / repeatedly restarting / **OOM-killed** / non-zero exit / zombie, and the agent-side `docker_attention` and `docker_ps target:'*'` support the same cross-target aggregation.
-- **Supports**: container list (`all` includes stopped containers), `docker inspect` details, logs (tail / timestamps / since), **live log streaming** (a FOLLOW toggle backed by SSE `docker logs --follow`, for both local and SSH targets, with auto-scroll and the same filtering/coloring as the snapshot; switches back to snapshot automatically when the container exits), `docker stats` **snapshots and a live stream** (SSE with a 60-point CPU / memory sparkline; this stream never ends on its own, so the front end closes it), a **Compose project view** (grouped by `composeProject` / `composeService`, with project-level logs merged client-side behind a `[service]` prefix), a **container event activity stream** (SSE `docker events` feeding an "Activity" bar in the list plus a 500 ms debounced list refresh), a **read-only multi-target overview** (one screen for every configured target: count cards plus a table of unhealthy / restarting containers, fetched in parallel with per-target failure tolerance and no cross-target actions), **networks and volumes** (lists plus details: subnets / gateways / attached containers, mountpoints / options / labels; removal and prune require `allowMutations`), plus **ephemeral multi-select merged logs from the container list** (2–8 containers), image list plus **image details** (`docker image inspect` layers / size and `docker history` build steps), a **`docker pull` progress stream** (per-layer, over SSE), image remove / dangling prune (requires `allowMutations`), and one-shot exec (exit code plus stdout/stderr); `dockerBin` can be set to `podman`; oversized output is truncated. All four SSE streams (logs / stats / events / pull) share one `openSseStream` foundation (heartbeat, active-stream registry, disconnect cleanup).
-- **Security model (important)**: the docker socket is equivalent to root on the target host, so the plugin is **read-only by default** — with `allowMutations` off, start / stop / remove are rejected (HTTP 403 and no agent tool registered); with `allowExec` off, exec is rejected. Container names/IDs pass a whitelist check, commands are always built as argv arrays with single-quote escaping, and passwords / passphrases should use `env:VAR` and are never sent back to the browser.
-- **Where it is stored**: this plugin entry’s profile configuration, written into the current profile’s `cordis.patch.yml` user layer (legacy `~/.dsh/settings.yaml` sections were imported once by DSH).
-- **Note**: there is no interactive TTY (exec is a one-shot command; use the terminal panel for `docker exec -it`), streaming exists only in the browser panel (the `docker_logs` / `docker_stats` / `docker_image_pull` agent tools keep snapshot semantics), there is no `docker build` / `save` / `load` / `push`, Compose is a read-only view (no `compose up/down`), and the multi-target overview is a **read-only** summary (there are no cross-target actions; start / stop / remove stay per-target); `docker rm` and `docker image rm` are issued without `-f`, so a running container or a referenced image fails with an explanatory hint. See `packages/docker/README.md` for details.
-
-### Environment Variables / Secrets Management (@hyzyn/dsh-env)
-
-- **What it does**: add, edit, or delete environment variables and secrets in the Web GUI. After saving, they are immediately written into the current process’s `process.env`, so both the host and subsequently started child processes can read them without restarting.
-- **How to use**: open Settings → Plugins → “Environment Variables / Secrets Management” → add a key-value pair → (check “Secret” for sensitive entries; secret values are never sent back to the browser, and saving with an empty field keeps the stored value) → save.
-- **Supports**: plain strings; `js:` prefixed expressions (e.g. `js:process.env.API_KEY`); secret values migrate automatically into the official credentials store `.credentials.yaml` (write-only: the API never sends secrets back, env file keeps only the manifest; existing refs are never overwritten — conflicting entries stay in the env file with a warning).
-- **Where it is stored**: the managed block of `~/.dsh/env.yml` (auto-generated; do not edit by hand).
-- **Note**: key names may only contain letters, digits, and underscores, and must not be duplicated.
-
-![Environment variables / secrets management plugin](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-env.png)
-
-### Prompt Management (@hyzyn/dsh-prompt)
-
-- **What it does**: visually edit systemPrompt. When enabled, its content is injected as a systemPrompt section and takes effect immediately after saving.
-- **How to use**: open Settings → Plugins → “Prompt Management” → create/edit a Prompt (multiple versions can be saved) → enable.
-- **Supports**: version switching/rollback; A/B testing (choose A/B versions for the same Prompt and randomly match them by weight); export JSON/Markdown, one-click copy & share, import from JSON.
-- **Where it is stored**: the managed block of `~/.dsh/prompts.yml`.
-- **Note**: each Prompt must have at least one version, and a single version’s content must be ≤ 500KB.
-
-![Prompt management plugin](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-prompt.png)
-
-## Quick Start
-
-### System Requirements
-
-- DeepSeek Harness installed and `dsh web` starts normally. **The current baseline is DSH `0.1.7-rc.2`**: settings now live in the current profile’s plugin-entry configuration, and compatibility is enforced from `peerDependencies` both before install and at startup; `0.1.6-alpha.2` and earlier are no longer supported.
-- Every installable plugin declares `@deepseek-ai/dsh: ^0.1.7-rc.2` in `peerDependencies`. Since DSH 0.1.7-rc.1 that declaration is enforced **before install** (`incompatible-version`) and **at startup** (the row becomes `disabled`), with prereleases participating in range matching. The plugins also keep `dsh.engines.dsh: ">=0.1.7-rc.2"` as a **marketplace display field**: the host does not read it (app-boot README: “these checks use peer declarations, not `engines.dsh`”), but the plugin market / community listings still display compatibility from it — it must match the peer floor, otherwise it states something untrue. To admit one exact version combination, write an exemption into the profile’s own `compatibility.json`: `dsh plugin --profile <p> allow-version <pkg@ver> --dsh-version <ver> --accept-risk`. CI enforces this with `node scripts/check-dsh-peers.mjs`, which checks the peer floor, the engines floor and `dsh.manifestVersion`, and can additionally run DSH’s own evaluator via `--app-boot <path>`.
+- DeepSeek Harness installed and `dsh web` starts normally. **The current baseline is DSH `0.1.7-rc.2`**:
+  settings now live in the current profile’s plugin-entry configuration, and compatibility is enforced
+  from `peerDependencies` both before install and at startup; `0.1.6-alpha.2` and earlier are no longer
+  supported.
+- Every installable plugin declares `@deepseek-ai/dsh: ^0.1.7-rc.2` in `peerDependencies`, enforced
+  both **before install** and **at startup**; `dsh.engines.dsh` is kept as a **marketplace display
+  field** (it must match the peer floor). Mechanics, what to do when a version is rejected, and how to
+  admit an exact combination → [docs/troubleshooting.md § Compatibility](docs/troubleshooting.md#兼容性校验).
 - No extra requirements for npm installs; installing from this repository requires Node.js >= 22.19 and pnpm 10.
 
-### Three-Step Setup
-
-1. Install the aggregate package: `dsh plugin --profile web add @hyzyn/dsh-all`
-2. Restart `dsh web`; all management cards appear under Settings → Plugins
-3. Open “Settings > Plugins” and use the cards as needed; changes take effect immediately after saving
-
 ### Install from npm (recommended)
-
-The plugins are published to npm (under the `@hyzyn` scope). Install everything with one command — either of these two equivalent options:
 
 ```sh
 dsh plugin --profile web add @hyzyn/dsh-all              # aggregate package
 dsh plugin --profile web add @hyzyn/dsh-plugin-kit       # repo root bundle (mounts the whole family too)
 ```
 
-After installation, restart `dsh web` and open Settings → Plugins to see all the cards. If you only want one plugin, see “Install a Single Plugin” below.
+**Restart `dsh web`** afterwards; all cards appearing under Settings → Plugins means it worked.
+If a card does not appear, you probably forgot to restart. You can also use
+`dsh --profile web --dump-config` to confirm the plugin configuration layer is mounted.
+For one plugin only, see “Install a single plugin” below.
+Uninstall: `dsh plugin --profile web remove @hyzyn/dsh-all` (or the matching subpackage), then restart.
 
-### Install from the GitHub Repository (Development / Debugging)
+> **Which configuration entry exists in which version**: DSH ≥ `0.1.6-alpha.2` has **two** entries
+> pointing at the same configuration — the sidebar **“Plugins”** → pick a plugin → its row’s
+> “Configure” (the official two-pane page), and **Settings → “Plugin configuration”** (a row next to
+> “General settings”, provided by `@hyzyn/dsh-kit-settings`).
+> DSH ≤ `0.1.5` uses the cards inside **Settings → Plugins → “Plugin configuration”**.
+> Client halves register all three slot generations (`plugins.row.config`, `settings.kit.item`,
+> `settings.plugin.item`), so one build works on every generation.
 
-The plugin packages are already on npm; installing from the repository is for development and debugging (requires Node.js >= 22.19 and pnpm 10).
-The repository root is itself a DSH bundle (`package.json#dsh.bundle.patch`, generated by `pnpm aggregate`),
-so `dsh plugin add link:$(pwd)` recognizes and mounts the whole family as one plugin:
+### Install from the GitHub repository (development / debugging)
+
+Requires Node.js >= 22.19 and pnpm 10. The repository root is itself a DSH bundle
+(`package.json#dsh.bundle.patch`, generated by `pnpm aggregate`):
 
 ```sh
-# 1. Clone the repository
 git clone https://github.com/hyzyn/dsh-plugin-kit.git
 cd dsh-plugin-kit
-
-# 2. Install dependencies and build
 pnpm install
 pnpm build
 
-# 3. Link the family into the web profile (the root bundle is equivalent to installing @hyzyn/dsh-all)
-dsh plugin --profile web add link:$(pwd)
-
-# 4. Restart dsh web
+dsh plugin --profile web add link:$(pwd)   # the root bundle is equivalent to installing @hyzyn/dsh-all
 dsh web
 ```
 
 > ⚠️ If the web profile already has `@hyzyn/dsh-all` or any `@hyzyn/dsh-<pkg>` installed, do **not**
 > add the root bundle (or `packages/all`) again — duplicate plugin rows cause a
-> `duplicate loader entry id` error at startup.
+> `duplicate loader entry id` error at startup. For one subpackage only, replace the add step with
+> `dsh plugin --profile web add link:$(pwd)/packages/<name>`.
+>
+> With the `dsh` field on the root package, GitHub DSH marketplaces classify this repository as a DSH
+> plugin (cordis-plugin) instead of flagging it as “non-plugin”.
 
-> If you only want one subpackage, replace step 3 with `dsh plugin --profile web add link:$(pwd)/packages/<name>`, e.g. `packages/mcp`.
+### Install a single plugin
 
-> With the `dsh` field declared on the root package, GitHub DSH plugin marketplaces
-> (e.g. DSH-Plugins-Marketplace, which detects plugins by the `dsh` field or
-> `@deepseek-ai/*` dependencies) now classify this repository as a DSH plugin
-> (cordis-plugin) instead of flagging it as "non-plugin".
-
-### Install a Single Plugin
-
-If you do not want the whole family, you can install any plugin individually (published on npm, use the package name directly):
+Swap the package name for any entry in the table above (`@hyzyn/dsh-all` → `@hyzyn/dsh-<pkg>`):
 
 ```sh
-dsh plugin --profile web add @hyzyn/dsh-env     # Environment variables / secrets management
-dsh plugin --profile web add @hyzyn/dsh-mcp     # MCP server configuration
-dsh plugin --profile web add @hyzyn/dsh-prompt  # Prompt management
-dsh plugin --profile web add @hyzyn/dsh-profile # Profile management
-dsh plugin --profile web add @hyzyn/dsh-rss     # RSS / news aggregation
-dsh plugin --profile web add @hyzyn/dsh-search  # Global search
-dsh plugin --profile web add @hyzyn/dsh-codegraph # Codegraph integration
-dsh plugin --profile web add @hyzyn/dsh-tty     # Terminal panel
-dsh plugin --profile web add @hyzyn/dsh-docker  # Docker container panel
+dsh plugin --profile web add @hyzyn/dsh-env       # Environment variables / secrets management
+dsh plugin --profile web add @hyzyn/dsh-tty       # Terminal panel
+dsh plugin --profile web add @hyzyn/dsh-docker    # Docker container panel
 ```
 
-### Verify and Uninstall
+Install failures / missing cards / HTTP 401 or 403 → [docs/troubleshooting.md](docs/troubleshooting.md).
 
-After installing, restart `dsh web`; the corresponding card appearing under Settings → Plugins means it worked. You can also use `dsh --profile web --dump-config` to confirm the plugin configuration layer is mounted. If a card does not appear, you probably forgot to restart `dsh web`.
+Install failures / missing cards / HTTP 401 or 403 → [docs/troubleshooting.md](docs/troubleshooting.md) (Chinese).
 
-Uninstall: `dsh plugin --profile web remove @hyzyn/dsh-all` (or the corresponding `@hyzyn/dsh-<package>`), then restart `dsh web`.
-
-### Installation Troubleshooting
-
-<details>
-<summary><strong>Expand for common installation problems</strong></summary>
-
-<br>
-
-> **Card does not appear?** Restart `dsh web`; make sure you are using the official `dsh-web-app` settings panel (the browser half depends on the core slots service).
-
-> **No tools appear after saving an MCP server?** Wait 1–2 seconds for HMR; check the status badge and conflict hints in the card; click “Connection Test” before saving.
-
-> **Getting `duplicate loader entry id`?** Most likely you manually added plugin lines to `~/.dsh/cordis.patch.yml`. Remove the duplicate lines — plugin lines should only be mounted by bundle patches; the managed block is only for server configuration.
-
-> **`npm install` / `npm view` reports EPERM?** There may be root-owned files in the local `~/.npm` cache (a historical npm bug). Run `sudo chown -R $(id -u):$(id -g) ~/.npm` to fix it. pnpm is not affected.
-
-</details>
-
-## Developing a New Plugin
+## Writing a new plugin
 
 ```sh
 pnpm create-plugin <name> [id]
-# Example: pnpm create-plugin timer          → packages/timer (@hyzyn/dsh-timer, plugin id: timer)
-# Example: pnpm create-plugin pet-tracker pt → packages/pet-tracker (plugin id: pt)
+# e.g. pnpm create-plugin timer          → packages/timer (@hyzyn/dsh-timer, plugin id: timer)
+# e.g. pnpm create-plugin pet-tracker pt → packages/pet-tracker (plugin id: pt)
 ```
 
-The script copies the `templates/hello` template, replaces the package name and plugin id, and automatically updates the aggregate package. Then:
-
-1. Edit `packages/<name>/src/index.ts` to write your plugin logic;
-2. Build and install locally for debugging:
+The script copies the `templates/hello` template, substitutes the package name and plugin id, and
+updates the aggregate package. Then edit `packages/<name>/src/index.ts` and build for local debugging:
 
 ```sh
 pnpm --filter @hyzyn/dsh-<name> build
 dsh plugin --profile web add link:$(pwd)/packages/<name>
 ```
 
-### What a Plugin Package Looks Like (using hello as an example)
+**Which docs a new package needs, how long they may be, and where its numbering starts** →
+[docs/conventions.md](docs/conventions.md) (Chinese).
+**The anatomy of a plugin package** (`dsh.bundle.patch` / `cordis.patch.yml` / `src/index.ts` /
+`dsh.client`) → [docs/conventions.md § Package anatomy](docs/conventions.md#插件包解剖).
+**Two rules that are easy to trip over** (where a client half may derive its host address; extracting
+pure logic into modules) → [docs/conventions.md § Client half](docs/conventions.md#客户端半体两条硬规矩).
 
-| File / field | Purpose |
-| --- | --- |
-| `package.json#dsh.bundle.patch` | Points to `cordis.patch.yml`, declaring this package as a bundle patch layer |
-| `cordis.patch.yml` | Inserts one line to mount the plugin into the profile lineup |
-| `src/index.ts` | Host half: exports a Cordis plugin shaped like `{ name, inject, apply }` |
-| `package.json#dsh.client` | Optional: declares the browser half; Web GUI loads it as `/plugins/<id>/client.js` |
+## Documentation map
 
-There are two ways to inject services: use `inject: ['tools', 'webServer']` and then access `ctx.tools` directly; or call `ctx.get('tools')` at runtime and check for null. Use schemastery to export a same-name `Config` schema for configuration.
+| You want to know | Read |
+|---|---|
+| What this is, what to install | this file |
+| How the 12 packages cooperate, dependency direction, who writes which config file | [docs/architecture.md](docs/architecture.md) |
+| Naming / commits / doc layers / numbering / package anatomy | [docs/conventions.md](docs/conventions.md) |
+| Terminology (host half, managed block, TOFU, slot generations…) | [docs/glossary.md](docs/glossary.md) |
+| Install failures, missing cards, HTTP 401/403, known limits | [docs/troubleshooting.md](docs/troubleshooting.md) |
+| How to run real-machine tests, and what counts as passing | [docs/agent-real-test.md](docs/agent-real-test.md) |
+| Windows 11 test environment setup | [scripts/windows/README.md](scripts/windows/README.md) |
+| Cross-package backlog | [ROADMAP.md](ROADMAP.md) |
+| Release process | [RELEASING.md](RELEASING.md) |
+| Runtime linking between plugins and the host in a dev checkout | [docs/link-dsh-runtime.md](docs/link-dsh-runtime.md) |
+| How one package is used | `packages/<pkg>/README.md` |
+| What a defect number means | `packages/<pkg>/DEFECTS.md` |
 
-### The browser half: two hard rules
-
-**① For any address that connects to the host, the base may only come from the injected `__DSH_TRANSPORT__`.** Do not compose an address from `location.protocol` / `location.host` / `location.hostname` / `location.origin` / `location.port`, and do not hard-code `ws://` / `wss://`:
-
-```js
-// ❌ fine in a browser, but the desktop build computes an unreachable address
-const url = (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/api/x/ws'
-// ✅ correct in both shapes
-const base = new URL(globalThis.__DSH_TRANSPORT__?.streamBaseUrl ?? document.baseURI, document.baseURI)
-const url = (base.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + base.host + '/api/x/ws'
-```
-
-Why: **the desktop build (DeepSeek Harness Desktop) does not serve the page over HTTP — its origin is the Electron custom scheme `dsh-app://app`**, and the real host lives on a different origin (`http://127.0.0.1:<dynamic port>`). An address derived from `location` works perfectly in a browser and **fails only on desktop**, while the CDP smoke drives `http://127.0.0.1:3082` (where `location` happens to be right) and each package’s preview harness uses a fake WebSocket — all four lines of defence are blind to it. That is exactly what **D61** in `packages/tty/DEFECTS.md` was: the terminal panel opened and the settings card / SSH book were fine, but the terminal itself could never connect. Relative-path `fetch('/api/dsh-x/...')` is unaffected and correct in both shapes.
-
-`scripts/client-lint.mjs`, run by `pnpm -r typecheck`, statically rejects both patterns (an AST check, immune to comments and strings; the rule and its rationale live in `scripts/client-host-url.mjs`).
-
-**② Client logic whose correctness matters must be extracted into a pure `client-src/*.js` module with a vitest case.** `client.js` is an esbuild artifact and is not tested at the vitest layer, and `client-lint` only checks static problems (name resolution, host-address provenance) — **it does not verify behaviour**. Logic left inside `client.js` therefore has no test entry point at all. Note that `client-lint` covers **all** of `client-src/**`, not just the entry point, so sibling modules are covered too.
-
-Example: `packages/tty/client-src/ws-url.js` + `packages/tty/test/ws-url.test.ts` (the cases must include a `dsh-app://app` scenario).
-
-## FAQ
-
-<details>
-<summary><strong>I restarted, but there is still no card under Settings → Plugins?</strong></summary>
-
-A: First make sure the plugin was installed into the `web` profile (the `--profile web` flag), then use `dsh --profile web --dump-config` to confirm the plugin configuration layer is mounted. If it still does not work, see “Installation Troubleshooting” above. Refreshing the page is not enough — restart the `dsh web` process.
-
-</details>
-
-<details>
-<summary><strong>Changes to plugin code do not take effect?</strong></summary>
-
-A: Run `pnpm build` again, then restart `dsh web`. If you changed the browser half, you may also need to clear the browser cache or do a hard refresh.
-
-</details>
-
-<details>
-<summary><strong>No tools appear after saving an MCP server?</strong></summary>
-
-A: Wait 1–2 seconds for HMR; check the status badge and conflict hints in the card; click “Connection Test” before saving. If it still fails, check whether the server process can actually start and whether the address is reachable.
-
-</details>
-
-<details>
-<summary><strong>Getting `duplicate loader entry id`?</strong></summary>
-
-A: Most likely you manually added plugin lines to `~/.dsh/cordis.patch.yml`. Remove the duplicate lines — plugin lines should only be mounted by bundle patches; the managed block is only for server configuration.
-
-</details>
-
-<details>
-<summary><strong>`npm install` / `npm view` reports EPERM?</strong></summary>
-
-A: There may be root-owned files in the local `~/.npm` cache (a historical npm bug). Run `sudo chown -R $(id -u):$(id -g) ~/.npm` to fix it. pnpm is not affected.
-
-</details>
-
-## Known Limitations
-
-- The managed block in `~/.dsh/cordis.patch.yml` is only for MCP server configuration; manually adding plugin lines can cause `duplicate loader entry id` at startup.
-- Codegraph’s MCP integration only aligns the working directory of the single `codegraph` server; DSH’s MCP client does not declare roots yet, so switching projects means using the card’s “Set as default project” or passing `projectPath` on the tool call.
-- Profile deletion is recursive and irreversible after the in-panel confirmation. The built-in `web` profile is protected; `headless` can be deleted.
-- RSS needs network access on first startup. An unreachable source does not block other sources, but that source may be missing from the day’s digest. AI summaries require a model configured on the host (`agent-default-model`, or a provider/model pair set in the card); when none is configured or a call fails, items fall back to the truncated original text.
-- The browser half depends on the official `dsh-web-app` settings panel slots service; non-official Web GUIs may not show the management cards.
-- Desktop (Electron) and `dsh web` have different page origins (`dsh-app://app` vs `http://127.0.0.1:<port>`), so **localStorage / IndexedDB are two independent stores** — “the desktop version cannot see tabs or config saved in the browser” is expected behaviour, not a bug. Desktop is a secure context (`dsh-app` is registered as a secure scheme), so `navigator.clipboard` / `crypto.subtle` are available; reaching a remote GUI by IP is not, and both branches have to work in the browser half.
-- The terminal panel (dsh-tty) resize passthrough relies on DSH’s internal terminal-handle shape, and TERM injection needs the `-c` wrapper layer (DSH hard-codes node-pty `name:"dumb"`); see `packages/tty/README.md`.
-- Installing from the repository requires Node.js >= 22.19 and pnpm 10; it is for development/debugging only. npm installs are not affected.
+> The L0 documents under `docs/` are currently Chinese-only. Each package’s `README.md` is bilingual
+> (see `README.en.md` next to it).
 
 ## Contributing
 
-- Generate new plugins with the scaffolding command: `pnpm create-plugin <name> [id]`, instead of writing boilerplate by hand.
-- Follow Conventional Commits for commit messages (e.g. `fix(mcp): fix connection test timeout`). For user-visible changes, please include screenshots or verification evidence.
-- Run the gates before submitting: `pnpm typecheck && pnpm build && pnpm test && pnpm aggregate`.
-- After adding or removing plugins, run `pnpm aggregate` to regenerate the `packages/all` manifest.
+- Generate new plugins with the scaffolding: `pnpm create-plugin <name> [id]`.
+- Commits follow Conventional Commits (e.g. `fix(mcp): …`); user-visible changes should come with
+  screenshots or verification evidence.
+- Run the gates before committing: `pnpm typecheck && pnpm build && pnpm test && pnpm aggregate`.
+- After adding or removing a plugin, re-run `pnpm aggregate` to regenerate the `packages/all` manifest.
+- Full conventions: [docs/conventions.md](docs/conventions.md).
 
 ## License
 
-This repository is licensed under the [Apache License 2.0](LICENSE).
+Licensed under the [Apache License 2.0](LICENSE).
 
 ## Contributors
 
@@ -378,6 +209,6 @@ This repository is licensed under the [Apache License 2.0](LICENSE).
 
 **Like this project? Give it a star.**
 
-[Report Bug](https://github.com/hyzyn/dsh-plugin-kit/issues) · [Request Feature](https://github.com/hyzyn/dsh-plugin-kit/issues) · [View Releases](https://github.com/hyzyn/dsh-plugin-kit/releases)
+[Report a bug](https://github.com/hyzyn/dsh-plugin-kit/issues) · [Request a feature](https://github.com/hyzyn/dsh-plugin-kit/issues) · [See releases](https://github.com/hyzyn/dsh-plugin-kit/releases)
 
 </div>

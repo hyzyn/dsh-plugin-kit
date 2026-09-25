@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * CG35 防回归：`DSH_HOME` 的推导（含 `~` 展开与 resolve）在**整个仓库只允许有一份**，
+ * codegraph CG35 防回归：`DSH_HOME` 的推导（含 `~` 展开与 resolve）在**整个仓库只允许有一份**，
  * 即 `@hyzyn/dsh-kit` 的 `dshHome()`（packages/kit/src/services.ts）。
  *
  * 为什么要有这道闸：kit 0.4.1 给 `dshHome()` 加了归一化（`~` 展开 + resolve，与 DSH

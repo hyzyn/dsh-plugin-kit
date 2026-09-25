@@ -1,6 +1,6 @@
 /**
  * Windows 真机端到端验证：走**已构建的插件本体**，覆盖
- *   - `@hyzyn/dsh-codegraph` 的缺陷报告 D1 / D2 / D3；
+ *   - `@hyzyn/dsh-codegraph` 的外部真机缺陷报告 #1 / #2 / #3（`#N` 是**报告序号**，不是任何包的台账编号）；
  *   - `@hyzyn/dsh-mcp` 连接测试的启动方式与 stderr 解码（本仓库唯一会起 MCP 服务器的地方）。
  *
  * 与 `packages/codegraph/test/cli-route.test.ts` 的区别：那个跑在 vitest 上（需要 rollup 的
@@ -182,7 +182,7 @@ const missing = join(sandbox, 'no-such-cli.cmd')
     await new Promise((r) => setTimeout(r, 50))
   }
   const before = mount.sections.size
-  // 只把 CLI 补上：不动补丁、不重启宿主（报告 D1 的确定性复现步骤）
+  // 只把 CLI 补上：不动补丁、不重启宿主（报告 #1 的确定性复现步骤）
   writeFileSync(late, '@echo off\r\necho 9.9.9\r\n')
   const reprobed = await call(mount.routes, '/api/dsh-codegraph/reprobe', { method: 'POST' })
   record(

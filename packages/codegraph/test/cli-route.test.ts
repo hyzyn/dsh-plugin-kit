@@ -596,7 +596,7 @@ describe('systemPrompt 注入门禁（CLI 探测 + settings 开关 + 索引门�
   })
 
   it('探测失败带出实测原因：命令不存在时是「找不到命令」的实测原文，不是泛泛一句「探测不到」', async () => {
-    // 缺陷报告 D3：probeCli 原先把 error 直接丢掉，于是卡片只能猜原因，
+    // 报告 #3（外部真机缺陷报告的序号，**不是本包台账的编号**）：probeCli 原先把 error 直接丢掉，于是卡片只能猜原因，
     // 用户与作者都分不清「没装 / 装错 / 超时」。
     //
     // 「命令不存在」的实测原文是**平台相关**的（真机实测，见脚本
@@ -628,8 +628,8 @@ describe('systemPrompt 注入门禁（CLI 探测 + settings 开关 + 索引门�
     expect(detail).not.toContain('ENOENT')
   })
 
-  it('重新探测：CLI 在挂载之后才出现时，无需重启宿主即可恢复（报告 D1 的复现步骤）', async () => {
-    // 缺陷报告 D1 的确定性复现：挂载时 command 指向一个还不存在的绝对路径，
+  it('重新探测：CLI 在挂载之后才出现时，无需重启宿主即可恢复（报告 #1 的复现步骤）', async () => {
+    // 报告 #1 的确定性复现：挂载时 command 指向一个还不存在的绝对路径，
     // 之后把 CLI 补上——原实现里 cliAvailable 是挂载时锁存的布尔，任何刷新都读同一个
     // 缓存，用户会陷在「按提示刷新 → 永远不恢复」里。POST /reprobe 是那个出口。
     const late = join(sandbox, POSIX ? 'late-cli.mjs' : 'late-cli.cmd')

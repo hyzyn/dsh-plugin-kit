@@ -230,7 +230,7 @@ try {
   // ---------- 6. 释放 A 只回收 A ----------
   await scopeA.dispose()
   scopeA = undefined
-  // 子进程退出是**异步**的：不能睡一个固定时长就断言（CG43 同款教训——固定等待在
+  // 子进程退出是**异步**的：不能睡一个固定时长就断言（codegraph CG43 同款教训——固定等待在
   // 慢机器/并发环境下会假失败）。改成条件轮询：等 A 清空、且 B 稳定仍在。
   const gone = await waitFor(() => mcpPidsFor(projectA).length === 0, 8000)
   const afterA = mcpPidsFor(projectA)

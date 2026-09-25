@@ -96,7 +96,7 @@ console.log('--- 阶段 A：静态探针（已构建的 lib/，不需要宿主�
       decoded === '不是',
       `encoding=${encoding} decodeOutput(0xb2 0xbb 0xca 0xc7)=${JSON.stringify(decoded)}`,
     )
-    // 分片安全：不管读到多少字节的块，结果必须一致（报告 D2 的第二种形态）
+    // 分片安全：不管读到多少字节的块，结果必须一致（报告 #2 的第二种形态；`#N` = 外部报告序号，非台账编号）
     const chunked = [1, 2, 3, 4, 5, 8].map((size) => {
       const decoder = kit.createOutputDecoder({ fallbackEncoding: 'gbk' })
       let out = ''

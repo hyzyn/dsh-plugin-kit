@@ -14,7 +14,7 @@ import { defineConfig } from 'vitest/config'
  * **打包后的 client.js 不在本层测**——它是 esbuild 产物，走各自的管线。所以
  * 浏览器半体里凡是要判对错的逻辑，请抽成不依赖 DOM 的纯模块：`client-lint.mjs`
  * 只查名字解析与宿主地址来源（静态），**不验行为**，留在 client.js 里的逻辑
- * 等于没有测试入口（D61 就是这么漏掉的——推导逻辑埋在 client-src/index.js 里）。
+ * 等于没有测试入口（tty D61 就是这么漏掉的——推导逻辑埋在 client-src/index.js 里）。
  */
 export default defineConfig({
   test: {

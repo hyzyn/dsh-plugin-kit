@@ -4,7 +4,7 @@
  * 为什么有这份测试：这条规则是**只会失败、平时不出声**的防线（规则上线时全仓库 0 命中），
  * 所以它自己漂了没人会发现——两种漂法都会让防线白给：
  *
- *   ① **漏报**：规则改松 / AST 遍历写错 → 下一个 D61 照样溜进桌面版（而 vitest、tsc 检查、
+ *   ① **漏报**：规则改松 / AST 遍历写错 → 下一个 tty D61 照样溜进桌面版（而 vitest、tsc 检查、
  *      CDP 冒烟、各包 preview harness 四层都抓不到它，见规则模块的文件头）；
  *   ② **误报**：规则改紧 → 对着合法代码报错，最后一定会被人削弱或加豁免，防线同样白给。
  *
@@ -26,8 +26,8 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const scan = (text, fileName = 'client.js') => scanHostUrlUses(fileName, text)
 const kinds = (text) => scan(text).map((item) => item.kind)
 
-describe('scanHostUrlUses · location 推地址（D61 的根因）', () => {
-  it('抓 location.protocol / location.host —— 就是 D61 那两行', () => {
+describe('scanHostUrlUses · location 推地址（tty D61 的根因）', () => {
+  it('抓 location.protocol / location.host —— 就是 tty D61 那两行', () => {
     const source = [
       'function wsUrl() {',
       "  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'",
@@ -79,7 +79,7 @@ describe('scanHostUrlUses · 不误报（误报会让规则被人削弱）', () 
   it('注释与文档字符串天然免判——用 AST 而不是正则的全部意义', () => {
     const source = [
       '/* 桌面版页面 origin 是 dsh-app://app，从 location.host 推会拼出',
-      ' * ws://app/api/dsh-tty/ws 这种连不上的地址（见 D61） */',
+      ' * ws://app/api/dsh-tty/ws 这种连不上的地址（见 tty D61） */',
       "const doc = '旧实现用的是 location.host + ws://app，别照抄'",
       '// const proto = location.protocol',
     ].join('\n')

@@ -9,7 +9,7 @@
  * 会算出**连不上的地址**，而在浏览器直连（`dsh web`，页面 origin 就是
  * `http://127.0.0.1:<port>`）下完全正常。
  *
- * 实测代价见 `packages/tty/DEFECTS.md` 的 **D61**：终端面板的 WS 地址用 `location.host`
+ * 实测代价见 `packages/tty/DEFECTS.md` 的 **tty D61**：终端面板的 WS 地址用 `location.host`
  * 拼成了 `ws://app/api/dsh-tty/ws`（`app` 不是可解析主机名，且落在桌面壳 `ws://127.0.0.1/*`
  * 的 cookie/Origin 拦截范围之外）→ 面板能打开、设置卡片全好，只有终端永远连不上。
  *
@@ -147,7 +147,7 @@ export function describeHostUrlUse(finding) {
 /**
  * 一个包目录里该被本规则检查的客户端半体文件（绝对路径）。
  *
- * 口径与 `client-lint.mjs` 的 tsc 锚点一致（D74）：有 `client-src/` 就查**源码全量**
+ * 口径与 `client-lint.mjs` 的 tsc 锚点一致（docker D74）：有 `client-src/` 就查**源码全量**
  * ——tsc 的 program 会经 import 拉进兄弟模块（如 docker 的 `session-target.js`），
  * 规则检查也不能只看入口；只有裸 `client.js` 的包才查构建产物。
  *

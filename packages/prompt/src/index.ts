@@ -46,7 +46,7 @@ const MAX_JSON_BODY_BYTES = 2 * 1024 * 1024
 const EXPORT_SCHEMA = 'dsh-prompt'
 const EXPORT_VERSION = 1
 
-// CG35：DSH_HOME 推导统一走 @hyzyn/dsh-kit（~ 展开 + resolve），别再手抄一份 raw 副本
+// codegraph CG35：DSH_HOME 推导统一走 @hyzyn/dsh-kit（~ 展开 + resolve），别再手抄一份 raw 副本
 const promptFilePath = () => process.env.DSH_PROMPT_FILE?.trim() || join(dshHome(), 'prompts.yml')
 
 interface PromptVersion {

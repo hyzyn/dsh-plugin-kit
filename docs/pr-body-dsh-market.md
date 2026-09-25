@@ -1,3 +1,8 @@
+<!-- 本文件是**提给 DSH 插件市场仓库**的 PR 正文副本（不是本仓的文档）：下面出现的相对链接
+     （`../CONTRIBUTING.md`、`../AGENTS.md`、`../docs/plugins.md`）以及 `packages/dsh-community-plugins/`、
+     `market/dist/`、`scripts/market-build` 等路径，都指向**目标市场仓库**，在本仓解析不到是预期的。
+     本仓的链接校验器会把这 3 条相对链接报成 BROKEN FILE —— 已知、且不修（改成绝对地址需要市场仓库
+     URL，本仓未记录；改成「不存在」的文字说明则是错的，它们在目标仓库里存在）。 -->
 > 提 PR 前请阅读 [CONTRIBUTING.md](../CONTRIBUTING.md) 与 [AGENTS.md](../AGENTS.md)；
 > 提交信息用 Conventional Commits（`type(scope): subject`），禁止 emoji。
 > 本仓库只接受四类内容贡献：插件申请（社区插件索引登记）、皮肤增加（新皮肤收录）、宠物增加（新宠物收录）、预设增加（agent 预设收录）。其余改动不接受直接 PR，请先提 Issue 讨论。

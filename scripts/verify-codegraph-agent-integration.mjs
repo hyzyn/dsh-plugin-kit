@@ -18,7 +18,7 @@
  * （与 `dsh-agent-loop:1718-1721` 同一条路径），再断言工具落到了**那个 agent** 的
  * 视图里、且全局层干净。
  *
- * 隔离（CG45 的教训，这里是必须的）：`apply()` 会写 `$DSH_HOME/cordis.patch.yml`。
+ * 隔离（codegraph CG45 的教训，这里是必须的）：`apply()` 会写 `$DSH_HOME/cordis.patch.yml`。
  * 本脚本把 `DSH_HOME` 指向临时目录——**第一版没做，插件当场去写真实
  * `~/.dsh/cordis.patch.yml`**（被文件沙箱的 EPERM 拦下才发现）。收尾同样断言真实补丁
  * 逐字节未变。
@@ -80,7 +80,7 @@ const record = (name, ok, detail) => {
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? '\n      ' + detail : ''}`)
 }
 
-/** 条件轮询：等 `check()` 为真或超时（CG43：不要用固定 sleep 等异步链）。 */
+/** 条件轮询：等 `check()` 为真或超时（codegraph CG43：不要用固定 sleep 等异步链）。 */
 async function waitFor(check, timeoutMs, stepMs = 200) {
   const deadline = Date.now() + timeoutMs
   for (;;) {

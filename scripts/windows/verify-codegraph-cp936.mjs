@@ -82,7 +82,7 @@ if (codePage === '936') {
   record('CP936 被识别为 gbk（Node 自带 full-icu）', detected === 'gbk', `得到 ${detected}，期望 gbk`)
 }
 
-/* ---- 3. cmd.exe 自己吐的中文报错（报告 D2 的原始现场） ---- */
+/* ---- 3. cmd.exe 自己吐的中文报错（报告 #2 的原始现场；`#N` = 外部报告序号，非台账编号） ---- */
 const sandbox = mkdtempSync(join(tmpdir(), 'cg-cp936-'))
 const shim = join(sandbox, 'definitely-not-a-real-command.cmd')
 writeFileSync(shim, '@echo off\r\nthis-command-does-not-exist-9f3a\r\n')

@@ -12,7 +12,7 @@
  *   | `preview-card.mjs` + `preview-card.test.ts` | 卡片结构 | 离线渲染（假 React）——测得到 DOM 结构与 CSS，测不到**真 React + 宿主主题 + 插槽布局** |
  *   | **本脚本** | **真浏览器** | —— |
  *
- * 这一层是仓库自己的历史教训逼出来的：CG37（样式引用计数跨代失效）与 CG44（工具栏被裁）
+ * 这一层是仓库自己的历史教训逼出来的：codegraph CG37（样式引用计数跨代失效）与 codegraph CG44（工具栏被裁）
  * 都是**只有真浏览器才暴露**的问题，离线预览与单测全绿。
  *
  * 做法：把 `scripts/verify-client-ui.mjs`（已有的通用 UI 验证器，其 UI8 逐插件断言
@@ -83,7 +83,7 @@ writeFileSync(overlay, [
 
 /**
  * 把被测 profile 拷进隔离 home。
- * **先清空目标**：本脚本只拷一次，但沿用 indexforce 的教训（CG48）——往已存在的目标上
+ * **先清空目标**：本脚本只拷一次，但沿用 indexforce 的教训（codegraph CG48）——往已存在的目标上
  * 拷时，里面残留的符号链接会指回源树，`cpSync` 报 "Cannot copy X to a subdirectory of self"。
  */
 const syncIsolatedProfile = () => {

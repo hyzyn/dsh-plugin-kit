@@ -83,7 +83,7 @@ export interface Config {
    * - `'per-agent'`：在每个 agent **自己的 scope** 里挂一份 `dsh-mcp-client`
    *   （`cwd` = 该 agent 会话目录解析出的索引根），并用 `agent/disposed` 回收。
    *   语义不再随全局 cwd 漂移、也不再写盘热重载；代价是每 agent 一个子进程
-   *   （实测空 Node 基线 ~40MB，见 P0-PLAN.md 的性能实测）。
+   *   （实测空 Node 基线 ~40MB，见 docs/p0-plan.md 的性能实测）。
    *
    * **默认保持现状**：这是行为变更，且按本机实测只覆盖「多项目并发」这一窄场景
    * （时间占比 3.1%），所以由用户显式开启，而不是自动切换。
@@ -116,7 +116,7 @@ export interface Config {
    * 注意语义是「重建」而不是「增量同步」：实测（codegraph 1.6.0）
    * `codegraph sync` 对「提取器版本落后」这种过期**返回 "Already up to date" 且不清除
    * 信号**——`sync` 只处理文件改动，版本/提取器不匹配只有 `index` 能修。
-   * 详见 ADOPTION-AUDIT.md 同一轮的实测记录。
+   * 详见 docs/adoption-audit.md 同一轮的实测记录。
    */
   autoReindex?: boolean
 }
@@ -390,7 +390,7 @@ export function describeAdoption(summary: AdoptionSummary): string {
   }
   const indexedNote = summary.indexed === false ? '（该项目未索引，这个数字不代表提示词效果）' : ''
   // 窄口径是主口径：`read` 占宽口径分母的绝大多数，用宽口径会得出「codegraph 没用」
-  // 的错误结论（实测 2.2% vs 28.8%，见 ADOPTION-AUDIT.md）。
+  // 的错误结论（实测 2.2% vs 28.8%，见 docs/adoption-audit.md）。
   if (summary.discoveryTotal === 0) {
     return `采纳率：还没有发现类调用（codegraph ${summary.codegraph} 次 / 读取 ${summary.file} 次）${indexedNote}`
   }
@@ -2203,7 +2203,7 @@ export interface MetricsAccess {
     summaries: AdoptionSummary[]
     /**
      * 按「是否有效索引」分组的合计（实测结论：必须分组——未索引项目里模型本来
-     * 就不该用它，混进来会把整体采纳率拉低且毫无意义。见 ADOPTION-AUDIT.md）。
+     * 就不该用它，混进来会把整体采纳率拉低且毫无意义。见 docs/adoption-audit.md）。
      */
     grouped: { indexed: AdoptionSummary; unindexed: AdoptionSummary }
     since: number

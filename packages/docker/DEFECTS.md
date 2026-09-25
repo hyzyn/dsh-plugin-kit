@@ -270,7 +270,8 @@
   `node scripts/client-smoke.mjs`（72/72，实测 0.6s）。三套都在 CI（ubuntu-only step）与发布闸里跑，
   并带看门狗（单例 25s / 全局 90s；末尾 `process.exit` 保证退出）。
 - **产物与源码一致**：`pnpm -r build` 后
-  `git diff --exit-code -- 'packages/*/client.js' 'packages/*/lib'`（CI 闸门）；
+  `git diff --exit-code -- 'packages/*/client.js' ':(glob)packages/*/lib/**'`（CI 闸门；
+  `:(glob)` 为什么必需见 [conventions.md § 真机脚本与 CI 接线](../../docs/conventions.md#真机脚本与-ci-接线)）；
   0.7.0 时另用内存重建逐字节核对过 `client.js`（229759 字节，`identical: true`）。
 - **真机 / 浏览器（0.7.0 时本机无法验）**：多容器 `docker stats` 的重复采样顺序、端口区间在
   `docker ps` / `docker inspect` 里的输出形状、crash-loop 的实机形态、别名 Host 的部署形态、

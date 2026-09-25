@@ -41,7 +41,7 @@
 export type McpScopeMode = 'managed' | 'per-agent';
 /** 两种模式的规范值（卡片与配置校验共用，避免两处字面量漂移）。 */
 export declare const MCP_SCOPE_MODES: readonly McpScopeMode[];
-/** 默认模式：**保持现状**。per-agent 是行为变更，由用户显式开启（见 P0-PLAN 第五节）。 */
+/** 默认模式：**保持现状**。per-agent 是行为变更，由用户显式开启（见 docs/p0-plan.md 第五节）。 */
 export declare const DEFAULT_MCP_SCOPE: McpScopeMode;
 /** 把任意输入规范化成模式；非法值回落 fallback（不抛：配置面永远不该让插件起不来）。 */
 export declare function normalizeMcpScope(value: unknown, fallback?: McpScopeMode): McpScopeMode;

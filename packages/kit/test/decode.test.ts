@@ -1,7 +1,7 @@
 /**
  * @hyzyn/dsh-kit — 子进程输出解码器的回归测试。
  *
- * 背景（真机缺陷报告 D2）：Windows 中文系统上 cmd.exe 自己的报错按 **CP936** 写
+ * 背景（报告 #2——外部真机缺陷报告的序号，**不是本包台账的编号**）：Windows 中文系统上 cmd.exe 自己的报错按 **CP936** 写
  * stderr，而插件按 UTF-8 解，卡片上的红色报错于是变成
  * `'x' �����ڲ����ⲿ���...`。这里用报告附录给出的**原始 CP936 字节**做断言——
  * 字节序列由 `python3 -c "s.encode('gbk')"` 生成，与报告截图逐字一致。
@@ -35,7 +35,7 @@ function decodeInChunks(bytes: Buffer, size: number): string {
   return out + decoder.flush()
 }
 
-describe('createOutputDecoder — CP936（报告 D2 的原始证据）', () => {
+describe('createOutputDecoder — CP936（报告 #2 的原始证据）', () => {
   it('整段喂入：CP936 的 cmd.exe 报错解出中文原文', () => {
     expect(decodeOutput(CP936_CMD_ERROR, { fallbackEncoding: 'gbk' })).toBe(EXPECTED_ERROR)
   })

@@ -179,7 +179,7 @@ async function waitForExit(...pids: number[]): Promise<void> {
   throw new Error('进程在 5s 内没有退出: ' + pids.filter(isAlive).join(', '))
 }
 
-describe('killProcessTree（CG05：POSIX 不再是 no-op）', () => {
+describe('killProcessTree（codegraph CG05：POSIX 不再是 no-op）', () => {
   it('detached 组长连同组内孙进程一起收到信号', async () => {
     if (process.platform === 'win32') return
     // 组长自己再 spawn 一个孙进程（孙进程继承组长的进程组）。
@@ -211,7 +211,7 @@ describe('killProcessTree（CG05：POSIX 不再是 no-op）', () => {
     await waitForExit(leader.pid!, grand)
   })
 
-  it('不是组长的普通子进程：默认只单杀（group 未开时绝不打 -pid，CG36）', async () => {
+  it('不是组长的普通子进程：默认只单杀（group 未开时绝不打 -pid，codegraph CG36）', async () => {
     if (process.platform === 'win32') return
     const plain = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' })
     expect(isAlive(plain.pid!)).toBe(true)
