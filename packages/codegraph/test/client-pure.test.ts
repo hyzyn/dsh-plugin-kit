@@ -340,6 +340,13 @@ describe('UX 重构：面板信息架构（顺序 / 分层）守卫', () => {
    */
   const src = readFileSync(new URL('../client-src/index.js', import.meta.url), 'utf8')
 
+  /*
+   * 锚点用 **i18n 键**（`group(t('panel.groupStatus')`）而不是界面文案（原来是 `group('索引状态'`）：
+   * 文案已进 `client-src/index.js` 的目录块（docs/i18n.md），源码里不再有中文字面量，
+   * 而键是比文案更稳定的标识——这条守卫钉的是**结构顺序**，与界面用哪种语言无关。
+   * 与上面「探索 / 上下文」那条同一个理由（第一版锚在 "children: '搜索'" 上，加了忙碌态
+   * 文案后立刻失效）。
+   */
   /** 某个结构标记在源码里的位置（用源码文本顺序近似 DOM 顺序；所有标记都在同一个 children 数组里）。 */
   const pos = (needle: string): number => {
     const at = src.indexOf(needle)
@@ -348,20 +355,20 @@ describe('UX 重构：面板信息架构（顺序 / 分层）守卫', () => {
   }
 
   it('状态先于操作：索引状态 必须排在 索引维护 之前', () => {
-    expect(pos("group('索引状态'")).toBeLessThan(pos("group('索引维护'"))
+    expect(pos("group(t('panel.groupStatus')")).toBeLessThan(pos("group(t('panel.groupMaintenance')"))
   })
 
   it('自上而下顺序：目标项目 → 索引状态 → 索引维护 → 搜索与查询 → Agent 集成', () => {
-    const order = ["group('目标项目'", "group('索引状态'", "group('索引维护'", "group('搜索与查询'", "group('Agent 集成'"]
+    const order = ["group(t('panel.groupTarget')", "group(t('panel.groupStatus')", "group(t('panel.groupMaintenance')", "group(t('panel.groupSearch')", "group(t('panel.groupAgent')"]
     for (let index = 1; index < order.length; index++) {
       expect(pos(order[index]), `${order[index - 1]} 应在 ${order[index]} 之前`).toBeGreaterThan(pos(order[index - 1]))
     }
   })
 
   it('索引维护按动作性质分层（生命周期 / 查看与诊断），删除类动作带独立标记', () => {
-    expect(src).toContain("'生命周期'")
-    expect(src).toContain("'查看与诊断'")
-    expect(pos("'生命周期'")).toBeLessThan(pos("'查看与诊断'"))
+    expect(src).toContain("t('panel.rowLifecycle')")
+    expect(src).toContain("t('panel.rowDiagnostics')")
+    expect(pos("t('panel.rowLifecycle')")).toBeLessThan(pos("t('panel.rowDiagnostics')"))
     /*
      * 删除类动作（撤销索引）的落点变过一次，这里钉住**现在**的设计：
      *   - 它在「生命周期」行内（写索引的动作同档），不另起一行——独立成行会变成
@@ -371,25 +378,25 @@ describe('UX 重构：面板信息架构（顺序 / 分层）守卫', () => {
      */
     expect(src).toContain('cg_dangerSlot')
     const slotAt = pos("className: 'cg_dangerSlot'")
-    expect(slotAt, '危险槽应在生命周期行内（查看与诊断之前）').toBeLessThan(pos("'查看与诊断'"))
+    expect(slotAt, '危险槽应在生命周期行内（查看与诊断之前）').toBeLessThan(pos("t('panel.rowDiagnostics')"))
     expect(slotAt, '危险槽应排在常规生命周期按钮之后').toBeGreaterThan(pos("busyOr('unlock'"))
   })
 
   it('Sync 是生命周期行的主按钮（cg_btn）：这张卡片最高频的安全操作要做视觉锚点', () => {
     // 生命周期子行内，Sync 用 cg_btn 而其它用 cg_btnGhost
-    const lifecycle = src.slice(pos("'生命周期'"), pos("'查看与诊断'"))
+    const lifecycle = src.slice(pos("t('panel.rowLifecycle')"), pos("t('panel.rowDiagnostics')"))
     expect(lifecycle).toContain("busyOr('sync'")
     const syncAt = lifecycle.indexOf("busyOr('sync'")
     expect(lifecycle.lastIndexOf("className: 'cg_btn'", syncAt), 'Sync 应使用 cg_btn 主样式').toBeGreaterThan(lifecycle.lastIndexOf("className: 'cg_btnGhost'", syncAt))
   })
 
   it('查询区拆成两个工作流：符号查询（吃关键词）在上，「其他查询」单列子行', () => {
-    expect(src).toContain("'其他查询'")
+    expect(src).toContain("t('panel.rowOtherQueries')")
     // 改动文件输入必须在「其他查询」标记之后（原先与类型/上限混在一行）
-    expect(pos("'其他查询'")).toBeLessThan(pos("'改动文件'"))
+    expect(pos("t('panel.rowOtherQueries')")).toBeLessThan(pos("t('field.changedFiles')"))
     // 「类型」「上限」贴着搜索按钮（它们是 query 的参数），不跟改动文件混
-    expect(pos("busyOr('search'")).toBeLessThan(pos("'类型'"))
-    expect(pos("'类型'")).toBeLessThan(pos("'其他查询'"))
+    expect(pos("busyOr('search'")).toBeLessThan(pos("t('field.kind')"))
+    expect(pos("t('field.kind')")).toBeLessThan(pos("t('panel.rowOtherQueries')"))
   })
 
   it('「文件」按钮与它的结果同处一区（不再与结果区割裂）', () => {
@@ -401,10 +408,10 @@ describe('UX 重构：面板信息架构（顺序 / 分层）守卫', () => {
      * 这条钉住：文件按钮在「搜索与查询」组内、且在结果区之前（= 与结果区同处一区）。
      */
     const fileButton = pos("busyOr('files'")
-    expect(fileButton, '文件按钮应在「搜索与查询」组内').toBeGreaterThan(pos("group('搜索与查询'"))
-    expect(fileButton, '文件按钮应在结果区之前（同处一区）').toBeLessThan(pos("group('结果'"))
+    expect(fileButton, '文件按钮应在「搜索与查询」组内').toBeGreaterThan(pos("group(t('panel.groupSearch')"))
+    expect(fileButton, '文件按钮应在结果区之前（同处一区）').toBeLessThan(pos("group(t('panel.groupResults')"))
     // 且不该再出现在「查看与诊断」里（那是卡片/CLI 自检动作，不产生查询结果）
-    const diagnostics = src.slice(pos("'查看与诊断'"), pos("group('搜索与查询'"))
+    const diagnostics = src.slice(pos("t('panel.rowDiagnostics')"), pos("group(t('panel.groupSearch')"))
     expect(diagnostics, '「查看与诊断」里不该再有文件按钮').not.toContain("busyOr('files'")
   })
 
@@ -418,8 +425,8 @@ describe('UX 重构：面板信息架构（顺序 / 分层）守卫', () => {
      * 修法：挪进「索引状态」的**组头右侧**——「这个按钮属于这一组」一眼可见。
      */
     const refresh = pos('onClick: loadStatus')
-    expect(refresh, '刷新应在「索引状态」组内').toBeGreaterThan(pos("group('索引状态'"))
-    expect(refresh, '刷新应在「索引维护」之前（即属于索引状态组）').toBeLessThan(pos("group('索引维护'"))
+    expect(refresh, '刷新应在「索引状态」组内').toBeGreaterThan(pos("group(t('panel.groupStatus')"))
+    expect(refresh, '刷新应在「索引维护」之前（即属于索引状态组）').toBeLessThan(pos("group(t('panel.groupMaintenance')"))
     // 组头里的辅助动作用**图标**而不是文字按钮（不抢组内主控件的视觉重量）
     const button = src.slice(refresh - 700, refresh + 700)
     expect(button, '刷新应是图标按钮').toContain('cg_iconBtn')
@@ -427,14 +434,14 @@ describe('UX 重构：面板信息架构（顺序 / 分层）守卫', () => {
     expect(button, '图标按钮必须带 title（悬停可读）').toContain('title:')
     expect(button, '应使用刷新图标路径').toContain('REFRESH_PATH')
     // 「查看与诊断」里不该再有它
-    const diagnostics = src.slice(pos("'查看与诊断'"), pos("group('搜索与查询'"))
+    const diagnostics = src.slice(pos("t('panel.rowDiagnostics')"), pos("group(t('panel.groupSearch')"))
     expect(diagnostics, '「查看与诊断」里不该再有刷新').not.toContain('onClick: loadStatus')
   })
 
   it('「索引状态」组无条件渲染（否则读取失败时连重试入口都没了）', () => {
     // 刷新按钮挂在这个组的组头；整组若随 status 一起消失，status 读失败就无从重试
-    expect(src, '缺少无数据占位').toContain('还没读取到索引状态')
-    const groupAt = pos("group('索引状态'")
+    expect(src, '缺少无数据占位').toContain("t('list.statusEmpty')")
+    const groupAt = pos("group(t('panel.groupStatus')")
     // 组调用前不能是「status ? ...」那种整体守卫
     const before = src.slice(groupAt - 200, groupAt)
     expect(before, '「索引状态」组不该被 status 守卫包住').not.toMatch(/status\s*\n\s*\?\s*$/)
@@ -449,17 +456,17 @@ describe('UX 重构：面板信息架构（顺序 / 分层）守卫', () => {
 
   it('诊断包默认折叠（展开的 260px 会把下方结果区推远）', () => {
     // report 的 details 不该带 open:true——它很长，自动展开会挡住结果
-    const details = src.slice(pos('诊断包（可整段复制贴 issue）') - 400, pos('诊断包（可整段复制贴 issue）'))
+    const details = src.slice(pos("t('panel.reportSummary')") - 400, pos("t('panel.reportSummary')"))
     expect(details, '诊断包应默认折叠').not.toContain('open: true')
   })
 
   it('Agent 集成拆两行：「跟随与提示词」与「MCP 挂载」分开', () => {
-    expect(src).toContain("'跟随与提示词'")
-    expect(src).toContain("'MCP 挂载'")
-    expect(pos("'跟随与提示词'")).toBeLessThan(pos("'MCP 挂载'"))
+    expect(src).toContain("t('panel.rowFollow')")
+    expect(src).toContain("t('panel.rowMcp')")
+    expect(pos("t('panel.rowFollow')")).toBeLessThan(pos("t('panel.rowMcp')"))
     // per-agent 开关必须在 MCP 挂载子行里（不能在提示词那行）
-    expect(pos("'MCP 挂载'")).toBeLessThan(pos("'per-agent MCP 隔离'"))
-    expect(pos("'注入使用指引'")).toBeLessThan(pos("'MCP 挂载'"))
+    expect(pos("t('panel.rowMcp')")).toBeLessThan(pos("t('check.perAgent')"))
+    expect(pos("t('check.guidance')")).toBeLessThan(pos("t('panel.rowMcp')"))
   })
 })
 
@@ -491,20 +498,38 @@ describe('UX 重构：忙碌态指示器（在标题行，不在正文中间）'
   it('忙碌指示器在面板标题行里（标题之后、目标项目之前 = 常驻且零布局跳动）', () => {
     expect(src).toContain('cg_panelHeader')
     expect(src).toContain('cg_busy')
-    expect(pos('cg_panelHeader')).toBeLessThan(pos("group('目标项目'"))
-    expect(pos("children: 'Codegraph 控制台'")).toBeLessThan(pos("className: 'cg_busy'"))
+    expect(pos('cg_panelHeader')).toBeLessThan(pos("group(t('panel.groupTarget')"))
+    // 标题文案已进 i18n 目录（docs/i18n.md），锚点用键而不是中文字面量
+    expect(pos("children: t('panel.title')")).toBeLessThan(pos("className: 'cg_busy'"))
   })
 
   it('忙碌文案具体到动作（不用笼统的「加载中」）', () => {
-    // 每个动作各给一句，用户才知道在等什么、该不该取消
-    for (const label of ['同步中…', '重建索引中…', '搜索中…', '初始化索引中…', '撤销索引中…', '读取索引状态…']) {
-      expect(src, `缺少动作文案：${label}`).toContain(label)
+    /*
+     * 每个动作各给一句，用户才知道在等什么、该不该取消。
+     *
+     * 文案迁移到 i18n 目录后（docs/i18n.md），这里钉两件事：
+     *   ① 源码里用的是**动作键**（`t('msg.syncing')`）——键是稳定标识，文案会随语言变；
+     *   ② 中文目录里这些键的译文仍是那六句具体动作文案（不是笼统的「加载中」）。
+     * 键集 / 空值 / 中英一致由 `scripts/check-i18n.mjs` 兜，这里只钉「哪几句」。
+     */
+    const catalog = src.slice(src.indexOf('dsh-i18n:begin'), src.indexOf('dsh-i18n:end'))
+    const expected: [string, string][] = [
+      ['msg.syncing', '同步中…'],
+      ['msg.reindexing', '重建索引中…'],
+      ['msg.searching', '搜索中…'],
+      ['msg.initializingIndex', '初始化索引中…'],
+      ['msg.uninitializing', '撤销索引中…'],
+      ['msg.readingStatus', '读取索引状态…'],
+    ]
+    for (const [key, label] of expected) {
+      expect(src, `源码里缺少动作键：${key}`).toContain(`t('${key}')`)
+      expect(catalog, `${key} 的中文译文应仍是「${label}」`).toContain(`'${key}': '${label}'`)
     }
   })
 
   it('「取消」紧挨着它要停的那件事（在 cg_busy 里，不在删除类动作那一格）', () => {
     const busyAt = pos("className: 'cg_busy'")
-    const cancelAt = pos("children: '取消'")
+    const cancelAt = pos("children: t('btn.cancel')")
     const slotAt = pos("className: 'cg_dangerSlot'")
     expect(cancelAt, '取消应在忙碌指示器之后').toBeGreaterThan(busyAt)
     expect(cancelAt, '取消不应与删除类动作同格（那是撤销索引的位置）').toBeLessThan(slotAt)
@@ -532,10 +557,10 @@ describe('UX 重构：忙碌态指示器（在标题行，不在正文中间）'
     // 取 JSX 用法（className）而不是 CSS 定义——样式表里先出现该名字，
     // 直接 indexOf 会把 CSS 那一处当成结构位置（第一版就是这么假失败的）。
     const alerts = pos("className: 'cg_alerts'")
-    expect(alerts, '问题区应在目标项目之后').toBeGreaterThan(pos("group('目标项目'"))
-    expect(alerts, '问题区应在索引状态之前').toBeLessThan(pos("group('索引状态'"))
+    expect(alerts, '问题区应在目标项目之后').toBeGreaterThan(pos("group(t('panel.groupTarget')"))
+    expect(alerts, '问题区应在索引状态之前').toBeLessThan(pos("group(t('panel.groupStatus')"))
     // Agent 集成里不该再有它们
-    const agent = src.slice(pos("group('Agent 集成'"))
+    const agent = src.slice(pos("group(t('panel.groupAgent')"))
     expect(agent, 'Agent 集成里不该再有 CLI 警告').not.toContain('cliWarning ?')
     expect(agent, 'Agent 集成里不该再有托管行警告').not.toContain('defaultWarning ?')
   })
@@ -548,13 +573,15 @@ describe('UX 重构：忙碌态指示器（在标题行，不在正文中间）'
      * 标签保持 CLI 子命令的对应关系（query/explore/context）不改名，改用一行说明把
      * 「产物有什么不同」讲清楚。
      */
-    expect(src, '缺少查询按钮说明行').toContain('搜索 = 符号列表')
-    expect(src).toContain('探索 = 相关符号源码 + 调用链')
-    expect(src).toContain('上下文 = 为任务组装上下文')
+    expect(src, '缺少查询按钮说明行').toContain("t('hint.queryButtons')")
+    // 说明行的中文译文仍要把「产物有什么不同」讲清楚（键存在 ≠ 文案还在）
+    for (const phrase of ['搜索 = 符号列表', '探索 = 相关符号源码 + 调用链', '上下文 = 为任务组装上下文']) {
+      expect(src, `说明行缺少：${phrase}`).toContain(phrase)
+    }
     // 说明行必须紧跟这三个按钮之后、且在「其他查询」之前
-    const legend = pos('搜索 = 符号列表')
+    const legend = pos("t('hint.queryButtons')")
     expect(legend, '说明应在三个按钮之后').toBeGreaterThan(pos("runQuery('context'"))
-    expect(legend, '说明应在「其他查询」之前').toBeLessThan(pos("'其他查询'"))
+    expect(legend, '说明应在「其他查询」之前').toBeLessThan(pos("t('panel.rowOtherQueries')"))
   })
 
   it('反馈项包成一个整体（.cg_feedback 收紧间距），且遥测脚注排在它之后', () => {
@@ -565,10 +592,10 @@ describe('UX 重构：忙碌态指示器（在标题行，不在正文中间）'
     expect(src, '缺少反馈容器').toContain('cg_feedback')
     expect(src, '反馈容器应收紧间距').toMatch(/\.cg_feedback\{[^}]*gap:6px/)
     // 脚注在源码顺序上必须晚于反馈容器（= 晚于结果）
-    expect(pos('cg_feedback')).toBeLessThan(pos('匿名用量统计'))
+    expect(pos('cg_feedback')).toBeLessThan(pos("t('panel.telemetryOn')"))
     // 且脚注不该再留在「索引维护」组内（那正是它夹在中间的原因）
-    const maintenance = src.slice(pos("group('索引维护'"), pos('cg_feedback'))
-    expect(maintenance, '遥测脚注不该留在索引维护组里').not.toContain('匿名用量统计')
+    const maintenance = src.slice(pos("group(t('panel.groupMaintenance')"), pos('cg_feedback'))
+    expect(maintenance, '遥测脚注不该留在索引维护组里').not.toContain("t('panel.telemetryOn')")
   })
 
   it('组头槽只放单个辅助动作，不放主操作组（生命周期那排按钮不该上组头）', () => {
@@ -584,8 +611,8 @@ describe('UX 重构：忙碌态指示器（在标题行，不在正文中间）'
     expect(src, '组头槽里不该出现按钮行').not.toMatch(/\],\s*jsxs?\('div',\s*\{\s*className: 'cg_toolbarBtns'/)
     // 生命周期那排必须在「索引维护」组**体内**
     const sync = pos("busyOr('sync'")
-    expect(pos("group('索引维护'")).toBeLessThan(pos("'生命周期'"))
-    expect(pos("'生命周期'")).toBeLessThan(sync)
+    expect(pos("group(t('panel.groupMaintenance')")).toBeLessThan(pos("t('panel.rowLifecycle')"))
+    expect(pos("t('panel.rowLifecycle')")).toBeLessThan(sync)
   })
 
   it('结果区在「搜索与查询」下方、且在「Agent 集成」之前（不再沉到面板最底部）', () => {
@@ -593,10 +620,10 @@ describe('UX 重构：忙碌态指示器（在标题行，不在正文中间）'
      * 用户反馈：「点击文件看不到对应的列表」——结果区原先在 Agent 集成**之后**
      * （面板最底部），而触发按钮在索引维护 / 搜索与查询，点完要翻两屏。
      */
-    expect(src).toContain("group('结果'")
-    const resultAt = pos("group('结果'")
-    expect(resultAt, '结果区应在搜索与查询之后').toBeGreaterThan(pos("group('搜索与查询'"))
-    expect(resultAt, '结果区应在 Agent 集成之前（这是本次修复的核心）').toBeLessThan(pos("group('Agent 集成'"))
+    expect(src).toContain("group(t('panel.groupResults')")
+    const resultAt = pos("group(t('panel.groupResults')")
+    expect(resultAt, '结果区应在搜索与查询之后').toBeGreaterThan(pos("group(t('panel.groupSearch')"))
+    expect(resultAt, '结果区应在 Agent 集成之前（这是本次修复的核心）').toBeLessThan(pos("group(t('panel.groupAgent')"))
   })
 
   it('结果按路由分槽保存（页签切回去还在，不是单槽覆盖）', () => {

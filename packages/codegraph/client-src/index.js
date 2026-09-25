@@ -26,6 +26,436 @@ window.__ModuleLoader__.load({
     const React = require('react')
     const { jsx, jsxs } = require('react/jsx-runtime')
 
+    /* ================================ 国际化 ================================ */
+
+    /*
+     * 界面文案走宿主 `@deepseek-ai/dsh-client-locale` 的目录（方案见 docs/i18n.md）。
+     * 目录**内联在 client-src/index.js**（不是单独一个模块）：本包的 scripts/build-client.mjs
+     * 是文本变换脚本，产物必须是单文件，遇到任何残留 import 直接 exit(1)——为目录去改构建
+     * 脚本得不偿失。下面这一对目录由 `scripts/check-i18n.mjs` 静态校验：zh/en 键集一致、
+     * `{name}` 占位符两边一致、代码里 `t('…')` 用到的键必须在这里有定义。
+     *
+     * 本文件的界面是 React（jsx/jsxs）渲染，没有手拼 HTML 串，所以不需要 esc()：转义由
+     * React 负责（mcp / prompt 那两个包是手拼 innerHTML，那边才必须 esc(t(…))）。
+     *
+     * **模块级常量里的 `t()` 必须走 getter**：`t()` 在模块加载时求值等于把当前语言冻住
+     * （`installI18n(ctx)` 要等 apply 才跑，语言切换也不会重算）——`RESULT_TABS` 的 label
+     * 因此写成 getter。
+     */
+    /* ==== dsh-i18n:begin ==== */
+    const I18N_NS = 'codegraph'
+    const I18N_ZH = {
+      'card.desc': '代码图谱：索引状态、符号搜索、callers/callees/impact、一键 sync/index。',
+      'card.summary': '代码图谱：索引状态、符号搜索、探索/上下文、影响面分析、一键 sync/index。',
+      'panel.title': 'Codegraph 控制台',
+      'panel.tabSearch': '搜索结果',
+      'panel.tabDetail': '符号详情',
+      'panel.cancelTitle': '终止正在跑的 codegraph CLI（SIGTERM，3s 后整组 SIGKILL）',
+      'panel.groupTarget': '目标项目',
+      'panel.groupStatus': '索引状态',
+      'panel.groupMaintenance': '索引维护',
+      'panel.groupSearch': '搜索与查询',
+      'panel.groupResults': '结果',
+      'panel.groupAgent': 'Agent 集成',
+      'panel.rowLifecycle': '生命周期',
+      'panel.rowDiagnostics': '查看与诊断',
+      'panel.rowOtherQueries': '其他查询',
+      'panel.rowFollow': '跟随与提示词',
+      'panel.rowMcp': 'MCP 挂载',
+      'panel.setDefaultTitle': '把当前路径持久化为默认项目（同时关闭「跟随当前项目」，避免被会话切换顶掉），codegraph MCP 服务器的工作目录随之热切换',
+      'panel.seenProjects': '已见项目',
+      'panel.defaultProject': '(默认项目)',
+      'panel.rawStatusJson': '原始 JSON（status --json）',
+      'panel.refreshingAria': '正在读取索引状态',
+      'panel.refreshAria': '刷新索引状态',
+      'panel.refreshingTitle': '正在读取索引状态…',
+      'panel.refreshTitle': '重新读取 `codegraph status --json`，刷新本组的索引状态（不会重建索引）',
+      'panel.confirmInitTitle': '再点一次即在 {path} 里创建 .codegraph/ 并建立首次索引',
+      'panel.initTitle': 'codegraph index / sync 都要求项目先初始化过（干净目录会报 “CodeGraph not initialized”）。这个按钮在该目录跑一次 `codegraph init`。',
+      'panel.syncTitle': 'codegraph sync：增量同步索引（只更新改动的部分；全量重建用右边的「重建索引」）',
+      'panel.unlockTitle': 'codegraph unlock：清掉挡住索引的陈旧锁文件（索引被强杀后常见）。没锁时什么也不做',
+      'panel.confirmUninitTitle': '再点一次即删除 {path} 的 .codegraph/（索引数据全部丢失，源文件不动）',
+      'panel.uninitTitle': 'codegraph uninit：删除该项目的 .codegraph/（索引数据全部丢失，源文件不动）。这是本卡片唯一的删除类动作',
+      'panel.reprobeTitle': '重跑一次 `<command> --version`：CLI 是后装的、或 command 改成了绝对路径时，无需重启宿主即可恢复',
+      'panel.diagnoseTitle': '收集一段可直接复制的诊断文本：CLI 探测实测原文、托管行与补丁区块（值已脱敏）、索引状态、codegraph daemon 与日志尾、最近一次 CLI 失败',
+      'panel.reportSummary': '诊断包（可整段复制贴 issue）',
+      'panel.telemetryOn': '匿名用量统计：已开启（init / 重建索引会上报）· 关闭：`codegraph telemetry off` 或 `CODEGRAPH_TELEMETRY=0`',
+      'panel.telemetryOff': '匿名用量统计：已关闭',
+      'panel.telemetryUnknown': '匿名用量统计：状态未知（CLI 输出未含可识别的状态行）',
+      'panel.exploreTitle': 'codegraph explore：与 MCP 的 codegraph_explore 同输出（相关符号源码 + 调用路径）。用左侧搜索框里的关键词',
+      'panel.contextTitle': 'codegraph context：为一个任务组装上下文（相关符号 + 关系 + 代码块）。用左侧搜索框里的关键词',
+      'panel.kindTitle': 'codegraph query -k/--kind：按节点类型过滤（function / class / method / interface / type_alias / constant / variable / property / file / import）',
+      'panel.limitTitle': 'codegraph query -l/--limit：返回条数上限（默认 20）。callers/callees 也吃这个值',
+      'panel.filesTitle': 'codegraph files --json：列出索引里的文件结构（语言 / 符号数 / 大小）。不吃搜索框的关键词',
+      'panel.affectedTitle': 'codegraph affected <files…>：由改动文件反查受影响的测试。一行一个，也可用逗号分隔；留空则 CLI 回「No files provided」',
+      'panel.affectedButtonTitle': 'codegraph affected <files>：由改动文件反查受影响的测试。用左侧「改动文件」里的列表',
+      'panel.symbolDetail': '符号详情：{name}',
+      'panel.callers': '调用者 (callers)',
+      'panel.callees': '被调用 (callees)',
+      'panel.impactTitle': '影响面 (impact) · {nodes} 个节点 / {edges} 条边',
+      'panel.affectedSymbols': '受影响符号',
+      'panel.rawDetailJson': '原始 JSON（node / callers / callees / impact）',
+      'panel.followTitle': '开启后：会话切到某个已索引项目时，MCP 托管行的 cwd 自动对齐它；会话目录没有索引时回落到默认项目。「设为默认项目」会关掉它（那是一次显式指定）',
+      'panel.announceTitle': '向 agent 注入本插件的能力公告（一段中文提示，告诉模型有这张卡片）',
+      'panel.announceDisabled': 'codegraph CLI 不可用，公告不会注入',
+      'panel.guidanceTitle': '注入 CodeGraph 使用指引（CODEGRAPH_START 区块：何时优先用 codegraph、失败怎么兜底）',
+      'panel.guidanceDisabled': 'codegraph CLI 不可用，使用指引不会注入',
+      'panel.perAgentTitle': '每 agent 一个独立的 codegraph MCP 进程（cwd = 该 agent 会话的索引根）：多项目并行时不再共享一个全局 cwd，也不再需要写盘热切换。代价是每个 agent 一个子进程（约 40MB 内存 / 每个），且只有会话目录真的**有索引**时才挂。',
+      'panel.perAgentReason': '前提不成立',
+      'panel.perAgentTail': '（当前仍是单服务器按会话热切换，功能正常）',
+      'panel.perAgentFallback': '⚠ per-agent 未生效，已退回 managed：{reason}{tail}',
+      'panel.perAgentActiveTitle': '每个 agent 一个独立的 codegraph MCP 进程；会话目录没有可用索引的 agent 不会挂载（避免拿到别的项目上下文）',
+      'panel.perAgentActive': 'per-agent 生效中：已挂载 {count} 个 agent 的独立 MCP 进程。全局托管行已挂起（disabled: true），切回 managed 会自动恢复。',
+      'panel.adoptionTitle': '来自宿主的内存计数（session/event 的 tool/call），宿主重启即归零；项目按索引根归并。「文件探索」= grep/glob/read 这类本可交给 codegraph 的工具，bash 等不计入',
+      'btn.cancel': '取消',
+      'btn.setDefault': '设为默认项目',
+      'btn.confirmInit': '确认初始化？',
+      'btn.initIndex': '初始化索引',
+      'btn.reindex': '重建索引',
+      'btn.unlock': '解锁',
+      'btn.confirmUninit': '确认撤销？',
+      'btn.uninit': '撤销索引',
+      'btn.reprobe': '重新探测',
+      'btn.diagnose': '诊断包',
+      'btn.copy': '复制',
+      'btn.search': '搜索',
+      'btn.explore': '探索',
+      'btn.context': '上下文',
+      'btn.files': '文件',
+      'btn.affected': '影响面',
+      'field.kind': '类型',
+      'field.limit': '上限',
+      'field.changedFiles': '改动文件',
+      'placeholder.projectPath': '项目路径（留空使用默认）',
+      'placeholder.searchSymbol': '搜索符号，例如 definePlugin',
+      'placeholder.kindAny': '任意（function…）',
+      'placeholder.changedFiles': '如 packages/codegraph/src/index.ts（点「影响面」查询）',
+      'check.followSession': '跟随当前项目',
+      'check.announce': '向 agent 公告能力',
+      'check.guidance': '注入使用指引',
+      'check.perAgent': 'per-agent MCP 隔离',
+      'hint.queryButtons': '搜索 = 符号列表（可点进详情）· 探索 = 相关符号源码 + 调用链 · 上下文 = 为任务组装上下文 · 三者都用左侧关键词',
+      'list.statusEmpty': '还没读取到索引状态。',
+      'list.noIndexHint': '该目录还没有索引：点下方「初始化索引」即可在本目录跑一次 `codegraph init`（只创建 .codegraph/，源文件不动；可用 `codegraph uninit` 撤销）。',
+      'list.noSymbols': '没有匹配的符号。换个关键词，或去掉「类型」过滤。',
+      'list.noCallers': '没有调用者',
+      'list.noCallees': '没有下游调用',
+      'list.noAffected': '没有受影响的符号',
+      'list.noResult': '（还没有结果）',
+      'list.emptyJson': '（空）',
+      'list.noOutput': '（无输出）',
+      'list.outputTruncated': '输出较长：只显示了前 {shown} 字符（共 {total} 字符）',
+      'list.loadingSymbol': '正在加载符号详情…',
+      'list.separator': '；',
+      'badge.notIndexed': ' · 未索引',
+      'status.mcpUnknown': 'MCP：状态未知',
+      'status.mcpOwn': 'MCP：已托管（本插件维护工作目录）· cwd {cwd}{disabled}{deadCwd}{following}{note}',
+      'status.mcpAligned': 'MCP：已对齐 MCP 卡片里的行 · cwd {cwd}{disabled}{deadCwd}{following}{note}',
+      'status.mcpExternal': 'MCP：检测到手工配置行，插件不接管',
+      'status.mcpUntracked': 'MCP：{note}',
+      'status.mcpUnmanaged': '未托管',
+      'status.mcpDisabled': ' · 已停用',
+      'status.mcpCwdUnset': '(未设置)',
+      'status.deadCwd': ' · ⚠ cwd 目录已不存在',
+      'status.followingSession': ' · 跟随会话 {path}',
+      'status.notAProjectWhy': '它的 .codegraph/ 里没有索引库，不是 codegraph 项目（家目录最常见：~/.codegraph 是 CLI 自身的安装目录）',
+      'status.noIndexWhy': '它没有 .codegraph/ 索引',
+      'status.fromSession': '（来自当前会话）',
+      'status.fromDefault': '（来自默认项目）',
+      'status.fixCurrent': '当前路径 {path} 已是有效索引，点「设为默认项目」即可修复。',
+      'status.fixOther': '把默认项目切到已索引目录即可自动挂载（也可以直接在该目录里运行 `codegraph init` 建索引）。',
+      'status.defaultWarning': '⚠ 托管行用的目录 {shown}{source} 不是有效索引：{why}。未加载项目的 codegraph_* 工具需要显式传 projectPath；{fix}',
+      'status.cliMissing': '⚠ 探测不到可执行的 CLI 命令 {command}（`--version` 失败）：systemPrompt 的能力公告与使用指引都不会注入，卡片里的状态 / 搜索 / sync / 重建索引也会报错。',
+      'status.cliFix': '\n修法二选一：① 把插件配置里的 command 写成该 CLI 的绝对路径（改 profile 补丁会触发热重载并重新探测）；② 从新开的终端重启宿主，让新的环境块生效。',
+      'status.cliNote': '注意：宿主进程的 PATH 在它启动时就固定了，刷新页面 / 重开卡片都不会改变它——改完上面任一项后，点「重新探测」即可就地确认，不必重启宿主。',
+      'status.probeReason': '实测原因：{error}',
+      'status.probeAt': '\n上次探测：{time}',
+      'status.staleWarning': '⚠ 索引可能过期：{reasons}。MCP 工具此刻给的是旧提取器产出的图——点「重建索引」修复（实测此时 Sync 会报 Already up to date 且不解决问题）。',
+      'status.projectSeen': '{path}（{ago}见过，来自{via}）',
+      'status.projectNotIndexed': '{path}：未索引，切换无效——先在该目录跑 codegraph init（{via}）',
+      'meta.status': '状态',
+      'meta.indexed': '● 已索引',
+      'meta.uninitialized': '○ 未初始化',
+      'meta.version': '版本',
+      'meta.project': '项目',
+      'meta.scale': '规模',
+      'meta.scaleValue': '{files} 文件 · {nodes} 符号 · {edges} 边',
+      'meta.lastIndexed': '最后索引',
+      'meta.pending': '待同步',
+      'meta.languages': '语言',
+      'meta.db': '索引库',
+      'msg.readingStatus': '读取索引状态…',
+      'msg.searching': '搜索中…',
+      'msg.loadingSymbol': '加载符号详情…',
+      'msg.syncing': '同步中…',
+      'msg.reindexing': '重建索引中…',
+      'msg.rebuilding': '重建中…',
+      'msg.unlocking': '解锁中…',
+      'msg.working': '处理中…',
+      'msg.uninitializing': '撤销索引中…',
+      'msg.removingIndex': '撤销中…',
+      'msg.initializingIndex': '初始化索引中…',
+      'msg.initializing': '初始化中…',
+      'msg.exploring': '探索中…',
+      'msg.buildingContext': '组装上下文…',
+      'msg.assembling': '组装中…',
+      'msg.readingFiles': '读取文件结构…',
+      'msg.reading': '读取中…',
+      'msg.analyzingImpact': '分析影响面…',
+      'msg.analyzing': '分析中…',
+      'msg.querying': '查询中…',
+      'msg.reprobing': '重新探测 CLI…',
+      'msg.collectingDiagnostics': '收集诊断信息…',
+      'msg.probing': '探测中…',
+      'msg.collecting': '收集中…',
+      'msg.switching': '切换中…',
+      'msg.synced': '已同步',
+      'msg.reindexed': '已重建',
+      'msg.unlocked': '解锁完成',
+      'msg.done': '已完成',
+      'msg.actionResult': '{label}：{output}',
+      'msg.uninitDone': '已撤销 {path} 的索引（.codegraph/ 已删除，源文件未动）：{output}',
+      'msg.noMatchingFiles': '索引里没有匹配的文件',
+      'msg.cancelSent': '已发送取消请求：CLI 进程正在被终止（SIGTERM，3s 后强制）。',
+      'msg.initDone': '已初始化并建立索引：{output}',
+      'msg.defaultSet': '已把默认项目切到 {path}{session}，并关闭「跟随当前项目」；codegraph MCP 服务器将热切换。',
+      'msg.sessionOnly': '（本次会话内生效）',
+      'msg.switched': '已切换到 {path}，并关闭「跟随当前项目」；codegraph MCP 服务器将热切换。',
+      'msg.announceUpdated': '能力公告已更新',
+      'msg.guidanceUpdated': '使用指引已更新',
+      'msg.followOn': '已开启跟随当前项目',
+      'msg.followOff': '已关闭跟随，托管行使用默认项目',
+      'msg.mcpScopePerAgent': '已切到 per-agent：新会话将各挂一个独立的 MCP 进程（已开的会话也会补挂）',
+      'msg.mcpScopeManaged': '已切回 managed：全局托管行已恢复，per-agent 挂载已回收',
+      'msg.settingUpdated': '设置已更新',
+      'msg.reprobeOk': '重新探测成功：CLI 可用，systemPrompt 两段已注入。',
+      'msg.reprobeFailed': '重新探测完成：CLI 仍不可用，原因见下方。',
+      'msg.reportCopied': '诊断包已复制到剪贴板。',
+      'msg.copyUnavailable': '自动复制不可用（{error}）：诊断包已展开在下方，手动全选复制即可。',
+      'error.noClipboard': '当前环境没有 navigator.clipboard（非安全上下文？）',
+    }
+    const I18N_EN = {
+      'card.desc': 'Code graph: index status, symbol search, callers/callees/impact, one-click sync/index.',
+      'card.summary': 'Code graph: index status, symbol search, explore/context, impact analysis, one-click sync/index.',
+      'panel.title': 'Codegraph console',
+      'panel.tabSearch': 'Search results',
+      'panel.tabDetail': 'Symbol detail',
+      'panel.cancelTitle': 'Terminate the running codegraph CLI (SIGTERM, then SIGKILL the whole group after 3s)',
+      'panel.groupTarget': 'Target project',
+      'panel.groupStatus': 'Index status',
+      'panel.groupMaintenance': 'Index maintenance',
+      'panel.groupSearch': 'Search and queries',
+      'panel.groupResults': 'Results',
+      'panel.groupAgent': 'Agent integration',
+      'panel.rowLifecycle': 'Lifecycle',
+      'panel.rowDiagnostics': 'Inspect and diagnose',
+      'panel.rowOtherQueries': 'Other queries',
+      'panel.rowFollow': 'Following and prompts',
+      'panel.rowMcp': 'MCP mounts',
+      'panel.setDefaultTitle': 'Persist the current path as the default project (this also turns off “Follow the current project” so a session switch cannot override it); the codegraph MCP server’s working directory hot-switches with it',
+      'panel.seenProjects': 'Projects seen',
+      'panel.defaultProject': '(default project)',
+      'panel.rawStatusJson': 'Raw JSON (status --json)',
+      'panel.refreshingAria': 'Reading index status',
+      'panel.refreshAria': 'Refresh index status',
+      'panel.refreshingTitle': 'Reading index status…',
+      'panel.refreshTitle': 'Re-read `codegraph status --json` to refresh this section’s index status (it does not rebuild the index)',
+      'panel.confirmInitTitle': 'Click again to create .codegraph/ in {path} and build the first index',
+      'panel.initTitle': 'codegraph index / sync both require an initialized project (a clean directory reports “CodeGraph not initialized”). This button runs `codegraph init` once in that directory.',
+      'panel.syncTitle': 'codegraph sync: incrementally sync the index (only the changed parts; use “Reindex” on the right for a full rebuild)',
+      'panel.unlockTitle': 'codegraph unlock: clear the stale lock file blocking indexing (common after an index run was killed). Does nothing when there is no lock',
+      'panel.confirmUninitTitle': 'Click again to delete .codegraph/ in {path} (all index data is lost; source files are untouched)',
+      'panel.uninitTitle': 'codegraph uninit: delete this project’s .codegraph/ (all index data is lost; source files are untouched). This is the only destructive action on this card',
+      'panel.reprobeTitle': 'Re-run `<command> --version`: recovers without a host restart when the CLI was installed later or `command` was changed to an absolute path',
+      'panel.diagnoseTitle': 'Collect a copy-pasteable diagnostic text: the raw CLI probe result, the managed row and patch block (values redacted), index status, the codegraph daemon and log tail, and the last CLI failure',
+      'panel.reportSummary': 'Diagnostic bundle (copy the whole thing into an issue)',
+      'panel.telemetryOn': 'Anonymous usage statistics: on (init / reindex report) · turn off: `codegraph telemetry off` or `CODEGRAPH_TELEMETRY=0`',
+      'panel.telemetryOff': 'Anonymous usage statistics: off',
+      'panel.telemetryUnknown': 'Anonymous usage statistics: status unknown (the CLI output had no recognizable status line)',
+      'panel.exploreTitle': 'codegraph explore: same output as the MCP codegraph_explore (relevant symbol sources + call paths). Uses the keyword in the search box on the left',
+      'panel.contextTitle': 'codegraph context: assemble context for a task (relevant symbols + relations + code blocks). Uses the keyword in the search box on the left',
+      'panel.kindTitle': 'codegraph query -k/--kind: filter by node kind (function / class / method / interface / type_alias / constant / variable / property / file / import)',
+      'panel.limitTitle': 'codegraph query -l/--limit: maximum number of results (default 20). callers/callees use it too',
+      'panel.filesTitle': 'codegraph files --json: list the file structure in the index (language / symbol count / size). Does not use the search box keyword',
+      'panel.affectedTitle': 'codegraph affected <files…>: find the tests affected by the changed files. One per line or comma-separated; leaving it empty makes the CLI answer “No files provided”',
+      'panel.affectedButtonTitle': 'codegraph affected <files>: find the tests affected by the changed files. Uses the list in “Changed files” on the left',
+      'panel.symbolDetail': 'Symbol detail: {name}',
+      'panel.callers': 'Callers',
+      'panel.callees': 'Callees',
+      'panel.impactTitle': 'Impact · {nodes} nodes / {edges} edges',
+      'panel.affectedSymbols': 'Affected symbols',
+      'panel.rawDetailJson': 'Raw JSON (node / callers / callees / impact)',
+      'panel.followTitle': 'When on: switching to an indexed project aligns the MCP managed row’s cwd with it; when the session directory has no index it falls back to the default project. “Set as default project” turns it off (that is an explicit choice)',
+      'panel.announceTitle': 'Inject this plugin’s capability announcement into the agent (a short note in Chinese telling the model this card exists)',
+      'panel.announceDisabled': 'The codegraph CLI is unavailable, so the announcement is not injected',
+      'panel.guidanceTitle': 'Inject the CodeGraph usage guidance (the CODEGRAPH_START block: when to prefer codegraph and how to fall back when it fails)',
+      'panel.guidanceDisabled': 'The codegraph CLI is unavailable, so the usage guidance is not injected',
+      'panel.perAgentTitle': 'One separate codegraph MCP process per agent (cwd = that agent session’s index root): parallel projects no longer share a single global cwd and no longer need an on-disk hot switch. The cost is one child process per agent (about 40 MB each), and it mounts only when the session directory really **has an index**.',
+      'panel.perAgentReason': 'the precondition does not hold',
+      'panel.perAgentTail': ' (still a single server hot-switching per session — everything works normally)',
+      'panel.perAgentFallback': '⚠ per-agent is not in effect; fell back to managed: {reason}{tail}',
+      'panel.perAgentActiveTitle': 'One separate codegraph MCP process per agent; agents whose session directory has no usable index do not mount one (so they cannot pick up another project’s context)',
+      'panel.perAgentActive': 'per-agent is active: {count} agents have their own MCP process. The global managed row is suspended (disabled: true) and is restored when you switch back to managed.',
+      'panel.adoptionTitle': 'In-memory counters from the host (session/event tool/call), reset when the host restarts; projects are merged by index root. “File exploration” = tools like grep/glob/read that codegraph could have handled; bash and friends are not counted',
+      'btn.cancel': 'Cancel',
+      'btn.setDefault': 'Set as default project',
+      'btn.confirmInit': 'Initialize?',
+      'btn.initIndex': 'Initialize index',
+      'btn.reindex': 'Reindex',
+      'btn.unlock': 'Unlock',
+      'btn.confirmUninit': 'Remove index?',
+      'btn.uninit': 'Remove index',
+      'btn.reprobe': 'Reprobe',
+      'btn.diagnose': 'Diagnostics',
+      'btn.copy': 'Copy',
+      'btn.search': 'Search',
+      'btn.explore': 'Explore',
+      'btn.context': 'Context',
+      'btn.files': 'Files',
+      'btn.affected': 'Impact',
+      'field.kind': 'Kind',
+      'field.limit': 'Limit',
+      'field.changedFiles': 'Changed files',
+      'placeholder.projectPath': 'Project path (leave empty to use the default)',
+      'placeholder.searchSymbol': 'Search symbols, e.g. definePlugin',
+      'placeholder.kindAny': 'Any (function…)',
+      'placeholder.changedFiles': 'e.g. packages/codegraph/src/index.ts (then click “Impact”)',
+      'check.followSession': 'Follow the current project',
+      'check.announce': 'Announce capabilities to the agent',
+      'check.guidance': 'Inject usage guidance',
+      'check.perAgent': 'per-agent MCP isolation',
+      'hint.queryButtons': 'Search = symbol list (click through to details) · Explore = relevant symbol sources + call chains · Context = assemble context for a task · all three use the keyword on the left',
+      'list.statusEmpty': 'Index status has not been read yet.',
+      'list.noIndexHint': 'This directory has no index yet: click “Initialize index” below to run `codegraph init` once here (it only creates .codegraph/ and leaves source files alone; `codegraph uninit` removes it).',
+      'list.noSymbols': 'No matching symbols. Try another keyword, or drop the “Kind” filter.',
+      'list.noCallers': 'No callers',
+      'list.noCallees': 'No outgoing calls',
+      'list.noAffected': 'No affected symbols',
+      'list.noResult': '(no results yet)',
+      'list.emptyJson': '(empty)',
+      'list.noOutput': '(no output)',
+      'list.outputTruncated': 'Long output: showing only the first {shown} characters (of {total})',
+      'list.loadingSymbol': 'Loading symbol details…',
+      'list.separator': '; ',
+      'badge.notIndexed': ' · not indexed',
+      'status.mcpUnknown': 'MCP: status unknown',
+      'status.mcpOwn': 'MCP: managed (this plugin maintains the working directory) · cwd {cwd}{disabled}{deadCwd}{following}{note}',
+      'status.mcpAligned': 'MCP: aligned with the row in the MCP card · cwd {cwd}{disabled}{deadCwd}{following}{note}',
+      'status.mcpExternal': 'MCP: a manually configured row was found; this plugin does not take it over',
+      'status.mcpUntracked': 'MCP: {note}',
+      'status.mcpUnmanaged': 'unmanaged',
+      'status.mcpDisabled': ' · disabled',
+      'status.mcpCwdUnset': '(not set)',
+      'status.deadCwd': ' · ⚠ cwd directory no longer exists',
+      'status.followingSession': ' · following session {path}',
+      'status.notAProjectWhy': 'its .codegraph/ has no index database, so it is not a codegraph project (the home directory is the usual case: ~/.codegraph is the CLI’s own install directory)',
+      'status.noIndexWhy': 'it has no .codegraph/ index',
+      'status.fromSession': ' (from the current session)',
+      'status.fromDefault': ' (from the default project)',
+      'status.fixCurrent': 'The current path {path} already has a valid index — click “Set as default project” to fix it.',
+      'status.fixOther': 'Switch the default project to an indexed directory to mount it automatically (or run `codegraph init` in that directory to build an index).',
+      'status.defaultWarning': '⚠ The directory used by the managed row {shown}{source} is not a valid index: {why}. codegraph_* tools without a loaded project need an explicit projectPath; {fix}',
+      'status.cliMissing': '⚠ No runnable CLI command found ({command}) (`--version` failed): neither the systemPrompt capability announcement nor the usage guidance will be injected, and status / search / sync / reindex on this card will fail too.',
+      'status.cliFix': '\nTwo fixes, pick one: (1) set `command` in the plugin config to that CLI’s absolute path (editing the profile patch triggers a hot reload and a fresh probe); (2) restart the host from a newly opened terminal so the new environment block takes effect.',
+      'status.cliNote': 'Note: the host process PATH is fixed when it starts — refreshing the page or reopening the card will not change it. After either fix above, click “Reprobe” to confirm in place; no host restart is needed.',
+      'status.probeReason': 'Probe result: {error}',
+      'status.probeAt': '\nLast probe: {time}',
+      'status.staleWarning': '⚠ The index may be stale: {reasons}. MCP tools are currently serving a graph produced by an older extractor — click “Reindex” to fix it (in this state Sync reports Already up to date and does not solve it).',
+      'status.projectSeen': '{path} ({ago} seen, via {via})',
+      'status.projectNotIndexed': '{path}: not indexed, switching has no effect — run codegraph init in that directory first ({via})',
+      'meta.status': 'Status',
+      'meta.indexed': '● Indexed',
+      'meta.uninitialized': '○ Not initialized',
+      'meta.version': 'Version',
+      'meta.project': 'Project',
+      'meta.scale': 'Scale',
+      'meta.scaleValue': '{files} files · {nodes} symbols · {edges} edges',
+      'meta.lastIndexed': 'Last indexed',
+      'meta.pending': 'Pending',
+      'meta.languages': 'Languages',
+      'meta.db': 'Index DB',
+      'msg.readingStatus': 'Reading index status…',
+      'msg.searching': 'Searching…',
+      'msg.loadingSymbol': 'Loading symbol details…',
+      'msg.syncing': 'Syncing…',
+      'msg.reindexing': 'Reindexing…',
+      'msg.rebuilding': 'Rebuilding…',
+      'msg.unlocking': 'Unlocking…',
+      'msg.working': 'Working…',
+      'msg.uninitializing': 'Removing index…',
+      'msg.removingIndex': 'Removing…',
+      'msg.initializingIndex': 'Initializing index…',
+      'msg.initializing': 'Initializing…',
+      'msg.exploring': 'Exploring…',
+      'msg.buildingContext': 'Assembling context…',
+      'msg.assembling': 'Assembling…',
+      'msg.readingFiles': 'Reading file structure…',
+      'msg.reading': 'Reading…',
+      'msg.analyzingImpact': 'Analyzing impact…',
+      'msg.analyzing': 'Analyzing…',
+      'msg.querying': 'Querying…',
+      'msg.reprobing': 'Reprobing the CLI…',
+      'msg.collectingDiagnostics': 'Collecting diagnostics…',
+      'msg.probing': 'Probing…',
+      'msg.collecting': 'Collecting…',
+      'msg.switching': 'Switching…',
+      'msg.synced': 'Synced',
+      'msg.reindexed': 'Rebuilt',
+      'msg.unlocked': 'Unlocked',
+      'msg.done': 'Done',
+      'msg.actionResult': '{label}: {output}',
+      'msg.uninitDone': 'Removed the index for {path} (.codegraph/ deleted, source files untouched): {output}',
+      'msg.noMatchingFiles': 'No matching files in the index',
+      'msg.cancelSent': 'Cancellation requested: the CLI process is being terminated (SIGTERM, forced after 3s).',
+      'msg.initDone': 'Initialized and indexed: {output}',
+      'msg.defaultSet': 'Default project switched to {path}{session}; “Follow the current project” was turned off and the codegraph MCP server will hot-switch.',
+      'msg.sessionOnly': ' (effective for this session only)',
+      'msg.switched': 'Switched to {path} and turned off “Follow the current project”; the codegraph MCP server will hot-switch.',
+      'msg.announceUpdated': 'Capability announcement updated',
+      'msg.guidanceUpdated': 'Usage guidance updated',
+      'msg.followOn': 'Now following the current project',
+      'msg.followOff': 'Following turned off; the managed row uses the default project',
+      'msg.mcpScopePerAgent': 'Switched to per-agent: new sessions each mount a separate MCP process (open sessions are backfilled too)',
+      'msg.mcpScopeManaged': 'Switched back to managed: the global managed row is restored and per-agent mounts are reclaimed',
+      'msg.settingUpdated': 'Setting updated',
+      'msg.reprobeOk': 'Reprobe succeeded: the CLI is available and both systemPrompt sections are injected.',
+      'msg.reprobeFailed': 'Reprobe finished: the CLI is still unavailable — see the reason below.',
+      'msg.reportCopied': 'Diagnostic bundle copied to the clipboard.',
+      'msg.copyUnavailable': 'Auto-copy is unavailable ({error}): the diagnostic bundle is expanded below — select it all and copy manually.',
+      'error.noClipboard': 'This environment has no navigator.clipboard (insecure context?)',
+    }
+    /* ==== dsh-i18n:end ==== */
+
+    /** 占位符替换：`{name}` → params.name（缺参留空，不抛错——文案不该打死界面）。 */
+    function i18nFormat(text, params) {
+      if (params === undefined) return text
+      return String(text).replace(/\{(\w+)\}/g, (_match, name) => (params[name] === undefined ? '' : String(params[name])))
+    }
+
+    /** 中文兜底：老宿主（DSH ≤0.1.5）没有 locale 服务时，界面不能变成一串键名。 */
+    function i18nFallback(key, params) {
+      return i18nFormat(I18N_ZH[key] !== undefined ? I18N_ZH[key] : key, params)
+    }
+
+    let t = i18nFallback
+
+    /**
+     * 注册目录并绑定翻译函数。**动态 inject**：老宿主上回调永不触发、`t` 保持中文兜底；
+     * 写成静态 `inject: ['locale']` 会让整张卡片在老宿主上根本不挂。
+     */
+    function installI18n(ctx) {
+      ctx.inject(['locale'], (i18nCtx) => {
+        const disposeZh = i18nCtx.locale.register(I18N_NS, 'zh', I18N_ZH)
+        const disposeEn = i18nCtx.locale.register(I18N_NS, 'en', I18N_EN)
+        t = i18nCtx.locale.bind(I18N_NS)
+        return () => {
+          disposeEn()
+          disposeZh()
+          t = i18nFallback
+        }
+      })
+    }
+
     /* ================================ CSS ================================ */
 
     const CSS = [
@@ -287,14 +717,14 @@ window.__ModuleLoader__.load({
     const statusCells = (status) => {
       const pending = status.pendingChanges && typeof status.pendingChanges === 'object' ? status.pendingChanges : {}
       return [
-        cell('状态', status.initialized ? '● 已索引' : '○ 未初始化', { tone: status.initialized ? 'cg_badgeOk' : 'cg_badgeWarn' }),
-        cell('版本', String(status.version ?? '—'), { mono: true }),
-        cell('项目', String(status.projectPath ?? '—'), { mono: true, title: status.projectPath }),
-        cell('规模', fmtNum(status.fileCount) + ' 文件 · ' + fmtNum(status.nodeCount) + ' 符号 · ' + fmtNum(status.edgeCount) + ' 边'),
-        cell('最后索引', fmtTime(status.lastIndexed)),
-        cell('待同步', '+' + fmtNum(pending.added ?? 0) + ' ~' + fmtNum(pending.modified ?? 0) + ' -' + fmtNum(pending.removed ?? 0)),
-        cell('语言', Array.isArray(status.languages) && status.languages.length > 0 ? status.languages.join(' / ') : '—'),
-        cell('索引库', fmtBytes(status.dbSizeBytes), { mono: true }),
+        cell(t('meta.status'), status.initialized ? t('meta.indexed') : t('meta.uninitialized'), { tone: status.initialized ? 'cg_badgeOk' : 'cg_badgeWarn' }),
+        cell(t('meta.version'), String(status.version ?? '—'), { mono: true }),
+        cell(t('meta.project'), String(status.projectPath ?? '—'), { mono: true, title: status.projectPath }),
+        cell(t('meta.scale'), t('meta.scaleValue', { files: fmtNum(status.fileCount), nodes: fmtNum(status.nodeCount), edges: fmtNum(status.edgeCount) })),
+        cell(t('meta.lastIndexed'), fmtTime(status.lastIndexed)),
+        cell(t('meta.pending'), '+' + fmtNum(pending.added ?? 0) + ' ~' + fmtNum(pending.modified ?? 0) + ' -' + fmtNum(pending.removed ?? 0)),
+        cell(t('meta.languages'), Array.isArray(status.languages) && status.languages.length > 0 ? status.languages.join(' / ') : '—'),
+        cell(t('meta.db'), fmtBytes(status.dbSizeBytes), { mono: true }),
       ]
     }
 
@@ -338,14 +768,18 @@ window.__ModuleLoader__.load({
     /**
      * 结果区的页签（顺序 = 展示顺序）。触发按钮用同一批 key 调 setActiveTab，
      * 所以新增一种查询时只需在这里加一行、在按钮上接一次 busyOr/setActiveTab。
+     *
+     * label 写成 **getter**：这是模块级常量，直接 `t(...)` 会在模块加载时求值、把语言冻住
+     * （mcp 的 STATUS_TEXT 踩过这个坑）。`文件` / `影响面` / `探索` / `上下文` 四个页签与
+     * 同名按钮用的是同一批键——两处文案本来就是同一个词，共用一个键免得两边译文漂开。
      */
     const RESULT_TABS = [
-      { key: 'search', label: '搜索结果' },
-      { key: 'files', label: '文件' },
-      { key: 'affected', label: '影响面' },
-      { key: 'explore', label: '探索' },
-      { key: 'context', label: '上下文' },
-      { key: 'detail', label: '符号详情' },
+      { key: 'search', get label() { return t('panel.tabSearch') } },
+      { key: 'files', get label() { return t('btn.files') } },
+      { key: 'affected', get label() { return t('btn.affected') } },
+      { key: 'explore', get label() { return t('btn.explore') } },
+      { key: 'context', get label() { return t('btn.context') } },
+      { key: 'detail', get label() { return t('panel.tabDetail') } },
     ]
     /** 会被「索引变化」弄陈旧的那几个页签（重建 / 撤销后要清掉）。 */
     const INDEX_RESULT_TABS = ['files', 'affected', 'explore', 'context']
@@ -373,7 +807,7 @@ window.__ModuleLoader__.load({
             output.text.length > OUTPUT_LIMIT
               ? jsx('p', {
                 className: 'cg_itemMeta',
-                children: '输出较长：只显示了前 ' + OUTPUT_LIMIT + ' 字符（共 ' + output.text.length + ' 字符）',
+                children: t('list.outputTruncated', { shown: OUTPUT_LIMIT, total: output.text.length }),
               })
               : null,
           ],
@@ -381,14 +815,14 @@ window.__ModuleLoader__.load({
       }
       return Array.isArray(output.json)
         ? (output.json.length === 0
-          ? jsx('p', { className: 'cg_mcpMeta', children: '（空）' })
+          ? jsx('p', { className: 'cg_mcpMeta', children: t('list.emptyJson') })
           : jsx('pre', {
             className: 'cg_pre',
             children: output.json.map((item) => typeof item === 'string'
               ? item
               : (item.path ?? item.file ?? JSON.stringify(item))).join('\n'),
           }))
-        : jsx('pre', { className: 'cg_pre', children: (output.raw || '（无输出）').slice(0, OUTPUT_LIMIT) })
+        : jsx('pre', { className: 'cg_pre', children: (output.raw || t('list.noOutput')).slice(0, OUTPUT_LIMIT) })
     }
 
     /**
@@ -586,7 +1020,7 @@ window.__ModuleLoader__.load({
         : idle)
 
       const loadStatus = React.useCallback(async () => {
-        beginBusy('读取索引状态…', 'status')
+        beginBusy(t('msg.readingStatus'), 'status')
         setError('')
         setOk('')
         try {
@@ -685,7 +1119,7 @@ window.__ModuleLoader__.load({
 
       const search = async () => {
         if (!query.trim()) return
-        beginBusy('搜索中…', 'search')
+        beginBusy(t('msg.searching'), 'search')
         setError('')
         setOk('')
         setSelected(null)
@@ -708,7 +1142,7 @@ window.__ModuleLoader__.load({
       }
 
       const loadSymbol = async (name) => {
-        beginBusy('加载符号详情…', 'symbol')
+        beginBusy(t('msg.loadingSymbol'), 'symbol')
         setError('')
         setOk('')
         // CG16：先清掉上一个符号的详情——标题马上要换成新符号，面板还挂着旧的
@@ -744,21 +1178,21 @@ window.__ModuleLoader__.load({
       const runAction = async (action) => {
         // 忙碌文案按动作分派：重建索引可能跑十分钟，用户需要知道在等的是哪件事，
         // 才能判断该不该按旁边的「取消」
-        beginBusy({ sync: '同步中…', index: '重建索引中…', unlock: '解锁中…' }[action] || '处理中…', action)
+        beginBusy({ sync: t('msg.syncing'), index: t('msg.reindexing'), unlock: t('msg.unlocking') }[action] || t('msg.working'), action)
         setError('')
         setOk('')
         // unlock 是秒级操作，不给取消按钮（给了一个点完就消失的「取消」只会让人困惑）
         setCancelable(action === 'sync' || action === 'index')
         // 文案按动作分派；`unlock` 的 CLI 输出在「本来就没锁」时是
         // "No stale lock files found"，原样带出来最诚实
-        const successLabel = { sync: '已同步', index: '已重建', unlock: '解锁完成' }[action] || '已完成'
+        const successLabel = { sync: t('msg.synced'), index: t('msg.reindexed'), unlock: t('msg.unlocked') }[action] || t('msg.done')
         try {
           const data = await api('/api/dsh-codegraph/' + action, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ path: effectivePath }),
           })
-          setOk(successLabel + '：' + (data.output || '').slice(0, 200))
+          setOk(t('msg.actionResult', { label: successLabel, output: (data.output || '').slice(0, 200) }))
           await loadStatus()
         } catch (err) {
           setError(err.message)
@@ -782,7 +1216,7 @@ window.__ModuleLoader__.load({
           return
         }
         setConfirmUninit(false)
-        beginBusy('撤销索引中…', 'uninit')
+        beginBusy(t('msg.uninitializing'), 'uninit')
         setError('')
         setOk('')
         setCancelable(true)
@@ -792,7 +1226,7 @@ window.__ModuleLoader__.load({
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ path: effectivePath }),
           })
-          setOk('已撤销 ' + (data.path || effectivePath) + ' 的索引（.codegraph/ 已删除，源文件未动）：' + (data.output || '').slice(0, 160))
+          setOk(t('msg.uninitDone', { path: data.path || effectivePath, output: (data.output || '').slice(0, 160) }))
           setStatus(null)
           clearIndexResults()
           await Promise.all([loadStatus(), loadMcpStatus(), loadProjects()])
@@ -819,7 +1253,7 @@ window.__ModuleLoader__.load({
        * 与 runAction 分开是因为它们**不改状态**，只需展示输出，不该触发 loadStatus。
        */
       const runQuery = async (route, params = {}) => {
-        beginBusy({ files: '读取文件结构…', affected: '分析影响面…', explore: '探索中…', context: '组装上下文…' }[route] || '查询中…', route)
+        beginBusy({ files: t('msg.readingFiles'), affected: t('msg.analyzingImpact'), explore: t('msg.exploring'), context: t('msg.buildingContext') }[route] || t('msg.querying'), route)
         setError('')
         setOk('')
         try {
@@ -837,7 +1271,7 @@ window.__ModuleLoader__.load({
           }))
           setActiveTab(route)
           if (data.files !== undefined && (!Array.isArray(data.files) || data.files.length === 0)) {
-            setOk('索引里没有匹配的文件')
+            setOk(t('msg.noMatchingFiles'))
           }
         } catch (err) {
           setError(err.message)
@@ -855,7 +1289,7 @@ window.__ModuleLoader__.load({
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ path: effectivePath }),
           })
-          setOk('已发送取消请求：CLI 进程正在被终止（SIGTERM，3s 后强制）。')
+          setOk(t('msg.cancelSent'))
         } catch (err) {
           setError(err.message)
         }
@@ -878,7 +1312,7 @@ window.__ModuleLoader__.load({
           return
         }
         setConfirmInit(false)
-        beginBusy('初始化索引中…', 'init')
+        beginBusy(t('msg.initializingIndex'), 'init')
         setError('')
         setOk('')
         setCancelable(true)
@@ -888,7 +1322,7 @@ window.__ModuleLoader__.load({
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({ path: effectivePath }),
           })
-          setOk('已初始化并建立索引：' + (data.output || '').slice(0, 200))
+          setOk(t('msg.initDone', { output: (data.output || '').slice(0, 200) }))
           clearIndexResults()
           await loadStatus()
           // 索引态变了 → MCP 托管行的决策也跟着变，必须重新取一次
@@ -914,7 +1348,10 @@ window.__ModuleLoader__.load({
             body: JSON.stringify({ path: effectivePath }),
           })
           setMcp(data.mcp || null)
-          setOk('已把默认项目切到 ' + (data.defaultPath || effectivePath) + (data.persisted === false ? '（本次会话内生效）' : '') + '，并关闭「跟随当前项目」；codegraph MCP 服务器将热切换。')
+          setOk(t('msg.defaultSet', {
+            path: data.defaultPath || effectivePath,
+            session: data.persisted === false ? t('msg.sessionOnly') : '',
+          }))
           await loadMcpStatus()
         } catch (err) {
           setError(err.message)
@@ -942,7 +1379,7 @@ window.__ModuleLoader__.load({
           setManual(true)
           setPath(target)
           setMcp(data.mcp || null)
-          setOk('已切换到 ' + (data.defaultPath || target) + '，并关闭「跟随当前项目」；codegraph MCP 服务器将热切换。')
+          setOk(t('msg.switched', { path: data.defaultPath || target }))
           await Promise.all([loadMcpStatus(), loadProjects()])
         } catch (err) {
           setError(err.message)
@@ -964,13 +1401,13 @@ window.__ModuleLoader__.load({
           })
           await loadMcpStatus()
           setOk({
-            announceToAgent: '能力公告已更新',
-            usageGuidance: '使用指引已更新',
-            followSession: value ? '已开启跟随当前项目' : '已关闭跟随，托管行使用默认项目',
+            announceToAgent: t('msg.announceUpdated'),
+            usageGuidance: t('msg.guidanceUpdated'),
+            followSession: value ? t('msg.followOn') : t('msg.followOff'),
             mcpScope: value === 'per-agent'
-              ? '已切到 per-agent：新会话将各挂一个独立的 MCP 进程（已开的会话也会补挂）'
-              : '已切回 managed：全局托管行已恢复，per-agent 挂载已回收',
-          }[key] || '设置已更新')
+              ? t('msg.mcpScopePerAgent')
+              : t('msg.mcpScopeManaged'),
+          }[key] || t('msg.settingUpdated'))
         } catch (err) {
           setError(err.message)
           await loadMcpStatus()
@@ -991,8 +1428,8 @@ window.__ModuleLoader__.load({
           const data = await api('/api/dsh-codegraph/reprobe', { method: 'POST' })
           await loadMcpStatus()
           setOk(data.cliAvailable === true
-            ? '重新探测成功：CLI 可用，systemPrompt 两段已注入。'
-            : '重新探测完成：CLI 仍不可用，原因见下方。')
+            ? t('msg.reprobeOk')
+            : t('msg.reprobeFailed'))
         } catch (err) {
           setError(err.message)
           await loadMcpStatus()
@@ -1028,32 +1465,41 @@ window.__ModuleLoader__.load({
           const clipboard = typeof navigator !== 'undefined' ? navigator.clipboard : undefined
           if (clipboard && typeof clipboard.writeText === 'function') {
             await clipboard.writeText(report)
-            setOk('诊断包已复制到剪贴板。')
+            setOk(t('msg.reportCopied'))
             return
           }
-          throw new Error('当前环境没有 navigator.clipboard（非安全上下文？）')
+          throw new Error(t('error.noClipboard'))
         } catch (err) {
           // 退回「让用户自己按 Ctrl/Cmd+C」：把一个可展开的 pre 放在眼前，比一句
           // 「复制失败」有用——文本已经拿到了，差的只是一次系统级操作。
-          setOk('自动复制不可用（' + err.message + '）：诊断包已展开在下方，手动全选复制即可。')
+          setOk(t('msg.copyUnavailable', { error: err.message }))
         }
       }
 
       const mcpText = React.useMemo(() => {
-        if (!mcp) return 'MCP：状态未知'
+        if (!mcp) return t('status.mcpUnknown')
         // 所有模式都带上宿主给的 note：未索引 / 手工行 / 联动关闭这些「没有托管」的
         // 情况必须说出来，否则「已对齐 cwd」看起来像一切正常。
+        // 宿主给的 note 是**宿主侧正文**（不经 ctx.locale），原样透出。
         const note = mcp.note ? ' · ' + mcp.note : ''
         const following = defaultInfo && defaultInfo.followSession && defaultInfo.sessionPath && defaultInfo.sessionPath !== defaultInfo.defaultPath
-          ? ' · 跟随会话 ' + defaultInfo.sessionPath
+          ? t('status.followingSession', { path: defaultInfo.sessionPath })
           : ''
         // CG12：项目被删 / uninit 后坏行会一直留在 cordis.patch.yml 里（没有 fs.watch），
         // 卡片至少要把「cwd 目录已经不在了」说出来。
-        const deadCwd = mcp.cwdExists === false ? ' · ⚠ cwd 目录已不存在' : ''
-        if (mcp.mode === 'own') return 'MCP：已托管（本插件维护工作目录）· cwd ' + (mcp.cwd || '(未设置)') + (mcp.disabled ? ' · 已停用' : '') + deadCwd + following + note
-        if (mcp.mode === 'dsh-mcp') return 'MCP：已对齐 MCP 卡片里的行 · cwd ' + (mcp.cwd || '(未设置)') + (mcp.disabled ? ' · 已停用' : '') + deadCwd + following + note
-        if (mcp.mode === 'external') return 'MCP：检测到手工配置行，插件不接管'
-        return 'MCP：' + (mcp.note || '未托管')
+        const deadCwd = mcp.cwdExists === false ? t('status.deadCwd') : ''
+        // 可选片段一律走占位符：中英的语序与标点不同，拼接会把语序写死。
+        const suffix = {
+          disabled: mcp.disabled ? t('status.mcpDisabled') : '',
+          deadCwd,
+          following,
+          note,
+        }
+        const cwd = mcp.cwd || t('status.mcpCwdUnset')
+        if (mcp.mode === 'own') return t('status.mcpOwn', { cwd, ...suffix })
+        if (mcp.mode === 'dsh-mcp') return t('status.mcpAligned', { cwd, ...suffix })
+        if (mcp.mode === 'external') return t('status.mcpExternal')
+        return t('status.mcpUntracked', { note: mcp.note || t('status.mcpUnmanaged') })
       }, [mcp, defaultInfo])
 
       // 托管行实际用的目录不是有效索引时必须点名：MCP 服务器以它为 cwd，未加载项目时
@@ -1062,24 +1508,24 @@ window.__ModuleLoader__.load({
       const defaultWarning = React.useMemo(() => {
         if (!defaultInfo || defaultInfo.indexed) return ''
         const why = defaultInfo.indexState === 'not-a-project'
-          ? '它的 .codegraph/ 里没有索引库，不是 codegraph 项目（家目录最常见：~/.codegraph 是 CLI 自身的安装目录）'
-          : '它没有 .codegraph/ 索引'
-        const shown = defaultInfo.effectivePath || defaultInfo.defaultPath || '(未设置)'
+          ? t('status.notAProjectWhy')
+          : t('status.noIndexWhy')
+        const shown = defaultInfo.effectivePath || defaultInfo.defaultPath || t('status.mcpCwdUnset')
         const source = defaultInfo.followSession && defaultInfo.sessionPath === shown
-          ? '（来自当前会话）'
-          : '（来自默认项目）'
+          ? t('status.fromSession')
+          : t('status.fromDefault')
         const fix = status && status.initialized === true && effectivePath && effectivePath !== shown
-          ? '当前路径 ' + effectivePath + ' 已是有效索引，点「设为默认项目」即可修复。'
+          ? t('status.fixCurrent', { path: effectivePath })
           // 注意这里谈的是**托管行用的那个目录**（shown），它未必等于下面你正在看的路径；
           // 所以只给不依赖「当前路径」的说法，别让人以为点卡片上的按钮就能修它。
-          : '把默认项目切到已索引目录即可自动挂载（也可以直接在该目录里运行 `codegraph init` 建索引）。'
-        return '⚠ 托管行用的目录 ' + shown + source + ' 不是有效索引：' + why + '。未加载项目的 codegraph_* 工具需要显式传 projectPath；' + fix
+          : t('status.fixOther')
+        return t('status.defaultWarning', { shown, source, why, fix })
       }, [defaultInfo, status, effectivePath])
 
       const cliWarning = defaultInfo && defaultInfo.cliAvailable === false
-        ? '⚠ 探测不到可执行的 CLI 命令 ' + (defaultInfo.command || 'codegraph') + '（`--version` 失败）：systemPrompt 的能力公告与使用指引都不会注入，卡片里的状态 / 搜索 / sync / 重建索引也会报错。'
-          + '\n修法二选一：① 把插件配置里的 command 写成该 CLI 的绝对路径（改 profile 补丁会触发热重载并重新探测）；② 从新开的终端重启宿主，让新的环境块生效。'
-          + '注意：宿主进程的 PATH 在它启动时就固定了，刷新页面 / 重开卡片都不会改变它——改完上面任一项后，点「重新探测」即可就地确认，不必重启宿主。'
+        ? t('status.cliMissing', { command: defaultInfo.command || 'codegraph' })
+          + t('status.cliFix')
+          + t('status.cliNote')
         : ''
 
       /** 某个页签有没有内容（决定它是否出现在页签栏里）。 */
@@ -1104,17 +1550,17 @@ window.__ModuleLoader__.load({
        * 一起禁掉），文案在这里补上，好让标题行统一显示「在做什么」。
        */
       const busyText = loading
-        ? (busy || '处理中…')
+        ? (busy || t('msg.working'))
         : reprobing
-          ? '重新探测 CLI…'
+          ? t('msg.reprobing')
           : diagnosing
-            ? '收集诊断信息…'
+            ? t('msg.collectingDiagnostics')
             : ''
 
       /** 探测失败的实测原文：ENOENT / 非零退出 / 超时三种情况靠它区分。 */
       const cliProbeDetail = defaultInfo && defaultInfo.cliAvailable === false && defaultInfo.cliProbeError
-        ? '实测原因：' + defaultInfo.cliProbeError
-          + (defaultInfo.cliProbeAt ? '\n上次探测：' + new Date(defaultInfo.cliProbeAt).toLocaleTimeString() : '')
+        ? t('status.probeReason', { error: defaultInfo.cliProbeError })
+          + (defaultInfo.cliProbeAt ? t('status.probeAt', { time: new Date(defaultInfo.cliProbeAt).toLocaleTimeString() }) : '')
         : ''
 
       // 状态区：能识别的 status 形状就铺成网格，否则回落到原始文本（CLI 报错时 status 可能是 {raw}）
@@ -1130,7 +1576,7 @@ window.__ModuleLoader__.load({
       }
 
       if (view === 'summary') {
-        return '代码图谱：索引状态、符号搜索、探索/上下文、影响面分析、一键 sync/index。'
+        return t('card.summary')
       }
 
       // page 视图：新页面自己画标题/图标/面包屑，这里只交表单本体，不渲染卡片头。
@@ -1147,7 +1593,7 @@ window.__ModuleLoader__.load({
                 className: 'cg_cardHeadText',
                 children: [
                   jsx('span', { className: 'cg_cardName', children: 'Codegraph' }),
-                  jsx('span', { className: 'cg_cardDescription', children: '代码图谱：索引状态、符号搜索、callers/callees/impact、一键 sync/index。' }),
+                  jsx('span', { className: 'cg_cardDescription', children: t('card.desc') }),
                 ],
               }),
               jsx('span', { className: 'dshkit_badge', children: 'Kit' }),
@@ -1179,7 +1625,7 @@ window.__ModuleLoader__.load({
                 jsxs('div', {
                   className: 'cg_panelHeader',
                   children: [
-                    jsx('span', { className: 'cg_panelTitle', children: 'Codegraph 控制台' }),
+                    jsx('span', { className: 'cg_panelTitle', children: t('panel.title') }),
                     busyText !== ''
                       ? jsxs('span', {
                         className: 'cg_busy',
@@ -1194,9 +1640,9 @@ window.__ModuleLoader__.load({
                             ? jsx('button', {
                               type: 'button',
                               className: 'cg_btnGhost',
-                              title: '终止正在跑的 codegraph CLI（SIGTERM，3s 后整组 SIGKILL）',
+                              title: t('panel.cancelTitle'),
                               onClick: cancelRun,
-                              children: '取消',
+                              children: t('btn.cancel'),
                             })
                             : null,
                         ],
@@ -1208,13 +1654,13 @@ window.__ModuleLoader__.load({
                 // 收进同一组。此前路径输入框在面板第二行、「设为默认项目」孤悬在查询
                 // 参数之后（截图实证：按钮和它作用的路径隔了两屏），托管行文案又挂在
                 // 按钮后面——三件事散在三处，现在自上而下是一条「我在看哪个项目」的动线。
-                group('目标项目', [
+                group(t('panel.groupTarget'), [
                   jsxs('div', {
                     className: 'cg_row',
                     children: [
                       jsx('input', {
                         className: 'cg_input',
-                        placeholder: '项目路径（留空使用默认）',
+                        placeholder: t('placeholder.projectPath'),
                         value: path,
                         onChange: (event) => {
                           const value = event.target.value
@@ -1226,9 +1672,9 @@ window.__ModuleLoader__.load({
                         type: 'button',
                         className: 'cg_btnGhost',
                         disabled: settingDefault || loading || !effectivePath,
-                        title: '把当前路径持久化为默认项目（同时关闭「跟随当前项目」，避免被会话切换顶掉），codegraph MCP 服务器的工作目录随之热切换',
+                        title: t('panel.setDefaultTitle'),
                         onClick: setDefaultProject,
-                        children: settingDefault ? '切换中…' : '设为默认项目',
+                        children: settingDefault ? t('msg.switching') : t('btn.setDefault'),
                       }),
                     ],
                   }),
@@ -1242,17 +1688,17 @@ window.__ModuleLoader__.load({
                     ? jsxs('div', {
                       className: 'cg_projects',
                       children: [
-                        jsx('span', { className: 'cg_projectsLabel', children: '已见项目' }),
+                        jsx('span', { className: 'cg_projectsLabel', children: t('panel.seenProjects') }),
                         ...projects.map((item) => jsx('button', {
                           type: 'button',
                           key: 'cg-project-' + item.path,
                           className: 'cg_projectBtn',
                           disabled: settingDefault || !item.indexed || item.path === effectivePath,
                           title: item.indexed
-                            ? item.path + '（' + seenAgoText(item.seenAgoMs) + '见过，来自' + item.via + '）'
-                            : item.path + '：未索引，切换无效——先在该目录跑 codegraph init（' + item.via + '）',
+                            ? t('status.projectSeen', { path: item.path, ago: seenAgoText(item.seenAgoMs), via: item.via })
+                            : t('status.projectNotIndexed', { path: item.path, via: item.via }),
                           onClick: () => switchProject(item.path),
-                          children: shortPath(item.path) + (item.indexed ? '' : ' · 未索引'),
+                          children: shortPath(item.path) + (item.indexed ? '' : t('badge.notIndexed')),
                         })),
                       ],
                     })
@@ -1282,8 +1728,8 @@ window.__ModuleLoader__.load({
                   : null,
                 // 本组**无条件渲染**（即使还没拿到数据）：「刷新」按钮挂在这个组的组头，
                 // 若整组随 status 一起消失，读取失败时用户就没有就地重试的入口了。
-                group('索引状态', status === null
-                  ? [jsx('p', { className: 'cg_mcpMeta', children: '还没读取到索引状态。' })]
+                group(t('panel.groupStatus'), status === null
+                  ? [jsx('p', { className: 'cg_mcpMeta', children: t('list.statusEmpty') })]
                   : statusIsStructured
                     ? [
                         jsx('div', { className: 'cg_grid', children: statusCells(status) }),
@@ -1294,18 +1740,17 @@ window.__ModuleLoader__.load({
                         staleReasons(status).length > 0
                           ? jsx('p', {
                             className: 'cg_warn',
-                            children: '⚠ 索引可能过期：' + staleReasons(status).join('；')
-                              + '。MCP 工具此刻给的是旧提取器产出的图——点「重建索引」修复（实测此时 Sync 会报 Already up to date 且不解决问题）。',
+                            children: t('status.staleWarning', { reasons: staleReasons(status).join(t('list.separator')) }),
                           })
                           : null,
                         status.initialized === false
-                          ? jsx('p', { className: 'cg_mcpMeta', children: '该目录还没有索引：点下方「初始化索引」即可在本目录跑一次 `codegraph init`（只创建 .codegraph/，源文件不动；可用 `codegraph uninit` 撤销）。' })
+                          ? jsx('p', { className: 'cg_mcpMeta', children: t('list.noIndexHint') })
                           : null,
                         statusRawText !== ''
                           ? jsxs('details', {
                             className: 'cg_details',
                             children: [
-                              jsx('summary', { children: '原始 JSON（status --json）' }),
+                              jsx('summary', { children: t('panel.rawStatusJson') }),
                               jsx('pre', { className: 'cg_pre', children: statusRawText }),
                             ],
                           })
@@ -1317,10 +1762,10 @@ window.__ModuleLoader__.load({
                   disabled: loading,
                   // 只有**本动作**在跑时才转（busyAction），不是任何动作都转
                   'data-busy': busyAction === 'status' ? '1' : undefined,
-                  'aria-label': busyAction === 'status' ? '正在读取索引状态' : '刷新索引状态',
+                  'aria-label': busyAction === 'status' ? t('panel.refreshingAria') : t('panel.refreshAria'),
                   title: busyAction === 'status'
-                    ? '正在读取索引状态…'
-                    : '重新读取 `codegraph status --json`，刷新本组的索引状态（不会重建索引）',
+                    ? t('panel.refreshingTitle')
+                    : t('panel.refreshTitle'),
                   onClick: loadStatus,
                   children: jsx('svg', {
                     width: '14',
@@ -1337,10 +1782,10 @@ window.__ModuleLoader__.load({
                 // 解锁、破坏性的撤销索引完全同样式混排（用户看到的「乱」主要在这里）。
                 // 现在按「动作性质」分三行并给 Sync 主按钮样式：
                 //   生命周期（会写索引）→ 查看与诊断（只读）→ 危险（删数据，视觉隔开）。
-                group('索引维护', [
+                group(t('panel.groupMaintenance'), [
                   // 生命周期：改索引的动作。Sync 是这张卡片最高频的安全操作，给主按钮样式
                   // 做视觉锚点；「初始化索引」在未索引时是唯一主操作，排在最前（判定见下）。
-                  jsx('div', { className: 'cg_rowLabel', children: '生命周期' }),
+                  jsx('div', { className: 'cg_rowLabel', children: t('panel.rowLifecycle') }),
                   // 按钮要包一层 .cg_toolbarBtns 行容器：group 本体是纵向 flex（分组头 +
                   // 内容自上而下），按钮直接塞进去会被拉成一条条通栏；包一行容器才能
                   // 左对齐横向排布、放不下再折行。
@@ -1362,26 +1807,26 @@ window.__ModuleLoader__.load({
                           className: confirmInit ? 'cg_btnDanger' : 'cg_btnGhost',
                           disabled: loading,
                           title: confirmInit
-                            ? '再点一次即在 ' + (effectivePath || '(默认项目)') + ' 里创建 .codegraph/ 并建立首次索引'
-                            : 'codegraph index / sync 都要求项目先初始化过（干净目录会报 “CodeGraph not initialized”）。这个按钮在该目录跑一次 `codegraph init`。',
+                            ? t('panel.confirmInitTitle', { path: effectivePath || t('panel.defaultProject') })
+                            : t('panel.initTitle'),
                           onClick: runInit,
-                          children: busyOr('init', confirmInit ? '确认初始化？' : '初始化索引', '初始化中…'),
+                          children: busyOr('init', confirmInit ? t('btn.confirmInit') : t('btn.initIndex'), t('msg.initializing')),
                         })
                         : null,
                       jsx('button', {
                         type: 'button',
                         className: 'cg_btn',
                         disabled: loading,
-                        title: 'codegraph sync：增量同步索引（只更新改动的部分；全量重建用右边的「重建索引」）',
+                        title: t('panel.syncTitle'),
                         onClick: () => runAction('sync'),
-                        children: busyOr('sync', 'Sync', '同步中…'),
+                        children: busyOr('sync', 'Sync', t('msg.syncing')),
                       }),
                       jsx('button', {
                         type: 'button',
                         className: 'cg_btnGhost',
                         disabled: loading,
                         onClick: () => runAction('index'),
-                        children: busyOr('index', '重建索引', '重建中…'),
+                        children: busyOr('index', t('btn.reindex'), t('msg.rebuilding')),
                       }),
                       // 清陈旧锁：一次被强杀的 index 留下的 codegraph.lock 会挡住后续
                       // **所有**索引操作，而在此之前卡片没有任何入口（只能去终端）。
@@ -1390,9 +1835,9 @@ window.__ModuleLoader__.load({
                         type: 'button',
                         className: 'cg_btnGhost',
                         disabled: loading,
-                        title: 'codegraph unlock：清掉挡住索引的陈旧锁文件（索引被强杀后常见）。没锁时什么也不做',
+                        title: t('panel.unlockTitle'),
                         onClick: () => runAction('unlock'),
-                        children: busyOr('unlock', '解锁', '解锁中…'),
+                        children: busyOr('unlock', t('btn.unlock'), t('msg.unlocking')),
                       }),
                       // 撤销索引（唯一的删除类动作）接在生命周期行尾，用**竖向虚线**与
                       // 常规按钮隔开。
@@ -1412,10 +1857,10 @@ window.__ModuleLoader__.load({
                             className: confirmUninit ? 'cg_btnDanger' : 'cg_btnGhost',
                             disabled: loading,
                             title: confirmUninit
-                              ? '再点一次即删除 ' + (effectivePath || '(默认项目)') + ' 的 .codegraph/（索引数据全部丢失，源文件不动）'
-                              : 'codegraph uninit：删除该项目的 .codegraph/（索引数据全部丢失，源文件不动）。这是本卡片唯一的删除类动作',
+                              ? t('panel.confirmUninitTitle', { path: effectivePath || t('panel.defaultProject') })
+                              : t('panel.uninitTitle'),
                             onClick: runUninit,
-                            children: busyOr('uninit', confirmUninit ? '确认撤销？' : '撤销索引', '撤销中…'),
+                            children: busyOr('uninit', confirmUninit ? t('btn.confirmUninit') : t('btn.uninit'), t('msg.removingIndex')),
                           }),
                         })
                         : null,
@@ -1423,7 +1868,7 @@ window.__ModuleLoader__.load({
                   }),
                   // 查看与诊断：只读动作（刷新卡片数据 / 重新探测 CLI / 看文件结构 / 收诊断包）。
                   // 与「会写索引」的按钮分开，扫一眼就知道这排不会改任何东西。
-                  jsx('div', { className: 'cg_rowLabel', children: '查看与诊断' }),
+                  jsx('div', { className: 'cg_rowLabel', children: t('panel.rowDiagnostics') }),
                   jsxs('div', {
                     className: 'cg_toolbarBtns',
                     children: [
@@ -1431,9 +1876,9 @@ window.__ModuleLoader__.load({
                         type: 'button',
                         className: 'cg_btnGhost',
                         disabled: reprobing,
-                        title: '重跑一次 `<command> --version`：CLI 是后装的、或 command 改成了绝对路径时，无需重启宿主即可恢复',
+                        title: t('panel.reprobeTitle'),
                         onClick: reprobe,
-                        children: reprobing ? '探测中…' : '重新探测',
+                        children: reprobing ? t('msg.probing') : t('btn.reprobe'),
                       }),
                       // 一键诊断包（P1-b）：把 PATH / 托管行 / 索引 / daemon / 最近失败
                       // 的原文一次收齐，供排障与贴 issue。它是**只读**动作，排在危险动作之前；
@@ -1442,9 +1887,9 @@ window.__ModuleLoader__.load({
                         type: 'button',
                         className: 'cg_btnGhost',
                         disabled: diagnosing,
-                        title: '收集一段可直接复制的诊断文本：CLI 探测实测原文、托管行与补丁区块（值已脱敏）、索引状态、codegraph daemon 与日志尾、最近一次 CLI 失败',
+                        title: t('panel.diagnoseTitle'),
                         onClick: loadReport,
-                        children: diagnosing ? '收集中…' : '诊断包',
+                        children: diagnosing ? t('msg.collecting') : t('btn.diagnose'),
                       }),
                     ],
                   }),
@@ -1471,7 +1916,7 @@ window.__ModuleLoader__.load({
                           children: [
                             jsxs('summary', {
                               children: [
-                                '诊断包（可整段复制贴 issue）',
+                                t('panel.reportSummary'),
                                 jsx('button', {
                                   type: 'button',
                                   className: 'cg_btnGhost',
@@ -1483,7 +1928,7 @@ window.__ModuleLoader__.load({
                                     event.stopPropagation()
                                     copyReport()
                                   },
-                                  children: '复制',
+                                  children: t('btn.copy'),
                                 }),
                               ],
                             }),
@@ -1506,23 +1951,23 @@ window.__ModuleLoader__.load({
                   ? jsx('p', {
                     className: 'cg_mcpMeta',
                     children: telemetry.enabled === true
-                      ? '匿名用量统计：已开启（init / 重建索引会上报）· 关闭：`codegraph telemetry off` 或 `CODEGRAPH_TELEMETRY=0`'
+                      ? t('panel.telemetryOn')
                       : telemetry.enabled === false
-                        ? '匿名用量统计：已关闭'
-                        : '匿名用量统计：状态未知（CLI 输出未含可识别的状态行）',
+                        ? t('panel.telemetryOff')
+                        : t('panel.telemetryUnknown'),
                   })
                   : null,
                 // ── 搜索与查询（UX 重构：拆两个工作流）──
                 // 「搜索 / 探索 / 上下文」是符号查询（吃同一个关键词），「改动文件 + 影响面」
                 // 是「改动 → 受影响测试」的另一个工作流——原先两者混在一行参数里，
                 // 看起来像一回事。现在符号查询在上、「改动影响」单列一行小标题。
-                group('搜索与查询', [
+                group(t('panel.groupSearch'), [
                   jsx('div', {
                     className: 'cg_row',
                     children: [
                       jsx('input', {
                         className: 'cg_input',
-                        placeholder: '搜索符号，例如 definePlugin',
+                        placeholder: t('placeholder.searchSymbol'),
                         value: query,
                         onChange: (event) => setQuery(event.target.value),
                         onKeyDown: (event) => { if (event.key === 'Enter') search() },
@@ -1532,34 +1977,34 @@ window.__ModuleLoader__.load({
                         className: 'cg_btn',
                         disabled: loading || !query.trim(),
                         onClick: search,
-                        children: busyOr('search', '搜索', '搜索中…'),
+                        children: busyOr('search', t('btn.search'), t('msg.searching')),
                       }),
                       // explore / context 与「搜索」共用 query，语义上是一组（见上）。
                       jsx('button', {
                         type: 'button',
                         className: 'cg_btnGhost',
                         disabled: loading || !query.trim(),
-                        title: 'codegraph explore：与 MCP 的 codegraph_explore 同输出（相关符号源码 + 调用路径）。用左侧搜索框里的关键词',
+                        title: t('panel.exploreTitle'),
                         onClick: () => runQuery('explore', { q: query.trim() }),
-                        children: busyOr('explore', '探索', '探索中…'),
+                        children: busyOr('explore', t('btn.explore'), t('msg.exploring')),
                       }),
                       jsx('button', {
                         type: 'button',
                         className: 'cg_btnGhost',
                         disabled: loading || !query.trim(),
-                        title: 'codegraph context：为一个任务组装上下文（相关符号 + 关系 + 代码块）。用左侧搜索框里的关键词',
+                        title: t('panel.contextTitle'),
                         onClick: () => runQuery('context', { q: query.trim() }),
-                        children: busyOr('context', '上下文', '组装中…'),
+                        children: busyOr('context', t('btn.context'), t('msg.assembling')),
                       }),
                       // kind / limit 是 query 的 -k/-l：贴着它们作用的搜索，不另起一行。
                       jsx('label', {
                         className: 'cg_opt',
-                        title: 'codegraph query -k/--kind：按节点类型过滤（function / class / method / interface / type_alias / constant / variable / property / file / import）',
+                        title: t('panel.kindTitle'),
                         children: [
-                          '类型',
+                          t('field.kind'),
                           jsx('input', {
                             className: 'cg_input cg_inputSm',
-                            placeholder: '任意（function…）',
+                            placeholder: t('placeholder.kindAny'),
                             value: queryKind,
                             onChange: (event) => setQueryKind(event.target.value),
                             onKeyDown: (event) => { if (event.key === 'Enter') search() },
@@ -1568,9 +2013,9 @@ window.__ModuleLoader__.load({
                       }),
                       jsx('label', {
                         className: 'cg_opt',
-                        title: 'codegraph query -l/--limit：返回条数上限（默认 20）。callers/callees 也吃这个值',
+                        title: t('panel.limitTitle'),
                         children: [
-                          '上限',
+                          t('field.limit'),
                           jsx('input', {
                             className: 'cg_input cg_inputXs',
                             value: queryLimit,
@@ -1588,7 +2033,7 @@ window.__ModuleLoader__.load({
                   // 不同**，光看标签分不出来（标签保持 CLI 子命令的对应关系，所以不改名）。
                   jsx('p', {
                     className: 'cg_mcpMeta',
-                    children: '搜索 = 符号列表（可点进详情）· 探索 = 相关符号源码 + 调用链 · 上下文 = 为任务组装上下文 · 三者都用左侧关键词',
+                    children: t('hint.queryButtons'),
                   }),
                   // 其他查询：**不用搜索框关键词**的几种查询。与上面那行分开是因为它们的
                   // 心智不同（上面是「拿关键词查符号」），混在一起会让人以为「文件」也吃关键词。
@@ -1600,7 +2045,7 @@ window.__ModuleLoader__.load({
                   // 「改动文件 / 影响面」：插件刻意不自己去猜改动列表（不读 git status、
                   // 不猜编辑器状态），所以需要用户手填；「影响面」吃左边这份列表，
                   // 依赖关系贴着输入框一眼可见。窄栏下自动折行。
-                  jsx('div', { className: 'cg_rowLabel', children: '其他查询' }),
+                  jsx('div', { className: 'cg_rowLabel', children: t('panel.rowOtherQueries') }),
                   jsxs('div', {
                     className: 'cg_queryOpts',
                     children: [
@@ -1608,18 +2053,18 @@ window.__ModuleLoader__.load({
                         type: 'button',
                         className: 'cg_btnGhost',
                         disabled: loading,
-                        title: 'codegraph files --json：列出索引里的文件结构（语言 / 符号数 / 大小）。不吃搜索框的关键词',
+                        title: t('panel.filesTitle'),
                         onClick: () => runQuery('files'),
-                        children: busyOr('files', '文件', '读取中…'),
+                        children: busyOr('files', t('btn.files'), t('msg.reading')),
                       }),
                       jsx('label', {
                         className: 'cg_opt cg_optWide',
-                        title: 'codegraph affected <files…>：由改动文件反查受影响的测试。一行一个，也可用逗号分隔；留空则 CLI 回「No files provided」',
+                        title: t('panel.affectedTitle'),
                         children: [
-                          '改动文件',
+                          t('field.changedFiles'),
                           jsx('input', {
                             className: 'cg_input cg_inputSm',
-                            placeholder: '如 packages/codegraph/src/index.ts（点「影响面」查询）',
+                            placeholder: t('placeholder.changedFiles'),
                             value: changedFiles,
                             onChange: (event) => setChangedFiles(event.target.value),
                             onKeyDown: (event) => { if (event.key === 'Enter') runQuery('affected', { files: manualFiles() }) },
@@ -1630,9 +2075,9 @@ window.__ModuleLoader__.load({
                         type: 'button',
                         className: 'cg_btnGhost',
                         disabled: loading || !(status && status.projectPath),
-                        title: 'codegraph affected <files>：由改动文件反查受影响的测试。用左侧「改动文件」里的列表',
+                        title: t('panel.affectedButtonTitle'),
                         onClick: () => runQuery('affected', { files: manualFiles() }),
-                        children: busyOr('affected', '影响面', '分析中…'),
+                        children: busyOr('affected', t('btn.affected'), t('msg.analyzing')),
                       }),
                     ],
                   }),
@@ -1648,7 +2093,7 @@ window.__ModuleLoader__.load({
                 //   ③ outputs 按路由分槽，切页签不会丢上一次的结果。
                 // 另有 useEffect 在结果出来且不在视野时滚过去（block:'nearest'，已在视野就不动）。
                 resultTabs.length > 0
-                  ? group('结果', [
+                  ? group(t('panel.groupResults'), [
                       jsxs('div', {
                         className: 'cg_tabs',
                         children: resultTabs.map((tab) => jsx('button', {
@@ -1681,40 +2126,40 @@ window.__ModuleLoader__.load({
                                 })
                               }),
                             })
-                            : jsx('p', { className: 'cg_mcpMeta', children: '没有匹配的符号。换个关键词，或去掉「类型」过滤。' }))
+                            : jsx('p', { className: 'cg_mcpMeta', children: t('list.noSymbols') }))
                           : activeTab === 'detail'
                             ? (detail
                               ? jsxs('div', {
                                 children: [
-                                  jsx('p', { className: 'cg_sectionTitle', children: '符号详情：' + selected }),
+                                  jsx('p', { className: 'cg_sectionTitle', children: t('panel.symbolDetail', { name: selected }) }),
                                   // node 侧返回的是带行号的 markdown 源码/调用轨迹（不是 JSON），直接按文本显示
                                   typeof detail.node?.node === 'string' && detail.node.node.trim() !== ''
                                     ? jsx('pre', { className: 'cg_pre', children: detail.node.node })
                                     : null,
-                                  relList('调用者 (callers)', relItems(detail.callers?.callers, 'callers'), '没有调用者'),
-                                  relList('被调用 (callees)', relItems(detail.callees?.callees, 'callees'), '没有下游调用'),
+                                  relList(t('panel.callers'), relItems(detail.callers?.callers, 'callers'), t('list.noCallers')),
+                                  relList(t('panel.callees'), relItems(detail.callees?.callees, 'callees'), t('list.noCallees')),
                                   jsxs('div', {
                                     children: [
                                       jsx('p', {
                                         className: 'cg_sectionTitle',
-                                        children: '影响面 (impact) · ' + fmtNum(detail.impact?.impact?.nodeCount) + ' 个节点 / ' + fmtNum(detail.impact?.impact?.edgeCount) + ' 条边',
+                                        children: t('panel.impactTitle', { nodes: fmtNum(detail.impact?.impact?.nodeCount), edges: fmtNum(detail.impact?.impact?.edgeCount) }),
                                       }),
-                                      relList('受影响符号', relItems(detail.impact?.impact?.affected, 'affected'), '没有受影响的符号'),
+                                      relList(t('panel.affectedSymbols'), relItems(detail.impact?.impact?.affected, 'affected'), t('list.noAffected')),
                                     ],
                                   }),
                                   jsxs('details', {
                                     className: 'cg_details',
                                     children: [
-                                      jsx('summary', { children: '原始 JSON（node / callers / callees / impact）' }),
+                                      jsx('summary', { children: t('panel.rawDetailJson') }),
                                       jsx('pre', { className: 'cg_pre', children: JSON.stringify(detail, null, 2) }),
                                     ],
                                   }),
                                 ],
                               })
-                              : jsx('p', { className: 'cg_mcpMeta', children: '正在加载符号详情…' }))
+                              : jsx('p', { className: 'cg_mcpMeta', children: t('list.loadingSymbol') }))
                             : (outputs[activeTab] !== undefined
                               ? renderOutputBody(outputs[activeTab])
-                              : jsx('p', { className: 'cg_mcpMeta', children: '（还没有结果）' })),
+                              : jsx('p', { className: 'cg_mcpMeta', children: t('list.noResult') })),
                       }),
                     ])
                   : null,
@@ -1722,17 +2167,17 @@ window.__ModuleLoader__.load({
                 // UX 重构：四个开关拆两行——「跟随与提示词」是轻量行为开关，
                 // 「per-agent MCP 隔离」是改 MCP 拓扑、有内存代价的决策，视觉同权正是
                 // 「乱」的来源之一。各自一行小标题，代价与后果各归各位。
-                group('Agent 集成', [
+                group(t('panel.groupAgent'), [
                   // UX 重构：四个开关拆两行——「跟随与提示词」是轻量行为开关，
                   // 「per-agent MCP 隔离」是改 MCP 拓扑、有内存代价的决策，两者视觉同权
                   // 正是「乱」的来源之一。各自一行小标题，代价与后果各归各位。
-                  jsx('div', { className: 'cg_rowLabel', children: '跟随与提示词' }),
+                  jsx('div', { className: 'cg_rowLabel', children: t('panel.rowFollow') }),
                   jsxs('div', {
                     className: 'cg_checks',
                     children: [
                       jsx('label', {
                         className: 'cg_check',
-                        title: '开启后：会话切到某个已索引项目时，MCP 托管行的 cwd 自动对齐它；会话目录没有索引时回落到默认项目。「设为默认项目」会关掉它（那是一次显式指定）',
+                        title: t('panel.followTitle'),
                         children: [
                           jsx('input', {
                             type: 'checkbox',
@@ -1740,15 +2185,15 @@ window.__ModuleLoader__.load({
                             disabled: !defaultInfo,
                             onChange: (event) => toggleSetting('followSession', event.target.checked),
                           }),
-                          '跟随当前项目',
+                          t('check.followSession'),
                         ],
                       }),
                       jsx('label', {
                         className: 'cg_check',
                         'data-off': !defaultInfo || defaultInfo.cliAvailable !== true ? '1' : undefined,
                         title: defaultInfo && defaultInfo.cliAvailable === true
-                          ? '向 agent 注入本插件的能力公告（一段中文提示，告诉模型有这张卡片）'
-                          : 'codegraph CLI 不可用，公告不会注入',
+                          ? t('panel.announceTitle')
+                          : t('panel.announceDisabled'),
                         children: [
                           jsx('input', {
                             type: 'checkbox',
@@ -1756,15 +2201,15 @@ window.__ModuleLoader__.load({
                             disabled: !defaultInfo || defaultInfo.cliAvailable !== true,
                             onChange: (event) => toggleSetting('announceToAgent', event.target.checked),
                           }),
-                          '向 agent 公告能力',
+                          t('check.announce'),
                         ],
                       }),
                       jsx('label', {
                         className: 'cg_check',
                         'data-off': !defaultInfo || defaultInfo.cliAvailable !== true ? '1' : undefined,
                         title: defaultInfo && defaultInfo.cliAvailable === true
-                          ? '注入 CodeGraph 使用指引（CODEGRAPH_START 区块：何时优先用 codegraph、失败怎么兜底）'
-                          : 'codegraph CLI 不可用，使用指引不会注入',
+                          ? t('panel.guidanceTitle')
+                          : t('panel.guidanceDisabled'),
                         children: [
                           jsx('input', {
                             type: 'checkbox',
@@ -1772,12 +2217,12 @@ window.__ModuleLoader__.load({
                             disabled: !defaultInfo || defaultInfo.cliAvailable !== true,
                             onChange: (event) => toggleSetting('usageGuidance', event.target.checked),
                           }),
-                          '注入使用指引',
+                          t('check.guidance'),
                         ],
                       }),
                     ],
                   }),
-                  jsx('div', { className: 'cg_rowLabel', children: 'MCP 挂载' }),
+                  jsx('div', { className: 'cg_rowLabel', children: t('panel.rowMcp') }),
                   jsx('div', {
                     className: 'cg_checks',
                     children:
@@ -1795,7 +2240,7 @@ window.__ModuleLoader__.load({
                           // 截图：看起来点不了，实际能点）。它只在状态未加载时禁用
                           // （下面的 disabled）。data-off 语义保留给真正不可用的开关
                           // ——CLI 探测失败的那两个（灰 = 确实注不了入）。
-                          title: '每 agent 一个独立的 codegraph MCP 进程（cwd = 该 agent 会话的索引根）：多项目并行时不再共享一个全局 cwd，也不再需要写盘热切换。代价是每个 agent 一个子进程（约 40MB 内存 / 每个），且只有会话目录真的**有索引**时才挂。',
+                          title: t('panel.perAgentTitle'),
                           children: [
                             jsx('input', {
                               type: 'checkbox',
@@ -1803,7 +2248,7 @@ window.__ModuleLoader__.load({
                               disabled: !defaultInfo,
                               onChange: (event) => toggleSetting('mcpScope', event.target.checked ? 'per-agent' : 'managed'),
                             }),
-                            'per-agent MCP 隔离',
+                            t('check.perAgent'),
                           ],
                         })
                         : null,
@@ -1812,17 +2257,17 @@ window.__ModuleLoader__.load({
                   defaultInfo && defaultInfo.mcpScope === 'per-agent' && defaultInfo.effectiveMcpScope !== 'per-agent'
                     ? jsx('p', {
                       className: 'cg_warn',
-                      children: '⚠ per-agent 未生效，已退回 managed：'
-                        + (defaultInfo.mcpScopeReason || '前提不成立')
-                        + '（当前仍是单服务器按会话热切换，功能正常）',
+                      children: t('panel.perAgentFallback', {
+                        reason: defaultInfo.mcpScopeReason || t('panel.perAgentReason'),
+                        tail: t('panel.perAgentTail'),
+                      }),
                     })
                     : null,
                   defaultInfo && defaultInfo.effectiveMcpScope === 'per-agent'
                     ? jsx('p', {
                       className: 'cg_mcpMeta',
-                      title: '每个 agent 一个独立的 codegraph MCP 进程；会话目录没有可用索引的 agent 不会挂载（避免拿到别的项目上下文）',
-                      children: 'per-agent 生效中：已挂载 ' + String(defaultInfo.agentMounts)
-                        + ' 个 agent 的独立 MCP 进程。全局托管行已挂起（disabled: true），切回 managed 会自动恢复。',
+                      title: t('panel.perAgentActiveTitle'),
+                      children: t('panel.perAgentActive', { count: String(defaultInfo.agentMounts) }),
                     })
                     : null,
                   // P1 采纳率：模型到底用不用 codegraph。放在开关下面——它是「配置对不对」
@@ -1830,7 +2275,7 @@ window.__ModuleLoader__.load({
                   adoptionText(adoption) !== ''
                     ? jsx('p', {
                       className: 'cg_subtitle',
-                      title: '来自宿主的内存计数（session/event 的 tool/call），宿主重启即归零；项目按索引根归并。「文件探索」= grep/glob/read 这类本可交给 codegraph 的工具，bash 等不计入',
+                      title: t('panel.adoptionTitle'),
                       children: adoptionText(adoption),
                     })
                     : null,
@@ -1932,6 +2377,7 @@ window.__ModuleLoader__.load({
     ]
 
     exports.apply = (ctx) => {
+      installI18n(ctx)
       sessionsService = ctx.sessions
       installSessionReporter(ctx)
       // 样式由卡片实例自管（ensureStyle/releaseStyle 引用计数，CG08）——这里不再全局

@@ -16,6 +16,7 @@
  *   node packages/codegraph/scripts/preview-card.mjs --result    # 点一次「文件」，看结果区（页签）带内容的样子
  *   node packages/codegraph/scripts/preview-card.mjs --feedback  # 点「重新探测」「诊断包」，看反馈区与脚注的顺序
  *   node packages/codegraph/scripts/preview-card.mjs --alert     # 让 CLI 探测失败，看页面最前的「问题区」
+ *   DSH_PREVIEW_LOCALE=en node packages/codegraph/scripts/preview-card.mjs  # 预览英文界面（i18n）
  *
  * 注意：无头 Chrome 在 DSH 文件沙箱里起不来（它要初始化自己的 sandbox），--png 需要在
  * 普通终端里跑；也可以直接打开 HTML 手动截图。产物目录 .preview/ 已在 .gitignore 里。
@@ -251,7 +252,12 @@ async function renderCardHtml() {
     },
     head: { appendChild() {} },
   }
-  globalThis.window = { __ModuleLoader__: { load: (mod) => { globalThis.__codegraphModule = mod } } }
+  globalThis.window = {
+    // 界面语言：`DSH_PREVIEW_LOCALE=en node scripts/preview-card.mjs` 预览英文卡片
+    // （默认 zh = 老宿主上的中文兜底，也是既有中文断言的来源）
+    __previewLocale: process.env.DSH_PREVIEW_LOCALE,
+    __ModuleLoader__: { load: (mod) => { globalThis.__codegraphModule = mod } },
+  }
   const requireShim = (name) => {
     if (name === 'react') return fake.React
     if (name === 'react/jsx-runtime') return { jsx: (type, props) => ({ type, props: props ?? {} }), jsxs: (type, props) => ({ type, props: props ?? {} }) }
@@ -260,10 +266,36 @@ async function renderCardHtml() {
 
   eval(source)
   const exports = globalThis.__codegraphModule.factory(requireShim)
+  /**
+   * 假 locale 服务（`@deepseek-ai/dsh-client-locale`）：插件用 `ctx.inject(['locale'], cb)`
+   * **动态**取它（老宿主上取不到就保持中文兜底）。没有这个桩，`exports.apply` 第一句
+   * `installI18n(ctx)` 会直接抛 `ctx.inject is not a function`（search 的 mock-host 踩过，
+   * 见 docs/i18n.md § 预览与 smoke 夹具）。boot 前把 `window.__previewLocale` 设成 `'en'`
+   * 就能预览英文界面；不设时走 zh，本脚本里既有的中文断言因此不用改。
+   */
+  const localeDicts = new Map()
+  const localeStub = {
+    register: (ns, locale, dict) => {
+      const entry = localeDicts.get(ns) || {}
+      entry[locale] = dict
+      localeDicts.set(ns, entry)
+      return () => {}
+    },
+    bind: (ns) => (key, params) => {
+      const active = globalThis.window.__previewLocale === 'en' ? 'en' : 'zh'
+      const text = ((localeDicts.get(ns) || {})[active] || {})[key] || key
+      if (params === undefined) return text
+      return String(text).replace(/\{(\w+)\}/g, (_match, name) => (params[name] === undefined ? '' : String(params[name])))
+    },
+  }
   exports.apply({
     sessions: { list: { subscribe: () => () => {}, getSnapshot: () => SESSION } },
     slots: { inject: (_ns, cb) => cb(), register: (_config, component) => { Card = component } },
     effect: (fn) => fn(),
+    inject: (_deps, cb) => {
+      const dispose = cb({ locale: localeStub })
+      return () => { if (typeof dispose === 'function') dispose() }
+    },
   })
   if (Card === null) throw new Error('卡片组件未注册')
 
@@ -274,6 +306,13 @@ async function renderCardHtml() {
     flatten(node.props?.children, acc)
     return acc
   }
+
+  /**
+   * 按可见文案找按钮。按钮文案已进 i18n 目录（docs/i18n.md），所以中英各给一份：
+   * 默认（zh）走兜底文案，`DSH_PREVIEW_LOCALE=en` 时走英文——只认一种会让另一种语言下的
+   * 预览直接抛「找不到按钮」。
+   */
+  const findButtonByText = (node, texts) => flatten(node).find((n) => n.type === 'button' && texts.includes(n.props?.children))
 
   // 第一次渲染：卡片折叠
   fake.start()
@@ -293,7 +332,7 @@ async function renderCardHtml() {
 
   if (result) {
     // 真的去点一次「文件」：走完整链路（busy → fetch → 写 outputs → 切页签 → 结果区出现）
-    const fileButton = flatten(tree).find((n) => n.type === 'button' && n.props?.children === '文件')
+    const fileButton = findButtonByText(tree, ['文件', 'Files'])
     if (fileButton === undefined) throw new Error('预览：找不到「文件」按钮，--result 失效')
     fileButton.props.onClick()
     fake.start()
@@ -313,7 +352,7 @@ async function renderCardHtml() {
     // 只点一个而不是连点两个：`loadReport` 开头就 `setOk('')`（新动作清掉上一次结果，
     // 这是既有设计），连点的话成功提示会被清掉，看不到「成功 + 诊断包行」并存的样子。
     // 诊断包行是反馈区里最高的一块，也最能看出脚注有没有被夹在中间。
-    const button = flatten(tree).find((n) => n.type === 'button' && n.props?.children === '诊断包')
+    const button = findButtonByText(tree, ['诊断包', 'Diagnostics'])
     if (button === undefined) throw new Error('预览：找不到「诊断包」按钮，--feedback 失效')
     button.props.onClick()
     await new Promise((r) => setTimeout(r, 30))
