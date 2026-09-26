@@ -142,6 +142,28 @@ dsh --profile <测试 profile> --patch <port.yml>
 - **`os.homedir()` 在 Windows 看 `USERPROFILE`、不看 `HOME`**：只改 `HOME` 的用例在 macOS /
   ubuntu 上绿，在 Windows 上路由读到的是真实 profile（那儿没有 `.ssh/config`）→ 断言全崩。
   改法：两个变量一起设、一起还原。
+- **Ubuntu（Parallels，干净 VM）腿的实测（2026-09-26）**：
+  - **VM 里没有工具链，apt 的 `nodejs` 只到 18**（本仓要 ≥22.19）→ 从 nodejs.org 取官方
+    arm64 tarball 解到 `/usr/local`（`tar -xJf … --strip-components=1`）+ `npm i -g pnpm@10.30.3`。
+  - **VM→外网很慢**：nodejs.org 实测 ~30KB/s、npm registry ~155KB/s。**大文件在宿主机下好、
+    用 `python3 -m http.server` + `curl` 从 `10.211.55.2` 喂进去**（这条链是本地网络，快得多）；
+    `pnpm install --frozen-lockfile` 在这条链上花了 **7m47s**（可接受）。
+  - **`prlctl exec <vm> bash -c "含空格的命令"` 会被拆参数**（Linux 与 Windows 都踩到）：
+    现象是 `cd /root/x && pnpm …` 只剩 `cd` 生效，pnpm 在 `/` 里跑（`ERR_PNPM_NO_PKG_MANIFEST`）。
+    稳妥写法：把步骤写成**一个脚本**（宿主机生成、HTTP 送进去），`prlctl exec <vm> bash /root/run.sh <step>`
+    —— argv 里没有空格，就没有解析歧义。
+  - **`git archive` 不带 `.git`，于是 `artifact`（`git diff` 产物）与 `no-public-ip`
+    （`git ls-files`）两个闸门跑不了**（报 `not a git repository`，看起来像断言失败）。
+    两条路：传 `git bundle`，或就地 `git init && git add -A && git commit` —— 解出来的树**就是
+    HEAD 的内容**，所以就地提交与 CI 的语义等价（本次用后者，两个闸门随后全绿）。
+  - **umask 会把权限断言打红**：Ubuntu 上以 root 跑（umask 077）时，
+    `packages/kit/test/kit.test.ts` 的 `0640` 断言失败（`expected 384 to be 416`）。本机 macOS
+    上 DSH 宿主进程的 umask 是 **0**，所以一直绿。**本地复现**：
+    `bash -c 'umask 077; npx vitest run packages/kit/test/kit.test.ts'`。这暴露的是**实现**问题
+    （权限随 umask 漂），修在 kit `writeFileAtomic`（见 `kit D06`），不是放宽断言。
+  - **rc.1 与 rc.2 的 DSH 不能混用**：这台 VM 的 `/usr/local/bin` 里只有一个 rc.1 的宿主，
+    而各包 peer 下限是 rc.2——所以宿主相关的验收（`live-host-smoke`）在 Linux 上要先装对 cohort；
+    纯 hermetic 的冒烟与 vitest 不受影响（本次全部跑绿）。
 - **macOS 的 `tar` 会带出 `._*.ts` 垃圾文件**：把改动打包进 Windows（bsdtar 带 xattr）后，
   vitest 会把 `._foo.test.ts` 当成测试文件，报 4 个「文件失败」而**每条断言都是通过的**——
   看着像代码坏了。打包加 `COPYFILE_DISABLE=1`，或落地后删 `._*`。

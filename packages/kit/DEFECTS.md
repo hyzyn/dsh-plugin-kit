@@ -23,8 +23,8 @@
 
 ## 现状
 
-**已修 5 / 待修 0**（全部为「在消费包发现、修在 kit」）。逐条见下表；
-原文见 [codegraph 的台账](../codegraph/DEFECTS.md)对应行。
+**已修 6 / 待修 0**（`D01–D05` 为「在消费包发现、修在 kit」，`D06` 是**本包内部**发现的第一条）。
+逐条见下表；`D01–D05` 原文见 [codegraph 的台账](../codegraph/DEFECTS.md)对应行。
 
 ## 转入清单
 
@@ -35,6 +35,7 @@
 | **kit D03** | `codegraph CG13` | `~/.dsh` 缺失时挂载期抛错、**整个插件起不来**；`DSH_HOME=~/x` 时写的与 loader watch 的**不是同一个文件** → `dshHome()` 归一化（`~` 展开 + resolve，与 loader 同口径） | [src/services.ts](../../packages/kit/src/services.ts) |
 | **kit D04** | `codegraph CG35` | D03 只做了一半：全仓还有 **8 处 raw 副本**，`DSH_HOME=~/x` 时两个包会写**两个不同**的 `cordis.patch.yml` → 8 处全改走 kit 的 `dshHome()`，并加 `scripts/check-dsh-home.mjs` 防回归闸（只认 kit 一份推导） | [src/services.ts](../../packages/kit/src/services.ts)（消费方改动在各包） |
 | **kit D05** | `codegraph CG63` | DSH 0.1.7-rc.1 起 `ctx.settings.register(ns, schema)` / `settings.get(ns)` **已删除**（换成 `SettingsForms`）→ kit 新增 settings 适配层：`settingsEntryScope`（读 `describe()` / 写 `update(entryId, patch)` / 订阅 `loader/volatile-update`）、`plainConfig()`（还原 volatile 冻结引用）、`readSettingsEntry`、`suppressAutoSettingsPage` | [src/settings.ts](../../packages/kit/src/settings.ts) |
+| **kit D06** | —（本包内部） | `writeFileAtomic` 的权限位随**进程 umask** 漂：`writeFileSync(tmp, data, { mode })` 得到的是 `mode & ~umask`，于是同一个调用在 umask 0 的机器上写 `0640`、在 umask 077 的机器上写 `0600`——而它管的是 `~/.dsh` 配置与密钥文件的可见范围，权限应当是**确定的**。修法：写入后按调用方要的 mode 显式 `chmod` 一次（不放宽：创建那一步仍先被 umask 收紧，chmod 只补回被削掉的位；Windows 跳过） | [src/managed-block.ts](../../packages/kit/src/managed-block.ts) · [test/kit.test.ts](../../packages/kit/test/kit.test.ts) |
 
 ## 维护规则
 
