@@ -88,11 +88,16 @@
 
 | 包 | 前缀 | 当前范围 |
 |---|---|---|
-| `docker` | `D` | `D01`–`D138` |
-| `tty` | `D` | `D01`–`D61` |
+| `docker` | `D` | `D01`–`D140` |
+| `tty` | `D` | `D01`–`D67` |
 | `codegraph` | `CG` | `CG01`–`CG63` |
-| `kit` | `D` | `D01`–`D05`——**转入镜像**：这些编号的权威记录在**原包**（主要是 `codegraph CG`），kit 侧只是「改 kit 的人不必翻别人的台账」的入口。**引用时优先写原编号**（如 `codegraph CG05`）；kit 内部新发现的缺陷才接 `D06` 往后 |
+| `kit` | `D` | `D01`–`D05` 是**转入镜像**：这些编号的权威记录在**原包**（主要是 `codegraph CG`），kit 侧只是「改 kit 的人不必翻别人的台账」的入口，**引用时优先写原编号**（如 `codegraph CG05`）；`D06`–`D06` 是**本包自研**：在 kit 内部发现、权威记录就在 kit。 |
 | 其它包 | 需要时自定，从 `01` 起 | — |
+
+> 表里的上界数字（以及各包 `DEFECTS.md` 文件头自称的范围、「接在 `Dxx` 之后」、跨包互称的范围）
+> 由 [`scripts/test/defects-table.test.ts`](../scripts/test/defects-table.test.ts) **现算**核对：
+> **改了台账就要同步改这里，否则 CI 红**。反向禁止：守卫报红时**只改文档侧**，
+> 绝不为让它变绿去增删 / 重排 / 改号任何台账行——「编号不回收、不重号、不丢失」比「数字对得上」硬得多。
 
 **硬规矩**：
 
@@ -108,7 +113,10 @@
 4. **索引表不写行号**：修复后代码移了位，审计时点的行号只会误导。定位实现用
    `git log -S'<症状关键词>'`，或读代码里带编号的注释。
 5. **台账自洽**：`DEFECTS.md` 的「现状」行数字必须与表内现算一致。
-   `codegraph` 有 `test/defects-ledger.test.ts` 守卫这条（其它包按需补）。
+   四包（`docker` / `tty` / `codegraph` / `kit`）都在
+   [`scripts/test/defects-table.test.ts`](../scripts/test/defects-table.test.ts) 的守卫范围内
+   （本包自带的那份是 `packages/codegraph/test/defects-ledger.test.ts`，只管 codegraph）。
+   新增包时：把它加进守卫的包清单，上表也补一行。
 6. **外部真机缺陷报告用 `报告 #N`**（带 `#`）：`#N` 只指**外部报告**的序号，
    **不是检索入口**——其结论必须已经落到某个台账号或某条 ROADMAP 行，否则就是漏记。
    **台账号永不带 `#`**，两种形态因此永不冲突。
@@ -127,7 +135,7 @@
 | 配置命名空间 | 同插件 id | `ctx.settings` 里的 `docker` |
 | HTTP 路由 | `/api/dsh-<插件 id>/…` | `/api/dsh-docker/containers` |
 | 环境变量 | `DSH_<插件 id 大写>_<项>` | `DSH_RSS_DIGEST_DIR` |
-| 缺陷编号 | 见上 | `docker D138` |
+| 缺陷编号 | 见上 | `docker D03` |
 
 ## 提交
 
