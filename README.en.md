@@ -175,6 +175,7 @@ pure logic into modules) → [docs/conventions.md § Client half](docs/conventio
 | You want to know | Read |
 |---|---|
 | What this is, what to install | this file |
+| New here and want the big picture (read in this order) | [docs/architecture.md](docs/architecture.md) → [docs/conventions.md](docs/conventions.md) → [docs/agent-real-test.md](docs/agent-real-test.md) |
 | How the 12 packages cooperate, dependency direction, who writes which config file | [docs/architecture.md](docs/architecture.md) |
 | Naming / commits / doc layers / numbering / package anatomy | [docs/conventions.md](docs/conventions.md) |
 | Terminology (host half, managed block, TOFU, slot generations…) | [docs/glossary.md](docs/glossary.md) |

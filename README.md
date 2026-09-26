@@ -163,6 +163,7 @@ dsh plugin --profile web add link:$(pwd)/packages/<name>
 | 想知道 | 看 |
 |---|---|
 | 项目是什么、装哪个 | 本文件 |
+| 刚上手，想先建立全局（按顺序读） | [docs/architecture.md](docs/architecture.md) → [docs/conventions.md](docs/conventions.md) → [docs/agent-real-test.md](docs/agent-real-test.md) |
 | 12 个包怎么协作、依赖方向、谁写哪个配置文件 | [docs/architecture.md](docs/architecture.md) |
 | 命名 / 提交 / 文档分层 / 编号规范 / 插件解剖 | [docs/conventions.md](docs/conventions.md) |
 | 术语（宿主半体、托管区块、TOFU、三代插槽…） | [docs/glossary.md](docs/glossary.md) |
