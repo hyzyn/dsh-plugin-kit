@@ -20,7 +20,7 @@
  *   - body 为空串 = 删除区块（含标记），对应 mcp 里「空 rows」语义的显式化
  *     （mcp 用 `- insert: []` 占位，那是 patch 文件的特殊要求，不是通用需求）。
  */
-import { writeFileSync, renameSync } from 'node:fs';
+import { chmodSync, renameSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 /** 在行数组里找起始标记行下标；找不到返回 -1。 */
 function findBegin(lines, beginMarker) {
@@ -96,12 +96,22 @@ export function readManagedBlock(text, markers) {
  * 在 POSIX 上是原子的，读者要么看到旧全文、要么看到新全文。临时文件必须与目标
  * 同目录（跨文件系统的 rename 会退化成复制，失去原子性）。
  *
- * mode 默认 0600（配置文件常含密钥）；writeFileSync 的 mode 只会被 umask 进
- * 一步收紧、不会放宽，所以最终权限不会比 mode 更宽。
+ * mode 默认 0600（配置文件常含密钥）。**写入后再显式 chmod 一次**：
+ * `writeFileSync` 的 mode 会被进程 umask 进一步收紧（`mode & ~umask`），于是同一个调用在
+ * umask 0 的机器上得到 0640、在 umask 077 的机器上得到 0600——权限本该是**确定的**（它管的
+ * 就是配置/密钥文件的可见范围），不该随调用方的 umask 漂。
+ * 这不是放宽：chmod 到调用方要的 mode，最宽不会超过它（`writeFileSync` 那一步仍先按 umask
+ * 收紧创建，chmod 只补回被 umask 削掉的位）。
+ *
+ * 2026-09-26 在 Ubuntu 真机（root，umask 077）上被 `packages/kit/test/kit.test.ts` 的 0640
+ * 断言抓到：本机 DSH 宿主的 umask 是 0，所以本地一直绿。
  */
 export function writeFileAtomic(file, data, mode = 0o600) {
     const tmp = join(dirname(file), '.' + basename(file) + '.' + process.pid + '.tmp');
     writeFileSync(tmp, data, { mode });
+    // Windows 的 chmod 只认只读位（且 mode 的组/其他人位无意义），跳过免得凭空造出只读文件
+    if (process.platform !== 'win32')
+        chmodSync(tmp, mode);
     renameSync(tmp, file);
 }
 //# sourceMappingURL=managed-block.js.map
