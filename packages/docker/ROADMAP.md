@@ -36,7 +36,13 @@
   `@hyzyn/dsh-kit`**，docker 改走 kit 的导出——行为一字未改（12 个既有路由 / 流用例未动一行
   即全绿），三包共用一份；DEFECTS.md 的「安全围栏」节下有落点迁移标注；
 - **`isConcurrencySafe`**：11 个只读工具声明、5 个变更工具**刻意不声明**；
-- **跳板机**：只落了「短期至少做到」的一半（超时 / 通道错误 / 条目缺失三处文案点出成因），
-  **完整实现仍开着**——`poolKey` 只带 `user@host:port` 那条是本包最需要先修的坑（不同跳板机
-  到同一目标会并成一条连接）；方案与全部已知坑见
-  [docs/proxyjump-plan.md](../../docs/proxyjump-plan.md)。
+- **跳板机（ProxyJump / ProxyCommand）**：**已全部落地**（2026-09-25）。先把「短期一半」
+  （超时 / 通道错误 / 条目缺失三处文案点出成因）补上，随后做完整实现：`readTtyBooks` 把
+  `jump` 带进规格、`poolKey` 并入 `|jump:<user@host:port>`（不同跳板机到同一目标不再并成一条
+  连接）、`acquire` 先拨跳板机再把 `forwardOut` 通道当 `sock`、`disposeAll` / 空闲回收 /
+  传输错误重连都成对收尾。
+- **`ProxyCommand`**：同样落地，但**闸门只有一处**——读 tty settings 的 `allowProxyCommand`
+  （**默认关**），且**每次拨号现读**（关掉立刻生效，不留缓存）；关着时携带代理命令的目标
+  明确失败（不退回直连）。本包**不新建界面**：连接簿在 tty 配一次，两个面板一起生效；
+  池键并入 `|cmd:<sha256 前 12 位>`——**只并入摘要**，因为命令原文可能含凭据而池键会进诊断路径。
+  方案与全部已知坑见 [docs/proxyjump-plan.md](../../docs/proxyjump-plan.md)（§6.1 闸门定案表）。

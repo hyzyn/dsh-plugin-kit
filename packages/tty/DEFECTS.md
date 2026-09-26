@@ -42,7 +42,7 @@
 
 ## 现状
 
-**已修 63 / 待修 0**，编号至 `D63`。逐条症状见 §1，设计意图见 §2，**还没做的见
+**已修 65 / 待修 0**，编号至 `D65`。逐条症状见 §1，设计意图见 §2，**还没做的见
 [ROADMAP.md](./ROADMAP.md)**。
 
 **沿革（原文照录，未改）**：2026-09-19 对 v0.18.3 做了一次系统性只读审计（5 路并行 + 人工复读
@@ -53,7 +53,7 @@
 tag `v0.1.36` → tty **0.19.0**（docker 0.6.4 / all 0.1.36 / kit 0.1.30）——此后 `v0.1.37` →
 0.19.1、`v0.1.38` → 0.19.2、`v0.1.39` → **0.19.3**（本仓库 `packages/tty/package.json` 现为 0.19.3）。
 
-**已修 63 / 待修 0**（D01–D48 审计波 + D49/D50 线上反馈 + D51–D56 复核实测发现 + D57 线上崩溃 + D58–D62 后续用户上报/复核 + D63 本轮统一安全围栏时顺手发现）。索引表**不写行号、也不保留修复提交
+**已修 65 / 待修 0**（D01–D48 审计波 + D49/D50 线上反馈 + D51–D56 复核实测发现 + D57 线上崩溃 + D58–D62 后续用户上报/复核 + D63 本轮统一安全围栏时顺手发现 + D64/D65 做 ProxyCommand 时顺路挖出来的两处静默泄漏）。索引表**不写行号、也不保留修复提交
 sha** —— 修复后代码移了位、有的整段被删或重写，审计时点的行号只会误导；所以回溯入口统一改成
 按关键词检索（D49/D50 修在 `bd407352`）：`git log -S'<症状列的关键词>'`，提交信息按条目写
 为什么。被代码直接引用的编号在
@@ -145,6 +145,8 @@ D50 才是用户看到的那一下（他补的描述是「整条状态条瞬间�
 | D61 | 桌面版终端**永远连不上**：WS 地址只用 `location` 拼，而桌面 origin 是 Electron 自定义协议 `dsh-app://app` → 拼出 `ws://app/…`；除 WS 外全是相对路径 fetch，所以只有终端这一条通道断 | client-src/ws-url.js（新增）、client-src/index.js、test/ws-url.test.ts、scripts/client-host-url.mjs |  |
 | D62 | Windows 冒烟的**失败原因被自己吞掉**：收尾的 `process.exit(1)` 丢掉管道里未 flush 的写（CI 上缓冲 64 KB）→ 日志里五条断言全 PASS、没有 ✘ 行、也没有汇总行，只剩 `exit code 1`；连带把「W5 第二次 exit 帧」这条偶发失败掩盖成不可诊断 | scripts/windows-smoke.mjs（同款写法另有 docker 三套 smoke，见 §2.3） | ✓ |
 | D63 | `~/.ssh/config` 导入的**四种丢弃此前全是静默的**：通配 / 无 User 的块无声消失、依赖跳板机（ProxyJump / ProxyCommand）的块被原样忽略、超过 100 条的块被丢——用户只看到「没有可导入的具体主机」，不知道自己的生产机被跳过了（跳板机那半边同时是项目级 ROADMAP 第 2 项） | src/ssh-config.ts、src/index.ts、client-src/index.js、test/ssh-config.test.ts、test/ssh-config-route.test.ts | ✓ |
+| D64 | 连接簿对话框的**「连接（并保存）」出口漏带跳板机**：填了跳板机却直连出去，勾了保存的那份条目里也没有跳板机——症状是「连不上」，且没有任何提示说跳板机被丢了（四个出口里只有三个改了，正是「配了等于没配」的教科书形态） | client-src/index.js、test/proxy-command.test.ts | ✓ |
+| D65 | SFTP 池条目在 `conn.on('close')` 里**只摘出池、没关跳板机**：目标连接断一次就漏一条 keepalive 一直养着的跳板机连接（`close(rt)` 才成对，而当时只做了 `conns.delete`） | src/sftp.ts | ✓ |
 
 ## 2. 编号字典：这段代码为什么长这样
 
@@ -186,7 +188,7 @@ D50 才是用户看到的那一下（他补的描述是「整条状态条瞬间�
 - **验证（真实 PTY，3 轮）**：`integration.mjs` **111/111 全绿**（新增 B32a–B32h 八项）；
   单测 **222/222**（新增 7 条 agent 会话护栏）。
 
-### 2.3 D49–D62 的刻意取舍 / 容易踩的坑
+### 2.3 D49–D65 的刻意取舍 / 容易踩的坑
 
 这 14 条的 postmortem 正文已冻结进 git（见 §4）。**唯独"刻意不做什么"与"排除了哪些假设"必须
 留在正文**——不写下来，下一个人会把它们当成遗漏给"补上"。
@@ -208,6 +210,8 @@ D50 才是用户看到的那一下（他补的描述是「整条状态条瞬间�
 | D61 | 来源改用宿主注入的 `globalThis.__DSH_TRANSPORT__.streamBaseUrl`，缺省退回 `document.baseURI`——浏览器直连下与旧的 `location.host` **逐字等价**。它同时是**仓库级静态规则**的由来：`scripts/client-host-url.mjs`（TS AST，注释与字符串免疫）拦「读 `location` 的 protocol/host/hostname/origin/port」与「硬编码 `ws://`/`wss://` 字面量」，覆盖全部 10 个客户端半体；接线在 `scripts/client-lint.mjs`。**没做**：桌面 profile 的 `cordis.patch.yml` 里没有 `- id: tty` 配置块（不是本次故障原因，但桌面版终端目前跑纯默认配置） |
 | D62 | 用**空串写入的回调**当 flush 屏障（实测：300 KB 输出直接 `exit` 只活 64 KB，加了屏障全活），**不用 `process.exitCode` 自然退出**——D121 的理由仍在：主体结束后可能有周期句柄漏着，看门狗又已经 clear，不显式退就会挂死。**刻意不做的**：① 不顺手改 docker 的 `smoke.mjs` / `route-smoke.mjs` / `client-smoke.mjs`（同款 `clearTimeout(watchdog)` + `process.exit(failed…)` 写法，同一类风险）——它们没loss过输出，本轮只修**证据覆盖到**的这一处，下轮要改就三处一起；② **没有**削弱 W5 的断言（「发过 kill 就必须收到 exit 帧」是 B1/B3 钉住的前端契约，socket 提前关掉**不算**通过）——本次只让失败可见，真正的偶发失败（W5 第二次 exit 帧）仍未复现、未定位 |
 | D63 | 解析器改成 `parseSshConfigDetailed()`：不仅回候选，还回 **proxy 块名 + 三种丢弃的计数**（`parseSshConfig()` 保留为薄包装，老调用点形状不变）。**`ProxyJump none` / `ProxyCommand none` 算显式直连**（OpenSSH 用它抵消上层 `Host *` 的设置），照常导入；键名大小写不敏感。`proxy` 名单截到 50 个但 **`proxyCount` 仍是准的**——截断不许把数报小。**刻意不做**：不真的经跳板机连（完整实现的六个坑见 [项目级 ROADMAP](../../ROADMAP.md) 第 2 项），也不在导入时把 `ProxyCommand` 带进来（那是设置字段驱动的本地任意命令执行，信任级与回环围栏后的路由不同） |
+| D64 | 「四个出口必须走同一个取值函数」写成注释钉在对话框里（连接 / 试连 / 文件浏览 / 保存修改）。**刻意不做**：不把 `jump` / `proxyCommand` 塞进 `collectProbeSpec` 之外的公共 builder —— 那四个出口的字段集合本来就不同（试连不带 name/persist），强行合并会把「这次到底提交了什么」藏进一层间接。回归靠 `test/proxy-command.test.ts` 的真插件往返（POST → GET 一字不差） |
+| D65 | `conn.on('close')` 里改走现成的 `close(rt)`（而不是新写一段清理）：它本来就是「目标 + 跳板机 + 代理命令」成对收尾的唯一入口，**再抄一遍必然漂**。代理命令的传输（子进程 stdio）与跳板机（另一条 Client）都是「目标只是借用」，所以收尾点永远是同一批：`close(rt)` / `failTunnel` / 重连路径 / `disposeAll` |
 
 ## 3. 复核方式
 

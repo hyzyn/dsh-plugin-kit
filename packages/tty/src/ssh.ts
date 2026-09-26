@@ -20,10 +20,12 @@
  */
 import { Client } from 'ssh2'
 import type { ClientChannel, ConnectConfig, ShellOptions } from 'ssh2'
+import { spawn } from 'node:child_process'
+import type { ChildProcess } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { PassThrough } from 'node:stream'
+import { Duplex, PassThrough } from 'node:stream'
 import { StringDecoder } from 'node:string_decoder'
 import { TMUX_SOCKET } from './tmux.js'
 import { shSingleQuote } from './shell-integration.js'
@@ -105,6 +107,19 @@ export interface SshSpec {
   agentForward?: boolean
   /** 经跳板机连接（ProxyJump 语义，**单跳**）；缺省 = 直连。 */
   jump?: SshJumpSpec
+  /**
+   * 代理命令（ProxyCommand 语义）：本机执行的命令，它的 stdin/stdout 就是 SSH 传输。
+   *
+   * **单独一档信任级**：这是「设置字段驱动的本机任意命令执行」，与跳板机（只连一跳 TCP）
+   * 完全不同。因此：
+   *   - **默认关闭**（settings `allowProxyCommand`）：关着时携带它的连接一律**明确失败**，
+   *     绝不静默退回直连——直连多半也连不上，还会把「配置没生效」伪装成网络问题；
+   *   - **`~/.ssh/config` 导入永不自动带入**（`parseSshConfigDetailed` 只报数）；
+   *   - `%h` / `%p` / `%r` / `%n` / `%%` 按 OpenSSH 同义展开（见 `expandProxyCommand`），
+   *     展开值只允许 `[A-Za-z0-9._@:\[\]-]`，否则**拒绝执行**（防连接簿字段注入 shell）；
+   *   - 与 `jump` 同时给时按 OpenSSH 语义 **ProxyJump 优先**，并记一条 warn。
+   */
+  proxyCommand?: string
 }
 
 /**
@@ -399,15 +414,20 @@ export function jumpTargetLabel(spec: SshSpec): string {
 }
 
 /**
- * 目标那一跳的展示串 + 跳板机后缀（**给用户看的错误文案**用）。
+ * 目标那一跳的展示串 + 跳板机 / 代理命令后缀（**给用户看的错误文案**用）。
  *
  * 为什么错误文案必须带这一句：ssh2 在两跳上共用 `readyTimeout`，报的都是
  * `Timed out while waiting for handshake`——不点名的话「跳板机不可达」会伪装成
- * 「目标超时」，用户会去查对端主机而问题在跳板机上。
+ * 「目标超时」，用户会去查对端主机而问题在跳板机上。代理命令同理：它一旦启动失败，
+ * 报出来的是「握手前连接中断」。
+ *
+ * **不回显命令原文**（可能含 `-i /path/key` 这类凭据）：只写「经代理命令」。
  */
 function targetWithJump(spec: SshSpec): string {
   const label = jumpTargetLabel(spec)
-  return label === '' ? sshTarget(spec) : `${sshTarget(spec)}（经跳板机 ${label}）`
+  if (label !== '') return `${sshTarget(spec)}（经跳板机 ${label}）`
+  if (sanitizeProxyCommand(spec.proxyCommand) !== undefined) return `${sshTarget(spec)}（经代理命令）`
+  return sshTarget(spec)
 }
 
 /** 跳板机那一跳的连接规格：显式给的优先，其余**继承目标**。 */
@@ -536,6 +556,305 @@ export async function dialJump(options: {
   return { bastion, sock }
 }
 
+/* ------------------------------------------------------------------ *
+ * ProxyCommand：单独一档信任级（默认关闭 + 显式开关 + 导入永不自动带入）
+ * ------------------------------------------------------------------ */
+
+/** 代理命令长度上限：与自定义命令标签同量级（它是一条命令行，不是脚本文件）。 */
+export const PROXY_COMMAND_MAX = 2000
+/** 保留的子进程 stderr 上限（错误文案里只截一小段，避免把用户的日志整片吞进来）。 */
+const PROXY_STDERR_KEEP = 2048
+/** 错误文案里展示的 stderr 片段上限。 */
+const PROXY_STDERR_SHOWN = 300
+/** 代理命令 SIGTERM 之后的 SIGKILL 兜底（毫秒）。 */
+const PROXY_KILL_GRACE_MS = 2000
+/**
+ * `%h` / `%r` 等展开值允许的字符集。
+ *
+ * 为什么不是「先转义再代入」：代理命令最终交给 `sh -c`（Windows 是 `cmd /c`），
+ * 而两边的转义规则不同（单引号在 cmd 里无效）。改为**白名单**：主机名 / 用户名本就
+ * 只该由这些字符组成，含别的字符就直接拒绝执行——比「按平台各写一套转义」既短又稳。
+ */
+const PROXY_VALUE_SAFE = /^[A-Za-z0-9._@:\[\]-]+$/
+
+/** 关着闸门时携带代理命令的连接报什么错（导出供单测与客户端文案对照）。 */
+export const PROXY_COMMAND_DISABLED =
+  '代理命令（ProxyCommand）未启用：本机命令执行默认关闭，请到 插件配置 → 终端面板 打开「允许 ProxyCommand」后重试。'
+  + '未启用时携带代理命令的连接不会退回直连——直连多半也连不上，还会把配置问题伪装成网络问题。'
+
+/**
+ * ProxyCommand 闸门（**模块级策略，缺省关闭**）。
+ *
+ * 为什么是模块级而不是每次调用传参：本包的建连入口有四个（终端 / SFTP / 隧道 / 探针），
+ * 而它们**共用** `prepareSshConnect` ——把开关读在拨号那一处，四条路就不会各判一次
+ * （漏一条就是「配了等于没配」或「关了还能用」）。写入方只有插件自己的 settings 热应用
+ * （`applyPatch`），与 `setCredentialResolver` 同一个模式。缺省 false = 关。
+ */
+let proxyCommandAllowed = false
+
+/** 设置 ProxyCommand 闸门（插件 settings 就绪与每次热更新时调用）。 */
+export function setProxyCommandPolicy(allowed: boolean): void {
+  proxyCommandAllowed = allowed === true
+}
+
+/** 当前闸门状态（探针用它把「配了但没开」与「连不上」分开报）。 */
+export function proxyCommandAllowedNow(): boolean {
+  return proxyCommandAllowed
+}
+
+/**
+ * 清洗一份代理命令输入（settings schema / 宽松清洗 / 内联融合共用）。
+ *
+ * 返回 `undefined` = 没配。**只做形状校验**（非空 / 单行 / 长度），命令内容本身不解释——
+ * 「能不能执行」由闸门决定，不由这里猜（含 `;` `/` `|` 都是合法的 shell 写法）。
+ */
+export function sanitizeProxyCommand(input: unknown): string | undefined {
+  if (typeof input !== 'string') return undefined
+  const trimmed = input.trim()
+  if (trimmed === '' || trimmed.length > PROXY_COMMAND_MAX) return undefined
+  if (/[\r\n\0]/.test(trimmed)) return undefined
+  return trimmed
+}
+
+/** 严格校验一份代理命令输入（HTTP POST 路径）；返回错误信息或清洗结果。 */
+export function validateProxyCommand(input: unknown): { proxyCommand?: string; error?: string } {
+  if (typeof input !== 'string') return { error: 'proxyCommand 必须是字符串' }
+  const trimmed = input.trim()
+  if (trimmed === '') return {}
+  if (trimmed.length > PROXY_COMMAND_MAX) return { error: `proxyCommand 过长（≤${String(PROXY_COMMAND_MAX)} 字符）` }
+  if (/[\r\n\0]/.test(trimmed)) return { error: 'proxyCommand 必须是单行（不能含换行/NUL）' }
+  return { proxyCommand: trimmed }
+}
+
+/** 展示用片段（不含凭据；控制字符清掉、单行、截断）。 */
+function excerpt(value: string): string {
+  const oneLine = value.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim()
+  return oneLine.length > 60 ? `${oneLine.slice(0, 60)}…` : oneLine
+}
+
+/**
+ * 展开 `%h` / `%p` / `%r` / `%n` / `%%`（与 OpenSSH 同义）。
+ *
+ * `%h` 目标主机、`%p` 目标端口、`%r` 目标用户名、`%n` 目标主机（如写法里给的名字——
+ * 本包没有别名概念，与 `%h` 同值）、`%%` 字面 `%`。其余 `%X` **原样保留**（不报错）：
+ * 用户可能是在命令里写 `printf '%s'`，替我们没实现的占位符而失败才是意外。
+ *
+ * 代入值必须过白名单，否则**抛错拒绝执行**（见 `PROXY_VALUE_SAFE`）。
+ */
+export function expandProxyCommand(command: string, spec: SshSpec): string {
+  const values: Record<string, string> = {
+    h: spec.host,
+    n: spec.host,
+    p: String(spec.port ?? 22),
+    r: spec.username,
+  }
+  return command.replace(/%(.)/g, (whole: string, key: string) => {
+    if (key === '%') return '%'
+    const value = values[key]
+    if (value === undefined) return whole
+    if (!PROXY_VALUE_SAFE.test(value)) {
+      throw new Error(
+        `代理命令里的 %${key} 无法代入：${excerpt(value)} 含 shell 特殊字符（只允许字母数字与 . _ @ : [ ] -）`,
+      )
+    }
+    return value
+  })
+}
+
+/** 代理命令传输：子进程 + 它的 stdio（目标那条连接把 stdio 当 `ConnectConfig.sock`）。 */
+export interface ProxyCommandDial {
+  /**
+   * 代理命令子进程：**它拥有传输**，目标 client 只是借用——ssh2 的 `end()`/`destroy()`
+   * 只关借来的流，不会去杀子进程。
+   */
+  child: ChildProcess
+  /** 目标连接用的传输（stdin/stdout 合成的 Duplex）。 */
+  sock: Duplex
+  /** 子进程提前退出 / 出错的事实；没有则 null（错误文案里点名它，别让用户去查目标主机）。 */
+  failure(): Error | null
+  /** 收尾：关传输 + 杀子进程（**幂等**；所有 teardown 路径都要调，否则漏一个常驻进程）。 */
+  dispose(): void
+}
+
+/**
+ * 杀代理命令（含它拉起的子孙进程）。
+ *
+ * POSIX 上用 `detached: true` 让子进程自成进程组，`kill(-pid)` 一次收掉整组——代理命令
+ * 常见写法是 `ssh -W %h:%p bastion` 这类**又开了一个进程**的命令，只杀 shell 会留下它。
+ * 先 SIGTERM，2s 后仍活着再 SIGKILL（兜底定时器 unref，不挡进程退出）。
+ */
+function killProxyChild(child: ChildProcess): void {
+  const pid = child.pid
+  const kill = (signal: NodeJS.Signals): void => {
+    try {
+      if (pid !== undefined && process.platform !== 'win32') process.kill(-pid, signal)
+      else child.kill(signal)
+    } catch {
+      try {
+        child.kill(signal)
+      } catch {
+        /* 已退出 */
+      }
+    }
+  }
+  kill('SIGTERM')
+  const timer = setTimeout(() => {
+    if (child.exitCode === null && child.signalCode === null) kill('SIGKILL')
+  }, PROXY_KILL_GRACE_MS)
+  timer.unref?.()
+}
+
+/**
+ * 启动代理命令并把它接到目标连接上。
+ *
+ * 这一跳与 `dialJump` 的差别，逐条都有理由：
+ *   1. **先过闸门**：关着就直接抛 `PROXY_COMMAND_DISABLED`（不 spawn、不退回直连）；
+ *   2. **没有「握手」可等**：传输就是子进程的 stdio，ssh2 会在它上面跑握手——所以这里
+ *      spawn 成功即返回，剩下的失败由目标连接的 error/close 路径 + `failure()` 共同呈现；
+ *   3. **子进程死了要拖垮传输**：提前退出时 destroy 掉 sock，逼 ssh2 立刻报错（否则
+ *      「命令一开始就失败」会伪装成 20s 握手超时）；
+ *   4. **stderr 必须排空**：不排空的话命令输出一多就把管道写满、子进程卡死（经典坑），
+ *      同时留一小段尾巴进错误文案——它是排查代理命令失败最直接的信息；
+ *   5. **命令原文不进日志与错误文案**：它可能含凭据（如 `-i /path/key`），日志只写
+ *      「已启动代理命令」与退出码。
+ */
+export async function dialProxyCommand(options: { spec: SshSpec; logger?: SshLogger }): Promise<ProxyCommandDial> {
+  const raw = sanitizeProxyCommand(options.spec.proxyCommand)
+  if (raw === undefined) throw new Error('代理命令为空（proxyCommand 需要一条非空的单行命令）')
+  if (!proxyCommandAllowed) throw new Error(PROXY_COMMAND_DISABLED)
+  const destination = sshTarget(options.spec)
+  const command = expandProxyCommand(raw, options.spec)
+  const child = spawn(command, {
+    shell: true,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
+    // POSIX：自成进程组，收尾时能一次收掉命令拉起的子孙进程（见 killProxyChild）
+    detached: process.platform !== 'win32',
+  })
+  const stdout = child.stdout
+  const stdin = child.stdin
+  const stderr = child.stderr
+  if (stdout === null || stdin === null || stderr === null) {
+    killProxyChild(child)
+    throw new Error('代理命令启动失败：stdio 管道未建立')
+  }
+  const sock = Duplex.from({ readable: stdout, writable: stdin })
+  let failure: Error | null = null
+  let disposed = false
+  /**
+   * 传输是否已经关掉（子进程的输出结束）。
+   *
+   * 为什么要单独记：子进程**先结束输出、后触发 `exit`**，而 ssh2 一看到流断了就立刻报
+   * 「Connection lost before handshake」——错误文案那一刻 `exit` 还没到。只认 `exit` 的话，
+   * 最需要解释的那种失败（命令一开始就挂）反而拿不到任何解释。于是这里退一步：传输关了
+   * 就至少把**已经攒到的 stderr** 交出去（那正是排查命令失败最直接的信息）。
+   */
+  let transportClosed = false
+  const chunks: Buffer[] = []
+  let kept = 0
+  const stderrTail = (): string => {
+    if (chunks.length === 0) return ''
+    const text = Buffer.concat(chunks).toString('utf8').replace(/[\r\n\0]+/g, ' ').replace(/\s+/g, ' ').trim()
+    return text === '' ? '' : `；stderr: ${text.slice(0, PROXY_STDERR_SHOWN)}`
+  }
+  stderr.on('data', (chunk: Buffer) => {
+    // 常驻排空（不排空会把管道写满、子进程卡死）；只留最后一小段给错误文案
+    if (kept >= PROXY_STDERR_KEEP) return
+    kept += chunk.length
+    chunks.push(chunk)
+  })
+  /** 记下失败事实并拖垮传输（提前退出时让 ssh2 立刻报错，而不是等满 readyTimeout）。 */
+  const recordFailure = (error: Error): void => {
+    // **覆盖**而不是只记第一个：传输关闭往往先触发出一个「语焉不详」的事实，
+    // 随后 exit 事件带来的（退出码 + stderr）严格更有信息量
+    failure = error
+    try {
+      sock.destroy()
+    } catch {
+      /* 已销毁 */
+    }
+  }
+  child.on('error', (error: Error) => {
+    recordFailure(new Error(`代理命令出错：${error.message}`))
+  })
+  child.on('exit', (code: number | null, signal: NodeJS.Signals | null) => {
+    // 我们自己收尾时杀的（disposed）：不是失败，别把正常关闭记成错误
+    if (disposed) return
+    const how = signal !== null ? `被信号 ${signal} 终止` : `退出码 ${String(code)}`
+    recordFailure(new Error(`代理命令已退出（${how}）${stderrTail()}`))
+  })
+  /**
+   * 子进程创建失败（EACCES / 资源耗尽等）要在**这里**就抛出去：否则调用方拿到的是一条
+   * 「永远连不上」的传输，错误文案会落到目标主机头上。
+   */
+  await new Promise<void>((resolve, reject) => {
+    let settled = false
+    child.once('spawn', () => {
+      if (settled) return
+      settled = true
+      resolve()
+    })
+    child.once('error', (error: Error) => {
+      if (settled) return
+      settled = true
+      reject(new Error(`代理命令启动失败（${excerpt(command)}）：${error.message}`))
+    })
+  })
+  options.logger?.info(`[dsh-tty] ssh ${destination} 已启动代理命令（ProxyCommand）作为传输`)
+  const dispose = (): void => {
+    if (disposed) return
+    disposed = true
+    try {
+      sock.destroy()
+    } catch {
+      /* 已销毁 */
+    }
+    killProxyChild(child)
+  }
+  // 传输先关（对端消失 / ssh2 主动 destroy）时也要杀子进程：否则每次重连漏一个常驻进程
+  /*
+   * **readable 侧 end** 是关键时点：ssh2 就是看到它才判定「握手前连接中断」并发错，
+   * 而子进程的 `exit` 还在后面（实测差 1~2ms）。所以在这里就认定「传输已关」，
+   * 错误路径才能带上已经攒到的 stderr。
+   */
+  sock.once('end', () => {
+    transportClosed = true
+  })
+  sock.once('close', () => {
+    transportClosed = true
+    // 不置 disposed：那是「我们主动收尾」的标记，而这里是传输先没了——子进程该杀，
+    // 但它随后带来的 exit 事实仍要记下来（失败文案靠它）
+    if (!disposed) killProxyChild(child)
+  })
+  /*
+   * 必须挂这个监听器：`Duplex.from({readable, writable})` 销毁时会把 **AbortError**
+   * 抛给底层流，没人接就是进程级的「未捕获异常」（实测：光调 dispose() 就能触发）。
+   * 收尾途中的错误不算失败（disposed 时忽略）；在途的错误记下来，供错误文案点名。
+   */
+  sock.on('error', (error: Error) => {
+    if (disposed) return
+    /*
+     * **AbortError 直接忽略**：它不是一个诊断，而是我们自己 destroy 这条传输时 Duplex 抛给
+     * 底层流的副产品（"The operation was aborted"）。把它记成失败原因，用户看到的就会是这句
+     * 毫无信息量的话，而不是「命令退出了、stderr 说了什么」。
+     */
+    if (error.name === 'AbortError' || (error as { code?: string }).code === 'ABORT_ERR') return
+    recordFailure(new Error(`代理命令传输出错：${error.message}`))
+  })
+  return {
+    child,
+    sock,
+    failure: () => {
+      if (failure !== null) return failure
+      // 主动收尾之后不算失败；传输自己关了且还没有 exit 事实时，先把 stderr 尾巴交出去
+      if (disposed || !transportClosed) return null
+      const tail = stderrTail()
+      return new Error(`代理命令传输已关闭${tail === '' ? '（命令已结束）' : tail}`)
+    },
+    dispose,
+  }
+}
+
 /**
  * 清洗一份跳板机输入（settings schema / 宽松清洗 / 内联融合共用）。
  *
@@ -580,14 +899,35 @@ export function validateJumpSpec(input: unknown): { jump?: SshJumpSpec; error?: 
   return { jump: sanitizeJumpSpec(raw) }
 }
 
-/** 建连前准备的结果：目标 config（可能挂了跳板机通道）+ 目标那一跳的 TOFU 策略。 */
+/** 目标连接的传输来源（两者互斥：`jump` 优先，见 `attachSshTransport`）。 */
+export interface SshTransport {
+  /** 需要跳板机时非 null；**调用方必须在收尾时 `end()` 它**（目标只是借用它的通道）。 */
+  bastion: Client | null
+  /** 需要代理命令时非 null；**调用方必须在收尾时 `dispose()` 它**（目标只是借用它的 stdio）。 */
+  proxy: ProxyCommandDial | null
+}
+
+/** 建连前准备的结果：目标 config（可能挂了跳板机通道 / 代理命令传输）+ 目标那一跳的 TOFU 策略。 */
 export interface PreparedSshConnect {
   connectConfig: ConnectConfig
   policy: { mismatchMessage(): string | null }
   /** 需要跳板机时非 null；**调用方必须在收尾时 `end()` 它**（目标只是借用它的通道）。 */
   bastion: Client | null
+  /** 需要代理命令时非 null；**调用方必须在收尾时 `dispose()` 它**（目标只是借用它的 stdio）。 */
+  proxy: ProxyCommandDial | null
   /** 展示串：带「经跳板机 X」后缀，错误文案直接用。 */
   target: string
+}
+
+/**
+ * 代理命令失败的事实 → 错误文案后缀（空串 = 没失败）。
+ *
+ * 为什么要它：代理命令死了之后 ssh2 只会报一句「握手前连接中断」，那会把用户支到目标主机上
+ * 去查。调用方在错误分支拼上这句，用户才知道是该去看代理命令的 stderr。
+ */
+export function proxyFailureSuffix(proxy: ProxyCommandDial | null): string {
+  const failure = proxy?.failure() ?? null
+  return failure === null ? '' : `；${failure.message}`
 }
 
 /**
@@ -595,11 +935,11 @@ export interface PreparedSshConnect {
  *
  * 为什么要有这个函数：跳板机不是「终端的特性」——SFTP、端口转发、探针各自都在建 SSH 连接
  * （`sftp.ts` / `tunnels.ts` / `probe.ts` 各有一处 `new Client()`）。把「构造 config →
- * 需要时拨跳板机 → 接上通道 → 装目标 TOFU 策略」收成一处，四条路才不会各写一份
+ * 需要时拨跳板机 / 起代理命令 → 接上传输 → 装目标 TOFU 策略」收成一处，四条路才不会各写一份
  * （那正是这一项立项时点名的「三处各写一份必然漂」）。
  *
  * **调用方负责**：自己 `conn.connect(connectConfig)`、自己处理 ready/error/close，
- * 并在收尾（成功或失败）时对 `bastion` 调 `end()`。
+ * 并在收尾（成功或失败）时对 `bastion` 调 `end()`、对 `proxy` 调 `dispose()`。
  */
 export async function prepareSshConnect(options: {
   spec: SshSpec
@@ -610,31 +950,55 @@ export async function prepareSshConnect(options: {
 }): Promise<PreparedSshConnect> {
   const { spec, store, logger } = options
   const target = targetWithJump(spec)
-  const { connectConfig, bastion } = await attachJumpSock(options)
-  const policy = applyHostKeyPolicy({ connectConfig, spec, store, logger, target })
-  return { connectConfig, policy, bastion, target }
+  const attached = await attachSshTransport(options)
+  try {
+    const policy = applyHostKeyPolicy({ connectConfig: attached.connectConfig, spec, store, logger, target })
+    return { connectConfig: attached.connectConfig, policy, bastion: attached.transport.bastion, proxy: attached.transport.proxy, target }
+  } catch (error) {
+    // 传输已经起来了、策略却装不上：这里必须自己收尾，否则漏一条连接 / 一个进程
+    try {
+      attached.transport.bastion?.end()
+    } catch {
+      /* 已断开 */
+    }
+    attached.transport.proxy?.dispose()
+    throw error
+  }
 }
 
 /**
- * 只做「构造目标 config（需要时拨跳板机并把通道接上）」这一半。
+ * 只做「构造目标 config（需要时拨跳板机 / 起代理命令并把传输接上）」这一半。
  *
  * 拆出来的唯一理由：**探针自己装 hostVerifier**（`makeHostKeyVerifier` 要收集
- * hostkey 结论，不用 `applyHostKeyPolicy`），但它同样需要跳板机。返回值里的
- * `bastion` 由调用方负责收尾。
+ * hostkey 结论，不用 `applyHostKeyPolicy`），但它同样需要跳板机 / 代理命令。返回值里的
+ * `transport` 由调用方负责收尾。
  */
-export async function attachJumpSock(options: {
+export async function attachSshTransport(options: {
   spec: SshSpec
   store?: HostKeyStore
   logger?: SshLogger
   readyTimeoutMs?: number
-}): Promise<{ connectConfig: ConnectConfig; bastion: Client | null }> {
+}): Promise<{ connectConfig: ConnectConfig; transport: SshTransport }> {
   const { spec, store, logger } = options
   const connectConfig = await buildConnectConfig(spec)
   if (options.readyTimeoutMs !== undefined) connectConfig.readyTimeout = options.readyTimeoutMs
-  if (spec.jump === undefined) return { connectConfig, bastion: null }
-  const dialed = await dialJump({ spec, store, logger, readyTimeoutMs: options.readyTimeoutMs })
-  connectConfig.sock = dialed.sock
-  return { connectConfig, bastion: dialed.bastion }
+  const hasJump = spec.jump !== undefined
+  const proxyCommand = sanitizeProxyCommand(spec.proxyCommand)
+  if (hasJump && proxyCommand !== undefined) {
+    // OpenSSH 语义：两者互斥、ProxyJump 优先。**不静默**——用户以为走的是代理命令是最坏情况
+    logger?.warn(`[dsh-tty] ssh ${sshTarget(spec)} 同时配了跳板机与代理命令：按 OpenSSH 语义走跳板机（ProxyJump 优先），代理命令被忽略`)
+  }
+  if (hasJump) {
+    const dialed = await dialJump({ spec, store, logger, readyTimeoutMs: options.readyTimeoutMs })
+    connectConfig.sock = dialed.sock
+    return { connectConfig, transport: { bastion: dialed.bastion, proxy: null } }
+  }
+  if (proxyCommand !== undefined) {
+    const dialed = await dialProxyCommand({ spec, logger })
+    connectConfig.sock = dialed.sock
+    return { connectConfig, transport: { bastion: null, proxy: dialed } }
+  }
+  return { connectConfig, transport: { bastion: null, proxy: null } }
 }
 
 /**
@@ -651,6 +1015,8 @@ export async function spawnSsh(spec: SshSpec, options: SshSpawnOptions): Promise
   const conn = new Client()
   /** 跳板机连接（ProxyJump）：它拥有目标借用的通道，收尾时必须由本函数 end 掉。 */
   let bastion: Client | null = null
+  /** 代理命令（ProxyCommand）：它拥有目标借用的传输，收尾时必须由本函数 dispose 掉。 */
+  let proxy: ProxyCommandDial | null = null
   const output = new PassThrough()
 
   let exitCode: number | null = null
@@ -681,18 +1047,22 @@ export async function spawnSsh(spec: SshSpec, options: SshSpawnOptions): Promise
         /* 已断开 */
       }
     }
+    // 代理命令同样最后收：先关目标连接再杀子进程，写进子进程的最后一个字节才有机会被读到
+    proxy?.dispose()
     settleDone({ exitCode, signal: exitSignal })
   }
 
   // 认证配置可能抛错（keyPath 读不到 / 引用解析不到）——先构造再连
   /*
-   * 建连前准备（含跳板机）：拨号失败/超时都在 dialJump 里点名跳板机并自我清理；
-   * 成功之后跳板机的生死由本函数的 finish() 一并负责（目标先关、跳板机后关）。
+   * 建连前准备（含跳板机 / 代理命令）：拨号失败/超时都在 dialJump / dialProxyCommand 里
+   * 点名那一跳并自我清理；成功之后它们的生死由本函数的 finish() 一并负责
+   * （目标先关、跳板机与代理命令后关）。
    */
   const prepared = await prepareSshConnect({ spec, store: options.hostKeyStore, logger })
   const connectConfig = prepared.connectConfig
   const policy = prepared.policy
   bastion = prepared.bastion
+  proxy = prepared.proxy
 
   /** 持久会话：远程 tmux 探测/降级提示（spawn 后由调用方注入终端）。 */
   let startupNotice: string | undefined
@@ -829,7 +1199,7 @@ export async function spawnSsh(spec: SshSpec, options: SshSpawnOptions): Promise
       if (!settled) {
         const mismatch = policy.mismatchMessage()
         if (mismatch !== null) settleErr(new Error(mismatch))
-        else settleErr(new Error(`SSH 连接失败（${targetWithJump(spec)}）: ${classifyError(error.message)}`))
+        else settleErr(new Error(`SSH 连接失败（${targetWithJump(spec)}）: ${classifyError(error.message)}${proxyFailureSuffix(proxy)}`))
       } else {
         logger?.warn(`[dsh-tty] ssh ${target} 连接错误: ${error.message}`)
         finish()
@@ -837,7 +1207,7 @@ export async function spawnSsh(spec: SshSpec, options: SshSpawnOptions): Promise
     })
     conn.on('close', () => {
       // channel 建立前连接就断了：不能让 await 悬挂（0.19.0 兜底）
-      settleErr(new Error(`SSH 连接已关闭（${targetWithJump(spec)}，channel 未建立）`))
+      settleErr(new Error(`SSH 连接已关闭（${targetWithJump(spec)}，channel 未建立）${proxyFailureSuffix(proxy)}`))
       finish()
     })
     if ((connectConfig as { tryKeyboard?: boolean }).tryKeyboard === true) {

@@ -47,10 +47,22 @@
 
 跳板机（ProxyJump / ProxyCommand）—— 与 docker 侧同因，见 [项目级 ROADMAP.md](../../ROADMAP.md) 第 2 项。
 
-**2026-09-25 更新**：该条的「短期至少做到」那一半已落地（导入跳过依赖跳板机的块并点名、
-超时与探针文案点出成因，顺带修掉 **tty D63** 的四种静默丢弃）；**完整实现（真的经跳板机连）
-仍开着**，方案（字段形状 / forwardOut → sock / 生命周期 / 池键 / 探针 / 白名单清单 /
-五步顺序 / 真机验收）见 [docs/proxyjump-plan.md](../../docs/proxyjump-plan.md)——动手前先读它。
+**2026-09-25 更新：该条已全部落地（含 `ProxyCommand` 的闸门版）。** 落点按时序：
+
+1. 「短期至少做到」那一半（导入跳过依赖跳板机的块并点名、超时与探针文案点出成因，
+   顺带修掉 **tty D63** 的四种静默丢弃）；
+2. **单跳跳板机完整实现**：`jump` 规格 + 四道白名单、四个连接点（终端 / SFTP / 隧道 / 探针）
+   共用 `prepareSshConnect` / `attachSshTransport`、阶段化超时、两层收尾、
+   `~/.ssh/config` 导入解析 `ProxyJump`（含同文件别名 / `user@host:port` / IPv6）、
+   连接簿对话框的「跳板机」段与「⇢ 经 X」标注、「试连」的跳板机维度（`ProbeResult.jump`）；
+3. **`ProxyCommand`（闸门版）**：settings `allowProxyCommand` **默认关**、关着时明确失败
+   （不退回直连）、导入永不自动带入、`%h/%p/%r/%n/%%` 展开且代入值走白名单、
+   `AbortError` 不当失败原因、收尾与跳板机走同一批入口；对话框一行 + 设置卡片一个开关。
+   做这一轮时顺路挖出并修掉 **D64**（「连接（并保存）」出口漏带跳板机）与 **D65**
+   （SFTP 池条目断线时只摘出池、没关跳板机）。
+
+**仍未做**：只有多跳链（明确不做）。方案与全部坑见
+[docs/proxyjump-plan.md](../../docs/proxyjump-plan.md)（第 6.1 节是 `ProxyCommand` 的闸门定案表）。
 
 统一安全围栏（对齐 docker 的加固档）与 `isConcurrencySafe` 两项也已落地（同上，§ 已完成）：
 本包的 `isLoopbackHttp` 已删除，改走 `gateRoute`（kit 的加固档 + 变更端点的同源证明）；

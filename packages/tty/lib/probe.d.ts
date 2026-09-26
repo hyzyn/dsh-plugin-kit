@@ -10,11 +10,14 @@ export interface ProbeResult {
      *
      * **有跳板机时探的是跳板机那一跳**（目标根本不能直连），标签与它的结论另见 `jump`——
      * 客户端据此把这一行写成「跳板机 X 通/不通」，而不是让人读成「目标 TCP 可达」。
+     * **走代理命令时这一阶段整个跳过**（`skipped=true`）：连不连得上由那条命令自己决定，
+     * 直连预检探的是目标主机、与本次连接路径无关，报「不可达」纯属误导读者的噪音。
      */
     tcp: {
         ok: boolean;
         error?: string;
         ms?: number;
+        skipped?: boolean;
     };
     /** 跳板机维度（单跳）：标签 + 它那一跳的 TCP 预检结论（与 `tcp` 同一份数据，便于客户端直接渲染）。 */
     jump?: {
@@ -24,6 +27,17 @@ export interface ProbeResult {
             error?: string;
             ms: number;
         };
+    };
+    /**
+     * 代理命令维度：配了 `proxyCommand` 时非空。
+     *
+     * `active=false` 表示**配了但闸门关着**（`allowProxyCommand` 未开），本次不会执行任何本机
+     * 命令——探针在这里就返回，把开关路径写清楚（而不是让人读成「目标连不上」）。
+     * **不回显命令原文**（它可能含凭据）。
+     */
+    proxy?: {
+        active: boolean;
+        error?: string;
     };
     /** hostkey 阶段：TOFU 比对（未到握手时为 unknown）。 */
     hostkey: {

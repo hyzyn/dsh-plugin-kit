@@ -1624,6 +1624,14 @@
 .tt_sshProbeBad {
   color: var(--tt-danger);
 }
+/* 代理命令（ProxyCommand）闸门提示：不是错误（连接还没试），但必须一眼看见 */
+.tt_sshProbeWarn {
+  color: var(--tt-warn);
+}
+/* 「允许 ProxyCommand」这个开关与其它开关不同色：它开的是本机命令执行 */
+.tt_cardDanger .tt_cardLabel {
+  color: var(--tt-warn);
+}
 .tt_sshEdit {
   display: flex;
   flex-direction: column;

@@ -202,9 +202,18 @@ const I18N_ZH = {
   'check.jumpOwnCred': '跳板机使用独立凭据',
   'field.jumpUsername': '跳板机用户名（留空沿用目标）',
   'field.jumpAuth': '跳板机认证方式（留空沿用目标）',
-  'hint.jumpInherit': '留空凭据 = 沿用上面那台主机的认证方式与钥匙；跳板机连不上时错误文案会点名它（不会伪装成目标超时）。代理命令（ProxyCommand）不支持。',
+  'hint.jumpInherit': '留空凭据 = 沿用上面那台主机的认证方式与钥匙；跳板机连不上时错误文案会点名它（不会伪装成目标超时）。',
   'meta.jumpStage': '跳板机 {label}',
   'meta.viaJump': '⇢ 经 {label}',
+  'meta.viaProxy': '⇢ 经代理命令',
+  'section.proxyCommand': '代理命令',
+  'field.proxyCommand': '代理命令（ProxyCommand，留空 = 不用）',
+  'placeholder.proxyCommand': '例如 ssh -W %h:%p bastion',
+  'hint.proxyCommand': '本机执行的命令，它的 stdin/stdout 就是到目标的 SSH 传输（等价于 OpenSSH 的 ProxyCommand）。支持 %h 目标主机、%p 端口、%r 用户名、%n 主机、%% 字面 %；其余写法原样保留。与跳板机同时填时跳板机优先（OpenSSH 语义）。需要下面那个开关，~/.ssh/config 导入不会自动带入它。',
+  'hint.proxyCommandDisabled': '⚠ 当前「允许 ProxyCommand」未打开：这条命令不会执行，连接会明确失败（不会退回直连）。到 插件配置 → 终端面板 打开开关后生效。',
+  'meta.probeProxy': '代理命令',
+  'meta.probeProxyOff': '代理命令（未启用）',
+  'meta.probeTcpSkipped': '直连预检已跳过（走代理命令）',
   'section.connection': '连接',
   'field.host': '主机',
   'placeholder.host': 'example.com 或 IP',
@@ -341,7 +350,9 @@ const I18N_ZH = {
   'error.hostKeyDeleteFailed': '删除主机密钥记录失败',
   'msg.hostKeyDeleted': '已删除主机密钥记录（下次连接重新记录指纹）',
   'error.sshConfigReadFailed': '读取 ~/.ssh/config 失败',
-  'msg.proxySkipped': '{count} 条依赖跳板机（ProxyJump / ProxyCommand）未导入：{names}',
+  'msg.proxySkipped': '{count} 条用了跳板机但解析不出跳板机（别名缺失 / 别名自己还依赖跳板机）未导入：{names}',
+  'msg.proxyCommandSkipped': '{count} 条只配了代理命令（ProxyCommand）未导入：{names} —— 代理命令是「本机执行一条命令」那一档，导入不会自动带入；需要时在连接簿里手填并打开「允许 ProxyCommand」',
+  'msg.skippedNotConcrete': '{count} 条不是具体主机（通配 / 无 User）',
   'list.separator': '、',
   'meta.etc': ' 等',
   'msg.importOverflow': '超过导入上限的 {count} 条未导入',
@@ -388,6 +399,8 @@ const I18N_ZH = {
   'check.endOnPageClose': '关闭页面后结束持久会话（不保活）',
   'check.statsEnabled': '服务器状态条（CPU / 内存 / 磁盘 / 在线 / TCP / 网速；采不到的项显示「无」）',
   'hint.statsEnabled': '默认关闭：整个页面关闭时持久会话留存（保活期后可再恢复）；开启则页面断开且保活期结束时连 tmux 会话一起结束——注意刷新页面在保活期内不受影响',
+  'check.allowProxyCommand': '允许 ProxyCommand（本机执行命令；默认关）',
+  'hint.allowProxyCommand': '打开后，连接簿条目里填的代理命令会在这台机器上执行，它的 stdin/stdout 当作到目标的 SSH 传输（等价于 OpenSSH 的 ProxyCommand）。这是本插件唯一「配置里写一行就在本机跑命令」的开关，所以默认关：关着时携带代理命令的连接会明确失败（不会退回直连）。~/.ssh/config 导入永不自动带入代理命令。',
   'field.maxSessions': '并发会话上限（1~16）',
   'hint.maxSessions': '超过上限的新标签会被拒绝；保存即热生效',
   'field.shell': 'Shell 路径（默认 $SHELL）',
@@ -554,9 +567,18 @@ const I18N_EN = {
   'check.jumpOwnCred': 'Use separate credentials for the jump host',
   'field.jumpUsername': 'Jump host user (empty = same as the target)',
   'field.jumpAuth': 'Jump host auth (empty = same as the target)',
-  'hint.jumpInherit': 'Empty credentials reuse the target host’s auth method and keys. When the jump host itself is unreachable the error names it (it will not masquerade as a target timeout). ProxyCommand is not supported.',
+  'hint.jumpInherit': 'Empty credentials reuse the target host’s auth method and keys. When the jump host itself is unreachable the error names it (it will not masquerade as a target timeout).',
   'meta.jumpStage': 'Jump host {label}',
   'meta.viaJump': '⇢ via {label}',
+  'meta.viaProxy': '⇢ via proxy command',
+  'section.proxyCommand': 'Proxy command',
+  'field.proxyCommand': 'Proxy command (ProxyCommand; empty = unused)',
+  'placeholder.proxyCommand': 'e.g. ssh -W %h:%p bastion',
+  'hint.proxyCommand': 'A command run on this machine whose stdin/stdout become the SSH transport to the target (the same idea as OpenSSH’s ProxyCommand). Supports %h host, %p port, %r user, %n host and %% for a literal %; anything else is left as written. If a jump host is set too, the jump host wins (OpenSSH semantics). It needs the switch below, and importing ~/.ssh/config never fills it in.',
+  'hint.proxyCommandDisabled': '⚠ “Allow ProxyCommand” is off right now: this command will not run and the connection fails explicitly (it does not fall back to a direct connection). Turn it on in Plugin settings → Terminal panel.',
+  'meta.probeProxy': 'Proxy command',
+  'meta.probeProxyOff': 'Proxy command (disabled)',
+  'meta.probeTcpSkipped': 'Direct TCP check skipped (using the proxy command)',
   'section.connection': 'Connection',
   'field.host': 'Host',
   'placeholder.host': 'example.com or IP',
@@ -693,7 +715,9 @@ const I18N_EN = {
   'error.hostKeyDeleteFailed': 'Failed to delete the host key record',
   'msg.hostKeyDeleted': 'Host key record deleted (the fingerprint is recorded again on the next connection)',
   'error.sshConfigReadFailed': 'Failed to read ~/.ssh/config',
-  'msg.proxySkipped': '{count} entries that use a jump host (ProxyJump / ProxyCommand) were not imported: {names}',
+  'msg.proxySkipped': '{count} entries use a jump host that could not be resolved (missing alias, or the alias itself needs a jump host) and were not imported: {names}',
+  'msg.proxyCommandSkipped': '{count} entries only set a proxy command (ProxyCommand) and were not imported: {names} — a proxy command is local command execution, so importing never fills it in; add it by hand on the connection-book entry and turn on “Allow ProxyCommand”',
+  'msg.skippedNotConcrete': '{count} entries are not a concrete host (wildcard / no User)',
   'list.separator': ', ',
   'meta.etc': ' etc.',
   'msg.importOverflow': '{count} entries beyond the import limit were not imported',
@@ -740,6 +764,8 @@ const I18N_EN = {
   'check.endOnPageClose': 'End persistent sessions when the page closes (no keepalive)',
   'check.statsEnabled': 'Server stats bar (CPU / memory / disk / uptime / TCP / network; items that cannot be sampled show “N/A”)',
   'hint.statsEnabled': 'Off by default: persistent sessions survive closing the whole page (recoverable after the keepalive window); when on, they end together with the tmux session once the page disconnects and the keepalive window expires — note that refreshing the page within the keepalive window is unaffected',
+  'check.allowProxyCommand': 'Allow ProxyCommand (runs a command on this machine; off by default)',
+  'hint.allowProxyCommand': 'When on, a proxy command set on a connection-book entry runs on this machine, and its stdin/stdout become the SSH transport to the target (the same idea as OpenSSH’s ProxyCommand). This is the only switch in this plugin that turns a settings field into local command execution, so it is off by default: while off, a connection carrying a proxy command fails explicitly (it does not fall back to a direct connection). Importing ~/.ssh/config never fills one in.',
   'field.maxSessions': 'Concurrent session limit (1–16)',
   'hint.maxSessions': 'New tabs beyond the limit are rejected; applies live on save',
   'field.shell': 'Shell path (defaults to $SHELL)',
@@ -2954,6 +2980,13 @@ let persistenceCache = 'off'
 let sftpLimitsCache = { maxDownloadMb: 1024, maxUploadMb: 2048, maxUploadFiles: 1000 }
 /** 宿主并发会话上限与最近一次查询的存活会话数（新增标签的前置校验用）。 */
 let maxSessionsCache = null
+/**
+ * ProxyCommand 闸门缓存（默认关）：config 快照与设置保存同步。
+ *
+ * 用途只有一个——SSH 对话框里如实说明这条字段**现在生效不生效**（关着时配了也不会执行，
+ * 试连会点名开关）。它**不是**安全边界：真正的闸门在宿主侧（关着时连接明确失败）。
+ */
+let allowProxyCommandCache = false
 let liveSessionCount = null
 /* ============================ 入口显隐闸门 ============================ */
 
@@ -3001,6 +3034,9 @@ function syncSshHostsCache(config) {
   }
   if (config !== null && typeof config === 'object' && Number.isInteger(config.maxSessions) && config.maxSessions >= 1) {
     maxSessionsCache = config.maxSessions
+  }
+  if (config !== null && typeof config === 'object' && typeof config.allowProxyCommand === 'boolean') {
+    allowProxyCommandCache = config.allowProxyCommand
   }
 }
 
@@ -3109,7 +3145,12 @@ function probeSummary(probeResult, opts) {
     const state = r.jump.tcp?.ok ? (jumpMs !== null ? jumpMs + 'ms' : t('meta.reachable')) : t('meta.unreachable')
     tail.push(t('meta.jumpStage', { label: r.jump.label }) + ' ' + state)
   }
+  // 代理命令：配了就有这一行（关着时如实说「未启用」，别让人把这句读成网络问题）
+  if (r.proxy !== null && typeof r.proxy === 'object') {
+    tail.push(r.proxy.active === true ? t('meta.probeProxy') : t('meta.probeProxyOff'))
+  }
   if (r.tcp?.ok) tail.push('TCP ' + (tcpMs !== null ? tcpMs + 'ms' : t('meta.reachable')))
+  else if (r.tcp?.skipped === true) tail.push(t('meta.probeTcpSkipped'))
   if (r.banner?.ok) tail.push(t('meta.probeBanner'))
   const hk = r.hostkey?.state
   if (hk === 'matched') tail.push(t('meta.hostKeyMatched'))
@@ -3119,7 +3160,13 @@ function probeSummary(probeResult, opts) {
     const authText = authMs !== null ? t('meta.authOkMs', { ms: authMs }) : t('meta.authOk')
     return t('meta.probeOk', { detail: authText + (tail.length ? ' · ' + tail.join(' · ') : '') })
   }
-  const failed = r.auth?.error || r.tcp?.error || t('error.unknown')
+  /*
+   * 失败原因的选择顺序：auth → tcp（**跳过的 tcp 不算原因**）→ 未知。
+   * 跳过那一档必须排除掉：它带着一条说明性 error（「走代理命令，目标不可直连」），
+   * 一旦被当成失败原因，用户会拿这句话去排查网络。
+   */
+  const tcpError = r.tcp?.skipped === true ? '' : r.tcp?.error
+  const failed = r.auth?.error || tcpError || t('error.unknown')
   const detail = failed + (tail.length ? ' · ' + tail.join(' · ') : '')
   // `opts.prefix`：调用方要换前缀时用它（现无调用方传值，保留兼容）
   return opts?.prefix !== undefined ? opts.prefix + detail : t('error.probeFailed', { detail })
@@ -3252,6 +3299,8 @@ function renderAddMenuItems(menu) {
     const jumpHintText = formatJumpShorthand(entry.jump)
     sub.textContent = sshHostTargetLabel(entry)
       + (jumpHintText === '' ? '' : ' ' + t('meta.viaJump', { label: jumpHintText }))
+      // 代理命令：只标「有没有配」，不回显命令原文（可能含凭据，且它本来就长）
+      + (typeof entry.proxyCommand === 'string' && entry.proxyCommand.trim() !== '' ? ' ' + t('meta.viaProxy') : '')
       + (tunnelCount > 0 ? ' · ⇄' + String(tunnelCount) : '')
     text.appendChild(main)
     text.appendChild(sub)
@@ -3726,6 +3775,34 @@ function openSshDialog(entry) {
   jumpHint.textContent = t('hint.jumpInherit')
   card.appendChild(jumpHint)
 
+  /*
+   * 代理命令（ProxyCommand）。与跳板机同属「怎么到达目标」，但**信任级完全不同**：
+   * 它是「本机任意命令执行」，所以宿主侧默认关闭（`allowProxyCommand`）。
+   *
+   * 界面决策：这一行**始终显示、始终可填**，关着时用一行灰字如实说明「现在不生效」。
+   * 藏掉字段会更糟——用户换了台机器/关了开关之后，条目里配过什么就无从查看，也解释不了
+   * 「我明明填过为什么没反应」。真正的闸门在宿主侧（关着时连接明确失败，不退回直连），
+   * 这里的文案只是提前把话说清楚。
+   */
+  card.appendChild(sectionLabel(t('section.proxyCommand')))
+  const proxyCommandRow = fieldRow('proxyCommand', t('field.proxyCommand'), { placeholder: t('placeholder.proxyCommand') })
+  card.appendChild(proxyCommandRow)
+  const proxyHint = document.createElement('div')
+  proxyHint.className = 'tt_cardHint'
+  proxyHint.textContent = t('hint.proxyCommand')
+  card.appendChild(proxyHint)
+  const proxyGateHint = document.createElement('div')
+  proxyGateHint.className = 'tt_cardHint tt_sshProbeWarn'
+  proxyGateHint.textContent = t('hint.proxyCommandDisabled')
+  card.appendChild(proxyGateHint)
+  /** 闸门提示只在「填了命令 + 开关关着」时出现；开关状态随 config 快照刷新。 */
+  const syncProxyGate = () => {
+    const filled = fields.proxyCommand.value.trim() !== ''
+    proxyGateHint.style.display = filled && !allowProxyCommandCache ? '' : 'none'
+  }
+  fields.proxyCommand.addEventListener('input', syncProxyGate)
+  syncProxyGate()
+
   /**
    * 跳板机那一跳的规格（没填就返回 undefined）。
    *
@@ -3747,6 +3824,18 @@ function openSshDialog(entry) {
     if (fields.jumpPassphrase.value !== '') jump.passphrase = fields.jumpPassphrase.value
     if (fields.jumpPassword.value !== '') jump.password = fields.jumpPassword.value
     return jump
+  }
+
+  /**
+   * 代理命令那一行（没填就返回 undefined）。
+   *
+   * 与宿主侧 `sanitizeProxyCommand` 同口径：**空 = 这个字段不存在**（不写空串进 spec）。
+   * 与跳板机同时填时**不在这里二选一**：优先关系（ProxyJump 优先）由宿主侧的拨号处
+   * 一处决定并记 warn，界面只管把用户填的东西如实带过去。
+   */
+  const proxyCommandFromFields = () => {
+    const raw = fields.proxyCommand.value.trim()
+    return raw === '' ? undefined : raw
   }
 
   /** 显隐：没填跳板机时整段退化成一个输入框；勾了独立凭据才展开覆盖字段。 */
@@ -3844,6 +3933,9 @@ function openSshDialog(entry) {
       }
     }
     fwdCheck.checked = editing.agentForward === true
+    // 代理命令回填（原样字符串：它本来就是一条命令行，不做简写解析）
+    fields.proxyCommand.value = String(editing.proxyCommand ?? '')
+    syncProxyGate()
     persistCheck.checked = persistenceCache === 'tmux'
   }
 
@@ -3878,6 +3970,8 @@ function openSshDialog(entry) {
     const spec = { host, port, username, auth }
     const jump = jumpFromFields()
     if (jump !== undefined) spec.jump = jump
+    const proxyCommand = proxyCommandFromFields()
+    if (proxyCommand !== undefined) spec.proxyCommand = proxyCommand
     if (auth === 'key') {
       const keyPath = fields.keyPath.value.trim()
       if (keyPath === '') {
@@ -3938,6 +4032,8 @@ function openSshDialog(entry) {
     const spec = { host, port, username, auth }
     const jump = jumpFromFields()
     if (jump !== undefined) spec.jump = jump
+    const proxyCommand = proxyCommandFromFields()
+    if (proxyCommand !== undefined) spec.proxyCommand = proxyCommand
     if (auth === 'key') {
       const keyPath = fields.keyPath.value.trim()
       if (keyPath === '') {
@@ -3995,6 +4091,8 @@ function openSshDialog(entry) {
       // 跳板机：留空就不写这个字段（宿主侧的「没写」= 直连／继承，空对象反而会走清洗）
       const nextJump = jumpFromFields()
       if (nextJump !== undefined) next.jump = nextJump
+      // 代理命令：编辑对话框里清空 = 就是要删掉它，所以这里**空串也写**（清洗会当没配）
+      next.proxyCommand = fields.proxyCommand.value.trim()
       if (auth === 'key' && next.keyPath === '') {
         errorEl.textContent = t('error.keyPathRequired')
         return
@@ -4082,6 +4180,17 @@ function openSshDialog(entry) {
     }
     const auth = fields.auth.value
     const spec = { t: 'ssh', host, port, username, auth }
+    /*
+     * 跳板机 / 代理命令必须同时进**两条路**：本次连接的 spec，以及（勾了保存时的）连接簿条目。
+     *
+     * 这里曾经漏过一遍（2026-09-25）：对话框里填了跳板机，连出去却是直连、存下来的条目也没有
+     * 跳板机——「配了等于没配」，而且症状是「连不上」（没有任何提示说跳板机被丢了）。四个出口
+     * （连接 / 试连 / 文件浏览 / 保存修改）必须走同一个取值函数，漏一个就是这一类缺陷。
+     */
+    const jump = jumpFromFields()
+    if (jump !== undefined) spec.jump = jump
+    const proxyCommand = proxyCommandFromFields()
+    if (proxyCommand !== undefined) spec.proxyCommand = proxyCommand
     if (auth === 'key') {
       const keyPath = fields.keyPath.value.trim()
       if (keyPath !== '') spec.keyPath = keyPath
@@ -4130,6 +4239,9 @@ function openSshDialog(entry) {
         password,
         agentForward: fwdCheck.checked,
         persist: persistCheck.checked,
+        // 同上：存进连接簿的那一份也要带跳板机 / 代理命令，否则「连接这次成功、下次直连」
+        ...(jump !== undefined ? { jump } : {}),
+        proxyCommand: fields.proxyCommand.value.trim(),
       })
       connectBtn.disabled = false
       if (error !== undefined) {
@@ -7142,17 +7254,21 @@ function TtySettingsCard(props) {
       }
       setForm((current) => ({ ...(current || {}), sshHosts: merged }))
       /*
-       * 丢弃要有信号（项目级 ROADMAP 第 2 项）：依赖跳板机（ProxyJump / ProxyCommand）
-       * 的块**不导入**——本版本不支持跳板机，导进来只会得到一条连不上、且只报通用超时的
-       * 条目。这里把它说清楚，用户才知道「我的生产机为什么没出现」。
+       * 丢弃要有信号（项目级 ROADMAP 第 2 项）。两类分开报：
+       *   - `proxy`：用了 ProxyJump 但**解析不出跳板机**（别名缺失 / 别名自己还要跳板机）；
+       *   - `proxyCommand`：只配了 ProxyCommand —— 它是「本机执行命令」那一档，导入**永不**
+       *     自动带入，所以这里不能与上一类混成一句话（一句「依赖跳板机」会让人以为配了就行）。
        */
       const proxyNames = Array.isArray(data.proxy) ? data.proxy.filter((name) => typeof name === 'string') : []
       const proxyCount = Number.isInteger(data.proxyCount) ? data.proxyCount : proxyNames.length
+      const proxyCommandNames = Array.isArray(data.proxyCommand) ? data.proxyCommand.filter((name) => typeof name === 'string') : []
+      const proxyCommandCount = Number.isInteger(data.proxyCommandCount) ? data.proxyCommandCount : proxyCommandNames.length
       const others = Number.isInteger(data.skippedOther) ? data.skippedOther : 0
       const overflow = Number.isInteger(data.droppedOverflow) ? data.droppedOverflow : 0
       const extras = []
       if (proxyCount > 0) extras.push(t('msg.proxySkipped', { count: proxyCount, names: proxyNames.slice(0, 5).join(t('list.separator')) + (proxyCount > 5 ? t('meta.etc') : '') }))
-      if (others > 0) extras.push(`${others} 条不是具体主机（通配 / 无 User）`)
+      if (proxyCommandCount > 0) extras.push(t('msg.proxyCommandSkipped', { count: proxyCommandCount, names: proxyCommandNames.slice(0, 5).join(t('list.separator')) + (proxyCommandCount > 5 ? t('meta.etc') : '') }))
+      if (others > 0) extras.push(t('msg.skippedNotConcrete', { count: others }))
       if (overflow > 0) extras.push(t('msg.importOverflow', { count: overflow }))
       const tail = extras.length > 0 ? t('list.separatorFull') + extras.join(t('list.separatorFull')) : ''
       if (added === 0) {
@@ -7247,7 +7363,7 @@ function TtySettingsCard(props) {
     setMessage({ kind: '', text: '' })
     // 只提交配置项：快照里的 toolsRegistered 等非配置键会被宿主 normalizePatch 拒绝
     const body = {}
-    for (const key of ['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'shellIntegration', 'sftpStyle', 'persistence', 'endOnPageClose', 'statsEnabled']) {
+    for (const key of ['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'shellIntegration', 'sftpStyle', 'persistence', 'endOnPageClose', 'statsEnabled', 'allowProxyCommand']) {
       const value = (form || {})[key]
       if (value !== undefined && value !== '') body[key] = value
     }
@@ -7635,8 +7751,8 @@ function TtySettingsCard(props) {
       hint ? jsx('span', { className: 'tt_cardHint', children: hint }) : null,
     ],
   })
-  const boolField = (label, key) => jsxs('label', {
-    className: 'tt_cardField tt_cardRow',
+  const boolField = (label, key, extraClass) => jsxs('label', {
+    className: 'tt_cardField tt_cardRow' + (typeof extraClass === 'string' && extraClass !== '' ? ' ' + extraClass : ''),
     children: [
       jsx('input', { type: 'checkbox', className: 'tt_cardCheckbox', checked: form[key] === true, onChange: (event) => set(key, event.target.checked) }),
       jsx('span', { className: 'tt_cardLabel', children: label }),
@@ -7776,6 +7892,12 @@ function TtySettingsCard(props) {
                     boolField(t('check.endOnPageClose'), 'endOnPageClose'),
                     boolField(t('check.statsEnabled'), 'statsEnabled'),
                     jsx('span', { className: 'tt_cardHint', children: t('hint.statsEnabled') }),
+                    /*
+                     * ProxyCommand 闸门。刻意与其它开关**不同色**（tt_cardDanger）：它是本插件
+                     * 唯一「由设置字段驱动本机任意命令执行」的开关，默认关，打开前该看清代价。
+                     */
+                    boolField(t('check.allowProxyCommand'), 'allowProxyCommand', 'tt_cardDanger'),
+                    jsx('span', { className: 'tt_cardHint', children: t('hint.allowProxyCommand') }),
                   ],
                 }),
                 textField(t('field.maxSessions'), 'maxSessions', '4', t('hint.maxSessions')),

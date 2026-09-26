@@ -25,17 +25,22 @@
 **为什么是 L0**：要同时改 `tty` 与 `mcp` 两个包，且口径必须与 `docker` 一致——
 三处各写一份必然漂。约定见 [architecture.md § 一条请求经过什么](./docs/architecture.md#7-一条请求经过什么)。
 
-### 2. 跳板机（ProxyJump / ProxyCommand）
+### 2. 跳板机（ProxyJump / ProxyCommand）✅
 
-> **短期一半 + 单跳完整实现都已落地**（2026-09-25，见 [§ 已完成](#已完成落点--门槛)与
+> **全部落地**（2026-09-25，见 [§ 已完成](#已完成落点--门槛)与
 > [docs/proxyjump-plan.md](./docs/proxyjump-plan.md) 的进度表）：两包加 `jump` 规格并补齐四道
-> 白名单、tty 四个连接点共用 `prepareSshConnect`、docker 池键并入跳板机身份、导入解析
-> `ProxyJump`（含同文件别名）；真机冒烟 `jump-smoke.mjs` 进了 CI。
+> 白名单、tty 四个连接点共用 `prepareSshConnect` / `attachSshTransport`、docker 池键并入
+> 跳板机身份、导入解析 `ProxyJump`（含同文件别名）；连接簿对话框的跳板机字段与「试连」的
+> 跳板机维度同日做完（`client-src/jump-field.js` 纯模块 + 预览 33/33 + 真机冒烟）。
 >
-> **仍未做**：① `ProxyCommand`（信任级不同，要单独定闸门）——**这是唯一剩下的部分**；
-> ② 多跳链（明确不做）。连接簿对话框的跳板机字段与「试连」的跳板机维度同日做完
-> （`client-src/jump-field.js` 纯模块 + 预览 33/33 + 真机冒烟）。边界与理由见
-> [docs/proxyjump-plan.md](./docs/proxyjump-plan.md)，那份文档仍是这项的唯一作业面。
+> **`ProxyCommand` 随后补上（闸门版）**：tty settings 新增 `allowProxyCommand`（**默认关**），
+> 关着时携带代理命令的连接**明确失败、不退回直连**，`~/.ssh/config` 导入**永不**自动带入；
+> docker 用**同一个**开关（读 tty settings），池键并入代理命令摘要（不回显命令原文）；
+> 真机冒烟 `proxycommand-smoke.mjs`（自写 `proxy-bridge.mjs` 当 `ssh -W %h:%p` 的原语）
+> 与两包各一套单测（tty 16 例 / docker 12 例）都进了 CI。
+>
+> **仍未做**：只有多跳链（跳板机的跳板机）——明确不做，导入遇嵌套别名按「解析不出」处理。
+> 边界与理由见 [docs/proxyjump-plan.md](./docs/proxyjump-plan.md) 第 6.1 节（闸门定案表）。
 
 同一个根因，两个包各写了一遍，迁到这里合并（两段原文都保留）：
 
@@ -131,7 +136,18 @@
 **单跳完整实现已落地**（同日）：`jump` 规格 + 四道白名单、tty 侧四个连接点共用
 `prepareSshConnect`/`attachJumpSock`（终端 / SFTP / 隧道 / 探针一起过 bastion，不留半吊子）、
 docker 侧 `poolKey` 并入跳板机身份并在 `disposeAll`/空闲回收/重连时成对关连接、导入把
-`ProxyJump` 解析成结构化 `jump`（含同文件别名 / `user@host:port` / IPv6）。
+`ProxyJump` 解析成结构化 `jump`（含同文件别名 / `user@host:port` / IPv6）。连接簿对话框新增
+「跳板机」一段（一个 `[用户名@]主机[:端口]` 输入框，勾「使用独立凭据」才展开覆盖字段）。
+原文里「两包同时可用」的口径至此两包都成立。
+
+**`ProxyCommand` 也已补上（闸门版，同日）**：`spawn(command, {shell:true})` 的 stdio 经
+`Duplex.from` 当 `ConnectConfig.sock`，`%h/%p/%r/%n/%%` 按 OpenSSH 同义展开且代入值走白名单
+（含 shell 特殊字符就拒绝执行）。闸门 = tty settings `allowProxyCommand`（**默认关**）：
+关着时携带代理命令的连接**明确失败、不退回直连**，探针在阶段 0 就返回并点名开关；
+导入**永不**自动带入；与跳板机同时配时按 OpenSSH 语义 **ProxyJump 优先**并记 warn。
+docker 侧读**同一个**开关、池键并入 `|cmd:<sha256 前 12 位>`（只并入摘要：命令原文可能含凭据）。
+收尾点与跳板机同一批（目标只是借用 stdio），另有「AbortError 不当失败原因」「传输比 `exit`
+先到时也要交出已攒到的 stderr」两处细节（见 plan 文档 §6.2）。
 
 **验证**（全绿）：`packages/tty/scripts/jump-smoke.mjs`（真 bastion 的 `direct-tcpip` + 真目标
 sshd；J1 正向 / J2 跳板机密码错点名跳板机 / J3 目标不可达同时点名两跳 / J4 收尾无残留连接；
@@ -144,11 +160,22 @@ sshd；J1 正向 / J2 跳板机密码错点名跳板机 / J3 目标不可达同�
 （`ProbeResult.jump`）；解析与回填是纯模块 `client-src/jump-field.js`（8 条单测），
 预览夹具 33/33 场景正常，tty 五个冒烟 + integration 113 PASS 未受影响。
 
-**仍未做**：`ProxyCommand`（信任级不同，要单独定闸门；导入侧仍跳过并单独报数）、多跳链
-（不做）。方案与全部坑仍见 [docs/proxyjump-plan.md](./docs/proxyjump-plan.md)。
+**`ProxyCommand` 的验证**：`packages/tty/scripts/proxycommand-smoke.mjs`（真机：自写的
+`scripts/lib/proxy-bridge.mjs` 当 `ssh -W %h:%p` 的原语；P1 终端 / P2 SFTP / P3 闸门关着明确
+失败且**没起进程** / P4 命令失败文案带 stderr 摘要 / P5 注入被拒且没落地 / P6 无残留子进程；
+已接进 CI）、`packages/tty/test/proxy-command.test.ts`（16 例）、
+`packages/docker/test/ssh-proxy-command.test.ts`（12 例）。
+
+**仍未做**：只剩多跳链（跳板机的跳板机）——明确不做（导入遇嵌套别名按「解析不出」处理）。
+方案与全部坑仍见 [docs/proxyjump-plan.md](./docs/proxyjump-plan.md)（第 6.1 节是闸门定案表）。
+
+**顺路修掉的两处**（做 ProxyCommand 时挖出来的，编号 tty **D64 / D65**）：连接簿对话框的
+「连接（并保存）」出口此前**漏带跳板机**（填了却直连、存下来的条目也没有它——四个出口只改了
+三个）；SFTP 池条目在 `conn.on('close')` 里只摘出池、**没关跳板机**（目标断一次就漏一条
+keepalive 养着的连接）。两处都已收口到公共收尾入口。
 
 **刻意不做**：不做「只让 tty 能过 bastion、docker 不行」的半吊子（原文的判据：那比不做更糟）；
-本轮也不动 `ProxyCommand`（信任级不同，要单独定闸门）。
+代理命令不做「按平台各写一套转义」（改白名单拒绝）、不在导入时自动带入；不做多跳链。
 
 ### 4. ✅ `isConcurrencySafe` 未声明
 

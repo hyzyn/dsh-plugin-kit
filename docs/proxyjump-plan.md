@@ -1,16 +1,17 @@
 # 跳板机（ProxyJump / ProxyCommand）完整实现方案
 
-> **状态（2026-09-25 更新）：单跳已实现并真机验过；界面与 ProxyCommand 仍未做。**
+> **状态（2026-09-25 更新）：**本方案**全部落地**（`ProxyJump` 单跳 + `ProxyCommand` 闸门版）；
+> 只剩「多跳链」明确不做。
 >
 > | 阶段 | 状态 |
 > |---|---|
 > | 短期一半（导入跳过 + 四处文案点出成因） | ✅ 已落地（顺带修掉导入的四种静默丢弃，**tty D63**） |
 > | 第 1 步：`jump` 规格 + 四道白名单 | ✅ 两包都做（tty 的 schema / `sanitizeSshHosts` / `validateSshHosts` / `mergeSshSpec` / tunnels 的 spec 拷贝 / probe 路由；docker 的 `readTtyBooks` + 池键） |
-> | 第 2 步：tty 拨号（`forwardOut → sock`）+ 阶段化超时 + 两层清理 | ✅ 四个连接点（终端 / SFTP / 隧道 / 探针）**共用** `prepareSshConnect` / `attachJumpSock` |
+> | 第 2 步：tty 拨号（`forwardOut → sock`）+ 阶段化超时 + 两层清理 | ✅ 四个连接点（终端 / SFTP / 隧道 / 探针）**共用** `prepareSshConnect` / `attachSshTransport`（原 `attachJumpSock`：加了代理命令后它不再只管跳板机） |
 > | 第 3 步：docker 拨号 + **池键并入跳板机身份** + 生命周期 | ✅ `poolKey` 带 `|jump:<user@host:port>`；`disposeAll` / 空闲回收 / 传输错误重连都成对关 |
 > | 第 5 步：导入解析 `ProxyJump`（含同文件别名、`user@host:port`、IPv6） | ✅ `parseSshConfigDetailed` 两遍解析；别名缺失 / 嵌套别名 / `ProxyCommand` 仍跳过并**分别报数** |
 > | 第 4 步：**连接簿对话框的跳板机字段 + 探针结果展示** | ✅ 对话框加「跳板机」一段（一个 `[用户@]主机[:端口]` 输入框 + 「使用独立凭据」勾选后才展开的覆盖字段）；连接簿条目行显示「⇢ 经 X」；「试连」结果把跳板机那一跳单列一行（`ProbeResult.jump`）；解析/回填抽成纯模块 `client-src/jump-field.js`（进 vitest） |
-> | `ProxyCommand` | ⛔ 仍未做（信任级不同，见第 6 节）——**这是本项唯一剩下的部分** |
+> | `ProxyCommand` | ✅ 两包都做，**闸门版**（默认关 + 显式开关 + 导入永不自动带入，见第 6 节）；tty 侧有对话框字段与设置开关，docker 侧只从 tty 连接簿读（同一处配置、两处生效） |
 > | 多跳链（跳板机的跳板机） | ⛔ 明确不做（单跳；导入遇嵌套别名按「解析不出」处理） |
 >
 > **界面**（第 4 步）：对话框的「跳板机」段只给一个输入框（与 OpenSSH 的 `ProxyJump` 写法一致），
@@ -22,7 +23,16 @@
 > `packages/docker/test/ssh-jump.test.ts`（假 ssh2：先拨跳板机、通道当 sock、池键区分、
 > 失败路径关连接）；`packages/tty/test/jump-spec.test.ts`（四道白名单往返 + 严格校验拒绝分支）。
 >
-> 本文下面各节仍是**动手前的完整背景**（坑、验收、边界），已实现的部分直接对应上表。
+> **验证（ProxyCommand）**：`packages/tty/scripts/proxycommand-smoke.mjs`（真机：自写的
+> `scripts/lib/proxy-bridge.mjs` 当代理命令——即 `ssh -W %h:%p` 的原语，不依赖系统 ssh/nc；
+> P1 终端会话 / P2 SFTP / P3 闸门关着明确失败且**没起进程** / P4 命令失败现状带 stderr 摘要 /
+> P5 主机名含 shell 特殊字符拒绝代入（并断言注入没落地）/ P6 收尾无残留子进程，已进 CI）；
+> `packages/tty/test/proxy-command.test.ts`（16 例：清洗 / 严格校验 / 占位符展开 / 闸门默认关 /
+> **关着时不起进程**（用「会写文件」的命令证明）/ 起得来收得掉 / 提前退出的 failure /
+> 四道白名单往返）；`packages/docker/test/ssh-proxy-command.test.ts`（12 例：同口径、
+> **池键并入代理命令身份且不回显原文**、缺省闸门关、**每次拨号求值**、连接簿 → 规格携带）。
+
+> **本文下面各节仍是动手前的完整背景**（坑、验收、边界），已实现的部分直接对应上表。
 >
 > 立项理由与「为什么是 L0」在 [项目级 ROADMAP.md](../ROADMAP.md)（原文照录，含两包各自的原始措辞）：
 > 两包各有一套连接构造，跳板机必须**一起做**——「docker 目标能过 bastion、终端不行」这种
@@ -170,17 +180,49 @@ tty 侧没有连接池（`spawnSsh` 一次一连接），但 **SFTP 池的键是
   解析不出来就**照旧跳过并点名**，不要产出一条注定连不上的条目。
   另外 `Include` 目前不展开，跨文件的别名解析不了——如实说「引用的是别的文件里的别名」。
 
-## 6. `ProxyCommand`：单独一档，本轮不做
+## 6. `ProxyCommand`：单独一档（已实现，闸门版）
 
-`ProxyCommand` 是**设置字段驱动的本地任意命令执行**，信任级与「回环围栏 + 显式开关之后的
-路由」完全不同。要做必须先定闸门（谁能在什么条件下写这个字段、要不要二次确认、要不要与
-docker 的 `allowMutations` 同款的显式开关），并且：
+### 6.1 定下来的闸门（动手前要求先定的那件事）
 
-- **绝不在 `~/.ssh/config` 导入时自动带进来**（短期那一半已经这么做了，保持）；
-- 实现上它和跳板机走同一个 `sock`，但流是 `child_process` 的 stdio：
-  `Duplex.from({ readable: child.stdout, writable: child.stdin })`，并且**必须**把
-  `child.stderr` 排空、child 退出与 sock 销毁双向接线（ssh2 不管子进程的生死）；
-- 单独一轮做，不要在跳板机那一轮顺手带上——`ProxyJump` 已经有足够的坑了。
+| 问题 | 决定 | 理由 |
+|---|---|---|
+| 谁能写这个字段 | 连接簿条目（tty） | 界面就在那儿；docker 侧不另开界面 |
+| 默认开还是关 | **默认关**（tty settings `allowProxyCommand`） | 这是本插件唯一「配置里写一行就在本机跑命令」的字段，与跳板机（只连一跳 TCP）不同档 |
+| 关着时怎么表现 | **明确失败**，绝不退回直连；探针阶段 0 就返回并点名开关 | 直连多半也连不上，还会把配置问题伪装成网络问题 |
+| 要不要二次确认 | 不要（一个显式开关足够） | 每次都弹确认会让人点习惯；开关本身已经是一次明确表态 |
+| 导入会不会带进来 | **永不**（`ProxyCommand` 仍整块跳过，且**单独报数**） | 导入是「把别人的文件搬进来」，不该顺带获得本机执行权限；要用就手填 + 开开关 |
+| docker 侧用哪个开关 | **同一个**（读 tty settings 的 `allowProxyCommand`） | 连接簿只有一处；两个开关会造出「连接簿配了、这个面板不认」的说不清状态 |
+| 与跳板机同时配 | **ProxyJump 优先**（OpenSSH 语义）+ 记一条 warn | 静默忽略一条用户明确写下的配置是最坏形态 |
+
+### 6.2 实现要点（两包各一份，逐句同序）
+
+- **传输**：`spawn(command, { shell: true, stdio: ['pipe','pipe','pipe'], detached: POSIX })`
+  → `Duplex.from({ readable: child.stdout, writable: child.stdin })` 交给 `ConnectConfig.sock`。
+- **`%h` / `%p` / `%r` / `%n` / `%%`** 按 OpenSSH 同义展开；**代入值只允许
+  `[A-Za-z0-9._@:\[\]-]`，否则拒绝执行**。不做转义：代理命令最终交给 `sh -c`（Windows 是
+  `cmd /c`），两边转义规则不同（单引号在 cmd 里无效）——白名单比「按平台各写一套转义」既短又稳。
+  没实现的 `%X` **原样保留**（用户可能在命令里写 `printf %s`）。
+- **stderr 必须常驻排空**：不排空的话命令输出一多就把管道写满、子进程卡死；同时留最后一小段
+  进错误文案（那是排查命令失败最直接的信息，且**只留摘要、不落原文到日志**）。
+- **子进程死了要拖垮传输**：`exit` / 传输关闭时 `sock.destroy()`，逼 ssh2 立刻报错，
+  而不是把「命令一开始就失败」伪装成 20s 握手超时。
+- **AbortError 要忽略**：它是我们自己 destroy 这条 Duplex 时抛给底层流的副产品
+  （`The operation was aborted`），记成失败原因就会把真正的原因盖掉。
+- **「传输关闭」与「exit」谁先到不确定**（实测差 1~2ms）：所以 `failure()` 在 `exit` 事实还没到
+  时也要把**已经攒到的 stderr** 交出去（`代理命令传输已关闭；stderr: …`），否则最需要解释的
+  那种失败反而没有解释。
+- **收尾**：`dispose()` 幂等——关传输 + 杀进程组（POSIX `detached: true` + `kill(-pid)`，
+  SIGTERM 后 2s SIGKILL 兜底）。目标 client **只是借用** stdio，所以每个 teardown 路径都要收：
+  tty 的 `spawnSsh.finish()` / SFTP `close(rt)` / 隧道（`failTunnel`、重连、`stop`）/ 探针 `settle()`；
+  docker 的 `disposeAll` / 空闲回收 / 传输错误重连 / `settleError`。
+- **docker 池键**：`|cmd:<sha256 前 12 位>`。**只并入摘要**：命令原文可能含凭据
+  （`-i /path/key`、甚至嵌 token），而池键会进日志与诊断路径。
+
+### 6.3 界面
+
+对话框里「代理命令」一行始终显示、始终可填（与跳板机段相邻），关着时多一行灰字说明
+「现在不生效」（**不藏字段**：藏掉之后条目里配过什么就无从查看，也解释不了「我明明填过」）。
+设置卡片的开关与其它开关**不同色**（`tt_cardDanger`）。
 
 ## 7. 分步落地顺序（每一步都要保持「两包同时可用」）
 
@@ -197,6 +239,10 @@ docker 的 `allowMutations` 同款的显式开关），并且：
    **门槛**：`probe.test.ts` 的字段校验 + `preview.mjs` 的界面场景（人工看）。
 5. **导入第二遍解析**：`ProxyJump` 别名解析 + 解析不出时的点名（沿用短期的结构）。
    **门槛**：`ssh-config.test.ts` 加「别名解析 / 通配别名 / 跨文件别名 / 引用不存在的别名」。
+6. **`ProxyCommand`（单独一轮，闸门先行）**：先定第 6.1 节那张表（谁写、默认值、关着时的表现、
+   导入策略），再实现两包同序的拨号 + 收尾。**门槛**：单测里「关着时**没有起进程**」必须
+   用可观测的副作用证明（写文件 / 不存在的命令），真机跑 `proxycommand-smoke.mjs`
+   （含「收尾无残留子进程」与「注入没落地」）。
 
 ## 8. 验收门槛（全绿才叫做完）
 
@@ -215,6 +261,10 @@ git diff --exit-code -- 'packages/*/client.js' ':(glob)packages/*/lib/**'   # �
    （`ps` 里不应多出残留的 ssh 进程、宿主退出后连接全部消失）；
 3. **docker 目标经跳板机**：`docker_ps` 跑一次；再配两个不同 bastion 指向同一目标，
    确认没有共用连接（池键那条）。
+4. **代理命令（ProxyCommand）**：`packages/tty/scripts/proxycommand-smoke.mjs` 已覆盖——
+   终端与 SFTP 都跑在子进程的 stdio 上、闸门关着时明确失败且不起进程、命令失败时文案带
+   stderr 摘要、收尾后 `ps` 里没有残留的桥进程。
 
-**刻意不做**：不做「只让一个包能过 bastion」；不在跳板机那一轮带 `ProxyCommand`；
-不改 `~/.ssh/config` 的 `Include` 展开语义（跨文件别名如实说不支持）。
+**刻意不做**：不做「只让一个包能过 bastion」；不改 `~/.ssh/config` 的 `Include` 展开语义
+（跨文件别名如实说不支持）；不做多跳链；代理命令不做「按平台各写一套转义」（改白名单拒绝）；
+不在导入时自动带入 `ProxyCommand`。

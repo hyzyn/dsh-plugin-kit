@@ -1,3 +1,5 @@
+import type { ChildProcess } from 'node:child_process';
+import { Duplex } from 'node:stream';
 import { Client } from 'ssh2';
 import type { ClientChannel, ConnectConfig } from 'ssh2';
 /**
@@ -32,6 +34,14 @@ export interface SshSpec {
     agentForward?: boolean;
     /** 经跳板机连接（ProxyJump 语义，**单跳**）；缺省 = 直连。与 tty 的 `SshSpec.jump` 同形。 */
     jump?: SshJumpSpec;
+    /**
+     * 代理命令（ProxyCommand 语义，与 tty 的 `SshSpec.proxyCommand` 同形）：本机执行的命令，
+     * stdin/stdout 当 SSH 传输。本包同样**只从 tty 连接簿读**（docker 侧不做界面）。
+     *
+     * **闸门只有一处**：tty settings 的 `allowProxyCommand`（本包通过 `readTtyBooks` 的 settings
+     * 句柄同读）。关着时携带它的目标**明确失败**，不退回直连——理由见 tty `src/ssh.ts`。
+     */
+    proxyCommand?: string;
 }
 /**
  * 跳板机规格（与 tty `src/ssh.ts` 的 `SshJumpSpec` **逐字同形**，两包各持一份类型）。
@@ -56,7 +66,7 @@ export interface SshJumpSpec {
 export declare function sanitizeJumpSpec(input: unknown): SshJumpSpec | undefined;
 /** 跳板机展示串（`user@host:port`）；没配时返回空串。**凭据不进这里**。 */
 export declare function jumpTargetLabel(spec: SshSpec): string;
-/** 目标那一跳的展示串 + 跳板机后缀（错误文案用；理由见 tty `src/ssh.ts` 的同名注释）。 */
+/** 目标那一跳的展示串 + 跳板机 / 代理命令后缀（错误文案用；理由见 tty `src/ssh.ts` 的同名注释）。 */
 export declare function targetWithJump(spec: SshSpec): string;
 /** 一条命令的执行结果。 */
 export interface ExecResult {
@@ -143,9 +153,12 @@ export declare function shJoin(argv: readonly string[]): string;
  * hostVerifier（D03）保持一致：那里也用 `trim().toLowerCase()` 分组指纹。
  */
 /**
- * 池键。**跳板机身份必须并进来**：不同 bastion 到同一目标绝不是同一条连接——
- * 只按 `user@host:port` 记的话，第二个 bastion 会静默复用第一条连接、走错跳板机。
- * 这与 tty 的 SFTP 池不同（那边键是 `JSON.stringify(spec)`，天然带上 jump）。
+ * 池键。**跳板机 / 代理命令身份必须并进来**：不同 bastion（或不同代理命令）到同一目标
+ * 绝不是同一条连接——只按 `user@host:port` 记的话，第二个 bastion 会静默复用第一条连接、
+ * 走错跳板机。这与 tty 的 SFTP 池不同（那边键是 `JSON.stringify(spec)`，天然带上 jump）。
+ *
+ * 代理命令**只并入它的哈希**，不并入原文：原文可能含凭据（`-i /path/key`、甚至嵌 token），
+ * 而池键会进日志/错误文案附近的诊断路径——摘要足够区分且不泄露。
  */
 export declare function poolKey(spec: SshSpec): string;
 /**
@@ -160,6 +173,45 @@ export declare function dialJump(options: {
     bastion: Client;
     sock: ClientChannel;
 }>;
+/** 代理命令长度上限（与 tty 同值：它是一条命令行）。 */
+export declare const PROXY_COMMAND_MAX = 2000;
+/**
+ * 闸门关着时报什么错。**与 tty 是同一个开关**（tty settings 的 `allowProxyCommand`）——
+ * 连接簿只有一处，开关也只能有一处，否则「连接簿配了、docker 不认」会很难解释。
+ */
+export declare const PROXY_COMMAND_DISABLED: string;
+/**
+ * 清洗一份代理命令输入（`readTtyBooks` 用）。返回 `undefined` = 没配。
+ * 只做形状校验（非空 / 单行 / 长度）；命令内容不解释——「能不能执行」由闸门决定。
+ */
+export declare function sanitizeProxyCommand(input: unknown): string | undefined;
+/**
+ * 展开 `%h` / `%p` / `%r` / `%n` / `%%`（与 OpenSSH 同义，与 tty 逐字同口径：
+ * 代入值必须过白名单，否则拒绝执行——理由见 tty `expandProxyCommand`）。
+ */
+export declare function expandProxyCommand(command: string, spec: SshSpec): string;
+/** 代理命令传输（与 tty `ProxyCommandDial` 同形）。 */
+export interface ProxyCommandDial {
+    child: ChildProcess;
+    sock: Duplex;
+    failure(): Error | null;
+    dispose(): void;
+}
+/**
+ * 启动代理命令（ProxyCommand）并把它的 stdio 当作目标连接的传输。
+ *
+ * 与 tty `src/ssh.ts` 的 dialProxyCommand **逐句同序**（两包不互相 import，只能各写一份；
+ * 语义口径由这份注释与单测钉住）：闸门 → 展开 → spawn → 提前退出拖垮传输 → stderr 常驻排空。
+ * **导出仅供单测**。
+ */
+export declare function dialProxyCommand(options: {
+    spec: SshSpec;
+    /** 闸门求值（缺省 = 关）：本包从 tty settings 读，按**每次拨号**求值——开关一关立刻生效。 */
+    allowed?: () => boolean;
+    logger?: ExecLogger | undefined;
+}): Promise<ProxyCommandDial>;
+/** 代理命令失败的事实 → 错误文案后缀（空串 = 没失败），与 tty 同口径。 */
+export declare function proxyFailureSuffix(proxy: ProxyCommandDial | null): string;
 /**
  * 长流配额判定（纯函数，便于回归）：`busy` 是连接上正在推送的长流数。
  * @param target - 目标标签，只用于文案。
@@ -215,9 +267,27 @@ export declare function shouldRecycleConn(conn: {
 export declare class RemoteExec {
     private readonly logger;
     private readonly store;
+    /**
+     * ProxyCommand 闸门求值器（缺省 = 恒关）。
+     *
+     * 为什么是**回调**而不是构造时读一次的布尔值：开关归 tty settings，本包的 settings 句柄是
+     * 运行时才就绪的，而且用户随时可能关掉它——关掉之后必须**立刻**对下一次拨号生效
+     * （留着旧值意味着「关了还能用」，那正是这一档最不能出的错）。求值只读内存，无 IO。
+     */
+    private readonly options;
     private readonly conns;
     private sweeper;
-    constructor(logger: ExecLogger, store: HostKeyStore);
+    constructor(logger: ExecLogger, store: HostKeyStore, 
+    /**
+     * ProxyCommand 闸门求值器（缺省 = 恒关）。
+     *
+     * 为什么是**回调**而不是构造时读一次的布尔值：开关归 tty settings，本包的 settings 句柄是
+     * 运行时才就绪的，而且用户随时可能关掉它——关掉之后必须**立刻**对下一次拨号生效
+     * （留着旧值意味着「关了还能用」，那正是这一档最不能出的错）。求值只读内存，无 IO。
+     */
+    options?: {
+        proxyCommandAllowed?: () => boolean;
+    });
     /** 插件卸载：关定时器与全部连接（幂等）。 */
     disposeAll(): void;
     /** 在远程执行一条命令（argv 形式，内部做 shell 转义）。 */

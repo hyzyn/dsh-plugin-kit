@@ -20,7 +20,8 @@
  */
 import { Client } from 'ssh2';
 import type { ClientChannel, ConnectConfig } from 'ssh2';
-import { PassThrough } from 'node:stream';
+import type { ChildProcess } from 'node:child_process';
+import { Duplex, PassThrough } from 'node:stream';
 export interface TermExit {
     exitCode: number | null;
     signal: string | null;
@@ -88,6 +89,19 @@ export interface SshSpec {
     agentForward?: boolean;
     /** 经跳板机连接（ProxyJump 语义，**单跳**）；缺省 = 直连。 */
     jump?: SshJumpSpec;
+    /**
+     * 代理命令（ProxyCommand 语义）：本机执行的命令，它的 stdin/stdout 就是 SSH 传输。
+     *
+     * **单独一档信任级**：这是「设置字段驱动的本机任意命令执行」，与跳板机（只连一跳 TCP）
+     * 完全不同。因此：
+     *   - **默认关闭**（settings `allowProxyCommand`）：关着时携带它的连接一律**明确失败**，
+     *     绝不静默退回直连——直连多半也连不上，还会把「配置没生效」伪装成网络问题；
+     *   - **`~/.ssh/config` 导入永不自动带入**（`parseSshConfigDetailed` 只报数）；
+     *   - `%h` / `%p` / `%r` / `%n` / `%%` 按 OpenSSH 同义展开（见 `expandProxyCommand`），
+     *     展开值只允许 `[A-Za-z0-9._@:\[\]-]`，否则**拒绝执行**（防连接簿字段注入 shell）；
+     *   - 与 `jump` 同时给时按 OpenSSH 语义 **ProxyJump 优先**，并记一条 warn。
+     */
+    proxyCommand?: string;
 }
 /**
  * 跳板机规格（ProxyJump 语义，**单跳**）。
@@ -258,6 +272,68 @@ export declare function dialJump(options: {
     /** 覆盖跳板机那一跳的握手超时（探针路径要短；缺省沿用 buildConnectConfig 的 20s）。 */
     readyTimeoutMs?: number;
 }): Promise<JumpDial>;
+/** 代理命令长度上限：与自定义命令标签同量级（它是一条命令行，不是脚本文件）。 */
+export declare const PROXY_COMMAND_MAX = 2000;
+/** 关着闸门时携带代理命令的连接报什么错（导出供单测与客户端文案对照）。 */
+export declare const PROXY_COMMAND_DISABLED: string;
+/** 设置 ProxyCommand 闸门（插件 settings 就绪与每次热更新时调用）。 */
+export declare function setProxyCommandPolicy(allowed: boolean): void;
+/** 当前闸门状态（探针用它把「配了但没开」与「连不上」分开报）。 */
+export declare function proxyCommandAllowedNow(): boolean;
+/**
+ * 清洗一份代理命令输入（settings schema / 宽松清洗 / 内联融合共用）。
+ *
+ * 返回 `undefined` = 没配。**只做形状校验**（非空 / 单行 / 长度），命令内容本身不解释——
+ * 「能不能执行」由闸门决定，不由这里猜（含 `;` `/` `|` 都是合法的 shell 写法）。
+ */
+export declare function sanitizeProxyCommand(input: unknown): string | undefined;
+/** 严格校验一份代理命令输入（HTTP POST 路径）；返回错误信息或清洗结果。 */
+export declare function validateProxyCommand(input: unknown): {
+    proxyCommand?: string;
+    error?: string;
+};
+/**
+ * 展开 `%h` / `%p` / `%r` / `%n` / `%%`（与 OpenSSH 同义）。
+ *
+ * `%h` 目标主机、`%p` 目标端口、`%r` 目标用户名、`%n` 目标主机（如写法里给的名字——
+ * 本包没有别名概念，与 `%h` 同值）、`%%` 字面 `%`。其余 `%X` **原样保留**（不报错）：
+ * 用户可能是在命令里写 `printf '%s'`，替我们没实现的占位符而失败才是意外。
+ *
+ * 代入值必须过白名单，否则**抛错拒绝执行**（见 `PROXY_VALUE_SAFE`）。
+ */
+export declare function expandProxyCommand(command: string, spec: SshSpec): string;
+/** 代理命令传输：子进程 + 它的 stdio（目标那条连接把 stdio 当 `ConnectConfig.sock`）。 */
+export interface ProxyCommandDial {
+    /**
+     * 代理命令子进程：**它拥有传输**，目标 client 只是借用——ssh2 的 `end()`/`destroy()`
+     * 只关借来的流，不会去杀子进程。
+     */
+    child: ChildProcess;
+    /** 目标连接用的传输（stdin/stdout 合成的 Duplex）。 */
+    sock: Duplex;
+    /** 子进程提前退出 / 出错的事实；没有则 null（错误文案里点名它，别让用户去查目标主机）。 */
+    failure(): Error | null;
+    /** 收尾：关传输 + 杀子进程（**幂等**；所有 teardown 路径都要调，否则漏一个常驻进程）。 */
+    dispose(): void;
+}
+/**
+ * 启动代理命令并把它接到目标连接上。
+ *
+ * 这一跳与 `dialJump` 的差别，逐条都有理由：
+ *   1. **先过闸门**：关着就直接抛 `PROXY_COMMAND_DISABLED`（不 spawn、不退回直连）；
+ *   2. **没有「握手」可等**：传输就是子进程的 stdio，ssh2 会在它上面跑握手——所以这里
+ *      spawn 成功即返回，剩下的失败由目标连接的 error/close 路径 + `failure()` 共同呈现；
+ *   3. **子进程死了要拖垮传输**：提前退出时 destroy 掉 sock，逼 ssh2 立刻报错（否则
+ *      「命令一开始就失败」会伪装成 20s 握手超时）；
+ *   4. **stderr 必须排空**：不排空的话命令输出一多就把管道写满、子进程卡死（经典坑），
+ *      同时留一小段尾巴进错误文案——它是排查代理命令失败最直接的信息；
+ *   5. **命令原文不进日志与错误文案**：它可能含凭据（如 `-i /path/key`），日志只写
+ *      「已启动代理命令」与退出码。
+ */
+export declare function dialProxyCommand(options: {
+    spec: SshSpec;
+    logger?: SshLogger;
+}): Promise<ProxyCommandDial>;
 /**
  * 清洗一份跳板机输入（settings schema / 宽松清洗 / 内联融合共用）。
  *
@@ -271,7 +347,14 @@ export declare function validateJumpSpec(input: unknown): {
     jump?: SshJumpSpec;
     error?: string;
 };
-/** 建连前准备的结果：目标 config（可能挂了跳板机通道）+ 目标那一跳的 TOFU 策略。 */
+/** 目标连接的传输来源（两者互斥：`jump` 优先，见 `attachSshTransport`）。 */
+export interface SshTransport {
+    /** 需要跳板机时非 null；**调用方必须在收尾时 `end()` 它**（目标只是借用它的通道）。 */
+    bastion: Client | null;
+    /** 需要代理命令时非 null；**调用方必须在收尾时 `dispose()` 它**（目标只是借用它的 stdio）。 */
+    proxy: ProxyCommandDial | null;
+}
+/** 建连前准备的结果：目标 config（可能挂了跳板机通道 / 代理命令传输）+ 目标那一跳的 TOFU 策略。 */
 export interface PreparedSshConnect {
     connectConfig: ConnectConfig;
     policy: {
@@ -279,19 +362,28 @@ export interface PreparedSshConnect {
     };
     /** 需要跳板机时非 null；**调用方必须在收尾时 `end()` 它**（目标只是借用它的通道）。 */
     bastion: Client | null;
+    /** 需要代理命令时非 null；**调用方必须在收尾时 `dispose()` 它**（目标只是借用它的 stdio）。 */
+    proxy: ProxyCommandDial | null;
     /** 展示串：带「经跳板机 X」后缀，错误文案直接用。 */
     target: string;
 }
+/**
+ * 代理命令失败的事实 → 错误文案后缀（空串 = 没失败）。
+ *
+ * 为什么要它：代理命令死了之后 ssh2 只会报一句「握手前连接中断」，那会把用户支到目标主机上
+ * 去查。调用方在错误分支拼上这句，用户才知道是该去看代理命令的 stderr。
+ */
+export declare function proxyFailureSuffix(proxy: ProxyCommandDial | null): string;
 /**
  * 四个连接点（终端 / SFTP / 隧道 / 探针）**共用**的建连前准备。
  *
  * 为什么要有这个函数：跳板机不是「终端的特性」——SFTP、端口转发、探针各自都在建 SSH 连接
  * （`sftp.ts` / `tunnels.ts` / `probe.ts` 各有一处 `new Client()`）。把「构造 config →
- * 需要时拨跳板机 → 接上通道 → 装目标 TOFU 策略」收成一处，四条路才不会各写一份
+ * 需要时拨跳板机 / 起代理命令 → 接上传输 → 装目标 TOFU 策略」收成一处，四条路才不会各写一份
  * （那正是这一项立项时点名的「三处各写一份必然漂」）。
  *
  * **调用方负责**：自己 `conn.connect(connectConfig)`、自己处理 ready/error/close，
- * 并在收尾（成功或失败）时对 `bastion` 调 `end()`。
+ * 并在收尾（成功或失败）时对 `bastion` 调 `end()`、对 `proxy` 调 `dispose()`。
  */
 export declare function prepareSshConnect(options: {
     spec: SshSpec;
@@ -301,20 +393,20 @@ export declare function prepareSshConnect(options: {
     readyTimeoutMs?: number;
 }): Promise<PreparedSshConnect>;
 /**
- * 只做「构造目标 config（需要时拨跳板机并把通道接上）」这一半。
+ * 只做「构造目标 config（需要时拨跳板机 / 起代理命令并把传输接上）」这一半。
  *
  * 拆出来的唯一理由：**探针自己装 hostVerifier**（`makeHostKeyVerifier` 要收集
- * hostkey 结论，不用 `applyHostKeyPolicy`），但它同样需要跳板机。返回值里的
- * `bastion` 由调用方负责收尾。
+ * hostkey 结论，不用 `applyHostKeyPolicy`），但它同样需要跳板机 / 代理命令。返回值里的
+ * `transport` 由调用方负责收尾。
  */
-export declare function attachJumpSock(options: {
+export declare function attachSshTransport(options: {
     spec: SshSpec;
     store?: HostKeyStore;
     logger?: SshLogger;
     readyTimeoutMs?: number;
 }): Promise<{
     connectConfig: ConnectConfig;
-    bastion: Client | null;
+    transport: SshTransport;
 }>;
 /**
  * 建立 SSH 连接并打开交互 shell channel，返回 TermHandle。

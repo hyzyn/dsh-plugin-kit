@@ -112,6 +112,14 @@ export interface Config {
     sftpLimits?: Partial<SftpLimits>;
     /** 服务器状态条（0.17.0）：是否采集并推送会话资源指标（CPU/内存/磁盘/uptime/TCP/网速/温度）。默认开。 */
     statsEnabled?: boolean;
+    /**
+     * 允许 ProxyCommand（本机命令执行）：**默认关**。
+     *
+     * 本插件唯一「由设置字段驱动本机任意命令执行」的开关，与跳板机（只连一跳 TCP）不同档：
+     * 关着时携带 `proxyCommand` 的连接**明确失败**（不退回直连），`~/.ssh/config` 导入也
+     * 永不自动带入该字段——要用的条目必须自己开开关再手填。
+     */
+    allowProxyCommand?: boolean;
     /** 内部状态：SSH 持久会话名（远程 tmux 托管，本机 socket 清单看不到，随 settings 留存供新窗口恢复确认）。 */
     persistSessions?: Array<{
         tmuxName: string;
@@ -259,6 +267,8 @@ declare class LiveConfig {
     persistSessions: string[];
     /** SFTP 传输限制（客户端浏览器侧执行）。 */
     sftpLimits: Required<SftpLimits>;
+    /** 允许 ProxyCommand（本机命令执行）：默认关（见 Config.allowProxyCommand）。 */
+    allowProxyCommand: boolean;
     constructor(init: {
         shell: string;
         term: string;
@@ -273,6 +283,7 @@ declare class LiveConfig {
         endOnPageClose?: boolean;
         statsEnabled?: boolean;
         sftpLimits?: Partial<SftpLimits>;
+        allowProxyCommand?: boolean;
         persistSessions?: string[];
     });
     /** 合并部分更新；空字符串/undefined 保持原值；sshHosts/hostKeys/tunnels 传数组即整体替换。 */
@@ -290,6 +301,7 @@ declare class LiveConfig {
         endOnPageClose: boolean;
         statsEnabled: boolean;
         sftpLimits?: Partial<SftpLimits>;
+        allowProxyCommand: boolean;
         persistSessions: string[];
     }>): void;
     findSshHost(name: string): SshHostEntry | undefined;

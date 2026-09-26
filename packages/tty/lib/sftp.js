@@ -23,7 +23,7 @@ import { mkdir as fsMkdir, readdir as fsReaddir, rm as fsRm, stat as fsStat } fr
 import { basename, dirname, join as pathJoin } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { prepareSshConnect, sshTarget } from './ssh.js';
+import { prepareSshConnect, proxyFailureSuffix, sshTarget } from './ssh.js';
 /** 连接空闲回收阈值：窗口内无任何操作即断开（下次操作自动重连）。 */
 const SFTP_IDLE_MS = 120_000;
 /** 扫描周期。 */
@@ -707,13 +707,15 @@ export class SftpManager {
         const conn = new Client();
         let sftp;
         let bastion = null;
+        let proxy = null;
         let target = sshTarget(spec);
         try {
-            // 与终端/隧道/探针共用同一条准备路径：跳板机只在 prepareSshConnect 里拨一次
+            // 与终端/隧道/探针共用同一条准备路径：跳板机 / 代理命令只在 prepareSshConnect 里拨一次
             const prepared = await prepareSshConnect({ spec, store: this.store, logger: this.logger });
             const connectConfig = prepared.connectConfig;
             const policy = prepared.policy;
             bastion = prepared.bastion;
+            proxy = prepared.proxy;
             target = prepared.target;
             // password 认证挂 keyboard-interactive 自动应答（同 spawnSsh；
             // tryKeyboard 只在 password 分支置位，见 buildConnectConfig）
@@ -733,17 +735,21 @@ export class SftpManager {
                     if (!settled) {
                         settled = true;
                         const mismatch = policy.mismatchMessage();
-                        reject(new Error(mismatch ?? `SSH 连接失败（${target}）: ${error.message}`));
+                        reject(new Error(mismatch ?? `SSH 连接失败（${target}）: ${error.message}${proxyFailureSuffix(proxy)}`));
                     }
                     else {
                         this.logger.warn(`[dsh-tty] sftp ${target} 连接错误: ${error.message}`);
                     }
                 });
                 conn.on('close', () => {
-                    // 连接断开：丢弃池内条目，下次操作自动重连
+                    // 连接断开：丢弃池内条目，下次操作自动重连。
+                    // **必须走 close(rt) 而不是只 delete**：跳板机 / 代理命令是「另一条连接 / 另一个进程」，
+                    // 只摘池条目会把它们留在原地（前者靠 keepalive 一直挂着、后者变常驻孤儿）。
                     const rt = this.conns.get(signature);
-                    if (rt !== undefined && rt.conn === conn)
+                    if (rt !== undefined && rt.conn === conn) {
                         this.conns.delete(signature);
+                        this.close(rt);
+                    }
                 });
                 try {
                     conn.connect(connectConfig);
@@ -774,10 +780,12 @@ export class SftpManager {
             catch {
                 /* 未建立 */
             }
+            proxy?.dispose();
+            proxy = null;
             throw error;
         }
         this.logger.info(`[dsh-tty] sftp ${target} 就绪`);
-        const rt = { spec, signature, conn, bastion, sftp, lastUsed: Date.now() };
+        const rt = { spec, signature, conn, bastion, proxy, sftp, lastUsed: Date.now() };
         this.conns.set(signature, rt);
         return sftp;
     }
@@ -810,6 +818,8 @@ export class SftpManager {
             /* 已断开 */
         }
         rt.bastion = null;
+        rt.proxy?.dispose();
+        rt.proxy = null;
     }
     /* -------------------------------------------------------------- */
     /* SFTPWrapper 回调的 Promise 化与递归删除                          */

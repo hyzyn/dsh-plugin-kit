@@ -19,7 +19,7 @@
  */
 import net from 'node:net';
 import { Client } from 'ssh2';
-import { classifyError, prepareSshConnect } from './ssh.js';
+import { classifyError, prepareSshConnect, proxyFailureSuffix } from './ssh.js';
 /**
  * 本地监听失败的文案（D58 补充）：`EADDRINUSE` 在多 profile 场景下**几乎总是**
  * 「另一个 profile 的宿主进程还占着这个端口」——端口转发是**机器级**资源，而配置是按
@@ -78,6 +78,7 @@ export class TunnelManager {
                 error: null,
                 conn: null,
                 bastion: null,
+                proxy: null,
                 ready: false,
                 server: null,
                 connections: 0,
@@ -159,6 +160,8 @@ export class TunnelManager {
             /* 已断开 */
         }
         rt.bastion = null;
+        rt.proxy?.dispose();
+        rt.proxy = null;
         rt.ready = false;
         // 在途转发一并销毁（0.19.0）：停用/改规格时的在途 socket 与 channel
         // 不再「不可见、不可控」。end/close/destroy 按对象类型择一可用。
@@ -222,19 +225,22 @@ export class TunnelManager {
             // 跳板机也要跟着走：隧道与终端走的是两条不同的连接，漏了它就得到「隧道连不上、
             // 终端能连」这种半吊子状态（本项立项时点名的正是这种状态）
             ...(book.jump !== undefined ? { jump: book.jump } : {}),
+            // 代理命令同理（一整档信任级；闸门在 ssh.ts 的 dialProxyCommand 里统一判）
+            ...(book.proxyCommand !== undefined ? { proxyCommand: book.proxyCommand } : {}),
         };
         const target = `${book.username}@${book.host}:${String(book.port)}`;
         rt.state = 'connecting';
         let conn;
         try {
             // 认证配置可能抛错（keyPath 读不到 / 引用解析不到）——走重试等待配置修复。
-            // 与终端/SFTP/探针共用同一条准备路径：跳板机（若有）在这里拨。
+            // 与终端/SFTP/探针共用同一条准备路径：跳板机 / 代理命令（若有）在这里拨。
             const prepared = await prepareSshConnect({ spec: sshSpec, store: this.store, logger: this.logger });
             const connectConfig = prepared.connectConfig;
             const policy = prepared.policy;
             conn = new Client();
             rt.conn = conn;
             rt.bastion = prepared.bastion;
+            rt.proxy = prepared.proxy;
             rt.ready = false;
             conn.on('ready', () => {
                 if (rt.dead || rt.conn !== conn)
@@ -265,7 +271,9 @@ export class TunnelManager {
             conn.on('error', (error) => {
                 if (rt.dead || rt.conn !== conn)
                     return;
-                this.scheduleRetry(rt, policy.mismatchMessage() ?? `SSH 连接失败（${target}）: ${classifyError(error.message)}`);
+                // 代理命令死了的话，ssh2 只会报「握手前连接中断」——把退出码 / stderr 补在后面，
+                // 否则用户会去查目标主机（那里没有任何问题）
+                this.scheduleRetry(rt, policy.mismatchMessage() ?? `SSH 连接失败（${target}）: ${classifyError(error.message)}${proxyFailureSuffix(rt.proxy)}`);
             });
             conn.on('close', () => {
                 if (rt.conn !== conn)
@@ -279,6 +287,9 @@ export class TunnelManager {
                     /* 已断开 */
                 }
                 rt.bastion = null;
+                // 代理命令是**另一个进程**：同理，目标断了就杀，别让它靠 keepalive 一直挂着
+                rt.proxy?.dispose();
+                rt.proxy = null;
                 rt.ready = false;
                 rt.connections = 0;
                 if (!rt.dead && rt.spec.enabled && rt.state !== 'error') {
@@ -428,6 +439,8 @@ export class TunnelManager {
             /* 已断开 */
         }
         rt.bastion = null;
+        rt.proxy?.dispose();
+        rt.proxy = null;
         rt.ready = false;
         rt.connections = 0;
         if (rt.dead || rt.retryTimer !== null)

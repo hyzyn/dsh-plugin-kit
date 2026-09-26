@@ -137,6 +137,7 @@ jobs:
           node packages/tty/scripts/probe-smoke.mjs
           node packages/tty/scripts/probe-route-smoke.mjs
           node packages/tty/scripts/jump-smoke.mjs
+          node packages/tty/scripts/proxycommand-smoke.mjs
           node packages/tty/scripts/sftplimits-smoke.mjs
       # dsh-docker 的三套端到端脚本（docker DEFECTS D70）：解析 / 路由 / 浏览器半体
       # 此前只在本机手跑，client.js 在 CI 里从未被执行过。三套都已 hermetic

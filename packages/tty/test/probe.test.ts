@@ -5,7 +5,7 @@
  * 编辑前的形状校验，错误文案是设置卡片直接展示给用户的契约。
  */
 import { describe, expect, it } from 'vitest'
-import { validateSshFields } from '../src/probe.js'
+import { probeSsh, validateSshFields } from '../src/probe.js'
 
 describe('validateSshFields', () => {
   it('host / username 必填（trim 后为空也算缺）', () => {
@@ -60,5 +60,27 @@ describe('validateSshFields', () => {
     const plain = validateSshFields({ host: ' h ', username: ' u ', agentForward: false }).spec
     expect(plain).toEqual({ host: 'h', port: 22, username: 'u', auth: 'agent' })
     expect(validateSshFields({ host: 'h', username: 'u', agentForward: true }).spec?.agentForward).toBe(true)
+  })
+})
+
+/**
+ * 代理命令维度：**闸门关着时探针必须在阶段 0 就返回**。
+ *
+ * 为什么单列：探针是用户遇到连不上时第一个点的按钮。若它照旧去 TCP 预检目标主机，
+ * 用户会拿到「TCP 超时」并去查网络——而真相是「代理命令没启用」。所以这里断言：
+ *   - 报的是开关那件事（文案含「未启用」），`proxy.active === false`；
+ *   - **不做 TCP 预检**（`tcp.skipped` 不为 true 也对：它带的就是同一条说明文案）；
+ *   - 立即返回（目标地址是 TEST-NET-3 的不可达地址，真去连必然慢）。
+ */
+describe('probeSsh：代理命令闸门', () => {
+  it('关着时阶段 0 直接返回，指名开关而不是「目标 TCP 超时」', async () => {
+    const started = Date.now()
+    const result = await probeSsh({ host: '203.0.113.7', username: 'u', proxyCommand: 'ssh -W %h:%p bastion' })
+    expect(Date.now() - started).toBeLessThan(1000)
+    expect(result.proxy).toEqual({ active: false, error: expect.stringContaining('未启用') })
+    expect(result.auth.ok).toBe(false)
+    expect(result.auth.error).toContain('ProxyCommand')
+    expect(result.tcp.ok).toBe(false)
+    expect(result.tcp.error).toContain('未启用')
   })
 })

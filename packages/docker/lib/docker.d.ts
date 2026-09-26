@@ -620,5 +620,12 @@ export declare function createRunner(options: {
     remote: RemoteExec;
     logger: ExecLogger;
 }): Runner;
-/** 供宿主半体复用：把 HostKeyStore 与 logger 绑到 RemoteExec。 */
-export declare function createRemoteExec(logger: ExecLogger, store: HostKeyStore): RemoteExec;
+/**
+ * 供宿主半体复用：把 HostKeyStore 与 logger 绑到 RemoteExec。
+ *
+ * `proxyCommandAllowed` 缺省 = 恒关（ProxyCommand 这一档要显式给闸门求值器才开，见
+ * `RemoteExec` 的构造参数注释）。
+ */
+export declare function createRemoteExec(logger: ExecLogger, store: HostKeyStore, options?: {
+    proxyCommandAllowed?: () => boolean;
+}): RemoteExec;

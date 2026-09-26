@@ -22,7 +22,7 @@
  */
 import { Client } from 'ssh2';
 import { connect as netConnect } from 'node:net';
-import { attachJumpSock, classifyError, jumpTargetLabel, sshTarget } from './ssh.js';
+import { attachSshTransport, classifyError, jumpTargetLabel, PROXY_COMMAND_DISABLED, proxyCommandAllowedNow, proxyFailureSuffix, sanitizeProxyCommand, sshTarget } from './ssh.js';
 /** TCP 预检超时（毫秒）：DNS 解析 + 建连。 */
 export const PROBE_TCP_TIMEOUT_MS = 6_000;
 /** ssh2 握手/认证阶段超时（毫秒）；覆盖 buildConnectConfig 的 readyTimeout。 */
@@ -126,16 +126,39 @@ export async function probeSsh(spec, store) {
         return finish();
     }
     /*
+     * ---- 阶段 0：代理命令闸门 ----
+     *
+     * 配了 `proxyCommand` 但开关（`allowProxyCommand`）没开时**在这里就返回**：这一档是
+     * 「本机任意命令执行」，关着的时候真实连接也会明确失败（见 ssh.ts 的 dialProxyCommand），
+     * 所以探针必须报同一件事——否则「试连」会去 TCP 预检目标主机，把用户引到网络排查上。
+     */
+    const proxyCommand = sanitizeProxyCommand(spec.proxyCommand);
+    const proxyActive = proxyCommand !== undefined && proxyCommandAllowedNow();
+    if (proxyCommand !== undefined) {
+        result.proxy = { active: proxyActive, ...(proxyActive ? {} : { error: PROXY_COMMAND_DISABLED }) };
+        if (!proxyActive) {
+            result.tcp = { ok: false, error: PROXY_COMMAND_DISABLED, ms: 0 };
+            result.auth = { ok: false, error: PROXY_COMMAND_DISABLED };
+            return finish();
+        }
+        /*
+         * 走代理命令时**不做直连 TCP 预检**：连不连得上由那条命令决定，探目标主机与本次路径无关
+         * （典型情况就是目标根本不可直连，报「不可达」纯属误导）。链路结论来自阶段 2 的握手。
+         */
+        result.tcp = { ok: false, skipped: true, ms: 0 };
+    }
+    /*
      * ---- 阶段 1：TCP 预检（DNS + 建连） ----
      *
      * **有跳板机时预检的是跳板机**：目标那一跳根本不能直连，探它只会得到一句「超时」，
      * 而那正是用户要区分的东西。目标那一跳的结论来自阶段 2（经通道握手），见 result.auth。
+     * **走代理命令时整段跳过**（上面已经把 tcp 标成 skipped）。
      */
     const jumpLabel = jumpTargetLabel(spec);
     const tcpHost = spec.jump !== undefined ? spec.jump.host.trim() : spec.host;
     const tcpPort = spec.jump !== undefined ? spec.jump.port ?? 22 : port;
     const tcpPrefix = jumpLabel === '' ? '' : `跳板机 ${jumpLabel} `;
-    const tcpResult = await new Promise((resolve) => {
+    const tcpResult = !proxyActive && await new Promise((resolve) => {
         const sock = netConnect({ host: tcpHost, port: tcpPort });
         const tcpStart = Date.now();
         const done = (ok, error) => {
@@ -159,21 +182,23 @@ export async function probeSsh(spec, store) {
             done(false, tcpPrefix + classifyError(error.message));
         });
     });
-    result.tcp = tcpResult;
-    if (jumpLabel !== '')
-        result.jump = { label: jumpLabel, tcp: { ...tcpResult, ms: tcpResult.ms } };
-    if (!tcpResult.ok) {
-        result.auth = { ok: false, error: tcpResult.error };
-        return finish();
+    if (tcpResult !== false) {
+        result.tcp = tcpResult;
+        if (jumpLabel !== '')
+            result.jump = { label: jumpLabel, tcp: { ...tcpResult, ms: tcpResult.ms } };
+        if (!tcpResult.ok) {
+            result.auth = { ok: false, error: tcpResult.error };
+            return finish();
+        }
     }
     // ---- 阶段 2+3：ssh2 握手（host key 交换 + 认证） ----
     // 有跳板机时**两跳都用探针的短超时**：否则「跳板机连不上」会把探针拖到 20s
     let connectConfig;
-    let bastion = null;
+    let transport;
     try {
-        const attached = await attachJumpSock({ spec, store, readyTimeoutMs: PROBE_AUTH_TIMEOUT_MS });
+        const attached = await attachSshTransport({ spec, store, readyTimeoutMs: PROBE_AUTH_TIMEOUT_MS });
         connectConfig = attached.connectConfig;
-        bastion = attached.bastion;
+        transport = attached.transport;
     }
     catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -198,12 +223,13 @@ export async function probeSsh(spec, store) {
                 /* 已断开 */
             }
             try {
-                bastion?.end();
+                transport.bastion?.end();
             }
             catch {
                 /* 已断开 */
             }
-            bastion = null;
+            // 代理命令是子进程：探针收尾必须杀它（每次试连漏一个常驻进程是很容易漏的地方）
+            transport.proxy?.dispose();
             resolve(finish());
         };
         // hostVerifier 的 onResult 同步回调：把结论收集到 hostkeyState
@@ -248,13 +274,14 @@ export async function probeSsh(spec, store) {
                 return;
             }
             result.hostkey = seenHostKey ? hostkeyState : { state: 'unknown', fingerprint: '' };
-            // TCP 已通：这里只可能是协商 / 认证 / 协议层错误
-            result.auth = { ok: false, error: classified, ms: Date.now() - authStart };
+            // TCP / 传输已通：这里只可能是协商 / 认证 / 协议层错误。
+            // 代理命令死了的话，ssh2 只会报「握手前连接中断」——把那件事补在后面，别把人支到目标主机上
+            result.auth = { ok: false, error: classified + proxyFailureSuffix(transport.proxy), ms: Date.now() - authStart };
             settle();
         });
         conn.on('close', () => {
             // 正常路径（ready / error / 超时）已 settle；未 settle 的 close 兜底
-            result.auth = { ok: false, error: '连接已关闭（服务端主动断开）', ms: Date.now() - authStart };
+            result.auth = { ok: false, error: `连接已关闭（服务端主动断开）${proxyFailureSuffix(transport.proxy)}`, ms: Date.now() - authStart };
             settle();
         });
         try {

@@ -2,7 +2,7 @@ import z from '@deepseek-ai/schemastery';
 import { definePlugin, hasSameOriginProof, isLoopbackRequestStrict, originProofHint, plainConfig, readSettingsEntry, settingsEntryScope, suppressAutoSettingsPage } from '@hyzyn/dsh-kit';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { DockerApi, assertBin, assertImageRef, assertName, assertRef, assertSince, createRunner, parseImageHistoryJson, parseImageHistoryText, parseContainerEvent, parseEventsJson, parseImageInspectJson, parseInspectJson, parsePsJson, parseStatsJson, suggestContainerNames, } from './docker.js';
-import { RemoteExec, sanitizeJumpSpec, setCredentialResolver, sshTarget } from './ssh-exec.js';
+import { RemoteExec, sanitizeJumpSpec, sanitizeProxyCommand, setCredentialResolver, sshTarget } from './ssh-exec.js';
 const TARGET_SCHEMA = z.object({
     name: z.string().required(),
     kind: z.union([z.const('local'), z.const('ssh')]).default('local'),
@@ -358,7 +358,11 @@ export function formatBytes(value) {
     return `${text} ${units[unit] ?? 'B'}`;
 }
 /** 从 tty 的 entry settings 读取连接簿（只读；tty 未安装时为空表）。 */
-function readTtyBooks(settings) {
+/**
+ * 读 tty 连接簿 → 本包的连接规格。**导出仅供单测**（连接簿 → 规格这一跳是「一处配置、两处
+ * 生效」的落地处：漏带 jump / proxyCommand 就是「tty 能连、docker 连不上」那种半吊子状态）。
+ */
+export function readTtyBooks(settings) {
     const out = new Map();
     if (settings === undefined)
         return out;
@@ -400,9 +404,38 @@ function readTtyBooks(settings) {
         const jump = sanitizeJumpSpec(item.jump);
         if (jump !== undefined)
             spec.jump = jump;
+        /*
+         * 代理命令同理跟着连接簿走（本包**不自建界面**）。闸门不在这里判：它归 tty settings 的
+         * `allowProxyCommand`，由 `readTtyProxyCommandAllowed()` 现读、在**每次拨号**时求值
+         * （见 RemoteExec 的 options.proxyCommandAllowed）——这样用户一关开关就立刻生效。
+         */
+        const proxyCommand = sanitizeProxyCommand(item.proxyCommand);
+        if (proxyCommand !== undefined)
+            spec.proxyCommand = proxyCommand;
         out.set(name, spec);
     }
     return out;
+}
+/**
+ * 读 tty settings 里的 ProxyCommand 闸门（`allowProxyCommand`，默认关）。
+ *
+ * 为什么本包要用 **tty 的**开关而不是自己再加一个：连接簿只有一处（tty），代理命令也只有
+ * 一处能填；两个开关会让「连接簿配了、这个面板不认」变成说不清的状态。代价是本包多依赖一个
+ * 只读 settings 字段——settings 句柄缺失（启动早期）时恒 false，即**关**（失败方向安全）。
+ */
+export function readTtyProxyCommandAllowed(settings) {
+    if (settings === undefined)
+        return false;
+    let raw;
+    try {
+        raw = settings.get('tty');
+    }
+    catch {
+        return false;
+    }
+    if (typeof raw !== 'object' || raw === null)
+        return false;
+    return raw.allowProxyCommand === true;
 }
 /** 从 tty 的 hostKeys 读取已钉扎指纹（作为本插件 TOFU 的种子）。 */
 function readTtyHostKeys(settings) {
@@ -433,11 +466,12 @@ export function resolveTarget(target, books) {
              * 只会扑空（实测：目标引用 HS-248、连接簿里只有 HS_248_ADMIN，进 tty 卡片什么也改不了）。
              * 真正要改的字段是**本卡片这条目标的「连接簿」下拉**，所以先把这里说清楚，再说备选。
              *
-             * 末句是给跳板机那类情况留的出口（项目级 ROADMAP 第 2 项）：tty 的 ~/.ssh/config
-             * 导入会**跳过**依赖 ProxyJump / ProxyCommand 的块，那种主机的条目根本不会进连接簿
-             * ——用户看到「条目不存在」时第一反应是「我明明配过」。
+             * 末句是给「只能经跳板机 / 代理命令访问」那类情况留的出口（项目级 ROADMAP 第 2 项）：
+             * tty 的 ~/.ssh/config 导入会**自动带上 ProxyJump**、但**永不带上 ProxyCommand**，所以
+             * 后者的条目要么不存在、要么存在却没配代理命令——用户看到「条目不存在」时的第一反应
+             * 是「我明明配过」。
              */
-            return { error: `目标「${target.name}」引用的连接簿条目不存在：${target.book}（在本卡片这条目标的「连接簿」下拉里改选一个已有条目；或把 tty 终端面板的连接簿补一个同名条目；也可清空下拉改为手填 host/username。若该主机在 ~/.ssh/config 里配了 ProxyJump / ProxyCommand，导入会跳过它——跳板机本版本尚不支持，见项目级 ROADMAP 第 2 项）` };
+            return { error: `目标「${target.name}」引用的连接簿条目不存在：${target.book}（在本卡片这条目标的「连接簿」下拉里改选一个已有条目；或把 tty 终端面板的连接簿补一个同名条目；也可清空下拉改为手填 host/username。若该主机在 ~/.ssh/config 里只配了 ProxyCommand，导入会跳过它——那种条目要在 tty 连接簿里手动建，并打开「允许 ProxyCommand」，见项目级 ROADMAP 第 2 项）` };
         }
         return { resolved: { name: target.name, kind: 'ssh', spec } };
     }
@@ -530,7 +564,12 @@ const plugin = definePlugin({
                 persistHostKeys(next);
             },
         };
-        const remote = new RemoteExec(logger, hostKeyStore);
+        /*
+         * ProxyCommand 闸门：**每次拨号现读** tty settings（回调只做一次对象属性读取，无 IO）。
+         * 不缓存成布尔值：用户随时可能关掉它，缓存意味着「关了还能用」——这一档最不能出的错。
+         * settingsApi 在 settings 子上下文就绪前是 undefined，那时恒 false（= 关，安全方向）。
+         */
+        const remote = new RemoteExec(logger, hostKeyStore, { proxyCommandAllowed: () => readTtyProxyCommandAllowed(settingsApi) });
         /**
          * 当前生效的 targets：**以 settings 解析值为准**。
          * 为什么不能只读内存里的 live：settings 解析是异步的（服务就绪后才读一次），存在一个

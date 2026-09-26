@@ -113,11 +113,29 @@ export declare function normalizeConfig(section: Record<string, unknown>): LiveC
 export declare function formatEventTime(seconds: number): string;
 /** 字节 → docker 风格的人类可读大小（十进制单位，与 `docker images` 的 SIZE 一致）。 */
 export declare function formatBytes(value: number): string;
+/** 从 tty 的 entry settings 读取连接簿（只读；tty 未安装时为空表）。 */
+/**
+ * 读 tty 连接簿 → 本包的连接规格。**导出仅供单测**（连接簿 → 规格这一跳是「一处配置、两处
+ * 生效」的落地处：漏带 jump / proxyCommand 就是「tty 能连、docker 连不上」那种半吊子状态）。
+ */
+export declare function readTtyBooks(settings: SettingsLookup | undefined): Map<string, SshSpec>;
+/**
+ * 读 tty settings 里的 ProxyCommand 闸门（`allowProxyCommand`，默认关）。
+ *
+ * 为什么本包要用 **tty 的**开关而不是自己再加一个：连接簿只有一处（tty），代理命令也只有
+ * 一处能填；两个开关会让「连接簿配了、这个面板不认」变成说不清的状态。代价是本包多依赖一个
+ * 只读 settings 字段——settings 句柄缺失（启动早期）时恒 false，即**关**（失败方向安全）。
+ */
+export declare function readTtyProxyCommandAllowed(settings: SettingsLookup | undefined): boolean;
 /** 把一个配置目标解析成可连接的规格（连接簿查找在此完成）。 */
 export declare function resolveTarget(target: DockerTarget, books: Map<string, SshSpec>): {
     resolved?: ResolvedTarget;
     error?: string;
 };
+/** 只读其它插件 entry 的 settings（旧 `settings.get(ns)` 的替代）。 */
+interface SettingsLookup {
+    get(ns: string): unknown;
+}
 export declare const name: string, inject: string[] | undefined, apply: (ctx: Context, config?: Config | undefined) => void;
 export { parsePsJson, parseStatsJson, parseInspectJson, assertBin, assertImageRef, parseImageInspectJson, parseImageHistoryJson, parseImageHistoryText, DockerApi };
 export type { Runner } from './docker.js';
