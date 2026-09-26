@@ -49,7 +49,12 @@ setTimeout(() => {
   process.exit(1)
 }, 60_000).unref?.()
 
-/** 数一数现在还活着几个桥进程（按命令行里的脚本路径匹配；本脚本只在 POSIX 跑）。 */
+/**
+ * 数一数现在还活着几个桥进程（按命令行里的脚本路径匹配）。
+ *
+ * 返回 **-1 = 这个平台数不了**（Windows 没有 `ps`）。调用方必须把 -1 当「无法判定」而不是
+ * 0——否则「没有残留进程」在 Windows 上会变成一个**假通过**（第一次写这个脚本时就是这么比的）。
+ */
 function bridgeProcessCount() {
   try {
     const out = execFileSync('ps', ['-A', '-o', 'command'], { encoding: 'utf8' })
@@ -167,8 +172,9 @@ try {
     const message = error instanceof Error ? error.message : String(error)
     await new Promise((resolve) => setTimeout(resolve, 150))
     const after = bridgeProcessCount()
-    if (message.includes('未获宿主授权') && message.includes(GRANT_ENV) && after <= before) {
-      pass(`P3 未授权 → 明确失败且没起进程（桥进程 ${String(before)} → ${String(after)}）`)
+    if (message.includes('未获宿主授权') && message.includes(GRANT_ENV) && (after === -1 || after <= before)) {
+      const count = after === -1 ? '本平台数不了进程（无 ps）' : `桥进程 ${String(before)} → ${String(after)}`
+      pass(`P3 未授权 → 明确失败${after === -1 ? '（未起进程这一条跳过：' + count + '）' : `且没起进程（${count}）`}`)
     } else {
       fail('P3 未授权 → 明确失败且没起进程', `msg=${message} before=${String(before)} after=${String(after)}`)
     }
@@ -248,6 +254,7 @@ try {
   await new Promise((resolve) => setTimeout(resolve, 400))
   const leaked = bridgeProcessCount()
   if (leaked === 0) pass('P6 收尾后没有残留的代理命令进程')
+  else if (leaked === -1) console.log('  ⊘ SKIP  P6 收尾后没有残留的代理命令进程 — 本平台没有 ps，数不了')
   else fail('P6 收尾后没有残留的代理命令进程', `ps 里还有 ${String(leaked)} 个 proxy-bridge.mjs`)
 } finally {
   await target.close().catch(() => {})

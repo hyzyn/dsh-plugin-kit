@@ -126,7 +126,9 @@ function findDsh() {
   const explicit = value('--dsh')
   if (explicit !== undefined) return fs.existsSync(explicit) ? explicit : null
   try {
-    const found = execFileSync('which', ['dsh'], { encoding: 'utf8' }).trim()
+    // Windows 上没有 `which`（`where` 才是等价物）：写错的话脚本会永远 SKIP，看起来像「没装 DSH」
+    const found = execFileSync(process.platform === 'win32' ? 'where' : 'which', ['dsh'], { encoding: 'utf8' })
+      .split('\n')[0].trim()
     return found !== '' && fs.existsSync(found) ? found : null
   } catch {
     return null
@@ -487,8 +489,13 @@ async function assertUngranted(host) {
 async function assertGranted(host) {
   const docker = await request(host, '/api/dsh-docker/config')
   const dc = docker.json?.config ?? {}
-  check('B1 授权后 *Granted=true，且配置里的 allowExec:true 按原样生效',
-    dc.allowMutationsGranted === true && dc.allowExecGranted === true && dc.allowExec === true,
+  /*
+   * 顺带证明「播种生效」：两个开关在**授权后都按配置的 true 生效**，这就反证了 A1 的前提——
+   * 那份配置里确实写着 true（否则 A1 的「配置里 true 却打不开」是个空断言）。
+   */
+  check('B1 授权后 *Granted=true，且配置里的 allowMutations/allowExec:true 都按原样生效',
+    dc.allowMutationsGranted === true && dc.allowExecGranted === true
+      && dc.allowMutations === true && dc.allowExec === true,
     JSON.stringify({ allowMutations: dc.allowMutations, allowMutationsGranted: dc.allowMutationsGranted, allowExec: dc.allowExec, allowExecGranted: dc.allowExecGranted }))
 
   const postMutations = await request(host, '/api/dsh-docker/config', { method: 'POST', body: { allowMutations: true } })
