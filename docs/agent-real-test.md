@@ -173,6 +173,31 @@ dsh --profile <测试 profile> --patch <port.yml>
     纯 hermetic 的冒烟与 vitest 不受影响（本次全部跑绿）。**`--bootstrap`（见下）现在会把这件事
     变成一条明确的报错**：cohort 不匹配时 DSH 会把本仓插件整批 `disabled`，自证那步直接失败，
     而不是让验收跑出一堆看起来像代码坏了的 FAIL。
+- **Windows：`where dsh` 的第一条不能拿去 spawn（2026-09-26）**：npm 全局装出来的 `dsh`
+  是**无扩展名的 POSIX shell 脚本** + `dsh.cmd`，`where` 先返回前者，`spawn` 它直接
+  `ENOENT`（`live-host-smoke` 第一次在 Windows 上跑就死在这儿）。而 `.cmd` 只能经 shell 启动，
+  `shell: true` 又会把 `link:C:\含 空格的路径\packages\tty` 交给 cmd 再解析一遍。
+  做法：解析出**真正的 JS 入口**（`…/@deepseek-ai/dsh/lib/bin.js`）用当前这个 node 跑
+  （`scripts/dsh-exec.mjs`，platform 与搜索函数可注入，所以这条 Windows 分支在 macOS / ubuntu
+  上也能被单测跑到）。
+- **Windows：`fs.cpSync` 会把 junction 展开成真目录（这条最贵）**：pnpm 的 `link:` 依赖在
+  Windows 上是 **junction**，`cpSync(..., { verbatimSymlinks: true, dereference: false })`
+  照样把它复制成**真目录**——实测一个链接的包变成 **124MB 的真副本**（两份拷贝 ≈ 250MB）。
+  后果不是慢而是**坏**：副本里没有它依赖的兄弟包（`@deepseek-ai/cosmokit` 那种只在宿主 store
+  里与 schemastery 并列的包），插件 `import` 直接失败，宿主日志只有一句
+  `docker (@hyzyn/dsh-docker): failed to import`，路由全 404、18 条断言里 17 条红——
+  **看起来像插件在 Windows 上坏了**。做法：自己走目录树，链接（含 junction）建成链接
+  （`copyProfileTree`：Windows 必须建成 `junction` 类型，且 junction 只认绝对目标）。
+- **往 Windows VM 传仓库时要排除 `node_modules`**：`tar` 会把宿主机上的符号链接原样带过去
+  （`packages/*/node_modules/@deepseek-ai/*` 在 macOS 上是**绝对** mac 路径），落地后链接看着
+  还在、`dir` 也正常，Node 却解析不到（`Cannot find package 'js-yaml'`）——
+  本次为此白跑两轮。收尾一律 `pnpm install` + `node scripts/link-dsh-runtime.mjs` 重建。
+- **给 VM 的 `.bat` 一律纯 ASCII**：cmd 在非 65001 代码页下会把含中文的 `.bat` 解析错位
+  （现象是 `'ayedexpansion' 不是内部或外部命令`、`copy` 变成 `py`，整段命令错行）。
+  node 输出的中文照常——那是 stdout，与 batch 解析无关。
+- **失败时要打宿主日志**：`live-host-smoke` 现在每条 FAIL 之后会打印两个宿主实例的日志尾部
+  （「路由 404 / 工具没注册 / client.js 是空的」这类失败，全部线索都在那里）。上面第 2 条就是
+  靠它一眼看出 `failed to import` 的——没有它只能猜。
 - **macOS 的 `tar` 会带出 `._*.ts` 垃圾文件**：把改动打包进 Windows（bsdtar 带 xattr）后，
   vitest 会把 `._foo.test.ts` 当成测试文件，报 4 个「文件失败」而**每条断言都是通过的**——
   看着像代码坏了。打包加 `COPYFILE_DISABLE=1`，或落地后删 `._*`。
@@ -188,8 +213,12 @@ SKIP 在「我跑过了」这句话里最容易被当成 PASS。
 # 干净机器（VM / 新克隆）：没有 link profile 也一条命令跑完
 pnpm install --frozen-lockfile
 node scripts/link-dsh-runtime.mjs          # 插件与宿主共用同一份 @deepseek-ai/*（必需）
-node scripts/live-host-smoke.mjs --bootstrap --strict
+node scripts/live-host-smoke.mjs --bootstrap --strict    # 18 条断言，含两个宿主实例
 ```
+
+**落地顺序不能省**：`pnpm install` 会重建 `node_modules`（冲掉 `link-dsh-runtime` 的链接），
+所以每次传完/装完都要重跑一次 `link-dsh-runtime`；漏掉它的症状是插件 import 失败、路由全 404，
+而不是一条「链接不对」的报错。
 
 `--bootstrap` 做的事（[scripts/live-profile.mjs](../scripts/live-profile.mjs)）：
 

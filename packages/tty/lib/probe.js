@@ -118,13 +118,6 @@ export async function probeSsh(spec, store) {
     };
     const port = spec.port ?? 22;
     const target = sshTarget(spec);
-    // ---- 阶段 1：agent 预检（与 spawnSsh 同款，快速失败） ----
-    if (spec.auth === 'agent' && (process.env.SSH_AUTH_SOCK === undefined || process.env.SSH_AUTH_SOCK === '')) {
-        const message = 'agent 认证需要 SSH_AUTH_SOCK（本机未运行 ssh-agent 或变量未设置）';
-        result.tcp = { ok: false, error: message, ms: 0 };
-        result.auth = { ok: false, error: message };
-        return finish();
-    }
     /*
      * ---- 阶段 0：代理命令闸门 ----
      *
@@ -149,6 +142,21 @@ export async function probeSsh(spec, store) {
          * （典型情况就是目标根本不可直连，报「不可达」纯属误导）。链路结论来自阶段 2 的握手。
          */
         result.tcp = { ok: false, skipped: true, ms: 0 };
+    }
+    /*
+     * ---- agent 预检（与 spawnSsh 同款，快速失败） ----
+     *
+     * **位置在代理命令闸门之后**（tty D67，Windows 真机实测纠正过一次顺序）：原先它在闸门之前，于是
+     * 「配了代理命令 + 宿主没授权 + 这台机器又没有 ssh-agent」三件事同时成立时，探针只报
+     * 「agent 认证需要 SSH_AUTH_SOCK」——用户去把 agent 修好、再点一次，才看到真正挡路的那道门。
+     * 策略挡路（要不要放行本机命令执行）优先于环境挡路（本机有没有 agent），
+     * 也与 HTTP 路由「先过门、再干活」一致。macOS 开发机上因为本机有 agent，看不出来。
+     */
+    if (spec.auth === 'agent' && (process.env.SSH_AUTH_SOCK === undefined || process.env.SSH_AUTH_SOCK === '')) {
+        const message = 'agent 认证需要 SSH_AUTH_SOCK（本机未运行 ssh-agent 或变量未设置）';
+        result.tcp = { ok: false, error: message, ms: 0 };
+        result.auth = { ok: false, error: message };
+        return finish();
     }
     /*
      * ---- 阶段 1：TCP 预检（DNS + 建连） ----

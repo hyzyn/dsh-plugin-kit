@@ -81,6 +81,13 @@ describe('live-host-smoke：--bootstrap 也只碰自己造的那一份', () => {
     expect(bootstrapSource).toContain('拒绝覆盖')
   })
 
+  it('复制 profile 不许用 `fs.cpSync`（Windows 上它会把 junction 展开成 124MB 真副本 → 插件 import 失败）', () => {
+    // 只禁**调用**（注释里正当地提了 cpSync 为什么不能用）
+    expect(source, 'copyProfile 走 copyProfileTree').not.toMatch(/cpSync\s*\(/)
+    expect(bootstrapSource).toMatch(/export function copyProfileTree/)
+    expect(bootstrapSource, '链接（含 junction）要建成链接').toMatch(/if \(stat\.isSymbolicLink\(\)\) \{/)
+  })
+
   it('link 的目标只能由 repoRoot + packages/<pkg> 拼出来（不接受外部路径）', () => {
     expect(bootstrapSource).toMatch(/link:\$\{path\.join\(repoRoot, 'packages', pkg\)\}/)
     // 全文件只有这一处拼 link:（没有第二处可以塞进用户给的路径）

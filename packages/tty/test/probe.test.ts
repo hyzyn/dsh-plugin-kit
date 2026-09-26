@@ -122,4 +122,41 @@ describe('probeSsh：代理命令闸门', () => {
     expect(result.proxy?.error).not.toContain('未获宿主授权')
     expect(result.auth.error).toContain('未启用')
   })
+
+  /*
+   * 顺序：**闸门优先于 agent 预检**（Windows 真机挖出来的）。
+   *
+   * 为什么上面那些用例没发现：它们写了 `proxyCommand` 却都没写 `auth`，于是 `spec.auth` 是
+   * `undefined`、agent 预检那一支（`spec.auth === 'agent'`）根本没进。而**路由**在缺省时会把
+   * `auth` 填成 `'agent'`（`index.ts` 的探针分支：`body.auth === 'key' || 'password' ? … : 'agent'`），
+   * 所以用户在对话框里不选认证方式 + 本机没有 ssh-agent 时，真实路径就是这里。
+   * macOS 开发机本机有 agent，看不出来；Windows / 干净 CI 上没有。
+   */
+  it('auth=agent（路由缺省值）+ 本机没有 ssh-agent：报的仍是**闸门**，不是 agent 文案', async () => {
+    const previous = process.env.SSH_AUTH_SOCK
+    delete process.env.SSH_AUTH_SOCK
+    try {
+      setProxyCommandPolicy({ granted: false, enabled: false })
+      const result = await probeSsh({ host: '203.0.113.7', port: 22, username: 'u', auth: 'agent', proxyCommand: 'ssh -W %h:%p bastion' })
+      expect(result.proxy?.error).toContain('未获宿主授权')
+      expect(result.auth.error).toContain('未获宿主授权')
+      expect(String(result.auth.error)).not.toContain('SSH_AUTH_SOCK')
+    } finally {
+      if (previous === undefined) delete process.env.SSH_AUTH_SOCK
+      else process.env.SSH_AUTH_SOCK = previous
+    }
+  })
+
+  it('没有代理命令时，agent 预检照旧生效（顺序修的是先后，不是把这一档丢掉）', async () => {
+    const previous = process.env.SSH_AUTH_SOCK
+    delete process.env.SSH_AUTH_SOCK
+    try {
+      const result = await probeSsh({ host: '203.0.113.7', port: 22, username: 'u', auth: 'agent' })
+      expect(result.proxy).toBeUndefined()
+      expect(result.auth.error).toContain('SSH_AUTH_SOCK')
+    } finally {
+      if (previous === undefined) delete process.env.SSH_AUTH_SOCK
+      else process.env.SSH_AUTH_SOCK = previous
+    }
+  })
 })

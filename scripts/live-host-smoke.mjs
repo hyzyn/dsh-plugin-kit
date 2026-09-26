@@ -43,7 +43,8 @@
  * | A5 | agent 工具清单 | 只有只读工具，没有 `docker_action` / `docker_exec` |
  * | A5b/A5c | 绕开工具直接打 `/action`、`/exec` | 403，文案点名对应环境变量 |
  * | A6 | tty：`POST {allowProxyCommand:true}` | 400，点名 `DSH_TTY_ALLOW_PROXY_COMMAND` |
- * | A7 | 试连带 `proxyCommand` | `proxy.active:false` + 「未获宿主授权」，且**不拨号** |
+ * | A7 | 试连带 `proxyCommand`（显式 password 认证） | `proxy.active:false` + 「未获宿主授权」，且**不拨号** |
+ * | A7b | 缺省认证（agent）+ 本机无 ssh-agent | 仍报**闸门**，不是「需要 SSH_AUTH_SOCK」（顺序缺陷回归） |
  * | B1 | 带授权启动 | `*Granted: true`；`allowExec` 按配置生效为 true |
  * | B2 | `POST {allowMutations:true}` | 200，有效值 true |
  * | B3 | agent 工具清单 | 多出 `docker_action` / `docker_image_*` / `docker_exec` |
@@ -59,13 +60,14 @@
  * 退出码：全 PASS → 0；任一 FAIL → 1；没装 DSH / 没扫到 link profile → 0（打印 SKIP），
  * 加 `--strict` 则算失败；**显式 `--from <name>` 却不合格 → 1**（用户点名了它，跳过等于假装验过）。
  */
-import { execFileSync, spawn } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { bootstrapLinkProfile } from './live-profile.mjs'
+import { findDsh } from './dsh-exec.mjs'
+import { bootstrapLinkProfile, copyProfileTree } from './live-profile.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const dshHome = process.env.DSH_HOME ?? path.join(os.homedir(), '.dsh')
@@ -128,19 +130,6 @@ async function freePort() {
   })
 }
 
-function findDsh() {
-  const explicit = value('--dsh')
-  if (explicit !== undefined) return fs.existsSync(explicit) ? explicit : null
-  try {
-    // Windows 上没有 `which`（`where` 才是等价物）：写错的话脚本会永远 SKIP，看起来像「没装 DSH」
-    const found = execFileSync(process.platform === 'win32' ? 'where' : 'which', ['dsh'], { encoding: 'utf8' })
-      .split('\n')[0].trim()
-    return found !== '' && fs.existsSync(found) ? found : null
-  } catch {
-    return null
-  }
-}
-
 /**
  * 找一个「link 到本仓」的 profile 当模板。
  *
@@ -178,12 +167,17 @@ function pickSourceProfile(preferred) {
   return null
 }
 
-/** 复制 profile（保留相对符号链接——它们靠「与源 profile 同深度」成立）。 */
+/**
+ * 复制 profile（保留相对符号链接——它们靠「与源 profile 同深度」成立）。
+ *
+ * 走 `copyProfileTree` 而不是 `fs.cpSync`，原因见那个函数的注释（Windows 上 cpSync 会把
+ * junction 展开成 124MB 的真副本，插件随即 import 失败）。
+ */
 function copyProfile(sourceName, destName) {
   const from = path.join(profilesDir, sourceName)
   const to = path.join(profilesDir, destName)
   if (fs.existsSync(to)) throw new Error(`临时 profile 已存在，拒绝覆盖：${to}（换个 PID 或先手动删掉）`)
-  fs.cpSync(from, to, { recursive: true, verbatimSymlinks: true, dereference: false })
+  copyProfileTree(from, to)
   return to
 }
 
@@ -250,13 +244,20 @@ function seedProfile(profileDir, port) {
 }
 
 /** 起一个宿主实例（独立端口、可选环境变量授权），返回句柄。 */
-async function startHost({ profileName, grants }) {
+async function startHost({ profileName, grants, dropEnv = [] }) {
   const port = await freePort()
   const base = `http://127.0.0.1:${String(port)}`
   let output = ''
-  const child = spawn(dshBin, ['--profile', profileName, '--no-open', '--port', String(port)], {
+  /*
+   * `dropEnv`：让某些环境在前置条件上**可复现**。目前只为一个用途——宿主 A 不带
+   * `SSH_AUTH_SOCK` 起，于是「本机没有 ssh-agent」在任何机器上都成立（macOS 开发机本机有
+   * agent，A7b 那条顺序断言在它上面永远走不到要验的分支）。
+   */
+  const env = { ...process.env, ...grants }
+  for (const key of dropEnv) delete env[key]
+  const child = spawn(dsh.binary, [...dsh.argv0, '--profile', profileName, '--no-open', '--port', String(port)], {
     cwd: repoRoot,
-    env: { ...process.env, ...grants },
+    env,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   child.stdout.on('data', (chunk) => { output += chunk.toString('utf8') })
@@ -331,8 +332,8 @@ function stopHost(host) {
 const profileDirs = []
 const hosts = []
 
-const dshBin = findDsh()
-if (dshBin === null) {
+const dsh = findDsh({ explicit: value('--dsh') })
+if (dsh === null) {
   console.log('[live-host-smoke] SKIP：本机 PATH 上没有 dsh（本脚本验的是真宿主，只在装了 DSH 的机器上有意义）。')
   console.log('                  装了之后重跑；想让它在这种情况下也失败，加 --strict。')
   process.exit(strict ? 1 : 0)
@@ -347,7 +348,7 @@ if (source === null && bootstrap && value('--from') === undefined) {
   console.log('[live-host-smoke] --bootstrap：本机没有「link 到本仓」的 profile，现场造一个模板 profile。')
   try {
     const made = bootstrapLinkProfile({
-      dsh: dshBin,
+      dsh,
       profilesDir,
       repoRoot,
       target: LIVE_TARGET,
@@ -393,7 +394,7 @@ const grants = {
   DSH_TTY_ALLOW_PROXY_COMMAND: '1',
 }
 
-console.log(`[live-host-smoke] dsh=${dshBin}`)
+console.log(`[live-host-smoke] dsh=${dsh.label}`)
 console.log(`[live-host-smoke] 模板 profile=${source.name}（link 到本仓：${source.repoLinked.join(', ')}）`)
 console.log(`[live-host-smoke] 一次性 profile=${profileName}（跑完删除；${keep ? '--keep 已指定，保留' : '不碰你的 profile'}）`)
 
@@ -408,7 +409,7 @@ async function makeProfile(suffix) {
 try {
   // ---- 实例 A：无授权（配置里却写着 true） ----
   const nameA = await makeProfile('a')
-  const hostA = await startHost({ profileName: nameA, grants: {} })
+  const hostA = await startHost({ profileName: nameA, grants: {}, dropEnv: ['SSH_AUTH_SOCK'] })
   hosts.push(hostA)
   console.log(`\n[A] 无授权实例 ${hostA.base}\n`)
   await assertUngranted(hostA)
@@ -443,6 +444,21 @@ try {
 }
 
 const failed = results.filter(([kind]) => kind === 'FAIL').length
+/*
+ * 有 FAIL 就把两个宿主的日志尾部打出来。
+ *
+ * 「路由 404 / 工具没注册 / client.js 是空的」这类失败，**全部线索都在宿主日志里**
+ * （插件是 import 失败、被兼容性闸门跳过、还是 apply 抛错），而断言本身只会说「404」。
+ * Windows 真机第一次跑就是这么白跑一轮的——补上之后同一轮就能看出原因。日志在进程被杀之后
+ * 仍留在 `host.log()` 里（是我们在管道上累积的字符串），所以这一步放在 finally 之后。
+ */
+if (failed > 0) {
+  for (const host of hosts) {
+    const text = host.log()
+    console.log(`\n---- ${host.base} 宿主日志（${String(text.length)}B）尾部 ----`)
+    console.log(text.split('\n').slice(-30).join('\n'))
+  }
+}
 console.log(failed === 0
   ? `\nlive-host-smoke: 全部 PASS（${String(results.length)} 条断言）——这是本地门槛，不进 CI（CI 里没有 DSH）`
   : `\nlive-host-smoke: ${String(failed)} 个 FAIL（共 ${String(results.length)} 条断言）`)
@@ -511,19 +527,39 @@ async function assertUngranted(host) {
       && String(postProxy.json?.error).includes('DSH_TTY_ALLOW_PROXY_COMMAND'),
     `${String(postProxy.status)} ${String(postProxy.json?.error).slice(0, 120)}`)
 
+  const proxyCommand = '"' + process.execPath + '" "' + bridgePath + '" %h %p'
+  /*
+   * A7：认证方式**显式写成 password**。
+   *
+   * 不写的话路由会把 `auth` 缺省成 `agent`（`index.ts` 的探针分支），而 agent 预检在本机没有
+   * ssh-agent 时会**先**返回——那样这条断言在 macOS（本机有 agent）是绿的、在 Windows / 干净
+   * CI 上是红的，测的东西也悄悄变成了「agent 预检」。显式 password 让它只测代理命令闸门。
+   */
   const probe = await request(host, '/api/dsh-tty/probe', {
     method: 'POST',
-    body: {
-      host: '203.0.113.7',
-      username: 'u',
-      proxyCommand: '"' + process.execPath + '" "' + bridgePath + '" %h %p',
-    },
+    body: { host: '203.0.113.7', username: 'u', auth: 'password', password: 'x', proxyCommand },
   })
   const pr = probe.json?.result ?? {}
   check('A7 试连带代理命令 → 阶段 0 返回「未获宿主授权」（且 tcp 预检没跑）',
     pr.proxy?.active === false && String(pr.proxy?.error).includes('未获宿主授权')
       && String(pr.auth?.error).includes('未获宿主授权'),
-    JSON.stringify(pr.proxy ?? null))
+    JSON.stringify({ status: probe.status, proxy: pr.proxy, auth: pr.auth, tcp: pr.tcp }))
+
+  /*
+   * A7b：**不写 auth**（路由缺省成 agent）+ 本机没有 ssh-agent（宿主 A 就是不带 SSH_AUTH_SOCK 起的）。
+   *
+   * 这一条钉的是 Windows 真机挖出来的顺序缺陷：原来 agent 预检排在代理命令闸门**之前**，于是
+   * 三件事同时成立时（配了代理命令 + 没授权 + 本机没 agent）用户只看到「需要 SSH_AUTH_SOCK」——
+   * 去把 agent 修好再点一次，才看到真正挡路的那道门。macOS 开发机看不出来：本机有 agent。
+   */
+  const probeAgent = await request(host, '/api/dsh-tty/probe', {
+    method: 'POST',
+    body: { host: '203.0.113.7', username: 'u', proxyCommand },
+  })
+  const pa = probeAgent.json?.result ?? {}
+  check('A7b 缺省认证（agent）+ 本机无 ssh-agent → 仍报闸门，而不是「需要 SSH_AUTH_SOCK」',
+    String(pa.proxy?.error).includes('未获宿主授权') && !String(pa.auth?.error).includes('SSH_AUTH_SOCK'),
+    JSON.stringify({ status: probeAgent.status, proxy: pa.proxy, auth: pa.auth, tcp: pa.tcp }))
 }
 
 /** B：带宿主侧授权。开关能开、工具会注册、真跑起来的命令失败时文案要带 stderr。 */

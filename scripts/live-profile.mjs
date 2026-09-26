@@ -74,9 +74,15 @@ export function bootstrapPatchYaml({ target }) {
   ].join('\n')
 }
 
-/** 跑一次 dsh，收 stdout/stderr（不抛错，交给调用方判 status）。 */
+/**
+ * 跑一次 dsh，收 stdout/stderr（不抛错，交给调用方判 status）。
+ *
+ * `dsh` 是 `{ binary, argv0 }` 描述符而不是一个路径：Windows 上真正能跑的是
+ * `node …/@deepseek-ai/dsh/lib/bin.js`（npm 的 dsh shim 是无扩展名的 shell 脚本 + `.cmd`，
+ * 两者直接 spawn 都有坑）——把入口解析出来是调用方 `findDsh()` 的职责。
+ */
 function runDsh(dsh, args, cwd) {
-  const result = spawnSync(dsh, args, { cwd, encoding: 'utf8', timeout: 120_000 })
+  const result = spawnSync(dsh.binary, [...dsh.argv0, ...args], { cwd, encoding: 'utf8', timeout: 120_000 })
   return {
     status: result.status ?? 1,
     stdout: result.stdout ?? '',
@@ -85,9 +91,46 @@ function runDsh(dsh, args, cwd) {
 }
 
 /**
+ * 复制一个 profile 目录树（把符号链接 / Windows junction **原样**建成链接）。
+ *
+ * ## 为什么不用 `fs.cpSync`（Windows 真机实测）
+ *
+ * pnpm 在 Windows 上把 `link:` 依赖建成 **junction**。`fs.cpSync(..., { verbatimSymlinks: true,
+ * dereference: false })` 在 Windows 上**照样把 junction 展开成真目录**：实测模板 profile 里
+ * `node_modules/@hyzyn/dsh-docker` 是一个 junction（`dir /AL` 显示 `<JUNCTION>`，Node 的
+ * `lstat().isSymbolicLink()` 也返回 true），cpSync 之后变成 **124MB 的真副本**。
+ *
+ * 后果不只是慢：副本里没有它依赖的**兄弟包**（像 `@deepseek-ai/cosmokit` 这种只在宿主 store 里
+ * 与 schemastery 并列存在的包），于是插件 import 直接失败——启动日志只有一句
+ * `docker (@hyzyn/dsh-docker): failed to import`，路由全 404、17 条断言里 16 条红，
+ * 看起来像插件代码在 Windows 上坏了。所以这里自己走一遍目录树：
+ *
+ * - **链接（含 junction）→ 建成链接**（Windows 上必须建成 `junction` 类型：建目录符号链接要特权，
+ *   而 junction 谁都能建；junction 也只认绝对目标，正好 `readlink` 给的就是绝对路径）；
+ * - 目录 → 递归；普通文件 → `copyFileSync`。
+ *
+ * @param from - 源目录。
+ * @param to - 目标目录（调用方负责「已存在就拒绝」与跑完删除）。
+ */
+export function copyProfileTree(from, to) {
+  const stat = fs.lstatSync(from)
+  if (stat.isSymbolicLink()) {
+    const target = fs.readlinkSync(from)
+    fs.symlinkSync(target, to, process.platform === 'win32' ? 'junction' : undefined)
+    return
+  }
+  if (stat.isDirectory()) {
+    fs.mkdirSync(to, { recursive: true })
+    for (const entry of fs.readdirSync(from)) copyProfileTree(path.join(from, entry), path.join(to, entry))
+    return
+  }
+  fs.copyFileSync(from, to)
+}
+
+/**
  * 现场造一个「link 到本仓」的 profile 当模板。
  *
- * @param options.dsh - dsh 可执行文件路径。
+ * @param options.dsh - dsh 的启动描述符 `{ binary, argv0 }`（见 `runDsh`）。
  * @param options.profilesDir - `<DSH_HOME>/profiles`（**不设 DSH_HOME**：子进程继承当前环境，
  *   这样它与调用方看到的 profile 目录永远是同一个）。
  * @param options.repoRoot - 本仓根目录（link: 的目标）。
@@ -144,7 +187,7 @@ export function bootstrapLinkProfile(options) {
     throw new Error(
       `bootstrap 造出来的 profile 里缺本仓插件：${missing}。`
       + '多半是 dsh 版本与本仓 cohort 不匹配（peer 范围不符时 DSH 会把插件整批 disabled，'
-      + `验收会跑出一堆假 FAIL）。装与本仓 cohort 一致的 dsh 后重跑。dsh=${dsh}\n`
+      + `验收会跑出一堆假 FAIL）。装与本仓 cohort 一致的 dsh 后重跑。dsh=${dsh.label ?? dsh.binary}\n`
       + `stderr: ${dump.stderr.trim().slice(-300)}`,
     )
   }
