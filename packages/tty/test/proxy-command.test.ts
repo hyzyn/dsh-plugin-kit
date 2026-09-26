@@ -14,7 +14,7 @@
  */
 import { existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { apply } from '../src/index.js'
 import { __resetCapabilityGrantsForTest, capabilityGranted } from '@hyzyn/dsh-kit'
 import {
@@ -35,11 +35,26 @@ import {
 /** 宿主侧授权的环境变量名（与 src/index.ts 的 CAP_PROXY_COMMAND 同一份口径）。 */
 const GRANT_ENV = 'DSH_TTY_ALLOW_PROXY_COMMAND'
 
-/** 每个用例结束后复位：闸门（授权 + 启用）与环境变量都不留给下一个用例。 */
+/**
+ * 每个用例结束后复位：闸门（授权 + 启用）与环境变量都不留给下一个用例。
+ *
+ * 顺带 `vi.unstubAllEnvs()` 收掉 `SSH_AUTH_SOCK`（见下面的 stub 说明）。
+ */
 afterEach(() => {
   setProxyCommandPolicy({ granted: false, enabled: false })
   delete process.env[GRANT_ENV]
   __resetCapabilityGrantsForTest()
+})
+
+/*
+ * **必须显式 stub `SSH_AUTH_SOCK`**（Windows 真机抓到的）：`prepareSshConnect` 会走
+ * `buildConnectConfig`，而 spec 不带 `auth` 时默认 `agent` → 在没有 ssh-agent 的环境里先抛
+ * 「auth=agent 需要 SSH_AUTH_SOCK」，断言看到的是那句而不是闸门文案。macOS 本机有 agent
+ * 所以本地全绿，**ubuntu CI / Windows 没有** → 这几条在 CI 上本来就会红。
+ * 这里 stub 成「有 agent」，让用例只测它真正想测的东西（闸门与传输接线）。
+ */
+beforeEach(() => {
+  vi.stubEnv('SSH_AUTH_SOCK', '/tmp/dsh-test-agent.sock')
 })
 
 /** 模拟「宿主启动时就带了授权环境变量」：设环境变量 + 清采样缓存 + 打开策略。 */

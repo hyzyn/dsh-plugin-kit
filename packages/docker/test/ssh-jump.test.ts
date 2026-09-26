@@ -10,7 +10,7 @@
  *      这里用假 ssh2 把这两件事钉死，比真机脚本更能定位失败点。
  */
 import { EventEmitter } from 'node:events'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 /** 假 ssh2：记录每条连接的 connect 配置与 forwardOut 调用。 */
 interface FakeClient {
@@ -69,6 +69,20 @@ import { dialJump, poolKey } from '../src/ssh-exec.js'
 function clientAt(index: number): FakeClient {
   return state.clients[index] as unknown as FakeClient
 }
+
+/*
+ * **必须显式 stub `SSH_AUTH_SOCK`**（2026-09-26 在 Windows 真机上抓到的）：
+ * 这些 spec 的 `auth` 默认是 `agent`，而 `buildConnectConfig` 在**没有 ssh-agent 的环境**
+ * 会先抛「auth=agent 但 SSH_AUTH_SOCK 未设置」——于是断言看到的是那句错误，而不是跳板机行为。
+ * macOS 上开发时 `SSH_AUTH_SOCK` 总是有值，本地全绿；**ubuntu CI 与 Windows 都没跑 agent**
+ * → 这几条在 CI 上本来就是红的。同一个仓库里 `test/ssh-connect.test.ts` 早就这么 stub 了。
+ */
+beforeEach(() => {
+  vi.stubEnv('SSH_AUTH_SOCK', '/tmp/dsh-test-agent.sock')
+})
+afterEach(() => {
+  vi.unstubAllEnvs()
+})
 
 describe('poolKey：跳板机身份必须进键', () => {
   it('同目标 + 不同跳板机 → 不同键（否则静默走错 bastion，且不报错）', () => {

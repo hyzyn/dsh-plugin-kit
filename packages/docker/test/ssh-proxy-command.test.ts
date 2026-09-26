@@ -13,7 +13,7 @@
  *      （缓存成布尔值 = 「关了还能用」，这一档最不能出的错）。
  */
 import { EventEmitter } from 'node:events'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { readTtyBooks, readTtyProxyCommandAllowed } from '../src/index.js'
 import {
   dialProxyCommand,
@@ -50,6 +50,18 @@ vi.mock('ssh2', () => ({
 const idleCommand = `"${process.execPath}" -e "setTimeout(() => {}, 60000)"`
 
 const baseSpec = { host: 'h', port: 22, username: 'u', auth: 'agent' as const }
+
+/*
+ * 同 tty 那份：`auth` 默认 agent，而 `RemoteExec.run` 会走 `buildConnectConfig`——
+ * 没有 ssh-agent 的环境（ubuntu CI / Windows）里它会先抛「SSH_AUTH_SOCK 未设置」，
+ * 于是「闸门拦下了」这个断言看到的其实是认证预检错误。stub 成有 agent，只测闸门本身。
+ */
+beforeEach(() => {
+  vi.stubEnv('SSH_AUTH_SOCK', '/tmp/dsh-test-agent.sock')
+})
+afterEach(() => {
+  vi.unstubAllEnvs()
+})
 
 describe('sanitizeProxyCommand / expandProxyCommand（与 tty 逐字同口径）', () => {
   it('清洗：非字符串 / 空 / 多行 → undefined（没配）', () => {
@@ -137,10 +149,14 @@ describe('dialProxyCommand：起得来、收得掉、失败说人话', () => {
   it('子进程提前退出 → failure() 带 stderr 摘要（文案要说人话）', async () => {
     const command = `"${process.execPath}" -e "process.stderr.write('boom');process.exit(3)"`
     const dialed = await dialProxyCommand({ spec: { ...baseSpec, proxyCommand: command }, allowed: () => true })
-    // 等**最终形态**（stderr 摘要必须出现）：exit 与「传输关闭」谁先到不确定，
-    // 但用户能据以排查的信息是 stderr 摘要本身
-    const deadline = Date.now() + 3000
-    while (Date.now() < deadline && !proxyFailureSuffix(dialed).includes('boom')) {
+    /*
+     * 等**最终形态**：既要有失败事实、又要有 stderr 摘要。
+     * 早先只等「stderr 摘要出现」是**错的**（Windows 真机暴露）：stderr 可能先到，
+     * 而 `exit` 事件在 cmd.exe 那层还要晚一点——于是断言在失败事实还没落地时就跑了。
+     * 轮询条件必须覆盖被臆断的每一件事。
+     */
+    const deadline = Date.now() + 5000
+    while (Date.now() < deadline && !(dialed.failure() !== null && proxyFailureSuffix(dialed).includes('boom'))) {
       await new Promise((resolve) => setTimeout(resolve, 20))
     }
     expect(dialed.failure()?.message).toMatch(/代理命令已退出|代理命令传输已关闭/)

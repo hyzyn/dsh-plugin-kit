@@ -83,16 +83,26 @@ function mountPlugin(): (req: unknown, res: FakeRes) => Promise<void> {
 
 let home: string
 let previousHome: string | undefined
+let previousUserProfile: string | undefined
 
+/*
+ * **两个变量都要设**（Windows 真机抓到的）：产品侧用 `os.homedir()`，它在 POSIX 上看 `HOME`、
+ * 在 Windows 上看 `USERPROFILE`。只改 `HOME` 的写法在 macOS / ubuntu 上绿，在 Windows 上
+ * 路由读的是 SYSTEM/用户的真实 profile（那儿没有 `.ssh/config`）→ 断言全崩。
+ */
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), 'dsh-tty-sshcfg-'))
   previousHome = process.env.HOME
   process.env.HOME = home
+  previousUserProfile = process.env.USERPROFILE
+  process.env.USERPROFILE = home
 })
 
 afterEach(() => {
   if (previousHome === undefined) delete process.env.HOME
   else process.env.HOME = previousHome
+  if (previousUserProfile === undefined) delete process.env.USERPROFILE
+  else process.env.USERPROFILE = previousUserProfile
   rmSync(home, { recursive: true, force: true })
 })
 

@@ -36,6 +36,11 @@
 那是**沙箱限制**，不是回归。同样地，假的 docker 是 `#!/bin/sh` 脚本，`docker` 的路由冒烟在
 Windows 上按设计跑不了（CI 里也是 ubuntu-only）。
 
+**`integration.mjs` 在 Windows 上也按设计跑不了**（2026-09-26 实测）：它给终端送的是 POSIX
+命令（`printf "IT_TERM_%s\n" "$TERM"`），而 Windows 侧是 cmd.exe——`[1] 全链路` 会等超时，
+报错里能看到 cmd 把整行原样回显。Windows 的对应入口是 `windows-smoke.mjs`（5/5，用的是
+`%OS%` 这类 cmd 原生写法）。
+
 **判据**：先问「这条在受限环境下有没有可能过」，再决定是修代码还是记成覆盖缺口。
 
 ### ③ 隔离与审批
@@ -121,6 +126,25 @@ dsh --profile <测试 profile> --patch <port.yml>
   仓库目录不在其中 → 代码传输要另想办法（临时 HTTP 服务 / `git archive` 打包）。
 - **别删了再忘**：`-WithRepo` 会往 VM 里落仓库副本、`node_modules`、profile 与 overlay 文件。
   收尾把计划任务、node 进程、日志、临时目录一并清掉。
+- **`prlctl exec` 的 SYSTEM 身份这次反而省事（2026-09-26）**：VM 里 SYSTEM 侧已有上一轮装的
+  node / pnpm / dsh（`…\systemprofile\AppData\Local\dsh-nodes\v22.23.3`，正是本仓要的
+  cohort 0.1.7-rc.2），于是全程按 SYSTEM 跑，**绕开了交互式计划任务那套**；用户 `czz` 侧反而
+  没有工具链。先探一句 `where node` 再决定走哪条路，能省一大截。
+- **`\\Mac\Home\Downloads` 在 SYSTEM 上下文里也能读**（这次实测）：runbook 原来只记了
+  「仓库目录不在共享列表」——`Downloads` 恰好在共享列表里，把 tarball 放那儿再反向拷日志回来
+  是最省事的通道；仓库本身走临时 HTTP（`python3 -m http.server` + `curl.exe`）即可。
+- **本地 macOS 有 ssh-agent 会掩盖 CI 红**（这次最值钱的一条）：`auth` 默认 `agent`，
+  而 `buildConnectConfig` 在没有 `SSH_AUTH_SOCK` 的环境会**先抛**「未设置 ssh-agent」——
+  于是那些用例在 macOS 上全绿，**在 ubuntu CI 与 Windows 上本来就是红的**，只是没人跑过。
+  写法：`vi.stubEnv('SSH_AUTH_SOCK', '/tmp/…')`（既有范本 `packages/docker/test/ssh-connect.test.ts`）
+  或把 spec 写成 `auth: 'password'`。**自查命令：`env -u SSH_AUTH_SOCK pnpm test`**——它能在
+  macOS 上等价复现 ubuntu CI 的这类依赖，比等 CI 便宜得多。
+- **`os.homedir()` 在 Windows 看 `USERPROFILE`、不看 `HOME`**：只改 `HOME` 的用例在 macOS /
+  ubuntu 上绿，在 Windows 上路由读到的是真实 profile（那儿没有 `.ssh/config`）→ 断言全崩。
+  改法：两个变量一起设、一起还原。
+- **macOS 的 `tar` 会带出 `._*.ts` 垃圾文件**：把改动打包进 Windows（bsdtar 带 xattr）后，
+  vitest 会把 `._foo.test.ts` 当成测试文件，报 4 个「文件失败」而**每条断言都是通过的**——
+  看着像代码坏了。打包加 `COPYFILE_DISABLE=1`，或落地后删 `._*`。
 
 ## 什么算「真机验证通过」
 
