@@ -83,6 +83,7 @@
     "ssh-smoke": "node scripts/ssh-smoke.mjs",
     "probe-smoke": "node scripts/probe-smoke.mjs",
     "probe-route-smoke": "node scripts/probe-route-smoke.mjs",
+    "jump-smoke": "node scripts/jump-smoke.mjs",
     "sftplimits-smoke": "node scripts/sftplimits-smoke.mjs",
     "windows-smoke": "node scripts/windows-smoke.mjs",
     "lint:client": "node ../../scripts/client-lint.mjs"

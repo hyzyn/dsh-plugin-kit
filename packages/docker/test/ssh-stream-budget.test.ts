@@ -62,13 +62,15 @@ describe('ssh2 通道错误的可读化', () => {
     const text = describeExecError('Timed out while waiting for handshake')
     expect(text).toContain('Timed out')
     expect(text).toContain('跳板机')
-    expect(text).toContain('ROADMAP 第 2 项')
+    // 支持跳板机之后，提示从「本版本尚不支持」改成「去哪儿配」
+    expect(text).toContain('连接簿')
     expect(describeExecError('connect ETIMEDOUT 203.0.113.1:22')).toContain('跳板机')
   })
 
   it('跳板机提示常量本身可复用（宿主侧超时分支引用的就是它）', () => {
     expect(SSH_TIMEOUT_HINT).toContain('ProxyJump')
-    expect(SSH_TIMEOUT_HINT).toContain('ROADMAP 第 2 项')
+    // ProxyCommand 仍不支持：文案必须把这条边界说出来，别让用户以为一并支持了
+    expect(SSH_TIMEOUT_HINT).toContain('ProxyCommand')
   })
 })
 

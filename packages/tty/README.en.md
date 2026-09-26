@@ -465,7 +465,15 @@ and the agent tools all reuse the same scheduling.
   `ProxyCommand`) are **not imported and are named** — this version does not support jump hosts, and
   importing one would only produce an entry that cannot connect and reports a generic timeout; the
   over-limit count and the “not a concrete host” count are reported too. `ProxyJump none` /
-  `ProxyCommand none` mean an explicit direct connection and are imported as usual;
+  `ProxyCommand none` mean an explicit direct connection and are imported as usual.
+  **`ProxyJump` is resolved into the entry's jump host (single hop) and imported with it**: the
+  value may be `user@host:port` (IPv6 as `[::1]:22`) or another concrete Host in the same config
+  (resolved by block name, in any order); the jump host **inherits the target hop's credentials**
+  by default, so set `jump.keyPath` / `jump.password` on the entry when it needs its own.
+  Unresolvable ones (missing alias, or an alias that itself needs a jump) are still skipped and
+  named; `ProxyCommand` is not supported (it would let a settings field drive arbitrary local
+  command execution — a different trust tier, see project ROADMAP item 2). **There is no jump-host
+  input in the UI yet** (for now use the import or edit `sshHosts[].jump` by hand);
 - **Credential-reference picker (0.4.0; decoupled from the env plugin since 0.17)**: next to the password /
   passphrase fields in the SSH dialog there is a filter box plus a height-limited list whose candidates are
   **the reference names the credential store already knows** (the host reads the `refs:` keys of

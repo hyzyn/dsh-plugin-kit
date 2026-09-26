@@ -1,9 +1,24 @@
 # 跳板机（ProxyJump / ProxyCommand）完整实现方案
 
-> **状态：未开工（活的待办方案，不是冻结记录）。** 短期那一半已落地（2026-09-25，见
-> [项目级 ROADMAP.md 第 2 项](../ROADMAP.md)）：`~/.ssh/config` 导入跳过依赖跳板机的块并点名、
-> 超时 / 探针 / 通道错误 / 条目缺失四处文案点出成因，顺带修掉导入的四种静默丢弃（tty D63）。
-> **本文只写「完整实现（真的经跳板机连）该怎么做、坑在哪、怎么验收」**，动手前先读一遍。
+> **状态（2026-09-25 更新）：单跳已实现并真机验过；界面与 ProxyCommand 仍未做。**
+>
+> | 阶段 | 状态 |
+> |---|---|
+> | 短期一半（导入跳过 + 四处文案点出成因） | ✅ 已落地（顺带修掉导入的四种静默丢弃，**tty D63**） |
+> | 第 1 步：`jump` 规格 + 四道白名单 | ✅ 两包都做（tty 的 schema / `sanitizeSshHosts` / `validateSshHosts` / `mergeSshSpec` / tunnels 的 spec 拷贝 / probe 路由；docker 的 `readTtyBooks` + 池键） |
+> | 第 2 步：tty 拨号（`forwardOut → sock`）+ 阶段化超时 + 两层清理 | ✅ 四个连接点（终端 / SFTP / 隧道 / 探针）**共用** `prepareSshConnect` / `attachJumpSock` |
+> | 第 3 步：docker 拨号 + **池键并入跳板机身份** + 生命周期 | ✅ `poolKey` 带 `|jump:<user@host:port>`；`disposeAll` / 空闲回收 / 传输错误重连都成对关 |
+> | 第 5 步：导入解析 `ProxyJump`（含同文件别名、`user@host:port`、IPv6） | ✅ `parseSshConfigDetailed` 两遍解析；别名缺失 / 嵌套别名 / `ProxyCommand` 仍跳过并**分别报数** |
+> | 第 4 步：**连接簿对话框的跳板机字段 + 探针结果展示** | ⛔ **未做**——目前只能靠导入或手改 settings 里的 `sshHosts[].jump` |
+> | `ProxyCommand` | ⛔ 仍未做（信任级不同，见第 6 节） |
+> | 多跳链（跳板机的跳板机） | ⛔ 明确不做（单跳；导入遇嵌套别名按「解析不出」处理） |
+>
+> **验证**：`packages/tty/scripts/jump-smoke.mjs`（真机：一个能 `direct-tcpip` 的 bastion +
+> `test-sshd` 目标，四个用例含凭据不同 / 密码错 / 目标不可达 / 收尾无残留连接，已进 CI）；
+> `packages/docker/test/ssh-jump.test.ts`（假 ssh2：先拨跳板机、通道当 sock、池键区分、
+> 失败路径关连接）；`packages/tty/test/jump-spec.test.ts`（四道白名单往返 + 严格校验拒绝分支）。
+>
+> 本文下面各节仍是**动手前的完整背景**（坑、验收、边界），已实现的部分直接对应上表。
 >
 > 立项理由与「为什么是 L0」在 [项目级 ROADMAP.md](../ROADMAP.md)（原文照录，含两包各自的原始措辞）：
 > 两包各有一套连接构造，跳板机必须**一起做**——「docker 目标能过 bastion、终端不行」这种

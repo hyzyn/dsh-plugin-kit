@@ -18,6 +18,58 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { Client } from 'ssh2';
+/**
+ * 清洗一份跳板机输入（`readTtyBooks` 用）。返回 `undefined` = 没配跳板机——不给下游留
+ * `host: ''` 的半个对象（那会让拨号去连空主机名）。
+ */
+export function sanitizeJumpSpec(input) {
+    if (typeof input !== 'object' || input === null)
+        return undefined;
+    const raw = input;
+    const host = typeof raw.host === 'string' ? raw.host.trim() : '';
+    if (host === '')
+        return undefined;
+    const port = Number(raw.port);
+    const jump = { host, port: Number.isInteger(port) && port >= 1 && port <= 65535 ? port : 22 };
+    if (typeof raw.username === 'string' && raw.username.trim() !== '')
+        jump.username = raw.username.trim();
+    if (raw.auth === 'agent' || raw.auth === 'key' || raw.auth === 'password')
+        jump.auth = raw.auth;
+    if (typeof raw.keyPath === 'string' && raw.keyPath !== '')
+        jump.keyPath = raw.keyPath;
+    if (typeof raw.passphrase === 'string' && raw.passphrase !== '')
+        jump.passphrase = raw.passphrase;
+    if (typeof raw.password === 'string' && raw.password !== '')
+        jump.password = raw.password;
+    return jump;
+}
+/** 跳板机展示串（`user@host:port`）；没配时返回空串。**凭据不进这里**。 */
+export function jumpTargetLabel(spec) {
+    const jump = spec.jump;
+    if (jump === undefined || jump.host.trim() === '')
+        return '';
+    const port = jump.port ?? 22;
+    return `${jump.username ?? spec.username}@${jump.host.trim()}${port === 22 ? '' : ':' + String(port)}`;
+}
+/** 目标那一跳的展示串 + 跳板机后缀（错误文案用；理由见 tty `src/ssh.ts` 的同名注释）。 */
+export function targetWithJump(spec) {
+    const label = jumpTargetLabel(spec);
+    return label === '' ? sshTarget(spec) : `${sshTarget(spec)}（经跳板机 ${label}）`;
+}
+/** 跳板机那一跳的连接规格：显式给的优先，其余继承目标。 */
+function jumpSpecOf(spec) {
+    const jump = spec.jump;
+    const username = typeof jump.username === 'string' && jump.username.trim() !== '' ? jump.username.trim() : spec.username;
+    return {
+        host: jump.host.trim(),
+        port: jump.port ?? 22,
+        username,
+        auth: jump.auth ?? spec.auth ?? 'agent',
+        keyPath: jump.keyPath ?? spec.keyPath,
+        passphrase: jump.passphrase ?? spec.passphrase,
+        password: jump.password ?? spec.password,
+    };
+}
 let credentialsProvider = null;
 /** 由 index.ts 在可选注入里挂上（服务缺失即为 null，退回 process.env）。 */
 export function setCredentialResolver(resolver) {
@@ -95,8 +147,102 @@ export function shJoin(argv) {
  * 长流额度被悄悄翻倍（恰好掩盖 D07 想暴露的 MaxSessions 问题）。口径与 TOFU 的
  * hostVerifier（D03）保持一致：那里也用 `trim().toLowerCase()` 分组指纹。
  */
-function poolKey(spec) {
-    return `${spec.username}@${spec.host.trim().toLowerCase()}:${String(spec.port ?? 22)}`;
+/**
+ * 池键。**跳板机身份必须并进来**：不同 bastion 到同一目标绝不是同一条连接——
+ * 只按 `user@host:port` 记的话，第二个 bastion 会静默复用第一条连接、走错跳板机。
+ * 这与 tty 的 SFTP 池不同（那边键是 `JSON.stringify(spec)`，天然带上 jump）。
+ */
+export function poolKey(spec) {
+    const basis = `${spec.username}@${spec.host.trim().toLowerCase()}:${String(spec.port ?? 22)}`;
+    const label = jumpTargetLabel(spec);
+    return label === '' ? basis : `${basis}|jump:${label.toLowerCase()}`;
+}
+/** 跳板机通道打开兜底（与 tty 同参数：对端不回 forwardOut 回调时不能让 await 挂着）。 */
+const JUMP_CHANNEL_TIMEOUT_MS = 15_000;
+/**
+ * 拨跳板机并借一条 forwardOut 通道（ProxyJump 单跳）。与 tty `src/ssh.ts` 的 dialJump 同序。
+ * **导出仅供单测**（`test/ssh-jump.test.ts` 用假 ssh2 验「先拨跳板机、再把通道当 sock」）。
+ */
+export async function dialJump(options) {
+    const jumpSpec = jumpSpecOf(options.spec);
+    const label = jumpTargetLabel(options.spec);
+    const destination = sshTarget(options.spec);
+    const bastion = new Client();
+    const closeQuietly = () => {
+        try {
+            bastion.end();
+        }
+        catch {
+            /* 已断开 */
+        }
+    };
+    let connectConfig;
+    try {
+        connectConfig = await buildConnectConfig(jumpSpec);
+    }
+    catch (error) {
+        throw new Error(`跳板机连接失败（${label}）：${error instanceof Error ? error.message : String(error)}`);
+    }
+    const policy = applyHostKeyPolicy({ connectConfig, spec: jumpSpec, store: options.store, logger: options.logger, target: `跳板机 ${label}` });
+    await new Promise((resolve, reject) => {
+        let settled = false;
+        const fail = (error) => {
+            if (settled)
+                return;
+            settled = true;
+            closeQuietly();
+            reject(error);
+        };
+        bastion.once('ready', () => {
+            if (settled)
+                return;
+            settled = true;
+            resolve();
+        });
+        bastion.on('error', (error) => {
+            fail(new Error(policy.mismatchMessage() ?? `跳板机连接失败（${label}）：${error.message}`));
+        });
+        bastion.once('close', () => {
+            fail(new Error(`跳板机连接已关闭（${label}）：目标连接尚未建立`));
+        });
+        if (connectConfig.tryKeyboard === true) {
+            const password = connectConfig.password ?? '';
+            bastion.on('keyboard-interactive', (_name, _instructions, _lang, _prompts, finishKb) => {
+                finishKb([password]);
+            });
+        }
+        try {
+            bastion.connect(connectConfig);
+        }
+        catch (error) {
+            fail(new Error(`跳板机连接失败（${label}）：${error instanceof Error ? error.message : String(error)}`));
+        }
+    });
+    const sock = await new Promise((resolve, reject) => {
+        let settled = false;
+        const timer = setTimeout(() => {
+            if (settled)
+                return;
+            settled = true;
+            closeQuietly();
+            reject(new Error(`跳板机通道打开超时（${label} → ${destination}，${String(JUMP_CHANNEL_TIMEOUT_MS / 1000)}s 无响应）：跳板机可能不允许转发或不响应`));
+        }, JUMP_CHANNEL_TIMEOUT_MS);
+        timer.unref?.();
+        bastion.forwardOut('127.0.0.1', 0, options.spec.host, options.spec.port ?? 22, (error, channel) => {
+            if (settled)
+                return;
+            settled = true;
+            clearTimeout(timer);
+            if (error !== undefined && error !== null) {
+                closeQuietly();
+                reject(new Error(`跳板机通道打开失败（${label} → ${destination}）：${error.message}`));
+                return;
+            }
+            resolve(channel);
+        });
+    });
+    options.logger?.info(`[dsh-docker] ssh ${destination} 经跳板机 ${label} 已建立转发通道（ProxyJump）`);
+    return { bastion, sock };
 }
 /**
  * 有界输出收集器（短命令路径的 stdout / stderr 各持一个）。
@@ -219,8 +365,8 @@ export function streamBudgetError(target, busy, max = MAX_STREAMS_PER_TARGET) {
  * 要过 bastion，用户需要的是「可能是什么原因、以及这个版本到底支不支持」——而不是 20 秒后
  * 一句放之四海皆准的「主机无响应」。
  */
-export const SSH_TIMEOUT_HINT = '若该主机只能经跳板机访问（~/.ssh/config 里的 ProxyJump / ProxyCommand），本版本尚不支持：'
-    + 'tty 的导入会跳过这类条目，请改用可直达的内网地址，或见项目级 ROADMAP 第 2 项';
+export const SSH_TIMEOUT_HINT = '若该主机只能经跳板机访问，请在目标引用的那条 **tty 连接簿条目**里配置跳板机'
+    + '（连接簿的 `~/.ssh/config` 导入会自动带上 ProxyJump；ProxyCommand 仍不支持）';
 export function describeExecError(message) {
     if (/Timed out|ETIMEDOUT/i.test(message))
         return `${message}：${SSH_TIMEOUT_HINT}`;
@@ -285,6 +431,13 @@ export class RemoteExec {
             catch {
                 /* 连接已断开 */
             }
+            try {
+                rt.jump?.end();
+            }
+            catch {
+                /* 连接已断开 */
+            }
+            rt.jump = null;
         }
         this.conns.clear();
     }
@@ -512,6 +665,14 @@ export class RemoteExec {
                 catch {
                     /* 连接已断开 */
                 }
+                // 空闲回收同样要成对：只关目标会留下一堆 keepalive 养着的跳板机连接
+                try {
+                    rt.jump?.end();
+                }
+                catch {
+                    /* 连接已断开 */
+                }
+                rt.jump = null;
             }
             if (this.conns.size === 0 && this.sweeper !== null) {
                 clearInterval(this.sweeper);
@@ -550,7 +711,19 @@ export class RemoteExec {
             if (attempt === 0 && isTransportError(message)) {
                 // 丢掉这条连接并**关闭它**（D07）：只摘出池不 end() 的话，keepalive 会一直
                 // 养着一条死连接；dropConn 带身份校验，不会误摘同键上的新连接（D06）。
-                this.dropConn(poolKey(spec), client);
+                const key = poolKey(spec);
+                const stale = this.conns.get(key);
+                if (stale !== undefined && stale.client === client) {
+                    // 跳板机也一起关：重连会重新拨一条，旧的留着只会白养一条 keepalive
+                    try {
+                        stale.jump?.end();
+                    }
+                    catch {
+                        /* 连接已断开 */
+                    }
+                    stale.jump = null;
+                }
+                this.dropConn(key, client);
                 try {
                     client.end();
                 }
@@ -582,7 +755,7 @@ export class RemoteExec {
         // 循环——若此时池里还没有条目，并发第二个请求会各自建连，先建好的那条立即脱管
         //（回收不到、disposeAll 关不掉、配额记在别人头上），日后的 close/error 还会误摘
         // 同键的新连接（D06）。占位后并发请求拿到的就是同一条 ready。
-        const entry = { client, lastUsed: Date.now(), ready, busy: 0, inflight: 0, disposed: false };
+        const entry = { client, lastUsed: Date.now(), ready, busy: 0, inflight: 0, disposed: false, jump: null };
         this.conns.set(key, entry);
         // ready 被拒时不要留下未处理 rejection（调用方 await 时会拿到）
         ready.catch(() => {
@@ -616,6 +789,19 @@ export class RemoteExec {
                 /* 同上 */
             }
         };
+        /** 关掉这条条目上的跳板机（目标 client 只是借用它的通道，必须成对关）。 */
+        const closeJump = () => {
+            const jump = entry.jump;
+            entry.jump = null;
+            if (jump === null)
+                return;
+            try {
+                jump.end();
+            }
+            catch {
+                /* 已断开 */
+            }
+        };
         const settleError = (error) => {
             if (settled)
                 return;
@@ -627,10 +813,21 @@ export class RemoteExec {
             const finalError = ownsEntry() ? error : new Error(`SSH 连接已在建立期间被释放（${target}）：请重试`);
             this.dropConn(key, client);
             forceClose();
+            closeJump();
             rejectReady(finalError);
         };
         try {
             const connectConfig = await buildConnectConfig(spec);
+            /*
+             * 跳板机（ProxyJump 单跳）：先拨它、借一条 forwardOut 通道，再把目标连接跑在这条
+             * 通道上（`ConnectConfig.sock`）。拨号失败/超时都在 dialJump 里点名跳板机并自我清理；
+             * 成功后这条「跳板机连接」登记在池条目上，与目标成对关闭（见 closeRuntime）。
+             */
+            if (spec.jump !== undefined) {
+                const dialed = await dialJump({ spec, store: this.store, logger: this.logger });
+                entry.jump = dialed.bastion;
+                connectConfig.sock = dialed.sock;
+            }
             const policy = applyHostKeyPolicy({ connectConfig, spec, store: this.store, logger: this.logger, target });
             /**
              * 指纹变更优先于任何通用文案（含 D94 的「已释放」）：安全提示不能被噪音盖掉。
@@ -644,7 +841,7 @@ export class RemoteExec {
                 return new Error(`${fallback}：${error.message}${hint}`);
             };
             timer = setTimeout(() => {
-                settleError(new Error(`SSH 连接超时（${target}）：${SSH_TIMEOUT_HINT}`));
+                settleError(new Error(`SSH 连接超时（${targetWithJump(spec)}）：${SSH_TIMEOUT_HINT}`));
             }, connectTimeoutMs());
             client.once('ready', () => {
                 if (settled)
@@ -657,6 +854,7 @@ export class RemoteExec {
                     // 交出去就是脱管连接——关掉再拒绝（D94）
                     this.dropConn(key, client);
                     forceClose();
+                    closeJump();
                     rejectReady(new Error(`SSH 连接已被释放（${target}）：请重试`));
                     return;
                 }
@@ -664,12 +862,14 @@ export class RemoteExec {
                 resolveReady(client);
             });
             client.once('error', (error) => {
-                settleError(describe(error, `SSH 连接失败（${target}）`));
+                settleError(describe(error, `SSH 连接失败（${targetWithJump(spec)}）`));
             });
             client.once('close', () => {
                 this.dropConn(key, client);
+                // 目标这条（无论握手期还是就绪后）断了：跳板机也要一起关，否则它会带着 keepalive 一直挂着
+                closeJump();
                 if (!settled)
-                    settleError(new Error(`SSH 连接失败（${target}）：连接在握手完成前关闭`));
+                    settleError(new Error(`SSH 连接失败（${targetWithJump(spec)}）：连接在握手完成前关闭`));
             });
             try {
                 client.connect(connectConfig);

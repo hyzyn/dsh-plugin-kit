@@ -12,59 +12,19 @@ function proxyOptOut(value) {
 export function parseSshConfigDetailed(text) {
     const entries = [];
     const proxy = [];
+    const proxyCommand = [];
     let proxyCount = 0;
+    let proxyCommandCount = 0;
+    let jumpImported = 0;
     let skippedOther = 0;
     let droppedOverflow = 0;
-    /** 当前 Host 块：模式列表 + 选项表（键已小写）。 */
+    /*
+     * **两遍**：第一遍只把 config 切成块（逐行状态机原样保留），第二遍才产出条目。
+     * 为什么要两遍：`ProxyJump bastion` 里的 `bastion` 常常是**同一份 config 里的另一个
+     * Host**，而那个块可能写在**后面**——边切边产出就没法解析别名。
+     */
+    const blocks = [];
     let block = null;
-    const flush = () => {
-        if (block === null)
-            return;
-        const concrete = block.patterns.length > 0 && block.patterns.every((p) => p !== '' && !/[*?!]/.test(p));
-        if (!concrete) {
-            skippedOther += 1;
-            block = null;
-            return;
-        }
-        const name = block.patterns[0];
-        const needsProxy = (block.options.has('proxyjump') && !proxyOptOut(block.options.get('proxyjump'))) ||
-            (block.options.has('proxycommand') && !proxyOptOut(block.options.get('proxycommand')));
-        if (needsProxy) {
-            proxyCount += 1;
-            if (proxy.length < MAX_PROXY_NAMES)
-                proxy.push(name);
-            block = null;
-            return;
-        }
-        const user = block.options.get('user');
-        if (typeof user !== 'string' || user.trim() === '') {
-            skippedOther += 1;
-            block = null;
-            return;
-        }
-        if (entries.length >= MAX_IMPORT_ENTRIES) {
-            droppedOverflow += 1;
-            block = null;
-            return;
-        }
-        const host = block.options.get('hostname') ?? name;
-        const portRaw = Number(block.options.get('port'));
-        const port = Number.isInteger(portRaw) && portRaw >= 1 && portRaw <= 65535 ? portRaw : 22;
-        const identityFile = block.options.get('identityfile');
-        entries.push({
-            name,
-            host,
-            port,
-            username: user.trim(),
-            auth: identityFile !== undefined && identityFile.trim() !== '' ? 'key' : 'agent',
-            keyPath: identityFile !== undefined ? identityFile.trim() : '',
-            passphrase: '',
-            password: '',
-            agentForward: false,
-        });
-        block = null;
-    };
-    // eslint-disable-next-line no-restricted-syntax -- 下面是既有的逐行状态机（保持原样）
     for (const rawLine of text.split(/\r?\n/)) {
         let line = rawLine.trim();
         if (line === '' || line.startsWith('#'))
@@ -91,7 +51,8 @@ export function parseSshConfigDetailed(text) {
         }
         const keyLower = key.toLowerCase();
         if (keyLower === 'host') {
-            flush();
+            if (block !== null)
+                blocks.push(block);
             // 「Host = name」的孤立等号当作分隔符宽容丢弃
             block = { patterns: rest.split(/\s+/).filter((p) => p !== '' && p !== '='), options: new Map() };
             continue;
@@ -104,8 +65,125 @@ export function parseSshConfigDetailed(text) {
             continue; // 首个生效（OpenSSH 语义）
         block.options.set(keyLower, rest.replace(/^"+|"+$/g, ''));
     }
-    flush();
-    return { entries, proxy, proxyCount, skippedOther, droppedOverflow };
+    if (block !== null)
+        blocks.push(block);
+    /** 一个块是不是「全具体」的 Host 模式（通配 / 否定整块不要）。 */
+    const isConcrete = (item) => item.patterns.length > 0 && item.patterns.every((pattern) => pattern !== '' && !/[*?!]/.test(pattern));
+    /** 具体块名 → 选项表（同名取第一个，与 OpenSSH「首个生效」一致）：别名解析用。 */
+    const concrete = new Map();
+    for (const item of blocks) {
+        if (!isConcrete(item))
+            continue;
+        const name = item.patterns[0];
+        if (!concrete.has(name))
+            concrete.set(name, item.options);
+    }
+    /**
+     * 解析 `ProxyJump` 的值 → `SshJumpSpec`；解析不出返回 undefined（调用方会把块名报回去）。
+     *
+     * 支持 `[user@]host[:port]`（IPv6 写 `[::1]:22`）与**同文件别名**；别名的 IdentityFile
+     * **不进 jump**——v1 的跳板机凭据缺省继承目标那一跳（企业内网里最常见的就是共用一把钥匙
+     * 或同一个 agent），显式要不同的凭据时在连接条目里手填。
+     */
+    const resolveJump = (value) => {
+        let rest = value.trim();
+        if (rest === '')
+            return undefined;
+        let username = '';
+        const at = rest.lastIndexOf('@');
+        if (at > 0) {
+            username = rest.slice(0, at).trim();
+            rest = rest.slice(at + 1).trim();
+        }
+        let host = rest;
+        let port = 22;
+        const match = /^\[([^\]]+)\](?::(\d+))?$/.exec(rest) ?? /^([^:]+):(\d+)$/.exec(rest);
+        if (match !== null) {
+            host = match[1];
+            const parsedPort = Number(match[2]);
+            if (Number.isInteger(parsedPort) && parsedPort >= 1 && parsedPort <= 65535)
+                port = parsedPort;
+        }
+        if (host === '')
+            return undefined;
+        const alias = concrete.get(host);
+        if (alias !== undefined) {
+            // 别名自己还依赖跳板机 → 不支持嵌套（单跳），按「解析不出」处理
+            if (alias.has('proxyjump') || alias.has('proxycommand'))
+                return undefined;
+            const aliasHost = alias.get('hostname') ?? host;
+            const aliasPortRaw = Number(alias.get('port'));
+            const jump = {
+                host: aliasHost,
+                port: Number.isInteger(aliasPortRaw) && aliasPortRaw >= 1 && aliasPortRaw <= 65535 ? aliasPortRaw : port,
+            };
+            const user = username !== '' ? username : alias.get('user');
+            if (typeof user === 'string' && user.trim() !== '')
+                jump.username = user.trim();
+            return jump;
+        }
+        const jump = { host, port };
+        if (username !== '')
+            jump.username = username;
+        return jump;
+    };
+    for (const item of blocks) {
+        if (!isConcrete(item)) {
+            skippedOther += 1;
+            continue;
+        }
+        const name = item.patterns[0];
+        // ProxyCommand 与 ProxyJump 同时给时按 OpenSSH 语义：ProxyJump 优先（这里先判 ProxyCommand
+        // 是为了「只配了 ProxyCommand」这种情况能被明确报数，而不是静默直连）
+        const hasJump = item.options.has('proxyjump') && !proxyOptOut(item.options.get('proxyjump'));
+        const hasCommand = item.options.has('proxycommand') && !proxyOptOut(item.options.get('proxycommand'));
+        let jump;
+        if (hasJump) {
+            jump = resolveJump(item.options.get('proxyjump') ?? '');
+            if (jump === undefined) {
+                proxyCount += 1;
+                if (proxy.length < MAX_PROXY_NAMES)
+                    proxy.push(name);
+                continue;
+            }
+        }
+        else if (hasCommand) {
+            proxyCommandCount += 1;
+            if (proxyCommand.length < MAX_PROXY_NAMES)
+                proxyCommand.push(name);
+            continue;
+        }
+        const user = item.options.get('user');
+        if (typeof user !== 'string' || user.trim() === '') {
+            skippedOther += 1;
+            continue;
+        }
+        if (entries.length >= MAX_IMPORT_ENTRIES) {
+            droppedOverflow += 1;
+            continue;
+        }
+        const host = item.options.get('hostname') ?? name;
+        const portRaw = Number(item.options.get('port'));
+        const port = Number.isInteger(portRaw) && portRaw >= 1 && portRaw <= 65535 ? portRaw : 22;
+        const identityFile = item.options.get('identityfile');
+        const entry = {
+            name,
+            host,
+            port,
+            username: user.trim(),
+            auth: identityFile !== undefined && identityFile.trim() !== '' ? 'key' : 'agent',
+            keyPath: identityFile !== undefined ? identityFile.trim() : '',
+            passphrase: '',
+            password: '',
+            agentForward: false,
+        };
+        if (jump !== undefined) {
+            entry.jump = jump;
+            jumpImported += 1;
+        }
+        entries.push(entry);
+    }
+    return { entries, proxy, proxyCount, proxyCommand, proxyCommandCount, jumpImported, skippedOther, droppedOverflow };
 }
 /** 只要导入候选（老调用点与既有用例的形状）；需要「跳过了什么」时用 detailed 版。 */
 export function parseSshConfig(text) {

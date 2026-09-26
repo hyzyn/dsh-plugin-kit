@@ -1,4 +1,25 @@
-import type { ConnectConfig } from 'ssh2';
+/**
+ * @hyzyn/dsh-tty — SSH 会话封装（方案 C：ssh2 原生集成）。
+ *
+ * 不经过本地 ssh 进程 / node-pty，直接用 ssh2 建立连接并开 shell channel，
+ * 包装成与本地 PTY 完全一致的 TermHandle 形状，TtyServer 无差别调度：
+ * input/resize/kill 上行，data/exit 下行，背压、环形缓冲、agent 工具全复用。
+ *
+ * 认证优先级由 spec.auth 决定：
+ *   agent    —— ssh-agent（SSH_AUTH_SOCK），最推荐，凭证不落盘
+ *   key      —— keyPath 私钥文件（~ 可省略 home），passphrase 可选
+ *   password —— 密码认证，同时挂 keyboard-interactive（很多服务端只开这个）
+ * password / passphrase 支持 `env:VAR` 前缀从进程环境变量取值（配合
+ * dsh-env-manager 插件托管密钥，避免明文写入 settings 文件）。
+ *
+ * 主机密钥策略：known_hosts TOFU（trust-on-first-use）钉扎——hostVerifier 里
+ * 首次连接记录 sha256 指纹（经 HostKeyStore 持久化），之后每次连接校验：
+ * 指纹一致放行；指纹变更拒绝连接（防中间人冒充），用户确认安全后可在
+ * 设置卡片删除该主机记录重连。未提供 hostKeyStore 时退化为 accept-and-log
+ * （旧行为，测试路径用）。
+ */
+import { Client } from 'ssh2';
+import type { ClientChannel, ConnectConfig } from 'ssh2';
 import { PassThrough } from 'node:stream';
 export interface TermExit {
     exitCode: number | null;
@@ -65,6 +86,30 @@ export interface SshSpec {
     password?: string;
     /** OpenSSH agent forwarding：远程可用本地 ssh-agent 的钥匙（git clone 等）。 */
     agentForward?: boolean;
+    /** 经跳板机连接（ProxyJump 语义，**单跳**）；缺省 = 直连。 */
+    jump?: SshJumpSpec;
+}
+/**
+ * 跳板机规格（ProxyJump 语义，**单跳**）。
+ *
+ * 与 `SshSpec` 同形但**不再嵌套**——不支持「跳板机的跳板机」；`username` / `auth` /
+ * `keyPath` / `passphrase` / `password` 任一缺省都会**继承目标那一跳**（企业内网里两者
+ * 通常共用同一把钥匙或同一个 agent），这也正是 v1 的界面只需要一个输入框的原因。
+ *
+ * 为什么不像 OpenSSH 那样只存 `user@host:port` 字符串：字符串装不下「与目标不同的凭据」，
+ * 而本仓所有认证都要走 `resolveSecret`（`env:VAR` 引用 / 凭据存储层）。界面与导入可以把
+ * 简写解析成这个结构。
+ *
+ * 凭据永不进日志与错误文案：展示串只由 `jumpTargetLabel()` 生成（`user@host:port`）。
+ */
+export interface SshJumpSpec {
+    host: string;
+    port?: number;
+    username?: string;
+    auth?: 'agent' | 'key' | 'password';
+    keyPath?: string;
+    passphrase?: string;
+    password?: string;
 }
 /** 连接簿条目（带名字，存 settings）。 */
 export interface SshHostEntry extends SshSpec {
@@ -162,6 +207,11 @@ export declare function classifyError(message: string): string;
  * resolveSecretVia —— 这是"存入凭据存储"的值能被连接真正用到的唯一通路。
  */
 export declare function buildConnectConfig(spec: SshSpec): Promise<ConnectConfig>;
+/** 本文件与各连接点共用的最小日志面（结构上兼容宿主 logger）。 */
+export interface SshLogger {
+    info(msg: string): void;
+    warn(msg: string): void;
+}
 /** TOFU 主机指纹策略（hostVerifier 接线）；返回的 mismatchMessage() 供连接错误路径取人类可读拒绝原因。 */
 export declare function applyHostKeyPolicy(options: {
     connectConfig: ConnectConfig;
@@ -175,6 +225,97 @@ export declare function applyHostKeyPolicy(options: {
 }): {
     mismatchMessage(): string | null;
 };
+/** 跳板机展示串（`user@host:port`）；没有跳板机时返回空串。**凭据不进这里**。 */
+export declare function jumpTargetLabel(spec: SshSpec): string;
+/**
+ * 跳板机连接 + 借来的通道（目标那一跳把它当 `ConnectConfig.sock`）。
+ *
+ * 跳板机**自己的 TOFU 策略**在 `dialJump` 内部就接好了（指纹变更提示必须来自正确的那一跳，
+ * 而握手期的错误也只有那一段能拿到），所以不往外传句柄。
+ */
+export interface JumpDial {
+    /**
+     * 跳板机连接：**它拥有通道**，目标 client 只是借用（ssh2 的 `end()`/`destroy()` 只关
+     * 借来的通道，不关跳板机传输）——谁拨的号，谁就要在收尾时 `end()` 它。
+     */
+    bastion: Client;
+    sock: ClientChannel;
+}
+/**
+ * 拨跳板机并借一条 `forwardOut` 通道（ProxyJump 单跳）。
+ *
+ * 三件事刻意做在这里：
+ *   1. **失败一律点名跳板机**（见 `targetWithJump` 的理由）；
+ *   2. **指纹策略单独一份**：TOFU 的键是 `(host, port)`，跳板机与目标撞 host:port
+ *      （NAT 后的 `127.0.0.1:22` 很常见）时不能共用句柄，否则会出现假「指纹变更」；
+ *   3. **失败路径自己关连接**：抛出去之前 `end()` 掉，否则每次重试都会漏一条
+ *      keepalive 一直养着的连接。
+ */
+export declare function dialJump(options: {
+    spec: SshSpec;
+    store?: HostKeyStore;
+    logger?: SshLogger;
+    /** 覆盖跳板机那一跳的握手超时（探针路径要短；缺省沿用 buildConnectConfig 的 20s）。 */
+    readyTimeoutMs?: number;
+}): Promise<JumpDial>;
+/**
+ * 清洗一份跳板机输入（settings schema / 宽松清洗 / 内联融合共用）。
+ *
+ * 返回 `undefined` = **没有可用的跳板机**（`host` 为空）——调用方据此把 `jump` 整个丢掉，
+ * 而不是留下一个 `host: ''` 的半个对象（那会让 `dialJump` 去连空主机名）。
+ * 缺省不填的字段**不写进结果**：它们要在拨号时「继承目标那一跳」（见 `jumpSpecOf`）。
+ */
+export declare function sanitizeJumpSpec(input: unknown): SshJumpSpec | undefined;
+/** 严格校验一份跳板机输入（HTTP POST 路径）；返回错误信息或清洗结果。 */
+export declare function validateJumpSpec(input: unknown): {
+    jump?: SshJumpSpec;
+    error?: string;
+};
+/** 建连前准备的结果：目标 config（可能挂了跳板机通道）+ 目标那一跳的 TOFU 策略。 */
+export interface PreparedSshConnect {
+    connectConfig: ConnectConfig;
+    policy: {
+        mismatchMessage(): string | null;
+    };
+    /** 需要跳板机时非 null；**调用方必须在收尾时 `end()` 它**（目标只是借用它的通道）。 */
+    bastion: Client | null;
+    /** 展示串：带「经跳板机 X」后缀，错误文案直接用。 */
+    target: string;
+}
+/**
+ * 四个连接点（终端 / SFTP / 隧道 / 探针）**共用**的建连前准备。
+ *
+ * 为什么要有这个函数：跳板机不是「终端的特性」——SFTP、端口转发、探针各自都在建 SSH 连接
+ * （`sftp.ts` / `tunnels.ts` / `probe.ts` 各有一处 `new Client()`）。把「构造 config →
+ * 需要时拨跳板机 → 接上通道 → 装目标 TOFU 策略」收成一处，四条路才不会各写一份
+ * （那正是这一项立项时点名的「三处各写一份必然漂」）。
+ *
+ * **调用方负责**：自己 `conn.connect(connectConfig)`、自己处理 ready/error/close，
+ * 并在收尾（成功或失败）时对 `bastion` 调 `end()`。
+ */
+export declare function prepareSshConnect(options: {
+    spec: SshSpec;
+    store?: HostKeyStore;
+    logger?: SshLogger;
+    /** 覆盖两跳的握手超时（探针路径要短） */
+    readyTimeoutMs?: number;
+}): Promise<PreparedSshConnect>;
+/**
+ * 只做「构造目标 config（需要时拨跳板机并把通道接上）」这一半。
+ *
+ * 拆出来的唯一理由：**探针自己装 hostVerifier**（`makeHostKeyVerifier` 要收集
+ * hostkey 结论，不用 `applyHostKeyPolicy`），但它同样需要跳板机。返回值里的
+ * `bastion` 由调用方负责收尾。
+ */
+export declare function attachJumpSock(options: {
+    spec: SshSpec;
+    store?: HostKeyStore;
+    logger?: SshLogger;
+    readyTimeoutMs?: number;
+}): Promise<{
+    connectConfig: ConnectConfig;
+    bastion: Client | null;
+}>;
 /**
  * 建立 SSH 连接并打开交互 shell channel，返回 TermHandle。
  * 失败（连接超时/认证被拒/host 不可达）时 reject 带人类可读信息。

@@ -27,11 +27,14 @@
 
 ### 2. 跳板机（ProxyJump / ProxyCommand）
 
-> **短期那一半已做**（2026-09-25，见 [§ 已完成](#已完成落点--门槛)）：导入跳过 + 明说、
-> 超时/探测文案点出成因。**完整实现（真的经跳板机连）仍开着，方案已写进
-> [docs/proxyjump-plan.md](./docs/proxyjump-plan.md)**——字段形状、`forwardOut → sock` 的构造序列、
-> 生命周期与清理、连接池键、探针与 UI、约 20 处扁平白名单的清单、五步落地顺序与真机验收
-> 都在那边（本文不重复）。**动手前先读那份方案**，它是这项的唯一作业面。
+> **短期一半 + 单跳完整实现都已落地**（2026-09-25，见 [§ 已完成](#已完成落点--门槛)与
+> [docs/proxyjump-plan.md](./docs/proxyjump-plan.md) 的进度表）：两包加 `jump` 规格并补齐四道
+> 白名单、tty 四个连接点共用 `prepareSshConnect`、docker 池键并入跳板机身份、导入解析
+> `ProxyJump`（含同文件别名）；真机冒烟 `jump-smoke.mjs` 进了 CI。
+>
+> **仍未做**：① **连接簿对话框的跳板机字段与探针结果展示**（目前只能靠导入或手改
+> settings）；② `ProxyCommand`（信任级不同，要单独定闸门）；③ 多跳链（明确不做）。
+> 三项的边界与理由见方案文档，**动手前先读它**——那份文档仍是这项的唯一作业面。
 
 同一个根因，两个包各写了一遍，迁到这里合并（两段原文都保留）：
 
@@ -124,10 +127,20 @@
 （真 HOME 下走一遍路由，含围栏不放松）、`packages/tty/test/host-smoke.test.ts` 与
 `packages/docker/test/ssh-stream-budget.test.ts` 的超时文案断言。
 
-**完整实现仍开着**（真的经跳板机连）：方案、七个坑（超时归属 / `poolKey` / TOFU 键 /
-bastion 生命周期 / `ProxyCommand` 信任级 / 约 20 处扁平白名单 / 导入的别名解析）、五步落地
-顺序与真机验收**全部在 [docs/proxyjump-plan.md](./docs/proxyjump-plan.md)**——那份文档是这项的
-唯一作业面，本文只留这句指针，避免两边各写一份（这一项立项的理由就是「三处各写一份必然漂」）。
+**单跳完整实现已落地**（同日）：`jump` 规格 + 四道白名单、tty 侧四个连接点共用
+`prepareSshConnect`/`attachJumpSock`（终端 / SFTP / 隧道 / 探针一起过 bastion，不留半吊子）、
+docker 侧 `poolKey` 并入跳板机身份并在 `disposeAll`/空闲回收/重连时成对关连接、导入把
+`ProxyJump` 解析成结构化 `jump`（含同文件别名 / `user@host:port` / IPv6）。
+
+**验证**（全绿）：`packages/tty/scripts/jump-smoke.mjs`（真 bastion 的 `direct-tcpip` + 真目标
+sshd；J1 正向 / J2 跳板机密码错点名跳板机 / J3 目标不可达同时点名两跳 / J4 收尾无残留连接；
+已接进 CI）、`packages/docker/test/ssh-jump.test.ts`（假 ssh2：拨号顺序、通道当 `sock`、
+池键区分、失败关连接）、`packages/tty/test/jump-spec.test.ts`（白名单往返 + 拒绝分支）、
+`packages/tty/test/ssh-config.test.ts`（别名 / IPv6 / 嵌套别名 / ProxyCommand 分别报数）。
+
+**仍未做**：连接簿对话框字段与探针结果展示（靠导入或手改 settings 暂时够用）、
+`ProxyCommand`（信任级不同，要单独定闸门）、多跳链（不做）。方案与全部坑仍见
+[docs/proxyjump-plan.md](./docs/proxyjump-plan.md)。
 
 **刻意不做**：不做「只让 tty 能过 bastion、docker 不行」的半吊子（原文的判据：那比不做更糟）；
 本轮也不动 `ProxyCommand`（信任级不同，要单独定闸门）。

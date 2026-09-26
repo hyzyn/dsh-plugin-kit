@@ -136,7 +136,7 @@ Host prod
  * 用户得自己反推是堡垒机的问题。
  */
 describe('parseSshConfigDetailed：每一种丢弃都要有信号', () => {
-  it('ProxyJump / ProxyCommand 的块整块跳过，并把块名报回去', () => {
+  it('ProxyJump 解析成 jump 一起导入；ProxyCommand 仍跳过并点名', () => {
     const text = [
       'Host direct',
       '  User u',
@@ -149,11 +149,62 @@ describe('parseSshConfigDetailed：每一种丢弃都要有信号', () => {
       '  ProxyCommand ssh -W %h:%p bastion',
     ].join('\n')
     const result = parseSshConfigDetailed(text)
-    expect(result.entries.map((entry) => entry.name)).toEqual(['direct'])
-    expect(result.proxy).toEqual(['via-jump', 'via-cmd'])
-    expect(result.proxyCount).toBe(2)
+    expect(result.entries.map((entry) => entry.name)).toEqual(['direct', 'via-jump'])
+    // `bastion` 在这份 config 里不是别名 → 当主机名用（与 OpenSSH 一致：它就是一台可解析的主机）
+    expect(result.entries[1].jump).toEqual({ host: 'bastion', port: 22 })
+    expect(result.jumpImported).toBe(1)
+    // ProxyCommand 是另一档（信任级不同）：仍整块跳过，且**单独报数**，不与「解析不出」混在一起
+    expect(result.proxyCommand).toEqual(['via-cmd'])
+    expect(result.proxyCommandCount).toBe(1)
+    expect(result.proxy).toEqual([])
+    expect(result.proxyCount).toBe(0)
     expect(result.skippedOther).toBe(0)
     expect(result.droppedOverflow).toBe(0)
+  })
+
+  it('ProxyJump 支持 user@host:port 与 IPv6 写法；也支持引用同一份 config 里的别名', () => {
+    const text = [
+      'Host alias-bastion',
+      '  HostName bastion.internal',
+      '  User jumpuser',
+      '  Port 2222',
+      'Host a',
+      '  User u',
+      '  ProxyJump jumpuser@10.0.0.5:2200',
+      'Host b',
+      '  User u',
+      '  ProxyJump alias-bastion',
+      'Host c',
+      '  User u',
+      '  ProxyJump [::1]:2223',
+    ].join('\n')
+    const result = parseSshConfigDetailed(text)
+    // 跳板机那个块本身也是一条可直连的条目（它是个具体 Host），所以它在候选里——这是对的
+    expect(result.entries.map((entry) => entry.name)).toEqual(['alias-bastion', 'a', 'b', 'c'])
+    expect(result.entries[0].jump).toBeUndefined()
+    expect(result.entries[1].jump).toEqual({ host: '10.0.0.5', port: 2200, username: 'jumpuser' })
+    // 别名：拿它自己的 HostName / User / Port
+    expect(result.entries[2].jump).toEqual({ host: 'bastion.internal', port: 2222, username: 'jumpuser' })
+    expect(result.entries[3].jump).toEqual({ host: '::1', port: 2223 })
+    expect(result.jumpImported).toBe(3)
+  })
+
+  it('别名块自己也依赖跳板机 → 不支持嵌套（单跳），整块跳过并报数', () => {
+    const text = [
+      'Host nested-bastion',
+      '  HostName inner',
+      '  User u',
+      '  ProxyJump outer',
+      'Host target',
+      '  User u',
+      '  ProxyJump nested-bastion',
+    ].join('\n')
+    const result = parseSshConfigDetailed(text)
+    // nested-bastion 自己被 ProxyJump 了 → 它作为「跳板机」不可用；target 因此也导入不了
+    expect(result.entries.map((entry) => entry.name)).toEqual(['nested-bastion'])
+    expect(result.entries[0].jump).toEqual({ host: 'outer', port: 22 })
+    expect(result.proxy).toEqual(['target'])
+    expect(result.proxyCount).toBe(1)
   })
 
   it('ProxyJump none / ProxyCommand none 是显式的直连，照常导入', () => {
@@ -163,11 +214,13 @@ describe('parseSshConfigDetailed：每一种丢弃都要有信号', () => {
     expect(result.proxyCount).toBe(0)
   })
 
-  it('键名大小写不敏感（proxyjump / PROXYCOMMAND 一样认）', () => {
+  it('键名大小写不敏感（PROXYJUMP 照解析 / proxycommand 照跳过）', () => {
     const text = ['Host a', '  User u', '  PROXYJUMP bastion', 'Host b', '  User u', '  proxycommand ssh -W %h:%p j'].join('\n')
     const result = parseSshConfigDetailed(text)
-    expect(result.entries).toEqual([])
-    expect(result.proxyCount).toBe(2)
+    expect(result.entries.map((entry) => entry.name)).toEqual(['a'])
+    expect(result.entries[0].jump?.host).toBe('bastion')
+    expect(result.proxyCommandCount).toBe(1)
+    expect(result.jumpImported).toBe(1)
   })
 
   it('通配 / 无 User 的块只计数（名字对用户没有意义），不与跳板机混为一谈', () => {
@@ -185,19 +238,22 @@ describe('parseSshConfigDetailed：每一种丢弃都要有信号', () => {
     expect(result.droppedOverflow).toBe(5)
   })
 
-  it('proxy 名单有上限，但计数仍然是准的（不许因为截断就把数报小）', () => {
-    const blocks = Array.from({ length: MAX_PROXY_NAMES + 7 }, (_, index) => `Host p${index}\n  User u\n  ProxyJump bastion`)
+  it('proxyCommand 名单有上限，但计数仍然是准的（不许因为截断就把数报小）', () => {
+    const blocks = Array.from({ length: MAX_PROXY_NAMES + 7 }, (_, index) => `Host p${index}\n  User u\n  ProxyCommand ssh -W %h:%p bastion`)
     const result = parseSshConfigDetailed(blocks.join('\n'))
-    expect(result.proxy).toHaveLength(MAX_PROXY_NAMES)
-    expect(result.proxyCount).toBe(MAX_PROXY_NAMES + 7)
+    expect(result.proxyCommand).toHaveLength(MAX_PROXY_NAMES)
+    expect(result.proxyCommandCount).toBe(MAX_PROXY_NAMES + 7)
   })
 
-  it('干净的配置：没有丢弃、没有跳过', () => {
+  it('干净的配置：没有丢弃、没有跳过、没有跳板机', () => {
     const result = parseSshConfigDetailed('Host a\n  HostName a.local\n  User u\n')
     expect(result).toEqual({
       entries: [expect.objectContaining({ name: 'a', host: 'a.local' })],
       proxy: [],
       proxyCount: 0,
+      proxyCommand: [],
+      proxyCommandCount: 0,
+      jumpImported: 0,
       skippedOther: 0,
       droppedOverflow: 0,
     })

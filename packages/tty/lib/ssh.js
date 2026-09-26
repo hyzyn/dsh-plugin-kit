@@ -221,6 +221,225 @@ export function applyHostKeyPolicy(options) {
     };
     return { mismatchMessage: () => hostKeyMismatch };
 }
+/** 跳板机展示串（`user@host:port`）；没有跳板机时返回空串。**凭据不进这里**。 */
+export function jumpTargetLabel(spec) {
+    const jump = spec.jump;
+    if (jump === undefined || jump.host.trim() === '')
+        return '';
+    const port = jump.port ?? 22;
+    return `${jump.username ?? spec.username}@${jump.host.trim()}${port === 22 ? '' : ':' + String(port)}`;
+}
+/**
+ * 目标那一跳的展示串 + 跳板机后缀（**给用户看的错误文案**用）。
+ *
+ * 为什么错误文案必须带这一句：ssh2 在两跳上共用 `readyTimeout`，报的都是
+ * `Timed out while waiting for handshake`——不点名的话「跳板机不可达」会伪装成
+ * 「目标超时」，用户会去查对端主机而问题在跳板机上。
+ */
+function targetWithJump(spec) {
+    const label = jumpTargetLabel(spec);
+    return label === '' ? sshTarget(spec) : `${sshTarget(spec)}（经跳板机 ${label}）`;
+}
+/** 跳板机那一跳的连接规格：显式给的优先，其余**继承目标**。 */
+function jumpSpecOf(spec) {
+    const jump = spec.jump;
+    const username = typeof jump.username === 'string' && jump.username.trim() !== '' ? jump.username.trim() : spec.username;
+    return {
+        host: jump.host.trim(),
+        port: jump.port ?? 22,
+        username,
+        auth: jump.auth ?? spec.auth ?? 'agent',
+        keyPath: jump.keyPath ?? spec.keyPath,
+        passphrase: jump.passphrase ?? spec.passphrase,
+        password: jump.password ?? spec.password,
+    };
+}
+/** 跳板机通道打开兜底（与 channel 打开兜底同思路：对端不回 `forwardOut` 回调时不能让 await 挂着）。 */
+const JUMP_CHANNEL_TIMEOUT_MS = 15_000;
+/**
+ * 拨跳板机并借一条 `forwardOut` 通道（ProxyJump 单跳）。
+ *
+ * 三件事刻意做在这里：
+ *   1. **失败一律点名跳板机**（见 `targetWithJump` 的理由）；
+ *   2. **指纹策略单独一份**：TOFU 的键是 `(host, port)`，跳板机与目标撞 host:port
+ *      （NAT 后的 `127.0.0.1:22` 很常见）时不能共用句柄，否则会出现假「指纹变更」；
+ *   3. **失败路径自己关连接**：抛出去之前 `end()` 掉，否则每次重试都会漏一条
+ *      keepalive 一直养着的连接。
+ */
+export async function dialJump(options) {
+    const jumpSpec = jumpSpecOf(options.spec);
+    const label = jumpTargetLabel(options.spec);
+    const destination = sshTarget(options.spec);
+    const bastion = new Client();
+    const closeQuietly = () => {
+        try {
+            bastion.end();
+        }
+        catch {
+            /* 已断开 */
+        }
+    };
+    let connectConfig;
+    try {
+        connectConfig = await buildConnectConfig(jumpSpec);
+    }
+    catch (error) {
+        // 预检类错误（缺 SSH_AUTH_SOCK / keyPath 读不到 / 引用解析不到）也要点名跳板机
+        throw new Error(`跳板机连接失败（${label}）：${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (options.readyTimeoutMs !== undefined)
+        connectConfig.readyTimeout = options.readyTimeoutMs;
+    const policy = applyHostKeyPolicy({ connectConfig, spec: jumpSpec, store: options.store, logger: options.logger, target: `跳板机 ${label}` });
+    await new Promise((resolve, reject) => {
+        let settled = false;
+        const fail = (error) => {
+            if (settled)
+                return;
+            settled = true;
+            closeQuietly();
+            reject(error);
+        };
+        bastion.once('ready', () => {
+            if (settled)
+                return;
+            settled = true;
+            resolve();
+        });
+        bastion.on('error', (error) => {
+            fail(new Error(policy.mismatchMessage() ?? `跳板机连接失败（${label}）：${classifyError(error.message)}`));
+        });
+        bastion.once('close', () => {
+            fail(new Error(`跳板机连接已关闭（${label}）：目标连接尚未建立`));
+        });
+        if (connectConfig.tryKeyboard === true) {
+            const password = connectConfig.password ?? '';
+            bastion.on('keyboard-interactive', (_name, _instructions, _lang, _prompts, finishKb) => {
+                finishKb([password]);
+            });
+        }
+        try {
+            bastion.connect(connectConfig);
+        }
+        catch (error) {
+            fail(new Error(`跳板机连接失败（${label}）：${error instanceof Error ? error.message : String(error)}`));
+        }
+    });
+    const sock = await new Promise((resolve, reject) => {
+        let settled = false;
+        const timer = setTimeout(() => {
+            if (settled)
+                return;
+            settled = true;
+            closeQuietly();
+            reject(new Error(`跳板机通道打开超时（${label} → ${destination}，${String(JUMP_CHANNEL_TIMEOUT_MS / 1000)}s 无响应）：跳板机可能不允许转发或不响应`));
+        }, JUMP_CHANNEL_TIMEOUT_MS);
+        timer.unref?.();
+        bastion.forwardOut('127.0.0.1', 0, options.spec.host, options.spec.port ?? 22, (error, channel) => {
+            if (settled)
+                return;
+            settled = true;
+            clearTimeout(timer);
+            if (error !== undefined && error !== null) {
+                closeQuietly();
+                reject(new Error(`跳板机通道打开失败（${label} → ${destination}）：${error.message}`));
+                return;
+            }
+            resolve(channel);
+        });
+    });
+    options.logger?.info(`[dsh-tty] ssh ${destination} 经跳板机 ${label} 已建立转发通道（ProxyJump）`);
+    return { bastion, sock };
+}
+/**
+ * 清洗一份跳板机输入（settings schema / 宽松清洗 / 内联融合共用）。
+ *
+ * 返回 `undefined` = **没有可用的跳板机**（`host` 为空）——调用方据此把 `jump` 整个丢掉，
+ * 而不是留下一个 `host: ''` 的半个对象（那会让 `dialJump` 去连空主机名）。
+ * 缺省不填的字段**不写进结果**：它们要在拨号时「继承目标那一跳」（见 `jumpSpecOf`）。
+ */
+export function sanitizeJumpSpec(input) {
+    if (typeof input !== 'object' || input === null)
+        return undefined;
+    const raw = input;
+    const host = typeof raw.host === 'string' ? raw.host.trim() : '';
+    if (host === '')
+        return undefined;
+    const port = Number(raw.port);
+    const jump = { host, port: Number.isInteger(port) && port >= 1 && port <= 65535 ? port : 22 };
+    if (typeof raw.username === 'string' && raw.username.trim() !== '')
+        jump.username = raw.username.trim();
+    if (raw.auth === 'agent' || raw.auth === 'key' || raw.auth === 'password')
+        jump.auth = raw.auth;
+    if (typeof raw.keyPath === 'string' && raw.keyPath !== '')
+        jump.keyPath = raw.keyPath;
+    if (typeof raw.passphrase === 'string' && raw.passphrase !== '')
+        jump.passphrase = raw.passphrase;
+    if (typeof raw.password === 'string' && raw.password !== '')
+        jump.password = raw.password;
+    return jump;
+}
+/** 严格校验一份跳板机输入（HTTP POST 路径）；返回错误信息或清洗结果。 */
+export function validateJumpSpec(input) {
+    if (typeof input !== 'object' || input === null)
+        return { error: 'jump 必须是对象' };
+    const raw = input;
+    if (typeof raw.host !== 'string' || raw.host.trim() === '')
+        return { error: 'jump.host 必须是非空字符串' };
+    if (raw.port !== undefined && raw.port !== '') {
+        const port = Number(raw.port);
+        if (!Number.isInteger(port) || port < 1 || port > 65535)
+            return { error: 'jump.port 必须是 1~65535 的整数' };
+    }
+    if (raw.username !== undefined && typeof raw.username !== 'string')
+        return { error: 'jump.username 必须是字符串' };
+    if (raw.auth !== undefined && raw.auth !== 'agent' && raw.auth !== 'key' && raw.auth !== 'password') {
+        return { error: 'jump.auth 必须是 agent / key / password' };
+    }
+    for (const key of ['keyPath', 'passphrase', 'password']) {
+        if (raw[key] !== undefined && typeof raw[key] !== 'string')
+            return { error: `jump.${key} 必须是字符串` };
+    }
+    if (raw.auth === 'key' && (typeof raw.keyPath !== 'string' || raw.keyPath.trim() === '')) {
+        return { error: 'jump.auth=key 需要 jump.keyPath' };
+    }
+    return { jump: sanitizeJumpSpec(raw) };
+}
+/**
+ * 四个连接点（终端 / SFTP / 隧道 / 探针）**共用**的建连前准备。
+ *
+ * 为什么要有这个函数：跳板机不是「终端的特性」——SFTP、端口转发、探针各自都在建 SSH 连接
+ * （`sftp.ts` / `tunnels.ts` / `probe.ts` 各有一处 `new Client()`）。把「构造 config →
+ * 需要时拨跳板机 → 接上通道 → 装目标 TOFU 策略」收成一处，四条路才不会各写一份
+ * （那正是这一项立项时点名的「三处各写一份必然漂」）。
+ *
+ * **调用方负责**：自己 `conn.connect(connectConfig)`、自己处理 ready/error/close，
+ * 并在收尾（成功或失败）时对 `bastion` 调 `end()`。
+ */
+export async function prepareSshConnect(options) {
+    const { spec, store, logger } = options;
+    const target = targetWithJump(spec);
+    const { connectConfig, bastion } = await attachJumpSock(options);
+    const policy = applyHostKeyPolicy({ connectConfig, spec, store, logger, target });
+    return { connectConfig, policy, bastion, target };
+}
+/**
+ * 只做「构造目标 config（需要时拨跳板机并把通道接上）」这一半。
+ *
+ * 拆出来的唯一理由：**探针自己装 hostVerifier**（`makeHostKeyVerifier` 要收集
+ * hostkey 结论，不用 `applyHostKeyPolicy`），但它同样需要跳板机。返回值里的
+ * `bastion` 由调用方负责收尾。
+ */
+export async function attachJumpSock(options) {
+    const { spec, store, logger } = options;
+    const connectConfig = await buildConnectConfig(spec);
+    if (options.readyTimeoutMs !== undefined)
+        connectConfig.readyTimeout = options.readyTimeoutMs;
+    if (spec.jump === undefined)
+        return { connectConfig, bastion: null };
+    const dialed = await dialJump({ spec, store, logger, readyTimeoutMs: options.readyTimeoutMs });
+    connectConfig.sock = dialed.sock;
+    return { connectConfig, bastion: dialed.bastion };
+}
 /**
  * 建立 SSH 连接并打开交互 shell channel，返回 TermHandle。
  * 失败（连接超时/认证被拒/host 不可达）时 reject 带人类可读信息。
@@ -233,6 +452,8 @@ export async function spawnSsh(spec, options) {
         throw new Error('agent forwarding 需要 SSH_AUTH_SOCK（本机未运行 ssh-agent 或变量未设置）');
     }
     const conn = new Client();
+    /** 跳板机连接（ProxyJump）：它拥有目标借用的通道，收尾时必须由本函数 end 掉。 */
+    let bastion = null;
     const output = new PassThrough();
     let exitCode = null;
     let exitSignal = null;
@@ -257,11 +478,26 @@ export async function spawnSsh(spec, options) {
         catch {
             /* 已断开 */
         }
+        // 跳板机**最后**关：顺序反了会在目标还活着时抽掉它借用的通道
+        if (bastion !== null) {
+            try {
+                bastion.end();
+            }
+            catch {
+                /* 已断开 */
+            }
+        }
         settleDone({ exitCode, signal: exitSignal });
     };
     // 认证配置可能抛错（keyPath 读不到 / 引用解析不到）——先构造再连
-    const connectConfig = await buildConnectConfig(spec);
-    const policy = applyHostKeyPolicy({ connectConfig, spec, store: options.hostKeyStore, logger, target });
+    /*
+     * 建连前准备（含跳板机）：拨号失败/超时都在 dialJump 里点名跳板机并自我清理；
+     * 成功之后跳板机的生死由本函数的 finish() 一并负责（目标先关、跳板机后关）。
+     */
+    const prepared = await prepareSshConnect({ spec, store: options.hostKeyStore, logger });
+    const connectConfig = prepared.connectConfig;
+    const policy = prepared.policy;
+    bastion = prepared.bastion;
     /** 持久会话：远程 tmux 探测/降级提示（spawn 后由调用方注入终端）。 */
     let startupNotice;
     let tmuxUsed = false;
@@ -406,7 +642,7 @@ export async function spawnSsh(spec, options) {
                 if (mismatch !== null)
                     settleErr(new Error(mismatch));
                 else
-                    settleErr(new Error(`SSH 连接失败（${target}）: ${classifyError(error.message)}`));
+                    settleErr(new Error(`SSH 连接失败（${targetWithJump(spec)}）: ${classifyError(error.message)}`));
             }
             else {
                 logger?.warn(`[dsh-tty] ssh ${target} 连接错误: ${error.message}`);
@@ -415,7 +651,7 @@ export async function spawnSsh(spec, options) {
         });
         conn.on('close', () => {
             // channel 建立前连接就断了：不能让 await 悬挂（0.19.0 兜底）
-            settleErr(new Error(`SSH 连接已关闭（${target}，channel 未建立）`));
+            settleErr(new Error(`SSH 连接已关闭（${targetWithJump(spec)}，channel 未建立）`));
             finish();
         });
         if (connectConfig.tryKeyboard === true) {

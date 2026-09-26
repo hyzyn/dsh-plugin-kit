@@ -1,4 +1,5 @@
-import type { ConnectConfig } from 'ssh2';
+import { Client } from 'ssh2';
+import type { ClientChannel, ConnectConfig } from 'ssh2';
 /**
  * TOFU 主机指纹记录（与 tty 0.19.0 同形状：同一 host:port 一组指纹）。
  *
@@ -29,7 +30,34 @@ export interface SshSpec {
     passphrase?: string;
     password?: string;
     agentForward?: boolean;
+    /** 经跳板机连接（ProxyJump 语义，**单跳**）；缺省 = 直连。与 tty 的 `SshSpec.jump` 同形。 */
+    jump?: SshJumpSpec;
 }
+/**
+ * 跳板机规格（与 tty `src/ssh.ts` 的 `SshJumpSpec` **逐字同形**，两包各持一份类型）。
+ *
+ * 本包只从 tty 的连接簿读它（`readTtyBooks`）——docker 侧**不做跳板机界面**：目标是
+ * 「一处配置、两处生效」。`username` / `auth` / `keyPath` / `passphrase` / `password`
+ * 缺省时**继承目标那一跳**（见 `jumpSpecOf`）。
+ */
+export interface SshJumpSpec {
+    host: string;
+    port?: number;
+    username?: string;
+    auth?: 'agent' | 'key' | 'password';
+    keyPath?: string;
+    passphrase?: string;
+    password?: string;
+}
+/**
+ * 清洗一份跳板机输入（`readTtyBooks` 用）。返回 `undefined` = 没配跳板机——不给下游留
+ * `host: ''` 的半个对象（那会让拨号去连空主机名）。
+ */
+export declare function sanitizeJumpSpec(input: unknown): SshJumpSpec | undefined;
+/** 跳板机展示串（`user@host:port`）；没配时返回空串。**凭据不进这里**。 */
+export declare function jumpTargetLabel(spec: SshSpec): string;
+/** 目标那一跳的展示串 + 跳板机后缀（错误文案用；理由见 tty `src/ssh.ts` 的同名注释）。 */
+export declare function targetWithJump(spec: SshSpec): string;
 /** 一条命令的执行结果。 */
 export interface ExecResult {
     /** 退出码；进程被信号杀死或 channel 异常时为 null。 */
@@ -106,6 +134,32 @@ export declare function sshTarget(spec: SshSpec): string;
  * 命令都以 argv 数组构造，禁止把用户输入拼进字符串。
  */
 export declare function shJoin(argv: readonly string[]): string;
+/**
+ * 连接池键：同一主机同一账号复用一条 SSH 连接。
+ *
+ * host 要 trim + 小写（D111）：否则 `NAS.example` 与 `nas.example` 各建一条连接，而
+ * `MAX_STREAMS_PER_TARGET` 与 `shouldRecycleConn` 都是**按连接**计的 → 同一台主机的
+ * 长流额度被悄悄翻倍（恰好掩盖 D07 想暴露的 MaxSessions 问题）。口径与 TOFU 的
+ * hostVerifier（D03）保持一致：那里也用 `trim().toLowerCase()` 分组指纹。
+ */
+/**
+ * 池键。**跳板机身份必须并进来**：不同 bastion 到同一目标绝不是同一条连接——
+ * 只按 `user@host:port` 记的话，第二个 bastion 会静默复用第一条连接、走错跳板机。
+ * 这与 tty 的 SFTP 池不同（那边键是 `JSON.stringify(spec)`，天然带上 jump）。
+ */
+export declare function poolKey(spec: SshSpec): string;
+/**
+ * 拨跳板机并借一条 forwardOut 通道（ProxyJump 单跳）。与 tty `src/ssh.ts` 的 dialJump 同序。
+ * **导出仅供单测**（`test/ssh-jump.test.ts` 用假 ssh2 验「先拨跳板机、再把通道当 sock」）。
+ */
+export declare function dialJump(options: {
+    spec: SshSpec;
+    store?: HostKeyStore | undefined;
+    logger?: ExecLogger | undefined;
+}): Promise<{
+    bastion: Client;
+    sock: ClientChannel;
+}>;
 /**
  * 长流配额判定（纯函数，便于回归）：`busy` 是连接上正在推送的长流数。
  * @param target - 目标标签，只用于文案。

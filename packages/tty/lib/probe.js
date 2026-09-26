@@ -22,7 +22,7 @@
  */
 import { Client } from 'ssh2';
 import { connect as netConnect } from 'node:net';
-import { buildConnectConfig, classifyError, sshTarget } from './ssh.js';
+import { attachJumpSock, classifyError, jumpTargetLabel, sshTarget } from './ssh.js';
 /** TCP 预检超时（毫秒）：DNS 解析 + 建连。 */
 export const PROBE_TCP_TIMEOUT_MS = 6_000;
 /** ssh2 握手/认证阶段超时（毫秒）；覆盖 buildConnectConfig 的 readyTimeout。 */
@@ -125,9 +125,18 @@ export async function probeSsh(spec, store) {
         result.auth = { ok: false, error: message };
         return finish();
     }
-    // ---- 阶段 1：TCP 预检（DNS + 建连） ----
+    /*
+     * ---- 阶段 1：TCP 预检（DNS + 建连） ----
+     *
+     * **有跳板机时预检的是跳板机**：目标那一跳根本不能直连，探它只会得到一句「超时」，
+     * 而那正是用户要区分的东西。目标那一跳的结论来自阶段 2（经通道握手），见 result.auth。
+     */
+    const jumpLabel = jumpTargetLabel(spec);
+    const tcpHost = spec.jump !== undefined ? spec.jump.host.trim() : spec.host;
+    const tcpPort = spec.jump !== undefined ? spec.jump.port ?? 22 : port;
+    const tcpPrefix = jumpLabel === '' ? '' : `跳板机 ${jumpLabel} `;
     const tcpResult = await new Promise((resolve) => {
-        const sock = netConnect({ host: spec.host, port });
+        const sock = netConnect({ host: tcpHost, port: tcpPort });
         const tcpStart = Date.now();
         const done = (ok, error) => {
             try {
@@ -139,13 +148,15 @@ export async function probeSsh(spec, store) {
             resolve({ ok, error, ms: Date.now() - tcpStart });
         };
         sock.setTimeout(PROBE_TCP_TIMEOUT_MS, () => {
-            // 跳板机提示（项目级 ROADMAP 第 2 项）：TCP 层不通是「只能经 bastion 访问」最典型的
-            // 表现——探针是用户遇到这类主机时第一个会点的按钮
-            done(false, 'TCP 连接超时：主机无响应（检查地址 / 防火墙 / 网络；若该主机只能经跳板机访问——~/.ssh/config 里的 ProxyJump / ProxyCommand——本版本尚不支持，见项目级 ROADMAP 第 2 项）');
+            // 没配跳板机时仍要点出这条最容易被误读的成因（企业内网主机几乎都要过 bastion）
+            const hint = jumpLabel === ''
+                ? '；若该主机只能经跳板机访问，请在这个连接条目里配置跳板机（也可从 ~/.ssh/config 导入，ProxyJump 会被自动带上）'
+                : '';
+            done(false, `${tcpPrefix}TCP 连接超时：无响应（检查地址 / 防火墙 / 网络${hint}）`);
         });
         sock.once('connect', () => done(true));
         sock.once('error', (error) => {
-            done(false, classifyError(error.message));
+            done(false, tcpPrefix + classifyError(error.message));
         });
     });
     result.tcp = tcpResult;
@@ -154,17 +165,19 @@ export async function probeSsh(spec, store) {
         return finish();
     }
     // ---- 阶段 2+3：ssh2 握手（host key 交换 + 认证） ----
+    // 有跳板机时**两跳都用探针的短超时**：否则「跳板机连不上」会把探针拖到 20s
     let connectConfig;
+    let bastion = null;
     try {
-        connectConfig = await buildConnectConfig(spec);
+        const attached = await attachJumpSock({ spec, store, readyTimeoutMs: PROBE_AUTH_TIMEOUT_MS });
+        connectConfig = attached.connectConfig;
+        bastion = attached.bastion;
     }
     catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         result.auth = { ok: false, error: classifyError(message) };
         return finish();
     }
-    // 探针专属更短握手超时（buildConnectConfig 默认 20s 对测试太长）
-    connectConfig.readyTimeout = PROBE_AUTH_TIMEOUT_MS;
     const password = spec.auth === 'password' ? connectConfig.password ?? '' : '';
     const tryKeyboard = connectConfig.tryKeyboard === true;
     return new Promise((resolve) => {
@@ -182,6 +195,13 @@ export async function probeSsh(spec, store) {
             catch {
                 /* 已断开 */
             }
+            try {
+                bastion?.end();
+            }
+            catch {
+                /* 已断开 */
+            }
+            bastion = null;
             resolve(finish());
         };
         // hostVerifier 的 onResult 同步回调：把结论收集到 hostkeyState

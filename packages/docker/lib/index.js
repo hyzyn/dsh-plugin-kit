@@ -2,7 +2,7 @@ import z from '@deepseek-ai/schemastery';
 import { definePlugin, hasSameOriginProof, isLoopbackRequestStrict, originProofHint, plainConfig, readSettingsEntry, settingsEntryScope, suppressAutoSettingsPage } from '@hyzyn/dsh-kit';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { DockerApi, assertBin, assertImageRef, assertName, assertRef, assertSince, createRunner, parseImageHistoryJson, parseImageHistoryText, parseContainerEvent, parseEventsJson, parseImageInspectJson, parseInspectJson, parsePsJson, parseStatsJson, suggestContainerNames, } from './docker.js';
-import { RemoteExec, setCredentialResolver, sshTarget } from './ssh-exec.js';
+import { RemoteExec, sanitizeJumpSpec, setCredentialResolver, sshTarget } from './ssh-exec.js';
 const TARGET_SCHEMA = z.object({
     name: z.string().required(),
     kind: z.union([z.const('local'), z.const('ssh')]).default('local'),
@@ -383,7 +383,7 @@ function readTtyBooks(settings) {
         const username = typeof item.username === 'string' ? item.username.trim() : '';
         if (name === '' || host === '' || username === '')
             continue;
-        out.set(name, {
+        const spec = {
             host,
             port: typeof item.port === 'number' && Number.isInteger(item.port) ? item.port : 22,
             username,
@@ -392,7 +392,15 @@ function readTtyBooks(settings) {
             password: typeof item.password === 'string' ? item.password : '',
             passphrase: typeof item.passphrase === 'string' ? item.passphrase : '',
             agentForward: item.agentForward === true,
-        });
+        };
+        /*
+         * 跳板机跟着连接簿一起走（本包**不自建跳板机界面**：目标是「一处配置、两处生效」）。
+         * 漏了这一段就是「终端能连、docker 目标连不上」——本项立项时点名的半吊子状态。
+         */
+        const jump = sanitizeJumpSpec(item.jump);
+        if (jump !== undefined)
+            spec.jump = jump;
+        out.set(name, spec);
     }
     return out;
 }

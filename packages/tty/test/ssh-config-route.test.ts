@@ -126,9 +126,12 @@ describe('GET /api/dsh-tty/ssh-config（导入候选 + 丢弃信号）', () => {
     const body = JSON.parse(String(res.body)) as Record<string, unknown>
     expect(res.status).toBe(200)
     expect(body.ok).toBe(true)
-    expect((body.entries as Array<{ name: string }>).map((entry) => entry.name)).toEqual(['prod'])
-    expect(body.proxy).toEqual(['internal'])
-    expect(body.proxyCount).toBe(1)
+    expect((body.entries as Array<{ name: string }>).map((entry) => entry.name)).toEqual(['prod', 'internal'])
+    // ProxyJump 现在解析成结构化 jump 一起导入（单跳）
+    expect((body.entries as Array<{ jump?: unknown }>)[1].jump).toEqual({ host: 'bastion', port: 22 })
+    expect(body.jumpImported).toBe(1)
+    expect(body.proxy).toEqual([])
+    expect(body.proxyCount).toBe(0)
     expect(body.skippedOther).toBe(0)
     expect(body.droppedOverflow).toBe(0)
   })
@@ -139,7 +142,8 @@ describe('GET /api/dsh-tty/ssh-config（导入候选 + 丢弃信号）', () => {
     await mountPlugin()(makeReq(), res)
     const body = JSON.parse(String(res.body)) as Record<string, unknown>
     expect(body.entries).toEqual([])
-    expect(body.proxy).toEqual(['via'])
+    expect(body.proxyCommand).toEqual(['via'])
+    expect(body.proxyCommandCount).toBe(1)
     expect(body.skippedOther).toBe(1)
   })
 

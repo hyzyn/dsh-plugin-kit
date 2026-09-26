@@ -56,7 +56,7 @@ import type {
   VolumeDetail,
   VolumeSummary,
 } from './docker.js'
-import { RemoteExec, setCredentialResolver, sshTarget } from './ssh-exec.js'
+import { RemoteExec, sanitizeJumpSpec, setCredentialResolver, sshTarget } from './ssh-exec.js'
 import type { CredentialResolver, ExecLogger, HostKeyRecord, HostKeyStore, SshSpec } from './ssh-exec.js'
 
 export type { HostKeyRecord } from './ssh-exec.js'
@@ -614,7 +614,7 @@ function readTtyBooks(settings: SettingsLookup | undefined): Map<string, SshSpec
     const host = typeof item.host === 'string' ? item.host.trim() : ''
     const username = typeof item.username === 'string' ? item.username.trim() : ''
     if (name === '' || host === '' || username === '') continue
-    out.set(name, {
+    const spec: SshSpec = {
       host,
       port: typeof item.port === 'number' && Number.isInteger(item.port) ? item.port : 22,
       username,
@@ -623,7 +623,14 @@ function readTtyBooks(settings: SettingsLookup | undefined): Map<string, SshSpec
       password: typeof item.password === 'string' ? item.password : '',
       passphrase: typeof item.passphrase === 'string' ? item.passphrase : '',
       agentForward: item.agentForward === true,
-    })
+    }
+    /*
+     * 跳板机跟着连接簿一起走（本包**不自建跳板机界面**：目标是「一处配置、两处生效」）。
+     * 漏了这一段就是「终端能连、docker 目标连不上」——本项立项时点名的半吊子状态。
+     */
+    const jump = sanitizeJumpSpec(item.jump)
+    if (jump !== undefined) spec.jump = jump
+    out.set(name, spec)
   }
   return out
 }

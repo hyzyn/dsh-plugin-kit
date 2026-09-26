@@ -14,7 +14,7 @@ import xtermHeadless from '@xterm/headless';
 const HeadlessTerminal = xtermHeadless.Terminal;
 import { definePlugin, dshHome as resolveDshHome, hasSameOriginProof, isLoopbackRequestStrict, plainConfig, settingsEntryScope, suppressAutoSettingsPage } from '@hyzyn/dsh-kit';
 import { defineTool } from '@deepseek-ai/dsh-tools';
-import { spawnSsh, sshTarget, expandHome, setCredentialResolver } from './ssh.js';
+import { sanitizeJumpSpec, spawnSsh, sshTarget, expandHome, setCredentialResolver, validateJumpSpec } from './ssh.js';
 import { probeSsh } from './probe.js';
 import { buildCommandSpawn, buildShellSpawn, defaultShellPath } from './shell-integration.js';
 import { parseSshConfigDetailed } from './ssh-config.js';
@@ -25,6 +25,22 @@ import { buildTmuxSpawnPlan, ensureTmuxAssets, killTmuxSession, listTmuxSessions
 import { buildRemoteStatsCommand, buildWindowsStatsCommand, hasStatsData, localStatsSampler, parseStatsLine } from './stats.js';
 /** SFTP 传输限制默认值。 */
 const DEFAULT_SFTP_LIMITS = { maxDownloadMb: 1024, maxUploadMb: 2048, maxUploadFiles: 1000 };
+/**
+ * 跳板机（ProxyJump 单跳）的 settings schema。
+ *
+ * 刻意**不给 `auth` / `keyPath` / `passphrase` / `password` / `username` 默认值**：
+ * 缺省的含义是「继承目标那一跳的凭据」，一旦给默认值（如 auth 默认 agent）就会把
+ * 「继承」变成「显式 agent」，用户配了密码的跳板机就会认证失败。
+ */
+const SSH_JUMP_SCHEMA = z.object({
+    host: z.string(),
+    port: z.natural().max(65535).default(22),
+    username: z.string().default(''),
+    auth: z.union([z.const('agent'), z.const('key'), z.const('password')]),
+    keyPath: z.string().default(''),
+    passphrase: z.string().default(''),
+    password: z.string().default(''),
+});
 const SSH_HOST_SCHEMA = z.object({
     name: z.string(),
     host: z.string(),
@@ -35,6 +51,8 @@ const SSH_HOST_SCHEMA = z.object({
     passphrase: z.string().default(''),
     password: z.string().default(''),
     agentForward: z.boolean().default(false),
+    /** 经跳板机连接（ProxyJump 单跳）；缺省 = 直连。 */
+    jump: SSH_JUMP_SCHEMA,
     /** 该条目的 SSH 标签默认以 tmux 持久会话打开（仅 persistence=tmux 时生效）。 */
     persist: z.boolean().default(false),
 });
@@ -610,6 +628,10 @@ function sanitizeSshHosts(input) {
             agentForward: raw.agentForward === true,
             persist: raw.persist === true,
         });
+        // 跳板机：清洗不出可用对象（host 为空）就当没配——不给下游留半个对象
+        const jump = sanitizeJumpSpec(raw.jump);
+        if (jump !== undefined)
+            out[out.length - 1].jump = jump;
     }
     return out;
 }
@@ -649,6 +671,11 @@ function validateSshHosts(input) {
         }
         if ((raw.auth === 'key') && (typeof raw.keyPath !== 'string' || raw.keyPath.trim() === '')) {
             return { error: `sshHosts「${String(raw.name)}」auth=key 需要 keyPath` };
+        }
+        if (raw.jump !== undefined) {
+            const checked = validateJumpSpec(raw.jump);
+            if (checked.error !== undefined)
+                return { error: `sshHosts「${String(raw.name)}」${checked.error}` };
         }
     }
     return { hosts: sanitizeSshHosts(input) };
@@ -2445,6 +2472,14 @@ function mergeSshSpec(findSshHost, name, inline) {
         password: typeof inline.password === 'string' && inline.password !== '' ? inline.password : profile?.password,
         agentForward: typeof inline.agentForward === 'boolean' ? inline.agentForward : profile?.agentForward ?? false,
     };
+    /*
+     * 跳板机：内联给了就以它为准（清洗不出可用对象则退回连接簿那一份），否则用连接簿的。
+     * `jump` 只在**目标那一跳**之外多一跳，不支持嵌套（单跳），所以这里不做递归解析。
+     */
+    const inlineJump = inline.jump === undefined ? undefined : sanitizeJumpSpec(inline.jump);
+    const jump = inlineJump ?? profile?.jump;
+    if (jump !== undefined)
+        spec.jump = jump;
     if (spec.host === '' || spec.username === '')
         return { error: 'SSH 会话需要 host 与 username（或用 name 引用连接簿）' };
     return { spec };
@@ -3044,6 +3079,14 @@ const plugin = definePlugin({
                         }
                         const auth = body.auth === 'key' || body.auth === 'password' ? body.auth : 'agent';
                         const spec = { host, port, username, auth };
+                        // 对话框「试连」可能带跳板机（连接簿条目由客户端先行展开；跳板机同理）
+                        const probeJump = validateJumpSpec(body.jump);
+                        if (body.jump !== undefined && probeJump.error !== undefined) {
+                            writeJson(res, 200, { ok: false, error: probeJump.error });
+                            return;
+                        }
+                        if (probeJump.jump !== undefined)
+                            spec.jump = probeJump.jump;
                         if (auth === 'key') {
                             const keyPath = typeof body.keyPath === 'string' ? body.keyPath.trim() : '';
                             if (keyPath === '') {

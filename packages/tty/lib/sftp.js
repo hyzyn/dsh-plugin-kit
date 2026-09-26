@@ -6,7 +6,7 @@
  * 下次操作自动重连（不做后台重连循环——SFTP 没有常驻监听需求，与隧道不同；
  * 解析 spec 由调用方每次传入，连接簿凭证热改后天然生效）。
  *
- * 连接建立复用 buildConnectConfig + applyHostKeyPolicy——TOFU 与终端会话、
+ * 连接建立复用 prepareSshConnect（含跳板机）——TOFU 与终端会话、
  * 隧道共用同一 HostKeyStore，指纹变更同样拒绝且文案一致；password 认证挂
  * keyboard-interactive 自动应答（同 spawnSsh，很多服务端只开这个）。
  *
@@ -23,7 +23,7 @@ import { mkdir as fsMkdir, readdir as fsReaddir, rm as fsRm, stat as fsStat } fr
 import { basename, dirname, join as pathJoin } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { applyHostKeyPolicy, buildConnectConfig, sshTarget } from './ssh.js';
+import { prepareSshConnect, sshTarget } from './ssh.js';
 /** 连接空闲回收阈值：窗口内无任何操作即断开（下次操作自动重连）。 */
 const SFTP_IDLE_MS = 120_000;
 /** 扫描周期。 */
@@ -704,12 +704,17 @@ export class SftpManager {
             existing.lastUsed = Date.now();
             return existing.sftp;
         }
-        const target = sshTarget(spec);
         const conn = new Client();
         let sftp;
+        let bastion = null;
+        let target = sshTarget(spec);
         try {
-            const connectConfig = await buildConnectConfig(spec);
-            const policy = applyHostKeyPolicy({ connectConfig, spec, store: this.store, logger: this.logger, target });
+            // 与终端/隧道/探针共用同一条准备路径：跳板机只在 prepareSshConnect 里拨一次
+            const prepared = await prepareSshConnect({ spec, store: this.store, logger: this.logger });
+            const connectConfig = prepared.connectConfig;
+            const policy = prepared.policy;
+            bastion = prepared.bastion;
+            target = prepared.target;
             // password 认证挂 keyboard-interactive 自动应答（同 spawnSsh；
             // tryKeyboard 只在 password 分支置位，见 buildConnectConfig）
             if (connectConfig.tryKeyboard === true) {
@@ -763,10 +768,16 @@ export class SftpManager {
             catch {
                 /* 未建立 */
             }
+            try {
+                bastion?.end();
+            }
+            catch {
+                /* 未建立 */
+            }
             throw error;
         }
         this.logger.info(`[dsh-tty] sftp ${target} 就绪`);
-        const rt = { spec, signature, conn, sftp, lastUsed: Date.now() };
+        const rt = { spec, signature, conn, bastion, sftp, lastUsed: Date.now() };
         this.conns.set(signature, rt);
         return sftp;
     }
@@ -792,6 +803,13 @@ export class SftpManager {
         catch {
             /* 已断开 */
         }
+        try {
+            rt.bastion?.end();
+        }
+        catch {
+            /* 已断开 */
+        }
+        rt.bastion = null;
     }
     /* -------------------------------------------------------------- */
     /* SFTPWrapper 回调的 Promise 化与递归删除                          */
