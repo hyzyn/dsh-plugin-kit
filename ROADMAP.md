@@ -142,6 +142,11 @@
 不碰任何既有 profile；**本地门槛不进 CI**（CI 里没有 DSH），是 [RELEASING.md](./RELEASING.md)
 发布门槛 #3「真实装进 DSH 跑一遍」的自动化形态。
 
+**两台 CI 腿对应的机器上都是 18/18（2026-09-26 实测）**：Windows 11（SYSTEM 上下文）与
+Ubuntu 24.04 各自一条命令跑完（`--bootstrap --strict`），全程不需要事先手工建 profile。
+这一轮 Windows 腿挖出 3 条真缺陷（`where dsh` 的 POSIX shim、`fs.cpSync` 把 junction 展开成
+124MB 真副本、**tty D67** 探针阶段顺序），全部已修并补了回归。
+
 **干净机器上也能跑（2026-09-26 补）**：加 `--bootstrap`
 （[scripts/live-profile.mjs](./scripts/live-profile.mjs)）——机器上没有「link 到本仓」的 profile
 时，它从 dsh **自带**的 `web` 模板现场造一个（link 本仓的 docker/tty、写一层让「配置里写着 true」

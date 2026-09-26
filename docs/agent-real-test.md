@@ -234,6 +234,20 @@ node scripts/live-host-smoke.mjs --bootstrap --strict    # 18 条断言，含两
 
 跑完连这个模板 profile 一起删（与两份拷贝同属「本次运行自己造的」，删除只认记录下来的路径）。
 
+**两条腿的实测（2026-09-26）**：Windows 11（SYSTEM 上下文）与 Ubuntu 24.04 都是
+**18/18 PASS**——即「干净机器上一条命令连宿主一起验」这件事本身在两个 CI 平台上都成立。
+Linux 侧顺带确认：profile 里的链接是**相对符号链接**，`copyProfileTree` 原样保留（可搬迁）；
+Windows 侧则是 junction，必须建成 junction（建目录符号链接要特权）。
+另外两条 VM 用法上的经验：
+
+- **只为跑这条验收装依赖时可以用 filter**：`pnpm install --frozen-lockfile --filter
+  @hyzyn/dsh-kit --filter @hyzyn/dsh-docker --filter @hyzyn/dsh-tty` 只装这三棵子树
+  （Ubuntu 上 store 已热：**641ms**，而不是整仓那次的 7m47s）。要跑 vitest / 冒烟就还是得整仓装。
+- **`prlctl exec` 的环境里 `HOME=/`**（不是 `/root`）：于是 `os.homedir()` 推出的 DSH home 是
+  **`/.dsh`**，profile 与日志都落在根目录下。跑完随手 `rm -rf /.dsh`（本次留下的只有匿名凭据、
+  空的 profiles 目录与 storages）——这也是为什么脚本**不自己设 `DSH_HOME`**：宿主与脚本看到的
+  必须是同一个目录。
+
 安全性质由 `scripts/test/live-host-smoke-safety.test.ts` 读源码钉住（名字带 pid、拒绝覆盖、
 只删记录下来的目录、不设 `DSH_HOME`、非 CI）；生成物本身的形状由
 `scripts/test/live-profile.test.ts` 钉住。
