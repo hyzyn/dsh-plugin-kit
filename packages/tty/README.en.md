@@ -472,8 +472,10 @@ and the agent tools all reuse the same scheduling.
   by default, so set `jump.keyPath` / `jump.password` on the entry when it needs its own.
   Unresolvable ones (missing alias, or an alias that itself needs a jump) are still skipped and
   named; `ProxyCommand` is not supported (it would let a settings field drive arbitrary local
-  command execution — a different trust tier, see project ROADMAP item 2). **There is no jump-host
-  input in the UI yet** (for now use the import or edit `sshHosts[].jump` by hand);
+  command execution — a different trust tier, see project ROADMAP item 2). **The dialog also has a “Jump host” section**: one
+  `[user@]host[:port]` input (matching OpenSSH), with user / auth / key / passphrase overrides
+  revealed only after ticking “use separate credentials”; entry rows show “⇢ via X”, and the
+  “Test” button reports the jump hop on its own line;
 - **Credential-reference picker (0.4.0; decoupled from the env plugin since 0.17)**: next to the password /
   passphrase fields in the SSH dialog there is a filter box plus a height-limited list whose candidates are
   **the reference names the credential store already knows** (the host reads the `refs:` keys of

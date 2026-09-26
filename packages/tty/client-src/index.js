@@ -82,6 +82,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import xtermCss from '@xterm/xterm/css/xterm.css'
 import ttyCss from './tty.css'
+import { formatJumpShorthand, parseJumpShorthand } from './jump-field.js'
 import { resolveDockOwner, dockPaneVisible } from './dock-owner.js'
 import { deriveWsUrl } from './ws-url.js'
 import { asciiRefToken, derivedCredentialRef } from './credential-ref.js'
@@ -174,6 +175,7 @@ const I18N_ZH = {
   'error.probeHttp': '连接测试失败（HTTP {status}）',
   'msg.probing': '连接测试中…',
   'meta.reachable': '通',
+  'meta.unreachable': '不通',
   'meta.probeBanner': 'banner 正常',
   'meta.hostKeyMatched': '主机密钥匹配',
   'meta.hostKeyRecorded': '主机密钥已记录（TOFU）',
@@ -194,6 +196,15 @@ const I18N_ZH = {
   'hint.sshConnect': '手动填写主机 / 用户 / 认证方式',
   'panel.editConnection': '编辑连接 · {name}',
   'panel.sshConnect': 'SSH 连接',
+  'section.jump': '跳板机',
+  'field.jumpHost': '跳板机（[用户@]主机[:端口]，留空 = 直连）',
+  'placeholder.jumpHost': '例如 bastion.corp:2222',
+  'check.jumpOwnCred': '跳板机使用独立凭据',
+  'field.jumpUsername': '跳板机用户名（留空沿用目标）',
+  'field.jumpAuth': '跳板机认证方式（留空沿用目标）',
+  'hint.jumpInherit': '留空凭据 = 沿用上面那台主机的认证方式与钥匙；跳板机连不上时错误文案会点名它（不会伪装成目标超时）。代理命令（ProxyCommand）不支持。',
+  'meta.jumpStage': '跳板机 {label}',
+  'meta.viaJump': '⇢ 经 {label}',
   'section.connection': '连接',
   'field.host': '主机',
   'placeholder.host': 'example.com 或 IP',
@@ -201,6 +212,7 @@ const I18N_ZH = {
   'field.username': '用户名',
   'section.auth': '认证',
   'field.authMethod': '认证方式',
+  'option.authInherit': '（沿用目标）',
   'option.authAgent': 'agent — 使用本机 ssh-agent',
   'option.authKey': 'key — 私钥文件',
   'option.authPassword': 'password — 密码',
@@ -515,6 +527,7 @@ const I18N_EN = {
   'error.probeHttp': 'Connection test failed (HTTP {status})',
   'msg.probing': 'Testing the connection…',
   'meta.reachable': 'reachable',
+  'meta.unreachable': 'unreachable',
   'meta.probeBanner': 'banner ok',
   'meta.hostKeyMatched': 'Host key matched',
   'meta.hostKeyRecorded': 'Host key recorded (TOFU)',
@@ -535,6 +548,15 @@ const I18N_EN = {
   'hint.sshConnect': 'Fill in host, user, and authentication manually',
   'panel.editConnection': 'Edit connection · {name}',
   'panel.sshConnect': 'SSH connection',
+  'section.jump': 'Jump host',
+  'field.jumpHost': 'Jump host ([user@]host[:port]; empty = direct)',
+  'placeholder.jumpHost': 'e.g. bastion.corp:2222',
+  'check.jumpOwnCred': 'Use separate credentials for the jump host',
+  'field.jumpUsername': 'Jump host user (empty = same as the target)',
+  'field.jumpAuth': 'Jump host auth (empty = same as the target)',
+  'hint.jumpInherit': 'Empty credentials reuse the target host’s auth method and keys. When the jump host itself is unreachable the error names it (it will not masquerade as a target timeout). ProxyCommand is not supported.',
+  'meta.jumpStage': 'Jump host {label}',
+  'meta.viaJump': '⇢ via {label}',
   'section.connection': 'Connection',
   'field.host': 'Host',
   'placeholder.host': 'example.com or IP',
@@ -542,6 +564,7 @@ const I18N_EN = {
   'field.username': 'Username',
   'section.auth': 'Authentication',
   'field.authMethod': 'Auth method',
+  'option.authInherit': '(same as the target)',
   'option.authAgent': 'agent — use the local ssh-agent',
   'option.authKey': 'key — private key file',
   'option.authPassword': 'password — password',
@@ -3080,6 +3103,12 @@ function probeSummary(probeResult, opts) {
   const tcpMs = typeof r.tcp?.ms === 'number' ? r.tcp.ms : null
   const authMs = typeof r.auth?.ms === 'number' ? r.auth.ms : null
   const tail = []
+  // 有跳板机时 `tcp` 探的就是**跳板机**（目标那一跳不能直连）：先摆它，免得读成「目标 TCP 可达」
+  if (r.jump !== null && typeof r.jump === 'object' && typeof r.jump.label === 'string' && r.jump.label !== '') {
+    const jumpMs = typeof r.jump.tcp?.ms === 'number' ? r.jump.tcp.ms : null
+    const state = r.jump.tcp?.ok ? (jumpMs !== null ? jumpMs + 'ms' : t('meta.reachable')) : t('meta.unreachable')
+    tail.push(t('meta.jumpStage', { label: r.jump.label }) + ' ' + state)
+  }
   if (r.tcp?.ok) tail.push('TCP ' + (tcpMs !== null ? tcpMs + 'ms' : t('meta.reachable')))
   if (r.banner?.ok) tail.push(t('meta.probeBanner'))
   const hk = r.hostkey?.state
@@ -3220,7 +3249,10 @@ function renderAddMenuItems(menu) {
     const sub = document.createElement('span')
     sub.className = 'tt_addMenuSub'
     const tunnelCount = tunnelCountFor(entry.name)
-    sub.textContent = sshHostTargetLabel(entry) + (tunnelCount > 0 ? ' · ⇄' + String(tunnelCount) : '')
+    const jumpHintText = formatJumpShorthand(entry.jump)
+    sub.textContent = sshHostTargetLabel(entry)
+      + (jumpHintText === '' ? '' : ' ' + t('meta.viaJump', { label: jumpHintText }))
+      + (tunnelCount > 0 ? ' · ⇄' + String(tunnelCount) : '')
     text.appendChild(main)
     text.appendChild(sub)
     item.appendChild(iconEl)
@@ -3658,6 +3690,83 @@ function openSshDialog(entry) {
   card.appendChild(passwordCred.row)
   card.appendChild(passwordEnv.row)
 
+  /*
+   * 跳板机（ProxyJump 单跳）。界面只给一个输入框（`[用户@]主机[:端口]`，与 OpenSSH 的写法
+   * 一致），凭据默认沿用目标那一跳——企业内网里通常共用一把钥匙或同一个 agent，所以绝大
+   * 多数情况只填这一行。勾掉「使用独立凭据」才展开覆盖字段。
+   */
+  card.appendChild(sectionLabel(t('section.jump')))
+  const jumpHostRow = fieldRow('jumpHost', t('field.jumpHost'), { placeholder: t('placeholder.jumpHost') })
+  card.appendChild(jumpHostRow)
+  const jumpOwnRow = document.createElement('label')
+  jumpOwnRow.className = 'tt_sshRow'
+  const jumpOwnCheck = document.createElement('input')
+  jumpOwnCheck.type = 'checkbox'
+  const jumpOwnText = document.createElement('span')
+  jumpOwnText.className = 'tt_cardLabel'
+  jumpOwnText.textContent = t('check.jumpOwnCred')
+  jumpOwnRow.appendChild(jumpOwnCheck)
+  jumpOwnRow.appendChild(jumpOwnText)
+  card.appendChild(jumpOwnRow)
+  const jumpUsernameRow = fieldRow('jumpUsername', t('field.jumpUsername'), { placeholder: 'root' })
+  const jumpAuthRow = fieldRow('jumpAuth', t('field.jumpAuth'), {
+    select: [
+      { value: '', label: t('option.authInherit') },
+      { value: 'agent', label: t('option.authAgent') },
+      { value: 'key', label: t('option.authKey') },
+      { value: 'password', label: t('option.authPassword') },
+    ],
+  })
+  const jumpKeyRow = fieldRow('jumpKeyPath', t('field.keyPath'), { placeholder: '~/.ssh/id_ed25519' })
+  const jumpPassphraseRow = fieldRow('jumpPassphrase', t('field.passphrase'), { type: 'password' })
+  const jumpPasswordRow = fieldRow('jumpPassword', t('field.password'), { type: 'password' })
+  for (const row of [jumpUsernameRow, jumpAuthRow, jumpKeyRow, jumpPassphraseRow, jumpPasswordRow]) card.appendChild(row)
+  const jumpHint = document.createElement('div')
+  jumpHint.className = 'tt_cardHint'
+  jumpHint.textContent = t('hint.jumpInherit')
+  card.appendChild(jumpHint)
+
+  /**
+   * 跳板机那一跳的规格（没填就返回 undefined）。
+   *
+   * 与宿主侧的 `sanitizeJumpSpec` 同一口径：**缺省字段不写进结果**——「没写」的含义是
+   * 「继承目标那一跳」，写成空串会变成「显式空凭据」，跳板机就认证不上了。
+   */
+  const jumpFromFields = () => {
+    const shorthand = parseJumpShorthand(fields.jumpHost.value)
+    if (shorthand === undefined) return undefined
+    if (jumpOwnCheck.checked !== true) return shorthand
+    // 显式放宽类型：下面要往这个对象上补 auth/keyPath/...（parseJumpShorthand 只声明了三个字段）
+    const jump = /** @type {Record<string, unknown>} */ ({ ...shorthand })
+    const username = fields.jumpUsername.value.trim()
+    if (username !== '') jump.username = username
+    const auth = fields.jumpAuth.value
+    if (auth === 'agent' || auth === 'key' || auth === 'password') jump.auth = auth
+    const keyPath = fields.jumpKeyPath.value.trim()
+    if (keyPath !== '') jump.keyPath = keyPath
+    if (fields.jumpPassphrase.value !== '') jump.passphrase = fields.jumpPassphrase.value
+    if (fields.jumpPassword.value !== '') jump.password = fields.jumpPassword.value
+    return jump
+  }
+
+  /** 显隐：没填跳板机时整段退化成一个输入框；勾了独立凭据才展开覆盖字段。 */
+  const syncJumpRows = () => {
+    const hasJump = parseJumpShorthand(fields.jumpHost.value) !== undefined
+    const own = hasJump && jumpOwnCheck.checked === true
+    jumpOwnRow.style.display = hasJump ? '' : 'none'
+    for (const row of [jumpUsernameRow, jumpAuthRow, jumpKeyRow, jumpPassphraseRow, jumpPasswordRow]) {
+      row.style.display = own ? '' : 'none'
+    }
+    // 认证方式选了 key 才显示私钥/口令；password 才显示密码（与上面目标那段同规则）
+    jumpKeyRow.style.display = own && fields.jumpAuth.value === 'key' ? '' : 'none'
+    jumpPassphraseRow.style.display = own && fields.jumpAuth.value === 'key' ? '' : 'none'
+    jumpPasswordRow.style.display = own && fields.jumpAuth.value === 'password' ? '' : 'none'
+    jumpHint.style.display = hasJump ? '' : 'none'
+  }
+  fields.jumpHost.addEventListener('input', syncJumpRows)
+  fields.jumpAuth.addEventListener('change', syncJumpRows)
+  jumpOwnCheck.addEventListener('change', syncJumpRows)
+
   card.appendChild(sectionLabel(t('section.options')))
   const fwdRow = document.createElement('label')
   fwdRow.className = 'tt_cardRow'
@@ -3720,6 +3829,20 @@ function openSshDialog(entry) {
     fields.keyPath.value = String(editing.keyPath ?? '')
     fields.passphrase.value = String(editing.passphrase ?? '')
     fields.password.value = String(editing.password ?? '')
+    // 跳板机回填：简写进输入框；有显式凭据才勾「独立凭据」并展开
+    const editingJump = editing.jump !== null && typeof editing.jump === 'object' ? /** @type {Record<string, unknown>} */ (editing.jump) : null
+    fields.jumpHost.value = formatJumpShorthand(editingJump)
+    if (editingJump !== null) {
+      const ownJumpCred = editingJump.auth !== undefined || editingJump.keyPath !== undefined || editingJump.password !== undefined || editingJump.passphrase !== undefined
+      jumpOwnCheck.checked = ownJumpCred
+      if (ownJumpCred) {
+        fields.jumpUsername.value = String(editingJump.username ?? '')
+        fields.jumpAuth.value = editingJump.auth === 'key' || editingJump.auth === 'password' ? String(editingJump.auth) : ''
+        fields.jumpKeyPath.value = String(editingJump.keyPath ?? '')
+        fields.jumpPassphrase.value = String(editingJump.passphrase ?? '')
+        fields.jumpPassword.value = String(editingJump.password ?? '')
+      }
+    }
     fwdCheck.checked = editing.agentForward === true
     persistCheck.checked = persistenceCache === 'tmux'
   }
@@ -3738,6 +3861,7 @@ function openSshDialog(entry) {
   statusEl.appendChild(errorEl)
   statusEl.appendChild(probeEl)
   card.appendChild(statusEl)
+  syncJumpRows()
 
   /** 从当前对话框字段收集 probe spec（不含 name/persist）；字段不齐返回 null 并提示。 */
   const collectProbeSpec = () => {
@@ -3752,6 +3876,8 @@ function openSshDialog(entry) {
     }
     const auth = fields.auth.value
     const spec = { host, port, username, auth }
+    const jump = jumpFromFields()
+    if (jump !== undefined) spec.jump = jump
     if (auth === 'key') {
       const keyPath = fields.keyPath.value.trim()
       if (keyPath === '') {
@@ -3810,6 +3936,8 @@ function openSshDialog(entry) {
     }
     const auth = fields.auth.value
     const spec = { host, port, username, auth }
+    const jump = jumpFromFields()
+    if (jump !== undefined) spec.jump = jump
     if (auth === 'key') {
       const keyPath = fields.keyPath.value.trim()
       if (keyPath === '') {
@@ -3864,6 +3992,9 @@ function openSshDialog(entry) {
         agentForward: fwdCheck.checked,
         persist: persistCheck.checked,
       }
+      // 跳板机：留空就不写这个字段（宿主侧的「没写」= 直连／继承，空对象反而会走清洗）
+      const nextJump = jumpFromFields()
+      if (nextJump !== undefined) next.jump = nextJump
       if (auth === 'key' && next.keyPath === '') {
         errorEl.textContent = t('error.keyPathRequired')
         return

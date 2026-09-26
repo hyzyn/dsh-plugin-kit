@@ -32,9 +32,10 @@
 > 白名单、tty 四个连接点共用 `prepareSshConnect`、docker 池键并入跳板机身份、导入解析
 > `ProxyJump`（含同文件别名）；真机冒烟 `jump-smoke.mjs` 进了 CI。
 >
-> **仍未做**：① **连接簿对话框的跳板机字段与探针结果展示**（目前只能靠导入或手改
-> settings）；② `ProxyCommand`（信任级不同，要单独定闸门）；③ 多跳链（明确不做）。
-> 三项的边界与理由见方案文档，**动手前先读它**——那份文档仍是这项的唯一作业面。
+> **仍未做**：① `ProxyCommand`（信任级不同，要单独定闸门）——**这是唯一剩下的部分**；
+> ② 多跳链（明确不做）。连接簿对话框的跳板机字段与「试连」的跳板机维度同日做完
+> （`client-src/jump-field.js` 纯模块 + 预览 33/33 + 真机冒烟）。边界与理由见
+> [docs/proxyjump-plan.md](./docs/proxyjump-plan.md)，那份文档仍是这项的唯一作业面。
 
 同一个根因，两个包各写了一遍，迁到这里合并（两段原文都保留）：
 
@@ -138,9 +139,13 @@ sshd；J1 正向 / J2 跳板机密码错点名跳板机 / J3 目标不可达同�
 池键区分、失败关连接）、`packages/tty/test/jump-spec.test.ts`（白名单往返 + 拒绝分支）、
 `packages/tty/test/ssh-config.test.ts`（别名 / IPv6 / 嵌套别名 / ProxyCommand 分别报数）。
 
-**仍未做**：连接簿对话框字段与探针结果展示（靠导入或手改 settings 暂时够用）、
-`ProxyCommand`（信任级不同，要单独定闸门）、多跳链（不做）。方案与全部坑仍见
-[docs/proxyjump-plan.md](./docs/proxyjump-plan.md)。
+**界面（同日）**：连接簿对话框新增「跳板机」一段（一个 `[用户@]主机[:端口]` 输入框，
+勾「使用独立凭据」才展开覆盖字段）、条目行显示「⇢ 经 X」、「试连」结果把跳板机那一跳单列
+（`ProbeResult.jump`）；解析与回填是纯模块 `client-src/jump-field.js`（8 条单测），
+预览夹具 33/33 场景正常，tty 五个冒烟 + integration 113 PASS 未受影响。
+
+**仍未做**：`ProxyCommand`（信任级不同，要单独定闸门；导入侧仍跳过并单独报数）、多跳链
+（不做）。方案与全部坑仍见 [docs/proxyjump-plan.md](./docs/proxyjump-plan.md)。
 
 **刻意不做**：不做「只让 tty 能过 bastion、docker 不行」的半吊子（原文的判据：那比不做更糟）；
 本轮也不动 `ProxyCommand`（信任级不同，要单独定闸门）。

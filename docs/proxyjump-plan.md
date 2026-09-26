@@ -9,9 +9,13 @@
 > | 第 2 步：tty 拨号（`forwardOut → sock`）+ 阶段化超时 + 两层清理 | ✅ 四个连接点（终端 / SFTP / 隧道 / 探针）**共用** `prepareSshConnect` / `attachJumpSock` |
 > | 第 3 步：docker 拨号 + **池键并入跳板机身份** + 生命周期 | ✅ `poolKey` 带 `|jump:<user@host:port>`；`disposeAll` / 空闲回收 / 传输错误重连都成对关 |
 > | 第 5 步：导入解析 `ProxyJump`（含同文件别名、`user@host:port`、IPv6） | ✅ `parseSshConfigDetailed` 两遍解析；别名缺失 / 嵌套别名 / `ProxyCommand` 仍跳过并**分别报数** |
-> | 第 4 步：**连接簿对话框的跳板机字段 + 探针结果展示** | ⛔ **未做**——目前只能靠导入或手改 settings 里的 `sshHosts[].jump` |
-> | `ProxyCommand` | ⛔ 仍未做（信任级不同，见第 6 节） |
+> | 第 4 步：**连接簿对话框的跳板机字段 + 探针结果展示** | ✅ 对话框加「跳板机」一段（一个 `[用户@]主机[:端口]` 输入框 + 「使用独立凭据」勾选后才展开的覆盖字段）；连接簿条目行显示「⇢ 经 X」；「试连」结果把跳板机那一跳单列一行（`ProbeResult.jump`）；解析/回填抽成纯模块 `client-src/jump-field.js`（进 vitest） |
+> | `ProxyCommand` | ⛔ 仍未做（信任级不同，见第 6 节）——**这是本项唯一剩下的部分** |
 > | 多跳链（跳板机的跳板机） | ⛔ 明确不做（单跳；导入遇嵌套别名按「解析不出」处理） |
+>
+> **界面**（第 4 步）：对话框的「跳板机」段只给一个输入框（与 OpenSSH 的 `ProxyJump` 写法一致），
+> 凭据默认沿用目标那一跳；勾「使用独立凭据」才展开用户名 / 认证方式 / 私钥 / 口令 / 密码。
+> 编辑已有条目时按 `jump` 回填（有显式凭据才勾上并展开）。
 >
 > **验证**：`packages/tty/scripts/jump-smoke.mjs`（真机：一个能 `direct-tcpip` 的 bastion +
 > `test-sshd` 目标，四个用例含凭据不同 / 密码错 / 目标不可达 / 收尾无残留连接，已进 CI）；

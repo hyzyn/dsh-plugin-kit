@@ -5,11 +5,25 @@ export declare const PROBE_TCP_TIMEOUT_MS = 6000;
 export declare const PROBE_AUTH_TIMEOUT_MS = 8000;
 /** 分类结果载荷（HTTP 回传；字段全部可 JSON）。 */
 export interface ProbeResult {
-    /** tcp 阶段：DNS 解析 + TCP 建连。 */
+    /**
+     * tcp 阶段：DNS 解析 + TCP 建连。
+     *
+     * **有跳板机时探的是跳板机那一跳**（目标根本不能直连），标签与它的结论另见 `jump`——
+     * 客户端据此把这一行写成「跳板机 X 通/不通」，而不是让人读成「目标 TCP 可达」。
+     */
     tcp: {
         ok: boolean;
         error?: string;
         ms?: number;
+    };
+    /** 跳板机维度（单跳）：标签 + 它那一跳的 TCP 预检结论（与 `tcp` 同一份数据，便于客户端直接渲染）。 */
+    jump?: {
+        label: string;
+        tcp: {
+            ok: boolean;
+            error?: string;
+            ms: number;
+        };
     };
     /** hostkey 阶段：TOFU 比对（未到握手时为 unknown）。 */
     hostkey: {

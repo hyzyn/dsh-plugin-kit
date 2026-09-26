@@ -160,6 +160,8 @@ export async function probeSsh(spec, store) {
         });
     });
     result.tcp = tcpResult;
+    if (jumpLabel !== '')
+        result.jump = { label: jumpLabel, tcp: { ...tcpResult, ms: tcpResult.ms } };
     if (!tcpResult.ok) {
         result.auth = { ok: false, error: tcpResult.error };
         return finish();
