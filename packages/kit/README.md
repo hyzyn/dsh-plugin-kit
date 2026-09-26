@@ -122,6 +122,28 @@ if (!ok) return writeJson(res, 403, { error: 'forbidden: loopback-only' })
 if (!hasSameOriginProof(req)) return writeJson(res, 403, { error: '缺少同源证明' })
 ```
 
+### 能力开关的宿主侧授权（`capability`）
+
+危险能力开关（docker 的 `allowMutations` / `allowExec`、tty 的 `allowProxyCommand`）的
+**提权通道**。为什么需要它：回环围栏与同源证明都拦不住**本机盲发进程**（它能发 HTTP、
+读不到响应，也能自己填 `Sec-Fetch-Site: same-origin`——那是请求头不是凭据），于是
+`POST /config {allowMutations:true}` 曾经一次就能把危险能力打开。为什么不是给 `/config`
+加一次性 token：它是插件被禁用后**唯一**的恢复入口，token 化等于把用户锁在外面
+（取舍与威胁模型边界见 [architecture.md § 一条请求经过什么](../../docs/architecture.md#7-一条请求经过什么)）。
+
+- `capabilityGranted(spec): boolean` —— 宿主侧是否授权（环境变量，值为
+  `1` / `true` / `yes` / `on`；**进程内只采样一次**，运行期改 `process.env` 不生效：
+  `~/.dsh/env.yml` 那类托管文件有 HTTP 写入路径，现读等于把提权路径搬到那张卡片上）；
+- `capabilityHowTo(spec): string` / `capabilityDeniedMessage(spec): string` —— 界面提示与
+  400 文案（**两步都说清**：设哪个变量 + 重启宿主）；
+- `__resetCapabilityGrantsForTest()` —— **仅供单测**清采样缓存（生产代码不许调用）。
+
+```ts
+const CAP = { env: 'DSH_DOCKER_ALLOW_MUTATIONS', label: '变更操作' }
+// 有效值 = 配置值 && 授权；HTTP 侧给 true 直接 400（只能降不能升）
+if (patch.allowMutations === true && !capabilityGranted(CAP)) return writeJson(res, 400, { error: capabilityDeniedMessage(CAP) })
+```
+
 ### !!js 表达式（`js-expr`）
 
 DSH 配置里的 `!!js <expr>` 方言（loader 用同一方言求值）：

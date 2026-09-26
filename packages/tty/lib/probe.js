@@ -22,7 +22,7 @@
  */
 import { Client } from 'ssh2';
 import { connect as netConnect } from 'node:net';
-import { attachSshTransport, classifyError, jumpTargetLabel, PROXY_COMMAND_DISABLED, proxyCommandAllowedNow, proxyFailureSuffix, sanitizeProxyCommand, sshTarget } from './ssh.js';
+import { attachSshTransport, classifyError, jumpTargetLabel, PROXY_COMMAND_DISABLED, PROXY_COMMAND_NOT_GRANTED, proxyCommandAllowedNow, proxyCommandGrantedNow, proxyFailureSuffix, sanitizeProxyCommand, sshTarget } from './ssh.js';
 /** TCP 预检超时（毫秒）：DNS 解析 + 建连。 */
 export const PROBE_TCP_TIMEOUT_MS = 6_000;
 /** ssh2 握手/认证阶段超时（毫秒）；覆盖 buildConnectConfig 的 readyTimeout。 */
@@ -135,10 +135,13 @@ export async function probeSsh(spec, store) {
     const proxyCommand = sanitizeProxyCommand(spec.proxyCommand);
     const proxyActive = proxyCommand !== undefined && proxyCommandAllowedNow();
     if (proxyCommand !== undefined) {
-        result.proxy = { active: proxyActive, ...(proxyActive ? {} : { error: PROXY_COMMAND_DISABLED }) };
+        // 未启用分两种：**宿主没授权**（要去设环境变量 + 重启）与**开关关着**（去把开关打开）。
+        // 合成一句话会让用户对着一个点不动的开关反复点。
+        const blocked = proxyCommandGrantedNow() ? PROXY_COMMAND_DISABLED : PROXY_COMMAND_NOT_GRANTED;
+        result.proxy = { active: proxyActive, ...(proxyActive ? {} : { error: blocked }) };
         if (!proxyActive) {
-            result.tcp = { ok: false, error: PROXY_COMMAND_DISABLED, ms: 0 };
-            result.auth = { ok: false, error: PROXY_COMMAND_DISABLED };
+            result.tcp = { ok: false, error: blocked, ms: 0 };
+            result.auth = { ok: false, error: blocked };
             return finish();
         }
         /*

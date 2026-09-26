@@ -25,6 +25,11 @@
 - **跨目标聚合的取消语义** —— 45s 超时只 `race`，不 abort 底层命令（超时的目标仍在后台跑完）。
   要么把 AbortSignal 串下去，要么在文案里说明。
 
+**2026-09-25 追加**：能力开关的信任模型按项目级 ROADMAP 第 5.1 节落地——`allowMutations` /
+`allowExec` 的**提权只认宿主侧环境变量**（启动时采样一次），HTTP 只能关不能开；未授权时卡片里
+那两个开关点不动 + 附一行说明。落点：`normalizeConfig` 折叠出有效值（二十多处使用点一处都不用
+改）、`/config` 写盘前 400、快照新增 `allowMutationsGranted` / `allowExecGranted`。
+
 ## 已上提到项目级（不在本文展开）
 
 跳板机（ProxyJump）· 统一安全围栏（对齐 tty / dsh-mcp）· 变更端点的信任模型（一次性 token）·

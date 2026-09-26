@@ -3,6 +3,7 @@ import { definePlugin, hasSameOriginProof, isLoopbackRequestStrict, originProofH
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { DockerApi, assertBin, assertImageRef, assertName, assertRef, assertSince, createRunner, parseImageHistoryJson, parseImageHistoryText, parseContainerEvent, parseEventsJson, parseImageInspectJson, parseInspectJson, parsePsJson, parseStatsJson, suggestContainerNames, } from './docker.js';
 import { RemoteExec, sanitizeJumpSpec, sanitizeProxyCommand, setCredentialResolver, sshTarget } from './ssh-exec.js';
+import { capabilityDeniedMessage, capabilityGranted } from '@hyzyn/dsh-kit';
 const TARGET_SCHEMA = z.object({
     name: z.string().required(),
     kind: z.union([z.const('local'), z.const('ssh')]).default('local'),
@@ -308,6 +309,27 @@ export function mergeTargetSecrets(prev, incoming) {
         return next;
     });
 }
+/**
+ * 两条能力开关的宿主侧授权（见 kit 的 capability.js 与 docs/architecture.md）。
+ *
+ * 环境变量是**唯一**的提权通道，且进程内只采样一次；HTTP 侧只能关闭它们、不能打开——
+ * 回环围栏与同源证明都拦不住本机盲发进程（它能自己填 `Sec-Fetch-Site: same-origin`，
+ * 那是请求头不是凭据），而 docker socket 等价目标主机 root。
+ */
+const CAP_MUTATIONS = { env: 'DSH_DOCKER_ALLOW_MUTATIONS', label: '变更操作' };
+const CAP_EXEC = { env: 'DSH_DOCKER_ALLOW_EXEC', label: 'exec' };
+/** 未启用时的文案：没授权要说清「怎么授权」，授权了只是没开就说「去开开关」。 */
+function mutationsOffMessage() {
+    return capabilityGranted(CAP_MUTATIONS)
+        ? '变更操作未启用（插件配置 → Docker 容器面板 → 允许变更操作）'
+        : capabilityDeniedMessage(CAP_MUTATIONS);
+}
+/** `exec` 那一档的同款文案。 */
+function execOffMessage() {
+    return capabilityGranted(CAP_EXEC)
+        ? 'exec 未启用（插件配置 → Docker 容器面板 → 允许 exec）'
+        : capabilityDeniedMessage(CAP_EXEC);
+}
 /** 把一份任意来源的配置归一成 LiveConfig。 */
 export function normalizeConfig(section) {
     const targets = sanitizeTargets(section.targets);
@@ -316,8 +338,14 @@ export function normalizeConfig(section) {
         enabled: section.enabled !== false,
         announceToAgent: section.announceToAgent !== false,
         dockerBin: assertBin(section.dockerBin),
-        allowMutations: section.allowMutations === true,
-        allowExec: section.allowExec === true,
+        /*
+         * **有效值 = 配置值 && 宿主授权**。折叠在这一处（而不是每个使用点各判一次）的理由：本包
+         * 有二十多处按 `live.allowMutations` 决定「工具注册 / 路由放行 / 面板渲染」，散着判必然
+         * 漏一处——漏掉的那处就是「没授权也能执行」。配置里的 true 不算授权：它与 HTTP 写进去的
+         * 值存在同一个存储里，分不出来源，只认环境变量才是能说清的规则（升级影响见 README）。
+         */
+        allowMutations: section.allowMutations === true && capabilityGranted(CAP_MUTATIONS),
+        allowExec: section.allowExec === true && capabilityGranted(CAP_EXEC),
         execTimeoutSec: clampInt(section.execTimeoutSec, 1, 120, 30),
         pollIntervalSec: clampInt(section.pollIntervalSec, 1, 60, 5),
         logTailDefault: clampInt(section.logTailDefault, 1, 5000, 200),
@@ -726,6 +754,9 @@ const plugin = definePlugin({
                 dockerBin: live.dockerBin,
                 allowMutations: live.allowMutations,
                 allowExec: live.allowExec,
+                // 宿主侧授权（只读）：客户端用它把开关渲染成「点不动 + 说明怎么开」
+                allowMutationsGranted: capabilityGranted(CAP_MUTATIONS),
+                allowExecGranted: capabilityGranted(CAP_EXEC),
                 execTimeoutSec: live.execTimeoutSec,
                 pollIntervalSec: live.pollIntervalSec,
                 logTailDefault: live.logTailDefault,
@@ -1989,7 +2020,7 @@ const plugin = definePlugin({
                     },
                     async execute(args) {
                         if (!live.allowMutations)
-                            throw new Error('变更操作未启用（插件配置 → Docker 容器面板 → 允许变更操作）');
+                            throw new Error(mutationsOffMessage());
                         const input = (args ?? {});
                         const picked = pickTarget(input.target);
                         if (picked.name === undefined)
@@ -2031,7 +2062,7 @@ const plugin = definePlugin({
                     },
                     async execute(args) {
                         if (!live.allowMutations)
-                            throw new Error('变更操作未启用（插件配置 → Docker 容器面板 → 允许变更操作）');
+                            throw new Error(mutationsOffMessage());
                         const input = (args ?? {});
                         const picked = pickTarget(input.target);
                         if (picked.name === undefined)
@@ -2065,7 +2096,7 @@ const plugin = definePlugin({
                     },
                     async execute(args) {
                         if (!live.allowMutations)
-                            throw new Error('变更操作未启用（插件配置 → Docker 容器面板 → 允许变更操作）');
+                            throw new Error(mutationsOffMessage());
                         const input = (args ?? {});
                         const picked = pickTarget(input.target);
                         if (picked.name === undefined)
@@ -2105,7 +2136,7 @@ const plugin = definePlugin({
                     },
                     async execute(args) {
                         if (!live.allowMutations)
-                            throw new Error('变更操作未启用（插件配置 → Docker 容器面板 → 允许变更操作）');
+                            throw new Error(mutationsOffMessage());
                         const input = (args ?? {});
                         const picked = pickTarget(input.target);
                         if (picked.name === undefined)
@@ -2164,7 +2195,7 @@ const plugin = definePlugin({
                     },
                     async execute(args) {
                         if (!live.allowExec)
-                            throw new Error('exec 未启用（插件配置 → Docker 容器面板 → 允许 exec）');
+                            throw new Error(execOffMessage());
                         const input = (args ?? {});
                         const picked = pickTarget(input.target);
                         if (picked.name === undefined)
@@ -2504,7 +2535,7 @@ const plugin = definePlugin({
          */
         const servePullStream = async (req, res, params) => {
             if (!live.allowMutations) {
-                writeJson(res, 403, { error: '变更操作未启用（插件配置 → Docker 容器面板 → 允许变更操作）' });
+                writeJson(res, 403, { error: mutationsOffMessage() });
                 return;
             }
             const picked = pickTarget(params.get('target'));
@@ -2596,6 +2627,18 @@ const plugin = definePlugin({
                                 if (key === 'clearTargets' || key === 'hostKeysRemove')
                                     continue;
                                 patch[key] = body[key];
+                            }
+                            /*
+                             * **能力开关只能降不能升**：提权只认宿主侧的环境变量（进程启动时采样一次），
+                             * HTTP 侧给 true 一律驳回并说清怎么做。这不是「输入不合法」而是「没获授权」——
+                             * 文案必须同时给出变量名与「要重启宿主」，否则用户会对着一个点不动的开关反复点。
+                             * 校验放在**落盘之前**（与下面那条 normalizeConfig 干跑同一口径）：错误路径不留脏配置。
+                             */
+                            for (const [key, spec] of [['allowMutations', CAP_MUTATIONS], ['allowExec', CAP_EXEC]]) {
+                                if (patch[key] === true && !capabilityGranted(spec)) {
+                                    writeJson(res, 400, { error: capabilityDeniedMessage(spec) });
+                                    return;
+                                }
                             }
                             // 空 targets 只在显式 clearTargets 时才允许清空：卡片若因启动竞态拿到
                             // 空列表，保存不会再把已配置的目标抹掉（防数据丢失）
@@ -2892,7 +2935,7 @@ const plugin = definePlugin({
                                 }
                                 case '/images/remove': {
                                     if (!live.allowMutations) {
-                                        writeJson(res, 403, { error: '变更操作未启用（插件配置 → Docker 容器面板 → 允许变更操作）' });
+                                        writeJson(res, 403, { error: mutationsOffMessage() });
                                         return;
                                     }
                                     if (typeof body.ref !== 'string' || body.ref.trim() === '') {
@@ -2904,7 +2947,7 @@ const plugin = definePlugin({
                                 }
                                 case '/images/prune': {
                                     if (!live.allowMutations) {
-                                        writeJson(res, 403, { error: '变更操作未启用（插件配置 → Docker 容器面板 → 允许变更操作）' });
+                                        writeJson(res, 403, { error: mutationsOffMessage() });
                                         return;
                                     }
                                     writeJson(res, 200, { ok: true, result: await api.imagePrune() });
@@ -2924,7 +2967,7 @@ const plugin = definePlugin({
                                 }
                                 case '/networks/remove': {
                                     if (!live.allowMutations) {
-                                        writeJson(res, 403, { error: '变更操作未启用（插件配置 → Docker 容器面板 → 允许变更操作）' });
+                                        writeJson(res, 403, { error: mutationsOffMessage() });
                                         return;
                                     }
                                     if (typeof body.name !== 'string' || body.name.trim() === '') {
@@ -2936,7 +2979,7 @@ const plugin = definePlugin({
                                 }
                                 case '/networks/prune': {
                                     if (!live.allowMutations) {
-                                        writeJson(res, 403, { error: '变更操作未启用（插件配置 → Docker 容器面板 → 允许变更操作）' });
+                                        writeJson(res, 403, { error: mutationsOffMessage() });
                                         return;
                                     }
                                     writeJson(res, 200, { ok: true, result: await api.networkPrune() });
@@ -2956,7 +2999,7 @@ const plugin = definePlugin({
                                 }
                                 case '/volumes/remove': {
                                     if (!live.allowMutations) {
-                                        writeJson(res, 403, { error: '变更操作未启用（插件配置 → Docker 容器面板 → 允许变更操作）' });
+                                        writeJson(res, 403, { error: mutationsOffMessage() });
                                         return;
                                     }
                                     if (typeof body.name !== 'string' || body.name.trim() === '') {
@@ -2968,7 +3011,7 @@ const plugin = definePlugin({
                                 }
                                 case '/volumes/prune': {
                                     if (!live.allowMutations) {
-                                        writeJson(res, 403, { error: '变更操作未启用（插件配置 → Docker 容器面板 → 允许变更操作）' });
+                                        writeJson(res, 403, { error: mutationsOffMessage() });
                                         return;
                                     }
                                     writeJson(res, 200, { ok: true, result: await api.volumePrune() });
@@ -2976,7 +3019,7 @@ const plugin = definePlugin({
                                 }
                                 case '/action': {
                                     if (!live.allowMutations) {
-                                        writeJson(res, 403, { error: '变更操作未启用（插件配置 → Docker 容器面板 → 允许变更操作）' });
+                                        writeJson(res, 403, { error: mutationsOffMessage() });
                                         return;
                                     }
                                     if (typeof body.id !== 'string') {
@@ -2993,7 +3036,7 @@ const plugin = definePlugin({
                                 }
                                 case '/exec': {
                                     if (!live.allowExec) {
-                                        writeJson(res, 403, { error: 'exec 未启用（插件配置 → Docker 容器面板 → 允许 exec）' });
+                                        writeJson(res, 403, { error: execOffMessage() });
                                         return;
                                     }
                                     if (typeof body.id !== 'string' || typeof body.command !== 'string') {

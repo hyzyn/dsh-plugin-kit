@@ -15,7 +15,8 @@
  * 「非法值 400 且**没有**落进 settings scope」——后者才是那条链路的真正回归点。
  */
 import { EventEmitter } from 'node:events'
-import { describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { __resetCapabilityGrantsForTest } from '@hyzyn/dsh-kit'
 
 const spawnMock = vi.hoisted(() => vi.fn())
 vi.mock('node:child_process', () => ({ spawn: spawnMock }))
@@ -149,7 +150,7 @@ function mountPlugin(options: { tty?: Record<string, unknown> } = {}): Harness {
   return { route, settingsStored: state.settingsStored, updates: state.updates }
 }
 
-async function postConfig(harness: Harness, body: unknown): Promise<{ status: number; json: { error?: string; config?: { dockerBin?: string } } | undefined }> {
+async function postConfig(harness: Harness, body: unknown): Promise<{ status: number; json: { error?: string; config?: Record<string, unknown> } | undefined }> {
   const res = makeRes()
   await harness.route.handler(makeReq('/api/dsh-docker/config', 'POST', body), res)
   return { status: res.status, json: res.endBody === undefined ? undefined : JSON.parse(res.endBody) }
@@ -306,5 +307,70 @@ describe('GET /api/dsh-docker/config：ttyBookHosts', () => {
     const config = JSON.parse(res.endBody ?? '{}').config
     expect(config.ttyBookHosts).toEqual([])
     expect(config.ttyAvailable).toBe(false)
+  })
+})
+
+/* ------------------------------------------------------------------ *
+ * 4. 能力开关：HTTP 只能降不能升（宿主侧授权是唯一提权通道）
+ * ------------------------------------------------------------------ */
+
+describe('能力开关的宿主侧授权（capability）', () => {
+  /*
+   * 本组用例**刻意不设**环境变量，并且开头清一次采样缓存：能力授权进程内只采样一次，
+   * 而同 worker 里别的测试文件可能已把它采成「已授权」——不清就会变成靠执行顺序取胜的脆测试。
+   */
+  beforeEach(() => {
+    delete process.env.DSH_DOCKER_ALLOW_MUTATIONS
+    delete process.env.DSH_DOCKER_ALLOW_EXEC
+    __resetCapabilityGrantsForTest()
+  })
+  afterAll(() => {
+    __resetCapabilityGrantsForTest()
+  })
+
+  it('未授权时 POST allowMutations=true → 400，文案点名环境变量与「重启宿主」，且不落盘', async () => {
+    const harness = mountPlugin()
+    const { status, json } = await postConfig(harness, { allowMutations: true })
+    expect(status).toBe(400)
+    expect(String(json?.error)).toContain('DSH_DOCKER_ALLOW_MUTATIONS')
+    expect(String(json?.error)).toContain('重启宿主')
+    // 校验在落盘之前：不该留下一个「看起来开了、其实没开」的值
+    expect(harness.updates).toHaveLength(0)
+    expect(harness.settingsStored.allowMutations).toBeUndefined()
+  })
+
+  it('未授权时 POST allowExec=true 同样 400（两条能力各自独立判定）', async () => {
+    const harness = mountPlugin()
+    const { status, json } = await postConfig(harness, { allowExec: true })
+    expect(status).toBe(400)
+    expect(String(json?.error)).toContain('DSH_DOCKER_ALLOW_EXEC')
+  })
+
+  it('降权永远可用：给 false 不需要任何授权', async () => {
+    const harness = mountPlugin()
+    const { status } = await postConfig(harness, { allowMutations: false, allowExec: false })
+    expect(status).toBe(200)
+  })
+
+  it('配置里写着 true 但没有宿主授权 → 有效值仍是 false（防「老配置/别的路径写进来的 true」）', async () => {
+    const harness = mountPlugin()
+    // 直接写进 settings（模拟升级前留下的值，或绕开校验的写入）
+    Object.assign(harness.settingsStored, { allowMutations: true, allowExec: true })
+    const res = makeRes()
+    await harness.route.handler(makeReq('/api/dsh-docker/config', 'GET'), res)
+    const config = JSON.parse(res.endBody ?? '{}').config
+    expect(config.allowMutations).toBe(false)
+    expect(config.allowExec).toBe(false)
+    expect(config.allowMutationsGranted).toBe(false)
+  })
+
+  it('有宿主授权时 POST=true 被接受，快照把「已授权」如实回给客户端', async () => {
+    process.env.DSH_DOCKER_ALLOW_MUTATIONS = '1'
+    __resetCapabilityGrantsForTest()
+    const harness = mountPlugin()
+    const { status, json } = await postConfig(harness, { allowMutations: true })
+    expect(status).toBe(200)
+    expect(json?.config?.allowMutations).toBe(true)
+    expect((json?.config as { allowMutationsGranted?: boolean } | undefined)?.allowMutationsGranted).toBe(true)
   })
 })

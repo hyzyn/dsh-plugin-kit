@@ -131,7 +131,7 @@
             └─ 业务：子进程 / SSH / 文件 / 宿主服务
 ```
 
-三条**跨包一致**的约定，改任何插件都适用：
+四条**跨包一致**的约定，改任何插件都适用：
 
 1. **回环围栏**：全部路由先过回环围栏；变更端点另需**同源证明**（`Origin` / `Sec-Fetch-Site`），
    且来源检查必须排在 DNS 等异步分支**之前**。围栏实现只有一份（`@hyzyn/dsh-kit`），
@@ -147,9 +147,27 @@
    为什么不一刀切：全仓收敛到加固档要连信任模型一起定（[ROADMAP.md](../ROADMAP.md) 第 5 项），
    单包先升级只会让插件之间的安全假设不一致。加固档的成因与桌面版例外写在
    `packages/kit/src/http.ts` 的注释里（那边是唯一归宿）。
-2. **body 围栏**：`readJsonBody` 对畸形 / 超限 / 空 body **返回 `undefined` 而不抛错**——
+2. **能力开关只能降不能升**（2026-09-25 起，docker / tty 各一到两个开关）：**危险能力**
+   （`allowMutations` / `allowExec` / `allowProxyCommand`）的**提权只认宿主侧的环境变量**，
+   且**进程启动时采样一次**；HTTP 侧永远可以关掉它们（紧急刹车不能依赖重启），但给 `true`
+   一律 400。
+
+   为什么需要这一条：上面那条围栏 + 同源证明**都拦不住本机盲发进程**——它能发 HTTP、
+   读不到响应，也能自己填 `Sec-Fetch-Site: same-origin`（那是请求头，不是凭据）。于是
+   危险能力**曾经**可以被一次 `POST /config {allowMutations:true}` 打开，而 docker socket
+   等价目标主机 root。为什么不是给 `/config` 加一次性 token：`/config` 是插件被禁用后
+   **唯一**的恢复入口，token 化等于把用户锁在外面（细节与取舍见 ROADMAP 第 5 项）。
+
+   约定实现只有一份（`packages/kit/src/capability.ts`）：`capabilityGranted(spec)` 采样
+   （进程内一次）、`capabilityDeniedMessage(spec)` 给 400 文案、`capabilityHowTo(spec)`
+   给界面提示（**必须两步都说清**：设哪个变量 + 重启宿主，否则用户会对着点不动的开关反复点）。
+   客户端由宿主快照里的 `allowMutationsGranted` / `allowProxyCommandGranted` 决定开关是否
+   可点。**威胁模型边界**：拦的是凭空提权（盲发进程 / 跨站页面 / 被拿下的 renderer）；
+   能读写本机文件的同用户全权进程不在模型内（它本来就能读 `~/.dsh/.credentials.yaml`、
+   能直接跑 `docker`）——任何进程内机制都拦不住它。
+3. **body 围栏**：`readJsonBody` 对畸形 / 超限 / 空 body **返回 `undefined` 而不抛错**——
    调用方必须把 `undefined` 当 **400**，**不能**当「没传这个字段」。写操作尤其。
-3. **截断要有信号**：任何截断（列表、日志、输出）都要显式报 `truncated` / 计数说明，
+4. **截断要有信号**：任何截断（列表、日志、输出）都要显式报 `truncated` / 计数说明，
    **不许静默少列**。这是本仓库历史上出现最多的一类缺陷。
 
 ## 8. 文档在哪一层

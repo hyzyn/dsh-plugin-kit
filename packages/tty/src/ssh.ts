@@ -579,27 +579,50 @@ const PROXY_VALUE_SAFE = /^[A-Za-z0-9._@:\[\]-]+$/
 
 /** 关着闸门时携带代理命令的连接报什么错（导出供单测与客户端文案对照）。 */
 export const PROXY_COMMAND_DISABLED =
-  '代理命令（ProxyCommand）未启用：本机命令执行默认关闭，请到 插件配置 → 终端面板 打开「允许 ProxyCommand」后重试。'
+  '代理命令（ProxyCommand）未启用：请到 插件配置 → 终端面板 打开「允许 ProxyCommand」后重试。'
   + '未启用时携带代理命令的连接不会退回直连——直连多半也连不上，还会把配置问题伪装成网络问题。'
 
 /**
- * ProxyCommand 闸门（**模块级策略，缺省关闭**）。
+ * 宿主**没有授权**这条能力时报什么错（与「授权了但开关关着」分开报）。
+ *
+ * 为什么要分开：两者的「下一步动作」完全不同——前者要去宿主侧设环境变量 + 重启（界面上那个
+ * 开关是点不动的），后者只是把开关打开。合成一句话会让用户对着一个点不动的开关反复点。
+ */
+export const PROXY_COMMAND_NOT_GRANTED =
+  '代理命令（ProxyCommand）未获宿主授权：'
+  + '在宿主侧设置环境变量 DSH_TTY_ALLOW_PROXY_COMMAND=1（可用 设置 → 环境变量 卡片写入 ~/.dsh/env.yml）'
+  + '并重启宿主；HTTP 侧只能关闭它、不能打开（本机任意进程都能发回环请求，配置路由若能提权，这道闸门等于没有）。'
+
+/**
+ * ProxyCommand 闸门（**模块级策略，缺省「未授权 + 未启用」**）。
+ *
+ * 两个维度刻意分开：
+ *   - `granted`：**宿主侧**授权（环境变量，进程启动时采样一次，见 kit 的 capability.js）。
+ *     未授权时这个开关在 HTTP 侧点不动——那是整个「只能降不能升」约定的落点；
+ *   - `enabled`：界面上那个开关（可以随时关，也可以随时开——但只有在授权为真时才可能开）。
  *
  * 为什么是模块级而不是每次调用传参：本包的建连入口有四个（终端 / SFTP / 隧道 / 探针），
  * 而它们**共用** `prepareSshConnect` ——把开关读在拨号那一处，四条路就不会各判一次
  * （漏一条就是「配了等于没配」或「关了还能用」）。写入方只有插件自己的 settings 热应用
- * （`applyPatch`），与 `setCredentialResolver` 同一个模式。缺省 false = 关。
+ * （`applyPatch`），与 `setCredentialResolver` 同一个模式。
  */
-let proxyCommandAllowed = false
+let proxyCommandGranted = false
+let proxyCommandEnabled = false
 
 /** 设置 ProxyCommand 闸门（插件 settings 就绪与每次热更新时调用）。 */
-export function setProxyCommandPolicy(allowed: boolean): void {
-  proxyCommandAllowed = allowed === true
+export function setProxyCommandPolicy(next: { granted: boolean; enabled: boolean }): void {
+  proxyCommandGranted = next.granted === true
+  proxyCommandEnabled = next.enabled === true
 }
 
-/** 当前闸门状态（探针用它把「配了但没开」与「连不上」分开报）。 */
+/** 当前是否真的会用代理命令（探针用它把「配了但没开」与「连不上」分开报）。 */
 export function proxyCommandAllowedNow(): boolean {
-  return proxyCommandAllowed
+  return proxyCommandGranted && proxyCommandEnabled
+}
+
+/** 宿主侧是否授权了这条能力（探针用它选文案：未授权 vs 未启用）。 */
+export function proxyCommandGrantedNow(): boolean {
+  return proxyCommandGranted
 }
 
 /**
@@ -721,7 +744,8 @@ function killProxyChild(child: ChildProcess): void {
 export async function dialProxyCommand(options: { spec: SshSpec; logger?: SshLogger }): Promise<ProxyCommandDial> {
   const raw = sanitizeProxyCommand(options.spec.proxyCommand)
   if (raw === undefined) throw new Error('代理命令为空（proxyCommand 需要一条非空的单行命令）')
-  if (!proxyCommandAllowed) throw new Error(PROXY_COMMAND_DISABLED)
+  if (!proxyCommandGranted) throw new Error(PROXY_COMMAND_NOT_GRANTED)
+  if (!proxyCommandEnabled) throw new Error(PROXY_COMMAND_DISABLED)
   const destination = sshTarget(options.spec)
   const command = expandProxyCommand(raw, options.spec)
   const child = spawn(command, {

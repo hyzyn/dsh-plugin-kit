@@ -4,8 +4,9 @@
  * 只测纯函数 validateSshFields（不做任何网络请求）：连接簿 / 对话框新增与
  * 编辑前的形状校验，错误文案是设置卡片直接展示给用户的契约。
  */
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { probeSsh, validateSshFields } from '../src/probe.js'
+import { setProxyCommandPolicy } from '../src/ssh.js'
 
 describe('validateSshFields', () => {
   it('host / username 必填（trim 后为空也算缺）', () => {
@@ -64,23 +65,39 @@ describe('validateSshFields', () => {
 })
 
 /**
- * 代理命令维度：**闸门关着时探针必须在阶段 0 就返回**。
+ * 代理命令维度：**闸门关着时探针必须在阶段 0 就返回**，且要按原因分开报。
  *
  * 为什么单列：探针是用户遇到连不上时第一个点的按钮。若它照旧去 TCP 预检目标主机，
- * 用户会拿到「TCP 超时」并去查网络——而真相是「代理命令没启用」。所以这里断言：
- *   - 报的是开关那件事（文案含「未启用」），`proxy.active === false`；
- *   - **不做 TCP 预检**（`tcp.skipped` 不为 true 也对：它带的就是同一条说明文案）；
+ * 用户会拿到「TCP 超时」并去查网络——而真相是「代理命令没开」。两种「没开」的下一步动作
+ * 完全不同（去设环境变量 + 重启 / 去把开关打开），所以文案必须分开：
+ *   - `proxy.active === false`，`auth.error` / `tcp.error` 带的是**那一条**原因；
+ *   - 不做 TCP 预检（否则会读成「目标不可达」）；
  *   - 立即返回（目标地址是 TEST-NET-3 的不可达地址，真去连必然慢）。
  */
 describe('probeSsh：代理命令闸门', () => {
-  it('关着时阶段 0 直接返回，指名开关而不是「目标 TCP 超时」', async () => {
+  afterEach(() => {
+    setProxyCommandPolicy({ granted: false, enabled: false })
+  })
+
+  it('未获宿主授权 → 阶段 0 返回「未授权」，并给出环境变量名', async () => {
     const started = Date.now()
     const result = await probeSsh({ host: '203.0.113.7', username: 'u', proxyCommand: 'ssh -W %h:%p bastion' })
     expect(Date.now() - started).toBeLessThan(1000)
-    expect(result.proxy).toEqual({ active: false, error: expect.stringContaining('未启用') })
+    expect(result.proxy?.active).toBe(false)
+    expect(result.proxy?.error).toContain('未获宿主授权')
+    expect(result.proxy?.error).toContain('DSH_TTY_ALLOW_PROXY_COMMAND')
     expect(result.auth.ok).toBe(false)
-    expect(result.auth.error).toContain('ProxyCommand')
+    expect(result.auth.error).toContain('未获宿主授权')
     expect(result.tcp.ok).toBe(false)
-    expect(result.tcp.error).toContain('未启用')
+    expect(result.tcp.error).toContain('未获宿主授权')
+  })
+
+  it('已授权但开关关着 → 报的是「未启用」（下一步只是去开开关）', async () => {
+    setProxyCommandPolicy({ granted: true, enabled: false })
+    const result = await probeSsh({ host: '203.0.113.7', username: 'u', proxyCommand: 'ssh -W %h:%p bastion' })
+    expect(result.proxy?.active).toBe(false)
+    expect(result.proxy?.error).toContain('未启用')
+    expect(result.proxy?.error).not.toContain('未获宿主授权')
+    expect(result.auth.error).toContain('未启用')
   })
 })

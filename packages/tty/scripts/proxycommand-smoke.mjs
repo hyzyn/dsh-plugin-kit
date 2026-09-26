@@ -12,7 +12,7 @@
  * 用例：
  *   P1 终端会话经代理命令连上（spawnSsh：握手 + shell channel + 命令往返）
  *   P2 SFTP 经代理命令列目录（同一份传输被 sftp.ts 那条路径复用）
- *   P3 闸门关着 → 明确失败（文案点名开关），**且没有起进程**
+ *   P3 未获宿主授权 → 明确失败（文案点名环境变量），**且没有起进程**（即便「开关想开着」）
  *   P4 命令本身失败（桥不存在）→ 文案带上代理命令的失败事实（stderr 摘要），而不是笼统的目标超时
  *   P5 含 shell 特殊字符的主机名 → 拒绝代入（不执行任何命令）
  *   P6 收尾后没有残留的桥进程（子进程不许变常驻孤儿）
@@ -27,6 +27,7 @@ import { fileURLToPath } from 'node:url'
 import { generateKeyPairSync } from 'node:crypto'
 import ssh2 from 'ssh2'
 import { SftpManager } from '../lib/sftp.js'
+import { __resetCapabilityGrantsForTest, capabilityGranted } from '@hyzyn/dsh-kit'
 import { setProxyCommandPolicy, spawnSsh } from '../lib/ssh.js'
 import { startSftpSshd, TEST_PASSWORD, TEST_USER } from './lib/test-sshd.mjs'
 
@@ -120,6 +121,14 @@ const shellTarget = await startShellSshd()
  * 而 execPath 在 Windows 上常含空格（`C:\Program Files\nodejs\node.exe`）。
  */
 const proxyCommand = `${JSON.stringify(process.execPath)} ${JSON.stringify(BRIDGE)} %h %p`
+
+/**
+ * 闸门的两个维度：`granted` 来自宿主侧环境变量（进程启动时采样一次，见 kit 的 capability.js），
+ * `enabled` 是界面上那个开关。这里**照插件宿主半体的做法**拼出同样的组合，而不是直接传 true
+ * ——否则冒烟就绕过了这一轮新加的那一层授权。
+ */
+const GRANT_ENV = 'DSH_TTY_ALLOW_PROXY_COMMAND'
+const applyPolicy = (enabled) => setProxyCommandPolicy({ granted: capabilityGranted(GRANT_ENV), enabled })
 const specOf = (extra = {}) => ({
   host: '127.0.0.1',
   port: target.port,
@@ -146,9 +155,11 @@ async function readUntil(handle, pattern, timeoutMs = 8000) {
 }
 
 try {
-  // ---- P3 放在最前：闸门关着时**不该起任何进程**（先测这条，后面的用例才有干净的计数） ----
+  // ---- P3 放在最前：**未获宿主授权**时不该起任何进程（先测这条，后面的用例才有干净的计数） ----
   const before = bridgeProcessCount()
-  setProxyCommandPolicy(false)
+  delete process.env[GRANT_ENV]
+  __resetCapabilityGrantsForTest()
+  applyPolicy(true) // 即便「开关想开着」，没有宿主授权也必须拒绝
   try {
     await new SftpManager({ info: () => {}, warn: () => {} }).list(specOf(), root)
     fail('P3 闸门关着 → 明确失败', '竟然连上了')
@@ -156,15 +167,20 @@ try {
     const message = error instanceof Error ? error.message : String(error)
     await new Promise((resolve) => setTimeout(resolve, 150))
     const after = bridgeProcessCount()
-    if (message.includes('ProxyCommand') && message.includes('未启用') && after <= before) {
-      pass(`P3 闸门关着 → 明确失败且没起进程（桥进程 ${String(before)} → ${String(after)}）`)
+    if (message.includes('未获宿主授权') && message.includes(GRANT_ENV) && after <= before) {
+      pass(`P3 未授权 → 明确失败且没起进程（桥进程 ${String(before)} → ${String(after)}）`)
     } else {
-      fail('P3 闸门关着 → 明确失败且没起进程', `msg=${message} before=${String(before)} after=${String(after)}`)
+      fail('P3 未授权 → 明确失败且没起进程', `msg=${message} before=${String(before)} after=${String(after)}`)
     }
   }
 
   // ---- P5：代入值含 shell 特殊字符 → 拒绝执行（连进程都不该起） ----
-  setProxyCommandPolicy(true)
+  // 从这里开始模拟「宿主启动时就带了授权环境变量」：设变量 + 清采样缓存（顺序不能反）
+  process.env[GRANT_ENV] = '1'
+  __resetCapabilityGrantsForTest()
+  applyPolicy(true)
+  if (!capabilityGranted(GRANT_ENV)) fail('P3b 宿主侧授权生效', '设了环境变量却没被采到')
+  else pass('P3b 宿主侧授权生效（DSH_TTY_ALLOW_PROXY_COMMAND=1）')
   try {
     await new SftpManager({ info: () => {}, warn: () => {} }).list(specOf({ host: '127.0.0.1; touch /tmp/dsh-pwned' }), root)
     fail('P5 主机名含 shell 特殊字符 → 拒绝代入', '竟然没报错')

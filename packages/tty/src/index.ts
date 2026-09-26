@@ -87,6 +87,7 @@ import { definePlugin, dshHome as resolveDshHome, hasSameOriginProof, isLoopback
 import type { SettingsEntryScope } from '@hyzyn/dsh-kit'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { sanitizeJumpSpec, sanitizeProxyCommand, spawnSsh, sshTarget, expandHome, setCredentialResolver, setProxyCommandPolicy, validateJumpSpec, validateProxyCommand } from './ssh.js'
+import { capabilityDeniedMessage, capabilityGranted } from '@hyzyn/dsh-kit'
 import type { CredentialResolver, HostKeyRecord, SshHostEntry, SshSpec, TermExit, TermHandle } from './ssh.js'
 import { probeSsh } from './probe.js'
 import { buildCommandSpawn, buildShellSpawn, defaultShellPath } from './shell-integration.js'
@@ -263,6 +264,14 @@ export const Config: z = z.object({
  * ------------------------------------------------------------------ */
 
 const WS_PATH = '/api/dsh-tty/ws'
+
+/**
+ * 代理命令这条能力的宿主侧授权（见 kit 的 capability.js 与 docs/architecture.md）。
+ *
+ * 环境变量是**唯一**的提权通道，且进程内只采样一次；HTTP 侧只能关闭它、不能打开——
+ * 因为回环围栏与同源证明都拦不住本机盲发进程，配置路由若能提权，这道闸门等于没有。
+ */
+const CAP_PROXY_COMMAND = { env: 'DSH_TTY_ALLOW_PROXY_COMMAND', label: '代理命令（ProxyCommand）' } as const
 const DEFAULT_MAX_SESSIONS = 4
 /** 断线保活默认秒数（reconnectGraceSec；0 = 旧行为，断开立即结束会话）。 */
 const DEFAULT_RECONNECT_GRACE_SEC = 120
@@ -2918,6 +2927,11 @@ interface ConfigSnapshot {
    * 现在能不能生效（关着时配了也不执行，连不上时错误文案点名这个开关而不是伪装成网络问题）。
    */
   allowProxyCommand: boolean
+  /**
+   * 这条能力是否**获宿主授权**（环境变量 `DSH_TTY_ALLOW_PROXY_COMMAND=1`，进程启动时采样）。
+   * 未授权时界面上那个开关点不动（客户端据此禁用 + 说明怎么授权）。
+   */
+  allowProxyCommandGranted: boolean
   /** agent 工具（tty_list / tty_open / tty_close / tty_stats / tty_capture / tty_screen / tty_expect / tty_send / tunnel_list / sftp_list / sftp_read / sftp_write / sftp_mkdir / sftp_rename / sftp_remove / sftp_tree）是否已注册到 harness。 */
   toolsRegistered: boolean
   /** 宿主平台：客户端按平台写「Shell 路径 / shell 集成」的说明（Windows 那套见 defaultShellPath）。 */
@@ -3022,6 +3036,7 @@ const plugin = definePlugin<Config>({
       statsEnabled: live.statsEnabled,
       sftpLimits: live.sftpLimits,
       allowProxyCommand: live.allowProxyCommand,
+      allowProxyCommandGranted: capabilityGranted(CAP_PROXY_COMMAND),
       toolsRegistered: stateRef.toolsRegistered,
       /**
        * 宿主平台（`process.platform`）：客户端据此把「Shell 路径 / shell 集成」的说明与候选
@@ -3055,7 +3070,7 @@ const plugin = definePlugin<Config>({
        * 探针共用 ssh.ts 的模块级策略，见 setProxyCommandPolicy）。启动路径也走这里
        * （settings 就绪时 applyPatch 会被调用一次），所以不存在「忘了初始化 → 意外为开」。
        */
-      setProxyCommandPolicy(live.allowProxyCommand)
+      setProxyCommandPolicy({ granted: capabilityGranted(CAP_PROXY_COMMAND), enabled: live.allowProxyCommand })
       if (typeof section.enabled === 'boolean') stateRef.enabled = section.enabled
       if (typeof section.announceToAgent === 'boolean') stateRef.announceToAgent = section.announceToAgent
       if (section.sftpStyle === 'dialog' || section.sftpStyle === 'dual') stateRef.sftpStyle = section.sftpStyle
@@ -3123,6 +3138,14 @@ const plugin = definePlugin<Config>({
       }
       if (input.allowProxyCommand !== undefined) {
         if (typeof input.allowProxyCommand !== 'boolean') return { error: 'allowProxyCommand 必须是布尔值' }
+        /*
+         * **只能降不能升**：提权只认宿主侧的环境变量（进程启动时采样一次），HTTP 侧给 true
+         * 一律驳回并说清怎么做。这不是「输入不合法」，而是「没获授权」——所以文案必须同时
+         * 给出变量名与「要重启宿主」，否则用户会对着一个点不动的开关反复点。
+         */
+        if (input.allowProxyCommand && !capabilityGranted(CAP_PROXY_COMMAND)) {
+          return { error: capabilityDeniedMessage(CAP_PROXY_COMMAND) }
+        }
         patch.allowProxyCommand = input.allowProxyCommand
       }
       for (const key of ['shell', 'term', 'colorTerm'] as const) {

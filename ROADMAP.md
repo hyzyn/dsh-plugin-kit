@@ -85,7 +85,7 @@
 
 **为什么是 L0**：原文自己就写了「要改建议一起」——三个包的 `tools.register` 调用点要一起加。
 
-### 5. 变更端点的信任模型：一次性 token
+### 5. 变更端点的信任模型：能力开关的宿主侧授权 ✅（一次性 token 未做，见下）
 
 > 自 `packages/docker/ROADMAP.md` 迁入，原文照录：
 
@@ -95,6 +95,38 @@
 **为什么是 L0**：这不是 docker 一家的性质——**任何**走回环围栏的插件都接受本机任意进程的请求。
 要收紧就得定一套全仓通用的机制（如一次性 token 交换），单包先做会在插件之间留下不一致的安全假设。
 与第 1 项同属「安全围栏」这条线，**建议合并规划**。
+
+#### 5.1 落地的是「只能降不能升」，不是 token（2026-09-25）
+
+**原文点名的攻击路径只有一条**：`POST /config {allowMutations:true}`。而一次性 token **打不到
+它**——变更子路由名单（docker 的 8 条）里根本没有 `/config`，因为 `/config` 是插件被禁用后
+**唯一**的恢复入口，token 化等于把用户锁在外面。所以本轮做的是能**真正堵住那条路径**、
+且不破坏恢复入口的那一层：
+
+- **提权只认宿主侧环境变量**（`DSH_DOCKER_ALLOW_MUTATIONS` / `DSH_DOCKER_ALLOW_EXEC` /
+  `DSH_TTY_ALLOW_PROXY_COMMAND`），且**进程启动时采样一次**；
+- **HTTP 只能关、不能开**：给 `true` → 400 + 文案说清「设哪个变量 + 重启宿主」；
+- 配置里的 `true` **不算授权**（它与 HTTP 写进去的值存在同一个存储里，分不出来源）；
+- 实现只有一份（[`packages/kit/src/capability.ts`](./packages/kit/src/capability.ts)），
+  客户端按快照里的 `*Granted` 把开关渲染成「点不动 + 说明怎么开」；
+- 约定与威胁模型边界写进 [architecture.md § 7](./docs/architecture.md#7-一条请求经过什么)。
+
+**门槛**：`packages/kit/test/capability.test.ts`（8 条：白名单值、**进程内只采样一次**、
+文案两步齐全）；`packages/docker/test/config-route.test.ts` 的 5 条（400 且不落盘、降权免授权、
+配置里的 true 无效、授权后接受）；`packages/tty/test/proxy-command.test.ts` 的 21 条（含
+未授权 / 未启用**两条文案必须不同**、路由 400、四道白名单往返）；`packages/tty/test/probe.test.ts`
+（探针按原因分开报）；docker route-smoke 62/62（含快照暴露授权）。
+
+**升级影响（刻意如此，已写进两包 README）**：升级前靠界面打开的开关**会变成关**——要恢复
+就在宿主侧设环境变量并重启宿主。这正是「HTTP 不能提权」的代价：分不出来源的 `true` 一律不算。
+
+#### 5.2 一次性 token 仍未做（按需）
+
+它**仍然有独立价值**，但只针对「**能到回环、读不到文件**」的隔离进程（沙箱应用、被拿下的
+renderer）：token 让盲发失效。若要做，先书面定三件事：① 威胁模型（谁被拦、谁不被拦——
+同用户全权进程本来就能读 `~/.dsh/.credentials.yaml`、能直接跑 `docker`，任何进程内机制都拦不住）；
+② `/config` 与恢复通道怎么办（token 化之后用户怎么把插件救回来）；③ 桌面壳的例外。
+按「全仓安全线一项」规划，而不是 docker 的附加项。
 
 ## 已完成（落点 + 门槛）
 

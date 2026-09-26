@@ -211,6 +211,7 @@ const I18N_ZH = {
   'placeholder.proxyCommand': '例如 ssh -W %h:%p bastion',
   'hint.proxyCommand': '本机执行的命令，它的 stdin/stdout 就是到目标的 SSH 传输（等价于 OpenSSH 的 ProxyCommand）。支持 %h 目标主机、%p 端口、%r 用户名、%n 主机、%% 字面 %；其余写法原样保留。与跳板机同时填时跳板机优先（OpenSSH 语义）。需要下面那个开关，~/.ssh/config 导入不会自动带入它。',
   'hint.proxyCommandDisabled': '⚠ 当前「允许 ProxyCommand」未打开：这条命令不会执行，连接会明确失败（不会退回直连）。到 插件配置 → 终端面板 打开开关后生效。',
+  'hint.proxyCommandNotGranted': '⚠ 这条能力未获宿主授权，设置卡片里的开关点不动：提权只认宿主侧的环境变量 DSH_TTY_ALLOW_PROXY_COMMAND=1（可用设置 → 环境变量 卡片写入 ~/.dsh/env.yml），设好后重启宿主。这样安排是因为本机任意进程都能发回环请求——若配置界面能提权，这道闸门等于没有；关掉它则随时可用。',
   'meta.probeProxy': '代理命令',
   'meta.probeProxyOff': '代理命令（未启用）',
   'meta.probeTcpSkipped': '直连预检已跳过（走代理命令）',
@@ -576,6 +577,7 @@ const I18N_EN = {
   'placeholder.proxyCommand': 'e.g. ssh -W %h:%p bastion',
   'hint.proxyCommand': 'A command run on this machine whose stdin/stdout become the SSH transport to the target (the same idea as OpenSSH’s ProxyCommand). Supports %h host, %p port, %r user, %n host and %% for a literal %; anything else is left as written. If a jump host is set too, the jump host wins (OpenSSH semantics). It needs the switch below, and importing ~/.ssh/config never fills it in.',
   'hint.proxyCommandDisabled': '⚠ “Allow ProxyCommand” is off right now: this command will not run and the connection fails explicitly (it does not fall back to a direct connection). Turn it on in Plugin settings → Terminal panel.',
+  'hint.proxyCommandNotGranted': '⚠ Not granted by the host, so the switch in the settings card cannot be turned on: raising it is only accepted from the host’s environment (DSH_TTY_ALLOW_PROXY_COMMAND=1, writable via Settings → Environment variables into ~/.dsh/env.yml), then restart the host. The reason: any local process can send loopback requests, so if the settings UI could raise it this gate would be pointless. Turning it off always works.',
   'meta.probeProxy': 'Proxy command',
   'meta.probeProxyOff': 'Proxy command (disabled)',
   'meta.probeTcpSkipped': 'Direct TCP check skipped (using the proxy command)',
@@ -2987,6 +2989,8 @@ let maxSessionsCache = null
  * 试连会点名开关）。它**不是**安全边界：真正的闸门在宿主侧（关着时连接明确失败）。
  */
 let allowProxyCommandCache = false
+/** 这条能力是否**获宿主授权**（只读快照）。未授权时界面上那个开关点不动，要说明怎么授权。 */
+let allowProxyCommandGrantedCache = false
 let liveSessionCount = null
 /* ============================ 入口显隐闸门 ============================ */
 
@@ -3037,6 +3041,9 @@ function syncSshHostsCache(config) {
   }
   if (config !== null && typeof config === 'object' && typeof config.allowProxyCommand === 'boolean') {
     allowProxyCommandCache = config.allowProxyCommand
+  }
+  if (config !== null && typeof config === 'object' && typeof config.allowProxyCommandGranted === 'boolean') {
+    allowProxyCommandGrantedCache = config.allowProxyCommandGranted
   }
 }
 
@@ -3795,10 +3802,18 @@ function openSshDialog(entry) {
   proxyGateHint.className = 'tt_cardHint tt_sshProbeWarn'
   proxyGateHint.textContent = t('hint.proxyCommandDisabled')
   card.appendChild(proxyGateHint)
-  /** 闸门提示只在「填了命令 + 开关关着」时出现；开关状态随 config 快照刷新。 */
+  /**
+   * 闸门提示只在「填了命令 + 现在不会生效」时出现；文案按**原因**二选一：
+   *   - 未获宿主授权 → 说清设哪个环境变量 + 要重启（那个开关在设置卡片里是点不动的）；
+   *   - 已授权但开关关着 → 只要去把开关打开。
+   * 合成一句话会让用户对着一个点不动的开关反复点。
+   */
   const syncProxyGate = () => {
     const filled = fields.proxyCommand.value.trim() !== ''
-    proxyGateHint.style.display = filled && !allowProxyCommandCache ? '' : 'none'
+    const granted = allowProxyCommandGrantedCache
+    const effective = granted && allowProxyCommandCache
+    proxyGateHint.textContent = granted ? t('hint.proxyCommandDisabled') : t('hint.proxyCommandNotGranted')
+    proxyGateHint.style.display = filled && !effective ? '' : 'none'
   }
   fields.proxyCommand.addEventListener('input', syncProxyGate)
   syncProxyGate()
@@ -7751,10 +7766,17 @@ function TtySettingsCard(props) {
       hint ? jsx('span', { className: 'tt_cardHint', children: hint }) : null,
     ],
   })
-  const boolField = (label, key, extraClass) => jsxs('label', {
+  const boolField = (label, key, extraClass, disabled) => jsxs('label', {
     className: 'tt_cardField tt_cardRow' + (typeof extraClass === 'string' && extraClass !== '' ? ' ' + extraClass : ''),
     children: [
-      jsx('input', { type: 'checkbox', className: 'tt_cardCheckbox', checked: form[key] === true, onChange: (event) => set(key, event.target.checked) }),
+      jsx('input', {
+        type: 'checkbox',
+        className: 'tt_cardCheckbox',
+        checked: form[key] === true,
+        // 未获宿主授权时挡住的只是「打开」：关掉永远可用（紧急刹车不能依赖重启）
+        disabled: disabled === true && form[key] !== true,
+        onChange: (event) => set(key, event.target.checked),
+      }),
       jsx('span', { className: 'tt_cardLabel', children: label }),
     ],
   })
@@ -7896,8 +7918,12 @@ function TtySettingsCard(props) {
                      * ProxyCommand 闸门。刻意与其它开关**不同色**（tt_cardDanger）：它是本插件
                      * 唯一「由设置字段驱动本机任意命令执行」的开关，默认关，打开前该看清代价。
                      */
-                    boolField(t('check.allowProxyCommand'), 'allowProxyCommand', 'tt_cardDanger'),
+                    boolField(t('check.allowProxyCommand'), 'allowProxyCommand', 'tt_cardDanger', form.allowProxyCommandGranted !== true),
                     jsx('span', { className: 'tt_cardHint', children: t('hint.allowProxyCommand') }),
+                    // 未授权时补一行「怎么授权」：只说「去打开开关」会让用户对着点不动的开关反复点
+                    form.allowProxyCommandGranted === true
+                      ? null
+                      : jsx('span', { className: 'tt_cardHint tt_sshProbeWarn', children: t('hint.proxyCommandNotGranted') }),
                   ],
                 }),
                 textField(t('field.maxSessions'), 'maxSessions', '4', t('hint.maxSessions')),

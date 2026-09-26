@@ -43,6 +43,10 @@
   「外抽」这条路已多一个——D49 落地的 `client-src/stats-bar.js` 带 17 条单测，现在这类模块共
   4 个：`stats-bar` / `status-line` / `dock-owner` / `current-session`，各有同名测试文件）*
 
+**2026-09-25 追加**：`allowProxyCommand` 的提权按项目级 ROADMAP 第 5.1 节收口——只认宿主侧
+环境变量 `DSH_TTY_ALLOW_PROXY_COMMAND`（启动时采样一次），HTTP 只能关不能开；未授权时设置卡片
+里那个开关点不动 + 附一行说明，「试连」与拨号按**原因**分两条文案（未授权 vs 未启用）。
+
 ## 已上提到项目级（不在本文展开）
 
 跳板机（ProxyJump / ProxyCommand）—— 与 docker 侧同因，见 [项目级 ROADMAP.md](../../ROADMAP.md) 第 2 项。

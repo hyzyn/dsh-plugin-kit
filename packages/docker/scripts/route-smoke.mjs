@@ -20,6 +20,14 @@ import { mkdtempSync, rmSync, writeFileSync, chmodSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+/*
+ * 能力开关的**宿主侧授权**：本脚本要测「开关能打开」（第 5 节），所以必须在挂载插件**之前**
+ * 设好环境变量——能力授权进程内只采样一次（见 kit 的 capability.js），挂载后再设就没用了。
+ * 真实部署里这也是唯一的提权通道：HTTP 侧只能关闭、不能打开（那一半由第 5b 节断言）。
+ */
+process.env.DSH_DOCKER_ALLOW_MUTATIONS = '1'
+process.env.DSH_DOCKER_ALLOW_EXEC = '1'
+
 const host = await import('../lib/index.js')
 
 /* ------------------------------------------------------------------ *
@@ -746,6 +754,13 @@ await test('未知子路由 404', async () => {
 /* ------------------------------------------------------------------ *
  * 5. 打开能力开关（含 settings/updated 热更新路径）
  * ------------------------------------------------------------------ */
+
+await test('快照暴露宿主侧授权（客户端据此决定开关能不能点）', async () => {
+  const res = await call('GET', '/config', {})
+  assert.equal(res.status, 200)
+  assert.equal(res.body.config.allowMutationsGranted, true)
+  assert.equal(res.body.config.allowExecGranted, true)
+})
 
 await test('POST /config 打开 allowMutations：工具与路由同时解锁', async () => {
   const res = await call('POST', '/config', { allowMutations: true })

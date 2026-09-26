@@ -276,10 +276,22 @@ export declare function dialJump(options: {
 export declare const PROXY_COMMAND_MAX = 2000;
 /** 关着闸门时携带代理命令的连接报什么错（导出供单测与客户端文案对照）。 */
 export declare const PROXY_COMMAND_DISABLED: string;
+/**
+ * 宿主**没有授权**这条能力时报什么错（与「授权了但开关关着」分开报）。
+ *
+ * 为什么要分开：两者的「下一步动作」完全不同——前者要去宿主侧设环境变量 + 重启（界面上那个
+ * 开关是点不动的），后者只是把开关打开。合成一句话会让用户对着一个点不动的开关反复点。
+ */
+export declare const PROXY_COMMAND_NOT_GRANTED: string;
 /** 设置 ProxyCommand 闸门（插件 settings 就绪与每次热更新时调用）。 */
-export declare function setProxyCommandPolicy(allowed: boolean): void;
-/** 当前闸门状态（探针用它把「配了但没开」与「连不上」分开报）。 */
+export declare function setProxyCommandPolicy(next: {
+    granted: boolean;
+    enabled: boolean;
+}): void;
+/** 当前是否真的会用代理命令（探针用它把「配了但没开」与「连不上」分开报）。 */
 export declare function proxyCommandAllowedNow(): boolean;
+/** 宿主侧是否授权了这条能力（探针用它选文案：未授权 vs 未启用）。 */
+export declare function proxyCommandGrantedNow(): boolean;
 /**
  * 清洗一份代理命令输入（settings schema / 宽松清洗 / 内联融合共用）。
  *

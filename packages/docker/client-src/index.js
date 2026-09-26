@@ -466,6 +466,7 @@ const I18N_ZH = {
   'check.allowMutations': '允许变更操作（容器启停删、镜像拉取 / 删除 / 清理）',
   'check.allowExec': '允许 exec（在容器内执行命令）',
   'hint.socketRoot': 'docker socket 等价于目标主机的 root 权限。开启后，浏览器面板与 agent 都能执行对应操作，请只在可信环境下打开。',
+  'hint.capabilityNotGranted': '⚠ 未获宿主授权，这两个开关在界面上点不动：提权只认宿主侧的环境变量（DSH_DOCKER_ALLOW_MUTATIONS / DSH_DOCKER_ALLOW_EXEC，可用设置 → 环境变量 卡片写入 ~/.dsh/env.yml），设好后重启宿主。这样安排是因为本机任意进程都能发回环请求——若配置界面能提权，这道闸门等于没有；关掉它则随时可用。',
   'placeholder.targetName': '目标名',
   'option.sshHost': 'SSH 主机',
   'hint.localTarget': '宿主所在机器上的 docker',
@@ -918,6 +919,7 @@ const I18N_EN = {
   'check.allowMutations': 'Allow changes (start/stop/remove containers, pull / remove / prune images)',
   'check.allowExec': 'Allow exec (run commands inside containers)',
   'hint.socketRoot': 'The docker socket is equivalent to root on the target host. Once enabled, both the browser panel and the agent can run these operations — only turn it on in a trusted environment.',
+  'hint.capabilityNotGranted': '⚠ Not granted by the host, so these two switches cannot be turned on here: raising them is only accepted from the host’s environment (DSH_DOCKER_ALLOW_MUTATIONS / DSH_DOCKER_ALLOW_EXEC, writable via Settings → Environment variables into ~/.dsh/env.yml), then restart the host. The reason: any local process can send loopback requests, so if the settings UI could raise them, this gate would be pointless. Turning them off always works.',
   'placeholder.targetName': 'Target name',
   'option.sshHost': 'SSH host',
   'hint.localTarget': 'docker on the machine running the host',
@@ -7109,11 +7111,37 @@ window.__ModuleLoader__.load({
         ] }),
 
         sectionTitle(t('section.capabilities')),
+        /*
+         * 两个开关在**未获宿主授权**时禁用（`allowMutationsGranted` / `allowExecGranted` 由宿主
+         * 快照给出）。为什么不是继续可点、点了报错：那会变成「点一下、弹一句、再点一下」的循环
+         * ——用户看不出这是刻意的闸门。禁用 + 一行说清「设哪个变量 + 要重启」才是这一步的正解。
+         *
+         * 关掉永远可用（宿主侧不拦降权：紧急刹车不能依赖重启），所以 disabled 只挡「打开」。
+         */
         jsxs('div', { className: 'dk_row', children: [
-          jsx('label', { className: 'dk_check', children: [jsx('input', { type: 'checkbox', checked: form.allowMutations, onChange: (event) => patch({ allowMutations: event.target.checked }) }), t('check.allowMutations')] }),
-          jsx('label', { className: 'dk_check', children: [jsx('input', { type: 'checkbox', checked: form.allowExec, onChange: (event) => patch({ allowExec: event.target.checked }) }), t('check.allowExec')] }),
+          jsx('label', { className: 'dk_check', children: [
+            jsx('input', {
+              type: 'checkbox',
+              checked: form.allowMutations,
+              disabled: form.allowMutationsGranted !== true && form.allowMutations !== true,
+              onChange: (event) => patch({ allowMutations: event.target.checked }),
+            }),
+            t('check.allowMutations'),
+          ] }),
+          jsx('label', { className: 'dk_check', children: [
+            jsx('input', {
+              type: 'checkbox',
+              checked: form.allowExec,
+              disabled: form.allowExecGranted !== true && form.allowExec !== true,
+              onChange: (event) => patch({ allowExec: event.target.checked }),
+            }),
+            t('check.allowExec'),
+          ] }),
         ] }),
         jsx('span', { className: 'dk_hint', children: t('hint.socketRoot') }),
+        form.allowMutationsGranted === true && form.allowExecGranted === true
+          ? null
+          : jsx('span', { className: 'dk_hint dk_hintWarn', children: t('hint.capabilityNotGranted') }),
 
         sectionTitle(t('field.target')),
         ...form.targets.map((item, index) => {

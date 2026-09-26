@@ -9,8 +9,27 @@
  * 而**变更**工具多声明一次就是真事故（两个 `docker_action` 并发跑）。所以两个方向
  * 都要钉：只读必须声明且恒真，变更必须**没有**声明。
  */
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, beforeAll, afterAll } from 'vitest'
+import { __resetCapabilityGrantsForTest } from '@hyzyn/dsh-kit'
 import { apply } from '../src/index.js'
+
+/*
+ * 能力开关的**宿主侧授权**：这个文件测的是「授权之后开关照旧可用」（工具注册 / 路由放行），
+ * 所以在这里模拟「宿主启动时就带了授权环境变量」。授权进程内只采样一次（见 kit 的
+ * capability.js），而每个用例的 mount 都会重新走 apply → 首次查询就读到这里的值。
+ * `afterAll` 必须清掉：vitest 复用 worker 进程，环境变量会漏给后面的测试文件
+ * （那会让「未授权」的用例在别的文件里静默变成已授权）。
+ */
+beforeAll(() => {
+  process.env.DSH_DOCKER_ALLOW_MUTATIONS = '1'
+  process.env.DSH_DOCKER_ALLOW_EXEC = '1'
+  __resetCapabilityGrantsForTest()
+})
+afterAll(() => {
+  delete process.env.DSH_DOCKER_ALLOW_MUTATIONS
+  delete process.env.DSH_DOCKER_ALLOW_EXEC
+  __resetCapabilityGrantsForTest()
+})
 
 /** 只读工具（列表 / 详情 / 快照）：与同轮其它调用并发执行。 */
 const READ_ONLY = [

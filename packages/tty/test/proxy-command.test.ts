@@ -16,23 +16,39 @@ import { existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { apply } from '../src/index.js'
+import { __resetCapabilityGrantsForTest, capabilityGranted } from '@hyzyn/dsh-kit'
 import {
   dialProxyCommand,
   expandProxyCommand,
   prepareSshConnect,
   proxyCommandAllowedNow,
+  proxyCommandGrantedNow,
   proxyFailureSuffix,
   PROXY_COMMAND_DISABLED,
   PROXY_COMMAND_MAX,
+  PROXY_COMMAND_NOT_GRANTED,
   sanitizeProxyCommand,
   setProxyCommandPolicy,
   validateProxyCommand,
 } from '../src/ssh.js'
 
-/** 闸门默认必须关着——每个用例结束后复位，避免用例之间互相影响。 */
+/** 宿主侧授权的环境变量名（与 src/index.ts 的 CAP_PROXY_COMMAND 同一份口径）。 */
+const GRANT_ENV = 'DSH_TTY_ALLOW_PROXY_COMMAND'
+
+/** 每个用例结束后复位：闸门（授权 + 启用）与环境变量都不留给下一个用例。 */
 afterEach(() => {
-  setProxyCommandPolicy(false)
+  setProxyCommandPolicy({ granted: false, enabled: false })
+  delete process.env[GRANT_ENV]
+  __resetCapabilityGrantsForTest()
 })
+
+/** 模拟「宿主启动时就带了授权环境变量」：设环境变量 + 清采样缓存 + 打开策略。 */
+function grantHostSide(enabled = true): void {
+  process.env[GRANT_ENV] = '1'
+  __resetCapabilityGrantsForTest()
+  expect(capabilityGranted(GRANT_ENV)).toBe(true)
+  setProxyCommandPolicy({ granted: true, enabled })
+}
 
 /** 一条「真跑起来就会在 cwd 留下文件」的命令：用来证明闸门关着时**没有起进程**。 */
 const GATE_PROBE_FILE = 'proxy-gate-probe.tmp'
@@ -103,33 +119,55 @@ describe('expandProxyCommand（OpenSSH 同义占位符）', () => {
   })
 })
 
-describe('闸门：默认关，关着时明确失败且不起进程', () => {
-  it('默认状态就是关（模块级策略的初值）', () => {
+describe('闸门：默认未授权 + 未启用，两种状态各自点名下一步', () => {
+  it('默认状态：既没授权也没启用', () => {
+    expect(proxyCommandGrantedNow()).toBe(false)
     expect(proxyCommandAllowedNow()).toBe(false)
   })
 
-  it('关着时 dialProxyCommand 抛「未启用」，**没有起任何进程**', async () => {
+  it('未获宿主授权时抛的是「未授权」文案（说清设哪个变量 + 要重启），**没有起任何进程**', async () => {
+    const probe = join(process.cwd(), GATE_PROBE_FILE)
+    rmSync(probe, { force: true })
+    await expect(dialProxyCommand({ spec: { host: 'h', username: 'u', proxyCommand: gateProbeCommand } }))
+      .rejects.toThrow(PROXY_COMMAND_NOT_GRANTED)
+    // 真的没执行：那条命令一旦跑起来就会在 cwd 留下这个文件
+    expect(existsSync(probe)).toBe(false)
+    // 文案必须同时给出变量名与「重启宿主」——只说一半会让用户对着点不动的开关反复点
+    await dialProxyCommand({ spec: { host: 'h', username: 'u', proxyCommand: gateProbeCommand } })
+      .catch((error: Error) => {
+        expect(error.message).toContain(GRANT_ENV)
+        expect(error.message).toContain('重启宿主')
+      })
+    // 命令**不存在**时也一样先撞闸门（证明判闸在 spawn 之前，不是 spawn 失败后补的文案）
+    await expect(dialProxyCommand({ spec: { host: 'h', username: 'u', proxyCommand: 'definitely-not-a-real-command-xyz' } }))
+      .rejects.toThrow('未获宿主授权')
+  })
+
+  it('已授权但开关关着 → 抛「未启用」（下一步只是把开关打开），同样不起进程', async () => {
+    grantHostSide(false)
     const probe = join(process.cwd(), GATE_PROBE_FILE)
     rmSync(probe, { force: true })
     await expect(dialProxyCommand({ spec: { host: 'h', username: 'u', proxyCommand: gateProbeCommand } }))
       .rejects.toThrow(PROXY_COMMAND_DISABLED)
-    // 真的没执行：那条命令一旦跑起来就会在 cwd 留下这个文件
     expect(existsSync(probe)).toBe(false)
-    // 命令**不存在**时也一样先撞闸门（证明判闸在 spawn 之前，不是 spawn 失败后补的文案）
-    await expect(dialProxyCommand({ spec: { host: 'h', username: 'u', proxyCommand: 'definitely-not-a-real-command-xyz' } }))
-      .rejects.toThrow('未启用')
+  })
+
+  it('两条文案必须**不同**（下一步动作不同：一个去设环境变量，一个去开开关）', () => {
+    expect(PROXY_COMMAND_NOT_GRANTED).not.toBe(PROXY_COMMAND_DISABLED)
+    expect(PROXY_COMMAND_NOT_GRANTED).toContain('未获宿主授权')
+    expect(PROXY_COMMAND_DISABLED).toContain('未启用')
   })
 
   it('四条建连路径共用的 prepareSshConnect 同样拒绝（不是只在终端那一处判）', async () => {
     await expect(prepareSshConnect({ spec: { host: 'h', username: 'u', proxyCommand: gateProbeCommand } }))
-      .rejects.toThrow(PROXY_COMMAND_DISABLED)
+      .rejects.toThrow(PROXY_COMMAND_NOT_GRANTED)
     expect(existsSync(join(process.cwd(), GATE_PROBE_FILE))).toBe(false)
   })
 })
 
 describe('闸门：打开之后真跑、真收', () => {
   it('dialProxyCommand 返回可用传输；dispose() 之后子进程被杀（不留常驻孤儿）', async () => {
-    setProxyCommandPolicy(true)
+    grantHostSide()
     const dialed = await dialProxyCommand({ spec: { host: 'h', username: 'u', proxyCommand: idleCommand } })
     expect(dialed.sock.destroyed).toBe(false)
     expect(dialed.failure()).toBeNull()
@@ -142,7 +180,7 @@ describe('闸门：打开之后真跑、真收', () => {
   })
 
   it('子进程提前退出 → failure() 带退出码与 stderr 摘要（错误文案要说人话）', async () => {
-    setProxyCommandPolicy(true)
+    grantHostSide()
     const command = `"${process.execPath}" -e "process.stderr.write('boom');process.exit(3)"`
     const dialed = await dialProxyCommand({ spec: { host: 'h', username: 'u', proxyCommand: command } })
     /*
@@ -159,16 +197,18 @@ describe('闸门：打开之后真跑、真收', () => {
   })
 
   it('开关关掉之后立刻生效：同一个 spec 从「能起」变「拒绝」', async () => {
-    setProxyCommandPolicy(true)
+    grantHostSide()
     const dialed = await dialProxyCommand({ spec: { host: 'h', username: 'u', proxyCommand: idleCommand } })
     dialed.dispose()
-    setProxyCommandPolicy(false)
+    // 只关开关（授权仍在）：拒绝的理由应是「未启用」，而不是「未授权」
+    setProxyCommandPolicy({ granted: true, enabled: false })
     await expect(dialProxyCommand({ spec: { host: 'h', username: 'u', proxyCommand: idleCommand } }))
-      .rejects.toThrow('未启用')
+      .rejects.toThrow(PROXY_COMMAND_DISABLED)
+    expect(proxyCommandGrantedNow()).toBe(true)
   })
 
   it('prepareSshConnect 带代理命令时把 stdio 接到 connectConfig.sock（跳板机位为空）', async () => {
-    setProxyCommandPolicy(true)
+    grantHostSide()
     const prepared = await prepareSshConnect({ spec: { host: 'h', username: 'u', proxyCommand: idleCommand } })
     expect(prepared.bastion).toBeNull()
     expect(prepared.proxy).not.toBeNull()
@@ -293,6 +333,40 @@ describe('连接簿配置往返（settings schema + 两条清洗路径）', () =
     expect(get.status).toBe(200)
     const config = (JSON.parse(String(get.body)) as { config?: { sshHosts?: unknown[] } }).config ?? {}
     expect(config.sshHosts).toEqual([entry])
+  })
+
+  it('POST /config 想把 allowProxyCommand 打开 → 400，文案点名环境变量与「重启宿主」', async () => {
+    const handler = mountConfigRoute()
+    const post = makeRes()
+    await handler(makeReq('POST', { allowProxyCommand: true }), post)
+    expect(post.status).toBe(400)
+    expect(String(post.body)).toContain(GRANT_ENV)
+    expect(String(post.body)).toContain('重启宿主')
+    // 没写盘：GET 读回仍是 false
+    const get = makeRes()
+    await handler(makeReq('GET'), get)
+    const config = (JSON.parse(String(get.body)) as { config?: { allowProxyCommand?: boolean; allowProxyCommandGranted?: boolean } }).config ?? {}
+    expect(config.allowProxyCommand).toBe(false)
+    expect(config.allowProxyCommandGranted).toBe(false)
+  })
+
+  it('宿主侧授权之后，POST 打开就被接受（授权是唯一的提权通道）', async () => {
+    grantHostSide(false)
+    const handler = mountConfigRoute()
+    const post = makeRes()
+    await handler(makeReq('POST', { allowProxyCommand: true }), post)
+    expect(post.status, String(post.body)).toBe(200)
+    const config = (JSON.parse(String(post.body)) as { config?: { allowProxyCommand?: boolean; allowProxyCommandGranted?: boolean } }).config ?? {}
+    expect(config.allowProxyCommand).toBe(true)
+    expect(config.allowProxyCommandGranted).toBe(true)
+  })
+
+  it('降权永远可用：授权状态下把开关关掉不需要任何额外条件', async () => {
+    grantHostSide()
+    const handler = mountConfigRoute()
+    const post = makeRes()
+    await handler(makeReq('POST', { allowProxyCommand: false }), post)
+    expect(post.status, String(post.body)).toBe(200)
   })
 
   it('多行 proxyCommand 会被明确拒绝（400），而不是静默丢掉半条命令', async () => {
