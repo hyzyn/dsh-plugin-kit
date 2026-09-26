@@ -136,6 +136,12 @@
 真机验收顺带挖出并修掉 **tty D66**（探针结算后仍被后到的事件覆写结果，导致「连接已关闭」
 这种空话盖掉带 stderr 的那句）——它**纯 mock 测不出来**，已补真进程回归。
 
+**这套验收已固化成脚本**：`pnpm live-smoke`（[scripts/live-host-smoke.mjs](./scripts/live-host-smoke.mjs)，
+17 条断言：上面的表 + agent 工具清单 + 绕开工具直打 `/action`、`/exec` 的门控 + 宿主正在服务的
+`client.js` 含新键）。它复制两份一次性 profile 起两个真宿主（无授权 / 带授权），跑完删干净、
+不碰任何既有 profile；**本地门槛不进 CI**（CI 里没有 DSH），是 [RELEASING.md](./RELEASING.md)
+发布门槛 #3「真实装进 DSH 跑一遍」的自动化形态。
+
 #### 5.2 一次性 token 仍未做（按需）
 
 它**仍然有独立价值**，但只针对「**能到回环、读不到文件**」的隔离进程（沙箱应用、被拿下的

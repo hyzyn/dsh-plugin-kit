@@ -64,6 +64,11 @@ CI 另有两道兜底（`--no-verify`、别的机器、别的工具提交都能�
 3. 动了插件运行行为的改动，真实装进 DSH 跑一遍：`dsh plugin --profile <name> add
    @hyzyn/dsh-<pkg>`（或 link: 路径调试）。build 绿不等于装上没问题。
    tty 的 integration/live/ssh-smoke 需要真机，按需本地跑。
+   **能力开关 / 权限 / 文案类改动跑一次 `pnpm live-smoke`**：它从你已有的「link 到本仓」的
+   profile 复制两份一次性 profile，起两个真宿主（无授权 / 带授权各一），把授权阶梯、路由门控、
+   agent 工具清单、试连文案、宿主正在服务的 `client.js` 全打一遍，跑完删干净——就是本节
+   「真实装进 DSH 跑一遍」的自动化形态（**本地门槛，不进 CI：CI 里没有 DSH**；未装 DSH 时
+   打印 SKIP，加 `--strict` 可让它变成失败）。
 4. 各包依赖**不要写 `workspace:*`**。它只在 monorepo 内部有效：`pnpm publish` 会把它
    换成真实版本（所以 npm 产物看起来是对的），但用户从 git 子路径安装
    （`git+https://github.com/hyzyn/dsh-plugin-kit.git#main&path:packages/tty`）时协议

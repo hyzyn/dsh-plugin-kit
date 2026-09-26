@@ -227,6 +227,15 @@ origin 上。从 `location` 推出来的地址在浏览器里完全正常、**�
   「隔离 DSH_HOME」「自证真实配置未变」）；真机脚本的正确性**只能靠跑一遍**。
 - **包内脚本不搬家**：`scripts/` 下的包内脚本与 `package.json` 的 `smoke` / CI step 直接接线，
   移动会打断它们。项目级 Runbook 见 [agent-real-test.md](./agent-real-test.md)。
+- **要真宿主的验收放根 `scripts/` 且不进 CI**：`scripts/live-host-smoke.mjs`（`pnpm live-smoke`）
+  是唯一需要**真 DSH 宿主**的脚本——它起两个一次性宿主实例，验能力开关的授权阶梯 / 路由门控 /
+  agent 工具清单 / 试连文案 / 宿主正在服务的 `client.js`。为什么不进 CI：CI 里没有 DSH（装一个
+  全局 DSH 是又慢又漂的重依赖），所以它是**发布门槛 #3 的自动化形态**，属于本地门槛；
+  本机没装 DSH 时打印 SKIP（不假装验过），`--strict` 则失败。安全前提写在脚本头：**绝不碰你的
+  profile**（复制两份一次性 profile，跑完删）、独立端口、只播种一个本地 docker 目标。
+  **静态守卫**：`scripts/test/live-host-smoke-safety.test.ts` 读源码钉住这些性质（只建/只删
+  带 `live-smoke-<pid>` 前缀的一次性 profile、拒绝覆盖、两实例各一份拷贝、**刻意不隔离
+  DSH_HOME**、CI / release 里都不出现它）。
 - **CI 与发布闸要成对**：只在 CI 补而漏了 `release.yml`，发布路径仍能整条绕过。
 - **文档链接闸门**：`node scripts/check-doc-links.mjs` 校验全仓 markdown 的**相对链接**与
   **锚点**（跨文件与同文件都查）。**尚未进 CI**，目前手动跑（见 [ROADMAP.md](../ROADMAP.md) 第 7 项）。

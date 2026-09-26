@@ -23,7 +23,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "create-plugin": "node scripts/create-plugin.mjs",
-    "aggregate": "node scripts/aggregate.mjs"
+    "aggregate": "node scripts/aggregate.mjs",
+    "live-smoke": "node scripts/live-host-smoke.mjs"
   },
   "devDependencies": {
     "typescript": "~5.9.3",
