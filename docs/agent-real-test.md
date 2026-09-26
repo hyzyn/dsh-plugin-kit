@@ -100,6 +100,7 @@ dsh --profile <测试 profile> --patch <port.yml>
 | `tty` | `scripts/integration.mjs`（真实 PTY 全链路）、`ssh-smoke.mjs`（内存 sshd）、`probe-smoke.mjs`、`probe-route-smoke.mjs`、`sftplimits-smoke.mjs`、`preview.mjs`（Chrome，界面场景）、`windows-smoke.mjs`（仅 Windows 有意义） | 真实 PTY / Chrome / Windows |
 | `codegraph` | `scripts/verify-codegraph-host-contract.mjs`（真宿主路由与开关）、`verify-codegraph-agent-scope.mjs`（最小 Cordis 根）、`verify-codegraph-agent-integration.mjs`（真 `AgentRegistry` 驱动真 `agent/created`）、`verify-codegraph-indexforce.mjs`、`verify-codegraph-client-ui.mjs`（自起隔离宿主 + 真 Chrome） | 真 DSH 宿主 / 真 CLI / Chrome |
 | `docker` | `scripts/smoke.mjs` / `route-smoke.mjs` / `client-smoke.mjs`（hermetic，能进 CI）；真机项需真 docker daemon | 真 docker |
+| 全部 | `scripts/live-host-smoke.mjs --bootstrap --strict`（真宿主：能力开关授权阶梯 / 路由门控 / 工具清单 / 试连文案 / 宿主正服务的 `client.js`） | 装了 DSH 的任意机器（干净机器加 `--bootstrap`） |
 | 全部 | `scripts/windows/setup-dsh-testenv.ps1 -WithRepo` | Windows 11 |
 
 > **三层真机脚本的分工**（codegraph 的实践，可照搬）：
@@ -152,6 +153,12 @@ dsh --profile <测试 profile> --patch <port.yml>
     现象是 `cd /root/x && pnpm …` 只剩 `cd` 生效，pnpm 在 `/` 里跑（`ERR_PNPM_NO_PKG_MANIFEST`）。
     稳妥写法：把步骤写成**一个脚本**（宿主机生成、HTTP 送进去），`prlctl exec <vm> bash /root/run.sh <step>`
     —— argv 里没有空格，就没有解析歧义。
+  - **更好的写法（2026-09-26 补）：脚本走 stdin** —— `prlctl exec <vm> bash < run.sh`。
+    实测 `bash -c 'echo hi'` / `bash -lc 'echo hi'` 都**没有任何输出**（`-c` 后面的串进不去），
+    而 `cat run.sh | prlctl exec <vm> bash` 正常工作；普通命令加空格不受影响
+    （`prlctl exec <vm> /bin/echo 'a b'` → `a b`）。**一条多行脚本可以一次跑完**，不必再拆步骤。
+    注意 `prlctl exec` 的环境很干净：`PATH=/bin:/sbin:/usr/bin:/usr/sbin`（**没有 `/usr/local/bin`**）、
+    `HOME=/`——脚本里自己 `export PATH=/usr/local/bin:$PATH`。
   - **`git archive` 不带 `.git`，于是 `artifact`（`git diff` 产物）与 `no-public-ip`
     （`git ls-files`）两个闸门跑不了**（报 `not a git repository`，看起来像断言失败）。
     两条路：传 `git bundle`，或就地 `git init && git add -A && git commit` —— 解出来的树**就是
@@ -163,10 +170,44 @@ dsh --profile <测试 profile> --patch <port.yml>
     （权限随 umask 漂），修在 kit `writeFileAtomic`（见 `kit D06`），不是放宽断言。
   - **rc.1 与 rc.2 的 DSH 不能混用**：这台 VM 的 `/usr/local/bin` 里只有一个 rc.1 的宿主，
     而各包 peer 下限是 rc.2——所以宿主相关的验收（`live-host-smoke`）在 Linux 上要先装对 cohort；
-    纯 hermetic 的冒烟与 vitest 不受影响（本次全部跑绿）。
+    纯 hermetic 的冒烟与 vitest 不受影响（本次全部跑绿）。**`--bootstrap`（见下）现在会把这件事
+    变成一条明确的报错**：cohort 不匹配时 DSH 会把本仓插件整批 `disabled`，自证那步直接失败，
+    而不是让验收跑出一堆看起来像代码坏了的 FAIL。
 - **macOS 的 `tar` 会带出 `._*.ts` 垃圾文件**：把改动打包进 Windows（bsdtar 带 xattr）后，
   vitest 会把 `._foo.test.ts` 当成测试文件，报 4 个「文件失败」而**每条断言都是通过的**——
   看着像代码坏了。打包加 `COPYFILE_DISABLE=1`，或落地后删 `._*`。
+
+## 干净机器上的真宿主验收：`--bootstrap`
+
+`pnpm live-smoke`（[scripts/live-host-smoke.mjs](../scripts/live-host-smoke.mjs)）的前提是
+**机器上已有一个「link 到本仓」的 profile**——开发机上它天然存在，而**干净环境全都没有**：
+CI 腿、Parallels 的 Windows / Ubuntu 腿、别人的新克隆。以前这种情况下它只能打印 SKIP，而
+SKIP 在「我跑过了」这句话里最容易被当成 PASS。
+
+```bash
+# 干净机器（VM / 新克隆）：没有 link profile 也一条命令跑完
+pnpm install --frozen-lockfile
+node scripts/link-dsh-runtime.mjs          # 插件与宿主共用同一份 @deepseek-ai/*（必需）
+node scripts/live-host-smoke.mjs --bootstrap --strict
+```
+
+`--bootstrap` 做的事（[scripts/live-profile.mjs](../scripts/live-profile.mjs)）：
+
+1. `dsh --profile live-smoke-src-<pid> --from-default-profile web --dump-config` —— 从 dsh
+   **自带**的 `web` 模板初始化一个一次性 profile（`--dump-config` 是**不启动宿主**的那条路）；
+2. `dsh plugin --profile <它> add link:<本仓>/packages/{docker,tty}` —— 挂本仓的两个插件
+   （只挂验收真正要用的两个：挂全仓会把不相干的安装问题变成这条验收的失败原因）；
+3. 写它的 `cordis.patch.yml`：docker 的 `allowMutations/allowExec` **故意写 true** —— 验收的
+   A 段要证的正是「配置里写着 true、宿主没授权时有效值仍是 false」。**少了这一层，A1 就是一条
+   恒真的空断言**（这条有单测守着）；
+4. **自证**：再 `--dump-config` 一次读组合结果，本仓的插件行必须真的在里面——没有就是被 DSH 的
+   兼容性闸门整批 `disabled`（cohort 不匹配），这时**直接失败并说明原因**。
+
+跑完连这个模板 profile 一起删（与两份拷贝同属「本次运行自己造的」，删除只认记录下来的路径）。
+
+安全性质由 `scripts/test/live-host-smoke-safety.test.ts` 读源码钉住（名字带 pid、拒绝覆盖、
+只删记录下来的目录、不设 `DSH_HOME`、非 CI）；生成物本身的形状由
+`scripts/test/live-profile.test.ts` 钉住。
 
 ## 什么算「真机验证通过」
 

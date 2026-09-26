@@ -25,7 +25,11 @@
  * - 复制来的 profile 里，docker 的 `allowMutations` / `allowExec` 会被**改成 true**——
  *   这正是要验的东西：「配置里写着 true，但宿主没授权 → 有效值仍是 false」；
  * - 需要本机装了 DSH（`dsh` 在 PATH 上，或 `--dsh <path>`）。没装就 **SKIP**（退出 0），
- *   加 `--strict` 则视为失败（CI/发布流水里想强制时用）。
+ *   加 `--strict` 则视为失败（CI/发布流水里想强制时用）；
+ * - 机器上**没有**「link 到本仓」的 profile 时（干净 CI 腿 / VM / 新克隆都是这样），默认 SKIP；
+ *   加 `--bootstrap` 会**现场造一个**一次性模板 profile 再来跑（[live-profile.mjs](./live-profile.mjs)：
+ *   从 dsh 自带的 `web` 模板初始化 + link 本仓的 docker/tty + 自证插件真进了阵容），跑完连它
+ *   一起删。所以干净环境上一条命令就能连宿主一起验：`node scripts/live-host-smoke.mjs --bootstrap --strict`。
  *
  * ## 断言什么（两个实例：A 无授权 / B 带授权环境变量）
  *
@@ -49,7 +53,7 @@
  * | B6 | 浏览器加载的那份 client.js | 含 `allowProxyCommandGranted` / `hint.proxyCommandNotGranted` / `allowMutationsGranted` |
  *
  * 用法：
- *   node scripts/live-host-smoke.mjs [--dsh <path>] [--from <profile>] [--strict] [--keep]
+ *   node scripts/live-host-smoke.mjs [--dsh <path>] [--from <profile>] [--bootstrap] [--strict] [--keep]
  *   （等价入口：`pnpm live-smoke`）
  *
  * 退出码：全 PASS → 0；任一 FAIL → 1；没装 DSH / 没扫到 link profile → 0（打印 SKIP），
@@ -61,6 +65,7 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { bootstrapLinkProfile } from './live-profile.mjs'
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const dshHome = process.env.DSH_HOME ?? path.join(os.homedir(), '.dsh')
@@ -91,6 +96,7 @@ const value = (name) => {
 }
 const strict = flag('--strict')
 const keep = flag('--keep')
+const bootstrap = flag('--bootstrap')
 
 /* ------------------------------ 断言框架 ------------------------------ */
 
@@ -140,12 +146,19 @@ function findDsh() {
  *
  * 判据是**它的 package.json 里至少一个 @hyzyn/* 是指向本仓 packages/ 的 link:**——否则复制
  * 出来验的是 npm 上的旧版本，本脚本的结论会假绿（这正是最容易骗过自己的地方）。
+ *
+ * **没有 profiles/ 目录本身不是错误**（DSH 装了但从没起过任何 profile 的干净机器就是这样；
+ * 隔离的 DSH_HOME 更是必然如此）——那只是「扫不到模板」，由调用方决定 SKIP 还是 `--bootstrap`。
  */
 function pickSourceProfile(preferred) {
   const wanted = preferred ?? value('--from')
-  const names = wanted === undefined
-    ? ['test', ...fs.readdirSync(profilesDir).filter((n) => n !== 'test')]
-    : [wanted]
+  let names
+  if (wanted === undefined) {
+    if (!fs.existsSync(profilesDir)) return null
+    names = ['test', ...fs.readdirSync(profilesDir).filter((n) => n !== 'test')]
+  } else {
+    names = [wanted]
+  }
   for (const name of names) {
     const pkgPath = path.join(profilesDir, name, 'package.json')
     if (!fs.existsSync(pkgPath)) continue
@@ -197,7 +210,8 @@ function seedProfile(profileDir, port) {
    */
   let entry = ''
   let seededMutations = false
-  let seededTarget = false
+  // 已经在 patch 里播过本机目标就不再插一遍（bootstrap 造的模板 profile 里本来就有一条）
+  let seededTarget = text.includes(`name: ${LIVE_TARGET}`)
   const seeded = text.split('\n').flatMap((line) => {
     const idMatch = /^-\s+id:\s*(\S+)\s*$/.exec(line)
     if (idMatch !== null) {
@@ -310,6 +324,13 @@ function stopHost(host) {
 
 /* ------------------------------- 主流程 ------------------------------- */
 
+/**
+ * 本次运行**自己建的** profile 目录（模板 profile + 两份拷贝）——删除只走这个列表，
+ * 绝不按前缀扫 `profiles/`（那会把别人的 `live-smoke-*` 一起删掉）。
+ */
+const profileDirs = []
+const hosts = []
+
 const dshBin = findDsh()
 if (dshBin === null) {
   console.log('[live-host-smoke] SKIP：本机 PATH 上没有 dsh（本脚本验的是真宿主，只在装了 DSH 的机器上有意义）。')
@@ -317,7 +338,28 @@ if (dshBin === null) {
   process.exit(strict ? 1 : 0)
 }
 
-const source = pickSourceProfile()
+let source = pickSourceProfile()
+if (source === null && bootstrap && value('--from') === undefined) {
+  /*
+   * `--bootstrap`：干净机器（CI 腿 / VM / 新克隆）上唯一缺的就是「link 到本仓」的 profile。
+   * 现场造一个当模板——它和两份拷贝一样属于本次运行，跑完一起删。
+   */
+  console.log('[live-host-smoke] --bootstrap：本机没有「link 到本仓」的 profile，现场造一个模板 profile。')
+  try {
+    const made = bootstrapLinkProfile({
+      dsh: dshBin,
+      profilesDir,
+      repoRoot,
+      target: LIVE_TARGET,
+      log: (line) => console.log(`[live-host-smoke] ${line}`),
+    })
+    profileDirs.push(made.dir)
+    source = { name: made.name, repoLinked: made.mounted.map((pkg) => `@hyzyn/dsh-${pkg}`) }
+  } catch (error) {
+    console.log(`[live-host-smoke] FAIL：--bootstrap 失败 —— ${error instanceof Error ? error.message : String(error)}`)
+    process.exit(1)
+  }
+}
 if (source === null) {
   const asked = value('--from')
   /*
@@ -333,6 +375,7 @@ if (source === null) {
   console.log('[live-host-smoke] SKIP：没找到「link 到本仓」的 profile（本仓 packages/ 至少一个 @hyzyn/* 用 link: 指过来）。')
   console.log(`                  看过的目录：${profilesDir}`)
   console.log('                  建一个：dsh plugin --profile <name> add link:' + path.join(repoRoot, 'packages/tty'))
+  console.log('                  或者加 --bootstrap 让本脚本自己造一个（干净 CI 腿 / VM 上就是这么跑的）。')
   process.exit(strict ? 1 : 0)
 }
 
@@ -354,8 +397,6 @@ console.log(`[live-host-smoke] dsh=${dshBin}`)
 console.log(`[live-host-smoke] 模板 profile=${source.name}（link 到本仓：${source.repoLinked.join(', ')}）`)
 console.log(`[live-host-smoke] 一次性 profile=${profileName}（跑完删除；${keep ? '--keep 已指定，保留' : '不碰你的 profile'}）`)
 
-const profileDirs = []
-const hosts = []
 /** 建一份一次性 profile 拷贝（各自独立，跑完统一删）。 */
 async function makeProfile(suffix) {
   const name = `${profileName}-${suffix}`

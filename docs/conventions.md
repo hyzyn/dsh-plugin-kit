@@ -233,9 +233,16 @@ origin 上。从 `location` 推出来的地址在浏览器里完全正常、**�
   全局 DSH 是又慢又漂的重依赖），所以它是**发布门槛 #3 的自动化形态**，属于本地门槛；
   本机没装 DSH 时打印 SKIP（不假装验过），`--strict` 则失败。安全前提写在脚本头：**绝不碰你的
   profile**（复制两份一次性 profile，跑完删）、独立端口、只播种一个本地 docker 目标。
+  **干净机器**（VM / 新克隆 / CI 腿）上没有可当模板的 link profile，此时加 `--bootstrap`：
+  [scripts/live-profile.mjs](../scripts/live-profile.mjs) 从 dsh **自带**的 `web` 模板初始化一个
+  一次性 profile、link 本仓的 docker/tty、写一层让「配置里写着 true」成立的 patch，最后用
+  `--dump-config` **自证**插件真进了阵容（cohort 不匹配时 DSH 会整批 disabled，不查就会跑出
+  一堆假 FAIL），跑完与两份拷贝一起删。
   **静态守卫**：`scripts/test/live-host-smoke-safety.test.ts` 读源码钉住这些性质（只建/只删
-  带 `live-smoke-<pid>` 前缀的一次性 profile、拒绝覆盖、两实例各一份拷贝、**刻意不隔离
-  DSH_HOME**、CI / release 里都不出现它）。
+  带 `live-smoke-<pid>` 前缀的一次性 profile、bootstrap 也只建 `live-smoke-src-<pid>`、拒绝覆盖、
+  两实例各一份拷贝、link 目标只能由 `repoRoot` 拼出、**刻意不隔离 DSH_HOME**、CI / release 里
+  都不出现它）；生成物形状由 `scripts/test/live-profile.test.ts` 钉住（docker 开关必须写 true，
+  否则 A1「配置里 true 却打不开」是空断言）。
 - **CI 与发布闸要成对**：只在 CI 补而漏了 `release.yml`，发布路径仍能整条绕过。
 - **文档链接闸门**：`node scripts/check-doc-links.mjs` 校验全仓 markdown 的**相对链接**与
   **锚点**（跨文件与同文件都查）。**尚未进 CI**，目前手动跑（见 [ROADMAP.md](../ROADMAP.md) 第 7 项）。

@@ -16,6 +16,7 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 
 const source = readFileSync(new URL('../../scripts/live-host-smoke.mjs', import.meta.url), 'utf8')
+const bootstrapSource = readFileSync(new URL('../../scripts/live-profile.mjs', import.meta.url), 'utf8')
 const ci = readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8')
 const release = readFileSync(new URL('../../.github/workflows/release.yml', import.meta.url), 'utf8')
 
@@ -59,6 +60,43 @@ describe('live-host-smoke：刻意不隔离 DSH_HOME（相对符号链接）', (
     // 这条断言是给想「顺手加上隔离」的人看的：先读脚本头与本测试的说明。
     expect(source).toMatch(/const dshHome = process\.env\.DSH_HOME \?\?/)
     expect(source, '不许把 DSH_HOME 指向别处（会断掉 profile 里的相对符号链接）').not.toMatch(/DSH_HOME\s*[:=]/)
+    expect(bootstrapSource, 'bootstrap 也不许自己改 DSH_HOME：它必须落在调用方看到的那个 profiles 目录里').not.toMatch(/DSH_HOME\s*[:=]/)
+  })
+})
+
+describe('live-host-smoke：--bootstrap 也只碰自己造的那一份', () => {
+  it('只有显式 --bootstrap（且没点名 --from）才现场造，默认行为不变', () => {
+    expect(source).toMatch(/if \(source === null && bootstrap && value\('--from'\) === undefined\)/)
+    // 造失败是**失败**，不是跳过：造不出来还退 0 就成了「假装验过」
+    expect(source).toMatch(/--bootstrap 失败[\s\S]{0,240}process\.exit\(1\)/)
+  })
+
+  it('造出来的模板 profile 也进「待删列表」（删除只认列表，不按前缀扫目录）', () => {
+    expect(source).toMatch(/profileDirs\.push\(made\.dir\)/)
+    expect(bootstrapSource, '模块自己不删目录：删除由调用方按记录做').not.toMatch(/rmSync\(/)
+  })
+
+  it('拒绝覆盖已存在的目录（宁可失败也不吞掉别人的 profile）', () => {
+    expect(bootstrapSource).toMatch(/if \(fs\.existsSync\(dir\)\) \{/)
+    expect(bootstrapSource).toContain('拒绝覆盖')
+  })
+
+  it('link 的目标只能由 repoRoot + packages/<pkg> 拼出来（不接受外部路径）', () => {
+    expect(bootstrapSource).toMatch(/link:\$\{path\.join\(repoRoot, 'packages', pkg\)\}/)
+    // 全文件只有这一处拼 link:（没有第二处可以塞进用户给的路径）
+    const linkTemplates = [...bootstrapSource.matchAll(/`link:\$\{[^}]*\}`/g)].map((m) => m[0])
+    expect(linkTemplates).toHaveLength(1)
+  })
+
+  it('自证插件真进了阵容（cohort 不匹配时 DSH 会整批 disabled → 假绿的源头）', () => {
+    expect(bootstrapSource).toMatch(/--dump-config/)
+    expect(bootstrapSource).toMatch(/@hyzyn\/dsh-\$\{pkg\}/)
+    expect(bootstrapSource).toContain('缺本仓插件')
+  })
+
+  it('模板用的是 dsh **自带**的名字，不是某个用户的 profile', () => {
+    expect(bootstrapSource).toMatch(/BOOTSTRAP_TEMPLATE = 'web'/)
+    expect(bootstrapSource).toMatch(/--from-default-profile/)
   })
 })
 
@@ -66,6 +104,8 @@ describe('live-host-smoke：本地门槛，不进 CI', () => {
   it('CI 与发布流水里都没有它（CI 里没有 DSH；装了 DSH 是又慢又漂的重依赖）', () => {
     expect(ci).not.toContain('live-host-smoke')
     expect(release).not.toContain('live-host-smoke')
+    expect(ci).not.toContain('live-profile')
+    expect(release).not.toContain('live-profile')
   })
 
   it('没装 DSH / 找不到 link profile 时打印 SKIP（退出 0），--strict 才失败', () => {

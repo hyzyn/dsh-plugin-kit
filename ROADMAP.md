@@ -142,6 +142,12 @@
 不碰任何既有 profile；**本地门槛不进 CI**（CI 里没有 DSH），是 [RELEASING.md](./RELEASING.md)
 发布门槛 #3「真实装进 DSH 跑一遍」的自动化形态。
 
+**干净机器上也能跑（2026-09-26 补）**：加 `--bootstrap`
+（[scripts/live-profile.mjs](./scripts/live-profile.mjs)）——机器上没有「link 到本仓」的 profile
+时，它从 dsh **自带**的 `web` 模板现场造一个（link 本仓的 docker/tty、写一层让「配置里写着 true」
+成立的 patch、再用 `--dump-config` 自证插件真进了阵容），跑完与两份拷贝一起删。这样**两台 CI 腿
+对应的机器（Parallels 的 Windows / Ubuntu VM）也能连宿主一起验**，而不只是打印 SKIP。
+
 #### 5.2 一次性 token 仍未做（按需）
 
 它**仍然有独立价值**，但只针对「**能到回环、读不到文件**」的隔离进程（沙箱应用、被拿下的
