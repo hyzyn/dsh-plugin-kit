@@ -120,6 +120,20 @@ describe('dialProxyCommand：起得来、收得掉、失败说人话', () => {
     expect(dialed.child.exitCode !== null || dialed.child.signalCode !== null).toBe(true)
   })
 
+  it('竞态兜底：失败事实还没到、stderr 已有内容 → proxyFailureSuffix 仍带上它', async () => {
+    const command = `"${process.execPath}" -e "process.stderr.write('ECONNREFUSED 127.0.0.1:9');setTimeout(() => {}, 60000)"`
+    const dialed = await dialProxyCommand({ spec: { ...baseSpec, proxyCommand: command }, allowed: () => true })
+    const deadline = Date.now() + 3000
+    while (Date.now() < deadline && !dialed.stderrHint().includes('ECONNREFUSED')) {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+    // 严格语义不变：传输还活着 → 没有「失败事实」；但错误路径拿得到那句 stderr
+    expect(dialed.failure()).toBeNull()
+    expect(proxyFailureSuffix(dialed)).toContain('ECONNREFUSED 127.0.0.1:9')
+    dialed.dispose()
+    expect(dialed.stderrHint()).toBe('')
+  })
+
   it('子进程提前退出 → failure() 带 stderr 摘要（文案要说人话）', async () => {
     const command = `"${process.execPath}" -e "process.stderr.write('boom');process.exit(3)"`
     const dialed = await dialProxyCommand({ spec: { ...baseSpec, proxyCommand: command }, allowed: () => true })

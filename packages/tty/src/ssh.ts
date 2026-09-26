@@ -695,6 +695,15 @@ export interface ProxyCommandDial {
   sock: Duplex
   /** 子进程提前退出 / 出错的事实；没有则 null（错误文案里点名它，别让用户去查目标主机）。 */
   failure(): Error | null
+  /**
+   * 已经攒到的 stderr 摘要（`；代理命令 stderr: …` 或空串）——**错误路径的兜底**。
+   *
+   * 为什么需要它（真机验收才暴露的竞态）：ssh2 一看到流断了就报错，而「子进程退出 / 传输
+   * 关闭」这两个事件比它晚 1~2ms，于是 `failure()` 那一刻还是 null，错误文案就只剩一句
+   * 「连接已关闭」——最有用的一句（命令自己说了什么）被丢掉。调用方**已经在报错**时，
+   * 手里有 stderr 就该交出去；没有 stderr 则返回空串（不制造噪音）。
+   */
+  stderrHint(): string
   /** 收尾：关传输 + 杀子进程（**幂等**；所有 teardown 路径都要调，否则漏一个常驻进程）。 */
   dispose(): void
 }
@@ -776,10 +785,15 @@ export async function dialProxyCommand(options: { spec: SshSpec; logger?: SshLog
   let transportClosed = false
   const chunks: Buffer[] = []
   let kept = 0
-  const stderrTail = (): string => {
+  /** 已攒到的 stderr 摘要（单行、截断；没有则空串）。 */
+  const stderrExcerpt = (): string => {
     if (chunks.length === 0) return ''
     const text = Buffer.concat(chunks).toString('utf8').replace(/[\r\n\0]+/g, ' ').replace(/\s+/g, ' ').trim()
-    return text === '' ? '' : `；stderr: ${text.slice(0, PROXY_STDERR_SHOWN)}`
+    return text.slice(0, PROXY_STDERR_SHOWN)
+  }
+  const stderrTail = (): string => {
+    const text = stderrExcerpt()
+    return text === '' ? '' : `；stderr: ${text}`
   }
   stderr.on('data', (chunk: Buffer) => {
     // 常驻排空（不排空会把管道写满、子进程卡死）；只留最后一小段给错误文案
@@ -875,6 +889,12 @@ export async function dialProxyCommand(options: { spec: SshSpec; logger?: SshLog
       const tail = stderrTail()
       return new Error(`代理命令传输已关闭${tail === '' ? '（命令已结束）' : tail}`)
     },
+    stderrHint: () => {
+      // 主动收尾之后不再提示（那是正常结束，不是线索）；没有 stderr 也不提示
+      if (disposed) return ''
+      const text = stderrExcerpt()
+      return text === '' ? '' : `；代理命令 stderr: ${text}`
+    },
     dispose,
   }
 }
@@ -950,8 +970,15 @@ export interface PreparedSshConnect {
  * 去查。调用方在错误分支拼上这句，用户才知道是该去看代理命令的 stderr。
  */
 export function proxyFailureSuffix(proxy: ProxyCommandDial | null): string {
-  const failure = proxy?.failure() ?? null
-  return failure === null ? '' : `；${failure.message}`
+  if (proxy === null) return ''
+  const failure = proxy.failure()
+  if (failure !== null) return `；${failure.message}`
+  /*
+   * 兜底：调用方**已经在报错**了，但「子进程退出 / 传输关闭」还没到（真机验收实测 1~2ms 的
+   * 竞态：ssh2 一看到流断就报错）。这时候手里有 stderr 就交出去——否则用户拿到的是一句
+   * 「连接已关闭」这种毫无线索的话，还得自己去猜代理命令有没有跑起来。
+   */
+  return proxy.stderrHint()
 }
 
 /**

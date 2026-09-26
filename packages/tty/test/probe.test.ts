@@ -4,6 +4,7 @@
  * 只测纯函数 validateSshFields（不做任何网络请求）：连接簿 / 对话框新增与
  * 编辑前的形状校验，错误文案是设置卡片直接展示给用户的契约。
  */
+import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { probeSsh, validateSshFields } from '../src/probe.js'
 import { setProxyCommandPolicy } from '../src/ssh.js'
@@ -90,6 +91,27 @@ describe('probeSsh：代理命令闸门', () => {
     expect(result.auth.error).toContain('未获宿主授权')
     expect(result.tcp.ok).toBe(false)
     expect(result.tcp.error).toContain('未获宿主授权')
+  })
+
+  it('真机验收挖出的缺陷（tty D66）：代理命令失败时，文案必须带子进程的 stderr，而不是被后到的 close 盖成空话', async () => {
+    setProxyCommandPolicy({ granted: true, enabled: true })
+    const bridge = fileURLToPath(new URL('../scripts/lib/proxy-bridge.mjs', import.meta.url))
+    // 桥指向没人监听的端口 → 子进程立刻失败并把 ECONNREFUSED 写进 stderr。
+    // 这一步真的会 spawn 一个本机进程（约 30ms），但正是要验「两条 ssh2 错误 + close 的先后顺序」
+    // 下最终交给用户的到底是哪一句——纯 mock 永远测不出这个次序问题。
+    const result = await probeSsh({
+      host: '127.0.0.1',
+      port: 9,
+      username: 'u',
+      auth: 'password',
+      password: 'x',
+      proxyCommand: `"${process.execPath}" "${bridge}" %h %p`,
+    })
+    expect(result.proxy?.active).toBe(true)
+    expect(result.tcp).toEqual({ ok: false, skipped: true, ms: 0 })
+    expect(String(result.auth.error)).toContain('ECONNREFUSED')
+    // 反过来也钉住：不许是那句「最后到的 close」文案（原先就是这个形态）
+    expect(String(result.auth.error)).not.toBe('连接已关闭（服务端主动断开）')
   })
 
   it('已授权但开关关着 → 报的是「未启用」（下一步只是去开开关）', async () => {

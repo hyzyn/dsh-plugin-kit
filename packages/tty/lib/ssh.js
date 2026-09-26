@@ -563,11 +563,16 @@ export async function dialProxyCommand(options) {
     let transportClosed = false;
     const chunks = [];
     let kept = 0;
-    const stderrTail = () => {
+    /** 已攒到的 stderr 摘要（单行、截断；没有则空串）。 */
+    const stderrExcerpt = () => {
         if (chunks.length === 0)
             return '';
         const text = Buffer.concat(chunks).toString('utf8').replace(/[\r\n\0]+/g, ' ').replace(/\s+/g, ' ').trim();
-        return text === '' ? '' : `；stderr: ${text.slice(0, PROXY_STDERR_SHOWN)}`;
+        return text.slice(0, PROXY_STDERR_SHOWN);
+    };
+    const stderrTail = () => {
+        const text = stderrExcerpt();
+        return text === '' ? '' : `；stderr: ${text}`;
     };
     stderr.on('data', (chunk) => {
         // 常驻排空（不排空会把管道写满、子进程卡死）；只留最后一小段给错误文案
@@ -675,6 +680,13 @@ export async function dialProxyCommand(options) {
             const tail = stderrTail();
             return new Error(`代理命令传输已关闭${tail === '' ? '（命令已结束）' : tail}`);
         },
+        stderrHint: () => {
+            // 主动收尾之后不再提示（那是正常结束，不是线索）；没有 stderr 也不提示
+            if (disposed)
+                return '';
+            const text = stderrExcerpt();
+            return text === '' ? '' : `；代理命令 stderr: ${text}`;
+        },
         dispose,
     };
 }
@@ -739,8 +751,17 @@ export function validateJumpSpec(input) {
  * 去查。调用方在错误分支拼上这句，用户才知道是该去看代理命令的 stderr。
  */
 export function proxyFailureSuffix(proxy) {
-    const failure = proxy?.failure() ?? null;
-    return failure === null ? '' : `；${failure.message}`;
+    if (proxy === null)
+        return '';
+    const failure = proxy.failure();
+    if (failure !== null)
+        return `；${failure.message}`;
+    /*
+     * 兜底：调用方**已经在报错**了，但「子进程退出 / 传输关闭」还没到（真机验收实测 1~2ms 的
+     * 竞态：ssh2 一看到流断就报错）。这时候手里有 stderr 就交出去——否则用户拿到的是一句
+     * 「连接已关闭」这种毫无线索的话，还得自己去猜代理命令有没有跑起来。
+     */
+    return proxy.stderrHint();
 }
 /**
  * 四个连接点（终端 / SFTP / 隧道 / 探针）**共用**的建连前准备。

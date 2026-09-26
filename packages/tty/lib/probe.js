@@ -252,7 +252,16 @@ export async function probeSsh(spec, store) {
             });
         }
         const authStart = Date.now();
+        /*
+         * **每个回调进来先看 settled**——这不是防御性代码，是修一个真缺陷（2026-09-26 真机验收发现）：
+         * `settle()` 有幂等守卫，但这些 `result.auth = …` **赋值没有**。而 `resolve(finish())` 交出去的
+         * 是**同一个对象**，于是「后到的 close」会把已经定稿的字段覆写掉，调用方看到的是最后那句
+         * ——实测症状是 ssh2 连报两条错（`Connection lost before handshake` 带着代理命令的 stderr、
+         * 随后 `The operation was aborted` 什么线索都没有），文案被后者盖成一句空话。
+         */
         const timer = setTimeout(() => {
+            if (settled)
+                return;
             if (seenHostKey) {
                 result.hostkey = hostkeyState;
                 result.auth = { ok: false, error: '认证/协商超时（服务端在 8s 内未完成认证）', ms: Date.now() - authStart };
@@ -264,11 +273,15 @@ export async function probeSsh(spec, store) {
         }, PROBE_AUTH_TIMEOUT_MS + 1000);
         timer.unref?.();
         conn.on('ready', () => {
+            if (settled)
+                return;
             result.hostkey = hostkeyState;
             result.auth = { ok: true, ms: Date.now() - authStart };
             settle();
         });
         conn.on('error', (error) => {
+            if (settled)
+                return;
             const classified = classifyError(error.message);
             if (error.message === 'Host key verification failed' && hostkeyState.state === 'mismatch') {
                 result.hostkey = hostkeyState;
@@ -284,6 +297,8 @@ export async function probeSsh(spec, store) {
         });
         conn.on('close', () => {
             // 正常路径（ready / error / 超时）已 settle；未 settle 的 close 兜底
+            if (settled)
+                return;
             result.auth = { ok: false, error: `连接已关闭（服务端主动断开）${proxyFailureSuffix(transport.proxy)}`, ms: Date.now() - authStart };
             settle();
         });
@@ -292,8 +307,10 @@ export async function probeSsh(spec, store) {
         }
         catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            result.auth = { ok: false, error: classifyError(message), ms: Date.now() - authStart };
-            settle();
+            if (!settled) {
+                result.auth = { ok: false, error: classifyError(message), ms: Date.now() - authStart };
+                settle();
+            }
         }
     });
 }

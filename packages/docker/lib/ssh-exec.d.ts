@@ -195,6 +195,13 @@ export interface ProxyCommandDial {
     child: ChildProcess;
     sock: Duplex;
     failure(): Error | null;
+    /**
+     * 已经攒到的 stderr 摘要（`；代理命令 stderr: …` 或空串）——**错误路径的兜底**。
+     *
+     * 与 tty 同因（真机验收暴露的竞态）：ssh2 一看到流断了就报错，而「子进程退出 / 传输关闭」
+     * 比它晚 1~2ms，那一刻 `failure()` 还是 null，最有用的那句就被丢掉。
+     */
+    stderrHint(): string;
     dispose(): void;
 }
 /**

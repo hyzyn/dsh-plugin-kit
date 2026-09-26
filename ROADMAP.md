@@ -120,6 +120,22 @@
 **升级影响（刻意如此，已写进两包 README）**：升级前靠界面打开的开关**会变成关**——要恢复
 就在宿主侧设环境变量并重启宿主。这正是「HTTP 不能提权」的代价：分不出来源的 `true` 一律不算。
 
+**真机验收（2026-09-26，真 DSH 宿主 + 真 HTTP 路由，不是假 ctx）**：临时 profile（从 test
+复制、links 到本仓）起两个实例——无授权与带授权各一，逐条验过：
+
+| 场景 | 实测 |
+|---|---|
+| 未授权 + 配置里写着 `allowExec: true` | 快照 `allowExec=false`、`allowExecGranted=false`（**「配置里的 true 不算授权」在真宿主上成立**） |
+| 未授权 + `POST /config {allowMutations:true}` | **400**，文案点名 `DSH_DOCKER_ALLOW_MUTATIONS` 与「重启宿主」；`allowExec` / `allowProxyCommand` 同 |
+| 未授权 + 降权（给 `false`） | **200**（紧急刹车不依赖授权） |
+| 未授权 + agent 工具 | docker 只注册 11 个只读工具（`docker_action` / `docker_exec` 等不出现） |
+| 带授权实例 | 快照 `*Granted=true`、按配置生效；`POST …true` → **200**；工具清单多出 `docker_action`/`docker_image_*`/`docker_exec` |
+| 试连三种文案 | 未授权 → 「未获宿主授权…DSH_TTY_ALLOW_PROXY_COMMAND…」；授权但开关关着 → 「未启用…」；真跑一条失败命令 → 带子进程 stderr |
+| 浏览器真正加载的那份 client.js | 从真宿主拉下来核过：新键与新逻辑都在（`allowProxyCommandGranted` / `hint.proxyCommandNotGranted` / `allowMutationsGranted`） |
+
+真机验收顺带挖出并修掉 **tty D66**（探针结算后仍被后到的事件覆写结果，导致「连接已关闭」
+这种空话盖掉带 stderr 的那句）——它**纯 mock 测不出来**，已补真进程回归。
+
 #### 5.2 一次性 token 仍未做（按需）
 
 它**仍然有独立价值**，但只针对「**能到回环、读不到文件**」的隔离进程（沙箱应用、被拿下的

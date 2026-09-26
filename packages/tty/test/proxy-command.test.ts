@@ -196,6 +196,25 @@ describe('闸门：打开之后真跑、真收', () => {
     dialed.dispose()
   })
 
+  it('竞态兜底：失败事实还没到、但 stderr 已有内容时，错误文案仍带上它（真机验收发现的差 1~2ms）', async () => {
+    grantHostSide()
+    /*
+     * 这条命令**活着**（不退出）并往 stderr 写一句：`failure()` 必须仍然是 null（严格语义不能
+     * 松），但 `proxyFailureSuffix()`（只在错误路径被调用）要能从 stderrHint 里把那句交出去。
+     * 真宿主上就是这个形状：ssh2 一看到流断就报错，而 exit / 传输关闭比它晚一点。
+     */
+    const command = `"${process.execPath}" -e "process.stderr.write('ECONNREFUSED 127.0.0.1:9');setTimeout(() => {}, 60000)"`
+    const dialed = await dialProxyCommand({ spec: { host: 'h', username: 'u', proxyCommand: command } })
+    const seen = await waitFor(() => (dialed.stderrHint() ?? '').includes('ECONNREFUSED'))
+    expect(seen).toBe(true)
+    // 严格语义不变：传输还活着、子进程没退出 → 没有「失败事实」
+    expect(dialed.failure()).toBeNull()
+    expect(proxyFailureSuffix(dialed)).toContain('ECONNREFUSED 127.0.0.1:9')
+    dialed.dispose()
+    // 主动收尾之后不再提示（那是正常结束，不是线索）
+    expect(dialed.stderrHint()).toBe('')
+  })
+
   it('开关关掉之后立刻生效：同一个 spec 从「能起」变「拒绝」', async () => {
     grantHostSide()
     const dialed = await dialProxyCommand({ spec: { host: 'h', username: 'u', proxyCommand: idleCommand } })

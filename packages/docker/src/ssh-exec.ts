@@ -443,6 +443,13 @@ export interface ProxyCommandDial {
   child: ChildProcess
   sock: Duplex
   failure(): Error | null
+  /**
+   * 已经攒到的 stderr 摘要（`；代理命令 stderr: …` 或空串）——**错误路径的兜底**。
+   *
+   * 与 tty 同因（真机验收暴露的竞态）：ssh2 一看到流断了就报错，而「子进程退出 / 传输关闭」
+   * 比它晚 1~2ms，那一刻 `failure()` 还是 null，最有用的那句就被丢掉。
+   */
+  stderrHint(): string
   dispose(): void
 }
 
@@ -510,10 +517,15 @@ export async function dialProxyCommand(options: {
   let transportClosed = false
   const chunks: Buffer[] = []
   let kept = 0
-  const stderrTail = (): string => {
+  /** 已攒到的 stderr 摘要（单行、截断；没有则空串）。 */
+  const stderrExcerpt = (): string => {
     if (chunks.length === 0) return ''
     const text = Buffer.concat(chunks).toString('utf8').replace(/[\r\n\0]+/g, ' ').replace(/\s+/g, ' ').trim()
-    return text === '' ? '' : `；stderr: ${text.slice(0, PROXY_STDERR_SHOWN)}`
+    return text.slice(0, PROXY_STDERR_SHOWN)
+  }
+  const stderrTail = (): string => {
+    const text = stderrExcerpt()
+    return text === '' ? '' : `；stderr: ${text}`
   }
   stderr.on('data', (chunk: Buffer) => {
     if (kept >= PROXY_STDERR_KEEP) return
@@ -598,14 +610,23 @@ export async function dialProxyCommand(options: {
       const tail = stderrTail()
       return new Error(`代理命令传输已关闭${tail === '' ? '（命令已结束）' : tail}`)
     },
+    stderrHint: () => {
+      // 主动收尾之后不再提示（那是正常结束，不是线索）；没有 stderr 也不提示
+      if (disposed) return ''
+      const text = stderrExcerpt()
+      return text === '' ? '' : `；代理命令 stderr: ${text}`
+    },
     dispose,
   }
 }
 
 /** 代理命令失败的事实 → 错误文案后缀（空串 = 没失败），与 tty 同口径。 */
 export function proxyFailureSuffix(proxy: ProxyCommandDial | null): string {
-  const failure = proxy?.failure() ?? null
-  return failure === null ? '' : `；${failure.message}`
+  if (proxy === null) return ''
+  const failure = proxy.failure()
+  if (failure !== null) return `；${failure.message}`
+  // 与 tty 同因的兜底：错误已经在报，手里有 stderr 就交出去（真机实测 1~2ms 的竞态）
+  return proxy.stderrHint()
 }
 
 /**
