@@ -24,6 +24,11 @@
  * - 起的是**独立端口**的宿主实例（`--port` 现选空闲口），不碰你正在用的那些；
  * - 复制来的 profile 里，docker 的 `allowMutations` / `allowExec` 会被**改成 true**——
  *   这正是要验的东西：「配置里写着 true，但宿主没授权 → 有效值仍是 false」；
+ * - **授权落点也隔离**（kit D12）：带外授权（就地提权那两个按钮写下的记录）是**持久**的，
+ *   落在 `<DSH home>/dsh-kit/`。不隔离时，「无授权实例」在**用过提权卡片**的机器上会继承那份
+ *   授权——2026-09-27 实测：A 段 9 条断言全红，而红的理由是「它其实已授权」，与产品行为无关。
+ *   所以两个实例都用一次性 profile 里的 `.kit-home` 当 `DSH_KIT_HOME`，与你的 `dsh-kit/`
+ *   完全两个目录（你那份只被读一眼用来打印条数，不被写）；
  * - 需要本机装了 DSH（`dsh` 在 PATH 上，或 `--dsh <path>`）。没装就 **SKIP**（退出 0），
  *   加 `--strict` 则视为失败（CI/发布流水里想强制时用）；
  * - 机器上**没有**「link 到本仓」的 profile 时（干净 CI 腿 / VM / 新克隆都是这样），默认 SKIP；
@@ -255,6 +260,16 @@ async function startHost({ profileName, grants, dropEnv = [] }) {
    */
   const env = { ...process.env, ...grants }
   for (const key of dropEnv) delete env[key]
+  /*
+   * 授权落点隔离（kit D12）：带外授权是**持久**的，落在 `<DSH home>/dsh-kit/`。不隔离的话，
+   * 「无授权实例」在**用过提权卡片**的机器上会继承那份授权——2026-09-27 实测：A 段 9 条断言
+   * 全红，红的理由却是「它其实已授权」，与产品行为无关。那正是最坏的一类闸门：恒红且理由错。
+   *
+   * 放在 profile 目录里（`.kit-home`）：它随一次性 profile 一起被删，不引入第二处清理路径；
+   * 也**不动** `DSH_HOME`（profile 里的 node_modules 是相对符号链接，换 DSH_HOME 会整批失联）。
+   */
+  const kitHome = path.join(profilesDir, profileName, '.kit-home')
+  env.DSH_KIT_HOME = kitHome
   const child = spawn(dsh.binary, [...dsh.argv0, '--profile', profileName, '--no-open', '--port', String(port)], {
     cwd: repoRoot,
     env,
@@ -262,7 +277,7 @@ async function startHost({ profileName, grants, dropEnv = [] }) {
   })
   child.stdout.on('data', (chunk) => { output += chunk.toString('utf8') })
   child.stderr.on('data', (chunk) => { output += chunk.toString('utf8') })
-  const handle = { child, port, base, log: () => output, cookie: '' }
+  const handle = { child, port, base, log: () => output, cookie: '', kitHome }
 
   // 就绪：日志里出现带 token 的 URL（DSH 的浏览器信任需要它换 cookie）
   const tokenUrl = await waitFor(() => {
@@ -397,6 +412,22 @@ const grants = {
 console.log(`[live-host-smoke] dsh=${dsh.label}`)
 console.log(`[live-host-smoke] 模板 profile=${source.name}（link 到本仓：${source.repoLinked.join(', ')}）`)
 console.log(`[live-host-smoke] 一次性 profile=${profileName}（跑完删除；${keep ? '--keep 已指定，保留' : '不碰你的 profile'}）`)
+/*
+ * 把你的授权文件**念一遍**再跑（只读）。这一行是给「A 段为什么能是无授权实例」留的现场：
+ * 你机器上明明有 N 条持久授权，而 A 依然报 `*Granted: false` —— 那句话本身就证明了
+ * 隔离生效（kit D12）。
+ */
+{
+  const yours = path.join(dshHome, 'dsh-kit', 'capability-grants.json')
+  let count = '读不到（还没授权过）'
+  try {
+    const parsed = JSON.parse(fs.readFileSync(yours, 'utf8'))
+    count = `${String(Object.keys(parsed.grants ?? {}).length)} 条记录`
+  } catch {
+    /* 不存在 / 坏文件都按「读不到」打印：这条只是日志 */
+  }
+  console.log(`[live-host-smoke] 你自己的授权文件：${yours}（${count}）——两实例都读不到它，各自用 profile 里的 .kit-home`)
+}
 
 /** 建一份一次性 profile 拷贝（各自独立，跑完统一删）。 */
 async function makeProfile(suffix) {
@@ -411,14 +442,14 @@ try {
   const nameA = await makeProfile('a')
   const hostA = await startHost({ profileName: nameA, grants: {}, dropEnv: ['SSH_AUTH_SOCK'] })
   hosts.push(hostA)
-  console.log(`\n[A] 无授权实例 ${hostA.base}\n`)
+  console.log(`\n[A] 无授权实例 ${hostA.base}（授权目录已隔离：${hostA.kitHome}）\n`)
   await assertUngranted(hostA)
 
   // ---- 实例 B：带宿主侧授权 ----
   const nameB = await makeProfile('b')
   const hostB = await startHost({ profileName: nameB, grants })
   hosts.push(hostB)
-  console.log(`\n[B] 带授权实例 ${hostB.base}\n`)
+  console.log(`\n[B] 带授权实例 ${hostB.base}（授权目录已隔离：${hostB.kitHome}）\n`)
   await assertGranted(hostB)
 } catch (error) {
   fail('脚本自身执行', error instanceof Error ? error.message : String(error))

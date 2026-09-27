@@ -147,24 +147,41 @@
    为什么不一刀切：全仓收敛到加固档要连信任模型一起定（[ROADMAP.md](../ROADMAP.md) 第 5 项），
    单包先升级只会让插件之间的安全假设不一致。加固档的成因与桌面版例外写在
    `packages/kit/src/http.ts` 的注释里（那边是唯一归宿）。
-2. **能力开关只能降不能升**（2026-09-25 起，docker / tty 各一到两个开关）：**危险能力**
-   （`allowMutations` / `allowExec` / `allowProxyCommand`）的**提权只认宿主侧的环境变量**，
-   且**进程启动时采样一次**；HTTP 侧永远可以关掉它们（紧急刹车不能依赖重启），但给 `true`
-   一律 400。
+2. **能力开关不能凭空升**（2026-09-26 起，docker 两个 + tty 一个）：**危险能力**
+   （`allowMutations` / `allowExec` / `allowProxyCommand`）有**两条**提权通道：
+   ① **启动环境变量**（最严）：`DSH_DOCKER_ALLOW_MUTATIONS=1` 这类，判定源是宿主的**启动
+   环境快照**（只认继承来的 `process` 层，`project-env` / `user-env` 一律不算）；
+   ② **就地提权**（免重启；docker 与 tty 都已接入）：页内点开关 → 面板给出一条在宿主上
+   「落地一个随机名文件」的命令 → 宿主发现该文件即授权（`packages/kit/src/elevation.ts`）。
+   授权落 `<DSH home>/dsh-kit/capability-grants.json`（0600）、确认目录
+   `<DSH home>/dsh-kit/grant-confirm/`（0700）——**收在 kit 自己的一级子目录**里，而不是平铺在
+   DSH 主目录：那一层是所有所有者共用的（官方 `sessions/` `storages/`，本仓 `tty/` `rss-digest/`），
+   机制名不带归属就会与官方或别的插件撞名（kit D08）；路径只在 `capabilityPaths()` 里拼一次。
+   授权是**持久**的（重启后直接生效、不再确认），所以载入也要审计（`auditLoadedGrants`，kit D09）。
+   HTTP 侧**永远可以关掉**它们（紧急刹车不能依赖重启），但给 `true` 而无授权一律 400。
 
-   为什么需要这一条：上面那条围栏 + 同源证明**都拦不住本机盲发进程**——它能发 HTTP、
-   读不到响应，也能自己填 `Sec-Fetch-Site: same-origin`（那是请求头，不是凭据）。于是
-   危险能力**曾经**可以被一次 `POST /config {allowMutations:true}` 打开，而 docker socket
+   为什么需要这一条：上面那条围栏 + 同源证明**都拦不住跨站页面与页内脚本**——它们能发
+   HTTP，也能自己填 `Sec-Fetch-Site: same-origin`（那是请求头，不是凭据）。于是危险能力
+   **曾经**可以被一次 `POST /config {allowMutations:true}` 打开，而 docker socket
    等价目标主机 root。为什么不是给 `/config` 加一次性 token：`/config` 是插件被禁用后
    **唯一**的恢复入口，token 化等于把用户锁在外面（细节与取舍见 ROADMAP 第 5 项）。
 
-   约定实现只有一份（`packages/kit/src/capability.ts`）：`capabilityGranted(spec)` 采样
-   （进程内一次）、`capabilityDeniedMessage(spec)` 给 400 文案、`capabilityHowTo(spec)`
-   给界面提示（**必须两步都说清**：设哪个变量 + 重启宿主，否则用户会对着点不动的开关反复点）。
-   客户端由宿主快照里的 `allowMutationsGranted` / `allowProxyCommandGranted` 决定开关是否
-   可点。**威胁模型边界**：拦的是凭空提权（盲发进程 / 跨站页面 / 被拿下的 renderer）；
-   能读写本机文件的同用户全权进程不在模型内（它本来就能读 `~/.dsh/.credentials.yaml`、
-   能直接跑 `docker`）——任何进程内机制都拦不住它。
+   授权存储**按目录共享一个实例**（`sharedGrantStore(dir)`）：能力判定是模块级单例，而存储是
+   「首查读盘 + 进程内缓存」，各插件各 `new` 一个就会各自拿一份快照副本、后写的授权在别的插件眼里
+   不存在（真机实测 → kit D11）。
+
+   约定实现只有一份（`packages/kit/src/capability.ts`）：`bindCapabilitySources(ctx, grants)`
+   在插件 `apply()` 第一行绑定两条通道的来源；`capabilityGranted(spec)` / `capabilityGrantVia(spec)`
+   回答「有没有授权 / 由哪条通道授权」；`capabilityDeniedMessage(spec)` 给 400 文案；
+   `capabilityHowTo(spec)` 给界面提示（**必须把通道说清**：哪条变量、要不要重启，并点明
+   `.env` 与 `~/.dsh/env.yml` **不算**授权——它俩在启动快照里根本不算「启动环境」）。
+   `/elevate` 三条子路由全部 POST、全部要求同源证明。客户端按快照里的
+   `allowMutationsGranted` / `allowProxyCommandGranted`（docker 另有 `*Configured` /
+   `*GrantSource`）渲染开关、未生效徽标与撤销入口。
+   **威胁模型边界**：拦住的是**跨站页面**与**页内脚本**（第三方插件的 client 半体 / XSS）；
+   能在本机执行命令的同用户进程**不在模型内**——它读得到自己那次 `begin` 的响应、写得了
+   那个文件，本来也就能读 `~/.dsh/.credentials.yaml`、直接跑 `docker`。要拦它只有 OS 级同意
+   （原生对话框 / polkit），不在本轮范围。
 3. **body 围栏**：`readJsonBody` 对畸形 / 超限 / 空 body **返回 `undefined` 而不抛错**——
    调用方必须把 `undefined` 当 **400**，**不能**当「没传这个字段」。写操作尤其。
 4. **截断要有信号**：任何截断（列表、日志、输出）都要显式报 `truncated` / 计数说明，

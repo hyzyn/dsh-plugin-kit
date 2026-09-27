@@ -68,9 +68,11 @@ CI 另有两道兜底（`--no-verify`、别的机器、别的工具提交都能�
    profile 复制两份一次性 profile，起两个真宿主（无授权 / 带授权各一），把授权阶梯、路由门控、
    agent 工具清单、试连文案、宿主正在服务的 `client.js` 全打一遍，跑完删干净——就是本节
    「真实装进 DSH 跑一遍」的自动化形态（**本地门槛，不进 CI：CI 里没有 DSH**；未装 DSH 时
-   打印 SKIP，加 `--strict` 可让它变成失败）。**机器上没有 link profile（干净 VM / 新克隆）时加
-   `--bootstrap`**：它会从 dsh 自带的 `web` 模板现场造一个（link 本仓的 docker/tty、自证插件真进了
-   阵容），跑完连它一起删——这样两台 CI 腿的机器也能连宿主一起验。
+   打印 SKIP，加 `--strict` 可让它变成失败）。两个实例的**授权目录也用一次性 profile 里的
+   `.kit-home` 隔离**（`DSH_KIT_HOME`，kit D12）：带外授权是持久的，不隔离的话「无授权」那一半
+   会在你用过提权卡片的机器上继承授权、九条断言全变成假红。**机器上没有 link profile
+   （干净 VM / 新克隆）时加 `--bootstrap`**：它会从 dsh 自带的 `web` 模板现场造一个（link 本仓的
+   docker/tty、自证插件真进了阵容），跑完连它一起删——这样两台 CI 腿的机器也能连宿主一起验。
 4. 各包依赖**不要写 `workspace:*`**。它只在 monorepo 内部有效：`pnpm publish` 会把它
    换成真实版本（所以 npm 产物看起来是对的），但用户从 git 子路径安装
    （`git+https://github.com/hyzyn/dsh-plugin-kit.git#main&path:packages/tty`）时协议

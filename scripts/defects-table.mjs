@@ -41,6 +41,17 @@
  * 没有「编号至」），由 [`LEDGER_SPECS`](#LEDGER_SPECS) 里的**显式字段**声明（`selfSequence: false`
  * 等），**不是靠正则匹配失败兜过去**——静默跳过等于没有守卫。
  *
+ * ## 另一半：`✓` 列（L2 侧）——台账指向代码注释的指针
+ *
+ * 三层架构里 L2 是**代码注释**，而 `✓` 列就是 L1 → L2 的指针：`tty` 的索引表最后一列写着
+ * 「**表示「这段代码/测试里引用了该编号」**」。它与范围一样是**手抄事实**，而且同样没有闸门
+ * ——实测（2026-09-26）：`tty` 表里标 `✓` 的 27 个编号中，`D63` / `D64` / `D65` 三个**在包内
+ * 任何 `src/` / `client-src/` / `test/` / `scripts/` 文件里都找不到**（那三条修在代码里、只是
+ * 没在注释里落编号，而该包的维护规则 1 要求「索引表加一行 + 在代码注释里落编号」）。
+ * 于是守卫再加一条：**标 `✓` 的编号必须在包内文件里真的出现**；
+ * 没有这一列的包（docker / codegraph / kit）用 `codeRefs: false` **显式声明**，
+ * 而且一旦有人在那种表里冒出 `✓` 列，也会被报出来（`ledger.codeRefs.undeclared`）。
+ *
  * ## 反向禁止（比这个守卫更硬的规矩）
  *
  * 守卫报红时**只改文档侧**。绝不允许为了让守卫变绿去增删、重排任何台账行或编号——
@@ -56,7 +67,7 @@
  *   node scripts/defects-table.mjs            # 现算四包事实 + 打印全部差异（有差异则退出 1）
  *   node scripts/defects-table.mjs --quiet    # 只打印差异
  */
-import { readFileSync } from 'node:fs'
+import { lstatSync, readFileSync, readdirSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -91,6 +102,8 @@ export const LEDGER_SPECS = [
     crossRefs: ['tty'],
     statusLine: { closedColumn: false, untilSentence: true },
     mirror: false,
+    codeRefs: false,
+    // 这张表没有 `✓` 列（末列是「涉及文件」）——显式声明，不靠「匹配不到就跳过」
   },
   {
     name: 'tty',
@@ -102,6 +115,8 @@ export const LEDGER_SPECS = [
     crossRefs: ['docker'],
     statusLine: { closedColumn: false, untilSentence: true },
     mirror: false,
+    codeRefs: true,
+    // 末列是 `✓`（「这段代码/测试里引用了该编号」）：必须与包内文件现算一致
   },
   {
     name: 'codegraph',
@@ -113,6 +128,8 @@ export const LEDGER_SPECS = [
     crossRefs: [],
     statusLine: { closedColumn: true, untilSentence: true },
     mirror: false,
+    codeRefs: false,
+    // 末列是「修复」（一句话记改法与落点），没有 `✓` 列
   },
   {
     name: 'kit',
@@ -125,6 +142,8 @@ export const LEDGER_SPECS = [
     crossRefs: [],
     statusLine: { closedColumn: false, untilSentence: false },
     mirror: true,
+    codeRefs: false,
+    // 末列是「落点」链接，没有 `✓` 列
   },
 ]
 
@@ -181,7 +200,13 @@ export function parseLedger(text, spec) {
       // `D01` / `CG15 追记` / `kit D01` 三种写法都收（首列就是编号列）
       const match = new RegExp(String.raw`^(?:${spec.name}\s+)?(${spec.prefix})\s*(\d{1,4})(?:\s|$)`).exec(first)
       if (match === null) continue
-      rows.push({ number: Number(match[2]), note: first.slice(match[0].length).trim(), origin: cells[1] ?? '' })
+      rows.push({
+        number: Number(match[2]),
+        note: first.slice(match[0].length).trim(),
+        origin: cells[1] ?? '',
+        // `✓` 只看**末列**：tty 的写法就是「编号 | 症状 | 涉及文件 | ✓」
+        marked: cells[cells.length - 1] === '✓',
+      })
     }
   }
   const numbers = rows.map((row) => row.number)
@@ -218,6 +243,7 @@ export function parseLedger(text, spec) {
     duplicates: numbers.filter((value, index) => numbers.indexOf(value) !== index),
     mirrorNumbers,
     ownNumbers,
+    checked: rows.filter((row) => row.marked).map((row) => row.number),
     selfSequence: [...text.matchAll(SELF_SEQUENCE)].map((match) => ({
       from: Number(match[2]),
       to: Number(match[4]),
@@ -228,13 +254,15 @@ export function parseLedger(text, spec) {
 }
 
 /**
- * 主检查：把四处手抄的复述与现算值对上。
+ * 主检查：把各处手抄的复述与现算值对上。
  *
  * @param input.ledgers - `{ <包名>: <DEFECTS.md 全文> }`（四包齐）。
  * @param input.conventions - `docs/conventions.md` 全文。
+ * @param input.sources - `{ <包名>: [{ path, text }] }`：包内可含编号引用的文件（L2 侧）。
+ *   只对声明了 `codeRefs: true` 的包是必需项；缺了会**报缺失**，不是静默跳过。
  * @returns 差异数组（空 = 通过）；每条是 `{ kind, where, expected, actual, message }`。
  */
-export function checkDefectsTable({ ledgers, conventions }) {
+export function checkDefectsTable({ ledgers, conventions, sources = {} }) {
   const diffs = []
   const add = (kind, where, expected, actual, message) => {
     diffs.push({ kind, where, expected, actual, message })
@@ -301,6 +329,32 @@ export function checkDefectsTable({ ledgers, conventions }) {
             `${spec.path}：文件头自称「${label(spec.prefix, range.from)}–${label(spec.prefix, range.to)} 是 packages/${range.pkg} 内部序列」，现算 ${spec.name} 是 01–${String(fact.max).padStart(2, '0')}`)
         }
       }
+    }
+
+    // ---- 判据 7（L2 侧）：`✓` 列说的「代码/测试里引用了该编号」必须为真 ----
+    const marks = fact.checked
+    if (spec.codeRefs) {
+      if (marks.length === 0) {
+        add('ledger.codeRefs.column.absent', spec.path, '至少一个 ✓ 标记', '一个都没有',
+          `${spec.path}：声明了这一包有 \`✓\` 列（末列表示「代码/测试里引用了该编号」），但表里一个 ✓ 都读不到`)
+      }
+      const own = sources?.[spec.name]
+      if (!Array.isArray(own)) {
+        add('ledger.codeRefs.sources.missing', spec.path, '包内文件文本', '缺失',
+          `${spec.path}：核 \`✓\` 列需要 ${spec.name} 包内的 src/ · client-src/ · test/ · scripts/ 文本，没拿到——不静默跳过`)
+      } else {
+        const haystack = own.map((file) => file.text).join('\n')
+        for (const number of marks) {
+          const ref = new RegExp(String.raw`\b${spec.prefix}${String(number).padStart(2, '0')}\b`)
+          if (!ref.test(haystack)) {
+            add('ledger.codeRefs', spec.path, `包内某处出现 \`${label(spec.prefix, number)}\``, '找不到',
+              `${spec.path}：${label(spec.prefix, number)} 标了 \`✓\`（代码/测试里引用了该编号），但包内 src/ · client-src/ · test/ · scripts/ 里找不到这个编号——要么去代码里落编号（维护规则 1），要么把这个 ✓ 去掉`)
+          }
+        }
+      }
+    } else if (marks.length > 0) {
+      add('ledger.codeRefs.undeclared', spec.path, '没有 `✓` 列', `${String(marks.length)} 个 ✓`,
+        `${spec.path}：读到了 ${String(marks.length)} 个 \`✓\` 标记，但这一包在 LEDGER_SPECS 里声明的是 codeRefs: false——加了列就要在声明里说清，否则这条判据静默失效`)
     }
 
     // ---- 判据 3（B2）：「接在 X 之后」每一处都要等于最大号 ----
@@ -441,11 +495,53 @@ export function checkDefectsTable({ ledgers, conventions }) {
   return diffs
 }
 
-/** 读入受检的 5 份文本（**只读**，不改任何东西）。 */
+/** 包内会写编号注释的四个目录（与各包台账文件头里那句「`src/` / `client-src/` / `test/` /
+ * `scripts/` 里有带 `Dxx` 的注释」一致）。 */
+const SOURCE_DIRS = ['src', 'client-src', 'test', 'scripts']
+/** 只有这些扩展名算「代码」；`.md` 不算——台账自己的说法是「代码/测试里引用了」。 */
+const SOURCE_EXT = /\.(ts|js|mjs)$/
+
+/** 递归收集一个目录下的代码文件（跳过 node_modules / 构建产物 / 点目录）。 */
+function collectSources(dir, out = []) {
+  let entries = []
+  try {
+    entries = readdirSync(dir)
+  } catch {
+    return out
+  }
+  for (const name of entries) {
+    if (name === 'node_modules' || name === 'lib' || name.startsWith('.')) continue
+    const full = join(dir, name)
+    let stat
+    try {
+      stat = lstatSync(full)
+    } catch {
+      continue
+    }
+    if (stat.isSymbolicLink()) continue
+    if (stat.isDirectory()) collectSources(full, out)
+    else if (SOURCE_EXT.test(name)) out.push({ path: full, text: readFileSync(full, 'utf8') })
+  }
+  return out
+}
+
+/** 收集一个包用于核 `✓` 列的代码文本（**只读**）。 */
+export function readPackageSources(spec, repoRoot = REPO_ROOT) {
+  const root = join(repoRoot, 'packages', spec.name)
+  const files = []
+  for (const dir of SOURCE_DIRS) collectSources(join(root, dir), files)
+  return files
+}
+
+/** 读入受检的全部文本（**只读**，不改任何东西）：四份台账 + conventions + 需要核 `✓` 的包内代码。 */
 export function readDefectsInputs(repoRoot = REPO_ROOT) {
   const ledgers = {}
-  for (const spec of LEDGER_SPECS) ledgers[spec.name] = readFileSync(join(repoRoot, spec.path), 'utf8')
-  return { ledgers, conventions: readFileSync(join(repoRoot, CONVENTIONS_PATH), 'utf8') }
+  const sources = {}
+  for (const spec of LEDGER_SPECS) {
+    ledgers[spec.name] = readFileSync(join(repoRoot, spec.path), 'utf8')
+    if (spec.codeRefs) sources[spec.name] = readPackageSources(spec, repoRoot)
+  }
+  return { ledgers, conventions: readFileSync(join(repoRoot, CONVENTIONS_PATH), 'utf8'), sources }
 }
 
 /** 对真实仓库跑一遍（CI 与人工都用这条）。 */
@@ -471,7 +567,8 @@ if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(
         `  ${fact.name.padEnd(10)} 行=${String(fact.rows).padStart(3)} 唯一=${String(fact.unique).padStart(3)}`
         + ` 最大=${label(fact.prefix, fact.max)} 空号=[${fact.gaps.join(',')}]`
         + ` 已修=${String(fact.statuses[0]?.fixed ?? 0)}${closed === 0 ? '' : ` 已关闭=${String(closed)}`} 待修=${String(fact.statuses[0]?.open ?? 0)}`
-        + ` 接在之后=${fact.anchors.map((n) => label(fact.prefix, n)).join(',') || '—'}`,
+        + ` 接在之后=${fact.anchors.map((n) => label(fact.prefix, n)).join(',') || '—'}`
+        + (fact.checked.length === 0 ? '' : ` 标✓=${String(fact.checked.length)} 个`),
       )
     }
   }

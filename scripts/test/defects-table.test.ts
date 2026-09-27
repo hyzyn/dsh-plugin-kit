@@ -7,13 +7,14 @@
  * 「接在 Dxx 之后」、**包内文件头复述别的包的范围**）。实测（2026-09-26 现算）：
  * `tty` 的文件头写着 `D01–D63`（实际 67）、把 `docker` 写成 `D01–D138`（实际 140）；
  * `docker` 的文件头把 `tty` 写成 `D01–D66`（实际 67）；`kit` 让新缺陷「接在 `D05` 之后」
- * （实际应接 `D06` 之后）；`docs/conventions.md` 的表里 `docker`/`tty` 各少 2 / 6。
+ * （实际应接 `D07` 之后）；`docs/conventions.md` 的表里 `docker`/`tty` 各少 2 / 6。
  * 而**没有任何东西会红**：`check-doc-links.mjs` 只查链接与锚点（数字不是链接），
  * `codegraph` 自带的 `defects-ledger.test.ts` 只核它自己那一份。
  *
  * ## 这份用例守两件事
  *
- * 1. **真实仓库必须通过**（A/B/C 三类句式 + 台账自洽 + kit 那行的两段范围）；
+ * 1. **真实仓库必须通过**（A/B/C 三类句式 + 台账自洽 + kit 那行的两段范围
+ *    + **`✓` 列（L2 侧）**：标了「代码/测试里引用了该编号」的，包内就得真有这个编号）；
  * 2. **守卫必须会红**——本仓刚发生过一道「命中 0 个文件、恒绿、拦不住任何东西」的闸门
  *    （lib 产物闸门那条写错的 pathspec：命中 0 个文件），所以任何新守卫都要自证会红。
  *    反例**全部用 fixture 造**（在真实文本上做一次字符串替换，并断言替换真的生效），
@@ -46,13 +47,13 @@ function mutate(text: string, from: string, to: string): string {
 }
 
 /** 在某个包的台账 fixture 上跑守卫。 */
-function checkWithLedger(name: string, text: string) {
-  return checkDefectsTable({ ledgers: { ...real.ledgers, [name]: text }, conventions: real.conventions })
+function checkWithLedger(name: string, text: string, sources = real.sources) {
+  return checkDefectsTable({ ledgers: { ...real.ledgers, [name]: text }, conventions: real.conventions, sources })
 }
 
 /** 在 conventions fixture 上跑守卫。 */
 function checkWithConventions(text: string) {
-  return checkDefectsTable({ ledgers: real.ledgers, conventions: text })
+  return checkDefectsTable({ ledgers: real.ledgers, conventions: text, sources: real.sources })
 }
 
 const kinds = (diffs: { kind: string }[]) => diffs.map((diff) => diff.kind)
@@ -103,6 +104,11 @@ describe('缺陷台账：现算（唯一真值来源）', () => {
     expect(kit?.statusLine.untilSentence, 'kit 的现状行没有「编号至」').toBe(false)
     expect(kit?.mirror, 'kit 的 A 类那行是两段范围').toBe(true)
     expect(LEDGER_SPECS.find((spec) => spec.name === 'codegraph')?.statusLine.closedColumn).toBe(true)
+    // `✓` 列（L2 侧）：只有 tty 有，其余三包必须**显式**声明为没有
+    expect(LEDGER_SPECS.find((spec) => spec.name === 'tty')?.codeRefs).toBe(true)
+    for (const name of ['docker', 'codegraph', 'kit']) {
+      expect(LEDGER_SPECS.find((spec) => spec.name === name)?.codeRefs, `${name} 没有 ✓ 列`).toBe(false)
+    }
     // C 类：docker 文件头复述 tty、tty 文件头复述 docker（codegraph 写的是不带范围的 `Dxx`）
     expect(LEDGER_SPECS.find((spec) => spec.name === 'docker')?.crossRefs).toEqual(['tty'])
     expect(LEDGER_SPECS.find((spec) => spec.name === 'tty')?.crossRefs).toEqual(['docker'])
@@ -111,41 +117,41 @@ describe('缺陷台账：现算（唯一真值来源）', () => {
 })
 
 describe('反例 1：L0 查表的数字写错 → 必须报出来', () => {
-  it('把 docker 那行的上界从 D140 改回 D138 → conventions.row 差异', () => {
-    const fixture = mutate(real.conventions, '| `docker` | `D` | `D01`–`D140` |', '| `docker` | `D` | `D01`–`D138` |')
+  it('把 docker 那行的上界从 D148 改回 D138 → conventions.row 差异', () => {
+    const fixture = mutate(real.conventions, '| `docker` | `D` | `D01`–`D148` |', '| `docker` | `D` | `D01`–`D138` |')
     const diffs = checkWithConventions(fixture)
     expect(kinds(diffs)).toContain('conventions.row')
     const diff = diffs.find((item) => item.kind === 'conventions.row')
-    expect(diff?.expected).toBe('140')
+    expect(diff?.expected).toBe('148')
     expect(diff?.actual).toBe('138')
     expect(diff?.message).toContain('D138')
   })
 
-  it('把 tty 那行的上界从 D67 改回 D61 → conventions.row 差异（历史值）', () => {
-    const fixture = mutate(real.conventions, '| `tty` | `D` | `D01`–`D67` |', '| `tty` | `D` | `D01`–`D61` |')
+  it('把 tty 那行的上界从 D72 改回 D61 → conventions.row 差异（历史值）', () => {
+    const fixture = mutate(real.conventions, '| `tty` | `D` | `D01`–`D72` |', '| `tty` | `D` | `D01`–`D61` |')
     const diff = checkWithConventions(fixture).find((item) => item.kind === 'conventions.row')
-    expect(diff?.expected).toBe('67')
+    expect(diff?.expected).toBe('72')
     expect(diff?.actual).toBe('61')
   })
 
   it('把 kit 那行的两段范围合成一段 → conventions.kit.shape 差异', () => {
     const fixture = mutate(
       real.conventions,
-      '`D06`–`D06` 是**本包自研**',
-      '`D06` 起是**本包自研**',
+      '`D06`–`D12` 是**本包自研**',
+      '`D12` 起是**本包自研**',
     )
     const diffs = checkWithConventions(fixture)
     expect(kinds(diffs)).toContain('conventions.kit.shape')
   })
 
   it('把 kit 行的自研段停在旧号（D06–D05）→ conventions.kit.own 差异', () => {
-    const fixture = mutate(real.conventions, '`D06`–`D06` 是**本包自研**', '`D05`–`D05` 是**本包自研**')
+    const fixture = mutate(real.conventions, '`D06`–`D12` 是**本包自研**', '`D05`–`D05` 是**本包自研**')
     const diffs = checkWithConventions(fixture)
     expect(kinds(diffs)).toContain('conventions.kit.own')
   })
 
-  it('命名表举例用**上界号**（docker D140）→ conventions.example 差异', () => {
-    const fixture = mutate(real.conventions, '| 缺陷编号 | 见上 | `docker D03` |', '| 缺陷编号 | 见上 | `docker D140` |')
+  it('命名表举例用**上界号**（docker D148）→ conventions.example 差异', () => {
+    const fixture = mutate(real.conventions, '| 缺陷编号 | 见上 | `docker D03` |', '| 缺陷编号 | 见上 | `docker D148` |')
     const diffs = checkWithConventions(fixture)
     expect(kinds(diffs)).toContain('conventions.example')
     expect(diffs.find((item) => item.kind === 'conventions.example')?.message).toContain('上界号')
@@ -166,23 +172,23 @@ describe('反例 1：L0 查表的数字写错 → 必须报出来', () => {
 })
 
 describe('反例 2：「接在 Dxx 之后」写成旧号 → 必须报出来', () => {
-  it('tty 文件头从 D67 改回 D63（照它做会造四个重号）→ ledger.nextAnchor 差异', () => {
-    const fixture = mutate(real.ledgers.tty, '新缺陷接在 `D67` 之后', '新缺陷接在 `D63` 之后')
+  it('tty 文件头从 D72 改回 D63（照它做会造四个重号）→ ledger.nextAnchor 差异', () => {
+    const fixture = mutate(real.ledgers.tty, '新缺陷接在 `D72` 之后', '新缺陷接在 `D63` 之后')
     const diffs = checkWithLedger('tty', fixture)
     expect(kinds(diffs)).toContain('ledger.nextAnchor')
     const diff = diffs.find((item) => item.kind === 'ledger.nextAnchor')
-    expect(diff?.expected).toBe('67')
+    expect(diff?.expected).toBe('72')
     expect(diff?.actual).toBe('63')
     expect(diff?.message).toContain('造重号')
   })
 
-  it('kit 的三处「接在 D06 之后」只要有一处写旧号就报 → ledger.nextAnchor', () => {
-    const fixture = mutate(real.ledgers.kit, '直接接在 `D06` 之后编号', '直接接在 `D05` 之后编号')
+  it('kit 的三处「接在 D12 之后」只要有一处写旧号就报 → ledger.nextAnchor', () => {
+    const fixture = mutate(real.ledgers.kit, '直接接在 `D12` 之后编号', '直接接在 `D05` 之后编号')
     expect(kinds(checkWithLedger('kit', fixture))).toContain('ledger.nextAnchor')
   })
 
   it('把「接在 … 之后」整句删掉 → **报缺失**，不是静默跳过', () => {
-    const fixture = mutate(real.ledgers.tty, '新缺陷接在 `D67` 之后，', '')
+    const fixture = mutate(real.ledgers.tty, '新缺陷接在 `D72` 之后，', '')
     expect(kinds(checkWithLedger('tty', fixture))).toContain('ledger.nextAnchor.absent')
   })
 })
@@ -191,31 +197,31 @@ describe('反例 3：跨包互称的范围写错（C 类，最容易飘）→ �
   it('docker 文件头把 tty 写成 D01–D66 → ledger.crossRef 差异', () => {
     const fixture = mutate(
       real.ledgers.docker,
-      '与 `packages/tty/DEFECTS.md` 的\n> `D01–D67` **不共享**',
+      '与 `packages/tty/DEFECTS.md` 的\n> `D01–D72` **不共享**',
       '与 `packages/tty/DEFECTS.md` 的\n> `D01–D66` **不共享**',
     )
     const diffs = checkWithLedger('docker', fixture)
     expect(kinds(diffs)).toContain('ledger.crossRef')
     const diff = diffs.find((item) => item.kind === 'ledger.crossRef')
-    expect(diff?.expected).toBe('67')
+    expect(diff?.expected).toBe('72')
     expect(diff?.message).toContain('tty')
   })
 
   it('tty 文件头把 docker 写成 D01–D138 → ledger.crossRef 差异', () => {
     const fixture = mutate(
       real.ledgers.tty,
-      '与 `packages/docker/DEFECTS.md` 的\n> `D01–D140` **不共享**',
+      '与 `packages/docker/DEFECTS.md` 的\n> `D01–D148` **不共享**',
       '与 `packages/docker/DEFECTS.md` 的\n> `D01–D138` **不共享**',
     )
     const diffs = checkWithLedger('tty', fixture)
     expect(kinds(diffs)).toContain('ledger.crossRef')
-    expect(diffs.find((item) => item.kind === 'ledger.crossRef')?.expected).toBe('140')
+    expect(diffs.find((item) => item.kind === 'ledger.crossRef')?.expected).toBe('148')
   })
 
   it('把跨包那句整句删掉 → **报缺失**（C 类不许静默消失）', () => {
     const fixture = mutate(
       real.ledgers.docker,
-      '与 `packages/tty/DEFECTS.md` 的\n> `D01–D67` **不共享**；',
+      '与 `packages/tty/DEFECTS.md` 的\n> `D01–D72` **不共享**；',
       '',
     )
     expect(kinds(checkWithLedger('docker', fixture))).toContain('ledger.crossRef.absent')
@@ -224,22 +230,22 @@ describe('反例 3：跨包互称的范围写错（C 类，最容易飘）→ �
 
 describe('反例 4：台账本身不自洽（唯一号数 / 最大号 / 现状行）→ 必须报出来', () => {
   it('文件头自称的范围写成旧号 → ledger.selfRange 差异', () => {
-    const fixture = mutate(real.ledgers.tty, '`D01–D67` 是 `packages/tty` 内部序列', '`D01–D63` 是 `packages/tty` 内部序列')
+    const fixture = mutate(real.ledgers.tty, '`D01–D72` 是 `packages/tty` 内部序列', '`D01–D63` 是 `packages/tty` 内部序列')
     expect(kinds(checkWithLedger('tty', fixture))).toContain('ledger.selfRange')
   })
 
   it('现状行的「已修」比表内少 1 → ledger.status.fixed 差异（tty 有两处现状行，都核）', () => {
-    const fixture = mutate(real.ledgers.tty, '**已修 67 / 待修 0**，编号至 `D67`。', '**已修 66 / 待修 0**，编号至 `D67`。')
+    const fixture = mutate(real.ledgers.tty, '**已修 72 / 待修 0**，编号至 `D72`。', '**已修 66 / 待修 0**，编号至 `D72`。')
     expect(kinds(checkWithLedger('tty', fixture))).toContain('ledger.status.fixed')
   })
 
   it('现状行的「编号至」落后于表内 → ledger.status.until 差异', () => {
-    const fixture = mutate(real.ledgers.docker, '**已修 140 / 待修 0**，编号至 `D140`。', '**已修 140 / 待修 0**，编号至 `D139`。')
+    const fixture = mutate(real.ledgers.docker, '**已修 148 / 待修 0**，编号至 `D148`。', '**已修 148 / 待修 0**，编号至 `D139`。')
     expect(kinds(checkWithLedger('docker', fixture))).toContain('ledger.status.until')
   })
 
-  it('codegraph 的「已关闭」被漏掉（61 + 3 ≠ 63）→ ledger.status.fixed 差异', () => {
-    const fixture = mutate(real.ledgers.codegraph, '**已修 60 / 已关闭 3 / 待修 0**', '**已修 61 / 已关闭 3 / 待修 0**')
+  it('codegraph 的「已关闭」被漏掉（62 + 3 ≠ 64）→ ledger.status.fixed 差异', () => {
+    const fixture = mutate(real.ledgers.codegraph, '**已修 61 / 已关闭 3 / 待修 0**', '**已修 62 / 已关闭 3 / 待修 0**')
     expect(kinds(checkWithLedger('codegraph', fixture))).toContain('ledger.status.fixed')
   })
 
@@ -261,14 +267,68 @@ describe('反例 4：台账本身不自洽（唯一号数 / 最大号 / 现状�
   })
 })
 
+describe('✓ 列（L2 侧）：台账指向代码注释的指针，必须为真', () => {
+  it('真实仓库：28 个 ✓ 都在包内文件里能找到（修 D63/D64/D65 之前是 3 个找不到）', () => {
+    const fact = facts.get('tty')
+    expect(fact.checked.length, 'tty 表应有 ✓ 标记').toBeGreaterThan(0)
+    const haystack = real.sources.tty.map((file) => file.text).join('\n')
+    for (const number of fact.checked) {
+      expect(new RegExp(`\\bD${String(number).padStart(2, '0')}\\b`).test(haystack), `D${number} 标了 ✓ 但包内找不到`).toBe(true)
+    }
+    expect(checkRepo()).toEqual([])
+  })
+
+  it('把某个 ✓ 的编号从包内文件里拿掉 → ledger.codeRefs 差异', () => {
+    // 把 cite 了 D68 的文件文本换成不含 D68 的版本（fixture 只在内存里改，不动真实文件）
+    const sources = {
+      tty: real.sources.tty.map((file) => ({ path: file.path, text: file.text.replaceAll('D68', 'DXX') })),
+    }
+    const diffs = checkWithLedger('tty', real.ledgers.tty, sources)
+    expect(kinds(diffs)).toContain('ledger.codeRefs')
+    const diff = diffs.find((item) => item.kind === 'ledger.codeRefs')
+    expect(diff?.message).toContain('D68')
+    expect(diff?.message).toContain('维护规则 1')
+  })
+
+  it('把 D63 / D64 / D65 的落点注释还原成历史状态 → 三条一起报（这就是它本来该拦住的漂移）', () => {
+    const strip = (text: string) => text.replaceAll('（**D63**', '（').replaceAll('（**D64**', '（').replaceAll('（**D65**', '（')
+    const sources = { tty: real.sources.tty.map((file) => ({ path: file.path, text: strip(file.text) })) }
+    const diffs = checkWithLedger('tty', real.ledgers.tty, sources)
+    for (const number of ['D63', 'D64', 'D65']) {
+      expect(diffs.some((item) => item.kind === 'ledger.codeRefs' && item.message.includes(number)), `${number} 应被报出来`).toBe(true)
+    }
+  })
+
+  it('有 ✓ 列却拿不到包内文本 → **报缺失**，不静默跳过', () => {
+    const diffs = checkWithLedger('tty', real.ledgers.tty, {})
+    expect(kinds(diffs)).toContain('ledger.codeRefs.sources.missing')
+  })
+
+  it('✓ 被整列删掉 → ledger.codeRefs.column.absent（声明里有这一列就不能没有）', () => {
+    const fixture = real.ledgers.tty.split('\n').map((line) => line.replace(/ \| ✓ \|$/, ' | |')).join('\n')
+    expect(fixture).not.toBe(real.ledgers.tty)
+    const diffs = checkWithLedger('tty', fixture)
+    expect(kinds(diffs)).toContain('ledger.codeRefs.column.absent')
+  })
+
+  it('没有这一列的包里冒出 ✓ → ledger.codeRefs.undeclared（加了列要改声明）', () => {
+    const fixture = mutate(
+      real.ledgers.docker,
+      '| D29 | `auth=agent` 缺 `SSH_AUTH_SOCK` 时无预检（tty 已修，docker 未跟上） | src/ssh-exec.ts |',
+      '| D29 | `auth=agent` 缺 `SSH_AUTH_SOCK` 时无预检（tty 已修，docker 未跟上） | src/ssh-exec.ts | ✓ |',
+    )
+    expect(kinds(checkWithLedger('docker', fixture))).toContain('ledger.codeRefs.undeclared')
+  })
+})
+
 describe('守卫的边界：拿不到文本 / 表被整段删掉时也要报，不许假装通过', () => {
   it('少给一份台账 → ledger.missing', () => {
-    const diffs = checkDefectsTable({ ledgers: { docker: real.ledgers.docker }, conventions: real.conventions })
+    const diffs = checkDefectsTable({ ledgers: { docker: real.ledgers.docker }, conventions: real.conventions, sources: real.sources })
     expect(kinds(diffs)).toContain('ledger.missing')
   })
 
   it('整条加粗现状行被删掉 → ledger.status.absent（不靠匹配失败兜）', () => {
-    const fixture = mutate(real.ledgers.docker, '**已修 140 / 待修 0**，编号至 `D140`。', '')
+    const fixture = mutate(real.ledgers.docker, '**已修 148 / 待修 0**，编号至 `D148`。', '')
     expect(kinds(checkWithLedger('docker', fixture))).toContain('ledger.status.absent')
   })
 

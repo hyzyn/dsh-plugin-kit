@@ -107,6 +107,33 @@ describe('live-host-smoke：--bootstrap 也只碰自己造的那一份', () => {
   })
 })
 
+describe('live-host-smoke：授权落点隔离（kit D12）', () => {
+  it('两个实例都用一次性 profile 里的 .kit-home 当 DSH_KIT_HOME（否则「无授权实例」会继承你的持久授权）', () => {
+    /*
+     * 2026-09-27 实测（就是这条守卫要拦住的那次）：开发机在卡片上授权过之后，
+     * `~/.dsh/dsh-kit/capability-grants.json` 里有了记录，而 A 实例共用同一个 DSH_HOME
+     * → A1/A2/A3/A5/A5b/A5c/A6/A7/A7b 九条全红，红的理由却是「它其实已授权」。
+     */
+    expect(source, 'startHost 必须给实例注入隔离的授权目录').toMatch(/env\.DSH_KIT_HOME = kitHome/)
+    expect(source, '隔离目录放在一次性 profile 里（随 profile 一起删，不引入第二处清理路径）').toMatch(
+      /const kitHome = path\.join\(profilesDir, profileName, '\.kit-home'\)/,
+    )
+    // 覆盖是「按实例」的：两个实例各拿自己的 profile 目录，不能共用一份
+    expect(source).toMatch(/startHost\(\{ profileName: nameA/)
+    expect(source).toMatch(/startHost\(\{ profileName: nameB/)
+  })
+
+  it('仍然不许动 DSH_HOME（相对符号链接那条理由没变）', () => {
+    expect(source).toMatch(/const dshHome = process\.env\.DSH_HOME \?\?/)
+    expect(source, '授权落点覆写不许被写成 DSH_HOME 覆写').not.toMatch(/DSH_HOME\s*[:=]/)
+  })
+
+  it('只**读**你自己的授权文件（打印条数），不写：写的一侧是宿主，宿主只看得见隔离目录', () => {
+    expect(source).toMatch(/fs\.readFileSync\(yours, 'utf8'\)/)
+    expect(source, '脚本里不许出现对 dsh-kit 授权文件的写').not.toMatch(/writeFileSync\([^)]*capability-grants/)
+  })
+})
+
 describe('live-host-smoke：本地门槛，不进 CI', () => {
   it('CI 与发布流水里都没有它（CI 里没有 DSH；装了 DSH 是又慢又漂的重依赖）', () => {
     expect(ci).not.toContain('live-host-smoke')
