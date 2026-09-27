@@ -737,6 +737,9 @@ describe('退出后的只读保留（D77）', () => {
     ws.emit('message', Buffer.from(JSON.stringify({ t: 'kill', sid: 'keep3' })))
     await until(() => h.sessions.get('keep3') === undefined)
     expect(disposed).toBe(true)
+    // D77：保留态只退役、**不再碰句柄**——进程已经没了，对死 PTY 再戳一遍在
+    // 个别后端（win-arm64 的 ConPTY）是纯风险，收益为零
+    expect(h.ptys[0].killCalls).toEqual([])
     await h.sessions.disposeAll()
   })
 

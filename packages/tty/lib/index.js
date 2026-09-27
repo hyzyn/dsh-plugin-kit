@@ -1450,6 +1450,9 @@ export class SessionManager {
             catch {
                 /* 已释放 */
             }
+            // D77：只读保留态（进程已退出）没有要收的进程——`forceKill` 只会对死句柄再戳一遍
+            if (session.exited !== null)
+                return Promise.resolve(true);
             return forceKill(session.handle);
         }));
     }
@@ -2092,6 +2095,14 @@ export class TtyServer {
         session.statsSubs.clear();
         this.stopStats(session);
         this.sessions.retire(session);
+        if (session.exited !== null) {
+            // D77：只读保留态（进程已经退出）**只退役、不再碰句柄**。下面那几条收尾
+            // （tmux kill-session / forceKill / done 兜底）语义都是「把一个还活着的 PTY
+            // 收掉」；对一具尸体再戳一遍收益为零，而在个别后端（win-arm64 的 ConPTY）
+            // 恰好是纯风险。tmux 那条也不做：D77 之前「退出」本来就不 teardown（tmux
+            // 会话留存），保持一致。
+            return;
+        }
         const teardown = session.handle.tmuxTeardown;
         if (teardown !== undefined) {
             let settled = false;
