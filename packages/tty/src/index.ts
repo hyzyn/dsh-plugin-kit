@@ -288,6 +288,31 @@ const CAP_PROXY_COMMAND = { env: 'DSH_TTY_ALLOW_PROXY_COMMAND', label: '代理�
 const DEFAULT_MAX_SESSIONS = 4
 /** 断线保活默认秒数（reconnectGraceSec；0 = 旧行为，断开立即结束会话）。 */
 const DEFAULT_RECONNECT_GRACE_SEC = 120
+/**
+ * 会话**退出后的只读保留期**（D77）。
+ *
+ * 进程没了之后仍把会话留在 `sessions` 表里一段时间：`tty_list` / `tty_capture` /
+ * `tty_screen` 照常能读到它最后那些输出（用户上报的痛点原话：「结果明明就在那里
+ * 但我看不到」——`tty_open` 跑一条命令，跑完会话就退役，AI 一个字符都取不回来，
+ * 逼得人先开 `/bin/sh` 再往里发命令）。
+ *
+ * 为什么必须有上限：`owner:'agent'` 的会话**逃过孤儿回收**（见 reapOrphans），
+ * 不设 TTL 的话「开一条跑完就退出的命令」会永久占住屏与缓冲区；用户标签退出后
+ * 同理。10 分钟覆盖「命令跑完 → 模型下一轮读结果」的常规间隔，也更长于任何
+ * 一次模型推理。
+ *
+ * 导出仅供单测（test/host-frames.test.ts）：到点退役与条数上限的行为护栏。
+ */
+export const EXITED_RETAIN_MS = 10 * 60_000
+/**
+ * 只读保留的会话数上限（超出按最旧淘汰，见 SessionManager.capExited）。
+ *
+ * 与「并发会话上限」（maxSessions，默认 4）是两个口径：那个数**只数活着的会话**
+ * （retained 的不占名额，否则跑几条短命令就把面板顶成「会话数已达上限」，
+ * 比原缺陷更糟）。这里兜的是内存：每条 retained 约 = 256KB 环形缓冲 + 一块
+ * xterm-headless 虚拟屏。
+ */
+export const MAX_EXITED_SESSIONS = 8
 /** 下行背压阈值（ws.bufferedAmount 字节）。 */
 const BACKPRESSURE_HIGH = 512 * 1024
 const BACKPRESSURE_LOW = 128 * 1024
@@ -443,6 +468,14 @@ interface TtySession {
    * agent 的 `tty_close`，或用户在面板里接管后照常关标签。
    */
   owner: 'user' | 'agent'
+  /**
+   * **只读保留态**（D77）：进程已退出，但会话**还留在表里**——读侧工具照常可用，
+   * 写侧明确拒写，用户与 agent 都能显式关掉它（`tty_close` / 面板关标签 / TTL 到点）。
+   *
+   * 与 `closed` 是两件事：`closed` = 真退役（出表 + 释放屏，见 SessionManager.retire），
+   * 而「进程退出」**不再**等于退役——否则退出瞬间那些输出就再也取不回来了。
+   */
+  exited: { code: number | null; signal: string | null; at: number } | null
   /** exit 帧只发一次（kill 主动关闭与 shell 自然退出共用同一回调）。 */
   exitSent?: boolean
   /** agent 工具展示用的元数据。 */
@@ -498,6 +531,23 @@ interface TtySession {
   stats: StatsCollector | null
   /** 采集已永久失败（远端无 /proc、exec 被拒、连接断开）：不再重启，前端隐藏状态条。 */
   statsFailed: boolean
+}
+
+/** 退出事实的一句话描述（工具文案共用同一措辞：`exitCode=3` / `signal=SIGSEGV`）。 */
+function describeExit(exited: { code: number | null; signal: string | null }): string {
+  if (exited.signal !== null && exited.signal !== '') return `signal=${exited.signal}`
+  return exited.code === null ? '退出码未知' : `exitCode=${String(exited.code)}`
+}
+
+/**
+ * 只读保留的剩余毫秒（D77；0 = 已到点 / 不是保留态）。
+ *
+ * 工具结果带上它，agent 才知道「这个 sid 还能读多久」——否则它会以为读到的
+ * 是一具刚刚咽气的尸体、下次照样能读，而实际上屏与缓冲到点就释放了。
+ */
+function retainLeftMs(session: TtySession, now: number = Date.now()): number {
+  if (session.exited === null) return 0
+  return Math.max(0, session.exited.at + EXITED_RETAIN_MS - now)
 }
 
 /** 单条 WS 连接的上下文：绑定键的连接侧成分 + 存活标志（spawn 在途竞态用）。 */
@@ -860,6 +910,8 @@ interface ExpectResult {
   matchedFrom?: 'live' | 'last' | 'buffered'
   /** D75：没匹配到，但 pattern **只**命中过「刚发进去的命令回显」——命令多半根本没执行。 */
   echoOnly?: boolean
+  /** D77：会话的进程已退出（只读保留）——不会再有新输出，这一轮是按现存输出结算的。 */
+  exited?: boolean
 }
 
 /**
@@ -1495,6 +1547,27 @@ export function writeToScreen(
  * 会话管理
  * ------------------------------------------------------------------ */
 
+/** 会话的只读快照形状（tty_list 与 sessions 帧共用；D77 起含只读保留态字段）。 */
+export interface SessionSnapshot {
+  sid: string
+  pid?: number
+  cwd: string
+  kind: 'local' | 'ssh'
+  target: string
+  startedAt: number
+  lastOutputAt: number
+  persist?: true
+  owner: 'user' | 'agent'
+  /** 进程已退出、会话仍在只读保留期内（D77）。 */
+  exited?: true
+  /** 退出码（拿不到时省略）。 */
+  exitCode?: number
+  /** 退出信号（正常退出时省略）。 */
+  signal?: string
+  /** 只读保留的剩余毫秒（到点由回收器摘掉）。 */
+  retainMs?: number
+}
+
 /** 导出仅供单测（test/host-frames.test.ts）：上限 / 孤儿回收 / grace 热改的行为护栏。 */
 export class SessionManager {
   private readonly sessions = new Map<string, TtySession>()
@@ -1520,8 +1593,27 @@ export class SessionManager {
     return this.sessions.size
   }
 
+  /** 活着的会话数（**不含**只读保留的，见 canSpawn）。 */
+  get liveCount(): number {
+    let live = 0
+    for (const session of this.sessions.values()) if (session.exited === null) live += 1
+    return live
+  }
+
+  /** 只读保留的会话数（D77）。 */
+  get exitedCount(): number {
+    let exited = 0
+    for (const session of this.sessions.values()) if (session.exited !== null) exited += 1
+    return exited
+  }
+
+  /**
+   * 名额判据**只数活着的会话**（D77）：只读保留的不占名额。不这样分的话，
+   * 「跑几条短命令」就能把面板顶成「会话数已达上限」——用户一条会话都没开，
+   * 比原来那个「AI 取不到结果」的缺陷更糟。
+   */
   canSpawn(): boolean {
-    return this.sessions.size < this.limit
+    return this.liveCount < this.limit
   }
 
   add(session: TtySession): void {
@@ -1536,9 +1628,18 @@ export class SessionManager {
     return this.sessions.get(id)
   }
 
-  /** 会话的只读快照（SSH 会话无本地 pid，该字段省略；tmux 持久会话带 persist）。 */
-  private snapshotOf(session: TtySession): { sid: string; pid?: number; cwd: string; kind: 'local' | 'ssh'; target: string; startedAt: number; lastOutputAt: number; persist?: true; owner: 'user' | 'agent' } {
-    const base: { sid: string; pid?: number; cwd: string; kind: 'local' | 'ssh'; target: string; startedAt: number; lastOutputAt: number; persist?: true; owner: 'user' | 'agent' } = {
+  /** 会话的只读快照（SSH 会话无本地 pid，该字段省略；tmux 持久会话带 persist；
+   *  只读保留态（D77）额外带 exited/exitCode|signal/retainMs）。 */
+  private snapshotOf(session: TtySession): SessionSnapshot {
+    const exitInfo = session.exited === null
+      ? {}
+      : {
+          exited: true as const,
+          ...(session.exited.code === null ? {} : { exitCode: session.exited.code }),
+          ...(session.exited.signal === null ? {} : { signal: session.exited.signal }),
+          retainMs: retainLeftMs(session),
+        }
+    const base: SessionSnapshot = {
       sid: session.id,
       cwd: session.cwd,
       kind: session.kind,
@@ -1547,20 +1648,22 @@ export class SessionManager {
       lastOutputAt: session.lastOutputAt,
       owner: session.owner,
       ...(session.tmuxName !== null ? { persist: true as const } : {}),
+      ...exitInfo,
     }
     return session.handle.pid === null ? base : { ...base, pid: session.handle.pid }
   }
 
   /** agent 工具用的只读快照。 */
-  list(): Array<{ sid: string; pid?: number; cwd: string; kind: 'local' | 'ssh'; target: string; startedAt: number; lastOutputAt: number; persist?: true; owner: 'user' | 'agent' }> {
+  list(): SessionSnapshot[] {
     return [...this.sessions.values()].map((session) => this.snapshotOf(session))
   }
 
   /** sessions 帧用：额外带 attachable（孤儿且未关闭的会话可被新连接 attach）。 */
-  listForAttach(): Array<{ sid: string; pid?: number; cwd: string; kind: 'local' | 'ssh'; target: string; startedAt: number; lastOutputAt: number; persist?: true; owner: 'user' | 'agent'; attachable: boolean }> {
+  listForAttach(): Array<SessionSnapshot & { attachable: boolean }> {
     return [...this.sessions.values()].map((session) => ({
       ...this.snapshotOf(session),
-      attachable: session.clients.size === 0 && !session.closed,
+      // 只读保留态不可 attach（没有活着的 PTY 可接）：客户端据此不建幽灵标签
+      attachable: session.clients.size === 0 && !session.closed && session.exited === null,
     }))
   }
 
@@ -1569,10 +1672,12 @@ export class SessionManager {
     for (const session of this.sessions.values()) fn(session)
   }
 
-  /** 按 tmux 持久会话名查找存活会话（跨窗口共享用）；不存在/已关闭返回 undefined。 */
+  /** 按 tmux 持久会话名查找**活着**的会话（跨窗口共享用）；不存在/已关闭/只读保留态返回 undefined。
+   *  D77：保留态必须排除——否则「同名 persistName 的新标签」会 rebind 到一具尸体上，
+   *  拿到 ready 却永远没有输出。 */
   findByTmuxName(tmuxName: string): TtySession | undefined {
     for (const session of this.sessions.values()) {
-      if (session.tmuxName === tmuxName && !session.closed) return session
+      if (session.tmuxName === tmuxName && !session.closed && session.exited === null) return session
     }
     return undefined
   }
@@ -1616,11 +1721,45 @@ export class SessionManager {
     const now = Date.now()
     for (const session of [...this.sessions.values()]) {
       if (session.owner === 'agent') continue
+      // D77：只读保留态不归孤儿回收管——它可能本来就带着 orphanedAt（断线后
+      // 才退出），被这里收掉就等于「退出即退役」，保留期形同虚设。它的到点
+      // 退役由 reapExited 统一负责。
+      if (session.exited !== null) continue
       if (session.orphanedAt === null) continue
       if (graceMs <= 0 || now - session.orphanedAt >= graceMs) {
         void this.destroy(session) // 后台收尾：terminate 最慢可达 ~20s，不阻塞回收器
       }
     }
+  }
+
+  /**
+   * 只读保留到点退役（D77；回收器每轮调用）：超过保留期的会话出表 + 释放屏。
+   *
+   * **不 kill 进程**：这里收的全是已经退出的会话（进程早没了），`retire()` 就够；
+   * 真退役（显式 `tty_close` / 面板关标签）走 `killSessionNow`，那条路要处理
+   * tmux teardown 与 forceKill 的兜底。
+   */
+  reapExited(retainMs: number): void {
+    const now = Date.now()
+    for (const session of [...this.sessions.values()]) {
+      if (session.exited === null) continue
+      if (retainMs <= 0 || now - session.exited.at >= retainMs) this.retire(session)
+    }
+  }
+
+  /**
+   * 只读保留的数量上限（超出按最旧淘汰，D77）：返回被淘汰的会话，便于单测断言。
+   *
+   * 为什么必须有：`owner:'agent'` 的会话不会走孤儿回收，agent 若不显式 `tty_close`
+   * （它常常不会），保留态就是**永久泄漏**——屏与 256KB 缓冲一直挂着。
+   */
+  capExited(max: number): TtySession[] {
+    const exited = [...this.sessions.values()]
+      .filter((session) => session.exited !== null)
+      .sort((a, b) => (a.exited?.at ?? 0) - (b.exited?.at ?? 0))
+    const victims = exited.slice(0, Math.max(0, exited.length - max))
+    for (const session of victims) this.retire(session)
+    return victims
   }
 
   async disposeAll(): Promise<void> {
@@ -1737,7 +1876,8 @@ export class TtyServer {
    * 隐藏状态条，PTY 数据路径与终端体验完全不受影响。
    */
   private startStats(session: TtySession): void {
-    if (!this.statsOn || session.closed || session.stats !== null || session.statsFailed) return
+    // D77：只读保留态没有进程可采（本地会取到宿主、远端 channel 早断了）——直接不起表
+    if (!this.statsOn || session.closed || session.exited !== null || session.stats !== null || session.statsFailed) return
     if (session.kind === 'local') {
       const sampler = localStatsSampler()
       let busy = false
@@ -1926,6 +2066,20 @@ export class TtyServer {
   }
 
   /**
+   * 摘掉同 sid 上残留的**只读保留**会话（D77）：spawn / ssh 新建同名会话前调用。
+   *
+   * 不摘会真泄漏：`sessions.add()` 用同一个键把旧对象顶出表，而旧对象的虚拟屏与
+   * 256KB 环形缓冲再没有任何引用能释放它们（`retire` 是唯一的释放口）。只处理
+   * 保留态——活着的同 sid 会话属于「跨连接同名」的既有语义，不在这里动。
+   */
+  private retireStaleExited(sid: string): void {
+    const stale = this.sessions.get(sid)
+    if (stale === undefined || stale.exited === null) return
+    this.sessionLocals.get(stale)?.delete(stale.id)
+    this.sessions.retire(stale)
+  }
+
+  /**
    * 解析帧里的 sid。返回：
    *   { sid }        目标会话；
    *   { unknown }    显式 sid 但本连接无此会话（客户端竞态，如 resize 先于
@@ -2026,6 +2180,8 @@ export class TtyServer {
     if (session.owner !== 'agent') {
       throw new Error(`会话 ${sid} 是用户在面板里开的（owner=user）：请在面板里关闭那个标签，不要由 agent 越权结束`)
     }
+    // D77：只读保留态（进程已退出）也走这条路——`killSessionNow` 对死句柄是安全的，
+    // 它做的正是「退役 + 释放屏」。这也是 issue 里要的那个「显式关闭」入口。
     this.flushPendingOutput(session)
     this.killSessionNow(session)
     this.broadcastSessions()
@@ -2180,6 +2336,7 @@ export class TtyServer {
         handle,
         clients: new Map(),
         closed: false,
+        exited: null,
         paused: false,
         owner,
         cwd,
@@ -2320,6 +2477,7 @@ export class TtyServer {
           send(ws, { t: 'error', sid, m: 'sid 已存在' })
           return
         }
+        this.retireStaleExited(sid) // D77：同 sid 上的只读保留态先摘掉，别让 add() 把它顶成泄漏
         // 持久化（0.10.0）：配置 persistence=tmux 且帧带 persist 时，spawn 包装层
         // 换成 `exec tmux -L dsh-tty -A -s <名>`（tmux 托管）；tmux 未安装则降级
         // 普通会话并回灰字提示。持久名稳定（客户端生成、随标签规格保存），
@@ -2391,6 +2549,7 @@ export class TtyServer {
           send(ws, { t: 'error', sid, m: 'sid 已存在' })
           return
         }
+        this.retireStaleExited(sid) // D77：同上，SSH 分支同规则
         // 跨窗口共享（0.10.1）：同 tmuxName 的 SSH 持久会话还活着时不重建远程
         // 连接，本连接重绑定到现有会话（单 PTY 多客户端扇出）
         const parsedCommand = sanitizeCommand(msg.command)
@@ -2404,7 +2563,7 @@ export class TtyServer {
           : null
         if (persistName !== null) {
           const existing = (this.sessions.findByTmuxName(persistName) ?? (await this.waitPendingTmux(persistName))) ?? null
-          if (existing !== null && existing.kind === 'ssh' && !existing.closed) {
+          if (existing !== null && existing.kind === 'ssh' && !existing.closed && existing.exited === null) {
             if (!conn.open) return // 等待在途创建期间连接断了：不往死连接上绑
             this.rebindClient(existing, sid, ws, local, conn.id)
             return
@@ -2450,6 +2609,7 @@ export class TtyServer {
             handle,
             clients: new Map([[conn.id + ':' + sid, { ws, sid }]]),
             closed: false,
+            exited: null,
             paused: false,
             owner: 'user',
             cwd: '',
@@ -2519,7 +2679,8 @@ export class TtyServer {
         const resolved = this.resolveSid(ws, msg, local)
         if (resolved === undefined || 'unknown' in resolved) return
         const session = local.get(resolved.sid)
-        if (session !== undefined && !session.closed) {
+        // D77：保留态是**只读**的——面板那边不该再发输入，真发了也不能写进死 PTY
+        if (session !== undefined && !session.closed && session.exited === null) {
           session.lastInputAt = Date.now()
           await session.handle.write(data)
         }
@@ -2527,7 +2688,7 @@ export class TtyServer {
         const resolved = this.resolveSid(ws, msg, local)
         if (resolved === undefined || 'unknown' in resolved) return
         const session = local.get(resolved.sid)
-        if (session !== undefined) {
+        if (session !== undefined && session.exited === null) {
           const cols = clampInt(msg.cols, 80, 2, 500)
           const rows = clampInt(msg.rows, 24, 2, 200)
           session.handle.resize(cols, rows)
@@ -2544,7 +2705,7 @@ export class TtyServer {
         const resolved = this.resolveSid(ws, msg, local)
         if (resolved === undefined || 'unknown' in resolved) return
         const session = local.get(resolved.sid)
-        if (session !== undefined && !session.closed && session.tmuxName !== null) {
+        if (session !== undefined && !session.closed && session.exited === null && session.tmuxName !== null) {
           void session.handle.tmuxRefresh?.()
         }
       } else if (msg.t === 'kill') {
@@ -2586,6 +2747,12 @@ export class TtyServer {
         const session = this.sessions.get(raw)
         if (session === undefined || session.closed) {
           send(ws, { t: 'error', sid: raw, m: `会话不存在或已结束: ${raw}` })
+          return
+        }
+        if (session.exited !== null) {
+          // D77：保留态没有活着的 PTY 可接回（缓冲里的输出由 tty_capture 读），
+          // 如实说明而不是让客户端拿到一个永远不出输出的「假在线」标签
+          send(ws, { t: 'error', sid: raw, m: `会话已退出（${describeExit(session.exited)}），只读保留中：不能再接回终端；要接着操作请重新打开标签或 tty_open 新会话` })
           return
         }
         // 跨连接共享（0.10.1）：tmux 持久会话允许多窗口同时绑定（单 PTY 扇出）；
@@ -2634,7 +2801,7 @@ export class TtyServer {
     const resolved = this.resolveSid(ws, msg, local)
     if (resolved === undefined || 'unknown' in resolved) return
     const session = local.get(resolved.sid)
-    if (session === undefined || session.closed) return
+    if (session === undefined || session.closed || session.exited !== null) return
     this.setStatsSub(session, connId + ':' + resolved.sid, msg.t === 'statsOn')
   }
 
@@ -2647,33 +2814,42 @@ export class TtyServer {
   }
 
   /**
-   * 会话终局的**唯一出口**：退役 + 清理 + 给所有绑定连接发 exit 帧（恰好一次）。
+   * 会话终局的**唯一出口**：给所有绑定连接发 exit 帧（恰好一次）+ 转只读保留（D77）。
    *
    * `outcome` 正常来自 PTY 句柄的 done；显式 kill 的兜底（KILL_EXIT_FALLBACK_MS）
    * 也走这里，带 code=null / signal=SIGKILL。exit 广播到所有绑定连接（跨窗口共享），
    * 各客户端按自己的 sid 收址。
+   *
+   * **D77 起「进程退出」不再等于「退役」**：会话留在 `sessions` 表里转只读保留态，
+   * 读侧工具（tty_list / tty_capture / tty_screen / tty_expect）照常可用，写侧拒写，
+   * 直到显式关闭（tty_close / 面板关标签）或保留期到点（reapExited）。退役只剩
+   * `SessionManager.retire` 那一处（出表 + 释放屏）。
    */
   private finishSession(session: TtySession, outcome: TermExit): void {
     if (session.exitSent === true) return
     session.exitSent = true
-    // 先置 closed：让 `onData` 立刻停止往合并窗口里塞新字节（终局之后的字节不再进帧）。
-    session.closed = true
     session.statsSubs.clear()
     this.stopStats(session)
-    this.sessionLocals.get(session)?.delete(session.id)
-    this.sessions.remove(session.id)
     if (session.kind === 'ssh' && session.tmuxName !== null) this.trackPersist(session.tmuxName, false)
+    // 心跳停掉，但**屏不 dispose**（D77）：保留期内 tty_screen 还要读它。
     clearScreenWatchdog(session.screenHeartbeat)
-    try {
-      session.screen?.dispose()
-    } catch {
-      /* 已释放 */
-    }
     this.flushPendingOutput(session, true) // exit 前冲掉合并窗口里的尾巴，保序（D76：必须 force）
     for (const client of session.clients.values()) {
       send(client.ws, { t: 'exit', sid: client.sid, code: outcome.exitCode, signal: outcome.signal })
     }
     session.clients.clear()
+    // ── 只读保留 ────────────────────────────────────────────────────────
+    // 刻意**不**置 `closed`：那个位表示「真退役（出表 + 释放屏）」，读侧工具的
+    // `session.closed` 守卫要放保留态过去。终局之后的字节因 clients 已清空而不再
+    // 成帧（`onData` 照常入环形缓冲与屏：读到的是更完整的尾巴，不是更少的）。
+    session.exited = { code: outcome.exitCode, signal: outcome.signal, at: Date.now() }
+    for (const victim of this.sessions.capExited(MAX_EXITED_SESSIONS)) {
+      // 被条数上限淘汰的：连同它在连接侧 local 表里的绑定一起摘掉（否则那条连接
+      // 还拿得到 sid、却指着一个已退役的会话）
+      this.sessionLocals.get(victim)?.delete(victim.id)
+    }
+    // 面板即时看到保留态（第二个窗口据此不建幽灵标签；agent 标签由 exit 帧标记）
+    this.broadcastSessions()
   }
 
   /** 输出下行 + 基于 ws.bufferedAmount 的背压（暂停/恢复 PassThrough）。 */
@@ -4169,7 +4345,7 @@ const plugin = definePlugin<Config>({
             name: 'tty_list',
             // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
             isConcurrencySafe: () => true,
-            description: '列出当前活跃的终端面板会话（sid / kind(local|ssh) / target / pid / cwd / 创建与最后活动时间）。用户开了终端面板后，用 tty_capture 读取某个 sid 的终端输出，用 tty_send 向该终端发送按键。',
+            description: '列出当前终端面板会话（sid / kind(local|ssh) / target / pid / cwd / 创建与最后活动时间），**含进程已退出但仍只读保留着的会话**（带 exited:true + 退出码/信号 + 还能读多久）：用户开了终端面板后，用 tty_capture 读取某个 sid 的输出、用 tty_send 向该会话发送按键。已退出的会话只能读（写会报错），要接着操作请 tty_open 新开一条。',
             parameters: {},
             output: {
               schema: {
@@ -4192,20 +4368,27 @@ const plugin = definePlugin<Config>({
                         lastOutputAt: { type: 'number', required: true },
                         persist: { type: 'boolean' },
                         owner: { type: 'string', required: true },
+                        exited: { type: 'boolean' },
+                        exitCode: { type: 'number' },
+                        signal: { type: 'string' },
+                        retainMs: { type: 'number' },
                       },
                     },
                   },
                 },
               },
               render: (_args: unknown, value: unknown) => {
-                const sessions = (value as { sessions?: Array<{ sid: string; pid?: number; cwd: string; kind: 'local' | 'ssh'; target: string; startedAt: number; lastOutputAt: number; persist?: boolean; owner?: 'user' | 'agent' }> })?.sessions ?? []
+                const sessions = (value as { sessions?: SessionSnapshot[] })?.sessions ?? []
                 const text = sessions.length === 0
-                  ? '当前没有活跃的终端面板会话（可用 tty_open 自己开一个，或引导用户打开终端面板）'
+                  ? '当前没有终端面板会话（可用 tty_open 自己开一个，或引导用户打开终端面板）'
                   : '终端面板会话：' + sessions.map((s) => {
                       const where = s.kind === 'ssh' ? `ssh ${s.target}` : `pid=${String(s.pid ?? '?')} cwd=${s.cwd}`
                       const persist = s.persist === true ? ' [tmux 持久]' : ''
                       const owner = s.owner === 'agent' ? ' [agent 开的]' : ''
-                      return `\n- sid=${s.sid} [${s.kind}]${owner}${persist} ${where} (启动于 ${new Date(s.startedAt).toLocaleString()})`
+                      // D77：只读保留态必须显眼——否则 AI 会对着一个已经死掉的会话发命令
+                      const detail = s.signal !== undefined && s.signal !== '' ? `signal=${s.signal}` : s.exitCode === undefined ? '退出码未知' : `exitCode=${String(s.exitCode)}`
+                      const gone = s.exited === true ? ` [已退出 ${detail}·只读保留 ${String(Math.ceil((s.retainMs ?? 0) / 60000))} 分钟——只能读，写会报错]` : ''
+                      return `\n- sid=${s.sid} [${s.kind}]${owner}${persist}${gone} ${where} (启动于 ${new Date(s.startedAt).toLocaleString()})`
                     }).join('')
                 return [{ type: 'text', text }]
               },
@@ -4219,7 +4402,7 @@ const plugin = definePlugin<Config>({
           })))
           activeDisposers.push(tools.register(defineTool({
             name: 'tty_open',
-            description: '开一个新的终端会话（本地 shell，或 `command` 直接跑一条长驻命令，如 dev server）。会话出现在用户的终端面板里、用户可见可接管，长驻进程与 watch 类任务应该用它（不要在 bash 工具里挂起等待）。开了之后用 tty_expect 等就绪信号、tty_capture{last:true} 拿结果；用完用 tty_close 关闭。cwd 缺省为插件配置的工作目录。',
+            description: '开一个新的终端会话（本地 shell，或 `command` 直接跑一条命令，如 dev server）。会话出现在用户的终端面板里、用户可见可接管，长驻进程与 watch 类任务应该用它（不要在 bash 工具里挂起等待）。开了之后用 tty_expect 等就绪信号、tty_capture{last:true} 拿结果；用完用 tty_close 关闭。**`command` 跑完退出后会话不会立刻消失**：它会转成只读保留（默认 10 分钟），退出前最后的输出与退出码都还能用 tty_capture / tty_screen 读——所以「跑一条会结束的命令、回头再取结果」不需要套一层 `sh`。cwd 缺省为插件配置的工作目录。',
             parameters: {
               cwd: { type: 'string', description: '工作目录（必须是已存在的绝对路径）；缺省用插件配置的 cwd' },
               command: { type: 'string', description: '直接执行的命令（非交互）；给出时不做 tmux 持久化。缺省 = 交互式 shell' },
@@ -4254,7 +4437,7 @@ const plugin = definePlugin<Config>({
           })))
           activeDisposers.push(tools.register(defineTool({
             name: 'tty_close',
-            description: '关闭一个由 tty_open 开的终端会话（结束其中的进程）。**只能关 agent 自己开的会话**：用户在面板里开的标签会被拒绝，请让用户自己在面板里关，不要越权结束用户正在用的终端。',
+            description: '关闭一个由 tty_open 开的终端会话（结束其中的进程）。**只能关 agent 自己开的会话**：用户在面板里开的标签会被拒绝，请让用户自己在面板里关，不要越权结束用户正在用的终端。对**进程已退出但仍只读保留着**的会话同样可用——那就是它的释放入口（提前把屏与缓冲还回去）；不显式关也会在保留期（默认 10 分钟）到点自动释放。',
             parameters: {
               sid: { type: 'string', required: true, description: '会话 id（tty_open 或 tty_list 提供）' },
             },
@@ -4328,6 +4511,11 @@ const plugin = definePlugin<Config>({
               if (typeof input.sid !== 'string' || input.sid === '') throw new Error('sid 必须是非空字符串')
               const session = sessions.get(input.sid)
               if (session === undefined || session.closed) throw new Error(`会话不存在或已退出: ${input.sid}`)
+              if (session.exited !== null) {
+                // D77：进程没了就没有「这台会话所在机器」的此刻指标可言（本地会话会取到
+                // 宿主自己、远端连接早断了）——如实回 available:false，不给过期数据
+                return { sid: input.sid, available: false, reason: `会话的进程已退出（${describeExit(session.exited)}），只读保留中：取不到它的资源指标` }
+              }
               const result = await server.sampleStats(session)
               if (result.available !== true || result.frame === undefined) {
                 return { sid: input.sid, available: false, reason: result.reason ?? '未知原因' }
@@ -4339,7 +4527,7 @@ const plugin = definePlugin<Config>({
             name: 'tty_capture',
             // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
             isConcurrencySafe: () => true,
-            description: '读取某个终端面板会话（tty_list 提供 sid）的近期输出。默认读取尾部 N 行（60，最多 500，已剥离 ANSI 转义序列并收敛同行覆盖）；last:true 时只返回「上一条已完成命令」的输出与退出码（依赖 shell 集成标记，更适合拿单条命令的结果）——若命令在途（刚发送/未收到完成标记）返回 inProgress:true 且不携带旧结果，请稍后重试或改用 tty_expect。',
+            description: '读取某个终端面板会话（tty_list 提供 sid）的近期输出。默认读取尾部 N 行（60，最多 500，已剥离 ANSI 转义序列并收敛同行覆盖）；last:true 时只返回「上一条已完成命令」的输出与退出码（依赖 shell 集成标记，更适合拿单条命令的结果）——若命令在途（刚发送/未收到完成标记）返回 inProgress:true 且不携带旧结果，请稍后重试或改用 tty_expect。**进程已退出的会话也能读**（结果带 exited:true + 退出码/信号）：输出在只读保留期内照样在（默认 10 分钟，`tty_open command=...` 跑完一条命令后就这么用）；这类会话不能再写，要接着操作请 tty_open 新开一条。',
             parameters: {
               sid: { type: 'string', required: true, description: '会话 id（来自 tty_list）' },
               lines: { type: 'number', description: '读取尾部行数（1~500，默认 60）；last:true 时忽略' },
@@ -4356,25 +4544,35 @@ const plugin = definePlugin<Config>({
                   source: { type: 'string' },
                   exitCode: { type: 'number' },
                   inProgress: { type: 'boolean' },
+                  exited: { type: 'boolean' },
+                  signal: { type: 'string' },
                 },
               },
               render: (_args: unknown, value: unknown) => {
-                const v = value as { sid?: string; tail?: string; source?: string; exitCode?: number; inProgress?: boolean }
+                const v = value as { sid?: string; tail?: string; source?: string; exitCode?: number; inProgress?: boolean; exited?: boolean; signal?: string }
                 if (v.inProgress === true) {
                   return [{ type: 'text', text: `终端会话 ${v.sid ?? '?'} 有命令正在执行（尚未收到完成标记），当前取不到「上一条已完成命令」的结果：稍后重试，或改用 tty_expect 等待特定输出。` }]
                 }
                 const head = v.source === 'last'
                   ? `终端会话 ${v.sid ?? '?'} 上一条命令的输出（exitCode=${String(v.exitCode ?? '?')}）：\n\n`
                   : `终端会话 ${v.sid ?? '?'} 尾部输出：\n\n`
-                return [{ type: 'text', text: head + (v.tail ?? '') }]
+                // D77：读的是已退出会话时显式说明——免得 AI 把它当成「还在跑的终端」继续发命令
+                const note = v.exited === true
+                  ? `（⚠️ 该会话的进程已退出${v.signal !== undefined && v.signal !== '' ? `（signal=${v.signal}）` : ''}，这是只读保留的输出；此会话不能再写入，要接着操作请 tty_open 新开一条）\n\n`
+                  : ''
+                return [{ type: 'text', text: note + head + (v.tail ?? '') }]
               },
             },
-            async execute(args: unknown): Promise<{ sid: string; tail: string; source?: string; exitCode?: number; inProgress?: boolean }> {
+            async execute(args: unknown): Promise<{ sid: string; tail: string; source?: string; exitCode?: number; inProgress?: boolean; exited?: boolean; signal?: string }> {
               const input = args as { sid?: unknown; lines?: unknown; last?: unknown; raw?: unknown }
               if (typeof input.sid !== 'string' || input.sid === '') throw new Error('sid 必须是非空字符串')
               const session = sessions.get(input.sid)
               if (session === undefined || session.closed) throw new Error(`会话不存在或已退出: ${input.sid}`)
               const useRaw = input.raw === true
+              // D77：只读保留态的标记（读得到，但要如实告诉 agent 这是已退出会话的输出）
+              const exitMark = session.exited === null
+                ? {}
+                : { exited: true as const, ...(session.exited.signal === null || session.exited.signal === '' ? {} : { signal: session.exited.signal }) }
               // D72：读侧工具返回前推进水位线——这里读到的内容算「已读」，后续
               // tty_expect 不再把它们当未读回扫（想回看更早的内容再用本工具）。
               // tty_screen 刻意**不**推进：它是「当前可见屏幕」这一种表示，不是
@@ -4397,18 +4595,24 @@ const plugin = definePlugin<Config>({
                 // 收一刀也保尾——最近输出才是 agent 要的。
                 // exitCode 用「键不存在」表达缺失（`?? undefined` 会留下一个
                 // undefined 键，不是无损 JSON 值，宿主输出校验会判工具错，见 B33）。
-                return { sid: input.sid, source: 'last', ...(last.exitCode === null ? {} : { exitCode: last.exitCode }), tail: (useRaw ? last.output : cleanAnsiTail(last.output)).slice(-128 * 1024) }
+                return { sid: input.sid, source: 'last', ...exitMark, ...(last.exitCode === null ? {} : { exitCode: last.exitCode }), tail: (useRaw ? last.output : cleanAnsiTail(last.output)).slice(-128 * 1024) }
               }
               const lines = Math.max(1, Math.min(500, typeof input.lines === 'number' && Number.isInteger(input.lines) && input.lines >= 1 ? input.lines : 60))
               const rawTail = tailLines(session, lines)
-              return { sid: input.sid, source: 'tail', tail: useRaw ? rawTail : cleanAnsiTail(rawTail) }
+              return {
+                sid: input.sid,
+                source: 'tail',
+                ...exitMark,
+                ...(session.exited === null || session.exited.code === null ? {} : { exitCode: session.exited.code }),
+                tail: useRaw ? rawTail : cleanAnsiTail(rawTail),
+              }
             },
           })))
           activeDisposers.push(tools.register(defineTool({
             name: 'tty_screen',
             // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
             isConcurrencySafe: () => true,
-            description: '读取某个终端面板会话（tty_list 提供 sid）当前可见屏幕的渲染结果（纯文本，等价于用户此刻看到的画面）。适合查看全屏交互程序（vim / htop / 菜单选择）的当前界面状态；要历史滚动输出用 tty_capture。',
+            description: '读取某个终端面板会话（tty_list 提供 sid）当前可见屏幕的渲染结果（纯文本，等价于用户此刻看到的画面）。适合查看全屏交互程序（vim / htop / 菜单选择）的当前界面状态；要历史滚动输出用 tty_capture。**进程已退出的会话也能读**（结果带 exited:true）：屏在只读保留期内不释放，读到的就是它退出那一刻的画面。',
             parameters: {
               sid: { type: 'string', required: true, description: '会话 id（来自 tty_list）' },
             },
@@ -4421,14 +4625,19 @@ const plugin = definePlugin<Config>({
                   cols: { type: 'number', required: true },
                   rows: { type: 'number', required: true },
                   text: { type: 'string', required: true },
+                  exited: { type: 'boolean' },
+                  signal: { type: 'string' },
                 },
               },
               render: (_args: unknown, value: unknown) => {
-                const v = value as { sid?: string; cols?: number; rows?: number; text?: string }
-                return [{ type: 'text', text: `终端会话 ${v.sid ?? '?'} 当前屏幕（${String(v.cols ?? '?')}×${String(v.rows ?? '?')}）：\n\n${v.text ?? ''}` }]
+                const v = value as { sid?: string; cols?: number; rows?: number; text?: string; exited?: boolean; signal?: string }
+                const note = v.exited === true
+                  ? `（⚠️ 该会话的进程已退出${v.signal !== undefined && v.signal !== '' ? `（signal=${v.signal}）` : ''}：这是退出那一刻的屏幕，只读保留中）`
+                  : ''
+                return [{ type: 'text', text: `终端会话 ${v.sid ?? '?'} 当前屏幕（${String(v.cols ?? '?')}×${String(v.rows ?? '?')}）${note}：\n\n${v.text ?? ''}` }]
               },
             },
-            async execute(args: unknown): Promise<{ sid: string; cols: number; rows: number; text: string }> {
+            async execute(args: unknown): Promise<{ sid: string; cols: number; rows: number; text: string; exited?: boolean; signal?: string }> {
               const input = args as { sid?: unknown }
               if (typeof input.sid !== 'string' || input.sid === '') throw new Error('sid 必须是非空字符串')
               const session = sessions.get(input.sid)
@@ -4446,7 +4655,14 @@ const plugin = definePlugin<Config>({
               }
               while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop()
               // 保尾截断：屏幕末尾（提示符行）才是有效区，丢头部不丢尾部
-              return { sid: input.sid, cols: screen.cols, rows: screen.rows, text: lines.join('\n').slice(-32 * 1024) }
+              return {
+                sid: input.sid,
+                cols: screen.cols,
+                rows: screen.rows,
+                // D77：只读保留态如实标注（屏不再更新，「当前屏幕」= 退出那一刻）
+                ...(session.exited === null ? {} : { exited: true as const, ...(session.exited.signal === null || session.exited.signal === '' ? {} : { signal: session.exited.signal }) }),
+                text: lines.join('\n').slice(-32 * 1024),
+              }
             },
           })))
           activeDisposers.push(tools.register(defineTool({
@@ -4470,10 +4686,11 @@ const plugin = definePlugin<Config>({
                   exitCode: { type: 'number' },
                   matchedFrom: { type: 'string' },
                   echoOnly: { type: 'boolean' },
+                  exited: { type: 'boolean' },
                 },
               },
               render: (_args: unknown, value: unknown) => {
-                const v = value as { matched?: boolean; timedOut?: boolean; text?: string; exitCode?: number; matchedFrom?: string; echoOnly?: boolean }
+                const v = value as { matched?: boolean; timedOut?: boolean; text?: string; exitCode?: number; matchedFrom?: string; echoOnly?: boolean; exited?: boolean }
                 if (v.matched === true) {
                   const from = v.matchedFrom === 'last'
                     ? '（回溯自「上一条命令」的输出）'
@@ -4483,6 +4700,10 @@ const plugin = definePlugin<Config>({
                 if (v.echoOnly === true) {
                   // D75：只命中过回显 —— 这不是「命令跑了但没输出」，而是「等的东西一次都没出现在输出里」
                   return [{ type: 'text', text: `等待超时：pattern **只匹配到刚发进去的命令回显**，没有匹配到任何真正的输出——命令可能没有被执行（回显先到、输出没来），也可能执行了但输出里没有这个 pattern。先复核它到底跑没跑（tty_capture 读尾部、或在面板里看那一行是否还停在输入行），再决定重发命令还是换 pattern。尾部输出：\n\n${v.text ?? ''}` }]
+                }
+                if (v.exited === true) {
+                  // D77：会话的进程已经退出（只读保留）——不会再有任何新输出，别让它以为还能等
+                  return [{ type: 'text', text: `会话的进程已退出（只读保留中），不会再有新输出：这一轮按现存输出结算，没有匹配到 pattern。要看它最后的输出用 tty_capture（默认读尾部）/ tty_screen（退出那一刻的屏）；要接着跑命令请 tty_open 新开一条会话。尾部输出：\n\n${v.text ?? ''}` }]
                 }
                 if (v.timedOut === true && (v.text ?? '').trim() === '') {
                   // D72：这段空白此前被当成「命令没执行」——命令若是瞬间完成的，它早就跑完了
@@ -4587,14 +4808,16 @@ const plugin = definePlugin<Config>({
                 timer.unref?.()
                 output.on('data', onData)
                 void session.handle.done.then(() => {
-                  finish({ matched: false, timedOut: false, text: cleanAnsiTail(acc.slice(-6 * 1024)) })
+                  // 会话结束（命令跑完 / 进程退出）：不能再等——D77 的只读保留态也走这里
+                  // （done 早已兑现，所以退出后调用 expect 不再白等满超时）
+                  finish({ matched: false, timedOut: false, ...(session.exited === null ? {} : { exited: true }), text: cleanAnsiTail(acc.slice(-6 * 1024)) })
                 })
               })
             },
           })))
           activeDisposers.push(tools.register(defineTool({
             name: 'tty_send',
-            description: '向某个终端面板会话（tty_list 提供 sid）的 PTY 发送按键/文本（命令以 \\n 结尾；Windows 本地会话上插件会把 `\\n` 归一成 CRLF，照常写 `\\n` 即可）。适合给用户终端里运行的程序发交互输入（如 dev server 的 q 键、menu 选择、回答提示）。操作会实时显示在用户的终端面板里。',
+            description: '向某个终端面板会话（tty_list 提供 sid）的 PTY 发送按键/文本（命令以 \\n 结尾；Windows 本地会话上插件会把 `\\n` 归一成 CRLF，照常写 `\\n` 即可）。适合给用户终端里运行的程序发交互输入（如 dev server 的 q 键、menu 选择、回答提示）。操作会实时显示在用户的终端面板里。**对已退出（只读保留）的会话会报错**——那种会话只能读，要接着操作请 tty_open 新开一条。',
             parameters: {
               sid: { type: 'string', required: true, description: '会话 id（来自 tty_list）' },
               data: { type: 'string', required: true, description: '要发送的文本（含换行则直接发送命令）' },
@@ -4619,6 +4842,10 @@ const plugin = definePlugin<Config>({
               if (typeof input.data !== 'string' || input.data === '') throw new Error('data 必须是非空字符串')
               const session = sessions.get(input.sid)
               if (session === undefined || session.closed) throw new Error(`会话不存在或已退出: ${input.sid}`)
+              if (session.exited !== null) {
+                // D77：只读保留态明确拒写——进程已经没了，写进去只会在死 PTY 上静默消失
+                throw new Error(`会话 ${input.sid} 的进程已退出（${describeExit(session.exited)}），只读保留中，写不进去：要接着操作请 tty_open 新开一条会话（它最后的输出仍可用 tty_capture / tty_screen 读）`)
+              }
               // D74：Windows 本地 PTY 的 Enter 是 CR，裸 LF 不提交命令行——按平台归一化。
               // SSH 会话不动：远端是什么系统插件不知道。
               const data = session.kind === 'local' ? normalizePtyInput(input.data) : input.data
@@ -5120,6 +5347,7 @@ const plugin = definePlugin<Config>({
     // 断开时立即结束）；插件卸载时随 effect 一起停掉
     const reaperTimer = setInterval(() => {
       void sessions.reapOrphans(live.reconnectGraceMs)
+      sessions.reapExited(EXITED_RETAIN_MS) // D77：只读保留到点退役（同一次扫描，另立定时器没必要）
     }, REAPER_INTERVAL_MS)
     reaperTimer.unref?.()
     ctx.effect(() => () => clearInterval(reaperTimer), 'dsh-tty: orphan reaper')

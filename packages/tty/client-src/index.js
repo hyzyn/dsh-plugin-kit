@@ -2012,6 +2012,10 @@ function adoptAgentSessions(list) {
   for (const entry of list) {
     if (entry === null || typeof entry !== 'object') continue
     if (entry.owner !== 'agent') continue // 只采纳 agent 开的
+    // D77：只读保留（进程已退出）的会话不建标签——它没有活着的 PTY 可 attach，
+    // 建出来只会立刻收到「不能再接回终端」的错误浮层。那种会话的输出归 AI 侧
+    // 的 tty_capture 读；用户要接着用就自己重开一条。
+    if (entry.exited === true) continue
     const sid = typeof entry.sid === 'string' ? entry.sid : ''
     if (sid === '') continue
     if (tabs.has(sid)) continue // 已经在本地有标签（用户已接管过）
@@ -2170,7 +2174,7 @@ function respawnTab(oldSid) {
   }
   const spawnSpec = old.spawnSpec
   const label = old.label
-  if (!old.exited) sendFrame({ t: 'kill', sid: oldSid })
+  sendFrame({ t: 'kill', sid: oldSid }) // D77：同上——重开等于放弃旧的只读保留会话，顺手释放
   if (old.term !== null) {
     try {
       old.term.dispose()
@@ -2196,7 +2200,10 @@ function closeTab(sid) {
   // 里面的 SFTP 在途传输 / docker 轮询会继续对着已经关掉的连接干活，而且它的
   // 归属标签永远回不来（切不回这个标签），等于一块看不见的僵尸面板。
   if (dockPane !== null && dockPane.ownerKey === sid) teardownDockPane(true)
-  if (!tab.exited) sendFrame({ t: 'kill', sid })
+  // D77：已退出的标签在宿主侧**仍挂着只读保留的会话**，关标签要把这件事告诉宿主、
+  // 让它立刻释放（屏与缓冲）；宿主那边到点也会自己收。旧行为之所以跳过：那时宿主
+  // 已经删了会话，kill 只会换来一个错误帧。
+  sendFrame({ t: 'kill', sid })
   tabs.delete(sid)
   embeddedSids.delete(sid) // 兜底：嵌入终端正常走 disposeEmbedded，这里防漏
   // 彻底移除：dispose xterm 实例并把 termEl（含错误/退出浮层）从面板拿走，

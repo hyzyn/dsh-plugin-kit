@@ -144,6 +144,31 @@ export interface SftpLimits {
  */
 export declare const Config: z;
 /**
+ * 会话**退出后的只读保留期**（D77）。
+ *
+ * 进程没了之后仍把会话留在 `sessions` 表里一段时间：`tty_list` / `tty_capture` /
+ * `tty_screen` 照常能读到它最后那些输出（用户上报的痛点原话：「结果明明就在那里
+ * 但我看不到」——`tty_open` 跑一条命令，跑完会话就退役，AI 一个字符都取不回来，
+ * 逼得人先开 `/bin/sh` 再往里发命令）。
+ *
+ * 为什么必须有上限：`owner:'agent'` 的会话**逃过孤儿回收**（见 reapOrphans），
+ * 不设 TTL 的话「开一条跑完就退出的命令」会永久占住屏与缓冲区；用户标签退出后
+ * 同理。10 分钟覆盖「命令跑完 → 模型下一轮读结果」的常规间隔，也更长于任何
+ * 一次模型推理。
+ *
+ * 导出仅供单测（test/host-frames.test.ts）：到点退役与条数上限的行为护栏。
+ */
+export declare const EXITED_RETAIN_MS: number;
+/**
+ * 只读保留的会话数上限（超出按最旧淘汰，见 SessionManager.capExited）。
+ *
+ * 与「并发会话上限」（maxSessions，默认 4）是两个口径：那个数**只数活着的会话**
+ * （retained 的不占名额，否则跑几条短命令就把面板顶成「会话数已达上限」，
+ * 比原缺陷更糟）。这里兜的是内存：每条 retained 约 = 256KB 环形缓冲 + 一块
+ * xterm-headless 虚拟屏。
+ */
+export declare const MAX_EXITED_SESSIONS = 8;
+/**
  * 本地 PTY 顶层 shell 的 best-effort 强杀（D48）。
  *
  * **Windows 绝不能带 signal**：node-pty 的 `WindowsTerminal.kill(signal)` 会同步
@@ -201,6 +226,18 @@ interface TtySession {
      * agent 的 `tty_close`，或用户在面板里接管后照常关标签。
      */
     owner: 'user' | 'agent';
+    /**
+     * **只读保留态**（D77）：进程已退出，但会话**还留在表里**——读侧工具照常可用，
+     * 写侧明确拒写，用户与 agent 都能显式关掉它（`tty_close` / 面板关标签 / TTL 到点）。
+     *
+     * 与 `closed` 是两件事：`closed` = 真退役（出表 + 释放屏，见 SessionManager.retire），
+     * 而「进程退出」**不再**等于退役——否则退出瞬间那些输出就再也取不回来了。
+     */
+    exited: {
+        code: number | null;
+        signal: string | null;
+        at: number;
+    } | null;
     /** exit 帧只发一次（kill 主动关闭与 shell 自然退出共用同一回调）。 */
     exitSent?: boolean;
     /** agent 工具展示用的元数据。 */
@@ -468,6 +505,26 @@ export declare function clearScreenWatchdog(heartbeat: ScreenHeartbeat): void;
 export declare function writeToScreen(screen: {
     write(data: string, callback?: () => void): void;
 }, heartbeat: ScreenHeartbeat, text: string, onStall: (reason: string) => void, stallMs?: number): void;
+/** 会话的只读快照形状（tty_list 与 sessions 帧共用；D77 起含只读保留态字段）。 */
+export interface SessionSnapshot {
+    sid: string;
+    pid?: number;
+    cwd: string;
+    kind: 'local' | 'ssh';
+    target: string;
+    startedAt: number;
+    lastOutputAt: number;
+    persist?: true;
+    owner: 'user' | 'agent';
+    /** 进程已退出、会话仍在只读保留期内（D77）。 */
+    exited?: true;
+    /** 退出码（拿不到时省略）。 */
+    exitCode?: number;
+    /** 退出信号（正常退出时省略）。 */
+    signal?: string;
+    /** 只读保留的剩余毫秒（到点由回收器摘掉）。 */
+    retainMs?: number;
+}
 /** 导出仅供单测（test/host-frames.test.ts）：上限 / 孤儿回收 / grace 热改的行为护栏。 */
 export declare class SessionManager {
     private readonly sessions;
@@ -479,40 +536,33 @@ export declare class SessionManager {
     /** 配置热生效时调整上限（1~16）。 */
     setLimit(maxSessions: number): void;
     get count(): number;
+    /** 活着的会话数（**不含**只读保留的，见 canSpawn）。 */
+    get liveCount(): number;
+    /** 只读保留的会话数（D77）。 */
+    get exitedCount(): number;
+    /**
+     * 名额判据**只数活着的会话**（D77）：只读保留的不占名额。不这样分的话，
+     * 「跑几条短命令」就能把面板顶成「会话数已达上限」——用户一条会话都没开，
+     * 比原来那个「AI 取不到结果」的缺陷更糟。
+     */
     canSpawn(): boolean;
     add(session: TtySession): void;
     remove(id: string): void;
     get(id: string): TtySession | undefined;
-    /** 会话的只读快照（SSH 会话无本地 pid，该字段省略；tmux 持久会话带 persist）。 */
+    /** 会话的只读快照（SSH 会话无本地 pid，该字段省略；tmux 持久会话带 persist；
+     *  只读保留态（D77）额外带 exited/exitCode|signal/retainMs）。 */
     private snapshotOf;
     /** agent 工具用的只读快照。 */
-    list(): Array<{
-        sid: string;
-        pid?: number;
-        cwd: string;
-        kind: 'local' | 'ssh';
-        target: string;
-        startedAt: number;
-        lastOutputAt: number;
-        persist?: true;
-        owner: 'user' | 'agent';
-    }>;
+    list(): SessionSnapshot[];
     /** sessions 帧用：额外带 attachable（孤儿且未关闭的会话可被新连接 attach）。 */
-    listForAttach(): Array<{
-        sid: string;
-        pid?: number;
-        cwd: string;
-        kind: 'local' | 'ssh';
-        target: string;
-        startedAt: number;
-        lastOutputAt: number;
-        persist?: true;
-        owner: 'user' | 'agent';
+    listForAttach(): Array<SessionSnapshot & {
         attachable: boolean;
     }>;
     /** 遍历全部会话（状态条采集器的批量收尾等按会话维度的操作）。 */
     forEach(fn: (session: TtySession) => void): void;
-    /** 按 tmux 持久会话名查找存活会话（跨窗口共享用）；不存在/已关闭返回 undefined。 */
+    /** 按 tmux 持久会话名查找**活着**的会话（跨窗口共享用）；不存在/已关闭/只读保留态返回 undefined。
+     *  D77：保留态必须排除——否则「同名 persistName 的新标签」会 rebind 到一具尸体上，
+     *  拿到 ready 却永远没有输出。 */
     findByTmuxName(tmuxName: string): TtySession | undefined;
     /** 同步退役：移出全局表 + 释放虚拟屏（幂等，不杀进程）。 */
     retire(session: TtySession): void;
@@ -529,6 +579,21 @@ export declare class SessionManager {
      * 它的关闭入口是 agent 的 tty_close 或用户在面板里接管后关标签。
      */
     reapOrphans(graceMs: number): Promise<void>;
+    /**
+     * 只读保留到点退役（D77；回收器每轮调用）：超过保留期的会话出表 + 释放屏。
+     *
+     * **不 kill 进程**：这里收的全是已经退出的会话（进程早没了），`retire()` 就够；
+     * 真退役（显式 `tty_close` / 面板关标签）走 `killSessionNow`，那条路要处理
+     * tmux teardown 与 forceKill 的兜底。
+     */
+    reapExited(retainMs: number): void;
+    /**
+     * 只读保留的数量上限（超出按最旧淘汰，D77）：返回被淘汰的会话，便于单测断言。
+     *
+     * 为什么必须有：`owner:'agent'` 的会话不会走孤儿回收，agent 若不显式 `tty_close`
+     * （它常常不会），保留态就是**永久泄漏**——屏与 256KB 缓冲一直挂着。
+     */
+    capExited(max: number): TtySession[];
     disposeAll(): Promise<void>;
 }
 /** 导出仅供单测（test/host-frames.test.ts）：帧校验 / 绑定 / 孤儿语义的行为护栏。 */
@@ -589,6 +654,14 @@ export declare class TtyServer {
     /** 围栏放行之后的实际握手（与上面的异步分支共用）。 */
     private finishUpgrade;
     private onConnection;
+    /**
+     * 摘掉同 sid 上残留的**只读保留**会话（D77）：spawn / ssh 新建同名会话前调用。
+     *
+     * 不摘会真泄漏：`sessions.add()` 用同一个键把旧对象顶出表，而旧对象的虚拟屏与
+     * 256KB 环形缓冲再没有任何引用能释放它们（`retire` 是唯一的释放口）。只处理
+     * 保留态——活着的同 sid 会话属于「跨连接同名」的既有语义，不在这里动。
+     */
+    private retireStaleExited;
     /**
      * 解析帧里的 sid。返回：
      *   { sid }        目标会话；
@@ -689,11 +762,16 @@ export declare class TtyServer {
     /** 会话退出事实 → exit 帧（恰好一次；本地 PTY 与 SSH 共用）。 */
     private watchDone;
     /**
-     * 会话终局的**唯一出口**：退役 + 清理 + 给所有绑定连接发 exit 帧（恰好一次）。
+     * 会话终局的**唯一出口**：给所有绑定连接发 exit 帧（恰好一次）+ 转只读保留（D77）。
      *
      * `outcome` 正常来自 PTY 句柄的 done；显式 kill 的兜底（KILL_EXIT_FALLBACK_MS）
      * 也走这里，带 code=null / signal=SIGKILL。exit 广播到所有绑定连接（跨窗口共享），
      * 各客户端按自己的 sid 收址。
+     *
+     * **D77 起「进程退出」不再等于「退役」**：会话留在 `sessions` 表里转只读保留态，
+     * 读侧工具（tty_list / tty_capture / tty_screen / tty_expect）照常可用，写侧拒写，
+     * 直到显式关闭（tty_close / 面板关标签）或保留期到点（reapExited）。退役只剩
+     * `SessionManager.retire` 那一处（出表 + 释放屏）。
      */
     private finishSession;
     /** 输出下行 + 基于 ws.bufferedAmount 的背压（暂停/恢复 PassThrough）。 */

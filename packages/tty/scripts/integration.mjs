@@ -1896,12 +1896,66 @@ async function run() {
     }
   }
 
+  // B34: 退出后的只读保留（D77，用户上报 issue #4 的正题）
+  //
+  // 现场：`tty_open` 跑一条**会结束**的命令，跑完会话就退役——输出还在终端上，
+  // AI 一个字符都取不回来（用户被迫先开 `/bin/sh` 再往里塞命令）。这一条用真 PTY
+  // 走一遍修好之后的链路：命令跑完 → 清单里仍有它（exited）→ tty_capture 读得到
+  // 输出 → tty_send 拒写 → tty_close 释放。
+  console.log('\n[31] 退出后的只读保留（D77）')
+  {
+    const open77 = toolDefs.find((d) => d.name === 'tty_open')
+    const close77 = toolDefs.find((d) => d.name === 'tty_close')
+    const list77 = toolDefs.find((d) => d.name === 'tty_list')
+    const capture77 = toolDefs.find((d) => d.name === 'tty_capture')
+    const send77 = toolDefs.find((d) => d.name === 'tty_send')
+    if (open77 === undefined || close77 === undefined || list77 === undefined || capture77 === undefined || send77 === undefined) {
+      fail('B34 D77 工具集', '缺工具: ' + toolDefs.map((d) => d.name).join(','))
+    } else {
+      const opened = await open77.execute({ cwd: '/tmp', command: 'printf "D77_%s\\n" RETAINED' })
+      const sid = opened.sid
+      // 命令瞬间跑完：等它转成只读保留态（清单里带 exited:true）
+      let entry = null
+      for (let i = 0; i < 40; i++) {
+        await sleep(150)
+        entry = ((await list77.execute({})).sessions ?? []).find((x) => x.sid === sid)
+        if (entry !== undefined && entry.exited === true) break
+      }
+      if (entry !== undefined && entry.exited === true && typeof entry.retainMs === 'number') {
+        pass('B34a 命令退出后会话仍在清单里（exited:true + retainMs）')
+      } else {
+        fail('B34a 命令退出后会话仍在清单里', JSON.stringify(entry))
+      }
+
+      const read = await capture77.execute({ sid, lines: 100 })
+      if (read.exited === true && String(read.tail).includes('D77_RETAINED')) {
+        pass('B34b tty_capture 读得到退出前的输出（带 exited 标记）')
+      } else {
+        fail('B34b tty_capture 读得到退出前的输出', JSON.stringify(read).slice(0, 160))
+      }
+
+      let refused = false
+      try {
+        await send77.execute({ sid, data: 'echo nope\n' })
+      } catch {
+        refused = true
+      }
+      if (refused) pass('B34c tty_send 对只读保留态明确拒写')
+      else fail('B34c tty_send 对只读保留态明确拒写', '居然写进去了')
+
+      const closed = await close77.execute({ sid })
+      const gone = !((await list77.execute({})).sessions ?? []).some((x) => x.sid === sid)
+      if (closed.ok === true && gone) pass('B34d tty_close 释放保留态（关掉后从清单消失）')
+      else fail('B34d tty_close 释放保留态', `ok=${String(closed.ok)} gone=${String(gone)}`)
+    }
+  }
+
   // B33: 输出契约（所有已调用工具的真实返回值都符合各自声明的 output.schema）
   //
   // 这一条是 §B12e 的补充：B12e 只证明 schema 形状受支持，证明不了返回值合法。
   // 真实宿主对输出做 additionalProperties:false 校验，违约会直接把工具调用变成
   // Error（tty_list 加 owner 漏改 schema 即此）。
-  console.log('\n[31] 输出契约')
+  console.log('\n[32] 输出契约')
   {
     if (outputViolations.length === 0) pass('B33 工具返回值符合声明的 output.schema')
     else fail('B33 工具返回值符合声明的 output.schema', outputViolations.slice(0, 3).join(' | '))

@@ -109,14 +109,14 @@ The plugin injects sixteen tools into the agent (with the same power as the bash
 
 | Tool | Purpose |
 | --- | --- |
-| `tty_list` | List active terminal sessions (sid / kind (`local\|ssh`) / target / pid / **cwd tracked live as you `cd`** / activity time; tmux persistent sessions carry a `persist` marker; sessions the agent opened carry `owner: 'agent'`) |
+| `tty_list` | List terminal sessions (sid / kind (`local\|ssh`) / target / pid / **cwd tracked live as you `cd`** / activity time; tmux persistent sessions carry a `persist` marker; sessions the agent opened carry `owner: 'agent'`). **Includes sessions whose process has exited but which are still inside their read-only retention window** (`exited:true` + exit code/signal + `retainMs`, see below) |
 | `tty_open` | **Open a terminal session yourself** (0.20.0): a local shell, or a long-running command via `command` (dev server / watch), with optional tmux persistence via `persistName`. The session **shows up in the user’s terminal panel** as an ordinary tab the user can see and take over — never a hidden session |
-| `tty_close` | Close a session opened by `tty_open` (0.20.0). **Only the agent’s own sessions may be closed**: a tab the user opened is refused, so the agent never ends a terminal the user is working in |
+| `tty_close` | Close a session opened by `tty_open` (0.20.0). **Only the agent’s own sessions may be closed**: a tab the user opened is refused, so the agent never ends a terminal the user is working in. It also works on an **exited session that is still in read-only retention** — that is its release entry point (without it, the retention window expires and releases it automatically) |
 | `tty_stats` | Read live host metrics for a session’s machine (0.20.0): CPU / memory / disk / TCP connections / network rates / temperature / uptime. Local sessions report the host; SSH sessions report that remote host over a separate non-PTY channel that never touches the terminal. Check it before deploying or load-testing |
 | `tty_capture` | Read recent output (last N lines, ANSI stripped by default, `raw:true` for the raw stream); **`last:true` returns only the output + exit code of the previous completed command** (shell integration markers, see the next section); when a command is **in flight** (just sent, completion marker not in yet) it returns `inProgress:true` without the stale result, so the previous command is never mistaken for this one (0.19.0) |
 | `tty_screen` | Read the **currently visible screen** as rendered (xterm-headless virtual screen, plain text) — it can genuinely read TUI interfaces such as vim / htop / menus |
 | `tty_expect` | Wait with a regex for a readiness signal (dev server URL, build finished, …). It **looks back first** at output that has not been read yet (including the full output of “the previous command”, so a command that finished instantly no longer burns the whole timeout) and then waits for subsequent output; on a hit it returns `matched:true` plus `matchedFrom` (`live` produced during this wait / `last` the previous command’s output / `buffered` buffered output that had already arrived). A timeout does not throw (`matched:false` + tail output, and it **does not consume the unread region**, so a different pattern can still look back at the same output), and a command that ends early also returns early with its exit code; **the echo of the command just sent never counts as a hit** (via the OSC 133 A..B boundary, or via the send record where there are no markers — see the next section; when only the echo ever matched, the timeout result carries `echoOnly:true`); at most 5 in-flight calls per session, and the accumulated window keeps only the last 64KB (0.19.0; look-back matching, see D72; echo exclusion, see D75) |
-| `tty_send` | Send keys/text to a given session (such as `q` to a dev server, or a menu selection). End a command with `\n`: on a **local Windows session** a trailing bare LF is normalised to CRLF (D74, see the “Windows hosts” section); non-Windows and SSH sessions pass through untouched |
+| `tty_send` | Send keys/text to a given session (such as `q` to a dev server, or a menu selection). End a command with `\n`: on a **local Windows session** a trailing bare LF is normalised to CRLF (D74, see the “Windows hosts” section); non-Windows and SSH sessions pass through untouched. On an **exited** session it fails explicitly (such sessions are read-only) |
 | `sftp_list` | List a remote SSH directory (name/type/size/mtime, directories first); `book` is the connection-book entry name and `path` defaults to the login home; at most 500 entries by default (`truncated:true` beyond that), and `isSymlink` distinguishes a symlink from a real directory (0.19.0) |
 | `sftp_read` | Read a remote **text** file (≤256KB by default, adjustable to 1MB, truncated beyond that); `offset` pages from a given byte (handy for log tails), an invalid `maxBytes` errors out instead of silently falling back, and binary detection is a double test (NUL + illegal-UTF-8 ratio) (0.19.0) |
 | `sftp_write` | Write a remote text file (overwrite by default, `append:true` appends; ≤1MB per call) |
@@ -139,6 +139,29 @@ where zombie sessions come from. Such a session has no client bound from birth, 
 the orphan collector** (which only reaps disconnected *user* sessions); it ends via the agent’s
 `tty_close` or the user closing the tab. Conversely the agent **cannot close a user-opened tab**
 (`tty_close` refuses explicitly).
+
+### Read-only retention after the process exits (D77)
+
+A process exit **no longer means the session is gone** — the session turns into a **read-only retained** one for **10 minutes** by default
+(`EXITED_RETAIN_MS`). During that window:
+
+- **Reads keep working**: `tty_capture` (tail or `last`, including the final batch of output printed
+  before exit), `tty_screen` (the screen as of the exit) and `tty_list` (entry carries `exited:true` +
+  `exitCode`/`signal` + `retainMs`) all still answer, and their results carry an `exited` marker;
+  `tty_expect` no longer burns its timeout — it settles against the existing output and returns
+  `exited:true`;
+- **Writes are refused**: `tty_send` reports an explicit error (the process is gone; a write would
+  vanish into a dead PTY), and `tty_resize` / `tty_stats` no longer apply to it (stats honestly returns
+  `available:false`);
+- **No re-attaching a terminal**: `attach` is explicitly refused (there is no live PTY; the panel does
+  not create a tab for it either) — read the output with `tty_capture`;
+- **Who releases it**: the agent’s `tty_close` (its own sessions only), the user closing that tab in the
+  panel, or the retention window expiring (the reaper releases it on the same sweep). The concurrency
+  limit counts **live sessions only** (retained ones do not consume a slot), and at most
+  `MAX_EXITED_SESSIONS` (8) retained sessions are kept — the oldest is evicted beyond that.
+
+This is why “`tty_open` a command that finishes and read the result afterwards” now just works — no
+`sh` wrapper needed (the request in issue #4).
 
 ### Shell integration (OSC 133/7, 0.4.0)
 

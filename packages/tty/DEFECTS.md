@@ -7,8 +7,8 @@
 > 知道**当年坏了什么**，再查 [§2 编号字典](#2-编号字典这段代码为什么长这样) 知道**所以代码
 > 为什么写成这样**。
 >
-> **编号是硬契约**：`D01–D76` 是 `packages/tty` 内部序列，与 `packages/docker/DEFECTS.md` 的
-> `D01–D149` **不共享**；跨包引用请写「tty D12 / docker D03」。新缺陷接在 `D76` 之后，
+> **编号是硬契约**：`D01–D77` 是 `packages/tty` 内部序列，与 `packages/docker/DEFECTS.md` 的
+> `D01–D149` **不共享**；跨包引用请写「tty D12 / docker D03」。新缺陷接在 `D77` 之后，
 > **不得重号、不得回收空号**——源码、测试与根 `README.md` 里已有引用指向它们。
 
 > **本文不含**：D49–D61 的逐条 postmortem（症状 / 现场复现 / 根因 / 修法 / 回归 / 反向验证），
@@ -42,7 +42,7 @@
 
 ## 现状
 
-**已修 76 / 待修 0**，编号至 `D76`。逐条症状见 §1，设计意图见 §2，**还没做的见
+**已修 77 / 待修 0**，编号至 `D77`。逐条症状见 §1，设计意图见 §2，**还没做的见
 [ROADMAP.md](./ROADMAP.md)**。
 
 **沿革（原文照录，未改）**：2026-09-19 对 v0.18.3 做了一次系统性只读审计（5 路并行 + 人工复读
@@ -53,7 +53,7 @@
 tag `v0.1.36` → tty **0.19.0**（docker 0.6.4 / all 0.1.36 / kit 0.1.30）——此后 `v0.1.37` →
 0.19.1、`v0.1.38` → 0.19.2、`v0.1.39` → **0.19.3**（本仓库 `packages/tty/package.json` 现为 0.19.3）。
 
-**已修 76 / 待修 0**（D01–D48 审计波 + D49/D50 线上反馈 + D51–D56 复核实测发现 + D57 线上崩溃 + D58–D62 后续用户上报/复核 + D63 本轮统一安全围栏时顺手发现 + D64/D65 做 ProxyCommand 时顺路挖出来的两处静默泄漏 + D66 做能力闸门时**真机验收**挖出来的探针结算缺陷 + D67 同一轮 Windows 真机挖出来的探针阶段顺序 + D68 本轮做就地提权时扫出来的客户端字面星号 + D69 同一轮接 tty 就地提权时发现的脆测试（用例读开发机真实授权）+ D70 同上轮挖出的启动期闸门未初始化 + D71 用户反馈的开关行没有手型 + D72 用户反馈的「命令瞬间完成时 tty_expect 白等满超时」+ D73 提权面板把复制按钮塞在命令框里 + D74/D75 同一份 **Windows 真机报告**（2026-09-27：`tty_send` 的 `\n` 在 conhost 上不提交命令 / `tty_expect` 拿命令回显当命中）+ D76 用户上报 `tty_open` 会话生命周期时挖出来的**终局尾巴丢失**）。索引表**不写行号、也不保留修复提交
+**已修 77 / 待修 0**（D01–D48 审计波 + D49/D50 线上反馈 + D51–D56 复核实测发现 + D57 线上崩溃 + D58–D62 后续用户上报/复核 + D63 本轮统一安全围栏时顺手发现 + D64/D65 做 ProxyCommand 时顺路挖出来的两处静默泄漏 + D66 做能力闸门时**真机验收**挖出来的探针结算缺陷 + D67 同一轮 Windows 真机挖出来的探针阶段顺序 + D68 本轮做就地提权时扫出来的客户端字面星号 + D69 同一轮接 tty 就地提权时发现的脆测试（用例读开发机真实授权）+ D70 同上轮挖出的启动期闸门未初始化 + D71 用户反馈的开关行没有手型 + D72 用户反馈的「命令瞬间完成时 tty_expect 白等满超时」+ D73 提权面板把复制按钮塞在命令框里 + D74/D75 同一份 **Windows 真机报告**（2026-09-27：`tty_send` 的 `\n` 在 conhost 上不提交命令 / `tty_expect` 拿命令回显当命中）+ D76 用户上报 `tty_open` 会话生命周期时挖出来的**终局尾巴丢失** + D77 同一份上报的正题（**进程退出即退役**，输出再也取不回来））。索引表**不写行号、也不保留修复提交
 sha** —— 修复后代码移了位、有的整段被删或重写，审计时点的行号只会误导；所以回溯入口统一改成
 按关键词检索（D49/D50 修在 `bd407352`）：`git log -S'<症状列的关键词>'`，提交信息按条目写
 为什么。被代码直接引用的编号在
@@ -159,6 +159,7 @@ D50 才是用户看到的那一下（他补的描述是「整条状态条瞬间�
 | D74 | Windows 本地 PTY 上 `tty_send` **不提交命令**：conhost 把 Enter 当 **CR**，裸 LF 只把光标下移一格——agent 按工具描述发 `echo X\n` 之后命令停在输入行，没有输出、没有新提示符，「发命令」这个动作在 Windows 上基本不可用（2026-09-27 真机报告，字节级 + 屏幕级判定：`\r` / `\r\n` 提交并执行、`\n` 不提交；补一个裸 `\r` 才把挂起的命令提交掉） | `src/index.ts` 新增导出 `normalizePtyInput(data, platform)`：win32 上把裸 LF 补成 CRLF（已经是 CRLF 的不重复补，否则凭空多提交一次空命令），非 win32 与 SSH 会话原样透传；`tty_send` 按 `session.kind === 'local'` 接上它，工具描述补一句「Windows 上插件会归一化」。test/send-normalize.test.ts（8 条：纯函数 5 + 真实写入路径 3；平台用 `Object.defineProperty` 临时切 win32，因为「忘了调用」这种回归只测纯函数拦不住） | ✓ |
 | D75 | `tty_expect` **拿命令回显当命中**：没有 shell 集成（Windows 本地 / 集成被关 / 远端未装）时没有 B 标记可切边界，`tty_send` 写进去的那行文本先回到输出流里——于是命令**一次都没执行**，等待却立刻返回 `matched:true`（报告现场：LF 没提交，`tty_expect pattern="echo ECHO_DEMO_2"` 秒回，来源标注「回溯自此前已到达、还没读过的缓冲输出」；报告方自己的自动判定脚本也被这个陷阱骗过一次） | `src/index.ts` 加回显剔除：`noteSubmittedInput`（只记 `tty_send` 且带行尾的提交，单键按键与含控制字符的行不记）+ `stripEchoLines`（按**行尾**削——cmd 的回显与提示符同行，行内提示符前缀保留）+ `echoOnlyMatch`（原始流与清洗后文本各削一次，**削掉后仍命中才算真命中**）；live 与 buffered 两条路径都过一遍，`inCommand`（TUI 全屏重画里出现输入文本是真实输出）或文本里有 B 标记时不启用；超时结果带 `echoOnly:true`，render 文案改成「只匹配到回显、没有匹配到任何真正的输出——先复核命令到底跑没跑」。test/expect-backlog.test.ts 的 D75 用例 5 条（含「不误杀真输出」「命令在跑时不启用」两条反向验证） | ✓ |
 | D76 | **进程退出前最后一批输出永远到不了终端面板**（用户上报原话：「结果明明就在那里但我看不到」——`tty_open` 跑一条记录结果的命令，程序打印完就退出，人跟 AI 都只能看到它前面那些输出）。根因是两行顺序：`finishSession` 先置 `session.closed = true`（为了让 `onData` 立刻停止成帧）**再**调 `flushPendingOutput`，而后者首行守卫正是 `if (session.closed \|\| …) return` ⇒ **12ms 合并窗口里还没发出的尾巴被它自己的守卫整批吞掉**，与方法自己的注释（「exit 前冲掉合并窗口里的尾巴，保序」）和「exit 帧永远在最后一帧 data 之后」的契约相反。判定用真实 `TtyServer` 路径的两个探针：写入后立刻退出 → 面板只收到 `ready` + `exit`（data 帧 0 个）；同一行若在退出前 ≥12ms 到达 → 正常 `ready` + `data` + `exit` | `src/index.ts` 给 `flushPendingOutput` 加 `force` 参数、`finishSession` 带 force 调用：`closed` 仍先置（终局后的字节照样不成帧），但这一步不再被自己的守卫挡下；test/host-frames.test.ts 两条（尾巴必须发出且 data 帧在 exit 帧之前 / 终局之后到达的输出仍不成帧） | ✓ |
+| D77 | **进程退出即会话退役，输出还在却再也取不回来**（用户上报 issue #4 的原话：「结果明明就在那里但我看不到……我现在不得不强迫AI先打开 `/bin/sh` 再执行具体的命令」——`tty_open` 跑一条会结束的命令，跑完 `tty_capture` 只报「会话不存在或已退出」，连 `tty_close` 都报「会话不存在或已结束」）。`finishSession` 是唯一出口：`sessions.remove` + 释放虚拟屏 + 清空绑定；而数据其实还躺在 `session.buffer` 与 `shellState.lastCommand` 里，丢掉的只是**可达性**。同一份现场的另一半在面板侧：`exit` 帧后标签转「已退出」浮层，点「重新打开」是**新 sid**，旧内容再也取不回 | `src/index.ts` 把「进程退出」与「退役」拆成两件事：`finishSession` 只发 exit 帧 + 打 `exited:{code,signal,at}` 标记，**不出表、不释放屏**（`closed` 保持 false ⇒ 读侧守卫天然放行）；读侧 (`tty_list` / `tty_capture` / `tty_screen`) 照常可用并带 `exited`/`signal`/`retainMs`，`tty_expect` 借已兑现的 `done` 立刻结算（带 `exited:true`），写侧 `tty_send` 与 `tty_stats` 明确拒绝，`attach` 明确拒绝，`tty_close` 成为显式释放入口；退役只剩 `SessionManager.retire` 一处，触发者 = 显式关闭 / 面板关标签 / 保留期到点（`reapExited(EXITED_RETAIN_MS)`=10 分钟）/ 条数上限（`capExited(8)` 按最旧淘汰）；并发名额改数**活着的**会话（`liveCount`），保留态不占名额；`reapOrphans` 跳过保留态，同 sid 新建时 `retireStaleExited` 先摘掉旧尸体（否则 `add()` 顶出表 = 屏泄漏）；client-src 关标签/重开也发 `kill` 释放、采纳 agent 会话时跳过保留态；test/host-frames.test.ts（8 条：表内保留/attach 拒绝/关标签释放/不占名额/TTL/条数上限/孤儿回收跳过/同 sid 摘尸体）+ test/exited-retain.test.ts（7 条工具层：list/capture/screen/expect 可读 + send/stats 拒绝 + close 释放） | ✓ |
 
 ## 2. 编号字典：这段代码为什么长这样
 

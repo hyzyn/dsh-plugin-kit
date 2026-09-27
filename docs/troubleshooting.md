@@ -134,6 +134,7 @@ dsh plugin --profile <p> allow-version <pkg@ver> --dsh-version <ver> --accept-ri
 | MCP 服务器保存后没有工具 | 等 1~2 秒 HMR；卡片里的状态徽章与冲突提示；保存前先点「连接测试」。仍不行就查服务器进程能否启动、地址是否可达 → [mcp](../packages/mcp/README.md) |
 | 模型调用 `mcp__codegraph__*` 报 `No CodeGraph project is loaded` | 默认项目没设或没索引 → codegraph 卡片「设为默认项目」/ 先 `codegraph index` → [codegraph](../packages/codegraph/README.md) |
 | 终端面板连不上（浏览器正常、桌面版永远「连接中…」） | 客户端半体从 `location` 拼了地址 → `tty D61`，跑 `node scripts/client-lint.mjs` 会拦 → [conventions.md § 客户端半体](./conventions.md#客户端半体两条硬规矩) |
+| 会话的进程已经退出，`tty_list` 里却还留着它（`exited:true`），`tty_send` 还报「只读保留」 | **预期行为**（`tty D77`）：退出转只读保留（默认 10 分钟），期间 `tty_capture` / `tty_screen` 仍读得到退出前的输出；要立刻释放用 `tty_close`（agent 自己开的会话）或让用户在面板里关那个标签 → [tty README § 进程退出后的「只读保留」](../packages/tty/README.md#进程退出后的只读保留d77) |
 | 隧道一直显示「连接中」而底下挂着报错 | 致命错误被重试路径覆写 → `tty D58`；先看端口是否被另一个 profile 的宿主占用 → [tty](../packages/tty/README.md) |
 | 日志级别过滤「看着没生效」 | 级别前缀是 `%5p` 右填充（`[INFO ]`）→ `docker D135` → [docker](../packages/docker/README.md) |
 | 桌面版容器日志 / 统计 / 活动 / 拉取永远「连接中断，正在自动重连…」，浏览器（`dsh web`）正常 | 桌面壳转发会删掉 `Origin` / `Sec-Fetch-Site`，撞上 docker 的「同源证明」→ `docker D139`；宿主日志里现在会打 `拒绝无同源证明的…（origin=无 sec-fetch-site=无 cookie=有）` → [docker README § HTTP 路由](../packages/docker/README.md#http-路由apidsh-docker-前缀全部-loopback-围栏) |

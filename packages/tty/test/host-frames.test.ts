@@ -15,7 +15,7 @@ import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { tmpdir } from 'node:os'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { SessionManager, TtyServer, killLocalShellTerminal, newScreenHeartbeat } from '../src/index.js'
+import { EXITED_RETAIN_MS, MAX_EXITED_SESSIONS, SessionManager, TtyServer, killLocalShellTerminal, newScreenHeartbeat } from '../src/index.js'
 import type { TermHandle } from '../src/ssh.js'
 
 /* ----------------------------- 假件 ----------------------------- */
@@ -313,11 +313,12 @@ describe('断连孤儿 / attach 回放（D06/D07 语义面）', () => {
     // 环形缓冲回放
     const replay = wsB.sent('data').map((f) => String(f.d ?? '')).join('')
     expect(replay).toContain('hello-replay')
-    // 进程退出 → exit 广播到当前绑定的 B
+    // 进程退出 → exit 广播到当前绑定的 B；D77 起会话转**只读保留**（不再立刻出表，
+    // 由 tty_capture/tty_screen 继续可读，直到显式关闭或保留期到点）
     h.ptys[0].settle({ exitCode: 3, signal: null })
     const exit = await wsB.waitFor('exit')
     expect(exit).toMatchObject({ t: 'exit', sid: 'sess1', code: 3 })
-    expect(h.sessions.count).toBe(0)
+    expect(h.sessions.get('sess1')?.exited).toMatchObject({ code: 3 })
     await h.sessions.disposeAll()
   })
 })
@@ -369,7 +370,7 @@ describe('SessionManager', () => {
   function sessionOf(id: string, overrides: Partial<Record<string, unknown>> = {}): never {
     throw new Error('helper placeholder')
   }
-  function makeSession(id: string, overrides: { orphanedAt?: number | null; tmuxName?: string | null } = {}): any {
+  function makeSession(id: string, overrides: { orphanedAt?: number | null; tmuxName?: string | null; exited?: { code: number | null; signal: string | null; at: number } | null; screen?: unknown } = {}): any {
     let settleDone!: (outcome: { exitCode: number | null; signal: string | null }) => void
     const done = new Promise<{ exitCode: number | null; signal: string | null }>((resolve) => {
       settleDone = resolve
@@ -392,6 +393,7 @@ describe('SessionManager', () => {
       },
       clients: new Map(),
       closed: false,
+      exited: overrides.exited ?? null,
       paused: false,
       cwd: '',
       kind: 'local',
@@ -401,7 +403,7 @@ describe('SessionManager', () => {
       lastInputAt: Date.now(),
       buffer: '',
       decoder: new (require('node:string_decoder').StringDecoder)('utf8'),
-      screen: null,
+      screen: overrides.screen ?? null,
       screenHeartbeat: newScreenHeartbeat(),
       screenDownReason: null,
       orphanedAt: overrides.orphanedAt ?? null,
@@ -481,6 +483,7 @@ describe('endOnPageClose × tmux 收尾（D45：孤儿回收策略）', () => {
       },
       clients: new Map(),
       closed: false,
+      exited: null,
       paused: false,
       cwd: '',
       kind: 'local',
@@ -650,6 +653,166 @@ describe('agent 开的终端会话（tty_open / tty_close）', () => {
  * 停摆的两种触发都在 screen-crash.test.ts 里单测；这里用「写就抛」的假屏走**同步抛出**
  * 那条，不必等 5s 窗口。
  */
+/* ------------------- 退出后的只读保留（D77，issue #4 的正题） ------------------- */
+
+describe('退出后的只读保留（D77）', () => {
+  /** 只读保留相关的纯替身（与上面 SessionManager 那组同构，但能预置 exited / screen）。 */
+  function makeSession(id: string, overrides: { orphanedAt?: number | null; exited?: { code: number | null; signal: string | null; at: number } | null; screen?: unknown } = {}): any {
+    return {
+      id,
+      handle: { kind: 'local', pid: 1, output: new PassThrough(), done: new Promise(() => {}), write: async () => {}, resize: () => {}, terminate: async () => true },
+      clients: new Map(),
+      closed: false,
+      exited: overrides.exited ?? null,
+      paused: false,
+      cwd: '',
+      kind: 'local',
+      target: '',
+      startedAt: Date.now(),
+      lastOutputAt: Date.now(),
+      lastInputAt: Date.now(),
+      buffer: '',
+      decoder: null as never,
+      screen: overrides.screen ?? null,
+      screenHeartbeat: newScreenHeartbeat(),
+      screenDownReason: null,
+      orphanedAt: overrides.orphanedAt ?? null,
+      shellState: { carry: '', inCommand: false, cmdBuffer: '', pendingT: null, lastCommand: null },
+      pendingOutput: '',
+      flushTimer: null,
+      tmuxName: null,
+      statsSubs: new Set(),
+      stats: null,
+      statsFailed: false,
+    }
+  }
+
+  it('进程退出 → 会话仍在表里：closed=false、exited 带 code/signal、屏与缓冲都还在', async () => {
+    const h = makeHarness()
+    const ws = h.connect()
+    await spawnLocal(ws, 'keep1')
+    h.ptys[0].output.write('BEFORE-EXIT\r\n')
+    await ws.waitFor('data')
+    h.ptys[0].settle({ exitCode: null, signal: 'SIGSEGV' })
+    await ws.waitFor('exit')
+    const session = h.sessions.get('keep1')
+    expect(session, '「退出即退役」是 D77 要改掉的旧行为').toBeDefined()
+    expect(session?.closed).toBe(false)
+    expect(session?.exited).toMatchObject({ code: null, signal: 'SIGSEGV' })
+    // 读侧的两条数据源都还在：环形缓冲（tty_capture）与虚拟屏（tty_screen）
+    expect(session?.buffer).toContain('BEFORE-EXIT')
+    expect(session?.screen).not.toBeNull()
+    // 快照如实带保留态（tty_list / sessions 帧的数据源）
+    expect(h.sessions.list()[0]).toMatchObject({ sid: 'keep1', exited: true, signal: 'SIGSEGV' })
+    expect(h.sessions.list()[0]?.retainMs).toBeGreaterThan(0)
+    // 保留态不可 attach（没有活着的 PTY 可接回）
+    expect(h.sessions.listForAttach()[0]?.attachable).toBe(false)
+    await h.sessions.disposeAll()
+  })
+
+  it('attach 保留态被明确拒绝（不是含糊的「会话不存在」）', async () => {
+    const h = makeHarness()
+    const wsA = h.connect()
+    await spawnLocal(wsA, 'keep2')
+    h.ptys[0].settle({ exitCode: 3, signal: null })
+    await wsA.waitFor('exit')
+    const wsB = h.connect()
+    wsB.emit('message', Buffer.from(JSON.stringify({ t: 'attach', sid: 'keep2' })))
+    const err = await wsB.waitFor('error')
+    expect(String(err.m)).toContain('只读保留')
+    expect(String(err.m)).toContain('exitCode=3')
+    await h.sessions.disposeAll()
+  })
+
+  it('kill（面板关标签）释放保留态：出表 + 释放屏', async () => {
+    const h = makeHarness()
+    const ws = h.connect()
+    await spawnLocal(ws, 'keep3')
+    h.ptys[0].settle({ exitCode: 0, signal: null })
+    await ws.waitFor('exit')
+    expect(h.sessions.get('keep3')?.closed).toBe(false)
+    let disposed = false
+    const session = h.sessions.get('keep3')
+    if (session !== undefined) session.screen = { dispose: () => { disposed = true } } as never
+    ws.emit('message', Buffer.from(JSON.stringify({ t: 'kill', sid: 'keep3' })))
+    await until(() => h.sessions.get('keep3') === undefined)
+    expect(disposed).toBe(true)
+    await h.sessions.disposeAll()
+  })
+
+  it('保留态不占名额：canSpawn 只数活着的会话', () => {
+    const sm = new SessionManager(2)
+    sm.add(makeSession('dead-1'))
+    sm.add(makeSession('dead-2'))
+    sm.add(makeSession('dead-3'))
+    expect(sm.exitedCount).toBe(0)
+    const one = sm.get('dead-1')
+    const two = sm.get('dead-2')
+    if (one !== undefined) one.exited = { code: 0, signal: null, at: Date.now() }
+    if (two !== undefined) two.exited = { code: 0, signal: null, at: Date.now() }
+    expect(sm.exitedCount).toBe(2)
+    expect(sm.liveCount).toBe(1)
+    expect(sm.canSpawn(), '两条尸体不该顶掉名额').toBe(true)
+    sm.add(makeSession('live-2'))
+    expect(sm.canSpawn()).toBe(false)
+  })
+
+  it('reapExited 到点退役（出表 + 释放屏），未到点不动', () => {
+    const sm = new SessionManager(4)
+    let disposedStale = false
+    let disposedFresh = false
+    sm.add(makeSession('stale', { exited: { code: 0, signal: null, at: Date.now() - EXITED_RETAIN_MS - 1000 }, screen: { dispose: () => { disposedStale = true } } }))
+    sm.add(makeSession('fresh', { exited: { code: 0, signal: null, at: Date.now() - 1000 }, screen: { dispose: () => { disposedFresh = true } } }))
+    sm.reapExited(EXITED_RETAIN_MS)
+    expect(sm.get('stale')).toBeUndefined()
+    expect(disposedStale).toBe(true)
+    expect(sm.get('fresh')).toBeDefined()
+    expect(disposedFresh).toBe(false)
+    sm.reapExited(0) // 保留期配成 0 = 立刻全清（热改语义）
+    expect(sm.get('fresh')).toBeUndefined()
+  })
+
+  it('capExited 超过上限按最旧淘汰（agent 不主动 close 时的兜底）', () => {
+    const sm = new SessionManager(4)
+    sm.add(makeSession('oldest', { exited: { code: 0, signal: null, at: Date.now() - 3000 } }))
+    sm.add(makeSession('mid', { exited: { code: 0, signal: null, at: Date.now() - 2000 } }))
+    sm.add(makeSession('newest', { exited: { code: 0, signal: null, at: Date.now() - 1000 } }))
+    const victims = sm.capExited(2)
+    expect(victims.map((session) => session.id)).toEqual(['oldest'])
+    expect(sm.get('oldest')).toBeUndefined()
+    expect(sm.get('mid')).toBeDefined()
+    expect(sm.get('newest')).toBeDefined()
+    expect(MAX_EXITED_SESSIONS).toBeGreaterThan(0)
+  })
+
+  it('reapOrphans 不碰保留态（断线后才退出的孤儿也不能被它收掉）', async () => {
+    const sm = new SessionManager(4)
+    sm.add(makeSession('orphan-dead', { orphanedAt: Date.now() - 10 * 60_000, exited: { code: 0, signal: null, at: Date.now() - 1000 } }))
+    sm.add(makeSession('orphan-live', { orphanedAt: Date.now() - 10 * 60_000 }))
+    await sm.reapOrphans(0)
+    expect(sm.get('orphan-dead'), '保留态归 reapExited 管').toBeDefined()
+    expect(sm.get('orphan-live')).toBeUndefined()
+  })
+
+  it('别的连接用同 sid 新建会话时，旧保留态被摘掉（屏释放，不泄漏）', async () => {
+    const h = makeHarness()
+    const wsA = h.connect()
+    await spawnLocal(wsA, 'same')
+    h.ptys[0].settle({ exitCode: 0, signal: null })
+    await wsA.waitFor('exit')
+    const stale = h.sessions.get('same')
+    expect(stale?.exited).not.toBeNull()
+    let disposed = false
+    if (stale !== undefined) stale.screen = { dispose: () => { disposed = true } } as never
+    const wsB = h.connect()
+    await spawnLocal(wsB, 'same')
+    expect(disposed).toBe(true)
+    expect(h.sessions.get('same')?.exited).toBeNull()
+    expect(h.ptys).toHaveLength(2)
+    await h.sessions.disposeAll()
+  })
+})
+
 describe('虚拟屏退役接线（D57）', () => {
   it('虚拟屏写入被拒 → 只退役该屏（会话照旧活着），并记下原因', async () => {
     const h = makeHarness()
