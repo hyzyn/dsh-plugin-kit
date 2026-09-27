@@ -4441,7 +4441,7 @@ const plugin = definePlugin<Config>({
             description: '开一个新的终端会话（本地 shell，或 `command` 直接跑一条命令，如 dev server）。会话出现在用户的终端面板里、用户可见可接管，长驻进程与 watch 类任务应该用它（不要在 bash 工具里挂起等待）。开了之后用 tty_expect 等就绪信号、tty_capture{last:true} 拿结果；用完用 tty_close 关闭。`command` 按 **shell 语法整体**执行（`cd dir && cmd`、`a; b`、`for …; do …; done` 都可以，D78：旧版本里 `exec` 包装只跑第一条）；**它跑完退出后会话不会立刻消失**：会转成只读保留（留到显式关闭，最多留 8 条），退出前最后的输出与退出码都还能用 tty_capture / tty_screen 读——所以「跑一条会结束的命令、回头再取结果」不需要套一层 `sh`。cwd 缺省为插件配置的工作目录。',
             parameters: {
               cwd: { type: 'string', description: '工作目录（必须是已存在的绝对路径）；缺省用插件配置的 cwd' },
-              command: { type: 'string', description: '直接执行的命令（非交互）；给出时不做 tmux 持久化。缺省 = 交互式 shell' },
+              command: { type: 'string', description: '直接执行的命令（非交互）：按**整段 shell 代码**执行，`cd x && cmd`、`a; b`、管道、多行脚本都可以（D78）；给出时不做 tmux 持久化。省略或全空白 = 交互式 shell' },
               persistName: { type: 'string', description: 'tmux 持久会话名（开启「会话持久化」时有效；同名复用既有会话）。适合宿主重启后仍需存活的长任务' },
               cols: { type: 'number', description: '列数（2~500，默认 80）' },
               rows: { type: 'number', description: '行数（2~200，默认 24）' },

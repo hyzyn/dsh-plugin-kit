@@ -112,7 +112,7 @@ The plugin injects sixteen tools into the agent (with the same power as the bash
 | Tool | Purpose |
 | --- | --- |
 | `tty_list` | List terminal sessions (sid / kind (`local\|ssh`) / target / pid / **cwd tracked live as you `cd`** / activity time; tmux persistent sessions carry a `persist` marker; sessions the agent opened carry `owner: 'agent'`). **Includes sessions whose process has exited but which are still inside their read-only retention window** (`exited:true` + exit code/signal, see below) |
-| `tty_open` | **Open a terminal session yourself** (0.20.0): a local shell, or a command via `command` (dev server / watch; it runs as **a whole piece of shell code**, so `cd x && cmd` and `a; b` work — D78), with optional tmux persistence via `persistName`. The session **shows up in the user’s terminal panel** as an ordinary tab the user can see and take over — never a hidden session |
+| `tty_open` | **Open a terminal session yourself** (0.20.0): a local shell, or a command via `command` (dev server / watch; it runs as **a whole piece of shell code** — `cd x && cmd`, `a; b`, even a multi-line script, and it is *not* subject to the “single line ≤2000” client rule below — D78), with optional tmux persistence via `persistName`. The session **shows up in the user’s terminal panel** as an ordinary tab the user can see and take over — never a hidden session |
 | `tty_close` | Close a session opened by `tty_open` (0.20.0). **Only the agent’s own sessions may be closed**: a tab the user opened is refused, so the agent never ends a terminal the user is working in. It also works on an **exited session that is still in read-only retention** — that is its release entry point (by default it is retained **until explicitly closed**, never on a timer) |
 | `tty_stats` | Read live host metrics for a session’s machine (0.20.0): CPU / memory / disk / TCP connections / network rates / temperature / uptime. Local sessions report the host; SSH sessions report that remote host over a separate non-PTY channel that never touches the terminal. Check it before deploying or load-testing |
 | `tty_capture` | Read recent output (last N lines, ANSI stripped by default, `raw:true` for the raw stream); **`last:true` returns only the output + exit code of the previous completed command** (shell integration markers, see the next section); when a command is **in flight** (just sent, completion marker not in yet) it returns `inProgress:true` without the stale result, so the previous command is never mistaken for this one (0.19.0) |
@@ -731,6 +731,12 @@ ctx.inject(['ttyTerminal'], (c) => {
 - The command comes from a **host-side plugin** (not from remote user input), so its trust level equals the
   plugin’s own; tty only validates the shape: non-empty, single line, length ≤2000 (a newline would break the
   local `-c` wrapper layer).
+- **“Single line, ≤2000” is this channel’s rule, not `tty_open`’s** (raised in the 2026-09-27 review): the
+  `command` in a `spawn` / `ssh` frame gets spliced into the `-c` wrapper, so `sanitizeCommand` rejects
+  newlines and NUL. The agent’s `tty_open.command` takes a different path — the command is wrapped **whole**
+  in `shSingleQuote` and handed to the inner `-c` (see above), so it **may contain newlines** (multi-line
+  scripts do run) and is bounded only by the tool parameter’s string type. Do not read this section’s limit
+  as a `tty_open` restriction.
 - The service name `ttyTerminal` is likewise not declared on the `Context` type surface; inject it as an
   optional dependency; when tty is not installed or is older than 0.14.0 it never fires (dsh-docker degrades
   to “copy command”).
