@@ -144,19 +144,26 @@ export interface SftpLimits {
  */
 export declare const Config: z;
 /**
- * 会话**退出后的只读保留期**（D77）。
+ * 会话退出后的**只读保留策略**（D77）。
  *
- * 进程没了之后仍把会话留在 `sessions` 表里一段时间：`tty_list` / `tty_capture` /
- * `tty_screen` 照常能读到它最后那些输出（用户上报的痛点原话：「结果明明就在那里
- * 但我看不到」——`tty_open` 跑一条命令，跑完会话就退役，AI 一个字符都取不回来，
- * 逼得人先开 `/bin/sh` 再往里发命令）。
+ * 进程没了之后把会话留在 `sessions` 表里：`tty_list` / `tty_capture` / `tty_screen`
+ * 照常能读到它最后那些输出（用户上报的痛点原话：「结果明明就在那里但我看不到」——
+ * `tty_open` 跑一条命令，跑完会话就退役，AI 一个字符都取不回来，逼得人先开
+ * `/bin/sh` 再往里发命令）。
  *
- * 为什么必须有上限：`owner:'agent'` 的会话**逃过孤儿回收**（见 reapOrphans），
- * 不设 TTL 的话「开一条跑完就退出的命令」会永久占住屏与缓冲区；用户标签退出后
- * 同理。10 分钟覆盖「命令跑完 → 模型下一轮读结果」的常规间隔，也更长于任何
- * 一次模型推理。
+ * 取 **∞ = 保留到显式关闭**（`tty_close` / 面板关标签 / 宿主重启），不由时间淘汰：
  *
- * 导出仅供单测（test/host-frames.test.ts）：到点退役与条数上限的行为护栏。
+ * - 时间上界对用户是**第二重惊喜**——「命令跑完 → 下一轮读结果」之间隔着人离开、
+ *   模型排队，多久都有可能；一个到期就消失的输出比「要主动关」更难理解；
+ * - 内存与句柄本来也不由时间决定：条数由 [`MAX_EXITED_SESSIONS`](#) 兜（8 条，
+ *   单条几百 KB~一两 MB），而「永久」还有一条天然上界——保留是**内存态**，
+ *   宿主 / 插件重启即清空，不会跨天累积；
+ * - 连续跑很多短命令时，淘汰节奏变成「超过 8 条按最旧淘汰」（`capExited`），
+ *   正是想要的语义：近的才有人读。
+ *
+ * 需要时间上界的人把这里改成任意毫秒数即可——`reapExited` 那条通路还在
+ * （回收器每轮都会调它）。导出仅供单测（test/host-frames.test.ts）：到点退役与
+ * 条数上限的行为护栏。
  */
 export declare const EXITED_RETAIN_MS: number;
 /**
@@ -522,7 +529,7 @@ export interface SessionSnapshot {
     exitCode?: number;
     /** 退出信号（正常退出时省略）。 */
     signal?: string;
-    /** 只读保留的剩余毫秒（到点由回收器摘掉）。 */
+    /** 只读保留的剩余毫秒；**省略 = 不按时间释放**（策略为 ∞，关闭或宿主重启才清）。 */
     retainMs?: number;
 }
 /** 导出仅供单测（test/host-frames.test.ts）：上限 / 孤儿回收 / grace 热改的行为护栏。 */
@@ -581,6 +588,9 @@ export declare class SessionManager {
     reapOrphans(graceMs: number): Promise<void>;
     /**
      * 只读保留到点退役（D77；回收器每轮调用）：超过保留期的会话出表 + 释放屏。
+     *
+     * 默认策略是 ∞（保留到显式关闭）⇒ 本方法是 no-op，条数由 `capExited` 兜；
+     * 把 `EXITED_RETAIN_MS` 改成有限值它就照常工作（策略可调，通路留着）。
      *
      * **不 kill 进程**：这里收的全是已经退出的会话（进程早没了），`retire()` 就够；
      * 真退役（显式 `tty_close` / 面板关标签）走 `killSessionNow`，那条路要处理

@@ -1921,8 +1921,8 @@ async function run() {
         entry = ((await list77.execute({})).sessions ?? []).find((x) => x.sid === sid)
         if (entry !== undefined && entry.exited === true) break
       }
-      if (entry !== undefined && entry.exited === true && typeof entry.retainMs === 'number') {
-        pass('B34a 命令退出后会话仍在清单里（exited:true + retainMs）')
+      if (entry !== undefined && entry.exited === true && entry.retainMs === undefined) {
+        pass('B34a 命令退出后会话仍在清单里（exited:true，默认不按时间释放）')
       } else {
         fail('B34a 命令退出后会话仍在清单里', JSON.stringify(entry))
       }

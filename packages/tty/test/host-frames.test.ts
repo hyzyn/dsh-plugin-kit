@@ -314,7 +314,7 @@ describe('断连孤儿 / attach 回放（D06/D07 语义面）', () => {
     const replay = wsB.sent('data').map((f) => String(f.d ?? '')).join('')
     expect(replay).toContain('hello-replay')
     // 进程退出 → exit 广播到当前绑定的 B；D77 起会话转**只读保留**（不再立刻出表，
-    // 由 tty_capture/tty_screen 继续可读，直到显式关闭或保留期到点）
+    // 由 tty_capture/tty_screen 继续可读，直到显式关闭或宿主重启）
     h.ptys[0].settle({ exitCode: 3, signal: null })
     const exit = await wsB.waitFor('exit')
     expect(exit).toMatchObject({ t: 'exit', sid: 'sess1', code: 3 })
@@ -704,7 +704,9 @@ describe('退出后的只读保留（D77）', () => {
     expect(session?.screen).not.toBeNull()
     // 快照如实带保留态（tty_list / sessions 帧的数据源）
     expect(h.sessions.list()[0]).toMatchObject({ sid: 'keep1', exited: true, signal: 'SIGSEGV' })
-    expect(h.sessions.list()[0]?.retainMs).toBeGreaterThan(0)
+    // 默认策略是 ∞（保留到显式关闭）：不报剩余时间——不能塞 Infinity（JSON → null），
+    // 省略该字段才是「不按时间释放」
+    expect(h.sessions.list()[0]?.retainMs).toBeUndefined()
     // 保留态不可 attach（没有活着的 PTY 可接回）
     expect(h.sessions.listForAttach()[0]?.attachable).toBe(false)
     await h.sessions.disposeAll()
@@ -760,13 +762,22 @@ describe('退出后的只读保留（D77）', () => {
     expect(sm.canSpawn()).toBe(false)
   })
 
-  it('reapExited 到点退役（出表 + 释放屏），未到点不动', () => {
+  it('默认策略 ∞：reapExited(EXITED_RETAIN_MS) 不按时间淘汰任何保留态', () => {
+    const sm = new SessionManager(4)
+    sm.add(makeSession('ancient', { exited: { code: 0, signal: null, at: 0 } }))
+    sm.reapExited(EXITED_RETAIN_MS)
+    expect(sm.get('ancient'), '默认策略下「保留到显式关闭」，时间不淘汰').toBeDefined()
+    expect(EXITED_RETAIN_MS).toBe(Number.POSITIVE_INFINITY)
+  })
+
+  it('reapExited 到点退役（出表 + 释放屏），未到点不动（把策略改成有限值时的行为）', () => {
     const sm = new SessionManager(4)
     let disposedStale = false
     let disposedFresh = false
-    sm.add(makeSession('stale', { exited: { code: 0, signal: null, at: Date.now() - EXITED_RETAIN_MS - 1000 }, screen: { dispose: () => { disposedStale = true } } }))
+    const retainMs = 60_000 // 显式给一个有限策略（默认是 ∞，测试要钉的是「有限值照常工作」）
+    sm.add(makeSession('stale', { exited: { code: 0, signal: null, at: Date.now() - retainMs - 1000 }, screen: { dispose: () => { disposedStale = true } } }))
     sm.add(makeSession('fresh', { exited: { code: 0, signal: null, at: Date.now() - 1000 }, screen: { dispose: () => { disposedFresh = true } } }))
-    sm.reapExited(EXITED_RETAIN_MS)
+    sm.reapExited(retainMs)
     expect(sm.get('stale')).toBeUndefined()
     expect(disposedStale).toBe(true)
     expect(sm.get('fresh')).toBeDefined()

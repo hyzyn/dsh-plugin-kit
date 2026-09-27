@@ -38,12 +38,15 @@ interface FakeTool {
 interface Mounted {
   tools: Map<string, FakeTool>
   ptys: FakePty[]
+  /** 宿主 systemPrompt 的动态快照回调（apply 注册时捕获）。 */
+  prompts: Array<() => string>
 }
 
 /** 最小假 cordis ctx（照 tool-concurrency.test.ts 的写法），多给一个可编程的 subprocess。 */
 function mountPlugin(): Mounted {
   const registered: FakeTool[] = []
   const ptys: FakePty[] = []
+  const prompts: Array<() => string> = []
   const makeChild = (names: string[]): Record<string, unknown> => {
     const child: Record<string, unknown> = {
       logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
@@ -95,7 +98,15 @@ function mountPlugin(): Mounted {
     }
     if (names.includes('webServer')) child.webServer = { register: () => () => {}, registerUpgrade: () => () => {} }
     if (names.includes('settings')) child.settings = { describe: () => [], update: async () => {}, configure: () => () => {} }
-    if (names.includes('systemPrompt')) child.systemPrompt = { section: () => () => {}, context: () => () => {} }
+    if (names.includes('systemPrompt')) {
+      child.systemPrompt = {
+        section: () => () => {},
+        context: (options: { text?: unknown }) => {
+          if (typeof options?.text === 'function') prompts.push(options.text as () => string)
+          return () => {}
+        },
+      }
+    }
     if (names.includes('credentials')) child.credentials = { resolve: async () => ({ value: undefined }) }
     return child
   }
@@ -105,7 +116,7 @@ function mountPlugin(): Mounted {
     return () => {}
   }
   ;(apply as unknown as (ctx: unknown, config: unknown) => void)(root, {})
-  return { tools: new Map(registered.map((tool) => [tool.name, tool])), ptys }
+  return { tools: new Map(registered.map((tool) => [tool.name, tool])), ptys, prompts }
 }
 
 async function wait(ms: number): Promise<void> {
@@ -124,14 +135,15 @@ async function openCrashedSession(mounted: Mounted): Promise<string> {
 }
 
 describe('退出后的只读保留（D77）：工具层', () => {
-  it('tty_open 的命令退出后：tty_list 仍列得到，且带 exited/exitCode|signal/retainMs', async () => {
+  it('tty_open 的命令退出后：tty_list 仍列得到，且带 exited/exitCode|signal', async () => {
     const mounted = mountPlugin()
     const sid = await openCrashedSession(mounted)
     const listed = await mounted.tools.get('tty_list')?.execute({}) as { sessions: Array<Record<string, unknown>> }
     const entry = listed.sessions.find((session) => session.sid === sid)
     expect(entry, '退出后会话应从表里消失是旧行为').toBeDefined()
     expect(entry).toMatchObject({ exited: true, signal: 'SIGSEGV', owner: 'agent' })
-    expect(Number(entry?.retainMs)).toBeGreaterThan(0)
+    // 默认策略「保留到显式关闭」不报剩余时间（Infinity 会被 JSON 变成 null，撞 schema）
+    expect(entry?.retainMs).toBeUndefined()
   })
 
   it('tty_capture 读得到退出前的输出（带 exited 标记）', async () => {
@@ -172,6 +184,19 @@ describe('退出后的只读保留（D77）：工具层', () => {
     expect(closed.ok).toBe(true)
     const listed = await mounted.tools.get('tty_list')?.execute({}) as { sessions: Array<Record<string, unknown>> }
     expect(listed.sessions.find((session) => session.sid === sid)).toBeUndefined()
+  })
+
+  it('systemPrompt 的动态快照把保留态单独标出（不冒充活会话）', async () => {
+    const mounted = mountPlugin()
+    const crashedSid = await openCrashedSession(mounted)
+    const live = await mounted.tools.get('tty_open')?.execute({ cwd: tmpdir() }) as { sid: string }
+    await wait(20)
+    const text = mounted.prompts.at(-1)?.() ?? ''
+    expect(mounted.prompts.length, 'systemPrompt 动态快照应已注册').toBeGreaterThan(0)
+    expect(text).toMatch(new RegExp(`- sid=${live.sid} \\[`)) // 活会话照旧逐条列
+    expect(text).toContain(crashedSid) // 保留态要有
+    expect(text).toContain('已退出')
+    expect(text, '保留态不能长成活会话那条').not.toMatch(new RegExp(`- sid=${crashedSid} \\[`))
   })
 
   it('tty_expect 对保留态不白等满超时：立刻按现存输出结算', async () => {

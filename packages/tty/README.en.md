@@ -109,9 +109,9 @@ The plugin injects sixteen tools into the agent (with the same power as the bash
 
 | Tool | Purpose |
 | --- | --- |
-| `tty_list` | List terminal sessions (sid / kind (`local\|ssh`) / target / pid / **cwd tracked live as you `cd`** / activity time; tmux persistent sessions carry a `persist` marker; sessions the agent opened carry `owner: 'agent'`). **Includes sessions whose process has exited but which are still inside their read-only retention window** (`exited:true` + exit code/signal + `retainMs`, see below) |
+| `tty_list` | List terminal sessions (sid / kind (`local\|ssh`) / target / pid / **cwd tracked live as you `cd`** / activity time; tmux persistent sessions carry a `persist` marker; sessions the agent opened carry `owner: 'agent'`). **Includes sessions whose process has exited but which are still inside their read-only retention window** (`exited:true` + exit code/signal, see below) |
 | `tty_open` | **Open a terminal session yourself** (0.20.0): a local shell, or a long-running command via `command` (dev server / watch), with optional tmux persistence via `persistName`. The session **shows up in the user’s terminal panel** as an ordinary tab the user can see and take over — never a hidden session |
-| `tty_close` | Close a session opened by `tty_open` (0.20.0). **Only the agent’s own sessions may be closed**: a tab the user opened is refused, so the agent never ends a terminal the user is working in. It also works on an **exited session that is still in read-only retention** — that is its release entry point (without it, the retention window expires and releases it automatically) |
+| `tty_close` | Close a session opened by `tty_open` (0.20.0). **Only the agent’s own sessions may be closed**: a tab the user opened is refused, so the agent never ends a terminal the user is working in. It also works on an **exited session that is still in read-only retention** — that is its release entry point (by default it is retained **until explicitly closed**, never on a timer) |
 | `tty_stats` | Read live host metrics for a session’s machine (0.20.0): CPU / memory / disk / TCP connections / network rates / temperature / uptime. Local sessions report the host; SSH sessions report that remote host over a separate non-PTY channel that never touches the terminal. Check it before deploying or load-testing |
 | `tty_capture` | Read recent output (last N lines, ANSI stripped by default, `raw:true` for the raw stream); **`last:true` returns only the output + exit code of the previous completed command** (shell integration markers, see the next section); when a command is **in flight** (just sent, completion marker not in yet) it returns `inProgress:true` without the stale result, so the previous command is never mistaken for this one (0.19.0) |
 | `tty_screen` | Read the **currently visible screen** as rendered (xterm-headless virtual screen, plain text) — it can genuinely read TUI interfaces such as vim / htop / menus |
@@ -142,12 +142,13 @@ the orphan collector** (which only reaps disconnected *user* sessions); it ends 
 
 ### Read-only retention after the process exits (D77)
 
-A process exit **no longer means the session is gone** — the session turns into a **read-only retained** one for **10 minutes** by default
-(`EXITED_RETAIN_MS`). During that window:
+A process exit **no longer means the session is gone** — the session turns into a **read-only retained** one,
+**kept until it is explicitly closed** by default (`EXITED_RETAIN_MS = ∞`; a host/plugin restart clears them).
+While retained:
 
 - **Reads keep working**: `tty_capture` (tail or `last`, including the final batch of output printed
   before exit), `tty_screen` (the screen as of the exit) and `tty_list` (entry carries `exited:true` +
-  `exitCode`/`signal` + `retainMs`) all still answer, and their results carry an `exited` marker;
+  `exitCode`/`signal`) all still answer, and their results carry an `exited` marker;
   `tty_expect` no longer burns its timeout — it settles against the existing output and returns
   `exited:true`;
 - **Writes are refused**: `tty_send` reports an explicit error (the process is gone; a write would
@@ -156,9 +157,17 @@ A process exit **no longer means the session is gone** — the session turns int
 - **No re-attaching a terminal**: `attach` is explicitly refused (there is no live PTY; the panel does
   not create a tab for it either) — read the output with `tty_capture`;
 - **Who releases it**: the agent’s `tty_close` (its own sessions only), the user closing that tab in the
-  panel, or the retention window expiring (the reaper releases it on the same sweep). The concurrency
-  limit counts **live sessions only** (retained ones do not consume a slot), and at most
-  `MAX_EXITED_SESSIONS` (8) retained sessions are kept — the oldest is evicted beyond that.
+  panel, or a host/plugin restart (retention lives in memory). The concurrency limit counts **live
+  sessions only** (retained ones do not consume a slot), and at most `MAX_EXITED_SESSIONS` (8) retained
+  sessions are kept — the oldest is evicted beyond that. So the rule is “the last 8 exited sessions stay
+  readable”, which is the only bound on memory and handles.
+
+  Why **not** a timer: memory and handles are not actually time-driven (see above), while a deadline is a
+  second surprise for whoever reads the output — the gap between “the command finished” and “the next
+  round reads the result” spans people walking away and queued model turns. An output that vanishes on
+  schedule is harder to reason about than one you have to close. If you do want a time bound (or no
+  retention at all), set `EXITED_RETAIN_MS` to a millisecond value / 0 — the `reapExited` path is still
+  wired into the reaper, and `tty_list`’s `retainMs` field only appears when a timer is in play.
 
 This is why “`tty_open` a command that finishes and read the result afterwards” now just works — no
 `sh` wrapper needed (the request in issue #4).
