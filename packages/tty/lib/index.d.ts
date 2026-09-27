@@ -218,6 +218,13 @@ interface TtySession {
     readSeq: number;
     /** 水位线最近一次推进的时刻（D72）：`lastCommand.endedAt > readMarkAt` = 这条命令的输出还没被读过。 */
     readMarkAt: number;
+    /**
+     * 最近若干条「agent 提交过的命令行」（D75，来自 `tty_send` 且带行尾的那些）：
+     * 无 shell 集成时 PTY 会把它们**原样回显**进输出流，`tty_expect` 拿回显当命中
+     * 就是假阳性（命令还没执行就报 matched）。用这份清单把回显行从匹配窗口里剔掉。
+     * 只记 `tty_send` 的写入：面板逐键输入不做行编辑模拟（宁可少抑制，不可错抑制）。
+     */
+    recentInputs: string[];
     /** 输出环形缓冲（尾部 256KB，供 tty_capture 与断线重连回放）。 */
     buffer: string;
     /** utf8 分帧兜底：跨 chunk 的多字节序列由 StringDecoder 缓存补齐。 */

@@ -601,8 +601,9 @@ function advanceReadMark(session) {
  * 水位线之后的**未读**原始输出。下界再抬到「最后一个 B 标记之后」：回显落在
  * A（prompt 开始）与 B（命令开始）之间，所以这样能零启发式地排除回显——按
  * 文本比对「跳过与发送内容相同的行」会被折行 / ANSI / 多行粘贴打碎。
- * 没有 B 标记（未开 shell 集成 / Windows PowerShell / 远端未装集成）时无法
- * 区分回显，退化为从水位线起扫（可能匹配到回显本身，文档已声明）。
+ * 没有 B 标记（未开 shell 集成 / Windows PowerShell / 远端未装集成）时无法按边界切片：
+ * D75 起改用「最近提交过的输入」这份回显候选把回显行从匹配窗口里剔掉（见 echoOnlyMatch），
+ * 不再直接拿回显当命中。
  */
 function unreadRegion(session) {
     ensureReadMark(session);
@@ -622,6 +623,84 @@ function testPattern(re, text) {
         return true;
     re.lastIndex = 0;
     return re.test(cleanAnsiTail(text));
+}
+/* ------------------------------------------------------------------ *
+ * 回显命中剔除（D75）
+ *
+ * 症状：`tty_expect` 会命中**命令回显本身**——命令还没执行（Windows 上裸 LF 不提交，
+ * 见 D74；或只是被 shell 集成之外的环境回显），`tty_send` 写进去的那行文本先回到了
+ * 输出流里，于是「等就绪标记」立刻返回 matched。报告侧的现场：LF 没提交、命令一次
+ * 都没跑，`tty_expect pattern="echo ECHO_DEMO_2"` 秒回 matched（来源标注 buffered）。
+ *
+ * 判据（不动 B 标记那条零启发式路径，只补它够不着的场景）：把**最近提交过的命令行**
+ * 从候选文本里削掉再试一次，只有「削掉后不再命中」才算纯回显。这样：
+ *   - 真实输出里也出现的标记照旧命中（不误杀）；
+ *   - 只在回显行**末尾**匹配才削（cmd 的回显与提示符同行，所以按行尾切）；
+ *   - 有 B 标记 / 命令正在跑（TUI 全屏重画里出现输入文本是正常输出）时不启用。
+ * ------------------------------------------------------------------ */
+/** 回显候选的行数上限（最近几条提交的输入）与单行长度上限。 */
+const ECHO_INPUT_CAP = 8;
+const ECHO_LINE_CAP = 512;
+/**
+ * 记录一次「提交过的输入」的回显候选（只在 `tty_send` 且带行尾时调用）：
+ * 单键按键（TUI 的 `q` / 方向键）不是命令行，不记——否则一个 `q` 就能把
+ * 之后任何只匹配到 `q` 的等待吞掉。
+ */
+function noteSubmittedInput(session, data) {
+    if (!/[\r\n]/.test(data))
+        return;
+    const lines = data
+        .split(/\r\n|\r|\n/)
+        .map((line) => line.trim())
+        // 控制字符（多为转义序列，如 `vim` 的 `\x1b:wq`）不做行编辑模拟，直接不记
+        .filter((line) => line !== '' && line.length <= ECHO_LINE_CAP && !/[\x00-\x1f\x7f]/.test(line));
+    if (lines.length === 0)
+        return;
+    session.recentInputs = [...session.recentInputs, ...lines].slice(-ECHO_INPUT_CAP);
+}
+/**
+ * 这批回显候选在当前现场是否该启用剔除。三条都得成立：
+ *   - 有候选（没 `tty_send` 过就无从判断，保持原语义）；
+ *   - 命令没在跑（`inCommand`：TUI 重画 / 长任务把输入文本画到屏上是真实输出）；
+ *   - 候选文本里没有 B 标记（有 B 就说明 shell 集成在管边界，回显已被切掉）。
+ */
+function echoStrippable(session, text) {
+    if (session.recentInputs.length === 0)
+        return false;
+    if (session.shellState.inCommand)
+        return false;
+    return lastCommandStart(text) === -1;
+}
+/**
+ * 把回显候选行从文本里削掉（保行结构）。按**行尾**匹配：cmd 的回显与提示符同行
+ * （`C:\>echo X`），所以只削后缀、保留提示符前缀。行尾空白（含 `\r`）先归一。
+ */
+function stripEchoLines(text, echoes) {
+    if (echoes.length === 0)
+        return text;
+    const sorted = [...echoes].sort((a, b) => b.length - a.length);
+    return text
+        .split('\n')
+        .map((line) => {
+        const trimmed = line.replace(/[ \t\r]+$/, '');
+        for (const echo of sorted) {
+            if (trimmed.endsWith(echo))
+                return trimmed.slice(0, trimmed.length - echo.length);
+        }
+        return line;
+    })
+        .join('\n');
+}
+/**
+ * 命中是否**只**落在回显上（纯回显 → 不算命中）。
+ * 原始流与清洗后文本各削一次：回显行里可能夹着 ANSI（zsh 的 zle / 彩色提示符）。
+ */
+function echoOnlyMatch(re, text, session) {
+    if (!echoStrippable(session, text))
+        return false;
+    const stripped = stripEchoLines(text, session.recentInputs);
+    const strippedClean = stripEchoLines(cleanAnsiTail(text), session.recentInputs);
+    return !testPattern(re, stripped) && !testPattern(re, strippedClean);
 }
 /** 宽松清洗一份 tunnels 输入；输入不是数组时返回 undefined（表示「未提供，保持原值」）。 */
 function sanitizeTunnels(input) {
@@ -1829,6 +1908,7 @@ export class TtyServer {
                 outputSeq: 0,
                 readSeq: -1,
                 readMarkAt: 0,
+                recentInputs: [],
                 buffer: '',
                 decoder: new StringDecoder('utf8'),
                 screen: this.createScreen(clampInt(cols, 80, 2, 500), clampInt(rows, 24, 2, 200)),
@@ -2100,6 +2180,7 @@ export class TtyServer {
                         outputSeq: 0,
                         readSeq: -1,
                         readMarkAt: 0,
+                        recentInputs: [],
                         buffer: '',
                         decoder: new StringDecoder('utf8'),
                         screen: this.createScreen(clampInt(msg.cols, 80, 2, 500), clampInt(msg.rows, 24, 2, 200)),
@@ -4105,7 +4186,7 @@ const plugin = definePlugin({
                         name: 'tty_expect',
                         // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
                         isConcurrencySafe: () => true,
-                        description: '在某个终端面板会话（tty_list 提供 sid）等待一个正则出现（如 dev server 的 ready/URL、构建完成标记、交互提示）。**先回溯**还没被读过的输出（含「上一条命令」的完整输出），再等后续输出——所以命令瞬间跑完也不会白等；匹配到立即返回 matched:true（matchedFrom 说明匹配来自哪里：live=本次等待期间新产生 / last=上一条命令的输出 / buffered=此前已到达的缓冲输出）与周边输出。超时不抛错，返回 matched:false + 尾部输出；期间该命令若已结束（shell 集成标记）也会提前返回并带退出码。适合先 tty_send 启动长任务、再 tty_expect 等就绪信号的流程。注意：只对「还没读过的输出」负责——要回看更早的内容用 tty_capture。',
+                        description: '在某个终端面板会话（tty_list 提供 sid）等待一个正则出现（如 dev server 的 ready/URL、构建完成标记、交互提示）。**先回溯**还没被读过的输出（含「上一条命令」的完整输出），再等后续输出——所以命令瞬间跑完也不会白等；匹配到立即返回 matched:true（matchedFrom 说明匹配来自哪里：live=本次等待期间新产生 / last=上一条命令的输出 / buffered=此前已到达的缓冲输出）与周边输出。**刚发进去的命令回显不算命中**（命令还没执行时回显先到，命中它等于谎报）；若等满超时且 pattern 只命中过回显，结果带 echoOnly:true——那说明命中的只是回显、不是输出（命令可能没被执行），先复核它到底跑没跑。超时不抛错，返回 matched:false + 尾部输出；期间该命令若已结束（shell 集成标记）也会提前返回并带退出码。适合先 tty_send 启动长任务、再 tty_expect 等就绪信号的流程。注意：只对「还没读过的输出」负责——要回看更早的内容用 tty_capture。',
                         parameters: {
                             sid: { type: 'string', required: true, description: '会话 id（来自 tty_list）' },
                             pattern: { type: 'string', required: true, description: '等待匹配的正则表达式（JavaScript RegExp 语法）' },
@@ -4121,6 +4202,7 @@ const plugin = definePlugin({
                                     text: { type: 'string', required: true },
                                     exitCode: { type: 'number' },
                                     matchedFrom: { type: 'string' },
+                                    echoOnly: { type: 'boolean' },
                                 },
                             },
                             render: (_args, value) => {
@@ -4130,6 +4212,10 @@ const plugin = definePlugin({
                                         ? '（回溯自「上一条命令」的输出）'
                                         : v.matchedFrom === 'buffered' ? '（回溯自此前已到达、还没读过的缓冲输出）' : '';
                                     return [{ type: 'text', text: `已匹配到等待的模式${from}：\n\n${v.text ?? ''}` }];
+                                }
+                                if (v.echoOnly === true) {
+                                    // D75：只命中过回显 —— 这不是「命令跑了但没输出」，而是「等的东西一次都没出现在输出里」
+                                    return [{ type: 'text', text: `等待超时：pattern **只匹配到刚发进去的命令回显**，没有匹配到任何真正的输出——命令可能没有被执行（回显先到、输出没来），也可能执行了但输出里没有这个 pattern。先复核它到底跑没跑（tty_capture 读尾部、或在面板里看那一行是否还停在输入行），再决定重发命令还是换 pattern。尾部输出：\n\n${v.text ?? ''}` }];
                                 }
                                 if (v.timedOut === true && (v.text ?? '').trim() === '') {
                                     // D72：这段空白此前被当成「命令没执行」——命令若是瞬间完成的，它早就跑完了
@@ -4171,6 +4257,8 @@ const plugin = definePlugin({
                                 // 尾部窗口：匹配只看最近 16KB，acc 全量囤积对刷屏会话可涨到数百 MB
                                 let acc = '';
                                 let settled = false;
+                                /** D75：pattern 只命中过回显（被剔除了）——超时文案据此如实说明「命令可能没跑」。 */
+                                let sawEchoOnly = false;
                                 let timer = null;
                                 const decoder = new StringDecoder('utf8');
                                 const output = session.handle.output;
@@ -4193,18 +4281,25 @@ const plugin = definePlugin({
                                         advanceReadMark(session);
                                     resolve(result);
                                 };
-                                function onData(chunk) {
+                                // 箭头函数（不是 function 声明）：后者会被提升，TS 不保留外层 `const session`
+                                // 的收窄，闭包里就得再判一次 undefined。
+                                const onData = (chunk) => {
                                     acc = (acc + decoder.write(chunk)).slice(-64 * 1024);
                                     const hay = acc.length > 16 * 1024 ? acc.slice(-16 * 1024) : acc;
                                     if (testPattern(re, hay)) {
-                                        finish({ matched: true, timedOut: false, matchedFrom: 'live', text: cleanAnsiTail(hay.slice(-6 * 1024)) });
-                                        return;
+                                        // D75：命中的若**只是刚送进去那行命令的回显**，不算命中——继续等真输出
+                                        if (echoOnlyMatch(re, hay, session))
+                                            sawEchoOnly = true;
+                                        else {
+                                            finish({ matched: true, timedOut: false, matchedFrom: 'live', text: cleanAnsiTail(hay.slice(-6 * 1024)) });
+                                            return;
+                                        }
                                     }
                                     // 命令早停：注册时命令在飞（B..D 之间），如今 D 已到仍未匹配
                                     if (startedInCommand && !state.inCommand && state.lastCommand !== null && state.lastCommand.endedAt >= startedAt) {
-                                        finish({ matched: false, timedOut: false, ...(state.lastCommand.exitCode === null ? {} : { exitCode: state.lastCommand.exitCode }), text: cleanAnsiTail(acc.slice(-6 * 1024)) });
+                                        finish({ matched: false, timedOut: false, ...(state.lastCommand.exitCode === null ? {} : { exitCode: state.lastCommand.exitCode }), ...(sawEchoOnly ? { echoOnly: true } : {}), text: cleanAnsiTail(acc.slice(-6 * 1024)) });
                                     }
-                                }
+                                };
                                 // ── 注册**之前**就已到达的输出（D72）─────────────────────────
                                 // 这段此前完全不匹配：acc 从空开始，所以「命令瞬间完成」时标记
                                 // 早就躺在缓冲区里、acc 里永远没有它 → 白等满超时、还只返回空白。
@@ -4220,11 +4315,16 @@ const plugin = definePlugin({
                                 // ② 泛化：水位线之后的未读缓冲（长驻输出落在多条命令之间、无 shell 集成……）
                                 const backlog = unreadRegion(session);
                                 if (backlog !== '' && testPattern(re, backlog)) {
-                                    finish({ matched: true, timedOut: false, matchedFrom: 'buffered', text: cleanAnsiTail(backlog.slice(-6 * 1024)) });
-                                    return;
+                                    // D75：同上——纯回显不算命中（Windows 上 LF 没提交时，这里命中的就只有回显）
+                                    if (echoOnlyMatch(re, backlog, session))
+                                        sawEchoOnly = true;
+                                    else {
+                                        finish({ matched: true, timedOut: false, matchedFrom: 'buffered', text: cleanAnsiTail(backlog.slice(-6 * 1024)) });
+                                        return;
+                                    }
                                 }
                                 timer = setTimeout(() => {
-                                    finish({ matched: false, timedOut: true, text: cleanAnsiTail(acc.slice(-6 * 1024)) }, false);
+                                    finish({ matched: false, timedOut: true, ...(sawEchoOnly ? { echoOnly: true } : {}), text: cleanAnsiTail(acc.slice(-6 * 1024)) }, false);
                                 }, timeoutMs);
                                 timer.unref?.();
                                 output.on('data', onData);
@@ -4271,6 +4371,8 @@ const plugin = definePlugin({
                             // D72：只初始化水位线，**不推进**——刚发出去的这条命令的输出 AI 还没看见；
                             // 但这一刻之前的积压不该被第一次 expect 当成「未读」回扫。
                             ensureReadMark(session);
+                            // D75：记下这行命令的回显候选，供 tty_expect 剔除「命中回显」的假阳性
+                            noteSubmittedInput(session, data);
                             await session.handle.write(data);
                             return { ok: true, sent: data.length };
                         },
