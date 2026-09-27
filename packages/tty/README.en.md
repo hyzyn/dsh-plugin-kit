@@ -76,6 +76,12 @@ Both were reproduced on **Windows 11 ARM (24H2) + Node 22 ARM64**. The fix:
   TERM / COLORTERM are meaningless for ConPTY and are no longer injected;
 - **“Run one command” tabs** (docker exec, command tabs opened by the agent) use `cmd /c` or
   `PowerShell -Command`;
+- **Input line-ending normalisation (D74, reported on real hardware 2026-09-27)**: conhost treats Enter as
+  **CR**, so a bare LF only moves the cursor down and **does not submit the command line** — `tty_send`
+  writing `echo X\n` as the tool description says leaves the command sitting on the input line (no output,
+  no new prompt, looking like “it was sent but never ran”). For **local sessions on win32** the plugin now
+  turns a bare LF into CRLF (an existing CRLF is not doubled; non-Windows and SSH sessions pass through
+  untouched), so the documented `\n` path just works;
 - **Three things are not supported** (the host turns them off and the settings card explains why):
   - **Shell integration (OSC 133/7)**: injection relies on POSIX rc stubs plus the `-c` wrapper, neither of
     which exists for cmd / PowerShell, so it is permanently off — **local** tabs therefore lose cwd tracking
@@ -110,7 +116,7 @@ The plugin injects sixteen tools into the agent (with the same power as the bash
 | `tty_capture` | Read recent output (last N lines, ANSI stripped by default, `raw:true` for the raw stream); **`last:true` returns only the output + exit code of the previous completed command** (shell integration markers, see the next section); when a command is **in flight** (just sent, completion marker not in yet) it returns `inProgress:true` without the stale result, so the previous command is never mistaken for this one (0.19.0) |
 | `tty_screen` | Read the **currently visible screen** as rendered (xterm-headless virtual screen, plain text) — it can genuinely read TUI interfaces such as vim / htop / menus |
 | `tty_expect` | Wait with a regex for a readiness signal (dev server URL, build finished, …). It **looks back first** at output that has not been read yet (including the full output of “the previous command”, so a command that finished instantly no longer burns the whole timeout) and then waits for subsequent output; on a hit it returns `matched:true` plus `matchedFrom` (`live` produced during this wait / `last` the previous command’s output / `buffered` buffered output that had already arrived). A timeout does not throw (`matched:false` + tail output, and it **does not consume the unread region**, so a different pattern can still look back at the same output), and a command that ends early also returns early with its exit code; the echo never counts as a hit (via the OSC 133 A..B boundary — see the next section for environments without markers); at most 5 in-flight calls per session, and the accumulated window keeps only the last 64KB (0.19.0; look-back matching, see D72) |
-| `tty_send` | Send keys/text to a given session (such as `q` to a dev server, or a menu selection) |
+| `tty_send` | Send keys/text to a given session (such as `q` to a dev server, or a menu selection). End a command with `\n`: on a **local Windows session** a trailing bare LF is normalised to CRLF (D74, see the “Windows hosts” section); non-Windows and SSH sessions pass through untouched |
 | `sftp_list` | List a remote SSH directory (name/type/size/mtime, directories first); `book` is the connection-book entry name and `path` defaults to the login home; at most 500 entries by default (`truncated:true` beyond that), and `isSymlink` distinguishes a symlink from a real directory (0.19.0) |
 | `sftp_read` | Read a remote **text** file (≤256KB by default, adjustable to 1MB, truncated beyond that); `offset` pages from a given byte (handy for log tails), an invalid `maxBytes` errors out instead of silently falling back, and binary detection is a double test (NUL + illegal-UTF-8 ratio) (0.19.0) |
 | `sftp_write` | Write a remote text file (overwrite by default, `append:true` appends; ≤1MB per call) |

@@ -87,6 +87,12 @@ function openSession(port) {
 /** ConPTY 里按 Enter 是 \r（顺带补 \n 兼容两种翻译），cmd 才会执行。 */
 const ENTER = '\r\n'
 
+/**
+ * 注册进来的 agent 工具定义（W6 要**直接调 `tty_send` 的工具路径**——D74 修的就是它）。
+ * 原先 stub 的 `register` 只吞掉返回值，等于这里没有 agent 工具入口。
+ */
+const TOOLS = new Map()
+
 async function run() {
   const app = new Context()
   const wsFiber = app.plugin(WebServerRuntime, { host: '127.0.0.1', port: 0 })
@@ -97,7 +103,7 @@ async function run() {
       // DSH ≥0.1.7 的 settings 服务（SettingsForms）：describe / update / configure。
       // 本用例不测配置持久化，空 describe 即可（插件的 settings effect 拿到空值）。
       ctx.provide('settings', { describe: () => [], update: async () => {}, configure: () => () => {} })
-      ctx.provide('tools', { register: () => () => {} })
+      ctx.provide('tools', { register: (definition) => { TOOLS.set(definition.name, definition); return () => {} } })
     },
   })
   await stubFiber.await()
@@ -171,6 +177,44 @@ async function run() {
     fail('W5 kill 后可重新 spawn', error.message)
   }
   try { s2.client.close() } catch { /* 已关闭 */ }
+
+  // W6：agent 侧 `tty_send` 发**裸 LF** 也能提交命令（D74，2026-09-27 真机报告）
+  //
+  // 为什么必须在真机上钉这条：报告的第 1 条是 conhost 的**真实行为**（Enter 是 CR，
+  // 裸 LF 只把光标下移、不提交命令行）。本地单测只能在 macOS/Linux 上 mock
+  // `process.platform` 验「插件有没有归一化」，验不了「归一化之后 conhost 真的执行了」。
+  // 这里用 `%OS%` 展开做判据，理由同 W3：回显里只有 `%OS%` 字面量。
+  console.log('\n[W6] tty_send 的 \\n 归一化（真实 conhost：裸 LF 不提交命令）')
+  let agentSid = null
+  try {
+    const open = TOOLS.get('tty_open')
+    const send = TOOLS.get('tty_send')
+    const capture = TOOLS.get('tty_capture')
+    if (open === undefined || send === undefined || capture === undefined) {
+      throw new Error('agent 工具没注册进 stub（注册到的：' + [...TOOLS.keys()].join(', ') + '）')
+    }
+    const opened = await open.execute({ cwd: process.cwd(), cols: 100, rows: 30 })
+    agentSid = opened.sid
+    await send.execute({ sid: agentSid, data: 'echo IT_LF_%OS%\n' })
+    const deadline = Date.now() + 15000
+    let tail = ''
+    for (;;) {
+      tail = String((await capture.execute({ sid: agentSid, lines: 60 })).tail ?? '')
+      if (/IT_LF_Windows_NT/.test(tail)) break
+      if (Date.now() > deadline) throw new Error('15s 内没等到 %OS% 展开；尾部：' + tail.slice(-300))
+      await sleep(200)
+    }
+    pass('W6 tty_send 的裸 LF 在 ConPTY 上提交并执行了命令（D74：win32 归一化成 CRLF）')
+  } catch (error) {
+    fail('W6 tty_send 的裸 LF 提交命令（D74）', error.message)
+  }
+  if (agentSid !== null) {
+    try {
+      await TOOLS.get('tty_close').execute({ sid: agentSid })
+    } catch {
+      /* 已关闭 */
+    }
+  }
 }
 
 await run()

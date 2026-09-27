@@ -156,6 +156,18 @@ export declare const Config: z;
  * 导出仅供单测（test/host-frames.test.ts）：平台参数注入，两个分支都能在 macOS/Linux 断言。
  */
 export declare function killLocalShellTerminal(terminal: unknown, platform?: NodeJS.Platform): void;
+/**
+ * Windows 本地 PTY 的**输入归一化**（D74，2026-09-27 真机报告）：conhost 把 Enter 当
+ * **CR**，裸 LF 只把光标下移一格、**不提交命令行**——于是 `tty_send` 按工具描述发
+ * `echo X\n` 时，命令停在输入行上：没有输出、没有新提示符，看起来像「发出去了但没执行」。
+ *
+ * 修法取报告建议里改动最小的一条：win32 上把行尾补成 CRLF（已有 CR 的不重复补），
+ * 让「照描述写 `\n`」这条主路径直接可用。非 win32 原样透传（POSIX 的 Enter 就是 LF），
+ * SSH 会话也不归一化（远端是什么系统、什么 shell 插件不知道，乱改会破坏 `cat` 之类的原始输入）。
+ *
+ * 导出仅供单测：平台参数注入，两个分支都能在 macOS/Linux 断言。
+ */
+export declare function normalizePtyInput(data: string, platform?: NodeJS.Platform): string;
 /** 一次「会话 → 帧」采集器的句柄（本地 = 定时器，SSH = 远端长驻 exec channel）。 */
 interface StatsCollector {
     stop(): void;

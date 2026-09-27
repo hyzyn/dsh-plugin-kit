@@ -75,6 +75,10 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
   没有意义，也不再注入；
 - **「跑一条命令」的标签**（docker exec、agent 起的命令标签）走 `cmd /c` 或
   `PowerShell -Command`；
+- **输入行尾归一化（D74，2026-09-27 真机报告）**：conhost 的 Enter 是 **CR**，裸 LF 只把光标
+  下移一格、**不提交命令行**——`tty_send` 按工具描述发 `echo X\n` 时命令停在输入行上（没有输出、
+  没有新提示符，看起来像「发出去了但没执行」）。**win32 的本地会话**上插件现在把裸 LF 补成 CRLF
+  （已经是 CRLF 的不重复补；非 Windows 与 SSH 会话原样透传），所以照描述写 `\n` 这条主路径直接可用；
 - **不支持的三项（宿主侧自动关掉，设置卡片里写明原因）**：
   - **shell 集成（OSC 133/7）**：注入靠 POSIX rc 桩 + `-c` 包装层，cmd / PowerShell 上都不成立，
     因此恒关 —— **本地标签**的 `tty_list.cwd` 跟随 `cd`、`tty_capture{last}` 与 `tty_expect`
@@ -104,7 +108,7 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
 | `tty_capture` | 读取近期输出（尾部 N 行，默认清洗 ANSI，`raw:true` 取原始流）；**`last:true` 只返回上一条已完成命令的输出 + 退出码**（shell 集成标记，见下节）；命令**在途**时（刚发送、完成标记未到）返回 `inProgress:true` 且不带旧结果——避免把上一条的输出当成这一条（0.19.0） |
 | `tty_screen` | 读取**当前可见屏幕**的渲染结果（xterm-headless 虚拟屏，纯文本）——能真正读懂 vim / htop / 菜单等 TUI 界面 |
 | `tty_expect` | 用正则等一个就绪信号（dev server URL、构建完成等）。**先回溯**还没被读过的输出（含「上一条命令」的完整输出，故命令瞬间跑完也不会白等），再等后续输出；命中即返回 `matched:true` + `matchedFrom`（`live` 本次等待期间新产生 / `last` 上一条命令的输出 / `buffered` 此前已到达的缓冲输出）。超时不抛错（`matched:false` + 尾部输出，且**不消耗未读区**——换个 pattern 还能回溯到同一段），命令提前结束也会带退出码早停；回显不算命中（靠 OSC 133 的 A..B 边界，无标记环境见下节）；同一会话在途调用最多 5 个，累积窗口只保留尾部 64KB（0.19.0；回溯匹配见 D72） |
-| `tty_send` | 向指定会话发送按键/文本（如 dev server 的 q 键、菜单选择） |
+| `tty_send` | 向指定会话发送按键/文本（如 dev server 的 q 键、菜单选择）。命令以 `\n` 结尾即可：**Windows 本地会话**上行尾裸 LF 会被归一成 CRLF（D74，见「Windows 宿主」一节），非 Windows 与 SSH 会话原样透传 |
 | `sftp_list` | 列出 SSH 远程目录内容（名称/类型/大小/修改时间，目录在前）；`book` 为连接簿条目名，`path` 缺省为登录 home；默认最多 500 项（超限 `truncated:true`），`isSymlink` 区分软链与真目录（0.19.0） |
 | `sftp_read` | 读取远程**文本**文件（默认 ≤256KB 可调至 1MB，超出截断）；`offset` 可从指定字节分页（适合读日志尾部），非法 `maxBytes` 直接报错，二进制判定 = NUL + 非法 UTF-8 占比双判据（0.19.0） |
 | `sftp_write` | 写远程文本文件（默认覆盖，`append:true` 追加；单次 ≤1MB） |
