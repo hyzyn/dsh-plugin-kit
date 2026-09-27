@@ -7698,14 +7698,19 @@ function TtySettingsCard(props) {
         ? null
         : jsxs('div', { className: 'tt_elevSteps', children: [
             jsx('span', { className: 'tt_cardHint', children: t('elev.step') }),
-            jsxs('div', { className: 'tt_elevCommand', children: [
-              jsx('code', { children: command }),
+            /*
+             * 命令独占一行，动作按钮另起一行**紧贴它**——与 docker 那份同一个排法。
+             * 早先把复制按钮塞在命令框里：命令一长就折行，按钮跟着文字尾巴跑，看起来像命令的
+             * 一部分（tt D73；2026-09-27 的真机报告正是照着这个观感提的）。
+             */
+            jsx('div', { className: 'tt_elevCommand', children: jsx('code', { children: command }) }),
+            jsxs('div', { className: 'tt_elevActions', children: [
               jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => void copyElevationCommand(), children: copied ? t('elev.copied') : t('elev.copy') }),
+              expired
+                ? jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => void beginElevation(), children: t('elev.regenerate') })
+                : jsx('span', { className: 'tt_cardHint', children: t('elev.expiresIn', { sec: seconds }) }),
             ] }),
             jsx('span', { className: 'tt_cardHint', children: expired ? t('elev.expired') : t('elev.waiting') }),
-            expired
-              ? jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => void beginElevation(), children: t('elev.regenerate') })
-              : jsx('span', { className: 'tt_cardHint', children: t('elev.expiresIn', { sec: seconds }) }),
           ] }),
       /*
        * 配置开关「看着开着」但没授权时，用户点它只会再发起一次授权——要**关掉配置**得有个单独

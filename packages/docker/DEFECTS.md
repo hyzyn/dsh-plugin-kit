@@ -7,8 +7,8 @@
 > 知道**当年坏了什么**，再查 [§2 编号字典](#2-编号字典这段代码为什么长这样) 知道**所以代码为什么
 > 写成这样**。
 >
-> **编号是硬契约**：`D01–D148` 是 `packages/docker` 内部序列，与 `packages/tty/DEFECTS.md` 的
-> `D01–D72` **不共享**；跨包引用请写「docker D03 / tty D12」。新缺陷接在 `D148` 之后，
+> **编号是硬契约**：`D01–D149` 是 `packages/docker` 内部序列，与 `packages/tty/DEFECTS.md` 的
+> `D01–D73` **不共享**；跨包引用请写「docker D03 / tty D12」。新缺陷接在 `D149` 之后，
 > **不得重号、不得回收空号**——源码里已有注释指向它们。
 
 > **本文不含**：逐条 postmortem（症状 / 现场复现 / 根因 / 修法 / 回归 / 反向验证）。
@@ -35,7 +35,7 @@
 
 ## 现状
 
-**已修 148 / 待修 0**，编号至 `D148`。逐条症状见 §1，设计意图见 §2，**还没做的见
+**已修 149 / 待修 0**，编号至 `D149`。逐条症状见 §1，设计意图见 §2，**还没做的见
 [ROADMAP.md](./ROADMAP.md)**。
 
 > ⚠️ **标注（本次未擅改）——两处口径不一致，原文未改：**
@@ -210,6 +210,7 @@
 
 | D147 | 可点的开关行**没有手型**：`input[type=checkbox]` 的 `cursor` 由浏览器 UA 样式定死（`default`），**不随 label 继承**——`.dk_check` / `.dk_capRow` 只给 label 写 `cursor: pointer` 时，鼠标停在最该点的那 16px 复选框上却是箭头（用户反馈：「这个没做手型」） | 两处都补 `.dk_check input[type="checkbox"], .dk_capRow input[type="checkbox"] { cursor: pointer }`；真机实测（CDP）label 与 checkbox 的 computed cursor 都是 `pointer` |
 | D148 | 「撤销宿主授权」与**同一个卡片里的 `删除`** 风格不一：删除（目标 / 指纹）是危险色，撤销却是中性灰——两处都是「按下去少一条记录、要重新配回来」的动作，红/灰混用会让人以为撤销可随手点；而且 tty 卡片那份 `tt_capRevoke` 本来就是危险色，同一个按钮在两个卡片里两种样子（用户反馈：「为什么撤销的按钮风格不统一」） | `className` 加上 `dk_btnDanger`（与那 6 个删除按钮**同一个类**，实测同为 `rgb(236, 19, 19)` + 危险色边框）；`dk_capRevoke` 只留「右对齐」那一条 |
+| D149 | 提权面板的动作按钮与说明文字**混排**：命令、复制、倒计时、等待说明、重新生成各占一条栅格行，「重新生成」被两行说明文字隔在下面——按钮离自己的命令越远，越像「不知道点了会发生什么」（2026-09-27 真机报告：Windows 缩放下的截图里这一整片读起来是散的）。同一份报告里的「这两个按钮没有手型」**未复现**：`.dk_btn` 从 docker 0.1.0 起就写着 `cursor: pointer`，CDP 实测 computed cursor 为 `pointer`、按钮中心命中自身；宿主 CSS 的 58 条 `cursor` 规则与全部 `html[data-platform=…]` 规则也压不掉它 | `client-src/index.js` 把「复制 / 重新生成 / 倒计时」并成 `.dk_elevActions` 一行、紧贴命令；`client-src/docker.css` 给面板与步骤容器加 `grid-template-columns: minmax(0, 1fr)` + `min-width: 0`（命令是等宽长串，auto 轨道按 max-content 会顶出卡片右边界，窄栏 + Windows 125%~150% 缩放最明显），动作行 `flex-wrap: wrap` 兜住极窄宽度。CDP 实测 360/420/520/700/900px 五种宽度：面板不溢出、命令在框内横向滚动、两个按钮均命中自身 |
 
 ## 2. 编号字典：这段代码为什么长这样
 

@@ -7345,23 +7345,32 @@ window.__ModuleLoader__.load({
             : jsxs('div', { className: 'dk_elevSteps', children: [
               jsx('span', { className: 'dk_hint', children: t('elev.step') }),
               jsx('code', { className: 'dk_elevCommand', children: String(elevation.command) }),
-              jsx('button', {
-                type: 'button',
-                className: 'dk_btn dk_btnPrimary',
-                onClick: () => copyCommand(String(elevation.command)),
-                children: copied ? t('elev.copied') : t('elev.copy'),
-              }, 'copy'),
-              jsx('span', {
-                className: seconds > 0 ? 'dk_hint' : 'dk_hint dk_hintWarn',
-                children: seconds > 0 ? t('elev.expiresIn', { sec: seconds }) : t('elev.expired'),
-              }),
+              /*
+               * 动作行：复制 / 重新生成 / 倒计时**并排一行、紧贴命令**。
+               *
+               * 早先这三样各自占一条栅格行，而且「重新生成」被「282 秒后失效」「等待确认…」两行
+               * 说明文字隔在下面——2026-09-27 的真机报告（Windows）里那块看上去就是散的：
+               * 按钮离自己的命令越远，越像「不知道点了会发生什么」。命令与它的按钮是一件事（docker D149）。
+               */
+              jsxs('div', { className: 'dk_elevActions', children: [
+                jsx('button', {
+                  type: 'button',
+                  className: 'dk_btn dk_btnPrimary',
+                  onClick: () => copyCommand(String(elevation.command)),
+                  children: copied ? t('elev.copied') : t('elev.copy'),
+                }, 'copy'),
+                jsx('button', {
+                  type: 'button',
+                  className: 'dk_btn',
+                  onClick: () => beginElevation(capability),
+                  children: t('elev.regenerate'),
+                }, 'regen'),
+                jsx('span', {
+                  className: seconds > 0 ? 'dk_hint' : 'dk_hint dk_hintWarn',
+                  children: seconds > 0 ? t('elev.expiresIn', { sec: seconds }) : t('elev.expired'),
+                }),
+              ] }),
               jsx('span', { className: 'dk_hint', children: t('elev.waiting') }),
-              jsx('button', {
-                type: 'button',
-                className: 'dk_btn',
-                onClick: () => beginElevation(capability),
-                children: t('elev.regenerate'),
-              }, 'regen'),
               jsxs('details', { className: 'dk_elevOther', children: [
                 jsx('summary', { children: t('elev.otherWay') }),
                 jsx('span', {

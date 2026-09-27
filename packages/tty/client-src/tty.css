@@ -1671,6 +1671,10 @@
 /* 授权面板：一段说明 + 一条要复制到宿主终端的命令。左侧色条把它与普通设置项区分开 */
 .tt_elevPanel {
   display: grid;
+  /* 单列且允许压到比内容窄：命令串是面板里最宽的东西，auto 轨道会按 max-content 撑开，
+     窄栏（Windows 125%~150% 缩放）下整块面板会顶出卡片右边界 */
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: var(--tt-gap-sm);
   padding: 10px 12px;
   border: 1px solid color-mix(in srgb, var(--tt-accent) 34%, transparent);
@@ -1686,6 +1690,8 @@
 }
 .tt_elevSteps {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: var(--tt-gap-sm);
 }
 .tt_elevCommand {
@@ -1693,6 +1699,15 @@
   align-items: center;
   gap: var(--tt-gap-sm);
   flex-wrap: wrap;
+  min-width: 0;
+}
+/* 命令的动作行：复制 / （过期时）重新生成 / 倒计时并排，紧贴命令，不与说明文字混排 */
+.tt_elevActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--tt-gap-sm);
+  min-width: 0;
 }
 .tt_elevCommand code {
   flex: 1 1 auto;

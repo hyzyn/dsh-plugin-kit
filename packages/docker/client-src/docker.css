@@ -2054,6 +2054,14 @@
  */
 .dk_elevPanel {
   display: grid;
+  /*
+   * 单列，且**允许轨道被压到比内容窄**（`minmax(0, 1fr)` 而不是默认的 auto）。
+   * 为什么必须有：面板里最宽的东西是那条等宽命令串，而 auto 轨道按 max-content 撑开——
+   * 命令一长，整块面板就顶出卡片右边界（窄栏 + Windows 常见的 125%~150% 缩放最明显）。
+   * 0 的下限让 `code` 的 `max-width: 100%` 真正生效，命令改成在框内横向滚动。
+   */
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: var(--dk-gap-sm);
   padding: var(--dk-gap-md) var(--dk-gap-lg);
   border: 1px solid color-mix(in srgb, var(--dk-accent) 34%, transparent);
@@ -2064,6 +2072,8 @@
 
 .dk_elevSteps {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: var(--dk-gap-sm);
   justify-items: start;
 }
@@ -2071,6 +2081,7 @@
 /* 命令要能整条读出来并三击选中：等宽、可横向滚动、不换行折断命令本身 */
 .dk_elevCommand {
   max-width: 100%;
+  min-width: 0;
   overflow-x: auto;
   padding: 6px 8px;
   border: 1px solid var(--dk-border);
@@ -2080,6 +2091,19 @@
   font-size: 12px;
   white-space: pre;
   user-select: all;
+}
+
+/*
+ * 命令的动作行：复制 / 重新生成 / 倒计时并排，紧贴命令（见 index.js 里那段注释）。
+ * 窄栏下允许换行，但**永远整行属于命令**，不与说明文字混排。
+ */
+.dk_elevActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--dk-gap-sm);
+  max-width: 100%;
+  min-width: 0;
 }
 
 .dk_elevOther > summary {
