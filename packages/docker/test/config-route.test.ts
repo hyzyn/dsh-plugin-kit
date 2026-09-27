@@ -15,8 +15,25 @@
  * 「非法值 400 且**没有**落进 settings scope」——后者才是那条链路的真正回归点。
  */
 import { EventEmitter } from 'node:events'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { __resetCapabilityGrantsForTest } from '@hyzyn/dsh-kit'
+
+/*
+ * 授权隔离：`apply()` 会按 `dshHome()` 打开 `<DSH home>/dsh-kit/capability-grants.json`（就地提权那条通道），而本文件
+ * 要断言「未授权 → 400」。不隔离的话，开发机上真用过一次就地提权之后，这组用例会在他机器上红、在
+ * CI 上绿——最坏的那种脆测试。做法与 `packages/codegraph/test/*` 一致：整个文件把 DSH_HOME 指到
+ * 临时目录。
+ */
+const originalDshHome = process.env.DSH_HOME
+const isolatedDshHome = mkdtempSync(join(tmpdir(), 'dsh-docker-cap-'))
+process.env.DSH_HOME = isolatedDshHome
+afterAll(() => {
+  if (originalDshHome === undefined) delete process.env.DSH_HOME
+  else process.env.DSH_HOME = originalDshHome
+  rmSync(isolatedDshHome, { recursive: true, force: true })
+})
 
 const spawnMock = vi.hoisted(() => vi.fn())
 vi.mock('node:child_process', () => ({ spawn: spawnMock }))
@@ -311,21 +328,19 @@ describe('GET /api/dsh-docker/config：ttyBookHosts', () => {
 })
 
 /* ------------------------------------------------------------------ *
- * 4. 能力开关：HTTP 只能降不能升（宿主侧授权是唯一提权通道）
+ * 4. 能力开关：HTTP 不能凭空升（提权只认启动环境快照，就地提权那条通道见 elevate-route.test.ts）
  * ------------------------------------------------------------------ */
 
 describe('能力开关的宿主侧授权（capability）', () => {
   /*
-   * 本组用例**刻意不设**环境变量，并且开头清一次采样缓存：能力授权进程内只采样一次，
-   * 而同 worker 里别的测试文件可能已把它采成「已授权」——不清就会变成靠执行顺序取胜的脆测试。
+   * 本组用例**刻意不设**环境变量。授权来源由每个 `mountPlugin()` 里的 `apply()` 重新绑定
+   * （绑定 = 重采样，见 kit 的 bindCapabilitySources），所以不需要「清采样缓存」这种东西——
+   * 每个用例都是一个新宿主。清环境变量仍然必要：绑定前的兜底路径会读 process.env 的快照，
+   * 而 vitest 复用 worker 进程，变量会漏给后面的文件。
    */
   beforeEach(() => {
     delete process.env.DSH_DOCKER_ALLOW_MUTATIONS
     delete process.env.DSH_DOCKER_ALLOW_EXEC
-    __resetCapabilityGrantsForTest()
-  })
-  afterAll(() => {
-    __resetCapabilityGrantsForTest()
   })
 
   it('未授权时 POST allowMutations=true → 400，文案点名环境变量与「重启宿主」，且不落盘', async () => {
@@ -366,7 +381,6 @@ describe('能力开关的宿主侧授权（capability）', () => {
 
   it('有宿主授权时 POST=true 被接受，快照把「已授权」如实回给客户端', async () => {
     process.env.DSH_DOCKER_ALLOW_MUTATIONS = '1'
-    __resetCapabilityGrantsForTest()
     const harness = mountPlugin()
     const { status, json } = await postConfig(harness, { allowMutations: true })
     expect(status).toBe(200)

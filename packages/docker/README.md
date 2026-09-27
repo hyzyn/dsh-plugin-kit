@@ -11,7 +11,7 @@
 - **多目标聚合取数**：总览页对全部 `targets[]` 并行请求，单个目标不可达只污染自己那一格；agent 侧同一口径由 `docker_ps target:"*"` / `docker_attention target:"*"` 暴露，跨目标不互相阻塞。
 - **「需关注」读权威字段**：不健康 / 反复重启 / OOM 被杀 / 非零退出 / 僵死；OOM 与真实退出码由一次 `docker inspect` 补齐——`docker ps` 摘要里的 137 分不出 OOM 与手动 kill，只按摘要筛必然误报。
 - **四条 SSE 长流共用一套基建**：日志 FOLLOW、`docker stats`、`docker events`、`docker pull` 走同一个 `openSseStream`（心跳 / 活跃流登记 / 断开清理），差异只在收尾语义——日志与拉取自然结束，统计与事件由前端主动断。多选聚合日志按 `--timestamps` 前缀还原跨容器真实时序，「暂停」只冻结渲染（流继续接收，恢复时一次性补齐）。
-- **默认只读，能力开关分三级**：启停删 / exec / 镜像变更各自独立开关，未开启时 agent 工具**不注册**、HTTP 路由 403（能力不存在，而非调用后报错）；开关的**提权只认宿主侧环境变量**（见下条）；容器名与 ID 过白名单，命令一律 argv 构造 + 单引号转义，密码 / 口令以 `env:NAME` **凭据引用**（官方凭据层解析，缺失时退回环境变量）且永不回传浏览器。
+- **默认只读，能力开关分三级**：启停删 / exec / 镜像变更各自独立开关，未开启时 agent 工具**不注册**、HTTP 路由 403（能力不存在，而非调用后报错）；开关的**提权走两条带外通道**（启动环境变量 / 卡片里就地确认，见下条）；容器名与 ID 过白名单，命令一律 argv 构造 + 单引号转义，密码 / 口令以 `env:NAME` **凭据引用**（官方凭据层解析，缺失时退回环境变量）且永不回传浏览器。
 - **与 dsh-tty 数据级复用、代码级不耦合**：不 import 任何 tty 代码，tty 也无需改一行源码，两者可各自安装与升级；装了 tty 则消费三个可选扩展点——连接栏动作（`ttyConnbar`）、终端承载（`ttyTerminal`：标签 / dock 承载下经 `open` 新开标签，模态下经 `mount` 就地嵌入抽屉）、以及只在兜底路径用到的终端右侧 dock（`ttyPanel.mountPane`）；未装或版本不足逐项静默降级。
 
 ## 与 dsh-tty 的关系
@@ -382,9 +382,18 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
 
 ## 配置（设置 → 插件 → Docker 容器面板，保存即热生效）
 
-未获宿主授权时，设置卡片里那两个开关**点不动**并附一行说明（说清设哪个变量、要重启宿主）——
-不是「点了报错」，因为那会变成「点一下、弹一句、再点一下」的循环，用户看不出这是刻意的闸门；
-**关掉**永远可用（宿主侧不拦降权）。
+未获宿主授权时，设置卡片里那两个开关**点它会就地发起一次授权**：面板给出一条「在宿主终端执行」
+的命令，执行完十秒内自动解锁并替你打开开关（免重启）；面板里另有「另一种方式（最强）」说明
+启动环境变量的做法。已授权时它们就是普通开关，**关掉**永远可用（宿主侧不拦降权）。
+「配置开着但没授权」会显示「未生效：未获宿主授权」徽标——这个状态最容易被当成插件坏了，
+所以必须有个名字。**一个能力一行**：开关后面跟这个能力自己的授权状态与**授权时刻**（`已授权 · 2026-09-26 22:31:08`），
+撤销按钮右对齐——两个能力的授权是分开的，并排放会看不出哪个撤销管哪个能力。
+
+为什么显示时刻：带外授权是**持久**的——宿主重启后它**直接生效、不再有任何一次确认**。也就是说
+「上个月授权的能力今天一开机就开着」这件事不会有任何提示，除非界面与日志说出来。所以宿主启动时会
+逐条打一行 `[dsh-docker] elevation: load capability=… via=file grantedAt=…`（不含 nonce 与路径），
+卡片上也把它显示出来。启动环境变量授权**没有**时刻（它就是启动环境的一部分，编一个假时间更糟），
+那一行显示的是「由启动环境变量授权；要撤销需在启动环境里去掉它并重启宿主」。
 
 ![设置卡片：目标 CRUD、能力开关与参数，保存即热生效](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-docker-setting.png)
 
@@ -400,7 +409,7 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
 | `announceToAgent` | true | 是否向 agent 注入能力公告（systemPrompt section `plugin:dsh-docker`） |
 | `dockerBin` | `docker` | docker CLI 可执行名或路径（podman 可填 `podman`）；只允许字母、数字与 `_ . / \ : -` 及内部空格，且不能以 `-` 开头（**Windows 盘符与 `\` 必须放行**，否则任何绝对路径都填不进来） |
 | `allowMutations` | false | 允许**变更操作**：容器 start / stop / restart / remove、镜像删除 / dangling 清理 / 拉取（面板按钮与 `docker_action`、`docker_image_remove`、`docker_image_prune`、`docker_image_pull` 工具；关闭时 `/action`、`/images/remove`、`/images/prune`、`/images/pull/stream` 返回 403，对应工具不注册） |
-| —（能力授权） | 未授权 | `allowMutations` / `allowExec` 的**提权只认宿主侧环境变量**（`DSH_DOCKER_ALLOW_MUTATIONS` / `DSH_DOCKER_ALLOW_EXEC`，值为 `1` / `true` / `yes` / `on`），且**进程启动时采样一次**：HTTP 侧永远可以**关掉**它们（紧急刹车不能依赖重启），但给 `true` 会被 400 拒绝并说清「设哪个变量 + 重启宿主」。配置里的 `true` **不算授权**（它与 HTTP 写进去的值存在同一个存储里，分不出来源）。**升级影响**：升级前靠界面打开的开关会变成关——要恢复就设环境变量并重启宿主。**为什么**：回环围栏与同源证明都拦不住本机盲发进程（它能自己填 `Sec-Fetch-Site: same-origin`），而 docker socket 等价目标主机 root；细节与威胁模型边界见 [architecture.md § 7](../../docs/architecture.md#7-一条请求经过什么) |
+| —（能力授权） | 未授权 | `allowMutations` / `allowExec` 有**两条提权通道**：① **启动环境变量**（`DSH_DOCKER_ALLOW_MUTATIONS` / `DSH_DOCKER_ALLOW_EXEC`，值为 `1` / `true` / `yes` / `on`）——判定源是宿主的**启动环境快照**，只认继承来的 `process` 层：写项目 `.env` 或 `~/.dsh/env.yml` **不算**授权；② **就地提权**（免重启）：在设置卡片点开关 → 面板给出一条「在宿主终端执行」的命令 → 执行后十秒内生效。HTTP 侧永远可以**关掉**它们（紧急刹车不能依赖重启），但给 `true` 而无授权会被 400 拒绝并说清两条路。配置里的 `true` **不算授权**（它与 HTTP 写进去的值存在同一个存储里，分不出来源）。**升级影响**：升级前靠界面打开的开关会变成关——设环境变量重启，或在卡片里就地确认。**为什么**：回环围栏与同源证明都拦不住跨站页面与页内脚本（它们能自己填 `Sec-Fetch-Site: same-origin`），而 docker socket 等价目标主机 root；细节（含拦不住谁）见 [architecture.md § 7](../../docs/architecture.md#7-一条请求经过什么) |
 | `allowExec` | false | 允许一次性 `docker exec`（面板 exec 输入与 `docker_exec` 工具；关闭时 `/exec` 返回 403） |
 | `execTimeoutSec` | 30 | exec 默认超时秒数（1~120） |
 | `pollIntervalSec` | 5 | 面板统计刷新间隔秒数（1~60） |

@@ -7,13 +7,14 @@
 > 知道**当年坏了什么**，再查 [§2 编号字典](#2-编号字典这段代码为什么长这样) 知道**所以代码为什么
 > 写成这样**。
 >
-> **编号是硬契约**：`D01–D140` 是 `packages/docker` 内部序列，与 `packages/tty/DEFECTS.md` 的
-> `D01–D67` **不共享**；跨包引用请写「docker D03 / tty D12」。新缺陷接在 `D140` 之后，
+> **编号是硬契约**：`D01–D148` 是 `packages/docker` 内部序列，与 `packages/tty/DEFECTS.md` 的
+> `D01–D72` **不共享**；跨包引用请写「docker D03 / tty D12」。新缺陷接在 `D148` 之后，
 > **不得重号、不得回收空号**——源码里已有注释指向它们。
 
 > **本文不含**：逐条 postmortem（症状 / 现场复现 / 根因 / 修法 / 回归 / 反向验证）。
 > 那是 commit message / PR description 的内容；本文只留**结论与取舍**，正文在哪见
 > [§4 冻结记录](#4-冻结记录被移出正文的内容在哪)。
+
 
 ## 维护规则
 
@@ -34,7 +35,7 @@
 
 ## 现状
 
-**已修 140 / 待修 0**，编号至 `D140`。逐条症状见 §1，设计意图见 §2，**还没做的见
+**已修 148 / 待修 0**，编号至 `D148`。逐条症状见 §1，设计意图见 §2，**还没做的见
 [ROADMAP.md](./ROADMAP.md)**。
 
 > ⚠️ **标注（本次未擅改）——两处口径不一致，原文未改：**
@@ -200,6 +201,15 @@
 | D138 | 单目标数据路由的目标侧失败（SSH 不可达 / 私钥读不到 / docker 不在）被统一写成 **500**，而 `target:'*'` 对同一件事回 200 + `groups[].ok:false`——同一句错误两种形状，「目标不可达」被当成服务端故障 | src/index.ts |
 | D139 | 桌面版四条流全断：桌面壳把 `dsh-app://app/api/…` 的请求转给宿主时删掉 `Origin` / `Sec-Fetch-Site`、只重写 `Cookie`，而 D32 的同源证明要求两者之一 → 四条 SSE 与八条变更路由在桌面版**全部** 403；客户端看到的是无限「连接中断，正在自动重连…」+ 0 行日志，宿主侧当时**一条日志都没有**（同面板的只读路由照常可用，所以看着像"只有流坏了"） | src/index.ts、test/logs-stream.test.ts、test/streams.test.ts、README.md、README.en.md |
 | D140 | 代理命令（ProxyCommand）失败时的错误文案**可能只剩一句「连接已关闭」**：ssh2 一看到流断了就报错，而「子进程退出 / 传输关闭」这两个事件比它晚 1~2ms，那一刻失败事实还是 null → 用户拿不到子进程自己打印的原因（`ECONNREFUSED` / `Cannot find module` 这类）。**只有真机验收能暴露**（真 ssh2 + 真子进程的时序） | src/ssh-exec.ts、test/ssh-proxy-command.test.ts |
+| D141 | 能力开关的有效值（**配置 && 已授权**）被折叠进 `live`，而 `applySection` 重算的输入也是 `live`——于是「配置早就是 true、之后才拿到授权」这一路永远回不到有效值：授权到了、破坏档工具却不注册（半个状态）。`onGrantChange` 里调 `applySection({})` 也救不回来，因为折叠后的 `false` 已经把配置里的 `true` 吃掉了 | src/index.ts（把**配置值**单独留一份 `configuredCapabilities`，重算时用它覆盖折叠值）、test/elevate-route.test.ts（配置预言 true + 授权到达 → 工具立即注册，且全程**没有** `/config` 写入） |
+| D142 | `snapshot()` 只回 `*Granted`，不回**配置值**与**授权来源**：「配置开着但没获授权」这个状态在界面上无法表达（只剩一句长黄字，用户多半当成插件坏了），「撤销」入口也无从区分带外授权（可撤销）与启动环境授权（撤不了，只能去改启动环境） | src/index.ts（新增 `*Configured` / `*GrantSource`）、client-src/index.js（未生效徽标 + 来源行）、test/elevate-route.test.ts |
+| D143 | 设置卡片有 6 处文案带字面 `**`（`hint.byteCap` / `hint.logTailDefault` / `hint.maxOutput` 的 zh 与 en）——客户端没有 markdown 渲染器，用户看到的是两个星号 | client-src/index.js（改成「」/ “”）（目录头注释里写明这条规矩） |
+| D144 | 同源证明的判据是「**精确子路径** + POST」：`/elevate` 族有三条子路由，只把 `'/elevate'` 写进 `MUTATION_SUBROUTES`（或把某一条做成 GET）会让另外两条**裸奔**——跨站页面能撤销授权、能反复对着确认挑战试错。**从测试里才发现**：一开始把整段分发写在证明检查**之前**，等于所有子路由都不设防 | 三条子路径**逐条**列入 `MUTATION_SUBROUTES`、全做成 POST、分发挪到证明检查之后；test/elevate-route.test.ts 逐条断言 403（并核对错误文案是「同源证明」那条） |
+| D145 | 建连失败时 ssh2 会 emit **不止一个** `error`（socket 层一次、client 层的「握手完成前关闭」再一次），而 `acquire()` 用的是 `client.once('error')`：第一个 error 消费掉监听之后，第二个成了「没有监听者的 `error` 事件」——Node 按约定**直接抛成 uncaught exception**。症状是「目标不可达」这条最平常的路径把进程带崩：本机 `pnpm test` 22 条断言全过、**退出码却是 1**（vitest 只把它记成 runner 级 Unhandled Error，任何断言都不会变红，所以既有用例在修之前也一直是绿的） | `client.on('error')` / `client.on('close')` 常驻（`settleError` 已按 `settled` 幂等，重复进来是 no-op）；test/ssh-connect.test.ts 新增一条**自己接住 `uncaughtException` 并断言「一次都没发生」**的用例——反向验证过：把两处改回 `once` 就能让它红 |
+| D146 | 同一个设置卡片里两种「删除」外观：目标行的删除按钮是 `.dk_btnDanger`（红框、按内容宽、右对齐），TOFU 指纹行那一处却只写了 `.dk_btn`——于是它既不吃 `.dk_targetRow > .dk_btnDanger { justify-self: end }`（被拉满 150px 的操作列），又是中性色。两行用的是**同一套**列模板（`1fr 96px 1fr 150px`），同一个卡片里两种删除说不通 | TOFU 那处补上 `dk_btnDanger`；CSS 规则改成按**位置**生效（`.dk_targetRow > .dk_btn, .dk_targetRow > .dk_btnDanger`），后来人换类名也不会掉出去。实测 6 个按钮（3 目标 + 3 指纹）类名 / 宽度 50 / 右缘 1067 / 边框与文字色全同 |
+
+| D147 | 可点的开关行**没有手型**：`input[type=checkbox]` 的 `cursor` 由浏览器 UA 样式定死（`default`），**不随 label 继承**——`.dk_check` / `.dk_capRow` 只给 label 写 `cursor: pointer` 时，鼠标停在最该点的那 16px 复选框上却是箭头（用户反馈：「这个没做手型」） | 两处都补 `.dk_check input[type="checkbox"], .dk_capRow input[type="checkbox"] { cursor: pointer }`；真机实测（CDP）label 与 checkbox 的 computed cursor 都是 `pointer` |
+| D148 | 「撤销宿主授权」与**同一个卡片里的 `删除`** 风格不一：删除（目标 / 指纹）是危险色，撤销却是中性灰——两处都是「按下去少一条记录、要重新配回来」的动作，红/灰混用会让人以为撤销可随手点；而且 tty 卡片那份 `tt_capRevoke` 本来就是危险色，同一个按钮在两个卡片里两种样子（用户反馈：「为什么撤销的按钮风格不统一」） | `className` 加上 `dk_btnDanger`（与那 6 个删除按钮**同一个类**，实测同为 `rgb(236, 19, 19)` + 危险色边框）；`dk_capRevoke` 只留「右对齐」那一条 |
 
 ## 2. 编号字典：这段代码为什么长这样
 

@@ -1290,10 +1290,19 @@ export class RemoteExec {
         entry.lastUsed = Date.now()
         resolveReady(client)
       })
-      client.once('error', (error: Error) => {
+      /*
+       * `on` 而不是 `once`（D145）：**同一次建连失败**里 ssh2 会 emit 不止一个 `error`——
+       * socket 层报一次，client 层的「握手完成前关闭」再报一次。`once` 会在第一个 error 之后
+       * 把监听摘掉，第二个就成了「没有监听者的 `error` 事件」，Node 按约定**直接抛成 uncaught
+       * exception**：于是「目标不可达」这条最平常的路径会把整个进程带崩（本机实测：`pnpm test`
+       * 22 条断言全过、退出码却是 1）。监听器常驻即可——`settleError` 自己按 `settled` 幂等，
+       * 重复进来是 no-op（后到的那个 error 本来也没什么新信息可报）。
+       */
+      client.on('error', (error: Error) => {
         settleError(describe(error, `SSH 连接失败（${targetWithJump(spec)}）`))
       })
-      client.once('close', () => {
+      // 同理常驻：重复的 close 是 no-op（条目已摘、跳板机与代理命令已收）
+      client.on('close', () => {
         // 先取下代理命令的失败事实再收尾：closeTransport() 会把 entry.proxy 清掉，
         // 那时再取就永远是空串了（这正是「错误文案里少了最有用的那一句」的经典成因）
         const proxySuffix = proxyFailureSuffix(entry.proxy)

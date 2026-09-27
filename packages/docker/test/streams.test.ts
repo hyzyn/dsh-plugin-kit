@@ -13,7 +13,6 @@
  */
 import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest'
-import { __resetCapabilityGrantsForTest } from '@hyzyn/dsh-kit'
 
 const spawnMock = vi.hoisted(() => vi.fn())
 vi.mock('node:child_process', () => ({ spawn: spawnMock }))
@@ -33,20 +32,18 @@ import { apply, formatBytes, sseFrame } from '../src/index.js'
 
 /*
  * 能力开关的**宿主侧授权**：这个文件测的是「授权之后开关照旧可用」（工具注册 / 路由放行），
- * 所以在这里模拟「宿主启动时就带了授权环境变量」。授权进程内只采样一次（见 kit 的
- * capability.js），而每个用例的 mount 都会重新走 apply → 首次查询就读到这里的值。
+ * 所以在这里模拟「宿主启动时就带了授权环境变量」。授权来源由每个用例的 `apply()` 重新绑定
+ * （绑定即重采样，见 kit 的 bindCapabilitySources），所以变量在这里先设好即可。
  * `afterAll` 必须清掉：vitest 复用 worker 进程，环境变量会漏给后面的测试文件
  * （那会让「未授权」的用例在别的文件里静默变成已授权）。
  */
 beforeAll(() => {
   process.env.DSH_DOCKER_ALLOW_MUTATIONS = '1'
   process.env.DSH_DOCKER_ALLOW_EXEC = '1'
-  __resetCapabilityGrantsForTest()
 })
 afterAll(() => {
   delete process.env.DSH_DOCKER_ALLOW_MUTATIONS
   delete process.env.DSH_DOCKER_ALLOW_EXEC
-  __resetCapabilityGrantsForTest()
 })
 
 /* ------------------------------------------------------------------ *

@@ -315,4 +315,34 @@ describe('第二轮修复的回归', () => {
     expect(Date.now() - started).toBeLessThan(8_000)
     remote.disposeAll()
   })
+
+  /**
+   * D145：同一次建连失败里 ssh2 会 emit **不止一个** `error`（socket 层一次、client 层的
+   * 「握手完成前关闭」再一次）。监听器若是 `once`，第二个 error 就是「没有监听者的 error 事件」，
+   * Node 按约定直接抛成 uncaught exception——断言全过、进程退出码却是 1（本机 2026-09-26 实测）。
+   *
+   * 为什么必须单独一条用例：这类泄漏**不会让任何断言变红**（vitest 只把它记成 runner 级
+   * Unhandled Error），所以既有用例在修之前也是「22 passed」。这里自己接住 uncaughtException
+   * 并断言「一次都没发生」，把不可见的那一侧变成可断言的。
+   */
+  it('建连失败期间 ssh2 的重复 error 不会被抛成 uncaught（D145）', async () => {
+    vi.stubEnv('DSH_DOCKER_CONNECT_TIMEOUT_MS', '300')
+    const logger: ExecLogger = { info: () => {}, warn: () => {} }
+    const store: HostKeyStore = { get: () => undefined, record: () => {} }
+    const remote = new RemoteExec(logger, store)
+    const uncaught: unknown[] = []
+    const onUncaught = (error: unknown): void => {
+      uncaught.push(error)
+    }
+    process.on('uncaughtException', onUncaught)
+    try {
+      await expect(remote.run({ host: '203.0.113.1', port: 2222, username: 'nobody' }, ['true'])).rejects.toThrow(/SSH/)
+      // 重复的 error 来自 socket 的**后续**回调：等一会儿，让它在断言之前到达
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      expect(uncaught.map((error) => (error instanceof Error ? error.message : String(error)))).toEqual([])
+    } finally {
+      process.off('uncaughtException', onUncaught)
+      remote.disposeAll()
+    }
+  })
 })

@@ -22,7 +22,7 @@ import { join } from 'node:path'
 
 /*
  * 能力开关的**宿主侧授权**：本脚本要测「开关能打开」（第 5 节），所以必须在挂载插件**之前**
- * 设好环境变量——能力授权进程内只采样一次（见 kit 的 capability.js），挂载后再设就没用了。
+ * 设好环境变量——授权来源在 `apply()` 里绑定（见 kit 的 bindCapabilitySources），挂载后再设没用了。
  * 真实部署里这也是唯一的提权通道：HTTP 侧只能关闭、不能打开（那一半由第 5b 节断言）。
  */
 process.env.DSH_DOCKER_ALLOW_MUTATIONS = '1'

@@ -501,6 +501,9 @@
 }
 
 .dk_check input { accent-color: var(--dk-accent); }
+/* 同上：复选框的 cursor 不随 label 继承（UA 样式），要单独写 */
+.dk_check input[type="checkbox"],
+.dk_capRow input[type="checkbox"] { cursor: pointer; }
 
 /*
  * 工具条末尾的两个开关（含已停止 / 自动刷新）成组：它们是一个「开关簇」，工具条在宽面板里
@@ -1978,7 +1981,14 @@
   background: var(--dk-surface-2);
 }
 
-/* 删除按钮靠右，不跟着列宽被拉长 */
+/*
+ * 操作列的按钮：靠右、按内容宽度（不跟着 150px 的列宽被拉长）。
+ *
+ * 两种类都要写：TOFU 指纹行那一处的删除按钮早先只写了 `.dk_btn`（D146），于是它既不吃这条
+ * `justify-self`（被拉满整列）又不是危险色——同一个卡片里出现两种「删除」外观。规则按**位置**
+ * （操作列的直接子按钮）而不是按**类名**生效，后来人换类名也不会掉出去。
+ */
+.dk_targetRow > .dk_btn,
 .dk_targetRow > .dk_btnDanger { justify-self: end; }
 
 /*
@@ -1992,6 +2002,90 @@
 }
 .dk_hintWarn {
   color: var(--dk-warn);
+}
+
+/*
+ * 能力开关区：**一个能力一块**（复选框 | 文字，第二行是它自己的授权状态）。
+ *
+ * 为什么不做成「两个开关并排 + 底下一行授权状态」：授权是**逐能力**的（`file` 通道一条一个），
+ * 并排时两个「撤销宿主授权」按钮挨在一起，没人看得出哪个撤的是哪个能力——界面说了，但没说清。
+ *
+ * 为什么是两列网格（而不是一行 flex + 换行）：状态行要左对齐到**文字**（不是复选框），并且
+ * 撤销按钮要落在同一竖线上。flex 换行的实现实测在这两点上都不成立——标签长度随语言变，
+ * 长标签那行会把状态整组挤到下一行、按钮右缘也和短标签那行差 200px（见 client-src 里的注释）。
+ * 网格的两列是确定写法：第一列是复选框，第二列同时放「文字」与「状态」。
+ */
+.dk_capList {
+  display: grid;
+  gap: var(--dk-gap-sm);
+}
+.dk_capRow {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--dk-gap-xs) var(--dk-gap-sm);
+}
+.dk_capLabel {
+  font-size: 12px;
+  color: var(--dk-label-2);
+  cursor: pointer;
+  user-select: none;
+}
+.dk_capRow input[type="checkbox"] { accent-color: var(--dk-accent); }
+.dk_capState {
+  /* 显式落在第二列：它跟的是「文字」那一列的左缘，而不是行左缘 */
+  grid-column: 2;
+  display: flex;
+  align-items: center;
+  gap: var(--dk-gap-sm);
+  /* 与 .dk_hint 同档：它是说明性文字，不该跟开关抢注意力 */
+  font-size: 11px;
+  color: var(--dk-label-3);
+  line-height: 1.6;
+}
+/* 撤销按钮推到第二列右缘：两个能力的按钮落在同一条竖线上，不会跟着标签长度左右跳 */
+.dk_capRevoke {
+  margin-left: auto;
+}
+
+/*
+ * 就地授权面板：一段「带外确认」的说明 + 一条要复制到宿主终端的命令。
+ * 左侧色条把它与普通设置项区分开——它不是配置项，是一个**动作区**。
+ */
+.dk_elevPanel {
+  display: grid;
+  gap: var(--dk-gap-sm);
+  padding: var(--dk-gap-md) var(--dk-gap-lg);
+  border: 1px solid color-mix(in srgb, var(--dk-accent) 34%, transparent);
+  border-left: 3px solid var(--dk-accent);
+  border-radius: var(--dk-r-md);
+  background: color-mix(in srgb, var(--dk-accent) 6%, transparent);
+}
+
+.dk_elevSteps {
+  display: grid;
+  gap: var(--dk-gap-sm);
+  justify-items: start;
+}
+
+/* 命令要能整条读出来并三击选中：等宽、可横向滚动、不换行折断命令本身 */
+.dk_elevCommand {
+  max-width: 100%;
+  overflow-x: auto;
+  padding: 6px 8px;
+  border: 1px solid var(--dk-border);
+  border-radius: 4px;
+  background: var(--dk-surface-2);
+  font-family: var(--dk-mono);
+  font-size: 12px;
+  white-space: pre;
+  user-select: all;
+}
+
+.dk_elevOther > summary {
+  cursor: pointer;
+  color: var(--dk-label-2);
+  font-size: 12px;
 }
 
 .dk_targetInline {

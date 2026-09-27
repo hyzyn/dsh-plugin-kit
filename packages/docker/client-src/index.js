@@ -28,6 +28,8 @@ import { subscribeLogStream, reconnectTail, LOG_RECONNECT_BASE_MS, LOG_RECONNECT
  * 界面文案走宿主 `@deepseek-ai/dsh-client-locale` 的目录（方案见 docs/i18n.md）。
  * 目录**内联在本文件**（不是单独一个模块）：scripts/build-client.mjs 用 esbuild 打包单文件，
  * 目录另起文件只会多一处构建面；下面这一对目录由 `scripts/check-i18n.mjs` 静态校验——
+ * **文案里不许出现字面 `**`**（D143）：浏览器半体没有 markdown 渲染器，用户看到的就是两个星号；
+ * 强调用「」/ “” 或直接换行，`check-i18n.mjs` 不查这一条，只能靠人守。
  * zh/en 键集一致、`{name}` 占位符两边一致、代码里 `t('…')` 用到的键必须在这里有定义。
  *
  * 兄弟模块（log-stream.js 等）不 import 本文件（会成环），需要 `t` 时**当参数传进去**。
@@ -195,7 +197,7 @@ const I18N_ZH = {
   'hint.bufferExceeded': '日志超出缓冲上限（{lines} 行 / {mb}MB），已丢弃最早内容',
   'hint.streamKeepsRecent': '流式日志只保留最近的行；需要完整历史请关掉 FOLLOW 用快照，或调小「LINES」。',
   'hint.outputTruncated': '日志输出超过「输出上限（{kb}KB）」，已截断',
-  'hint.byteCap': '这是**字节**上限，不是行数上限——所以 LINES 选了 5000 也可能只回来一部分。想多留日志请到设置卡片调大「输出上限（KB）」，或打开 FOLLOW（流式不受它约束）。',
+  'hint.byteCap': '这是「字节」上限，不是行数上限——所以 LINES 选了 5000 也可能只回来一部分。想多留日志请到设置卡片调大「输出上限（KB）」，或打开 FOLLOW（流式不受它约束）。',
   'list.waitingLogs': '等待日志…',
   'list.noLogs': '(无日志)',
   'list.noMatchingLogs': '(无匹配日志)',
@@ -458,15 +460,37 @@ const I18N_ZH = {
   'hint.dockerBin': '默认 docker；podman 可填 podman',
   'field.pollInterval': '统计刷新间隔（秒）',
   'field.logTailDefault': '日志默认行数',
-  'hint.logTailDefault': '面板日志页 LINES 的初始值（面板内可临时改）；它只是**行数**上限——快照还要过下面那道字节闸，所以不保证一定拿得到这么多行',
+  'hint.logTailDefault': '面板日志页 LINES 的初始值（面板内可临时改）；它只是「行数」上限——快照还要过下面那道字节闸，所以不保证一定拿得到这么多行',
   'field.maxOutput': '输出上限（KB）',
-  'hint.maxOutput': '单次输出的**字节**上限：日志快照 / inspect / exec 共用；日志行数够但字节超了会被截断（面板会给出截断横幅）。FOLLOW 流式日志不受它约束',
+  'hint.maxOutput': '单次输出的「字节」上限：日志快照 / inspect / exec 共用；日志行数够但字节超了会被截断（面板会给出截断横幅）。FOLLOW 流式日志不受它约束',
   'field.execTimeout': 'exec 超时（秒）',
   'section.capabilities': '能力开关（默认关闭）',
   'check.allowMutations': '允许变更操作（容器启停删、镜像拉取 / 删除 / 清理）',
   'check.allowExec': '允许 exec（在容器内执行命令）',
   'hint.socketRoot': 'docker socket 等价于目标主机的 root 权限。开启后，浏览器面板与 agent 都能执行对应操作，请只在可信环境下打开。',
-  'hint.capabilityNotGranted': '⚠ 未获宿主授权，这两个开关在界面上点不动：提权只认宿主侧的环境变量（DSH_DOCKER_ALLOW_MUTATIONS / DSH_DOCKER_ALLOW_EXEC，可用设置 → 环境变量 卡片写入 ~/.dsh/env.yml），设好后重启宿主。这样安排是因为本机任意进程都能发回环请求——若配置界面能提权，这道闸门等于没有；关掉它则随时可用。',
+  'hint.capabilityNotGranted': '⚠ 宿主尚未授权：这两个开关现在打不开，点它会给出一条就地确认的命令（免重启）。关掉它们随时可用。',
+  'badge.notEffective': '未生效：未获宿主授权',
+  'elev.title': '就地授权（免重启）',
+  'elev.lockedWhy': '本机任意进程都能发回环请求，所以「打开危险能力」这件事不能由这个页面自己说了算——必须在宿主的文件系统上确认一次。',
+  'elev.step': '在宿主的终端里执行下一条命令，开关会自动解锁：',
+  'elev.copy': '复制命令',
+  'elev.copied': '已复制',
+  'elev.expiresIn': '{sec} 秒后失效',
+  'elev.expired': '本次确认已过期，请重新生成。',
+  'elev.waiting': '等待确认…执行完命令这里会自动变成已授权。',
+  'elev.regenerate': '重新生成',
+  'elev.granted': '已授权并生效。',
+  'elev.grantedNeedSave': '已授权。点「保存」后生效。',
+  'elev.revoke': '撤销宿主授权',
+  'elev.grantedAt': '已授权 · {time}',
+  'elev.revoked': '已撤销宿主授权（配置开关保持不变，重新授权后会立刻生效）。',
+  'elev.viaEnv': '由启动环境变量授权；要撤销需在启动环境里去掉它并重启宿主。',
+  'elev.close': '收起',
+  'elev.disableFirst': '先关掉这个配置开关',
+  'elev.otherWay': '另一种方式（最强，需要重启宿主）',
+  'elev.envHow': '在「启动 dsh 的那个环境」里 export {env}=1，然后重启宿主。注意：启动之后再设、或写进别的配置文件都不算授权——这道闸门防的就是「运行期能改的东西冒充授权」。',
+  'elev.error': '就地授权没成功：',
+  'elev.copyManual': '当前环境拿不到剪贴板，请手动选中上面那条命令复制。',
   'placeholder.targetName': '目标名',
   'option.sshHost': 'SSH 主机',
   'hint.localTarget': '宿主所在机器上的 docker',
@@ -648,7 +672,7 @@ const I18N_EN = {
   'hint.bufferExceeded': 'Logs exceeded the buffer limit ({lines} rows / {mb}MB); the oldest content was dropped',
   'hint.streamKeepsRecent': 'The stream keeps only the most recent rows; for full history turn off FOLLOW and use snapshots, or lower “LINES”.',
   'hint.outputTruncated': 'Log output exceeded the “Output limit ({kb}KB)” and was truncated',
-  'hint.byteCap': 'This is a **byte** cap, not a row cap — so LINES = 5000 may still return only part of it. To keep more logs, raise “Output limit (KB)” in the settings card, or turn on FOLLOW (the stream is not bound by it).',
+  'hint.byteCap': 'This is a “byte” cap, not a row cap — so LINES = 5000 may still return only part of it. To keep more logs, raise “Output limit (KB)” in the settings card, or turn on FOLLOW (the stream is not bound by it).',
   'list.waitingLogs': 'Waiting for logs…',
   'list.noLogs': '(no logs)',
   'list.noMatchingLogs': '(no matching logs)',
@@ -911,15 +935,37 @@ const I18N_EN = {
   'hint.dockerBin': 'docker by default; for podman put podman',
   'field.pollInterval': 'Stats refresh interval (seconds)',
   'field.logTailDefault': 'Default log rows',
-  'hint.logTailDefault': 'Initial value of LINES on the panel\'s log page (adjustable there); it is only a **row** cap — the snapshot also has to pass the byte gate below, so this many rows is not guaranteed',
+  'hint.logTailDefault': 'Initial value of LINES on the panel\'s log page (adjustable there); it is only a “row” cap — the snapshot also has to pass the byte gate below, so this many rows is not guaranteed',
   'field.maxOutput': 'Output limit (KB)',
-  'hint.maxOutput': '**Byte** cap for a single output: shared by log snapshots / inspect / exec; enough rows can still truncate on bytes (the panel shows a truncation banner). The FOLLOW stream is not bound by it',
+  'hint.maxOutput': '“Byte” cap for a single output: shared by log snapshots / inspect / exec; enough rows can still truncate on bytes (the panel shows a truncation banner). The FOLLOW stream is not bound by it',
   'field.execTimeout': 'exec timeout (seconds)',
   'section.capabilities': 'Capability switches (off by default)',
   'check.allowMutations': 'Allow changes (start/stop/remove containers, pull / remove / prune images)',
   'check.allowExec': 'Allow exec (run commands inside containers)',
   'hint.socketRoot': 'The docker socket is equivalent to root on the target host. Once enabled, both the browser panel and the agent can run these operations — only turn it on in a trusted environment.',
-  'hint.capabilityNotGranted': '⚠ Not granted by the host, so these two switches cannot be turned on here: raising them is only accepted from the host’s environment (DSH_DOCKER_ALLOW_MUTATIONS / DSH_DOCKER_ALLOW_EXEC, writable via Settings → Environment variables into ~/.dsh/env.yml), then restart the host. The reason: any local process can send loopback requests, so if the settings UI could raise them, this gate would be pointless. Turning them off always works.',
+  'hint.capabilityNotGranted': '⚠ Not granted by the host: these two switches cannot be turned on right now — clicking one gives you a command to confirm in place (no restart). Turning them off always works.',
+  'badge.notEffective': 'Not effective: not granted by the host',
+  'elev.title': 'Grant in place (no restart)',
+  'elev.lockedWhy': 'Any local process can send loopback requests, so “turn on a dangerous capability” cannot be decided by this page alone — it has to be confirmed on the host’s filesystem once.',
+  'elev.step': 'Run the command below in a terminal on the host and the switch unlocks by itself:',
+  'elev.copy': 'Copy command',
+  'elev.copied': 'Copied',
+  'elev.expiresIn': 'expires in {sec}s',
+  'elev.expired': 'This confirmation has expired — generate a new one.',
+  'elev.waiting': 'Waiting for confirmation… once you run the command this turns into “granted” automatically.',
+  'elev.regenerate': 'Generate a new one',
+  'elev.granted': 'Granted and now in effect.',
+  'elev.grantedNeedSave': 'Granted. Press “Save” to apply.',
+  'elev.revoke': 'Revoke host grant',
+  'elev.grantedAt': 'Granted · {time}',
+  'elev.revoked': 'Host grant revoked (the config switch is left untouched; granting again takes effect immediately).',
+  'elev.viaEnv': 'Granted by a launch environment variable; to revoke, remove it from the launch environment and restart the host.',
+  'elev.close': 'Collapse',
+  'elev.disableFirst': 'Turn this config switch off first',
+  'elev.otherWay': 'The other way (strongest, needs a host restart)',
+  'elev.envHow': 'In the environment that launched dsh: export {env}=1, then restart the host. Setting it after launch — or writing it into some other config file — does not count as a grant; that is exactly what this gate guards against.',
+  'elev.error': 'In-place grant failed: ',
+  'elev.copyManual': 'The clipboard is unavailable here — select the command above and copy it manually.',
   'placeholder.targetName': 'Target name',
   'option.sshHost': 'SSH host',
   'hint.localTarget': 'docker on the machine running the host',
@@ -1059,6 +1105,13 @@ const api = {
   volumePrune: (target) => request('/volumes/prune', { method: 'POST', body: JSON.stringify({ target }) }),
   action: (target, action, id) => request('/action', { method: 'POST', body: JSON.stringify({ target, action, id }) }),
   exec: (target, id, command, timeoutSec) => request('/exec', { method: 'POST', body: JSON.stringify({ target, id, command, timeoutSec }) }),
+  /*
+   * 就地提权三条（全 POST）：宿主侧要求同源证明，所以只能从页面里调——这正是设计意图
+   * （页内请求不是凭据，真正的凭据是「在宿主的文件系统上落地那个文件」）。
+   */
+  elevateBegin: (capability) => request('/elevate', { method: 'POST', body: JSON.stringify({ capability }) }),
+  elevateStatus: (capability) => request('/elevate/status', { method: 'POST', body: JSON.stringify({ capability }) }),
+  elevateRevoke: (capability) => request('/elevate/revoke', { method: 'POST', body: JSON.stringify({ capability }) }),
 }
 
 /** SSE 订阅 URL 的唯一构造点（四条流都在这里拼 query）。 */
@@ -6916,10 +6969,27 @@ window.__ModuleLoader__.load({
       const [numberDrafts, setNumberDrafts] = useState({})
       /** 本卡片会话里被用户删除的主机密钥记录（D03/D10）：保存时走显式 hostKeysRemove。 */
       const removedHostKeysRef = useRef([])
+      /*
+       * 就地提权（见 kit 的 elevation.ts）：点开关 → 面板给出一条「在宿主上落地一个随机名文件」的
+       * 命令 → 宿主发现文件即授权，免重启。状态放在卡片里而不是子组件里：离线冒烟的 React 桩不执行
+       * 函数组件体（见文件里其它地方的说明），状态留在卡片里才测得动。
+       */
+      const [elevation, setElevation] = useState(null)
+      const [elevationNotice, setElevationNotice] = useState('')
+      const [copied, setCopied] = useState(false)
+      /** 每秒推进一次的计数：只为了让「还剩 N 秒」自己走（读的是渲染期的时间差）。 */
+      const [nowTick, setNowTick] = useState(0)
+      /** 授权到达后要「先把开关写进表单、再自动保存」：保存读的是表单镜像，得等一次提交。 */
+      const [autoSavePending, setAutoSavePending] = useState(false)
+      /** 服务端确认过的保存 payload（JSON）：用来判断有没有**除授权之外**的未保存改动。 */
+      const cleanPayloadRef = useRef('')
+      const saveRef = useRef(null)
 
       const load = useCallback(() => {
         api.config().then((payload) => {
-          setForm(payload.config)
+          const next = toCardForm(payload.config)
+          setForm(next)
+          cleanPayloadRef.current = JSON.stringify(toPayload(next))
           removedHostKeysRef.current = []
           primeTargetsCache(payload.config)
           publishConfig(payload.config)
@@ -6955,6 +7025,42 @@ window.__ModuleLoader__.load({
         }))
       }
 
+      /**
+       * 表单 → 保存 payload。**也是「脏不脏」的比较口径**：只有这些字段会被写进去，所以
+       * 快照里那些只读字段（`*Granted` / `*GrantSource` / `*GrantedAt`）变化不算用户改动——
+       * 否则授权一到，「表单变脏了」会让自动保存白白放弃。
+       */
+      const toPayload = (source) => ({
+        enabled: source.enabled,
+        announceToAgent: source.announceToAgent,
+        dockerBin: source.dockerBin,
+        allowMutations: source.allowMutations,
+        allowExec: source.allowExec,
+        execTimeoutSec: source.execTimeoutSec,
+        pollIntervalSec: source.pollIntervalSec,
+        logTailDefault: source.logTailDefault,
+        maxOutputKb: source.maxOutputKb,
+        targets: source.targets.map((item) => ({
+          name: item.name,
+          kind: item.kind,
+          book: item.book ?? '',
+          host: item.host ?? '',
+          port: Number(item.port) || 22,
+          username: item.username ?? '',
+          auth: item.auth ?? 'agent',
+          keyPath: item.keyPath ?? '',
+          // 空字符串 = 保留原有凭证（宿主按 undefined 处理会覆盖为空，这里显式跳过）
+          ...(item.password === undefined || item.password === '' ? {} : { password: item.password }),
+          ...(item.passphrase === undefined || item.passphrase === '' ? {} : { passphrase: item.passphrase }),
+          agentForward: item.agentForward === true,
+        })),
+        // hostKeys 不整表回传（D10）：服务端并集合并，运行期新增的钉扎不会被表单快照冲掉；
+        // 删除某条记录走显式 hostKeysRemove
+        ...(removedHostKeysRef.current.length > 0 ? { hostKeysRemove: removedHostKeysRef.current } : {}),
+        // 只有「加载到过非空目标、现在被用户删空」才算显式清空；否则宿主会拒绝写入空数组
+        ...(source.targets.length === 0 && loadedCountRef.current > 0 ? { clearTargets: true } : {}),
+      })
+
       const save = () => {
         setSaving(true)
         setMessage({ kind: '', text: '' })
@@ -6967,36 +7073,7 @@ window.__ModuleLoader__.load({
          * 记下发出时的数组引用，响应里按长度前缀切掉即可。
          */
         const sentRemovals = removedHostKeysRef.current
-        const payload = {
-          enabled: form.enabled,
-          announceToAgent: form.announceToAgent,
-          dockerBin: form.dockerBin,
-          allowMutations: form.allowMutations,
-          allowExec: form.allowExec,
-          execTimeoutSec: form.execTimeoutSec,
-          pollIntervalSec: form.pollIntervalSec,
-          logTailDefault: form.logTailDefault,
-          maxOutputKb: form.maxOutputKb,
-          targets: form.targets.map((item) => ({
-            name: item.name,
-            kind: item.kind,
-            book: item.book ?? '',
-            host: item.host ?? '',
-            port: Number(item.port) || 22,
-            username: item.username ?? '',
-            auth: item.auth ?? 'agent',
-            keyPath: item.keyPath ?? '',
-            // 空字符串 = 保留原有凭证（宿主按 undefined 处理会覆盖为空，这里显式跳过）
-            ...(item.password === undefined || item.password === '' ? {} : { password: item.password }),
-            ...(item.passphrase === undefined || item.passphrase === '' ? {} : { passphrase: item.passphrase }),
-            agentForward: item.agentForward === true,
-          })),
-          // hostKeys 不整表回传（D10）：服务端并集合并，运行期新增的钉扎不会被
-          // 表单快照冲掉；删除某条记录走显式 hostKeysRemove
-          ...(sentRemovals.length > 0 ? { hostKeysRemove: sentRemovals } : {}),
-          // 只有「加载到过非空目标、现在被用户删空」才算显式清空；否则宿主会拒绝写入空数组
-          ...(form.targets.length === 0 && loadedCountRef.current > 0 ? { clearTargets: true } : {}),
-        }
+        const payload = toPayload(form)
         api.saveConfig(payload).then((response) => {
           /*
            * 只清「已经发出」的那批（D82）：按发出时的长度切掉前缀，飞行期间新入队的
@@ -7007,8 +7084,9 @@ window.__ModuleLoader__.load({
           primeTargetsCache(response.config)
           publishConfig(response.config)
           loadedCountRef.current = Array.isArray(response.config?.targets) ? response.config.targets.length : 0
+          cleanPayloadRef.current = JSON.stringify(toPayload(toCardForm(response.config)))
           // 请求飞行期间的编辑不能被服务端快照整表回滚（D22）：只在表单没有新改动时同步
-          if (JSON.stringify(formRef.current) === formSnapshot) setForm(response.config)
+          if (JSON.stringify(formRef.current) === formSnapshot) setForm(toCardForm(response.config))
           // 目标增删会影响 tty 连接栏按钮：刷新解析后的目标列表
           void refreshTargetsCache()
           setMessage(response.warning === undefined
@@ -7019,7 +7097,295 @@ window.__ModuleLoader__.load({
         }).finally(() => setSaving(false))
       }
 
+      /* ---------------- 就地提权（capability elevation） ---------------- */
+
+      /** 能力开关名 → 宿主侧环境变量名（「另一种方式」那一栏要写出具体变量名）。 */
+      const CAPABILITY_ENV = {
+        allowMutations: 'DSH_DOCKER_ALLOW_MUTATIONS',
+        allowExec: 'DSH_DOCKER_ALLOW_EXEC',
+      }
+
+      /**
+       * 快照 → 表单：能力开关在表单里存**配置值**（用户写下的那个），不是快照里的有效值。
+       *
+       * 为什么必须换：有效值 = 配置 && 已授权。配置开着但没授权时有效值是 false，若拿它当表单值，
+       * 用户一按保存就把配置关掉了——而界面还显示着「未生效」，用户完全看不出发生了什么。
+       */
+      const toCardForm = (config) => ({
+        ...config,
+        allowMutations: config.allowMutationsConfigured === true,
+        allowExec: config.allowExecConfigured === true,
+      })
+
+      /** 只刷新与授权有关的那几个只读字段（**不动**用户正在编辑的字段）。 */
+      const refreshGrantState = () => {
+        api.config().then((payload) => {
+          primeTargetsCache(payload.config)
+          publishConfig(payload.config)
+          setForm((current) => (current === null ? current : {
+            ...current,
+            allowMutationsGranted: payload.config.allowMutationsGranted === true,
+            allowMutationsGrantSource: payload.config.allowMutationsGrantSource ?? null,
+            allowMutationsGrantedAt: Number.isFinite(payload.config.allowMutationsGrantedAt) ? payload.config.allowMutationsGrantedAt : null,
+            allowExecGranted: payload.config.allowExecGranted === true,
+            allowExecGrantSource: payload.config.allowExecGrantSource ?? null,
+            allowExecGrantedAt: Number.isFinite(payload.config.allowExecGrantedAt) ? payload.config.allowExecGrantedAt : null,
+          }))
+        }).catch(() => {
+          /* 刷新失败静默：卡片本身照旧可用，下一次加载会同步 */
+        })
+      }
+
+      /**
+       * 授权到了：把开关写进表单、刷新授权状态，并在「表单本来是干净的」时顺手保存。
+       *
+       * 自动保存只在干净表单下做：保存是**整表**提交，脏表单下自动保存会把用户没打算提交的编辑
+       * 一起写进去。脏的时候只把开关置上并提示「点保存生效」——不替用户做决定。
+       */
+      const finishElevation = (capability) => {
+        setElevation(null)
+        setCopied(false)
+        const clean = JSON.stringify(toPayload(formRef.current)) === cleanPayloadRef.current
+        setForm((current) => (current === null ? current : { ...current, [capability]: true }))
+        setElevationNotice(clean ? t('elev.granted') : t('elev.grantedNeedSave'))
+        if (clean) setAutoSavePending(true)
+        refreshGrantState()
+      }
+
+      const beginElevation = (capability) => {
+        setElevationNotice('')
+        setCopied(false)
+        setElevation({ capability })
+        api.elevateBegin(capability).then((result) => {
+          if (result !== null && result.status === 'granted') {
+            finishElevation(capability)
+            return
+          }
+          if (result !== null && result.status === 'pending') {
+            setElevation({ capability, command: String(result.command), expiresAt: Number(result.expiresAt) })
+            return
+          }
+          setElevation({ capability, error: String((result && result.error) ?? '') })
+        }).catch((error) => setElevation({ capability, error: String(error.message) }))
+      }
+
+      const revokeElevation = (capability) => {
+        setElevationNotice('')
+        api.elevateRevoke(capability).then(() => {
+          setElevationNotice(t('elev.revoked'))
+          refreshGrantState()
+        }).catch((error) => setElevationNotice(t('elev.error') + String(error.message)))
+      }
+
+      /** 复制命令：拿不到剪贴板（老宿主 / 非安全上下文）时退回「请手动复制」。 */
+      const copyCommand = (command) => {
+        const clipboard = typeof navigator === 'undefined' ? undefined : navigator.clipboard
+        if (clipboard === undefined || typeof clipboard.writeText !== 'function') {
+          setElevationNotice(t('elev.copyManual'))
+          return
+        }
+        clipboard.writeText(command).then(() => setCopied(true)).catch(() => setElevationNotice(t('elev.copyManual')))
+      }
+
+      /*
+       * 授权成功后的自动保存：必须等表单提交一次再保存——`save()` 读的是表单镜像
+       * （`formRef.current`，在渲染期同步），在同一个 tick 里调它写的是**改之前**的表单。
+       */
+      saveRef.current = save
+      useEffect(() => {
+        if (!autoSavePending) return
+        setAutoSavePending(false)
+        if (saveRef.current !== null) saveRef.current()
+      }, [autoSavePending])
+
+      /*
+       * 面板开着时轮询授权状态（1.5s）并顺带推进倒计时。轮询而不是等推送：这条通道本来就是
+       * 「用户在别的终端里做了一件事」，宿主没有可订阅的事件面。
+       */
+      const elevationCapability = elevation === null ? '' : String(elevation.capability)
+      useEffect(() => {
+        if (elevationCapability === '') return undefined
+        const timer = setInterval(() => {
+          setNowTick((value) => value + 1)
+          api.elevateStatus(elevationCapability).then((status) => {
+            if (status !== null && status.status === 'granted') finishElevation(elevationCapability)
+          }).catch(() => {
+            /* 轮询失败静默：宿主可能在重启，下一次再试 */
+          })
+        }, 1500)
+        return () => clearInterval(timer)
+      }, [elevationCapability])
+
+      /* ---------------- 能力开关那一段的渲染 ---------------- */
+
+      /**
+       * 一个能力开关 + 「未生效」徽标。返回**两个**节点：复选框与文字标签。
+       *
+       * 未获授权时点它 = **发起就地授权**（展开面板给出确认命令），不是「点一下弹一句」的循环，
+       * 也**不是**把「看着开着」的配置关掉——用户点它是想说「我要它真的生效」。要关掉配置，
+       * 面板里有单独的「先关掉这个配置开关」。
+       *
+       * 复选框与文字拆成两格（见 `capabilityRow` 的网格）：授权状态行要落在**文字**下面，而不是
+       * 落在复选框下面——那需要一个「文字左边缘」的参照，用 `padding` 猜一个像素值会随字号与平台
+       * 漂，两列网格是同一件事的确定写法（`htmlFor` 保住「点文字也能勾」）。
+       */
+      const capabilityCheck = (capability, label, id) => {
+        const configured = form[capability] === true
+        const granted = form[`${capability}Granted`] === true
+        return [
+          jsx('input', {
+            id,
+            type: 'checkbox',
+            checked: configured,
+            onChange: (event) => {
+              if (granted !== true) {
+                beginElevation(capability)
+                return
+              }
+              patch({ [capability]: event.target.checked })
+            },
+          }, 'box'),
+          jsxs('label', { className: 'dk_capLabel', htmlFor: id, children: [
+            label,
+            configured && !granted
+              ? jsx('span', { className: 'dk_badge', 'data-state': 'paused', children: t('badge.notEffective') })
+              : null,
+          ] }, 'label'),
+        ]
+      }
+
+      /**
+       * 授权时刻 → **固定格式** `YYYY-MM-DD HH:mm:ss`（本地时区）。
+       *
+       * 为什么不用 `toLocaleString()`：它给的是 `2026/9/26 22:37:30` 这种斜杠 + 不补零的形状，
+       * 两个能力的时刻并排时既不好扫读、也不跟宿主日志里的 ISO 时刻对得上（审计要能对照）。
+       * 秒保留：与日志的 `grantedAt=` 逐字段对得上，比省两个字符值。
+       */
+      const formatGrantedAt = (seconds) => {
+        const date = new Date(Number(seconds) * 1000)
+        if (Number.isNaN(date.getTime())) return String(seconds)
+        const pad = (value) => String(value).padStart(2, '0')
+        return `${String(date.getFullYear())}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+      }
+
+      /**
+       * 一个能力**自己的**授权状态行（跟在这个能力的开关后面，而不是两个能力合排一行）。
+       *
+       * 为什么必须贴着各自的开关：`file` 通道的授权是**逐能力**的，两个「撤销宿主授权」并排放在
+       * 一行里时，没人能看出哪个按钮撤的是哪个能力——那是「界面说了但没说清」的典型。
+       *
+       * 顺带带上**授权时刻**（kit D09）：授权是持久的，重启后它直接生效、不再有任何确认，用户至少
+       * 该看得出它是什么时候来的。`*GrantSource === 'env'` 没有时刻（启动环境没有「授权时刻」），
+       * 那一档给的是「去改启动环境」的说明，不给按钮——环境变量授权撤不了。
+       */
+      const grantState = (capability) => {
+        if (form[`${capability}Granted`] !== true) return null
+        if (form[`${capability}GrantSource`] === 'env') {
+          return jsx('span', { className: 'dk_capState', children: t('elev.viaEnv') })
+        }
+        const grantedAt = form[`${capability}GrantedAt`]
+        return jsxs('span', { className: 'dk_capState', children: [
+          Number.isFinite(grantedAt)
+            ? jsx('span', { children: t('elev.grantedAt', { time: formatGrantedAt(grantedAt) }) }, 'at')
+            : null,
+          /*
+           * 危险色（`dk_btnDanger`，D148）：与同一个卡片里的「删除目标 / 删除指纹」同色——
+           * 三者都是「按下去就少一条记录、要重新配回来」的动作，红/灰混用会让人以为撤销可随手点。
+           * tty 卡片那份（`tt_capRevoke`）本来就是危险色，两处必须一致（用户反馈：为什么风格不统一）。
+           */
+          jsx('button', {
+            type: 'button',
+            className: 'dk_btn dk_btnDanger dk_capRevoke',
+            onClick: () => revokeElevation(capability),
+            children: t('elev.revoke'),
+          }, 'revoke'),
+        ] })
+      }
+
+      /**
+       * 一个能力一块：`[复选框] [开关文字]` 一行，授权状态**另起一行、与文字左对齐**。
+       *
+       * 为什么不做成「一行内右对齐」（试过，实测不合格）：标签长度随语言变（中文「允许变更操作
+       * （容器启停删、镜像拉取 / 删除 / 清理）」313px、英文更长），一行里塞「文字 + 状态 + 按钮」
+       * 必然有的行换行、有的不换行——实测：短标签那行按钮右缘 1020，长标签那行整组被挤到下一行、
+       * 右缘只有 812（按钮的 `margin-left:auto` 生效在状态 span **内部**，推不到行右缘）。
+       * 状态另起一行后，换行不再取决于标签长度；按钮落在第二列上（状态撑满该列 + 按钮自动右推），
+       * 两个能力的按钮天然在同一竖线上。
+       */
+      const capabilityRow = (capability, label) => {
+        const id = `dk-cap-${capability}`
+        return jsxs('div', { className: 'dk_capRow', children: [
+          ...capabilityCheck(capability, label, id),
+          grantState(capability),
+        ] })
+      }
+
+      /** 就地提权面板（内联展开；不用 confirm()——那会在 React 之外同步阻塞渲染）。 */
+      const elevationPanel = () => {
+        const capability = String(elevation.capability)
+        const label = capability === 'allowMutations' ? t('check.allowMutations') : t('check.allowExec')
+        const seconds = elevation.expiresAt === undefined
+          ? 0
+          : Math.max(0, Math.ceil((Number(elevation.expiresAt) - Date.now()) / 1000))
+        const close = () => {
+          setElevation(null)
+          setCopied(false)
+        }
+        return jsxs('div', { className: 'dk_elevPanel', children: [
+          jsxs('div', { className: 'dk_row', children: [
+            jsx('span', { className: 'dk_label', children: t('elev.title') + ' · ' + label }),
+            jsx('button', { type: 'button', className: 'dk_btn', onClick: close, children: t('elev.close') }, 'close'),
+          ] }),
+          jsx('span', { className: 'dk_hint', children: t('elev.lockedWhy') }),
+          elevation.error === undefined
+            ? null
+            : jsx('span', { className: 'dk_hint dk_hintWarn', children: t('elev.error') + String(elevation.error) }),
+          elevation.command === undefined
+            ? null
+            : jsxs('div', { className: 'dk_elevSteps', children: [
+              jsx('span', { className: 'dk_hint', children: t('elev.step') }),
+              jsx('code', { className: 'dk_elevCommand', children: String(elevation.command) }),
+              jsx('button', {
+                type: 'button',
+                className: 'dk_btn dk_btnPrimary',
+                onClick: () => copyCommand(String(elevation.command)),
+                children: copied ? t('elev.copied') : t('elev.copy'),
+              }, 'copy'),
+              jsx('span', {
+                className: seconds > 0 ? 'dk_hint' : 'dk_hint dk_hintWarn',
+                children: seconds > 0 ? t('elev.expiresIn', { sec: seconds }) : t('elev.expired'),
+              }),
+              jsx('span', { className: 'dk_hint', children: t('elev.waiting') }),
+              jsx('button', {
+                type: 'button',
+                className: 'dk_btn',
+                onClick: () => beginElevation(capability),
+                children: t('elev.regenerate'),
+              }, 'regen'),
+              jsxs('details', { className: 'dk_elevOther', children: [
+                jsx('summary', { children: t('elev.otherWay') }),
+                jsx('span', {
+                  className: 'dk_hint',
+                  children: t('elev.envHow', { env: CAPABILITY_ENV[capability] ?? '' }),
+                }),
+              ] }),
+            ] }),
+          form[capability] === true
+            ? jsx('button', {
+              type: 'button',
+              className: 'dk_btn',
+              onClick: () => {
+                patch({ [capability]: false })
+                close()
+              },
+              children: t('elev.disableFirst'),
+            }, 'disable')
+            : null,
+        ] })
+      }
+
       const sectionTitle = (text) => jsx('div', { className: 'dk_cardSection', children: text })
+
       const field = (label, control, hint, span) => jsxs('div', {
         className: 'dk_field',
         'data-span': span === undefined ? undefined : String(span),
@@ -7112,36 +7478,24 @@ window.__ModuleLoader__.load({
 
         sectionTitle(t('section.capabilities')),
         /*
-         * 两个开关在**未获宿主授权**时禁用（`allowMutationsGranted` / `allowExecGranted` 由宿主
-         * 快照给出）。为什么不是继续可点、点了报错：那会变成「点一下、弹一句、再点一下」的循环
-         * ——用户看不出这是刻意的闸门。禁用 + 一行说清「设哪个变量 + 要重启」才是这一步的正解。
+         * 两个开关**不再 disabled**。未获宿主授权时点它就地发起授权（见 capabilityCheck）；
+         * 已授权时它就是普通开关，关掉随时可用（宿主侧不拦降权：紧急刹车不能依赖重启）。
          *
-         * 关掉永远可用（宿主侧不拦降权：紧急刹车不能依赖重启），所以 disabled 只挡「打开」。
+         * **一个能力一行**（不是两个开关并排 + 底下一行授权状态）：授权是逐能力的，并排时两个
+         * 「撤销宿主授权」谁管谁全靠猜。行内是「开关 … 状态 …（右）撤销按钮」，扫一眼就对上。
          */
-        jsxs('div', { className: 'dk_row', children: [
-          jsx('label', { className: 'dk_check', children: [
-            jsx('input', {
-              type: 'checkbox',
-              checked: form.allowMutations,
-              disabled: form.allowMutationsGranted !== true && form.allowMutations !== true,
-              onChange: (event) => patch({ allowMutations: event.target.checked }),
-            }),
-            t('check.allowMutations'),
-          ] }),
-          jsx('label', { className: 'dk_check', children: [
-            jsx('input', {
-              type: 'checkbox',
-              checked: form.allowExec,
-              disabled: form.allowExecGranted !== true && form.allowExec !== true,
-              onChange: (event) => patch({ allowExec: event.target.checked }),
-            }),
-            t('check.allowExec'),
-          ] }),
+        jsxs('div', { className: 'dk_capList', children: [
+          capabilityRow('allowMutations', t('check.allowMutations')),
+          capabilityRow('allowExec', t('check.allowExec')),
         ] }),
         jsx('span', { className: 'dk_hint', children: t('hint.socketRoot') }),
         form.allowMutationsGranted === true && form.allowExecGranted === true
           ? null
           : jsx('span', { className: 'dk_hint dk_hintWarn', children: t('hint.capabilityNotGranted') }),
+        elevationNotice === ''
+          ? null
+          : jsx('span', { className: 'dk_hint', children: elevationNotice }),
+        elevation === null ? null : elevationPanel(),
 
         sectionTitle(t('field.target')),
         ...form.targets.map((item, index) => {
@@ -7213,7 +7567,8 @@ window.__ModuleLoader__.load({
               style: { gridColumn: 'span 2', wordBreak: 'break-all' },
               children: hostKeyFingerprints(record).map((fp) => 'sha256:' + fp).join('  '),
             }),
-            jsx('button', { type: 'button', className: 'dk_btn', onClick: () => removeHostKey(record), children: t('btn.delete') }),
+            // 与目标行的删除**同风格**（D146）：同一个卡片里两种「删除」外观是说不通的
+            jsx('button', { type: 'button', className: 'dk_btn dk_btnDanger', onClick: () => removeHostKey(record), children: t('btn.delete') }),
           ] }, record.host + ':' + String(record.port)))),
         jsx('span', { className: 'dk_hint', children: t('hint.tofu') }),
 
