@@ -12,6 +12,8 @@
  *   3. D 的退出码非数字 → null（不能把垃圾塞进 lastCommand）；
  *   4. 跨 chunk 的残包（B 与 D 分属两次 write）仍要正确配对。
  */
+// DSH_HOME 隔离（D69）：读不到开发机上的真实授权文件
+import './isolated-home.js'
 import { describe, expect, it } from 'vitest'
 import { feedShellIntegration } from '../src/index.js'
 

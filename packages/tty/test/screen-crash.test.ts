@@ -16,6 +16,8 @@
  * 下面那条 10 步序列就是 D57 的最小复现：`scrollback: 0` 上 5/5 崩，
  * `scrollback: 1`（= SCREEN_SCROLLBACK）上 0/5。
  */
+// DSH_HOME 隔离（D69）：读不到开发机上的真实授权文件
+import './isolated-home.js'
 import { afterEach, describe, expect, it } from 'vitest'
 import xtermHeadless from '@xterm/headless'
 import {

@@ -7,8 +7,8 @@
 > 知道**当年坏了什么**，再查 [§2 编号字典](#2-编号字典这段代码为什么长这样) 知道**所以代码
 > 为什么写成这样**。
 >
-> **编号是硬契约**：`D01–D67` 是 `packages/tty` 内部序列，与 `packages/docker/DEFECTS.md` 的
-> `D01–D140` **不共享**；跨包引用请写「tty D12 / docker D03」。新缺陷接在 `D67` 之后，
+> **编号是硬契约**：`D01–D72` 是 `packages/tty` 内部序列，与 `packages/docker/DEFECTS.md` 的
+> `D01–D148` **不共享**；跨包引用请写「tty D12 / docker D03」。新缺陷接在 `D72` 之后，
 > **不得重号、不得回收空号**——源码、测试与根 `README.md` 里已有引用指向它们。
 
 > **本文不含**：D49–D61 的逐条 postmortem（症状 / 现场复现 / 根因 / 修法 / 回归 / 反向验证），
@@ -42,7 +42,7 @@
 
 ## 现状
 
-**已修 67 / 待修 0**，编号至 `D67`。逐条症状见 §1，设计意图见 §2，**还没做的见
+**已修 72 / 待修 0**，编号至 `D72`。逐条症状见 §1，设计意图见 §2，**还没做的见
 [ROADMAP.md](./ROADMAP.md)**。
 
 **沿革（原文照录，未改）**：2026-09-19 对 v0.18.3 做了一次系统性只读审计（5 路并行 + 人工复读
@@ -53,7 +53,7 @@
 tag `v0.1.36` → tty **0.19.0**（docker 0.6.4 / all 0.1.36 / kit 0.1.30）——此后 `v0.1.37` →
 0.19.1、`v0.1.38` → 0.19.2、`v0.1.39` → **0.19.3**（本仓库 `packages/tty/package.json` 现为 0.19.3）。
 
-**已修 67 / 待修 0**（D01–D48 审计波 + D49/D50 线上反馈 + D51–D56 复核实测发现 + D57 线上崩溃 + D58–D62 后续用户上报/复核 + D63 本轮统一安全围栏时顺手发现 + D64/D65 做 ProxyCommand 时顺路挖出来的两处静默泄漏 + D66 做能力闸门时**真机验收**挖出来的探针结算缺陷 + D67 同一轮 Windows 真机挖出来的探针阶段顺序）。索引表**不写行号、也不保留修复提交
+**已修 72 / 待修 0**（D01–D48 审计波 + D49/D50 线上反馈 + D51–D56 复核实测发现 + D57 线上崩溃 + D58–D62 后续用户上报/复核 + D63 本轮统一安全围栏时顺手发现 + D64/D65 做 ProxyCommand 时顺路挖出来的两处静默泄漏 + D66 做能力闸门时**真机验收**挖出来的探针结算缺陷 + D67 同一轮 Windows 真机挖出来的探针阶段顺序 + D68 本轮做就地提权时扫出来的客户端字面星号 + D69 同一轮接 tty 就地提权时发现的脆测试（用例读开发机真实授权）+ D70 同上轮挖出的启动期闸门未初始化 + D71 用户反馈的开关行没有手型 + D72 用户反馈的「命令瞬间完成时 tty_expect 白等满超时」）。索引表**不写行号、也不保留修复提交
 sha** —— 修复后代码移了位、有的整段被删或重写，审计时点的行号只会误导；所以回溯入口统一改成
 按关键词检索（D49/D50 修在 `bd407352`）：`git log -S'<症状列的关键词>'`，提交信息按条目写
 为什么。被代码直接引用的编号在
@@ -149,6 +149,12 @@ D50 才是用户看到的那一下（他补的描述是「整条状态条瞬间�
 | D65 | SFTP 池条目在 `conn.on('close')` 里**只摘出池、没关跳板机**：目标连接断一次就漏一条 keepalive 一直养着的跳板机连接（`close(rt)` 才成对，而当时只做了 `conns.delete`） | src/sftp.ts | ✓ |
 | D66 | 探针（`probeSsh`）**结算后仍会被后到的事件覆写结果**：`settle()` 有幂等守卫，但四处 `result.auth = …` 赋值没有——而 `resolve(finish())` 交出的是**同一个对象**。于是 ssh2 连报两条错时（`Connection lost before handshake` 带着代理命令的 stderr、随后 `The operation was aborted` 什么都没带），用户看到的永远是**最后那句空话**（「连接已关闭（服务端主动断开）」）。**纯 mock 测不出来**（要真 ssh2 + 真子进程的时序），是「宿主侧授权」那一轮真机验收时点了一次「试连」才暴露 | src/probe.ts、test/probe.test.ts | ✓ |
 | D67 | 探针里 **agent 预检排在代理命令闸门之前**：「配了代理命令 + 宿主没授权 + 本机没有 ssh-agent」三件事同时成立时，只报「agent 认证需要 SSH_AUTH_SOCK」——用户去把 agent 修好、再点一次，才看到真正挡路的那道门；`result.proxy` 干脆是 `undefined`，连「代理命令被拒」这件事都没说。**macOS 开发机看不出来**（本机有 agent），是 Windows 真机跑 `live-host-smoke` 时 A7 才暴露的 | src/probe.ts、test/probe.test.ts、scripts/live-host-smoke.mjs | ✓ |
+| D68 | 客户端文案里有 2 处字面 `**`（`hint.shellIntegrationWindows` 的 zh / en）——浏览器半体没有 markdown 渲染器，用户看到的是两个星号 | client-src/index.js | ✓ |
+| D69 | 挂载插件的用例会读**开发机上真实的** `<DSH home>/dsh-kit/capability-grants.json`（就地提权那条通道）：开发机用卡片授权过一次之后，那批「未授权 → 必须 400 / 必须拒绝」的断言就在他那儿红、在 CI 上绿（本机实测：`proxy-command.test.ts` 的「POST /config 想把 allowProxyCommand 打开 → 400」正是这么变红的）。这类脆测试最坏的地方是**别人复现不了**——他的机器上恰好没授权，于是看到一片绿 | test/isolated-home.ts（把 DSH_HOME 指到临时目录，挂载插件的 10 个文件各 import 一行；与 packages/docker/test 各文件自己那段同思路） | ✓ |
+| D70 | ProxyCommand 闸门是**模块级策略**，而它的唯一写入方 `applyPatch` 在启动期**只在「settings 里存过东西」时才跑**（`if (Object.keys(startup).length > 0)`）：于是「配置里写着 `allowProxyCommand: true` + 已授权 + 重启宿主」这条最平常的路径停在模块级默认值 `{granted:false, enabled:false}` 上——fail-closed（不是安全问题），但症状正是本仓最忌讳的「配了没反应」：卡片显示已授权，代理命令却仍被拒。接入就地提权后更致命：授权是**持久**的，重启后「界面说已授权」与「闸门真的放行」必须一致 | src/index.ts 在挂载时先 `setProxyCommandPolicy({ granted: capabilityGranted(...), enabled: live.allowProxyCommand })` 一次 | ✓ |
+
+| D71 | 开关行**没有手型**（用户反馈原话：「这个没做手型」）：tty 卡片的复选框行（`boolField` 的那一堆 + 本轮新加的 ProxyCommand 那块）此前只有文字有反应、鼠标停上去是箭头，而 docker 卡片的 `.dk_check` 一直有手型——同一个 GUI 里两种手感。更隐蔽的是**复选框本身**：`input[type=checkbox]` 的 `cursor` 被 UA 样式定死，**不随 label 继承**，所以只给 label 写一条仍然不对 | 新增 `.tt_cardToggle`（`cursor: pointer` + `user-select: none`），`boolField` 与 `proxyCommandField` 的 label 都带上，复选框单独写一条；真机实测（CDP）6 个开关行的 label 与 checkbox computed cursor 均为 `pointer` | ✓ |
+| D72 | `tty_expect` **在「命令瞬间完成」时必然白等满超时、而且只交回一段空白**（用户反馈的痛点原话：AI 很难预测一条命令会执行多久，`tty_send` 与 `tty_expect` 之间隔着一次模型推理，命令若在这个窗口里跑完，要等的标记早已出现在终端输出里，却匹配不到）。旧实现只匹配**注册之后**到达的输出（`acc` 从空开始 + 只挂 data 监听），于是三件事一起发生：① 标记永远不会进入 `acc`；② 命令结束早停也失效（判定写在 `onData` 里，注册后没有新 chunk 就根本不执行）；③ 返回 `timedOut` + **空文本**，看起来像「命令没执行」。而插件推荐的流程正是 `tty_send → tty_expect → tty_capture{last}`——可信度最高的一条路径在快命令下 100% 出错 | src/index.ts 加两层回溯：注册时先拿「上一条命令」的 B..D 窗口输出试（无回显、无提示符、自带退出码 → `matchedFrom:'last'`），再扫「已读水位线之后的未读缓冲」且下界抬到最后一个 B 标记之后去回显（→ `matchedFrom:'buffered'`）；水位线用**单调字符计数**定位（裁剪只前移起点，公式恒成立），`tty_capture` 读到即算已读、超时不消耗未读区；test/expect-backlog.test.ts（9 条，含两处反向验证） | ✓ |
 
 ## 2. 编号字典：这段代码为什么长这样
 

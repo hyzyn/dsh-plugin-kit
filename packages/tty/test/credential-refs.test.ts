@@ -5,6 +5,8 @@
  * 引用选择器的数据源：读 `$DSH_HOME/.credentials.yaml` 的 `refs:` 块键名。
  * 只验「键名解析 + 只回键名不回值」——值在任何返回值里都不允许出现。
  */
+// DSH_HOME 隔离（D69）：读不到开发机上的真实授权文件
+import './isolated-home.js'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

@@ -19,7 +19,7 @@
  *   B14. tty_screen 虚拟屏 + tty_capture ANSI 清洗
  *   B15. shell 集成（OSC 133 命令捕获/退出码 + OSC 7 cwd 跟随）
  *   B16. ~/.ssh/config 解析器
- *   B17. tty_expect 匹配与超时
+ *   B17. tty_expect 匹配与超时（含 D72：命令已结束后的回溯命中、回显不算命中）
  *   B18. data 帧合并后帧序不变量（exit 在最后一帧 data 之后）
  *   B19. known_hosts 解析器
  *   B20. 端口转发隧道（forwardOut 往返 + forwardIn 就绪 + 状态与工具）
@@ -741,6 +741,29 @@ async function run() {
       const missResult = await expect.execute({ sid: 'ex-1', pattern: 'NEVER_APPEARS_XYZ', timeoutSec: 1 })
       if (missResult.matched === false && missResult.timedOut === true && typeof missResult.text === 'string') pass('B17b tty_expect 超时不抛错（matched=false, timedOut=true）')
       else fail('B17b tty_expect 超时不抛错（matched=false, timedOut=true）', JSON.stringify(missResult).slice(0, 160))
+
+      // B17c（D72）：命令**早已跑完**（输出到达发生在注册之前）时也要回溯命中。
+      // 真实场景就是 AI 无法预测命令耗时：`tty_send` 与 `tty_expect` 之间隔着一次
+      // 模型推理，命令若在这个窗口里跑完，旧实现只能白等满超时并返回空文本。
+      // 这里刻意「先等输出落地、再注册」，把那个窗口显式做出来。
+      s.client.send(JSON.stringify({ t: 'input', sid: 'ex-1', d: 'printf "BACKFILL_%s\\n" MARK\n' }))
+      await s.waitFor(() => /BACKFILL_MARK/.test(s.state.text), 10000, 'BACKFILL_MARK 输出')
+      await sleep(500) // 等 D 标记与 prompt 落定：注册这一刻命令已经结束
+      const backStarted = Date.now()
+      const backResult = await expect.execute({ sid: 'ex-1', pattern: 'BACKFILL_MARK', timeoutSec: 8 })
+      const backElapsed = Date.now() - backStarted
+      // matchedFrom 必须是回溯（last = 上一条命令的输出 / buffered = 未读缓冲）：
+      // 若回成 live，说明它是注册之后才到的，这条用例就没有意义了
+      if (backResult.matched === true && backResult.matchedFrom !== undefined && backResult.matchedFrom !== 'live' && backElapsed < 2000) pass(`B17c 命令已结束后注册仍回溯命中（matchedFrom=${backResult.matchedFrom}，${backElapsed}ms）`)
+      else fail('B17c 命令已结束后注册仍回溯命中', JSON.stringify(backResult).slice(0, 160) + ` elapsed=${backElapsed}ms`)
+
+      // B17d（D72）：回显**不算**命中。上面那条命令的回显里带着 BACKFILL_%s（输出是
+      // BACKFILL_MARK），它落在 shell 集成的 A..B 之间——真实 zsh / bash 是否真的如此，
+      // 是「用 A..B 边界去回显」这个设计唯一没法在单测里自证的前提（单测的标记是
+      // 自己造的，属循环论证），所以在这里拿真 shell 钉一次。
+      const echoResult = await expect.execute({ sid: 'ex-1', pattern: 'BACKFILL_%s', timeoutSec: 1 })
+      if (echoResult.matched === false && echoResult.timedOut === true) pass('B17d 回显里的字样不算命中（A..B 边界在真 shell 上成立）')
+      else fail('B17d 回显里的字样不算命中（A..B 边界在真 shell 上成立）', JSON.stringify(echoResult).slice(0, 160) + '（若本机 shell 未启用集成，这是降级语义而非回归）')
     }
     s.client.send(JSON.stringify({ t: 'kill', sid: 'ex-1' }))
     await s.waitFor(() => s.state.exited !== null, 10000, 'ex-1 exit')

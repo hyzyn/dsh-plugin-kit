@@ -822,7 +822,7 @@ export class SftpManager {
         })
         conn.on('close', () => {
           // 连接断开：丢弃池内条目，下次操作自动重连。
-          // **必须走 close(rt) 而不是只 delete**：跳板机 / 代理命令是「另一条连接 / 另一个进程」，
+          // **必须走 close(rt) 而不是只 delete**（**D65**）：跳板机 / 代理命令是「另一条连接 / 另一个进程」，
           // 只摘池条目会把它们留在原地（前者靠 keepalive 一直挂着、后者变常驻孤儿）。
           const rt = this.conns.get(signature)
           if (rt !== undefined && rt.conn === conn) {

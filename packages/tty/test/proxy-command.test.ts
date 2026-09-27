@@ -12,11 +12,13 @@
  * 另外照抄 `jump-spec.test.ts` 的做法真跑一遍插件：`POST /api/dsh-tty/config` → `GET`，
  * 证明 `proxyCommand` 穿过了四道扁平白名单（漏一道同样是「配了等于没配」）。
  */
+// DSH_HOME 隔离（D69）：读不到开发机上的真实授权文件
+import './isolated-home.js'
 import { existsSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { apply } from '../src/index.js'
-import { __resetCapabilityGrantsForTest, capabilityGranted } from '@hyzyn/dsh-kit'
+import { bindCapabilitySources, capabilityGranted } from '@hyzyn/dsh-kit'
 import {
   dialProxyCommand,
   expandProxyCommand,
@@ -43,7 +45,8 @@ const GRANT_ENV = 'DSH_TTY_ALLOW_PROXY_COMMAND'
 afterEach(() => {
   setProxyCommandPolicy({ granted: false, enabled: false })
   delete process.env[GRANT_ENV]
-  __resetCapabilityGrantsForTest()
+  // 重新绑定（= 重采样）成「这次宿主没带授权」：见 kit 的 bindCapabilitySources
+  bindCapabilitySources(undefined)
 })
 
 /*
@@ -57,10 +60,11 @@ beforeEach(() => {
   vi.stubEnv('SSH_AUTH_SOCK', '/tmp/dsh-test-agent.sock')
 })
 
-/** 模拟「宿主启动时就带了授权环境变量」：设环境变量 + 清采样缓存 + 打开策略。 */
+/** 模拟「宿主启动时就带了授权环境变量」：设环境变量 + 重新绑定授权来源 + 打开策略。 */
 function grantHostSide(enabled = true): void {
   process.env[GRANT_ENV] = '1'
-  __resetCapabilityGrantsForTest()
+  // 绑定发生在 apply()；这里没有宿主上下文，就用兜底路径（冻结绑定那一刻的 process.env）
+  bindCapabilitySources(undefined)
   expect(capabilityGranted(GRANT_ENV)).toBe(true)
   setProxyCommandPolicy({ granted: true, enabled })
 }

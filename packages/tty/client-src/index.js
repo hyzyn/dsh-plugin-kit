@@ -100,6 +100,8 @@ import { formatBytes, formatRate, hasUsableStats, statsFrameFresh, statsItemSpec
 
 /*
  * 界面文案走宿主 `@deepseek-ai/dsh-client-locale` 的目录（方案见 docs/i18n.md）。
+ * **文案里不许出现字面 `**`**（D68）：浏览器半体没有 markdown 渲染器，用户看到的就是两个星号；
+ * 强调用「」/ “” 或直接换行。
  * 目录**内联在 client-src/index.js**（不是单独一个模块）：本包用 esbuild 打成单文件 IIFE，
  * 多一个模块就多一层「谁在什么时候加载」的不确定性，而 docs/i18n.md 明确要求目录住在主半体里。
  *
@@ -211,7 +213,30 @@ const I18N_ZH = {
   'placeholder.proxyCommand': '例如 ssh -W %h:%p bastion',
   'hint.proxyCommand': '本机执行的命令，它的 stdin/stdout 就是到目标的 SSH 传输（等价于 OpenSSH 的 ProxyCommand）。支持 %h 目标主机、%p 端口、%r 用户名、%n 主机、%% 字面 %；其余写法原样保留。与跳板机同时填时跳板机优先（OpenSSH 语义）。需要下面那个开关，~/.ssh/config 导入不会自动带入它。',
   'hint.proxyCommandDisabled': '⚠ 当前「允许 ProxyCommand」未打开：这条命令不会执行，连接会明确失败（不会退回直连）。到 插件配置 → 终端面板 打开开关后生效。',
-  'hint.proxyCommandNotGranted': '⚠ 这条能力未获宿主授权，设置卡片里的开关点不动：提权只认宿主侧的环境变量 DSH_TTY_ALLOW_PROXY_COMMAND=1（可用设置 → 环境变量 卡片写入 ~/.dsh/env.yml），设好后重启宿主。这样安排是因为本机任意进程都能发回环请求——若配置界面能提权，这道闸门等于没有；关掉它则随时可用。',
+  'hint.proxyCommandNotGranted': '⚠ 这条能力未获宿主授权：点这个开关会就地发起一次授权（面板给一条在宿主终端执行的命令，免重启）；也可以走最严的那条——在「启动 dsh 的那个环境」里 export DSH_TTY_ALLOW_PROXY_COMMAND=1 后重启宿主（启动之后再设不算授权）。这样安排是因为跨站页面与页内脚本都能发回环请求——若配置界面能凭空提权，这道闸门等于没有；关掉它则随时可用。',
+  'badge.notEffective': '未生效：未获宿主授权',
+  'elev.title': '就地授权（免重启）',
+  'elev.lockedWhy': '本机任意进程都能发回环请求，所以「打开危险能力」这件事不能由这个页面自己说了算——必须在宿主的文件系统上确认一次。',
+  'elev.step': '在宿主的终端里执行下一条命令，开关会自动解锁：',
+  'elev.copy': '复制命令',
+  'elev.copied': '已复制',
+  'elev.copyManual': '当前环境拿不到剪贴板，请手动选中上面那条命令复制。',
+  'elev.expiresIn': '{sec} 秒后失效',
+  'elev.expired': '本次确认已过期，请重新生成。',
+  'elev.waiting': '等待确认…执行完命令这里会自动变成已授权。',
+  'elev.regenerate': '重新生成',
+  'elev.loading': '正在生成确认命令…',
+  'elev.granted': '已授权并生效。',
+  'elev.grantedNeedSave': '已授权。点「保存」后生效。',
+  'elev.grantedAt': '已授权 · {time}',
+  'elev.revoke': '撤销宿主授权',
+  'elev.revoked': '已撤销宿主授权（配置开关保持不变，重新授权后会立刻生效）。',
+  'elev.viaEnv': '由启动环境变量授权；要撤销需在启动环境里去掉它并重启宿主。',
+  'elev.close': '收起',
+  'elev.disableFirst': '先关掉这个配置开关',
+  'elev.otherWay': '另一种方式（最强，需要重启宿主）',
+  'elev.envHow': '在「启动 dsh 的那个环境」里 export {env}=1，然后重启宿主。注意：启动之后再设、或写进别的配置文件都不算授权——这道闸门防的就是「运行期能改的东西冒充授权」。',
+  'elev.error': '就地授权没成功：',
   'meta.probeProxy': '代理命令',
   'meta.probeProxyOff': '代理命令（未启用）',
   'meta.probeTcpSkipped': '直连预检已跳过（走代理命令）',
@@ -380,7 +405,7 @@ const I18N_ZH = {
   'check.announce': '向 agent 公告终端面板能力',
   'check.shellIntegration': 'shell 集成（OSC 133/7 注入）',
   'check.shellIntegrationWindows': 'shell 集成（OSC 133/7 注入，tty_capture{last} 与 cwd 跟随依赖它）',
-  'hint.shellIntegrationWindows': 'Windows 宿主上不适用：注入走的是 POSIX 的 `-c` 包装层与 rc 桩，cmd / PowerShell 上都不成立（实测 cmd 忽略 `-c` 空跑、PowerShell 报 export 不存在）。因此**本地**标签的 cwd 跟随与 tty_capture{last} 不可用；远程 Linux / macOS 主机照旧支持。',
+  'hint.shellIntegrationWindows': 'Windows 宿主上不适用：注入走的是 POSIX 的 `-c` 包装层与 rc 桩，cmd / PowerShell 上都不成立（实测 cmd 忽略 `-c` 空跑、PowerShell 报 export 不存在）。因此「本地」标签的 cwd 跟随与 tty_capture{last} 不可用；远程 Linux / macOS 主机照旧支持。',
   'section.sftp': 'SFTP 文件传输',
   'field.sftpStyle': 'SFTP 文件浏览风格',
   'option.sftpDialog': '单窗体 — 远程目录 + 上传/下载/拖拽',
@@ -577,7 +602,30 @@ const I18N_EN = {
   'placeholder.proxyCommand': 'e.g. ssh -W %h:%p bastion',
   'hint.proxyCommand': 'A command run on this machine whose stdin/stdout become the SSH transport to the target (the same idea as OpenSSH’s ProxyCommand). Supports %h host, %p port, %r user, %n host and %% for a literal %; anything else is left as written. If a jump host is set too, the jump host wins (OpenSSH semantics). It needs the switch below, and importing ~/.ssh/config never fills it in.',
   'hint.proxyCommandDisabled': '⚠ “Allow ProxyCommand” is off right now: this command will not run and the connection fails explicitly (it does not fall back to a direct connection). Turn it on in Plugin settings → Terminal panel.',
-  'hint.proxyCommandNotGranted': '⚠ Not granted by the host, so the switch in the settings card cannot be turned on: raising it is only accepted from the host’s environment (DSH_TTY_ALLOW_PROXY_COMMAND=1, writable via Settings → Environment variables into ~/.dsh/env.yml), then restart the host. The reason: any local process can send loopback requests, so if the settings UI could raise it this gate would be pointless. Turning it off always works.',
+  'hint.proxyCommandNotGranted': '⚠ Not granted by the host: clicking this switch starts a grant in place (the panel shows one command to run in a terminal on the host — no restart), or use the strictest route — export DSH_TTY_ALLOW_PROXY_COMMAND=1 in the environment that launched dsh and restart the host (setting it after launch does not count). The reason: cross-site pages and in-page scripts can both send loopback requests, so if the settings UI could raise it out of thin air this gate would be pointless. Turning it off always works.',
+  'badge.notEffective': 'Not effective: not granted by the host',
+  'elev.title': 'Grant in place (no restart)',
+  'elev.lockedWhy': 'Any local process can send loopback requests, so “turn on a dangerous capability” cannot be decided by this page alone — it has to be confirmed on the host’s filesystem once.',
+  'elev.step': 'Run the command below in a terminal on the host and the switch unlocks by itself:',
+  'elev.copy': 'Copy command',
+  'elev.copied': 'Copied',
+  'elev.copyManual': 'The clipboard is unavailable here — select the command above and copy it manually.',
+  'elev.expiresIn': 'expires in {sec}s',
+  'elev.expired': 'This confirmation has expired — generate a new one.',
+  'elev.waiting': 'Waiting for confirmation… once you run the command this turns into “granted” automatically.',
+  'elev.regenerate': 'Generate a new one',
+  'elev.loading': 'Generating the confirmation command…',
+  'elev.granted': 'Granted and now in effect.',
+  'elev.grantedNeedSave': 'Granted. Press “Save” to apply.',
+  'elev.grantedAt': 'Granted · {time}',
+  'elev.revoke': 'Revoke host grant',
+  'elev.revoked': 'Host grant revoked (the config switch is left untouched; granting again takes effect immediately).',
+  'elev.viaEnv': 'Granted by a launch environment variable; to revoke, remove it from the launch environment and restart the host.',
+  'elev.close': 'Collapse',
+  'elev.disableFirst': 'Turn this config switch off first',
+  'elev.otherWay': 'The other way (strongest, needs a host restart)',
+  'elev.envHow': 'In the environment that launched dsh: export {env}=1, then restart the host. Setting it after launch — or writing it into some other config file — does not count as a grant; that is exactly what this gate guards against.',
+  'elev.error': 'In-place grant failed: ',
   'meta.probeProxy': 'Proxy command',
   'meta.probeProxyOff': 'Proxy command (disabled)',
   'meta.probeTcpSkipped': 'Direct TCP check skipped (using the proxy command)',
@@ -746,7 +794,7 @@ const I18N_EN = {
   'check.announce': 'Announce the terminal panel capabilities to the agent',
   'check.shellIntegration': 'Shell integration (OSC 133/7 injection)',
   'check.shellIntegrationWindows': 'Shell integration (OSC 133/7 injection; tty_capture{last} and cwd following depend on it)',
-  'hint.shellIntegrationWindows': 'Not applicable on Windows hosts: injection relies on the POSIX `-c` wrapper and rc stubs, which do not hold for cmd / PowerShell (cmd ignores `-c` and exits, PowerShell reports that export does not exist). So cwd following and tty_capture{last} are unavailable for **local** tabs; remote Linux / macOS hosts are unaffected.',
+  'hint.shellIntegrationWindows': 'Not applicable on Windows hosts: injection relies on the POSIX `-c` wrapper and rc stubs, which do not hold for cmd / PowerShell (cmd ignores `-c` and exits, PowerShell reports that export does not exist). So cwd following and tty_capture{last} are unavailable for “local” tabs; remote Linux / macOS hosts are unaffected.',
   'section.sftp': 'SFTP file transfer',
   'field.sftpStyle': 'SFTP file browser style',
   'option.sftpDialog': 'Single pane — remote directory + upload/download/drag',
@@ -4200,7 +4248,7 @@ function openSshDialog(entry) {
      *
      * 这里曾经漏过一遍（2026-09-25）：对话框里填了跳板机，连出去却是直连、存下来的条目也没有
      * 跳板机——「配了等于没配」，而且症状是「连不上」（没有任何提示说跳板机被丢了）。四个出口
-     * （连接 / 试连 / 文件浏览 / 保存修改）必须走同一个取值函数，漏一个就是这一类缺陷。
+     * （连接 / 试连 / 文件浏览 / 保存修改）必须走同一个取值函数，漏一个就是这一类缺陷（**D64**）。
      */
     const jump = jumpFromFields()
     if (jump !== undefined) spec.jump = jump
@@ -6287,6 +6335,28 @@ function ensureModalVisible() {
 }
 
 /**
+ * 就地提权（免重启）用的能力名：与宿主侧 `CAP_PROXY_COMMAND.env` **必须一致**（宿主按它查表）。
+ */
+const ELEVATE_CAPABILITY = 'DSH_TTY_ALLOW_PROXY_COMMAND'
+
+/**
+ * 授权时刻 → 固定格式 `YYYY-MM-DD HH:mm:ss`（本地时区）。
+ *
+ * 刻意不用 `toLocaleString()`：它给 `2026/9/26 22:37:30` 这种斜杠 + 不补零的形状，既不好扫读、
+ * 也跟宿主日志里的 ISO 时刻对不上（这两处迟早要被对着看）。
+ *
+ * 为什么 docker 有一份、这里又写一份：仓规硬规矩 1 明令**插件之间不许互相 import**（`kit` 是
+ * 宿主半体库，入口 import 了 `node:*`），能在浏览器侧共享的通道只有宿主服务本身。所以这段
+ * 十几行的纯格式化在两侧各留一份，而不是为此建共享包。
+ */
+function formatGrantedAt(seconds) {
+  const date = new Date(Number(seconds) * 1000)
+  if (Number.isNaN(date.getTime())) return String(seconds)
+  const pad = (value) => String(value).padStart(2, '0')
+  return `${String(date.getFullYear())}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+}
+
+/**
  * 剪贴板降级（0.19.0）：`navigator.clipboard` 在非 secure context（如
  * `http://<局域网IP>:3080`）下是 undefined——此前直接调 writeText/readText
  * 会在「粘贴」处同步取属性抛 TypeError，整条复制/粘贴不可用（localhost 自测
@@ -6846,6 +6916,19 @@ function TtySettingsCard(props) {
   const [loaded, setLoaded] = React.useState(false)
   const [saving, setSaving] = React.useState(false)
   const [message, setMessage] = React.useState({ kind: '', text: '' })
+  /**
+   * 就地提权面板（`null` = 收起）。形状：`{ phase: 'loading' | 'pending' | 'expired' | 'error',
+   * command?, expiresAt?, error? }`。见 kit 的 elevation.ts。
+   */
+  const [elevation, setElevation] = React.useState(null)
+  const [elevationNotice, setElevationNotice] = React.useState('')
+  const [copied, setCopied] = React.useState(false)
+  /** 倒计时用：每秒重渲一次（只在面板展开且有 expiresAt 时启用）。 */
+  const [nowTick, setNowTick] = React.useState(Date.now())
+  /** 表单镜像：提权成功后的自动保存要读**当前**表单（state 更新还没刷）。 */
+  const formRef = React.useRef(null)
+  /** 「上次保存/加载时的表单」序列化：授权到达时据此判断表单干不干净。 */
+  const cleanPayloadRef = React.useRef(null)
   /** 已安装 shell 候选（/api/dsh-tty/shells，加载失败保持空 = 纯手输）。 */
   const [shellOptions, setShellOptions] = React.useState([])
   const [shellListOpen, setShellListOpen] = React.useState(false)
@@ -6858,6 +6941,8 @@ function TtySettingsCard(props) {
       const res = await fetch('/api/dsh-tty/config', { cache: 'no-store' })
       const data = await res.json()
       if (data.ok && typeof data.config === 'object' && data.config !== null) {
+        formRef.current = data.config
+        cleanPayloadRef.current = JSON.stringify(toPayload(data.config))
         setForm(data.config)
         syncSshHostsCache(data.config) // 连接簿缓存与设置保持一致（「+」菜单共用）
       } else setMessage({ kind: 'error', text: String(data.error || t('error.configLoadFailed')) })
@@ -6882,7 +6967,35 @@ function TtySettingsCard(props) {
     }
   }, [open])
 
-  const set = (key, value) => setForm((current) => ({ ...(current || {}), [key]: value }))
+  const set = (key, value) => setForm((current) => {
+    const next = { ...(current || {}), [key]: value }
+    formRef.current = next
+    return next
+  })
+  /**
+   * 表单 → 保存 payload。**也是「脏不脏」的比较口径**：只有这些键会被写进去，所以授权到达后的
+   * 自动保存只在**干净**表单下做——保存是整表提交，脏表单里自动保存会静默写入用户没打算提交的编辑。
+   * `save()` 与脏检查共用这一份，避免两处各拼一遍「要提交哪些键」（那正是漂的种子）。
+   */
+  const toPayload = (source) => {
+    const body = {}
+    for (const key of ['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'shellIntegration', 'sftpStyle', 'persistence', 'endOnPageClose', 'statsEnabled', 'allowProxyCommand']) {
+      const value = (source || {})[key]
+      if (value !== undefined && value !== '') body[key] = value
+    }
+    body.sshHosts = Array.isArray(source?.sshHosts) ? source.sshHosts : []
+    body.tunnels = Array.isArray(source?.tunnels) ? source.tunnels : []
+    // sftpLimits：对象整体提交（宿主按字段校验；0 = 不限）
+    if (source?.sftpLimits && typeof source.sftpLimits === 'object') {
+      body.sftpLimits = {
+        maxDownloadMb: Number(source.sftpLimits.maxDownloadMb) || 0,
+        maxUploadMb: Number(source.sftpLimits.maxUploadMb) || 0,
+        maxUploadFiles: Number(source.sftpLimits.maxUploadFiles) || 0,
+      }
+    }
+    return body
+  }
+  formRef.current = form
   /** sftpLimits 单项更新（函数式合并，避免连续编辑覆盖）。 */
   const setSftpLimit = (key, value) => setForm((current) => ({
     ...(current || {}),
@@ -7373,25 +7486,16 @@ function TtySettingsCard(props) {
       setMessage({ kind: 'error', text: String(error && error.message ? error.message : error) })
     }
   }
-  const save = async () => {
+  /**
+   * 保存配置。`source` 显式传表单快照的场景是**提权成功后的自动保存**：那一拍 state 还没刷，
+   * 读 `form` 会写进改之前的值（与 docker 同一条理由）。
+   */
+  const save = async (source) => {
+    const snapshot = source ?? formRef.current ?? form
     setSaving(true)
     setMessage({ kind: '', text: '' })
     // 只提交配置项：快照里的 toolsRegistered 等非配置键会被宿主 normalizePatch 拒绝
-    const body = {}
-    for (const key of ['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'shellIntegration', 'sftpStyle', 'persistence', 'endOnPageClose', 'statsEnabled', 'allowProxyCommand']) {
-      const value = (form || {})[key]
-      if (value !== undefined && value !== '') body[key] = value
-    }
-    body.sshHosts = Array.isArray(form?.sshHosts) ? form.sshHosts : []
-    body.tunnels = Array.isArray(form?.tunnels) ? form.tunnels : []
-    // sftpLimits：对象整体提交（宿主按字段校验；0 = 不限）
-    if (form?.sftpLimits && typeof form.sftpLimits === 'object') {
-      body.sftpLimits = {
-        maxDownloadMb: Number(form.sftpLimits.maxDownloadMb) || 0,
-        maxUploadMb: Number(form.sftpLimits.maxUploadMb) || 0,
-        maxUploadFiles: Number(form.sftpLimits.maxUploadFiles) || 0,
-      }
-    }
+    const body = toPayload(snapshot)
     try {
       const res = await fetch('/api/dsh-tty/config', {
         method: 'POST',
@@ -7402,7 +7506,10 @@ function TtySettingsCard(props) {
       if (!res.ok || !data.ok) setMessage({ kind: 'error', text: String(data.error || t('error.saveFailed')) })
       else {
         setMessage({ kind: 'ok', text: t('msg.saved') })
+        // 保存成功 = 新的干净基线（授权到达后的自动保存据此判定表单干不干净）
+        cleanPayloadRef.current = JSON.stringify(body)
         if (data.config) {
+          formRef.current = data.config
           setForm(data.config)
           syncSshHostsCache(data.config)
         }
@@ -7411,6 +7518,242 @@ function TtySettingsCard(props) {
       setMessage({ kind: 'error', text: String(error && error.message ? error.message : error) })
     }
     setSaving(false)
+  }
+
+  /* ---------------- 就地提权（免重启） ---------------- */
+
+  /** 提权端点前缀（三条子路由**全 POST**，见宿主侧 MUTATION_SUBROUTES）。 */
+  const elevateUrl = (sub) => '/api/dsh-tty/elevate' + sub
+
+  /** 只刷新与授权有关的只读字段（**不动**用户正在编辑的字段）。 */
+  const refreshGrantState = async () => {
+    try {
+      const res = await fetch('/api/dsh-tty/config', { cache: 'no-store' })
+      const data = await res.json()
+      const config = data && typeof data.config === 'object' && data.config !== null ? data.config : null
+      if (config === null) return
+      setForm((current) => {
+        if (current === null) return current
+        const next = {
+          ...current,
+          allowProxyCommandGranted: config.allowProxyCommandGranted === true,
+          allowProxyCommandGrantSource: config.allowProxyCommandGrantSource ?? null,
+          allowProxyCommandGrantedAt: Number.isFinite(config.allowProxyCommandGrantedAt) ? config.allowProxyCommandGrantedAt : null,
+        }
+        formRef.current = next
+        return next
+      })
+    } catch {
+      /* 刷新失败静默：卡片本身照旧可用，下一次加载会同步 */
+    }
+  }
+
+  /**
+   * 授权到达：把开关写进表单、刷新授权状态，并在「表单本来是干净的」时顺手保存。
+   *
+   * 自动保存只在干净表单下做：保存是整表提交，脏表单里自动保存会把用户没打算提交的编辑一起
+   * 写进去。脏的时候只把开关置上并提示「点保存生效」——不替用户做决定。
+   */
+  const finishElevation = async () => {
+    setElevation(null)
+    setCopied(false)
+    const current = formRef.current || {}
+    const clean = cleanPayloadRef.current !== null && JSON.stringify(toPayload(current)) === cleanPayloadRef.current
+    const next = { ...current, allowProxyCommand: true }
+    formRef.current = next
+    setForm(next)
+    await refreshGrantState()
+    if (clean) {
+      await save(next)
+      setElevationNotice(t('elev.granted'))
+    } else {
+      setElevationNotice(t('elev.grantedNeedSave'))
+    }
+  }
+
+  /** 发起一次就地提权（只在未授权时调用；已授权时点开关就是普通开关）。 */
+  const beginElevation = async () => {
+    setCopied(false)
+    setElevationNotice('')
+    setElevation({ phase: 'loading' })
+    try {
+      const res = await fetch(elevateUrl(''), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ capability: ELEVATE_CAPABILITY }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setElevation({ phase: 'error', error: String(data.error || res.status) })
+        return
+      }
+      if (data.status === 'granted') {
+        await finishElevation()
+        return
+      }
+      setElevation({ phase: 'pending', command: String(data.command ?? ''), expiresAt: Number(data.expiresAt) || 0 })
+    } catch (error) {
+      setElevation({ phase: 'error', error: String(error && error.message ? error.message : error) })
+    }
+  }
+
+  /** 撤销宿主授权（零确认）。配置开关**不动**——它是用户写下的值，重新授权后会立刻生效。 */
+  const revokeElevation = async () => {
+    setElevationNotice('')
+    try {
+      const res = await fetch(elevateUrl('/revoke'), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ capability: ELEVATE_CAPABILITY }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        setElevationNotice(t('elev.error') + String(data.error || res.status))
+        return
+      }
+      await refreshGrantState()
+      setElevationNotice(t('elev.revoked'))
+    } catch (error) {
+      setElevationNotice(t('elev.error') + String(error && error.message ? error.message : error))
+    }
+  }
+
+  const copyElevationCommand = async () => {
+    const command = elevation === null ? '' : String(elevation.command ?? '')
+    if (command === '') return
+    if (clipboardAvailable()) {
+      try {
+        await navigator.clipboard.writeText(command)
+        setCopied(true)
+        return
+      } catch {
+        /* 权限被拒：落到手动复制提示 */
+      }
+    }
+    setCopied(false)
+    setElevationNotice(t('elev.copyManual'))
+  }
+
+  /*
+   * 待确认期间轮询状态（1.5s，与 docker 同频）+ 每秒重算倒计时。只在面板处于 pending 时跑：
+   * 面板一收 / 一授权，两个定时器随 effect 清理一起停。
+   */
+  React.useEffect(() => {
+    if (elevation === null || elevation.phase !== 'pending') return undefined
+    const tick = setInterval(() => setNowTick(Date.now()), 1000)
+    const poll = setInterval(() => {
+      fetch(elevateUrl('/status'), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ capability: ELEVATE_CAPABILITY }),
+      })
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.status === 'granted') void finishElevation()
+        })
+        .catch(() => { /* 网络抖动：下一次轮询再试 */ })
+    }, 1500)
+    return () => {
+      clearInterval(tick)
+      clearInterval(poll)
+    }
+  }, [elevation])
+
+  /** 「已授权」那一行：file 通道给时刻 + 撤销；env 通道只说明「去启动环境改」。 */
+  const grantStateLine = () => {
+    if (form.allowProxyCommandGrantSource === 'env') {
+      return jsx('span', { className: 'tt_cardHint', children: t('elev.viaEnv') })
+    }
+    const grantedAt = form.allowProxyCommandGrantedAt
+    return jsxs('span', { className: 'tt_capState', children: [
+      Number.isFinite(grantedAt)
+        ? jsx('span', { children: t('elev.grantedAt', { time: formatGrantedAt(grantedAt) }) })
+        : null,
+      jsx('button', { type: 'button', className: 'tt_toolBtn tt_capRevoke', onClick: () => void revokeElevation(), children: t('elev.revoke') }),
+    ] })
+  }
+
+  /** 就地提权面板（内联展开；不用 confirm()——那会在 React 之外同步阻塞渲染）。 */
+  const elevationPanel = () => {
+    const command = String(elevation.command ?? '')
+    const seconds = elevation.expiresAt > 0 ? Math.max(0, Math.ceil((elevation.expiresAt - nowTick) / 1000)) : 0
+    const expired = elevation.phase === 'pending' && elevation.expiresAt > 0 && seconds === 0
+    const close = () => {
+      setElevation(null)
+      setCopied(false)
+    }
+    return jsxs('div', { className: 'tt_elevPanel', children: [
+      jsxs('div', { className: 'tt_elevHead', children: [
+        jsx('span', { className: 'tt_cardLabel', children: t('elev.title') }),
+        jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: close, children: t('elev.close') }),
+      ] }),
+      jsx('span', { className: 'tt_cardHint', children: t('elev.lockedWhy') }),
+      elevation.phase === 'error'
+        ? jsx('span', { className: 'tt_cardHint tt_sshProbeWarn', children: t('elev.error') + String(elevation.error ?? '') })
+        : null,
+      elevation.phase === 'loading'
+        ? jsx('span', { className: 'tt_cardHint', children: t('elev.loading') })
+        : null,
+      command === ''
+        ? null
+        : jsxs('div', { className: 'tt_elevSteps', children: [
+            jsx('span', { className: 'tt_cardHint', children: t('elev.step') }),
+            jsxs('div', { className: 'tt_elevCommand', children: [
+              jsx('code', { children: command }),
+              jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => void copyElevationCommand(), children: copied ? t('elev.copied') : t('elev.copy') }),
+            ] }),
+            jsx('span', { className: 'tt_cardHint', children: expired ? t('elev.expired') : t('elev.waiting') }),
+            expired
+              ? jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => void beginElevation(), children: t('elev.regenerate') })
+              : jsx('span', { className: 'tt_cardHint', children: t('elev.expiresIn', { sec: seconds }) }),
+          ] }),
+      /*
+       * 配置开关「看着开着」但没授权时，用户点它只会再发起一次授权——要**关掉配置**得有个单独
+       * 的入口（否则从界面上根本关不掉那个值）。
+       */
+      form.allowProxyCommand === true && form.allowProxyCommandGranted !== true
+        ? jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => { set('allowProxyCommand', false); close() }, children: t('elev.disableFirst') })
+        : null,
+      jsx('span', { className: 'tt_cardHint', children: t('elev.otherWay') }),
+      jsx('span', { className: 'tt_cardHint', children: t('elev.envHow', { env: ELEVATE_CAPABILITY }) }),
+    ] })
+  }
+
+  /**
+   * 代理命令闸门那一块：开关（未授权时点它 = **发起就地授权**）+ 说明 + 授权状态 + 面板。
+   *
+   * 为什么单独写而不复用 boolField：未授权时它要做的**不是**改配置，而是发起授权；把它塞进
+   * boolField 的 `disabled` 分支，就又回到「点不动」那种「界面说了但没给路」的状态。
+   */
+  const proxyCommandField = () => {
+    const granted = form.allowProxyCommandGranted === true
+    const configured = form.allowProxyCommand === true
+    return jsxs('div', { className: 'tt_capBlock', children: [
+      jsxs('label', { className: 'tt_cardField tt_cardRow tt_cardToggle tt_cardDanger', children: [
+        jsx('input', {
+          type: 'checkbox',
+          className: 'tt_cardCheckbox',
+          checked: configured,
+          onChange: (event) => {
+            if (!granted) {
+              void beginElevation()
+              return
+            }
+            set('allowProxyCommand', event.target.checked)
+          },
+        }),
+        jsx('span', { className: 'tt_cardLabel', children: t('check.allowProxyCommand') }),
+        configured && !granted
+          ? jsx('span', { className: 'tt_badgeWarn', children: t('badge.notEffective') })
+          : null,
+      ] }),
+      jsx('span', { className: 'tt_cardHint', children: t('hint.allowProxyCommand') }),
+      granted
+        ? grantStateLine()
+        : jsx('span', { className: 'tt_cardHint tt_sshProbeWarn', children: t('hint.proxyCommandNotGranted') }),
+      elevationNotice === '' ? null : jsx('span', { className: 'tt_cardHint', children: elevationNotice }),
+      elevation === null ? null : elevationPanel(),
+    ] })
   }
 
   /* ---------------- 编辑表单里的凭据引用（React 版，语义与对话框逐条对齐） ---------------- */
@@ -7766,8 +8109,13 @@ function TtySettingsCard(props) {
       hint ? jsx('span', { className: 'tt_cardHint', children: hint }) : null,
     ],
   })
+  /*
+   * `tt_cardToggle`（D71）：这一类行点整行就能勾上，所以要给手型——此前只有文字有反应、鼠标停上去
+   * 是箭头，而 docker 卡片的 `.dk_check` 一直有。复选框本身还得单独写（UA 样式不让它继承 label 的
+   * cursor），见 tty.css 里那两条。
+   */
   const boolField = (label, key, extraClass, disabled) => jsxs('label', {
-    className: 'tt_cardField tt_cardRow' + (typeof extraClass === 'string' && extraClass !== '' ? ' ' + extraClass : ''),
+    className: 'tt_cardField tt_cardRow tt_cardToggle' + (typeof extraClass === 'string' && extraClass !== '' ? ' ' + extraClass : ''),
     children: [
       jsx('input', {
         type: 'checkbox',
@@ -7918,12 +8266,8 @@ function TtySettingsCard(props) {
                      * ProxyCommand 闸门。刻意与其它开关**不同色**（tt_cardDanger）：它是本插件
                      * 唯一「由设置字段驱动本机任意命令执行」的开关，默认关，打开前该看清代价。
                      */
-                    boolField(t('check.allowProxyCommand'), 'allowProxyCommand', 'tt_cardDanger', form.allowProxyCommandGranted !== true),
-                    jsx('span', { className: 'tt_cardHint', children: t('hint.allowProxyCommand') }),
-                    // 未授权时补一行「怎么授权」：只说「去打开开关」会让用户对着点不动的开关反复点
-                    form.allowProxyCommandGranted === true
-                      ? null
-                      : jsx('span', { className: 'tt_cardHint tt_sshProbeWarn', children: t('hint.proxyCommandNotGranted') }),
+                    // 未授权时点它**发起就地授权**（面板给一条在宿主终端执行的命令），不再点不动
+                    proxyCommandField(),
                   ],
                 }),
                 textField(t('field.maxSessions'), 'maxSessions', '4', t('hint.maxSessions')),

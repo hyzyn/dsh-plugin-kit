@@ -1,7 +1,9 @@
 /**
  * @hyzyn/dsh-tty — 宿主半体最小冒烟（0.19.0，DEFECTS D38/D45 第一刀）。
  *
- * 此前 test/ 里没有任何用例 import src/index.ts——CI 对宿主侧的语法断裂、
+ * 此前 test/ 里没有任何用例 // DSH_HOME 隔离（D69）：读不到开发机上的真实授权文件
+import './isolated-home.js'
+import src/index.ts——CI 对宿主侧的语法断裂、
  * 依赖缺失、导出面破坏静默通过（D38 的核心事实）。这里至少钉住：
  *   1. 宿主插件模块可加载、导出面完整；
  *   2. env: 引用「值为空」与「未设置」分开报错（D16① 回归）；

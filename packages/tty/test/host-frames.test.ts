@@ -9,6 +9,8 @@
  *   - SessionManager 直测：上限、reapOrphans 的 grace=0 立即回收与按龄回收（D08）。
  * 不追求覆盖率：只钉「修复过的行为 + 边界」。
  */
+// DSH_HOME 隔离（D69）：读不到开发机上的真实授权文件
+import './isolated-home.js'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { tmpdir } from 'node:os'

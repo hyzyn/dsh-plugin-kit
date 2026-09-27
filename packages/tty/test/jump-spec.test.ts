@@ -10,6 +10,8 @@
  * 所以这里既测两个纯函数（清洗 / 严格校验），也**真跑一遍插件**：
  * `POST /api/dsh-tty/config` 存进去、`GET` 读回来，断言 `jump` 一字不差。
  */
+// DSH_HOME 隔离（D69）：读不到开发机上的真实授权文件
+import './isolated-home.js'
 import { describe, expect, it } from 'vitest'
 import { apply } from '../src/index.js'
 import { sanitizeJumpSpec, validateJumpSpec } from '../src/ssh.js'

@@ -1632,6 +1632,80 @@
 .tt_cardDanger .tt_cardLabel {
   color: var(--tt-warn);
 }
+
+/*
+ * 「允许 ProxyCommand」那一块（开关 + 说明 + 授权状态 + 就地提权面板）。
+ *
+ * 为什么这个开关不像其它开关那样只用 boolField：未获宿主授权时点它**不是**改配置，而是发起一次
+ * 就地授权（面板给一条要在宿主终端执行的命令）。所以它自带状态行与面板，也是一个独立 class。
+ */
+.tt_capBlock {
+  display: grid;
+  gap: var(--tt-gap-sm);
+}
+/* 「未生效：未获宿主授权」——开关看着是开的、其实不会发生任何事，必须有个名字 */
+.tt_badgeWarn {
+  padding: 1px 6px;
+  border: 1px solid color-mix(in srgb, var(--tt-warn) 45%, transparent);
+  border-radius: 999px;
+  color: var(--tt-warn);
+  font-size: 11px;
+  white-space: nowrap;
+}
+/* 授权状态行：授权是逐能力的，撤销按钮与时刻要贴着**这个**开关，不跟别的开关混在一行 */
+.tt_capState {
+  display: flex;
+  align-items: center;
+  gap: var(--tt-gap-sm);
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--tt-label-3);
+}
+.tt_capRevoke {
+  color: var(--tt-danger);
+  border-color: color-mix(in srgb, var(--tt-danger) 40%, transparent);
+}
+.tt_capRevoke:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--tt-danger) 10%, transparent);
+}
+/* 授权面板：一段说明 + 一条要复制到宿主终端的命令。左侧色条把它与普通设置项区分开 */
+.tt_elevPanel {
+  display: grid;
+  gap: var(--tt-gap-sm);
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--tt-accent) 34%, transparent);
+  border-left: 3px solid var(--tt-accent);
+  border-radius: var(--tt-r-md);
+  background: var(--tt-surface-2);
+}
+.tt_elevHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--tt-gap-sm);
+}
+.tt_elevSteps {
+  display: grid;
+  gap: var(--tt-gap-sm);
+}
+.tt_elevCommand {
+  display: flex;
+  align-items: center;
+  gap: var(--tt-gap-sm);
+  flex-wrap: wrap;
+}
+.tt_elevCommand code {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--tt-border);
+  border-radius: var(--tt-r-sm, 6px);
+  background: var(--tt-input);
+  font-family: var(--tt-mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
 .tt_sshEdit {
   display: flex;
   flex-direction: column;
@@ -2328,6 +2402,23 @@
   gap: var(--tt-gap-md);
   /* 窄容器里宁可换行也不横向溢出（下拉框默认 min-width:auto 会顶出卡片） */
   flex-wrap: wrap;
+}
+/*
+ * 「点整行就能勾上」的开关行（复选框 + 文字的那个 label）。**D71**：这一类行此前没有手型
+ * （docker 卡片的 .dk_check 一直有），而复选框本身更隐蔽——UA 样式把它的 cursor 定死、
+ * 不随 label 继承，所以两处都要写。
+ *
+ * 为什么值得一条专门的类：`.tt_cardRow` 也被「标签 + 下拉框」那种行用（跳板机凭据那种），
+ * 给那一类加手型是错的。`cursor` 是**继承属性**，所以写在 label 上，里面的复选框与文字一起
+ * 变成手型——与 docker 卡片里 `.dk_check` 的行为对齐（用户反馈：「这个没做手型」）。
+ */
+.tt_cardToggle {
+  cursor: pointer;
+  user-select: none;
+}
+/* 复选框本身要单独写：表单控件的 cursor 由 UA 样式定死，不随 label 继承 */
+.tt_cardToggle input[type="checkbox"] {
+  cursor: pointer;
 }
 .tt_cardHint {
   margin-top: 2px;

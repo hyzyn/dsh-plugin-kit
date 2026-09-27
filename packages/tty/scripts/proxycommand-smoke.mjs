@@ -27,7 +27,7 @@ import { fileURLToPath } from 'node:url'
 import { generateKeyPairSync } from 'node:crypto'
 import ssh2 from 'ssh2'
 import { SftpManager } from '../lib/sftp.js'
-import { __resetCapabilityGrantsForTest, capabilityGranted } from '@hyzyn/dsh-kit'
+import { bindCapabilitySources, capabilityGranted } from '@hyzyn/dsh-kit'
 import { setProxyCommandPolicy, spawnSsh } from '../lib/ssh.js'
 import { startSftpSshd, TEST_PASSWORD, TEST_USER } from './lib/test-sshd.mjs'
 
@@ -163,7 +163,8 @@ try {
   // ---- P3 放在最前：**未获宿主授权**时不该起任何进程（先测这条，后面的用例才有干净的计数） ----
   const before = bridgeProcessCount()
   delete process.env[GRANT_ENV]
-  __resetCapabilityGrantsForTest()
+  // 绑定 = 「这次宿主启动时带了什么环境」（见 kit 的 bindCapabilitySources）：先改变量再绑定，顺序不能反
+  bindCapabilitySources(undefined)
   applyPolicy(true) // 即便「开关想开着」，没有宿主授权也必须拒绝
   try {
     await new SftpManager({ info: () => {}, warn: () => {} }).list(specOf(), root)
@@ -181,9 +182,9 @@ try {
   }
 
   // ---- P5：代入值含 shell 特殊字符 → 拒绝执行（连进程都不该起） ----
-  // 从这里开始模拟「宿主启动时就带了授权环境变量」：设变量 + 清采样缓存（顺序不能反）
+  // 从这里开始模拟「宿主启动时就带了授权环境变量」：先设变量再绑定（顺序不能反）
   process.env[GRANT_ENV] = '1'
-  __resetCapabilityGrantsForTest()
+  bindCapabilitySources(undefined)
   applyPolicy(true)
   if (!capabilityGranted(GRANT_ENV)) fail('P3b 宿主侧授权生效', '设了环境变量却没被采到')
   else pass('P3b 宿主侧授权生效（DSH_TTY_ALLOW_PROXY_COMMAND=1）')

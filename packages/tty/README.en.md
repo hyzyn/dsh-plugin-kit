@@ -109,7 +109,7 @@ The plugin injects sixteen tools into the agent (with the same power as the bash
 | `tty_stats` | Read live host metrics for a session’s machine (0.20.0): CPU / memory / disk / TCP connections / network rates / temperature / uptime. Local sessions report the host; SSH sessions report that remote host over a separate non-PTY channel that never touches the terminal. Check it before deploying or load-testing |
 | `tty_capture` | Read recent output (last N lines, ANSI stripped by default, `raw:true` for the raw stream); **`last:true` returns only the output + exit code of the previous completed command** (shell integration markers, see the next section); when a command is **in flight** (just sent, completion marker not in yet) it returns `inProgress:true` without the stale result, so the previous command is never mistaken for this one (0.19.0) |
 | `tty_screen` | Read the **currently visible screen** as rendered (xterm-headless virtual screen, plain text) — it can genuinely read TUI interfaces such as vim / htop / menus |
-| `tty_expect` | Wait with a regex for a readiness signal in **subsequent output** (dev server URL, build finished, …); a timeout does not throw (`matched:false` + tail output), and a command that ends early also returns early with its exit code; at most 5 in-flight calls per session, and the accumulated window keeps only the last 64KB (0.19.0) |
+| `tty_expect` | Wait with a regex for a readiness signal (dev server URL, build finished, …). It **looks back first** at output that has not been read yet (including the full output of “the previous command”, so a command that finished instantly no longer burns the whole timeout) and then waits for subsequent output; on a hit it returns `matched:true` plus `matchedFrom` (`live` produced during this wait / `last` the previous command’s output / `buffered` buffered output that had already arrived). A timeout does not throw (`matched:false` + tail output, and it **does not consume the unread region**, so a different pattern can still look back at the same output), and a command that ends early also returns early with its exit code; the echo never counts as a hit (via the OSC 133 A..B boundary — see the next section for environments without markers); at most 5 in-flight calls per session, and the accumulated window keeps only the last 64KB (0.19.0; look-back matching, see D72) |
 | `tty_send` | Send keys/text to a given session (such as `q` to a dev server, or a menu selection) |
 | `sftp_list` | List a remote SSH directory (name/type/size/mtime, directories first); `book` is the connection-book entry name and `path` defaults to the login home; at most 500 entries by default (`truncated:true` beyond that), and `isSymlink` distinguishes a symlink from a real directory (0.19.0) |
 | `sftp_read` | Read a remote **text** file (≤256KB by default, adjustable to 1MB, truncated beyond that); `offset` pages from a given byte (handy for log tails), an invalid `maxBytes` errors out instead of silently falling back, and binary detection is a double test (NUL + illegal-UTF-8 ratio) (0.19.0) |
@@ -151,6 +151,30 @@ At spawn time hooks are injected through the existing `-c` wrapper layer accordi
 - Marker semantics: `133;A` prompt start / `133;B` command start / `133;D;<exit>` command end with exit
   code / `OSC 7 file://…` cwd reporting (`tty_list.cwd` follows `cd`, and SSH sessions report the remote path);
 - Other shells are silently disabled; `shellIntegration: false` turns the whole thing off (escape hatch).
+
+**Look-back matching and the read watermark (D72)**: `tty_expect` first looks back at output that has
+**not been read yet** (when a command finishes instantly, the marker you are waiting for is already in the
+buffer). The look-back lower bound is raised to “just after the last `B` marker” inside the unread region —
+the echo sits between `A` and `B`, so text in the echo never counts as a hit (deliberately no text
+comparison here: line wrapping / ANSI / multi-line paste would break it).
+
+- **Environments without `B` markers** (integration off / local Windows tabs / a remote host without the
+  hooks) cannot tell the echo apart and degrade to “scan from the watermark, possibly matching the echo
+  itself” — a known limitation;
+- **The tradeoff in that look-back range**: raising the lower bound to “just after the last `B` marker”
+  costs you the unread output that precedes the newest command’s start. It deliberately prefers a miss
+  over a false hit — treating the echo as a match would make the agent believe the event just happened.
+  Use `tty_capture` for that text. The mirror-image corner exists too: right after `tty_send`, before the
+  new command’s `B` marker arrives, the unread region still holds the previous command’s output, so a
+  pattern in it matches at once (the agent’s next call almost always lands after that `B`, where this
+  text has already been cut off by it);
+- **Read watermark**: whatever `tty_capture` / `tty_expect` returns counts as read, and later
+  `tty_expect` calls will not look back at it (use `tty_capture` to re-read older output). `tty_screen`
+  deliberately does **not** advance it (the screen is a different representation, not a text stream);
+  `tty_send` only initialises it (the output of the command just sent has not been seen yet); **a timeout
+  does not consume the unread region** either (another pattern can still look back at the same output).
+  A tab the user opened gets its watermark placed at the moment the agent first touches it — history
+  before that does not count as unread.
 
 SSH sessions are scheduled on the same table: entries with `kind: 'ssh'` in `tty_list` are identified by
 `target` (user@host[:port]), and `tty_capture` / `tty_expect` / `tty_send` are used exactly as for local

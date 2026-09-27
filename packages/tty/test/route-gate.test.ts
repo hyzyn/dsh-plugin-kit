@@ -11,6 +11,8 @@
  *   2. **哪些动作算变更**——`/list` 与 `/download` 也是 POST（凭证走 body），但只是读，
  *      一刀切「POST 就要求证明」会把旧 Safari 与裸 curl 一起挡在门外。
  */
+// DSH_HOME 隔离（D69）：读不到开发机上的真实授权文件
+import './isolated-home.js'
 import { describe, expect, it } from 'vitest'
 import { gateRoute, isMutationSubroute } from '../src/index.js'
 

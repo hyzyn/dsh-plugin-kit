@@ -9,6 +9,8 @@
  * 判定走工具自带的参数校验（`defineTool` 里参数不合法直接返回 false），所以这里按工具的
  * JSON Schema 造一份合法最小实参，避免把「我们调错了」误读成「没声明」。
  */
+// DSH_HOME 隔离（D69）：读不到开发机上的真实授权文件
+import './isolated-home.js'
 import { describe, expect, it } from 'vitest'
 import { apply } from '../src/index.js'
 

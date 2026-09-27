@@ -5,6 +5,8 @@
  * 整块跳过并**把名字报回去**——不静默少列，也不产出一条注定「20s 后通用超时」的连接簿
  * 条目（那是原文点名的症状）。其余每种丢弃（通配 / 无 User / 超上限）同样要有计数。
  */
+// DSH_HOME 隔离（D69）：读不到开发机上的真实授权文件
+import './isolated-home.js'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
