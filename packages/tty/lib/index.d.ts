@@ -698,7 +698,14 @@ export declare class TtyServer {
     private finishSession;
     /** 输出下行 + 基于 ws.bufferedAmount 的背压（暂停/恢复 PassThrough）。 */
     private attachOutput;
-    /** 立即冲刷待发的合并输出（exit/kill 前调用，保证 exit 帧永远在最后一帧 data 之后）。 */
+    /** 立即冲刷待发的合并输出（exit/kill 前调用，保证 exit 帧永远在最后一帧 data 之后）。
+     *
+     *  D76：`force` 是**终局路径专用**的开关。`finishSession` 必须先置 `closed`（否则终局
+     *  之后到达的字节会继续往合并窗口里塞），可它同时又要交出**已经攒在 `pendingOutput`
+     *  里的**那批输出——两者共用同一个 `closed` 判据时，尾巴会被下面这行自己的守卫整批
+     *  吞掉：进程「打印完就退出」时那正是崩溃堆栈的最后一行 / 命令的结论行。传 `force`
+     *  即「我知道它已 closed，这一批仍然要发」。
+     */
     private flushPendingOutput;
     close(): void;
 }

@@ -2394,6 +2394,7 @@ export class TtyServer {
         if (session.exitSent === true)
             return;
         session.exitSent = true;
+        // 先置 closed：让 `onData` 立刻停止往合并窗口里塞新字节（终局之后的字节不再进帧）。
         session.closed = true;
         session.statsSubs.clear();
         this.stopStats(session);
@@ -2408,7 +2409,7 @@ export class TtyServer {
         catch {
             /* 已释放 */
         }
-        this.flushPendingOutput(session); // exit 前冲掉合并窗口里的尾巴，保序
+        this.flushPendingOutput(session, true); // exit 前冲掉合并窗口里的尾巴，保序（D76：必须 force）
         for (const client of session.clients.values()) {
             send(client.ws, { t: 'exit', sid: client.sid, code: outcome.exitCode, signal: outcome.signal });
         }
@@ -2476,15 +2477,22 @@ export class TtyServer {
         };
         output.on('data', onData);
     }
-    /** 立即冲刷待发的合并输出（exit/kill 前调用，保证 exit 帧永远在最后一帧 data 之后）。 */
-    flushPendingOutput(session) {
+    /** 立即冲刷待发的合并输出（exit/kill 前调用，保证 exit 帧永远在最后一帧 data 之后）。
+     *
+     *  D76：`force` 是**终局路径专用**的开关。`finishSession` 必须先置 `closed`（否则终局
+     *  之后到达的字节会继续往合并窗口里塞），可它同时又要交出**已经攒在 `pendingOutput`
+     *  里的**那批输出——两者共用同一个 `closed` 判据时，尾巴会被下面这行自己的守卫整批
+     *  吞掉：进程「打印完就退出」时那正是崩溃堆栈的最后一行 / 命令的结论行。传 `force`
+     *  即「我知道它已 closed，这一批仍然要发」。
+     */
+    flushPendingOutput(session, force = false) {
         if (session.flushTimer !== null) {
             clearTimeout(session.flushTimer);
             session.flushTimer = null;
         }
         const pending = session.pendingOutput;
         session.pendingOutput = '';
-        if (session.closed || session.clients.size === 0 || pending === '')
+        if ((session.closed && !force) || session.clients.size === 0 || pending === '')
             return;
         for (const client of session.clients.values()) {
             send(client.ws, { t: 'data', sid: client.sid, d: pending });

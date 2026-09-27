@@ -771,7 +771,7 @@ ctx.inject(['ttyPanel'], (c) => {
 | C→S | `{t:'attach', sid}` | 重连孤儿会话（保活窗口内）：`ready(reattached:true)` 后紧跟一帧 `data` 回放输出缓冲 |
 | C→S | `{t:'statsOn' \| 'statsOff', sid}` | 订阅/退订该会话的服务器状态条（0.17.0）：按标签可见性驱动，宿主只在有订阅时采集（懒启动 + 退订即停表并关远端 channel） |
 | S→C | `{t:'ready', sid, pid, kind, target?, persist?, reattached?}` | 会话就绪；`kind:'local'` 带 pid，`kind:'ssh'` 时 pid=null、target=user@host[:port]；attach 复用此帧并带 `reattached:true`；`persist:true` 表示 tmux 持久会话（0.10.0） |
-| S→C | `{t:'data', sid, d}` | 终端输出（utf8 文本，StringDecoder 兜跨帧多字节序列）；**12ms 窗口/64KB 阈值合并成帧**（0.4.1），exit/kill 前强制冲刷保证帧序 |
+| S→C | `{t:'data', sid, d}` | 终端输出（utf8 文本，StringDecoder 兜跨帧多字节序列）；**12ms 窗口/64KB 阈值合并成帧**（0.4.1），exit/kill 前强制冲刷保证帧序——**退出前最后一批一定发出**（D76：这一批曾被终局路径自己的 `closed` 守卫整批吞掉，于「打印完就退出」的进程上表现为面板永远少最后几行） |
 | S→C | `{t:'stats', sid, stats}` | 资源指标帧（0.17.0）：`{cpuPct, cores, memUsed, memTotal, memPct, diskUsed, diskTotal, diskPct, uptimeSec, tcpConns, rxRate, txRate, tempC?}`；缺失字段即省略（best-effort，前端显示「无」），字节类为 bytes、速率为 B/s |
 | S→C | `{t:'exit', sid, code, signal}` | PTY 退出事实（恰好一次；attach 换连接后仍随当前连接送达） |
 | S→C | `{t:'error', sid?, m}` | 错误 |

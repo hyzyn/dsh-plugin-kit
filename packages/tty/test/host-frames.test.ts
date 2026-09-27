@@ -322,6 +322,39 @@ describe('断连孤儿 / attach 回放（D06/D07 语义面）', () => {
   })
 })
 
+/* ---------------- 终局尾巴：退出前最后一批输出必须发出（D76） ---------------- */
+
+describe('终局尾巴（D76）', () => {
+  it('写入后**立刻**退出：尾巴仍发给面板，且 data 帧在 exit 帧之前', async () => {
+    const h = makeHarness()
+    const ws = h.connect()
+    await spawnLocal(ws, 'tail1')
+    // 合并窗口是 12ms：输出落在窗口内、紧接着 done 兑现——旧实现里这一批被
+    // flushPendingOutput 首行的 `closed` 守卫整批吞掉（面板只收到 ready + exit）
+    h.ptys[0].output.write('TAIL-LINE\r\n')
+    await new Promise((r) => setImmediate(r))
+    h.ptys[0].settle({ exitCode: 0, signal: null })
+    await ws.waitFor('exit')
+    const types = ws.frames.map((f) => f.t)
+    expect(types).toContain('data')
+    expect(types.indexOf('data')).toBeLessThan(types.indexOf('exit'))
+    expect(ws.sent('data').map((f) => String(f.d ?? '')).join('')).toContain('TAIL-LINE')
+    await h.sessions.disposeAll()
+  })
+
+  it('终局之后到达的输出不再成帧（force 只补尾巴，不复活已 closed 的会话）', async () => {
+    const h = makeHarness()
+    const ws = h.connect()
+    await spawnLocal(ws, 'tail2')
+    h.ptys[0].settle({ exitCode: 0, signal: null })
+    await ws.waitFor('exit')
+    h.ptys[0].output.write('AFTER-EXIT\r\n')
+    await new Promise((r) => setTimeout(r, 60))
+    expect(ws.sent('data')).toHaveLength(0)
+    await h.sessions.disposeAll()
+  })
+})
+
 async function until(cond: () => boolean, ms = 2000): Promise<void> {
   const start = Date.now()
   while (!cond()) {
