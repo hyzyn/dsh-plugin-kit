@@ -9,8 +9,8 @@
 > 没有 docker 那样的独立「修复记录摘要」节可拆；且原表没有「涉及文件」列（补一列就得靠猜，
 > 会发明事实）。所以 **§1 的「修复 / 设计意图」列就是意图字典**。理由与时点见 §4。
 >
-> **编号是硬契约**：`CG01–CG63` 是 `packages/codegraph` 内部序列，与 docker / tty 的 `Dxx`
-> **不共享**；跨包引用请写「codegraph CG02 / docker D03」。新缺陷接在 `CG63` 之后，
+> **编号是硬契约**：`CG01–CG64` 是 `packages/codegraph` 内部序列，与 docker / tty 的 `Dxx`
+> **不共享**；跨包引用请写「codegraph CG02 / docker D03」。新缺陷接在 `CG64` 之后，
 > **不得重号、不得回收空号**——源码里已有注释指向它们。
 
 > **本文不含**：逐条 postmortem 的完整原文、独立验收复跑记录、原批次计划。
@@ -42,16 +42,16 @@
 
 ## 现状
 
-**已修 60 / 已关闭 3 / 待修 0**，编号至 `CG63`。逐条见 §1；未做项见 [ROADMAP.md](./ROADMAP.md)。
+**已修 61 / 已关闭 3 / 待修 0**，编号至 `CG64`。逐条见 §1；未做项见 [ROADMAP.md](./ROADMAP.md)。
 
-**已修 60 / 已关闭 3 / 待修 0**（CG01–CG29 + CG30/31/35/36/37/38 修于 0.4.2；CG39–CG49 修于其后一轮；
-CG50–CG62 修于上一轮；CG63（DSH 0.1.7-rc.1 的 settings 服务迁移）修于本轮；CG32–CG34 **因原文从未随附而关闭**，不再挂账）。索引表的「修复」列一句话记录改法与落点；行号已漂移，定位用
+**已修 61 / 已关闭 3 / 待修 0**（CG01–CG29 + CG30/31/35/36/37/38 修于 0.4.2；CG39–CG49 修于其后一轮；
+CG50–CG62 修于上一轮；CG63（DSH 0.1.7-rc.1 的 settings 服务迁移）修于上一轮；CG64（客户端字面星号）修于本轮；CG32–CG34 **因原文从未随附而关闭**，不再挂账）。索引表的「修复」列一句话记录改法与落点；行号已漂移，定位用
 `grep -n` 找符号（`locateIndex` / `locateCwdEdits` / `readPostBody` / `runViaSpawn` /
 `ensureStyle` / `installSessionReporter`）。代码里带 `CGxx` 注释的位置就是对应修复点，
 改到相关代码时请先读那里的注释。
 
 > **数字口径（原文照录）**：`已修 = 表内去重编号数 − 已关闭数`，实测复现过历史每一档
-> （`dd3de493` 35、`1dc45292` 40、`7b24ce2b` 41、`79658a8f` 42）。当前 63 − 3 = **60**。
+> （`dd3de493` 35、`1dc45292` 40、`7b24ce2b` 41、`79658a8f` 42）。当前 64 − 3 = **61**。
 > 一处易错点：`CG15 追记` 是**同一编号的补充记录**（表格里多一行），不额外计入「已修」——
 > 按行数算会多 1，按去重编号算才对。P0 那轮我按「加了 1 条却 +2」写成了 44，已更正。
 
@@ -138,6 +138,7 @@ CG50–CG62 修于上一轮；CG63（DSH 0.1.7-rc.1 的 settings 服务迁移）
 | CG61 | `renderOutputBody` 对 explore/context 输出**静默** `slice(0, 4000)`，与本包自己的 CG17 纪律（截断要报计数）不一致——explore 的 markdown 末尾正是调用链 | 超限时补一行计数说明（复用 `truncationNote`）；`raw` 本来就在响应里，文案里也点明 |
 | CG62 | `/default-path`（项目胶囊 / 「设为默认项目」）把**部分对象** `{ defaultPath, followSession }` 喂给 `sync()`，而 `resolveStored` 对「对象里没有的键」回落插件配置默认值 → `mcpScope` / `mcpIntegration` / `announceToAgent` / `usageGuidance` 四个键**在内存里被静默重置**。settings.yaml 没丢（写的是合并）→ **重启又「好了」**，表现为「时好时坏」、卡片显示与文件里的用户选择长期不一致。实测：勾上 per-agent 后点一次项目胶囊，当场退回 managed、全局托管行被写回、per-agent 挂载被回收；关掉「公告能力」后同样被打回 true | 改成把**完整的** stored 传进 sync（`{ ...(rt.scope?.get() ?? {}), defaultPath, followSession: false }`）；补用例逐键断言（mcpScope / mcpIntegration / announceToAgent / usageGuidance），变异验证：还原成部分对象即红（实测报 `mcpScope 不该被 /default-path 重置: expected 'managed' to be 'per-agent'`） |
 | CG63 | **DSH 0.1.7-rc.1 起 `ctx.settings.register(ns, schema)` / `settings.get(ns)` 已删除**（服务换成 `SettingsForms`：`describe/update/mutate/replace/configure`，设置存储改为「当前 profile 的插件 entry 配置」+ 导出带 `.volatile()` 的运行时 `Config`）。本包仍调旧 API：settings effect 抛错后静默走 config 兜底（`scope === undefined`），于是卡片开关 / 「设为默认项目」/ `per-agent` 切换全部回 500 `插件尚未完成挂载`。**单测与 tsc 都发现不了**——旧代码用 `as unknown as` 擦掉了服务类型。真机实测（rc.1 隔离装置）：`POST /api/dsh-codegraph/settings` 对合法 patch 回 500，`/default-path` 报 `effectiveMcpScope=managed` 且不落盘 | ① `@hyzyn/dsh-kit` 新增 settings 适配层：`settingsEntryScope`（读 `describe()` / 写 `update(entryId, patch)` / 订阅 `loader/volatile-update`）+ `plainConfig()`（还原 volatile 冻结引用）+ `readSettingsEntry` + `suppressAutoSettingsPage`；② 本包导出运行时 `Config` schema（卡片可改的 6 个字段标 `.volatile()`），settings effect 改用它，`apply()` 里先 `plainConfig()` 还原；③ 两处写入口改走适配层；④ 兼容性声明从 `dsh.engines.dsh` 换成 `peerDependencies["@deepseek-ai/dsh"] = ^0.1.7-rc.1`（rc.1 的安装前/启动时判定只认 peer；`engines.dsh` 已无读取方）。验收：真机宿主契约 **42/42**（含新增的两项 settings 写路径基线），`POST /settings` 在 per-agent / managed 间往返都是 200 |
+| CG64 | 客户端文案里有 2 处字面 `**`（`panel.perAgentTitle` 的 zh / en）——浏览器半体没有 markdown 渲染器，用户看到的是两个星号 | 改成引号包裹（「有索引」/ “has an index”）；目录头注释里写明这条规矩 |
 
 ## 2. 台账纪律与长期结论
 
