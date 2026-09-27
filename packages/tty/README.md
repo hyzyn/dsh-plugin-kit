@@ -91,7 +91,9 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
   内容标记一致；不写死字节数——每次重建都会变）、`[dsh-tty] mounted (shell=C:\WINDOWS\system32\cmd.exe)`；x64 Windows 由 CI
   的三平台矩阵覆盖（build / typecheck / test，见「开发」）。
 - **端到端覆盖（0.19.0）**：`scripts/windows-smoke.mjs` 在 CI 的 windows-latest 上跑真实 `cmd.exe`
-  的 spawn → 输入回显 → kill → 重开。它抓出并钉住了「强杀本地 PTY 会崩宿主」这类只在 Windows
+  的 spawn → 输入回显 → kill → 重开，外加两条只在真机上成立的链路（W6：`tty_send` 的裸 LF 经归一化
+  后 conhost 真的执行了命令，D74；W7：`command` 型会话跑完退出后转只读保留、`tty_capture` 仍读得到
+  退出前的输出，D77）。它抓出并钉住了「强杀本地 PTY 会崩宿主」这类只在 Windows
   出现的问题——node-pty 在 Windows 上不接受 signal，而它的 `_deferNoArgs` 会把这个异常推迟到
   socket 回调里抛出，调用方的 try/catch 拦不住。
 

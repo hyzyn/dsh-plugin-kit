@@ -215,6 +215,61 @@ async function run() {
       /* 已关闭 */
     }
   }
+
+  // W7：进程退出后转「只读保留」——输出还能读回来（D77，issue #4 的正题）
+  //
+  // 为什么必须在真机上钉：条目链路在真实 ConPTY 上才完整——`command` 型会话跑完，
+  // ConPTY 侧进程退出、句柄收尾、宿主把会话**留在表里**而不是摘掉；本地单测用的是
+  // 假 PTY，验不到「真机上退出之后 tty_capture 还读得到输出」。
+  console.log('\n[W7] 退出后的只读保留（D77）')
+  let retainedSid = null
+  try {
+    const open = TOOLS.get('tty_open')
+    const list = TOOLS.get('tty_list')
+    const capture = TOOLS.get('tty_capture')
+    const send = TOOLS.get('tty_send')
+    if (open === undefined || list === undefined || capture === undefined || send === undefined) {
+      throw new Error('agent 工具没注册进 stub（注册到的：' + [...TOOLS.keys()].join(', ') + '）')
+    }
+    // `command` 直接跑一条会结束的命令（正是上报现场那种用法）
+    const opened = await open.execute({ cwd: process.cwd(), command: 'echo IT_RETAIN_%OS%' })
+    retainedSid = opened.sid
+    const deadline = Date.now() + 20000
+    let entry = null
+    for (;;) {
+      entry = (await list.execute({})).sessions.find((x) => x.sid === retainedSid) ?? null
+      if (entry !== null && entry.exited === true) break
+      if (Date.now() > deadline) throw new Error('20s 内没等到 exited:true；最近一条：' + JSON.stringify(entry))
+      await sleep(200)
+    }
+    pass('W7a 命令退出后会话仍是只读保留态（exited:true）')
+    const read = await capture.execute({ sid: retainedSid, lines: 60 })
+    if (read.exited === true && /IT_RETAIN_Windows_NT/.test(String(read.tail ?? ''))) {
+      pass('W7b 退出之后 tty_capture 仍读得到退出前的输出')
+    } else {
+      fail('W7b 退出之后 tty_capture 仍读得到输出（D77）', JSON.stringify(read).slice(0, 200))
+    }
+    let refused = false
+    try {
+      await send.execute({ sid: retainedSid, data: 'echo nope\n' })
+    } catch {
+      refused = true
+    }
+    if (refused) pass('W7c 对只读保留态 tty_send 明确拒写')
+    else fail('W7c 对只读保留态 tty_send 明确拒写', '居然写进去了')
+  } catch (error) {
+    fail('W7 退出后的只读保留（D77）', error.message)
+  }
+  if (retainedSid !== null) {
+    try {
+      await TOOLS.get('tty_close').execute({ sid: retainedSid })
+      const gone = !(await TOOLS.get('tty_list').execute({})).sessions.some((x) => x.sid === retainedSid)
+      if (gone) pass('W7d tty_close 释放保留态（关掉后从清单消失）')
+      else fail('W7d tty_close 释放保留态', '仍在清单里')
+    } catch (error) {
+      fail('W7d tty_close 释放保留态', error.message)
+    }
+  }
 }
 
 await run()

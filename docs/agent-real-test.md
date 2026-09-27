@@ -38,8 +38,8 @@ Windows 上按设计跑不了（CI 里也是 ubuntu-only）。
 
 **`integration.mjs` 在 Windows 上也按设计跑不了**（2026-09-26 实测）：它给终端送的是 POSIX
 命令（`printf "IT_TERM_%s\n" "$TERM"`），而 Windows 侧是 cmd.exe——`[1] 全链路` 会等超时，
-报错里能看到 cmd 把整行原样回显。Windows 的对应入口是 `windows-smoke.mjs`（5/5，用的是
-`%OS%` 这类 cmd 原生写法）。
+报错里能看到 cmd 把整行原样回显。Windows 的对应入口是 `windows-smoke.mjs`（10/10，用的是
+`%OS%` 这类 cmd 原生写法；W6 钉 D74 的裸 LF 归一化、W7 钉 D77 的「退出后仍可读」）。
 
 **判据**：先问「这条在受限环境下有没有可能过」，再决定是修代码还是记成覆盖缺口。
 
