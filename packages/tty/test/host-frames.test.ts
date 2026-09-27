@@ -105,13 +105,16 @@ interface Harness {
   server: TtyServer
   sessions: SessionManager
   ptys: FakePty[]
+  /** 宿主 logger.warn 的内容（淘汰留痕这类「事后可查」的证据靠它断言）。 */
+  warns: string[]
   connect(): FakeWs
 }
 
 function makeHarness(overrides: Partial<{ graceSec: number; maxSessions: number }> = {}): Harness {
   const ptys: FakePty[] = []
+  const warns: string[] = []
   const ctx = {
-    logger: { info: () => {}, warn: () => {} },
+    logger: { info: () => {}, warn: (message: string) => { warns.push(message) } },
     get(name: string): unknown {
       if (name === 'subprocess') {
         return {
@@ -153,6 +156,7 @@ function makeHarness(overrides: Partial<{ graceSec: number; maxSessions: number 
     server,
     sessions,
     ptys,
+    warns,
     connect: () => {
       const ws = new FakeWs()
       // onConnection 是 private：测试经类型断言走真实入口（含 cleanupAll 接线）
@@ -806,6 +810,24 @@ describe('退出后的只读保留（D77）', () => {
     await sm.reapOrphans(0)
     expect(sm.get('orphan-dead'), '保留态归 reapExited 管').toBeDefined()
     expect(sm.get('orphan-live')).toBeUndefined()
+  })
+
+  it('保留超过上限：按最旧淘汰，且淘汰留痕（D77 补：上限 16 + logger.warn）', async () => {
+    const h = makeHarness()
+    const ws = h.connect()
+    const total = MAX_EXITED_SESSIONS + 1
+    for (let i = 0; i < total; i++) {
+      const sid = `evict-${String(i)}`
+      await spawnLocal(ws, sid)
+      h.ptys[i].settle({ exitCode: 0, signal: null })
+      await until(() => h.sessions.get(sid)?.exited !== null && h.sessions.get(sid)?.exited !== undefined)
+    }
+    expect(h.sessions.exitedCount).toBe(MAX_EXITED_SESSIONS)
+    expect(h.sessions.get('evict-0'), '最旧那条应被淘汰').toBeUndefined()
+    expect(h.sessions.get(`evict-${String(total - 1)}`)).toBeDefined()
+    expect(h.warns.some((message) => message.includes('evict-0') && message.includes('只读保留已达上限'))).toBe(true)
+    expect(MAX_EXITED_SESSIONS).toBe(16)
+    await h.sessions.disposeAll()
   })
 
   it('别的连接用同 sid 新建会话时，旧保留态被摘掉（屏释放，不泄漏）', async () => {

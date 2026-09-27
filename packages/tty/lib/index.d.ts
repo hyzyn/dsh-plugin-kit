@@ -172,9 +172,14 @@ export declare const EXITED_RETAIN_MS: number;
  * 与「并发会话上限」（maxSessions，默认 4）是两个口径：那个数**只数活着的会话**
  * （retained 的不占名额，否则跑几条短命令就把面板顶成「会话数已达上限」，
  * 比原缺陷更糟）。这里兜的是内存：每条 retained 约 = 256KB 环形缓冲 + 一块
- * xterm-headless 虚拟屏。
+ * xterm-headless 虚拟屏，16 条仍在 ~20MB 量级。
+ *
+ * 为什么从 8 抬到 16（D77 补，2026-09-27 真机验收反馈）：保留改成「留到显式关闭」
+ * 之后，上限就是唯一会**自动**挤掉结果的东西，而 agent 一口气开二十几条一次性
+ * 会话是常态——8 条意味着「几分钟前那份结果」被最旧淘汰挤掉，用户只看到「没了」。
+ * 淘汰一律 `logger.warn` 留痕（见 finishSession），否则这件事在事后完全不可查。
  */
-export declare const MAX_EXITED_SESSIONS = 8;
+export declare const MAX_EXITED_SESSIONS = 16;
 /**
  * 本地 PTY 顶层 shell 的 best-effort 强杀（D48）。
  *

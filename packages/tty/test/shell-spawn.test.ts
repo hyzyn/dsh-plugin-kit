@@ -151,13 +151,53 @@ describe('POSIX 分支回归（改动不能碰现有的 zsh/bash 路径）', () 
     expect(zshrc).not.toContain('precmd_functions+=')
   })
 
-  it('带命令的本地 spawn 仍是 -c + export 包装（docker exec 这类标签依赖它）', () => {
+  it('带命令的本地 spawn 仍是 -c + export 包装，且命令**整体**交给内层 shell（D78）', () => {
     const plan = buildCommandSpawn('/bin/zsh', 'xterm-256color', 'truecolor', 'docker exec -it web sh', 'darwin')
     expect(plan.argv).toEqual([
       '/bin/zsh',
       '-c',
-      "export TERM='xterm-256color'; export COLORTERM='truecolor'; exec docker exec -it web sh",
+      "export TERM='xterm-256color'; export COLORTERM='truecolor'; exec '/bin/zsh' -c 'docker exec -it web sh'",
     ])
+  })
+
+  /*
+   * D78：旧实现把用户命令直接缀在 `exec` 后面，而 `exec` 只作用于**简单命令**——
+   * `a; b` 的后半段、`cd x && cmd` 的右支永远不会被调度（`exec cd …` 这类内建更是
+   * 直接结束外层 shell），退出码也取自第一条。用户命令是「一段 shell 代码」，所以
+   * 这里钉的不是某一条形态，而是**整段命令必须原样出现在单引号里**。
+   */
+  it('复合命令整段进单引号：`a; b` / `cd x && cmd` / `for` 都不再被 exec 截断（D78）', () => {
+    for (const command of ['echo A; echo B', 'cd /tmp && pwd', 'for i in 1 2 3; do echo L$i; done', 'echo X; exit 3']) {
+      const plan = buildCommandSpawn('/bin/zsh', 'xterm-256color', 'truecolor', command, 'darwin')
+      const script = String(plan.argv[2])
+      expect(script, command).toBe(`export TERM='xterm-256color'; export COLORTERM='truecolor'; exec '/bin/zsh' -c '${command}'`)
+      // 旧形状（`exec <command>`）必须不再出现：那才是「只跑第一条」的写法
+      expect(script.startsWith(`export TERM='xterm-256color'; export COLORTERM='truecolor'; exec ${command}`), command).toBe(false)
+    }
+  })
+
+  it('命令里的单引号被转义，带引号 / 多行的命令也能安全穿过外层 shell（D78）', () => {
+    const quoted = buildCommandSpawn('/bin/zsh', 'xterm-256color', 'truecolor', "echo 'it'", 'darwin')
+    expect(String(quoted.argv[2])).toBe(
+      "export TERM='xterm-256color'; export COLORTERM='truecolor'; exec '/bin/zsh' -c 'echo '\\''it'\\'''",
+    )
+    const multiline = buildCommandSpawn('/bin/zsh', 'xterm-256color', 'truecolor', 'echo A\necho B', 'darwin')
+    expect(String(multiline.argv[2])).toContain("exec '/bin/zsh' -c 'echo A\necho B'")
+  })
+
+  it('Windows 四个分支都不带 exec（跨平台一致：复合命令在那边本来就完整执行，D78）', () => {
+    const cases: Array<[string, string[]]> = [
+      ['C:\\Windows\\System32\\cmd.exe', ['/c']],
+      ['C:\\Program Files\\PowerShell\\7\\pwsh.exe', ['-NoLogo', '-Command']],
+      ['C:\\Program Files\\Git\\bin\\bash.exe', ['-c']],
+      ['C:\\Windows\\System32\\wsl.exe', ['-e', 'sh', '-c']],
+    ]
+    for (const [shell, flags] of cases) {
+      const plan = buildCommandSpawn(shell, 'xterm-256color', 'truecolor', 'echo A; echo B', 'win32')
+      expect(String(plan.argv.at(-1)), shell).toBe('echo A; echo B')
+      expect(plan.argv, shell).not.toContain('exec')
+      expect(plan.argv.slice(1, -1), shell).toEqual(flags)
+    }
   })
 
   it('bash 的 D 标记必须无条件发（0.19.0 修 D46：PS0 的展开在子 shell 里，设不了 IN_CMD）', () => {

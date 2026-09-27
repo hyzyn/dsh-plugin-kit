@@ -104,7 +104,7 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
 | 工具 | 作用 |
 | --- | --- |
 | `tty_list` | 列出终端会话（sid / kind（local\|ssh）/ target / pid / **cwd 实时跟随 cd** / 活动时间；tmux 持久会话带 `persist` 标记；agent 自己开的带 `owner: 'agent'`）。**含进程已退出但仍在只读保留期内的会话**（`exited:true` + 退出码/信号，见下节） |
-| `tty_open` | **自己开一个终端会话**（0.20.0）：本地 shell，或 `command` 直接跑一条长驻命令（dev server / watch），`persistName` 可要 tmux 持久化。**开出来的会话出现在用户的终端面板里**（普通标签、用户可见可接管），不做隐形会话 |
+| `tty_open` | **自己开一个终端会话**（0.20.0）：本地 shell，或 `command` 直接跑一条命令（dev server / watch；**按整段 shell 代码执行**，`cd x && cmd`、`a; b` 都可以，D78），`persistName` 可要 tmux 持久化。**开出来的会话出现在用户的终端面板里**（普通标签、用户可见可接管），不做隐形会话 |
 | `tty_close` | 关掉一个由 `tty_open` 开的会话（0.20.0）。**只允许关 agent 自己开的**：用户在面板里开的标签会被拒绝——agent 不越权结束用户正在用的终端。对**已退出但仍只读保留着**的会话同样可用——那是它的释放入口（默认**保留到显式关闭**，不按时间释放） |
 | `tty_stats` | 读会话所在机器的实时指标（0.20.0）：CPU / 内存 / 磁盘 / TCP 连接数 / 网速 / 温度 / 在线时长。本地会话取宿主机；SSH 会话取那台远程主机（另开一段非 PTY 通道，不影响终端）。部署、压测前先看它 |
 | `tty_capture` | 读取近期输出（尾部 N 行，默认清洗 ANSI，`raw:true` 取原始流）；**`last:true` 只返回上一条已完成命令的输出 + 退出码**（shell 集成标记，见下节）；命令**在途**时（刚发送、完成标记未到）返回 `inProgress:true` 且不带旧结果——避免把上一条的输出当成这一条（0.19.0） |
@@ -145,8 +145,9 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
   输出用 `tty_capture` 读；
 - **谁释放它**：agent 的 `tty_close`（仅限自己开的）、用户在面板里关那个标签、
   或宿主 / 插件重启（保留是内存态）。并发上限**只数活着的会话**（保留态不占名额）；
-  保留态本身最多留 `MAX_EXITED_SESSIONS`（8）条，超出按最旧淘汰——也就是「最近的
-  8 条退出会话一直可读」，这是内存与句柄的唯一上界。
+  保留态本身最多留 `MAX_EXITED_SESSIONS`（16）条，超出按最旧淘汰（淘汰时
+  `logger.warn` 记下被挤掉的 sid）——也就是「最近的 16 条退出会话一直可读」，
+  这是内存与句柄的唯一上界（16 条约 ~20MB 量级）。
 
   为什么**不用时间**淘汰：内存与句柄本来就不由时间决定（见上一句），而时间上界对
   使用者是第二重惊喜——「命令跑完 → 下一轮读结果」之间隔着人离开、模型排队，多久
@@ -668,7 +669,11 @@ ctx.inject(['ttyTerminal'], (c) => {
 ```
 
 - 命令标签**不做 tmux 持久化**（命令短命，attach 无意义），也不走登录 shell；
-  SSH 侧用 `conn.exec(command, {pty})`，本地侧用 `sh -c 'export TERM=…; exec <command>'`。
+  SSH 侧用 `conn.exec(command, {pty})`，本地侧用
+  `sh -c 'export TERM=…; exec <同一个 shell> -c <command>'`——外层 `exec` 让进程就是命令本身
+  （退出码与信号忠实），**内层 `-c` 才保证整段命令被当 shell 代码执行**：`cd x && cmd`、
+  `a; b`、`for …; do …; done` 都完整跑（D78：旧写法把命令直接缀在 `exec` 后面，只跑第一条，
+  内建命令还会直接结束外层 shell）。
 - **命令标签会自动重开**：宿主重启 / 断线重连后 sid 已失效，客户端对
   `spawnSpec.command` 的标签按原规格重新执行命令（普通非持久标签维持「点击重试」
   的旧行为）。页面刷新后同样按原命令恢复。

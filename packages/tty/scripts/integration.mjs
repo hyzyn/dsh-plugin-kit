@@ -38,6 +38,9 @@
  *        （不新建 PTY / 不占名额）、输出扇出、kill 广播 exit
  *   B29. 禁用热生效（enabled 开关）：工具/公告撤下与恢复、数据路由 403、
  *        /config 保持可读写、存量 WS 被关闭与新升级被拒
+ *   B34. 退出后的只读保留（D77）：命令跑完仍可读、写被拒、tty_close 释放
+ *   B35. `tty_open command=` 执行整段 shell 代码（D78）：`a; b` / `cd x && cmd` /
+ *        `for` 不被 exec 截断，退出码取自最后一条
  *
  * 用法：pnpm --filter @hyzyn/dsh-tty integration
  * 退出码：0 = 全部 PASS，1 = 任一 FAIL。
@@ -1950,12 +1953,86 @@ async function run() {
     }
   }
 
+  // B35: `tty_open command=` 执行的是**整段 shell 代码**（D78）
+  //
+  // 旧实现把用户命令直接缀在 `exec` 后面——`exec` 只作用于简单命令，于是
+  // `echo A; echo B` 只跑 A、`cd /tmp && pwd` 空输出、`echo X; exit 3` 报 0、
+  // `for …` 直接 parse error（2026-09-27 报告）。这里用真 PTY 钉住五条形态，
+  // 判据取「后半段的输出真的出现了」+「退出码取自最后一条」。
+  console.log('\n[32] `command` 按 shell 语法整体执行（D78）')
+  {
+    const open = toolDefs.find((d) => d.name === 'tty_open')
+    const close = toolDefs.find((d) => d.name === 'tty_close')
+    const list = toolDefs.find((d) => d.name === 'tty_list')
+    const capture = toolDefs.find((d) => d.name === 'tty_capture')
+    if (open === undefined || close === undefined || list === undefined || capture === undefined) {
+      fail('B35 D78 工具集', '缺工具: ' + toolDefs.map((d) => d.name).join(','))
+    } else {
+      /** 开一条命令会话并等它转成只读保留态（命令跑完），返回 { sid, entry }。 */
+      const openAndSettle = async (command) => {
+        const opened = await open.execute({ cwd: '/tmp', command })
+        for (let i = 0; i < 80; i++) {
+          await sleep(150)
+          const entry = ((await list.execute({})).sessions ?? []).find((x) => x.sid === opened.sid) ?? null
+          if (entry !== null && entry.exited === true) return { sid: opened.sid, entry }
+        }
+        return { sid: opened.sid, entry: null }
+      }
+      const readTail = async (sid) => String((await capture.execute({ sid, lines: 80 })).tail ?? '')
+      const opened = []
+      try {
+        // ① `a; b`：旧实现只跑第一条
+        const semi = await openAndSettle('echo A; echo B; echo C; echo D')
+        opened.push(semi.sid)
+        const semiTail = await readTail(semi.sid)
+        if (['A', 'B', 'C', 'D'].every((m) => semiTail.includes(m))) pass('B35a 分号列表整段执行（A/B/C/D 都在）')
+        else fail('B35a 分号列表整段执行', JSON.stringify(semiTail).slice(0, 160))
+
+        // ② `cd x && cmd`：agent 最惯用的写法，旧实现空输出
+        const and = await openAndSettle('cd /tmp && pwd')
+        opened.push(and.sid)
+        const andTail = await readTail(and.sid)
+        if (andTail.includes('/tmp')) pass('B35b `cd && cmd` 完整执行（拿到 /tmp）')
+        else fail('B35b `cd && cmd` 完整执行', JSON.stringify(andTail).slice(0, 160))
+
+        // ③ 退出码取自命令列表最后一条（旧实现取被 exec 的第一条）
+        const rc = await openAndSettle('echo X; exit 3')
+        opened.push(rc.sid)
+        if (rc.entry !== null && rc.entry.exitCode === 3) pass('B35c 退出码取自最后一条（echo X; exit 3 → exitCode=3）')
+        else fail('B35c 退出码取自最后一条', JSON.stringify(rc.entry))
+
+        // ④ 复合语句（for）不再 parse error
+        const loop = await openAndSettle('for i in 1 2 3; do echo L$i; done')
+        opened.push(loop.sid)
+        const loopTail = await readTail(loop.sid)
+        if (['L1', 'L2', 'L3'].every((m) => loopTail.includes(m))) pass('B35d `for …; do …; done` 整段执行（L1/L2/L3 都在）')
+        else fail('B35d `for …` 整段执行', JSON.stringify(loopTail).slice(0, 200))
+
+        // ⑤ 命令里的单引号安全穿过包装层
+        const quoted = await openAndSettle("echo 'QUOTED-OK'")
+        opened.push(quoted.sid)
+        const quotedTail = await readTail(quoted.sid)
+        if (quotedTail.includes('QUOTED-OK')) pass("B35e 命令内的单引号不被包装层吃掉（echo 'QUOTED-OK'）")
+        else fail('B35e 命令内的单引号', JSON.stringify(quotedTail).slice(0, 160))
+      } catch (error) {
+        fail('B35 D78 `command` 按 shell 语法整体执行', error.message)
+      }
+      for (const sid of opened) {
+        try {
+          await close.execute({ sid })
+        } catch {
+          /* 已释放 */
+        }
+      }
+    }
+  }
+
   // B33: 输出契约（所有已调用工具的真实返回值都符合各自声明的 output.schema）
   //
   // 这一条是 §B12e 的补充：B12e 只证明 schema 形状受支持，证明不了返回值合法。
   // 真实宿主对输出做 additionalProperties:false 校验，违约会直接把工具调用变成
   // Error（tty_list 加 owner 漏改 schema 即此）。
-  console.log('\n[32] 输出契约')
+  console.log('\n[33] 输出契约')
   {
     if (outputViolations.length === 0) pass('B33 工具返回值符合声明的 output.schema')
     else fail('B33 工具返回值符合声明的 output.schema', outputViolations.slice(0, 3).join(' | '))

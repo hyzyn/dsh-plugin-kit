@@ -112,7 +112,7 @@ The plugin injects sixteen tools into the agent (with the same power as the bash
 | Tool | Purpose |
 | --- | --- |
 | `tty_list` | List terminal sessions (sid / kind (`local\|ssh`) / target / pid / **cwd tracked live as you `cd`** / activity time; tmux persistent sessions carry a `persist` marker; sessions the agent opened carry `owner: 'agent'`). **Includes sessions whose process has exited but which are still inside their read-only retention window** (`exited:true` + exit code/signal, see below) |
-| `tty_open` | **Open a terminal session yourself** (0.20.0): a local shell, or a long-running command via `command` (dev server / watch), with optional tmux persistence via `persistName`. The session **shows up in the user’s terminal panel** as an ordinary tab the user can see and take over — never a hidden session |
+| `tty_open` | **Open a terminal session yourself** (0.20.0): a local shell, or a command via `command` (dev server / watch; it runs as **a whole piece of shell code**, so `cd x && cmd` and `a; b` work — D78), with optional tmux persistence via `persistName`. The session **shows up in the user’s terminal panel** as an ordinary tab the user can see and take over — never a hidden session |
 | `tty_close` | Close a session opened by `tty_open` (0.20.0). **Only the agent’s own sessions may be closed**: a tab the user opened is refused, so the agent never ends a terminal the user is working in. It also works on an **exited session that is still in read-only retention** — that is its release entry point (by default it is retained **until explicitly closed**, never on a timer) |
 | `tty_stats` | Read live host metrics for a session’s machine (0.20.0): CPU / memory / disk / TCP connections / network rates / temperature / uptime. Local sessions report the host; SSH sessions report that remote host over a separate non-PTY channel that never touches the terminal. Check it before deploying or load-testing |
 | `tty_capture` | Read recent output (last N lines, ANSI stripped by default, `raw:true` for the raw stream); **`last:true` returns only the output + exit code of the previous completed command** (shell integration markers, see the next section); when a command is **in flight** (just sent, completion marker not in yet) it returns `inProgress:true` without the stale result, so the previous command is never mistaken for this one (0.19.0) |
@@ -161,8 +161,9 @@ While retained:
 - **Who releases it**: the agent’s `tty_close` (its own sessions only), the user closing that tab in the
   panel, or a host/plugin restart (retention lives in memory). The concurrency limit counts **live
   sessions only** (retained ones do not consume a slot), and at most `MAX_EXITED_SESSIONS` (8) retained
-  sessions are kept — the oldest is evicted beyond that. So the rule is “the last 8 exited sessions stay
-  readable”, which is the only bound on memory and handles.
+  sessions are kept — the oldest is evicted beyond that (each eviction logs the sid it drops). So the
+  rule is “the last 16 exited sessions stay readable”, which is the only bound on memory and handles
+  (16 of them is on the order of ~20MB).
 
   Why **not** a timer: memory and handles are not actually time-driven (see above), while a deadline is a
   second surprise for whoever reads the output — the gap between “the command finished” and “the next
@@ -719,7 +720,11 @@ ctx.inject(['ttyTerminal'], (c) => {
 
 - Command tabs are **not persisted in tmux** (commands are short-lived and attaching is meaningless) and do
   not go through a login shell; the SSH side uses `conn.exec(command, {pty})`, and the local side uses
-  `sh -c 'export TERM=…; exec <command>'`.
+  `sh -c 'export TERM=…; exec <the same shell> -c <command>'` — the outer `exec` makes the process
+  the command itself (faithful exit code and signal), and the **inner `-c`** is what makes the whole
+  string run as shell code: `cd x && cmd`, `a; b`, `for …; do …; done` all run to completion
+  (D78: the old form appended the command straight after `exec`, so only the first one ran and a
+  builtin such as `cd` ended the wrapper shell outright).
 - **Command tabs reopen automatically**: after a host restart / reconnect the sid is gone, and the client
   re-runs the command from the original spec for tabs with `spawnSpec.command` (ordinary non-persistent tabs
   keep the old “click to retry” behavior). After a page refresh they are restored by the original command too.

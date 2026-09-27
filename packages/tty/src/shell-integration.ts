@@ -283,7 +283,31 @@ function ensureBashStubRc(): string | undefined {
 export function buildCommandSpawn(shell: string, term: string, colorTerm: string, command: string, platform: NodeJS.Platform = process.platform): ShellSpawnPlan {
   if (platform === 'win32') return buildWindowsCommandSpawn(shell, command)
   const pre = `export TERM='${term}'; export COLORTERM='${colorTerm}';`
-  return { argv: [shell, '-c', `${pre} exec ${command}`], env: {} }
+  /*
+   * D78：命令**整体**交给内层 shell（`-c`），不再直接缀在 `exec` 后面。
+   *
+   * 旧写法是 `${pre} exec ${command}`，而 `exec` 只是**简单命令**的前缀：zsh 会把
+   * `exec echo A; echo B` 解析成 `[exec echo A] ; [echo B]`，第一条把 shell 进程替换
+   * 掉之后 `echo B` 永远不会被调度；`cd x && cmd` 的右支同理；`exec for …` 直接在
+   * 解析阶段报错；退出码也变成被 exec 的那条命令的。更狠的是内建命令：`exec cd /tmp`
+   * 在 zsh 里的语义是「跑完内建即结束当前 shell」，于是连第一条的输出都没有、
+   * `&&` 右支连同外层 shell 一起消失（`tty_open command="cd /tmp && pwd"` 实测空输出、
+   * rc=0，2026-09-27 报告）。
+   *
+   * 用户的命令是**一段 shell 代码**，不是一条 argv——这是「跑一条命令」这个工具的
+   * 基本契约：`cd dir && cmd`、`cmd; echo rc=$?` 正是 agent 最惯用的写法，静默少跑
+   * 后半段比报错更难查。内层仍用同一个 shell（交互习惯一致：zsh 的 `for` 语法照旧），
+   * 且不加 `-l/-i`（维持非交互语义，不 source rc，与旧路径一致）。
+   *
+   * 外层 `exec` 保留：进程被内层 shell 替换，「进程即命令」的语义不变——退出码取自
+   * 命令列表最后一条，**被信号打死时仍如实报 signal**（不套 exec 的话外层 shell 会把
+   * 信号退化成 128+n 的退出码，而 D77 的面板与工具文案正是靠 signal 区分崩溃与正常退出）。
+   *
+   * 内层用 `shSingleQuote` 包住：命令里的单引号由 `'\''` 转义，带引号 / 多行的命令
+   * 都能安全穿过外层 shell 的解析。
+   */
+  const inner = `${shSingleQuote(shell)} -c ${shSingleQuote(command)}`
+  return { argv: [shell, '-c', `${pre} exec ${inner}`], env: {} }
 }
 
 /**

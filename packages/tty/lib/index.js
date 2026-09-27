@@ -164,9 +164,14 @@ export const EXITED_RETAIN_MS = Number.POSITIVE_INFINITY;
  * 与「并发会话上限」（maxSessions，默认 4）是两个口径：那个数**只数活着的会话**
  * （retained 的不占名额，否则跑几条短命令就把面板顶成「会话数已达上限」，
  * 比原缺陷更糟）。这里兜的是内存：每条 retained 约 = 256KB 环形缓冲 + 一块
- * xterm-headless 虚拟屏。
+ * xterm-headless 虚拟屏，16 条仍在 ~20MB 量级。
+ *
+ * 为什么从 8 抬到 16（D77 补，2026-09-27 真机验收反馈）：保留改成「留到显式关闭」
+ * 之后，上限就是唯一会**自动**挤掉结果的东西，而 agent 一口气开二十几条一次性
+ * 会话是常态——8 条意味着「几分钟前那份结果」被最旧淘汰挤掉，用户只看到「没了」。
+ * 淘汰一律 `logger.warn` 留痕（见 finishSession），否则这件事在事后完全不可查。
  */
-export const MAX_EXITED_SESSIONS = 8;
+export const MAX_EXITED_SESSIONS = 16;
 /** 下行背压阈值（ws.bufferedAmount 字节）。 */
 const BACKPRESSURE_HIGH = 512 * 1024;
 const BACKPRESSURE_LOW = 128 * 1024;
@@ -2585,6 +2590,9 @@ export class TtyServer {
             // 被条数上限淘汰的：连同它在连接侧 local 表里的绑定一起摘掉（否则那条连接
             // 还拿得到 sid、却指着一个已退役的会话）
             this.sessionLocals.get(victim)?.delete(victim.id);
+            // D77 补：淘汰必须留痕——否则用户侧只有「刚才那份结果怎么没了」这一种观测，
+            // 排查时既不知道发生过淘汰、也不知道被挤掉的是哪个 sid。
+            this.ctx.logger.warn(`[dsh-tty] 只读保留已达上限（${String(MAX_EXITED_SESSIONS)} 条，MAX_EXITED_SESSIONS）：最旧的会话 ${victim.id} 被淘汰，它的输出不再可读；想留住结果请在淘汰前 tty_capture / tty_screen 读走`);
         }
         // 面板即时看到保留态（第二个窗口据此不建幽灵标签；agent 标签由 exit 帧标记）
         this.broadcastSessions();
@@ -4133,7 +4141,7 @@ const plugin = definePlugin({
                     })));
                     activeDisposers.push(tools.register(defineTool({
                         name: 'tty_open',
-                        description: '开一个新的终端会话（本地 shell，或 `command` 直接跑一条命令，如 dev server）。会话出现在用户的终端面板里、用户可见可接管，长驻进程与 watch 类任务应该用它（不要在 bash 工具里挂起等待）。开了之后用 tty_expect 等就绪信号、tty_capture{last:true} 拿结果；用完用 tty_close 关闭。**`command` 跑完退出后会话不会立刻消失**：它会转成只读保留（留到显式关闭，最多留 8 条），退出前最后的输出与退出码都还能用 tty_capture / tty_screen 读——所以「跑一条会结束的命令、回头再取结果」不需要套一层 `sh`。cwd 缺省为插件配置的工作目录。',
+                        description: '开一个新的终端会话（本地 shell，或 `command` 直接跑一条命令，如 dev server）。会话出现在用户的终端面板里、用户可见可接管，长驻进程与 watch 类任务应该用它（不要在 bash 工具里挂起等待）。开了之后用 tty_expect 等就绪信号、tty_capture{last:true} 拿结果；用完用 tty_close 关闭。`command` 按 **shell 语法整体**执行（`cd dir && cmd`、`a; b`、`for …; do …; done` 都可以，D78：旧版本里 `exec` 包装只跑第一条）；**它跑完退出后会话不会立刻消失**：会转成只读保留（留到显式关闭，最多留 8 条），退出前最后的输出与退出码都还能用 tty_capture / tty_screen 读——所以「跑一条会结束的命令、回头再取结果」不需要套一层 `sh`。cwd 缺省为插件配置的工作目录。',
                         parameters: {
                             cwd: { type: 'string', description: '工作目录（必须是已存在的绝对路径）；缺省用插件配置的 cwd' },
                             command: { type: 'string', description: '直接执行的命令（非交互）；给出时不做 tmux 持久化。缺省 = 交互式 shell' },
