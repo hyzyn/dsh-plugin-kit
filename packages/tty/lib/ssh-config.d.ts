@@ -17,7 +17,7 @@
  *   - 没有 User 的块无法构成连接簿条目（username 必填），跳过；
  *   - IdentityFile 取第一个 → auth=key + keyPath，否则 auth=agent；
  *   - 单文件最多产出 100 条，**超出部分报数**（`droppedOverflow`）：静默少列是本仓
- *     反复出现的一类缺陷（见 docs/architecture.md § 7 的「截断要有信号」）。
+ *     反复出现的一类缺陷（**D63**；见 docs/architecture.md § 7 的「截断要有信号」）。
  */
 import type { SshHostEntry } from './ssh.js';
 /** 单文件最多产出多少条连接簿候选（防异常巨型文件）。 */

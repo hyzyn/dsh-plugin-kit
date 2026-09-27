@@ -253,6 +253,8 @@ window.__ModuleLoader__.load({
 
     /*
      * 界面文案走宿主 `@deepseek-ai/dsh-client-locale` 的目录（方案见 docs/i18n.md）。
+     * **文案里不许出现字面 `**`**（CG64）：浏览器半体没有 markdown 渲染器，用户看到的就是两个星号；
+     * 强调用「」/ “” 或直接换行。
      * 目录**内联在 client-src/index.js**（不是单独一个模块）：本包的 scripts/build-client.mjs
      * 是文本变换脚本，产物必须是单文件，遇到任何残留 import 直接 exit(1)——为目录去改构建
      * 脚本得不偿失。下面这一对目录由 `scripts/check-i18n.mjs` 静态校验：zh/en 键集一致、
@@ -323,7 +325,7 @@ window.__ModuleLoader__.load({
       'panel.announceDisabled': 'codegraph CLI 不可用，公告不会注入',
       'panel.guidanceTitle': '注入 CodeGraph 使用指引（CODEGRAPH_START 区块：何时优先用 codegraph、失败怎么兜底）',
       'panel.guidanceDisabled': 'codegraph CLI 不可用，使用指引不会注入',
-      'panel.perAgentTitle': '每 agent 一个独立的 codegraph MCP 进程（cwd = 该 agent 会话的索引根）：多项目并行时不再共享一个全局 cwd，也不再需要写盘热切换。代价是每个 agent 一个子进程（约 40MB 内存 / 每个），且只有会话目录真的**有索引**时才挂。',
+      'panel.perAgentTitle': '每 agent 一个独立的 codegraph MCP 进程（cwd = 该 agent 会话的索引根）：多项目并行时不再共享一个全局 cwd，也不再需要写盘热切换。代价是每个 agent 一个子进程（约 40MB 内存 / 每个），且只有会话目录真的「有索引」时才挂。',
       'panel.perAgentReason': '前提不成立',
       'panel.perAgentTail': '（当前仍是单服务器按会话热切换，功能正常）',
       'panel.perAgentFallback': '⚠ per-agent 未生效，已退回 managed：{reason}{tail}',
@@ -529,7 +531,7 @@ window.__ModuleLoader__.load({
       'panel.announceDisabled': 'The codegraph CLI is unavailable, so the announcement is not injected',
       'panel.guidanceTitle': 'Inject the CodeGraph usage guidance (the CODEGRAPH_START block: when to prefer codegraph and how to fall back when it fails)',
       'panel.guidanceDisabled': 'The codegraph CLI is unavailable, so the usage guidance is not injected',
-      'panel.perAgentTitle': 'One separate codegraph MCP process per agent (cwd = that agent session’s index root): parallel projects no longer share a single global cwd and no longer need an on-disk hot switch. The cost is one child process per agent (about 40 MB each), and it mounts only when the session directory really **has an index**.',
+      'panel.perAgentTitle': 'One separate codegraph MCP process per agent (cwd = that agent session’s index root): parallel projects no longer share a single global cwd and no longer need an on-disk hot switch. The cost is one child process per agent (about 40 MB each), and it mounts only when the session directory really “has an index”.',
       'panel.perAgentReason': 'the precondition does not hold',
       'panel.perAgentTail': ' (still a single server hot-switching per session — everything works normally)',
       'panel.perAgentFallback': '⚠ per-agent is not in effect; fell back to managed: {reason}{tail}',

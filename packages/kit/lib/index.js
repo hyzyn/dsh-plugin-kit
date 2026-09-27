@@ -10,6 +10,8 @@ export * from './settings.js';
 export * from './http.js';
 export * from './js-expr.js';
 export * from './capability.js';
+export * from './grant-store.js';
+export * from './elevation.js';
 export * from './managed-block.js';
 export * from './decode.js';
 export * from './windows-shim.js';

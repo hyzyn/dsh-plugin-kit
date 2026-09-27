@@ -1,9 +1,10 @@
+import { join } from 'node:path';
 import z from '@deepseek-ai/schemastery';
 import { definePlugin, hasSameOriginProof, isLoopbackRequestStrict, originProofHint, plainConfig, readSettingsEntry, settingsEntryScope, suppressAutoSettingsPage } from '@hyzyn/dsh-kit';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { DockerApi, assertBin, assertImageRef, assertName, assertRef, assertSince, createRunner, parseImageHistoryJson, parseImageHistoryText, parseContainerEvent, parseEventsJson, parseImageInspectJson, parseInspectJson, parsePsJson, parseStatsJson, suggestContainerNames, } from './docker.js';
 import { RemoteExec, sanitizeJumpSpec, sanitizeProxyCommand, setCredentialResolver, sshTarget } from './ssh-exec.js';
-import { capabilityDeniedMessage, capabilityGranted } from '@hyzyn/dsh-kit';
+import { auditLoadedGrants, bindCapabilitySources, capabilityDeniedMessage, capabilityGrantAt, capabilityGranted, capabilityGrantVia, capabilityPaths, createElevationManager, dshHome, sharedGrantStore, } from '@hyzyn/dsh-kit';
 const TARGET_SCHEMA = z.object({
     name: z.string().required(),
     kind: z.union([z.const('local'), z.const('ssh')]).default('local'),
@@ -81,6 +82,13 @@ const MUTATION_SUBROUTES = new Set([
     '/volumes/remove',
     '/volumes/prune',
     '/exec',
+    /*
+     * 就地提权三条（判定条件是**精确子路径** + POST，所以必须逐条列；只写 '/elevate' 的话
+     * /elevate/status 与 /elevate/revoke 就是裸奔的——跨站页面能撤销授权、能对着确认码试错）。
+     */
+    '/elevate',
+    '/elevate/status',
+    '/elevate/revoke',
 ]);
 /** 「这条错误来自目标侧」的标记（见 guardTargetFailures）。 */
 const TARGET_FAILURE = Symbol('dsh-docker.target-failure');
@@ -312,23 +320,34 @@ export function mergeTargetSecrets(prev, incoming) {
 /**
  * 两条能力开关的宿主侧授权（见 kit 的 capability.js 与 docs/architecture.md）。
  *
- * 环境变量是**唯一**的提权通道，且进程内只采样一次；HTTP 侧只能关闭它们、不能打开——
- * 回环围栏与同源证明都拦不住本机盲发进程（它能自己填 `Sec-Fetch-Site: same-origin`，
+ * 两条提权通道：**启动环境变量**（最严，见 kit 的 capability.ts）与**就地提权**（页内点开关 →
+ * 在宿主上落地一个随机名文件 → 免重启生效，见 kit 的 elevation.ts）。HTTP 侧不能凭空打开它们——
+ * 回环围栏与同源证明都拦不住跨站页面与页内脚本（它们能自己填 `Sec-Fetch-Site: same-origin`，
  * 那是请求头不是凭据），而 docker socket 等价目标主机 root。
  */
 const CAP_MUTATIONS = { env: 'DSH_DOCKER_ALLOW_MUTATIONS', label: '变更操作' };
 const CAP_EXEC = { env: 'DSH_DOCKER_ALLOW_EXEC', label: 'exec' };
+/**
+ * 客户端/HTTP 用的能力名 → 授权说明。**白名单**：不在表里的一律 400。
+ *
+ * 为什么要这张表：路由收到的 `capability` 是外部字符串，直接拿它当环境变量名去查授权存储，等于让
+ * 请求方决定「查哪个键」——今天查不出问题（存储里只有这两个键），明天就是一类越权。
+ */
+const CAPABILITIES = new Map([
+    ['allowMutations', CAP_MUTATIONS],
+    ['allowExec', CAP_EXEC],
+]);
 /** 未启用时的文案：没授权要说清「怎么授权」，授权了只是没开就说「去开开关」。 */
 function mutationsOffMessage() {
     return capabilityGranted(CAP_MUTATIONS)
         ? '变更操作未启用（插件配置 → Docker 容器面板 → 允许变更操作）'
-        : capabilityDeniedMessage(CAP_MUTATIONS);
+        : capabilityDeniedMessage(CAP_MUTATIONS, { inPlace: true });
 }
 /** `exec` 那一档的同款文案。 */
 function execOffMessage() {
     return capabilityGranted(CAP_EXEC)
         ? 'exec 未启用（插件配置 → Docker 容器面板 → 允许 exec）'
-        : capabilityDeniedMessage(CAP_EXEC);
+        : capabilityDeniedMessage(CAP_EXEC, { inPlace: true });
 }
 /** 把一份任意来源的配置归一成 LiveConfig。 */
 export function normalizeConfig(section) {
@@ -526,8 +545,47 @@ export function resolveTarget(target, books) {
 const plugin = definePlugin({
     name: 'docker',
     apply(ctx, rawConfig) {
+        /*
+         * 授权来源必须在**第一次 capabilityGranted 之前**绑定（下面的 normalizeConfig 就会查它）：
+         * 环境变量那一半取宿主的启动快照，就地提权那一半取带外授权存储。详见 kit 的 capability.ts /
+         * grant-store.ts。存储每次 apply 新建一个实例 —— 这就是「宿主重启后重新读盘」的语义。
+         *
+         * 落点全部来自 kit 的 `capabilityPaths`（`<DSH home>/dsh-kit/`）：路径只在那里拼一次，
+         * 插件不再自己 join（kit D08：平铺在 DSH 主目录的 `capability-grants.json` / `grant-confirm/`
+         * 不带归属，容易与官方或别的插件撞名）。
+         */
+        const paths = capabilityPaths(dshHome());
+        // **共享实例**（kit D11）：docker 与 tty 同装时各 new 一个会各自缓存一份文件快照，
+        // 后绑定的那个看不到另一个后来写进去的授权（实测：tty 授权成功后自己的快照仍是 false）
+        const grantStore = sharedGrantStore(paths.dir);
+        bindCapabilitySources(ctx, grantStore);
+        /*
+         * 启动期审计：盘上已有的带外授权是**持久**的（重启后直接生效、不再有任何一次确认），所以那次
+         * 「静默继承」必须在日志里留下痕迹——否则「三周前授权的能力今天一开机就开着」无可追溯（kit D09）。
+         * 只报本插件的两条能力；环境变量通道由启动环境本身表达，不在这里重复。
+         *
+         * 刻意放在 `enabled` 判定**之前**：授权是宿主级的、与插件这次是否启用无关；插件这次是禁用态时
+         * 反而更该说一句（「盘上有授权，但插件没开」与「点了没反应」是两回事）。
+         */
+        auditLoadedGrants(grantStore, [CAP_MUTATIONS.env, CAP_EXEC.env], { info: (msg) => ctx.logger.info(msg), warn: (msg) => ctx.logger.warn(msg) }, '[dsh-docker]');
         // volatile 字段解析后是 `{ get() }` 引用，先还原成纯数据（见 @hyzyn/dsh-kit 的 plainConfig）。
         const config = plainConfig((rawConfig ?? {}));
+        /*
+         * 配置里**写着的**能力开关值（**没和授权折叠**）。
+         *
+         * 为什么必须单独留一份：`live.allowMutations` 是「配置值 && 已授权」折叠后的**有效值**，一旦
+         * 用户在没授权时打开过开关，它就成了 false——此后「重算」再拿它当输入，永远回不到 true
+         * （授权到了、工具却不注册，就是那个半个状态）。重算必须从**配置值**出发：
+         *   - `applySection` 把这一份塞回合并结果里（见那里的注释）；
+         *   - 快照里的 `*Configured` 字段也用它，界面靠它把开关画成「开着但未生效」。
+         *
+         * （D141/D142：折叠后的有效值当输入 = 授权到了也回不来；快照缺配置值/来源 = 界面说不出
+         * 「配置开着但没授权」。）
+         */
+        let configuredCapabilities = {
+            allowMutations: config.allowMutations === true,
+            allowExec: config.allowExec === true,
+        };
         let live = normalizeConfig(config);
         if (!live.enabled)
             return;
@@ -754,9 +812,29 @@ const plugin = definePlugin({
                 dockerBin: live.dockerBin,
                 allowMutations: live.allowMutations,
                 allowExec: live.allowExec,
+                /*
+                 * 配置里**写着的**值（未与授权折叠）：开关的视觉状态用它，有效值用上面那两个。
+                 * 两张都要给客户端，否则「配置开着但没授权」这个状态在界面上无法表达——那正是本仓最忌讳的
+                 * 「配了没反应」：开关看着是开的、什么都不会发生，却没有任何东西说明原因。
+                 */
+                allowMutationsConfigured: configuredCapabilities.allowMutations,
+                allowExecConfigured: configuredCapabilities.allowExec,
                 // 宿主侧授权（只读）：客户端用它把开关渲染成「点不动 + 说明怎么开」
                 allowMutationsGranted: capabilityGranted(CAP_MUTATIONS),
                 allowExecGranted: capabilityGranted(CAP_EXEC),
+                /*
+                 * 授权来源：'env' = 启动环境变量（界面不给「撤销」按钮，因为它只能靠改启动环境撤销）、
+                 * 'file' = 就地确认写下的带外授权（界面可撤销）、null = 没授权。
+                 * 客户端据此决定显示「撤销宿主授权」还是「去启动环境里去掉它」，两者完全不同。
+                 */
+                allowMutationsGrantSource: capabilityGrantVia(CAP_MUTATIONS) ?? null,
+                allowExecGrantSource: capabilityGrantVia(CAP_EXEC) ?? null,
+                /*
+                 * 授权时刻（Unix 秒；只有 file 通道有值，环境变量通道与未授权都是 null）。授权是**持久**
+                 * 的：重启后它直接生效、不再确认，所以界面至少要能说出「它是什么时候来的」（D09）。
+                 */
+                allowMutationsGrantedAt: capabilityGrantAt(CAP_MUTATIONS) ?? null,
+                allowExecGrantedAt: capabilityGrantAt(CAP_EXEC) ?? null,
                 execTimeoutSec: live.execTimeoutSec,
                 pollIntervalSec: live.pollIntervalSec,
                 logTailDefault: live.logTailDefault,
@@ -978,8 +1056,14 @@ const plugin = definePlugin({
         };
         const applySection = (section, options) => {
             const before = live;
+            // 能力开关的**配置值**单独记（D141）：section 里没提到它就保持原样（`{}` = 只重算、不改配置）
+            if (section.allowMutations !== undefined)
+                configuredCapabilities.allowMutations = section.allowMutations === true;
+            if (section.allowExec !== undefined)
+                configuredCapabilities.allowExec = section.allowExec === true;
             // hostKeys 只在显式传入时覆盖（避免把 TOFU 运行期新增的记录冲掉）
-            const merged = { ...live, ...section };
+            // 能力两项用**配置值**覆盖折叠后的 live：否则重算的输入就是折叠后的 false（见 configuredCapabilities）
+            const merged = { ...live, ...section, ...configuredCapabilities };
             if (section.hostKeys === undefined)
                 merged.hostKeys = live.hostKeys;
             live = normalizeConfig(merged);
@@ -1010,6 +1094,29 @@ const plugin = definePlugin({
             }
             console.log(`[dsh-docker] config applied (enabled=${String(live.enabled)}, bin=${live.dockerBin}, targets=${String(live.targets.length)}, allowMutations=${String(live.allowMutations)}, allowExec=${String(live.allowExec)})`);
         };
+        /*
+         * 就地提权（见 kit 的 elevation.ts）：页内点开关 → 在宿主上落地一个随机名确认文件 → 授权。
+         *
+         * `onGrantChange` 是这一整段里**最容易漏、也最要紧**的一下：授权到达与撤销都必须重算 live。
+         *   - 授权侧：配置开关可能**早就**是 true（用户先打开过、当时没授权，于是 live.allowMutations
+         *     被折叠成 false），授权到了却不重算，症状就是「开关亮着、工具却没注册」；
+         *   - 撤销侧：不重算会留下「记录没了、工具还开着」，还要收掉在途的写流（D84）。
+         * `applySection({})` 用当前 live 兜底再归一化一次即可（normalizeConfig 会重新问 capabilityGranted）。
+         */
+        const elevation = createElevationManager({
+            confirmDir: paths.confirmDir,
+            store: grantStore,
+            logger,
+            logPrefix: '[dsh-docker]',
+            onGrantChange: () => {
+                applySection({}, { forceRefreshTools: true });
+            },
+        });
+        ctx.effect(() => {
+            return () => {
+                elevation.dispose();
+            };
+        }, 'dsh-docker: elevation cleanup');
         /* ---------- agent 工具 ---------- */
         let toolsApi;
         let toolDisposers = [];
@@ -2596,10 +2703,11 @@ const plugin = definePlugin({
                             return;
                         }
                         const sub = new URL(req.url ?? '/', 'http://loopback').pathname.slice(ROUTE_PREFIX.length);
-                        // 插件禁用时只保留 /config 读写：设置卡片靠它渲染，也是重新启用插件的唯一
-                        // UI 入口（不能一并关掉，否则卡片消失就没有恢复路径了）；其余数据路由一律
-                        // 403——agent 工具已由 refreshTools 同步清空，这里只管 HTTP 半体。
-                        if (!live.enabled && sub !== '/config') {
+                        // 插件禁用时只保留 /config 读写与 /elevate 族：设置卡片靠前者渲染，也是重新启用插件的
+                        // 唯一 UI 入口（不能一并关掉，否则卡片消失就没有恢复路径了）；授权的宿主级操作也不该
+                        // 因为插件被停用而失效（用户先授权再启用插件同样合理）。其余数据路由一律 403——
+                        // agent 工具已由 refreshTools 同步清空，这里只管 HTTP 半体。
+                        if (!live.enabled && sub !== '/config' && !sub.startsWith('/elevate')) {
                             writeJson(res, 403, { error: '插件已禁用（插件配置 → Docker 容器面板 → 启用插件）' });
                             return;
                         }
@@ -2629,14 +2737,14 @@ const plugin = definePlugin({
                                 patch[key] = body[key];
                             }
                             /*
-                             * **能力开关只能降不能升**：提权只认宿主侧的环境变量（进程启动时采样一次），
-                             * HTTP 侧给 true 一律驳回并说清怎么做。这不是「输入不合法」而是「没获授权」——
-                             * 文案必须同时给出变量名与「要重启宿主」，否则用户会对着一个点不动的开关反复点。
+                             * **能力开关不能凭空升**：提权只认宿主侧来源（启动环境变量，或带外确认写下的授权）。
+                             * HTTP 侧给 true 而没有授权一律驳回并说清两条路。这不是「输入不合法」而是「没获授权」——
+                             * 文案必须给出**怎么授权**，否则用户会对着一个点不动的开关反复点。
                              * 校验放在**落盘之前**（与下面那条 normalizeConfig 干跑同一口径）：错误路径不留脏配置。
                              */
                             for (const [key, spec] of [['allowMutations', CAP_MUTATIONS], ['allowExec', CAP_EXEC]]) {
                                 if (patch[key] === true && !capabilityGranted(spec)) {
-                                    writeJson(res, 400, { error: capabilityDeniedMessage(spec) });
+                                    writeJson(res, 400, { error: capabilityDeniedMessage(spec, { inPlace: true }) });
                                     return;
                                 }
                             }
@@ -2810,6 +2918,42 @@ const plugin = definePlugin({
                         const body = await readJsonBody(req);
                         if (body === undefined) {
                             writeJson(res, 400, { error: 'invalid JSON body' });
+                            return;
+                        }
+                        /*
+                         * 就地提权（三条子路由）。放在这里而不是 `/config` 旁边是有原因的：**同源证明由上面那段
+                         * MUTATION_SUBROUTES 判据提供**，而它只覆盖它后面这段分发——写在它前面就是裸的了
+                         * （跨站页面能撤销授权、能反复试确认）。三条都做成 POST 也是为了复用那一条判据
+                         * （它只认 POST；`status` 做成 GET 会绕过）。
+                         */
+                        if (sub === '/elevate' || sub === '/elevate/status' || sub === '/elevate/revoke') {
+                            const capability = typeof body.capability === 'string' ? body.capability : '';
+                            const spec = CAPABILITIES.get(capability);
+                            if (spec === undefined) {
+                                writeJson(res, 400, { error: `未知能力开关: ${capability === '' ? '(空)' : capability}（可用：${[...CAPABILITIES.keys()].join(' / ')}）` });
+                                return;
+                            }
+                            if (sub === '/elevate/status') {
+                                writeJson(res, 200, elevation.status(spec.env));
+                                return;
+                            }
+                            if (sub === '/elevate/revoke') {
+                                // 降权零门槛：不要求任何确认（紧急刹车不等重启）。撤销带来的重算由 elevation 的
+                                // onGrantChange 回调负责（不变量 6），这里不再补一刀。
+                                const revoked = elevation.revoke(spec.env);
+                                writeJson(res, 200, { ok: true, revoked, config: snapshot() });
+                                return;
+                            }
+                            const result = elevation.begin(spec.env);
+                            if (result.status === 'rate-limited') {
+                                writeJson(res, 429, { ...result, error: '短时间内发起太多次，请稍后再试' });
+                                return;
+                            }
+                            if (result.status === 'error') {
+                                writeJson(res, 500, result);
+                                return;
+                            }
+                            writeJson(res, 200, result);
                             return;
                         }
                         // 跨目标聚合（0.15.0）：target='*' 不是目标名，必须在 pickTarget 之前分流，
@@ -3081,10 +3225,13 @@ const plugin = definePlugin({
                 const offAutoPage = suppressAutoSettingsPage(settingsCtx, ctx);
                 settingsScope = scope;
                 settingsApi = { get: (ns) => readSettingsEntry(settingsCtx, ns) };
-                // 立刻读一次 resolved 值（schema 默认值 ← composition base ← 用户层）
+                // 立刻读一次 resolved 值（schema 默认值 ← composition base ← 用户层）。
+                // 走 applySection 而不是直接 normalizeConfig：能力开关的**配置值**要一起记下来（见
+                // configuredCapabilities），否则此后的就地提权重算会拿折叠后的 false 当输入。
                 const resolved = scope.get();
-                if (typeof resolved === 'object' && resolved !== null)
-                    live = normalizeConfig(resolved);
+                if (typeof resolved === 'object' && resolved !== null) {
+                    applySection(resolved, { forceRefreshTools: true });
+                }
                 const diag = (resolved ?? {});
                 console.log(`[dsh-docker] settings resolved (keys=${Object.keys(diag).join('|')}, targets=${Array.isArray(diag.targets) ? String(diag.targets.length) : 'not-array'}, hostKeys=${Array.isArray(diag.hostKeys) ? String(diag.hostKeys.length) : 'not-array'})`);
                 refreshTools();

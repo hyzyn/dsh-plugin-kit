@@ -122,26 +122,75 @@ if (!ok) return writeJson(res, 403, { error: 'forbidden: loopback-only' })
 if (!hasSameOriginProof(req)) return writeJson(res, 403, { error: '缺少同源证明' })
 ```
 
-### 能力开关的宿主侧授权（`capability`）
+### 能力开关的宿主侧授权（`capability` / `grant-store` / `elevation`）
 
 危险能力开关（docker 的 `allowMutations` / `allowExec`、tty 的 `allowProxyCommand`）的
-**提权通道**。为什么需要它：回环围栏与同源证明都拦不住**本机盲发进程**（它能发 HTTP、
-读不到响应，也能自己填 `Sec-Fetch-Site: same-origin`——那是请求头不是凭据），于是
+**提权通道**。为什么需要它：回环围栏与同源证明都拦不住**跨站页面与页内脚本**（它们能发
+HTTP，也能自己填 `Sec-Fetch-Site: same-origin`——那是请求头不是凭据），于是
 `POST /config {allowMutations:true}` 曾经一次就能把危险能力打开。为什么不是给 `/config`
 加一次性 token：它是插件被禁用后**唯一**的恢复入口，token 化等于把用户锁在外面
 （取舍与威胁模型边界见 [architecture.md § 一条请求经过什么](../../docs/architecture.md#7-一条请求经过什么)）。
 
-- `capabilityGranted(spec): boolean` —— 宿主侧是否授权（环境变量，值为
-  `1` / `true` / `yes` / `on`；**进程内只采样一次**，运行期改 `process.env` 不生效：
-  `~/.dsh/env.yml` 那类托管文件有 HTTP 写入路径，现读等于把提权路径搬到那张卡片上）；
-- `capabilityHowTo(spec): string` / `capabilityDeniedMessage(spec): string` —— 界面提示与
-  400 文案（**两步都说清**：设哪个变量 + 重启宿主）；
-- `__resetCapabilityGrantsForTest()` —— **仅供单测**清采样缓存（生产代码不许调用）。
+两条通道：
+
+1. **启动环境变量**（最严档）：判定源是宿主的**启动环境快照**，且**只认继承来的 `process`
+   层**——`project-env`（`<cwd>/.env`）与 `user-env`（`$DSH_HOME/.env`，环境变量卡片写的
+   `~/.dsh/env.yml` 就是它）都算**不**授权：它们都有运行期写入路径，拿它们当闸门等于没有闸门。
+2. **就地提权**（免重启档）：页内点开关 → 面板给出一条「在宿主上落地一个随机名文件」的命令
+   → 宿主发现该文件即授权，写进 `grant-store`（`<DSH home>/dsh-kit/capability-grants.json`，0600，
+   原子写；确认目录 `<DSH home>/dsh-kit/grant-confirm/`）。**落点收在 `dsh-kit/` 这一级**：DSH
+   主目录是所有所有者共用的平铺目录（官方的 `sessions/` `storages/`，本仓的 `tty/` `rss-digest/`），
+   而 `capability-grants.json` / `grant-confirm/` 描述的是**机制**、不带所有者，铺在那一层容易与
+   官方或别的插件撞名（**kit D08**）。拦得住跨站页面与页内脚本；**拦不住**能在本机执行命令的
+   同用户进程——它读得到自己那次 `begin` 的响应、也写得了那个文件，本来还能直接跑 `docker`
+   （不在威胁模型内）。
+
+- `bindCapabilitySources(ctx, grants?)` —— **各插件在 `apply()` 第一行调用**：绑定「这次宿主
+  的启动环境」与带外授权存储（不传 = 本插件只有启动环境通道；docker / tty 都传了存储）；
+- `capabilityGranted(spec): boolean` —— 有没有授权（环境变量值为 `1` / `true` / `yes` / `on`
+  才算；**绑定后运行期改 `process.env` 不生效**）；
+- `capabilityGrantVia(spec): 'env' | 'file' | undefined` —— 由哪条通道授权（两条都命中时报
+  `'env'`：那时撤销带外授权并不能真的关掉能力，界面据此不给「撤销」按钮）；
+- `capabilityGrantAt(spec): number | undefined` —— 授权时刻（Unix 秒；**只有 `file` 通道有值**，
+  环境变量通道没有「授权时刻」）。授权是**持久**的：重启后直接生效、不再确认，界面至少要能说出
+  它是什么时候来的（**kit D09**）；界面按**逐能力一行**把它显示在对应开关后面（不是两个能力合排一行）；
+- `capabilityHowTo(spec, { inPlace? })` / `capabilityDeniedMessage(spec, { inPlace? })` ——
+  界面提示与 400 文案（**把通道说清**：哪条变量、要不要重启、`.env` / `env.yml` 不算授权；
+  `inPlace: true` 才提「就地确认」，否则用户会去卡片上找一个不存在的入口）；
+- `capabilityPaths(dshHomeDir): { dir, grantsFile, confirmDir }` —— kit 的落盘布局，
+  **路径只在这里拼一次**；插件不要自己 `join(dshHome(), …)`（两处各拼一遍就是漂的种子）。
+  `DSH_KIT_HOME` 能把这一级的目录整份换掉（`resolve` 归一后使用；空串 / 全空白视为没设）：
+  **这是测试 / 诊断用的旋钮，不是给用户调的**——能设置宿主环境变量的人本来就能用启动环境变量
+  那条通道直接授权，这里只是把「授权落在哪个目录」也变成可注入的。真宿主验收
+  （[live-host-smoke.mjs](../../scripts/live-host-smoke.mjs)）靠它给「无授权实例」一份空目录：
+  带外授权是持久的，不隔离的话那个实例会继承你机器上的授权，A 段九条断言就全是假红（**kit D12**）；
+- `sharedGrantStore(dir)` —— **插件取授权存储的唯一正确方式**：同一个目录在同一进程里只造一个
+  实例。为什么不是「各插件自己 `new GrantStore(dir)`」：能力判定是模块级单例（`bindCapabilitySources`
+  后绑定覆盖前一次），而 `GrantStore` 是首查读盘 + 进程内缓存——各 `new` 一个等于每个插件拿一份
+  快照副本，后授权的插件在别的插件眼里永远「没授权」（真机实测：tty 授权成功后自己的快照仍是
+  `false`，界面连撤销按钮都不渲染 → **kit D11**）。也不能改成「多来源取并集」：过期副本会否决撤销；
+- `GrantStore` / `createElevationManager({ confirmDir, store, logger, onGrantChange })` ——
+  授权存储与就地提权管理器。`onGrantChange` **必填**：授权到达与撤销都要回调宿主重算
+  （少了它，症状是「授权成功但工具没注册」或者「撤销了工具还开着」）；
+- `auditLoadedGrants(store, capabilities, logger, logPrefix?)` —— **启动期审计**：把盘上已有的
+  带外授权逐条打出来（`elevation: load capability=… via=file grantedAt=…`）。不带它，重启后
+  「静默继承」的授权在日志里查不到（**kit D09**）。
+
+**已知限制**（经复核确认，刻意不修，别当缺陷重报）：运行期改 / 删授权文件**不生效**（要重启才
+读到——删文件当撤销是容易误以为生效的一侧，界面上的「撤销宿主授权」才是正路）；授权记录的 key 是
+**裸环境变量名**、不含插件身份（同名 env 的两个插件会共享一条授权）；没有「仅本次运行有效」档位
+（TTL / boot 计数），持久生效是刻意的。
 
 ```ts
 const CAP = { env: 'DSH_DOCKER_ALLOW_MUTATIONS', label: '变更操作' }
-// 有效值 = 配置值 && 授权；HTTP 侧给 true 直接 400（只能降不能升）
-if (patch.allowMutations === true && !capabilityGranted(CAP)) return writeJson(res, 400, { error: capabilityDeniedMessage(CAP) })
+apply(ctx) {
+  const paths = capabilityPaths(dshHome())
+  const store = sharedGrantStore(paths.dir)               // 必须在第一次 capabilityGranted 之前
+  bindCapabilitySources(ctx, store)
+  auditLoadedGrants(store, [CAP.env], logger, '[dsh-docker]')   // 持久授权的「载入」也要留痕
+}
+// 有效值 = 配置值 && 授权；HTTP 侧给 true 而无授权直接 400（不能凭空升）
+if (patch.allowMutations === true && !capabilityGranted(CAP)) return writeJson(res, 400, { error: capabilityDeniedMessage(CAP, { inPlace: true }) })
 ```
 
 ### !!js 表达式（`js-expr`）

@@ -200,6 +200,12 @@ interface TtySession {
     lastOutputAt: number;
     /** 最近一次 PTY 输入（input 帧 / tty_send）的时间戳：tty_capture{last} 的在途判据之一。 */
     lastInputAt: number;
+    /** 累计写入环形缓冲的原始输出字符数（单调，D72）：buffer 起点 = `outputSeq - buffer.length`。 */
+    outputSeq: number;
+    /** agent 已读水位线（绝对字符计数，D72）；-1 = 还没被 agent 工具碰过（首次触达时落在当下）。 */
+    readSeq: number;
+    /** 水位线最近一次推进的时刻（D72）：`lastCommand.endedAt > readMarkAt` = 这条命令的输出还没被读过。 */
+    readMarkAt: number;
     /** 输出环形缓冲（尾部 256KB，供 tty_capture 与断线重连回放）。 */
     buffer: string;
     /** utf8 分帧兜底：跨 chunk 的多字节序列由 StringDecoder 缓存补齐。 */

@@ -15,7 +15,7 @@ const HeadlessTerminal = xtermHeadless.Terminal;
 import { definePlugin, dshHome as resolveDshHome, hasSameOriginProof, isLoopbackRequestStrict, plainConfig, settingsEntryScope, suppressAutoSettingsPage } from '@hyzyn/dsh-kit';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { sanitizeJumpSpec, sanitizeProxyCommand, spawnSsh, sshTarget, expandHome, setCredentialResolver, setProxyCommandPolicy, validateJumpSpec, validateProxyCommand } from './ssh.js';
-import { capabilityDeniedMessage, capabilityGranted } from '@hyzyn/dsh-kit';
+import { sharedGrantStore, auditLoadedGrants, bindCapabilitySources, capabilityDeniedMessage, capabilityGrantAt, capabilityGrantVia, capabilityGranted, capabilityPaths, createElevationManager, } from '@hyzyn/dsh-kit';
 import { probeSsh } from './probe.js';
 import { buildCommandSpawn, buildShellSpawn, defaultShellPath } from './shell-integration.js';
 import { parseSshConfigDetailed } from './ssh-config.js';
@@ -125,8 +125,11 @@ const WS_PATH = '/api/dsh-tty/ws';
 /**
  * 代理命令这条能力的宿主侧授权（见 kit 的 capability.js 与 docs/architecture.md）。
  *
- * 环境变量是**唯一**的提权通道，且进程内只采样一次；HTTP 侧只能关闭它、不能打开——
- * 因为回环围栏与同源证明都拦不住本机盲发进程，配置路由若能提权，这道闸门等于没有。
+ * 两条提权通道（见 kit 的 capability.ts）：
+ *   ① 启动环境变量（最严档，判定源是宿主的启动环境快照）；
+ *   ② 就地提权（免重启）：卡片上点开关 → 在宿主文件系统上落地一个随机名确认文件。
+ * HTTP 侧**不能凭空打开**它——回环围栏与同源证明都拦不住跨站页面与页内脚本，配置路由若能
+ * 凭空提权，这道闸门等于没有；而「关掉」永远可用（紧急刹车不依赖重启）。
  */
 const CAP_PROXY_COMMAND = { env: 'DSH_TTY_ALLOW_PROXY_COMMAND', label: '代理命令（ProxyCommand）' };
 const DEFAULT_MAX_SESSIONS = 4;
@@ -172,7 +175,7 @@ const TERM_RE = /^[A-Za-z0-9_.+-]+$/;
 const REAPER_INTERVAL_MS = 10_000;
 /** 服务器状态条的采集/推送间隔（mvp 固定 1s，不做配置项）。 */
 const STATS_INTERVAL_MS = 1000;
-const TTY_GUIDANCE = '本机已安装 dsh-tty 插件（终端面板）：Web GUI 侧边栏的「终端」入口可打开交互终端（xterm.js + PTY），可运行任意命令与 TUI 程序（vim/htop 等），支持多标签页与断线自动重连（刷新页面/网络抖动后会话保活并恢复现场）；新标签默认在当前会话工作目录打开。标签栏「+」菜单还能开 SSH 标签页（ssh2 原生连接，连接簿在设置卡片维护，支持 agent forwarding 与主机指纹 TOFU 钉扎；连接簿条目可配单跳跳板机 ProxyJump），像本地终端一样操作远程主机。设置卡片开启「会话持久化（tmux）」后，新开的本地/SSH 标签默认由 tmux server 托管（宿主重启/断线超时后重开即恢复现场），长任务建议在持久化开启时运行。长驻进程（dev server、watch、交互式程序）用 tty_open 开一个会话跑（或引导用户到终端面板里运行），不要在 bash 工具里挂起等待；用户提到「开个终端 / 在终端里跑 / SSH 到某台机器」时引导其打开该面板。agent 侧配套工具：tty_list 列出活跃终端会话（含 SSH 的 target 与实时 cwd），tty_capture 读取近期输出（默认清洗 ANSI；last:true 拿「上一条命令」的输出+退出码），tty_screen 读取当前可见屏幕（可读懂 vim/htop 等 TUI），tty_expect 用正则等待输出中的就绪信号（如 dev server URL、构建完成），tty_send 发送按键，tunnel_list 列出端口转发隧道状态——操作会实时显示在用户终端里。SFTP 文件传输：面板内可对 SSH 连接簿条目（或 SSH 连接对话框当前填写的信息）打开文件浏览（上传/下载/建目录/重命名/删除），传输期间进度条右侧 ✕ 可取消（半截文件自动清理）；agent 配套 sftp_list 列远程目录、sftp_tree 递归看目录结构、sftp_read 读远程文本文件（≤1MB）、sftp_write 写远程文本文件（≤1MB，可追加）、sftp_mkdir 建目录（parents 可逐级补齐）、sftp_rename 重命名/移动、sftp_remove 删除（目录需 recursive），book 参数为连接簿条目名。端口转发：连接簿条目可配本地/远程隧道（如把远程数据库映射到本地端口），宿主自动保活重连，用户提到「转发端口 / 访问远程库」时引导其到终端面板设置卡片配置。推荐流程：tty_send 启动长任务 → tty_expect 等就绪标记 → tty_capture{last:true} 拿结果。';
+const TTY_GUIDANCE = '本机已安装 dsh-tty 插件（终端面板）：Web GUI 侧边栏的「终端」入口可打开交互终端（xterm.js + PTY），可运行任意命令与 TUI 程序（vim/htop 等），支持多标签页与断线自动重连（刷新页面/网络抖动后会话保活并恢复现场）；新标签默认在当前会话工作目录打开。标签栏「+」菜单还能开 SSH 标签页（ssh2 原生连接，连接簿在设置卡片维护，支持 agent forwarding 与主机指纹 TOFU 钉扎；连接簿条目可配单跳跳板机 ProxyJump），像本地终端一样操作远程主机。设置卡片开启「会话持久化（tmux）」后，新开的本地/SSH 标签默认由 tmux server 托管（宿主重启/断线超时后重开即恢复现场），长任务建议在持久化开启时运行。长驻进程（dev server、watch、交互式程序）用 tty_open 开一个会话跑（或引导用户到终端面板里运行），不要在 bash 工具里挂起等待；用户提到「开个终端 / 在终端里跑 / SSH 到某台机器」时引导其打开该面板。agent 侧配套工具：tty_list 列出活跃终端会话（含 SSH 的 target 与实时 cwd），tty_capture 读取近期输出（默认清洗 ANSI；last:true 拿「上一条命令」的输出+退出码），tty_screen 读取当前可见屏幕（可读懂 vim/htop 等 TUI），tty_expect 用正则等待输出中的就绪信号（如 dev server URL、构建完成；它**先回看还没读过的已到达输出**，命令瞬间跑完也不会白等——超时若只返回一句诊断文案，别当成「命令没执行」），tty_send 发送按键，tunnel_list 列出端口转发隧道状态——操作会实时显示在用户终端里。SFTP 文件传输：面板内可对 SSH 连接簿条目（或 SSH 连接对话框当前填写的信息）打开文件浏览（上传/下载/建目录/重命名/删除），传输期间进度条右侧 ✕ 可取消（半截文件自动清理）；agent 配套 sftp_list 列远程目录、sftp_tree 递归看目录结构、sftp_read 读远程文本文件（≤1MB）、sftp_write 写远程文本文件（≤1MB，可追加）、sftp_mkdir 建目录（parents 可逐级补齐）、sftp_rename 重命名/移动、sftp_remove 删除（目录需 recursive），book 参数为连接簿条目名。端口转发：连接簿条目可配本地/远程隧道（如把远程数据库映射到本地端口），宿主自动保活重连，用户提到「转发端口 / 访问远程库」时引导其到终端面板设置卡片配置。推荐流程：tty_send 启动长任务 → tty_expect 等就绪标记 → tty_capture{last:true} 拿结果。';
 /** 本地 PTY 包装成 TermHandle（resize/kill 仍是透传 node-pty 的内部耦合；防御性降级）。 */
 function wrapLocalPty(handle) {
     let resizeWarned = false;
@@ -544,6 +547,65 @@ export function feedShellIntegration(session, text) {
         if (rest !== '')
             state.cmdBuffer = (state.cmdBuffer + rest).slice(-COMMAND_CAP);
     }
+}
+/**
+ * 唯一追加点（D72）：环形缓冲与单调字符计数一起维护。水位线用绝对值定位
+ * 未读区（`buffer 起点 = outputSeq - buffer.length`，裁剪只会前移起点，
+ * 公式恒成立），漏掉任何一处追加都会让它错位——notice 注入那两处此前也是
+ * 各写各的 `tailFromSafeBoundary`。
+ */
+function appendOutput(session, text) {
+    session.outputSeq += text.length;
+    session.buffer = tailFromSafeBoundary(session.buffer + text, BUFFER_CAP);
+}
+/** 原始流里最后一个「命令开始」B 标记的结束位置；-1 = 窗口内没有（无 shell 集成 → 降级）。 */
+function lastCommandStart(text) {
+    OSC133_RE.lastIndex = 0;
+    let end = -1;
+    for (const match of text.matchAll(OSC133_RE)) {
+        if (match[1] === 'B')
+            end = (match.index ?? 0) + match[0].length;
+    }
+    OSC133_RE.lastIndex = 0; // 归位：这个正则是共用的（feedShellIntegration 也用它）
+    return end;
+}
+/** 首次被 agent 工具触达时把水位线落在当下——否则第一次回扫会把用户此前的历史输出当成「还没读过」。 */
+function ensureReadMark(session) {
+    if (session.readSeq >= 0)
+        return;
+    session.readSeq = session.outputSeq;
+    session.readMarkAt = Date.now();
+}
+/** 读侧工具返回前推进水位线：返回时刻 = 「AI 真正看到的内容」的上界。 */
+function advanceReadMark(session) {
+    session.readSeq = session.outputSeq;
+    session.readMarkAt = Date.now();
+}
+/**
+ * 水位线之后的**未读**原始输出。下界再抬到「最后一个 B 标记之后」：回显落在
+ * A（prompt 开始）与 B（命令开始）之间，所以这样能零启发式地排除回显——按
+ * 文本比对「跳过与发送内容相同的行」会被折行 / ANSI / 多行粘贴打碎。
+ * 没有 B 标记（未开 shell 集成 / Windows PowerShell / 远端未装集成）时无法
+ * 区分回显，退化为从水位线起扫（可能匹配到回显本身，文档已声明）。
+ */
+function unreadRegion(session) {
+    ensureReadMark(session);
+    const bufferStart = session.outputSeq - session.buffer.length;
+    const text = session.buffer.slice(Math.max(0, session.readSeq - bufferStart));
+    const start = lastCommandStart(text);
+    return start === -1 ? text : text.slice(start);
+}
+/**
+ * pattern 匹配的统一入口（D72）：先对含 ANSI 的原始流试（live 路径原语义），
+ * 未命中再对清洗后文本试一次——这样承诺才是「tty_capture 里看得到的，
+ * tty_expect 也能匹配到」，而不是回扫命中、返回文案里却看不到。
+ */
+function testPattern(re, text) {
+    re.lastIndex = 0;
+    if (re.test(text))
+        return true;
+    re.lastIndex = 0;
+    return re.test(cleanAnsiTail(text));
 }
 /** 宽松清洗一份 tunnels 输入；输入不是数组时返回 undefined（表示「未提供，保持原值」）。 */
 function sanitizeTunnels(input) {
@@ -1572,6 +1634,10 @@ export class TtyServer {
             local: new Map(),
             owner: 'agent',
         });
+        // D72：agent 自己开的会话从出生起「什么都没读过」（水位线落在 seq 0）——
+        // 包括 `command` 型会话在第一次 expect 之前打印的启动输出。用户开的标签
+        // 相反：历史输出不算未读，首次被 agent 触达时才把水位线落在当下。
+        ensureReadMark(session);
         // 面板可见性：新会话推给所有已连接的面板（客户端据此建「agent 开的」标签）
         this.broadcastSessions();
         return { sid: session.id, persist: session.tmuxName !== null && !degraded };
@@ -1744,6 +1810,9 @@ export class TtyServer {
                 startedAt: Date.now(),
                 lastOutputAt: Date.now(),
                 lastInputAt: Date.now(),
+                outputSeq: 0,
+                readSeq: -1,
+                readMarkAt: 0,
                 buffer: '',
                 decoder: new StringDecoder('utf8'),
                 screen: this.createScreen(clampInt(cols, 80, 2, 500), clampInt(rows, 24, 2, 200)),
@@ -1929,7 +1998,7 @@ export class TtyServer {
                 send(ws, { t: 'ready', sid, pid: next.handle.pid, kind: 'local', ...(next.tmuxName !== null ? { persist: true } : {}) });
                 if (created.wantsPersist && created.degraded) {
                     const notice = '\x1b[2m[dsh-tty] 未检测到 tmux，本标签以普通会话运行；安装 tmux 后持久化标签可跨宿主重启恢复现场\x1b[0m\r\n';
-                    next.buffer = tailFromSafeBoundary(next.buffer + notice, BUFFER_CAP);
+                    appendOutput(next, notice);
                     send(ws, { t: 'data', sid, d: notice });
                 }
             }
@@ -2012,6 +2081,9 @@ export class TtyServer {
                         startedAt: Date.now(),
                         lastOutputAt: Date.now(),
                         lastInputAt: Date.now(),
+                        outputSeq: 0,
+                        readSeq: -1,
+                        readMarkAt: 0,
                         buffer: '',
                         decoder: new StringDecoder('utf8'),
                         screen: this.createScreen(clampInt(msg.cols, 80, 2, 500), clampInt(msg.rows, 24, 2, 200)),
@@ -2040,7 +2112,7 @@ export class TtyServer {
                         this.trackPersist(tmuxName, true); // 留存：远程 tmux 本机清单看不到
                     if (handle.startupNotice !== undefined) {
                         const notice = `\x1b[2m[dsh-tty] ${handle.startupNotice}\x1b[0m\r\n`;
-                        next.buffer = tailFromSafeBoundary(next.buffer + notice, BUFFER_CAP);
+                        appendOutput(next, notice);
                         send(ws, { t: 'data', sid, d: notice });
                     }
                     this.attachOutput(next);
@@ -2279,7 +2351,7 @@ export class TtyServer {
             // StringDecoder 兜跨 chunk 多字节序列，再喂 shell 集成解析与虚拟屏
             const text = session.decoder.write(chunk);
             session.lastOutputAt = Date.now();
-            session.buffer = tailFromSafeBoundary(session.buffer + text, BUFFER_CAP);
+            appendOutput(session, text);
             feedShellIntegration(session, text);
             const screen = session.screen;
             if (screen !== null) {
@@ -2569,6 +2641,11 @@ export async function gateRoute(req, res, options) {
 const MUTATION_SUBROUTES = {
     '/api/dsh-tty/sftp': new Set(['/mkdir', '/rename', '/remove', '/upload']),
     '/api/dsh-tty/local-fs': new Set(['/mkdir', '/rename', '/remove', '/transfer']),
+    /*
+     * 就地提权：三条子路由**逐条**列（docker D144 的教训）——判据是「精确子路径 + POST」，
+     * 只写一条的话另外两条就是裸的（跨站页面能撤销授权、能反复对着确认挑战试错）。
+     */
+    '/api/dsh-tty/elevate': new Set(['', '/status', '/revoke']),
 };
 /**
  * 这个前缀路由的子路径是否**会改状态**（导出仅供单测）。
@@ -2686,6 +2763,24 @@ const plugin = definePlugin({
     // 均拿不到，实测 mcp-client 同款模式），声明后 ctx.get('tools') 才能取到。
     inject: ['tools'],
     apply(ctx, rawConfig) {
+        /*
+         * 授权来源必须在**第一次 capabilityGranted 之前**绑定（见 kit 的 capability.ts）。两条通道：
+         *   ① 启动环境快照（最严档，只认继承来的 `process` 层）；
+         *   ② 就地提权（免重启）：卡片上点开关 → 宿主文件系统上落地一个随机名确认文件 → 授权写进
+         *      grant-store（HTTP 写不到）。落点全部来自 kit 的 `capabilityPaths`（路径只在那里拼一次）。
+         * 存储每次 apply 新建一个实例 —— 这就是「宿主重启后重新读盘」的语义。
+         */
+        const paths = capabilityPaths(resolveDshHome());
+        // **共享实例**（kit D11）：tty 与 docker 同装时各 new 一个会各自缓存一份文件快照，
+        // 后绑定的那个看不到另一个后来写进去的授权（实测：tty 授权成功后自己的快照仍是 false）
+        const grantStore = sharedGrantStore(paths.dir);
+        bindCapabilitySources(ctx, grantStore);
+        /*
+         * 启动期审计：盘上已有的带外授权是**持久**的（重启后直接生效、不再有任何一次确认），所以那次
+         * 「静默继承」必须在日志里留下痕迹（kit D09）。刻意放在 `enabled` 判定**之前**：授权是宿主级的，
+         * 与插件这次是否启用无关。
+         */
+        auditLoadedGrants(grantStore, [CAP_PROXY_COMMAND.env], { info: (msg) => ctx.logger.info(msg), warn: (msg) => ctx.logger.warn(msg) }, '[dsh-tty]');
         // volatile 字段解析后是 `{ get() }` 引用，先还原成纯数据（见 @hyzyn/dsh-kit 的 plainConfig）。
         const config = plainConfig((rawConfig ?? {}));
         if (config?.enabled === false)
@@ -2712,6 +2807,17 @@ const plugin = definePlugin({
             allowProxyCommand: config?.allowProxyCommand === true,
             persistSessions: sanitizePersistSessions(config?.persistSessions) ?? [],
         });
+        /*
+         * 闸门在**挂载时先初始化一次**（tty D70）。
+         *
+         * 它的唯一写入方是 `applyPatch`，而 `applyPatch` 在启动期**只在「settings 里存过东西」时才跑**
+         * （见那里 `if (Object.keys(startup).length > 0)`）。于是「配置里写着 `allowProxyCommand: true`
+         * + 已授权（环境变量或授权文件）+ 重启宿主」这条最平常的路径会停在模块级默认值
+         * `{granted:false, enabled:false}` 上：fail-closed（不是安全问题），但症状正是本仓最忌讳的
+         * 「配了没反应」——卡片显示已授权，代理命令却仍被拒。这条在接入就地提权后才致命：授权是
+         * **持久**的，重启后更要保证「界面上说已授权」与「闸门真的放行」一致。
+         */
+        setProxyCommandPolicy({ granted: capabilityGranted(CAP_PROXY_COMMAND), enabled: live.allowProxyCommand });
         const sessions = new SessionManager(config?.maxSessions ?? DEFAULT_MAX_SESSIONS, () => live.endOnPageClose);
         /** TOFU 指纹记录持久化：写入 settings 命名空间（合并语义），失败不影响连接。 */
         const persistHostKeys = (records) => {
@@ -2775,6 +2881,16 @@ const plugin = definePlugin({
             sftpLimits: live.sftpLimits,
             allowProxyCommand: live.allowProxyCommand,
             allowProxyCommandGranted: capabilityGranted(CAP_PROXY_COMMAND),
+            /*
+             * 授权来源：'env' = 启动环境变量（界面不给「撤销」按钮，它只能靠改启动环境撤销）、
+             * 'file' = 就地确认写下的带外授权（界面可撤销）、null = 没授权。
+             */
+            allowProxyCommandGrantSource: capabilityGrantVia(CAP_PROXY_COMMAND) ?? null,
+            /*
+             * 授权时刻（Unix 秒；只有 file 通道有值）。授权是**持久**的：重启后它直接生效、不再确认，
+             * 界面至少要能说出它是什么时候来的（kit D09）。
+             */
+            allowProxyCommandGrantedAt: capabilityGrantAt(CAP_PROXY_COMMAND) ?? null,
             toolsRegistered: stateRef.toolsRegistered,
             /**
              * 宿主平台（`process.platform`）：客户端据此把「Shell 路径 / shell 集成」的说明与候选
@@ -2894,7 +3010,7 @@ const plugin = definePlugin({
                  * 给出变量名与「要重启宿主」，否则用户会对着一个点不动的开关反复点。
                  */
                 if (input.allowProxyCommand && !capabilityGranted(CAP_PROXY_COMMAND)) {
-                    return { error: capabilityDeniedMessage(CAP_PROXY_COMMAND) };
+                    return { error: capabilityDeniedMessage(CAP_PROXY_COMMAND, { inPlace: true }) };
                 }
                 patch.allowProxyCommand = input.allowProxyCommand;
             }
@@ -2971,6 +3087,30 @@ const plugin = definePlugin({
             setCredentialResolver(credCtx.credentials ?? null);
             return () => { setCredentialResolver(null); };
         });
+        /*
+         * 就地提权（见 kit 的 elevation.ts）：卡片上点开关 → 宿主在确认目录里等一个随机名文件出现
+         * → 授权写进 grant-store。
+         *
+         * `onGrantChange` 是这一段里**最容易漏、也最要紧**的一下：`setProxyCommandPolicy` 是终端 /
+         * SFTP / 隧道 / 探针**四条建连路径共用**的模块级闸门，只写存储不重算就会留下两种半个状态——
+         *   - 授权侧：授权到了，代理命令仍然被拒（用户以为没生效，再去点开关）；
+         *   - 撤销侧：记录没了，本机仍在跑连接簿里那条命令（这一侧是安全问题，不是体验问题）。
+         * `applyPatch({})` 用当前 live 兜底重算一次即可（它本来就每次都写一次策略，见那里的注释）。
+         */
+        const elevation = createElevationManager({
+            confirmDir: paths.confirmDir,
+            store: grantStore,
+            logger: { info: (msg) => ctx.logger.info(msg), warn: (msg) => ctx.logger.warn(msg) },
+            logPrefix: '[dsh-tty]',
+            onGrantChange: () => {
+                applyPatch({});
+            },
+        });
+        ctx.effect(() => {
+            return () => {
+                elevation.dispose();
+            };
+        }, 'dsh-tty: elevation cleanup');
         // webServer：WS upgrade 路由 + 配置读写路由（/api/dsh-tty/config）
         ctx.inject(['webServer'], (webCtx) => {
             webCtx.effect(() => {
@@ -3034,6 +3174,65 @@ const plugin = definePlugin({
                         // 无 settings 服务（或 stub）时直接应用；有服务时也再应用一次（幂等）
                         applyPatch(patch);
                         writeJson(res, 200, { ok: true, config: snapshot() });
+                    },
+                }));
+                /*
+                 * 就地提权（`/elevate`、`/elevate/status`、`/elevate/revoke`）。
+                 *
+                 * 三条**全 POST**、**逐条**进 MUTATION_SUBROUTES（判据是「精确子路径 + POST」，只写一条
+                 * 另外两条就是裸的 → docker D144），且分发必须在证明检查**之后**——`sub` 一旦拿去分支，
+                 * 后面再补证明就晚了。
+                 *
+                 * 刻意**不走** registerGated：授权是宿主级的，插件当前禁用时也该能在卡片里提权/撤销
+                 * （卡片本身是禁用后唯一的恢复入口，与 /config 同一条理由）。
+                 */
+                disposers.push(webServer.register({
+                    kind: 'prefix',
+                    path: '/api/dsh-tty/elevate',
+                    handler: async (req, res) => {
+                        const sub = new URL(req.url ?? '/', 'http://loopback').pathname.slice('/api/dsh-tty/elevate'.length);
+                        if (!(await gateRoute(req, res, { mutation: isMutationSubroute('/api/dsh-tty/elevate', sub) }))) {
+                            return;
+                        }
+                        if (req.method !== 'POST') {
+                            writeJson(res, 405, { error: 'method not allowed: ' + String(req.method) });
+                            return;
+                        }
+                        if (sub !== '' && sub !== '/status' && sub !== '/revoke') {
+                            writeJson(res, 404, { error: 'not found' });
+                            return;
+                        }
+                        const body = await readJsonBody(req);
+                        if (body === undefined) {
+                            writeJson(res, 400, { error: 'invalid JSON body' });
+                            return;
+                        }
+                        // 白名单：别让请求方决定查哪个键（那张表是宿主侧的策略来源）
+                        if (body.capability !== undefined && body.capability !== CAP_PROXY_COMMAND.env) {
+                            writeJson(res, 400, { error: '未知能力: ' + String(body.capability) });
+                            return;
+                        }
+                        if (sub === '/status') {
+                            writeJson(res, 200, elevation.status(CAP_PROXY_COMMAND.env));
+                            return;
+                        }
+                        if (sub === '/revoke') {
+                            // 降权零门槛：撤销不要求任何确认（紧急刹车不等重启）。撤销带来的策略重算由
+                            // elevation 的 onGrantChange 负责——不重算就会留下「记录没了、本机还在跑命令」
+                            writeJson(res, 200, { revoked: elevation.revoke(CAP_PROXY_COMMAND.env) });
+                            return;
+                        }
+                        const result = elevation.begin(CAP_PROXY_COMMAND.env);
+                        if (result.status === 'rate-limited') {
+                            writeJson(res, 429, { error: '请求过于频繁，请稍后再试', retryAfterMs: result.retryAfterMs });
+                            return;
+                        }
+                        if (result.status === 'error') {
+                            writeJson(res, 500, { error: result.error });
+                            return;
+                        }
+                        // 只回状态与一次性命令；nonce 就在命令里，**不进日志**（见 elevation.ts 的不变量）
+                        writeJson(res, 200, result);
                     },
                 }));
                 // ~/.ssh/config 导入候选（连接簿）：loopback 围栏，只回解析结果不落盘。
@@ -3639,6 +3838,9 @@ const plugin = definePlugin({
                             },
                         },
                         async execute() {
+                            // D72：agent 第一次「看见」这些会话时把水位线落在当下——否则第一次
+                            // tty_expect 会把用户早先的历史输出当成「还没读过的输出」回扫过来
+                            sessions.forEach((session) => { ensureReadMark(session); });
                             return { sessions: sessions.list() };
                         },
                     })));
@@ -3806,6 +4008,11 @@ const plugin = definePlugin({
                             if (session === undefined || session.closed)
                                 throw new Error(`会话不存在或已退出: ${input.sid}`);
                             const useRaw = input.raw === true;
+                            // D72：读侧工具返回前推进水位线——这里读到的内容算「已读」，后续
+                            // tty_expect 不再把它们当未读回扫（想回看更早的内容再用本工具）。
+                            // tty_screen 刻意**不**推进：它是「当前可见屏幕」这一种表示，不是
+                            // 文本流，推进它会把 AI 从未在文本里看过的输出标记成已读。
+                            advanceReadMark(session);
                             if (input.last === true) {
                                 const state = session.shellState;
                                 const last = state.lastCommand;
@@ -3882,7 +4089,7 @@ const plugin = definePlugin({
                         name: 'tty_expect',
                         // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
                         isConcurrencySafe: () => true,
-                        description: '在某个终端面板会话（tty_list 提供 sid）的后续输出中等待一个正则出现（如 dev server 的 ready/URL、构建完成标记、交互提示）。匹配到立即返回 matched:true 与周边输出；超时不抛错，返回 matched:false + 尾部输出供判断重试或放弃；期间该命令若已结束（shell 集成标记）也会提前返回并带退出码。适合先 tty_send 启动长任务、再 tty_expect 等就绪信号的流程。',
+                        description: '在某个终端面板会话（tty_list 提供 sid）等待一个正则出现（如 dev server 的 ready/URL、构建完成标记、交互提示）。**先回溯**还没被读过的输出（含「上一条命令」的完整输出），再等后续输出——所以命令瞬间跑完也不会白等；匹配到立即返回 matched:true（matchedFrom 说明匹配来自哪里：live=本次等待期间新产生 / last=上一条命令的输出 / buffered=此前已到达的缓冲输出）与周边输出。超时不抛错，返回 matched:false + 尾部输出；期间该命令若已结束（shell 集成标记）也会提前返回并带退出码。适合先 tty_send 启动长任务、再 tty_expect 等就绪信号的流程。注意：只对「还没读过的输出」负责——要回看更早的内容用 tty_capture。',
                         parameters: {
                             sid: { type: 'string', required: true, description: '会话 id（来自 tty_list）' },
                             pattern: { type: 'string', required: true, description: '等待匹配的正则表达式（JavaScript RegExp 语法）' },
@@ -3897,12 +4104,21 @@ const plugin = definePlugin({
                                     timedOut: { type: 'boolean', required: true },
                                     text: { type: 'string', required: true },
                                     exitCode: { type: 'number' },
+                                    matchedFrom: { type: 'string' },
                                 },
                             },
                             render: (_args, value) => {
                                 const v = value;
-                                if (v.matched === true)
-                                    return [{ type: 'text', text: `已匹配到等待的模式：\n\n${v.text ?? ''}` }];
+                                if (v.matched === true) {
+                                    const from = v.matchedFrom === 'last'
+                                        ? '（回溯自「上一条命令」的输出）'
+                                        : v.matchedFrom === 'buffered' ? '（回溯自此前已到达、还没读过的缓冲输出）' : '';
+                                    return [{ type: 'text', text: `已匹配到等待的模式${from}：\n\n${v.text ?? ''}` }];
+                                }
+                                if (v.timedOut === true && (v.text ?? '').trim() === '') {
+                                    // D72：这段空白此前被当成「命令没执行」——命令若是瞬间完成的，它早就跑完了
+                                    return [{ type: 'text', text: '等待超时，且注册之后没有任何新输出。命令若是瞬间完成的，它早已在开始等待之前跑完：用 tty_capture{last:true} 复核那条命令的输出与退出码，别把这段空白当成「没执行」。' }];
+                                }
                                 const why = v.timedOut === true ? '等待超时' : `命令已结束（exitCode=${String(v.exitCode ?? '?')}）但未出现匹配`;
                                 return [{ type: 'text', text: `${why}。尾部输出：\n\n${v.text ?? ''}` }];
                             },
@@ -3934,36 +4150,65 @@ const plugin = definePlugin({
                             expectCounts.set(session, inflight + 1);
                             return await new Promise((resolve) => {
                                 const startedAt = Date.now();
-                                const startedInCommand = session.shellState.inCommand;
+                                const state = session.shellState;
+                                const startedInCommand = state.inCommand;
                                 // 尾部窗口：匹配只看最近 16KB，acc 全量囤积对刷屏会话可涨到数百 MB
                                 let acc = '';
                                 let settled = false;
+                                let timer = null;
                                 const decoder = new StringDecoder('utf8');
                                 const output = session.handle.output;
-                                const finish = (result) => {
+                                /**
+                                 * 结算时的水位线（D72）：
+                                 *  - 匹配成功 / 会话结束 → 推进到当下（这段输出已经交回给 AI 了）；
+                                 *  - **超时不动**：那次只把注册之后的增量交回去，注册前就在缓冲里的
+                                 *    未读输出没被读过，而且下一次换个 pattern 还要靠它回溯——吞掉
+                                 *    它等于「等一次没等到，这段输出就作废了」。
+                                 */
+                                const finish = (result, consumeBacklog = true) => {
                                     if (settled)
                                         return;
                                     settled = true;
-                                    clearTimeout(timer);
+                                    if (timer !== null)
+                                        clearTimeout(timer);
                                     output.off('data', onData);
                                     expectCounts.set(session, Math.max(0, (expectCounts.get(session) ?? 1) - 1));
+                                    if (consumeBacklog)
+                                        advanceReadMark(session);
                                     resolve(result);
                                 };
-                                const onData = (chunk) => {
+                                function onData(chunk) {
                                     acc = (acc + decoder.write(chunk)).slice(-64 * 1024);
                                     const hay = acc.length > 16 * 1024 ? acc.slice(-16 * 1024) : acc;
-                                    if (re.test(hay)) {
-                                        finish({ matched: true, timedOut: false, text: cleanAnsiTail(hay.slice(-6 * 1024)) });
+                                    if (testPattern(re, hay)) {
+                                        finish({ matched: true, timedOut: false, matchedFrom: 'live', text: cleanAnsiTail(hay.slice(-6 * 1024)) });
                                         return;
                                     }
                                     // 命令早停：注册时命令在飞（B..D 之间），如今 D 已到仍未匹配
-                                    const state = session.shellState;
                                     if (startedInCommand && !state.inCommand && state.lastCommand !== null && state.lastCommand.endedAt >= startedAt) {
                                         finish({ matched: false, timedOut: false, ...(state.lastCommand.exitCode === null ? {} : { exitCode: state.lastCommand.exitCode }), text: cleanAnsiTail(acc.slice(-6 * 1024)) });
                                     }
-                                };
-                                const timer = setTimeout(() => {
-                                    finish({ matched: false, timedOut: true, text: cleanAnsiTail(acc.slice(-6 * 1024)) });
+                                }
+                                // ── 注册**之前**就已到达的输出（D72）─────────────────────────
+                                // 这段此前完全不匹配：acc 从空开始，所以「命令瞬间完成」时标记
+                                // 早就躺在缓冲区里、acc 里永远没有它 → 白等满超时、还只返回空白。
+                                ensureReadMark(session);
+                                // ① 上一条命令的完整输出（B..D 窗口：无回显、无提示符、自带退出码）。
+                                //    两个闸门保证它「还没被读过」：不晚于最后一次输入（否则是上一条
+                                //    命令的旧结果），且晚于水位线时刻（否则 AI 已经用 capture 看过了）。
+                                const last = state.lastCommand;
+                                if (!state.inCommand && last !== null && last.endedAt > session.readMarkAt && last.endedAt >= session.lastInputAt && testPattern(re, last.output)) {
+                                    finish({ matched: true, timedOut: false, matchedFrom: 'last', ...(last.exitCode === null ? {} : { exitCode: last.exitCode }), text: cleanAnsiTail(last.output.slice(-6 * 1024)) });
+                                    return;
+                                }
+                                // ② 泛化：水位线之后的未读缓冲（长驻输出落在多条命令之间、无 shell 集成……）
+                                const backlog = unreadRegion(session);
+                                if (backlog !== '' && testPattern(re, backlog)) {
+                                    finish({ matched: true, timedOut: false, matchedFrom: 'buffered', text: cleanAnsiTail(backlog.slice(-6 * 1024)) });
+                                    return;
+                                }
+                                timer = setTimeout(() => {
+                                    finish({ matched: false, timedOut: true, text: cleanAnsiTail(acc.slice(-6 * 1024)) }, false);
                                 }, timeoutMs);
                                 timer.unref?.();
                                 output.on('data', onData);
@@ -4004,6 +4249,9 @@ const plugin = definePlugin({
                             if (session === undefined || session.closed)
                                 throw new Error(`会话不存在或已退出: ${input.sid}`);
                             session.lastInputAt = Date.now();
+                            // D72：只初始化水位线，**不推进**——刚发出去的这条命令的输出 AI 还没看见；
+                            // 但这一刻之前的积压不该被第一次 expect 当成「未读」回扫。
+                            ensureReadMark(session);
                             await session.handle.write(input.data);
                             return { ok: true, sent: input.data.length };
                         },

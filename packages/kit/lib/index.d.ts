@@ -7,7 +7,8 @@
  *     响应（http）、!!js 表达式方言（js-expr）、通用托管区块读写（managed-block）、
  *     子进程输出编码容错解码（decode）、Windows `.cmd` shim 启动与转义
  *     （windows-shim）、DSH ≥0.1.7 的 settings 存储适配（settings）、
- *     能力开关的宿主侧授权（capability）。
+ *     能力开关的宿主侧授权（capability）、带外授权的持久存储（grant-store）、
+ *     就地提权（elevation）。
  * 全部为增量导出：0.2.0 的 definePlugin 等原样保留。
  */
 import type { Context } from '@deepseek-ai/cordis';
@@ -32,6 +33,8 @@ export * from './settings.js';
 export * from './http.js';
 export * from './js-expr.js';
 export * from './capability.js';
+export * from './grant-store.js';
+export * from './elevation.js';
 export * from './managed-block.js';
 export * from './decode.js';
 export * from './windows-shim.js';
