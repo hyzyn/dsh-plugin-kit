@@ -169,6 +169,7 @@ dsh plugin --profile web add link:$(pwd)/packages/<name>
 | 术语（宿主半体、托管区块、TOFU、三代插槽…） | [docs/glossary.md](docs/glossary.md) |
 | 装不上、卡片不出现、接口 401/403、已知限制 | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | 真机测试怎么跑、什么算通过 | [docs/agent-real-test.md](docs/agent-real-test.md) |
+| 某个跨包方案的完整设计与验收（跳板机 / 就地提权 / i18n…） | `docs/` 下的 `*-plan.md` 与 `i18n.md`，由 [conventions.md 的知识归属表](docs/conventions.md) 路由 |
 | Windows 11 真机环境搭建 | [scripts/windows/README.md](scripts/windows/README.md) |
 | 跨包待办 | [ROADMAP.md](ROADMAP.md) |
 | 发版流程 | [RELEASING.md](RELEASING.md) |

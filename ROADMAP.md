@@ -8,10 +8,10 @@
 > 缺陷按编号记在各包 `DEFECTS.md`，不在本文。
 > 本文每一项在动手前先转成可验收条目（做完回填「落点 + 门槛」）。
 >
-> **状态标记**：标题带 ✅ 的是已落地的条目（原文保留作历史，落点与门槛见
-> [§ 已完成](#已完成落点--门槛)）；未标 ✅ 的才是待办。2026-09-25 一轮做掉 1 / 4，
-> 以及 2 的「短期至少做到」那一半（2 的完整实现仍开着）。**2026-09-25 后续**：第 3 项也已做掉
-> （10/10 包，1636 条键）；仍未动的只剩第 5 项与第 2 项的完整实现。
+> **怎么读 `## 待办` 这一节**：它是**历史与待办混排**——**带 ✅ 的条目 = 整项已落地**，原文留在
+> 原位作历史（目标、取舍、当时的理由都在正文里，搬走就只剩一句结论），落点与门槛见
+> [§ 已完成](#已完成落点--门槛)；**没带 ✅ 的才是活待办**。判据就这一个符号，**不数条数、也不写死
+> 条数**（写了就会漂）。
 
 ## 待办
 
@@ -85,7 +85,7 @@
 
 **为什么是 L0**：原文自己就写了「要改建议一起」——三个包的 `tools.register` 调用点要一起加。
 
-### 5. 变更端点的信任模型：能力开关的宿主侧授权 ✅（一次性 token 未做，见下）
+### 5. 变更端点的信任模型：能力开关的宿主侧授权 ✅
 
 > 自 `packages/docker/ROADMAP.md` 迁入，原文照录：
 
@@ -111,11 +111,45 @@
   客户端按快照里的 `*Granted` 把开关渲染成「点不动 + 说明怎么开」；
 - 约定与威胁模型边界写进 [architecture.md § 7](./docs/architecture.md#7-一条请求经过什么)。
 
-**门槛**：`packages/kit/test/capability.test.ts`（8 条：白名单值、**进程内只采样一次**、
-文案两步齐全）；`packages/docker/test/config-route.test.ts` 的 5 条（400 且不落盘、降权免授权、
-配置里的 true 无效、授权后接受）；`packages/tty/test/proxy-command.test.ts` 的 21 条（含
-未授权 / 未启用**两条文案必须不同**、路由 400、四道白名单往返）；`packages/tty/test/probe.test.ts`
-（探针按原因分开报）；docker route-smoke 62/62（含快照暴露授权）。
+> ⚠️ 上面那一条里「**提权只认宿主侧环境变量**」在 2026-09-26 被扩展成**两条通道**（并修好了
+> 环境变量那条的采样源），见下 § 5.1.1；「进程启动时采样一次」这句仍成立，但它的理由变了
+> （不再是「防运行期注入」这个权宜，而是「只认启动时继承的环境」这条规则）。
+
+#### 5.1.1 就地提权：第二条带外通道（2026-09-26）
+
+> 机制推演、API 取舍与威胁模型**不在本文**（本文只放「落点 + 门槛」）：全部在
+> [docs/capability-elevation-plan.md](./docs/capability-elevation-plan.md)——§0 是对手表与
+> 三条结论、§1 是不变量、§3 是 kit 侧落点、附录 B 说明为什么砍掉确认码通道、附录 C 是实施记录
+> （含 API 改名与四处偏差）、附录 D 是 tty 接入、§9 是明确不做（OS 级同意仍后置）。
+
+**做了什么**：补上**免重启**的第二条通道——页内点开关 → 面板给出一条「在宿主上落地一个随机名
+文件」的命令 → 宿主发现该文件即授权；顺带修掉 5.1 遗留的采样源问题（`.env` / `~/.dsh/env.yml`
+从此明确不算授权）。通道实现只有一份（kit），docker 与 tty 两个插件共用；未授权时开关可点 =
+发起提权（不再是点不动的 `disabled`）。
+
+**落点**：
+
+- kit：[`capability.ts`](./packages/kit/src/capability.ts)（判定 + 文案：`bindCapabilitySources` /
+  `capabilityGranted` / `capabilityGrantAt`）、[`grant-store.ts`](./packages/kit/src/grant-store.ts)
+  （`capabilityPaths()` 只拼一次路径 / `GrantStore` / `sharedGrantStore`）、
+  [`elevation.ts`](./packages/kit/src/elevation.ts)（`createElevationManager` / `auditLoadedGrants`）；
+- docker：`/api/dsh-docker/elevate{,/status,/revoke}`，三条**全 POST**且**逐条**进
+  `MUTATION_SUBROUTES`（那条判据是「精确子路径 + POST」，只写一条另外两条就是裸的）；授权到达与
+  撤销都由宿主侧 `onGrantChange` 重算。客户端：逐能力状态行 + 「撤销宿主授权」入口。
+- tty：`/api/dsh-tty/elevate{,/status,/revoke}` 同上（`allowProxyCommand` 也接上第二条通道）。
+- 编号：kit **D07**（采样源）/ **D08**（落点带归属）/ **D09**（持久授权可见）/ **D11**（共享存储）/
+  **D12**（验收的授权落点隔离）；docker **D141–D144**（重算、快照、字面 `**`、证明覆盖）；
+  tty **D68**（字面 `**`）/ **D69**（脆测试隔离）/ **D70**（启动期闸门未初始化）；codegraph **CG64**。
+
+**门槛**（本文件管「哪些用例 / 真机」）：`packages/kit/test/capability.test.ts`（8 条：白名单值、
+**进程内只采样一次**、文案两步齐全）、`packages/kit/test/grant-store.test.ts`、
+`packages/kit/test/elevation.test.ts`；`packages/docker/test/config-route.test.ts` 的 5 条
+（400 且不落盘、降权免授权、配置里的 true 无效、授权后接受）、
+`packages/docker/test/elevate-route.test.ts`（含「不碰文件系统的任意 HTTP 序列都提不了权」的负向
+性质）；`packages/tty/test/proxy-command.test.ts` 的 21 条（含未授权 / 未启用**两条文案必须不同**、
+路由 400、四道白名单往返）、`packages/tty/test/probe.test.ts`（探针按原因分开报）、
+`packages/tty/test/elevate-route.test.ts`；docker route-smoke 62/62（含快照暴露授权）；真机：下面那张
+真机验收表 + `pnpm live-smoke`（18 条，两个实例的授权目录各自隔离 → kit D12）。
 
 **升级影响（刻意如此，已写进两包 README）**：升级前靠界面打开的开关**会变成关**——要恢复
 就在宿主侧设环境变量并重启宿主。这正是「HTTP 不能提权」的代价：分不出来源的 `true` 一律不算。
@@ -161,6 +195,14 @@ renderer）：token 让盲发失效。若要做，先书面定三件事：① �
 ② `/config` 与恢复通道怎么办（token 化之后用户怎么把插件救回来）；③ 桌面壳的例外。
 按「全仓安全线一项」规划，而不是 docker 的附加项。
 
+#### 5.3 三条已知限制（刻意不修，别当缺陷重报）
+
+**三条边界**（复核时确认，写在这里免得被当缺陷重报）：① 运行期改 / 删授权文件不生效
+（要重启才读到）——删文件当撤销是**容易误以为生效**的一侧，界面上的「撤销宿主授权」才是正路；
+② 授权记录的 key 是**裸环境变量名**，不含插件身份（同名 env 的两个插件会共享一条授权；今天的
+名字都带前缀，现实风险低）；③ 没有「仅本次运行有效」档位（TTL / boot 计数），持久生效是刻意的。
+三条都写进了 `grant-store.ts` 的「已知限制」。
+
 ## 已完成（落点 + 门槛）
 
 ### 1. ✅ 统一安全围栏：docker 的加固口径同步到 tty / dsh-mcp
@@ -183,7 +225,7 @@ renderer）：token 让盲发失效。若要做，先书面定三件事：① �
 `packages/mcp/test/route-gate.test.ts`（每包的拒绝分支负例）；`docker` 既有的 12 个路由/流
 用例在**不动一行测试**的前提下继续绿——那就是「行为一字未改」的证据（232 passed）。
 
-### 2.（短期一半）✅ 跳板机：不再静默产出一条注定超时的条目
+### 2. ✅ 跳板机（ProxyJump / ProxyCommand）：单跳全部落地，只剩多跳链明确不做
 
 **落点**：`packages/tty/src/ssh-config.ts` 的 `parseSshConfigDetailed()`（新增）识别
 `ProxyJump` / `ProxyCommand` 并**整块跳过 + 回报块名**（`ProxyNone` / `none` 视为显式直连，
@@ -242,26 +284,6 @@ keepalive 养着的连接）。两处都已收口到公共收尾入口。
 **刻意不做**：不做「只让 tty 能过 bastion、docker 不行」的半吊子（原文的判据：那比不做更糟）；
 代理命令不做「按平台各写一套转义」（改白名单拒绝）、不在导入时自动带入；不做多跳链。
 
-### 4. ✅ `isConcurrencySafe` 未声明
-
-**落点**：`docker` 的 11 个只读工具（`docker_targets` … `docker_volumes`）与 `tty` 的 9 个
-只读工具（`tty_list` / `tty_stats` / `tty_capture` / `tty_screen` / `tty_expect` /
-`tunnel_list` / `sftp_list` / `sftp_read` / `sftp_tree`）声明 `isConcurrencySafe: () => true`；
-五个 docker 变更工具与七个 tty 变更工具**刻意不声明**（宿主按独占处理，多声明一次就是
-两个 `docker_action` 并发跑）。
-
-**codegraph 那半边查下来不成立**：`packages/codegraph/src/**` 里一个 `tools.register` 都没有
-（它只往 systemPrompt 注入两段 + 管 MCP 托管行）。模型看到的
-`mcp__codegraph__codegraph_explore` 由宿主的 `@deepseek-ai/dsh-mcp-client` 注册，而那份
-声明不在本仓，插件侧也够不到（没有改已注册工具的公开 API）。**要它并发安全只能改上游**，
-本仓如实记录，不假装做了。
-
-**门槛**：`packages/docker/test/tool-concurrency.test.ts`、
-`packages/tty/test/tool-concurrency.test.ts`——三张表（只读 / 变更 / 清单自洽），
-且断言走工具自己的参数校验（`defineTool` 参数不合法会直接返回 false，用 `{}` 调会把
-「我们调错了」误读成「没声明」；测试按 JSON Schema 造合法最小实参）。清单自洽那条保证
-**新增工具时必须来表里归类**。
-
 ### 3. ✅ 面板端 i18n：方案 + 闸门 + 10 个包全部接入
 
 **落点**：方案落在新文件 [docs/i18n.md](./docs/i18n.md)（规范片段 / 键名规范 / 目录放哪 /
@@ -314,6 +336,40 @@ CI 真在跑的 `packages/tty/scripts/probe-route-smoke.mjs` / `integration.mjs`
 `scripts/verify-mcp-*.mjs` 打变更端点时没有同源证明（403），按浏览器同源 fetch 的形状补了
 `sec-fetch-site: same-origin`。
 
+### 4. ✅ `isConcurrencySafe` 未声明
+
+**落点**：`docker` 的 11 个只读工具（`docker_targets` … `docker_volumes`）与 `tty` 的 9 个
+只读工具（`tty_list` / `tty_stats` / `tty_capture` / `tty_screen` / `tty_expect` /
+`tunnel_list` / `sftp_list` / `sftp_read` / `sftp_tree`）声明 `isConcurrencySafe: () => true`；
+五个 docker 变更工具与七个 tty 变更工具**刻意不声明**（宿主按独占处理，多声明一次就是
+两个 `docker_action` 并发跑）。
+
+**codegraph 那半边查下来不成立**：`packages/codegraph/src/**` 里一个 `tools.register` 都没有
+（它只往 systemPrompt 注入两段 + 管 MCP 托管行）。模型看到的
+`mcp__codegraph__codegraph_explore` 由宿主的 `@deepseek-ai/dsh-mcp-client` 注册，而那份
+声明不在本仓，插件侧也够不到（没有改已注册工具的公开 API）。**要它并发安全只能改上游**，
+本仓如实记录，不假装做了。
+
+**门槛**：`packages/docker/test/tool-concurrency.test.ts`、
+`packages/tty/test/tool-concurrency.test.ts`——三张表（只读 / 变更 / 清单自洽），
+且断言走工具自己的参数校验（`defineTool` 参数不合法会直接返回 false，用 `{}` 调会把
+「我们调错了」误读成「没声明」；测试按 JSON Schema 造合法最小实参）。清单自洽那条保证
+**新增工具时必须来表里归类**。
+
+### 5. ✅ 变更端点的信任模型：能力开关的宿主侧授权
+
+**落点**：机制在 kit——[`capability.ts`](./packages/kit/src/capability.ts)（判定与文案）、
+[`grant-store.ts`](./packages/kit/src/grant-store.ts)（`capabilityPaths()` 只拼一次路径 /
+`GrantStore` / `sharedGrantStore`）、[`elevation.ts`](./packages/kit/src/elevation.ts)
+（`createElevationManager` / `auditLoadedGrants`）；两个消费插件各接三条 `/elevate` 路由
+（docker / tty）并在卡片上给出**逐能力**的状态行与撤销入口。方案、威胁模型与实施偏差见
+[docs/capability-elevation-plan.md](./docs/capability-elevation-plan.md)（v1 已删除，冻结指针见下表）。
+
+**门槛**：`packages/kit/test/{capability,grant-store,elevation}.test.ts`、
+`packages/docker/test/elevate-route.test.ts`、`packages/tty/test/elevate-route.test.ts`；
+真机 `pnpm live-smoke`（18 条，两个实例的授权目录各自隔离 → kit D12）+ 待办第 5 项下面那张
+真机验收表。
+
 ## 已由 L0 资产承接（不再是待办）
 
 | 曾经的形态 | 现在的归属 |
@@ -323,3 +379,4 @@ CI 真在跑的 `packages/tty/scripts/probe-route-smoke.mjs` / `integration.mjs`
 | bundle 补丁重复挂载 | [troubleshooting.md](./docs/troubleshooting.md#安装与挂载) 记症状与成因 |
 | CI 产物闸门对 `lib/` 恒绿（pathspec `'packages/*/lib'` 命中 0 个文件） | **2026-09-25 已修**：`.github/workflows/ci.yml` 换成 `':(glob)packages/*/lib/**'`，并在该 step 注释里记下这个坑。闸门细节与实测命中数见 [docs/conventions.md § 真机脚本与 CI 接线](./docs/conventions.md#真机脚本与-ci-接线) |
 | 文档链接闸门只能手动跑 | **2026-09-25 已接线**：`scripts/check-doc-links.mjs` 进 CI（ubuntu-only step），白名单 3 条跨仓相对链接 |
+| `docs/capability-elevation-plan.md` 的 **v1**（它设计的「宿主终端确认码」通道在代码里不存在） | **2026-09-27 删除**（改名后的 v2 占了这个文件名）：内容在 `79ca434e` 已入库，`git show 79ca434e:docs/capability-elevation-plan.md` 取回（223 行；`grep -c terminal-code` = 9，即那份文档的特征段落还在） |

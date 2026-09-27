@@ -25,6 +25,8 @@
 | **跨包行为约定**（回环围栏 / body 围栏 / 截断信号） | L0 [`docs/architecture.md` § 7](./architecture.md#7-一条请求经过什么) |
 | **面板端 GUI 的文案与语言（i18n）** | L0 [`docs/i18n.md`](./i18n.md)（方案 + 规范片段 + 进度表） |
 | **跳板机（ProxyJump / ProxyCommand）完整实现的方案**（2026-09-25 已按它落地，`ProxyCommand` 见其 §6.1 的闸门定案表；保留为**活**的作业面：多跳链与后续坑仍以它为准） | L0 [`docs/proxyjump-plan.md`](./proxyjump-plan.md) |
+| **能力开关「就地提权」的当前权威实施方案**（2026-09-26 已按它落地：两条通道、落点、威胁模型、逐 PR 顺序；实施偏差见其附录 C。原先的 `…-plan.v2.md` 已按命名规范改名成本文件名） | L0 [`docs/capability-elevation-plan.md`](./capability-elevation-plan.md) |
+| **能力开关「就地提权」方案的 v1（已删除，仅历史）**——它设计的「宿主终端确认码」通道**在代码里不存在**（`CapabilityGrantVia` 只有一个值 `'file'`），保留只为追溯取舍过程；**不要照着执行**（改动去上面那份） | 冻结指针 `git show 79ca434e:docs/capability-elevation-plan.md`（223 行）· 检索入口见 [`ROADMAP.md` 的「已由 L0 资产承接」表](../ROADMAP.md) |
 | AI 真机测试约束 | L0 [`docs/agent-real-test.md`](./agent-real-test.md) |
 | 术语 | L0 [`docs/glossary.md`](./glossary.md) |
 | 发布流程 | L0 [`RELEASING.md`](../RELEASING.md) |
@@ -137,6 +139,7 @@
 | HTTP 路由 | `/api/dsh-<插件 id>/…` | `/api/dsh-docker/containers` |
 | 环境变量 | `DSH_<插件 id 大写>_<项>` | `DSH_RSS_DIGEST_DIR` |
 | 缺陷编号 | 见上 | `docker D03` |
+| 文档文件名 | **同一主题只允许一份活文档**：`v2` / `-v3` / `(新)` 这类版本后缀**不得出现在文件名里**。历史版本的去处是仓库已有的机制——内容留在提交历史（`git show <sha>:<path>` 取回），并在该主题的台账 / 文档「冻结记录」小节登记指针；同一份文档要出新版就**原地改写**，让旧版只存在于历史里。唯一的例外必须**显式登记**在 `scripts/docs-index.mjs` 的 `VERSION_SUFFIX_ALLOWLIST` 并写明理由（守卫会查例外是否还真实存在） | `proxyjump-plan.md`（不是 `proxyjump-plan-v2.md`） |
 
 ## 提交
 
