@@ -80,6 +80,12 @@ CI 另有两道兜底（`--no-verify`、别的机器、别的工具提交都能�
    只能靠用户来提 issue。写真实版本（如 `^0.1.2`）即可；本地开发靠根 `.npmrc` 的
    `link-workspace-packages=true` 仍然链接到 `packages/*`，体验不变。
    CI 与 Release workflow 都会跑 `node scripts/check-publishable.mjs` 兜底。
+   **例外是 `@hyzyn/dsh-kit`：它必须是精确版本，且全仓一致、等于 `packages/kit` 自己的
+   版本。** kit 的跨插件一致性（授权存储、能力绑定，`kit D11`）靠**模块级单例**，
+   而 pnpm 的 hoisted 布局只能把一个版本提升到顶层、另一个嵌进消费者自己的
+   `node_modules`——两份 kit 就是两套单例，`kit D11` 的症状会回来。所以 bump kit 时必须
+   跟齐**每一个**消费者，一次发完；`node scripts/check-kit-pins.mjs` 兜底（CI 与 Release
+   workflow 都跑）。
 5. 可安装插件必须用 `peerDependencies` 声明 DSH 兼容范围。DSH 0.1.7-rc.1 起
    **安装前与启动时**都强制校验，且只看 `@deepseek-ai/dsh` / `@deepseek-ai/dsh-*`
    的 peer（预发布参与范围匹配）。写法统一为
@@ -134,6 +140,7 @@ build + typecheck + 聚合检查 → 按依赖序发布全部包（registry 上�
 | `403 ... Two-factor authentication or granular access token with bypass 2fa` | 缺动态码或 token 不是 bypass-2FA：换 bypass granular token |
 | `404 Not found - PUT <包名>` / `404 ... install from a tarball` | token 对该包无发布权（npm 故意 404 隐藏存在性）：检查 granular token 的 Packages and scopes 是否勾到该包、权限是否 Read and write |
 | 用户报 `ERR_PNPM_WORKSPACE_PKG_NOT_FOUND ... "@hyzyn/dsh-kit@workspace:*"` | 某包依赖残留 `workspace:*`：从 git 子路径安装必炸（npm 安装正常，因为 publish 期已转换）。改真实版本 + bump 受影响包重发；本地先跑 `node scripts/check-publishable.mjs` 确认 |
+| `check-kit-pins` 报「全仓出现 N 个不同的 kit 钉子」或「全仓钉子 X ≠ packages/kit 的版本 Y」 | 本轮的 bump 只跟了部分消费者。把点名的包改成本轮 kit 的精确版本、**同一轮一起发**（顺序照门槛 1：bump → `pnpm aggregate` → `pnpm install --lockfile-only`）。为什么不能只发一半：hoisted 布局下两份 kit 会让 `kit D11` 的模块级单例失效 |
 
 校验 token 身份（不泄露值）：
 

@@ -71,6 +71,14 @@ jobs:
       - name: Check DSH_HOME derivation lives only in kit
         if: matrix.os == 'ubuntu-latest'
         run: node scripts/check-dsh-home.mjs
+      # 防回归：@hyzyn/dsh-kit 的钉子必须在全仓一致、精确、且等于 packages/kit 的版本。
+      # kit 的跨插件一致性（授权存储 / 能力绑定，kit D11）靠**模块级单例**，而 pnpm 的
+      # hoisted 布局只能把一个版本提升到顶层、另一个嵌进消费者自己的 node_modules
+      # → 同一进程两份 kit = 两套单例，D11 的症状回来（一个卡片授了权、另一个仍报未授权）。
+      # 2026-09-27 的真机报告里树上就同时躺着两份（.modules.yaml 的 hoistedLocations 各占一行）
+      - name: Check dsh-kit pins are uniform and aligned
+        if: matrix.os == 'ubuntu-latest'
+        run: node scripts/check-kit-pins.mjs
       # 防回归：全仓 markdown 的相对链接要命中真实文件、锚点要命中真实标题。
       # 三层文档改造那几轮里这类问题真实发生过三次（死锚点 / 自指链接 / 搬家后少一级），
       # 而没有一次是测试发现的——仓库里唯一的文档耦合测试只读 codegraph 自己的两份文档。
