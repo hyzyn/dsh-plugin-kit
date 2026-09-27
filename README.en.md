@@ -143,7 +143,7 @@ dsh plugin --profile web add @hyzyn/dsh-tty       # Terminal panel
 dsh plugin --profile web add @hyzyn/dsh-docker    # Docker container panel
 ```
 
-Install failures / missing cards / HTTP 401 or 403 → [docs/troubleshooting.md](docs/troubleshooting.md).
+Install failures / missing cards / **every plugin gone** / HTTP 401 or 403 → [docs/troubleshooting.md](docs/troubleshooting.md).
 
 Install failures / missing cards / HTTP 401 or 403 → [docs/troubleshooting.md](docs/troubleshooting.md) (Chinese).
 
@@ -179,7 +179,7 @@ pure logic into modules) → [docs/conventions.md § Client half](docs/conventio
 | How the 12 packages cooperate, dependency direction, who writes which config file | [docs/architecture.md](docs/architecture.md) |
 | Naming / commits / doc layers / numbering / package anatomy | [docs/conventions.md](docs/conventions.md) |
 | Terminology (host half, managed block, TOFU, slot generations…) | [docs/glossary.md](docs/glossary.md) |
-| Install failures, missing cards, HTTP 401/403, known limits | [docs/troubleshooting.md](docs/troubleshooting.md) |
+| Install failures, missing cards, every plugin gone, HTTP 401/403, known limits | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | How to run real-machine tests, and what counts as passing | [docs/agent-real-test.md](docs/agent-real-test.md) |
 | The full design and acceptance criteria of a cross-package plan (bastion / elevation / i18n…) | `*-plan.md` and `i18n.md` under `docs/`, routed by the [conventions.md knowledge-ownership table](docs/conventions.md) |
 | Windows 11 test environment setup | [scripts/windows/README.md](scripts/windows/README.md) |

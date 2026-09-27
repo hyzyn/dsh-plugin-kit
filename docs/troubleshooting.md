@@ -26,6 +26,34 @@
 </details>
 
 <details>
+<summary><strong>装好的插件「整体消失」（卡片、插件行、工具全没了）？</strong></summary>
+
+这种症状**多半不是插件坏了，是 profile 的依赖树没了位置**：插件在 `import` 阶段就
+`Cannot find package`，根本没机会挂载——所以界面上连报错都看不到，只能看到「什么都没了」。
+判定入口因此不是插件代码，而是「依赖树还在不在 profile 里」。
+
+Windows 上的一种成因（真机现场）：profile 的 `node_modules` 被换成了一个指向**别处**的链接
+（那次指向盘根 `C:\`），原来那份完好的目录被改名成 `.ignored_node_modules`。三步自查与恢复：
+
+1. `cmd /c dir /AL "<profile 目录>"` —— 出现 `<JUNCTION> node_modules [C:\]` 之类的行就是它；
+2. `Test-Path "<profile 目录>\.ignored_node_modules"` —— `True` 说明那份完好的安装还在，只是被改了名；
+3. 恢复：**完全退出 DSH** → `cmd /c rmdir "<profile 目录>\node_modules"` 删掉那个链接 →
+   把 `.ignored_node_modules` 改回 `node_modules` → 重启宿主。插件随原样恢复，不需要重装。
+
+**必须用 `rmdir`**：`Remove-Item -Recurse`（以及任何会「展开链接」的复制 / 删除）会**顺着链接递归**，
+动的是链接目标里的东西——那次的目标就是盘根。同理，「复制 profile」也不能用会展开链接的复制。
+
+为什么这种损坏会波及整个目录：DSH 给 profile 选的 `nodeLinker: hoisted` 会把整棵依赖树**平铺**，
+而 pnpm 按 `realpath(profile/node_modules)` 算落点——一旦这一层是链接，树就铺进链接目标里，
+之后每次 `pnpm add` 都失败且只留下残骸。
+
+出处：2026-09-27 的故障报告（DSH 插件管理器把一个畸形 spec `\` 交给 pnpm；`\` 在 Windows 上被
+解析成盘根，链接随后落在 `node_modules` **自身**上）。那次的 bundle 声明 / entry 合成 / 版本兼容
+三层全部通过——**别先去插件代码里找原因**。
+
+</details>
+
+<details>
 <summary><strong>报 <code>duplicate loader entry id</code>？</strong></summary>
 
 多半是手工往 `~/.dsh/cordis.patch.yml` 加了**插件行**。删掉重复行——
@@ -123,6 +151,11 @@ dsh plugin --profile <p> allow-version <pkg@ver> --dsh-version <ver> --accept-ri
 - **Codegraph 的 MCP 托管**只对齐 codegraph 一个服务器的工作目录。DSH 的 MCP 客户端暂不声明
   roots，切换项目需在卡片「设为默认项目」或调用工具时传 `projectPath`。
 - **一台 codegraph MCP 服务器同一时刻只挂一个默认项目**，多项目是时分复用。
+- **一个宿主进程里只能解析出一份 `@hyzyn/dsh-kit`**：kit 的跨插件一致性（授权存储、能力绑定，
+  见 `kit D11`）靠**模块级单例**，而 pnpm 的 hoisted 布局只把一个版本提升到顶层、另一个嵌进
+  消费者自己的 `node_modules` → 两份 kit = 两套单例（一个卡片授了权、另一个仍报未授权）。
+  本仓同批发布时钉版一致（`scripts/check-kit-pins.mjs` 兜底），但**跨两次发布逐个升级**的用户
+  会撞上窗口期：升级请整组一起（`@hyzyn/dsh-all`）。
 - **Profile 删除是递归删除**，面板内二次确认，一旦执行不可撤销；内置 `web` 受保护，`headless` 可删。
 - **RSS 首次启动需要联网抓取**；某个源不可达不会阻塞其它源，但当天 digest 可能缺该源内容。
   AI 摘要依赖宿主已配置的模型，未配置或调用失败时条目回落原文截断。
