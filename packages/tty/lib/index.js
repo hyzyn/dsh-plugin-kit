@@ -17,7 +17,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 import { sanitizeJumpSpec, sanitizeProxyCommand, spawnSsh, sshTarget, expandHome, setCredentialResolver, setProxyCommandPolicy, validateJumpSpec, validateProxyCommand } from './ssh.js';
 import { sharedGrantStore, auditLoadedGrants, bindCapabilitySources, capabilityDeniedMessage, capabilityGrantAt, capabilityGrantVia, capabilityGranted, capabilityPaths, createElevationManager, } from '@hyzyn/dsh-kit';
 import { probeSsh } from './probe.js';
-import { buildCommandSpawn, buildShellSpawn, defaultShellPath } from './shell-integration.js';
+import { buildCommandSpawn, buildShellSpawn, commandShellHint, defaultShellPath } from './shell-integration.js';
 import { parseSshConfigDetailed } from './ssh-config.js';
 import { parseKnownHostsDetailed } from './known-hosts.js';
 import { TunnelManager } from './tunnels.js';
@@ -147,10 +147,10 @@ const DEFAULT_RECONNECT_GRACE_SEC = 120;
  *
  * - 时间上界对用户是**第二重惊喜**——「命令跑完 → 下一轮读结果」之间隔着人离开、
  *   模型排队，多久都有可能；一个到期就消失的输出比「要主动关」更难理解；
- * - 内存与句柄本来也不由时间决定：条数由 [`MAX_EXITED_SESSIONS`](#) 兜（8 条，
+ * - 内存与句柄本来也不由时间决定：条数由 [`MAX_EXITED_SESSIONS`](#) 兜（16 条，
  *   单条几百 KB~一两 MB），而「永久」还有一条天然上界——保留是**内存态**，
  *   宿主 / 插件重启即清空，不会跨天累积；
- * - 连续跑很多短命令时，淘汰节奏变成「超过 8 条按最旧淘汰」（`capExited`），
+ * - 连续跑很多短命令时，淘汰节奏变成「超过 16 条按最旧淘汰」（`capExited`），
  *   正是想要的语义：近的才有人读。
  *
  * 需要时间上界的人把这里改成任意毫秒数即可——`reapExited` 那条通路还在
@@ -4141,7 +4141,7 @@ const plugin = definePlugin({
                     })));
                     activeDisposers.push(tools.register(defineTool({
                         name: 'tty_open',
-                        description: '开一个新的终端会话（本地 shell，或 `command` 直接跑一条命令，如 dev server）。会话出现在用户的终端面板里、用户可见可接管，长驻进程与 watch 类任务应该用它（不要在 bash 工具里挂起等待）。开了之后用 tty_expect 等就绪信号、tty_capture{last:true} 拿结果；用完用 tty_close 关闭。`command` 按 **shell 语法整体**执行（`cd dir && cmd`、`a; b`、`for …; do …; done` 都可以，D78：旧版本里 `exec` 包装只跑第一条）；**它跑完退出后会话不会立刻消失**：会转成只读保留（留到显式关闭，最多留 8 条），退出前最后的输出与退出码都还能用 tty_capture / tty_screen 读——所以「跑一条会结束的命令、回头再取结果」不需要套一层 `sh`。cwd 缺省为插件配置的工作目录。',
+                        description: '开一个新的终端会话（本地 shell，或 `command` 直接跑一条命令，如 dev server）。会话出现在用户的终端面板里、用户可见可接管，长驻进程与 watch 类任务应该用它（不要在 bash 工具里挂起等待）。开了之后用 tty_expect 等就绪信号、tty_capture{last:true} 拿结果；用完用 tty_close 关闭。`command` 按 **宿主 shell 的语法整段执行**（D78：旧版本里 `exec` 包装只跑第一条）——POSIX shell 上 `cd dir && cmd`、`a; b`、`for …; do …; done` 都可以，**Windows 的 cmd / PowerShell 则按它们自己的语法**（当前执行命令的 shell 与语法见 systemPrompt 里的终端一行）；**它跑完退出后会话不会立刻消失**：会转成只读保留（留到显式关闭，最多留 16 条），退出前最后的输出与退出码都还能用 tty_capture / tty_screen 读——所以「跑一条会结束的命令、回头再取结果」不需要套一层 `sh`。cwd 缺省为插件配置的工作目录。',
                         parameters: {
                             cwd: { type: 'string', description: '工作目录（必须是已存在的绝对路径）；缺省用插件配置的 cwd' },
                             command: { type: 'string', description: '直接执行的命令（非交互）：按**整段 shell 代码**执行，`cd x && cmd`、`a; b`、管道、多行脚本都可以（D78）；给出时不做 tmux 持久化。省略或全空白 = 交互式 shell' },
@@ -4160,7 +4160,7 @@ const plugin = definePlugin({
                             },
                             render: (_args, value) => {
                                 const v = value;
-                                return [{ type: 'text', text: `已开终端会话 sid=${v.sid ?? '?'}${v.persist === true ? '（tmux 持久）' : ''}。它在用户的终端面板里可见；下一步可用 tty_send 执行命令、tty_expect 等就绪信号。` }];
+                                return [{ type: 'text', text: `已开终端会话 sid=${v.sid ?? '?'}${v.persist === true ? '（tmux 持久）' : ''}。它在用户的终端面板里可见；下一步可用 tty_send 执行命令、tty_expect 等就绪信号。\n${commandShellHint(live.shell)}` }];
                             },
                         },
                         async execute(args) {
@@ -4176,7 +4176,7 @@ const plugin = definePlugin({
                     })));
                     activeDisposers.push(tools.register(defineTool({
                         name: 'tty_close',
-                        description: '关闭一个由 tty_open 开的终端会话（结束其中的进程）。**只能关 agent 自己开的会话**：用户在面板里开的标签会被拒绝，请让用户自己在面板里关，不要越权结束用户正在用的终端。对**进程已退出但仍只读保留着**的会话同样可用——那就是它的释放入口（把屏与缓冲还回去）。只读保留默认留到显式关闭（宿主重启也会清空），不按时间释放；同时最多留 8 条，超出按最旧淘汰。',
+                        description: '关闭一个由 tty_open 开的终端会话（结束其中的进程）。**只能关 agent 自己开的会话**：用户在面板里开的标签会被拒绝，请让用户自己在面板里关，不要越权结束用户正在用的终端。对**进程已退出但仍只读保留着**的会话同样可用——那就是它的释放入口（把屏与缓冲还回去）。只读保留默认留到显式关闭（宿主重启也会清空），不按时间释放；同时最多留 16 条，超出按最旧淘汰。',
                         parameters: {
                             sid: { type: 'string', required: true, description: '会话 id（tty_open 或 tty_list 提供）' },
                         },
@@ -5090,16 +5090,19 @@ const plugin = definePlugin({
                         order: 150,
                         text: () => {
                             const list = sessions.list();
+                            // D78 补：本地命令的语法随宿主 shell 变（POSIX / cmd / PowerShell），
+                            // 而「Shell 路径」是热改的配置——所以这行每轮现算，不冻在工具描述里。
+                            const shellLine = commandShellHint(live.shell);
                             if (list.length === 0)
-                                return '当前没有终端面板会话（可用 tty_open 自己开一个，或引导用户打开「终端」面板）。';
+                                return `当前没有终端面板会话（可用 tty_open 自己开一个，或引导用户打开「终端」面板）。\n${shellLine}`;
                             // D77：只读保留态（进程已退出）**不能冒充活会话**——模型会以为那个长驻
                             // 任务还在跑、或者对它发命令。这里把两者分开：活会话逐条列，保留态压成
                             // 一行汇总（每轮 prompt 的增量是常数，不随条数线性膨胀）。
-                            const live = list.filter((s) => s.exited !== true);
+                            const alive = list.filter((s) => s.exited !== true);
                             const gone = list.filter((s) => s.exited === true);
-                            const head = live.length === 0
+                            const head = alive.length === 0
                                 ? '当前没有活着的终端面板会话。'
-                                : '当前活跃的终端面板会话（可用 tty_capture / tty_screen / tty_expect / tty_send 操作，用 tty_open / tty_close 开关，sid 如下）：\n' + live.map((s) => {
+                                : '当前活跃的终端面板会话（可用 tty_capture / tty_screen / tty_expect / tty_send 操作，用 tty_open / tty_close 开关，sid 如下）：\n' + alive.map((s) => {
                                     const where = s.kind === 'ssh' ? `ssh ${s.target}` : `pid=${String(s.pid ?? '?')} cwd=${s.cwd}`;
                                     const owner = s.owner === 'agent' ? ' [agent 开的]' : '';
                                     return `- sid=${s.sid} [${s.kind}]${owner}${s.persist === true ? ' [tmux 持久]' : ''} ${where} (最后活动 ${new Date(s.lastOutputAt).toLocaleTimeString()})`;
@@ -5110,7 +5113,7 @@ const plugin = definePlugin({
                                     const how = s.signal !== undefined ? `signal=${s.signal}` : s.exitCode === undefined ? '退出码未知' : `exitCode=${String(s.exitCode)}`;
                                     return `sid=${s.sid} (${how})`;
                                 }).join('、');
-                            return head + tail;
+                            return head + tail + '\n' + shellLine;
                         },
                     });
                     sectionDisposable = systemPrompt.section({ name: 'plugin:dsh-tty', order: 150, text: TTY_GUIDANCE });

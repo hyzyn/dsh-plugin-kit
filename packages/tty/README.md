@@ -104,7 +104,7 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
 | 工具 | 作用 |
 | --- | --- |
 | `tty_list` | 列出终端会话（sid / kind（local\|ssh）/ target / pid / **cwd 实时跟随 cd** / 活动时间；tmux 持久会话带 `persist` 标记；agent 自己开的带 `owner: 'agent'`）。**含进程已退出但仍在只读保留期内的会话**（`exited:true` + 退出码/信号，见下节） |
-| `tty_open` | **自己开一个终端会话**（0.20.0）：本地 shell，或 `command` 直接跑一条命令（dev server / watch；**按整段 shell 代码执行**——`cd x && cmd`、`a; b`、多行脚本都可以，且不受下面「命令标签单行 ≤2000」那条客户端约束，D78），`persistName` 可要 tmux 持久化。**开出来的会话出现在用户的终端面板里**（普通标签、用户可见可接管），不做隐形会话 |
+| `tty_open` | **自己开一个终端会话**（0.20.0）：本地 shell，或 `command` 直接跑一条命令（dev server / watch；**按宿主 shell 的语法整段执行**——POSIX shell 上 `cd x && cmd`、`a; b`、多行脚本都可以；**Windows 的 cmd / PowerShell 则按它们自己的语法**，当前 shell 与语法每轮都写在 systemPrompt 的终端一行里；不受下面「命令标签单行 ≤2000」那条客户端约束，D78），`persistName` 可要 tmux 持久化。**开出来的会话出现在用户的终端面板里**（普通标签、用户可见可接管），不做隐形会话 |
 | `tty_close` | 关掉一个由 `tty_open` 开的会话（0.20.0）。**只允许关 agent 自己开的**：用户在面板里开的标签会被拒绝——agent 不越权结束用户正在用的终端。对**已退出但仍只读保留着**的会话同样可用——那是它的释放入口（默认**保留到显式关闭**，不按时间释放） |
 | `tty_stats` | 读会话所在机器的实时指标（0.20.0）：CPU / 内存 / 磁盘 / TCP 连接数 / 网速 / 温度 / 在线时长。本地会话取宿主机；SSH 会话取那台远程主机（另开一段非 PTY 通道，不影响终端）。部署、压测前先看它 |
 | `tty_capture` | 读取近期输出（尾部 N 行，默认清洗 ANSI，`raw:true` 取原始流）；**`last:true` 只返回上一条已完成命令的输出 + 退出码**（shell 集成标记，见下节）；命令**在途**时（刚发送、完成标记未到）返回 `inProgress:true` 且不带旧结果——避免把上一条的输出当成这一条（0.19.0） |

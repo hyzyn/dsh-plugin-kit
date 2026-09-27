@@ -321,6 +321,33 @@ export function defaultShellPath(platform = process.platform, env = process.env)
  * `C:\Program Files\PowerShell\7\pwsh.exe` 会整串返回（没有 `/`），判定就漏了。
  * 两个分隔符一起切，任何平台上都对。
  */
+/**
+ * 本地「跑一条命令」时，**命令由哪个 shell 执行、按什么语法**（D78 补，2026-09-27 复核报告）。
+ *
+ * 为什么需要它：`command` 是整段交给宿主 shell 的（POSIX 分支 `exec <shell> -c`，Windows 分支
+ * `cmd /c` / `-Command` / `bash -c`），也就是**语法随宿主平台与「Shell 路径」设置变**。
+ * 只写「按整段 shell 代码执行、`a; b` 都可以」会误导模型：在 Windows 的 cmd 上，`;`、`for …; do`、
+ * `$?`、`$$`、单引号全都不是 cmd 语法——报告方就是在 Windows 上按 POSIX 语法复测，9 条全红。
+ *
+ * 文案要短（进 systemPrompt 每轮都出现），但必须点明「哪些不是这个 shell 的语法」。
+ */
+export function commandShellHint(shell, platform = process.platform) {
+    const name = shell.trim() === '' ? '(未配置)' : shell.trim();
+    if (platform !== 'win32') {
+        return `本地命令由 ${name} 执行：按 POSIX shell 语法（\`a; b\`、\`cd x && y\`、\`for …; do …; done\`、管道、单引号）`;
+    }
+    if (isPowerShellShell(name)) {
+        return `本地命令由 ${name} 执行：按 **PowerShell** 语法（\`;\` 分隔语句、\`$env:VAR\` 取环境变量、\`$(…)\` 子表达式；POSIX 的 \`&&\`、\`$?\`、单引号不是 PowerShell 5.1 的语法）`;
+    }
+    const kind = name.split(/[\\/]/).pop()?.toLowerCase() ?? '';
+    if (kind === 'bash.exe' || kind === 'bash' || kind === 'sh.exe' || kind === 'sh' || kind === 'zsh.exe' || kind === 'zsh') {
+        return `本地命令由 ${name} 执行：这是 POSIX shell，按 POSIX 语法（\`a; b\`、\`cd x && y\`、\`for …; do …; done\`）`;
+    }
+    if (kind === 'wsl.exe' || kind === 'wsl') {
+        return `本地命令由 ${name} 执行：命令经默认发行版的 \`sh -c\`，按 POSIX 语法`;
+    }
+    return `本地命令由 ${name} 执行：按 **cmd** 语法（\`&\` 顺序执行、\`&&\` 条件执行、\`|\` 管道、\`%VAR%\` 取环境变量；POSIX 的 \`;\`、\`for …; do\`、\`$?\`、\`$$\`、单引号都不是 cmd 语法）`;
+}
 export function isPowerShellShell(shell) {
     const kind = shell.split(/[\\/]/).pop()?.toLowerCase() ?? '';
     return kind === 'powershell' || kind === 'powershell.exe' || kind === 'pwsh' || kind === 'pwsh.exe';

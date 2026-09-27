@@ -34,6 +34,17 @@ export declare function defaultShellPath(platform?: NodeJS.Platform, env?: NodeJ
  * `C:\Program Files\PowerShell\7\pwsh.exe` 会整串返回（没有 `/`），判定就漏了。
  * 两个分隔符一起切，任何平台上都对。
  */
+/**
+ * 本地「跑一条命令」时，**命令由哪个 shell 执行、按什么语法**（D78 补，2026-09-27 复核报告）。
+ *
+ * 为什么需要它：`command` 是整段交给宿主 shell 的（POSIX 分支 `exec <shell> -c`，Windows 分支
+ * `cmd /c` / `-Command` / `bash -c`），也就是**语法随宿主平台与「Shell 路径」设置变**。
+ * 只写「按整段 shell 代码执行、`a; b` 都可以」会误导模型：在 Windows 的 cmd 上，`;`、`for …; do`、
+ * `$?`、`$$`、单引号全都不是 cmd 语法——报告方就是在 Windows 上按 POSIX 语法复测，9 条全红。
+ *
+ * 文案要短（进 systemPrompt 每轮都出现），但必须点明「哪些不是这个 shell 的语法」。
+ */
+export declare function commandShellHint(shell: string, platform?: NodeJS.Platform): string;
 export declare function isPowerShellShell(shell: string): boolean;
 export declare function buildShellSpawn(shell: string, term: string, colorTerm: string, integration: boolean, platform?: NodeJS.Platform): ShellSpawnPlan;
 /** POSIX 单引号安全包裹（路径/值进 inner.sh 与 -c 包装层用）。 */

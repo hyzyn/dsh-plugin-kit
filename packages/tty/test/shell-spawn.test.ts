@@ -17,6 +17,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
   buildCommandSpawn,
   buildShellSpawn,
+  commandShellHint,
   defaultShellPath,
   isPowerShellShell,
 } from '../src/shell-integration.js'
@@ -183,6 +184,26 @@ describe('POSIX 分支回归（改动不能碰现有的 zsh/bash 路径）', () 
     )
     const multiline = buildCommandSpawn('/bin/zsh', 'xterm-256color', 'truecolor', 'echo A\necho B', 'darwin')
     expect(String(multiline.argv[2])).toContain("exec '/bin/zsh' -c 'echo A\necho B'")
+  })
+
+  it('命令语法提示随宿主 shell 变（D78 补：Windows 上无条件说 POSIX 语法会误导模型）', () => {
+    const posix = commandShellHint('/bin/zsh', 'darwin')
+    expect(posix).toContain('/bin/zsh')
+    expect(posix).toContain('POSIX')
+    expect(commandShellHint('   ', 'darwin')).toContain('(未配置)')
+
+    const cmd = commandShellHint('C:\\WINDOWS\\system32\\cmd.exe', 'win32')
+    expect(cmd).toContain('cmd')
+    expect(cmd).toContain('%VAR%')
+    // 必须明确否定 POSIX 那几样——报告方就是在 Windows 上按 POSIX 语法复测，9 条全红
+    expect(cmd).toContain('不是 cmd 语法')
+
+    const pwsh = commandShellHint('C:\\Program Files\\PowerShell\\7\\pwsh.exe', 'win32')
+    expect(pwsh).toContain('PowerShell')
+    expect(pwsh).toContain('$env:VAR')
+
+    expect(commandShellHint('C:\\Program Files\\Git\\bin\\bash.exe', 'win32')).toContain('POSIX')
+    expect(commandShellHint('C:\\Windows\\System32\\wsl.exe', 'win32')).toContain('sh -c')
   })
 
   it('Windows 四个分支都不带 exec（跨平台一致：复合命令在那边本来就完整执行，D78）', () => {
