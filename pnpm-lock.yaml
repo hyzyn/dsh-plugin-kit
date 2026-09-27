@@ -15,34 +15,34 @@ importers:
         specifier: link:scripts/dsh-peer-stub
         version: link:scripts/dsh-peer-stub
       '@hyzyn/dsh-codegraph':
-        specifier: 0.5.2
+        specifier: 0.6.0-rc.1
         version: link:packages/codegraph
       '@hyzyn/dsh-docker':
-        specifier: 0.8.1
+        specifier: 0.9.0-rc.1
         version: link:packages/docker
       '@hyzyn/dsh-env':
-        specifier: 0.2.7
+        specifier: 0.3.0-rc.1
         version: link:packages/env
       '@hyzyn/dsh-kit-settings':
-        specifier: 0.1.1
+        specifier: 0.2.0-rc.1
         version: link:packages/kit-settings
       '@hyzyn/dsh-mcp':
-        specifier: 0.1.15
+        specifier: 0.2.0-rc.1
         version: link:packages/mcp
       '@hyzyn/dsh-profile':
-        specifier: 0.1.13
+        specifier: 0.2.0-rc.1
         version: link:packages/profile
       '@hyzyn/dsh-prompt':
-        specifier: 0.1.13
+        specifier: 0.2.0-rc.1
         version: link:packages/prompt
       '@hyzyn/dsh-rss':
-        specifier: 0.3.6
+        specifier: 0.4.0-rc.1
         version: link:packages/rss
       '@hyzyn/dsh-search':
-        specifier: 0.3.6
+        specifier: 0.4.0-rc.1
         version: link:packages/search
       '@hyzyn/dsh-tty':
-        specifier: 0.21.0
+        specifier: 0.22.0-rc.1
         version: link:packages/tty
     devDependencies:
       typescript:
@@ -58,34 +58,34 @@ importers:
         specifier: link:../../scripts/dsh-peer-stub
         version: link:../../scripts/dsh-peer-stub
       '@hyzyn/dsh-codegraph':
-        specifier: 0.5.2
+        specifier: 0.6.0-rc.1
         version: link:../codegraph
       '@hyzyn/dsh-docker':
-        specifier: 0.8.1
+        specifier: 0.9.0-rc.1
         version: link:../docker
       '@hyzyn/dsh-env':
-        specifier: 0.2.7
+        specifier: 0.3.0-rc.1
         version: link:../env
       '@hyzyn/dsh-kit-settings':
-        specifier: 0.1.1
+        specifier: 0.2.0-rc.1
         version: link:../kit-settings
       '@hyzyn/dsh-mcp':
-        specifier: 0.1.15
+        specifier: 0.2.0-rc.1
         version: link:../mcp
       '@hyzyn/dsh-profile':
-        specifier: 0.1.13
+        specifier: 0.2.0-rc.1
         version: link:../profile
       '@hyzyn/dsh-prompt':
-        specifier: 0.1.13
+        specifier: 0.2.0-rc.1
         version: link:../prompt
       '@hyzyn/dsh-rss':
-        specifier: 0.3.6
+        specifier: 0.4.0-rc.1
         version: link:../rss
       '@hyzyn/dsh-search':
-        specifier: 0.3.6
+        specifier: 0.4.0-rc.1
         version: link:../search
       '@hyzyn/dsh-tty':
-        specifier: 0.21.0
+        specifier: 0.22.0-rc.1
         version: link:../tty
     devDependencies:
       '@deepseek-ai/cordis':
@@ -104,7 +104,7 @@ importers:
         specifier: ^3.18.4
         version: 3.18.4
       '@hyzyn/dsh-kit':
-        specifier: 0.4.2
+        specifier: 0.5.0-rc.1
         version: link:../kit
       js-yaml:
         specifier: ^4.1.0
@@ -135,7 +135,7 @@ importers:
         specifier: ^3.18.4
         version: 3.18.4
       '@hyzyn/dsh-kit':
-        specifier: 0.4.2
+        specifier: 0.5.0-rc.1
         version: link:../kit
       ssh2:
         specifier: ^1.17.0
@@ -172,7 +172,7 @@ importers:
         specifier: ^3.18.4
         version: 3.18.4
       '@hyzyn/dsh-kit':
-        specifier: 0.4.2
+        specifier: 0.5.0-rc.1
         version: link:../kit
       js-yaml:
         specifier: ^4.1.0
@@ -232,7 +232,7 @@ importers:
         specifier: ^3.18.4
         version: 3.18.4
       '@hyzyn/dsh-kit':
-        specifier: 0.4.2
+        specifier: 0.5.0-rc.1
         version: link:../kit
       js-yaml:
         specifier: ^4.1.0
@@ -260,7 +260,7 @@ importers:
         specifier: ^3.18.4
         version: 3.18.4
       '@hyzyn/dsh-kit':
-        specifier: 0.4.2
+        specifier: 0.5.0-rc.1
         version: link:../kit
     devDependencies:
       '@deepseek-ai/cordis':
@@ -285,7 +285,7 @@ importers:
         specifier: ^3.18.4
         version: 3.18.4
       '@hyzyn/dsh-kit':
-        specifier: 0.4.2
+        specifier: 0.5.0-rc.1
         version: link:../kit
       js-yaml:
         specifier: ^4.1.0
@@ -313,7 +313,7 @@ importers:
         specifier: ^3.18.4
         version: 3.18.4
       '@hyzyn/dsh-kit':
-        specifier: 0.4.2
+        specifier: 0.5.0-rc.1
         version: link:../kit
     devDependencies:
       '@deepseek-ai/cordis':
@@ -335,7 +335,7 @@ importers:
         specifier: link:../../scripts/dsh-peer-stub
         version: link:../../scripts/dsh-peer-stub
       '@hyzyn/dsh-kit':
-        specifier: 0.4.2
+        specifier: 0.5.0-rc.1
         version: link:../kit
       js-yaml:
         specifier: ^4.1.0
@@ -360,7 +360,7 @@ importers:
         specifier: ^3.18.4
         version: 3.18.4
       '@hyzyn/dsh-kit':
-        specifier: 0.4.2
+        specifier: 0.5.0-rc.1
         version: link:../kit
       '@xterm/headless':
         specifier: ^5.5.0
