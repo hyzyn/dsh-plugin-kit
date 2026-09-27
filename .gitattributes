@@ -1,0 +1,16 @@
+# 行尾统一 LF（含 Windows 检出）。这不是风格洁癖，是 2026-09-27 CI 实测出来的两条硬约束：
+#
+#   1. **带 shebang 的 .mjs 一旦是 CRLF，vitest / esbuild 的变换就抛
+#      `SyntaxError: Invalid or unexpected token`**，于是 import 它的测试套件在 windows-latest 上
+#      **整份加载失败**。本仓 scripts/ 下有一批 `#!/usr/bin/env node` 的脚本，其中
+#      `scripts/defects-table.mjs` 与 `scripts/check-i18n.mjs` 会被 scripts/test 下的套件 import
+#      ——那两条腿就是这么红的（本地把文件转成 CRLF 可复现，转回 LF 即绿）。
+#   2. 本仓大量测试**以文本读仓库文件再做逐字 / 逐行断言**（台账、文档、i18n 目录、docs-index）。
+#      CRLF 会让这些断言在 Windows 上假红，而假红比真红难发现。
+#
+# `text=auto eol=lf`：git 判定为文本的文件，检出即 LF（该属性优先于 core.autocrlf）。
+* text=auto eol=lf
+# 二进制产物不要当文本处理（docs/ 有 24 张 PNG；packages/dist 有历史 tgz）
+*.png binary
+*.jpg binary
+*.tgz binary

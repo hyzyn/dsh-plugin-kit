@@ -268,10 +268,17 @@ export function readDocsInputs(repoRoot = REPO_ROOT) {
   const docs = readdirSync(join(repoRoot, DOCS_DIR))
     .filter((name) => name.endsWith('.md'))
     .sort()
+  /*
+   * 行尾归一：本守卫的判据与单测 fixture 都是**按行**写的（`\n## 待办\n` 这种字面替换最典型），
+   * 而 Windows 检出（或 `core.autocrlf`）会给文件 CRLF——不归一的话，守卫在那种工作区里
+   * 会因为「匹配不上」而假红（2026-09-27 CI 实测：docs-index 那条 fixture 就是这么红的）。
+   * 仓库根另有 `.gitattributes`（`* text=auto eol=lf`）从检出侧堵住；这里是代码侧的第二道。
+   */
+  const readNormalized = (rel) => readFileSync(join(repoRoot, rel), 'utf8').replace(/\r\n/g, '\n')
   return {
     docs,
-    conventions: readFileSync(join(repoRoot, CONVENTIONS_PATH), 'utf8'),
-    roadmap: readFileSync(join(repoRoot, ROADMAP_PATH), 'utf8'),
+    conventions: readNormalized(CONVENTIONS_PATH),
+    roadmap: readNormalized(ROADMAP_PATH),
   }
 }
 

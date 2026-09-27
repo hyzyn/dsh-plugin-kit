@@ -255,7 +255,12 @@ describe('/elevate：提权全流程', () => {
     expect(begun.status).toBe(200)
     expect(begun.json.status).toBe('pending')
     const command = String(begun.json.command)
-    expect(command.startsWith('touch ')).toBe(true)
+    /*
+     * 命令形状按**宿主平台**二选一（POSIX `touch '<path>'` / Windows
+     * `powershell -NoProfile -Command "New-Item …"`）：只断言 'touch ' 会在 windows-latest 上红
+     * ——那条腿真的跑到过（2026-09-27 CI）。路径抠取不受影响：两种形状里被单引号包住的都只有路径。
+     */
+    expect(process.platform === 'win32' ? command.startsWith('powershell ') : command.startsWith('touch ')).toBe(true)
     const path = command.slice(command.indexOf("'") + 1, command.lastIndexOf("'"))
     expect(
       (await h.call('/api/dsh-docker/elevate/status', 'POST', { capability: 'allowMutations' })).json.status,
@@ -324,7 +329,8 @@ describe('/elevate：提权全流程', () => {
     expect(begun.json.command).toBeTypeOf('string')
     const status = await h.call('/api/dsh-docker/elevate/status', 'POST', { capability: 'allowExec' })
     expect(status.json).toEqual({ status: 'pending', expiresAt: expect.any(Number) })
-    expect(JSON.stringify(status.json)).not.toContain('touch')
+    // 命令里的平台标记也不许出现在状态里（上面那条全等断言已经更强，这条是补充）
+    expect(JSON.stringify(status.json)).not.toContain(process.platform === 'win32' ? 'New-Item' : 'touch')
   })
 
   it('限流：新建三次之后 429（幂等复用不算额度）', async () => {

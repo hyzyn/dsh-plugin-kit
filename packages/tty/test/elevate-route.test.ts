@@ -159,7 +159,8 @@ async function until(check: () => Promise<boolean>, timeoutMs = 6_000): Promise<
   }
 }
 
-/** 把确认命令里的路径抠出来（命令形如 `touch '<path>'`）。 */
+/** 把确认命令里的路径抠出来（POSIX 形如 `touch '<path>'`，Windows 形如
+ *  `powershell … "New-Item -ItemType File -Force '<path>' | Out-Null"`——两种形状里被单引号包住的都只有路径）。 */
 function pathOf(command: string): string {
   return command.slice(command.indexOf("'") + 1, command.lastIndexOf("'"))
 }
@@ -223,7 +224,9 @@ describe('/elevate：提权全流程', () => {
     expect(begun.status).toBe(200)
     expect(begun.json.status).toBe('pending')
     const command = String(begun.json.command)
-    expect(command.startsWith('touch ')).toBe(true)
+    // 命令形状按宿主平台二选一（POSIX `touch` / Windows PowerShell `New-Item`）：
+    // 只断言 'touch ' 会在 windows-latest 上红（2026-09-27 CI 实测）
+    expect(process.platform === 'win32' ? command.startsWith('powershell ') : command.startsWith('touch ')).toBe(true)
     const path = pathOf(command)
     expect((await h.call('/status', 'POST', { capability: ENV })).json.status).toBe('pending')
 

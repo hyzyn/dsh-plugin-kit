@@ -76,6 +76,18 @@ describe('docs-index：现算（唯一真值来源）', () => {
     expect(VERSION_SUFFIX_ALLOWLIST.length, '改名后例外应当已被清掉').toBe(0)
     expect(real.conventions, '命名规范里要写「同一主题只允许一份活文档」').toMatch(/同一主题只允许一份活文档/)
   })
+
+  it('CRLF 输入照样判对（Windows 检出 / core.autocrlf 不该让守卫假红）', () => {
+    /*
+     * 2026-09-27 CI 实测：windows-latest 上的 docs-index 套件报「fixture 替换没匹配上：
+     * \n## 待办\n」——因为那边的工作区是 CRLF，而 fixture 是按 `\n` 写字面量的。
+     * 两道防线：仓库根 `.gitattributes` 强制 LF（检出侧），`readDocsInputs` 再做一次归一（代码侧）。
+     * 这条用例钉的是**判据本身对 CRLF 免疫**：直接把 CRLF 文本喂给两个 checker，必须全绿。
+     */
+    const crlf = (text) => text.replace(/\n/g, '\r\n')
+    expect(checkDocsRegistration({ docs: real.docs, conventions: crlf(real.conventions) })).toEqual([])
+    expect(checkRoadmapStatus({ roadmap: crlf(real.roadmap) })).toEqual([])
+  })
 })
 
 describe('反例 1：文档没被登记 → 必须报出来', () => {
