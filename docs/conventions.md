@@ -37,7 +37,7 @@
 | 包特有的深层设计 / API | L1 `packages/<pkg>/docs/`（仅需要时建） |
 | **已完成批次 / 设计方案的冻结记录** | L1 `packages/<pkg>/docs/`（设计方案，例：[codegraph/docs/p0-plan.md](../packages/codegraph/docs/p0-plan.md)——首行即标「已实现」，**不是活待办**）；**指针表**在各包 `DEFECTS.md` §4「冻结记录」，检索方式 `git show <sha>:<path>` |
 | **入库产物与 CI 产物闸门** | L0 [docs/conventions.md § 真机脚本与 CI 接线](./conventions.md#真机脚本与-ci-接线) |
-| **提 issue 的格式约束**（表单字段 / 自查结果 / 空白 issue 已关闭） | L0 [`.github/ISSUE_TEMPLATE/`](../.github/ISSUE_TEMPLATE/)（两张表单是**字段真相**）+ 本文 [§ Issue](./conventions.md#issue提-issue-的格式约束)（规矩）。字段与 [troubleshooting.md 的通用顺序](./troubleshooting.md#通用顺序)一一对应 |
+| **提 issue 的格式约束**（表单字段 / 自查结果 / 空白 issue 已关闭） | L0 [`.github/ISSUE_TEMPLATE/`](../.github/ISSUE_TEMPLATE/)（两张表单是**字段真相**）+ 本文 [§ Issue](./conventions.md#issue提-issue-的格式约束)（规矩）。字段与 [troubleshooting.md 的通用顺序](./troubleshooting.md#通用顺序)一一对应；schema 与表单内链接的闸门是 [`scripts/check-issue-forms.mjs`](../scripts/check-issue-forms.mjs) |
 | **投稿材料**（面向 DSH 插件市场） | L0 [`docs/pr-body-dsh-market.md`](./pr-body-dsh-market.md)（**提给市场仓库的 PR 正文**，其相对链接指向目标仓库）与 [`docs/community-submission.json`](./community-submission.json)（提交载荷）。两者都是**对外投稿物**，不是本仓架构 / 规范；**保留原路径**——`community-submission.json` 可能被市场按 `@main/docs/` URL 取 |
 
 ### L0 / L1 的边界判据
@@ -186,10 +186,11 @@
 5. **给用户的信息与给维护者的约定要分开**。`报告 #N`（见上文[编号规范](#编号规范)第 6 条）
    是**维护者侧**的台账引用规则：提 issue 的人对它无法采取任何行动，写在表单上只会让人困惑
    「我要做什么吗」。这类约定只留在本文，不进表单；反向也一样——表单不承载仓库内部流程。
-6. **改表单本身就是改 L0 资产**（它决定所有未来 issue 的字段）。字段增删后必须同步：
-   本表的「提 issue 的格式约束」行、本文这一节、以及 [`README.md` 的参与贡献](../README.md#参与贡献)
-   入口说明；表单里指向仓库文件的链接要真实存在——`node scripts/check-doc-links.mjs` **只扫
-   markdown**，`.yml` 里的死链没有任何闸门会红，只能靠人守。
+6. **改表单本身就是改 L0 资产**（它决定所有未来 issue 的字段）。schema 与表单里指向仓库
+   文件的链接由 [`scripts/check-issue-forms.mjs`](../scripts/check-issue-forms.mjs) 守着
+   （CI 必跑，含 `--self-test`）；要**靠人守**的只剩文档散文三处：本表的「提 issue 的格式
+   约束」行、本文这一节、[`README.md` 的参与贡献](../README.md#参与贡献)入口说明——表格是
+   散文不是索引，硬绑机器判据只会制造误报（这个取舍写在闸门文件头的「已知边界」里）。
 
 ## 插件包解剖
 

@@ -85,6 +85,15 @@ jobs:
       - name: Check doc links and anchors
         if: matrix.os == 'ubuntu-latest'
         run: node scripts/check-doc-links.mjs
+      # 防回归：.github/ISSUE_TEMPLATE 的表单一旦 schema 破（重复 id / label 撞车 / 缩进错），
+      # GitHub 只是在 issue 选择器里**不显示这张表**——没有任何东西会红；表单里指向仓库文档的
+      # 链接同理（check-doc-links 只扫 markdown，不扫 yml）；config.yml 被删或
+      # blank_issues_enabled 被改回，空白 issue 入口会悄悄回来。自检先跑（判据被改坏比没有闸门更糟）。
+      - name: Check issue forms
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          node scripts/check-issue-forms.mjs --self-test
+          node scripts/check-issue-forms.mjs
       # 防回归：面板端 i18n 的目录（zh/en）必须键集一致、占位符一致，且代码里 t('…')
       # 用到的键全都有定义——第三条是主要理由：写错一个字母只会让界面露出键名，
       # 没有任何测试会红。自检先跑（闸门自身的判据也要有反例）。
