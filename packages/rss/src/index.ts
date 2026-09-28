@@ -258,6 +258,16 @@ const DEFAULT_MAX_ITEMS_PER_SOURCE = 5
 const DEFAULT_MAX_TOTAL_ITEMS = 30
 const DEFAULT_DAILY_TIME = '08:00'
 const DEFAULT_TIMEOUT_MS = 10_000
+/**
+ * 全源抓取失败后的退避重试：`base × 2^(次数-1)`，上限 `MAX_DELAY`，最多 `MAX_ATTEMPTS` 次。
+ *
+ * 为什么必须有：全源失败不再落盘，而调度只在 `dailyTime` 那一分钟触发，没有这一手的话
+ * 「挂载时弱网失败」要等到明天同一分钟才再试。上限既让瞬态故障当天补上，又不会对必然
+ * 失败的源整天反复抓；systemPrompt 的文案也据此写明「最多几次」。
+ */
+const RETRY_BASE_MS = 10 * 60_000
+const RETRY_MAX_DELAY_MS = 60 * 60_000
+const RETRY_MAX_ATTEMPTS = 6
 const DEFAULT_USER_AGENT = 'Mozilla/5.0 (compatible; dsh-rss-digest/0.1; +https://github.com/hyzyn/dsh-plugin-kit)'
 
 const DEFAULT_AI_MAX_ITEMS = 20
@@ -1572,7 +1582,7 @@ export function buildSystemPromptText(digest: DigestResult | null): string {
   if (digest.items.length === 0 && digest.errors.length > 0) {
     // 全源失败（本次未落盘）：绝不写成「已生成，但暂无新条目」——那会把网络故障
     // 说成「今天没有新闻」，模型据此回答用户就成了假消息。
-    return `本机已安装 rss-digest 插件（RSS / 新闻聚合）。${digest.date} 的「今日值得读」本次未能生成：${String(digest.errors.length)} 个订阅源全部抓取失败（多为网络问题）。宿主会按退避自动重试；也可在 Web GUI 设置 → 插件 →「RSS / 新闻聚合」里手动刷新。`
+    return `本机已安装 rss-digest 插件（RSS / 新闻聚合）。${digest.date} 的「今日值得读」本次未能生成：${String(digest.errors.length)} 个订阅源全部抓取失败（多为网络问题）。宿主会按退避自动重试（最多 ${String(RETRY_MAX_ATTEMPTS)} 次）；也可在 Web GUI 设置 → 插件 →「RSS / 新闻聚合」里手动刷新。`
   }
   if (digest.items.length === 0) {
     return `本机已安装 rss-digest 插件（RSS / 新闻聚合）。${digest.date} 的「今日值得读」已生成，但暂无新条目。`
@@ -1646,18 +1656,11 @@ export function apply(ctx: Context, config?: Config): void {
     }
   }
 
-  /**
-   * 抓取失败的退避重试状态（见 refresh / 调度器）。
-   *
-   * 为什么必须有：全源失败不再落盘，而 rss 的调度只在 `dailyTime` 那一分钟触发，
-   * 没有这一手的话「挂载时弱网失败」要等到明天同一分钟才会再试。退避 + 次数上限
-   * 让瞬态故障当天就能补上，又不会对必然失败的源整天反复抓。
-   */
-  const RETRY_BASE_MS = 10 * 60_000
-  const RETRY_MAX_DELAY_MS = 60 * 60_000
-  const RETRY_MAX_ATTEMPTS = 6
+  // 退避重试状态（见 refresh / 调度器）：常数在模块级，systemPrompt 文案要引用上限值
   let retryAttempts = 0
   let retryAt: number | null = null
+  /** 退避计数所属的日期：跨天重置，免得昨天的 6 次把今天也锁死。 */
+  let retryDate: string | null = null
 
   const refresh = async (force: boolean) => {
     try {
@@ -1665,6 +1668,13 @@ export function apply(ctx: Context, config?: Config): void {
       // 全源失败（generateDigest 不落盘那次）排一次退避重试：调度器原本只在
       // dailyTime 那一分钟触发，不补这一手的话当天就再也不会重试了。
       if (latest.items.length === 0 && latest.errors.length > 0) {
+        // 跨天重置：retryAttempts 活在插件实例里，不重置的话「昨天用尽 6 次」会让
+        // 今天的失败一次都不重试——而下文那句「会按退避自动重试」就成了空头承诺
+        const today = todayKey()
+        if (retryDate !== today) {
+          retryDate = today
+          retryAttempts = 0
+        }
         retryAttempts += 1
         retryAt = retryAttempts <= RETRY_MAX_ATTEMPTS
           ? Date.now() + Math.min(RETRY_BASE_MS * 2 ** (retryAttempts - 1), RETRY_MAX_DELAY_MS)

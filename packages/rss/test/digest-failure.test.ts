@@ -116,6 +116,8 @@ describe('systemPrompt 文案：失败 ≠ 没有新条目', () => {
     })
     expect(text).toContain('未能生成')
     expect(text).toContain('全部抓取失败')
+    // 承诺要写实：退避重试有次数上限，文案不能只说「会自动重试」（6 次用尽当天就放弃）
+    expect(text).toContain('最多 6 次')
     expect(text).not.toContain('暂无新条目')
   })
 

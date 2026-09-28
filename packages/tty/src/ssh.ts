@@ -472,7 +472,8 @@ const JUMP_CHANNEL_TIMEOUT_MS = 15_000
  * 和真的没装分开；轮数封顶（spawn 路径是同步等的，不能无限等）。
  */
 const REMOTE_TMUX_PROBE_TIMEOUT_MS = 10_000
-const REMOTE_TMUX_PROBE_ROUNDS = 2
+/** 补探**次数**上限（不是总轮数）：1 = 首探 + 补探一次，同步最坏 2×10s。 */
+const REMOTE_TMUX_PROBE_ROUNDS = 1
 
 /**
  * 拨跳板机并借一条 `forwardOut` 通道（ProxyJump 单跳）。
@@ -1232,6 +1233,13 @@ export async function spawnSsh(spec: SshSpec, options: SshSpawnOptions): Promise
       // 或链路慢说成了确定结论，用户显式要的持久化就此被瞬时状况关掉。
       let proceeded = false
       let rounds = 0
+      /**
+       * 探测世代号（D82 复查）：补探会**再开一条 channel**，而旧 channel 的 listener
+       * 不摘——它迟到的 `close` / `exit` 会替新一轮结算，白耗一轮补探（补探只要一次时，
+       * 更会把还在飞的那次探测直接判成降级，正好抵消 D82 要修的东西）。每轮领一个号，
+       * 事件回调先对号：不是当前世代就丢掉。
+       */
+      let generation = 0
       /** 本轮探测的兜底计时器：结算时清掉，免得上一轮的 10s 计时器误判下一轮。 */
       let timer: ReturnType<typeof setTimeout> | undefined
       const clearTimer = (): void => {
@@ -1266,17 +1274,23 @@ export async function spawnSsh(spec: SshSpec, options: SshSpawnOptions): Promise
           : '远程 tmux 不可用（未安装），本次以普通会话连接；安装 tmux 后持久会话可跨断线/宿主重启恢复')
       }
       const probe = (): void => {
+        const mine = ++generation
+        /** 只让**当前世代**的事件参与结算；旧 channel 的迟到事件直接丢掉。 */
+        const settleRound = (code: number | null): void => {
+          if (mine !== generation) return
+          settle(code)
+        }
         conn.exec('command -v tmux >/dev/null 2>&1', (error, stream) => {
           if (error !== undefined && error !== null) {
             // channel 都打不开（远端并发上限 / 瞬态拒绝）同样属「没探明白」
-            settle(null)
+            settleRound(null)
             return
           }
-          stream.on('exit', (c: number | null) => { settle(typeof c === 'number' ? c : null) })
+          stream.on('exit', (c: number | null) => { settleRound(typeof c === 'number' ? c : null) })
           // 只有 close、没有 exit（个别 sshd 实现）：同样是「没探明白」，不是「没有 tmux」
-          stream.on('close', () => { settle(null) })
-          stream.on('error', () => { settle(null) })
-          timer = setTimeout(() => { settle(null) }, REMOTE_TMUX_PROBE_TIMEOUT_MS)
+          stream.on('close', () => { settleRound(null) })
+          stream.on('error', () => { settleRound(null) })
+          timer = setTimeout(() => { settleRound(null) }, REMOTE_TMUX_PROBE_TIMEOUT_MS)
           timer.unref?.()
         })
       }
