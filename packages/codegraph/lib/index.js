@@ -24,8 +24,25 @@ const MAX_BUFFER = 20 * 1024 * 1024;
 const DEFAULT_CLI_TIMEOUT_MS = 60_000;
 /** 索引类命令的默认超时：全量重建在大仓库上远超查询档。 */
 const DEFAULT_INDEX_TIMEOUT_MS = 600_000;
-/** CLI 可用性探测的超时（毫秒）：只决定要不要注入提示词，慢/挂住一律当不可用。 */
+/**
+ * CLI 可用性探测的**单次尝试**超时（毫秒）。
+ *
+ * 它不是用户可调的档位（CG65）：探测只决定要不要注入 systemPrompt 文案， ENOENT 这类
+ * 确定性失败本来就在几百毫秒内返回，调大这个值救不了任何场景；而「宿主启动争抢把
+ * 单次探测拖过 5s」（外部 issue：空闲实测 ~200ms 的命令在 60–80 个并发 spawn 下打穿
+ * 5s）靠的是下面的**重试梯子**，不是把一次超时膨胀到更大的数——那是在猜一个猜不准
+ * 的上界。也不复用 `cliTimeoutMs`：那是查询调用的档位，用户为排障把它调小会连带
+ * 把探测重新变回「启动期必超时」。
+ */
 const CLI_PROBE_TIMEOUT_MS = 5_000;
+/**
+ * 探测超时（「不确定」失败）后的自动重试延迟（毫秒），梯子长度即重试次数上限（CG65）。
+ *
+ * 为什么只对超时重试：ENOENT / 非零退出是**确定性**失败，重试只会空转；超时则是
+ * 「命令可能只是还没轮到 CPU」——等一会儿再探，空闲机器 200ms 的命令就能落地，
+ * 公告随之注入，无需用户手动「重新探测」、更无需重启宿主。重试全程异步，不碰挂载路径。
+ */
+const PROBE_RETRY_DELAYS_MS = [10_000, 30_000];
 /**
  * 运行时 Config schema——DSH ≥0.1.7 起它**同时就是本插件的 settings 存储**：
  * `settings.describe()` 读的就是它解析出的值，`settings.update(entryId, patch)` 把
@@ -1636,21 +1653,28 @@ const CLI_PROBE_ERROR_MAX = 600;
  *
  * 只用于 systemPrompt 门禁：`command` 指向的 CLI 不存在时，不该向模型宣告
  * 「本机已安装 Codegraph 插件 / 可以用 codegraph 工具」——那是让模型去撞必然
- * 失败的调用。任何失败（ENOENT / 非零退出 / 超时）都按不可用处理，且不影响
- * 卡片的其它功能（路由会把真实报错显示出来）。
+ * 失败的调用。确定性失败（ENOENT / 非零退出 / cmd.exe 报错）按不可用处理，且
+ * 不影响卡片的其它功能（路由会把真实报错显示出来）。
+ *
+ * 超时**不**在此判死（CG65）：启动争抢能把空闲 200ms 的命令拖过任何单次超时
+ * （外部 issue 实测），超时只说明「这次没探明白」——结果带 `inconclusive: true`
+ * 回去，由调用方按重试梯子补探。
  *
  * 但**为什么失败**必须带出去：报告里那次排障之所以要翻注册表、比对进程环境，
  * 就是因为卡片只说「探测不到」，而 `spawn codegraph ENOENT` 这句话被打进黑洞。
  */
-async function probeCli(command) {
+async function probeCli(command, timeoutMs = CLI_PROBE_TIMEOUT_MS) {
     const at = Date.now();
     try {
-        await runCodegraph(command, ['--version'], process.cwd(), CLI_PROBE_TIMEOUT_MS);
+        await runCodegraph(command, ['--version'], process.cwd(), timeoutMs);
         return { ok: true, at };
     }
     catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return { ok: false, error: message.slice(0, CLI_PROBE_ERROR_MAX), at };
+        const timedOut = error?.timedOut === true;
+        return timedOut
+            ? { ok: false, error: message.slice(0, CLI_PROBE_ERROR_MAX), at, inconclusive: true }
+            : { ok: false, error: message.slice(0, CLI_PROBE_ERROR_MAX), at };
     }
 }
 /**
@@ -3071,7 +3095,7 @@ In repositories indexed by CodeGraph — a \`.codegraph/\` directory with an ind
 const plugin = definePlugin({
     name: 'codegraph',
     inject: [],
-    apply(ctx, rawConfig) {
+    apply(ctx, rawConfig, tuning) {
         // settings 可写字段已标 volatile：schema 解析后 `config.<字段>` 是冻结引用
         // `{ get() }` 而不是值本身。先还原成纯数据，后续所有读取按普通值处理。
         const config = plainConfig((rawConfig ?? {}));
@@ -3385,19 +3409,67 @@ const plugin = definePlugin({
             usageDisposer = setSection(usageDisposer, ready && usage && indexed, (api) => api.section({ name: 'plugin:dsh-codegraph:usage', order: 151, text: codegraphUsageGuidance(command) }));
         };
         let probeInFlight;
+        /**
+         * 探测调度（CG65）：超时是「没探明白」——available 落回 undefined（未落地态）
+         * 并按重试梯子自动补探；确定性失败（ENOENT / 非零退出）立即判死，重试无意义。
+         *
+         * `explicit` 标记这次探测来自**人**（挂载 / 卡片「重新探测」）：显式探测作废
+         * 待触发的重试计时器并把梯子归零；梯子自己的续跑（explicit=false）不归零，
+         * 否则一次超时就永远探不完梯子。
+         */
+        const probeTimeoutMs = tuning?.probeTimeoutMs ?? CLI_PROBE_TIMEOUT_MS;
+        const retryDelaysMs = tuning?.probeRetryDelaysMs ?? PROBE_RETRY_DELAYS_MS;
+        let retryTimer;
+        let retryIndex = 0;
         /** 跑一次探测、更新状态、同步两段 section；返回本次结果。 */
-        const runProbe = async () => {
+        const runProbe = async (explicit = true) => {
             // CG21：探测幂等，in-flight 时复用同一个 Promise——连点「重新探测」不该连起
             // 一串 `<command> --version` 子进程。
             if (probeInFlight !== undefined)
                 return probeInFlight;
+            if (explicit) {
+                if (retryTimer !== undefined) {
+                    clearTimeout(retryTimer);
+                    retryTimer = undefined;
+                }
+                retryIndex = 0;
+            }
             probeInFlight = (async () => {
-                const result = await probeCli(command);
-                cliProbeState.available = result.ok;
-                cliProbeState.error = result.error;
+                const result = await probeCli(command, probeTimeoutMs);
                 cliProbeState.at = result.at;
-                if (!result.ok) {
-                    console.warn(`[dsh-codegraph] \`${command} --version\` 不可用：跳过 systemPrompt 的能力公告与使用指引（卡片与 MCP 托管不受影响）—— ${result.error}`);
+                if (result.ok) {
+                    cliProbeState.available = true;
+                    cliProbeState.error = undefined;
+                    retryIndex = 0;
+                }
+                else if (result.inconclusive === true && retryIndex < retryDelaysMs.length) {
+                    // CG65：超时不判死——外部 issue 实测，空闲 200ms 的命令在宿主启动争抢
+                    // （60–80 个并发 spawn）下能打穿任何单次超时；等一会儿再探通常就成了，
+                    // 公告随之注入，无需用户手动重探、更无需重启。
+                    cliProbeState.available = undefined;
+                    cliProbeState.error = result.error;
+                    const delay = retryDelaysMs[retryIndex];
+                    retryIndex += 1;
+                    console.warn(`[dsh-codegraph] \`${command} --version\` 探测超时（疑似宿主启动争抢）：${delay}ms 后自动重试（第 ${retryIndex}/${retryDelaysMs.length} 次）——卡片与 MCP 托管不受影响`);
+                    retryTimer = setTimeout(() => {
+                        retryTimer = undefined;
+                        void runProbe(false);
+                    }, delay);
+                    // 重试计时器不为退出中的宿主拖延进程关闭
+                    retryTimer.unref?.();
+                }
+                else {
+                    cliProbeState.available = false;
+                    cliProbeState.error = result.error;
+                    retryIndex = 0;
+                    // 两种判死的文案分开（外部 issue 建议三）：超时穷尽与「命令不存在」的
+                    // 排障方向完全不同——前者查机器负载，后者查 command 路径。
+                    if (result.inconclusive === true) {
+                        console.warn(`[dsh-codegraph] \`${command} --version\` 连续 ${retryDelaysMs.length + 1} 次探测超时（疑似宿主启动争抢或命令挂住）：按不可用跳过 systemPrompt 公告与使用指引，稍后可在卡片「重新探测」—— ${result.error}`);
+                    }
+                    else {
+                        console.warn(`[dsh-codegraph] \`${command} --version\` 不可用：跳过 systemPrompt 的能力公告与使用指引（卡片与 MCP 托管不受影响）—— ${result.error}`);
+                    }
                 }
                 refreshGuidance();
                 return result;
@@ -3409,10 +3481,18 @@ const plugin = definePlugin({
                 probeInFlight = undefined;
             }
         };
-        void runProbe();
+        void runProbe(true);
+        // 重试计时器的卸载清理：插件 fiber 被丢弃（HMR / 停用）后，迟到的重试不该再起
+        // `<command> --version` 子进程。effect 立即执行 setup，返回值登记为 fiber 级 disposer。
+        ctx.effect(() => () => {
+            if (retryTimer !== undefined) {
+                clearTimeout(retryTimer);
+                retryTimer = undefined;
+            }
+        }, 'dsh-codegraph: probe retry ladder');
         const routes = makeRoutes(cli, config?.defaultPath?.trim() || process.cwd(), {
             get: () => ({ available: cliProbeState.available, error: cliProbeState.error, at: cliProbeState.at }),
-            reprobe: () => runProbe(),
+            reprobe: () => runProbe(true),
         }, getRuntime, () => metricsCollector.access, projectRegistry, () => {
             const rt = runtimeRef;
             return { mounter: rt?.mounter, decision: rt?.scopeDecision };

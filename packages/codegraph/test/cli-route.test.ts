@@ -25,6 +25,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 // 从 helper 再导一个同名函数会把它覆盖掉（实测：52 条用例全红）。
 import { rmStubDir } from './stub-cli.js'
 import { apply, staleReasonsFromStatus } from '../src/index.js'
+import type { ProbeTuning } from '../src/index.js'
 
 const POSIX = process.platform !== 'win32'
 const sandbox = mkdtempSync(join(tmpdir(), 'dsh-cg-route-'))
@@ -146,6 +147,30 @@ const initCli = () =>
     ? ["import fs from 'node:fs'", "import path from 'node:path'", ...INIT_STUB_BODY].join('\n')
     : ["const fs = require('node:fs')", "const path = require('node:path')", ...INIT_STUB_BODY].join('\n'))
 const sleepCli = () => stubCli('sleep-cli', 'setTimeout(() => {}, 3_000)')
+
+/**
+ * 冒充「启动争抢下的 codegraph」（CG65）：被调起的前 `succeedOnAttempt - 1` 次都
+ * 挂住（探到超时、被运行器收树），到第 `succeedOnAttempt` 次立刻成功——模拟
+ * 「机器忙完之后命令本来就能跑」。尝试次数落进计数文件，测试据此断言**梯子真的
+ * 补探了几次**，而不是只看最终成败。
+ *
+ * 计数文件按 stub 名隔离：`stubCli` 按名缓存、同名内容固定，而计数路径嵌在内容里，
+ * 所以每个新场景都要起一个新名字。
+ */
+function flakyCli(name: string, succeedOnAttempt: number): string {
+  const counter = JSON.stringify(join(sandbox, `${name}.attempts`))
+  const body = [
+    POSIX ? "import fs from 'node:fs'" : "const fs = require('node:fs')",
+    `const counter = ${counter}`,
+    'let n = 0',
+    'try { n = Number.parseInt(fs.readFileSync(counter, "utf8"), 10) || 0 } catch {}',
+    'n += 1',
+    'fs.writeFileSync(counter, String(n))',
+    `if (n < ${succeedOnAttempt}) setTimeout(() => {}, 9_000)`,
+    'else console.log("1.0.0")',
+  ]
+  return stubCli(name, body.join('\n'))
+}
 
 interface CapturedRoute {
   kind: string
@@ -411,7 +436,7 @@ interface FullMount {
   dispatch: (ns: string, next: Record<string, unknown>) => void
 }
 
-function mountFull(command: string, extra: Record<string, unknown> = {}): FullMount {
+function mountFull(command: string, extra: Record<string, unknown> = {}, tuning?: ProbeTuning): FullMount {
   const routes = new Map<string, CapturedRoute>()
   const sections = new Map<string, FakeSection>()
   const settingsStore: Record<string, unknown> = {}
@@ -474,7 +499,7 @@ function mountFull(command: string, extra: Record<string, unknown> = {}): FullMo
   }
 
   type ApplyArgs = Parameters<typeof apply>
-  apply(ctx as unknown as ApplyArgs[0], { command, defaultPath: project, ...extra } as ApplyArgs[1])
+  apply(ctx as unknown as ApplyArgs[0], { command, defaultPath: project, ...extra } as ApplyArgs[1], tuning)
   return {
     routes,
     sections,
@@ -667,6 +692,49 @@ describe('systemPrompt 注入门禁（CLI 探测 + settings 开关 + 索引门�
     // 非回环来源一律拒绝
     const remote = await call(mount.routes, '/api/dsh-codegraph/reprobe', { method: 'POST', remoteAddress: '10.0.0.9' })
     expect(remote.status).toBe(403)
+  })
+
+  it('CG65：探测超时不再判死——按重试梯子自动补探，成功后公告照常注入（外部 issue 的启动争抢场景）', async () => {
+    // 外部 issue：空闲 ~200ms 的命令在宿主启动争抢（60–80 个并发 spawn）下打穿 5s，
+    // 原实现把超时当「不可用」判死 → 公告与使用指引整个会话不注入、只能手动重探。
+    // stub 复刻该场景：前两次挂住（探到超时）、第三次立刻成功——梯子 [80,80]ms 应在
+    // 无人工干预的情况下把公告救回来。
+    const cli = flakyCli('flaky-recover-cli', 3)
+    const mount = mountFull(cli, {}, { probeTimeoutMs: 600, probeRetryDelaysMs: [80, 80] })
+    // 首次探测必然还在路上（单次超时 600ms）：JSON 里不得出现 cliAvailable=false——
+    // 超时只是「还没探明白」，不是「确认不可用」（复用 undefined=未落地的既有契约）
+    const pending = await call(mount.routes, '/api/dsh-codegraph/default-path')
+    expect(pending.body?.cliAvailable).toBeUndefined()
+    await waitFor(async () => (await call(mount.routes, '/api/dsh-codegraph/default-path')).body?.cliAvailable === true, 15_000)
+    // 计数 = 3：证明前两次真的超时了、是梯子补探成功的，而不是首探就过
+    expect(readFileSync(join(sandbox, 'flaky-recover-cli.attempts'), 'utf8')).toBe('3')
+    // 成功后 error 清空、公告段注入（默认路径未索引 → 只有公告段，usage 被索引门禁挡住）
+    const done = await call(mount.routes, '/api/dsh-codegraph/default-path')
+    expect(done.body?.cliProbeError).toBeUndefined()
+    await waitFor(() => mount.sections.size === 1)
+    expect([...mount.sections.keys()]).toEqual(['plugin:dsh-codegraph'])
+  })
+
+  it('CG65：确定性失败（命令不存在）不进梯子——判死后不再起子进程', async () => {
+    // 梯子只救「没探明白」的超时；ENOENT 是确定的答案，重试只会空转、徒增 spawn。
+    const mount = mountFull(missingCli(), {}, { probeRetryDelaysMs: [80, 80] })
+    await waitFor(async () => (await call(mount.routes, '/api/dsh-codegraph/default-path')).body?.cliAvailable === false)
+    const first = await call(mount.routes, '/api/dsh-codegraph/default-path')
+    // 等过整个梯子窗口（2 次 × 80ms 加裕量）：at 不变 = 没有任何重试跑过
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    const second = await call(mount.routes, '/api/dsh-codegraph/default-path')
+    expect(second.body?.cliAvailable).toBe(false)
+    expect(second.body?.cliProbeAt).toBe(first.body?.cliProbeAt)
+  })
+
+  it('CG65：梯子穷尽仍超时 → 按不可用收敛，原因点明 timeout 而不是含糊的「不可用」', async () => {
+    // 三次（首探 + 2 次补探）全是超时死：收敛成 false 是必须的——卡片不能永远
+    // 停在「探测中」；但原因要能和「命令不存在」区分开，排障方向才不会带偏。
+    const mount = mountFull(sleepCli(), {}, { probeTimeoutMs: 600, probeRetryDelaysMs: [80, 80] })
+    await waitFor(async () => (await call(mount.routes, '/api/dsh-codegraph/default-path')).body?.cliAvailable === false, 15_000)
+    const done = await call(mount.routes, '/api/dsh-codegraph/default-path')
+    expect(String(done.body?.cliProbeError ?? '')).toContain('timeout after 600ms')
+    expect(mount.sections.size).toBe(0)
   })
 
   it('安装级开关关闭：对应段落不注入', async () => {

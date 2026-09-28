@@ -244,8 +244,8 @@ describe('反例 4：台账本身不自洽（唯一号数 / 最大号 / 现状�
     expect(kinds(checkWithLedger('docker', fixture))).toContain('ledger.status.until')
   })
 
-  it('codegraph 的「已关闭」被漏掉（62 + 3 ≠ 64）→ ledger.status.fixed 差异', () => {
-    const fixture = mutate(real.ledgers.codegraph, '**已修 61 / 已关闭 3 / 待修 0**', '**已修 62 / 已关闭 3 / 待修 0**')
+  it('codegraph 的「已关闭」被漏掉（63 + 3 ≠ 65）→ ledger.status.fixed 差异', () => {
+    const fixture = mutate(real.ledgers.codegraph, '**已修 62 / 已关闭 3 / 待修 0**', '**已修 63 / 已关闭 3 / 待修 0**')
     expect(kinds(checkWithLedger('codegraph', fixture))).toContain('ledger.status.fixed')
   })
 

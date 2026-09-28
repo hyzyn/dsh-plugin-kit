@@ -409,6 +409,7 @@ window.__ModuleLoader__.load({
       'status.cliMissing': '⚠ 探测不到可执行的 CLI 命令 {command}（`--version` 失败）：systemPrompt 的能力公告与使用指引都不会注入，卡片里的状态 / 搜索 / sync / 重建索引也会报错。',
       'status.cliFix': '\n修法二选一：① 把插件配置里的 command 写成该 CLI 的绝对路径（改 profile 补丁会触发热重载并重新探测）；② 从新开的终端重启宿主，让新的环境块生效。',
       'status.cliNote': '注意：宿主进程的 PATH 在它启动时就固定了，刷新页面 / 重开卡片都不会改变它——改完上面任一项后，点「重新探测」即可就地确认，不必重启宿主。',
+      'status.cliTimeoutHint': '\n这次失败是「超时」而不是「命令不存在」：多半是宿主启动时机器繁忙（大量子进程并发 spawn，Windows 上常见；宿主会在超时后于 10s / 30s 各自动重试一次）。等机器空闲后点「重新探测」即可；若空闲时仍超时，再检查 command 路径与命令本身。',
       'status.probeReason': '实测原因：{error}',
       'status.probeAt': '\n上次探测：{time}',
       'status.staleWarning': '⚠ 索引可能过期：{reasons}。MCP 工具此刻给的是旧提取器产出的图——点「重建索引」修复（实测此时 Sync 会报 Already up to date 且不解决问题）。',
@@ -615,6 +616,7 @@ window.__ModuleLoader__.load({
       'status.cliMissing': '⚠ No runnable CLI command found ({command}) (`--version` failed): neither the systemPrompt capability announcement nor the usage guidance will be injected, and status / search / sync / reindex on this card will fail too.',
       'status.cliFix': '\nTwo fixes, pick one: (1) set `command` in the plugin config to that CLI’s absolute path (editing the profile patch triggers a hot reload and a fresh probe); (2) restart the host from a newly opened terminal so the new environment block takes effect.',
       'status.cliNote': 'Note: the host process PATH is fixed when it starts — refreshing the page or reopening the card will not change it. After either fix above, click “Reprobe” to confirm in place; no host restart is needed.',
+      'status.cliTimeoutHint': '\nThis failure is a timeout, not a missing command: most likely the machine was busy while the host was booting (dozens of concurrent child-process spawns, common on Windows; the host now retries automatically at 10s and 30s). Click “Reprobe” once the machine is idle; if it still times out on an idle machine, check the command path and the command itself.',
       'status.probeReason': 'Probe result: {error}',
       'status.probeAt': '\nLast probe: {time}',
       'status.staleWarning': '⚠ The index may be stale: {reasons}. MCP tools are currently serving a graph produced by an older extractor — click “Reindex” to fix it (in this state Sync reports Already up to date and does not solve it).',
@@ -1779,10 +1781,15 @@ window.__ModuleLoader__.load({
         return t('status.defaultWarning', { shown, source, why, fix })
       }, [defaultInfo, status, effectivePath])
 
+      // 修法建议按失败原因分流（CG65）：「命令不存在」才谈 PATH / 绝对路径；「超时」
+      // 是机器忙——改 command 路径救不了它，指引应是等空闲重探。判定只认运行器写入
+      // 报错原文的 `(timeout after …)` 字样，平台无关、不依赖 i18n。
+      const cliProbeTimedOut = defaultInfo != null
+        && typeof defaultInfo.cliProbeError === 'string'
+        && defaultInfo.cliProbeError.includes('timeout after')
       const cliWarning = defaultInfo && defaultInfo.cliAvailable === false
         ? t('status.cliMissing', { command: defaultInfo.command || 'codegraph' })
-          + t('status.cliFix')
-          + t('status.cliNote')
+          + (cliProbeTimedOut ? t('status.cliTimeoutHint') : t('status.cliFix') + t('status.cliNote'))
         : ''
 
       /** 某个页签有没有内容（决定它是否出现在页签栏里）。 */

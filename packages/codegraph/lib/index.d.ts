@@ -441,6 +441,13 @@ export interface CliProbeResult {
     error?: string;
     /** 本次探测的时刻（epoch ms）：卡片据此显示「上次探测」，也让「重新探测」有可见反馈。 */
     at: number;
+    /**
+     * `true` = 超时这类「**没探明白**」的失败：命令可能只是还没轮到 CPU（宿主启动争抢，
+     * CG65），调用方应留在「探测未落地」态并按重试梯子补探，而不是判死。
+     * 缺省 = 确定性失败（ENOENT / cmd.exe 报错 / 非零退出），重试无意义，按不可用处理。
+     * 判据是运行器置的 `timedOut` 显式标记（CG22），不做报错文案匹配——平台无关。
+     */
+    inconclusive?: boolean;
 }
 /**
  * 路由侧对探测状态的访问口。
@@ -451,7 +458,11 @@ export interface CliProbeResult {
  * （GET 不该有副作用：重探会顺带增删 systemPrompt section）。
  */
 export interface CliProbeAccess {
-    /** 当前结果：available 为 undefined 表示还没探测完（JSON 里会整个字段消失）。 */
+    /**
+     * 当前结果：available 为 undefined 表示还没探测完（JSON 里会整个字段消失）——
+     * CG65 起这也覆盖「超时后的重试窗口」：超时不判死，状态退回未落地直到梯子
+     * 补探出结论。false 只来自确定性失败，或梯子穷尽后按不可用收敛。
+     */
     get(): {
         available: boolean | undefined;
         error: string | undefined;
@@ -459,6 +470,17 @@ export interface CliProbeAccess {
     };
     /** 立刻重跑一次探测，并把结果同步给 systemPrompt 门禁。 */
     reprobe(): Promise<CliProbeResult>;
+}
+/**
+ * 探测调度的注入口（CG65）：只供测试把单次超时 / 重试延迟调小到可断言的量级，
+ * 生产走 `CLI_PROBE_TIMEOUT_MS` / `PROBE_RETRY_DELAYS_MS` 默认值。刻意**不进
+ * Config**——它们不是用户档位，理由见那两个常量上的注释。
+ */
+export interface ProbeTuning {
+    /** 单次探测的超时毫秒数。 */
+    probeTimeoutMs?: number;
+    /** 超时后的自动重试延迟（毫秒）序列；长度即重试次数上限。 */
+    probeRetryDelaysMs?: number[];
 }
 /** 登记表里的一项（给卡片用）。 */
 export interface ProjectEntry {
