@@ -180,6 +180,10 @@ dsh plugin --profile web add link:$(pwd)/packages/<name>
 ## 参与贡献
 
 - 新插件用脚手架生成：`pnpm create-plugin <name> [id]`，避免手写样板。
+- 提 issue 走模板（**Bug 报告** / **功能请求**，空白 issue 已关闭）：必填的环境 / 版本 /
+  复现步骤 / **自查结果**对应 [docs/troubleshooting.md](docs/troubleshooting.md#通用顺序) 的
+  通用顺序，填全了才有人能在第一轮定位。格式约束见
+  [docs/conventions.md § Issue](docs/conventions.md#issue提-issue-的格式约束)。
 - 提交信息遵循 Conventional Commits（如 `fix(mcp): 修复连接测试超时`），
   用户可见变更请附截图或验证证据。
 - 提交前过门禁：`pnpm typecheck && pnpm build && pnpm test && pnpm aggregate`；

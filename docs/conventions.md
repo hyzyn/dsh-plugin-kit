@@ -37,6 +37,7 @@
 | 包特有的深层设计 / API | L1 `packages/<pkg>/docs/`（仅需要时建） |
 | **已完成批次 / 设计方案的冻结记录** | L1 `packages/<pkg>/docs/`（设计方案，例：[codegraph/docs/p0-plan.md](../packages/codegraph/docs/p0-plan.md)——首行即标「已实现」，**不是活待办**）；**指针表**在各包 `DEFECTS.md` §4「冻结记录」，检索方式 `git show <sha>:<path>` |
 | **入库产物与 CI 产物闸门** | L0 [docs/conventions.md § 真机脚本与 CI 接线](./conventions.md#真机脚本与-ci-接线) |
+| **提 issue 的格式约束**（表单字段 / 自查结果 / 空白 issue 已关闭） | L0 [`.github/ISSUE_TEMPLATE/`](../.github/ISSUE_TEMPLATE/)（两张表单是**字段真相**）+ 本文 [§ Issue](./conventions.md#issue提-issue-的格式约束)（规矩）。字段与 [troubleshooting.md 的通用顺序](./troubleshooting.md#通用顺序)一一对应 |
 | **投稿材料**（面向 DSH 插件市场） | L0 [`docs/pr-body-dsh-market.md`](./pr-body-dsh-market.md)（**提给市场仓库的 PR 正文**，其相对链接指向目标仓库）与 [`docs/community-submission.json`](./community-submission.json)（提交载荷）。两者都是**对外投稿物**，不是本仓架构 / 规范；**保留原路径**——`community-submission.json` 可能被市场按 `@main/docs/` URL 取 |
 
 ### L0 / L1 的边界判据
@@ -151,6 +152,44 @@
 - **提交前门禁**：`pnpm typecheck && pnpm build && pnpm test && pnpm aggregate`。
   `.githooks/pre-commit` 会自动重建产物并 `git add`，然后按 **index** 扫公网 IP。
 - 增删插件后必须跑 `pnpm aggregate` 重新生成 `packages/all` 的聚合清单。
+
+## Issue（提 issue 的格式约束）
+
+**所有 issue 走表单**（[`.github/ISSUE_TEMPLATE/`](../.github/ISSUE_TEMPLATE/)），空白 issue 入口
+已关闭（`config.yml` 的 `blank_issues_enabled: false`）。两张表单（Bug 报告 / 功能请求）的字段
+不是礼节，而是**排查一个插件问题最小需要的信息**——每一项都对应
+[troubleshooting.md 的通用顺序](./troubleshooting.md#通用顺序)里的一步：
+
+| 表单字段 | 对应排查动作 |
+|---|---|
+| 插件版本 / DSH 版本 / 安装方式 | 兼容性校验（peer 下限）、产物是否最新（是否 `link:` 装的）；插件版本的**可抄查法**见下条规矩 |
+| 运行形态（`dsh web` / 桌面版） | 两套 origin → 桌面版独有故障（`tty D61`、`docker D139`）先在这一栏分叉 |
+| 问题类型（401/403 还是 404） | 路由「没注册」与「被围栏挡回」是两类问题，先在这一栏分叉 |
+| **是否回归（以前能用吗）** | 「以前能用、现在坏了」是**查最近变更**与**查环境**的分水岭，与「复现稳定性」同等重要——不逼这一栏，用户不会主动写 |
+| 自查结果 | 通用顺序 1–5 步 + 双形态对照：重启宿主 / `dsh --profile web --dump-config` / 卡片在不在 / 已知限制 / 是否重建 / 桌面版与浏览器是否都试过 |
+
+**硬规矩**：
+
+1. **必填项不许编**。填不出来就写「不知道 / 做不了 + 原因」——这比一个像样的猜测有用：
+   猜测会把排查引到错方向，而「不知道」至少告诉下一个人该去查什么。
+2. **「自查结果」必须真跑过**。它对应通用顺序 1–5 步加双形态对照（重启宿主、`--dump-config` 看
+   插件行、看卡片在不在、对一遍已知限制、源码装的是否已重建、桌面版与浏览器是否都试过），这几步
+   能把相当一部分报告在提出来之前就解决掉。
+3. **现象 / 证据 / 环境三样齐全**。没有版本、没有复现步骤、只有一句「不工作」的报告，维护者
+   只能回问，一来一回就是一周。日志贴**原始报错**（宿主终端里那段），不要转述、不要只贴截图。
+4. **表单里写「怎么查」的地方，命令必须真跑过**。反例是插件版本：表单一度只给了
+   `@hyzyn/dsh-tty@0.22.0` 这种格式示例，而全仓没有任何地方写过**去哪看版本**——表单指了路、
+   路却不存在，用户只会卡在那里，然后填一个猜的版本。可抄查法：
+   `dsh plugin --profile <profile> ls <包名> --depth 0` 或读 profile 的 `package.json`
+   （`dsh plugin` 只是把参数转发给 pnpm；profile 里可能只写了范围，那就照抄范围）。
+   加任何新字段前，先自己按 description 走一遍。
+5. **给用户的信息与给维护者的约定要分开**。`报告 #N`（见上文[编号规范](#编号规范)第 6 条）
+   是**维护者侧**的台账引用规则：提 issue 的人对它无法采取任何行动，写在表单上只会让人困惑
+   「我要做什么吗」。这类约定只留在本文，不进表单；反向也一样——表单不承载仓库内部流程。
+6. **改表单本身就是改 L0 资产**（它决定所有未来 issue 的字段）。字段增删后必须同步：
+   本表的「提 issue 的格式约束」行、本文这一节、以及 [`README.md` 的参与贡献](../README.md#参与贡献)
+   入口说明；表单里指向仓库文件的链接要真实存在——`node scripts/check-doc-links.mjs` **只扫
+   markdown**，`.yml` 里的死链没有任何闸门会红，只能靠人守。
 
 ## 插件包解剖
 

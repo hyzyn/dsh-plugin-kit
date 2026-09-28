@@ -1,0 +1,211 @@
+# Bug 报告表单（GitHub Issue Forms）。
+#
+# 设计意图：**这张表的必填项 = 排查一个插件问题最小需要的信息**，每一项都对应
+# docs/troubleshooting.md「通用顺序」里的一步（版本 / 挂载 / 卡片 / 路由 / 产物）。
+# 少哪一项，就多一个来回。改本文件等于改所有未来 issue 的字段，属 L0 资产，
+# 规矩见 docs/conventions.md § Issue。
+name: 🐞 Bug 报告
+description: 插件行为不对 / 报错 / 界面异常。按表单填全——缺关键信息的 issue 会先被打回补料。
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > 花两分钟填完这张表，比来回问四轮快得多。
+        > 提之前先按 [docs/troubleshooting.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/docs/troubleshooting.md)
+        > 的「通用顺序」走一遍——最后一栏就是让你把结果填进来。
+
+  - type: dropdown
+    id: symptom
+    attributes:
+      label: 问题类型
+      description: 决定先看哪条排查路径；选不准就选「其他」，在正文里说清。
+      options:
+        - 功能不工作 / 行为与文档不符
+        - 插件整体消失 / 加载失败 / 启动报错
+        - 接口报错（401 / 403 / 404 / 500）
+        - 界面显示或交互异常（空白、卡住、不刷新）
+        - 连不上外部目标（SSH / Docker / MCP / RSS 源）
+        - 配置或数据被改坏、丢失
+        - 性能问题（卡顿、内存、日志暴涨）
+        - 其他（正文说明）
+    validations:
+      required: true
+
+  - type: dropdown
+    id: packages
+    attributes:
+      label: 涉及的插件
+      description: 可多选；**不确定也要选**（选「不确定」），别因为不确定而留空。
+      multiple: true
+      options:
+        - "@hyzyn/dsh-tty（终端面板 / SSH / SFTP / 隧道）"
+        - "@hyzyn/dsh-docker（容器面板）"
+        - "@hyzyn/dsh-codegraph（代码图谱）"
+        - "@hyzyn/dsh-mcp（MCP 服务器配置）"
+        - "@hyzyn/dsh-env（环境变量 / 密钥）"
+        - "@hyzyn/dsh-prompt（Prompt 管理）"
+        - "@hyzyn/dsh-profile（Profile 管理）"
+        - "@hyzyn/dsh-rss（RSS 聚合）"
+        - "@hyzyn/dsh-search（全局搜索）"
+        - "@hyzyn/dsh-kit-settings（设置入口）"
+        - "@hyzyn/dsh-kit（共享库，被其它包依赖）"
+        - "@hyzyn/dsh-all（聚合安装包）"
+        - 不确定 / 与多个包都相关
+    validations:
+      required: true
+
+  - type: input
+    id: plugin_version
+    attributes:
+      label: 插件版本
+      description: |
+        查法：`dsh plugin --profile <profile> ls <包名> --depth 0`
+        （例 `dsh plugin --profile web ls @hyzyn/dsh-tty --depth 0`）；
+        或看 `~/.dsh/profiles/<profile>/package.json` 的 dependencies——那里可能写的是范围（`^0.6.0` 这种），
+        是范围就照抄范围，别自己换算。
+      placeholder: "例：@hyzyn/dsh-tty@0.22.0"
+    validations:
+      required: true
+
+  - type: input
+    id: dsh_version
+    attributes:
+      label: DSH 版本
+      description: "`dsh --version` 的输出。兼容性判定只看插件的 peer 下限，版本对不上时这是第一条线索。"
+      placeholder: "例：0.1.7-rc.2"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: 安装方式
+      description: npm 安装与仓库源码（`link:`）是两条完全不同的路径，产物是否最新只在后者成立。
+      options:
+        - npm 安装（dsh plugin --profile web add …）
+        - 仓库源码 link:（clone + pnpm build + add link:）
+        - 随宿主 / 桌面版自带或其它方式
+        - 不确定
+    validations:
+      required: true
+
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: 出现问题的运行形态
+      description: 桌面版与 `dsh web` 是两套 origin、两套 localStorage——很多问题只在一侧出现，请写清哪一侧。
+      options:
+        - 浏览器 dsh web（http://127.0.0.1:…）
+        - 桌面版（dsh-app）
+        - 两者都复现
+        - headless / 其它
+    validations:
+      required: true
+
+  - type: input
+    id: env
+    attributes:
+      label: 环境
+      description: 操作系统 + 浏览器（或桌面版）版本；源码安装的再补 Node / pnpm 版本。
+      placeholder: "例：macOS 15.3 · Chrome 140 · Node 22.23.2 · pnpm 10.30.3"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: 实际现象 / 期望行为
+      description: 你看到什么、你期望看到什么。**不要只贴截图**——截图放「证据」那一栏。
+      placeholder: |
+        实际：
+        期望：
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 从启动说起，写成别人能照着走一遍的编号步骤；能最小化就最小化（少一步还复现，就删掉那一步）。
+      placeholder: |
+        1. 启动 dsh web，打开 …面板
+        2. 点 …
+        3. 看到 …
+    validations:
+      required: true
+
+  - type: dropdown
+    id: reproducibility
+    attributes:
+      label: 复现稳定性
+      description: 偶发问题也要写清比例，这决定是查逻辑还是查竞态 / 时序。
+      options:
+        - 每次都能复现
+        - 偶发（试 N 次出现一次）
+        - 只出现过一次
+        - 还没能复现，只是看到过一次报错
+    validations:
+      required: true
+
+  - type: dropdown
+    id: regression
+    attributes:
+      label: 是否回归（以前能用吗）
+      description: |
+        「以前能用、现在坏了」是分水岭：能立刻分成**查最近变更**（升级 / 改配置）还是**查环境**。
+        选了「是回归」的，请把**以前正常的版本号**补进上面「实际现象」那一栏。
+      options:
+        - 不是回归：从装上 / 第一次用就没成功过
+        - 是回归：以前能用，**升级之后**坏的
+        - 是回归：以前能用，**改了配置 / 换了环境**之后坏的
+        - 说不清：刚用不久，没有可对比的「以前」
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 报错 / 日志 / 截图
+      description: |
+        优先贴 `dsh web` 宿主终端里的**原始报错**（不要转述、不要只贴截图）。
+        涉及外部目标的（SSH / Docker / MCP / RSS 源）请附目标侧的报错原文。
+        长日志用 ``` 包起来。贴之前抹掉私钥、token、真实内网地址。
+      render: shell
+    validations:
+      required: false
+
+  - type: markdown
+    attributes:
+      value: |
+        ---
+        ### 自查结果（下面这一栏**必填**）
+
+        以下是 [docs/troubleshooting.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/docs/troubleshooting.md)
+        的通用顺序。**先自己跑一遍**：填「有 / 没有」加一句原文，比填「不知道」有用得多。
+
+  - type: textarea
+    id: selfcheck
+    attributes:
+      label: 自查结果
+      description: 逐条回答；确实做不了的写「做不了 + 原因」。
+      placeholder: |
+        1. 重启过 `dsh web` 进程（不只是刷新页面）：是 / 否
+        2. `dsh --profile web --dump-config` 里有没有本插件行：有 / 没有（贴相关行）
+        3. 插件配置页里卡片在不在：在 / 不在
+        4. 是否命中 docs/troubleshooting.md 的「已知限制 / 预期行为」：命中第几节 / 没有
+        5. 桌面版与浏览器是否都试过（两种都在用的话）：都试过 / 只试过一侧
+        6. 源码（link:）安装的是否已 `pnpm -r build`：是 / 否 / 不是源码装的
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: ack
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 以上信息是我实际跑出来 / 亲眼看到的，不是推测；我已搜过 issue 列表，确认没有重复报告。
+          required: true
+        - label: 正文里的日志与截图已抹掉真实密钥、token 与内网地址。
+          required: true

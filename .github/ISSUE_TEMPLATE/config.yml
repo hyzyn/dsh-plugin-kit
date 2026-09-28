@@ -1,0 +1,16 @@
+# Issue 入口配置：**关掉空白 issue**，强制走上面两张表单。
+#
+# 这就是「格式限制」的强制点：表单里的必填项（版本 / 环境 / 复现步骤 / 自查结果）
+# 是排查一个插件问题最小需要的信息，缺了就没人能在第一轮定位。
+# 真的都不合适时，用户仍可用 contact_links 的入口先自查，或直接提 PR。
+blank_issues_enabled: false
+contact_links:
+  - name: 📖 先查排障文档：装不上 / 卡片不出现 / 插件整体消失 / 401、403 / 已知限制
+    url: https://github.com/hyzyn/dsh-plugin-kit/blob/main/docs/troubleshooting.md
+    about: Bug 表单里的「自查结果」就是这一节的通用顺序——先跑一遍，往往不用提 issue。
+  - name: 🧭 文档地图：12 个包分别归哪份 README / DEFECTS / ROADMAP
+    url: https://github.com/hyzyn/dsh-plugin-kit#文档地图
+    about: 先确认你看的是对的包、对的版本，再描述问题。
+  - name: 🔍 搜索已有 issue（含已关闭）
+    url: https://github.com/hyzyn/dsh-plugin-kit/issues?q=is%3Aissue
+    about: 同类问题可能已经报告过，里面往往有绕过办法或修复计划。

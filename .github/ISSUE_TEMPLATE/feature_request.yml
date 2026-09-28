@@ -1,0 +1,99 @@
+# 功能请求表单（GitHub Issue Forms）。
+#
+# 设计意图：把「我想要 X」逼成「我在哪个场景下卡住了、现在怎么绕过的」——
+# 前者无法排期也无法验收，后者能直接判断值不值得做。规矩见 docs/conventions.md § Issue。
+name: ✨ 功能请求
+description: 想要本仓还没有的能力，或现有能力不够用。请先给场景，再给方案。
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > 本仓的取舍原则写在 [README.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/README.md)
+        > 与各包 README 的「已知限制」里：**先有场景，再谈方案**。
+        > 想加一个新插件？先看 [docs/conventions.md](https://github.com/hyzyn/dsh-plugin-kit/blob/main/docs/conventions.md)，
+        > 用 `pnpm create-plugin` 起骨架，直接提 PR 比提需求快。
+
+  - type: dropdown
+    id: packages
+    attributes:
+      label: 相关的插件
+      description: 可多选；「新增一个插件」请选最后一项。
+      multiple: true
+      options:
+        - "@hyzyn/dsh-tty（终端面板 / SSH / SFTP / 隧道）"
+        - "@hyzyn/dsh-docker（容器面板）"
+        - "@hyzyn/dsh-codegraph（代码图谱）"
+        - "@hyzyn/dsh-mcp（MCP 服务器配置）"
+        - "@hyzyn/dsh-env（环境变量 / 密钥）"
+        - "@hyzyn/dsh-prompt（Prompt 管理）"
+        - "@hyzyn/dsh-profile（Profile 管理）"
+        - "@hyzyn/dsh-rss（RSS 聚合）"
+        - "@hyzyn/dsh-search（全局搜索）"
+        - "@hyzyn/dsh-kit（共享库 / 插件脚手架）"
+        - "新增一个插件（不在上表中）"
+        - 不确定 / 与多个包都相关
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你要解决的问题
+      description: 具体到「哪一步卡住了、多久遇到一次、影响谁」。**不要只写想要的按钮名。**
+      placeholder: |
+        场景：我在 …
+        现状：现在只能 …，结果是 …
+        代价：每次要多花 …，一天遇到 … 次
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 期望的行为
+      description: 界面上 / 工具调用上具体是什么样（入口在哪、点了发生什么、工具签名与返回长什么样）。
+      placeholder: |
+        例：卡片里加一行「…」，点击后 …；agent 侧新增 `xxx_yyy` 工具，返回 …
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 你现在怎么绕过的，为什么不够用
+      description: 手改配置文件 / 命令行 / 别的工具都算。这条直接决定优先级。
+    validations:
+      required: true
+
+  - type: dropdown
+    id: willingness
+    attributes:
+      label: 你愿意参与到哪一步
+      description: 不承诺也没关系，写清能省一轮确认。
+      options:
+        - 我可以提 PR 实现（含测试与截图）
+        - 我可以提 PR，但需要有人指路改哪几个文件
+        - 我只能提供真机验证 / 复现环境
+        - 我只提需求，等维护者排期
+    validations:
+      required: true
+
+  - type: textarea
+    id: boundary
+    attributes:
+      label: 边界与反例（可选）
+      description: 哪些情况**不需要**支持、哪些做法你不能接受（例如「不能默认允许变更操作」）。
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: ack
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已读过 README 与相关包 README，确认这不是**已实现**的能力，也不是「已知限制」里刻意不做的取舍。
+          required: true
+        - label: 我理解功能请求会由维护者决定是否进 ROADMAP.md，进不进都不代表拒绝。
+          required: true

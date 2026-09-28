@@ -89,6 +89,25 @@ pnpm 不受影响。
 </details>
 
 <details>
+<summary><strong>想知道某个插件当前装的是哪个版本？</strong></summary>
+
+`dsh plugin` 只是把参数**转发给 pnpm**（`dsh plugin --profile <name> <pnpm args>`），
+所以 pnpm 的查询命令直接可用：
+
+```sh
+dsh plugin --profile web ls @hyzyn/dsh-tty --depth 0
+# → dsh-profile-web … └── @hyzyn/dsh-tty@0.22.0
+```
+
+手工路径是 profile 的 `package.json`（`~/.dsh/profiles/web/package.json` 的 `dependencies`），
+**但它可能写的是范围**（`^0.6.0` 这种）；范围与实装不一致时以实装为准——实装版本的权威值在
+`~/.dsh/profiles/web/node_modules/<包名>/package.json` 的 `version`。
+
+提 issue 填的就是这个版本：抄到的是范围就照抄范围，别自己换算。
+
+</details>
+
+<details>
 <summary><strong>改了插件代码不生效？</strong></summary>
 
 重新 `pnpm build` 后**重启** `dsh web`。改的是浏览器半体时，还要清缓存或硬刷新。
