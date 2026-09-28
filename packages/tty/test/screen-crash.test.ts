@@ -191,18 +191,33 @@ describe('虚拟屏停摆心跳（D57 跟进）', () => {
     const hostile = new HeadlessTerminal({ cols: 60, rows: 3, scrollback: 0, allowProposedApi: true })
     const heartbeat = newScreenHeartbeat()
     let stalls = 0
+    const crashesBefore = xtermScreenCrashCount() // 结局判据（见下面那段注释）
     try {
       for (const op of CRASH_OPS) {
         if (op[0] === 'write') writeToScreen(hostile, heartbeat, op[1], () => stalls++, 60)
         else hostile.resize(op[1], op[2])
         await tick()
       }
-      expect(stalls).toBe(0) // 还没到窗口
-      await until(() => stalls === 1) // 判出（轮询，不赌固定 sleep）
-      expect(heartbeat.inflight).toBeGreaterThan(0) // 出错那批的回调永远不会回来
-      // 且只回调一次：再等一段确认没有第二次
-      await new Promise((r) => setTimeout(r, 250))
-      expect(stalls).toBe(1)
+      /*
+       * 按**实际结局**分两支断言，而不是赌「xterm 这次一定崩」。
+       *
+       * 判据必须是**崩溃计数**，不能拿 `inflight > 0` 当证据：那只是「有在途批次」，
+       * 它完全可能随后按序回调（实测 5 次里就假红 1 次）。真崩溃是否发生取决于 xterm
+       * 内部 `setTimeout`（`_innerWrite` 里那个回调）的时序，2026-09-28 本地与 macOS CI
+       * 都见过假红。崩溃本身已由上面两条负控制用例钉死（`最小复现序列打不穿…` /
+       * `打在上确实会崩`），「回调永不来」的确定性停摆另有 `连续输出下的真停摆照样判出`。
+       * 这条的独特价值是**真崩溃 → 真的判出停摆**，所以：崩了就必须报且只报一次；
+       * 没崩就绝不能误报。
+       */
+      if (xtermScreenCrashCount() > crashesBefore) {
+        await until(() => stalls === 1) // 判出（轮询，不赌固定 sleep）
+        // 且只回调一次：再等一段确认没有第二次
+        await new Promise((r) => setTimeout(r, 250))
+        expect(stalls).toBe(1)
+      } else {
+        await new Promise((r) => setTimeout(r, 250))
+        expect(stalls).toBe(0) // 没崩（回调按序回来了）→ 不得误报停摆
+      }
     } finally {
       clearScreenWatchdog(heartbeat)
       hostile.dispose()
