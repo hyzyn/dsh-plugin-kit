@@ -27,7 +27,7 @@ importers:
         specifier: 0.2.0
         version: link:packages/kit-settings
       '@hyzyn/dsh-mcp':
-        specifier: 0.2.0
+        specifier: 0.2.1
         version: link:packages/mcp
       '@hyzyn/dsh-profile':
         specifier: 0.2.0
@@ -73,7 +73,7 @@ importers:
         specifier: 0.2.0
         version: link:../kit-settings
       '@hyzyn/dsh-mcp':
-        specifier: 0.2.0
+        specifier: 0.2.1
         version: link:../mcp
       '@hyzyn/dsh-profile':
         specifier: 0.2.0
