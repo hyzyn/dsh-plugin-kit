@@ -181,7 +181,7 @@ try {
     const deadline = Date.now() + 45_000
     while (Date.now() < deadline) {
       const state = await chrome.evaluate(`(() => ({
-        text: (document.body.innerText ?? '').length,
+        text: (document.body?.innerText ?? '').length,
         plugins: performance.getEntriesByType('resource').filter((e) => e.name.includes('/plugins/')).length,
       }))()`)
       if (state.text > 80 && state.plugins >= 1) return true
@@ -202,16 +202,36 @@ try {
       return true
     })()`)
 
-  /** 打开 RSS 设置卡片（从当前页面状态出发）。 */
-  const clickRssRow = () =>
-    chrome.evaluate(`(() => {
-      const hits = [...document.querySelectorAll('*')].filter((el) => (el.innerText ?? '').trim().startsWith('RSS / 新闻聚合') && (el.innerText ?? '').trim().length < 60)
-      if (hits.length === 0) return false
-      hits.sort((a, b) => (a.innerText ?? '').length - (b.innerText ?? '').length)
-      const row = hits[0].closest('button, li, [class*=settingsCard]') ?? hits[0]
-      row.click()
-      return true
+  /**
+   * 真实鼠标点击（CDP Input 域）：设置入口、「插件配置」tab、插件行这类带 pointer 交互的
+   * 组件对 `element.click()` 的合成 click 没有反应（v0.1.48 宿主实测：合成点「设置」只会把
+   * 主区切到新会话视图，设置面板根本不开）——这正是本脚本此前从未跑通的原因。finder 在
+   * 页面里求值出元素中心坐标，Node 侧派发 mousePressed/mouseReleased。
+   */
+  const realClick = async (finderExpr) => {
+    const point = await chrome.evaluate(`(() => {
+      const el = ${finderExpr}
+      if (el === undefined || el === null) return null
+      el.scrollIntoView({ block: 'center' })
+      const rect = el.getBoundingClientRect()
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
     })()`)
+    if (process.env.RSS_OPML_DEBUG === '1') console.log(`      [debug] realClick point=${JSON.stringify(point)}`)
+    if (point === null) return false
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    await chrome.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: point.x, y: point.y, button: 'left', clickCount: 1 })
+    await chrome.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', clickCount: 1 })
+    return true
+  }
+  /** 轮询等页面侧条件成立（替代旧版赌时序的固定 sleep）。 */
+  const waitForPage = async (expr, ms = 12_000) => {
+    const deadline = Date.now() + ms
+    while (Date.now() < deadline) {
+      if ((await chrome.evaluate(expr)) === true) return true
+      await new Promise((resolve) => setTimeout(resolve, 400))
+    }
+    return false
+  }
 
   /**
    * 从零走到「RSS 卡片已打开」—— 刷新页面后也能用。
@@ -219,22 +239,46 @@ try {
    * O3 会再调一次它：导入触发重渲染之后，**同一页面里的第二次自动下载会被 Chrome 拦掉**
    * （浏览器策略，不是产品问题）。重新加载既绕开该策略，又顺带把 O3 证得更硬 ——
    * 导出读的是**落盘的配置**，而不是内存里的旧快照。
+   *
+   * 路径：设置 → 「插件配置」tab → 「RSS / 新闻聚合」行 → 卡片（导出按钮就绪）。
+   * 每层都必须走**真实鼠标事件**（CDP Input 域）：设置入口、「插件配置」tab、插件行这类
+   * 带 pointer 交互的组件对 `element.click()` 的合成 click 没有反应（v0.1.48 宿主实测）。
+   * 另有一个面板过渡期的竞态：面板刚出现的短时间内点 nav 项会把整个 dialog 关掉
+   * （实测约 1/4 概率）——点击级重试救不回来（面板已关，重试点空），所以**整体重试**：
+   * 任一层未就绪就重新 navigate、从「设置」重走；navigate 就是最干净的 reset。
    */
+  let debugStep = 0
+  const debugShot = async (label) => {
+    if (process.env.RSS_OPML_DEBUG !== '1') return
+    debugStep += 1
+    try {
+      const { data } = await chrome.send('Page.captureScreenshot', { format: 'png' })
+      writeFileSync(`/tmp/opml-debug-${String(debugStep).padStart(2, '0')}-${label}.png`, Buffer.from(data, 'base64'))
+    } catch {
+      /* 截图失败不影响验证流程 */
+    }
+  }
+
   const openRssCardFresh = async () => {
-    await chrome.send('Page.navigate', { url: `${baseUrl}/?token=${String(token)}` })
-    await waitForShell()
-    await injectHelpers()
-    await chrome.evaluate("window.__ui.clickExact('设置')")
-    await new Promise((resolve) => setTimeout(resolve, 1500))
-    await chrome.evaluate(
-      "(() => { const nav = [...document.querySelectorAll('[class*=navLabel]')].find((el) => (el.innerText ?? '').trim() === '插件'); if (nav) nav.click(); return nav !== undefined })()",
-    )
-    await new Promise((resolve) => setTimeout(resolve, 1500))
-    await chrome.evaluate("window.__ui.clickExact('插件配置')")
-    await new Promise((resolve) => setTimeout(resolve, 1800))
-    await clickRssRow()
-    await new Promise((resolve) => setTimeout(resolve, 2000))
-    return chrome.evaluate("document.querySelector('[data-action=\"custom-export-opml\"]') !== null")
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      if (process.env.RSS_OPML_DEBUG === '1') console.log(`      [debug] openRssCardFresh 第 ${String(attempt)} 轮`)
+      await chrome.send('Page.navigate', { url: `${baseUrl}/?token=${String(token)}` })
+      await waitForShell()
+      await injectHelpers()
+      await new Promise((resolve) => setTimeout(resolve, 800))
+      await debugShot(`r${String(attempt)}-点击设置前`)
+      await realClick(`[...document.querySelectorAll('*')].filter((el) => (el.innerText ?? '').trim() === '设置' && el.children.length <= 2).pop()`)
+      if (!(await waitForPage(`(() => [...document.querySelectorAll('*')].some((el) => (el.innerText ?? '').trim() === '插件配置'))()`, 6000))) continue
+      await new Promise((resolve) => setTimeout(resolve, 600))
+      await debugShot(`r${String(attempt)}-点击插件配置前`)
+      await realClick(`[...document.querySelectorAll('*')].filter((el) => (el.innerText ?? '').trim() === '插件配置' && el.children.length <= 2)[0]`)
+      if (!(await waitForPage(`(() => [...document.querySelectorAll('*')].some((el) => (el.innerText ?? '').trim().startsWith('RSS / 新闻聚合')))()`, 6000))) continue
+      await new Promise((resolve) => setTimeout(resolve, 600))
+      await debugShot(`r${String(attempt)}-点击RSS行前`)
+      await realClick(`[...document.querySelectorAll('*')].filter((el) => (el.innerText ?? '').trim().startsWith('RSS / 新闻聚合') && (el.innerText ?? '').length < 120 && el.children.length <= 4).sort((a, b) => (a.innerText ?? '').length - (b.innerText ?? '').length)[0]`)
+      if (await waitForPage(`document.querySelector('[data-action="custom-export-opml"]') !== null`, 6000)) return true
+    }
+    return waitForPage(`document.querySelector('[data-action="custom-export-opml"]') !== null`)
   }
 
   const opened = await openRssCardFresh()
@@ -242,12 +286,7 @@ try {
 
   /* ---------------- O1 导出 ---------------- */
   const beforeFiles = snapshotExports()
-  await chrome.evaluate(`(() => {
-    const button = document.querySelector('[data-action="custom-export-opml"]')
-    if (button === null) return false
-    button.click()
-    return true
-  })()`)
+  await realClick(`document.querySelector('[data-action="custom-export-opml"]')`)
   const first = await waitForExport(beforeFiles)
   const exported = first?.path
   const opml = first?.text ?? ''
@@ -298,12 +337,7 @@ try {
     const ready = await openRssCardFresh()
     console.log(`      O3 前置：刷新后重新打开卡片，导出按钮就绪=${String(ready)}`)
     const beforeFiles2 = snapshotExports()
-    const clickedAgain = await chrome.evaluate(`(() => {
-      const b = document.querySelector('[data-action="custom-export-opml"]')
-      if (b === null) return false
-      b.click()
-      return true
-    })()`)
+    const clickedAgain = await realClick(`document.querySelector('[data-action="custom-export-opml"]')`)
     if (clickedAgain !== true) console.log('      （提示：O3 时没找到「导出 OPML」按钮）')
     const second = await waitForExport(beforeFiles2)
     const exported2 = second?.path
