@@ -223,6 +223,33 @@ try {
     await chrome.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: point.x, y: point.y, button: 'left', clickCount: 1 })
     return true
   }
+
+  /**
+   * 关掉宿主自己弹的**首启浮层**，否则它们盖住「设置」入口，点下去等于点在浮层上。
+   *
+   * DSH 0.2 全新浏览器会话会先后弹两层：「预览版说明」（按钮「继续」）与
+   * 「添加一个 API Key 开始使用」（按钮「稍后配置」）。两层都只记在**浏览器侧**
+   * （profile 里的 `ui-settings-account` 配置不足以抑制，实测把 `step` 写成 `done`
+   * 后浮层照旧出现），所以每次跑都得在页面里先关掉；不关掉的症状就是 O0 报
+   * 「点开=false; 卡片文本长度=2」——浮层挡住了，面板根本没开，**不是插件问题**。
+   *
+   * 0.1.x 上没有这两个按钮，realClick 找不到元素直接返回 false，本函数是空操作。
+   */
+  const dismissFirstRunOverlays = async () => {
+    for (let round = 0; round < 4; round++) {
+      let clicked = false
+      for (const label of ['继续', '稍后配置']) {
+        const hit = await realClick(
+          `[...document.querySelectorAll('*')].filter((el) => (el.innerText ?? '').trim() === ${JSON.stringify(label)} && el.children.length <= 2).pop()`,
+        )
+        if (hit === true) {
+          clicked = true
+          await new Promise((resolve) => setTimeout(resolve, 900))
+        }
+      }
+      if (!clicked) return
+    }
+  }
   /** 轮询等页面侧条件成立（替代旧版赌时序的固定 sleep）。 */
   const waitForPage = async (expr, ms = 12_000) => {
     const deadline = Date.now() + ms
@@ -266,6 +293,8 @@ try {
       await waitForShell()
       await injectHelpers()
       await new Promise((resolve) => setTimeout(resolve, 800))
+      // 0.2 的首启浮层盖在设置入口上：先关掉，再点「设置」（关不掉时旧版行为不变）。
+      await dismissFirstRunOverlays()
       await debugShot(`r${String(attempt)}-点击设置前`)
       await realClick(`[...document.querySelectorAll('*')].filter((el) => (el.innerText ?? '').trim() === '设置' && el.children.length <= 2).pop()`)
       if (!(await waitForPage(`(() => [...document.querySelectorAll('*')].some((el) => (el.innerText ?? '').trim() === '插件配置'))()`, 6000))) continue
