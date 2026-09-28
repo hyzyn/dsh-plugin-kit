@@ -70,8 +70,6 @@ export function codePageEncoding(codePage: number): string | undefined {
   return label !== undefined ? usableEncoding(label) : undefined
 }
 
-let cachedConsoleEncoding: string | undefined
-
 /** 该编码标签在当前 Node 上可用则原样返回，否则 undefined（ICU 裁剪过的发行版会缺表）。 */
 function usableEncoding(label: string): string | undefined {
   try {
@@ -83,19 +81,62 @@ function usableEncoding(label: string): string | undefined {
   }
 }
 
+/** 探测不出结论时的兜底编码：单字节表不依赖 ICU，永远可用，至少不会把字节丢掉。 */
+const FALLBACK_ENCODING = 'windows-1252'
+
 /**
- * 当前进程所在控制台的输出代码页（非 Windows 恒为 UTF-8），结果进程内缓存。
+ * 探测**没探明白**（超时）之后隔多久再试（kit D13）。
+ *
+ * 为什么不是「探不到就缓存一辈子」：`chcp` 探测超时是**瞬态**的——宿主启动争抢期
+ * （60–80 个并发子进程）能把 `cmd.exe` 拉起到 3s 以上，而探测结论原先一经写入就
+ * 进程级缓存、再不重试，于是**一次争抢就把整个会话钉死成错码表解码**：此后每条
+ * CLI 输出都被按 windows-1252 重解，中文（CP936）场景下就是乱码被当成真实输出。
+ * 确定性失败（没有控制台 / chcp 不可用）仍然照旧缓存——那种原因重试也不会变。
+ */
+const ENCODING_RETRY_MS = 30_000
+
+/**
+ * 当前进程所在控制台的输出代码页（非 Windows 恒为 UTF-8）。
  *
  * 用 `chcp` 而不是注册表：注册表给的是系统 ANSI 代码页，而 cmd.exe 写管道用的是
  * **控制台输出**代码页，两者在 `chcp` 改过之后会不一致。取不到时回落到
  * `windows-1252`——单字节表不依赖 ICU，永远可用，至少不会把字节丢掉。
+ *
+ * 失败分两档（D13）：确定性失败**缓存**；超时**不缓存**，只在 `ENCODING_RETRY_MS`
+ * 内直接给兜底（避免每次建解码器都同步起一次 `cmd.exe`），窗口过后自动重试——
+ * 机器忙过去就自愈，不必重启宿主。
  */
 export function consoleEncoding(): string {
-  if (cachedConsoleEncoding === undefined) cachedConsoleEncoding = detectConsoleEncoding()
-  return cachedConsoleEncoding
+  if (cachedConsoleEncoding !== undefined) return cachedConsoleEncoding
+  if (Date.now() < consoleEncodingRetryAt) return FALLBACK_ENCODING
+  const detected = probeConsoleEncoding()
+  if (detected === undefined) {
+    consoleEncodingRetryAt = Date.now() + ENCODING_RETRY_MS
+    return FALLBACK_ENCODING
+  }
+  cachedConsoleEncoding = detected
+  return detected
 }
 
-function detectConsoleEncoding(): string {
+/**
+ * 超时判定：`execFileSync` 因 `timeout` 收掉子进程时给 `killed` + `signal`
+ * （Node 文档里还有 `code: 'ETIMEDOUT'`）。**只**认这几个标记，不猜文案——
+ * 「没探明白」与「chcp 不可用」必须走不同的缓存策略。
+ *
+ * 单独导出是为了能断言这几个标记（非 Windows 平台恒返回 UTF-8，跑不到真实分支；
+ * 这里判错的话问题**只在 Windows 上**复现，正是最该被钉住的一段）。
+ */
+export function isConsoleEncodingTimeout(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false
+  const record = error as { killed?: unknown; signal?: unknown; code?: unknown }
+  return record.killed === true || record.signal === 'SIGTERM' || record.code === 'ETIMEDOUT'
+}
+
+/**
+ * 真探测。返回 `undefined` = **没探明白**（超时，结论不可信）；返回字符串 =
+ * 确定性结论（含「取不到代码页 → 兜底」这种确定性回落），可以缓存。
+ */
+function detectConsoleEncoding(): string | undefined {
   if (process.platform !== 'win32') return UTF8
   let codePage: number | undefined
   try {
@@ -108,16 +149,35 @@ function detectConsoleEncoding(): string {
     })
     const matched = /(\d{3,5})/.exec(out)
     if (matched !== null) codePage = Number(matched[1])
-  } catch {
-    /* 没有控制台 / chcp 不可用：走下面的兜底 */
+  } catch (error) {
+    // 超时是「机器忙」，不是「没有控制台」——别把瞬态结论钉死（D13）
+    if (isConsoleEncodingTimeout(error)) return undefined
+    /* 没有控制台 / chcp 不可用：确定性结论，走下面的兜底并缓存 */
   }
   const label = codePage !== undefined ? codePageEncoding(codePage) : undefined
-  return label ?? 'windows-1252'
+  return label ?? FALLBACK_ENCODING
+}
+
+let cachedConsoleEncoding: string | undefined
+/** 上一次「没探明白」之后允许再探的时刻（0 = 没在退避）。 */
+let consoleEncodingRetryAt = 0
+let probeConsoleEncoding: () => string | undefined = detectConsoleEncoding
+
+/**
+ * 供测试注入探测实现（真机上不必调用）；传 `undefined` 恢复真实探测并清空缓存。
+ *
+ * 需要这个缝是因为真实探测只认 Windows：非 Windows 平台恒返回 UTF-8，跑不到
+ * 超时分支，而这个分支（D13 的全部要点）必须在三平台矩阵上都能被断言。
+ */
+export function setConsoleEncodingProbe(probe?: () => string | undefined): void {
+  probeConsoleEncoding = probe ?? detectConsoleEncoding
+  resetConsoleEncodingCache()
 }
 
 /** 供测试重置进程内缓存（真机上不必调用）。 */
 export function resetConsoleEncodingCache(): void {
   cachedConsoleEncoding = undefined
+  consoleEncodingRetryAt = 0
 }
 
 export interface OutputDecoderOptions {

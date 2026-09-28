@@ -280,5 +280,13 @@ export declare function generateDigest(config?: Config, runtime?: DigestRuntime)
 export declare function ensureTodayDigest(config?: Config, runtime?: DigestRuntime): Promise<DigestResult>;
 /** 读取最近一次生成的 digest 元数据；没有则返回 null。 */
 export declare function readLatestDigest(config?: Config): DigestResult | null;
+/**
+ * systemPrompt 段落文案。
+ *
+ * 单独导出是为了能断言「全源失败」与「确实没有新条目」这两条**必须分开**：
+ * 前者说「本次未能生成（N 个源全部抓取失败）」，后者才说「暂无新条目」——
+ * 把网络故障说成「今天没有新闻」，模型会照着回答用户。
+ */
+export declare function buildSystemPromptText(digest: DigestResult | null): string;
 export declare function apply(ctx: Context, config?: Config): void;
 export declare const pluginName: string, pluginInject: string[] | undefined, pluginApply: (ctx: Context, config?: Config | undefined) => void;

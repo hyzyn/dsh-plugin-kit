@@ -443,7 +443,11 @@ export function readRssStore(config?: Config): RssStore {
 export function writeRssStore(store: RssStore): void {
   const file = rssConfigPath()
   mkdirSync(dirname(file), { recursive: true })
-  writeFileSync(file, JSON.stringify({ ...store, updatedAt: new Date().toISOString() }, null, 2), { mode: 0o600 })
+  // 原子写：与同包的 AI 缓存（writeFileAtomic）及其余插件的 store 保持一致。
+  // 原先裸 writeFileSync 中途崩盘 / 磁盘满会留下半截 JSON，而 readRssStore 解析
+  // 失败是**静默**回落内置默认——用户的源 / 目录 / 设置无声消失，并被下一次
+  // 卡片保存固化。tmp + rename 保证读到的要么是旧内容、要么是新内容。
+  writeFileAtomic(file, JSON.stringify({ ...store, updatedAt: new Date().toISOString() }, null, 2), 0o600)
 }
 
 /**
@@ -1229,17 +1233,26 @@ export async function generateDigest(config: Config = {}, runtime: DigestRuntime
   const generatedAt = new Date().toISOString()
   const markdown = renderDigestMarkdown(outputItems, date, errors, sources.length, aiSummary)
 
-  mkdirSync(digestDir(config), { recursive: true })
-  writeFileSync(file, markdown, 'utf8')
-  writeFileSync(latestJsonPath(config), JSON.stringify({
-    date,
-    file,
-    items: outputItems,
-    errors,
-    generatedAt,
-    sources: sourcesMeta,
-    ...(aiSummary !== undefined ? { aiSummary } : {}),
-  }, null, 2), 'utf8')
+  // 全源失败（一条都没抓到 + 有错误）**不落盘**：落一份空 digest 会把「抓取失败」
+  // 说成「今天没有新闻」，而文件一旦存在，ensureTodayDigest 与调度器当天就都不再
+  // 重生成——一次弱网 / 断网撞上生成时刻，空结果就钉死一整天（本包无台账号，
+  // 现场与修法见本轮 commit）。不落盘则下一次触发（调度器退避重试 / 卡片手动刷新）
+  // 会重新抓取；systemPrompt 也会如实说「本次未能生成」。
+  const totalFailure = outputItems.length === 0 && errors.length > 0
+  if (!totalFailure) {
+    mkdirSync(digestDir(config), { recursive: true })
+    // 原子写：崩盘 / 磁盘满留下半截 markdown 会被当成「今天已生成」而钉住整天
+    writeFileAtomic(file, markdown, 0o644)
+    writeFileAtomic(latestJsonPath(config), JSON.stringify({
+      date,
+      file,
+      items: outputItems,
+      errors,
+      generatedAt,
+      sources: sourcesMeta,
+      ...(aiSummary !== undefined ? { aiSummary } : {}),
+    }, null, 2), 0o644)
+  }
 
   return { date, file, items: outputItems, errors, generatedAt, sources: sourcesMeta, ...(aiSummary !== undefined ? { aiSummary } : {}) }
 }
@@ -1545,9 +1558,21 @@ function makeRoutes(
  * systemPrompt 注入
  * ------------------------------------------------------------------ */
 
-function buildSystemPromptText(digest: DigestResult | null): string {
+/**
+ * systemPrompt 段落文案。
+ *
+ * 单独导出是为了能断言「全源失败」与「确实没有新条目」这两条**必须分开**：
+ * 前者说「本次未能生成（N 个源全部抓取失败）」，后者才说「暂无新条目」——
+ * 把网络故障说成「今天没有新闻」，模型会照着回答用户。
+ */
+export function buildSystemPromptText(digest: DigestResult | null): string {
   if (!digest) {
     return '本机已安装 rss-digest 插件（RSS / 新闻聚合）：每天自动抓取订阅源并生成「今日值得读」；内置 awesome-rsshub-routes 精选订阅源目录（官方 RSS 与 RSSHub 路由），可在 Web GUI 设置 → 插件 →「RSS / 新闻聚合」中浏览搜索并一键添加订阅。用户询问今日新闻 / 值得读时，可提示稍后刷新或等待生成。'
+  }
+  if (digest.items.length === 0 && digest.errors.length > 0) {
+    // 全源失败（本次未落盘）：绝不写成「已生成，但暂无新条目」——那会把网络故障
+    // 说成「今天没有新闻」，模型据此回答用户就成了假消息。
+    return `本机已安装 rss-digest 插件（RSS / 新闻聚合）。${digest.date} 的「今日值得读」本次未能生成：${String(digest.errors.length)} 个订阅源全部抓取失败（多为网络问题）。宿主会按退避自动重试；也可在 Web GUI 设置 → 插件 →「RSS / 新闻聚合」里手动刷新。`
   }
   if (digest.items.length === 0) {
     return `本机已安装 rss-digest 插件（RSS / 新闻聚合）。${digest.date} 的「今日值得读」已生成，但暂无新条目。`
@@ -1621,9 +1646,34 @@ export function apply(ctx: Context, config?: Config): void {
     }
   }
 
+  /**
+   * 抓取失败的退避重试状态（见 refresh / 调度器）。
+   *
+   * 为什么必须有：全源失败不再落盘，而 rss 的调度只在 `dailyTime` 那一分钟触发，
+   * 没有这一手的话「挂载时弱网失败」要等到明天同一分钟才会再试。退避 + 次数上限
+   * 让瞬态故障当天就能补上，又不会对必然失败的源整天反复抓。
+   */
+  const RETRY_BASE_MS = 10 * 60_000
+  const RETRY_MAX_DELAY_MS = 60 * 60_000
+  const RETRY_MAX_ATTEMPTS = 6
+  let retryAttempts = 0
+  let retryAt: number | null = null
+
   const refresh = async (force: boolean) => {
     try {
       latest = force ? await generateDigest(config, runtime) : await ensureTodayDigest(config, runtime)
+      // 全源失败（generateDigest 不落盘那次）排一次退避重试：调度器原本只在
+      // dailyTime 那一分钟触发，不补这一手的话当天就再也不会重试了。
+      if (latest.items.length === 0 && latest.errors.length > 0) {
+        retryAttempts += 1
+        retryAt = retryAttempts <= RETRY_MAX_ATTEMPTS
+          ? Date.now() + Math.min(RETRY_BASE_MS * 2 ** (retryAttempts - 1), RETRY_MAX_DELAY_MS)
+          : null
+        ctx.logger('rss-digest').warn('digest generation failed for all sources (attempt %d), retry %s', retryAttempts, retryAt === null ? 'given up until next trigger' : 'scheduled')
+      } else {
+        retryAttempts = 0
+        retryAt = null
+      }
       updateSystemPrompt()
     } catch (error) {
       ctx.logger('rss-digest').warn('generate digest failed: %s', error instanceof Error ? error.message : String(error))
@@ -1684,6 +1734,12 @@ export function apply(ctx: Context, config?: Config): void {
     const timer = setInterval(() => {
       // 禁用态整个调度停摆：不生成、不抓取（store 保存即时翻转 enabled，无需重建定时器）
       if (!enabled) return
+      // 抓取失败后的退避重试（见 refresh）：当天仍没有 digest 才重试，成功即停
+      if (retryAt !== null && Date.now() >= retryAt) {
+        retryAt = null
+        if (!existsSync(digestPath(todayKey(), config))) void refresh(true)
+        return
+      }
       const now = new Date()
       const hh = String(now.getHours()).padStart(2, '0')
       const mm = String(now.getMinutes()).padStart(2, '0')

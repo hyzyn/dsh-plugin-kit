@@ -10,8 +10,8 @@
  * ——块边界切在多字节字符中间时会误判成非 UTF-8，反而把好数据解坏。用例 2/3 就是
  * 这条的防线：**切块位置不影响结果**。
  */
-import { describe, expect, it } from 'vitest'
-import { codePageEncoding, createOutputDecoder, decodeOutput } from '../src/index.js'
+import { describe, expect, it, afterEach, vi } from 'vitest'
+import { codePageEncoding, consoleEncoding, createOutputDecoder, decodeOutput, isConsoleEncodingTimeout, setConsoleEncodingProbe } from '../src/index.js'
 
 /** 报告第 5 节实测的那句话，按 CP936（GBK）编码后的原始字节。 */
 const CP936_CMD_ERROR = Buffer.from([
@@ -143,5 +143,77 @@ describe('createOutputDecoder — 其它', () => {
   it('流式与一次性解码结果一致', () => {
     const streamed = decodeInChunks(CP936_CMD_ERROR, 3)
     expect(streamed).toBe(decodeOutput(CP936_CMD_ERROR, { fallbackEncoding: 'gbk' }))
+  })
+})
+
+describe('consoleEncoding：探测超时不把结论钉死（kit D13）', () => {
+  // 注入缝必须在每个用例后还原：不还原会把真实探测换成桩，污染同文件其它用例
+  afterEach(() => {
+    setConsoleEncodingProbe()
+    vi.useRealTimers()
+  })
+
+  it('超时 → 给兜底但**不缓存**；退避窗口内不再反复同步起 cmd.exe', () => {
+    let calls = 0
+    setConsoleEncodingProbe(() => {
+      calls += 1
+      return undefined
+    })
+    expect(consoleEncoding()).toBe('windows-1252')
+    expect(consoleEncoding()).toBe('windows-1252')
+    // 关键两条一起守：结论不缓存（修复前会钉死一整个进程），但也不允许每次建
+    // 解码器都同步起一次 cmd.exe（那会把「不缓存」变成新的性能问题）
+    expect(calls).toBe(1)
+  })
+
+  it('退避窗口过后自动重试：机器闲下来就自愈成真实代码页（不必重启宿主）', () => {
+    vi.useFakeTimers()
+    const start = new Date('2026-01-01T00:00:00Z')
+    vi.setSystemTime(start)
+    let calls = 0
+    let next: string | undefined
+    setConsoleEncodingProbe(() => {
+      calls += 1
+      return next
+    })
+
+    // 争抢期：探不明白 → 兜底 + 退避
+    expect(consoleEncoding()).toBe('windows-1252')
+    expect(calls).toBe(1)
+
+    // 机器闲下来：窗口过后重探，这次给得出真实代码页
+    next = 'gbk'
+    vi.setSystemTime(new Date(start.getTime() + 31_000))
+    expect(consoleEncoding()).toBe('gbk')
+    expect(calls).toBe(2)
+
+    // 探出结论即缓存：再久也不重探（修复前缺的就是「探出结论才缓存」这条分界）
+    vi.setSystemTime(new Date(start.getTime() + 600_000))
+    expect(consoleEncoding()).toBe('gbk')
+    expect(calls).toBe(2)
+  })
+
+  it('确定性结论照旧缓存：探测只发生一次', () => {
+    let calls = 0
+    setConsoleEncodingProbe(() => {
+      calls += 1
+      return 'gbk'
+    })
+    expect(consoleEncoding()).toBe('gbk')
+    expect(consoleEncoding()).toBe('gbk')
+    expect(calls).toBe(1)
+  })
+
+  it('超时标记只认 killed / signal / ETIMEDOUT——不把「无控制台」也当瞬态', () => {
+    // chcp 退出非零（没有控制台）、cmd.exe 不存在（ENOENT）都是确定性结论，必须照旧
+    // 缓存；只有被我们的 timeout 收掉才算「没探明白」。这条判错只会在 Windows 上复现。
+    expect(isConsoleEncodingTimeout({ killed: true })).toBe(true)
+    expect(isConsoleEncodingTimeout({ signal: 'SIGTERM' })).toBe(true)
+    expect(isConsoleEncodingTimeout({ code: 'ETIMEDOUT' })).toBe(true)
+    expect(isConsoleEncodingTimeout({ code: 'ENOENT' })).toBe(false)
+    expect(isConsoleEncodingTimeout({ code: 1 })).toBe(false)
+    expect(isConsoleEncodingTimeout({ signal: 'SIGKILL' })).toBe(false)
+    expect(isConsoleEncodingTimeout(null)).toBe(false)
+    expect(isConsoleEncodingTimeout('Command failed: chcp')).toBe(false)
   })
 })

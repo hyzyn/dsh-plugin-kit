@@ -361,6 +361,23 @@ const TERM_RE = /^[A-Za-z0-9_.+-]+$/
 const REAPER_INTERVAL_MS = 10_000
 /** 服务器状态条的采集/推送间隔（mvp 固定 1s，不做配置项）。 */
 const STATS_INTERVAL_MS = 1000
+/**
+ * 采集失败后的退避重挂：`base × 2^(失败次数-1)`，上限 `MAX`（D83）。
+ *
+ * 上限 5 分钟是给「远端压根没有采集源」那种稳态失败留的——既要重挂（瞬态故障能自愈），
+ * 又不能把必然失败的 channel 重开得太勤。出过帧即计数归零，恢复正常节奏。
+ */
+const STATS_RETRY_BASE_MS = 30_000
+const STATS_RETRY_MAX_MS = 300_000
+/**
+ * agent `tty_stats` 一发式远端采样的超时（D84）。
+ *
+ * 原先写死 3s，而这条路径要等**第一帧**：远端 shell 启动 + 脚本首次迭代，Windows
+ * 远端还要算 PowerShell 冷启动 + 多次 WMI 查询——状态条那条推送路径没有这个上限，
+ * 于是出现过「面板有数据、agent tty_stats 每次都报超时」的错位。放宽到 15s：工具
+ * 调用等得起，而写死的小值会把慢首帧误报成「采不到」。
+ */
+const STATS_ONESHOT_TIMEOUT_MS = 15_000
 
 const TTY_GUIDANCE =
   '本机已安装 dsh-tty 插件（终端面板）：Web GUI 侧边栏的「终端」入口可打开交互终端（xterm.js + PTY），可运行任意命令与 TUI 程序（vim/htop 等），支持多标签页与断线自动重连（刷新页面/网络抖动后会话保活并恢复现场）；新标签默认在当前会话工作目录打开。标签栏「+」菜单还能开 SSH 标签页（ssh2 原生连接，连接簿在设置卡片维护，支持 agent forwarding 与主机指纹 TOFU 钉扎；连接簿条目可配单跳跳板机 ProxyJump），像本地终端一样操作远程主机。设置卡片开启「会话持久化（tmux）」后，新开的本地/SSH 标签默认由 tmux server 托管（宿主重启/断线超时后重开即恢复现场），长任务建议在持久化开启时运行。长驻进程（dev server、watch、交互式程序）用 tty_open 开一个会话跑（或引导用户到终端面板里运行），不要在 bash 工具里挂起等待；用户提到「开个终端 / 在终端里跑 / SSH 到某台机器」时引导其打开该面板。agent 侧配套工具：tty_list 列出活跃终端会话（含 SSH 的 target 与实时 cwd），tty_capture 读取近期输出（默认清洗 ANSI；last:true 拿「上一条命令」的输出+退出码），tty_screen 读取当前可见屏幕（可读懂 vim/htop 等 TUI），tty_expect 用正则等待输出中的就绪信号（如 dev server URL、构建完成；它**先回看还没读过的已到达输出**，命令瞬间跑完也不会白等——超时若只返回一句诊断文案，别当成「命令没执行」），tty_send 发送按键，tunnel_list 列出端口转发隧道状态——操作会实时显示在用户终端里。SFTP 文件传输：面板内可对 SSH 连接簿条目（或 SSH 连接对话框当前填写的信息）打开文件浏览（上传/下载/建目录/重命名/删除），传输期间进度条右侧 ✕ 可取消（半截文件自动清理）；agent 配套 sftp_list 列远程目录、sftp_tree 递归看目录结构、sftp_read 读远程文本文件（≤1MB）、sftp_write 写远程文本文件（≤1MB，可追加）、sftp_mkdir 建目录（parents 可逐级补齐）、sftp_rename 重命名/移动、sftp_remove 删除（目录需 recursive），book 参数为连接簿条目名。端口转发：连接簿条目可配本地/远程隧道（如把远程数据库映射到本地端口），宿主自动保活重连，用户提到「转发端口 / 访问远程库」时引导其到终端面板设置卡片配置。推荐流程：tty_send 启动长任务 → tty_expect 等就绪标记 → tty_capture{last:true} 拿结果。'
@@ -553,6 +570,10 @@ interface TtySession {
   stats: StatsCollector | null
   /** 采集已永久失败（远端无 /proc、exec 被拒、连接断开）：不再重启，前端隐藏状态条。 */
   statsFailed: boolean
+  /** 采集失败后的重挂时刻（0 = 没有待重挂）：失败位不再是粘性的（D83）。 */
+  statsRetryAt: number
+  /** 连续失败次数：退避倍数按它递增，出过帧即归零。 */
+  statsFailures: number
 }
 
 /** 退出事实的一句话描述（工具文案共用同一措辞：`exitCode=3` / `signal=SIGSEGV`）。 */
@@ -1912,8 +1933,13 @@ export class TtyServer {
    *     共享一次 df/netstat）；
    *   - SSH：远端 sh + awk 常驻循环，每秒一行 JSON 走**非 PTY** exec channel；
    *     速率类由远端算好，宿主只解析 + 清洗。
-   * 任何失败都静默停表并置 statsFailed（粘性，避免每秒重启）：前端靠「无数据」
-   * 隐藏状态条，PTY 数据路径与终端体验完全不受影响。
+   * 失败时静默停表并置 statsFailed：前端靠「无数据」隐藏状态条，PTY 数据路径与
+   * 终端体验完全不受影响。
+   *
+   * 但失败位**不再粘死整个会话**（D83）：原先置位后永不复位，一次瞬态故障
+   * （sshd MaxSessions 拒绝并发 channel、单通道 ECONNRESET）就让状态条与 agent
+   * tty_stats 在会话余生里彻底没有数据，而主 PTY 通道其实是健康的。现在按指数
+   * 退避自动重挂（出过帧即计数归零），既保住「别每秒重启」的本意，又能自愈。
    */
   private startStats(session: TtySession): void {
     // D77：只读保留态没有进程可采（本地会取到宿主、远端 channel 早断了）——直接不起表
@@ -1949,7 +1975,9 @@ export class TtyServer {
     }
     const statsExec = session.handle.statsExec
     if (statsExec === undefined) {
+      // 句柄缺失（连接已断等）同样退避重挂，而不是永久放弃（D83）
       session.statsFailed = true
+      this.scheduleStatsRetry(session)
       return
     }
     let stopped = false
@@ -1975,6 +2003,7 @@ export class TtyServer {
         const frame = parseStatsLine(line)
         if (frame === null) return
         sawFrame = true
+        session.statsFailures = 0 // 出过帧：退避计数归零，下次失败从头退避
         if (hasStatsData(frame)) this.sendStats(session, frame)
       }, () => {
         if (stopped) return // 我们自己停的，不算失败
@@ -1982,10 +2011,12 @@ export class TtyServer {
           attempt(buildWindowsStatsCommand(), true)
           return
         }
-        // 读过帧 = 远端采集进程自己停了；一帧未读 = 彻底失败——都停表并置粘性失败位
+        // 读过帧 = 远端采集进程自己停了；一帧未读 = 这一跳没起来——都停表。
+        // D83：置失败位让前端先隐藏状态条，但排一次退避重挂，恢复后自愈
         session.statsFailed = true
         session.stats = null
         collector.stop()
+        this.scheduleStatsRetry(session)
       })
     }
     // 先登记再起采集：同步失败（conn.exec 直接抛错）也走同一套收尾
@@ -1993,6 +2024,28 @@ export class TtyServer {
     attempt(buildRemoteStatsCommand(), false)
     // 双跳同步失败时 collector.stop() 已把当时在手的句柄停掉；conn.exec 直接抛错的
     // 那一跳压根没建 channel，句柄是惰性的，不需要额外收尾。
+  }
+
+  /**
+   * 采集失败后的退避重挂（D83）。
+   *
+   * 退避而不是立刻重试，是为了保住原先「粘性失败位」想解决的问题——远端平台压根
+   * 没有采集源（macOS/BSD：既无 /proc 也无 PowerShell）时不能每秒重启一个必然失败
+   * 的 channel。指数退避 + 上限把这种「稳态失败」压到几分钟一次，同时让瞬态故障
+   * 在恢复后自动回到有数据状态（出过帧就归零）。
+   */
+  private scheduleStatsRetry(session: TtySession): void {
+    if (session.closed || session.exited !== null || !this.statsOn) return
+    session.statsFailures += 1
+    const delay = Math.min(STATS_RETRY_BASE_MS * 2 ** (session.statsFailures - 1), STATS_RETRY_MAX_MS)
+    session.statsRetryAt = Date.now() + delay
+    const timer = setTimeout(() => {
+      session.statsRetryAt = 0
+      if (session.closed || session.exited !== null || !this.statsOn) return
+      session.statsFailed = false // 清位后 startStats 的门禁才放行
+      this.startStats(session)
+    }, delay)
+    timer.unref?.()
   }
 
   /** 停表（幂等）：订阅清零 / 会话结束 / 插件禁用 / 配置关闭都走它。 */
@@ -2281,7 +2334,7 @@ export class TtyServer {
         }
         resolve(result)
       }
-      const timer = setTimeout(() => { finish({ available: false, reason: '远端采集超时（3s）' }) }, 3000)
+      const timer = setTimeout(() => { finish({ available: false, reason: `远端采集超时（${String(STATS_ONESHOT_TIMEOUT_MS / 1000)}s）` }) }, STATS_ONESHOT_TIMEOUT_MS)
       timer.unref?.()
       try {
         handle = statsExec(buildRemoteStatsCommand(), (line) => {
@@ -2338,7 +2391,7 @@ export class TtyServer {
     client: { ws: WebSocket; connId: string } | null
     local: Map<string, TtySession>
     owner: 'user' | 'agent'
-  }): Promise<{ session: TtySession; wantsPersist: boolean; degraded: boolean }> {
+  }): Promise<{ session: TtySession; wantsPersist: boolean; degraded: boolean; degradedInconclusive: boolean }> {
     const { sid, cols, rows, cwd, command, persistName, client, local, owner } = input
     const subprocess = (this.ctx as unknown as { get(name: string): { spawnTerminal(spec: unknown): Promise<PtyHandle> } | undefined }).get('subprocess')
     if (subprocess === undefined) throw new Error('subprocess 服务不可用')
@@ -2348,6 +2401,8 @@ export class TtyServer {
       : buildShellSpawn(this.options.shell, this.options.term, this.options.colorTerm, this.options.shellIntegration)
     let tmuxName: string | null = null
     let degraded = false
+    /** 降级原因：探测**超时**（机器忙）还是确定没装——提示文案必须分开（D80）。 */
+    let degradedInconclusive = false
     if (wantsPersist) {
       const probe = await probeTmux()
       if (probe.available) {
@@ -2355,7 +2410,8 @@ export class TtyServer {
         ensureTmuxAssets({ shell: this.options.shell, colorTerm: this.options.colorTerm, shellIntegration: this.options.shellIntegration, passthrough: probe.passthrough })
         spawnPlan = buildTmuxSpawnPlan({ shell: this.options.shell, term: this.options.term, colorTerm: this.options.colorTerm, tmuxName })
       } else {
-        degraded = true // tmux 不在：降级普通会话，由调用方给灰字提示
+        degraded = true // 降级普通会话，由调用方给灰字提示；原因（超时/没装）一并带出去
+        degradedInconclusive = probe.inconclusive === true
       }
     }
     const create = (async (): Promise<TtySession> => {
@@ -2403,6 +2459,8 @@ export class TtyServer {
         lastStats: null,
         stats: null,
         statsFailed: false,
+        statsRetryAt: 0,
+        statsFailures: 0,
       }
       // 绑定：有客户端才绑（agent 路径 client === null → 保持空表 = 无客户端会话）。
       // 空表但 owner:'agent'，故不会被孤儿回收器当孤儿收掉。
@@ -2429,7 +2487,7 @@ export class TtyServer {
     const session = await create
     this.attachOutput(session)
     this.watchDone(session, local)
-    return { session, wantsPersist, degraded }
+    return { session, wantsPersist, degraded, degradedInconclusive }
   }
 
   /**
@@ -2563,7 +2621,7 @@ export class TtyServer {
         }
         // 会话创建走共用工厂（与 agent tty_open 同一套）；用户开的标签带连接，
         // 立刻 ready + 收输出
-        let created: { session: TtySession; wantsPersist: boolean; degraded: boolean }
+        let created: { session: TtySession; wantsPersist: boolean; degraded: boolean; degradedInconclusive: boolean }
         try {
           created = await this.createLocalSession({
             sid,
@@ -2583,7 +2641,12 @@ export class TtyServer {
         const next = created.session
         send(ws, { t: 'ready', sid, pid: next.handle.pid, kind: 'local', ...(next.tmuxName !== null ? { persist: true } : {}) })
         if (created.wantsPersist && created.degraded) {
-          const notice = '\x1b[2m[dsh-tty] 未检测到 tmux，本标签以普通会话运行；安装 tmux 后持久化标签可跨宿主重启恢复现场\x1b[0m\r\n'
+          // 超时与「确定没装」的提示分开（D80）：前者让用户重开一次标签即可（那时
+          // 机器已经不忙了），后者才需要去装 tmux。原先一律写「未检测到 tmux」，
+          // 把「机器忙」误报成「没装」，排障方向被带偏。
+          const notice = created.degradedInconclusive
+            ? '\x1b[2m[dsh-tty] tmux 探测超时（机器较忙），本标签以普通会话运行；重开一个标签页即可再试持久化\x1b[0m\r\n'
+            : '\x1b[2m[dsh-tty] 未检测到 tmux，本标签以普通会话运行；安装 tmux 后持久化标签可跨宿主重启恢复现场\x1b[0m\r\n'
           appendOutput(next, notice)
           send(ws, { t: 'data', sid, d: notice })
         }
@@ -2684,6 +2747,8 @@ export class TtyServer {
             lastStats: null,
             stats: null,
             statsFailed: false,
+            statsRetryAt: 0,
+            statsFailures: 0,
           }
           local.set(sid, next)
           this.sessions.add(next)
@@ -2787,8 +2852,13 @@ export class TtyServer {
         // tmux 托管、本机清单看不到，从 settings 留存读取）——客户端用它确认
         // localStorage 里的持久标签规格是否仍可恢复（新窗口/新浏览器）
         const localTmux = await listTmuxSessions()
-        const tmuxSessions = [...new Set([...localTmux, ...this.options.persistSessions])]
-        send(ws, { t: 'sessions', list: this.sessions.listForAttach(), tmux: tmuxSessions })
+        // 本机清单探不明白（超时）时**整个字段缺席**（D81）：只给 SSH 侧的名字会被
+        // 读成「本机没有持久会话」——正是「失败伪装成确定答案」要避免的
+        send(ws, {
+          t: 'sessions',
+          list: this.sessions.listForAttach(),
+          ...(localTmux !== undefined ? { tmux: [...new Set([...localTmux, ...this.options.persistSessions])] } : {}),
+        })
       } else if (msg.t === 'attach') {
         const raw = msg.sid
         if (typeof raw !== 'string' || raw === '' || !SID_RE.test(raw)) {

@@ -26,13 +26,33 @@
  */
 export declare function codePageEncoding(codePage: number): string | undefined;
 /**
- * 当前进程所在控制台的输出代码页（非 Windows 恒为 UTF-8），结果进程内缓存。
+ * 当前进程所在控制台的输出代码页（非 Windows 恒为 UTF-8）。
  *
  * 用 `chcp` 而不是注册表：注册表给的是系统 ANSI 代码页，而 cmd.exe 写管道用的是
  * **控制台输出**代码页，两者在 `chcp` 改过之后会不一致。取不到时回落到
  * `windows-1252`——单字节表不依赖 ICU，永远可用，至少不会把字节丢掉。
+ *
+ * 失败分两档（D13）：确定性失败**缓存**；超时**不缓存**，只在 `ENCODING_RETRY_MS`
+ * 内直接给兜底（避免每次建解码器都同步起一次 `cmd.exe`），窗口过后自动重试——
+ * 机器忙过去就自愈，不必重启宿主。
  */
 export declare function consoleEncoding(): string;
+/**
+ * 超时判定：`execFileSync` 因 `timeout` 收掉子进程时给 `killed` + `signal`
+ * （Node 文档里还有 `code: 'ETIMEDOUT'`）。**只**认这几个标记，不猜文案——
+ * 「没探明白」与「chcp 不可用」必须走不同的缓存策略。
+ *
+ * 单独导出是为了能断言这几个标记（非 Windows 平台恒返回 UTF-8，跑不到真实分支；
+ * 这里判错的话问题**只在 Windows 上**复现，正是最该被钉住的一段）。
+ */
+export declare function isConsoleEncodingTimeout(error: unknown): boolean;
+/**
+ * 供测试注入探测实现（真机上不必调用）；传 `undefined` 恢复真实探测并清空缓存。
+ *
+ * 需要这个缝是因为真实探测只认 Windows：非 Windows 平台恒返回 UTF-8，跑不到
+ * 超时分支，而这个分支（D13 的全部要点）必须在三平台矩阵上都能被断言。
+ */
+export declare function setConsoleEncodingProbe(probe?: () => string | undefined): void;
 /** 供测试重置进程内缓存（真机上不必调用）。 */
 export declare function resetConsoleEncodingCache(): void;
 export interface OutputDecoderOptions {

@@ -37,32 +37,104 @@ export const TMUX_SOCKET = 'dsh-tty'
 export interface TmuxProbe {
   available: boolean
   passthrough: boolean
+  /**
+   * `true` = **没探明白**（探测超时 / 被信号收掉），而不是「tmux 不在」（D80）。
+   * 调用方据此把提示写成「机器忙，重开标签再试」而不是「未安装」；这种结论**不进缓存**。
+   */
+  inconclusive?: boolean
 }
 
 let probeCache: { at: number; value: TmuxProbe } | null = null
 const PROBE_TTL_MS = 30_000
+/**
+ * 单次探测的超时序列（毫秒）：首次 3s，只有「没探明白」才补探一次 6s（D80）。
+ *
+ * 为什么不是把 3s 直接放大：`tmux -V` 空闲是毫秒级，超时只可能是机器忙（宿主启动
+ * 争抢期能把子进程拉起拖到数秒）。补探一次能救回绝大多数；固定放大只会让「真没装」
+ * 的场景也白等。挂载路径上这一步是同步等的（要先决定 spawn 计划），所以次数必须封顶。
+ */
+const PROBE_TIMEOUTS_MS = [3_000, 6_000]
 
-/** 探测 tmux 可用性与版本（30s TTL；execFile 3s 超时）。 */
+/**
+ * `execFile` 被我们的 timeout 收掉（killed / signal；Node 文档里还有 ETIMEDOUT）
+ * ——与「命令不存在」（ENOENT）、「命令退出非零」区分开：前者是没探明白，后者是
+ * 确定的不可用（D80）。只认标记，不猜文案。
+ */
+function isProbeTimeout(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false
+  const record = error as { killed?: unknown; signal?: unknown; code?: unknown }
+  return record.killed === true || record.signal === 'SIGTERM' || record.code === 'ETIMEDOUT'
+}
+
+/**
+ * 探测 tmux 可用性与版本（30s TTL；超时→补探一次）。
+ *
+ * 超时**不判死**（D80）：原先任何 error 都返回 `{available:false}` 且结果进 30s 缓存，
+ * 于是启动争抢期一次慢探测就让这一窗口里开的每个持久标签静默降级成普通会话，提示还
+ * 写成「未检测到 tmux」——把「机器忙」误报成「没装」。现在超时补探一次、结论不进缓存、
+ * `inconclusive` 带出去让调用方如实提示。
+ */
 export async function probeTmux(): Promise<TmuxProbe> {
   if (probeCache !== null && Date.now() - probeCache.at < PROBE_TTL_MS) return probeCache.value
-  const value = await new Promise<TmuxProbe>((resolve) => {
-    execFile('tmux', ['-V'], { timeout: 3000 }, (error, stdout) => {
-      if (error !== null && error !== undefined) {
-        resolve({ available: false, passthrough: false })
-        return
-      }
-      const match = /tmux\s+(\d+)\.(\d+)/.exec(String(stdout))
-      if (match === null) {
-        resolve({ available: false, passthrough: false })
-        return
-      }
-      const major = Number(match[1])
-      const minor = Number(match[2])
-      resolve({ available: true, passthrough: major > 3 || (major === 3 && minor >= 3) })
+  let value = await runTmuxProbe(PROBE_TIMEOUTS_MS[0])
+  for (let attempt = 1; value.inconclusive === true && attempt < PROBE_TIMEOUTS_MS.length; attempt += 1) {
+    value = await runTmuxProbe(PROBE_TIMEOUTS_MS[attempt])
+  }
+  // 只有确定结论才进缓存：把瞬态超时缓存 30s 会把「一次机器忙」放大成一批标签降级，
+  // 而标签恢复与 agent tty_open 恰恰扎堆在启动期（当年就是这条缓存放大了症状）
+  if (value.inconclusive !== true) probeCache = { at: Date.now(), value }
+  return value
+}
+
+/**
+ * 单次 tmux 调用的结果：`error` 原样带出——「超时」与「没有 server / 没装」的区别
+ * 全靠它（见 `isProbeTimeout`），所以这里不吞错、也不翻译。
+ */
+interface TmuxExecResult {
+  error?: unknown
+  stdout: string
+}
+
+type TmuxExec = (args: string[], timeoutMs: number) => Promise<TmuxExecResult>
+
+const execTmux: TmuxExec = (args, timeoutMs) =>
+  new Promise<TmuxExecResult>((resolve) => {
+    execFile('tmux', args, { timeout: timeoutMs }, (error, stdout) => {
+      resolve({
+        ...(error !== null && error !== undefined ? { error } : {}),
+        stdout: String(stdout),
+      })
     })
   })
-  probeCache = { at: Date.now(), value }
-  return value
+
+let tmuxExec: TmuxExec = execTmux
+
+/**
+ * 供测试注入 tmux 调用（真机上不必调用）；传 `undefined` 恢复真实调用并清探测缓存。
+ *
+ * 需要这个缝是因为真实 `tmux` 在 CI 上未必存在，"超时才补探、超时不进缓存"这几条
+ * 又必须能确定性地造出来（否则这三条只会在有 tmux 的机器上被覆盖）。
+ */
+export function setTmuxExecForTest(exec?: TmuxExec): void {
+  tmuxExec = exec ?? execTmux
+  probeCache = null
+}
+
+/** 单次探测（超时序列里的一档）。 */
+function runTmuxProbe(timeoutMs: number): Promise<TmuxProbe> {
+  return tmuxExec(['-V'], timeoutMs).then(({ error, stdout }) => {
+    if (error !== undefined) {
+      // 超时 = 没探明白；ENOENT / 非零退出 = 确定的「不可用」
+      return isProbeTimeout(error)
+        ? { available: false, passthrough: false, inconclusive: true }
+        : { available: false, passthrough: false }
+    }
+    const match = /tmux\s+(\d+)\.(\d+)/.exec(stdout)
+    if (match === null) return { available: false, passthrough: false }
+    const major = Number(match[1])
+    const minor = Number(match[2])
+    return { available: true, passthrough: major > 3 || (major === 3 && minor >= 3) }
+  })
 }
 
 /** spawn 帧里的持久名清洗：合法字符集加 `dsh-` 前缀；不合法退回 sid 派生名。 */
@@ -145,16 +217,18 @@ export function killTmuxSession(tmuxName: string): Promise<void> {
   })
 }
 
-/** 专用 socket 上现存的 tmux 会话名（sessions 帧的 tmux 字段，客户端恢复确认用）。 */
-export function listTmuxSessions(): Promise<string[]> {
-  return new Promise((resolve) => {
-    execFile('tmux', ['-L', TMUX_SOCKET, 'list-sessions', '-F', '#{session_name}'], { timeout: 4000 }, (error, stdout) => {
-      if (error !== null && error !== undefined) {
-        resolve([])
-        return
-      }
-      resolve(String(stdout).trim().split('\n').filter(Boolean))
-    })
+/**
+ * 专用 socket 上现存的 tmux 会话名（sessions 帧的 tmux 字段）。
+ *
+ * 探不明白（超时 / 被信号收掉）返回 `undefined` 而不是 `[]`（D81）：空数组会被读成
+ * 「确实没有任何持久会话」这个**确定答案**，而失败只是「不知道」——下游据此淘汰
+ * 持久标签规格时，两者含义完全相反。所以只把**确定**的「没有 server / 没装」
+ * （非零退出、ENOENT）落成 `[]`。
+ */
+export function listTmuxSessions(): Promise<string[] | undefined> {
+  return tmuxExec(['-L', TMUX_SOCKET, 'list-sessions', '-F', '#{session_name}'], 4000).then(({ error, stdout }) => {
+    if (error !== undefined) return isProbeTimeout(error) ? undefined : []
+    return stdout.trim().split('\n').filter(Boolean)
   })
 }
 

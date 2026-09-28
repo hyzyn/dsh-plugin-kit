@@ -281,10 +281,12 @@ async function searchSessions(ctx, rawQuery, limit, signal, maxScanSessions = MA
             }
         }
     }
-    hits = await searchSessionsByScan(sessionQuery, query, limit, signal, maxScanSessions);
-    const visible = await filterVisibleSessionHits(ctx, hits, signal);
-    // 同上：空结果不写缓存，避免超时截断的空结果被 30s 固化。
-    if (visible.length > 0)
+    const scanned = await searchSessionsByScan(sessionQuery, query, limit, signal, maxScanSessions);
+    const visible = await filterVisibleSessionHits(ctx, scanned.hits, signal);
+    // 空结果不写缓存（超时截断的空结果会被 30s 固化）——同理，**被切走的非空部分结果**
+    // 也不写：它只是「还没扫完」，缓存会让立刻重试拿到同一份不完整清单（后台扫描仍在
+    // 补文档缓存，不缓存时重试很快就能拿全）。
+    if (!scanned.truncated && visible.length > 0)
         setCachedResult(cacheKey, visible);
     return visible;
 }
@@ -342,16 +344,18 @@ export function sortRecordsByTimeDesc(records) {
  * 回退扫描（宿主 FTS 不可用时逐会话扫描原始事件）：
  * 会话按最近优先截断到 maxScanSessions；命中结果按时间倒序返回。
  */
-async function searchSessionsByScan(sessionQuery, query, limit, signal, maxScanSessions = MAX_SCAN_SESSIONS) {
+export async function searchSessionsByScan(sessionQuery, query, limit, signal, maxScanSessions = MAX_SCAN_SESSIONS) {
     if (typeof sessionQuery.listSessions !== 'function' || typeof sessionQuery.filterEvents !== 'function')
-        return [];
+        return { hits: [], truncated: false };
     let records = [];
     try {
         records = await sessionQuery.listSessions(signal);
     }
     catch (error) {
         console.warn('[dsh-global-search] session list unavailable for fallback scan:', error instanceof Error ? error.message : String(error));
-        return [];
+        // 会话清单都拿不到：这是「没扫成」，不是「扫完没有命中」——同样按 truncated 处理，
+        // 免得这个空结果被缓存 30s
+        return { hits: [], truncated: true };
     }
     const filter = compileLocalTextFilter(query);
     // subagent 会话排除在扫描之外（打不开，也不占结果名额）；
@@ -376,10 +380,16 @@ async function searchSessionsByScan(sessionQuery, query, limit, signal, maxScanS
     // 整体超时：返回已收集的部分结果，避免最坏情况长时间无响应；
     // 即使被切走，后台任务仍在为下一个查询填充会话缓存。
     let scanTimeout;
+    // 注意：计时器在竞态构造时就已创建，所以 `scanTimeout !== undefined` 不能用来判断
+    // 「是否被超时切走」——必须由回调自己置标志位
+    let timedOut = false;
     await Promise.race([
         scanPromise,
         new Promise((resolve) => {
-            scanTimeout = setTimeout(resolve, SCAN_TIMEOUT_MS);
+            scanTimeout = setTimeout(() => {
+                timedOut = true;
+                resolve();
+            }, SCAN_TIMEOUT_MS);
         }),
     ]);
     // 扫描先结束时清掉超时定时器：后台扫描不受影响，但不留 ref 计时器拖住进程退出。
@@ -388,7 +398,9 @@ async function searchSessionsByScan(sessionQuery, query, limit, signal, maxScanS
     // 命中按时间倒序返回（同一时间保持收集顺序稳定）；只影响回退扫描路径，
     // 宿主 FTS 正常返回时仍保持其相关度排序。
     collected.sort((a, b) => b.time - a.time);
-    return collected.slice(0, limit);
+    // truncated：这次是**被超时切走的**部分结果，不是扫完了的全部命中。
+    // 调用方据此决定不写缓存——部分结果一旦缓存，立刻重试也拿不到更全的清单。
+    return { hits: collected.slice(0, limit), truncated: timedOut };
 }
 /** 单会话扫描：优先使用缓存文档；未缓存则一次拉取全部文档并缓存（消除重复解压）。 */
 async function scanOneSession(sessionQuery, sessionId, filter, query) {

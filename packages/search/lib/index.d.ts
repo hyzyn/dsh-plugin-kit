@@ -18,6 +18,41 @@ export interface Config {
     maxScanSessions?: number;
 }
 export declare function makeSnippet(text: string, query: string, radius?: number): string;
+interface SessionHit {
+    id: string;
+    snippet: string;
+    time: number;
+}
+export interface SessionQueryLike {
+    searchSessions?(request: {
+        query: string;
+        eventFilters?: unknown[];
+        limit?: number;
+    }, exec?: {
+        signal?: AbortSignal;
+    }): Promise<{
+        items?: Array<{
+            header?: {
+                id?: string;
+            };
+            bestMatch?: {
+                snippet?: string;
+                time?: number;
+            };
+        }>;
+    }>;
+    listSessions?(signal?: AbortSignal): Promise<Array<{
+        header: {
+            id: string;
+        };
+    }>>;
+    filterEvents?(sessionId: string, filters: unknown[]): Promise<Array<{
+        text: string;
+        time: number;
+        type?: string;
+        surface?: string;
+    }>>;
+}
 /**
  * 生成本地扫描的文本过滤器，语义与宿主 compileSessionTextFilter 对齐：
  * 大小写不敏感、空白弹性、正则元字符转义。
@@ -39,4 +74,13 @@ export declare function isSubagentHeader(header: unknown): boolean;
  * 有时间记录之间用原索引做稳定 tie-break。
  */
 export declare function sortRecordsByTimeDesc<T>(records: T[]): T[];
+/**
+ * 回退扫描（宿主 FTS 不可用时逐会话扫描原始事件）：
+ * 会话按最近优先截断到 maxScanSessions；命中结果按时间倒序返回。
+ */
+export declare function searchSessionsByScan(sessionQuery: SessionQueryLike, query: string, limit: number, signal?: AbortSignal, maxScanSessions?: number): Promise<{
+    hits: SessionHit[];
+    truncated: boolean;
+}>;
 export declare const name: string, inject: string[] | undefined, apply: (ctx: Context, config?: Config | undefined) => void;
+export {};

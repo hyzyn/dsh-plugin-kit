@@ -324,6 +324,10 @@ interface TtySession {
     stats: StatsCollector | null;
     /** 采集已永久失败（远端无 /proc、exec 被拒、连接断开）：不再重启，前端隐藏状态条。 */
     statsFailed: boolean;
+    /** 采集失败后的重挂时刻（0 = 没有待重挂）：失败位不再是粘性的（D83）。 */
+    statsRetryAt: number;
+    /** 连续失败次数：退避倍数按它递增，出过帧即归零。 */
+    statsFailures: number;
 }
 interface ReqLike {
     method?: string;
@@ -674,10 +678,24 @@ export declare class TtyServer {
      *     共享一次 df/netstat）；
      *   - SSH：远端 sh + awk 常驻循环，每秒一行 JSON 走**非 PTY** exec channel；
      *     速率类由远端算好，宿主只解析 + 清洗。
-     * 任何失败都静默停表并置 statsFailed（粘性，避免每秒重启）：前端靠「无数据」
-     * 隐藏状态条，PTY 数据路径与终端体验完全不受影响。
+     * 失败时静默停表并置 statsFailed：前端靠「无数据」隐藏状态条，PTY 数据路径与
+     * 终端体验完全不受影响。
+     *
+     * 但失败位**不再粘死整个会话**（D83）：原先置位后永不复位，一次瞬态故障
+     * （sshd MaxSessions 拒绝并发 channel、单通道 ECONNRESET）就让状态条与 agent
+     * tty_stats 在会话余生里彻底没有数据，而主 PTY 通道其实是健康的。现在按指数
+     * 退避自动重挂（出过帧即计数归零），既保住「别每秒重启」的本意，又能自愈。
      */
     private startStats;
+    /**
+     * 采集失败后的退避重挂（D83）。
+     *
+     * 退避而不是立刻重试，是为了保住原先「粘性失败位」想解决的问题——远端平台压根
+     * 没有采集源（macOS/BSD：既无 /proc 也无 PowerShell）时不能每秒重启一个必然失败
+     * 的 channel。指数退避 + 上限把这种「稳态失败」压到几分钟一次，同时让瞬态故障
+     * 在恢复后自动回到有数据状态（出过帧就归零）。
+     */
+    private scheduleStatsRetry;
     /** 停表（幂等）：订阅清零 / 会话结束 / 插件禁用 / 配置关闭都走它。 */
     private stopStats;
     private stopAllStats;

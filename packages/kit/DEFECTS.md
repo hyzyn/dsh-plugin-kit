@@ -2,7 +2,7 @@
 
 > **本文件是「转入台账」，不是本包的权威序列。** 下表 `kit D01`–`kit D05` 是**转入镜像**——
 > 权威记录在**原包**（主要是 `codegraph CGxx`），kit 侧只是「改 kit 的人不必翻别人的台账」的入口。
-> **引用时优先写原编号**（如 `codegraph CG05`）；kit 内部新发现的缺陷才接在 `D12` 之后编号。
+> **引用时优先写原编号**（如 `codegraph CG05`）；kit 内部新发现的缺陷才接在 `D13` 之后编号。
 > 跨包引用一律写 `<包名> <前缀><号>`（如 `codegraph CG05`、`tty D61`、`docker D13`），
 > 裸编号只在本包文件内使用。规范见 [docs/conventions.md § 编号规范](../../docs/conventions.md#编号规范)。
 
@@ -19,11 +19,11 @@
 
 - 每条只写**一句话**（这段代码为什么长这样）+ **指回原编号**；
 - **不复制原文、不重新编号、不删除原编号**（原编号仍是权威记录）；
-- 新的、**在 kit 内部发现**的缺陷，直接接在 `D12` 之后编号，写在本文件里。
+- 新的、**在 kit 内部发现**的缺陷，直接接在 `D13` 之后编号，写在本文件里。
 
 ## 现状
 
-**已修 12 / 待修 0**（`D01–D05` 为「在消费包发现、修在 kit」，`D06`–`D12` 是**本包内部**发现的）。
+**已修 13 / 待修 0**（`D01–D05` 为「在消费包发现、修在 kit」，`D06`–`D13` 是**本包内部**发现的）。
 逐条见下表；`D01–D05` 原文见 [codegraph 的台账](../codegraph/DEFECTS.md)对应行。
 
 ## 转入清单
@@ -44,10 +44,11 @@
 | **kit D11** | —（本包内部） | 能力判定在 kit 里是**模块级单例**（`bindCapabilitySources` 后绑定覆盖前一次），而各插件各 `new GrantStore(...)`——每个插件因此拿一份**文件快照副本**（该类是「首查读盘 + 进程内缓存」）。真机实测（2026-09-27，docker + tty 同装）：用户在 **tty 卡片**上完成就地授权，授权文件里明明有了这条记录，**tty 自己的快照却报 `granted: false`**（此刻绑定的是 docker 的实例，它在启动时缓存了「还没有这条授权」的表）→ 界面显示「未获宿主授权」、连撤销按钮都不渲染，策略重算也问的是错的来源（授权等于没生效）。也不能用「多来源取并集」糊过去：一个过期副本会**否决撤销**，方向恰好是危险的那一侧。修法：`sharedGrantStore(dir)`（按 `resolve` 后的目录 memo，同一目录只造一个实例），docker 与 tty 都改用它；单测同时钉住「共享 = 互相可见」与「各自 new = 互相看不见（这一条的理由）」 | [src/grant-store.ts](../../packages/kit/src/grant-store.ts) · [test/grant-store.test.ts](../../packages/kit/test/grant-store.test.ts) |
 
 | **kit D12** | —（本包内部） | 真宿主验收里的「**无授权实例**」会**继承开发机上的持久授权**：带外授权是持久的（落在 `<DSH home>/dsh-kit/`，kit D09），而验收必须跑在用户真实的 DSH 主目录里（profile 里的 `node_modules` 是相对符号链接，换 `DSH_HOME` 会整批失联），于是只要用户在卡片上授权过一次，那个「无授权」实例就白拿那份授权。真机实测（2026-09-27）：`live-host-smoke` 的 A 段 **9/9 全红**（A1/A2/A3/A5/A5b/A5c/A6/A7/A7b），红的理由却与产品行为无关（该实例其实已授权；同轮 B 段 7/7 绿，A7 甚至显示代理命令真的跑起来了——那是闸门放行，不是缺陷）。这类闸门最坏的地方是**恒红且理由错**：跑几次之后没人再看它，真正的回归会一起被无视。修法：kit 新增 `DSH_KIT_HOME` 覆写（**测试 / 诊断用**，不是给用户调的旋钮——能设置宿主环境变量的人本来就能用启动环境变量直接授权，那条通道更强；这里只是把「授权落在哪个目录」也变成可注入的），验收给每个实例一份一次性 profile 里的 `.kit-home` 作授权目录，并把自己那份授权文件**只读地**念一遍（打印条数）留作现场 | [src/grant-store.ts](../../packages/kit/src/grant-store.ts) · [scripts/live-host-smoke.mjs](../../scripts/live-host-smoke.mjs) · [scripts/test/live-host-smoke-safety.test.ts](../../scripts/test/live-host-smoke-safety.test.ts) · [test/grant-store.test.ts](../../packages/kit/test/grant-store.test.ts) |
+| **kit D13** | —（本包内部） | `consoleEncoding`（Windows 控制台代码页探测）把**超时**与「没有控制台」合成同一个确定性结论、并**进程级缓存**：`chcp` 探测超时是瞬态的（宿主启动争抢期 `cmd.exe` 能被拉起过 3s），而结论写入 `cachedConsoleEncoding` 后再不重试——**一次争抢就把整个会话钉死成错码表解码**，此后每条 CLI 输出都按 `windows-1252` 重解（CP936 中文系统上就是乱码被当成真实工具输出），恢复要重启宿主。同一条路径还漏了「为什么失败」：裸 `catch` 把超时与「没有控制台」写成了同一句话。修法：探测用 `undefined` 表示「没探明白」（判据只认 `killed` / `signal` / `ETIMEDOUT` 标记，不猜文案），超时结论**不缓存**、只在 30s 退避窗口内直接给兜底（免得每次建解码器都同步起一次 `cmd.exe`），窗口过后自动重探；确定性失败照旧缓存。`setConsoleEncodingProbe` 是给三平台矩阵用的注入缝——非 Windows 恒返回 UTF-8，跑不到这条分支 | [src/decode.ts](../../packages/kit/src/decode.ts) · [test/decode.test.ts](../../packages/kit/test/decode.test.ts) |
 
 ## 维护规则
 
-1. **在 kit 内部发现**的缺陷：接在 `D12` 之后编号，只加一行 + 在代码注释里落编号；
+1. **在 kit 内部发现**的缺陷：接在 `D13` 之后编号，只加一行 + 在代码注释里落编号；
    详细 postmortem 写进 commit message。
 2. **在消费包发现、修在 kit** 的缺陷：原编号留在那个包的台账（权威），本文加一行转入记录。
    **不要**在两个地方都写详细正文。

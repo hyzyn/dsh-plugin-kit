@@ -990,3 +990,87 @@ describe('wrapLocalPty 的 resize 降级（D79）', () => {
     }
   })
 })
+
+describe('SSH 采集失败：退避重挂而不是粘死（D83）', () => {
+  /**
+   * SSH 会话替身：只补 `startStats` 会碰到的字段 + 一个「一帧未读就结束」的 statsExec。
+   * 真实故障就是这样：sshd MaxSessions 拒绝并发 channel、单通道 ECONNRESET——PTY 主通道
+   * 健康，采集 channel 一帧未读就没了。修复前这会置一个**永不复位**的失败位。
+   */
+  function makeSshStatsSession(
+    statsExec: (command: string, onLine: (line: string) => void, onExit: () => void) => { stop(): void },
+  ): any {
+    return {
+      id: 'ssh-stats',
+      kind: 'ssh',
+      handle: { kind: 'ssh', pid: 7, done: new Promise(() => {}), statsExec },
+      clients: new Map(),
+      closed: false,
+      exited: null,
+      statsSubs: new Set(),
+      stats: null,
+      statsFailed: false,
+      statsRetryAt: 0,
+      statsFailures: 0,
+    }
+  }
+
+  it('失败后按指数退避自动重挂：30s 一次、翻倍到 60s（不是粘死整个会话）', async () => {
+    vi.useFakeTimers()
+    try {
+      const h = makeHarness()
+      let attempts = 0
+      const session = makeSshStatsSession((_command, _onLine, onExit) => {
+        attempts += 1
+        // 一帧未读就结束：POSIX 跳 → 换 PowerShell 再试一次 → 两跳都失败
+        queueMicrotask(() => { onExit() })
+        return { stop: () => {} }
+      })
+      const start = (h.server as unknown as { startStats(s: unknown): void }).startStats.bind(h.server)
+      start(session)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(attempts).toBe(2) // 双跳都试过
+      expect(session.statsFailed).toBe(true)
+
+      // 第一轮退避 base=30s：到点自动重挂（又两跳）
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(attempts).toBe(4)
+      expect(session.statsFailed).toBe(true)
+
+      // 第二轮退避翻倍成 60s：29s 时不该有任何动作
+      await vi.advanceTimersByTimeAsync(29_000)
+      expect(attempts).toBe(4)
+      await vi.advanceTimersByTimeAsync(31_000)
+      expect(attempts).toBe(6)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('重挂后出帧 → 失败位清除、退避计数归零（瞬态故障恢复即自愈）', async () => {
+    vi.useFakeTimers()
+    try {
+      const h = makeHarness()
+      let attempts = 0
+      const session = makeSshStatsSession((_command, onLine, onExit) => {
+        attempts += 1
+        if (attempts <= 2) queueMicrotask(() => { onExit() }) // 前两跳（首轮）失败
+        else queueMicrotask(() => { onLine('{"cpu":1}') }) // 重挂后出帧
+        return { stop: () => {} }
+      })
+      const start = (h.server as unknown as { startStats(s: unknown): void }).startStats.bind(h.server)
+      start(session)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(session.statsFailed).toBe(true)
+      expect(session.statsFailures).toBe(1)
+
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(attempts).toBe(3)
+      // 出帧即归零：下次真失败会重新从 base 退避，而不是继承已翻倍的档位
+      expect(session.statsFailures).toBe(0)
+      expect(session.statsFailed).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

@@ -265,6 +265,16 @@ function jumpSpecOf(spec) {
 /** 跳板机通道打开兜底（与 channel 打开兜底同思路：对端不回 `forwardOut` 回调时不能让 await 挂着）。 */
 const JUMP_CHANNEL_TIMEOUT_MS = 15_000;
 /**
+ * 远端 tmux 探测：单次超时 + 补探轮数（D82）。
+ *
+ * 为什么补探：`command -v tmux` 是**毫秒级**命令，10s 打不满就只可能是远端忙 / 链路
+ * 慢 / channel 被拒（sshd MaxSessions 之类）。原先超时与「没装」同一条降级路径，
+ * 用户显式要的持久化被瞬时状况关掉，提示还写成「未安装」。补探一次把这类瞬时状况
+ * 和真的没装分开；轮数封顶（spawn 路径是同步等的，不能无限等）。
+ */
+const REMOTE_TMUX_PROBE_TIMEOUT_MS = 10_000;
+const REMOTE_TMUX_PROBE_ROUNDS = 2;
+/**
  * 拨跳板机并借一条 `forwardOut` 通道（ProxyJump 单跳）。
  *
  * 三件事刻意做在这里：
@@ -987,35 +997,63 @@ export async function spawnSsh(spec, options) {
             // 先毫秒级探测远程是否有 tmux（不带 pty 的 exec）。决策依据：exit（大多
             // 数 sshd 立即回）→ close（兜底，个别实现无 exit）→ 10s 超时（实测某些
             // sshd 如 CentOS 9 只回 exit 不回 close，等 close 会永久卡死 spawn）。
-            // error 与 close 可能先后到达，proceeded 防止降级路径开两条 channel
+            // error 与 close 可能先后到达，proceeded 防止降级路径开两条 channel。
+            //
+            // D82：exit 非零 = **确定**没装；超时 / 只有 close 没有 exit / channel 打不开
+            // = **没探明白**，补探一次再判——原先这几种一律按「未安装」降级，把远端忙
+            // 或链路慢说成了确定结论，用户显式要的持久化就此被瞬时状况关掉。
             let proceeded = false;
+            let rounds = 0;
+            /** 本轮探测的兜底计时器：结算时清掉，免得上一轮的 10s 计时器误判下一轮。 */
+            let timer;
+            const clearTimer = () => {
+                if (timer !== undefined) {
+                    clearTimeout(timer);
+                    timer = undefined;
+                }
+            };
+            /** 收尾降级：调用方负责 proceeded 守卫（这里只做「清计时器 + 提示 + 开 shell」）。 */
             const fallback = (notice) => {
-                if (proceeded)
-                    return;
-                proceeded = true;
+                clearTimer();
                 startupNotice = notice;
                 openShell();
             };
-            const decide = (code) => {
+            const settle = (code) => {
                 if (proceeded)
                     return;
-                proceeded = true;
-                if (code === 0)
+                if (code === 0) {
+                    proceeded = true;
+                    clearTimer();
                     openTmux();
-                else
-                    fallback('远程 tmux 不可用（未安装或探测超时），本次以普通会话连接；安装 tmux 后持久会话可跨断线/宿主重启恢复');
-            };
-            conn.exec('command -v tmux >/dev/null 2>&1', (error, stream) => {
-                if (error !== undefined && error !== null) {
-                    fallback('远程 tmux 探测失败，已降级为普通会话');
                     return;
                 }
-                stream.on('exit', (c) => { decide(typeof c === 'number' ? c : 1); });
-                stream.on('close', () => { decide(null); });
-                stream.on('error', () => fallback('远程 tmux 探测失败，已降级为普通会话'));
-                const timer = setTimeout(() => decide(null), 10_000);
-                timer.unref?.();
-            });
+                if (code === null && rounds < REMOTE_TMUX_PROBE_ROUNDS) {
+                    rounds += 1;
+                    clearTimer();
+                    probe();
+                    return;
+                }
+                proceeded = true;
+                fallback(code === null
+                    ? '远程 tmux 探测超时（远端较忙或链路慢），本次以普通会话连接；重连一次即可再试持久化'
+                    : '远程 tmux 不可用（未安装），本次以普通会话连接；安装 tmux 后持久会话可跨断线/宿主重启恢复');
+            };
+            const probe = () => {
+                conn.exec('command -v tmux >/dev/null 2>&1', (error, stream) => {
+                    if (error !== undefined && error !== null) {
+                        // channel 都打不开（远端并发上限 / 瞬态拒绝）同样属「没探明白」
+                        settle(null);
+                        return;
+                    }
+                    stream.on('exit', (c) => { settle(typeof c === 'number' ? c : null); });
+                    // 只有 close、没有 exit（个别 sshd 实现）：同样是「没探明白」，不是「没有 tmux」
+                    stream.on('close', () => { settle(null); });
+                    stream.on('error', () => { settle(null); });
+                    timer = setTimeout(() => { settle(null); }, REMOTE_TMUX_PROBE_TIMEOUT_MS);
+                    timer.unref?.();
+                });
+            };
+            probe();
         };
         conn.on('ready', () => {
             // 命令标签（0.14.0）优先：不做 tmux 持久化（命令短命，attach 没意义）
