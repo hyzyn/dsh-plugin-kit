@@ -52,6 +52,21 @@ const CRASH_OPS: Op[] = [
 ]
 
 const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0))
+
+/**
+ * 轮询到条件成立（默认 5s 预算）。
+ *
+ * 看门狗用例的窗口是**毫秒级**（这条用 60ms），固定 sleep 一个「差不多够」的值在满载
+ * runner 上会被事件循环延迟吃掉——2026-09-28 macOS CI 实测过一次假红（`expected +0
+ * to be 1`：250ms 没等到 60ms 的看门狗）。等条件成立既保住断言意图，又不依赖机器快慢。
+ */
+async function until(predicate: () => boolean, budgetMs = 5000): Promise<void> {
+  const start = Date.now()
+  while (!predicate()) {
+    if (Date.now() - start > budgetMs) throw new Error('等待条件超时')
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+}
 /** 多让几拍：解析在 setTimeout 回调里跑，异常要等定时器才冒出来。 */
 const settle = async (): Promise<void> => {
   for (let i = 0; i < 5; i++) await tick()
@@ -183,9 +198,11 @@ describe('虚拟屏停摆心跳（D57 跟进）', () => {
         await tick()
       }
       expect(stalls).toBe(0) // 还没到窗口
-      await new Promise((r) => setTimeout(r, 250))
-      expect(stalls).toBe(1) // 判出且只回调一次
+      await until(() => stalls === 1) // 判出（轮询，不赌固定 sleep）
       expect(heartbeat.inflight).toBeGreaterThan(0) // 出错那批的回调永远不会回来
+      // 且只回调一次：再等一段确认没有第二次
+      await new Promise((r) => setTimeout(r, 250))
+      expect(stalls).toBe(1)
     } finally {
       clearScreenWatchdog(heartbeat)
       hostile.dispose()
