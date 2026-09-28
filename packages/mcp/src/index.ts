@@ -417,7 +417,14 @@ function liveStatus(ctx: Context, id: string): string {
   return 'not-loaded'
 }
 
-/** 查找本插件托管之外的 mcp-client 实例（用于 serverName 冲突提示）。 */
+/**
+ * 查找本插件托管之外的 mcp-client 实例（外部实例**清单**，不是冲突列表）。
+ *
+ * ⚠️ 返回值与托管行**未必**有交集：本机 7 条 profile 层的外部实例、卡片里 2 条托管行，
+ * 两边的 serverName 毫无重叠时这里照样返回 7 条。所以它只适合当「外部占用名单」用
+ * （保存护栏比对、以及信息条展示）——**横幅上的「冲突」必须另算交集**，见
+ * `externalNameClashes()`。事故背景见 issue #5（把清单原样当冲突渲染，导致不重名也报警）。
+ */
 function externalMcpEntries(ctx: Context, managedIds: Set<string>): Array<{ id: string; serverName: string }> {
   const loader = (ctx as unknown as { loader?: { entries(): Iterable<unknown> } }).loader
   if (loader === undefined) return []
@@ -437,20 +444,41 @@ function externalMcpEntries(ctx: Context, managedIds: Set<string>): Array<{ id: 
   return out
 }
 
+/**
+ * 纯函数：从托管行里挑出与本插件之外的 mcp-client 实例**真正重名**的那些行。
+ *
+ * 与 `externalMcpEntries()` 的分工（issue #5 的核心）：
+ * - `externalMcpEntries()` = 「外部实例清单」，**不与托管行求交集**，供保存护栏 / 外部占用名单用；
+ * - 本函数 = 上面这份清单与托管行的**交集**，即 DTO 里 `servers[].conflict === true` 的行，
+ *   只有它才配叫「冲突」（同名两个实例抢同一套 `mcp__<serverName>__*` 工具名，其中一个必然加载失败）。
+ *
+ * 一条都不相交时返回空数组 ⇒ 界面不该出现任何冲突横幅（这正是它要修的行为）。
+ */
+export function externalNameClashes(
+  rows: Array<{ id: string; serverName: string }>,
+  external: Array<{ id: string; serverName: string }>,
+): Array<{ id: string; serverName: string }> {
+  const taken = new Set(external.map((entry) => entry.serverName))
+  return rows.filter((row) => taken.has(row.serverName)).map((row) => ({ id: row.id, serverName: row.serverName }))
+}
+
 /* ------------------------------------------------------------------ *
  * 服务器列表 DTO
  * ------------------------------------------------------------------ */
 
-function buildServersDto(ctx: Context): {
+export function buildServersDto(ctx: Context): {
   servers: Array<Record<string, unknown>>
   fileError?: string
   patchFile: string
+  /** 托管行里**真正**与外部实例重名的那些行（横幅只该渲染这份）。 */
   conflicts: Array<{ id: string; serverName: string }>
+  /** 本插件之外的 mcp-client 实例清单（保存护栏与「外部占用」信息条用；与 conflicts 不是一回事）。 */
+  externalServers: Array<{ id: string; serverName: string }>
 } {
   const managed = readManagedRows()
   const managedIds = new Set(managed.rows.map((row) => row.id))
-  const external = externalMcpEntries(ctx, managedIds)
-  const usedExternalNames = new Set(external.map((entry) => entry.serverName))
+  const externalServers = externalMcpEntries(ctx, managedIds)
+  const usedExternalNames = new Set(externalServers.map((entry) => entry.serverName))
   const servers = managed.rows.map((row) => {
     const config = row.config
     return {
@@ -479,7 +507,13 @@ function buildServersDto(ctx: Context): {
     ...(managed.fileError !== undefined ? { fileError: managed.fileError } : {}),
     servers,
     patchFile: managed.patchFile,
-    conflicts: external,
+    // conflicts 只放交集（逐行 conflict 的同一份判据），外部清单另走 externalServers——
+    // 曾经这里塞的是 external 原样，于是「没有任何重名」也会常驻一条冲突横幅（issue #5）。
+    conflicts: externalNameClashes(
+      managed.rows.map((row) => ({ id: row.id, serverName: row.config.serverName })),
+      externalServers,
+    ),
+    externalServers,
   }
 }
 

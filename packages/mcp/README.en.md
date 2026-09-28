@@ -9,7 +9,7 @@
 - **Hot-loaded on save**: rewrites the managed block of `~/.dsh/cordis.patch.yml`; DSH’s HMR watcher reloads it automatically, and tools are registered to the model as `mcp__<server>__<tool>`.
 - **stdio and streamable-http transports**: stdio (command / args / env / cwd) and streamable-http (url / headers, including SSE and session headers); values can be written as `js:` expressions, so secrets never land in the patch file.
 - **Connection Test without the MCP SDK**: the host speaks JSON-RPC directly (initialize → tools/list), returning protocol version / serverInfo / tool list / elapsed time.
-- **Liveness and name conflicts are visible**: reads liveness from the loader fiber (running / disabled / error / loading) and warns about serverName conflicts with external mcp-client instances; servers can be enabled / disabled (`disabled: true`) / edited / deleted.
+- **Liveness and name conflicts are visible**: reads liveness from the loader fiber (running / disabled / error / loading). Name clashes come in two distinct tiers, never conflated (issue #5): `conflicts` holds only rows that **actually reuse** an external serverName — both instances would claim the same `mcp__<serverName>__*` tool names, so the warning banner appears only then; the inventory of instances outside this card travels in `externalServers` and is shown as a neutral info banner (“these names are already taken elsewhere — don’t reuse them here”). Servers can be enabled / disabled (`disabled: true`) / edited / deleted.
 - **Capability notice injected into systemPrompt**: injects a capability notice (systemPrompt section) so that when “MCP config / MCP server” comes up, the model knows it refers to this plugin.
 
 ![MCP Server Configuration card: add / Connection Test / hot reload](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-mcp.png)
@@ -24,7 +24,7 @@
 
 Routes (loopback + same-origin only):
 
-- `GET /api/dsh-mcp/servers` — list + status + conflicts
+- `GET /api/dsh-mcp/servers` — list + status + **real clashes** (`conflicts`) / instances outside this card (`externalServers`)
 - `POST /api/dsh-mcp/servers/save` — save the whole set (after validation, write back to the managed block)
 - `POST /api/dsh-mcp/test` — run one Connection Test with the form configuration
 

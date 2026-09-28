@@ -1245,7 +1245,9 @@ if (codegraphCli === undefined) {
     `保存=${saved.status} 最终 status=${status}（loader 树里的 fiber 状态）`,
   )
   // E6：codegraph 把「已索引的默认工程」写进 home 补丁的托管行；DSH 核心的 mcp-client
-  // 加载它之后，它会以「不受 mcp 插件管理的 mcp-client 条目」出现在 /servers 的 conflicts 里。
+  // 加载它之后，它会以「不受 mcp 插件管理的 mcp-client 条目」出现在 /servers 的
+  // externalServers（外部实例清单）里。注意不是 conflicts：后者自 issue #5 起只放**真重名**
+  // 的托管行，而这条 codegraph 行与本卡托管行并不重名，理应不出现在 conflicts 里。
   // 先确保默认路径就是 B1 里已经索引好的那个工程，托管行才会被写出来。
   await call('POST', '/api/dsh-codegraph/default-path', { path: PROJECT })
   await call('POST', '/api/dsh-codegraph/sync', { path: PROJECT })
@@ -1258,11 +1260,11 @@ if (codegraphCli === undefined) {
     `补丁文件=${String(patchFile)} 有开始=${patchText.includes('# --- dsh-codegraph mcp managed')} 有结束=${patchText.includes('# --- end dsh-codegraph mcp managed')}`,
   )
   const after = json((await call('GET', '/api/dsh-mcp/servers')).body)
-  const external = JSON.stringify(after?.conflicts ?? [])
+  const external = JSON.stringify(after?.externalServers ?? [])
   record(
-    'B15 跨插件：codegraph 写的托管 MCP 行确实被 DSH 核心的 mcp-client 加载了（在 /servers 的 conflicts 里可见）',
+    'B15 跨插件：codegraph 写的托管 MCP 行确实被 DSH 核心的 mcp-client 加载了（在 /servers 的 externalServers 里可见）',
     external.includes('codegraph') || external.includes('mcp-codegraph'),
-    `conflicts=${external.slice(0, 240)}`,
+    `externalServers=${external.slice(0, 240)}`,
   )
   // 复位同样要 clearAll: true（理由见 B7 那段）
   await call('POST', '/api/dsh-mcp/servers/save', { servers: [], clearAll: true })

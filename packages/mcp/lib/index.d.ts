@@ -75,6 +75,41 @@ export declare function externalNameRejection(incoming: Array<{
     id: string;
     serverName: string;
 }>): string | undefined;
+/**
+ * 纯函数：从托管行里挑出与本插件之外的 mcp-client 实例**真正重名**的那些行。
+ *
+ * 与 `externalMcpEntries()` 的分工（issue #5 的核心）：
+ * - `externalMcpEntries()` = 「外部实例清单」，**不与托管行求交集**，供保存护栏 / 外部占用名单用；
+ * - 本函数 = 上面这份清单与托管行的**交集**，即 DTO 里 `servers[].conflict === true` 的行，
+ *   只有它才配叫「冲突」（同名两个实例抢同一套 `mcp__<serverName>__*` 工具名，其中一个必然加载失败）。
+ *
+ * 一条都不相交时返回空数组 ⇒ 界面不该出现任何冲突横幅（这正是它要修的行为）。
+ */
+export declare function externalNameClashes(rows: Array<{
+    id: string;
+    serverName: string;
+}>, external: Array<{
+    id: string;
+    serverName: string;
+}>): Array<{
+    id: string;
+    serverName: string;
+}>;
+export declare function buildServersDto(ctx: Context): {
+    servers: Array<Record<string, unknown>>;
+    fileError?: string;
+    patchFile: string;
+    /** 托管行里**真正**与外部实例重名的那些行（横幅只该渲染这份）。 */
+    conflicts: Array<{
+        id: string;
+        serverName: string;
+    }>;
+    /** 本插件之外的 mcp-client 实例清单（保存护栏与「外部占用」信息条用；与 conflicts 不是一回事）。 */
+    externalServers: Array<{
+        id: string;
+        serverName: string;
+    }>;
+};
 interface ReqLike {
     method?: string;
     url?: string;

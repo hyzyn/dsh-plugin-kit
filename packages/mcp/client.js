@@ -164,8 +164,9 @@ window.__ModuleLoader__.load({
       'panel.fieldEnabled': ' 启用',
       'panel.fieldReconnect': ' 断线自动重连',
       'panel.hint': 'env/headers 的 VALUE 以 js: 开头会原样写入 !!js 表达式（例如 js:process.env.GITHUB_TOKEN）。保存后服务器会热加载，工具名形如 mcp__<serverName>__<tool>。',
-      'msg.fileError': '配置区块异常：{error}（保存一次即可修复）',
-      'msg.conflicts': '以下 serverName 与本插件托管之外的 mcp-client 实例重复，可能导致对应实例加载失败：{names}',
+      'banner.fileError': '配置区块异常：{error}（保存一次即可修复）',
+      'banner.conflicts': '以下 serverName 与本插件之外的 mcp-client 实例重名，两个实例会抢同一套工具名 mcp__<serverName>__*，其中一个必然加载失败：{names}',
+      'banner.externalOccupied': '以下 serverName 已被本卡之外的 mcp-client 实例占用（例如别的插件自管的行），在本卡内不要重名：{names}',
       'msg.hotReload': '改动写入 ~/.dsh/cordis.patch.yml 的托管区块后经 HMR 热加载（约 1~2 秒生效）。env/headers 值以 js: 开头会被当作 !!js 表达式（如 js:process.env.GITHUB_TOKEN）。',
       'msg.testConnecting': '正在连接并列出工具…（最长 25 秒）',
       'msg.testOk': '连接成功',
@@ -232,8 +233,9 @@ window.__ModuleLoader__.load({
       'panel.fieldEnabled': ' Enabled',
       'panel.fieldReconnect': ' Reconnect automatically after a drop',
       'panel.hint': 'An env/headers VALUE starting with js: is written as a !!js expression verbatim (e.g. js:process.env.GITHUB_TOKEN). Saving hot-loads the server; tool names look like mcp__<serverName>__<tool>.',
-      'msg.fileError': 'Malformed configuration block: {error} (saving once repairs it)',
-      'msg.conflicts': 'These serverNames clash with mcp-client instances managed outside this plugin, which may keep those instances from loading: {names}',
+      'banner.fileError': 'Malformed configuration block: {error} (saving once repairs it)',
+      'banner.conflicts': 'These serverNames clash with mcp-client instances outside this plugin — both would claim the same tool names mcp__<serverName>__*, and one of them is bound to fail loading: {names}',
+      'banner.externalOccupied': 'These serverNames are already taken by mcp-client instances outside this card (rows managed by other plugins, for example); avoid reusing them here: {names}',
       'msg.hotReload': 'Changes are written to the managed block of ~/.dsh/cordis.patch.yml and hot-loaded via HMR (effective in about 1–2 seconds). An env/headers value starting with js: is treated as a !!js expression (e.g. js:process.env.GITHUB_TOKEN).',
       'msg.testConnecting': 'Connecting and listing tools… (up to 25 seconds)',
       'msg.testOk': 'Connected',
@@ -337,7 +339,9 @@ window.__ModuleLoader__.load({
 
     const state = {
       servers: [],
+      // 真正重名的托管行（横幅只渲染这份）；外部实例清单另存 externalServers，两者别混用。
       conflicts: [],
+      externalServers: [],
       fileError: '',
       patchFile: '',
       loading: false,
@@ -431,9 +435,16 @@ window.__ModuleLoader__.load({
       parts.push('<button class="mX_btnGhost" data-action="refresh"' + (state.loading ? ' disabled' : '') + '>' + t('btn.refresh') + '</button>')
       parts.push('<button class="mX_btn" data-action="add">' + t('btn.addServer') + '</button>')
       parts.push('</div>')
-      if (state.fileError) parts.push('<div class="mX_banner" data-kind="error">' + t('msg.fileError', { error: esc(state.fileError) }) + '</div>')
+      if (state.fileError) parts.push('<div class="mX_banner" data-kind="error">' + t('banner.fileError', { error: esc(state.fileError) }) + '</div>')
+      // 冲突横幅只报**真重名**（host 端的 conflicts 已与托管行求过交集）：一条都不相交时
+      // 这里什么都不渲染——曾经把「外部实例清单」原样当冲突渲染，于是不重名也常驻报警（issue #5）。
       if (state.conflicts && state.conflicts.length) {
-        parts.push('<div class="mX_banner" data-kind="warn">' + t('msg.conflicts', { names: esc(state.conflicts.map((c) => c.serverName).join(t('list.separator'))) }) + '</div>')
+        parts.push('<div class="mX_banner" data-kind="warn">' + t('banner.conflicts', { names: esc(state.conflicts.map((c) => c.serverName).join(t('list.separator'))) }) + '</div>')
+      }
+      // 外部占用是**信息**、不是错误：这些名字别人（其它插件 / profile 层手工行）已经占了，
+      // 在本卡内起名时避开即可，与「已发生加载失败」无关。
+      if (state.externalServers && state.externalServers.length) {
+        parts.push('<div class="mX_banner" data-kind="info">' + t('banner.externalOccupied', { names: esc(state.externalServers.map((c) => c.serverName).join(t('list.separator'))) }) + '</div>')
       }
       parts.push('<div class="mX_list">')
       if (state.loading) {
@@ -670,6 +681,7 @@ window.__ModuleLoader__.load({
         const body = await apiList()
         state.servers = Array.isArray(body.servers) ? body.servers : []
         state.conflicts = Array.isArray(body.conflicts) ? body.conflicts : []
+        state.externalServers = Array.isArray(body.externalServers) ? body.externalServers : []
         state.fileError = body.fileError || ''
         state.patchFile = body.patchFile || ''
       } catch (error) {
@@ -705,9 +717,10 @@ window.__ModuleLoader__.load({
         return
       }
       // 外部实例同名（别的插件托管的 mcp-client，如 codegraph 归 Codegraph 插件管）：本地先拦
-      // 一道给即时反馈；宿主侧还会再拦一次（权威）。已经是这一行原本的名字（历史遗留）不拦，
-      // 否则连它的其它字段都改不了 —— 宿主侧同样按「是否新引入」判定。
-      const clash = (state.conflicts || []).find((item) => item.serverName === row.config.serverName)
+      // 一道给即时反馈；宿主侧还会再拦一次（权威）。比的是**外部实例清单**（externalServers），
+      // 不是 conflicts——conflicts 只是「已经重名」的那几行，这里要拦的是任何撞上外部名单的新名字。
+      // 已经是这一行原本的名字（历史遗留）不拦，否则连它的其它字段都改不了 —— 宿主侧同样按「是否新引入」判定。
+      const clash = (state.externalServers || []).find((item) => item.serverName === row.config.serverName)
       const original = state.editor !== null && state.editor.server !== null ? state.editor.server : null
       if (clash !== undefined && !(original !== null && original.serverName === row.config.serverName)) {
         setEditorError(t('error.externalClash', { name: row.config.serverName, id: clash.id }))
