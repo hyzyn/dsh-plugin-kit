@@ -109,6 +109,17 @@ rmSync(logPath, { force: true })
 console.log('# dsh-mcp：保存 → 热加载 → 工具真的可用')
 console.log(`# node ${process.version} / 宿主 ${hostUrl} / 夹具 ${fixture}\n`)
 
+/**
+ * 跑之前宿主上已有的条目（收尾原样写回，见文件末尾 M4 的理由）。
+ *
+ * 只取 `{ id, config }`：这两项就是保存接口的输入形状，DTO 里其余字段（status /
+ * conflict / …）是运行时状态，写回去会被拒。
+ */
+const restoreList = (jsonOf((await call('GET', '/api/dsh-mcp/servers')).text)?.servers ?? []).map((row) => ({
+  id: row.id,
+  config: row.config,
+}))
+
 /* ---------- 保存夹具服务器 ---------- */
 const saved = await call('POST', '/api/dsh-mcp/servers/save', {
   servers: [
@@ -179,10 +190,57 @@ record(
   `收到的 JSON-RPC 方法：${JSON.stringify([...new Set(requests)])}`,
 )
 
-/* ---------- 收尾 ---------- */
-await call('POST', '/api/dsh-mcp/servers/save', { servers: [] })
+/* ---------- 收尾：可复位 + 把宿主原状写回 ---------- *
+ * 两件事都必须在同一个收尾里做，缺一件都会留下副作用：
+ *   1. **清空要显式 `clearAll`**（保存闸门会拒绝「把最后一条也清掉」的保存，防误清空）；
+ *      旧版不带它，于是 M3 必然失败、夹具条目留在宿主配置里——实测（2026-09-28）
+ *      在真实 `~/.dsh/cordis.patch.yml` 上留下了 `mcp-probehttp` 残留。
+ *   2. **跑完把宿主原有的条目写回**：这个脚本打的是**外部宿主**（`--host`），宿主用的是
+ *      它自己的 DSH home，脚本没法给它换；M1 已经用夹具顶掉了原有配置，所以收尾必须
+ *      逐条写回，否则「借宿主的配置验一条链路」的代价是宿主的 MCP 配置被换成夹具。
+ */
+await call('POST', '/api/dsh-mcp/servers/save', { servers: [], clearAll: true })
 const after = jsonOf((await call('GET', '/api/dsh-mcp/servers')).text)?.servers ?? []
 record('M3 清空后条目消失（托管区块可复位）', after.length === 0, `剩余 ${after.length} 条`)
+
+if (restoreList.length > 0) {
+  /**
+   * 等外部清单里不再有本次用的 serverName。
+   *
+   * 为什么必须等：清空（M3）之后 loader 还持有刚被移除的实例一小会儿，而保存闸门会把
+   * 这段时间里的同名保存判成「被本插件之外的 mcp-client 实例占用」——实测 M4 就是这么
+   * 拿到 400 的。闸门本身是对的（两个实例会抢同一套 `mcp__<serverName>__*` 工具名），
+   * 错的是收尾不等它退场就急着写回。
+   */
+  const waitExternalGone = async () => {
+    const deadline = Date.now() + 20_000
+    while (Date.now() < deadline) {
+      const dto = jsonOf((await call('GET', '/api/dsh-mcp/servers')).text)
+      const external = Array.isArray(dto?.externalServers) ? dto.externalServers : []
+      if (!external.some((entry) => entry.serverName === serverName)) return true
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    }
+    return false
+  }
+  const externalGone = await waitExternalGone()
+  let restored = await call('POST', '/api/dsh-mcp/servers/save', { servers: restoreList })
+  // 退避重试：写回是这个脚本**必须完成**的收尾——它失败就等于把宿主的配置留在
+  // 「夹具被清空」的状态里，比留下一件夹具更糟
+  for (let attempt = 0; restored.status !== 200 && attempt < 5; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+    restored = await call('POST', '/api/dsh-mcp/servers/save', { servers: restoreList })
+  }
+  const now = jsonOf((await call('GET', '/api/dsh-mcp/servers')).text)?.servers ?? []
+  record(
+    'M4 跑完把宿主原有条目原样写回（不留夹具残留）',
+    restored.status === 200 && now.length === restoreList.length,
+    // 失败时带上响应正文：这条是「收尾」，只说「没写回」帮不上排查（实测就是这么
+    // 丢过一次原因——400 的正文里写着为什么）
+    `原有 ${String(restoreList.length)} 条 → 写回后 ${String(now.length)} 条（externalGone=${String(externalGone)} status=${String(restored.status)}${restored.status === 200 ? '' : ' body=' + restored.text.slice(0, 200)}）`,
+  )
+} else {
+  record('M4 跑完把宿主原有条目原样写回（不留夹具残留）', after.length === 0, '宿主原本没有条目，清空后即为原状')
+}
 
 const failed = results.filter((item) => item.ok !== true)
 console.log(`\n# 汇总：PASS ${results.filter((r) => r.ok === true && r.warned !== true && r.skipped !== true).length} / WARN ${results.filter((r) => r.warned === true).length} / FAIL ${failed.length}`)
