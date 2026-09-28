@@ -185,39 +185,46 @@ describe('虚拟屏停摆心跳（D57 跟进）', () => {
     }
   })
 
-  /** 停摆屏：`scrollback: 0` 上崩溃被兜底吞掉 → 回调再也不来 → 看门狗判定停摆。 */
-  it('停摆屏被判出：崩溃后回调不再来，看门狗回调一次', async () => {
+  /**
+   * 停摆的**语义**（跨平台确定性）：回调再也不来 → 看门狗报一次，且只报一次。
+   *
+   * 为什么不用真 `scrollback: 0` 终端来造这个条件：崩溃是否发生取决于 xterm 内部
+   * `setTimeout`（`_innerWrite` 里那个回调）的时序——2026-09-28 本地 / macOS CI /
+   * Windows CI 各假红过一次；而且**慢机器上即使不崩**，60ms 窗口也可能先到而报停摆
+   * （Windows CI 实测 `expected 1 to be +0`）。那两种情况都不是缺陷，是看门狗的定义，
+   * 所以「一定会崩」和「不崩就一定不报」都不能当断言。崩溃本身由上面两条负控制用例钉死
+   * （`最小复现序列打不穿…` / `打在上确实会崩`），真崩溃路径见下一条用例。
+   */
+  it('停摆屏被判出：回调不再来，看门狗只报一次', async () => {
+    const heartbeat = newScreenHeartbeat()
+    let stalls = 0
+    writeToScreen({ write() { /* 永不回调：模拟解析器卡死 */ } }, heartbeat, 'x', () => stalls++, 60)
+    expect(heartbeat.inflight).toBeGreaterThan(0)
+    await until(() => stalls === 1) // 判出（轮询，不赌固定 sleep）
+    // 且只报一次：再等一段确认没有第二次
+    await new Promise((r) => setTimeout(r, 250))
+    expect(stalls).toBe(1)
+    clearScreenWatchdog(heartbeat)
+  })
+
+  /** 真崩溃路径（集成）：崩了就**必须**报出停摆；没崩不做反向断言（见上一条的理由）。 */
+  it('停摆屏被判出：真崩溃时一定报出停摆', async () => {
     guard() // 先挂兜底，否则这条用例会把 vitest worker 打死
     const hostile = new HeadlessTerminal({ cols: 60, rows: 3, scrollback: 0, allowProposedApi: true })
     const heartbeat = newScreenHeartbeat()
     let stalls = 0
-    const crashesBefore = xtermScreenCrashCount() // 结局判据（见下面那段注释）
+    const crashesBefore = xtermScreenCrashCount()
     try {
       for (const op of CRASH_OPS) {
         if (op[0] === 'write') writeToScreen(hostile, heartbeat, op[1], () => stalls++, 60)
         else hostile.resize(op[1], op[2])
         await tick()
       }
-      /*
-       * 按**实际结局**分两支断言，而不是赌「xterm 这次一定崩」。
-       *
-       * 判据必须是**崩溃计数**，不能拿 `inflight > 0` 当证据：那只是「有在途批次」，
-       * 它完全可能随后按序回调（实测 5 次里就假红 1 次）。真崩溃是否发生取决于 xterm
-       * 内部 `setTimeout`（`_innerWrite` 里那个回调）的时序，2026-09-28 本地与 macOS CI
-       * 都见过假红。崩溃本身已由上面两条负控制用例钉死（`最小复现序列打不穿…` /
-       * `打在上确实会崩`），「回调永不来」的确定性停摆另有 `连续输出下的真停摆照样判出`。
-       * 这条的独特价值是**真崩溃 → 真的判出停摆**，所以：崩了就必须报且只报一次；
-       * 没崩就绝不能误报。
-       */
       if (xtermScreenCrashCount() > crashesBefore) {
-        await until(() => stalls === 1) // 判出（轮询，不赌固定 sleep）
-        // 且只回调一次：再等一段确认没有第二次
-        await new Promise((r) => setTimeout(r, 250))
-        expect(stalls).toBe(1)
-      } else {
-        await new Promise((r) => setTimeout(r, 250))
-        expect(stalls).toBe(0) // 没崩（回调按序回来了）→ 不得误报停摆
+        await until(() => stalls > 0)
+        expect(stalls).toBeGreaterThan(0)
       }
+      // 没崩：什么都不断言——慢机器上窗口先到也会报，那是定义不是缺陷
     } finally {
       clearScreenWatchdog(heartbeat)
       hostile.dispose()
