@@ -88,6 +88,7 @@ import { deriveWsUrl } from './ws-url.js'
 import { asciiRefToken, derivedCredentialRef } from './credential-ref.js'
 import { applyTunnelEdit, buildTunnelFromDraft as buildTunnelSpec, tunnelNameClash } from './tunnel-edit.js'
 import { currentSessionCwd } from './current-session.js'
+import { FALLBACK_COLS, FALLBACK_ROWS, usableFitSize } from './fit-size.js'
 import { eventOwnsStatus, needsStatusResync, statusForTab } from './status-line.js'
 import { formatBytes, formatRate, hasUsableStats, statsFrameFresh, statsItemSpecs, statsItemValues, statsLevel } from './stats-bar.js'
 
@@ -1761,10 +1762,42 @@ function waitFrame(type, timeoutMs) {
   })
 }
 
+/** 尺寸探测用的宿主元素：普通标签是 termEl，嵌入终端是它自己的挂载容器。 */
+function sizeHostEl(tab) {
+  if (tab === undefined) return null
+  if (tab.embedded === true) {
+    return tab.controller !== undefined && tab.controller !== null ? tab.controller.hostEl : null
+  }
+  return tab.termEl
+}
+
+/**
+ * 算一次**可以发给 PTY** 的尺寸（D79）。
+ *
+ * 三种「不算可见」的情况一律返回 `undefined`，调用方就别发：别的标签正亮着
+ * （`display:none`）、面板最小化、元素根本没进 DOM（agent 开的标签刻意不 switchTab）。
+ * 探测结果本身也可能是垃圾（游离元素给 NaN、隐藏容器给 2×1），一并由
+ * `usableFitSize` 挡掉——**绝不能把退化值当尺寸发出去**：宿主会把 `NaN`→JSON `null`
+ * 夹成下限，后台标签的 PTY 于是变成 2×2，长任务输出按 2 列折行且永不重排。
+ */
+function probeFitSize(tab) {
+  if (tab === undefined || tab.fit === null || tab.fit === undefined) return undefined
+  let dims
+  try {
+    dims = tab.fit.proposeDimensions()
+  } catch {
+    return undefined // 终端已 dispose 等
+  }
+  const el = sizeHostEl(tab)
+  return usableFitSize(dims, el === null || el === undefined ? null : { width: el.clientWidth, height: el.clientHeight })
+}
+
 function sendResize(tab) {
   if (tab === undefined || tab.fit === undefined) return
-  const dims = tab.fit.proposeDimensions()
-  if (dims !== undefined) sendFrame({ t: 'resize', sid: tab.sid, cols: dims.cols, rows: dims.rows })
+  const dims = probeFitSize(tab)
+  if (dims === undefined) return // D79：不可见 / 退化的尺寸不发，保留 PTY 上一次有效尺寸
+  tab.lastDims = dims
+  sendFrame({ t: 'resize', sid: tab.sid, cols: dims.cols, rows: dims.rows })
 }
 
 /**
@@ -2121,12 +2154,17 @@ function warnStrippedCredentials(tab) {
 /** 按标签保存的 spawnSpec 发创建帧（sid/cols/rows 由本地补齐）。 */
 function spawnTab(tab) {
   warnStrippedCredentials(tab)
-  const dims = tab.fit !== null ? tab.fit.proposeDimensions() : undefined
+  // D79：容器还没可见（或探测结果退化）时**不能**把 proposeDimensions 的值当尺寸发
+  // ——以前这里只在 `undefined` 时回落，NaN / 2×N 会照发，宿主夹成下限 ⇒ 新会话以
+  // 2×2 开局。优先复用本标签上一次有效尺寸，其次 80×24（与宿主缺省一致）。
+  const probed = probeFitSize(tab)
+  if (probed !== undefined) tab.lastDims = probed
+  const dims = probed !== undefined ? probed : tab.lastDims !== undefined ? tab.lastDims : { cols: FALLBACK_COLS, rows: FALLBACK_ROWS }
   const frame = {
     ...tab.spawnSpec,
     sid: tab.sid,
-    cols: dims !== undefined ? dims.cols : 80,
-    rows: dims !== undefined ? dims.rows : 24,
+    cols: dims.cols,
+    rows: dims.rows,
   }
   if (socket === null || socket.readyState !== WebSocket.OPEN) {
     // 连接还没就绪：挂起，onopen 后补发。嵌入式终端是「冷启动」的（面板没开也可能

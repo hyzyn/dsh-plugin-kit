@@ -36,7 +36,8 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
   workspace 域），客户端改看 `retainedBy.mainView > 0` 认当前会话——只认老字段会让
   cwd 恒为空、新标签回落宿主启动目录；
 - 支持 vim / htop / less 等 TUI（TERM 已注入为 `xterm-256color`）；
-- 面板大小变化自动 resize（xterm fit → PTY 原生 resize）；
+- 面板大小变化自动 resize（xterm fit → PTY 原生 resize）；**非活动标签不跟手**——它保留自己
+  最后一次有效尺寸（D79：容器不可见、或探测结果退化时，尺寸帧一律不发）；
 - **Ctrl+F 终端内搜索**（Enter 下一个 / Shift+Enter 上一个 / Esc 只关搜索框），
   输出中的链接可点击，工具栏提供 清屏 / 复制选中 / 粘贴；
 - **断线自动重连（0.3.0）**：刷新页面、网络抖动等异常断开后，会话在宿主
@@ -802,7 +803,7 @@ ctx.inject(['ttyPanel'], (c) => {
 | C→S | `{t:'spawn', sid?, cols?, rows?, cwd?, persist?, persistName?, command?}` | 创建会话；sid 缺省由宿主生成，cwd 缺省用配置兜底；`persist` + 稳定 `persistName`（0.10.0）= tmux 持久会话（`dsh-<名>`，需 persistence=tmux）；`command`（0.14.0）= 直接跑一条命令（不做持久化） |
 | C→S | `{t:'ssh', sid?, cols?, rows?, name? \| host, username, …, persist?, persistName?}` | 创建 SSH 会话（ssh2 原生）；`name` 引用连接簿条目作基底，内联 `host/port/username/auth/keyPath/passphrase/password/agentForward` 可逐项覆盖；`persist` 语义同 spawn（远程 tmux 托管） |
 | C→S | `{t:'input', sid?, d}` | 按键/粘贴数据 |
-| C→S | `{t:'resize', sid?, cols, rows}` | 面板尺寸变化 |
+| C→S | `{t:'resize', sid?, cols, rows}` | 面板尺寸变化。**客户端只在容器可见且尺寸可信时发**（D79：隐藏标签 / 未挂载 / 面板最小化一律不发，PTY 保留上一次有效尺寸）；宿主的夹紧只做安全下限，非数值（含 `null`）按非法值回落 80×24 而不是夹到下限 |
 | C→S | `{t:'refresh', sid?}` | 强制重画（0.10.1）：宿主对 tmux 会话执行 `refresh-client`（客户端 reset 清残 scrollback 后请现场重画；非 tmux 会话 no-op） |
 | C→S | `{t:'kill', sid?}` | 关闭会话（孤儿会话也允许跨连接 kill，防泄漏） |
 | C→S | `{t:'sessions'}` | 列出全局会话快照（`attachable` 标记可重连者） |
@@ -891,7 +892,9 @@ node scripts/preview.mjs --theme=light   # 浅色主题
 - **resize 为内部耦合**：DSH 的 `spawnTerminal` handle 未暴露 resize，
   插件直接透传 `(handle).terminal.resize(cols, rows)`（node-pty 原生 API，
   同进程可达）。DSH 升级若改内部结构，0.3.0 起会警告一次并退化为固定尺寸，
-  不再逐帧抛错。
+  不再逐帧抛错；**D79 补**：这里的判据是显式看 `typeof terminal.resize === 'function'`
+  ——老写法 `handle.terminal?.resize?.(…)` 只在**抛错**时才进警告分支，DSH 若把
+  `handle.terminal` 改名 / 移除，既不 resize 也不警告（承诺落空、排查无线索）。
 - **TERM 注入用 `-c` 包装层（仅 POSIX）**：DSH 硬编码 node-pty `name:"dumb"`，而
   node-pty 里 name 优先于 env.TERM，因此 shell 以
   `sh -c 'export TERM=...; exec "$shell"'` 方式启动（对用户透明；TERM /

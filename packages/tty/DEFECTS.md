@@ -7,8 +7,8 @@
 > 知道**当年坏了什么**，再查 [§2 编号字典](#2-编号字典这段代码为什么长这样) 知道**所以代码
 > 为什么写成这样**。
 >
-> **编号是硬契约**：`D01–D78` 是 `packages/tty` 内部序列，与 `packages/docker/DEFECTS.md` 的
-> `D01–D149` **不共享**；跨包引用请写「tty D12 / docker D03」。新缺陷接在 `D78` 之后，
+> **编号是硬契约**：`D01–D79` 是 `packages/tty` 内部序列，与 `packages/docker/DEFECTS.md` 的
+> `D01–D149` **不共享**；跨包引用请写「tty D12 / docker D03」。新缺陷接在 `D79` 之后，
 > **不得重号、不得回收空号**——源码、测试与根 `README.md` 里已有引用指向它们。
 
 > **本文不含**：D49–D61 的逐条 postmortem（症状 / 现场复现 / 根因 / 修法 / 回归 / 反向验证），
@@ -42,7 +42,7 @@
 
 ## 现状
 
-**已修 78 / 待修 0**，编号至 `D78`。逐条症状见 §1，设计意图见 §2，**还没做的见
+**已修 79 / 待修 0**，编号至 `D79`。逐条症状见 §1，设计意图见 §2，**还没做的见
 [ROADMAP.md](./ROADMAP.md)**。
 
 **沿革（原文照录，未改）**：2026-09-19 对 v0.18.3 做了一次系统性只读审计（5 路并行 + 人工复读
@@ -53,7 +53,7 @@
 tag `v0.1.36` → tty **0.19.0**（docker 0.6.4 / all 0.1.36 / kit 0.1.30）——此后 `v0.1.37` →
 0.19.1、`v0.1.38` → 0.19.2、`v0.1.39` → **0.19.3**（本仓库 `packages/tty/package.json` 现为 0.19.3）。
 
-**已修 78 / 待修 0**（D01–D48 审计波 + D49/D50 线上反馈 + D51–D56 复核实测发现 + D57 线上崩溃 + D58–D62 后续用户上报/复核 + D63 本轮统一安全围栏时顺手发现 + D64/D65 做 ProxyCommand 时顺路挖出来的两处静默泄漏 + D66 做能力闸门时**真机验收**挖出来的探针结算缺陷 + D67 同一轮 Windows 真机挖出来的探针阶段顺序 + D68 本轮做就地提权时扫出来的客户端字面星号 + D69 同一轮接 tty 就地提权时发现的脆测试（用例读开发机真实授权）+ D70 同上轮挖出的启动期闸门未初始化 + D71 用户反馈的开关行没有手型 + D72 用户反馈的「命令瞬间完成时 tty_expect 白等满超时」+ D73 提权面板把复制按钮塞在命令框里 + D74/D75 同一份 **Windows 真机报告**（2026-09-27：`tty_send` 的 `\n` 在 conhost 上不提交命令 / `tty_expect` 拿命令回显当命中）+ D76 用户上报 `tty_open` 会话生命周期时挖出来的**终局尾巴丢失** + D77 同一份上报的正题（**进程退出即退役**，输出再也取不回来）+ D78 同一轮真机复测里挖出来的「`exec` 包装层截断复合命令」）。索引表**不写行号、也不保留修复提交
+**已修 79 / 待修 0**（D01–D48 审计波 + D49/D50 线上反馈 + D51–D56 复核实测发现 + D57 线上崩溃 + D58–D62 后续用户上报/复核 + D63 本轮统一安全围栏时顺手发现 + D64/D65 做 ProxyCommand 时顺路挖出来的两处静默泄漏 + D66 做能力闸门时**真机验收**挖出来的探针结算缺陷 + D67 同一轮 Windows 真机挖出来的探针阶段顺序 + D68 本轮做就地提权时扫出来的客户端字面星号 + D69 同一轮接 tty 就地提权时发现的脆测试（用例读开发机真实授权）+ D70 同上轮挖出的启动期闸门未初始化 + D71 用户反馈的开关行没有手型 + D72 用户反馈的「命令瞬间完成时 tty_expect 白等满超时」+ D73 提权面板把复制按钮塞在命令框里 + D74/D75 同一份 **Windows 真机报告**（2026-09-27：`tty_send` 的 `\n` 在 conhost 上不提交命令 / `tty_expect` 拿命令回显当命中）+ D76 用户上报 `tty_open` 会话生命周期时挖出来的**终局尾巴丢失** + D77 同一份上报的正题（**进程退出即退役**，输出再也取不回来）+ D78 同一轮真机复测里挖出来的「`exec` 包装层截断复合命令」+ D79 用户上报的「**非活动标签的 PTY 被压成 2×2**」）。索引表**不写行号、也不保留修复提交
 sha** —— 修复后代码移了位、有的整段被删或重写，审计时点的行号只会误导；所以回溯入口统一改成
 按关键词检索（D49/D50 修在 `bd407352`）：`git log -S'<症状列的关键词>'`，提交信息按条目写
 为什么。被代码直接引用的编号在
@@ -161,6 +161,7 @@ D50 才是用户看到的那一下（他补的描述是「整条状态条瞬间�
 | D76 | **进程退出前最后一批输出永远到不了终端面板**（用户上报原话：「结果明明就在那里但我看不到」——`tty_open` 跑一条记录结果的命令，程序打印完就退出，人跟 AI 都只能看到它前面那些输出）。根因是两行顺序：`finishSession` 先置 `session.closed = true`（为了让 `onData` 立刻停止成帧）**再**调 `flushPendingOutput`，而后者首行守卫正是 `if (session.closed \|\| …) return` ⇒ **12ms 合并窗口里还没发出的尾巴被它自己的守卫整批吞掉**，与方法自己的注释（「exit 前冲掉合并窗口里的尾巴，保序」）和「exit 帧永远在最后一帧 data 之后」的契约相反。判定用真实 `TtyServer` 路径的两个探针：写入后立刻退出 → 面板只收到 `ready` + `exit`（data 帧 0 个）；同一行若在退出前 ≥12ms 到达 → 正常 `ready` + `data` + `exit` | `src/index.ts` 给 `flushPendingOutput` 加 `force` 参数、`finishSession` 带 force 调用：`closed` 仍先置（终局后的字节照样不成帧），但这一步不再被自己的守卫挡下；test/host-frames.test.ts 两条（尾巴必须发出且 data 帧在 exit 帧之前 / 终局之后到达的输出仍不成帧） | ✓ |
 | D77 | **进程退出即会话退役，输出还在却再也取不回来**（用户上报 issue #4 的原话：「结果明明就在那里但我看不到……我现在不得不强迫AI先打开 `/bin/sh` 再执行具体的命令」——`tty_open` 跑一条会结束的命令，跑完 `tty_capture` 只报「会话不存在或已退出」，连 `tty_close` 都报「会话不存在或已结束」）。`finishSession` 是唯一出口：`sessions.remove` + 释放虚拟屏 + 清空绑定；而数据其实还躺在 `session.buffer` 与 `shellState.lastCommand` 里，丢掉的只是**可达性**。同一份现场的另一半在面板侧：`exit` 帧后标签转「已退出」浮层，点「重新打开」是**新 sid**，旧内容再也取不回 | `src/index.ts` 把「进程退出」与「退役」拆成两件事：`finishSession` 只发 exit 帧 + 打 `exited:{code,signal,at}` 标记，**不出表、不释放屏**（`closed` 保持 false ⇒ 读侧守卫天然放行）；读侧 (`tty_list` / `tty_capture` / `tty_screen`) 照常可用并带 `exited`/`signal`/`retainMs`，`tty_expect` 借已兑现的 `done` 立刻结算（带 `exited:true`），写侧 `tty_send` 与 `tty_stats` 明确拒绝，`attach` 明确拒绝，`tty_close` 成为显式释放入口；退役只剩 `SessionManager.retire` 一处，触发者 = 显式关闭 / 面板关标签 / 条数上限（`capExited(16)` 按最旧淘汰，淘汰时 `logger.warn` 记下被挤掉的 sid——否则用户只有「刚才那份结果怎么没了」这一种观测）/ 宿主重启；保留**不按时间**淘汰（`EXITED_RETAIN_MS=∞`：时间上界对使用者是第二重惊喜，而内存与句柄本来就由 8 条上限兜；想要时间上界改这一个常量即可，`reapExited` 通路还在）；并发名额改数**活着的**会话（`liveCount`），保留态不占名额；`reapOrphans` 跳过保留态，同 sid 新建时 `retireStaleExited` 先摘掉旧尸体（否则 `add()` 顶出表 = 屏泄漏）；client-src 关标签/重开也发 `kill` 释放、采纳 agent 会话时跳过保留态；test/host-frames.test.ts（8 条：表内保留/attach 拒绝/关标签释放/不占名额/TTL/条数上限/孤儿回收跳过/同 sid 摘尸体）+ test/exited-retain.test.ts（8 条工具层：list/capture/screen/expect 可读 + send/stats 拒绝 + close 释放 + systemPrompt 不冒充活会话）；scripts/windows-smoke.mjs 新增 W7a-d（**真机** Windows 11 ARM64 + ConPTY：command 型会话退出后仍可读、写被拒、tty_close 释放） | ✓ |
 | D78 | POSIX 本地 `tty_open command=` **只执行命令列表的第一条**：`echo A; echo B` 只输出 `A`、`cd /tmp && pwd` 输出为空、`echo X; exit 3` 的退出码是 0、`for i in 1 2 3; do …; done` 直接 `parse error`（2026-09-27 真机复测报告；落盘副作用证明后半段**根本没执行**，不是输出丢失）。根因在 `buildCommandSpawn`（`src/shell-integration.ts`）：包装层写成 `${pre} exec ${command}`，而 `exec` 只是**简单命令**前缀——zsh 把 `exec echo A; echo B` 解析成 `[exec echo A] ; [echo B]`，进程被第一条替换后 `echo B` 永不调度；`cd x && cmd` 的右支同理；`exec for …` 在解析阶段就报错；退出码也变成被 exec 那条的。更狠的是内建命令：`exec cd /tmp` 的语义是「跑完内建即结束当前 shell」，于是连第一条的输出都没有、`&&` 右支连同外层 shell 一起消失。而 agent 最惯用的写法正是 `cd dir && cmd` / `cmd; echo rc=$?`，静默少跑后半段比报错更难查；Windows 四分支（`buildWindowsCommandSpawn`）本来就不带 `exec`，同一份 agent 代码在 macOS/Linux 与 Windows 上行为不一致 | `src/shell-integration.ts` 的 POSIX 包装层改成 `exec <同一个 shell> -c <command>`：外层 `exec` 保留「进程即命令」（退出码取自命令列表最后一条、被信号打死仍如实报 signal——D77 的面板与工具文案正靠它区分崩溃与正常退出），内层 `-c` 把**整段命令当 shell 代码**执行；命令用既有的 `shSingleQuote` 包住（内嵌单引号 `'\''`、多行都能安全穿过外层解析），内层不加 `-l/-i`（非交互语义与旧路径一致）；test/shell-spawn.test.ts 三条（单条命令的新 argv 形状 / 复合命令整段进单引号且不再以 `exec <cmd>` 前缀 / Windows 四分支都不含 `exec`）；scripts/integration.mjs B35a-e（真 PTY：`a; b`、`cd && cmd`、`exit 3 → exitCode=3`、`for …`、命令内单引号）；**补**：`commandShellHint(shell, platform)`（POSIX / cmd / PowerShell / Git Bash / WSL 五分支）写进 systemPrompt 的终端行与 `tty_open` 结果——「`command` 按整段 shell 语法执行」这句话在 Windows 上不能无条件承诺 POSIX 语法（2026-09-27 复核报告：在 Windows 上按 POSIX 语法复测，9 条全红，根因是命令由 `cmd.exe` 执行），同时修掉工具描述里漏改的保留上限（8 → 16）；反向验证：用旧产物跑 B35 → 前四条红、单引号那条绿（旧形状本来就吃单引号）；**报告方真机复验**（2026-09-27 20:57，打运行中的宿主）：§4.2 全部复现用例转为通过，另加「命令内含引号」「`false; echo rc=$?` → rc=1」「`python3 … exit(9); echo rc=$?` → rc=9」「`kill -TERM $$` → `signal=SIGTERM`（没退化成 143）」三类边界；**第二轮按复测提示词再跑 9/9**（2026-09-27 21:0x：`echo A; echo B; echo C; echo D` / `cd /tmp && pwd` / `echo X; exit 3` → exitCode=3 / `for …; do …; done` / 内嵌引号 / `false; echo rc=$?` → rc=1 / `kill -TERM $$` → signal=SIGTERM，外加 D77 与 D76 各一条回归；全程不套 `sh -c`） | ✓ |
+| D79 | **非活动标签的 PTY 被压成 2×2**（用户截图上门的 0.22.0 报告：终端面板里非活动标签的 scrollback 全按 2 列折行——webpack 进度条、shell 提示符竖排成一个字符一列；同标签里较新的行却正常，看起来像「内容损坏」，实际是 PTY 被以退化尺寸 resize 过。最小复现：agent 开一个会话让它**不处于前台**，约 2 秒后 `stty size` 从 `50 200` 变成 `2 2`；面板收起时所有标签都是 2×2）。根因是发帧侧只看「`proposeDimensions()` 有没有返回 undefined」——FitAddon 只在「没有 parentElement」或「cell 尺寸为 0」时返回 undefined，而三种不可见状态都能绕过它：① 别的标签正亮着（`display:none`）⇒ 容器 0 宽 0 高 ⇒ 它把 `cols` 夹到 2、`rows` 夹到 1；② agent 开的标签刻意不 `switchTab` ⇒ `termEl` 没进 DOM，但 `term.open(termEl)` 让 `element.parentElement` 是**游离**的 termEl（truthy，骗过那道守卫）⇒ `parseInt('auto')` = NaN ⇒ `{cols: NaN, rows: NaN}`；③ 面板最小化。NaN 其实**通过了** `dims !== undefined` 检查、被 `JSON.stringify` 写成 `null`，而宿主 `clampInt` 里 `Number(null)` = 0 **是有限数** ⇒ 夹到下限（rows 的下限也是 2）⇒ 后台标签的 PTY 落成 2×2；xterm 不重排历史行 ⇒ 那段 scrollback 永久花屏，`tty_capture` / `tty_screen` 读出来也是竖排（正则匹配、人工判读一起报废） | 新增 `client-src/fit-size.js`（纯判据：尺寸有限 + 不低于 20×3 + 宿主元素 `clientWidth/Height > 0`，并把上限夹到宿主协议范围 500×200）；`client-src/index.js` 的 `sendResize` / `spawnTab` 都走它（拿不到可信尺寸就**不发**，spawn 优先复用本标签上一次有效尺寸、否则回落 80×24）；宿主 `clampInt` 把 `null` / `''` / 布尔 / 对象与 NaN 同档按非法值回落（防御纵深：旧版或第三方客户端发来的垃圾值不再被夹成下限）；`wrapLocalPty` 的 resize 透传改成显式判断 `typeof terminal.resize === 'function' `（老写法 `?.` 只在抛错时警告，「DSH 把 handle.terminal 改名」这一种坏法既不 resize 也不警告，README 承诺的「警告一次」是空头支票）；test/fit-size.test.ts（11 条：游离元素 NaN / 隐藏容器 2×1 / 只有一维退化 / 阈值边界 / 上限夹紧 / boxUsable 反向验证）+ test/host-frames.test.ts（`null` 不再夹成 2×2、非数值回落 80×24、数字字符串兼容面、窄但合法尺寸照原样透传、resize 降级只警告一次）+ scripts/preview.mjs 新增 `resize-hidden` 场景（真产物 + 真实布局：面板里先有用户自己的活动标签，再由宿主推一帧 sessions 采纳 agent 会话 ⇒ 它的 `.tt_term` 不进 DOM，走的正是事故现场；断言**没有任何**退化尺寸的 resize 帧、且切到该标签时必须补发一次合法尺寸；**反向验证**：把 `sendResize` 换回旧写法重跑该场景 → 红，且现场帧就是 `{"t":"resize","sid":"agent-background","cols":null,"rows":null}`——与报告里 `stty size` 从 `50 200` 变 `2 2` 的现场对得上） | ✓ |
 
 ## 2. 编号字典：这段代码为什么长这样
 
@@ -242,6 +243,7 @@ D50 才是用户看到的那一下（他补的描述是「整条状态条瞬间�
   **本次未复核**——受限沙箱下 `posix_openpt` 被拒，见下条）、`node scripts/ssh-smoke.mjs`（内存 sshd，
   自包含，实测 38 个断言）、`node scripts/probe-smoke.mjs`（7）、`node scripts/probe-route-smoke.mjs`（9）、
   `node scripts/sftplimits-smoke.mjs`（7）、`node scripts/preview.mjs`（Chrome，**30 个界面场景**；
+  > ⚠️ **标注（本次未擅改）**：这个「30」在 D79 时点已过期——`--list` 现为 **34 个**（本轮 +`resize-hidden`）。原文照录不改，因为它是**当时**的基线数字。
   默认不重建产物，落后会报错，`--build` 显式重建）。
 - Windows：`node scripts/windows-smoke.mjs`（**只在 Windows 上有意义**，非 Windows 平台打印原因后
   跳过并退出 0；CI 的 windows-latest job 会执行它）。

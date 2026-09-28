@@ -14,8 +14,8 @@ import './isolated-home.js'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { tmpdir } from 'node:os'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { EXITED_RETAIN_MS, MAX_EXITED_SESSIONS, SessionManager, TtyServer, killLocalShellTerminal, newScreenHeartbeat } from '../src/index.js'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { EXITED_RETAIN_MS, MAX_EXITED_SESSIONS, SessionManager, TtyServer, killLocalShellTerminal, newScreenHeartbeat, wrapLocalPty } from '../src/index.js'
 import type { TermHandle } from '../src/ssh.js'
 
 /* ----------------------------- 假件 ----------------------------- */
@@ -227,6 +227,46 @@ describe('帧校验', () => {
     ws.emit('message', Buffer.from(JSON.stringify({ t: 'resize', sid: 'abc123', cols, rows })))
     await new Promise((r) => setTimeout(r, 50))
     expect(h.ptys[0].resizeCalls.at(-1)).toEqual(expected)
+  })
+
+  it('resize 收到 null（客户端把 NaN 序列化的结果）→ 回落 80×24，不夹成 2×2（D79）', async () => {
+    const ws = h.connect()
+    await spawnLocal(ws, 'abc123')
+    // 现场：agent 开的标签不在前台 ⇒ proposeDimensions 给 NaN ⇒ JSON.stringify 写成 null；
+    // `Number(null)` = 0 是有限数，老 clampInt 于是把它夹到下限 2 ⇒ PTY 被压成 2×2。
+    ws.emit('message', Buffer.from(JSON.stringify({ t: 'resize', sid: 'abc123', cols: null, rows: null })))
+    await new Promise((r) => setTimeout(r, 50))
+    const applied = h.ptys[0].resizeCalls.at(-1)
+    expect(applied).toEqual([80, 24])
+    expect(applied).not.toEqual([2, 2])
+  })
+
+  it.each([
+    ['空字符串', ''],
+    ['布尔', true],
+    ['对象', { cols: 10 }],
+  ])('resize 的非数值输入（%s）按非法处理 → 80×24（D79）', async (_label, cols) => {
+    const ws = h.connect()
+    await spawnLocal(ws, 'abc123')
+    ws.emit('message', Buffer.from(JSON.stringify({ t: 'resize', sid: 'abc123', cols, rows: cols })))
+    await new Promise((r) => setTimeout(r, 50))
+    expect(h.ptys[0].resizeCalls.at(-1)).toEqual([80, 24])
+  })
+
+  it('数字字符串仍然照数字处理（老配置 / 手工帧的兼容面不被 D79 误伤）', async () => {
+    const ws = h.connect()
+    await spawnLocal(ws, 'abc123')
+    ws.emit('message', Buffer.from(JSON.stringify({ t: 'resize', sid: 'abc123', cols: '120', rows: '30' })))
+    await new Promise((r) => setTimeout(r, 50))
+    expect(h.ptys[0].resizeCalls.at(-1)).toEqual([120, 30])
+  })
+
+  it('窄但合法的尺寸照原样透传（门槛在客户端，宿主不擅自拒绝小终端）', async () => {
+    const ws = h.connect()
+    await spawnLocal(ws, 'abc123')
+    ws.emit('message', Buffer.from(JSON.stringify({ t: 'resize', sid: 'abc123', cols: 40, rows: 10 })))
+    await new Promise((r) => setTimeout(r, 50))
+    expect(h.ptys[0].resizeCalls.at(-1)).toEqual([40, 10])
   })
 
   it('多会话不指定 sid → 提示指定；单会话可省略', async () => {
@@ -886,5 +926,67 @@ describe('虚拟屏退役接线（D57）', () => {
     expect(session?.screen).not.toBeNull()
     expect(session?.screenDownReason).toBeNull()
     await h.sessions.disposeAll()
+  })
+})
+
+/* ------------------ 本地 PTY resize 透传的降级可观测性（D79） ------------------ */
+
+describe('wrapLocalPty 的 resize 降级（D79）', () => {
+  /** DSH spawnTerminal 返回的 handle 最小形状（terminal 是内部耦合字段）。 */
+  function dshHandle(terminal: unknown): never {
+    return {
+      pid: 1,
+      output: new PassThrough(),
+      write: async () => {},
+      terminate: async () => {},
+      done: new Promise(() => {}),
+      ...(terminal === undefined ? {} : { terminal }),
+    } as never
+  }
+
+  it('terminal.resize 可用 → 原样透传（cols, rows）', () => {
+    const calls: Array<[number, number]> = []
+    const handle = wrapLocalPty(dshHandle({ resize: (cols: number, rows: number) => calls.push([cols, rows]) }))
+    handle.resize(120, 30)
+    expect(calls).toEqual([[120, 30]])
+  })
+
+  it('terminal 被 DSH 改名 / 移除（不再是函数）→ 不抛错，但**必须**记一条日志', () => {
+    // 老写法 `handle.terminal?.resize?.(…)` 在这里既不 resize 也不警告：README 承诺的
+    // 「改内部结构会警告一次并退化为固定尺寸」是空头支票，排查时毫无线索。
+    const warned: string[] = []
+    const spy = vi.spyOn(console, 'warn').mockImplementation((message: unknown) => {
+      warned.push(String(message))
+    })
+    try {
+      const handle = wrapLocalPty(dshHandle({}))
+      expect(() => handle.resize(120, 30)).not.toThrow()
+      expect(warned).toHaveLength(1)
+      expect(warned[0]).toContain('resize 透传失败')
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('resize 抛错 → 记一条日志，且重复调用只记一次（不逐帧刷屏）', () => {
+    const warned: string[] = []
+    const spy = vi.spyOn(console, 'warn').mockImplementation((message: unknown) => {
+      warned.push(String(message))
+    })
+    try {
+      const handle = wrapLocalPty(
+        dshHandle({
+          resize: () => {
+            throw new Error('ioctl failed')
+          },
+        }),
+      )
+      handle.resize(120, 30)
+      handle.resize(121, 31)
+      expect(warned).toHaveLength(1)
+      expect(warned[0]).toContain('ioctl failed')
+    } finally {
+      spy.mockRestore()
+    }
   })
 })

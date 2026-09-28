@@ -384,8 +384,17 @@ interface PtyHandle {
 }
 
 /** 本地 PTY 包装成 TermHandle（resize/kill 仍是透传 node-pty 的内部耦合；防御性降级）。 */
-function wrapLocalPty(handle: PtyHandle): TermHandle {
+export function wrapLocalPty(handle: PtyHandle): TermHandle {
   let resizeWarned = false
+  // D79：README 承诺「DSH 升级若改内部结构会警告一次并退化为固定尺寸」，但老写法是
+  // `handle.terminal?.resize?.(…)` —— `?.` 只在**抛错**时才进 catch，DSH 若把
+  // `handle.terminal` 改名 / 移除（而不是让 resize 抛错），这里既不 resize 也不警告，
+  // 排查时一点线索都没有（承诺成了空头支票）。两种坏法现在都记一条日志。
+  const warnResizeDegraded = (reason: string): void => {
+    if (resizeWarned) return
+    resizeWarned = true
+    console.warn('[dsh-tty] resize 透传失败（DSH 内部结构可能已变化，退化为固定尺寸）: ' + reason)
+  }
   return {
     kind: 'local',
     pid: handle.pid,
@@ -393,14 +402,15 @@ function wrapLocalPty(handle: PtyHandle): TermHandle {
     done: handle.done,
     write: (data) => handle.write(data),
     resize: (cols, rows) => {
+      const terminal = handle.terminal
+      if (terminal === undefined || typeof terminal.resize !== 'function') {
+        warnResizeDegraded('handle.terminal.resize 不存在')
+        return
+      }
       try {
-        handle.terminal?.resize?.(cols, rows)
+        terminal.resize(cols, rows)
       } catch (error) {
-        // DSH 升级若改内部结构，降级为固定尺寸而不是每帧抛错
-        if (!resizeWarned) {
-          resizeWarned = true
-          console.warn('[dsh-tty] resize 透传失败（DSH 内部结构可能已变化，退化为固定尺寸）: ' + String((error as Error | undefined)?.message ?? error))
-        }
+        warnResizeDegraded(String((error as Error | undefined)?.message ?? error))
       }
     },
     terminate: () => handle.terminate(),
@@ -790,9 +800,15 @@ const expectCounts = new WeakMap<TtySession, number>()
  * 整数夹紧（0.19.0）：ws 帧输入零信任——`Number('abc')=NaN`、`-5`、`1.5`、
  * `1e9` 都不能原样透传给 node-pty 的 ioctl 与 xterm-headless（后者曾在
  * resize 帧路径直接炸出未捕获异常）。非法值回落 fallback，范围内取整。
+ *
+ * D79 补的一档（0.22.1）：`null` / `''` / 布尔 / 对象也**不是数字**，但
+ * `Number(null)` = 0、`Number('')` = 0 会通过 isFinite 检查 ⇒ 被夹成下限 2。而客户端
+ * 把 NaN 发成 JSON 时正是 `null`（FitAddon 对游离 / 隐藏容器给 NaN，见
+ * `client-src/fit-size.js`），于是「根本不该发」的尺寸被翻译成「合法的极小尺寸」——
+ * 后台标签的 PTY 就是这么变成 2×2 的。非数值一律与 NaN 同档：回落 fallback。
  */
 function clampInt(value: unknown, fallback: number, min: number, max: number): number {
-  const n = Number(value)
+  const n = typeof value === 'number' ? value : typeof value === 'string' && value.trim() !== '' ? Number(value) : Number.NaN
   if (!Number.isFinite(n)) return fallback
   return Math.min(max, Math.max(min, Math.round(n)))
 }
@@ -2717,6 +2733,9 @@ export class TtyServer {
           await session.handle.write(data)
         }
       } else if (msg.t === 'resize') {
+        // D79：`msg.cols/rows` 缺失或非数值（客户端把 NaN 序列化成 `null` 就是这种）时
+        // clampInt 回落 80×24，**不是**夹到下限 2——客户端的门槛在 client-src/fit-size.js，
+        // 这里是防御纵深：旧版本客户端 / 第三方客户端发来的垃圾值不该把 PTY 压成 2×2。
         const resolved = this.resolveSid(ws, msg, local)
         if (resolved === undefined || 'unknown' in resolved) return
         const session = local.get(resolved.sid)

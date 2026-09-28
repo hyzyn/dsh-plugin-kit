@@ -68,6 +68,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
+import { PassThrough } from 'node:stream';
 import { StringDecoder } from 'node:string_decoder';
 import WebSocket from 'ws';
 import xtermHeadless from '@xterm/headless';
@@ -180,6 +181,24 @@ export declare const EXITED_RETAIN_MS: number;
  * 淘汰一律 `logger.warn` 留痕（见 finishSession），否则这件事在事后完全不可查。
  */
 export declare const MAX_EXITED_SESSIONS = 16;
+/** DSH spawnTerminal 返回 handle 的最小形状（含内部耦合的 terminal 字段）。 */
+interface PtyHandle {
+    pid: number;
+    output: PassThrough;
+    write(data: string): Promise<unknown>;
+    terminate(): Promise<unknown>;
+    done: Promise<{
+        exitCode: number | null;
+        signal: string | null;
+    }>;
+    /** 内部耦合：DSH 的 LocalTerminalHandle 未暴露 resize/kill，直接透传 node-pty。 */
+    terminal?: {
+        resize?(cols: number, rows: number): void;
+        kill?(signal: string): void;
+    };
+}
+/** 本地 PTY 包装成 TermHandle（resize/kill 仍是透传 node-pty 的内部耦合；防御性降级）。 */
+export declare function wrapLocalPty(handle: PtyHandle): TermHandle;
 /**
  * 本地 PTY 顶层 shell 的 best-effort 强杀（D48）。
  *

@@ -1133,6 +1133,57 @@
       await waitFor(() => q('.tt_toast'))
       await sleep(200)
     },
+
+    /*
+     * D79：后台标签的 PTY 不得被压成 2×2。
+     *
+     * 现场（用户截图）：非活动标签的 scrollback 按 2 列折行（webpack 进度条竖排成一个
+     * 字符一列），同一标签里较新的行却正常。根因是发帧侧只看 `proposeDimensions()`
+     * 有没有返回 undefined，而三种不可见状态都能给出「有值但荒谬」的尺寸：
+     *   - 别的标签正亮着（display:none）⇒ 容器 0 宽 0 高 ⇒ FitAddon 夹成 2×1；
+     *   - agent 开的标签刻意不 switchTab ⇒ termEl 没进 DOM，但 `term.open(termEl)` 让
+     *     `element.parentElement` 是游离的 termEl（truthy，骗过守卫）⇒ NaN；
+     *   - 面板最小化。
+     * NaN 被 JSON.stringify 写成 `null`，宿主 `Number(null)` = 0 是有限数 ⇒ 夹到下限 ⇒ 2×2。
+     *
+     * 夹具：面板里先有一个**用户自己的**活动标签，再由宿主**主动推**一帧 sessions
+     * （`{t:'sessions', list:[{owner:'agent',…}]}`，真实宿主在 agent 开关会话后会推）。客户端
+     * 采纳它成标签，但因为已有活动标签而**不切换**（`adoptAgentSessions` 刻意不抢焦点）
+     * ⇒ 它的 `.tt_term` 一直没进 DOM；随后 mock 回 ready ⇒ 走的正是真实事故那条路径。
+     * 断言：**没有任何**退化尺寸的 resize 帧；且点开该标签后必须补发一次合法尺寸
+     * （证明门槛没把正常路径一起拦死）。
+     */
+    async 'resize-hidden'() {
+      await openPanel() // 面板打开时会自带一个本地标签（用户那个活动标签）
+      await waitFor(() => tabs().length === 1)
+      // 宿主主动推 agent 会话（这个帧本来就是**推**的，不必等下一次 sessions 请求）
+      const agentSession = { sid: 'agent-background', owner: 'agent', kind: 'local', cwd: window.__PREVIEW_CWD }
+      window.__PREVIEW_AGENT_SESSIONS = [agentSession] // 后续 sessions 响应也带上它，别被当成已结束
+      emit({ t: 'sessions', list: [agentSession] })
+      await waitFor(() => tabs().length === 2)
+      const agentTab = tabs().find((el) => sidOf(el) === 'agent-background')
+      // 事故前提：两个标签，但文档里只有一个终端元素（agent 那个还没进 DOM）——
+      // 夹具哪天不再复现这条路径，场景必须自己报错，而不是退化成永远绿的空断言。
+      const hiddenWhileBackground = document.querySelectorAll('.tt_term').length === 1 && q('.tt_term').clientWidth > 0
+      await sleep(300) // attach → ready → sendResize 跑完
+      if (agentTab !== undefined) agentTab.click() // 切到它：变可见，PTY 必须拿到真实尺寸
+      await sleep(300)
+      window.__previewAssert = async () => {
+        if (agentTab === undefined) return '没有采纳出 agent 标签（夹具失效）'
+        if (!hiddenWhileBackground) return '夹具前提不成立：采纳时 agent 的终端元素已经可见（本场景失去意义）'
+        if (document.querySelectorAll('.tt_term').length !== 2) return '切到该标签后终端元素仍不在文档里'
+        const frames = () => window.__mockFrames || []
+        const degenerate = frames().filter((f) => f.t === 'resize' && (!Number.isFinite(f.cols) || !Number.isFinite(f.rows) || f.cols < 20 || f.rows < 3))
+        if (degenerate.length > 0) return '发出了退化尺寸的 resize 帧（后台标签被压扁）：' + JSON.stringify(degenerate)
+        const spawns = frames().filter((f) => f.t === 'spawn' || f.t === 'ssh')
+        const badSpawn = spawns.filter((f) => !Number.isFinite(f.cols) || f.cols < 20 || f.rows < 3)
+        if (badSpawn.length > 0) return '以退化尺寸建会话：' + JSON.stringify(badSpawn)
+        // 正面对照：切到该标签后必须有一次合法尺寸的 resize（否则 PTY 会停在旧尺寸）
+        const sane = frames().filter((f) => f.t === 'resize' && f.sid === 'agent-background' && Number.isFinite(f.cols) && f.cols >= 20 && f.rows >= 3)
+        if (sane.length === 0) return '切到该标签后没有补发合法尺寸（PTY 会停在旧尺寸）'
+        return null
+      }
+    },
   }
 
   const name = new URLSearchParams(location.search).get('scenario') || 'local'

@@ -242,6 +242,8 @@
         return
       }
       window.__mockLog.push('in:' + msg.t)
+      // D79：留完整帧（不只类型）——「后台标签不得发出退化尺寸的 resize」这类断言要读 cols/rows
+      window.__mockFrames.push(msg)
       const sid = msg.sid
       if (msg.t === 'spawn' || msg.t === 'ssh') {
         if (!SESSIONS.some((s) => s.sid === sid)) SESSIONS.push({ sid, attachable: true, kind: msg.t === 'ssh' ? 'ssh' : 'local', tmux: msg.persistName })
@@ -262,9 +264,12 @@
         return
       }
       if (msg.t === 'sessions') {
+        // D79 夹具：`window.__PREVIEW_AGENT_SESSIONS` = 真实宿主推的「agent 开的会话」
+        // （owner:'agent'，客户端采纳成标签但不 switchTab ⇒ 它一直在后台）。
+        const agentSessions = Array.isArray(window.__PREVIEW_AGENT_SESSIONS) ? window.__PREVIEW_AGENT_SESSIONS : []
         const list = window.__PREVIEW_AT_LIMIT
           ? [{ sid: 'other-1', attachable: true }, { sid: 'other-2', attachable: true }, { sid: 'other-3', attachable: true }, { sid: 'other-4', attachable: true }]
-          : SESSIONS.slice()
+          : SESSIONS.slice().concat(agentSessions)
         setTimeout(() => this._deliver({ t: 'sessions', list }), 5)
         return
       }
@@ -341,6 +346,7 @@
   }
   window.__mockSockets = []
   window.__mockLog = []
+  window.__mockFrames = []
   window.WebSocket = MockSocket
 
   /* ---------- module loader ---------- */

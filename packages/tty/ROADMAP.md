@@ -38,10 +38,10 @@
   磁盘多挂载点（仍固定取 `/`，Windows 取系统盘）。
 - **`HostKeyAlias` / 别名参与 TOFU 定位**（可搭 D12 的多指纹 schema 一起做）。*（复核：仍未做，
   全仓无 `HostKeyAlias`）*
-- **客户端接线进 CI**（D38 遗留，单独立项）—— `preview.mjs` 的 30 个界面场景需要 Chrome：要么加一个
+- **客户端接线进 CI**（D38 遗留，单独立项）—— `preview.mjs` 的 34 个界面场景需要 Chrome：要么加一个
   带浏览器的 CI job，要么继续把 UI 纯逻辑外抽成可单测模块。*（复核：CI 仍未跑 `preview.mjs`；
   「外抽」这条路已多一个——D49 落地的 `client-src/stats-bar.js` 带 17 条单测，现在这类模块共
-  4 个：`stats-bar` / `status-line` / `dock-owner` / `current-session`，各有同名测试文件）*
+  5 个：`stats-bar` / `status-line` / `dock-owner` / `current-session` / `fit-size`（D79 新增），各有同名测试文件）*
 
 **2026-09-25 追加**：`allowProxyCommand` 的提权按项目级 ROADMAP 第 5.1 节收口——只认宿主侧
 环境变量 `DSH_TTY_ALLOW_PROXY_COMMAND`（启动时采样一次），HTTP 只能关不能开；未授权时设置卡片

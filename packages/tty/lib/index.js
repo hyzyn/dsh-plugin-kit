@@ -214,8 +214,18 @@ const REAPER_INTERVAL_MS = 10_000;
 const STATS_INTERVAL_MS = 1000;
 const TTY_GUIDANCE = '本机已安装 dsh-tty 插件（终端面板）：Web GUI 侧边栏的「终端」入口可打开交互终端（xterm.js + PTY），可运行任意命令与 TUI 程序（vim/htop 等），支持多标签页与断线自动重连（刷新页面/网络抖动后会话保活并恢复现场）；新标签默认在当前会话工作目录打开。标签栏「+」菜单还能开 SSH 标签页（ssh2 原生连接，连接簿在设置卡片维护，支持 agent forwarding 与主机指纹 TOFU 钉扎；连接簿条目可配单跳跳板机 ProxyJump），像本地终端一样操作远程主机。设置卡片开启「会话持久化（tmux）」后，新开的本地/SSH 标签默认由 tmux server 托管（宿主重启/断线超时后重开即恢复现场），长任务建议在持久化开启时运行。长驻进程（dev server、watch、交互式程序）用 tty_open 开一个会话跑（或引导用户到终端面板里运行），不要在 bash 工具里挂起等待；用户提到「开个终端 / 在终端里跑 / SSH 到某台机器」时引导其打开该面板。agent 侧配套工具：tty_list 列出活跃终端会话（含 SSH 的 target 与实时 cwd），tty_capture 读取近期输出（默认清洗 ANSI；last:true 拿「上一条命令」的输出+退出码），tty_screen 读取当前可见屏幕（可读懂 vim/htop 等 TUI），tty_expect 用正则等待输出中的就绪信号（如 dev server URL、构建完成；它**先回看还没读过的已到达输出**，命令瞬间跑完也不会白等——超时若只返回一句诊断文案，别当成「命令没执行」），tty_send 发送按键，tunnel_list 列出端口转发隧道状态——操作会实时显示在用户终端里。SFTP 文件传输：面板内可对 SSH 连接簿条目（或 SSH 连接对话框当前填写的信息）打开文件浏览（上传/下载/建目录/重命名/删除），传输期间进度条右侧 ✕ 可取消（半截文件自动清理）；agent 配套 sftp_list 列远程目录、sftp_tree 递归看目录结构、sftp_read 读远程文本文件（≤1MB）、sftp_write 写远程文本文件（≤1MB，可追加）、sftp_mkdir 建目录（parents 可逐级补齐）、sftp_rename 重命名/移动、sftp_remove 删除（目录需 recursive），book 参数为连接簿条目名。端口转发：连接簿条目可配本地/远程隧道（如把远程数据库映射到本地端口），宿主自动保活重连，用户提到「转发端口 / 访问远程库」时引导其到终端面板设置卡片配置。推荐流程：tty_send 启动长任务 → tty_expect 等就绪标记 → tty_capture{last:true} 拿结果。';
 /** 本地 PTY 包装成 TermHandle（resize/kill 仍是透传 node-pty 的内部耦合；防御性降级）。 */
-function wrapLocalPty(handle) {
+export function wrapLocalPty(handle) {
     let resizeWarned = false;
+    // D79：README 承诺「DSH 升级若改内部结构会警告一次并退化为固定尺寸」，但老写法是
+    // `handle.terminal?.resize?.(…)` —— `?.` 只在**抛错**时才进 catch，DSH 若把
+    // `handle.terminal` 改名 / 移除（而不是让 resize 抛错），这里既不 resize 也不警告，
+    // 排查时一点线索都没有（承诺成了空头支票）。两种坏法现在都记一条日志。
+    const warnResizeDegraded = (reason) => {
+        if (resizeWarned)
+            return;
+        resizeWarned = true;
+        console.warn('[dsh-tty] resize 透传失败（DSH 内部结构可能已变化，退化为固定尺寸）: ' + reason);
+    };
     return {
         kind: 'local',
         pid: handle.pid,
@@ -223,15 +233,16 @@ function wrapLocalPty(handle) {
         done: handle.done,
         write: (data) => handle.write(data),
         resize: (cols, rows) => {
+            const terminal = handle.terminal;
+            if (terminal === undefined || typeof terminal.resize !== 'function') {
+                warnResizeDegraded('handle.terminal.resize 不存在');
+                return;
+            }
             try {
-                handle.terminal?.resize?.(cols, rows);
+                terminal.resize(cols, rows);
             }
             catch (error) {
-                // DSH 升级若改内部结构，降级为固定尺寸而不是每帧抛错
-                if (!resizeWarned) {
-                    resizeWarned = true;
-                    console.warn('[dsh-tty] resize 透传失败（DSH 内部结构可能已变化，退化为固定尺寸）: ' + String(error?.message ?? error));
-                }
+                warnResizeDegraded(String(error?.message ?? error));
             }
         },
         terminate: () => handle.terminate(),
@@ -522,9 +533,15 @@ const expectCounts = new WeakMap();
  * 整数夹紧（0.19.0）：ws 帧输入零信任——`Number('abc')=NaN`、`-5`、`1.5`、
  * `1e9` 都不能原样透传给 node-pty 的 ioctl 与 xterm-headless（后者曾在
  * resize 帧路径直接炸出未捕获异常）。非法值回落 fallback，范围内取整。
+ *
+ * D79 补的一档（0.22.1）：`null` / `''` / 布尔 / 对象也**不是数字**，但
+ * `Number(null)` = 0、`Number('')` = 0 会通过 isFinite 检查 ⇒ 被夹成下限 2。而客户端
+ * 把 NaN 发成 JSON 时正是 `null`（FitAddon 对游离 / 隐藏容器给 NaN，见
+ * `client-src/fit-size.js`），于是「根本不该发」的尺寸被翻译成「合法的极小尺寸」——
+ * 后台标签的 PTY 就是这么变成 2×2 的。非数值一律与 NaN 同档：回落 fallback。
  */
 function clampInt(value, fallback, min, max) {
-    const n = Number(value);
+    const n = typeof value === 'number' ? value : typeof value === 'string' && value.trim() !== '' ? Number(value) : Number.NaN;
     if (!Number.isFinite(n))
         return fallback;
     return Math.min(max, Math.max(min, Math.round(n)));
@@ -2414,6 +2431,9 @@ export class TtyServer {
                 }
             }
             else if (msg.t === 'resize') {
+                // D79：`msg.cols/rows` 缺失或非数值（客户端把 NaN 序列化成 `null` 就是这种）时
+                // clampInt 回落 80×24，**不是**夹到下限 2——客户端的门槛在 client-src/fit-size.js，
+                // 这里是防御纵深：旧版本客户端 / 第三方客户端发来的垃圾值不该把 PTY 压成 2×2。
                 const resolved = this.resolveSid(ws, msg, local);
                 if (resolved === undefined || 'unknown' in resolved)
                     return;
