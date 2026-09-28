@@ -79,7 +79,7 @@
     "access": "public"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh": "^0.1.7-rc.2"
+    "@deepseek-ai/dsh": "^0.1.7-rc.2 || ^0.2.0-rc.1"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh": {

@@ -79,14 +79,16 @@ direction and how they cooperate: [docs/architecture.md](docs/architecture.md) (
 
 ### System requirements
 
-- DeepSeek Harness installed and `dsh web` starts normally. **The current baseline is DSH `0.1.7-rc.2`**:
-  settings now live in the current profile’s plugin-entry configuration, and compatibility is enforced
-  from `peerDependencies` both before install and at startup; `0.1.6-alpha.2` and earlier are no longer
-  supported.
-- Every installable plugin declares `@deepseek-ai/dsh: ^0.1.7-rc.2` in `peerDependencies`, enforced
-  both **before install** and **at startup**; `dsh.engines.dsh` is kept as a **marketplace display
-  field** (it must match the peer floor). Mechanics, what to do when a version is rejected, and how to
-  admit an exact combination → [docs/troubleshooting.md § Compatibility](docs/troubleshooting.md#兼容性校验).
+- DeepSeek Harness installed and `dsh web` starts normally. **The current baseline spans two DSH
+  cohorts, `0.1.7-rc.2` and `0.2.0-rc.1`**: settings now live in the current profile’s plugin-entry
+  configuration, and compatibility is enforced from `peerDependencies` both before install and at
+  startup; `0.1.6-alpha.2` and earlier are no longer supported.
+- Every installable plugin declares `@deepseek-ai/dsh: ^0.1.7-rc.2 || ^0.2.0-rc.1` in
+  `peerDependencies` (one `^<cohort>` per supported cohort joined with `||`; matching any branch
+  admits the host), enforced both **before install** and **at startup**. `dsh.engines.dsh` is kept as
+  a **marketplace display field** — the market resolver only accepts a single `>=X.Y.Z` segment, so it
+  carries the **lowest** cohort, `>=0.1.7-rc.2`. Mechanics, what to do when a version is rejected, and
+  how to admit an exact combination → [docs/troubleshooting.md § Compatibility](docs/troubleshooting.md#兼容性校验).
 - No extra requirements for npm installs; installing from this repository requires Node.js >= 22.19 and pnpm 10.
 
 ### Install from npm (recommended)

@@ -88,18 +88,23 @@ CI 另有两道兜底（`--no-verify`、别的机器、别的工具提交都能�
    workflow 都跑）。
 5. 可安装插件必须用 `peerDependencies` 声明 DSH 兼容范围。DSH 0.1.7-rc.1 起
    **安装前与启动时**都强制校验，且只看 `@deepseek-ai/dsh` / `@deepseek-ai/dsh-*`
-   的 peer（预发布参与范围匹配）。写法统一为
-   `"@deepseek-ai/dsh": "^<cohort>"`，并在 `peerDependenciesMeta` 里标
-   `optional`——只压 pnpm 的 unmet-peer 噪音，DSH 判定器不看它，照旧强制。
-   被判定不兼容的插件安装时抛 `incompatible-version`、启动时整行 `disabled`；
-   豁免要写进 profile 自己的 `compatibility.json`（`dsh plugin allow-version`）。
-   同时保留 `dsh.engines.dsh: ">=<cohort>"`（市场解析器唯一支持的 `>=X.Y.Z[-预发布]`
-   形式）作为**展示**位：rc.1 宿主不读它，但插件市场 / 社区条目仍按它展示兼容性——
-   两条下限必须一致，脚本会拦。
-   cohort 升级时同步提升**全部**包与 `scripts/check-dsh-peers.mjs` 里的 `DSH_COHORT`
-   （新插件从 `templates/hello` 复制，模板也要跟着改）。CI 与 Release workflow 都会跑
+   的 peer（预发布参与范围匹配）。写法统一为**逐 cohort 写全**：
+   `"@deepseek-ai/dsh": "^<cohort-1> || ^<cohort-2>"`（单 cohort 时就是 `^<cohort>`），
+   并在 `peerDependenciesMeta` 里标 `optional`——只压 pnpm 的 unmet-peer 噪音，
+   DSH 判定器不看它，照旧强制。
+   被判定不兼容的插件安装时抛 `incompatible-version`、启动时整行 `disabled`
+   （bundle 则整包被 skip）；豁免要写进 profile 自己的 `compatibility.json`
+   （`dsh plugin allow-version`）。
+   同时保留 `dsh.engines.dsh: ">=<最低档 cohort>"`（市场解析器唯一支持的 `>=X.Y.Z[-预发布]`
+   形式，写 `||` 会被判「无法验证」）作为**展示**位：rc.1 宿主不读它，但插件市场 /
+   社区条目仍按它展示兼容性——它必须与 peer 覆盖的最低档一致，脚本会拦。
+   cohort 增删时同步改**全部**包与 `scripts/check-dsh-peers.mjs` 里的 `DSH_COHORTS`
+   （列表，旧 → 新；新插件从 `templates/hello` 复制，模板也要跟着改）。**每加一档都必须
+   实测过**：用该 cohort 的 `app-boot` 判定器逐包核对，并至少跑一遍真宿主加载
+   （`dsh plugin add` 不需要豁免 + 启动后无 `skipping profile bundle`），
+   写进对应 README 的兼容性段。CI 与 Release workflow 都会跑
    `node scripts/check-dsh-peers.mjs` 兜底；本机装了对应 cohort 时可用
-   `--app-boot <path>` 让 DSH 自己的判定器再核一遍。
+   `--app-boot <path>` 让 DSH 自己的判定器对**每一档**再核一遍。
 
 ## 攒批
 
