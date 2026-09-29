@@ -401,21 +401,29 @@ await test('apply 注册设置卡片与配置入口（settings.plugin.item / set
    * 卡片注册面（新宿主 0.2.0-rc.1）：
    *   - settings.plugin.item：DSH ≤0.1.5 的设置页插件卡片；
    *   - settings.kit.item：0.1.6 起设置里的「插件配置」行（kit-settings 提供的子槽）；
-   *   - plugins.bundle.config：**详情页「说明」下方的内联配置**（两个 key：独立包与聚合包）。
-   * 配置表单一共只该有**一个**位置：bundle 槽可用时 row 槽（per-row 的「>」子页）不再注册，
-   * 否则同一份表单会有两个入口。旧宿主的回退在下面单独一条用例里锁。
+   *   - plugins.bundle.config：**详情页「说明」下方的内联配置**——**只挂本包自己的 bundle 名**；
+   *   - plugins.row.config：聚合包（`@hyzyn/dsh-all`）那一份**保留**（内联位挂不了聚合包，
+   *     见下）。
+   * 关键约束（实测踩过）：`plugins.bundle.config` 的 key 是**共享命名空间**，同一个 key 只能
+   * 有一个注册者——重复注册会**直接抛错**，而客户端 apply 抛错就是整插件起不来（启动页
+   * 「Failed to load plugins」）。`@hyzyn/dsh-all` 是所有插件共用的聚合 bundle，八个插件都去
+   * 挂它必然崩，所以它只能走 row 入口。
    */
   const names = state.cards.map((card) => card.options.name).sort()
-  assert.deepEqual(names, ['plugins.bundle.config', 'plugins.bundle.config', 'settings.kit.item', 'settings.plugin.item'])
+  assert.deepEqual(names, ['plugins.bundle.config', 'plugins.row.config', 'settings.kit.item', 'settings.plugin.item'])
   const settingsCard = state.cards.find((card) => card.options.name === 'settings.plugin.item')
   assert.equal(settingsCard.options.key, 'docker', 'settings 卡片 key 必须等于命名空间')
   assert.equal(state.cards.find((card) => card.options.name === 'settings.kit.item').options.id, 'docker', '插件配置行 id')
   assert.deepEqual(
-    state.cards.filter((card) => card.options.name === 'plugins.bundle.config').map((card) => card.options.key).sort(),
-    ['@hyzyn/dsh-all', '@hyzyn/dsh-docker'],
-    '详情页内联配置的 key 必须等于 **bundle 包名**（独立包 + 聚合包），管理器按它匹配详情页',
+    state.cards.filter((card) => card.options.name === 'plugins.bundle.config').map((card) => card.options.key),
+    ['@hyzyn/dsh-docker'],
+    '内联配置只挂**本包自己的** bundle 名（挂聚合包会与其它插件撞 key → 客户端启动即崩）',
   )
-  assert.equal(state.cards.some((card) => card.options.name === 'plugins.row.config'), false, '内联可用时不该再注册 per-row 的「>」入口')
+  assert.deepEqual(
+    state.cards.filter((card) => card.options.name === 'plugins.row.config').map((card) => card.options.key),
+    ['@hyzyn/dsh-all#docker'],
+    '内联可用时只撤掉**本包**那份 row 入口；聚合包那份要留着（它的唯一入口）',
+  )
   for (const card of state.cards) assert.equal(typeof card.component, 'function', card.options.name + ' 未暴露组件')
   // 宿主侧边栏找不到时安静降级（不抛异常），卸载可重复调用
   assert.equal(typeof dispose, 'function')

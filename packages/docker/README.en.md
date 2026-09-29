@@ -439,14 +439,16 @@ Where the settings surface **lives** depends on the DSH version, but it is alway
 
 | Host | Where the settings are |
 |---|---|
-| `0.2.0-rc.1` and later | **Directly below the description on the plugin detail page** (`plugins.bundle.config`, dispatched by bundle package name) — no extra ">" step into a sub-page |
+| `0.2.0-rc.1` and later | **Directly below the description on the plugin detail page** (`plugins.bundle.config`, key = **this package's own** bundle name) — no extra ">" step into a sub-page |
 | `0.1.6` line | Plugins sidebar → the bundle's **row** → the ">" row detail (`plugins.row.config`) |
 | `≤0.1.5` | Settings → Plugins → the plugin's collapsible card (`settings.plugin.item`) |
 | All of the above | Settings → **plugin configuration**, the same entry (`settings.kit.item`, provided by `@hyzyn/dsh-kit-settings`) |
 
-On hosts that have the bundle slot, the row slot is **no longer registered** — two entries for one form
-only makes people think there are two sets of settings; hosts without it (the bundle slot missing) fall
-back to the row detail automatically, with no loss of function.
+On hosts that have the bundle slot, **this package's** row entry is **no longer registered** — two entries
+for one form only makes people think there are two sets of settings; hosts without it (the bundle slot
+missing) fall back to the row detail automatically, with no loss of function. The **aggregate bundle
+`@hyzyn/dsh-all` is the exception**: its `plugins.bundle.config` key is shared by every plugin (a second
+registrant throws), so it has no inline slot and keeps using its row entry.
 
 Configuration lives in the settings namespace `docker`, i.e. the `docker:` section of `~/.dsh/settings.yaml`
 (`$DSH_HOME/settings.yaml`; DSH's settings file is provided by the host's `dsh-settings-file`). The composition

@@ -416,13 +416,15 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
 
 | 宿主 | 设置面在哪 |
 |---|---|
-| `0.2.0-rc.1` 起 | **插件详情页「说明」正下方**（`plugins.bundle.config`，按 bundle 包名派发）——设置就在详情页里，不必再点一次「>」进二级页 |
+| `0.2.0-rc.1` 起 | **插件详情页「说明」正下方**（`plugins.bundle.config`，key = **本包自己的** bundle 包名）——设置就在详情页里，不必再点一次「>」进二级页 |
 | `0.1.6` 线 | 侧边栏「插件」→ 该 bundle 的**行** → 「>」行详情（`plugins.row.config`） |
 | `≤0.1.5` | 设置 → 插件 → 该插件的可折叠卡片（`settings.plugin.item`） |
 | 以上各版 | 设置 → **插件配置** 里的同一条目（`settings.kit.item`，由 `@hyzyn/dsh-kit-settings` 提供） |
 
-新宿主上 bundle 槽可用时**不再注册 row 槽**——同一份表单两个入口只会让人以为有两套设置；
-旧宿主（bundle 槽不存在）自动回退到行详情，功能一点不减。
+新宿主上 bundle 槽可用时**不再注册本包那份 row 槽**——同一份表单两个入口只会让人以为有两套设置；
+旧宿主（bundle 槽不存在）自动回退到行详情，功能一点不减。**聚合包 `@hyzyn/dsh-all` 例外**：它的
+`plugins.bundle.config` key 是所有插件共享的（重复注册会直接抛错），所以挂不了内联位，它在聚合
+安装下继续走 row 入口。
 
 配置落在 settings 命名空间 `docker`，即 `~/.dsh/settings.yaml` 的 `docker:`
 段（`$DSH_HOME/settings.yaml`；DSH 的 settings 文件由宿主 `dsh-settings-file`

@@ -967,38 +967,47 @@ window.__ModuleLoader__.load({
       })
       // 注册到官方插件配置 → 可配置 卡片列表（与终端 / Agent 循环 / 网页搜索同级）
       /*
-       * 设置面：0.2.0-rc.1 起挂 `plugins.bundle.config`（按 **bundle 包名** 派发，管理器的插件
-       * 详情页把它渲染在「说明」正下方）；`plugins.row.config` 是 per-row 的「>」子页。
-       * **内联优先**：bundle 槽可用就不注册 row 槽——同一份表单两个入口会让人以为有两套设置；
-       * bundle 槽不存在的旧宿主（0.1.6 线）自动回退到行详情，功能一点不减。bundle 名从 row key
-       * （`bundle#rowId`）推导，两者不许漂移。就绪顺序不敏感：任一侧先到都收敛到「内联优先」
-       * （后到的 row 注册会被撤掉）。
+       * 设置面：0.2.0-rc.1 起挂 `plugins.bundle.config`——key 是 **bundle 包名**，管理器的插件
+       * 详情页把它渲染在「说明」正下方；`plugins.row.config` 是 per-row 的「>」子页。
+       *
+       * 两条硬约束（第一条踩过坑，见下）：
+       *   ① `plugins.bundle.config` 的 key 是**共享命名空间**：同一个 key 只能有一个注册者，
+       *      重复注册**直接抛错**（`keyed slot ... already has an entry`），而客户端 `apply`
+       *      抛错 = 整个插件起不来（实测：把 `@hyzyn/dsh-all` 也挂上时，八个插件抢同一个 key，
+       *      启动页直接变「Failed to load plugins」）。聚合包 `@hyzyn/dsh-all` 是所有插件共用的
+       *      bundle，**不能**挂 bundle.config —— 它没有内联位，设置面走它自己的 row 入口。
+       *   ② 内联位可用时，**本包自己的** bundle 不再注册 row 槽（同一份表单两个入口会让人以为
+       *      有两套设置）；聚合包那份 row 入口**保留**（那是它在聚合安装下的唯一入口）。旧宿主
+       *      （bundle 槽不存在，0.1.6 线）回退注册全部 row 槽，功能一点不减。
+       * 就绪顺序不敏感：任一侧先到都收敛到「内联优先」（后到的本包 row 注册会被撤掉）。
        */
-      const BUNDLE_CONFIG_KEYS = ROW_CONFIG_KEYS.map((key) => key.split('#')[0])
+      const AGGREGATE_BUNDLE = '@hyzyn/dsh-all'
+      const BUNDLE_NAMES = [...new Set(ROW_CONFIG_KEYS.map((key) => key.split('#')[0]))]
+      const OWN_BUNDLE = BUNDLE_NAMES.find((name) => name !== AGGREGATE_BUNDLE)
       let bundleConfigLive = false
-      const disposeRowConfigs = []
-      for (const key of BUNDLE_CONFIG_KEYS) {
+      const disposeOwnRowConfigs = []
+      if (OWN_BUNDLE !== undefined) {
         ctx.slots.inject('plugins.bundle.config', () => {
           bundleConfigLive = true
-          while (disposeRowConfigs.length > 0) {
-            const disposeRow = disposeRowConfigs.pop()
+          while (disposeOwnRowConfigs.length > 0) {
+            const disposeRow = disposeOwnRowConfigs.pop()
             if (typeof disposeRow === 'function') disposeRow()
           }
           return ctx.slots.register({
             name: 'plugins.bundle.config',
-            key,
+            key: OWN_BUNDLE,
           }, McpSettingsCard)
         })
       }
-      // 旧宿主回退（DSH 0.1.6 线；bundle 槽不存在时 inject 不会触发）
       for (const key of ROW_CONFIG_KEYS) {
         ctx.slots.inject('plugins.row.config', () => {
-          if (bundleConfigLive) return undefined
+          const own = key.split('#')[0] === OWN_BUNDLE
+          if (own && bundleConfigLive) return undefined
           const disposeRow = ctx.slots.register({
             name: 'plugins.row.config',
             key,
           }, McpSettingsCard)
-          disposeRowConfigs.push(disposeRow)
+          if (own) disposeOwnRowConfigs.push(disposeRow)
           return disposeRow
         })
       }
