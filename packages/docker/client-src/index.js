@@ -8415,13 +8415,46 @@ window.__ModuleLoader__.load({
         },
       }
       setEntryVisible(true)
-      // DSH ≥0.1.6-alpha.2：侧边栏「插件」页里该行的配置页。插槽不存在时 inject 不会触发，
-      // 因此在旧版上完全无副作用，一份代码同时兼容两代。
+      /*
+       * 设置面的两个位置（0.2.0-rc.1 起）：
+       *   - `plugins.bundle.config`：按 **bundle 包名** 派发，管理器的插件详情页把它渲染在
+       *     「说明」**正下方**——设置就在详情页里，用户不必再点一次「>」；
+       *   - `plugins.row.config`：per-row 的「>」子页（同一份表单的第二个入口）。
+       * 两者同时注册 = 同一份表单两个入口（还会让人以为有两套设置）。所以**内联优先**：
+       * bundle 槽可用就不注册 row 槽；bundle 槽不存在的旧宿主（0.1.6 线）继续用 row 槽，
+       * 功能一点不减。两边的就绪顺序不敏感——任一侧先到都收敛到「内联优先」。
+       */
+      const BUNDLE_CONFIG_KEYS = [
+        '@hyzyn/dsh-docker',
+        '@hyzyn/dsh-all',
+      ]
+      let bundleConfigLive = false
+      const disposeRowConfigs = []
+      for (const key of BUNDLE_CONFIG_KEYS) {
+        ctx.slots.inject('plugins.bundle.config', () => {
+          bundleConfigLive = true
+          // 行入口整个撤掉：新宿主上不该再留「>」（同一份表单不该有两个入口）
+          while (disposeRowConfigs.length > 0) {
+            const disposeRow = disposeRowConfigs.pop()
+            if (typeof disposeRow === 'function') disposeRow()
+          }
+          return ctx.slots.register({
+            name: 'plugins.bundle.config',
+            key,
+          }, DockerSettingsCard)
+        })
+      }
+      // 旧宿主回退（DSH 0.1.6 线；bundle 槽不存在时 inject 不会触发）
       for (const key of ROW_CONFIG_KEYS) {
-        ctx.slots.inject('plugins.row.config', () => ctx.slots.register({
-          name: 'plugins.row.config',
-          key,
-        }, DockerSettingsCard))
+        ctx.slots.inject('plugins.row.config', () => {
+          if (bundleConfigLive) return undefined
+          const disposeRow = ctx.slots.register({
+            name: 'plugins.row.config',
+            key,
+          }, DockerSettingsCard)
+          disposeRowConfigs.push(disposeRow)
+          return disposeRow
+        })
       }
       // DSH ≥0.1.6：设置里与「通用设置」平级的「插件配置」页（子 slot 由
       // @hyzyn/dsh-kit-settings 声明）。不传 view，卡片走各自原有的可折叠形态。

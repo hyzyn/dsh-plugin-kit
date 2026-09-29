@@ -262,12 +262,21 @@ function makeClientCtx(options = {}) {
   const ctx = {
     slots: {
       inject: (slot, callback) => {
+        /*
+         * 默认按新宿主：所有槽都存在（回调立即触发）。传 `options.slots` 可只暴露其中几个，
+         * 用来模拟「宿主还没有这个槽」的旧版（如 0.1.6 线只有 plugins.row.config、
+         * 没有 plugins.bundle.config）——设置面在旧宿主上的回退路径靠它测。
+         */
+        if (options.slots !== undefined && !options.slots.includes(slot)) return () => {}
         callback()
         return () => {}
       },
       register: (options_, component) => {
         state.cards.push({ options: options_, component })
-        return () => {}
+        return () => {
+          const index = state.cards.findIndex((card) => card.options === options_)
+          if (index !== -1) state.cards.splice(index, 1)
+        }
       },
     },
     inject: (names, callback) => {
@@ -383,34 +392,49 @@ function makeClientCtx(options = {}) {
   return { ctx, state }
 }
 
-await test('apply 注册设置卡片与配置入口（settings.plugin.item / settings.kit.item / plugins.row.config）并挂载侧边栏入口', () => {
+await test('apply 注册设置卡片与配置入口（settings.plugin.item / settings.kit.item / plugins.bundle.config）并挂载侧边栏入口', () => {
   const requireStub = (spec) => SEED[spec]
   const exports_ = registration.factory(requireStub)
   const { ctx, state } = makeClientCtx()
   const dispose = exports_.apply(ctx)
   /*
-   * 卡片注册面：三个入口是**并存**的，不是其一替代其一——
+   * 卡片注册面（新宿主 0.2.0-rc.1）：
    *   - settings.plugin.item：DSH ≤0.1.5 的设置页插件卡片；
    *   - settings.kit.item：0.1.6 起设置里的「插件配置」行（kit-settings 提供的子槽）；
-   *   - plugins.row.config：0.1.6 侧边栏插件页的行详情（两个 key：独立包与聚合包）。
-   * 数量写死过 1，于是加了后两条注册之后就一直是红的——这里按名字/键列清单，
-   * 既锁全又不必每加一个入口改一次数字。
+   *   - plugins.bundle.config：**详情页「说明」下方的内联配置**（两个 key：独立包与聚合包）。
+   * 配置表单一共只该有**一个**位置：bundle 槽可用时 row 槽（per-row 的「>」子页）不再注册，
+   * 否则同一份表单会有两个入口。旧宿主的回退在下面单独一条用例里锁。
    */
   const names = state.cards.map((card) => card.options.name).sort()
-  assert.deepEqual(names, ['plugins.row.config', 'plugins.row.config', 'settings.kit.item', 'settings.plugin.item'])
+  assert.deepEqual(names, ['plugins.bundle.config', 'plugins.bundle.config', 'settings.kit.item', 'settings.plugin.item'])
   const settingsCard = state.cards.find((card) => card.options.name === 'settings.plugin.item')
   assert.equal(settingsCard.options.key, 'docker', 'settings 卡片 key 必须等于命名空间')
   assert.equal(state.cards.find((card) => card.options.name === 'settings.kit.item').options.id, 'docker', '插件配置行 id')
   assert.deepEqual(
-    state.cards.filter((card) => card.options.name === 'plugins.row.config').map((card) => card.options.key).sort(),
-    ['@hyzyn/dsh-all#docker', '@hyzyn/dsh-docker#docker'],
-    '插件页行配置要同时挂独立包与聚合包两个 key',
+    state.cards.filter((card) => card.options.name === 'plugins.bundle.config').map((card) => card.options.key).sort(),
+    ['@hyzyn/dsh-all', '@hyzyn/dsh-docker'],
+    '详情页内联配置的 key 必须等于 **bundle 包名**（独立包 + 聚合包），管理器按它匹配详情页',
   )
+  assert.equal(state.cards.some((card) => card.options.name === 'plugins.row.config'), false, '内联可用时不该再注册 per-row 的「>」入口')
   for (const card of state.cards) assert.equal(typeof card.component, 'function', card.options.name + ' 未暴露组件')
   // 宿主侧边栏找不到时安静降级（不抛异常），卸载可重复调用
   assert.equal(typeof dispose, 'function')
   dispose()
   dispose()
+})
+
+await test('旧宿主（只有 plugins.row.config 槽）回退：设置面走 per-row「>」子页，功能不减', () => {
+  const requireStub = (spec) => SEED[spec]
+  const exports_ = registration.factory(requireStub)
+  const { ctx, state } = makeClientCtx({ slots: ['plugins.row.config', 'settings.kit.item', 'settings.plugin.item'] })
+  exports_.apply(ctx)
+  assert.deepEqual(
+    state.cards.filter((card) => card.options.name === 'plugins.row.config').map((card) => card.options.key).sort(),
+    ['@hyzyn/dsh-all#docker', '@hyzyn/dsh-docker#docker'],
+    'bundle 槽不存在时必须回退注册 row 槽（两个 key 都要）',
+  )
+  assert.equal(state.cards.some((card) => card.options.name === 'plugins.bundle.config'), false, '槽不存在时不该凭空注册')
+  assert.equal(state.cards.filter((card) => card.options.name === 'settings.kit.item').length, 1, '旧宿主上其余入口照常')
 })
 
 await test('tty 未安装时：可选注入不触发、apply 仍成功', () => {

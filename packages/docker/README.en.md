@@ -434,6 +434,20 @@ The "Overview" page lays out all targets on one screen: one counter card per tar
 
 ![Settings card: target CRUD, capability switches and parameters, saved and applied hot](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-docker-setting.png)
 
+Where the settings surface **lives** depends on the DSH version, but it is always the **same form**
+(same settings namespace, same write path) — the data and behaviour are identical:
+
+| Host | Where the settings are |
+|---|---|
+| `0.2.0-rc.1` and later | **Directly below the description on the plugin detail page** (`plugins.bundle.config`, dispatched by bundle package name) — no extra ">" step into a sub-page |
+| `0.1.6` line | Plugins sidebar → the bundle's **row** → the ">" row detail (`plugins.row.config`) |
+| `≤0.1.5` | Settings → Plugins → the plugin's collapsible card (`settings.plugin.item`) |
+| All of the above | Settings → **plugin configuration**, the same entry (`settings.kit.item`, provided by `@hyzyn/dsh-kit-settings`) |
+
+On hosts that have the bundle slot, the row slot is **no longer registered** — two entries for one form
+only makes people think there are two sets of settings; hosts without it (the bundle slot missing) fall
+back to the row detail automatically, with no loss of function.
+
 Configuration lives in the settings namespace `docker`, i.e. the `docker:` section of `~/.dsh/settings.yaml`
 (`$DSH_HOME/settings.yaml`; DSH's settings file is provided by the host's `dsh-settings-file`). The composition
 config in the plugin line acts as the schema's `base`, which the settings layer overrides; the HTTP
