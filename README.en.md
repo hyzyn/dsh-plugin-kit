@@ -79,11 +79,11 @@ direction and how they cooperate: [docs/architecture.md](docs/architecture.md) (
 
 ### System requirements
 
-- DeepSeek Harness installed and `dsh web` starts normally. **The current baseline spans two DSH
-  cohorts, `0.1.7-rc.2` and `0.2.0-rc.1`**: settings now live in the current profile’s plugin-entry
+- DeepSeek Harness installed and `dsh web` starts normally. **The current baseline spans three DSH
+  cohorts, `0.1.7-rc.2`, `0.2.0-rc.1` and `0.2.0-rc.2`**: settings now live in the current profile’s plugin-entry
   configuration, and compatibility is enforced from `peerDependencies` both before install and at
   startup; `0.1.6-alpha.2` and earlier are no longer supported.
-- Every installable plugin declares `@deepseek-ai/dsh: ^0.1.7-rc.2 || ^0.2.0-rc.1` in
+- Every installable plugin declares `@deepseek-ai/dsh: ^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2` in
   `peerDependencies` (one `^<cohort>` per supported cohort joined with `||`; matching any branch
   admits the host), enforced both **before install** and **at startup**. `dsh.engines.dsh` is kept as
   a **marketplace display field** — the market resolver only accepts a single `>=X.Y.Z` segment, so it

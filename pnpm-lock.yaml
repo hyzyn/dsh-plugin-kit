@@ -15,34 +15,34 @@ importers:
         specifier: link:scripts/dsh-peer-stub
         version: link:scripts/dsh-peer-stub
       '@hyzyn/dsh-codegraph':
-        specifier: 0.6.2
+        specifier: 0.6.3
         version: link:packages/codegraph
       '@hyzyn/dsh-docker':
-        specifier: 0.9.2
+        specifier: 0.9.3
         version: link:packages/docker
       '@hyzyn/dsh-env':
-        specifier: 0.3.2
+        specifier: 0.3.3
         version: link:packages/env
       '@hyzyn/dsh-kit-settings':
-        specifier: 0.2.1
+        specifier: 0.2.2
         version: link:packages/kit-settings
       '@hyzyn/dsh-mcp':
-        specifier: 0.2.3
+        specifier: 0.2.4
         version: link:packages/mcp
       '@hyzyn/dsh-profile':
-        specifier: 0.2.2
+        specifier: 0.2.3
         version: link:packages/profile
       '@hyzyn/dsh-prompt':
-        specifier: 0.2.2
+        specifier: 0.2.3
         version: link:packages/prompt
       '@hyzyn/dsh-rss':
-        specifier: 0.4.2
+        specifier: 0.4.3
         version: link:packages/rss
       '@hyzyn/dsh-search':
-        specifier: 0.4.2
+        specifier: 0.4.3
         version: link:packages/search
       '@hyzyn/dsh-tty':
-        specifier: 0.22.2
+        specifier: 0.22.3
         version: link:packages/tty
     devDependencies:
       typescript:
@@ -61,34 +61,34 @@ importers:
         specifier: link:../../scripts/dsh-peer-stub
         version: link:../../scripts/dsh-peer-stub
       '@hyzyn/dsh-codegraph':
-        specifier: 0.6.2
+        specifier: 0.6.3
         version: link:../codegraph
       '@hyzyn/dsh-docker':
-        specifier: 0.9.2
+        specifier: 0.9.3
         version: link:../docker
       '@hyzyn/dsh-env':
-        specifier: 0.3.2
+        specifier: 0.3.3
         version: link:../env
       '@hyzyn/dsh-kit-settings':
-        specifier: 0.2.1
+        specifier: 0.2.2
         version: link:../kit-settings
       '@hyzyn/dsh-mcp':
-        specifier: 0.2.3
+        specifier: 0.2.4
         version: link:../mcp
       '@hyzyn/dsh-profile':
-        specifier: 0.2.2
+        specifier: 0.2.3
         version: link:../profile
       '@hyzyn/dsh-prompt':
-        specifier: 0.2.2
+        specifier: 0.2.3
         version: link:../prompt
       '@hyzyn/dsh-rss':
-        specifier: 0.4.2
+        specifier: 0.4.3
         version: link:../rss
       '@hyzyn/dsh-search':
-        specifier: 0.4.2
+        specifier: 0.4.3
         version: link:../search
       '@hyzyn/dsh-tty':
-        specifier: 0.22.2
+        specifier: 0.22.3
         version: link:../tty
     devDependencies:
       '@deepseek-ai/cordis':

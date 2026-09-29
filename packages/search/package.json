@@ -1,7 +1,7 @@
 {
   "name": "@hyzyn/dsh-search",
-  "version": "0.4.2",
-  "description": "DSH Web GUI 的全局搜索插件：在侧边栏提供「全局搜索」入口，全文搜索历史会话。",
+  "version": "0.4.3",
+  "description": "DSH Web GUI 的全局搜索插件：侧边栏「全局搜索」（⌘/Ctrl + K）命令面板式一处检索历史会话、Prompt、MCP 工具与设置面板。",
   "type": "module",
   "engines": {
     "node": ">=22.19.0"
@@ -67,7 +67,7 @@
     "access": "public"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh": "^0.1.7-rc.2 || ^0.2.0-rc.1"
+    "@deepseek-ai/dsh": "^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh": {

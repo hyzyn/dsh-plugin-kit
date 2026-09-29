@@ -77,11 +77,11 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 
 ### 系统要求
 
-- 已安装 DeepSeek Harness，`dsh web` 可正常启动。**当前适配的两档基线为 DSH `0.1.7-rc.2` 与
-  `0.2.0-rc.1`**：settings 存储改为「当前 profile 的插件 entry 配置」，兼容性改由
+- 已安装 DeepSeek Harness，`dsh web` 可正常启动。**当前适配的三档基线为 DSH `0.1.7-rc.2`、
+  `0.2.0-rc.1` 与 `0.2.0-rc.2`**：settings 存储改为「当前 profile 的插件 entry 配置」，兼容性改由
   `peerDependencies` 在安装前与启动时强制校验；`0.1.6-alpha.2` 及更早不再支持。
 - 每个可安装插件都在 `peerDependencies` 声明
-  `@deepseek-ai/dsh: ^0.1.7-rc.2 || ^0.2.0-rc.1`（逐 cohort 用 `||` 写全，命中任一段即放行），
+  `@deepseek-ai/dsh: ^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2`（逐 cohort 用 `||` 写全，命中任一段即放行），
   DSH 在**安装前**与**启动时**都用它判定兼容性；同时保留 `dsh.engines.dsh` 作**市场展示位**
   ——市场解析器只认单段 `>=X.Y.Z`，所以它写的是**最低档** `>=0.1.7-rc.2`，与 peer 覆盖的最低档一致。
   机制细节、被拦下怎么办、怎么临时放行 → [docs/troubleshooting.md § 兼容性校验](docs/troubleshooting.md#兼容性校验)。

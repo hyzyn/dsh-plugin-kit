@@ -40,18 +40,24 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
  * 本仓统一适配的 DSH cohort 列表，**旧 → 新**；新增/退役 cohort 时改这一处 + 各包 peer 范围。
  *
  * 每个可安装插件的 peer 必须**逐 cohort 覆盖**（`||` 连起来），宿主侧逐个判定，命中任一段
- * 即放行。两个 cohort 的插件 API 面实测一致（0.2.0-rc.1 vs 0.1.7-rc.2：本仓 import 的
- * `dsh-tools` / `dsh-client-ui-slots` / `dsh-client-locale` / `dsh-host-webserver` /
- * `dsh-subprocess-local` / `dsh-client-modules` / `dsh-package-manifest` 的 d.ts 逐字节相同，
- * `cordis` 4.0.4 与 `schemastery` 3.18.4 同版本），所以同一条范围同时声明两段是如实表述，
+ * 即放行。相邻 cohort 的插件 API 面都逐文件比对过：
+ *  - 0.2.0-rc.1 vs 0.1.7-rc.2：本仓 import 的 `dsh-tools` / `dsh-client-ui-slots` /
+ *    `dsh-client-locale` / `dsh-host-webserver` / `dsh-subprocess-local` /
+ *    `dsh-client-modules` / `dsh-package-manifest` 的 d.ts 逐字节相同；
+ *  - 0.2.0-rc.2 vs 0.2.0-rc.1：本仓 import 的宿主包**零代码变化**（cli + web-app 的全部
+ *    依赖包 166 个里只有 40 个有真实改动，与本仓相关的只有 `dsh-cordis-client-runner`
+ *    的 slot 目录：97 → 98 条，**只增不减**，新增 `sidebar.right.tab.files.actions`，
+ *    本仓注册的 4 个槽逐字节相同）。
+ * `cordis` 4.0.4 与 `schemastery` 3.18.4 三档同版本，所以同一条范围同时声明多段是如实表述，
  * 而不是「先放宽再说」。
  */
-const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1']
+const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2']
 /** 成熟下限：最低支持的 cohort，市场展示位与它一致，也是本仓历史文档里的基线。 */
 const DSH_COHORT = DSH_COHORTS[0]
 /**
  * 唯一支持的 peer 写法：逐 cohort 的 `^<cohort>` 用 `||` 连起来（预发布参与匹配，见文件头）。
- * 单 cohort 时就是 `^0.1.7-rc.2` 这种老写法，多 cohort 时是 `^0.1.7-rc.2 || ^0.2.0-rc.1`。
+ * 单 cohort 时就是 `^0.1.7-rc.2` 这种老写法，多 cohort 时是
+ * `^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2`。
  */
 const EXPECTED_RANGE = DSH_COHORTS.map((cohort) => `^${cohort}`).join(' || ')
 /**

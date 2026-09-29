@@ -74,7 +74,7 @@ body:
     attributes:
       label: DSH 版本
       description: "`dsh --version` 的输出。兼容性判定只看插件的 peer 下限，版本对不上时这是第一条线索。"
-      placeholder: "例：0.2.0-rc.1"
+      placeholder: "例：0.2.0-rc.2"
     validations:
       required: true
 
