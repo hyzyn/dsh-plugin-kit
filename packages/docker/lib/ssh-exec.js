@@ -582,6 +582,23 @@ function connectTimeoutMs() {
     return Number.isFinite(raw) && raw > 0 ? raw : 20_000;
 }
 /**
+ * 每个 SSH 连接上**短命令**（{@link RemoteExec.run}）的并发通道上限（D150）。
+ *
+ * 为什么需要：`MaxSessions` 的 10 个槽是**按连接**算的，而一个目标只维持一条连接；
+ * {@link MAX_STREAMS_PER_TARGET} 留出的那两条余量只够**串行**的短命令用。真实面板一次
+ * 点击就会并发发出不止两条（详情页的「概览 inspect」+「日志快照」+ 统计快照），agent 侧
+ * 也会并发调 `docker_logs` / `docker_inspect`。超出余量的那条通道被远端**直接拒绝**
+ * （sshd 侧 `error: no more sessions` → ssh2 `Channel open failure: open failed`），
+ * 症状是「日志读不出来」，不是「慢一点」。
+ *
+ * 所以短命令在这里**排队**而不是硬闯：最多 2 条并发，其余等前一条收尾。与
+ * {@link connectTimeoutMs} 同样的口径，可用环境变量覆盖——**只为测试与排障**。
+ */
+function shortChannelLimit() {
+    const raw = Number(process.env.DSH_DOCKER_SHORT_CHANNELS);
+    return Number.isInteger(raw) && raw > 0 ? raw : 2;
+}
+/**
  * 每个 SSH 目标上同时可持有的**长流**上限。
  *
  * 为什么需要它：一个目标只维持**一条** TCP 连接，所有 exec / stream 共用这条连接上的
@@ -630,10 +647,29 @@ export const SSH_TIMEOUT_HINT = '若该主机只能经跳板机访问，请在�
 export function describeExecError(message) {
     if (/Timed out|ETIMEDOUT/i.test(message))
         return `${message}：${SSH_TIMEOUT_HINT}`;
-    if (!/Channel open failure|open failed/i.test(message))
+    if (!isChannelExhaustedError(message))
         return message;
     return `${message}（远端 sshd 拒绝了新通道：同一连接上的通道额度可能已被实时流占满——`
-        + `OpenSSH MaxSessions 默认 10；关掉部分实时跟随 / 减少聚合容器数后重试）`;
+        + `OpenSSH MaxSessions 默认 10；插件遇到该错误会重建连接自动重试一次，仍失败请关掉`
+        + `部分实时跟随 / 减少聚合容器数后重试）`;
+}
+/**
+ * 这条错误是不是**通道额度被远端占满**（D150）。
+ *
+ * sshd 侧的原话是 `error: no more sessions`（`session_new()` 在
+ * `sessions_nalloc >= options.max_sessions` 时返回 NULL），ssh2 把它翻译成
+ * `(SSH) Channel open failure: open failed` —— 两个形态都要认。
+ *
+ * 与 {@link isTransportError} 分开判定的理由：它**曾经**被当成「连接健康、别重连」的一类
+ * （D07），但线上实证（2026-09-29，248）表明被占满的连接会**一直是满的**：
+ * ① 客户端中止长流时发的 `signal('KILL')` 在部分 sshd 上被直接拒绝
+ *   （`error: session_signal_req: session signalling requires privilege separation`）；
+ * ② sshd 在子进程仍活着时**延迟释放** session 槽（session.c：`delay detach of session`）。
+ * 两条叠加后，插件侧 `busy` 归零而远端槽位仍未归还，于是「重试」永远打在一条满连接上。
+ * 重建连接是唯一能让额度立刻归零的动作，所以这一类改判为「丢连接 + 重建一次」。
+ */
+export function isChannelExhaustedError(message) {
+    return /Channel open failure|no more sessions|open failed/i.test(message);
 }
 /**
  * 这条 ssh2 错误是不是**传输层 / 连接层**的（而不是命令自己失败）。
@@ -643,10 +679,12 @@ export function describeExecError(message) {
  * 这条连接、重连一次再试；反过来，「命令返回非零」「镜像不存在」这类业务失败**绝不能**
  * 触发重连——那会把一次普通错误变成两条命令。
  *
- * 「Channel open failure / open failed」刻意**不在**传输层名单里：它是远端**拒绝开新
- * 通道**，典型成因是同一连接的 MaxSessions 被长流占满——连接本身是健康的。把它当传输
- * 错误会泄漏健康连接（摘出池却不关闭，keepalive 一直养着），还会把 `describeExecError`
- * 补的可操作文案藏掉（重连后新连接额度是空的，命令反而成功）。见 D07。
+ * 「Channel open failure / open failed」**不在**这份名单里（D07 的取舍仍然成立：它是远端拒绝
+ * 开新通道，连接本身未必是死的，而且把它当传输错误会让 `describeExecError` 补的可操作文案
+ * 被一次成功的重连藏掉）。但 D150（2026-09-29 线上实证）补了一条**独立分支**：识别为
+ * {@link isChannelExhaustedError} 时也丢连接重建，**并且**在日志里留一行 warn——
+ * 因为被占满的连接不会自己恢复（见 {@link isChannelExhaustedError} 的注释），
+ * 不重建就永远是那句「重试也没用」。
  */
 export function isTransportError(message) {
     // 前两条是我们自己的包装文案：回调迟迟不来 = 这条连接已经不响应了
@@ -665,12 +703,69 @@ export function shouldRecycleConn(conn, now, idleMs = IDLE_MS) {
         return false;
     return now - conn.lastUsed >= idleMs;
 }
+/**
+ * 每条连接上的短命令闸门（FIFO，D150）。`acquire()` 返回释放函数；超出上限的调用排队。
+ *
+ * 名额是**转交**而不是「先减后加」：释放时若队列里有人，直接把名额交给它、`active` 不减，
+ * 否则同一 tick 里新来的 `acquire()` 会看到一个空位、与刚被唤醒的等待者**同时**拿到名额
+ * （并发数超限，而这正是闸门要防的事）。
+ *
+ * `dispose()` 放行全部等待者（插件卸载时不能让排队中的命令永远挂着）；此时 `active` 与真实
+ * 占用的对应关系不再有意义，所以减法一律 `Math.max(0, …)`。
+ */
+export class ShortChannelGate {
+    limit;
+    active = 0;
+    waiters = [];
+    constructor(limit = shortChannelLimit()) {
+        this.limit = limit;
+    }
+    async acquire() {
+        if (this.active < this.limit) {
+            this.active += 1;
+            return this.releaseFn();
+        }
+        await new Promise((resolve) => this.waiters.push(resolve));
+        // 名额由释放方转交，这里不再自增
+        return this.releaseFn();
+    }
+    /** 占用中的并发数（测试缝）。 */
+    get inUse() {
+        return this.active;
+    }
+    /** 排队中的调用数（测试缝）。 */
+    get queued() {
+        return this.waiters.length;
+    }
+    /** 放行全部等待者（卸载路径；幂等）。 */
+    dispose() {
+        const pending = this.waiters.splice(0);
+        for (const resolve of pending)
+            resolve();
+    }
+    releaseFn() {
+        let released = false;
+        return () => {
+            if (released)
+                return;
+            released = true;
+            const next = this.waiters.shift();
+            if (next !== undefined) {
+                next();
+                return;
+            }
+            this.active = Math.max(0, this.active - 1);
+        };
+    }
+}
 /** 远程一次性命令执行器：懒连接池 + TOFU 指纹 + 输出上限。 */
 export class RemoteExec {
     logger;
     store;
     options;
     conns = new Map();
+    /** 每个池键一条短命令闸门（D150）；与连接同寿命，连接被重建也不重置配额。 */
+    gates = new Map();
     sweeper = null;
     constructor(logger, store, 
     /**
@@ -713,6 +808,22 @@ export class RemoteExec {
             rt.proxy = null;
         }
         this.conns.clear();
+        // 排队中的短命令一并放行（D150）：卸载后它们只会立刻失败，但不能挂在闸门上
+        for (const gate of this.gates.values())
+            gate.dispose();
+        this.gates.clear();
+    }
+    /**
+     * 取这个池键对应的短命令闸门（懒建）。键与连接池同口径（{@link poolKey}）——闸门防的是
+     * 「同一条连接上的通道额度」，所以必须与「同一条连接」同键。
+     */
+    gateFor(key) {
+        const existing = this.gates.get(key);
+        if (existing !== undefined)
+            return existing;
+        const gate = new ShortChannelGate();
+        this.gates.set(key, gate);
+        return gate;
     }
     /** 在远程执行一条命令（argv 形式，内部做 shell 转义）。 */
     async run(spec, argv, options) {
@@ -720,80 +831,93 @@ export class RemoteExec {
         const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
         const maxBytes = options?.maxBytes ?? DEFAULT_MAX_BYTES;
         const started = Date.now();
-        const channel = await this.openChannel(spec, command, timeoutMs, 0);
-        // 一次性命令也计入「在途」（D01）：docker pull 默认 600s，期间没有任何请求
-        // 刷新 lastUsed， sweeper 若只认 busy 会把跑了一半的命令连人带输出掐断。
         const key = poolKey(spec);
-        const rt = this.conns.get(key);
-        if (rt !== undefined)
-            rt.inflight += 1;
+        /*
+         * 短命令闸门（D150）：先排队再开通道，超出的调用等前一条收尾。
+         * 「开门」也算在占用里——若在拿到名额与开门之间放走另一个调用，两条通道会同时落在同一条
+         * 连接上，而额度只剩两条余量（长流上限 8 / MaxSessions 10），那正是要防的事。
+         */
+        const releaseSlot = await this.gateFor(key).acquire();
         try {
-            return await new Promise((resolve, reject) => {
-                const stdoutSink = new ByteSink(maxBytes, options?.keepTail === true);
-                const stderrSink = new ByteSink(maxBytes, options?.keepTail === true);
-                const stdoutDecoder = new StringDecoder('utf8');
-                const stderrDecoder = new StringDecoder('utf8');
-                let timedOut = false;
-                let settled = false;
-                let timer = null;
-                const finish = (code) => {
-                    if (settled)
-                        return;
-                    settled = true;
-                    if (timer !== null)
-                        clearTimeout(timer);
-                    const current = this.conns.get(key);
-                    if (current !== undefined)
-                        current.lastUsed = Date.now();
-                    resolve({
-                        code,
-                        stdout: stdoutSink.decode(stdoutDecoder),
-                        stderr: stderrSink.decode(stderrDecoder),
-                        timedOut,
-                        truncated: stdoutSink.truncated || stderrSink.truncated,
-                        durationMs: Date.now() - started,
+            const channel = await this.openChannel(spec, command, timeoutMs, 0);
+            // 一次性命令也计入「在途」（D01）：docker pull 默认 600s，期间没有任何请求
+            // 刷新 lastUsed， sweeper 若只认 busy 会把跑了一半的命令连人带输出掐断。
+            // 取值放在开门**之后**：openChannel 可能已经重连换过条目（D150），要算在活条目头上。
+            const rt = this.conns.get(key);
+            if (rt !== undefined)
+                rt.inflight += 1;
+            try {
+                return await new Promise((resolve, reject) => {
+                    const stdoutSink = new ByteSink(maxBytes, options?.keepTail === true);
+                    const stderrSink = new ByteSink(maxBytes, options?.keepTail === true);
+                    const stdoutDecoder = new StringDecoder('utf8');
+                    const stderrDecoder = new StringDecoder('utf8');
+                    let timedOut = false;
+                    let settled = false;
+                    let timer = null;
+                    const finish = (code) => {
+                        if (settled)
+                            return;
+                        settled = true;
+                        if (timer !== null)
+                            clearTimeout(timer);
+                        const current = this.conns.get(key);
+                        if (current !== undefined)
+                            current.lastUsed = Date.now();
+                        resolve({
+                            code,
+                            stdout: stdoutSink.decode(stdoutDecoder),
+                            stderr: stderrSink.decode(stderrDecoder),
+                            timedOut,
+                            truncated: stdoutSink.truncated || stderrSink.truncated,
+                            durationMs: Date.now() - started,
+                        });
+                    };
+                    // 定时器放在 finish **之后**（D112）：超时除了打断远端命令，还要**直接 settle**。
+                    // 原先只 signal('KILL') + close()，若通道静默不响应（既不 emit 'close' 也不 emit
+                    // 'error'），promise 永不落定 → finally 里的 inflight 减不掉 → 该连接对
+                    // shouldRecycleConn 永远是「在途」，sweeper 再也回收不了它。
+                    // settled 守卫保证与随后的 'close' 事件不会重复 resolve（幂等）。
+                    timer = setTimeout(() => {
+                        timedOut = true;
+                        try {
+                            channel.signal('KILL');
+                        }
+                        catch {
+                            /* 远端可能已结束 */
+                        }
+                        channel.close();
+                        finish(null);
+                    }, timeoutMs);
+                    channel.on('data', (chunk) => {
+                        stdoutSink.push(chunk);
                     });
-                };
-                // 定时器放在 finish **之后**（D112）：超时除了打断远端命令，还要**直接 settle**。
-                // 原先只 signal('KILL') + close()，若通道静默不响应（既不 emit 'close' 也不 emit
-                // 'error'），promise 永不落定 → finally 里的 inflight 减不掉 → 该连接对
-                // shouldRecycleConn 永远是「在途」，sweeper 再也回收不了它。
-                // settled 守卫保证与随后的 'close' 事件不会重复 resolve（幂等）。
-                timer = setTimeout(() => {
-                    timedOut = true;
-                    try {
-                        channel.signal('KILL');
-                    }
-                    catch {
-                        /* 远端可能已结束 */
-                    }
-                    channel.close();
-                    finish(null);
-                }, timeoutMs);
-                channel.on('data', (chunk) => {
-                    stdoutSink.push(chunk);
+                    channel.stderr.on('data', (chunk) => {
+                        stderrSink.push(chunk);
+                    });
+                    channel.on('close', (code) => {
+                        finish(typeof code === 'number' ? code : null);
+                    });
+                    channel.on('error', (error) => {
+                        if (settled)
+                            return;
+                        settled = true;
+                        if (timer !== null)
+                            clearTimeout(timer);
+                        reject(new Error(`SSH exec channel 异常：${error.message}`));
+                    });
+                    if (options?.input !== undefined)
+                        channel.end(options.input);
                 });
-                channel.stderr.on('data', (chunk) => {
-                    stderrSink.push(chunk);
-                });
-                channel.on('close', (code) => {
-                    finish(typeof code === 'number' ? code : null);
-                });
-                channel.on('error', (error) => {
-                    if (settled)
-                        return;
-                    settled = true;
-                    if (timer !== null)
-                        clearTimeout(timer);
-                    reject(new Error(`SSH exec channel 异常：${error.message}`));
-                });
-                if (options?.input !== undefined)
-                    channel.end(options.input);
-            });
+            }
+            finally {
+                if (rt !== undefined)
+                    rt.inflight = Math.max(0, rt.inflight - 1);
+            }
         }
         finally {
-            if (rt !== undefined)
-                rt.inflight = Math.max(0, rt.inflight - 1);
+            // 释放名额（异常路径也必须放）：闸门漏放 = 该目标后续所有短命令永久排队
+            releaseSlot();
         }
     }
     /**
@@ -863,6 +987,15 @@ export class RemoteExec {
                 const stdoutDecoder = new StringDecoder('utf8');
                 const stderrDecoder = new StringDecoder('utf8');
                 let settled = false;
+                /*
+                 * 中止长流：先请远端 KILL，再关通道。
+                 *
+                 * 注意 `signal('KILL')` **不保证生效**（D150，2026-09-29 实测 248：sshd 记
+                 * `session_signal_req: session signalling requires privilege separation` 并拒绝），
+                 * 而 sshd 在子进程仍活着时会延迟释放 session 槽。也就是说：这一关通道之后，远端
+                 * 可能还留着一条 `docker logs -f`，并继续占着 10 个槽里的一个——插件侧的 `busy` 已经
+                 * 归零，自己看不出来。真正兜底的是 openChannel 的「额度满 → 重建连接」（D150）。
+                 */
                 const onAbort = () => {
                     if (settled)
                         return;
@@ -958,10 +1091,11 @@ export class RemoteExec {
         this.sweeper.unref?.();
     }
     /**
-     * 开一条 exec channel；**传输层**错误时丢掉连接、重连一次（见 `isTransportError`）。
+     * 开一条 exec channel；**传输层**错误或**通道额度被占满**时丢掉连接、重连一次
+     * （见 `isTransportError` / `isChannelExhaustedError`）。
      *
-     * 只重试一次：重连之后还报同样的错，多半不是连接的问题（目标本身不可达），
-     * 再试只是把失败拖长、还会多压一条命令过去。
+     * 只重试一次：重连之后还报同样的错，多半不是连接的问题（目标本身不可达 / 新连接也被
+     * 别的东西占满），再试只是把失败拖长、还会多压一条命令过去。
      */
     async openChannel(spec, command, timeoutMs, attempt) {
         // acquire 放在 try **外面**（D27）：建连失败（目标不可达等）不该落在「传输错误
@@ -984,7 +1118,22 @@ export class RemoteExec {
         }
         catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            if (attempt === 0 && isTransportError(message)) {
+            /*
+             * 额度占满（D150）与传输错误走同一套「丢连接 + 关闭 + 重建一次」，但**留一行 warn**：
+             * 与传输错误不同，连接本身是活的，用户看到的现象是「面板时好时坏、重试偶尔有用」——
+             * 没有这行日志，事后没人能从宿主日志里看出「这条连接曾被打满、插件自己重建过一次」。
+             * 关闭动作仍然要做：只摘出池不 end() 会让 keepalive 一直养着一条满连接（D07 的教训）。
+             *
+             * 代价（有意接受）：`end()` 会让这条连接上正在跟随的长流一起断，由面板的 SSE 自动
+             * 重连接管（日志流按 D133 用 tail=0 续尾、统计与事件流由 EventSource 自己重连）。
+             * 「几秒的流抖动 + 自动恢复」比「一条永远满的连接 + 重试永远失败」划算——这也是
+             * {@link MAX_STREAMS_PER_TARGET} 说明里那条实测症状的唯一出口。
+             */
+            const exhausted = isChannelExhaustedError(message);
+            if (attempt === 0 && (isTransportError(message) || exhausted)) {
+                if (exhausted) {
+                    this.logger.warn(`[dsh-docker] ssh ${sshTarget(spec)} 远端拒绝了新通道（通道额度已满）：已重建连接重试`);
+                }
                 // 丢掉这条连接并**关闭它**（D07）：只摘出池不 end() 的话，keepalive 会一直
                 // 养着一条死连接；dropConn 带身份校验，不会误摘同键上的新连接（D06）。
                 const key = poolKey(spec);

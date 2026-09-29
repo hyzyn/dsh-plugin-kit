@@ -250,7 +250,7 @@ Inside the panel:
   **SSE push** (`GET /api/dsh-docker/logs/stream`, where the server runs
   `docker logs --follow`) — new log lines are appended as they arrive and polling stops; `FOLLOW` and
   `AUTO REFRESH` are mutually exclusive (opening the stream stops polling and greys out the switch), and closing it
-  returns to snapshots with an immediate refresh. Streaming logs keep the last **5000 lines / 4MB** (a ring buffer that drops the oldest on either cap; newline-free oversized output is force-split so memory stays bounded). Chunks render at most every **150ms** (no per-chunk re-render on chatty containers) and rows carry stable ids, so sliding the buffer only mounts/unmounts boundary nodes — the view no longer truncates: whatever `LINES` selects is rendered and exported (bounded by the buffer and the host output cap). Auto-scroll to bottom,
+  returns to snapshots with an immediate refresh. Streaming logs keep the last **5000 lines / 4MB** (a ring buffer that drops the oldest on either cap; newline-free oversized output is force-split so memory stays bounded). Chunks render at most every **150ms** (no per-chunk re-render on chatty containers) and rows carry stable ids. The body is **windowed (D152)**: only the visible rows plus 24 rows of overscan on each side are mounted (about 230 nodes for 5000 rows, previously ~10000), the rest is represented by top/bottom padding — under a sustained 20k lines/s flood the max event-loop lag drops from 70–97ms to 6ms and >50ms long frames from 25–26 to **0**. Row heights are **measured** (not estimated) and the window anchors to the tail while pinned, so auto-scroll / scroll-up pause / "back to bottom" keep exact geometry; scrolling up through history is compensated by a top-of-viewport anchor recorded **across commits**, so it does not jump even while the ring buffer keeps evicting old rows (or the aggregate view inserts a row by timestamp). **Switching streams / containers / refreshing a snapshot invalidates that whole generation of measured heights and anchors (D155)**: snapshot row ids are positional (`'s'+index`), so the same id is different content after a refresh — keeping them would compute the padding from the wrong generation's heights (measured: `scrollHeight` inflated by 35644px), so the scrollbar, jumps and "which row is at the top" all describe the wrong generation. The view does not truncate: whatever `LINES` selects is scrollable and exported — it is simply not all mounted at once (bounded by the buffer and the host output cap). Auto-scroll to bottom,
   drops the oldest and hints once); filtering / level colouring share exactly the same rendering as snapshots. It
   auto-scrolls to the bottom, pauses when the user scrolls up and floats a
   "back to bottom" button; a status line in the top right shows the connection state, and a stream that ends
@@ -259,8 +259,15 @@ Inside the panel:
   carries `tail` to backfill history, while every reconnect uses `tail=0` — new lines only, **never replaying
   history** (auto-reconnect reuses the URL with its `tail`, so the server pushes the last `tail` lines again as
   if they were new, and the log grows a duplicated block). When the host-side backpressure queue (8MB)
-  overflows it first sends an `end` frame with `reason: output-limit` and then closes, so the UI says
-  "host-side backlog" and reconnects.
+  **Host-side backpressure (D153)**: each stream buffers at most 8MB; the text tail streams (logs, pulls)
+drop the oldest frames and keep the newest when they overflow, sending a `skip{frames,bytes}` notice so the UI
+can say "a stretch is missing, following continues" — the stream is **not** torn down (the old policy sent
+`end{reason:output-limit}` and closed, which left the panel stuck in "connection lost" while the container kept
+flooding). The skip accounting is **exact**: when more frames are dropped while a queued `skip` notice has not
+been written yet, the server updates that notice **in place** (D156 — no gap goes unreported); the client
+**accumulates** consecutive skips and shows "N batches skipped on this connection", resetting on a successful
+reconnect (D157). Structured streams (stats, events) still close and reconnect, because a missing sample/event is
+semantically wrong.
   Connecting / switching pages / closing the panel all close the `EventSource`.
 - **Overview**: `docker inspect`'s authoritative data — state and health, exit code, restart count and policy,
   port mappings, mounts (including read-only flags), networks and IPs, entrypoint and command, and the latest
@@ -616,6 +623,19 @@ The four streams differ only in "executor + end reason":
   no-cache`, `connection: keep-alive`, with `flushHeaders()` immediately after writing them (the host's gzip
   explicitly skips `text/event-stream`, so nothing is buffered).
 - Heartbeat: one `: ping` comment frame every 15s (ignored by clients per the SSE spec).
+- **Chunk coalescing (D151)**: the log and pull streams merge upstream chunks over a 50ms window before pushing
+  them (strict ordering within a channel, stdout before stderr, an immediate flush once 256KB has accumulated), so a
+  `line` frame's `d` / `e` may carry **several lines**. The client already splits on arbitrary chunks, so the
+  semantics are unchanged — what disappears is "one SSE frame per stdout chunk" (with a chatty container that is
+  thousands of frames per second, and every frame's fixed cost lands on the browser's main thread). The `end` frame
+  always comes after the last batch of `line` frames in the window.
+- **Backpressure and overflow (D153)**: when the client cannot keep up, frames go into an in-memory queue
+  (≤ 8MB per stream). The log and pull streams (text tails) drop the oldest whole frames and keep the newest on
+  overflow, pushing a `skip{frames,bytes}` notice (`skip` itself is never dropped) — the stream stays alive. When
+  more frames are dropped while a queued `skip` has not been written yet, its counters are updated **in place**
+  (D156 — reporting only the first gap would undercount). The
+  stats and events streams send `end{reason:output-limit}` and reconnect instead. Also, `write()` returning false
+  only means "past the high-water mark": a frame is **never written twice** (that duplication was a real bug).
 - Teardown: the client disconnects → the executor is aborted immediately (locally `SIGTERM`, then `SIGKILL` if it has
   not exited in 2s; over SSH that exec channel is closed and the pooled connection is kept for reuse), writing no
   frame at all; the plugin is disabled / the config is hot-updated / it is uninstalled → the server wraps up on its
@@ -876,14 +896,49 @@ ring buffer / action labels / debounce** (pure logic through the `__events` test
 the entry label when the sidebar is collapsed (`data-sidebar-collapsed`).
 Verification that needs a real daemon follows the manual checklist below.
 
-`test/logs-stream.test.ts` (27 cases, run by the root `pnpm test`) covers four layers of the live log stream:
+`test/logs-stream.test.ts` (37 cases, run by the root `pnpm test`) covers four layers of the live log stream:
 `logsStream`'s argv construction and `assertRef` allowlist, the single-line JSON encapsulation of SSE frames
 (newlines / multi-byte), the local stream lifecycle (fake spawn: multi-byte across chunks, the SIGTERM→SIGKILL
 ladder, close resolve, spawn error) plus the SSH long stream's busy-count pairing / sweeper skip, and the route
 layer's event sequence / heartbeat / silent abort when the client disconnects / uniform wrap-up when the plugin is
-disabled.
+disabled — plus **chunk coalescing** (D151: ten chunks produce a single `line` frame; when the stream ends before the
+window elapses, `end` still comes after those rows) and **exact skip accounting** (D156: frames dropped while a queued
+`skip` has not been written yet must still be reported — a 46-frame ledger where every frame is either delivered or
+accounted for). The coalescer's own rules (window merge / flush on the size cap /
+idempotent flush / dispose stops the timer) live in `test/sse-coalesce.test.ts` (6 cases).
 
-`test/streams.test.ts` (33 cases) covers the **stats stream / event stream / pull stream / networks and volumes /
+`test/log-window.test.ts` (17 cases) covers the **pure windowing logic** (D152, `client-src/log-window.js`):
+measured heights in the cache vs the estimate for rows never measured, window placement and self-consistent
+padding for the non-pinned case, the pinned case anchoring to the tail with zero bottom padding (the premise
+for exact stick-to-bottom), `reanchor` only compensating for height changes above the anchor, `offsetOf` and
+"compensation after head eviction = the evicted height" (the cross-generation anchor math behind D154), cache
+FIFO eviction and empty-list edges. The real-DOM layer (measuring, anchor correction, pinning) is verified by the
+performance gate in real Chrome; offline there is also the `__logWindow` seam in `scripts/client-smoke.mjs`.
+
+`pnpm --filter @hyzyn/dsh-docker perf:logs` (`scripts/log-perf.mjs`) is the **browser-side performance gate for the
+log page**: a real Chrome measures four scenarios — the 5000-row first paint (time / DOM size), the 20000-row FOLLOW
+burst (processing time and max event-loop lag), the **event flood** (the same 6.2k lines/s as 1 line per event vs 50
+lines per event — this is the per-event fixed cost D151 removed) and the **sustained flood** (20k lines/s for 6s; once
+the buffer is full every frame evicts and inserts, which is the "the page janks as soon as logs get fast" users
+report). It also checks two things users tend to misread: the snapshot must show the yellow "truncated" banner whenever
+the "Output limit (KB)" byte cap bites (otherwise "LINES = 1000 returned only 985 rows" looks like data loss — that
+985 is docker's own record granularity), it also asserts that "scroll-up pauses following" reacts to **real gestures only** (wheel / touch /
+scrollbar / keyboard: a gesture must pause and one click must resume, while positional drift with no gesture must
+*not* stop following), and it simulates the **backlog → reconnect** path (D153/D152: after a host-side `output-limit` the body must
+still show rows, following must not silently stop, and after the automatic reconnect the last mounted row must be
+the newest), it **parks mid-history during a flood** (D154: while the ring buffer keeps evicting, the top visible row
+must stay the same row for 1.2s — uncompensated eviction makes reading history drift like an automatic rewind), it checks the **generation switch** (D155: a snapshot refreshed into a generation of taller wrapped rows and then back to normal rows must have its padding computed from the *current* generation — a stale cache inflates `scrollHeight` by 35644px), and **checks the window is
+correct**: the snapshot content is deterministic, so scrolling to the top must show `seq=0` as the first row,
+scrolling to the bottom `seq=4999` as the last, and after the flood the last mounted row must be the newest one
+(stick-to-bottom still following). Over budget means a non-zero exit. Measured after D152: 5000-row snapshot
+179ms / **229 body nodes** (previously ~10000) with 53–57 rows mounted; 20k-row burst 933ms / max lag **2ms**
+(previously 52–97ms); event flood 10ms vs 7ms; sustained 20k lines/s × 6s max lag **6ms** with **0** frames >50ms
+(previously 70–97ms / 25–26) and 213 nodes. The budget also caps mounted rows at 200 — if windowing breaks, that
+turns red immediately. It depends on the tty preview fixtures
+(generated by `node packages/tty/scripts/preview.mjs`) and **skips with exit 0** when the fixtures or Chrome are
+missing — it is an npm script, not a required vitest entry.
+
+`test/streams.test.ts` (35 cases) covers the **stats stream / event stream / pull stream / networks and volumes /
 generic SSE infrastructure**: `statsStream` without `--no-stream` (the same construction point as the snapshot),
 `pullStream`'s `assertImageRef` allowlist, `/stats/stream` normalising line-by-line JSON (including half lines
 across chunks) into `stats` events with the same shape as the `/stats` snapshot, heartbeats, silent abort when the

@@ -75,6 +75,39 @@ interface LiveConfig {
  * 多字节字符也不会被 SSE 的 `\n` 行边界截断（客户端 JSON.parse 还原）。
  */
 export declare function sseFrame(event: string, data: unknown): string;
+/** 合帧器句柄（生命周期：`flush()` 收尾、`dispose()` 停表）。 */
+export interface SseCoalescer {
+    /** 追加一个分片：窗口到点（或攒满 maxBytes）时按通道合并成一帧推出去。 */
+    push(channel: 'd' | 'e', text: string): void;
+    /** 立刻把两个通道里攒着的分片推出去（顺序：stdout 先、stderr 后）。 */
+    flush(): void;
+    /** 停掉定时器并丢掉残帧（客户端已走 / 流已收尾，再推只会写进关掉的响应）。 */
+    dispose(): void;
+}
+/**
+ * SSE 分片合帧器（D151）：把「一个 stdout chunk 一帧」压成「一个窗口一帧」。
+ *
+ * 为什么要有它：`docker logs -f` / `docker pull` 的分片大小由上游决定，话痨容器
+ * （未缓冲 stdout、逐行 flush 的应用）能到每秒几千个 chunk，而每个 chunk 在链路上
+ * 的固定成本并不小——服务端一次 `JSON.stringify` + 一次 `res.write`，客户端一次
+ * SSE 事件派发 + 一次 `JSON.parse` + 一次 `pushChunk`（字符串拼接 + 扫描换行）。
+ * 这些成本与「一行日志多少个字节」无关，只与**事件个数**成正比。
+ *
+ * 实测（scripts/log-perf.mjs 的事件洪泛剖面，同一行速率 6.2k 行/秒）：每事件 1 行
+ * 时事件循环最大延迟 53ms、出现 1 个 >50ms 的长帧；每事件 50 行时 37ms、0 个。
+ * 差距在事件率再高一个数量级时会继续放大（浏览器真实 SSE 解析比冒烟桩更贵）。
+ *
+ * 语义约束（客户端按到达序落行，合帧不能改变「看到的内容」）：
+ *   - 同一通道内部**严格保序**（就是字符串拼接）；
+ *   - 两个通道各攒各的，一帧最多推 `d` 一条 + `e` 一条——`docker logs` 的 stdout /
+ *     stderr 本就是两路，跨通道的先后从来不由单帧保证；
+ *   - 收尾前调用方必须 `flush()`：`end` 帧得排在这些 `line` 帧之后（见调用点）。
+ */
+export declare function createSseCoalescer(options: {
+    emit: (channel: 'd' | 'e', text: string) => void;
+    windowMs?: number;
+    maxBytes?: number;
+}): SseCoalescer;
 /** 清洗一份 targets 输入（settings 存储 / 热更新路径共用）。 */
 export declare function sanitizeTargets(input: unknown): DockerTarget[] | undefined;
 /**

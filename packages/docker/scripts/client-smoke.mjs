@@ -113,6 +113,12 @@ const documentStub = {
 const ReactStub = {
   useState: (initial) => [typeof initial === 'function' ? initial() : initial, () => {}],
   useEffect: () => {},
+  /*
+   * layout effect（D152 的窗口化挂载用它量高 + 锚点修正）：桩里必须存在，否则
+   * `const { useLayoutEffect } = React` 拿到 undefined，组件体一进 hook 就抛。
+   * 桩不做真实挂载，所以空的实现正好——量高那条路径在真 Chrome 里由性能门禁覆盖。
+   */
+  useLayoutEffect: () => {},
   useRef: (initial) => ({ current: initial }),
   useCallback: (fn) => fn,
   /*
@@ -2067,6 +2073,84 @@ await test('日志流重连:服务端 end{output-limit} 交给调用方决定重
     globalThis.EventSource = previous
     globalThis.setTimeout = previousSetTimeout
   }
+})
+
+await test('窗口化挂载(D152):只挂可见的几十行,垫高与总高自洽,贴底锚在尾部', () => {
+  const exports_ = registration.factory((spec) => SEED[spec])
+  const seam = exports_.__logWindow
+  assert.ok(seam !== undefined && typeof seam.create === 'function', '缺少 __logWindow 测试缝')
+  const { create, ESTIMATE, OVERSCAN, LIMIT } = seam
+  // 常量在场：估算高度、overscan（≥ 右键「问 Agent」要的前后 20 行上下文）、缓存上限
+  assert.equal(ESTIMATE, 20)
+  assert.ok(OVERSCAN >= 20, 'overscan 必须 ≥ ASK_CONTEXT_LINES(20)')
+  assert.ok(LIMIT >= 5000)
+
+  const win = create()
+  const rows = Array.from({ length: 5000 }, (_, i) => ({ id: i + 1 }))
+  // 非贴底（快照视图）：顶部只挂「视口 + 下 overscan」，不挂 5000 行
+  const top = win.layout(rows, { scrollTop: 0, viewportHeight: 600 })
+  assert.equal(top.start, 0)
+  const mounted = top.end - top.start + 1
+  assert.ok(mounted < 100 && mounted > 20, '挂载行数应是可见 + overscan 的几十行，实测 ' + String(mounted))
+  // 垫高与总高自洽（虚拟滚动的全部前提）
+  assert.equal(top.topPad + mounted * ESTIMATE + top.bottomPad, top.total)
+  assert.equal(top.total, 5000 * ESTIMATE)
+
+  // 贴底（FOLLOW）：窗口锚到尾部、下垫为 0 —— 贴底判定与 scrollTop=scrollHeight 靠它精确
+  const tail = win.layout(rows, { scrollTop: 999999, viewportHeight: 600, pinned: true })
+  assert.equal(tail.end, 4999)
+  assert.equal(tail.bottomPad, 0)
+  assert.ok(tail.end - tail.start + 1 < 100, '贴底也只挂几十行')
+
+  // 实测高度生效 + 锚点修正：锚点上方行变高 → scrollTop 要补等量像素
+  assert.ok(win.measure(1, 60), '第一条实测 60px 应算变化')
+  const after = win.layout(rows, { scrollTop: 0, viewportHeight: 600 })
+  assert.equal(after.total, 60 + 4999 * ESTIMATE)
+  const offsetOf = (id) => {
+    let acc = 0
+    for (const row of rows) {
+      if (row.id === id) return acc
+      acc += win.heightOf(row.id)
+    }
+    return 0
+  }
+  const before = offsetOf(100)
+  assert.ok(win.measure(3, 60), '锚点上方的另一行变高')
+  assert.equal(win.reanchor(rows, 100, before), 40, '锚点上方 +40 必须补偿 40')
+  assert.equal(win.reanchor(rows, 1, 0), 0, '锚点自身变高不补偿')
+
+  /*
+   * offsetOf（D154）：跨代锚点每帧要记「这一行现在在哪」，它和 reanchor 一起构成
+   * 「相对上一帧记录的锚补偿」这套机制；两段缺口（淘汰位移 / 量高位移）都靠它吸收。
+   */
+  assert.equal(win.offsetOf(rows, 1), 0, '第一行偏移为 0')
+  assert.equal(win.offsetOf(rows, 3), 60 + ESTIMATE, '第 3 行偏移 = 前两行实测/估算之和')
+  assert.equal(win.offsetOf(rows, 9999), null, '不在表里的行返回 null（不猜）')
+  assert.equal(win.offsetOf(rows, null), null, '空 id 返回 null')
+  // 淘汰头部后：相对旧记录的补偿 = 被淘汰行的总高（洪泛中读历史的位移来源）
+  const evicted = rows.slice(2)
+  assert.equal(win.reanchor(evicted, 3, 60 + ESTIMATE), -(60 + ESTIMATE), '淘汰掉的前两行总高必须补偿回来')
+})
+
+await test('日志窗口换代(D155):两个视图都传 resetKey,hook 里按它整代作废(源码级)', () => {
+  /*
+   * 这条看**源码**而不是 bundle：bundle 里局部变量名被压缩，grep 不到 `resetKey` 的
+   * 形参名；而「换代必须作废高度缓存与锚点」是结构契约——漏了它，快照刷新（行 id 是
+   * 位置寻址 `'s'+index`）会把上一代的高度套到这一代第 N 行的陌生内容上，跨代锚点
+   * 更会把补偿量算飞（D154 在快照模式下的安全前提）。
+   */
+  const source = readFileSync(new URL('../client-src/index.js', import.meta.url), 'utf8')
+  assert.ok(source.includes('const resetKey = options === undefined ? undefined : options.resetKey'), 'useLogRows 要接 resetKey 选项')
+  assert.ok(source.includes('if (resetKey !== resetKeyRef.current) {'), 'resetKey 变了要进换代分支')
+  assert.ok(source.includes('resetKeyRef.current = resetKey\n          cache.clear()'), '换代必须清高度缓存')
+  assert.ok(source.includes('anchorRef.current = null\n        }\n        if (list.length === 0 && hadRowsRef.current) {'), '换代必须同时作废锚点')
+  // 两个日志视图（单容器 / 聚合）都要传：漏一个就等于那个视图不换代
+  assert.ok(source.includes('resetKey: follow ? followBufRef.current : logs,'), '单容器视图：跟随传缓冲身份、快照传 logs 响应身份')
+  assert.ok(source.includes('resetKey: aggBufRef.current,'), '聚合视图：传缓冲身份')
+  // 兜底信号仍在（调用方漏传时靠「有行 → 空」自愈）
+  assert.ok(source.includes('if (list.length === 0 && hadRowsRef.current) {'), '「有行 → 空」兜底换代信号不许丢')
+  // bundle 里也要能看见这条契约（证明它确实被打进了产物）
+  assert.ok(code.includes('resetKey'), '产物里缺少 resetKey 契约')
 })
 
 await test('日志缓冲:无换行的超长输出被残行分片钉在有界内存内', () => {

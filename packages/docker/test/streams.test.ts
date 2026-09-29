@@ -78,12 +78,19 @@ interface FakeRes {
   flushed: boolean
   ended: boolean
   closeListeners: Array<() => void>
+  drainListeners: Array<() => void>
+  /**
+   * 背压开关：true 时 write 一律返回 false（模拟 socket 写缓冲越过高水位）。
+   * **数据仍然被收下**——这是 Node 的契约，也是 D153 修掉「drain 时重写同一帧」的前提。
+   */
+  blocked: boolean
   writeHead(status: number, headers?: Record<string, string>): void
-  write(chunk: string): void
+  write(chunk: string): boolean
   flushHeaders(): void
   end(body?: string): void
   on(event: string, listener: () => void): void
   emitClose(): void
+  emitDrain(): void
 }
 
 function makeRes(): FakeRes {
@@ -95,12 +102,15 @@ function makeRes(): FakeRes {
     flushed: false,
     ended: false,
     closeListeners: [],
+    drainListeners: [],
+    blocked: false,
     writeHead(status, headers) {
       res.status = status
       res.headers = headers ?? {}
     },
     write(chunk) {
       res.frames.push(chunk)
+      return !res.blocked
     },
     flushHeaders() {
       res.flushed = true
@@ -111,9 +121,13 @@ function makeRes(): FakeRes {
     },
     on(event, listener) {
       if (event === 'close') res.closeListeners.push(listener)
+      if (event === 'drain') res.drainListeners.push(listener)
     },
     emitClose() {
       for (const listener of [...res.closeListeners]) listener()
+    },
+    emitDrain() {
+      for (const listener of [...res.drainListeners]) listener()
     },
   }
   return res
@@ -321,6 +335,27 @@ describe('GET /stats/stream（SSE 路由）', () => {
     expect(args).toEqual(['stats', '--format', '{{json .}}', 'web'])
     child.emit('close', 0)
     await pending
+  })
+
+  it('背压积压：结构化流仍按老策略补 end{output-limit} 收尾（D153 —— 采样缺一个就是错，宁可收尾重连）', async () => {
+    const { route } = mountPlugin()
+    const child = makeChild()
+    spawnMock.mockReturnValue(child)
+    const res = makeRes()
+    res.blocked = true // 越过高水位：第一帧直写（返回 false 也算写成功），之后的帧进队列
+    const pending = route.handler(makeReq('/api/dsh-docker/stats/stream?target=本机&ids=web'), res)
+    // 两个**不同**的超大采样：每帧 ~9MB，第二帧进队列就越过 8MB 上限
+    const hugeA = JSON.stringify({ ID: 'web', Name: 'a' + 'x'.repeat(9 * 1024 * 1024), CPUPerc: '1.00%' })
+    const hugeB = JSON.stringify({ ID: 'web', Name: 'b' + 'x'.repeat(9 * 1024 * 1024), CPUPerc: '2.00%' })
+    child.stdout.emit('data', Buffer.from(hugeA + '\n'))
+    child.stdout.emit('data', Buffer.from(hugeB + '\n'))
+    // 溢出收尾会 abort 上游：假 child 得补一次 close，runner 才能 resolve
+    child.emit('close', null)
+    await pending
+    expect(res.ended).toBe(true)
+    const tail = res.frames.join('') + (res.endBody ?? '')
+    expect(tail).toContain('event: end')
+    expect(tail).toContain('"reason":"output-limit"')
   })
 
   it('docker stats 的逐行 JSON 归一成 stats 事件（形状与 /stats 快照一致）', async () => {

@@ -160,6 +160,7 @@ dsh plugin --profile <p> allow-version <pkg@ver> --dsh-version <ver> --accept-ri
 | 桌面版容器日志 / 统计 / 活动 / 拉取永远「连接中断，正在自动重连…」，浏览器（`dsh web`）正常 | 桌面壳转发会删掉 `Origin` / `Sec-Fetch-Site`，撞上 docker 的「同源证明」→ `docker D139`；宿主日志里现在会打 `拒绝无同源证明的…（origin=无 sec-fetch-site=无 cookie=有）` → [docker README § HTTP 路由](../packages/docker/README.md#http-路由apidsh-docker-前缀全部-loopback-围栏) |
 | 桌面版点「启动 / 停止 / 删除容器」「exec」报 `缺少同源证明` | 同 `docker D139`（变更类八条子路由与四条流同一道闸） |
 | docker 目标连不上，回 500 | 目标侧失败（SSH 不可达 / 私钥读不到 / docker 不在 PATH）→ `docker D138`，应为 200 + `ok:false` |
+| 容器日志 / 刷新列表偶发失败，报 `SSH exec 失败：(SSH) Channel open failure: open failed`（远端 sshd 侧原文 `error: no more sessions`） | 到该目标的**那条** SSH 连接被 `MaxSessions`（默认 10）打满：长流（聚合日志 ≤6 + 事件 + 统计）最多 8 条，余下两条要装下全部短命令（列表 / inspect / 日志快照 / agent 工具）→ `docker D150`。**先别只顾点「重试」**：关掉其它面板与标签页的实时跟随（尤其聚合日志）再试；要根治就在那台主机上 `printf 'MaxSessions 50\n' > /etc/ssh/sshd_config.d/10-dsh-maxsessions.conf && sshd -t && systemctl reload ssh`（reload 只影响新连接）→ [docker](../packages/docker/README.md) |
 | 同一个端口在两个 profile 里冲突 | 端口是**机器级资源**，profile 复制会把端口一并拷走 → `tty D60`；错开 webserver 端口与隧道 `localPort` |
 | 面板显示「已索引」但 CLI 说索引过期 | 卡片接的是 CLI 的 `reindexRecommended` / `builtWithVersion` 信号 → codegraph 卡片的警告行 |
 | 桌面版看不到浏览器里存的标签 / 配置 | **预期行为**：两者 origin 不同 → localStorage / IndexedDB 是两套独立存储 |

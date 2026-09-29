@@ -628,24 +628,95 @@ describe('GET /logs/stream（SSE 路由）', () => {
     await pending2
   })
 
-  it('背压队列溢出：补一条 end{reason:output-limit} 再收尾（D133，不再静默断流）', async () => {
+  it('背压不重写：越过高水位的帧只出现一次（D153 —— 老代码会在 drain 时重写同一帧）', async () => {
+    vi.useFakeTimers()
     const { route } = mountPlugin()
     const child = makeChild()
     spawnMock.mockReturnValue(child)
     const res = makeRes()
-    res.blocked = true // 客户端不再消费：所有帧堆积在宿主队列里
-    const pending = route.handler(makeReq('/api/dsh-docker/logs/stream?target=本机&id=web&tail=0'), res)
-    // 每帧 ~9MB，两帧就超过 8MB 上限
+    const pending = route.handler(makeReq(STREAM_PATH), res)
+
+    // 第一帧直写：write() 返回 false 只表示「越过高水位」，数据已经被收下
+    res.blocked = true
+    child.stdout.emit('data', Buffer.from('first\n'))
+    await vi.advanceTimersByTimeAsync(60)
+    expect(res.frames).toEqual([sseFrame('line', { d: 'first\n' })])
+
+    // 第二帧：高水位期间进队列，等 drain 再写
+    child.stdout.emit('data', Buffer.from('second\n'))
+    await vi.advanceTimersByTimeAsync(60)
+    expect(res.frames).toEqual([sseFrame('line', { d: 'first\n' })])
+    res.blocked = false
+    for (const listener of [...res.drainListeners]) listener()
+    expect(res.frames).toEqual([
+      sseFrame('line', { d: 'first\n' }),
+      sseFrame('line', { d: 'second\n' }),
+    ])
+    child.emit('close', 0)
+    await pending
+  })
+
+  it('日志流积压：丢最旧的帧继续跟随，并推一条 skip 通知（D153 —— 不再掐流重连）', async () => {
+    vi.useFakeTimers()
+    const { route } = mountPlugin()
+    const child = makeChild()
+    spawnMock.mockReturnValue(child)
+    const res = makeRes()
+    res.blocked = true
+    const pending = route.handler(makeReq(STREAM_PATH), res)
+    // 每帧 ~9MB（合帧器的单通道上限是 256KB，超了立刻推）：两帧就超过 8MB 队列上限
     const huge = 'x'.repeat(9 * 1024 * 1024)
     child.stdout.emit('data', Buffer.from(huge + '\n'))
-    // 溢出收尾会 abort 上游：假 child 得补一次 close，runner 才能 resolve
-    child.emit('close', null)
+    await vi.advanceTimersByTimeAsync(60)
+    child.stdout.emit('data', Buffer.from(huge + '\n'))
+    await vi.advanceTimersByTimeAsync(60)
+
+    // 文本尾部流的策略是「丢最旧、留最新」：流**不能**被掐掉
+    expect(res.ended).toBe(false)
+    // drain 之后客户端拿到的：第一帧（已直写）+ 一条 skip 通知；被丢的那帧不再出现
+    res.blocked = false
+    for (const listener of [...res.drainListeners]) listener()
+    const tail = res.frames.join('')
+    expect(tail).toContain('event: skip')
+    expect(tail).toContain('"frames":1')
+    expect(tail.split('event: line').length - 1).toBe(1)
+    child.emit('close', 0)
     await pending
-    expect(res.ended).toBe(true)
-    // 溢出的 end 帧走的是 finish() 的「收尾前把没写完的帧交给 res.end 落地」
-    const tail = res.frames.join('') + (res.endBody ?? '')
-    expect(tail).toContain('event: end')
-    expect(tail).toContain('"reason":"output-limit"')
+  })
+
+  it('skip 账目精确：skip 排队期间再丢弃，账目原地更新、一段缺口都不吞（D156）', async () => {
+    vi.useFakeTimers()
+    const { route } = mountPlugin()
+    const child = makeChild()
+    spawnMock.mockReturnValue(child)
+    const res = makeRes()
+    res.blocked = true
+    const pending = route.handler(makeReq(STREAM_PATH), res)
+    // 每块 300KB > 合帧器单通道上限（256KB，攒满立刻推）→ 块与帧一一对应，账目可数。
+    // 前 28 帧把队列顶过 8MB → 丢 15 留 13、skip#1 入队；再 15 帧（skip 仍未落地）再次
+    // 溢出 → 再丢 15。旧实现这一段只会报出首批的 15（skip 写出时账目被清零），少 15。
+    const chunk = 'x'.repeat(300 * 1024)
+    for (let i = 0; i < 46; i += 1) {
+      child.stdout.emit('data', Buffer.from(chunk))
+      await vi.advanceTimersByTimeAsync(60)
+    }
+    res.blocked = false
+    for (const listener of [...res.drainListeners]) listener()
+    child.emit('close', 0)
+    await pending
+
+    // 队列里始终只有一条 skip：后续丢弃是**原地更新**它，不是再排一条
+    const skips = res.frames.filter((frame) => frame.startsWith('event: skip'))
+    expect(skips.length).toBe(1)
+    const reported = skips.reduce((total, frame) => {
+      const data = JSON.parse(frame.split('\n')[1].slice(6)) as { frames: number }
+      return total + data.frames
+    }, 0)
+    const delivered = res.frames.filter((frame) => frame.startsWith('event: line')).length
+    // 不变式：每一帧要么送达、要么被 skip 记账——46 = 送达 16 + 记账 30
+    expect(delivered + reported).toBe(46)
+    expect(reported).toBe(30)
+    expect(res.frames.some((frame) => frame.startsWith('event: end'))).toBe(true)
   })
 
   it('响应头 / flushHeaders / 事件序列：line(stdout) → line(stderr) → end', async () => {
@@ -674,6 +745,42 @@ describe('GET /logs/stream（SSE 路由）', () => {
       sseFrame('end', { reason: 'container-exit', code: 3 }),
     ])
     expect(res.ended).toBe(true)
+  })
+
+  it('逐 chunk 一帧被合帧（D151）：十个分片只出一个 line 帧', async () => {
+    vi.useFakeTimers()
+    const { route } = mountPlugin()
+    const child = makeChild()
+    spawnMock.mockReturnValue(child)
+    const res = makeRes()
+    const pending = route.handler(makeReq(STREAM_PATH), res)
+    for (let i = 0; i < 10; i += 1) child.stdout.emit('data', Buffer.from('line-' + String(i) + '\n'))
+    // 窗口（50ms）没到：一帧都不许推——这就是「话痨容器每秒几千帧」被消掉的地方
+    expect(res.frames).toEqual([])
+    await vi.advanceTimersByTimeAsync(50)
+    expect(res.frames).toEqual([
+      sseFrame('line', { d: Array.from({ length: 10 }, (_, i) => 'line-' + String(i)).join('\n') + '\n' }),
+    ])
+    child.emit('close', 0)
+    await pending
+    expect(res.frames).toHaveLength(2)
+    expect(res.frames[1]).toBe(sseFrame('end', { reason: 'container-exit', code: 0 }))
+  })
+
+  it('收尾前把窗口里的残帧推出去（D151）：end 帧必须排在这些行之后', async () => {
+    const { route } = mountPlugin()
+    const child = makeChild()
+    spawnMock.mockReturnValue(child)
+    const res = makeRes()
+    const pending = route.handler(makeReq(STREAM_PATH), res)
+    child.stdout.emit('data', Buffer.from('out\n'))
+    // 窗口（50ms）远没到就收尾：run 的 finally 先 flush，end 才跟着出去
+    child.emit('close', 5)
+    await pending
+    expect(res.frames).toEqual([
+      sseFrame('line', { d: 'out\n' }),
+      sseFrame('end', { reason: 'container-exit', code: 5 }),
+    ])
   })
 
   it('心跳：每 15s 一帧注释 ping', async () => {

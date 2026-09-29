@@ -246,6 +246,22 @@ export declare function streamBudgetError(target: string, busy: number, max?: nu
 export declare const SSH_TIMEOUT_HINT: string;
 export declare function describeExecError(message: string): string;
 /**
+ * 这条错误是不是**通道额度被远端占满**（D150）。
+ *
+ * sshd 侧的原话是 `error: no more sessions`（`session_new()` 在
+ * `sessions_nalloc >= options.max_sessions` 时返回 NULL），ssh2 把它翻译成
+ * `(SSH) Channel open failure: open failed` —— 两个形态都要认。
+ *
+ * 与 {@link isTransportError} 分开判定的理由：它**曾经**被当成「连接健康、别重连」的一类
+ * （D07），但线上实证（2026-09-29，248）表明被占满的连接会**一直是满的**：
+ * ① 客户端中止长流时发的 `signal('KILL')` 在部分 sshd 上被直接拒绝
+ *   （`error: session_signal_req: session signalling requires privilege separation`）；
+ * ② sshd 在子进程仍活着时**延迟释放** session 槽（session.c：`delay detach of session`）。
+ * 两条叠加后，插件侧 `busy` 归零而远端槽位仍未归还，于是「重试」永远打在一条满连接上。
+ * 重建连接是唯一能让额度立刻归零的动作，所以这一类改判为「丢连接 + 重建一次」。
+ */
+export declare function isChannelExhaustedError(message: string): boolean;
+/**
  * 这条 ssh2 错误是不是**传输层 / 连接层**的（而不是命令自己失败）。
  *
  * 为什么要分类：池里的连接可能已经死了（远端 sshd 重启、网络抖动、sshd 踢掉空闲连接），
@@ -253,10 +269,12 @@ export declare function describeExecError(message: string): string;
  * 这条连接、重连一次再试；反过来，「命令返回非零」「镜像不存在」这类业务失败**绝不能**
  * 触发重连——那会把一次普通错误变成两条命令。
  *
- * 「Channel open failure / open failed」刻意**不在**传输层名单里：它是远端**拒绝开新
- * 通道**，典型成因是同一连接的 MaxSessions 被长流占满——连接本身是健康的。把它当传输
- * 错误会泄漏健康连接（摘出池却不关闭，keepalive 一直养着），还会把 `describeExecError`
- * 补的可操作文案藏掉（重连后新连接额度是空的，命令反而成功）。见 D07。
+ * 「Channel open failure / open failed」**不在**这份名单里（D07 的取舍仍然成立：它是远端拒绝
+ * 开新通道，连接本身未必是死的，而且把它当传输错误会让 `describeExecError` 补的可操作文案
+ * 被一次成功的重连藏掉）。但 D150（2026-09-29 线上实证）补了一条**独立分支**：识别为
+ * {@link isChannelExhaustedError} 时也丢连接重建，**并且**在日志里留一行 warn——
+ * 因为被占满的连接不会自己恢复（见 {@link isChannelExhaustedError} 的注释），
+ * 不重建就永远是那句「重试也没用」。
  */
 export declare function isTransportError(message: string): boolean;
 /**
@@ -270,6 +288,30 @@ export declare function shouldRecycleConn(conn: {
     busy: number;
     inflight?: number;
 }, now: number, idleMs?: number): boolean;
+/**
+ * 每条连接上的短命令闸门（FIFO，D150）。`acquire()` 返回释放函数；超出上限的调用排队。
+ *
+ * 名额是**转交**而不是「先减后加」：释放时若队列里有人，直接把名额交给它、`active` 不减，
+ * 否则同一 tick 里新来的 `acquire()` 会看到一个空位、与刚被唤醒的等待者**同时**拿到名额
+ * （并发数超限，而这正是闸门要防的事）。
+ *
+ * `dispose()` 放行全部等待者（插件卸载时不能让排队中的命令永远挂着）；此时 `active` 与真实
+ * 占用的对应关系不再有意义，所以减法一律 `Math.max(0, …)`。
+ */
+export declare class ShortChannelGate {
+    private readonly limit;
+    private active;
+    private readonly waiters;
+    constructor(limit?: number);
+    acquire(): Promise<() => void>;
+    /** 占用中的并发数（测试缝）。 */
+    get inUse(): number;
+    /** 排队中的调用数（测试缝）。 */
+    get queued(): number;
+    /** 放行全部等待者（卸载路径；幂等）。 */
+    dispose(): void;
+    private releaseFn;
+}
 /** 远程一次性命令执行器：懒连接池 + TOFU 指纹 + 输出上限。 */
 export declare class RemoteExec {
     private readonly logger;
@@ -283,6 +325,8 @@ export declare class RemoteExec {
      */
     private readonly options;
     private readonly conns;
+    /** 每个池键一条短命令闸门（D150）；与连接同寿命，连接被重建也不重置配额。 */
+    private readonly gates;
     private sweeper;
     constructor(logger: ExecLogger, store: HostKeyStore, 
     /**
@@ -297,6 +341,11 @@ export declare class RemoteExec {
     });
     /** 插件卸载：关定时器与全部连接（幂等）。 */
     disposeAll(): void;
+    /**
+     * 取这个池键对应的短命令闸门（懒建）。键与连接池同口径（{@link poolKey}）——闸门防的是
+     * 「同一条连接上的通道额度」，所以必须与「同一条连接」同键。
+     */
+    private gateFor;
     /** 在远程执行一条命令（argv 形式，内部做 shell 转义）。 */
     run(spec: SshSpec, argv: readonly string[], options?: ExecOptions): Promise<ExecResult>;
     /**
@@ -310,10 +359,11 @@ export declare class RemoteExec {
     stream(spec: SshSpec, argv: readonly string[], handlers: StreamHandlers, signal?: AbortSignal): Promise<StreamResult>;
     private ensureSweeper;
     /**
-     * 开一条 exec channel；**传输层**错误时丢掉连接、重连一次（见 `isTransportError`）。
+     * 开一条 exec channel；**传输层**错误或**通道额度被占满**时丢掉连接、重连一次
+     * （见 `isTransportError` / `isChannelExhaustedError`）。
      *
-     * 只重试一次：重连之后还报同样的错，多半不是连接的问题（目标本身不可达），
-     * 再试只是把失败拖长、还会多压一条命令过去。
+     * 只重试一次：重连之后还报同样的错，多半不是连接的问题（目标本身不可达 / 新连接也被
+     * 别的东西占满），再试只是把失败拖长、还会多压一条命令过去。
      */
     private openChannel;
     private acquire;

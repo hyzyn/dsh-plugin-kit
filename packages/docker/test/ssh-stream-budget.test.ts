@@ -49,6 +49,19 @@ describe('ssh2 通道错误的可读化', () => {
     expect(text).toContain('实时流')
   })
 
+  /**
+   * D150：这条文案出现时，`openChannel` **已经**丢连接重建并重试过一次了
+   * （见 test/ssh-channel-gate.test.ts）。文案必须把这层说出来——否则用户会以为
+   * 「插件什么都没做就报错」，而真实含义是「换了一条连接还是被拒」。
+   */
+  it('通道打开失败要说明插件已自动重建连接重试过一次', () => {
+    const text = describeExecError('(SSH) Channel open failure: open failed')
+    expect(text).toContain('重建连接')
+    expect(text).toContain('重试')
+    expect(text).toContain('实时跟随')
+    expect(text).toContain('聚合容器数')
+  })
+
   it('其它错误原样返回，不硬改文案', () => {
     expect(describeExecError('connection lost')).toBe('connection lost')
     expect(describeExecError('')).toBe('')

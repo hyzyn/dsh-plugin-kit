@@ -1114,6 +1114,12 @@
   font-family: var(--dk-mono);
   font-size: 12px;
   line-height: 1.6;
+  /*
+   * 关掉浏览器的滚动锚定（D152）：窗口化会把垫高与行**成批地换掉**，Chrome 的锚定
+   * 会挑一个节点把 scrollTop 拽回去，跟「贴底钉住 / 锚点修正」互相打架——表现就是
+   * 位置漂一下、甚至整屏空白。位置上的一切由 useLogRows 负责，不需要浏览器再猜。
+   */
+  overflow-anchor: none;
 }
 
 .dk_logLine {
@@ -1131,9 +1137,11 @@
    *
    * D63 根治（第二轮）走了另一条路：行 key 用单调 id + 缓冲行数/字节双限 +
    * 150ms 合帧（见 index.js 与 log-buffer.js）——渲染频率与 chunk 速率解耦、
-   * 内存有界，DOM 按 LINES 全量渲染（显示层不截断，D129），精确 scrollHeight
-   * 保住了贴底判定。content-visibility 依旧没有开的理由；再想压 DOM 就做真
-   * 虚拟化（DEFECTS.md 待办），别走估算高度的回头路。
+   * 内存有界。D152 起再叠一层**窗口化挂载**：DOM 里只留可见的几十行 + 上下垫高
+   * （`.dk_logPad`），「显示层不截断」落在**数据**上——全部行都能滚到、都能导出，
+   * 只是不再同时挂在 DOM 里。精确 scrollHeight 由实测行高 + 贴底锚定保住（见
+   * log-window.js），所以贴底判定依旧成立；content-visibility 依旧没有开的理由
+   * （D91 的估算高度会把它打穿）。
    */
 }
 
@@ -1141,6 +1149,17 @@
   background: color-mix(in srgb, var(--dk-warn) 62%, transparent);
   color: inherit;
   border-radius: 2px;
+}
+
+/*
+ * 窗口化挂载的上下垫高（D152）：没挂出来的行由它占位，高度 = 那些行的前缀和。
+ * 必须 `flex: none` / 不参与换行——它是纯占位，不该被压缩，也不该被选中或读屏读到
+ * （元素上带 aria-hidden）。`content-visibility` 依旧不要开（D91）。
+ */
+.dk_logPad {
+  flex: none;
+  pointer-events: none;
+  user-select: none;
 }
 
 .dk_logLevel {

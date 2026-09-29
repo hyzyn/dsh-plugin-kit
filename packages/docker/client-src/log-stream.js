@@ -27,6 +27,7 @@ export function reconnectTail(initialTail, isReconnect) {
  *   tail: number,
  *   onOpen?: () => void,
  *   onLine?: (text: string) => void,
+ *   onSkip?: (payload: { frames?: number, bytes?: number } | null) => void,
  *   onEnd?: (payload: Record<string, unknown> | null, controls: { reconnect: () => void }) => void,
  *   onError?: (message: string, controls: { close: () => void, reconnect: () => void }) => void,
  *   onStatus?: (status: 'connecting' | 'open' | 'reconnecting' | 'closed') => void,
@@ -102,6 +103,20 @@ export function subscribeLogStream(options) {
       if (payload === null || typeof payload !== 'object') return
       if (typeof payload.d === 'string') options.onLine?.(payload.d)
       else if (typeof payload.e === 'string') options.onLine?.(payload.e)
+    })
+    next.addEventListener('skip', (event) => {
+      if (source !== next) return
+      /*
+       * 主机侧背压丢帧（D153）：`{frames,bytes}` = 被丢掉的帧数与字节数。流**没有断**，
+       * 只是中间少了一截——交给调用方提示，别当成断线去重连（那会白丢一次历史）。
+       */
+      let payload = null
+      try {
+        payload = JSON.parse(event.data)
+      } catch {
+        /* 畸形载荷按「跳过了一截」提示，不带数字 */
+      }
+      options.onSkip?.(payload !== null && typeof payload === 'object' ? payload : null)
     })
     next.addEventListener('end', (event) => {
       if (source !== next) return

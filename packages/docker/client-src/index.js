@@ -20,6 +20,7 @@ import dockerCss from './docker.css'
 import { bookSessionHost, pickTargetByHost, sessionHostPort, staleBookRef } from './session-target.js'
 import { currentSessionIdOf } from './current-session.js'
 import { createLogBuffer, splitLogLines } from './log-buffer.js'
+import { createLogWindow, LOG_ROW_ESTIMATE_PX, LOG_WINDOW_OVERSCAN, LOG_HEIGHT_CACHE_LIMIT } from './log-window.js'
 import { subscribeLogStream, reconnectTail, LOG_RECONNECT_BASE_MS, LOG_RECONNECT_MAX_MS } from './log-stream.js'
 
 /* ================================ 国际化 ================================ */
@@ -138,6 +139,8 @@ const I18N_ZH = {
   'meta.exitCodeNote': '（退出码 {code}）',
   'status.streamEndedSnapshot': '，日志流结束，已切回快照',
   'hint.logBacklog': '主机侧日志积压超出上限（推送速度超过浏览器消费速度），已断开并重连；重连只补新行，不重复历史',
+  'hint.logSkipped': '主机侧积压，已跳过 {frames} 批较早的日志（内容不连续）；跟随继续，不用重连',
+  'hint.logSkippedNoCount': '主机侧积压，已跳过一批较早的日志（内容不连续）；跟随继续，不用重连',
   'status.streamStoppedReconnecting': '服务端已停止日志流，正在重连…',
   'status.statsFollowing': '实时跟随中（docker stats）',
   'status.statsConnecting': '正在连接统计流…',
@@ -613,6 +616,8 @@ const I18N_EN = {
   'meta.exitCodeNote': ' (exit code {code})',
   'status.streamEndedSnapshot': ', log stream ended, back to the snapshot',
   'hint.logBacklog': 'Host-side log backlog exceeded the limit (the push rate outran the browser); disconnected and reconnecting. A reconnect only appends new lines, history is not replayed',
+  'hint.logSkipped': 'Host-side backlog: {frames} batches of earlier logs were skipped (content is not contiguous); following continues, no reconnect needed',
+  'hint.logSkippedNoCount': 'Host-side backlog: a batch of earlier logs was skipped (content is not contiguous); following continues, no reconnect needed',
   'status.streamStoppedReconnecting': 'The server stopped the log stream, reconnecting…',
   'status.statsFollowing': 'Live (docker stats)',
   'status.statsConnecting': 'Connecting to the stats stream…',
@@ -1946,7 +1951,7 @@ window.__ModuleLoader__.load({
     const { jsx, jsxs } = require('react/jsx-runtime')
     const { createRoot } = require('react-dom/client')
 
-    const { useState, useEffect, useRef, useCallback, useMemo } = React
+    const { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } = React
 
     /** 日志高亮：把匹配片段包成 <mark>（React 元素，不走 innerHTML）。 */
     function highlight(text, query, keyPrefix) {
@@ -2448,9 +2453,16 @@ window.__ModuleLoader__.load({
     /**
      * 行 key = 行的单调 id（D63 根治）：旧实现用渲染下标当 key，环形缓冲一滑动
      * 每行内容全变 → 每帧全量 reconcile；id 稳定后窗口滑动只挂载/卸载边界行。
+     *
+     * `data-log-row` 是窗口化挂载（D152）用来**量这一行实测高度**的锚点：渲染出来的行
+     * 才有这个属性，量高与锚点修正都只认它（见 useLogRows）。
      */
     function renderLogLine(entry, query) {
-      return jsxs('div', { className: 'dk_logLine', children: renderLogParts(entry.text, entry.id, query) }, String(entry.id))
+      return jsxs('div', {
+        className: 'dk_logLine',
+        'data-log-row': String(entry.id),
+        children: renderLogParts(entry.text, entry.id, query),
+      }, String(entry.id))
     }
 
     /** Compose 聚合日志行：在标准日志行前加一个 `[service]` 前缀。 */
@@ -2460,6 +2472,8 @@ window.__ModuleLoader__.load({
         : null
       return jsxs('div', {
         className: 'dk_logLine',
+        // 窗口化挂载（D152）量高用的锚点，与单容器视图同一个属性
+        'data-log-row': String(entry.id),
         // 时间戳只在这里能拿到：entry.ts 是 epoch，而 showTs 关着时 DOM 里没有它。
         // 右键「问 Agent」要用它组诊断包的时间窗，所以挂在 dataset 上（一个数字，代价可忽略）。
         'data-log-ts': typeof entry.ts === 'number' && Number.isFinite(entry.ts) ? String(entry.ts) : undefined,
@@ -2469,6 +2483,258 @@ window.__ModuleLoader__.load({
           ...renderLogParts(entry.text, entry.id, query),
         ],
       }, String(entry.id))
+    }
+
+    /**
+     * 日志正文的窗口化挂载（D152 虚拟滚动）：两个日志视图共用的一份。
+     *
+     * 为什么：D151 之后持续洪泛剩下的唯一大账是**挂载 5000 行的 DOM churn**（实测
+     * 20k 行/秒下 25~26 个 >50ms 长帧 / 6s）。这里只挂「可见 + 上下 overscan」的
+     * 几十行，其余用上下垫高表示——DOM 从 ~10000 节点掉到 ~500。策略与取舍（估算高度
+     * 只出现在视口之外、贴底时窗口锚在列表尾部因而精确、往上滚历史用锚点修正抵消位移）
+     * 全部写在 `client-src/log-window.js` 的头注释里。
+     *
+     * 三件事在这里合并成一次**绘制前**的布局提交，所以看不到抖动：
+     *   1. 量高：量刚渲染出来的行的实测高度（`offsetHeight`）；
+     *   2. 修正：贴底就重新钉到底（尾部实测 → `scrollHeight` 精确），否则按可见区顶行
+     *      做锚点修正（`body.scrollTop += delta`）；
+     *   3. 重排：高度变了就重算垫高（`setTick`，React 会在同一帧绘制前同步重渲染）。
+     *
+     * @param bodyRef 日志正文容器（滚动容器）
+     * @param entries 已经过滤好的行（`matched`）——窗口只在这份列表上算
+     * @param options `pin=true` 时列表一变就把视口钉到最底（跟随且用户贴底）；
+     *   `resetKey` 说明这一屏行属于哪一代缓冲（跟随传缓冲对象、快照传 `logs` 响应对象）
+     *   ——身份一变就整代作废实测高度与锚点（D155），漏传时退回「有行 → 空」兜底
+     */
+    function useLogRows(bodyRef, entries, options) {
+      const pin = options !== undefined && options.pin === true
+      const resetKey = options === undefined ? undefined : options.resetKey
+      const winRef = useRef(null)
+      if (winRef.current === null) winRef.current = createLogWindow()
+      const [scrollTop, setScrollTop] = useState(0)
+      const [viewH, setViewH] = useState(0)
+      const [atBottom, setAtBottom] = useState(true)
+      const [, setTick] = useState(0)
+      const rafRef = useRef(null)
+      /**
+       * 上一次同步时看到的几何。用来区分两种「scrollTop 变小」：
+       *   - 用户真的往上滚（内容没变短）→ 停掉跟随（D61）；
+       *   - 内容变短 / 面板高度变了导致浏览器**夹紧**位置（banner 一出现就会）→ 不算上滚，
+       *     继续贴底。D152 的第一版没区分，结果「主机侧积压」banner 一弹，跟随就悄悄停了，
+       *     而窗口还按状态里的旧位置渲染 → 正文空白（用户现场截图就是这个）。
+       */
+      const geomRef = useRef({ top: 0, height: 0 })
+      /** `atBottom` 的即时值：layout effect 里要在同一批里读到刚同步出来的锁存。 */
+      const atBottomRef = useRef(true)
+      /**
+       * 最近一次**用户手势**的时间戳（轮盘 / 触摸 / 拖滚动条 / 键盘）。
+       *
+       * 为什么不能只看几何：洪泛稳态下每帧都在淘汰旧行、插入新行，行高还随内容千差万别，
+       * `scrollTop` 会因为浏览器夹紧、我们自己的贴底、锚点修正而变——光看「位置变小了」
+       * 会把主机侧的抖动误判成「用户上滚」，于是跟随悄悄停掉、右下角冒出「回到底部」。
+       * 现在只有**真的有人滚**（1.5s 内有过手势）才允许停掉跟随；没手势就一律继续贴底。
+       */
+      const gestureRef = useRef(0)
+      /**
+       * 跨提交的稳定锚（D154）：上一帧「应该钉在原地不动」的那一行（id + 它当时的偏移）。
+       *
+       * 为什么不能只用本次渲染的 `win.anchorOffset`：那两次测量都在**同一次布局**里，
+       * 差值只包含「量高修正」——洪泛稳态下环形缓冲每帧都在淘汰最旧的行，锚点**上方**
+       * 的总高持续变短，整个内容上移，读历史成了自动「倒带」，而这份位移一点都补不到。
+       * 现在每帧把锚（当前可见区顶行）的**绝对位置**记下来，下一帧用 `reanchor` 相对
+       * 这份记录补偿——淘汰、量高修正、聚合视图按时间插行，三类位移全部被同一个差值吸收。
+       * 贴底时置 null（绝对定位钉尾，无需补偿）。
+       *
+       * **它依赖的不变量**（改 id 规则前先看这里）：跨代补偿的前提是「id 撞车 = 同一行」，
+       * 而这靠两层保证——① 快照行的 id 是 `'s' + index`（字符串）、跟随行与聚合行的 id 是
+       * 缓冲里的数字，两代**天然不撞**；② 换代时 `resetKeyRef` 一定先作废锚（见下）。
+       * 破了任一条，锚就可能落到另一代同 id 的陌生行上，补偿量会把视口推飞——**快照刷新
+       * 就是这种情形**：快照 id 是位置寻址（`'s'+index`），刷新后同一 id 换成了别的内容，
+       * 同代替换若不换代，跨代补偿就会把视口推到随机位置。
+       */
+      const anchorRef = useRef(null)
+      /**
+       * 换代号（D155）：调用方用 `options.resetKey` 说明「这一屏行属于哪一代缓冲」——
+       * 跟随流是缓冲对象身份（重开流就是新对象）、快照是 `logs` 响应对象（每次刷新都是
+       * 新对象）。身份变化 = 行 id 会重来或位移，实测高度与锚点必须整代作废。
+       */
+      const resetKeyRef = useRef(undefined)
+      /**
+       * 上一帧有没有行：兜底的换代信号。调用方漏传 `resetKey` 时，「有行 → 空 → 有行」
+       * （两个视图重开流都会先把行清空）仍能把高度缓存作废（D155，log-window `clear()`
+       * 的契约），否则上一代容器行的实测高度会被套到这一代同 id 的陌生行上。
+       */
+      const hadRowsRef = useRef(false)
+
+      /*
+       * 手势标记走 React 事件（不自己 addEventListener）：日志页不是首屏 tab，挂载时
+       * `bodyRef.current` 还是 null，用 effect 挂监听**永远挂不上**——那样「上滚暂停跟随」
+       * 会整个失效（这条是门禁抓出来的：真手势上滚后按钮不出现）。
+       */
+      const markGesture = () => {
+        gestureRef.current = Date.now()
+      }
+      const gestureHandlers = {
+        onWheel: markGesture,
+        onTouchStart: markGesture,
+        onTouchMove: markGesture,
+        onPointerDown: markGesture,
+        onKeyDown: markGesture,
+      }
+
+      /**
+       * 把 DOM 当**唯一真相源**同步回状态：滚动位置、视口高度、贴底锁存。
+       * 浏览器的滚动位置会在我们没参与的时候变（夹紧 / 我们自己的贴底 / 面板高度变化），
+       * 每次提交都同步一次，窗口才不会按一个不存在的旧位置渲染。
+       *
+       * @returns {boolean} 有没有任何一项变了（调用方据此排一次绘制前重排）
+       */
+      const syncFromDom = (body) => {
+        const top = body.scrollTop
+        const height = body.scrollHeight
+        const client = body.clientHeight
+        const last = geomRef.current
+        const movedUp = top < last.top - 4
+        const shrank = height < last.height - 4
+        const gestureRecent = Date.now() - gestureRef.current < 1500
+        geomRef.current = { top, height }
+        setScrollTop(top)
+        setViewH(client)
+        let latchChanged = false
+        if (movedUp && !shrank && gestureRecent) {
+          latchChanged = atBottomRef.current
+          atBottomRef.current = false
+          setAtBottom(false)
+        } else if (height - top - client < 24) {
+          latchChanged = !atBottomRef.current
+          atBottomRef.current = true
+          setAtBottom(true)
+        }
+        return top !== last.top || height !== last.height || client !== viewH || latchChanged
+      }
+
+      /*
+       * 面板拖宽 / 折叠 / 字号变化都会让换行与行高变：只用来催一次重排，具体数值一律
+       * 由 layout effect 从 DOM 读（别再维护第二份 viewH 来源）。
+       */
+      useEffect(() => {
+        const body = bodyRef.current
+        if (body === null || typeof ResizeObserver !== 'function') return undefined
+        const observer = new ResizeObserver(() => setTick((value) => value + 1))
+        observer.observe(body)
+        return () => {
+          observer.disconnect()
+          // 卸载时排队的 rAF 一起取消：回调里的 syncFromDom 会对着已卸载的组件 setState
+          if (rafRef.current !== null) {
+            cancelAnimationFrame(rafRef.current)
+            rafRef.current = null
+          }
+        }
+      }, [bodyRef])
+
+      /** 滚动：rAF 合帧，一帧最多一次同步（滚动是 60Hz 级的事件源）。 */
+      const onScroll = (event) => {
+        const body = event.currentTarget
+        if (rafRef.current !== null) return
+        const run = () => {
+          rafRef.current = null
+          syncFromDom(body)
+        }
+        if (typeof requestAnimationFrame === 'function') rafRef.current = requestAnimationFrame(run)
+        else run()
+      }
+
+      const scrollToBottom = () => {
+        const body = bodyRef.current
+        atBottomRef.current = true
+        setAtBottom(true)
+        if (body === null) return
+        body.scrollTop = body.scrollHeight
+        geomRef.current = { top: body.scrollTop, height: body.scrollHeight }
+      }
+
+      const list = Array.isArray(entries) ? entries : []
+      const win = winRef.current.layout(list, {
+        scrollTop,
+        viewportHeight: viewH,
+        pinned: pin && atBottom,
+      })
+
+      /*
+       * 每次提交后的三件事，全在**绘制前**完成（layout effect），所以看不到抖动：
+       *   1. 同步 DOM 真相（滚动位置 / 视口高度 / 贴底锁存）；
+       *   2. 量刚渲染出来的行（实测高度进缓存）；
+       *   3. 位置修正：贴底就钉到最底（尾部实测 → scrollHeight 精确），否则按可见区顶行
+       *      补偿（`scrollTop += delta`）；任何一项变了就用 setTick 在同帧重排垫高。
+       *
+       * 无依赖数组：滚动驱动的提交、flush 驱动的提交、面板变化都要走同一段逻辑；
+       * 没变化时它会立刻返回（不 setTick），不会自激。
+       */
+      useLayoutEffect(() => {
+        const body = bodyRef.current
+        if (body === null) return
+        const cache = winRef.current
+        const beforeTop = body.scrollTop
+        const beforeHeight = body.scrollHeight
+        // 换代检测（D155）：主判据是调用方给的 `resetKey`（这一屏行属于哪一代缓冲）——
+        // 重开流、换容器、**快照刷新**都会换身份；兜底再认「有行 → 空」（漏传 resetKey 时
+        // 仍能自愈；过滤把 matched 清空也会走到这，清了重测无害）。行 id 是位置寻址
+        // （快照 `'s'+index`），不换代就会把上一代第 N 行的高度/锚点套到陌生内容上。
+        if (resetKey !== resetKeyRef.current) {
+          resetKeyRef.current = resetKey
+          cache.clear()
+          anchorRef.current = null
+        }
+        if (list.length === 0 && hadRowsRef.current) {
+          cache.clear()
+          anchorRef.current = null
+        }
+        hadRowsRef.current = list.length > 0
+        const synced = syncFromDom(body)
+        let changed = false
+        for (const el of body.querySelectorAll('[data-log-row]')) {
+          const id = el.getAttribute('data-log-row')
+          if (id === null) continue
+          if (cache.measure(id, el.offsetHeight)) changed = true
+        }
+        if (pin && atBottomRef.current) {
+          body.scrollTop = body.scrollHeight
+          anchorRef.current = null
+        } else {
+          /*
+           * 锚点补偿（D154）：相对**上一帧记录的锚**算位移。旧实现只补「量高」引起的
+           * 位移、且以本次渲染自己的 anchorOffset 为基准——环形缓冲淘汰旧行造成的位移
+           * （锚上方总高变短）一分都补不到，洪泛中读历史就持续上飘。
+           */
+          const prev = anchorRef.current
+          if (prev !== null) {
+            const delta = cache.reanchor(list, prev.id, prev.offset)
+            if (delta !== 0) body.scrollTop += delta
+          }
+          // 记下本帧的锚：可见区顶行 + 它在**实测后**缓存下的绝对偏移
+          const anchorId = win.anchorId
+          const anchorOffset = cache.offsetOf(list, anchorId)
+          anchorRef.current = anchorOffset === null ? null : { id: anchorId, offset: anchorOffset }
+        }
+        const afterTop = body.scrollTop
+        const afterHeight = body.scrollHeight
+        if (changed || synced || afterTop !== beforeTop || afterHeight !== beforeHeight) {
+          geomRef.current = { top: afterTop, height: afterHeight }
+          setTick((value) => value + 1)
+        }
+      })
+
+      return {
+        start: win.start,
+        end: win.end,
+        topPad: win.topPad,
+        bottomPad: win.bottomPad,
+        total: win.total,
+        atBottom,
+        onScroll,
+        scrollToBottom,
+        gestureHandlers,
+      }
     }
 
     /* ------------------------------------------------------------------ *
@@ -3043,8 +3309,15 @@ window.__ModuleLoader__.load({
       const [followError, setFollowError] = useState('')
       const [followNotice, setFollowNotice] = useState('')
       const [followDropped, setFollowDropped] = useState(false)
-      const [followAtBottom, setFollowAtBottom] = useState(true)
+      // 贴底状态（原 followAtBottom）搬到 useLogRows（D152）：它与滚动位置、视口高度、
+      // 行高缓存是同一份状态，分散在两边必然漂。
       const followBufRef = useRef(null)
+      /**
+       * 本次连接累计被主机跳过的帧数（D157）：skip 通知是**增量**的（服务端每丢一批报
+       * 一批），提示文案要的是**累计**值——只显示最后一批会少报，长洪泛里「跳过了 1 批」
+       * 与实际相去甚远。连接重开（onStatus 'open'）时清零，语义是「本次连接共跳过多少」。
+       */
+      const followSkippedRef = useRef(0)
       const followDirtyRef = useRef(false)
       const followTimerRef = useRef(null)
 
@@ -3163,7 +3436,8 @@ window.__ModuleLoader__.load({
         setFollowDropped(false)
         setFollowError('')
         setFollowNotice('')
-        setFollowAtBottom(true)
+        // 重开流 = 内容清空重来：贴底状态一并复位（D92），新行到了仍然贴着底
+        logRows.scrollToBottom()
         setFollowStatus('connecting')
 
         /**
@@ -3193,10 +3467,26 @@ window.__ModuleLoader__.load({
           }),
           tail: logOptions.tail,
           onStatus: (status) => {
-            if (status === 'open') setFollowNotice('')
+            if (status === 'open') {
+              // 重连成功 = 新的一段连接：跳过计数与提示一并清零（D157）
+              followSkippedRef.current = 0
+              setFollowNotice('')
+            }
             setFollowStatus(status)
           },
           onLine: pushChunk,
+          /*
+           * 主机侧背压丢帧（D153）：流没断，只是中间少了一截——用状态行上方的提示
+           * 说明白（不弹错误横幅、也不重连；重连只会白丢一次历史）。计数**累加**
+           * 而不是覆盖（D157）：skip 是增量通知，覆盖会少报。
+           */
+          onSkip: (payload) => {
+            const frames = payload !== null && typeof payload.frames === 'number' ? payload.frames : null
+            if (frames !== null) followSkippedRef.current += frames
+            setFollowNotice(frames === null
+              ? t('hint.logSkippedNoCount')
+              : t('hint.logSkipped', { frames: followSkippedRef.current }))
+          },
           onEnd: (payload, controls) => {
             const reason = payload !== null && typeof payload.reason === 'string' ? payload.reason : 'container-exit'
             const code = payload !== null && typeof payload.code === 'number' ? payload.code : null
@@ -3235,13 +3525,8 @@ window.__ModuleLoader__.load({
         // `docker logs -f` 会一直占着共享的 SSH 通道额度——与 S3 的设计意图相反
       }, [active, tab, follow, props.target, item.id, logOptions.tail, logOptions.timestamps, loadLogs])
 
-      // FOLLOW 自动贴底；用户往上滚后暂停，显示「回到底部」
-      useEffect(() => {
-        if (tab !== 'logs' || !follow || !followAtBottom) return
-        const body = logBodyRef.current
-        if (body === null) return
-        body.scrollTop = body.scrollHeight
-      }, [active, tab, follow, followAtBottom, followLines])
+      // FOLLOW 自动贴底 / 用户上滚后暂停 / 行高实测与锚点修正：全部搬进 useLogRows（D152）——
+      // 那里是「绘制前一帧」的 layout effect，垫高与滚动位置在同一次提交里落定，不闪。
 
       /** FOLLOW 与 AUTO REFRESH 互斥：开流停轮询；关流立即回快照。 */
       const toggleFollow = () => {
@@ -3279,17 +3564,11 @@ window.__ModuleLoader__.load({
         return t('status.statsStream')
       }
 
-      const scrollToBottom = () => {
-        const body = logBodyRef.current
-        if (body !== null) body.scrollTop = body.scrollHeight
-        setFollowAtBottom(true)
-      }
-
-      const onLogScroll = (event) => {
-        if (!follow) return
-        const body = event.currentTarget
-        setFollowAtBottom(body.scrollHeight - body.scrollTop - body.clientHeight < 24)
-      }
+      /*
+       * 贴底 / 滚动状态由 useLogRows 统一维护（D152）：滚动位置、视口高度、atBottom 与
+       * 「回到底部」都从那里取——两个日志视图因此是同一套滚动语义。调用点在下面
+       * logStatsValue 之后（窗口要在过滤后的行列表上算）。
+       */
 
       /** 连接状态文案（连接层错误只动这里，不进错误横幅）。 */
       const followStatusText = () => {
@@ -3503,6 +3782,24 @@ window.__ModuleLoader__.load({
       }, [follow, followLines, snapshotEntriesValue, logFilter, levelMin])
       const logStats = () => logStatsValue
 
+      /*
+       * 贴底 / 滚动状态由 useLogRows 统一维护（D152）：滚动位置、视口高度、atBottom 与
+       * 「回到底部」都从那里取——两个日志视图因此是同一套滚动语义。
+       *
+       * 位置在这里而不是更早：窗口要在**过滤之后**的行列表上算（`matched`），所以必须
+       * 等 logStatsValue 出来；上面那些 effect 里对 logRows 的引用都在 effect 体内（渲染
+       * 结束后才执行），不会踩 TDZ。
+       */
+      const logRows = useLogRows(logBodyRef, logStatsValue.matched, {
+        pin: follow,
+        /*
+         * 这一屏行属于哪一代（D155）：跟随 → 缓冲对象身份（重开流即新对象）；快照 →
+         * `logs` 响应对象身份（每次刷新都是新对象，行 id 是位置寻址 `'s'+index`，
+         * 刷新后同一 id 就是另一行内容，不换代高度与锚点都会算错）。
+         */
+        resetKey: follow ? followBufRef.current : logs,
+      })
+
       const logPill = (on, label, onClick, options) => jsx('button', {
         type: 'button',
         className: 'dk_pill' + ((options?.className) ?? ''),
@@ -3673,7 +3970,12 @@ window.__ModuleLoader__.load({
             // 可聚焦（D64）：键盘用户 Tab 进来才能滚动日志、用键盘触发「问 Agent」
             tabIndex: 0,
             'aria-label': t('panel.containerLogs'),
-            onScroll: onLogScroll,
+            // 行数真值挂在 DOM 上：窗口化之后 DOM 里只有几十行，外部（性能门禁 / 诊断）
+            // 不能再用 `.dk_logLine` 计数来判断「视图里有多少行」（D152）
+            'data-log-total': String(matched.length),
+            onScroll: logRows.onScroll,
+            // 「用户真的滚了」的手势来源（D152 加固）：只有这些事件才允许停掉贴底跟随
+            ...logRows.gestureHandlers,
             // 右键「问 Agent」：单容器视图里上下文就是当前这一条容器
             onContextMenu: (event) => onLogContextMenu(event, logBodyRef.current, {
               target: props.target,
@@ -3688,11 +3990,21 @@ window.__ModuleLoader__.load({
                   ? jsx('div', { className: 'dk_logLine', children: t('list.loading') }, 'loading')
                   : (matched.length === 0
                     ? jsx('div', { className: 'dk_logLine', children: follow ? t('list.waitingLogs') : (needle === '' ? t('list.noLogs') : t('list.noMatchingLogs')) }, 'empty')
-                    : matched.map((entry) => renderLogLine(entry, needle))),
+                    : [
+                        // 上下垫高 = 没挂出来的那些行的占位（虚拟滚动，D152）。`aria-hidden`
+                        // 让读屏跳过它们；overscan ≥ 右键「问 Agent」要的前后 20 行上下文。
+                        logRows.topPad > 0
+                          ? jsx('div', { className: 'dk_logPad', style: { height: String(logRows.topPad) + 'px' }, 'aria-hidden': 'true' }, 'padTop')
+                          : null,
+                        ...matched.slice(logRows.start, logRows.end + 1).map((entry) => renderLogLine(entry, needle)),
+                        logRows.bottomPad > 0
+                          ? jsx('div', { className: 'dk_logPad', style: { height: String(logRows.bottomPad) + 'px' }, 'aria-hidden': 'true' }, 'padBottom')
+                          : null,
+                      ]),
             ],
           }),
-          follow && !followAtBottom
-            ? jsx('button', { type: 'button', className: 'dk_backToBottom', onClick: scrollToBottom, children: t('btn.backToBottom') })
+          follow && !logRows.atBottom
+            ? jsx('button', { type: 'button', className: 'dk_backToBottom', onClick: logRows.scrollToBottom, children: t('btn.backToBottom') })
             : null,
         ] })
       }
@@ -4625,6 +4937,10 @@ window.__ModuleLoader__.load({
       const [paused, setPaused] = useState(false)
       const [bufferedCount, setBufferedCount] = useState(0)
       const [dropped, setDropped] = useState(false)
+      /** 主机侧背压丢帧的提示（D153）：流没断，只是中间少了一截——聚合进状态行。 */
+      const [skipNotice, setSkipNotice] = useState('')
+      /** 本次连接累计被跳过的帧数（D157）：skip 是增量通知，提示要的是累计值，覆盖会少报。 */
+      const aggSkippedRef = useRef(0)
       /** 显示每行时间戳（默认关：聚合看内容为主，时间戳会占宽度）。 */
       const [showTs, setShowTs] = useState(false)
       /** 排序：'arrival' 到达序（默认，零延迟）/ 'time' 按容器时间戳合并（窗口 350ms）。 */
@@ -4653,17 +4969,8 @@ window.__ModuleLoader__.load({
       const itemIds = items.map((item) => item.id).join(',')
       /** 面板是否可见（S3）：聚合视图是**每容器一条流**，最占 SSH 通道，优先掐它。 */
       const active = usePanelActive()
-      /** 用户是否贴底（D61）：上滚看历史时暂停自动贴底，与单容器视图同一套行为。 */
-      const [atBottom, setAtBottom] = useState(true)
-      const onBodyScroll = (event) => {
-        const body = event.currentTarget
-        setAtBottom(body.scrollHeight - body.scrollTop - body.clientHeight < 24)
-      }
-      const backToBottom = () => {
-        const body = bodyRef.current
-        if (body !== null) body.scrollTop = body.scrollHeight
-        setAtBottom(true)
-      }
+      // 贴底 / 滚动位置 / 视口高度由 useLogRows（D152）统一维护：与单容器视图同一套行为，
+      // 调用点在下面 `matched` 算出来之后（窗口要在过滤后的列表上算）。
 
       /** 暂停期间的去处：攒进暂停缓冲,DOM 不动(与旧版 push 里的分支同一语义)。 */
       const stashRows = (rows) => {
@@ -4747,11 +5054,12 @@ window.__ModuleLoader__.load({
         setEntries([])
         setBufferedCount(0)
         setDropped(false)
+        setSkipNotice('')
         // 重建流 = 内容清空重来，贴底状态必须一并复位（D92）：不复位时，之前上滚看历史
         // 留下的 atBottom=false 会跨过这次重建继续生效，新日志停在顶部不跟随，而状态行
         // 还写着「已连接 N 条容器日志流」——「回到底部」常驻且看着像开关坏了。
-        // 单容器视图在同一个位置就做了 setFollowAtBottom(true)，这里与它对齐。
-        setAtBottom(true)
+        // 单容器视图在同一个位置也做同一件事（D152 起两边共用 useLogRows.scrollToBottom）。
+        aggRows.scrollToBottom()
         timeBufRef.current = []
         if (flushTimerRef.current !== null) {
           clearTimeout(flushTimerRef.current)
@@ -4796,12 +5104,24 @@ window.__ModuleLoader__.load({
               if (next === 'connecting') return
               if (next === 'open') {
                 open += 1
+                // 任一条容器流重连成功：跳过计数与提示清零（D157，与单容器视图同一语义）
+                aggSkippedRef.current = 0
+                setSkipNotice('')
                 setStatus('open')
                 return
               }
               if (next === 'reconnecting') setStatus('reconnecting')
             },
             onLine: push,
+            // 主机侧背压丢帧（D153）：与单容器视图同一份语义，聚合成一句状态行提示；
+            // 计数累加而不是覆盖（D157）——skip 是增量通知，覆盖会少报
+            onSkip: (payload) => {
+              const frames = payload !== null && typeof payload.frames === 'number' ? payload.frames : null
+              if (frames !== null) aggSkippedRef.current += frames
+              setSkipNotice(frames === null
+                ? t('hint.logSkippedNoCount')
+                : t('hint.logSkipped', { frames: aggSkippedRef.current }))
+            },
             onEnd: (payload, controls) => {
               const reason = payload !== null && typeof payload.reason === 'string' ? payload.reason : 'container-exit'
               if (reason === 'container-exit') {
@@ -4831,12 +5151,8 @@ window.__ModuleLoader__.load({
         }
       }, [active, props.target, itemIds, tail])
 
-      useEffect(() => {
-        // 上滚看历史时不拽回底部（D61）：只有贴底时才跟随新行
-        if (paused || !atBottom) return
-        const body = bodyRef.current
-        if (body !== null) body.scrollTop = body.scrollHeight
-      }, [paused, entries, atBottom])
+      // 上滚看历史时不拽回底部（D61）/ 贴底时钉到最底：搬进 useLogRows（D152）的 pin——
+      // 那里是绘制前的 layout effect，垫高与滚动位置同一次提交落定；暂停时不 pin（D61）。
 
       /** 暂停 / 恢复：恢复那一刻把缓冲并入（环形上限）并回到底部。 */
       const togglePause = () => {
@@ -4869,6 +5185,18 @@ window.__ModuleLoader__.load({
         : leveled.filter((entry) => entry.text.toLowerCase().indexOf(needle) >= 0 || entry.service.toLowerCase().indexOf(needle) >= 0)
       // 与单容器视图一致:LINES 选多少就渲染/导出多少,显示层不再截断(缓冲与宿主
       // 输出上限已是闸;再多一道「只显示最近 N 行」只会让选择说了不算)
+
+      /*
+       * 窗口化挂载（D152）：DOM 里只挂可见的几十行 + 上下垫高——「显示层不截断」说的是
+       * **数据**（全部行都能滚到、都能导出），不是「全部行都必须同时挂在 DOM 里」。
+       * 暂停时 `entries` 不动，因此窗口也不动（D61 的冻结语义保持）。
+       */
+      const aggRows = useLogRows(bodyRef, matched, {
+        pin: !paused,
+        // 换代信号（D155）：聚合行都来自这一份缓冲，缓冲对象一换 = 整代作废
+        resetKey: aggBufRef.current,
+      })
+
 
       /** 切换排序：先把待合并窗口落地，避免切模式时短暂的顺序错乱。 */
       const toggleOrderMode = () => {
@@ -4998,14 +5326,23 @@ window.__ModuleLoader__.load({
           }, 'export'),
           jsx('span', { className: 'dk_filterCount', children: needle === '' && levelMin === 0 ? String(entries.length) + t('meta.rowsSuffix') : String(matched.length) + ' / ' + String(entries.length) + t('meta.rowsSuffix') }),
         ] }),
-        jsx('div', { className: 'dk_followState', 'data-state': status === 'open' ? 'open' : (status === 'closed' ? 'closed' : 'connecting'), children: statusText() }),
+        jsx('div', {
+          className: 'dk_followState',
+          'data-state': status === 'open' ? 'open' : (status === 'closed' ? 'closed' : 'connecting'),
+          // 主机侧丢帧的提示（D153）并进状态行：它表达的是「内容断了一截」，不是错误
+          children: skipNotice === '' ? statusText() : statusText() + ' · ' + skipNotice,
+        }),
         jsx('div', {
           className: 'dk_logBody',
           ref: bodyRef,
           // 可聚焦（D64）：键盘用户 Tab 进来才能滚动聚合日志、用键盘触发「问 Agent」
           tabIndex: 0,
           'aria-label': t('panel.aggContainerLogs'),
-          onScroll: onBodyScroll,
+          // 行数真值（D152）：窗口化之后 DOM 里只有几十行，外部计数一律读它
+          'data-log-total': String(matched.length),
+          onScroll: aggRows.onScroll,
+          // 同单容器视图：手势是「用户上滚」的唯一凭据（D152 加固）
+          ...aggRows.gestureHandlers,
           // 右键「问 Agent」：聚合视图把本次聚合的容器集合一起交出去，
           // 具体是哪个容器由每行的 [service] 前缀决定
           onContextMenu: (event) => onLogContextMenu(event, bodyRef.current, {
@@ -5017,10 +5354,18 @@ window.__ModuleLoader__.load({
           children: [
             matched.length === 0
               ? jsx('div', { className: 'dk_logLine', children: status === 'open' ? t('list.waitingLogs') : statusText() }, 'empty')
-              : matched.map((entry) => renderAggLine(entry, needle, showTs)),
+              : [
+                  aggRows.topPad > 0
+                    ? jsx('div', { className: 'dk_logPad', style: { height: String(aggRows.topPad) + 'px' }, 'aria-hidden': 'true' }, 'padTop')
+                    : null,
+                  ...matched.slice(aggRows.start, aggRows.end + 1).map((entry) => renderAggLine(entry, needle, showTs)),
+                  aggRows.bottomPad > 0
+                    ? jsx('div', { className: 'dk_logPad', style: { height: String(aggRows.bottomPad) + 'px' }, 'aria-hidden': 'true' }, 'padBottom')
+                    : null,
+                ],
           ],
         }),
-        !paused && !atBottom ? jsx('button', { type: 'button', className: 'dk_backToBottom', onClick: backToBottom, children: t('btn.backToBottom') }) : null,
+        !paused && !aggRows.atBottom ? jsx('button', { type: 'button', className: 'dk_backToBottom', onClick: aggRows.scrollToBottom, children: t('btn.backToBottom') }) : null,
       ] })
     }
 
@@ -8006,6 +8351,16 @@ window.__ModuleLoader__.load({
       BYTE_LIMIT: FOLLOW_BYTE_LIMIT,
       PENDING_MAX: LOG_PENDING_MAX,
       FLUSH_MS: FOLLOW_FLUSH_MS,
+    }
+    /*
+     * 窗口化挂载（D152）的测试缝：布局是纯逻辑，离线冒烟直接驱动（真 DOM 里的量高与
+     * 滚动位置由 test/log-window.test.ts 与性能门禁覆盖）。常量挂出来供用例对齐。
+     */
+    exports.__logWindow = {
+      create: createLogWindow,
+      ESTIMATE: LOG_ROW_ESTIMATE_PX,
+      OVERSCAN: LOG_WINDOW_OVERSCAN,
+      LIMIT: LOG_HEIGHT_CACHE_LIMIT,
     }
     /*
      * 断线重连策略的测试缝（D133）：真实 EventSource 时序进不了 Node 桩，但「首连带

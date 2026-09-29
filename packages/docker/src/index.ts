@@ -397,6 +397,92 @@ export function sseFrame(event: string, data: unknown): string {
 /** SSE 心跳间隔（毫秒）：注释帧只保活，客户端 EventSource 会忽略。 */
 const SSE_HEARTBEAT_MS = 15_000
 
+/** 日志 / 拉取流的分片合帧窗口（毫秒）。低一个数量级的渲染合帧是 150ms，用户看不见。 */
+const SSE_COALESCE_MS = 50
+/** 单个通道攒到这个字节数就立刻推一帧：不让一个大 chunk 在窗口里多等一个周期。 */
+const SSE_COALESCE_MAX_BYTES = 256 * 1024
+
+/** 合帧器句柄（生命周期：`flush()` 收尾、`dispose()` 停表）。 */
+export interface SseCoalescer {
+  /** 追加一个分片：窗口到点（或攒满 maxBytes）时按通道合并成一帧推出去。 */
+  push(channel: 'd' | 'e', text: string): void
+  /** 立刻把两个通道里攒着的分片推出去（顺序：stdout 先、stderr 后）。 */
+  flush(): void
+  /** 停掉定时器并丢掉残帧（客户端已走 / 流已收尾，再推只会写进关掉的响应）。 */
+  dispose(): void
+}
+
+/**
+ * SSE 分片合帧器（D151）：把「一个 stdout chunk 一帧」压成「一个窗口一帧」。
+ *
+ * 为什么要有它：`docker logs -f` / `docker pull` 的分片大小由上游决定，话痨容器
+ * （未缓冲 stdout、逐行 flush 的应用）能到每秒几千个 chunk，而每个 chunk 在链路上
+ * 的固定成本并不小——服务端一次 `JSON.stringify` + 一次 `res.write`，客户端一次
+ * SSE 事件派发 + 一次 `JSON.parse` + 一次 `pushChunk`（字符串拼接 + 扫描换行）。
+ * 这些成本与「一行日志多少个字节」无关，只与**事件个数**成正比。
+ *
+ * 实测（scripts/log-perf.mjs 的事件洪泛剖面，同一行速率 6.2k 行/秒）：每事件 1 行
+ * 时事件循环最大延迟 53ms、出现 1 个 >50ms 的长帧；每事件 50 行时 37ms、0 个。
+ * 差距在事件率再高一个数量级时会继续放大（浏览器真实 SSE 解析比冒烟桩更贵）。
+ *
+ * 语义约束（客户端按到达序落行，合帧不能改变「看到的内容」）：
+ *   - 同一通道内部**严格保序**（就是字符串拼接）；
+ *   - 两个通道各攒各的，一帧最多推 `d` 一条 + `e` 一条——`docker logs` 的 stdout /
+ *     stderr 本就是两路，跨通道的先后从来不由单帧保证；
+ *   - 收尾前调用方必须 `flush()`：`end` 帧得排在这些 `line` 帧之后（见调用点）。
+ */
+export function createSseCoalescer(options: {
+  emit: (channel: 'd' | 'e', text: string) => void
+  windowMs?: number
+  maxBytes?: number
+}): SseCoalescer {
+  const windowMs = typeof options.windowMs === 'number' && options.windowMs > 0 ? options.windowMs : SSE_COALESCE_MS
+  const maxBytes = typeof options.maxBytes === 'number' && options.maxBytes > 0 ? options.maxBytes : SSE_COALESCE_MAX_BYTES
+  let stdout = ''
+  let stderr = ''
+  let timer: NodeJS.Timeout | null = null
+
+  const stopTimer = (): void => {
+    if (timer === null) return
+    clearTimeout(timer)
+    timer = null
+  }
+
+  const flush = (): void => {
+    stopTimer()
+    if (stdout !== '') {
+      const text = stdout
+      stdout = ''
+      options.emit('d', text)
+    }
+    if (stderr !== '') {
+      const text = stderr
+      stderr = ''
+      options.emit('e', text)
+    }
+  }
+
+  return {
+    push(channel, text) {
+      if (typeof text !== 'string' || text === '') return
+      if (channel === 'd') stdout += text
+      else stderr += text
+      // 攒满一个上限就立刻推：超大 chunk（整段 JSON / base64）不该在窗口里多等一拍
+      if ((channel === 'd' ? stdout : stderr).length >= maxBytes) {
+        flush()
+        return
+      }
+      if (timer === null) timer = setTimeout(flush, windowMs)
+    },
+    flush,
+    dispose() {
+      stopTimer()
+      stdout = ''
+      stderr = ''
+    },
+  }
+}
+
 /*
  * 回环围栏与同源证明：**实现已收敛到 `@hyzyn/dsh-kit`**（2026-09-25，项目级 ROADMAP
  * 第 1 项）。本包是那段加固档的来源，行为一字未改；D31 / D32 / D80 / D110 / D139 五条
@@ -1186,6 +1272,12 @@ const plugin = definePlugin<Config>({
         run: (sendEvent: (event: string, data: unknown) => void, signal: AbortSignal) => Promise<number | null>
         /** `end` 帧的附加字段（如 ref / ids）。 */
         endData?: (code: number | null) => Record<string, unknown>
+        /**
+         * 背压队列溢出时的策略（D153，见下）：`'end'`（默认）补一条 end 收尾；
+         * `'drop'` 丢最旧的整帧、保留最新并推一条 `skip` 通知——
+         * 日志 / 拉取这类**文本尾部流**用它（丢的是本来就会被客户端环形缓冲丢掉的历史）。
+         */
+        overflow?: 'end' | 'drop'
       },
     ): Promise<void> => {
       const write = res.write?.bind(res)
@@ -1210,19 +1302,34 @@ const plugin = definePlugin<Config>({
       let heartbeat: NodeJS.Timeout | null = null
 
       /*
-       * 背压（D04）：write() 返回 false = socket 写缓冲已满。无视返回值继续写，
-       * 慢客户端（后台标签 / 慢链路）+ 话痨容器会让宿主侧缓冲无界增长直至 OOM。
-       * 处理：缓冲已满时把帧暂存进内存队列、等 drain 再续写；队列超过上限视为
-       * 客户端事实上已死（消费速度跟不上产出），主动收尾——宿主内存上限从
-       * 「无界」变成「每条流 ≤ MAX_PENDING_BYTES」。上游（docker logs -f 的
-       * stdout）由 finish/clientGone 里的 abort 停掉，不需要逐帧 pause。
+       * 背压（D04）：write() 返回 false = socket 写缓冲越过高水位。**注意 Node 的语义**：
+       * 返回 false 时数据**已经被收下**（只是缓冲满了，等 drain），所以这里不能把它再排一次
+       * 队列——老代码 `writeFrame` 把 false 当失败、随后又 push 进队列，drain 时会重写同一帧
+       * （客户端收到重复日志行、pendingBytes 也虚高）。现在的契约：写一次就是写一次，false
+       * 只表示「先别再直写」，等 drain 继续。
        *
-       * 溢出收尾会补一条 `end{reason:'output-limit'}`（D133）：客户端据此提示
-       * 「主机侧积压」而不是当成正常结束。
+       * 队列上限仍是每条流 ≤ MAX_PENDING_BYTES（宿主内存有界）。**溢出怎么办**由调用方选：
+       *   - `overflow: 'end'`（默认，结构化流）：补一条 `end{reason:'output-limit'}` 收尾，
+       *     客户端重连（少一帧事件语义上比缺一个事件好）；
+       *   - `overflow: 'drop'`（日志 / 拉取这类**文本尾部流**，D153）：丢掉最旧的整帧、只留
+       *     最新的，并推一条 `skip` 帧告诉客户端「中间断了一截」。丢掉的这些行本来也会被
+       *     客户端的环形缓冲（5000 行 / 4MB）丢掉——为它们把整条流掐掉，代价远大于收益
+       *     （用户现场：话痨容器一冲，面板就变成「连接中断 + 空白正文」在重连里打转）。
        */
       const MAX_PENDING_BYTES = 8 * 1024 * 1024
+      /** 溢出后丢到这个水位为止：一次多丢一点，给 drain 留出喘息空间。 */
+      const DROP_TARGET_BYTES = MAX_PENDING_BYTES / 2
+      const overflow = options.overflow ?? 'end'
       let pendingFrames: string[] = []
       let pendingBytes = 0
+      /** 高水位标记：true 时新帧一律进队列，等 drain 再续写。 */
+      let waitingDrain = false
+      /** 已被丢掉的帧数与字节数（尚未告知客户端）；skip 通知发出后清零。 */
+      let droppedFrames = 0
+      let droppedBytes = 0
+      let skipQueued = false
+
+      const isSkipFrame = (frame: string): boolean => frame.startsWith('event: skip\n')
 
       const stopHeartbeat = (): void => {
         if (heartbeat === null) return
@@ -1261,31 +1368,97 @@ const plugin = definePlugin<Config>({
           /* 连接已断开 */
         }
       }
-      const writeFrame = (frame: string): boolean => {
+      /**
+       * 写一帧。
+       * @returns `'ok'` 直写完成（可继续直写）｜`'pressure'` 已写入但越过高水位（等 drain）
+       *   ｜`'gone'` 连接已断（已走 clientGone）
+       */
+      const tryWrite = (frame: string): 'ok' | 'pressure' | 'gone' => {
         try {
-          return write(frame) !== false
+          const result = write(frame)
+          if (isSkipFrame(frame)) {
+            // skip 通知真的落到 socket 了：这一轮的丢弃账目清零，下次再丢再报一次
+            droppedFrames = 0
+            droppedBytes = 0
+            skipQueued = false
+          }
+          return result === false ? 'pressure' : 'ok'
         } catch {
           // 写失败 = 连接已断：与 res close 同一收尾路径
           clientGone()
-          return false
+          return 'gone'
         }
       }
-      /** drain 后续写暂存的帧；中途再遇 false 就停手等下一次 drain。 */
+      /**
+       * 溢出策略 `'drop'`：丢最旧的整帧保留最新，并保证队列里恰有一条 `skip` 通知。
+       * `skip` 帧自己**永不参与丢弃**——它是「这里断了一截」的唯一凭据。
+       */
+      const dropOldestFrames = (): void => {
+        while (pendingBytes > DROP_TARGET_BYTES && pendingFrames.length > 0) {
+          const index = pendingFrames.findIndex((frame) => !isSkipFrame(frame))
+          if (index === -1) break
+          const [frame] = pendingFrames.splice(index, 1)
+          pendingBytes -= frame.length
+          droppedFrames += 1
+          droppedBytes += frame.length
+        }
+        if (droppedFrames > 0 && !skipQueued) {
+          const notice = sseFrame('skip', { frames: droppedFrames, bytes: droppedBytes })
+          pendingFrames.push(notice)
+          pendingBytes += notice.length
+          skipQueued = true
+          return
+        }
+        /*
+         * 队列里已有一条 skip 还没写到 socket，而这期间**又发生了丢弃**：原地更新那条
+         * skip 的账目（D156）。旧实现只把首次丢弃的数排进队，之后（skip 落地前）再发生
+         * 的丢弃虽然记了账，却在 skip 真正写出时被清零一起吞掉——客户端看到的第一段
+         * 缺口永远偏小，第二段缺口则完全不可见。skip 还在队列里，改它正合适；账目清零
+         * 仍由 `tryWrite` 在它真正写出去时做，时序不变。
+         */
+        if (droppedFrames > 0) {
+          const notice = sseFrame('skip', { frames: droppedFrames, bytes: droppedBytes })
+          const index = pendingFrames.findIndex((frame) => isSkipFrame(frame))
+          if (index !== -1) {
+            pendingBytes += notice.length - (pendingFrames[index] as string).length
+            pendingFrames[index] = notice
+          } else {
+            // 防御：skipQueued 为 true 却找不到帧（不该发生）——退回「新排一条」
+            pendingFrames.push(notice)
+            pendingBytes += notice.length
+          }
+        }
+      }
+      /** drain 后续写暂存的帧；中途再遇高水位就停手等下一次 drain。 */
       const flushPending = (): void => {
         while (!done && pendingFrames.length > 0) {
           const frame = pendingFrames[0] as string
-          if (!writeFrame(frame)) return
+          const result = tryWrite(frame)
+          if (result === 'gone') return
           pendingBytes -= frame.length
           pendingFrames.shift()
+          if (result === 'pressure') {
+            waitingDrain = true
+            return
+          }
         }
+        waitingDrain = false
       }
       const send = (frame: string): void => {
         if (done) return
-        if (pendingFrames.length === 0 && writeFrame(frame)) return
-        if (done) return
+        if (!waitingDrain && pendingFrames.length === 0) {
+          const result = tryWrite(frame)
+          // 已写入（含「越过高水位」这一种）：**不许再排一遍**，否则 drain 时会重写
+          if (result === 'pressure') waitingDrain = true
+          return
+        }
         pendingFrames.push(frame)
         pendingBytes += frame.length
         if (pendingBytes > MAX_PENDING_BYTES) {
+          if (overflow === 'drop') {
+            dropOldestFrames()
+            return
+          }
           /*
            * 队列溢出 = 客户端消费速度跟不上产出（D133）：收尾前补一条 end，
            * 让客户端知道「是主机侧积压」而不是把它当成正常结束。静默 res.end()
@@ -2728,19 +2901,38 @@ const plugin = definePlugin<Config>({
 
       await openSseStream(res, {
         reason: 'container-exit',
+        // 文本尾部流：积压时丢最旧的帧继续跟随，不掐流（D153）
+        overflow: 'drop',
         run: async (sendEvent, signal) => {
-          // 事件协议与快照 /logs 完全一致，只多一个 end.reason
-          const handlers: StreamHandlers = {
-            onStdout: (chunk) => sendEvent('line', { d: chunk }),
-            onStderr: (chunk) => sendEvent('line', { e: chunk }),
+          /*
+           * 事件协议与快照 /logs 完全一致，只多一个 end.reason——**只多一层合帧**
+           * （D151）：docker 的分片边界与「一行日志」无关，逐 chunk 一帧时话痨容器
+           * 每秒能推几千个事件，客户端的每事件固定开销（SSE 派发 + JSON.parse +
+           * 拼残行）全砸在主线程上。合帧后客户端收到的仍是同一串字节，只是按窗口
+           * 合并成了更少的帧。
+           */
+          const coalescer = createSseCoalescer({
+            emit: (channel, text) => sendEvent('line', channel === 'd' ? { d: text } : { e: text }),
+          })
+          try {
+            const result = await api.logsStream(safeId, {
+              // 与 POST /logs 同一条取值规则：非法/越界交给 DockerApi 内的夹紧
+              tail: Number.isInteger(tail) ? tail : live.logTailDefault,
+              timestamps: timestampsParam === '1' || timestampsParam === 'true',
+              ...(since !== undefined ? { since } : {}),
+            }, {
+              onStdout: (chunk) => coalescer.push('d', chunk),
+              onStderr: (chunk) => coalescer.push('e', chunk),
+            }, signal)
+            return result.code
+          } finally {
+            /*
+             * 收尾前把窗口里剩下的行推出去：`end` 帧必须排在它们之后——客户端按到达
+             * 序落行，先收到 end 会当场切回快照，窗口里那批行就再也显示不出来了。
+             */
+            coalescer.flush()
+            coalescer.dispose()
           }
-          const result = await api.logsStream(safeId, {
-            // 与 POST /logs 同一条取值规则：非法/越界交给 DockerApi 内的夹紧
-            tail: Number.isInteger(tail) ? tail : live.logTailDefault,
-            timestamps: timestampsParam === '1' || timestampsParam === 'true',
-            ...(since !== undefined ? { since } : {}),
-          }, handlers, signal)
-          return result.code
         },
       })
     }
@@ -2942,14 +3134,24 @@ const plugin = definePlugin<Config>({
 
       await openSseStream(res, {
         reason: 'pull-exit',
+        // 同日志流：逐层进度是文本尾部流，积压时丢最旧而不是把整条流掐掉（D153）
+        overflow: 'drop',
         endData: () => ({ ref: safeRef }),
         run: async (sendEvent, signal) => {
-          const handlers: StreamHandlers = {
-            onStdout: (chunk) => sendEvent('line', { d: chunk }),
-            onStderr: (chunk) => sendEvent('line', { e: chunk }),
+          // 与日志流同一层合帧（D151）：docker pull 逐层刷进度时也是每秒几百行的流
+          const coalescer = createSseCoalescer({
+            emit: (channel, text) => sendEvent('line', channel === 'd' ? { d: text } : { e: text }),
+          })
+          try {
+            const result = await api.pullStream(safeRef, {
+              onStdout: (chunk) => coalescer.push('d', chunk),
+              onStderr: (chunk) => coalescer.push('e', chunk),
+            }, signal)
+            return result.code
+          } finally {
+            coalescer.flush()
+            coalescer.dispose()
           }
-          const result = await api.pullStream(safeRef, handlers, signal)
-          return result.code
         },
       })
     }
