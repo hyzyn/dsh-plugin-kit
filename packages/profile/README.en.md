@@ -66,6 +66,11 @@ Settings → Plugins → the “Profile Management” card (configuration UI):
 
 ![Profile Management configuration UI](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-profile.png)
 
+Where the settings surface lives depends on the DSH version, but it is always the **same form**: from
+`0.2.0-rc.1` it is registered as `plugins.bundle.config` — **inline on the plugin detail page, directly
+below the description**, with no extra ">" step; older hosts (the 0.1.6 line) fall back to the row's ">"
+sub-page under the Plugins sidebar, and `≤0.1.5` uses the settings-page card.
+
 After creating a profile from the `headless` template, you can start a headless session with that profile directly from the command line (answer one task, print the result, then exit):
 
 ![Example of starting a headless profile from the command line](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-profile-example-headless1.png)

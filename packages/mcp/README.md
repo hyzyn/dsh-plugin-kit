@@ -14,6 +14,10 @@
 
 ![MCP 服务器配置卡片：添加 / 连接测试 / 热加载](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-mcp.png)
 
+设置面在宿主里的位置随 DSH 版本变，但**始终是同一份表单**：`0.2.0-rc.1` 起挂
+`plugins.bundle.config`——**插件详情页「说明」正下方内联**，不必再点「>」进二级页；旧宿主
+（0.1.6 线）自动回退到侧边栏「插件」页里该行的「>」子页，`≤0.1.5` 用设置页卡片。
+
 ## 结构
 
 | 文件 | 说明 |

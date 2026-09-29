@@ -67,6 +67,11 @@ Settings → Plugins → “RSS / News Aggregation” card (built-in channel tog
 
 ![RSS settings card](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-rss-setting.png)
 
+Where the settings surface lives depends on the DSH version, but it is always the **same form**: from
+`0.2.0-rc.1` it is registered as `plugins.bundle.config` — **inline on the plugin detail page, directly
+below the description**, with no extra ">" step; older hosts (the 0.1.6 line) fall back to the row's ">"
+sub-page under the Plugins sidebar, and `≤0.1.5` uses the settings-page card.
+
 Sidebar “Today's Worth Reading” modal (grouped by category, sources with "View more" linking straight to their websites, manual refresh at the bottom):
 
 ![Today's Worth Reading modal](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-rss-view.png)

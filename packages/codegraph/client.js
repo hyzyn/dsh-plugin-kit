@@ -9,7 +9,8 @@
  * 纯逻辑（无 DOM / React 依赖的判定）放 client-src/pure.js，因为那边能进 vitest；
  * 本文件里剩下的都是 React 组件与宿主交互，没有测试底座。新增纯判定请加到 pure.js，
  * 不要写回这里的闭包。
- * 同时注册 DSH ≤0.1.5 的 settings.plugin.item 与 ≥0.1.6-alpha.2 的 plugins.row.config，跨版本兼容。
+ * 设置面：0.2.0-rc.1 起挂 plugins.bundle.config（插件详情页「说明」下方内联），
+ * 旧宿主回退到 0.1.6 线的 plugins.row.config / ≤0.1.5 的 settings.plugin.item，跨版本兼容。
  * 纯前端 React 卡片，宿主经 client-modules 的 combo 路由（/plugins/??<id>/client.js&rev=…）
  * 按 boot graph 下发的 URL 提供；单包直链 /plugins/@hyzyn/dsh-codegraph/client.js 在
  * 当前 DSH（0.1.5-rc.2）上不再直接可用。
@@ -2646,13 +2647,41 @@ window.__ModuleLoader__.load({
       installSessionReporter(ctx)
       // 样式由卡片实例自管（ensureStyle/releaseStyle 引用计数，CG08）——这里不再全局
       // 注入一次又随插件卸载摘掉，那会让另一张还在显示的卡片全裸。
-      // DSH ≥0.1.6-alpha.2：侧边栏「插件」页里该行的配置页。插槽不存在时 inject 不会触发，
-      // 因此在旧版上完全无副作用，一份代码同时兼容两代。
+      /*
+       * 设置面：0.2.0-rc.1 起挂 `plugins.bundle.config`（按 **bundle 包名** 派发，管理器的插件
+       * 详情页把它渲染在「说明」正下方）；`plugins.row.config` 是 per-row 的「>」子页。
+       * **内联优先**：bundle 槽可用就不注册 row 槽——同一份表单两个入口会让人以为有两套设置；
+       * bundle 槽不存在的旧宿主（0.1.6 线）自动回退到行详情，功能一点不减。bundle 名从 row key
+       * （`bundle#rowId`）推导，两者不许漂移。就绪顺序不敏感：任一侧先到都收敛到「内联优先」
+       * （后到的 row 注册会被撤掉）。
+       */
+      const BUNDLE_CONFIG_KEYS = ROW_CONFIG_KEYS.map((key) => key.split('#')[0])
+      let bundleConfigLive = false
+      const disposeRowConfigs = []
+      for (const key of BUNDLE_CONFIG_KEYS) {
+        ctx.slots.inject('plugins.bundle.config', () => {
+          bundleConfigLive = true
+          while (disposeRowConfigs.length > 0) {
+            const disposeRow = disposeRowConfigs.pop()
+            if (typeof disposeRow === 'function') disposeRow()
+          }
+          return ctx.slots.register({
+            name: 'plugins.bundle.config',
+            key,
+          }, CodegraphSettingsCard)
+        })
+      }
+      // 旧宿主回退（DSH 0.1.6 线；bundle 槽不存在时 inject 不会触发）
       for (const key of ROW_CONFIG_KEYS) {
-        ctx.slots.inject('plugins.row.config', () => ctx.slots.register({
-          name: 'plugins.row.config',
-          key,
-        }, CodegraphSettingsCard))
+        ctx.slots.inject('plugins.row.config', () => {
+          if (bundleConfigLive) return undefined
+          const disposeRow = ctx.slots.register({
+            name: 'plugins.row.config',
+            key,
+          }, CodegraphSettingsCard)
+          disposeRowConfigs.push(disposeRow)
+          return disposeRow
+        })
       }
       // DSH ≥0.1.6：设置里与「通用设置」平级的「插件配置」页（子 slot 由
       // @hyzyn/dsh-kit-settings 声明）。不传 view，卡片走各自原有的可折叠形态。

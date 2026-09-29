@@ -245,6 +245,31 @@ origin 上。从 `location` 推出来的地址在浏览器里完全正常、**�
 范例：`packages/tty/client-src/ws-url.js` + `packages/tty/test/ws-url.test.ts`
 （用例里必须有一条 `dsh-app://app` 场景）。
 
+## 客户端设置面：内联优先
+
+DSH `0.2.0-rc.1` 的插件管理页把插件配置渲染在**插件详情页「说明」正下方**，靠的是
+`plugins.bundle.config` 这个**按 bundle 包名派发**的槽；`plugins.row.config` 是 per-row 的
+「>」子页（侧边栏「插件」→ 该 bundle 的**行**）。两者是同一份表单的两个位置，不是两套设置。
+
+四条契约（八个包逐字节相同，只换卡片组件名）：
+
+1. **挂 `plugins.bundle.config`**，key 是 **bundle 包名**（`@hyzyn/dsh-x` 与聚合包 `@hyzyn/dsh-all`）；
+2. **内联优先**：bundle 槽可用就**不注册** row 槽——同一份表单两个入口会让人以为有两套设置
+   （用户现场：「设置要点『>』再进二级页」）；
+3. **旧宿主回退**：bundle 槽不存在时（0.1.6 线）回退注册 row 槽，功能一点不减；`≤0.1.5` 仍是
+   `settings.plugin.item` 卡片。两侧就绪顺序不敏感——任一侧先到都收敛到「内联优先」（后到的
+   row 注册会被撤掉）；
+4. **bundle 名从 row key 推导**（`ROW_CONFIG_KEYS.map((key) => key.split('#')[0])`）——另写一份
+   常量一定会漂。
+
+卡片在 `view === 'page'` 下**只渲染表单、不画卡片头**（标题与面包屑由宿主页面提供），所以同一个
+组件能同时落在「插件配置」行、详情页内联与行详情三处。
+
+守卫：`scripts/test/plugin-settings-surface.test.ts`（跨包一致性 + 反例）。行为验证在
+`packages/docker/scripts/client-smoke.mjs` 的两条用例里（真跑 `apply(ctx)`：新宿主只注册两个
+bundle key 且没有 row 入口、旧宿主只注册两个 row key）——其余包是手写单文件、没有 apply 级夹具，
+故以「逐字节一致」当防漂判据。
+
 ## 三条跨包一致的行为约定（正文不在这里）
 
 三条的名字是 **回环围栏** · **body 围栏** · **截断要有信号**。它们的正文、以及它们为什么长这样

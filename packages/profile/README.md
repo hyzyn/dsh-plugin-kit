@@ -66,6 +66,10 @@ interface Config {
 
 ![Profile 管理配置界面](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-profile.png)
 
+设置面在宿主里的位置随 DSH 版本变，但**始终是同一份表单**：`0.2.0-rc.1` 起挂
+`plugins.bundle.config`——**插件详情页「说明」正下方内联**，不必再点「>」进二级页；旧宿主
+（0.1.6 线）自动回退到侧边栏「插件」页里该行的「>」子页，`≤0.1.5` 用设置页卡片。
+
 用 `headless` 模板建好 profile 后，命令行可直接以该 profile 启动 headless 会话（一次性回答一个任务、打印结果后退出）：
 
 ![命令行启动 headless profile 示例](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-profile-example-headless1.png)

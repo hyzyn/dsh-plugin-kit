@@ -203,6 +203,11 @@ dsh plugin --profile web add link:$(pwd)
 
 ## Configuration
 
+Where the settings surface lives depends on the DSH version, but it is always the **same form**: from
+`0.2.0-rc.1` it is registered as `plugins.bundle.config` — **inline on the plugin detail page, directly
+below the description**, with no extra ">" step; older hosts (the 0.1.6 line) fall back to the row's ">"
+sub-page under the Plugins sidebar, and `≤0.1.5` uses the settings-page card.
+
 ```ts
 export interface Config {
   /** Disable the whole plugin. On by default. */
