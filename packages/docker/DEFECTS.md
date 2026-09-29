@@ -7,8 +7,8 @@
 > 知道**当年坏了什么**，再查 [§2 编号字典](#2-编号字典这段代码为什么长这样) 知道**所以代码为什么
 > 写成这样**。
 >
-> **编号是硬契约**：`D01–D157` 是 `packages/docker` 内部序列，与 `packages/tty/DEFECTS.md` 的
-> `D01–D84` **不共享**；跨包引用请写「docker D03 / tty D12」。新缺陷接在 `D157` 之后，
+> **编号是硬契约**：`D01–D158` 是 `packages/docker` 内部序列，与 `packages/tty/DEFECTS.md` 的
+> `D01–D84` **不共享**；跨包引用请写「docker D03 / tty D12」。新缺陷接在 `D158` 之后，
 > **不得重号、不得回收空号**——源码里已有注释指向它们。
 
 > **本文不含**：逐条 postmortem（症状 / 现场复现 / 根因 / 修法 / 回归 / 反向验证）。
@@ -35,7 +35,7 @@
 
 ## 现状
 
-**已修 157 / 待修 0**，编号至 `D157`。逐条症状见 §1，设计意图见 §2，**还没做的见
+**已修 158 / 待修 0**，编号至 `D158`。逐条症状见 §1，设计意图见 §2，**还没做的见
 [ROADMAP.md](./ROADMAP.md)**。
 
 > ⚠️ **标注（本次未擅改）——两处口径不一致，原文未改：**
@@ -221,6 +221,7 @@
 | D155 | `log-window` 的高度缓存**从未被清过**：模块契约写明「换流 / 重建缓冲时 `clear()`——行 id 会从 1 起复用」，但没有任何调用点。两个日志视图每次重开流都新建缓冲、id 从 1 重来，上一代容器行的实测高度被套到这一代同 id 的陌生行上。**快照刷新同样中招**：快照行 id 是**位置寻址**（`'s'+index`），刷新后同一 id 就是另一行内容，缓存不但错、还是「同名不同行」的错——它同时是 D154 跨帧锚在快照模式下的安全前提 | `client-src/index.js` 的 `useLogRows`：新增 `options.resetKey`（调用方说明「这一屏行属于哪一代缓冲」——单容器视图跟随传缓冲对象身份、快照传 `logs` 响应对象身份；聚合视图传缓冲身份），身份一变就 `clear()` + 作废锚点；「有行 → 空」保留为**兜底**信号（调用方漏传时仍能自愈，过滤把 `matched` 清空也会走到，清了重测无害）。回归：`scripts/client-smoke.mjs` 新增「换代作废」用例（源码级锁接线：hook 接 `resetKey`、换代分支同时清缓存与锚、两个视图都传、兜底信号不许丢、产物里能看到契约）＋ `log-window` 的 `clear()` / `offsetOf` 用例。门禁补了端到端场景（`scripts/log-perf.mjs` 的**换代回归**）：闸门自己喂的快照先刷成一代会折行的高行（每行 ~150px）并扫 6 个位置把它们量进缓存，再刷回普通行——判据是**几何**（这一代的垫高必须由这一代的实测高度算出来，`scrollHeight` ≤ 5000×20px + 余量），不是滚动位置。**判别性已实测**：把 `resetKey` 分支禁掉后该断言确实失败（滚动高 135557px vs 上限 115000px）。为什么不判滚动位置：跨帧锚本来就应该补偿视口上方行高的真实变化（D154 的正当职责），拿它当判据会把正确实现判成错的——第一版就是这么写错的，实测正确实现会位移 1881px 而被误报 |
 | D156 | `skip` 账目**少报**：skip 帧排队期间（高水位未退）再发生丢弃，账目虽然累加了，却在 skip 真正写出时被 `tryWrite` 的清零一起吞掉——客户端看到的第一段缺口永远偏小，第二段缺口完全不可见。D153 的测试只覆盖「丢一批 → 报一批」，两批叠着丢没测到 | `src/index.ts` 的 `dropOldestFrames`：队列里已有未落地的 skip 时**原地更新**它的 `{frames,bytes}`（改还没写到 socket 的帧正合适，时序不变）；`tryWrite` 的清零仍发生在写出时。回归：`test/logs-stream.test.ts` 新增「skip 排队期间再丢弃」——46 块逐块对账，不变式「每一帧要么送达、要么被 skip 记账」（旧实现只报得出 15） |
 | D157 | `skip` 提示两处小洞：① 客户端**覆盖**不累计——skip 是增量通知（每丢一批报一批），只显示最后一批在长洪泛里严重少报；② 聚合视图重连成功后**不清除**（单容器视图清），提示跨过重连一直挂着 | `client-src/index.js` 两个日志视图：各加一个累计 ref，`onSkip` 累加后显示累计值；`onStatus 'open'`（重连成功）时计数与提示一并清零——语义是「本次连接共跳过多少」。i18n 无新增（复用 `hint.logSkipped`，数字变累计值） |
+| D158 | 设置面改挂 `plugins.bundle.config` 时**把共享的聚合包 key 当成了每包私有**：该槽的 key 是**共享命名空间**（同一 key 只能有一个注册者，重复注册**直接抛错**），而 `@hyzyn/dsh-all` 是所有插件共用的聚合 bundle —— 于是八个插件都去注册它，第二个注册者抛 `keyed slot "plugins.bundle.config" already has an entry for key "@hyzyn/dsh-all"`，客户端 `apply` 抛错 = 整个插件起不来，用户启动页直接变「Failed to load plugins」（现场两条：`@hyzyn/dsh-codegraph` / `@hyzyn/dsh-tty`，即抢 key 输掉的那些）。窗口期极短：从 `8ef7b6a9` 引入到 `237e8ac5` 修掉 | `client-src/index.js` 的注册块（八个包同一段）：**只挂本包自己的 bundle 名**；聚合包不挂内联位、继续走 `plugins.row.config` 的 `@hyzyn/dsh-all#<rowId>`（那份 row 入口即使内联可用也保留）；内联可用时只撤掉**本包**那份 row 入口；旧宿主回退注册全部 row 槽。定位方式（可复用）：把 profile + `$DSH_HOME` 复制到 `/tmp`，`DSH_HOME=… dsh --profile test --port <空闲端口>` 起隔离宿主，再用 `scripts/chrome-cdp.mjs` 抓浏览器侧 `Runtime.exceptionThrown`。回归：`scripts/test/plugin-settings-surface.test.ts` 新增 **bundle key 全仓两两不同、且不得是聚合包** 的跨包守卫（判别性已实测）；`packages/docker/scripts/client-smoke.mjs` 两条用例改成新期望（内联只注册本包 key / 内联可用时仍保留聚合包 row key / 旧宿主两条 row key 都在） |
 ## 2. 编号字典：这段代码为什么长这样
 
 > 本节由原「修复记录摘要（第一轮 D01–D79 / 第二轮 D80–D125）」**重排**而来，「决策 / 机制」

@@ -2432,7 +2432,7 @@ window.__ModuleLoader__.load({
        *   ① `plugins.bundle.config` 的 key 是**共享命名空间**：同一个 key 只能有一个注册者，
        *      重复注册**直接抛错**（`keyed slot ... already has an entry`），而客户端 `apply`
        *      抛错 = 整个插件起不来（实测：把 `@hyzyn/dsh-all` 也挂上时，八个插件抢同一个 key，
-       *      启动页直接变「Failed to load plugins」）。聚合包 `@hyzyn/dsh-all` 是所有插件共用的
+       *      启动页直接变「Failed to load plugins」）（D158）。聚合包 `@hyzyn/dsh-all` 是所有插件共用的
        *      bundle，**不能**挂 bundle.config —— 它没有内联位，设置面走它自己的 row 入口。
        *   ② 内联位可用时，**本包自己的** bundle 不再注册 row 槽（同一份表单两个入口会让人以为
        *      有两套设置）；聚合包那份 row 入口**保留**（那是它在聚合安装下的唯一入口）。旧宿主
