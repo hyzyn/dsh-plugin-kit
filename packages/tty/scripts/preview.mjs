@@ -89,6 +89,7 @@ const SCENARIOS = [
   ['dock-pane-bottom', '底部挂载位 + 终端重排（视口钉底）'],
   ['docker-dock', '连接栏「容器」→ docker 面板挂进右侧 dock（终端不被盖住）'],
   ['resize-hidden', '后台标签的 PTY 不得被压成 2×2（D79）'],
+  ['limit-retained', '只读保留（已退出）的会话不算并发名额（D85）'],
 ]
 
 if (flags.has('--list')) {

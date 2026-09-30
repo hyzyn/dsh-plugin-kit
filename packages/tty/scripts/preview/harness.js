@@ -1184,6 +1184,44 @@
         return null
       }
     },
+
+    /*
+     * D85：只读保留（已退出）的会话不得被算进并发名额。
+     *
+     * 现场（用户截图）：面板里**一条标签都没有**（agent 开的会话都跑完/关掉了），点「+」
+     * 却报「会话数已达上限（共 6 个 / 上限 4：本窗口 0 个 + 其他窗口 6 个）——关闭不用的
+     * 窗口/标签」——而面板里根本没有标签可关，终端从此开不出来（只能等宿主重启）。
+     * 那 6 条是 agent 跑完的一次性会话留下的**只读保留态**（D77：进程退出但输出还留着
+     * 可读，宿主 `sessions` 帧里一直带着 `exited: true`，最多 16 条）。
+     *
+     * 夹具：`window.__PREVIEW_EXITED_SESSIONS` = 6 条 exited 会话（宿主 sessions 帧照原样回）。
+     * 断言：点「+」→「本地终端」既不弹上限 toast，也必须**真的开出第二个标签**——
+     * 后者是关键：光断言「没弹 toast」在夹具失效（列表压根没被查过）时也会绿。
+     */
+    async 'limit-retained'() {
+      await openPanel()
+      await waitFor(() => tabs().length === 1)
+      window.__PREVIEW_EXITED_SESSIONS = Array.from({ length: 6 }, (_, i) => ({
+        sid: 'retained-' + String(i + 1),
+        owner: 'agent',
+        kind: 'local',
+        cwd: window.__PREVIEW_CWD,
+        exited: true,
+        exitCode: 0,
+      }))
+      await clickAdd()
+      await clickMenuItem('本地终端', 'Local terminal')
+      await sleep(600) // 上限预检（sessions 往返）→ addTab → spawn → ready
+      window.__previewAssert = async () => {
+        const list = window.__PREVIEW_EXITED_SESSIONS
+        if (!Array.isArray(list) || list.length !== 6) return '夹具失效：没有 6 条只读保留态会话'
+        if (!(window.__mockLog || []).includes('in:sessions')) return '夹具失效：客户端没查过 sessions 帧（走的不是上限预检这条路径）'
+        const toast = q('.tt_toast')
+        if (toast !== null) return '把只读保留的会话算成了并发名额：' + String(toast.textContent)
+        if (tabs().length !== 2) return '新标签没开出来（被上限预检拦下）：共 ' + String(tabs().length) + ' 个标签'
+        return null
+      }
+    },
   }
 
   const name = new URLSearchParams(location.search).get('scenario') || 'local'

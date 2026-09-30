@@ -267,9 +267,13 @@
         // D79 夹具：`window.__PREVIEW_AGENT_SESSIONS` = 真实宿主推的「agent 开的会话」
         // （owner:'agent'，客户端采纳成标签但不 switchTab ⇒ 它一直在后台）。
         const agentSessions = Array.isArray(window.__PREVIEW_AGENT_SESSIONS) ? window.__PREVIEW_AGENT_SESSIONS : []
+        // D85 夹具：`window.__PREVIEW_EXITED_SESSIONS` = 宿主的**只读保留态**（进程已退出、
+        // 带 `exited: true`；D77 起这种条目会在 sessions 帧里一直留着，最多 16 条）。
+        // 它们不占并发名额，客户端的上限预检也不能数它们。
+        const exitedSessions = Array.isArray(window.__PREVIEW_EXITED_SESSIONS) ? window.__PREVIEW_EXITED_SESSIONS : []
         const list = window.__PREVIEW_AT_LIMIT
           ? [{ sid: 'other-1', attachable: true }, { sid: 'other-2', attachable: true }, { sid: 'other-3', attachable: true }, { sid: 'other-4', attachable: true }]
-          : SESSIONS.slice().concat(agentSessions)
+          : SESSIONS.slice().concat(agentSessions, exitedSessions)
         setTimeout(() => this._deliver({ t: 'sessions', list }), 5)
         return
       }

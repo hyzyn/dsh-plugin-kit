@@ -89,6 +89,7 @@ import { asciiRefToken, derivedCredentialRef } from './credential-ref.js'
 import { applyTunnelEdit, buildTunnelFromDraft as buildTunnelSpec, tunnelNameClash } from './tunnel-edit.js'
 import { currentSessionCwd } from './current-session.js'
 import { FALLBACK_COLS, FALLBACK_ROWS, usableFitSize } from './fit-size.js'
+import { countLiveSessions, liveSessionSids } from './session-live.js'
 import { eventOwnsStatus, needsStatusResync, statusForTab } from './status-line.js'
 import { formatBytes, formatRate, hasUsableStats, statsFrameFresh, statsItemSpecs, statsItemValues, statsLevel } from './stats-bar.js'
 
@@ -2100,7 +2101,10 @@ function persistTabsForAgent() {
 function syncAgentTabs(list) {
   adoptAgentSessions(list)
   if (!Array.isArray(list)) return
-  const alive = new Set(list.filter((e) => e !== null && typeof e === 'object' && e.owner === 'agent').map((e) => e.sid))
+  // D85：只把**活着**的 agent 会话算成还在。保留态（进程已退出、只读留着）也是一条
+  // 「宿主表里还有」的条目——按旧写法它会让标签永远停在「活着」的样子：exit 帧一旦没
+  // 收到（刷新页面后重连），这条标签就再也没机会被标成已退出。
+  const alive = liveSessionSids(list.filter((e) => e !== null && typeof e === 'object' && e.owner === 'agent'))
   for (const [sid, tab] of [...tabs]) {
     if (tab.agentOwned !== true) continue
     if (alive.has(sid)) continue
@@ -3158,13 +3162,19 @@ function showToast(text, kind) {
   setTimeout(() => toast.remove(), 4000)
 }
 
-/** 查询宿主当前存活会话数（sessions 帧）。 */
+/** 查询宿主当前**活着**的会话数（sessions 帧）。
+ *
+ * D85：`sessions` 帧的 list 是**全部**会话快照，D77 起里面还有进程已退出、只读保留着
+ * 的会话（`exited: true`）。它们不占并发名额（宿主 `canSpawn` 数的是 `liveCount`），
+ * 所以这里必须按同一口径过滤——早期直接取 `list.length`，于是 agent 跑满几条一次性
+ * 命令之后，「+」就被自己的客户端拦死（面板里根本没有标签可关）。判据见
+ * `session-live.js`。 */
 async function refreshSessionCount() {
   try {
     sendFrame({ t: 'sessions' })
     const frame = await waitFrame('sessions', 3000)
     if (frame !== null && Array.isArray(frame.list)) {
-      liveSessionCount = frame.list.length
+      liveSessionCount = countLiveSessions(frame.list)
       return liveSessionCount
     }
   } catch {
@@ -6166,7 +6176,9 @@ async function afterSocketOpenInner() {
   if (rerunnableTabs.length > 0) {
     sendFrame({ t: 'sessions' })
     const frame = await waitFrame('sessions', 4000)
-    const aliveSids = new Set((frame !== null && Array.isArray(frame.list) ? frame.list : []).map((entry) => entry?.sid).filter((sid) => typeof sid === 'string'))
+    // D85：只认活着的会话当「还活着」——保留态（exited）接不回去（宿主 attach 明确拒绝），
+    // 把它当活的会让这个标签既不重开也 attach 不上，卡在错误遮罩里。
+    const aliveSids = liveSessionSids(frame !== null ? frame.list : [])
     deadPersistSids = rerunnableTabs.filter((tab) => !aliveSids.has(tab.sid))
     for (const tab of deadPersistSids) {
       // 换新 sid 重发 spawnSpec：持久标签 tmux -A 接回，命令标签重新执行命令
@@ -6196,7 +6208,9 @@ async function recoverEmbeddedTabs() {
   if (embeddedTabs.length === 0) return
   sendFrame({ t: 'sessions' })
   const frame = await waitFrame('sessions', 4000)
-  const alive = new Set((frame !== null && Array.isArray(frame.list) ? frame.list : []).map((entry) => entry?.sid).filter((sid) => typeof sid === 'string'))
+  // D85：保留态（exited）不算「还活着」——宿主对它 attach 明确拒绝，判成活着只会
+  // 发一条注定失败的 attach（标签停在错误遮罩），而它的语义本来就是「重跑这条命令」。
+  const alive = liveSessionSids(frame !== null ? frame.list : [])
   for (const tab of embeddedTabs) {
     // 刚挂上、还没收到 ready 的会话：宿主侧的会话表可能还没登记（SSH 建链有耗时），
     // 这时按「已死」重开会话会导致双开——直接跳过，交给它的 spawn 帧正常走完
