@@ -9,7 +9,11 @@ import { defineConfig } from 'vitest/config'
  *
  * environment 固定 node：用例覆盖宿主半体纯逻辑（解析器、托管区块、排序等），
  * 以及**从浏览器半体抽出来的纯模块**（credential-ref / ws-url / stats-bar…）
- * 和仓库级脚本的纯逻辑（scripts/lib/，如 client-lint 用的宿主地址来源规则）。
+ * 和仓库级脚本抽出来的纯逻辑——**被用例直接 import 的纯模块**就放在 `scripts/` 根、
+ * 与脚本同目录（如 client-lint 用的宿主地址来源规则在 `scripts/client-host-url.mjs`，
+ * 用例是 `scripts/test/client-host-url.test.ts`）。`scripts/lib/` 放的是另一类：**真机脚本
+ * 共享的隔离引导**（`live-harness.mjs`：临时目录 / 隔离 DSH_HOME / profile 播种 / 补丁自证），
+ * 它不起宿主、不被 import 进来跑，而由 `scripts/test/live-scripts-safety.test.ts` 读源码钉住。
  *
  * **打包后的 client.js 不在本层测**——它是 esbuild 产物，走各自的管线。所以
  * 浏览器半体里凡是要判对错的逻辑，请抽成不依赖 DOM 的纯模块：`client-lint.mjs`

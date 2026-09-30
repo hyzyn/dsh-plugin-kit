@@ -18,6 +18,12 @@
  * 用法：
  *   node scripts/verify-rss-opml.mjs --url http://127.0.0.1:3082 --token <token> \
  *        [--report out.json] [--download-dir /tmp/x] [--keep]
+ *   node scripts/verify-rss-opml.mjs --url … --token … --chrome-arg --no-sandbox
+ *
+ * **`--chrome-arg`（与 `verify-client-ui.mjs` 同一套形态，可重复）默认关**：受限环境（DSH 文件沙箱 /
+ * CI 容器）里 Chrome **自己的** sandbox 起不来，必须 `--chrome-arg --no-sandbox` 才连得上 CDP——
+ * 否则表现是 `Runtime.enable` 超时，报错完全指不到真因。刻意不做成默认：关掉渲染进程的沙箱等于
+ * 替所有使用者降一层隔离，这个口径要由**跑的人**显式决定（验证脚本用它自己的浏览器、不动产品）。
  */
 import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import http, { createServer } from 'node:http'
@@ -33,6 +39,14 @@ const flag = (name) => {
 }
 const baseUrl = flag('--url') ?? 'http://127.0.0.1:3082'
 const token = flag('--token')
+/**
+ * 透传给 Chrome 的额外参数（可重复），形态照抄 [`verify-client-ui.mjs`](./verify-client-ui.mjs) 的同名解析。
+ * **默认空**：不传就不加任何参数（见文件头「为什么不做成默认」）。
+ */
+const chromeArgs = []
+for (let i = 0; i < argv.length; i += 1) {
+  if (argv[i] === '--chrome-arg' && argv[i + 1] !== undefined) chromeArgs.push(argv[i + 1])
+}
 const reportPath = flag('--report')
 const keep = argv.includes('--keep')
 const downloadDir = mkdtempSync(join(tmpdir(), 'dsh-opml-'))
@@ -168,7 +182,7 @@ const waitForExport = async (before, timeoutMs = 20_000) => {
   return undefined
 }
 
-const chrome = await Chrome.launch({})
+const chrome = await Chrome.launch({ extraArgs: chromeArgs })
 let crashed
 try {
   await chrome.attachToPage()

@@ -28,7 +28,7 @@
 临时目录，真实 `~/.dsh` 全程只读。
 
 **必须自证**：收尾加一条断言「真实补丁逐字节未变」，把「不污染」从承诺变成会被执行的检查。
-（范本：`packages/codegraph/scripts/verify-codegraph-host-contract.mjs`，`codegraph CG45`。）
+（范本：`scripts/verify-codegraph-host-contract.mjs`，`codegraph CG45`。）
 
 ### ② 不把「环境限制」当成「代码回归」
 
@@ -95,13 +95,39 @@ dsh --profile <测试 profile> --patch <port.yml>
 
 ## 各包真机入口
 
-| 包 | 脚本 | 需要什么 |
+**入口一律写成一条可粘贴命令**（包的脚本条目在各自 `package.json` 里）。仓库根那 9 个
+`scripts/verify-*.mjs` 也能被一条命令列全：`pnpm verify:list`——它现算「脚本 / 所在包 /
+需要什么 / 是否进 CI / 那条命令」，且**只列不跑**（它们会起真宿主与真 Chrome，聚合执行会把
+垃圾进程与临时目录留在机器上）。
+
+| 包 | 一条可粘贴命令 | 需要什么 |
 |---|---|---|
-| `tty` | `scripts/integration.mjs`（真实 PTY 全链路）、`ssh-smoke.mjs`（内存 sshd）、`probe-smoke.mjs`、`probe-route-smoke.mjs`、`sftplimits-smoke.mjs`、`preview.mjs`（Chrome，界面场景）、`windows-smoke.mjs`（仅 Windows 有意义） | 真实 PTY / Chrome / Windows |
-| `codegraph` | `scripts/verify-codegraph-host-contract.mjs`（真宿主路由与开关）、`verify-codegraph-agent-scope.mjs`（最小 Cordis 根）、`verify-codegraph-agent-integration.mjs`（真 `AgentRegistry` 驱动真 `agent/created`）、`verify-codegraph-indexforce.mjs`、`verify-codegraph-client-ui.mjs`（自起隔离宿主 + 真 Chrome） | 真 DSH 宿主 / 真 CLI / Chrome |
-| `docker` | `scripts/smoke.mjs` / `route-smoke.mjs` / `client-smoke.mjs`（hermetic，能进 CI）；真机项需真 docker daemon | 真 docker |
-| 全部 | `scripts/live-host-smoke.mjs --bootstrap --strict`（真宿主：能力开关授权阶梯 / 路由门控 / 工具清单 / 试连文案 / 宿主正服务的 `client.js`） | 装了 DSH 的任意机器（干净机器加 `--bootstrap`） |
-| 全部 | `scripts/windows/setup-dsh-testenv.ps1 -WithRepo` | Windows 11 |
+| `tty` | `pnpm --filter @hyzyn/dsh-tty run integration`（真实 PTY 全链路）、`… run ssh-smoke`（内存 sshd）、`… run probe-smoke`、`… run probe-route-smoke`、`… run sftplimits-smoke`、`… run preview`（Chrome，界面场景）、`… run windows-smoke`（仅 Windows 有意义） | 真实 PTY / Chrome / Windows |
+| `codegraph` | `pnpm --filter @hyzyn/dsh-codegraph run agent-scope-smoke`（最小 Cordis 根）、`… run agent-integration-smoke`（真 `AgentRegistry` 驱动真 `agent/created`）、`… run indexforce-smoke`、`… run host-contract-smoke`（真宿主路由与开关）、`… run client-ui-smoke`（自起隔离宿主 + 真 Chrome） | 真 DSH 宿主 / 真 CLI / Chrome |
+| `mcp` | `pnpm --filter @hyzyn/dsh-mcp run http-smoke`（streamable-http 的三种响应模式；只打 `/api/dsh-mcp/test`，不写配置）、`… run tools-smoke`（保存 → 热加载 → 工具真的进注册表；会写宿主 MCP 配置并**逐条写回**） | 正在跑的宿主（装了 `dsh-mcp`；`tools-smoke` 的 L2 那半还需 `dsh-search` 与一次 agent 回合） |
+| `rss` | `pnpm --filter @hyzyn/dsh-rss run opml-smoke`（OPML 导入 / 导出 / 回环；先存基线，收尾写回并重刷 digest） | 正在跑的宿主 + token + 真 Chrome（受限沙箱加 `--chrome-arg --no-sandbox`） |
+| `docker` | `pnpm --filter @hyzyn/dsh-docker run smoke`（`smoke.mjs` + `route-smoke.mjs` + `client-smoke.mjs`，hermetic，能进 CI）；真机项需真 docker daemon | 真 docker |
+| 通用（L0） | `node scripts/verify-client-ui.mjs --url <宿主> --token <token>`（应用壳 + 逐插件配置页；`--mode boot` 只验壳）、`pnpm verify:list`（只列不跑） | 正在跑的宿主 + token + 真 Chrome |
+| 全部 | `pnpm live-smoke`（= `node scripts/live-host-smoke.mjs`；干净机器 `node scripts/live-host-smoke.mjs --bootstrap --strict`）（真宿主：能力开关授权阶梯 / 路由门控 / 工具清单 / 试连文案 / 宿主正服务的 `client.js`） | 装了 DSH 的任意机器（干净机器加 `--bootstrap`） |
+| 全部 | `node scripts/windows/setup-dsh-testenv.ps1 -WithRepo` | Windows 11 |
+
+> ✅ **2026-09-30 真机分诊 → 复跑 → 修复的结论**：
+> `… run client-ui-smoke` 与 `node scripts/verify-client-ui.mjs --mode full` 当时**全红**（UI8/UI9/UI11/UI12），
+> 根因是**四条过期的选择器 / 结构口径**（DOM dump 实测，不是读代码）：① 插件页行文案从短名改成
+> 全包名（`codegraph` → `@hyzyn/dsh-codegraph`）；② 行级 `配置 <key>` 入口与 `[data-plugin-row-detail]`
+> 已不存在——卡片改由 `plugins.bundle.config` **内联渲染在包详情页**；③ 侧边栏「终端」是
+> `div[role=button]` 而不是 `<button>`；④ 设置面板的定位当时被「添加一个 API Key」引导弹窗抢走。
+> **当日已按当前形状修好**（判据改的是「怎么找」，不是「要不要过」：控件数 / 文本长度两个下限沿用
+> 原来的 `> 0` / `> 40`）。`… run opml-smoke` 当时在受限沙箱里起不来 Chrome（`Runtime.enable` 超时）
+> 是因为它**没有 Chrome 参数透传口**，本轮按 `verify-client-ui.mjs` 的既有形态补上了可重复的
+> `--chrome-arg <参数>`（**默认关**；受限沙箱里用 `--chrome-arg --no-sandbox`）。
+> **本轮逐条重跑（依据 2026-09-30 重跑记录，各脚本自己有报告）：9 个脚本 9 个跑过并通过、0 个被挡**——
+> `agent-scope` 10/10、`agent-integration` 9/9、`indexforce` 5/5、`host-contract` 42/42、
+> **`client-ui-smoke` 18 PASS / 1 WARN / 0 FAIL**、**`opml-smoke` 9/9**（带 `--chrome-arg --no-sandbox`）、
+> `mcp-http` 7/7、`mcp-tools` 7 PASS / 1 WARN / 0 FAIL，通用 `verify-client-ui.mjs --mode full`
+> 18 PASS / 1 WARN / 0 FAIL。两条 WARN 都是**设计内**的：UI11 的沙箱 `posix_openpt` 被拒
+> （与上文「三条硬约束 ②：不把环境限制当成代码回归」同因，环境限制记 WARN 而不是 FAIL）、
+> `mcp-tools` 的 L2 需要一次 agent 回合（它只负责 L1）。
 
 > **三层真机脚本的分工**（codegraph 的实践，可照搬）：
 > **机制**（最小 Cordis 根 + 假 agent）→ **宿主契约**（真宿主，验路由 / 开关 / 托管行）→

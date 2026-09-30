@@ -58,7 +58,12 @@
     "build": "tsc -p tsconfig.json && node scripts/build-client.mjs",
     "typecheck": "tsc --noEmit && node ../../scripts/client-lint.mjs",
     "lint:client": "node ../../scripts/client-lint.mjs",
-    "test": "vitest run"
+    "test": "vitest run",
+    "agent-scope-smoke": "node ../../scripts/verify-codegraph-agent-scope.mjs",
+    "agent-integration-smoke": "node ../../scripts/verify-codegraph-agent-integration.mjs",
+    "indexforce-smoke": "node ../../scripts/verify-codegraph-indexforce.mjs",
+    "host-contract-smoke": "node ../../scripts/verify-codegraph-host-contract.mjs",
+    "client-ui-smoke": "node ../../scripts/verify-codegraph-client-ui.mjs"
   },
   "files": [
     "lib",

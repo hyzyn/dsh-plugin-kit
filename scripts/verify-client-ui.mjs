@@ -1,6 +1,20 @@
 /**
  * 客户端半体（浏览器 UI）验证：用**已装的 Chrome + CDP** 驱动，零新增依赖。
  *
+ * > ✅ **2026-09-30 已按当前宿主形状修好**（当日「分诊 → 复跑 → 修复」，`--mode full` 实测
+ * > **18 PASS / 1 WARN / 0 FAIL**）。断言链的四处旧口径换成了 DOM dump 出来的新形状：
+ * >   ① 行按**短名或全包名**（`@hyzyn/dsh-<id>`）找——行文案现在是 `@hyzyn/dsh-codegraph`；
+ * >   ② 配置卡片认**内联**的 `[data-plugin-config="true"]`（包详情页内），不再找早已消失的
+ * >      `button[aria-label="配置 <行 id>"]` 与 `[data-plugin-row-detail]`；控件数 / 文本长度
+ * >      两个下限**沿用原来的 `> 0` / `> 40`**（实测最小是 prompt：5 控件 / 64 字符）；
+ * >   ③ 行注册改用 `[data-plugin-row="include:<行 id>"]` 核（8/8 命中）；
+ * >   ④ 侧边栏项同时认 `<button>` 与 `[role=button]`（「终端」现在是后者）；
+ * >   ⑤ UI12 不再假设设置面板是文档里第一个 `[role=dialog]`（引导弹窗会抢），并在开设置前
+ * >      关掉「添加一个 API Key」引导弹窗。
+ * > UI11 现在是 **WARN 而不是 FAIL**：沙箱里 `posix_openpt` 被拒（见
+ * > [docs/agent-real-test.md § 三条硬约束 ②](../docs/agent-real-test.md)），而 xterm 本身已初始化
+ * > ——环境限制不该记成代码回归，原文照抄进详情。
+ *
  * 为什么不需要 Windows 真机：客户端半体是纯浏览器 JS，与宿主平台无关；它消费的
  * `/api/dsh-*` 契约已经在真 Windows 上验过（131 PASS）。所以这里对着本机 macOS 的
  * `test` profile（link 到仓库、端口 3082）驱动即可 —— 验的是同一份客户端代码。
@@ -200,20 +214,33 @@ try {
     }
 
     if (mode === 'cards' || mode === 'full') {
-      /* ---------------- 点击级：侧边栏「插件」→ 逐个配置页 ----------------
+      /* ---------------- 点击级：侧边栏「插件」→ 逐个插件卡片 ----------------
        * DSH ≥0.1.6-alpha.2 起，插件配置从「设置 → 插件 → 插件配置」搬到了侧边栏的「插件」页
-       * （ui-plugin-manager）：每个插件是一条 bundle 行，该行注册了 plugins.row.config 之后
-       * 才会出现「配置」入口（button[aria-label="配置 <行 id>"]）。断言链因此是：
-       * 打开插件页 → 找到该插件 → 该行有配置入口 → 点进去 summary / page 两视图都渲染、
-       * 有控件、不报错。缺任一环都说明注册 key 或两视图实现有问题。
+       * （ui-plugin-manager）：每个插件是一条 bundle 行。
+       *
+       * ⚠️ 2026-09-30 起断言链按**当前**宿主形状（DSH 0.2.0-rc.2，DOM dump 实测 8/8）重写：
+       *   · 行文案是**全包名**（`@hyzyn/dsh-codegraph`），不再是插件短名；
+       *   · 配置卡片由 `plugins.bundle.config` **内联渲染在包详情页**（`[data-plugin-config="true"]`）——
+       *     旧的 `button[aria-label="配置 <行 id>"]` 与 `[data-plugin-row-detail]` 两级入口**已不存在**；
+       *   · 该 bundle 注册的每一行以 `[data-plugin-row="include:<行 id>"]` 标在详情页上。
+       * 断言链因此是：打开插件页 → 按（短名或全包名）进包详情页 → 内联卡片有控件且有文本
+       * → 期望的行标记在 → 本轮无新增错误。这是**跟着界面改判据**，不是放宽：控件数与文本长度
+       * 两个下限沿用原来的 `> 0` / `> 40`（实测最小值 prompt 也有 5 控件 / 64 字符）。
        */
 
-      // 页面里注入 DOM 助手：按精确文案点按钮 + 在插件页与插件详情之间来回。
+      // 页面里注入 DOM 助手：按精确文案点按钮 + 在插件列表 / 包详情之间来回。
       await chrome.evaluate(`(() => {
         const exact = (t) => [...document.querySelectorAll('*')].filter((el) => (el.innerText ?? '').trim() === t)
         const clickExact = (t) => { const el = exact(t).pop(); if (el === undefined) return false; el.click(); return true }
+        /**
+         * 按精确文案点一个**可点元素**。
+         *
+         * 候选同时收 <button> 与 [role=button]：这一版宿主的侧边栏项（例：「终端」）是
+         * div[role=button]，只查 <button> 永远点不到它（2026-09-30 实测：exact-text 候选 =
+         * DIV[role=button] + SPAN，button 元素数 0 —— UI11 就是这么恒红的）。
+         */
         const clickText = (t) => {
-          const h = [...document.querySelectorAll('button')].filter((el) => (el.innerText ?? '').trim() === t)
+          const h = [...document.querySelectorAll('button, [role=button]')].filter((el) => (el.innerText ?? '').trim() === t)
           if (h.length === 0) return false
           h[h.length - 1].click()
           return true
@@ -224,8 +251,8 @@ try {
         }
         const onList = () => (document.body.innerText ?? '').includes('添加插件')
         const back = () => {
-          // 面包屑：列表页那层 aria-label 是「返回插件列表」，行详情那层是「返回 <包短名>」，
-          // 唯一稳定的是 class 里的 crumb。两者都要认，否则会卡在行详情里出不去。
+          // 面包屑：列表页那层 aria-label 是「返回插件列表」，详情页那层是「返回 <包短名>」，
+          // 唯一稳定的是 class 里的 crumb。两者都要认，否则会卡在详情里出不去。
           const b = document.querySelector('button[class*="crumb"]')
             ?? [...document.querySelectorAll('button')].find((el) => (el.getAttribute('aria-label') ?? '').startsWith('返回'))
           if (b === undefined || b === null) return false
@@ -234,31 +261,36 @@ try {
         }
         window.__dshUi = {
           exact, clickExact, clickText, dialogText, onList, back,
-          /** 已安装列表里的插件行 = 文本恰好是该插件短名的按钮。 */
+          /**
+           * 从已安装列表打开某个插件的**包详情页**。
+           *
+           * 行文案是全包名，所以短名与 @hyzyn/dsh-&lt;短名&gt; 都试。
+           * @returns { opened, by }：by 是实际点中的行文案（写进断言详情，便于排查）。
+           */
           openPlugin: async (id) => {
-            // 行详情（data-plugin-row-detail）→ 包页（data-plugin-detail）→ 列表：面包屑每层都叫
-            // 「返回插件列表」，所以要退到**两个详情标记都不在**为止，否则下一轮 clickText 找不到目标。
             for (let i = 0; i < 4; i += 1) {
-              if (document.querySelector('[data-plugin-detail], [data-plugin-row-detail]') === null) break
+              if (document.querySelector('[data-plugin-detail]') === null) break
               back()
-              await new Promise((r) => setTimeout(r, 800))
+              await new Promise((r) => setTimeout(r, 900))
             }
-            if (!clickText(id)) return false
-            await new Promise((r) => setTimeout(r, 2200))
-            return true
+            const names = [id, '@hyzyn/dsh-' + id]
+            const hits = [...document.querySelectorAll('button, [role=button]')].filter((el) => names.includes((el.innerText ?? '').trim()))
+            if (hits.length === 0) return { opened: false, by: null }
+            const by = (hits[hits.length - 1].innerText ?? '').trim()
+            hits[hits.length - 1].click()
+            await new Promise((r) => setTimeout(r, 2500))
+            return { opened: true, by }
           },
-          /** 点开该 bundle 下第一个有配置入口的行；返回它的 aria-label。 */
-          openRow: () => {
-            const b = document.querySelector('[aria-label^="配置 "]')
-            if (b === null) return null
-            const label = b.getAttribute('aria-label')
-            b.click()
-            return label
-          },
-          rowDetailKey: () => document.querySelector('[data-plugin-row-detail]')?.getAttribute('data-plugin-row-detail') ?? null,
-          pageStats: () => {
-            const root = document.querySelector('[data-plugin-row-detail]') ?? document.body
-            return { textLength: (root.innerText ?? '').length, controls: root.querySelectorAll('input, select, textarea, button').length }
+          /** 包详情页上的**内联配置卡片**与行标记（当前宿主形状，见上面的注释）。 */
+          readBundleConfig: () => {
+            const cfg = document.querySelector('[data-plugin-config="true"]')
+            return {
+              hasDetail: document.querySelector('[data-plugin-detail]') !== null,
+              hasConfig: cfg !== null,
+              controls: cfg === null ? 0 : cfg.querySelectorAll('input, select, textarea, button').length,
+              textLength: cfg === null ? 0 : (cfg.innerText ?? '').length,
+              rowMarks: [...document.querySelectorAll('[data-plugin-row]')].map((el) => el.getAttribute('data-plugin-row')),
+            }
           },
         }
         return true
@@ -294,21 +326,31 @@ try {
       for (const [id, expectedKey] of PLUGIN_ROWS) {
         const before = consoleErrors.length + exceptions.length
         const opened = await chrome.evaluate(`window.__dshUi.openPlugin(${JSON.stringify(id)})`)
-        if (opened !== true) {
-          record(`UI8 插件「${id}」：配置页可达、两视图渲染且有控件、不报错`, false, '详情页打不开')
+        if (opened?.opened !== true) {
+          record(
+            `UI8 插件「${id}」：包详情页可达、内联配置卡片渲染且有控件、本行注册生效、不报错`,
+            false,
+            '已安装列表里找不到该插件的行（短名与全包名都试过）',
+          )
           continue
         }
-        const label = await chrome.evaluate('window.__dshUi.openRow()')
-        await new Promise((resolve) => setTimeout(resolve, 2200))
-        const stats = await chrome.evaluate('window.__dshUi.pageStats()')
-        const key = await chrome.evaluate('window.__dshUi.rowDetailKey()')
+        const view = await chrome.evaluate('window.__dshUi.readBundleConfig()')
+        // 行 id 沿用既有映射（`<bundle>#<行 id>`），详情页上的 `[data-plugin-row="include:<行 id>"]` 是它的现算标记
+        const rowId = expectedKey.split('#')[1]
+        const wantMark = `include:${rowId}`
         const newErrors = consoleErrors.length + exceptions.length - before
-        const ok = label !== null && key === expectedKey && stats.textLength > 40 && stats.controls > 0 && newErrors === 0
+        const ok =
+          view.hasDetail === true &&
+          view.hasConfig === true &&
+          view.controls > 0 &&
+          view.textLength > 40 &&
+          view.rowMarks.includes(wantMark) &&
+          newErrors === 0
         if (ok) configured += 1
         record(
-          `UI8 插件「${id}」：配置页可达、两视图渲染且有控件、不报错`,
+          `UI8 插件「${id}」：包详情页可达、内联配置卡片渲染且有控件、本行注册生效、不报错`,
           ok,
-          `入口=${String(label)} 行 key=${String(key)}（期望 ${expectedKey}）控件 ${String(stats.controls)} 个 文本 ${String(stats.textLength)} 字符 本次新增错误 ${String(newErrors)}`,
+          `入口=${String(opened.by)} 内联卡片=${String(view.hasConfig)} 控件 ${String(view.controls)} 个 文本 ${String(view.textLength)} 字符 行标记 ${wantMark}=${String(view.rowMarks.includes(wantMark))}（实际 ${JSON.stringify(view.rowMarks)}）本次新增错误 ${String(newErrors)}`,
         )
         if (shotDir !== undefined && ok) {
           mkdirSync(shotDir, { recursive: true })
@@ -316,9 +358,9 @@ try {
         }
       }
       record(
-        'UI9 全部 8 个插件都拿到了配置入口（plugins.row.config 注册生效）',
+        'UI9 全部 8 个插件的内联配置卡片都渲染出来了（plugins.bundle.config 注册生效 + 行标记都在）',
         configured === PLUGIN_ROWS.length,
-        `${String(configured)}/${String(PLUGIN_ROWS.length)} 个配置页可用；整轮新增错误 ${String(consoleErrors.length + exceptions.length - beforeErrors)} 条`,
+        `${String(configured)}/${String(PLUGIN_ROWS.length)} 个配置卡片可用；整轮新增错误 ${String(consoleErrors.length + exceptions.length - beforeErrors)} 条`,
       )
 
       /* ---------------- 侧边栏：全局搜索（search 的客户端半体） ---------------- */
@@ -360,36 +402,83 @@ try {
       const terminalOpened = await chrome.evaluate(`(() => {
         const hits = [...document.querySelectorAll('*')].filter((el) => (el.innerText ?? '').trim() === '终端')
         if (hits.length === 0) return false
+        // 侧边栏项是 div[role=button]（不是 <button>），closest 必须认 role
         const row = hits[hits.length - 1].closest('button, [role=button], li, [class*=nav]') ?? hits[hits.length - 1]
         row.click()
         return true
       })()`)
-      await new Promise((resolve) => setTimeout(resolve, 4000))
-      const terminalState = await chrome.evaluate(`(() => {
-        const xterm = document.querySelector('.xterm')
-        const screen = document.querySelector('.xterm-screen')
-        const text = (document.querySelector('.xterm-rows')?.innerText ?? '').replace(/\\s+/g, ' ').trim()
-        const textarea = document.querySelector('.xterm-helper-textarea')
-        return { xterm: xterm !== null, screen: screen !== null, textarea: textarea !== null, text: text.slice(0, 200) }
-      })()`)
-      record(
-        'UI11 侧边栏「终端」：xterm 在真浏览器里初始化完成',
-        terminalOpened === true && terminalState.xterm && terminalState.textarea,
-        `xterm=${String(terminalState.xterm)} screen=${String(terminalState.screen)} textarea=${String(terminalState.textarea)} 屏幕文本=${JSON.stringify(terminalState.text.slice(0, 80))}`,
-      )
+      /*
+       * 轮询等 xterm 挂上来，而不是固定 sleep：这一版宿主先建标签页、再连 PTY，慢机器上 4s 不够
+       * （2026-09-30 实测：等 9s 时 `.xterm` / `.xterm-screen` / `.xterm-helper-textarea` 全部就位）。
+       */
+      let terminalState = {}
+      for (let i = 0; i < 12; i += 1) {
+        terminalState = await chrome.evaluate(`(() => {
+          const xterm = document.querySelector('.xterm')
+          const text = (document.querySelector('.xterm-rows')?.innerText ?? '').replace(/\\s+/g, ' ').trim()
+          return {
+            xterm: xterm !== null,
+            screen: document.querySelector('.xterm-screen') !== null,
+            textarea: document.querySelector('.xterm-helper-textarea') !== null,
+            text: text.slice(0, 200),
+            // 面板自己的正文（div.tt_term 就是终端区）：PTY 被拒时错误原文在这里，而不是在 xterm 里
+            panelText: (document.querySelector('.tt_term')?.innerText ?? '').replace(/\\s+/g, ' ').trim().slice(0, 200),
+          }
+        })()`)
+        if (terminalState.xterm === true && terminalState.textarea === true) break
+        await new Promise((resolve) => setTimeout(resolve, 1000))
+      }
+      /*
+       * 沙箱里 `posix_openpt` 会被拒（见 docs/agent-real-test.md「三条硬约束 ②」），此时**前端仍然
+       * 正常**：xterm 挂上来了、面板把错误原文显示给用户。这种「环境限制」记 WARN 而不是 FAIL,
+       * 也不假装通过——原文照抄进详情，免得下次有人以为终端功能坏了。
+       */
+      const ptyBlocked = /posix_openpt|Operation not permitted/.test(terminalState.panelText ?? '')
+      if (terminalOpened === true && terminalState.xterm === true && terminalState.textarea === true && ptyBlocked) {
+        warn(
+          'UI11 侧边栏「终端」：xterm 已初始化；PTY 被环境拒绝（沙箱限制，不是回归）',
+          `xterm=${String(terminalState.xterm)} textarea=${String(terminalState.textarea)} 面板原文=${JSON.stringify(terminalState.panelText)}`,
+        )
+      } else {
+        record(
+          'UI11 侧边栏「终端」：xterm 在真浏览器里初始化完成',
+          terminalOpened === true && terminalState.xterm === true && terminalState.textarea === true,
+          `xterm=${String(terminalState.xterm)} screen=${String(terminalState.screen)} textarea=${String(terminalState.textarea)} 屏幕文本=${JSON.stringify(String(terminalState.text).slice(0, 80))} 面板文本=${JSON.stringify(String(terminalState.panelText).slice(0, 80))}`,
+        )
+      }
       if (shotDir !== undefined) await chrome.screenshot(join(shotDir, 'terminal.png'))
 
       /* ---------------- 设置里的一行「插件配置」（@hyzyn/dsh-kit-settings） ---------------- */
 
+      /*
+       * 先把「添加一个 API Key」引导弹窗关掉。
+       *
+       * 为什么要这一步：全新 profile（没有凭据）会弹这个引导，它**自己就是** `[role=dialog]`；
+       * 不关它时 `document.querySelector('[role=dialog]')` 拿到的是它、不是设置弹窗 → 导航读成
+       * `[]`、卡片数 0（2026-09-30 实测：那时弹窗里的按钮只有「稍后配置 / 保存并继续」）。
+       * 关掉之后实测导航 5 项（含「插件配置」）、`li button` 卡片 8 张——就是这条断言要的数字。
+       */
+      await chrome.evaluate("window.__dshUi.clickText('稍后配置') || window.__dshUi.clickText('关闭')")
+      await new Promise((resolve) => setTimeout(resolve, 1500))
+
       const kitRow = await chrome.evaluate(`(async () => {
         const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-        const dialog = () => document.querySelector('[role=dialog]')
-        const readNav = () => [...(dialog() ?? document.body).querySelectorAll('[class*=navLabel]')]
+        /**
+         * 设置面板的定位方式**不能**假设它是文档里第一个 [role=dialog]（引导弹窗、搜索结果浮层
+         * 都可能是 dialog）。改为：导航标签（[class*=navLabel]，设置面板专有）→ 它所在的
+         * panel / dialog 容器。实测该类名链是
+         * SPAN.navLabel → BUTTON.navCell → DIV.navList → NAV.nav → DIV.panel。
+         */
+        const readNav = () => [...document.querySelectorAll('[class*=navLabel]')]
           .map((el) => (el.innerText ?? '').trim())
           .filter(Boolean)
+        const settingsRoot = () => {
+          const label = [...document.querySelectorAll('[class*=navLabel]')].find((el) => (el.innerText ?? '').trim() === '插件配置')
+          return label?.closest('[class*=panel], [role=dialog], [class*=overlay]') ?? document.querySelector('[role=dialog]') ?? document.body
+        }
         const waitForSettings = async () => {
           for (let i = 0; i < 12; i += 1) {
-            if (dialog() !== null && readNav().length > 0) return true
+            if (readNav().length > 0) return true
             await sleep(400)
           }
           return false
@@ -401,20 +490,19 @@ try {
           window.__dshUi.clickText('设置')
           ready = await waitForSettings()
         }
-        const panel = dialog()
         const nav = readNav()
         const clicked = window.__dshUi.clickText('插件配置')
         await sleep(1800)
-        const heads = [...(dialog() ?? document.body).querySelectorAll('li button')]
+        const heads = [...settingsRoot().querySelectorAll('li button')]
           .map((el) => (el.innerText ?? '').replace(/\\s+/g, ' ').trim())
           .filter(Boolean)
         window.__dshUi.clickText('关闭')
-        return { opened: panel !== null, nav, clicked, heads }
+        return { opened: readNav().length > 0, nav, clicked, heads }
       })()`)
       record(
         'UI12 设置里有与「通用设置」平级的「插件配置」行，并列出 kit 插件卡片',
         kitRow.opened === true && kitRow.nav.includes('插件配置') && kitRow.clicked === true && kitRow.heads.length >= 8,
-        `弹窗=${String(kitRow.opened)} 导航=${JSON.stringify(kitRow.nav)} 卡片 ${String(kitRow.heads.length)} 张：${kitRow.heads.map((h) => h.slice(0, 12)).join(' / ')}`,
+        `设置面板=${String(kitRow.opened)} 导航=${JSON.stringify(kitRow.nav)} 卡片 ${String(kitRow.heads.length)} 张：${kitRow.heads.map((h) => h.slice(0, 12)).join(' / ')}`,
       )
       if (shotDir !== undefined) await chrome.screenshot(join(shotDir, 'kit-settings-row.png'))
     }

@@ -30,11 +30,12 @@
  *        --runtime-store /path/to/proj/node_modules/.pnpm/node_modules/@deepseek-ai
  */
 import { spawn } from 'node:child_process'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
-import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import { createLiveHarness, verifyRealPatchUnchanged } from './lib/live-harness.mjs'
 
 const argv = process.argv.slice(2)
 const flag = (name) => {
@@ -53,18 +54,17 @@ const reportPath = flag('--report')
  */
 const runtimeStore = flag('--runtime-store')
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
-const workDir = mkdtempSync(join(tmpdir(), 'cg-host-contract-'))
 /**
- * 隔离的 DSH_HOME：被测宿主的 profile 仍从真实 `~/.dsh/profiles` 解析（符号链接），
+ * 隔离引导（临时目录 + 隔离 `DSH_HOME` + profile 播种 + 补丁快照）统一在
+ * [`scripts/lib/live-harness.mjs`](./lib/live-harness.mjs)——五个 codegraph 真机脚本共用一份，
+ * 免得同一段隔离被抄五遍、抄漏一处（indexforce 那份就漏了收尾比对）。
+ *
+ * 隔离的 DSH_HOME：被测宿主的 profile 仍从真实 `~/.dsh/profiles` 拷进来，
  * 但**所有 home 级写入**（插件的托管行、settings、profile 组装产物 cordis.yml）都落在
  * 这个临时目录里。这样脚本无论怎么跑都不会碰用户的真实配置。
  */
-const isolatedHome = join(workDir, 'dsh-home')
-mkdirSync(join(isolatedHome, 'profiles'), { recursive: true })
-const realDshHome = process.env.DSH_HOME?.trim() || join(process.env.HOME ?? '', '.dsh')
-const realPatchPath = join(realDshHome, 'cordis.patch.yml')
-/** 运行前的真实补丁快照（收尾时逐字节比对，证明没被改）。 */
-const realPatchBefore = existsSync(realPatchPath) ? readFileSync(realPatchPath, 'utf8') : undefined
+const harness = createLiveHarness({ prefix: 'cg-host-contract-', profile })
+const { workDir, isolatedHome } = harness
 
 const results = []
 const record = (name, ok, detail) => {
@@ -176,7 +176,7 @@ let child
 let stderr = ''
 try {
   // 整份拷入被测 profile：插件/配置照旧，但组装产物与 home 级写入都落在隔离目录
-  cpSync(join(realDshHome, 'profiles', profile), join(isolatedHome, 'profiles', profile), { recursive: true })
+  harness.syncProfile()
   if (runtimeStore !== undefined) {
     const runtimeDir = resolve(runtimeStore)
     if (!existsSync(runtimeDir)) throw new Error(`--runtime-store 不存在：${runtimeDir}`)
@@ -195,7 +195,8 @@ try {
   }
   child = spawn(dshBin, ['--profile', profile, '--patch', overlay], {
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, DSH_HOME: isolatedHome },
+    // 隔离 DSH_HOME 由 harness 显式覆盖（codegraph CG45：继承真实值会写用户真实配置）
+    env: harness.hostEnv(),
   })
   child.stderr?.on('data', (chunk) => (stderr += String(chunk)))
   const up = await waitForPort(child)
@@ -365,16 +366,16 @@ try {
   try { child?.kill('SIGKILL') } catch { /* 已退 */ }
   // 收尾自证：真实 ~/.dsh/cordis.patch.yml 必须逐字节未变。
   // 这条是「不污染用户配置」的执行版——没有它，隔离写错了也没人会发现。
-  const realPatchAfter = existsSync(realPatchPath) ? readFileSync(realPatchPath, 'utf8') : undefined
-  const untouched = realPatchAfter === realPatchBefore
+  const realPatchCheck = verifyRealPatchUnchanged(harness.patch)
+  const untouched = realPatchCheck.unchanged
   record(
     '真实 DSH_HOME 的 cordis.patch.yml 未被改动',
     untouched,
     untouched
-      ? `${realPatchPath}（${realPatchAfter === undefined ? '不存在→仍不存在' : String(realPatchAfter.length) + ' 字节，逐字节一致'}）`
-      : `❌ ${realPatchPath} 被改动了！before=${realPatchBefore === undefined ? '(不存在)' : String(realPatchBefore.length) + 'B'} after=${realPatchAfter === undefined ? '(不存在)' : String(realPatchAfter.length) + 'B'}`,
+      ? `${realPatchCheck.path}（${realPatchCheck.bytes === undefined ? '不存在→仍不存在' : String(realPatchCheck.bytes) + ' 字节，逐字节一致'}）`
+      : `❌ ${realPatchCheck.path} 被改动了！before=${realPatchCheck.before === undefined ? '(不存在)' : String(realPatchCheck.before.length) + 'B'} after=${realPatchCheck.bytes === undefined ? '(不存在)' : String(realPatchCheck.bytes) + 'B'}`,
   )
-  rmSync(workDir, { recursive: true, force: true })
+  harness.cleanup()
 }
 
 const failed = results.filter((r) => !r.ok)

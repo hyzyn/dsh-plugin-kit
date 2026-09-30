@@ -8,6 +8,9 @@
  * 2. **守卫必须会红**——本仓刚发生过一道「命中 0 个文件、恒绿、拦不住任何东西」的闸门，
  *    所以任何新守卫都要自证会红。反例**全部用 fixture 造**（在真实文本上做一次字符串替换，
  *    并断言替换真的生效），**不修改任何受版本控制的文件**；`docs` 清单类判据直接传合成清单。
+ * 3. **事实报告只报告、不判红**——`README 事实报告`（行数 + 档位）不是闸门：它没有阈值、
+ *    不产出差异、不影响退出码。它只加一条「报告存在且不含判定结论」的正向用例，
+ *    **刻意不加反例**（给它造反例就等于承认它是一个判据，而复杂档本来就没有行数上界）。
  *
  * 反例里用的**就是本轮实际漂过的那几处**：两份方案文档没登记、`✅（一次性 token 未做）`
  * 的混态、`§ 已完成` 的 1/2/4/3 乱序——所以这组用例同时是「守卫能不能拦住这次漂移」的证明。
@@ -24,8 +27,10 @@ import {
   checkDocsRegistration,
   checkRoadmapStatus,
   checkRepo,
+  formatReadmeReport,
   parseAttributedDocs,
   readDocsInputs,
+  readReadmeFacts,
   sectionOf,
 } from '../docs-index.mjs'
 
@@ -87,6 +92,22 @@ describe('docs-index：现算（唯一真值来源）', () => {
     const crlf = (text) => text.replace(/\n/g, '\r\n')
     expect(checkDocsRegistration({ docs: real.docs, conventions: crlf(real.conventions) })).toEqual([])
     expect(checkRoadmapStatus({ roadmap: crlf(real.roadmap) })).toEqual([])
+  })
+
+  it('README 事实报告存在，且不含判定结论（只报告、不判红，不是闸门）', () => {
+    const facts = readReadmeFacts()
+    const report = formatReadmeReport(facts)
+    // 每个有 package.json 的包都摊开一行；docker 是长 README 的样本
+    expect(facts.length).toBeGreaterThan(0)
+    expect(facts.map((fact) => fact.pkg)).toContain('docker')
+    for (const fact of facts) {
+      expect(report, `${fact.pkg} 应出现在报告里`).toContain(fact.pkg)
+      expect(['复杂', '中等', '简单', '未定档'], `${fact.pkg} 的档位`).toContain(fact.tier)
+    }
+    expect(report, '报告要给出真实行数').toMatch(/README\.md \d+ 行/)
+    for (const verdict of ['✘', '失败', '不通过', '超标', '应裁', '不得超过']) {
+      expect(report, `事实报告不许带判定结论：${verdict}`).not.toContain(verdict)
+    }
   })
 })
 

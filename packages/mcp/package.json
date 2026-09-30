@@ -47,7 +47,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit && node ../../scripts/client-lint.mjs",
-    "lint:client": "node ../../scripts/client-lint.mjs"
+    "lint:client": "node ../../scripts/client-lint.mjs",
+    "http-smoke": "node ../../scripts/verify-mcp-http.mjs",
+    "tools-smoke": "node ../../scripts/verify-mcp-tools.mjs"
   },
   "files": [
     "lib",

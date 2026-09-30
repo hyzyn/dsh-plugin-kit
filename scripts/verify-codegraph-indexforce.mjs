@@ -28,11 +28,12 @@
  *   node scripts/verify-codegraph-indexforce.mjs --profile test --port 3086 [--report out.json]
  */
 import { spawn } from 'node:child_process'
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
-import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import { createLiveHarness, verifyRealPatchUnchanged } from './lib/live-harness.mjs'
 
 const argv = process.argv.slice(2)
 const flag = (name) => {
@@ -58,13 +59,14 @@ if (!existsSync(fakeCli)) {
 }
 chmodSync(fakeCli, 0o755)
 
-const workDir = mkdtempSync(join(tmpdir(), 'cg-force-'))
-/** 隔离的 DSH_HOME：profile 仍从真实 ~/.dsh/profiles 解析，home 级写入全落在临时目录。 */
-const isolatedHome = join(workDir, 'dsh-home')
-mkdirSync(join(isolatedHome, 'profiles'), { recursive: true })
-const realDshHome = process.env.DSH_HOME?.trim() || join(process.env.HOME ?? '', '.dsh')
-const realPatchPath = join(realDshHome, 'cordis.patch.yml')
-const realPatchBefore = existsSync(realPatchPath) ? readFileSync(realPatchPath, 'utf8') : undefined
+/**
+ * 隔离引导统一在 [`scripts/lib/live-harness.mjs`](./lib/live-harness.mjs)（五个 codegraph 真机
+ * 脚本共用一份）：临时目录 + 隔离 `DSH_HOME` +「先清空再拷」的 profile 播种 + 补丁快照。
+ *
+ * 隔离的 DSH_HOME：profile 从真实 `~/.dsh/profiles` 拷进来，home 级写入全落在临时目录。
+ */
+const harness = createLiveHarness({ prefix: 'cg-force-', profile })
+const { workDir } = harness
 // 目标目录：只要求「存在」（/index 本身不做目录校验，那是 /init 的事）
 const targetDir = join(workDir, 'target')
 mkdirSync(targetDir, { recursive: true })
@@ -131,24 +133,19 @@ console.log(`# node ${process.version} / profile ${profile} / 端口 ${String(po
 let crashed
 try {
   /**
-   * 把被测 profile 拷进隔离 home。
+   * 把被测 profile 拷进隔离 home：`harness.syncProfile()`。
    *
-   * **必须先清空目标**：本脚本对 `indexForce` 的两个取值各起一轮宿主，两轮共用同一个
+   * **它必须先清空目标**：本脚本对 `indexForce` 的两个取值各起一轮宿主，两轮共用同一个
    * 隔离 home。第二轮若直接往已存在的目标上拷，目标里上一轮留下的**符号链接**会指回
    * 源树，`cpSync` 于是报
    *   `Cannot copy …/pkce-challenge to a subdirectory of self …/pkce-challenge`
-   * 并中止脚本（实测：第二轮必崩，且只跑到 F1 就退出）。
+   * 并中止脚本（实测：第二轮必崩，且只跑到 F1 就退出）。清空语义现在住在
+   * [`scripts/lib/live-harness.mjs`](./lib/live-harness.mjs) 的 `syncProfile()` 里，一处管五个脚本。
    *
-   * 这个坑是「静态守卫测不出来」的典型：`test/verify-scripts-safety.test.ts` 只能断言
-   * 「脚本里有 cpSync / isolatedHome / realPatchBefore」，断言不了「拷两次不会崩」——
-   * 真机脚本的正确性只能靠**跑一遍**。codegraph CG48 记的就是这次：codegraph CG45 给本脚本加的隔离从没被
-   * 运行过，一跑就崩。
+   * 这个坑是「静态守卫测不出来」的典型：守卫只能断言「脚本调了隔离引导」，断言不了
+   * 「拷两次不会崩」——真机脚本的正确性只能靠**跑一遍**。codegraph CG48 记的就是这次：
+   * codegraph CG45 给本脚本加的隔离从没被运行过，一跑就崩。
    */
-  const syncIsolatedProfile = () => {
-    const dest = join(isolatedHome, 'profiles', profile)
-    rmSync(dest, { recursive: true, force: true })
-    cpSync(join(realDshHome, 'profiles', profile), dest, { recursive: true })
-  }
 
   for (const indexForce of [false, true]) {
     const logPath = join(workDir, `argv-${String(indexForce)}.log`)
@@ -168,10 +165,10 @@ try {
         '',
       ].join('\n'),
     )
-    syncIsolatedProfile()
+    harness.syncProfile()
     const child = spawn(dshBin, ['--profile', profile, '--patch', overlay], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, DSH_HOME: isolatedHome, CG_FAKE_LOG: logPath },
+      env: harness.hostEnv({ CG_FAKE_LOG: logPath }),
     })
     let stderr = ''
     child.stderr?.on('data', (chunk) => (stderr += String(chunk)))
@@ -226,7 +223,23 @@ try {
   crashed = error
   console.error(`崩溃：${String(error?.stack ?? error?.message ?? error)}`)
 } finally {
-  rmSync(workDir, { recursive: true, force: true })
+  /*
+   * 收尾自证：真实 ~/.dsh/cordis.patch.yml 必须逐字节未变。
+   *
+   * ⚠️ 2026-09-30 分诊补记：这一条**原先缺失**——脚本声明了 `realPatchBefore` 却从未拿它
+   * 比对，而 `verify-scripts-safety.test.ts` 的旧断言（`toContain('realPatchBefore')` +
+   * `/未被改动|逐字节/`）分别命中了**声明**与文件头那句注释，于是守卫全绿、自证并不存在。
+   * 抽取隔离引导时补上（只增不减：不改任何阈值/命令，也不放宽任何隔离前提）。
+   */
+  const realPatchCheck = verifyRealPatchUnchanged(harness.patch)
+  record(
+    '真实 DSH_HOME 的 cordis.patch.yml 未被改动',
+    realPatchCheck.unchanged,
+    realPatchCheck.unchanged
+      ? `${realPatchCheck.path}（${realPatchCheck.bytes === undefined ? '不存在→仍不存在' : String(realPatchCheck.bytes) + ' 字节，逐字节一致'}）`
+      : `❌ ${realPatchCheck.path} 被改动了！before=${realPatchCheck.before === undefined ? '(不存在)' : String(realPatchCheck.before.length) + 'B'} after=${realPatchCheck.bytes === undefined ? '(不存在)' : String(realPatchCheck.bytes) + 'B'}`,
+  )
+  harness.cleanup()
   const failed = results.filter((item) => item.ok !== true)
   console.log(`\n# 汇总：PASS ${results.filter((r) => r.ok === true).length} / FAIL ${failed.length}`)
   if (failed.length > 0) {

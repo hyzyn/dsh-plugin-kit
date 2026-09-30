@@ -2,6 +2,14 @@
  * `@hyzyn/dsh-codegraph` 的**真浏览器 UI** 验证：自起一个隔离宿主，用真 Chrome（CDP）
  * 把插件的配置卡片真的渲染一遍。
  *
+ * > ✅ **2026-09-30 起是绿的**：本脚本以 `--mode full` 调 `verify-client-ui.mjs`，那条链上的四处
+ * > 旧选择器口径已在当日修好（行文案改全包名、行级 `配置` 入口被内联卡片 `[data-plugin-config]`
+ * > 取代、侧边栏「终端」变成 `div[role=button]`、UI12 的设置面板定位）——实测
+ * > **18 PASS / 1 WARN / 0 FAIL**（唯一的 WARN 是沙箱里 `posix_openpt` 被拒，见
+ * > [docs/agent-real-test.md § 三条硬约束 ②](../docs/agent-real-test.md)）。
+ * > 本脚本自己那半边（自起隔离宿主、抓带 token 的 URL、「真实 DSH_HOME 补丁逐字节未变」的自证）
+ * > 照旧全绿；修复细节与新旧口径对照见 `verify-client-ui.mjs` 文件头。
+ *
  * 为什么需要它（它补的是前三个脚本都够不到的一层）：
  *
  *   | 脚本 | 层次 | 够不到的地方 |
@@ -26,10 +34,11 @@
  *   node scripts/verify-codegraph-client-ui.mjs [--profile test] [--port 3110] [--shots 目录]
  */
 import { spawn } from 'node:child_process'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import { createLiveHarness, verifyRealPatchUnchanged } from './lib/live-harness.mjs'
 
 const argv = process.argv.slice(2)
 const flag = (name) => {
@@ -45,12 +54,12 @@ const shotDir = flag('--shots')
 const reportPath = flag('--report')
 const dshBin = flag('--dsh-bin') ?? 'dsh'
 
-const workDir = mkdtempSync(join(tmpdir(), 'cg-client-ui-'))
-const isolatedHome = join(workDir, 'dsh-home')
-mkdirSync(join(isolatedHome, 'profiles'), { recursive: true })
-const realDshHome = process.env.DSH_HOME?.trim() || join(process.env.HOME ?? '', '.dsh')
-const realPatchPath = join(realDshHome, 'cordis.patch.yml')
-const realPatchBefore = existsSync(realPatchPath) ? readFileSync(realPatchPath, 'utf8') : undefined
+/**
+ * 隔离引导统一在 [`scripts/lib/live-harness.mjs`](./lib/live-harness.mjs)（临时目录 + 隔离
+ * `DSH_HOME` + 「先清空目标再拷」的 profile 播种 + 补丁快照），五个 codegraph 真机脚本共用一份。
+ */
+const harness = createLiveHarness({ prefix: 'cg-client-ui-', profile })
+const { workDir } = harness
 
 /**
  * 卡片要指向一个**真有索引**的项目。
@@ -82,23 +91,19 @@ writeFileSync(overlay, [
 ].join('\n'))
 
 /**
- * 把被测 profile 拷进隔离 home。
- * **先清空目标**：本脚本只拷一次，但沿用 indexforce 的教训（codegraph CG48）——往已存在的目标上
- * 拷时，里面残留的符号链接会指回源树，`cpSync` 报 "Cannot copy X to a subdirectory of self"。
+ * 把被测 profile 拷进隔离 home：`harness.syncProfile()`。
+ * **它先清空目标**：本脚本只拷一次，但沿用 indexforce 的教训（codegraph CG48）——往已存在的
+ * 目标上拷时，里面残留的符号链接会指回源树，`cpSync` 报 "Cannot copy X to a subdirectory of self"。
  */
-const syncIsolatedProfile = () => {
-  const dest = join(isolatedHome, 'profiles', profile)
-  rmSync(dest, { recursive: true, force: true })
-  cpSync(join(realDshHome, 'profiles', profile), dest, { recursive: true })
-}
 
 let host
 let exitCode = 1
 try {
-  syncIsolatedProfile()
+  harness.syncProfile()
   host = spawn(dshBin, ['--profile', profile, '--patch', overlay], {
     stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, DSH_HOME: isolatedHome },
+    // 隔离 DSH_HOME 由 harness 显式覆盖（codegraph CG45）
+    env: harness.hostEnv(),
   })
   let stdout = ''
   let stderr = ''
@@ -148,11 +153,10 @@ try {
   try { host?.kill('SIGKILL') } catch { /* 已退 */ }
 
   // 收尾自证：真实补丁逐字节未变（与另几个真机脚本同款）
-  const realPatchAfter = existsSync(realPatchPath) ? readFileSync(realPatchPath, 'utf8') : undefined
-  const untouched = realPatchAfter === realPatchBefore
-  console.log(`${untouched ? 'PASS' : 'FAIL'}  真实 DSH_HOME 的 cordis.patch.yml 未被改动`)
-  console.log(`      ${realPatchPath}（${untouched ? '逐字节一致' : '❌ 被改动了'}）`)
-  if (!untouched) exitCode = 1
-  rmSync(workDir, { recursive: true, force: true })
+  const realPatchCheck = verifyRealPatchUnchanged(harness.patch)
+  console.log(`${realPatchCheck.unchanged ? 'PASS' : 'FAIL'}  真实 DSH_HOME 的 cordis.patch.yml 未被改动`)
+  console.log(`      ${realPatchCheck.path}（${realPatchCheck.unchanged ? '逐字节一致' : '❌ 被改动了'}）`)
+  if (!realPatchCheck.unchanged) exitCode = 1
+  harness.cleanup()
 }
 process.exit(exitCode)

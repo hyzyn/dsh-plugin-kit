@@ -26,11 +26,11 @@
  *   node scripts/verify-codegraph-agent-scope.mjs [--report out.json]
  */
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
+
+import { createTempWorkDir, resolveRuntimeLoader } from './lib/live-harness.mjs'
 
 const argv = process.argv.slice(2)
 const flag = (name) => {
@@ -52,14 +52,11 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
  *   3. **但必须与 mcp-client 解析到同一份 `dsh-scope`**：`kScope` 是模块内局部
  *      Symbol（`dsh-scope/lib/index.js:229`），第二份副本会让所有 `scopeOf()` 返回
  *      undefined，隔离**静默失效**——正是本脚本第 3/4 条在探测的失效模式。
- *      从 mcp-client 所在目录解析，天然保证同源。
+ *      从 mcp-client 所在目录解析，天然保证同源（实现见
+ *      [`scripts/lib/live-harness.mjs`](./lib/live-harness.mjs) 的 `resolveRuntimeLoader()`，
+ *      与 agent-integration 共用一份）。
  */
-const codegraphPkg = join(repoRoot, 'packages', 'codegraph', 'package.json')
-const mcpClientPath = createRequire(codegraphPkg).resolve('@deepseek-ai/dsh-mcp-client')
-// .../@deepseek-ai/dsh-mcp-client/lib/index.js → 上溯三层到 .../@deepseek-ai
-const runtimeScopeDir = dirname(dirname(dirname(mcpClientPath)))
-const runtimeRequire = createRequire(join(runtimeScopeDir, 'anchor.cjs'))
-const loadRuntime = (specifier) => import(pathToFileURL(runtimeRequire.resolve(specifier)).href)
+const { loadRuntime } = resolveRuntimeLoader(repoRoot)
 
 const { Context } = await loadRuntime('@deepseek-ai/cordis')
 const McpClient = await loadRuntime('@deepseek-ai/dsh-mcp-client')
@@ -147,7 +144,15 @@ function readDaemonPid(cwd) {
   }
 }
 
-const workDir = mkdtempSync(join(tmpdir(), 'dsh-cg-agent-scope-'))
+/**
+ * 一次性临时目录（前缀保持原样，隔离引导见 [`scripts/lib/live-harness.mjs`](./lib/live-harness.mjs)）。
+ *
+ * 本脚本**不启动宿主、也不写 DSH_HOME**：它建的是最小 Cordis 根，只在自己的临时目录里造两个
+ * 带 `.codegraph/` 的项目——这是它与 host-contract / indexforce 的关键区别，
+ * `verify-scripts-safety.test.ts` 正钉着这一点（一旦它开始写 DSH_HOME，就说明有人把它改成
+ * 「起真宿主」了，那属于 host-contract 的职责）。
+ */
+const { workDir, cleanup } = createTempWorkDir('dsh-cg-agent-scope-')
 const projectA = makeProject(workDir, 'project-a')
 const projectB = makeProject(workDir, 'project-b')
 
@@ -268,7 +273,7 @@ try {
       try { process.kill(Number(pid), 'SIGTERM') } catch { /* 已退 */ }
     }
   }
-  rmSync(workDir, { recursive: true, force: true })
+  cleanup()
 }
 
 const failed = results.filter((r) => !r.ok)

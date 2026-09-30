@@ -63,7 +63,11 @@ CI 另有两道兜底（`--no-verify`、别的机器、别的工具提交都能�
    本次要发的插件版本；CI 与 Release workflow 都强制检查，过期直接红。
 3. 动了插件运行行为的改动，真实装进 DSH 跑一遍：`dsh plugin --profile <name> add
    @hyzyn/dsh-<pkg>`（或 link: 路径调试）。build 绿不等于装上没问题。
-   tty 的 integration/live/ssh-smoke 需要真机，按需本地跑。
+   tty 的 integration/live/ssh-smoke、codegraph 的 5 个 `verify-codegraph-*-smoke`、mcp 的
+   http-smoke/tools-smoke、rss 的 opml-smoke（以及根 `scripts/verify-*.mjs` 全部 9 条）都需要真机，
+   按需本地跑——它们**也都不在 CI 里**（真机脚本进不了 CI，见
+   [docs/conventions.md § 真机脚本与 CI 接线](docs/conventions.md#真机脚本与-ci-接线)）；
+   清单与可粘贴命令见 `pnpm verify:list`。
    **能力开关 / 权限 / 文案类改动跑一次 `pnpm live-smoke`**：它从你已有的「link 到本仓」的
    profile 复制两份一次性 profile，起两个真宿主（无授权 / 带授权各一），把授权阶梯、路由门控、
    agent 工具清单、试连文案、宿主正在服务的 `client.js` 全打一遍，跑完删干净——就是本节

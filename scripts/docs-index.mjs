@@ -32,16 +32,25 @@
  *
  * ## 只读
  *
- * 本模块不写文件、不调 git、不联网。输入是**文本**（`docs/` 的文件名清单 + conventions + ROADMAP），
- * 所以单测可以喂 fixture 造反例，而不必修改任何受版本控制的文件。
+ * 本模块不写文件、不调 git、不联网。输入是**文本**（`docs/` 的文件名清单 + conventions + ROADMAP，
+ * 外加 `packages/<pkg>/README*.md` 的行数），所以单测可以喂 fixture 造反例，而不必修改任何受版本控制的文件。
+ *
+ * ## 事实报告（**只报告，不判红**）
+ *
+ * 通过时额外打印各包 `README.md` / `README.en.md` 的**行数与档位**（判据见
+ * [conventions § 文档分档](./conventions.md#文档分档)）。它是**事实报告**：复杂档没有行数上界
+ * （`docs/conventions.md` § 文档分档 三条纪律第 1 条），所以这里**不许**拿任何数字去做判定
+ * ——没有阈值、没有 ✘、不影响退出码；`--quiet` 一并抑制（CI 侧走单测，本来也不打印）。
  *
  * 用法（人工核对用；CI 侧由 `scripts/test/docs-index.test.ts` 调 `checkRepo()`）：
- *   node scripts/docs-index.mjs            # 打印全部差异（有差异则退出 1）
+ *   node scripts/docs-index.mjs            # 事实报告 + 全部差异（有差异则退出 1）
  *   node scripts/docs-index.mjs --quiet    # 只打印差异
  */
-import { readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+// 只借它的 `LEDGER_SPECS`（哪份台账是「转入台账」的权威声明）来判「有作为本包序列权威的 DEFECTS.md」。
+import { LEDGER_SPECS } from './defects-table.mjs'
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -51,6 +60,16 @@ export const DOCS_DIR = 'docs'
 export const CONVENTIONS_PATH = 'docs/conventions.md'
 /** `ROADMAP.md`：✅ 与落点的成对关系。 */
 export const ROADMAP_PATH = 'ROADMAP.md'
+/** `packages/*`：事实报告扫这一层（判据 1–3 都不看它）。 */
+export const PACKAGES_DIR = 'packages'
+
+/**
+ * § 文档分档 的行数判据，**照抄** `docs/conventions.md` § 文档分档 的表，不是新阈值：
+ * 复杂 = README > 250 行 **或** 有作为本包序列权威的台账 **或** 包内 `docs/` ≥ 2 篇；
+ * 中等 = 100–250 行；简单 = ≤ 100 行。**复杂档没有上界**——报告只摊开现算值，不做判定。
+ */
+const COMPLEX_ABOVE = 250
+const MEDIUM_FROM = 100
 
 /** 知识归属表的小节标题——**判据只认这一节里的引用**，别处的链接不算「登记」。 */
 export const ATTRIBUTION_HEADING = '### 知识归属表（唯一归宿）'
@@ -263,6 +282,88 @@ export function checkRoadmapStatus({ roadmap }) {
   return diffs
 }
 
+/** 文件的行数（与 `wc -l` 同口径：数换行符；文件不在返回 `undefined`）。 */
+function countLines(file) {
+  if (!existsSync(file)) return undefined
+  return readFileSync(file, 'utf8').split('\n').length - 1
+}
+
+/** 包内 `docs/*.md` 的篇数（目录不在 = 0）。 */
+function countDocFiles(dir) {
+  try {
+    return readdirSync(dir).filter((name) => name.endsWith('.md')).length
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * 事实报告：各包 `README.md` / `README.en.md` 的行数与档位。
+ *
+ * **只报告，不判红**：复杂档没有行数上界（§ 文档分档 三条纪律第 1 条），所以这里不设阈值、
+ * 不产出差异、不影响退出码——`checkRepo()` 里没有它的位置，它只在 CLI 的非 `--quiet` 分支打印。
+ *
+ * 档位按 § 文档分档 的判据现算：「有作为本包序列权威的台账」用
+ * [`LEDGER_SPECS`](./defects-table.mjs) 的 `mirror` 标志分流（`mirror: true` = 转入台账，
+ * 按规矩**不计**）。
+ *
+ * @param repoRoot - 仓库根（默认本模块所在仓库）。
+ * @returns 每包一条 `{ pkg, readmeLines, readmeEnLines, docsCount, tier, why }`。
+ */
+export function readReadmeFacts(repoRoot = REPO_ROOT) {
+  const pkgRoot = join(repoRoot, PACKAGES_DIR)
+  const authoritativeLedgers = new Set(
+    LEDGER_SPECS.filter((spec) => !spec.mirror).map((spec) => spec.name),
+  )
+  return readdirSync(pkgRoot)
+    .filter((pkg) => existsSync(join(pkgRoot, pkg, 'package.json')))
+    .sort()
+    .map((pkg) => {
+      const readmeLines = countLines(join(pkgRoot, pkg, 'README.md'))
+      const readmeEnLines = countLines(join(pkgRoot, pkg, 'README.en.md'))
+      const docsCount = countDocFiles(join(pkgRoot, pkg, 'docs'))
+
+      const complexReasons = []
+      if (readmeLines !== undefined && readmeLines > COMPLEX_ABOVE) {
+        complexReasons.push(`README > ${String(COMPLEX_ABOVE)} 行`)
+      }
+      if (authoritativeLedgers.has(pkg)) complexReasons.push('有权威 DEFECTS.md 台账')
+      if (docsCount >= 2) complexReasons.push('包内 docs/ ≥ 2 篇')
+
+      let tier = '复杂'
+      let why = complexReasons
+      if (complexReasons.length === 0 && readmeLines === undefined) {
+        tier = '未定档'
+        why = ['README.md 不在（判据无从算起）']
+      } else if (complexReasons.length === 0 && readmeLines >= MEDIUM_FROM) {
+        tier = '中等'
+        why = [`README ${String(MEDIUM_FROM)}–${String(COMPLEX_ABOVE)} 行`]
+      } else if (complexReasons.length === 0) {
+        tier = '简单'
+        why = [`README ≤ ${String(MEDIUM_FROM)} 行`]
+      }
+      return { pkg, readmeLines, readmeEnLines, docsCount, tier, why }
+    })
+}
+
+/**
+ * 把事实报告渲染成文本。**内容只有事实**：包名、行数、档位与判据来源——
+ * 没有阈值判定、没有 ✘、没有「应改成…」。
+ */
+export function formatReadmeReport(facts) {
+  const lines = [
+    '[docs-index] README 事实报告（只报告，不判红；档位判据见 docs/conventions.md § 文档分档）：',
+  ]
+  for (const fact of facts) {
+    const zh = fact.readmeLines === undefined ? 'README.md 不在' : `README.md ${String(fact.readmeLines)} 行`
+    const en = fact.readmeEnLines === undefined ? 'README.en.md 不在' : `README.en.md ${String(fact.readmeEnLines)} 行`
+    lines.push(
+      `  ${fact.pkg.padEnd(12)} ${zh} / ${en} / 包内 docs/ ${String(fact.docsCount)} 篇 → ${fact.tier}（${fact.why.join('；')}）`,
+    )
+  }
+  return lines.join('\n')
+}
+
 /** 读仓库里的三份输入（只读）。 */
 export function readDocsInputs(repoRoot = REPO_ROOT) {
   const docs = readdirSync(join(repoRoot, DOCS_DIR))
@@ -299,6 +400,8 @@ if (process.argv[1] !== undefined && import.meta.url === `file://${process.argv[
   const diffs = checkRepo()
   if (!quiet) {
     console.log(`[docs-index] docs/ 共 ${String(inputs.docs.length)} 份 markdown；已登记 ${String(parseAttributedDocs(inputs.conventions).size)} 份`)
+    // 事实报告（只报告，不判红）：`--quiet` 一并抑制，免得把 CI / 脚本输出搞脏。
+    console.log(formatReadmeReport(readReadmeFacts()))
   }
   for (const diff of diffs) console.log(`  ✘ ${diff.kind}  ${diff.message}`)
   if (diffs.length === 0) console.log('[docs-index] 通过')

@@ -34,11 +34,11 @@
  *   node scripts/verify-codegraph-agent-integration.mjs [--report out.json]
  */
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { createRequire } from 'node:module'
-import { tmpdir } from 'node:os'
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+
+import { createLiveHarness, resolveRuntimeLoader, verifyRealPatchUnchanged } from './lib/live-harness.mjs'
 
 const argv = process.argv.slice(2)
 const flag = (name) => {
@@ -53,13 +53,12 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
  *
  * `homePatchPath()` 是模块级 `dshHome()` 的调用，而 `dshHome()` 读 `process.env.DSH_HOME`。
  * 插件在 `apply()` 里就会写补丁，所以这个赋值不能晚于挂载。
+ *
+ * 隔离引导本身在 [`scripts/lib/live-harness.mjs`](./lib/live-harness.mjs)：本脚本不 spawn 宿主，
+ * 所以只借它的临时目录 + 隔离 home + 补丁快照（**不**给它 profile：进程内挂插件不需要真 profile）。
  */
-const workDir = mkdtempSync(join(tmpdir(), 'cg-agent-integration-'))
-const isolatedHome = join(workDir, 'dsh-home')
-mkdirSync(join(isolatedHome, 'profiles'), { recursive: true })
-const realDshHome = process.env.DSH_HOME?.trim() || join(process.env.HOME ?? '', '.dsh')
-const realPatchPath = join(realDshHome, 'cordis.patch.yml')
-const realPatchBefore = existsSync(realPatchPath) ? readFileSync(realPatchPath, 'utf8') : undefined
+const harness = createLiveHarness({ prefix: 'cg-agent-integration-' })
+const { workDir, isolatedHome } = harness
 process.env.DSH_HOME = isolatedHome
 
 /**
@@ -67,12 +66,10 @@ process.env.DSH_HOME = isolatedHome
  *
  * 这是**正确性要求**而不是便利：`dsh-scope` 的 `kScope` 是模块内局部 Symbol，解析到
  * 第二份副本会让所有 `scopeOf()` 返回 undefined，隔离**静默失效**（本脚本第 3 条
- * 断言正好能测出这种失效）。
+ * 断言正好能测出这种失效）。实现见 [`scripts/lib/live-harness.mjs`](./lib/live-harness.mjs)
+ * 的 `resolveRuntimeLoader()`（与 agent-scope 共用一份）。
  */
-const mcpClientPath = createRequire(join(repoRoot, 'packages', 'codegraph', 'package.json'))
-  .resolve('@deepseek-ai/dsh-mcp-client')
-const runtimeScopeDir = dirname(dirname(dirname(mcpClientPath)))
-const loadRuntime = (specifier) => import(pathToFileURL(createRequire(join(runtimeScopeDir, 'anchor.cjs')).resolve(specifier)).href)
+const { loadRuntime } = resolveRuntimeLoader(repoRoot)
 
 const results = []
 const record = (name, ok, detail) => {
@@ -223,12 +220,12 @@ try {
     } catch { /* 目录已被删 */ }
   }
   // 收尾自证：真实补丁必须逐字节未变（与另两个真机脚本同款）
-  const realPatchAfter = existsSync(realPatchPath) ? readFileSync(realPatchPath, 'utf8') : undefined
-  const untouched = realPatchAfter === realPatchBefore
+  const realPatchCheck = verifyRealPatchUnchanged(harness.patch)
+  const untouched = realPatchCheck.unchanged
   record('真实 DSH_HOME 的 cordis.patch.yml 未被改动', untouched,
     untouched
-      ? `${realPatchPath}（${realPatchAfter === undefined ? '不存在→仍不存在' : String(realPatchAfter.length) + ' 字节，逐字节一致'}）`
-      : `❌ 被改动了！before=${realPatchBefore === undefined ? '(不存在)' : String(realPatchBefore.length) + 'B'} after=${realPatchAfter === undefined ? '(不存在)' : String(realPatchAfter.length) + 'B'}`)
+      ? `${realPatchCheck.path}（${realPatchCheck.bytes === undefined ? '不存在→仍不存在' : String(realPatchCheck.bytes) + ' 字节，逐字节一致'}）`
+      : `❌ 被改动了！before=${realPatchCheck.before === undefined ? '(不存在)' : String(realPatchCheck.before.length) + 'B'} after=${realPatchCheck.bytes === undefined ? '(不存在)' : String(realPatchCheck.bytes) + 'B'}`)
   /*
    * 隔离生效的**正向**证据：插件 home 级写入必须落在隔离目录里。
    *
@@ -244,7 +241,7 @@ try {
   record('per-agent 模式下不产生托管行（只撤销、不新建）',
     !isolatedText.includes('mcp-codegraph-managed'),
     isolatedText === '' ? '隔离 home 无补丁（符合预期：per-agent 不建行）' : `隔离补丁 ${String(isolatedText.length)} 字节，含托管行=${String(isolatedText.includes('mcp-codegraph-managed'))}`)
-  rmSync(workDir, { recursive: true, force: true })
+  harness.cleanup()
 }
 
 const failed = results.filter((r) => !r.ok)
