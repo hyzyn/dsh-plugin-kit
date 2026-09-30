@@ -16,11 +16,14 @@
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square" alt="License">
 </p>
 
-Repo gates: `pnpm typecheck` / `pnpm build` / `pnpm test` / `pnpm aggregate`.
-
 <p align="center">
   <strong>A plugin family for the DeepSeek Harness (DSH) Web GUI</strong><br>
   <em>Environment · MCP servers · Prompt · Profile · RSS · Global search · Codegraph · Terminal panel · Container panel · Scaffolding</em>
+</p>
+
+<p align="center">
+  <code>dsh plugin --profile web add @hyzyn/dsh-all</code><br>
+  <sub>installs the whole family · restart <code>dsh web</code> to take effect · only want a few? → <a href="#quick-start">install on demand</a></sub>
 </p>
 
 <p align="center">
@@ -46,17 +49,19 @@ and you can install them one by one or all at once with the aggregate package.
 </tr>
 </table>
 
-| Capability | Plain `dsh web` | The dsh-plugin-kit family |
-| --- | --- | --- |
+Grouped configuration → panels → development:
+
+| Capability | Plain `dsh web` | dsh-plugin-kit |
+|---|---|---|
 | MCP servers | edit the patch file / CLI | visual card + connection test + hot reload after saving |
-| Profile management | CLI | visual create / copy / rename / delete |
-| RSS aggregation | none | multi-source subscriptions + a daily digest + optional AI summaries (uses the host’s default model, zero config) |
-| Global search | session titles/content only | one full-text search over past sessions, Prompts, MCP tools and settings panels |
-| Codegraph integration | none | code graph card: index status / symbol search / call chain / impact / one-click sync-index |
-| Terminal panel | none | real xterm.js multi-tab PTY (vim/htop/dev server); native SSH (connection book, host-key pinning, auto reconnect); SFTP single-dialog / dual-pane transfer; `tty_*` / `sftp_*` agent tools |
-| Docker container panel | none | containers / images / Compose / live logs and stats / multi-target overview; **read-only by default**, mutations and exec behind explicit switches; `docker_*` agent tools |
-| Environment variables | CLI / hand-edited config | Web GUI card, written into `process.env` on save |
+| Environment variables | edit `env.yml` by hand / CLI | Web GUI card, written into `process.env` on save |
 | Prompt management | hand-edited config | visual editing + versioning / A/B testing / export & share |
+| Profile management | CLI | visual create / copy / rename / delete |
+| RSS aggregation | none | multi-source subscriptions + a daily “Today’s Worth Reading” + optional AI summaries (follows the host’s default model, zero config) |
+| Global search | session titles / content only | one full-text search in the sidebar over past sessions, Prompts, MCP tools and settings panels |
+| Terminal panel | none | real xterm.js multi-tab PTY + native SSH (connection book / host-key pinning / auto reconnect) + SFTP dual-pane transfer; registers `tty_*` / `sftp_*` tools |
+| Docker container panel | none | containers / images / Compose / live logs and stats / multi-target overview; **read-only by default**, mutations and exec behind explicit switches; registers `docker_*` tools |
+| Codegraph integration | none | code graph card: index status / symbol search / call chain / impact / one-click sync-index |
 | Plugin development | boilerplate by hand | `pnpm create-plugin` scaffolding + the `@hyzyn/dsh-kit` shared library |
 
 > **Each plugin’s full feature set, screenshots and caveats live in its own README** (table below).
@@ -70,69 +75,65 @@ direction and how they cooperate: [docs/architecture.md](docs/architecture.md) (
 | Package | What it does | Docs |
 |---|---|---|
 | `@hyzyn/dsh-kit` | **Library** (not a plugin): shared host-half utilities — HTTP loopback fence, managed blocks, `!!js` expressions, service access | [README](packages/kit/README.md) · [DEFECTS](packages/kit/DEFECTS.md) |
-| `@hyzyn/dsh-mcp` | MCP server configuration card, hot-reloaded on save | [README](packages/mcp/README.md) |
 | `@hyzyn/dsh-env` | Environment variables / secrets management | [README](packages/env/README.md) |
+| `@hyzyn/dsh-mcp` | MCP server configuration card, hot-reloaded on save | [README](packages/mcp/README.md) |
 | `@hyzyn/dsh-prompt` | systemPrompt editing / versions / A-B testing | [README](packages/prompt/README.md) |
 | `@hyzyn/dsh-profile` | Graphical management of `~/.dsh/profiles` | [README](packages/profile/README.md) |
-| `@hyzyn/dsh-rss` | RSS aggregation → a daily digest | [README](packages/rss/README.md) |
-| `@hyzyn/dsh-search` | Sidebar global search | [README](packages/search/README.md) |
-| `@hyzyn/dsh-codegraph` | Code graph card + MCP management + adoption measurement | [README](packages/codegraph/README.md) · [DEFECTS](packages/codegraph/DEFECTS.md) · [ROADMAP](packages/codegraph/ROADMAP.md) |
-| `@hyzyn/dsh-tty` | Terminal panel (PTY / SSH / SFTP / tunnels) | [README](packages/tty/README.md) · [DEFECTS](packages/tty/DEFECTS.md) · [ROADMAP](packages/tty/ROADMAP.md) |
-| `@hyzyn/dsh-docker` | Docker container panel (local / SSH), read-only by default | [README](packages/docker/README.md) · [DEFECTS](packages/docker/DEFECTS.md) · [ROADMAP](packages/docker/ROADMAP.md) |
 | `@hyzyn/dsh-kit-settings` | Adds a “Plugin configuration” row next to “General settings” | [README](packages/kit-settings/README.md) |
+| `@hyzyn/dsh-rss` | RSS aggregation → a daily digest | [README](packages/rss/README.md) |
+| `@hyzyn/dsh-search` | Sidebar global search (⌘ / Ctrl + K) | [README](packages/search/README.md) |
+| `@hyzyn/dsh-codegraph` | Code graph card + MCP management + adoption measurement | [README](packages/codegraph/README.md) · [DEFECTS](packages/codegraph/DEFECTS.md) · [ROADMAP](packages/codegraph/ROADMAP.md) |
+| `@hyzyn/dsh-tty` | Terminal panel: PTY / SSH / SFTP / tunnels | [README](packages/tty/README.md) · [DEFECTS](packages/tty/DEFECTS.md) · [ROADMAP](packages/tty/ROADMAP.md) |
+| `@hyzyn/dsh-docker` | Docker container panel (local / SSH), read-only by default | [README](packages/docker/README.md) · [DEFECTS](packages/docker/DEFECTS.md) · [ROADMAP](packages/docker/ROADMAP.md) |
 | `@hyzyn/dsh-all` | Aggregate package: one bundle patch that mounts the 10 plugins above | [README](packages/all/README.md) |
 
 ## Quick start
 
 ### System requirements
 
-- DeepSeek Harness installed and `dsh web` starts normally. **The current baseline spans three DSH
-  cohorts, `0.1.7-rc.2`, `0.2.0-rc.1` and `0.2.0-rc.2`**: settings now live in the current profile’s plugin-entry
-  configuration, and compatibility is enforced from `peerDependencies` both before install and at
-  startup; `0.1.6-alpha.2` and earlier are no longer supported.
-- Every installable plugin declares `@deepseek-ai/dsh: ^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2` in
-  `peerDependencies` (one `^<cohort>` per supported cohort joined with `||`; matching any branch
-  admits the host), enforced both **before install** and **at startup**. `dsh.engines.dsh` is kept as
-  a **marketplace display field** — the market resolver only accepts a single `>=X.Y.Z` segment, so it
-  carries the **lowest** cohort, `>=0.1.7-rc.2`. Mechanics, what to do when a version is rejected, and
-  how to admit an exact combination → [docs/troubleshooting.md § Compatibility](docs/troubleshooting.md#兼容性校验).
-- No extra requirements for npm installs; installing from this repository requires Node.js >= 22.19 and pnpm 10.
+- DeepSeek Harness installed and `dsh web` starts normally. **Three DSH cohorts are currently
+  supported: `0.1.7-rc.2`, `0.2.0-rc.1` and `0.2.0-rc.2`**; `0.1.6-alpha.2` and earlier are no longer
+  supported.
+- Compatibility is guaranteed by the `@deepseek-ai/dsh` range each installable plugin declares in
+  `peerDependencies`, which DSH checks once **before install** and once **at startup**. What a
+  rejection looks like and how to admit a combination temporarily →
+  [docs/troubleshooting.md § Compatibility](docs/troubleshooting.md#兼容性校验).
+- No extra requirements for npm installs; building from this repository’s sources requires
+  Node.js >= 22.19 and pnpm 10.
 
 ### Install from npm
 
-**Installing only what you need is the recommended path** — one package per line below; starting with
-the three configuration cards (`env` / `prompt` / `mcp`, which register no tools) is the cheapest way in:
+**Installing only what you need is the recommended path** — one package per line below, install just
+the ones you want. Starting with the three configuration cards (`env` / `mcp` / `prompt`, none of
+which register tools) is the cheapest way in:
 
 ```sh
 dsh plugin --profile web add @hyzyn/dsh-env          # env vars / secrets
-dsh plugin --profile web add @hyzyn/dsh-prompt       # systemPrompt
 dsh plugin --profile web add @hyzyn/dsh-mcp          # MCP servers
+dsh plugin --profile web add @hyzyn/dsh-prompt       # systemPrompt
 dsh plugin --profile web add @hyzyn/dsh-profile      # profiles
 dsh plugin --profile web add @hyzyn/dsh-kit-settings # the "Plugin configuration" settings row
 dsh plugin --profile web add @hyzyn/dsh-rss          # RSS digest
-dsh plugin --profile web add @hyzyn/dsh-search       # ⌘K global search
+dsh plugin --profile web add @hyzyn/dsh-search       # ⌘/Ctrl+K global search
 dsh plugin --profile web add @hyzyn/dsh-codegraph    # code graph card
 dsh plugin --profile web add @hyzyn/dsh-tty          # terminal panel (PTY / SSH / SFTP)
 dsh plugin --profile web add @hyzyn/dsh-docker       # Docker container panel
 ```
 
 Package names, one-line descriptions and per-package docs are in the [Packages](#packages) table above.
-**One thing to know before you install** (each package's README has its details; the mechanism is in
+
+**One thing to know before you install: the packages differ in what they touch** (details are in each
+package's README; the mechanism is in
 [docs/architecture.md § 7](docs/architecture.md#7-一条请求经过什么)):
 
-- **These three register tools and genuinely change what the agent can do**: `@hyzyn/dsh-tty`
-  (`tty_*` / `sftp_*` — a real shell / SFTP channel), `@hyzyn/dsh-docker` (`docker_*`) and
-  `@hyzyn/dsh-codegraph` (it hosts the codegraph MCP row for you, so `mcp__codegraph__*` lands in
-  the model's toolbox).
-- **These only add content to the systemPrompt**: `@hyzyn/dsh-rss` (the daily digest section) and
-  `@hyzyn/dsh-search` (its capability announcement); what `@hyzyn/dsh-prompt` does *is* editing the
-  systemPrompt itself.
-- **These only touch your own configuration and UI**: `@hyzyn/dsh-profile` · `@hyzyn/dsh-kit-settings`,
-  plus `@hyzyn/dsh-env` (saving writes into the host's `process.env` — still your own configuration);
-  `@hyzyn/dsh-mcp` is a configuration entry point — it adds no tools itself, but the servers you type
-  into it will.
-- Installing everything at once is the aggregate package: **its exposure is the union of all of
-  them** — if you don't know which plugin you need, don't start there.
+| Install it | What it means |
+|---|---|
+| **Registers tools — genuinely changes what the agent can do** | `tty` (`tty_*` / `sftp_*` — a real shell / SFTP channel) · `docker` (`docker_*`) · `codegraph` (it hosts the codegraph MCP row for you, so `mcp__codegraph__*` lands in the model's toolbox) |
+| **Only appends a section to the systemPrompt** | `rss` (the “Today's Worth Reading” section) · `search` (its capability announcement); what `prompt` does *is* edit the systemPrompt |
+| **Only touches your own configuration and UI** | `env` (saving writes into the host's `process.env` — still your own configuration) · `profile` · `kit-settings` · `mcp` (a configuration entry point — it adds no tools itself, but the servers you type into it will) |
+
+Installing everything at once is the aggregate package — **its exposure is the union of each
+package's** — if you don't know which plugin you need, don't start there:
 
 ```sh
 dsh plugin --profile web add @hyzyn/dsh-all              # aggregate package
@@ -151,12 +152,14 @@ Uninstall: `dsh plugin --profile web remove @hyzyn/dsh-all` (or the matching sub
 > DSH ≤ `0.1.5` uses the cards inside **Settings → Plugins → “Plugin configuration”**.
 > Client halves register all three slot generations (`plugins.row.config`, `settings.kit.item`,
 > `settings.plugin.item`), so one build works on every generation.
+> This configuration itself lives in the **current profile's plugin entry** (`cordis.patch.yml` user
+> layer), not in a global `settings.yaml` section — see the [glossary](docs/glossary.md).
 
 Install failures / missing cards / **every plugin gone** / HTTP 401 or 403 → [docs/troubleshooting.md](docs/troubleshooting.md) (Chinese).
 
 ### Install from the GitHub repository (development / debugging)
 
-Requires Node.js >= 22.19 and pnpm 10. The repository root is itself a DSH bundle
+The repository root is itself a DSH bundle
 (`package.json#dsh.bundle.patch`, generated by `pnpm aggregate`):
 
 ```sh
@@ -213,9 +216,9 @@ pure logic into modules) → [docs/conventions.md § Client half](docs/conventio
 | How to run real-machine tests, and what counts as passing | [docs/agent-real-test.md](docs/agent-real-test.md) |
 | The full design and acceptance criteria of a cross-package plan (bastion / elevation / i18n…) | `*-plan.md` and `i18n.md` under `docs/`, routed by the [conventions.md knowledge-ownership table](docs/conventions.md) |
 | Windows 11 test environment setup | [scripts/windows/README.md](scripts/windows/README.md) |
-| Cross-package backlog | [ROADMAP.md](ROADMAP.md) |
-| Release process | [RELEASING.md](RELEASING.md) |
 | Runtime linking between plugins and the host in a dev checkout | [docs/link-dsh-runtime.md](docs/link-dsh-runtime.md) |
+| Cross-package backlog | [ROADMAP.md](ROADMAP.md) |
+| Release process (incl. the cohort change list) | [RELEASING.md](RELEASING.md) |
 | How one package is used | `packages/<pkg>/README.md` |
 | What a defect number means | `packages/<pkg>/DEFECTS.md` |
 
