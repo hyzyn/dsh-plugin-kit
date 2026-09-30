@@ -79,7 +79,10 @@
 
 **三条纪律**：
 
-1. **升档不强制回填**：档位只约束**新写**的文档。已有超长 README 登记为债务，不强制裁剪。
+1. **升档不强制回填**：档位只约束**新写**的文档。**复杂档不设行数上界**（表里只有它的下界），
+   长本身不构成债务，不强制裁剪。**本仓的「债务」只有一个定义：同一事实在两处展开**——
+   这与本文开头「每类知识只在且仅在一个层级展开」是同一条规矩：要收敛的是**重复**，不是篇幅。
+   各包 README 的行数与档位由 `node scripts/docs-index.mjs` 现算报出（**只报告，不判红**）。
 2. **中英同结构**：有 `README.en.md` 的包，两版章节结构必须一致（不要求逐字对应）。
    **简单包免英文**（当前 `kit` / `kit-settings` / `all` 无英文版，属已登记债务）。
 3. **不写死计数**：文档里不写「N 条路由」「N 个测试」这类会漂的数字，改成指向脚本 / CI 输出。
@@ -114,7 +117,8 @@
    > `vitest.config.ts` 里写裸 `D61`（tty 的），而 **`docker` 也有一个 D61**（聚合日志贴底），
    > 同号不同义。跨包引用一律补包名。
 3. **编号不回收、不重号**：新缺陷接在最大号之后；已关闭的编号**保留在表内**并写明关闭理由。
-4. **索引表不写行号**：修复后代码移了位，审计时点的行号只会误导。定位实现用
+4. **索引表不写行号、也不保留修复提交 sha**：修复后代码可能移位、整段被删或重写，
+   审计时点的行号与 sha 同样只会误导。定位实现用
    `git log -S'<症状关键词>'`，或读代码里带编号的注释。
 5. **台账自洽**：`DEFECTS.md` 的「现状」行数字必须与表内现算一致。
    四包（`docker` / `tty` / `codegraph` / `kit`）都在
@@ -129,6 +133,19 @@
    > `kit D02`（权威记录 = `codegraph CG36`）在**同一目录、同一个号、不同含义**。
    > **报告号与台账号之间不建立自动映射**：只有当某条台账行的症状与报告原文逐字对得上时，
    > 才在括号里补「（见 `codegraph CGxx`）」；对不上就只写 `报告 #N`，不要猜。
+7. **新缺陷只做两件事**：对应包的 `DEFECTS.md` 索引表加一行 + 在代码注释里落编号。详细的现场 /
+   根因 / 修法 / 反向验证写进 **commit message**，正文不展开。
+8. **编号只在「已不再被源码 / 测试注释引用」时才可移出索引表**：被引用的一律**留在原地**——
+   索引表是代码注释的**字典**，搬走编号就等于让注释失去解析处。
+   **不设「超过 N 行就归档」这种无条件触发器**（表长反映的是引用量，不是债务）：表变长时按编号
+   **分段**（在同一张表里加小标题），而不是把号搬走。判据的实测依据见
+   [`packages/docker/DEFECTS.md` 的 ⚠️ 标注](../packages/docker/DEFECTS.md#维护规则)。
+
+> **7–8 原本逐字抄在三份 L1 台账里**（`packages/docker` / `packages/tty` / `packages/codegraph`
+> 的 `DEFECTS.md` §「维护规则」）：同一条规矩三份正文，改一处漏两处。现在通用条目只在本文写一次，
+> L1 **只留指针**（条目编号不变，历史引用不失效）；**包特有条目**（各包的冻结记录说明、
+> `CGxx` / `Dxx` 前缀的检索提示等）仍留在各包，**没有上收**。L1 §维护规则 第 4 条那一类
+> （阈值 / 口径 / 基线数字只增不改）的 L0 正文在 [§ 文档分档](#文档分档) 的「三条纪律」第 3 条。
 
 ## 命名
 
@@ -306,8 +323,15 @@ bundle key 且没有 row 入口、旧宿主只注册两个 row key）——其�
 ## 真机脚本与 CI 接线
 
 - **真机脚本进不了 CI**（需要真机 / 真宿主 / 真浏览器）。所以：能静态断言的性质，补一条
-  vitest 守卫（例：`packages/codegraph/test/verify-scripts-safety.test.ts` 断言真机脚本
-  「隔离 DSH_HOME」「自证真实配置未变」）；真机脚本的正确性**只能靠跑一遍**。
+  vitest 守卫（例：`packages/codegraph/test/verify-scripts-safety.test.ts` 断言它那 5 个
+  `verify-codegraph-*.mjs`「隔离 DSH_HOME」「自证真实配置未变」；跨包的那 4 个（`mcp` / `rss` /
+  通用 UI）与公共隔离引导 `scripts/lib/live-harness.mjs` 由 `scripts/test/live-scripts-safety.test.ts`
+  按同一口径断言——**包内的进包内用例、跨包的进 L0**）；真机脚本的正确性**只能靠跑一遍**。
+- **每个真机脚本都要有可粘贴入口**：`pnpm --filter <包名> run <条目>`（条目名照各包既有形态，
+  如 tty 的 `integration` / `ssh-smoke`），`pnpm verify:list` 只列不跑地摊开这 9 个脚本的
+  「所在包 / 需要什么 / 是否进 CI / 那条命令」——**不要**做成「一条命令全跑」：它们会起真宿主与
+  真 Chrome，半路失败会留下垃圾进程与临时目录。Runbook 见
+  [agent-real-test.md § 各包真机入口](./agent-real-test.md#各包真机入口)。
 - **包内脚本不搬家**：`scripts/` 下的包内脚本与 `package.json` 的 `smoke` / CI step 直接接线，
   移动会打断它们。项目级 Runbook 见 [agent-real-test.md](./agent-real-test.md)。
 - **要真宿主的验收放根 `scripts/` 且不进 CI**：`scripts/live-host-smoke.mjs`（`pnpm live-smoke`）
@@ -327,6 +351,20 @@ bundle key 且没有 row 入口、旧宿主只注册两个 row key）——其�
   都不出现它）；生成物形状由 `scripts/test/live-profile.test.ts` 钉住（docker 开关必须写 true，
   否则 A1「配置里 true 却打不开」是空断言）。
 - **CI 与发布闸要成对**：只在 CI 补而漏了 `release.yml`，发布路径仍能整条绕过。
+- **同一个真机 / 冒烟脚本有两个真相源（2026-09-30 诊断，本轮只诊断、未动 workflow）**：
+  CI 用**写死路径**跑 hermetic 脚本（`grep -n 'node packages/' .github/workflows/ci.yml` 那 8 条：
+  `node packages/tty/scripts/integration.mjs` … `node packages/docker/scripts/smoke.mjs`），而同一批
+  脚本在包内 `package.json` 里另有条目（tty 的 `integration` / `ssh-smoke` / `probe-*` / `jump-smoke`
+  / `proxycommand-smoke` / `sftplimits-smoke`，docker 的 `smoke`）。后果是**改名只红一处**：
+  改脚本文件名 → CI 立刻红（路径找不到），而 `pnpm --filter … run <条目>` 那条**悄悄烂掉**
+  （CI 从不跑它，没人会红）；反过来改条目名 → CI 照样绿，只有手动跑的人受影响。
+  **推荐收敛（待批准：它要动 workflow）**：CI 的 `run:` 改成调用**包内条目**——
+  `pnpm --filter @hyzyn/dsh-tty run integration`（其余 6 条同形）+ `pnpm --filter @hyzyn/dsh-docker run smoke`，
+  于是「哪个脚本叫什么」只剩 `package.json` 一个真相源。改动量：ci.yml 那 8 行 `run:` + 一行注释；
+  风险：① `pnpm run` 多一层输出（无实质影响），但要**逐条挑**——`windows-smoke` 只在 Windows 有意义、
+  整包 `run smoke` 也不是 CI 想要的那一组；② 这几条 step 本来就不在 `release.yml` 里，改完仍要按
+  上一条核对配对。**更省的前置护栏**：加一条守卫，断言「CI 里出现的每个 `packages/*/scripts/*.mjs`
+  路径都能在对应包的 `package.json` 里找到同名条目」——不改任何执行语义，只让两个真相源不许漂。
 - **文档链接闸门**：`node scripts/check-doc-links.mjs` 校验全仓 markdown 的**相对链接**与
   **锚点**（跨文件与同文件都查）。**尚未进 CI**，目前手动跑（见 [ROADMAP.md](../ROADMAP.md) 第 7 项）。
   已知的「相对的是别的仓库」的链接走脚本里的**精确白名单**（当前 3 条，属
