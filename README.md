@@ -39,8 +39,8 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 
 <table>
 <tr>
-<td><img src="https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-rss-view.png" alt="RSS「今日值得读」：侧边栏入口，当日条目按来源分区（IT之家 / Hacker News / Solidot）" width="400"></td>
-<td><img src="https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-sftp-dual.png" alt="SFTP 双栏：左本机 / 右远程，行内直传" width="400"></td>
+<td><img src="https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-rss-view.png" alt="RSS「今日值得读」：当日条目按分类与来源分区，可搜索、按分类筛选与刷新" width="400"></td>
+<td><img src="https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-sftp-dialog.png" alt="终端面板：多标签真实 PTY + 顶部服务器状态条，下方抽屉是单窗体 SFTP（浏览 / 上传 / 新建目录）" width="400"></td>
 </tr>
 <tr>
 <td><img src="https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-docker-dock.png" alt="Docker 容器面板：会话右侧栏标签，与对话同屏" width="400"></td>

@@ -40,8 +40,8 @@ and you can install them one by one or all at once with the aggregate package.
 
 <table>
 <tr>
-<td><img src="https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-rss-view.png" alt="RSS digest &quot;Today's Worth Reading&quot;: sidebar entry, the day's items grouped by source (IT之家 / Hacker News / Solidot)" width="400"></td>
-<td><img src="https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-sftp-dual.png" alt="SFTP dual pane: local on the left, remote on the right, inline transfer" width="400"></td>
+<td><img src="https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-rss-view.png" alt="RSS digest &quot;Today's Worth Reading&quot;: the day's items grouped by category and source, searchable and filterable" width="400"></td>
+<td><img src="https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-sftp-dialog.png" alt="Terminal panel: multi-tab real PTY with the server status bar, and the single-pane SFTP drawer below (browse / upload / mkdir)" width="400"></td>
 </tr>
 <tr>
 <td><img src="https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-docker-dock.png" alt="Docker container panel: docked as a sidebar tab next to the conversation" width="400"></td>
