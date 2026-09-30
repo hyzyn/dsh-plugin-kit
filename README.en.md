@@ -35,9 +35,16 @@ dsh-plugin-kit is a general-purpose plugin collection for the DeepSeek Harness (
 Every plugin mounts through the official profile mechanism — **DSH itself is never patched** —
 and you can install them one by one or all at once with the aggregate package.
 
-![SFTP dual pane: local on the left, remote on the right, inline transfer](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-sftp-dual.png)
-
-![Docker container panel: docked as a sidebar tab next to the conversation](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-docker-dock.png)
+<table>
+<tr>
+<td><img src="https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-rss-view.png" alt="RSS digest &quot;Today's Worth Reading&quot;: sidebar entry, the day's items grouped by source (IT之家 / Hacker News / Solidot)" width="400"></td>
+<td><img src="https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-sftp-dual.png" alt="SFTP dual pane: local on the left, remote on the right, inline transfer" width="400"></td>
+</tr>
+<tr>
+<td><img src="https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-docker-dock.png" alt="Docker container panel: docked as a sidebar tab next to the conversation" width="400"></td>
+<td><img src="https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-search-query.png" alt="Global search: typing codegraph, results grouped into recent sessions / history / Prompt / MCP tools / settings" width="400"></td>
+</tr>
+</table>
 
 | Capability | Plain `dsh web` | The dsh-plugin-kit family |
 | --- | --- | --- |
@@ -91,7 +98,41 @@ direction and how they cooperate: [docs/architecture.md](docs/architecture.md) (
   how to admit an exact combination → [docs/troubleshooting.md § Compatibility](docs/troubleshooting.md#兼容性校验).
 - No extra requirements for npm installs; installing from this repository requires Node.js >= 22.19 and pnpm 10.
 
-### Install from npm (recommended)
+### Install from npm
+
+**Installing only what you need is the recommended path** — one package per line below; starting with
+the three configuration cards (`env` / `prompt` / `mcp`, which register no tools) is the cheapest way in:
+
+```sh
+dsh plugin --profile web add @hyzyn/dsh-env          # env vars / secrets
+dsh plugin --profile web add @hyzyn/dsh-prompt       # systemPrompt
+dsh plugin --profile web add @hyzyn/dsh-mcp          # MCP servers
+dsh plugin --profile web add @hyzyn/dsh-profile      # profiles
+dsh plugin --profile web add @hyzyn/dsh-kit-settings # the "Plugin configuration" settings row
+dsh plugin --profile web add @hyzyn/dsh-rss          # RSS digest
+dsh plugin --profile web add @hyzyn/dsh-search       # ⌘K global search
+dsh plugin --profile web add @hyzyn/dsh-codegraph    # code graph card
+dsh plugin --profile web add @hyzyn/dsh-tty          # terminal panel (PTY / SSH / SFTP)
+dsh plugin --profile web add @hyzyn/dsh-docker       # Docker container panel
+```
+
+Package names, one-line descriptions and per-package docs are in the [Packages](#packages) table above.
+**One thing to know before you install** (each package's README has its details; the mechanism is in
+[docs/architecture.md § 7](docs/architecture.md#7-一条请求经过什么)):
+
+- **These three register tools and genuinely change what the agent can do**: `@hyzyn/dsh-tty`
+  (`tty_*` / `sftp_*` — a real shell / SFTP channel), `@hyzyn/dsh-docker` (`docker_*`) and
+  `@hyzyn/dsh-codegraph` (it hosts the codegraph MCP row for you, so `mcp__codegraph__*` lands in
+  the model's toolbox).
+- **These only add content to the systemPrompt**: `@hyzyn/dsh-rss` (the daily digest section) and
+  `@hyzyn/dsh-search` (its capability announcement); what `@hyzyn/dsh-prompt` does *is* editing the
+  systemPrompt itself.
+- **These only touch your own configuration and UI**: `@hyzyn/dsh-profile` · `@hyzyn/dsh-kit-settings`,
+  plus `@hyzyn/dsh-env` (saving writes into the host's `process.env` — still your own configuration);
+  `@hyzyn/dsh-mcp` is a configuration entry point — it adds no tools itself, but the servers you type
+  into it will.
+- Installing everything at once is the aggregate package: **its exposure is the union of all of
+  them** — if you don't know which plugin you need, don't start there.
 
 ```sh
 dsh plugin --profile web add @hyzyn/dsh-all              # aggregate package
@@ -101,7 +142,6 @@ dsh plugin --profile web add @hyzyn/dsh-plugin-kit       # repo root bundle (mou
 **Restart `dsh web`** afterwards; all cards appearing under Settings → Plugins means it worked.
 If a card does not appear, you probably forgot to restart. You can also use
 `dsh --profile web --dump-config` to confirm the plugin configuration layer is mounted.
-For one plugin only, see “Install a single plugin” below.
 Uninstall: `dsh plugin --profile web remove @hyzyn/dsh-all` (or the matching subpackage), then restart.
 
 > **Which configuration entry exists in which version**: DSH ≥ `0.1.6-alpha.2` has **two** entries
@@ -111,6 +151,8 @@ Uninstall: `dsh plugin --profile web remove @hyzyn/dsh-all` (or the matching sub
 > DSH ≤ `0.1.5` uses the cards inside **Settings → Plugins → “Plugin configuration”**.
 > Client halves register all three slot generations (`plugins.row.config`, `settings.kit.item`,
 > `settings.plugin.item`), so one build works on every generation.
+
+Install failures / missing cards / **every plugin gone** / HTTP 401 or 403 → [docs/troubleshooting.md](docs/troubleshooting.md) (Chinese).
 
 ### Install from the GitHub repository (development / debugging)
 
@@ -134,20 +176,6 @@ dsh web
 >
 > With the `dsh` field on the root package, GitHub DSH marketplaces classify this repository as a DSH
 > plugin (cordis-plugin) instead of flagging it as “non-plugin”.
-
-### Install a single plugin
-
-Swap the package name for any entry in the table above (`@hyzyn/dsh-all` → `@hyzyn/dsh-<pkg>`):
-
-```sh
-dsh plugin --profile web add @hyzyn/dsh-env       # Environment variables / secrets management
-dsh plugin --profile web add @hyzyn/dsh-tty       # Terminal panel
-dsh plugin --profile web add @hyzyn/dsh-docker    # Docker container panel
-```
-
-Install failures / missing cards / **every plugin gone** / HTTP 401 or 403 → [docs/troubleshooting.md](docs/troubleshooting.md).
-
-Install failures / missing cards / HTTP 401 or 403 → [docs/troubleshooting.md](docs/troubleshooting.md) (Chinese).
 
 ## Writing a new plugin
 
