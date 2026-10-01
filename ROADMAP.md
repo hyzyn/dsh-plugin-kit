@@ -203,6 +203,34 @@ renderer）：token 让盲发失效。若要做，先书面定三件事：① �
 名字都带前缀，现实风险低）；③ 没有「仅本次运行有效」档位（TTL / boot 计数），持久生效是刻意的。
 三条都写进了 `grant-store.ts` 的「已知限制」。
 
+### 6. CI 与 `package.json` 的脚本双真相源
+
+诊断正文在 [conventions.md § 真机脚本与 CI 接线](./docs/conventions.md#真机脚本与-ci-接线)
+（同一条 hermetic 脚本，CI 用写死路径、包内用 `smoke` 条目，改名只会红一处）。
+**待批准**：收敛要动 `.github/`，按 [§ AI 协作边界](./docs/conventions.md#ai-协作边界什么改动要先问)
+属于必须先问的动作。
+
+### 7. `architecture.md § 2` 包清单缺守卫
+
+归属规矩写着「任何档位的新包都要在 [architecture.md § 包清单](./docs/architecture.md#2-包清单)
+加一行」，现算 12/12 满足，但**没有任何守卫**：第 13 个包进来时不会有人红。
+`docs-index.mjs` 管的是 `docs/*.md` 的登记与包内 `ROADMAP.md` 的记录节位置，管不到
+「workspace 包 ↔ 清单行」这一层。
+
+**为什么是 L0**：要同时动 `scripts/` 与 L0 文档。**修法**：在 `docs-index` 里加一条断言——
+从 `pnpm-workspace.yaml` 现算包集合，与 `architecture.md § 2` 表格里的 README 链接逐一对账，
+多一个少一个都报（配 fixture 反例：清单少一行必须红）。
+
+### 8. `docs/` 的活规矩与已落地档案混在同一层
+
+现算（`wc -l docs/*.md`，2026-10-01 时点）：`docs/` 11 份 2558 行。其中三份**已落地方案的执行记录**
+（就地提权 451 / 跳板机 270 / 面板端 i18n 252）合计 976 行 = **38%**；而每次改代码都要翻的活规矩
+（`conventions` 419 / `agent-real-test` 290 / `architecture` 194 / `troubleshooting` 193）
+合计 1096 行 = 43%。两组平铺在同一目录、同一张归属表里，新人打开的第一屏近四成是历史。
+
+**为什么是 L0**：要动 `docs/` 结构与归属表。**这是可发现性问题，不是正确性问题**，不急；
+真要动，方向是分层（例如 `docs/landed/`）而不是继续加规矩。
+
 ## 已完成（落点 + 门槛）
 
 ### 1. ✅ 统一安全围栏：docker 的加固口径同步到 tty / dsh-mcp
