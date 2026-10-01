@@ -146,28 +146,30 @@ jobs:
           git diff --exit-code -- 'packages/*/client.js' ':(glob)packages/*/lib/**' || { echo "::error::构建产物落后于源码：在本地跑 pnpm -r build 后重新提交"; exit 1; }
       # 旗舰端到端脚本（自包含：内存 sshd / 本机 PTY，不依赖真实外部主机）。
       # 此前完全不在 CI 里跑，SFTP / SSH 生命周期 / 工具路由的回归静默通过。
+      #
+      # 调**包内条目**而不是写死路径：这样「哪个脚本叫什么」只剩 `package.json` 一个真相源
+      # （写死路径时，改脚本名会红 CI、却让 `pnpm --filter … run <条目>` 那个可粘贴入口悄悄烂掉；
+      # 反过来只改条目名则 CI 照样绿）。逐条对应关系与验收见 docs/ci-scripts-plan.md。
       - name: dsh-tty end-to-end scripts
         if: matrix.os == 'ubuntu-latest'
         run: |
-          node packages/tty/scripts/integration.mjs
-          node packages/tty/scripts/ssh-smoke.mjs
-          node packages/tty/scripts/probe-smoke.mjs
-          node packages/tty/scripts/probe-route-smoke.mjs
-          node packages/tty/scripts/jump-smoke.mjs
-          node packages/tty/scripts/proxycommand-smoke.mjs
-          node packages/tty/scripts/sftplimits-smoke.mjs
+          pnpm --filter @hyzyn/dsh-tty run integration
+          pnpm --filter @hyzyn/dsh-tty run ssh-smoke
+          pnpm --filter @hyzyn/dsh-tty run probe-smoke
+          pnpm --filter @hyzyn/dsh-tty run probe-route-smoke
+          pnpm --filter @hyzyn/dsh-tty run jump-smoke
+          pnpm --filter @hyzyn/dsh-tty run proxycommand-smoke
+          pnpm --filter @hyzyn/dsh-tty run sftplimits-smoke
       # dsh-docker 的三套端到端脚本（docker DEFECTS D70）：解析 / 路由 / 浏览器半体
       # 此前只在本机手跑，client.js 在 CI 里从未被执行过。三套都已 hermetic
       # （假 ctx + 假 docker CLI + 127.0.0.1:1 立即拒绝连接，见 docker D25）且带看门狗（docker D71）。
+      # 三条并成包内的一条 `smoke`（`package.json` 里就是这三条 `&&` 串联，逐字等价）。
       - name: dsh-docker smoke scripts
         if: matrix.os == 'ubuntu-latest'
-        run: |
-          node packages/docker/scripts/smoke.mjs
-          node packages/docker/scripts/route-smoke.mjs
-          node packages/docker/scripts/client-smoke.mjs
+        run: pnpm --filter @hyzyn/dsh-docker run smoke
       # Windows 端到端（tty DEFECTS D45 的最后一格）：真实 cmd.exe / ConPTY 的
       # spawn → ready → 输入回显 → kill → 重开。脚本在非 Windows 上自行跳过，
       # 所以只在这个 job 上有意义（integration.mjs 的 POSIX 用例在 Windows 上不适用）。
       - name: dsh-tty Windows smoke
         if: matrix.os == 'windows-latest'
-        run: node packages/tty/scripts/windows-smoke.mjs
+        run: pnpm --filter @hyzyn/dsh-tty run windows-smoke

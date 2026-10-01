@@ -41,6 +41,7 @@
 | **提 issue 的格式约束**（表单字段 / 自查结果 / 空白 issue 已关闭） | L0 [`.github/ISSUE_TEMPLATE/`](../.github/ISSUE_TEMPLATE/)（两张表单是**字段真相**）+ 本文 [§ Issue](./conventions.md#issue提-issue-的格式约束)（规矩）。字段与 [troubleshooting.md 的通用顺序](./troubleshooting.md#通用顺序)一一对应；schema 与表单内链接的闸门是 [`scripts/check-issue-forms.mjs`](../scripts/check-issue-forms.mjs) |
 | **投稿材料**（面向 DSH 插件市场） | L0 [`docs/pr-body-dsh-market.md`](./pr-body-dsh-market.md)（**提给市场仓库的 PR 正文**，其相对链接指向目标仓库）与 [`docs/community-submission.json`](./community-submission.json)（提交载荷）。两者都是**对外投稿物**，不是本仓架构 / 规范；**保留原路径**——`community-submission.json` 可能被市场按 `@main/docs/` URL 取。它们属于**「创意工坊」那条投稿轨道**，与市场卡片上分类标签的实际来源不是一回事：见下行 |
 | **插件市场索引**（卡片分类标签从哪来 · 我们 8 条的现状 · 改分类怎么提 PR） | L0 [`docs/market-index.md`](./market-index.md) |
+| **CI 与 `package.json` 的脚本双真相源：收敛方案**（改动点 / rename 面 / CI 影响 / 验收；**待批准——它要动 `.github/`**） | L0 [`docs/ci-scripts-plan.md`](./ci-scripts-plan.md) |
 | **AI 协作边界**（哪些改动必须先问维护者） | L0 本文 [§ AI 协作边界](#ai-协作边界什么改动要先问) |
 
 ### L0 / L1 的边界判据
@@ -356,20 +357,18 @@ bundle key 且没有 row 入口、旧宿主只注册两个 row key）——其�
   都不出现它）；生成物形状由 `scripts/test/live-profile.test.ts` 钉住（docker 开关必须写 true，
   否则 A1「配置里 true 却打不开」是空断言）。
 - **CI 与发布闸要成对**：只在 CI 补而漏了 `release.yml`，发布路径仍能整条绕过。
-- **同一个真机 / 冒烟脚本有两个真相源（2026-09-30 诊断，本轮只诊断、未动 workflow）**：
-  CI 用**写死路径**跑 hermetic 脚本（`grep -n 'node packages/' .github/workflows/ci.yml` 那 8 条：
-  `node packages/tty/scripts/integration.mjs` … `node packages/docker/scripts/smoke.mjs`），而同一批
-  脚本在包内 `package.json` 里另有条目（tty 的 `integration` / `ssh-smoke` / `probe-*` / `jump-smoke`
-  / `proxycommand-smoke` / `sftplimits-smoke`，docker 的 `smoke`）。后果是**改名只红一处**：
-  改脚本文件名 → CI 立刻红（路径找不到），而 `pnpm --filter … run <条目>` 那条**悄悄烂掉**
-  （CI 从不跑它，没人会红）；反过来改条目名 → CI 照样绿，只有手动跑的人受影响。
-  **推荐收敛（待批准：它要动 workflow）**：CI 的 `run:` 改成调用**包内条目**——
-  `pnpm --filter @hyzyn/dsh-tty run integration`（其余 6 条同形）+ `pnpm --filter @hyzyn/dsh-docker run smoke`，
-  于是「哪个脚本叫什么」只剩 `package.json` 一个真相源。改动量：ci.yml 那 8 行 `run:` + 一行注释；
-  风险：① `pnpm run` 多一层输出（无实质影响），但要**逐条挑**——`windows-smoke` 只在 Windows 有意义、
-  整包 `run smoke` 也不是 CI 想要的那一组；② 这几条 step 本来就不在 `release.yml` 里，改完仍要按
-  上一条核对配对。**更省的前置护栏**：加一条守卫，断言「CI 里出现的每个 `packages/*/scripts/*.mjs`
-  路径都能在对应包的 `package.json` 里找到同名条目」——不改任何执行语义，只让两个真相源不许漂。
+- **同一个真机 / 冒烟脚本有两个真相源（2026-09-30 诊断）**：
+  CI 用**写死路径**跑 hermetic 脚本，而同一批脚本在包内 `package.json` 里另有条目。后果是
+  **改名只红一处**：改脚本文件名 → workflow 立刻红（路径找不到），而
+  `pnpm --filter … run <条目>` 那条**悄悄烂掉**（CI 从不跑它，没人会红）；反过来改条目名 →
+  workflow 照样绿，只有手动跑的人受影响。
+  **收敛方案与执行记录见 [docs/ci-scripts-plan.md](./ci-scripts-plan.md)**：**方案 A 已于 2026-10-01
+  执行**（workflow 改成调用包内条目，14 行 → 10 行、`grep -c 'node packages/'` = 0 / 0；真相源收敛到
+  `package.json`），**方案 B（守卫）同轮也已做**——`scripts/ci-script-truth.mjs`（写死路径不许回来、
+  每个 `--filter` 引用都要能解析、两侧命令逐字一致、发布闸不许跑 CI 不认的入口、命中不是 0）；
+  改动点、rename 面、CI 影响、验收与回滚都在那一份里。
+  **现算纠正一条**：docker 那 3 条**在 `release.yml` 里也各写了一遍**（现算 14 处写死路径），
+  所以收敛必须两个 workflow 一起改——「只在 CI 补、发布路径照样绕过」本仓已经吃过一次（docker D119）。
 - **文档链接闸门**：`node scripts/check-doc-links.mjs` 校验全仓 markdown 的**相对链接**与
   **锚点**（跨文件与同文件都查）。**尚未进 CI**，目前手动跑（见 [ROADMAP.md](../ROADMAP.md) 第 7 项）。
   已知的「相对的是别的仓库」的链接走脚本里的**精确白名单**（当前 3 条，属

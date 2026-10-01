@@ -203,12 +203,16 @@ renderer）：token 让盲发失效。若要做，先书面定三件事：① �
 名字都带前缀，现实风险低）；③ 没有「仅本次运行有效」档位（TTL / boot 计数），持久生效是刻意的。
 三条都写进了 `grant-store.ts` 的「已知限制」。
 
-### 6. CI 与 `package.json` 的脚本双真相源
+### 6. ✅ CI 与 `package.json` 的脚本双真相源
 
 诊断正文在 [conventions.md § 真机脚本与 CI 接线](./docs/conventions.md#真机脚本与-ci-接线)
 （同一条 hermetic 脚本，CI 用写死路径、包内用 `smoke` 条目，改名只会红一处）。
 **待批准**：收敛要动 `.github/`，按 [§ AI 协作边界](./docs/conventions.md#ai-协作边界什么改动要先问)
 属于必须先问的动作。
+**方案**：[docs/ci-scripts-plan.md](./docs/ci-scripts-plan.md)——现算 **14 处**写死路径（ci.yml 11 +
+release.yml 3，docker 那三条两个 workflow 各写一遍）、方案 A（workflow 调用包内条目，14 行 → 10 行）
+与方案 B（不动 workflow 的守卫）、rename 面、CI 影响、验收与回滚都列在那里；批准后照它执行
+——**已批准并执行（2026-10-01）**，执行记录见该文 § 9；**已做**：见 § 已完成 第 6 项。
 
 ### 7. ✅ `architecture.md § 2` 包清单缺守卫
 
@@ -401,6 +405,23 @@ CI 真在跑的 `packages/tty/scripts/probe-route-smoke.mjs` / `integration.mjs`
 `packages/docker/test/elevate-route.test.ts`、`packages/tty/test/elevate-route.test.ts`；
 真机 `pnpm live-smoke`（18 条，两个实例的授权目录各自隔离 → kit D12）+ 待办第 5 项下面那张
 真机验收表。
+
+### 6. ✅ CI 与 `package.json` 的脚本双真相源：workflow 调包内条目（14 → 10 行）
+
+**落点**：`ci.yml` 三个 step 的 `run:` 与 `release.yml` 那一步改成 `pnpm --filter <包名> run <条目>`
+（tty 7 条 + docker 3 条并成一条 `smoke` + windows 1 条；docker 那三条**在两个 workflow 里各写了一遍**，
+一起收敛）；step 数、`if:`、矩阵一律未动。真相源收敛到 `package.json`。
+方案、rename 面、CI 影响与验收见 [docs/ci-scripts-plan.md](./docs/ci-scripts-plan.md)。
+
+**门槛**：两份 workflow YAML 仍可解析；`grep -c 'node packages/' .github/workflows/*.yml` = **0 / 0**；
+**机械等价 14 条**（HEAD 里每条写死路径都有同名条目、且条目命令逐字指向同一个脚本文件）；
+本地演练 8/9 个入口绿（`integration` 在本环境跑不起来——无法开 PTY，**旧写法同样失败**，属环境限制）；
+**改名演练**：脚本改名 → 包内入口立刻红（`Cannot find module`），而同一时刻旧写法的写死路径照跑
+——那正是被消灭的静默腐烂；还原后 sha256 一致。
+**未验证**：windows 腿的 `pnpm run`、CI 真跑一轮。
+**方案 B（守卫）同轮已做**：`scripts/ci-script-truth.mjs` + 10 条用例（写死路径回归 / 条目改名 /
+包名打错 / 发布闸跑 CI 不认的入口 / 同一入口两侧命令不一致 / 恒绿警戒）；端到端反证——把写死路径
+塞回 `ci.yml` → 守卫报 `ci.hardcodedPath`、4 条用例红，`cp` 还原后 sha256 一致并复绿。
 
 ### 7. ✅ `architecture.md § 2` 包清单缺守卫：两边现算 + 三种漂法各一条反例
 

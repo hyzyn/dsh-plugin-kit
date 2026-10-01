@@ -65,8 +65,13 @@ function withLanded(mutator) {
 const kinds = (diffs) => diffs.map((diff) => diff.kind)
 
 describe('docs-index：现算（唯一真值来源）', () => {
-  it('真实仓库：11 份 markdown 全部被归属表登记', () => {
-    expect(real.docs.length, 'docs/ 的 markdown 份数').toBe(11)
+  it('真实仓库：docs/ 每一份 markdown 都被归属表登记', () => {
+    /*
+     * 这里**刻意不写死份数**（conventions § 文档分档 三条纪律第 3 条：文档里不写会漂的数字）：
+     * 这条断言要拦的是「一份都没扫到」（命中 0 = 恒绿），不是「正好 11 份」——
+     * 而那个数字每逢加一份文档就要来改一次（10 → 11 → 12，实测三轮）。
+     */
+    expect(real.docs.length, 'docs/ 应有 markdown（0 份 = 闸门恒绿）').toBeGreaterThan(0)
     const registered = parseAttributedDocs(real.conventions)
     expect(registered.size, '登记份数应等于 docs/ 的实际份数').toBe(real.docs.length)
     for (const file of real.docs) expect(registered.has(file), `${file} 应被登记`).toBe(true)
