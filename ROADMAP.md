@@ -341,8 +341,9 @@ CI 真在跑的 `packages/tty/scripts/probe-route-smoke.mjs` / `integration.mjs`
 **落点**：`docker` 的 11 个只读工具（`docker_targets` … `docker_volumes`）与 `tty` 的 9 个
 只读工具（`tty_list` / `tty_stats` / `tty_capture` / `tty_screen` / `tty_expect` /
 `tunnel_list` / `sftp_list` / `sftp_read` / `sftp_tree`）声明 `isConcurrencySafe: () => true`；
-五个 docker 变更工具与七个 tty 变更工具**刻意不声明**（宿主按独占处理，多声明一次就是
-两个 `docker_action` 并发跑）。
+五个 docker 变更工具与八个 tty 变更工具**刻意不声明**（宿主按独占处理，多声明一次就是
+两个 `docker_action` 并发跑）。**2026-10-01 补**：`tty_run`（一次性命令）加入后 tty 的变更工具
+是 8 个——新增工具必须来这两张表里归类（门槛那条「清单自洽」就是为此设的）。
 
 **codegraph 那半边查下来不成立**：`packages/codegraph/src/**` 里一个 `tools.register` 都没有
 （它只往 systemPrompt 注入两段 + 管 MCP 托管行）。模型看到的

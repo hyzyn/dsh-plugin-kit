@@ -9,8 +9,9 @@
 - **Real PTY + WebGL rendering**: node-pty real PTY, so TUIs such as vim / htop / a dev server all run; multi-tab.
 - **Optional tmux session persistence**: reopen after a host restart / network blip and the scene is back; “command tabs” such as docker exec reopen automatically.
 - **Native ssh2 connections**: agent forwarding + host-key TOFU pinning, managed uniformly through the connection book; plus **SFTP** upload/download and **port forwarding** (-L / -R, reconnecting automatically after a drop).
-- **The agent reads the terminal at “command” granularity**: shell integration (OSC 133/7) lets `tty_capture{last}` / `tty_expect` read the output and exit code of “the previous command” instead of capturing the screen and guessing.
+- **The agent reads the terminal at “command” granularity**: shell integration (OSC 133/7) lets `tty_capture{last}` / `tty_expect` read the output and exit code of “the previous command” instead of capturing the screen and guessing; `tty_list` reports whether a command is currently running (`running`, three states: running / finished / cannot tell), and `tty_run` returns the output and exit code of one command in a single call.
 - **Two client services exposed to other plugins**: `ttyConnbar` (connection-bar actions) and `ttyTerminal` (open a terminal in place); dsh-docker’s “Containers / Terminal” buttons go through them.
+- **AI assist: explain failures (0.24.0, off by default)**: when a command exits non-zero a chip appears in the corner; clicking it sends **that command's output tail** (cleaned / truncated / secrets masked) plus the current screen to the model and renders a short "what happened / next step". A suggested command is only typed into the prompt line — never submitted for you. See [AI assist](#ai-assist-explain-failures-0240-off-by-default).
 
 ![Terminal panel: a multi-tab xterm modal, the toolbar has search/clear/copy/paste, and the title bar has the minimize “—” and close ✕](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty.png)
 
@@ -29,7 +30,11 @@ After installing, restart `dsh web`; a “Terminal” entry appears in the sideb
 - **Multi-tab**: “+” in the tab bar creates a new terminal (since 0.2.0 “+” is a menu: local terminal /
   SSH connection book (entries have ✎ to edit) / SSH connection…, see the next section for SSH), and ✕ closes
   a tab; **double-clicking a tab renames it** (the name is persisted with the tab and survives a reconnect);
-  each tab is an independent session (local PTY or SSH channel);
+  each tab is an independent session (local PTY or SSH channel); when the tab bar runs out of room it
+  **scrolls horizontally** (no scrollbar — wheel / trackpad, with fades at both edges) and a
+  **“⋯” tab list** appears at the strip’s right edge listing only the tabs **scrolled out of view**
+  (status dot + target, with the current tab highlighted when it is one of them): one click to switch,
+  and an inline ✕ to close it right there (the list stays open so you can close several in a row);
 - **The working directory follows the current DSH session**: new tabs open in the current session’s
   working directory (the host `cwd` configuration is the fallback). Since 0.1.6 the session list
   snapshot no longer carries `current` (view selection moved to the workspace domain), so the client
@@ -109,18 +114,19 @@ Both were reproduced on **Windows 11 ARM (24H2) + Node 22 ARM64**. The fix:
 
 ## Agent tools
 
-The plugin injects sixteen tools into the agent (with the same power as the bash tool; operations show up live in the user’s terminal):
+The plugin injects seventeen tools into the agent (with the same power as the bash tool; operations show up live in the user’s terminal):
 
 | Tool | Purpose |
 | --- | --- |
-| `tty_list` | List terminal sessions (sid / kind (`local\|ssh`) / target / pid / **cwd tracked live as you `cd`** / activity time; tmux persistent sessions carry a `persist` marker; sessions the agent opened carry `owner: 'agent'`). **Includes sessions whose process has exited but which are still inside their read-only retention window** (`exited:true` + exit code/signal, see below) |
+| `tty_list` | List terminal sessions (sid / kind (`local\|ssh`) / target / pid / **cwd tracked live as you `cd`** / activity time; tmux persistent sessions carry a `persist` marker; sessions the agent opened carry `owner: 'agent'`). **Includes sessions whose process has exited but which are still inside their read-only retention window** (`exited:true` + exit code/signal, see below). **`running` says whether a command is currently executing** (true = it is: do not send into it now; false = the command has finished; **omitted = cannot tell** — non-persistent SSH / fish·csh / Windows local sessions carry no shell-integration markers, which is *not* the same as “idle”), and the same-source `lastExitCode` / `lastExitAt` are the exit code and end time of “the previous completed command” (0.23.0). The rendered text spells the three states `[空闲]` / `[运行中——现在别往里发命令]` / `[命令状态未知——…]`; **“unknown” also covers one more case** — the host has seen **no marker for that session since this boot** (typically a tmux persistent session already sitting at its prompt before the host restarted): send it a bare Enter or run a command and the marker arrives, turning it into `[空闲]`; non-persistent SSH / fish·csh / Windows local sessions never emit markers, so `[命令状态未知]` is their normal state |
 | `tty_open` | **Open a terminal session yourself** (0.20.0): a local shell, or a command via `command` (dev server / watch; it runs as **a whole piece of code in the host shell’s syntax** — on a POSIX shell `cd x && cmd`, `a; b` and multi-line scripts work, while **Windows cmd / PowerShell use their own syntax**; the current shell and syntax are restated every turn in the systemPrompt terminal line; it is *not* subject to the “single line ≤2000” client rule below — D78), with optional tmux persistence via `persistName`. The session **shows up in the user’s terminal panel** as an ordinary tab the user can see and take over — never a hidden session |
 | `tty_close` | Close a session opened by `tty_open` (0.20.0). **Only the agent’s own sessions may be closed**: a tab the user opened is refused, so the agent never ends a terminal the user is working in. It also works on an **exited session that is still in read-only retention** — that is its release entry point (by default it is retained **until explicitly closed**, never on a timer) |
+| `tty_run` | **One-shot command** (0.23.0): open a session, run `command`, wait for it to finish and return the tail output + exit code directly — collapsing “`tty_open` → wait → `tty_capture{last}` → `tty_close`” into a single call. It **closes the session once the command finishes** by default (the result is already in this call); `keep:true` leaves it in read-only retention instead. If it is still running at `timeoutSec` (1~600, default 120) it returns `running:true` and **does not kill the session** (whether to keep waiting or close it is the caller’s call). When to use this instead of the bash tool: when the user should **see** the command, or when it must run inside a terminal session; for purely non-interactive commands bash is more direct |
 | `tty_stats` | Read live host metrics for a session’s machine (0.20.0): CPU / memory / disk / TCP connections / network rates / temperature / uptime. Local sessions report the host; SSH sessions report that remote host over a separate non-PTY channel that never touches the terminal. Check it before deploying or load-testing |
-| `tty_capture` | Read recent output (last N lines, ANSI stripped by default, `raw:true` for the raw stream); **`last:true` returns only the output + exit code of the previous completed command** (shell integration markers, see the next section); when a command is **in flight** (just sent, completion marker not in yet) it returns `inProgress:true` without the stale result, so the previous command is never mistaken for this one (0.19.0) |
+| `tty_capture` | Read recent output (last N lines, ANSI stripped by default, `raw:true` for the raw stream); **`last:true` returns only the output + exit code of the previous completed command** (shell integration markers, see the next section); when a command is **in flight** (just sent, completion marker not in yet) it returns `inProgress:true` without the stale result, so the previous command is never mistaken for this one (0.19.0). **A command-type session (`tty_open command=` / `tty_run`) has no “previous command”** (it injects no shell-integration hooks), so `last:true` on one errors explicitly and points at `lines` (0.23.0, D87) |
 | `tty_screen` | Read the **currently visible screen** as rendered (xterm-headless virtual screen, plain text) — it can genuinely read TUI interfaces such as vim / htop / menus |
 | `tty_expect` | Wait with a regex for a readiness signal (dev server URL, build finished, …). It **looks back first** at output that has not been read yet (including the full output of “the previous command”, so a command that finished instantly no longer burns the whole timeout) and then waits for subsequent output; on a hit it returns `matched:true` plus `matchedFrom` (`live` produced during this wait / `last` the previous command’s output / `buffered` buffered output that had already arrived). A timeout does not throw (`matched:false` + tail output, and it **does not consume the unread region**, so a different pattern can still look back at the same output), and a command that ends early also returns early with its exit code; **the echo of the command just sent never counts as a hit** (via the OSC 133 A..B boundary, or via the send record where there are no markers — see the next section; when only the echo ever matched, the timeout result carries `echoOnly:true`); at most 5 in-flight calls per session, and the accumulated window keeps only the last 64KB (0.19.0; look-back matching, see D72; echo exclusion, see D75) |
-| `tty_send` | Send keys/text to a given session (such as `q` to a dev server, or a menu selection). End a command with `\n`: on a **local Windows session** a trailing bare LF is normalised to CRLF (D74, see the “Windows hosts” section); non-Windows and SSH sessions pass through untouched. On an **exited** session it fails explicitly (such sessions are read-only) |
+| `tty_send` | Send text and/or keys to a given session (such as `q` to a dev server, a menu selection, or `:wq` in vim). **Use the named `keys` for control and arrow keys** (`["C-c"]`, `["Down","Down","Enter"]` — a whitelisted lookup: an unknown name errors out instead of being silently sent as a literal), and **never hand-build escape sequences inside `data`** — `"\\x1b[B"` / `"^[[B"` get printed into the terminal as ordinary characters while the `sent` count looks identical (0.23.0); give at least one of `data`/`keys`, and when both are present `data` goes first followed by `keys` in order. End a command with `\n`: on a **local Windows session** a trailing bare LF is normalised to CRLF (D74, see the “Windows hosts” section); non-Windows and SSH sessions pass through untouched. On an **exited** session it fails explicitly (such sessions are read-only) |
 | `sftp_list` | List a remote SSH directory (name/type/size/mtime, directories first); `book` is the connection-book entry name and `path` defaults to the login home; at most 500 entries by default (`truncated:true` beyond that), and `isSymlink` distinguishes a symlink from a real directory (0.19.0) |
 | `sftp_read` | Read a remote **text** file (≤256KB by default, adjustable to 1MB, truncated beyond that); `offset` pages from a given byte (handy for log tails), an invalid `maxBytes` errors out instead of silently falling back, and binary detection is a double test (NUL + illegal-UTF-8 ratio) (0.19.0) |
 | `sftp_write` | Write a remote text file (overwrite by default, `append:true` appends; ≤1MB per call) |
@@ -130,11 +136,12 @@ The plugin injects sixteen tools into the agent (with the same power as the bash
 | `sftp_tree` | Recursively list a remote directory structure (depth-first, directories first; `maxDepth` 1~8 / `maxEntries` 1~2000 cap it, `truncated:true` when exceeded; symlinks are not followed, to avoid cycles) |
 | `tunnel_list` | List port-forwarding tunnels and their live state (active/connecting/error/stopped, rules, connection counts) |
 
-Typical agent flow (recommended): `tty_open` opens a session (pass `persistName` for tmux persistence on
-long-running work) → `tty_send` starts the command → `tty_expect` waits for the readiness marker →
+Typical agent flow (recommended): for a command that simply runs to completion, use `tty_run` to get its
+output + exit code in one call; for a **long-lived** session, `tty_open` opens one (pass `persistName` for tmux
+persistence on long-running work) → `tty_send` starts the command → `tty_expect` waits for the readiness marker →
 `tty_capture{last:true}` gets the result of that single command → `tty_close` when done. In addition, a dynamic
 context is registered in `systemPrompt` so that every turn automatically carries a snapshot of active
-terminals (sid / kind / cwd / owner) — you have context without calling `tty_list` first.
+terminals (sid / kind / cwd / owner, plus a `[running]` marker) — you have context without calling `tty_list` first.
 
 **Agent-opened session boundaries (0.20.0)**: a session opened by `tty_open` is an **ordinary tab in the
 panel** (marked “agent”) — the user can see it, switch to it, take it over and close it. Hidden sessions
@@ -647,6 +654,48 @@ session belongs to (visually aligned with FinalShell’s session monitor bar):
   horizontally scrolling to `Network` in a narrow window is no longer snapped back to the start by the next
   refresh.
 
+## AI assist: explain failures (0.24.0, off by default)
+
+When a command **exits non-zero**, a low-key chip showing the exit code appears in the corner of the
+terminal; clicking it sends **the tail of that command's output** to the model and renders a short
+"what happened / next step" answer.
+
+- **Zero input, never automatic**: the chip only says "this failed — want a look?". Sending terminal
+  content off the machine is always a user click. `Ctrl-C` (130) and `SIGPIPE` (141) never raise it (they
+  happen all day; raising it for them just gets the feature turned off), and neither does a missing exit code.
+- **What is sent**: the output tail of that one command (colors and `\r` progress lines stripped, repeated
+  lines collapsed, truncated to 40 lines / 6000 chars, keys / tokens / passwords in connection strings
+  masked) **plus the current screen** — never the scrollback. The two are complementary: the output answers
+  "what did this command do", the screen answers "which command was it" (an empirically confirmed fact:
+  the captured output contains **no command echo**).
+- **Using the answer**: the popover header carries the exit code as a pill; a suggested command is rendered
+  as a "Suggested command" block with an **Insert command** button that only types the bytes into the prompt
+  line (sending `Ctrl-U` first, to clear any half-typed input) and **never presses Enter**; Copy and Close
+  sit next to it. With no suggested command the block is simply absent. The answer lives in the panel UI only
+  and is never echoed into the terminal.
+- **Errors are actionable too**: when the host fails (no model route, a provider error, a timeout) the popover
+  shows a copyable "Copy error" button rather than a dead line of red text with no buttons.
+- **One call per failure**: the answer is cached per failed command — closing the popover and clicking the chip
+  again replays it instead of asking again, and only a previous **error** retries. The host additionally
+  de-duplicates in-flight asks per session, so two tabs clicking at once cannot spend two calls.
+- **Model route**: candidates come from the host's registered model catalog (`provider` / `model` as a
+  **pair**; leave it empty to follow the host default model). When nothing resolves, the panel says
+  "no usable model route" instead of doing nothing.
+- **One control for the pair**: `provider` and `model` are a pair, and neither stands alone (the host
+  rejects a half-filled route), so the card has a single **Model route** field written as `provider/model`.
+  Focusing it lists the host's registered providers grouped together (the whole table arrives in one round
+  trip) and one click fills **both** keys; you can also type, split at the **first** slash (a model id may
+  contain slashes itself: the control is **read-only** — **no manual entry**, because the candidates are exactly
+  what the host can route, and an empty catalog would mean DSH's own chat cannot pick a model either. The
+  candidates are a **floating** list (it never shifts the card's layout), the first row is always "Follow the
+  host default model" (leave it empty to follow), and the currently effective route is highlighted.
+- **A failed fetch says so**: the panel keeps "candidates unavailable — the host may not have restarted"
+  apart from "the host advertises no models" instead of blurring them into one sentence. This route comes
+  from the host half, so a page refresh alone will not make it appear.
+- **Privacy**: off by default. Turning it on authorises terminal content to leave the machine — only the
+  excerpt above, and lightly masked before sending (explicit-form secrets only; normal log lines are never
+  mangled).
+
 ## Configuration (Settings → Plugins → “Terminal Panel”, saving takes effect immediately)
 
 Where the settings surface lives depends on the DSH version, but it is always the **same form**: from
@@ -672,6 +721,9 @@ sub-page under the Plugins sidebar, and `≤0.1.5` uses the settings-page card.
 | `persistence` | `off` | Session persistence: `off` sessions live and die with the host (default); `tmux` makes **every newly opened tab hosted by the tmux server by default**, recoverable across a host restart (requires tmux locally/remotely); the SSH dialog can opt out for a single connection |
 | `endOnPageClose` | `false` | Whether to end the tmux persistent session as well when the page (the last connection) disconnects and the keep-alive window ends. `false` by default = retained and recoverable; `true` = nothing is kept alive once the page is closed (a refresh within the keep-alive window still reattaches seamlessly) |
 | `sftpLimits` | `{maxDownloadMb: 1024, maxUploadMb: 2048, maxUploadFiles: 1000}` | SFTP transfer limits (browser-side guardrails, all **0 = unlimited**): `maxDownloadMb` per-file download limit (over the limit it aborts and suggests the dual-pane `⇦`/terminal scp), `maxUploadMb` per-file upload limit, `maxUploadFiles` files per batch/drag & drop upload; for large files use dual-pane `⇨/⇦` server-side direct transfer (bytes never pass through the browser, no memory cost) |
+| `assistEnabled` | false | AI assist: explain failures (0.24.0). **Off by default**: when on, a chip appears after a command exits non-zero, and clicking it sends that command's output tail (cleaned, de-duplicated, truncated, secrets masked) plus the current screen to the model — never the scrollback. A suggested command is only typed into the prompt line, never submitted. While off the host also rejects `/api/dsh-tty/assist` |
+| `assistProvider` | `''` | Model route provider for the AI assist; must be set **together** with `assistModel` (both empty = follow the host default model). Setting only one has no effect and does **not** silently fall back |
+| `assistModel` | `''` | Model route model for the AI assist; pairs with `assistProvider` |
 | `statsEnabled` | true | Server status bar (0.17.0): collects and pushes CPU / memory / disk / uptime / TCP connections / network speed / CPU temperature by tab visibility; turning it off stops the meter at once (the remote exec channel is closed too), and saving takes effect immediately |
 
 ## Connection-bar extension point (client service `ttyConnbar`, 0.13.0)
