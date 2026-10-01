@@ -16,6 +16,7 @@ import { PassThrough } from 'node:stream'
 import { describe, expect, it } from 'vitest'
 import { apply } from '../src/index.js'
 import { resolveKeys } from '../src/keys.js'
+import { withPlatform } from './platform.js'
 
 interface FakePty {
   kind: 'local'
@@ -151,12 +152,20 @@ describe('具名按键的解析表（纯函数）', () => {
 
 describe('tty_send 的 keys 走真实工具路径（字节落到 PTY 上）', () => {
   it('keys 按序发成字节；data 在前、keys 在后', async () => {
-    const mounted = mountPlugin()
-    const sid = await openSession(mounted)
-    await mounted.tools.get('tty_send')?.execute({ sid, keys: ['Down', 'Down', 'Enter'] })
-    expect(mounted.ptys[0].writes).toEqual(['\x1b[B\x1b[B\n'])
-    await mounted.tools.get('tty_send')?.execute({ sid, data: ':wq', keys: ['Enter'] })
-    expect(mounted.ptys[0].writes.at(-1)).toBe(':wq\n')
+    /*
+     * 平台**钉在非 win32**：这条用例看的是 keys 的字节映射与顺序，而写入路径会过
+     * `normalizePtyInput`（D74：Windows 本地会话的裸 LF 变 CRLF）——不钉住的话，
+     * 同一个期望值在 windows 腿上必红（CI run 36864303722 实测）。平台两个分支由
+     * `send-normalize.test.ts` 各测一遍。
+     */
+    await withPlatform('darwin', async () => {
+      const mounted = mountPlugin()
+      const sid = await openSession(mounted)
+      await mounted.tools.get('tty_send')?.execute({ sid, keys: ['Down', 'Down', 'Enter'] })
+      expect(mounted.ptys[0].writes).toEqual(['\x1b[B\x1b[B\n'])
+      await mounted.tools.get('tty_send')?.execute({ sid, data: ':wq', keys: ['Enter'] })
+      expect(mounted.ptys[0].writes.at(-1)).toBe(':wq\n')
+    })
   })
 
   it('裸 data 依旧是**原样字节**：拼错的转义序列会照字面打进去（这就是 keys 要消灭的形态）', async () => {

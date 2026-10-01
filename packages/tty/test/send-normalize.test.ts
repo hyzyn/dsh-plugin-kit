@@ -29,6 +29,7 @@ import { tmpdir } from 'node:os'
 import { describe, expect, it } from 'vitest'
 import { apply, normalizePtyInput } from '../src/index.js'
 import type { TermHandle } from '../src/ssh.js'
+import { withPlatform } from './platform.js'
 
 /* ----------------------------- 假件 ----------------------------- */
 
@@ -125,20 +126,6 @@ async function setup(): Promise<Rig> {
   const opened = await byName.get('tty_open')!.execute({ cwd: tmpdir() }) as { sid: string }
   await sleep(5)
   return { tools: byName, pty: ptys[0], sid: opened.sid }
-}
-
-/**
- * 临时把 `process.platform` 换成指定值跑一段：`tty_send` 的平台判定读的就是它
- * （vitest 默认按文件隔离 worker，所以这次改写不会外溢到别的用例文件）。
- */
-async function withPlatform<T>(platform: NodeJS.Platform, run: () => Promise<T>): Promise<T> {
-  const original = process.platform
-  Object.defineProperty(process, 'platform', { value: platform, configurable: true })
-  try {
-    return await run()
-  } finally {
-    Object.defineProperty(process, 'platform', { value: original, configurable: true })
-  }
 }
 
 /* ----------------------------- 用例 ----------------------------- */
