@@ -40,14 +40,17 @@ const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'coverage', '.preview
  * 已知的「从本仓解析必然落空、但在目标上下文里正确」的链接，**精确白名单**。
  *
  * 这 3 条属于 `docs/pr-body-dsh-market.md`——它是**提给 DSH 插件仓库市场那个仓库**的 PR
- * 正文副本，其相对链接相对的是**目标仓库**（`CONTRIBUTING.md` / `AGENTS.md` / `docs/plugins.md`
- * 都在那边，本仓一个都没有；全仓也没有目标仓库的 URL，所以无法改成绝对地址）。
- * 该文件顶部有一段 HTML 注释说明同一件事。要真正消除这 3 条，需要目标仓库的 URL。
+ * 正文副本，其相对链接相对的是**目标仓库**，在本仓必然落空。
+ *
+ * 2026-10-01 复查：目标仓库 = `zhu1090093659/dsh-web`（该仓库的 CONTRIBUTING.md / AGENTS.md /
+ * docs/plugins.md 三条当时都存在，属主仓库不收录它们不是笔误）。保留白名单而不是改成绝对地址，
+ * 是为了保住「这份文件是**当时提交的那份正文**」这一点；目标仓库与两条投稿轨道的区别记在
+ * `docs/market-index.md`。要真正消除这 3 条例外，得先决定是否允许改写这份历史投稿文本。
  */
 const ALLOWED_BROKEN = [
-  { file: 'docs/pr-body-dsh-market.md', target: '../CONTRIBUTING.md', why: '目标市场仓库的贡献指南' },
-  { file: 'docs/pr-body-dsh-market.md', target: '../AGENTS.md', why: '目标市场仓库的 agent 说明' },
-  { file: 'docs/pr-body-dsh-market.md', target: '../docs/plugins.md', why: '目标市场仓库的登记说明' },
+  { file: 'docs/pr-body-dsh-market.md', target: '../CONTRIBUTING.md', why: '目标仓库 zhu1090093659/dsh-web 的贡献指南' },
+  { file: 'docs/pr-body-dsh-market.md', target: '../AGENTS.md', why: '目标仓库 zhu1090093659/dsh-web 的 agent 说明' },
+  { file: 'docs/pr-body-dsh-market.md', target: '../docs/plugins.md', why: '目标仓库 zhu1090093659/dsh-web 的登记说明' },
 ]
 const allowed = new Set(ALLOWED_BROKEN.map((e) => `${e.file}\u0000${e.target}`))
 

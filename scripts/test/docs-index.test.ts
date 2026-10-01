@@ -55,8 +55,8 @@ function withLanded(mutator) {
 const kinds = (diffs) => diffs.map((diff) => diff.kind)
 
 describe('docs-index：现算（唯一真值来源）', () => {
-  it('真实仓库：10 份 markdown 全部被归属表登记', () => {
-    expect(real.docs.length, 'docs/ 的 markdown 份数').toBe(10)
+  it('真实仓库：11 份 markdown 全部被归属表登记', () => {
+    expect(real.docs.length, 'docs/ 的 markdown 份数').toBe(11)
     const registered = parseAttributedDocs(real.conventions)
     expect(registered.size, '登记份数应等于 docs/ 的实际份数').toBe(real.docs.length)
     for (const file of real.docs) expect(registered.has(file), `${file} 应被登记`).toBe(true)

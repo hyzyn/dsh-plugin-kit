@@ -2,7 +2,21 @@
      （`../CONTRIBUTING.md`、`../AGENTS.md`、`../docs/plugins.md`）以及 `packages/dsh-community-plugins/`、
      `market/dist/`、`scripts/market-build` 等路径，都指向**目标市场仓库**，在本仓解析不到是预期的。
      本仓的链接校验器会把这 3 条相对链接报成 BROKEN FILE —— 已知、且不修（改成绝对地址需要市场仓库
-     URL，本仓未记录；改成「不存在」的文字说明则是错的，它们在目标仓库里存在）。 -->
+     URL，本仓未记录；改成「不存在」的文字说明则是错的，它们在目标仓库里存在）。
+
+     2026-10-01 复查（补记，不改正文）：
+     · 目标仓库**已确认** = zhu1090093659/dsh-web。依据：本文「涉及包」清单里的
+       packages/dsh-task-board / dsh-git-graph / dsh-aionui-panel / dsh-remote-web-ui / dsh-ssh /
+       dsh-pet / dsh-preset-center / dsh-skins / dsh-web-all / dsh-web-settings 都存在于该仓库，
+       且上面那 3 个链接目标也在。
+     · 这 3 条相对链接在该仓库**今天仍然存在**（CONTRIBUTING.md / AGENTS.md / docs/plugins.md），
+       当时的写法没有错。
+     · 但本文描述的流程已经改过：该仓库全仓树里**没有** packages/dsh-community-plugins/，
+       也没有任何 community*.json（market/dist/manifest/plugins.json 仍在）——按本文那套
+       提交载荷的老路子今天跑不通。
+     · **市场卡片上的分类标签来自另一条轨道**（awesome-dsh-plugin 的 data/plugins/*.yml），
+       本文与 community-submission.json 都不影响它。两条轨道的区别、我们 8 条的现场分类与改法见
+       [docs/market-index.md](./market-index.md)。 -->
 > 提 PR 前请阅读 [CONTRIBUTING.md](../CONTRIBUTING.md) 与 [AGENTS.md](../AGENTS.md)；
 > 提交信息用 Conventional Commits（`type(scope): subject`），禁止 emoji。
 > 本仓库只接受四类内容贡献：插件申请（社区插件索引登记）、皮肤增加（新皮肤收录）、宠物增加（新宠物收录）、预设增加（agent 预设收录）。其余改动不接受直接 PR，请先提 Issue 讨论。
