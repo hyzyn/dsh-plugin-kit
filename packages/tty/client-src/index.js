@@ -159,6 +159,9 @@ const I18N_ZH = {
   'btn.close': '关闭',
   'btn.closeTabAria': '关闭标签：{label}',
   'btn.newTab': '新建（本地 / SSH）',
+  'btn.tabList': '标签列表',
+  'btn.tabListTitle': '标签列表（{n} 个）',
+  'list.tabsAllVisible': '没有藏在视野外的标签',
   'meta.tunnelRemote': '远程:{host}:{port} → 本机:{local}',
   'meta.tunnelLocal': '本机:{local} → {host}:{port}',
   'status.tmuxPersistedTitle': '已由 tmux 托管 — 断线 / 宿主重启后按名接回现场',
@@ -443,6 +446,26 @@ const I18N_ZH = {
   'placeholder.cwd': '留空使用宿主进程启动目录',
   'field.grace': '断线保活（秒，0 = 立即结束）',
   'hint.grace': '刷新页面/网络抖动后会话保活等待重连，超时后结束；保存即热生效',
+  'section.assist': 'AI 辅助',
+  'check.assistEnabled': '失败即解释（命令非零退出时问模型「为什么 / 下一步」）',
+  'hint.assistEnabled': '默认关。开启后，命令以非零状态结束时终端右下角会出现一枚徽标；点它才把那条命令的「输出尾部」（剥离颜色与进度条、折掉重复行、密钥/token 已遮盖）连同当前屏幕发给模型，不发 scrollback。模型给的命令只会「填入」命令行，永不替你回车。',
+  'field.assistRoute': '模型路由（可选）',
+  'hint.assistRoute': '留空跟随宿主默认模型',
+  'option.followHostModel': '跟随宿主默认模型',
+  'list.modelLoading': '正在取候选…',
+  'list.noModelCandidate': '宿主没有可用的模型',
+  'list.modelCatalogFailed': '拿不到候选：宿主可能还没重启，或没有提供模型目录（手输请按 provider/model）',
+  'badge.assistFailed': '命令失败（{code}）· 解释一下',
+  'panel.assistTitle': '这条命令为什么失败',
+  'panel.assistCommand': '建议命令',
+  'status.assistThinking': '正在问模型…',
+  'error.assistRequest': '解释失败：{message}',
+  'btn.assistFill': '填入命令行',
+  'btn.assistCopy': '复制答案',
+  'btn.assistCopyError': '复制报错',
+  'btn.assistClose': '关闭',
+  'hint.assistFillNoEnter': '只写进命令行，不会替你回车',
+  'hint.assistNoCommand': '模型没给出可直接填的命令 — 用「复制」自己挑',
   'section.ssh': 'SSH 连接',
   'btn.probeRowTitle': '试连该条目：TCP → 主机密钥 → 认证逐段诊断',
   'msg.testing': '测试中…',
@@ -548,6 +571,9 @@ const I18N_EN = {
   'btn.close': 'Close',
   'btn.closeTabAria': 'Close tab: {label}',
   'btn.newTab': 'New (local / SSH)',
+  'btn.tabList': 'Tab list',
+  'btn.tabListTitle': 'Tab list ({n})',
+  'list.tabsAllVisible': 'No tabs are out of view',
   'meta.tunnelRemote': 'remote:{host}:{port} → local:{local}',
   'meta.tunnelLocal': 'local:{local} → {host}:{port}',
   'status.tmuxPersistedTitle': 'Hosted by tmux — the session is reattached by name after a disconnect or host restart',
@@ -832,6 +858,26 @@ const I18N_EN = {
   'placeholder.cwd': 'Leave empty to use the host process start directory',
   'field.grace': 'Disconnect keepalive (seconds, 0 = end immediately)',
   'hint.grace': 'Sessions are kept alive for reconnect after a page refresh or network hiccup and end on timeout; applies live on save',
+  'section.assist': 'AI assist',
+  'check.assistEnabled': 'Explain failures (ask the model "why / what next" when a command exits non-zero)',
+  'hint.assistEnabled': 'Off by default. When on, a chip appears in the corner of the terminal after a command exits non-zero; clicking it sends that command\'s output tail (colors and progress bars stripped, repeated lines collapsed, keys/tokens masked) together with the current screen to the model — never the scrollback. A suggested command is only ever typed into the prompt line, never submitted for you.',
+  'field.assistRoute': 'Model route (optional)',
+  'hint.assistRoute': 'Empty follows the host default model',
+  'option.followHostModel': 'Follow the host default model',
+  'list.modelLoading': 'Loading candidates…',
+  'list.noModelCandidate': 'The host advertises no models',
+  'list.modelCatalogFailed': 'Candidates unavailable — the host may not have restarted, or serves no model catalog (type provider/model to enter one manually)',
+  'badge.assistFailed': 'Command failed ({code}) · explain',
+  'panel.assistTitle': 'Why this command failed',
+  'panel.assistCommand': 'Suggested command',
+  'status.assistThinking': 'Asking the model…',
+  'error.assistRequest': 'Explanation failed: {message}',
+  'btn.assistFill': 'Insert command',
+  'btn.assistCopy': 'Copy answer',
+  'btn.assistCopyError': 'Copy error',
+  'btn.assistClose': 'Close',
+  'hint.assistFillNoEnter': 'Types it into the prompt line; never submits',
+  'hint.assistNoCommand': 'The model gave no directly-insertable command — use Copy and pick one yourself',
   'section.ssh': 'SSH connections',
   'btn.probeRowTitle': 'Test this entry: per-stage diagnosis of TCP → host key → authentication',
   'msg.testing': 'Testing…',
@@ -1194,6 +1240,8 @@ let credentialsRemote = null
 let statusEl = null
 let statusDotEl = null
 let tabbarEl = null
+/** 标签栏溢出时才出现的「⋯」标签列表入口（0.23.0）。 */
+let tabMoreEl = null
 let connbarEl = null
 let connDotEl = null
 let connTargetEl = null
@@ -1236,6 +1284,33 @@ let tabCounter = 0
 let connecting = false
 /** 「+」新建菜单与 SSH 连接对话框（挂在 document.body 的浮层）。 */
 let addMenuEl = null
+/* ---------- AI 辅助「失败即解释」（0.24.0） ---------- */
+/**
+ * 配置开关（/api/dsh-tty/config 的 assistEnabled，**默认关**）。
+ *
+ * 关掉时连徽标都不摆：宿主侧也会拒 `/api/dsh-tty/assist`（两道闸），但界面这一侧
+ * 不该出现一个点了只会报错的入口。
+ */
+let assistEnabledCache = false
+/**
+ * 待处理的失败徽标：sid → { exitCode, at, dismissed }。
+ *
+ * 刻意**不做成 tab 字段**：`tabs.set` 有 5 处（本地/SSH/attach/agent 标签/嵌入），
+ * 每处补一个字段就多 5 个漏掉的点；徽标本身也只是「这个 sid 上最近一次失败」。
+ */
+const assistHints = new Map()
+/** 已打开的答案浮层（挂在 document.body，皮肤复用 .tt_addMenu）。 */
+let assistMenuEl = null
+/** 浮层对应的 sid：切标签/关标签时据此收起，避免答案挂到另一个终端上。 */
+let assistMenuSid = null
+/** 在途请求的 AbortController：关浮层即取消，迟到的答案不许盖到新内容上。 */
+let assistAbort = null
+/** 徽标 DOM（每个面板一枚；`.tt_body` 右下角）。 */
+let assistBadgeEl = null
+/** 浮层的锚点（就是徽标本身）：内容变化后高度会变，每次重渲染都要重新定位。 */
+let assistMenuAnchor = null
+/** 标签列表弹层（挂在 document.body，皮肤复用 .tt_addMenu）。 */
+let tabListMenuEl = null
 let sshDialogEl = null
 /** SSH 连接簿缓存：/api/dsh-tty/config 的 sshHosts（设置卡片保存后同步）。 */
 let sshHostsCache = []
@@ -1951,6 +2026,8 @@ function createTerminal(tab) {
 
   term.onData((data) => {
     sendFrame({ t: 'input', sid: tab.sid, d: data })
+    // 用户自己动手了：旧徽标作废（否则修好之后那枚「命令失败」会一直挂在那儿）
+    if (assistHints.delete(tab.sid)) syncAssistBadge()
   })
   // 持久（tmux）标签尺寸自愈：SSH↔本地标签切换会改变终端区高度（连接栏
   // 显隐），xterm 收缩的瞬间多出的行被推进 scrollback——幽灵滚动条 + 视口
@@ -2247,6 +2324,10 @@ function closeTab(sid) {
   // 已经删了会话，kill 只会换来一个错误帧。
   sendFrame({ t: 'kill', sid })
   tabs.delete(sid)
+  // 会话没了，它的失败徽标也没什么可解释的了（浮层若正开着先收起）
+  if (assistMenuSid === sid) closeAssistMenu()
+  assistHints.delete(sid)
+  syncAssistBadge()
   embeddedSids.delete(sid) // 兜底：嵌入终端正常走 disposeEmbedded，这里防漏
   // 彻底移除：dispose xterm 实例并把 termEl（含错误/退出浮层）从面板拿走，
   // 否则被关闭标签的幽灵 DOM 会叠在其它标签上
@@ -2672,6 +2753,9 @@ function switchTab(sid) {
   // 拒绝把它设为 activeSid（否则面板空白、连接栏描述一个看不见的会话）
   if (tab.embedded === true) return
   activeSid = sid
+  // 答案浮层属于**某个**会话：切走就收起，免得它挂在新终端上（徽标则跟着新活动标签重算）
+  closeAssistMenu()
+  syncAssistBadge()
   for (const [otherSid, other] of tabs) {
     // 嵌入终端的显隐由挂载方（抽屉/面板）决定，这里不碰
     if (other.embedded === true) continue
@@ -2712,7 +2796,10 @@ function refreshTabDot(sid) {
   const btn = tabbarEl.querySelector(`[data-sid="${sid}"]`)
   const dot = btn?.querySelector('.tt_tabDot')
   if (dot === undefined || dot === null) return
-  dot.dataset.state = tab.exited ? 'exited' : tab.live === true ? 'connected' : tab.errored === true ? 'error' : 'connecting'
+  dot.dataset.state = tabDotState(tab)
+  // 「⋯」列表可能正开着：同一个状态口径，别让它显示成旧颜色
+  const menuDot = tabListMenuEl === null ? null : tabListMenuEl.querySelector('[data-sid="' + sid + '"] .tt_tabDot')
+  if (menuDot !== null) menuDot.dataset.state = tabDotState(tab)
 }
 
 let tabbarRenderPending = false
@@ -2740,7 +2827,7 @@ function renderTabbar() {
     // 标签状态点：与连接栏状态点同语义（连接中 / 活跃 / 出错 / 已退出）
     const dotEl = document.createElement('span')
     dotEl.className = 'tt_tabDot'
-    dotEl.dataset.state = tab.exited ? 'exited' : tab.live === true ? 'connected' : tab.errored === true ? 'error' : 'connecting'
+    dotEl.dataset.state = tabDotState(tab)
     btn.appendChild(dotEl)
     // 标签标题：SSH 标签用 label（连接名 / target），本地标签用「终端 N」
     const labelEl = document.createElement('span')
@@ -2785,14 +2872,64 @@ function renderTabbar() {
   if (activeEl !== null && typeof activeEl.scrollIntoView === 'function') {
     activeEl.scrollIntoView({ block: 'nearest', inline: 'nearest' })
   }
-  const add = document.createElement('button')
-  add.className = 'tt_tabAdd'
-  add.title = t('btn.newTab')
-  add.innerHTML = ICON_PLUS
-  add.addEventListener('click', () => {
-    openAddMenu(add)
-  })
-  tabbarEl.appendChild(add)
+  // 「+」新建按钮**不在这里**：它是 .tt_tabs 的兄弟（同在外壳 .tt_tabbar 里）、由
+  // openModal 接线一次。塞进 tabbarEl 就会变成滚动内容（D89）。
+  syncTabOverflow()
+  // 列表的重算在上面那条里（syncTabOverflow 覆盖了「渲染 / 滚动 / 面板变宽」三个入口）；
+  // 这里只管一个收尾：标签被关到一个不剩时，空列表没有意义
+  if (tabListMenuEl !== null && tabs.size === 0) closeTabListMenu()
+}
+
+/**
+ * 标签栏溢出状态（0.23.0）：一条函数维护两件事，它们的输入完全相同（溢出与否 + 滚到哪）：
+ *   ① 两侧渐隐 `data-edge`——滚动条已隐藏（见 tty.css 的 .tt_tabs），得有别的东西告诉
+ *      用户「那边还有标签」：`end` = 右边还有、`start` = 左边还有、`both` = 中间；
+ *      不溢出时**删掉属性**，于是完全没有遮罩。
+ *   ② 「⋯」标签列表入口的显隐——它是兜底：渐隐只提示得出「还有」，提示不出「还有哪几个」，
+ *      10 个以上标签时找会话就成了盲找。只在溢出时出现（不溢出时它纯属噪音）。
+ */
+function syncTabOverflow() {
+  if (tabbarEl === null) return
+  const max = tabbarEl.scrollWidth - tabbarEl.clientWidth
+  const overflow = max > 1
+  if (tabMoreEl !== null) {
+    tabMoreEl.hidden = !overflow
+    if (overflow) tabMoreEl.title = t('btn.tabListTitle', { n: tabs.size })
+    // 溢出消失（面板被拉宽 / 标签被关少）时入口会藏起来，菜单不能还挂着
+    else if (tabListMenuEl !== null) closeTabListMenu()
+  }
+  if (!overflow) {
+    delete tabbarEl.dataset.edge
+    return
+  }
+  const moreLeft = tabbarEl.scrollLeft > 1
+  const moreRight = tabbarEl.scrollLeft < max - 1
+  tabbarEl.dataset.edge = moreLeft && moreRight ? 'both' : moreRight ? 'end' : 'start'
+  // 列表只列「看不见的」→ 它的内容取决于滚到哪：滚动（含自动 scrollIntoView）时重算，
+  // 否则用户滚一下标签栏，菜单里那份名单就过期了
+  if (tabListMenuEl !== null) renderTabListItems()
+}
+
+/** 标签状态点口径（标签栏 / 「⋯」列表共用一份，免得两处漂）：连接中 / 活跃 / 出错 / 已退出。 */
+function tabDotState(tab) {
+  return tab.exited ? 'exited' : tab.live === true ? 'connected' : tab.errored === true ? 'error' : 'connecting'
+}
+
+/**
+ * 滚轮 → 横向滚动（0.23.0）：滚动条隐藏后，触控板横扫本来就能滚，但**鼠标滚轮的纵向
+ * delta 在只支持横向滚动的容器上不会自动换轴**（Chromium 要按 Shift），于是鼠标用户
+ * 根本滚不动标签栏。这里把纵向 delta 映射成 scrollLeft；滚到头就不拦截，让滚轮继续
+ * 做它本来该做的事（滚页面）——不吞事件比「滚不动了还卡住页面」强。
+ */
+function onTabbarWheel(event) {
+  if (tabbarEl === null) return
+  if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return // 触控板横扫：交给浏览器
+  const max = tabbarEl.scrollWidth - tabbarEl.clientWidth
+  if (max <= 1) return
+  const next = Math.max(0, Math.min(max, tabbarEl.scrollLeft + event.deltaY))
+  if (next === tabbarEl.scrollLeft) return // 已经到头：不吞事件
+  event.preventDefault()
+  tabbarEl.scrollLeft = next
 }
 
 /* ================================ 连接栏 ================================ */
@@ -3139,6 +3276,12 @@ function syncSshHostsCache(config) {
   if (config !== null && typeof config === 'object' && typeof config.allowProxyCommand === 'boolean') {
     allowProxyCommandCache = config.allowProxyCommand
   }
+  if (config !== null && typeof config === 'object' && typeof config.assistEnabled === 'boolean') {
+    // 关掉即收起徽标；打开不主动补历史失败（徽标是实时提示，不是待办队列）
+    assistEnabledCache = config.assistEnabled
+    if (!assistEnabledCache) closeAssistMenu()
+    syncAssistBadge()
+  }
   if (config !== null && typeof config === 'object' && typeof config.allowProxyCommandGranted === 'boolean') {
     allowProxyCommandGrantedCache = config.allowProxyCommandGranted
   }
@@ -3304,12 +3447,31 @@ function onDocAddMenuMouseDown(event) {
   closeAddMenu()
 }
 
+/**
+ * 浮层定位（「+」菜单与「⋯」标签列表共用）：横向贴锚点、越界时夹回视口；
+ * 纵向优先贴锚点下沿，下面放不下就翻到上面——标签列表能长到几十行，翻上去比被裁好。
+ */
+function placePopover(menu, anchorBtn) {
+  const rect = anchorBtn.getBoundingClientRect()
+  const width = menu.offsetWidth
+  const height = menu.offsetHeight
+  const preferRight = rect.left + width > window.innerWidth - 8
+  const left = preferRight ? rect.right - width : rect.left
+  menu.style.left = Math.max(8, Math.min(left, window.innerWidth - width - 8)) + 'px'
+  const below = rect.bottom + 6
+  const above = rect.top - height - 6
+  menu.style.top = (below + height > window.innerHeight - 8 && above >= 8
+    ? above
+    : Math.min(below, Math.max(8, window.innerHeight - height - 8))) + 'px'
+}
+
 /** 标签栏「+」菜单：本地终端 / SSH 连接簿 / SSH 连接…（再点一次「+」收起）。 */
 function openAddMenu(anchorBtn) {
   if (addMenuEl !== null) {
     closeAddMenu()
     return
   }
+  closeTabListMenu() // 两个浮层别叠在一起
   void refreshSshHosts()
   void refreshSessionCount().then(() => {
     if (addMenuEl !== null) renderAddMenuItems(addMenuEl)
@@ -3319,12 +3481,7 @@ function openAddMenu(anchorBtn) {
   addMenuEl = menu
   renderAddMenuItems(menu)
   document.body.appendChild(menu)
-  const rect = anchorBtn.getBoundingClientRect()
-  const width = menu.offsetWidth
-  const preferRight = rect.left + width > window.innerWidth - 8
-  const left = preferRight ? rect.right - width : rect.left
-  menu.style.left = Math.max(8, Math.min(left, window.innerWidth - width - 8)) + 'px'
-  menu.style.top = rect.bottom + 6 + 'px'
+  placePopover(menu, anchorBtn)
   document.addEventListener('mousedown', onDocAddMenuMouseDown, true)
 }
 
@@ -3333,6 +3490,460 @@ function closeAddMenu() {
   document.removeEventListener('mousedown', onDocAddMenuMouseDown, true)
   addMenuEl.remove()
   addMenuEl = null
+}
+
+/* ========================= 「⋯」标签列表（0.23.0） ========================= */
+
+/*
+ * 为什么要有它：标签栏的滚动条已经隐藏（见 tty.css 的 .tt_tabs），只剩两侧渐隐——
+ * 渐隐提示得出「那边还有」，提示不出「还有哪几个」。10 个以上标签时「找藏在后面的
+ * 那个会话」就成了盲找，这个列表是兜底入口。
+ *
+ * 它列的是**全部标签**（不只是被藏起来的）：按标签栏顺序、当前标签高亮，所以它同时
+ * 就是切换器。每行是「状态点 + 名称 + 目标（SSH 的 user@host）」+ 尾部 ✕；✕ 关掉后
+ * 菜单**保持打开**（连着关几个不用重开，也省掉「先切过去再关」那一步）。
+ * 皮肤直接复用 .tt_addMenu（含 D86 那套滚动条皮肤）。
+ */
+function openTabListMenu(anchorBtn) {
+  if (tabListMenuEl !== null) {
+    closeTabListMenu()
+    return
+  }
+  closeAddMenu() // 两个浮层别叠在一起
+  const menu = document.createElement('div')
+  menu.className = 'tt_addMenu tt_tabMenu'
+  tabListMenuEl = menu
+  renderTabListItems()
+  document.body.appendChild(menu)
+  placePopover(menu, anchorBtn)
+  document.addEventListener('mousedown', onDocTabListMouseDown, true)
+  document.addEventListener('keydown', onTabListKeydown, true)
+}
+
+function closeTabListMenu() {
+  if (tabListMenuEl === null) return
+  document.removeEventListener('mousedown', onDocTabListMouseDown, true)
+  document.removeEventListener('keydown', onTabListKeydown, true)
+  tabListMenuEl.remove()
+  tabListMenuEl = null
+}
+
+function onDocTabListMouseDown(event) {
+  if (tabListMenuEl === null) return
+  // 触发器自己交给 click 处理：这里若一并关掉，紧接着的 click 又会打开，等于关不掉
+  if (event.target instanceof Element && (tabListMenuEl.contains(event.target) || event.target.closest('.tt_tabMore') !== null)) return
+  closeTabListMenu()
+}
+
+function onTabListKeydown(event) {
+  if (event.key !== 'Escape') return
+  // 捕获阶段先收浮层：面板级的 Esc 是「最小化面板」（onModalKeydown），不能让它抢走
+  event.preventDefault()
+  event.stopPropagation()
+  closeTabListMenu()
+}
+
+function renderTabListItems() {
+  const menu = tabListMenuEl
+  if (menu === null) return
+  menu.textContent = ''
+  const hidden = hiddenTabs()
+  if (hidden.length === 0) {
+    // 可能发生：溢出量比一个标签还窄时，两端只是被裁掉一角，没有「完全看不见」的标签
+    const hint = document.createElement('div')
+    hint.className = 'tt_addMenuTitle'
+    hint.textContent = t('list.tabsAllVisible')
+    menu.appendChild(hint)
+    return
+  }
+  for (const [sid, tab] of hidden) {
+    const label = tab.label || t('panel.tabLabel', { n: tabCounterLabel(sid) })
+    const meta = tabListMeta(tab)
+    const row = document.createElement('div')
+    row.className = 'tt_addMenuRow tt_tabMenuRow'
+    row.dataset.sid = sid
+    const item = document.createElement('button')
+    item.type = 'button'
+    item.className = 'tt_addMenuItem tt_tabMenuItem'
+    if (sid === activeSid) item.dataset.active = ''
+    // 状态点与标签栏同一口径（tabDotState）：「哪个标签出错了」在这里也必须看得出来
+    const dot = document.createElement('span')
+    dot.className = 'tt_tabDot'
+    dot.dataset.state = tabDotState(tab)
+    item.appendChild(dot)
+    const text = document.createElement('span')
+    text.className = 'tt_addMenuText tt_tabMenuText'
+    const main = document.createElement('span')
+    main.className = 'tt_addMenuMain'
+    main.textContent = label
+    text.appendChild(main)
+    if (meta !== '') {
+      const metaEl = document.createElement('span')
+      metaEl.className = 'tt_tabMenuMeta'
+      metaEl.textContent = meta
+      text.appendChild(metaEl)
+    }
+    item.appendChild(text)
+    item.title = meta === '' ? label : label + ' · ' + meta
+    item.addEventListener('click', () => {
+      switchTab(sid)
+      closeTabListMenu()
+    })
+    row.appendChild(item)
+    const closeBtn = document.createElement('button')
+    closeBtn.type = 'button'
+    closeBtn.className = 'tt_addMenuEdit'
+    closeBtn.textContent = '✕'
+    closeBtn.title = t('btn.close')
+    closeBtn.setAttribute('aria-label', t('btn.closeTabAria', { label: label }))
+    closeBtn.addEventListener('click', () => {
+      // 关完不关菜单：renderTabbar 会把这一行摘掉，位置留给下一个
+      closeTab(sid)
+    })
+    row.appendChild(closeBtn)
+    menu.appendChild(row)
+  }
+  // 列表长了让当前标签一开始就在视野里；当前标签不在列表里（多数情况：它看得见）就没事
+  const activeRow = menu.querySelector('.tt_tabMenuItem[data-active]')
+  if (activeRow !== null && typeof activeRow.scrollIntoView === 'function') {
+    activeRow.scrollIntoView({ block: 'nearest' })
+  }
+}
+
+/**
+ * 一个标签要「算看得见」至少得露出这么多像素。**不能是 0**（D90）：标签栏两端各有
+ * `--tt-tabfade`（22px）宽的渐隐带，只露一两像素的标签正好躺在渐隐里——肉眼看不见，
+ * 却又不满足「整颗在窗口外」，于是它既不在标签栏上、也不在列表里，凭空消失
+ * （用户实测：「有个隐藏的 tab 终端 3 看不到」）。40 = 渐隐带宽 22 + 一点余量，
+ * 保证露出来的那点真的读得出是哪个终端。改渐隐带宽时这里要跟着看。
+ */
+const TAB_VISIBLE_MIN_PX = 40
+
+/** 标签在标签栏可视窗口里露出的宽度（像素，已按窗口夹紧；两端都算）。 */
+function tabVisibleWidth(el, viewport) {
+  const rect = el.getBoundingClientRect()
+  return Math.max(0, Math.min(rect.right, viewport.right) - Math.max(rect.left, viewport.left))
+}
+
+/**
+ * 当前**看不见**的标签（露出的宽度不足 TAB_VISIBLE_MIN_PX 的那些）。列表只列它们：
+ * 看得见的标签就在标签栏上，再列一遍是噪音（0.23.0 用户评审的结论）。
+ * 用相对可视窗口的矩形算宽度，不用 scrollLeft 加减（容器有内边距 / 子元素有外边距时
+ * 后者会差一截）。
+ */
+function hiddenTabs() {
+  const out = []
+  if (tabbarEl === null) return out
+  const viewport = tabbarEl.getBoundingClientRect() // 别叫 window：那会遮住全局的 window
+  for (const [sid, tab] of tabs) {
+    if (tab.embedded === true) continue // 嵌入终端不进标签栏，也不进列表
+    const el = tabbarEl.querySelector('[data-sid="' + sid + '"]')
+    if (el === null) continue
+    if (tabVisibleWidth(el, viewport) < TAB_VISIBLE_MIN_PX) out.push([sid, tab])
+  }
+  return out
+}
+
+/** 列表行里「这是哪个终端」：SSH 用宿主回显的 target（user@host[:port]）；本地标签名本来就唯一，不给。 */
+function tabListMeta(tab) {
+  return typeof tab.target === 'string' ? tab.target : ''
+}
+
+/* ================== AI 辅助「失败即解释」（0.24.0） ================== */
+
+/*
+ * 入口刻意是**零输入**的：命令非零退出时宿主推一帧 hint，面板右下角浮出一枚低调的
+ * 徽标；点它才去问模型。理由见 ROADMAP——人不知道用什么命令时才去问，而「命令失败了、
+ * 连问题都问不好」是更高频也更痛的那一半。
+ *
+ * 三条自我约束（写在这里免得后来人改坏）：
+ *   1. 徽标**不自动弹答案**：那一步会把终端内容送出本机，必须由用户点一下；
+ *   2. 答案**只活在面板 UI 里**，绝不 echo 进 PTY（模型输出是不可信文本，且往终端里
+ *      混一段解释会让下一条命令的现场变得莫名其妙）；
+ *   3. 「填入」只写字节、**绝不回车**：填进去与跑起来是两件事，后者永远由用户按。
+ */
+
+/** 界面语言（模型据此决定用中文还是英文作答）：拿一个两语言必然不同的键当探针。 */
+function uiLang() {
+  return t('panel.assistTitle') === I18N_ZH['panel.assistTitle'] ? 'zh' : 'en'
+}
+
+/** 徽标文案（退出码拿不到时宿主根本不会弹，这里的兜底只是别显示成 undefined）。 */
+function assistBadgeLabel(hint) {
+  const code = hint !== null && hint !== undefined && typeof hint.exitCode === 'number' ? String(hint.exitCode) : '?'
+  return t('badge.assistFailed', { code: code })
+}
+
+/** 活动标签的徽标显隐：切标签、收到 hint、关掉徽标都走这一处。 */
+function syncAssistBadge() {
+  if (assistBadgeEl === null) return
+  const hint = activeSid === null ? undefined : assistHints.get(activeSid)
+  const show = assistEnabledCache && hint !== undefined && hint.dismissed !== true
+  assistBadgeEl.hidden = !show
+  if (show) {
+    /*
+     * 文案写在**内层 span** 上，不是按钮本身：按钮里还坐着那枚状态圆点，
+     * 直接写 assistBadgeEl.textContent 会把圆点一起抹掉（美化这一轮踩到的）。
+     */
+    const text = assistBadgeEl.querySelector('.tt_assistBadgeText')
+    if (text !== null) text.textContent = assistBadgeLabel(hint)
+  }
+}
+
+/** 收起答案浮层（顺带取消在途请求：迟到的答案不许盖到新内容上）。 */
+function closeAssistMenu() {
+  if (assistAbort !== null) {
+    assistAbort.abort()
+    assistAbort = null
+  }
+  if (assistMenuEl !== null) {
+    assistMenuEl.remove()
+    assistMenuEl = null
+  }
+  assistMenuSid = null
+  assistMenuAnchor = null
+}
+
+function onDocAssistMouseDown(event) {
+  if (assistMenuEl === null) return
+  // 触发器自己交给 click（这里若一并关掉，紧接着的 click 又会打开，等于关不掉）
+  if (event.target instanceof Element && (assistMenuEl.contains(event.target) || event.target.closest('.tt_assistBadge') !== null)) return
+  closeAssistMenu()
+}
+
+function onAssistKeydown(event) {
+  if (event.key !== 'Escape') return
+  // 捕获阶段先收浮层：面板级的 Esc 是「最小化面板」，不能让它抢走
+  event.preventDefault()
+  event.stopPropagation()
+  closeAssistMenu()
+}
+
+/** 打开浮层并立刻发问（拉取失败也留在浮层里说清楚，而不是静默什么都不发生）。 */
+function openAssistMenu(anchorEl) {
+  const sid = activeSid
+  if (sid === null) return
+  closeAssistMenu()
+  const menu = document.createElement('div')
+  menu.className = 'tt_addMenu tt_assistMenu'
+  assistMenuEl = menu
+  assistMenuSid = sid
+  assistMenuAnchor = anchorEl
+  document.body.appendChild(menu)
+  document.addEventListener('mousedown', onDocAssistMouseDown, true)
+  document.addEventListener('keydown', onAssistKeydown, true)
+  renderAssistMenu()
+  placePopover(menu, anchorEl)
+  void askAssist(sid)
+}
+
+async function askAssist(sid) {
+  const hint = assistHints.get(sid)
+  if (hint === undefined) return
+  /*
+   * **一条失败只问一次**（tty D94）：重开浮层不该再发一次请求。
+   *   - 正在问 → 复用在途那一次（浮层已由 openAssistMenu 渲染过，转圈继续转）；
+   *   - 已有答案 → 直接显示缓存（关掉再点、切走再回来都是零成本）；
+   *   - 上一次**报错** → 才真的重问（这是唯一需要的「重试」路径）。
+   *
+   * 光靠 closeAssistMenu 里的 abort 拦不住重复：POST 早已送达宿主，abort 只停客户端这一头，
+   * 宿主那边照样把模型跑完（tokens 已经花掉了）。所以必须**在发请求之前**拦住。
+   */
+  if (hint.busy === true) return
+  if (hint.error === null || hint.error === undefined) {
+    if (hint.answer !== null && hint.answer !== undefined) return
+  }
+  hint.busy = true
+  hint.answer = null
+  hint.command = ''
+  hint.error = null
+  renderAssistMenu()
+  const controller = new AbortController()
+  assistAbort = controller
+  try {
+    const res = await fetch('/api/dsh-tty/assist', {
+      method: 'POST',
+      cache: 'no-store',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sid: sid, kind: 'failure', lang: uiLang() }),
+      signal: controller.signal,
+    })
+    const data = await res.json().catch(() => null)
+    if (assistMenuSid !== sid) return // 已经关掉或切走：丢弃这次结果
+    hint.busy = false
+    if (res.ok && data !== null && data.ok === true) {
+      hint.answer = String(data.answer !== undefined ? data.answer : '')
+      hint.command = String(data.command !== undefined ? data.command : '')
+    } else {
+      hint.error = data !== null && data.error !== undefined ? String(data.error) : 'HTTP ' + String(res.status)
+    }
+  } catch (error) {
+    if (controller.signal.aborted) return
+    if (assistMenuSid !== sid) return
+    hint.busy = false
+    hint.error = error instanceof Error ? error.message : String(error)
+  } finally {
+    if (assistAbort === controller) assistAbort = null
+    /*
+     * busy 一定要在 finally 归位：中途关掉浮层会 abort，那条路走上面 `catch` 里的裸 return，
+     * 原先不清 busy —— 有了「在问就不重问」的闸之后，它会把徽标**永久**锁在转圈上。
+     */
+    hint.busy = false
+    renderAssistMenu()
+  }
+}
+
+function renderAssistMenu() {
+  const menu = assistMenuEl
+  if (menu === null) return
+  const sid = assistMenuSid
+  const hint = sid === null ? undefined : assistHints.get(sid)
+  menu.textContent = ''
+
+  const head = document.createElement('div')
+  head.className = 'tt_assistHead'
+  const title = document.createElement('span')
+  title.className = 'tt_assistTitle'
+  title.textContent = t('panel.assistTitle')
+  head.appendChild(title)
+  if (hint !== undefined && typeof hint.exitCode === 'number') {
+    const code = document.createElement('span')
+    code.className = 'tt_assistCode'
+    code.textContent = 'exit=' + String(hint.exitCode)
+    head.appendChild(code)
+  }
+  menu.appendChild(head)
+
+  /*
+   * 失败态在**两处**要用（正文块 + 底部按钮），先算一次。判据用 typeof：hint.error 初值是
+   * null、失败时才是字符串，undefined 同样算「没有错」——老的 !== null 写法把 undefined 也当错。
+   */
+  const failed = hint !== undefined && typeof hint.error === 'string' && hint.error !== ''
+  const body = document.createElement('div')
+  body.className = 'tt_assistBody'
+  if (hint === undefined || hint.busy === true) {
+    // 转圈 + 文案两个节点；.tt_assistBody 的 textContent 仍等于那两句之一（圆环不带文字）
+    body.classList.add('tt_assistMuted', 'tt_assistBusy')
+    const spin = document.createElement('span')
+    spin.className = 'tt_assistSpin'
+    body.appendChild(spin)
+    body.appendChild(document.createTextNode(t('status.assistThinking')))
+  } else if (failed) {
+    body.textContent = t('error.assistRequest', { message: hint.error })
+    body.classList.add('tt_assistError')
+  } else {
+    /*
+     * 模型输出是**不可信文本**：只走 textContent（绝不 innerHTML），换行交给 CSS 的 pre-wrap。
+     * 正文里的 Markdown 标记已由**宿主**去掉（assist.ts 的 plainAnswerText）——客户端刻意
+     * 不做任何标记解释，它只负责「原样显示」。
+     */
+    const text = hint.answer !== null && hint.answer !== undefined ? hint.answer : ''
+    body.textContent = text
+    body.classList.add('tt_assistAnswer')
+    // 模型只回了一个围栏（正文被宿主清空）时不留一块空白
+    if (text === '') body.hidden = true
+  }
+  menu.appendChild(body)
+
+  if (hint === undefined || hint.busy === true) return
+
+  const hasCommand = hint.command !== ''
+  if (hasCommand) {
+    // 小标题在外层：.tt_assistCmd 的 textContent 必须**只剩命令**（预览断言按它精确比对）
+    const wrap = document.createElement('div')
+    wrap.className = 'tt_assistCmdWrap'
+    const label = document.createElement('span')
+    label.className = 'tt_assistCmdLabel'
+    label.textContent = t('panel.assistCommand')
+    wrap.appendChild(label)
+    const cmd = document.createElement('div')
+    cmd.className = 'tt_assistCmd'
+    cmd.textContent = hint.command
+    wrap.appendChild(cmd)
+    menu.appendChild(wrap)
+  }
+
+  const foot = document.createElement('div')
+  foot.className = 'tt_assistFoot'
+  if (hasCommand) {
+    const fill = document.createElement('button')
+    fill.type = 'button'
+    fill.className = 'tt_toolBtn tt_assistFill'
+    fill.textContent = t('btn.assistFill')
+    fill.title = t('hint.assistFillNoEnter')
+    fill.addEventListener('click', fillAssistCommand)
+    foot.appendChild(fill)
+  }
+  /*
+   * 失败态也要有按钮（tty D92）。宿主给的那句原因（例如「没有可用的模型路由：…」）正是用户要拿去排查
+   * 或贴给别人的原文，而一个只有一行红字、连关闭都没有的浮层是条死路——只剩 Esc 和点外面
+   * 两条看不见的路。复制的是**屏幕上那句话本身**，不是空答案。
+   */
+  const copy = document.createElement('button')
+  copy.type = 'button'
+  copy.className = 'tt_toolBtn'
+  copy.textContent = failed ? t('btn.assistCopyError') : t('btn.assistCopy')
+  copy.addEventListener('click', () => {
+    if (failed) {
+      void copyTerminalText(t('error.assistRequest', { message: hint.error }))
+      return
+    }
+    void copyTerminalText(hint.answer !== null && hint.answer !== undefined ? hint.answer : '')
+  })
+  foot.appendChild(copy)
+  const closeBtn = document.createElement('button')
+  closeBtn.type = 'button'
+  // 「关闭」是唯一不做任何事的按钮：加一个类让它去边框并推到最右（见 tty.css）
+  closeBtn.className = 'tt_toolBtn tt_assistClose'
+  closeBtn.textContent = t('btn.assistClose')
+  closeBtn.addEventListener('click', () => {
+    closeAssistMenu()
+  })
+  foot.appendChild(closeBtn)
+  menu.appendChild(foot)
+
+  // 脚注解释的是「填入」按钮的行为；失败态没有那个按钮，也就不该留着这条说明
+  if (!failed) {
+    const note = document.createElement('span')
+    note.className = 'tt_assistNote'
+    note.textContent = hasCommand ? t('hint.assistFillNoEnter') : t('hint.assistNoCommand')
+    menu.appendChild(note)
+  }
+
+  /*
+   * **每次重渲染后都要重新定位**：菜单高度是变的（转圈 → 长答案 + 按钮行），
+   * 只在打开时定位一次的话，答案一到就把底部的「填入 / 复制」推出视口下面——
+   * 用户看得到答案、点不到按钮（真机截图暴露过，见 tty-assist 场景的长答案断言）。
+   */
+  if (assistMenuAnchor !== null) placePopover(menu, assistMenuAnchor)
+}
+
+/**
+ * 把模型给的命令**填进命令行**。
+ *
+ * 先发一个 Ctrl-U（readline / zsh / bash 的「清空当前行」）：提示符上可能已经躺着半截
+ * 输入（用户在报错后先敲了几个字），直接追加会拼成一条谁也不认识的命令。徽标只会在
+ * 命令边界（B..D）完整出现过之后才弹，也就是**一定在 shell 提示符下**，Ctrl-U 在这里
+ * 是最安全的一档。
+ *
+ * 结尾**不带换行**：填进去与跑起来是两件事。
+ */
+function fillAssistCommand() {
+  const sid = assistMenuSid
+  const hint = sid === null ? undefined : assistHints.get(sid)
+  if (sid === null || hint === undefined || hint.command === '') return
+  sendFrame({ t: 'input', sid: sid, d: '\x15' + hint.command })
+  const tab = tabs.get(sid)
+  closeAssistMenu()
+  dismissAssistHint(sid)
+  if (tab !== undefined && tab.term !== null) tab.term.focus()
+}
+
+/** 关掉某条会话的徽标（用户处理过了）。 */
+function dismissAssistHint(sid) {
+  const hint = assistHints.get(sid)
+  if (hint !== undefined) hint.dismissed = true
+  syncAssistBadge()
 }
 
 function addMenuItem(menu, label, sub, onClick, disabled, icon) {
@@ -6346,6 +6957,23 @@ function connect() {
       } catch (error) {
         console.warn('[dsh-tty] stats 帧处理失败（已忽略）: ' + (error instanceof Error ? error.message : String(error)))
       }
+    } else if (msg.t === 'hint') {
+      /*
+       * AI 辅助（0.24.0）：宿主只在开关打开时推这帧，这里再判一次配置缓存——卡片刚关掉、
+       * 帧还在路上时不该再摆出一枚点了会报 403 的徽标。
+       */
+      if (!assistEnabledCache) return
+      if (msg.kind !== 'failure' || typeof sid !== 'string' || sid === '') return
+      assistHints.set(sid, {
+        exitCode: typeof msg.exitCode === 'number' ? msg.exitCode : null,
+        at: typeof msg.at === 'number' ? msg.at : Date.now(),
+        dismissed: false,
+        busy: false,
+        answer: null,
+        command: '',
+        error: null,
+      })
+      if (sid === activeSid) syncAssistBadge()
     } else if (msg.t === 'error') {
       setTabStatus(sid, t('status.error', { message: String(msg.m ?? '') }), 'error')
       if (typeof sid === 'string') {
@@ -6495,7 +7123,18 @@ function openModal() {
     // 两行头部：标签行（图标 + 标签区 + 状态 + 工具/窗口按钮）+ SSH 连接栏
     '<div class="tt_header">' +
     '<span class="tt_titleIcon">' + TERMINAL_ICON + '</span>' +
+    // 标签区外壳（D89）：.tt_tabs 是 overflow-x:auto 的滚动容器，「+」只能在它**外面**
+    // （挂进去就成了滚动内容，跟着标签一起滚走）；外壳则负责吃掉剩余宽度，于是标签不多时
+    // 「+」还能紧贴最后一个标签，只有标签栏排满时才被顶到右端
+    '<div class="tt_tabbar">' +
     '<div class="tt_tabs"></div>' +
+    // 标签栏溢出时才出现的「⋯」标签列表入口（显隐由 syncTabOverflow 维护；
+    // 注意 .tt_tabMore 的 display 是作者样式，必须自己写 [hidden] 兜底）。
+    // 它排在「+」**前面**：紧挨标签区右缘——被裁掉的那些标签就在那一侧，
+    // 而「+」是面板级动作，让它跟右边那排工具按钮待在一起。
+    '<button type="button" class="tt_tabMore" hidden></button>' +
+    '<button type="button" class="tt_tabAdd"></button>' +
+    '</div>' +
     '<div class="tt_status"><span class="tt_statusDot"></span><span class="tt_statusText">' + t('status.initializing') + '</span></div>' +
     '<input class="tt_searchInput" style="display:none" placeholder="' + t('placeholder.search') + '" />' +
     '<span class="tt_toolGroup">' +
@@ -6516,7 +7155,7 @@ function openModal() {
     '<div class="tt_work">' +
     // 状态条（0.17.0）与终端容器同级：绝对定位在 body 顶部，显隐只改 .tt_term 的
     // top 偏移——不能塞进 .tt_term 里，否则 FitAddon 会把条高算进行数
-    '<div class="tt_body"><div class="tt_statsBar" hidden></div><div class="tt_overlay"></div></div>' +
+    '<div class="tt_body"><div class="tt_statsBar" hidden></div><button type="button" class="tt_assistBadge" hidden><span class="tt_assistDot"></span><span class="tt_assistBadgeText"></span></button><div class="tt_overlay"></div></div>' +
     '</div>' +
     '</div>'
   document.body.appendChild(modalEl)
@@ -6525,6 +7164,33 @@ function openModal() {
   statusEl = modalEl.querySelector('.tt_statusText')
   statusDotEl = modalEl.querySelector('.tt_statusDot')
   tabbarEl = modalEl.querySelector('.tt_tabs')
+  /*
+   * 「+」新建按钮（D89）：**不能挂进 `.tt_tabs`**——那是个 overflow-x:auto 的横向滚动
+   * 容器，挂进去它就成了滚动内容的一部分：标签一多就被推着走，甚至整颗滚出可视区
+   * （想新建得先把标签栏滚到底）。它是滚动容器的兄弟，位置由外壳 `.tt_tabbar` 决定：
+   * `.tt_tabs` 是 `flex: 0 1 auto`（不撑满），所以标签不多时「+」紧贴最后一个标签，
+   * 只有标签栏排满时才被顶到标签区右端（那时它也必须**停在可视区内**）。
+   * 这里接线一次即可——renderTabbar 每次重建的是标签，不再重建它。
+   */
+  const tabAddEl = modalEl.querySelector('.tt_tabAdd')
+  if (tabAddEl !== null) {
+    tabAddEl.title = t('btn.newTab')
+    tabAddEl.innerHTML = ICON_PLUS
+    tabAddEl.addEventListener('click', () => {
+      openAddMenu(tabAddEl)
+    })
+  }
+  tabMoreEl = modalEl.querySelector('.tt_tabMore')
+  if (tabMoreEl !== null) {
+    tabMoreEl.innerHTML = ICON_MORE
+    tabMoreEl.title = t('btn.tabList')
+    tabMoreEl.addEventListener('click', () => {
+      openTabListMenu(tabMoreEl)
+    })
+  }
+  // 标签栏溢出（0.23.0）：滚动条已隐藏，改由两侧渐隐提示；滚轮纵向 delta 手动换轴
+  tabbarEl.addEventListener('scroll', syncTabOverflow)
+  tabbarEl.addEventListener('wheel', onTabbarWheel, { passive: false })
   connbarEl = modalEl.querySelector('.tt_connbar')
   connDotEl = modalEl.querySelector('.tt_connDot')
   connTargetEl = modalEl.querySelector('.tt_connTarget')
@@ -6538,6 +7204,18 @@ function openModal() {
   statsSubSid = null
   ensureStatsStaleTimer()
   bodyOverlayEl = modalEl.querySelector('.tt_body > .tt_overlay')
+  /*
+   * 失败徽标（0.24.0）：由 hint 帧点亮，点它才去问模型。节点每个面板一枚（不随标签走），
+   * 显隐由 syncAssistBadge 按**活动标签**裁决。
+   */
+  assistBadgeEl = modalEl.querySelector('.tt_assistBadge')
+  if (assistBadgeEl !== null) {
+    assistBadgeEl.addEventListener('click', () => {
+      if (assistBadgeEl !== null) openAssistMenu(assistBadgeEl)
+    })
+  }
+  closeAssistMenu()
+  syncAssistBadge()
   searchInputEl = modalEl.querySelector('.tt_searchInput')
 
   bodyOverlayEl.addEventListener('click', () => {
@@ -6593,6 +7271,9 @@ function openModal() {
     // 面板变窄/变矮时 dock 也要跟着收（否则会把终端挤到没有位置）
     applyDockGeometry()
     refitTerminal(activeTab())
+    // 面板变窄会让标签栏从「不溢出」变成「溢出」（反之亦然）：渐隐与「⋯」入口都要重算。
+    // 这条不能只挂在 scroll 上——宽度变化根本不产生 scroll 事件。
+    syncTabOverflow()
   })
   resizeObserver.observe(bodyEl)
 
@@ -6638,6 +7319,8 @@ function buildDock() {
 function minimizeModal() {
   if (modalEl === null || minimized) return
   closeAddMenu()
+  closeTabListMenu()
+  closeAssistMenu()
   closeSshDialog()
   // SFTP 不关（0.19.0）：挂载位 pane 随面板显隐走（挂载位契约「面板最小化 /
   // 恢复跟着走，消费者不需要做任何事」），收起态的 SFTP 浮层藏起、恢复时放回
@@ -6742,6 +7425,8 @@ function closeModal() {
   intentionalClose = !keepSocket
   minimized = false
   closeAddMenu()
+  closeTabListMenu()
+  closeAssistMenu()
   closeConnbarMoreMenu()
   closeTunnelPopover()
   closeSshDialog()
@@ -6799,6 +7484,7 @@ function closeModal() {
   statusEl = null
   statusDotEl = null
   tabbarEl = null
+  tabMoreEl = null
   connbarEl = null
   connDotEl = null
   connTargetEl = null
@@ -6991,6 +7677,16 @@ function TtySettingsCard(props) {
   /** 已安装 shell 候选（/api/dsh-tty/shells，加载失败保持空 = 纯手输）。 */
   const [shellOptions, setShellOptions] = React.useState([])
   const [shellListOpen, setShellListOpen] = React.useState(false)
+  /*
+   * 模型候选目录（/api/dsh-tty/model-catalog）：**渠道 + 模型一张表**（groups = 按 provider 分组）。
+   * 失败要与「目录是空的」分开记：前者要说「拿不到」（多半是宿主没重启），后者才叫「没有候选」。
+   */
+  const [modelCatalog, setModelCatalog] = React.useState({ groups: [], loading: false, failed: false })
+  const [routeListOpen, setRouteListOpen] = React.useState(false)
+  /** 候选浮层的锚点（定位用）；列表本身是 position:fixed，不进卡片布局。 */
+  const routeInputRef = React.useRef(null)
+  /** 候选请求的序号（见 loadModelCatalog）：迟到的响应不许覆盖新结果。 */
+  const catalogSeqRef = React.useRef(0)
 
   /** 设置卡片分组小标题：字段多了以后靠它把卡片切成可扫读的几段。 */
   const sectionTitle = (text) => jsx('div', { className: 'tt_cardSection', children: text })
@@ -7018,11 +7714,61 @@ function TtySettingsCard(props) {
       /* 网络失败：候选保持为空，输入框照常可用 */
     }
   }
+  /*
+   * 候选浮层的定位。**必须**在 layout 阶段做：列表是 position:fixed，渲染完才知道多高、
+   * placePopover 要按高度决定往上翻还是往下放（同「+」菜单）。
+   * 依赖里带上 loading/failed/groups：数据到达会改变列表高度，不重定位就会飘。
+   */
+  React.useLayoutEffect(() => {
+    if (!routeListOpen) return undefined
+    const place = () => {
+      const input = routeInputRef.current
+      const list = input === null || input.parentElement === null ? null : input.parentElement.querySelector('.tt_routeList')
+      if (input === null || list === null) return
+      // 宽度对齐输入框（placePopover 要用宽度算左右夹取，所以先定宽再定位）
+      list.style.width = String(Math.round(input.getBoundingClientRect().width)) + 'px'
+      placePopover(list, input)
+    }
+    place()
+    // 卡片是可滚动的：滚动/改窗口时列表要跟着锚点走，不能钉在原地
+    window.addEventListener('scroll', place, true)
+    window.addEventListener('resize', place)
+    return () => {
+      window.removeEventListener('scroll', place, true)
+      window.removeEventListener('resize', place)
+    }
+  }, [routeListOpen, modelCatalog.loading, modelCatalog.failed, modelCatalog.groups])
+
+  /**
+   * 取模型候选（**整张表一次拿回来**：宿主会并行问每个 provider）。
+   *
+   * 失败必须与「目录是空的」分开：宿主里没这条路由（多半是**没重启**）时，笼统说一句
+   * 「没有候选」会把人引到「我配错了」上去——所以单记一个 failed，界面照实说「拿不到」。
+   */
+  const loadModelCatalog = async () => {
+    // 序号守卫：连点两次时先发的那次可能后到，迟到的响应一律丢弃
+    const seq = catalogSeqRef.current + 1
+    catalogSeqRef.current = seq
+    setModelCatalog((current) => ({ ...current, loading: true }))
+    try {
+      const res = await fetch('/api/dsh-tty/model-catalog', { cache: 'no-store' })
+      const data = await res.json()
+      if (data.ok === true && seq === catalogSeqRef.current) {
+        setModelCatalog({ groups: Array.isArray(data.groups) ? data.groups : [], loading: false, failed: false })
+        return
+      }
+    } catch {
+      /* 落到下面的 failed：候选为空，但界面要说清楚是「拿不到」 */
+    }
+    if (seq !== catalogSeqRef.current) return
+    setModelCatalog({ groups: [], loading: false, failed: true })
+  }
   React.useEffect(() => {
     if (open && !loaded) {
       setLoaded(true)
       void load()
       void loadShellOptions()
+      void loadModelCatalog()
     }
   }, [open])
 
@@ -7036,11 +7782,23 @@ function TtySettingsCard(props) {
    * 自动保存只在**干净**表单下做——保存是整表提交，脏表单里自动保存会静默写入用户没打算提交的编辑。
    * `save()` 与脏检查共用这一份，避免两处各拼一遍「要提交哪些键」（那正是漂的种子）。
    */
+  /*
+   * 快照里**不是配置项**的键（宿主会以「未知配置项」拒绝）：派生的授权状态与宿主平台。
+   *
+   * D91 起这张表是**否定清单**，其余键**默认提交**。原先写的是肯定清单（一个一个列要提交的
+   * 键），代价就是**新增 volatile 字段必须记得回来补**——`assistEnabled` 正是这么漏的：宿主
+   * 侧压根没收到它，卡片上「保存后又弹回去」。否定清单漏一个的后果是宿主**响亮地**报
+   * 「未知配置项: X」，而不是静默丢掉一个字段。
+   */
+  const NON_CONFIG_KEYS = new Set(['toolsRegistered', 'platform', 'allowProxyCommandGranted', 'allowProxyCommandGrantSource', 'allowProxyCommandGrantedAt'])
   const toPayload = (source) => {
     const body = {}
-    for (const key of ['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'shellIntegration', 'sftpStyle', 'persistence', 'endOnPageClose', 'statsEnabled', 'allowProxyCommand']) {
-      const value = (source || {})[key]
-      if (value !== undefined && value !== '') body[key] = value
+    for (const [key, value] of Object.entries(source || {})) {
+      if (NON_CONFIG_KEYS.has(key)) continue
+      // 空串照常提交：`assistProvider` / `assistModel` 的**空串是「清空路由」这个真实意图**；
+      // 而 shell / term / cwd 那一类由宿主侧丢弃空串（normalizePatch 里逐个判过），提交了也无害
+      if (value === undefined) continue
+      body[key] = value
     }
     body.sshHosts = Array.isArray(source?.sshHosts) ? source.sshHosts : []
     body.tunnels = Array.isArray(source?.tunnels) ? source.tunnels : []
@@ -8165,6 +8923,90 @@ function TtySettingsCard(props) {
       ],
     })
   }
+  /*
+   * 模型路由是**一个**控件（原来拆成 provider / model 两栏）：两个配置键在语义上是一对
+   * 「渠道 + 模型」，拆开就等于让用户先选一个**单独不成立**的东西。控件里显示 `provider/model`，
+   * 候选表也是按渠道分组的一张表，点一条**同时**把两个键写好。
+   *
+   * 手输仍然可用（宿主目录只是**建议**——dsh-llm 明写核心路由接受未列出的 model id，
+   * 纯下拉会在目录为空时把人锁死）。手输的语法就是 `provider/model`，按**第一个**斜杠切：
+   * model id 自己可以带斜杠（`meta-llama/Llama-3`），provider 路由键不带。
+   */
+  const routeText = (current) => {
+    const provider = typeof current?.assistProvider === 'string' ? current.assistProvider.trim() : ''
+    const model = typeof current?.assistModel === 'string' ? current.assistModel.trim() : ''
+    if (provider !== '' && model !== '') return provider + '/' + model
+    // 只填了一半也照实显示（老配置可能是这样；宿主会明确报「需要成对」），别抹成空让人以为没保存
+    return provider !== '' ? provider : model
+  }
+  /**
+   * 候选表：按渠道分组，点一条同时写两个键。
+   *
+   * **只有选择，没有手输**（用户定的）：候选就是宿主能路由的集合——目录空的话 DSH 自己的对话
+   * 也选不出模型，那种状态不是「要兼容的输入」，是宿主本身坏了。所以这里不再有过滤词、
+   * 也不再有「写错了给你提示」那一档：不存在写错的机会。
+   */
+  const routeCandidates = () => {
+    if (modelCatalog.loading) return jsx('span', { className: 'tt_envMore', children: t('list.modelLoading') })
+    if (modelCatalog.failed) return jsx('span', { className: 'tt_envMore', children: t('list.modelCatalogFailed') })
+    const rows = []
+    /*
+     * 第一行永远是「跟随宿主默认模型」（= 两个键都清空）。这条**必须**在列表里：
+     * 它是「一个控件」的默认态，不给出来用户就找不到回默认的路。
+     */
+    const isDefault = (form?.assistProvider ?? '') === '' && (form?.assistModel ?? '') === ''
+    rows.push(jsx('button', {
+      type: 'button',
+      className: 'tt_envItem',
+      ...(isDefault ? { 'data-active': '' } : {}),
+      onMouseDown: (event) => event.preventDefault(),
+      onClick: () => {
+        setForm((current) => ({ ...(current || {}), assistProvider: '', assistModel: '' }))
+        setRouteListOpen(false)
+      },
+      children: t('option.followHostModel'),
+    }, 'assist-route-default'))
+    for (const group of modelCatalog.groups) {
+      const id = String(group.id ?? '')
+      if (id === '') continue
+      const name = String(group.name ?? id)
+      const models = Array.isArray(group.models) ? group.models : []
+      if (models.length === 0) continue
+      rows.push(jsx('span', { className: 'tt_envMore', children: name }, 'group-' + id))
+      for (const item of models) {
+        const modelId = String(item.id ?? '')
+        if (modelId === '') continue
+        const modelName = String(item.name ?? '') === '' ? modelId : String(item.name)
+        const selected = (form?.assistProvider ?? '') === id && (form?.assistModel ?? '') === modelId
+        rows.push(jsx('button', {
+          type: 'button',
+          className: 'tt_envItem',
+          ...(selected ? { 'data-active': '' } : {}),
+          // 名字与 id 常常只差大小写/连字符，行里并排写两遍又长又吵（用户实测「label 有点太长了」）；
+          // id 放 title，悬停照样看得到，也仍是真正被写进配置的那个值
+          title: id + '/' + modelId,
+          onMouseDown: (event) => event.preventDefault(),
+          onClick: () => {
+            // 一次点选 = 渠道 + 模型两个键，不存在「只填一个」的中间态
+            setForm((current) => ({ ...(current || {}), assistProvider: id, assistModel: modelId }))
+            setRouteListOpen(false)
+          },
+          children: modelName === modelId ? modelId : modelName,
+        }, id + '/' + modelId))
+      }
+    }
+    /*
+     * 「目录是空的」「过滤没命中」是两件事，别用同一句话（DSH 自己的选择器也分两句）。
+     * 注意判据是 **matched** 而不是 rows.length：第一行那个「跟随宿主默认模型」永远在，
+     * 用 rows.length 判的话过滤没命中时界面上只剩那一行，什么都不解释。
+     */
+    // 目录整张是空的：留一句说明，别只剩一行「跟随宿主默认模型」（那时候宿主自己也选不出模型）
+    if (modelCatalog.groups.length === 0) {
+      rows.push(jsx('span', { className: 'tt_envMore', children: t('list.noModelCandidate') }, 'assist-route-empty'))
+    }
+    return rows
+  }
+
   const textField = (label, key, placeholder, hint) => jsxs('label', {
     className: 'tt_cardField',
     children: [
@@ -8334,6 +9176,49 @@ function TtySettingsCard(props) {
                     proxyCommandField(),
                   ],
                 }),
+                sectionTitle(t('section.assist')),
+                boolField(t('check.assistEnabled'), 'assistEnabled'),
+                jsx('span', { className: 'tt_cardHint', children: t('hint.assistEnabled') }),
+                // 一个控件管一对（渠道 + 模型）：候选按渠道分组，点一条两个键一起写
+                jsxs('div', {
+                  className: 'tt_cardField',
+                  // 焦点离开整个字段（含候选表）才收起；候选项靠 preventDefault 保持焦点不触发这里
+                  onBlur: (event) => {
+                    if (!event.currentTarget.contains(event.relatedTarget)) setRouteListOpen(false)
+                  },
+                  children: [
+                    jsx('span', { className: 'tt_cardLabel', children: t('field.assistRoute') }),
+                    jsx('input', {
+                      className: 'tt_cardInput tt_routeInput',
+                      ref: routeInputRef,
+                      // 只读：只能从候选表里选（见 routeCandidates 的注释）。光标也藏掉，别像能打字
+                      readOnly: true,
+                      value: routeText(form),
+                      /*
+                       * **不给占位符**。原先写的是 '如 tokenrhythm/deepseek-flash'——那是开发机上
+                       * 真实存在的路由，等于把我的调试环境抄进了给所有人的文案；而且「候选表 + 下面
+                       * 那两句说明」已经把「怎么填」讲完了，再加一句示范是重复（用户实测指出）。
+                       * 空态本身就有含义：空 = 跟随宿主默认模型（候选表第一行写着）。
+                       */
+                      autoComplete: 'off',
+                      spellCheck: false,
+                      onFocus: () => {
+                        setRouteListOpen(true)
+                        if (modelCatalog.groups.length === 0 && !modelCatalog.loading) void loadModelCatalog()
+                      },
+                      onClick: () => {
+                        setRouteListOpen(true)
+                        if (modelCatalog.groups.length === 0 && !modelCatalog.loading) void loadModelCatalog()
+                      },
+                      onKeyDown: (event) => {
+                        if (event.key === 'Escape') setRouteListOpen(false)
+                      },
+                    }),
+                    // 浮层（不是内联列表）：固定定位 + placePopover，不进卡片布局
+                    ...(routeListOpen ? [jsx('div', { className: 'tt_envList tt_routeList', children: routeCandidates() }, 'assist-route-list')] : []),
+                    jsx('span', { className: 'tt_cardHint', children: t('hint.assistRoute') }),
+                  ],
+                }, 'assist-route-field'),
                 textField(t('field.maxSessions'), 'maxSessions', '4', t('hint.maxSessions')),
                 jsxs('div', {
                   className: 'tt_cardField',

@@ -40,6 +40,11 @@
     persistence: window.__PREVIEW_PERSISTENCE || 'off',
     endOnPageClose: false,
     statsEnabled: true,
+    // AI 辅助：**默认关**（与宿主 Config 的默认值一致；夹具要开就自己改这一项，
+    // 顺带把「关着时一个徽标都不摆」这条也验掉）
+    assistEnabled: false,
+    assistProvider: '',
+    assistModel: '',
     sftpLimits: { maxDownloadMb: 1024, maxUploadMb: 2048, maxUploadFiles: 1000 },
     toolsRegistered: true,
     sshHosts: [
@@ -83,8 +88,59 @@
   ]
 
   const route = (url, body) => {
-    if (url.indexOf('/api/dsh-tty/config') === 0) return { ok: true, config: CONFIG }
+    if (url.indexOf('/api/dsh-tty/config') === 0) {
+      /*
+       * POST = 保存：**照真实宿主的样子把补丁应用进 CONFIG 再回快照**（不是原样回一份旧的）。
+       * 这是 D91 的照妖镜——客户端保存成功后拿**这份响应**重置整张表单，夹具要永远回旧值，
+       * 就等于把「到底存下去了没有」这件事从测试里抠掉了。
+       */
+      if (body !== null && typeof body === 'object') {
+        window.__mockConfigPosts = (window.__mockConfigPosts || []).concat([body])
+        for (const [key, value] of Object.entries(body)) {
+          if (key === 'sshHosts' || key === 'tunnels' || key === 'hostKeys' || key === 'sftpLimits') continue
+          CONFIG[key] = value
+        }
+      }
+      return { ok: true, config: CONFIG }
+    }
     if (url.indexOf('/api/dsh-tty/shells') === 0) return { ok: true, shells: ['/bin/zsh', '/bin/bash', '/bin/sh', '/opt/homebrew/bin/fish'] }
+    /*
+     * 模型候选目录（/api/dsh-tty/model-catalog）。形状与宿主一致：providers **恒有**、models
+     * **按 provider 才有**（目录是 per-provider 的）。场景据此断言「选了 provider，模型候选跟着来」。
+     */
+    if (url.indexOf('/api/dsh-tty/model-catalog') === 0) {
+      const provider = new URL(url, 'http://preview').searchParams.get('provider') || ''
+      window.__mockLog.push('fetch:model-catalog:' + provider)
+      /*
+       * `window.__PREVIEW_CATALOG = { fail: true }` 模拟**宿主没这条路由**（多半是没重启）：
+       * 真机上那是 401，客户端只看得到「拿不到」。这是用户实测撞到的那个现场，
+       * 界面必须说「拿不到」，而不是笼统说一句「没有候选」把人引到「我配错了」上去。
+       */
+      const canned = window.__PREVIEW_CATALOG
+      if (canned && canned.fail === true) return { ok: false, error: 'unauthorized' }
+      return {
+        ok: true,
+        available: true,
+        providers: [
+          { id: 'mock-provider', name: 'Mock Provider' },
+          { id: 'tokenrhythm', name: 'tokenrhythm' },
+        ],
+        groups: [
+          { id: 'mock-provider', name: 'Mock Provider', models: [
+            { id: 'mock-fast', name: 'mock-fast' },
+            { id: 'mock-reasoning', name: 'Mock Reasoning' },
+          ] },
+          { id: 'tokenrhythm', name: 'tokenrhythm', models: [
+            { id: 'deepseek-flash', name: 'DeepSeek Flash' },
+          ] },
+        ],
+        models: provider === '' ? [] : [
+          { id: 'mock-fast', name: 'mock-fast' },
+          { id: 'mock-reasoning', name: 'Mock Reasoning' },
+        ],
+        provider: provider,
+      }
+    }
     if (url.indexOf('/api/dsh-tty/env-vars') === 0) return { ok: true, names: ['STAGING_DB_PASSWORD', 'PROD_DEPLOY_KEY', 'GITHUB_TOKEN', 'OPENAI_API_KEY', 'SSH_PASSPHRASE'] }
     if (url.indexOf('/api/dsh-tty/tunnels') === 0) return { ok: true, tunnels: [
       { name: 'staging-pg', state: 'active', connections: 2, totalConnections: 17, error: '', lastForwardError: '' },
@@ -101,6 +157,31 @@
       hostkey: { state: 'matched' },
       auth: { ok: true, ms: 296 },
     } }
+    /*
+     * AI 辅助「失败即解释」（0.24.0）。答案由 `window.__PREVIEW_ASSIST` 供给：
+     *   - `{ error: '…' }` → 模拟「没有可用的模型路由」（宿主也是这个形状：ok:false + error）
+     *   - `{ answer, command }` → 正常答案（command 就是宿主的 extractCommandFromAnswer 结果）
+     * 默认答案里刻意塞了 **HTML 与围栏**：答案必须原样显示（`<b>` 不许被当标签解析），
+     * 而围栏块是宿主机侧取命令的来源。
+     */
+    if (url.indexOf('/api/dsh-tty/assist') === 0) {
+      // 记一笔：场景要断言「点徽标之前不许有请求」（零输入入口 ≠ 自动外发）
+      window.__mockLog.push('fetch:assist')
+      const canned = window.__PREVIEW_ASSIST
+      if (canned && typeof canned.error === 'string') return { ok: false, error: canned.error }
+      // 形状与真实宿主一致：answer 是**已去标记**的正文（Markdown 的解析在宿主做）
+      const answer = canned && typeof canned.answer === 'string'
+        ? canned.answer
+        : '发生了什么：<b>这不是加粗</b>，是输出里的原文；依赖装漏了一个。\n\n下一步：\n装完再跑一次。'
+      return {
+        ok: true,
+        answer,
+        command: canned && typeof canned.command === 'string' ? canned.command : 'npm install',
+        route: 'mock/model',
+        chars: 812,
+        ms: 37,
+      }
+    }
     if (url.indexOf('/api/dsh-tty/ssh-config') === 0) return { ok: true, hosts: [] }
     if (url.indexOf('/api/dsh-tty/known-hosts') === 0) return { ok: true, keys: [] }
     if (url.indexOf('/api/dsh-docker/') === 0) return dockerRoute(url.slice('/api/dsh-docker'.length), body)

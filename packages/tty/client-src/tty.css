@@ -321,8 +321,29 @@
 }
 
 /* ---- 标签 ---- */
-.tt_tabs {
+
+/*
+ * 标签区外壳（D89）：头部里那个「吃掉剩余宽度」的弹性项是**它**，不是 .tt_tabs。
+ * 好处是「+」能同时满足两件事：标签不多时紧贴最后一个标签（因为 .tt_tabs 不撑满），
+ * 标签栏排满时被顶到右端但依然在滚动容器之外（不会被滚走 / 滚出可视区）。
+ */
+.tt_tabbar {
   flex: 1 1 0;
+  display: flex;
+  align-items: center;
+  gap: var(--tt-gap-sm);
+  min-width: 0;
+}
+.tt_tabs {
+  /*
+   * 两端的渐隐带宽。**client-src 里有它的孪生常量** TAB_VISIBLE_MIN_PX（D90）：
+   * 只露出不到渐隐带的标签肉眼看不见，必须算进「隐藏」，否则它会既不在栏上、
+   * 也不在「⋯」列表里。改这里要回头看那一个。
+   */
+  --tt-tabfade: 22px;
+  /* 不撑满：宽度就是标签的总宽，所以「+」贴着最后一个标签；排不下时它才收缩
+     （flex-shrink: 1 + min-width: 0）并出现横向滚动条 */
+  flex: 0 1 auto;
   display: flex;
   align-items: center;
   gap: var(--tt-gap-sm);
@@ -330,6 +351,33 @@
   padding: 1px 0;
   overflow-x: auto;
   overflow-y: hidden;
+  /*
+   * 滚动条在标签行里像一根异物（0.23.0 用户反馈：页签一多，一条灰亮条横在标签下面，
+   * 还占着高度），所以**隐藏它**——手法与 .tt_statsBar 一致；替代提示是下面那套
+   * 「哪边还有标签、哪边渐隐」的遮罩（data-edge 由 client-src 的 syncTabEdges 维护）。
+   * 注意 .tt_modal * 给所有后代设了 scrollbar-width: thin，这里必须显式覆盖成 none：
+   * 它是继承属性，留着 thin 就等于「一条主题色细条」（同 D86 的教训）。
+   */
+  scrollbar-width: none;
+}
+.tt_tabs::-webkit-scrollbar {
+  display: none;
+}
+/*
+ * 溢出提示：data-edge 说的就是「哪边还有内容」——不溢出时该属性被删掉，
+ * 于是**一点遮罩都没有**（这是常见情形，不能让人以为标签被裁了）。
+ */
+.tt_tabs[data-edge=end] {
+  -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - var(--tt-tabfade)), transparent);
+  mask-image: linear-gradient(90deg, #000 calc(100% - var(--tt-tabfade)), transparent);
+}
+.tt_tabs[data-edge=start] {
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 var(--tt-tabfade));
+  mask-image: linear-gradient(90deg, transparent, #000 var(--tt-tabfade));
+}
+.tt_tabs[data-edge=both] {
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 var(--tt-tabfade), #000 calc(100% - var(--tt-tabfade)), transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 var(--tt-tabfade), #000 calc(100% - var(--tt-tabfade)), transparent);
 }
 .tt_tab {
   display: inline-flex;
@@ -433,7 +481,8 @@
   font-size: 12px;
   box-sizing: border-box;
 }
-.tt_tabAdd {
+.tt_tabAdd,
+.tt_tabMore {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -448,7 +497,8 @@
   cursor: pointer;
   transition: background var(--tt-dur) var(--tt-ease), color var(--tt-dur) var(--tt-ease), border-color var(--tt-dur) var(--tt-ease), transform var(--tt-dur) var(--tt-ease);
 }
-.tt_tabAdd:hover {
+.tt_tabAdd:hover,
+.tt_tabMore:hover {
   border-color: var(--tt-accent);
   border-style: solid;
   background: color-mix(in srgb, var(--tt-accent) 12%, transparent);
@@ -457,9 +507,18 @@
 .tt_tabAdd:active {
   transform: rotate(90deg);
 }
-.tt_tabAdd:focus-visible {
+.tt_tabAdd:focus-visible,
+.tt_tabMore:focus-visible {
   outline: none;
   box-shadow: var(--tt-ring);
+}
+/*
+ * 「⋯」= 标签列表入口，**只在标签栏溢出时**出现（syncTabOverflow 维护 hidden）。
+ * 这条 [hidden] 兜底不是冗余：上面给了作者样式的 display:inline-flex，UA 表那条
+ * display:none 会被它盖掉——不写就是「永远显示」（同 .tt_statsBar[hidden] 的坑）。
+ */
+.tt_tabMore[hidden] {
+  display: none;
 }
 
 /* ---- 状态胶囊 ---- */
@@ -1441,6 +1500,55 @@
   letter-spacing: .02em;
 }
 
+/* ---- 「⋯」标签列表（标签栏溢出时的兜底入口，0.23.0） ---- */
+/*
+ * 皮肤复用 .tt_addMenu（含 D86 那套滚动条规则），这里只补它缺的三件：
+ * 宽度、行数上限（标签能有几十个）、以及行内「状态点 + 名称 + 目标」的单行排布。
+ * 说明：名称与目标并排而不是上下两行——行矮一半，一屏能多列一倍标签；目标放不下就省略。
+ */
+.tt_tabMenu {
+  min-width: 260px;
+  max-width: 320px;
+  max-height: min(60vh, 420px);
+  overflow-y: auto;
+}
+.tt_tabMenuItem {
+  gap: var(--tt-gap-sm);
+}
+.tt_tabMenuItem[data-active] {
+  background: color-mix(in srgb, var(--tt-accent) 13%, transparent);
+  font-weight: 600;
+}
+.tt_tabMenuText {
+  flex-direction: row;
+  align-items: baseline;
+  gap: var(--tt-gap-sm);
+}
+.tt_tabMenuText .tt_addMenuMain {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.tt_tabMenuMeta {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--tt-label-3);
+  font-size: 11px;
+}
+/*
+ * 尾部 ✕：默认压暗（一屏十几个亮叉子太吵），行 hover / 键盘聚焦时才亮起来。
+ * 只改透明度、不动 pointer-events——压暗了也照样点得到（预览断言直接点它）。
+ */
+.tt_tabMenuRow .tt_addMenuEdit {
+  opacity: .45;
+  transition: opacity var(--tt-dur) var(--tt-ease), background var(--tt-dur) var(--tt-ease), color var(--tt-dur) var(--tt-ease);
+}
+.tt_tabMenuRow:hover .tt_addMenuEdit,
+.tt_tabMenuRow .tt_addMenuEdit:focus-visible {
+  opacity: 1;
+}
+
 /* ======================= 对话框通用 ======================= */
 
 .tt_sshBackdrop {
@@ -1988,6 +2096,30 @@
   margin-top: 6px;
 }
 /*
+ * 模型路由的候选表：**浮层**，不是内联列表。
+ *
+ * 内联（`.tt_shellList` 那种做法）会把设置卡片顶高、把下面的字段整段推走——用户实测原话
+ * 「下拉选会破坏布局」。固定定位 + placePopover 逐次定位，与「+」菜单、终端那边几个浮层同一套；
+ * 宽度由 JS 对齐输入框（见 client-src 的定位 effect）。
+ */
+.tt_routeList {
+  position: fixed;
+  z-index: 1400;
+  max-width: min(560px, 92vw);
+  max-height: 260px;
+  box-shadow: var(--tt-shadow);
+}
+/* 模型路由是**只读**的（只能选，不能打字）：手型 + 藏光标，别让它看起来像能输 */
+.tt_routeInput {
+  cursor: pointer;
+  caret-color: transparent;
+}
+/* 当前生效的那一条（含「跟随宿主默认模型」）：让它一眼看得出来 */
+.tt_envItem[data-active] {
+  background: var(--tt-hover);
+  color: var(--tt-accent);
+}
+/*
  * 设置卡片（React 侧）编辑表单里的引用选择器：**内联**候选列表，不做浮层。
  * 对话框那边靠 `.tt_sshRow > .tt_envList` 做浮层（见上）；这里刻意不复用 `.tt_sshRow`
  * 包一层，免得列表被卡片/列表的 overflow 裁掉。
@@ -2501,6 +2633,223 @@
 }
 .tt_cardMessageError {
   color: var(--tt-danger);
+}
+
+/* ================== AI 辅助「失败即解释」（0.24.0） ================== */
+
+/*
+ * 徽标贴在终端区右下角，**不占布局**：面板里任何高度变化都会经既有的 ResizeObserver
+ * 触发一次 PTY refit（SIGWINCH → 全屏程序重绘）。绝对定位的浮层进出行都不动终端，
+ * hover 的位移只走 transform（同样不进布局，不会带来一次 refit）。
+ */
+.tt_assistBadge {
+  position: absolute;
+  right: var(--tt-gap-lg);
+  bottom: var(--tt-gap-lg);
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100% - var(--tt-gap-xl) * 2);
+  height: var(--tt-h-sm);
+  padding: 0 10px;
+  border: 1px solid var(--tt-border-strong);
+  border-radius: var(--tt-r-pill);
+  background: var(--tt-surface-solid);
+  color: var(--tt-label-2);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: var(--tt-shadow);
+  transition: color var(--tt-dur) var(--tt-ease), border-color var(--tt-dur) var(--tt-ease),
+    box-shadow var(--tt-dur) var(--tt-ease), transform var(--tt-dur) var(--tt-ease);
+}
+/*
+ * 状态圆点：徽标是「这里出事了」的信号，不能只靠文字——不给这个形状，它跟面板里
+ * 其它 pill 长得一模一样，扫一眼分不出哪个是要处理的。
+ */
+.tt_assistDot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--tt-r-pill);
+  background: var(--tt-danger);
+}
+/* flex 子项的 min-width 默认是 auto，不写这条省略号永远不生效（只会把按钮撑宽） */
+.tt_assistBadgeText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tt_assistBadge:hover {
+  border-color: var(--tt-accent);
+  color: var(--tt-accent);
+  box-shadow: var(--tt-shadow-lg);
+  transform: translateY(-1px);
+}
+.tt_assistBadge:active {
+  transform: scale(.97);
+}
+.tt_assistBadge:focus-visible {
+  outline: none;
+  box-shadow: var(--tt-ring);
+}
+/*
+ * 这条 [hidden] 兜底不是冗余：上面给了作者样式的 display:inline-flex，UA 表那条
+ * display:none 会被它盖掉——不写就是「永远显示」（同 .tt_statsBar[hidden] / .tt_tabAdd 的坑）。
+ */
+.tt_assistBadge[hidden] {
+  display: none;
+}
+
+/* 答案浮层：皮肤复用 .tt_addMenu，换掉它的菜单内边距与行距，改成自己排版的分段卡片 */
+.tt_assistMenu {
+  width: 420px;
+  max-width: min(92vw, 420px);
+  /* 覆盖 .tt_addMenu 的 6px / 2px：段与段的间隔由各自的 margin 决定，不用 gap */
+  gap: 0;
+  padding: 12px 14px 10px;
+}
+.tt_assistHead {
+  display: flex;
+  align-items: center;
+  gap: var(--tt-gap-md);
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--tt-border);
+}
+/* 标题前的红点与徽标呼应：一眼认出这是「刚才那条失败」的同一个面 */
+.tt_assistTitle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--tt-label);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.tt_assistTitle::before {
+  content: '';
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--tt-r-pill);
+  background: var(--tt-danger);
+}
+/* 退出码做成药丸：它是这一屏信息量最大的一条，不该是一行右对齐的灰色小字 */
+.tt_assistCode {
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: var(--tt-r-pill);
+  background: color-mix(in srgb, var(--tt-danger) 12%, transparent);
+  color: var(--tt-danger);
+  font-family: var(--tt-mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+}
+.tt_assistBody {
+  max-height: 240px;
+  margin-top: 10px;
+  overflow-y: auto;
+  color: var(--tt-label);
+  font-size: 12.5px;
+  line-height: 1.62;
+  /* 模型答案是多行文本，换行照原样显示（内容一律走 textContent，绝不 innerHTML） */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tt_assistBusy {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+}
+/* 等待圆环：纯 CSS，不带任何图片资源（面板是注入进宿主页面的，不能有外链） */
+.tt_assistSpin {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid color-mix(in srgb, var(--tt-label-3) 40%, transparent);
+  border-top-color: var(--tt-accent);
+  border-radius: var(--tt-r-pill);
+  animation: ttSpin .7s linear infinite;
+}
+@keyframes ttSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+/* 等待态用二级灰而非三级：12px 的三级灰在白底上读着太吃力 */
+.tt_assistMuted {
+  color: var(--tt-label-2);
+}
+/* 宿主给的原因做成告警块：要能一眼看见，而不是混在正文里当一段话 */
+.tt_assistError {
+  padding: 9px 10px;
+  border-radius: var(--tt-r-md);
+  border-left: 2px solid var(--tt-danger);
+  background: color-mix(in srgb, var(--tt-danger) 8%, transparent);
+  color: var(--tt-danger);
+}
+/*
+ * 建议命令：整块沿用终端底色（它就是要敲进终端的一条命令），上面加一行小标题。
+ * .tt_assistCmd **本身仍然只装命令**——预览断言按 textContent 精确比对它，标题在外层。
+ */
+.tt_assistCmdWrap {
+  margin-top: 10px;
+  border-radius: var(--tt-r-md);
+  background: var(--tt-term-bg);
+  overflow: hidden;
+}
+.tt_assistCmdLabel {
+  display: block;
+  padding: 6px 10px 0;
+  color: color-mix(in srgb, var(--tt-term-fg) 55%, transparent);
+  font-size: 11px;
+}
+.tt_assistCmd {
+  padding: 3px 10px 8px;
+  color: var(--tt-term-fg);
+  font-family: var(--tt-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tt_assistFoot {
+  display: flex;
+  align-items: center;
+  gap: var(--tt-gap-sm);
+  margin-top: 12px;
+}
+/* 主操作做实心：三个按钮里只有「填入」会动你的终端，层级就该跟另外两个不一样 */
+.tt_assistFill,
+.tt_assistFill:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--tt-accent);
+  color: #fff;
+}
+.tt_assistFill:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--tt-accent) 86%, #000);
+}
+/* 关闭是「什么都不做」的那条路：去边框、推到最右，与两个动作分开 */
+.tt_assistClose {
+  margin-left: auto;
+  border-color: transparent;
+  background: transparent;
+}
+.tt_assistClose:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--tt-hover);
+  color: var(--tt-label);
+}
+.tt_assistNote {
+  display: block;
+  margin-top: 8px;
+  color: var(--tt-label-2);
+  font-size: 11.5px;
+  line-height: 1.5;
 }
 
 /* ======================= 动效降级 ======================= */

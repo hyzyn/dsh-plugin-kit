@@ -166,6 +166,19 @@
   const activeTabEl = () => q('.tt_tab[data-active]')
   const sidOf = (el) => el && el.dataset ? el.dataset.sid : undefined
   const socket = () => window.__mockSockets[window.__mockSockets.length - 1]
+  /*
+   * 「面板被最小化了」的判据。
+   *
+   * ⚠️ 不能看 `.tt_modal`：`data-minimized` 是设在 **`.tt_modalBackdrop`** 上的（CSS 规则
+   * `.tt_modalBackdrop[data-minimized]` 也是那一条），`.tt_modal` 只是它的子元素。
+   * 早先两个场景（tab-list / tty-assist）都写的 `q('.tt_modal') === null`——最小化**不移除**
+   * DOM，于是那两条「Esc 不许把面板最小化」的断言**永远不会触发**：空断言。
+   * 这条是被「反证第 E 条一直不红」当场抓出来的，别再退回去。
+   */
+  const isMinimized = () => {
+    const backdrop = q('.tt_modalBackdrop')
+    return backdrop === null || backdrop.hasAttribute('data-minimized')
+  }
   const emit = (msg) => {
     const s = socket()
     if (s) s._deliver(msg)
@@ -598,6 +611,207 @@
           problems.push('保存后没有退出编辑态')
         }
         return problems.length > 0 ? problems.join('；') : null
+      }
+    },
+    /*
+     * 设置卡片：AI 辅助小节（0.24.0）。
+     *
+     * 新小节排在卡片**最下面**，默认视口看不到——这个场景负责把它滚进来，并核对四个控件
+     * 都在、且**默认是关**（这个开关会外发终端内容，默认值错了就是隐私事故，不能只靠肉眼）。
+     */
+    async 'settings-assist'() {
+      const host = document.createElement('div')
+      host.id = 'preview-settings'
+      host.style.cssText = 'position:fixed;inset:24px 24px 24px 260px;overflow:auto;z-index:2000;background:var(--dsw-alias-bg-base);padding:8px;border-radius:16px'
+      document.body.appendChild(host)
+      const list = document.createElement('ul')
+      list.style.cssText = 'display:flex;flex-direction:column;gap:12px;margin:0;padding:0'
+      host.appendChild(list)
+      const tty = cards.find((c) => c.spec.key === 'tty')
+      if (tty === undefined) throw new Error('未注册 tty 设置卡片')
+      const root = window.ReactDOM.createRoot(list)
+      // 先让模型目录**取不到**（= 宿主没这条路由）：卡片必须说「拿不到」，不能笼统说「没有候选」
+      window.__PREVIEW_CATALOG = { fail: true }
+      root.render(window.React.createElement(tty.Component))
+      await waitFor(() => q('.tt_card'), 3000)
+      q('.tt_cardHeader').click()
+      await waitFor(() => q('.tt_cardBody'), 4000)
+      await sleep(400)
+      const assistTitle = qa('.tt_cardSection').find((el) => says(el, 'AI 辅助', 'AI assist'))
+      if (assistTitle !== undefined) assistTitle.scrollIntoView({ block: 'start' })
+      await sleep(300)
+      /*
+       * D91：**勾上 → 保存 → 必须还是勾着的**。
+       *
+       * 用户现场就是这条（勾完点保存、勾自己弹回去）。客户端保存成功后拿**响应里的 config**
+       * 重置整张表单，所以「到底存下去了没有」的观测点就在这里；夹具的 /config POST 已改成
+       * 照真实宿主的样子应用补丁——它要是只原样回一份旧配置，这条断言就永远绿（测不出东西）。
+       */
+      /*
+       * 模型路由是**一个**控件（渠道 + 模型一张候选表）。盯四件事：
+       *   ① 目录**取不到**时要说「拿不到」（宿主没重启就会这样），不能笼统说「没有候选」——
+       *      用户实测就是被这句话引到「我是不是配错了」上去的；
+       *   ② 取到之后：按渠道分组、点一条**同时**把两个键写好；
+       *   ③ 手输仍然可用，写法 provider/model（目录只是建议，纯下拉会把人锁死）；
+       *   ④ 这两条路都得真的进保存 payload。
+       */
+      const setReactInput = (el, value) => {
+        // React 在 input 上装了 value 的原生 setter：直接赋值它读到的是旧值，必须先取 prototype 的
+        const desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')
+        desc.set.call(el, value)
+        el.dispatchEvent(new window.Event('input', { bubbles: true }))
+      }
+      const routeField = qa('.tt_cardField').find((el) => {
+        const label = el.querySelector('.tt_cardLabel')
+        return label !== null && (label.textContent.indexOf('模型路由') >= 0 || label.textContent.indexOf('Model route') >= 0)
+      })
+      const routeInput = routeField === undefined ? null : routeField.querySelector('input.tt_cardInput')
+      const routeList = () => (routeField === undefined ? null : routeField.querySelector('.tt_routeList'))
+      const routeItems = () => {
+        const list = routeList()
+        return list === null ? [] : Array.from(list.querySelectorAll('.tt_envItem')).map((el) => el.textContent)
+      }
+      const routeGroups = () => {
+        const list = routeList()
+        return list === null ? [] : Array.from(list.querySelectorAll('.tt_envMore')).map((el) => el.textContent)
+      }
+      const catalogCalls = () => (window.__mockLog || []).filter((line) => line.indexOf('fetch:model-catalog') === 0)
+      let unavailableText = ''
+      let candidateGroups = []
+      let candidateItems = []
+      let pickedPair = ''
+      let routeReadOnly = null
+      let listPosition = ''
+      let layoutShift = null
+      let defaultLabel = ''
+      let defaultCleared = ''
+      let labelsRepeatId = false
+      if (routeInput !== null) {
+        // ① 挂载时目录取不到（夹具预先置了 __PREVIEW_CATALOG.fail）
+        routeInput.click()
+        await sleep(300)
+        unavailableText = routeField.textContent
+        // ② 目录恢复：再聚焦一次会重取（失败时 groups 仍为空，守卫放行）
+        delete window.__PREVIEW_CATALOG
+        const saveBtn = qa('.tt_cardSave').find((el) => saysExact(el, '保存', 'Save'))
+        const saveTopBefore = saveBtn === undefined ? null : saveBtn.getBoundingClientRect().top
+        routeInput.click()
+        await sleep(400)
+        candidateGroups = routeGroups()
+        candidateItems = routeItems()
+        // 下拉选不许顶动卡片（用户实测：「下拉选会破坏布局」）——浮层是 fixed，进不了布局
+        const saveTopOpen = saveBtn === undefined ? null : saveBtn.getBoundingClientRect().top
+        layoutShift = saveTopBefore === null || saveTopOpen === null ? null : saveTopOpen - saveTopBefore
+        listPosition = routeList() === null ? '' : window.getComputedStyle(routeList()).position
+        // 名字与 id 并排写两遍太吵（用户实测：「label 有点太长了」）
+        labelsRepeatId = candidateItems.some((label) => label.indexOf(' · ') >= 0)
+        // ③ 第一行必须是「跟随宿主默认模型」，点它 = 两个键都清空
+        const defaultItem = routeList() === null ? null : routeList().querySelector('.tt_envItem')
+        defaultLabel = defaultItem === null ? '' : defaultItem.textContent
+        if (defaultItem !== null) {
+          defaultItem.click()
+          await sleep(250)
+        }
+        defaultCleared = routeInput.value
+        // ④ 再点一条模型：渠道 + 模型一起写好
+        routeInput.click()
+        await sleep(300)
+        const modelItem = routeList() === null ? null : routeList().querySelectorAll('.tt_envItem')[1]
+        if (modelItem !== null && modelItem !== undefined) {
+          modelItem.click()
+          await sleep(250)
+        }
+        pickedPair = routeInput.value
+        // ⑤ 只能选，不能打字：控件是只读的（用户定的——目录空的话 DSH 自己的对话也选不出模型）
+        routeReadOnly = routeInput.readOnly
+      }
+
+      const toggleBefore = qa('.tt_cardLabel').find((el) => says(el, '失败即解释', 'Explain failures'))
+      const boxBefore = toggleBefore === undefined ? null : toggleBefore.parentElement.querySelector('input[type=checkbox]')
+      const checkedByDefault = boxBefore === null ? null : boxBefore.checked
+      let checkedAfterSave = null
+      let postedPayload = null
+      let saveBtnLabels = null
+      if (boxBefore !== null) {
+        boxBefore.click()
+        await sleep(120)
+        const saveBtns = qa('.tt_cardSave')
+        saveBtnLabels = saveBtns.map((el) => el.textContent)
+        /*
+         * 卡片里不止一个 .tt_cardSave（隧道那一组的「添加隧道」也用这个类），
+         * 必须**按文案**挑出真正的保存按钮——按「第一个非空」挑会点到「添加隧道」上，
+         * 于是保存根本没发生，而断言只会说「没发出请求」（真机调试时就是这么被骗了一轮）。
+         */
+        const saveBtn = saveBtns.find((el) => saysExact(el, '保存', 'Save')) ?? saveBtns[saveBtns.length - 1]
+        if (saveBtn !== undefined) saveBtn.click()
+        await sleep(900)
+        const posts = window.__mockConfigPosts || []
+        postedPayload = posts.length > 0 ? posts[posts.length - 1] : null
+        const afterLabel = qa('.tt_cardLabel').find((el) => says(el, '失败即解释', 'Explain failures'))
+        const afterBox = afterLabel === undefined ? null : afterLabel.parentElement.querySelector('input[type=checkbox]')
+        checkedAfterSave = afterBox === null ? null : afterBox.checked
+      }
+      window.__previewAssert = async () => {
+        if (assistTitle === undefined) return '设置卡片里没有「AI 辅助」小节'
+        if (checkedByDefault !== false) return 'AI 辅助默认必须是**关**（它会外发终端内容），实测默认 checked=' + String(checkedByDefault)
+        if (checkedAfterSave === null) return '夹具失效：找不到「失败即解释」复选框'
+        if (postedPayload === null) {
+          return '夹具失效：保存没有发出 /config 请求（.tt_cardSave 共 ' + String((saveBtnLabels || []).length) + ' 个：' + JSON.stringify(saveBtnLabels) + '）'
+        }
+        if (postedPayload.assistEnabled !== true) return '保存的 payload 里没有 assistEnabled（D91 客户端那一半）'
+        if (checkedAfterSave !== true) return '保存成功后勾又弹回去了（D91 现场）'
+        const toggleLabel = qa('.tt_cardLabel').find((el) => says(el, '失败即解释', 'Explain failures'))
+        const box = toggleLabel.parentElement.querySelector('input[type=checkbox]')
+        if (!box.closest('.tt_cardBody').contains(assistTitle)) return '开关不在设置卡片里（夹具失效）'
+        if (routeInput === null) return '设置卡片里没有「模型路由」控件'
+        // 这一栏的说明只该有一行短句：控件本身已经把「能选什么」摆在列表里了
+        const routeHints = routeField === undefined ? [] : Array.from(routeField.querySelectorAll('.tt_cardHint'))
+        if (routeHints.length > 1) {
+          return '模型路由一栏堆了 ' + String(routeHints.length) + ' 行说明（其它字段都只有一行）：' + JSON.stringify(routeHints.map((el) => el.textContent))
+        }
+        // 占位符里不许出现具体路由（曾经写死过开发机上的那一对）；空态的含义由候选表解释
+        if (routeInput.placeholder !== '') {
+          return '模型路由控件带了占位符（会把某一对具体路由写给所有人看）：' + JSON.stringify(routeInput.placeholder)
+        }
+        if (unavailableText.indexOf('拿不到候选') < 0 && unavailableText.indexOf('Candidates unavailable') < 0) {
+          return '目录取不到时没说「拿不到」（宿主没重启就长这样）：' + unavailableText.slice(0, 120)
+        }
+        if (catalogCalls().length === 0) return '夹具失效：控件没有去取候选目录'
+        if (candidateGroups.length < 2) return '候选表没有按渠道分组：' + JSON.stringify(candidateGroups)
+        if (candidateItems.length === 0) return '候选表里一个模型都没有'
+        if (layoutShift === null) return '夹具失效：量不到保存按钮的位置'
+        if (Math.abs(layoutShift) > 0.5) {
+          return '打开候选表把卡片布局顶动了 ' + String(Math.round(layoutShift)) + 'px（用户实测现场）'
+        }
+        if (listPosition !== 'fixed') {
+          return '候选表不是浮层（会顶动卡片布局）：position=' + listPosition
+        }
+        if (labelsRepeatId) {
+          return '候选行的标签把名字与 id 并排写了两遍（太长）：' + JSON.stringify(candidateItems)
+        }
+        if (defaultLabel.indexOf('跟随宿主默认模型') < 0 && defaultLabel.indexOf('Follow the host default model') < 0) {
+          return '候选表第一行不是「跟随宿主默认模型」：' + JSON.stringify(defaultLabel)
+        }
+        if (defaultCleared !== '') {
+          return '点「跟随宿主默认模型」没有把路由清空：' + JSON.stringify(defaultCleared)
+        }
+        // routeText 只有在**两个键都写好了**时才显示 p/m —— 所以这条同时证明「一次点选写全了对」
+        if (pickedPair !== 'mock-provider/mock-fast') {
+          return '点候选没有把渠道 + 模型一起写进去：' + JSON.stringify(pickedPair)
+        }
+        if (routeReadOnly !== true) {
+          return '模型路由控件不是只读的（只该能选，不该能打字）'
+        }
+        if (postedPayload.assistProvider !== 'mock-provider' || postedPayload.assistModel !== 'mock-fast') {
+          return '选中的那一对没进保存 payload：' + JSON.stringify([postedPayload.assistProvider, postedPayload.assistModel])
+        }
+        // 路由是**一个**控件（渠道 + 模型一对）：两栏并列的旧形态不许回来
+        const labels = qa('.tt_cardLabel').map((el) => el.textContent)
+        const routeLabels = labels.filter((text) => text.indexOf('模型路由') >= 0 || text.indexOf('Model route') >= 0)
+        if (routeLabels.length !== 1) return '模型路由应当是**一个**控件，实测 ' + String(routeLabels.length) + ' 个：' + JSON.stringify(routeLabels)
+        const hint = qa('.tt_cardHint').map((el) => el.textContent).join('\n')
+        if (hint.indexOf('默认关') < 0 && hint.indexOf('Off by default') < 0) return 'AI 辅助的说明里没有写明「默认关」'
+        return null
       }
     },
     /* 设置卡片：docker 与 tty 并排（同一张 ul 里），核对两家的观感是否一致 */
@@ -1219,6 +1433,412 @@
         const toast = q('.tt_toast')
         if (toast !== null) return '把只读保留的会话算成了并发名额：' + String(toast.textContent)
         if (tabs().length !== 2) return '新标签没开出来（被上限预检拦下）：共 ' + String(tabs().length) + ' 个标签'
+        return null
+      }
+    },
+    /*
+     * 「+」新建按钮的位置（D89）——两半都要钉住：
+     *   ① 标签不多时**紧贴最后一个标签**（用户明确不要「钉在头部最右端」那种）；
+     *   ② 标签栏排满溢出时，它既不能被当成滚动内容滚走、也不能滚出可视区。
+     * 夹具先量 ①（此时只有 1 个标签），再把面板压到 560px（真实宿主里这张卡片常挂在
+     * 侧栏 / 插件页这种窄容器里）× 5 个标签强制溢出，量 ②。
+     */
+    async 'tab-add'() {
+      window.__PREVIEW_CONFIG.maxSessions = 12
+      await openPanel()
+      await sleep(200)
+      // ① 未溢出时的贴附间距（「+」左缘 - 最后一个标签右缘）应当就是容器自己的 gap
+      const hug = (() => {
+        const bar = q('.tt_tabs')
+        const add = q('.tt_tabAdd')
+        const last = qa('.tt_tab').pop()
+        if (bar === null || add === null || last === undefined) return null
+        return {
+          overflow: bar.scrollWidth > bar.clientWidth + 1,
+          gap: Math.round(add.getBoundingClientRect().left - last.getBoundingClientRect().right),
+          edge: bar.dataset.edge ?? '',
+        }
+      })()
+      modal().style.width = '560px'
+      for (let i = 0; i < 4; i += 1) {
+        await clickAdd()
+        await clickMenuItem('本地终端', 'Local terminal')
+        await waitFor(() => tabs().length === i + 2, 4000)
+      }
+      await sleep(250)
+      const strip = q('.tt_tabs')
+      // 先滚到底：用户截图里「+」正是被推到了这一头
+      if (strip !== null) strip.scrollLeft = strip.scrollWidth
+      await sleep(150)
+      window.__previewAssert = async () => {
+        if (hug === null) return '夹具失效：单标签时读不到标签栏 / 「+」/ 标签'
+        if (hug.overflow) return '夹具失效：单标签时标签栏就溢出了，量不到「贴不贴」'
+        if (hug.gap > 8) {
+          return '「+」没有贴着页签：与最后一个标签相距 ' + String(hug.gap)
+            + 'px（应等于容器自己的 gap；钉在头部最右端会长出几十上百 px）'
+        }
+        const bar = q('.tt_tabs')
+        const add = q('.tt_tabAdd')
+        if (bar === null || add === null) return '标签栏或「+」缺失'
+        if (bar.contains(add)) return '「+」是滚动容器 .tt_tabs 的子元素（会被当成滚动内容一起滚走）'
+        if (tabs().length < 5) return '夹具失效：只开出 ' + String(tabs().length) + ' 个标签'
+        if (bar.scrollWidth <= bar.clientWidth + 1) {
+          return '夹具失效：标签栏没有溢出（scrollWidth=' + String(bar.scrollWidth) + ' clientWidth=' + String(bar.clientWidth) + '）'
+        }
+        const head = q('.tt_header').getBoundingClientRect()
+        const sample = (left) => {
+          bar.scrollLeft = left
+          const r = add.getBoundingClientRect()
+          return { left: r.left, right: r.right }
+        }
+        const start = sample(0)
+        const end = sample(bar.scrollWidth)
+        if (Math.abs(end.left - start.left) > 0.5) {
+          return '「+」跟着横向滚动走了：scrollLeft 0→' + String(Math.round(bar.scrollWidth))
+            + ' 时从 x=' + String(Math.round(start.left)) + ' 挪到 x=' + String(Math.round(end.left))
+        }
+        if (end.right > head.right + 0.5 || end.left < head.left - 0.5) {
+          return '「+」落在头部可视区外：x=' + String(Math.round(end.left))
+            + '，头部 ' + String(Math.round(head.left)) + '–' + String(Math.round(head.right))
+        }
+        // ③ 原生滚动条必须已隐藏：不许再占一条高度（0.23.0 用户反馈的那根灰亮条）
+        const chromeH = bar.offsetHeight - bar.clientHeight
+        if (chromeH > 0) return '标签栏仍占着 ' + String(chromeH) + 'px 的原生滚动条高度（应隐藏）'
+        // ④ 两侧渐隐：哪边还有内容哪边 fade；不溢出时**一个遮罩都不该有**
+        if (hug.edge !== '') return '不溢出时不该有 data-edge（会白遮一条），实测 ' + hug.edge
+        const maxLeft = bar.scrollWidth - bar.clientWidth
+        const edgeAt = (left) => {
+          bar.scrollLeft = left
+          bar.dispatchEvent(new Event('scroll'))
+          return bar.dataset.edge ?? ''
+        }
+        const atStart = edgeAt(0)
+        const atMid = edgeAt(Math.round(maxLeft / 2))
+        const atEnd = edgeAt(maxLeft)
+        if (atStart !== 'end' || atMid !== 'both' || atEnd !== 'start') {
+          return '溢出渐隐标记不对：scrollLeft 首/中/尾 → ' + atStart + '/' + atMid + '/' + atEnd + '（应为 end/both/start）'
+        }
+        // ⑤ 滚轮换轴：鼠标用户的纵向滚轮得能推着标签栏走，滚到头则不吞事件
+        bar.scrollLeft = 0
+        const wheelTo = (deltaY) => {
+          const ev = new WheelEvent('wheel', { deltaY, bubbles: true, cancelable: true })
+          bar.dispatchEvent(ev)
+          return { left: bar.scrollLeft, prevented: ev.defaultPrevented }
+        }
+        const moved = wheelTo(40)
+        if (moved.left < 39 || moved.left > 41) return '滚轮没有换轴：deltaY=40 只滚到 ' + String(moved.left) + 'px'
+        if (moved.prevented !== true) return '滚轮换轴时没有 preventDefault（页面会跟着一起滚）'
+        bar.scrollLeft = maxLeft
+        const stuck = wheelTo(40)
+        if (stuck.left !== maxLeft || stuck.prevented !== false) {
+          return '滚到尾部后仍在吞滚轮事件：scrollLeft=' + String(stuck.left) + ' prevented=' + String(stuck.prevented)
+        }
+        return null
+      }
+    },
+    /*
+     * 标签栏溢出时的「⋯」标签列表（0.23.0）——用户评审的三条结论都要钉住：
+     *   ① 入口只在溢出时出现，且排在「+」**前面**（紧挨标签区右缘，被裁掉的标签就在那一侧）；
+     *   ② 只列**看不见**的标签（看得见的就在标签栏上，再列一遍是噪音）——判据是「露出的宽度
+     *      不足 TAB_VISIBLE_MIN_PX」，不是「整颗在窗口外」：后者会把只露一线的标签漏掉，
+     *      于是它两边都不出现、凭空消失（**D90**，用户实测「有个隐藏的 tab 终端 3 看不到」）；
+     *   ③ 点行即切、行内 ✕ 关掉标签后菜单保持打开（连着关几个）、Esc 关闭且不把面板最小化掉。
+     * 夹具：先 1 个标签量「不该出现」，再压到 560px × 8 个标签造出「确实有标签被挤出视野」，
+     * 最后把第 3 个标签精确挤成「只剩 3px」——D90 的现场。
+     */
+    async 'tab-list'() {
+      window.__PREVIEW_CONFIG.maxSessions = 12
+      await openPanel()
+      await sleep(200)
+      const moreAtOneTab = q('.tt_tabMore')
+      // 量**渲染结果**而不是 `hidden` 属性：作者样式里的 display 会盖掉 UA 表那条
+      // display:none（.tt_statsBar[hidden] 踩过同一个坑），只读属性是量不出来的
+      const visibleAtOneTab = moreAtOneTab === null ? null : moreAtOneTab.getBoundingClientRect().width > 0
+      // 「算看得见」的门槛：与 client-src 的 TAB_VISIBLE_MIN_PX 同一契约（两端渐隐带
+      // 22px + 余量）。这里独立算一遍，好验出「实现漏掉了某一类标签」——
+      // D90 就是这么漏的：只露几像素的标签躺在渐隐带里，两边都不认它。
+      const MIN_VISIBLE = 40
+      const visibleWidthOf = (el) => {
+        const v = q('.tt_tabs').getBoundingClientRect()
+        const r = el.getBoundingClientRect()
+        return Math.max(0, Math.min(r.right, v.right) - Math.max(r.left, v.left))
+      }
+      const hiddenSids = () => qa('.tt_tab').filter((el) => visibleWidthOf(el) < MIN_VISIBLE).map((el) => el.dataset.sid)
+      const openMenu = async () => {
+        q('.tt_tabMore').click()
+        await waitFor(() => q('.tt_tabMenu'))
+        await sleep(120)
+      }
+      modal().style.width = '560px'
+      for (let i = 0; i < 7; i += 1) {
+        await clickAdd()
+        await clickMenuItem('本地终端', 'Local terminal')
+        await waitFor(() => tabs().length === i + 2, 4000)
+      }
+      await sleep(250)
+      await openMenu()
+      window.__previewAssert = async () => {
+        const more = q('.tt_tabMore')
+        const add = q('.tt_tabAdd')
+        if (more === null || add === null) return '「⋯」或「+」入口缺失'
+        if (visibleAtOneTab !== false) return '标签栏不溢出时「⋯」不该可见（实测可见=' + String(visibleAtOneTab) + '）'
+        if (more.getBoundingClientRect().width <= 0) return '标签栏已溢出，但「⋯」没有渲染出来'
+        // ① 位置：紧挨标签区的应该是「⋯」，「+」排在它右边（跟工具按钮一排）
+        if (more.getBoundingClientRect().left > add.getBoundingClientRect().left) return '「⋯」应该排在「+」前面'
+        const menu = q('.tt_tabMenu')
+        if (menu === null) return '标签列表没打开'
+        // ② 摆出 D90 的现场：把第 3 个标签只推出「露出 3px」（不是全隐、也不是全显）。
+        // 它躺在左端的渐隐带里，肉眼看不见 —— 这时它必须在列表里。
+        const bar = q('.tt_tabs')
+        const slim = qa('.tt_tab')[2]
+        if (slim === undefined) return '夹具失效：标签不足 3 个'
+        const slimName = slim.querySelector('.tt_tabLabel').textContent
+        bar.scrollLeft += (slim.getBoundingClientRect().right - bar.getBoundingClientRect().left) - 3
+        bar.dispatchEvent(new Event('scroll')) // 让实现按新的滚动位置重算
+        await sleep(80)
+        const slimWidth = Math.round(visibleWidthOf(slim))
+        if (slimWidth > 8) return '夹具失效：没把「' + slimName + '」挤到只剩一线（实测露出 ' + String(slimWidth) + 'px）'
+        if (hiddenSids().indexOf(slim.dataset.sid) < 0) return '夹具失效：连判据都不认它隐藏'
+        if (qa('.tt_tabMenuRow').map((row) => row.dataset.sid).indexOf(slim.dataset.sid) < 0) {
+          return '只露出 ' + String(slimWidth) + 'px 的「' + slimName + '」既看不见、也不在列表里（D90 原样复现）'
+        }
+        // ③ 内容：恰好是「看不见的」那些标签，顺序与标签栏一致
+        const want = hiddenSids()
+        if (want.length === 0) return '夹具失效：没有看不见的标签，本场景验不了「只列隐藏的」'
+        const rows = qa('.tt_tabMenuRow')
+        if (rows.map((row) => row.dataset.sid).join('|') !== want.join('|')) {
+          return '列表内容 ≠ 看不见的标签：列表 [' + rows.map((row) => row.dataset.sid).join(', ')
+            + ']，实际隐藏 [' + want.join(', ') + ']'
+        }
+        // ④ 一个都不能丢、也不能多：每个标签要么在栏上真的看得见、要么在列表里
+        for (const el of qa('.tt_tab')) {
+          const sid = el.dataset.sid
+          const name = el.querySelector('.tt_tabLabel').textContent
+          const shown = visibleWidthOf(el) >= MIN_VISIBLE
+          const listed = rows.some((row) => row.dataset.sid === sid)
+          if (!shown && !listed) return '「' + name + '」既看不见也不在列表里（凭空消失）'
+          if (shown && listed) return '「' + name + '」看得见却被列进了列表'
+        }
+        for (let i = 0; i < rows.length; i += 1) {
+          const bar = q('.tt_tab[data-sid="' + rows[i].dataset.sid + '"]')
+          if (bar === null) return '第 ' + String(i + 1) + ' 行指向一个不存在的标签'
+          const rowState = rows[i].querySelector('.tt_tabDot').dataset.state
+          const barState = bar.querySelector('.tt_tabDot').dataset.state
+          if (rowState !== barState) return '第 ' + String(i + 1) + ' 行状态点与标签栏不一致：' + rowState + ' vs ' + barState
+        }
+        // 当前标签**隐藏时**才高亮；它看得见时列表里不该有任何高亮行
+        const activeBar = q('.tt_tab[data-active]')
+        if (activeBar === null) return '夹具失效：标签栏里没有活动标签'
+        const activeRow = menu.querySelector('.tt_tabMenuItem[data-active]')
+        const activeHidden = want.indexOf(activeBar.dataset.sid) >= 0
+        if (activeHidden && activeRow === null) return '当前标签是隐藏的，列表里却没高亮'
+        if (!activeHidden && activeRow !== null) return '当前标签看得见，列表里不该有高亮行'
+        // 行内 ✕：关掉一个标签，菜单原地保留、内容按新的可见情况重算
+        const before = tabs().length
+        rows[0].querySelector('.tt_addMenuEdit').click()
+        await sleep(250)
+        if (q('.tt_tabMenu') === null) return '行内 ✕ 关掉标签后菜单也关了（应保持打开，方便连着关几个）'
+        if (tabs().length !== before - 1) return '行内 ✕ 没关掉标签：' + String(before) + ' → ' + String(tabs().length)
+        if (qa('.tt_tabMenuRow').map((row) => row.dataset.sid).join('|') !== hiddenSids().join('|')) {
+          return '关完没有按新的可见情况重渲染列表'
+        }
+        // 点一行 → 切过去（标签栏会把它滚进视野）+ 菜单关闭
+        const firstRow = qa('.tt_tabMenuRow')[0]
+        if (firstRow === undefined) return '夹具失效：列表空了'
+        const wantSid = firstRow.dataset.sid
+        firstRow.querySelector('.tt_tabMenuItem').click()
+        await sleep(250)
+        if (q('.tt_tabMenu') !== null) return '选了一个标签后菜单没关'
+        const afterActive = q('.tt_tab[data-active]')
+        if (afterActive === null) return '切换之后标签栏没有活动标签'
+        if (afterActive.dataset.sid !== wantSid) {
+          return '没切到选中的标签：当前 ' + afterActive.dataset.sid + '，选的是 ' + wantSid
+        }
+        // Esc 关闭，且不许把面板最小化掉（浮层要先吃掉这个 Esc）
+        await openMenu()
+        document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+        await sleep(200)
+        if (q('.tt_tabMenu') !== null) return 'Esc 没关掉标签列表'
+        if (isMinimized()) return 'Esc 把面板最小化了（浮层该先把它吃掉）'
+        await openMenu() // 截图留一个「列表开着」的样子
+        return null
+      }
+    },
+
+    /*
+     * AI 辅助「失败即解释」（0.24.0）——「零输入入口」这条链路的完整走查。
+     *
+     * 钉五件事，其中三条带**反向对照**：
+     *   ① 开关**默认关**时，同样一帧 hint 什么都不点亮（默认关 = 界面上根本没这个功能）；
+     *   ② 打开后徽标才出现，且**点它才发请求**——那一步会把终端内容送出本机，不许自动发；
+     *   ③ 答案原样显示：模型输出是**不可信文本**，`<b>` 必须当字面量（走 textContent）；
+     *   ④ 「填入」写进 PTY 的字节 = Ctrl-U + 命令，**结尾不带 \r/\n**（填进去 ≠ 跑起来）；
+     *   ⑤ Esc 只收浮层，不许把整个面板最小化。
+     */
+    async 'tty-assist'() {
+      await openPanel()
+      await waitFor(() => tabs().length === 1)
+      const sid = sidOf(activeTabEl())
+      const badge = () => q('.tt_assistBadge')
+      const badgeShown = () => {
+        const el = badge()
+        return el !== null && el.hidden !== true && el.getBoundingClientRect().width > 0
+      }
+      const asked = () => (window.__mockLog || []).filter((line) => line === 'fetch:assist').length
+      const fail = (why) => why
+
+      // ① 默认关：同样一帧 hint 什么都不该点亮
+      emit({ t: 'hint', sid, kind: 'failure', exitCode: 2, at: Date.now() })
+      await sleep(250)
+      const shownWhileOff = badgeShown()
+      // 打开开关走**真实路径**（点「+」会顺手刷 /api/dsh-tty/config），不是直接塞缓存
+      window.__PREVIEW_CONFIG.assistEnabled = true
+      await clickAdd()
+      q('.tt_tabAdd').click()
+      await sleep(250)
+
+      // ② 徽标出现，且此刻**还没有**任何 assist 请求
+      emit({ t: 'hint', sid, kind: 'failure', exitCode: 2, at: Date.now() })
+      await sleep(250)
+      const shownWhileOn = badgeShown()
+      const askedBeforeClick = asked()
+      const badgeText = badge() === null ? '' : badge().textContent
+
+      if (badge() !== null) badge().click()
+      await waitFor(() => q('.tt_assistMenu') !== null, 3000)
+      await sleep(300)
+      const answerEl = q('.tt_assistAnswer')
+      const answerText = answerEl === null ? '' : answerEl.textContent
+      const answerHasMarkup = answerEl !== null && answerEl.querySelector('b') !== null
+      const cmdText = q('.tt_assistCmd') === null ? '' : q('.tt_assistCmd').textContent
+      /*
+       * 美化这一轮（2026-10-01）：徽标与命令块都拆成了「外层容器 + 内层节点」。徽标多了一枚
+       * 状态圆点，而 syncAssistBadge 原来是直接写按钮的 textContent —— 那样会把圆点整个抹掉，
+       * 所以这里按**节点存在性**盯着，而不是只看文字对不对。
+       */
+      const badgeDot = badge() === null ? null : badge().querySelector('.tt_assistDot')
+      const badgeTextEl = badge() === null ? null : badge().querySelector('.tt_assistBadgeText')
+      const exitChip = q('.tt_assistCode')
+      const cmdLabel = q('.tt_assistCmdLabel')
+
+      // ④ 「填入」的字节（先清帧，只留这一次点击的）
+      window.__mockFrames.length = 0
+      const fillBtn = q('.tt_assistFill')
+      if (fillBtn !== null) fillBtn.click()
+      await sleep(200)
+      const inputs = (window.__mockFrames || []).filter((frame) => frame.t === 'input')
+
+      // ⑤ 再来一轮：Esc 只收浮层
+      emit({ t: 'hint', sid, kind: 'failure', exitCode: 1, at: Date.now() })
+      await sleep(200)
+      if (badge() !== null) badge().click()
+      await waitFor(() => q('.tt_assistMenu') !== null, 3000)
+      await sleep(250)
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      await sleep(250)
+      const menuAfterEsc = q('.tt_assistMenu')
+      const minimized = isMinimized()
+
+      // 宿主说「没有可用的模型路由」时：浮层里要有一句能照做的原因，不许静默什么都不发生
+      window.__PREVIEW_ASSIST = { error: '没有可用的模型路由：在卡片里填 provider / model，或先给宿主配一个默认模型' }
+      emit({ t: 'hint', sid, kind: 'failure', exitCode: 2, at: Date.now() })
+      await sleep(200)
+      if (badge() !== null) badge().click()
+      await waitFor(() => q('.tt_assistMenu') !== null, 3000)
+      await sleep(300)
+      const errorText = q('.tt_assistError') === null ? '' : q('.tt_assistError').textContent
+      // 失败态也要有出路（tty D92）：底部那排按钮（复制报错 / 关闭）——只有一行红字、没有按钮的浮层是死路
+      const errorFoot = q('.tt_assistFoot')
+      const errorButtons = errorFoot === null ? 0 : errorFoot.querySelectorAll('button').length
+      const errorCloses = errorFoot === null ? null : errorFoot.querySelector('.tt_assistClose')
+      /*
+       * **长答案**：浮层会在内容到达后长高。只按「转圈时的高度」定位一次的话，底部那排
+       * 按钮会被推出视口（用户看得到答案、点不到「填入」）——真机截图暴露过。
+       * 短答案区分不出来（两种做法都放得下），所以这一段刻意用长正文把差异逼出来。
+       */
+      window.__PREVIEW_ASSIST = {
+        answer: '发生了什么：' + '这是一段很长的说明，用来把浮层撑高。'.repeat(5)
+          + '\n\n下一步：\n' + Array.from({ length: 14 }, (_v, i) => '第 ' + String(i + 1) + ' 行：继续补充上下文，直到正文超过自己的高度上限。').join('\n'),
+        command: 'npm install',
+      }
+      emit({ t: 'hint', sid, kind: 'failure', exitCode: 2, at: Date.now() })
+      await sleep(200)
+      if (badge() !== null) badge().click()
+      await waitFor(() => q('.tt_assistAnswer') !== null, 3000)
+      await sleep(300)
+      const longMenu = q('.tt_assistMenu')
+      const longBox = longMenu === null ? null : longMenu.getBoundingClientRect()
+      const longBody = q('.tt_assistBody')
+      const longScrolled = longBody !== null && longBody.scrollHeight > longBody.clientHeight + 1
+      // 恢复默认答案，让截图里留一个「有答案」的样子
+      delete window.__PREVIEW_ASSIST
+      emit({ t: 'hint', sid, kind: 'failure', exitCode: 2, at: Date.now() })
+      await sleep(200)
+      if (badge() !== null) badge().click()
+      await waitFor(() => q('.tt_assistAnswer') !== null, 3000)
+      await sleep(200)
+
+      /*
+       * ⑥ 同一条失败**只问一次**（tty D94）：Esc 收掉浮层后再点徽标，应该直接显示缓存答案，
+       * 而不是又发一次请求（POST 早已送达宿主，abort 只停客户端这头，宿主照跑模型）。
+       */
+      const askedBeforeReopen = asked()
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      await sleep(150)
+      if (badge() !== null) badge().click()
+      await waitFor(() => q('.tt_assistAnswer') !== null, 3000)
+      await sleep(200)
+      const askedAfterReopen = asked()
+      const reopenedAnswer = q('.tt_assistAnswer') === null ? '' : q('.tt_assistAnswer').textContent
+
+      window.__previewAssert = async () => {
+        if (sid === undefined || sid === null) return fail('夹具失效：读不到活动标签的 sid')
+        if (shownWhileOff) return fail('开关默认关着，hint 帧却点亮了徽标（默认关 = 界面上不该有它）')
+        if (!shownWhileOn) return fail('开关打开后徽标没出现（功能等于不存在）')
+        if (badgeText.indexOf('2') < 0) return fail('徽标没写出退出码：' + badgeText)
+        if (askedBeforeClick !== 0) return fail('点徽标之前就发了 ' + String(askedBeforeClick) + ' 次 assist 请求（终端内容被自动外发）')
+        if (asked() === 0) return fail('点了徽标却没发请求')
+        if (answerHasMarkup) return fail('答案里的 <b> 被当成 HTML 解析了（模型输出是不可信文本）')
+        // 宿主给什么就显示什么（一个字都不许被客户端顺手改掉/解释掉）
+        const expectedAnswer = '发生了什么：<b>这不是加粗</b>，是输出里的原文；依赖装漏了一个。\n\n下一步：\n装完再跑一次。'
+        if (answerText !== expectedAnswer) {
+          return fail('正文与宿主给的文本不一致：' + JSON.stringify(answerText))
+        }
+        // 命令块里**只许有命令**（小标题在外层）：混进标题，「填入」就会把标题一起敲进终端
+        if (cmdText !== 'npm install') return fail('命令块里不止有命令：' + JSON.stringify(cmdText))
+        if (cmdLabel === null || cmdLabel.textContent === '') return fail('建议命令块没有小标题')
+        if (badgeDot === null) return fail('徽标里没有状态圆点（多半是被 syncAssistBadge 的 textContent 抹掉了）')
+        if (badgeTextEl === null) return fail('徽标文案没落在内层 span 上')
+        if (exitChip === null || exitChip.textContent.indexOf('2') < 0) {
+          return fail('退出码药丸没渲染出来：' + (exitChip === null ? 'null' : exitChip.textContent))
+        }
+        if (inputs.length !== 1) return fail('「填入」发出的 input 帧数不对：' + String(inputs.length))
+        if (inputs[0].d !== '\u0015npm install') return fail('「填入」的字节不对：' + JSON.stringify(inputs[0].d))
+        if (menuAfterEsc !== null) return fail('Esc 没关掉答案浮层')
+        if (minimized) return fail('Esc 把整个面板最小化了（浮层该先把它吃掉）')
+        if (errorText.indexOf('没有可用的模型路由') < 0) return fail('宿主报错时浮层没说明原因：' + errorText.slice(0, 80))
+        if (errorCloses === null || errorButtons !== 2) {
+          return fail('失败态浮层没有可用的按钮（只剩 Esc / 点外面）：按钮数=' + String(errorButtons))
+        }
+        const shot = q('.tt_assistMenu')
+        if (shot === null) return fail('截图态没有浮层')
+        const box = shot.getBoundingClientRect()
+        if (box.bottom > window.innerHeight - 4 || box.top < 4) {
+          return fail('答案浮层超出视口（底部按钮点不到）：top=' + String(Math.round(box.top))
+            + ' bottom=' + String(Math.round(box.bottom)) + ' 视口高=' + String(window.innerHeight))
+        }
+        if (longScrolled !== true) return fail('夹具失效：长答案没有被正文高度上限约束（区分不出定位问题）')
+        if (longBox === null) return fail('长答案那一轮没有浮层')
+        if (longBox.bottom > window.innerHeight - 4 || longBox.top < 4) {
+          return fail('长答案把浮层顶出视口（底部按钮点不到）：top=' + String(Math.round(longBox.top))
+            + ' bottom=' + String(Math.round(longBox.bottom)) + ' 视口高=' + String(window.innerHeight))
+        }
+        if (askedAfterReopen !== askedBeforeReopen) {
+          return fail('重开浮层又发了 ' + String(askedAfterReopen - askedBeforeReopen) + ' 次请求（同一条失败只该问一次）')
+        }
+        if (reopenedAnswer.indexOf('发生了什么') < 0) return fail('重开浮层没显示缓存答案：' + reopenedAnswer.slice(0, 60))
+        if (q('.tt_assistFill') === null) return fail('浮层里没有「填入」按钮')
+        if (q('.tt_assistAnswer') === null) return fail('截图态没停在「有答案」上（夹具失效）')
         return null
       }
     },

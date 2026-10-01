@@ -65,6 +65,7 @@ const SCENARIOS = [
   ['ssh-probe', 'SSH 连接对话框（试连结果）'],
   ['ssh-edit', 'SSH 连接对话框（编辑）'],
   ['settings', '设置卡片'],
+  ['settings-assist', '设置卡片：AI 辅助小节（默认关 + 模型路由一个控件）'],
   ['settings-docker', '设置卡片（docker 与 tty 并排对照）'],
   ['docker-stale-book', 'docker 设置卡片：失效的连接簿引用要看得出来'],
   ['tunnel-edit', '端口转发：编辑隧道（回填 / 改端口换名 / 停用的不被启用）'],
@@ -90,6 +91,9 @@ const SCENARIOS = [
   ['docker-dock', '连接栏「容器」→ docker 面板挂进右侧 dock（终端不被盖住）'],
   ['resize-hidden', '后台标签的 PTY 不得被压成 2×2（D79）'],
   ['limit-retained', '只读保留（已退出）的会话不算并发名额（D85）'],
+  ['tab-add', '「+」贴着页签，且标签栏溢出时不跟着滚走（D89）'],
+  ['tab-list', '标签栏溢出：「⋯」标签列表（切/关/Esc，0.23.0）'],
+  ['tty-assist', 'AI 辅助「失败即解释」：徽标 → 答案 → 填入不回车（0.24.0）'],
 ]
 
 if (flags.has('--list')) {
