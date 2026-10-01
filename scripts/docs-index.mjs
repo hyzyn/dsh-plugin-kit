@@ -1,5 +1,6 @@
 /**
- * L0 文档路由守卫：`docs/*.md`（登记 + 命名）与 `ROADMAP.md`（✅ ↔ 落点）两件事。
+ * 文档路由守卫：`docs/*.md`（登记 + 命名）、L0 `ROADMAP.md`（✅ ↔ 落点），以及**包内**
+ * `packages/<pkg>/ROADMAP.md`（落地记录节必须排在 `## 已完成` 之后）。
  *
  * ## 为什么有这一份
  *
@@ -18,7 +19,14 @@
  *      某件事未做 / 三条边界刻意不修），而「已落地的落点在哪」要靠人翻；`§ 已完成` 的小节号
  *      还可以乱序（实测 1、2、4、3）。
  *
- * ## 两类判据都不许「匹配失败就算过」
+ * 2026-10-01 又收了一条**同一类**漂移（这次在 L1）：包内 `ROADMAP.md` 的文件头写着「本文只放
+ * 还没做的事」，而落地记录（逐轮实测 / 落点 + 门槛 / 设计取舍）当时**没有归宿**——归属表里只有
+ * 「包内待办」与「设计方案冻结记录」，都不接「工作记录」这一类，于是它们被顺手写在待办后面，
+ * 一攒就是几百行（实测：tty 那份 591 行里约 545 行是落地记录，读者再也分不清哪条还没做）。
+ * 归宿现定在包内 `## 已完成（落点 + 门槛）`（照 L0 同名节，见
+ * [conventions § 知识归属表](./conventions.md#知识归属表唯一归宿)），本守卫守**位置**。
+ *
+ * ## 每一类判据都不许「匹配失败就算过」
  *
  * 与 [defects-table.mjs](./defects-table.mjs) 同一套设计原则：**该有的东西找不到就报「缺失」**，
  * 而不是静默跳过；某类例外确实存在时，用**显式清单**声明（见 `VERSION_SUFFIX_ALLOWLIST`），
@@ -33,7 +41,7 @@
  * ## 只读
  *
  * 本模块不写文件、不调 git、不联网。输入是**文本**（`docs/` 的文件名清单 + conventions + ROADMAP，
- * 外加 `packages/<pkg>/README*.md` 的行数），所以单测可以喂 fixture 造反例，而不必修改任何受版本控制的文件。
+ * 外加包内 `ROADMAP.md` 全文与 `packages/<pkg>/README*.md` 的行数），所以单测可以喂 fixture 造反例，而不必修改任何受版本控制的文件。
  *
  * ## 事实报告（**只报告，不判红**）
  *
@@ -76,6 +84,28 @@ export const ATTRIBUTION_HEADING = '### 知识归属表（唯一归宿）'
 /** `ROADMAP.md` 的两节：待办（含 ✅ 的历史原文）与已完成（落点 + 门槛）。 */
 export const TODO_HEADING = '## 待办'
 export const LANDED_HEADING = '## 已完成（落点 + 门槛）'
+/** 包内路线图的文件名（判据 4 只扫 `packages/<pkg>/ROADMAP.md`，L0 那份不归它管）。 */
+export const PACKAGE_ROADMAP_FILE = 'ROADMAP.md'
+
+/**
+ * 包内 ROADMAP 的「已完成」锚点。
+ *
+ * 目标形态与 L0 同名（`## 已完成（落点 + 门槛）`），但 codegraph 那节叫
+ * `## 已完成（0.4.2 之后的工作树）`（先于本判据存在）——所以**按前缀认**：这条判据管的是
+ * 「落地记录排在那节**之后**」，不是逼各包统一标题（改名要维护者批准，见 conventions § 命名）。
+ */
+const PKG_LANDED_ANCHOR_RE = /^## 已完成/
+
+/**
+ * 落地记录节的两种标题形态（归宿见 docs/conventions.md 知识归属表的那一行）：
+ *
+ *   ① 带 ✅ 的标题——`### ✅ tty_run：一条命令一次调用`、`## P0：… ✅`；
+ *   ② 日期批次标题——`## 2026-10-01：agent 单会话闭环（三件已做，未发版）`。
+ *
+ * **刻意只认标题**：待办条目里的内联 ✅（`- **agent 侧没有 tty_open** —— ✅ **已做（0.20.0）**`）
+ * 是文件头承诺保留的历史原文，允许留在待办里；被抓的只有「一整节落地记录住错了地方」。
+ */
+const PKG_LANDED_HEADING_RES = [/^#{2,6} .*✅/, /^#{2,6} \d{4}-\d{2}-\d{2}[：:\s]/]
 
 /**
  * 文件名带版本后缀的**显式例外**（当前为空：`capability-elevation-plan.v2.md` 已按命名规范改名成
@@ -282,6 +312,68 @@ export function checkRoadmapStatus({ roadmap }) {
   return diffs
 }
 
+/**
+ * 解析一份包内 ROADMAP 里的「已完成」锚点与落地记录节。
+ *
+ * 导出给单测自证「命中不是 0」：一道只会在 0 命中时绿的闸门（本仓真实发生过）比没有还坏，
+ * 所以「扫到了几处」本身也要能断言。
+ *
+ * @param roadmap - 包内 `ROADMAP.md` 全文。
+ * @returns `{ anchorLine, landed }`：锚点行号（1 起，没有则 `undefined`）与落地记录节清单。
+ */
+export function parsePackageLandedSections(roadmap) {
+  const lines = roadmap.split('\n')
+  let anchorLine
+  const landed = []
+  lines.forEach((line, index) => {
+    if (anchorLine === undefined && PKG_LANDED_ANCHOR_RE.test(line)) anchorLine = index + 1
+    if (PKG_LANDED_HEADING_RES.some((re) => re.test(line))) landed.push({ line: index + 1, heading: line.trim() })
+  })
+  return { anchorLine, landed }
+}
+
+/**
+ * 判据 4：**包内** `ROADMAP.md` 的落地记录节必须排在 `## 已完成（落点 + 门槛）` **之后**。
+ *
+ * 为什么需要它：包内 ROADMAP 的文件头写的是「本文只放**还没做的事**」，而落地记录（逐轮实测、
+ * 落点 + 门槛、设计取舍）只有 DEFECTS 与 `docs/` 两处归宿、都不接「工作记录」这一类——
+ * 于是它们被顺手写在待办后面，一攒就是几百行，读者再也分不清哪条还没做（2026-10-01 实测：
+ * tty 那份 591 行里约 545 行是落地记录）。归宿定在 `## 已完成（落点 + 门槛）`（照 L0 同名节），
+ * 这条判据守的就是**位置**：节本身可以只有标题 + 一段段记录，但记录不许再出现在它之前。
+ *
+ * 三条口径：
+ *   a. **没有落地记录节的文件不受约束**（只有待办的包不必凭空造一节）；
+ *   b. 有落地记录节却整份文件没有锚点 → 报缺失（不许散在待办里）；
+ *   c. 锚点之前出现任何一处落地记录节 → 报位置（含锚点自己在最前、记录在后的半截搬迁）。
+ *
+ * @param input - `{ packageRoadmaps }`：`[{ pkg, path, text }]`（由 `readDocsInputs` 读，单测可传合成清单）。
+ */
+export function checkPackageRoadmapLanded({ packageRoadmaps }) {
+  const diffs = []
+  for (const file of packageRoadmaps) {
+    const { anchorLine, landed } = parsePackageLandedSections(file.text)
+    if (landed.length === 0) continue
+    if (anchorLine === undefined) {
+      diffs.push({
+        kind: 'pkgRoadmap.landed.anchor.absent',
+        pkg: file.pkg,
+        message: `${file.path} 里有 ${String(landed.length)} 处落地记录节（第一处是第 ${String(landed[0].line)} 行「${landed[0].heading}」），但整份文件没有 \`${LANDED_HEADING}\` 节：落点要有明确归宿，不许散在待办里`,
+      })
+      continue
+    }
+    for (const item of landed) {
+      if (item.line > anchorLine) continue
+      diffs.push({
+        kind: 'pkgRoadmap.landed.before',
+        pkg: file.pkg,
+        line: item.line,
+        message: `${file.path} 第 ${String(item.line)} 行的落地记录节「${item.heading}」排在 \`${LANDED_HEADING}\`（第 ${String(anchorLine)} 行）之前：本文只放还没做的事，落地记录必须挪到那节之后`,
+      })
+    }
+  }
+  return diffs
+}
+
 /** 文件的行数（与 `wc -l` 同口径：数换行符；文件不在返回 `undefined`）。 */
 function countLines(file) {
   if (!existsSync(file)) return undefined
@@ -364,7 +456,7 @@ export function formatReadmeReport(facts) {
   return lines.join('\n')
 }
 
-/** 读仓库里的三份输入（只读）。 */
+/** 读仓库里的输入（只读）：`docs/` 清单、conventions、L0 ROADMAP，以及**包内** ROADMAP（判据 4）。 */
 export function readDocsInputs(repoRoot = REPO_ROOT) {
   const docs = readdirSync(join(repoRoot, DOCS_DIR))
     .filter((name) => name.endsWith('.md'))
@@ -376,10 +468,19 @@ export function readDocsInputs(repoRoot = REPO_ROOT) {
    * 仓库根另有 `.gitattributes`（`* text=auto eol=lf`）从检出侧堵住；这里是代码侧的第二道。
    */
   const readNormalized = (rel) => readFileSync(join(repoRoot, rel), 'utf8').replace(/\r\n/g, '\n')
+  const pkgRoot = join(repoRoot, PACKAGES_DIR)
+  const packageRoadmaps = readdirSync(pkgRoot)
+    .filter((pkg) => existsSync(join(pkgRoot, pkg, PACKAGE_ROADMAP_FILE)))
+    .sort()
+    .map((pkg) => {
+      const rel = `${PACKAGES_DIR}/${pkg}/${PACKAGE_ROADMAP_FILE}`
+      return { pkg, path: rel, text: readNormalized(rel) }
+    })
   return {
     docs,
     conventions: readNormalized(CONVENTIONS_PATH),
     roadmap: readNormalized(ROADMAP_PATH),
+    packageRoadmaps,
   }
 }
 
@@ -390,6 +491,7 @@ export function checkRepo(repoRoot = REPO_ROOT) {
     ...checkDocsRegistration(inputs),
     ...checkDocFilenames(inputs),
     ...checkRoadmapStatus(inputs),
+    ...checkPackageRoadmapLanded(inputs),
   ]
 }
 
@@ -400,6 +502,12 @@ if (process.argv[1] !== undefined && import.meta.url === `file://${process.argv[
   const diffs = checkRepo()
   if (!quiet) {
     console.log(`[docs-index] docs/ 共 ${String(inputs.docs.length)} 份 markdown；已登记 ${String(parseAttributedDocs(inputs.conventions).size)} 份`)
+    // 「扫到了几处」也要打印：只会在 0 命中时绿的闸门比没有还坏（本仓真实发生过）。
+    const landedCount = inputs.packageRoadmaps.reduce(
+      (sum, file) => sum + parsePackageLandedSections(file.text).landed.length,
+      0,
+    )
+    console.log(`[docs-index] 包内 ROADMAP 共 ${String(inputs.packageRoadmaps.length)} 份；落地记录节 ${String(landedCount)} 处（判据 4 只管它们排在 \`## 已完成\` 之后）`)
     // 事实报告（只报告，不判红）：`--quiet` 一并抑制，免得把 CI / 脚本输出搞脏。
     console.log(formatReadmeReport(readReadmeFacts()))
   }

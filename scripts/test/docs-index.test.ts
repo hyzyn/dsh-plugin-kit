@@ -4,7 +4,8 @@
  * ## 这份用例守两件事
  *
  * 1. **真实仓库必须绿**（`docs/` 每一份都被知识归属表登记 + 文件名里没有版本后缀 +
- *    `ROADMAP.md` 的 ✅ 与落点成对、`§ 已完成` 序号递增、✅ 不混态）；
+ *    `ROADMAP.md` 的 ✅ 与落点成对、`§ 已完成` 序号递增、✅ 不混态 + **包内** `ROADMAP.md` 的
+ *    落地记录节都排在 `## 已完成` 之后）；
  * 2. **守卫必须会红**——本仓刚发生过一道「命中 0 个文件、恒绿、拦不住任何东西」的闸门，
  *    所以任何新守卫都要自证会红。反例**全部用 fixture 造**（在真实文本上做一次字符串替换，
  *    并断言替换真的生效），**不修改任何受版本控制的文件**；`docs` 清单类判据直接传合成清单。
@@ -14,6 +15,9 @@
  *
  * 反例里用的**就是本轮实际漂过的那几处**：两份方案文档没登记、`✅（一次性 token 未做）`
  * 的混态、`§ 已完成` 的 1/2/4/3 乱序——所以这组用例同时是「守卫能不能拦住这次漂移」的证明。
+ * 反例 4 同理，用的是**这次真实失焦的那份文件**（tty/ROADMAP.md：591 行里约 545 行是落地记录，
+ * 而文件头写着「本文只放还没做的事」）；它另外断言「扫到了几处」——只会在 0 命中时绿的闸门，
+ * 本仓真实发生过一次，所以「命中不是 0」本身也要能被证伪。
  *
  * 反向禁止（与 `docs/conventions.md` 硬规矩一致）：守卫报红时只改文档侧；
  * 绝不为让它变绿去删文件、去改文件名（改名要维护者批准）。
@@ -25,10 +29,12 @@ import {
   VERSION_SUFFIX_ALLOWLIST,
   checkDocFilenames,
   checkDocsRegistration,
+  checkPackageRoadmapLanded,
   checkRoadmapStatus,
   checkRepo,
   formatReadmeReport,
   parseAttributedDocs,
+  parsePackageLandedSections,
   readDocsInputs,
   readReadmeFacts,
   sectionOf,
@@ -92,6 +98,21 @@ describe('docs-index：现算（唯一真值来源）', () => {
     const crlf = (text) => text.replace(/\n/g, '\r\n')
     expect(checkDocsRegistration({ docs: real.docs, conventions: crlf(real.conventions) })).toEqual([])
     expect(checkRoadmapStatus({ roadmap: crlf(real.roadmap) })).toEqual([])
+  })
+
+  it('真实仓库：包内 ROADMAP 的落地记录节都排在「已完成」之后（命中不是 0）', () => {
+    const tty = real.packageRoadmaps.find((file) => file.pkg === 'tty')
+    expect(tty, 'packages/tty/ROADMAP.md 应在输入里').toBeDefined()
+    const parsed = parsePackageLandedSections(tty.text)
+    expect(parsed.anchorLine, 'tty/ROADMAP.md 应有 `## 已完成（落点 + 门槛）`').toBeGreaterThan(0)
+    expect(parsed.landed.length, 'tty 的落地记录节（### ✅ / ## 日期）').toBeGreaterThan(0)
+    for (const item of parsed.landed) expect(item.line, `「${item.heading}」应在锚点之后`).toBeGreaterThan(parsed.anchorLine)
+
+    // 跨包命中：codegraph 的锚点叫 `## 已完成（0.4.2 之后的工作树）`（按前缀认），记录是 `### … ✅`
+    const codegraph = real.packageRoadmaps.find((file) => file.pkg === 'codegraph')
+    expect(parsePackageLandedSections(codegraph.text).landed.length, 'codegraph 也应被扫到').toBeGreaterThan(0)
+
+    expect(checkPackageRoadmapLanded(real)).toEqual([])
   })
 
   it('README 事实报告存在，且不含判定结论（只报告、不判红，不是闸门）', () => {
@@ -227,5 +248,49 @@ describe('反例 3：ROADMAP 的 ✅ 与落点脱钩 → 必须报出来', () =>
   it('非 ✅ 的条目不受成对判据影响（一次性 token / 已知限制这类「未做」条目就该不带 ✅）', () => {
     const diffs = checkRoadmapStatus({ roadmap: real.roadmap })
     expect(kinds(diffs)).not.toContain('roadmap.marker.missing')
+  })
+})
+
+describe('反例 4：包内 ROADMAP 的落地记录节住错了地方 → 必须报出来', () => {
+  /** 真实 tty 那份的副本（判据只看文本，所以复用它造 fixture）。 */
+  const ttyText = () => real.packageRoadmaps.find((file) => file.pkg === 'tty').text
+  const asPkg = (text) => ({ packageRoadmaps: [{ pkg: 'tty', path: 'packages/tty/ROADMAP.md', text }] })
+
+  it('锚点整行消失（落地记录散在待办后面 = 修复前的形态）→ pkgRoadmap.landed.anchor.absent', () => {
+    const fixture = mutate(ttyText(), '## 已完成（落点 + 门槛）\n\n', '')
+    const diffs = checkPackageRoadmapLanded(asPkg(fixture))
+    expect(kinds(diffs)).toContain('pkgRoadmap.landed.anchor.absent')
+    const diff = diffs.find((item) => item.kind === 'pkgRoadmap.landed.anchor.absent')
+    expect(diff?.pkg).toBe('tty')
+    expect(diff?.message).toContain('没有')
+    expect(diff?.message, '要报出扫到几处——0 命中的闸门比没有还坏').toMatch(/处落地记录节/)
+  })
+
+  it('锚点被挪到文件末尾（记录全在它之前）→ pkgRoadmap.landed.before 逐处报出', () => {
+    const fixture = `${mutate(ttyText(), '## 已完成（落点 + 门槛）\n\n', '')}\n## 已完成（落点 + 门槛）\n`
+    const diffs = checkPackageRoadmapLanded(asPkg(fixture))
+    const before = diffs.filter((item) => item.kind === 'pkgRoadmap.landed.before')
+    expect(before.length, '每一处错位的记录节都要报').toBeGreaterThan(1)
+    expect(before[0].message).toContain('本文只放还没做的事')
+    expect(before[0].line).toBeGreaterThan(0)
+  })
+
+  it('待办条目里的内联 ✅ 不是「节」，不许误报（历史原文要留着）', () => {
+    const tty = ttyText()
+    expect(tty, '待办第 2 条带着内联 ✅').toContain('✅ **已做（0.20.0）**')
+    const inlineLine = tty.split('\n').findIndex((line) => line.includes('✅ **已做（0.20.0）**')) + 1
+    expect(parsePackageLandedSections(tty).landed.map((item) => item.line)).not.toContain(inlineLine)
+  })
+
+  it('只有待办、一处记录都没有的文件（docker）不受这条约束：不许逼它凭空造一节', () => {
+    const docker = real.packageRoadmaps.find((file) => file.pkg === 'docker')
+    expect(parsePackageLandedSections(docker.text).landed).toEqual([])
+    expect(checkPackageRoadmapLanded({ packageRoadmaps: [docker] })).toEqual([])
+  })
+
+  it('闸门对 CRLF 免疫（Windows 检出不该假红）', () => {
+    const crlf = (text) => text.replace(/\n/g, '\r\n')
+    const roadmaps = real.packageRoadmaps.map((file) => ({ ...file, text: crlf(file.text) }))
+    expect(checkPackageRoadmapLanded({ packageRoadmaps: roadmaps })).toEqual([])
   })
 })
