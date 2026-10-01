@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-tty",
-  "version": "0.22.3",
+  "version": "0.24.0",
   "description": "DSH Web GUI 的终端面板插件：侧边栏「终端」提供 xterm.js + PTY 全交互终端与 ssh2 原生 SSH 远程连接（连接簿、主机指纹 TOFU、跳板机），支持 tmux 会话持久化、SFTP 文件传输、端口转发与服务器状态条，并向其他插件开放 ttyTerminal / ttyPanel / ttyConnbar 扩展点；Windows 宿主同样可用。",
   "keywords": [
     "dsh",

@@ -18,7 +18,7 @@ importers:
         specifier: 0.6.3
         version: link:packages/codegraph
       '@hyzyn/dsh-docker':
-        specifier: 0.9.3
+        specifier: 0.9.4
         version: link:packages/docker
       '@hyzyn/dsh-env':
         specifier: 0.3.3
@@ -27,7 +27,7 @@ importers:
         specifier: 0.2.2
         version: link:packages/kit-settings
       '@hyzyn/dsh-mcp':
-        specifier: 0.2.4
+        specifier: 0.3.0
         version: link:packages/mcp
       '@hyzyn/dsh-profile':
         specifier: 0.2.3
@@ -42,7 +42,7 @@ importers:
         specifier: 0.4.3
         version: link:packages/search
       '@hyzyn/dsh-tty':
-        specifier: 0.22.3
+        specifier: 0.24.0
         version: link:packages/tty
     devDependencies:
       typescript:
@@ -64,7 +64,7 @@ importers:
         specifier: 0.6.3
         version: link:../codegraph
       '@hyzyn/dsh-docker':
-        specifier: 0.9.3
+        specifier: 0.9.4
         version: link:../docker
       '@hyzyn/dsh-env':
         specifier: 0.3.3
@@ -73,7 +73,7 @@ importers:
         specifier: 0.2.2
         version: link:../kit-settings
       '@hyzyn/dsh-mcp':
-        specifier: 0.2.4
+        specifier: 0.3.0
         version: link:../mcp
       '@hyzyn/dsh-profile':
         specifier: 0.2.3
@@ -88,7 +88,7 @@ importers:
         specifier: 0.4.3
         version: link:../search
       '@hyzyn/dsh-tty':
-        specifier: 0.22.3
+        specifier: 0.24.0
         version: link:../tty
     devDependencies:
       '@deepseek-ai/cordis':

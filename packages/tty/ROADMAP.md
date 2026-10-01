@@ -68,7 +68,7 @@ tty 侧只留三条：
 > 已落地的批次按**主题**记在这里：结论 → 为什么（用户原话照录）→ 落点 / 门槛 → 刻意不做的边界。
 > 缺陷的症状 / 根因 / 修法仍在 [DEFECTS.md](./DEFECTS.md) 的索引表；逐轮往返的**过程原文**（2026-10-01
 > 按主题重排前那一份）冻结在 git 历史：`git show 2f7dd4f1:packages/tty/ROADMAP.md`。
-> **未发版**：`lib/`（`tsc -p tsconfig.json`）与 `client.js` 已重建入库；版本号留待 release 提交统一 bump。
+> **已发 0.24.0（2026-10-01）**：`lib/`（`tsc -p tsconfig.json`）与 `client.js` 随包入库（预构建产物）。
 
 ### 2026-10-01：agent 单会话闭环——`running` 三态 / 具名 `keys` / `tty_run`（0.23.0）
 

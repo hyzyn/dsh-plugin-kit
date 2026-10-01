@@ -65,7 +65,7 @@ body:
         （例 `dsh plugin --profile web ls @hyzyn/dsh-tty --depth 0`）；
         或看 `~/.dsh/profiles/<profile>/package.json` 的 dependencies——那里可能写的是范围（`^0.6.0` 这种），
         是范围就照抄范围，别自己换算。
-      placeholder: "例：@hyzyn/dsh-tty@0.22.0"
+      placeholder: "例：@hyzyn/dsh-tty@0.24.0"
     validations:
       required: true
 
