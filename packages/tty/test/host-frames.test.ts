@@ -110,7 +110,7 @@ interface Harness {
   connect(): FakeWs
 }
 
-function makeHarness(overrides: Partial<{ graceSec: number; maxSessions: number }> = {}): Harness {
+function makeHarness(overrides: Partial<{ graceSec: number; maxSessions: number; assistEnabled: boolean }> = {}): Harness {
   const ptys: FakePty[] = []
   const warns: string[] = []
   const ctx = {
@@ -142,6 +142,10 @@ function makeHarness(overrides: Partial<{ graceSec: number; maxSessions: number 
     persistence: 'off' as const,
     endOnPageClose: false,
     statsEnabled: true,
+    // AI 辅助：默认关（用例按需打开，见文件末尾的「失败徽标」一节）
+    assistEnabled: overrides.assistEnabled === true,
+    assistProvider: '',
+    assistModel: '',
     persistSessions: [],
     findSshHost: () => undefined,
   }
@@ -1071,6 +1075,82 @@ describe('SSH 采集失败：退避重挂而不是粘死（D83）', () => {
       expect(session.statsFailed).toBe(false)
     } finally {
       vi.useRealTimers()
+    }
+  })
+})
+
+/* ------------------------------------------------------------------ *
+ * 失败徽标（hint 帧，0.24.0）
+ *
+ * 徽标是「失败即解释」的**入口**，它错了整个功能就没人用得上：不弹 = 功能不存在，
+ * 乱弹（0 / Ctrl-C / 同一条命令反复弹）= 用户把它关掉。所以这一节钉的全是**时机**。
+ * ------------------------------------------------------------------ */
+
+describe('失败徽标（hint 帧）', () => {
+  /** 喂一对 B..D 标记：这就是 shell 集成眼里「跑完一条命令」的样子（输出落在 B..D 之间）。 */
+  function finishCommand(h: Harness, code: number, body = 'boom'): void {
+    h.ptys[0].output.write('\x1b]133;B\x07' + body + '\x1b]133;D;' + String(code) + '\x07')
+  }
+
+  const settle = (ms = 60): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+  it('命令非零退出 → 一条 hint 帧，带退出码', async () => {
+    const h = makeHarness({ assistEnabled: true })
+    try {
+      const ws = h.connect()
+      await spawnLocal(ws, 'abc123')
+      finishCommand(h, 2)
+      expect(await ws.waitFor('hint')).toMatchObject({ t: 'hint', sid: 'abc123', kind: 'failure', exitCode: 2 })
+    } finally {
+      await h.sessions.disposeAll()
+    }
+  })
+
+  it('开关关着时一个 hint 都不发（默认关 = 这个功能完全不外发）', async () => {
+    const h = makeHarness()
+    try {
+      const ws = h.connect()
+      await spawnLocal(ws, 'abc123')
+      finishCommand(h, 2)
+      await settle()
+      expect(ws.sent('hint')).toEqual([])
+    } finally {
+      await h.sessions.disposeAll()
+    }
+  })
+
+  it('0 / 130（Ctrl-C）/ 141（SIGPIPE）都不弹——这三个天天出现，误报会逼用户关掉功能', async () => {
+    const h = makeHarness({ assistEnabled: true })
+    try {
+      const ws = h.connect()
+      await spawnLocal(ws, 'abc123')
+      for (const code of [0, 130, 141]) finishCommand(h, code)
+      await settle()
+      expect(ws.sent('hint')).toEqual([])
+    } finally {
+      await h.sessions.disposeAll()
+    }
+  })
+
+  it('同一条命令只弹一次（否则用户关掉徽标后，终端再吐一个字节它就重新冒出来）', async () => {
+    const h = makeHarness({ assistEnabled: true })
+    try {
+      const ws = h.connect()
+      await spawnLocal(ws, 'abc123')
+      finishCommand(h, 1)
+      await ws.waitFor('hint')
+      // 后续输出（回显、下一条命令的提示符）都会再走一遍判定，但 seq 没变
+      h.ptys[0].output.write('后续输出\r\n')
+      await settle()
+      expect(ws.sent('hint')).toHaveLength(1)
+      // 下一条**新的**失败命令：要能再弹（去重不能把后续失败一起吞掉）
+      finishCommand(h, 3, 'second')
+      await settle()
+      const hints = ws.sent('hint')
+      expect(hints).toHaveLength(2)
+      expect(hints.at(-1)).toMatchObject({ exitCode: 3 })
+    } finally {
+      await h.sessions.disposeAll()
     }
   })
 })

@@ -41,6 +41,9 @@
  *   B34. 退出后的只读保留（D77）：命令跑完仍可读、写被拒、tty_close 释放
  *   B35. `tty_open command=` 执行整段 shell 代码（D78）：`a; b` / `cd x && cmd` /
  *        `for` 不被 exec 截断，退出码取自最后一条
+ *   B36. agent 单会话闭环（0.23.0）：tty_list 的 running / lastExitCode（真 shell 集成
+ *        的 A/B/D 标记）、tty_send 的具名 keys（Enter 提交 / C-c 打断 / 未知名报错）、
+ *        tty_run 一条命令一次调用（输出+退出码+默认关会话 / 超时不杀 / keep 保留）
  *
  * 用法：pnpm --filter @hyzyn/dsh-tty integration
  * 退出码：0 = 全部 PASS，1 = 任一 FAIL。
@@ -1582,8 +1585,9 @@ async function run() {
     if (on.status === 200 && on.body.config?.enabled === true) pass('B29h 重新启用生效')
     else fail('B29h 重新启用生效', `status=${String(on.status)}`)
     await sleep(100)
-    if (toolDefs.length === 16) pass('B29i 重新启用后 16 个 agent 工具回归')
-    else fail('B29i 重新启用后 16 个 agent 工具回归', `当前 ${String(toolDefs.length)}`)
+    // 0.23.0：tty_run 加入后是 17 个
+    if (toolDefs.length === 17) pass('B29i 重新启用后 17 个 agent 工具回归')
+    else fail('B29i 重新启用后 17 个 agent 工具回归', `当前 ${String(toolDefs.length)}`)
     if (promptParts.length === 2) pass('B29j 重新启用后公告与动态快照恢复')
     else fail('B29j 重新启用后公告与动态快照恢复', `当前 ${String(promptParts.length)}`)
     const again = openSession(port)
@@ -2020,6 +2024,160 @@ async function run() {
       for (const sid of opened) {
         try {
           await close.execute({ sid })
+        } catch {
+          /* 已释放 */
+        }
+      }
+    }
+  }
+
+  // B36: agent 单会话闭环（0.23.0）—— tty_list 的 running / lastExitCode、tty_send 的
+  // 具名 keys、tty_run 的一条命令一次调用。
+  //
+  // 这一节要的是**真 shell 集成**：running 的判据建立在 OSC 133 标记上，假 PTY 测不出
+  // 「标记真的会到、命令真的会结束」。这里用真 PTY 里跑的 zsh/bash 走一遍。
+  console.log('\n[34] agent 单会话闭环（0.23.0）')
+  {
+    const open36 = toolDefs.find((d) => d.name === 'tty_open')
+    const close36 = toolDefs.find((d) => d.name === 'tty_close')
+    const list36 = toolDefs.find((d) => d.name === 'tty_list')
+    const capture36 = toolDefs.find((d) => d.name === 'tty_capture')
+    const send36 = toolDefs.find((d) => d.name === 'tty_send')
+    const run36 = toolDefs.find((d) => d.name === 'tty_run')
+    if (open36 === undefined || close36 === undefined || list36 === undefined || capture36 === undefined || send36 === undefined || run36 === undefined) {
+      fail('B36 0.23.0 工具集', '缺工具: ' + toolDefs.map((d) => d.name).join(','))
+    } else {
+      const opened = []
+      const entryOf = async (sid) => ((await list36.execute({})).sessions ?? []).find((x) => x.sid === sid) ?? null
+      /** 轮询到谓词为真（工具侧的效果随输出流异步到达）。 */
+      const until = async (fn, ms = 10000) => {
+        const deadline = Date.now() + ms
+        for (;;) {
+          let value = null
+          try {
+            value = await fn()
+          } catch {
+            value = null
+          }
+          if (value) return value
+          if (Date.now() > deadline) return null
+          await sleep(150)
+        }
+      }
+      try {
+        // ① 交互会话：提示符上 running=false（A 标记到了）→ 发命令 running=true →
+        //    跑完 running=false 且 lastExitCode/lastExitAt 就位
+        const interactive = await open36.execute({ cwd: '/tmp' })
+        opened.push(interactive.sid)
+        const atPrompt = await until(async () => {
+          const e = await entryOf(interactive.sid)
+          return e !== null && e.running === false ? e : null
+        })
+        if (atPrompt !== null) pass('B36a 交互会话在提示符上 running=false（真 shell 集成标记到了）')
+        else fail('B36a 交互会话在提示符上 running=false', JSON.stringify(await entryOf(interactive.sid)))
+
+        await send36.execute({ sid: interactive.sid, data: 'sleep 2; echo LOOPDONE\n' })
+        const busy = await until(async () => {
+          const e = await entryOf(interactive.sid)
+          return e !== null && e.running === true ? e : null
+        })
+        if (busy !== null) pass('B36b 命令在跑时 running=true（B 标记之后、D 之前）')
+        else fail('B36b 命令在跑时 running=true', JSON.stringify(await entryOf(interactive.sid)))
+
+        const settled = await until(async () => {
+          const e = await entryOf(interactive.sid)
+          return e !== null && e.running === false && e.lastExitCode === 0 ? e : null
+        }, 15000)
+        if (settled !== null && typeof settled.lastExitAt === 'number') pass('B36c 命令跑完 running=false 且 lastExitCode/lastExitAt 就位')
+        else fail('B36c 命令跑完 running=false 且 lastExitCode/lastExitAt 就位', JSON.stringify(await entryOf(interactive.sid)))
+
+        // ② 命令型会话（不注入钩子）：活着就是在跑——判据不能只依赖 shell 集成
+        const commandSession = await open36.execute({ cwd: '/tmp', command: 'sleep 10' })
+        opened.push(commandSession.sid)
+        const cmdEntry = await until(async () => {
+          const e = await entryOf(commandSession.sid)
+          return e !== null && e.running === true ? e : null
+        })
+        if (cmdEntry !== null) pass('B36d 命令型会话活着即 running=true（不依赖 shell 集成）')
+        else fail('B36d 命令型会话活着即 running=true', JSON.stringify(await entryOf(commandSession.sid)))
+
+        // ③ keys：Enter 提交命令；C-c 打断正在跑的命令；未知名报错
+        await send36.execute({ sid: interactive.sid, data: "printf 'KEYS_%s\\n' OK", keys: ['Enter'] })
+        const keyTail = await until(async () => {
+          const out = await capture36.execute({ sid: interactive.sid, lines: 60 })
+          return String(out.tail ?? '').includes('KEYS_OK') ? out : null
+        })
+        if (keyTail !== null) pass('B36e keys 里的 Enter 真的提交了命令行（printf + keys:[Enter]）')
+        else fail('B36e keys 里的 Enter 提交命令行', JSON.stringify(await capture36.execute({ sid: interactive.sid, lines: 40 })).slice(0, 160))
+
+        await send36.execute({ sid: interactive.sid, data: 'sleep 30\n' })
+        await until(async () => (await entryOf(interactive.sid))?.running === true, 8000)
+        await send36.execute({ sid: interactive.sid, keys: ['C-c'] })
+        const interrupted = await until(async () => {
+          const e = await entryOf(interactive.sid)
+          return e !== null && e.running === false ? e : null
+        }, 10000)
+        if (interrupted !== null) pass('B36f keys 里的 C-c 打断了正在跑的命令（提示符回来了）')
+        else fail('B36f keys 里的 C-c 打断命令', JSON.stringify(await entryOf(interactive.sid)))
+
+        let keyRefused = false
+        try {
+          await send36.execute({ sid: interactive.sid, keys: ['DownArrow'] })
+        } catch {
+          keyRefused = true
+        }
+        if (keyRefused) pass('B36g 未知按键名明确报错（不静默当字面量发出去）')
+        else fail('B36g 未知按键名明确报错', '居然发出去了')
+
+        // ④ tty_run：一条命令一次调用
+        const ran = await run36.execute({ command: "printf 'RUN_%s\\n' OK; exit 7", cwd: '/tmp', timeoutSec: 30 })
+        const runGone = !((await list36.execute({})).sessions ?? []).some((x) => x.sid === ran.sid)
+        if (ran.running === false && ran.exitCode === 7 && ran.closed === true && String(ran.tail).includes('RUN_OK') && runGone) {
+          pass('B36h tty_run 一次调用拿回输出+退出码并关掉会话')
+        } else {
+          fail('B36h tty_run 一次调用拿回输出+退出码并关掉会话', JSON.stringify({ ...ran, tail: String(ran.tail).slice(0, 80) }))
+        }
+
+        const timedOut = await run36.execute({ command: 'sleep 30', cwd: '/tmp', timeoutSec: 1 })
+        const stillThere = await entryOf(timedOut.sid)
+        if (timedOut.running === true && timedOut.closed === false && stillThere !== null && stillThere.exited === undefined) {
+          pass('B36i tty_run 超时回 running:true 且不杀会话')
+          opened.push(timedOut.sid)
+        } else {
+          fail('B36i tty_run 超时回 running:true 且不杀会话', JSON.stringify({ timedOut, stillThere }))
+        }
+
+        const kept = await run36.execute({ command: "printf 'KEEP_%s\\n' OK", cwd: '/tmp', timeoutSec: 30, keep: true })
+        opened.push(kept.sid)
+        const keptTail = await until(async () => {
+          const out = await capture36.execute({ sid: kept.sid, lines: 40 })
+          return String(out.tail ?? '').includes('KEEP_OK') ? out : null
+        })
+        if (kept.running === false && kept.closed === false && keptTail !== null && keptTail.exited === true) {
+          pass('B36j tty_run keep:true 留在只读保留态且输出仍可读')
+        } else {
+          fail('B36j tty_run keep:true 留在只读保留态且输出仍可读', JSON.stringify({ kept, tail: String(keptTail?.tail ?? '').slice(0, 80) }))
+        }
+
+        // ⑤ D87：命令型会话没有「上一条命令」——报错要指向 lines，别再把人引向
+        //    「shell 不受支持 / 集成被配置关闭」（用户验收现场就是这么撞上的）
+        let lastRefused = ''
+        try {
+          await capture36.execute({ sid: kept.sid, last: true })
+        } catch (error) {
+          lastRefused = String(error?.message ?? error)
+        }
+        if (lastRefused.includes('命令型会话') && lastRefused.includes('lines') && !lastRefused.includes('shell 不受支持或被配置关闭')) {
+          pass('B36k 命令型会话的 last:true 报错指向 lines（D87）')
+        } else {
+          fail('B36k 命令型会话的 last:true 报错指向 lines（D87）', JSON.stringify(lastRefused).slice(0, 200))
+        }
+      } catch (error) {
+        fail('B36 agent 单会话闭环', error.message)
+      }
+      for (const sid of opened) {
+        try {
+          await close36.execute({ sid })
         } catch {
           /* 已释放 */
         }

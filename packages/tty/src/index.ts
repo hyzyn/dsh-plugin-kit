@@ -83,7 +83,7 @@ import WebSocket, { WebSocketServer } from 'ws'
 import xtermHeadless from '@xterm/headless'
 const HeadlessTerminal = xtermHeadless.Terminal
 type HeadlessTerminal = InstanceType<typeof HeadlessTerminal>
-import { definePlugin, dshHome as resolveDshHome, hasSameOriginProof, isLoopbackRequestStrict, plainConfig, settingsEntryScope, suppressAutoSettingsPage } from '@hyzyn/dsh-kit'
+import { definePlugin, dshHome as resolveDshHome, getService, hasSameOriginProof, isLoopbackRequestStrict, plainConfig, settingsEntryScope, suppressAutoSettingsPage } from '@hyzyn/dsh-kit'
 import type { SettingsEntryScope } from '@hyzyn/dsh-kit'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { sanitizeJumpSpec, sanitizeProxyCommand, spawnSsh, sshTarget, expandHome, setCredentialResolver, setProxyCommandPolicy, validateJumpSpec, validateProxyCommand } from './ssh.js'
@@ -101,6 +101,7 @@ import {
 import type { CredentialResolver, HostKeyRecord, SshHostEntry, SshSpec, TermExit, TermHandle } from './ssh.js'
 import { probeSsh } from './probe.js'
 import { buildCommandSpawn, buildShellSpawn, commandShellHint, defaultShellPath } from './shell-integration.js'
+import { KEY_VOCABULARY, resolveKeys } from './keys.js'
 import { parseSshConfigDetailed } from './ssh-config.js'
 import { parseKnownHostsDetailed } from './known-hosts.js'
 import { TunnelManager } from './tunnels.js'
@@ -109,6 +110,9 @@ import { SftpManager } from './sftp.js'
 import { buildTmuxSpawnPlan, ensureTmuxAssets, killTmuxSession, listTmuxSessions, probeTmux, refreshTmuxClient, sanitizePersistName } from './tmux.js'
 import { buildRemoteStatsCommand, buildWindowsStatsCommand, hasStatsData, localStatsSampler, parseStatsLine } from './stats.js'
 import type { StatsFrame } from './stats.js'
+import { cleanAnsi } from './ansi.js'
+import { buildFailurePrompt, extractCommandFromAnswer, plainAnswerText, shouldExplainExit } from './assist.js'
+import type { AssistPromptInput } from './assist.js'
 
 export type { HostKeyRecord } from './ssh.js'
 
@@ -147,6 +151,18 @@ export interface Config {
   sftpLimits?: Partial<SftpLimits>
   /** 服务器状态条（0.17.0）：是否采集并推送会话资源指标（CPU/内存/磁盘/uptime/TCP/网速/温度）。默认开。 */
   statsEnabled?: boolean
+  /**
+   * AI 辅助「失败即解释」（0.24.0）：**默认关**（见下方 assistProvider 的成对规则）。
+   *
+   * 打开后，命令以非零状态结束时宿主会把**那条命令的输出尾部**（经清洗、去重、截断
+   * 与轻量遮盖）发给模型，换回一段「发生了什么 / 下一步」。所以这个开关不只是功能开关，
+   * 它同时是一次**数据外发**的授权——默认关，卡片上必须把这件事写清楚。
+   */
+  assistEnabled?: boolean
+  /** AI 辅助的模型路由 provider；与 assistModel **成对**（都留空 = 跟随宿主默认模型，只填一个按未配置处理）。 */
+  assistProvider?: string
+  /** AI 辅助的模型路由 model；与 assistProvider 成对。 */
+  assistModel?: string
   /**
    * 允许 ProxyCommand（本机命令执行）：**默认关**。
    *
@@ -254,6 +270,9 @@ export const Config: z = z.object({
   persistence: z.union([z.const('off'), z.const('tmux')]).default('off').volatile(),
   endOnPageClose: z.boolean().default(false).volatile(),
   statsEnabled: z.boolean().default(true).volatile(),
+  assistEnabled: z.boolean().default(false).volatile(),
+  assistProvider: z.string().default('').volatile(),
+  assistModel: z.string().default('').volatile(),
   sftpLimits: z.object({
     maxDownloadMb: z.natural().max(1024 * 1024).default(1024),
     maxUploadMb: z.natural().max(1024 * 1024).default(2048),
@@ -380,7 +399,7 @@ const STATS_RETRY_MAX_MS = 300_000
 const STATS_ONESHOT_TIMEOUT_MS = 15_000
 
 const TTY_GUIDANCE =
-  '本机已安装 dsh-tty 插件（终端面板）：Web GUI 侧边栏的「终端」入口可打开交互终端（xterm.js + PTY），可运行任意命令与 TUI 程序（vim/htop 等），支持多标签页与断线自动重连（刷新页面/网络抖动后会话保活并恢复现场）；新标签默认在当前会话工作目录打开。标签栏「+」菜单还能开 SSH 标签页（ssh2 原生连接，连接簿在设置卡片维护，支持 agent forwarding 与主机指纹 TOFU 钉扎；连接簿条目可配单跳跳板机 ProxyJump），像本地终端一样操作远程主机。设置卡片开启「会话持久化（tmux）」后，新开的本地/SSH 标签默认由 tmux server 托管（宿主重启/断线超时后重开即恢复现场），长任务建议在持久化开启时运行。长驻进程（dev server、watch、交互式程序）用 tty_open 开一个会话跑（或引导用户到终端面板里运行），不要在 bash 工具里挂起等待；用户提到「开个终端 / 在终端里跑 / SSH 到某台机器」时引导其打开该面板。agent 侧配套工具：tty_list 列出活跃终端会话（含 SSH 的 target 与实时 cwd），tty_capture 读取近期输出（默认清洗 ANSI；last:true 拿「上一条命令」的输出+退出码），tty_screen 读取当前可见屏幕（可读懂 vim/htop 等 TUI），tty_expect 用正则等待输出中的就绪信号（如 dev server URL、构建完成；它**先回看还没读过的已到达输出**，命令瞬间跑完也不会白等——超时若只返回一句诊断文案，别当成「命令没执行」），tty_send 发送按键，tunnel_list 列出端口转发隧道状态——操作会实时显示在用户终端里。SFTP 文件传输：面板内可对 SSH 连接簿条目（或 SSH 连接对话框当前填写的信息）打开文件浏览（上传/下载/建目录/重命名/删除），传输期间进度条右侧 ✕ 可取消（半截文件自动清理）；agent 配套 sftp_list 列远程目录、sftp_tree 递归看目录结构、sftp_read 读远程文本文件（≤1MB）、sftp_write 写远程文本文件（≤1MB，可追加）、sftp_mkdir 建目录（parents 可逐级补齐）、sftp_rename 重命名/移动、sftp_remove 删除（目录需 recursive），book 参数为连接簿条目名。端口转发：连接簿条目可配本地/远程隧道（如把远程数据库映射到本地端口），宿主自动保活重连，用户提到「转发端口 / 访问远程库」时引导其到终端面板设置卡片配置。推荐流程：tty_send 启动长任务 → tty_expect 等就绪标记 → tty_capture{last:true} 拿结果。'
+  '本机已安装 dsh-tty 插件（终端面板）：Web GUI 侧边栏的「终端」入口可打开交互终端（xterm.js + PTY），可运行任意命令与 TUI 程序（vim/htop 等），支持多标签页与断线自动重连（刷新页面/网络抖动后会话保活并恢复现场）；新标签默认在当前会话工作目录打开。标签栏「+」菜单还能开 SSH 标签页（ssh2 原生连接，连接簿在设置卡片维护，支持 agent forwarding 与主机指纹 TOFU 钉扎；连接簿条目可配单跳跳板机 ProxyJump），像本地终端一样操作远程主机。设置卡片开启「会话持久化（tmux）」后，新开的本地/SSH 标签默认由 tmux server 托管（宿主重启/断线超时后重开即恢复现场），长任务建议在持久化开启时运行。长驻进程（dev server、watch、交互式程序）用 tty_open 开一个会话跑（或引导用户到终端面板里运行），不要在 bash 工具里挂起等待；用户提到「开个终端 / 在终端里跑 / SSH 到某台机器」时引导其打开该面板。agent 侧配套工具：tty_list 列出活跃终端会话（含 SSH 的 target、实时 cwd，以及 `running`——这个会话**有没有命令在跑**，文本里三态写作 `[空闲]` / `[运行中——现在别往里发命令]` / `[命令状态未知]`；命令状态未知**不是**没在跑），tty_capture 读取近期输出（默认清洗 ANSI；last:true 拿「上一条命令」的输出+退出码），tty_screen 读取当前可见屏幕（可读懂 vim/htop 等 TUI），tty_expect 用正则等待输出中的就绪信号（如 dev server URL、构建完成；它**先回看还没读过的已到达输出**，命令瞬间跑完也不会白等——超时若只返回一句诊断文案，别当成「命令没执行」），tty_send 发送按键（控制键/方向键用具名 `keys`，别在 data 里拼转义序列），tty_run 一次调用跑完一条命令并直接拿回尾部输出+退出码（想省掉 open→等→capture→close 四步时用它），tunnel_list 列出端口转发隧道状态——操作会实时显示在用户终端里。SFTP 文件传输：面板内可对 SSH 连接簿条目（或 SSH 连接对话框当前填写的信息）打开文件浏览（上传/下载/建目录/重命名/删除），传输期间进度条右侧 ✕ 可取消（半截文件自动清理）；agent 配套 sftp_list 列远程目录、sftp_tree 递归看目录结构、sftp_read 读远程文本文件（≤1MB）、sftp_write 写远程文本文件（≤1MB，可追加）、sftp_mkdir 建目录（parents 可逐级补齐）、sftp_rename 重命名/移动、sftp_remove 删除（目录需 recursive），book 参数为连接簿条目名。端口转发：连接簿条目可配本地/远程隧道（如把远程数据库映射到本地端口），宿主自动保活重连，用户提到「转发端口 / 访问远程库」时引导其到终端面板设置卡片配置。推荐流程：tty_send 启动长任务 → tty_expect 等就绪标记 → tty_capture{last:true} 拿结果。'
 
 /* ------------------------------------------------------------------ *
  * 类型
@@ -522,6 +541,12 @@ interface TtySession {
   kind: 'local' | 'ssh'
   /** SSH 会话的展示目标（user@host[:port]）；本地会话为空串。 */
   target: string
+  /**
+   * 命令型会话（0.23.0）：`tty_open command=` / `tty_run` / SSH 的 exec 标签 ——
+   * 进程本身就是那条命令，**活着就等于在跑**、退出就等于命令结束。
+   * tty_list 的 `running` 对这类会话不依赖 shell 集成（它们不注入钩子）。
+   */
+  commandSession: boolean
   startedAt: number
   lastOutputAt: number
   /** 最近一次 PTY 输入（input 帧 / tty_send）的时间戳：tty_capture{last} 的在途判据之一。 */
@@ -532,6 +557,8 @@ interface TtySession {
   readSeq: number
   /** 水位线最近一次推进的时刻（D72）：`lastCommand.endedAt > readMarkAt` = 这条命令的输出还没被读过。 */
   readMarkAt: number
+  /** 已经就「失败」弹过徽标的那条命令的 `lastCommand.seq`（0.24.0）；-1 = 还没弹过。 */
+  assistHintedSeq: number
   /**
    * 最近若干条「agent 提交过的命令行」（D75，来自 `tty_send` 且带行尾的那些）：
    * 无 shell 集成时 PTY 会把它们**原样回显**进输出流，`tty_expect` 拿回显当命中
@@ -643,6 +670,11 @@ class LiveConfig {
   endOnPageClose: boolean
   /** 服务器状态条：是否采集并推送会话资源指标（默认 true）。 */
   statsEnabled: boolean
+  /** AI 辅助「失败即解释」：默认关（见 Config.assistEnabled）。 */
+  assistEnabled: boolean
+  /** AI 辅助的模型路由（provider / model 成对；都空 = 跟随宿主默认模型）。 */
+  assistProvider: string
+  assistModel: string
   /** SSH 持久会话名（远程 tmux 托管；本机 socket 清单看不到，随 settings 留存）。 */
   persistSessions: string[]
   /** SFTP 传输限制（客户端浏览器侧执行）。 */
@@ -650,7 +682,7 @@ class LiveConfig {
   /** 允许 ProxyCommand（本机命令执行）：默认关（见 Config.allowProxyCommand）。 */
   allowProxyCommand: boolean
 
-  constructor(init: { shell: string; term: string; colorTerm: string; cwd: string; reconnectGraceSec: number; sshHosts?: SshHostEntry[]; hostKeys?: HostKeyRecord[]; shellIntegration: boolean; tunnels?: TunnelSpec[]; persistence?: 'off' | 'tmux'; endOnPageClose?: boolean; statsEnabled?: boolean; sftpLimits?: Partial<SftpLimits>; allowProxyCommand?: boolean; persistSessions?: string[] }) {
+  constructor(init: { shell: string; term: string; colorTerm: string; cwd: string; reconnectGraceSec: number; sshHosts?: SshHostEntry[]; hostKeys?: HostKeyRecord[]; shellIntegration: boolean; tunnels?: TunnelSpec[]; persistence?: 'off' | 'tmux'; endOnPageClose?: boolean; statsEnabled?: boolean; sftpLimits?: Partial<SftpLimits>; allowProxyCommand?: boolean; persistSessions?: string[]; assistEnabled?: boolean; assistProvider?: string; assistModel?: string }) {
     this.shell = init.shell
     this.term = sanitizeTermValue(init.term, 'xterm-256color')
     this.colorTerm = sanitizeTermValue(init.colorTerm, 'truecolor')
@@ -668,10 +700,14 @@ class LiveConfig {
     // 缺省/旧配置一律视为**关**（这一档是「本机命令执行」，只有显式 true 才开）
     this.allowProxyCommand = init.allowProxyCommand === true
     this.persistSessions = init.persistSessions ?? []
+    // AI 辅助同样「只有显式 true 才开」：它会把终端内容发往模型，缺省必须是关
+    this.assistEnabled = init.assistEnabled === true
+    this.assistProvider = typeof init.assistProvider === 'string' ? init.assistProvider.trim() : ''
+    this.assistModel = typeof init.assistModel === 'string' ? init.assistModel.trim() : ''
   }
 
   /** 合并部分更新；空字符串/undefined 保持原值；sshHosts/hostKeys/tunnels 传数组即整体替换。 */
-  apply(partial: Partial<{ shell: string; term: string; colorTerm: string; cwd: string; reconnectGraceSec: number; sshHosts: SshHostEntry[]; hostKeys: HostKeyRecord[]; shellIntegration: boolean; tunnels: TunnelSpec[]; persistence: 'off' | 'tmux'; endOnPageClose: boolean; statsEnabled: boolean; sftpLimits?: Partial<SftpLimits>; allowProxyCommand: boolean; persistSessions: string[] }>): void {
+  apply(partial: Partial<{ shell: string; term: string; colorTerm: string; cwd: string; reconnectGraceSec: number; sshHosts: SshHostEntry[]; hostKeys: HostKeyRecord[]; shellIntegration: boolean; tunnels: TunnelSpec[]; persistence: 'off' | 'tmux'; endOnPageClose: boolean; statsEnabled: boolean; sftpLimits?: Partial<SftpLimits>; allowProxyCommand: boolean; persistSessions: string[]; assistEnabled: boolean; assistProvider: string; assistModel: string }>): void {
     if (typeof partial.shell === 'string' && partial.shell.trim() !== '') this.shell = partial.shell.trim()
     if (typeof partial.term === 'string' && partial.term.trim() !== '') this.term = sanitizeTermValue(partial.term, this.term)
     if (typeof partial.colorTerm === 'string' && partial.colorTerm.trim() !== '') this.colorTerm = sanitizeTermValue(partial.colorTerm, this.colorTerm)
@@ -689,6 +725,13 @@ class LiveConfig {
     if (partial.sftpLimits !== undefined) this.sftpLimits = sanitizeSftpLimits({ ...this.sftpLimits, ...partial.sftpLimits })
     if (typeof partial.allowProxyCommand === 'boolean') this.allowProxyCommand = partial.allowProxyCommand
     if (Array.isArray(partial.persistSessions)) this.persistSessions = partial.persistSessions
+    if (typeof partial.assistEnabled === 'boolean') this.assistEnabled = partial.assistEnabled
+    /*
+     * 这两个字段**刻意偏离**本方法的「空串保持原值」惯例：空串是「清掉路由、跟随宿主
+     * 默认模型」这个**真实意图**，按惯例处理的话路由一旦填上就再也删不掉（只能重启）。
+     */
+    if (typeof partial.assistProvider === 'string') this.assistProvider = partial.assistProvider.trim()
+    if (typeof partial.assistModel === 'string') this.assistModel = partial.assistModel.trim()
   }
 
   findSshHost(name: string): SshHostEntry | undefined {
@@ -791,16 +834,9 @@ function tailFromSafeBoundary(text: string, cap: number): string {
  * （要完整画面用 tty_screen / xterm-headless 虚拟屏）。
  */
 function cleanAnsiTail(raw: string): string {
-  const withoutOsc = raw.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
-  const withoutCsi = withoutOsc.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
-  const withoutEsc = withoutCsi.replace(/\x1b[@-Z\\-_]/g, '')
-  // 先把「行尾 \r\n」（zsh 行结束常为 \r\r\n）归一成 \n，再按同行覆盖处理
-  // 剩余孤立的 \r —— 否则回显/输出行会被误判为覆盖而整行抹掉
-  const normalized = withoutEsc.replace(/\r+\n/g, '\n')
-  return normalized.split('\n').map((line) => {
-    const idx = line.lastIndexOf('\r')
-    return idx === -1 ? line : line.slice(idx + 1)
-  }).join('\n')
+  // 实现已抽到 ./ansi.ts（0.24.0）：「失败即解释」的上下文压缩建立在同一套正则上，
+  // 各留一份必然漂移。这里保持名字与逐字节相同的行为，调用点一个都不用改。
+  return cleanAnsi(raw)
 }
 
 /** OSC 133 命令标记帧：\x1b]133;<A|B|D|T>[;<payload>](BEL|ST)。
@@ -844,16 +880,29 @@ const FLUSH_SIZE_CHARS = 64 * 1024
 interface ShellIntegrationState {
   /** 跨 chunk 未闭合 OSC 序列的残包缓冲（≤512KB，超限丢弃；上限容纳 T 快照——200 行 tmux capture-pane 的 base64 可到数百 KB）。 */
   carry: string
+  /**
+   * 这个会话**见过至少一个 OSC 133 标记**（0.23.0）。tty_list 的 `running` 能不能
+   * 下结论全看它：没有标记 = 命令边界不可信（非持久 SSH / fish·csh / Windows 本地 /
+   * 集成被关 / tmux <3.3 吞了 DCS 信封），此时**必须报「未知」而不是「没在跑」**。
+   */
+  sawMark: boolean
   /** B..D 之间：命令输出捕获中。 */
   inCommand: boolean
   cmdBuffer: string
   /** T 标记带来的 pane 快照（tmux 持久标签；D 时优先于 cmdBuffer）。 */
   pendingT: string | null
-  lastCommand: { output: string; exitCode: number | null; endedAt: number } | null
+  /**
+   * 上一条已完成命令。`seq` 是**单调序号**（每见到一个 D 自增）：AI 辅助的失败徽标按它
+   * 去重——用 `endedAt`（Date.now()）的话，同一毫秒内连跑两条命令会撞成同一条，第二条
+   * 就再也弹不出徽标。
+   */
+  lastCommand: { output: string; exitCode: number | null; endedAt: number; seq: number } | null
+  /** 命令完成序号（单调自增，见 lastCommand.seq）。 */
+  cmdSeq: number
 }
 
 function createShellState(): ShellIntegrationState {
-  return { carry: '', inCommand: false, cmdBuffer: '', pendingT: null, lastCommand: null }
+  return { carry: '', sawMark: false, inCommand: false, cmdBuffer: '', pendingT: null, lastCommand: null, cmdSeq: 0 }
 }
 
 /** OSC 133;T 的 base64 payload → utf8 文本（无效输入返回 null）。 */
@@ -907,6 +956,7 @@ export function feedShellIntegration(session: TtySession, text: string): void {
   OSC133_RE.lastIndex = 0
   let cursor = 0
   for (const match of data.matchAll(OSC133_RE)) {
+    state.sawMark = true // 命令边界从此可信（A/B/D/T 任意一个都算）
     const segment = data.slice(cursor, match.index).replace(OSC7_RE, '')
     if (state.inCommand && segment !== '') {
       state.cmdBuffer = (state.cmdBuffer + segment).slice(-COMMAND_CAP)
@@ -921,10 +971,12 @@ export function feedShellIntegration(session: TtySession, text: string): void {
     } else if (kind === 'D') {
       if (state.inCommand) {
         const exitCode = match[2] !== undefined && /^\d+$/.test(match[2]) ? Number(match[2]) : null
+        state.cmdSeq += 1
         state.lastCommand = {
           output: (state.pendingT ?? state.cmdBuffer).slice(-COMMAND_CAP),
           exitCode: exitCode !== null && Number.isFinite(exitCode) ? exitCode : null,
           endedAt: Date.now(),
+          seq: state.cmdSeq,
         }
         state.inCommand = false
         state.cmdBuffer = ''
@@ -938,6 +990,329 @@ export function feedShellIntegration(session: TtySession, text: string): void {
     const rest = data.slice(cursor).replace(OSC7_RE, '')
     if (rest !== '') state.cmdBuffer = (state.cmdBuffer + rest).slice(-COMMAND_CAP)
   }
+}
+
+/**
+ * 「这个会话有没有命令在跑」的判据（0.23.0，tty_list 的 `running`）。
+ *
+ * 三态是刻意的：`running` **省略**表示这个会话根本没有可信的命令边界（没见过
+ * OSC 133 标记），而**不是**「没在跑」。把未知报成 false 会让 agent 往一个正在
+ * 跑的程序里塞命令——往 vim / apt / less 的交互提示里打字，那些字节被当输入吃掉，
+ * 是要等下一次 expect 超时才发现的静默事故。
+ *
+ * 两条不依赖 shell 集成的确定性判据：
+ *   - 进程已退出 → 没在跑（false）；
+ *   - **命令型会话**（`tty_open command=` / `tty_run` / SSH 的 exec 标签）的进程
+ *     **就是**那条命令 → 活着就等于在跑（true）。这里刻意不看 inCommand：命令型
+ *     会话不注入 shell 集成钩子，D 标记永远不会来。
+ */
+function runningOf(session: TtySession): { running?: boolean; lastExitCode?: number; lastExitAt?: number } {
+  const state = session.shellState
+  const last = state.lastCommand
+  // 「上一条已完成命令」只在标记可信时说（否则 lastCommand 永远是 null，
+  // 本来也不会进这条分支；sawMark 是给「标记中途失效」留的守卫）
+  const lastInfo = last === null || !state.sawMark
+    ? {}
+    : {
+        ...(last.exitCode === null ? {} : { lastExitCode: last.exitCode }),
+        lastExitAt: last.endedAt,
+      }
+  if (session.exited !== null) return { running: false, ...lastInfo }
+  if (session.commandSession) return { running: true, ...lastInfo }
+  if (!state.sawMark) return {}
+  return { running: state.inCommand, ...lastInfo }
+}
+
+/**
+ * 等一个命令型会话的进程结束（tty_run 用；超时返回 false，不抛错、不杀会话）。
+ *
+ * 为什么用 `handle.done` 而不是轮询 `session.exited`：`watchDone` 在同一 promise 上
+ * **先**注册（spawn 时就挂上了），promise 回调按注册顺序跑，所以本函数的 then 一定
+ * 排在 `finishSession` 之后——回来时缓冲已 force 冲刷（D76 的终局尾巴）、
+ * `session.exited` 已就位。命令瞬间跑完也不会白等：done 早已 resolve，then 立刻跑。
+ */
+async function waitForSessionExit(session: TtySession, timeoutMs: number): Promise<boolean> {
+  if (session.exited !== null) return true
+  let timer: ReturnType<typeof setTimeout> | null = null
+  try {
+    return await Promise.race([
+      session.handle.done.then(() => true, () => true),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => { resolve(false) }, timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timer !== null) clearTimeout(timer)
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * AI 辅助「失败即解释」（0.24.0）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 宿主 llm 服务的流式块（只声明本插件用到的字段，其余块忽略）。
+ *
+ * ⚠️ **finish 块的权威形状是 `{ type:'finish', reason: FinishReason }`**，而 FinishReason
+ * 是**以 `kind` 为判别式**的联合——也就是 `kind` 与 `failure` 都在 `reason` **里面**，
+ * 不在块的顶层。rss 曾经把这两个字段声明在顶层，于是**每一次成功**都被判成「终止原因
+ * unknown」，AI 摘要 100% 失败而单测全绿（假 llm 照着同一个错形状造数据）。这里照抄它
+ * 修好后的形状。
+ */
+interface LlmStreamChunk {
+  type?: string
+  text?: string
+  reason?: { kind?: string; failure?: { message?: string; code?: string } }
+  [key: string]: unknown
+}
+
+/**
+ * 宿主 llm 服务的最小结构（cordis Context 上的 llm 服务）。
+ *
+ * ⚠️ `messages[].content` 必须是 **ContentBlock[]**（`[{ type:'text', text }]`），不是
+ * 字符串：字符串会在下游 `contentHasImage(content)` 之类对 content 调 `.some(...)`
+ * 的地方炸成 `content.some is not a function`（rss 踩过，表现是每条都失败）。
+ */
+interface LlmLike {
+  stream(options: {
+    provider: string
+    model: string
+    system?: string
+    messages: Array<{ role: 'user'; content: Array<{ type: 'text'; text: string }> }>
+    maxTokens?: number
+    temperature?: number
+    signal?: AbortSignal
+  }): AsyncIterable<LlmStreamChunk>
+  /**
+   * 已注册的 provider 路由（设置卡片里 provider 栏的候选）。**可选**：宿主没装 llm 服务、
+   * 或该版本没有这个方法时就是「没有候选」，卡片里的输入框照旧手输。
+   */
+  listProviders?: () => unknown
+  /**
+   * 某个 provider 广告的模型（model 栏的候选）。**可选**，且**可能空**。
+   *
+   * 契约见 dsh-llm 的注释：目录只是**建议**——核心路由接受未列出的 model id，
+   * 「基础空目录、不提供 GUI 选择」是合法状态。所以这里永远不许把空候选当成错误。
+   */
+  listModels?: (provider: string) => Promise<unknown>
+}
+
+/** 一次解释请求的超时（毫秒）。用户正盯着屏幕等，30s 是「还能忍」的上限。 */
+const ASSIST_TIMEOUT_MS = 30_000
+/**
+ * 解释请求的 maxTokens。
+ *
+ * 取 4096 是 rss 的**真机实测拐点**（见 packages/rss/src/index.ts 的长注释）：推理模型
+ * 与最终答案**共享**这个预算，200 / 1024 都会让一部分请求死在 `max-tokens` 上，4096
+ * 才既容得下推理开销又不至于把整轮拖过超时。
+ */
+const ASSIST_MAX_TOKENS = 4096
+/**
+ * 取模型候选的超时（毫秒）。
+ *
+ * 比一次解释请求短得多是**故意**的：候选只是输入框旁边的建议，等不到就该让用户直接手输；
+ * 而远端目录一慢（有的适配器要去问服务端点）会把整张设置卡片吊住，那种「打开设置像卡死」
+ * 比「没有候选」糟得多。
+ */
+const MODEL_CATALOG_TIMEOUT_MS = 6_000
+
+/**
+ * 解析模型路由：显式配置对 > 宿主默认模型（服务 agentDefaultModel，兼容 currentSelection）
+ * > settings 的 agent-default-model 命名空间；全拿不到返回 error（**不是** null —— 界面要
+ * 一句能照做的原因，而不是一个「点了没反应」的徽标）。
+ *
+ * 与 rss 的 resolveAiRoute 同构，但多一条**成对规则**的显式报错：只填一个时既不生效、
+ * 也不该静默回落到宿主默认（用户以为自己配了，实际走的是别的模型）。
+ */
+export function resolveAssistRoute(ctx: Context, provider: string, model: string): { route?: { provider: string; model: string }; error?: string } {
+  const p = provider.trim()
+  const m = model.trim()
+  if (p !== '' && m !== '') return { route: { provider: p, model: m } }
+  if (p !== '' || m !== '') {
+    return { error: 'provider 与 model 需要成对填写（只填一个不生效）：补齐另一个，或两个都清空以跟随宿主默认模型' }
+  }
+  try {
+    const defaultModel = getService(ctx, 'agentDefaultModel') as { source?: () => unknown; currentSelection?: () => unknown } | undefined
+    const read = typeof defaultModel?.source === 'function'
+      ? defaultModel.source
+      : typeof defaultModel?.currentSelection === 'function'
+        ? defaultModel.currentSelection
+        : undefined
+    if (read !== undefined) {
+      const picked = pickRoute(read.call(defaultModel))
+      if (picked !== null) return { route: picked }
+    }
+    const settings = getService(ctx, 'settings') as { get?: (ns: string) => unknown } | undefined
+    if (typeof settings?.get === 'function') {
+      const picked = pickRoute(settings.get('agent-default-model'))
+      if (picked !== null) return { route: picked }
+    }
+  } catch {
+    /* 服务异常 / 命名空间未注册（get 抛 TypeError）：当作解析不到，如实回报 */
+  }
+  return { error: '没有可用的模型路由：在卡片里填 provider / model，或先给宿主配一个默认模型' }
+}
+
+/**
+ * 一次性调用宿主 llm 服务：收集 text-delta 直到 finish（导出仅供单测，照 rss 的
+ * callAiSummary 先例——只测假件的话，「忘了在路由里调用它」这种回归一条都拦不住，
+ * 而 finish 块的形状错误又恰好是 rss 踩过的坑）。
+ */
+export async function askModelOnce(llm: LlmLike, route: { provider: string; model: string }, prompt: { system: string; user: string }, timeoutMs: number = ASSIST_TIMEOUT_MS): Promise<string> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  timer.unref?.()
+  let text = ''
+  let finishKind: string | undefined
+  let finishMessage: string | undefined
+  try {
+    for await (const chunk of llm.stream({
+      provider: route.provider,
+      model: route.model,
+      system: prompt.system,
+      // content 必须是 ContentBlock[]（字符串会在下游 .some(...) 上炸）
+      messages: [{ role: 'user', content: [{ type: 'text', text: prompt.user }] }],
+      maxTokens: ASSIST_MAX_TOKENS,
+      temperature: 0.2,
+      signal: controller.signal,
+    })) {
+      if (chunk.type === 'text-delta' && typeof chunk.text === 'string') {
+        text += chunk.text
+      } else if (chunk.type === 'finish') {
+        // kind / failure 在 reason **里面**（顶层读它们会把每次成功都判成 unknown）
+        const reason = chunk.reason
+        finishKind = typeof reason?.kind === 'string' ? reason.kind : 'unknown'
+        finishMessage = reason?.failure?.message
+      }
+    }
+  } catch (error) {
+    // 主动 abort 视作超时；其余错误原样抛出（provider 报的错比「请求失败」有用得多）
+    if (controller.signal.aborted) throw new Error('请求超时（' + String(timeoutMs) + 'ms）')
+    throw error instanceof Error ? error : new Error(String(error))
+  } finally {
+    clearTimeout(timer)
+  }
+  if (finishKind === undefined) throw new Error('模型未返回终止标记')
+  if (finishKind !== 'stop') {
+    if (finishKind === 'max-tokens') {
+      // 最容易被误读成「provider 坏了」的一档：把「该调什么」直接写进原因里
+      throw new Error('输出被 maxTokens=' + String(ASSIST_MAX_TOKENS) + ' 截断（推理模型会先消耗推理 token）：换一个更轻的模型，或把上面的路由指向非推理模型')
+    }
+    throw new Error(finishMessage !== undefined ? finishKind + ': ' + finishMessage : '终止原因 ' + finishKind)
+  }
+  const answer = text.trim()
+  if (answer === '') throw new Error('模型返回了空答案')
+  return answer
+}
+
+/** 从任意值里取 provider/model 对；不完整返回 null（与 rss 的 pickRoute 同构）。 */
+function pickRoute(value: unknown): { provider: string; model: string } | null {
+  if (typeof value !== 'object' || value === null) return null
+  const record = value as { provider?: unknown; model?: unknown }
+  const provider = typeof record.provider === 'string' ? record.provider.trim() : ''
+  const model = typeof record.model === 'string' ? record.model.trim() : ''
+  return provider !== '' && model !== '' ? { provider, model } : null
+}
+
+/**
+ * 模型候选目录（设置卡片 provider / model 两栏的候选列表）。
+ *
+ * ⚠️ 目录是**建议**、不是白名单：dsh-llm 明写「核心路由接受未列出的 model id」，而
+ * 「基础空目录」是**合法**状态（那种适配器压根不提供 GUI 选择）。所以下面每一条失败路径
+ * 都收敛成**空候选**——卡片里的输入框照旧可以手输，绝不因为「取不到候选」把人锁死。
+ */
+
+/** 把目录项归一成 { id, name }：丢掉没有 id 的、按 id 去重（远端目录会重复）。 */
+function normalizeCatalogEntries(raw: unknown): Array<{ id: string; name: string }> {
+  if (!Array.isArray(raw)) return []
+  const out: Array<{ id: string; name: string }> = []
+  const seen = new Set<string>()
+  for (const item of raw) {
+    if (typeof item !== 'object' || item === null) continue
+    const record = item as { id?: unknown; name?: unknown }
+    const id = typeof record.id === 'string' ? record.id.trim() : ''
+    if (id === '' || seen.has(id)) continue
+    seen.add(id)
+    const name = typeof record.name === 'string' && record.name.trim() !== '' ? record.name.trim() : id
+    out.push({ id, name })
+  }
+  return out
+}
+
+/** 已注册的 provider 路由；服务没有这个方法、或抛错，都只当「没有候选」。导出仅供单测。 */
+export function listProvidersOf(llm: unknown): Array<{ id: string; name: string }> {
+  try {
+    const fn = (llm as { listProviders?: unknown } | null | undefined)?.listProviders
+    if (typeof fn !== 'function') return []
+    return normalizeCatalogEntries((fn as () => unknown).call(llm))
+  } catch {
+    return []
+  }
+}
+
+/**
+ * 某个 provider 广告的模型。
+ *
+ * **必须有超时**：适配器是拿远端目录喂这个方法的（pi-ai 那一族会去问服务端点），网络一慢
+ * 就会把设置卡片吊住——而候选只是「建议」，等不到就该立刻放弃、让用户直接手输。
+ */
+export async function listModelsOf(llm: unknown, provider: string, timeoutMs: number = MODEL_CATALOG_TIMEOUT_MS): Promise<Array<{ id: string; name: string }>> {
+  try {
+    const fn = (llm as { listModels?: unknown } | null | undefined)?.listModels
+    if (typeof fn !== 'function') return []
+    const pending = Promise.resolve((fn as (name: string) => unknown).call(llm, provider))
+    return normalizeCatalogEntries(await withSoftTimeout(pending, timeoutMs))
+  } catch {
+    return []
+  }
+}
+
+/**
+ * 每个 provider 的模型**并行**取回来，给「一个控件同时选渠道 + 模型」的候选表用。
+ *
+ * 判据同 listModelsOf：拿不到就是空数组——**一个 provider 坏掉不许把整张候选表清空**，
+ * 用户至少还能从别的渠道里选。并行 + 每个自带软超时，所以总时长仍被一次超时界住。
+ */
+export async function listGroupsOf(llm: unknown, providers: Array<{ id: string; name: string }>): Promise<Array<{ id: string; name: string; models: Array<{ id: string; name: string }> }>> {
+  return await Promise.all(providers.map(async (item) => ({
+    id: item.id,
+    name: item.name,
+    models: await listModelsOf(llm, item.id),
+  })))
+}
+
+/** 到点就放弃（原 promise 继续跑，结果丢弃）：只给「建议」类查询用，绝不让 UI 等网络。 */
+function withSoftTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('catalog timeout')), ms)
+    timer.unref?.()
+    void promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (error: unknown) => {
+        clearTimeout(timer)
+        reject(error instanceof Error ? error : new Error(String(error)))
+      },
+    )
+  })
+}
+
+/**
+ * 虚拟屏的可见文本：每行去尾空格、去掉末尾空行（屏幕末尾的提示符行才是有效区）。
+ *
+ * 与 `tty_screen` 工具共用同一份实现——「屏幕上是什么」只能有一个答案，两处各写一份
+ * 迟早会漂（一处按 rows 遍历、一处按 buffer 长度遍历，就差出去了）。
+ */
+function screenTextOf(screen: HeadlessTerminal): string {
+  const buffer = screen.buffer.active
+  const lines: string[] = []
+  for (let row = 0; row < screen.rows; row++) {
+    lines.push(buffer.getLine(row)?.translateToString(true) ?? '')
+  }
+  while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop()
+  return lines.join('\n')
 }
 
 /* ------------------------------------------------------------------ *
@@ -1620,6 +1995,17 @@ export interface SessionSnapshot {
   signal?: string
   /** 只读保留的剩余毫秒；**省略 = 不按时间释放**（策略为 ∞，关闭或宿主重启才清）。 */
   retainMs?: number
+  /**
+   * 有命令正在执行（0.23.0）：true = 在跑；false = 命令已结束（或进程已退出）；
+   * **省略 = 无法判断**——这个会话没有 shell 集成标记（非持久 SSH / fish·csh /
+   * Windows 本地 / 集成被关 / tmux <3.3 吞了信封），或命令型会话尚未收到终局。
+   * 拿它当「现在可以往里发命令」的许可时要按三态处理：省略 ≠ 没在跑。
+   */
+  running?: boolean
+  /** 上一条已完成命令的退出码（0.23.0；来自 OSC 133;D，拿不到时省略）。 */
+  lastExitCode?: number
+  /** 上一条已完成命令的结束时刻（epoch ms，0.23.0；与 running/lastExitCode 同源）。 */
+  lastExitAt?: number
 }
 
 /** 导出仅供单测（test/host-frames.test.ts）：上限 / 孤儿回收 / grace 热改的行为护栏。 */
@@ -1695,6 +2081,14 @@ export class SessionManager {
           // 省略 = 不按时间释放（策略 ∞）：不能塞 Infinity，理由见 retainLeftMs
           ...(exitRetainMs === null ? {} : { retainMs: exitRetainMs }),
         }
+    // 命令边界三态（0.23.0）：省略的键必须**不出现**（`?? undefined` 会留下一个
+    // undefined 键，宿主输出校验判「不是无损 JSON」（D52/B33））
+    const runInfo = runningOf(session)
+    const runFields = {
+      ...(runInfo.running === undefined ? {} : { running: runInfo.running }),
+      ...(runInfo.lastExitCode === undefined ? {} : { lastExitCode: runInfo.lastExitCode }),
+      ...(runInfo.lastExitAt === undefined ? {} : { lastExitAt: runInfo.lastExitAt }),
+    }
     const base: SessionSnapshot = {
       sid: session.id,
       cwd: session.cwd,
@@ -1703,6 +2097,7 @@ export class SessionManager {
       startedAt: session.startedAt,
       lastOutputAt: session.lastOutputAt,
       owner: session.owner,
+      ...runFields,
       ...(session.tmuxName !== null ? { persist: true as const } : {}),
       ...exitInfo,
     }
@@ -2438,12 +2833,14 @@ export class TtyServer {
         cwd,
         kind: 'local',
         target: '',
+        commandSession: command !== null,
         startedAt: Date.now(),
         lastOutputAt: Date.now(),
         lastInputAt: Date.now(),
         outputSeq: 0,
         readSeq: -1,
         readMarkAt: 0,
+        assistHintedSeq: -1,
         recentInputs: [],
         buffer: '',
         decoder: new StringDecoder('utf8'),
@@ -2726,12 +3123,14 @@ export class TtyServer {
             cwd: '',
             kind: 'ssh',
             target,
+            commandSession: command !== null,
             startedAt: Date.now(),
             lastOutputAt: Date.now(),
             lastInputAt: Date.now(),
             outputSeq: 0,
             readSeq: -1,
             readMarkAt: 0,
+        assistHintedSeq: -1,
             recentInputs: [],
             buffer: '',
             decoder: new StringDecoder('utf8'),
@@ -2976,6 +3375,32 @@ export class TtyServer {
     this.broadcastSessions()
   }
 
+  /**
+   * 「上一条命令失败了」的徽标帧（0.24.0）。
+   *
+   * 只能在**输出下行路径**里判：shell 集成的 `D` 标记可能落在任意一块数据里，没有
+   * 「命令结束」的独立事件可挂。判据全在 assist.ts 的 `shouldExplainExit`（0 不弹、
+   * 130 / 141 豁免）。
+   *
+   * `assistHintedSeq` 按 `lastCommand.seq`（单调序号）去重：同一条命令只弹一次——否则用户
+   * 关掉徽标之后，只要终端再吐一个字节（比如敲了下一个字符的回显）它就会重新冒出来。
+   *
+   * 没有连接时直接返回：徽标是**实时提示**，不是待办队列；等重连时补发会让一个刚打开
+   * 的标签莫名其妙地顶着一个旧徽标。
+   */
+  private maybeEmitAssistHint(session: TtySession): void {
+    if (!this.options.assistEnabled) return
+    const state = session.shellState
+    const last = state.lastCommand
+    if (last === null || last.seq === session.assistHintedSeq) return
+    session.assistHintedSeq = last.seq
+    if (session.exited !== null || session.clients.size === 0) return
+    if (!shouldExplainExit(last.exitCode)) return
+    for (const client of session.clients.values()) {
+      send(client.ws, { t: 'hint', sid: client.sid, kind: 'failure', exitCode: last.exitCode, at: last.endedAt })
+    }
+  }
+
   /** 输出下行 + 基于 ws.bufferedAmount 的背压（暂停/恢复 PassThrough）。 */
   private attachOutput(session: TtySession): void {
     const output = session.handle.output
@@ -3009,6 +3434,7 @@ export class TtyServer {
       session.lastOutputAt = Date.now()
       appendOutput(session, text)
       feedShellIntegration(session, text)
+      this.maybeEmitAssistHint(session)
       const screen = session.screen
       if (screen !== null) {
         // 心跳包裹（D57）：同步抛出 / 解析停摆的屏会被退役，而不是让 tty_screen 一直返回冻结画面
@@ -3453,6 +3879,14 @@ interface ConfigSnapshot {
   endOnPageClose: boolean
   /** 服务器状态条开关（客户端据此隐藏/显示状态条）。 */
   statsEnabled: boolean
+  /**
+   * AI 辅助「失败即解释」开关（0.24.0，**默认关**）。客户端据此决定要不要摆失败徽标；
+   * 关着时宿主侧也拒绝 `/api/dsh-tty/assist`（两道闸，不靠客户端自觉）。
+   */
+  assistEnabled: boolean
+  /** AI 辅助的模型路由（客户端回显；都空 = 跟随宿主默认模型）。 */
+  assistProvider: string
+  assistModel: string
   /** SFTP 传输限制（客户端渲染 + 浏览器侧执行）。 */
   sftpLimits: Required<SftpLimits>
   /**
@@ -3531,6 +3965,15 @@ const plugin = definePlugin<Config>({
       sftpLimits: sanitizeSftpLimits(config?.sftpLimits),
       allowProxyCommand: config?.allowProxyCommand === true,
       persistSessions: sanitizePersistSessions(config?.persistSessions) ?? [],
+      /*
+       * tty D93 = D91 的**第三个实例**（同一根因：新字段要记得回来补一行）。这处比 applyPatch 那边更隐蔽：
+       * applyPatch 是**热更新**路径，这里是**启动**路径——配置文件里写着 assistEnabled: true
+       * 却不生效，只有「settings 里存过东西」的那条路能把它救回来。症状仍是本仓最忌讳的
+       * 「配了没反应」（卡片/配置说开着，宿主里 live 还是 false）。
+       */
+      assistEnabled: config?.assistEnabled === true,
+      assistProvider: typeof config?.assistProvider === 'string' ? config.assistProvider : '',
+      assistModel: typeof config?.assistModel === 'string' ? config.assistModel : '',
     })
     /*
      * 闸门在**挂载时先初始化一次**（tty D70）。
@@ -3608,6 +4051,9 @@ const plugin = definePlugin<Config>({
       persistence: live.persistence,
       endOnPageClose: live.endOnPageClose,
       statsEnabled: live.statsEnabled,
+      assistEnabled: live.assistEnabled,
+      assistProvider: live.assistProvider,
+      assistModel: live.assistModel,
       sftpLimits: live.sftpLimits,
       allowProxyCommand: live.allowProxyCommand,
       allowProxyCommandGranted: capabilityGranted(CAP_PROXY_COMMAND),
@@ -3632,21 +4078,22 @@ const plugin = definePlugin<Config>({
     /** 规范化并应用一份配置补丁（volatile 更新事件与 HTTP POST 共用；幂等）。 */
     const applyPatch = (section: Record<string, unknown>): void => {
       live.apply({
-        shell: typeof section.shell === 'string' ? section.shell : undefined,
-        term: typeof section.term === 'string' ? section.term : undefined,
-        colorTerm: typeof section.colorTerm === 'string' ? section.colorTerm : undefined,
-        cwd: typeof section.cwd === 'string' ? section.cwd : undefined,
-        reconnectGraceSec: typeof section.reconnectGraceSec === 'number' ? section.reconnectGraceSec : undefined,
+        /*
+         * **先把整份补丁铺开**，再逐个覆盖需要清洗/归一化的字段。
+         *
+         * D91：这里原先是一张**逐字段的显式清单**，于是新加的 volatile 字段必须记得回来补一行
+         * ——`assistEnabled` 就是这么漏的：profile 里存下来了、`live` 却没变，`snapshot()` 回给
+         * 卡片的还是旧值，表现就是「点了保存，勾又弹回去」。铺开之后**新字段默认就会热生效**；
+         * `live.apply` 对每个字段都有类型守卫，多出来的键自然被忽略（类型上收窄成它的参数类型）。
+         * 只有**需要清洗**的字段才留在这张清单里。
+         */
+        ...(section as unknown as Parameters<LiveConfig['apply']>[0]),
         sshHosts: sanitizeSshHosts(section.sshHosts),
         hostKeys: sanitizeHostKeys(section.hostKeys),
-        shellIntegration: typeof section.shellIntegration === 'boolean' ? section.shellIntegration : undefined,
         tunnels: sanitizeTunnels(section.tunnels),
-        persistence: section.persistence === 'tmux' || section.persistence === 'off' ? section.persistence : undefined,
-        endOnPageClose: typeof section.endOnPageClose === 'boolean' ? section.endOnPageClose : undefined,
-        statsEnabled: typeof section.statsEnabled === 'boolean' ? section.statsEnabled : undefined,
-        sftpLimits: typeof section.sftpLimits === 'object' && section.sftpLimits !== null ? section.sftpLimits as Record<string, unknown> : undefined,
-        allowProxyCommand: typeof section.allowProxyCommand === 'boolean' ? section.allowProxyCommand : undefined,
         persistSessions: sanitizePersistSessions(section.persistSessions),
+        // sftpLimits 必须留在清单里：apply 用展开运算合并它，传进非对象会把字符索引并进去
+        sftpLimits: typeof section.sftpLimits === 'object' && section.sftpLimits !== null ? section.sftpLimits as Record<string, unknown> : undefined,
       })
       /*
        * ProxyCommand 闸门跟着 settings 走（**每次热应用都写一次**）：这一档是「设置字段驱动的
@@ -3678,7 +4125,7 @@ const plugin = definePlugin<Config>({
     /** 校验 HTTP POST 的配置体；返回规范化补丁或错误信息。 */
     const normalizePatch = (input: Record<string, unknown>): { patch?: Record<string, unknown>; error?: string } => {
       const patch: Record<string, unknown> = {}
-      const known = new Set(['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'sshHosts', 'hostKeys', 'tunnels', 'shellIntegration', 'sftpStyle', 'persistence', 'endOnPageClose', 'statsEnabled', 'sftpLimits', 'allowProxyCommand'])
+      const known = new Set(['enabled', 'announceToAgent', 'maxSessions', 'shell', 'term', 'colorTerm', 'cwd', 'reconnectGraceSec', 'sshHosts', 'hostKeys', 'tunnels', 'shellIntegration', 'sftpStyle', 'persistence', 'endOnPageClose', 'statsEnabled', 'sftpLimits', 'allowProxyCommand', 'assistEnabled', 'assistProvider', 'assistModel'])
       for (const key of Object.keys(input)) {
         if (!known.has(key)) return { error: '未知配置项: ' + key }
       }
@@ -3719,6 +4166,21 @@ const plugin = definePlugin<Config>({
       if (input.statsEnabled !== undefined) {
         if (typeof input.statsEnabled !== 'boolean') return { error: 'statsEnabled 必须是布尔值' }
         patch.statsEnabled = input.statsEnabled
+      }
+      if (input.assistEnabled !== undefined) {
+        if (typeof input.assistEnabled !== 'boolean') return { error: 'assistEnabled 必须是布尔值' }
+        patch.assistEnabled = input.assistEnabled
+      }
+      /*
+       * provider / model 刻意**允许空串**（与下方 shell/term/colorTerm 的「空串 = 不修改」
+       * 不同）：空串是「跟随宿主默认模型」这个真实意图。也刻意**不在这里**校验成对——
+       * 卡片是逐字段保存的，先填 provider 再填 model 必然经过一次「只填了一个」的中间态，
+       * 在那里驳回会让用户根本填不完；成对规则留到真正解析路由时判（resolveAssistRoute）。
+       */
+      for (const key of ['assistProvider', 'assistModel'] as const) {
+        if (input[key] === undefined) continue
+        if (typeof input[key] !== 'string') return { error: key + ' 必须是字符串' }
+        patch[key] = (input[key] as string).trim()
       }
       if (input.allowProxyCommand !== undefined) {
         if (typeof input.allowProxyCommand !== 'boolean') return { error: 'allowProxyCommand 必须是布尔值' }
@@ -3893,6 +4355,143 @@ const plugin = definePlugin<Config>({
             writeJson(res, 200, { ok: true, config: snapshot() })
           },
         }))
+        /*
+         * AI 辅助「失败即解释」（0.24.0）。
+         *
+         * 与 /config 同档：**不进** MUTATION_SUBROUTES——它不改宿主状态；真正的闸是设置里
+         * 那个**默认关闭**的开关（assistEnabled），回环围栏照常过。
+         *
+         * 刻意**不做流式**：本插件没有任何 SSE 基建，为一段几百 token 的回答新开一条流
+         * 不划算；一次 POST 拿整段 + 客户端「取消」就够。模型的思考过程对用户也没有价值。
+         */
+
+        /*
+         * 同一会话的**在途**询问（0.24.0，tty D94）。客户端已经拦了重复点击，但两个标签页、或客户端
+         * 竞态仍可能同时打进来，而每一次都是**真花一次模型调用**。这里按 sid 记在途，
+         * 重复的直接 409 挡回去；finally 里一定清，否则一次异常就把会话锁死。
+         */
+        const assistInFlight = new Set<string>()
+        disposers.push(webServer.register({
+          kind: 'exact',
+          path: '/api/dsh-tty/assist',
+          handler: async (req: ReqLike & AsyncIterable<Uint8Array>, res: ResLike) => {
+            if (!(await gateRoute(req, res))) {
+              return
+            }
+            if (req.method !== 'POST') {
+              writeJson(res, 405, { error: 'method not allowed: ' + String(req.method) })
+              return
+            }
+            /*
+             * 开关是**宿主侧**的闸，不靠客户端自觉：关掉时客户端连徽标都收不到，但配置
+             * 随时可被改，而「关掉必须立刻生效」是这类外发开关的底线。
+             */
+            if (!live.assistEnabled) {
+              writeJson(res, 403, { error: 'AI 辅助未开启（插件配置 → 终端面板 → 「失败即解释」）' })
+              return
+            }
+            const body = await readJsonBody(req)
+            if (body === undefined) {
+              writeJson(res, 400, { error: 'invalid JSON body' })
+              return
+            }
+            const sid = typeof body.sid === 'string' ? body.sid : ''
+            const session = sessions.get(sid)
+            if (sid === '' || session === undefined || session.closed) {
+              writeJson(res, 404, { error: '会话不存在或已退出: ' + sid })
+              return
+            }
+            const resolved = resolveAssistRoute(ctx, live.assistProvider, live.assistModel)
+            if (resolved.route === undefined) {
+              writeJson(res, 409, { error: resolved.error ?? '没有可用的模型路由' })
+              return
+            }
+            const llm = getService(ctx, 'llm') as LlmLike | undefined
+            if (llm === undefined || llm === null || typeof llm.stream !== 'function') {
+              writeJson(res, 409, { error: '宿主 llm 服务不可用（当前宿主没有提供模型调用）' })
+              return
+            }
+            /*
+             * 进到这行才说明这次真的要花一次模型调用了，所以在**这里**记账（而不是上面更早处）：
+             * 重复请求挡在门外、且不占用一次调用。
+             */
+            if (assistInFlight.has(sid)) {
+              writeJson(res, 409, { error: '这条命令的解释正在生成中，稍等一下再试' })
+              return
+            }
+            assistInFlight.add(sid)
+            const last = session.shellState.lastCommand
+            const prompt = buildFailurePrompt({
+              shell: session.kind === 'ssh' ? 'ssh ' + session.target : live.shell,
+              cwd: session.cwd,
+              exitCode: last === null ? null : last.exitCode,
+              output: last === null ? '' : last.output,
+              screen: session.screen === null ? '' : screenTextOf(session.screen),
+              lang: body.lang === 'en' ? 'en' : 'zh',
+            })
+            const started = Date.now()
+            try {
+              const raw = await askModelOnce(llm, resolved.route, prompt)
+              writeJson(res, 200, {
+                ok: true,
+                /*
+                 * 界面正文用**去标记后的纯文本**（围栏与 ** 都去掉）：命令另有 command 字段
+                 * 专门展示，正文里再来一遍是重复；而把 Markdown 原样铺在界面上就是满屏星号。
+                 * 标记的解析在这里一次做完，客户端只负责原样显示。
+                 */
+                answer: plainAnswerText(raw),
+                // 「填入」按钮用：只在模型给了围栏代码块时非空（见 extractCommandFromAnswer）
+                command: extractCommandFromAnswer(raw),
+                route: resolved.route.provider + '/' + resolved.route.model,
+                chars: prompt.user.length,
+                ms: Date.now() - started,
+              })
+            } catch (error) {
+              writeJson(res, 502, { error: error instanceof Error ? error.message : String(error) })
+            } finally {
+              // 无论成功、报错还是超时都要放行，否则这个会话从此再也问不动
+              assistInFlight.delete(sid)
+            }
+          },
+        }))
+        /*
+         * 模型候选（0.24.0）：设置卡片里 provider / model 两栏的候选列表。
+         *
+         * 与 `/shells` 同档：loopback 围栏、纯只读、不改宿主状态，也不进 MUTATION_SUBROUTES。
+         * **不看 assistEnabled**：卡片要在功能关着时也能把路由配好（同 /config 的理由）。
+         * 也不带会话概念——它回答的是「宿主这台机器上有什么」，与终端会话无关。
+         */
+        registerGated({
+          kind: 'exact',
+          path: '/api/dsh-tty/model-catalog',
+          handler: async (req: ReqLike, res: ResLike) => {
+            if (!(await gateRoute(req, res))) {
+              return
+            }
+            if (req.method !== 'GET') {
+              writeJson(res, 405, { error: 'method not allowed: ' + String(req.method) })
+              return
+            }
+            const provider = (new URL(req.url ?? '/', 'http://loopback').searchParams.get('provider') ?? '').trim()
+            const llm = getService(ctx, 'llm')
+            const available = llm !== undefined && llm !== null && typeof (llm as LlmLike).listModels === 'function'
+            const providers = listProvidersOf(llm)
+            writeJson(res, 200, {
+              ok: true,
+              // available=false 只用来把提示说准（「宿主没这个目录」vs「目录是空的」），不是错误
+              available,
+              providers,
+              /*
+               * 不带 provider：一次往返就把**每个** provider 的模型都取回来。控件的候选表是
+               * 「渠道 + 模型」一张表，逐个 provider 再发一轮请求会把它变成 N 次往返。
+               */
+              groups: provider === '' ? await listGroupsOf(llm, providers) : [],
+              // 带 provider：只问这一个（候选表要重取单个渠道时用）
+              models: provider === '' ? [] : await listModelsOf(llm, provider),
+              provider,
+            })
+          },
+        })
         /*
          * 就地提权（`/elevate`、`/elevate/status`、`/elevate/revoke`）。
          *
@@ -4469,7 +5068,7 @@ const plugin = definePlugin<Config>({
             name: 'tty_list',
             // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
             isConcurrencySafe: () => true,
-            description: '列出当前终端面板会话（sid / kind(local|ssh) / target / pid / cwd / 创建与最后活动时间），**含进程已退出但仍只读保留着的会话**（带 exited:true + 退出码/信号；按时间释放时另带 retainMs）：用户开了终端面板后，用 tty_capture 读取某个 sid 的输出、用 tty_send 向该会话发送按键。已退出的会话只能读（写会报错），要接着操作请 tty_open 新开一条。',
+            description: '列出当前终端面板会话（sid / kind(local|ssh) / target / pid / cwd / 创建与最后活动时间），**含进程已退出但仍只读保留着的会话**（带 exited:true + 退出码/信号；按时间释放时另带 retainMs）。**running** 说明这个会话有没有命令在跑（true = 在跑，现在别往里发命令，那些字节会被正在跑的程序当输入吃掉；false = 命令已结束；**省略 = 无法判断**——该会话没有 shell 集成标记，例如非持久 SSH / fish·csh / Windows 本地 / 集成被关，**不是**「没在跑」）；同源的 lastExitCode / lastExitAt 是「上一条已完成命令」的退出码与结束时刻。用户开了终端面板后，用 tty_capture 读取某个 sid 的输出、用 tty_send 向该会话发送按键。已退出的会话只能读（写会报错），要接着操作请 tty_open 新开一条。',
             parameters: {},
             output: {
               schema: {
@@ -4496,6 +5095,9 @@ const plugin = definePlugin<Config>({
                         exitCode: { type: 'number' },
                         signal: { type: 'string' },
                         retainMs: { type: 'number', description: '只读保留的剩余毫秒；省略 = 不按时间释放' },
+                        running: { type: 'boolean', description: '有命令正在执行；**省略 = 无法判断**（该会话没有 shell 集成标记），不等于「没在跑」' },
+                        lastExitCode: { type: 'number', description: '上一条已完成命令的退出码' },
+                        lastExitAt: { type: 'number', description: '上一条已完成命令的结束时刻（epoch ms）' },
                       },
                     },
                   },
@@ -4509,11 +5111,24 @@ const plugin = definePlugin<Config>({
                       const where = s.kind === 'ssh' ? `ssh ${s.target}` : `pid=${String(s.pid ?? '?')} cwd=${s.cwd}`
                       const persist = s.persist === true ? ' [tmux 持久]' : ''
                       const owner = s.owner === 'agent' ? ' [agent 开的]' : ''
+                      // D88：三态必须在**渲染文本**里就分得开——agent 只看得到这段文本，
+                      // 而「无法判断」与「空闲」在旧写法里都渲染成「没有标记」，正好把新加的
+                      // 第三态糊掉了（用户验收现场：自己那条会话与既有的两条长得一模一样）。
+                      // 正在跑的会话尤其要显眼：往里发命令会被那个程序当输入吃掉。
+                      const runMark = s.exited === true
+                        ? ''
+                        : s.running === true
+                          ? ' [运行中——现在别往里发命令]'
+                          : s.running === false
+                            ? ' [空闲]'
+                            : ' [命令状态未知——该会话没有 shell 集成标记，发命令前先自己确认]'
+                      // 已退出会话的退出码由 gone 那条统管，这里只标活会话的「上一条」
+                      const lastExit = s.exited === true || s.lastExitCode === undefined ? '' : ` [上一条命令 exitCode=${String(s.lastExitCode)}]`
                       // D77：只读保留态必须显眼——否则 AI 会对着一个已经死掉的会话发命令
                       const detail = s.signal !== undefined && s.signal !== '' ? `signal=${s.signal}` : s.exitCode === undefined ? '退出码未知' : `exitCode=${String(s.exitCode)}`
                       const left = s.retainMs === undefined ? '（显式关闭前一直都在）' : ` ${String(Math.ceil(s.retainMs / 60000))} 分钟`
                       const gone = s.exited === true ? ` [已退出 ${detail}·只读保留${left}——只能读，写会报错]` : ''
-                      return `\n- sid=${s.sid} [${s.kind}]${owner}${persist}${gone} ${where} (启动于 ${new Date(s.startedAt).toLocaleString()})`
+                      return `\n- sid=${s.sid} [${s.kind}]${owner}${persist}${runMark}${lastExit}${gone} ${where} (启动于 ${new Date(s.startedAt).toLocaleString()})`
                     }).join('')
                 return [{ type: 'text', text }]
               },
@@ -4581,6 +5196,78 @@ const plugin = definePlugin<Config>({
               const input = args as { sid?: unknown }
               if (typeof input.sid !== 'string' || input.sid === '') throw new Error('sid 必须是非空字符串')
               return await server.closeAgentSession(input.sid)
+            },
+          })))
+          activeDisposers.push(tools.register(defineTool({
+            name: 'tty_run',
+            description: '**一次性命令**：开一个终端会话跑 `command`，等它结束，直接返回尾部输出 + 退出码（会话出现在用户面板里、可见可接管）——把「tty_open → 等 → tty_capture{last} → tty_close」四步压成一次调用。命令**跑完就结束**：默认把这个会话关掉（结果已在本调用返回），`keep:true` 则留在「只读保留」态供回看。到 `timeoutSec` 还没结束会返回 `running:true`（会话照旧在跑，**杀不杀由你决定**），接着用 tty_expect / tty_capture 看，或 tty_close 关掉。何时用它而不是 bash 工具：需要用户**看得见**这条命令、或要跑在终端会话里（同一套 PTY / 会话名额 / 后续可接管）时用它；纯非交互、不需要用户看见的命令用 bash 工具更直接。`command` 按宿主 shell 的语法整段执行（POSIX 上 `cd x && cmd`、多行脚本都可以；Windows 的 cmd / PowerShell 按它们自己的语法）。',
+            parameters: {
+              command: { type: 'string', required: true, description: '要执行的命令（整段 shell 代码，支持 `cd x && cmd`、管道、多行脚本）' },
+              cwd: { type: 'string', description: '工作目录（必须是已存在的绝对路径）；缺省用插件配置的 cwd' },
+              timeoutSec: { type: 'number', description: '等待命令结束的上限秒数（1~600，默认 120）；到点没结束返回 running:true，会话不会被杀' },
+              keep: { type: 'boolean', description: 'true = 跑完留在只读保留态（可回看/接管）；默认 false = 跑完即关（结果已在本调用返回）' },
+              lines: { type: 'number', description: '返回的输出尾部行数（1~500，默认 60）' },
+              cols: { type: 'number', description: '列数（2~500，默认 80）' },
+              rows: { type: 'number', description: '行数（2~200，默认 24）' },
+            },
+            output: {
+              schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  sid: { type: 'string', required: true },
+                  running: { type: 'boolean', required: true },
+                  tail: { type: 'string', required: true },
+                  closed: { type: 'boolean', required: true },
+                  exitCode: { type: 'number' },
+                  signal: { type: 'string' },
+                },
+              },
+              render: (_args: unknown, value: unknown) => {
+                const v = value as { sid?: string; running?: boolean; tail?: string; closed?: boolean; exitCode?: number; signal?: string }
+                const sid = v.sid ?? '?'
+                if (v.running === true) {
+                  return [{ type: 'text', text: `终端会话 ${sid} 里这条命令到点还没结束（它就是面板里的普通标签，用户看得见、可接管）：用 tty_expect 等它的就绪标记、tty_capture 读尾部，或 tty_close 关掉。\n\n${v.tail ?? ''}` }]
+                }
+                const how = v.signal !== undefined && v.signal !== '' ? `signal=${v.signal}` : `exitCode=${String(v.exitCode ?? '?')}`
+                const note = v.closed === true
+                  ? '会话已关闭（结果都在下面这段里）。'
+                  : `会话留在只读保留态（sid=${sid}），要回看这段输出可以再 tty_capture（用 lines 读尾部——命令型会话没有「上一条命令」，last:true 会报错）。`
+                return [{ type: 'text', text: `终端会话 ${sid} 的命令已结束（${how}）。${note}\n\n${v.tail ?? ''}` }]
+              },
+            },
+            async execute(args: unknown): Promise<{ sid: string; running: boolean; tail: string; closed: boolean; exitCode?: number; signal?: string }> {
+              const input = args as { command?: unknown; cwd?: unknown; timeoutSec?: unknown; keep?: unknown; lines?: unknown; cols?: unknown; rows?: unknown }
+              if (typeof input.command !== 'string' || input.command.trim() === '') throw new Error('command 必须是非空字符串')
+              const timeoutSec = clampInt(input.timeoutSec, 120, 1, 600)
+              const lines = clampInt(input.lines, 60, 1, 500)
+              const opened = await server.openAgentSession({
+                command: input.command,
+                ...(typeof input.cwd === 'string' && input.cwd.trim() !== '' ? { cwd: input.cwd } : {}),
+                cols: input.cols,
+                rows: input.rows,
+              })
+              const session = sessions.get(opened.sid)
+              if (session === undefined || session.closed) throw new Error(`会话创建后立刻退役了: ${opened.sid}`)
+              // 命令型会话的进程**就是**那条命令（D78 的 exec 链）：进程退出 = 命令结束，
+              // 与 shell 集成无关（这类会话不注入钩子，等 133;D 是等不到的）
+              const finished = await waitForSessionExit(session, timeoutSec * 1000)
+              const tail = cleanAnsiTail(tailLines(session, lines))
+              if (!finished) return { sid: opened.sid, running: true, closed: false, tail }
+              const exited = session.exited
+              const result = {
+                sid: opened.sid,
+                running: false,
+                tail,
+                closed: false,
+                ...(exited === null || exited.code === null ? {} : { exitCode: exited.code }),
+                ...(exited === null || exited.signal === null || exited.signal === '' ? {} : { signal: exited.signal }),
+              }
+              // keep 默认 false：这条通道的语义就是「一条命令一次调用」，留着会占满
+              // 只读保留的名额（16 条）；要回看现场就显式 keep:true
+              if (input.keep === true) return result
+              await server.closeAgentSession(opened.sid)
+              return { ...result, closed: true }
             },
           })))
           activeDisposers.push(tools.register(defineTool({
@@ -4652,7 +5339,7 @@ const plugin = definePlugin<Config>({
             name: 'tty_capture',
             // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
             isConcurrencySafe: () => true,
-            description: '读取某个终端面板会话（tty_list 提供 sid）的近期输出。默认读取尾部 N 行（60，最多 500，已剥离 ANSI 转义序列并收敛同行覆盖）；last:true 时只返回「上一条已完成命令」的输出与退出码（依赖 shell 集成标记，更适合拿单条命令的结果）——若命令在途（刚发送/未收到完成标记）返回 inProgress:true 且不携带旧结果，请稍后重试或改用 tty_expect。**进程已退出的会话也能读**（结果带 exited:true + 退出码/信号）：输出在只读保留期里一直都在（保留到显式关闭或宿主重启，`tty_open command=...` 跑完一条命令后就这么用）；这类会话不能再写，要接着操作请 tty_open 新开一条。',
+            description: '读取某个终端面板会话（tty_list 提供 sid）的近期输出。默认读取尾部 N 行（60，最多 500，已剥离 ANSI 转义序列并收敛同行覆盖）；last:true 时只返回「上一条已完成命令」的输出与退出码（依赖 shell 集成标记，更适合拿单条命令的结果）——若命令在途（刚发送/未收到完成标记）返回 inProgress:true 且不携带旧结果，请稍后重试或改用 tty_expect。**进程已退出的会话也能读**（结果带 exited:true + 退出码/信号）：输出在只读保留期里一直都在（保留到显式关闭或宿主重启，`tty_open command=...` 跑完一条命令后就这么用）；这类会话不能再写，要接着操作请 tty_open 新开一条。**命令型会话（`tty_open command=` / `tty_run`）没有「上一条命令」**（它们不注入 shell 集成钩子），对它们用 last:true 会明确报错——改用默认的 lines 读尾部。',
             parameters: {
               sid: { type: 'string', required: true, description: '会话 id（来自 tty_list）' },
               lines: { type: 'number', description: '读取尾部行数（1~500，默认 60）；last:true 时忽略' },
@@ -4712,6 +5399,13 @@ const plugin = definePlugin<Config>({
                 // 否则 agent 拿旧结果当本次结果用（静默错数据）。
                 if (state.inCommand || (last !== null && last.endedAt < session.lastInputAt)) {
                   return { sid: input.sid, source: 'last', inProgress: true, tail: '' }
+                }
+                // D87：命令型会话（`tty_open command=` / `tty_run`）**不注入 shell 集成钩子**，
+                // 它们根本没有「上一条命令」这个概念——旧文案把用户指向「shell 不受支持 /
+                // 集成被配置关闭」，方向完全反了（用户会去翻设置卡片找一个不存在的开关）。
+                // 这类会话的**整条输出就是那条命令的输出**，要的是尾部读取。
+                if (session.commandSession) {
+                  throw new Error(`会话 ${input.sid} 是命令型会话（tty_open 的 command= / tty_run）：**整条输出就是那条命令的输出**，没有「上一条命令」这个概念（这类会话不注入 shell 集成钩子）。用不带 last 的尾部读取（lines，默认 60 行）或 tty_screen 拿结果`)
                 }
                 if (last === null) {
                   throw new Error('暂无「上一条命令」记录（shell 集成未生效——shell 不受支持或被配置关闭——或尚未执行过命令）；可改用 lines 读尾部')
@@ -4773,12 +5467,6 @@ const plugin = definePlugin<Config>({
                 const why = session.screenDownReason === null ? '' : `（${session.screenDownReason}）`
                 throw new Error(`虚拟屏不可用: ${input.sid}${why}`)
               }
-              const buffer = screen.buffer.active
-              const lines: string[] = []
-              for (let row = 0; row < screen.rows; row++) {
-                lines.push(buffer.getLine(row)?.translateToString(true) ?? '')
-              }
-              while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop()
               // 保尾截断：屏幕末尾（提示符行）才是有效区，丢头部不丢尾部
               return {
                 sid: input.sid,
@@ -4786,7 +5474,7 @@ const plugin = definePlugin<Config>({
                 rows: screen.rows,
                 // D77：只读保留态如实标注（屏不再更新，「当前屏幕」= 退出那一刻）
                 ...(session.exited === null ? {} : { exited: true as const, ...(session.exited.signal === null || session.exited.signal === '' ? {} : { signal: session.exited.signal }) }),
-                text: lines.join('\n').slice(-32 * 1024),
+                text: screenTextOf(screen).slice(-32 * 1024),
               }
             },
           })))
@@ -4942,10 +5630,11 @@ const plugin = definePlugin<Config>({
           })))
           activeDisposers.push(tools.register(defineTool({
             name: 'tty_send',
-            description: '向某个终端面板会话（tty_list 提供 sid）的 PTY 发送按键/文本（命令以 \\n 结尾；Windows 本地会话上插件会把 `\\n` 归一成 CRLF，照常写 `\\n` 即可）。适合给用户终端里运行的程序发交互输入（如 dev server 的 q 键、menu 选择、回答提示）。操作会实时显示在用户的终端面板里。**对已退出（只读保留）的会话会报错**——那种会话只能读，要接着操作请 tty_open 新开一条。',
+            description: '向某个终端面板会话（tty_list 提供 sid）的 PTY 发送文本与/或按键（data 含换行则以回车提交；Windows 本地会话上插件会把 `\\n` 归一成 CRLF，照常写 `\\n` 即可）。**控制键与方向键用具名 `keys`，不要自己在 data 里拼转义序列**：`"\\x1b[B"` / `"^[[B"` 这类写法会被当成普通字符打印进终端（而 sent 计数一样，看不出错）。data 与 keys 至少给一个；两个都给时先发 data、再按序发 keys（如 data=":wq" + keys=["Enter"]）。适合给用户终端里运行的程序发交互输入（如 dev server 的 q 键、menu 选择、vim/less 的翻页、回答提示）。操作会实时显示在用户的终端面板里。**对已退出（只读保留）的会话会报错**——那种会话只能读，要接着操作请 tty_open 新开一条。',
             parameters: {
               sid: { type: 'string', required: true, description: '会话 id（来自 tty_list）' },
-              data: { type: 'string', required: true, description: '要发送的文本（含换行则直接发送命令）' },
+              data: { type: 'string', description: '要发送的文本（含换行则直接发送命令）；与 keys 至少给一个' },
+              keys: { type: 'array', items: { type: 'string' }, description: `具名按键数组，按序发送：${KEY_VOCABULARY}。例：["C-c"]、["Down","Down","Enter"]、["Esc", ":", "w", "q", "Enter"]` },
             },
             output: {
               schema: {
@@ -4956,24 +5645,40 @@ const plugin = definePlugin<Config>({
                   sent: { type: 'number', required: true },
                 },
               },
-              render: (_args: unknown, value: unknown) => {
+              render: (renderArgs: unknown, value: unknown) => {
                 const v = value as { sent?: number }
-                return [{ type: 'text', text: `已向终端会话发送 ${v.sent ?? 0} 个字符` }]
+                const a = renderArgs as { keys?: unknown }
+                const shown = Array.isArray(a.keys) ? a.keys.filter((key): key is string => typeof key === 'string' && key !== '') : []
+                const note = shown.length === 0 ? '' : `（含按键 ${shown.join(' ')}）`
+                return [{ type: 'text', text: `已向终端会话发送 ${v.sent ?? 0} 个字符${note}` }]
               },
             },
             async execute(args: unknown): Promise<{ ok: boolean; sent: number }> {
-              const input = args as { sid?: unknown; data?: unknown }
+              const input = args as { sid?: unknown; data?: unknown; keys?: unknown }
               if (typeof input.sid !== 'string' || input.sid === '') throw new Error('sid 必须是非空字符串')
-              if (typeof input.data !== 'string' || input.data === '') throw new Error('data 必须是非空字符串')
+              if (input.keys !== undefined && !Array.isArray(input.keys)) throw new Error('keys 必须是字符串数组')
+              const keys: string[] = Array.isArray(input.keys) ? input.keys.map((key) => {
+                if (typeof key !== 'string') throw new Error('keys 里只能放字符串（按键名或单个字符）')
+                return key
+              }) : []
+              const hasData = typeof input.data === 'string' && input.data !== ''
+              if (!hasData && keys.length === 0) {
+                throw new Error(`data 与 keys 至少要有一个：data 是要发送的文本，keys 是具名按键数组（${KEY_VOCABULARY}）`)
+              }
+              // 按键名先解析（未知名字在这里就报错，别等写进 PTY 才发现）
+              const keyBytes = resolveKeys(keys)
               const session = sessions.get(input.sid)
               if (session === undefined || session.closed) throw new Error(`会话不存在或已退出: ${input.sid}`)
               if (session.exited !== null) {
                 // D77：只读保留态明确拒写——进程已经没了，写进去只会在死 PTY 上静默消失
                 throw new Error(`会话 ${input.sid} 的进程已退出（${describeExit(session.exited)}），只读保留中，写不进去：要接着操作请 tty_open 新开一条会话（它最后的输出仍可用 tty_capture / tty_screen 读）`)
               }
+              // 0.23.0：data 在前、keys 在后按序拼（两个都给时语义固定，见工具描述）。
+              // 具名按键走同一份归一化：Windows 本地会话的 Enter 同样要 CRLF（D74）。
+              const raw = (hasData ? input.data as string : '') + keyBytes
               // D74：Windows 本地 PTY 的 Enter 是 CR，裸 LF 不提交命令行——按平台归一化。
               // SSH 会话不动：远端是什么系统插件不知道。
-              const data = session.kind === 'local' ? normalizePtyInput(input.data) : input.data
+              const data = session.kind === 'local' ? normalizePtyInput(raw) : raw
               session.lastInputAt = Date.now()
               // D72：只初始化水位线，**不推进**——刚发出去的这条命令的输出 AI 还没看见；
               // 但这一刻之前的积压不该被第一次 expect 当成「未读」回扫。
@@ -5384,7 +6089,7 @@ const plugin = definePlugin<Config>({
             },
           })))
           stateRef.toolsRegistered = true
-          console.log('[dsh-tty] agent tools registered (tty_list, tty_open, tty_close, tty_stats, tty_capture, tty_screen, tty_expect, tty_send, tunnel_list, sftp_list, sftp_read, sftp_write, sftp_mkdir, sftp_rename, sftp_remove, sftp_tree)')
+          console.log('[dsh-tty] agent tools registered (tty_list, tty_open, tty_close, tty_run, tty_stats, tty_capture, tty_screen, tty_expect, tty_send, tunnel_list, sftp_list, sftp_read, sftp_write, sftp_mkdir, sftp_rename, sftp_remove, sftp_tree)')
         }
         refreshToolsHook = registerAll
         registerAll()
@@ -5449,7 +6154,17 @@ const plugin = definePlugin<Config>({
                 : '当前活跃的终端面板会话（可用 tty_capture / tty_screen / tty_expect / tty_send 操作，用 tty_open / tty_close 开关，sid 如下）：\n' + alive.map((s) => {
                     const where = s.kind === 'ssh' ? `ssh ${s.target}` : `pid=${String(s.pid ?? '?')} cwd=${s.cwd}`
                     const owner = s.owner === 'agent' ? ' [agent 开的]' : ''
-                    return `- sid=${s.sid} [${s.kind}]${owner}${s.persist === true ? ' [tmux 持久]' : ''} ${where} (最后活动 ${new Date(s.lastOutputAt).toLocaleTimeString()})`
+                    // D88：这里只给**非空闲**的两种态打标（「没有标记」= 空闲且可信）——
+                    // 每轮的增量只在异常态出现，三态又不会糊成两种。省略态必须看得见：
+                    // 一个「不知道在不在跑」的会话最不该被当成空闲。
+                    // 措辞与 tty_list 的渲染**逐字一致**（两处都给「现在」：它才是那句里
+                    // 真正要 agent 照做的部分；每轮多 2 个字符换掉一处措辞漂移，值）
+                    const busy = s.running === true
+                      ? ' [运行中——现在别往里发命令]'
+                      : s.running === false
+                        ? ''
+                        : ' [命令状态未知]'
+                    return `- sid=${s.sid} [${s.kind}]${owner}${s.persist === true ? ' [tmux 持久]' : ''}${busy} ${where} (最后活动 ${new Date(s.lastOutputAt).toLocaleTimeString()})`
                   }).join('\n')
               const tail = gone.length === 0
                 ? ''

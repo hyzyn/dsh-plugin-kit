@@ -114,6 +114,18 @@ export interface Config {
     /** 服务器状态条（0.17.0）：是否采集并推送会话资源指标（CPU/内存/磁盘/uptime/TCP/网速/温度）。默认开。 */
     statsEnabled?: boolean;
     /**
+     * AI 辅助「失败即解释」（0.24.0）：**默认关**（见下方 assistProvider 的成对规则）。
+     *
+     * 打开后，命令以非零状态结束时宿主会把**那条命令的输出尾部**（经清洗、去重、截断
+     * 与轻量遮盖）发给模型，换回一段「发生了什么 / 下一步」。所以这个开关不只是功能开关，
+     * 它同时是一次**数据外发**的授权——默认关，卡片上必须把这件事写清楚。
+     */
+    assistEnabled?: boolean;
+    /** AI 辅助的模型路由 provider；与 assistModel **成对**（都留空 = 跟随宿主默认模型，只填一个按未配置处理）。 */
+    assistProvider?: string;
+    /** AI 辅助的模型路由 model；与 assistProvider 成对。 */
+    assistModel?: string;
+    /**
      * 允许 ProxyCommand（本机命令执行）：**默认关**。
      *
      * 本插件唯一「由设置字段驱动本机任意命令执行」的开关，与跳板机（只连一跳 TCP）不同档：
@@ -276,6 +288,12 @@ interface TtySession {
     kind: 'local' | 'ssh';
     /** SSH 会话的展示目标（user@host[:port]）；本地会话为空串。 */
     target: string;
+    /**
+     * 命令型会话（0.23.0）：`tty_open command=` / `tty_run` / SSH 的 exec 标签 ——
+     * 进程本身就是那条命令，**活着就等于在跑**、退出就等于命令结束。
+     * tty_list 的 `running` 对这类会话不依赖 shell 集成（它们不注入钩子）。
+     */
+    commandSession: boolean;
     startedAt: number;
     lastOutputAt: number;
     /** 最近一次 PTY 输入（input 帧 / tty_send）的时间戳：tty_capture{last} 的在途判据之一。 */
@@ -286,6 +304,8 @@ interface TtySession {
     readSeq: number;
     /** 水位线最近一次推进的时刻（D72）：`lastCommand.endedAt > readMarkAt` = 这条命令的输出还没被读过。 */
     readMarkAt: number;
+    /** 已经就「失败」弹过徽标的那条命令的 `lastCommand.seq`（0.24.0）；-1 = 还没弹过。 */
+    assistHintedSeq: number;
     /**
      * 最近若干条「agent 提交过的命令行」（D75，来自 `tty_send` 且带行尾的那些）：
      * 无 shell 集成时 PTY 会把它们**原样回显**进输出流，`tty_expect` 拿回显当命中
@@ -360,6 +380,11 @@ declare class LiveConfig {
     endOnPageClose: boolean;
     /** 服务器状态条：是否采集并推送会话资源指标（默认 true）。 */
     statsEnabled: boolean;
+    /** AI 辅助「失败即解释」：默认关（见 Config.assistEnabled）。 */
+    assistEnabled: boolean;
+    /** AI 辅助的模型路由（provider / model 成对；都空 = 跟随宿主默认模型）。 */
+    assistProvider: string;
+    assistModel: string;
     /** SSH 持久会话名（远程 tmux 托管；本机 socket 清单看不到，随 settings 留存）。 */
     persistSessions: string[];
     /** SFTP 传输限制（客户端浏览器侧执行）。 */
@@ -382,6 +407,9 @@ declare class LiveConfig {
         sftpLimits?: Partial<SftpLimits>;
         allowProxyCommand?: boolean;
         persistSessions?: string[];
+        assistEnabled?: boolean;
+        assistProvider?: string;
+        assistModel?: string;
     });
     /** 合并部分更新；空字符串/undefined 保持原值；sshHosts/hostKeys/tunnels 传数组即整体替换。 */
     apply(partial: Partial<{
@@ -400,6 +428,9 @@ declare class LiveConfig {
         sftpLimits?: Partial<SftpLimits>;
         allowProxyCommand: boolean;
         persistSessions: string[];
+        assistEnabled: boolean;
+        assistProvider: string;
+        assistModel: string;
     }>): void;
     findSshHost(name: string): SshHostEntry | undefined;
 }
@@ -409,16 +440,30 @@ declare class LiveConfig {
 interface ShellIntegrationState {
     /** 跨 chunk 未闭合 OSC 序列的残包缓冲（≤512KB，超限丢弃；上限容纳 T 快照——200 行 tmux capture-pane 的 base64 可到数百 KB）。 */
     carry: string;
+    /**
+     * 这个会话**见过至少一个 OSC 133 标记**（0.23.0）。tty_list 的 `running` 能不能
+     * 下结论全看它：没有标记 = 命令边界不可信（非持久 SSH / fish·csh / Windows 本地 /
+     * 集成被关 / tmux <3.3 吞了 DCS 信封），此时**必须报「未知」而不是「没在跑」**。
+     */
+    sawMark: boolean;
     /** B..D 之间：命令输出捕获中。 */
     inCommand: boolean;
     cmdBuffer: string;
     /** T 标记带来的 pane 快照（tmux 持久标签；D 时优先于 cmdBuffer）。 */
     pendingT: string | null;
+    /**
+     * 上一条已完成命令。`seq` 是**单调序号**（每见到一个 D 自增）：AI 辅助的失败徽标按它
+     * 去重——用 `endedAt`（Date.now()）的话，同一毫秒内连跑两条命令会撞成同一条，第二条
+     * 就再也弹不出徽标。
+     */
     lastCommand: {
         output: string;
         exitCode: number | null;
         endedAt: number;
+        seq: number;
     } | null;
+    /** 命令完成序号（单调自增，见 lastCommand.seq）。 */
+    cmdSeq: number;
 }
 /**
  * 把一块输出喂进 shell 集成解析（cwd 跟随 + 命令边界捕获）。
@@ -429,6 +474,122 @@ interface ShellIntegrationState {
  */
 /** 导出仅供单测（test/shell-capture.test.ts）：B/D 配对与未配对 D 的忽略语义。 */
 export declare function feedShellIntegration(session: TtySession, text: string): void;
+/**
+ * 宿主 llm 服务的流式块（只声明本插件用到的字段，其余块忽略）。
+ *
+ * ⚠️ **finish 块的权威形状是 `{ type:'finish', reason: FinishReason }`**，而 FinishReason
+ * 是**以 `kind` 为判别式**的联合——也就是 `kind` 与 `failure` 都在 `reason` **里面**，
+ * 不在块的顶层。rss 曾经把这两个字段声明在顶层，于是**每一次成功**都被判成「终止原因
+ * unknown」，AI 摘要 100% 失败而单测全绿（假 llm 照着同一个错形状造数据）。这里照抄它
+ * 修好后的形状。
+ */
+interface LlmStreamChunk {
+    type?: string;
+    text?: string;
+    reason?: {
+        kind?: string;
+        failure?: {
+            message?: string;
+            code?: string;
+        };
+    };
+    [key: string]: unknown;
+}
+/**
+ * 宿主 llm 服务的最小结构（cordis Context 上的 llm 服务）。
+ *
+ * ⚠️ `messages[].content` 必须是 **ContentBlock[]**（`[{ type:'text', text }]`），不是
+ * 字符串：字符串会在下游 `contentHasImage(content)` 之类对 content 调 `.some(...)`
+ * 的地方炸成 `content.some is not a function`（rss 踩过，表现是每条都失败）。
+ */
+interface LlmLike {
+    stream(options: {
+        provider: string;
+        model: string;
+        system?: string;
+        messages: Array<{
+            role: 'user';
+            content: Array<{
+                type: 'text';
+                text: string;
+            }>;
+        }>;
+        maxTokens?: number;
+        temperature?: number;
+        signal?: AbortSignal;
+    }): AsyncIterable<LlmStreamChunk>;
+    /**
+     * 已注册的 provider 路由（设置卡片里 provider 栏的候选）。**可选**：宿主没装 llm 服务、
+     * 或该版本没有这个方法时就是「没有候选」，卡片里的输入框照旧手输。
+     */
+    listProviders?: () => unknown;
+    /**
+     * 某个 provider 广告的模型（model 栏的候选）。**可选**，且**可能空**。
+     *
+     * 契约见 dsh-llm 的注释：目录只是**建议**——核心路由接受未列出的 model id，
+     * 「基础空目录、不提供 GUI 选择」是合法状态。所以这里永远不许把空候选当成错误。
+     */
+    listModels?: (provider: string) => Promise<unknown>;
+}
+/**
+ * 解析模型路由：显式配置对 > 宿主默认模型（服务 agentDefaultModel，兼容 currentSelection）
+ * > settings 的 agent-default-model 命名空间；全拿不到返回 error（**不是** null —— 界面要
+ * 一句能照做的原因，而不是一个「点了没反应」的徽标）。
+ *
+ * 与 rss 的 resolveAiRoute 同构，但多一条**成对规则**的显式报错：只填一个时既不生效、
+ * 也不该静默回落到宿主默认（用户以为自己配了，实际走的是别的模型）。
+ */
+export declare function resolveAssistRoute(ctx: Context, provider: string, model: string): {
+    route?: {
+        provider: string;
+        model: string;
+    };
+    error?: string;
+};
+/**
+ * 一次性调用宿主 llm 服务：收集 text-delta 直到 finish（导出仅供单测，照 rss 的
+ * callAiSummary 先例——只测假件的话，「忘了在路由里调用它」这种回归一条都拦不住，
+ * 而 finish 块的形状错误又恰好是 rss 踩过的坑）。
+ */
+export declare function askModelOnce(llm: LlmLike, route: {
+    provider: string;
+    model: string;
+}, prompt: {
+    system: string;
+    user: string;
+}, timeoutMs?: number): Promise<string>;
+/** 已注册的 provider 路由；服务没有这个方法、或抛错，都只当「没有候选」。导出仅供单测。 */
+export declare function listProvidersOf(llm: unknown): Array<{
+    id: string;
+    name: string;
+}>;
+/**
+ * 某个 provider 广告的模型。
+ *
+ * **必须有超时**：适配器是拿远端目录喂这个方法的（pi-ai 那一族会去问服务端点），网络一慢
+ * 就会把设置卡片吊住——而候选只是「建议」，等不到就该立刻放弃、让用户直接手输。
+ */
+export declare function listModelsOf(llm: unknown, provider: string, timeoutMs?: number): Promise<Array<{
+    id: string;
+    name: string;
+}>>;
+/**
+ * 每个 provider 的模型**并行**取回来，给「一个控件同时选渠道 + 模型」的候选表用。
+ *
+ * 判据同 listModelsOf：拿不到就是空数组——**一个 provider 坏掉不许把整张候选表清空**，
+ * 用户至少还能从别的渠道里选。并行 + 每个自带软超时，所以总时长仍被一次超时界住。
+ */
+export declare function listGroupsOf(llm: unknown, providers: Array<{
+    id: string;
+    name: string;
+}>): Promise<Array<{
+    id: string;
+    name: string;
+    models: Array<{
+        id: string;
+        name: string;
+    }>;
+}>>;
 /**
  * TOFU 主机指纹存储：get/record 面向 spawnSsh 的 hostVerifier；
  * record 时经 persist 回调写入 settings（宿主重启后钉扎仍在）。
@@ -559,6 +720,17 @@ export interface SessionSnapshot {
     signal?: string;
     /** 只读保留的剩余毫秒；**省略 = 不按时间释放**（策略为 ∞，关闭或宿主重启才清）。 */
     retainMs?: number;
+    /**
+     * 有命令正在执行（0.23.0）：true = 在跑；false = 命令已结束（或进程已退出）；
+     * **省略 = 无法判断**——这个会话没有 shell 集成标记（非持久 SSH / fish·csh /
+     * Windows 本地 / 集成被关 / tmux <3.3 吞了信封），或命令型会话尚未收到终局。
+     * 拿它当「现在可以往里发命令」的许可时要按三态处理：省略 ≠ 没在跑。
+     */
+    running?: boolean;
+    /** 上一条已完成命令的退出码（0.23.0；来自 OSC 133;D，拿不到时省略）。 */
+    lastExitCode?: number;
+    /** 上一条已完成命令的结束时刻（epoch ms，0.23.0；与 running/lastExitCode 同源）。 */
+    lastExitAt?: number;
 }
 /** 导出仅供单测（test/host-frames.test.ts）：上限 / 孤儿回收 / grace 热改的行为护栏。 */
 export declare class SessionManager {
@@ -826,6 +998,20 @@ export declare class TtyServer {
      * `SessionManager.retire` 那一处（出表 + 释放屏）。
      */
     private finishSession;
+    /**
+     * 「上一条命令失败了」的徽标帧（0.24.0）。
+     *
+     * 只能在**输出下行路径**里判：shell 集成的 `D` 标记可能落在任意一块数据里，没有
+     * 「命令结束」的独立事件可挂。判据全在 assist.ts 的 `shouldExplainExit`（0 不弹、
+     * 130 / 141 豁免）。
+     *
+     * `assistHintedSeq` 按 `lastCommand.seq`（单调序号）去重：同一条命令只弹一次——否则用户
+     * 关掉徽标之后，只要终端再吐一个字节（比如敲了下一个字符的回显）它就会重新冒出来。
+     *
+     * 没有连接时直接返回：徽标是**实时提示**，不是待办队列；等重连时补发会让一个刚打开
+     * 的标签莫名其妙地顶着一个旧徽标。
+     */
+    private maybeEmitAssistHint;
     /** 输出下行 + 基于 ws.bufferedAmount 的背压（暂停/恢复 PassThrough）。 */
     private attachOutput;
     /** 立即冲刷待发的合并输出（exit/kill 前调用，保证 exit 帧永远在最后一帧 data 之后）。
