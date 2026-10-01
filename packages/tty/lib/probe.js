@@ -27,6 +27,13 @@ import { attachSshTransport, classifyError, jumpTargetLabel, PROXY_COMMAND_DISAB
 export const PROBE_TCP_TIMEOUT_MS = 6_000;
 /** ssh2 握手/认证阶段超时（毫秒）；覆盖 buildConnectConfig 的 readyTimeout。 */
 export const PROBE_AUTH_TIMEOUT_MS = 8_000;
+/**
+ * 代理命令这条路上，拼错误文案**之前**等「子进程证据（exit / stderr）」的有界窗口（毫秒，tty D95）。
+ *
+ * 为什么是「有界」而不是「一直等」：代理命令没死透时等它是无意义的（那属于握手超时的活），
+ * 而用户点「试连」要的是一个答案。200ms 覆盖实测的 1~2ms 竞态，又不改变探针的数量级。
+ */
+export const PROXY_EVIDENCE_GRACE_MS = 200;
 /** 把底层错误分类为人类可读诊断；原文保留在返回串里便于对照排查。 */
 /** 与 spawnSsh 的 applyHostKeyPolicy 一致的 TOFU 指引文案（多指纹集合版）。 */
 function mismatchMessage(target, host, port, known, current) {
@@ -287,6 +294,38 @@ export async function probeSsh(spec, store) {
             result.auth = { ok: true, ms: Date.now() - authStart };
             settle();
         });
+        /*
+         * 代理命令在场合：**文案先别拼**（tty D95）。
+         *
+         * D66 修的是「后到的 close 覆写已定稿字段」（每个回调先看 settled），但没有覆盖另一半：
+         * **拼得太早**——`conn` 的 error/close 往往比子进程的 stderr 早，那一刻 `failure()` /
+         * `stderrHint()` 手里还没有证据，于是最有用的一句（命令自己说了什么）被丢成
+         * 「传输已关闭（命令已结束）」。负载下就成了间歇红（CI 实测过一次）。
+         *
+         * 所以这里等一个**有界**窗口让子进程的 stdio 排空（`awaitEvidence`），再拼文案；
+         * 非代理路径（`transport.proxy === null`）**不进这个等待**，行为与延迟一字不变。
+         */
+        let authEventError = null;
+        const settleAuthFailure = (compose) => {
+            if (settled)
+                return;
+            const proxy = transport.proxy;
+            if (proxy === null) {
+                compose();
+                return;
+            }
+            void proxy.awaitEvidence(PROXY_EVIDENCE_GRACE_MS).then(compose, compose);
+        };
+        /** 定稿一条 auth 失败：`base` 是「哪一句」，代理命令的证据统一补在后面。 */
+        const composeAuthFailure = (base) => {
+            if (settled)
+                return;
+            // 见过主机密钥才把那份状态交出去（与 D66 的行为一字不差）
+            if (authEventError !== null)
+                result.hostkey = seenHostKey ? hostkeyState : { state: 'unknown', fingerprint: '' };
+            result.auth = { ok: false, error: base + proxyFailureSuffix(transport.proxy), ms: Date.now() - authStart };
+            settle();
+        };
         conn.on('error', (error) => {
             if (settled)
                 return;
@@ -297,18 +336,22 @@ export async function probeSsh(spec, store) {
                 settle();
                 return;
             }
-            result.hostkey = seenHostKey ? hostkeyState : { state: 'unknown', fingerprint: '' };
-            // TCP / 传输已通：这里只可能是协商 / 认证 / 协议层错误。
-            // 代理命令死了的话，ssh2 只会报「握手前连接中断」——把那件事补在后面，别把人支到目标主机上
-            result.auth = { ok: false, error: classified + proxyFailureSuffix(transport.proxy), ms: Date.now() - authStart };
-            settle();
+            /*
+             * **保留第一条** ssh2 错误：实测它连报两条（前者带线索的「握手前连接中断」、后者是
+             * 「The operation was aborted」这种空话）——先来的更具体，别被后到的盖掉。
+             * TCP / 传输已通：这里只可能是协商 / 认证 / 协议层错误；代理命令死了的话，ssh2 只会报
+             * 「握手前连接中断」——把那件事补在后面，别把人支到目标主机上。
+             */
+            authEventError ??= classified;
+            settleAuthFailure(() => {
+                composeAuthFailure(authEventError ?? classified);
+            });
         });
         conn.on('close', () => {
             // 正常路径（ready / error / 超时）已 settle；未 settle 的 close 兜底
-            if (settled)
-                return;
-            result.auth = { ok: false, error: `连接已关闭（服务端主动断开）${proxyFailureSuffix(transport.proxy)}`, ms: Date.now() - authStart };
-            settle();
+            settleAuthFailure(() => {
+                composeAuthFailure(authEventError ?? '连接已关闭（服务端主动断开）');
+            });
         });
         try {
             conn.connect(connectConfig);

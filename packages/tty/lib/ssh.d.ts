@@ -334,6 +334,18 @@ export interface ProxyCommandDial {
      * 手里有 stderr 就该交出去；没有 stderr 则返回空串（不制造噪音）。
      */
     stderrHint(): string;
+    /**
+     * 等 stdio 排空（最多 `ms`）——**拼错误文案之前**调用。
+     *
+     * 为什么需要它（tty D95）：`exit` 只说明进程没了，**不保证 stderr 已经交到我们手里**——
+     * 负载下 stderr 的数据事件可能排在 `exit` / 传输 `close` 之后（真机与 CI 都实测到过：
+     * 「代理命令已退出（退出码 1）」那一刻 chunks 还是空的），于是最有用的一句（命令自己说了
+     * 什么）被丢成「传输已关闭（命令已结束）」，用户只能去猜。子进程的 `close` 事件是
+     * 「已退出**且** stdio 已关闭」的时点，数据到那时一定已经交出来了。
+     *
+     * **有界**：到点就返回（调用方照当时手里有的写），绝不为等证据把探针拖长。
+     */
+    awaitEvidence(ms: number): Promise<void>;
     /** 收尾：关传输 + 杀子进程（**幂等**；所有 teardown 路径都要调，否则漏一个常驻进程）。 */
     dispose(): void;
 }

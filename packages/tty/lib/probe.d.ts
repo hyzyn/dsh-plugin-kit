@@ -3,6 +3,13 @@ import type { HostKeyStore, SshSpec } from './ssh.js';
 export declare const PROBE_TCP_TIMEOUT_MS = 6000;
 /** ssh2 握手/认证阶段超时（毫秒）；覆盖 buildConnectConfig 的 readyTimeout。 */
 export declare const PROBE_AUTH_TIMEOUT_MS = 8000;
+/**
+ * 代理命令这条路上，拼错误文案**之前**等「子进程证据（exit / stderr）」的有界窗口（毫秒，tty D95）。
+ *
+ * 为什么是「有界」而不是「一直等」：代理命令没死透时等它是无意义的（那属于握手超时的活），
+ * 而用户点「试连」要的是一个答案。200ms 覆盖实测的 1~2ms 竞态，又不改变探针的数量级。
+ */
+export declare const PROXY_EVIDENCE_GRACE_MS = 200;
 /** 分类结果载荷（HTTP 回传；字段全部可 JSON）。 */
 export interface ProbeResult {
     /**

@@ -562,6 +562,8 @@ export async function dialProxyCommand(options) {
     }
     const sock = Duplex.from({ readable: stdout, writable: stdin });
     let failure = null;
+    /** 子进程「怎么结束的」（tty D95）：只记事实，文案在 `failure()` 里现拼。 */
+    let exitHow = null;
     let disposed = false;
     /**
      * 传输是否已经关掉（子进程的输出结束）。
@@ -607,12 +609,27 @@ export async function dialProxyCommand(options) {
     child.on('error', (error) => {
         recordFailure(new Error(`代理命令出错：${error.message}`));
     });
+    /** stdio 全关 = 数据事件已交完；`awaitEvidence` 等的就是它（见 ProxyCommandDial.awaitEvidence）。 */
+    let stdioClosed = false;
+    child.once('close', () => {
+        stdioClosed = true;
+    });
     child.on('exit', (code, signal) => {
         // 我们自己收尾时杀的（disposed）：不是失败，别把正常关闭记成错误
         if (disposed)
             return;
-        const how = signal !== null ? `被信号 ${signal} 终止` : `退出码 ${String(code)}`;
-        recordFailure(new Error(`代理命令已退出（${how}）${stderrTail()}`));
+        /*
+         * **只记「怎么结束的」，不在这里拼文案**（tty D95）：`exit` 到达时 stderr 的数据事件
+         * 可能还排在事件循环里（实测 16B 的 stderr 比 exit 晚 100+ms 才交出来），冻在那一刻
+         * 等于把最有用的一句丢掉——`failure()` 每次**现拼**，证据晚到也能带上。
+         */
+        exitHow = signal !== null ? `被信号 ${signal} 终止` : `退出码 ${String(code)}`;
+        try {
+            sock.destroy();
+        }
+        catch {
+            /* 已销毁 */
+        }
     });
     /**
      * 子进程创建失败（EACCES / 资源耗尽等）要在**这里**就抛出去：否则调用方拿到的是一条
@@ -683,6 +700,9 @@ export async function dialProxyCommand(options) {
         child,
         sock,
         failure: () => {
+            // 「已退出」这条**现拼**：stderr 可能刚刚才到（见 exit 处理里的 D95 注释）
+            if (exitHow !== null)
+                return new Error(`代理命令已退出（${exitHow}）${stderrTail()}`);
             if (failure !== null)
                 return failure;
             // 主动收尾之后不算失败；传输自己关了且还没有 exit 事实时，先把 stderr 尾巴交出去
@@ -698,6 +718,26 @@ export async function dialProxyCommand(options) {
             const text = stderrExcerpt();
             return text === '' ? '' : `；代理命令 stderr: ${text}`;
         },
+        awaitEvidence: (ms) => new Promise((resolve) => {
+            // 已经排空（或本来就关着）→ 立即返回；调用方因此不会为「没证据可等」付延迟
+            if (stdioClosed) {
+                resolve();
+                return;
+            }
+            let done = false;
+            const finish = () => {
+                if (done)
+                    return;
+                done = true;
+                clearTimeout(timer);
+                child.off('close', finish);
+                resolve();
+            };
+            // 到点就走：等不到证据也不能把探针拖长（调用方照当时手里有的写）
+            const timer = setTimeout(finish, ms);
+            timer.unref?.();
+            child.once('close', finish);
+        }),
         dispose,
     };
 }

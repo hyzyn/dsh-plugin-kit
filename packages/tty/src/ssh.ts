@@ -716,6 +716,18 @@ export interface ProxyCommandDial {
    * 手里有 stderr 就该交出去；没有 stderr 则返回空串（不制造噪音）。
    */
   stderrHint(): string
+  /**
+   * 等 stdio 排空（最多 `ms`）——**拼错误文案之前**调用。
+   *
+   * 为什么需要它（tty D95）：`exit` 只说明进程没了，**不保证 stderr 已经交到我们手里**——
+   * 负载下 stderr 的数据事件可能排在 `exit` / 传输 `close` 之后（真机与 CI 都实测到过：
+   * 「代理命令已退出（退出码 1）」那一刻 chunks 还是空的），于是最有用的一句（命令自己说了
+   * 什么）被丢成「传输已关闭（命令已结束）」，用户只能去猜。子进程的 `close` 事件是
+   * 「已退出**且** stdio 已关闭」的时点，数据到那时一定已经交出来了。
+   *
+   * **有界**：到点就返回（调用方照当时手里有的写），绝不为等证据把探针拖长。
+   */
+  awaitEvidence(ms: number): Promise<void>
   /** 收尾：关传输 + 杀子进程（**幂等**；所有 teardown 路径都要调，否则漏一个常驻进程）。 */
   dispose(): void
 }
@@ -785,6 +797,8 @@ export async function dialProxyCommand(options: { spec: SshSpec; logger?: SshLog
   }
   const sock = Duplex.from({ readable: stdout, writable: stdin })
   let failure: Error | null = null
+  /** 子进程「怎么结束的」（tty D95）：只记事实，文案在 `failure()` 里现拼。 */
+  let exitHow: string | null = null
   let disposed = false
   /**
    * 传输是否已经关掉（子进程的输出结束）。
@@ -827,11 +841,25 @@ export async function dialProxyCommand(options: { spec: SshSpec; logger?: SshLog
   child.on('error', (error: Error) => {
     recordFailure(new Error(`代理命令出错：${error.message}`))
   })
+  /** stdio 全关 = 数据事件已交完；`awaitEvidence` 等的就是它（见 ProxyCommandDial.awaitEvidence）。 */
+  let stdioClosed = false
+  child.once('close', () => {
+    stdioClosed = true
+  })
   child.on('exit', (code: number | null, signal: NodeJS.Signals | null) => {
     // 我们自己收尾时杀的（disposed）：不是失败，别把正常关闭记成错误
     if (disposed) return
-    const how = signal !== null ? `被信号 ${signal} 终止` : `退出码 ${String(code)}`
-    recordFailure(new Error(`代理命令已退出（${how}）${stderrTail()}`))
+    /*
+     * **只记「怎么结束的」，不在这里拼文案**（tty D95）：`exit` 到达时 stderr 的数据事件
+     * 可能还排在事件循环里（实测 16B 的 stderr 比 exit 晚 100+ms 才交出来），冻在那一刻
+     * 等于把最有用的一句丢掉——`failure()` 每次**现拼**，证据晚到也能带上。
+     */
+    exitHow = signal !== null ? `被信号 ${signal} 终止` : `退出码 ${String(code)}`
+    try {
+      sock.destroy()
+    } catch {
+      /* 已销毁 */
+    }
   })
   /**
    * 子进程创建失败（EACCES / 资源耗尽等）要在**这里**就抛出去：否则调用方拿到的是一条
@@ -895,6 +923,8 @@ export async function dialProxyCommand(options: { spec: SshSpec; logger?: SshLog
     child,
     sock,
     failure: () => {
+      // 「已退出」这条**现拼**：stderr 可能刚刚才到（见 exit 处理里的 D95 注释）
+      if (exitHow !== null) return new Error(`代理命令已退出（${exitHow}）${stderrTail()}`)
       if (failure !== null) return failure
       // 主动收尾之后不算失败；传输自己关了且还没有 exit 事实时，先把 stderr 尾巴交出去
       if (disposed || !transportClosed) return null
@@ -907,6 +937,26 @@ export async function dialProxyCommand(options: { spec: SshSpec; logger?: SshLog
       const text = stderrExcerpt()
       return text === '' ? '' : `；代理命令 stderr: ${text}`
     },
+    awaitEvidence: (ms: number) =>
+      new Promise<void>((resolve) => {
+        // 已经排空（或本来就关着）→ 立即返回；调用方因此不会为「没证据可等」付延迟
+        if (stdioClosed) {
+          resolve()
+          return
+        }
+        let done = false
+        const finish = (): void => {
+          if (done) return
+          done = true
+          clearTimeout(timer)
+          child.off('close', finish)
+          resolve()
+        }
+        // 到点就走：等不到证据也不能把探针拖长（调用方照当时手里有的写）
+        const timer = setTimeout(finish, ms)
+        timer.unref?.()
+        child.once('close', finish)
+      }),
     dispose,
   }
 }

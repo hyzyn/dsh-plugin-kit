@@ -6,7 +6,7 @@
  */
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
-import { probeSsh, validateSshFields } from '../src/probe.js'
+import { PROXY_EVIDENCE_GRACE_MS, probeSsh, validateSshFields } from '../src/probe.js'
 import { setProxyCommandPolicy } from '../src/ssh.js'
 
 describe('validateSshFields', () => {
@@ -112,6 +112,29 @@ describe('probeSsh：代理命令闸门', () => {
     expect(String(result.auth.error)).toContain('ECONNREFUSED')
     // 反过来也钉住：不许是那句「最后到的 close」文案（原先就是这个形态）
     expect(String(result.auth.error)).not.toBe('连接已关闭（服务端主动断开）')
+  })
+
+  it('负载下间歇红的缺陷（tty D95）：子进程已退出、stderr 后到时，文案必须**等**它（有界）', async () => {
+    setProxyCommandPolicy({ granted: true, enabled: true })
+    const late = fileURLToPath(new URL('../scripts/lib/proxy-late-evidence.mjs', import.meta.url))
+    /*
+     * 夹具把「已退出」与「stderr 到手」**必然**拆成两拍（见该文件）：主进程立刻 `exit(1)`，
+     * stderr 交给 detached 的孙进程 120ms 后写。修复前实测每次都得到
+     * 「代理命令传输已关闭（命令已结束）」——最有用的一句丢了；负载下这正是上面 D66 那条
+     * 用例会间歇红的原因（CI 与两次全量并行跑各实测到过一次）。
+     */
+    const started = Date.now()
+    const result = await probeSsh({
+      host: '127.0.0.1',
+      port: 9,
+      username: 'u',
+      auth: 'password',
+      password: 'x',
+      proxyCommand: `"${process.execPath}" "${late}"`,
+    })
+    expect(String(result.auth.error)).toContain('LATE-EVIDENCE-9')
+    // 有界：等证据也不许把探针拖长（夹具 120ms + 握手开销；余量给足，免得在慢机上假红）
+    expect(Date.now() - started).toBeLessThan(PROXY_EVIDENCE_GRACE_MS + 1000)
   })
 
   it('已授权但开关关着 → 报的是「未启用」（下一步只是去开开关）', async () => {
