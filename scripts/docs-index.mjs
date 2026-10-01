@@ -1,6 +1,7 @@
 /**
- * 文档路由守卫：`docs/*.md`（登记 + 命名）、L0 `ROADMAP.md`（✅ ↔ 落点），以及**包内**
- * `packages/<pkg>/ROADMAP.md`（落地记录节必须排在 `## 已完成` 之后）。
+ * 文档路由守卫：`docs/*.md`（登记 + 命名）、L0 `ROADMAP.md`（✅ ↔ 落点）、**包内**
+ * `packages/<pkg>/ROADMAP.md`（落地记录节必须排在 `## 已完成` 之后），以及
+ * **workspace 包集合 ↔ `architecture.md § 2 包清单`**（判据 5）。
  *
  * ## 为什么有这一份
  *
@@ -25,6 +26,11 @@
  * 一攒就是几百行（实测：tty 那份 591 行里约 545 行是落地记录，读者再也分不清哪条还没做）。
  * 归宿现定在包内 `## 已完成（落点 + 门槛）`（照 L0 同名节，见
  * [conventions § 知识归属表](./conventions.md#知识归属表唯一归宿)），本守卫守**位置**。
+ *
+ * 同一轮（2026-10-01，L0 待办第 7 条）还收了一条**没有守卫的规矩**：归属规范写着「任何档位的新包
+ * 都要在 [architecture.md § 2 包清单](./architecture.md#2-包清单) 加一行」，现算 12/12 满足，
+ * 但第 13 个包进来时**不会有人红**——判据 1–4 都管不到「workspace 包 ↔ 清单行」这一层。
+ * 于是有了判据 5：两边都现算、多一个少一个都报。
  *
  * ## 每一类判据都不许「匹配失败就算过」
  *
@@ -55,8 +61,10 @@
  *   node scripts/docs-index.mjs --quiet    # 只打印差异
  */
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+// 只借它的 YAML 解析能力读 `pnpm-workspace.yaml`（与 check-issue-forms.mjs 同一份依赖）。
+import { parse as parseYaml } from 'yaml'
 // 只借它的 `LEDGER_SPECS`（哪份台账是「转入台账」的权威声明）来判「有作为本包序列权威的 DEFECTS.md」。
 import { LEDGER_SPECS } from './defects-table.mjs'
 
@@ -86,6 +94,12 @@ export const TODO_HEADING = '## 待办'
 export const LANDED_HEADING = '## 已完成（落点 + 门槛）'
 /** 包内路线图的文件名（判据 4 只扫 `packages/<pkg>/ROADMAP.md`，L0 那份不归它管）。 */
 export const PACKAGE_ROADMAP_FILE = 'ROADMAP.md'
+/** `pnpm-workspace.yaml`：判据 5 的**左边**（workspace 到底有哪些包，现算）。 */
+export const WORKSPACE_PATH = 'pnpm-workspace.yaml'
+/** `docs/architecture.md`：判据 5 的**右边**（包清单那张表的唯一归宿）。 */
+export const ARCHITECTURE_PATH = 'docs/architecture.md'
+/** 包清单节的标题——判据 5 只认这一节里的 README 链接。 */
+export const PACKAGE_MANIFEST_HEADING = '## 2. 包清单'
 
 /**
  * 包内 ROADMAP 的「已完成」锚点。
@@ -374,6 +388,110 @@ export function checkPackageRoadmapLanded({ packageRoadmaps }) {
   return diffs
 }
 
+/**
+ * 判据 5：**workspace 包集合 ↔ `architecture.md § 2 包清单`** 一一对应。
+ *
+ * 为什么需要它：归属规矩写着「任何档位的新包都要在 [architecture.md § 2 包清单] 加一行」，
+ * 而这条规矩此前**没有任何守卫**——第 13 个包进来时不会有人红（判据 1–4 都管不到
+ * 「workspace 包 ↔ 清单行」这一层：判据 1 管的是 `docs/*.md` 的登记）。清单一旦漂，
+ * 它就成了一份**历史**，而新人读到的第一份包关系图正是它。
+ *
+ * 两边都**现算**、不写死：左边从 `pnpm-workspace.yaml` 的通配解析出带 `package.json` 的目录，
+ * 右边从那一节的 `<pkg>/README.md` 链接取包名——所以新包 / 删包都会在两侧各自现形。
+ *
+ * @param input - `{ workspacePackages, architecture }`（由 `readDocsInputs` 读；单测可传合成清单）。
+ */
+export function checkPackageManifest({ workspacePackages, architecture }) {
+  const diffs = []
+  const listed = parseManifestPackages(architecture)
+  if (listed === undefined) {
+    diffs.push({
+      kind: 'manifest.section.absent',
+      message: `architecture.md 里找不到「${PACKAGE_MANIFEST_HEADING}」这一节：包清单是这条判据的右边，报缺失、不静默跳过`,
+    })
+    return diffs
+  }
+  const inWorkspace = new Set(workspacePackages)
+  for (const pkg of [...inWorkspace].sort()) {
+    if (listed.has(pkg)) continue
+    diffs.push({
+      kind: 'manifest.missing',
+      pkg,
+      message: `packages/${pkg} 在 ${WORKSPACE_PATH} 里，但 architecture.md「${PACKAGE_MANIFEST_HEADING}」没有它的行：任何档位的新包都要在清单里加一行`,
+    })
+  }
+  for (const pkg of [...listed].sort()) {
+    if (inWorkspace.has(pkg)) continue
+    diffs.push({
+      kind: 'manifest.stale',
+      pkg,
+      message: `architecture.md「${PACKAGE_MANIFEST_HEADING}」给 packages/${pkg} 留了一行，但它已不在 ${WORKSPACE_PATH} 里：删包时清单要跟着删，否则清单成了历史`,
+    })
+  }
+  return diffs
+}
+
+/**
+ * 从 `architecture.md` 的包清单节取包名（= `../packages/<pkg>/README.md` 这类链接的目标）。
+ *
+ * 只认**这一节**里的链接：别处的 `../packages/...` 引用不算「登记」（与判据 1 认归属表同款口径）。
+ * 节不在时返回 `undefined`（调用方据此**报缺失**，而不是当成空清单）。
+ */
+export function parseManifestPackages(architecture) {
+  const section = sectionOf(architecture, PACKAGE_MANIFEST_HEADING)
+  if (section === undefined) return undefined
+  const names = new Set()
+  for (const match of section.matchAll(/\]\(\.\.\/packages\/([A-Za-z0-9._-]+)\/README(?:\.en)?\.md(?:#[^)]*)?\)/g)) {
+    names.add(match[1])
+  }
+  return names
+}
+
+/**
+ * 从 `pnpm-workspace.yaml` 取通配清单（纯函数；`!` 开头的排除项按规矩不产出包）。
+ *
+ * 解析用真 YAML（`yaml` 包）：这条判据要的是**准**，而手写正则会在注释 / 引号 / 流式写法上
+ * 悄悄错（错的方向恰好是「少数几个包」= 恒绿）。
+ */
+export function parseWorkspaceGlobs(workspaceText) {
+  const doc = parseYaml(workspaceText)
+  const entries = doc?.packages
+  if (!Array.isArray(entries)) return []
+  return entries
+    .filter((entry) => typeof entry === 'string')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== '' && !entry.startsWith('!'))
+}
+
+/**
+ * 把通配解析成**包目录名**（判据 5 的左边）。
+ *
+ * 只支持本仓实际用的两种形态：`dir` 与 `dir/*`（单层通配）。出现别的形态就**抛错**——
+ * 守卫宁可炸，也不许把一批包悄悄漏掉（漏 = 恒绿，本仓最忌讳的闸门形态）。
+ */
+function resolveWorkspacePackages(repoRoot) {
+  const globs = parseWorkspaceGlobs(readFileSync(join(repoRoot, WORKSPACE_PATH), 'utf8'))
+  const dirs = new Set()
+  for (const glob of globs) {
+    const star = glob.indexOf('*')
+    if (star === -1) {
+      if (existsSync(join(repoRoot, glob, 'package.json'))) dirs.add(basename(glob))
+      continue
+    }
+    if (!glob.endsWith('/*') || glob.indexOf('*', star + 1) !== -1) {
+      throw new Error(
+        `[docs-index] ${WORKSPACE_PATH} 里的通配「${glob}」不在判据 5 支持的形态内（只支持 dir 与 dir/*）：` +
+          '守卫宁可报错，也不许悄悄漏掉一批包',
+      )
+    }
+    const base = glob.slice(0, -2)
+    for (const name of readdirSync(join(repoRoot, base))) {
+      if (existsSync(join(repoRoot, base, name, 'package.json'))) dirs.add(name)
+    }
+  }
+  return [...dirs].sort()
+}
+
 /** 文件的行数（与 `wc -l` 同口径：数换行符；文件不在返回 `undefined`）。 */
 function countLines(file) {
   if (!existsSync(file)) return undefined
@@ -456,7 +574,8 @@ export function formatReadmeReport(facts) {
   return lines.join('\n')
 }
 
-/** 读仓库里的输入（只读）：`docs/` 清单、conventions、L0 ROADMAP，以及**包内** ROADMAP（判据 4）。 */
+/** 读仓库里的输入（只读）：`docs/` 清单、conventions、L0 ROADMAP、包内 ROADMAP（判据 4），
+ *  以及 workspace 包集合与 architecture（判据 5）。 */
 export function readDocsInputs(repoRoot = REPO_ROOT) {
   const docs = readdirSync(join(repoRoot, DOCS_DIR))
     .filter((name) => name.endsWith('.md'))
@@ -481,6 +600,8 @@ export function readDocsInputs(repoRoot = REPO_ROOT) {
     conventions: readNormalized(CONVENTIONS_PATH),
     roadmap: readNormalized(ROADMAP_PATH),
     packageRoadmaps,
+    architecture: readNormalized(ARCHITECTURE_PATH),
+    workspacePackages: resolveWorkspacePackages(repoRoot),
   }
 }
 
@@ -492,6 +613,7 @@ export function checkRepo(repoRoot = REPO_ROOT) {
     ...checkDocFilenames(inputs),
     ...checkRoadmapStatus(inputs),
     ...checkPackageRoadmapLanded(inputs),
+    ...checkPackageManifest(inputs),
   ]
 }
 
@@ -508,6 +630,8 @@ if (process.argv[1] !== undefined && import.meta.url === `file://${process.argv[
       0,
     )
     console.log(`[docs-index] 包内 ROADMAP 共 ${String(inputs.packageRoadmaps.length)} 份；落地记录节 ${String(landedCount)} 处（判据 4 只管它们排在 \`## 已完成\` 之后）`)
+    // 判据 5 的两边也打印出来：同样为了「命中不是 0」看得见。
+    console.log(`[docs-index] workspace 包 ${String(inputs.workspacePackages.length)} 个；§ 2 包清单 ${String(parseManifestPackages(inputs.architecture)?.size ?? 0)} 行（判据 5 要求一一对应）`)
     // 事实报告（只报告，不判红）：`--quiet` 一并抑制，免得把 CI / 脚本输出搞脏。
     console.log(formatReadmeReport(readReadmeFacts()))
   }

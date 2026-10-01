@@ -232,6 +232,8 @@
 - 中等：`README.md` ≤250 行
 - 复杂：再加 `DEFECTS.md`（第一行写明「本包序列」）与 `ROADMAP.md`
 - 任何档位都要在 [architecture.md § 包清单](./architecture.md#2-包清单) 加一行
+  （**守卫**：`scripts/docs-index.mjs` 判据 5 现算 `pnpm-workspace.yaml` 的包集合与这张表逐一对账，
+  多一个少一个都报）
 
 ## 客户端半体：两条硬规矩
 

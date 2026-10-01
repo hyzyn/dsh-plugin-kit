@@ -5,7 +5,7 @@
  *
  * 1. **真实仓库必须绿**（`docs/` 每一份都被知识归属表登记 + 文件名里没有版本后缀 +
  *    `ROADMAP.md` 的 ✅ 与落点成对、`§ 已完成` 序号递增、✅ 不混态 + **包内** `ROADMAP.md` 的
- *    落地记录节都排在 `## 已完成` 之后）；
+ *    落地记录节都排在 `## 已完成` 之后 + **workspace 包集合与 `architecture.md § 2` 包清单一一对应**）；
  * 2. **守卫必须会红**——本仓刚发生过一道「命中 0 个文件、恒绿、拦不住任何东西」的闸门，
  *    所以任何新守卫都要自证会红。反例**全部用 fixture 造**（在真实文本上做一次字符串替换，
  *    并断言替换真的生效），**不修改任何受版本控制的文件**；`docs` 清单类判据直接传合成清单。
@@ -18,6 +18,8 @@
  * 反例 4 同理，用的是**这次真实失焦的那份文件**（tty/ROADMAP.md：591 行里约 545 行是落地记录，
  * 而文件头写着「本文只放还没做的事」）；它另外断言「扫到了几处」——只会在 0 命中时绿的闸门，
  * 本仓真实发生过一次，所以「命中不是 0」本身也要能被证伪。
+ * 反例 5 是 L0 待办第 7 条那条**没有守卫的规矩**（新包要进 § 2 包清单）：两边都现算，
+ * 所以「删一行」「加一行假包」「节被改名」三种漂法各钉一条。
  *
  * 反向禁止（与 `docs/conventions.md` 硬规矩一致）：守卫报红时只改文档侧；
  * 绝不为让它变绿去删文件、去改文件名（改名要维护者批准）。
@@ -29,11 +31,13 @@ import {
   VERSION_SUFFIX_ALLOWLIST,
   checkDocFilenames,
   checkDocsRegistration,
+  checkPackageManifest,
   checkPackageRoadmapLanded,
   checkRoadmapStatus,
   checkRepo,
   formatReadmeReport,
   parseAttributedDocs,
+  parseManifestPackages,
   parsePackageLandedSections,
   readDocsInputs,
   readReadmeFacts,
@@ -72,6 +76,19 @@ describe('docs-index：现算（唯一真值来源）', () => {
     const diffs = checkRepo()
     expect(diffs.map((diff) => diff.message).join('\n')).toBe('')
     expect(diffs).toEqual([])
+  })
+
+  it('真实仓库：workspace 包与 `architecture.md § 2` 包清单一一对应（命中不是 0）', () => {
+    /*
+     * 两边都**现算**（左边读 `pnpm-workspace.yaml` 的通配，右边读清单节里的 README 链接），
+     * 所以这里先钉「两边都真的扫到了东西」——只会在 0 命中时绿的闸门，本仓真实发生过一次。
+     */
+    expect(real.workspacePackages.length, 'workspace 包数').toBeGreaterThanOrEqual(12)
+    const listed = parseManifestPackages(real.architecture)
+    expect(listed, '§ 2 包清单节应存在').toBeDefined()
+    expect(listed?.size, '清单行数应等于 workspace 包数').toBe(real.workspacePackages.length)
+    expect(real.workspacePackages, '两边应是同一批包名').toEqual([...(listed ?? [])].sort())
+    expect(checkPackageManifest(real)).toEqual([])
   })
 
   it('方案文档登记在案：一份权威（就是这个文件名）、v1 只剩冻结指针', () => {
@@ -292,5 +309,62 @@ describe('反例 4：包内 ROADMAP 的落地记录节住错了地方 → 必须
     const crlf = (text) => text.replace(/\n/g, '\r\n')
     const roadmaps = real.packageRoadmaps.map((file) => ({ ...file, text: crlf(file.text) }))
     expect(checkPackageRoadmapLanded({ packageRoadmaps: roadmaps })).toEqual([])
+  })
+})
+
+describe('反例 5：workspace 包与包清单脱钩 → 必须报出来', () => {
+  /** 按行删掉某一包在清单里的那一行（不硬编码行内容，换个包名照样能用）。 */
+  const dropManifestRow = (pkg) => {
+    const lines = real.architecture.split('\n')
+    const index = lines.findIndex((line) => line.includes(`../packages/${pkg}/README.md`))
+    expect(index, `§ 2 包清单里应有 packages/${pkg} 的行`).toBeGreaterThan(-1)
+    const dropped = lines.filter((_, n) => n !== index).join('\n')
+    expect(dropped, 'fixture 必须真的改动文本').not.toBe(real.architecture)
+    return dropped
+  }
+
+  it('清单少一行（新包进了 workspace 却没登记）→ manifest.missing 点名它', () => {
+    const diffs = checkPackageManifest({ workspacePackages: real.workspacePackages, architecture: dropManifestRow('docker') })
+    expect(kinds(diffs)).toEqual(['manifest.missing'])
+    expect(diffs[0].pkg).toBe('docker')
+    expect(diffs[0].message).toContain('都要在清单里加一行')
+  })
+
+  it('清单多一行（包删了清单没删）→ manifest.stale 点名它', () => {
+    const ghost = mutate(
+      real.architecture,
+      '| `@hyzyn/dsh-all` |',
+      '| `@hyzyn/dsh-ghost` | 插件 | 已经删掉的包（fixture） | [README](../packages/ghost/README.md) |\n| `@hyzyn/dsh-all` |',
+    )
+    const diffs = checkPackageManifest({ workspacePackages: real.workspacePackages, architecture: ghost })
+    expect(kinds(diffs)).toEqual(['manifest.stale'])
+    expect(diffs[0].pkg).toBe('ghost')
+    expect(diffs[0].message).toContain('清单成了历史')
+  })
+
+  it('清单节被改名/删掉 → **报缺失**，不是静默当成空清单', () => {
+    const renamed = mutate(real.architecture, '## 2. 包清单', '## 2. 包清单（fixture 改名）')
+    const diffs = checkPackageManifest({ workspacePackages: real.workspacePackages, architecture: renamed })
+    expect(kinds(diffs)).toContain('manifest.section.absent')
+    expect(diffs[0].message).toContain('报缺失')
+  })
+
+  it('别处的 `../packages/...` 链接不算登记（只认清单那一节）', () => {
+    // 把整张表清空、但保留文档别处的包链接 → 仍必须报「少 12 行」，而不是被别处链接喂饱
+    const tableGone = real.architecture.replace(/^\| `@hyzyn\/dsh-[a-z-]+` \|.*$/gm, '')
+    const diffs = checkPackageManifest({ workspacePackages: real.workspacePackages, architecture: tableGone })
+    expect(diffs.filter((diff) => diff.kind === 'manifest.missing').length).toBe(real.workspacePackages.length)
+  })
+
+  it('合成 workspace（少一个包）→ 按现算报 stale，不依赖真实目录', () => {
+    const withoutDocker = real.workspacePackages.filter((pkg) => pkg !== 'docker')
+    const diffs = checkPackageManifest({ workspacePackages: withoutDocker, architecture: real.architecture })
+    expect(kinds(diffs)).toEqual(['manifest.stale'])
+    expect(diffs[0].pkg).toBe('docker')
+  })
+
+  it('闸门对 CRLF 免疫（Windows 检出不该假红）', () => {
+    const crlf = real.architecture.replace(/\n/g, '\r\n')
+    expect(checkPackageManifest({ workspacePackages: real.workspacePackages, architecture: crlf })).toEqual([])
   })
 })

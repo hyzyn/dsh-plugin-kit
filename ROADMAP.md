@@ -210,7 +210,7 @@ renderer）：token 让盲发失效。若要做，先书面定三件事：① �
 **待批准**：收敛要动 `.github/`，按 [§ AI 协作边界](./docs/conventions.md#ai-协作边界什么改动要先问)
 属于必须先问的动作。
 
-### 7. `architecture.md § 2` 包清单缺守卫
+### 7. ✅ `architecture.md § 2` 包清单缺守卫
 
 归属规矩写着「任何档位的新包都要在 [architecture.md § 包清单](./docs/architecture.md#2-包清单)
 加一行」，现算 12/12 满足，但**没有任何守卫**：第 13 个包进来时不会有人红。
@@ -220,6 +220,9 @@ renderer）：token 让盲发失效。若要做，先书面定三件事：① �
 **为什么是 L0**：要同时动 `scripts/` 与 L0 文档。**修法**：在 `docs-index` 里加一条断言——
 从 `pnpm-workspace.yaml` 现算包集合，与 `architecture.md § 2` 表格里的 README 链接逐一对账，
 多一个少一个都报（配 fixture 反例：清单少一行必须红）。
+
+**已做（2026-10-01）**：落点与门槛见 § 已完成 第 7 项（`docs-index` 判据 5：两边现算 +
+三种漂法各一条反例）。
 
 ### 8. `docs/` 的活规矩与已落地档案混在同一层
 
@@ -398,6 +401,24 @@ CI 真在跑的 `packages/tty/scripts/probe-route-smoke.mjs` / `integration.mjs`
 `packages/docker/test/elevate-route.test.ts`、`packages/tty/test/elevate-route.test.ts`；
 真机 `pnpm live-smoke`（18 条，两个实例的授权目录各自隔离 → kit D12）+ 待办第 5 项下面那张
 真机验收表。
+
+### 7. ✅ `architecture.md § 2` 包清单缺守卫：两边现算 + 三种漂法各一条反例
+
+**落点**：`scripts/docs-index.mjs` 新增**判据 5**（`checkPackageManifest` / `parseManifestPackages` /
+`parseWorkspaceGlobs` / `resolveWorkspacePackages`）——**左右两边都现算**：左边从
+`pnpm-workspace.yaml` 的通配解析出带 `package.json` 的目录，右边从 `## 2. 包清单` 那一节的
+`../packages/<pkg>/README.md` 链接取包名。`readDocsInputs` 多带 `workspacePackages` 与
+`architecture` 两份输入；CLI 多打一行「workspace 包 N 个 / § 2 包清单 M 行」（命中不是 0 要看得见）。
+通配只支持本仓在用的 `dir` 与 `dir/*`，出现别的形态**抛错**——漏一批包就是恒绿，宁可炸。
+`conventions.md § 插件包解剖` 那句「任何档位都要在 § 包清单加一行」补上了判据指针。
+
+**三条口径**：workspace 有、清单没有 → `manifest.missing`（新包没登记）；清单有、workspace 没有
+→ `manifest.stale`（删包没删行，清单成了历史）；`## 2. 包清单` 整节被改名/删掉 → **报缺失**，
+不静默当成空清单。只认那一节里的链接——文档别处的 `../packages/...` 引用不算登记。
+
+**门槛**：`scripts/test/docs-index.test.ts` 的反例 5 六条——删一行 / 加一行假包 / 节被改名 /
+把整张表清空（仍必须按 12 行报，不许被别处链接喂饱）/ 合成 workspace（少一个包 → stale）/ CRLF 免疫；
+外加一条正向断言把「命中不是 0」钉住（两边都 ≥12、集合相等）。真实仓库 12/12 现算一致。
 
 ## 已由 L0 资产承接（不再是待办）
 
