@@ -9,7 +9,7 @@
 - **Hot-loaded on save**: rewrites the managed block of `~/.dsh/cordis.patch.yml`; DSH’s HMR watcher reloads it automatically, and tools are registered to the model as `mcp__<server>__<tool>`.
 - **stdio and streamable-http transports**: stdio (command / args / env / cwd) and streamable-http (url / headers, including SSE and session headers); values can be written as `js:` expressions, so secrets never land in the patch file.
 - **Connection Test without the MCP SDK**: the host speaks JSON-RPC directly (initialize → tools/list), returning protocol version / serverInfo / tool list / elapsed time.
-- **Liveness and name conflicts are visible**: reads liveness from the loader fiber (running / disabled / error / loading). Name clashes come in two distinct tiers, never conflated (issue #5): `conflicts` holds only rows that **actually reuse** an external serverName — both instances would claim the same `mcp__<serverName>__*` tool names, so the warning banner appears only then; the inventory of instances outside this card travels in `externalServers` and is shown as a neutral info banner (“these names are already taken elsewhere — don’t reuse them here”). Servers can be enabled / disabled (`disabled: true`) / edited / deleted.
+- **Liveness and name conflicts are visible**: reads liveness from the loader fiber (running / disabled / error / loading). Name clashes come in two distinct tiers, never conflated (issue #5): `conflicts` holds only rows that **actually reuse** an external serverName — both instances would claim the same `mcp__<serverName>__*` tool names, so the warning banner appears only then; the inventory of instances outside this card travels in `externalServers` and is shown as a neutral info banner (“these names are already taken elsewhere — don’t reuse them here”). Servers can be enabled / disabled (`disabled: true`) / edited / deleted. **“Mounted” is not the same as “connected”**: fiber liveness comes from the loader, while a server that cannot be reached still resolves its `mcp-client` apply (`failOnStartupError` defaults to `false`, so nothing throws) — an unreachable address therefore keeps showing a green “running”. Each managed row now carries a `toolCount` (the number of `mcp__<serverName>__*` tools in the registry): when the row is `active` and `toolCount === 0`, the badge reads **“Not connected”** instead (overriding the green “running”), and a line underneath spells out the cost (every boot waits once for that connection attempt) with a “disable” button right there. When the tool registry cannot be read, `toolCount` is **absent** (not 0) and the UI draws no conclusion — “cannot read” must never be rendered as “not connected”.
 - **Capability notice injected into systemPrompt**: injects a capability notice (systemPrompt section) so that when “MCP config / MCP server” comes up, the model knows it refers to this plugin.
 
 ![MCP Server Configuration card: add / Connection Test / hot reload](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-mcp.png)
@@ -29,7 +29,7 @@ sub-page under the Plugins sidebar, and `≤0.1.5` uses the settings-page card.
 
 Routes (loopback + same-origin only):
 
-- `GET /api/dsh-mcp/servers` — list + status + **real clashes** (`conflicts`) / instances outside this card (`externalServers`)
+- `GET /api/dsh-mcp/servers` — list + status (including each row’s `toolCount`, see below) + **real clashes** (`conflicts`) / instances outside this card (`externalServers`). **A failed DTO read returns 500 with the original reason**: the host webserver answers a throwing handler with an empty 400, which shows nothing in the UI (the fence has already passed, so returning the text is safe and makes the next incident obvious at a glance)
 - `POST /api/dsh-mcp/servers/save` — save the whole set (after validation, write back to the managed block)
 - `POST /api/dsh-mcp/test` — run one Connection Test with the form configuration
 
@@ -92,4 +92,13 @@ is present), or you can first clear the server list in the panel and then manual
   deletes the last row (the delete confirmation says so too). A block that was already empty (no entries to begin
   with) is not destructive and is allowed through — saving an empty card does not error
 - The `!!js` expressions of a Connection Test are evaluated inside the host (the same trust model as the loader)
+- **The criterion for “mounted but not connected” is a tool count, not the fiber state**: tools are the only
+  artefact “a successful connection + `tools/list`” leaves behind, so counting them yields the real connection
+  state for free (a walk over the in-memory tool registry, with no network probing). Attribution is by the
+  `mcp__<serverName>__` prefix, using the same character rules as `publicName()` in the core
+  `@deepseek-ai/dsh-mcp-client`; serverName is capped at 32 characters, so the prefix always stays inside the
+  core’s 51-character truncation line and the attribution is reliable — should an over-long prefix ever appear,
+  that row is **skipped rather than guessed**. Rows with `disabled` should have no tools anyway and do not count
+  as “not connected”. Note this does **not** change startup cost: an unreachable address still costs one
+  connection attempt per boot (about 10s; up to 60s when reachable but unresponsive) — disable the row to skip it
 - The browser half is hand-written ESM (the React shell is resolved through `__ModuleLoader__`’s `require`, and the panel itself is pure DOM), so no tsdown is needed; the host half emits ESM straight from tsc

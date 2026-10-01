@@ -54,6 +54,10 @@ window.__ModuleLoader__.load({
       '.mX_cardName{font-weight:700;font-size:13.5px}',
       '.mX_cardSummary{color:var(--dsw-alias-label-secondary);font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}',
       '.mX_cardActions{display:flex;align-items:center;gap:6px;margin-left:auto}',
+      // 卡片内的问题行（目前只有「已挂载但没连上」一种）：与摘要之间加一道分隔，
+      // 文字保持次要色（长句用警告色会吵），靠徽标与左边的停用按钮传达该干什么。
+      '.mX_cardWarn{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;border-top:1px solid var(--dsw-alias-border-l1);margin-top:2px;padding-top:8px;font-size:11.5px;line-height:1.55;color:var(--dsw-alias-label-secondary)}',
+      '.mX_cardWarnText{flex:1;min-width:0}',
       '.mX_badge{display:inline-block;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:999px;padding:1px 8px;font-size:11px;line-height:1.6;white-space:nowrap}',
       '.mX_badge[data-kind=stdio]{color:var(--dsw-alias-state-business-primary);border-color:var(--dsw-alias-state-business-primary)}',
       '.mX_badge[data-kind=http]{color:var(--dsw-alias-state-business-primary);border-color:var(--dsw-alias-state-business-primary)}',
@@ -65,6 +69,11 @@ window.__ModuleLoader__.load({
       '.mX_banner[data-kind=error]{color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary)}',
       '.mX_banner[data-kind=info]{color:var(--dsw-alias-state-business-primary);border-color:var(--dsw-alias-state-business-primary)}',
       '.mX_banner[data-kind=warn]{color:var(--dsw-alias-state-warn-primary);border-color:var(--dsw-alias-state-warn-primary)}',
+      // 「外部占用」是**信息**、不是告警：做成列表下方的紧凑脚注（一行小字 + 名字 chip），
+      // 尺寸与位置都与真冲突的黄色横幅（.mX_banner[data-kind=warn]）明显拉开。
+      '.mX_note{display:flex;align-items:center;flex-wrap:wrap;gap:6px;flex:none;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:6px 10px;font-size:11.5px;line-height:1.6;color:var(--dsw-alias-label-tertiary)}',
+      '.mX_noteGlyph{flex:none;width:13px;height:13px;border-radius:50%;border:1px solid var(--dsw-alias-state-business-primary);color:var(--dsw-alias-state-business-primary);font-size:9px;font-weight:700;font-style:normal;line-height:11px;text-align:center}',
+      '.mX_noteName{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-3);border:1px solid var(--dsw-alias-border-l2);border-radius:6px;padding:0 6px}',
       '.mX_empty,.mX_loading{text-align:center;color:var(--dsw-alias-label-tertiary);padding:24px 12px;font-size:12.5px}',
       '.mX_modalBackdrop{position:absolute;inset:0;z-index:70;background:var(--dsw-alias-bg-mask-1);display:flex;justify-content:center;align-items:flex-start;padding:24px 12px;overflow-y:auto}',
       '.mX_modal{background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);width:min(640px,100%);max-width:100%;box-shadow:var(--dsw-shadow-lv3);color:var(--dsw-alias-label-primary);border-radius:14px;display:flex;flex-direction:column;gap:12px;padding:18px;box-sizing:border-box}',
@@ -79,6 +88,11 @@ window.__ModuleLoader__.load({
       '.mX_input::placeholder{color:var(--dsw-alias-label-tertiary)}',
       '.mX_textarea{min-height:64px;resize:vertical;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px}',
       '.mX_hint{color:var(--dsw-alias-label-tertiary);font-size:11.5px;line-height:1.5}',
+      // 字段级实时校验（serverName 撞名）：必须排在 `.mX_input:focus` **之后**，
+      // 否则聚焦时那抹主题蓝会盖掉标红（两条选择器权重相同，比的是顺序）。
+      '.mX_input[data-invalid]{border-color:var(--dsw-alias-state-error-primary)}',
+      '.mX_fieldError{color:var(--dsw-alias-state-error-primary);font-size:11.5px;line-height:1.5;margin:0;white-space:pre-wrap}',
+      '.mX_fieldError:empty{display:none}',
       '.mX_radioRow{display:flex;align-items:center;gap:16px}',
       '.mX_radioLabel{display:inline-flex;align-items:center;gap:6px;font-size:13px;cursor:pointer;color:var(--dsw-alias-label-primary)}',
       '.mX_checkRow{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--dsw-alias-label-primary);cursor:pointer}',
@@ -147,6 +161,8 @@ window.__ModuleLoader__.load({
       'list.statusLoading': '加载中',
       'list.statusNotLoaded': '未加载',
       'list.conflict': 'serverName 冲突',
+      'list.notConnected': '未连接',
+      'list.notConnectedDetail': '这行当前没有注册任何工具。每次启动都要为它等一次连接尝试（地址不可达约 10 秒、能连上但不回应最长 60 秒），会拖慢启动完成；用不上时建议停用。',
       'panel.editorCreate': '添加 MCP 服务器',
       'panel.editorEdit': '编辑 MCP 服务器',
       'panel.fieldName': 'serverName（模型侧命名空间，[A-Za-z0-9_-] 1~32 字符）',
@@ -165,8 +181,9 @@ window.__ModuleLoader__.load({
       'panel.fieldReconnect': ' 断线自动重连',
       'panel.hint': 'env/headers 的 VALUE 以 js: 开头会原样写入 !!js 表达式（例如 js:process.env.GITHUB_TOKEN）。保存后服务器会热加载，工具名形如 mcp__<serverName>__<tool>。',
       'banner.fileError': '配置区块异常：{error}（保存一次即可修复）',
-      'banner.conflicts': '以下 serverName 与本插件之外的 mcp-client 实例重名，两个实例会抢同一套工具名 mcp__<serverName>__*，其中一个必然加载失败：{names}',
-      'banner.externalOccupied': '以下 serverName 已被本卡之外的 mcp-client 实例占用（例如别的插件自管的行），在本卡内不要重名：{names}',
+      'banner.conflicts': '⚠ 以下 serverName 与本插件之外的 mcp-client 实例重名，两个实例会抢同一套工具名 mcp__<serverName>__*，其中一个必然加载失败：{names}',
+      'banner.externalOccupied': '以下名字已被本卡片之外的 mcp-client 实例占用，在本卡片内起名请避开：',
+      'banner.externalOccupiedHint': '这些行由别的插件自管（不在本卡片的托管区块里），本卡片管不到它们。同名会让两个 mcp-client 实例抢同一套工具名 mcp__<serverName>__*，其中一个必然加载失败；要改名请到对应插件的设置里改。',
       'msg.hotReload': '改动写入 ~/.dsh/cordis.patch.yml 的托管区块后经 HMR 热加载（约 1~2 秒生效）。env/headers 值以 js: 开头会被当作 !!js 表达式（如 js:process.env.GITHUB_TOKEN）。',
       'msg.testConnecting': '正在连接并列出工具…（最长 25 秒）',
       'msg.testOk': '连接成功',
@@ -216,6 +233,8 @@ window.__ModuleLoader__.load({
       'list.statusLoading': 'Loading',
       'list.statusNotLoaded': 'Not loaded',
       'list.conflict': 'serverName conflict',
+      'list.notConnected': 'Not connected',
+      'list.notConnectedDetail': 'This row currently registers no tools. Every boot waits once for its connection attempt (about 10s when the address is unreachable, up to 60s when it is reachable but unresponsive), which delays startup — disable it while you do not need it.',
       'panel.editorCreate': 'Add MCP server',
       'panel.editorEdit': 'Edit MCP server',
       'panel.fieldName': 'serverName (model-side namespace, [A-Za-z0-9_-], 1–32 chars)',
@@ -234,8 +253,9 @@ window.__ModuleLoader__.load({
       'panel.fieldReconnect': ' Reconnect automatically after a drop',
       'panel.hint': 'An env/headers VALUE starting with js: is written as a !!js expression verbatim (e.g. js:process.env.GITHUB_TOKEN). Saving hot-loads the server; tool names look like mcp__<serverName>__<tool>.',
       'banner.fileError': 'Malformed configuration block: {error} (saving once repairs it)',
-      'banner.conflicts': 'These serverNames clash with mcp-client instances outside this plugin — both would claim the same tool names mcp__<serverName>__*, and one of them is bound to fail loading: {names}',
-      'banner.externalOccupied': 'These serverNames are already taken by mcp-client instances outside this card (rows managed by other plugins, for example); avoid reusing them here: {names}',
+      'banner.conflicts': '⚠ These serverNames clash with mcp-client instances outside this plugin — both would claim the same tool names mcp__<serverName>__*, and one of them is bound to fail loading: {names}',
+      'banner.externalOccupied': 'Already taken by mcp-client instances outside this card — avoid these names here:',
+      'banner.externalOccupiedHint': 'These rows are managed by other plugins (they live outside this card’s managed block), so this card cannot change them. A same-named server would make two mcp-client instances claim the same mcp__<serverName>__* tool names and one of them is bound to fail loading; rename it in that plugin’s settings instead.',
       'msg.hotReload': 'Changes are written to the managed block of ~/.dsh/cordis.patch.yml and hot-loaded via HMR (effective in about 1–2 seconds). An env/headers value starting with js: is treated as a !!js expression (e.g. js:process.env.GITHUB_TOKEN).',
       'msg.testConnecting': 'Connecting and listing tools… (up to 25 seconds)',
       'msg.testOk': 'Connected',
@@ -426,6 +446,44 @@ window.__ModuleLoader__.load({
       return badge(STATUS_TEXT[status] || status, STATUS_KIND[status] || '')
     }
 
+    /**
+     * 「已挂载，但没连上」：判据是宿主 DTO 的 `toolCount`（工具注册表里属于这行的工具数）。
+     *
+     * 为什么不看 `status`：它来自 fiber 生命周期，而连不上时 mcp-client 的 apply 照样 resolve
+     * （默认 `failOnStartupError: false`，不抛错）⇒ 徽标显示「运行中」，可这个服务器一个工具
+     * 都没有。工具是「连接成功 + tools/list」之后**唯一**会留下的产物，所以「active 且 0 个工具」
+     * 就等于没连上；而且它是零成本的（读内存注册表，不做任何网络探测）。
+     *
+     * `toolCount === undefined` = 宿主读不到注册表（老宿主）⇒ 返回 false：宁可什么都不说，
+     * 也不能把「读不到」显示成「未连接」。disabled 的行本来就不该有工具，不算；
+     * loading / error 各有自己的徽标，不叠加。
+     */
+    function notConnected(server) {
+      return server.toolCount === 0 && server.disabled !== true && server.status === 'active'
+    }
+
+    /**
+     * 「外部占用」脚注：本卡之外还挂着哪些 mcp-client（别的插件自管的行）。
+     *
+     * 三处刻意与真冲突拉开距离，因为**两者不是一回事**（issue #5 的教训）：
+     * 判据不同（这是清单本身，不与托管行求交集；冲突是清单 ∩ 托管行）、颜色不同（中性灰 vs 黄）、
+     * 位置不同（列表下方脚注 vs 列表上方横幅）。零重名时它照样显示——它说的是「这些名字被占了」，
+     * 不是「你重名了」。**只有真重名才该报警**。
+     *
+     * 名字逐个渲染成 chip，并把**托管它的 loader 行 id** 放进 title：只给一个 serverName 时，
+     * 用户看不出它打哪来（`codegraph` 这种名字尤其像本卡自己的）。
+     */
+    function renderExternalNoteHtml() {
+      const list = state.externalServers || []
+      if (list.length === 0) return ''
+      const chips = list.map((item) => '<span class="mX_noteName" title="' + esc(item.id) + '">' + esc(item.serverName) + '</span>').join('')
+      return '<div class="mX_note" title="' + esc(t('banner.externalOccupiedHint')) + '">'
+        + '<i class="mX_noteGlyph">i</i>'
+        + '<span>' + esc(t('banner.externalOccupied')) + '</span>'
+        + chips
+        + '</div>'
+    }
+
     function renderMainHtml() {
       const parts = []
       parts.push('<div class="mX_panel">')
@@ -435,17 +493,17 @@ window.__ModuleLoader__.load({
       parts.push('<button class="mX_btnGhost" data-action="refresh"' + (state.loading ? ' disabled' : '') + '>' + t('btn.refresh') + '</button>')
       parts.push('<button class="mX_btn" data-action="add">' + t('btn.addServer') + '</button>')
       parts.push('</div>')
-      if (state.fileError) parts.push('<div class="mX_banner" data-kind="error">' + t('banner.fileError', { error: esc(state.fileError) }) + '</div>')
+      if (state.fileError) parts.push('<div class="mX_banner" data-kind="error">' + esc(t('banner.fileError', { error: state.fileError })) + '</div>')
       // 冲突横幅只报**真重名**（host 端的 conflicts 已与托管行求过交集）：一条都不相交时
       // 这里什么都不渲染——曾经把「外部实例清单」原样当冲突渲染，于是不重名也常驻报警（issue #5）。
+      // 整句也必须 `esc()` 包住：文案里有 `mcp__<serverName>__*`，不转义时 `<serverName>` 会被
+      // innerHTML 当成一个未知标签吃掉，用户在界面上看到的是 `mcp____*`（见文件头「带 < 的文案
+      // 一律 esc 包住」那条约定——这里当初漏了，缺陷只在**真有冲突**时才可见，所以一直没被发现）。
       if (state.conflicts && state.conflicts.length) {
-        parts.push('<div class="mX_banner" data-kind="warn">' + t('banner.conflicts', { names: esc(state.conflicts.map((c) => c.serverName).join(t('list.separator'))) }) + '</div>')
+        parts.push('<div class="mX_banner" data-kind="warn">' + esc(t('banner.conflicts', { names: state.conflicts.map((c) => c.serverName).join(t('list.separator')) })) + '</div>')
       }
-      // 外部占用是**信息**、不是错误：这些名字别人（其它插件 / profile 层手工行）已经占了，
-      // 在本卡内起名时避开即可，与「已发生加载失败」无关。
-      if (state.externalServers && state.externalServers.length) {
-        parts.push('<div class="mX_banner" data-kind="info">' + t('banner.externalOccupied', { names: esc(state.externalServers.map((c) => c.serverName).join(t('list.separator'))) }) + '</div>')
-      }
+      // 外部占用**不在这里**渲染：它是信息不是告警，放在列表下方当脚注（renderExternalNoteHtml），
+      // 免得一条「不重名也常驻」的蓝框顶在列表前面被读成报错。
       parts.push('<div class="mX_list">')
       if (state.loading) {
         parts.push('<div class="mX_loading">' + t('list.loading') + '</div>')
@@ -455,6 +513,7 @@ window.__ModuleLoader__.load({
         for (const server of state.servers) parts.push(renderCardHtml(server))
       }
       parts.push('</div>')
+      parts.push(renderExternalNoteHtml())
       if (state.test) parts.push(renderTestHtml())
       parts.push('<div class="mX_banner" data-kind="info">' + t('msg.hotReload') + '</div>')
       parts.push('</div>')
@@ -467,7 +526,9 @@ window.__ModuleLoader__.load({
       parts.push('<div class="mX_cardRow">')
       parts.push(transportBadge(server.transport))
       parts.push('<span class="mX_cardName">' + esc(server.serverName) + '</span>')
-      parts.push(statusBadge(server.status))
+      // 「未连接」要顶掉绿色的「运行中」：fiber 是 ACTIVE 不代表连上了（见 notConnected），
+      // 两个徽标并排只会让人以为它既活着又没连上。
+      parts.push(notConnected(server) ? badge(t('list.notConnected'), 'warn', '') : statusBadge(server.status))
       if (server.conflict) parts.push(badge(t('list.conflict'), 'warn', ''))
       parts.push('<span class="mX_cardActions">')
       parts.push('<button class="mX_linkBtn" data-action="test" data-id="' + esc(server.id) + '"' + (state.busy ? ' disabled' : '') + '>' + t('btn.test') + '</button>')
@@ -477,6 +538,12 @@ window.__ModuleLoader__.load({
       parts.push('</span>')
       parts.push('</div>')
       parts.push('<div class="mX_cardSummary" title="' + esc(summaryOf(server)) + '">' + esc(summaryOf(server)) + '</div>')
+      // 问题行里再放一个「停用」：宿主那一行 `.cardActions` 里的同名按钮在右上角，
+      // 而人在读这段解释时手边正好该有个按钮——这就是「一键停用」。
+      if (notConnected(server)) {
+        parts.push('<div class="mX_cardWarn"><span class="mX_cardWarnText">' + esc(t('list.notConnectedDetail')) + '</span>'
+          + '<button class="mX_linkBtn" data-action="toggle" data-id="' + esc(server.id) + '"' + (state.busy ? ' disabled' : '') + '>' + t('btn.disable') + '</button></div>')
+      }
       parts.push('</div>')
       return parts.join('')
     }
@@ -529,7 +596,7 @@ window.__ModuleLoader__.load({
       parts.push('<div class="mX_panelHeader"><h2 class="mX_panelTitle">' + esc(title) + '</h2></div>')
       parts.push('<div class="mX_modalBody">')
       parts.push('<div class="mX_formRow">')
-      parts.push('<div class="mX_field"><label class="mX_fieldLabel" for="ed_name">' + esc(t('panel.fieldName')) + '</label><input class="mX_input" id="ed_name" placeholder="' + esc(t('placeholder.serverName')) + '" value="' + esc(config.serverName || '') + '"></div>')
+      parts.push('<div class="mX_field"><label class="mX_fieldLabel" for="ed_name">' + esc(t('panel.fieldName')) + '</label><input class="mX_input" id="ed_name" placeholder="' + esc(t('placeholder.serverName')) + '" value="' + esc(config.serverName || '') + '"><p class="mX_fieldError" id="ed_nameError"></p></div>')
       parts.push('<div class="mX_field"><span class="mX_fieldLabel">' + esc(t('panel.fieldTransport')) + '</span><span class="mX_radioRow">')
       parts.push('<label class="mX_radioLabel"><input type="radio" name="ed_transport" value="stdio"' + (transport === 'stdio' ? ' checked' : '') + '>' + esc(t('panel.transportStdio')) + '</label>')
       parts.push('<label class="mX_radioLabel"><input type="radio" name="ed_transport" value="streamable-http"' + (transport === 'streamable-http' ? ' checked' : '') + '>' + esc(t('panel.transportHttp')) + '</label>')
@@ -586,6 +653,14 @@ window.__ModuleLoader__.load({
       const radios = container.querySelectorAll('input[name="ed_transport"]')
       for (const radio of radios) radio.addEventListener('change', toggleSections)
       toggleSections()
+      // serverName 一撞名就当场标红：这是「直观」的主力——用户不必先点保存、再读一条
+      // 事后错误。事件挂在 input 上而不是 blur 上，因为撞名多半是边打边发生（打到第 3 个
+      // 字符就撞上了）。开表单时先跑一次，编辑一条历史遗留的同名行也能立刻看到原因。
+      const nameInput = container.querySelector('#ed_name')
+      if (nameInput !== null) {
+        nameInput.addEventListener('input', () => validateEditorName())
+        validateEditorName()
+      }
     }
 
     function parseArgs(text) {
@@ -665,6 +740,41 @@ window.__ModuleLoader__.load({
     function setEditorError(message) {
       const errorEl = document.getElementById('ed_error')
       if (errorEl) errorEl.textContent = message || ''
+    }
+
+    /**
+     * serverName 的**字段级**实时校验：撞名当场在输入框下给原因，并把输入框标红。
+     *
+     * 它只是「一眼看见」，**不是闸门**——真正拒绝保存的是 `saveEditor()`（本地即时反馈，
+     * 见下面 externalClash 那段）与宿主侧的 `externalNameRejection()`（权威）。所以这里
+     * 刻意**不**禁用保存按钮：历史遗留的同名行要能改别的字段，而「能不能存」由那两道说。
+     *
+     * 两个判据与保存侧逐字对齐（口径分叉过一次就很难再对齐了）：
+     * ① 与本卡其它行重名 → `error.duplicateName`；
+     * ② 撞上外部实例名单 → `error.externalClash`，但**这行本来就叫这个名字**时放行。
+     */
+    function validateEditorName() {
+      const input = document.getElementById('ed_name')
+      const errorEl = document.getElementById('ed_nameError')
+      if (input === null) return ''
+      const name = String(input.value || '').trim()
+      const setError = (message) => {
+        if (errorEl !== null) errorEl.textContent = message
+        if (message === '') delete input.dataset.invalid
+        else input.dataset.invalid = 'true'
+        return message
+      }
+      const original = state.editor !== null && state.editor.server !== null ? state.editor.server : null
+      if (name === '') return setError('')
+      const selfId = original !== null ? original.id : null
+      if (state.servers.some((server) => server.id !== selfId && server.serverName === name)) {
+        return setError(t('error.duplicateName', { name }))
+      }
+      const clash = (state.externalServers || []).find((item) => item.serverName === name)
+      if (clash !== undefined && !(original !== null && original.serverName === name)) {
+        return setError(t('error.externalClash', { name, id: clash.id }))
+      }
+      return setError('')
     }
 
     /* ================================ 动作 ================================ */

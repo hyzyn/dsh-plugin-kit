@@ -41,6 +41,29 @@ const PROBE_TIMEOUT_MS = 25_000
 const MAX_JSON_BODY_BYTES = 512 * 1024
 const MAX_TOOLS_REPORTED = 200
 
+/* ------------------------------------------------------------------ *
+ * 公开工具名：核心 mcp-client 的命名规则（用于数「这行到底连上没有」）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 与 `@deepseek-ai/dsh-mcp-client` 的 `publicName()` 对齐：把非法字符换成 `_`。
+ *
+ * 注意 `-` 是**合法**的（`/[^A-Za-z0-9_-]/`），而 serverName 本身被约束在
+ * `[A-Za-z0-9_-]{1,32}` 内 —— 所以**前缀部分永远不会被改**，只有 rawName 那截会。
+ */
+const INVALID_TOOL_NAME_CHARS = /[^A-Za-z0-9_-]/g
+/**
+ * 公开名长度上限与 hash 长度（核心里的 `MAX_PUBLIC_NAME_LENGTH` / `HASH_LENGTH`）。
+ *
+ * 超长时核心保留 `64 - 12 - 1 = 51` 个字符再接 `_<12 位 hash>`，而本插件允许的
+ * serverName ≤ 32 ⇒ 前缀最长 `3 + 32 + 2 = 37` ≤ 51 —— **截断永远切不到前缀**，
+ * 所以按下面前缀做 `startsWith` 归因是可靠的（这是它能当判据用的前提）。
+ */
+const MAX_PUBLIC_NAME_LENGTH = 64
+const NAME_HASH_LENGTH = 12
+/** 前缀在被截断前还能保住的长度。 */
+const MAX_PREFIX_LENGTH = MAX_PUBLIC_NAME_LENGTH - NAME_HASH_LENGTH - 1
+
 const homePatchPath = () => join(dshHome(), 'cordis.patch.yml')
 
 interface JsExpr {
@@ -463,6 +486,76 @@ export function externalNameClashes(
 }
 
 /* ------------------------------------------------------------------ *
+ * 真实连接态：数工具注册表里属于某行的工具
+ * ------------------------------------------------------------------ */
+
+/** 某行在工具注册表里的公开名前缀（`mcp__<serverName>__`，按核心规则归一化）。 */
+function toolNamespacePrefix(serverName: string): string {
+  return ('mcp__' + serverName + '__').replace(INVALID_TOOL_NAME_CHARS, '_')
+}
+
+/**
+ * 统计每个 serverName **当前**在工具注册表里注册了几个工具 —— 「连上没有」唯一零成本的证据。
+ *
+ * 为什么要它：`liveStatus()` 读的是 fiber 生命周期状态，而连不上时 mcp-client 的 apply
+ * 照样 resolve（`failOnStartupError` 默认 false，不抛错），于是界面显示「运行中」而工具
+ * 一个都没有——实测踩过：jenkins 不可达时卡片绿着，注册表里 `mcp__jenkins__*` 一个不存在。
+ * 工具是连接成功 + `tools/list` 之后**唯一**会留下的产物，所以「active 且 0 个工具」就等于
+ * 「没连上」，而且不需要任何网络探测（每次请求只是 O(工具数) 的内存遍历）。
+ *
+ * 读不到 `tools` 服务，或结构不符预期时返回 `undefined`：调用方据此**不下结论**——
+ * 宁可什么都不说，也不能把「读不到」渲染成「未连接」。
+ */
+function registeredToolCounts(ctx: Context, serverNames: string[]): Map<string, number> | undefined {
+  // **必须走 `ctx.get('tools')`**：cordis 里「属性访问服务」是**严格**的——服务不在本 fiber 的
+  // 解析链上时，`ctx.tools` 直接抛 `cannot get property "tools" without inject`（宿主实测：就是
+  // 这一行把一个 GET 变成空 400 的，见下面的兜底 try/catch 与 docs/troubleshooting）。
+  // `get()` 是反射层的非严格取值：取不到返回 undefined，不抛。
+  //
+  // 顺序**照抄** search 包的 `getService(ctx, name)`（先 get、后属性）：它这么写就是因为踩过同一个坑；
+  // 我之前图省事反着写，于是在真机上报错、而在单测的假 ctx 上完全看不出来。
+  let service: unknown
+  const get = (ctx as unknown as { get?: (name: string) => unknown }).get
+  if (typeof get === 'function') {
+    try {
+      service = get.call(ctx, 'tools')
+    } catch {
+      service = undefined
+    }
+  }
+  if (service === undefined) {
+    try {
+      service = (ctx as unknown as { tools?: unknown }).tools
+    } catch {
+      return undefined
+    }
+  }
+  const schemas = (service as { schemas?: () => unknown } | undefined)?.schemas
+  if (typeof schemas !== 'function') return undefined
+
+  let list: unknown
+  try {
+    list = schemas.call(service)
+  } catch {
+    /* 注册表不可读按「不知道」处理 */
+    return undefined
+  }
+  if (!Array.isArray(list)) return undefined
+  const names = list
+    .map((item) => (typeof item === 'object' && item !== null ? (item as { name?: unknown }).name : undefined))
+    .filter((name): name is string => typeof name === 'string')
+
+  const counts = new Map<string, number>()
+  for (const serverName of serverNames) {
+    // 前缀长到会被截断时归因不可靠（正常配置不会发生，见 MAX_PREFIX_LENGTH 的推导）：不猜，跳过这条
+    const prefix = toolNamespacePrefix(serverName)
+    if (prefix.length > MAX_PREFIX_LENGTH) continue
+    counts.set(serverName, names.filter((name) => name.startsWith(prefix)).length)
+  }
+  return counts
+}
+
+/* ------------------------------------------------------------------ *
  * 服务器列表 DTO
  * ------------------------------------------------------------------ */
 
@@ -479,6 +572,9 @@ export function buildServersDto(ctx: Context): {
   const managedIds = new Set(managed.rows.map((row) => row.id))
   const externalServers = externalMcpEntries(ctx, managedIds)
   const usedExternalNames = new Set(externalServers.map((entry) => entry.serverName))
+  // 真实连接态的证据（见 registeredToolCounts）：某行一个工具都没注册 = 它没连上。
+  // 「读不到注册表」时这里是 undefined，逐行也就没有 toolCount —— 卡片据此不报警。
+  const toolCounts = registeredToolCounts(ctx, managed.rows.map((row) => row.config.serverName))
   const servers = managed.rows.map((row) => {
     const config = row.config
     return {
@@ -488,6 +584,7 @@ export function buildServersDto(ctx: Context): {
       disabled: row.disabled === true,
       status: liveStatus(ctx, row.id),
       conflict: usedExternalNames.has(config.serverName),
+      ...(toolCounts?.has(config.serverName) === true ? { toolCount: toolCounts.get(config.serverName) } : {}),
       config: {
         serverName: config.serverName,
         transport: config.transport,
@@ -956,7 +1053,22 @@ function makeRoutes(ctx: Context): Array<{ kind: 'exact'; path: string; handler:
       path: '/api/dsh-mcp/servers',
       handler: async (req, res) => {
         if (!(await guard(req, res, 'GET'))) return
-        const dto = buildServersDto(ctx)
+        // 读 DTO 失败**不能**变成一个空 400：宿主 webserver 对 handler 抛错只回 400 + 空 body，
+        // 界面上什么原因都看不到（只能去翻宿主 stderr）。围栏已经过了（loopback-only + 方法闸门），
+        // 所以把原因原样交回去是安全的，也让下一次出问题时一眼可查。
+        let dto: ReturnType<typeof buildServersDto>
+        try {
+          dto = buildServersDto(ctx)
+        } catch (error) {
+          const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+          logger?.warn(`dsh-mcp-config: 读取服务器列表失败 ${message}`)
+          writeJson(res, 500, {
+            ok: false,
+            error: message,
+            ...(error instanceof Error && error.stack !== undefined ? { stack: error.stack } : {}),
+          })
+          return
+        }
         writeJson(res, 200, { ok: true, ...dto })
       },
     },
