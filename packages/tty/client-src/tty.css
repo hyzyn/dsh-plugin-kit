@@ -977,6 +977,31 @@
 }
 .tt_term .xterm-viewport {
   background: transparent !important;
+  /*
+   * D86：把两个「标准滚动条属性」都复位回 auto，让视口重新走 `::-webkit-scrollbar`
+   * 那套皮肤（下面三条规则）。上面「统一细滚动条」把它们设在了 `.tt_modal *`（以及
+   * .tt_card / .tt_tunnelPop 等）上，而两者都是**继承属性**——面板里的 `.xterm-viewport`
+   * 因此也拿到 `scrollbar-width: thin` + 主题 token 色。
+   *
+   * Chromium 的规则是：滚动容器只要**任一**标准属性是非 `auto`，就切到「标准滚动条」
+   * 绘制路径，该元素上的 `::-webkit-scrollbar*` 样式**整体失效**。于是下面那套 4px
+   * 淡白胶囊被换成不透明条，亮色主题下就是 `--dsw-static-neutral-200` = #e5e5e5 的一根
+   * 亮条，压在固定深色的终端区上白得扎眼（用户截图上报的就是它）。
+   *
+   * ⚠️ **两个都要复位，只复位 color 不够**：实测（headless / DPR=2 / 真实 CSS，三个盒子
+   * 只差标准属性）——
+   *   X `scrollbar-color: auto` + 继承来的 `thin` → 22 device px 的**主题外 UA 亮条**
+   *     （剖面 232│250×4│193×12│250│237：轨道 + 默认滑块），皮肤没回来；
+   *   Y `scrollbar-color: auto` + `scrollbar-width: auto` → 8 device px、剖面 53×8，
+   *     正是 rgba(255,255,255,.16) 叠在 #0b0e14 上 = 皮肤回来了；
+   *   Z 不受面板规则影响（对照）→ 与 Y 一致。
+   * 所以 `scrollbar-width: auto` 这一行不是冗余，`test/scrollbar-skin.test.ts` 钉着这层关系。
+   *
+   * 只能在视口本体上复位、不能靠给 `.tt_modal *` 加 `:not()` 绕开：祖先上的值照样继承。
+   * 滚动条**只在真有可滚范围时才画**（xterm 缓冲多出历史 / 回放残渣），本行不改该行为。
+   */
+  scrollbar-color: auto;
+  scrollbar-width: auto;
 }
 .tt_term .xterm-viewport::-webkit-scrollbar {
   width: 10px;
