@@ -38,6 +38,7 @@
 | 包特有的深层设计 / API | L1 `packages/<pkg>/docs/`（仅需要时建） |
 | **已完成批次 / 设计方案的冻结记录** | L1 `packages/<pkg>/docs/`（设计方案，例：[codegraph/docs/p0-plan.md](../packages/codegraph/docs/p0-plan.md)——首行即标「已实现」，**不是活待办**）；**指针表**在各包 `DEFECTS.md` §4「冻结记录」，检索方式 `git show <sha>:<path>` |
 | **入库产物与 CI 产物闸门** | L0 [docs/conventions.md § 真机脚本与 CI 接线](./conventions.md#真机脚本与-ci-接线) |
+| **测试面与覆盖率口径**（三个测试面怎么分 / `pnpm test:coverage` 的排除项与理由 / 阈值是棘轮不是目标线 / 为什么刻意不进 CI 门禁） | L0 [`docs/testing.md`](./testing.md)（**参数改在 [`vitest.config.ts`](../vitest.config.ts)**，本文只讲为什么） |
 | **提 issue 的格式约束**（表单字段 / 自查结果 / 空白 issue 已关闭） | L0 [`.github/ISSUE_TEMPLATE/`](../.github/ISSUE_TEMPLATE/)（两张表单是**字段真相**）+ 本文 [§ Issue](./conventions.md#issue提-issue-的格式约束)（规矩）。字段与 [troubleshooting.md 的通用顺序](./troubleshooting.md#通用顺序)一一对应；schema 与表单内链接的闸门是 [`scripts/check-issue-forms.mjs`](../scripts/check-issue-forms.mjs) |
 | **投稿材料**（面向 DSH 插件市场） | L0 [`docs/pr-body-dsh-market.md`](./pr-body-dsh-market.md)（**提给市场仓库的 PR 正文**，其相对链接指向目标仓库）与 [`docs/community-submission.json`](./community-submission.json)（提交载荷）。两者都是**对外投稿物**，不是本仓架构 / 规范；**保留原路径**——`community-submission.json` 可能被市场按 `@main/docs/` URL 取。它们属于**「创意工坊」那条投稿轨道**，与市场卡片上分类标签的实际来源不是一回事：见下行 |
 | **插件市场索引**（卡片分类标签从哪来 · 我们 8 条的现状 · 改分类怎么提 PR） | L0 [`docs/market-index.md`](./market-index.md) |
@@ -172,6 +173,8 @@
   真实内网 IP、真实主机名一律换成文档网段 / 中性取值。
 - **提交前门禁**：`pnpm typecheck && pnpm build && pnpm test && pnpm aggregate`。
   `.githooks/pre-commit` 会自动重建产物并 `git add`，然后按 **index** 扫公网 IP。
+  **覆盖率不在门禁里**：它是本地工具，按需 `pnpm test:coverage`（口径、排除理由、阈值棘轮与
+  「为什么不进 CI」见 [testing.md](./testing.md)）。
 - 增删插件后必须跑 `pnpm aggregate` 重新生成 `packages/all` 的聚合清单。
 
 ## Issue（提 issue 的格式约束）

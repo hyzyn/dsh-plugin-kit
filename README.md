@@ -199,6 +199,7 @@ dsh plugin --profile web add link:$(pwd)/packages/<name>
 | 术语（宿主半体、托管区块、TOFU、三代插槽…） | [docs/glossary.md](docs/glossary.md) |
 | 装不上、卡片不出现、插件整体消失、接口 401/403、已知限制 | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | 真机测试怎么跑、什么算通过 | [docs/agent-real-test.md](docs/agent-real-test.md) |
+| 单测 / 集成型用例怎么跑、覆盖率口径与阈值规矩 | [docs/testing.md](docs/testing.md) |
 | 某个跨包方案的完整设计与验收（跳板机 / 就地提权 / i18n…） | `docs/` 下的 `*-plan.md` 与 `i18n.md`，由 [conventions.md 的知识归属表](docs/conventions.md) 路由 |
 | Windows 11 真机环境搭建 | [scripts/windows/README.md](scripts/windows/README.md) |
 | 开发环境里插件与宿主的 runtime 链接 | [docs/link-dsh-runtime.md](docs/link-dsh-runtime.md) |
@@ -218,6 +219,8 @@ dsh plugin --profile web add link:$(pwd)/packages/<name>
   用户可见变更请附截图或验证证据。
 - 提交前过门禁：`pnpm typecheck && pnpm build && pnpm test && pnpm aggregate`；
   增删插件后必须跑 `pnpm aggregate` 重新生成 `packages/all` 聚合清单。
+  **覆盖率不进这道门禁**——它是本地工具，按需 `pnpm test:coverage`（口径、排除理由与阈值
+  棘轮规矩见 [docs/testing.md](docs/testing.md)）。
 - 命名 / 编号 / 文档分层等完整规范见 [docs/conventions.md](docs/conventions.md)。
 
 ## 许可证
