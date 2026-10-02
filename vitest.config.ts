@@ -47,5 +47,50 @@ export default defineConfig({
      * 20s 仍是**有界**的：真挂死照样判失败，只是晚 15 秒。
      */
     testTimeout: 20_000,
+
+    /**
+     * 覆盖率口径（`pnpm test:coverage`）。**正文在 `docs/testing.md`**——那里写三条
+     * 测试面的划分、排除理由、阈值棘轮规矩与「为什么不进 CI」；这里只留配置本身。
+     *
+     * **本文不抄会随提交漂的测量值**（用例总数、整体覆盖百分比）——要数字就跑一次
+     * `pnpm test:coverage`（写法见 docs/testing.md § 覆盖率口径）；下面保留的只有
+     * 阈值与棘轮基线那类技术事实（规矩见 docs/conventions.md § 文档分档）。
+     *
+     * **只统计「有测试入口」的面，按设计不在本层测的代码不计入**——否则全量口径
+     * 会被三份浏览器 bundle 入口与真机 / Windows / E2E 脚本（全是 0%）拖成一个
+     * 大家会学会无视的假数字。排除项各有明确理由：
+     *
+     *   - `client-src/index.js` ×3：浏览器 bundle 入口，esbuild 管线自有验证
+     *     （smoke/verify 脚本）。判对错的逻辑留在里面等于没有测试入口（tty D61
+     *     的教训）——要测就抽成纯模块，抽出来的自然回到统计里；
+     *   - `scripts/lib|fixtures|windows`：真机隔离引导（由 live-scripts-safety
+     *     读源码钉住）、测试夹具、Windows E2E；
+     *   - `scripts/test`：测试夹具自身；`*.d.ts` 类型声明。
+     *
+     * **thresholds 是棘轮，不是目标线**：只钉已过 80% 的包，各留 2 个点余量防无意识
+     * 回落（codegraph 92→90、kit 86→84——左边是当时的实测，右边是钉的值）。其余包
+     * **故意不钉**（当前都远低于 80%，按包现算见 `pnpm test:coverage` 的表格）——钉一条
+     * 达不到的线只是把「没测」变成「红」，不会多出任何用例；要爬就改这里的数字，
+     * 每爬一格都该是用例落地的结果。
+     *
+     * 覆盖率是本地工具，不进 CI 门禁；哪天要当门禁用，先验证阈值在 CI 三平台
+     * 上稳定（本仓库用例靠参数注入覆盖双平台而非 skip，理论上不漂移）。
+     */
+    coverage: {
+      include: ['packages/*/src/**', 'packages/*/client-src/**', 'scripts/**/*.mjs'],
+      exclude: [
+        '**/client-src/index.js',
+        'scripts/test/**',
+        'scripts/lib/**',
+        'scripts/fixtures/**',
+        'scripts/windows/**',
+        '**/*.d.ts',
+      ],
+      reporter: ['text', 'text-summary', 'json-summary'],
+      thresholds: {
+        'packages/codegraph/src/**': { statements: 90, lines: 90 },
+        'packages/kit/src/**': { statements: 84, lines: 84 },
+      },
+    },
   },
 })
