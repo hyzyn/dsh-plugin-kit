@@ -370,6 +370,35 @@ bundle key 且没有 row 入口、旧宿主只注册两个 row key）——其�
   [agent-real-test.md § 各包真机入口](./agent-real-test.md#各包真机入口)。
 - **包内脚本不搬家**：`scripts/` 下的包内脚本与 `package.json` 的 `smoke` / CI step 直接接线，
   移动会打断它们。项目级 Runbook 见 [agent-real-test.md](./agent-real-test.md)。
+- **负载敏感型 flake 的复现与排查**（2026-10-03 立，起因是三条同型 flake：tty `D95` / `D57`、
+  codegraph `CG65`，详见各包 ROADMAP）。这类用例**单跑永远绿**，只在「全量套件并发挤压 CPU」时红，
+  所以排查第一步必须是**稳定复现**。用 [`scripts/repro-flake.mjs`](../scripts/repro-flake.mjs)：
+
+  ```sh
+  node scripts/repro-flake.mjs packages/tty/test/screen-crash.test.ts --rounds 10
+  ```
+
+  它自己管负载的生死（起 N 份全量套件 + M 个忙循环 → 测量 → **先杀进程组再等**，中断路径也收）。
+  **手敲命令时踩过的三个坑**（各浪费近一小时，脚本已经把这几个都绕开了）：
+  1. **`wait` 无参数会等全部后台任务**，包括用来造负载的忙循环——于是「测试 3 分钟跑完、命令挂满
+     15 分钟」。顺序必须是 `kill <负载>; wait`，**不是** `wait; kill`（后者等于没优化）。
+  2. **负载时长要与测量时长匹配**：忙循环设 15 分钟而每轮只需几十秒争用，是纯空转。脚本的循环给
+     600s 只是「保证不先于测量结束」的兜底，正常路径由 cleanup 立即收。
+  3. **`pgrep -fl <关键词>` 会匹配到你自己的检查命令**——用它判断「有没有残留」时会假阳性
+     （`pgrep -fl vitest` 命中含 "vitest" 的自身命令行）。判残留要精确匹配（如
+     `pgrep -f 'Math\.sqrt\(Math.random'`）或直接看退出码。
+
+  **排查时另有两个判据陷阱**（本轮实测踩到，比 flake 本身更值钱）：
+  - **别用 `grep 用例名` 判断红绿**：vitest 通过时也会打印用例名，于是「6 份里 5 份红」这类结论
+    会混进假阳性（实测：某份日志里目标用例其实 `✓` 通过，红的是另一条）。要看 `× ` 行 /
+    `Tests N failed` / `FAIL ` 行。
+  - **A/B 对照必须先复现**：把参数改小后「15/15 通过」不算证据，除非**改回原值的对照组在同一负载下
+    会红**。第一次对照两边都全绿 = 那次负载不够，结论无效。
+  - **vitest 必须从仓库根跑**：`include` 是 `packages/*/test/**`（仓库根相对），在包目录下跑
+    `npx vitest run test/xxx.test.ts` 会 `No test files found`——一个用例都没跑，却容易被当成
+    「全红的基线」。
+  - **改 `src/` 后必须重建 `lib/`**（`pnpm --filter @hyzyn/dsh-<pkg> build`）：测试跑的是入库的
+    预构建产物，只改 `src/` 会让反证实验「全绿」——本轮据此差点得出「用例没问题」的错误结论。
 - **要真宿主的验收放根 `scripts/`**：`scripts/live-host-smoke.mjs`（`pnpm live-smoke`）
   是唯一需要**真 DSH 宿主**的脚本——它起两个一次性宿主实例，验能力开关的授权阶梯 / 路由门控 /
   agent 工具清单 / 试连文案 / 宿主正在服务的 `client.js`。它是**发布门槛 #3 的自动化形态**；
