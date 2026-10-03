@@ -188,6 +188,12 @@
   **覆盖率不在门禁里**：它是本地工具，按需 `pnpm test:coverage`（口径、排除理由、阈值棘轮与
   「为什么不进 CI」见 [testing.md](./testing.md)）。
 - 增删插件后必须跑 `pnpm aggregate` 重新生成 `packages/all` 的聚合清单。
+- **产物与源码必须双向对得上**（`packages/<pkg>/lib/**` ↔ `packages/<pkg>/src/**`）：
+  `tsc` **只写不删**，源码搬走或删掉后旧产物会留在原地，而「重建后 `git diff` 干净」那道闸门
+  **永远发现不了**它（没人会重建一个已经没有源码的文件）。反向那一半同样要守：`src/` 里除
+  `.d.ts` 外每个文件都要有 `.js` + `.d.ts`——`git diff --exit-code` 不报 untracked，所以
+  「提交了源码、忘了提交产物」在 CI 上是绿的。判据与反例：
+  [`scripts/test/lib-artifacts.test.ts`](../scripts/test/lib-artifacts.test.ts)。
 
 ## Issue（提 issue 的格式约束）
 
