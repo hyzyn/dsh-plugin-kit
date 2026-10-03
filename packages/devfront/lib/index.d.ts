@@ -42,3 +42,4 @@ export * from './cdp-driver.js';
 export * from './web-verify.js';
 export { name, inject, apply, Config, CARD_FIELDS, configSnapshotFrom, normalizeCardPatch, normalizeTargets, normalizeConfig, parseViewport, DEVFONT_GUIDANCE, webAuditSink, webAuditText, } from './plugin.js';
 export type { LiveConfig } from './plugin.js';
+export { PROJECT_SITES_REL, loadProjectSites, mergeSites } from './project-sites.js';

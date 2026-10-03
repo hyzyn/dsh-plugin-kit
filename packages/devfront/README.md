@@ -211,6 +211,46 @@ pnpm vitest run packages/devfront
   本包的动作面是「跑一次验活」，不是盯着看的控制台；
 - **卡片里不能改站点**：`targets` 只读展示（见 § 面板的那条边界）。
 
+## 站点声明随项目走（`web/sites.yaml`）
+
+卡片能改的是 **profile 里**的站点（宿主侧配置）。想让站点声明**随项目走**——进项目仓库、随代码
+评审——就把它写进项目里的 `web/sites.yaml`，并在 profile 里打开那条开关：
+
+```yaml
+# ~/.dsh/profiles/<profile>/cordis.patch.yml
+- id: devfront
+  config:
+    # 站点声明随项目走：每次调用按 cwd 找这个相对路径（推荐 web/sites.yaml）
+    projectSitesFile: web/sites.yaml
+```
+
+项目里的清单（与就绪清单 `ready/`、验活断言 `web/<项目>.yaml` 同一形态）：
+
+```yaml
+version: 1
+sites:
+  - id: app
+    label: 应用
+    url: https://app.test/
+    scopeDirs: [/Users/me/work/app]
+    allowedOrigins: [https://sso.test]
+    viewport: 390x844
+```
+
+判据：
+
+- **默认关闭**：`projectSitesFile` 为空 = 只认 profile 的站点。这条开关必须由**维护者在宿主侧**打开，
+  因为站点清单**能凭空多出一个「工具可以在它上面动手」的站点**——这一点与 `devdata` / `devenv` 的
+  项目清单**不对称**（那两包声明的是「怎么访问那个目标」，目标本身已在 profile 里声明过）；
+- **并集**：profile 的站点 + 项目清单的站点；**同一个 id 出现在两处 = 配置问题，报出来**（不静默取
+  一个——两份声明可能给出不同的 url / 范围 / 允许源，静默取一个的后果是「工具按哪份在动手」说不清）；
+- **四态分明**：本目录没有这份文件 = 安静地用 profile；文件在但读不了 / YAML 语法错 / 空文件 / 内容
+  不成立 = **报错并指出原因**（空文件与「没有声明」是两件事）；
+- 行的校验用的是**卡片保存那一套**（`normalizeTargets`）——两套规则必然漂；
+- 项目清单里的站点**不在卡片里改**（它归项目仓库管）；卡片改的始终是 profile 那份。
+
+> 共用件：读盘走 `@hyzyn/dsh-kit/manifest`（三包同一份骨架，2026-10-03 上收）。
+
 ## 还没做
 
 - **站点编辑器（卡片里的增删改）**：现在站点只在卡片里只读展示，编辑走 profile 补丁层。要加就得先

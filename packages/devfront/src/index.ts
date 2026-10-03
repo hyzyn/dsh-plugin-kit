@@ -58,3 +58,4 @@ export {
   webAuditText,
 } from './plugin.js'
 export type { LiveConfig } from './plugin.js'
+export { PROJECT_SITES_REL, loadProjectSites, mergeSites } from './project-sites.js'

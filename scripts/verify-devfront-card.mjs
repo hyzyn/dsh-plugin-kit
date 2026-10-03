@@ -210,6 +210,11 @@ try {
     `status=${String(get1.status)} targets=${String(get1.json?.config?.targets?.length)} persisted=${String(get1.json?.persisted)}`,
   )
   record(
+    '④b 快照带出「站点声明随项目走」的宿主开关（缺省是空 = 关闭）',
+    get1.json?.config?.projectSitesFile === '',
+    `projectSitesFile=${JSON.stringify(get1.json?.config?.projectSitesFile)}`,
+  )
+  record(
     '④ 只读展示要的字段都在（范围 / 允许源 / 视口 / 凭据引用）',
     get1.json?.config?.targets?.[0]?.scopeDirs?.[0] === '/Users/me/coding'
       && get1.json?.config?.targets?.[0]?.allowedOrigins?.[0] === 'https://sso.example.com'

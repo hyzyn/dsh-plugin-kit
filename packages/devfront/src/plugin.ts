@@ -32,6 +32,8 @@ import z from '@deepseek-ai/schemastery'
 import { definePlugin, hasSameOriginProof, isLoopbackRequestStrict, plainConfig, settingsEntryScope } from '@hyzyn/dsh-kit'
 import type { SettingsEntryScope } from '@hyzyn/dsh-kit'
 import { readJsonBody, writeJson, type ReqLike, type ResLike } from '@hyzyn/dsh-kit'
+
+import { loadProjectSites, mergeSites } from './project-sites.js'
 import { createJsonlAuditSink, createLoggerAuditSink, type AuditLoggerLike } from '@hyzyn/dsh-kit/audit'
 
 import { CdpWebDriver, type CdpWebDriverOptions } from './cdp-driver.js'
@@ -76,6 +78,8 @@ export interface Config {
   shotDir?: string
   /** 持久审计出口（JSON 行）；省略 / 空串 = 只进宿主日志（不持久）。 */
   auditFile?: string
+  /** 站点声明随项目走的宿主开关（空 = 关闭，见 zod schema 上那段注释）。 */
+  projectSitesFile?: string
 }
 
 /** 插件配置的 schema。 */
@@ -96,6 +100,17 @@ export const Config: z = z.object({
    * 这里显式声明「空串 = 没配」。
    */
   auditFile: z.string().default('').volatile(),
+  /*
+   * **站点声明随项目走**的宿主开关（2026-10-03）。
+   *
+   * 空串 = 关闭（缺省）。给了相对路径（推荐 `web/sites.yaml`）才去读**每次调用 `cwd` 那个目录**里的
+   * 站点声明，与 profile 里的 `targets` 取并集。
+   *
+   * **为什么这条开关必须存在**（与 `devdata` / `devenv` 的项目清单不对称）：那两包的项目清单声明的是
+   * 「用哪种方式访问那个目标」，目标本身已在 profile 里声明过——清单**加不出**一个可达目标；而本站点
+   * 清单**能凭空多出一个「工具可以在它上面动手」的站点**。默认关闭 = 只有维护者能在宿主侧授权它。
+   */
+  projectSitesFile: z.string().default('').volatile(),
 })
 
 /**
@@ -129,6 +144,7 @@ export interface LiveConfig {
   shotDir: string
   /** 持久审计出口；空串 = 只进宿主日志（不持久）。 */
   auditFile: string
+  projectSitesFile: string
 }
 
 /**
@@ -192,6 +208,7 @@ export function normalizeConfig(section: Record<string, unknown>): LiveConfig {
     chromePath: typeof raw.chromePath === 'string' ? raw.chromePath : '',
     shotDir: typeof raw.shotDir === 'string' ? raw.shotDir : '',
     auditFile: typeof raw.auditFile === 'string' ? raw.auditFile.trim() : '',
+    projectSitesFile: typeof raw.projectSitesFile === 'string' ? raw.projectSitesFile.trim() : '',
   }
 }
 
@@ -516,6 +533,7 @@ export function configSnapshotFrom(live: LiveConfig): Record<string, unknown> {
     chromePath: live.chromePath,
     shotDir: live.shotDir,
     auditFile: live.auditFile,
+    projectSitesFile: live.projectSitesFile,
     targets: live.targets.map((target) => ({
       id: target.id,
       label: target.label,
@@ -577,14 +595,36 @@ const plugin = definePlugin<Config>({  name: 'devfront',
     }
 
     /** 按 id 找站点；找不到时报出可用名单（agent 的失败模式是原地重试，得给它出路）。 */
-    const pickTarget = (id: unknown): LiveTarget => {
+    const pickTarget = (id: unknown, sites: readonly LiveTarget[]): LiveTarget => {
       const wanted = typeof id === 'string' ? id.trim() : ''
-      if (wanted === '') throw new Error(`缺少 target 参数。可用站点：${live.targets.map((t) => t.id).join(' / ')}`)
-      const found = live.targets.find((t) => t.id === wanted)
+      if (wanted === '') throw new Error(`缺少 target 参数。可用站点：${sites.map((t) => t.id).join(' / ')}`)
+      const found = sites.find((t) => t.id === wanted)
       if (found === undefined) {
-        throw new Error(`没有名为 ${JSON.stringify(wanted)} 的站点。可用：${live.targets.map((t) => t.id).join(' / ')}`)
+        throw new Error(`没有名为 ${JSON.stringify(wanted)} 的站点。可用：${sites.map((t) => t.id).join(' / ')}`)
       }
       return found
+    }
+
+    /**
+     * 一次调用**可用**的站点：profile 声明的 +（宿主开关打开时）**项目里声明的**。
+     *
+     * 开关（`projectSitesFile`）为空 = 只认 profile（缺省）。打开后按每次调用的 `cwd` 找项目清单，
+     * 与 profile 的站点取并集；**同一个 id 出现在两处 = 配置问题**（报出来，不静默取一个）。
+     * 问题与「本目录没有清单」是两件事：前者报错（带恢复路径），后者安静地只用 profile。
+     */
+    const sitesForCall = (cwd: unknown): { sites: LiveTarget[] } | { problem: string } => {
+      if (live.projectSitesFile === '') return { sites: live.targets }
+      const dir = typeof cwd === 'string' && cwd.trim() !== '' ? cwd.trim() : process.cwd()
+      const read = loadProjectSites(dir, live.projectSitesFile)
+      if (read.kind === 'missing') return { sites: live.targets }
+      if (read.kind === 'problem') return { problem: read.message }
+      const declared = normalizeConfig({ targets: read.sites }).targets
+      const merged = mergeSites(
+        live.targets as unknown as Record<string, unknown>[],
+        declared as unknown as Record<string, unknown>[],
+      )
+      if ('problem' in merged) return { problem: merged.problem }
+      return { sites: merged.sites as unknown as LiveTarget[] }
     }
 
     /**
@@ -595,7 +635,9 @@ const plugin = definePlugin<Config>({  name: 'devfront',
      */
     const run = async (action: WebAction, args: unknown): Promise<unknown> => {
       const input = (args ?? {}) as Record<string, unknown>
-      const target = pickTarget(input.target)
+      const resolved = sitesForCall(input.cwd)
+      if ('problem' in resolved) throw new Error(resolved.problem)
+      const target = pickTarget(input.target, resolved.sites)
       const outcome = await invokeWebAction({
         request: {
           target,

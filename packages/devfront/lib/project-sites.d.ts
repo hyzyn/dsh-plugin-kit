@@ -1,0 +1,61 @@
+/**
+ * **站点声明随项目走**：把「这个站点、这个范围、这个源」的声明放进**项目仓库**（`web/sites.yaml`），
+ * 与就绪清单（`ready/`）、验活断言（`web/<项目>.yaml`）同一形态——**随项目评审、DSH 侧只读**。
+ *
+ * ## 与另两份清单的**关键不对称**（这条决定了这里为什么要有宿主侧开关）
+ *
+ * `devdata` / `devenv` 的项目清单**不需要**宿主开关：它们声明的是「用哪种方式访问那个目标」，
+ * 而目标本身（host:port / 容器名）已经在 profile 里被维护者声明过了——清单**加不出**一个可达的目标。
+ *
+ * 本包不一样：站点就是「工具能在哪些站点上动手」，一条项目清单**能凭空多出一个目标**。
+ * 所以这里有一条与另两份不同的规矩：**默认关闭**——profile 里写了 `projectSitesFile` 才去读它
+ * （`enabled` 由宿主侧配置给，不由项目目录给）。否则任何能写项目目录的人都能把工具指到新站点上。
+ *
+ * ## 两份来源怎么合
+ *
+ * profile 里的 `targets` 与项目文件里的站点**并集**；**同一个 id 出现在两处 = 配置问题，报出来**
+ * （不静默取一个）——与 `devdata` 的「两份清单是歧义，请只留一份」、`devenv` 的同款判据一致。
+ *
+ * ## 只做「读 + 合」，不做领域外的判断
+ *
+ * 读盘走 `@hyzyn/dsh-kit/manifest`（三包共用的清单骨架），行的校验走 `normalizeTargets`
+ * （**卡片保存用的同一套判据**——两套规则必然漂）。
+ */
+/** 项目里站点声明的**缺省相对路径**（`projectSitesFile` 的推荐取值）。 */
+export declare const PROJECT_SITES_REL = "web/sites.yaml";
+/** 项目文件里的站点（形状与 profile 里的 `targets` 完全一致）。 */
+export type ProjectSites = Record<string, unknown>[];
+/** 读一次项目站点声明的结果。 */
+export type ProjectSitesRead = {
+    kind: 'ok';
+    sites: ProjectSites;
+}
+/** 没这份文件 = 这个项目没有站点声明（**不是**错误，也不是「用默认站点」） */
+ | {
+    kind: 'missing';
+}
+/** 文件在，但读不了 / 解析不了 / 内容不成立——**指到字段或说清原因** */
+ | {
+    kind: 'problem';
+    message: string;
+};
+/**
+ * 读一个项目里的站点声明（**永不抛**：四种结果都是返回值）。
+ *
+ * @param cwd - 项目根（工具调用的 `cwd`）。
+ * @param file - 相对 `cwd` 的清单路径（缺省 `web/sites.yaml`）。
+ */
+export declare function loadProjectSites(cwd: string, file?: string): ProjectSitesRead;
+/**
+ * 把 profile 声明的站点与项目声明的站点合成一份可用清单。
+ *
+ * **同一个 id 在两处都出现 = 配置问题**（不静默取一个）：两份声明指同一个 id 却可能给出不同的
+ * `url` / 范围 / 允许源，静默取一个的后果是「工具按哪份在动手」说不清。
+ *
+ * @returns 合并后的清单；冲突时 `problem` 说清是哪两个 id。
+ */
+export declare function mergeSites(profileSites: readonly Record<string, unknown>[], projectSites: readonly Record<string, unknown>[]): {
+    sites: Record<string, unknown>[];
+} | {
+    problem: string;
+};

@@ -56,6 +56,8 @@ export interface Config {
     shotDir?: string;
     /** 持久审计出口（JSON 行）；省略 / 空串 = 只进宿主日志（不持久）。 */
     auditFile?: string;
+    /** 站点声明随项目走的宿主开关（空 = 关闭，见 zod schema 上那段注释）。 */
+    projectSitesFile?: string;
 }
 /** 插件配置的 schema。 */
 export declare const Config: z;
@@ -74,6 +76,7 @@ export interface LiveConfig {
     shotDir: string;
     /** 持久审计出口；空串 = 只进宿主日志（不持久）。 */
     auditFile: string;
+    projectSitesFile: string;
 }
 /**
  * 把原始配置解析成纯数据。
