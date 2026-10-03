@@ -22,14 +22,15 @@
  *
  * 覆盖范围：`scripts/publish-targets.mjs` 里声明了 `dsh.bundle.patch` 的包
  * （= 能被 `dsh plugin` 挂载的插件，含 packages/all 与根 bundle）+ `templates/hello`
- * 模板。纯库包（如 `@hyzyn/dsh-kit`）不参与挂载，不加这些字段。
+ * 模板 + `EXTRA_PLUGIN_DIRS` 里那些**私有、不发布但宿主可加载**的插件（目录不存在就跳过）。
+ * 纯库包（如 `@hyzyn/dsh-kit`）不参与挂载，不加这些字段。
  *
  * 用法：
  *   node scripts/check-dsh-peers.mjs
  *   node scripts/check-dsh-peers.mjs --app-boot /path/to/@deepseek-ai/dsh-app-boot
  *     # 可选：额外用 DSH 自己的判定器逐包 × 逐 cohort 核对（COHORTS 里每一档都要放行）
  */
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { targets } from './publish-targets.mjs'
@@ -48,16 +49,23 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
  *    依赖包 166 个里只有 40 个有真实改动，与本仓相关的只有 `dsh-cordis-client-runner`
  *    的 slot 目录：97 → 98 条，**只增不减**，新增 `sidebar.right.tab.files.actions`，
  *    本仓注册的 4 个槽逐字节相同）。
- * `cordis` 4.0.4 与 `schemastery` 3.18.4 三档同版本，所以同一条范围同时声明多段是如实表述，
- * 而不是「先放宽再说」。
+ *  - 0.2.1-alpha.1 vs 0.2.0-rc.2：CLI 包 20 个文件里只有 package.json 变；本仓 import 的
+ *    宿主包**零代码变化**；`dsh-tools` 只改 `run_code` 的参数顺序与文案、并删掉 `./invariant`
+ *    子路径导出（本仓零引用，`index.d.ts` 逐字节相同），`evaluatePluginCompatibility` 语义
+ *    等价；`dsh-cordis-client-runner` 的 slot 目录 98 → 100 条，**只增不减**
+ *    （新增 `plugins.add.actions` / `shell.bottom`）。
+ * `cordis` 4.0.4 与 `schemastery` 3.18.4 在前三档同版本；第四档的宿主带 4.0.5-alpha.1 与
+ * 3.18.5-alpha.1，但两份 tarball 除 `package.json` 外**逐字节相同**，且 app-boot 用
+ * `Symbol.for('schemastery')` 判定原生 schema（不是 `instanceof`），所以同一条范围同时声明
+ * 多段是如实表述，而不是「先放宽再说」。
  */
-const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2']
+const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1']
 /** 成熟下限：最低支持的 cohort，市场展示位与它一致，也是本仓历史文档里的基线。 */
 const DSH_COHORT = DSH_COHORTS[0]
 /**
  * 唯一支持的 peer 写法：逐 cohort 的 `^<cohort>` 用 `||` 连起来（预发布参与匹配，见文件头）。
  * 单 cohort 时就是 `^0.1.7-rc.2` 这种老写法，多 cohort 时是
- * `^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2`。
+ * `^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1`。
  */
 const EXPECTED_RANGE = DSH_COHORTS.map((cohort) => `^${cohort}`).join(' || ')
 /**
@@ -162,6 +170,18 @@ function checkPlugin(rel, name) {
 for (const [dir, name] of targets) {
   const rel = dir === '.' ? 'package.json' : `${dir}/package.json`
   checkPlugin(rel, name)
+}
+
+/**
+ * 私有、不发布、但宿主**可加载**的插件：它们不在 `publish-targets.mjs` 里（那是发布清单，
+ * 塞进去会去发布一个私有包），所以单独列在这里。目录不存在时跳过——`devfront` 目前只存在于
+ * 开发套件分支上，main 上还没有它；一旦它随合并进来，peer 忘了跟齐这里就会红。
+ */
+const EXTRA_PLUGIN_DIRS = ['packages/devfront']
+
+for (const dir of EXTRA_PLUGIN_DIRS) {
+  if (!existsSync(join(root, dir, 'package.json'))) continue
+  checkPlugin(`${dir}/package.json`, `${dir}（私有、不发布，但宿主可加载）`)
 }
 
 // 模板不在发布清单里，单独查
