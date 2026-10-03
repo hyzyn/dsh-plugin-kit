@@ -844,6 +844,15 @@ window.__ModuleLoader__.load({
     function handleClick(event) {
       const target = event.target
       if (!(target instanceof Element)) return
+      /*
+       * 作用域：只处理**自己卡片 DOM 内**的点击。
+       * 为什么必须有：同一个设置页上挂着别的插件的卡片，它们的按钮同样带 `data-action`
+       * （profile 的「删除」是 `data-action="delete" data-name="…"`，没有 `data-id`）。
+       * 不判作用域时那次点击也会落到这里 → `deletePrompt(undefined)` →
+       * `POST /api/dsh-prompt/delete {promptId: undefined}` → 宿主 400 `prompt 不存在: `。
+       * 2026-10-03 用户实测：点 profile 卡片的「删除」，弹出来的是 prompt 的报错。
+       */
+      if (panelEl === undefined || !panelEl.contains(target)) return
       const actionEl = target.closest('[data-action]')
       if (actionEl === null || actionEl.disabled) return
       const action = actionEl.dataset.action

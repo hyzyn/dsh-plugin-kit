@@ -236,7 +236,7 @@
   （**守卫**：`scripts/docs-index.mjs` 判据 5 现算 `pnpm-workspace.yaml` 的包集合与这张表逐一对账，
   多一个少一个都报）
 
-## 客户端半体：两条硬规矩
+## 客户端半体：三条硬规矩
 
 ### ① 跟宿主建连的地址，基址只能来自宿主注入的 `__DSH_TRANSPORT__`
 
@@ -261,12 +261,42 @@ origin 上。从 `location` 推出来的地址在浏览器里完全正常、**�
 
 ### ② 要判对错的客户端逻辑，抽成 `client-src/*.js` 纯模块 + vitest 用例
 
-`client.js` 是构建产物、不在 vitest 层测；`client-lint` 只查静态问题（名字解析、宿主地址来源）、
+`client.js` 是构建产物、不在 vitest 层测；`client-lint` 只查静态问题（名字解析、宿主地址来源、
+点击委托作用域）、
 **不验行为**——逻辑留在组件闭包里就等于没有测试入口。`client-lint` 查的是**全量**
 `client-src/**` 而不只是入口，兄弟模块同样受管。
 
 范例：`packages/tty/client-src/ws-url.js` + `packages/tty/test/ws-url.test.ts`
 （用例里必须有一条 `dsh-app://app` 场景）。
+
+### ③ 绑在 `document` 上的点击委托，必须限定在自己的 DOM 内
+
+同一个设置页上同时挂着多张插件的卡片，各自把 `click` 绑在 `document`（捕获阶段）上再用
+`closest('[data-action]')` 取动作——`data-action` 是**跨卡共享**的通用名，于是没有作用域判定的
+处理器会接走**别张卡片**的按钮：
+
+```js
+// ❌ 点 profile 卡片的「删除」（data-action="delete"、没有 data-id）也会进到这里
+function handleClick(event) {
+  const el = event.target.closest('[data-action]')
+  if (el === null) return
+  if (el.dataset.action === 'delete') deletePrompt(el.dataset.id) // id 是 undefined
+}
+// ✅ 先判「这次点击是不是落在自己的 DOM 里」，自己的浮层挂在 body 上就一并算进来
+function handleClick(event) {
+  const target = event.target
+  if (!panelEl || !panelEl.contains(target)) return
+  const el = target.closest('[data-action]')
+  if (el === null) return
+  if (el.dataset.action === 'delete') deletePrompt(el.dataset.id)
+}
+```
+
+2026-10-03 实测的后果：点 profile 的「删除」多弹一次 `删除 prompt「undefined」` 确认框，随后
+宿主 400、卡片上出现 `prompt 不存在: ` 的红字（用户的报告就是这一条）。静态比对四张绑了
+`document` 的卡片（mcp / profile / prompt / rss）还有 `refresh` / `edit` / `editor-save` 三处
+同类误触。`scripts/client-lint.mjs` 的**检查三**静态拦下这类处理器（规则与成因见
+`scripts/client-click-scope.mjs`，用例见 `scripts/test/client-click-scope.test.ts`）。
 
 ## 客户端设置面：内联优先
 

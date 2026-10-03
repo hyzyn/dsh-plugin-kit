@@ -2343,6 +2343,16 @@ window.__ModuleLoader__.load({
       const target = event.target
       const el = target && target.closest ? target.closest('[data-action]') : null
       if (!el) return
+      /*
+       * 作用域：只处理自己卡片 / 自己浮层里的点击。浮层（digest / catalog）挂在
+       * `document.body` 上、不在 panelEl 里，所以两个根都要判。
+       * 不判作用域时，别张卡片上同名 `data-action`（delete / refresh / edit…）的点击
+       * 会被这里接走——2026-10-03 实测过同类：profile 的「删除」弹 prompt 的报错。
+       */
+      const inPanel = panelEl !== undefined && panelEl.contains(el)
+      const inModal = (modalEl !== undefined && modalEl.contains(el))
+        || (catalogModalEl !== undefined && catalogModalEl.contains(el))
+      if (!inPanel && !inModal) return
       const action = el.dataset.action
       const index = el.dataset.index
       const value = el.dataset.value

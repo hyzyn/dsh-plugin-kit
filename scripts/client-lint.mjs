@@ -20,7 +20,7 @@
  * search）的客户端是**裸 `client.js`**，于是它们从来没被这道防线覆盖过 —— 第 4 条就落在里面。
  * 现在两者都查：有 `client-src/index.js` 就查源码，否则查 `client.js`。
  *
- * ## 两道检查
+ * ## 三道检查
  *
  * **① 名字解析（tsc --checkJs）**：用仓库**已有**的 tsc 对目标跑 `--checkJs`，然后**只把
  * "真 bug"那几个诊断码当失败**：
@@ -50,6 +50,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join, relative } from 'node:path'
 
 import { describeHostUrlUse, HOST_URL_RULE_HINT, listClientSourceFiles, scanHostUrlUses } from './client-host-url.mjs'
+import { CLICK_SCOPE_RULE_HINT, listClickScopeTargets, scanClickScopeUses } from './client-click-scope.mjs'
 
 // 在「包目录」里调用（`pnpm -r typecheck` 就是这样跑的）：tsc 输出的路径也相对它，
 // 于是下面的解析与提示都是包内相对路径。
@@ -86,6 +87,18 @@ const packageName = (() => {
  */
 const hostUrlFindings = listClientSourceFiles(root).flatMap((file) =>
   scanHostUrlUses(relative(root, file).replaceAll('\\', '/'), readFileSync(file, 'utf8')))
+
+/* ------------------------------------------------------------------ *
+ * 检查三：document 级点击委托的作用域（规则与成因见 client-click-scope.mjs）
+ * ------------------------------------------------------------------ */
+
+/*
+ * 多张卡片的客户端半体同挂一个设置页，各自把 click 监听器绑在 document 上；不带作用域判定
+ * 的处理器会接走**别张卡片**的按钮（2026-10-03 实测：点 profile 的「删除」弹出 prompt 的
+ * `prompt 不存在: `）。与检查一同源：口径与真实语料名单收在模块里，CLI 与单测查同一批文件。
+ */
+const clickScopeFindings = listClickScopeTargets(root).flatMap(({ file, source }) =>
+  scanClickScopeUses(relative(root, file).replaceAll('\\', '/'), source))
 
 /* ------------------------------------------------------------------ *
  * 检查二：名字解析（tsc --checkJs）
@@ -137,6 +150,17 @@ for (const item of hostUrlFindings) {
   console.error('[client-lint] ' + item.file + ':' + String(item.line) + ':' + String(item.col) + ' ' + describeHostUrlUse(item))
 }
 
+for (const item of clickScopeFindings) {
+  console.error('[client-lint] ' + item.file + ':' + String(item.line) + ':' + String(item.col) + ' 点击委托缺少作用域判定（处理器 ' + item.handler + '）：' + item.detail)
+}
+
+if (clickScopeFindings.length > 0) {
+  console.error('\n[' + packageName + '] document 级点击委托检查失败：' + String(clickScopeFindings.length) + ' 处。')
+  console.error('  ' + CLICK_SCOPE_RULE_HINT)
+  console.error('  为什么：同一个设置页上挂着多张插件的卡片，各自把 click 绑在 document 上；'
+    + '没有作用域判定就会接走别张卡片的按钮（2026-10-03 实测：点 profile 的「删除」报 `prompt 不存在: `）。')
+}
+
 if (hostUrlFindings.length > 0) {
   console.error('\n[' + packageName + '] 宿主地址来源检查失败：' + String(hostUrlFindings.length) + ' 处。')
   console.error('  ' + HOST_URL_RULE_HINT)
@@ -151,6 +175,8 @@ if (fatal.length > 0) {
 }
 
 if (hostUrlFindings.length > 0) process.exit(1)
+
+if (clickScopeFindings.length > 0) process.exit(1)
 
 const verdict = '宿主地址来源 0 处'
 if (noise.length > 0) {

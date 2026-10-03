@@ -956,6 +956,14 @@ window.__ModuleLoader__.load({
     function handleClick(event) {
       const target = event.target
       if (!(target instanceof Element)) return
+      /*
+       * 作用域：只处理**自己卡片 DOM 内**的点击。
+       * 为什么必须有：prompt 卡片的按钮也用通用 `data-action`（refresh / edit / editor-save
+       * 与这里同名），不判作用域时点 prompt 的「刷新」「编辑」「保存」都会落到这里，
+       * 拿 undefined 的 id 去操作 MCP 服务器（轻则空跑；MCP 编辑态开着时会把那张表单存下去）。
+       * 2026-10-03 实测过同一类：profile 的「删除」被 prompt 的处理器接走并报错。
+       */
+      if (panelEl === undefined || !panelEl.contains(target)) return
       const actionEl = target.closest('[data-action]')
       if (actionEl === null || actionEl.disabled) return
       const action = actionEl.dataset.action

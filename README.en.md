@@ -91,9 +91,9 @@ direction and how they cooperate: [docs/architecture.md](docs/architecture.md) (
 
 ### System requirements
 
-- DeepSeek Harness installed and `dsh web` starts normally. **Three DSH cohorts are currently
-  supported: `0.1.7-rc.2`, `0.2.0-rc.1` and `0.2.0-rc.2`**; `0.1.6-alpha.2` and earlier are no longer
-  supported.
+- DeepSeek Harness installed and `dsh web` starts normally. **Four DSH cohorts are currently
+  supported: `0.1.7-rc.2`, `0.2.0-rc.1`, `0.2.0-rc.2` and `0.2.1-alpha.1`**; `0.1.6-alpha.2` and
+  earlier are no longer supported.
 - Compatibility is guaranteed by the `@deepseek-ai/dsh` range each installable plugin declares in
   `peerDependencies`, which DSH checks once **before install** and once **at startup**. What a
   rejection looks like and how to admit a combination temporarily →
@@ -200,8 +200,9 @@ dsh plugin --profile web add link:$(pwd)/packages/<name>
 [docs/conventions.md](docs/conventions.md) (Chinese).
 **The anatomy of a plugin package** (`dsh.bundle.patch` / `cordis.patch.yml` / `src/index.ts` /
 `dsh.client`) → [docs/conventions.md § Package anatomy](docs/conventions.md#插件包解剖).
-**Two rules that are easy to trip over** (where a client half may derive its host address; extracting
-pure logic into modules) → [docs/conventions.md § Client half](docs/conventions.md#客户端半体两条硬规矩).
+**Three rules that are easy to trip over** (where a client half may derive its host address; extracting
+pure logic into modules; scoping a `document`-level click delegate) →
+[docs/conventions.md § Client half](docs/conventions.md#客户端半体三条硬规矩).
 
 ## Documentation map
 
