@@ -166,6 +166,7 @@ export function normalizeConfig(raw) {
         waitTimeoutMs: clampInt(raw.waitTimeoutMs, MIN_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS, DEFAULT_WAIT_TIMEOUT_MS),
         pollIntervalMs: clampInt(raw.pollIntervalMs, MIN_POLL_INTERVAL_MS, MAX_POLL_INTERVAL_MS, DEFAULT_POLL_INTERVAL_MS),
         stopTimeoutSec: clampInt(raw.stopTimeoutSec, MIN_STOP_TIMEOUT_SEC, MAX_STOP_TIMEOUT_SEC, DEFAULT_STOP_TIMEOUT_SEC),
+        auditFile: asString(raw.auditFile),
         hostKeys: cleanHostKeys ?? [],
         problems,
     };

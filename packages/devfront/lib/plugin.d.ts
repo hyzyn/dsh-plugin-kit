@@ -27,7 +27,8 @@
  */
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
-import { type WebTarget } from './page.js';
+import { type AuditLoggerLike } from '@hyzyn/dsh-kit/audit';
+import { type WebAuditEntry, type WebAuditSink, type WebTarget } from './page.js';
 /**
  * 插件配置的**类型**。
  *
@@ -53,6 +54,8 @@ export interface Config {
     noSandbox?: boolean;
     chromePath?: string;
     shotDir?: string;
+    /** 持久审计出口（JSON 行）；省略 / 空串 = 只进宿主日志（不持久）。 */
+    auditFile?: string;
 }
 /** 插件配置的 schema。 */
 export declare const Config: z;
@@ -69,6 +72,8 @@ interface LiveConfig {
     noSandbox: boolean;
     chromePath: string;
     shotDir: string;
+    /** 持久审计出口；空串 = 只进宿主日志（不持久）。 */
+    auditFile: string;
 }
 /**
  * 把原始配置解析成纯数据。
@@ -89,6 +94,27 @@ export declare function parseViewport(value: unknown): {
     height: number;
 } | undefined;
 export declare function normalizeConfig(section: Record<string, unknown>): LiveConfig;
+/**
+ * 日志出口的一句话（**含被拒的尝试**——那才是「agent 试过什么」的证据）。
+ *
+ * 话术留在本包：它带站点的 `subject`（URL 或选择器），而 `/audit` 里那句通用文案不知道这些。
+ * 路由（允许 → `info`、拒绝 → `warn`）由 `kit` 统一。
+ */
+export declare function webAuditText(entry: WebAuditEntry): string;
+/**
+ * 建审计出口：配了 `auditFile` 走**持久**出口，否则只进宿主日志。
+ *
+ * 2026-10-03 起改用 `@hyzyn/dsh-kit/audit`（与 `devdata` / `devenv` 同一份实现）：
+ * 一条 JSON 行 / 调用、**含被拒绝的尝试**、写不进去 = 抛（fail-closed）。日志话术留在本包
+ * （`webAuditText`），因为它带站点与 subject，是给人看的。
+ *
+ * 抽成导出函数是为了**可测**：宿主半体那一层在本包没有假宿主夹具，而这条判据（「配了就落盘、
+ * 没配就进日志」）不该只靠真机验收。
+ */
+export declare function webAuditSink(options: {
+    auditFile: string;
+    logger: AuditLoggerLike;
+}): WebAuditSink;
 /** 给 agent 的能力公告（只在 `announceToAgent` 打开时注入）。 */
 export declare const DEVFONT_GUIDANCE: string;
 /** `site_text` 的截断上限。 */

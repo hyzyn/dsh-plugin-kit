@@ -89,8 +89,24 @@ Cordis 插件（`{ name, inject, apply }`）+ 六个工具注册：`site_open` /
 3. **拒绝带着恢复路径抛出去**（不返回 `{ok:false}` 信封）：DSH 的工具错误本身就是给模型看的一句话，
    而且不会出现「调用方忘了看 ok 字段」这种沉默失败。
 
-审计写宿主日志，**含被拒绝的尝试**（那才是「agent 试过什么」的证据）。`announceToAgent` 打开时
-注入一段能力公告（六个动作 + 边界 + console 三档口径）。
+审计**含被拒绝的尝试**（那才是「agent 试过什么」的证据）。2026-10-03 起它与 `devdata` / `devenv`
+**共用同一份实现**（[`@hyzyn/dsh-kit/audit`](../kit/README.md#审计出口audit-子路径)）：
+
+- **没配 `auditFile`**（缺省）：只进宿主日志——允许 → `info`、拒绝 → `warn`。**不持久**：
+  日志会被轮转、也未必落盘；
+- **配了 `auditFile`**：一条 JSON 行 / 调用落盘，**含被拒的尝试与判据码**；写不进去时本次调用
+  **不返回结果**（fail-closed——审计写不进就不能装作记下了）。
+
+```yaml
+- id: devfront
+  config:
+    auditFile: ~/.dsh/devfront-audit.jsonl   # 不写 = 只进日志
+```
+
+与 `devdata` / `devenv` 的差别只有一处：本包的动作面是**站点交互**（点一下、填个值），不改共享
+基础设施的状态，所以**没有**「写类动作要求持久审计」那道门——要落盘是配置选择，不是准入条件。
+
+`announceToAgent` 打开时注入一段能力公告（六个动作 + 边界 + console 三档口径）。
 
 ### CDP 驱动（`cdp-driver.ts`）
 

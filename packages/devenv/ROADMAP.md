@@ -36,8 +36,6 @@
    门槛：上收进 `kit` 后三包各自用例绿 + 全仓钉子同步（属 L0，动手前先从本文迁进根 `ROADMAP.md`）。
 6. **一次发布后的证据链对齐**：容器起来了（本包）→ 数据对（`devdata`）→ 页面对（`devfront`）。
    门槛：只读、**不改 Jenkins**；三者能按同一个项目名跑同一批清单。
-7. **审计持久化**：本包现在只写宿主日志，没有落盘面（`devfront` 有同名缺口）。门槛：两包口径一起定
-   （落哪、谁读、被拒的尝试也在内）。
 
 ### C. 结构性的债
 
@@ -117,3 +115,22 @@
 > 这样。改成只看 `docker info` 的退出码（版本号另取一次 `docker info --format`，只用于显示）。
 > 教训与 D04 / D08 同族：**判据不能比被判的东西更假设**——一个连不上就「跳过」的探针，
 > 会把「环境不对」静默伪装成「一切正常」。
+
+### 记-7. 审计落盘：与 `devdata` / `devfront` **共用一份实现**（2026-10-03）
+
+**为什么三包共一份**：`devdata` 早就有 `audit.ts`（JSONL + fail-closed），`devfront` 与 `devenv`
+只有宿主日志。按本仓「第三个消费者出现就上收」的判据，实现搬进了 `@hyzyn/dsh-kit/audit`（0.7.0，
+子路径导出——它 `import 'node:fs'`，不能进会被客户端半体打包的主入口）。`devdata` 那一份随之变成
+**纯再导出 + 自家话术**，行为逐字未变（它的 8 条用例原样通过，含那条精确到字节的 JSON 行断言）。
+
+| 落点 | 内容 | 门槛（已验） |
+|---|---|---|
+| `@hyzyn/dsh-kit/audit` | 一条 JSON 行 / 调用（键序固定）；两个出口：JSONL（**持久，写失败 = 抛**）与 logger（**不持久**，允许 → `info` / 拒绝 → `warn`）；话术可由调用方给 | `packages/kit/test/audit.test.ts` 9 条；`devdata` 那 8 条原样绿（同一份实现的**等价性**由它钉住） |
+| `devenv` | **本包此前没有审计出口**：现在四个工具的每次调用都记（允许 / 拒绝 + 判据码），配 `auditFile` 落 JSONL、否则进日志 | `plugin.test.ts` 新增 4 条：允许与被拒**各落一行**（含 `CONFIRMATION_REQUIRED`）、只读工具也进审计、没配时 `[AUDIT_NOT_DURABLE]` 且**没有一条 start/stop** |
+| 第五道门（写类要求持久审计） | `env_up` / `env_down` 在**确认之后、动手之前**要求 `auditFile`（码与 `devdata` 同名 `AUDIT_NOT_DURABLE`） | 「先报能力、后报审计」由用例钉住（避免把人送去改错地方）；三个既有写路径用例改为显式配 `auditFile` |
+| `devfront` | 同款：`auditFile` 配了落 JSONL，没配进日志；抽出的 `webAuditSink()` 让这条判据**可单测**（本包没有假宿主夹具） | `plugin.test.ts` 新增 3 条（解析 / 落盘两行 / 日志路由）；`page.test.ts` 原有的「审计写失败 = 动作不返回结果」继续钉住 fail-closed |
+
+> **一条留给维护者的迁移提示**：`test` profile 里那份 `devenv` 配置**没有** `auditFile`，
+> 于是它的 `env_up` / `env_down` 现在会被 `[AUDIT_NOT_DURABLE]` 拒（**只读工具不受影响**）。
+> 这是 fail-closed 的方向（宁可不动，也别动得没有记录），代价是要在 profile 补一行
+> `auditFile: ~/.dsh/devenv-audit.jsonl`。

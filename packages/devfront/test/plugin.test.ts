@@ -8,9 +8,13 @@
  * 等于替他授权。
  */
 
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
+
 import { describe, expect, it } from 'vitest'
 
-import { DEVFONT_GUIDANCE, normalizeConfig, parseViewport } from '../src/index.js'
+import { DEVFONT_GUIDANCE, normalizeConfig, parseViewport, webAuditSink } from '../src/index.js'
 
 describe('parseViewport：站点视口（**按站点**，2026-10-02 加）', () => {
   it('收 `390x844` 这类；`x` / `X` / `×` 与前后空白都认', () => {
@@ -171,5 +175,43 @@ describe('能力公告', () => {
     expect(DEVFONT_GUIDANCE).toContain('extension-inject')
     expect(DEVFONT_GUIDANCE).toContain('全新 profile')
     expect(DEVFONT_GUIDANCE).toContain('别把')
+  })
+})
+
+describe('审计落盘（2026-10-03：与 devdata / devenv 同一份实现）', () => {
+  it('`auditFile` 解析：去空白；不写 / 写空 = 只进日志', () => {
+    expect(normalizeConfig({ auditFile: '  ~/.dsh/devfront-audit.jsonl  ' }).auditFile).toBe('~/.dsh/devfront-audit.jsonl')
+    expect(normalizeConfig({}).auditFile).toBe('')
+    expect(normalizeConfig({ auditFile: '   ' }).auditFile).toBe('')
+    expect(normalizeConfig({ auditFile: 42 }).auditFile).toBe('')
+  })
+
+  it('配了文件 → 允许与被拒**各落一行**（含码）', () => {
+    const file = join(mkdtempSync(join(tmpdir(), 'dsh-devfront-audit-')), 'a.jsonl')
+    try {
+      const sink = webAuditSink({ auditFile: file, logger: { info: () => {}, warn: () => {} } })
+      sink.record({ at: 1, targetId: 'w', action: 'open', allowed: true, subject: 'https://x.test/' })
+      sink.record({ at: 2, targetId: 'w', action: 'click', allowed: false, code: 'PAGE_ORIGIN_NOT_ALLOWED' })
+      const lines = readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>)
+      expect(lines.map((line) => [line.action, line.allowed, line.code])).toEqual([
+        ['open', true, undefined],
+        ['click', false, 'PAGE_ORIGIN_NOT_ALLOWED'],
+      ])
+      expect(lines[0]?.subject).toBe('https://x.test/')
+    } finally {
+      rmSync(dirname(file), { recursive: true, force: true })
+    }
+  })
+
+  it('没配文件 → 只进日志（允许 info / 拒绝 warn），话术带站点与 subject', () => {
+    const calls: Array<[string, string]> = []
+    const sink = webAuditSink({
+      auditFile: '',
+      logger: { info: (m) => calls.push(['info', m]), warn: (m) => calls.push(['warn', m]) },
+    })
+    sink.record({ at: 1, targetId: 'w', action: 'open', allowed: true, subject: 'https://x.test/' })
+    sink.record({ at: 2, targetId: 'w', action: 'click', allowed: false, code: 'PAGE_ORIGIN_NOT_ALLOWED' })
+    expect(calls[0]).toEqual(['info', '[dsh-devfront] 允许 open https://x.test/ @w'])
+    expect(calls[1]).toEqual(['warn', '[dsh-devfront] 拒绝 click @w (PAGE_ORIGIN_NOT_ALLOWED)'])
   })
 })

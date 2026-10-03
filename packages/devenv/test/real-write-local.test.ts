@@ -116,6 +116,8 @@ function mountWritable(dir: string, grant: boolean): ReturnType<typeof makeHost>
   if (grant) host.grant('DSH_DEVENV_WRITE')
   host.mount({
     stopTimeoutSec: 1,
+    // 写类动作要求**持久审计**（第五道门，与 `devdata` 同口径）；审计落在本用例自己的临时目录里。
+    auditFile: join(dir, 'audit.jsonl'),
     targets: [
       {
         id: 'here',

@@ -40,4 +40,4 @@ export * from './console.js';
 export * from './page.js';
 export * from './cdp-driver.js';
 export * from './web-verify.js';
-export { name, inject, apply, Config, normalizeConfig, parseViewport, DEVFONT_GUIDANCE } from './plugin.js';
+export { name, inject, apply, Config, normalizeConfig, parseViewport, DEVFONT_GUIDANCE, webAuditSink, webAuditText } from './plugin.js';

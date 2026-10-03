@@ -34,6 +34,7 @@ import {
   settingsEntryScope,
 } from '@hyzyn/dsh-kit'
 import type { CapabilitySpec } from '@hyzyn/dsh-kit'
+import { createJsonlAuditSink, createLoggerAuditSink, type AuditSink } from '@hyzyn/dsh-kit/audit'
 import { RemoteExec, runLocal } from '@hyzyn/dsh-kit/ssh-exec'
 import type { HostKeyRecord, HostKeyStore } from '@hyzyn/dsh-kit/ssh-exec'
 import type { SettingsLookup } from '@hyzyn/dsh-kit'
@@ -46,7 +47,7 @@ import type { ReadyProfile } from './env-ready.js'
 import { observeServices, type ObservationIo } from './observe.js'
 import { actionLabel, planMutation, runMutation, type MutationAction, type MutationOutcome, type MutationPlan } from './mutate.js'
 import { hasWritableTarget, normalizeConfig, pickTarget, targetIds, type LiveConfig, type LiveTarget } from './plugin-config.js'
-import { denialMessage, outOfScope, REJECTION_CODES } from './rejection.js'
+import { denialMessage, outOfScope, rejectionCodeOf, REJECTION_CODES } from './rejection.js'
 import { httpProbe } from './probe.js'
 import { describeProfileProblem, listReadyProjects, loadReadyProfile, readyManifestRelPath } from './ready-loader.js'
 import { formatMs, renderEvaluation as renderReadyReport, renderMutation } from './render.js'
@@ -91,6 +92,13 @@ export interface Config {
   waitTimeoutMs?: number
   pollIntervalMs?: number
   stopTimeoutSec?: number
+  /**
+   * 持久审计出口（JSON 行）；省略 / 空串 = 只进宿主日志（**写类会被 `AUDIT_NOT_DURABLE` 挡住**）。
+   *
+   * 与 `devdata` 同一口径（实现同在 `@hyzyn/dsh-kit/audit`）：一条 JSON 行 / 调用，含被拒绝的尝试；
+   * 写不进去时本次调用不返回结果（fail-closed）。
+   */
+  auditFile?: string
   targets?: Array<{ id?: string; label?: string; kind?: string; book?: string; scopeDirs?: string[]; writeCapability?: { env?: string; label?: string } }>
   hostKeys?: Array<{ host?: string; port?: number; fingerprints?: string[] }>
 }
@@ -114,6 +122,7 @@ export const Config: z = z.object({
   waitTimeoutMs: z.natural().volatile(),
   pollIntervalMs: z.natural().volatile(),
   stopTimeoutSec: z.natural().volatile(),
+  auditFile: z.string().default('').volatile(),
   targets: z.array(TARGET_SCHEMA).default([]).volatile(),
   hostKeys: z.array(HOST_KEY_SCHEMA).default([]).volatile(),
 })
@@ -208,6 +217,45 @@ const plugin = definePlugin<Config>({
     let runtimeHostKeys: HostKeyRecord[] = []
 
     bindCapabilitySources(ctx)
+
+    /**
+     * 审计出口（2026-10-03 加）：配了 `auditFile` 走**持久**出口，否则只进宿主日志。
+     *
+     * 口径与 `devdata` 完全一致（实现是同一份 `@hyzyn/dsh-kit/audit`）：一条 JSON 行 / 调用，
+     * **含被拒绝的尝试**；写不进去 = 抛（fail-closed）。而**写类动作要求持久审计**（见下面
+     * `mutateText` 里的第五道门）：`env_down` 会停共享机器上别人正在联调的容器，
+     * 「谁在什么时候停了什么」必须事后说得清。
+     */
+    const auditSink = (): AuditSink =>
+      live.auditFile === ''
+        ? createLoggerAuditSink(ctx.logger, { tag: 'dsh-devenv' })
+        : createJsonlAuditSink(live.auditFile)
+    const auditDurable = (): boolean => live.auditFile !== ''
+
+    /**
+     * 包一次工具调用：成功记「允许」，抛出记「拒绝 + 码」。
+     *
+     * **码从拒绝文案里读回来**（`rejectionCodeOf`），不在这里另判一遍——判据只该有一处。
+     * 读不到码的错误（例如 `docker` 自己抛的）如实留空，不猜。
+     */
+    const audited = async <T>(action: string, args: Record<string, unknown>, run: () => Promise<T>): Promise<T> => {
+      const targetId = typeof args.target === 'string' ? args.target : '(未指定)'
+      try {
+        const value = await run()
+        auditSink().record({ at: Date.now(), targetId, action, allowed: true })
+        return value
+      } catch (error) {
+        const code = rejectionCodeOf(error)
+        auditSink().record({
+          at: Date.now(),
+          targetId,
+          action,
+          allowed: false,
+          ...(code === undefined ? {} : { code }),
+        })
+        throw error
+      }
+    }
 
     /*
      * 执行层：与容器面板**同一份实现**（`@hyzyn/dsh-kit/ssh-exec`），只是日志前缀与处置文案不同。
@@ -359,6 +407,21 @@ const plugin = definePlugin<Config>({
           code: REJECTION_CODES.CONFIRMATION_REQUIRED,
           message: `这次会${actionLabel(action)}目标 ${target.id} 上这 ${String(plan.services.length)} 个容器：${plan.services.join(' / ')}（清单 ${readyManifestRelPath(project)} 里声明的）`,
           hint: `后果说清之后再带 confirmed: true 重试。这是一台共享机器：${action === 'down' ? '停掉的容器可能是同事正在联调的那一份' : '启动容器会占用目标机的资源'}；本工具**只**在清单里声明的服务上动手，不会碰别的容器`,
+        }))
+      }
+
+      /*
+       * 第五道门：**写类动作要求持久审计**（口径与 `devdata` 一致，码也同一个）。
+       *
+       * 放在**确认之后**：一个「没授权 / 没确认」的调用该报的仍然是它自己那一档——反过来的话，
+       * 用户会先去配审计，再撞一次「没授权」，那是本仓最忌讳的**错诊断**。
+       * 放在**真正动手之前**：审计是这一档的前提，写不进去就不能装作记下了。
+       */
+      if (!auditDurable()) {
+        throw new Error(denialMessage({
+          code: REJECTION_CODES.AUDIT_NOT_DURABLE,
+          message: `这次会${actionLabel(action)}目标 ${target.id} 上的容器，而本插件没有配持久审计出口`,
+          hint: '在插件配置里设置 auditFile（如 ~/.dsh/devenv-audit.jsonl）。审计是这一档的前提：共享机器上的一次启停，事后必须说得清「谁在什么时候动了什么」',
         }))
       }
 
@@ -558,7 +621,10 @@ const plugin = definePlugin<Config>({
         description: `看一眼环境现在什么样（容器在跑吗 / 健康吗 / 探针通吗），**不等待**。判据来自项目里的 ready/<项目名>.ready.yaml。目标：${summary}`,
         parameters: { target: targetParam, project: projectParam, cwd: cwdParam },
         output: textOutput(),
-        execute: (args: unknown): Promise<ToolText> => statusText((args ?? {}) as Record<string, unknown>),
+        execute: (args: unknown): Promise<ToolText> => {
+          const input = (args ?? {}) as Record<string, unknown>
+          return audited('env_status', input, () => statusText(input))
+        },
       }))
 
       /*
@@ -576,7 +642,10 @@ const plugin = definePlugin<Config>({
           description: `启动项目就绪清单（ready/<项目名>.ready.yaml）里声明、但**没在跑**的容器。**只 start 已存在的容器，不创建**；不会碰清单之外的任何容器。目标：${summary}`,
           parameters: { target: targetParam, project: projectParam, cwd: cwdParam, confirmed: confirmParam },
           output: textOutput(),
-          execute: (args: unknown): Promise<ToolText> => mutateText('up', (args ?? {}) as Record<string, unknown>),
+          execute: (args: unknown): Promise<ToolText> => {
+            const input = (args ?? {}) as Record<string, unknown>
+            return audited('env_up', input, () => mutateText('up', input))
+          },
         }))
         add('env_down', defineTool({
           name: 'env_down',
@@ -584,7 +653,10 @@ const plugin = definePlugin<Config>({
           description: `停掉项目就绪清单里声明、且**正在跑**的容器。这是一台共享机器：停掉的可能是同事正在联调的那一份，所以每次都要 confirmed: true。只碰清单里声明的容器。目标：${summary}`,
           parameters: { target: targetParam, project: projectParam, cwd: cwdParam, confirmed: confirmParam },
           output: textOutput(),
-          execute: (args: unknown): Promise<ToolText> => mutateText('down', (args ?? {}) as Record<string, unknown>),
+          execute: (args: unknown): Promise<ToolText> => {
+            const input = (args ?? {}) as Record<string, unknown>
+            return audited('env_down', input, () => mutateText('down', input))
+          },
         }))
       }
 
@@ -599,7 +671,10 @@ const plugin = definePlugin<Config>({
           timeoutMs: { type: 'number', description: `最多等多少毫秒（缺省 ${String(live.waitTimeoutMs)}，上限 900000）` },
         },
         output: textOutput(),
-        execute: (args: unknown): Promise<ToolText> => waitText((args ?? {}) as Record<string, unknown>),
+        execute: (args: unknown): Promise<ToolText> => {
+          const input = (args ?? {}) as Record<string, unknown>
+          return audited('env_wait', input, () => waitText(input))
+        },
       }))
 
       for (const failure of failures) console.warn(`[dsh-devenv] 工具注册失败：${failure}`)
@@ -726,7 +801,7 @@ const plugin = definePlugin<Config>({
 
     // 挂载行走 stdout：运维就是**在启动日志里找这一行**确认插件挂上了（本仓其余插件的约定）。
     console.log(
-      `[dsh-devenv] mounted (enabled=${String(live.enabled)}, targets=${String(live.targets.length)}, logTail=${String(live.logTail)}, execTimeoutMs=${String(live.execTimeoutMs)})`,
+      `[dsh-devenv] mounted (enabled=${String(live.enabled)}, targets=${String(live.targets.length)}, logTail=${String(live.logTail)}, execTimeoutMs=${String(live.execTimeoutMs)}, audit=${live.auditFile === '' ? 'log-only（写类会被 AUDIT_NOT_DURABLE 拒）' : live.auditFile})`,
     )
   },
 })

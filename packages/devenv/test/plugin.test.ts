@@ -14,7 +14,7 @@
  * - **通道面**：daemon 连不上时报告要明说**不是**「容器没起」；容器不存在才是 `unfound`；
  * - **等待面**：`refuted` 立刻返回（不等满超时）、轮询能等到（`missing-then-ok`）、就绪即返回。
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -370,7 +370,7 @@ describe('写入口真的动手时：只碰清单里的容器、幂等、逐条�
     fake = installFakeDocker({ inspect: 'exited|2026-10-01T12:00:00.000000000Z|0|0|' })
     const host = makeHost()
     host.grant('DSH_DEVENV_WRITE')
-    host.mount({ targets: [writableTarget(dir)] })
+    host.mount({ targets: [writableTarget(dir)], auditFile: join(dir, 'audit.jsonl') })
     const text = await host.call('env_up', { target: 'here', cwd: dir, confirmed: true })
     expect(text).toContain('已启动：stopped-one / started-one / absent-one')
     expect(fake.calls().filter((line) => line.startsWith('start ')).length).toBe(3)
@@ -381,7 +381,7 @@ describe('写入口真的动手时：只碰清单里的容器、幂等、逐条�
     fake = installFakeDocker({ inspect: 'running|2026-10-01T12:00:00.000000000Z|0|0|' })
     const host = makeHost()
     host.grant('DSH_DEVENV_WRITE')
-    host.mount({ targets: [writableTarget(dir)], stopTimeoutSec: 7 })
+    host.mount({ targets: [writableTarget(dir)], stopTimeoutSec: 7, auditFile: join(dir, 'audit.jsonl') })
     const text = await host.call('env_down', { target: 'here', cwd: dir, confirmed: true })
     expect(text).toContain('已停止：ems-service')
     expect(fake.calls()).toContain('stop --time 7 ems-service')
@@ -405,10 +405,66 @@ describe('写入口真的动手时：只碰清单里的容器、幂等、逐条�
     fake = installFakeDocker({ inspect: 'running|2026-10-01T12:00:00.000000000Z|0|0|', fail: 'stop' })
     const host = makeHost()
     host.grant('DSH_DEVENV_WRITE')
-    host.mount({ targets: [writableTarget(dir)] })
+    host.mount({ targets: [writableTarget(dir)], auditFile: join(dir, 'audit.jsonl') })
     const text = await host.call('env_down', { target: 'here', cwd: dir, confirmed: true })
     expect(text).toContain('失败：ems-service')
     expect(text).toContain('permission denied')
     expect(text).toContain('已停止：0 个')
+  })
+})
+
+describe('写入口的第五道门：写类要求持久审计（与 `devdata` 同一口径）', () => {
+  it('没配 auditFile → `[AUDIT_NOT_DURABLE]`，且**一条命令都没发**', async () => {
+    const dir = projectWith(manifest())
+    fake = installFakeDocker({ inspect: 'running|2026-10-01T12:00:00.000000000Z|0|0|' })
+    const host = makeHost()
+    host.grant('DSH_DEVENV_WRITE')
+    host.mount({ targets: [writableTarget(dir)] })
+    const text = await host.callError('env_down', { target: 'here', cwd: dir, confirmed: true })
+    expect(text).toContain('[AUDIT_NOT_DURABLE]')
+    expect(text).toContain('auditFile')
+    // 观测（inspect）是只读的、也在门之前——这里要钉的是**没有一条动手的命令**（start / stop）
+    expect(fake.calls().filter((line) => line.startsWith('start') || line.startsWith('stop'))).toEqual([])
+  })
+
+  it('该报的**先**是能力那一档，而不是审计（避免把人送去改错地方）', async () => {
+    const dir = projectWith(manifest())
+    fake = installFakeDocker({ inspect: 'running|2026-10-01T12:00:00.000000000Z|0|0|' })
+    // 既没授权、也没配审计：正确的那一步是「去启动环境加变量并重启」
+    const host = makeHost()
+    host.mount({ targets: [writableTarget(dir)] })
+    const text = await host.callError('env_down', { target: 'here', cwd: dir, confirmed: true })
+    expect(text).toContain('[CAPABILITY_NOT_GRANTED]')
+    expect(text).not.toContain('[AUDIT_NOT_DURABLE]')
+  })
+
+  it('配了 auditFile：允许与被拒的尝试**各落一行**，字段与码都在', async () => {
+    const dir = projectWith(manifest())
+    const auditFile = join(dir, 'audit.jsonl')
+    fake = installFakeDocker({ inspect: 'running|2026-10-01T12:00:00.000000000Z|0|0|' })
+    const host = makeHost()
+    host.grant('DSH_DEVENV_WRITE')
+    host.mount({ targets: [writableTarget(dir)], stopTimeoutSec: 1, auditFile })
+
+    await host.call('env_down', { target: 'here', cwd: dir, confirmed: true })
+    await host.callError('env_down', { target: 'here', cwd: dir }) // 缺 confirmed → 被拒的一次
+
+    const lines = readFileSync(auditFile, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>)
+    expect(lines.map((line) => [line.action, line.allowed, line.code])).toEqual([
+      ['env_down', true, undefined],
+      ['env_down', false, 'CONFIRMATION_REQUIRED'],
+    ])
+    expect(lines.map((line) => line.targetId)).toEqual(['here', 'here'])
+    expect(typeof lines[0]?.atIso).toBe('string')
+  })
+
+  it('只读工具也进审计（默认出口是宿主日志；这里用文件出口把形状钉住）', async () => {
+    const dir = projectWith(manifest())
+    const auditFile = join(dir, 'audit.jsonl')
+    const host = mount({ targets: [writableTarget(dir)], auditFile }, { inspect: 'running|2026-10-01T12:00:00.000000000Z|0|0|' })
+    await host.call('env_status', { target: 'here', cwd: dir })
+    const line = JSON.parse(readFileSync(auditFile, 'utf8').trim()) as Record<string, unknown>
+    expect(line.action).toBe('env_status')
+    expect(line.allowed).toBe(true)
   })
 })

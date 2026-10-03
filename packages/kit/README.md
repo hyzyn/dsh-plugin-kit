@@ -241,6 +241,36 @@ env.yml / cordis.patch.yml / prompts.yml 共用的「注释标记圈出自动生
 - `writeFileAtomic(file, data, mode = 0o600)` —— 同目录临时文件 + rename 原子写
   （配置 watch 不会读到半截文件），mode 只会被 umask 进一步收紧。
 
+### 审计出口（`./audit` 子路径）
+
+**一条 JSON 行 / 调用，含被拒绝的尝试**——共享环境里唯一能事后回答「谁在什么时候动了什么」的东西。
+三个消费者共用同一份实现：`devdata`（数据面）、`devfront`（前端验活）、`devenv`（环境编排）。
+2026-10-03 从 `devdata` 上收（第三个消费者出现时上收，是本仓的既定判据）。
+
+```ts
+import { createJsonlAuditSink, createLoggerAuditSink, auditLine } from '@hyzyn/dsh-kit/audit'
+
+const sink = auditFile === ''
+  ? createLoggerAuditSink(logger, { tag: 'dsh-devdata' })          // 只进日志：**不持久**
+  : createJsonlAuditSink(auditFile)                                // 持久：写不进去 = 抛
+sink.record({ at: Date.now(), targetId: 'redis-248', action: 'set', allowed: false, code: 'CAPABILITY_NOT_GRANTED' })
+```
+
+**两个出口的区别必须说清**（消费者要在自己的配置面里如实标出来）：
+
+- `createJsonlAuditSink`：**持久**。写失败 = **抛**，调用方据此让本次调用**不返回结果**——
+  审计记的是「试过什么」，写不进去就不能装作它被记下了；
+- `createLoggerAuditSink`：只进宿主日志，**不持久**（日志会被轮转、也未必落盘）。它的意义是
+  「没配 `auditFile` 时至少别什么都不记」，路由统一为**允许 → `info`、拒绝 → `warn`**；
+  话术归调用方（`render`），因为它常带领域字段（`devfront` 的站点 `subject`）。
+
+**为什么是子路径**：它 `import 'node:fs'`，而客户端半体（`client-src/*.js` → `client.js`）会打包
+主入口——进主入口等于把 `node:fs` 带进浏览器那一侧。
+
+**谁该要求「持久」**：各包自己定，但口径一致——**写类动作要求持久审计**（没配就拒，
+`AUDIT_NOT_DURABLE`）：`devdata` 的写命令、`devenv` 的 `env_up` / `env_down` 都在这条线上
+（后者停的可能是同事正在联调的那一份，事后必须说得清）。只读动作不受影响。
+
 ### SSH 执行层（`./ssh-exec` 子路径）与连接簿读取（`tty-books`）
 
 一次性命令的执行通道：**懒连接池 + TOFU 主机指纹 + 超时与输出上限**，本地目标走

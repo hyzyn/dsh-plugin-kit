@@ -89,6 +89,8 @@ export interface LiveConfig {
   pollIntervalMs: number
   /** `docker stop --time` 的秒数（给容器体面收尾的时间；SIGKILL 不是默认）。 */
   stopTimeoutSec: number
+  /** 持久审计出口（JSON 行）；空串 = 只进宿主日志（写类会被 `AUDIT_NOT_DURABLE` 挡住）。 */
+  auditFile: string
   /** TOFU 指纹记录（消费者自持一份，种子来自 tty 的连接簿）。 */
   hostKeys: HostKeyRecord[]
   /** 配置问题（指到字段，原样交给宿主半体打日志与公告）。 */
@@ -225,6 +227,7 @@ export function normalizeConfig(raw: Record<string, unknown>): LiveConfig {
     waitTimeoutMs: clampInt(raw.waitTimeoutMs, MIN_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS, DEFAULT_WAIT_TIMEOUT_MS),
     pollIntervalMs: clampInt(raw.pollIntervalMs, MIN_POLL_INTERVAL_MS, MAX_POLL_INTERVAL_MS, DEFAULT_POLL_INTERVAL_MS),
     stopTimeoutSec: clampInt(raw.stopTimeoutSec, MIN_STOP_TIMEOUT_SEC, MAX_STOP_TIMEOUT_SEC, DEFAULT_STOP_TIMEOUT_SEC),
+    auditFile: asString(raw.auditFile),
     hostKeys: cleanHostKeys ?? [],
     problems,
   }

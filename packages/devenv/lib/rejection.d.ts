@@ -22,6 +22,8 @@ export declare const REJECTION_CODES: {
     readonly CAPABILITY_NOT_GRANTED: "CAPABILITY_NOT_GRANTED";
     /** 不可逆 / 影响他人的操作要**逐次**二次确认。 */
     readonly CONFIRMATION_REQUIRED: "CONFIRMATION_REQUIRED";
+    /** 写类动作要求**持久审计**，而本插件没配 `auditFile`（与 `devdata` 同一个码）。 */
+    readonly AUDIT_NOT_DURABLE: "AUDIT_NOT_DURABLE";
     /** 该动作在本包**没有入口**（例如删容器、`compose down -v`）。 */
     readonly OPERATION_FORBIDDEN: "OPERATION_FORBIDDEN";
 };
@@ -40,3 +42,13 @@ export declare function denialMessage(rejection: Rejection): string;
 export declare function throwDenial(rejection: Rejection): never;
 /** 作用域外的拒绝（判据用的目录与允许的目录都要说清：cwd 缺省取宿主进程的工作目录，最容易错）。 */
 export declare function outOfScope(targetId: string, scopeDirs: readonly string[], cwd: string): Rejection;
+/**
+ * 从一段拒绝文案里读回稳定码（`[CODE] 正文`）。
+ *
+ * 为什么要有它：审计里那一栏要的是**码**，而拒绝是抛出去的（`denialMessage` 把码写进了句首）。
+ * 在调用点各写一份正则就是「同一件事两处实现」——所以读码这件事只在这一个函数里做。
+ *
+ * 读不到就返回 `undefined`：那个错误不是本包的拒绝（例如 `docker` 自己抛的），审计里如实留空，
+ * 不猜一个码。
+ */
+export declare function rejectionCodeOf(error: unknown): string | undefined;

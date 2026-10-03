@@ -110,6 +110,9 @@ describe.skipIf(!CAN_PROBE)(`真机：写入口（${USER}@${HOST}，容器 ${CON
       }],
       stopTimeoutSec: 10,
       execTimeoutMs: 20_000,
+      // 写类动作要求**持久审计**（2026-10-03 的第五道门，与 `devdata` 同口径）。
+      // 落进本用例自己的临时目录（`dir`，收尾里删），不往别人的 home 里写东西。
+      auditFile: join(dir, 'audit.jsonl'),
     })
     return host
   }

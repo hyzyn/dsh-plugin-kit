@@ -30,9 +30,10 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import z from '@deepseek-ai/schemastery'
 import { definePlugin, plainConfig, settingsEntryScope } from '@hyzyn/dsh-kit'
+import { createJsonlAuditSink, createLoggerAuditSink, type AuditLoggerLike } from '@hyzyn/dsh-kit/audit'
 
 import { CdpWebDriver, type CdpWebDriverOptions } from './cdp-driver.js'
-import { invokeWebAction, type WebAction, type WebAuditEntry, type WebTarget } from './page.js'
+import { invokeWebAction, type WebAction, type WebAuditEntry, type WebAuditSink, type WebTarget } from './page.js'
 
 /** 一个站点的配置形状。 */
 const TARGET_SCHEMA = z.object({
@@ -71,6 +72,8 @@ export interface Config {
   noSandbox?: boolean
   chromePath?: string
   shotDir?: string
+  /** 持久审计出口（JSON 行）；省略 / 空串 = 只进宿主日志（不持久）。 */
+  auditFile?: string
 }
 
 /** 插件配置的 schema。 */
@@ -82,6 +85,15 @@ export const Config: z = z.object({
   noSandbox: z.boolean().default(false).volatile(),
   chromePath: z.string().default('').volatile(),
   shotDir: z.string().default('').volatile(),
+  /**
+   * 持久审计出口（JSON 行）。**不填 = 只有宿主日志**（不持久：日志会被轮转、也未必落盘）。
+   *
+   * 与 `devdata` / `devenv` 同一份实现（`@hyzyn/dsh-kit/audit`）：一条 JSON 行 / 调用，
+   * **含被拒绝的尝试**；写不进去时本次调用不返回结果（fail-closed）。
+   * `.default('')` 而不是省略：本仓踩过「schema 把没写伪造成写了空值」的坑（`devenv D06`），
+   * 这里显式声明「空串 = 没配」。
+   */
+  auditFile: z.string().default('').volatile(),
 })
 
 /**
@@ -113,6 +125,8 @@ interface LiveConfig {
   noSandbox: boolean
   chromePath: string
   shotDir: string
+  /** 持久审计出口；空串 = 只进宿主日志（不持久）。 */
+  auditFile: string
 }
 
 /**
@@ -175,7 +189,37 @@ export function normalizeConfig(section: Record<string, unknown>): LiveConfig {
     noSandbox: raw.noSandbox === true,
     chromePath: typeof raw.chromePath === 'string' ? raw.chromePath : '',
     shotDir: typeof raw.shotDir === 'string' ? raw.shotDir : '',
+    auditFile: typeof raw.auditFile === 'string' ? raw.auditFile.trim() : '',
   }
+}
+
+/**
+ * 日志出口的一句话（**含被拒的尝试**——那才是「agent 试过什么」的证据）。
+ *
+ * 话术留在本包：它带站点的 `subject`（URL 或选择器），而 `/audit` 里那句通用文案不知道这些。
+ * 路由（允许 → `info`、拒绝 → `warn`）由 `kit` 统一。
+ */
+export function webAuditText(entry: WebAuditEntry): string {
+  const subject = entry.subject === undefined ? '' : ` ${entry.subject}`
+  const code = entry.code === undefined ? '' : ` (${entry.code})`
+  return `[dsh-devfront] ${entry.allowed ? '允许' : '拒绝'} ${entry.action}${subject} @${entry.targetId}${code}`
+}
+
+/**
+ * 建审计出口：配了 `auditFile` 走**持久**出口，否则只进宿主日志。
+ *
+ * 2026-10-03 起改用 `@hyzyn/dsh-kit/audit`（与 `devdata` / `devenv` 同一份实现）：
+ * 一条 JSON 行 / 调用、**含被拒绝的尝试**、写不进去 = 抛（fail-closed）。日志话术留在本包
+ * （`webAuditText`），因为它带站点与 subject，是给人看的。
+ *
+ * 抽成导出函数是为了**可测**：宿主半体那一层在本包没有假宿主夹具，而这条判据（「配了就落盘、
+ * 没配就进日志」）不该只靠真机验收。
+ */
+export function webAuditSink(options: { auditFile: string; logger: AuditLoggerLike }): WebAuditSink {
+  if (options.auditFile === '') {
+    return createLoggerAuditSink<WebAuditEntry>(options.logger, { tag: 'dsh-devfront', render: webAuditText })
+  }
+  return createJsonlAuditSink<WebAuditEntry>(options.auditFile)
 }
 
 /** 给 agent 的能力公告（只在 `announceToAgent` 打开时注入）。 */
@@ -342,16 +386,8 @@ const plugin = definePlugin<Config>({
     let appliedSignature = JSON.stringify(live)
     let driver: CdpWebDriver | undefined
 
-    /** 审计出口：写宿主日志（**含被拒绝的尝试**——那才是「agent 试过什么」的证据）。 */
-    const audit = {
-      record(entry: WebAuditEntry): void {
-        const subject = entry.subject === undefined ? '' : ` ${entry.subject}`
-        const code = entry.code === undefined ? '' : ` (${entry.code})`
-        const line = `[dsh-devfront] ${entry.allowed ? '允许' : '拒绝'} ${entry.action}${subject} @${entry.targetId}${code}`
-        if (entry.allowed) ctx.logger.info(line)
-        else ctx.logger.warn(line)
-      },
-    }
+    /** 审计出口：配了文件走持久出口，否则只进日志（见 `webAuditSink` 的文件头）。 */
+    const audit = (): WebAuditSink => webAuditSink({ auditFile: live.auditFile, logger: ctx.logger })
 
     /** 取（或起）浏览器。同一插件实例共用一个，避免每次工具调用都重启 Chrome。 */
     const ensureDriver = (): CdpWebDriver => {
@@ -396,7 +432,7 @@ const plugin = definePlugin<Config>({
           ...(typeof input.path === 'string' && input.path !== '' ? { path: input.path } : {}),
         },
         driver: ensureDriver(),
-        audit,
+        audit: audit(),
       })
       if (!outcome.ok) {
         throw new Error(denialMessage(outcome))
@@ -773,7 +809,7 @@ const plugin = definePlugin<Config>({
      * 于是人去查了一圈为什么没挂上。日志的**去处**也是约定的一部分。
      */
     console.log(
-      `[dsh-devfront] mounted (enabled=${String(live.enabled)}, targets=${String(live.targets.length)}, noSandbox=${String(live.noSandbox)})`,
+      `[dsh-devfront] mounted (enabled=${String(live.enabled)}, targets=${String(live.targets.length)}, noSandbox=${String(live.noSandbox)}, audit=${live.auditFile === '' ? 'log-only' : live.auditFile})`,
     )
   },
 })

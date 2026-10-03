@@ -22,6 +22,8 @@ export const REJECTION_CODES = {
     CAPABILITY_NOT_GRANTED: 'CAPABILITY_NOT_GRANTED',
     /** 不可逆 / 影响他人的操作要**逐次**二次确认。 */
     CONFIRMATION_REQUIRED: 'CONFIRMATION_REQUIRED',
+    /** 写类动作要求**持久审计**，而本插件没配 `auditFile`（与 `devdata` 同一个码）。 */
+    AUDIT_NOT_DURABLE: 'AUDIT_NOT_DURABLE',
     /** 该动作在本包**没有入口**（例如删容器、`compose down -v`）。 */
     OPERATION_FORBIDDEN: 'OPERATION_FORBIDDEN',
 };
@@ -44,5 +46,18 @@ export function outOfScope(targetId, scopeDirs, cwd) {
         message: `当前目录 ${cwd} 不在它的允许目录内——${allowed}。`,
         hint: 'cwd 参数**缺省取宿主进程的工作目录**（不是你会话所在的项目目录）：显式传一个允许目录下的路径即可',
     };
+}
+/**
+ * 从一段拒绝文案里读回稳定码（`[CODE] 正文`）。
+ *
+ * 为什么要有它：审计里那一栏要的是**码**，而拒绝是抛出去的（`denialMessage` 把码写进了句首）。
+ * 在调用点各写一份正则就是「同一件事两处实现」——所以读码这件事只在这一个函数里做。
+ *
+ * 读不到就返回 `undefined`：那个错误不是本包的拒绝（例如 `docker` 自己抛的），审计里如实留空，
+ * 不猜一个码。
+ */
+export function rejectionCodeOf(error) {
+    const text = error instanceof Error ? error.message : String(error);
+    return /^\[([A-Z][A-Z0-9_]*)\]/.exec(text)?.[1];
 }
 //# sourceMappingURL=rejection.js.map

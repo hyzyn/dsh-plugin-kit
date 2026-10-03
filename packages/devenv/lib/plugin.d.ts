@@ -10,6 +10,13 @@ export interface Config {
     waitTimeoutMs?: number;
     pollIntervalMs?: number;
     stopTimeoutSec?: number;
+    /**
+     * 持久审计出口（JSON 行）；省略 / 空串 = 只进宿主日志（**写类会被 `AUDIT_NOT_DURABLE` 挡住**）。
+     *
+     * 与 `devdata` 同一口径（实现同在 `@hyzyn/dsh-kit/audit`）：一条 JSON 行 / 调用，含被拒绝的尝试；
+     * 写不进去时本次调用不返回结果（fail-closed）。
+     */
+    auditFile?: string;
     targets?: Array<{
         id?: string;
         label?: string;

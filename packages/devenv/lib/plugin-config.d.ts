@@ -79,6 +79,8 @@ export interface LiveConfig {
     pollIntervalMs: number;
     /** `docker stop --time` 的秒数（给容器体面收尾的时间；SIGKILL 不是默认）。 */
     stopTimeoutSec: number;
+    /** 持久审计出口（JSON 行）；空串 = 只进宿主日志（写类会被 `AUDIT_NOT_DURABLE` 挡住）。 */
+    auditFile: string;
     /** TOFU 指纹记录（消费者自持一份，种子来自 tty 的连接簿）。 */
     hostKeys: HostKeyRecord[];
     /** 配置问题（指到字段，原样交给宿主半体打日志与公告）。 */
