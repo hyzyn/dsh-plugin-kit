@@ -122,8 +122,8 @@
 
 | 候选 | 为什么是 L0 |
 |---|---|
-| **把 `readTtyBooks` 上收进 `kit`** | 它现在是 `docker` 专属导出，本包是**第三个消费者**。上收要同时改 `kit` + `docker`（+ 本包），且动 `kit` 会触发全仓钉版同步（`check-kit-pins.mjs`） |
-| **让 `scripts/aggregate.mjs` 认 `private`**（plan §7 的 N1） | 要改脚本 + 同步 `check-publishable` 判据 + 加守卫用例——**动 CI / 脚本**，属 L0 |
+| ~~**把 `readTtyBooks` 上收进 `kit`**~~ | **已做（2026-10-02，见 `devenv` 记-1）**：落在 `@hyzyn/dsh-kit/tty-books`（连接簿读取）与 `ssh-exec`（执行层），`docker` 那两份变成再导出壳，「读取与执行这一跳只有一份实现」由 `ssh-single-source` 守卫钉住 |
+| ~~**让 `scripts/aggregate.mjs` 认 `private`**~~（plan §7 的 N1） | **已做（随三包入库 `b32324c4`，等价性由 `scripts/test/aggregate.test.ts` 钉住）**：`isAggregatable(pkg)` 里 `pkg.private === true` 直接不进聚合；**只认 `=== true`**（`private: false` 与「没写 private」一样算公开），且有一条用例拿仓里真实的「带 `dsh.bundle.patch` 的私有包」对账。**这一行曾漂过**（2026-10-03 更正）：plan §7 的 N1、§17.13 与 `aggregate.mjs` 的文件头注都已记「已落地」，只有本表还挂着 |
 | ~~**包结构最终定为三包**~~ | **已定（2026-10-01）**：`devdata` / `devenv` / `devfront`。代价落在「三个包各要本身份 + N1 一次覆盖三个」上，见 plan §16 |
 
 ## 已完成（落点 + 门槛）

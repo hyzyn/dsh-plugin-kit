@@ -304,5 +304,7 @@ check-dsh-engines → publish → `dsh plugin --profile web add @hyzyn/dsh-tty@<
 
 ## 5. 待办 / 路线图
 
-**已拆分为独立文档：[ROADMAP.md](./ROADMAP.md)（8 项，一项未删）。**
+**已拆分为独立文档：[ROADMAP.md](./ROADMAP.md)（拆分时 8 项，一项未删；其中跳板机那一项随后按
+[L0/L1 边界判据](../../docs/conventions.md#l0--l1-的边界判据)**上提到项目级 ROADMAP**、原文在那里，
+所以本地清单现在少一行）。**本地清单的条数以那份文档的现算为准**——这里不写死条数。
 本文只放「已经发生的事」；「还没做的事」一律去那里。

@@ -69,7 +69,9 @@
    - ~~**夹具上收进 `kit`**~~ —— **已落地（2026-10-03）**：机制搬到 `@hyzyn/dsh-kit/testing`，三包留
      薄适配层；本包原有的两份夹具并成一份。见记-27。**留一条**：
    - ~~**卡片展开后的 DOM 验收**~~ —— **已落地（2026-10-03）**：`scripts/verify-devfront-card.mjs`
-     （`… run verify`）现在**12/12**，含详情页卡片渲染（控件数 + 站点只读信息）。见记-23。
+     （`… run verify`）**全套通过**，含详情页卡片渲染（控件数 + 站点只读信息）。**条数不写在这里**——
+     它随功能增长，以脚本末尾那行汇总为准（2026-10-03 首验时 12 条；站点编辑器 / 站点随项目走 /
+     夹具那几轮之后继续增加，当天现算 15 条）。见记-23。
 
 ### D. 与验活流程对齐
 
@@ -88,11 +90,11 @@
    「删除文件属于要先问的动作」（`AGENTS.md` 的不可逆边界）。
    **删除时跟着处理的两处引用**：① `src/page.ts` 的 `WebDriver` 注释（活代码，改成指向 kit 的
    `Chrome`）；② `docs/` 里那几处「原先住在仓根」是**历史叙述**，保留不动。
-   ⚠️ **一处已知的失效指针（未擅改台账）**：`packages/docker/DEFECTS.md` 的 `D158` 行里有一句
-   可复用技巧「再用 `scripts/chrome-cdp.mjs` 抓浏览器侧 `Runtime.exceptionThrown`」——那个路径
-   现在没了。替代是 `scripts/verify-client-ui.mjs`（`--mode full` 正是干这件事，CG49 起就是它的
-   继任者），或直接 `import { Chrome } from '@hyzyn/dsh-kit'`。台账正文按「原文未改写」的纪律
-   未动，**要改说一声**。
+   ✅ **那处失效指针已收（2026-10-03，经维护者点头）**：`packages/docker/DEFECTS.md` 的 `D158` 行里
+   那句可复用技巧「再用 `scripts/chrome-cdp.mjs` 抓浏览器侧 `Runtime.exceptionThrown`」——路径已没了。
+   替代是 `scripts/verify-client-ui.mjs`（`--mode full` 正是干这件事，CG49 起就是它的继任者），
+   或直接 `import { Chrome } from '@hyzyn/dsh-kit'`。**做法是「只追加、不改写原文」**：在那句后面
+   加了一段 `2026-10-03 追加更正`，台账正文原样保留。
 
 9. ~~**两处「同一模式写了两遍」**~~ —— **已收口（2026-10-03）**：`web-verify.ts` 与 `devdata` 的
    `verify.ts` 在**清单加载的骨架**上同构（版本/项目名一致、三种「读不到」、`JSON_SCHEMA`），
@@ -104,7 +106,7 @@
 | 候选 | 为什么是 L0 |
 |---|---|
 | ~~**把 `scripts/chrome-cdp.mjs` 上收进 `kit`**~~ | **已做（2026-10-01，见记-2）**：kit 加 `chrome-cdp` 导出、kit 0.5.1 → 0.6.0、12 处钉子同步、5 个消费者改从 kit 导入 |
-| **把 `scope.ts` 从 `devdata` 上收进 `kit`** | 要同时改 `devdata` + `devfront`（+ 将来的 `devenv`），并动 `kit` 的导出面与版本钉子 |
+| ~~**把 `scope.ts` 从 `devdata` 上收进 `kit`**~~ | **已做（随三包入库同一步 `b32324c4`）**：实现落在 `packages/kit/src/scope.ts`，`devdata` 那份只剩 15 行转发壳、`devenv` / 本包直接从 `@hyzyn/dsh-kit` 导入。**这一行曾漂过**（2026-10-03 更正）：它一直挂在候选表里，而记-1 已经写着「本包用的是数据面那一份 `scope.ts`」——不许把「已做」留在候选表里 |
 | ~~**把「项目内只读文本清单」的骨架上收**~~ | **已做（2026-10-03）**：落在 `@hyzyn/dsh-kit/manifest`，三包共用；见记-20 |
 
 ## 已完成（落点 + 门槛）
