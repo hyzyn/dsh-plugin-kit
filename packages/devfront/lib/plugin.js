@@ -27,7 +27,8 @@
  */
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import z from '@deepseek-ai/schemastery';
-import { definePlugin, plainConfig, settingsEntryScope } from '@hyzyn/dsh-kit';
+import { definePlugin, hasSameOriginProof, isLoopbackRequestStrict, plainConfig, settingsEntryScope } from '@hyzyn/dsh-kit';
+import { readJsonBody, writeJson } from '@hyzyn/dsh-kit';
 import { createJsonlAuditSink, createLoggerAuditSink } from '@hyzyn/dsh-kit/audit';
 import { CdpWebDriver } from './cdp-driver.js';
 import { invokeWebAction } from './page.js';
@@ -265,9 +266,85 @@ export function denialMessage(outcome) {
     const head = `[${outcome.code}] ${outcome.message}`;
     return outcome.hint === undefined ? head : `${head}\n恢复路径：${outcome.hint}`;
 }
+/**
+ * 配置卡片（客户端半体）**能改**的字段。
+ *
+ * 只放**标量**：`targets`（站点列表）刻意不在卡片里改——它是「项目/环境的声明」，与就绪清单、
+ * 验活断言同一类东西（随项目评审、DSH 侧只读），塞进一个自由编辑的表单等于把它的评审面抹掉。
+ * 卡片把站点**只读展示**出来，编辑仍走 profile 补丁层（`~/.dsh/profiles/<profile>/cordis.patch.yml`）。
+ */
+export const CARD_FIELDS = ['enabled', 'announceToAgent', 'settleMs', 'noSandbox', 'chromePath', 'shotDir', 'auditFile'];
+/**
+ * 把卡片提交上来的 patch 收敛成「能写进 settings entry 的那几个字段」。
+ *
+ * **纯函数**，所以这条判据有单测（宿主半体那一层没有假宿主夹具，抽出来才能断言）。
+ * 三条规矩：
+ *   - 不认识的字段 → 报错（**不静默丢弃**：卡片与宿主版本不一致时，静默丢弃会让用户以为保存成功）；
+ *   - `targets` → 报错并说清它该去哪儿改（见 `CARD_FIELDS` 的注释）；
+ *   - 类型/范围先判、再写：非法值**不许**先落地再抛（docker 踩过：非法值写进 settings.yaml 之后
+ *     整段配置在下次启动时静默退回默认）。
+ */
+export function normalizeCardPatch(input) {
+    const patch = {};
+    for (const [key, value] of Object.entries(input)) {
+        if (key === 'targets') {
+            return {
+                error: '站点列表（targets）不在卡片里改：它是 profile 补丁层里的声明，请编辑 ~/.dsh/profiles/<profile>/cordis.patch.yml（卡片只读展示它们）',
+            };
+        }
+        if (!CARD_FIELDS.includes(key))
+            return { error: `不认识的字段：${key}` };
+        if (key === 'enabled' || key === 'announceToAgent' || key === 'noSandbox') {
+            if (typeof value !== 'boolean')
+                return { error: `${key} 必须是布尔值` };
+            patch[key] = value;
+            continue;
+        }
+        if (key === 'settleMs') {
+            // 上界与 schema 一致（`z.natural().max(30_000)`）：卡片和 schema 各判一套就会漂。
+            if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 30_000) {
+                return { error: 'settleMs 必须是 0~30000 的整数（毫秒）' };
+            }
+            patch[key] = value;
+            continue;
+        }
+        if (typeof value !== 'string')
+            return { error: `${key} 必须是字符串` };
+        patch[key] = value.trim();
+    }
+    if (Object.keys(patch).length === 0)
+        return { error: '没有要改的字段（patch 是空的）' };
+    return { patch };
+}
+/**
+ * 卡片的 GET 快照（**纯函数**：把 `live` 投影成客户端要的形状）。
+ *
+ * 站点**全量只读展示**（含 `scopeDirs` / `allowedOrigins` / `viewport`）：卡片不改它们，但要把
+ * 「这台机器上现在配了哪些站点、各自的范围是什么」摆出来——这正是记-15 那个缺口的一半。
+ * `credentialRef` 是**引用**不是口令（值在凭据服务里），所以可以照原样给卡片。
+ */
+export function configSnapshotFrom(live) {
+    return {
+        enabled: live.enabled,
+        announceToAgent: live.announceToAgent,
+        settleMs: live.settleMs,
+        noSandbox: live.noSandbox,
+        chromePath: live.chromePath,
+        shotDir: live.shotDir,
+        auditFile: live.auditFile,
+        targets: live.targets.map((target) => ({
+            id: target.id,
+            label: target.label,
+            url: target.url,
+            scopeDirs: [...target.scopeDirs],
+            allowedOrigins: [...(target.allowedOrigins ?? [])],
+            ...(target.viewport === undefined ? {} : { viewport: `${String(target.viewport.width)}x${String(target.viewport.height)}` }),
+            ...(target.credentialRef === undefined ? {} : { credentialRef: target.credentialRef }),
+        })),
+    };
+}
 /** 宿主半体。 */
-const plugin = definePlugin({
-    name: 'devfront',
+const plugin = definePlugin({ name: 'devfront',
     inject: ['tools'],
     apply(ctx, rawConfig) {
         /**
@@ -287,6 +364,10 @@ const plugin = definePlugin({
         /** 已经登记出去的那份配置的指纹：用来挡掉「值没变」的空转（见 `applySection`）。 */
         let appliedSignature = JSON.stringify(live);
         let driver;
+        /** settings 读写口（没有新版 settings 服务时是 `undefined`，卡片仍可用但不落盘）。 */
+        let settingsScopeRef;
+        /** 最近一次生效的**原始** section：没有 settings 服务时，卡片保存靠它套用 patch。 */
+        let rawSectionRef = {};
         /** 审计出口：配了文件走持久出口，否则只进日志（见 `webAuditSink` 的文件头）。 */
         const audit = () => webAuditSink({ auditFile: live.auditFile, logger: ctx.logger });
         /** 取（或起）浏览器。同一插件实例共用一个，避免每次工具调用都重启 Chrome。 */
@@ -599,6 +680,7 @@ const plugin = definePlugin({
              */
             if (Object.keys(raw).length === 0)
                 return;
+            rawSectionRef = raw;
             const next = normalizeConfig(raw);
             /*
              * 值没变就不动。`loader/volatile-update` 是**全仓广播**的（kit 的 onChanged 不按 entry
@@ -646,10 +728,85 @@ const plugin = definePlugin({
                 const scope = settingsEntryScope(settingsCtx, 'devfront');
                 if (scope === undefined)
                     return () => { };
+                settingsScopeRef = scope;
                 applySection(scope.get());
                 const off = scope.onChanged(() => applySection(scope.get()));
-                return () => off();
+                return () => {
+                    settingsScopeRef = undefined;
+                    off();
+                };
             }, 'dsh-devfront: settings');
+        });
+        /*
+         * ---------- 配置卡片的**数据面**（`/api/dsh-devfront/config`） ----------
+         *
+         * 为什么必须有这条路由：客户端半体读不到插件配置——宿主那套「按 schema 生成表单」在这一版
+         * **没有渲染方**（记-15 真机扫过），所以各插件的卡片都自带一条 GET/POST 路由（tty / docker 同款）。
+         *
+         * - GET：卡片渲染用的快照（`configSnapshotFrom(live)`，站点全量只读）；
+         * - POST：走**官方持久化通道** `settings.update(entryId, patch)` 写 volatile 字段 →
+         *   loader 广播 → 本插件的 `applySection` 热应用（不重启）。没有 settings 服务时退化成
+         *   「只在本进程套用」，并**在响应里如实标注 `persisted: false`**——不假装写进去了。
+         *
+         * `/config` 不受「插件停用」影响（与 tty 同口径）：卡片是重新启用插件的唯一 UI 入口。
+         */
+        ctx.inject(['webServer'], (webCtx) => {
+            webCtx.effect(() => {
+                const webServer = webCtx.webServer;
+                if (webServer === undefined)
+                    return () => { };
+                return webServer.register({
+                    kind: 'exact',
+                    path: '/api/dsh-devfront/config',
+                    handler: async (req, res) => {
+                        /*
+                         * 围栏：**只放回环 + 强来源判据**（`isLoopbackRequestStrict`，与 tty / docker 的
+                         * `gateRoute` 同一套）。`POST /config` **刻意不额外要求 `hasSameOriginProof`**：
+                         * 卡片是插件被停用后唯一的恢复入口（与 tty 的 `/config`、docker 的 `/config` 同口径），
+                         * 而跨站请求已由上面那道围栏的 `sec-fetch-site: cross-site` 与 Origin 比对拦掉。
+                         */
+                        if (!(await isLoopbackRequestStrict(req))) {
+                            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+                            return;
+                        }
+                        // `hasSameOriginProof` 在这里只用于**诊断日志**：真正的判据是上面那道围栏。
+                        if (req.method === 'POST' && !hasSameOriginProof(req)) {
+                            ctx.logger.warn('[dsh-devfront] /config 的 POST 没带同源证明（回环已放行，按恢复入口口径继续）');
+                        }
+                        if (req.method === 'GET') {
+                            writeJson(res, 200, { ok: true, config: configSnapshotFrom(live), persisted: settingsScopeRef !== undefined });
+                            return;
+                        }
+                        if (req.method !== 'POST') {
+                            writeJson(res, 405, { error: `method not allowed: ${String(req.method)}` });
+                            return;
+                        }
+                        const body = await readJsonBody(req);
+                        if (body === undefined) {
+                            writeJson(res, 400, { error: 'invalid JSON body' });
+                            return;
+                        }
+                        const normalized = normalizeCardPatch(body);
+                        if ('error' in normalized) {
+                            writeJson(res, 400, { error: normalized.error });
+                            return;
+                        }
+                        const scope = settingsScopeRef;
+                        if (scope !== undefined) {
+                            try {
+                                await scope.update(normalized.patch);
+                            }
+                            catch (error) {
+                                writeJson(res, 500, { error: `保存配置失败：${error instanceof Error ? error.message : String(error)}` });
+                                return;
+                            }
+                        }
+                        // 幂等兜底：广播通常紧接着到，但「保存成功」之后立刻 GET 必须已经一致。
+                        applySection({ ...rawSectionRef, ...normalized.patch });
+                        writeJson(res, 200, { ok: true, config: configSnapshotFrom(live), persisted: scope !== undefined });
+                    },
+                });
+            }, 'dsh-devfront: config route');
         });
         /* ---------- 卸载清理 ---------- */
         ctx.effect(() => {

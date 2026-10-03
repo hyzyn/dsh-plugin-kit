@@ -41,5 +41,5 @@ export * from './page.js';
 export * from './cdp-driver.js';
 export * from './web-verify.js';
 /* 宿主半体：DSH 靠这三个导出把本包装成插件（见 conventions.md § 插件包解剖）。 */
-export { name, inject, apply, Config, normalizeConfig, parseViewport, DEVFONT_GUIDANCE, webAuditSink, webAuditText } from './plugin.js';
+export { name, inject, apply, Config, CARD_FIELDS, configSnapshotFrom, normalizeCardPatch, normalizeConfig, parseViewport, DEVFONT_GUIDANCE, webAuditSink, webAuditText, } from './plugin.js';
 //# sourceMappingURL=index.js.map

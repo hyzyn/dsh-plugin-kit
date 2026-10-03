@@ -63,8 +63,8 @@ export declare const Config: z;
 interface LiveTarget extends WebTarget {
     scopeDirs: string[];
 }
-/** 解析后的配置。 */
-interface LiveConfig {
+/** 解析后的配置（导出是为了让 `configSnapshotFrom` 能出现在 `.d.ts` 里）。 */
+export interface LiveConfig {
     enabled: boolean;
     announceToAgent: boolean;
     targets: LiveTarget[];
@@ -163,5 +163,36 @@ export declare function denialMessage(outcome: {
     message: string;
     hint?: string;
 }): string;
+/**
+ * 配置卡片（客户端半体）**能改**的字段。
+ *
+ * 只放**标量**：`targets`（站点列表）刻意不在卡片里改——它是「项目/环境的声明」，与就绪清单、
+ * 验活断言同一类东西（随项目评审、DSH 侧只读），塞进一个自由编辑的表单等于把它的评审面抹掉。
+ * 卡片把站点**只读展示**出来，编辑仍走 profile 补丁层（`~/.dsh/profiles/<profile>/cordis.patch.yml`）。
+ */
+export declare const CARD_FIELDS: readonly ["enabled", "announceToAgent", "settleMs", "noSandbox", "chromePath", "shotDir", "auditFile"];
+/**
+ * 把卡片提交上来的 patch 收敛成「能写进 settings entry 的那几个字段」。
+ *
+ * **纯函数**，所以这条判据有单测（宿主半体那一层没有假宿主夹具，抽出来才能断言）。
+ * 三条规矩：
+ *   - 不认识的字段 → 报错（**不静默丢弃**：卡片与宿主版本不一致时，静默丢弃会让用户以为保存成功）；
+ *   - `targets` → 报错并说清它该去哪儿改（见 `CARD_FIELDS` 的注释）；
+ *   - 类型/范围先判、再写：非法值**不许**先落地再抛（docker 踩过：非法值写进 settings.yaml 之后
+ *     整段配置在下次启动时静默退回默认）。
+ */
+export declare function normalizeCardPatch(input: Record<string, unknown>): {
+    patch: Record<string, unknown>;
+} | {
+    error: string;
+};
+/**
+ * 卡片的 GET 快照（**纯函数**：把 `live` 投影成客户端要的形状）。
+ *
+ * 站点**全量只读展示**（含 `scopeDirs` / `allowedOrigins` / `viewport`）：卡片不改它们，但要把
+ * 「这台机器上现在配了哪些站点、各自的范围是什么」摆出来——这正是记-15 那个缺口的一半。
+ * `credentialRef` 是**引用**不是口令（值在凭据服务里），所以可以照原样给卡片。
+ */
+export declare function configSnapshotFrom(live: LiveConfig): Record<string, unknown>;
 export declare const name: string, inject: string[] | undefined, apply: (ctx: Context, config?: Config | undefined) => void;
 export {};

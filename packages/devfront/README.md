@@ -6,7 +6,8 @@
 > **已建**：[packages/devenv](../devenv/README.md)）、**本包 = 前端效果验证**。
 >
 > **判定层、CDP 驱动与宿主工具注册都已就位**：六个 `site_*` 工具能真的打开站点、截图、收 console，
-> 并已接进宿主的工具面与审计。**没有面板**（客户端半体尚未建）。
+> **有配置卡片**（客户端半体，2026-10-03）：标量字段可改并落盘；**站点只读展示**（编辑仍在
+> profile 补丁层）。**没有独立面板**。
 
 前端发布后的**效果验证**工具，面向 DSH 里的 coding agent。方案见
 [docs/devdata-plan.md](../../docs/devdata-plan.md) §15。
@@ -108,6 +109,35 @@ Cordis 插件（`{ name, inject, apply }`）+ 六个工具注册：`site_open` /
 
 `announceToAgent` 打开时注入一段能力公告（六个动作 + 边界 + console 三档口径）。
 
+### 面板（客户端半体，`client.js`）
+
+2026-10-03 建。它就是记-15 那个缺口的另一半：宿主那套「按 `Config` schema 生成表单」在这一版
+**没有渲染方**（真机三面扫过），所以每个插件的卡片都得自己写（tty / docker 同款）——在那之前
+devfront 只能在 profile 补丁层手改配置，而工具报出来的「配置问题」用户没有 UI 可改。
+
+- **能改（标量）**：`enabled` / `announceToAgent` / `settleMs` / `noSandbox` / `chromePath` /
+  `shotDir` / `auditFile`；
+- **只读展示**：`targets`（站点：id · label · url · 作用域 · 允许动手的源 · 视口 · 凭据引用）；
+- **为什么站点只读**：它是「这个站点、这个范围、这个源」的**声明**，与就绪清单、验活断言同一类
+  东西——随项目评审、DSH 侧只读（§15.3 的边界）。塞进自由编辑的表单等于把评审面抹掉；卡片上
+  写着这条边界，不靠用户猜；
+- **数据面**：宿主那条 `GET/POST /api/dsh-devfront/config`。POST 走**官方持久化通道**
+  `settings.update(entryId, patch)`（写 volatile 字段 → loader 广播 → 本插件 `applySection` 热应用，
+  不重启）；宿主没有 settings 服务时退化成「只在本进程生效」，响应里如实带 `persisted: false`，
+  卡片也照实提示「**没有落盘**」；
+- **围栏**：只放回环 + 强来源判据（`isLoopbackRequestStrict`，与 tty / docker 的 `gateRoute` 同一套）。
+  `POST /config` **刻意不额外要求同源证明**——卡片是插件被停用后唯一的恢复入口（与 tty / docker 的
+  `/config` 同口径）；
+- **校验在写之前**（`normalizeCardPatch`，纯函数、有用例）：不认识的字段**报错而不是静默丢弃**，
+  `targets` 直接指到 profile 补丁层，类型/范围先判——非法值不许先落地再抛（docker 踩过：非法值写进
+  `settings.yaml` 之后整段配置在下次启动静默退回默认）；
+- **界面文案走 i18n 目录**（`docs/i18n.md`）：`client.js` 是**源**（本包没有构建步骤），目录内联在
+  文件里，`check-i18n` 与 `client-lint` 都管着它。
+
+> **还没验到的**：这张卡片**没有在真宿主里点过**——宿主侧数据面有纯函数用例、客户端半体过了两道
+> 静态闸门，但渲染 / 保存 / 站点列表显示对不对，要一次真机 UI 验收（口径与本包其它「验不到的不许
+> 报 ✓」一致，所以写在这里而不是当成已完成）。
+
 ### CDP 驱动（`cdp-driver.ts`）
 
 `CdpWebDriver` 实现 `WebDriver`：真的起 headless Chrome、导航、截图、点击 / 填值、取可见文本、收 console。
@@ -161,17 +191,24 @@ pnpm vitest run packages/devfront
 
 ## 刻意没有的东西
 
+> ⚠️ **2026-10-03 更正（原文照旧留在 git 历史里）**：本节原来还写着「没有客户端半体」「没有工具注册」
+> ——两条**都已落地**：六个 `site_*` 工具早进了宿主工具面（记-3），配置卡片也建了（记-21）。
+
 - **没有 `dsh.bundle.patch`**：一旦带上，`scripts/aggregate.mjs` 会把本包卷进 `@hyzyn/dsh-all`
   聚合包（该脚本**不看 `private`**，已实测）。带上它 = 私有工具被塞进公开发布的聚合包；
 - **没有 `build` script**：只有 `check-publishable` 认 `private`，`.gitignore` 与 pre-commit 都不认，
   带 `build` 会每次重建 `lib/` 又被一起 `git add`（`devdata` 记-4 的实测教训）；
-- **没有客户端半体**：只有 agent 工具面，没有独立面板；
-- **没有工具注册**：六个动作还没注册成宿主工具（判定层与驱动都已就位）。
+- **没有「面板式」UI**：客户端半体只有一张**设置卡片**（见 § 面板），没有侧边栏面板 / 独立窗口 ——
+  本包的动作面是「跑一次验活」，不是盯着看的控制台；
+- **卡片里不能改站点**：`targets` 只读展示（见 § 面板的那条边界）。
 
 ## 还没做
 
-- **客户端半体（面板 / 设置卡片）**：现在只有 agent 工具面，站点配置走宿主的配置编辑；
-  一建 `client-src/` 就会被 `check-i18n` 与 `client-lint` 纳入管辖（那是方案的 P14）；
+- **站点编辑器（卡片里的增删改）**：现在站点只在卡片里只读展示，编辑走 profile 补丁层。要加就得先
+  回答「这个表单凭什么评审」——站点声明是随项目评审的东西（§15.3 的边界），一个自由编辑的表单会把
+  它的评审面抹掉；
+- **卡片的真机 UI 验收**：宿主侧数据面有纯函数用例、客户端半体过了 `check-i18n` 与 `client-lint`，
+  但**还没有在真宿主里点过这张卡片**（渲染 / 保存 / 站点列表都对不对）；
 - **登录会话**：凭据走 `resolveSecret` 口径（§3.7-1），且只对已在 `scopeDirs` 内的目标；
 - **与 Jenkins 的关联**（§3.9 约束 4 的口径）：前端验活跑在一次发布之后，结果与 CIFS 传输量并列；
 - **就绪/等待**：环境就绪判据在 `@hyzyn/dsh-devenv`（2026-10-02 从 `devdata` 迁出；**刻意不合并**——

@@ -14,7 +14,7 @@ import { dirname, join } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
-import { DEVFONT_GUIDANCE, normalizeConfig, parseViewport, webAuditSink } from '../src/index.js'
+import { CARD_FIELDS, DEVFONT_GUIDANCE, configSnapshotFrom, normalizeCardPatch, normalizeConfig, parseViewport, webAuditSink } from '../src/index.js'
 
 describe('parseViewport：站点视口（**按站点**，2026-10-02 加）', () => {
   it('收 `390x844` 这类；`x` / `X` / `×` 与前后空白都认', () => {
@@ -213,5 +213,79 @@ describe('审计落盘（2026-10-03：与 devdata / devenv 同一份实现）', 
     sink.record({ at: 2, targetId: 'w', action: 'click', allowed: false, code: 'PAGE_ORIGIN_NOT_ALLOWED' })
     expect(calls[0]).toEqual(['info', '[dsh-devfront] 允许 open https://x.test/ @w'])
     expect(calls[1]).toEqual(['warn', '[dsh-devfront] 拒绝 click @w (PAGE_ORIGIN_NOT_ALLOWED)'])
+  })
+})
+
+describe('配置卡片的数据面（宿主侧纯函数，2026-10-03）', () => {
+  it('`normalizeCardPatch`：只认卡片字段，类型与范围**先判**（非法值不许先落地再抛）', () => {
+    expect(normalizeCardPatch({})).toEqual({ error: '没有要改的字段（patch 是空的）' })
+    expect(normalizeCardPatch({ nope: 1 })).toEqual({ error: '不认识的字段：nope' })
+    expect(normalizeCardPatch({ enabled: 'yes' })).toEqual({ error: 'enabled 必须是布尔值' })
+    expect(normalizeCardPatch({ settleMs: 30_001 })).toEqual({ error: 'settleMs 必须是 0~30000 的整数（毫秒）' })
+    expect(normalizeCardPatch({ settleMs: 1.5 })).toEqual({ error: 'settleMs 必须是 0~30000 的整数（毫秒）' })
+    expect(normalizeCardPatch({ chromePath: 7 })).toEqual({ error: 'chromePath 必须是字符串' })
+
+    expect(normalizeCardPatch({ enabled: false, settleMs: 0, auditFile: '  ~/.dsh/a.jsonl  ' })).toEqual({
+      patch: { enabled: false, settleMs: 0, auditFile: '~/.dsh/a.jsonl' },
+    })
+    expect(CARD_FIELDS).toContain('auditFile')
+  })
+
+  it('**站点列表不在卡片里改**：报错并指到 profile 补丁层（不是静默丢弃）', () => {
+    const result = normalizeCardPatch({ targets: [{ id: 'w', url: 'https://x.test/' }] })
+    expect('error' in result).toBe(true)
+    if ('error' in result) {
+      expect(result.error).toContain('targets')
+      expect(result.error).toContain('cordis.patch.yml')
+    }
+  })
+
+  it('`configSnapshotFrom`：站点全量只读展示（含范围 / 允许源 / 视口 / 凭据引用）', () => {
+    const snapshot = configSnapshotFrom({
+      enabled: true,
+      announceToAgent: false,
+      settleMs: 800,
+      noSandbox: false,
+      chromePath: '/usr/bin/chrome',
+      shotDir: '/tmp/shots',
+      auditFile: '',
+      targets: [
+        {
+          id: 'w',
+          label: '测试站点',
+          url: 'https://x.test/app/',
+          scopeDirs: ['/work/a'],
+          allowedOrigins: ['https://sso.test'],
+          viewport: { width: 390, height: 844 },
+          credentialRef: 'secret:x',
+        },
+      ],
+    })
+    expect(snapshot.auditFile).toBe('')
+    expect(snapshot.targets).toEqual([
+      {
+        id: 'w',
+        label: '测试站点',
+        url: 'https://x.test/app/',
+        scopeDirs: ['/work/a'],
+        allowedOrigins: ['https://sso.test'],
+        viewport: '390x844',
+        credentialRef: 'secret:x',
+      },
+    ])
+  })
+
+  it('`configSnapshotFrom`：没写视口 / 允许源 / 凭据引用的站点不带那些键（不是 null 占位）', () => {
+    const snapshot = configSnapshotFrom({
+      enabled: false,
+      announceToAgent: true,
+      settleMs: 800,
+      noSandbox: true,
+      chromePath: '',
+      shotDir: '',
+      auditFile: 'a.jsonl',
+      targets: [{ id: 'w', label: 'w', url: 'https://x.test/', scopeDirs: [] }],
+    })
+    expect(snapshot.targets).toEqual([{ id: 'w', label: 'w', url: 'https://x.test/', scopeDirs: [], allowedOrigins: [] }])
   })
 })
