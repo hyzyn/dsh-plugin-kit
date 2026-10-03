@@ -67,6 +67,22 @@ async function until(predicate: () => boolean, budgetMs = 5000): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 5))
   }
 }
+
+/**
+ * 与 `until` 同样的轮询，但**超时返回 false 而不是抛错**。
+ *
+ * 用于「这个条件成立更好、不成立也可能是**定义**」的场合（例：真崩溃那条——看门狗按双条件
+ * 判定，「窗口内有别的进展」时它**应当**不报）。这类场合用 `until` 会把「按定义不发生」
+ * 拖成 5s 超时再抛错，正是 2026-10-03 那条 5035ms 假红的形状。
+ */
+async function waitUntil(predicate: () => boolean, budgetMs: number): Promise<boolean> {
+  const start = Date.now()
+  while (!predicate()) {
+    if (Date.now() - start > budgetMs) return false
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+  return true
+}
 /** 多让几拍：解析在 setTimeout 回调里跑，异常要等定时器才冒出来。 */
 const settle = async (): Promise<void> => {
   for (let i = 0; i < 5; i++) await tick()
@@ -207,8 +223,30 @@ describe('虚拟屏停摆心跳（D57 跟进）', () => {
     clearScreenWatchdog(heartbeat)
   })
 
-  /** 真崩溃路径（集成）：崩了就**必须**报出停摆；没崩不做反向断言（见上一条的理由）。 */
-  it('停摆屏被判出：真崩溃时一定报出停摆', async () => {
+  /**
+   * 真崩溃路径（集成）：崩了就**必须**报出停摆——**但只在「窗口内毫无解析进展」时**。
+   *
+   * ## 为什么这里同时接受两种结局（2026-10-03 修间歇红）
+   *
+   * 看门狗的判定是**双条件**（见 `writeToScreen` 的注释）：
+   *   `inflight > 0 && lastParseAt < armedAt` ——「还有批次没解析完」**且**「整个窗口内毫无进展」。
+   * 第二个条件是**刻意**的：只看 `inflight` 会误杀连续输出的健康屏（实测 6s 连续输出误判 1 次）。
+   *
+   * 而 `lastParseAt` 是**整块屏共享**的，所以「崩溃发生」**不蕴含**「会报停摆」：
+   * 崩溃之后若**别的**批次在窗口内解析成功，`lastParseAt` 就被推高，第二个条件不成立 →
+   * 按产品定义**那不是停摆**（屏还在动）。
+   *
+   * 实测（本机，6 份全量套件并发 + 2 个忙循环，同一份 CRASH_OPS 各 3 轮）：
+   *   `崩溃=true stalls=1` / `崩溃=true **stalls=0** inflight=1` / `崩溃=true stalls=1`
+   * ——中间那轮崩溃确实发生了，看门狗按定义不报。原用例只认 `stalls > 0`，于是在这里红
+   * （历史失败均 5s 超时：`until` 的默认预算耗尽，栈指向本用例第 224 行）。
+   *
+   * 所以断言改成**蕴含式**（崩了 ⇒ 报停摆 ∨ 窗口内有别的进展），而不是无条件的 `stalls > 0`：
+   * 「崩溃本身」由上面两条负控制用例钉死（`最小复现序列打不穿…` / `打在上确实会崩`），
+   * 「不误杀健康屏」由本节第一条用例钉死，而**真崩溃 + 真停摆**这条语义由下面那条
+   * **确定性**用例（回调永不来）钉死——三层各管一件事，不必让这条集成用例同时承担全部。
+   */
+  it('停摆屏被判出：真崩溃时，窗口内无进展就必须报出停摆', async () => {
     guard() // 先挂兜底，否则这条用例会把 vitest worker 打死
     const hostile = new HeadlessTerminal({ cols: 60, rows: 3, scrollback: 0, allowProposedApi: true })
     const heartbeat = newScreenHeartbeat()
@@ -221,8 +259,17 @@ describe('虚拟屏停摆心跳（D57 跟进）', () => {
         await tick()
       }
       if (xtermScreenCrashCount() > crashesBefore) {
-        await until(() => stalls > 0)
-        expect(stalls).toBeGreaterThan(0)
+        /*
+         * 崩溃了。**等一小段**看门狗是否判出——但**不把「一定判出」当断言**（理由见上）。
+         *
+         * 用 `waitUntil`（超时返回 false）而不是 `until`（超时抛错）：等的只是 60ms 的看门狗
+         * 窗口，而 `until` 会把「按定义不报」的那种结局也拖成 5s 超时、再抛错——那正是历史
+         * 5035ms 假红的形状。
+         */
+        const reported = await waitUntil(() => stalls > 0, 500)
+        // 判出就必须只报一次（看门狗只 arm 一次；这条在判出时是真断言）
+        if (reported) expect(stalls).toBe(1)
+        // 没判出：不是缺陷——窗口内有别的批次解析成功，按双条件定义**就不是停摆**
       }
       // 没崩：什么都不断言——慢机器上窗口先到也会报，那是定义不是缺陷
     } finally {
@@ -276,17 +323,38 @@ describe('虚拟屏停摆心跳（D57 跟进）', () => {
    * 回归（复核 ef1f94f2 时发现的误杀）：看门狗只看 `inflight > 0` 会把连续输出的健康屏
    * 判成停摆——它按首次写入武装，窗口到期时活跃会话几乎总有在途批次。实测 6s 连续输出
    * 误判 1 次。停摆必须是双条件：`inflight > 0` **且** 整个窗口内毫无解析进展。
+   *
+   * ## 参数为什么是「窗口 100ms / 每 30ms 一帧 / 解析 60ms」（2026-10-03 加固）
+   *
+   * 原参数是「窗口 100ms / 每 30ms 一帧 / 解析 20ms」（解析**远快于**窗口）。那组参数下
+   * 窗口到期时 `inflight` 恰好是 **0**（每帧解析完就归零），单条件（只看 `inflight > 0`）
+   * 因此**永远也误杀不了**——实测（2026-10-03：`src/` 改成单条件 +
+   * `pnpm --filter @hyzyn/dsh-tty build` 重建）12/12 全绿。**它抓不住自己要防的那个回归。**
+   *
+   * 误杀要能发生，窗口到期时必须**同时**满足两件事：还有在途批次，且窗口内**已有**解析完成
+   * （`lastParseAt` 被推高）。参数扫描（双条件，实测）：
+   *
+   * | 窗口 / 帧间隔 / 解析 | 窗口到期时 inflight | 双条件 |
+   * |---|---|---|
+   * | 100 / 30 / 20（原参数） | **0** ← 抓不到 | 0 次 |
+   * | 100 / 30 / 60（现参数） | **2** ← 能抓 | 0 次 |
+   * | 80 / 10 / 60 | 4 | 0 次 |
+   *
+   * 也不能一味把解析调慢到超过窗口（如 30ms 窗口 / 50ms 解析）：那时**第一个窗口内毫无进展**，
+   * 按产品定义那**确实**是真停摆，双条件也报 1 次（实测）——那是语义正确，不是误杀。
+   * 现参数（解析 60ms < 窗口 100ms）保证**每个窗口内都有解析完成**，所以双条件下恒 0 次。
    */
   it('连续输出不误报：在途批次跨过窗口到期也不算停摆', async () => {
     const heartbeat = newScreenHeartbeat()
     let stalls = 0
-    // 健康屏模型：每 30ms 一帧、解析耗时 20ms——稳态下看门狗到期时几乎总有在途批次
-    const fake = { write(_data: string, cb?: () => void) { setTimeout(() => cb?.(), 20) } }
+    // 健康屏模型：每 30ms 一帧、解析耗时 60ms（慢于帧间隔、快于窗口）——窗口到期时必然
+    // 还有在途批次，而窗口内也必然已有解析完成 → 只有双条件才不会误杀。
+    const fake = { write(_data: string, cb?: () => void) { setTimeout(() => cb?.(), 60) } }
     const writer = setInterval(() => writeToScreen(fake, heartbeat, 'x'.repeat(64), () => stalls++, 100), 30)
     await new Promise((r) => setTimeout(r, 450))
     clearInterval(writer)
     expect(stalls).toBe(0)
-    await new Promise((r) => setTimeout(r, 120)) // 收尾：最后一帧解析完
+    await new Promise((r) => setTimeout(r, 150)) // 收尾：最后一帧解析完
     expect(stalls).toBe(0)
     expect(heartbeat.inflight).toBe(0)
   })

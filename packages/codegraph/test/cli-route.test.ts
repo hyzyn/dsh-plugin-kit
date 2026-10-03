@@ -699,9 +699,23 @@ describe('systemPrompt 注入门禁（CLI 探测 + settings 开关 + 索引门�
     // 原实现把超时当「不可用」判死 → 公告与使用指引整个会话不注入、只能手动重探。
     // stub 复刻该场景：前两次挂住（探到超时）、第三次立刻成功——梯子 [80,80]ms 应在
     // 无人工干预的情况下把公告救回来。
+    //
+    // ## `probeTimeoutMs` 为什么从 600 提到 3000（2026-10-03 修间歇红）
+    //
+    // 600ms 是在赌一条**墙钟**性质：「第 3 次那个『立刻成功』的子进程能在 600ms 内起来」。
+    // 实测（本机，6 份全量套件并发 + 2 个忙循环）第 3 次尝试的耗时 **54ms（空载）→ 559ms
+    // （重负载）**，已经贴到 600ms 的判定线上：一旦它超时，梯子就按「连续 3 次超时」收敛成
+    // `available = false`，公告**永远不注入**，下面那条 `waitFor(… true, 15_000)` 便必然耗尽
+    // 预算（实测 6 份里 3 份红、每次 15s 超时，栈指向本用例）。
+    //
+    // 提到 3000ms 之后，「成功那一次」有 5 倍余量，而**被验的语义一字未变**：
+    // 前两次仍会挂满 9s 必然超时（`flakyCli` 里 `setTimeout(()=>{}, 9000)`），梯子照样要补探两次；
+    // 3000 只放宽「单次探测允许多慢」，不放宽「超时了该怎么走」。
+    // 另一条同族用例（梯子穷尽 → 收敛成 false，第 736 行断言 `timeout after 600ms` 文案）
+    // **保持 600 不动**——它刻意要三次都超时，正是要验那个数字进文案。
     const cli = flakyCli('flaky-recover-cli', 3)
-    const mount = mountFull(cli, {}, { probeTimeoutMs: 600, probeRetryDelaysMs: [80, 80] })
-    // 首次探测必然还在路上（单次超时 600ms）：JSON 里不得出现 cliAvailable=false——
+    const mount = mountFull(cli, {}, { probeTimeoutMs: 3000, probeRetryDelaysMs: [80, 80] })
+    // 首次探测必然还在路上（单次超时 3000ms）：JSON 里不得出现 cliAvailable=false——
     // 超时只是「还没探明白」，不是「确认不可用」（复用 undefined=未落地的既有契约）
     const pending = await call(mount.routes, '/api/dsh-codegraph/default-path')
     expect(pending.body?.cliAvailable).toBeUndefined()
