@@ -114,14 +114,28 @@ describe('probeSsh：代理命令闸门', () => {
     expect(String(result.auth.error)).not.toBe('连接已关闭（服务端主动断开）')
   })
 
-  it('负载下间歇红的缺陷（tty D95）：子进程已退出、stderr 后到时，文案必须**等**它（有界）', async () => {
+  it('负载下间歇红的缺陷（tty D95）：子进程已退出时，文案必须带上「已退出」这个事实（不退回空话）', async () => {
     setProxyCommandPolicy({ granted: true, enabled: true })
     const late = fileURLToPath(new URL('../scripts/lib/proxy-late-evidence.mjs', import.meta.url))
     /*
-     * 夹具把「已退出」与「stderr 到手」**必然**拆成两拍（见该文件）：主进程立刻 `exit(1)`，
-     * stderr 交给 detached 的孙进程 120ms 后写。修复前实测每次都得到
-     * 「代理命令传输已关闭（命令已结束）」——最有用的一句丢了；负载下这正是上面 D66 那条
-     * 用例会间歇红的原因（CI 与两次全量并行跑各实测到过一次）。
+     * 夹具把「已退出」与「stderr 到手」**必然**拆成两拍（见该文件）。
+     *
+     * ## 这条为什么**只**断言「已退出」这个事实（2026-10-03 降级）
+     *
+     * 它原先还断言 `toContain('LATE-EVIDENCE-9')`——即「stderr 也必须在 200ms 窗口内到达」。
+     * 那是一条**墙钟**性质，在重负载下不成立。实测（本机，6 份全量套件并发 + 2 个忙循环，
+     * 各 24 次）：含证据率 **54%**、含「已退出」**100%**、出现空话「连接已关闭」**0%**。
+     * 54% 正好解释了历次「D95 偶尔红」——它不是代码回归，是断言在赌调度器。
+     *
+     * **有界窗口**（`PROXY_EVIDENCE_GRACE_MS = 200`）本身是**刻意**的（等不到证据就照手里的写，
+     * 绝不为等证据把探针拖长），所以「证据必然在窗口内」这条断言与产品设计相冲突——
+     * 产品只保证**尽力等**，不保证**等到**。
+     *
+     * 「证据晚到时文案仍要带上它」这个真正的语义由**确定性用例**守着，见
+     * `test/proxy-evidence-order.test.ts`：那里用假 child 主动构造「exit 先、stderr 后」的时序，
+     * 零墙钟依赖（同负载下实测 20/20 绿）。两层分工：
+     *   - 这条（真进程 / 全链路）：验「真 spawn 的路径不退化、不退回那句空话、有界返回」；
+     *   - 那条（假 child / 确定性）：验「晚到的证据必须被带进文案」这个顺序性质。
      */
     const started = Date.now()
     const result = await probeSsh({
@@ -132,8 +146,11 @@ describe('probeSsh：代理命令闸门', () => {
       password: 'x',
       proxyCommand: `"${process.execPath}" "${late}"`,
     })
-    expect(String(result.auth.error)).toContain('LATE-EVIDENCE-9')
-    // 有界：等证据也不许把探针拖长（夹具 120ms + 握手开销；余量给足，免得在慢机上假红）
+    // ① exit 事实必须进文案（实测 100%，不是墙钟性质）
+    expect(String(result.auth.error)).toContain('代理命令已退出')
+    // ② 不许退回那句「最后到的 close」空话（D95 的病症；修复后实测 0% 出现）
+    expect(String(result.auth.error)).not.toBe('连接已关闭（服务端主动断开）')
+    // ③ 有界：等证据也不许把探针拖长（余量给足，免得在慢机上假红）
     expect(Date.now() - started).toBeLessThan(PROXY_EVIDENCE_GRACE_MS + 1000)
   })
 
