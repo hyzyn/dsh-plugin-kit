@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * `packages/devenv` 的**一键验证**（L1 脚本）：一条命令跑完
- * 「产物 → 单测 → 真机只读链路 → 真机写入口 → 真宿主挂载」。
+ * 「产物 → 单测 → 真机只读链路 → 真机 HTTP 探针 → 真机写入口 → 真宿主挂载」。
  *
  * ## 为什么要有它（与 `verify-devdata-all.mjs` 同因）
  *
@@ -9,27 +9,36 @@
  * （`interactive_comments` 默认关），于是每一行注释都被当成命令跑，屏幕上一串
  * `zsh: command not found: #`。分享验证方式要么是一行命令，要么就是别人踩坑。
  *
- * ## 六步，以及每步的失败意味着什么
+ * ## 七步，以及每步的失败意味着什么
  *
  * | 步 | 命令 | 失败意味着 |
  * |---|---|---|
  * | 1 | `pnpm -r typecheck` | 类型层坏了 |
- * | 2 | `pnpm -r build` | 产物建不出来；**不能省**——第 ⑤⑥ 步加载的是 `lib/`，不重建就可能验的是旧代码 |
+ * | 2 | `pnpm -r build` | 产物建不出来；**不能省**——第 ⑤⑥⑦ 步加载的是 `lib/`，不重建就可能验的是旧代码 |
  * | 3 | `npx vitest run packages/devenv` | 本包用例红了（门控真机用例在这里是「跳过」） |
  * | 4 | 真机只读链路（`test/real-machine.test.ts`） | SSH → `docker inspect` / `docker logs` → 解析 → 判定，这条链断了 |
- * | 5 | 真机写入口（`test/real-write.test.ts`） | 四道门槛、白名单、幂等、启停本身有问题 |
- * | 6 | `node scripts/verify-devenv-host-mount.mjs` | 真 DSH 宿主挂不上（那一步自己起隔离 profile） |
+ * | 5 | 真机 HTTP 探针（`test/real-probe.test.ts`） | 探针从本机打到远端端口这条路（真 200 / 真超时）断了 |
+ * | 6 | 真机写入口（`test/real-write.test.ts`） | 四道门槛、白名单、幂等、启停本身有问题 |
+ * | 7 | `node scripts/verify-devenv-host-mount.mjs` | 真 DSH 宿主挂不上（那一步自己起隔离 profile） |
  *
- * ## 第 4、5 步为什么要**两个前提**才对跑
+ * ## 第 4、5、6 步为什么要**各自的**前提才对跑
  *
- * 它们都打真机（默认 248），所以先探可达性；而**写入口还多一个前提**：必须有人**指名**一个可以动的
- * 容器（`DEVENV_REAL_WRITE_CONTAINER`）。理由是这台机器上有同事在联调——「启停一台共享机器上的容器」
- * 不该由脚本自动挑一个目标。缺任何一个前提都报 **SKIP 不报红**：拿环境状况当失败信号只会训练人
- * 忽略红灯（本仓真机脚本一贯如此，见 [docs/agent-real-test.md](../docs/agent-real-test.md)）。
+ * 它们都打真机（默认 248），所以先探可达性；但三档各有额外的**环境事实**要人给：
+ *
+ * - 第 5 步（探针）要**上游端口**：目标机上得有一个**从这台机器可达、会回 2xx/3xx** 的端口
+ *   （`DEVENV_REAL_PROBE_PORT`），以及一个**从这台机器发 HTTP 永远没响应**的端口
+ *   （`DEVENV_REAL_PROBE_TIMEOUT_PORT`）——共享联调机上的容器多半没发布端口，哪个端口会黑洞
+ *   只有现场知道，所以这两个旋钮没有默认值；
+ * - 第 6 步（写入口）要人**指名**一个可以动的容器（`DEVENV_REAL_WRITE_CONTAINER`）。理由是这台
+ *   机器上有同事在联调——「启停一台共享机器上的容器」不该由脚本自动挑一个目标。
+ *
+ * 缺任何一个前提都报 **SKIP 不报红**：拿环境状况当失败信号只会训练人忽略红灯
+ * （本仓真机脚本一贯如此，见 [docs/agent-real-test.md](../docs/agent-real-test.md)）。
+ * **每一档的 SKIP 单独打、理由单独写**——一档跳过了不该被另一档的 PASS 盖住。
  *
  * ## 它**刻意不去读凭据存储**
  *
- * 真机那两档要 SSH 凭据，而本脚本**不会**自己去读 `~/.dsh/.credentials.yaml`——那属于凭据服务，
+ * 真机那三档要 SSH 凭据，而本脚本**不会**自己去读 `~/.dsh/.credentials.yaml`——那属于凭据服务，
  * 一个验证脚本伸手进去就等于绕过了它的所有权（而且会把口令带进自己的进程环境与可能的日志）。
  * 所以：**要么你自己 export，要么那两步跳过**。
  *
@@ -37,9 +46,13 @@
  * # 目标地址必填（公开仓库里不留内网默认地址）
  * DEVENV_REAL_SSH_HOST=<目标> node scripts/verify-devenv-all.mjs
  *
- * # 真机那两档还要口令：自己把口令读进变量再跑（不进 shell 历史的话用 read -s）
+ * # 真机那三档还要口令：自己把口令读进变量再跑（不进 shell 历史的话用 read -s）
  * read -rs DEVENV_REAL_SSH_PASSWORD && export DEVENV_REAL_SSH_PASSWORD
  * DEVENV_REAL_SSH_HOST=<目标> node scripts/verify-devenv-all.mjs
+ *
+ * # 探针那一档再给两个端口（一个会回 2xx/3xx、一个发 HTTP 永远没响应）
+ * DEVENV_REAL_SSH_HOST=<目标> DEVENV_REAL_PROBE_PORT=5000 DEVENV_REAL_PROBE_TIMEOUT_PORT=8080 \
+ *   node scripts/verify-devenv-all.mjs
  *
  * # 写入口那一步另外要指名一个可以动的容器（自己起一个一次性的最稳妥）
  * DEVENV_REAL_SSH_HOST=<目标> DEVENV_REAL_WRITE_CONTAINER=dsh-devenv-write-test node scripts/verify-devenv-all.mjs
@@ -47,10 +60,11 @@
  *
  * ## 它**不**做什么
  *
- * - **不碰真实的 `~/.dsh`**：自己不建临时目录也不起宿主，需要动 DSH 的第 6 步**委托**给
+ * - **不碰真实的 `~/.dsh`**：自己不建临时目录也不起宿主，需要动 DSH 的第 7 步**委托**给
  *   [`verify-devenv-host-mount.mjs`](./verify-devenv-host-mount.mjs)（那个脚本有自己的隔离守卫
  *   `test/host-mount-script-safety.test.ts` 与收尾自证）；
- * - **不创建、不删除容器**：第 5 步只启停你指名的那一个（`docker start` / `docker stop`）；
+ * - **不创建、不删除容器**：第 5 步只发 HTTP `GET` 与只读 docker 命令，第 6 步只启停你指名的那一个
+ *   （`docker start` / `docker stop`）；
  * - **不管发布**：仓库级门禁（`pnpm typecheck && pnpm build && pnpm test && pnpm aggregate`）是另一回事。
  *
  * ## 用法
@@ -75,6 +89,9 @@ const SSH_HOST = process.env.DEVENV_REAL_SSH_HOST ?? ''
 const SSH_PORT = Number(process.env.DEVENV_REAL_SSH_PORT ?? '22')
 /** 有人在用例里指名了容器吗（**写入口那一档的唯一门控**）。 */
 const WRITE_CONTAINER = process.env.DEVENV_REAL_WRITE_CONTAINER ?? ''
+/** 探针那一档要的两个上游端口（**环境事实**：哪个可达、哪个黑洞只有现场知道）。 */
+const PROBE_PORT = process.env.DEVENV_REAL_PROBE_PORT ?? ''
+const PROBE_TIMEOUT_PORT = process.env.DEVENV_REAL_PROBE_TIMEOUT_PORT ?? ''
 
 const results = []
 
@@ -125,26 +142,29 @@ function hasCredential() {
 
 /* ------------------------------- 开始跑 ------------------------------- */
 
-console.log('[devenv-verify] 一键验证：产物 → 单测 → 真机只读 → 真机写 → 真宿主挂载')
+console.log('[devenv-verify] 一键验证：产物 → 单测 → 真机只读 → 真机 HTTP 探针 → 真机写 → 真宿主挂载')
 console.log(`[devenv-verify] 仓库：${repoRoot}`)
 
 run('① 类型检查（pnpm -r typecheck）', 'pnpm', ['-r', 'typecheck'])
-// ② 产物必须在 ⑤⑥ 之前重建：那两个脚本加载的是 `lib/`，不重建可能验的是旧代码。
+// ② 产物必须在 ⑤⑥⑦ 之前重建：那几个脚本加载的是 `lib/`，不重建可能验的是旧代码。
 run('② 构建产物（pnpm -r build）', 'pnpm', ['-r', 'build'])
 run('③ devenv 全量单测（含门控真机用例的跳过）', 'npx', ['vitest', 'run', 'packages/devenv'])
 
-/* ④⑤ 真机那两档：目标 → 可达性 → 凭据 → （写那档还要人指名容器） */
+/* ④⑤⑥ 真机那三档：目标 → 可达性 → 凭据 →（各自额外的前提） */
 if (SSH_HOST === '') {
   const reason = '没给 DEVENV_REAL_SSH_HOST——本仓不留内网默认地址（公开仓库）。用法：DEVENV_REAL_SSH_HOST=… node scripts/verify-devenv-all.mjs'
   skip('④ 真机只读链路', reason)
-  skip('⑤ 真机写入口', reason)
+  skip('⑤ 真机 HTTP 探针', reason)
+  skip('⑥ 真机写入口', reason)
 } else if (!(await canConnect(SSH_HOST, SSH_PORT))) {
   skip(`④ 真机只读链路（${SSH_HOST}:${String(SSH_PORT)}）`, '目标不可达（需要 VPN / 内网）')
-  skip('⑤ 真机写入口', '目标不可达（同上）')
+  skip('⑤ 真机 HTTP 探针', '目标不可达（同上）')
+  skip('⑥ 真机写入口', '目标不可达（同上）')
 } else if (!hasCredential()) {
-  const reason = '缺凭据：这两档要 SSH 凭据，而本脚本**刻意不去读凭据存储**（那属于凭据服务）。用法见脚本头注：先 read -rs 读进 DEVENV_REAL_SSH_PASSWORD 或给 DEVENV_REAL_SSH_KEY_PATH 再重跑'
+  const reason = '缺凭据：这三档要 SSH 凭据，而本脚本**刻意不去读凭据存储**（那属于凭据服务）。用法见脚本头注：先 read -rs 读进 DEVENV_REAL_SSH_PASSWORD 或给 DEVENV_REAL_SSH_KEY_PATH 再重跑'
   skip(`④ 真机只读链路（${SSH_HOST}:${String(SSH_PORT)}）`, reason)
-  skip('⑤ 真机写入口', reason)
+  skip('⑤ 真机 HTTP 探针', reason)
+  skip('⑥ 真机写入口', reason)
 } else {
   run(
     `④ 真机只读链路（${SSH_HOST}:${String(SSH_PORT)}）`,
@@ -152,15 +172,34 @@ if (SSH_HOST === '') {
     ['vitest', 'run', 'packages/devenv/test/real-machine.test.ts'],
     { DEVENV_REAL: '1' },
   )
+  const missingPorts = [
+    PROBE_PORT === '' ? 'DEVENV_REAL_PROBE_PORT' : '',
+    PROBE_TIMEOUT_PORT === '' ? 'DEVENV_REAL_PROBE_TIMEOUT_PORT' : '',
+  ].filter((item) => item !== '')
+  if (missingPorts.length > 0) {
+    skip(
+      '⑤ 真机 HTTP 探针',
+      `没给 ${missingPorts.join(' / ')}：这一档要两个**环境事实**——目标机上有一个从本机可达、会回 2xx/3xx 的`
+        + '端口（真 200），以及一个从本机发 HTTP 永远没响应的端口（真超时）。共享联调机上的容器多半没发布'
+        + '端口，所以没有默认值：DEVENV_REAL_PROBE_PORT=<端口> DEVENV_REAL_PROBE_TIMEOUT_PORT=<端口>',
+    )
+  } else {
+    run(
+      `⑤ 真机 HTTP 探针（${PROBE_PORT} 应回 2xx/3xx · ${PROBE_TIMEOUT_PORT} 应超时）`,
+      'npx',
+      ['vitest', 'run', 'packages/devenv/test/real-probe.test.ts'],
+      { DEVENV_REAL: '1' },
+    )
+  }
   if (WRITE_CONTAINER === '') {
     skip(
-      '⑤ 真机写入口',
+      '⑥ 真机写入口',
       '没人指名可以动的容器：这一步会在目标机上**真启停**容器，而那是台共享机器（有同事在联调），'
         + '所以它要人指名：DEVENV_REAL_WRITE_CONTAINER=<容器名>（自己起一个一次性的最稳妥，用例只启停、不创建不删除）',
     )
   } else {
     run(
-      `⑤ 真机写入口（容器 ${WRITE_CONTAINER}）`,
+      `⑥ 真机写入口（容器 ${WRITE_CONTAINER}）`,
       'npx',
       ['vitest', 'run', 'packages/devenv/test/real-write.test.ts'],
       { DEVENV_REAL: '1' },
@@ -168,8 +207,8 @@ if (SSH_HOST === '') {
   }
 }
 
-// ⑥ 委托给已隔离、已守卫的挂载验收脚本（它自己起一次性 profile，跑完即删）。
-run('⑥ 真 DSH 宿主挂载验收（隔离 profile）', 'node', [join(here, 'verify-devenv-host-mount.mjs')])
+// ⑦ 委托给已隔离、已守卫的挂载验收脚本（它自己起一次性 profile，跑完即删）。
+run('⑦ 真 DSH 宿主挂载验收（隔离 profile）', 'node', [join(here, 'verify-devenv-host-mount.mjs')])
 
 /* ------------------------------- 汇总 ------------------------------- */
 

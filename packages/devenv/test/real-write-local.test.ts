@@ -17,6 +17,8 @@
  *
  * 连不上 daemon、或本机没有可用镜像且拉不下来 → 整档 SKIP，理由写在套件名里。
  * 口径与本仓其余真机档一致：拿环境状况当失败信号只会训练人忽略红灯。
+ * 探 daemon / 挑镜像 / 跑一条 docker 命令这套 plumbing 与 `real-health-local.test.ts` **共用**
+ * `test/local-docker.ts`（两个本机真 daemon 档，同一个靶子镜像入口）。
  *
  * ## 自己建的自己删，而且要看得见
  *
@@ -28,7 +30,6 @@
  * 这台机器**没有 daemon** 时本档只会 SKIP；「真 daemon 上端到端」的验证面是**有 daemon 的机器**
  * （CI ubuntu 腿 / 维护者起了 Docker Desktop 时）。这一点在 ROADMAP 的落点里写明了，不靠注释暗示。
  */
-import { spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
@@ -36,59 +37,19 @@ import { basename, join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { makeHost } from './fake-host.js'
+import { containerExists, docker, pickImage, probeDaemon, uniqueName } from './local-docker.js'
 
 /** 靶子的名字前缀与标签：一眼看出这是本用例建的（人肉兜底清理时不必猜）。 */
 const CONTAINER_PREFIX = 'dsh-devenv-write-local-'
 const CONTAINER_LABEL = 'dsh.devenv.test=write-local'
 
-/** 跑一条 docker 命令（同步；靶子的准备与读回都是短命令）。 */
-function docker(args: string[], timeoutMs = 60_000): { code: number; out: string } {
-  const result = spawnSync('docker', args, { encoding: 'utf8', timeout: timeoutMs })
-  const out = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim()
-  return { code: result.status ?? 1, out }
-}
-
-/**
- * 挑一个能长跑的靶子镜像：**先看本机有没有**（不联网），没有才拉最小的那个。
- *
- * 可用 `DEVENV_LOCAL_WRITE_IMAGE` 指定（例如本机只有内网仓库里的镜像）。
- */
-function pickImage(): { image: string } | { problem: string } {
-  const override = process.env.DEVENV_LOCAL_WRITE_IMAGE
-  const candidates = override === undefined || override === '' ? ['busybox:latest', 'alpine:latest'] : [override]
-
-  for (const image of candidates) {
-    if (docker(['image', 'inspect', image], 20_000).code === 0) return { image }
-  }
-  for (const image of candidates) {
-    // 90 秒是有界的：拉不到就当「前提缺失」SKIP，不让它在收集期把整轮测试拖住
-    const pulled = docker(['pull', image], 90_000)
-    if (pulled.code === 0) return { image }
-  }
-  return {
-    problem: `本机没有 ${candidates.join(' / ')} 且拉取失败——这是前提缺失，不是代码坏了（可用 DEVENV_LOCAL_WRITE_IMAGE 指定一个本机镜像）`,
-  }
-}
-
-/**
- * 探 daemon；连不上就是「没起 Docker」，不是失败。
- *
- * **只看退出码、不依赖任何模板**：实测（2026-10-03，Docker Desktop 的 CLI 28.3.2）——
- * `docker version --format '{{.ServerVersion}}'` 在这台机器上直接报模板错（那个字段在
- * `version` 的 JSON 里不存在，正确写法是 `{{.Server.Version}}` 或 `docker info`），
- * 于是「daemon 明明在跑」也会被判成 SKIP。探针必须比被探的东西更笨。
- */
-const daemon = docker(['info'], 20_000)
-const serverVersion = daemon.code === 0 ? docker(['info', '--format', '{{.ServerVersion}}'], 20_000).out : ''
-const prepared: { image: string } | { problem: string } =
-  daemon.code === 0
-    ? pickImage()
-    : { problem: `连不上 docker daemon（${daemon.out.split('\n')[0] ?? ''}）` }
+const daemon = probeDaemon()
+const prepared: { image: string } | { problem: string } = daemon.ok ? pickImage() : { problem: daemon.detail }
 
 const IMAGE = 'image' in prepared ? prepared.image : ''
 const SKIP_REASON = 'problem' in prepared ? prepared.problem : undefined
 
-const CONTAINER = `${CONTAINER_PREFIX}${String(process.pid)}-${Math.random().toString(36).slice(2, 8)}`
+const CONTAINER = uniqueName(CONTAINER_PREFIX)
 
 let projectDir = ''
 let created = false
@@ -131,7 +92,7 @@ function mountWritable(dir: string, grant: boolean): ReturnType<typeof makeHost>
   return host
 }
 
-describe.skipIf(SKIP_REASON !== undefined)(`写入口常态验证（本机一次性容器：${SKIP_REASON ?? `${IMAGE} · daemon ${serverVersion}`}）`, () => {
+describe.skipIf(SKIP_REASON !== undefined)(`写入口常态验证（本机一次性容器：${SKIP_REASON ?? `${IMAGE} · daemon ${daemon.serverVersion}`}）`, () => {
   beforeAll(() => {
     const made = docker(['create', '--name', CONTAINER, '--label', CONTAINER_LABEL, '--entrypoint', 'sleep', IMAGE, '600'])
     expect(made.code, `docker create 失败：${made.out}`).toBe(0)
@@ -145,8 +106,7 @@ describe.skipIf(SKIP_REASON !== undefined)(`写入口常态验证（本机一次
     if (created) docker(['rm', '-f', CONTAINER], 60_000)
     if (projectDir !== '') rmSync(projectDir, { recursive: true, force: true })
     // 收尾自证：容器真的没了（自己建的自己删，且这件事要有断言盯着）
-    const left = docker(['ps', '-a', '--filter', `name=^/${CONTAINER}$`, '--format', '{{.Names}}'], 30_000)
-    expect(left.out, '一次性靶子没被清掉').toBe('')
+    expect(containerExists(CONTAINER), '一次性靶子没被清掉').toBe(false)
   })
 
   it('被拒的两次一条命令都没发：读回容器仍在跑', async () => {

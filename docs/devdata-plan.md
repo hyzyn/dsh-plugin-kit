@@ -1013,8 +1013,8 @@ settings entry**。devfront 的 `scope.ts` 已经因为同一条理由上收到 
   **4/4 PASS**（248：SSH → `docker inspect` / `docker logs` → 解析 → 判定）。
 - **真机抓到的缺陷**：`INSPECT_TEMPLATE` 原先写 `{{.State.RestartCount}}`，而 `RestartCount` 是**顶层**
   字段——docker 的模板对缺失的键直接报错，于是**每条 inspect 都失败**，而假 docker 夹具照自己的想象
-  回一行，单测全绿。现在 `test/inspect-template.test.ts`（7 条）拿真机的**结构样本**
-  （`test/fixtures/docker-inspect.state.json`，只有键与类型、没有值）逐条解析模板里的字段路径。
+  回一行，单测全绿。现在 `test/inspect-template.test.ts` 拿真机的**结构样本**（`test/fixtures/` 下
+  两份——没有健康检查的与配了健康检查的，只有键与类型、没有值）逐条解析模板里的字段路径。
 
 **已经挂进 `test` profile**（2026-10-02）：`dsh plugin --profile test add link:…/packages/devenv` +
 配置层里一条 `nas-248`（`kind=ssh` + `book=TEST`，作用域 `/Users/czz/coding/webproject`）。
@@ -1035,8 +1035,9 @@ settings entry**。devfront 的 `scope.ts` 已经因为同一条理由上收到 
 
 > ⚠️ **2026-10-03 更正（原文保留）**：上面那句「第 5 步还没做」是 **§16.1.2 落笔时的快照**，
 > 当天晚些就在下面的 §16.1.3 落地了（含一次真机写路径实测）。**当前状态以
-> `packages/devenv/ROADMAP.md` 与 §16.1.3 为准**；剩下没做的只有 `Health` 真机覆盖、
-> SSH HTTP 探针、冷启动 150s 的轮询体验。
+> `packages/devenv/ROADMAP.md` 为准**；2026-10-03 又闭合了两条真机盲区——`Health` 路径的真机覆盖
+> （本机真 daemon 上的一次性健康检查容器）与 SSH 目标的 HTTP 探针（248 上真 200 与真超时**各一次**），
+> 落点与门槛见 ROADMAP 记-10。**剩下的**只有冷启动 150s 的轮询体验。
 
 #### 16.1.3 第 5 步的落点（✅ 2026-10-02）：写入口
 
@@ -1069,21 +1070,24 @@ settings entry**。devfront 的 `scope.ts` 已经因为同一条理由上收到 
 
 #### 16.1.5 一键验证脚本（✅ 2026-10-02）
 
-`scripts/verify-devenv-all.mjs`（包内别名 `pnpm --filter @hyzyn/dsh-devenv run verify`）把六步串成一条
-可粘贴的命令：类型检查 → 产物 → 本包单测 → 真机只读 → 真机写 → 真宿主挂载（最后一步委托给隔离脚本）。
-理由与 `verify-devdata-all.mjs` 同源：**「怎么验证」不该靠手工粘一段带注释的清单**（zsh 交互式不把
-`#` 当注释，每一行注释都被当命令跑）。
+`scripts/verify-devenv-all.mjs`（包内别名 `pnpm --filter @hyzyn/dsh-devenv run verify`）把七步串成一条
+可粘贴的命令：类型检查 → 产物 → 本包单测 → 真机只读 → **真机 HTTP 探针** → 真机写 → 真宿主挂载
+（最后一步委托给隔离脚本）。理由与 `verify-devdata-all.mjs` 同源：**「怎么验证」不该靠手工粘一段带
+注释的清单**（zsh 交互式不把 `#` 当注释，每一行注释都被当命令跑）。
 
-它比 devdata 那条多两条约束，都是这个包特有的：
+它比 devdata 那条多三条约束，都是这个包特有的：
 
-- **刻意不去读凭据存储**：真机那两步要 SSH 凭据，而最方便的写法（从 `~/.dsh/.credentials.yaml` 里抠）
+- **刻意不去读凭据存储**：真机那几档要 SSH 凭据，而最方便的写法（从 `~/.dsh/.credentials.yaml` 里抠）
   正好是错的——那绕过了凭据服务的所有权，还把口令带进这个进程。缺凭据就 SKIP 并说清怎么给；
 - **写入口那一档要人指名容器**（`DEVENV_REAL_WRITE_CONTAINER`）：目标机上有同事在联调，
-  「启停共享机器上的容器」不该由脚本自动挑一个目标。
+  「启停共享机器上的容器」不该由脚本自动挑一个目标；
+- **探针那一档要两个上游端口**（`DEVENV_REAL_PROBE_PORT` / `DEVENV_REAL_PROBE_TIMEOUT_PORT`，
+  2026-10-03 加）：那是**环境事实**（哪个端口可达、哪个黑洞只有现场知道），缺就**单列一档** SKIP——
+  静默跳过最危险，第 ④ 档的 PASS 会让人以为整条真机链路都验过了。
 
-守卫：`packages/devenv/test/verify-all-script-safety.test.ts`（8 条，六条性质各配反例——其中两条正好是
-上面这两条约束）。实测：不带凭据 **4 PASS / 2 SKIP**；带只读凭据 **5 PASS / 1 SKIP**（写那档如实说明
-「要人指名容器」）。
+守卫：`packages/devenv/test/verify-all-script-safety.test.ts`（**八条性质**，每条配反例——其中三条正好是
+上面这三条约束）。实测：不带凭据 **4 PASS / 3 SKIP**；带只读凭据 **5 PASS / 2 SKIP**（探针与写那两档
+各自如实说明缺什么）。
 
 ## 17. 落地记录：P1–P2（2026-10-01）
 

@@ -6,19 +6,22 @@
  *
  * 一键脚本是**最容易被改坏的那一类代码**：它不进 CI 的判据面（它自己就是验证入口），跑起来又慢，
  * 所以「改坏了没人发现」的窗口很长。而它坏掉的方式恰恰是最糟的两种：**吞掉失败**（步骤红了但退出码
- * 是 0）与**越权去拿它不该拿的东西**（凭据）。所以这里把六条性质逐条钉住，每条配反例。
+ * 是 0）与**越权去拿它不该拿的东西**（凭据），外加第三种：**把 SKIP 做成静默**（一档因为缺前提没跑，
+ * 报告里却看不出它没跑）。所以这里把八条性质逐条钉住，每条配反例。
  *
- * ## 七条性质
+ * ## 八条性质
  *
  * 1. **不自己起宿主 / 不建临时目录**：需要动真实 DSH 的那一步委托给挂载脚本（那边有隔离守卫与收尾自证）；
- * 2. **真机那两档必须先探可达性**：不可达时 SKIP 不报红（拿网络状况当失败信号会训练人忽略红灯）；
+ * 2. **真机那几档必须先探可达性**：不可达时 SKIP 不报红（拿网络状况当失败信号会训练人忽略红灯）；
  * 3. **失败必须非零退出**（不许吞）；
  * 4. **不推导 / 不碰真实 DSH home**；
- * 5. **不读凭据存储**（`~/.dsh/.credentials.yaml`）——真机那两档要凭据，而一个验证脚本伸手进凭据服务
+ * 5. **不读凭据存储**（`~/.dsh/.credentials.yaml`）——真机那几档要凭据，而一个验证脚本伸手进凭据服务
  *    等于绕过它的所有权；缺凭据就 SKIP，这是**刻意**的（本包独有的一条，devdata 那边不需要因为它的
  *    真机目标没有密码）；
  * 6. **写入口那一档必须由「人指名的容器」门控**：不许自动挑一个容器——目标机上有同事在联调。
  * 7. **目标地址不许留内网默认值**（2026-10-03 加）：本仓是**公开仓库**，`?? '192.168.x.y'` 这种便利写法等于公开内网拓扑。
+ * 8. **探针那一档必须由「两个上游端口旋钮」门控**（2026-10-03 加）：那两个端口是**环境事实**，
+ *    缺了就得单列一档 SKIP 并说清怎么给——不许让它悄悄跳过、被第 ④ 档的 PASS 盖住。
  */
 import { readFileSync } from 'node:fs'
 
@@ -38,7 +41,7 @@ export function stripComments(source: string): string {
 }
 
 /**
- * 检查一键脚本源码是否满足六条性质（**纯函数**，喂 fixture 就能造反例）。
+ * 检查一键脚本源码是否满足八条性质（**纯函数**，喂 fixture 就能造反例）。
  *
  * @param raw - 脚本源码（注释会自动去掉）。
  * @returns 违规描述数组（空 = 通过）。
@@ -55,9 +58,9 @@ export function verifyAllViolations(raw: string): string[] {
     problems.push('自己起了 dsh 宿主：该委托给挂载脚本')
   }
 
-  // ② 真机那两档必须先探可达性
+  // ② 真机那几档必须先探可达性
   if (!/canConnect\(SSH_HOST, SSH_PORT\)/.test(source)) {
-    problems.push('真机那两档没有先探可达性：不可达会被报成失败（拿网络状况当失败信号）')
+    problems.push('真机那几档没有先探可达性：不可达会被报成失败（拿网络状况当失败信号）')
   }
   if (!/await canConnect\(/.test(source)) {
     problems.push('可达性探测没有被 await：判定会在探测完成之前发生')
@@ -114,6 +117,20 @@ export function verifyAllViolations(raw: string): string[] {
   if (/192\.168\.|172\.(1[6-9]|2\d|3[01])\.|\b10\.\d+\.\d+\.\d+/.test(source)) {
     problems.push('源码里出现了内网地址字面量：本仓是公开仓库，那等于把内网拓扑公开出去')
   }
+
+  /*
+   * ⑧ 探针那一档必须由**两个上游端口旋钮**门控（2026-10-03 加）。
+   *
+   * 探针那一档的前提是「目标机上有一个从本机可达的端口」——那是**环境事实**，不是代码能定的。
+   * 缺旋钮时它必须**单列一档 SKIP 并说清怎么给**：静默跳过最危险，因为报告里第 ④ 档一个 PASS
+   * 会让人以为整条真机链路都验过了。
+   */
+  if (!/DEVENV_REAL_PROBE_PORT/.test(source) || !/DEVENV_REAL_PROBE_TIMEOUT_PORT/.test(source)) {
+    problems.push('探针那一档没有要求两个上游端口（DEVENV_REAL_PROBE_PORT / DEVENV_REAL_PROBE_TIMEOUT_PORT）：缺了就得说清怎么给')
+  }
+  if (!/missingPorts\.length > 0/.test(source)) {
+    problems.push('探针那一档没有「缺端口就 SKIP」的分支：静默跳过会被别的档 PASS 盖住')
+  }
   return problems
 }
 
@@ -125,19 +142,19 @@ function mutate(from: string, to: string): string {
   return mutated
 }
 
-describe('devenv 一键验证脚本：七条性质', () => {
-  it('真实源码满足七条', () => {
+describe('devenv 一键验证脚本：八条性质', () => {
+  it('真实源码满足八条', () => {
     expect(verifyAllViolations(SOURCE)).toEqual([])
   })
 
   it('反例①：自己起宿主 / 建临时目录 → 都报出来', () => {
-    const withHost = verifyAllViolations(mutate("run('⑥ 真 DSH 宿主挂载验收（隔离 profile）', 'node', [join(here, 'verify-devenv-host-mount.mjs')])", "run('⑥ 自起宿主', 'dsh', ['--profile', 'x'])"))
+    const withHost = verifyAllViolations(mutate("run('⑦ 真 DSH 宿主挂载验收（隔离 profile）', 'node', [join(here, 'verify-devenv-host-mount.mjs')])", "run('⑦ 自起宿主', 'dsh', ['--profile', 'x'])"))
     expect(withHost.join('\n')).toContain('自己起了 dsh 宿主')
     const withTmp = verifyAllViolations(mutate("const repoRoot = resolve(here, '..')", "const repoRoot = resolve(here, '..')\nconst tmp = mkdtempSync('/tmp/x')"))
     expect(withTmp.join('\n')).toContain('自己建了临时目录')
   })
 
-  it('反例②：去掉可达性探测（真机那两档直接跑）→ 报出来', () => {
+  it('反例②：去掉可达性探测（真机那几档直接跑）→ 报出来', () => {
     const problems = verifyAllViolations(mutate('await canConnect(SSH_HOST, SSH_PORT)', 'true'))
     expect(problems.join('\n')).toContain('没有先探可达性')
   })
@@ -172,10 +189,16 @@ describe('devenv 一键验证脚本：七条性质', () => {
     expect(problems.join('\n')).toContain('没有「没指名就 SKIP」的分支')
   })
 
+  it('反例⑧：探针那档把「缺端口」做成静默跳过 → 报出来', () => {
+    const problems = verifyAllViolations(mutate('if (missingPorts.length > 0) {', 'if (false) {'))
+    expect(problems.join('\n')).toContain('没有「缺端口就 SKIP」的分支')
+  })
+
   it('SKIP 不报红：缺凭据走的是 skip 分支，而不是 run', () => {
-    // 三条 skip 分支各自说清理由（拿环境状况当失败信号会训练人忽略红灯）
+    // 各档的 skip 分支各自说清理由（拿环境状况当失败信号会训练人忽略红灯）
     expect(SOURCE).toContain("skip(`④ 真机只读链路")
-    expect(SOURCE).toContain("skip('⑤ 真机写入口'")
+    expect(SOURCE).toContain("skip('⑤ 真机 HTTP 探针'")
+    expect(SOURCE).toContain("skip('⑥ 真机写入口'")
     expect(SOURCE).toMatch(/SKIP：\$\{reason\}/)
   })
 })

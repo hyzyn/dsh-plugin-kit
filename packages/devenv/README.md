@@ -214,16 +214,19 @@ services:
 
 ## 验到哪一档了（照实写）
 
-**一条命令跑完**（六步，缺前提的那两步如实报 SKIP 不报红）：
+**一条命令跑完**（七步，缺前提的那几档如实报 SKIP 不报红）：
 
 ```sh
 pnpm --filter @hyzyn/dsh-devenv run verify
 ```
 
 它跑：① `pnpm -r typecheck` → ② `pnpm -r build` → ③ 本包全量单测 → ④ 真机只读链路 →
-⑤ 真机写入口 → ⑥ 真宿主挂载验收（委托给隔离脚本）。**真机那两步要凭据，而脚本刻意不去读凭据存储**
-（那属于凭据服务）：要么自己 `read -rs DEVENV_REAL_SSH_PASSWORD && export …`，要么那两步跳过。
-写入口那一步还要人**指名**一个可以动的容器（`DEVENV_REAL_WRITE_CONTAINER`）。
+⑤ 真机 HTTP 探针 → ⑥ 真机写入口 → ⑦ 真宿主挂载验收（委托给隔离脚本）。**真机那三档要凭据，而脚本刻意
+不去读凭据存储**（那属于凭据服务）：要么自己 `read -rs DEVENV_REAL_SSH_PASSWORD && export …`，要么
+那几档跳过。第 ⑤ 档还要两个**环境事实**（一个从本机可达、会回 2xx/3xx 的端口
+`DEVENV_REAL_PROBE_PORT`，一个从本机发 HTTP 永远没响应的端口 `DEVENV_REAL_PROBE_TIMEOUT_PORT`），
+第 ⑥ 档还要人**指名**一个可以动的容器（`DEVENV_REAL_WRITE_CONTAINER`）。**每一档单独 SKIP、理由单独打**
+——一档跳过了不该被另一档的 PASS 盖住。
 
 各档单独跑也可以：
 
@@ -232,14 +235,44 @@ pnpm --filter @hyzyn/dsh-devenv run verify
 | 单测 | `npx vitest run packages/devenv` | ✅ 假宿主 + **真进程的假 docker** + 真临时清单 + 真 HTTP 服务 |
 | **真 DSH 挂载** | `pnpm --filter @hyzyn/dsh-devenv run host-mount-smoke` | ✅ 2026-10-02 **12/12**（连跑两次）：装上 → 挂上 → `env_status` / `env_wait` 进真 ToolRuntime，没配 `writeCapability` 就没有写入口，收尾连临时目录都清干净 |
 | **真机观测链路** | `DEVENV_REAL=1 DEVENV_REAL_SSH_PASSWORD=… npx vitest run packages/devenv/test/real-machine.test.ts` | ✅ 2026-10-02 **5/5**（248：SSH → `docker inspect` / `docker logs` → 解析 → 判定；含插件本体与「容器不存在 ≠ 通道不通」） |
+| **真机 SSH 探针** | `DEVENV_REAL=1 DEVENV_REAL_SSH_PASSWORD=… DEVENV_REAL_PROBE_PORT=<会回 2xx/3xx 的端口> DEVENV_REAL_PROBE_TIMEOUT_PORT=<发 HTTP 永远没响应的端口> npx vitest run packages/devenv/test/real-probe.test.ts` | ✅ 2026-10-03 **2/2**（248，同一天两半各一次）：`6080`（rmqdashboard）**真 200** → `✓ … HTTP 200 /`；`10912` 发 HTTP 挂住不响应 → 探针等满 1500ms 预算，报 `!`（继续等）而**不是** `✗`（别等了）。两条都走插件本体（连接簿 → `probeHost = 那台主机的地址` → 真网络） |
 | **真机写入口** | `DEVENV_REAL=1 DEVENV_REAL_WRITE_CONTAINER=<你指名的容器> DEVENV_REAL_SSH_PASSWORD=… npx vitest run packages/devenv/test/real-write.test.ts` | ✅ 2026-10-02 **6/6**（对 248 上一个一次性容器真停/真启，两次拒绝都**一条命令都没发**；收尾**还原现场**） |
-| **写入口常态验证**（本机一次性容器，不用人指容器） | 就在 `npx vitest run packages/devenv` 里（**不需要**指定容器）。靶子镜像默认用本机已有的 `busybox` / `alpine`，都没有就拉一次；两者都不成（例如 Docker Hub 不通）再用 `DEVENV_LOCAL_WRITE_IMAGE=<本机镜像>` | ✅ 2026-10-03 **4/4**（真 daemon 28.3.2：被拒两次读回仍在跑、真停真启、幂等走「无需变更」、清单外不碰；收尾 `docker ps -aq` = 0）。**没起 Docker 时整档 SKIP**，理由写在套件名里；本次靶子是用 `DEVENV_LOCAL_WRITE_IMAGE` 指的本机镜像——这台机器到 Docker Hub 不通，默认路径在这里会如实 SKIP，CI 那步会先预拉 |
+| **写入口常态验证**（本机一次性容器，不用人指容器） | 就在 `npx vitest run packages/devenv` 里（**不需要**指定容器）。靶子镜像默认用本机已有的 `busybox` / `alpine`，都没有就拉一次；两者都不成（例如 Docker Hub 不通）再用 `DEVENV_LOCAL_IMAGE=<本机镜像>` | ✅ 2026-10-03 **4/4**（真 daemon 28.3.2：被拒两次读回仍在跑、真停真启、幂等走「无需变更」、清单外不碰；收尾 `docker ps -aq` = 0）。**没起 Docker 时整档 SKIP**，理由写在套件名里；本次靶子是用 `DEVENV_LOCAL_IMAGE` 指的本机镜像——这台机器到 Docker Hub 不通，默认路径在这里会如实 SKIP，CI 那步会先预拉 |
+| **Health 常态验证**（本机一次性健康检查容器） | 就在 `npx vitest run packages/devenv` 里；靶子镜像与上一档共用 `DEVENV_LOCAL_IMAGE`（旧的 `DEVENV_LOCAL_WRITE_IMAGE` 仍认） | ✅ 2026-10-03 **4/4**（真 daemon 28.3.2）：真 `docker inspect` 的结构满足模板且与入库样本**逐条同类型**、真 CLI 渲染出五段且末段就是健康状态；插件本体对真 `healthy` 给 `✓`、对真 `unhealthy` 给 `✗` 且 `env_wait` **不空等**。连不上 daemon / 没有可用镜像时整档 SKIP |
 
 **真机那一档抓到过一个单测抓不到的缺陷**：`INSPECT_TEMPLATE` 原先写 `{{.State.RestartCount}}`，
 而 `RestartCount` 是**顶层**字段——docker 的模板对缺失的键直接报错，于是**每条 inspect 都失败**，
 `env_status` 只会说「取观测失败」。假 docker 夹具照自己的想象回一行，所以单测全绿：**夹具与真机之间
-的保真度缺口**。现在有两条东西守着它：`test/inspect-template.test.ts`（拿真机 `docker inspect` 的
-**结构样本**逐条解析模板里的字段路径，样本在 `test/fixtures/`，只有键与类型、没有值）与真机用例本身。
+的保真度缺口**。现在有两条东西守着它：`test/inspect-template.test.ts` 拿真机 `docker inspect` 的
+**结构样本**逐条解析模板里的字段路径（两份样本都在 `test/fixtures/`，只有键与类型、没有值），
+以及两档真 daemon 用例本身。
+
+### 结构样本怎么来（可复现）
+
+模板里的字段路径只有在**真 docker 的结构**里才判得准（`RestartCount` 那次就是假夹具骗过了所有人）。
+样本只有键与类型，**一个值都不进仓库**；两份各守一档：`docker-inspect.state.json` 来自**没有**健康检查
+的容器，`docker-inspect.health.json` 来自**配了**健康检查的容器。
+
+```sh
+# ① 起一个配了健康检查、且会转成 healthy 的一次性容器（本机真 daemon 即可）
+docker run -d --name dsh-devenv-sample --health-cmd 'test -f /tmp/ok' \
+  --health-interval 1s --health-timeout 2s --health-retries 3 \
+  --entrypoint sh <镜像> -c 'touch /tmp/ok; sleep 300'
+
+# ② 取结构（`shapeOf` 与 test/inspect-shape.ts 里那个同构：标量 → 类型名，数组 → 一个代表性元素）
+docker inspect dsh-devenv-sample | node -e '
+const shape = (v) => Array.isArray(v) ? (v.length === 0 ? [] : [shape(v[0])])
+  : (v !== null && typeof v === "object") ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, shape(v[k])]))
+  : typeof v
+const raw = JSON.parse(require("fs").readFileSync(0, "utf8"))[0]
+process.stdout.write(JSON.stringify({ RestartCount: shape(raw.RestartCount), State: shape(raw.State) }, null, 2) + "\n")'
+
+# ③ 收尾
+docker rm -f dsh-devenv-sample
+```
+
+> 一份样本只说明**那一刻**的结构。带健康检查那份的守法是**双份**：入库样本 + `real-health-local.test.ts`
+> 拿当下这台 daemon 的真输出再验一遍（两者的模板路径类型必须逐条一致）——样本过期的表现就是那一条开始红。
 
 ### 已经在哪几个 profile 里
 
@@ -260,10 +293,12 @@ pnpm --filter @hyzyn/dsh-devenv run verify
 
 ### 还没验到的
 
-三条盲区——`Health` 路径的真机样本、SSH 目标的 HTTP 探针、冷启动 150 秒的轮询体验——各自的判据与
-门槛收在 [ROADMAP.md](./ROADMAP.md) § 待办 A（**状态真源**），本文不复述。（原来的第四条「写路径的
-常态验证」已于 2026-10-03 落地：本机一次性容器那一档，见上表与 ROADMAP 记-6。）
-口径与记-4 相同：**验不到的不许报 `✓`**。
+剩下一条盲区——**冷启动 150 秒那一档的轮询体验**（单测里有 `missing-then-ok` 的轮询用例，但那不是
+体验）——判据与门槛收在 [ROADMAP.md](./ROADMAP.md) § 待办 A（**状态真源**），本文不复述。
+
+原来的三条已于 2026-10-03 落地：`Health` 路径的真机覆盖（本机真 daemon 上的一次性健康检查容器）、
+SSH 目标的 HTTP 探针（248 上**真 200 与真超时各一次**，见上表与 ROADMAP 记-10）、以及更早的
+「写路径的常态验证」（记-6）。口径与记-4 相同：**验不到的不许报 `✓`**。
 
 ## 开发
 

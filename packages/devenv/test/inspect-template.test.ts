@@ -12,81 +12,35 @@
  * 这正是「夹具与真机之间的保真度缺口」。所以这里拿**真机 `docker inspect` 的结构样本**来判：
  * 模板里的每条字段路径，必须在真机样本里真的有。
  *
+ * ## 两份样本，各守一档（这是本文件的分工，不是重复）
+ *
+ * | 样本 | 来自 | 守什么 |
+ * |---|---|---|
+ * | `fixtures/docker-inspect.state.json` | **没有**健康检查的容器 | 五条路径里前四条；以及「`Health` 不在样本里」这个事实——它正是 `{{if}}` 保护存在的理由 |
+ * | `fixtures/docker-inspect.health.json` | **配了**健康检查的容器 | 第五条 `State.Health.Status` **真的存在**（ROADMAP 待办 A 的第 1 条，2026-10-03 闭合，落点见记-10） |
+ *
  * ## 样本从哪来（可复现）
  *
- * ```sh
- * # 在目标机上取一份真实输出，只保留**结构**（标量换成类型标记，真值一个都不进仓库）
- * docker inspect <容器> | node -e '<shapeOf 见 packages/devenv/README.md>'
- * ```
+ * 取样本的命令、以及 `shapeOf`（真输出 → 只有键与类型的结构）都在
+ * [README.md](../README.md) 的「结构样本怎么来」一节。样本里**一个值都没有**。
  *
- * 现成的两份样本在 `test/fixtures/`：一份来自没有健康检查的容器（这台机器上 24 个容器**都没有**
- * 配健康检查），另一份是**同一台机器的结构**再取一次（保留备用）。两份都只有键与类型，没有值。
+ * ## 「验不到」这一档去哪了
  *
- * ## 验不到的那一条照实说
- *
- * `{{if .State.Health}}{{.State.Health.Status}}{{end}}` 这条路径**在样本里不存在**（样本容器没有
- * 健康检查），所以守卫只能验它「写成受 `{{if}}` 保护」这一条——**不能**说「Health 已验证」。
- * 本仓的规矩是「验不到的一律报 warn，不报 ✓」（`devdata` 的 doctor 就是这条），所以下面有一条
- * 用例专门断言这件事，而不是让它静默通过。
+ * 2026-10-02 时这台机器上 24 个容器**没有一个**配健康检查，所以当时只能验 `Health` 那条路径
+ * 「写成受 `{{if}}` 保护」——**不能说「Health 已验证」**。2026-10-03 补上了带健康检查的样本
+ * （本机真 daemon 上的一次性容器，见 `real-health-local.test.ts`），于是盲区闭合、那条「验不到」
+ * 的用例改成了对两份样本各自事实的断言。**这件事仍要能被看出来**：下面有一条用例断言
+ * 「无健康检查的样本里没有 `Health`」——哪天有人误删了一份样本，它会红。
  */
-import { readFileSync } from 'node:fs'
-
 import { describe, expect, it } from 'vitest'
 
 import { INSPECT_TEMPLATE } from '../src/observe.js'
+import { readShape, templatePaths, templateProblems, walkSample } from './inspect-shape.js'
 
-const SAMPLE = JSON.parse(readFileSync(new URL('./fixtures/docker-inspect.state.json', import.meta.url), 'utf8')) as Record<string, unknown>
-
-/**
- * 抠出模板里的字段路径，并标出它是否被 `{{if …}}` 保护着。
- *
- * `{{if .X}}…{{end}}` 里的路径**允许在样本里不存在**（那正是 if 的用途：没有健康检查的容器），
- * 而没被保护的路径**必须在样本里存在**——`RestartCount` 那个缺陷就属于后者。
- */
-export function templatePaths(template: string): Array<{ path: string; guarded: boolean }> {
-  const guardedSpans: Array<[number, number]> = []
-  for (const matched of template.matchAll(/\{\{if\s+([^}]*)\}\}([\s\S]*?)\{\{end\}\}/g)) {
-    const start = (matched.index ?? 0) + matched[0].indexOf('}}') + 2
-    guardedSpans.push([start, start + (matched[2] as string).length])
-  }
-  const out: Array<{ path: string; guarded: boolean }> = []
-  for (const matched of template.matchAll(/\{\{\.([A-Za-z0-9_.]+)\}\}/g)) {
-    const at = matched.index ?? 0
-    out.push({ path: matched[1] as string, guarded: guardedSpans.some(([from, to]) => at >= from && at < to) })
-  }
-  return out
-}
-
-/** 在样本里走一条字段路径；走到就返回它的类型标记，走不到返回 `undefined`。 */
-export function walkSample(sample: unknown, path: string): unknown {
-  let current: unknown = sample
-  for (const segment of path.split('.')) {
-    if (current === null || typeof current !== 'object' || Array.isArray(current)) return undefined
-    const record = current as Record<string, unknown>
-    if (!(segment in record)) return undefined
-    current = record[segment]
-  }
-  return current
-}
-
-/** 模板的字段路径问题（空 = 通过）。 */
-export function templateProblems(template: string, sample: unknown): string[] {
-  const problems: string[] = []
-  const paths = templatePaths(template)
-  if (paths.length !== 5) problems.push(`模板应当有 5 条字段路径（解析层按 5 段拆分），实际 ${String(paths.length)} 条`)
-  for (const { path, guarded } of paths) {
-    const hit = walkSample(sample, path)
-    if (hit === undefined && !guarded) {
-      problems.push(`字段路径 .${path} 在真机样本里不存在（docker 的模板会直接报 map has no entry，每条 inspect 都会失败）`)
-    }
-  }
-  // `Health` 这一条必须**受保护**：没有健康检查的容器上它是 nil，裸写会让这些容器全都取不到观测。
-  const health = paths.find((item) => item.path === 'State.Health.Status')
-  if (health !== undefined && !health.guarded) {
-    problems.push('State.Health.Status 没有被 {{if .State.Health}} 保护：没配健康检查的容器会整个取不到观测')
-  }
-  return problems
-}
+/** 没有健康检查的容器（原样本，2026-10-02 取自真机）。 */
+const SAMPLE = readShape('state')
+/** 配了健康检查的容器（2026-10-03 取自本机真 daemon 的一次性容器）。 */
+const HEALTH_SAMPLE = readShape('health')
 
 /** 在模板上做一次替换造反例；替换没生效就抛（否则反例会变成空测试）。 */
 function mutate(template: string, from: string, to: string): string {
@@ -97,6 +51,13 @@ function mutate(template: string, from: string, to: string): string {
 describe('INSPECT_TEMPLATE 的字段路径必须在真机结构里存在', () => {
   it('真实模板 vs 真机样本（无健康检查的那一份）', () => {
     expect(templateProblems(INSPECT_TEMPLATE, SAMPLE)).toEqual([])
+  })
+
+  it('真实模板 vs 真机样本（**带健康检查**的那一份）——`Health` 那条路径真的在', () => {
+    expect(templateProblems(INSPECT_TEMPLATE, HEALTH_SAMPLE)).toEqual([])
+    // 盲区闭合的判据：这条路径不是「猜它对」，而是真样本里真的有、且类型对。
+    expect(walkSample(HEALTH_SAMPLE, 'State.Health.Status')).toBe('string')
+    expect(walkSample(HEALTH_SAMPLE, 'RestartCount')).toBe('number')
   })
 
   it('五个字段的顺序就是解析层拆的那五段（`|` 分隔）', () => {
@@ -131,10 +92,11 @@ describe('INSPECT_TEMPLATE 的字段路径必须在真机结构里存在', () =>
     expect(templateProblems(four, SAMPLE).join('\n')).toContain('应当有 5 条字段路径')
   })
 
-  it('**验不到的那一条照实说**：样本容器没有健康检查，所以 `Health` 的路径只能验「受保护」', () => {
-    // 这一条刻意断言「样本里没有 Health」这个**事实**：哪天有人换了一份带健康检查的样本，
-    // 它会红——那一刻应该把这条用例改写成「Health 路径已在样本里验证」，而不是删掉它。
+  it('两份样本的分工还在：**没有**健康检查的那一份里确实没有 `Health`（这正是 `{{if}}` 的理由）', () => {
+    // 这一条刻意断言「那份样本里没有 Health」这个**事实**：哪份样本被误删/被换成同一份，它会红。
     expect(walkSample(SAMPLE, 'State.Health')).toBeUndefined()
     expect(walkSample(SAMPLE, 'State.Health.Status')).toBeUndefined()
+    // 而带健康检查的那一份有——两份同时在场，才说明「有 / 没有」两档都被真样本覆盖过。
+    expect(walkSample(HEALTH_SAMPLE, 'State.Health')).not.toBeUndefined()
   })
 })
