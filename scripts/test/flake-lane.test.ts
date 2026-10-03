@@ -17,7 +17,7 @@
  */
 import { describe, expect, it } from 'vitest'
 
-import { extractFailures, summarizeRuns } from '../flake-lane.mjs'
+import { extractFailures, summarizeRuns, workersPerSuite } from '../flake-lane.mjs'
 
 /** 造一份运行结果。 */
 const run = (index, code, output = '') => ({ index, code, output })
@@ -88,5 +88,29 @@ describe('summarizeRuns：收敛成「红没红 + 可读报告」', () => {
     const { report } = summarizeRuns({ runs: [run(3, 0), run(1, 0), run(2, 0)] })
     expect(report.indexOf('第 1 份')).toBeLessThan(report.indexOf('第 2 份'))
     expect(report.indexOf('第 2 份')).toBeLessThan(report.indexOf('第 3 份'))
+  })
+})
+
+describe('workersPerSuite：把「争用强度」钉住，而不是「每份几个 worker」', () => {
+  /*
+   * 2026-10-03 加。不加 --maxWorkers 时 vitest 自己取 `核数 - 1`，于是同一个「并发 3 份」
+   * 在本机（10 核 → 每份 9 个 = 27 抢 10 核 = 2.7x）与 CI runner（4 核 → 每份 3 个 = 9 抢 4 核
+   * = 2.25x）的争用强度不同，车道的灵敏度就不可比——本机绿不代表 CI 绿，而那正是它要回答的问题。
+   */
+  it('本机（10 核）与 CI runner（4 核）压出来的超订倍数接近', () => {
+    const mac = (workersPerSuite(3, 10) * 3) / 10
+    const ci = (workersPerSuite(3, 4) * 3) / 4
+    expect(mac).toBeGreaterThan(1.5)
+    expect(ci).toBeGreaterThan(1.5)
+    expect(Math.abs(mac - ci)).toBeLessThan(0.5)
+  })
+
+  it('份数越多、每份 worker 越少（总超订不随份数爆炸）', () => {
+    expect(workersPerSuite(6, 10)).toBeLessThan(workersPerSuite(3, 10))
+  })
+
+  it('下限是 1：极小机器 / 极多份数也不会算出 0（--maxWorkers=0 是非法值）', () => {
+    expect(workersPerSuite(3, 1)).toBe(1)
+    expect(workersPerSuite(64, 2)).toBe(1)
   })
 })
