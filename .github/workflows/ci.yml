@@ -82,6 +82,14 @@ jobs:
       - name: Check no workspace protocol in publishable deps
         if: matrix.os == 'ubuntu-latest'
         run: pnpm publishable:check
+      # 防回归：真的打一次包（pnpm pack --dry-run），断言声明的入口都在 tarball 里。
+      # `files` 是手工清单，漏一行**没有别的闸门会红**——2026-10-03 实测：从 tty 的 files
+      # 删掉 client.js 后，上面全部闸门 + 1698 条用例仍全绿，而 tarball 里真的没有它
+      # （用户装上就是浏览器半体 404）。挂载车道走 link:（绕过 files 字段）、artifacts:check
+      # 只管「产物 vs 源码」，都看不见这一层。
+      - name: Check published package contents include declared entries
+        if: matrix.os == 'ubuntu-latest'
+        run: pnpm package-contents:check
       # 防回归：每个可安装插件必须用 peerDependencies 声明与当前 cohort 一致的
       # @deepseek-ai/dsh 范围。DSH 0.1.7-rc.1 起安装前/启动时的兼容性判定只看 peer
       # （预发布参与匹配），engines.dsh 不再有任何读取方；声明错了用户侧才暴露

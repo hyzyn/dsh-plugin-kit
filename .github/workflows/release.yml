@@ -58,6 +58,12 @@ jobs:
       # 两份 kit = 两套模块级单例 → kit D11 的授权不一致回来），发出去只能靠新版本补救
       - name: Check dsh-kit pins are uniform and aligned
         run: pnpm kit-pins:check
+      # 发布前的发包内容闸（与 ci.yml 成对）：真的打一次包，断言声明的入口都在 tarball 里。
+      # 为什么发布闸必须有它：tag 可以打在没过 CI 的提交上，而 `files` 漏一项**发出去就只能
+      # 靠新版本补救**——用户装到的包缺 client.js 就是界面整块不出现（2026-10-03 实测：这条
+      # 缺口在 CI 里原先也拦不住，十三道闸门 + 1698 条用例对它是全绿的）。
+      - name: Check published package contents include declared entries
+        run: pnpm package-contents:check
       # 挂载闸（2026-10-03，与 ci.yml 的 mount-smoke job 成对）：**发出去之前**证明这批包真的能
       # 在真 DSH 里挂起来、界面真的能渲染。为什么发布闸必须有它：tag 可以打在没过 CI 的提交上，
       # 而 npm 一旦发出去就只能靠发新版本补救——「只在 CI 补、发布路径照样绕过」正是 docker D119

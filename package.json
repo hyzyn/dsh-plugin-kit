@@ -29,6 +29,7 @@
     "aggregate:check": "node scripts/check-aggregate.mjs",
     "artifacts:check": "node scripts/check-artifacts.mjs",
     "publishable:check": "node scripts/check-publishable.mjs",
+    "package-contents:check": "node scripts/check-package-contents.mjs",
     "dsh-peers:check": "node scripts/check-dsh-peers.mjs",
     "dsh-home:check": "node scripts/check-dsh-home.mjs",
     "kit-pins:check": "node scripts/check-kit-pins.mjs",
