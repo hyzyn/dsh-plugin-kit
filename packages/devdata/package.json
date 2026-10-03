@@ -6,6 +6,10 @@
     "manifestVersion": 1,
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": []
     }
   },
   "description": "开发/测试环境的数据面与编排工具（SQL 只读 / NoSQL 受限 / 消息中间件 / 环境编排）：面向 agent 的工具注册 + 操作级能力裁决 + 审计。私有包，不发布。",
@@ -24,6 +28,7 @@
       "types": "./lib/scope.d.ts",
       "default": "./lib/scope.js"
     },
+    "./client": "./client.js",
     "./package.json": "./package.json"
   },
   "dependencies": {
@@ -39,8 +44,10 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "card-smoke": "node ../../scripts/verify-devdata-card.mjs",
     "host-mount-smoke": "node ../../scripts/verify-devdata-host-mount.mjs",
-    "typecheck": "tsc --noEmit",
+    "lint:client": "node ../../scripts/client-lint.mjs",
+    "typecheck": "tsc --noEmit && node ../../scripts/client-lint.mjs",
     "verify": "node ../../scripts/verify-devdata-all.mjs"
   },
   "license": "Apache-2.0",
@@ -48,5 +55,11 @@
     "type": "git",
     "url": "git+https://github.com/hyzyn/dsh-plugin-kit.git",
     "directory": "packages/devdata"
-  }
+  },
+  "files": [
+    "lib",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md"
+  ]
 }

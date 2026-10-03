@@ -103,7 +103,12 @@ function guardPlanFor(engine: Engine, action: string): boolean {
 export interface AuditEntry {
   at: number
   targetId: string
-  engine: Engine
+  /**
+   * 这次调用打到的引擎。**可缺席**：`plugin.ts` 里配置卡片的变更（`config.targets` /
+   * `config.scalars` / `config.save`）没有引擎——那不是一次引擎调用，给它编一个（比如恒填
+   * `redis`）会让审计行撒谎。工具面那几条一定会填（引擎是它唯一的 subject）。
+   */
+  engine?: Engine
   action: string
   allowed: boolean
   code?: string

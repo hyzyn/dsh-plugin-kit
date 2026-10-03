@@ -17,15 +17,16 @@ const items = collectVerifyList()
 describe('verify:list：清单现算（真实仓库）', () => {
   it('清单里的脚本一个不少、且都真的存在', () => {
     // 条数刻意写死：新增/删除脚本时要**有意识地**改这一行，而不是让它随手漂
-    //（2026-10-02 加 devdata 的两个，9 → 11；同日加 devenv 的挂载脚本 11 → 12、一键脚本 12 → 13）。
-    expect(items).toHaveLength(13)
+    //（2026-10-02 加 devdata 的两个，9 → 11；同日加 devenv 的挂载脚本 11 → 12、一键脚本 12 → 13；
+    //  2026-10-03 加 devenv 的**配置卡片**脚本 13 → 14、devdata 的配置卡片脚本 14 → 15）。
+    expect(items).toHaveLength(15)
     expect(items.filter((item) => !item.exists)).toEqual([])
     expect(items.map((item) => item.file).sort()).toEqual([...items.map((item) => item.file)].sort())
   })
 
   it('包内脚本的入口都在对应 package.json 里登记了，命令是 pnpm --filter 形态', () => {
     const packaged = items.filter((item) => item.pkg !== '（通用）')
-    expect(packaged).toHaveLength(12)
+    expect(packaged).toHaveLength(14)
     for (const item of packaged) {
       expect(item.registered, `${item.pkg} 缺少入口 ${String(item.entry)}`).toBe(true)
       expect(item.command).toMatch(/^pnpm --filter @hyzyn\/dsh-[\w-]+ run [\w:-]+$/)

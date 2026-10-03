@@ -26,16 +26,18 @@
  * | 2 | 建包 + 迁移就绪判据（`env-ready*`） | ✅ 2026-10-02 |
  * | 3 | 观测层（经通道取容器状态 / 日志尾部 / HTTP 探针） | ✅ 2026-10-02（`observe.ts` / `probe.ts` / `channel.ts`） |
  * | 4 | 只读工具面（`env_status` / `env_wait`） | ✅ 2026-10-02（`plugin.ts`） |
- * | 5 | `env_up` / `env_down`（能力闸门 + 二次确认） | 未做 |
+ * | 5 | `env_up` / `env_down`（能力闸门 + 二次确认） | ✅ 2026-10-02（`mutate.ts` + 四道门槛：作用域 → 清单 → 能力 → 确认，见 ROADMAP 记-4） |
+ * | 6 | 审计出口（与 `devdata` / `devfront` 共用 `@hyzyn/dsh-kit/audit`） | ✅ 2026-10-03（记-7；写类另多一道 `AUDIT_NOT_DURABLE`） |
+ * | 7 | 配置卡片（客户端半体 + `GET/POST /api/dsh-devenv/config`） | ✅ 2026-10-03（记-11；能力字段在卡片上**只读**） |
  *
  * ## 刻意还没有的东西
  *
- * - **没有任何写入口**：工具面只有两个只读工具（`docker inspect` / `docker logs` / HTTP 探针）。
- *   `env_down` 会打到正在联调的同事，它要先有闸门与逐次二次确认（第 5 步）——工具面里没有的东西，
- *   agent 不会去试；
- * - **没有客户端半体**：`client-src/` 一建就被 `check-i18n` 与 `client-lint` 纳入管辖；面板排在
- *   agent 工具面之后（§ 13 的次序），现在建只会提前背上 i18n 目录与两条客户端硬规矩；
+ * - **`env_up` 不创建容器**（只有 `start`，没有 `run` / `compose up` / `rm`）：这一层是「把**已经声明**
+ *   的环境拉起来」，不是编排器——建容器与清理是人的决定；
  * - **没有第三份 SSH / 连接簿实现**：这一条是 § 16.1 的「不做什么」，由守卫钉住。
+ *
+ * （2026-10-03 更正：这一节此前还写着「没有任何写入口」「没有客户端半体，面板排在工具面之后」——
+ * 两者都已落地：写入口见 `mutate.ts` 与 ROADMAP 记-4 / 记-6，客户端半体见记-11。）
  *
  * ## 真机状态（照实写，别把「单测绿」当成「真机验过」）
  *
@@ -44,6 +46,9 @@
  * | 单测（假宿主 + 真进程的假 docker + 真临时清单） | ✅ 覆盖工具注册 / 拒绝面 / 通道 / 轮询 / 报告全文 |
  * | 真 DSH 挂载（`scripts/verify-devenv-host-mount.mjs`） | ✅ 2026-10-02 **12/12**（连跑两次） |
  * | 真机观测链路（`test/real-machine.test.ts`，门控 `DEVENV_REAL=1`） | ✅ 2026-10-02 **4/4**（SSH → `docker inspect` / `docker logs` → 解析 → 判定） |
+ * | 写路径（本机一次性容器，`test/real-write-local.test.ts`） | ✅ 2026-10-03 **4/4**（真 `docker` 进程；被拒的两次读回仍在跑，带确认的 `env_down` 真停） |
+ * | `Health` 路径 + SSH HTTP 探针（`test/real-health-local.test.ts` / `test/real-probe.test.ts`） | ✅ 2026-10-03 **4/4** + **2/2**（真 daemon / 真网络；两块此前是盲区，见记-10） |
+ * | 配置卡片（`scripts/verify-devenv-card.mjs`） | ✅ 2026-10-03 **21 PASS / 0 FAIL**（真宿主 + 真 Chrome；隔离 `DSH_HOME` + 真实补丁逐字节未变的自证） |
  *
  * 真机那一档抓到过一个单测抓不到的缺陷（`{{.State.RestartCount}}` —— `RestartCount` 其实是**顶层**
  * 字段）：假 docker 夹具照自己的想象回一行，所以模板写错它也不吭声。现在有

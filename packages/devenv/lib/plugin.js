@@ -22,7 +22,8 @@
  * ——后者的症状是「等了 3 分钟说超时」，而人从这句话里读不出任何线索。
  */
 import { defineTool } from '@deepseek-ai/dsh-tools';
-import { bindCapabilitySources, capabilityGranted, capabilityHowTo, decideScope, definePlugin, plainConfig, readSettingsEntry, readTtyHostKeys, settingsEntryScope, } from '@hyzyn/dsh-kit';
+import { bindCapabilitySources, capabilityGranted, capabilityHowTo, decideScope, definePlugin, hasSameOriginProof, isLoopbackRequestStrict, plainConfig, readSettingsEntry, readTtyHostKeys, settingsEntryScope, } from '@hyzyn/dsh-kit';
+import { readJsonBody, writeJson } from '@hyzyn/dsh-kit';
 import { createJsonlAuditSink, createLoggerAuditSink } from '@hyzyn/dsh-kit/audit';
 import { RemoteExec, runLocal } from '@hyzyn/dsh-kit/ssh-exec';
 import z from '@deepseek-ai/schemastery';
@@ -30,7 +31,7 @@ import { resolveChannel } from './channel.js';
 import { evaluateProfile } from './env-ready-eval.js';
 import { observeServices } from './observe.js';
 import { actionLabel, planMutation, runMutation } from './mutate.js';
-import { hasWritableTarget, normalizeConfig, pickTarget, targetIds } from './plugin-config.js';
+import { hasWritableTarget, MAX_POLL_INTERVAL_MS, MAX_WAIT_TIMEOUT_MS, MIN_POLL_INTERVAL_MS, MIN_WAIT_TIMEOUT_MS, normalizeConfig, pickTarget, targetIds, } from './plugin-config.js';
 import { denialMessage, outOfScope, rejectionCodeOf, REJECTION_CODES } from './rejection.js';
 import { httpProbe } from './probe.js';
 import { describeProfileProblem, listReadyProjects, loadReadyProfile, readyManifestRelPath } from './ready-loader.js';
@@ -127,23 +128,296 @@ function textOutput() {
 }
 /** 判定图标（与 `devdata` 的 doctor 同一套：`✓` / `!` / `✗`）。 */
 const VERDICT_ICON = { ready: '✓', unready: '!', refuted: '✗' };
+/* ------------------------------------------------------------------ *
+ * 配置卡片（客户端半体）的数据面：纯函数住在这里
+ *
+ * 为什么抽成导出的纯函数：宿主半体那一层的路由要真宿主才能跑到，而这几条判据
+ * （哪些字段可改、目标怎么校验、快照长什么样）**不该只靠真机验收**。`devfront`
+ * 走过同一段路，形状照它抄（两边行为一致本身也是判据）。
+ * ------------------------------------------------------------------ */
+/**
+ * 配置卡片（客户端半体）能改的**标量**字段。
+ *
+ * 刻意**不**在这一列里的：
+ *   - `targets`：它有自己的那条路（`normalizeTargets` + 逐次确认 `confirmTargetEdit`），因为它是
+ *     「哪些目标、从哪些目录能碰」的**声明**，与就绪清单同一类东西；
+ *   - `writeCapability`（在目标里）：**只读**。它声明的环境变量名就是授权判据本身（宿主**启动继承层**
+ *     里那个变量的值 ∈ `{1,true,yes,on}`，见 `kit` 的 `TRUTHY`），而本卡片能写配置——把它指向**另一个
+ *     已经在启动环境里、值恰好为真**的变量（例如 `CI=true`），页面脚本一次 POST 就等于**免重启提权**，
+ *     违反根 ROADMAP §5.1 的不变量「HTTP 不能凭空打开能力」。
+ *     ⚠️ **别用「改成 `HOME`」当例子**（2026-10-03 更正）：`HOME` 的值不在那个白名单里，`env` 名
+ *     指向它**不会**授权——写错例子会让人以为这条判据是「防手滑」而不是「防提权」；
+ *   - `hostKeys`：TOFU 自己维护的记录，改它等于放弃指纹校验（卡片只把 host / 端口 / 指纹条数摆出来）；
+ *   - `execTimeoutMs` / `logTail` / `stopTimeoutSec`：运维旋钮，仍走 profile 补丁层
+ *     （卡片只暴露上面那六个——多一个可写字段就多一片要评审的面）。
+ */
+export const CARD_FIELDS = ['enabled', 'announceToAgent', 'auditFile', 'probeTimeoutMs', 'waitTimeoutMs', 'pollIntervalMs'];
+/**
+ * 卡片上的数值字段 → 允许区间。
+ *
+ * **与 `plugin-config.ts` 的 `clampInt` 同界**（等待 / 轮询那两对直接引用它的常量；探针那两个界
+ * 目前只写在 `normalizeConfig` 里，所以这里另记一份，并由 `normalizeCardPatch` 末尾的**复核**
+ * 与用例的双向断言（提交上界下界后 `normalizeConfig` 原样收下）钉住「两套规则不许分叉」）。
+ */
+const CARD_NUMBERS = {
+    /** 与 `normalizeConfig` 的 `clampInt(raw.probeTimeoutMs, 100, 60_000, 3000)` 同界。 */
+    probeTimeoutMs: { min: 100, max: 60_000 },
+    waitTimeoutMs: { min: MIN_WAIT_TIMEOUT_MS, max: MAX_WAIT_TIMEOUT_MS },
+    pollIntervalMs: { min: MIN_POLL_INTERVAL_MS, max: MAX_POLL_INTERVAL_MS },
+};
+/**
+ * `writeCapability` 被提交上来时的**专用**拒绝文案（码 `CAPABILITY_READONLY`）。
+ *
+ * 这不是「不支持这个字段」那种普通的 400：这一条是根 ROADMAP §5.1 那个不变量在卡片层的落点。
+ * 机制（**别写错**，2026-10-03 更正过一次）：授权判据 = 宿主**启动继承层**里 `spec.env` 那个变量的值
+ * ∈ `{1,true,yes,on}`（`kit` 的 `TRUTHY`；`project-env` / `user-env` 两层刻意排除）。所以
+ * 「改成 `HOME`」**不会**提权（值不在白名单里）；真实的攻击形态是**把它指向另一个已经在启动环境里、
+ * 值恰好为真的变量**（如 `CI=true`）——那样一条 POST 就能免重启把危险档打开，正是这条 400 要挡的。
+ */
+const CAPABILITY_READONLY = 'writeCapability 在这一层**只读**：它声明的环境变量名就是「谁有权启停共享环境里的容器」的判据'
+    + '（宿主启动环境里该变量值 ∈ 1/true/yes/on 才算授权），而这张卡片能写配置——'
+    + '把它指向另一个恰好为真的变量（例如 CI=true）就等于免重启提权（HTTP 不能凭空打开能力）。'
+    + '要改它请改 ~/.dsh/profiles/<profile>/cordis.patch.yml；授权本身只认宿主启动环境'
+    + '（在启动 dsh 的那个环境里 export DSH_DEVENV_WRITE=1 后重启宿主）。';
+/** 一个字符串数组字段（去空、保序）。 */
+function readStringList(value) {
+    if (!Array.isArray(value))
+        return undefined;
+    return value.filter((item) => typeof item === 'string' && item.trim() !== '').map((item) => item.trim());
+}
+/** 目标编辑这一层的字段（多一个都会被拒：卡片与宿主版本不一致时静默丢弃才是坏事）。 */
+const TARGET_FIELDS = ['id', 'label', 'kind', 'book', 'scopeDirs'];
+/**
+ * 目标列表的**严格**校验（卡片保存路径专用）。
+ *
+ * 与 `devfront` 的 `normalizeTargets` 同一条判据：`normalizeConfig` 对配置里本来就写坏的行是
+ * **静默丢掉**（那是容错），而保存路径上静默丢掉 = 用户以为存了 3 个、实际只有 2 个。所以这里
+ * 逐行逐字段报错、**指到 `targets[i].字段`**，最后再用 `normalizeConfig` 复核「校验过的行一行不少
+ * 地被收下」——两套规则分叉时在这里就红。
+ *
+ * 本包比 `devfront` 多两条：`kind` 只认 `local` / `ssh`（解析层也是这么判的），`ssh` 必须给 `book`
+ * （连不上的目标留着只会在下游报一个指不到配置的错）；`scopeDirs` 为空**照收**（那是「处处拒绝」，
+ * 是合法状态，只是工具用不了——解析层会报一条配置问题，不在这里拦）。
+ */
+export function normalizeTargets(input) {
+    if (!Array.isArray(input))
+        return { error: 'targets 必须是数组' };
+    const out = [];
+    const seen = new Set();
+    for (const [index, row] of input.entries()) {
+        const where = `targets[${String(index)}]`;
+        if (typeof row !== 'object' || row === null || Array.isArray(row))
+            return { error: `${where} 必须是对象` };
+        const entry = row;
+        if (entry.writeCapability !== undefined) {
+            return { error: `${where}.writeCapability：${CAPABILITY_READONLY}`, code: 'CAPABILITY_READONLY' };
+        }
+        for (const key of Object.keys(entry)) {
+            if (TARGET_FIELDS.includes(key))
+                continue;
+            return { error: `${where}.${key} 不是目标这一层的字段（可改的是：${TARGET_FIELDS.join(' / ')}）` };
+        }
+        const id = typeof entry.id === 'string' ? entry.id.trim() : '';
+        if (id === '')
+            return { error: `${where}.id 必须是非空字符串（工具就是按它选目标的）` };
+        if (seen.has(id))
+            return { error: `${where}.id 与前面的目标重名：${id}——重名的那一个会被丢掉，那是静默失败` };
+        seen.add(id);
+        const kind = typeof entry.kind === 'string' ? entry.kind.trim() : '';
+        if (kind !== 'local' && kind !== 'ssh') {
+            return { error: `${where}.kind 只认 local 或 ssh，拿到 ${JSON.stringify(entry.kind)}——认不出的目标不登记（不是「当成 ssh」）` };
+        }
+        const book = typeof entry.book === 'string' ? entry.book.trim() : '';
+        if (kind === 'ssh' && book === '') {
+            return { error: `${where}.book：ssh 目标必须给 tty 连接簿的条目名（本插件不自建连接簿界面：一处配置、两处生效）` };
+        }
+        if (entry.book !== undefined && typeof entry.book !== 'string')
+            return { error: `${where}.book 必须是字符串` };
+        const label = typeof entry.label === 'string' ? entry.label.trim() : '';
+        if (entry.label !== undefined && typeof entry.label !== 'string')
+            return { error: `${where}.label 必须是字符串` };
+        const scopeDirs = readStringList(entry.scopeDirs);
+        if (entry.scopeDirs !== undefined && scopeDirs === undefined) {
+            return { error: `${where}.scopeDirs 必须是字符串数组（空数组合法——那意味着处处拒绝，不是「不限制」）` };
+        }
+        out.push({
+            id,
+            kind,
+            ...(label === '' ? {} : { label }),
+            ...(book === '' ? {} : { book }),
+            scopeDirs: scopeDirs ?? [],
+        });
+    }
+    // 复核：解析层必须把这些行**一行不少、id 顺序不变**地收下（两套规则分叉时在这里红）
+    const parsed = normalizeConfig({ targets: out }).targets;
+    if (parsed.length !== out.length || parsed.map((target) => target.id).join('|') !== out.map((row) => String(row.id)).join('|')) {
+        return { error: `内部判据分叉：校验通过 ${String(out.length)} 个目标，解析层只收下 ${String(parsed.length)} 个（报 bug，别重试）` };
+    }
+    return { targets: out };
+}
+/**
+ * 把卡片提交上来的 patch 收敛成「能写进 settings entry 的那几个字段」。
+ *
+ * **纯函数**，所以这条判据有单测。五条规矩：
+ *   - 不认识的字段 → 报错（**不静默丢弃**：卡片与宿主版本不一致时，静默丢弃会让用户以为保存成功）；
+ *   - `writeCapability` → 专用 400（见 `CAPABILITY_READONLY`）：这是提权面，不是普通字段；
+ *   - `hostKeys` / `writeGates` → 只读投影，回写一律拒（它们是 GET 快照里的展示项）；
+ *   - 类型/范围**先判、再写**：非法值不许先落地再抛（docker 踩过：非法值写进 settings.yaml 之后，
+ *     整段配置在下次启动时静默退回默认）；
+ *   - 改目标时，**同 id 目标已声明的 `writeCapability` 原样带过去**（见下面 `carryWriteCapability`）。
+ *
+ * `targets` 那条路要 `confirmTargetEdit: true`：它会影响「agent 能用哪些目标、在哪些目录里动手」，
+ * 与 `env_down` 同一档（那是**逐次确认**，不是「第一次要点一次」）。
+ *
+ * @param input - 卡片 POST 上来的 body。
+ * @param options.currentTargets - 当前生效的目标（只为「保住已声明的写闸门」这一件事）。
+ */
+export function normalizeCardPatch(input, options = {}) {
+    const patch = {};
+    for (const [key, value] of Object.entries(input)) {
+        if (key === 'confirmTargetEdit')
+            continue; // 它只是这次调用的确认位，不进配置
+        if (key === 'writeCapability')
+            return { error: CAPABILITY_READONLY, code: 'CAPABILITY_READONLY' };
+        if (key === 'hostKeys' || key === 'writeGates') {
+            return {
+                error: `${key} 只读：它是 GET 快照里的展示项。${key === 'hostKeys' ? '指纹记录由 TOFU 自己维护（改它等于放弃指纹校验）' : '写闸门的判据在宿主启动环境里，HTTP 不能凭空打开它'}`,
+                code: 'READONLY_FIELD',
+            };
+        }
+        if (key === 'targets') {
+            if (input.confirmTargetEdit !== true) {
+                return {
+                    error: '改目标声明要逐次确认：这是「agent 能用哪些目标、在哪些目录里动手」的变更，'
+                        + '带 `confirmTargetEdit: true` 重试（卡片上那个复选框就是它）。它写进 profile 补丁层并进审计。',
+                    code: 'CONFIRMATION_REQUIRED',
+                };
+            }
+            const normalized = normalizeTargets(value);
+            if ('error' in normalized)
+                return normalized;
+            patch.targets = carryWriteCapability(normalized.targets, options.currentTargets ?? []);
+            continue;
+        }
+        if (!CARD_FIELDS.includes(key))
+            return { error: `不认识的字段：${key}` };
+        if (key === 'enabled' || key === 'announceToAgent') {
+            if (typeof value !== 'boolean')
+                return { error: `${key} 必须是布尔值` };
+            patch[key] = value;
+            continue;
+        }
+        const range = CARD_NUMBERS[key];
+        if (range !== undefined) {
+            if (typeof value !== 'number' || !Number.isInteger(value) || value < range.min || value > range.max) {
+                return { error: `${key} 必须是 ${String(range.min)}~${String(range.max)} 的整数（毫秒）` };
+            }
+            // 复核：解析层必须原样收下（夹回去了说明两套界分叉了——错的方向是「保存成功、值却不是你写的」）
+            const parsed = normalizeConfig({ [key]: value });
+            if (parsed[key] !== value) {
+                return { error: `内部判据分叉：${key}=${String(value)} 被解析层改成了 ${String(parsed[key])}（报 bug，别重试）` };
+            }
+            patch[key] = value;
+            continue;
+        }
+        if (typeof value !== 'string')
+            return { error: `${key} 必须是字符串` };
+        patch[key] = value.trim();
+    }
+    if (Object.keys(patch).length === 0)
+        return { error: '没有要改的字段（patch 是空的）' };
+    return { patch };
+}
+/**
+ * 改目标时**保住**同 id 目标已经声明的 `writeCapability`。
+ *
+ * 为什么必须这么做：`writeCapability` 在卡片上只读（上面那条 400），所以客户端提交的目标行里
+ * **没有**它——若照原样写回 settings，用户只是改了一个 `scopeDirs` 的错别字，写闸门就会被静默抹掉，
+ * `env_up` / `env_down` 跟着从工具面消失（症状是「agent 的写工具不见了」，而没有任何提示）。
+ * 这与 `devfront` 真机上那条「保存一个标量把站点整批抹掉」是同一类缺陷。
+ *
+ * 安全方向没变：这里带过去的只有**配置里本来就写着**的那一份，HTTP 仍然不能新增、不能改名字
+ * （那条 400 管的是**请求体**，不是宿主自己写回配置的值）。改 `id` 等于换一个目标，闸门不跟过去
+ * ——那正是「重新声明一次」该有的样子，且整个变更进审计。
+ */
+function carryWriteCapability(rows, current) {
+    return rows.map((row) => {
+        const capability = current.find((target) => target.id === row.id)?.writeCapability;
+        return capability === undefined ? row : { ...row, writeCapability: { env: capability.env, label: capability.label } };
+    });
+}
+/**
+ * 卡片的 GET 快照（**纯函数**：把 `live` 投影成客户端要的形状）。
+ *
+ * 三块刻意分开：
+ *   - **可改**：标量（上面那六个）+ 目标列表（`targets` 走逐次确认那条路）；
+ *   - **只读**：`writeGates` —— 每个目标一档，给「声明的环境变量名 + 当前是否已授权 + 怎么授权」。
+ *     判据本身是宿主启动环境（`capabilityGranted` / `capabilityHowTo`），卡片只**显示**它；
+ *   - **只读**：`hostKeys` —— 只给 host / port / **指纹条数**（不给指纹本身，也不给编辑：
+ *     这一项由 TOFU 维护，改它等于放弃指纹校验）。
+ */
+export function configSnapshotFrom(live) {
+    return {
+        enabled: live.enabled,
+        announceToAgent: live.announceToAgent,
+        execTimeoutMs: live.execTimeoutMs,
+        logTail: live.logTail,
+        probeTimeoutMs: live.probeTimeoutMs,
+        waitTimeoutMs: live.waitTimeoutMs,
+        pollIntervalMs: live.pollIntervalMs,
+        stopTimeoutSec: live.stopTimeoutSec,
+        auditFile: live.auditFile,
+        targets: live.targets.map((target) => ({
+            id: target.id,
+            label: target.label,
+            kind: target.kind,
+            book: target.book,
+            scopeDirs: [...target.scopeDirs],
+        })),
+        writeGates: live.targets.map((target) => {
+            const capability = target.writeCapability;
+            return capability === undefined
+                ? { targetId: target.id, label: target.label, declared: false }
+                : {
+                    targetId: target.id,
+                    label: target.label,
+                    declared: true,
+                    env: capability.env,
+                    granted: capabilityGranted(capability),
+                    howTo: capabilityHowTo(capability),
+                };
+        }),
+        hostKeys: live.hostKeys.map((record) => ({ host: record.host, port: record.port, fingerprints: record.fingerprints.length })),
+    };
+}
 const plugin = definePlugin({
     name: 'devenv',
     inject: ['tools'],
     apply(ctx, rawConfig) {
+        /** apply 时的原始配置：卡片保存时如果拿不到 settings 的已解析值，用它兜底。 */
+        const initialSection = plainConfig((rawConfig ?? {}));
         /** 当前生效的配置（volatile 字段被就地改写后靠重算取回来）。 */
-        let live = normalizeConfig(plainConfig((rawConfig ?? {})));
+        let live = normalizeConfig(initialSection);
         let toolDisposers = [];
         let announcementDispose;
         let toolsApi;
         let announcementApi;
         /** 只读别的插件 entry 的口（`kit` 的 `readSettingsEntry`：连接簿在 tty 那边）。 */
         let settingsApi;
+        /** 本插件 settings entry 的读写口（没有新版 settings 服务时是 `undefined`：卡片仍可用但不落盘）。 */
         let settingsScope;
         let appliedSignature = JSON.stringify(live);
         let reportedProblems = '';
         /** 运行期记下的新指纹（TOFU 首次连接即记录；同时往本插件自己的 settings entry 落盘）。 */
         let runtimeHostKeys = [];
+        /**
+         * 最近一次生效的**原始** section：卡片保存时套用 patch 的兜底源。
+         *
+         * **初值必须是 apply 时那份配置**，不能是 `{}`：`devfront` 真机验收（2026-10-03）抓到过——
+         * 启动时 `scope.get()` 还是空对象（settings entry 尚未就绪），于是兜底源一直是空的；卡片保存
+         * 一个标量时用 `{...{}, probeTimeoutMs}` 重建，**把目标整批抹掉**（响应里 `targets: []`）。
+         */
+        let rawSectionRef = initialSection;
         bindCapabilitySources(ctx);
         /**
          * 审计出口（2026-10-03 加）：配了 `auditFile` 走**持久**出口，否则只进宿主日志。
@@ -637,6 +911,8 @@ const plugin = definePlugin({
         function applySection(raw) {
             if (Object.keys(raw).length === 0)
                 return;
+            // 兜底源要在**值没变**的那条早退之前更新：它记的是「最近一份原始 section」，与签名无关。
+            rawSectionRef = raw;
             const next = normalizeConfig(raw);
             const signature = JSON.stringify(next);
             if (signature === appliedSignature)
@@ -678,6 +954,118 @@ const plugin = definePlugin({
                 const off = scope.onChanged(() => applySection(scope.get()));
                 return () => off();
             }, 'dsh-devenv: settings');
+        });
+        /*
+         * ---------- 配置卡片的**数据面**（`/api/dsh-devenv/config`） ----------
+         *
+         * 为什么必须有这条路由：客户端半体读不到插件配置——宿主那套「按 schema 生成表单」在这一版
+         * **没有渲染方**，所以各插件的卡片都自带一条 GET/POST 路由（`tty` / `docker` / `devfront` 同款）。
+         *
+         * - GET：卡片渲染用的快照（`configSnapshotFrom(live)`：标量 + 目标 + 写闸门只读档 + 指纹只读档）；
+         * - POST：走**官方持久化通道** `settings.update(entryId, patch)` 写 volatile 字段 → loader 广播 →
+         *   本插件的 `applySection` 热应用（不重启）。没有 settings 服务时退化成「只在本进程套用」，
+         *   并**在响应里如实标注 `persisted: false`**——不假装写进去了。
+         *
+         * `/config` 不受「插件停用」影响（与 tty / docker / devfront 同口径）：卡片是重新启用插件的
+         * 唯一 UI 入口。
+         */
+        ctx.inject(['webServer'], (webCtx) => {
+            webCtx.effect(() => {
+                const webServer = webCtx.webServer;
+                if (webServer === undefined)
+                    return () => { };
+                return webServer.register({
+                    kind: 'exact',
+                    path: '/api/dsh-devenv/config',
+                    handler: async (req, res) => {
+                        /*
+                         * 围栏：**只放回环 + 强来源判据**（`isLoopbackRequestStrict`，与 tty / docker / devfront
+                         * 的 `gateRoute` 同一套）。`POST /config` **刻意不额外要求 `hasSameOriginProof`**：
+                         * 卡片是插件被停用后唯一的恢复入口，而跨站请求已由上面那道围栏的
+                         * `sec-fetch-site: cross-site` 与 Origin 比对拦掉。
+                         */
+                        if (!(await isLoopbackRequestStrict(req))) {
+                            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+                            return;
+                        }
+                        // `hasSameOriginProof` 在这里只用于**诊断日志**：真正的判据是上面那道围栏。
+                        if (req.method === 'POST' && !hasSameOriginProof(req)) {
+                            ctx.logger.warn('[dsh-devenv] /config 的 POST 没带同源证明（回环已放行，按恢复入口口径继续）');
+                        }
+                        if (req.method === 'GET') {
+                            writeJson(res, 200, { ok: true, config: configSnapshotFrom(live), persisted: settingsScope !== undefined });
+                            return;
+                        }
+                        if (req.method !== 'POST') {
+                            writeJson(res, 405, { error: `method not allowed: ${String(req.method)}` });
+                            return;
+                        }
+                        const body = await readJsonBody(req);
+                        if (body === undefined) {
+                            writeJson(res, 400, { error: 'invalid JSON body' });
+                            return;
+                        }
+                        const normalized = normalizeCardPatch(body, { currentTargets: live.targets });
+                        if ('error' in normalized) {
+                            /*
+                             * **被拒的尝试也进审计**（与工具面同一口径）。走本包**已有的**出口（`auditSink`），
+                             * 不新造 sink；写不进去就让它抛：审计是这条路径的前提，坏了就该响
+                             * （而不是安静地放行一次没记下来的变更）。
+                             */
+                            auditSink().record({
+                                at: Date.now(),
+                                targetId: 'card',
+                                action: 'config.save',
+                                allowed: false,
+                                ...(normalized.code === undefined ? {} : { code: normalized.code }),
+                            });
+                            writeJson(res, 400, {
+                                error: normalized.error,
+                                ...(normalized.code === undefined ? {} : { code: normalized.code }),
+                            });
+                            return;
+                        }
+                        const scope = settingsScope;
+                        if (scope !== undefined) {
+                            try {
+                                await scope.update(normalized.patch);
+                            }
+                            catch (error) {
+                                writeJson(res, 500, { error: `保存配置失败：${error instanceof Error ? error.message : String(error)}` });
+                                return;
+                            }
+                            /*
+                             * 优先用 settings 的**已解析值**（含 schema 默认值与组合后的层），拿不到才退回
+                             * 「最近一次原始 section + patch」。**不能只退回后者**：见 `rawSectionRef` 的注释
+                             * （真机验收抓到过：保存一个标量把目标整批抹掉）。
+                             */
+                            const resolved = scope.get();
+                            if (Object.keys(resolved).length > 0)
+                                applySection(resolved);
+                            else
+                                applySection({ ...rawSectionRef, ...normalized.patch });
+                        }
+                        else {
+                            applySection({ ...rawSectionRef, ...normalized.patch });
+                        }
+                        /*
+                         * 成功的变更也进审计：目标声明（影响「agent 能用哪些目标、在哪些目录里动手」）与标量
+                         * 分开记，这样事后 grep 一次就能回答「那次是改了闸门还是改了个超时」。
+                         *
+                         * 顺序与 `devfront` 逐条一致：审计在**生效之后、响应之前**——写不进去时这次请求
+                         * 不返回成功（不假装记下了）；代价是那一刻配置已经生效，回滚不在这一层的职责里
+                         * （配置改动没有「半个生效」的危险，而撒谎说记下了会把审计从保证降成口号）。
+                         */
+                        auditSink().record({
+                            at: Date.now(),
+                            targetId: 'card',
+                            action: 'targets' in normalized.patch ? 'config.targets' : 'config.scalars',
+                            allowed: true,
+                        });
+                        writeJson(res, 200, { ok: true, config: configSnapshotFrom(live), persisted: scope !== undefined });
+                    },
+                });
+            }, 'dsh-devenv: config route');
         });
         ctx.effect(() => {
             return () => {

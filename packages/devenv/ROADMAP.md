@@ -168,3 +168,32 @@ remove），而本包的「清单就是白名单」只在自己的入口上成�
 **两台目标机上都没有健康检查容器**（248 的 36 个容器——含 24 个在跑的、161 的 48 个，都逐容器扫过
 `{{if .State.Health}}`）：所以 `Health` 那一档的样本取自**本机真 daemon**，而要在共享机上取样本就得
 新建容器——那不是这一档该做的事（`real-write.test.ts` 连启停都要求人指名，同一条纪律）。
+
+### 记-11. 配置卡片（客户端半体）与 `/config` 那条数据面（2026-10-03）
+
+**为什么这件事值得单独一层**：本包此前**没有客户端半体**，于是「`scopeDirs` 为空 = 处处拒绝」
+「`kind` 认不出来」这类**配置问题**只在启动日志里报，用户没有 UI 可以去改；写路径要的 `auditFile`
+也只能手改 yaml。卡片补上这一半（另一半是 `devfront` 那次记的同一个缺口）。
+
+| 落点 | 内容 | 门槛（已验） |
+|---|---|---|
+| `client.js`（手写、无构建步骤） | 卡片：六个标量可改；**目标编辑器**（`id` / `label` / `kind` / `book` / `scopeDirs`，可增删行）；**写闸门只读面板**；**TOFU 指纹只读列表**；**四个槽全注册**（`settings.kit.item` / `plugins.bundle.config` / `plugins.row.config` / `settings.plugin.item`） | 2026-10-03 真机：详情页卡片渲染出 **21 个控件**、两个已有目标与 `kind`/`book` 都回填；写闸门的 `DSH_DEVENV_WRITE` 与「未授权」在文本里、**没有任何输入框的值等于它**；指纹 host 与「指纹 2 条」在文本里。静态：43 条 i18n 键 zh/en 一致、**客户端半体 0 条残留中文字面量**、`client-lint` 过 |
+| `src/plugin.ts` 的 `GET/POST /api/dsh-devenv/config` | 围栏与恢复入口口径与 `devfront` **逐条一致**：`isLoopbackRequestStrict` 不过 → 403；非 GET/POST → 405；JSON 坏了 → 400；停用后 `/config` 照旧可用；没有 settings 服务时 `persisted:false` 如实标注（不假装落盘） | `test/card-config.test.ts` **36 条**（含反例）；真机 ③⑦⑧⑨⑫⑬ 全 PASS |
+| **能力字段只读**（本轮最要紧的一条判据） | POST 体里出现 `writeCapability` → 400 + `CAPABILITY_READONLY`（目标行里的那一处同样拒）；GET 只给只读档 `writeGates`（声明的变量名 / **当前是否已授权** / 怎么授权） | 用例 + 真机 ⑩。**理由**：授权判据是「宿主**启动继承层**里那个变量的值 ∈ `{1,true,yes,on}`」（`kit` 的 `TRUTHY`），而变量名来自配置——把它指向**另一个已经在启动环境里、值恰好为真**的变量（如 `CI=true`），一条 POST 就等于**免重启提权**。⚠️ 本格此前写的是「改成 `HOME`」，**那是错的**（`HOME` 的值不在白名单里、不会授权）——2026-10-03 更正，代码文案与 README 同轮一并改 |
+| 改目标逐次确认 + 审计 | 不带 `confirmTargetEdit` → 400 + `CONFIRMATION_REQUIRED`；成功分 `config.scalars` / `config.targets`，失败带码；审计写不进去 = 抛（fail-closed，走本包**已有的** `auditSink`，没新造 sink） | 用例（含「审计文件是个目录 → 请求不返回成功」）×2 + 真机 ⑮（JSONL 6 行，四种 action/码都在） |
+| **改目标不抹掉写闸门** | 同 `id` 目标的 `writeCapability` 原样带过去（客户端提交的行里没有它——它在卡片上只读）；改 `id` 等于换一个目标，闸门不跟过去 | 用例 ×2 + 真机 ⑭：改完目标后 `nas-one` 仍是 `declared:true` / `DSH_DEVENV_WRITE`，工具面仍是四个。**没有它的话**：用户改一个 `scopeDirs` 的错别字就会让 `env_up` / `env_down` 从工具面消失，而卡片上没有任何地方能把它加回来（那是 `devfront`「保存一个标量把站点整批抹掉」的同一类缺陷） |
+| `scripts/verify-devenv-card.mjs` + `card-smoke` 入口 | 隔离 `DSH_HOME`（`createLiveHarness({ prefix: 'dsh-devenv-card-' })`）+ 临时 profile 装本包 + 真宿主 + 真 Chrome：数据面 / `writeCapability` 只读那条 400 / 逐次确认 / 审计落盘 / bundle 真被加载（含四个槽）/ 插件页那一行 / 详情页控件 / 自证真实补丁未变；`--dump` / `--keep` 同 `devfront` | 2026-10-03 首跑与复跑各 **21 PASS / 0 FAIL**；真实 `~/.dsh/cordis.patch.yml`（780 字节）逐字节未变。守卫见 `test/verify-script-safety.test.ts`（六条判据 + 五条反例，**判前先去注释**） |
+
+**为什么脚本叫 `card-smoke` 而不是 `verify`**：本包的 `verify` 已经是
+[`scripts/verify-devenv-all.mjs`](../../scripts/verify-devenv-all.mjs)（一键七步，登记在
+`scripts/verify-list.mjs` 里）；重指它会把那条入口弄丢。新脚本另起一个名字（与 `host-mount-smoke` 同族）。
+
+**这一轮没验到 / 已知的两处**：
+
+1. **英文界面下「怎么授权」那一段仍是中文**：那段文案来自 `@hyzyn/dsh-kit` 的 `capabilityHowTo()`
+   （宿主侧判据的一部分），不在本包的 i18n 目录里。要么把那一档话术也在 `kit` 里做双语，要么接受
+   「授权说明只给中文」。本轮按「不动 `kit`」处理。
+2. **`packages/devenv/src/index.ts` 的头注已过期**：它还写着「没有任何写入口」「没有客户端半体」——
+   两条今天都不成立（写入口是记-4、客户端半体是这条）。头注不在这次的交付面里，**留给 Lead 一并改**
+   （`src/index.ts` 一改就要重建 `lib/`）。
+

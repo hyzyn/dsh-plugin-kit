@@ -21,8 +21,10 @@
  * 3. **写类操作要求持久审计**（`auditFile` 未配 → `AUDIT_NOT_DURABLE`）。§5 把审计写成这一档的
  *    前提，那就不能只在文档里成立。只读操作不受影响。
  * 4. **不可逆操作先拒、要逐次二次确认**（判据在内核 `preflight`，本层只把 `confirmed` 传下去）。
- * 5. **能力授权只认宿主侧通道**（`bindCapabilitySources` 在 `apply` 期绑定一次）——本套件今天
- *    没有客户端半体，所以没有就地提权通道，文案也不提它（见 `adjudicate.ts` 的同名注释）。
+ * 5. **能力授权只认宿主侧通道**（`bindCapabilitySources` 在 `apply` 期绑定一次）——配置卡片
+ *    （2026-10-03 建）**不提供就地提权**：两档能力在写入路径上只读（`CAPABILITY_FIELDS` 那条 400），
+ *    文案也不提它（见 `adjudicate.ts` 的同名注释）。「HTTP 只能关、不能开」这条不变量因此在卡片
+ *    这一层也成立。
  *
  * ## 拒绝怎么报给 agent
  *
@@ -34,7 +36,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import type { CapabilitySpec } from '@hyzyn/dsh-kit';
 import { type Engine } from './operations.js';
-import { type LiveTarget } from './plugin-config.js';
+import { type LiveConfig, type LiveTarget } from './plugin-config.js';
 /**
  * 插件配置的**类型**。
  *
@@ -128,4 +130,97 @@ export interface DoctorLayer {
 export declare function doctorLayers(target: LiveTarget, cwd: string, options: {
     auditDurable: boolean;
 }): DoctorLayer[];
+/**
+ * 配置卡片能改的**标量**字段。
+ *
+ * `targets`（目标列表）不在这一列里——它有自己那条路（`normalizeTargets` + 逐次确认），
+ * 因为它是「这个目标、这个引擎、这个环境、这个范围」的**声明**。
+ *
+ * 计划护栏刻意用**扁平键**（`plan.maxRows` / `plan.maxCost`）而不是嵌套对象：settings 的
+ * `update(entryId, patch)` 是**深合并**，`{plan:{maxRows}}` 与 `{'plan.maxRows':…}` 都能落到
+ * 同一个位置，但前者会让「这次到底改了 plan 里的哪一个」在 patch 里看不出来，而审计要能说清
+ * 这件事（`config.scalars` 那一行）。
+ */
+export declare const CARD_FIELDS: readonly ["enabled", "announceToAgent", "auditFile", "timeoutMs", "plan.maxRows", "plan.maxCost"];
+/**
+ * **只读**的两档能力字段（出现在 POST body 里 → 400）。
+ *
+ * 为什么它们不能可写：这两档的授权判据是「宿主**启动继承层**里 `spec.env` 那个变量的值 ∈
+ * `{1,true,yes,on}`」（`kit` 的 `TRUTHY`），而变量名来自配置。把它指向**另一个已经在启动环境里、
+ * 值恰好为真**的变量（例如宿主自带的 `CI=true`），页内脚本一条 `POST /config` 就等于
+ * **免重启提权**——那恰好违反根 `ROADMAP.md` §5.1 的不变量「**HTTP 只能关、不能开**」。
+ * ⚠️ **别用「改成 `HOME`」当例子**（2026-10-03 更正）：`HOME` 的值不在那个白名单里，`env` 名指向它
+ * **不会**授权——写错例子会让人以为这条判据是「防手滑」而不是「防提权」。
+ * 所以：GET 快照照实给出**当前授权状态**，写入路径一律拒。
+ */
+export declare const CAPABILITY_FIELDS: readonly ["writeCapability", "dangerousReadCapability"];
+/** 能力字段出现在写入路径上时的拒绝文案（带恢复路径：改哪儿才是对的地方）。 */
+export declare function capabilityEditRefusal(field: string): string;
+/**
+ * 目标列表的**严格**校验（卡片保存路径专用）。
+ *
+ * 为什么不直接拿 `normalizeConfig` 的结果：它对坏行是**静默跳过 / 静默夹回**（那是给「配置里
+ * 本来就写坏了一行」的容错），而保存路径上静默跳过 = 用户以为存了 3 个、实际只有 2 个。
+ * 这里逐行逐字段报错、**指到 `targets[i].字段`**，并在最后用 `normalizeConfig` 复核两件事：
+ * 校验过的行**一行不少**被收下、且**一条 problem 都不产生**（两套规则一旦分叉就在这里红，
+ * 而不是等到下次启动时用户在日志里看到一条「配置问题」）。
+ */
+export declare function normalizeTargets(input: unknown): {
+    targets: Record<string, unknown>[];
+} | {
+    error: string;
+    code?: string;
+};
+/**
+ * 改目标时**保住原有的能力声明**。
+ *
+ * 卡片改目标是**替换整份 `targets`**（与 `devfront` 的站点编辑器同形），而能力字段在写入路径上
+ * **不许出现**（见 `CAPABILITY_FIELDS`）——两者叠起来就是「编辑一次目标，能力声明全被抹掉」。
+ * 那是静默的安全降级：闸门看起来还在（卡片照样显示两档），实际已经变成「未接入」。
+ * 所以按 id 把**上一份生效配置里**的声明原样带回来，只认 id 相同的行：
+ *
+ *   - 新增的行没有声明（= 未接入闸门，**这是诚实的缺省**：一个刚加进来的目标不该凭空获得授权）；
+ *   - 改名的行算新增（它已经不是同一个目标了）——卡片上写了这条。
+ */
+export declare function preserveCapabilities(rows: readonly Record<string, unknown>[], previous: readonly LiveTarget[]): Record<string, unknown>[];
+/** 只对**普通对象**递归的合并（数组 / 标量一律替换）——与 settings 的 `mergeLayers` 同口径。 */
+export declare function mergeSection(current: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown>;
+/**
+ * 把卡片提交上来的 patch 收敛成「能写进 settings entry 的那几个字段」。
+ *
+ * **纯函数**，所以这条判据有单测（宿主半体那一层没有假宿主夹具，抽出来才能断言）。四条规矩：
+ *   - **能力字段一律拒**（含藏在 `targets[i]` 里的）——见 `CAPABILITY_FIELDS`；
+ *   - 不认识的字段 → 报错（**不静默丢弃**：卡片与宿主版本不一致时，静默丢弃会让用户以为保存成功）；
+ *   - `targets` → 必须带 `confirmTargetEdit: true`（逐次确认），且逐行严格校验；
+ *   - 类型/范围**先判、再写**：非法值**不许**先落地再抛（docker 踩过：非法值写进 settings 之后
+ *     整段配置在下次启动时静默退回默认）。
+ */
+export declare function normalizeCardPatch(input: Record<string, unknown>): {
+    patch: Record<string, unknown>;
+    code?: string;
+} | {
+    error: string;
+    code?: string;
+};
+/**
+ * 一条能力档的**只读**快照（给卡片的能力面板用；`undefined` = 这份配置里没接入闸门）。
+ *
+ * 三件必须都在：**声明的变量名**（`env`）、**当前是否已授权**（`granted` / `via`）、
+ * **怎么授权**（`howTo`）。只给前两件，用户就只能在猜里过日子；只给后一件，他不知道自己现在
+ * 在哪一档。`howTo` 刻意**不传 `{inPlace:true}`**：本包没有就地提权通道（`bindCapabilitySources`
+ * 不接 `GrantStore`），文案提到一个不存在的按钮就是「配了没反应」。
+ */
+export declare function capabilitySnapshot(spec: CapabilitySpec): Record<string, unknown>;
+/**
+ * 卡片的 GET 快照（**纯函数**：把 `live` 投影成客户端要的形状）。
+ *
+ * 目标**全量只读展示**（含 `scopeDirs` / 连接 / `maxScanCount` / 凭据引用），另有两条只读元信息：
+ *
+ *   - 每个目标的两档能力（`capabilitySnapshot`）——**只读**，写入路径一律拒（见 `CAPABILITY_FIELDS`）；
+ *   - `engines` / `envs`：枚举的**唯一真相在宿主侧**（`operations.ts` / `env.ts`），卡片拿它渲染
+ *     下拉框，而不是自己抄一份字面量（抄一份必然漂）。
+ *
+ * `credentialRef` 是**引用**不是口令（值在凭据服务/文件/环境里），所以可以照原样给卡片。
+ */
+export declare function configSnapshotFrom(live: LiveConfig): Record<string, unknown>;
 export declare const name: string, inject: string[] | undefined, apply: (ctx: Context, config?: Config | undefined) => void;

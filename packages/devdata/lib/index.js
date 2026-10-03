@@ -9,17 +9,21 @@
  * - **入口层**（`entries.ts`）：把「可见面」收成「**这台机器上真的有执行器**的那些入口」。
  * - **引擎层**：今天只有 Redis 的通路 A（`redis-executor.ts` + 自写 RESP，**零依赖**），已真机验证；
  *   SQL / RocketMQ 的驱动按 §2.4 **一律可选**，装了驱动也不等于有执行器。
- * - **宿主半体**（`plugin.ts`）：读配置、注册四个 agent 工具、写审计、把拒绝转成带码与恢复路径的话。
+ * - **宿主半体**（`plugin.ts`）：读配置、注册四个 agent 工具、写审计、把拒绝转成带码与恢复路径的话；
+ *   外加配置卡片的**数据面**（`GET/POST /api/dsh-devdata/config`）。
+ * - **客户端半体**（`client.js`，2026-10-03 建）：官方「插件配置」里的一张卡片（同 `devenv` /
+ *   `devfront`）——标量与目标可改，**两档能力只读**（写入路径上出现即 400，见 `plugin.ts` 的
+ *   `CAPABILITY_FIELDS`）。
  *
  * 工具名带 `devdata_` 域前缀（仓库守卫要求 `<域>_<动作>`）；今天注册的是
  * `devdata_list_targets` / `devdata_capabilities` / `devdata_doctor` / `devdata_redis_command`。
  *
  * ## 刻意没有的东西
  *
- * - **没有客户端半体**：`client-src/` 一建就会被 `check-i18n` 与 `client-lint` 纳入管辖；
- *   面板本身按 plan 排在 agent 工具面之后（P14），现在建只会提前背上 i18n 目录与两条客户端硬规矩。
- *   连带的一个后果：**没有就地提权通道**，所以能力文案只说「启动环境 + 重启宿主」（`adjudicate.ts`
- *   里 `capabilityHowTo` 刻意不传 `inPlace`）。
+ * - **没有就地提权通道**：卡片能改配置，但两档能力在写入路径上**只读**（那条 400 是根 ROADMAP
+ *   §5.1 不变量在卡片层的落点），`bindCapabilitySources` 也不接 `GrantStore`——所以能力文案只说
+ *   「启动环境 + 重启宿主」（`adjudicate.ts` 里 `capabilityHowTo` 刻意不传 `inPlace`，提一个不存在
+ *   的开关正是本仓修过的缺陷类型）。
  * - **没有 SQL / RocketMQ 的执行器**：那几个引擎只给引擎无关的自证工具，数据入口一个都不注册
  *   （注册了就是「配了没反应」，见 `entries.ts`）。阻塞项是 C2 账号与防火墙，不是代码。
  *

@@ -21,8 +21,10 @@
  * 3. **写类操作要求持久审计**（`auditFile` 未配 → `AUDIT_NOT_DURABLE`）。§5 把审计写成这一档的
  *    前提，那就不能只在文档里成立。只读操作不受影响。
  * 4. **不可逆操作先拒、要逐次二次确认**（判据在内核 `preflight`，本层只把 `confirmed` 传下去）。
- * 5. **能力授权只认宿主侧通道**（`bindCapabilitySources` 在 `apply` 期绑定一次）——本套件今天
- *    没有客户端半体，所以没有就地提权通道，文案也不提它（见 `adjudicate.ts` 的同名注释）。
+ * 5. **能力授权只认宿主侧通道**（`bindCapabilitySources` 在 `apply` 期绑定一次）——配置卡片
+ *    （2026-10-03 建）**不提供就地提权**：两档能力在写入路径上只读（`CAPABILITY_FIELDS` 那条 400），
+ *    文案也不提它（见 `adjudicate.ts` 的同名注释）。「HTTP 只能关、不能开」这条不变量因此在卡片
+ *    这一层也成立。
  *
  * ## 拒绝怎么报给 agent
  *
@@ -32,13 +34,14 @@
  */
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import z from '@deepseek-ai/schemastery';
-import { bindCapabilitySources, capabilityGrantVia, capabilityHowTo, definePlugin, plainConfig, settingsEntryScope, } from '@hyzyn/dsh-kit';
+import { bindCapabilitySources, capabilityGrantVia, capabilityHowTo, definePlugin, hasSameOriginProof, isLoopbackRequestStrict, plainConfig, settingsEntryScope, } from '@hyzyn/dsh-kit';
+import { readJsonBody, writeJson } from '@hyzyn/dsh-kit';
 import { credentialStatus, snapshotTarget } from './adjudicate.js';
 import { createJsonlAuditSink, createLoggerAuditSink } from './audit.js';
 import { entryTools, unionEntryTools } from './entries.js';
-import { envFacts, normalizeEnv } from './env.js';
-import { neverActions, matrixFor } from './operations.js';
-import { DEFAULT_SCAN_COUNT, DEFAULT_TIMEOUT_MS, normalizeConfig, pickTarget, targetIds, } from './plugin-config.js';
+import { DEV_ENVS, envFacts, normalizeEnv } from './env.js';
+import { ENGINES, neverActions, matrixFor } from './operations.js';
+import { DEFAULT_SCAN_COUNT, DEFAULT_TIMEOUT_MS, MAX_SCAN_COUNT, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, normalizeConfig, pickTarget, targetIds, } from './plugin-config.js';
 import { readOnlySummary, verdictReadOnly } from './readonly-probe.js';
 import { createRedisExecutor } from './redis-executor.js';
 import { REJECTION_CODES } from './rejection.js';
@@ -259,13 +262,386 @@ export function doctorLayers(target, cwd, options) {
     }
     return layers;
 }
+/* ==========================================================================
+ * 配置卡片（客户端半体）的数据面 —— 纯函数
+ *
+ * 卡片是照 `devfront` 那份做的（它是**唯一**的模板：同一版宿主里没有任何东西按 Config schema
+ * 生成表单，所以每张卡片都自带一条 `GET/POST /api/dsh-devdata/config`）。这里只放**判据**，
+ * 路由在 `apply()` 里，两者分开是因为「宿主半体那一层在本包没有假宿主夹具」——
+ * 抽成纯函数才测得到（`test/plugin.test.ts`）。
+ * ======================================================================== */
+/**
+ * 配置卡片能改的**标量**字段。
+ *
+ * `targets`（目标列表）不在这一列里——它有自己那条路（`normalizeTargets` + 逐次确认），
+ * 因为它是「这个目标、这个引擎、这个环境、这个范围」的**声明**。
+ *
+ * 计划护栏刻意用**扁平键**（`plan.maxRows` / `plan.maxCost`）而不是嵌套对象：settings 的
+ * `update(entryId, patch)` 是**深合并**，`{plan:{maxRows}}` 与 `{'plan.maxRows':…}` 都能落到
+ * 同一个位置，但前者会让「这次到底改了 plan 里的哪一个」在 patch 里看不出来，而审计要能说清
+ * 这件事（`config.scalars` 那一行）。
+ */
+export const CARD_FIELDS = ['enabled', 'announceToAgent', 'auditFile', 'timeoutMs', 'plan.maxRows', 'plan.maxCost'];
+/**
+ * **只读**的两档能力字段（出现在 POST body 里 → 400）。
+ *
+ * 为什么它们不能可写：这两档的授权判据是「宿主**启动继承层**里 `spec.env` 那个变量的值 ∈
+ * `{1,true,yes,on}`」（`kit` 的 `TRUTHY`），而变量名来自配置。把它指向**另一个已经在启动环境里、
+ * 值恰好为真**的变量（例如宿主自带的 `CI=true`），页内脚本一条 `POST /config` 就等于
+ * **免重启提权**——那恰好违反根 `ROADMAP.md` §5.1 的不变量「**HTTP 只能关、不能开**」。
+ * ⚠️ **别用「改成 `HOME`」当例子**（2026-10-03 更正）：`HOME` 的值不在那个白名单里，`env` 名指向它
+ * **不会**授权——写错例子会让人以为这条判据是「防手滑」而不是「防提权」。
+ * 所以：GET 快照照实给出**当前授权状态**，写入路径一律拒。
+ */
+export const CAPABILITY_FIELDS = ['writeCapability', 'dangerousReadCapability'];
+/** 能力字段出现在写入路径上时的拒绝文案（带恢复路径：改哪儿才是对的地方）。 */
+export function capabilityEditRefusal(field) {
+    return (`能力档字段 ${field} 在卡片上**只读**，不能经 HTTP 改。` +
+        '理由：这两档的授权判据是「宿主启动继承层里那个变量的值 ∈ 1/true/yes/on」，而变量名来自配置——' +
+        '把它指向另一个恰好为真的变量（例如 CI=true），页内脚本一条请求就等于**免重启提权**，' +
+        '违反根 ROADMAP §5.1 的不变量「HTTP 只能关、不能开」。' +
+        `\n恢复路径：在 profile 补丁层（~/.dsh/profiles/<profile>/cordis.patch.yml）里改这个目标的 ${field}，` +
+        '然后按新的变量名重启宿主（授权只认启动时继承的环境与带外确认）。');
+}
+/** 一个字符串数组字段（去空、保序）。 */
+function readStringList(value) {
+    if (!Array.isArray(value))
+        return undefined;
+    return value.filter((item) => typeof item === 'string' && item.trim() !== '').map((item) => item.trim());
+}
+/** 一个普通对象（`normalizeTargets` 的产物一定是；这里只是让调用点的类型收窄）。 */
+function isPlainRow(row) {
+    return typeof row === 'object' && row !== null && !Array.isArray(row);
+}
+/**
+ * 递归找能力字段（**含 `targets[i]` 里那些**：换了位置不等于换了语义），返回它的**路径**。
+ *
+ * 返回路径而不是键名：报错要能指到具体那一行（`targets[2].writeCapability`），否则一份多目标的
+ * 配置里用户不知道该改哪一个（与 `targets[i].字段` 的其余报错同一口径）。
+ */
+function findCapabilityField(value, at = '', depth = 0) {
+    if (depth > 6 || typeof value !== 'object' || value === null)
+        return undefined;
+    if (Array.isArray(value)) {
+        for (const [index, item] of value.entries()) {
+            const found = findCapabilityField(item, `${at}[${String(index)}]`, depth + 1);
+            if (found !== undefined)
+                return found;
+        }
+        return undefined;
+    }
+    for (const [key, child] of Object.entries(value)) {
+        const path = at === '' ? key : `${at}.${key}`;
+        if (CAPABILITY_FIELDS.includes(key))
+            return path;
+        const found = findCapabilityField(child, path, depth + 1);
+        if (found !== undefined)
+            return found;
+    }
+    return undefined;
+}
+/**
+ * 目标列表的**严格**校验（卡片保存路径专用）。
+ *
+ * 为什么不直接拿 `normalizeConfig` 的结果：它对坏行是**静默跳过 / 静默夹回**（那是给「配置里
+ * 本来就写坏了一行」的容错），而保存路径上静默跳过 = 用户以为存了 3 个、实际只有 2 个。
+ * 这里逐行逐字段报错、**指到 `targets[i].字段`**，并在最后用 `normalizeConfig` 复核两件事：
+ * 校验过的行**一行不少**被收下、且**一条 problem 都不产生**（两套规则一旦分叉就在这里红，
+ * 而不是等到下次启动时用户在日志里看到一条「配置问题」）。
+ */
+export function normalizeTargets(input) {
+    if (!Array.isArray(input))
+        return { error: 'targets 必须是数组' };
+    const out = [];
+    const seen = new Set();
+    for (const [index, row] of input.entries()) {
+        const where = `targets[${String(index)}]`;
+        if (typeof row !== 'object' || row === null || Array.isArray(row))
+            return { error: `${where} 必须是对象` };
+        const entry = row;
+        const capabilityField = findCapabilityField(entry, where);
+        if (capabilityField !== undefined) {
+            return { error: capabilityEditRefusal(capabilityField), code: 'CAPABILITY_READONLY' };
+        }
+        const id = typeof entry.id === 'string' ? entry.id.trim() : '';
+        if (id === '')
+            return { error: `${where}.id 必须是非空字符串（工具就是按它选目标的）` };
+        if (seen.has(id))
+            return { error: `${where}.id 与前面的目标重名：${id}——重名的那一个会被丢掉，那是静默失败` };
+        seen.add(id);
+        const engine = typeof entry.engine === 'string' ? entry.engine.trim().toLowerCase() : '';
+        if (!ENGINES.includes(engine)) {
+            return {
+                error: `${where}.engine 认不出：${JSON.stringify(entry.engine ?? '')}（可用：${ENGINES.join(' / ')}）` +
+                    '——认不出的引擎一律不当成某个默认值（那是「配了没反应」的来源）',
+            };
+        }
+        const envRaw = typeof entry.env === 'string' ? entry.env.trim() : '';
+        if (entry.env !== undefined && typeof entry.env !== 'string')
+            return { error: `${where}.env 必须是字符串` };
+        if (envRaw !== '' && !DEV_ENVS.includes(envRaw.toLowerCase())) {
+            return {
+                error: `${where}.env 认不出：${JSON.stringify(envRaw)}（可用：${DEV_ENVS.join(' / ')}；留空 = unknown）。` +
+                    '**不许「匹配不到就算 test」**：那是把「没标注」静默升格为「可写」',
+            };
+        }
+        const label = typeof entry.label === 'string' ? entry.label.trim() : '';
+        if (entry.label !== undefined && typeof entry.label !== 'string')
+            return { error: `${where}.label 必须是字符串` };
+        const scopeDirs = readStringList(entry.scopeDirs);
+        if (entry.scopeDirs !== undefined && scopeDirs === undefined)
+            return { error: `${where}.scopeDirs 必须是字符串数组` };
+        const credentialRef = typeof entry.credentialRef === 'string' ? entry.credentialRef.trim() : '';
+        if (entry.credentialRef !== undefined && typeof entry.credentialRef !== 'string') {
+            return { error: `${where}.credentialRef 必须是字符串（它是**引用**，如 env:DB_PASS；明文口令不许写进来）` };
+        }
+        const scanRaw = entry.maxScanCount;
+        let maxScanCount;
+        if (scanRaw !== undefined) {
+            if (typeof scanRaw !== 'number' || !Number.isInteger(scanRaw) || scanRaw < 1 || scanRaw > MAX_SCAN_COUNT) {
+                return { error: `${where}.maxScanCount 必须是 1~${String(MAX_SCAN_COUNT)} 的整数（SCAN 族的策略上限，候选只能请求更小）` };
+            }
+            maxScanCount = scanRaw;
+        }
+        const host = typeof entry.host === 'string' ? entry.host.trim() : '';
+        if (entry.host !== undefined && typeof entry.host !== 'string')
+            return { error: `${where}.host 必须是字符串` };
+        const portRaw = entry.port;
+        if (portRaw !== undefined && (typeof portRaw !== 'number' || !Number.isInteger(portRaw) || portRaw < 1 || portRaw > 65535)) {
+            return { error: `${where}.port 必须是 1~65535 的整数` };
+        }
+        const port = typeof portRaw === 'number' ? portRaw : undefined;
+        if (host === '' && port !== undefined) {
+            return {
+                error: `${where}.port 给了但 host 是空的——要么两个都给，要么都不给。` +
+                    '（少一个不是「用默认端口」，是配置没写完；解析层会因此报一条配置问题）',
+            };
+        }
+        if (host !== '' && port === undefined) {
+            return { error: `${where}.port 必须与 host 一起给（1~65535）：端口不是可以省的那一半` };
+        }
+        const dbRaw = entry.db;
+        if (dbRaw !== undefined && (typeof dbRaw !== 'number' || !Number.isInteger(dbRaw) || dbRaw < 0)) {
+            return { error: `${where}.db 必须是非负整数` };
+        }
+        if (dbRaw !== undefined && host === '') {
+            return { error: `${where}.db 给了但没有连接（host/port）——库号只在有连接时有意义` };
+        }
+        out.push({
+            id,
+            ...(label === '' ? {} : { label }),
+            engine,
+            ...(envRaw === '' ? {} : { env: envRaw }),
+            scopeDirs: scopeDirs ?? [],
+            ...(host === '' ? {} : { host }),
+            ...(port === undefined ? {} : { port }),
+            ...(typeof dbRaw === 'number' ? { db: dbRaw } : {}),
+            ...(maxScanCount === undefined ? {} : { maxScanCount }),
+            ...(credentialRef === '' ? {} : { credentialRef }),
+        });
+    }
+    // 复核：解析层必须把这些行**一行不少**地收下，且**一条 problem 都不报**（两套规则分叉时在这里红）
+    const parsed = normalizeConfig({ targets: out });
+    if (parsed.targets.length !== out.length) {
+        return { error: `内部判据分叉：校验通过 ${String(out.length)} 个目标，解析层只收下 ${String(parsed.targets.length)} 个（报 bug，别重试）` };
+    }
+    if (parsed.problems.length > 0) {
+        return {
+            error: `内部判据分叉：卡片校验通过的目标在解析层报了问题——${parsed.problems.join('；')}` +
+                '（报 bug，别重试：保存路径不该写出一份「启动时又报配置问题」的配置）',
+        };
+    }
+    return { targets: out };
+}
+/**
+ * 改目标时**保住原有的能力声明**。
+ *
+ * 卡片改目标是**替换整份 `targets`**（与 `devfront` 的站点编辑器同形），而能力字段在写入路径上
+ * **不许出现**（见 `CAPABILITY_FIELDS`）——两者叠起来就是「编辑一次目标，能力声明全被抹掉」。
+ * 那是静默的安全降级：闸门看起来还在（卡片照样显示两档），实际已经变成「未接入」。
+ * 所以按 id 把**上一份生效配置里**的声明原样带回来，只认 id 相同的行：
+ *
+ *   - 新增的行没有声明（= 未接入闸门，**这是诚实的缺省**：一个刚加进来的目标不该凭空获得授权）；
+ *   - 改名的行算新增（它已经不是同一个目标了）——卡片上写了这条。
+ */
+export function preserveCapabilities(rows, previous) {
+    return rows.map((row) => {
+        const id = typeof row.id === 'string' ? row.id : '';
+        const before = previous.find((target) => target.id === id);
+        if (before === undefined)
+            return { ...row };
+        return {
+            ...row,
+            ...(before.writeCapability === undefined ? {} : { writeCapability: before.writeCapability }),
+            ...(before.dangerousReadCapability === undefined ? {} : { dangerousReadCapability: before.dangerousReadCapability }),
+        };
+    });
+}
+/** 只对**普通对象**递归的合并（数组 / 标量一律替换）——与 settings 的 `mergeLayers` 同口径。 */
+export function mergeSection(current, patch) {
+    const out = { ...current };
+    for (const [key, value] of Object.entries(patch)) {
+        if (key === '__proto__' || key === 'constructor' || key === 'prototype')
+            continue;
+        const under = out[key];
+        const mergeable = typeof under === 'object' && under !== null && !Array.isArray(under) &&
+            typeof value === 'object' && value !== null && !Array.isArray(value);
+        out[key] = mergeable ? mergeSection(under, value) : value;
+    }
+    return out;
+}
+/**
+ * 把卡片提交上来的 patch 收敛成「能写进 settings entry 的那几个字段」。
+ *
+ * **纯函数**，所以这条判据有单测（宿主半体那一层没有假宿主夹具，抽出来才能断言）。四条规矩：
+ *   - **能力字段一律拒**（含藏在 `targets[i]` 里的）——见 `CAPABILITY_FIELDS`；
+ *   - 不认识的字段 → 报错（**不静默丢弃**：卡片与宿主版本不一致时，静默丢弃会让用户以为保存成功）；
+ *   - `targets` → 必须带 `confirmTargetEdit: true`（逐次确认），且逐行严格校验；
+ *   - 类型/范围**先判、再写**：非法值**不许**先落地再抛（docker 踩过：非法值写进 settings 之后
+ *     整段配置在下次启动时静默退回默认）。
+ */
+export function normalizeCardPatch(input) {
+    const capabilityField = findCapabilityField(input);
+    if (capabilityField !== undefined) {
+        return { error: capabilityEditRefusal(capabilityField), code: 'CAPABILITY_READONLY' };
+    }
+    const patch = {};
+    const plan = {};
+    for (const [key, value] of Object.entries(input)) {
+        if (key === 'confirmTargetEdit')
+            continue; // 它只是这次调用的确认位，不进配置
+        if (key === 'targets') {
+            if (input.confirmTargetEdit !== true) {
+                return {
+                    error: '改目标要逐次确认：这是「工具能在哪个目标、哪个引擎、哪个环境、哪个范围上动手」的变更，'
+                        + '带 `confirmTargetEdit: true` 重试（卡片上那个复选框就是它）。它写进 profile 补丁层并进审计。',
+                    code: 'CONFIRMATION_REQUIRED',
+                };
+            }
+            const normalized = normalizeTargets(value);
+            if ('error' in normalized)
+                return normalized;
+            patch.targets = normalized.targets;
+            continue;
+        }
+        if (key === 'plan.maxRows' || key === 'plan.maxCost') {
+            if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+                return {
+                    error: `${key} 必须是非负数字。**两个语义不许混**：留空 = 不做这一层检查（卡片会跳过它），` +
+                        '而 `plan.maxRows: 0` = 一行都不许——后者是有意收紧，不是「没填」',
+                };
+            }
+            plan[key.slice('plan.'.length)] = value;
+            continue;
+        }
+        if (key === 'plan') {
+            return { error: '不认识的字段：plan（计划护栏用扁平键 `plan.maxRows` / `plan.maxCost`，不是嵌套对象）' };
+        }
+        if (!CARD_FIELDS.includes(key))
+            return { error: `不认识的字段：${key}` };
+        if (key === 'enabled' || key === 'announceToAgent') {
+            if (typeof value !== 'boolean')
+                return { error: `${key} 必须是布尔值` };
+            patch[key] = value;
+            continue;
+        }
+        if (key === 'timeoutMs') {
+            // 范围与 `plugin-config.ts` 的常量同源（卡片与解析层各判一套就会漂）
+            if (typeof value !== 'number' || !Number.isInteger(value) || value < MIN_TIMEOUT_MS || value > MAX_TIMEOUT_MS) {
+                return { error: `timeoutMs 必须是 ${String(MIN_TIMEOUT_MS)}~${String(MAX_TIMEOUT_MS)} 的整数（毫秒）` };
+            }
+            patch[key] = value;
+            continue;
+        }
+        if (typeof value !== 'string')
+            return { error: `${key} 必须是字符串` };
+        patch[key] = value.trim();
+    }
+    if (Object.keys(plan).length > 0)
+        patch.plan = plan;
+    if (Object.keys(patch).length === 0)
+        return { error: '没有要改的字段（patch 是空的）' };
+    return { patch };
+}
+/**
+ * 一条能力档的**只读**快照（给卡片的能力面板用；`undefined` = 这份配置里没接入闸门）。
+ *
+ * 三件必须都在：**声明的变量名**（`env`）、**当前是否已授权**（`granted` / `via`）、
+ * **怎么授权**（`howTo`）。只给前两件，用户就只能在猜里过日子；只给后一件，他不知道自己现在
+ * 在哪一档。`howTo` 刻意**不传 `{inPlace:true}`**：本包没有就地提权通道（`bindCapabilitySources`
+ * 不接 `GrantStore`），文案提到一个不存在的按钮就是「配了没反应」。
+ */
+export function capabilitySnapshot(spec) {
+    const via = capabilityGrantVia(spec);
+    return {
+        env: spec.env,
+        label: spec.label,
+        granted: via !== undefined,
+        ...(via === undefined ? {} : { via }),
+        howTo: capabilityHowTo(spec),
+    };
+}
+/**
+ * 卡片的 GET 快照（**纯函数**：把 `live` 投影成客户端要的形状）。
+ *
+ * 目标**全量只读展示**（含 `scopeDirs` / 连接 / `maxScanCount` / 凭据引用），另有两条只读元信息：
+ *
+ *   - 每个目标的两档能力（`capabilitySnapshot`）——**只读**，写入路径一律拒（见 `CAPABILITY_FIELDS`）；
+ *   - `engines` / `envs`：枚举的**唯一真相在宿主侧**（`operations.ts` / `env.ts`），卡片拿它渲染
+ *     下拉框，而不是自己抄一份字面量（抄一份必然漂）。
+ *
+ * `credentialRef` 是**引用**不是口令（值在凭据服务/文件/环境里），所以可以照原样给卡片。
+ */
+export function configSnapshotFrom(live) {
+    return {
+        enabled: live.enabled,
+        announceToAgent: live.announceToAgent,
+        auditFile: live.auditFile,
+        timeoutMs: live.timeoutMs,
+        plan: { ...live.plan },
+        engines: [...ENGINES],
+        envs: [...DEV_ENVS],
+        targets: live.targets.map((target) => ({
+            id: target.id,
+            label: target.label,
+            engine: target.engine,
+            env: target.env,
+            scopeDirs: [...target.scopeDirs],
+            maxScanCount: target.maxScanCount,
+            ...(target.connection === undefined
+                ? {}
+                : {
+                    host: target.connection.host,
+                    port: target.connection.port,
+                    ...(target.connection.db === undefined ? {} : { db: target.connection.db }),
+                }),
+            ...(target.credentialRef === undefined ? {} : { credentialRef: target.credentialRef }),
+            ...(target.writeCapability === undefined ? {} : { writeCapability: capabilitySnapshot(target.writeCapability) }),
+            ...(target.dangerousReadCapability === undefined
+                ? {}
+                : { dangerousReadCapability: capabilitySnapshot(target.dangerousReadCapability) }),
+        })),
+    };
+}
 /** 宿主半体。 */
 const plugin = definePlugin({
     name: 'devdata',
     inject: ['tools'],
     apply(ctx, rawConfig) {
+        /** apply 时的原始配置：卡片保存时如果拿不到 settings 的已解析值，就用它兜底。 */
+        const initialSection = plainConfig((rawConfig ?? {}));
         /** 当前生效的配置（volatile 字段被就地改写后靠重算取回来，见 `applySection`）。 */
-        let live = normalizeConfig(plainConfig((rawConfig ?? {})));
+        let live = normalizeConfig(initialSection);
+        /**
+         * 最近一次生效的**原始** section：卡片保存时套用 patch 的兜底源。
+         *
+         * **初值必须是 apply 时那份配置**，不能是 `{}`：`devfront` 的真机验收抓到过——启动时
+         * `scope.get()` 还是空对象（settings entry 尚未就绪），于是兜底源一直是空的；卡片保存
+         * 一个标量时用 `{...{}, timeoutMs}` 重建，**把整份 targets 抹掉**（响应里 `targets: []`）。
+         */
+        let rawSectionRef = initialSection;
+        /** settings 读写口（没有新版 settings 服务时是 `undefined`，卡片仍可用但不落盘）。 */
+        let settingsScopeRef;
         /** 本轮登记的工具。配置一变整批换掉——`tools.register` 不覆盖同名工具。 */
         let toolDisposers = [];
         let announcementDispose;
@@ -278,8 +654,9 @@ const plugin = definePlugin({
          * 能力判定源**在 apply 期绑定一次**（kit `capability.ts` 的约定 2）：现读 `process.env` 等于把
          * 提权路径搬到「环境变量卡片」（它有 HTTP 写入路径）。
          *
-         * **不传 GrantStore**：本套件今天没有客户端半体，也就没有就地提权通道——传一个空存储只会让
-         * 文案与事实分家。等 P14 的面板落地并真的接上它，再加。
+         * **仍然不传 GrantStore**：配置卡片（2026-10-03 建）**刻意没有**就地提权入口——两档能力在
+         * 写入路径上只读（`CAPABILITY_FIELDS` 那条 400），传一个空存储只会让文案与事实分家。将来真做
+         * 就地提权（带外确认 + `GrantStore`）时再传，那时 `capabilityHowTo` 的 `inPlace` 也跟着开。
          */
         bindCapabilitySources(ctx);
         const logger = {
@@ -619,6 +996,7 @@ const plugin = definePlugin({
         function applySection(raw) {
             if (Object.keys(raw).length === 0)
                 return;
+            rawSectionRef = raw;
             const next = normalizeConfig(raw);
             const signature = JSON.stringify(next);
             if (signature === appliedSignature)
@@ -652,10 +1030,127 @@ const plugin = definePlugin({
                 const scope = settingsEntryScope(settingsCtx, 'devdata');
                 if (scope === undefined)
                     return () => { };
+                settingsScopeRef = scope;
                 applySection(scope.get());
                 const off = scope.onChanged(() => applySection(scope.get()));
-                return () => off();
+                return () => {
+                    settingsScopeRef = undefined;
+                    off();
+                };
             }, 'dsh-devdata: settings');
+        });
+        /*
+         * ---------- 配置卡片的**数据面**（`/api/dsh-devdata/config`） ----------
+         *
+         * 为什么必须有这条路由：客户端半体读不到插件配置——宿主那套「按 schema 生成表单」在这一版
+         * **没有渲染方**（`devfront` 记-15 真机扫过），所以各插件的卡片都自带一条 GET/POST 路由
+         * （tty / docker / devfront 同款）。
+         *
+         * - GET：卡片渲染用的快照（`configSnapshotFrom(live)`；目标是全量只读展示，含两档能力的
+         *   **当前授权状态**）；
+         * - POST：走**官方持久化通道** `settings.update(entryId, patch)` 写 volatile 字段 →
+         *   loader 广播 → 本插件的 `applySection` 热应用（不重启）。没有 settings 服务时退化成
+         *   「只在本进程套用」，并**在响应里如实标注 `persisted: false`**——不假装写进去了。
+         *
+         * `/config` 不受「插件停用」影响（与 tty / docker / devfront 同口径）：卡片是重新启用插件的
+         * 唯一 UI 入口。
+         */
+        ctx.inject(['webServer'], (webCtx) => {
+            webCtx.effect(() => {
+                const webServer = webCtx.webServer;
+                if (webServer === undefined)
+                    return () => { };
+                /** 一次卡片变更的审计（被拒的与成功的都走它；写不进去就让它抛——fail-closed）。 */
+                const recordCardAudit = (action, allowed, code) => {
+                    auditSink().record({
+                        at: Date.now(),
+                        targetId: 'card',
+                        action,
+                        allowed,
+                        ...(code === undefined ? {} : { code }),
+                    });
+                };
+                return webServer.register({
+                    kind: 'exact',
+                    path: '/api/dsh-devdata/config',
+                    handler: async (req, res) => {
+                        /*
+                         * 围栏：**只放回环 + 强来源判据**（`isLoopbackRequestStrict`，与 tty / docker /
+                         * devfront 的 `gateRoute` 同一套）。`POST /config` **刻意不额外要求
+                         * `hasSameOriginProof`**：卡片是插件被停用后唯一的恢复入口，而跨站请求已由上面那道
+                         * 围栏的 `sec-fetch-site: cross-site` 与 Origin 比对拦掉。
+                         */
+                        if (!(await isLoopbackRequestStrict(req))) {
+                            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+                            return;
+                        }
+                        // `hasSameOriginProof` 在这里只用于**诊断日志**：真正的判据是上面那道围栏。
+                        if (req.method === 'POST' && !hasSameOriginProof(req)) {
+                            ctx.logger.warn('[dsh-devdata] /config 的 POST 没带同源证明（回环已放行，按恢复入口口径继续）');
+                        }
+                        if (req.method === 'GET') {
+                            writeJson(res, 200, { ok: true, config: configSnapshotFrom(live), persisted: settingsScopeRef !== undefined });
+                            return;
+                        }
+                        if (req.method !== 'POST') {
+                            writeJson(res, 405, { error: `method not allowed: ${String(req.method)}` });
+                            return;
+                        }
+                        const body = await readJsonBody(req);
+                        if (body === undefined) {
+                            writeJson(res, 400, { error: 'invalid JSON body' });
+                            return;
+                        }
+                        const normalized = normalizeCardPatch(body);
+                        if ('error' in normalized) {
+                            /*
+                             * **被拒的尝试也进审计**（与工具面同一口径）。写不进去就让它抛：审计是这条路径的
+                             * 前提，坏了就该响（而不是安静地放行一次没记下来的变更）。
+                             */
+                            recordCardAudit('config.save', false, normalized.code);
+                            writeJson(res, 400, {
+                                error: normalized.error,
+                                ...(normalized.code === undefined ? {} : { code: normalized.code }),
+                            });
+                            return;
+                        }
+                        /*
+                         * 改目标时把**原有的能力声明**按 id 带回来：写入路径不许出现能力字段（那是免重启
+                         * 提权口），而「替换整份 targets」会顺手把声明抹掉——见 `preserveCapabilities`。
+                         */
+                        const patch = Array.isArray(normalized.patch.targets) && normalized.patch.targets.every(isPlainRow)
+                            ? { ...normalized.patch, targets: preserveCapabilities(normalized.patch.targets, live.targets) }
+                            : normalized.patch;
+                        const scope = settingsScopeRef;
+                        if (scope !== undefined) {
+                            try {
+                                await scope.update(patch);
+                            }
+                            catch (error) {
+                                recordCardAudit('config.save', false, 'PERSIST_FAILED');
+                                writeJson(res, 500, { error: `保存配置失败：${error instanceof Error ? error.message : String(error)}` });
+                                return;
+                            }
+                            /*
+                             * 优先用 settings 的**已解析值**（含非 volatile 字段与组合后的层），拿不到才退回
+                             * 「最近一次原始 section + patch」。**不能只退回后者**：见 `rawSectionRef` 的注释
+                             * （真机验收抓到过：保存一个标量把目标整批抹掉）。
+                             */
+                            const resolved = scope.get();
+                            if (Object.keys(resolved).length > 0)
+                                applySection(resolved);
+                            else
+                                applySection(mergeSection(rawSectionRef, patch));
+                        }
+                        else {
+                            applySection(mergeSection(rawSectionRef, patch));
+                        }
+                        // 成功的变更也进审计：目标声明（影响「能在哪些目标上动手」）与标量分开记。
+                        recordCardAudit(patch.targets === undefined ? 'config.scalars' : 'config.targets', true);
+                        writeJson(res, 200, { ok: true, config: configSnapshotFrom(live), persisted: scope !== undefined });
+                    },
+                });
+            }, 'dsh-devdata: config route');
         });
         ctx.effect(() => {
             return () => {

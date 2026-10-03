@@ -24,6 +24,10 @@
 两个都是只读（`docker inspect` / `docker logs` / HTTP 探针）。写入口只在**某个目标配了写能力闸门**时
 才注册——工具面里没有的东西，agent 不会去试。
 
+**配置 UI**（2026-10-03 起）：设置 → 插件配置里的「环境编排」卡片能改标量与目标名单，
+并把「写闸门」与「TOFU 指纹」**只读**摆出来——见下面的
+[配置卡片](#配置卡片客户端半体) 一节。此前改配置只能手改 profile 补丁层。
+
 ## 装进去怎么配
 
 ```yaml
@@ -85,6 +89,10 @@
 写不进去时本次调用不返回结果（fail-closed）。**只读工具（`env_status` / `env_wait`）不受这道门限制**，
 但同样进审计（默认出口是宿主日志）。
 
+> **「写路径要 `auditFile`」这条现在可以在卡片上补**：`auditFile` 是配置卡片六个可改标量之一
+> （见下面的「配置卡片」一节），填上它就落盘、并**立刻**对写类动作生效（volatile 字段热应用，不重启宿主）。
+> 还没补时那两档的行为是 `[AUDIT_NOT_DURABLE]`——**只读工具不受影响**。
+
 > ⚠️ **白名单的前提是这台机器上没有更宽的入口**：`docker` 的 `allowMutations` 一旦打开，
 > `docker_action` 就能对**任意**容器动手 —— 那时本包的「清单就是白名单」**可以从旁边绕过去**。
 > 共享机器上**只在一边开门**；代价与另一条路（让 docker 也认清单）为什么不做，见
@@ -118,6 +126,41 @@
 **探针是从运行本工具的机器发出的**（不是从目标主机内部），所以清单里的 `port` 必须从这台机器
 可达——一般是 docker 发布到宿主机的端口。只支持 http：清单里没有协议字段，而把 https 当 http 探
 只会得到一句连接错误，于是「服务没起来」和「协议写错了」变成同一句话。
+
+## 配置卡片（客户端半体）
+
+设置 → 插件配置里那张「环境编排」卡（`packages/devenv/client.js`，手写、**没有构建步骤**：
+它本身就是源）。数据面是宿主那条 `GET/POST /api/dsh-devenv/config`（同源相对路径，客户端
+不硬编码宿主地址）。
+
+**能改什么、不能改什么**——这张表就是判据，不是排版：
+
+| 面 | 能改吗 | 为什么 |
+|---|---|---|
+| 标量：`enabled` / `announceToAgent` / `auditFile` / `probeTimeoutMs` / `waitTimeoutMs` / `pollIntervalMs` | ✅ | 它们只影响「怎么看、等多久」 |
+| 目标：`id` / `label` / `kind`(`local`\|`ssh`) / `book` / `scopeDirs` | ✅ **逐次确认** | 它是「agent 能用哪些目标、在哪些目录里动手」的**声明**，与就绪清单同一类 → 每次保存都要勾那个确认框（`confirmTargetEdit: true`），不勾就是 400 + `CONFIRMATION_REQUIRED`；变更进审计 |
+| `writeCapability` | ❌ **只读** | 见下 |
+| `hostKeys`（TOFU 指纹记录） | ❌ 只读展示 | 改它等于放弃指纹校验。卡片只摆 host / 端口 / 指纹**条数** |
+| `execTimeoutMs` / `logTail` / `stopTimeoutSec` | 走 profile 补丁层 | 运维旋钮；卡片只暴露上面那六个——多一个可写字段就多一片要评审的面 |
+
+**为什么 `writeCapability` 必须只读**（这是这张卡片最重要的一条判据）：授权判据是「宿主**启动继承层**
+里那个环境变量的值 ∈ `1`/`true`/`yes`/`on`」（`kit` 的 `TRUTHY`；`project-env` / `user-env` 两层刻意
+排除），而变量名来自配置。所以**真正的口子不是「随手改成 `HOME`」**（它的值不在白名单里，`env` 名指向
+它**不会**授权），而是**把它指向另一个已经在启动环境里、值恰好为真的变量**（例如 `CI=true`）——那样
+页面脚本一次 `POST` 就等于**免重启提权**。（2026-10-03 更正：这处此前用 `HOME` 当例子，是错的。）所以：
+
+- `POST` 体里出现 `writeCapability` → **400**，码 `CAPABILITY_READONLY`（目标行里的那一处同样拒）；
+- 卡片只**显示**这一档：每个目标一行，给出「声明的环境变量名 + 当前是否已授权（判据是宿主启动环境，
+  不是配置文件）+ 怎么授权」，并说明**没声明 `writeCapability` 的目标 = `env_up` / `env_down` 根本不注册**；
+- 与之配套的一条：**改目标不会顺手把写闸门抹掉**（同 `id` 的目标，其 `writeCapability` 原样带过去）。
+  否则用户只改一个 `scopeDirs` 的错别字，写工具就从工具面消失了——而卡片上没有任何地方能把它加回来
+  （它是只读的）。改 `id` 等于换一个目标，闸门不跟过去，要重新在补丁层声明一次。
+
+`GET` 快照把 `writeCapability` 投影成**只读档** `writeGates`（`writeCapability` 这个名字在
+POST 里是被拒的），把指纹投影成 `hostKeys: [{ host, port, fingerprints }]`（`fingerprints` 是**条数**）。
+
+要不要用卡片改配置，可以先看这一条判据：**它只碰「怎么看」与「允许哪些目标在哪些目录里」，
+绝不碰「谁能动手」**。后面那条改动每次都要勾确认框、也进审计。
 
 ## 就绪判据：它在解决什么
 
@@ -228,12 +271,16 @@ pnpm --filter @hyzyn/dsh-devenv run verify
 第 ⑥ 档还要人**指名**一个可以动的容器（`DEVENV_REAL_WRITE_CONTAINER`）。**每一档单独 SKIP、理由单独打**
 ——一档跳过了不该被另一档的 PASS 盖住。
 
+**配置卡片那一档不在这条一键里**（它要真 Chrome，与 `devfront` 同档）：单独跑
+`pnpm --filter @hyzyn/dsh-devenv run card-smoke`，见下表。
+
 各档单独跑也可以：
 
 | 档 | 怎么跑 | 实测 |
 |---|---|---|
 | 单测 | `npx vitest run packages/devenv` | ✅ 假宿主 + **真进程的假 docker** + 真临时清单 + 真 HTTP 服务 |
 | **真 DSH 挂载** | `pnpm --filter @hyzyn/dsh-devenv run host-mount-smoke` | ✅ 2026-10-02 **12/12**（连跑两次）：装上 → 挂上 → `env_status` / `env_wait` 进真 ToolRuntime，没配 `writeCapability` 就没有写入口，收尾连临时目录都清干净 |
+| **配置卡片**（起真宿主 + 真 Chrome） | `pnpm --filter @hyzyn/dsh-devenv run card-smoke`（= `node scripts/verify-devenv-card.mjs`；`--dump` 只打插件页与卡片结构、`--keep` 失败时留现场） | ✅ 2026-10-03 首跑与复跑各 **21 PASS / 0 FAIL**（隔离 `DSH_HOME` + 一次性 profile）：数据面 9 条 + `writeCapability` 只读那条 400 + 改目标逐次确认 + 改目标不抹掉写闸门 + 审计 6 行 + bundle 真被加载（含四个槽）+ 插件页那一行（running）+ **详情页卡片渲染出 21 个控件**（目标编辑器 / 写闸门只读面板 / 指纹只读列表）+ 真实 `~/.dsh/cordis.patch.yml` 逐字节未变 |
 | **真机观测链路** | `DEVENV_REAL=1 DEVENV_REAL_SSH_PASSWORD=… npx vitest run packages/devenv/test/real-machine.test.ts` | ✅ 2026-10-02 **5/5**（248：SSH → `docker inspect` / `docker logs` → 解析 → 判定；含插件本体与「容器不存在 ≠ 通道不通」） |
 | **真机 SSH 探针** | `DEVENV_REAL=1 DEVENV_REAL_SSH_PASSWORD=… DEVENV_REAL_PROBE_PORT=<会回 2xx/3xx 的端口> DEVENV_REAL_PROBE_TIMEOUT_PORT=<发 HTTP 永远没响应的端口> npx vitest run packages/devenv/test/real-probe.test.ts` | ✅ 2026-10-03 **2/2**（248，同一天两半各一次）：`6080`（rmqdashboard）**真 200** → `✓ … HTTP 200 /`；`10912` 发 HTTP 挂住不响应 → 探针等满 1500ms 预算，报 `!`（继续等）而**不是** `✗`（别等了）。两条都走插件本体（连接簿 → `probeHost = 那台主机的地址` → 真网络） |
 | **真机写入口** | `DEVENV_REAL=1 DEVENV_REAL_WRITE_CONTAINER=<你指名的容器> DEVENV_REAL_SSH_PASSWORD=… npx vitest run packages/devenv/test/real-write.test.ts` | ✅ 2026-10-02 **6/6**（对 248 上一个一次性容器真停/真启，两次拒绝都**一条命令都没发**；收尾**还原现场**） |
@@ -295,6 +342,11 @@ docker rm -f dsh-devenv-sample
 
 剩下一条盲区——**冷启动 150 秒那一档的轮询体验**（单测里有 `missing-then-ok` 的轮询用例，但那不是
 体验）——判据与门槛收在 [ROADMAP.md](./ROADMAP.md) § 待办 A（**状态真源**），本文不复述。
+
+配置卡片那一档顺带带出一条**已知的**边界：英文界面下「怎么授权」那段话术来自
+`@hyzyn/dsh-kit` 的 `capabilityHowTo()`（宿主侧判据的一部分，中文），不在本包的 i18n 目录里——
+卡片自己是双语的，**这一段不是**。要不要把它也在 `kit` 里做双语，记在
+[ROADMAP.md](./ROADMAP.md) 记-11 的「这一轮没验到 / 已知的两处」。
 
 原来的三条已于 2026-10-03 落地：`Health` 路径的真机覆盖（本机真 daemon 上的一次性健康检查容器）、
 SSH 目标的 HTTP 探针（248 上**真 200 与真超时各一次**，见上表与 ROADMAP 记-10）、以及更早的

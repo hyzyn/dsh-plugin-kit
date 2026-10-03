@@ -135,6 +135,61 @@ assertions:
 4. **拒绝一律抛错**，格式 `[CODE] 正文` + 下一行「恢复路径」——agent 的失败模式是循环重试，
    一句「未授权」不产生新信息。
 
+### 面板（客户端半体，`client.js`）
+
+2026-10-03 建（`devenv` / `devfront` 同一批）。它就是「配置面在 GUI 里不存在」那个缺口的另一半：
+宿主那套「按 `Config` schema 生成表单」在这一版**没有渲染方**（`devfront` 真机三面扫过），所以每张
+卡片都得自己写（tty / docker 同款）——在那之前本包只能在 profile 补丁层手改配置，而
+`capabilities` / `doctor` 报出来的「配置问题」用户没有 UI 可改。
+
+- **能改（标量）**：`enabled` / `announceToAgent` / `auditFile` / `timeoutMs` / 计划护栏
+  `plan.maxRows` · `plan.maxCost`（扁平键；数值留空 = **不改**这一层，而 `plan.maxRows: 0` 是
+  「一行都不许」——两个语义刻意不混）；
+- **能改（目标）**：`targets` —— 结构化表单（每行 id / 名字 / 引擎 / 环境档 / 作用域目录 /
+  `maxScanCount` / 连接 `host`·`port`·`db` / 凭据引用），可增删改。**改目标要逐次确认**
+  （那个复选框 → `confirmTargetEdit: true`），与 `env_down` 同一档：它决定「工具能在哪个目标、
+  哪个引擎、哪个环境、哪个范围上动手」。引擎与环境档的下拉框**选项由宿主快照给**
+  （`config.engines` / `config.envs`）——枚举的真相在 `operations.ts` / `env.ts`，卡片再抄一份必然漂；
+- **只读（两档能力）**：`writeCapability` / `dangerousReadCapability` 各显示「声明的变量名 +
+  **当前是否已授权** + 怎么授权」。**它们是只读的，这不是省事而是不变量**：这两档的授权判据是
+  「宿主**启动继承层**里那个变量的值 ∈ `1`/`true`/`yes`/`on`」（`kit` 的 `TRUTHY`；`project-env` /
+  `user-env` 两层刻意排除），而变量名来自配置——**真正的口子不是「随手改成 `HOME`」**（它的值不在
+  白名单里，指向它**不会**授权），而是把它指向**另一个已经在启动环境里、值恰好为真**的变量
+  （例如 `CI=true`），那样页内脚本一条 `POST` 就等于**免重启提权**，直接违反根 `ROADMAP.md` §5.1 的
+  「HTTP 只能关、不能开」。（2026-10-03 更正：这处此前用 `HOME` 当例子，是错的。）服务端对这两个字段在写入路径上**一律 400 `CAPABILITY_READONLY`**
+  （含藏在 `targets[i]` 里的那种写法），`howTo` 刻意不提「就地提权」按钮——本包没有那条通道
+  （`capabilityHowTo` 不传 `inPlace`），提一个不存在的入口正是本仓修过的缺陷类型；
+- **数据面**：宿主那条 `GET/POST /api/dsh-devdata/config`。POST 走**官方持久化通道**
+  `settings.update(entryId, patch)`（写 volatile 字段 → loader 广播 → 本插件 `applySection`
+  热应用，不重启）；宿主没有 settings 服务时退化成「只在本进程生效」，响应里如实带
+  `persisted: false`，卡片照实提示「**没有落盘**」；
+- **围栏**：只放回环 + 强来源判据（`isLoopbackRequestStrict`，与 tty / docker / devenv / devfront
+  的 `gateRoute` 同一套）。`POST /config` **刻意不额外要求同源证明**——卡片是插件被停用后唯一的
+  恢复入口；`/config` 也不因插件停用而失效（停用时工具一个都不注册，卡片照样能把它开回来）；
+- **校验在写之前**（`normalizeCardPatch` / `normalizeTargets`，纯函数、有用例）：不认识的字段
+  **报错而不是静默丢弃**、目标逐行逐字段报错并**指到 `targets[i].字段`**（重名 id 拒、认不出的
+  引擎整条拒、连接要么两个字段都给要么都不给）、类型与范围先判——非法值不许先落地再抛
+  （docker 踩过：非法值写进 settings 之后整段配置在下次启动静默退回默认）。校验过的行还会经
+  `normalizeConfig` **复核**「一行不少地被收下、且一条 problem 都不报」：两套规则分叉时保存就红；
+- **改目标不许抹掉能力声明**：卡片提交的目标行里没有能力字段（那是 400 管的），所以服务端按 id
+  把**原有的**声明原样带回来（`preserveCapabilities`）——不这么做，改一个 `scopeDirs` 的错别字
+  就会把闸门静默抹掉。新行没有声明（= 未接入闸门，**不凭空授权**），改 `id` 等于新增一个目标；
+- **每次变更进审计**：成功分 `config.targets` / `config.scalars` 两条，被拒的带码（`config.save`）；
+  审计写不进去就让它抛（fail-closed——不许「改完了、没记下」）。卡片变更**没有引擎**，审计行里
+  也就不编一个引擎；
+- **界面文案走 i18n 目录**（`docs/i18n.md`）：`client.js` 是**源**（本包没有构建步骤），目录内联
+  在文件里，`check-i18n` 与 `client-lint`（`typecheck` 里带着跑）都管着它。
+
+**真机验收**（`pnpm --filter @hyzyn/dsh-devdata run card-smoke` → `scripts/verify-devdata-card.mjs`）：
+起一个**隔离 home 里的一次性 profile**、装本包、起真宿主、开真 Chrome，跑一遍断言
+（**条数以脚本末尾那行汇总为准**——它会随功能增长，不在这里写死）：数据面（快照字段 / 保存标量
+**且目标不被抹掉** / 写 `plan.maxRows` **保住 `plan.maxCost`**（真 settings 的深合并，假宿主的浅合并
+验不到这条）/ 非法值先判后写 / 405 / 坏 JSON）+ **两档能力只读那条 400**（顶层与 `targets[i]` 各一条）
++ 改目标逐次确认（能力声明按 id 跟回来）+ 审计落盘（两个码都在）+ bundle 真的被宿主按批量 URL
+加载 + 插件页里那一行 + **详情页卡片渲染**（控件数、目标编辑器、能力只读说明）+ **在卡片上真的点
+一次「保存」**（客户端拼的 payload 过得了服务端校验）+ 真实 `~/.dsh` 逐字节未变的自证。
+`--dump` 只打插件页结构（迭代 DOM 断言用），`--keep` 失败时留现场。
+
 ## 配置（profile 里的形状）
 
 ```yaml
@@ -206,10 +261,12 @@ if (decision.allowed) {
 
 ## 刻意没有的东西
 
-- **没有客户端半体**：`client-src/` 一建就会被 `check-i18n` 与 `client-lint` 纳入管辖；
-  面板按 plan 排在 agent 工具面之后（P14）。连带后果：**没有就地提权通道**，所以能力文案只说
-  「启动环境 + 重启宿主」（`adjudicate.ts` 里 `capabilityHowTo` 刻意不传 `inPlace`——tty 的
-  `allowProxyCommand` 是同一处境，文案里提一个不存在的开关是本仓修过的缺陷类型）。
+- **有客户端半体了（2026-10-03 起），但仍没有就地提权通道**：配置卡片见上面
+  [面板（客户端半体）](#面板客户端半体clientjs)那一节。**卡片能改配置，但提权那条路仍然没有**——
+  两档能力在写入路径上只读（400 `CAPABILITY_READONLY`），`bindCapabilitySources` 也不接
+  `GrantStore`，所以能力文案只说「启动环境 + 重启宿主」（`adjudicate.ts` 里 `capabilityHowTo`
+  刻意不传 `inPlace`——tty 的 `allowProxyCommand` 是同一处境，文案里提一个不存在的开关是本仓
+  修过的缺陷类型）。
 - **没有 SQL / 达梦 / RocketMQ 的执行器**：那几个引擎在本宿主上只给引擎无关的自证工具，数据入口
   一个都不注册。阻塞项是 C2（只读账号）与防火墙，不是代码。
 - `lib/` **是入库产物**（本包现在有 `build` script）。2026-10-02 之前它刻意没有 `build`
@@ -324,6 +381,7 @@ pnpm --filter @hyzyn/dsh-devdata run verify
 pnpm vitest run packages/devdata
 DEVDATA_REDIS_248=1 pnpm vitest run packages/devdata/test/redis-real-machine.test.ts
 node scripts/verify-devdata-host-mount.mjs
+node scripts/verify-devdata-card.mjs
 ```
 
 **达梦那条通路的第一段**（`ssh → docker exec dm8_test → 容器内命令`）也有一条门控用例——
@@ -337,7 +395,8 @@ DEVDATA_DM_161=1 DEVDATA_SSH_PASSWORD=… pnpm vitest run packages/devdata/test/
 **门控变量是 `DEVDATA_DM_161`**：漏拼不会报错，只会**静默跳过 5 条**（屏幕上一行 `5 skipped`）——
 跑完先确认输出里有 PASS/FAIL。也别把 `read -rs` 和后面的命令放进同一次粘贴（`read` 会把下一行当口令吃掉）。
 
-`test/`（424 例，其中 11 例门控在真机上）：`adjudicate.test.ts` 钉不变量与四条设计约束；`sql.test.ts` 钉**绕过面**
+`test/`（**条数以 `pnpm vitest run packages/devdata` 现算为准**——它每加一条用例就会漂，不在这里
+写死；门控在真机上的那两档见上面）：`adjudicate.test.ts` 钉不变量与四条设计约束；`sql.test.ts` 钉**绕过面**
 （多语句、注释藏写操作、字符串里的分号、未闭合）；`redis-command.test.ts` 钉命令白名单与
 `SCAN` 两种参数布局；`redis-route.test.ts` 钉**档位只能更严**（`INFO ALL` 必须走危险读闸门，
 不许被矩阵按动作名抹平）；`verify.test.ts` 钉清单的**缺省即无**与加载期校验；
@@ -346,7 +405,11 @@ DEVDATA_DM_161=1 DEVDATA_SSH_PASSWORD=… pnpm vitest run packages/devdata/test/
 与「不可见的工具不进入执行路径」；`entries.test.ts` 钉**没有执行器就不注册**（只留引擎无关项）；
 `plugin-config.test.ts` 钉配置解析的每一种坏输入都有确定行为；`audit.test.ts` 钉**写不进去就抛**
 （fail-closed 而不是尽力而为）；`plugin.test.ts` 是**假宿主的端到端**（四个工具全跑一遍，含
-审计落成 JSON 行、写类缺审计被拒、不可复现的确认路径）；`fake-redis.ts` / `fake-host.ts` 是两个
+审计落成 JSON 行、写类缺审计被拒、不可复现的确认路径）；**`config-route.test.ts` 是配置卡片那条
+数据面**（patch 校验先判后写 / 两档能力只读那条 400 / 目标逐次确认 / 能力声明按 id 跟回来 /
+兜底路径的深合并 / 快照 / 围栏与失败审计）；**`verify-script-safety.test.ts`** 与
+`verify-all-script-safety.test.ts` / `host-mount-script-safety.test.ts` 守仓根那三个真机脚本的
+隔离与自证（**判前先去注释**，每条判据都带反例）；`fake-redis.ts` / `fake-host.ts` 是两个
 共用夹具（**各只有一份**——两份复制会让「假服务怎么理解协议」出现两个版本，被测代码改了帧格式时
 可能一起错着通过）。每条用例的注释写了「这条失败了意味着什么」——一个失败的断言若说不清后果，
 迟早会被当成噪声改掉。

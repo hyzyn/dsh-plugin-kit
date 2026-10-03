@@ -14,6 +14,7 @@
       "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
     },
+    "./client": "./client.js",
     "./package.json": "./package.json"
   },
   "dependencies": {
@@ -29,10 +30,18 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "card-smoke": "node ../../scripts/verify-devenv-card.mjs",
     "host-mount-smoke": "node ../../scripts/verify-devenv-host-mount.mjs",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && node ../../scripts/client-lint.mjs",
+    "lint:client": "node ../../scripts/client-lint.mjs",
     "verify": "node ../../scripts/verify-devenv-all.mjs"
   },
+  "files": [
+    "lib",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -43,6 +52,10 @@
     "manifestVersion": 1,
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": []
     }
   }
 }

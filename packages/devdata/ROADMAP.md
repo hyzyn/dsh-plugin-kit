@@ -102,8 +102,10 @@
     **写路径没有真机验证**（真机上会启停 248 上的真容器，那台机器有同事在联调）。
 15. **前端效果验证**：复用本仓既有的 Chrome CDP 夹具（tty / search 各一套），换目标为真站点；
     门槛：截图 + 收 console 错误；**工具面不含定时 / 爬虫 / 批量能力**（边界用例）。建 `devfront` 包。
-16. **面板（GUI）**：明确排在 agent 工具面之后。一建 `client-src/` 就会被 `check-i18n` 与
-    `client-lint` 纳入管辖，届时补 i18n 目录块与两条客户端硬规矩。
+16. ~~**面板（GUI）**~~ —— **已落地（2026-10-03，见记-18）**：`client.js`（手写，无构建步骤）+
+    宿主那条 `GET/POST /api/dsh-devdata/config`，标量与目标可改、**两档能力只读**、改目标逐次确认、
+    每次变更进审计。`check-i18n`（目录块）与 `client-lint`（宿主地址来源 / 语法族）都接管了它
+    （`typecheck` 里带着跑），真机验收是 `scripts/verify-devdata-card.mjs`。
 
 ### E. 结构性决策
 
@@ -357,6 +359,8 @@
 另外一处**顺手更正**：能力未授权时的提示原先带 `inPlace: true`（「去设置卡片点这个开关」），
 而本包**没有客户端半体**、根本没有那个开关——文案会把用户送去点一个不存在的东西。已改成只提
 「启动环境 + 重启宿主」。
+（2026-10-03 更正：**卡片建起来了**（记-18），但结论**不变**——那两档能力在写入路径上只读
+（`CAPABILITY_FIELDS` 那条 400），本插件也不接 `GrantStore`，所以卡片上确实没有那个开关。）
 
 ### 记-16. 真机**首次使用**抓到的纸割：作用域拒绝不说「判了哪个目录」（2026-10-02）
 
@@ -494,3 +498,44 @@ devdata (@hyzyn/dsh-devdata): ValidationError: invalid config:
 **门槛（已验）**：本包 38 条 `verify` 用例**原样通过**——等价性由它们钉住（含那句「在多个根目录下
 都找到了…两份清单是歧义」的文案、YAML 语法错、空文件、`ENOENT` 与 `ENOTDIR` 的分界）。
 骨架本身的用例在 `packages/kit/test/manifest.test.ts`（12 条）。
+
+### 记-18. 配置卡片（客户端半体）与 `/config` 那条数据面（2026-10-03，待办 16 收口）
+
+**由来**：本包此前**没有客户端半体**，于是「`scopeDirs` 为空 = 处处拒绝」「引擎认不出」「连接信息
+不完整」这类**配置问题**只在启动日志里报，用户没有 UI 可以去改；写类要的 `auditFile` 也只能手改
+yaml。卡片补上这一半（同一个缺口 `devfront` / `devenv` 各记过一次）。形状照 `devfront`（唯一的
+卡片模板），与同批的 `devenv` 记-11 对齐。
+
+| 落点 | 内容 | 门槛（已验） |
+|---|---|---|
+| `src/plugin.ts` 的纯函数 | `CARD_FIELDS`（`enabled` / `announceToAgent` / `auditFile` / `timeoutMs` / `plan.maxRows` / `plan.maxCost`，计划护栏刻意用**扁平键**）、`normalizeCardPatch`、`normalizeTargets`（逐行逐字段报错、重名 id 拒、认不出的引擎整条拒、连接要么两个都给要么都不给）、`preserveCapabilities`、`mergeSection`、`configSnapshotFrom`、`capabilitySnapshot` | `test/config-route.test.ts` **40 条**（含反例）：类型与范围先判、非法值不许先落地（断言 `settings` 一次都没被写过）、校验过的行经 `normalizeConfig` 复核「一行不少 + 一条 problem 都不报」 |
+| `src/plugin.ts` 的 `GET/POST /api/dsh-devdata/config` | 围栏与恢复入口口径与 `devfront` **逐条一致**：`isLoopbackRequestStrict` 不过 → 403；非 GET/POST → 405；JSON 坏了 → 400；`/config` 不因插件停用而失效；没有 settings 服务时 `persisted:false` 如实标注（不假装落盘） | 用例 ×6（403 两种、405、400 两种、停用后仍可用）+ 真机 ③⑦⑫⑬ |
+| **两档能力只读**（本轮最要紧的判据） | POST 体里出现 `writeCapability` / `dangerousReadCapability` → 400 + `CAPABILITY_READONLY`（**藏在 `targets[i]` 里的那种写法同样拒**，报错还指到路径）；GET 只给只读档（声明的变量名 / **当前是否已授权** / 怎么授权） | 用例 ×4 + 真机 ⑭。**理由**：授权判据是「宿主**启动继承层**里那个变量的值 ∈ `{1,true,yes,on}`」（`kit` 的 `TRUTHY`），而变量名来自配置——把它指向**另一个已经在启动环境里、值恰好为真**的变量（如 `CI=true`），一条 POST 就等于**免重启提权**，违反根 ROADMAP §5.1「HTTP 只能关、不能开」。⚠️ 本格此前写的是「改成 `HOME`」，**那是错的**（`HOME` 的值不在白名单里、不会授权）——2026-10-03 更正，代码文案与 README 同轮一并改 |
+| 改目标逐次确认 + 审计 | 不带 `confirmTargetEdit` → 400 + `CONFIRMATION_REQUIRED`；成功分 `config.scalars` / `config.targets`，失败带码；审计写不进去 = 抛（fail-closed，走本包**已有的** `auditSink`，没新造 sink） | 用例 ×3（含「审计文件是个目录 → 请求不返回成功」）+ 真机 ⑮⑱（JSONL 9 行，三种 action 与两个码都在） |
+| **改目标不抹掉能力声明** | 同 `id` 目标的 `writeCapability` / `dangerousReadCapability` 原样带回来（客户端提交的行里没有它们——它们在卡片上只读）；新行没有声明（**不凭空授权**），改 `id` 等于换一个目标 | 用例 ×3 + 真机 ⑯⑰。**没有它的话**：改一个 `scopeDirs` 的错别字就把闸门静默抹掉——那是 `devfront`「保存一个标量把站点整批抹掉」的同一类缺陷 |
+| `client.js`（手写、无构建步骤） | 卡片：四个标量 + 两个计划护栏可改；**目标编辑器**（id / 名字 / 引擎 / 环境档 / 作用域 / `maxScanCount` / 连接 host·port·db / 凭据引用，可增删行；引擎与环境档是**下拉框，选项由宿主快照给**）；**两档能力只读面板**；**四个槽全注册**（`settings.kit.item` / `plugins.bundle.config` / `plugins.row.config` / `settings.plugin.item`） | 2026-10-03 真机：详情页卡片渲染出 **36 个控件**、两个已有目标与环境档 / 作用域都回填；能力面板里 `DSH_DEVDATA_WRITE` 与「免重启提权」在**文本**里（只读说明），输入框里没有任何能力字段。静态：`check-i18n` **45 条键** zh/en 一致、**0 条残留中文字面量**、`client-lint` 过（宿主地址来源 0 处） |
+| `package.json` | `dsh.client`（`platform: web`）+ `exports["./client"]` + `files` 里加 `client.js`——**少任何一个都是「bundle 404、卡片永不渲染」**（`devfront` 真机踩过） | 真机 ⑲⑳：宿主按**批量 URL** 发这个包、bundle 里含 `dsh-i18n` 与三个注册面 |
+| `scripts/verify-devdata-card.mjs` + `card-smoke` 入口 | 隔离 `DSH_HOME`（`createLiveHarness({ prefix: 'dsh-devdata-card-' })`）+ 临时 profile 装本包 + 真宿主 + 真 Chrome：数据面 / 能力只读那条 400 / 逐次确认 / 能力声明跟回来 / 审计落盘 / bundle 真被加载 / 插件页那一行 / 详情页控件 / **卡片上真的点一次「保存」**（客户端拼的 payload 过得了服务端校验——`client.js` 不在 vitest 层，这一下是它唯一一次被执行）/ 自证真实补丁未变；`--dump` / `--keep` 同 `devfront` | 2026-10-03 首跑 **23 PASS / 0 FAIL**（连跑两次都全绿）；真实 `~/.dsh/cordis.patch.yml`（780 字节）逐字节未变。守卫见 `test/verify-script-safety.test.ts`（六条判据 + 五条反例，**判前先去注释**） |
+
+**为什么脚本叫 `card-smoke` 而不是 `verify`**：本包的 `verify` 已经是
+[`scripts/verify-devdata-all.mjs`](../../scripts/verify-devdata-all.mjs)（一键：类型检查 → 产物 →
+单测 → 真机链路 → 真宿主挂载，登记在 `scripts/verify-list.mjs` 里）；重指它会把那条入口弄丢，
+且会把 README / `docs/agent-real-test.md` 里「`run verify` = 一键」那句话变成假的。
+新脚本另起一个名字（与 `host-mount-smoke` 同族，也与 `devenv` 的 `card-smoke` 对齐）。
+
+**本轮验到的一条，只有真机才验得到**：写 `plan.maxRows` **没有**把 `plan.maxCost` 抹掉——
+真宿主那条 `settings.update()` 是**深合并**（`dsh-settings` 的 `mergeLayers`），而假宿主的
+`Object.assign` 是浅合并。所以这条断言分两处：兜底路径（没有 settings 服务）由 `mergeSection` 的
+用例钉住，走真 settings 栈那一半由真机断言 ⑧ 钉住。
+
+**这一轮没验到 / 已知的两处**：
+
+1. **英文界面下「怎么授权」那一段仍是中文**：那段文案来自 `@hyzyn/dsh-kit` 的 `capabilityHowTo()`
+   （宿主侧判据的一部分），不在本包的 i18n 目录里，所以 `check-i18n` 数不到它（数的是本文件里的
+   字面量）。要么把那一档话术在 `kit` 里做双语，要么接受「授权说明只给中文」。本轮按「不动 `kit`」
+   处理（`devenv` 记-11 记了同一条）。
+2. **浏览器里只点了标量那一次「保存」**：改目标那一次要在页面上再点两个复选框（改动 + 确认），
+   真实机脚本没点——它证明的是同一段提交代码的第二次。数据面那一半（含能力声明跟回来）已由
+   ⑮⑯⑰ 覆盖，**客户端那一段的其余分支（增删行、勾确认框）没有自动化证据**。
+   （另：`§5.1` 的「关」这一半本来就没有入口——两档能力不可写、`bindCapabilitySources` 不接
+   `GrantStore`。那不是缺口，是刻意的边界。）

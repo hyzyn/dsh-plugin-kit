@@ -8,7 +8,8 @@
  *   - 本包**真实的** `Config` schema（保真度：`mount()` 把配置过一遍它，假宿主才不会让
  *     「schema 给没写的字段造了个默认值」这类行为永远测不到——这条是当年一次真机假问题换来的）；
  *   - `apply`；
- *   - 本包用到的服务开关：`settings` 与 **`launchEnvironment`**（能力判定要它）。
+ *   - 本包用到的服务开关：`settings`、**`launchEnvironment`**（能力判定要它）与
+ *     **`webServer`**（卡片那条 `GET/POST /api/dsh-devdata/config` 要它）。
  */
 
 import { plainConfig } from '@hyzyn/dsh-kit'
@@ -29,13 +30,14 @@ export function resolvedPlain(raw: Record<string, unknown>): Record<string, unkn
 }
 
 /** 假宿主。 */
-export function makeHost(options: { settings?: boolean } = {}) {
+export function makeHost(options: { settings?: boolean; webServer?: boolean } = {}) {
   return makeFakeHost({
     ns: 'devdata',
     parse: (raw) => resolveConfig(raw),
     plain: (parsed) => plainConfig(parsed as Config) as unknown as Record<string, unknown>,
     apply: apply as unknown as (ctx: unknown, config: unknown) => void,
     settings: options.settings,
+    webServer: options.webServer !== false,
     launchEnvironment: true,
   })
 }

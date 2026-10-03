@@ -119,10 +119,11 @@ export function rejectionHint(
       return spec === undefined
         ? undefined
         : /*
-           * **不提「就地提权」**（`inPlace` 缺省 false，**D05**）：本套件今天没有客户端半体，也就没有那个
-           * 开关。文案里提它，用户会去设置卡片上找一个不存在的入口——kit 的 `capabilityHowTo`
-           * 专门为这件事留了 `inPlace` 选项（tty 的 `allowProxyCommand` 是同一处境）。
-           * 等 P14 的面板落地、并且真的接上 `GrantStore` 之后，这里才该改成 true。
+           * **不提「就地提权」**（`inPlace` 缺省 false，**D05**）：配置卡片（2026-10-03 建）**没有
+           * 那个开关**——两档能力在写入路径上只读（`plugin.ts` 的 `CAPABILITY_FIELDS` 那条 400），
+           * 本插件也不接 `GrantStore`。文案里提它，用户会去设置卡片上找一个不存在的入口——kit 的
+           * `capabilityHowTo` 专门为这件事留了 `inPlace` 选项（tty 的 `allowProxyCommand` 是同一处境）。
+           * 将来真的做成就地提权（带外确认 + `GrantStore`）之后，这里才该改成 true。
            */
           capabilityHowTo(spec) + '。未获授权前请改用只读类操作'
     }
