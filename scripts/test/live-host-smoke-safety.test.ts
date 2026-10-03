@@ -264,4 +264,33 @@ describe('浏览器路径发现：不许退回写死的 macOS 常量', () => {
     expect(cdp).toMatch(/export const DEFAULT_CHROME = findChrome\(\)/)
     expect(cdp, '不许再有写死的 macOS 路径').not.toContain('/Applications/Google Chrome.app')
   })
+
+  /*
+   * 2026-10-03 补：此前只守住了 `chrome-cdp.mjs`，而 `packages/` 下另有**四处**各自
+   * 抄了一份浏览器发现——tty 与 search 的 preview **逐字相同**（都只在 macOS 上找得到），
+   * codegraph 的 preview-card 与 docker 的 log-perf 直接写死 macOS 路径。
+   * 「只修一半」正是这一组要拦的形状：改了一处、漏了另外几处，而漏掉的那些在
+   * macOS 开发机上照样能跑，所以本地永远发现不了。
+   */
+  const CALL_SITES = [
+    ['packages/tty/scripts/preview.mjs', '../../../scripts/chrome-path.mjs'],
+    ['packages/search/scripts/preview.mjs', '../../../scripts/chrome-path.mjs'],
+    ['packages/codegraph/scripts/preview-card.mjs', '../../../scripts/chrome-path.mjs'],
+    ['packages/docker/scripts/log-perf.mjs', '../../../scripts/chrome-path.mjs'],
+  ]
+
+  it.each(CALL_SITES)('%s 走共享的 findChrome（不再自抄一份）', (rel, importPath) => {
+    const text = readFileSync(new URL('../../' + rel, import.meta.url), 'utf8')
+    expect(text, '要从根 scripts/chrome-path.mjs 取浏览器发现').toContain(`from '${importPath}'`)
+    expect(text, '不许再有写死的 macOS 路径').not.toContain('/Applications/Google Chrome.app')
+    // 自抄一份的指纹：自己再定义一个同名的本地函数（收口后应改成 resolveChrome 之类的薄包装）
+    expect(text, '不许再自带一份 findChrome 实现').not.toMatch(/^function findChrome\(/m)
+  })
+
+  it('四处都不再自己扫 playwright 缓存（那份扫描只在 chrome-path.mjs 里有一份）', () => {
+    for (const [rel] of CALL_SITES) {
+      const text = readFileSync(new URL('../../' + rel, import.meta.url), 'utf8')
+      expect(text, `${rel} 不该再手抄 playwright 缓存路径`).not.toContain('Library/Caches/ms-playwright')
+    }
+  })
 })

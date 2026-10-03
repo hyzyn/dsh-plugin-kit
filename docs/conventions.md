@@ -443,6 +443,16 @@ bundle key 且没有 row 入口、旧宿主只注册两个 row key）——其�
   **浏览器路径不再写死**：`scripts/chrome-path.mjs` 做平台发现（macOS / Linux / Windows 候选表 +
   `CHROME_PATH` / `CHROME_BIN` 环境变量 + `--chrome` 显式点名），因为原先 `chrome-cdp.mjs` 与
   `verify-client-ui.mjs` 各写死一份 macOS App 路径——非 macOS 上必然指不到可执行文件。
+  **2026-10-03 收口了剩下四处**（同一个坑只填了一半）：`packages/tty` 与 `packages/search` 的
+  preview 各抄了一份 `findChrome`（**逐字相同**，且两份都比共享版更差——`if (process.env.CHROME_PATH)
+  return …` **不检查文件是否存在**就返回，指到坏路径时把错误直接交给 spawn），
+  `packages/codegraph/scripts/preview-card.mjs` 与 `packages/docker/scripts/log-perf.mjs` 直接写死
+  macOS 路径。四处现在都 import 共享模块；playwright 缓存仍排在平台候选**之前**（缓存里的
+  Chrome for Testing 版本确定，比机器上随便装的更适合当截图基准），这个顺序经 `findChrome` 的
+  `extraCandidates` 原样保留（默认空数组 ⇒ 既有调用方行为一字未变）。
+  守卫在 `scripts/test/live-host-smoke-safety.test.ts`：四处逐个断言「引了共享模块」「没有写死的
+  macOS 路径」「没有再自带一份 `findChrome`」「没有再手抄 playwright 缓存路径」——
+  **只修一半**正是这一组要拦的形状（漏掉的那些在 macOS 开发机上照样能跑，本地永远发现不了）。
   **为什么单独一个 ubuntu-only job**：它要装真 DSH、起真宿主、开真浏览器，与三平台矩阵性质不同，
   不该把重依赖带进 Windows / macOS 腿；也**不占用**矩阵那三个 job 的时间。
 - **CI 与发布闸要成对**：只在 CI 补而漏了 `release.yml`，发布路径仍能整条绕过（docker D119）。
@@ -577,6 +587,29 @@ nightly 恰恰相反——它存在的理由就是跑 CI **不该**每次跑的�
 
 **并发组名要区分**：`nightly.yml` 用 `nightly-${{ github.ref }}` 而不是复用 `ci-…`，
 否则两种车道会互相取消。
+
+#### 刻意不进 CI：`preview.mjs` 的 39 个界面场景（2026-10-03 复核，结论：**暂不**）
+
+`packages/tty/scripts/preview.mjs` 是**真的覆盖了挂载车道看不见的东西**——挂载车道的 C1–C5 只回答
+「加载了、没崩、没 4xx」（冒烟），而 preview 的 39 个场景断言具体界面行为，且 harness 里有
+**47 处 `getBoundingClientRect` + 13 处 `getComputedStyle`**（真实布局几何，D79 的 2×2 PTY、
+D89 的「+」跟着滚走、D86 的滚动条亮条都是这一层）。**价值真实，是设计没就绪**：
+
+- **两个硬阻塞**（都可解，各有成本）：① **它不能并发**——`userDataDir` 写死在
+  `.preview/chrome-profile`，同时跑两份实测 `Chrome 退出，code=21`，所以只能独占一条车道；
+  ② **它依赖 unpkg.com**——`ensureVendor()` 从 `https://unpkg.com/react@18.3.1/...` 下 React UMD，
+  而 `.preview/` 是 gitignored，checkout 后没有缓存。挂载车道刻意没有这种第三方网络依赖。
+- **一个未证实的风险**：preview 优先读本机 skin-center（真皮肤 **232** 个 CSS 变量），读不到就用
+  内置兜底（**64** 个）。实测用隔离 `HOME` 强制走兜底皮肤，**39/39 仍全绿**（没有假红），
+  但**假绿未证实也未否定**——要证实只能往几何上注入一个真 bug、两种皮肤各跑一次（那次尝试注入错了
+  位置，实验无效，故不下结论）。
+- **可靠性数据（支持它够稳）**：连续 3 次 39/39 零抖动；重负载（6 份并发全量套件 + 忙循环）下
+  也 39/39。虽然 harness 里有 **106 处 `sleep()`**（77 处是 200–400ms，正是 D95/D57/CG65 那种
+  「赌墙钟」的形状），但**实测没抖**——所以这条**不构成**阻塞，只是要盯着。
+
+**什么时候该重新考虑**：preview 开始被当作**无人值守**的闸门（而不是改样式时的本地走查工具）时。
+在那之前，它的定位是「你每次改样式都会跑」，这已经够了。真要接进来，先解上面两个阻塞、
+再做那个 10 分钟的反证实验。
 
 ## AI 协作边界：什么改动要先问
 

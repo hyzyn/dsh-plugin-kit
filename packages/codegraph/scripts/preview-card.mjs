@@ -25,6 +25,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { describeChromeSearch, findChrome, playwrightChromeCandidates } from '../../../scripts/chrome-path.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const pkgRoot = resolve(here, '..')
@@ -370,9 +371,16 @@ writeFileSync(htmlPath, html)
 console.log('预览 HTML:', htmlPath)
 
 if (process.argv.includes('--png')) {
-  const chrome = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-  if (!existsSync(chrome)) {
-    console.log('未找到 Google Chrome，跳过 PNG；HTML 已生成，可在浏览器里打开截图。')
+  /*
+   * 浏览器发现走仓库根的共享模块（`scripts/chrome-path.mjs`）。此前这里写死一条
+   * **只对 macOS 成立**的 Chrome 路径——任何非 macOS 调用方都命中不了它，而症状是
+   * 「未找到 Google Chrome，跳过 PNG」这句**听起来像环境没装浏览器**的话，
+   * 真正的原因（路径写死了平台）被这句话盖掉了。
+   */
+  const chrome = findChrome({ extraCandidates: playwrightChromeCandidates })
+  if (chrome === null) {
+    console.log('未找到 Chrome/Chromium，跳过 PNG；HTML 已生成，可在浏览器里打开截图。')
+    console.log(describeChromeSearch())
   } else {
     // 老版 headless + virtual-time-budget 是这里唯一能稳定退出的组合；
     // --no-sandbox 是因为在受限环境里 Chrome 自己的 sandbox 起不来。

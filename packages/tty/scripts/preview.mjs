@@ -24,6 +24,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, readdirSync
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir, tmpdir } from 'node:os'
+import { describeChromeSearch, findChrome, playwrightChromeCandidates } from '../../../scripts/chrome-path.mjs'
 
 const require = createRequire(import.meta.url)
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -240,23 +241,17 @@ function prepare() {
 
 /* ------------------------------ Chrome/CDP ------------------------------ */
 
-function findChrome() {
-  if (process.env.CHROME_PATH) return process.env.CHROME_PATH
-  const roots = [join(homedir(), 'Library/Caches/ms-playwright'), join(homedir(), '.cache/ms-playwright')]
-  const candidates = []
-  for (const base of roots) {
-    if (!existsSync(base)) continue
-    for (const dir of readdirSync(base)) {
-      if (!dir.startsWith('chromium')) continue
-      candidates.push(join(base, dir, 'chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing'))
-      candidates.push(join(base, dir, 'chrome-mac/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing'))
-      candidates.push(join(base, dir, 'chrome-linux/chrome'))
-    }
-  }
-  candidates.push('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
-  candidates.push('/Applications/Chromium.app/Contents/MacOS/Chromium')
-  for (const c of candidates) if (existsSync(c)) return c
-  throw new Error('找不到 Chrome/Chromium，请设置 CHROME_PATH')
+/*
+ * 浏览器发现走仓库根的共享模块（`scripts/chrome-path.mjs`）：此前这里抄了一份
+ * 「扫 playwright 缓存 → 退回平台候选」的实现，`packages/search` 那份与它**逐字相同**，
+ * 两份都只在 macOS 上找得到浏览器（Linux 上必然抛「找不到 Chrome/Chromium」）。
+ * playwright 缓存仍排在平台候选**之前**——缓存里那个 Chrome for Testing 版本确定，
+ * 比机器上随便装的 Chrome 更适合当截图基准（顺序经 `extraCandidates` 原样保留）。
+ */
+function resolveChrome() {
+  const found = findChrome({ extraCandidates: playwrightChromeCandidates })
+  if (found === null) throw new Error('找不到 Chrome/Chromium：' + describeChromeSearch())
+  return found
 }
 
 const WebSocketImpl = (() => {
@@ -332,7 +327,7 @@ class Cdp {
 }
 
 async function launchChrome() {
-  const chrome = findChrome()
+  const chrome = resolveChrome()
   const userDataDir = join(previewDir, 'chrome-profile')
   rmSync(userDataDir, { recursive: true, force: true })
   const child = spawn(chrome, [

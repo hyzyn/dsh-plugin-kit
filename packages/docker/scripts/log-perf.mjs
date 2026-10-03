@@ -18,6 +18,7 @@ import { readFileSync, existsSync, copyFileSync, mkdirSync, statSync } from 'nod
 import { join, extname, resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Chrome } from '../../../scripts/chrome-cdp.mjs'
+import { describeChromeSearch, findChrome, playwrightChromeCandidates } from '../../../scripts/chrome-path.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const pkg = resolve(here, '..')
@@ -62,8 +63,14 @@ function skip(reason) {
   process.exit(0)
 }
 
-const chromePath = process.env.CHROME_PATH ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-if (!existsSync(chromePath)) skip('没找到 Chrome（可用 CHROME_PATH 指定）')
+/*
+ * 浏览器发现走共享模块：此前这里是 `process.env.CHROME_PATH ?? '<写死的 macOS 路径>'`，
+ * 与 tty / search / codegraph 那三处同一个毛病（非 macOS 上永远命中不了）。走
+ * `findChrome` 后环境变量仍最优先，只是**多了一层「指到不存在的路径时继续找」**
+ * （旧写法 `??` 会直接把那个坏路径交给 spawn）。
+ */
+const chromePath = findChrome({ extraCandidates: playwrightChromeCandidates })
+if (chromePath === null) skip('没找到 Chrome/Chromium（可用 CHROME_PATH 指定）：' + describeChromeSearch())
 for (const file of ['harness.html', 'mock-host.js', 'harness.js', 'vendor/react.js', 'vendor/react-dom.js']) {
   if (!existsSync(join(fixtureDir, file))) skip('预览夹具缺 ' + file + '（先跑 node packages/tty/scripts/preview.mjs）')
 }
