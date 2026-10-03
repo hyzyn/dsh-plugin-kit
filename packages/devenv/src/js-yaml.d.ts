@@ -1,7 +1,11 @@
 /**
  * js-yaml 的最小环境声明：只声明本包用到的子集。
  *
- * js-yaml 在本包是运行时真实依赖（读项目内的就绪清单 `ready/<project>.ready.yaml`），但仓库没有装
+ * **本文件自 2026-10-03 起是历史遗留**：本包不再直接 import `js-yaml`（清单骨架已上收
+ * `@hyzyn/dsh-kit/manifest`）。删这份声明与 `package.json` 里那条依赖要走一次专门清理
+ * （删文件属「先问」的动作），在此之前留着不影响编译。
+ *
+ * 原文（当时的理由）：js-yaml 在本包是运行时真实依赖（读项目内的就绪清单 `ready/<project>.ready.yaml`），但仓库没有装
  * `@types/js-yaml`；这里按实际用到的 API 面收窄声明，与 `devdata` / `kit` / `mcp` / `env` /
  * `codegraph` 等包内的同名声明保持一致的写法。
  *

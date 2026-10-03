@@ -34,10 +34,10 @@
  * 依据：`docs/devdata-plan.md` §15.1 / §15.2 / §15.3。
  */
 
-import { readFileSync } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
 
-import yaml from 'js-yaml'
+
+import { manifestFileName as kitManifestFileName, manifestRelPath, projectsInFiles, readProjectManifest } from '@hyzyn/dsh-kit/manifest'
 
 import { classifyConsoleMessages, summarizeConsole, type ConsoleMessage } from './console.js'
 
@@ -257,24 +257,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * 而那正好命中「缺省即无」这条 fail-closed 判据的**假阴性**（看起来像设计使然，实际是 bug）。
  */
 export function webManifestFileName(project: string): string {
-  return `${project}.yaml`
+  return kitManifestFileName(project, '.yaml')
 }
 
 /** 清单在项目里的相对路径：`web/<project>.yaml`。 */
 export function webManifestRelativePath(project: string): string {
-  return `web/${project}.yaml`
+  return manifestRelPath('web', project, '.yaml')
 }
 
-/** 从一批已列好的文件名里挑出前端清单（不读目录——保持可测）。 */
+/** 从一批已列好的文件名里挑出前端清单（不读目录——保持可测）。实现在 `@hyzyn/dsh-kit/manifest`。 */
 export function webManifestsIn(files: readonly string[]): Map<string, string> {
-  const out = new Map<string, string>()
-  for (const file of files) {
-    if (!file.startsWith('web/') || !file.endsWith('.yaml')) continue
-    const stem = file.slice('web/'.length, -'.yaml'.length)
-    if (stem === '' || stem.includes('/')) continue
-    out.set(stem, file)
-  }
-  return out
+  return projectsInFiles(files, { prefix: 'web/', suffix: '.yaml' })
 }
 
 /** 加载选项。 */
@@ -290,46 +283,27 @@ export interface LoadWebManifestOptions {
  */
 export function loadWebManifest(project: string, options: LoadWebManifestOptions = {}): WebManifestLoad {
   const roots = options.roots ?? ['.']
-  const hits: { file: string; text: string }[] = []
+  // 与 `devdata` / `devenv` 共用同一份「读一份项目内清单」的实现（候选路径 / JSON_SCHEMA /
+  // 五种「读不到」）；这里只把它翻成本包的结果与文案。
+  const candidates = roots.map((root) => join(isAbsolute(root) ? root : resolve(root), 'web', webManifestFileName(project)))
+  const read = readProjectManifest(candidates)
 
-  for (const root of roots) {
-    const dir = isAbsolute(root) ? root : resolve(root)
-    const file = join(dir, 'web', webManifestFileName(project))
-    try {
-      hits.push({ file, text: readFileSync(file, 'utf8') })
-    } catch (error) {
-      if (isNotFound(error)) continue
-      return { kind: 'unreadable', project, message: `读不到 ${file}：${error instanceof Error ? error.message : String(error)}` }
-    }
-  }
-
-  if (hits.length === 0) return { kind: 'no-manifest', project }
-  if (hits.length > 1) {
+  if (read.kind === 'missing') return { kind: 'no-manifest', project }
+  if (read.kind === 'multiple') {
     return {
       kind: 'unreadable',
       project,
-      message: `在多个根目录下都找到了 ${webManifestRelativePath(project)}：${hits.map((hit) => hit.file).join('、')}——两份清单是歧义，请只留一份`,
+      message: `在多个根目录下都找到了 ${webManifestRelativePath(project)}：${read.files.join('、')}——两份清单是歧义，请只留一份`,
     }
   }
-
-  const hit = hits[0] as { file: string; text: string }
-  let data: unknown
-  try {
-    data = yaml.load(hit.text, { schema: yaml.JSON_SCHEMA })
-  } catch (error) {
-    return { kind: 'unreadable', project, message: `${hit.file} 的 YAML 语法错：${error instanceof Error ? error.message : String(error)}` }
-  }
-  if (data === undefined || data === null) {
-    return { kind: 'config-error', project, errors: [{ path: '', message: `${hit.file} 是空的：要么写上断言，要么删掉它` }] }
+  if (read.kind === 'unreadable') return { kind: 'unreadable', project, message: `读不到 ${read.file}：${read.message}` }
+  if (read.kind === 'malformed') return { kind: 'unreadable', project, message: `${read.file} 的 YAML 语法错：${read.message}` }
+  if (read.kind === 'empty') {
+    return { kind: 'config-error', project, errors: [{ path: '', message: `${read.file} 是空的：要么写上断言，要么删掉它` }] }
   }
 
-  const validated = validateWebManifest(project, data)
+  const validated = validateWebManifest(project, read.data)
   return validated.ok ? { kind: 'ok', manifest: validated.manifest } : { kind: 'config-error', project, errors: validated.errors }
-}
-
-/** 区分「文件不存在」与「文件在但读不了」。 */
-function isNotFound(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'ENOENT'
 }
 
 /* --------------------------------- 求值 --------------------------------- */

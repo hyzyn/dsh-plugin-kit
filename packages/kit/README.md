@@ -271,6 +271,38 @@ sink.record({ at: Date.now(), targetId: 'redis-248', action: 'set', allowed: fal
 `AUDIT_NOT_DURABLE`）：`devdata` 的写命令、`devenv` 的 `env_up` / `env_down` 都在这条线上
 （后者停的可能是同事正在联调的那一份，事后必须说得清）。只读动作不受影响。
 
+### 项目内只读清单骨架（`./manifest` 子路径）
+
+三包的东西**同一形态**：`verify/<项目>.yaml`（数据面验活断言）、`web/<项目>.yaml`（前端验活断言）、
+`ready/<项目>.ready.yaml`（环境就绪清单）——都是「**项目内文本 + DSH 侧只读 + 缺省即无**」。
+2026-10-03 把加载骨架从三份几乎逐字相同的实现上收成一份（第三个消费者已到）。
+
+```ts
+import { readProjectManifest, manifestRelPath, projectsInFiles } from '@hyzyn/dsh-kit/manifest'
+
+const read = readProjectManifest([join(root, manifestRelPath('verify', project, '.yaml'))])
+// read.kind: missing | unreadable | malformed | empty | multiple | parsed
+```
+
+**这一层只做「读」，不做「判」**：它不知道什么叫断言、什么叫服务。领域校验（`version`、字段形状、
+跨字段约束）留在各包。它只把「读一份清单会遇到的事」逐个分开——因为**下一步动作完全不同**：
+
+| 结果 | 含义 | 下一步 |
+|---|---|---|
+| `missing` | 文件不存在 | 「这个项目**没有**清单」——**不是**「用默认清单」（缺省即无，fail-closed） |
+| `unreadable` | 文件在，读不了 | 去看权限 / 挂载 |
+| `malformed` | YAML 语法错 | 去改清单（解析器那句话通常带行列） |
+| `empty` | 空文件 | **「空文件」与「没有清单」是两件事**：文件在说明有人打算写 |
+| `multiple` | 多个候选都读到了 | 歧义——报出来，**不按顺序静默取胜** |
+| `parsed` | 读到了，`data` 原样交回 | 各包自己校验 |
+
+**YAML 用 `JSON_SCHEMA`**：清单是**配置数据**，不是「能求值的表达式」。默认 schema 会放进 `!!js`
+一类标签——那等于把「断言」变成「脚本」，评审面完全不同。
+
+**为什么是子路径**：它 `import 'node:fs'`（与 `js-yaml` 同进），不能让这些进客户端半体的 bundle。
+`projectsInFiles` / `manifestFileName` / `manifestRelPath` 三个纯函数把「哪个文件名算清单」这件事
+收在一处——两处不一致时的症状是「明明有清单却报无要求」，而那正好是「缺省即无」的**假阴性**。
+
 ### SSH 执行层（`./ssh-exec` 子路径）与连接簿读取（`tty-books`）
 
 一次性命令的执行通道：**懒连接池 + TOFU 主机指纹 + 超时与输出上限**，本地目标走

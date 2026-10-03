@@ -40,7 +40,6 @@
  *
  * 依据：`docs/devdata-plan.md` §13.2、`jenkins-release` 技能 §3.1 / §4。
  */
-/** 就绪维度：三类判据。**必须显式声明一种**，不做推断。 */
 export type ReadyDimension = 'logPattern' | 'httpProbe' | 'healthcheck';
 /** 全部就绪维度。 */
 export declare const READY_DIMENSIONS: readonly ReadyDimension[];
@@ -115,7 +114,7 @@ export declare function validateProfile(project: string, data: unknown): {
     ok: false;
     errors: ProfileConfigError[];
 };
-/** 清单的文件名（唯一一处）：`<project>.ready.yaml`。 */
+/** 清单文件名：`<项目>.ready.yaml`。 */
 export declare function profileFileName(project: string): string;
 /**
  * 从一批已列好的文件名里挑出就绪清单。

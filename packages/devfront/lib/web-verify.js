@@ -33,9 +33,8 @@
  *
  * 依据：`docs/devdata-plan.md` §15.1 / §15.2 / §15.3。
  */
-import { readFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
-import yaml from 'js-yaml';
+import { manifestFileName as kitManifestFileName, manifestRelPath, projectsInFiles, readProjectManifest } from '@hyzyn/dsh-kit/manifest';
 import { classifyConsoleMessages, summarizeConsole } from './console.js';
 /** 预期算子。与数据面断言库**刻意不同**（见文件头那张表）。 */
 export const WEB_EXPECT_OPERATORS = ['toContain', 'elementExists', 'elementText', 'consoleClean'];
@@ -183,24 +182,15 @@ function isRecord(value) {
  * 而那正好命中「缺省即无」这条 fail-closed 判据的**假阴性**（看起来像设计使然，实际是 bug）。
  */
 export function webManifestFileName(project) {
-    return `${project}.yaml`;
+    return kitManifestFileName(project, '.yaml');
 }
 /** 清单在项目里的相对路径：`web/<project>.yaml`。 */
 export function webManifestRelativePath(project) {
-    return `web/${project}.yaml`;
+    return manifestRelPath('web', project, '.yaml');
 }
-/** 从一批已列好的文件名里挑出前端清单（不读目录——保持可测）。 */
+/** 从一批已列好的文件名里挑出前端清单（不读目录——保持可测）。实现在 `@hyzyn/dsh-kit/manifest`。 */
 export function webManifestsIn(files) {
-    const out = new Map();
-    for (const file of files) {
-        if (!file.startsWith('web/') || !file.endsWith('.yaml'))
-            continue;
-        const stem = file.slice('web/'.length, -'.yaml'.length);
-        if (stem === '' || stem.includes('/'))
-            continue;
-        out.set(stem, file);
-    }
-    return out;
+    return projectsInFiles(files, { prefix: 'web/', suffix: '.yaml' });
 }
 /**
  * 从项目里读一份前端清单（**只读**）。
@@ -209,45 +199,28 @@ export function webManifestsIn(files) {
  */
 export function loadWebManifest(project, options = {}) {
     const roots = options.roots ?? ['.'];
-    const hits = [];
-    for (const root of roots) {
-        const dir = isAbsolute(root) ? root : resolve(root);
-        const file = join(dir, 'web', webManifestFileName(project));
-        try {
-            hits.push({ file, text: readFileSync(file, 'utf8') });
-        }
-        catch (error) {
-            if (isNotFound(error))
-                continue;
-            return { kind: 'unreadable', project, message: `读不到 ${file}：${error instanceof Error ? error.message : String(error)}` };
-        }
-    }
-    if (hits.length === 0)
+    // 与 `devdata` / `devenv` 共用同一份「读一份项目内清单」的实现（候选路径 / JSON_SCHEMA /
+    // 五种「读不到」）；这里只把它翻成本包的结果与文案。
+    const candidates = roots.map((root) => join(isAbsolute(root) ? root : resolve(root), 'web', webManifestFileName(project)));
+    const read = readProjectManifest(candidates);
+    if (read.kind === 'missing')
         return { kind: 'no-manifest', project };
-    if (hits.length > 1) {
+    if (read.kind === 'multiple') {
         return {
             kind: 'unreadable',
             project,
-            message: `在多个根目录下都找到了 ${webManifestRelativePath(project)}：${hits.map((hit) => hit.file).join('、')}——两份清单是歧义，请只留一份`,
+            message: `在多个根目录下都找到了 ${webManifestRelativePath(project)}：${read.files.join('、')}——两份清单是歧义，请只留一份`,
         };
     }
-    const hit = hits[0];
-    let data;
-    try {
-        data = yaml.load(hit.text, { schema: yaml.JSON_SCHEMA });
+    if (read.kind === 'unreadable')
+        return { kind: 'unreadable', project, message: `读不到 ${read.file}：${read.message}` };
+    if (read.kind === 'malformed')
+        return { kind: 'unreadable', project, message: `${read.file} 的 YAML 语法错：${read.message}` };
+    if (read.kind === 'empty') {
+        return { kind: 'config-error', project, errors: [{ path: '', message: `${read.file} 是空的：要么写上断言，要么删掉它` }] };
     }
-    catch (error) {
-        return { kind: 'unreadable', project, message: `${hit.file} 的 YAML 语法错：${error instanceof Error ? error.message : String(error)}` };
-    }
-    if (data === undefined || data === null) {
-        return { kind: 'config-error', project, errors: [{ path: '', message: `${hit.file} 是空的：要么写上断言，要么删掉它` }] };
-    }
-    const validated = validateWebManifest(project, data);
+    const validated = validateWebManifest(project, read.data);
     return validated.ok ? { kind: 'ok', manifest: validated.manifest } : { kind: 'config-error', project, errors: validated.errors };
-}
-/** 区分「文件不存在」与「文件在但读不了」。 */
-function isNotFound(error) {
-    return typeof error === 'object' && error !== null && error.code === 'ENOENT';
 }
 /** 求一条断言。 */
 export function evaluateWebAssertion(input) {

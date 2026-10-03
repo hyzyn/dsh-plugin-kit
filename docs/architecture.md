@@ -29,7 +29,7 @@
 
 | 包 | 类型 | 干什么（一句话） | 文档 |
 |---|---|---|---|
-| `@hyzyn/dsh-kit` | **库** | 宿主半体共享工具：HTTP 回环围栏、托管区块读写、`!!js` 表达式、服务读取、Windows shim、输出解码、**SSH 执行层与 tty 连接簿读取**（子路径 `./ssh-exec`，见 §5）、**审计出口**（子路径 `./audit`：一条 JSON 行 / 调用、含被拒的尝试；`devdata` / `devfront` / `devenv` 三包共用） | [README](../packages/kit/README.md) · [DEFECTS](../packages/kit/DEFECTS.md) |
+| `@hyzyn/dsh-kit` | **库** | 宿主半体共享工具：HTTP 回环围栏、托管区块读写、`!!js` 表达式、服务读取、Windows shim、输出解码、**SSH 执行层与 tty 连接簿读取**（子路径 `./ssh-exec`，见 §5）、**审计出口**（子路径 `./audit`：一条 JSON 行 / 调用、含被拒的尝试；三包共用）、**项目内只读清单骨架**（子路径 `./manifest`：`verify/` · `web/` · `ready/` 三处共用一套「读清单」的分档） | [README](../packages/kit/README.md) · [DEFECTS](../packages/kit/DEFECTS.md) |
 | `@hyzyn/dsh-kit-settings` | 插件 | 在官方「设置」里补一行与「通用设置」平级的「插件配置」入口。**不依赖 kit** | [README](../packages/kit-settings/README.md) |
 | `@hyzyn/dsh-mcp` | 插件 | MCP 服务器配置卡片，保存后热加载为 `mcp__<server>__<tool>` | [README](../packages/mcp/README.md) |
 | `@hyzyn/dsh-env` | 插件 | 环境变量 / 密钥管理，保存即写 `process.env` | [README](../packages/env/README.md) |

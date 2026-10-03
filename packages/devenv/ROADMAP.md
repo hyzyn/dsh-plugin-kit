@@ -31,24 +31,14 @@
 
 ### B. 与另外两包的接缝
 
-5. **「项目内只读文本清单」骨架的上收**：本包与 `devdata` / `devfront` 都在读同一形态的清单
-   （项目内文本 + DSH 侧只读 + 缺省即无），骨架同构却是三份实现。第三个消费者已经出现。
-   门槛：上收进 `kit` 后三包各自用例绿 + 全仓钉子同步（属 L0，动手前先从本文迁进根 `ROADMAP.md`）。
 6. **一次发布后的证据链对齐**：容器起来了（本包）→ 数据对（`devdata`）→ 页面对（`devfront`）。
    门槛：只读、**不改 Jenkins**；三者能按同一个项目名跑同一批清单。
-
-### C. 结构性的债
-
-8. **同一台机器上的两套写入口**：`docker` 的 `allowMutations` 能启停**任意**容器，而本包的
-   「清单就是白名单」只在自己的入口上成立。当前口径只有 plan § 13 风险段的「与 docker 同档」，
-   **没有**记「并存时怎么办」。门槛：先落一条部署纪律（共享机器上不开 docker 的 `allowMutations`），
-   再决定是否让 docker 的变更面也认同一份清单（与根 `ROADMAP.md` 第 9 项合并处理）。
 
 ## 应先迁进 L0 的候选项（本文动手前要搬）
 
 | 候选 | 为什么是 L0 |
 |---|---|
-| **「项目内只读文本清单」骨架上收进 `kit`** | 见待办 B5：要同时改 `devdata` / `devfront` / `devenv` 三包，并动 `kit` 的导出面与全仓钉子（含守卫） |
+| ~~**「项目内只读文本清单」骨架上收进 `kit`**~~ | **已做（2026-10-03）**：落在 `@hyzyn/dsh-kit/manifest`（`kit` 0.8.0），三包共用；见记-9 |
 
 ## 已完成（落点 + 门槛）
 
@@ -134,3 +124,31 @@
 > 于是它的 `env_up` / `env_down` 现在会被 `[AUDIT_NOT_DURABLE]` 拒（**只读工具不受影响**）。
 > 这是 fail-closed 的方向（宁可不动，也别动得没有记录），代价是要在 profile 补一行
 > `auditFile: ~/.dsh/devenv-audit.jsonl`。
+
+### 记-8. 与 docker 并存时的口径：**只在一边开门**（2026-10-03，根 ROADMAP 第 10 项）
+
+**问题**：`docker` 的 `allowMutations` 是**插件级**开关（一开就能对任意容器 start / stop / restart /
+remove），而本包的「清单就是白名单」只在自己的入口上成立——两条路并存时，白名单可以从旁边绕过去。
+
+**落点**：[devdata-plan.md § 13.1](../../docs/devdata-plan.md) 写出结论（含两边的门逐项对照表、
+选「部署纪律」而非「让 docker 也认清单」的理由、以及什么时候该重审）；本包 README 的写入口小节与
+`docker` README 的 `allowMutations` 行各加一条**互相指认**的警示。
+
+**门槛（已验）**：两边的门都**读代码读准了**，不是复述记忆——`allowMutations` 的有效值 =
+`section.allowMutations === true && capabilityGranted(CAP_MUTATIONS)`，且它有**两条**提权通道
+（启动环境 + 就地提权）；本包的 `writeCapability` 只认启动环境（没有客户端半体 ⇒ 没有就地提权），
+外加逐次确认与（今天起）写类要求持久审计。对照表就按这些事实写。
+
+**诚实标注**：这条规矩**只有文档、没有守卫**——它约束的是人的部署动作，而仓库里今天没有
+「同一目标上不许出现两条容器写入口」这种可判定的配置面。文档里写明了：将来若真要合并，
+合的方向是「一处声明、两处生效」（像 tty 连接簿那样），那才是能被守卫化的形态。
+
+### 记-9. 清单骨架上收进 `kit`（2026-10-03）
+
+待办 B5 的落点：`readProjectManifest` / `manifestFileName` / `manifestRelPath` / `projectsInFiles`
+落到 `@hyzyn/dsh-kit/manifest`（`kit` 0.8.0 子路径），本包的 `ready-loader.ts` 与 `env-ready.ts`
+只剩「档位 → 本包的结果与文案」的映射与领域校验。
+
+**门槛（已验）**：本包 `ready-loader` / `env-ready` 的用例**原样通过**（等价性由它们钉住）；
+`packages/kit/test/manifest.test.ts` 12 条钉住骨架本身（五档「读不到」+ 歧义 + 纯函数映射）。
+`empty`（空文件）刻意仍走 `validateProfile(undefined)` —— 与上收前的行为逐字一致。

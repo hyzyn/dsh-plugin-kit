@@ -441,6 +441,14 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
 | —（能力授权） | 未授权 | `allowMutations` / `allowExec` 有**两条提权通道**：① **启动环境变量**（`DSH_DOCKER_ALLOW_MUTATIONS` / `DSH_DOCKER_ALLOW_EXEC`，值为 `1` / `true` / `yes` / `on`）——判定源是宿主的**启动环境快照**，只认继承来的 `process` 层：写项目 `.env` 或 `~/.dsh/env.yml` **不算**授权；② **就地提权**（免重启）：在设置卡片点开关 → 面板给出一条「在宿主终端执行」的命令 → 执行后十秒内生效。HTTP 侧永远可以**关掉**它们（紧急刹车不能依赖重启），但给 `true` 而无授权会被 400 拒绝并说清两条路。配置里的 `true` **不算授权**（它与 HTTP 写进去的值存在同一个存储里，分不出来源）。**升级影响**：升级前靠界面打开的开关会变成关——设环境变量重启，或在卡片里就地确认。**为什么**：回环围栏与同源证明都拦不住跨站页面与页内脚本（它们能自己填 `Sec-Fetch-Site: same-origin`），而 docker socket 等价目标主机 root；细节（含拦不住谁）见 [architecture.md § 7](../../docs/architecture.md#7-一条请求经过什么) |
 | `allowExec` | false | 允许一次性 `docker exec`（面板 exec 输入与 `docker_exec` 工具；关闭时 `/exec` 返回 403） |
 | `execTimeoutSec` | 30 | exec 默认超时秒数（1~120） |
+
+> ⚠️ **`allowMutations` 是插件级开关，别与 `devenv` 的白名单同时开在同一台共享机器上**
+> （2026-10-03 定的跨插件口径，全文与代价见 [devdata-plan.md § 13.1](../../docs/devdata-plan.md)）：
+> 打开它之后 `docker_action` 能对**任意**容器 `start` / `stop` / `restart` / `remove`，于是
+> `devenv` 的「清单就是白名单」**可以从旁边绕过去**——agent 不必碰 `env_down`，直接点名即可。
+> 想保住白名单就**只在一边开门**；关掉它的代价是那台机器上没有面板的启停按钮、没有
+> `docker_action`（只读那套 `ps` / `logs` / `stats` / `inspect` / `events` 不受影响）。
+> 注意**就地提权**（上面那条②）尤其容易在「临时看一眼」时被打开：它免重启生效、不需要谁确认。
 | `pollIntervalSec` | 5 | 面板统计刷新间隔秒数（1~60） |
 | `logTailDefault` | 200 | 日志默认尾部行数（1~5000） |
 | `maxOutputKb` | 512 | 单次命令输出上限（KB，1~8192）；超出截断并标记 `truncated` |

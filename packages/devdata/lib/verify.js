@@ -22,9 +22,8 @@
  *
  * 依据：`docs/devdata-plan.md` §3.9（四条设计约束）、§2 的部署机制分类、`jenkins-release` 技能的 §4 噪声口径。
  */
-import { readFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
-import yaml from 'js-yaml';
+import { manifestFileName as kitManifestFileName, manifestRelPath, projectsInFiles, readProjectManifest } from '@hyzyn/dsh-kit/manifest';
 import { classifySql, sqlRejectionHint } from './sql.js';
 /** 全部部署机制。 */
 export const APPLIES_TO = ['backend', 'front', 'build-only'];
@@ -200,29 +199,23 @@ function isRecord(value) {
  * 而「缺省即无」是这一层的安全判据——歧义在这里的代价是静默地无断言。
  */
 export function manifestFileName(project) {
-    return `${project}.yaml`;
+    return kitManifestFileName(project, '.yaml');
 }
 /** 清单在项目里的相对路径：`verify/<project>.yaml`。 */
 export function manifestRelativePath(project) {
-    return `verify/${manifestFileName(project)}`;
+    return manifestRelPath('verify', project, '.yaml');
 }
 /**
  * 扫一遍「哪些项目真的有清单」。
  *
  * 输入是**已经列好的文件名**（不读目录——本模块不做 I/O，保持可测）。
  * 返回项目名 → 文件名的对应；非 `verify/<project>.yaml` 的文件一律忽略。
+ *
+ * 实现在 `@hyzyn/dsh-kit/manifest`（与 `devfront` / `devenv` 同一份）；这里只是把本包的
+ * 目录与后缀绑上。
  */
 export function projectsWithManifest(files) {
-    const out = new Map();
-    for (const file of files) {
-        if (!file.startsWith('verify/') || !file.endsWith('.yaml'))
-            continue;
-        const stem = file.slice('verify/'.length, -'.yaml'.length);
-        if (stem === '' || stem.includes('/'))
-            continue;
-        out.set(stem, file);
-    }
-    return out;
+    return projectsInFiles(files, { prefix: 'verify/', suffix: '.yaml' });
 }
 /**
  * 从项目里读一份清单（**只读**，不写、不改、不生成模板）。
@@ -235,47 +228,30 @@ export function projectsWithManifest(files) {
 export function loadManifest(project, options = {}) {
     const roots = options.roots ?? ['.'];
     const classify = options.classify ?? classifyAssertionStatement;
-    const hits = [];
-    for (const root of roots) {
-        const dir = isAbsolute(root) ? root : resolve(root);
-        const file = join(dir, 'verify', manifestFileName(project));
-        let text;
-        try {
-            text = readFileSync(file, 'utf8');
-        }
-        catch (error) {
-            if (isNotFound(error))
-                continue;
-            return { kind: 'unreadable', project, message: `读不到 ${file}：${error instanceof Error ? error.message : String(error)}` };
-        }
-        hits.push({ file, text });
-    }
-    if (hits.length === 0)
+    // 读清单这件事（候选路径 / JSON_SCHEMA / 五种「读不到」）在 `@hyzyn/dsh-kit/manifest`，
+    // 与 `devfront` / `devenv` 同一份；这里只把它翻成本包的结果与文案。
+    const candidates = roots.map((root) => join(isAbsolute(root) ? root : resolve(root), 'verify', manifestFileName(project)));
+    const read = readProjectManifest(candidates);
+    if (read.kind === 'missing')
         return { kind: 'no-manifest', project };
-    if (hits.length > 1) {
+    if (read.kind === 'multiple') {
         return {
             kind: 'unreadable',
             project,
-            message: `在多个根目录下都找到了 ${manifestRelativePath(project)}：${hits.map((hit) => hit.file).join('、')}——两份清单是歧义，请只留一份`,
+            message: `在多个根目录下都找到了 ${manifestRelativePath(project)}：${read.files.join('、')}——两份清单是歧义，请只留一份`,
         };
     }
-    const hit = hits[0];
-    let data;
-    try {
-        data = yaml.load(hit.text, { schema: yaml.JSON_SCHEMA });
+    if (read.kind === 'unreadable') {
+        return { kind: 'unreadable', project, message: `读不到 ${read.file}：${read.message}` };
     }
-    catch (error) {
-        return { kind: 'unreadable', project, message: `${hit.file} 的 YAML 语法错：${error instanceof Error ? error.message : String(error)}` };
+    if (read.kind === 'malformed') {
+        return { kind: 'unreadable', project, message: `${read.file} 的 YAML 语法错：${read.message}` };
     }
-    if (data === undefined || data === null) {
+    if (read.kind === 'empty') {
         // 空文件不是「无断言」——文件在，说明有人打算写断言。报配置错，让人补上或删掉。
-        return { kind: 'config-error', project, errors: [{ path: '', message: `${hit.file} 是空的：要么写上断言，要么删掉它（空文件与「没有清单」是两件事）` }] };
+        return { kind: 'config-error', project, errors: [{ path: '', message: `${read.file} 是空的：要么写上断言，要么删掉它（空文件与「没有清单」是两件事）` }] };
     }
-    const validated = validateManifest(project, data, classify);
+    const validated = validateManifest(project, read.data, classify);
     return validated.ok ? { kind: 'ok', manifest: validated.manifest } : { kind: 'config-error', project, errors: validated.errors };
-}
-/** 区分「文件不存在」与「文件在但读不了」——前者是正常的 `no-manifest`，后者要报出来。 */
-function isNotFound(error) {
-    return typeof error === 'object' && error !== null && error.code === 'ENOENT';
 }
 //# sourceMappingURL=verify.js.map

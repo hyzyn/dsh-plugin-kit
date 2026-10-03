@@ -42,6 +42,8 @@
  */
 
 /** 就绪维度：三类判据。**必须显式声明一种**，不做推断。 */
+import { manifestFileName as kitManifestFileName, projectsInFiles } from '@hyzyn/dsh-kit/manifest'
+
 export type ReadyDimension = 'logPattern' | 'httpProbe' | 'healthcheck'
 
 /** 全部就绪维度。 */
@@ -208,8 +210,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** 清单的文件名（唯一一处）：`<project>.ready.yaml`。 */
+/** 就绪清单的后缀（`.ready.yaml`：让它在 `ready/` 下一堆 yaml 里认得出来）。 */
+const READY_SUFFIX = '.ready.yaml'
+
+/** 清单文件名：`<项目>.ready.yaml`。 */
 export function profileFileName(project: string): string {
-  return `${project}.ready.yaml`
+  return kitManifestFileName(project, READY_SUFFIX)
 }
 
 /**
@@ -220,15 +226,7 @@ export function profileFileName(project: string): string {
  * 当时这里写的「会随 devenv 包一起搬走」就是这一步），不该在这里钉死一个属于数据面的路径。
  */
 export function profilesIn(files: readonly string[]): Map<string, string> {
-  const out = new Map<string, string>()
-  for (const file of files) {
-    if (!file.endsWith('.ready.yaml')) continue
-    const base = file.slice(file.lastIndexOf('/') + 1)
-    const stem = base.slice(0, -'.ready.yaml'.length)
-    if (stem === '') continue
-    out.set(stem, file)
-  }
-  return out
+  return projectsInFiles(files, { suffix: READY_SUFFIX })
 }
 
 /** 人类可读的时长（报告里用，别让人去数毫秒）。 */

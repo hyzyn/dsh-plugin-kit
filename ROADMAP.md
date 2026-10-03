@@ -254,20 +254,17 @@ release.yml 3，docker 那三条两个 workflow 各写一遍）、方案 A（wor
 同一台机器上两套容器写入口（`docker` 的 `allowMutations` 与 `devenv` 的 `DSH_DEVENV_WRITE`）——
 它不属「入库」，是一条待定的部署/设计取舍。
 
-### 10. 同一台机器上的两套容器写入口：定个口径
+### 10. ✅ 同一台机器上的两套容器写入口：定个口径
 
 `docker` 的 `allowMutations` 能启停**任意**容器，`devenv` 的 `env_up` / `env_down` 则守着
-「**清单就是白名单**」。同一台共享机器上两条路都在时，**后者那道白名单是可以从旁边绕过去的**——
-当前文档只写了它与 docker「同档」（[devdata-plan.md § 13 风险段](./docs/devdata-plan.md)），
-没有记「并存时怎么办」。
+「**清单就是白名单**」。同一台共享机器上两条路都在时，**后者那道白名单可以从旁边绕过去**——
+原来只写了它与 docker「同档」，没有记「并存时怎么办」。
 
 **为什么是 L0**：要么改 `docker` 的变更面判据（动另一个包 + 它的守卫），要么把它写成一条跨包的
 部署纪律（动规范）——两条路都不是包内改动。
 
-**门槛（先写清再挑一条）**：① 共享机器上的部署纪律落到文档（「开了 `allowMutations` 就别指望
-`devenv` 的白名单」），并说明代价；或 ② 让 `docker` 的变更面也认同一份清单（要比 ① 大得多，
-且要先回答「docker 面板的临时排障要不要受清单约束」）。**先不做任何码改动**：这条的产出是
-一条可引用的结论，不是一个工具。
+**结果**：选了「部署纪律」这一条并**写清了代价**；另一条（让 docker 也认清单）为什么不做、
+什么时候该重审，都记在落点里。见 § 已完成 第 10 项。
 
 ## 已完成（落点 + 门槛）
 
@@ -494,6 +491,22 @@ typecheck` 绿；`pnpm aggregate` 无差异；`docs-index` / `check-doc-links` /
 `ci-script-truth` / 公网 IP 闸门全过；`git ls-files packages/devdata packages/devenv packages/devfront`
 非空。两道 git 钩子在**两次**提交上都真跑过（`commit-msg` 那次还拦下了我在提交信息里写的一个
 IP 形状的四段式子节号——闸门确实有牙齿）。
+
+### 10. ✅ 两套容器写入口的口径：只在一边开门（2026-10-03）
+
+**落点**：[devdata-plan.md § 13.1](./docs/devdata-plan.md) —— 结论与代价成文（两边的门**逐项对照**：
+粒度 / 授权来源 / 作用面 / 逐次确认 / 持久审计），并写清「为什么不选『让 docker 也认一份清单』」
+与「什么时候该重审」。互相指认的三处：`packages/docker/README.md` 的 `allowMutations` 行、
+`packages/devenv/README.md` 的写入口小节、`packages/devenv/ROADMAP.md` 记-8。
+
+**门槛（已验）**：两边的门是**读代码读准**的，不是复述记忆——
+`docker` 的有效值 = `section.allowMutations === true && capabilityGranted(CAP_MUTATIONS)`，且有
+**两条**提权通道（启动环境 + 就地提权）；`devenv` 的 `writeCapability` **只认启动环境**
+（无客户端半体 ⇒ 无就地提权），另有逐次 `confirmed` 与（今天起）写类要求持久审计。
+
+**诚实的边界**：这条规矩**只有文档、没有守卫**——它约束的是**人的部署动作**，今天仓库里没有
+「同一目标不许出现两条容器写入口」这种可判定的配置面。文档里写明了将来若合并，
+合的方向是「一处声明、两处生效」（像 tty 连接簿那样），那才是可守卫化的形态。
 
 ## 已由 L0 资产承接（不再是待办）
 

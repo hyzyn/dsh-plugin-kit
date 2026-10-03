@@ -122,7 +122,7 @@ export declare function validateWebManifest(project: string, data: unknown): {
 export declare function webManifestFileName(project: string): string;
 /** 清单在项目里的相对路径：`web/<project>.yaml`。 */
 export declare function webManifestRelativePath(project: string): string;
-/** 从一批已列好的文件名里挑出前端清单（不读目录——保持可测）。 */
+/** 从一批已列好的文件名里挑出前端清单（不读目录——保持可测）。实现在 `@hyzyn/dsh-kit/manifest`。 */
 export declare function webManifestsIn(files: readonly string[]): Map<string, string>;
 /** 加载选项。 */
 export interface LoadWebManifestOptions {

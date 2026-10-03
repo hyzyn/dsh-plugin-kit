@@ -82,14 +82,10 @@
    继任者），或直接 `import { Chrome } from '@hyzyn/dsh-kit'`。台账正文按「原文未改写」的纪律
    未动，**要改说一声**。
 
-9. **两处「同一模式写了两遍」**：本包的 `web-verify.ts` 与 `devdata` 的 `verify.ts`
-   在**清单加载的骨架**上同构（版本/项目名一致、三种「读不到」、`JSON_SCHEMA`）。
-   目前是两份实现。
-   判据：这是**第二个**消费者，还没到第三个；等 `devenv` 也要读清单时，就该把「项目内只读文本清单」
-   这个骨架上收进 `kit`（上收要 bump kit 版本并同步全仓 10 处钉子，属 L0）。
-10. ~~**`scope.ts` 的归属**~~ —— **已落地**（见 § 已完成 记-6）：实现上收进了
-    `@hyzyn/dsh-kit`（`packages/kit/src/scope.ts`），`devdata` 那份只剩转发 shim，
-    `devfront` 直接从 kit 导入。两边不再交叉依赖。
+9. ~~**两处「同一模式写了两遍」**~~ —— **已收口（2026-10-03）**：`web-verify.ts` 与 `devdata` 的
+   `verify.ts` 在**清单加载的骨架**上同构（版本/项目名一致、三种「读不到」、`JSON_SCHEMA`），
+   等 `devenv` 也要读清单时上收进 `kit` 的判据**已经触发**——骨架落在 `@hyzyn/dsh-kit/manifest`
+   （`kit` 0.8.0 子路径导出），本包那一份只剩自己的领域校验与文案。见 § 已完成 记-20。
 
 ## 应先迁进 L0 的候选项（本文动手前要搬）
 
@@ -97,7 +93,7 @@
 |---|---|
 | ~~**把 `scripts/chrome-cdp.mjs` 上收进 `kit`**~~ | **已做（2026-10-01，见记-2）**：kit 加 `chrome-cdp` 导出、kit 0.5.1 → 0.6.0、12 处钉子同步、5 个消费者改从 kit 导入 |
 | **把 `scope.ts` 从 `devdata` 上收进 `kit`** | 要同时改 `devdata` + `devfront`（+ 将来的 `devenv`），并动 `kit` 的导出面与版本钉子 |
-| **把「项目内只读文本清单」的骨架上收** | 见待办 E9；要同时改 ≥2 个包 |
+| ~~**把「项目内只读文本清单」的骨架上收**~~ | **已做（2026-10-03）**：落在 `@hyzyn/dsh-kit/manifest`，三包共用；见记-20 |
 
 ## 已完成（落点 + 门槛）
 
@@ -788,3 +784,19 @@ JSONL 出口。三包各写一份必然漂，于是按「第三个消费者出�
 
 **没变的两条**（`page.test.ts` 原有的用例继续钉住）：拒绝的尝试也进审计；**审计写失败 = 本次调用
 不返回结果**（fail-closed）。
+
+### 记-20. 清单骨架上收进 `kit`：三包共用一份「读清单」（2026-10-03）
+
+**由来**：待办 E9 的判据（「等 `devenv` 也要读清单时就该上收」）已经触发——`devdata` 的
+`verify/<项目>.yaml`、本包的 `web/<项目>.yaml`、`devenv` 的 `ready/<项目>.ready.yaml` 三处，
+加载骨架此前是**三份几乎逐字相同**的实现（`readFileSync` + `JSON_SCHEMA` + 同一批「读不到」的区分）。
+
+| 落点 | 内容 | 门槛（已验） |
+|---|---|---|
+| `@hyzyn/dsh-kit/manifest`（`kit` 0.8.0 子路径） | `readProjectManifest(paths)` 把「读一份清单会遇到的事」分成五档：`missing`（缺省即无）/ `unreadable` / `malformed` / `empty`（空文件与「没有清单」是两件事）/ `multiple`（歧义，不按顺序静默取胜），外加 `parsed`；另有 `manifestFileName` / `manifestRelPath` / `projectsInFiles` 三个纯函数 | `packages/kit/test/manifest.test.ts` 12 条；**本包 33 条 `web-verify` 用例原样通过**（等价性由它们钉住，不是靠我声明） |
+| 本包这一份 | 只剩**领域校验**（`version` / 断言形状 / 算子）与自己的文案：读盘、JSON_SCHEMA、`isNotFound` 都从本包删掉了 | `typecheck` + 上面那 33 条 |
+| 为什么是子路径 | 它 `import 'node:fs'`（还与 `js-yaml` 同进）——客户端半体会打包主入口 | 与 `./ssh-exec` / `./audit` 同款 |
+
+**顺带**：`devdata` / `devenv` 各自的加载器同样改了（它们各自的用例也原样通过）。三包 `src/js-yaml.d.ts`
+与 `package.json` 里那条 `js-yaml` 依赖现在是**历史遗留**（本包不再直接 import 它）——删文件属
+「要先问」的动作，留待一次专门清理。

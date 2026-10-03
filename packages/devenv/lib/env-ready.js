@@ -40,6 +40,8 @@
  *
  * 依据：`docs/devdata-plan.md` §13.2、`jenkins-release` 技能 §3.1 / §4。
  */
+/** 就绪维度：三类判据。**必须显式声明一种**，不做推断。 */
+import { manifestFileName as kitManifestFileName, projectsInFiles } from '@hyzyn/dsh-kit/manifest';
 /** 全部就绪维度。 */
 export const READY_DIMENSIONS = ['logPattern', 'httpProbe', 'healthcheck'];
 /** 服务名的形状：compose 服务名允许字母数字与 `-` `_` `.`，但含 `/` 就不是服务名了。 */
@@ -144,8 +146,11 @@ function isRecord(value) {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 /** 清单的文件名（唯一一处）：`<project>.ready.yaml`。 */
+/** 就绪清单的后缀（`.ready.yaml`：让它在 `ready/` 下一堆 yaml 里认得出来）。 */
+const READY_SUFFIX = '.ready.yaml';
+/** 清单文件名：`<项目>.ready.yaml`。 */
 export function profileFileName(project) {
-    return `${project}.ready.yaml`;
+    return kitManifestFileName(project, READY_SUFFIX);
 }
 /**
  * 从一批已列好的文件名里挑出就绪清单。
@@ -155,17 +160,7 @@ export function profileFileName(project) {
  * 当时这里写的「会随 devenv 包一起搬走」就是这一步），不该在这里钉死一个属于数据面的路径。
  */
 export function profilesIn(files) {
-    const out = new Map();
-    for (const file of files) {
-        if (!file.endsWith('.ready.yaml'))
-            continue;
-        const base = file.slice(file.lastIndexOf('/') + 1);
-        const stem = base.slice(0, -'.ready.yaml'.length);
-        if (stem === '')
-            continue;
-        out.set(stem, file);
-    }
-    return out;
+    return projectsInFiles(files, { suffix: READY_SUFFIX });
 }
 /** 人类可读的时长（报告里用，别让人去数毫秒）。 */
 export function formatDuration(ms) {

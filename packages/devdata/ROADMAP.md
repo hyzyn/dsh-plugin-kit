@@ -482,3 +482,15 @@ devdata (@hyzyn/dsh-devdata): ValidationError: invalid config:
 两者合起来仍是「假宿主 + 真 Redis」与「真宿主 + 假目标」各一半，**没有一条同时为真**——
 把 devdata 挂进你自己的 profile 之后才能补上那一段（`dsh plugin --profile web add link:<本包目录>`，
 然后重启宿主；配置见 README）。
+
+### 记-17. 清单骨架上收进 `kit`：本包从「一份实现」变成「一份映射」（2026-10-03）
+
+`verify/<项目>.yaml` 的加载骨架（`readFileSync` + `JSON_SCHEMA` + 三种「读不到」）与
+`devfront` 的 `web/`、`devenv` 的 `ready/` 同构，三份实现 → 上收进 `@hyzyn/dsh-kit/manifest`
+（`kit` 0.8.0 子路径）。本包剩下的只有：**档位 → 本包结果与文案**的映射，以及领域校验
+（`classifySql` / 断言形状 / 算子）。`manifestFileName` / `manifestRelativePath` /
+`projectsWithManifest` 变成对 kit 纯函数的**薄包装**（导出名与调用方不变）。
+
+**门槛（已验）**：本包 38 条 `verify` 用例**原样通过**——等价性由它们钉住（含那句「在多个根目录下
+都找到了…两份清单是歧义」的文案、YAML 语法错、空文件、`ENOENT` 与 `ENOTDIR` 的分界）。
+骨架本身的用例在 `packages/kit/test/manifest.test.ts`（12 条）。

@@ -163,6 +163,9 @@ export declare function manifestRelativePath(project: string): string;
  *
  * 输入是**已经列好的文件名**（不读目录——本模块不做 I/O，保持可测）。
  * 返回项目名 → 文件名的对应；非 `verify/<project>.yaml` 的文件一律忽略。
+ *
+ * 实现在 `@hyzyn/dsh-kit/manifest`（与 `devfront` / `devenv` 同一份）；这里只是把本包的
+ * 目录与后缀绑上。
  */
 export declare function projectsWithManifest(files: readonly string[]): Map<string, string>;
 /** 加载选项。 */

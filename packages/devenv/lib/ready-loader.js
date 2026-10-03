@@ -13,9 +13,9 @@
  * `config-error`（读到了但清单本身不成立，**指到字段**）。把它们合成一句「加载失败」的代价是：
  * 用户分不清「我没写」和「我写错了」，而这两件事的下一步动作完全不同。
  */
-import { readFileSync, readdirSync } from 'node:fs';
+import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import yaml from 'js-yaml';
+import { manifestFileName as kitManifestFileName, manifestRelPath, readProjectManifest } from '@hyzyn/dsh-kit/manifest';
 import { profileFileName, profilesIn, validateProfile } from './env-ready.js';
 /** 清单所在子目录（`<项目根>/ready/`）。 */
 export const READY_DIR = 'ready';
@@ -46,30 +46,24 @@ export function listReadyProjects(dir) {
  * 加载一份就绪清单。**永不抛**：三种失败都是返回值（调用方要把它们说给人听）。
  */
 export function loadReadyProfile(dir, project) {
-    const file = readyManifestPath(dir, project);
-    let text;
-    try {
-        text = readFileSync(file, 'utf8');
+    // 读清单这件事（JSON_SCHEMA / 五种「读不到」）在 `@hyzyn/dsh-kit/manifest`，与 `devdata` /
+    // `devfront` 同一份实现；这里只把它翻成本包的结果与文案。
+    const read = readProjectManifest([readyManifestPath(dir, project)]);
+    if (read.kind === 'missing')
+        return { kind: 'no-profile', project };
+    if (read.kind === 'multiple') {
+        // 单路径调用下到不了；留着是为了「档位映射是穷尽的」——将来若支持多根，文案在这里现成。
+        return { kind: 'unreadable', project, message: `在多个根目录下都找到了 ${readyManifestRelPath(project)}：${read.files.join('、')}——两份清单是歧义，请只留一份` };
     }
-    catch (error) {
-        const code = error.code;
-        if (code === 'ENOENT' || code === 'ENOTDIR')
-            return { kind: 'no-profile', project };
-        return { kind: 'unreadable', project, message: error instanceof Error ? error.message : String(error) };
-    }
-    let data;
-    try {
-        // `JSON_SCHEMA` 而不是默认 schema：清单是**配置数据**（与数据面的断言清单同一口径）。
-        data = yaml.load(text, { schema: yaml.JSON_SCHEMA });
-    }
-    catch (error) {
+    if (read.kind === 'unreadable')
+        return { kind: 'unreadable', project, message: read.message };
+    if (read.kind === 'malformed') {
         // YAML 语法错也算「清单不成立」，但路径指不到字段——把解析器那句话原样带上（它通常带行列）。
-        return {
-            kind: 'config-error',
-            project,
-            errors: [{ path: '', message: `YAML 解析失败：${error instanceof Error ? error.message : String(error)}` }],
-        };
+        return { kind: 'config-error', project, errors: [{ path: '', message: `YAML 解析失败：${read.message}` }] };
     }
+    // `empty`（空文件）与 `parsed` 走同一条：交给 `validateProfile` 去说「它不成立」——
+    // 与上收前的行为逐字一致（那时 `yaml.load('')` 也给 undefined）。
+    const data = read.kind === 'empty' ? undefined : read.data;
     const validated = validateProfile(project, data);
     if (!validated.ok)
         return { kind: 'config-error', project, errors: validated.errors };
