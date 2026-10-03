@@ -453,7 +453,9 @@ const plugin = definePlugin<Config>({  name: 'devfront',
      * `applySection`）。工具的执行体在调用时读 `live`，所以重算后无需重新注册即可用上新值；
      * 但**描述里嵌了可用站点名单**，那些必须重新注册（`refreshTools`）。
      */
-    let live = normalizeConfig(plainConfig((rawConfig ?? {}) as Config) as unknown as Record<string, unknown>)
+    /** apply 时的原始配置：卡片保存时如果拿不到 settings 的已解析值，就用它兜底。 */
+    const initialSection = plainConfig((rawConfig ?? {}) as Config) as unknown as Record<string, unknown>
+    let live = normalizeConfig(initialSection)
     /** 本轮登记的工具。配置一变整批换掉——`tools.register` 不覆盖同名工具。 */
     let toolDisposers: Array<() => void> = []
     /** 本轮的能力公告段。 */
@@ -465,8 +467,14 @@ const plugin = definePlugin<Config>({  name: 'devfront',
     let driver: CdpWebDriver | undefined
     /** settings 读写口（没有新版 settings 服务时是 `undefined`，卡片仍可用但不落盘）。 */
     let settingsScopeRef: SettingsEntryScope | undefined
-    /** 最近一次生效的**原始** section：没有 settings 服务时，卡片保存靠它套用 patch。 */
-    let rawSectionRef: Record<string, unknown> = {}
+    /**
+     * 最近一次生效的**原始** section：卡片保存时套用 patch 的兜底源。
+     *
+     * **初值必须是 apply 时那份配置**，不能是 `{}`：真机验收（2026-10-03）抓到过——启动时
+     * `scope.get()` 还是空对象（settings entry 尚未就绪），于是兜底源一直是空的；卡片保存
+     * 一个标量时用 `{...{}, settleMs}` 重建，**把站点整批抹掉**（响应里 `targets: []`）。
+     */
+    let rawSectionRef: Record<string, unknown> = initialSection
 
     /** 审计出口：配了文件走持久出口，否则只进日志（见 `webAuditSink` 的文件头）。 */
     const audit = (): WebAuditSink => webAuditSink({ auditFile: live.auditFile, logger: ctx.logger })
@@ -939,9 +947,17 @@ const plugin = definePlugin<Config>({  name: 'devfront',
                 writeJson(res, 500, { error: `保存配置失败：${error instanceof Error ? error.message : String(error)}` })
                 return
               }
+              /*
+               * 优先用 settings 的**已解析值**（含非 volatile 字段与组合后的层），拿不到才退回
+               * 「最近一次原始 section + patch」。**不能只退回后者**：见 `rawSectionRef` 的注释
+               * （真机验收抓到过：保存一个标量把站点整批抹掉）。
+               */
+              const resolved = scope.get()
+              if (Object.keys(resolved).length > 0) applySection(resolved)
+              else applySection({ ...rawSectionRef, ...normalized.patch })
+            } else {
+              applySection({ ...rawSectionRef, ...normalized.patch })
             }
-            // 幂等兜底：广播通常紧接着到，但「保存成功」之后立刻 GET 必须已经一致。
-            applySection({ ...rawSectionRef, ...normalized.patch })
             writeJson(res, 200, { ok: true, config: configSnapshotFrom(live), persisted: scope !== undefined })
           },
         })

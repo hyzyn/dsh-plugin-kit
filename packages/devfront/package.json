@@ -6,6 +6,13 @@
     "manifestVersion": 1,
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": []
+    },
+    "engines": {
+      "dsh": ">=0.1.7-rc.2"
     }
   },
   "description": "开发/测试环境的前端效果验证工具（真站点打开 / 截图 / 交互 / console 收集 / 文本比对）：声明式验活断言 + 审计。私有包，不发布。",
@@ -20,6 +27,7 @@
       "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
     },
+    "./client": "./client.js",
     "./package.json": "./package.json"
   },
   "dependencies": {
@@ -43,5 +51,14 @@
     "type": "git",
     "url": "git+https://github.com/hyzyn/dsh-plugin-kit.git",
     "directory": "packages/devfront"
+  },
+  "files": [
+    "lib",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/dsh": "^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2"
   }
 }
