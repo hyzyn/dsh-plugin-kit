@@ -28,9 +28,20 @@ export const CHROME_CANDIDATES = {
     '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
   ],
   linux: [
-    // GitHub 的 ubuntu runner 镜像自带 Google Chrome（浏览器测试用），所以它排第一
+    /*
+     * GitHub 的 ubuntu runner 镜像把 Google Chrome 装到这里，并把 `CHROME_BIN` 写成同一个值
+     * （runner-images 的 install-google-chrome.sh：`apt-get install google-chrome-stable_current_amd64.deb`
+     * + `set_etc_environment_variable "CHROME_BIN" "/usr/bin/google-chrome"`）。所以它排第一，
+     * 且环境变量那条分支也会独立命中同一个路径。
+     */
     '/usr/bin/google-chrome',
     '/usr/bin/google-chrome-stable',
+    /*
+     * 同一个脚本把 Chromium 解压到 `/usr/local/share/chromium/chrome-linux/chrome`（不是发行版包，
+     * 所以 `which chromium` 找不到它）。列在这里是为了「镜像只装了 Chromium / 用户拆掉了 Chrome」
+     * 时仍能找到——2026-10-03 复核 runner 镜像安装脚本时补，此前这个路径不在候选表里。
+     */
+    '/usr/local/share/chromium/chrome-linux/chrome',
     '/usr/bin/chromium',
     '/usr/bin/chromium-browser',
     '/snap/bin/chromium',

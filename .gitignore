@@ -14,6 +14,9 @@ dist/
 # 本地杂项：贡献导出 bundle 与 smoke 测试脚本，不入库
 .dsh-contrib.bundle
 .smoke/
+# vitest 覆盖率输出（coverage-summary.json 等）。本仓目前没有 coverage 条目，
+# 是本地手工跑 `vitest --coverage` 时落下的——纯派生数据，不入库
+coverage/
 # 根 bundle 插件入口需要入库；子包 lib/ 为预构建产物，随 git 分发（git 安装
 # 默认不跑构建，产物必须入库才能装，详见 dshmarket #18）
 !/lib/

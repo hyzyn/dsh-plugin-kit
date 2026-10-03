@@ -84,6 +84,40 @@ describe('findChrome：平台候选', () => {
     expect(findChrome({ platform: 'darwin', env: {}, isFile: only(target) })).toBe(target)
   })
 
+  it('GitHub ubuntu runner 镜像的真实形态：/usr/bin/google-chrome 命中（挂载车道的 C 段靠它）', () => {
+    /*
+     * 2026-10-03 复核 runner-images 的 install-google-chrome.sh：它 apt 装 google-chrome-stable，
+     * 并把 `CHROME_BIN=/usr/bin/google-chrome` 写进 /etc/environment。这条钉住「CI 腿找得到浏览器」
+     * 这个前提——找不到时 C 段会按设计 FAIL（不是 SKIP），整条车道红。
+     */
+    expect(findChrome({ platform: 'linux', env: {}, isFile: only('/usr/bin/google-chrome') }))
+      .toBe('/usr/bin/google-chrome')
+    // 同一个脚本把 CHROME_BIN 写进环境；那条分支独立命中同一个路径
+    expect(findChrome({
+      platform: 'linux',
+      env: { CHROME_BIN: '/usr/bin/google-chrome' },
+      isFile: only('/usr/bin/google-chrome'),
+    })).toBe('/usr/bin/google-chrome')
+  })
+
+  it('镜像里的 Chromium 走 /usr/local/share/chromium（不是发行版包，which 找不到它）', () => {
+    /*
+     * 同一个安装脚本把 Chromium 解压到 chromium-browser-snapshots 的 `chrome-linux/chrome`。
+     * 这个路径此前不在候选表里——「镜像只装了 Chromium / 用户拆掉了 Chrome」时会误报找不到。
+     */
+    const target = '/usr/local/share/chromium/chrome-linux/chrome'
+    expect(findChrome({ platform: 'linux', env: {}, isFile: only(target) })).toBe(target)
+  })
+
+  it('Chrome 与 Chromium 都在时优先 Google Chrome（候选表顺序即优先级）', () => {
+    const found = findChrome({
+      platform: 'linux',
+      env: {},
+      isFile: only('/usr/bin/google-chrome', '/usr/local/share/chromium/chrome-linux/chrome'),
+    })
+    expect(found).toBe('/usr/bin/google-chrome')
+  })
+
   it('未知平台 → null（不抛错）', () => {
     expect(findChrome({ platform: 'aix', env: {}, isFile: () => true })).toBeNull()
   })
