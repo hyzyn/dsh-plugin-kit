@@ -100,7 +100,7 @@ export declare function rejectionHint(code: RejectionCode, target: DevDataTarget
  * 为什么要传：`cwd` 缺省是**宿主进程的工作目录**，不是 agent 会话所在的项目目录。本机宿主从
  * `~` 启动，于是「不传 cwd」在作用域收敛到某个项目目录时**必然**被拒——而原先的恢复路径只说
  * 「在允许目录内重试」，**没说你刚才被判的是哪个目录**，agent 只能猜（2026-10-02 真机实测：
- * 那边第一次 `PING` 就撞了它）。
+ * 那边第一次 `PING` 就撞了它，见 **D09**）。
  */
 cwd?: string): string | undefined;
 /**

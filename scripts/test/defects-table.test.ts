@@ -59,8 +59,8 @@ function checkWithConventions(text: string) {
 const kinds = (diffs: { kind: string }[]) => diffs.map((diff) => diff.kind)
 
 describe('缺陷台账：现算（唯一真值来源）', () => {
-  it('五包都能读到索引表，且编号连续、无空号、唯一号数 == 最大号', () => {
-    expect(LEDGER_SPECS.map((spec) => spec.name)).toEqual(['docker', 'tty', 'codegraph', 'kit', 'devenv'])
+  it('六包都能读到索引表，且编号连续、无空号、唯一号数 == 最大号', () => {
+    expect(LEDGER_SPECS.map((spec) => spec.name)).toEqual(['docker', 'tty', 'codegraph', 'kit', 'devenv', 'devdata'])
     for (const spec of LEDGER_SPECS) {
       const fact = facts.get(spec.name)
       expect(fact, `${spec.name} 没算出来`).toBeDefined()
@@ -104,8 +104,9 @@ describe('缺陷台账：现算（唯一真值来源）', () => {
     expect(kit?.statusLine.untilSentence, 'kit 的现状行没有「编号至」').toBe(false)
     expect(kit?.mirror, 'kit 的 A 类那行是两段范围').toBe(true)
     expect(LEDGER_SPECS.find((spec) => spec.name === 'codegraph')?.statusLine.closedColumn).toBe(true)
-    // `✓` 列（L2 侧）：只有 tty 有，其余四包必须**显式**声明为没有
+    // `✓` 列（L2 侧）：tty 与 devdata 有，其余四包必须**显式**声明为没有
     expect(LEDGER_SPECS.find((spec) => spec.name === 'tty')?.codeRefs).toBe(true)
+    expect(LEDGER_SPECS.find((spec) => spec.name === 'devdata')?.codeRefs, 'devdata 表末列是 ✓').toBe(true)
     for (const name of ['docker', 'codegraph', 'kit', 'devenv']) {
       expect(LEDGER_SPECS.find((spec) => spec.name === name)?.codeRefs, `${name} 没有 ✓ 列`).toBe(false)
     }

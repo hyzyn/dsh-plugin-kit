@@ -28,7 +28,7 @@
  * **一个 `redis_command`（命令原文）+ 引擎无关的自证项**，而结构化动作（`get` / `set` / `keys`…）
  * **不进工具面**（它们在矩阵里照旧登记着，因为解析层算出的动作名要靠它们分档）。
  * 于是「工具名」与「动作名」在那类引擎上不是一一对应的——`preflight` 因此把
- * **入口（可见性）**与**动作（裁决）**分成两个参数。写 / 危险读的闸门全部落在判据层：
+ * **入口（可见性）**与**动作（裁决）**分成两个参数（**D03**）。写 / 危险读的闸门全部落在判据层：
  * 可见性挡不住它们，`adjudicate` 挡得住。理由与代价见 `docs/devdata-plan.md` §17.12 / §17.14。
  *
  * 反面规则：**读类始终注册**，即使环境是 `unknown`——可见性与可执行性是两件事，
@@ -223,8 +223,8 @@ export const RAW_COMMAND_TOOL_NAME = toolNameFor(RAW_COMMAND_TOOL)
  * 引擎专属的**受管**工具名（非引擎无关的那些）。
  *
  * **从矩阵现算，不手写**：原先这里是手写的一份清单，而 RocketMQ 的矩阵是后加的——清单没跟着长，
- * 于是 `lag` / `list_topics` / `send` 在工具面上永远不可见（还没有一条用例发现）。教训与修法见
- * `operations.ts` 的 `allManagedActions`。
+ * 于是 `lag` / `list_topics` / `send` 在工具面上永远不可见（还没有一条用例发现；当时的断言方向反了，
+ * 见 **D01**）。教训与修法见 `operations.ts` 的 `allManagedActions`。
  */
 const ENGINE_SPECIFIC = new Set(allManagedActions().filter((action) => !AGNOSTIC_ACTIONS.includes(action)))
 
@@ -499,7 +499,7 @@ async function preflight(input: {
   /*
    * 需要二次确认的操作**在这里就拒**，不往下走。
    *
-   * 2026-10-02 修：此前裁决只把 `requiresConfirm` 算出来**放进成功结果的载荷**，然后照样执行
+   * 2026-10-02 修（**D02**）：此前裁决只把 `requiresConfirm` 算出来**放进成功结果的载荷**，然后照样执行
    * ——于是「共享环境里的不可逆操作要逐次确认」这句话只在类型里成立。真实后果是：给 `248` 那种
    * 共享 Redis 授权写之后，第一次 `DEL` 就打出去了（`facts.requiresConfirm` 对 `test-shared`
    * 是 true，而它当时只是被回显）。

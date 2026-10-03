@@ -158,6 +158,20 @@ export const LEDGER_SPECS = [
     codeRefs: false,
     // 末列是「涉及文件」；两条缺陷只改了脚本 / 夹具，没有 `✓` 列（声明式，不靠匹配失败兜）
   },
+  {
+    name: 'devdata',
+    prefix: 'D',
+    path: 'packages/devdata/DEFECTS.md',
+    tableHeading: /^## 1\. 编号索引表/,
+    selfSequence: true,
+    nextAnchor: true,
+    crossRefs: [],
+    statusLine: { closedColumn: false, untilSentence: true },
+    mirror: false,
+    codeRefs: true,
+    // 末列是 `✓`（「这段代码/测试里引用了该编号」）：9 条补立的号都在 src/ 里落了指针，
+    // 所以这一列**必须**由守卫现算核对（与 tty 同款），不靠人工记得去更新
+  },
 ]
 
 /** 编号数字串的公共形状（`D01` / `CG140`）。 */

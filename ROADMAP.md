@@ -238,37 +238,36 @@ release.yml 3，docker 那三条两个 workflow 各写一遍）、方案 A（wor
 **为什么是 L0**：要动 `docs/` 结构与归属表。**这是可发现性问题，不是正确性问题**，不急；
 真要动，方向是分层（例如 `docs/landed/`）而不是继续加规矩。
 
-### 9. 开发数据套件三包（`devdata` / `devenv` / `devfront`）：入库 + 状态真源收敛
+### 9. ✅ 开发数据套件三包（`devdata` / `devenv` / `devfront`）：入库 + 状态真源收敛
 
 现算（2026-10-03）：三包功能**都已落地并各有真机记录**（`devdata` 的 Redis 通路 A、`devenv` 的
 观测链路与写路径、`devfront` 的 CDP 驱动 + 六个 `site_*` 工具），判据与落点在三包各自的
-`ROADMAP.md`。但**整套还没入库**：三个包目录、L0 方案 [`docs/devdata-plan.md`](./docs/devdata-plan.md)、
-`kit` 里随它们新增的 5 个 `src`（`chrome-cdp` / `scope` / `ssh-exec` / `tty-books` / `host-services`）
-与四个 `scripts/verify-{devdata,devenv}-*.mjs` 全部是 **untracked**；本条的动机不是「补个链接」，
-而是**三包现在只存在于工作区**——一次误清理就没了，且 CI 看不到它们。
+`ROADMAP.md`。本条要收的是「它们只存在于工作区」：三个包目录、L0 方案
+[`docs/devdata-plan.md`](./docs/devdata-plan.md)、`kit` 里随它们新增的 5 个 `src`
+（`chrome-cdp` / `scope` / `ssh-exec` / `tty-books` / `host-services`）与四个
+`scripts/verify-{devdata,devenv}-*.mjs` 当时全是 **untracked**——一次误清理就没了，且 CI 看不到它们。
 
 **为什么是 L0**：一次改动跨 `devdata` / `devenv` / `devfront` + `kit` + `scripts` + 根文档，
 符合「要同时改 ≥2 个包，或要动 CI / 脚本 / 规范」。
 
-**落点**：按可回滚的顺序拆提交（① `kit` 的新增导出 + 全仓钉子同步 → ② 三包本体 →
-③ L0 方案与根文档 / 守卫），每步自带产物重建（`lib/` 是入库产物）。
+**落点与门槛**见 § 已完成 第 9 项（含实际做法与两道钩子的实测）。**尾边一件另立第 10 项**：
+同一台机器上两套容器写入口（`docker` 的 `allowMutations` 与 `devenv` 的 `DSH_DEVENV_WRITE`）——
+它不属「入库」，是一条待定的部署/设计取舍。
 
-**门槛**：`pnpm typecheck && pnpm build && pnpm test && pnpm aggregate` 全绿，且 build 之后
-`git diff` 干净（产物闸门）；三包单测绿（真机那几档按 [docs/agent-real-test.md](./docs/agent-real-test.md)
-单独跑，缺凭据 SKIP 不算过）；`git ls-files packages/devdata packages/devenv packages/devfront` 非空。
+### 10. 同一台机器上的两套容器写入口：定个口径
 
-**顺带要收的两个尾巴**（都不阻塞入库，但同批做完更省事）：
+`docker` 的 `allowMutations` 能启停**任意**容器，`devenv` 的 `env_up` / `env_down` 则守着
+「**清单就是白名单**」。同一台共享机器上两条路都在时，**后者那道白名单是可以从旁边绕过去的**——
+当前文档只写了它与 docker「同档」（[devdata-plan.md § 13 风险段](./docs/devdata-plan.md)），
+没有记「并存时怎么办」。
 
-1. **`devdata` 还没有 `DEFECTS.md`**——它目前没有需要编号的缺陷。（`devenv` 的那两条**已修**缺陷
-   ——真机首跑暴露、记在 [devdata-plan.md § 16.1.4](./docs/devdata-plan.md)——已于 2026-10-03 落
-   [`packages/devenv/DEFECTS.md`](./packages/devenv/DEFECTS.md) 的 `D01`–`D02`，并按
-   [conventions.md § 编号规范 硬规矩 5](./docs/conventions.md#编号规范) 登记进
-   `scripts/defects-table.mjs` 与编号规范表。）`devdata` 真出现缺陷时照同一条硬规矩补建。
-2. **同一台机器上两套写入口**：`docker` 的 `allowMutations` 与 `devenv` 的 `DSH_DEVENV_WRITE`
-   各自都能启停容器，而 `devenv` 的「清单就是白名单」只在自己的入口上成立。当前口径只是
-   「与 docker 同档」（[devdata-plan.md §13 风险段](./docs/devdata-plan.md)），**没有**记
-   「并存时怎么办」。先落一条部署纪律（共享机器上不开 docker 的 `allowMutations`），
-   将来要么让 docker 的变更面也认同一份清单，要么显式把这条写成可接受的取舍。
+**为什么是 L0**：要么改 `docker` 的变更面判据（动另一个包 + 它的守卫），要么把它写成一条跨包的
+部署纪律（动规范）——两条路都不是包内改动。
+
+**门槛（先写清再挑一条）**：① 共享机器上的部署纪律落到文档（「开了 `allowMutations` 就别指望
+`devenv` 的白名单」），并说明代价；或 ② 让 `docker` 的变更面也认同一份清单（要比 ① 大得多，
+且要先回答「docker 面板的临时排障要不要受清单约束」）。**先不做任何码改动**：这条的产出是
+一条可引用的结论，不是一个工具。
 
 ## 已完成（落点 + 门槛）
 
@@ -472,6 +471,29 @@ CI 真在跑的 `packages/tty/scripts/probe-route-smoke.mjs` / `integration.mjs`
 **门槛**：`scripts/test/docs-index.test.ts` 的反例 5 六条——删一行 / 加一行假包 / 节被改名 /
 把整张表清空（仍必须按 12 行报，不许被别处链接喂饱）/ 合成 workspace（少一个包 → stale）/ CRLF 免疫；
 外加一条正向断言把「命中不是 0」钉住（两边都 ≥12、集合相等）。真实仓库 12/12 现算一致。
+
+### 9. ✅ 开发数据套件三包入库：一条提交 338 文件 + 状态真源收敛到三个包
+
+**落点（2026-10-03，提交 `b25ccc5c`，本地未 push）**：三包（`devdata` / `devenv` / `devfront`）
++ L0 方案 + `kit` 的新增导出与全仓钉子同步（0.5.1 → 0.6.0：`ssh-exec` / `tty-books` / `scope` /
+`chrome-cdp` / `host-services`）+ `docker` 转再导出壳 + `docker/test` 四个 ssh 用例迁进 `kit` +
+`scripts/` 的守卫与 `verify-*` + 根文档，**一条提交**入库。
+
+**为什么合成一条而不是拆三条**：拆出来的中间提交在**本机不可能绿**——workspace 现算包含那三个
+包，而 `docs-index` 判据 5 要求 `architecture.md § 2` 行数与之相等：只提交文档会得到「清单 15 行 ↔
+仓库 12 包」，只提交包又会得到反向漂移。中间态只能靠先移走未跟踪目录来伪造，而那本身是「删除/改名
+文件」那一类要先问的动作。
+
+**顺带收掉的三件**：① `devenv` 与 `devdata` 的缺陷台账都立起来了（`D01`–`D02` / `D01`–`D09`，
+后者是**补立**的号，此前只以叙述形态住在 `devdata/ROADMAP.md` 的 记-12 / 记-14 / 记-16）；
+② 收敛三包的旧陈述（11 处，含 plan §16.1.2 与 §16.1.3 自相矛盾一处）；③ 真实公网地址与业务域名
+按闸门口径换成占位（RFC 5737 / `example.com`），真机用例的默认主机改为必填。
+
+**门槛（已验）**：`pnpm -r build` → 产物闸门干净；`pnpm test` 154 文件 / 2484 用例绿；`pnpm -r
+typecheck` 绿；`pnpm aggregate` 无差异；`docs-index` / `check-doc-links` / `defects-table` /
+`ci-script-truth` / 公网 IP 闸门全过；`git ls-files packages/devdata packages/devenv packages/devfront`
+非空。两道 git 钩子在**两次**提交上都真跑过（`commit-msg` 那次还拦下了我在提交信息里写的一个
+IP 形状的四段式子节号——闸门确实有牙齿）。
 
 ## 已由 L0 资产承接（不再是待办）
 

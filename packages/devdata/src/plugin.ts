@@ -85,11 +85,11 @@ const CAPABILITY_SCHEMA = z.object({
  *
  * 用户**什么都没写**时它照样造出 `{env:'', label:''}`（`.required(false)` 也一样，实测）。
  * 而空 `env` 在语义上是「给了能力规格但没给变量名」——一条**配置问题**。于是「没写」被报成了
- * 「写错了」：2026-10-02 真机上 `devdata_capabilities` 对每个目标多报两条这种假问题（维护者
- * 自己验出来的）。`.default(undefined)` 让缺省**保持缺席**：未写 → 键不存在（静默按「不接入
+ * 「写错了」（**D06**）：2026-10-02 真机上 `devdata_capabilities` 对每个目标多报两条这种假问题
+ * （维护者自己验出来的）。`.default(undefined)` 让缺省**保持缺席**：未写 → 键不存在（静默按「不接入
  * 闸门」）；真写了 `{}` → 仍是 `{env:'', label:''}`（照报）。
  *
- * ## ② `db`：`z.natural().default(0)` 会让执行器每次先发一条 `SELECT 0`
+ * ## ② `db`：`z.natural().default(0)` 会让执行器每次先发一条 `SELECT 0`（**D07**）
  *
  * 「没写」变成「写了 0」，于是每个调用前都多一帧（Redis 连接默认就在 0 号库）。2026-10-02 把
  * 假宿主改成走真 schema 之后，用例当场把这个多出来的帧照了出来——真机上它一直在发，只是没人看帧序。
@@ -698,7 +698,7 @@ const plugin = definePlugin<Config>({
         console.warn(`[dsh-devdata] ${String(failures.length)} 个工具注册失败（下次配置变更会重试）：${failures.join('；')}`)
       }
       /*
-       * 这一行走 `console.log` 而不是 `ctx.logger.info`——**2026-10-02 真宿主验证时踩到的**：
+       * 这一行走 `console.log` 而不是 `ctx.logger.info`——**2026-10-02 真宿主验证时踩到的**（**D04**）：
        * 走 logger 会进另一个 sink，实测「插件明明挂上了、启动日志里却找不到它注册了什么」。
        * 而**真机验收脚本解析的就是这一行**（`live-host-smoke` 对 docker 用的是同一个写法），
        * 运维确认插件有没有生效也看它。本仓其余插件（docker / tty / devfront）都用 stdout。
@@ -735,7 +735,7 @@ const plugin = definePlugin<Config>({
     /**
      * 配置问题只报一次（`applySection` 会被反复调用）。
      *
-     * **走 `console.warn` 而不是 `ctx.logger.warn`**——这是 2026-10-02 补的第二个洞：logger 进的是
+     * **走 `console.warn` 而不是 `ctx.logger.warn`**——这是 2026-10-02 补的第二个洞（**D08**）：logger 进的是
      * 另一个 sink，真宿主的启动日志里看不到，于是
      *   ① 用户永远不会在启动时知道自己的配置有问题；
      *   ② `verify-host-mount.mjs` 里那条「启动日志里没有『配置问题』」**变成空断言**（报告本来

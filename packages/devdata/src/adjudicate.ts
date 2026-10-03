@@ -105,7 +105,7 @@ export function rejectionHint(
    * 为什么要传：`cwd` 缺省是**宿主进程的工作目录**，不是 agent 会话所在的项目目录。本机宿主从
    * `~` 启动，于是「不传 cwd」在作用域收敛到某个项目目录时**必然**被拒——而原先的恢复路径只说
    * 「在允许目录内重试」，**没说你刚才被判的是哪个目录**，agent 只能猜（2026-10-02 真机实测：
-   * 那边第一次 `PING` 就撞了它）。
+   * 那边第一次 `PING` 就撞了它，见 **D09**）。
    */
   cwd?: string,
 ): string | undefined {
@@ -119,7 +119,7 @@ export function rejectionHint(
       return spec === undefined
         ? undefined
         : /*
-           * **不提「就地提权」**（`inPlace` 缺省 false）：本套件今天没有客户端半体，也就没有那个
+           * **不提「就地提权」**（`inPlace` 缺省 false，**D05**）：本套件今天没有客户端半体，也就没有那个
            * 开关。文案里提它，用户会去设置卡片上找一个不存在的入口——kit 的 `capabilityHowTo`
            * 专门为这件事留了 `inPlace` 选项（tty 的 `allowProxyCommand` 是同一处境）。
            * 等 P14 的面板落地、并且真的接上 `GrantStore` 之后，这里才该改成 true。

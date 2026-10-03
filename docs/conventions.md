@@ -85,12 +85,12 @@
 | 中等 | `kit` · `rss` · `search` · `mcp` · `devfront` |
 | 简单 | `profile` · `env` · `prompt` · `kit-settings` · `all` |
 
-> **已登记的缺口（2026-10-03）**：`devdata` 按行数落在**复杂档**，但**没有 `DEFECTS.md`**
-> ——它目前没有需要编号的缺陷（`devenv` 的那两条已于 2026-10-03 落
-> [`packages/devenv/DEFECTS.md`](../packages/devenv/DEFECTS.md) 的 `D01`–`D02`，并按硬规矩 5
-> 登记进了 `scripts/defects-table.mjs` 与本表）。按纪律 1「升档不强制回填」，这不构成红；
-> `devdata` 真出现缺陷时照同一条硬规矩补建（建序列 + 把包登记进守卫与编号规范表）。
-> **跟踪见 [`ROADMAP.md`](../ROADMAP.md) 第 9 项。**
+> **档位与台账（2026-10-03）**：`devdata` / `devenv` 都落在**复杂档**，两者的 `DEFECTS.md` 也都已
+> 建立并登记进 `scripts/defects-table.mjs` 与本表（`devdata D01`–`D09` 与 `devenv D01`–`D02`，
+> 后者有几条是当天补立的号）。补立时用的两条判据：① **一次真跑暴露的缺陷要留编号**——已经修在
+> 代码里、却没有号，下次同样的坑就没人认得出；② 反之，**修在仓根 / 规范里、包内没有一行代码因它
+> 长成现在这样**的缺口不硬塞包内号（例：2026-10-03 `devdata/lib` 那次陈旧产物——它的守卫与规矩
+> 都在 L0，编号在包内会得到一个没有 L2 指针的空号）。
 
 **三条纪律**：
 
@@ -114,6 +114,7 @@
 | `codegraph` | `CG` | `CG01`–`CG65` |
 | `kit` | `D` | `D01`–`D05` 是**转入镜像**：这些编号的权威记录在**原包**（主要是 `codegraph CG`），kit 侧只是「改 kit 的人不必翻别人的台账」的入口，**引用时优先写原编号**（如 `codegraph CG05`）；`D06`–`D14` 是**本包自研**：在 kit 内部发现、权威记录就在 kit。 |
 | `devenv` | `D` | `D01`–`D02` |
+| `devdata` | `D` | `D01`–`D09`（2026-10-03 补立：此前只以叙述形态住在它 `ROADMAP.md` 的 记-12 / 记-14 / 记-16 里） |
 | 其它包 | 需要时自定，从 `01` 起 | — |
 
 > 表里的上界数字（以及各包 `DEFECTS.md` 文件头自称的范围、「接在 `Dxx` 之后」、跨包互称的范围、
@@ -137,7 +138,7 @@
    审计时点的行号与 sha 同样只会误导。定位实现用
    `git log -S'<症状关键词>'`，或读代码里带编号的注释。
 5. **台账自洽**：`DEFECTS.md` 的「现状」行数字必须与表内现算一致。
-   五包（`docker` / `tty` / `codegraph` / `kit` / `devenv`）都在
+   六包（`docker` / `tty` / `codegraph` / `kit` / `devenv` / `devdata`）都在
    [`scripts/test/defects-table.test.ts`](../scripts/test/defects-table.test.ts) 的守卫范围内
    （本包自带的那份是 `packages/codegraph/test/defects-ledger.test.ts`，只管 codegraph）。
    新增包时：把它加进守卫的包清单，上表也补一行。
