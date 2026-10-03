@@ -42,6 +42,8 @@
 | **投稿材料**（面向 DSH 插件市场） | L0 [`docs/pr-body-dsh-market.md`](./pr-body-dsh-market.md)（**提给市场仓库的 PR 正文**，其相对链接指向目标仓库）与 [`docs/community-submission.json`](./community-submission.json)（提交载荷）。两者都是**对外投稿物**，不是本仓架构 / 规范；**保留原路径**——`community-submission.json` 可能被市场按 `@main/docs/` URL 取。它们属于**「创意工坊」那条投稿轨道**，与市场卡片上分类标签的实际来源不是一回事：见下行 |
 | **插件市场索引**（卡片分类标签从哪来 · 我们 8 条的现状 · 改分类怎么提 PR） | L0 [`docs/market-index.md`](./market-index.md) |
 | **CI 与 `package.json` 的脚本双真相源：收敛方案**（改动点 / rename 面 / CI 影响 / 验收；**已执行——方案 A + 守卫，含 2026-10-03 根级扩展**） | L0 [`docs/ci-scripts-plan.md`](./ci-scripts-plan.md) |
+| **发包内容**（`files` 字段漏一项没有任何闸门会红 · 为什么挂载车道看不见它 · 守卫形态） | L0 本文 [§ 发包内容守卫](#发包内容守卫files-字段漏一项不许静默) |
+| **三条车道各管什么**（CI 每次推送 / 挂载车道 / nightly 的 flake + coverage；为什么后两者不进 CI） | L0 本文 [§ 车道分工](#车道分工哪条车道管什么) |
 | **AI 协作边界**（哪些改动必须先问维护者） | L0 本文 [§ AI 协作边界](#ai-协作边界什么改动要先问) |
 
 ### L0 / L1 的边界判据
@@ -375,8 +377,14 @@ bundle key 且没有 row 入口、旧宿主只注册两个 row key）——其�
   所以排查第一步必须是**稳定复现**。用 [`scripts/repro-flake.mjs`](../scripts/repro-flake.mjs)：
 
   ```sh
-  node scripts/repro-flake.mjs packages/tty/test/screen-crash.test.ts --rounds 10
+  pnpm repro-flake packages/tty/test/screen-crash.test.ts --rounds 10
   ```
+
+  **发现渠道**：`nightly.yml` 的 flake job 每天自动跑一次
+  （`pnpm flake:check`，[`scripts/flake-lane.mjs`](../scripts/flake-lane.mjs)——并发跑 N 份全量套件，
+  红了**点名哪一份、哪条用例**）。它**自动重跑**是刻意不做的：重跑到绿正是要避免的事
+  （会把真 flake 洗成绿）。车道的形状为什么是并发而不是顺序三遍，见
+  [§ 车道分工](#车道分工哪条车道管什么)。
 
   它自己管负载的生死（起 N 份全量套件 + M 个忙循环 → 测量 → **先杀进程组再等**，中断路径也收）。
   **手敲命令时踩过的三个坑**（各浪费近一小时，脚本已经把这几个都绕开了）：
@@ -489,6 +497,86 @@ bundle key 且没有 row 入口、旧宿主只注册两个 row key）——其�
   CI 那处此前长期是失效写法（**本地防得住、CI 防不住**，风险面限于绕过钩子的提交：
   浅克隆 / `--no-verify` / 直接在 CI 环境重建产物的人），2026-09-25 修好——
   该 step 的注释里也记了这个坑，免得后人「顺手简化」回去。
+
+### 发包内容守卫：`files` 字段漏一项不许静默
+
+**症状**：`package.json` 的 `files` 是**手工清单**，而清单漏一项**没有任何别的东西会红**。
+2026-10-03 实测反证——把 `packages/tty/package.json` 的 `files` 里 `"client.js"` 删掉后：
+
+```
+publishable:check ✔ · dsh-peers:check ✔ · kit-pins:check ✔ · aggregate:check ✔
+全量 vitest 110 文件 / 1714 用例 ✔
+```
+
+十三道闸门 + 一千七百条用例**全绿**，而 `pnpm pack` 出的 tarball 里真的没有 `client.js`
+——用户装上就是浏览器半体 404（界面整块不出现），只在用户侧暴露。
+
+**为什么既有车道全都看不见它**（三条各自成立，合起来才是这个洞）：
+
+| 车道 | 为什么看不见 |
+|---|---|
+| `artifacts:check` | 只比「入库产物 vs 重新构建」，它不知道 `files` 字段 |
+| `publishable:check` | 只管 `workspace:` 协议残留 |
+| **挂载车道** | 走 `link:`（直接链到本仓目录），**绕过 `files` 字段** |
+
+第三行值得单独说：挂载车道是「最强的那条」（真 DSH + 真浏览器），但它的**挂载形态**决定了
+它验不到打包边界。dsh-web 的同名车道用 `pnpm pack` + `file:<tarball>`，天然覆盖这一层——
+**这是两条车道形态不同带来的真实缺口**，不是谁写漏了。要补的是**形态**，不是断言。
+
+**守卫**：`pnpm package-contents:check`（[`scripts/check-package-contents.mjs`](../scripts/check-package-contents.mjs)）
+真的打一次包（`pnpm pack --dry-run`，本地、不落 tarball、不联网，13 个目标各约 0.14s），判三条：
+
+1. **声明的入口必须在 tarball 里**——`main` / `types` / `exports` 的每个值 /
+   `dsh.bundle.patch` / 声明了 `dsh.client` 时的 `client.js`，**全部从 manifest 现算**。
+   写死一张清单就是同一个 bug 换个位置。
+2. **`files` 里的字面路径必须存在于磁盘**——pnpm 对不存在的路径**静默忽略**（实测：加一条
+   不存在的 `DOES-NOT-EXIST.md`，`pnpm pack` 退出码 0、只是不包含它），于是改名/删除后残留的
+   死路径会一直躺着骗人。
+3. **命中不是 0**——与本文其它守卫同一条纪律。
+
+**刻意不查「多余的东西」**：tarball 里多带 `scripts/` / `client-src/` 是**有意的**
+（tty / docker 把端到端脚本随包发给用户），本闸只回答「声明的东西在不在」。
+
+**接线**：`ci.yml` 与 `release.yml` **成对**（发布闸不许绕过——tag 可以打在没过 CI 的提交上，
+而 `files` 漏一项发出去就只能靠新版本补救）。守卫用 `scripts/test/package-contents.test.ts`
+的 16 条用例钉住（核心反例就是上面那个「删掉 client.js」）。
+
+### 车道分工：哪条车道管什么
+
+三条车道的**性质不同**，所以付出的频率也该不同。混在一起会让「贵但按天看就够」的事挡住每次合入：
+
+| 车道 | 跑什么 | 频率 | 为什么是这个频率 |
+|---|---|---|---|
+| `ci.yml` 的 `build` 矩阵 | 构建 / 类型 / 1700 条用例 / 13 道不变量闸 / 端到端 smoke | **每次推送** | 正确性——红了就是这棵树有问题，必须立刻知道 |
+| `ci.yml` 的 `mount-smoke` | 真 DSH + 真浏览器加载 `client.js`（挂载车道） | **每次推送** | 它验的是「用户实际运行的东西能不能跑」，这个洞曾经长期没人看（tty D61） |
+| `nightly.yml` 的 `flake` | 并发跑 N 份全量套件 | **每天一次 + 手动** | 争用型 flake（tty D95 / D57、codegraph CG65）**单跑永不复现**，而「红一次 → 定位 → 根治」的节奏天然按天 |
+| `nightly.yml` 的 `coverage` | coverage 棘轮（宿主半体覆盖率只许升不许降） | **每天一次 + 手动** | 它回答的是**趋势**（还有多少代码从没被执行过），不是正确性；红了不该挡任何人今天的合入 |
+
+两条 nightly 车道**都不是「把 CI 再跑一遍」**，形状与 CI 里的同名动作不同：
+
+- **flake 是并发而不是顺序**。dsh-web 的同名车道顺序把全量套件跑三遍——那抓的是**顺序 / 状态污染**
+  型 flake，而**不是本仓发生过的那一类**：实测顺序三遍对本仓已知的三条从来全绿。同一个「跑三遍」
+  的意图，换形状才对症（并发 3 份 ≈28s，顺序 3 遍 ≈42s——**并发还更便宜**）。
+  修法与复现器见下方「负载敏感型 flake 的复现与排查」。
+- **coverage 只统计宿主半体**（`packages/<pkg>/src`）。实测：只算 `src` 是 **66.5%**，加上
+  `client-src` 掉到 **35.9%**——差 30 个百分点不是巧合：浏览器半体的纯逻辑已经抽成
+  `client-src/*.js` 由单测覆盖，剩下那部分是**按定义**跑在浏览器里的，混进分母只会让数字
+  随「有没有加界面代码」抖动。两边各有一条车道管（浏览器那半走挂载车道）。
+  棘轮基线冻在 [`scripts/coverage-baseline.json`](../scripts/coverage-baseline.json)，
+  只判「有没有比基线低超过 **0.3 个百分点**」（实测同树抖动 ≤0.01，余量给足；
+  最小的源文件也有 0.1 上下，所以 0.3 拦得住「新加一块没人测的代码」）。
+  **回退要留痕**：确实无法在单测层覆盖时用 `pnpm coverage:write` 接受新基线——
+  代价是**这件事会出现在 diff 里**，那正是它该有的代价。
+
+**新 workflow 同样受脚本真相源守卫约束**：`nightly.yml` 已加进
+`scripts/ci-script-truth.mjs` 的 `WORKFLOW_FILES`——它引用 `pnpm flake:check` /
+`pnpm coverage:check`，同样不许写死 `node scripts/…` 路径、条目也不许漂。
+但它**不受**「发布闸不许跑 CI 不认的入口」那条约束：那条只针对 `release.yml`；
+nightly 恰恰相反——它存在的理由就是跑 CI **不该**每次跑的东西，要求它的入口也出现在
+`ci.yml` 会把这条设计抹掉（守卫的注释里写了这一层，免得后人「顺手统一」）。
+
+**并发组名要区分**：`nightly.yml` 用 `nightly-${{ github.ref }}` 而不是复用 `ci-…`，
+否则两种车道会互相取消。
 
 ## AI 协作边界：什么改动要先问
 

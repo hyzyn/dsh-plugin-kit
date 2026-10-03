@@ -61,6 +61,12 @@ CI 另有两道兜底（`--no-verify`、别的机器、别的工具提交都能�
    ```
 2. `pnpm aggregate` 无 diff。聚合层（根 `cordis.patch.yml`、`packages/all`）必须钉住
    本次要发的插件版本；CI 与 Release workflow 都强制检查，过期直接红。
+   同一步顺带跑 `pnpm package-contents:check`：它真的打一次包，断言 `main` / `exports` /
+   `dsh.bundle.patch` / `client.js` 这些**声明的入口都在 tarball 里**。`files` 是手工清单，
+   漏一项**发出去就只能靠新版本补救**——而挂载车道走 `link:`、绕过 `files` 字段，看不见它
+   （2026-10-03 实测：删掉 tty 的 `client.js` 后十三道闸门 + 1700 条用例仍全绿）。
+   理由与守卫形态见
+   [docs/conventions.md § 发包内容守卫](docs/conventions.md#发包内容守卫files-字段漏一项不许静默)。
 3. 动了插件运行行为的改动，真实装进 DSH 跑一遍：`dsh plugin --profile <name> add
    @hyzyn/dsh-<pkg>`（或 link: 路径调试）。build 绿不等于装上没问题。
    tty 的 integration/live/ssh-smoke、codegraph 的 5 个 `verify-codegraph-*-smoke`、mcp 的
@@ -83,6 +89,10 @@ CI 另有两道兜底（`--no-verify`、别的机器、别的工具提交都能�
    对应 step，形态 `--bootstrap --strict --render --chrome-arg --no-sandbox`）——本地手工跑仍是
    主要用法，但发布路径不再只依赖「你记得跑」。决策记录见
    [docs/conventions.md § 挂载车道](docs/conventions.md#真机脚本与-ci-接线)。
+   **tag 前建议看一眼 nightly**（`gh run list --workflow=nightly.yml --limit 3`）：它每天跑并发
+   flake 与 coverage 棘轮。两条都不挡发版，但**带着一条已知红状态发版是错的信号**——
+   尤其 flake 那条：本仓已经有三次「发了版才发现用例在赌墙钟」。两条车道的分工与为什么不进
+   CI 见 [docs/conventions.md § 车道分工](docs/conventions.md#车道分工哪条车道管什么)。
 4. 各包依赖**不要写 `workspace:*`**。它只在 monorepo 内部有效：`pnpm publish` 会把它
    换成真实版本（所以 npm 产物看起来是对的），但用户从 git 子路径安装
    （`git+https://github.com/hyzyn/dsh-plugin-kit.git#main&path:packages/tty`）时协议

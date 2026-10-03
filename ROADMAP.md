@@ -231,6 +231,17 @@ release.yml 3，docker 那三条两个 workflow 各写一遍）、方案 A（wor
 **已做（2026-10-01）**：落点与门槛见 § 已完成 第 7 项（`docs-index` 判据 5：两边现算 +
 三种漂法各一条反例）。
 
+### 9. ✅ 对齐 dsh-web：补上「运行驱动」的两条发现渠道
+
+与 `zhu1090093659/dsh-web` 的 16 个 workflow 逐条对照后找到的两个**真实**的洞：**发包内容无人守**
+（`files` 漏一项，十三道闸门 + 1700 条用例全绿而 tarball 里真的缺文件）与**没有运行驱动的发现渠道**
+（coverage 棘轮 + 争用型 flake 的自动发现）。它那 16 个里 12 个是治理用（单人项目不适用），
+结构上本仓已经不差——差的是后一条这一层。
+
+**为什么是 L0**：要同时动 `scripts/`、`.github/`、根 `package.json` 与 L0 文档。
+
+**已做（2026-10-03）**：落点与门槛见 § 已完成 第 9 项（9.1 发包内容守卫 + 9.2 nightly 两条车道）。
+
 ### 8. `docs/` 的活规矩与已落地档案混在同一层
 
 现算（`wc -l docs/*.md`，2026-10-01 时点）：`docs/` 11 份 2558 行。其中三份**已落地方案的执行记录**
@@ -480,6 +491,66 @@ Windows 腿的 `pnpm run` 形态。
 **门槛**：`scripts/test/docs-index.test.ts` 的反例 5 六条——删一行 / 加一行假包 / 节被改名 /
 把整张表清空（仍必须按 12 行报，不许被别处链接喂饱）/ 合成 workspace（少一个包 → stale）/ CRLF 免疫；
 外加一条正向断言把「命中不是 0」钉住（两边都 ≥12、集合相等）。真实仓库 12/12 现算一致。
+
+### 9. ✅ 对齐 dsh-web：补上「运行驱动」的两条发现渠道
+
+**背景**（2026-10-03 与 `zhu1090093659/dsh-web` 的 16 个 workflow 逐条对照）：结构上本仓已经不差
+——它最强的三块（挂载车道、发布硬闸、产物一致性）本仓都有，端到端 smoke 还多出 8 套；
+它那 16 个里 12 个是治理用（PR 证据门 / issue 去重 / reject-docs-pr / auto-assign / stale-assignment /
+contributors / labeler / deploy-market），单人项目不适用。**差的是发现渠道的性质**：本仓是
+「闸门驱动」（静态一致性极强：13 道不变量闸 + 1700 条用例），而 dsh-web 多一层「运行驱动」
+（真的 pack 安装、coverage 棘轮、flake 连跑）。对照中找出**两个真实的洞**，本轮都补上。
+
+#### 9.1 ✅ 发包内容守卫（真打一次包，断言声明的入口都在 tarball 里）
+
+**为什么是真洞**（实测反证，不是理论风险）：把 `packages/tty/package.json` 的 `files` 里
+`"client.js"` 删掉后，`publishable:check` / `dsh-peers:check` / `kit-pins:check` / `aggregate:check`
+**全绿**、全量 **110 文件 / 1714 用例全绿**，而 `pnpm pack` 出的 tarball 里真的没有它——
+用户装上就是浏览器半体 404。三条既有车道各自都看不见：`artifacts:check` 只管「产物 vs 源码」、
+`publishable:check` 只管 `workspace:` 残留，而**挂载车道走 `link:`（直接链到本仓目录），
+绕过 `files` 字段**——dsh-web 那条用 `pnpm pack` + `file:<tarball>`，天然覆盖。
+这是**车道形态不同**带来的缺口，不是谁写漏了断言。
+
+**落点**：[`scripts/check-package-contents.mjs`](./scripts/check-package-contents.mjs)
+（`pnpm package-contents:check`）——`pnpm pack --dry-run` 真的打一次包（本地、不落 tarball、
+不联网，13 个目标各约 0.14s），判三条：① `main` / `types` / `exports` 每个值 /
+`dsh.bundle.patch` / 声明了 `dsh.client` 时的 `client.js` **全部从 manifest 现算**（写死清单就是
+同一个 bug 换位置）必须在 tarball 里；② `files` 里的字面路径必须存在于磁盘（pnpm 对不存在的路径
+**静默忽略**，实测加一条 `DOES-NOT-EXIST.md` 退出码 0、只是不包含它）；③ 命中不是 0。
+**接线成对**：`ci.yml` 与 `release.yml` 各一条（tag 可以打在没过 CI 的提交上）。
+
+**门槛**：`scripts/test/package-contents.test.ts` 16 条；反证两端都实测过——删 `client.js` → 红并
+点名 `exports["./client"]` 与 `dsh.client` 两条声明；`files` 里塞不存在的 `CHANGELOG.md` → 同样红。
+`ci-script-truth` 的两条根级判据也覆盖了它（entry 名打错 / 只在 release 侧 → 各自红）。
+
+#### 9.2 ✅ nightly 两条车道：并发 flake + coverage 棘轮
+
+**落点**：[`.github/workflows/nightly.yml`](./.github/workflows/nightly.yml)（每天 15:15 UTC + 手动）
++ 两个根级条目 `pnpm flake:check` / `pnpm coverage:check`。**两者都不是「把 CI 再跑一遍」**：
+
+- **flake**（[`scripts/flake-lane.mjs`](./scripts/flake-lane.mjs)）：**并发**跑 N 份全量套件
+  （默认 3），红了**点名哪一份、哪条用例**。**刻意不照抄 dsh-web 的顺序三遍**——那抓的是顺序 /
+  状态污染型，而本仓三条间歇红（tty D95 / D57、codegraph CG65）是**争用 / 墙钟型**，实测顺序三遍
+  对它们从来全绿。并发 3 份 ≈28s 比顺序 3 遍 ≈42s **还便宜**。
+  **端到端反证**（真机校准，本机 10 核）：空载 `spawnSync(node -e 0)` p50=25ms / max=33ms，
+  并发 3 份套件下 p50=39 / p90=97 / max=183ms；据此临时写一条「必须 <60ms」的赌墙钟用例 →
+  **3 份里红 2 份、并点名了那条用例**（单跑 5 次全绿），验完删除。
+- **coverage 棘轮**（[`scripts/coverage-ratchet.mjs`](./scripts/coverage-ratchet.mjs)）：
+  **只统计宿主半体**（`packages/<pkg>/src`）——实测只算 `src` 是 **66.5%**、加上 `client-src`
+  掉到 **35.9%**，差 30 个点是因为浏览器半体的纯逻辑已抽成 `client-src/*.js` 由单测覆盖、
+  剩下那部分按定义跑在浏览器里（那半由挂载车道管）。基线冻在
+  [`scripts/coverage-baseline.json`](./scripts/coverage-baseline.json)，只判「比基线低不超过
+  **0.3 个百分点**」（实测同树抖动 ≤0.01：66.52 / 66.53 / 66.53）。回退要用
+  `pnpm coverage:write` 显式接受——代价是**这件事出现在 diff 里**。
+
+**门槛**：`scripts/test/flake-lane.test.ts` 11 条 + `scripts/test/coverage-ratchet.test.ts` 9 条
+（含「零份 = 红」的恒绿警戒、「一份红 → 整体红并点名」、「json-summary 形态漂了必须硬红」）。
+真机反证：coverage 新增 122 行无人使用的源码 → 66.52 → **66.13（−0.39）被抓住**；flake 的
+端到端反证见上。两条车道本地各跑通一次（flake 3 份全绿 27s；coverage 与基线持平）。
+**顺带**：`nightly.yml` 加进 `ci-script-truth.mjs` 的 `WORKFLOW_FILES`（入口同样不许漂），
+但**不受**「发布闸不许跑 CI 不认的入口」那条约束——它存在的理由正是跑 CI 不该每次跑的东西。
+`coverage` 需要 `@vitest/coverage-v8`，本轮加进根 `devDependencies`（此前本机有一份是残留、
+**不在 lockfile 里**，`--frozen-lockfile` 的 CI 上装不到它）。
 
 ## 已由 L0 资产承接（不再是待办）
 
