@@ -5,11 +5,14 @@
  *
  * 1. **真实仓库必须绿**（方案 A 之后，两条 workflow 里的包内脚本入口全部以
  *    `pnpm --filter <包名> run <条目>` 形态出现、且每个都能解析到真实条目）；
- * 2. **守卫必须会红**——五条判据各来一条反例，且**都拿真实文本造 fixture**（先断言替换生效）。
+ * 2. **守卫必须会红**——七条判据各来一条反例，且**都拿真实文本造 fixture**（先断言替换生效）。
  *    另有「命中不是 0」的正向断言：只会在 0 命中时绿的闸门，本仓真实发生过一次。
  *
  * 反例里用的是**方案 A 消灭掉的那几种形态**：写死路径回归、条目改名忘改 workflow、
  * `--filter` 包名打错、发布闸跑 CI 不认的入口、同一入口两侧命令不一致。
+ *
+ * **根级扩展（2026-10-03）**另加四条用例：根级写死路径回归、根级条目改名、
+ * `release:publish` 的白名单豁免、pnpm 内建命令与注释行不假红。
  */
 import { describe, expect, it } from 'vitest'
 import {
@@ -34,6 +37,9 @@ function mutateWorkflow(file, from, to) {
   return {
     workflows: real.workflows.map((workflow) => (workflow.file === file ? { file, text: mutated } : workflow)),
     packages: real.packages,
+    // 根 package.json 的条目要一起带上：漏了它，每个根级引用都会被当成「条目不存在」，
+    // 反例会退化成一片噪音（断言还会过，但不再是那一条判据在红）
+    rootScripts: real.rootScripts,
   }
 }
 
@@ -56,6 +62,22 @@ describe('ci-script-truth：现算（唯一真值来源）', () => {
     const ciRefs = parseWorkflowRefs(ciText).entries
     expect(ciRefs.length, 'ci.yml 的条目引用数（tty 7 + docker 1 + windows 1）').toBeGreaterThanOrEqual(9)
     expect(WORKFLOW_FILES, '查的文件清单').toEqual(['ci.yml', 'release.yml'])
+  })
+
+  it('命中不是 0（根级）：两条 workflow 的裸调用条目都真抓到了，且根级写死路径已归零', () => {
+    // 2026-10-03 的根级扩展同样要防「正则与写法对不上 → 恒绿」：先证明抓得到
+    for (const workflow of real.workflows) {
+      const { rootEntries, rootHardcoded } = parseWorkflowRefs(workflow.text)
+      expect(rootEntries.length, `${workflow.file} 应抓到根级条目引用`).toBeGreaterThan(0)
+      expect(rootHardcoded, `${workflow.file} 不该再有根级写死路径`).toEqual([])
+    }
+    // 每个根级引用都必须能在根 package.json 里解析（真实仓库现状）
+    const rootScripts = real.rootScripts
+    for (const workflow of real.workflows) {
+      for (const ref of parseWorkflowRefs(workflow.text).rootEntries) {
+        expect(Object.keys(rootScripts), `${workflow.file} 的 root#${ref.entry}`).toContain(ref.entry)
+      }
+    }
   })
 
   it('tty 与 docker 的包名来自 package.json（不是写死的字符串）', () => {
@@ -120,8 +142,53 @@ describe('反例：方案 A 消灭掉的形态回来一条 → 必须报出来',
     expect(diffs.find((diff) => diff.kind === 'ci.empty')?.message).toContain('恒绿')
   })
 
+  it('根级写死路径回归 → ci.rootHardcodedPath', () => {
+    const fixture = mutateWorkflow(
+      'ci.yml',
+      '        run: pnpm kit-pins:check\n',
+      '        run: node scripts/check-kit-pins.mjs\n',
+    )
+    const diffs = checkCiScriptTruth(fixture)
+    expect(kinds(diffs)).toContain('ci.rootHardcodedPath')
+    expect(diffs.find((diff) => diff.kind === 'ci.rootHardcodedPath')?.message).toContain('悄悄腐烂')
+  })
+
+  it('根级条目改名忘改 workflow → ci.rootEntry.missing', () => {
+    const fixture = mutateWorkflow('ci.yml', 'run: pnpm doc-links:check', 'run: pnpm doc-links:check-renamed')
+    const diffs = checkCiScriptTruth(fixture)
+    expect(kinds(diffs)).toContain('ci.rootEntry.missing')
+    expect(diffs.find((diff) => diff.kind === 'ci.rootEntry.missing')?.message).toContain('根 package.json 没有这个条目')
+  })
+
+  it('发布动作（release:publish）只出现在发布闸 → 白名单豁免，不报 ci.releaseOnly', () => {
+    // 「发布动作天然只属于 tag 闸」——它不该反过来逼着每次推送都跑一遍 publish
+    const diffs = checkCiScriptTruth(real)
+    expect(diffs.filter((diff) => diff.kind === 'ci.releaseOnly')).toEqual([])
+    // 反向确认它确实被扫到了（不是没人看见）
+    const { rootEntries } = parseWorkflowRefs(releaseText)
+    expect(rootEntries.map((ref) => ref.entry)).toContain('release:publish')
+  })
+
+  it('裸调用里的 pnpm 内建命令不算条目（不假红）', () => {
+    // `pnpm install` / `pnpm -r build` / `pnpm --filter …` 都不是 package.json 条目
+    const builtins = ['pnpm install --frozen-lockfile', 'pnpm -r build', 'pnpm --filter @x/y run z', 'pnpm exec vitest run']
+    const text = builtins.map((line) => `        run: ${line}\n`).join('')
+    const { rootEntries } = parseWorkflowRefs(text)
+    expect(rootEntries).toEqual([])
+    // 真实仓库里这些内建命令确实存在，却一条都没被当成条目（否则上面「真实仓库必须绿」会红）
+    expect(ciText).toContain('pnpm install --frozen-lockfile')
+    expect(ciText).toContain('pnpm -r build')
+  })
+
+  it('注释里提到的命令不算引用（否则解释性注释会自己把自己判红）', () => {
+    const text = '      # 本地可以跑 pnpm aggregate:check 自查\n      # 旧写法是 node scripts/check-aggregate.mjs\n'
+    const { rootEntries, rootHardcoded } = parseWorkflowRefs(text)
+    expect(rootEntries).toEqual([])
+    expect(rootHardcoded).toEqual([])
+  })
+
   it('CRLF 检出不该假红（Windows 工作区）', () => {
     const crlf = real.workflows.map((workflow) => ({ file: workflow.file, text: workflow.text.replace(/\n/g, '\r\n') }))
-    expect(checkCiScriptTruth({ workflows: crlf, packages: real.packages })).toEqual([])
+    expect(checkCiScriptTruth({ workflows: crlf, packages: real.packages, rootScripts: real.rootScripts })).toEqual([])
   })
 })

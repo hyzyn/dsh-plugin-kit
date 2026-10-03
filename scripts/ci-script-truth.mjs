@@ -24,6 +24,16 @@
  *      （「只在 CI 补、发布路径绕过」是 docker D119；反过来「只在发布闸跑」同样会让那条入口平时无声）；
  *   5. **命中不是 0**：两个 workflow 的引用数都为 0 时报警（恒绿闸门比没有更坏，本仓真实发生过）。
  *
+ * **根级扩展（2026-10-03）**：同一套「不许漂」延伸到根 `scripts/` 的发布不变量闸
+ * （check-*.mjs 九道 + release-publish），workflow 里改成裸调用 `pnpm <条目>`：
+ *
+ *   6. **根级写死路径不许出现**（`node scripts/<file>.mjs` → `ci.rootHardcodedPath`）——
+ *      与第 1 条同罪：条目才是真相源；
+ *   7. **每个裸调用 `pnpm <条目>` 都必须存在于根 package.json**（`ci.rootEntry.missing`；
+ *      pnpm 内建命令如 install / run 不算条目）。根级入口同样受第 3 / 4 条约束
+ *      （键带 `root#` 前缀进同一张命令表）；`release:publish` 在白名单里——发布动作本身
+ *      天然只出现在发布闸，不该反过来逼着 CI 每次推送都跑一遍 publish。
+ *
  * ## 只读
  *
  * 不写文件、不调 git、不联网：输入是 workflow 文本 + 各包 `package.json`，所以单测可以喂 fixture
@@ -44,20 +54,49 @@ const HARDCODED_SCRIPT_RE = /node\s+(packages\/[A-Za-z0-9._-]+\/scripts\/[A-Za-z
 /** 包内条目引用：`pnpm --filter <包名> run <条目>`。 */
 const ENTRY_REF_RE = /pnpm\s+--filter\s+(@?[A-Za-z0-9._@/-]+)\s+run\s+([A-Za-z0-9:._-]+)/g
 
+/** 根级写死路径：`node scripts/<file>.mjs`（2026-10-03 起与包内写死同罪）。 */
+const ROOT_HARDCODED_SCRIPT_RE = /node\s+(scripts\/[A-Za-z0-9._-]+\.mjs)/g
 /**
- * 从一份 workflow 文本里抓出两类引用（纯函数）。
+ * 根级条目引用：行内裸调用 `pnpm <条目>`。首段以 `-` 开头的是 pnpm 自己的旗标
+ * （`pnpm -r build` / `pnpm --filter …` / `pnpm --silent …`），不是条目，不在此抓。
+ * 抓到后再对照 ROOT_PNPM_BUILTINS 排除内建命令（install / run 等不是 package.json 条目）。
+ */
+const ROOT_ENTRY_RE = /pnpm\s+([A-Za-z0-9][A-Za-z0-9:._-]*)/g
+/** pnpm 内建命令：不是条目，解析时跳过（不进根级一致性检查）。 */
+const ROOT_PNPM_BUILTINS = new Set([
+  'install', 'i', 'add', 'update', 'up', 'remove', 'rm', 'uninstall',
+  'publish', 'pack', 'run', 'exec', 'dlx', 'create', 'init',
+  'link', 'unlink', 'prune', 'rebuild', 'approve-builds',
+  'store', 'env', 'setup', 'workspace', 'recursive', 'r',
+])
+/** 根级条目里「天然只属于发布闸」的白名单（第 4 条对它们豁免）。 */
+const ROOT_RELEASE_ONLY_ALLOW = new Set(['release:publish'])
+
+/** match 所在行是否是注释行（YAML `#` 或 run: | 块里的 `#` 行）——注释里提到的命令不算引用。 */
+function isCommentLine(text, index) {
+  const lineStart = text.lastIndexOf('\n', index) + 1
+  return text.slice(lineStart, index).trimStart().startsWith('#')
+}
+
+/**
+ * 从一份 workflow 文本里抓出四类引用（纯函数）。
  *
  * @param text - workflow 全文（YAML 原样；这里按行抓命令，不做 YAML 解析——引用只出现在 `run:` 里，
- *   而 YAML 解析会把多行 `|` 块拼成整段，反而更容易误伤）。
- * @returns `{ hardcoded, entries, commands }`：写死路径、`{ pkgName, entry, raw }` 引用、以及
- *   `pkgName#entry → raw` 的首次出现（用于跨 workflow 比对命令形态）。
+ *   而 YAML 解析会把多行 `|` 块拼成整段，反而更容易误伤）。注释行里的命令一律不算引用。
+ * @returns `{ hardcoded, entries, rootHardcoded, rootEntries, commands }`：包内写死路径、
+ *   `pnpm --filter` 引用、根级写死路径、裸调用 `pnpm <条目>`，以及命令形态表——包内键为
+ *   `pkgName#entry`，根级键为 `root#entry`（同一张表，第 3 / 4 条判据对两类一视同仁）。
  */
 export function parseWorkflowRefs(text) {
   const hardcoded = [...text.matchAll(HARDCODED_SCRIPT_RE)].map((match) => match[1])
+  const rootHardcoded = [...text.matchAll(ROOT_HARDCODED_SCRIPT_RE)]
+    .filter((match) => !isCommentLine(text, match.index))
+    .map((match) => match[1])
   const entries = []
+  const rootEntries = []
   const commands = new Map()
   for (const match of text.matchAll(ENTRY_REF_RE)) {
-    const [raw, pkgName, entry] = match
+    if (isCommentLine(text, match.index)) continue
     /*
      * 取**整行**（而不是正则命中那一截）当命令形态：`… run smoke --silent` 这类尾巴必须算进差异——
      * 只比命中的话，两侧被加上参数也看不出来。
@@ -74,19 +113,32 @@ export function parseWorkflowRefs(text) {
       .replace(/^run:\s*/, '')
       .replace(/\s+/g, ' ')
       .trim()
-    entries.push({ pkgName, entry, raw, line, command })
-    const key = `${pkgName}#${entry}`
+    entries.push({ pkgName: match[1], entry: match[2], raw: match[0], line, command })
+    const key = `${match[1]}#${match[2]}`
     if (!commands.has(key)) commands.set(key, command)
   }
-  return { hardcoded, entries, commands }
+  for (const match of text.matchAll(ROOT_ENTRY_RE)) {
+    if (isCommentLine(text, match.index)) continue
+    const entry = match[1]
+    if (ROOT_PNPM_BUILTINS.has(entry)) continue
+    const start = text.lastIndexOf('\n', match.index) + 1
+    const end = text.indexOf('\n', match.index)
+    const line = text.slice(start, end === -1 ? text.length : end).trim()
+    const command = line.replace(/^-\s*/, '').replace(/^run:\s*/, '').replace(/\s+/g, ' ').trim()
+    rootEntries.push({ entry, line, command })
+    const key = `root#${entry}`
+    if (!commands.has(key)) commands.set(key, command)
+  }
+  return { hardcoded, entries, rootHardcoded, rootEntries, commands }
 }
 
-/** 读真实仓库的输入：两个 workflow 的文本 + workspace 各包的 `{ dir, name, scripts }`。 */
+/** 读真实仓库的输入：两个 workflow 的文本 + workspace 各包的 `{ dir, name, scripts }` + 根 `package.json` 的条目。 */
 export function readCiScriptInputs(repoRoot = REPO_ROOT) {
   const workflows = WORKFLOW_FILES.map((file) => ({
     file,
     text: readFileSync(join(repoRoot, WORKFLOWS_DIR, file), 'utf8').replace(/\r\n/g, '\n'),
   }))
+  const rootManifest = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'))
   const pkgRoot = join(repoRoot, 'packages')
   const packages = readdirSync(pkgRoot)
     .filter((dir) => {
@@ -102,15 +154,17 @@ export function readCiScriptInputs(repoRoot = REPO_ROOT) {
       const manifest = JSON.parse(readFileSync(join(pkgRoot, dir, 'package.json'), 'utf8'))
       return { dir, name: manifest.name, scripts: manifest.scripts ?? {} }
     })
-  return { workflows, packages }
+  return { workflows, packages, rootScripts: rootManifest.scripts ?? {} }
 }
 
 /**
- * 判据：CI 与包内条目不许漂（五条，见文件头）。
+ * 判据：CI 与包内条目不许漂（七条，见文件头）。
  *
- * @param input - `{ workflows, packages }`（由 `readCiScriptInputs` 读；单测可传合成清单）。
+ * @param input - `{ workflows, packages, rootScripts }`（由 `readCiScriptInputs` 读；单测可传合成清单）。
+ *   `rootScripts` 是根 `package.json` 的 `scripts`——根级裸调用要拿它解析（缺省 = 空对象，
+ *   此时任何根级引用都会按「条目不存在」报出来，不会静默放过）。
  */
-export function checkCiScriptTruth({ workflows, packages }) {
+export function checkCiScriptTruth({ workflows, packages, rootScripts = {} }) {
   const diffs = []
   const byName = new Map(packages.map((pkg) => [pkg.name, pkg]))
   const parsed = workflows.map((workflow) => ({ file: workflow.file, ...parseWorkflowRefs(workflow.text) }))
@@ -170,6 +224,8 @@ export function checkCiScriptTruth({ workflows, packages }) {
   if (ci !== undefined && release !== undefined) {
     for (const [key, raw] of release.commands) {
       if (ci.commands.has(key)) continue
+      // 发布动作天然只属于发布闸（白名单）：不该反过来逼着每次推送都跑一遍 publish。
+      if (ROOT_RELEASE_ONLY_ALLOW.has(key.slice('root#'.length))) continue
       diffs.push({
         kind: 'ci.releaseOnly',
         file: release.file,
@@ -186,6 +242,30 @@ export function checkCiScriptTruth({ workflows, packages }) {
       message: `两个 workflow 里一个 \`pnpm --filter … run …\` 引用都没抓到：闸门恒绿（本仓真实发生过这种闸门），先确认抓引用的正则与 workflow 实际写法还对得上`,
     })
   }
+
+  // 6. 根级写死路径回归（`node scripts/<file>.mjs`）
+  for (const workflow of parsed) {
+    for (const path of workflow.rootHardcoded) {
+      diffs.push({
+        kind: 'ci.rootHardcodedPath',
+        file: workflow.file,
+        message: `${workflow.file} 里又出现了根级写死路径 \`node ${path}\`：这会让根 package.json 的对应条目悄悄腐烂（CI 不再跑它，手动入口也没人验）。改成 \`pnpm <条目>\`——条目与对应关系见 docs/ci-scripts-plan.md § 10`,
+      })
+    }
+  }
+
+  // 7. 每个根级裸调用都要能在根 package.json 里解析
+  for (const workflow of parsed) {
+    for (const ref of workflow.rootEntries) {
+      if (ref.entry in rootScripts) continue
+      diffs.push({
+        kind: 'ci.rootEntry.missing',
+        file: workflow.file,
+        message: `${workflow.file} 跑了 \`pnpm ${ref.entry}\`，但根 package.json 没有这个条目：` +
+          `要么是条目改名没同步（两个真相源漂了），要么是 pnpm 内建命令漏进了 ROOT_PNPM_BUILTINS 白名单`,
+      })
+    }
+  }
   return diffs
 }
 
@@ -194,8 +274,12 @@ if (process.argv[1] !== undefined && import.meta.url === `file://${process.argv[
   const inputs = readCiScriptInputs()
   const diffs = checkCiScriptTruth(inputs)
   for (const workflow of inputs.workflows) {
-    const { hardcoded, entries } = parseWorkflowRefs(workflow.text)
-    console.log(`[ci-script-truth] ${workflow.file}：包内条目引用 ${String(entries.length)} 条；写死路径 ${String(hardcoded.length)} 处`)
+    const { hardcoded, entries, rootHardcoded, rootEntries } = parseWorkflowRefs(workflow.text)
+    console.log(
+      `[ci-script-truth] ${workflow.file}：包内条目引用 ${String(entries.length)} 条；` +
+        `写死路径 ${String(hardcoded.length)} 处；根级条目 ${String(rootEntries.length)} 条；` +
+        `根级写死路径 ${String(rootHardcoded.length)} 处`,
+    )
   }
   for (const diff of diffs) console.log(`  ✘ ${diff.kind}  ${diff.message}`)
   if (diffs.length === 0) console.log('[ci-script-truth] 通过')

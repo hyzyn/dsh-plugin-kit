@@ -1,6 +1,6 @@
-# CI 与 `package.json` 的脚本双真相源：收敛方案（**待批准**）
+# CI 与 `package.json` 的脚本双真相源：收敛方案
 
-> **状态：已执行（2026-10-01）——方案 A 已落地；方案 B（守卫）未做**。
+> **状态：已执行（2026-10-01 方案 A + § 10 根级扩展 2026-10-03）——A、B 均落地**。
 > 按 [conventions.md § AI 协作边界](./conventions.md#ai-协作边界什么改动要先问)，「改 `.github/`」属于
 > **先问再动手**：所以本文先作为提案写完、经维护者批准后才执行；执行记录见 § 9。
 > 诊断（症状、后果、为什么危险）在 [conventions.md § 真机脚本与 CI 接线](./conventions.md#真机脚本与-ci-接线)；
@@ -155,4 +155,78 @@ grep -o 'node packages/[a-z-]*/scripts/[a-z-]*\.mjs' .github/workflows/*.yml | s
 命令不一致），另加「命中不是 0」的恒绿警戒与 CRLF 免疫。**端到端反证**：把
 `node packages/tty/scripts/ssh-smoke.mjs` 塞回 `ci.yml` → 守卫报 `ci.hardcodedPath`、用例 4 条红；
 用 `cp` 还原（**不碰 git**）后 sha256 一致（`2df46d2d…`）且守卫复绿。
+
+## 10. 根级扩展（2026-10-03）：同一套收敛延伸到根 `scripts/` 的发布不变量闸
+
+§ 9 收敛的是**包内**条目（`pnpm --filter <包名> run <条目>`）；根 `scripts/` 下那批发布不变量闸
+当时仍是**写死路径**，且**同一批命令在 `ci.yml` 与 `release.yml` 里各写一遍**——方案 A 要消灭的
+两个真相源在根级原样存在，只是没人扫到。本轮按同一套办法收尾。
+
+### 10.1 改了什么
+
+根 `package.json` 新增 13 个条目，两条 workflow 的对应 step 从写死路径 / 内联多行脚本改成
+裸调用 `pnpm <条目>`：
+
+| 条目 | 落点脚本 | ci.yml | release.yml |
+|---|---|---|---|
+| `aggregate:check` | `scripts/check-aggregate.mjs`（**新**） | ✅ | ✅ |
+| `artifacts:check` | `scripts/check-artifacts.mjs`（**新**） | ✅ | — |
+| `publishable:check` | `check-publishable.mjs` | ✅ | ✅ |
+| `dsh-peers:check` | `check-dsh-peers.mjs` | ✅ | ✅ |
+| `dsh-home:check` | `check-dsh-home.mjs` | ✅ | — |
+| `kit-pins:check` | `check-kit-pins.mjs` | ✅ | ✅ |
+| `doc-links:check` | `check-doc-links.mjs` | ✅ | — |
+| `issue-forms:check` | `check-issue-forms.mjs --self-test && …` | ✅ | — |
+| `i18n:check` | `check-i18n.mjs --self-test && …` | ✅ | — |
+| `no-public-ip:check` | `check-no-public-ip.mjs --self-test && …` | ✅ | — |
+| `no-public-ip:message` | `check-no-public-ip.mjs --message-file …` | ✅（提交信息循环） | — |
+| `release:publish` | `release-publish-tag.mjs` | — | ✅ |
+
+**为什么 `aggregate:check` / `artifacts:check` 要做成脚本**：原来的两条命令带 shell 组语法
+（`cmd \|\| { echo …; exit 1; }`），在 Windows 的 cmd 下不成立，而闸门条目应当三平台都能当粘贴
+入口用；脚本里改用 `execFileSync` 的 **argv 数组**直传（不经 shell），顺带让 `:(glob)` 这类
+git pathspec magic 原样到达 git，跨平台引号 / glob 语义问题一并消失。`artifacts:check` 还保留
+了原注释里那两条实测教训（不递归的 `lib` 写法会恒绿、`*` 跨 `/` 会误伤 tty 的 scripts/lib）。
+
+### 10.2 守卫扩展（第 6 / 7 条判据）
+
+`scripts/ci-script-truth.mjs` 的 `parseWorkflowRefs` 新增两类抓取，`checkCiScriptTruth` 新增两条判据：
+
+- **`ci.rootHardcodedPath`**：`node scripts/<file>.mjs` 不许出现在 workflow 里（注释行豁免），
+  与第 1 条包内写死路径同罪；
+- **`ci.rootEntry.missing`**：每个裸调用 `pnpm <条目>` 都必须存在于根 `package.json`。
+  解析时用 `ROOT_PNPM_BUILTINS` 排除 pnpm 内建命令（`install` / `-r` / `run` / `pack` …）——
+  否则 `pnpm install --frozen-lockfile` 会被误判成条目。
+
+根级引用进**同一张** `commands` 表（键加 `root#` 前缀），所以第 3 条（两侧命令逐字一致）与
+第 4 条（发布闸不许跑 CI 不认的入口）对根级自动生效。第 4 条另加白名单
+`ROOT_RELEASE_ONLY_ALLOW`：`release:publish` 天然只属于 tag 闸，不该反过来逼着每次推送都跑 publish。
+
+### 10.3 验证（全部本机可复现）
+
+1. 8 个纯闸门条目逐条演练全绿（`publishable:check` / `dsh-peers:check` / `dsh-home:check` /
+   `kit-pins:check` / `doc-links:check` / `issue-forms:check` / `i18n:check` / `no-public-ip:check`）；
+2. `artifacts:check` 经真实重建后 `git diff --exit-code` 通过；`no-public-ip:message` 的参数转发
+   实测（合法消息 → 0，含公网 IP → 1 并打印指引）；
+3. **`aggregate:check` 的红是对语义的正确反应**：工作区有未提交改动时它按设计红
+   （原内联命令同为 `git diff --exit-code`）；用临时 index（`GIT_INDEX_FILE`）造「已提交」树后
+   **退出码 0**——证明它的红只来自未提交状态，不是脚本本身有问题；
+4. **守卫两端反证**：把 `run: pnpm kit-pins:check` 换回 `node scripts/check-kit-pins.mjs` →
+   守卫报 `ci.rootHardcodedPath`、**退出码 1**，且 5 条用例转红；`cp` 还原（不碰 git）后
+   **退出码 0** 且 sha256 与还原前一致（`f0afcee7…`）；
+5. 全量套件 **107 文件 / 1671 用例全绿**（含守卫自身的 16 条，比原来 10 条多 6 条）。
+
+### 10.4 未验证
+
+- **actionlint step 没在本机跑过**：本机 docker 拉不到 `rhysd/actionlint` 镜像、也没有本地
+  二进制，只能靠 YAML 解析 + 结构核查（`permissions` / `concurrency` / `timeout-minutes` /
+  step 位置均确认）。第一次 CI 跑要盯一眼这步；
+- `pnpm run` 在 **Windows 腿**上的行为（根级条目同样走 cmd）；本机只有 macOS 腿的证据。
+
+### 10.5 明确不做
+
+- **不把 `no-public-ip:message` 的每次循环都换成条目调用**以「省进程」：commit-msg 循环里
+  每条提交多一次 `pnpm` 启动（毫秒级），换来的是「同一个入口只有一个真相源」——与 § 8
+  「不让真机脚本进 CI」同一条取舍逻辑；
+- **不给根级条目加 `--silent`**：去掉 `pnpm` 的横幅会让 CI 日志里看不出这条闸门实际跑了什么。
 

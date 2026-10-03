@@ -41,7 +41,7 @@
 | **提 issue 的格式约束**（表单字段 / 自查结果 / 空白 issue 已关闭） | L0 [`.github/ISSUE_TEMPLATE/`](../.github/ISSUE_TEMPLATE/)（两张表单是**字段真相**）+ 本文 [§ Issue](./conventions.md#issue提-issue-的格式约束)（规矩）。字段与 [troubleshooting.md 的通用顺序](./troubleshooting.md#通用顺序)一一对应；schema 与表单内链接的闸门是 [`scripts/check-issue-forms.mjs`](../scripts/check-issue-forms.mjs) |
 | **投稿材料**（面向 DSH 插件市场） | L0 [`docs/pr-body-dsh-market.md`](./pr-body-dsh-market.md)（**提给市场仓库的 PR 正文**，其相对链接指向目标仓库）与 [`docs/community-submission.json`](./community-submission.json)（提交载荷）。两者都是**对外投稿物**，不是本仓架构 / 规范；**保留原路径**——`community-submission.json` 可能被市场按 `@main/docs/` URL 取。它们属于**「创意工坊」那条投稿轨道**，与市场卡片上分类标签的实际来源不是一回事：见下行 |
 | **插件市场索引**（卡片分类标签从哪来 · 我们 8 条的现状 · 改分类怎么提 PR） | L0 [`docs/market-index.md`](./market-index.md) |
-| **CI 与 `package.json` 的脚本双真相源：收敛方案**（改动点 / rename 面 / CI 影响 / 验收；**待批准——它要动 `.github/`**） | L0 [`docs/ci-scripts-plan.md`](./ci-scripts-plan.md) |
+| **CI 与 `package.json` 的脚本双真相源：收敛方案**（改动点 / rename 面 / CI 影响 / 验收；**已执行——方案 A + 守卫，含 2026-10-03 根级扩展**） | L0 [`docs/ci-scripts-plan.md`](./ci-scripts-plan.md) |
 | **AI 协作边界**（哪些改动必须先问维护者） | L0 本文 [§ AI 协作边界](#ai-协作边界什么改动要先问) |
 
 ### L0 / L1 的边界判据
@@ -386,7 +386,7 @@ bundle key 且没有 row 入口、旧宿主只注册两个 row key）——其�
   两实例各一份拷贝、link 目标只能由 `repoRoot` 拼出、**刻意不隔离 DSH_HOME**、CI / release 里
   都不出现它）；生成物形状由 `scripts/test/live-profile.test.ts` 钉住（docker 开关必须写 true，
   否则 A1「配置里 true 却打不开」是空断言）。
-- **CI 与发布闸要成对**：只在 CI 补而漏了 `release.yml`，发布路径仍能整条绕过。
+- **CI 与发布闸要成对**：只在 CI 补而漏了 `release.yml`，发布路径仍能整条绕过（docker D119）。
 - **同一个真机 / 冒烟脚本有两个真相源（2026-09-30 诊断）**：
   CI 用**写死路径**跑 hermetic 脚本，而同一批脚本在包内 `package.json` 里另有条目。后果是
   **改名只红一处**：改脚本文件名 → workflow 立刻红（路径找不到），而
@@ -399,6 +399,15 @@ bundle key 且没有 row 入口、旧宿主只注册两个 row key）——其�
   改动点、rename 面、CI 影响、验收与回滚都在那一份里。
   **现算纠正一条**：docker 那 3 条**在 `release.yml` 里也各写了一遍**（现算 14 处写死路径），
   所以收敛必须两个 workflow 一起改——「只在 CI 补、发布路径照样绕过」本仓已经吃过一次（docker D119）。
+- **根级 `scripts/` 那批发布不变量闸：2026-10-03 已按同一套收敛**（[§ 10](./ci-scripts-plan.md#10-根级扩展2026-10-03同一套收敛延伸到根-scripts-的发布不变量闸)）。
+  § 9 只收了**包内**条目；根级 `check-*.mjs` 当时仍是写死路径，**且同一批命令在 `ci.yml` 与
+  `release.yml` 各写一遍**——方案 A 要消灭的两个真相源在根级原样存在，只是守卫扫不到。
+  现在两条 workflow 一律裸调用 `pnpm <条目>`（13 个新条目），两条新判据把形态钉住：
+  `ci.rootHardcodedPath`（`node scripts/…` 不许回来）、`ci.rootEntry.missing`（裸调用必须能在根
+  `package.json` 解析；pnpm 内建命令走白名单，注释行不算引用）。
+  **`aggregate:check` / `artifacts:check` 落成脚本**（而不是继续内联多行）是因为原来的
+  `cmd || { echo …; exit 1; }` 组语法在 Windows 的 cmd 下不成立，而闸门条目要三平台都能当粘贴入口；
+  脚本里 `execFileSync` 的 argv 数组直传 git，`:(glob)` magic 与引号语义跨平台一致。
 - **文档链接闸门**：`node scripts/check-doc-links.mjs` 校验全仓 markdown 的**相对链接**与
   **锚点**（跨文件与同文件都查）。**尚未进 CI**，目前手动跑（见 [ROADMAP.md](../ROADMAP.md) 第 7 项）。
   已知的「相对的是别的仓库」的链接走脚本里的**精确白名单**（当前 3 条，属
@@ -423,7 +432,9 @@ bundle key 且没有 row 入口、旧宿主只注册两个 row key）——其�
   git diff --exit-code -- 'packages/*/client.js' ':(glob)packages/*/lib/**'
   ```
 
-  **现状**：`.githooks/pre-commit` 与 `.github/workflows/ci.yml` **都用的是正确写法**。
+  **现状**：`.githooks/pre-commit` 与 `.github/workflows/ci.yml` **都用的是正确写法**
+  （2026-10-03 起 CI 那处搬进了 `scripts/check-artifacts.mjs`（`pnpm artifacts:check`），
+  两条教训随注释一起搬过去：`:(glob)` + 双星的写法与「`*` 会跨 `/`」的反例）。
   CI 那处此前长期是失效写法（**本地防得住、CI 防不住**，风险面限于绕过钩子的提交：
   浅克隆 / `--no-verify` / 直接在 CI 环境重建产物的人），2026-09-25 修好——
   该 step 的注释里也记了这个坑，免得后人「顺手简化」回去。

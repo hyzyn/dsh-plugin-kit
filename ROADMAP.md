@@ -423,6 +423,23 @@ CI 真在跑的 `packages/tty/scripts/probe-route-smoke.mjs` / `integration.mjs`
 包名打错 / 发布闸跑 CI 不认的入口 / 同一入口两侧命令不一致 / 恒绿警戒）；端到端反证——把写死路径
 塞回 `ci.yml` → 守卫报 `ci.hardcodedPath`、4 条用例红，`cp` 还原后 sha256 一致并复绿。
 
+**根级收尾（2026-10-03，[docs/ci-scripts-plan.md § 10](./docs/ci-scripts-plan.md)）**：方案 A 当时只收了
+**包内**条目；根 `scripts/` 那批发布不变量闸仍写死路径、**且 `ci.yml` 与 `release.yml` 各写一遍**。
+本轮按同一套收尾——根 `package.json` 加 13 个条目（`aggregate:check` / `artifacts:check` /
+`publishable:check` / `dsh-peers:check` / `dsh-home:check` / `kit-pins:check` / `doc-links:check` /
+`issue-forms:check` / `i18n:check` / `no-public-ip:check` / `no-public-ip:message` / `release:publish`），
+两条 workflow 一律裸调用 `pnpm <条目>`；`check-aggregate.mjs` 与 `check-artifacts.mjs` 落成脚本
+（原 `cmd || { …; }` 组语法在 Windows cmd 下不成立，脚本里 argv 直传 git 顺带解决 `:(glob)` 语义）。
+守卫加第 6 / 7 条判据（`ci.rootHardcodedPath` / `ci.rootEntry.missing`，pnpm 内建命令与注释行白名单），
+用例 10 → 16 条。
+**门槛**：8 道纯闸门条目逐条演练绿；`artifacts:check` 真实重建后 diff 通过；`aggregate:check` 用
+临时 index 造「已提交」树后退出码 0（其红只对未提交状态反应，与原内联命令同语义）；守卫两端反证
+（塞回写死路径 → `ci.rootHardcodedPath` + 退出码 1 + 5 条用例红；`cp` 还原 → 退出码 0 + sha256 一致）；
+全量 **107 文件 / 1671 用例绿**。
+**未验证**：actionlint step 本机没跑过（docker 拉不到镜像、无本地二进制，仅 YAML 解析 + 结构核查）；
+Windows 腿的 `pnpm run` 形态。
+
+
 ### 7. ✅ `architecture.md § 2` 包清单缺守卫：两边现算 + 三种漂法各一条反例
 
 **落点**：`scripts/docs-index.mjs` 新增**判据 5**（`checkPackageManifest` / `parseManifestPackages` /
