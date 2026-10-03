@@ -225,12 +225,52 @@ try {
     post1.status === 200 && post1.json?.persisted === true && get2.json?.config?.settleMs === 1234 && get2.json?.config?.targets?.length === 2,
     `persisted=${String(post1.json?.persisted)} settleMs=${String(get2.json?.config?.settleMs)} targets=${String(get2.json?.config?.targets?.length)}`,
   )
-  const bad = await call('/api/dsh-devfront/config', { method: 'POST', body: { targets: [] } })
-  record('⑥ POST targets → 400 且指到 profile 补丁层', bad.status === 400 && String(bad.json?.error ?? '').includes('cordis.patch.yml'), `status=${String(bad.status)}`)
   const unknown = await call('/api/dsh-devfront/config', { method: 'POST', body: { nope: 1 } })
   record('⑦ POST 不认识的字段 → 400（不静默丢弃）', unknown.status === 400, `status=${String(unknown.status)}`)
   const wrongMethod = await call('/api/dsh-devfront/config', { method: 'DELETE' })
   record('⑧ 非 GET/POST → 405', wrongMethod.status === 405, `status=${String(wrongMethod.status)}`)
+
+  /* ---------------- 站点编辑器（逐次确认 + 审计） ---------------- */
+
+  const needConfirm = await call('/api/dsh-devfront/config', {
+    method: 'POST',
+    body: { targets: [{ id: 'w-three', url: 'https://three.example.com/' }] },
+  })
+  record(
+    '⑭ 改站点不带 `confirmSiteEdit` → 400 且码是 CONFIRMATION_REQUIRED',
+    needConfirm.status === 400 && needConfirm.json?.code === 'CONFIRMATION_REQUIRED',
+    `status=${String(needConfirm.status)} code=${String(needConfirm.json?.code)}`,
+  )
+
+  const current = (get2.json?.config?.targets ?? []).map((target) => ({
+    id: target.id,
+    url: target.url,
+    ...(target.label === undefined ? {} : { label: target.label }),
+    scopeDirs: target.scopeDirs ?? [],
+    allowedOrigins: target.allowedOrigins ?? [],
+    ...(target.viewport === undefined ? {} : { viewport: target.viewport }),
+    ...(target.credentialRef === undefined ? {} : { credentialRef: target.credentialRef }),
+  }))
+  const siteEdit = await call('/api/dsh-devfront/config', {
+    method: 'POST',
+    body: {
+      confirmSiteEdit: true,
+      targets: [...current, { id: 'w-three', label: '验收站点三', url: 'https://three.example.com/', scopeDirs: [], allowedOrigins: [] }],
+    },
+  })
+  const get3 = await call('/api/dsh-devfront/config')
+  record(
+    '⑮ 带确认改站点 → 200，且 GET 里真的多出第三个站点（不是「放行但没做事」）',
+    siteEdit.status === 200 && siteEdit.json?.persisted === true && get3.json?.config?.targets?.length === 3,
+    `status=${String(siteEdit.status)} targets=${String(get3.json?.config?.targets?.length)}`,
+  )
+
+  const auditText = fs.existsSync(auditFile) ? fs.readFileSync(auditFile, 'utf8') : ''
+  record(
+    '⑯ 站点变更**进了审计**（auditFile 里有 `config.sites` 一行；被拒的那次记成 `config.save` + 码）',
+    auditText.includes('"action":"config.sites"') && auditText.includes('"action":"config.save"') && auditText.includes('CONFIRMATION_REQUIRED'),
+    `auditFile=${auditFile}（${String(auditText.split('\n').filter((line) => line !== '').length)} 行）`,
+  )
 
   /* ---------------- 真 Chrome ---------------- */
 
@@ -280,6 +320,8 @@ try {
     await sleep(3000)
     const cards = [...document.querySelectorAll('[data-plugin-config="true"]')]
     const text = cards.map((el) => el.innerText || '').join(' || ')
+    // 站点现在是**编辑器**：值在 input.value 里，不在 innerText 里 —— 两条都收
+    const values = cards.map((el) => [...el.querySelectorAll('input')].map((input) => input.value).join(' | ')).join(' || ')
     return {
       rowFound: row !== null,
       status,
@@ -288,9 +330,10 @@ try {
       hasName: text.includes('前端效果验证'),
       hasSiteOne: text.includes('w-one'),
       hasSiteTwo: text.includes('w-two'),
-      hasViewport: text.includes('390x844'),
-      hasOrigin: text.includes('sso.example.com'),
+      hasViewport: values.includes('390x844'),
+      hasOrigin: values.includes('sso.example.com'),
       textHead: text.slice(0, 400),
+      valueHead: values.slice(0, 400),
     }
   })()`)
 
@@ -299,8 +342,8 @@ try {
   } else {
     record('⑪ 插件页里有 devfront 那一行，且状态是 running', cardReport.rowFound === true && cardReport.status === 'running', JSON.stringify({ rowFound: cardReport.rowFound, status: cardReport.status }))
     record(
-      '⑫ 详情页里的配置卡片渲染出标量控件 + 两个站点的只读信息（含视口与允许源）',
-      cardReport.cardCount > 0 && cardReport.inputs >= 5 && cardReport.hasName && cardReport.hasSiteOne && cardReport.hasSiteTwo && cardReport.hasViewport && cardReport.hasOrigin,
+      '⑫ 详情页里的卡片渲染出标量控件 + **站点编辑器**（两个已有站点的 id / 视口 / 允许源都在）',
+      cardReport.cardCount > 0 && cardReport.inputs >= 7 && cardReport.hasName && cardReport.hasSiteOne && cardReport.hasSiteTwo && cardReport.hasViewport && cardReport.hasOrigin,
       JSON.stringify(cardReport),
     )
   }

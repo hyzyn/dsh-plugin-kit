@@ -164,13 +164,36 @@ export declare function denialMessage(outcome: {
     hint?: string;
 }): string;
 /**
- * 配置卡片（客户端半体）**能改**的字段。
+ * 配置卡片（客户端半体）能改的**标量**字段。
  *
- * 只放**标量**：`targets`（站点列表）刻意不在卡片里改——它是「项目/环境的声明」，与就绪清单、
- * 验活断言同一类东西（随项目评审、DSH 侧只读），塞进一个自由编辑的表单等于把它的评审面抹掉。
- * 卡片把站点**只读展示**出来，编辑仍走 profile 补丁层（`~/.dsh/profiles/<profile>/cordis.patch.yml`）。
+ * `targets`（站点列表）不在这一列里——它有自己那条路（`normalizeTargets` + 逐次确认），
+ * 因为它是「这个站点、这个范围、这个源」的**声明**，与就绪清单、验活断言同一类东西。
+ * **回答「这个表单凭什么评审」**（2026-10-03 定的口径，四条一起才成立）：
+ *
+ *   1. **结构化表单**：每行站点按字段填（id / url / 范围 / 允许源 / 视口 / 凭据引用），不是 YAML 自由文本；
+ *   2. **服务端同一套判据**：`normalizeTargets` 严格校验（**不静默丢弃**），并要求 `normalizeConfig`
+ *      把校验过的行**原样**收下（两套规则一旦分叉就在保存时报错，而不是悄悄少一个站点）；
+ *   3. **逐次确认**：保存站点必须带 `confirmSiteEdit: true`——它是会影响「工具能在哪些站点上动手」的
+ *      变更，与 `env_down` 同一档；
+ *   4. **每次变更进审计**（含被拒的尝试）：`auditFile` 配了就是持久 JSON 行，没配就是宿主日志。
+ *
+ * 更彻底的那条路（站点声明**随项目走**，像 `verify/` / `ready/` 那样进项目仓库评审）是**下一件**，
+ * 记在 ROADMAP 待办 6b。
  */
 export declare const CARD_FIELDS: readonly ["enabled", "announceToAgent", "settleMs", "noSandbox", "chromePath", "shotDir", "auditFile"];
+/**
+ * 站点列表的**严格**校验（卡片保存路径专用）。
+ *
+ * 为什么不能直接拿 `normalizeConfig` 的结果：它对缺 id / 缺 url 的行是**静默跳过**
+ * （那是给「配置里本来就写坏了一行」的容错），而保存路径上静默跳过 = 用户以为存了 3 个、实际只有 2 个。
+ * 这里逐行逐字段报错、**指到 `targets[i].字段`**，并在最后用 `normalizeConfig` 复核「校验过的行
+ * 一行不少地被收下」——两套规则分叉时在这里就红。
+ */
+export declare function normalizeTargets(input: unknown): {
+    targets: Record<string, unknown>[];
+} | {
+    error: string;
+};
 /**
  * 把卡片提交上来的 patch 收敛成「能写进 settings entry 的那几个字段」。
  *
@@ -183,8 +206,10 @@ export declare const CARD_FIELDS: readonly ["enabled", "announceToAgent", "settl
  */
 export declare function normalizeCardPatch(input: Record<string, unknown>): {
     patch: Record<string, unknown>;
+    code?: string;
 } | {
     error: string;
+    code?: string;
 };
 /**
  * 卡片的 GET 快照（**纯函数**：把 `live` 投影成客户端要的形状）。

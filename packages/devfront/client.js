@@ -49,6 +49,7 @@ window.__ModuleLoader__.load({
       '.df_site{padding:6px 8px;border:1px solid var(--dsw-alias-border-secondary);border-radius:6px;font-size:12px}',
       '.df_siteName{font-weight:600}',
       '.df_actions{display:flex;align-items:center;gap:8px}',
+      '.df_remove{padding:2px 8px;border:1px solid var(--dsw-alias-border-secondary);border-radius:6px;background:transparent;color:inherit;cursor:pointer;font-size:12px}',
       '.df_save{padding:4px 12px;border:1px solid var(--dsw-alias-border-secondary);border-radius:6px;background:var(--dsw-alias-bg-primary);color:inherit;cursor:pointer;font-size:13px}',
       '.df_msg{font-size:12px}',
       '.df_msgOk{color:var(--dsw-alias-label-tertiary)}',
@@ -77,8 +78,20 @@ window.__ModuleLoader__.load({
       'card.name': '前端效果验证',
       'card.desc': '面向「发布之后页面到底对不对」：打开站点、截图、收 console、跑验活断言。',
       'section.config': '插件配置',
-      'section.sites': '站点（只读）',
-      'hint.sitesReadonly': '站点列表在 profile 补丁层维护（~/.dsh/profiles/<profile>/cordis.patch.yml）：它随项目评审，卡片只展示。',
+      'section.sites': '站点（可改）',
+      'btn.addSite': '+ 添加站点',
+      'btn.removeSite': '删除',
+      'field.siteId': 'id（工具按它选站点）',
+      'field.siteLabel': '名字',
+      'field.siteUrl': '入口 URL',
+      'field.siteScope': '作用域目录（逗号分隔）',
+      'field.siteOrigins': '允许动手的源（逗号分隔）',
+      'field.siteViewport': '视口（如 390x844，留空 = 浏览器默认）',
+      'field.siteCredential': '凭据引用（留空 = 不登录）',
+      'check.confirmSites': '我知道这会写进 profile 补丁层（~/.dsh/profiles/<profile>/cordis.patch.yml），并进审计',
+      'msg.sitesNeedConfirm': '站点改动要先勾选下面那个确认框：它是「工具能在哪些站点、哪些范围、哪些源上动手」的变更。',
+      'msg.sitesSaved': '站点已保存（进审计）',
+      'msg.sitesUnchanged': '站点没有改动',
       'check.enabled': '启用本插件',
       'check.announce': '向 agent 注入能力公告',
       'check.noSandbox': '关掉 Chrome 沙箱（只在受限环境开）',
@@ -94,17 +107,25 @@ window.__ModuleLoader__.load({
       'msg.loadFailed': '读取配置失败：',
       'msg.saveFailed': '保存失败：',
       'list.emptySites': '还没有配置任何站点——卡片不编一个默认站点出来（作用域与允许源都该由你声明）。',
-      'meta.scope': '作用域',
-      'meta.origins': '允许动手的源',
-      'meta.viewport': '视口',
-      'meta.credential': '凭据引用',
     }
     const I18N_EN = {
       'card.name': 'Front-end verification',
       'card.desc': 'Answers "is the page actually right after a release": open a site, screenshot, collect console, run assertions.',
       'section.config': 'Plugin configuration',
-      'section.sites': 'Sites (read-only)',
-      'hint.sitesReadonly': 'Sites live in the profile patch layer (~/.dsh/profiles/<profile>/cordis.patch.yml): they are reviewed with the project, so the card only displays them.',
+      'section.sites': 'Sites (editable)',
+      'btn.addSite': '+ Add a site',
+      'btn.removeSite': 'Remove',
+      'field.siteId': 'id (tools pick the site by it)',
+      'field.siteLabel': 'Name',
+      'field.siteUrl': 'Entry URL',
+      'field.siteScope': 'Scope dirs (comma separated)',
+      'field.siteOrigins': 'Origins allowed to act on (comma separated)',
+      'field.siteViewport': 'Viewport (e.g. 390x844; empty = browser default)',
+      'field.siteCredential': 'Credential ref (empty = no login)',
+      'check.confirmSites': 'I understand this is written into the profile patch layer (~/.dsh/profiles/<profile>/cordis.patch.yml) and audited',
+      'msg.sitesNeedConfirm': 'Tick the confirmation box first: this changes which sites, scopes and origins the tools may act on.',
+      'msg.sitesSaved': 'Sites saved (audited)',
+      'msg.sitesUnchanged': 'Sites unchanged',
       'check.enabled': 'Enable this plugin',
       'check.announce': 'Inject the capability notice to the agent',
       'check.noSandbox': 'Disable the Chrome sandbox (restricted environments only)',
@@ -120,10 +141,6 @@ window.__ModuleLoader__.load({
       'msg.loadFailed': 'Failed to load configuration: ',
       'msg.saveFailed': 'Failed to save: ',
       'list.emptySites': 'No sites configured yet — the card will not invent one (scope and allowed origins must be declared by you).',
-      'meta.scope': 'Scope',
-      'meta.origins': 'Origins allowed to act on',
-      'meta.viewport': 'Viewport',
-      'meta.credential': 'Credential ref',
     }
     /* ==== dsh-i18n:end ==== */
 
@@ -169,13 +186,47 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function sitesOf(config) {
-      return Array.isArray(config.targets) ? config.targets : []
+    /** 快照里的站点 → **可编辑草稿**（列表字段用逗号拼起来，方便一个输入框改）。 */
+    function draftSites(config) {
+      const rows = Array.isArray(config.targets) ? config.targets : []
+      return rows.map((site) => ({
+        id: typeof site.id === 'string' ? site.id : '',
+        label: typeof site.label === 'string' ? site.label : '',
+        url: typeof site.url === 'string' ? site.url : '',
+        scopeDirs: Array.isArray(site.scopeDirs) ? site.scopeDirs.join(', ') : '',
+        allowedOrigins: Array.isArray(site.allowedOrigins) ? site.allowedOrigins.join(', ') : '',
+        viewport: typeof site.viewport === 'string' ? site.viewport : '',
+        credentialRef: typeof site.credentialRef === 'string' ? site.credentialRef : '',
+      }))
+    }
+
+    /** 逗号分隔 → 字符串数组（空项丢掉；**不去重、不排序**：顺序是用户的意图）。 */
+    function splitList(value) {
+      return String(value)
+        .split(',')
+        .map((item) => item.trim())
+        .filter((item) => item !== '')
+    }
+
+    /** 草稿 → 提交给宿主的 payload 形状（空字段**不占位**，让「没写」保持没写）。 */
+    function sitesPayload(rows) {
+      return rows.map((row) => ({
+        id: row.id.trim(),
+        url: row.url.trim(),
+        ...(row.label.trim() === '' ? {} : { label: row.label.trim() }),
+        scopeDirs: splitList(row.scopeDirs),
+        allowedOrigins: splitList(row.allowedOrigins),
+        ...(row.viewport.trim() === '' ? {} : { viewport: row.viewport.trim() }),
+        ...(row.credentialRef.trim() === '' ? {} : { credentialRef: row.credentialRef.trim() }),
+      }))
     }
 
     function DevfrontCard() {
       const [config, setConfig] = React.useState(null)
       const [form, setForm] = React.useState(null)
+      const [sites, setSites] = React.useState([])
+      const [sitesFromServer, setSitesFromServer] = React.useState([])
+      const [confirmSites, setConfirmSites] = React.useState(false)
       const [busy, setBusy] = React.useState(false)
       const [message, setMessage] = React.useState({ text: '', kind: '' })
 
@@ -186,6 +237,8 @@ window.__ModuleLoader__.load({
             if (data !== null && typeof data === 'object' && data.ok === true && typeof data.config === 'object') {
               setConfig(data.config)
               setForm(pickScalars(data.config))
+              setSites(draftSites(data.config))
+              setSitesFromServer(draftSites(data.config))
               return
             }
             setMessage({ text: t('msg.loadFailed') + String(data && data.error ? data.error : ''), kind: 'err' })
@@ -203,14 +256,29 @@ window.__ModuleLoader__.load({
         setForm((prev) => (prev === null ? prev : { ...prev, [key]: value }))
       }
 
+      const setSiteField = (index, key, value) => {
+        setSites((rows) => rows.map((row, i) => (i === index ? { ...row, [key]: value } : row)))
+      }
+
+      const sitesDirty = JSON.stringify(sites) !== JSON.stringify(sitesFromServer)
+
       const save = () => {
         if (form === null || busy) return
+        if (sitesDirty && !confirmSites) {
+          setMessage({ text: t('msg.sitesNeedConfirm'), kind: 'err' })
+          return
+        }
         setBusy(true)
         setMessage({ text: '', kind: '' })
+        const payload = { ...form }
+        if (sitesDirty) {
+          payload.targets = sitesPayload(sites)
+          payload.confirmSiteEdit = true
+        }
         fetch(CONFIG_PATH, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(form),
+          body: JSON.stringify(payload),
         })
           .then((res) => res.json())
           .then((data) => {
@@ -221,7 +289,11 @@ window.__ModuleLoader__.load({
             }
             setConfig(data.config)
             setForm(pickScalars(data.config))
-            setMessage({ text: data.persisted === false ? t('msg.savedNotPersisted') : t('msg.saved'), kind: data.persisted === false ? 'err' : 'ok' })
+            setSites(draftSites(data.config))
+            setSitesFromServer(draftSites(data.config))
+            setConfirmSites(false)
+            const done = sitesDirty ? t('msg.sitesSaved') : t('msg.saved')
+            setMessage({ text: data.persisted === false ? t('msg.savedNotPersisted') : done, kind: data.persisted === false ? 'err' : 'ok' })
           })
           .catch((error) => {
             setBusy(false)
@@ -263,33 +335,94 @@ window.__ModuleLoader__.load({
           ],
         })
 
-      const sites = sitesOf(config === null ? {} : config)
-      const siteList =
-        sites.length === 0
-          ? [jsx('li', { className: 'df_hint', children: t('list.emptySites') }, 'empty')]
-          : sites.map((site, index) => {
-              const meta = []
-              if (Array.isArray(site.scopeDirs) && site.scopeDirs.length > 0) meta.push(`${t('meta.scope')}: ${site.scopeDirs.join(' / ')}`)
-              if (Array.isArray(site.allowedOrigins) && site.allowedOrigins.length > 0) meta.push(`${t('meta.origins')}: ${site.allowedOrigins.join(' / ')}`)
-              if (typeof site.viewport === 'string' && site.viewport !== '') meta.push(`${t('meta.viewport')}: ${site.viewport}`)
-              if (typeof site.credentialRef === 'string' && site.credentialRef !== '') meta.push(`${t('meta.credential')}: ${site.credentialRef}`)
-              return jsxs(
-                'li',
-                {
-                  className: 'df_site',
-                  children: [
-                    jsxs('div', {
+      /** 一个站点草稿的某个字段（标签 + 输入框）。 */
+      const siteField = (index, key, label) =>
+        jsxs('label', {
+          className: 'df_field',
+          children: [
+            jsx('span', { className: 'df_label', children: label }),
+            jsx('input', {
+              className: 'df_input',
+              type: 'text',
+              value: sites[index] === undefined ? '' : String(sites[index][key]),
+              onChange: (event) => {
+                setSiteField(index, key, event.target.value)
+              },
+            }),
+          ],
+        })
+
+      const siteEditor = jsxs('div', {
+        className: 'df_card',
+        children: [
+          jsx('p', { className: 'df_hint', children: t('section.sites') }),
+          sites.length === 0
+            ? jsx('p', { className: 'df_hint', children: t('list.emptySites') })
+            : jsx('ul', {
+                className: 'df_sites',
+                children: sites.map((row, index) =>
+                  jsxs(
+                    'li',
+                    {
+                      className: 'df_site',
                       children: [
-                        jsx('span', { className: 'df_siteName', children: String(site.id) + ' · ' + String(site.label === undefined ? '' : site.label) }),
-                        jsx('span', { children: ' ' + String(site.url === undefined ? '' : site.url) }),
+                        jsxs('div', {
+                          className: 'df_row',
+                          children: [
+                            jsx('span', { className: 'df_siteName', children: row.id.trim() === '' ? t('field.siteId') : row.id }),
+                            jsx('button', {
+                              type: 'button',
+                              className: 'df_remove',
+                              onClick: () => {
+                                setSites((rows) => rows.filter((_item, i) => i !== index))
+                                setConfirmSites(false)
+                              },
+                              children: t('btn.removeSite'),
+                            }),
+                          ],
+                        }),
+                        siteField(index, 'id', t('field.siteId')),
+                        siteField(index, 'label', t('field.siteLabel')),
+                        siteField(index, 'url', t('field.siteUrl')),
+                        siteField(index, 'scopeDirs', t('field.siteScope')),
+                        siteField(index, 'allowedOrigins', t('field.siteOrigins')),
+                        siteField(index, 'viewport', t('field.siteViewport')),
+                        siteField(index, 'credentialRef', t('field.siteCredential')),
                       ],
-                    }),
-                    meta.length === 0 ? null : jsx('div', { className: 'df_hint', children: meta.join(' · ') }),
-                  ],
-                },
-                String(site.id) + '#' + String(index),
-              )
-            })
+                    },
+                    'site-' + String(index),
+                  ),
+                ),
+              }),
+          jsx('button', {
+            type: 'button',
+            className: 'df_save',
+            onClick: () => {
+              setSites((rows) => [
+                ...rows,
+                { id: '', label: '', url: '', scopeDirs: '', allowedOrigins: '', viewport: '', credentialRef: '' },
+              ])
+              setConfirmSites(false)
+            },
+            children: t('btn.addSite'),
+          }),
+          sitesDirty
+            ? jsx('label', {
+                className: 'df_row',
+                children: [
+                  jsx('input', {
+                    type: 'checkbox',
+                    checked: confirmSites,
+                    onChange: (event) => {
+                      setConfirmSites(event.target.checked)
+                    },
+                  }),
+                  jsx('span', { className: 'df_hint', children: t('check.confirmSites') }),
+                ],
+              })
+            : null,
+        ],
+      })
 
       return jsxs('div', {
         className: 'df_card',
@@ -314,9 +447,7 @@ window.__ModuleLoader__.load({
                   text('chromePath', t('field.chromePath')),
                   text('shotDir', t('field.shotDir')),
                   text('auditFile', t('field.auditFile')),
-                  jsx('p', { className: 'df_hint', children: t('section.sites') }),
-                  jsx('ul', { className: 'df_sites', children: siteList }),
-                  jsx('p', { className: 'df_hint', children: t('hint.sitesReadonly') }),
+                  siteEditor,
                   jsxs('div', {
                     className: 'df_actions',
                     children: [

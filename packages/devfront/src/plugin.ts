@@ -366,13 +366,89 @@ export function denialMessage(outcome: { code: string; message: string; hint?: s
 }
 
 /**
- * 配置卡片（客户端半体）**能改**的字段。
+ * 配置卡片（客户端半体）能改的**标量**字段。
  *
- * 只放**标量**：`targets`（站点列表）刻意不在卡片里改——它是「项目/环境的声明」，与就绪清单、
- * 验活断言同一类东西（随项目评审、DSH 侧只读），塞进一个自由编辑的表单等于把它的评审面抹掉。
- * 卡片把站点**只读展示**出来，编辑仍走 profile 补丁层（`~/.dsh/profiles/<profile>/cordis.patch.yml`）。
+ * `targets`（站点列表）不在这一列里——它有自己那条路（`normalizeTargets` + 逐次确认），
+ * 因为它是「这个站点、这个范围、这个源」的**声明**，与就绪清单、验活断言同一类东西。
+ * **回答「这个表单凭什么评审」**（2026-10-03 定的口径，四条一起才成立）：
+ *
+ *   1. **结构化表单**：每行站点按字段填（id / url / 范围 / 允许源 / 视口 / 凭据引用），不是 YAML 自由文本；
+ *   2. **服务端同一套判据**：`normalizeTargets` 严格校验（**不静默丢弃**），并要求 `normalizeConfig`
+ *      把校验过的行**原样**收下（两套规则一旦分叉就在保存时报错，而不是悄悄少一个站点）；
+ *   3. **逐次确认**：保存站点必须带 `confirmSiteEdit: true`——它是会影响「工具能在哪些站点上动手」的
+ *      变更，与 `env_down` 同一档；
+ *   4. **每次变更进审计**（含被拒的尝试）：`auditFile` 配了就是持久 JSON 行，没配就是宿主日志。
+ *
+ * 更彻底的那条路（站点声明**随项目走**，像 `verify/` / `ready/` 那样进项目仓库评审）是**下一件**，
+ * 记在 ROADMAP 待办 6b。
  */
 export const CARD_FIELDS = ['enabled', 'announceToAgent', 'settleMs', 'noSandbox', 'chromePath', 'shotDir', 'auditFile'] as const
+
+/** 一个字符串数组字段（去空、保序）。 */
+function readStringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  return value.filter((item): item is string => typeof item === 'string' && item.trim() !== '').map((item) => item.trim())
+}
+
+/**
+ * 站点列表的**严格**校验（卡片保存路径专用）。
+ *
+ * 为什么不能直接拿 `normalizeConfig` 的结果：它对缺 id / 缺 url 的行是**静默跳过**
+ * （那是给「配置里本来就写坏了一行」的容错），而保存路径上静默跳过 = 用户以为存了 3 个、实际只有 2 个。
+ * 这里逐行逐字段报错、**指到 `targets[i].字段`**，并在最后用 `normalizeConfig` 复核「校验过的行
+ * 一行不少地被收下」——两套规则分叉时在这里就红。
+ */
+export function normalizeTargets(input: unknown): { targets: Record<string, unknown>[] } | { error: string } {
+  if (!Array.isArray(input)) return { error: 'targets 必须是数组' }
+  const out: Record<string, unknown>[] = []
+  const seen = new Set<string>()
+
+  for (const [index, row] of input.entries()) {
+    const where = `targets[${String(index)}]`
+    if (typeof row !== 'object' || row === null || Array.isArray(row)) return { error: `${where} 必须是对象` }
+    const entry = row as Record<string, unknown>
+
+    const id = typeof entry.id === 'string' ? entry.id.trim() : ''
+    if (id === '') return { error: `${where}.id 必须是非空字符串（工具就是按它选站点的）` }
+    if (seen.has(id)) return { error: `${where}.id 与前面的站点重名：${id}——重名的那一个会被丢掉，那是静默失败` }
+    seen.add(id)
+
+    const url = typeof entry.url === 'string' ? entry.url.trim() : ''
+    if (url === '') return { error: `${where}.url 必须是非空字符串（站点范围判据从它取同源与前缀）` }
+
+    const label = typeof entry.label === 'string' ? entry.label.trim() : ''
+    const scopeDirs = readStringList(entry.scopeDirs)
+    if (entry.scopeDirs !== undefined && scopeDirs === undefined) return { error: `${where}.scopeDirs 必须是字符串数组` }
+    const allowedOrigins = readStringList(entry.allowedOrigins)
+    if (entry.allowedOrigins !== undefined && allowedOrigins === undefined) return { error: `${where}.allowedOrigins 必须是字符串数组` }
+
+    const viewportRaw = typeof entry.viewport === 'string' ? entry.viewport.trim() : ''
+    if (entry.viewport !== undefined && typeof entry.viewport !== 'string') return { error: `${where}.viewport 必须是字符串（如 390x844）` }
+    if (viewportRaw !== '' && parseViewport(viewportRaw) === undefined) {
+      return { error: `${where}.viewport 认不出：${viewportRaw}（要么按 宽x高 写，要么留空 = 浏览器默认）` }
+    }
+
+    const credentialRef = typeof entry.credentialRef === 'string' ? entry.credentialRef.trim() : ''
+    if (entry.credentialRef !== undefined && typeof entry.credentialRef !== 'string') return { error: `${where}.credentialRef 必须是字符串` }
+
+    out.push({
+      id,
+      ...(label === '' ? {} : { label }),
+      url,
+      scopeDirs: scopeDirs ?? [],
+      allowedOrigins: allowedOrigins ?? [],
+      ...(viewportRaw === '' ? {} : { viewport: viewportRaw }),
+      ...(credentialRef === '' ? {} : { credentialRef }),
+    })
+  }
+
+  // 复核：解析层必须把这些行**一行不少**地收下（两套规则分叉时在这里红，而不是悄悄少一个站点）
+  const parsed = normalizeConfig({ targets: out }).targets
+  if (parsed.length !== out.length) {
+    return { error: `内部判据分叉：校验通过 ${String(out.length)} 个站点，解析层只收下 ${String(parsed.length)} 个（报 bug，别重试）` }
+  }
+  return { targets: out }
+}
 
 /**
  * 把卡片提交上来的 patch 收敛成「能写进 settings entry 的那几个字段」。
@@ -384,13 +460,23 @@ export const CARD_FIELDS = ['enabled', 'announceToAgent', 'settleMs', 'noSandbox
  *   - 类型/范围先判、再写：非法值**不许**先落地再抛（docker 踩过：非法值写进 settings.yaml 之后
  *     整段配置在下次启动时静默退回默认）。
  */
-export function normalizeCardPatch(input: Record<string, unknown>): { patch: Record<string, unknown> } | { error: string } {
+export function normalizeCardPatch(input: Record<string, unknown>): { patch: Record<string, unknown>; code?: string } | { error: string; code?: string } {
   const patch: Record<string, unknown> = {}
   for (const [key, value] of Object.entries(input)) {
+    if (key === 'confirmSiteEdit') continue // 它只是这次调用的确认位，不进配置
     if (key === 'targets') {
-      return {
-        error: '站点列表（targets）不在卡片里改：它是 profile 补丁层里的声明，请编辑 ~/.dsh/profiles/<profile>/cordis.patch.yml（卡片只读展示它们）',
+      if (input.confirmSiteEdit !== true) {
+        return {
+          error:
+            '改站点声明要逐次确认：这是「工具能在哪些站点、哪些范围、哪些源上动手」的变更，'
+            + '带 `confirmSiteEdit: true` 重试（卡片上那个复选框就是它）。它写进 profile 补丁层并进审计。',
+          code: 'CONFIRMATION_REQUIRED',
+        }
       }
+      const normalized = normalizeTargets(value)
+      if ('error' in normalized) return normalized
+      patch.targets = normalized.targets
+      continue
     }
     if (!(CARD_FIELDS as readonly string[]).includes(key)) return { error: `不认识的字段：${key}` }
 
@@ -936,7 +1022,21 @@ const plugin = definePlugin<Config>({  name: 'devfront',
             }
             const normalized = normalizeCardPatch(body)
             if ('error' in normalized) {
-              writeJson(res, 400, { error: normalized.error })
+              /*
+               * **被拒的尝试也进审计**（与工具面同一口径）。写不进去就让它抛：审计是这条路径的
+               * 前提，坏了就该响（而不是安静地放行一次没记下来的变更）。
+               */
+              webAuditSink({ auditFile: live.auditFile, logger: ctx.logger }).record({
+                at: Date.now(),
+                targetId: 'card',
+                action: 'config.save',
+                allowed: false,
+                ...(normalized.code === undefined ? {} : { code: normalized.code }),
+              })
+              writeJson(res, 400, {
+                error: normalized.error,
+                ...(normalized.code === undefined ? {} : { code: normalized.code }),
+              })
               return
             }
             const scope = settingsScopeRef
@@ -958,6 +1058,13 @@ const plugin = definePlugin<Config>({  name: 'devfront',
             } else {
               applySection({ ...rawSectionRef, ...normalized.patch })
             }
+            // 成功的变更也进审计：站点声明（影响「能在哪些站点上动手」）与标量分开记。
+            webAuditSink({ auditFile: live.auditFile, logger: ctx.logger }).record({
+              at: Date.now(),
+              targetId: 'card',
+              action: 'targets' in normalized.patch ? 'config.sites' : 'config.scalars',
+              allowed: true,
+            })
             writeJson(res, 200, { ok: true, config: configSnapshotFrom(live), persisted: scope !== undefined })
           },
         })

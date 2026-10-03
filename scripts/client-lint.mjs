@@ -56,8 +56,17 @@ import { describeHostUrlUse, HOST_URL_RULE_HINT, listClientSourceFiles, scanHost
 const root = process.cwd()
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
-/** 只把这几类当失败：见文件头的说明。 */
+/**
+ * 只把这几类当失败：见文件头的说明。
+ *
+ * **语法错（`TS1xxx`）也算失败**（2026-10-03 加）：`TS1005`「少一个逗号」此前落在噪音里——
+ * 而它意味着**整个 bundle 解析不了、插件的界面全没了**。实测就是这么漏的：`devfront` 的
+ * 目录块漏了一个逗号，`check-i18n`（容错解析拿得到键）与本闸门（把它当噪音）**都绿**，
+ * 只有真机验收（真宿主 + 真 Chrome）发现卡片不见了。判据用前缀族而不是逐个码列举：
+ * 语法错会换码（`TS1005` / `TS1003` / `TS1109` / `TS1128` …），列不完。
+ */
 const FATAL_CODES = new Set(['TS2304', 'TS2552', 'TS2448', 'TS2454'])
+const isSyntaxError = (code) => /^TS1\d{3}$/.test(code)
 
 // 目标选择：优先源码，没有源码就查构建产物（7 个裸 client.js 的包走这条）
 const target = ['client-src/index.js', 'client.js'].find((candidate) => existsSync(join(root, candidate)))
@@ -122,8 +131,8 @@ const anchor = target.startsWith('client-src/')
 const found = [...output.matchAll(new RegExp('(' + anchor + ')\\((\\d+),(\\d+)\\): error (TS\\d+): (.*)', 'g'))]
   .map((match) => ({ file: match[1], line: Number(match[2]), col: Number(match[3]), code: match[4], text: match[5].trim() }))
 
-const fatal = found.filter((item) => FATAL_CODES.has(item.code))
-const noise = found.filter((item) => !FATAL_CODES.has(item.code))
+const fatal = found.filter((item) => FATAL_CODES.has(item.code) || isSyntaxError(item.code))
+const noise = found.filter((item) => !FATAL_CODES.has(item.code) && !isSyntaxError(item.code))
 
 /* ------------------------------------------------------------------ *
  * 汇总

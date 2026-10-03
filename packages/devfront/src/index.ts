@@ -50,6 +50,7 @@ export {
   CARD_FIELDS,
   configSnapshotFrom,
   normalizeCardPatch,
+  normalizeTargets,
   normalizeConfig,
   parseViewport,
   DEVFONT_GUIDANCE,

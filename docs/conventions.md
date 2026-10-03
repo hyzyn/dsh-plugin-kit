@@ -318,6 +318,14 @@ origin 上。从 `location` 推出来的地址在浏览器里完全正常、**�
 `pnpm -r typecheck` 里的 `scripts/client-lint.mjs` 会静态拦下这两类写法
 （AST 检查，注释与字符串免疫；规则与成因见 `scripts/client-host-url.mjs`），覆盖全部客户端半体。
 
+### ①b 语法错是**致命**的（`client-lint` 不许把它当噪音）
+
+`client-lint` 用 `tsc --allowJs --checkJs` 扫客户端半体，只把几类错误当失败（`TS2304` / `TS2552` /
+`TS2448` / `TS2454`），其余归「已知噪音」。**`TS1xxx`（语法族）不在此列**：一个少写的逗号意味着
+**整个 bundle 解析不了、这个插件的界面全没了**。2026-10-03 实测漏过一次：`devfront` 的 i18n 目录块
+漏了逗号，`check-i18n`（容错解析仍拿得到键）与 `client-lint`（当噪音）**都绿**，只有真机验收
+（真宿主 + 真 Chrome）发现卡片不见了。判据用前缀族而不是逐个码列举——语法错会换码。
+
 ### ② 要判对错的客户端逻辑，抽成 `client-src/*.js` 纯模块 + vitest 用例
 
 `client.js` 是构建产物、不在 vitest 层测；`client-lint` 只查静态问题（名字解析、宿主地址来源）、

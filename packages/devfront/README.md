@@ -117,10 +117,13 @@ devfront 只能在 profile 补丁层手改配置，而工具报出来的「配�
 
 - **能改（标量）**：`enabled` / `announceToAgent` / `settleMs` / `noSandbox` / `chromePath` /
   `shotDir` / `auditFile`；
-- **只读展示**：`targets`（站点：id · label · url · 作用域 · 允许动手的源 · 视口 · 凭据引用）；
-- **为什么站点只读**：它是「这个站点、这个范围、这个源」的**声明**，与就绪清单、验活断言同一类
-  东西——随项目评审、DSH 侧只读（§15.3 的边界）。塞进自由编辑的表单等于把评审面抹掉；卡片上
-  写着这条边界，不靠用户猜；
+- **能改（站点）**：`targets` —— 结构化表单（每行 id / 名字 / 入口 URL / 作用域 / 允许动手的源 /
+  视口 / 凭据引用），可增删改。**改站点要逐次确认**（卡片上那个复选框 → `confirmSiteEdit: true`），
+  与 `env_down` 同一档：它决定「工具能在哪些站点、哪些范围、哪些源上动手」。
+- **站点这个表单凭什么评审**（四条一起才成立）：① 结构化表单（不是 YAML 自由文本）；② 服务端
+  **同一套判据**（`normalizeTargets` 严格校验、**不静默丢行**，并要求 `normalizeConfig` 把校验过的行
+  一行不少地收下——两套规则分叉时保存就报错）；③ **逐次确认**；④ **每次变更进审计**（含被拒的尝试）。
+  更彻底的那条路——站点声明**随项目走**（像 `verify/` / `ready/` 那样进项目仓库评审）——是下一件；
 - **数据面**：宿主那条 `GET/POST /api/dsh-devfront/config`。POST 走**官方持久化通道**
   `settings.update(entryId, patch)`（写 volatile 字段 → loader 广播 → 本插件 `applySection` 热应用，
   不重启）；宿主没有 settings 服务时退化成「只在本进程生效」，响应里如实带 `persisted: false`，

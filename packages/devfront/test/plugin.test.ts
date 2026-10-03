@@ -231,13 +231,70 @@ describe('配置卡片的数据面（宿主侧纯函数，2026-10-03）', () => 
     expect(CARD_FIELDS).toContain('auditFile')
   })
 
-  it('**站点列表不在卡片里改**：报错并指到 profile 补丁层（不是静默丢弃）', () => {
+  it('站点不带 `confirmSiteEdit` → 逐次确认那一档（码要能被 agent 认出来）', () => {
     const result = normalizeCardPatch({ targets: [{ id: 'w', url: 'https://x.test/' }] })
     expect('error' in result).toBe(true)
     if ('error' in result) {
-      expect(result.error).toContain('targets')
-      expect(result.error).toContain('cordis.patch.yml')
+      expect(result.code).toBe('CONFIRMATION_REQUIRED')
+      expect(result.error).toContain('confirmSiteEdit')
+      expect(result.error).toContain('profile 补丁层')
     }
+  })
+
+  it('站点带 `confirmSiteEdit` → patch 里就是**校验过**的行（列表字段去空、`label` 去空白）', () => {
+    const result = normalizeCardPatch({
+      confirmSiteEdit: true,
+      targets: [
+        {
+          id: 'w',
+          url: 'https://x.test/app/',
+          label: '  站点  ',
+          scopeDirs: ['/a', '   '],
+          allowedOrigins: ['https://sso.test'],
+          viewport: '390x844',
+          credentialRef: 'secret:x',
+        },
+      ],
+    })
+    expect(result).toEqual({
+      patch: {
+        targets: [
+          {
+            id: 'w',
+            label: '站点',
+            url: 'https://x.test/app/',
+            scopeDirs: ['/a'],
+            allowedOrigins: ['https://sso.test'],
+            viewport: '390x844',
+            credentialRef: 'secret:x',
+          },
+        ],
+      },
+    })
+  })
+
+  it('站点校验**逐行逐字段报错**（不静默丢行）', () => {
+    const cases: Array<[unknown, string]> = [
+      ['not-an-array', 'targets 必须是数组'],
+      [[{ url: 'https://x.test/' }], 'targets[0].id'],
+      [[{ id: 'w' }], 'targets[0].url'],
+      [[{ id: 'w', url: 'https://x.test/' }, { id: 'w', url: 'https://y.test/' }], '重名'],
+      [[{ id: 'w', url: 'https://x.test/', viewport: 'nope' }], 'targets[0].viewport'],
+      [[{ id: 'w', url: 'https://x.test/', scopeDirs: 'a,b' }], 'targets[0].scopeDirs'],
+    ]
+    for (const [targets, needle] of cases) {
+      const result = normalizeCardPatch({ confirmSiteEdit: true, targets })
+      expect('error' in result, JSON.stringify(targets)).toBe(true)
+      if ('error' in result) expect(result.error, JSON.stringify(targets)).toContain(needle)
+    }
+  })
+
+  it('标量与站点可以一次改：`confirmSiteEdit` 是确认位，**不进配置**', () => {
+    expect(normalizeCardPatch({ confirmSiteEdit: true, settleMs: 500, targets: [] })).toEqual({
+      patch: { settleMs: 500, targets: [] },
+    })
+    // 删光站点也是合法状态（「没配站点 = 一个工具都不注册」那条 fail-closed 判据由注册面钉住）
+    expect(normalizeCardPatch({ confirmSiteEdit: true, targets: [] })).toEqual({ patch: { targets: [] } })
   })
 
   it('`configSnapshotFrom`：站点全量只读展示（含范围 / 允许源 / 视口 / 凭据引用）', () => {
