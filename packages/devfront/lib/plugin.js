@@ -494,6 +494,8 @@ const plugin = definePlugin({ name: 'devfront',
         /** 按 id 找站点；找不到时报出可用名单（agent 的失败模式是原地重试，得给它出路）。 */
         const pickTarget = (id, sites) => {
             const wanted = typeof id === 'string' ? id.trim() : '';
+            // 兜底分支：真宿主那层 `defineTool` 的参数校验会先挡下缺参与空串（假宿主实测），
+            // 这条只在绕过校验时到得了——留着是为了「拿到的 id 一定是非空」这条不变量。
             if (wanted === '')
                 throw new Error(`缺少 target 参数。可用站点：${sites.map((t) => t.id).join(' / ')}`);
             const found = sites.find((t) => t.id === wanted);
