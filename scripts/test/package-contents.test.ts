@@ -14,7 +14,7 @@
  * 闸门（见 [docs/conventions.md](../docs/conventions.md) 的守卫纪律），所以「检查数不是 0」
  * 是这道闸自己的必要条件。
  */
-import { describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it } from 'vitest'
 
 import {
   checkPackageContents,
@@ -156,8 +156,22 @@ describe('真实仓库 · 真的打一次包', () => {
    * 这一组走子进程（`pnpm pack --dry-run --json`），是本闸真正的防线：fixture 只能证明
    * 判定逻辑对，不能证明「仓库当前的 files 字段真的把入口带出去了」。
    * 同时它顺带钉住 pnpm 的输出形态（根包给对象、子包给数组），解析写错就会在这里炸。
+   *
+   * ## 为什么是 `beforeAll` 而不是在 describe 体里直接调
+   *
+   * 第一版写成 `const inputs = readPackageContentsInputs()`（describe 体里）。那意味着
+   * **只要加载这个测试文件就 spawn 13 个 pnpm 子进程**——实测空载 3.9 秒，且 vitest 收集阶段
+   * 是并行的，于是并发跑几份全量套件时会有几十个 pnpm 同时抢 CPU。2026-10-03 实测到过一次
+   * `pnpm flake:check` 因此报红（同一次里另一条车道也超时）。
+   *
+   * 这正是本仓刚花一整轮根治的那类问题（D95 / D57 / CG65：**测试在赌资源**），
+   * 只不过这次赌的是「pnpm 能在我需要的时候立刻起来」。放进 `beforeAll` 后，
+   * 它只在**这一组真的要被跑**时才执行一次，收集阶段零副作用。
    */
-  const inputs = readPackageContentsInputs()
+  let inputs
+  beforeAll(() => {
+    inputs = readPackageContentsInputs()
+  })
 
   it('13 个发布目标都真的打出了包（不是「读空 = 恒绿」）', () => {
     expect(inputs.targets.length).toBeGreaterThanOrEqual(13)

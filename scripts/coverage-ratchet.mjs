@@ -62,6 +62,9 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 /** 棘轮基线文件（入库；`--write` 时重写）。 */
 export const BASELINE_FILE = join(REPO_ROOT, 'scripts', 'coverage-baseline.json')
 
+/** vitest 的真实 JS 入口（绕开 npm/pnpm 的 `.cmd` shim，见 measureCoverage 的注释）。 */
+const VITEST_ENTRY = join(REPO_ROOT, 'node_modules', 'vitest', 'vitest.mjs')
+
 /** 统计范围：只算宿主半体源码，理由见文件头。 */
 export const COVERAGE_INCLUDE = 'packages/*/src/**'
 
@@ -130,9 +133,14 @@ export function compareCoverage({ baseline, current }) {
 export function measureCoverage() {
   const outDir = mkdtempSync(join(tmpdir(), 'dsh-coverage-'))
   try {
+    /*
+     * 用 `node <vitest 的 JS 入口>` 而不是 `npx vitest`：Windows 上 npx 是 `npx.cmd`，
+     * 不带 `shell` 起不来，而开 shell 又会让 `--coverage.reportsDirectory=<临时目录>`
+     * 里的空格被拆开。直接跑 JS 入口两头都躲开（同 flake-lane）。
+     */
     execFileSync(
-      'npx',
-      ['vitest', 'run', '--coverage', `--coverage.include=${COVERAGE_INCLUDE}`, '--coverage.reporter=json-summary',
+      process.execPath,
+      [VITEST_ENTRY, 'run', '--coverage', `--coverage.include=${COVERAGE_INCLUDE}`, '--coverage.reporter=json-summary',
         `--coverage.reportsDirectory=${outDir}`, '--reporter=dot'],
       { cwd: REPO_ROOT, stdio: ['ignore', 'inherit', 'inherit'] },
     )

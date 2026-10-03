@@ -35,10 +35,13 @@
  * 不写 shebang：本文件要被 `scripts/test/flake-lane.test.ts` import。
  */
 import { spawn } from 'node:child_process'
-import { dirname, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+
+/** vitest 的真实 JS 入口（绕开 npm/pnpm 的 `.cmd` shim，见 runSuite 的注释）。 */
+const VITEST_ENTRY = join(REPO_ROOT, 'node_modules', 'vitest', 'vitest.mjs')
 
 /**
  * 从一份 vitest 输出里抠出「哪条用例 / 哪个文件红了」。
@@ -105,7 +108,14 @@ const children = new Set()
 /** 跑一份全量套件，把输出**收进内存**（不像 repro-flake 那样丢弃——报告要用它点名用例）。 */
 function runSuite(index) {
   return new Promise((resolveDone) => {
-    const child = spawn('npx', ['vitest', 'run', '--reporter=dot'], {
+    /*
+     * 用 `node <vitest 的 JS 入口>` 而不是 `npx vitest`：Windows 上 npx 是 `npx.cmd`，
+     * 不带 `shell` 起不来（`spawnSync npx ENOENT`），而开 `shell: true` 又会让参数重新过一遍
+     * 命令行解析——上面那条 `--reportsDirectory=<临时目录>` 里一旦有空格就会被拆开。
+     * 直接跑 JS 入口两头都躲开（本仓 `dsh-exec.mjs` 处理 dsh 的 `.cmd` shim 时用的也是
+     * 「解析出真实 JS 入口」这条思路）。
+     */
+    const child = spawn(process.execPath, [VITEST_ENTRY, 'run', '--reporter=dot'], {
       cwd: REPO_ROOT,
       // CI=true 让 vitest 自己选非交互形态（无 TTY 时本该如此，显式写出来免得本地手动跑时行为不同）
       env: { ...process.env, CI: 'true' },

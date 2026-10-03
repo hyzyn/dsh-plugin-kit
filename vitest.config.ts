@@ -47,5 +47,22 @@ export default defineConfig({
      * 20s 仍是**有界**的：真挂死照样判失败，只是晚 15 秒。
      */
     testTimeout: 20_000,
+    /**
+     * `hookTimeout` 必须跟着 `testTimeout` 一起放宽（2026-10-03 补）。
+     *
+     * 起因：新增的 `scripts/test/package-contents.test.ts` 用 `beforeAll` 跑 13 次
+     * `pnpm pack --dry-run`。单跑时 3.9s，**并发 3 份全量套件时实测 20.1s**（5 倍）——
+     * 而 vitest 的 `hookTimeout` 默认只有 **10s**，于是它间歇性地报
+     * `Hook timed out in 10000ms`，三份一起红。
+     *
+     * 这个坑和上面 `testTimeout` 记的是**同一件事的另一半**：上面那次是「5s 把真 bug
+     * 伪装成超时」，这次是「10s 把慢但正确的 hook 判成失败」。两条都是**超时预算与用例的
+     * 真实形态不匹配**。既然本仓的集成型用例已经确定需要 20s，hook 没有理由比它更严——
+     * hook 里跑的正是同一批子进程。
+     *
+     * 它同时是**发现渠道**的证明：这条间歇红不是 CI 报出来的，是**新加的 `pnpm flake:check`
+     * 车道**（并发跑全量套件）当场抓到的——正是那条车道存在的理由。
+     */
+    hookTimeout: 60_000,
   },
 })

@@ -77,13 +77,22 @@ export const PLAYWRIGHT_CACHE_DIRS = [
   ['AppData/Local/ms-playwright', 'win32'],
 ]
 
-/** Chrome for Testing 在各平台缓存目录里的相对形态（一个版本目录下三种布局）。 */
-const PLAYWRIGHT_BROWSER_PATHS = [
-  'chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
-  'chrome-mac/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
-  'chrome-linux/chrome',
-  'chrome-win/chrome.exe',
-]
+/**
+ * Chrome for Testing 在缓存版本目录里的布局，**按平台给**。
+ *
+ * 按平台过滤而不是把四种布局都列出来（原手抄两份的写法）：在 Windows 上 `path.join`
+ * 会把 `chrome-mac-arm64/…` 也拼成反斜杠形态的**混合路径**——那种路径在任何机器上都不存在，
+ * 纯粹是噪音，还会让「候选里到底有哪些」难以断言（2026-10-03 Windows 腿实测：测试里写
+ * `endsWith('chrome-linux/chrome')` 直接红，因为那边拼出来的是反斜杠）。
+ */
+const PLAYWRIGHT_BROWSER_PATHS = {
+  darwin: [
+    'chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
+    'chrome-mac/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
+  ],
+  linux: ['chrome-linux/chrome'],
+  win32: ['chrome-win/chrome.exe'],
+}
 
 /**
  * 列出 Playwright 缓存里所有可用的 Chrome 候选（**新的排前面**）。
@@ -123,7 +132,7 @@ export function playwrightChromeCandidates(options = {}) {
     // `chromium-999` 会排在 `chromium-1234` 前面（'9' > '1'），那是反的。
     for (const dir of [...entries].sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))) {
       if (!/^chromium-\d+$/.test(dir)) continue
-      for (const browserPath of PLAYWRIGHT_BROWSER_PATHS) {
+      for (const browserPath of PLAYWRIGHT_BROWSER_PATHS[platform] ?? []) {
         found.push(path.join(base, dir, browserPath))
       }
     }

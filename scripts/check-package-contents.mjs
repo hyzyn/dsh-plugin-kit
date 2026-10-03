@@ -151,6 +151,15 @@ export function checkPackageContents({ targets: list }) {
  *
  * 两种输出形态都要接：pnpm 在**根包**上给对象、在**子包**上给数组（实测），这里统一成数组。
  *
+ * ## Windows 必须经 shell（2026-10-03 CI 实测）
+ *
+ * 第一版直接 `execFileSync('pnpm', …)`，在 Windows 腿上 **26 条用例全炸**：
+ * `spawnSync pnpm ENOENT`。原因是 Windows 上的 pnpm 是 `pnpm.cmd`，而 `execFileSync` 不带
+ * `shell` 时**拒跑批处理**（本仓 `scripts/dsh-exec.mjs` 的文件头记过同一件事：`.cmd` 只能经
+ * shell 启动）。所以这里按平台开 shell——**只在 Windows 上开**，POSIX 上保持不开，
+ * 免得给一条本来没有 shell 语义的调用引入引号/通配的意外（我们的参数里没有需要转义的字符，
+ * 但「不需要就别开」是更稳的默认）。
+ *
  * @param dir - 包目录（绝对路径）
  * @returns `string[]` tarball 里的条目路径
  */
@@ -159,6 +168,7 @@ export function packDryRun(dir) {
     cwd: dir,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
+    shell: process.platform === 'win32',
     maxBuffer: 64 * 1024 * 1024,
   })
   const parsed = JSON.parse(out)

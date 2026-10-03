@@ -5,6 +5,7 @@
  * Linux——正是这段代码真正生效的地方。所以 platform 与「文件在不在」都注入，让三条平台
  * 分支在任何机器上都能被走一遍（与 `dsh-exec.test.ts` 同一条理由）。
  */
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   CHROME_CANDIDATES,
@@ -160,13 +161,27 @@ describe('playwrightChromeCandidates：收口原先手抄两份的那段扫描',
     exists: (dir) => Object.keys(tree).some((base) => dir.endsWith(base)),
   })
 
-  it('扫到 chromium-<数字> 目录下的三种平台布局', () => {
+  it('扫到 chromium-<数字> 目录下**当前平台**的布局', () => {
     const { readdir, exists } = fakeCache({ 'ms-playwright': ['chromium-1234'] })
     const found = playwrightChromeCandidates({ home: '/home/u', platform: 'darwin', readdir, exists })
-    expect(found).toHaveLength(4)
+    expect(found).toHaveLength(2)
     expect(found[0]).toContain('chrome-mac-arm64')
-    expect(found.some((p) => p.endsWith('chrome-linux/chrome'))).toBe(true)
-    expect(found.some((p) => p.endsWith('chrome-win/chrome.exe'))).toBe(true)
+  })
+
+  it('候选只按**当前平台**的布局生成（不在 Windows 上拼 macOS 的混合路径）', () => {
+    /*
+     * 2026-10-03 Windows 腿实测出的问题：把四种布局都列出来时，Windows 上 `path.join`
+     * 会把 `chrome-mac-arm64/…` 拼成反斜杠的混合路径——那种路径在任何机器上都不存在。
+     * 期望值也用 `path.join` 拼，这样在哪个平台跑都对（不写死分隔符）。
+     */
+    const { readdir, exists } = fakeCache({ 'ms-playwright': ['chromium-1234'] })
+    const onLinux = playwrightChromeCandidates({ home: '/home/u', platform: 'linux', readdir, exists })
+    expect(onLinux).toHaveLength(1)
+    expect(onLinux[0].endsWith(join('chromium-1234', 'chrome-linux', 'chrome'))).toBe(true)
+
+    const onWin = playwrightChromeCandidates({ home: 'C:\\Users\\u', platform: 'win32', readdir, exists })
+    expect(onWin).toHaveLength(1)
+    expect(onWin[0].endsWith(join('chromium-1234', 'chrome-win', 'chrome.exe'))).toBe(true)
   })
 
   it('**版本号大的排前面**（numeric 排序，不是裸字符串比较）', () => {
@@ -181,7 +196,7 @@ describe('playwrightChromeCandidates：收口原先手抄两份的那段扫描',
       'ms-playwright': ['chromium_headless_shell-1234', 'ffmpeg-1011', 'chromium-1234'],
     })
     const found = playwrightChromeCandidates({ home: '/home/u', platform: 'darwin', readdir, exists })
-    expect(found).toHaveLength(4)
+    expect(found).toHaveLength(2)
     expect(found.every((p) => p.includes('chromium-1234'))).toBe(true)
   })
 
