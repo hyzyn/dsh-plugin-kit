@@ -28,9 +28,6 @@
    探针真取到 200 与真超时各一次。
 3. **冷启动 150 秒那一档的轮询体验**：单测里有 `missing-then-ok` 的轮询用例，但那不是体验。
    门槛：对一套真的冷启动服务跑一次 `env_wait`，看等待期间的输出够不够回答「在等什么」。
-4. **写路径的常态验证**：真机写路径已跑过（记-4），但那一档要求人**指名**容器
-   （`DEVENV_REAL_WRITE_CONTAINER`），不能在 CI 里反复跑。门槛：一个不需要人指名的安全靶子
-   （例如 `kind=local` 上的一次性容器），让这条链路可以被反复验证。
 
 ### B. 与另外两包的接缝
 
@@ -100,3 +97,23 @@
 | [DEFECTS.md](./DEFECTS.md) | 包内序列立号：`D01`（挂载脚本收尾撞 `ENOTEMPTY`）、`D02`（假 docker 夹具泄漏临时目录）——两条都是真机首跑暴露、单测当时全绿的那一类 | 索引表 2 行、无空号、已修 2 / 待修 0，编号至 `D02` |
 | `scripts/defects-table.mjs` · `docs/conventions.md` | 按 [硬规矩 5](../../docs/conventions.md#编号规范) 把本包加进守卫的 `LEDGER_SPECS` 与编号规范表（**新增包时的两步**，这次是真跑了一遍） | `node scripts/defects-table.mjs` 全部一致；`defects-table.test.ts` 33 条绿 |
 | 代码注释落编号 | `devenv D01` → `scripts/verify-devenv-host-mount.mjs` 的 `stopChild()`；`D02` → `test/fake-docker.ts` 的 `cleanup()` 与 `test/fixture-hygiene.test.ts` | 硬规矩 7「索引表加一行 + 代码注释里落编号」两步都在 |
+
+### 记-6. 写路径的**常态验证**：本机一次性容器，不需要人指容器（2026-10-03）
+
+**为什么需要这一档**：写路径此前只有两档——假 docker 的单测（快，但**真的 `docker` 进程**从没被
+跑过）与真机那一档（记-4，打 248 那台共享机器）。后者刻意要求人**指名**容器（那台机器上有同事在
+联调），所以它**不可能**进 CI、也就不可能常态跑。于是这条链路长期是「逻辑有单测、真 CLI 只在人
+记得时验一次」。
+
+| 落点 | 内容 | 门槛（已验） |
+|---|---|---|
+| `test/real-write-local.test.ts` | 靶子换成**本机一次性容器**：`docker create` 一个 `sleep` 着的镜像（唯一名字 + `dsh.devenv.test=write-local` 标签，不绑端口、不挂卷）→ 真跑四道门槛与 `env_up` / `env_down` → `afterAll` 里 `docker rm -f` **并断言容器真的没了**。`kind=local` 走 kit 的 `runLocal`，所以这一跳是**真 docker 进程** | **4/4 PASS**（2026-10-03，Docker Desktop daemon 28.3.2）：被拒的两次（未授权 / 未带 confirmed）读回**仍在跑**；带 `confirmed` 的 `env_down` 真停（读回 `exited`）且同一次调用里的 `env_status` 跟着变成非 `✓`；`env_up` 真启（读回 `running`）；已在跑时 `env_up` 走「无需变更」且不要求确认；清单外的名字只报「观测不到」、不碰别的容器；收尾 `docker ps -aq` = 0 |
+| 前提缺失 → SKIP 不报红 | 连不上 daemon、或本机没有可用镜像且拉不到 → 整档 SKIP，**理由写在套件名里**（不是静默跳过） | 本机 daemon 没起时实测 4 skipped；`DEVENV_LOCAL_WRITE_IMAGE` 可指定本机已有镜像（本次验证用的就是它） |
+| CI 接线 | ubuntu 腿在 Test 之前预拉 `busybox:latest`，让这一档**真的跑**而不是靠测试期网络；另两腿没有 Linux docker，自动 SKIP | 本地已验真链路；CI 那一跳待下一次推送 |
+
+> **真机验证当场抓到的一个 bug（值得记）**：探针原先写
+> `docker version --format '{{.ServerVersion}}'`，而这个字段在 `version` 的 JSON 里**不存在**——
+> Docker Desktop 的 CLI 直接报模板错，于是**daemon 明明在跑也会被判成 SKIP**。本机第一次跑正是
+> 这样。改成只看 `docker info` 的退出码（版本号另取一次 `docker info --format`，只用于显示）。
+> 教训与 D04 / D08 同族：**判据不能比被判的东西更假设**——一个连不上就「跳过」的探针，
+> 会把「环境不对」静默伪装成「一切正常」。

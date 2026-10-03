@@ -220,6 +220,7 @@ pnpm --filter @hyzyn/dsh-devenv run verify
 | **真 DSH 挂载** | `pnpm --filter @hyzyn/dsh-devenv run host-mount-smoke` | ✅ 2026-10-02 **12/12**（连跑两次）：装上 → 挂上 → `env_status` / `env_wait` 进真 ToolRuntime，没配 `writeCapability` 就没有写入口，收尾连临时目录都清干净 |
 | **真机观测链路** | `DEVENV_REAL=1 DEVENV_REAL_SSH_PASSWORD=… npx vitest run packages/devenv/test/real-machine.test.ts` | ✅ 2026-10-02 **5/5**（248：SSH → `docker inspect` / `docker logs` → 解析 → 判定；含插件本体与「容器不存在 ≠ 通道不通」） |
 | **真机写入口** | `DEVENV_REAL=1 DEVENV_REAL_WRITE_CONTAINER=<你指名的容器> DEVENV_REAL_SSH_PASSWORD=… npx vitest run packages/devenv/test/real-write.test.ts` | ✅ 2026-10-02 **6/6**（对 248 上一个一次性容器真停/真启，两次拒绝都**一条命令都没发**；收尾**还原现场**） |
+| **写入口常态验证**（本机一次性容器，不用人指容器） | 就在 `npx vitest run packages/devenv` 里（**不需要**指定容器）。靶子镜像默认用本机已有的 `busybox` / `alpine`，都没有就拉一次；两者都不成（例如 Docker Hub 不通）再用 `DEVENV_LOCAL_WRITE_IMAGE=<本机镜像>` | ✅ 2026-10-03 **4/4**（真 daemon 28.3.2：被拒两次读回仍在跑、真停真启、幂等走「无需变更」、清单外不碰；收尾 `docker ps -aq` = 0）。**没起 Docker 时整档 SKIP**，理由写在套件名里；本次靶子是用 `DEVENV_LOCAL_WRITE_IMAGE` 指的本机镜像——这台机器到 Docker Hub 不通，默认路径在这里会如实 SKIP，CI 那步会先预拉 |
 
 **真机那一档抓到过一个单测抓不到的缺陷**：`INSPECT_TEMPLATE` 原先写 `{{.State.RestartCount}}`，
 而 `RestartCount` 是**顶层**字段——docker 的模板对缺失的键直接报错，于是**每条 inspect 都失败**，
@@ -246,9 +247,10 @@ pnpm --filter @hyzyn/dsh-devenv run verify
 
 ### 还没验到的
 
-四条盲区——`Health` 路径的真机样本、SSH 目标的 HTTP 探针、冷启动 150 秒的轮询体验、
-写路径的**常态**验证——各自的判据与门槛收在 [ROADMAP.md](./ROADMAP.md) § 待办 A（**状态真源**），
-本文不复述。口径与记-4 相同：**验不到的不许报 `✓`**。
+三条盲区——`Health` 路径的真机样本、SSH 目标的 HTTP 探针、冷启动 150 秒的轮询体验——各自的判据与
+门槛收在 [ROADMAP.md](./ROADMAP.md) § 待办 A（**状态真源**），本文不复述。（原来的第四条「写路径的
+常态验证」已于 2026-10-03 落地：本机一次性容器那一档，见上表与 ROADMAP 记-6。）
+口径与记-4 相同：**验不到的不许报 `✓`**。
 
 ## 开发
 

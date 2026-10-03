@@ -35,6 +35,12 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r build
       - run: pnpm -r typecheck
+      # 给「写入口常态验证」预拉靶子镜像（packages/devenv/test/real-write-local.test.ts）：
+      # 那个用例自己也会拉，但把它放在前面，是为了让「CI 上这一档真的跑了」不依赖测试期网络。
+      # 只有 ubuntu 腿有 Linux docker daemon；另外两腿该用例自动 SKIP（理由写在套件名里）。
+      - name: Pre-pull the throwaway image for devenv's local write test
+        if: matrix.os == 'ubuntu-latest'
+        run: docker pull busybox:latest
       # shell 显式指定 bash：三个 runner 上都有，免得 Windows 默认走 pwsh 而分叉行为
       - name: Test
         shell: bash
