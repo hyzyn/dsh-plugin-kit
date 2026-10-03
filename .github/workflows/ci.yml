@@ -187,3 +187,42 @@ jobs:
       - name: dsh-tty Windows smoke
         if: matrix.os == 'windows-latest'
         run: pnpm --filter @hyzyn/dsh-tty run windows-smoke
+
+  # mount 车道（P2，2026-10-03）：把本 checkout 的插件**真的挂进一个真 DSH**，起宿主跑完
+  # 授权阶梯，再用无头浏览器打开界面证明 client.js 真能跑起来。
+  #
+  # 为什么必须有它：上面 build 那个 job 的 9 道闸门全在回答「这棵树自洽吗」，没有一道会去
+  # **加载** client.js——而 client.js 才是用户实际运行的东西（vitest.config.ts 写着「打包后的
+  # client.js 不在本层测」，留在里面的逻辑等于没有测试入口，tty D61 就是这么漏掉的）。
+  # 「构建绿 + 单测绿 + 用户白屏」这类失败，本仓此前在 CI 里完全不可见。
+  #
+  # 为什么单独一个 ubuntu-only job（而不是塞进上面的矩阵）：它要装真 DSH、起真宿主、开真
+  # 浏览器，是**真机验收**，与三平台矩阵的性质不同；也要避免把它的重依赖带进 Windows/macOS 腿。
+  #
+  # 三块积木都是现成的：`--bootstrap`（干净环境现场造 profile，见 live-profile.mjs）、
+  # `--render`（复用 chrome-cdp.mjs 的零依赖 CDP 客户端）、`--strict`（没装 DSH 从 SKIP 变红）。
+  mount-smoke:
+    name: Mount + headless render (real DSH)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DSH_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # pin 住要挂进去的 DSH 版本：它与根 package.json 的 peer 范围同档，升 cohort 时一起改。
+      # 装不上（或版本与 cohort 不匹配）时 `--bootstrap` 会**自证失败**并把原因打出来——不会假绿。
+      - name: Install dsh CLI (pinned)
+        run: npm install -g @deepseek-ai/dsh@0.2.1-alpha.1
+      # 挂载走 link:，用的是本 checkout 的包，所以先构建出 lib/ 与 client.js。
+      - run: pnpm -r build
+      # `--no-sandbox`：受限环境（容器化 runner / 文件沙箱）里 Chrome 自己的 sandbox 起不来，
+      # CDP 只会报「超时」而指不到原因（本机沙箱实测：不带必超时，带了 5/5 全绿）。
+      # `--strict`：没装 DSH 时不再是「打印 SKIP 然后退 0」——那是「假装验过」最典型的样子。
+      - name: Mount + headless render smoke
+        run: pnpm live-smoke --bootstrap --strict --render --chrome-arg --no-sandbox

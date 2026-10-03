@@ -41,6 +41,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { Chrome } from './chrome-cdp.mjs'
+import { describeChromeSearch, findChrome } from './chrome-path.mjs'
 
 const argv = process.argv.slice(2)
 const flag = (name) => {
@@ -53,7 +54,15 @@ const mode = flag('--mode') ?? 'boot'
 const expr = flag('--expr')
 const reportPath = flag('--report')
 const shotDir = flag('--shot-dir')
-const chromePath = flag('--chrome') ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+/*
+ * 浏览器路径：显式 `--chrome` > `CHROME_PATH` / `CHROME_BIN` > 平台候选表（见 chrome-path.mjs）。
+ * 2026-10-03 之前这里写死 macOS 的 App 路径，Linux / Windows 上必然指不到可执行文件。
+ */
+const chromePath = findChrome({ explicit: flag('--chrome') })
+if (chromePath === null) {
+  console.error(`找不到 Chrome / Chromium。${describeChromeSearch()}`)
+  process.exit(1)
+}
 const debugPort = Number(flag('--debug-port') ?? 9222 + Math.floor(Math.random() * 500))
 /**
  * 额外传给 Chrome 的参数（可重复）。

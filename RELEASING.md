@@ -71,12 +71,18 @@ CI 另有两道兜底（`--no-verify`、别的机器、别的工具提交都能�
    **能力开关 / 权限 / 文案类改动跑一次 `pnpm live-smoke`**：它从你已有的「link 到本仓」的
    profile 复制两份一次性 profile，起两个真宿主（无授权 / 带授权各一），把授权阶梯、路由门控、
    agent 工具清单、试连文案、宿主正在服务的 `client.js` 全打一遍，跑完删干净——就是本节
-   「真实装进 DSH 跑一遍」的自动化形态（**本地门槛，不进 CI：CI 里没有 DSH**；未装 DSH 时
-   打印 SKIP，加 `--strict` 可让它变成失败）。两个实例的**授权目录也用一次性 profile 里的
-   `.kit-home` 隔离**（`DSH_KIT_HOME`，kit D12）：带外授权是持久的，不隔离的话「无授权」那一半
-   会在你用过提权卡片的机器上继承授权、九条断言全变成假红。**机器上没有 link profile
-   （干净 VM / 新克隆）时加 `--bootstrap`**：它会从 dsh 自带的 `web` 模板现场造一个（link 本仓的
-   docker/tty、自证插件真进了阵容），跑完连它一起删——这样两台 CI 腿的机器也能连宿主一起验。
+   「真实装进 DSH 跑一遍」的自动化形态（未装 DSH 时打印 SKIP，加 `--strict` 可让它变成失败）。
+   两个实例的**授权目录也用一次性 profile 里的 `.kit-home` 隔离**（`DSH_KIT_HOME`，kit D12）：
+   带外授权是持久的，不隔离的话「无授权」那一半会在你用过提权卡片的机器上继承授权、九条断言
+   全变成假红。**机器上没有 link profile（干净 VM / 新克隆）时加 `--bootstrap`**：它会从 dsh
+   自带的 `web` 模板现场造一个（link 本仓的 docker/tty、自证插件真进了阵容），跑完连它一起删。
+   **加 `--render` 还会用无头浏览器打开界面**，断言本仓插件的 `client.js` 真的被加载、无未捕获
+   异常——这是唯一能看见「构建绿 / 单测绿 / 用户白屏」那类失败的验收（受限环境要配
+   `--chrome-arg --no-sandbox`）。
+   **2026-10-03 起它也在 CI 与发布流水里跑**（`ci.yml` 的 `mount-smoke` job + `release.yml`
+   对应 step，形态 `--bootstrap --strict --render --chrome-arg --no-sandbox`）——本地手工跑仍是
+   主要用法，但发布路径不再只依赖「你记得跑」。决策记录见
+   [docs/conventions.md § 挂载车道](docs/conventions.md#真机脚本与-ci-接线)。
 4. 各包依赖**不要写 `workspace:*`**。它只在 monorepo 内部有效：`pnpm publish` 会把它
    换成真实版本（所以 npm 产物看起来是对的），但用户从 git 子路径安装
    （`git+https://github.com/hyzyn/dsh-plugin-kit.git#main&path:packages/tty`）时协议

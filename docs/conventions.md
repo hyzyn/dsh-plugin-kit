@@ -370,10 +370,9 @@ bundle key 且没有 row 入口、旧宿主只注册两个 row key）——其�
   [agent-real-test.md § 各包真机入口](./agent-real-test.md#各包真机入口)。
 - **包内脚本不搬家**：`scripts/` 下的包内脚本与 `package.json` 的 `smoke` / CI step 直接接线，
   移动会打断它们。项目级 Runbook 见 [agent-real-test.md](./agent-real-test.md)。
-- **要真宿主的验收放根 `scripts/` 且不进 CI**：`scripts/live-host-smoke.mjs`（`pnpm live-smoke`）
+- **要真宿主的验收放根 `scripts/`**：`scripts/live-host-smoke.mjs`（`pnpm live-smoke`）
   是唯一需要**真 DSH 宿主**的脚本——它起两个一次性宿主实例，验能力开关的授权阶梯 / 路由门控 /
-  agent 工具清单 / 试连文案 / 宿主正在服务的 `client.js`。为什么不进 CI：CI 里没有 DSH（装一个
-  全局 DSH 是又慢又漂的重依赖），所以它是**发布门槛 #3 的自动化形态**，属于本地门槛；
+  agent 工具清单 / 试连文案 / 宿主正在服务的 `client.js`。它是**发布门槛 #3 的自动化形态**；
   本机没装 DSH 时打印 SKIP（不假装验过），`--strict` 则失败。安全前提写在脚本头：**绝不碰你的
   profile**（复制两份一次性 profile，跑完删）、独立端口、只播种一个本地 docker 目标。
   **干净机器**（VM / 新克隆 / CI 腿）上没有可当模板的 link profile，此时加 `--bootstrap`：
@@ -383,9 +382,32 @@ bundle key 且没有 row 入口、旧宿主只注册两个 row key）——其�
   一堆假 FAIL），跑完与两份拷贝一起删。
   **静态守卫**：`scripts/test/live-host-smoke-safety.test.ts` 读源码钉住这些性质（只建/只删
   带 `live-smoke-<pid>` 前缀的一次性 profile、bootstrap 也只建 `live-smoke-src-<pid>`、拒绝覆盖、
-  两实例各一份拷贝、link 目标只能由 `repoRoot` 拼出、**刻意不隔离 DSH_HOME**、CI / release 里
-  都不出现它）；生成物形状由 `scripts/test/live-profile.test.ts` 钉住（docker 开关必须写 true，
-  否则 A1「配置里 true 却打不开」是空断言）。
+  两实例各一份拷贝、link 目标只能由 `repoRoot` 拼出、**刻意不隔离 DSH_HOME**）；生成物形状由
+  `scripts/test/live-profile.test.ts` 钉住（docker 开关必须写 true，否则 A1「配置里 true 却打不开」
+  是空断言）。
+- **挂载车道（2026-10-03 起进 CI，**政策变更**）**：此前本节的结论是「CI 里没有 DSH」，
+  所以 `live-host-smoke` 只在本地跑。那条判断被有意推翻，理由是**它留下了一个没人看的洞**：
+  本仓 9 道 CI 闸门全在验「这棵树自洽吗」，**没有一道会加载 `client.js`**，而 client.js 才是用户
+  实际运行的东西（[vitest.config.ts](../vitest.config.ts) 明写「打包后的 client.js 不在本层测」，
+  留在里面的逻辑等于没有测试入口——**tty D61 就是这么漏掉的**）。「构建绿 + 单测绿 + 用户白屏」
+  此前在 CI 里完全不可见。
+  **形态**（`ci.yml` 的 `mount-smoke` job + `release.yml` 的对应 step，命令逐字一致）：
+  `npm install -g @deepseek-ai/dsh@<pin>` → `pnpm -r build` →
+  `pnpm live-smoke --bootstrap --strict --render --chrome-arg --no-sandbox`。
+  四个旗标各自不可少，缺一个都会让车道**静默退化**（守卫逐条钉住）：
+  `--bootstrap`（干净腿没有可挂的 profile，缺则 SKIP）、`--strict`（缺则「没装 DSH」退 0，
+  而 SKIP 是「我跑过了」里最容易被当成 PASS 的东西）、`--render`（缺则退化成纯 HTTP 断言，
+  client.js 又没人加载）、`--no-sandbox`（容器化 runner 里 Chrome 自己的 sandbox 起不来，
+  CDP 只报超时；本机沙箱实测：不带必超时、带了 5/5 全绿）。
+  **C 段断言什么**：真浏览器带 token 打开宿主（C1 界面真的渲染出内容）、本仓插件的 bundle 在
+  `performance.getEntriesByType('resource')` 里被真的请求到（C2，用**现算**而不是读宿主日志——
+  后者只能证明「字节送达」，证明不了「浏览器跑得起来」）、无未捕获异常（C3）、插件子请求无
+  4xx/5xx（C4）、控制台无插件相关 error（C5）。
+  **浏览器路径不再写死**：`scripts/chrome-path.mjs` 做平台发现（macOS / Linux / Windows 候选表 +
+  `CHROME_PATH` / `CHROME_BIN` 环境变量 + `--chrome` 显式点名），因为原先 `chrome-cdp.mjs` 与
+  `verify-client-ui.mjs` 各写死一份 macOS App 路径——非 macOS 上必然指不到可执行文件。
+  **为什么单独一个 ubuntu-only job**：它要装真 DSH、起真宿主、开真浏览器，与三平台矩阵性质不同，
+  不该把重依赖带进 Windows / macOS 腿；也**不占用**矩阵那三个 job 的时间。
 - **CI 与发布闸要成对**：只在 CI 补而漏了 `release.yml`，发布路径仍能整条绕过（docker D119）。
 - **同一个真机 / 冒烟脚本有两个真相源（2026-09-30 诊断）**：
   CI 用**写死路径**跑 hermetic 脚本，而同一批脚本在包内 `package.json` 里另有条目。后果是

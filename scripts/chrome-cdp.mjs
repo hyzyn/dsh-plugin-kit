@@ -4,13 +4,26 @@
  * 由 `scripts/verify-client-ui.mjs`（设置卡片点击级）与 `scripts/verify-rss-opml.mjs`
  * （客户端半体的功能路径）共用 —— 原先那份是内联在 UI 脚本里的，抽出来免得两份驱动
  * 慢慢漂移。
+ *
+ * **2026-10-03**：`DEFAULT_CHROME` 从一个 macOS 常量改成 `findChrome()` 的结果——原先的常量
+ * 让任何非 macOS 调用方（Ubuntu CI 腿、Linux 服务器）必然拿到一个不存在的路径，而症状只有
+ * 「CDP 端点没起来」。现在 macOS / Linux / Windows 都有候选表，也可用 `--chrome` /
+ * `CHROME_PATH` 点名，见 [chrome-path.mjs](./chrome-path.mjs)。
  */
 import { spawn } from 'node:child_process'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-export const DEFAULT_CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+import { findChrome } from './chrome-path.mjs'
+
+/**
+ * 本机找到的浏览器路径（找不到时 `undefined`——`launch()` 会给出可读的报错）。
+ *
+ * 保留这个导出名是为了兼容既有调用方（`verify-rss-opml.mjs` 等 import 它当默认值）；
+ * 语义从「macOS 写死路径」变成「现算的本机浏览器」。
+ */
+export const DEFAULT_CHROME = findChrome() ?? undefined
 
 export class Chrome {
   /**
@@ -18,6 +31,11 @@ export class Chrome {
    * @param {{ path?: string, port?: number, userDataDir?: string, extraArgs?: string[] }} options
    */
   static async launch({ path = DEFAULT_CHROME, port, userDataDir, extraArgs = [] } = {}) {
+    if (path === undefined || path === null || path === '') {
+      throw new Error(
+        '找不到 Chrome / Chromium：请用 --chrome <path> 或设置 CHROME_PATH 环境变量点名一个可执行文件',
+      )
+    }
     const dir = userDataDir ?? join(tmpdir(), `dsh-cdp-${String(process.pid)}-${String(port ?? 0)}`)
     rmSync(dir, { recursive: true, force: true })
     mkdirSync(dir, { recursive: true })
@@ -65,7 +83,7 @@ export class Chrome {
       } catch {
         /* 已退 */
       }
-      throw new Error(`Chrome 的 CDP 端点没起来；stderr=${stderr.slice(0, 400)}`)
+      throw new Error(`Chrome 的 CDP 端点没起来（路径 ${path}）；stderr=${stderr.slice(0, 400)}`)
     }
     return new Chrome(child, actualPort, version, dir)
   }

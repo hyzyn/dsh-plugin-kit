@@ -134,12 +134,69 @@ describe('live-host-smoke：授权落点隔离（kit D12）', () => {
   })
 })
 
-describe('live-host-smoke：本地门槛，不进 CI', () => {
-  it('CI 与发布流水里都没有它（CI 里没有 DSH；装了 DSH 是又慢又漂的重依赖）', () => {
-    expect(ci).not.toContain('live-host-smoke')
-    expect(release).not.toContain('live-host-smoke')
-    expect(ci).not.toContain('live-profile')
-    expect(release).not.toContain('live-profile')
+describe('live-host-smoke：CI 形态（2026-10-03 政策变更——此前是「不进 CI」）', () => {
+  /*
+   * ## 这条政策为什么变了
+   *
+   * 原文是「CI 与发布流水里都没有它（CI 里没有 DSH）」——那条判断在 2026-10-03 被有意推翻：
+   * 本仓的 9 道 CI 闸门全在验「这棵树自洽吗」，**没有一道会加载 client.js**，而 client.js
+   * 才是用户实际运行的东西（`vitest.config.ts` 明写「打包后的 client.js 不在本层测」，
+   * tty D61 就是这么漏掉的）。「构建绿 + 单测绿 + 用户白屏」此前在 CI 里完全不可见。
+   *
+   * 所以现在 CI 与发布闸**都**跑它，形态固定为
+   * `pnpm live-smoke --bootstrap --strict --render --chrome-arg --no-sandbox`。
+   *
+   * ⚠️ 三条**不可退化**的性质随这次变更一起钉住（它们才是这条车道安全的根据）：
+   *   ① `--bootstrap` 必须在场：CI 腿是干净环境，没有它就没有可挂的 profile（会 SKIP）；
+   *   ② `--strict` 必须在场：否则「没装 DSH」会退 0，而 SKIP 是「我跑过了」里最容易被当成
+   *      PASS 的东西——加了 --strict 它才是失败；
+   *   ③ `--no-sandbox` 必须在场：容器化 runner 里 Chrome 自己的 sandbox 起不来，不带它
+   *      CDP 只会报超时（本机沙箱实测：不带必超时，带了 5/5 全绿）。
+   */
+  const CI_CMD = 'pnpm live-smoke --bootstrap --strict --render --chrome-arg --no-sandbox'
+
+  /*
+   * 从 workflow 文本里取**实际的 run 命令行**（去掉注释行）。
+   *
+   * 为什么必须这样做：第一版直接对全文 `toContain('--no-sandbox')`——而同一份文件里**解释这个
+   * 旗标的注释**也含这个词，于是「把旗标从命令里删掉」这个反例**照绿**（实测：只红了
+   * 「命令逐字一致」那一条）。这正是本仓反复吃过的那类恒绿闸门（`:(glob)` pathspec 命中 0 个
+   * 文件、写死路径的守卫扫不到）。注释里正当地提了这些旗标名，所以判据只能看命令本身。
+   */
+  const runLines = (text) =>
+    text
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => !line.startsWith('#'))
+      .filter((line) => /^(- )?run:\s/.test(line) || /^pnpm live-smoke/.test(line))
+      .join('\n')
+
+  it('CI 与发布闸都跑挂载车道，且命令逐字一致', () => {
+    expect(ci).toContain(CI_CMD)
+    expect(release).toContain(CI_CMD)
+  })
+
+  it('CI 形态的四个旗标一个都不能少（在**命令行**里，不是注释里）', () => {
+    for (const [name, text] of [['ci.yml', ci], ['release.yml', release]]) {
+      const commands = runLines(text)
+      expect(commands, `${name} 里要能找到挂载命令`).toContain('live-smoke')
+      expect(commands, `${name} 的挂载命令缺 --bootstrap：干净腿没有可挂的 profile，会退化成 SKIP`).toContain('--bootstrap')
+      expect(commands, `${name} 的挂载命令缺 --strict：没装 DSH 会退 0（假装验过）`).toContain('--strict')
+      expect(commands, `${name} 的挂载命令缺 --no-sandbox：容器里 Chrome sandbox 起不来，只会报超时`).toContain('--no-sandbox')
+      expect(commands, `${name} 的挂载命令缺 --render：退化成纯 HTTP 断言，client.js 又没人加载了`).toContain('--render')
+    }
+  })
+
+  it('CI 里真的装了 DSH 并 pin 住版本（不装则整条车道只会 SKIP）', () => {
+    expect(ci).toMatch(/npm install -g @deepseek-ai\/dsh@\d+\.\d+\.\d+/)
+    expect(release).toMatch(/npm install -g @deepseek-ai\/dsh@\d+\.\d+\.\d+/)
+    // pin 的版本与根 package.json 的 peer 范围同档（升 cohort 时两边一起改）
+    const pinned = /npm install -g @deepseek-ai\/dsh@([\d.]+[\w.-]*)/.exec(ci)?.[1]
+    const peer = /"@deepseek-ai\/dsh":\s*"([^"]+)"/.exec(
+      readFileSync(new URL('../../package.json', import.meta.url), 'utf8'),
+    )?.[1]
+    expect(pinned, 'ci.yml 里要能解析出 pin 的 dsh 版本').toBeDefined()
+    expect(peer, `pin 的 ${String(pinned)} 应在 peer 范围内：${String(peer)}`).toContain(pinned)
   })
 
   it('没装 DSH / 找不到 link profile 时打印 SKIP（退出 0），--strict 才失败', () => {
@@ -150,5 +207,61 @@ describe('live-host-smoke：本地门槛，不进 CI', () => {
   it('显式 --from 却不合格 → 直接失败（用户点名了它，静默跳过等于假装验过）', () => {
     expect(source).toMatch(/if \(asked !== undefined\) \{/)
     expect(source).toMatch(/FAIL：--from \$\{asked\} 不是「link 到本仓」的 profile/)
+  })
+
+  it('脚本里的文案不再自称「不进 CI」（代码变了、文案没跟是最容易被信的那种错）', () => {
+    /*
+     * 实际踩到：接进 CI 之后跑出来的汇总仍然印着「这是本地门槛，不进 CI（CI 里没有 DSH）」
+     * ——一条跑在 CI 里的命令自己说它不在 CI 里。这类「代码已变、文案没跟」比代码错更难发现，
+     * 因为没人会去质疑一句打印出来的话。
+     */
+    expect(source, '汇总文案里不许再出现「不进 CI」').not.toContain('不进 CI')
+    expect(source, '脚本头不许再自称「本地门槛」').not.toMatch(/^\s*\*\s*真宿主验收[^\n]*本地门槛/m)
+  })
+})
+
+describe('live-host-smoke：--render 的 C 段真的存在且不可退化成 HTTP-only', () => {
+  /*
+   * 这条守的是本次变更的**核心价值**：车道必须有真浏览器，否则又退回「字节对就算过」。
+   * 与上面同一条思路——静态断言防的是后续重构把它改坏。
+   */
+  it('存在独立的渲染断言函数，且在 B 段之后按 --render 调用', () => {
+    expect(source, '渲染断言要独立成函数').toMatch(/async function assertRendered\(host\)/)
+    expect(source, '只有显式 --render 才跑（默认行为不变）').toMatch(/if \(render\) await assertRendered\(hostB\)/)
+  })
+
+  it('渲染断言用的是真浏览器（Chrome.launch），不是再打一次 HTTP', () => {
+    expect(source).toMatch(/chrome = await Chrome\.launch\(/)
+    expect(source).toMatch(/Page\.navigate/)
+  })
+
+  it('C2 断言「插件 bundle 在真浏览器里被加载」——用 performance 现算，不是读宿主日志', () => {
+    expect(source).toContain("performance.getEntriesByType('resource')")
+    expect(source).toContain('C2 本仓插件的客户端 bundle 在真浏览器里被真的加载了')
+    // 抠出**所有** @hyzyn 段（client 是合并请求，只取第一个会少数 8 个——verify-client-ui 踩过）
+    expect(source).toContain('matchAll(/@hyzyn(?:%2F|\\\\/)([a-z-]+)/g)')
+  })
+
+  it('渲染断言收尾一定关浏览器（失败路径也要关）', () => {
+    expect(source).toMatch(/finally \{\s*chrome\.close\(\)/)
+  })
+
+  it('--render 找不到浏览器 → 失败，不是静默跳过', () => {
+    expect(source).toMatch(/C0 无头渲染：本机没有可用的 Chrome/)
+    expect(source).toMatch(/C0 无头渲染：本机没有可用的 Chrome \/ Chromium/)
+  })
+
+  it('用带 token 的 URL 打开（真实首访路径），而不是手工注入 cookie', () => {
+    expect(source).toMatch(/host\.base\}\/\?token=\$\{String\(host\.token\)\}/)
+    expect(source, '句柄要留住 token').toMatch(/handle\.token = tokenUrl\.token/)
+  })
+})
+
+describe('浏览器路径发现：不许退回写死的 macOS 常量', () => {
+  it('chrome-cdp.mjs 走 findChrome（Linux / Windows 腿才找得到浏览器）', () => {
+    const cdp = readFileSync(new URL('../../scripts/chrome-cdp.mjs', import.meta.url), 'utf8')
+    expect(cdp).toMatch(/import \{ findChrome \} from '\.\/chrome-path\.mjs'/)
+    expect(cdp).toMatch(/export const DEFAULT_CHROME = findChrome\(\)/)
+    expect(cdp, '不许再有写死的 macOS 路径').not.toContain('/Applications/Google Chrome.app')
   })
 })

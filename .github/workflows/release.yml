@@ -58,6 +58,15 @@ jobs:
       # 两份 kit = 两套模块级单例 → kit D11 的授权不一致回来），发出去只能靠新版本补救
       - name: Check dsh-kit pins are uniform and aligned
         run: pnpm kit-pins:check
+      # 挂载闸（2026-10-03，与 ci.yml 的 mount-smoke job 成对）：**发出去之前**证明这批包真的能
+      # 在真 DSH 里挂起来、界面真的能渲染。为什么发布闸必须有它：tag 可以打在没过 CI 的提交上，
+      # 而 npm 一旦发出去就只能靠发新版本补救——「只在 CI 补、发布路径照样绕过」正是 docker D119
+      # 那次的形状（docs/conventions.md § 真机脚本与 CI 接线：CI 与发布闸要成对）。
+      # 命令与 ci.yml **逐字一致**（守卫第 3 条要求两侧同一条目命令相同）。
+      - name: Install dsh CLI (pinned)
+        run: npm install -g @deepseek-ai/dsh@0.2.1-alpha.1
+      - name: Mount + headless render smoke
+        run: pnpm live-smoke --bootstrap --strict --render --chrome-arg --no-sandbox
       # 发布前最后一档：CI 会跑这些，但 tag 可以打在没过 CI 的提交上，发布闸自己也要
       # 挡一次（docker DEFECTS D119：此前只有 CI 补了这套脚本，发布路径仍能整条绕过）
       # 调包内条目（唯一真相源 `package.json`）——CI 那侧同步收敛，见 docs/ci-scripts-plan.md。

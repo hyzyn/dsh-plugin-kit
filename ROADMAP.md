@@ -173,8 +173,11 @@
 **这套验收已固化成脚本**：`pnpm live-smoke`（[scripts/live-host-smoke.mjs](./scripts/live-host-smoke.mjs)，
 18 条断言：上面的表（含 A7b 那条顺序回归）+ agent 工具清单 + 绕开工具直打 `/action`、`/exec` 的门控 + 宿主正在服务的
 `client.js` 含新键）。它复制两份一次性 profile 起两个真宿主（无授权 / 带授权），跑完删干净、
-不碰任何既有 profile；**本地门槛不进 CI**（CI 里没有 DSH），是 [RELEASING.md](./RELEASING.md)
-发布门槛 #3「真实装进 DSH 跑一遍」的自动化形态。
+不碰任何既有 profile；是 [RELEASING.md](./RELEASING.md)
+发布门槛 #3「真实装进 DSH 跑一遍」的自动化形态。**2026-10-03 起 CI 与发布闸也跑它**（挂载车道，
+形态 `--bootstrap --strict --render --chrome-arg --no-sandbox`；此前是「本地门槛不进 CI」——
+那条判断被有意推翻，理由见本文件 § 已完成 第 6 项与
+[conventions.md § 挂载车道](./docs/conventions.md#真机脚本与-ci-接线)）。
 
 **两台 CI 腿对应的机器上都是 18/18（2026-09-26 实测）**：Windows 11（SYSTEM 上下文）与
 Ubuntu 24.04 各自一条命令跑完（`--bootstrap --strict`），全程不需要事先手工建 profile。
@@ -439,6 +442,26 @@ CI 真在跑的 `packages/tty/scripts/probe-route-smoke.mjs` / `integration.mjs`
 **未验证**：actionlint step 本机没跑过（docker 拉不到镜像、无本地二进制，仅 YAML 解析 + 结构核查）；
 Windows 腿的 `pnpm run` 形态。
 
+**挂载车道（2026-10-03，P2；[conventions.md § 挂载车道](./docs/conventions.md#真机脚本与-ci-接线)）**：
+本轮补的是 CI 里最大的那个洞——9 道闸门全在验「这棵树自洽吗」，**没有一道会加载 `client.js`**，
+而它才是用户实际运行的东西（`vitest.config.ts` 明写「打包后的 client.js 不在本层测」，tty D61 就是
+这么漏掉的）。做法是**复用现成积木**而不是新写一套：
+`--bootstrap`（干净腿现场造 profile，早就为 CI 设计）+ `--render`（新增的 C 段，复用 `chrome-cdp.mjs`
+的零依赖 CDP 客户端）+ `--strict`（没装 DSH 从 SKIP 变红）。CI job `mount-smoke`（ubuntu-only，
+与三平台矩阵分开，不占它的时间）+ 发布闸同命令 step（成对，防 docker D119 那种「只在 CI 补」）。
+**顺带修掉两处写死的 macOS Chrome 路径**：新增 `scripts/chrome-path.mjs`（平台候选表 +
+`CHROME_PATH` / `CHROME_BIN` + `--chrome` 点名），`chrome-cdp.mjs` 与 `verify-client-ui.mjs` 都改用它
+——原先的常量让任何非 macOS 调用方必然拿到不存在的路径。
+**门槛**：本机真跑 **23/23 PASS**（18 条原有 HTTP 断言 + C1–C5 渲染断言），且是在**干净 `DSH_HOME`**
+下跑的（复现 CI 的 `--bootstrap` 路径：现场造 profile → docker/tty 自证进阵容 → 两个实例）
+——C2 证明本仓 client.js 真在浏览器里被加载。
+**实测挖出两条**：① 受限环境必须 `--no-sandbox`（本机沙箱下不带它 CDP `Runtime.enable` 必超时、
+带了 5/5 全绿）——这条直接进了 CI 命令；② 第一版守卫用全文 `toContain('--no-sandbox')` 会被
+**注释里同一个词**满足 → 删掉旗标照绿（反例实测只红 1 条），改成只看 `run:` 命令行后同样的反例
+红 2 条。守卫 20 → 28 条，全量 **108 文件 / 1692 用例绿**。
+**未验证**：CI 上首次真跑（本机是 macOS + 已装 dsh 0.2.1-alpha.1；Ubuntu runner 的 Chrome 由
+候选表首项 `/usr/bin/google-chrome` 覆盖，但那台机器的实际镜像只等首轮 CI 确认）；
+`--no-sandbox` 在 GitHub 托管 runner 上是否必需（本机沙箱下必需，runner 上可能不必要但无害）。
 
 ### 7. ✅ `architecture.md § 2` 包清单缺守卫：两边现算 + 三种漂法各一条反例
 

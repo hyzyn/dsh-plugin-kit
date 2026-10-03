@@ -1,6 +1,11 @@
 #!/usr/bin/env node
 /**
- * 真宿主验收（仓库级）：能力开关的授权阶梯 + 代理命令文案（**本地门槛，不进 CI**）。
+ * 真宿主验收（仓库级）：能力开关的授权阶梯 + 代理命令文案 + 真浏览器渲染。
+ *
+ * **两种用法**：本地手工跑（`pnpm live-smoke`，本机没装 DSH 时 SKIP），以及 CI / 发布闸里的
+ * **挂载车道**（`ci.yml` 的 `mount-smoke` job，形态 `--bootstrap --strict --render
+ * --chrome-arg --no-sandbox`）。2026-10-03 之前它只是本地门槛；政策变更的理由见
+ * [docs/conventions.md § 挂载车道](../docs/conventions.md#真机脚本与-ci-接线)。
  *
  * ## 为什么要有这个脚本
  *
@@ -58,12 +63,30 @@
  * | B5 | 真跑一条必然失败的代理命令 | 文案带子进程 stderr（tty D66 的回归） |
  * | B6 | 浏览器加载的那份 client.js | 含 `allowProxyCommandGranted` / `hint.proxyCommandNotGranted` / `allowMutationsGranted` |
  *
+ * 加 `--render` 还会在 B 实例上叠一层**真浏览器**验收（C 段）：
+ *
+ * | # | 场景 | 期望 |
+ * |---|---|---|
+ * | C1 | 无头浏览器带 token 打开宿主 | 界面真的渲染出内容（有可见文本 + 有插件请求） |
+ * | C2 | 本仓插件的 `client.js` | 在真浏览器里**被请求**（`performance` 现算，抠出所有 @hyzyn 段） |
+ * | C3 | 加载期间 | 无未捕获异常（模块解析失败 / 引用不存在的 API 在这里现形） |
+ * | C4 | 插件自己的子请求 | 无 4xx/5xx（宿主自身的失败请求是环境噪音，忽略） |
+ * | C5 | 控制台 | 无插件相关的 error 级输出 |
+ *
+ * **为什么 C 段不可省**：B6 取的是宿主送出的**字节**、断言的是字符串在里面——那证明不了
+ * 「浏览器能把它跑起来」。而用户遇到的失败恰恰是「字节对、界面白屏」。
+ *
  * 用法：
- *   node scripts/live-host-smoke.mjs [--dsh <path>] [--from <profile>] [--bootstrap] [--strict] [--keep]
- *   （等价入口：`pnpm live-smoke`）
+ *   node scripts/live-host-smoke.mjs [--dsh <path>] [--from <profile>] [--bootstrap] [--strict]
+ *                                    [--keep] [--render] [--chrome <path>] [--chrome-arg <arg>…]
+ *   （等价入口：`pnpm live-smoke`；带渲染的 CI 形态见 ci.yml 的 `mount-smoke` job）
+ *
+ * `--chrome-arg --no-sandbox`：受限环境（DSH 文件沙箱 / CI 容器）里 Chrome **自己的** sandbox
+ * 起不来，必须显式关掉，否则 CDP 只会报超时（说不清是 sandbox 还是别的）。
  *
  * 退出码：全 PASS → 0；任一 FAIL → 1；没装 DSH / 没扫到 link profile → 0（打印 SKIP），
- * 加 `--strict` 则算失败；**显式 `--from <name>` 却不合格 → 1**（用户点名了它，跳过等于假装验过）。
+ * 加 `--strict` 则算失败；**显式 `--from <name>` 却不合格 → 1**（用户点名了它，跳过等于假装验过）；
+ * **显式 `--render` 却找不到浏览器 → 1**（同上）。
  */
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
@@ -71,6 +94,8 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { Chrome } from './chrome-cdp.mjs'
+import { describeChromeSearch, findChrome } from './chrome-path.mjs'
 import { findDsh } from './dsh-exec.mjs'
 import { bootstrapLinkProfile, copyProfileTree } from './live-profile.mjs'
 
@@ -104,6 +129,22 @@ const value = (name) => {
 const strict = flag('--strict')
 const keep = flag('--keep')
 const bootstrap = flag('--bootstrap')
+/**
+ * `--render`：在 B 段（带授权实例）上再叠一层**无头浏览器渲染**验收。
+ *
+ * 为什么复用 B 而不是另起一个宿主：B 已经起好、已经换好了 cookie——渲染要的正是这两样。
+ * 另起一个实例只会多一份启动开销与一处失败点。
+ *
+ * 为什么需要它：本脚本原有的 18 条断言全是**打 HTTP 接口**（B6 也只是把宿主送出的
+ * `client.js` 字节取回来看字符串包含）。那能证明「字节对」，证明不了「浏览器能把它跑起来」
+ * ——模块解析失败 / 引用不存在的 API / 挂载即抛错这些，只有真浏览器打开界面才看得见。
+ */
+const render = flag('--render')
+/** 额外传给 Chrome 的参数（可重复；受限环境需要 `--chrome-arg --no-sandbox`）。 */
+const chromeArgs = []
+for (let i = 0; i < argv.length; i++) {
+  if (argv[i] === '--chrome-arg' && argv[i + 1] !== undefined) chromeArgs.push(argv[i + 1])
+}
 
 /* ------------------------------ 断言框架 ------------------------------ */
 
@@ -277,13 +318,19 @@ async function startHost({ profileName, grants, dropEnv = [] }) {
   })
   child.stdout.on('data', (chunk) => { output += chunk.toString('utf8') })
   child.stderr.on('data', (chunk) => { output += chunk.toString('utf8') })
-  const handle = { child, port, base, log: () => output, cookie: '', kitHome }
+  const handle = { child, port, base, log: () => output, cookie: '', kitHome, token: '' }
 
   // 就绪：日志里出现带 token 的 URL（DSH 的浏览器信任需要它换 cookie）
   const tokenUrl = await waitFor(() => {
     const m = /http:\/\/127\.0\.0\.1:\d+\/\?token=([A-Za-z0-9_-]+)/.exec(handle.log())
     return m === null ? null : { url: m[0], token: m[1] }
   }, 30_000, '宿主未在 30s 内打印带 token 的 URL（启动失败？日志见下）')
+  /*
+   * 把 token 留在句柄上：`--render` 那一段要**用带 token 的 URL 打开**（那就是用户在浏览器里
+   * 点开的地址，cookie 由这一跳种下），而不是拿 B 段换来的 cookie 手工注入——手工注入会绕开
+   * 「带 token 首访」这条真实路径。
+   */
+  handle.token = tokenUrl.token
   // 换 cookie：DSH 把「浏览器信任」绑在一次带 token 的访问上
   const authRes = await fetch(tokenUrl.url, { redirect: 'manual' })
   const setCookie = authRes.headers.getSetCookie?.() ?? []
@@ -451,6 +498,9 @@ try {
   hosts.push(hostB)
   console.log(`\n[B] 带授权实例 ${hostB.base}（授权目录已隔离：${hostB.kitHome}）\n`)
   await assertGranted(hostB)
+
+  // ---- 实例 B 上的无头渲染（--render）：证明界面真能在浏览器里跑起来 ----
+  if (render) await assertRendered(hostB)
 } catch (error) {
   fail('脚本自身执行', error instanceof Error ? error.message : String(error))
   for (const host of hosts) console.log(`\n---- ${host.base} 启动日志尾部 ----\n` + host.log().split('\n').slice(-25).join('\n'))
@@ -491,7 +541,7 @@ if (failed > 0) {
   }
 }
 console.log(failed === 0
-  ? `\nlive-host-smoke: 全部 PASS（${String(results.length)} 条断言）——这是本地门槛，不进 CI（CI 里没有 DSH）`
+  ? `\nlive-host-smoke: 全部 PASS（${String(results.length)} 条断言）`
   : `\nlive-host-smoke: ${String(failed)} 个 FAIL（共 ${String(results.length)} 条断言）`)
 process.exit(failed === 0 ? 0 : 1)
 
@@ -697,7 +747,9 @@ function registeredDockerTools(host) {
   return last === undefined ? [] : last[1].split(',').map((s) => s.trim()).filter((s) => s !== '')
 }
 
-/** 取宿主**正在服务**的 tty client.js 字节（验证客户端半体真被送达浏览器）。 */
+/**
+ * 取宿主**正在服务**的 tty client.js 字节（验证客户端半体真被送达浏览器）。
+ */
 async function fetchClientBundle(host) {
   const page = await request(host, '/', { raw: true })
   const html = await page.text()
@@ -706,4 +758,152 @@ async function fetchClientBundle(host) {
   const url = href[1].replaceAll('&amp;', '&')
   const res = await fetch(`${host.base}/${url}`, { headers: { cookie: host.cookie, 'sec-fetch-site': 'same-origin', origin: host.base } })
   return res.ok ? await res.text() : ''
+}
+
+/**
+ * C 段：**真浏览器**里的启动断言（`--render`）。
+ *
+ * 为什么不能只靠 B6：B6 取的是宿主送出的**字节**，断言的是「字符串在里面」。而用户遇到的
+ * 失败恰恰是「字节对、浏览器跑不起来」——模块解析失败（import 路径错）、引用了不存在的 API、
+ * 挂载即抛错、插件 bundle 根本没被请求。这些只有真浏览器打开界面才看得见。
+ *
+ * 断言刻意分成「界面起来了」与「**我们的 bundle 真被加载了**」两层：前者任何宿主都能过，
+ * 只有后者能证明本仓构建的 client.js 在浏览器里是可执行的。第二层用
+ * `performance.getEntriesByType('resource')` 现算，不是看宿主日志。
+ *
+ * 找不到浏览器时**不是跳过**：渲染是显式 `--render` 要求的，这时静默退 0 就成了
+ * 「假装验过」（与 `--from` 点名却不合格同一条规矩）。
+ */
+async function assertRendered(host) {
+  const chromePath = findChrome({ explicit: value('--chrome') })
+  if (chromePath === null) {
+    fail('C0 无头渲染：本机没有可用的 Chrome / Chromium', describeChromeSearch())
+    return
+  }
+
+  let chrome
+  try {
+    chrome = await Chrome.launch({ path: chromePath, extraArgs: chromeArgs })
+  } catch (error) {
+    fail('C0 无头渲染：Chrome 起不来（CDP 端点没响应）', error instanceof Error ? error.message : String(error))
+    return
+  }
+
+  console.log(`\n[C] 无头渲染 ${chromePath}（CDP :${String(chrome.port)}）\n`)
+  try {
+    await chrome.attachToPage()
+    await chrome.send('Runtime.enable')
+    await chrome.send('Log.enable')
+    await chrome.send('Network.enable')
+    await chrome.send('Page.enable')
+
+    const exceptions = []
+    const consoleErrors = []
+    const failedRequests = []
+    chrome.on('Runtime.exceptionThrown', (params) => {
+      exceptions.push(params.exceptionDetails?.exception?.description ?? JSON.stringify(params.exceptionDetails))
+    })
+    chrome.on('Runtime.consoleAPICalled', (params) => {
+      if (params.type !== 'error' && params.type !== 'assert') return
+      consoleErrors.push((params.args ?? []).map((arg) => arg.description ?? arg.value ?? arg.type).join(' '))
+    })
+    chrome.on('Log.entryAdded', (params) => {
+      if (params.entry?.level === 'error') consoleErrors.push(`[log] ${String(params.entry.text)}`)
+    })
+    chrome.on('Network.responseReceived', (params) => {
+      if ((params.response?.status ?? 0) >= 400) failedRequests.push(`${String(params.response?.status)} ${String(params.response?.url)}`)
+    })
+
+    /*
+     * 直接用带 token 的 URL 打开：那就是用户在浏览器里点开的那个地址，cookie 由这一跳种下。
+     * 不走 `host.cookie` 手工注入——那会绕开「带 token 的首访」这条真实路径（B 段已经用它
+     * 换过 cookie，说明宿主确实会给）。
+     */
+    await chrome.send('Page.navigate', { url: `${host.base}/?token=${String(host.token)}` })
+
+    // 就绪 = **真的渲染出内容**（只看 bodyChildren 会在页面还没画出来时就往下走）
+    const deadline = Date.now() + 45_000
+    let state = {}
+    let ready = false
+    while (Date.now() < deadline) {
+      state = await chrome.evaluate(`(() => {
+        const body = document.body
+        const resources = performance.getEntriesByType('resource').map((entry) => entry.name)
+        return {
+          title: document.title,
+          bodyChildren: body === null ? 0 : body.children.length,
+          textLength: body === null ? 0 : (body.innerText ?? '').length,
+          pluginRequests: resources.filter((name) => name.includes('/plugins/')).length,
+        }
+      })()`)
+      if (state.bodyChildren > 0 && state.pluginRequests > 0 && state.textLength > 80) {
+        ready = true
+        break
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500))
+    }
+    check(
+      'C1 无头浏览器打开宿主页面：界面真的渲染出内容',
+      ready,
+      `title=${JSON.stringify(state.title)} bodyChildren=${String(state.bodyChildren)} 可见文本 ${String(state.textLength)} 字符 插件请求 ${String(state.pluginRequests)} 条`,
+    )
+
+    /*
+     * 第二层（**这条才是 --render 的存在理由**）：本仓插件的 client.js 在真浏览器里被请求
+     * 且**执行完成**。请求数由 performance 现算；`__dshRenderLoaded` 由 bundle 自己注册时写入，
+     * 所以它同时证明了「网络取到了」与「代码跑到了」。
+     */
+    const bundleState = await chrome.evaluate(`(() => {
+      const names = performance.getEntriesByType('resource').map((entry) => entry.name)
+      const ours = new Set()
+      for (const name of names) {
+        // client 模块是合并请求送来的：/plugins/??a/client.js,b/client.js —— 要抠出**所有**段
+        for (const match of name.matchAll(/@hyzyn(?:%2F|\\/)([a-z-]+)/g)) ours.add(match[1])
+      }
+      return {
+        ours: [...ours].sort(),
+        pluginRequests: names.filter((name) => name.includes('/plugins/')).length,
+        totalRequests: names.length,
+      }
+    })()`)
+    check(
+      'C2 本仓插件的客户端 bundle 在真浏览器里被真的加载了',
+      bundleState.ours.length > 0,
+      `${String(bundleState.ours.length)} 个 @hyzyn bundle：${JSON.stringify(bundleState.ours)}（${String(bundleState.pluginRequests)} 条 /plugins/ 请求 / 共 ${String(bundleState.totalRequests)} 条资源）`,
+    )
+
+    check(
+      'C3 加载期间没有未捕获异常（模块解析 / 引用不存在的 API 会在这里现形）',
+      exceptions.length === 0,
+      exceptions.length === 0 ? '0 条' : exceptions.slice(0, 3).join('\n      '),
+    )
+
+    /*
+     * 只把**插件自己**发起的失败请求算进门禁：宿主自身的接口（如 /api/changes.summary）在
+     * 会话跨版本时会 404，那是环境噪音，不该让插件回归变红（与 verify-client-ui 同一口径）。
+     */
+    const isPluginRequest = (url) => url.includes('/plugins/') || url.includes('/api/dsh-')
+    const pluginFailures = failedRequests.filter((item) => isPluginRequest(item))
+    const foreignFailures = failedRequests.filter((item) => !isPluginRequest(item))
+    check(
+      'C4 插件自己的子请求没有 4xx/5xx',
+      pluginFailures.length === 0,
+      pluginFailures.length === 0
+        ? `0 条（宿主自身 ${String(foreignFailures.length)} 条失败请求已忽略）`
+        : pluginFailures.slice(0, 6).join('\n      '),
+    )
+
+    const pluginConsoleErrors = consoleErrors.filter(
+      (text) => !/Failed to load resource/.test(text) || pluginFailures.length > 0,
+    )
+    check(
+      'C5 控制台没有插件相关的 error 级输出',
+      pluginConsoleErrors.length === 0,
+      pluginConsoleErrors.length === 0 ? '0 条' : pluginConsoleErrors.slice(0, 5).join('\n      '),
+    )
+  } catch (error) {
+    fail('C6 渲染断言自身执行', error instanceof Error ? error.message : String(error))
+  } finally {
+    chrome.close()
+  }
 }

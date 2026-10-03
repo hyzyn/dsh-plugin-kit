@@ -37,7 +37,9 @@
  * ## 只读
  *
  * 不写文件、不调 git、不联网：输入是 workflow 文本 + 各包 `package.json`，所以单测可以喂 fixture
- * 造反例，而不必碰 `.github/`。**也不碰真机脚本的口径**：真机脚本刻意不进 CI，这里只查被引用的那批。
+ * 造反例，而不必碰 `.github/`。**也不碰真机脚本的口径**：真机脚本（要真机 / 真宿主 / 真浏览器）
+ * 大多不进 CI，这里只查被引用的那批——唯一例外是 `live-host-smoke` 的挂载车道，它进 CI 之后
+ * 同样受这套判据约束（见 [docs/conventions.md § 挂载车道](../docs/conventions.md#真机脚本与-ci-接线)）。
  */
 import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
