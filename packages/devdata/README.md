@@ -150,7 +150,7 @@ assertions:
         engine: redis
         env: test-shared                     # 不标 = unknown = 不可写
         scopeDirs: [~/coding]                # 空 = 处处拒绝
-        host: 192.168.80.248
+        host: 192.0.2.248                  # 占位（RFC 5737）；真实内网地址不入库
         port: 6379
         maxScanCount: 200                    # SCAN 族的策略上限（候选只能请求更小）
         writeCapability: { env: DSH_DEVDATA_WRITE, label: 受限写 }

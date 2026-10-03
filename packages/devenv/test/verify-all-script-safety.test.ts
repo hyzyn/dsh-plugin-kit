@@ -8,7 +8,7 @@
  * 所以「改坏了没人发现」的窗口很长。而它坏掉的方式恰恰是最糟的两种：**吞掉失败**（步骤红了但退出码
  * 是 0）与**越权去拿它不该拿的东西**（凭据）。所以这里把六条性质逐条钉住，每条配反例。
  *
- * ## 六条性质
+ * ## 七条性质
  *
  * 1. **不自己起宿主 / 不建临时目录**：需要动真实 DSH 的那一步委托给挂载脚本（那边有隔离守卫与收尾自证）；
  * 2. **真机那两档必须先探可达性**：不可达时 SKIP 不报红（拿网络状况当失败信号会训练人忽略红灯）；
@@ -18,6 +18,7 @@
  *    等于绕过它的所有权；缺凭据就 SKIP，这是**刻意**的（本包独有的一条，devdata 那边不需要因为它的
  *    真机目标没有密码）；
  * 6. **写入口那一档必须由「人指名的容器」门控**：不许自动挑一个容器——目标机上有同事在联调。
+ * 7. **目标地址不许留内网默认值**（2026-10-03 加）：本仓是**公开仓库**，`?? '192.168.x.y'` 这种便利写法等于公开内网拓扑。
  */
 import { readFileSync } from 'node:fs'
 
@@ -100,6 +101,19 @@ export function verifyAllViolations(raw: string): string[] {
   if (!/WRITE_CONTAINER === ''/.test(source)) {
     problems.push('写入口那一档没有「没指名就 SKIP」的分支')
   }
+
+  /*
+   * ⑦ 目标地址不许留**内网默认值**（2026-10-03 加）。
+   *
+   * 本仓是**公开仓库**：`?? '192.168.x.y'` 这种便利写法等于把内网拓扑与主机编号一起公开出去
+   * （公网 IP 有闸门管，私网地址没有）。所以目标地址必须是「显式给环境变量」的形态。
+   */
+  if (!/DEVENV_REAL_SSH_HOST \?\? ''/.test(source)) {
+    problems.push("目标地址没有走「必须显式给」的形态（DEVENV_REAL_SSH_HOST ?? ''）：留了默认值就会把地址写进公开仓库")
+  }
+  if (/192\.168\.|172\.(1[6-9]|2\d|3[01])\.|\b10\.\d+\.\d+\.\d+/.test(source)) {
+    problems.push('源码里出现了内网地址字面量：本仓是公开仓库，那等于把内网拓扑公开出去')
+  }
   return problems
 }
 
@@ -111,8 +125,8 @@ function mutate(from: string, to: string): string {
   return mutated
 }
 
-describe('devenv 一键验证脚本：六条性质', () => {
-  it('真实源码满足六条', () => {
+describe('devenv 一键验证脚本：七条性质', () => {
+  it('真实源码满足七条', () => {
     expect(verifyAllViolations(SOURCE)).toEqual([])
   })
 
@@ -124,8 +138,15 @@ describe('devenv 一键验证脚本：六条性质', () => {
   })
 
   it('反例②：去掉可达性探测（真机那两档直接跑）→ 报出来', () => {
-    const problems = verifyAllViolations(mutate('const reachable = await canConnect(SSH_HOST, SSH_PORT)', 'const reachable = true'))
+    const problems = verifyAllViolations(mutate('await canConnect(SSH_HOST, SSH_PORT)', 'true'))
     expect(problems.join('\n')).toContain('没有先探可达性')
+  })
+
+  it('反例⑦：把内网地址写回目标默认值 → 两条都报出来', () => {
+    const leaked = mutate("process.env.DEVENV_REAL_SSH_HOST ?? ''", "process.env.DEVENV_REAL_SSH_HOST ?? '192.168.80.248'")
+    const problems = verifyAllViolations(leaked).join('\n')
+    expect(problems).toContain('内网地址字面量')
+    expect(problems).toContain('必须显式给')
   })
 
   it('反例③：把失败吞掉（不看退出码 / 不非零退出）→ 都报出来', () => {

@@ -40,13 +40,14 @@ import type { SshSpec } from '@hyzyn/dsh-kit/ssh-exec'
 
 import { makeHost } from './fake-host.js'
 
-const HOST = process.env.DEVENV_REAL_SSH_HOST ?? '192.168.80.248'
+/** 目标地址：**必须显式给**（`DEVENV_REAL_SSH_HOST`）——公开仓库里不留内网默认地址。 */
+const HOST = process.env.DEVENV_REAL_SSH_HOST ?? ''
 const USER = process.env.DEVENV_REAL_SSH_USER ?? 'root'
 const PASSWORD = process.env.DEVENV_REAL_SSH_PASSWORD
 const KEY_PATH = process.env.DEVENV_REAL_SSH_KEY_PATH
 /** **人指名的**容器——它就是这条用例唯一的门控。 */
 const CONTAINER = process.env.DEVENV_REAL_WRITE_CONTAINER
-const CAN_PROBE = process.env.DEVENV_REAL === '1' && CONTAINER !== undefined && CONTAINER !== ''
+const CAN_PROBE = process.env.DEVENV_REAL === '1' && HOST !== '' && CONTAINER !== undefined && CONTAINER !== ''
 
 const spec: SshSpec = {
   host: HOST,

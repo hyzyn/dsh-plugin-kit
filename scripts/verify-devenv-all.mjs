@@ -34,12 +34,15 @@
  * 所以：**要么你自己 export，要么那两步跳过**。
  *
  * ```sh
- * # 自己把口令读进变量再跑（不进 shell 历史的话用 read -s）
+ * # 目标地址必填（公开仓库里不留内网默认地址）
+ * DEVENV_REAL_SSH_HOST=<目标> node scripts/verify-devenv-all.mjs
+ *
+ * # 真机那两档还要口令：自己把口令读进变量再跑（不进 shell 历史的话用 read -s）
  * read -rs DEVENV_REAL_SSH_PASSWORD && export DEVENV_REAL_SSH_PASSWORD
- * node scripts/verify-devenv-all.mjs
+ * DEVENV_REAL_SSH_HOST=<目标> node scripts/verify-devenv-all.mjs
  *
  * # 写入口那一步另外要指名一个可以动的容器（自己起一个一次性的最稳妥）
- * DEVENV_REAL_WRITE_CONTAINER=dsh-devenv-write-test node scripts/verify-devenv-all.mjs
+ * DEVENV_REAL_SSH_HOST=<目标> DEVENV_REAL_WRITE_CONTAINER=dsh-devenv-write-test node scripts/verify-devenv-all.mjs
  * ```
  *
  * ## 它**不**做什么
@@ -67,8 +70,8 @@ import { fileURLToPath } from 'node:url'
 const here = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(here, '..')
 
-/** 真机目标（与两个真机用例同一套环境变量口径）。 */
-const SSH_HOST = process.env.DEVENV_REAL_SSH_HOST ?? '192.168.80.248'
+/** 真机目标（与两个真机用例同一套环境变量口径；**没有默认地址**——公开仓库里不留内网地址）。 */
+const SSH_HOST = process.env.DEVENV_REAL_SSH_HOST ?? ''
 const SSH_PORT = Number(process.env.DEVENV_REAL_SSH_PORT ?? '22')
 /** 有人在用例里指名了容器吗（**写入口那一档的唯一门控**）。 */
 const WRITE_CONTAINER = process.env.DEVENV_REAL_WRITE_CONTAINER ?? ''
@@ -130,10 +133,13 @@ run('① 类型检查（pnpm -r typecheck）', 'pnpm', ['-r', 'typecheck'])
 run('② 构建产物（pnpm -r build）', 'pnpm', ['-r', 'build'])
 run('③ devenv 全量单测（含门控真机用例的跳过）', 'npx', ['vitest', 'run', 'packages/devenv'])
 
-/* ④⑤ 真机那两档：可达性 → 凭据 → （写那档还要人指名容器） */
-const reachable = await canConnect(SSH_HOST, SSH_PORT)
-if (!reachable) {
-  skip(`④ 真机只读链路（${SSH_HOST}:${String(SSH_PORT)}）`, '目标不可达（需要 VPN / 内网）。想换目标：DEVENV_REAL_SSH_HOST=…')
+/* ④⑤ 真机那两档：目标 → 可达性 → 凭据 → （写那档还要人指名容器） */
+if (SSH_HOST === '') {
+  const reason = '没给 DEVENV_REAL_SSH_HOST——本仓不留内网默认地址（公开仓库）。用法：DEVENV_REAL_SSH_HOST=… node scripts/verify-devenv-all.mjs'
+  skip('④ 真机只读链路', reason)
+  skip('⑤ 真机写入口', reason)
+} else if (!(await canConnect(SSH_HOST, SSH_PORT))) {
+  skip(`④ 真机只读链路（${SSH_HOST}:${String(SSH_PORT)}）`, '目标不可达（需要 VPN / 内网）')
   skip('⑤ 真机写入口', '目标不可达（同上）')
 } else if (!hasCredential()) {
   const reason = '缺凭据：这两档要 SSH 凭据，而本脚本**刻意不去读凭据存储**（那属于凭据服务）。用法见脚本头注：先 read -rs 读进 DEVENV_REAL_SSH_PASSWORD 或给 DEVENV_REAL_SSH_KEY_PATH 再重跑'

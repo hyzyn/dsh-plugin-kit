@@ -133,6 +133,28 @@ jobs:
             rm -f "$msg_file"
           done
           echo "提交信息检查通过（$base..$head）"
+      # 防回归：本次推送 / PR 新增的内容里不许有密钥（2026-10-03 加；本地钩子同款，见
+      # .githooks/pre-commit）。**只扫推送区间**：全历史扫会在 2026-10 之前那批 marketplace
+      # HTML 上命中 862 条既有结果（`generic-api-key` 的假阳性），那种闸门只会被人学会无视。
+      # 用 CLI 而不是第三方 action：理由是「range 由我们自己定」——action 的事件分支逻辑在这里
+      # 不可复现，而这条闸门的全部价值就是「扫的是将要进历史的那一段」。
+      - name: Check the pushed range for secrets (gitleaks)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          GITLEAKS_VERSION=8.30.1
+          base='${{ github.event.pull_request.base.sha }}'
+          head='${{ github.sha }}'
+          if [ -z "$base" ]; then base='${{ github.event.before }}'; fi
+          if [ -z "$base" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "无法确定比较基线（首次推送 / 新分支），跳过密钥扫描"
+            exit 0
+          fi
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+          gitleaks git --redact --no-banner --log-opts="${base}..${head}" \
+            || { echo "::error::本次推送的提交里疑似含密钥（确属夹具假值请加进 .gitleaksignore）"; exit 1; }
+          echo "密钥扫描通过（${base}..${head}）"
       # 防回归：入库产物必须与源码一致——曾发生过源码改了、产物没重建，修复在浏览器侧
       # 完全无效。重建后对全部包的浏览器半体（client.js）与宿主半体（lib/）做 diff。
       # ⚠️ lib/ 那半边**必须**用 ':(glob)…/**'：默认 pathspec 下 `*` 不递归目录内容，写

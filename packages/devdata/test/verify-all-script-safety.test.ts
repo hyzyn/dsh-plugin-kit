@@ -11,6 +11,8 @@
  * 2. **把环境问题报成失败**：真机那一步必须先**探可达性**，不可达 → `SKIP` 而不是红——否则没连
  *    VPN 的人会看到红灯，而红灯的理由与代码无关（本仓真机脚本一贯如此）；
  * 3. **吞掉失败**：每一步都要看退出码，任何 FAIL 必须非零退出——一个永远退 0 的一键脚本比没有更坏。
+ * 4. **不许把内网地址留在源码里**（2026-10-03 加）：本仓是**公开仓库**，真机目标地址必须走
+ *    「显式给环境变量」的形态（`DEVDATA_REDIS_HOST ?? ''`），留默认值 = 公开内网拓扑。
  *
  * ## 为什么是静态检查
  *
@@ -61,17 +63,25 @@ export function verifyAllViolations(source) {
 
   // ② 真机步骤先探可达性，不可达 = SKIP（不是 FAIL）
   //
-  //    断言的是**调用点**（`if (await canConnect(`）而不是「源码里出现过 canConnect」——
+  //    断言的是**调用点**（`if (… await canConnect(`）而不是「源码里出现过 canConnect」——
   //    后者会被函数**声明**满足，于是「有探测函数但没在门口用」这种改法照样绿（本文件的反例②
-  //    第一版就是这么漏掉的）。
-  if (!/if \(await canConnect\(/.test(code)) {
+  //    第一版就是这么漏掉的）。2026-10-03 起调用点**可能带前置条件**：目标没给时走的是它前面那个
+  //    SKIP 分支，所以探测落在 `else if` 里——正则因此允许 `if (` 之前有别的条件。
+  if (!/\bif \([^)]*await canConnect\(/.test(code)) {
     problems.push('没有在真机那一步的门口调用可达性探测：没 VPN 的机器会红成「代码坏了」')
   }
   if (!/skip\(/.test(code)) {
     problems.push('没有 SKIP 路径：不可达的环境问题会被算成失败')
   }
-  if (!/DEVDATA_REDIS_HOST/.test(code)) {
-    problems.push('没有给出换目标的办法（DEVDATA_REDIS_HOST）：探测失败时人只能去改源码')
+  if (!/DEVDATA_REDIS_HOST \?\? ''/.test(code)) {
+    problems.push(
+      "目标地址没有走「必须显式给」的形态（DEVDATA_REDIS_HOST ?? ''）：留了默认值就会把地址写进公开仓库",
+    )
+  }
+
+  // ④ 目标地址不许留内网默认值（本仓是**公开仓库**：私网地址写进去 = 公开内网拓扑）
+  if (/192\.168\.|172\.(1[6-9]|2\d|3[01])\.|\b10\.\d+\.\d+\.\d+/.test(code)) {
+    problems.push('源码里出现了内网地址字面量：本仓是公开仓库，那等于把内网拓扑公开出去')
   }
 
   // ③ 吞掉失败 = 更坏
@@ -85,7 +95,7 @@ export function verifyAllViolations(source) {
 }
 
 describe('devdata 一键验证脚本：不越界、不吞错、不把环境问题当代码问题', () => {
-  it('真实源码满足三条性质', () => {
+  it('真实源码满足四条性质', () => {
     expect(verifyAllViolations(SOURCE)).toEqual([])
   })
 
@@ -100,9 +110,16 @@ describe('devdata 一键验证脚本：不越界、不吞错、不把环境问�
   })
 
   it('反例②：去掉可达性探测，真机那步直接跑 → 报出来', () => {
-    const noProbe = SOURCE.replace('if (await canConnect(REDIS_HOST, REDIS_PORT)) {', 'if (true) {')
+    const noProbe = SOURCE.replace('else if (await canConnect(REDIS_HOST, REDIS_PORT)) {', 'else if (true) {')
     const problems = verifyAllViolations(noProbe).join('\n')
     expect(problems).toContain('没有在真机那一步的门口调用可达性探测')
+  })
+
+  it('反例⑤：把内网地址写回默认值（公开仓库里留内网拓扑）→ 两条都报出来', () => {
+    const leaked = SOURCE.replace("process.env.DEVDATA_REDIS_HOST ?? ''", "process.env.DEVDATA_REDIS_HOST ?? '192.168.80.248'")
+    const problems = verifyAllViolations(leaked).join('\n')
+    expect(problems).toContain('内网地址字面量')
+    expect(problems).toContain('必须显式给')
   })
 
   it('反例③：把失败吞掉（不看退出码 / 不非零退出）→ 报出来', () => {

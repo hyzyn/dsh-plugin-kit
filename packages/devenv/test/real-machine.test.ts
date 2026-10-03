@@ -44,13 +44,14 @@ import { evaluateProfile, parseInstant } from '../src/env-ready-eval.js'
 import type { ReadyProfile } from '../src/env-ready.js'
 import { observeServices, type ObservationIo } from '../src/observe.js'
 
-const HOST = process.env.DEVENV_REAL_SSH_HOST ?? '192.168.80.248'
+/** 目标地址：**必须显式给**（`DEVENV_REAL_SSH_HOST`）——公开仓库里不留内网默认地址。 */
+const HOST = process.env.DEVENV_REAL_SSH_HOST ?? ''
 const USER = process.env.DEVENV_REAL_SSH_USER ?? 'root'
 const PASSWORD = process.env.DEVENV_REAL_SSH_PASSWORD
 const KEY_PATH = process.env.DEVENV_REAL_SSH_KEY_PATH
 /** 这台机器上一个已知在跑的容器（可用环境变量换）。 */
 const CONTAINER = process.env.DEVENV_REAL_CONTAINER ?? 'ems-service-test'
-const CAN_PROBE = process.env.DEVENV_REAL === '1'
+const CAN_PROBE = process.env.DEVENV_REAL === '1' && HOST !== ''
 
 describe.skipIf(!CAN_PROBE)(`真机：观测链路（${USER}@${HOST}）`, () => {
   const spec: SshSpec = {

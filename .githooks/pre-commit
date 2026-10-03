@@ -44,4 +44,19 @@ if ! node scripts/check-no-public-ip.mjs --staged; then
   echo "✘ [pre-commit] 提交内容含公网 IP，已中止（详见上方指引）"
   exit 1
 fi
+
+# 密钥扫描（2026-10-03 加）：**按 index 扫**，口径与上面那条公网 IP 一致——进历史的只有暂存内容。
+# 用 `--staged` 而不是全历史：后者会在 2026-10 之前那批 marketplace HTML 上命中 862 条既有结果
+# （generic-api-key 的假阳性，见 .gitleaksignore 的容器），一道总在报旧事的闸门会被学会无视。
+#
+# 没装 gitleaks 时**明说跳过**（不静默）：本地便捷不该冒充成检查过，而 CI 那一步是无条件的
+# （.github/workflows/ci.yml 的 "Check the pushed range for secrets"，按推送区间扫）。
+if command -v gitleaks >/dev/null 2>&1; then
+  if ! gitleaks git --staged --redact --no-banner; then
+    echo "✘ [pre-commit] 暂存内容疑似含密钥，已中止（确属夹具假值请把它加进 .gitleaksignore）"
+    exit 1
+  fi
+else
+  echo "⚠️ [pre-commit] 未安装 gitleaks，密钥这一步**被跳过**（CI 仍会扫）——装法：brew install gitleaks"
+fi
 exit 0

@@ -22,9 +22,15 @@ import { describe, expect, it } from 'vitest'
 import { createRedisExecutor, invokeRedisCommand, type DevDataTarget, type ToolOutcome } from '../src/index.js'
 import { makeHost } from './fake-host.js'
 
-const HOST = process.env.DEVDATA_REDIS_HOST ?? '192.168.80.248'
+/**
+ * 目标地址：**必须显式给**（`DEVDATA_REDIS_HOST` / `DEVDATA_REDIS_PORT`）。
+ *
+ * 仓库里**不留内网默认地址**（2026-10-03 起）：这是公开仓库，默认值等于把内网寻址方案写进去。
+ * 没给 host 就整档 SKIP，不会去打任何地址。
+ */
+const HOST = process.env.DEVDATA_REDIS_HOST ?? ''
 const PORT = Number(process.env.DEVDATA_REDIS_PORT ?? '6379')
-const CAN_PROBE = process.env.DEVDATA_REDIS_248 === '1'
+const CAN_PROBE = process.env.DEVDATA_REDIS_248 === '1' && HOST !== ''
 
 describe.skipIf(!CAN_PROBE)(`真机：Redis 通路 A（${HOST}:${String(PORT)}）`, () => {
   const cwd = process.cwd()

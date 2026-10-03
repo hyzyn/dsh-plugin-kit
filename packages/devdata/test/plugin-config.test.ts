@@ -27,7 +27,7 @@ function redisTarget(overrides: Record<string, unknown> = {}): Record<string, un
     engine: 'redis',
     env: 'test-shared',
     scopeDirs: [CWD],
-    host: '192.168.80.248',
+    host: '192.0.2.248',
     port: 6379,
     ...overrides,
   }
@@ -170,7 +170,7 @@ describe('id：缺了或重了就丢（否则 target 参数会指向不可预期
 describe('连接：两个字段都齐才认（少一个不是「用默认端口」）', () => {
   it('齐了才有连接，含 db', () => {
     const live = normalizeConfig({ targets: [redisTarget({ db: 3 })] })
-    expect(live.targets[0]?.connection).toEqual({ host: '192.168.80.248', port: 6379, db: 3 })
+    expect(live.targets[0]?.connection).toEqual({ host: '192.0.2.248', port: 6379, db: 3 })
   })
 
   it('只有 host → 没有连接 + problem（不会拿默认端口去试）', () => {

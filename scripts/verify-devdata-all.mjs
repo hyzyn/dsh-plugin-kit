@@ -21,7 +21,7 @@
  *
  * **第 4 步先探可达性**：目标不可达时**报 SKIP，不报红**——真机用例需要 VPN 与那台 Redis，
  * 拿网络状况当失败信号只会训练人忽略红灯（本仓真机脚本一贯如此，见 `docs/agent-real-test.md`）。
- * 想换目标：`DEVDATA_REDIS_HOST` / `DEVDATA_REDIS_PORT`。
+ * 目标要**显式给**：`DEVDATA_REDIS_HOST`（**没有默认值**——公开仓库里不留内网地址）/ `DEVDATA_REDIS_PORT`。
  *
  * ## 它**不**做什么
  *
@@ -35,6 +35,8 @@
  *
  * ```sh
  * node scripts/verify-devdata-all.mjs                 # 或 pnpm --filter @hyzyn/dsh-devdata run verify
+ * # 真机那一档要显式给目标（公开仓库里不留内网默认地址）；不给就报 SKIP
+ * DEVDATA_REDIS_HOST=<目标> node scripts/verify-devdata-all.mjs
  * ```
  *
  * 任何一步 FAIL → 退出码 1；全过（含 SKIP）→ 0。
@@ -48,8 +50,8 @@ import { fileURLToPath } from 'node:url'
 const here = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(here, '..')
 
-/** 真机目标（与 `test/redis-real-machine.test.ts` 同一套环境变量口径）。 */
-const REDIS_HOST = process.env.DEVDATA_REDIS_HOST ?? '192.168.80.248'
+/** 真机目标（与 `test/redis-real-machine.test.ts` 同一套环境变量口径；**没有默认地址**）。 */
+const REDIS_HOST = process.env.DEVDATA_REDIS_HOST ?? ''
 const REDIS_PORT = Number(process.env.DEVDATA_REDIS_PORT ?? '6379')
 
 const results = []
@@ -102,7 +104,12 @@ run('① 类型检查（pnpm -r typecheck）', 'pnpm', ['-r', 'typecheck'])
 run('② 构建产物（pnpm -r build）', 'pnpm', ['-r', 'build'])
 run('③ devdata 全量单测', 'npx', ['vitest', 'run', 'packages/devdata'])
 
-if (await canConnect(REDIS_HOST, REDIS_PORT)) {
+if (REDIS_HOST === '') {
+  skip(
+    '④ 真机链路与闸门',
+    '没给 DEVDATA_REDIS_HOST——本仓不留内网默认地址（公开仓库）。用法：DEVDATA_REDIS_HOST=… DEVDATA_REDIS_PORT=… pnpm --filter @hyzyn/dsh-devdata run verify',
+  )
+} else if (await canConnect(REDIS_HOST, REDIS_PORT)) {
   run(
     `④ 真机链路与闸门（${REDIS_HOST}:${String(REDIS_PORT)}）`,
     'npx',

@@ -184,6 +184,15 @@
 - **用户可见变更请附截图或验证证据**。
 - **提交信息也要过公网 IP 闸门**：`.githooks/commit-msg` 调 `scripts/check-no-public-ip.mjs`。
   真实内网 IP、真实主机名一律换成文档网段 / 中性取值。
+  **闸门只管公网地址，内网地址靠同一条口径人工守**（本仓是公开仓库，`192.168.x` 写进去照样等于
+  公开内网拓扑）：真机脚本与用例的目标地址**不留内网默认值**，必须显式给环境变量
+  （`DEVDATA_REDIS_HOST` / `DEVENV_REAL_SSH_HOST` / `DEVDATA_SSH_HOST`），缺了就 SKIP 并说清怎么给。
+- **密钥扫描**（2026-10-03 加）：`.githooks/pre-commit` 用 `gitleaks git --staged` 扫**暂存内容**
+  （口径与上一条公网 IP 相同——进历史的只有 index），CI 用 `gitleaks git --log-opts=<base>..<head>`
+  扫**推送区间**（`ci.yml` 的 `Check the pushed range for secrets`）。**刻意只扫增量**：全历史扫会在
+  2026-10 之前那批 marketplace HTML 上命中 862 条既有结果（`generic-api-key` 假阳性），一道总在报
+  旧事的闸门会被学会无视。夹具里的假密钥按 `.gitleaksignore` 的容器口径登记（每条是
+  `<文件>:<规则>:<行>` 指纹）；**没装 gitleaks 的机器上本地那步会明说跳过，CI 仍无条件扫**。
 - **提交前门禁**：`pnpm typecheck && pnpm build && pnpm test && pnpm aggregate`。
   `.githooks/pre-commit` 会自动重建产物并 `git add`，然后按 **index** 扫公网 IP。
   **覆盖率不在门禁里**：它是本地工具，按需 `pnpm test:coverage`（口径、排除理由、阈值棘轮与
