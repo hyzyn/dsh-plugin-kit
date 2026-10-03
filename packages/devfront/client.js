@@ -354,7 +354,14 @@ window.__ModuleLoader__.load({
       ctx.slots.inject('settings.kit.item', () =>
         ctx.slots.register({ name: 'settings.kit.item', id: 'devfront', order: 90, label: () => t('card.name') }, DevfrontCard),
       )
-      // 侧边栏「插件」页里本插件那一行。
+      /*
+       * 侧边栏「插件」页：**两个槽都要注册**（tty / docker 同款，2026-10-03 真机验收抓到的）——
+       * 列表行用 `plugins.row.config`（key 是 `<包名>#<行 id>`），而点「查看」进的那个**详情页**
+       * 用 `plugins.bundle.config`（key 是**包名**）。只注册前者时详情页里的卡片是空的。
+       */
+      ctx.slots.inject('plugins.bundle.config', () =>
+        ctx.slots.register({ name: 'plugins.bundle.config', key: '@hyzyn/dsh-devfront' }, DevfrontCard),
+      )
       ctx.slots.inject('plugins.row.config', () =>
         ctx.slots.register({ name: 'plugins.row.config', key: '@hyzyn/dsh-devfront#devfront' }, DevfrontCard),
       )

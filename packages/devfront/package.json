@@ -44,7 +44,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit && node ../../scripts/client-lint.mjs",
-    "lint:client": "node ../../scripts/client-lint.mjs"
+    "lint:client": "node ../../scripts/client-lint.mjs",
+    "verify": "node ../../scripts/verify-devfront-card.mjs"
   },
   "license": "Apache-2.0",
   "repository": {
