@@ -29,6 +29,10 @@
       "types": "./lib/manifest.d.ts",
       "default": "./lib/manifest.js"
     },
+    "./testing": {
+      "types": "./lib/testing/fake-host.d.ts",
+      "default": "./lib/testing/fake-host.js"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {

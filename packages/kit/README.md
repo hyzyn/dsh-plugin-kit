@@ -3,6 +3,44 @@
 dsh-plugin-kit 的插件开发工具包：类型助手 + 宿主半体共享工具库。
 运行时依赖只有 `js-yaml`（!!js 表达式方言）；`@deepseek-ai/cordis` 仅为类型。
 
+## 测试夹具（`./testing` 子路径）
+
+```ts
+import { makeFakeHost } from '@hyzyn/dsh-kit/testing'
+import { plainConfig } from '@hyzyn/dsh-kit'
+import { Config, apply } from '../src/index.js'
+
+export function makeHost(options: { settings?: boolean } = {}) {
+  return makeFakeHost({
+    ns: 'your-plugin',                                  // settings 的 entry id
+    parse: (raw) => Config(raw as never),                // 本包**真实的** schema（保真度）
+    plain: (parsed) => plainConfig(parsed as Config),    // settings 层交回的就是纯数据
+    apply: apply as unknown as (ctx: unknown, config: unknown) => void,
+    settings: options.settings,
+    webServer: false,                                    // 需要数据面路由才开
+    launchEnvironment: false,                            // 需要能力判定才开
+  })
+}
+```
+
+**这份机制只有一处**：`devdata` / `devenv` / `devfront` 三包各留一个薄适配层（就是上面这几行），
+假 cordis 的行为全在这里。判据来自那两份夹具自己的文件头：「夹具跨包 import 会让两个包的测试互相
+耦合；**若出现第三个消费者，判据就变了**——那时上收进 `kit`（共享的是机制）」（2026-10-03，第三个
+消费者出现后照办）。
+
+它给的是：`inject` 立刻回调子上下文、`effect(fn)` 立刻执行、settings 的 `update()` **先落值再广播**、
+工具/路由登记与撤销、`call` / `callError` / `descriptionOf`、`notReady()`·`ready()`、`grant()`（启动
+环境那套能力判定源）、`extraEntries`（读别的插件的 entry）、`webServer` 与 `launchEnvironment` 开关。
+
+一个容易踩的口径：`mount(config)` 缺省把配置**也写进 settings 层**（模拟真宿主上两者同源）；
+要造「bundle 层给的那份与 settings 解析出来的那份不同」（如「resolved 值才是权威」），用
+`mount(config, { seed: false })`。
+
+> **代价照实说**：`kit` 是发布包，这个子路径会随 `lib/` 一起发布（多几十 KB 的测试脚手架）。
+> 换来的是三份拷贝不再各自漂——夹具注释里记着漂移的实例（`indexforce` 那份抄漏了收尾比对，而静态
+> 守卫因为正则命中了它的一句注释而保持全绿）。**本轮刻意没升版本**：没有成文规矩要求为测试脚手架
+> 升版本，而升版本要连带改 13 个钉子并刷 lockfile。
+
 ## API
 
 ### 类型助手

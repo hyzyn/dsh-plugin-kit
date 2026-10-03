@@ -66,8 +66,8 @@
      `projectSitesFile`（**默认关闭**）+ 并集与冲突报错。见记-25。
    - ~~**假宿主夹具 + 工具级验收**~~ —— **已落地（2026-10-03）**：`test/fake-host.ts` +
      `test/tools.test.ts`（11 条），把「按 `cwd` 读项目清单 → 合并 → `pickTarget`」这段接线补上了。见记-26。
-     **留下的债**：夹具按 §16.1 该上收进 `kit`（本包是第三个消费者，那两份夹具的文件头都写着这条判据）；
-     本轮不做是因为 `devenv` 的夹具正被并发工作改着。**留一条**：
+   - ~~**夹具上收进 `kit`**~~ —— **已落地（2026-10-03）**：机制搬到 `@hyzyn/dsh-kit/testing`，三包留
+     薄适配层；本包原有的两份夹具并成一份。见记-27。**留一条**：
    - ~~**卡片展开后的 DOM 验收**~~ —— **已落地（2026-10-03）**：`scripts/verify-devfront-card.mjs`
      （`… run verify`）现在**12/12**，含详情页卡片渲染（控件数 + 站点只读信息）。见记-23。
 
@@ -937,7 +937,12 @@ JSONL 出口。三包各写一份必然漂，于是按「第三个消费者出�
 
 **为什么需要**：纯函数（`loadProjectSites` / `mergeSites`）有单测，真机脚本走的是 HTTP 数据面 +
 真浏览器——中间那段**接线**（工具调用时 `sitesForCall(input.cwd)` 读清单、`pickTarget(id, sites)`、
-可用站点名单也来自合并后的清单）此前没有任何覆盖。这正是记-21 起就记着的那条：本包`没有假宿主`。
+可用站点名单也来自合并后的清单）此前没有任何覆盖。
+
+> **更正（同日）**：我先前在记-21 起写的「本包没有假宿主夹具」**是错的**——`test/volatile-config.test.ts`
+> 里一直有一份**内联的**假宿主（随包落地 `b32324c4` 就在，~104 行，做的是「服务注入 + 事件广播 +
+> 登记可撤销」三件真事）。真相比我写的更值得上收：本包当时是**两份夹具**（内联那份 + 本轮新写的
+> 那份）。所以本轮做的是**合并 + 上收**，不是「从零搭一个」。
 
 **落点**：
 
@@ -954,6 +959,38 @@ JSONL 出口。三包各写一份必然漂，于是按「第三个消费者出�
 校验（`invalid arguments: missing required property 'target'`）会先挡下。已在代码里把那句标成兜底
 （并说明留着是为了「拿到的 id 一定非空」这条不变量），用例也改成断言**真实**行为。
 
-**留下的债（记进待办 6b）**：两份现有夹具的文件头都写着「若出现第三个消费者，判据就变了——按 §16.1
-的同一套判据上收进 `kit`」。本包正是第三个消费者，所以这笔债现在成立；本轮不做的原因写在夹具文件头：
-`devenv` 的夹具此刻正被另一份并发工作改着，现在动它会撞车。
+**已于同日还清**：两份夹具（`devdata` / `devenv`）的文件头都写着「若出现第三个消费者，判据就变了
+——按 §16.1 的同一套判据上收进 `kit`」。本包是第三个消费者，而本轮把机制上收到了
+[`kit/src/testing/fake-host.ts`](../../packages/kit/src/testing/fake-host.ts)（子路径 `@hyzyn/dsh-kit/testing`）：
+三包各留一份**薄适配层**（自己的 `Config` schema + `apply` + 自己用到的服务开关），本包那两份夹具也
+并成了一份。详见记-27。
+
+### 记-27. 假宿主夹具上收进 `kit`：机制一份，三包各留适配层（2026-10-03）
+
+**判据来自夹具自己**：`devdata` / `devenv` 两份夹具的文件头都写着「夹具跨包 import 会让两个包的测试
+互相耦合；**若出现第三个消费者，判据就变了**——那时按 §16.1 的同一套判据上收进 `kit`（共享的是
+机制）」。`devfront` 是第三个消费者。
+
+**做了什么**：
+
+| 落点 | 内容 |
+|---|---|
+| `kit/src/testing/fake-host.ts`（新子路径 `./testing`） | 假 cordis 的**全部机制**：`inject` 立刻回调子上下文、`effect(fn)` 立刻执行、settings `update()` **先落值再广播**、工具/路由登记、`call` / `callError` / `unmount` / `descriptionOf` / `notReady`·`ready` / `grant`（启动环境）/ `extraEntries`（读别人 entry）/ `webServer` 开关 |
+| 三包 `test/fake-host.ts` | **薄适配层**：`ns` + 本包真实 `Config` schema（保真度）+ `apply` + 自己用到的服务开关（devfront 要 `webServer`，devdata/devenv 要 `launchEnvironment`） |
+| `devfront/test/volatile-config.test.ts` | 删掉内联的那份假宿主（~104 行），改用共享夹具；`targetsOf(name)` 换成等价的 `descriptionOf(name, 'target')` |
+
+**两处口径是这一轮才显式化的**（原来藏在某一份夹具里）：
+
+- `mount(config, { seed })`：缺省把配置也写进 settings 层（多数用例要的「两层同一份」）；
+  `seed: false` **只交给 `apply`**——`volatile-config` 那条「resolved 值才是权威」要的正是「两层不同」，
+  旧的内联夹具是靠「mount 不写 stored」隐式做到这一点的；
+- `settings` / `emit` 从夹具里**暴露出来**：有的用例要绕过 `update()` 直接驱动 settings（「entry 未就绪」
+  那条），或者手动打一次全仓广播。
+
+**门槛（已验）**：共享夹具自带 **13 条**用例（`kit/test/testing-fake-host.test.ts`：注入/广播/`seed`
+两种口径/`grant` 只认挂载前/`webServer` 与 `launchEnvironment` 的开关/`unmount` 收尾/未知 ns 被拒…）；
+三包（`devdata` + `devenv` + `devfront`）在迁移后 **792 用例**全绿；全仓闸门绿。
+
+**刻意没做的**：不升 `kit` 版本、不动 13 个钉子。判据：这是**测试脚手架**子路径（没有成文规矩要求为它
+升版本），而升版本要连带改 13 个 `package.json` 并刷 lockfile——收益只是版本号好看。代价照实说：它会随
+`lib/` 一起被发布（多几十 KB 的测试脚手架），换的是三份拷贝不再各自漂。

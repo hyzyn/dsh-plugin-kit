@@ -20,120 +20,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { apply } from '../src/index.js'
-
-/* ------------------------------------------------------------------ *
- * 最小假宿主：只做这三件事的真——服务注入、事件广播、登记可撤销
- * ------------------------------------------------------------------ */
-
-interface RegisteredTool {
-  name: string
-  /** `defineTool` 交给宿主的是**编译后的 JSON Schema**（不是原始 spec），描述在 properties 里。 */
-  parameters?: { properties?: Record<string, { description?: string } | undefined> }
-}
-
-const noop = (): void => {}
-
-function makeHost(options: { settings?: boolean } = {}) {
-  const settingsEnabled = options.settings !== false
-
-  const listeners = new Map<string, Array<() => void>>()
-  const cleanups: Array<() => void> = []
-  const tools = new Map<string, RegisteredTool>()
-  const stored: Record<string, unknown> = {}
-  const counts = { registrations: 0, disposals: 0, sections: 0, sectionDisposals: 0 }
-
-  /** `describe` 是否认得出这份 entry。置 false 模拟「settings 服务在、但还没准备好」。 */
-  let entryReady = true
-
-  const emit = (name: string): void => {
-    for (const listener of listeners.get(name) ?? []) listener()
-  }
-
-  const toolsApi = {
-    register(def: RegisteredTool): () => void {
-      counts.registrations += 1
-      tools.set(def.name, def)
-      return () => {
-        counts.disposals += 1
-        // 只在还是自己那版时才删：否则「新登记把旧的顶掉」会被旧登记的回调误删。
-        if (tools.get(def.name) === def) tools.delete(def.name)
-      }
-    },
-  }
-
-  const systemPromptApi = {
-    section(): () => void {
-      counts.sections += 1
-      return () => {
-        counts.sectionDisposals += 1
-        counts.sections -= 1
-      }
-    },
-  }
-
-  /**
-   * DSH ≥0.1.7 的 settings 服务（SettingsForms）。
-   *
-   * `update()` 的**顺序是契约**：真实层是「先落盘（改 entry 的 config）再广播 volatile 更新」，
-   * 所以插件在事件里重读能拿到新值。这里照抄，否则用例会验不到真正的那条链路。
-   */
-  const settingsApi = {
-    describe: (): Array<{ ns: string; value: unknown }> => [
-      { ns: 'devfront', value: entryReady ? { ...stored } : undefined },
-    ],
-    update: async (ns: string, patch: Record<string, unknown>): Promise<void> => {
-      if (ns !== 'devfront') throw new Error(`未知的 entry: ${ns}`)
-      Object.assign(stored, patch)
-      emit('loader/volatile-update')
-    },
-    configure: () => noop,
-  }
-
-  /** 每个 inject 子上下文都是独立对象（真实 cordis 里也是派生的），但共享同一批服务与事件。 */
-  const makeCtx = (): Record<string, unknown> => ({
-    logger: { info: noop, warn: noop },
-    fiber: { entry: { options: { id: 'devfront' } } },
-    get: (name: string) => (name === 'settings' && settingsEnabled ? settingsApi : undefined),
-    on: (name: string, listener: () => void) => {
-      const list = listeners.get(name) ?? []
-      list.push(listener)
-      listeners.set(name, list)
-      return noop
-    },
-    effect: (fn: () => () => void) => {
-      cleanups.push(fn())
-    },
-    inject: (deps: string[], cb: (child: unknown) => void) => {
-      const child = makeCtx()
-      if (deps.includes('tools')) child.tools = toolsApi
-      if (deps.includes('systemPrompt')) child.systemPrompt = systemPromptApi
-      if (deps.includes('settings') && settingsEnabled) child.settings = settingsApi
-      cb(child)
-    },
-  })
-
-  return {
-    tools,
-    counts,
-    stored,
-    settings: settingsApi,
-    /** 造一个站点（scopeDirs 必须非空：空 = 处处拒绝）。 */
-    mount: (config: Record<string, unknown>) => {
-      ;(apply as unknown as (ctx: unknown, config: unknown) => void)(makeCtx(), config)
-    },
-    notReady: () => {
-      entryReady = false
-    },
-    ready: () => {
-      entryReady = true
-    },
-    /** 工具描述里嵌的那份「可用站点名单」——它是配置真的生效了的可观测面。 */
-    targetsOf: (name: string): string =>
-      tools.get(name)?.parameters?.properties?.target?.description ?? '<未注册>',
-    emit,
-  }
-}
+import { makeHost } from './fake-host.js'
 
 const TARGET = (id: string): Record<string, unknown> => ({
   id,
@@ -151,13 +38,13 @@ describe('volatile 契约：配置改了必须真的生效', () => {
   it('★ 走真实的写入路径（settings.update）改站点名单：工具重新注册，可用站点换成新的', async () => {
     const host = makeHost()
     host.mount({ targets: [TARGET('a')] })
-    expect(host.targetsOf('site_open')).toContain('可用：a')
+    expect(host.descriptionOf('site_open', 'target')).toContain('可用：a')
 
     // 用户在插件配置页上改：写入 → loader 广播 volatile 更新 → 插件重读。
     await host.settings.update('devfront', { targets: [TARGET('b')] })
 
-    expect(host.targetsOf('site_open')).toContain('可用：b')
-    expect(host.targetsOf('site_open')).not.toContain('可用：a')
+    expect(host.descriptionOf('site_open', 'target')).toContain('可用：b')
+    expect(host.descriptionOf('site_open', 'target')).not.toContain('可用：a')
     // 六个工具都得在：只有描述变了，不是一个都没了。
     expect([...host.tools.keys()].sort()).toEqual([...SIX].sort())
   })
@@ -218,8 +105,9 @@ describe('volatile 契约：配置改了必须真的生效', () => {
   it('resolved 值才是权威：settings 层的站点压过 apply 时拿到的那份 config', () => {
     const host = makeHost()
     host.stored.targets = [TARGET('from-settings')]
-    host.mount({ targets: [TARGET('from-config')] })
-    expect(host.targetsOf('site_open')).toContain('可用：from-settings')
+    // `seed: false`：这份 config **只**交给 apply（模拟「bundle 层给的」与「settings 解析的」不同）
+    host.mount({ targets: [TARGET('from-config')] }, { seed: false })
+    expect(host.descriptionOf('site_open', 'target')).toContain('可用：from-settings')
   })
 })
 
@@ -236,7 +124,7 @@ describe('volatile 契约的边界', () => {
     host.emit('loader/volatile-update')
 
     expect(host.tools.size).toBe(SIX.length)
-    expect(host.targetsOf('site_open')).toContain('可用：a')
+    expect(host.descriptionOf('site_open', 'target')).toContain('可用：a')
   })
 
   it('★ 值没变的广播不拆装工具（别人的配置变更也会打到我们这里）', () => {
@@ -255,7 +143,7 @@ describe('volatile 契约的边界', () => {
     const host = makeHost({ settings: false })
     host.mount({ targets: [TARGET('a')] })
     expect(host.tools.size).toBe(SIX.length)
-    expect(host.targetsOf('site_open')).toContain('可用：a')
+    expect(host.descriptionOf('site_open', 'target')).toContain('可用：a')
 
     // 没人订阅，广播不该有任何动静（也不该抛）。
     host.emit('loader/volatile-update')
