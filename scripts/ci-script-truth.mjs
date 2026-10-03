@@ -49,7 +49,16 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 /** workflow 目录与要查的文件（相对仓库根；顺序稳定，报错信息才可复现）。 */
 export const WORKFLOWS_DIR = '.github/workflows'
-export const WORKFLOW_FILES = ['ci.yml', 'release.yml']
+/**
+ * 参与检查的 workflow。
+ *
+ * `nightly.yml` 2026-10-03 加入：它跑的是 CI 放不下的两条车道（并发 flake / coverage 棘轮），
+ * 但**入口同样不许漂**——它引用 `pnpm flake:check` / `pnpm coverage:check`，同样受第 6 / 7 条
+ * 约束（写死路径 / 条目不存在）。它**不受**第 4 条约束：那一条只针对 `release.yml`（发布闸不许
+ * 跑 CI 不认的入口）；nightly 反过来——它存在的理由正是跑 CI **不该**每次跑的东西，
+ * 要求它的入口也出现在 ci.yml 会把这层设计抹掉。
+ */
+export const WORKFLOW_FILES = ['ci.yml', 'release.yml', 'nightly.yml']
 
 /** 写死路径：`node packages/<pkg>/scripts/<file>.mjs`（方案 A 之后**不许再出现**）。 */
 const HARDCODED_SCRIPT_RE = /node\s+(packages\/[A-Za-z0-9._-]+\/scripts\/[A-Za-z0-9._-]+\.mjs)/g

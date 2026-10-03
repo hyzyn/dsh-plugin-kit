@@ -52,16 +52,23 @@ describe('ci-script-truth：现算（唯一真值来源）', () => {
     expect(diffs).toEqual([])
   })
 
-  it('命中不是 0：两条 workflow 都真的有包内条目引用，且写死路径已归零', () => {
+  it('命中不是 0：每条 workflow 都真的有包内条目引用，且写死路径已归零', () => {
     // 「写死路径 0 处」正是方案 A 的成果——它必须是被**现算**出来的，不是没人扫
     for (const workflow of real.workflows) {
       const { hardcoded, entries } = parseWorkflowRefs(workflow.text)
-      expect(entries.length, `${workflow.file} 应抓到条目引用`).toBeGreaterThan(0)
+      /*
+       * nightly.yml 没有**包内**条目引用（它只跑根级条目 flake:check / coverage:check）——
+       * 对它只要求「写死路径为 0」；根级那条引用由下面第二组断言覆盖。
+       */
+      if (workflow.file !== 'nightly.yml') {
+        expect(entries.length, `${workflow.file} 应抓到条目引用`).toBeGreaterThan(0)
+      }
       expect(hardcoded, `${workflow.file} 不该再有写死路径`).toEqual([])
     }
     const ciRefs = parseWorkflowRefs(ciText).entries
     expect(ciRefs.length, 'ci.yml 的条目引用数（tty 7 + docker 1 + windows 1）').toBeGreaterThanOrEqual(9)
-    expect(WORKFLOW_FILES, '查的文件清单').toEqual(['ci.yml', 'release.yml'])
+    // nightly.yml 2026-10-03 加入：它跑 CI 放不下的两条车道，入口同样不许漂
+    expect(WORKFLOW_FILES, '查的文件清单').toEqual(['ci.yml', 'release.yml', 'nightly.yml'])
   })
 
   it('命中不是 0（根级）：两条 workflow 的裸调用条目都真抓到了，且根级写死路径已归零', () => {

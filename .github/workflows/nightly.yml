@@ -1,0 +1,81 @@
+# Nightly：CI 每次推送跑不到的那两类（2026-10-03 新增）
+#
+# 为什么单独一条车道、而不是塞进 ci.yml：这两件事**要么太贵、要么性质不同**——
+#
+#   1. **flake**（并发跑 N 份全量套件）：本仓三条间歇红（tty D95 / D57、codegraph CG65）
+#      只在**多份套件并发挤压 CPU** 时复现，单跑永不复现。做闸门意味着每次推送多烧一份
+#      CPU；而「红一次 → 定位 → 根治」的节奏天然是**按天**的，不是按 PR 的。
+#   2. **coverage 棘轮**：它回答的是**趋势**（还有多少宿主半体代码从没被执行过），不是
+#      正确性。正确性已经由 ci.yml 那十几道闸门与 1700 条用例守着。趋势闸红了不该挡
+#      任何人今天的合入——第二天处理就够了。
+#
+# 两者都**不是**「把 CI 再跑一遍」：形状与 ci.yml 不同（并发而非顺序、带插桩而非裸跑），
+# 理由见 scripts/flake-lane.mjs 与 scripts/coverage-ratchet.mjs 的文件头。
+#
+# 手动触发保留：想在不等到半夜的情况下验一条 flake 修得对不对，用 workflow_dispatch。
+
+name: Nightly
+
+on:
+  schedule:
+    # 15:00 UTC = 23:00 Asia/Shanghai——本仓主要在 +08 时区维护，跑在当天结束前。
+    # 避开整点（GitHub 的调度器在整点最挤，实测延迟可达几十分钟）。
+    - cron: '15 15 * * *'
+  workflow_dispatch:
+
+# 与 ci.yml 同一条最小权限：这两条车道都只读代码、跑测试。
+permissions:
+  contents: read
+
+# 同一 ref 的新一轮取代在跑的（半夜连跑两次没有意义）。与 ci.yml 的组名区分开，
+# 免得两种车道互相取消——**这正是 dsh-web 那条 nightly 值得抄的一处**：它的组是
+# `nightly-${ref}` 而不是复用 `ci-${ref}`。
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  flake:
+    name: Flake lane (concurrent full suites)
+    runs-on: ubuntu-latest
+    # 实测本机并发 3 份 27s；runner 是 4 核、通常更慢。上限防挂死（不是时间预算）。
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # 测试读的是源码与入库产物（vitest 不编译 src），所以不必须先 build——
+      # 与 ci.yml 「先 build 再 test」的顺序无关，这里省掉它只为了让这条车道更快。
+      - name: Flake lane
+        run: pnpm flake:check
+      # 红了要点名「哪一份红、红在哪条用例」——脚本已经把失败用例打进日志，
+      # 这里再加一条 annotation，让结论出现在 job 摘要里而不是埋在几千行日志里。
+      - name: Point at the failure
+        if: failure()
+        run: |
+          echo "::error::并发全量套件下有用例红了——这是 flake 车道的用途，不要靠重跑到绿。"
+          echo "::error::定位：pnpm repro-flake <红掉的文件> --rounds 10；方法见 docs/conventions.md § 负载敏感 flake"
+
+  coverage:
+    name: Coverage ratchet
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Coverage ratchet
+        run: pnpm coverage:check
+      - name: Point at the regression
+        if: failure()
+        run: |
+          echo "::error::宿主半体覆盖率低于基线——要么给新代码补用例（首选），要么 pnpm coverage:write 显式接受。"
+          echo "::error::报告用 npx vitest run --coverage --reporter=html 打开看红行；范围与理由见 scripts/coverage-ratchet.mjs 文件头。"
