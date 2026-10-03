@@ -47,6 +47,14 @@ const LEDGER_POINTER_COUNT = /（\s*\d+\s*项/
 const LIVE_NOW_COUNT = /(?<![发呈显涌闪兑实出浮体展])现在[^。，、\n]{0,8}\d+\s*\/\s*\d+/
 /** `## 待办（7 项）` / `## 待办（3 项，其中 1 项已完成）`。 */
 const ROADMAP_HEADING_COUNT = /^##\s*待办（[^）]*\d[^）]*）/m
+/**
+ * i18n 进度表**不许有计数列**（`键数` / `剩余中文字面量`）。
+ *
+ * 那份表自称「数字是闸门算的、不写死」，却把值抄了下来——2026-10-03 走查时 11 行里 4 行过期
+ * （`tty` 差 46、`docker` 差 24、`devfront` 差 7、`codegraph` 差 1），根 ROADMAP 里还有第二份。
+ * 现在两处都只留「状态 + 为什么不该翻」，数字一律跑闸门。这条判据守的是**别再加回来**。
+ */
+const I18N_TABLE_COUNT_COLUMN = /^\|\s*包\s*\|[^\n]*(键数|剩余中文字面量)/m
 
 /** 一次判据（**纯函数**，喂 fixture 就能造反例）。 */
 export function countDriftProblems(files: readonly { path: string; text: string }[]): string[] {
@@ -71,6 +79,13 @@ export function countDriftProblems(files: readonly { path: string; text: string 
             '而没人会回头改标题（tty 与 docker 各漂过一次）',
         )
       }
+    }
+
+    if (file.path === 'docs/i18n.md' && I18N_TABLE_COUNT_COLUMN.test(file.text)) {
+      problems.push(
+        'docs/i18n.md: 进度表里又出现了「键数」/「剩余中文字面量」列——那两个数只有闸门知道，' +
+          '抄进表里就会漂（2026-10-03 收掉时 11 行里 4 行已过期）。状态写这里、度量跑闸门',
+      )
     }
 
     file.text.split('\n').forEach((line, index) => {
@@ -165,6 +180,26 @@ describe('文档里的计数不许写死（规矩：不数条数、也不写死�
       {
         path: 'docs/architecture.md',
         text: '> 上面这三个数字是**现算**的（2026-10-02 加 `devenv` 时才发现在此之前它们停在 12/9/×10）：\n',
+      },
+    ]
+    expect(countDriftProblems(ok)).toEqual([])
+  })
+
+  it('反例⑦：i18n 进度表加回「键数」列 → 报出来（收掉时的原形态）', () => {
+    const bad = [
+      {
+        path: 'docs/i18n.md',
+        text: '| 包 | 客户端半体 | 状态 | 键数 | 剩余中文字面量 | 说明 |\n|---|---|---|---|---|---|\n| `tty` | `client-src/index.js` | ✅ | 364 | 5 | … |\n',
+      },
+    ]
+    expect(countDriftProblems(bad).join('\n')).toContain('进度表里又出现了')
+  })
+
+  it('反例⑧：同一份进度表只留「状态 + 说明」→ 不报', () => {
+    const ok = [
+      {
+        path: 'docs/i18n.md',
+        text: '| 包 | 客户端半体 | 状态 | 说明 |\n|---|---|---|---|\n| `devfront` | 手写 `client.js` | ✅ | 配置卡片：标量可改、站点可编辑 |\n',
       },
     ]
     expect(countDriftProblems(ok)).toEqual([])
