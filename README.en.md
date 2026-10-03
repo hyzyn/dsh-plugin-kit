@@ -87,6 +87,11 @@ direction and how they cooperate: [docs/architecture.md](docs/architecture.md) (
 | `@hyzyn/dsh-docker` | Docker container panel (local / SSH), read-only by default | [README](packages/docker/README.md) · [DEFECTS](packages/docker/DEFECTS.md) · [ROADMAP](packages/docker/ROADMAP.md) |
 | `@hyzyn/dsh-all` | Aggregate package: one bundle patch that mounts the 10 plugins above | [README](packages/all/README.md) |
 
+> Three more packages are **private and unpublished** (not part of `dsh-all`, not on npm): `devdata`
+> (data plane + assertion library), `devenv` (environment orchestration and observation), `devfront`
+> (front-end effect verification). Scope and boundaries: [docs/devdata-plan.md](docs/devdata-plan.md);
+> manifest: [architecture.md § 2](docs/architecture.md).
+
 ## Quick start
 
 ### System requirements
@@ -209,7 +214,7 @@ pure logic into modules) → [docs/conventions.md § Client half](docs/conventio
 |---|---|
 | What this is, what to install | this file |
 | New here and want the big picture (read in this order) | [docs/architecture.md](docs/architecture.md) → [docs/conventions.md](docs/conventions.md) → [docs/agent-real-test.md](docs/agent-real-test.md) |
-| How the 12 packages cooperate, dependency direction, who writes which config file | [docs/architecture.md](docs/architecture.md) |
+| How the 15 packages cooperate, dependency direction, who writes which config file | [docs/architecture.md](docs/architecture.md) |
 | Naming / commits / doc layers / numbering / package anatomy | [docs/conventions.md](docs/conventions.md) |
 | Terminology (host half, managed block, TOFU, slot generations…) | [docs/glossary.md](docs/glossary.md) |
 | Install failures, missing cards, every plugin gone, HTTP 401/403, known limits | [docs/troubleshooting.md](docs/troubleshooting.md) |

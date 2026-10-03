@@ -1,0 +1,8 @@
+# dsh-devdata 的补丁层：把插件挂进 profile 阵容。
+#
+# `id` 与 `name` 的写法要与 scripts/aggregate.mjs 的 extractRows 对得上（它读的就是这两行）。
+# 本包是 `private`，**不会**被卷进 @hyzyn/dsh-all——判据在 aggregate.mjs 的 `isAggregatable`
+# （2026-10-01 落的 N1：私有包即使带补丁层也排除在外），不是靠「记得别加 patch」。
+- insert:
+    - id: devdata
+      name: '@hyzyn/dsh-devdata'

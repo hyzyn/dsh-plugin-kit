@@ -873,7 +873,10 @@ Host half (src/index.ts)
 pnpm --filter @hyzyn/dsh-docker build       # tsc → lib/ (host half) + esbuild → client.js (browser half)
 pnpm --filter @hyzyn/dsh-docker typecheck
 pnpm --filter @hyzyn/dsh-docker smoke       # three offline regression suites, none needing a docker daemon
-pnpm test                                    # repo-level vitest (including this package's config-route / current-session / session-target / logs-stream / streams / ssh-stream-budget suites — six in total)
+pnpm test                                    # repo-level vitest (including this package's config-route / current-session / session-target /
+                                             # logs-stream / streams / ssh-connect suites — six in total; the SSH-layer suites
+                                             # (ssh-jump / ssh-channel-gate / ssh-stream-budget / ssh-proxy-command) moved to
+                                             # @hyzyn/dsh-kit's test/ on 2026-10-02 with the implementation)
 ```
 
 `scripts/smoke.mjs` (reading the `lib/` build output; item counts are self-reported at the end of the script) covers pure logic: ps parsing (field mapping /

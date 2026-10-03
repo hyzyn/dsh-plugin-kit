@@ -1,0 +1,48 @@
+{
+  "name": "@hyzyn/dsh-devenv",
+  "version": "0.1.0",
+  "private": true,
+  "description": "开发/测试环境的编排与观测面：容器/进程/端口/探针的**状态**判据（就绪清单 + 求值）+ 经复用通道取观测 + 只读优先的 agent 工具。私有包，不发布。",
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.4",
+    "@hyzyn/dsh-kit": "0.6.0",
+    "js-yaml": "^4.1.0"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.4",
+    "@deepseek-ai/dsh-tools": "0.1.2-rc.1",
+    "@types/node": "^22.20.0",
+    "typescript": "~5.9.3"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "host-mount-smoke": "node ../../scripts/verify-devenv-host-mount.mjs",
+    "typecheck": "tsc --noEmit",
+    "verify": "node ../../scripts/verify-devenv-all.mjs"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hyzyn/dsh-plugin-kit.git",
+    "directory": "packages/devenv"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

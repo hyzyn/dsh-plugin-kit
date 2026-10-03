@@ -83,7 +83,7 @@ import WebSocket, { WebSocketServer } from 'ws'
 import xtermHeadless from '@xterm/headless'
 const HeadlessTerminal = xtermHeadless.Terminal
 type HeadlessTerminal = InstanceType<typeof HeadlessTerminal>
-import { definePlugin, dshHome as resolveDshHome, getService, hasSameOriginProof, isLoopbackRequestStrict, plainConfig, settingsEntryScope, suppressAutoSettingsPage } from '@hyzyn/dsh-kit'
+import { HOST_SERVICES, definePlugin, dshHome as resolveDshHome, getService, hasSameOriginProof, isLoopbackRequestStrict, plainConfig, settingsEntryScope, suppressAutoSettingsPage } from '@hyzyn/dsh-kit'
 import type { SettingsEntryScope } from '@hyzyn/dsh-kit'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { sanitizeJumpSpec, sanitizeProxyCommand, spawnSsh, sshTarget, expandHome, setCredentialResolver, setProxyCommandPolicy, validateJumpSpec, validateProxyCommand } from './ssh.js'
@@ -1132,7 +1132,7 @@ export function resolveAssistRoute(ctx: Context, provider: string, model: string
     return { error: 'provider 与 model 需要成对填写（只填一个不生效）：补齐另一个，或两个都清空以跟随宿主默认模型' }
   }
   try {
-    const defaultModel = getService(ctx, 'agentDefaultModel') as { source?: () => unknown; currentSelection?: () => unknown } | undefined
+    const defaultModel = getService(ctx, HOST_SERVICES.agentDefaultModel) as { source?: () => unknown; currentSelection?: () => unknown } | undefined
     const read = typeof defaultModel?.source === 'function'
       ? defaultModel.source
       : typeof defaultModel?.currentSelection === 'function'
@@ -1142,7 +1142,7 @@ export function resolveAssistRoute(ctx: Context, provider: string, model: string
       const picked = pickRoute(read.call(defaultModel))
       if (picked !== null) return { route: picked }
     }
-    const settings = getService(ctx, 'settings') as { get?: (ns: string) => unknown } | undefined
+    const settings = getService(ctx, HOST_SERVICES.settings) as { get?: (ns: string) => unknown } | undefined
     if (typeof settings?.get === 'function') {
       const picked = pickRoute(settings.get('agent-default-model'))
       if (picked !== null) return { route: picked }
@@ -4406,7 +4406,7 @@ const plugin = definePlugin<Config>({
               writeJson(res, 409, { error: resolved.error ?? '没有可用的模型路由' })
               return
             }
-            const llm = getService(ctx, 'llm') as LlmLike | undefined
+            const llm = getService(ctx, HOST_SERVICES.llm) as LlmLike | undefined
             if (llm === undefined || llm === null || typeof llm.stream !== 'function') {
               writeJson(res, 409, { error: '宿主 llm 服务不可用（当前宿主没有提供模型调用）' })
               return
@@ -4473,7 +4473,7 @@ const plugin = definePlugin<Config>({
               return
             }
             const provider = (new URL(req.url ?? '/', 'http://loopback').searchParams.get('provider') ?? '').trim()
-            const llm = getService(ctx, 'llm')
+            const llm = getService(ctx, HOST_SERVICES.llm)
             const available = llm !== undefined && llm !== null && typeof (llm as LlmLike).listModels === 'function'
             const providers = listProvidersOf(llm)
             writeJson(res, 200, {

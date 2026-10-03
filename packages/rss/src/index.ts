@@ -17,7 +17,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
-import { definePlugin, dshHome, getService, writeFileAtomic } from '@hyzyn/dsh-kit'
+import { HOST_SERVICES, definePlugin, dshHome, getService, writeFileAtomic } from '@hyzyn/dsh-kit'
 import {
   BUILTIN_CATALOG_NAME,
   getBuiltinCatalogEntries,
@@ -923,7 +923,7 @@ export function resolveAiRoute(ctx: Context | undefined, ai?: AiStoreConfig): Ai
   if (ctx === undefined) return null
 
   try {
-    const defaultModel = getService(ctx, 'agentDefaultModel') as AgentDefaultModelLike | undefined
+    const defaultModel = getService(ctx, HOST_SERVICES.agentDefaultModel) as AgentDefaultModelLike | undefined
     if (defaultModel !== undefined && defaultModel !== null) {
       const read = typeof defaultModel.source === 'function'
         ? defaultModel.source
@@ -936,7 +936,7 @@ export function resolveAiRoute(ctx: Context | undefined, ai?: AiStoreConfig): Ai
       }
     }
 
-    const settings = getService(ctx, 'settings') as SettingsLike | undefined
+    const settings = getService(ctx, HOST_SERVICES.settings) as SettingsLike | undefined
     if (settings !== undefined && settings !== null && typeof settings.get === 'function') {
       const picked = pickRoute(settings.get(AGENT_DEFAULT_MODEL_NAMESPACE))
       if (picked !== null) return picked
@@ -1028,7 +1028,7 @@ async function summarizeItems(
     }
   }
   const routeText = `${route.provider}/${route.model}`
-  const llm = ctx !== undefined ? (getService(ctx, 'llm') as LlmRuntimeLike | undefined) : undefined
+  const llm = ctx !== undefined ? (getService(ctx, HOST_SERVICES.llm) as LlmRuntimeLike | undefined) : undefined
   if (llm === undefined || llm === null || typeof llm.stream !== 'function') {
     return { items, info: { enabled: true, route: routeText, summarized: 0, failed: 0, reason: '宿主 llm 服务不可用' } }
   }

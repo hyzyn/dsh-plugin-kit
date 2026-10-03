@@ -837,7 +837,9 @@ abort）、客户端断开静默中止。各自只差执行器与结束原因：
 pnpm --filter @hyzyn/dsh-docker build       # tsc → lib/（宿主半体）+ esbuild → client.js（浏览器半体）
 pnpm --filter @hyzyn/dsh-docker typecheck
 pnpm --filter @hyzyn/dsh-docker smoke       # 三套离线回归，都不需要 docker daemon（项数以脚本尾部自报为准）
-pnpm test                                    # 仓库级 vitest（含本包 config-route / current-session / session-target / logs-stream / streams / ssh-stream-budget / ssh-connect 共七套）
+pnpm test                                    # 仓库级 vitest（含本包 config-route / current-session / session-target / logs-stream / streams / ssh-connect 共六套；
+                                             # SSH 层那几套（ssh-jump / ssh-channel-gate / ssh-stream-budget / ssh-proxy-command）
+                                             # 2026-10-02 随实现搬到 @hyzyn/dsh-kit 的 test/ 下，见那里的文件头注）
 ```
 
 > **改了哪一半、怎么才生效**（踩过两次的坑）：

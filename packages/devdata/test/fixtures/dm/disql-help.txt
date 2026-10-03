@@ -1,0 +1,16 @@
+# 真机样本：达梦客户端 `disql -h` 的输出（**逐字抄自 161 的 dm8_test 容器**）
+#
+# 采集方式（零凭据、只读；`192.0.2.161` 是 RFC 5737 占位，真实地址不入库）：
+#   ssh root@192.0.2.161
+#   docker exec dm8_test /opt/dmdbms/bin/disql -h
+#
+# 采集时间：2026-10-02
+# 用途：写达梦执行器时校准「这个客户端怎么起、版本文案长什么样」——**别凭想象写字符串**。
+#       （本仓吃过一次：`{{.State.RestartCount}}` 那个字段路径就是凭想象写的，单测全绿、真机全错。）
+#
+# 实测：退出码 0
+disql V8
+version: 03134284294-20241225-255012-20119 Pack20
+
+DISQL usage1:disql -h | help
+  show disql version and help message

@@ -2,8 +2,8 @@
  * `pnpm verify:list`（[scripts/verify-list.mjs](../verify-list.mjs)）的守卫。
  *
  * 它守的是这轮改造真正容易再坏掉的那一环：**清单与入口不许脱钩**——
- *   - 清单里列的 9 个脚本必须真的存在（改名/删除会立刻红）；
- *   - 8 个包内脚本必须在对应 `package.json` 里有同名条目（否则打印出来的「可粘贴命令」
+ *   - 清单里列的脚本必须真的存在（改名/删除会立刻红）；
+ *   - 包内脚本必须在对应 `package.json` 里有同名条目（否则打印出来的「可粘贴命令」
  *     是假的，`registered: false` + 退出码 1）；
  *   - 通用脚本（不属于任何包）**不该**假装有包内条目。
  *
@@ -15,15 +15,17 @@ import { collectVerifyList, formatVerifyList, VERIFY_SCRIPTS } from '../verify-l
 const items = collectVerifyList()
 
 describe('verify:list：清单现算（真实仓库）', () => {
-  it('九个脚本一个不少，且都真的存在', () => {
-    expect(items).toHaveLength(9)
+  it('清单里的脚本一个不少、且都真的存在', () => {
+    // 条数刻意写死：新增/删除脚本时要**有意识地**改这一行，而不是让它随手漂
+    //（2026-10-02 加 devdata 的两个，9 → 11；同日加 devenv 的挂载脚本 11 → 12、一键脚本 12 → 13）。
+    expect(items).toHaveLength(13)
     expect(items.filter((item) => !item.exists)).toEqual([])
     expect(items.map((item) => item.file).sort()).toEqual([...items.map((item) => item.file)].sort())
   })
 
   it('包内脚本的入口都在对应 package.json 里登记了，命令是 pnpm --filter 形态', () => {
     const packaged = items.filter((item) => item.pkg !== '（通用）')
-    expect(packaged).toHaveLength(8)
+    expect(packaged).toHaveLength(12)
     for (const item of packaged) {
       expect(item.registered, `${item.pkg} 缺少入口 ${String(item.entry)}`).toBe(true)
       expect(item.command).toMatch(/^pnpm --filter @hyzyn\/dsh-[\w-]+ run [\w:-]+$/)

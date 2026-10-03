@@ -19,6 +19,7 @@
  * 单测）时返回 `undefined`，调用方走原有 config 兜底。
  */
 import type { Context } from '@deepseek-ai/cordis'
+import { HOST_SERVICES } from './host-services.js'
 import { getService } from './services.js'
 
 /** schemastery volatile 字段的解析结果：冻结引用，只能经 `get()` 取值。 */
@@ -87,7 +88,7 @@ export function plainConfig<T>(value: T): T {
 }
 
 function settingsService(ctx: Context): SettingsFormsLike | undefined {
-  const service = getService(ctx, 'settings')
+  const service = getService(ctx, HOST_SERVICES.settings)
   if (typeof service !== 'object' || service === null) return undefined
   const forms = service as Partial<SettingsFormsLike>
   return typeof forms.describe === 'function' && typeof forms.update === 'function'

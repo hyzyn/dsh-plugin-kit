@@ -13,7 +13,7 @@
 import { readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
-import { definePlugin, dshHome } from '@hyzyn/dsh-kit'
+import { HOST_SERVICES, definePlugin, dshHome } from '@hyzyn/dsh-kit'
 import yaml from 'js-yaml'
 
 export interface Config {
@@ -333,7 +333,7 @@ async function searchSessions(ctx: Context, rawQuery: string, limit: number, sig
   if (query === '') return []
   // 1 字符查询（含 CJK 单字）命中面极小却要付出全量扫描成本，直接不搜会话
   if ([...query].length < 2) return []
-  const sessionQuery = getService(ctx, 'sessionQuery') as SessionQueryLike | undefined
+  const sessionQuery = getService(ctx, HOST_SERVICES.sessionQuery) as SessionQueryLike | undefined
   if (sessionQuery === undefined) return []
   const cacheKey = query + '|' + limit
   const cached = getCachedResult(cacheKey)
@@ -547,13 +547,13 @@ async function getVisibleSessionIds(ctx: Context, signal?: AbortSignal): Promise
   const cached = visibleSessionIdsCache
   if (cached !== undefined && Date.now() - cached.at <= VISIBLE_CACHE_TTL_MS) return cached.ids
   const ids = new Set<string>()
-  const sessions = getService(ctx, 'sessions') as { list?: () => Array<{ id: string }> } | undefined
+  const sessions = getService(ctx, HOST_SERVICES.sessions) as { list?: () => Array<{ id: string }> } | undefined
   try {
     for (const session of sessions?.list?.() ?? []) ids.add(session.id)
   } catch {
     /* 忽略 live 列表读取失败 */
   }
-  const persistence = getService(ctx, 'sessionPersistence') as {
+  const persistence = getService(ctx, HOST_SERVICES.sessionPersistence) as {
     list?(signal?: AbortSignal): Promise<Array<{ id?: string; cwd?: string; header?: { id?: string; cwd?: string } }>>
   } | undefined
   if (persistence?.list !== undefined) {
@@ -592,7 +592,7 @@ interface McpToolHit {
 function searchMcpTools(ctx: Context, rawQuery: string, limit: number): McpToolHit[] {
   const query = normalizeQuery(rawQuery)
   if (query === '') return []
-  const tools = getService(ctx, 'tools') as {
+  const tools = getService(ctx, HOST_SERVICES.tools) as {
     schemas?(scope?: unknown): Array<{ name: string; description?: string }>
   } | undefined
   if (tools?.schemas === undefined) return []

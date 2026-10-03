@@ -1,6 +1,6 @@
-# 架构：12 个包怎么组成一个 DSH 插件全家桶
+# 架构：15 个包怎么组成一个 DSH 插件全家桶
 
-> **本文是「12 个包关系与协作」的唯一归宿。** 包内功能见各包 README；规矩见
+> **本文是「15 个包关系与协作」的唯一归宿。** 包内功能见各包 README；规矩见
 > [conventions.md](./conventions.md)；术语见 [glossary.md](./glossary.md)。
 >
 > 判据：**「改一个包就能说清」→ 写进包 README；「要跨 ≥2 个包才说得清」→ 写进本文。**
@@ -10,11 +10,18 @@
 
 ```
 @hyzyn/dsh-kit            ← 共享库（唯一的非插件包，无 cordis.patch.yml）
-    ↑ 被下面 9 个插件依赖（`kit-settings` 是唯一例外，见 §2）
-@hyzyn/dsh-<插件> ×10     ← 功能插件（各有自己的托管区块 / 配置 / 客户端半体）
-    ↑ 被聚合
-@hyzyn/dsh-all            ← 聚合安装包（一条 bundle patch 挂载上面 10 个）
+    ↑ 被下面 12 个插件依赖（`kit-settings` 是唯一例外，见 §2）
+@hyzyn/dsh-<插件> ×13     ← 功能插件（各有自己的托管区块 / 配置 / 客户端半体）
+    ↑ 被聚合（**只聚合 10 个**：`devdata` / `devfront` / `devenv` 三个私有包不进）
+@hyzyn/dsh-all            ← 聚合安装包（一条 bundle patch 挂载那 10 个）
 ```
+
+> 上面这三个数字是**现算**的（2026-10-02 加 `devenv` 时才发现在此之前它们停在 12/9/×10）：
+> 包总数 = `packages/*` 里有 `name` 的目录数（15 = 1 个库 + 13 个功能插件 + 1 个聚合包）；
+> 「依赖 kit 的插件数」= 声明了 `@hyzyn/dsh-kit` 的包数减根清单（`scripts/check-kit-pins.mjs`
+> 扫的就是这批）；「聚合几个」= `scripts/aggregate.mjs` 的 `isAggregatable` 为真的包数
+> （跳 `all` / 跳 `private`，且要求有 `dsh.bundle.patch`）。
+> **手抄这三个数是漂移的高发区**——要改就先按上面三条各算一遍。
 
 仓库根 `package.json` 本身也是一个 bundle，`dsh plugin add link:$(pwd)` 等价于装 `dsh-all`。
 
@@ -22,7 +29,7 @@
 
 | 包 | 类型 | 干什么（一句话） | 文档 |
 |---|---|---|---|
-| `@hyzyn/dsh-kit` | **库** | 宿主半体共享工具：HTTP 回环围栏、托管区块读写、`!!js` 表达式、服务读取、Windows shim、输出解码 | [README](../packages/kit/README.md) · [DEFECTS](../packages/kit/DEFECTS.md) |
+| `@hyzyn/dsh-kit` | **库** | 宿主半体共享工具：HTTP 回环围栏、托管区块读写、`!!js` 表达式、服务读取、Windows shim、输出解码、**SSH 执行层与 tty 连接簿读取**（子路径 `./ssh-exec`，见 §5） | [README](../packages/kit/README.md) · [DEFECTS](../packages/kit/DEFECTS.md) |
 | `@hyzyn/dsh-kit-settings` | 插件 | 在官方「设置」里补一行与「通用设置」平级的「插件配置」入口。**不依赖 kit** | [README](../packages/kit-settings/README.md) |
 | `@hyzyn/dsh-mcp` | 插件 | MCP 服务器配置卡片，保存后热加载为 `mcp__<server>__<tool>` | [README](../packages/mcp/README.md) |
 | `@hyzyn/dsh-env` | 插件 | 环境变量 / 密钥管理，保存即写 `process.env` | [README](../packages/env/README.md) |
@@ -34,6 +41,9 @@
 | `@hyzyn/dsh-tty` | 插件 | 终端面板（PTY / SSH / SFTP / 隧道）+ `tty_*` `sftp_*` 工具 | [README](../packages/tty/README.md) · [DEFECTS](../packages/tty/DEFECTS.md) · [ROADMAP](../packages/tty/ROADMAP.md) |
 | `@hyzyn/dsh-docker` | 插件 | Docker 容器面板（本机 / SSH）+ `docker_*` 工具，默认只读 | [README](../packages/docker/README.md) · [DEFECTS](../packages/docker/DEFECTS.md) · [ROADMAP](../packages/docker/ROADMAP.md) |
 | `@hyzyn/dsh-all` | 聚合 | 一条 bundle patch 挂载上面 10 个插件 | [README](../packages/all/README.md) |
+| `@hyzyn/dsh-devdata` | 插件（**私有，不发布**） | 开发/测试环境的数据面。判定层（环境四态 + 操作矩阵 + 作用域门 + 操作级裁决 + 计划护栏 + 只读自证）**不连任何东西**；已接成宿主插件，注册 `devdata_*` 四个工具；**引擎只落了 Redis**（通路 A 直连 + 自写 RESP，零依赖） | [README](../packages/devdata/README.md) · [ROADMAP](../packages/devdata/ROADMAP.md) · 方案 [devdata-plan.md](./devdata-plan.md) |
+| `@hyzyn/dsh-devfront` | 插件（**私有，不发布**） | 开发/测试环境的前端效果验证。判定层（动作白名单 + 站点范围 + console 分类 + 验活断言）、**CDP 驱动与宿主工具注册都已就位**：六个 `site_*` 工具真的开站点 / 截图 / 收 console；**没有面板**（客户端半体未建） | [README](../packages/devfront/README.md) · [ROADMAP](../packages/devfront/ROADMAP.md) · 方案 [devdata-plan.md](./devdata-plan.md) |
+| `@hyzyn/dsh-devenv` | 插件（**私有，不发布**） | 开发/测试环境的**编排与观测面**：容器 / 进程 / 端口 / 探针的**状态**判据（就绪清单 + 三态求值 + 经复用通道取观测）。默认只注册 `env_status` / `env_wait` 两个**只读**工具；`env_up` / `env_down` 只在**配了写闸门的目标**上注册，且每次调用要过能力与二次确认 | [README](../packages/devenv/README.md) · [DEFECTS](../packages/devenv/DEFECTS.md) · [ROADMAP](../packages/devenv/ROADMAP.md) · 方案 [devdata-plan.md](./devdata-plan.md) |
 
 > `kit` 是**唯一的库**：它没有 `cordis.patch.yml`，不挂载任何东西，也不出现在 `dsh-all` 的
 > 依赖里（它是各插件的 `dependencies`）。写新插件时先看
@@ -49,13 +59,15 @@
 ## 3. 依赖方向（不许反向）
 
 ```
-插件 ──depends──▶ @hyzyn/dsh-kit ──depends──▶ js-yaml
+插件 ──depends──▶ @hyzyn/dsh-kit ──depends──▶ js-yaml · ssh2（仅 `./ssh-exec` 子路径用）
 插件 ──peerDep──▶ @deepseek-ai/dsh（宿主）· @deepseek-ai/dsh-tools · @deepseek-ai/dsh-mcp-client
 ```
 
 **硬规矩**：
 
 - **插件之间不得互相 `import`。** 需要协作时走**数据级复用**（见 §5），或走宿主公开服务。
+  共享的是**机制**（怎么连、怎么读连接簿）时，它的归宿是 `kit`；共享的是**数据/配置**时才读对方
+  的 settings entry——判据与代价见 [devdata-plan.md § 16.1](./devdata-plan.md)。
 - 插件**只**依赖 `@hyzyn/dsh-kit` 与宿主 `@deepseek-ai/*`；新增第三方运行时依赖要在包 README 里写明理由。
   **没有任何运行时依赖也是允许的**（`kit-settings` 就是：宿主半体只占一行，工作全在浏览器半体）。
 - 全部插件的 `peerDependencies` 必须钉同一个 DSH 版本下限；`dsh.engines.dsh` 必须与 peer 下限**一致**
@@ -92,7 +104,7 @@
 | `tty` | `docker` | tty ≥ 0.15.0 | 容器卡片首个图标变「终端」→ 调 tty 的 `ttyTerminal.mount` **就地嵌入**面板底部抽屉 |
 | `tty` | `docker` | tty ≥ 0.14.0 | 退化为「新开终端标签 + 收面板」 |
 | `tty` | `docker` | tty ≥ 0.13.0 | SSH 标签连接栏出现「容器」按钮，用当前会话那台主机直接开面板 |
-| `tty` | `docker` | 任意 | `kind=ssh` 目标可直接**引用 tty 连接簿条目名**；主机指纹 TOFU **以 tty 已有记录作种子** |
+| `tty` | `docker` · `devenv` | 任意 | `kind=ssh` 目标可直接**引用 tty 连接簿条目名**；主机指纹 TOFU **以 tty 已有记录作种子**。**读取与执行这一跳只有一份实现在 `kit`**（`tty-books` / `ssh-exec`），两个消费者都不自建连接簿或跳板机界面 |
 | `mcp` | `codegraph` | — | 同一份 `cordis.patch.yml` 托管区块；codegraph 只补自己那行的 `cwd`，已在 MCP 卡片配置过的行不动其它字段 |
 | `prompt` | `search` | — | `search` **只读** `~/.dsh/prompts.yml` 托管区块 |
 | `mcp` | `search` | — | `search` 按 `mcp__` 前缀枚举已挂载工具并标注所属 server |

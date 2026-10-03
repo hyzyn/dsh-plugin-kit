@@ -238,6 +238,38 @@ release.yml 3，docker 那三条两个 workflow 各写一遍）、方案 A（wor
 **为什么是 L0**：要动 `docs/` 结构与归属表。**这是可发现性问题，不是正确性问题**，不急；
 真要动，方向是分层（例如 `docs/landed/`）而不是继续加规矩。
 
+### 9. 开发数据套件三包（`devdata` / `devenv` / `devfront`）：入库 + 状态真源收敛
+
+现算（2026-10-03）：三包功能**都已落地并各有真机记录**（`devdata` 的 Redis 通路 A、`devenv` 的
+观测链路与写路径、`devfront` 的 CDP 驱动 + 六个 `site_*` 工具），判据与落点在三包各自的
+`ROADMAP.md`。但**整套还没入库**：三个包目录、L0 方案 [`docs/devdata-plan.md`](./docs/devdata-plan.md)、
+`kit` 里随它们新增的 5 个 `src`（`chrome-cdp` / `scope` / `ssh-exec` / `tty-books` / `host-services`）
+与四个 `scripts/verify-{devdata,devenv}-*.mjs` 全部是 **untracked**；本条的动机不是「补个链接」，
+而是**三包现在只存在于工作区**——一次误清理就没了，且 CI 看不到它们。
+
+**为什么是 L0**：一次改动跨 `devdata` / `devenv` / `devfront` + `kit` + `scripts` + 根文档，
+符合「要同时改 ≥2 个包，或要动 CI / 脚本 / 规范」。
+
+**落点**：按可回滚的顺序拆提交（① `kit` 的新增导出 + 全仓钉子同步 → ② 三包本体 →
+③ L0 方案与根文档 / 守卫），每步自带产物重建（`lib/` 是入库产物）。
+
+**门槛**：`pnpm typecheck && pnpm build && pnpm test && pnpm aggregate` 全绿，且 build 之后
+`git diff` 干净（产物闸门）；三包单测绿（真机那几档按 [docs/agent-real-test.md](./docs/agent-real-test.md)
+单独跑，缺凭据 SKIP 不算过）；`git ls-files packages/devdata packages/devenv packages/devfront` 非空。
+
+**顺带要收的两个尾巴**（都不阻塞入库，但同批做完更省事）：
+
+1. **`devdata` 还没有 `DEFECTS.md`**——它目前没有需要编号的缺陷。（`devenv` 的那两条**已修**缺陷
+   ——真机首跑暴露、记在 [devdata-plan.md § 16.1.4](./docs/devdata-plan.md)——已于 2026-10-03 落
+   [`packages/devenv/DEFECTS.md`](./packages/devenv/DEFECTS.md) 的 `D01`–`D02`，并按
+   [conventions.md § 编号规范 硬规矩 5](./docs/conventions.md#编号规范) 登记进
+   `scripts/defects-table.mjs` 与编号规范表。）`devdata` 真出现缺陷时照同一条硬规矩补建。
+2. **同一台机器上两套写入口**：`docker` 的 `allowMutations` 与 `devenv` 的 `DSH_DEVENV_WRITE`
+   各自都能启停容器，而 `devenv` 的「清单就是白名单」只在自己的入口上成立。当前口径只是
+   「与 docker 同档」（[devdata-plan.md §13 风险段](./docs/devdata-plan.md)），**没有**记
+   「并存时怎么办」。先落一条部署纪律（共享机器上不开 docker 的 `allowMutations`），
+   将来要么让 docker 的变更面也认同一份清单，要么显式把这条写成可接受的取舍。
+
 ## 已完成（落点 + 门槛）
 
 ### 1. ✅ 统一安全围栏：docker 的加固口径同步到 tty / dsh-mcp
@@ -273,7 +305,7 @@ release.yml 3，docker 那三条两个 workflow 各写一遍）、方案 A（wor
 **门槛**：`packages/tty/test/ssh-config.test.ts`（7 条：跳过 + 点名、`none` 直连、大小写、
 其余丢弃只计数、溢出报数、名单截断但计数准）、`packages/tty/test/ssh-config-route.test.ts`
 （真 HOME 下走一遍路由，含围栏不放松）、`packages/tty/test/host-smoke.test.ts` 与
-`packages/docker/test/ssh-stream-budget.test.ts` 的超时文案断言。
+`packages/kit/test/ssh-stream-budget.test.ts` 的超时文案断言。
 
 **单跳完整实现已落地**（同日）：`jump` 规格 + 四道白名单、tty 侧四个连接点共用
 `prepareSshConnect`/`attachJumpSock`（终端 / SFTP / 隧道 / 探针一起过 bastion，不留半吊子）、
@@ -293,7 +325,7 @@ docker 侧读**同一个**开关、池键并入 `|cmd:<sha256 前 12 位>`（只
 
 **验证**（全绿）：`packages/tty/scripts/jump-smoke.mjs`（真 bastion 的 `direct-tcpip` + 真目标
 sshd；J1 正向 / J2 跳板机密码错点名跳板机 / J3 目标不可达同时点名两跳 / J4 收尾无残留连接；
-已接进 CI）、`packages/docker/test/ssh-jump.test.ts`（假 ssh2：拨号顺序、通道当 `sock`、
+已接进 CI）、`packages/kit/test/ssh-jump.test.ts`（假 ssh2：拨号顺序、通道当 `sock`、
 池键区分、失败关连接）、`packages/tty/test/jump-spec.test.ts`（白名单往返 + 拒绝分支）、
 `packages/tty/test/ssh-config.test.ts`（别名 / IPv6 / 嵌套别名 / ProxyCommand 分别报数）。
 
@@ -306,7 +338,7 @@ sshd；J1 正向 / J2 跳板机密码错点名跳板机 / J3 目标不可达同�
 `scripts/lib/proxy-bridge.mjs` 当 `ssh -W %h:%p` 的原语；P1 终端 / P2 SFTP / P3 闸门关着明确
 失败且**没起进程** / P4 命令失败文案带 stderr 摘要 / P5 注入被拒且没落地 / P6 无残留子进程；
 已接进 CI）、`packages/tty/test/proxy-command.test.ts`（16 例）、
-`packages/docker/test/ssh-proxy-command.test.ts`（12 例）。
+`packages/kit/test/ssh-proxy-command.test.ts`（12 例）。
 
 **仍未做**：只剩多跳链（跳板机的跳板机）——明确不做（导入遇嵌套别名按「解析不出」处理）。
 方案与全部坑仍见 [docs/proxyjump-plan.md](./docs/proxyjump-plan.md)（第 6.1 节是闸门定案表）。

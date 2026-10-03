@@ -1,0 +1,7 @@
+# dsh-devfront 的补丁层：把插件挂进 profile 阵容。
+#
+# 注意 `id` 与 `name` 的写法要与 scripts/aggregate.mjs 的 extractRows 对得上
+# （它读的就是这两行）；本包是 `private`，**不会**被卷进 @hyzyn/dsh-all（见 aggregate.mjs 文件头）。
+- insert:
+    - id: devfront
+      name: '@hyzyn/dsh-devfront'

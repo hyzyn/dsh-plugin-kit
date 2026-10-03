@@ -44,8 +44,19 @@ describe('真实仓库 · 当前必须绿', () => {
     expect(pins.length).toBeGreaterThan(0)
     for (const entry of pins) {
       expect(entry.spec).toBe(kitVersion)
-      expect(entry.file).toMatch(/^packages\/[^/]+\/package\.json$/)
+      // 只可能是「某个包的清单」或「仓根清单」——两者都是本仓这棵树里的消费者。
+      expect(entry.file).toMatch(/^(?:packages\/[^/]+\/package\.json|package\.json)$/)
     }
+  })
+
+  it('**仓根清单也在管辖范围内**（它的 scripts/ 会用 kit）', () => {
+    // 失败意味着：根清单那颗钉子不受管辖，可以钉着旧版本而闸门照样报绿——
+    // 而「一棵树里两份 kit」正是这道闸门要拦的事：devDependency 钉旧了，
+    // pnpm 的 `link-workspace-packages` 就不 link，改从 registry 拉一份。
+    const { pins } = collectKitPins()
+    const rootPins = pins.filter((entry) => entry.file === 'package.json')
+    expect(rootPins).toHaveLength(1)
+    expect(rootPins[0]?.field).toBe('devDependencies')
   })
 })
 

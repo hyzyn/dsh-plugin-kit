@@ -12,7 +12,7 @@
  */
 import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { definePlugin, dshHome } from '@hyzyn/dsh-kit';
+import { HOST_SERVICES, definePlugin, dshHome } from '@hyzyn/dsh-kit';
 import yaml from 'js-yaml';
 const promptFilePath = () => process.env.DSH_PROMPT_FILE?.trim() || join(dshHome(), 'prompts.yml');
 function emptyStore() {
@@ -235,7 +235,7 @@ async function searchSessions(ctx, rawQuery, limit, signal, maxScanSessions = MA
     // 1 字符查询（含 CJK 单字）命中面极小却要付出全量扫描成本，直接不搜会话
     if ([...query].length < 2)
         return [];
-    const sessionQuery = getService(ctx, 'sessionQuery');
+    const sessionQuery = getService(ctx, HOST_SERVICES.sessionQuery);
     if (sessionQuery === undefined)
         return [];
     const cacheKey = query + '|' + limit;
@@ -450,7 +450,7 @@ async function getVisibleSessionIds(ctx, signal) {
     if (cached !== undefined && Date.now() - cached.at <= VISIBLE_CACHE_TTL_MS)
         return cached.ids;
     const ids = new Set();
-    const sessions = getService(ctx, 'sessions');
+    const sessions = getService(ctx, HOST_SERVICES.sessions);
     try {
         for (const session of sessions?.list?.() ?? [])
             ids.add(session.id);
@@ -458,7 +458,7 @@ async function getVisibleSessionIds(ctx, signal) {
     catch {
         /* 忽略 live 列表读取失败 */
     }
-    const persistence = getService(ctx, 'sessionPersistence');
+    const persistence = getService(ctx, HOST_SERVICES.sessionPersistence);
     if (persistence?.list !== undefined) {
         try {
             const cold = await persistence.list(signal);
@@ -494,7 +494,7 @@ function searchMcpTools(ctx, rawQuery, limit) {
     const query = normalizeQuery(rawQuery);
     if (query === '')
         return [];
-    const tools = getService(ctx, 'tools');
+    const tools = getService(ctx, HOST_SERVICES.tools);
     if (tools?.schemas === undefined)
         return [];
     const schemas = tools.schemas();

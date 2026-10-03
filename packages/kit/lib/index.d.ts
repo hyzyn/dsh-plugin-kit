@@ -29,6 +29,7 @@ export interface DshPlugin<C extends PluginConfig = PluginConfig> {
  */
 export declare function definePlugin<C extends PluginConfig = PluginConfig>(plugin: DshPlugin<C>): DshPlugin<C>;
 export * from './services.js';
+export * from './host-services.js';
 export * from './settings.js';
 export * from './http.js';
 export * from './js-expr.js';
@@ -38,3 +39,6 @@ export * from './elevation.js';
 export * from './managed-block.js';
 export * from './decode.js';
 export * from './windows-shim.js';
+export * from './chrome-cdp.js';
+export * from './scope.js';
+export * from './tty-books.js';

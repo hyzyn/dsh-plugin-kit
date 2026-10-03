@@ -12,7 +12,7 @@ import WebSocket, { WebSocketServer } from 'ws';
 // found），必须默认导入后取 Terminal；类型用 InstanceType 别名保持同名可用
 import xtermHeadless from '@xterm/headless';
 const HeadlessTerminal = xtermHeadless.Terminal;
-import { definePlugin, dshHome as resolveDshHome, getService, hasSameOriginProof, isLoopbackRequestStrict, plainConfig, settingsEntryScope, suppressAutoSettingsPage } from '@hyzyn/dsh-kit';
+import { HOST_SERVICES, definePlugin, dshHome as resolveDshHome, getService, hasSameOriginProof, isLoopbackRequestStrict, plainConfig, settingsEntryScope, suppressAutoSettingsPage } from '@hyzyn/dsh-kit';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { sanitizeJumpSpec, sanitizeProxyCommand, spawnSsh, sshTarget, expandHome, setCredentialResolver, setProxyCommandPolicy, validateJumpSpec, validateProxyCommand } from './ssh.js';
 import { sharedGrantStore, auditLoadedGrants, bindCapabilitySources, capabilityDeniedMessage, capabilityGrantAt, capabilityGrantVia, capabilityGranted, capabilityPaths, createElevationManager, } from '@hyzyn/dsh-kit';
@@ -772,7 +772,7 @@ export function resolveAssistRoute(ctx, provider, model) {
         return { error: 'provider 与 model 需要成对填写（只填一个不生效）：补齐另一个，或两个都清空以跟随宿主默认模型' };
     }
     try {
-        const defaultModel = getService(ctx, 'agentDefaultModel');
+        const defaultModel = getService(ctx, HOST_SERVICES.agentDefaultModel);
         const read = typeof defaultModel?.source === 'function'
             ? defaultModel.source
             : typeof defaultModel?.currentSelection === 'function'
@@ -783,7 +783,7 @@ export function resolveAssistRoute(ctx, provider, model) {
             if (picked !== null)
                 return { route: picked };
         }
-        const settings = getService(ctx, 'settings');
+        const settings = getService(ctx, HOST_SERVICES.settings);
         if (typeof settings?.get === 'function') {
             const picked = pickRoute(settings.get('agent-default-model'));
             if (picked !== null)
@@ -3976,7 +3976,7 @@ const plugin = definePlugin({
                             writeJson(res, 409, { error: resolved.error ?? '没有可用的模型路由' });
                             return;
                         }
-                        const llm = getService(ctx, 'llm');
+                        const llm = getService(ctx, HOST_SERVICES.llm);
                         if (llm === undefined || llm === null || typeof llm.stream !== 'function') {
                             writeJson(res, 409, { error: '宿主 llm 服务不可用（当前宿主没有提供模型调用）' });
                             return;
@@ -4045,7 +4045,7 @@ const plugin = definePlugin({
                             return;
                         }
                         const provider = (new URL(req.url ?? '/', 'http://loopback').searchParams.get('provider') ?? '').trim();
-                        const llm = getService(ctx, 'llm');
+                        const llm = getService(ctx, HOST_SERVICES.llm);
                         const available = llm !== undefined && llm !== null && typeof llm.listModels === 'function';
                         const providers = listProvidersOf(llm);
                         writeJson(res, 200, {

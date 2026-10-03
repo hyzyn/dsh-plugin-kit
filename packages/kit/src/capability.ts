@@ -40,6 +40,7 @@
  * 文件、能在本机执行命令的**同用户进程不在模型内**：它本来就能读 `~/.dsh/.credentials.yaml`、
  * 能直接跑 `docker`。任何进程内机制都拦不住它。
  */
+import { HOST_SERVICES, LAUNCH_ENV_LAYERS } from './host-services.js'
 import type { CapabilityGrantSource, CapabilityGrantVia } from './grant-store.js'
 
 /** 一条能力开关的宿主侧授权说明。 */
@@ -169,7 +170,7 @@ function envGranted(env: string): boolean {
 
 /** 把宿主上下文解析成「按变量名取值」的判定源。 */
 function resolveEnvSource(ctx: CapabilityContextLike | null | undefined): (env: string) => string | undefined {
-  const slot = typeof ctx?.get === 'function' ? ctx.get('launchEnvironment') : undefined
+  const slot = typeof ctx?.get === 'function' ? ctx.get(HOST_SERVICES.launchEnvironment) : undefined
   const snapshot = typeof slot === 'object' && slot !== null ? (slot as LaunchEnvironmentLike) : undefined
   if (typeof snapshot?.getFrom === 'function') {
     /*
@@ -178,7 +179,7 @@ function resolveEnvSource(ctx: CapabilityContextLike | null | undefined): (env: 
      * `.env` 设置 `DSH_*`（BOOTSTRAP_PREFIXES），这里是同一条道理的插件侧落点。
      */
     return (env) => {
-      const entry = snapshot.getFrom(env, ['process'])
+      const entry = snapshot.getFrom(env, [LAUNCH_ENV_LAYERS.process])
       return typeof entry?.value === 'string' ? entry.value : undefined
     }
   }

@@ -17,7 +17,7 @@ import http from 'node:http'
 import { readFileSync, existsSync, copyFileSync, mkdirSync, statSync } from 'node:fs'
 import { join, extname, resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { Chrome } from '../../../scripts/chrome-cdp.mjs'
+import { Chrome } from '@hyzyn/dsh-kit'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const pkg = resolve(here, '..')

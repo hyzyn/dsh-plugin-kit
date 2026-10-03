@@ -11,6 +11,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   definePlugin,
+  defaultUserDataDir,
   dshHome,
   getService,
   isJsExpr,
@@ -213,5 +214,19 @@ describe('js-expr', () => {
     const loaded = yaml.load('A: !!js process.env.X\nB: plain\n', { schema: jsYamlSchema })
     expect(loaded).toEqual({ A: { __jsExpr: 'process.env.X' }, B: 'plain' })
     expect(yaml.dump(loaded, { schema: jsYamlSchema })).toContain('!!js process.env.X')
+  })
+})
+
+describe('Chrome 的默认 userDataDir（2026-10-02 回归）', () => {
+  it('**逐次唯一**：同一进程里连起两个 Chrome 不会撞到同一个目录', () => {
+    // 曾经的实现是 `dsh-cdp-<pid>-<port>`，而 `port` 缺省 0 →
+    // 同进程里的第二个 Chrome 会去 `rmSync` 掉第一个**正在跑**的 profile 目录，
+    // 表现为 `ENOTEMPTY: directory not empty, rmdir …`（或更糟：把它删了）。
+    const dirs = new Set(Array.from({ length: 5 }, () => defaultUserDataDir()))
+    expect(dirs.size).toBe(5)
+  })
+
+  it('名字里带 pid（多进程并存时便于排查是谁的）', () => {
+    expect(defaultUserDataDir()).toContain(`dsh-cdp-${String(process.pid)}-`)
   })
 })

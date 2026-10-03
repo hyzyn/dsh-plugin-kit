@@ -32,10 +32,13 @@ export declare function parseIOPair(text: string): {
     tx: number | null;
 };
 /**
- * `--since` 的统一口径（D45）：时长（docker 的 Go duration 语法，允许复合如
- * `1h30m`）、Unix 秒或时间戳。events 与 logs 两条路径此前各有一套——events
+ * `--since` / `--until` 的统一口径（D45，D159 起两者共用）：时长（docker 的 Go duration 语法，
+ * 允许复合如 `1h30m`）、Unix 秒或时间戳。events 与 logs 两条路径此前各有一套——events
  * 白名单偏窄（复合 duration 被拒）、logs 完全不校验（docker 的参数错误变成
  * 不可读的报错）。纯校验函数：合法返回原样串，不合法抛错。
+ *
+ * 名字里的 since 是历史（先有它）；`field` 参数让 `--until` 复用同一套语法与报错文案——
+ * 两者在 docker 里本来就是同一个 `--since/--until` 解析器。
  *
  * 与 docker 的口径**双向对齐**（D99）：
  *   ① duration 支持小数与 `0`——Go 的 `time.ParseDuration` 接受 `1.5h` 与 `0`，
@@ -368,6 +371,13 @@ export interface LogsOptions {
     tail?: number;
     timestamps?: boolean;
     since?: string;
+    /**
+     * `--until`（D159）：**光有 `--since` 取不到「启动那一刻」的日志**——`tail` 拿的是筛选结果的
+     * **最后** N 行，所以一个跑了几周、日志上百万行的容器，启动横幅永远在 `tail` 够不到的地方。
+     * 配上 `until` 才能把窗口夹在启动前后（`since=<StartedAt> until=<+2m>`）。
+     * 语法与 `since` 同一个口径（见 `assertSince`），校验也用同一个函数。
+     */
+    until?: string;
     /** 实时跟随（`docker logs --follow`）：仅 logsStream() 使用，logs() 忽略。 */
     follow?: boolean;
 }
@@ -621,10 +631,21 @@ export declare function createRunner(options: {
     logger: ExecLogger;
 }): Runner;
 /**
+ * 指纹不匹配时给用户的**处置说明**（本面板的入口）。
+ *
+ * 这一句归**面板**、不归 `kit` 的 SSH 层：诊断（「已记录 X，本次 Y」）是那一层的事，
+ * 而「去哪一格点删除」只有面板自己知道。写死在 `kit` 里会让别的面板用户照着一条走不通的
+ * 路径去点——而那正是最需要说清楚的一刻（可能是 MITM）。
+ */
+export declare const DOCKER_MISMATCH_HINT = "\u786E\u8BA4\u5B89\u5168\u540E\uFF0C\u5230 \u63D2\u4EF6\u914D\u7F6E \u2192 Docker \u5BB9\u5668\u9762\u677F \u2192 SSH \u4E3B\u673A\u5BC6\u94A5\u8BB0\u5F55 \u5220\u9664\u8BE5\u4E3B\u673A\u518D\u91CD\u8FDE\u3002";
+/** 本面板日志行的前缀名（`kit` 的 SSH 层只收 `tag`，不知道自己在替谁记日志）。 */
+export declare const DOCKER_LOG_TAG = "dsh-docker";
+/**
  * 供宿主半体复用：把 HostKeyStore 与 logger 绑到 RemoteExec。
  *
  * `proxyCommandAllowed` 缺省 = 恒关（ProxyCommand 这一档要显式给闸门求值器才开，见
- * `RemoteExec` 的构造参数注释）。
+ * `RemoteExec` 的构造参数注释）。`tag` / `mismatchHint` 也一并带上——两者都是**本面板的
+ * 身份**，少给一个的后果是日志指错插件、或者错误文案把人指到不存在的入口。
  */
 export declare function createRemoteExec(logger: ExecLogger, store: HostKeyStore, options?: {
     proxyCommandAllowed?: () => boolean;

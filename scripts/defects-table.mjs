@@ -4,8 +4,8 @@
  *
  * ## 为什么需要它
  *
- * 权威数据是四份 `packages/<pkg>/DEFECTS.md` 的索引表（`docker` / `tty` / `codegraph` / `kit`），
- * 但它们的范围被**复述**在四个地方，全部是手抄的：
+ * 权威数据是各包的 `packages/<pkg>/DEFECTS.md` 索引表（当前五份：`docker` / `tty` / `codegraph` /
+ * `kit` / `devenv`），但它们的范围被**复述**在四个地方，全部是手抄的：
  *
  * | # | 复述点 | 句式 |
  * |---|---|---|
@@ -60,11 +60,11 @@
  *
  * ## 只读
  *
- * 本模块不写文件、不调 git、不联网。输入是五份**文本**（四份台账 + conventions），
+ * 本模块不写文件、不调 git、不联网。输入是**文本**（各包台账 + conventions），
  * 所以单测可以喂 fixture 造反例，而不必修改任何受版本控制的文件。
  *
  * 用法（人工核对 / 报告用；CI 侧由 `scripts/test/defects-table.test.ts` 调 `checkRepo()`）：
- *   node scripts/defects-table.mjs            # 现算四包事实 + 打印全部差异（有差异则退出 1）
+ *   node scripts/defects-table.mjs            # 现算五包事实 + 打印全部差异（有差异则退出 1）
  *   node scripts/defects-table.mjs --quiet    # 只打印差异
  */
 import { lstatSync, readFileSync, readdirSync } from 'node:fs'
@@ -144,6 +144,19 @@ export const LEDGER_SPECS = [
     mirror: true,
     codeRefs: false,
     // 末列是「落点」链接，没有 `✓` 列
+  },
+  {
+    name: 'devenv',
+    prefix: 'D',
+    path: 'packages/devenv/DEFECTS.md',
+    tableHeading: /^## 1\. 编号索引表/,
+    selfSequence: true,
+    nextAnchor: true,
+    crossRefs: [],
+    statusLine: { closedColumn: false, untilSentence: true },
+    mirror: false,
+    codeRefs: false,
+    // 末列是「涉及文件」；两条缺陷只改了脚本 / 夹具，没有 `✓` 列（声明式，不靠匹配失败兜）
   },
 ]
 

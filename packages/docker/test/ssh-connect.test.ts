@@ -13,7 +13,7 @@ import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { RemoteExec, applyHostKeyPolicy, buildConnectConfig, expandHome, runLocal, setCredentialResolver, shJoin, shouldRecycleConn, sshTarget } from '../src/ssh-exec.js'
 import type { ExecLogger, HostKeyRecord, HostKeyStore } from '../src/ssh-exec.js'
-import { DockerApi, assertSince, parseExitCode, parseInspectPorts, parseLabels, deriveHealth, deriveState } from '../src/docker.js'
+import { DockerApi, assertSince, parseExitCode, parseInspectPorts, parseLabels, deriveHealth, deriveState, DOCKER_MISMATCH_HINT } from '../src/docker.js'
 import type { Runner } from '../src/docker.js'
 import { formatEventTime } from '../src/index.js'
 
@@ -67,12 +67,38 @@ describe('applyHostKeyPolicy（TOFU 三分支 + host 口径）', () => {
     const store = fakeStore([{ host: 'nas.example', port: 22, fingerprints: ['sha256:old'] }])
     const warns: string[] = []
     const config: Parameters<typeof applyHostKeyPolicy>[0]['connectConfig'] = {}
-    const policy = applyHostKeyPolicy({ connectConfig: config, spec: SPEC, store, logger: { info: () => {}, warn: (msg) => warns.push(msg) }, target: 'root@Nas.example' })
+    const policy = applyHostKeyPolicy({
+      connectConfig: config,
+      spec: SPEC,
+      store,
+      logger: { info: () => {}, warn: (msg) => warns.push(msg) },
+      target: 'root@Nas.example',
+      mismatchHint: DOCKER_MISMATCH_HINT,
+    })
     expect(config.hostVerifier?.('sha256:new')).toBe(false)
     expect(policy.mismatchMessage()).toContain('sha256:old')
     expect(policy.mismatchMessage()).toContain('sha256:new')
     expect(policy.mismatchMessage()).toContain('删除该主机再重连')
     expect(warns).toHaveLength(1)
+  })
+
+  /**
+   * 处置入口归**面板**，不归 `kit` 的 SSH 层（2026-10-02 上收时立的边界）。
+   *
+   * 这一条不是文案测试：`kit` 那一层同时服务容器面板与将来的环境编排，缺省文案里点一个具体
+   * 面板名，另一半用户就会照着一条走不通的路径去点——而这是指纹变更（可能是 MITM）之后
+   * 唯一的指引。所以缺省必须**不含任何面板名**，而本包必须显式把自己的入口传下去。
+   */
+  it('缺省处置说明不点任何面板名；本包显式传自己的入口', () => {
+    const store = fakeStore([{ host: 'nas.example', port: 22, fingerprints: ['sha256:old'] }])
+    const config: Parameters<typeof applyHostKeyPolicy>[0]['connectConfig'] = {}
+    const policy = applyHostKeyPolicy({ connectConfig: config, spec: SPEC, store, target: 'root@Nas.example' })
+    expect(config.hostVerifier?.('sha256:new')).toBe(false)
+    const generic = policy.mismatchMessage() ?? ''
+    expect(generic).toContain('sha256:old')
+    expect(generic).not.toContain('Docker 容器面板')
+    expect(generic).not.toContain('终端面板')
+    expect(DOCKER_MISMATCH_HINT).toContain('Docker 容器面板')
   })
 
   it('host 键统一小写比较（tty 落盘口径一致，D03）', () => {
@@ -270,6 +296,16 @@ describe('第二轮修复的回归', () => {
     expect(() => assertSince('2026-09-13')).toThrow(/2026-09-13/)
     expect(() => assertSince('abc')).toThrow(/abc/)
     expect(() => assertSince('  ')).toThrow(/since 必填/)
+  })
+
+  it('assertSince 也被 --until 复用：报错点的是 until，别把用户引到 since 上（D159）', () => {
+    // 同一套语法（docker 里本来就是同一个解析器），只有 field 名不同
+    expect(assertSince('2026-09-10T01:36:00', 'until')).toBe('2026-09-10T01:36:00')
+    expect(assertSince('2m', 'until')).toBe('2m')
+    expect(() => assertSince('2026-09-13', 'until')).toThrow(/until/)
+    expect(() => assertSince('', 'until')).toThrow(/until 必填/)
+    // 反向也钉住：不许说成 since
+    expect(() => assertSince('abc', 'until')).not.toThrow(/since/)
   })
 
   it('parseInspectPorts：区间端口不再整段丢弃（D102）', () => {

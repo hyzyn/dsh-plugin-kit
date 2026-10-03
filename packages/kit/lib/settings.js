@@ -1,3 +1,4 @@
+import { HOST_SERVICES } from './host-services.js';
 import { getService } from './services.js';
 /** 判定一个值是不是 schemastery 的 volatile 引用（冻结 + `get()`）。 */
 function isVolatileRef(value) {
@@ -53,7 +54,7 @@ export function plainConfig(value) {
     return unwrap(value, new WeakMap());
 }
 function settingsService(ctx) {
-    const service = getService(ctx, 'settings');
+    const service = getService(ctx, HOST_SERVICES.settings);
     if (typeof service !== 'object' || service === null)
         return undefined;
     const forms = service;

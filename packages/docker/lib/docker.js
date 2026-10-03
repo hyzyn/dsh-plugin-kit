@@ -164,10 +164,13 @@ function firstLine(stderr, stdout, code) {
     return (stderr.trim() || stdout.trim() || `退出码 ${String(code)}`).split('\n')[0] ?? `退出码 ${String(code)}`;
 }
 /**
- * `--since` 的统一口径（D45）：时长（docker 的 Go duration 语法，允许复合如
- * `1h30m`）、Unix 秒或时间戳。events 与 logs 两条路径此前各有一套——events
+ * `--since` / `--until` 的统一口径（D45，D159 起两者共用）：时长（docker 的 Go duration 语法，
+ * 允许复合如 `1h30m`）、Unix 秒或时间戳。events 与 logs 两条路径此前各有一套——events
  * 白名单偏窄（复合 duration 被拒）、logs 完全不校验（docker 的参数错误变成
  * 不可读的报错）。纯校验函数：合法返回原样串，不合法抛错。
+ *
+ * 名字里的 since 是历史（先有它）；`field` 参数让 `--until` 复用同一套语法与报错文案——
+ * 两者在 docker 里本来就是同一个 `--since/--until` 解析器。
  *
  * 与 docker 的口径**双向对齐**（D99）：
  *   ① duration 支持小数与 `0`——Go 的 `time.ParseDuration` 接受 `1.5h` 与 `0`，
@@ -1422,6 +1425,7 @@ export class DockerApi {
             String(tail),
             ...(options?.timestamps === true ? ['--timestamps'] : []),
             ...(typeof options?.since === 'string' && options.since.trim() !== '' ? ['--since', options.since.trim()] : []),
+            ...(typeof options?.until === 'string' && options.until.trim() !== '' ? ['--until', options.until.trim()] : []),
             id,
         ];
     }
@@ -1496,12 +1500,23 @@ export function createRunner(options) {
     };
 }
 /**
+ * 指纹不匹配时给用户的**处置说明**（本面板的入口）。
+ *
+ * 这一句归**面板**、不归 `kit` 的 SSH 层：诊断（「已记录 X，本次 Y」）是那一层的事，
+ * 而「去哪一格点删除」只有面板自己知道。写死在 `kit` 里会让别的面板用户照着一条走不通的
+ * 路径去点——而那正是最需要说清楚的一刻（可能是 MITM）。
+ */
+export const DOCKER_MISMATCH_HINT = '确认安全后，到 插件配置 → Docker 容器面板 → SSH 主机密钥记录 删除该主机再重连。';
+/** 本面板日志行的前缀名（`kit` 的 SSH 层只收 `tag`，不知道自己在替谁记日志）。 */
+export const DOCKER_LOG_TAG = 'dsh-docker';
+/**
  * 供宿主半体复用：把 HostKeyStore 与 logger 绑到 RemoteExec。
  *
  * `proxyCommandAllowed` 缺省 = 恒关（ProxyCommand 这一档要显式给闸门求值器才开，见
- * `RemoteExec` 的构造参数注释）。
+ * `RemoteExec` 的构造参数注释）。`tag` / `mismatchHint` 也一并带上——两者都是**本面板的
+ * 身份**，少给一个的后果是日志指错插件、或者错误文案把人指到不存在的入口。
  */
 export function createRemoteExec(logger, store, options) {
-    return new RemoteExec(logger, store, options ?? {});
+    return new RemoteExec(logger, store, { tag: DOCKER_LOG_TAG, mismatchHint: DOCKER_MISMATCH_HINT, ...options });
 }
 //# sourceMappingURL=docker.js.map

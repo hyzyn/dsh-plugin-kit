@@ -85,6 +85,10 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 | `@hyzyn/dsh-docker` | Docker 容器面板（本机 / SSH），默认只读 | [README](packages/docker/README.md) · [DEFECTS](packages/docker/DEFECTS.md) · [ROADMAP](packages/docker/ROADMAP.md) |
 | `@hyzyn/dsh-all` | 聚合安装包：一条 bundle patch 挂载上面 10 个插件 | [README](packages/all/README.md) |
 
+> 另有三个**私有、不发布**的开发套件包（不进 `dsh-all`、不发 npm）：`devdata`（数据面 + 验活断言库）、
+> `devenv`（环境编排与观测）、`devfront`（前端效果验证）。定位与边界见
+> [docs/devdata-plan.md](docs/devdata-plan.md)，包清单见 [architecture.md § 2](docs/architecture.md)。
+
 ## 快速开始
 
 ### 系统要求
@@ -194,7 +198,7 @@ dsh plugin --profile web add link:$(pwd)/packages/<name>
 |---|---|
 | 项目是什么、装哪个 | 本文件 |
 | 刚上手，想先建立全局（按顺序读） | [docs/architecture.md](docs/architecture.md) → [docs/conventions.md](docs/conventions.md) → [docs/agent-real-test.md](docs/agent-real-test.md) |
-| 12 个包怎么协作、依赖方向、谁写哪个配置文件 | [docs/architecture.md](docs/architecture.md) |
+| 15 个包怎么协作、依赖方向、谁写哪个配置文件 | [docs/architecture.md](docs/architecture.md) |
 | 命名 / 提交 / 文档分层 / 编号规范 / 插件解剖 | [docs/conventions.md](docs/conventions.md) |
 | 术语（宿主半体、托管区块、TOFU、三代插槽…） | [docs/glossary.md](docs/glossary.md) |
 | 装不上、卡片不出现、插件整体消失、接口 401/403、已知限制 | [docs/troubleshooting.md](docs/troubleshooting.md) |

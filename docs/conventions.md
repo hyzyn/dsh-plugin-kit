@@ -18,14 +18,17 @@
 | 知识类型 | 归宿 |
 |---|---|
 | 项目定位 / 装哪个 | L0 [`README.md`](../README.md) |
+| **agent 的入口与门禁**（先读什么 / 确切命令 / 不可逆边界 / 完成定义；**只做路由，不复制规矩正文**） | 仓根 [`AGENTS.md`](../AGENTS.md)。它是**入口不是归宿**：每一条的真相源仍在本文或 `docs/`——加内容前先读本文 [§ 常量](#常量什么该提什么不该提) 那条判据的同款问法：「这条会不会让我做出不同的 action？它的真相源在哪？」守卫是 `scripts/test/string-contracts.guard.test.ts`（入口文件存在 + 四份 L0 都被路由到 + 没抄分节标题）。**若要加 `CLAUDE.md`：只写一行 `@AGENTS.md`，不要维护两份独立指令**（业界口径，见该守卫的文件头注释） |
 | 12 包关系与协作 | L0 [`docs/architecture.md`](./architecture.md) |
 | 命名 / 提交 / 文档 / 编号规范 | 本文 |
 | 跨包路线图 | L0 [`ROADMAP.md`](../ROADMAP.md) |
 | 跨包通用故障诊断路径 | L0 [`docs/troubleshooting.md`](./troubleshooting.md) |
 | **跨包行为约定**（回环围栏 / body 围栏 / 截断信号） | L0 [`docs/architecture.md` § 7](./architecture.md#7-一条请求经过什么) |
+| **字符串契约常量的判据**（什么该提常量、什么不该；服务名 / 环境层名的归宿与守卫） | L0 本文 [§ 常量](#常量什么该提什么不该提) |
 | **面板端 GUI 的文案与语言（i18n）** | L0 [`docs/i18n.md`](./i18n.md)（方案 + 规范片段 + 进度表） |
 | **跳板机（ProxyJump / ProxyCommand）完整实现的方案**（2026-09-25 已按它落地，`ProxyCommand` 见其 §6.1 的闸门定案表；保留为**活**的作业面：多跳链与后续坑仍以它为准） | L0 [`docs/proxyjump-plan.md`](./proxyjump-plan.md) |
 | **能力开关「就地提权」的当前权威实施方案**（2026-09-26 已按它落地：两条通道、落点、威胁模型、逐 PR 顺序；实施偏差见其附录 C。原先的 `…-plan.v2.md` 已按命名规范改名成本文件名） | L0 [`docs/capability-elevation-plan.md`](./capability-elevation-plan.md) |
+| **开发数据套件（SQL 只读 / NoSQL 受限 / 消息中间件控制台）的方案**（2026-10-01 立项：定位与边界、三条数据通路、三档能力模型、必须先真机确认的 C1–C6、分步顺序与验收清单。**进展以三个包各自的状态真源为准，不看本行**：`devdata` → [`packages/devdata/ROADMAP.md`](../packages/devdata/ROADMAP.md)、`devenv` → [`packages/devenv/ROADMAP.md`](../packages/devenv/ROADMAP.md)、`devfront` → [`packages/devfront/ROADMAP.md`](../packages/devfront/ROADMAP.md)。三包均已建并有真机落地记录） | L0 [`docs/devdata-plan.md`](./devdata-plan.md) |
 | **能力开关「就地提权」方案的 v1（已删除，仅历史）**——它设计的「宿主终端确认码」通道**在代码里不存在**（`CapabilityGrantVia` 只有一个值 `'file'`），保留只为追溯取舍过程；**不要照着执行**（改动去上面那份） | 冻结指针 `git show 79ca434e:docs/capability-elevation-plan.md`（223 行）· 检索入口见 [`ROADMAP.md` 的「已由 L0 资产承接」表](../ROADMAP.md) |
 | AI 真机测试约束 | L0 [`docs/agent-real-test.md`](./agent-real-test.md) |
 | 术语 | L0 [`docs/glossary.md`](./glossary.md) |
@@ -78,9 +81,16 @@
 
 | 档 | 包 |
 |---|---|
-| 复杂 | `docker` · `tty` · `codegraph` |
-| 中等 | `kit` · `rss` · `search` · `mcp` |
+| 复杂 | `docker` · `tty` · `codegraph` · `devdata` · `devenv` |
+| 中等 | `kit` · `rss` · `search` · `mcp` · `devfront` |
 | 简单 | `profile` · `env` · `prompt` · `kit-settings` · `all` |
+
+> **已登记的缺口（2026-10-03）**：`devdata` 按行数落在**复杂档**，但**没有 `DEFECTS.md`**
+> ——它目前没有需要编号的缺陷（`devenv` 的那两条已于 2026-10-03 落
+> [`packages/devenv/DEFECTS.md`](../packages/devenv/DEFECTS.md) 的 `D01`–`D02`，并按硬规矩 5
+> 登记进了 `scripts/defects-table.mjs` 与本表）。按纪律 1「升档不强制回填」，这不构成红；
+> `devdata` 真出现缺陷时照同一条硬规矩补建（建序列 + 把包登记进守卫与编号规范表）。
+> **跟踪见 [`ROADMAP.md`](../ROADMAP.md) 第 9 项。**
 
 **三条纪律**：
 
@@ -99,10 +109,11 @@
 
 | 包 | 前缀 | 当前范围 |
 |---|---|---|
-| `docker` | `D` | `D01`–`D158` |
+| `docker` | `D` | `D01`–`D159` |
 | `tty` | `D` | `D01`–`D95` |
 | `codegraph` | `CG` | `CG01`–`CG65` |
-| `kit` | `D` | `D01`–`D05` 是**转入镜像**：这些编号的权威记录在**原包**（主要是 `codegraph CG`），kit 侧只是「改 kit 的人不必翻别人的台账」的入口，**引用时优先写原编号**（如 `codegraph CG05`）；`D06`–`D13` 是**本包自研**：在 kit 内部发现、权威记录就在 kit。 |
+| `kit` | `D` | `D01`–`D05` 是**转入镜像**：这些编号的权威记录在**原包**（主要是 `codegraph CG`），kit 侧只是「改 kit 的人不必翻别人的台账」的入口，**引用时优先写原编号**（如 `codegraph CG05`）；`D06`–`D14` 是**本包自研**：在 kit 内部发现、权威记录就在 kit。 |
+| `devenv` | `D` | `D01`–`D02` |
 | 其它包 | 需要时自定，从 `01` 起 | — |
 
 > 表里的上界数字（以及各包 `DEFECTS.md` 文件头自称的范围、「接在 `Dxx` 之后」、跨包互称的范围、
@@ -126,7 +137,7 @@
    审计时点的行号与 sha 同样只会误导。定位实现用
    `git log -S'<症状关键词>'`，或读代码里带编号的注释。
 5. **台账自洽**：`DEFECTS.md` 的「现状」行数字必须与表内现算一致。
-   四包（`docker` / `tty` / `codegraph` / `kit`）都在
+   五包（`docker` / `tty` / `codegraph` / `kit` / `devenv`）都在
    [`scripts/test/defects-table.test.ts`](../scripts/test/defects-table.test.ts) 的守卫范围内
    （本包自带的那份是 `packages/codegraph/test/defects-ledger.test.ts`，只管 codegraph）。
    新增包时：把它加进守卫的包清单，上表也补一行。
@@ -158,6 +169,7 @@
 |---|---|---|
 | 包名 | `@hyzyn/dsh-<name>` | `@hyzyn/dsh-docker` |
 | 插件 id | 短横线小写，与包名后缀一致 | `docker`、`kit-settings` |
+| **agent 工具名** | `<域>_<动作>`；域 = 该工具**操作的对象或能力**（不是包名）。**不得占用宿主已用的域前缀**——目前保留 `web_`（宿主 `@deepseek-ai/dsh-tool-web` 的 `web_search` / `web_fetch`，那是**公网**）与 `ui_`（GUI 自己的 `ui-*` 插件）。守卫见 `scripts/test/tool-names.test.ts` | `docker_ps`、`tty_open`、`sftp_read`、`site_console` |
 | 配置命名空间 | 同插件 id | `ctx.settings` 里的 `docker` |
 | HTTP 路由 | `/api/dsh-<插件 id>/…` | `/api/dsh-docker/containers` |
 | 环境变量 | `DSH_<插件 id 大写>_<项>` | `DSH_RSS_DIGEST_DIR` |
@@ -239,6 +251,34 @@
   （**守卫**：`scripts/docs-index.mjs` 判据 5 现算 `pnpm-workspace.yaml` 的包集合与这张表逐一对账，
   多一个少一个都报）
 
+## 插件配置：`.volatile()` 是**承诺**，不是标注
+
+`Config` 里标 `.volatile()` 的字段 = 「**可以热写、且不重挂插件**」。loader 检出「只变了 volatile
+字段」后只把配置引用**就地改写**、再发 `loader/volatile-update`——插件**不会**被重新 `apply`。
+
+**所以声明 volatile 就等于承诺：本插件自己订阅那个事件并重读。** 两条：
+
+1. **不订阅的后果是「改了不生效」，而且它不报错**：写入成功、落盘成功，插件继续用旧值；
+   `dsh-settings` 那边还会把 descriptor 标成 `applies: "live"`（**写死**的）。
+   **但要说清这一版的实际可达性**——真机实测（2026-10-02，profile 3082 + 真 Chrome）：**Web GUI
+   里没有配置面**，插件详情页没有表单、「插件配置」页只有 8 张客户端卡片（都是自带客户端半体的
+   那些）、「内置插件」页是只读清单，且**全安装没有任何客户端代码消费 `autoGenerate`**。
+   宿主侧的 `describe()` 确实按 `volatileForm(schema)` 列表单（**没有 volatile 字段的 entry
+   根本不进这份清单**，`update()` 也会抛 `has no volatile fields`），只是这一版没人渲染它。
+   所以这条义务目前是**潜伏**的：本版 GUI 里没有触发它的写入方（`settings.update` RPC 与
+   配置编辑器仍在，仍是真实入口）。
+2. **订阅之后要自己收尾**：重读 → 拆掉上一轮登记 → 重建只在构造时读配置的东西（如浏览器进程）
+   → 重新注册。**值没变就别动**——`loader/volatile-update` 是**全仓广播**的，
+   `settingsEntryScope` 的 `onChanged` 不按 entry 过滤，别的插件改配置也会打到你这里。
+
+读配置先过 `plainConfig()`（volatile 字段被解析成冻结引用 `{ get() }`）。机制正文与 API 在
+`packages/kit/src/settings.ts` 的模块注释；**可照抄的完整写法**是 `docker` / `tty` / `codegraph`
+三处的 `scope.onChanged(() => …(scope.get()))`。
+
+**守卫**：`scripts/test/plugin-volatile-contract.test.ts` —— 只要包里有 `.volatile()` 字段，
+源码里就必须出现订阅（`loader/volatile-update` 字面量，或 `settingsEntryScope` + `onChanged`）；
+**只在注释里提一句不算**。
+
 ## 客户端半体：两条硬规矩
 
 ### ① 跟宿主建连的地址，基址只能来自宿主注入的 `__DSH_TRANSPORT__`
@@ -301,6 +341,33 @@ DSH `0.2.0-rc.1` 的插件管理页把插件配置渲染在**插件详情页「�
 `packages/docker/scripts/client-smoke.mjs` 的两条用例里（真跑 `apply(ctx)`：新宿主只注册两个
 bundle key 且没有 row 入口、旧宿主只注册两个 row key）——其余包是手写单文件、没有 apply 级夹具，
 故以「逐字节一致」当防漂判据。
+
+## 常量：什么该提，什么不该提
+
+> **判据是「编译器管不管得住」，不是「出现了几次」。**
+
+| 形态 | 谁保证不漂 | 要不要常量 |
+|---|---|---|
+| **类型联合的取值**：`kind: 'read' \| 'write-scoped'`、`'full-scan'`、`'SELECT'` | **TypeScript**——写错编译就报，比对也受联合收窄 | ❌ **不要**。提出去只是把类型系统做过的事再做一遍，还多一层间接 |
+| **跨进程 / 跨包的运行时字符串键**：宿主服务名、启动环境层名、环境变量名、文件名 / 目录名、协议标记 | **没人**——它们是字符串，写错不报错，运行时**静默走另一条分支** | ✅ **要** |
+| **错误码** | 没人，且它是对外契约（agent 按码决定下一步） | ✅ 要，且必须有**单一真相源** |
+
+**为什么「出现次数」不是判据**：`'write-scoped'` 在 4 个文件里出现 8 次——它已经由类型管住了，
+重构它没有收益。反过来 `getService(ctx, 'settings')` 只写一次也是风险：拼错一个字母，
+`getService` 返回 `undefined`，卡片少一块、能力判定换一条路，**没有任何报错**。
+
+**为什么这类错误特别难发现**：本仓 `tsconfig` 是白名单式装载（`include: ["src"]`），
+所以这类名字**不会**进类型检查；而「取不到服务」的代码路径按设计是**降级**（返回 `undefined`），
+不是抛错。两者叠加就是静默。
+
+**归宿**：`kit` 的 `HOST_SERVICES` 与 `LAUNCH_ENV_LAYERS`（`packages/kit/src/host-services.ts`）。
+`launchEnvironment` 单独点名：它错了会**静默换掉能力闸门的判定源**（回落到冻结的
+`process.env` 拷贝）——安全相关，不是体验问题。
+
+**守卫**：`scripts/test/string-contracts.guard.test.ts` +
+`scripts/lib/string-contracts.ts`（源码扫描，跳过注释行——注释里会写反面示例）。
+它只认 `getService(ctx, '…')` 这一种写法；**另一种写法它看不见**，所以这条规矩以本节为准，
+守卫是补强不是唯一保障。
 
 ## 三条跨包一致的行为约定（正文不在这里）
 

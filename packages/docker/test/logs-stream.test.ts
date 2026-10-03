@@ -129,6 +129,66 @@ describe('DockerApi.logsStream', () => {
     expect(calls[0]?.argv).toEqual(['docker', 'logs', '--follow', '--tail', '10', '--timestamps', '--since', '10m', 'web'])
   })
 
+  /**
+   * D159：**只有 `--since` 取不到「启动那一刻」**——`tail` 拿的是筛选结果的最后 N 行，
+   * 所以一个跑了几周、日志上百万行的容器，`Started XxxApplication` 永远在够不到的地方
+   * （2026-10-02 真机：161 上的 `hcckc-ems-service` 跑了三周、每 2~3 分钟产出约 22MB 日志，
+   * 只用 since+tail 拿到的全是当天的定时任务行）。夹出窗口靠 `--until`。
+   */
+  it('--until 与 --since 同一构造（D159）：快照与流式都带上，未传时不得出现', async () => {
+    const calls: string[][] = []
+    const runner: Runner = {
+      label: 'fake',
+      async run(argv) {
+        calls.push([...argv])
+        return { code: 0, stdout: 'log line', stderr: '', truncated: false }
+      },
+      async stream() {
+        throw new Error('stream 不应在快照路径被调用')
+      },
+    }
+    const api = new DockerApi(runner, 'docker', { timeoutMs: 1000, maxBytes: 1024 })
+
+    // 真机上那条判据的写法：窗口夹在容器 StartedAt 与 +2 分钟之间
+    await api.logs('web', { tail: 50, since: '2026-09-10T01:34:00', until: '2026-09-10T01:36:00' })
+    expect(calls[0]).toEqual([
+      'docker',
+      'logs',
+      '--tail',
+      '50',
+      '--since',
+      '2026-09-10T01:34:00',
+      '--until',
+      '2026-09-10T01:36:00',
+      'web',
+    ])
+
+    // 不传就不许凭空塞一个 --until（那会把「读到现在」静默改成别的语义）
+    await api.logs('web', { tail: 5 })
+    expect(calls[1]).toEqual(['docker', 'logs', '--tail', '5', 'web'])
+    expect(calls[1]).not.toContain('--until')
+    // 空串 / 纯空白按「未传」处理（与 since 的 D98 同一口径）
+    await api.logs('web', { tail: 5, until: '   ' })
+    expect(calls[2]).not.toContain('--until')
+
+    // 流式与快照共用同一构造，所以 --until 在跟随路径上同样生效
+    const { runner: streamRunner, calls: streamCalls } = fakeStreamRunner()
+    const streamApi = new DockerApi(streamRunner, 'docker', { timeoutMs: 1000, maxBytes: 1024 })
+    await streamApi.logsStream('web', { since: '10m', until: '2026-09-10T01:36:00' }, makeHandlers())
+    expect(streamCalls[0]?.argv).toEqual([
+      'docker',
+      'logs',
+      '--follow',
+      '--tail',
+      '200',
+      '--since',
+      '10m',
+      '--until',
+      '2026-09-10T01:36:00',
+      'web',
+    ])
+  })
+
   it('缺省 tail=200，越界夹紧到 1..5000', async () => {
     const { runner, calls } = fakeStreamRunner()
     const api = new DockerApi(runner, 'docker', { timeoutMs: 1000, maxBytes: 1024 })

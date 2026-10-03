@@ -30,7 +30,7 @@ import http, { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { Chrome } from './chrome-cdp.mjs'
+import { Chrome } from '@hyzyn/dsh-kit'
 
 const argv = process.argv.slice(2)
 const flag = (name) => {

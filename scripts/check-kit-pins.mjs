@@ -43,10 +43,20 @@ const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 export const KIT_NAME = '@hyzyn/dsh-kit'
 
 /**
- * 参与判定的字段：它们都会进入**用户侧**的解析结果。
- * `devDependencies` 不算——它不进消费者的树，本仓也没有包把 kit 放在那儿。
+ * 参与判定的字段。
+ *
+ * ## 为什么 `devDependencies` **也**算（2026-10-01 改，原先不算）
+ *
+ * 原先的理由是「devDependencies 不进消费者的树」——那对**消费者的安装结果**成立，
+ * 但对**本仓这棵树**不成立：pnpm 的 `link-workspace-packages=true` 只在范围匹配得上
+ * 本地包版本时才 link，否则**从 registry 拉一份**。也就是说，一个 devDependency 钉着旧 kit，
+ * 结果就是**同一个 workspace 树里装了两份 kit**——正是这道闸门要拦的事（见文件头）。
+ *
+ * 触发这次修改的实例：仓根的 `scripts/` 会用 kit（Chrome CDP 客户端来自
+ * `@hyzyn/dsh-kit`），而根清单的 kit 钉子落在 `devDependencies` 里。不改这条判据，
+ * 根清单那颗钉子就**不受管辖**：它可以钉着旧版本而闸门照样报绿。
  */
-export const DEPENDENCY_FIELDS = ['dependencies', 'optionalDependencies', 'peerDependencies']
+export const DEPENDENCY_FIELDS = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']
 
 /** 精确版本（`0.5.0-rc.1` 合格）。范围 / dist-tag / 协议 / git URL 一律不合格。 */
 export const EXACT_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$/
@@ -57,12 +67,35 @@ export const EXACT_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$/
  * 目录里没有 `package.json` 就跳过：`packages/` 下可能存在非包的残留目录（历史产物等），
  * 它们不是消费者，也不该让闸门抛异常。
  *
+ * **根清单也算消费者**（2026-10-01 补）：仓根的 `scripts/` 会用 kit——例如
+ * `verify-client-ui.mjs` 的 Chrome CDP 客户端就来自 `@hyzyn/dsh-kit`。原先只扫 `packages/*`，
+ * 于是根清单里那颗钉子**不受这道闸门管辖**：它可以钉着旧版本而闸门照样报绿，
+ * 而「一个进程里只允许一份 kit」正是本闸门存在的理由（见文件头）。
+ *
  * @param {string} root 仓库根
  * @returns {{ kitVersion: string, pins: { pkg: string, file: string, field: string, spec: string }[] }}
  */
 export function collectKitPins(root = REPO_ROOT) {
   const kitVersion = JSON.parse(readFileSync(join(root, 'packages', 'kit', 'package.json'), 'utf8')).version
   const pins = []
+
+  /** 收一份清单里的声明。 */
+  const collect = (manifest, file) => {
+    for (const field of DEPENDENCY_FIELDS) {
+      const spec = manifest[field]?.[KIT_NAME]
+      if (spec !== undefined) {
+        pins.push({ pkg: manifest.name ?? file, file, field, spec })
+      }
+    }
+  }
+
+  // 根清单
+  try {
+    collect(JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')), 'package.json')
+  } catch {
+    /* 没有根清单就跳过（子目录里跑时不至于抛） */
+  }
+
   for (const name of readdirSync(join(root, 'packages'))) {
     if (name === 'kit') continue
     let manifest
@@ -71,12 +104,7 @@ export function collectKitPins(root = REPO_ROOT) {
     } catch {
       continue
     }
-    for (const field of DEPENDENCY_FIELDS) {
-      const spec = manifest[field]?.[KIT_NAME]
-      if (spec !== undefined) {
-        pins.push({ pkg: manifest.name ?? name, file: `packages/${name}/package.json`, field, spec })
-      }
-    }
+    collect(manifest, `packages/${name}/package.json`)
   }
   return { kitVersion, pins }
 }

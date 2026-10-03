@@ -1,0 +1,16 @@
+{
+  "RestartCount": "number",
+  "State": {
+    "Dead": "boolean",
+    "Error": "string",
+    "ExitCode": "number",
+    "FinishedAt": "string",
+    "OOMKilled": "boolean",
+    "Paused": "boolean",
+    "Pid": "number",
+    "Restarting": "boolean",
+    "Running": "boolean",
+    "StartedAt": "string",
+    "Status": "string"
+  }
+}

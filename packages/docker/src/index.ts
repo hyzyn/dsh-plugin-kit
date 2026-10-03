@@ -39,6 +39,8 @@ import {
   parsePsJson,
   parseStatsJson,
   suggestContainerNames,
+  DOCKER_LOG_TAG,
+  DOCKER_MISMATCH_HINT,
 } from './docker.js'
 import type {
   AttentionItem,
@@ -57,7 +59,7 @@ import type {
   VolumeDetail,
   VolumeSummary,
 } from './docker.js'
-import { RemoteExec, sanitizeJumpSpec, sanitizeProxyCommand, setCredentialResolver, sshTarget } from './ssh-exec.js'
+import { RemoteExec, setCredentialResolver, sshTarget } from './ssh-exec.js'
 import {
   auditLoadedGrants,
   bindCapabilitySources,
@@ -68,11 +70,23 @@ import {
   capabilityPaths,
   createElevationManager,
   dshHome,
+  readTtyBooks,
+  readTtyHostKeys,
+  readTtyProxyCommandAllowed,
+  sanitizeHostKeys,
   sharedGrantStore,
 } from '@hyzyn/dsh-kit'
+import type { SettingsLookup } from '@hyzyn/dsh-kit'
 import type { CredentialResolver, ExecLogger, HostKeyRecord, HostKeyStore, SshSpec } from './ssh-exec.js'
 
 export type { HostKeyRecord } from './ssh-exec.js'
+/*
+ * 这四个从 `kit` 取、并**原样再导出**：本包的历史出口（用例与外部使用者都从 `./index.js` 取它们）。
+ * 实现只有一份——连接簿与指纹的读取/清洗是「共享机制」，2026-10-02 上收进
+ * `@hyzyn/dsh-kit/tty-books`（见该文件头注与 docs/devdata-plan.md § 16.1 的 B1）。
+ */
+export { readTtyBooks, readTtyProxyCommandAllowed, readTtyHostKeys, sanitizeHostKeys } from '@hyzyn/dsh-kit'
+export type { SettingsLookup } from '@hyzyn/dsh-kit'
 export type { ContainerSummary, ContainerDetail, ContainerStats, ContainerEvent, ImageSummary, NetworkSummary, NetworkDetail, VolumeSummary, VolumeDetail, DockerTarget } from './docker.js'
 
 /* ------------------------------------------------------------------ *
@@ -546,40 +560,11 @@ export function sanitizeTargets(input: unknown): DockerTarget[] | undefined {
   return out
 }
 
-/**
- * 清洗一份 hostKeys 输入（settings 存储 / 热更新 / 种子复制共用）。
- *
- * 同时接受两种形状（D03）：
- *   - tty 0.19.0+ 的 `{host, port, fingerprints: [...]}`（多指纹集合）；
- *   - docker 0.6.x 自己落盘的 `{host, port, fingerprint}`（迁移输入）。
- * host 统一 trim + 小写（与 tty 的落盘口径一致，否则种子命中与否取决于大小写），
- * 同一 host:port 的多条记录合并成一组指纹。
+/*
+ * `sanitizeHostKeys` 已上收进 `@hyzyn/dsh-kit/tty-books`（2026-10-02，plan §16.1 B1）——
+ * 指纹记录的清洗口径必须与连接簿读取同源：两边各写一份，分叉的症状是「种子命中与否取决于
+ * 大小写」这类只在真机上才看得出来的偏差。本文件顶部已再导出它。
  */
-export function sanitizeHostKeys(input: unknown): HostKeyRecord[] | undefined {
-  if (!Array.isArray(input)) return undefined
-  const byKey = new Map<string, HostKeyRecord>()
-  for (const raw of input) {
-    if (typeof raw !== 'object' || raw === null) continue
-    const item = raw as Record<string, unknown>
-    const host = typeof item.host === 'string' ? item.host.trim().toLowerCase() : ''
-    const port = typeof item.port === 'number' && Number.isInteger(item.port) && item.port >= 1 && item.port <= 65535 ? item.port : 22
-    const list = Array.isArray(item.fingerprints) ? item.fingerprints : []
-    const single = typeof item.fingerprint === 'string' && item.fingerprint.trim() !== '' ? [item.fingerprint.trim()] : []
-    const fingerprints = [...new Set([
-      ...list.filter((fp): fp is string => typeof fp === 'string' && fp.trim() !== '').map((fp) => fp.trim()),
-      ...single,
-    ])]
-    if (host === '' || fingerprints.length === 0) continue
-    const key = `${host}:${String(port)}`
-    const existing = byKey.get(key)
-    if (existing !== undefined) {
-      existing.fingerprints = [...new Set([...existing.fingerprints, ...fingerprints])]
-      continue
-    }
-    byKey.set(key, { host, port, fingerprints })
-  }
-  return [...byKey.values()]
-}
 
 /**
  * hostKeys **并集**合并（D10）：客户端表单快照回传的表不得整表覆盖 TOFU 运行期
@@ -742,90 +727,15 @@ export function formatBytes(value: number): string {
   return `${text} ${units[unit] ?? 'B'}`
 }
 
-/** 从 tty 的 entry settings 读取连接簿（只读；tty 未安装时为空表）。 */
-/**
- * 读 tty 连接簿 → 本包的连接规格。**导出仅供单测**（连接簿 → 规格这一跳是「一处配置、两处
- * 生效」的落地处：漏带 jump / proxyCommand 就是「tty 能连、docker 连不上」那种半吊子状态）。
- */
-export function readTtyBooks(settings: SettingsLookup | undefined): Map<string, SshSpec> {
-  const out = new Map<string, SshSpec>()
-  if (settings === undefined) return out
-  let raw: unknown
-  try {
-    raw = settings.get('tty')
-  } catch {
-    return out
-  }
-  if (typeof raw !== 'object' || raw === null) return out
-  const hosts = (raw as { sshHosts?: unknown }).sshHosts
-  if (!Array.isArray(hosts)) return out
-  for (const entry of hosts) {
-    if (typeof entry !== 'object' || entry === null) continue
-    const item = entry as Record<string, unknown>
-    const name = typeof item.name === 'string' ? item.name.trim() : ''
-    const host = typeof item.host === 'string' ? item.host.trim() : ''
-    const username = typeof item.username === 'string' ? item.username.trim() : ''
-    if (name === '' || host === '' || username === '') continue
-    const spec: SshSpec = {
-      host,
-      port: typeof item.port === 'number' && Number.isInteger(item.port) ? item.port : 22,
-      username,
-      auth: item.auth === 'key' || item.auth === 'password' ? item.auth : 'agent',
-      keyPath: typeof item.keyPath === 'string' ? item.keyPath : '',
-      password: typeof item.password === 'string' ? item.password : '',
-      passphrase: typeof item.passphrase === 'string' ? item.passphrase : '',
-      agentForward: item.agentForward === true,
-    }
-    /*
-     * 跳板机跟着连接簿一起走（本包**不自建跳板机界面**：目标是「一处配置、两处生效」）。
-     * 漏了这一段就是「终端能连、docker 目标连不上」——本项立项时点名的半吊子状态。
-     */
-    const jump = sanitizeJumpSpec(item.jump)
-    if (jump !== undefined) spec.jump = jump
-    /*
-     * 代理命令同理跟着连接簿走（本包**不自建界面**）。闸门不在这里判：它归 tty settings 的
-     * `allowProxyCommand`，由 `readTtyProxyCommandAllowed()` 现读、在**每次拨号**时求值
-     * （见 RemoteExec 的 options.proxyCommandAllowed）——这样用户一关开关就立刻生效。
-     */
-    const proxyCommand = sanitizeProxyCommand(item.proxyCommand)
-    if (proxyCommand !== undefined) spec.proxyCommand = proxyCommand
-    out.set(name, spec)
-  }
-  return out
-}
-
-/**
- * 读 tty settings 里的 ProxyCommand 闸门（`allowProxyCommand`，默认关）。
+/*
+ * `readTtyBooks` / `readTtyProxyCommandAllowed` / `readTtyHostKeys` 已上收进
+ * `@hyzyn/dsh-kit/tty-books`（2026-10-02，plan §16.1 B1），本文件顶部已再导出前两个
+ * （`readTtyHostKeys` 只在本文件内用，从 `import` 取即可）。
  *
- * 为什么本包要用 **tty 的**开关而不是自己再加一个：连接簿只有一处（tty），代理命令也只有
- * 一处能填；两个开关会让「连接簿配了、这个面板不认」变成说不清的状态。代价是本包多依赖一个
- * 只读 settings 字段——settings 句柄缺失（启动早期）时恒 false，即**关**（失败方向安全）。
+ * 为什么这一跳必须只有一份：它是「一处配置、两处生效」的落地处——漏带 `jump` /
+ * `proxyCommand` 就是「tty 能连、面板连不上」那种半吊子状态，而两边各自看着都对。
+ * 环境编排（`devenv`）是第三个消费者，所以它归 `kit` 而不是任何一个面板。
  */
-export function readTtyProxyCommandAllowed(settings: SettingsLookup | undefined): boolean {
-  if (settings === undefined) return false
-  let raw: unknown
-  try {
-    raw = settings.get('tty')
-  } catch {
-    return false
-  }
-  if (typeof raw !== 'object' || raw === null) return false
-  return (raw as { allowProxyCommand?: unknown }).allowProxyCommand === true
-}
-
-/** 从 tty 的 hostKeys 读取已钉扎指纹（作为本插件 TOFU 的种子）。 */
-function readTtyHostKeys(settings: SettingsLookup | undefined): HostKeyRecord[] {
-  if (settings === undefined) return []
-  let raw: unknown
-  try {
-    raw = settings.get('tty')
-  } catch {
-    return []
-  }
-  if (typeof raw !== 'object' || raw === null) return []
-  const keys = (raw as { hostKeys?: unknown }).hostKeys
-  return sanitizeHostKeys(keys) ?? []
-}
 
 /** 把一个配置目标解析成可连接的规格（连接簿查找在此完成）。 */
 export function resolveTarget(target: DockerTarget, books: Map<string, SshSpec>): { resolved?: ResolvedTarget; error?: string } {
@@ -871,9 +781,10 @@ export function resolveTarget(target: DockerTarget, books: Map<string, SshSpec>)
  * ------------------------------------------------------------------ */
 
 /** 只读其它插件 entry 的 settings（旧 `settings.get(ns)` 的替代）。 */
-interface SettingsLookup {
-  get(ns: string): unknown
-}
+/*
+ * `SettingsLookup` 随连接簿读取出 `kit` 取（本文件顶部 `import type`）——它描述的是
+ * 「只读别的插件 entry」这件事本身，不是本包特有的形状。
+ */
 
 interface ToolsLike {
   register(definition: unknown): () => void
@@ -1009,7 +920,11 @@ const plugin = definePlugin<Config>({
      * 不缓存成布尔值：用户随时可能关掉它，缓存意味着「关了还能用」——这一档最不能出的错。
      * settingsApi 在 settings 子上下文就绪前是 undefined，那时恒 false（= 关，安全方向）。
      */
-    const remote = new RemoteExec(logger, hostKeyStore, { proxyCommandAllowed: () => readTtyProxyCommandAllowed(settingsApi) })
+    const remote = new RemoteExec(logger, hostKeyStore, {
+      proxyCommandAllowed: () => readTtyProxyCommandAllowed(settingsApi),
+      tag: DOCKER_LOG_TAG,
+      mismatchHint: DOCKER_MISMATCH_HINT,
+    })
 
     /**
      * 当前生效的 targets：**以 settings 解析值为准**。
@@ -2191,13 +2106,14 @@ const plugin = definePlugin<Config>({
         name: 'docker_logs',
         // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
         isConcurrencySafe: () => true,
-        description: '读取某个容器的日志尾部（docker logs --tail）。默认行数取插件配置 logTailDefault（出厂 200）、不带时间戳；可加 timestamps / since。日志可能很大，优先用 tail 而不是全量。',
+        description: '读取某个容器的日志尾部（docker logs --tail）。默认行数取插件配置 logTailDefault（出厂 200）、不带时间戳；可加 timestamps / since / until。**要看「启动那一刻」的日志必须同时给 since 与 until**：只有 since 时 tail 拿的永远是筛选结果的最后 N 行，跑了几周的容器其启动横幅早已被冲掉（D159）。日志可能很大，优先用 tail 而不是全量。',
         parameters: {
           target: targetParam,
           id: { type: 'string', required: true, description: '容器名或 ID' },
           tail: { type: 'number', description: '尾部行数（1~5000，默认取配置 logTailDefault；越界值会被静默夹紧到边界）' },
           timestamps: { type: 'boolean', description: 'true 时每行带时间戳' },
           since: { type: 'string', description: '起始时间（docker --since 语法，如 10m、2026-09-09T10:00:00）' },
+          until: { type: 'string', description: '结束时间（docker --until 语法，与 since 同口径）。配 since 才夹得出「启动那一刻」这类窗口' },
         },
         output: {
           schema: {
@@ -2217,7 +2133,7 @@ const plugin = definePlugin<Config>({
           },
         },
         async execute(args: unknown): Promise<ToolLogRow> {
-          const input = (args ?? {}) as { target?: unknown; id?: unknown; tail?: unknown; timestamps?: unknown; since?: unknown }
+          const input = (args ?? {}) as { target?: unknown; id?: unknown; tail?: unknown; timestamps?: unknown; since?: unknown; until?: unknown }
           const picked = pickTarget(input.target)
           if (picked.name === undefined) throw new Error(picked.error ?? '无效的 target')
           if (typeof input.id !== 'string') throw new Error('id 必填')
@@ -2230,6 +2146,9 @@ const plugin = definePlugin<Config>({
             // 完全不校验，docker 的参数错误会变成一句不可读的报错。空/纯空白按「未传」处理（D98）：
             // 否则模型传个空串会拿到「since 必填」这种与事实相反的提示。
             ...(typeof input.since === 'string' && input.since.trim() !== '' ? { since: assertSince(input.since) } : {}),
+            // until 与 since 同一个口径（D159）：同一个 assertSince，只换 field 名——报错才会说
+            // 「until 无法识别」而不是把用户引到 since 上去。
+            ...(typeof input.until === 'string' && input.until.trim() !== '' ? { until: assertSince(input.until, 'until') } : {}),
           })
           return { target: picked.name, id: result.id, text: result.text, truncated: result.truncated }
         },

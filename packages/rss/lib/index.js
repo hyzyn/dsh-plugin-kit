@@ -16,7 +16,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { definePlugin, dshHome, getService, writeFileAtomic } from '@hyzyn/dsh-kit';
+import { HOST_SERVICES, definePlugin, dshHome, getService, writeFileAtomic } from '@hyzyn/dsh-kit';
 import { BUILTIN_CATALOG_NAME, getBuiltinCatalogEntries, getCatalogCategories, getCatalogSourceNames, getMergedCatalogEntries, searchCatalogEntries, catalogStatus, } from './catalog.js';
 export const name = 'rss-digest';
 export const inject = [];
@@ -657,7 +657,7 @@ export function resolveAiRoute(ctx, ai) {
     if (ctx === undefined)
         return null;
     try {
-        const defaultModel = getService(ctx, 'agentDefaultModel');
+        const defaultModel = getService(ctx, HOST_SERVICES.agentDefaultModel);
         if (defaultModel !== undefined && defaultModel !== null) {
             const read = typeof defaultModel.source === 'function'
                 ? defaultModel.source
@@ -670,7 +670,7 @@ export function resolveAiRoute(ctx, ai) {
                     return picked;
             }
         }
-        const settings = getService(ctx, 'settings');
+        const settings = getService(ctx, HOST_SERVICES.settings);
         if (settings !== undefined && settings !== null && typeof settings.get === 'function') {
             const picked = pickRoute(settings.get(AGENT_DEFAULT_MODEL_NAMESPACE));
             if (picked !== null)
@@ -758,7 +758,7 @@ async function summarizeItems(items, ai, ctx, config) {
         };
     }
     const routeText = `${route.provider}/${route.model}`;
-    const llm = ctx !== undefined ? getService(ctx, 'llm') : undefined;
+    const llm = ctx !== undefined ? getService(ctx, HOST_SERVICES.llm) : undefined;
     if (llm === undefined || llm === null || typeof llm.stream !== 'function') {
         return { items, info: { enabled: true, route: routeText, summarized: 0, failed: 0, reason: '宿主 llm 服务不可用' } };
     }

@@ -213,7 +213,8 @@ describe('反例 3：宿主写操作不可复位（或只读脚本偷偷写）�
 
   it('给「只读」的通用 UI 脚本塞一个写宿主配置的调用 → 报', () => {
     const spec = SCRIPTS.find((item) => item.file === 'verify-client-ui.mjs')
-    const fixture = mutate(read(`../${spec.file}`), "import { Chrome } from './chrome-cdp.mjs'", "import { Chrome } from './chrome-cdp.mjs'\n// fixture：假装它开始写宿主\nconst save = () => fetch('/api/dsh-mcp/servers/save', { method: 'POST' })")
+    const anchor = "import { Chrome } from '@hyzyn/dsh-kit'"
+    const fixture = mutate(read(`../${spec.file}`), anchor, `${anchor}\n// fixture：假装它开始写宿主\nconst save = () => fetch('/api/dsh-mcp/servers/save', { method: 'POST' })`)
     expect(violationsOf(fixture, spec).join('\n')).toContain('却出现了写宿主配置的调用')
   })
 })

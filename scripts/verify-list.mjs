@@ -91,6 +91,33 @@ export const VERIFY_SCRIPTS = [
     needs: '正在跑的宿主（装了 dsh-mcp / dsh-search）；会写宿主 MCP 配置并**逐条写回**',
   },
   {
+    file: 'verify-devdata-all.mjs',
+    pkg: 'devdata',
+    entry: 'verify',
+    needs: '离线可跑（pnpm typecheck/build + 本包单测 + 真机链路 + 真 DSH 挂载）；**目标不可达那步报 SKIP 不报红**',
+  },
+  {
+    file: 'verify-devdata-host-mount.mjs',
+    pkg: 'devdata',
+    entry: 'host-mount-smoke',
+    needs: '真 DSH 宿主（自起一次性隔离 profile，独立端口，跑完即删；自证真实补丁未变）',
+  },
+  {
+    file: 'verify-devenv-all.mjs',
+    pkg: 'devenv',
+    entry: 'verify',
+    needs: '离线可跑（typecheck/build/本包单测/真宿主挂载）；真机那两档要 VPN + 凭据（口令由人 export，脚本刻意不读凭据存储），'
+      + '写入口那档还要人指名容器，缺任一前提都报 SKIP 不报红',
+    note: '✅ 2026-10-02：一键六步（产物 → 单测 → 真机只读 → 真机写 → 真宿主挂载；写那档没指名容器时如实 SKIP）',
+  },
+  {
+    file: 'verify-devenv-host-mount.mjs',
+    pkg: 'devenv',
+    entry: 'host-mount-smoke',
+    needs: '真 DSH 宿主（自起一次性隔离 profile，独立端口，跑完即删；自证真实补丁未变）',
+    note: '✅ 2026-10-02 首跑 11/11，补上「临时目录已清理」后连跑两次都是 12/12 PASS（注册的恰好是两个只读工具；没配 writeCapability 就没有写入口）',
+  },
+  {
     file: 'verify-client-ui.mjs',
     pkg: '（通用）',
     entry: undefined,

@@ -1,0 +1,229 @@
+/**
+ * 配置面：把宿主交下来的一份普通对象**解析成纯数据**（`docs/devdata-plan.md` §5 的数据模型）。
+ *
+ * ## 为什么解析不交给 schemastery 就完了
+ *
+ * `Config`（schemastery schema）负责「形状对不对」；本模块负责**「语义上算不算数」**，而后者
+ * 恰好是本套件的安全前提：
+ *
+ * - **认不出的引擎** → 整个目标丢掉（不是「当成某个默认引擎」）——未登记的一律拒；
+ * - **认不出的环境标签** → 回落 `unknown`（= 不可写），并**报一条 problem**：静默回落会让用户
+ *   以为自己标的是 `test-shared`（可写）；
+ * - **空的 `scopeDirs` 保持为空**（= 处处拒绝），**不替用户填默认目录**——那等于替他授权；
+ * - **能力规格的 `env` 为空串** → 当作**没接入闸门**（而不是「接了但永远授不了权」）；
+ * - 越界的上限**夹回**而不是「按无上限处理」（`sync` 与 `ceilings` 同一个方向：坏了要更严）。
+ *
+ * 这些判断全部是纯函数：不读文件、不连网络、不看 `process.env`。`problems` 原样交给宿主半体去打
+ * 日志与公告——**配置问题不该只在启动日志里一闪而过**，agent 撞墙时 `doctor` 也要能看到。
+ */
+import { expandHome } from '@hyzyn/dsh-kit';
+import { DEV_ENVS, normalizeEnv } from './env.js';
+import { ENGINES } from './operations.js';
+/** SCAN 族 `COUNT` 的策略上限（候选只能请求更小）。 */
+export const MAX_SCAN_COUNT = 1000;
+/** 不给时的策略默认值。 */
+export const DEFAULT_SCAN_COUNT = 200;
+/** 单次连接 + 命令的默认超时（毫秒）。 */
+export const DEFAULT_TIMEOUT_MS = 5000;
+/** 超时可配范围。 */
+export const MIN_TIMEOUT_MS = 100;
+export const MAX_TIMEOUT_MS = 60_000;
+const ENGINE_SET = new Set(ENGINES);
+const ENV_SET = new Set(DEV_ENVS);
+function asRecord(value) {
+    return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : undefined;
+}
+function asString(value) {
+    return typeof value === 'string' ? value : undefined;
+}
+function asStringArray(value) {
+    if (!Array.isArray(value))
+        return undefined;
+    return value.filter((entry) => typeof entry === 'string');
+}
+/**
+ * 解析一个能力规格。
+ *
+ * **`env` 为空串 = 没接入闸门**（返回 `undefined`），并且记一条 problem：一份「接了但永远授不了
+ * 权」的闸门比没接更坏——`visibleTools` 会因此把入口露出去，而 `capabilityGranted('')` 永远为假。
+ */
+function parseCapability(value, where, problems) {
+    const raw = asRecord(value);
+    if (raw === undefined) {
+        /*
+         * 这条分支**在真宿主上到不了**：`:writeCapability` 是 schema 里的 object 字段，给了非对象
+         * 会在 prepare 期被拒（实测报错带精确路径 `$.targets[0].dangerousReadCapability expected
+         * object but got true`，插件整体不挂载 = fail closed）。留着它是给**不经 schema 的调用方**
+         * （直接调 `normalizeConfig` 的脚本 / 用例）一个确定的行为——不能因为「到不了」就让它随机。
+         */
+        if (value !== undefined && value !== null)
+            problems.push(`${where}：能力规格不是一个对象，按「未接入闸门」处理`);
+        return undefined;
+    }
+    const env = (asString(raw.env) ?? '').trim();
+    if (env === '') {
+        problems.push(`${where}：给了能力规格却没有 env（环境变量名），按「未接入闸门」处理。` +
+            `两条出路选一条：**补上 env**（接入一个待授权的闸门），或**把这个字段整段删掉**（不接入）` +
+            `——前者将来 export 那个变量才能授权，后者永远不授权。`);
+        return undefined;
+    }
+    const label = (asString(raw.label) ?? '').trim();
+    return { env, label: label === '' ? env : label };
+}
+/** 解析一个目标；返回 `undefined` = 整条丢掉（并把理由写进 problems）。 */
+function parseTarget(value, index, seenIds, problems) {
+    const where = `targets[${String(index)}]`;
+    const raw = asRecord(value);
+    if (raw === undefined) {
+        problems.push(`${where}：不是一个对象，已忽略`);
+        return undefined;
+    }
+    const id = (asString(raw.id) ?? '').trim();
+    if (id === '') {
+        problems.push(`${where}：缺少 id，已忽略（工具参数与作用域判据都用它）`);
+        return undefined;
+    }
+    if (seenIds.has(id)) {
+        problems.push(`${where}：id ${JSON.stringify(id)} 与前面某个目标重复，已忽略（id 必须唯一，否则 target 参数会指向不可预期的那个）`);
+        return undefined;
+    }
+    const engineRaw = (asString(raw.engine) ?? '').trim().toLowerCase();
+    if (!ENGINE_SET.has(engineRaw)) {
+        problems.push(`${where}（${id}）：engine ${JSON.stringify(raw.engine ?? '')} 不是受支持的引擎（${ENGINES.join(' / ')}），**整个目标已忽略**——认不出的引擎一律不当成某个默认值`);
+        return undefined;
+    }
+    const engine = engineRaw;
+    const envRaw = asString(raw.env);
+    const env = normalizeEnv(envRaw);
+    if (envRaw !== undefined && envRaw.trim() !== '' && !ENV_SET.has(envRaw.trim().toLowerCase())) {
+        problems.push(`${where}（${id}）：环境标签 ${JSON.stringify(envRaw)} 认不出，已按 unknown 处理（**不可写**）。可用的值：${DEV_ENVS.join(' / ')}`);
+    }
+    const scopeDirs = (asStringArray(raw.scopeDirs) ?? []).map((dir) => expandHome(dir.trim())).filter((dir) => dir !== '');
+    const writeCapability = parseCapability(raw.writeCapability, `${where}（${id}）.writeCapability`, problems);
+    const dangerousReadCapability = parseCapability(raw.dangerousReadCapability, `${where}（${id}）.dangerousReadCapability`, problems);
+    const credentialRef = (asString(raw.credentialRef) ?? '').trim();
+    // 连接：两个字段都齐才认（少一个不是「用默认端口」，是配置没写完）。
+    const host = (asString(raw.host) ?? '').trim();
+    const portRaw = raw.port;
+    const port = typeof portRaw === 'number' && Number.isInteger(portRaw) ? portRaw : Number.NaN;
+    let connection;
+    if (host !== '' && Number.isInteger(port) && port >= 1 && port <= 65535) {
+        const dbRaw = raw.db;
+        const db = typeof dbRaw === 'number' && Number.isInteger(dbRaw) && dbRaw >= 0 ? dbRaw : undefined;
+        connection = db === undefined ? { host, port } : { host, port, db };
+    }
+    else if (host !== '' || Number.isFinite(port) || raw.port !== undefined) {
+        problems.push(`${where}（${id}）：连接信息不完整（host=${JSON.stringify(host)}，port=${JSON.stringify(portRaw ?? '')}），已按「没有连接」处理——工具调用会明确报这一点，不会拿默认端口去试`);
+    }
+    const scanRaw = raw.maxScanCount;
+    let maxScanCount = DEFAULT_SCAN_COUNT;
+    if (scanRaw !== undefined) {
+        if (typeof scanRaw === 'number' && Number.isInteger(scanRaw) && scanRaw >= 1 && scanRaw <= MAX_SCAN_COUNT) {
+            maxScanCount = scanRaw;
+        }
+        else {
+            problems.push(`${where}（${id}）：maxScanCount ${JSON.stringify(scanRaw)} 不合法，已夹回默认值 ${String(DEFAULT_SCAN_COUNT)}（范围 1..${String(MAX_SCAN_COUNT)}）。**坏了要更严，不是更松**`);
+        }
+    }
+    const label = (asString(raw.label) ?? '').trim();
+    const target = {
+        id,
+        label: label === '' ? id : label,
+        engine,
+        env,
+        scopeDirs,
+        maxScanCount,
+        ...(connection === undefined ? {} : { connection }),
+        ...(credentialRef === '' ? {} : { credentialRef }),
+        ...(writeCapability === undefined ? {} : { writeCapability }),
+        ...(dangerousReadCapability === undefined ? {} : { dangerousReadCapability }),
+    };
+    seenIds.add(id);
+    return target;
+}
+/** 解析计划护栏阈值（**不填 = 不做这一层检查**，填 0 = 一行都不许，口径见 `plan-guard.ts`）。 */
+function parsePlan(value, problems) {
+    const raw = asRecord(value);
+    if (raw === undefined)
+        return {};
+    const plan = {};
+    for (const key of ['maxRows', 'maxCost']) {
+        const entry = raw[key];
+        if (entry === undefined)
+            continue;
+        if (typeof entry === 'number' && Number.isFinite(entry) && entry >= 0) {
+            plan[key] = entry;
+            continue;
+        }
+        problems.push(`plan.${key}：${JSON.stringify(entry)} 不是非负数字，已忽略这一层检查`);
+    }
+    return plan;
+}
+/** 解析布尔开关（只认真正的 `false` / 缺省）。 */
+function parseFlag(value, fallback, where, problems) {
+    if (value === undefined)
+        return fallback;
+    if (typeof value === 'boolean')
+        return value;
+    problems.push(`${where}：${JSON.stringify(value)} 不是布尔值，已按默认值 ${String(fallback)} 处理`);
+    return fallback;
+}
+/**
+ * 把一份普通对象解析成生效配置。
+ *
+ * 入参刻意收 `Record<string, unknown>` 而不是 `Config`：**setting 存储交下来的投影未必经过 schema
+ * 默认值**（`devfront` 记过同类教训），所以这一层必须自己对每种坏输入有确定行为。
+ */
+export function normalizeConfig(raw) {
+    const problems = [];
+    const targets = [];
+    const seenIds = new Set();
+    const rawTargets = raw.targets;
+    if (rawTargets === undefined) {
+        // 没有目标不是错误：插件照常挂载，只是工具一个都不注册（agent 看不到任何入口）。
+    }
+    else if (!Array.isArray(rawTargets)) {
+        problems.push(`targets：不是数组，已按「没有目标」处理`);
+    }
+    else {
+        rawTargets.forEach((entry, index) => {
+            const parsed = parseTarget(entry, index, seenIds, problems);
+            if (parsed !== undefined)
+                targets.push(parsed);
+        });
+    }
+    const timeoutRaw = raw.timeoutMs;
+    let timeoutMs = DEFAULT_TIMEOUT_MS;
+    if (timeoutRaw !== undefined) {
+        if (typeof timeoutRaw === 'number' &&
+            Number.isInteger(timeoutRaw) &&
+            timeoutRaw >= MIN_TIMEOUT_MS &&
+            timeoutRaw <= MAX_TIMEOUT_MS) {
+            timeoutMs = timeoutRaw;
+        }
+        else {
+            problems.push(`timeoutMs：${JSON.stringify(timeoutRaw)} 不合法，已夹回 ${String(DEFAULT_TIMEOUT_MS)}（范围 ${String(MIN_TIMEOUT_MS)}..${String(MAX_TIMEOUT_MS)}）`);
+        }
+    }
+    return {
+        enabled: parseFlag(raw.enabled, true, 'enabled', problems),
+        announceToAgent: parseFlag(raw.announceToAgent, true, 'announceToAgent', problems),
+        auditFile: (asString(raw.auditFile) ?? '').trim(),
+        plan: parsePlan(raw.plan, problems),
+        timeoutMs,
+        targets,
+        problems,
+    };
+}
+/** 按 id 找目标（找不到时报出可用名单——agent 的失败模式是原地重试，得给它出路）。 */
+export function pickTarget(targets, id) {
+    const wanted = typeof id === 'string' ? id.trim() : '';
+    if (wanted === '')
+        return undefined;
+    return targets.find((target) => target.id === wanted);
+}
+/** 可用目标名单（拒绝文案里用）。 */
+export function targetIds(targets) {
+    return targets.length === 0 ? '（一个都没有：插件配置里还没有 targets）' : targets.map((target) => target.id).join(' / ');
+}
+//# sourceMappingURL=plugin-config.js.map

@@ -20,7 +20,7 @@
 >
 > **验证**：`packages/tty/scripts/jump-smoke.mjs`（真机：一个能 `direct-tcpip` 的 bastion +
 > `test-sshd` 目标，四个用例含凭据不同 / 密码错 / 目标不可达 / 收尾无残留连接，已进 CI）；
-> `packages/docker/test/ssh-jump.test.ts`（假 ssh2：先拨跳板机、通道当 sock、池键区分、
+> `packages/kit/test/ssh-jump.test.ts`（假 ssh2：先拨跳板机、通道当 sock、池键区分、
 > 失败路径关连接）；`packages/tty/test/jump-spec.test.ts`（四道白名单往返 + 严格校验拒绝分支）。
 >
 > **验证（ProxyCommand）**：`packages/tty/scripts/proxycommand-smoke.mjs`（真机：自写的
@@ -29,7 +29,7 @@
 > P5 主机名含 shell 特殊字符拒绝代入（并断言注入没落地）/ P6 收尾无残留子进程，已进 CI）；
 > `packages/tty/test/proxy-command.test.ts`（16 例：清洗 / 严格校验 / 占位符展开 / 闸门默认关 /
 > **关着时不起进程**（用「会写文件」的命令证明）/ 起得来收得掉 / 提前退出的 failure /
-> 四道白名单往返）；`packages/docker/test/ssh-proxy-command.test.ts`（12 例：同口径、
+> 四道白名单往返）；`packages/kit/test/ssh-proxy-command.test.ts`（12 例：同口径、
 > **池键并入代理命令身份且不回显原文**、缺省闸门关、**每次拨号求值**、连接簿 → 规格携带）。
 
 > **本文下面各节仍是动手前的完整背景**（坑、验收、边界），已实现的部分直接对应上表。

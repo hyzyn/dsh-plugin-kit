@@ -77,11 +77,33 @@ child.on('close', () => (tail += stderr.flush()))
   全仓曾有 8 份逐字重复的推导，读的是同一份配置目录，新代码一律用这个函数。
 
 ```ts
-import { dshHome, getService } from '@hyzyn/dsh-kit'
+import { HOST_SERVICES, dshHome, getService } from '@hyzyn/dsh-kit'
 
-const sessionQuery = getService(ctx, 'sessionQuery')
+// 服务名走常量，不要写字面量：它是运行时字符串键，拼错了不报错、只静默降级
+// （`getService` 返回 undefined）。判据见 docs/conventions.md § 常量。
+const sessionQuery = getService(ctx, HOST_SERVICES.sessionQuery)
 const patchFile = join(dshHome(), 'cordis.patch.yml')
 ```
+
+### 字符串契约常量（`host-services`）
+
+**跨进程 / 跨包的字符串键**——类型管不住、写错了不报错的那一类。判据见
+[docs/conventions.md § 常量](../../docs/conventions.md#常量什么该提什么不该提)：
+**类型联合的取值不要提常量，运行时字符串键要提。**
+
+- `HOST_SERVICES` —— 宿主服务名（`settings` / `launchEnvironment` / `llm` / `tools` /
+  `sessions` / `sessionQuery` / `sessionPersistence` / `agentDefaultModel`）。**不是穷举**：
+  只登记本仓用到的，新增一处补一行即可。
+- `HOST_SERVICE_NAMES` —— 上面全部值（守卫与用例用）。
+- `LAUNCH_ENV_LAYERS` —— 启动环境的层名（`process` / `project-env` / `user-env`）。
+  **`process` 是唯一可用于授权的层**；后两层运行期可写（环境变量卡片），拿它们当授权
+  等于把提权路径搬到那张卡片上。
+
+`launchEnvironment` 为什么单独点名：它错了会**静默换掉能力闸门的判定源**（回落到冻结的
+`process.env` 拷贝）——安全相关，不是体验问题。
+
+守卫：`scripts/test/string-contracts.guard.test.ts`（源码扫描，跳过注释行；
+只认 `getService(ctx, '…')` 一种写法）。
 
 ### HTTP 路由辅助（`http`）
 
@@ -218,6 +240,66 @@ env.yml / cordis.patch.yml / prompts.yml 共用的「注释标记圈出自动生
   或结束标记返回 `undefined`（损坏，调用方应报错而不是用半截内容）；
 - `writeFileAtomic(file, data, mode = 0o600)` —— 同目录临时文件 + rename 原子写
   （配置 watch 不会读到半截文件），mode 只会被 umask 进一步收紧。
+
+### SSH 执行层（`./ssh-exec` 子路径）与连接簿读取（`tty-books`）
+
+一次性命令的执行通道：**懒连接池 + TOFU 主机指纹 + 超时与输出上限**，本地目标走
+`runLocal()`。它与 `tty` 的 PTY 实现是**两份**，刻意不合并——PTY 会话会挂住、没有总超时，
+一次性命令有；合并等于让一边的取舍吃进另一边的失败模式。
+
+```ts
+import { RemoteExec, sshTarget } from '@hyzyn/dsh-kit/ssh-exec'
+import { readTtyBooks, readTtyProxyCommandAllowed } from '@hyzyn/dsh-kit'
+
+const books = readTtyBooks(settingsApi)                       // tty 连接簿 → SshSpec
+const exec = new RemoteExec(logger, hostKeyStore, {
+  proxyCommandAllowed: () => readTtyProxyCommandAllowed(settingsApi),
+  tag: 'dsh-docker',        // 日志前缀：属于调用方（缺省 dsh-kit）
+  mismatchHint: '到 … → SSH 主机密钥记录 删除该主机再重连。',   // 处置入口也属于调用方
+})
+const out = await exec.run(books.get('nas')!, ['docker', 'ps'])
+```
+
+**两条边界，都有守卫**（`scripts/test/ssh-single-source.test.ts`）：
+
+- **只许一份实现**。`tty-books` / `ssh-exec` 的实现在 `kit` **一处**；消费者
+  （`docker`，以及环境编排 `devenv`）要么直接 import 子路径，要么保留一个**纯再导出**的壳
+  （`packages/docker/src/ssh-exec.ts` 就是壳），**不许把实现抄回去**——TOFU 口径 / 通道额度 /
+  跳板机语义一旦分叉，症状是「容器面板连得上、环境编排连不上」，而两边各自看着都对；
+- **日志前缀与处置文案归调用方**（`tag` / `mismatchHint`）。这一层同时替多个面板干活，
+  写死成某一个的名字，另一个的日志就会指错人、错误提示会指到不存在的入口。
+
+**为什么 `./ssh-exec` 是子路径而不是主入口导出**：它 `import { Client } from 'ssh2'`，
+进主入口等于让十个不需要 SSH 的插件都多加载一个传输库；而且它与 `scope` 各有一个
+`expandHome`，**语义不同**（`scope` 那个只认 `~` / `~/`，`ssh-exec` 那个对 `~user` 抛错），
+同名不同义的两个导出不能同在 `export *` 里。`tty-books` 只有纯函数（不依赖 `ssh2`），
+所以它在主入口。
+
+
+
+### Chrome DevTools Protocol 客户端（`chrome-cdp`）
+
+零依赖的最小 CDP 客户端（Node 22 自带 `fetch` 与全局 `WebSocket`）：起一个 headless
+Chrome、连上它的 CDP 端点、发命令、收事件、截图。消费者是**验证类**脚本与工具
+（仓根 `scripts/verify-*.mjs`、`packages/docker/scripts/*`、`packages/devfront` 的浏览器驱动）。
+
+```ts
+const chrome = await Chrome.launch()
+await chrome.attachToPage()
+await chrome.send('Page.navigate', { url: 'https://example.com/' })
+await chrome.screenshot('/tmp/shot.png')
+chrome.close()   // 必须调：忘了会留下 Chrome 进程
+```
+
+**`noSandbox` 只在必要时开**：受限环境（容器 / CI / 受限的 macOS 沙箱）里 Chrome 的沙箱
+初始化会失败，进程随后带 `SIGTRAP` 退出——表现为「CDP 端点起来了 1 秒就没了」，很难归因。
+`Chrome.launch` 会在进程已死时**立刻**失败并给出这条提示（不再等满 20 秒超时），
+但**不会自动关沙箱**：
+
+```ts
+const chrome = await Chrome.launch({ noSandbox: true })   // 代价是关掉浏览器进程隔离
+```
+
 
 ```ts
 const markers = { beginMarker: '# --- my-plugin managed ---', endMarker: '# --- end my-plugin managed ---' }

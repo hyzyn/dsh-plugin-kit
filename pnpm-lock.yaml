@@ -45,6 +45,9 @@ importers:
         specifier: 0.24.0
         version: link:packages/tty
     devDependencies:
+      '@hyzyn/dsh-kit':
+        specifier: 0.6.0
+        version: link:packages/kit
       '@vitest/coverage-v8':
         specifier: 3.2.7
         version: 3.2.7(vitest@3.2.7(@types/node@22.20.1)(yaml@2.9.1))
@@ -110,7 +113,7 @@ importers:
         specifier: ^3.18.4
         version: 3.18.4
       '@hyzyn/dsh-kit':
-        specifier: 0.5.1
+        specifier: 0.6.0
         version: link:../kit
       js-yaml:
         specifier: ^4.1.0
@@ -132,6 +135,81 @@ importers:
         specifier: ~5.9.3
         version: 5.9.3
 
+  packages/devdata:
+    dependencies:
+      '@deepseek-ai/schemastery':
+        specifier: ^3.18.4
+        version: 3.18.4
+      '@hyzyn/dsh-kit':
+        specifier: 0.6.0
+        version: link:../kit
+      js-yaml:
+        specifier: ^4.1.0
+        version: 4.3.2
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: ^4.0.4
+        version: 4.0.4(@deepseek-ai/cordis-plugin-include@1.0.9)(@deepseek-ai/cordis-plugin-loader@1.0.5)
+      '@deepseek-ai/dsh-tools':
+        specifier: 0.1.2-rc.1
+        version: 0.1.2-rc.1(20d62db838ec6aaa7229571d99008ed6)
+      '@types/node':
+        specifier: ^22.20.0
+        version: 22.20.1
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+
+  packages/devenv:
+    dependencies:
+      '@deepseek-ai/schemastery':
+        specifier: ^3.18.4
+        version: 3.18.4
+      '@hyzyn/dsh-kit':
+        specifier: 0.6.0
+        version: link:../kit
+      js-yaml:
+        specifier: ^4.1.0
+        version: 4.3.2
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: ^4.0.4
+        version: 4.0.4(@deepseek-ai/cordis-plugin-include@1.0.9)(@deepseek-ai/cordis-plugin-loader@1.0.5)
+      '@deepseek-ai/dsh-tools':
+        specifier: 0.1.2-rc.1
+        version: 0.1.2-rc.1(20d62db838ec6aaa7229571d99008ed6)
+      '@types/node':
+        specifier: ^22.20.0
+        version: 22.20.1
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+
+  packages/devfront:
+    dependencies:
+      '@deepseek-ai/schemastery':
+        specifier: ^3.18.4
+        version: 3.18.4
+      '@hyzyn/dsh-kit':
+        specifier: 0.6.0
+        version: link:../kit
+      js-yaml:
+        specifier: ^4.1.0
+        version: 4.3.2
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: ^4.0.4
+        version: 4.0.4(@deepseek-ai/cordis-plugin-include@1.0.9)(@deepseek-ai/cordis-plugin-loader@1.0.5)
+      '@deepseek-ai/dsh-tools':
+        specifier: 0.1.2-rc.1
+        version: 0.1.2-rc.1(20d62db838ec6aaa7229571d99008ed6)
+      '@types/node':
+        specifier: ^22.20.0
+        version: 22.20.1
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+
   packages/docker:
     dependencies:
       '@deepseek-ai/dsh':
@@ -141,7 +219,7 @@ importers:
         specifier: ^3.18.4
         version: 3.18.4
       '@hyzyn/dsh-kit':
-        specifier: 0.5.1
+        specifier: 0.6.0
         version: link:../kit
       ssh2:
         specifier: ^1.17.0
@@ -178,7 +256,7 @@ importers:
         specifier: ^3.18.4
         version: 3.18.4
       '@hyzyn/dsh-kit':
-        specifier: 0.5.1
+        specifier: 0.6.0
         version: link:../kit
       js-yaml:
         specifier: ^4.1.0
@@ -202,6 +280,9 @@ importers:
       js-yaml:
         specifier: ^4.1.0
         version: 4.3.2
+      ssh2:
+        specifier: ^1.17.0
+        version: 1.17.0
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: ^4.0.4
@@ -209,6 +290,9 @@ importers:
       '@types/node':
         specifier: ^22.20.0
         version: 22.20.1
+      '@types/ssh2':
+        specifier: ^1.15.6
+        version: 1.15.6
       typescript:
         specifier: ~5.9.3
         version: 5.9.3
@@ -238,7 +322,7 @@ importers:
         specifier: ^3.18.4
         version: 3.18.4
       '@hyzyn/dsh-kit':
-        specifier: 0.5.1
+        specifier: 0.6.0
         version: link:../kit
       js-yaml:
         specifier: ^4.1.0
@@ -266,7 +350,7 @@ importers:
         specifier: ^3.18.4
         version: 3.18.4
       '@hyzyn/dsh-kit':
-        specifier: 0.5.1
+        specifier: 0.6.0
         version: link:../kit
     devDependencies:
       '@deepseek-ai/cordis':
@@ -291,7 +375,7 @@ importers:
         specifier: ^3.18.4
         version: 3.18.4
       '@hyzyn/dsh-kit':
-        specifier: 0.5.1
+        specifier: 0.6.0
         version: link:../kit
       js-yaml:
         specifier: ^4.1.0
@@ -319,7 +403,7 @@ importers:
         specifier: ^3.18.4
         version: 3.18.4
       '@hyzyn/dsh-kit':
-        specifier: 0.5.1
+        specifier: 0.6.0
         version: link:../kit
     devDependencies:
       '@deepseek-ai/cordis':
@@ -341,7 +425,7 @@ importers:
         specifier: link:../../scripts/dsh-peer-stub
         version: link:../../scripts/dsh-peer-stub
       '@hyzyn/dsh-kit':
-        specifier: 0.5.1
+        specifier: 0.6.0
         version: link:../kit
       js-yaml:
         specifier: ^4.1.0
@@ -366,7 +450,7 @@ importers:
         specifier: ^3.18.4
         version: 3.18.4
       '@hyzyn/dsh-kit':
-        specifier: 0.5.1
+        specifier: 0.6.0
         version: link:../kit
       '@xterm/headless':
         specifier: ^5.5.0
