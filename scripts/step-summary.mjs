@@ -35,18 +35,27 @@ import { appendFileSync } from 'node:fs'
  * @param markdown - 要追加的内容（不需要结尾换行；函数会补）
  * @param options.env - 注入环境变量（默认 `process.env`；测试用）
  * @param options.appendFile - 注入写文件函数（默认 `fs.appendFileSync`；测试用）
+ * @param options.log - 注入日志函数（默认 `console.log`；测试用）。写成功/失败都留一行，见下方注释。
  * @returns 真的写了 → `true`；没设变量或写失败 → `false`（**不抛错**）
  */
 export function writeStepSummary(markdown, options = {}) {
-  const { env = process.env, appendFile = appendFileSync } = options
+  const { env = process.env, appendFile = appendFileSync, log = console.log } = options
   const target = env.GITHUB_STEP_SUMMARY
   // 空串与未定义同档：本地没有这个变量是**正常状态**，不是错误
   if (typeof target !== 'string' || target === '') return false
   try {
     appendFile(target, markdown.endsWith('\n') ? markdown : markdown + '\n')
+    /*
+     * 写成功要**留一行日志**：`$GITHUB_STEP_SUMMARY` 的内容在 REST API 里读不到
+     * （`jobs.output.summary` 是 check-run 的另一个字段），所以「到底写没写」只能靠
+     * 日志自证。第一版是静默的，验证时无法区分「写成功了」与「悄悄没写」——
+     * 一个不说话的写入器等于没法验收。
+     */
+    log(`[summary] 已写入 Job Summary（${String(markdown.split('\n')[0])} …）`)
     return true
-  } catch {
-    // 摘要写不进去（权限 / 磁盘满 / 路径被占）不该影响闸门结论
+  } catch (error) {
+    // 摘要写不进去（权限 / 磁盘满 / 路径被占）不该影响闸门结论，但**要说出来**
+    log(`[summary] Job Summary 写入失败（不影响闸门结论）：${String(error?.message ?? error)}`)
     return false
   }
 }

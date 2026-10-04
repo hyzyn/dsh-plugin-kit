@@ -116,3 +116,44 @@ describe('renderCoverageSummary：三条指标的「本轮 vs 基线」表', () 
     expect(md).toContain('+3.48')
   })
 })
+
+describe('可观测性：写入必须留痕（否则没法验收）', () => {
+  /*
+   * 2026-10-04 加。第一版是**静默**的：写成功与「悄悄没写」在日志里长得一样。
+   * 而 `$GITHUB_STEP_SUMMARY` 的内容**在 REST API 里读不到**
+   * （`jobs.output.summary` 是 check-run 的另一个字段，实测恒空），
+   * 所以「到底写没写」只能靠日志自证——一个不说话的写入器等于没法验收。
+   */
+  const spy = () => {
+    const lines = []
+    return { lines, log: (msg) => lines.push(String(msg)) }
+  }
+
+  it('写成功 → 打一行（含首行内容，便于在日志里确认写了什么）', () => {
+    const { lines, log } = spy()
+    const { appendFile } = fakeAppend()
+    writeStepSummary('## Flake lane\n\n✅ 全绿', { env: { GITHUB_STEP_SUMMARY: '/tmp/s.md' }, appendFile, log })
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toContain('[summary]')
+    expect(lines[0]).toContain('Flake lane')
+  })
+
+  it('写失败 → 也打一行，且**说明不影响闸门结论**（否则会有人以为闸门坏了）', () => {
+    const { lines, log } = spy()
+    const boom = () => {
+      throw new Error('EACCES: permission denied')
+    }
+    const ok = writeStepSummary('# x', { env: { GITHUB_STEP_SUMMARY: '/nope' }, appendFile: boom, log })
+    expect(ok).toBe(false)
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toContain('失败')
+    expect(lines[0]).toContain('不影响闸门结论')
+    expect(lines[0]).toContain('EACCES')
+  })
+
+  it('**未设变量时完全静默**（本地跑不该刷出无意义的 [summary] 行）', () => {
+    const { lines, log } = spy()
+    writeStepSummary('# x', { env: {}, appendFile: fakeAppend().appendFile, log })
+    expect(lines).toEqual([])
+  })
+})
