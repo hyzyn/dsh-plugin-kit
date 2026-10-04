@@ -248,6 +248,23 @@ jobs:
       # 装不上（或版本与 cohort 不匹配）时 `--bootstrap` 会**自证失败**并把原因打出来——不会假绿。
       - name: Install dsh CLI (pinned)
         run: npm install -g @deepseek-ai/dsh@0.2.1-alpha.1
+      # 用 **DSH 自己的判定器**逐包 × 逐 cohort 复核兼容性声明（2026-10-04 接进 CI）。
+      #
+      # 为什么必须有它：上面 build 那个 job 的 `dsh-peers:check` 只回答「我们的声明自洽吗」
+      # （范围是否逐字等于 EXPECTED_RANGE、manifestVersion / engines.dsh 是否齐全）——那些
+      # 都是**我自己写的规则**。而「这个 cohort 到底放不放行我们的包」只有官方能回答：
+      # `evaluatePluginCompatibility` 就是宿主安装前与启动时真正跑的那段代码（44 行，只做
+      # peer 版本匹配、不 import 插件代码）。
+      #
+      # 这条路径 2026-09-29 就有了，但**从没进 CI**——每次都要人手拼路径当参数传，于是退化成
+      # 「靠人记得跑」（历史证据：packages/codegraph/README.md 记着两轮发布前手工跑过）。
+      # 现在 `--with-app-boot` 自动定位（scripts/dsh-app-boot.mjs：从 `which dsh` 真身上溯，
+      # 兼容 vendored 与 hoisted 两种 npm 布局），定位不到就**报错退出**、不静默跳过。
+      #
+      # 放在 Install 之后、live-smoke 之前：它是纯 manifest 判定（毫秒级、不起宿主），
+      # 先过这一关再花几十秒起真宿主。
+      - name: Check compatibility with DSH's own evaluator
+        run: pnpm dsh-peers:check --with-app-boot
       # 挂载走 link:，用的是本 checkout 的包，所以先构建出 lib/ 与 client.js。
       - run: pnpm -r build
       # `--no-sandbox`：受限环境（容器化 runner / 文件沙箱）里 Chrome 自己的 sandbox 起不来，

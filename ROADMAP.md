@@ -594,6 +594,38 @@ CI 绿，而那正是它要回答的问题；副作用是本机跑起来瞬间�
 2.25x。取 2 而不是历史上复现用过的 5：这是每天跑的常设闸门，不该长期占满开发机 CPU。
 门槛：新增 3 条用例钉住这个不变量（含「下限是 1，`--maxWorkers=0` 是非法值」）。
 
+#### 9.7 ✅ 官方判定器核对进 CI：用宿主真正会跑的那段代码复核声明（2026-10-04）
+
+**来源**：用户问「有校验样式是否符合 DSH 规范的 lint 吗」。查证结论是**官方没有 lint 命令**
+（`dsh` 只有 boot / plugin；`dsh-package-manifest` 是**纯类型包**，`lib/index.js` 只有
+11 字节 `export {};`，README 原话「Each reader owns JSON parsing, validation, and default
+resolution」）。但查出本仓**早就有一处官方校验器的接线却从没进 CI**。
+
+**洞（性质与前面几条不同——这不是「修 bug」，是「把靠人记得的手工步骤自动化」）**：
+`check-dsh-peers.mjs --app-boot <dir>` 这条路径 2026-09-29 就有，历史证据是
+`packages/codegraph/README.md` 记着两轮发布前**手工**跑过、逐 cohort × 逐包核对。但它
+**从没进 CI**——每次要人手把路径拼出来当参数传。这正是 `conventions.md` 那条
+「CI 与发布闸要成对」的反面。
+
+**为什么值得接**：`dsh-peers:check` 的默认路径只回答「**我的声明符合我的规则**吗」
+（范围逐字等于 `EXPECTED_RANGE`、`manifestVersion` / `engines.dsh` 齐全）。而「这个 cohort
+**到底放不放行**」只有官方能回答——`evaluatePluginCompatibility` 是宿主**安装前与启动时
+真正跑的那段代码**。实测两者**不重叠**：官方那个 44 行函数**不看** `dsh.manifestVersion` /
+`dsh.bundle.patch` / `dsh.engines.dsh`。
+
+**落点**：新增 `scripts/dsh-app-boot.mjs`（自动定位，四级优先：`--app-boot` > `$DSH_APP_BOOT_DIR`
+> 从 `which dsh` 真身上溯 > `npm root -g` 兜底；后两条各兼容 **vendored** 与 **hoisted**
+两种 npm 布局）；`check-dsh-peers.mjs` 加 `--with-app-boot`。接线在 `ci.yml` 的 `mount-smoke`
+job（它已装 pinned dsh），放在 `Install dsh CLI` 之后、`live-smoke` 之前。
+
+**两条纪律**（都有用例钉住）：① `--app-boot` / `$DSH_APP_BOOT_DIR` **点了名就只认它**，
+指错直接失败、不回落——实测过不这么做的后果是 env 被静默忽略、自动定位成功、结论照绿；
+② 找不到就**报错退出**、不静默跳过，并列出试过哪些路径。
+
+**门槛**：`scripts/test/dsh-app-boot.test.ts` 26 条用例（含两种 npm 布局、三级优先级、
+「点了名就只认它」、未装 dsh 时 tried 为空）。实测：本机定位到 `dsh-bin` 来源、13 包 × 4 cohort
+全放行；真正不含 dsh 的 PATH 下报错退出（exit=1）；`DSH_APP_BOOT_DIR` 指错时报错而非回落。
+
 #### 9.6 ✅ 工具链钉子守卫：两处版本声明必须自洽（2026-10-04）
 
 **来源**：与 9.5 同一轮——对照 `ant-design/ant-design` 时顺带把本仓「声明层」自查了一遍，

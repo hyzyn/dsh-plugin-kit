@@ -28,11 +28,15 @@
  * 用法：
  *   node scripts/check-dsh-peers.mjs
  *   node scripts/check-dsh-peers.mjs --app-boot /path/to/@deepseek-ai/dsh-app-boot
- *     # 可选：额外用 DSH 自己的判定器逐包 × 逐 cohort 核对（COHORTS 里每一档都要放行）
+ *     # 用 DSH 自己的判定器逐包 × 逐 cohort 核对（COHORTS 里每一档都要放行）
+ *   node scripts/check-dsh-peers.mjs --with-app-boot
+ *     # 同上，但**自动定位**那份判定器（`scripts/dsh-app-boot.mjs`：从 `which dsh` 的真身上溯，
+ *     # 兜底 `npm root -g`）；定位不到就**报错退出**，不静默跳过。CI 用的是这条。
  */
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { APP_BOOT_ENV_VAR, describeAppBootSearch, findAppBoot } from './dsh-app-boot.mjs'
 import { targets } from './publish-targets.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -81,10 +85,52 @@ function floorOf(range) {
   return match === null ? undefined : match[1]
 }
 
-/** `--app-boot` 指向一份 `@deepseek-ai/dsh-app-boot` 包目录时做真判定器核对。 */
+/**
+ * `--app-boot <dir>` 指向一份 `@deepseek-ai/dsh-app-boot` 包目录时做真判定器核对。
+ *
+ * `--with-app-boot`（2026-10-04 加，CI 用这条）**自动定位**那份判定器：这条路径此前
+ * 存在但**从没进 CI**——每次都要人手拼路径当参数传，于是退化成「靠人记得跑」。
+ * 自动定位的实现与理由见 `scripts/dsh-app-boot.mjs`；定位不到时**报错退出**，
+ * 不静默跳过（跳过它等于把 CI 的结论降级成「我自己写的规则说没问题」）。
+ */
 const argv = process.argv.slice(2)
 const appBootIndex = argv.indexOf('--app-boot')
-const appBootDir = appBootIndex === -1 ? undefined : argv[appBootIndex + 1]
+const appBootExplicit = appBootIndex === -1 ? undefined : argv[appBootIndex + 1]
+const wantAppBoot = argv.includes('--with-app-boot') || appBootExplicit !== undefined
+
+/**
+ * 定位失败时统一报错退出。
+ *
+ * `source` 说明是**哪一路**没成：`explicit` / `env` 是「你点了名但那儿没有」——
+ * 这种必须报错（否则会静默换成另一份判定器，把「我验的是哪个判定器」变成运气）；
+ * `undefined` 是自动搜索都没命中——报出试过的路径。
+ */
+function failAppBoot(found) {
+  const byUser = found.source === 'explicit' || found.source === 'env'
+  const what = found.source === 'explicit' ? '--app-boot 指定的目录' : `$${APP_BOOT_ENV_VAR} 指定的目录`
+  console.error(
+    (byUser
+      ? `✘ ${what}不是一份可用的 @deepseek-ai/dsh-app-boot（要同时有 package.json 与 lib/index.js）。\n`
+      : '✘ 没找到 @deepseek-ai/dsh-app-boot（DSH 的官方兼容性判定器）。\n') +
+      '试过这些路径：\n' +
+      describeAppBootSearch(found.tried) +
+      '\n修法：装一份 dsh（`npm install -g @deepseek-ai/dsh@<pin>`），' +
+      '或用 DSH_APP_BOOT_DIR=<dir> / --app-boot <dir> 显式指定。\n' +
+      '**不要改成静默跳过**：这条路径是「用宿主真正会跑的那段代码复核声明」，' +
+      '跳过它等于把结论降级成「我自己写的规则说没问题」。',
+  )
+  process.exit(1)
+}
+
+let appBootDir = appBootExplicit
+if (wantAppBoot) {
+  const found = appBootExplicit === undefined ? findAppBoot() : findAppBoot({ explicit: appBootExplicit })
+  if (found.dir === null) failAppBoot(found)
+  appBootDir = found.dir
+  // 报出**用的是哪一份**：自动定位之后，日志里必须能看出验的是哪个判定器，
+  // 否则「定位到了另一份」也没人会发现（来源见 dsh-app-boot.mjs 的三级优先级）。
+  console.log(`[check-dsh-peers] 判定器来源：${found.source} → ${found.dir}`)
+}
 
 /** 新插件模板也必须合规，否则每个新包都带着同一个缺口出厂。 */
 const TEMPLATE = 'templates/hello/package.json'
@@ -217,7 +263,19 @@ console.log(`✔ dsh peer 兼容性检查通过：${String(ranges.size)} 个可�
 
 if (appBootDir !== undefined) {
   const entry = join(resolve(appBootDir), 'lib', 'index.js')
-  const { evaluatePluginCompatibility } = await import(pathToFileURL(entry).href)
+  const { evaluatePluginCompatibility, getDshRuntimeVersion } = await import(pathToFileURL(entry).href)
+  /*
+   * 报出**用的是哪一份判定器**：`--with-app-boot` 自动定位之后，日志里必须能看出
+   * 「验的是哪个版本的官方判定器」——否则路径拼错了也不会有人发现（它会静默用另一份）。
+   * `getDshRuntimeVersion()` 是判定器自己报的运行时版本，比读 package.json 更权威。
+   */
+  let evaluatorVersion = '(未知)'
+  try {
+    evaluatorVersion = getDshRuntimeVersion()
+  } catch {
+    /* 读不到就保持「未知」——不影响下面的核对 */
+  }
+  console.log(`[check-dsh-peers] 用官方判定器核对：${appBootDir}（自报运行时 ${evaluatorVersion}）`)
   // 逐个 cohort 都用 DSH 自己的判定器复核一遍：范围里写了几段，就得有几段真的放行。
   const incompatible = []
   for (const cohort of DSH_COHORTS) {

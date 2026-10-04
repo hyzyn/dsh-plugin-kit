@@ -508,6 +508,54 @@ bundle key 且没有 row 入口、旧宿主只注册两个 row key）——其�
   浅克隆 / `--no-verify` / 直接在 CI 环境重建产物的人），2026-09-25 修好——
   该 step 的注释里也记了这个坑，免得后人「顺手简化」回去。
 
+### 官方判定器核对：用宿主真正会跑的那段代码复核声明
+
+`pnpm dsh-peers:check` 有两半，**2026-10-04 起两半都进 CI**：
+
+| 半边 | 回答什么 | 谁写的规则 |
+|---|---|---|
+| 默认路径（自写断言） | 声明**自洽**吗——peer 范围是否逐字等于 `EXPECTED_RANGE`、`dsh.manifestVersion` / `dsh.engines.dsh` 是否齐全、顶层 `engines.dsh` 有无残留 | **我自己写的** |
+| `--with-app-boot` | 这个 cohort **到底放不放行**我们的包 | **DSH 官方**（`evaluatePluginCompatibility`） |
+
+**为什么需要官方那半边**：前者只保证「我的声明符合我的规则」。而「这个 cohort 放不放行」
+只有官方能回答——`evaluatePluginCompatibility` 就是宿主**安装前与启动时真正跑的那段代码**。
+它只有 44 行，**只做一件事**：把 manifest 里 `@deepseek-ai/dsh*` 的 peer 拿去和运行时版本做
+`semver.satisfies(rt, range, { includePrerelease: true })`，返回不满足的那些；**不 import 插件代码**，
+所以能在安装前判定。实测它**不看** `dsh.manifestVersion` / `dsh.bundle.patch` / `dsh.engines.dsh`
+（那几项正是默认路径补的）——**两半不重叠**。
+
+**这条路径的历史**：2026-09-29 就有了（`packages/codegraph/README.md` 记着两轮发布前手工跑过、
+逐 cohort × 逐包核对），但**从没进 CI**——每次要人手把路径拼出来当参数传，于是退化成
+「靠人记得跑」，正是本文开头那条「CI 与发布闸要成对」的反面。
+
+**自动定位**（[`scripts/dsh-app-boot.mjs`](../scripts/dsh-app-boot.mjs)）四级优先：
+
+1. `--app-boot <dir>`（显式）
+2. `$DSH_APP_BOOT_DIR`
+3. 从 `which dsh` 的**真身**上溯（`<root>/@deepseek-ai/dsh/lib/bin.js` → 包根），
+   同时给 **vendored**（`<pkgRoot>/node_modules/…`，本机实测）与 **hoisted**
+   （`<globalRoot>/@deepseek-ai/dsh-app-boot`，npm 可能提升）两种 npm 布局候选
+4. `npm root -g` 兜底（同样两种布局）
+
+**优先从 dsh 真身而不是 `npm root -g`**：nvm / volta 下 PATH 里的 `npm` 与 `dsh` 可能来自
+**不同** node 版本，而我们要的是「这个 dsh 自己」带的那份判定器。
+
+**两条纪律（都有用例钉住）**：
+
+- **① / ② 点了名就只认它**——指错了**直接失败**，绝不回落到自动搜索。2026-10-04 实测过
+  不这么做的后果：`DSH_APP_BOOT_DIR=/tmp/also-missing` 被静默忽略、回落到自动定位并**成功**，
+  于是「我钉住的那一份判定器」根本没被用上，而结论看起来是绿的。
+- **找不到就报错退出，不静默跳过**——跳过它等于把 CI 的结论降级成「我自己写的规则说没问题」。
+  报错里列出**试过哪些路径**，否则没人知道该建什么。
+
+**可观测性**：闸门会打出判定器**来源与路径**，以及它**自报的运行时版本**
+（`getDshRuntimeVersion()`）——自动定位之后，日志里必须能看出验的是哪一份，
+否则「定位到了另一份」也不会有人发现。
+
+**接线**：`ci.yml` 的 `mount-smoke` job（它已装 pinned dsh，判定器就在那棵树里），
+放在 `Install dsh CLI` 之后、`live-smoke` 之前——纯 manifest 判定是毫秒级、不起宿主，
+先过这一关再花几十秒起真宿主。
+
 ### 工具链钉子守卫：两处版本声明必须自洽
 
 两组判据是同一形状——「A 处声明的版本必须与 B 处一致」，而两处的脱节**都不会报错**。
