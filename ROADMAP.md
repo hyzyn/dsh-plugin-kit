@@ -594,37 +594,36 @@ CI 绿，而那正是它要回答的问题；副作用是本机跑起来瞬间�
 2.25x。取 2 而不是历史上复现用过的 5：这是每天跑的常设闸门，不该长期占满开发机 CPU。
 门槛：新增 3 条用例钉住这个不变量（含「下限是 1，`--maxWorkers=0` 是非法值」）。
 
-#### 9.7 ✅ 官方判定器核对进 CI：用宿主真正会跑的那段代码复核声明（2026-10-04）
+#### 9.5 ✅ 测试收集守卫：写了的测试不许从不运行（2026-10-04）
 
-**来源**：用户问「有校验样式是否符合 DSH 规范的 lint 吗」。查证结论是**官方没有 lint 命令**
-（`dsh` 只有 boot / plugin；`dsh-package-manifest` 是**纯类型包**，`lib/index.js` 只有
-11 字节 `export {};`，README 原话「Each reader owns JSON parsing, validation, and default
-resolution」）。但查出本仓**早就有一处官方校验器的接线却从没进 CI**。
+**来源**：对照 `ant-design/ant-design` 的 46 个 workflow 时，在 `test.yml` 里看到一步
+「数磁盘上的测试文件 vs `vitest list --filesOnly` 收集到的数，差值写进 Job Summary」。
+它做的正是「**写了但从没运行过**」这一类检查——本仓此前**没有任何闸门守这一层**。
 
-**洞（性质与前面几条不同——这不是「修 bug」，是「把靠人记得的手工步骤自动化」）**：
-`check-dsh-peers.mjs --app-boot <dir>` 这条路径 2026-09-29 就有，历史证据是
-`packages/codegraph/README.md` 记着两轮发布前**手工**跑过、逐 cohort × 逐包核对。但它
-**从没进 CI**——每次要人手把路径拼出来当参数传。这正是 `conventions.md` 那条
-「CI 与发布闸要成对」的反面。
+**洞（实测反证）**：`vitest.config.ts` 的 `include` 是写死的两条 glob，所以「放错目录」或
+「扩展名写成 `.spec.ts`」是**静默**的。把一条必然失败的断言放进
+`packages/tty/tests/zz-probe.spec.ts`：
 
-**为什么值得接**：`dsh-peers:check` 的默认路径只回答「**我的声明符合我的规则**吗」
-（范围逐字等于 `EXPECTED_RANGE`、`manifestVersion` / `engines.dsh` 齐全）。而「这个 cohort
-**到底放不放行**」只有官方能回答——`evaluatePluginCompatibility` 是宿主**安装前与启动时
-真正跑的那段代码**。实测两者**不重叠**：官方那个 44 行函数**不看** `dsh.manifestVersion` /
-`dsh.bundle.patch` / `dsh.engines.dsh`。
+```
+vitest 收集 → 0 个 · pnpm test → 113 文件 / 1768 用例全绿 · 十二道闸门无一变红
+```
 
-**落点**：新增 `scripts/dsh-app-boot.mjs`（自动定位，四级优先：`--app-boot` > `$DSH_APP_BOOT_DIR`
-> 从 `which dsh` 真身上溯 > `npm root -g` 兜底；后两条各兼容 **vendored** 与 **hoisted**
-两种 npm 布局）；`check-dsh-peers.mjs` 加 `--with-app-boot`。接线在 `ci.yml` 的 `mount-smoke`
-job（它已装 pinned dsh），放在 `Install dsh CLI` 之后、`live-smoke` 之前。
+那个文件**从未执行过一次**。与已记在案的 **tty D61**（逻辑埋在 `client-src` 里 = 没有测试入口）、
+**v0.1.20 的 dsh-docker 漏进 `publish-targets.mjs`** 是同一形状：**「该有的东西找不到」不会报错**。
 
-**两条纪律**（都有用例钉住）：① `--app-boot` / `$DSH_APP_BOOT_DIR` **点了名就只认它**，
-指错直接失败、不回落——实测过不这么做的后果是 env 被静默忽略、自动定位成功、结论照绿；
-② 找不到就**报错退出**、不静默跳过，并列出试过哪些路径。
+**落点**：`scripts/check-test-collection.mjs`（`pnpm test-collection:check`），三条判据——
+① 盘面（`git ls-files --cached --others --exclude-standard`，`--others` 让**未 `git add`** 的
+新文件也被看见）减去收集结果、减去白名单必须为空；② 收集结果不是 0；③ 白名单不许腐烂。
+盘面 glob 刻意**比 include 宽**（认全 `*.{test,spec}.{ts,tsx,js,jsx,mjs,cjs,mts,cts}`）——
+照抄 include 就抓不到「`.test.ts` 写成 `.spec.ts`」这个最常见的漏法。
 
-**门槛**：`scripts/test/dsh-app-boot.test.ts` 26 条用例（含两种 npm 布局、三级优先级、
-「点了名就只认它」、未装 dsh 时 tried 为空）。实测：本机定位到 `dsh-bin` 来源、13 包 × 4 cohort
-全放行；真正不含 dsh 的 PATH 下报错退出（exit=1）；`DSH_APP_BOOT_DIR` 指错时报错而非回落。
+**白名单一条**（设计，非漏）：`templates/hello/test/hello.test.ts` 是 `create-plugin` 的模板，
+复制进 `packages/<name>/` 后才被收集；模板自己待在 `templates/` 下刻意不收集。
+
+**接线**：`ci.yml` + `release.yml` 成对；发布闸那边放在 `pnpm test` **之前**。
+**门槛**：`scripts/test/check-test-collection.test.ts` 13 条用例（核心反例 = 两种漏法）
++ `--self-test` 8 组夹具；四种反例实测都能红（放错目录 / `.spec.ts` / 未 `git add` 的新文件 /
+白名单腐烂），真仓库 114 盘面 − 113 收集 − 1 豁免 = 0 违规。成本 **0.32s**。
 
 #### 9.6 ✅ 工具链钉子守卫：两处版本声明必须自洽（2026-10-04）
 
@@ -658,36 +657,37 @@ pin 不在 cohort / pin 落后一档 / `@latest`），只改 `release.yml` 也�
 「真实仓库的 pin 是最新 cohort」那条抓到——**闸门实现与用例侧各写一遍正则，两边踩同一个坑、
 也就两边验证了修法**。
 
-#### 9.5 ✅ 测试收集守卫：写了的测试不许从不运行（2026-10-04）
+#### 9.7 ✅ 官方判定器核对进 CI：用宿主真正会跑的那段代码复核声明（2026-10-04）
 
-**来源**：对照 `ant-design/ant-design` 的 46 个 workflow 时，在 `test.yml` 里看到一步
-「数磁盘上的测试文件 vs `vitest list --filesOnly` 收集到的数，差值写进 Job Summary」。
-它做的正是「**写了但从没运行过**」这一类检查——本仓此前**没有任何闸门守这一层**。
+**来源**：用户问「有校验样式是否符合 DSH 规范的 lint 吗」。查证结论是**官方没有 lint 命令**
+（`dsh` 只有 boot / plugin；`dsh-package-manifest` 是**纯类型包**，`lib/index.js` 只有
+11 字节 `export {};`，README 原话「Each reader owns JSON parsing, validation, and default
+resolution」）。但查出本仓**早就有一处官方校验器的接线却从没进 CI**。
 
-**洞（实测反证）**：`vitest.config.ts` 的 `include` 是写死的两条 glob，所以「放错目录」或
-「扩展名写成 `.spec.ts`」是**静默**的。把一条必然失败的断言放进
-`packages/tty/tests/zz-probe.spec.ts`：
+**洞（性质与前面几条不同——这不是「修 bug」，是「把靠人记得的手工步骤自动化」）**：
+`check-dsh-peers.mjs --app-boot <dir>` 这条路径 2026-09-29 就有，历史证据是
+`packages/codegraph/README.md` 记着两轮发布前**手工**跑过、逐 cohort × 逐包核对。但它
+**从没进 CI**——每次要人手把路径拼出来当参数传。这正是 `conventions.md` 那条
+「CI 与发布闸要成对」的反面。
 
-```
-vitest 收集 → 0 个 · pnpm test → 113 文件 / 1768 用例全绿 · 十二道闸门无一变红
-```
+**为什么值得接**：`dsh-peers:check` 的默认路径只回答「**我的声明符合我的规则**吗」
+（范围逐字等于 `EXPECTED_RANGE`、`manifestVersion` / `engines.dsh` 齐全）。而「这个 cohort
+**到底放不放行**」只有官方能回答——`evaluatePluginCompatibility` 是宿主**安装前与启动时
+真正跑的那段代码**。实测两者**不重叠**：官方那个 44 行函数**不看** `dsh.manifestVersion` /
+`dsh.bundle.patch` / `dsh.engines.dsh`。
 
-那个文件**从未执行过一次**。与已记在案的 **tty D61**（逻辑埋在 `client-src` 里 = 没有测试入口）、
-**v0.1.20 的 dsh-docker 漏进 `publish-targets.mjs`** 是同一形状：**「该有的东西找不到」不会报错**。
+**落点**：新增 `scripts/dsh-app-boot.mjs`（自动定位，四级优先：`--app-boot` > `$DSH_APP_BOOT_DIR`
+> 从 `which dsh` 真身上溯 > `npm root -g` 兜底；后两条各兼容 **vendored** 与 **hoisted**
+两种 npm 布局）；`check-dsh-peers.mjs` 加 `--with-app-boot`。接线在 `ci.yml` 的 `mount-smoke`
+job（它已装 pinned dsh），放在 `Install dsh CLI` 之后、`live-smoke` 之前。
 
-**落点**：`scripts/check-test-collection.mjs`（`pnpm test-collection:check`），三条判据——
-① 盘面（`git ls-files --cached --others --exclude-standard`，`--others` 让**未 `git add`** 的
-新文件也被看见）减去收集结果、减去白名单必须为空；② 收集结果不是 0；③ 白名单不许腐烂。
-盘面 glob 刻意**比 include 宽**（认全 `*.{test,spec}.{ts,tsx,js,jsx,mjs,cjs,mts,cts}`）——
-照抄 include 就抓不到「`.test.ts` 写成 `.spec.ts`」这个最常见的漏法。
+**两条纪律**（都有用例钉住）：① `--app-boot` / `$DSH_APP_BOOT_DIR` **点了名就只认它**，
+指错直接失败、不回落——实测过不这么做的后果是 env 被静默忽略、自动定位成功、结论照绿；
+② 找不到就**报错退出**、不静默跳过，并列出试过哪些路径。
 
-**白名单一条**（设计，非漏）：`templates/hello/test/hello.test.ts` 是 `create-plugin` 的模板，
-复制进 `packages/<name>/` 后才被收集；模板自己待在 `templates/` 下刻意不收集。
-
-**接线**：`ci.yml` + `release.yml` 成对；发布闸那边放在 `pnpm test` **之前**。
-**门槛**：`scripts/test/check-test-collection.test.ts` 13 条用例（核心反例 = 两种漏法）
-+ `--self-test` 8 组夹具；四种反例实测都能红（放错目录 / `.spec.ts` / 未 `git add` 的新文件 /
-白名单腐烂），真仓库 114 盘面 − 113 收集 − 1 豁免 = 0 违规。成本 **0.32s**。
+**门槛**：`scripts/test/dsh-app-boot.test.ts` 26 条用例（含两种 npm 布局、三级优先级、
+「点了名就只认它」、未装 dsh 时 tried 为空）。实测：本机定位到 `dsh-bin` 来源、13 包 × 4 cohort
+全放行；真正不含 dsh 的 PATH 下报错退出（exit=1）；`DSH_APP_BOOT_DIR` 指错时报错而非回落。
 
 ## 已由 L0 资产承接（不再是待办）
 

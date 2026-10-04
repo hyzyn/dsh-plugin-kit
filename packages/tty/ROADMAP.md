@@ -11,13 +11,17 @@
 > [docs/conventions.md 的边界判据](../../docs/conventions.md#l0--l1-的边界判据)上提到项目级
 > [ROADMAP.md](../../ROADMAP.md)（两包原文都在那里逐字保留）。本文只留「改 tty 一个包就能做完」的项。
 
-## 待办（7 项）
+## 待办（7 项 + 1 条待定性缺陷）
 
 > 下面 7 条是**规划**，不是缺陷——单人项目不另开 Issue，待办就记在这里，做完打勾。
 > 新发现的缺陷也接着编号记在本文，不要只留在对话里。
 > **2026-09-20 复核**：7 条中 2 条已被部分做掉（SFTP 双栏、状态条与图元边界，已在原地逐项标注
 > 「已经做掉的 / 仍缺的」），1 条已整条做掉（agent 侧 `tty_open` / `tty_close`，见下方标注），
 > 其余 4 条**截至 2026-09-20**与代码现状一致；其后（D62–D94）未再逐项复核，动手前请自己核一遍。
+>
+> **2026-10-04 追加的那条不属于上面 7 项**：它是**已观测到的缺陷**（`windows-smoke` 原生崩溃），
+> 但因为**只观测到 1 次、未定性**，按本仓「先记账、复现够了再动手」的纪律暂不进
+> [DEFECTS.md](./DEFECTS.md) 的索引表（那张表要求 `待修 == 0`，进表就意味着已修）。
 
 - **机器级资源的 profile 维度（D60）** —— 复制 profile 会把固定端口（webserver / 隧道
   `localPort`）一并拷走，且 tmux socket（`-L dsh-tty`）全 profile 共用。本次只做了
@@ -48,6 +52,55 @@
 **2026-09-25 追加**：`allowProxyCommand` 的提权按项目级 ROADMAP 第 5.1 节收口——只认宿主侧
 环境变量 `DSH_TTY_ALLOW_PROXY_COMMAND`（启动时采样一次），HTTP 只能关不能开；未授权时设置卡片
 里那个开关点不动 + 附一行说明，「试连」与拨号按**原因**分两条文案（未授权 vs 未启用）。
+
+### `windows-smoke` 在 CI 上原生崩溃（`0xC0000374`，2026-10-04 首次观测，**未定性**）
+
+**症状**：CI 的 Windows 腿上 `pnpm --filter @hyzyn/dsh-tty run windows-smoke` 以
+**`Exit status 3221226356`（= `0xC0000374`，Windows 堆损坏 / `STATUS_HEAP_CORRUPTION`）**
+退出，**W1–W5 五条断言全部 PASS**，日志里**没有任何 `[W6]` 字样**——即崩在
+「W5 结束（`s2.client.close()`）」到「W6 开新 agent 会话（`tty_open`）」之间。
+
+**关键特征（决定了它不是普通断言失败）**：
+
+- **没有 JS 层错误**：没有 `uncaughtException` / `unhandledRejection` / `AssertionError`，
+  退出码是**原生**的，说明崩在 ConPTY / node-pty 那一层，不是被测逻辑；
+- **不是超时**：脚本有 90s 看门狗（`watchdog`），超时会打 `[watchdog] 90s 看门狗触发`，
+  日志里没有；
+- **重跑即绿**：同一提交（`f92b6212`）只重跑失败的 job，`dsh-tty Windows smoke` **success**。
+
+**观测记录**：
+
+| 项 | 值 |
+|---|---|
+| 首次观测 | 2026-10-04，CI run `37170601433`，sha `f92b6212`，job `build (windows-latest)` |
+| 之前 5 轮同 job | **全绿**（跑到 W7d，`10/10 PASS`）——最近三轮是 `37166549464` / `37166217406` / `37165747057` |
+| 重跑同提交 | **绿** |
+| 样本数 | **1 次 / 约 10 轮**（不足以下结论） |
+
+**为什么这次只记账、不改代码**：
+
+1. **样本只有 1 次**。凭一次原生崩溃去改 ConPTY 生命周期就是猜——而本轮已经因为
+   「在 macOS 上推演 Windows 行为」错了两次（见项目级 ROADMAP 9.5 / 9.6 那两条修复），
+   教训还热着。本仓对 D95 的处理也是同一条纪律：**先记账，复现到足够次数再动手**。
+2. **崩点落在原生层**，改 JS 侧大概率打不中。
+
+**一个结构性事实（比这次崩溃本身更值得记）**：nightly 的 **flake 车道跑的是
+`ubuntu-latest`**（`.github/workflows/nightly.yml`），而这个 flake 出现在 **Windows 的
+ConPTY** 上——**我们建的 flake 车道覆盖不到这个平台的 flake**。要覆盖得让 flake 车道也上
+Windows runner（更慢更贵），或把 ConPTY 相关路径单独做一个 Windows 的重复跑车道。
+
+**下次复现时先拿这些证据**（现在崩了只剩一个退出码，连「崩在哪一行」都没有）：
+
+- 崩点两侧的会话状态：W5 的 `s2` 是否真的 `close()` 干净（`try { s2.client.close() } catch {}`
+  吞掉了异常，失败时无声）；
+- 同时存活的原生句柄数（W1–W5 开了若干 PTY，是否都 `kill` 掉了）；
+- 用 `node --stack-trace-limit` / 让 node 打印原生崩溃栈，或对 `windows-smoke` 加一层
+  「原生崩溃诊断留痕」——**这是可观测性缺口**，与项目级 `writeStepSummary` 那次修的是同一类
+  问题（不说话的失败没法定位）。
+
+**若将来确认是 flake 而非真 bug**：按项目级 ROADMAP 9.4 的口径处理（那条讲的是「争用强度
+不随机器漂」）；若确认是真 bug，另开 `Dxx` 编号进 [DEFECTS.md](./DEFECTS.md) 索引表
+（**注意**：索引表要求 `待修 == 0`，所以只有修好之后才进表，见 `scripts/defects-table.mjs`）。
 
 ## 已上提到项目级（不在本文展开）
 
