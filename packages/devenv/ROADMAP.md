@@ -190,7 +190,7 @@ remove），而本包的「清单就是白名单」只在自己的入口上成�
 | **能力字段只读**（本轮最要紧的一条判据） | POST 体里出现 `writeCapability` → 400 + `CAPABILITY_READONLY`（目标行里的那一处同样拒）；GET 只给只读档 `writeGates`（声明的变量名 / **当前是否已授权** / 怎么授权） | 用例 + 真机 ⑩。**理由**：授权判据是「宿主**启动继承层**里那个变量的值 ∈ `{1,true,yes,on}`」（`kit` 的 `TRUTHY`），而变量名来自配置——把它指向**另一个已经在启动环境里、值恰好为真**的变量（如 `CI=true`），一条 POST 就等于**免重启提权**。⚠️ 本格此前写的是「改成 `HOME`」，**那是错的**（`HOME` 的值不在白名单里、不会授权）——2026-10-03 更正，代码文案与 README 同轮一并改 |
 | 改目标逐次确认 + 审计 | 不带 `confirmTargetEdit` → 400 + `CONFIRMATION_REQUIRED`；成功分 `config.scalars` / `config.targets`，失败带码；审计写不进去 = 抛（fail-closed，走本包**已有的** `auditSink`，没新造 sink） | 用例（含「审计文件是个目录 → 请求不返回成功」）×2 + 真机 ⑮（JSONL 6 行，四种 action/码都在） |
 | **改目标不抹掉写闸门** | 同 `id` 目标的 `writeCapability` 原样带过去（客户端提交的行里没有它——它在卡片上只读）；改 `id` 等于换一个目标，闸门不跟过去 | 用例 ×2 + 真机 ⑭：改完目标后 `nas-one` 仍是 `declared:true` / `DSH_DEVENV_WRITE`，工具面仍是四个。**没有它的话**：用户改一个 `scopeDirs` 的错别字就会让 `env_up` / `env_down` 从工具面消失，而卡片上没有任何地方能把它加回来（那是 `devfront`「保存一个标量把站点整批抹掉」的同一类缺陷） |
-| `scripts/verify-devenv-card.mjs` + `card-smoke` 入口 | 隔离 `DSH_HOME`（`createLiveHarness({ prefix: 'dsh-devenv-card-' })`）+ 临时 profile 装本包 + 真宿主 + 真 Chrome：数据面 / `writeCapability` 只读那条 400 / 逐次确认 / 审计落盘 / bundle 真被加载（含四个槽）/ 插件页那一行 / 详情页控件 / 自证真实补丁未变；`--dump` / `--keep` 同 `devfront` | 2026-10-03 首跑与复跑各 **21 PASS / 0 FAIL**；真实 `~/.dsh/cordis.patch.yml`（780 字节）逐字节未变。守卫见 `test/verify-script-safety.test.ts`（六条判据 + 五条反例，**判前先去注释**） |
+| `scripts/verify-devenv-card.mjs` + `card-smoke` 入口 | 隔离 `DSH_HOME`（`createLiveHarness({ prefix: 'dsh-devenv-card-' })`）+ 临时 profile 装本包 + 真宿主 + 真 Chrome：数据面 / `writeCapability` 只读那条 400 / 逐次确认 / 审计落盘 / bundle 真被加载（含四个槽）/ 插件页那一行 / 详情页控件 / **目标编辑器的客户端路径（㉓㉔㉕）** / 自证真实补丁未变；`--dump` / `--keep` 同 `devfront` | 2026-10-03 首跑与复跑各 **21 PASS / 0 FAIL**；**2026-10-04 补 ㉓㉔㉕ 后 24 PASS / 0 FAIL**（当天复跑，含反例实测）；真实 `~/.dsh/cordis.patch.yml`（780 字节）逐字节未变。守卫见 `test/verify-script-safety.test.ts`（六条判据 + 五条反例，**判前先去注释**）+ `scripts/test/card-dom-path.test.ts`（跨包：三张卡片的 DOM 路径**在不在**，六条反例） |
 
 **为什么脚本叫 `card-smoke` 而不是 `verify`**：本包的 `verify` 已经是
 [`scripts/verify-devenv-all.mjs`](../../scripts/verify-devenv-all.mjs)（一键七步，登记在
@@ -201,9 +201,9 @@ remove），而本包的「清单就是白名单」只在自己的入口上成�
 1. **英文界面下「怎么授权」那一段仍是中文**：那段文案来自 `@hyzyn/dsh-kit` 的 `capabilityHowTo()`
    （宿主侧判据的一部分），不在本包的 i18n 目录里。要么把那一档话术也在 `kit` 里做双语，要么接受
    「授权说明只给中文」。本轮按「不动 `kit`」处理。
-2. **`packages/devenv/src/index.ts` 的头注已过期**：它还写着「没有任何写入口」「没有客户端半体」——
-   两条今天都不成立（写入口是记-4、客户端半体是这条）。头注不在这次的交付面里，**留给 Lead 一并改**
-   （`src/index.ts` 一改就要重建 `lib/`）。
+2. **`packages/devenv/src/index.ts` 的头注**：写这条时它还写着「没有任何写入口」「没有客户端半体」，
+   两条都已经不成立。**2026-10-03 已改**（同一处末尾留了一行更正，注明写入口见记-4 / 记-6、
+   客户端半体见记-11；随 `7b843e03` 重建 `lib/` 一并入库）。
 
 ### 记-12. `env_wait` 的等待过程与取消：把「在等什么」做成报告的账，把 `exec.signal` 接上（2026-10-04）
 
@@ -225,3 +225,30 @@ SDK 明写的「异步工作必须转发 `exec.signal`」这条契约是空的�
 **一个仓库级发现（本包之外）**：`exec.signal` 在**全仓 0 个工具**里被转发过（`tty_expect` 能等
 600 秒、`devfront` 的 `site_verify` 要开好几个页面），所以这不是本包独有的疏忽，而是一条**缺规矩**。
 本轮只修了本包最贵的那一个（15 分钟），其余上提到了根 ROADMAP § 待办第 12 项。
+
+### 记-13. 卡片里「加一行目标」那条路：客户端 DOM 证据 + 一条跨包口径（2026-10-04）
+
+**由来**（根 ROADMAP 待办第 13 项，本包那一半）：记-11 的门槛只验了两样——数据面（脚本自己拼的
+POST：⑦⑫⑬⑭）与**渲染**（⑲：控件数与字段回填）。而「在卡片上真的加一行、填值、勾确认、点保存」
+这条**客户端路径**一次都没走过。它恰好是静态闸门**看不见**的那一块：`client.js` 不在 vitest 层，
+`client-lint` 管语法与地址来源、`check-i18n` 管键集，**都不看客户端拼出来的 payload**——`devfront`
+被真机抓出的三条缺陷（`exports["./client"]` 缺失、保存标量抹掉站点、详情页要注册 `bundle.config` 槽）
+当时**三条静态闸门全绿**。
+
+| 落点 | 内容 | 门槛（已验） |
+|---|---|---|
+| `scripts/verify-devenv-card.mjs` 的 ㉓ | 真 Chrome 里点「+ 添加目标」→ 往新行的 **5 个控件**写值（`kind` 是下拉）→ 勾那个**只在 dirty 时渲染**的确认框 → 点保存 → 卡片回「目标已保存（进审计）」 | 行数 3→4、`fieldCount:5`、`tags:INPUT,INPUT,SELECT,INPUT,INPUT` |
+| 同文件 ㉔ | HTTP 复核：`dv-dom` 在位，`kind`=`ssh` / `book`=`TEST` / 文案 / 两个作用域与刚填的一致 | `ids=[nas-one,here-two,third-one,dv-dom]` |
+| 同文件 ㉕ | 卡片这条写入口**也没抹掉**写闸门（⑭ 的回归网：同一个动作的第二条写入口） | `writeGates[0]` 仍是 `nas-one` / `declared:true` / `DSH_DEVENV_WRITE` |
+| `docs/conventions.md` 新增「客户端卡片：改配置那条路要有真机 DOM 证据」 | 把这条口径从「三张卡片各自记得」提到 L0：判据 + 两条技法（确认框要在**嵌套的那层卡片**里找；React 受控输入走**原生 setter + 事件**） | 由 `scripts/test/card-dom-path.test.ts` 守**在不在**（三张卡片 × 五条判据 + 六条反例） |
+
+**反例实测过**（这条证据不能是恒绿的）：把下拉框的 `change` 事件扣掉不派，
+**㉓ 照样 PASS**（行数 +1、卡片照回「目标已保存（进审计）」），只有 ㉔ 红——提交上去的 `kind`
+停在默认的 `local`。所以这两条**必须成对**：㉓ 管「这条路走得通」，㉔ 管「走出来的东西是对的」。
+
+**为什么故意选 `kind: ssh` + `book`**：那是宿主最**严**的一条判据（ssh 目标没给 `book` 会被**整个
+丢掉**，见 `src/plugin-config.ts`），所以「下拉的变更没进 React state」这种坏实现会在这里露出来——
+提交上去的 `kind` 停在 `local`，目标照样落地，但字段串了。
+
+**没抓到的**（如实记）：㉓㉔㉕ 一次过，本轮没有新缺陷。价值是把「静态闸门看不见的那一类」
+纳入每次 `card-smoke`（21 → 24 条）。

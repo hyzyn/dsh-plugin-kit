@@ -406,8 +406,84 @@ try {
     }
   })()`)
 
+  /*
+   * ㉓㉔㉕ **目标编辑器的客户端路径**（2026-10-04）。
+   *
+   * 记-19 的门槛只验了两样：数据面（脚本自己拼的 POST：⑦⑫⑬⑭）与渲染（⑲）。而
+   * **在卡片上真的加一行、填 5 个控件、勾确认、点保存**这条路一次都没走过——它恰好是
+   * devfront 那三条「本地全绿、真机必坏」的藏身处：客户端拼的 payload 长什么样，
+   * `client-lint` 与 `check-i18n` 都看不见（一个只管语法与地址来源，一个只管键集）。
+   *
+   * 这一步也是「同一个动作有两条写入口」的证据：HTTP 那条（⑬⑭）与卡片这条写的都是同一份
+   * 配置，而卡片提交的是**它那份完整清单**——所以这里只断言「我加的那个目标在位且字段没串位」，
+   * 不断言别人后写的还在不在（那是「最后写入者获胜」的语义，不是缺陷）。
+   *
+   * 故意选 `kind: ssh` + `book`：那是宿主**最严**的一条判据（ssh 目标没给 book 会被整个丢掉，
+   * 见 `plugin-config.ts` 的 `targets[i].book` 那条），所以一个「下拉框的变更没进 React state」
+   * 的坏实现会在这里露出来——提交上去的 kind 停在 local，字段就串了。
+   */
+  const domEdit = await chrome.evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+    const card = [...document.querySelectorAll('[data-plugin-config="true"]')].find(
+      (el) => [...el.querySelectorAll('button')].some((b) => (b.innerText || '').trim() === '+ 添加目标'),
+    )
+    if (card === undefined) return { ok: false, note: '没有带目标编辑器的卡片' }
+    const add = [...card.querySelectorAll('button')].find((el) => (el.innerText || '').trim() === '+ 添加目标')
+    /*
+     * 目标编辑器是卡片里嵌套的那个 .dv_card：行与确认框都要**在编辑器里**找，否则会先命中
+     * 写闸门 / 指纹那两张只读卡片里的 li.dv_item，或标量那一段的复选框。
+     */
+    const editor = add.closest('.dv_card')
+    const rows = () => [...editor.querySelectorAll('li.dv_item')]
+    const before = rows().length
+    add.click()
+    await sleep(300)
+    const afterAdd = rows().length
+    const row = rows()[afterAdd - 1]
+    if (row === undefined) return { ok: false, note: '点了添加但没有新行', before, afterAdd }
+    /*
+     * React 受控输入：必须走**原生 setter + input 事件**。直接改 input.value 时 React 的 state
+     * 不会变（它靠事件与自己的 value tracker），提交上去的还是空行——而这条在静态闸门里看不出来。
+     * select 同理，只是事件名是 change（与 devdata 卡片那条、devfront 那条同一手法）。
+     */
+    const setValue = (element, value) => {
+      if (element.tagName === 'SELECT') {
+        Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set.call(element, value)
+        element.dispatchEvent(new Event('change', { bubbles: true }))
+        return
+      }
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(element, value)
+      element.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    const fields = [...row.querySelectorAll('.dv_input')]
+    // 顺序就是渲染顺序：id / 文案 / kind（下拉）/ 连接簿条目 / 作用域（逗号分隔）
+    const wanted = ['dv-dom', 'DOM 验收目标', 'ssh', 'TEST', '/Users/me/coding/dom, /Users/me/coding/dom2']
+    wanted.forEach((value, index) => {
+      if (fields[index] !== undefined) setValue(fields[index], value)
+    })
+    await sleep(300)
+    // 有改动才会出现那个确认框（targetsDirty）
+    const confirm = editor.querySelector('input[type="checkbox"]')
+    if (confirm === null) return { ok: false, note: '填了值但确认框没出现', before, afterAdd }
+    confirm.click()
+    await sleep(200)
+    const save = [...card.querySelectorAll('button')].find((el) => (el.innerText || '').trim() === '保存')
+    if (save === undefined) return { ok: false, note: '没有「保存」按钮', before, afterAdd }
+    save.click()
+    for (let i = 0; i < 50; i += 1) {
+      await sleep(200)
+      const node = card.querySelector('.dv_msg')
+      const text = node === null ? '' : (node.innerText || '').trim()
+      if (text !== '' && !text.includes('保存中')) {
+        return { ok: true, before, afterAdd, fieldCount: fields.length, tags: fields.map((f) => f.tagName), message: text, values: fields.map((f) => f.value) }
+      }
+    }
+    return { ok: false, note: '点了保存但卡片没有回消息', before, afterAdd }
+  })()`)
+
   if (dumpOnly) {
     console.log('# 插件页与卡片：', JSON.stringify(cardReport, null, 2))
+    console.log('# 目标编辑器（DOM 路径）：', JSON.stringify(domEdit, null, 2))
   } else {
     // 卡片开着的时候再截一张：出问题时人第一眼看的是它（DOM 断言给的是判据，截图给的是现场）。
     const cardShotFile = path.join(os.tmpdir(), `devenv-card-detail-${String(Date.now())}.png`)
@@ -428,6 +504,31 @@ try {
       '㉑ TOFU 指纹只读列表渲染出 host 与指纹条数',
       cardReport.hasHostKey === true && cardReport.hasHostKeyCount === true,
       JSON.stringify({ hasHostKey: cardReport.hasHostKey, hasHostKeyCount: cardReport.hasHostKeyCount }),
+    )
+    record(
+      '㉓ 卡片上**真的**加一行目标、填 5 个控件（含 kind 下拉）、勾确认、点保存 → 回「目标已保存（进审计）」',
+      domEdit.ok === true && domEdit.afterAdd === domEdit.before + 1 && domEdit.message === '目标已保存（进审计）',
+      JSON.stringify(domEdit),
+    )
+    const get4 = await call('/api/dsh-devenv/config')
+    const targets4 = get4.json?.config?.targets ?? []
+    const added = targets4.find((target) => target.id === 'dv-dom')
+    record(
+      '㉔ 客户端拼的目标 payload 过得了服务端**最严**那条判据（ssh 必须给 book）：GET 里有 dv-dom，kind / book / 文案 / 两个作用域都没串位',
+      get4.status === 200
+        && added !== undefined
+        && added.kind === 'ssh'
+        && added.book === 'TEST'
+        && added.label === 'DOM 验收目标'
+        && (added.scopeDirs ?? []).join(',') === '/Users/me/coding/dom,/Users/me/coding/dom2',
+      JSON.stringify({ status: get4.status, ids: targets4.map((target) => target.id), added: added ?? null }),
+    )
+    record(
+      '㉕ 卡片这条写入口**也没抹掉**写闸门（nas-one 仍是 declared + DSH_DEVENV_WRITE）',
+      get4.json?.config?.writeGates?.[0]?.targetId === 'nas-one'
+        && get4.json?.config?.writeGates?.[0]?.declared === true
+        && get4.json?.config?.writeGates?.[0]?.env === 'DSH_DEVENV_WRITE',
+      JSON.stringify(get4.json?.config?.writeGates ?? []),
     )
   }
   console.log(`# 截图：${shotFile}`)
