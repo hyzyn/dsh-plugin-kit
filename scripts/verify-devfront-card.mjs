@@ -352,6 +352,85 @@ try {
       JSON.stringify(cardReport),
     )
   }
+  /*
+   * ⑰⑱ **站点编辑器的客户端路径**（2026-10-04）。
+   *
+   * 记-24 的门槛只验了两样：数据面（脚本自己拼的 POST：⑭⑮⑯）与渲染（⑫）。而
+   * **在卡片上真的加一行、填值、勾确认、点保存**这条路一次都没走过——它恰好是记-22 / 记-23
+   * 那三条「本地全绿、真机必坏」的藏身处：客户端拼的 payload 长什么样，`client-lint` 与
+   * `check-i18n` 都看不见（一个只管语法与地址来源，一个只管键集）。
+   *
+   * 这一步也是「同一个动作有两条写入口」的证据：HTTP 那条（⑮）与卡片这条写的都是同一份配置，
+   * 而卡片提交的是**它那份完整清单**——所以这里只断言「我加的那个站点在位且字段没串位」，
+   * 不断言别人后写的还在不在（那是「最后写入者获胜」的语义，不是缺陷）。
+   */
+  const domEdit = await chrome.evaluate(`(async () => {
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+    const card = [...document.querySelectorAll('[data-plugin-config="true"]')].find((el) => el.querySelector('.df_sites') !== null)
+    if (card === undefined) return { ok: false, note: '没有带站点编辑器的卡片' }
+    // 站点编辑器是卡片里嵌套的那个 .df_card：确认框要**在编辑器里**找，否则会先命中标量的复选框
+    const editor = card.querySelector('.df_sites').closest('.df_card')
+    const rows = () => [...editor.querySelectorAll('li.df_site')]
+    const before = rows().length
+    const add = [...editor.querySelectorAll('button')].find((el) => (el.innerText || '').trim() === '+ 添加站点')
+    if (add === undefined) return { ok: false, note: '没有「+ 添加站点」按钮', before }
+    add.click()
+    await sleep(300)
+    const afterAdd = rows().length
+    const row = rows()[afterAdd - 1]
+    if (row === undefined) return { ok: false, note: '点了添加但没有新行', before, afterAdd }
+    /*
+     * React 受控输入：必须走**原生 setter + input 事件**。直接改 input.value 时 React 的 state
+     * 不会变（它靠事件与自己的 value tracker），提交上去的还是空行——而这条在静态闸门里看不出来。
+     */
+    const setValue = (input, value) => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+      setter.call(input, value)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    const inputs = [...row.querySelectorAll('input.df_input')]
+    const wanted = ['w-dom', '验收站点（DOM 加的）', 'https://dom.example.com/', '/Users/me/coding/dom']
+    wanted.forEach((value, index) => { if (inputs[index] !== undefined) setValue(inputs[index], value) })
+    await sleep(300)
+    // 有改动才会出现那个确认框（sitesDirty）
+    const confirm = editor.querySelector('input[type="checkbox"]')
+    if (confirm === null) return { ok: false, note: '填了值但确认框没出现', before, afterAdd }
+    confirm.click()
+    await sleep(200)
+    const save = [...card.querySelectorAll('button')].find((el) => (el.innerText || '').trim() === '保存')
+    if (save === undefined) return { ok: false, note: '没有「保存」按钮', before, afterAdd }
+    save.click()
+    for (let i = 0; i < 50; i += 1) {
+      await sleep(200)
+      const node = card.querySelector('.df_msg')
+      const text = node === null ? '' : (node.innerText || '').trim()
+      if (text !== '' && !text.includes('保存中')) {
+        return { ok: true, before, afterAdd, fieldCount: inputs.length, message: text, values: inputs.map((input) => input.value) }
+      }
+    }
+    return { ok: false, note: '点了保存但卡片没有回消息', before, afterAdd }
+  })()`)
+
+  if (dumpOnly) {
+    console.log('# 站点编辑器（DOM 路径）：', JSON.stringify(domEdit, null, 2))
+  } else {
+    record(
+      '⑰ 卡片上**真的**加一行、填值、勾确认、点保存 → 回「站点已保存（进审计）」',
+      domEdit.ok === true && domEdit.afterAdd === domEdit.before + 1 && domEdit.message === '站点已保存（进审计）',
+      JSON.stringify(domEdit),
+    )
+    const get4 = await call('/api/dsh-devfront/config')
+    const targets4 = get4.json?.config?.targets ?? []
+    const added = targets4.find((target) => target.id === 'w-dom')
+    record(
+      '⑱ 客户端拼的站点 payload 过得了服务端判据：GET 里有 w-dom，url 与 scopeDirs 都没串位',
+      get4.status === 200
+        && added !== undefined
+        && added.url === 'https://dom.example.com/'
+        && added.scopeDirs?.[0] === '/Users/me/coding/dom',
+      JSON.stringify({ status: get4.status, ids: targets4.map((target) => target.id), added: added ?? null }),
+    )
+  }
   console.log(`# 截图：${shotFile}`)
 
 } finally {
