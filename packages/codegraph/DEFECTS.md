@@ -9,8 +9,8 @@
 > 没有 docker 那样的独立「修复记录摘要」节可拆；且原表没有「涉及文件」列（补一列就得靠猜，
 > 会发明事实）。所以 **§1 的「修复 / 设计意图」列就是意图字典**。理由与时点见 §4。
 >
-> **编号是硬契约**：`CG01–CG65` 是 `packages/codegraph` 内部序列，与 docker / tty 的 `Dxx`
-> **不共享**；跨包引用请写「codegraph CG02 / docker D03」。新缺陷接在 `CG65` 之后，
+> **编号是硬契约**：`CG01–CG66` 是 `packages/codegraph` 内部序列，与 docker / tty 的 `Dxx`
+> **不共享**；跨包引用请写「codegraph CG02 / docker D03」。新缺陷接在 `CG66` 之后，
 > **不得重号、不得回收空号**——源码里已有注释指向它们。
 
 > **本文不含**：逐条 postmortem 的完整原文、独立验收复跑记录、原批次计划。
@@ -43,17 +43,18 @@
 
 ## 现状
 
-**已修 62 / 已关闭 3 / 待修 0**，编号至 `CG65`。逐条见 §1；未做项见 [ROADMAP.md](./ROADMAP.md)。
+**已修 63 / 已关闭 3 / 待修 0**，编号至 `CG66`。逐条见 §1；未做项见 [ROADMAP.md](./ROADMAP.md)。
 
-**已修 62 / 已关闭 3 / 待修 0**（CG01–CG29 + CG30/31/35/36/37/38 修于 0.4.2；CG39–CG49 修于其后一轮；
+**已修 63 / 已关闭 3 / 待修 0**（CG01–CG29 + CG30/31/35/36/37/38 修于 0.4.2；CG39–CG49 修于其后一轮；
 CG50–CG62 修于上一轮；CG63（DSH 0.1.7-rc.1 的 settings 服务迁移）修于上一轮；CG64（客户端字面星号）修于上一轮；
-CG65（探测超时被判死 + 启动争抢打穿单次超时，外部 issue）修于本轮；CG32–CG34 **因原文从未随附而关闭**，不再挂账）。索引表的「修复」列一句话记录改法与落点；行号已漂移，定位用
+CG65（探测超时被判死 + 启动争抢打穿单次超时，外部 issue）与 CG66（假主题把不存在的样式变量名写死，
+预览对、真机错）修于本轮；CG32–CG34 **因原文从未随附而关闭**，不再挂账）。索引表的「修复」列一句话记录改法与落点；行号已漂移，定位用
 `grep -n` 找符号（`locateIndex` / `locateCwdEdits` / `readPostBody` / `runViaSpawn` /
 `ensureStyle` / `installSessionReporter`）。代码里带 `CGxx` 注释的位置就是对应修复点，
 改到相关代码时请先读那里的注释。
 
 > **数字口径（原文照录）**：`已修 = 表内去重编号数 − 已关闭数`，实测复现过历史每一档
-> （`dd3de493` 35、`1dc45292` 40、`7b24ce2b` 41、`79658a8f` 42）。当前 65 − 3 = **62**。
+> （`dd3de493` 35、`1dc45292` 40、`7b24ce2b` 41、`79658a8f` 42）。当前 66 − 3 = **63**。
 > 一处易错点：`CG15 追记` 是**同一编号的补充记录**（表格里多一行），不额外计入「已修」——
 > 按行数算会多 1，按去重编号算才对。P0 那轮我按「加了 1 条却 +2」写成了 44，已更正。
 
@@ -142,6 +143,7 @@ CG65（探测超时被判死 + 启动争抢打穿单次超时，外部 issue）�
 | CG63 | **DSH 0.1.7-rc.1 起 `ctx.settings.register(ns, schema)` / `settings.get(ns)` 已删除**（服务换成 `SettingsForms`：`describe/update/mutate/replace/configure`，设置存储改为「当前 profile 的插件 entry 配置」+ 导出带 `.volatile()` 的运行时 `Config`）。本包仍调旧 API：settings effect 抛错后静默走 config 兜底（`scope === undefined`），于是卡片开关 / 「设为默认项目」/ `per-agent` 切换全部回 500 `插件尚未完成挂载`。**单测与 tsc 都发现不了**——旧代码用 `as unknown as` 擦掉了服务类型。真机实测（rc.1 隔离装置）：`POST /api/dsh-codegraph/settings` 对合法 patch 回 500，`/default-path` 报 `effectiveMcpScope=managed` 且不落盘 | ① `@hyzyn/dsh-kit` 新增 settings 适配层：`settingsEntryScope`（读 `describe()` / 写 `update(entryId, patch)` / 订阅 `loader/volatile-update`）+ `plainConfig()`（还原 volatile 冻结引用）+ `readSettingsEntry` + `suppressAutoSettingsPage`；② 本包导出运行时 `Config` schema（卡片可改的 6 个字段标 `.volatile()`），settings effect 改用它，`apply()` 里先 `plainConfig()` 还原；③ 两处写入口改走适配层；④ 兼容性声明从 `dsh.engines.dsh` 换成 `peerDependencies["@deepseek-ai/dsh"] = ^0.1.7-rc.1`（rc.1 的安装前/启动时判定只认 peer；`engines.dsh` 已无读取方）。验收：真机宿主契约 **42/42**（含新增的两项 settings 写路径基线），`POST /settings` 在 per-agent / managed 间往返都是 200 |
 | CG64 | 客户端文案里有 2 处字面 `**`（`panel.perAgentTitle` 的 zh / en）——浏览器半体没有 markdown 渲染器，用户看到的是两个星号 | 改成引号包裹（「有索引」/ “has an index”）；目录头注释里写明这条规矩 |
 | CG65 | probe 的超时硬编码 `CLI_PROBE_TIMEOUT_MS=5000`，且**超时被当作「不可用」判死**：宿主启动争抢（外部 issue 实测 60–80 个并发 spawn）能把空闲 ~200ms 的命令拖过任何单次超时（同机 whoami 链 21.5s），于是公告与使用指引整个会话不注入、只能手动「重新探测」；且「命令不存在」与「超时」共用同一条警告文案，排障被引向 command 路径而非机器负载 | 失败**分类**：按运行器的 `timedOut` 显式标记（CG22）把超时标成 `inconclusive`——available 落回 undefined（未落地态，复用既有契约）并按重试梯子 `PROBE_RETRY_DELAYS_MS=[10s,30s]` 自动补探，成功即注入；确定性失败（ENOENT/非零退出）立即判死不重试；梯子穷尽才判死并换「连续超时」专属警告文案；显式重探作废待触发重试并归零梯子；卸载 effect 清理重试计时器。单次超时与梯子**刻意不进 Config**（不是用户档位，见常量注释），测试经 `apply` 第三参 `ProbeTuning` 注入；客户端对含「timeout after」的原因给专属指引 |
+| CG66 | **客户端假主题把不存在的名字写死了 → 预览是对的、真机是错的**：`client-src/index.js` 的警告色写的是 `--dsw-alias-state-warning-primary`（带 fallback），而宿主主题里的真名是 `--dsw-alias-state-warn-primary`——变量不存在时 fallback 生效，于是真机上「警告」静默降级成**错误红**（不是失踪，是认错颜色，更难发现）。它**为什么躲过所有检查**更值得记：`scripts/preview-card.mjs` 那份**自己造的假主题**里写的也是同一个错名字，**预览因此一直是对的**；`tsc` 不查字符串里的 CSS 变量名，冒烟只断言文案与控件值 | `client-src/index.js` + `client.js`（重建产物）改用 `--dsw-alias-state-warn-primary`；`scripts/preview-card.mjs` 的假主题同步改名，并写明「名字必须与真主题逐字一致」；判据 `scripts/client-lint.mjs` 检查 ③ + 宿主主题名字快照 `scripts/fixtures/dsh-theme-tokens.json` |
 
 ## 2. 台账纪律与长期结论
 

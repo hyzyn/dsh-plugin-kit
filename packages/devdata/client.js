@@ -47,6 +47,15 @@ window.__ModuleLoader__.load({
 
     /* ================================ CSS ================================ */
 
+    /*
+     * devdata D10：样式变量只许写宿主主题里**真实存在**的名字。
+     *
+     * 变量不存在时那条声明在**计算值阶段**整条作废（`border` 是 shorthand，它的所有 longhand
+     * 一起回落 `unset`，而 `border-style` 的初始值就是 `none`）——框会**直接消失**，而布局类
+     * 声明照常生效，看着像「样式没加载」。本包 2026-10-04 就是这样：输入框 / 按钮 / 目标行
+     * 全都没有框。名字表是生成物 `scripts/fixtures/dsh-theme-tokens.json`，判据在
+     * `scripts/client-lint.mjs` 的检查 ③（`pnpm -r typecheck` 里跑）。
+     */
     const CSS = [
       '.dd_card{display:flex;flex-direction:column;gap:10px;max-width:820px;color:var(--dsw-alias-label-primary)}',
       '.dd_head{display:flex;flex-direction:column;gap:4px}',
@@ -55,16 +64,16 @@ window.__ModuleLoader__.load({
       '.dd_field{display:flex;flex-direction:column;gap:4px;margin:0}',
       '.dd_row{display:flex;align-items:center;gap:8px}',
       '.dd_label{font-size:13px;font-weight:500}',
-      '.dd_input{padding:4px 8px;border:1px solid var(--dsw-alias-border-secondary);border-radius:6px;background:var(--dsw-alias-bg-primary);color:inherit;font-size:13px}',
+      '.dd_input{padding:4px 8px;border:1px solid var(--dsw-alias-border-l4);border-radius:6px;background:var(--dsw-specific-input-major);color:inherit;font-size:13px}',
       '.dd_hint{margin:0;font-size:12px;color:var(--dsw-alias-label-tertiary)}',
       '.dd_targets{display:flex;flex-direction:column;gap:6px;margin:0;padding:0;list-style:none}',
-      '.dd_target{padding:6px 8px;border:1px solid var(--dsw-alias-border-secondary);border-radius:6px;font-size:12px;display:flex;flex-direction:column;gap:6px}',
+      '.dd_target{padding:6px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;font-size:12px;display:flex;flex-direction:column;gap:6px}',
       '.dd_targetName{font-weight:600}',
-      '.dd_caps{margin:0;padding:6px 8px;border:1px dashed var(--dsw-alias-border-secondary);border-radius:6px}',
+      '.dd_caps{margin:0;padding:6px 8px;border:1px dashed var(--dsw-alias-border-l2);border-radius:6px}',
       '.dd_cap{margin:0;font-size:12px}',
       '.dd_actions{display:flex;align-items:center;gap:8px}',
-      '.dd_remove{padding:2px 8px;border:1px solid var(--dsw-alias-border-secondary);border-radius:6px;background:transparent;color:inherit;cursor:pointer;font-size:12px}',
-      '.dd_save{padding:4px 12px;border:1px solid var(--dsw-alias-border-secondary);border-radius:6px;background:var(--dsw-alias-bg-primary);color:inherit;cursor:pointer;font-size:13px}',
+      '.dd_remove{padding:2px 8px;border:1px solid var(--dsw-alias-border-l4);border-radius:6px;background:transparent;color:inherit;cursor:pointer;font-size:12px}',
+      '.dd_save{padding:4px 12px;border:1px solid var(--dsw-alias-border-l4);border-radius:6px;background:var(--dsw-specific-input-major);color:inherit;cursor:pointer;font-size:13px}',
       '.dd_msg{font-size:12px}',
       '.dd_msgOk{color:var(--dsw-alias-label-tertiary)}',
       '.dd_msgErr{color:var(--dsw-alias-state-error-primary, #d33)}',

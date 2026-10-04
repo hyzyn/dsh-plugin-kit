@@ -69,6 +69,7 @@
 | 包特有的深层设计 / API | L1 `packages/<pkg>/docs/`（仅需要时建） |
 | **已完成批次 / 设计方案的冻结记录** | L1 `packages/<pkg>/docs/`（设计方案，例：[codegraph/docs/p0-plan.md](../packages/codegraph/docs/p0-plan.md)——首行即标「已实现」，**不是活待办**）；**指针表**在各包 `DEFECTS.md` §4「冻结记录」，检索方式 `git show <sha>:<path>` |
 | **入库产物与 CI 产物闸门** | L0 [docs/conventions.md § 真机脚本与 CI 接线](./conventions.md#真机脚本与-ci-接线) |
+| **宿主主题的 `--dsw-*` 名字表**（客户端半体允许用的样式变量名；写错名字 = 那条 `border`/`background` 整条作废） | 快照 [`scripts/fixtures/dsh-theme-tokens.json`](../scripts/fixtures/dsh-theme-tokens.json)（403 个名字，**生成物**，`node scripts/sync-dsh-theme-tokens.mjs` 保鲜）+ 规则 [本文 § 客户端半体](#客户端半体三条硬规矩) ③ |
 | **测试面与覆盖率口径**（三个测试面怎么分 / `pnpm test:coverage` 的排除项与理由 / 阈值是棘轮不是目标线 / 为什么刻意不进 CI 门禁） | L0 [`docs/testing.md`](./testing.md)（**参数改在 [`vitest.config.ts`](../vitest.config.ts)**，本文只讲为什么） |
 | **提 issue 的格式约束**（表单字段 / 自查结果 / 空白 issue 已关闭） | L0 [`.github/ISSUE_TEMPLATE/`](../.github/ISSUE_TEMPLATE/)（两张表单是**字段真相**）+ 本文 [§ Issue](./conventions.md#issue提-issue-的格式约束)（规矩）。字段与 [troubleshooting.md 的通用顺序](./troubleshooting.md#通用顺序)一一对应；schema 与表单内链接的闸门是 [`scripts/check-issue-forms.mjs`](../scripts/check-issue-forms.mjs) |
 | **投稿材料**（面向 DSH 插件市场） | L0 [`docs/pr-body-dsh-market.md`](./pr-body-dsh-market.md)（**提给市场仓库的 PR 正文**，其相对链接指向目标仓库）与 [`docs/community-submission.json`](./community-submission.json)（提交载荷）。两者都是**对外投稿物**，不是本仓架构 / 规范；**保留原路径**——`community-submission.json` 可能被市场按 `@main/docs/` URL 取。它们属于**「创意工坊」那条投稿轨道**，与市场卡片上分类标签的实际来源不是一回事：见下行 |
@@ -110,8 +111,8 @@
 
 | 档 | 包 |
 |---|---|
-| 复杂 | `docker` · `tty` · `codegraph` · `devdata` · `devenv` · `devfront` |
-| 中等 | `kit` · `rss` · `search` · `mcp` |
+| 复杂 | `docker` · `tty` · `codegraph` · `devdata` · `devenv` · `devfront` · `mcp` |
+| 中等 | `kit` · `rss` · `search` |
 | 简单 | `profile` · `env` · `prompt` · `kit-settings` · `all` |
 
 > **档位与台账（2026-10-03；`devenv` 的上界 2026-10-04 更新）**：`devdata` / `devenv` 都落在**复杂档**，
@@ -125,6 +126,11 @@
 > 代码里、却没有号，下次同样的坑就没人认得出；② 反之，**修在仓根 / 规范里、包内没有一行代码因它
 > 长成现在这样**的缺口不硬塞包内号（例：2026-10-03 `devdata/lib` 那次陈旧产物——它的守卫与规矩
 > 都在 L0，编号在包内会得到一个没有 L2 指针的空号）。
+> **2026-10-04（第二处）**：`mcp` 也立了 `D01`（工具列表的分隔线**整条消失**：样式变量名引用了
+> 宿主主题里不存在的名字，与三张 dev* 卡片同族）。⚠️ 它同时把本包从**中等档**推进**复杂档**，
+> 而复杂档该有的 `ROADMAP.md` **尚未建立**——按「已登记的债务」处理（与上面「简单包免英文」同款）：
+> 本包目前没有跨轮待办，用法与边界都还在 README 里；等真的攒出跨轮待办再建，先造一份空壳只会多
+> 一处要维护的漂移点。
 
 **三条纪律**：
 
@@ -145,11 +151,12 @@
 |---|---|---|
 | `docker` | `D` | `D01`–`D159` |
 | `tty` | `D` | `D01`–`D95` |
-| `codegraph` | `CG` | `CG01`–`CG65` |
+| `codegraph` | `CG` | `CG01`–`CG66` |
 | `kit` | `D` | `D01`–`D05` 是**转入镜像**：这些编号的权威记录在**原包**（主要是 `codegraph CG`），kit 侧只是「改 kit 的人不必翻别人的台账」的入口，**引用时优先写原编号**（如 `codegraph CG05`）；`D06`–`D14` 是**本包自研**：在 kit 内部发现、权威记录就在 kit。 |
-| `devenv` | `D` | `D01`–`D03` |
-| `devdata` | `D` | `D01`–`D09`（2026-10-03 补立：此前只以叙述形态住在它 `ROADMAP.md` 的 记-12 / 记-14 / 记-16 里） |
-| `devfront` | `D` | `D01`–`D01`（2026-10-04 立：本包此前根本没有台账，见下面那条注） |
+| `devenv` | `D` | `D01`–`D04`（`D04` 是 2026-10-04 的样式变量名错） |
+| `devdata` | `D` | `D01`–`D10`（前九条是 2026-10-03 补立的：此前只以叙述形态住在它 `ROADMAP.md` 的 记-12 / 记-14 / 记-16 里；`D10` 是 2026-10-04 的样式变量名错） |
+| `devfront` | `D` | `D01`–`D02`（2026-10-04 立：本包此前根本没有台账，见下面那条注；`D02` 是同日的样式变量名错） |
+| `mcp` | `D` | `D01`–`D01`（2026-10-04 立：样式变量名错 → 工具列表分隔线整条消失） |
 | 其它包 | 需要时自定，从 `01` 起 | — |
 
 > 表里的上界数字（以及各包 `DEFECTS.md` 文件头自称的范围、「接在 `Dxx` 之后」、跨包互称的范围、
@@ -173,7 +180,7 @@
    审计时点的行号与 sha 同样只会误导。定位实现用
    `git log -S'<症状关键词>'`，或读代码里带编号的注释。
 5. **台账自洽**：`DEFECTS.md` 的「现状」行数字必须与表内现算一致。
-   六包（`docker` / `tty` / `codegraph` / `kit` / `devenv` / `devdata`）都在
+   八包（`docker` / `tty` / `codegraph` / `kit` / `devenv` / `devdata` / `devfront` / `mcp`）都在
    [`scripts/test/defects-table.test.ts`](../scripts/test/defects-table.test.ts) 的守卫范围内
    （本包自带的那份是 `packages/codegraph/test/defects-ledger.test.ts`，只管 codegraph）。
    新增包时：把它加进守卫的包清单，上表也补一行。
@@ -351,7 +358,7 @@ quiescence」。**判据**：一个工具的等待上限（自己的 `timeoutSec
 源码里就必须出现订阅（`loader/volatile-update` 字面量，或 `settingsEntryScope` + `onChanged`）；
 **只在注释里提一句不算**。
 
-## 客户端半体：两条硬规矩
+## 客户端半体：三条硬规矩
 
 ### ① 跟宿主建连的地址，基址只能来自宿主注入的 `__DSH_TRANSPORT__`
 
@@ -384,12 +391,45 @@ origin 上。从 `location` 推出来的地址在浏览器里完全正常、**�
 
 ### ② 要判对错的客户端逻辑，抽成 `client-src/*.js` 纯模块 + vitest 用例
 
-`client.js` 是构建产物、不在 vitest 层测；`client-lint` 只查静态问题（名字解析、宿主地址来源）、
-**不验行为**——逻辑留在组件闭包里就等于没有测试入口。`client-lint` 查的是**全量**
+`client.js` 是构建产物、不在 vitest 层测；`client-lint` 只查静态问题（名字解析、宿主地址来源、
+样式变量名）、**不验行为**——逻辑留在组件闭包里就等于没有测试入口。`client-lint` 查的是**全量**
 `client-src/**` 而不只是入口，兄弟模块同样受管。
 
 范例：`packages/tty/client-src/ws-url.js` + `packages/tty/test/ws-url.test.ts`
 （用例里必须有一条 `dsh-app://app` 场景）。
+
+### ③ 样式变量只能用宿主主题里**真实存在**的名字
+
+写错一个 `--dsw-*` 名字的后果**不是「退回默认样式」，而是那条声明整条作废**：CSS 变量在
+计算值阶段无效时，`border:1px solid var(--不存在的变量)` 这个 **shorthand 的所有 longhand
+一起回落 `unset`**，而 `border-style` 的初始值就是 `none`——**框直接消失**；
+`background:var(--…)` 同理变成透明。`devdata` / `devenv` / `devfront` 三张卡片 2026-10-04 就是
+这样变成一堵裸文本的：它们引用了 `--dsw-alias-border-secondary` 与 `--dsw-alias-bg-primary`，
+而宿主主题的 403 个 token 里**一个都没有**（真名是 `--dsw-alias-border-l1..l4` /
+`--dsw-alias-bg-base` / `--dsw-alias-bg-layer-1` / `--dsw-specific-input-major`）。
+注意**不含变量的布局类声明照常生效**（`display` / `gap` / `max-width` / 字号），所以现场看起来是
+「排版是对的，就是什么都没有」——最容易被当成「样式没加载」往错方向查。
+
+四层防线**都看不见它**，这才是它必须做成静态检查的理由：
+
+- `tsc` 不查 CSS 变量名（它藏在**字符串字面量**里）；`client-lint` 的 ①（名字解析）与
+  ②（宿主地址来源）也零信号；
+- 各包 preview harness 用的是**自己造的假主题**：名字写错时**预览仍然是对的、只有真机是错的**
+  （`packages/codegraph/scripts/preview-card.mjs` 里原本就写着 `--dsw-alias-state-warning-primary`）；
+- 真机冒烟（CDP）只断言**文案与控件值**——一个没有边框的输入框照样满足断言。
+
+判据：`pnpm -r typecheck` 里的 `scripts/client-lint.mjs` **检查 ③** 拿宿主主题的名字快照
+（[`scripts/fixtures/dsh-theme-tokens.json`](../scripts/fixtures/dsh-theme-tokens.json)，403 个名字，
+**生成物**）比对全部客户端半体；规则的取用口径与成因见
+[`scripts/client-theme-tokens.mjs`](../scripts/client-theme-tokens.mjs)。快照由
+`node scripts/sync-dsh-theme-tokens.mjs` 从真宿主生成、`--check` 逐字比对宿主与快照
+（**需要本机装着 `dsh` → 这一档不进 CI**，与 `check-dsh-peers.mjs --app-boot` 同一档；
+宿主换版本后跑一次 `--check`，它同时是「我们可能在用已经没了的名字」的告警）。
+**读不到快照时 `client-lint` 直接报错而不是跳过**——恒绿的闸门比没有闸门更糟。
+
+这条检查**不区分注释与代码**：注释里写下不存在的名字同样报红（它会被下一个人照抄）。要描述
+「当年写错的那个名字」请写进包内 `DEFECTS.md`——那里不被扫描，而且本来就是症状关键词该在的地方
+（`git log -S'<症状关键词>'` 靠它）。
 
 ## 客户端设置面：内联优先
 

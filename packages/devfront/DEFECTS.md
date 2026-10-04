@@ -5,8 +5,8 @@
 > `src/` / `test/` / `client.js` 里有带 `Dxx` 的注释，含义是「这段代码为什么长这样」，编号的出处
 > 就是本文。拿到任意一个 `Dxx`，查 [§1 编号索引表](#1-编号索引表)。
 >
-> **编号是硬契约**：`D01–D01` 是 `packages/devfront` 内部序列，与其它包的 `Dxx` **不共享**；
-> 跨包引用请写全名（`devfront D01` / `devdata D01` / `devenv D03`）。新缺陷接在 `D01` 之后，
+> **编号是硬契约**：`D01–D02` 是 `packages/devfront` 内部序列，与其它包的 `Dxx` **不共享**；
+> 跨包引用请写全名（`devfront D01` / `devdata D01` / `devenv D03`）。新缺陷接在 `D02` 之后，
 > **不得重号、不得回收空号**。
 >
 > 本包 2026-10-04 才立台账（`devfront` 此前在 [conventions.md § 文档分档](../../docs/conventions.md#文档分档)
@@ -14,8 +14,14 @@
 > 立号的判据沿用 `devenv` / `devdata` 那两条：**一次真实暴露的缺陷要留编号**；修在 L0、包内没有一行
 > 代码因它长成现在这样的缺口不硬塞包内号。`D01` 属前者：它是**本轮改动自己引入、并在真机验收里被抓到**
 > 的那一条（细节在 [ROADMAP.md](./ROADMAP.md) 记-32）。
+>
+> **`D02`（2026-10-04）**：`client.js` 的样式变量名写错了（`--dsw-alias-border-secondary` /
+> `--dsw-alias-bg-primary`，宿主主题的 403 个 token 里都没有）→ 输入框 / 按钮 / 站点行的框
+> **整条作废**，而布局照常。它与 `D01` 是同一条共性：**卡片自己看不见的坏法**——`D01` 是字段被
+> 静默抹掉、`D02` 是样式整条被静默丢掉，不专门去量就都发现不了（`D02` 是被「拿真 Chrome 读
+> 计算样式」抓到的，见 `scripts/client-lint.mjs` 的检查 ③）。
 
-**已修 1 / 待修 0**，编号至 `D01`。症状见 §1。索引表**不写行号、也不保留修复提交 sha**
+**已修 2 / 待修 0**，编号至 `D02`。症状见 §1。索引表**不写行号、也不保留修复提交 sha**
 （[conventions.md § 编号规范](../../docs/conventions.md#编号规范) 硬规矩 4）：定位实现用
 `git log -S'<症状关键词>'`，或读代码里带编号的注释。
 
@@ -24,3 +30,4 @@
 | 编号 | 症状（当年坏了什么） | 涉及文件 | ✓ |
 |---|---|---|---|
 | D01 | **站点编辑器保存一次，登录声明就没了（而且不报错）**：客户端半体的站点编解码只认识七个字段（id / 名字 / URL / 作用域 / 允许源 / 视口 / 凭据引用），而保存时 `targets` 是**整批重建**的——于是「加一个卡片不认识的字段」与「点一次保存就把它删掉」只差一行透传。`login` 加上的当天就踩中：界面**看不到**它（卡片不显示，这是刻意的），所以用户既不会发现自己丢了东西、也不会收到任何提示；下一次 `site_login` 才报「这个站点没有声明登录流程」，而那份声明明明还在配置文件里（是保存时被抹掉的） | `client.js`（`draftSites` / `sitesPayload` 透传 `login`） · `src/plugin.ts` 的 `configSnapshotFrom`（把原文给客户端） · `scripts/verify-devfront-card.mjs` 第 ⑳ 步（真宿主 + 真 Chrome：保存之后读回来，声明还在） · `test/plugin.test.ts`（配置层不许把它丢掉） | ✓ |
+| D02 | **样式变量名写错，站点行与输入框整条没有框**：`client.js` 引用了宿主主题里不存在的 `--dsw-alias-border-secondary` / `--dsw-alias-bg-primary`（403 个 token 里都没有）→ `border` / `background` 在计算值阶段整条作废，`df_input` / `df_remove` / `df_save` / `df_site` 全部无框而布局照常。与 `D01` 是同一条共性：**卡片自己看不见的坏法**（`D01` 是字段被静默抹掉、`D02` 是样式整条被静默丢掉） | `client.js`（`border` 改 `--dsw-alias-border-l4` / `-l2`，底色改 `--dsw-specific-input-major`） · 判据 `scripts/client-lint.mjs` 检查 ③ + 宿主主题名字快照 `scripts/fixtures/dsh-theme-tokens.json` | ✓ |

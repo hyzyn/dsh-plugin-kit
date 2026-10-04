@@ -59,8 +59,8 @@ function checkWithConventions(text: string) {
 const kinds = (diffs: { kind: string }[]) => diffs.map((diff) => diff.kind)
 
 describe('缺陷台账：现算（唯一真值来源）', () => {
-  it('七包都能读到索引表，且编号连续、无空号、唯一号数 == 最大号', () => {
-    expect(LEDGER_SPECS.map((spec) => spec.name)).toEqual(['docker', 'tty', 'codegraph', 'kit', 'devenv', 'devdata', 'devfront'])
+  it('八包都能读到索引表，且编号连续、无空号、唯一号数 == 最大号', () => {
+    expect(LEDGER_SPECS.map((spec) => spec.name)).toEqual(['docker', 'tty', 'codegraph', 'kit', 'devenv', 'devdata', 'devfront', 'mcp'])
     for (const spec of LEDGER_SPECS) {
       const fact = facts.get(spec.name)
       expect(fact, `${spec.name} 没算出来`).toBeDefined()
@@ -246,8 +246,8 @@ describe('反例 4：台账本身不自洽（唯一号数 / 最大号 / 现状�
     expect(kinds(checkWithLedger('docker', fixture))).toContain('ledger.status.until')
   })
 
-  it('codegraph 的「已关闭」被漏掉（63 + 3 ≠ 65）→ ledger.status.fixed 差异', () => {
-    const fixture = mutate(real.ledgers.codegraph, '**已修 62 / 已关闭 3 / 待修 0**', '**已修 63 / 已关闭 3 / 待修 0**')
+  it('codegraph 的「已修」少算一条（62 + 3 ≠ 66）→ ledger.status.fixed 差异', () => {
+    const fixture = mutate(real.ledgers.codegraph, '**已修 63 / 已关闭 3 / 待修 0**', '**已修 62 / 已关闭 3 / 待修 0**')
     expect(kinds(checkWithLedger('codegraph', fixture))).toContain('ledger.status.fixed')
   })
 

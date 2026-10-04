@@ -38,6 +38,15 @@ window.__ModuleLoader__.load({
 
     /* ================================ CSS ================================ */
 
+    /*
+     * devfront D02：样式变量只许写宿主主题里**真实存在**的名字。
+     *
+     * 变量不存在时那条声明在**计算值阶段**整条作废（`border` 是 shorthand，它的所有 longhand
+     * 一起回落 `unset`，而 `border-style` 的初始值就是 `none`）——框会**直接消失**，而布局类
+     * 声明照常生效。它与 D01 是同一条共性：**卡片自己看不见的坏法**，不专门去量就发现不了。
+     * 名字表是生成物 `scripts/fixtures/dsh-theme-tokens.json`，判据在 `scripts/client-lint.mjs`
+     * 的检查 ③。
+     */
     const CSS = [
       '.df_card{display:flex;flex-direction:column;gap:10px;max-width:760px;color:var(--dsw-alias-label-primary)}',
       '.df_head{display:flex;flex-direction:column;gap:4px}',
@@ -46,14 +55,14 @@ window.__ModuleLoader__.load({
       '.df_field{display:flex;flex-direction:column;gap:4px;margin:0}',
       '.df_row{display:flex;align-items:center;gap:8px}',
       '.df_label{font-size:13px;font-weight:500}',
-      '.df_input{padding:4px 8px;border:1px solid var(--dsw-alias-border-secondary);border-radius:6px;background:var(--dsw-alias-bg-primary);color:inherit;font-size:13px}',
+      '.df_input{padding:4px 8px;border:1px solid var(--dsw-alias-border-l4);border-radius:6px;background:var(--dsw-specific-input-major);color:inherit;font-size:13px}',
       '.df_hint{margin:0;font-size:12px;color:var(--dsw-alias-label-tertiary)}',
       '.df_sites{display:flex;flex-direction:column;gap:6px;margin:0;padding:0;list-style:none}',
-      '.df_site{padding:6px 8px;border:1px solid var(--dsw-alias-border-secondary);border-radius:6px;font-size:12px}',
+      '.df_site{padding:6px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;font-size:12px}',
       '.df_siteName{font-weight:600}',
       '.df_actions{display:flex;align-items:center;gap:8px}',
-      '.df_remove{padding:2px 8px;border:1px solid var(--dsw-alias-border-secondary);border-radius:6px;background:transparent;color:inherit;cursor:pointer;font-size:12px}',
-      '.df_save{padding:4px 12px;border:1px solid var(--dsw-alias-border-secondary);border-radius:6px;background:var(--dsw-alias-bg-primary);color:inherit;cursor:pointer;font-size:13px}',
+      '.df_remove{padding:2px 8px;border:1px solid var(--dsw-alias-border-l4);border-radius:6px;background:transparent;color:inherit;cursor:pointer;font-size:12px}',
+      '.df_save{padding:4px 12px;border:1px solid var(--dsw-alias-border-l4);border-radius:6px;background:var(--dsw-specific-input-major);color:inherit;cursor:pointer;font-size:13px}',
       '.df_msg{font-size:12px}',
       '.df_msgOk{color:var(--dsw-alias-label-tertiary)}',
       '.df_msgErr{color:var(--dsw-alias-state-error-primary, #d33)}',

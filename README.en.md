@@ -205,8 +205,9 @@ dsh plugin --profile web add link:$(pwd)/packages/<name>
 [docs/conventions.md](docs/conventions.md) (Chinese).
 **The anatomy of a plugin package** (`dsh.bundle.patch` / `cordis.patch.yml` / `src/index.ts` /
 `dsh.client`) → [docs/conventions.md § Package anatomy](docs/conventions.md#插件包解剖).
-**Two rules that are easy to trip over** (where a client half may derive its host address; extracting
-pure logic into modules) → [docs/conventions.md § Client half](docs/conventions.md#客户端半体两条硬规矩).
+**The three rules that are easy to trip over** (where a client half may derive its host address;
+extracting pure logic into modules; which theme variables actually exist)
+→ [docs/conventions.md § Client half](docs/conventions.md#客户端半体三条硬规矩).
 
 ## Documentation map
 

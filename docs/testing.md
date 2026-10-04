@@ -17,7 +17,7 @@
 前两面的边界值得记住：**留在 `client-src/index.js`（浏览器 bundle 入口）里的逻辑等于没有测试入口**
 ——要判对错的逻辑必须抽成不依赖 DOM 的纯模块（`packages/tty/client-src/ws-url.js` 这类），
 抽出来才自动回到上面的统计里。规矩正文见
-[conventions.md § 客户端半体：两条硬规矩](./conventions.md#客户端半体两条硬规矩)。
+[conventions.md § 客户端半体：三条硬规矩](./conventions.md#客户端半体三条硬规矩)。
 
 ## 命令
 

@@ -183,8 +183,23 @@ export const LEDGER_SPECS = [
     statusLine: { closedColumn: false, untilSentence: true },
     mirror: false,
     codeRefs: true,
-    // 末列是 `✓`：这一条缺陷的修法在 `client.js`（包根，不进 `src/`），所以编号指针落在
-    // `src/plugin.ts` 与 `test/` 的注释里——守卫按包内 `src`/`test` 现算，找不到就报
+    // 末列是 `✓`：`D01` 的修法在 `client.js`（包根）与 `src/plugin.ts`——2026-10-04 起
+    // 包根的 `client.js` 也进现算范围（见 SOURCE_DIRS 的说明），不再需要把指针挪到别的文件。
+  },
+  {
+    name: 'mcp',
+    prefix: 'D',
+    path: 'packages/mcp/DEFECTS.md',
+    tableHeading: /^## 1\. 编号索引表/,
+    selfSequence: true,
+    nextAnchor: true,
+    crossRefs: [],
+    statusLine: { closedColumn: false, untilSentence: true },
+    mirror: false,
+    codeRefs: false,
+    // 2026-10-04 立台账（本包从中等档进复杂档）。`D01` 是「样式变量名写错 → 工具列表分隔线
+    // 整条消失」，修法在 `client.js`（包根）。末列是「涉及文件」，**没有 `✓` 列**——显式声明，
+    // 不靠「匹配不到就跳过」。
   },
 ]
 
@@ -382,14 +397,14 @@ export function checkDefectsTable({ ledgers, conventions, sources = {} }) {
       const own = sources?.[spec.name]
       if (!Array.isArray(own)) {
         add('ledger.codeRefs.sources.missing', spec.path, '包内文件文本', '缺失',
-          `${spec.path}：核 \`✓\` 列需要 ${spec.name} 包内的 src/ · client-src/ · test/ · scripts/ 文本，没拿到——不静默跳过`)
+          `${spec.path}：核 \`✓\` 列需要 ${spec.name} 包内的 client.js · src/ · client-src/ · test/ · scripts/ 文本，没拿到——不静默跳过`)
       } else {
         const haystack = own.map((file) => file.text).join('\n')
         for (const number of marks) {
           const ref = new RegExp(String.raw`\b${spec.prefix}${String(number).padStart(2, '0')}\b`)
           if (!ref.test(haystack)) {
             add('ledger.codeRefs', spec.path, `包内某处出现 \`${label(spec.prefix, number)}\``, '找不到',
-              `${spec.path}：${label(spec.prefix, number)} 标了 \`✓\`（代码/测试里引用了该编号），但包内 src/ · client-src/ · test/ · scripts/ 里找不到这个编号——要么去代码里落编号（维护规则 1），要么把这个 ✓ 去掉`)
+              `${spec.path}：${label(spec.prefix, number)} 标了 \`✓\`（代码/测试里引用了该编号），但包内 client.js · src/ · client-src/ · test/ · scripts/ 里找不到这个编号——要么去代码里落编号（维护规则 1），要么把这个 ✓ 去掉`)
           }
         }
       }
@@ -536,9 +551,20 @@ export function checkDefectsTable({ ledgers, conventions, sources = {} }) {
   return diffs
 }
 
-/** 包内会写编号注释的四个目录（与各包台账文件头里那句「`src/` / `client-src/` / `test/` /
- * `scripts/` 里有带 `Dxx` 的注释」一致）。 */
+/**
+ * 包内会写编号注释的目录（与各包台账文件头里那句「`src/` / `client-src/` / `test/` /
+ * `scripts/` 里有带 `Dxx` 的注释」一致）。
+ *
+ * **2026-10-04 起，包根的 `client.js` 也进现算范围**（见 {@link ROOT_SOURCE_FILES}）：`devfront D01`
+ * （站点编辑器保存抹字段）与 `devdata D10` / `devenv D04` / `devfront D02`（样式变量名写错、
+ * 框整条消失）这几条的修法**就在 `client.js` 里**，而它不在这四个目录里——于是要么把编号指针
+ * 挪去别的文件交差（`devfront D01` 当时就是这么绕的），要么这个号根本没有 L2 指针。
+ * `client.js` 是包内文本、也是改得最多的地方，把它算进来才是「编号是代码注释的字典」的完整版。
+ * 构建产物 `lib/` 仍然排除（`collectSources` 里跳过）。
+ */
 const SOURCE_DIRS = ['src', 'client-src', 'test', 'scripts']
+/** 包根那个**单文件**客户端半体（不是目录，所以单独列）。没有它的包属正常（客户端在 client-src/）。 */
+const ROOT_SOURCE_FILES = ['client.js']
 /** 只有这些扩展名算「代码」；`.md` 不算——台账自己的说法是「代码/测试里引用了」。 */
 const SOURCE_EXT = /\.(ts|js|mjs)$/
 
@@ -571,6 +597,13 @@ export function readPackageSources(spec, repoRoot = REPO_ROOT) {
   const root = join(repoRoot, 'packages', spec.name)
   const files = []
   for (const dir of SOURCE_DIRS) collectSources(join(root, dir), files)
+  for (const name of ROOT_SOURCE_FILES) {
+    try {
+      files.push({ path: join(root, name), text: readFileSync(join(root, name), 'utf8') })
+    } catch {
+      // 这个包没有包根的那个单文件客户端半体——正常情况，不是「缺失」
+    }
+  }
   return files
 }
 

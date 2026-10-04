@@ -20,7 +20,7 @@
  * search）的客户端是**裸 `client.js`**，于是它们从来没被这道防线覆盖过 —— 第 4 条就落在里面。
  * 现在两者都查：有 `client-src/index.js` 就查源码，否则查 `client.js`。
  *
- * ## 两道检查
+ * ## 三道检查
  *
  * **① 名字解析（tsc --checkJs）**：用仓库**已有**的 tsc 对目标跑 `--checkJs`，然后**只把
  * "真 bug"那几个诊断码当失败**：
@@ -43,6 +43,16 @@
  * 并且**凡是要跟宿主建连的地址都要抽成 `client-src/*.js` 纯模块 + vitest 覆盖
  * `dsh-app://app` 场景**（范例：`packages/tty/client-src/ws-url.js` +
  * `packages/tty/test/ws-url.test.ts`）。规矩比测试重要：它决定下一个人会不会再踩。
+ *
+ * **③ 样式变量（快照比对，规则与成因见 `scripts/client-theme-tokens.mjs`）**：客户端半体里
+ * 引用的每个 `--dsw-*` 都必须在宿主主题里**真实存在**。写错一个名字的后果不是「退回默认样式」
+ * ——`border:1px solid var(--不存在的变量)` 在**计算值阶段整条作废**（shorthand 的所有
+ * longhand 一起回落 `unset`，而 `border-style` 的初始值就是 `none`），**框会直接消失**。
+ * `devdata` / `devenv` / `devfront` 三张卡片 2026-10-04 就是这样变成一堵裸文本的
+ * （`--dsw-alias-border-secondary` / `--dsw-alias-bg-primary` 在宿主 403 个 token 里一个都没有，
+ * 而布局类声明不含变量、照常生效——所以"排版是对的，就是什么都没有"）。名字表是**生成物**
+ * （`scripts/fixtures/dsh-theme-tokens.json`，用 `node scripts/sync-dsh-theme-tokens.mjs` 保鲜），
+ * 读不到就**直接报错**而不是跳过——恒绿的闸门比没有闸门更糟。
  */
 import { spawnSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
@@ -50,6 +60,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join, relative } from 'node:path'
 
 import { describeHostUrlUse, HOST_URL_RULE_HINT, listClientSourceFiles, scanHostUrlUses } from './client-host-url.mjs'
+import { describeThemeTokenUse, loadThemeTokenSnapshot, scanThemeTokenUses, THEME_TOKEN_RULE_HINT } from './client-theme-tokens.mjs'
 
 // 在「包目录」里调用（`pnpm -r typecheck` 就是这样跑的）：tsc 输出的路径也相对它，
 // 于是下面的解析与提示都是包内相对路径。
@@ -95,6 +106,22 @@ const packageName = (() => {
  */
 const hostUrlFindings = listClientSourceFiles(root).flatMap((file) =>
   scanHostUrlUses(relative(root, file).replaceAll('\\', '/'), readFileSync(file, 'utf8')))
+
+/* ------------------------------------------------------------------ *
+ * 检查三：样式变量（快照比对）
+ * ------------------------------------------------------------------ */
+
+/*
+ * 先在**每个**受管文件上把引用扫全，再拿快照过滤：扫全的那个数量会打进通过行
+ * （`主题变量 N 处`）——本仓的规矩是闸门必须自证「命中不是 0」，只会在 0 命中时绿的
+ * 检查等于没有检查。快照读不到会在这里抛（不静默跳过，理由见 client-theme-tokens.mjs）。
+ */
+const { tokens: knownThemeTokens } = loadThemeTokenSnapshot(repoRoot)
+const themeTokenUses = listClientSourceFiles(root).flatMap((file) => {
+  const rel = relative(root, file).replaceAll('\\', '/')
+  return scanThemeTokenUses(readFileSync(file, 'utf8')).map((use) => ({ ...use, file: rel }))
+})
+const themeFindings = themeTokenUses.filter((use) => !knownThemeTokens.has(use.token))
 
 /* ------------------------------------------------------------------ *
  * 检查二：名字解析（tsc --checkJs）
@@ -146,11 +173,22 @@ for (const item of hostUrlFindings) {
   console.error('[client-lint] ' + item.file + ':' + String(item.line) + ':' + String(item.col) + ' ' + describeHostUrlUse(item))
 }
 
+for (const item of themeFindings) {
+  console.error('[client-lint] ' + item.file + ':' + String(item.line) + ':' + String(item.col) + ' ' + describeThemeTokenUse(item))
+}
+
 if (hostUrlFindings.length > 0) {
   console.error('\n[' + packageName + '] 宿主地址来源检查失败：' + String(hostUrlFindings.length) + ' 处。')
   console.error('  ' + HOST_URL_RULE_HINT)
   console.error('  桌面版页面 origin 是 dsh-app://app（Electron 自定义协议）而不是 HTTP：这些写法在浏览器里'
     + '一切正常、只有桌面版暴露——所以别指望冒烟能替你发现（详见 packages/tty/DEFECTS.md 的 tty D61）。')
+}
+
+if (themeFindings.length > 0) {
+  console.error('\n[' + packageName + '] 主题变量检查失败：' + String(themeFindings.length) + ' 处引用了宿主主题里不存在的样式变量。')
+  console.error('  ' + THEME_TOKEN_RULE_HINT)
+  console.error('  这类错**编译不报、preview 也报不出来**（preview 用的是自己造的假主题）、冒烟只断言文案与控件值'
+    + '——一个没有边框的输入框照样满足断言。真机代价见 2026-10-04 的三张 dev* 卡片：输入框/按钮/目标行全部无框。')
 }
 
 if (fatal.length > 0) {
@@ -159,9 +197,9 @@ if (fatal.length > 0) {
   process.exit(1)
 }
 
-if (hostUrlFindings.length > 0) process.exit(1)
+if (hostUrlFindings.length > 0 || themeFindings.length > 0) process.exit(1)
 
-const verdict = '宿主地址来源 0 处'
+const verdict = '宿主地址来源 0 处 · 主题变量 ' + String(themeTokenUses.length) + ' 处全部存在'
 if (noise.length > 0) {
   const byCode = new Map()
   for (const item of noise) byCode.set(item.code, (byCode.get(item.code) ?? 0) + 1)

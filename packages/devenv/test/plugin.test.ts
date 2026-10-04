@@ -267,8 +267,10 @@ describe('等待面：什么时候该停', () => {
     const text = await host.call('env_wait', { target: 'here', cwd: dir })
     expect(text).toContain('等待过程（共观测 2 次）')
     // 第一轮「还没观测到容器」、第二轮「就绪」——两段的耗时都要带出来（≥1ms 说明真的记了时间）。
-    expect(text).toMatch(/\+\d+m?s 还差/)
-    expect(text).toMatch(/\+\d+m?s 全部 1 个服务就绪/)
+    // `formatMs` 有三种形状：`715ms` / `1.2s` / `2m3s`（见 src/render.ts）——正则只认 `\d+m?s`
+    // 时，等待一旦超过 1s（机器有负载时就是常态）就会红，而那是**断言写错**、不是代码错。
+    expect(text).toMatch(/\+\d+(?:\.\d+)?(?:ms|s|m\d+s) 还差/)
+    expect(text).toMatch(/\+\d+(?:\.\d+)?(?:ms|s|m\d+s) 全部 1 个服务就绪/)
   })
 
   it('★ 取消：调用方 abort 之后立刻返回，且报告说清「不是超时、也不代表环境有问题」', async () => {

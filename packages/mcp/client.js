@@ -16,6 +16,14 @@ window.__ModuleLoader__.load({
 
     /* ================================ CSS ================================ */
 
+    /*
+     * mcp D01：样式变量只许写宿主主题里**真实存在**的名字。
+     *
+     * 变量不存在时那条声明在**计算值阶段**整条作废（`border` 是 shorthand，它的所有 longhand
+     * 一起回落 `unset`，而 `border-style` 的初始值就是 `none`）——本包当时是工具列表的分隔线
+     * **整条消失**（列宽、间距都对，只是没有线，所以谁都不确定是不是设计如此）。名字表是生成物
+     * `scripts/fixtures/dsh-theme-tokens.json`，判据在 `scripts/client-lint.mjs` 的检查 ③。
+     */
     const CSS = [
       // 设置插件卡片外壳（与官方 PluginCard 一致的轮廓）
       '.mX_pageHost{display:block}',
@@ -100,7 +108,7 @@ window.__ModuleLoader__.load({
       '.mX_toolWrap{border:1px solid var(--dsw-alias-border-l1);border-radius:10px;flex:none;overflow:hidden}',
       '.mX_toolHeader{background:var(--dsw-alias-bg-layer-2);border-bottom:1px solid var(--dsw-alias-border-l1);padding:8px 10px;font-size:12px;color:var(--dsw-alias-label-secondary);display:flex;gap:12px;flex-wrap:wrap}',
       '.mX_toolList{max-height:220px;overflow-y:auto;padding:4px 0}',
-      '.mX_toolItem{padding:5px 10px;font-size:12px;display:flex;flex-direction:column;gap:2px;border-bottom:1px solid var(--dsw-alias-separator-primary)}',
+      '.mX_toolItem{padding:5px 10px;font-size:12px;display:flex;flex-direction:column;gap:2px;border-bottom:1px solid var(--dsw-alias-border-l2)}',
       '.mX_toolItem:last-child{border-bottom:none}',
       '.mX_toolName{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--dsw-alias-state-business-primary)}',
       '.mX_toolDesc{color:var(--dsw-alias-label-tertiary)}',

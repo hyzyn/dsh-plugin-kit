@@ -159,7 +159,7 @@ describe('AGENTS.md 与它指向的 L0 文档', () => {
     // 判据是「有没有把某一节的规矩正文抄过来」——用**节标题**当探针。
     // 只出现在链接文字与指针句里是允许的（那是路由，不是正文）。
     const text = readFileSync(join(root, 'AGENTS.md'), 'utf8')
-    const ruleSections = ['文档分档', '编号规范', '客户端半体：两条硬规矩', '真机脚本与 CI 接线']
+    const ruleSections = ['文档分档', '编号规范', '客户端半体：三条硬规矩', '真机脚本与 CI 接线']
     for (const section of ruleSections) {
       expect(text, `AGENTS.md 里出现了「${section}」——疑似复制规矩正文`).not.toContain(section)
     }

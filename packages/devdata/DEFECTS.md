@@ -5,8 +5,8 @@
 > `src/` / `test/` 里有带 `Dxx` 的注释，含义是「这段代码为什么长这样」，编号的出处就是本文。
 > 拿到任意一个 `Dxx`：先查 [§1 编号索引表](#1-编号索引表) 知道**当年坏了什么**。
 >
-> **编号是硬契约**：`D01–D09` 是 `packages/devdata` 内部序列，与其它包的 `Dxx` **不共享**；
-> 跨包引用请写全名（`devdata D01` / `tty D95` / `devenv D01`）。新缺陷接在 `D09` 之后，
+> **编号是硬契约**：`D01–D10` 是 `packages/devdata` 内部序列，与其它包的 `Dxx` **不共享**；
+> 跨包引用请写全名（`devdata D01` / `tty D95` / `devenv D01`）。新缺陷接在 `D10` 之后，
 > **不得重号、不得回收空号**。
 >
 > 末列 `✓` 表示「**这段代码 / 测试里引用了该编号**」，由
@@ -21,8 +21,13 @@
 > 它的修复落在**仓根**（`scripts/test/lib-artifacts.test.ts` 守卫 + conventions § 提交 一条规矩），
 > 本包的 `src/` / `test/` 里没有任何一行代码因为那次事故而长成现在这样——给一个没有 L2 指针的东西
 > 编号，等于把「编号是代码注释的字典」这句话变成半句话。它记在 L0 那两处。
+>
+> **`D10`（2026-10-04）**：「样式变量引用了宿主主题里不存在的名字」这一族的第一落点——三张
+> dev* 卡片的输入框 / 按钮 / 目标行**全部没有框**，而布局照常生效（所以现场像「样式没加载」）。
+> 判据已固化成 `client-lint` 的检查 ③（宿主主题名字快照 403 条），规矩在
+> [conventions.md § 客户端半体 ③](../../docs/conventions.md#客户端半体三条硬规矩)。
 
-**已修 9 / 待修 0**，编号至 `D09`。症状见 §1。索引表**不写行号、也不保留修复提交 sha**
+**已修 10 / 待修 0**，编号至 `D10`。症状见 §1。索引表**不写行号、也不保留修复提交 sha**
 （[conventions.md § 编号规范](../../docs/conventions.md#编号规范) 硬规矩 4）：定位实现用
 `git log -S'<症状关键词>'`，或读代码里带编号的注释。
 
@@ -39,3 +44,4 @@
 | D07 | **`db: z.natural().default(0)` 让「没写」变成「写了 0」**：执行器于是**每次调用都先发一条 `SELECT 0`**——真机上它一直在发，只是没人看帧序，是 D06 同族埋着的第二颗雷。修法：`OPTIONAL_DB` 的缺省同样保持缺席（0 不是合法端口，安全） | src/plugin.ts、test/plugin-config.test.ts | ✓ |
 | D08 | **配置问题走 `ctx.logger.warn`**：启动日志里看不到它，于是挂载脚本里那条「启动日志里没有『配置问题』」**变成空断言**——报告本来就不在它查的地方，所以它拦不住 D06 那条假问题。修法：改 `console.warn`，并把夹具改成**真实形状**（含能力声明），那条断言这才长出牙齿 | src/plugin.ts、test/fake-host.ts、scripts/verify-devdata-host-mount.mjs | ✓ |
 | D09 | **作用域拒绝不说「判了哪个目录」**：真机首用第一步 `PING` 就被 `[OUT_OF_SCOPE]` 拒（工具 `cwd` 缺省取**宿主进程**的工作目录，而那台宿主从 `~` 启动），恢复路径只说「在允许目录内重试」——**没说你刚被判的是哪个目录**，agent 与人只能猜。写不出恢复路径的拒绝会让 agent 原地重试。修法：`rejectionHint` 多吃一个 `cwd`，点名被判目录与允许目录，并写明 `cwd` 缺省的取值来源；空作用域走另一支文案 | src/adjudicate.ts、test/adjudicate.test.ts | ✓ |
+| D10 | **样式变量名写错，框整条消失**：`client.js` 的 CSS 里写着 `--dsw-alias-border-secondary` 与 `--dsw-alias-bg-primary`，而宿主主题的 403 个 token 里**一个都没有**（真名是 `--dsw-alias-border-l1..l4` / `--dsw-alias-bg-base` / `--dsw-specific-input-major`）→ `border:1px solid var(--不存在的变量)` 在**计算值阶段整条作废**（shorthand 的所有 longhand 一起回落 `unset`，而 `border-style` 的初始值就是 `none`）：输入框、按钮、目标行**全部没有框**、输入框底色变透明。而不含变量的布局声明（`display` / `gap` / `max-width` / 字号）照常生效，所以现场看起来是「排版是对的，就是什么都没有」——最容易被当成「样式没加载」往错方向查。抓到它的是一张真机截图 | `client.js`（`border` 改 `--dsw-alias-border-l4` / `-l2`，底色改 `--dsw-specific-input-major`） · 判据 `scripts/client-lint.mjs` 检查 ③ + 宿主主题名字快照 `scripts/fixtures/dsh-theme-tokens.json` | ✓ |
