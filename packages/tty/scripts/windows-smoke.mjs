@@ -20,18 +20,67 @@ import WebServerRuntime from '@deepseek-ai/dsh-host-webserver'
 import { LocalSubprocessRuntime } from '@deepseek-ai/dsh-subprocess-local'
 import WebSocket from 'ws'
 import { name, inject, apply } from '../lib/index.js'
+import { createPhaseTracer, describeCrashPoint, traceSync } from './lib/crash-trace.mjs'
 
 if (process.platform !== 'win32') {
   console.log(`[windows-smoke] 跳过：当前平台 ${process.platform}——本脚本只在 Windows 上跑（真实验证 cmd.exe / ConPTY 链路），CI 的 windows-latest job 会执行它`)
   process.exit(0)
 }
 
+/**
+ * 阶段留痕（2026-10-04 加，起因是 CI 上那次 `0xC0000374` 原生崩溃）。
+ *
+ * **为什么不能用 `console.log`**：Node 官方规定 **Windows 上 stdout 到管道是异步的**
+ * （Linux/macOS 同步）。CI 上 stdout 正是管道，于是 `console.log('[W6] …')` 只把字节交给
+ * libuv 写队列——**进程原生崩溃那一刻队列一起没了**，日志里连 `[W6]` 都看不到，
+ * 只剩一个「什么都没说」的退出码。所以这里用 `fs.writeSync` 直写 fd 1（见 crash-trace.mjs）。
+ *
+ * **判据是配对**：`enter` 没配对 `leave` 的阶段 = 崩溃最可能的位置；若最后一条 `enter`
+ * 有对应的 `leave`，则崩溃在**下一个阶段入口之前**。2026-10-04 那次正是后者
+ * （W5 的 leave 打出来了、W6 的 enter 没打出来 ⇒ 崩在 W5 结束后、W6 入口前）。
+ */
+const tracer = createPhaseTracer()
+
 /* 看门狗：任何环节卡死时留痕退出（正常路径会先 process.exit）。 */
 const watchdog = setTimeout(() => {
+  // 卡死也是「失败」，先把诊断同步打出去（console.error 在 Windows 管道上同样会丢）
+  traceSync(describeCrashPoint({ openPhases: tracer.snapshot(), exitCode: 2 }))
   console.error('[watchdog] 90s 看门狗触发：windows-smoke 卡死')
   process.exit(2)
 }, 90000)
 watchdog.unref()
+
+/**
+ * 原生崩溃（段错误 / 堆损坏）会**绕过**所有 JS 异常处理，`uncaughtException` 也接不到。
+ * 所以真正的保证是上面那条「每阶段同步留痕」——崩溃点 = 最后一条没配对 `leave` 的 `enter`。
+ *
+ * 下面这几层是**尽力而为**的补充，只捕获 JS 层的漏网异常（那类崩溃此前也只剩一个退出码）。
+ */
+let exitingNormally = false
+
+function reportCrash(why, detail) {
+  traceSync(describeCrashPoint({ openPhases: tracer.snapshot(), exitCode: process.exitCode }))
+  traceSync(`${why}${detail ? '：' + detail : ''}`)
+}
+process.on('uncaughtException', (error) => {
+  exitingNormally = true // 自己报过了，别让 exit 钩子再报一遍
+  reportCrash('uncaughtException', error?.stack ?? String(error))
+  process.exit(1)
+})
+process.on('unhandledRejection', (reason) => {
+  exitingNormally = true
+  reportCrash('unhandledRejection', reason instanceof Error ? reason.stack : String(reason))
+  process.exit(1)
+})
+process.on('exit', (code) => {
+  /*
+   * 只在**异常终止**时报：正常收尾（末尾那段汇总 + flush 屏障 + exit）已经把事情说清了，
+   * 再打一段「崩溃点诊断」只会误导（断言失败被说成崩溃）。
+   * 判据用 `exitingNormally` 而不是 code：正常的失败路径 code 也是 1。
+   */
+  if (exitingNormally) return
+  reportCrash('进程在收尾之前退出', `code=${String(code)}`)
+})
 
 const RESULTS = []
 function pass(label) { RESULTS.push(['PASS', label]); console.log('  ✔ PASS  ' + label) }
@@ -117,8 +166,11 @@ async function run() {
 
   // W1：spawn → ready（默认 shell 必须是 %COMSPEC%，且真的起来了）
   console.log('\n[W1] spawn → ready（默认 shell = %COMSPEC%）')
+  tracer.enter('W1 openSession + ws 连接')
   const s = openSession(port)
   await s.open()
+  tracer.leave('W1 openSession + ws 连接')
+  tracer.enter('W1 spawn → ready')
   s.client.send(JSON.stringify({ t: 'spawn', cols: 100, rows: 30 }))
   try {
     await s.waitFor(() => s.state.ready !== null, 20000, 'ready')
@@ -131,9 +183,11 @@ async function run() {
   } catch (error) {
     fail('W1 spawn → ready', error.message)
   }
+  tracer.leave('W1 spawn → ready')
 
   // W2：跑起来的是 %COMSPEC%（cmd.exe），不是 POSIX 包装层
   console.log('\n[W2] 输入回显：跑起来的是 cmd.exe')
+  tracer.enter('W2 %COMSPEC% 回显')
   try {
     s.client.send(JSON.stringify({ t: 'input', d: `echo IT_SHELL_%COMSPEC%${ENTER}` }))
     await s.waitFor(() => /IT_SHELL_.*cmd\.exe/i.test(s.state.text), 15000, 'cmd.exe 回显')
@@ -141,9 +195,11 @@ async function run() {
   } catch (error) {
     fail('W2 %COMSPEC% 生效', error.message)
   }
+  tracer.leave('W2 %COMSPEC% 回显')
 
   // W3：命令真的被执行（不是只回显了输入）——靠 %OS% 展开证明
   console.log('\n[W3] 命令执行（%OS% 由 shell 展开）')
+  tracer.enter('W3 %OS% 展开')
   try {
     s.client.send(JSON.stringify({ t: 'input', d: `echo IT_WIN_%OS%${ENTER}` }))
     await s.waitFor(() => /IT_WIN_Windows_NT/.test(s.state.text), 15000, '%OS% 展开')
@@ -151,9 +207,11 @@ async function run() {
   } catch (error) {
     fail('W3 命令执行生效', error.message)
   }
+  tracer.leave('W3 %OS% 展开')
 
   // W4：kill 帧 → exit，会话名额释放
   console.log('\n[W4] kill → exit')
+  tracer.enter('W4 kill → exit')
   try {
     s.client.send(JSON.stringify({ t: 'kill' }))
     await s.waitFor(() => s.state.exited !== null, 15000, 'exit 帧')
@@ -161,11 +219,17 @@ async function run() {
   } catch (error) {
     fail('W4 kill 帧结束会话', error.message)
   }
+  tracer.leave('W4 kill → exit')
+  tracer.enter('W4 s.client.close()')
   try { s.client.close() } catch { /* 已关闭 */ }
+  tracer.leave('W4 s.client.close()')
 
   // W5：kill 之后还能再开一个（名额与清理都正确）
   console.log('\n[W5] kill 后重新 spawn')
+  tracer.enter('W5 openSession')
   const s2 = openSession(port)
+  tracer.leave('W5 openSession')
+  tracer.enter('W5 第二次 spawn → ready → kill → exit')
   try {
     await s2.open()
     s2.client.send(JSON.stringify({ t: 'spawn', cols: 80, rows: 24 }))
@@ -176,7 +240,10 @@ async function run() {
   } catch (error) {
     fail('W5 kill 后可重新 spawn', error.message)
   }
+  tracer.leave('W5 第二次 spawn → ready → kill → exit')
+  tracer.enter('W5 s2.client.close()')
   try { s2.client.close() } catch { /* 已关闭 */ }
+  tracer.leave('W5 s2.client.close()')
 
   // W6：agent 侧 `tty_send` 发**裸 LF** 也能提交命令（D74，2026-09-27 真机报告）
   //
@@ -186,6 +253,7 @@ async function run() {
   // 这里用 `%OS%` 展开做判据，理由同 W3：回显里只有 `%OS%` 字面量。
   console.log('\n[W6] tty_send 的 \\n 归一化（真实 conhost：裸 LF 不提交命令）')
   let agentSid = null
+  tracer.enter('W6 tty_open → tty_send → tty_capture')
   try {
     const open = TOOLS.get('tty_open')
     const send = TOOLS.get('tty_send')
@@ -208,6 +276,7 @@ async function run() {
   } catch (error) {
     fail('W6 tty_send 的裸 LF 提交命令（D74）', error.message)
   }
+  tracer.leave('W6 tty_open → tty_send → tty_capture')
   if (agentSid !== null) {
     try {
       await TOOLS.get('tty_close').execute({ sid: agentSid })
@@ -222,6 +291,7 @@ async function run() {
   // ConPTY 侧进程退出、句柄收尾、宿主把会话**留在表里**而不是摘掉；本地单测用的是
   // 假 PTY，验不到「真机上退出之后 tty_capture 还读得到输出」。
   console.log('\n[W7] 退出后的只读保留（D77）')
+  tracer.enter('W7 退出后的只读保留')
   let retainedSid = null
   try {
     const open = TOOLS.get('tty_open')
@@ -270,11 +340,17 @@ async function run() {
       fail('W7d tty_close 释放保留态', error.message)
     }
   }
+  tracer.leave('W7 退出后的只读保留')
 }
 
 await run()
+// 正常收尾（无论有没有断言失败）：告诉 exit 钩子「别打崩溃诊断」——那段是给
+// **异常终止**用的，断言失败被说成「崩溃」只会误导。
+exitingNormally = true
 const failed = RESULTS.filter((row) => row[0] === 'FAIL')
 console.log('\n==== Windows 冒烟：' + String(RESULTS.length - failed.length) + '/' + String(RESULTS.length) + ' PASS ====')
+// 同步再打一份结论：万一下面的 flush 屏障之前进程就没了（原生崩溃），至少这一行一定在。
+traceSync(`Windows 冒烟结论：${String(RESULTS.length - failed.length)}/${String(RESULTS.length)} PASS`)
 for (const row of failed) console.error('  ✘ ' + row[1] + (row[2] ? ' — ' + row[2] : ''))
 clearTimeout(watchdog)
 /**

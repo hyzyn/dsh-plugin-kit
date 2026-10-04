@@ -94,9 +94,41 @@ Windows runner（更慢更贵），或把 ConPTY 相关路径单独做一个 Win
 - 崩点两侧的会话状态：W5 的 `s2` 是否真的 `close()` 干净（`try { s2.client.close() } catch {}`
   吞掉了异常，失败时无声）；
 - 同时存活的原生句柄数（W1–W5 开了若干 PTY，是否都 `kill` 掉了）；
-- 用 `node --stack-trace-limit` / 让 node 打印原生崩溃栈，或对 `windows-smoke` 加一层
-  「原生崩溃诊断留痕」——**这是可观测性缺口**，与项目级 `writeStepSummary` 那次修的是同一类
-  问题（不说话的失败没法定位）。
+- 用 `node --stack-trace-limit` / 让 node 打印原生崩溃栈。
+
+**2026-10-04 当天已补上「原生崩溃诊断留痕」**（这一半是**可观测性**，不需要先定性就能做）：
+
+- 新增 [`scripts/lib/crash-trace.mjs`](./scripts/lib/crash-trace.mjs)：`traceSync`（`fs.writeSync`
+  直写 fd 1）、`createPhaseTracer`（阶段配对）、`describeCrashPoint`（把人话说清）；
+- `windows-smoke.mjs` 在 W1–W7 每个阶段边界插了 `tracer.enter` / `tracer.leave`，
+  共 27 处留痕点。
+
+**为什么不能用 `console.log`**（这是本次查出的**根因级**发现）：Node 官方规定
+**Windows 上 stdout 到管道是异步的**（Linux / macOS 同步；见 Node 文档 `process.stdout`
+的 "A note on process I/O"）。CI 上 stdout 正是管道，于是 `console.log('[W6] …')` 只把字节
+交给 libuv 写队列——**进程原生崩溃那一刻队列一起没了**，日志里连 `[W6]` 都看不到。
+这与本文件头 D62 记的是**同一件事的另一半**：D62 修的是**正常退出**路径（末尾空串写入做
+flush 屏障），而**原生崩溃没有「末尾」**，屏障来不及跑，只能靠**同步写**。
+
+**实测确认的一条硬约束**：**原生崩溃时 `process.on('exit')` 不触发**
+（`node -e "process.on('exit',…); process.abort()"` 里钩子从未跑到）。所以第一版
+「靠收尾钩子打完整诊断」的设计**在最需要它的场景里失效**——改成**每行 `enter` 自带完整栈**，
+最后一行就是完整诊断，不依赖任何收尾代码。`describeCrashPoint` 退居辅助（看门狗、
+`uncaughtException`、人肉排查时用）。
+
+**崩溃时 CI 日志长这样**（夹具模拟 2026-10-04 那次的形态，实测）：
+
+```
+[trace] +…ms enter｜栈：W5 s2.client.close()
+[trace] +…ms leave W5 s2.client.close()（用了 …ms）｜栈：（空）
+   ← 最后一行是这个 ⇒ 崩在 W5 之后、W6 入口之前
+```
+
+**门槛**：`packages/tty/test/crash-trace.test.ts` 18 条用例（同步写绕开缓冲、
+每行自带栈、写失败不成新失败源、阶段配对、`0xC0000374` / `0xC0000005` 认得出来）。
+
+**仍然未做的**（真要做才动）：崩点两侧的会话状态与原生句柄数——那要改被测路径本身，
+属于「先定性再动手」，本轮不做。
 
 **若将来确认是 flake 而非真 bug**：按项目级 ROADMAP 9.4 的口径处理（那条讲的是「争用强度
 不随机器漂」）；若确认是真 bug，另开 `Dxx` 编号进 [DEFECTS.md](./DEFECTS.md) 索引表
