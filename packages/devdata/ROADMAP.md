@@ -92,6 +92,15 @@
 12. **`test-isolated`**：按 worktree / 任务起副本 + 重置 + 清理（依赖 B7 的答案）。
 13. ~~**验活断言库**~~ —— 纯逻辑**已落地**（记-8）：清单 + 加载校验 + 求值 + 结构化差异。
     剩**跑批执行器**（要引擎执行器先能跑语句，见 A 组）。
+21. **把 `verify/<项目>.yaml` 接进工具面**（2026-10-04，从根 ROADMAP 第 14 项发现）：
+    本包的清单（记-8 那套：加载 + 校验 + 求值 + 结构化差异）**在 `src/verify.ts` 之外没有任何消费者**
+    ——真机启动日志里注册的四个工具（`devdata_list_targets` / `devdata_redis_command` /
+    `devdata_doctor` / `devdata_capabilities`）没有一个是清单驱动的。后果很具体：一次发布的证据链里
+    「数据对」那一环**只能由人 / 脚本接上，agent 走不通**（另两面各有 `env_status` / `site_verify`）。
+    门槛：一个**只读**的清单执行动作（按 `verify/<项目>.yaml` 跑断言、逐条给 `pass` / `fail` / `unknown`
+    ——「没验成」不许冒充「验出问题」、进审计）；要一起定的三件：**工具名**、**清单里 `statement` 的
+    表达力**（今天是共用 SQL 那条判据，Redis 语句过不了加载，见 `classifyAssertionStatement`）、
+    以及**不做发现**（跑什么完全由清单决定）。守卫见 `scripts/test/release-chain.test.ts` 的 tripwire。
 14. **环境编排**（归属 `devenv`，见 plan §16.1）：就绪判据的纯逻辑（记-9：`env-ready.ts` +
     `env-ready-eval.ts`、声明式清单 + 三态判定）**已于 2026-10-02 随建包**迁到 `packages/devenv`
     ——本包不再持有它，也不留转发。剩下的三件都在 `devenv` 那边：**观测层**（经复用通道取
