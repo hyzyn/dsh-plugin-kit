@@ -9,9 +9,37 @@
 
 | 层 | 位置 | 放什么 | 读者 |
 |---|---|---|---|
-| **L0** | 仓库根 + `docs/` | 跨包共享：定位、架构、规范、术语、跨包路线图、诊断路径、真机约束 | 新人 / 接手整个仓库的人 |
+| **L0** | 仓库根 + `docs/` | 跨包共享：定位、架构、规范、术语、跨包路线图、诊断路径、真机约束。**已落地方案的档案在 `docs/landed/`**（判据见下） | 新人 / 接手整个仓库的人 |
 | **L1** | `packages/<pkg>/` | 包内独有：使用 / 配置 / 工具、缺陷编号、包内待办、包特有深层设计 | 改这个包的人 |
 | **L2** | 代码注释 | 「这段代码为什么长这样」，带缺陷编号 | 读这段代码的人 |
+
+### L0 内部：活规矩与已落地档案
+
+`docs/` 顶层放**活规矩**——改代码时要读、要守、会变的东西；**已落地方案的档案**放
+`docs/landed/`。**判据只有一句**：
+
+> **这份文档还约束「现在怎么写代码」吗？** 还约束 → 留 `docs/`；只解释「当时为什么这么做、
+> 怎么做的、被什么推翻过」→ 进 `docs/landed/`。
+
+| | `docs/`（活规矩） | `docs/landed/`（档案） |
+|---|---|---|
+| 什么时候读 | 动手前必读（规范 / 诊断 / 真机约束 / 术语） | 想知道「这块为什么长这样」时再翻 |
+| 内容 | 约束、判据、当前方案 | 已落地方案的设计依据 + 执行记录 + 当时的取舍 |
+| 谁登记 | [知识归属表](#知识归属表唯一归宿)，**两层都要** | 同上（登记相对 `docs/` 的路径，如 `landed/ci-scripts-plan.md`） |
+| 命名 | [§ 命名](#命名)那条「同一主题只允许一份活文档」对**两层都**生效 | 同上 |
+
+**为什么分层（2026-10-04，根 ROADMAP 第 8 项）**：`docs/` 第一屏近四成是「已经做完了」的方案
+执行记录，新人分不清「这条要守」与「这条已经落地」。**这是可发现性问题，不是正确性问题**
+——所以做法是**搬**，不是加规矩。
+
+**两条纪律**：
+
+1. **分层的边界是「还约束不约束」，不是「长不长」**——「方案 + 进度表」混合的文档（`i18n.md`）
+   只要还有活的部分就留在 `docs/`，不为了整齐把它劈开（劈开会让 `check-i18n` 的报错指向一份
+   只讲历史的地方）；
+2. **档案不造第二份真相源**：事实已经搬到别处的（例如三包各自的状态真源），档案里只留指针；
+   已经落地的结论被后来的改动推翻时，**追加更正、不删原文**——原文本身是「当时为什么这么定」
+   的证据。
 
 ### 知识归属表（唯一归宿）
 
@@ -26,8 +54,8 @@
 | **跨包行为约定**（回环围栏 / body 围栏 / 截断信号） | L0 [`docs/architecture.md` § 7](./architecture.md#7-一条请求经过什么) |
 | **字符串契约常量的判据**（什么该提常量、什么不该；服务名 / 环境层名的归宿与守卫） | L0 本文 [§ 常量](#常量什么该提什么不该提) |
 | **面板端 GUI 的文案与语言（i18n）** | L0 [`docs/i18n.md`](./i18n.md)（方案 + 规范片段 + 进度表） |
-| **跳板机（ProxyJump / ProxyCommand）完整实现的方案**（2026-09-25 已按它落地，`ProxyCommand` 见其 §6.1 的闸门定案表；保留为**活**的作业面：多跳链与后续坑仍以它为准） | L0 [`docs/proxyjump-plan.md`](./proxyjump-plan.md) |
-| **能力开关「就地提权」的当前权威实施方案**（2026-09-26 已按它落地：两条通道、落点、威胁模型、逐 PR 顺序；实施偏差见其附录 C。原先的 `…-plan.v2.md` 已按命名规范改名成本文件名） | L0 [`docs/capability-elevation-plan.md`](./capability-elevation-plan.md) |
+| **跳板机（ProxyJump / ProxyCommand）完整实现的方案**（2026-09-25 已按它落地：`ProxyJump` 单跳 + `ProxyCommand` 闸门版，闸门定案表在其 §6.1；**多跳链明确不做**） | 档案 [`docs/landed/proxyjump-plan.md`](./landed/proxyjump-plan.md) |
+| **能力开关「就地提权」的当前权威实施方案**（2026-09-26 已按它落地：两条通道、落点、威胁模型、逐 PR 顺序；实施偏差见其附录 C。原先的 `…-plan.v2.md` 已按命名规范改名成本文件名） | 档案 [`docs/landed/capability-elevation-plan.md`](./landed/capability-elevation-plan.md) |
 | **开发数据套件（SQL 只读 / NoSQL 受限 / 消息中间件控制台）的方案**（2026-10-01 立项：定位与边界、三条数据通路、三档能力模型、必须先真机确认的 C1–C6、分步顺序与验收清单。**进展以三个包各自的状态真源为准，不看本行**：`devdata` → [`packages/devdata/ROADMAP.md`](../packages/devdata/ROADMAP.md)、`devenv` → [`packages/devenv/ROADMAP.md`](../packages/devenv/ROADMAP.md)、`devfront` → [`packages/devfront/ROADMAP.md`](../packages/devfront/ROADMAP.md)。三包均已建并有真机落地记录） | L0 [`docs/devdata-plan.md`](./devdata-plan.md) |
 | **能力开关「就地提权」方案的 v1（已删除，仅历史）**——它设计的「宿主终端确认码」通道**在代码里不存在**（`CapabilityGrantVia` 只有一个值 `'file'`），保留只为追溯取舍过程；**不要照着执行**（改动去上面那份） | 冻结指针 `git show 79ca434e:docs/capability-elevation-plan.md`（223 行）· 检索入口见 [`ROADMAP.md` 的「已由 L0 资产承接」表](../ROADMAP.md) |
 | AI 真机测试约束 | L0 [`docs/agent-real-test.md`](./agent-real-test.md) |
@@ -45,7 +73,8 @@
 | **提 issue 的格式约束**（表单字段 / 自查结果 / 空白 issue 已关闭） | L0 [`.github/ISSUE_TEMPLATE/`](../.github/ISSUE_TEMPLATE/)（两张表单是**字段真相**）+ 本文 [§ Issue](./conventions.md#issue提-issue-的格式约束)（规矩）。字段与 [troubleshooting.md 的通用顺序](./troubleshooting.md#通用顺序)一一对应；schema 与表单内链接的闸门是 [`scripts/check-issue-forms.mjs`](../scripts/check-issue-forms.mjs) |
 | **投稿材料**（面向 DSH 插件市场） | L0 [`docs/pr-body-dsh-market.md`](./pr-body-dsh-market.md)（**提给市场仓库的 PR 正文**，其相对链接指向目标仓库）与 [`docs/community-submission.json`](./community-submission.json)（提交载荷）。两者都是**对外投稿物**，不是本仓架构 / 规范；**保留原路径**——`community-submission.json` 可能被市场按 `@main/docs/` URL 取。它们属于**「创意工坊」那条投稿轨道**，与市场卡片上分类标签的实际来源不是一回事：见下行 |
 | **插件市场索引**（卡片分类标签从哪来 · 我们 8 条的现状 · 改分类怎么提 PR） | L0 [`docs/market-index.md`](./market-index.md) |
-| **CI 与 `package.json` 的脚本双真相源：收敛方案**（改动点 / rename 面 / CI 影响 / 验收；**已执行：方案 A + B**） | L0 [`docs/ci-scripts-plan.md`](./ci-scripts-plan.md)（本文 [§ 真机脚本与 CI 接线](#真机脚本与-ci-接线)只留诊断，执行记录在那份里） |
+| **CI 与 `package.json` 的脚本双真相源：收敛方案**（改动点 / rename 面 / CI 影响 / 验收；**已执行：方案 A + B**） | 档案 [`docs/landed/ci-scripts-plan.md`](./landed/ci-scripts-plan.md)（本文 [§ 真机脚本与 CI 接线](#真机脚本与-ci-接线)只留诊断，执行记录在那份里） |
+| **已落地方案的档案**（设计依据 + 执行记录 + 当时的取舍；**不是活待办**，改代码时不必读） | 档案 `docs/landed/`（判据见 [§ L0 内部：活规矩与已落地档案](#l0-内部活规矩与已落地档案)）。守卫 `scripts/docs-index.mjs` **递归扫两层**：`docs/` 与 `docs/landed/` 的**每一份都要在本表登记**，登记的是相对 `docs/` 的路径（`landed/xxx.md`）——不登记就报 `doc.unregistered` |
 | **AI 协作边界**（哪些改动必须先问维护者） | L0 本文 [§ AI 协作边界](#ai-协作边界什么改动要先问) |
 
 ### L0 / L1 的边界判据
@@ -571,7 +600,7 @@ HTTP 那条管「走出来的东西是对的」。
   **改名只红一处**：改脚本文件名 → workflow 立刻红（路径找不到），而
   `pnpm --filter … run <条目>` 那条**悄悄烂掉**（CI 从不跑它，没人会红）；反过来改条目名 →
   workflow 照样绿，只有手动跑的人受影响。
-  **收敛方案与执行记录见 [docs/ci-scripts-plan.md](./ci-scripts-plan.md)**：**方案 A 已于 2026-10-01
+  **收敛方案与执行记录见 [docs/landed/ci-scripts-plan.md](./landed/ci-scripts-plan.md)**：**方案 A 已于 2026-10-01
   执行**（workflow 改成调用包内条目，14 行 → 10 行、`grep -c 'node packages/'` = 0 / 0；真相源收敛到
   `package.json`），**方案 B（守卫）同轮也已做**——`scripts/ci-script-truth.mjs`（写死路径不许回来、
   每个 `--filter` 引用都要能解析、两侧命令逐字一致、发布闸不许跑 CI 不认的入口、命中不是 0）；

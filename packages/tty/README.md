@@ -511,7 +511,7 @@ tmux server（专用 socket `dsh-tty`，与用户自己的 tmux 完全隔离）�
   阶段 0 就返回并点名这个开关。与跳板机同时填时按 OpenSSH 语义**跳板机优先**，并记一条 warn。
   闸门只有一处（本插件 settings）：docker 容器面板读同一个开关——连接簿配一次、两处生效；
   代价是代理命令是**本机**执行的，docker 目标也会用这条命令（详见
-  [docs/proxyjump-plan.md](../../docs/proxyjump-plan.md) §6.1 的闸门定案表）；
+  [docs/landed/proxyjump-plan.md](../../docs/landed/proxyjump-plan.md) §6.1 的闸门定案表）；
   与跳板机一样，**它是另一条独立传输，收尾必须成对**（终端 / SFTP / 隧道 / 探针四条路都在
   同一个收尾入口里 `dispose()`：关传输 + 杀进程组，子进程不会变成常驻孤儿）；
 - **凭据引用选择器（0.4.0，0.17 起与 env 插件解耦）**：SSH 对话框的密码/口令字段旁有筛选框 +

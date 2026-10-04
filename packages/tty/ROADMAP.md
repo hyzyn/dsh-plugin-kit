@@ -63,7 +63,7 @@ tty 侧只留三条：
 - 落点一句：`isLoopbackHttp` 删除、收敛成**唯一**闸门 `gateRoute`（kit 的加固档 + 变更端点的同源证明），
   9 个只读工具声明并发安全；
 - **仍未做：只有多跳链（明确不做）**——方案与全部坑见
-  [docs/proxyjump-plan.md](../../docs/proxyjump-plan.md)（第 6.1 节是 `ProxyCommand` 的闸门定案表）。
+  [docs/landed/proxyjump-plan.md](../../docs/landed/proxyjump-plan.md)（第 6.1 节是 `ProxyCommand` 的闸门定案表）。
 
 ## 已完成（落点 + 门槛）
 

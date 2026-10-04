@@ -11,7 +11,7 @@
  *     （CI 从不跑它，没人会红）；
  *   - 只改条目名 → workflow 全绿，只有手动跑的人受影响。
  *
- * **方案 A**（已执行，见 [docs/ci-scripts-plan.md](../docs/ci-scripts-plan.md)）把 workflow 改成调用
+ * **方案 A**（已执行，见 [docs/landed/ci-scripts-plan.md](../docs/landed/ci-scripts-plan.md)）把 workflow 改成调用
  * 包内条目，真相源收敛到 `package.json`。本模块是**方案 B**：让「收敛后的形态」不许再漂——
  * 它不改任何执行语义，只做静态断言：
  *
@@ -121,7 +121,7 @@ export function checkCiScriptTruth({ workflows, packages }) {
       diffs.push({
         kind: 'ci.hardcodedPath',
         file: workflow.file,
-        message: `${workflow.file} 里又出现了写死路径 \`node ${path}\`：这会让对应包的条目悄悄腐烂（CI 不再跑它）。改成 \`pnpm --filter <包名> run <条目>\`——逐条对应关系见 docs/ci-scripts-plan.md`,
+        message: `${workflow.file} 里又出现了写死路径 \`node ${path}\`：这会让对应包的条目悄悄腐烂（CI 不再跑它）。改成 \`pnpm --filter <包名> run <条目>\`——逐条对应关系见 docs/landed/ci-scripts-plan.md`,
       })
     }
   }

@@ -77,6 +77,21 @@ describe('docs-index：现算（唯一真值来源）', () => {
     for (const file of real.docs) expect(registered.has(file), `${file} 应被登记`).toBe(true)
   })
 
+  it('真实仓库：分层两层都被扫到（`landed/` 命中不是 0）', () => {
+    /*
+     * 2026-10-04 分层（根 ROADMAP 第 8 项）之后的**正向**断言：`docs/landed/` 里的档案必须
+     * 真的被收进清单。否则「只扫顶层」这个旧行为会在某次重构里悄悄回来，而上面那条
+     * 「每一份都被登记」照旧绿（它只查收进来的那批）——分层就变成一个盲区。
+     */
+    const landed = real.docs.filter((file) => file.startsWith('landed/'))
+    expect(landed.length, 'docs/landed/ 里应有档案（0 份 = 分层已经退回去了）').toBeGreaterThan(0)
+    expect(landed, '三份已落地方案的档案').toContain('landed/ci-scripts-plan.md')
+    expect(landed).toContain('landed/proxyjump-plan.md')
+    // 顶层仍然在，且两层的项都不带目录前缀之外的东西
+    expect(real.docs, '顶层活规矩仍在清单里').toContain('conventions.md')
+    for (const file of real.docs) expect(file.startsWith('landed/') || !file.includes('/'), `${file} 应只有 landed/ 这一个子层`).toBe(true)
+  })
+
   it('真实仓库：全部判据通过（守卫必须绿）', () => {
     const diffs = checkRepo()
     expect(diffs.map((diff) => diff.message).join('\n')).toBe('')
@@ -98,11 +113,15 @@ describe('docs-index：现算（唯一真值来源）', () => {
 
   it('方案文档登记在案：一份权威（就是这个文件名）、v1 只剩冻结指针', () => {
     const table = sectionOf(real.conventions, ATTRIBUTION_HEADING)
-    expect(table).toContain('./capability-elevation-plan.md')
-    // v1 已删除：归属表那一行不再指向文件，而是指向可检索的 sha
+    // 2026-10-04 分层之后，登记项是相对 `docs/` 的路径（`./landed/…`）
+    expect(table).toContain('./landed/capability-elevation-plan.md')
+    // v1 已删除：归属表那一行不再指向文件，而是指向可检索的 sha（**历史路径不带 landed/**
+    // ——那份 v1 在 79ca434e 时住在 docs/ 顶层，改它会让 `git show` 取不回来）
     expect(table).toContain('git show 79ca434e:docs/capability-elevation-plan.md')
+    expect(table, '历史路径不该被分层改写').not.toContain('79ca434e:docs/landed/')
     expect(table).toMatch(/能力开关「就地提权」方案的 v1（已删除，仅历史）/)
     expect(table, '旧名不该还留在归属表里').not.toContain('capability-elevation-plan.v2')
+    expect(table, '分层那一行要指到判据').toContain('#l0-内部活规矩与已落地档案')
   })
 
   it('命名规矩还在，例外清单已清空（机制不许跟着拆）', () => {
@@ -156,11 +175,11 @@ describe('docs-index：现算（唯一真值来源）', () => {
 
 describe('反例 1：文档没被登记 → 必须报出来', () => {
   it('把方案文档那一行的链接目标改掉 → doc.unregistered（就是本轮真实漂过的那一份）', () => {
-    const fixture = mutate(real.conventions, '](./capability-elevation-plan.md)', '](./capability-elevation-plan-vX.md)')
+    const fixture = mutate(real.conventions, '](./landed/capability-elevation-plan.md)', '](./landed/capability-elevation-plan-vX.md)')
     const diffs = checkDocsRegistration({ docs: real.docs, conventions: fixture })
     expect(kinds(diffs)).toContain('doc.unregistered')
     const diff = diffs.find((item) => item.kind === 'doc.unregistered')
-    expect(diff?.file).toBe('capability-elevation-plan.md')
+    expect(diff?.file).toBe('landed/capability-elevation-plan.md')
     expect(diff?.message).toContain('没有被知识归属表登记')
   })
 
@@ -168,6 +187,17 @@ describe('反例 1：文档没被登记 → 必须报出来', () => {
     const diffs = checkDocsRegistration({ docs: [...real.docs, 'brand-new-plan.md'], conventions: real.conventions })
     expect(diffs).toHaveLength(1)
     expect(diffs[0].file).toBe('brand-new-plan.md')
+  })
+
+  it('**档案层**新加一份文件却不登记 → 一样报（分层的盲区反例）', () => {
+    /*
+     * 分层最容易坏的方式：档案搬进子目录之后，「每一份都被登记」那条判据**看不见它们**了。
+     * 所以这里拿一份合成的 `landed/…` 塞进清单——它必须和顶层文件**同权**地报出来。
+     */
+    const diffs = checkDocsRegistration({ docs: [...real.docs, 'landed/nobody-registered-me.md'], conventions: real.conventions })
+    expect(diffs).toHaveLength(1)
+    expect(diffs[0].file).toBe('landed/nobody-registered-me.md')
+    expect(diffs[0].message).toContain('docs/landed/nobody-registered-me.md')
   })
 
   it('归属表整节被改名/删掉 → **报缺失**，不是静默跳过', () => {
@@ -190,7 +220,7 @@ describe('反例 2：版本号住进文件名 → 必须报出来', () => {
     expect(diffs[0].message).toContain('同一主题只允许一份活文档')
   })
 
-  it('真实清单已清空：10 份文件名一个都不报', () => {
+  it('真实清单已清空：全部文件名一个都不报', () => {
     expect(VERSION_SUFFIX_ALLOWLIST).toEqual([])
     expect(checkDocFilenames({ docs: real.docs })).toEqual([])
   })

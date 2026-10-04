@@ -1,5 +1,6 @@
 /**
- * 文档路由守卫：`docs/*.md`（登记 + 命名）、L0 `ROADMAP.md`（✅ ↔ 落点）、**包内**
+ * 文档路由守卫：`docs/` **两层**（`docs/*.md` 活规矩 + `docs/landed/*.md` 已落地档案；
+ * 登记 + 命名）、L0 `ROADMAP.md`（✅ ↔ 落点）、**包内**
  * `packages/<pkg>/ROADMAP.md`（落地记录节必须排在 `## 已完成` 之后），以及
  * **workspace 包集合 ↔ `architecture.md § 2 包清单`**（判据 5）。
  *
@@ -11,6 +12,14 @@
  * `packages/kit/src/grant-store.ts` 的 `CapabilityGrantVia` 只有一个值 `'file'`）与
  * `capability-elevation-plan.v2.md`。两份都写着「执行对象：AI 代理，按 PR 顺序执行」——
  * 也就是说，一份**描述不存在机制**的工单正躺在 L0 里等着被照着做，而没有任何东西会红。
+ *
+ * ## 两层都扫（2026-10-04，根 ROADMAP 第 8 项）
+ *
+ * 分层把「已经做完的方案」搬进 `docs/landed/`（判据见
+ * [conventions § L0 内部：活规矩与已落地档案](./conventions.md#l0-内部活规矩与已落地档案)）。
+ * **只扫顶层就等于给新目录开一个盲区**——一份谁也没登记的档案躺在 `landed/` 里，闸门照绿。
+ * 所以这里递归扫两层、登记项写成相对 `docs/` 的路径（`landed/xxx.md`），
+ * 并把「扫到了 landed 里的文件」本身做成一条正向断言（命中 0 = 分层已经悄悄退回去）。
  *
  * 同一轮还收了两条同类漂移：
  *
@@ -70,8 +79,10 @@ import { LEDGER_SPECS } from './defects-table.mjs'
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
-/** `docs/`：被登记方（判据 1 / 判据 2 都只看这一层）。 */
+/** `docs/`：被登记方（判据 1 / 判据 2 都只看这一层——**含 `landed/` 子层**，见 `collectDocs`）。 */
 export const DOCS_DIR = 'docs'
+/** `docs/landed/`：已落地方案的档案（判据 1 / 2 与顶层同权，登记项写成 `landed/xxx.md`）。 */
+export const LANDED_DIR_NAME = 'landed'
 /** `docs/conventions.md`：知识归属表与命名规范都在这里。 */
 export const CONVENTIONS_PATH = 'docs/conventions.md'
 /** `ROADMAP.md`：✅ 与落点的成对关系。 */
@@ -161,10 +172,10 @@ export function sectionOf(text, heading) {
 }
 
 /**
- * 归属表里引用到的 `docs/*.md` 文件名。
+ * 归属表里引用到的文档名（**相对 `docs/`**：顶层是 `xxx.md`，档案层是 `landed/xxx.md`）。
  *
- * 只认**同目录**的相对链接（`](./xxx.md)`，允许带同文件锚点 `./xxx.md#…`）：表里还有
- * `../README.md`、`../RELEASING.md`、`../packages/codegraph/docs/p0-plan.md`（L1 资产）与
+ * 只认**从 `docs/` 出发**的相对链接（`](./xxx.md)` / `](./landed/xxx.md)`，允许带同文件锚点）：
+ * 表里还有 `../README.md`、`../RELEASING.md`、`../packages/codegraph/docs/p0-plan.md`（L1 资产）与
  * `./community-submission.json`（投稿物），它们都不该被算成本层文档的登记项——所以按链接目标的
  * 形状取，而不是按关键词扫。
  */
@@ -172,8 +183,9 @@ export function parseAttributedDocs(conventions) {
   const table = sectionOf(conventions, ATTRIBUTION_HEADING)
   const names = new Set()
   if (table === undefined) return names
-  // `.md` 之后允许 `#锚点`：`./conventions.md#真机脚本与-ci-接线` 也是一次登记
-  for (const match of table.matchAll(/\]\(\.\/([A-Za-z0-9._-]+\.md)(?:#[^)]*)?\)/g)) names.add(match[1])
+  // `.md` 之后允许 `#锚点`：`./conventions.md#真机脚本与-ci-接线` 也是一次登记。
+  // 路径里允许 `/`：档案层的登记项是 `./landed/xxx.md`（两层都要登记，见文件头）。
+  for (const match of table.matchAll(/\]\(\.\/([A-Za-z0-9._/-]+\.md)(?:#[^)]*)?\)/g)) names.add(match[1])
   return names
 }
 
@@ -576,10 +588,29 @@ export function formatReadmeReport(facts) {
 
 /** 读仓库里的输入（只读）：`docs/` 清单、conventions、L0 ROADMAP、包内 ROADMAP（判据 4），
  *  以及 workspace 包集合与 architecture（判据 5）。 */
-export function readDocsInputs(repoRoot = REPO_ROOT) {
-  const docs = readdirSync(join(repoRoot, DOCS_DIR))
+/**
+ * `docs/` 两层的 markdown 清单（**相对 `docs/`** 的路径，已排序）。
+ *
+ * 顶层是活规矩，`landed/` 是已落地方案的档案（见
+ * [conventions § L0 内部：活规矩与已落地档案](./conventions.md#l0-内部活规矩与已落地档案)）。
+ * **两层同权**：都要求被归属表登记、都不许带版本后缀。只把顶层收进来的话，
+ * 新目录就是一个「谁也没登记也照样绿」的盲区。
+ */
+export function collectDocs(repoRoot) {
+  const names = readdirSync(join(repoRoot, DOCS_DIR))
     .filter((name) => name.endsWith('.md'))
-    .sort()
+    .map((name) => name)
+  const landed = join(repoRoot, DOCS_DIR, LANDED_DIR_NAME)
+  if (existsSync(landed)) {
+    for (const name of readdirSync(landed)) {
+      if (name.endsWith('.md')) names.push(`${LANDED_DIR_NAME}/${name}`)
+    }
+  }
+  return names.sort()
+}
+
+export function readDocsInputs(repoRoot = REPO_ROOT) {
+  const docs = collectDocs(repoRoot)
   /*
    * 行尾归一：本守卫的判据与单测 fixture 都是**按行**写的（`\n## 待办\n` 这种字面替换最典型），
    * 而 Windows 检出（或 `core.autocrlf`）会给文件 CRLF——不归一的话，守卫在那种工作区里

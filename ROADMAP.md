@@ -31,7 +31,7 @@
 ### 2. 跳板机（ProxyJump / ProxyCommand）✅
 
 > **全部落地**（2026-09-25，见 [§ 已完成](#已完成落点--门槛)与
-> [docs/proxyjump-plan.md](./docs/proxyjump-plan.md) 的进度表）：两包加 `jump` 规格并补齐四道
+> [docs/landed/proxyjump-plan.md](./docs/landed/proxyjump-plan.md) 的进度表）：两包加 `jump` 规格并补齐四道
 > 白名单、tty 四个连接点共用 `prepareSshConnect` / `attachSshTransport`、docker 池键并入
 > 跳板机身份、导入解析 `ProxyJump`（含同文件别名）；连接簿对话框的跳板机字段与「试连」的
 > 跳板机维度同日做完（`client-src/jump-field.js` 纯模块 + 预览 33/33 + 真机冒烟）。
@@ -43,7 +43,7 @@
 > 与两包各一套单测（tty 16 例 / docker 12 例）都进了 CI。
 >
 > **仍未做**：只有多跳链（跳板机的跳板机）——明确不做，导入遇嵌套别名按「解析不出」处理。
-> 边界与理由见 [docs/proxyjump-plan.md](./docs/proxyjump-plan.md) 第 6.1 节（闸门定案表）。
+> 边界与理由见 [docs/landed/proxyjump-plan.md](./docs/landed/proxyjump-plan.md) 第 6.1 节（闸门定案表）。
 
 同一个根因，两个包各写了一遍，迁到这里合并（两段原文都保留）：
 
@@ -125,7 +125,7 @@
 #### 5.1.1 就地提权：第二条带外通道（2026-09-26）
 
 > 机制推演、API 取舍与威胁模型**不在本文**（本文只放「落点 + 门槛」）：全部在
-> [docs/capability-elevation-plan.md](./docs/capability-elevation-plan.md)——§0 是对手表与
+> [docs/landed/capability-elevation-plan.md](./docs/landed/capability-elevation-plan.md)——§0 是对手表与
 > 三条结论、§1 是不变量、§3 是 kit 侧落点、附录 B 说明为什么砍掉确认码通道、附录 C 是实施记录
 > （含 API 改名与四处偏差）、附录 D 是 tty 接入、§9 是明确不做（OS 级同意仍后置）。
 
@@ -216,7 +216,7 @@ renderer）：token 让盲发失效。若要做，先书面定三件事：① �
 （同一条 hermetic 脚本，CI 用写死路径、包内用 `smoke` 条目，改名只会红一处）。
 **待批准**：收敛要动 `.github/`，按 [§ AI 协作边界](./docs/conventions.md#ai-协作边界什么改动要先问)
 属于必须先问的动作。
-**方案**：[docs/ci-scripts-plan.md](./docs/ci-scripts-plan.md)——现算 **14 处**写死路径（ci.yml 11 +
+**方案**：[docs/landed/ci-scripts-plan.md](./docs/landed/ci-scripts-plan.md)——现算 **14 处**写死路径（ci.yml 11 +
 release.yml 3，docker 那三条两个 workflow 各写一遍）、方案 A（workflow 调用包内条目，14 行 → 10 行）
 与方案 B（不动 workflow 的守卫）、rename 面、CI 影响、验收与回滚都列在那里；批准后照它执行
 ——**已批准并执行（2026-10-01）**，执行记录见该文 § 9；**已做**：见 § 已完成 第 6 项。
@@ -235,7 +235,7 @@ release.yml 3，docker 那三条两个 workflow 各写一遍）、方案 A（wor
 **已做（2026-10-01）**：落点与门槛见 § 已完成 第 7 项（`docs-index` 判据 5：两边现算 +
 三种漂法各一条反例）。
 
-### 8. `docs/` 的活规矩与已落地档案混在同一层
+### 8. ✅ `docs/` 的活规矩与已落地档案混在同一层
 
 现算（`wc -l docs/*.md`，2026-10-01 时点）：`docs/` 11 份 2558 行。其中三份**已落地方案的执行记录**
 （就地提权 451 / 跳板机 270 / 面板端 i18n 252）合计 976 行 = **38%**；而每次改代码都要翻的活规矩
@@ -244,6 +244,12 @@ release.yml 3，docker 那三条两个 workflow 各写一遍）、方案 A（wor
 
 **为什么是 L0**：要动 `docs/` 结构与归属表。**这是可发现性问题，不是正确性问题**，不急；
 真要动，方向是分层（例如 `docs/landed/`）而不是继续加规矩。
+
+> **2026-10-04：按这个方向落地**（判据、落点与门槛见 [§ 已完成](#已完成落点--门槛) 第 8 项）。
+> 结果与原文那句估值的差别值得记：这轮**只搬了两份是纯档案的**（就地提权 451 / 跳板机 270）加
+> 一份同性质的 `ci-scripts-plan`（164，原估里没算它），共 885 行；**面板端 i18n 留在了顶层**
+> ——它是「方案 + 规范片段 + 进度表」的混合体，`check-i18n` 的报错就指着它的 § 键名规范，
+> 按「还约束不约束」这条判据它仍是活规矩。
 
 ### 9. ✅ 开发数据套件三包（`devdata` / `devenv` / `devfront`）：入库 + 状态真源收敛
 
@@ -445,7 +451,7 @@ sshd；J1 正向 / J2 跳板机密码错点名跳板机 / J3 目标不可达同�
 `packages/kit/test/ssh-proxy-command.test.ts`（12 例）。
 
 **仍未做**：只剩多跳链（跳板机的跳板机）——明确不做（导入遇嵌套别名按「解析不出」处理）。
-方案与全部坑仍见 [docs/proxyjump-plan.md](./docs/proxyjump-plan.md)（第 6.1 节是闸门定案表）。
+方案与全部坑仍见 [docs/landed/proxyjump-plan.md](./docs/landed/proxyjump-plan.md)（第 6.1 节是闸门定案表）。
 
 **顺路修掉的两处**（做 ProxyCommand 时挖出来的，编号 tty **D64 / D65**）：连接簿对话框的
 「连接（并保存）」出口此前**漏带跳板机**（填了却直连、存下来的条目也没有它——四个出口只改了
@@ -525,7 +531,7 @@ CI 真在跑的 `packages/tty/scripts/probe-route-smoke.mjs` / `integration.mjs`
 `GrantStore` / `sharedGrantStore`）、[`elevation.ts`](./packages/kit/src/elevation.ts)
 （`createElevationManager` / `auditLoadedGrants`）；两个消费插件各接三条 `/elevate` 路由
 （docker / tty）并在卡片上给出**逐能力**的状态行与撤销入口。方案、威胁模型与实施偏差见
-[docs/capability-elevation-plan.md](./docs/capability-elevation-plan.md)（v1 已删除，冻结指针见下表）。
+[docs/landed/capability-elevation-plan.md](./docs/landed/capability-elevation-plan.md)（v1 已删除，冻结指针见下表）。
 
 **门槛**：`packages/kit/test/{capability,grant-store,elevation}.test.ts`、
 `packages/docker/test/elevate-route.test.ts`、`packages/tty/test/elevate-route.test.ts`；
@@ -537,7 +543,7 @@ CI 真在跑的 `packages/tty/scripts/probe-route-smoke.mjs` / `integration.mjs`
 **落点**：`ci.yml` 三个 step 的 `run:` 与 `release.yml` 那一步改成 `pnpm --filter <包名> run <条目>`
 （tty 7 条 + docker 3 条并成一条 `smoke` + windows 1 条；docker 那三条**在两个 workflow 里各写了一遍**，
 一起收敛）；step 数、`if:`、矩阵一律未动。真相源收敛到 `package.json`。
-方案、rename 面、CI 影响与验收见 [docs/ci-scripts-plan.md](./docs/ci-scripts-plan.md)。
+方案、rename 面、CI 影响与验收见 [docs/landed/ci-scripts-plan.md](./docs/landed/ci-scripts-plan.md)。
 
 **门槛**：两份 workflow YAML 仍可解析；`grep -c 'node packages/' .github/workflows/*.yml` = **0 / 0**；
 **机械等价 14 条**（HEAD 里每条写死路径都有同名条目、且条目命令逐字指向同一个脚本文件）；
@@ -566,6 +572,55 @@ CI 真在跑的 `packages/tty/scripts/probe-route-smoke.mjs` / `integration.mjs`
 **门槛**：`scripts/test/docs-index.test.ts` 的反例 5 六条——删一行 / 加一行假包 / 节被改名 /
 把整张表清空（仍必须按 12 行报，不许被别处链接喂饱）/ 合成 workspace（少一个包 → stale）/ CRLF 免疫；
 外加一条正向断言把「命中不是 0」钉住（两边都 ≥12、集合相等）。真实仓库 12/12 现算一致。
+
+### 8. ✅ `docs/` 分层：活规矩留顶层，已落地方案的档案进 `docs/landed/`（2026-10-04）
+
+**判据**（一句话，落在 [conventions.md § L0 内部：活规矩与已落地档案](./docs/conventions.md#l0-内部活规矩与已落地档案)）：
+**这份文档还约束「现在怎么写代码」吗？** 还约束 → 留 `docs/`；只解释「当时为什么这么做、怎么做
+的、被什么推翻过」→ 进 `docs/landed/`。原第 8 项那句「方向是分层而不是继续加规矩」照办：**没有
+新增任何判据类规矩**，只是给已有的东西一个位置。
+
+**落点**：`git mv` 三份（`git` 认得出是重命名，历史不断）：
+
+| 搬走的 | 行数 | 为什么它是档案 |
+|---|---|---|
+| `capability-elevation-plan.md` | 451 | 头部自述「各 PR 已全部落地…下文保留为设计依据与验收门槛，**不是待执行工单**」 |
+| `proxyjump-plan.md` | 270 | 「本方案**全部落地**；只剩多跳链明确不做」 |
+| `ci-scripts-plan.md` | 164 | 「**已执行**（方案 A + B）…本文是执行记录 + 设计依据」（原估里没算它，同性质） |
+
+**没搬的，以及为什么**（这一半同样重要）：
+
+- `i18n.md` 留在顶层——它是「方案 + **规范片段** + 进度表」的混合体，`check-i18n` 的报错就指着
+  它的 § 键名规范；按判据它仍约束「今天怎么写 i18n」。**不为整齐去劈开一份混合文档**。
+- `pr-body-dsh-market.md` / `community-submission.json` 留顶层——**对外投稿物**，归属表本来就要求
+  保留原路径（市场可能按 `@main/docs/` 的 URL 取）。
+- `devdata-plan.md` 留顶层——**活方案**（A/B 两组还开着），它的 §17 落地记录按上面的判据本该切出去，
+  但切它要改一批 `#锚点` 引用，**本轮刻意没做**（记在下面「没做的」）。
+
+**要动的机制（不是只搬文件）**：`scripts/docs-index.mjs` 原先只扫 `docs/` 顶层——搬完之后那三份会
+**掉出「每一份都被归属表登记」的覆盖**，等于给新目录开一个盲区。所以：
+
+- 新增 `collectDocs()`：递归收两层，清单项写成**相对 `docs/`** 的路径（`landed/xxx.md`）；
+- `parseAttributedDocs` 的链接形状放宽到允许 `/`（登记项 `./landed/xxx.md`）；
+- 归属表新增一行「**已落地方案的档案**」，并把三行登记项改成 `./landed/…`；
+- `README.md` 的文档地图那一行改成「活规矩在 `docs/`、已落地的搬进了 `docs/landed/`」。
+
+**门槛**：`scripts/test/docs-index.test.ts` 加两条——① 正向：`landed/` 里的档案**真的**被收进清单
+（命中 0 = 分层悄悄退回去）；② 反例：一份合成的 `landed/nobody-registered-me.md` **必须和顶层文件
+同权地报 `doc.unregistered`**（这就是「只扫顶层」那个盲区本身）。加上既有的反例 1 改成搬后路径
+（`./landed/capability-elevation-plan.md`），以及一条「**历史 `git show` 路径不许被分层改写**」
+（v1 那份在 `79ca434e` 时住在 `docs/` 顶层，改了就取不回来）。实测：`docs-index` 报
+「docs/ 共 14 份 markdown；已登记 14 份」（11 顶层 + 3 档案），套件 37 → **39 条全绿**。
+
+**另一件必做**：搬走的文件里外所有相对链接都要跟着改一层——`docs/landed/*` 内指向同级文档的
+链接多一层 `../`、指向仓根的链接多一层（`check-doc-links` 会拦），外部约 15 处引用（本文件、
+`conventions.md`、`ci-script-truth.mjs`、`tty`/`docker` 的 README 与 ROADMAP）同步成 `docs/landed/…`。
+
+**刻意没做的**：劈开 `devdata-plan.md` 的 §17 落地记录（改锚点面太大，留给下一轮）；`i18n.md`
+的逐包进度表同理——两者都记进各自文件，不在这里重述。
+
+**没验到的**：这次改的是文档结构与守卫，**没有真机面**（`docs-index` / `check-doc-links` / 全量单测
+都是静态的，已经全绿）。
 
 ### 9. ✅ 开发数据套件三包入库：一条提交 338 文件 + 状态真源收敛到三个包
 
@@ -774,4 +829,4 @@ IP 形状的四段式子节号——闸门确实有牙齿）。
 | bundle 补丁重复挂载 | [troubleshooting.md](./docs/troubleshooting.md#安装与挂载) 记症状与成因 |
 | CI 产物闸门对 `lib/` 恒绿（pathspec `'packages/*/lib'` 命中 0 个文件） | **2026-09-25 已修**：`.github/workflows/ci.yml` 换成 `':(glob)packages/*/lib/**'`，并在该 step 注释里记下这个坑。闸门细节与实测命中数见 [docs/conventions.md § 真机脚本与 CI 接线](./docs/conventions.md#真机脚本与-ci-接线) |
 | 文档链接闸门只能手动跑 | **2026-09-25 已接线**：`scripts/check-doc-links.mjs` 进 CI（ubuntu-only step），白名单 3 条跨仓相对链接 |
-| `docs/capability-elevation-plan.md` 的 **v1**（它设计的「宿主终端确认码」通道在代码里不存在） | **2026-09-27 删除**（改名后的 v2 占了这个文件名）：内容在 `79ca434e` 已入库，`git show 79ca434e:docs/capability-elevation-plan.md` 取回（223 行；`grep -c terminal-code` = 9，即那份文档的特征段落还在） |
+| `docs/capability-elevation-plan.md` 的 **v1**（它设计的「宿主终端确认码」通道在代码里不存在） | **2026-09-27 删除**（改名后的 v2 占了这个文件名）：内容在 `79ca434e` 已入库，`git show 79ca434e:docs/capability-elevation-plan.md` 取回（223 行；`grep -c terminal-code` = 9，即那份文档的特征段落还在）。**这份文档本体 2026-10-04 已搬进 [`docs/landed/`](./docs/landed/capability-elevation-plan.md)，但上面的 `git show` 路径不许跟着改**——v1 住在顶层时才有那个路径 |

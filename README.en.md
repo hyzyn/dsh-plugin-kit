@@ -219,7 +219,7 @@ pure logic into modules) → [docs/conventions.md § Client half](docs/conventio
 | Terminology (host half, managed block, TOFU, slot generations…) | [docs/glossary.md](docs/glossary.md) |
 | Install failures, missing cards, every plugin gone, HTTP 401/403, known limits | [docs/troubleshooting.md](docs/troubleshooting.md) |
 | How to run real-machine tests, and what counts as passing | [docs/agent-real-test.md](docs/agent-real-test.md) |
-| The full design and acceptance criteria of a cross-package plan (bastion / elevation / i18n…) | `*-plan.md` and `i18n.md` under `docs/`, routed by the [conventions.md knowledge-ownership table](docs/conventions.md) |
+| The full design and acceptance criteria of a cross-package plan (bastion / elevation / i18n…) | `*-plan.md` and `i18n.md` under `docs/` (**living rules**); the ones that already landed moved to `docs/landed/` (design rationale + execution record — no need to read them to change code). Both layers are routed by the [conventions.md knowledge-ownership table](docs/conventions.md) |
 | Windows 11 test environment setup | [scripts/windows/README.md](scripts/windows/README.md) |
 | Runtime linking between plugins and the host in a dev checkout | [docs/link-dsh-runtime.md](docs/link-dsh-runtime.md) |
 | Cross-package backlog | [ROADMAP.md](ROADMAP.md) |

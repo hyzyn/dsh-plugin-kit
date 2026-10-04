@@ -1,15 +1,15 @@
 # CI 与 `package.json` 的脚本双真相源：收敛方案（**已执行**）
 
 > **状态：已执行（2026-10-01）——方案 A 与方案 B 都已落地**：方案 A 把 workflow 改成调用包内条目
-> （写死路径 14 行 → 10 行），方案 B 是守卫 [`scripts/ci-script-truth.mjs`](../scripts/ci-script-truth.mjs)
+> （写死路径 14 行 → 10 行），方案 B 是守卫 [`scripts/ci-script-truth.mjs`](../../scripts/ci-script-truth.mjs)
 > + 10 条用例（跑在 `pnpm test` 里）。本文是**执行记录 + 设计依据**，不是待执行工单。
 >
 > **上面这句话曾经漂过**（2026-10-03 更正）：此前这一行写的是「方案 A 已落地；**方案 B（守卫）未做**」，
 > 而 § 3、§ 9 与项目级 ROADMAP § 已完成第 6 项都记着方案 B 同轮已做——同一份文档的头部与正文各说一套。
 > 教训与本仓那条「同一事实两处各写一份必然漂」同族：**状态行要指向正文那一处，而不是各写一句话**。
-> 按 [conventions.md § AI 协作边界](./conventions.md#ai-协作边界什么改动要先问)，「改 `.github/`」属于
+> 按 [conventions.md § AI 协作边界](../conventions.md#ai-协作边界什么改动要先问)，「改 `.github/`」属于
 > **先问再动手**：所以本文先作为提案写完、经维护者批准后才执行；执行记录见 § 9。
-> 诊断（症状、后果、为什么危险）在 [conventions.md § 真机脚本与 CI 接线](./conventions.md#真机脚本与-ci-接线)；
+> 诊断（症状、后果、为什么危险）在 [conventions.md § 真机脚本与 CI 接线](../conventions.md#真机脚本与-ci-接线)；
 > 本文是那条诊断的**执行方案**，也是它的唯一归宿：改动点、rename 面、CI 影响、验收、回滚都只在这里展开。
 
 ## 0. 一句话
