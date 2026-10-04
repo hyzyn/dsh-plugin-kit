@@ -6,7 +6,8 @@
 > **已建**：[packages/devenv](../devenv/README.md)）、**本包 = 前端效果验证**。
 >
 > **判定层、CDP 驱动与宿主工具注册都已就位**：七个 `site_*` 工具能真的打开站点、截图、收 console，
-> 还能**按项目清单跑一批断言**（`site_verify`），`site_fill` 还能填**凭据引用**（口令不落明文）；
+> 还能**按项目清单跑一批断言**（`site_verify`）、**按发布清单一次跑多个项目**（`site_verify_release`），
+> `site_fill` 还能填**凭据引用**（口令不落明文）；
 > **有配置卡片**（客户端半体，2026-10-03）：标量与站点都可改并落盘。**没有独立面板**。
 
 前端发布后的**效果验证**工具，面向 DSH 里的 coding agent。方案见
@@ -103,6 +104,38 @@ assertions:
 清单读不到 / 内容不成立 / 这份清单里没有这个 `target` 的断言——三类**整体性**问题都在**碰浏览器
 之前**报出来，并带上「这个目录下现在有哪些清单」的对照（项目名与文件名不一致是最常见的写错方式）。
 
+### 一次发布验多个项目（`site_verify_release`，2026-10-04）
+
+7 个 CIFS job 分属 7 个项目，而 `site_verify` 一次跑**一个**项目（`web/<项目>.yaml`）。
+**「这次发布该验哪些项目」不能靠工具发现**——那正是本套件划掉的爬虫 / 批量边界。补法是
+**由人写一份发布清单**（口径与三条约束见
+[conventions.md § 发布清单](../../docs/conventions.md#发布清单由人给出的这次该验哪些项目)）：
+
+```yaml
+# release/2026-10-04-hg.yaml —— 人写；每个面读自己那一列
+version: 1
+release: 2026-10-04-hg
+projects:
+  - project: cdqas        # 与三份清单同一个项目名（唯一对齐键）
+    root: ../cdqas        # 项目根：清单在它下面（相对本文件所在目录）
+    target: cdqas-test    # 本面（devfront）按哪个站点验
+  - project: ems
+    root: ../ems
+    target: ems-test
+```
+
+```jsonc
+// 调用：一次调用把清单里列的项目全跑完
+{ "release": "2026-10-04-hg", "cwd": "/Users/me/releases" }
+```
+
+| 它做什么 | 它不做什么 |
+|---|---|
+| 按发布清单**逐个**项目读**它自己**的 `web/<项目>.yaml` 跑批（判定、依据、一次取全与 `site_verify` 完全相同） | **不发现项目**：不扫目录、不 glob、不跟随链接——项目逐条来自那份清单 |
+| 每个项目**各留一行** `action: verify` 审计（subject = 项目名），页级拒绝照旧各自一行 | 不做一个「三面一起跑」的聚合器：每个面读自己那一份清单 |
+| **没跑成的项目单列**（没配站点 / 没有清单 / 清单不成立 / 那份清单里没有这个站点的断言），一律算「没验成」 | 不因为一个项目不成立就丢掉其余项目（一次配置问题只砸那一个项目） |
+| 整批 `fail` > `warn` > `unknown` > `pass`：某项目失败 → 整批失败；有项目没验成 → 至少 `unknown` | 不把「没跑到」算成通过，也不算成失败 |
+
 ### 凭据（`site_fill` 的 `credentialRef`，2026-10-04）
 
 `WebTarget.credentialRef` 从 2026-10-02 起就在配置里、卡片上，但**没有任何消费者**——于是
@@ -153,8 +186,8 @@ assertions:
 
 ### 宿主半体（`plugin.ts`）
 
-Cordis 插件（`{ name, inject, apply }`）+ 七个工具注册：`site_open` / `site_shot` / `site_click` /
-`site_fill` / `site_text` / `site_console` / `site_verify`。三条注册纪律：
+Cordis 插件（`{ name, inject, apply }`）+ 八个工具注册：`site_open` / `site_shot` / `site_click` /
+`site_fill` / `site_text` / `site_console` / `site_verify` / `site_verify_release`。三条注册纪律：
 
 1. **没启用 / 没配站点 → 一个工具都不注册**。未注册的工具 agent 根本看不到，于是不会去试、不会撞墙；
 2. **作用域 fail-closed**：`scopeDirs` 为空 = 处处拒绝。插件**不替用户补默认目录**——那等于替他授权；
@@ -279,7 +312,9 @@ pnpm vitest run packages/devfront
 `web-run.test.ts` 钉跑批执行器（**同一个 URL 只观察一次**、一次拒绝只砸一页、审计三类行）；
 `tools.test.ts` 用假宿主钉「按 `cwd` 读清单 → 选目标 → 清单问题在碰浏览器之前报出来」；
 `tool-contract.test.ts` 把**声明的**输出契约与实际产出对起来（含 `site_verify` 那份）；
-`tool-smoke.test.ts` **把七个工具真的跑一遍**（真 Chrome，含一条 `site_verify` 端到端）；
+`tool-smoke.test.ts` **把八个工具真的跑一遍**（真 Chrome，含 `site_verify` 与 `site_verify_release`
+两条端到端）；`release.test.ts` / `release-run.test.ts` 钉发布清单的加载校验与跨项目跑批（后者依赖全注入，
+不连浏览器）；
 `cdp-driver.test.ts` 纯函数必跑 + **真的起 Chrome 的集成用例**（`it.skipIf` 门控在「本机有 Chrome」
  上，没装就跳过而不是红掉）；`scope-consistency.test.ts` 钉**本包用的是数据面那一份 `scope.ts`**。
 
@@ -346,10 +381,10 @@ sites:
 - **真正有防护的凭据来源**：今天 `credentialRef` 能指到的来源层全是 `none`（见 § 凭据）；
   macOS Keychain 一类带上游 ACL 的 provider 一出现，保护强度那一列就会变成 `strong`——本包
   不用改代码（`source` 已经是数据），但**报告里的那句话会跟着变**；
-- **一次调用跨多个项目**：`site_verify` 一次跑**一个**项目（`web/<项目>.yaml`）。7 个 CIFS job
-  分属 7 个项目 = 7 次调用。**刻意不自动发现**「这次发布该验哪些项目」——那正是 §15.3 要防的
-  发现逻辑；要一次跑多个，得先有一条**由人给出**的发布清单（与 `jenkins-release` 的 job 映射对齐），
-  见 ROADMAP 待办 D8 的尾边；
+- ~~**一次调用跨多个项目**~~ —— **已落地（2026-10-04）**：`site_verify_release` 按**人写的**发布清单
+  （`release/<发布名>.yaml`）一次跑多个项目，见上一节与 ROADMAP 记-31。**刻意不自动发现**
+  「这次发布该验哪些项目」——那正是 §15.3 要防的发现逻辑；发布清单是这条边界上唯一被允许的补法。
+  **7 个 job 仍然要人来列**：`jenkins-release` 的 job → 项目映射是那份清单的**输入**，不是它的替身；
 - **与 Jenkins 的关联**（§3.9 约束 4 的口径）：前端验活跑在一次发布之后，结果与 CIFS 传输量并列；
 - **就绪/等待**：环境就绪判据在 `@hyzyn/dsh-devenv`（2026-10-02 从 `devdata` 迁出；**刻意不合并**——
   就绪是等待期判据、断言是验证期判据，合并会让「还没渲染完」被报成「验证失败」）。

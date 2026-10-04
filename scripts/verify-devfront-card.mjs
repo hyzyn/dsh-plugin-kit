@@ -56,6 +56,24 @@ const dumpOnly = argv.includes('--dump')
 const keep = argv.includes('--keep')
 const chromePath = flag('--chrome') ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 
+/**
+ * 注册面期望：本包**八个**工具（2026-10-04 加了发布跑批 `site_verify_release`）。
+ *
+ * 为什么这一步值得单独钉：`site_verify_release` 的输出契约是**手写 schema**
+ * （`verifyOutputSchema()`），而假宿主那一层对 schema **照单全收**——「真 ToolRuntime 收不收得下」
+ * 只有真宿主回答得了。少一个工具、或某个工具被 `defineTool` 拒掉，都是「本地全绿、真机必坏」。
+ */
+const EXPECTED_TOOLS = [
+  'site_click',
+  'site_console',
+  'site_fill',
+  'site_open',
+  'site_shot',
+  'site_text',
+  'site_verify',
+  'site_verify_release',
+]
+
 const results = []
 const record = (name, ok, detail) => {
   results.push({ name, ok, detail })
@@ -431,6 +449,22 @@ try {
       JSON.stringify({ status: get4.status, ids: targets4.map((target) => target.id), added: added ?? null }),
     )
   }
+
+  /*
+   * ⑲ **新工具真的注册进了真 ToolRuntime**（2026-10-04，追加在编号末尾——不插在中间改号，
+   * 理由与 `devdata` 记-19 同：插号会让文档里已有的编号引用失效）。
+   *
+   * 判据与 `verify-devdata-host-mount.mjs` 的同名断言一致：那一行是**运维确认插件生效的观测面**，
+   * 而且它必须**恰好**是本包该有的八个（少一个 = 某个 defineTool 被真宿主拒了，而卡片照样渲染）。
+   */
+  const registered = /\[dsh-devfront\] agent tools registered \(([^)]*)\)/.exec(output)
+  const registeredNames = registered === null ? [] : registered[1].split(',').map((name) => name.trim()).filter((name) => name !== '')
+  record(
+    '⑲ 真 ToolRuntime 收下了八个工具（含 `site_verify_release` 的手写 schema）',
+    JSON.stringify([...registeredNames].sort()) === JSON.stringify(EXPECTED_TOOLS) && !output.includes('注册失败'),
+    registeredNames.join(', '),
+  )
+
   console.log(`# 截图：${shotFile}`)
 
 } finally {

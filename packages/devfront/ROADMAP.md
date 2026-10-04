@@ -86,14 +86,17 @@
    > [conventions.md § 一次发布的证据链](../../docs/conventions.md#一次发布的证据链同一个项目名三份清单)
    > + `scripts/test/release-chain.test.ts`。本包这一面由 `site_verify` 提供入口，清单是
    > `web/<项目>.yaml`；**中间那一环（数据面）今天还没有工具面入口**，见 devdata 待办 21。
-8. **一次发布验多个站点**：7 个 CIFS job 分属不同项目，要能按项目批量取清单并跑批。
+8. ~~**一次发布验多个站点**~~ —— **已落地（2026-10-04，见记-31）**：7 个 CIFS job 分属不同项目，
+   要能按项目批量取清单并跑批。
    门槛：**批量指的是「按清单跑一批断言」，不是「批量开页面」**——后者就是爬虫，
    与本包 §15.3 的边界冲突。
-   > **2026-10-04：前半条已落地，后半条明确留着。** 「按项目跑一批断言」= `site_verify`
-   > （记-28）；但它是**一次一个项目**（清单 `web/<项目>.yaml`），7 个项目 = 7 次调用。
-   > 「一次调用跨多个项目」**没做**，而且不该顺手做：自动发现「这次发布该验哪些项目」正是
-   > §15.3 要防的发现逻辑。真要做，先得有一条**由人给出**的发布清单（与 `jenkins-release`
-   > 的 job → 项目映射对齐），那是另一件、也是 L0 级的（跨 `devfront` 与那份 manifest 的形态）。
+   > **2026-10-04 前半条已落地**：「按项目跑一批断言」= `site_verify`（记-28）；但它是**一次一个
+   > 项目**（清单 `web/<项目>.yaml`），7 个项目 = 7 次调用。
+   > **同日后半条也落地（记-31）**：形态定成**由人给出的发布清单** `release/<发布名>.yaml`
+   > （`{ project, root, target }` 逐条列），入口是 `site_verify_release`。定案的两条：
+   > ① 它**只列项目**，不重复三份清单的内容——每个面仍只读**那个项目里**自己那一份，所以它
+   > **不是聚合器**；② **不做发现**：不 glob、不扫目录，「这次该验哪些项目」由人写下来
+   > （`jenkins-release` 的 job → 项目映射是那份清单的**输入**，不是它的替身）。
 
 ### E. 已知的债（动手前先看）
 
@@ -1098,3 +1101,35 @@ JSONL 出口。三包各写一份必然漂，于是按「第三个消费者出�
 脚本在 `import '@hyzyn/dsh-kit'` 时就失败（`ERR_MODULE_NOT_FOUND`）。补回 `-> ../../packages/kit`
 即可——这也是「`pnpm install` 状态不完整」的一个可观测症状（同一批还导致三个私有包的
 `@deepseek-ai/*` 链到了全局 dsh，见根 ROADMAP 第 11 项那一段）。
+
+### 记-31. 发布清单 + `site_verify_release`：一次调用跨多个项目（2026-10-04，待办 D8 收口 / 根 ROADMAP 第 15 项）
+
+**由来**：待办 D8 的尾边——7 个 CIFS job 分属 7 个项目，而 `site_verify` 一次只跑一个项目。
+「这次发布该验哪些项目」**不能靠工具发现**（那正是 §15.3 划掉的爬虫 / 批量边界），所以这一轮把它
+定成**由人写的一份清单**。四条形态是这一轮定死的：① 路径 `release/<发布名>.yaml`；
+② 逐条 `{ project, root, target }`；③ `root` 相对**发布清单所在目录**解析；④ 入口是**另一条工具**
+`site_verify_release`（不给 `site_verify` 加参数——两者输出契约不同，合成一条会让 schema 变成并集）。
+
+| 落点 | 内容 | 门槛 |
+|---|---|---|
+| `src/release.ts`（新） | 发布清单的加载 + 校验：文件名与 `release` 字段一致、未知字段一律拒、`projects` 非空、项目名形状与去重、`root`/`target` 非空；`releaseOverall`（**项目级**三态，与断言层同一个次序）；`resolveProjectRoot`（相对发布清单所在目录）；`listReleaseManifests` 只服务报错文案 | `test/release.test.ts` 14 例（含两处反例：`Projects` 大小写写错必须报未知字段、`unknown` 不许当 `pass`） |
+| `src/release-run.ts`（新） | 跑批执行器：按清单顺序循环 + **没跑成的账**（站点声明读不出 / 站点没配 / 没有清单 / 清单不成立 / 那份清单里没有这个站点的断言）+ **取消自成一档**。依赖全注入（`sitesFor` / `loadManifest` / `runProject`），**不连浏览器** | `test/release-run.test.ts` 8 例：顺序、七种结局、取消补账（不给已有结论的项目重复补）、两处反例 |
+| `src/plugin.ts` | `site_verify_release` 工具 + `releaseOutput`（每个项目复用 `verifyOutput`，同一份账不写两遍）+ `releaseRenderText`（通过的项目不逐条列，**没通过 / 没验成**的逐条给依据）+ `verifyOutputSchema()` 抽出来给两条工具共用 | `test/tools.test.ts` 4 例（整体性问题都在碰浏览器之前）+ `test/tool-contract.test.ts` 契约专条（声明 vs 产出） |
+| 文档 | [conventions.md § 发布清单](../../docs/conventions.md#发布清单由人给出的这次该验哪些项目)（形态 / 谁读 / 不做发现 / 缺省即无 / 两种拒绝分开）；README 新增一节 + 工具面 7 → 8；plan §15.2 一行 | `check-doc-links` 等闸门 |
+| 守卫 | `scripts/test/release-chain.test.ts` 新增 5 例：路径口径钉住 + 发布清单列的项目 ↔ 三份清单项目名逐一对齐 + **三条反例**（某一份清单项目名串了 / 项目里没有清单 / 发布清单里的名字与目录里的对不上） | 该文件 13 例 |
+
+**真机证据（本轮实跑）**：`test/tool-smoke.test.ts` 的 ★ 新用例——**真 Chrome** + 本地站点 + 三个项目
+（两个有清单：一个过、一个失败；一个**没有清单**）：两个项目各自读自己的清单跑出 `pass` / `fail`，
+第三个记「没验成」并说清路径，整批 `fail`（`fail` > `unknown` > `pass`，没验成**绝不**被算成通过）。
+该文件 **17/17**；`devfront` 的卡片脚本 **18 PASS / 0 FAIL**（新增的 ⑲ 就是这一步的真宿主证据：
+**真 ToolRuntime 恰好收下了八个工具**——手写 schema 那条路只有真宿主回答得了，假宿主对 schema 照单全收）。
+
+**刻意没做的**：
+
+1. **不做跨面聚合**：发布清单里只有本面要用的 `target`，另外两面要接时各读自己那一列
+   （conventions 的「刻意没有聚合器」不变）；
+2. **不给 `site_verify` 加 `release` 参数**：两条工具的输出契约不同（这一条多一层「项目账」），
+   合成一条会让 schema 变成两种形态的并集——而「声明与实际不符」在本包是**最坏的一类失败**
+   （`invalid output`：动作真的做了，agent 却以为没做，见 `tool-contract.test.ts` 的文件头）；
+3. **B3 的登录编排没做**（本轮只做 D8）：声明形态已定 `WebTarget.login`（主体可写
+   `web/sites.yaml`），落地留待下一轮。

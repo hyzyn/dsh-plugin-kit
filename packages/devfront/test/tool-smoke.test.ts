@@ -190,6 +190,19 @@ async function call(name: string, target: string, args: Record<string, unknown> 
   }
 }
 
+/** `site_verify_release` **没有** `target` 参数（目标在发布清单里逐条给），所以单独调一次。 */
+async function callRelease(release: string, args: Record<string, unknown> = {}): Promise<CallResult> {
+  const def = tools.get('site_verify_release')
+  if (def === undefined) throw new Error('site_verify_release 没注册上')
+  const input = { release, cwd: CWD, ...args }
+  try {
+    const value = await def.execute(input)
+    return { ok: true, value, text: def.output.render(input, value).map((part) => part.text).join('\n') }
+  } catch (error) {
+    return { ok: false, value: undefined, text: error instanceof Error ? error.message : String(error) }
+  }
+}
+
 /** 打开站点下的一个路径（用声明过的站点根，避免每条用例都写一遍）。 */
 const openPath = (target: string, path: string): Promise<CallResult> =>
   call('site_open', target, { url: `${siteOrigin}${path}` })
@@ -204,6 +217,8 @@ let siteOrigin = ''
 let foreignOrigin = ''
 /** 验活清单所在的项目目录（`site_verify` 按调用的 `cwd` 去找 `web/smoke.yaml`）。 */
 let verifyProject = ''
+/** 发布清单的工作目录（三层：`release/<发布名>.yaml` + 两个项目目录 + 一个**没有清单**的项目）。 */
+let releaseWork = ''
 
 const FOREIGN_PAGE = `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><title>异源页</title></head>
@@ -254,7 +269,7 @@ const listen = async (handler: Parameters<typeof createServer>[0]): Promise<{ se
   return { server, origin: `http://127.0.0.1:${String(port)}` }
 }
 
-describe.skipIf(!CAN_DRIVE_CHROME)('工具面端到端冒烟：七个工具 + 跨源闸门（真 Chrome）', () => {
+describe.skipIf(!CAN_DRIVE_CHROME)('工具面端到端冒烟：八个工具 + 跨源闸门（真 Chrome）', () => {
   beforeAll(async () => {
     // 异源先起（站点页面里的 iframe / 重定向要引用它的地址）。
     const f = await listen((_req, res) => {
@@ -323,6 +338,49 @@ describe.skipIf(!CAN_DRIVE_CHROME)('工具面端到端冒烟：七个工具 + �
       }),
     )
 
+    /*
+     * 发布清单夹具（2026-10-04）：**一次调用跨三个项目**——两个有清单（一个会过、一个会失败）、
+     * 一个**没有清单**。三个项目目录都落在 `release-fixture` 那个站点的作用域里。
+     * 清单里的 `root` 用绝对路径（相对路径那条路由 `release.test.ts` 钉着）。
+     */
+    releaseWork = mkdtempSync(join(tmpdir(), 'devfront-release-'))
+    const projectA = join(releaseWork, 'proj-a')
+    const projectB = join(releaseWork, 'proj-b')
+    mkdirSync(join(projectA, 'web'), { recursive: true })
+    mkdirSync(join(projectB, 'web'), { recursive: true })
+    writeFileSync(
+      join(projectA, 'web', 'proj-a.yaml'),
+      JSON.stringify({
+        version: 1,
+        project: 'proj-a',
+        assertions: [{ id: 'a-title', url: `${siteOrigin}/`, target: 'release-fixture', expect: { toContain: '订单列表' }, severity: 'fail' }],
+      }),
+    )
+    writeFileSync(
+      join(projectB, 'web', 'proj-b.yaml'),
+      JSON.stringify({
+        version: 1,
+        project: 'proj-b',
+        assertions: [
+          { id: 'b-missing-text', url: `${siteOrigin}/detail.html`, target: 'release-fixture', expect: { toContain: '这一句页面上不可能有' }, severity: 'fail' },
+        ],
+      }),
+    )
+    mkdirSync(join(releaseWork, 'release'), { recursive: true })
+    writeFileSync(
+      join(releaseWork, 'release', 'smoke-release.yaml'),
+      JSON.stringify({
+        version: 1,
+        release: 'smoke-release',
+        projects: [
+          { project: 'proj-a', root: projectA, target: 'release-fixture' },
+          { project: 'proj-b', root: projectB, target: 'release-fixture' },
+          // 列了、但那个项目里没有清单 → 记「没验成」（**不是**「验出问题」）
+          { project: 'proj-missing', root: join(releaseWork, 'proj-missing'), target: 'release-fixture' },
+        ],
+      }),
+    )
+
     mount([
       { id: 'local-fixture', label: '本地夹具', url: `${siteOrigin}/`, scopeDirs: [CWD] },
       {
@@ -334,6 +392,7 @@ describe.skipIf(!CAN_DRIVE_CHROME)('工具面端到端冒烟：七个工具 + �
       },
       { id: 'foreign-fixture', label: '异源夹具', url: `${foreignOrigin}/`, scopeDirs: [CWD] },
       { id: 'verify-fixture', label: '验活清单夹具', url: `${siteOrigin}/`, scopeDirs: [verifyProject] },
+      { id: 'release-fixture', label: '发布清单夹具', url: `${siteOrigin}/`, scopeDirs: [releaseWork] },
       // 声明了一个凭据引用的站点：`site_fill` 的 `credentialRef` 只对它放行。
       {
         id: 'cred-fixture',
@@ -350,9 +409,10 @@ describe.skipIf(!CAN_DRIVE_CHROME)('工具面端到端冒烟：七个工具 + �
     await new Promise<void>((resolve) => site?.close(() => resolve()) ?? resolve())
     await new Promise<void>((resolve) => foreign?.close(() => resolve()) ?? resolve())
     if (verifyProject !== '') rmSync(verifyProject, { recursive: true, force: true })
+    if (releaseWork !== '') rmSync(releaseWork, { recursive: true, force: true })
   })
 
-  it('七个工具都注册上了（少一个，下面的用例会静默少守一条）', () => {
+  it('八个工具都注册上了（少一个，下面的用例会静默少守一条）', () => {
     expect([...tools.keys()].sort()).toEqual([
       'site_click',
       'site_console',
@@ -361,6 +421,7 @@ describe.skipIf(!CAN_DRIVE_CHROME)('工具面端到端冒烟：七个工具 + �
       'site_shot',
       'site_text',
       'site_verify',
+      'site_verify_release',
     ])
   })
 
@@ -551,6 +612,41 @@ describe.skipIf(!CAN_DRIVE_CHROME)('工具面端到端冒烟：七个工具 + �
     expect(result.text).toContain('本次只做了「打开 + 观察」')
     expect(result.text).not.toContain('undefined')
   }, 120_000)
+
+  /**
+   * ★ **一次调用跨多个项目**（2026-10-04，待办 D8 的尾边）。
+   *
+   * 假宿主那一层钉的是接线，这里钉的是**真 Chrome 上三个项目串起来跑**：两个项目各自的清单真的
+   * 被读了、各自的页面真的被开了，而**列表里第三个没有清单的项目**记成「没验成」——
+   * 它绝不能被算成通过，也不该被算成失败。
+   */
+  it('★ site_verify_release：按发布清单一次跑多个项目；没跑成的项目单列', async () => {
+    const result = await callRelease('smoke-release', { cwd: releaseWork })
+    expect(result.ok, result.text).toBe(true)
+    const value = result.value as {
+      release: string
+      overall: string
+      problems: string[]
+      projects: Array<{ project: string; overall: string; total: number; passed: number }>
+    }
+
+    // 每个项目读的是**它自己**的 `web/<项目>.yaml`：一个过、一个失败
+    expect(value.projects.map((project) => project.project)).toEqual(['proj-a', 'proj-b'])
+    expect(value.projects[0]?.overall).toBe('pass')
+    expect(value.projects[1]?.overall).toBe('fail')
+
+    // 第三个项目没有清单 → 记「没验成」，并说清是哪个路径下没有
+    expect(value.problems.join('\n')).toContain('proj-missing')
+    expect(value.problems.join('\n')).toContain('web/proj-missing.yaml')
+
+    // 整批：`fail` > `unknown` > `pass`——失败压过「没验成」，而没验成**绝不**被算成通过
+    expect(value.overall).toBe('fail')
+
+    expect(result.text).toContain('release/smoke-release.yaml')
+    expect(result.text).toContain('跑了 2 个，没验成 1 个')
+    expect(result.text).toContain('没验成的项目')
+    expect(result.text).not.toContain('undefined')
+  }, 180_000)
 
   it('★ site_fill 用凭据引用填值：值真的进了页面，但**不进工具输出**', async () => {
     const SECRET = 's3cret-来自环境变量'

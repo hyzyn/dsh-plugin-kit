@@ -28,7 +28,8 @@ import { describe, expect, it } from 'vitest'
 
 import type { WebAction, WebDriver, WebTarget } from '../src/index.js'
 import { invokeWebAction } from '../src/page.js'
-import { apply, consoleOutput, denialMessage, SITE_TEXT_MAX, textOutput, verifyOutput } from '../src/plugin.js'
+import { apply, consoleOutput, denialMessage, releaseOutput, SITE_TEXT_MAX, textOutput, verifyOutput } from '../src/plugin.js'
+import { runReleaseVerify } from '../src/release-run.js'
 import { runWebVerify } from '../src/web-run.js'
 import { validateWebManifest } from '../src/web-verify.js'
 
@@ -285,6 +286,61 @@ describe('契约守卫：`site_verify` 的输出契约', () => {
     expect(rendered).not.toContain('undefined')
     // 两条断言同一个 URL → 只观察一次（渲染里那行汇总就是这件事的账）。
     expect(rendered).toContain('打开 1 个页，观察到 1 个')
+  })
+})
+
+/* ------------------------------------------------------------------ *
+ * `site_verify_release`：跨项目那条同样单独守（它多一层「项目账」）
+ * ------------------------------------------------------------------ */
+
+describe('契约守卫：`site_verify_release` 的输出契约', () => {
+  const tools = mountTools()
+
+  it('产出通过自己的 output.schema，且渲染读得到字段（含**没验成**的项目，且没有 `undefined`）', async () => {
+    const def = tools.get('site_verify_release')
+    if (def === undefined) throw new Error('site_verify_release 没注册上')
+
+    const run = await runReleaseVerify({
+      manifest: {
+        version: 1,
+        release: 'r1',
+        projects: [
+          { project: 'cdqas', root: '../cdqas', target: TARGET.id },
+          { project: 'ems', root: '../ems', target: TARGET.id },
+        ],
+      },
+      file: '/w/releases/release/r1.yaml',
+      sitesFor: () => ({ sites: [TARGET] }),
+      // 一个项目有清单、另一个没有 → 正好把「跑了」与「没验成」两条路都走一遍
+      loadManifest: (project) =>
+        project === 'cdqas'
+          ? {
+              kind: 'ok',
+              manifest: {
+                version: 1,
+                project,
+                assertions: [
+                  { id: 'order-list', project, url: `${SITE}order`, target: TARGET.id, expect: { toContain: '订单编号' }, severity: 'fail' },
+                ],
+              },
+            }
+          : { kind: 'no-manifest', project },
+      runProject: (request) => runWebVerify({ ...request, cwd: request.root, driver: fakeDriver() }),
+    })
+    const value = releaseOutput(run)
+    expect(validate(def.output.schema, value)).toEqual([])
+
+    const rendered = def.output
+      .render({}, value)
+      .map((part) => part.text)
+      .join('\n')
+    expect(rendered).toContain('release/r1.yaml')
+    expect(rendered).toContain('cdqas')
+    expect(rendered).toContain('ems')
+    // 「没验成」单独成块，且整批因此是 unknown（**不是** pass）
+    expect(rendered).toContain('没验成的项目')
+    expect(rendered).toContain('overall unknown')
+    expect(rendered).not.toContain('undefined')
   })
 })
 

@@ -144,6 +144,6 @@ describe('devfront 的工具名', () => {
       .filter((tool) => tool.file.startsWith('packages/devfront/'))
       .map((tool) => tool.name)
       .sort()
-    expect(names).toEqual(['site_click', 'site_console', 'site_fill', 'site_open', 'site_shot', 'site_text', 'site_verify'])
+    expect(names).toEqual(['site_click', 'site_console', 'site_fill', 'site_open', 'site_shot', 'site_text', 'site_verify', 'site_verify_release'])
   })
 })

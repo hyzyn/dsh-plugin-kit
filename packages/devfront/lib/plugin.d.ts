@@ -30,6 +30,7 @@ import z from '@deepseek-ai/schemastery';
 import { type AuditLoggerLike } from '@hyzyn/dsh-kit/audit';
 import { type ProtectionLevel } from './credential.js';
 import { denialMessage, type WebAuditEntry, type WebAuditSink, type WebTarget } from './page.js';
+import { type ReleaseRunResult } from './release-run.js';
 import { type WebVerifyRunResult } from './web-run.js';
 import { type WebStatus } from './web-verify.js';
 /**
@@ -208,16 +209,54 @@ export interface VerifyOutput {
     cancelled: boolean;
 }
 /**
+ * `site_verify_release` 的输出契约：**一次调用跨多个项目**（集合由人写在那份发布清单里）。
+ *
+ * 与单项目那份的关系：`projects` 里每一项都是**完整的单项目契约**——项目内部的细节（逐条断言、
+ * 页级问题）不在这里重定义，免得同一个事实有两套账。这一层只多三件事：**哪些项目在跑**、
+ * **整批的判定**、以及**哪些项目压根没跑成**。
+ */
+export interface ReleaseOutput {
+    release: string;
+    /** 真的跑起来的项目（顺序 = 发布清单里的顺序）。 */
+    projects: VerifyOutput[];
+    /** 整批判定：`fail` > `warn` > `unknown` > `pass`；**没跑成的项目算 `unknown`**。 */
+    overall: 'pass' | 'fail' | 'warn' | 'unknown';
+    /**
+     * **没跑成**的项目（没配那个站点 / 没有清单 / 清单不成立 / 那份清单里没有这个站点的断言）。
+     *
+     * 与「验出问题」**分列**：这两件事的下一步动作相反（去补声明 vs 去改数据/页面），
+     * 而把没验成算进通过就是「用没验过冒充验过」。
+     */
+    problems: string[];
+    /** 调用方取消了这次跑批：剩下的项目没有跑（没跑到的都算「没验成」）。 */
+    cancelled: boolean;
+}
+/**
  * 把一次跑批结果收敛成工具的输出契约（**纯函数**，与 `textOutput` / `consoleOutput` 同理：
  * 声明与实际不符时 DSH 会把整次调用判成 `invalid output`，所以这份契约也要有单测）。
  */
 export declare function verifyOutput(result: WebVerifyRunResult): VerifyOutput;
+/**
+ * 把发布跑批结果收敛成**输出契约**（**纯函数**，与 `verifyOutput` 同理）。
+ *
+ * 每个项目复用单项目那份映射——同一份账不写两遍；这一层只加三件：哪些项目在跑、整批判定、
+ * 哪些项目压根没跑成。
+ */
+export declare function releaseOutput(run: ReleaseRunResult): ReleaseOutput;
 /**
  * `site_verify` 的渲染：一屏读完「哪几条过了、哪几条没过、凭什么、哪几页压根没验成」。
  *
  * 证据要**逐条列出来**：只报「失败 2 条」等于把复核的活又推回给 agent，而它下一步只能重跑一次。
  */
 export declare function verifyRenderText(value: unknown): string;
+/**
+ * `site_verify_release` 的渲染：一屏读完「哪几个项目过了、哪几个没过、哪几个压根没验成」。
+ *
+ * 通过的项目**不逐条列断言**（一次发布 7 个项目 × N 条，全列会把信号埋掉），但计数、站点与
+ * 页级问题都在；**没通过 / 验不了的那几条要逐条给出依据**——只报「失败 2 条」等于把复核的活
+ * 又推回给 agent，而它下一步只能重跑一次。
+ */
+export declare function releaseRenderText(value: unknown): string;
 /**
  * 配置卡片（客户端半体）能改的**标量**字段。
  *

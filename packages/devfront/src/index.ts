@@ -43,6 +43,8 @@ export * from './cdp-driver.js'
 export * from './credential.js'
 export * from './web-verify.js'
 export * from './web-run.js'
+export * from './release.js'
+export * from './release-run.js'
 /* 宿主半体：DSH 靠这三个导出把本包装成插件（见 conventions.md § 插件包解剖）。 */
 export {
   name,
@@ -61,6 +63,8 @@ export {
   verifyOutput,
   verifyRenderText,
   fillRenderText,
+  releaseOutput,
+  releaseRenderText,
 } from './plugin.js'
-export type { LiveConfig, VerifyOutput, VerifyLine, FillOutput } from './plugin.js'
+export type { LiveConfig, VerifyOutput, VerifyLine, FillOutput, ReleaseOutput } from './plugin.js'
 export { PROJECT_SITES_REL, loadProjectSites, mergeSites } from './project-sites.js'

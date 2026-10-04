@@ -39,10 +39,20 @@ function project(sites?: Record<string, unknown>[]): string {
 const PROFILE_SITE = { id: 'p1', url: 'https://p1.test/', scopeDirs: [process.cwd()] }
 
 describe('工具级：站点清单按 cwd 解析', () => {
-  it('七个工具都注册了（启用 + 有站点），且没有站点时一个都不注册', () => {
+  it('八个工具都注册了（启用 + 有站点），且没有站点时一个都不注册', () => {
     const on = makeHost()
     on.mount({ enabled: true, targets: [PROFILE_SITE] })
-    expect(on.names()).toEqual(['site_click', 'site_console', 'site_fill', 'site_open', 'site_shot', 'site_text', 'site_verify'])
+    expect(on.names()).toEqual([
+      'site_click',
+      'site_console',
+      'site_fill',
+      'site_open',
+      'site_shot',
+      'site_text',
+      'site_verify',
+      // 发布跑批（2026-10-04）：一次调用跨多个项目，集合由人写在 `release/<发布名>.yaml` 里
+      'site_verify_release',
+    ])
 
     const off = makeHost()
     off.mount({ enabled: true, targets: [] })
@@ -120,7 +130,7 @@ describe('工具级：站点清单按 cwd 解析', () => {
   it('卸载后工具与路由都不留（宿主重挂不会撞名）', () => {
     const host = makeHost()
     host.mount({ enabled: true, targets: [PROFILE_SITE] })
-    expect(host.names().length).toBe(7)
+    expect(host.names().length).toBe(8)
     host.unmount()
     expect(host.names()).toEqual([])
     expect([...host.routes.keys()]).toEqual([])
@@ -253,5 +263,64 @@ describe('工具级：site_fill 的凭据引用只认目标声明过的那一个
       credentialRef: 'env:P1_APP_PWD',
     })
     expect(message).toContain('CREDENTIAL_AND_VALUE')
+  })
+})
+
+/** 造一个工作目录并写一份**发布清单**（`release/<发布名>.yaml`）。 */
+function releaseDir(release: string, projects: Record<string, unknown>[], extra: Record<string, unknown> = {}): string {
+  const dir = mkdtempSync(join(root, 'release-'))
+  mkdirSync(join(dir, 'release'), { recursive: true })
+  writeFileSync(join(dir, 'release', `${release}.yaml`), JSON.stringify({ version: 1, release, projects, ...extra }))
+  return dir
+}
+
+/**
+ * `site_verify_release` 的**整体性**问题：发布清单读不到 / 不成立。
+ *
+ * 与 `site_verify` 那一组同一条纪律：这些判据都在 `ensureDriver()` **之前**，所以不碰浏览器、
+ * 也不需要 Chrome 在不在。**而「一个项目不成立」那一条不同**——它是项目级的问题，工具不该抛错
+ * （抛了就把另外 6 个项目一起丢掉），所以它由跑批执行器记成「没验成」，在正文里如实报出来。
+ */
+describe('工具级：site_verify_release 在碰浏览器之前说清', () => {
+  it('没有发布清单 → 报出找的那个路径，并说清 release/ 下现在有什么', async () => {
+    const host = makeHost()
+    host.mount({ enabled: true, targets: [PROFILE_SITE] })
+    const message = await host.callError('site_verify_release', { release: 'r1', cwd: project() })
+    expect(message).toContain('release/r1.yaml')
+    expect(message).toContain('一份都没有')
+  })
+
+  it('目录里有别的发布清单 → 报**对照**（发布名与文件名不一致是最常见的写错方式）', async () => {
+    const host = makeHost()
+    host.mount({ enabled: true, targets: [PROFILE_SITE] })
+    const dir = releaseDir('other', [{ project: 'cdqas', root: '../cdqas', target: 'p1' }])
+    const message = await host.callError('site_verify_release', { release: 'r1', cwd: dir })
+    expect(message).toContain('现在有这些发布清单：other')
+  })
+
+  it('发布清单不成立 → **指到字段**（不是「没找到清单」）', async () => {
+    const host = makeHost()
+    host.mount({ enabled: true, targets: [PROFILE_SITE] })
+    const dir = releaseDir('r1', [{ project: 'cdqas', root: '', target: 'p1' }])
+    const message = await host.callError('site_verify_release', { release: 'r1', cwd: dir })
+    expect(message).toContain('发布清单不成立')
+    expect(message).toContain('projects[0].root')
+  })
+
+  it('项目里没有清单 → **不砸整批**：记「没验成」并在正文里报出来（不是抛错）', async () => {
+    const host = makeHost()
+    host.mount({ enabled: true, targets: [PROFILE_SITE] })
+    // `../cdqas` 相对发布清单所在目录 → 那个项目目录不存在 → 没有 web/cdqas.yaml
+    const dir = releaseDir('r1', [{ project: 'cdqas', root: '../cdqas', target: 'p1' }])
+    const text = await host.call('site_verify_release', { release: 'r1', cwd: dir })
+
+    expect(text).toContain('release/r1.yaml')
+    expect(text).toContain('没验成 1 个')
+    expect(text).toContain('cdqas')
+    expect(text).toContain('没有证据')
+    // 一个能跑的项目都没有 → 整批是 `unknown`，**不是** pass（用没验过冒充验过）
+    expect(text).toContain('overall unknown')
+    // 「没验成」与「验出问题」分列：这一整段没有一条 ✗
+    expect(text).not.toContain('✘')
   })
 })

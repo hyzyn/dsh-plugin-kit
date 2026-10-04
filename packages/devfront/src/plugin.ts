@@ -46,6 +46,13 @@ import {
   type WebAuditSink,
   type WebTarget,
 } from './page.js'
+import {
+  listReleaseManifests,
+  loadReleaseManifest,
+  releaseManifestRelativePath,
+  releaseOverall,
+} from './release.js'
+import { runReleaseVerify, type ReleaseRunResult } from './release-run.js'
 import { runWebVerify, type WebVerifyRunResult } from './web-run.js'
 import {
   listWebProjects,
@@ -268,7 +275,7 @@ export function webAuditSink(options: { auditFile: string; logger: AuditLoggerLi
 export const DEVFONT_GUIDANCE = [
   '本机已安装 dsh-devfront 插件（前端效果验证）：面向「发布之后页面到底对不对」，',
   '不做定时任务、不做爬虫、不做批量操作（唯一的那「一批」是 `site_verify` 按项目清单**跑已声明的',
-  '断言**：要访问哪些页面由清单逐条写死，不由工具去发现或跟随链接）。工具面七个动作：',
+  '断言**：要访问哪些页面由清单逐条写死，不由工具去发现或跟随链接）。工具面八个动作：',
   '',
   '- `site_open`：打开目标声明过的站点（同源且落在声明路径前缀内；异源一律拒）；',
   '- `site_shot`：截图（返回真 PNG 路径，可直接看）；',
@@ -292,6 +299,10 @@ export const DEVFONT_GUIDANCE = [
   '  出结果」这类页面，得先用 `site_open` / `site_click` / `site_fill` 手动走到那个状态，再验',
   '  （或者把这类断言降级成 `severity: warn`，别让它天天报红）。URL 只能来自清单，且每条都过',
   '  同一道站点范围判据；**改断言请改项目里的文件**，不要指望工具能记住你现编的步骤。',
+  '- `site_verify_release`：**按发布清单一次跑多个项目**（清单在 `release/<发布名>.yaml`，**由人写**：',
+  '  逐条列出「项目名 + 项目根 + 这个项目按哪个站点验」）。它**不做发现**——跑哪些项目完全来自那份',
+  '  人写的清单；每个项目读的还是**它自己**的 `web/<项目>.yaml`，判定与逐条依据同 `site_verify`，',
+  '  并额外把**没跑成的项目**（没配站点 / 没有清单 / 清单不成立）单列出来（**没验成 ≠ 验出问题**）。',
   '',
   '读 `site_console` 时注意：判成 error 的是**来自本站资源**的错误，那才是「页面坏了」的信号；',
   '异源与来源不明的都只在 warning 里——真实站点的 console 里常驻噪声，噪声淹掉信号等于没信号。',
@@ -463,6 +474,30 @@ export interface VerifyOutput {
   cancelled: boolean
 }
 
+/**
+ * `site_verify_release` 的输出契约：**一次调用跨多个项目**（集合由人写在那份发布清单里）。
+ *
+ * 与单项目那份的关系：`projects` 里每一项都是**完整的单项目契约**——项目内部的细节（逐条断言、
+ * 页级问题）不在这里重定义，免得同一个事实有两套账。这一层只多三件事：**哪些项目在跑**、
+ * **整批的判定**、以及**哪些项目压根没跑成**。
+ */
+export interface ReleaseOutput {
+  release: string
+  /** 真的跑起来的项目（顺序 = 发布清单里的顺序）。 */
+  projects: VerifyOutput[]
+  /** 整批判定：`fail` > `warn` > `unknown` > `pass`；**没跑成的项目算 `unknown`**。 */
+  overall: 'pass' | 'fail' | 'warn' | 'unknown'
+  /**
+   * **没跑成**的项目（没配那个站点 / 没有清单 / 清单不成立 / 那份清单里没有这个站点的断言）。
+   *
+   * 与「验出问题」**分列**：这两件事的下一步动作相反（去补声明 vs 去改数据/页面），
+   * 而把没验成算进通过就是「用没验过冒充验过」。
+   */
+  problems: string[]
+  /** 调用方取消了这次跑批：剩下的项目没有跑（没跑到的都算「没验成」）。 */
+  cancelled: boolean
+}
+
 /** 把一个值写成一行（`undefined` 也要有话说，不能渲染成一个空洞）。 */
 function describeValue(value: unknown): string {
   if (value === undefined) return '（没有这个事实）'
@@ -517,6 +552,65 @@ export function verifyOutput(result: WebVerifyRunResult): VerifyOutput {
 }
 
 /**
+ * 把发布跑批结果收敛成**输出契约**（**纯函数**，与 `verifyOutput` 同理）。
+ *
+ * 每个项目复用单项目那份映射——同一份账不写两遍；这一层只加三件：哪些项目在跑、整批判定、
+ * 哪些项目压根没跑成。
+ */
+export function releaseOutput(run: ReleaseRunResult): ReleaseOutput {
+  return {
+    release: run.release,
+    projects: run.projects.map(verifyOutput),
+    overall: releaseOverall(run.verdicts),
+    problems: run.problems,
+    cancelled: run.cancelled,
+  }
+}
+
+/**
+ * 单项目输出契约的 **schema**（`site_verify` 与 `site_verify_release` 的 `projects[]` **共用一份**）。
+ *
+ * 抽出来是因为它现在有两个消费者：同一份契约写两遍，下一次改一处漏一处就变成 `invalid output`
+ * ——那正是 `tool-contract.test.ts` 的文件头记的那类失败（动作生效了，agent 却以为没生效）。
+ */
+function verifyOutputSchema() {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      project: { type: 'string', required: true },
+      target: { type: 'string', required: true },
+      overall: { type: 'string', required: true },
+      total: { type: 'number', required: true },
+      passed: { type: 'number', required: true },
+      failed: { type: 'number', required: true },
+      warned: { type: 'number', required: true },
+      unknown: { type: 'number', required: true },
+      pages: { type: 'number', required: true },
+      pagesObserved: { type: 'number', required: true },
+      lines: {
+        type: 'array',
+        required: true,
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            id: { type: 'string', required: true },
+            url: { type: 'string', required: true },
+            status: { type: 'string', required: true },
+            severity: { type: 'string', required: true },
+            message: { type: 'string', required: true },
+            evidence: { type: 'array', required: true, items: { type: 'string' } },
+          },
+        },
+      },
+      problems: { type: 'array', required: true, items: { type: 'string' } },
+      cancelled: { type: 'boolean', required: true },
+    },
+  } as const
+}
+
+/**
  * `site_verify` 的渲染：一屏读完「哪几条过了、哪几条没过、凭什么、哪几页压根没验成」。
  *
  * 证据要**逐条列出来**：只报「失败 2 条」等于把复核的活又推回给 agent，而它下一步只能重跑一次。
@@ -555,6 +649,73 @@ export function verifyRenderText(value: unknown): string {
     ? '\n被调用方取消：剩下的页面没有打开（**不是**超时，也不是页面有问题）——没跑到的断言都判「验不了」，重跑一次就有结论。'
     : ''
   return `${head}\n${body.join('\n')}${problemBlock}${cancelled}${hint}\n本次只做了「打开 + 观察」：没有点击、没有填值、没有跟随链接。`
+}
+
+/**
+ * `site_verify_release` 的渲染：一屏读完「哪几个项目过了、哪几个没过、哪几个压根没验成」。
+ *
+ * 通过的项目**不逐条列断言**（一次发布 7 个项目 × N 条，全列会把信号埋掉），但计数、站点与
+ * 页级问题都在；**没通过 / 验不了的那几条要逐条给出依据**——只报「失败 2 条」等于把复核的活
+ * 又推回给 agent，而它下一步只能重跑一次。
+ */
+export function releaseRenderText(value: unknown): string {
+  const v = (value ?? {}) as Partial<ReleaseOutput>
+  const projects = v.projects ?? []
+  const problems = v.problems ?? []
+  /** 拒绝话术里带换行（恢复路径另起一行）：缩进的报告里要跟着缩进，否则看着像跑出了条目之外。 */
+  const indent = (text: string, pad: string): string => text.replaceAll('\n', `\n${pad}`)
+
+  const totals = projects.reduce(
+    (acc, project) => ({
+      total: acc.total + (project.total ?? 0),
+      passed: acc.passed + (project.passed ?? 0),
+      failed: acc.failed + (project.failed ?? 0),
+      warned: acc.warned + (project.warned ?? 0),
+      unknown: acc.unknown + (project.unknown ?? 0),
+    }),
+    { total: 0, passed: 0, failed: 0, warned: 0, unknown: 0 },
+  )
+
+  const head =
+    `发布清单 ${releaseManifestRelativePath(v.release ?? '')}：${String(projects.length + problems.length)} 个项目 —— ` +
+    `跑了 ${String(projects.length)} 个，没验成 ${String(problems.length)} 个`
+
+  const sections = projects.map((project) => {
+    const marks = (project.lines ?? [])
+      .filter((line) => line.status !== 'pass')
+      .map((line) => {
+        const mark = line.status === 'unknown' ? '?' : line.severity === 'warn' ? '!' : '✘'
+        return `      ${mark} ${line.id}（${line.severity}）${indent(line.message, '        ')}`
+      })
+    const pages = project.problems ?? []
+    const pageBlock =
+      pages.length === 0 ? '' : `\n      页面问题（这些页面**没验成**）：\n${pages.map((page) => `        - ${indent(page, '          ')}`).join('\n')}`
+    const counts =
+      `通过 ${String(project.passed ?? 0)} / 失败 ${String(project.failed ?? 0)} / ` +
+      `告警未过 ${String(project.warned ?? 0)} / 验不了 ${String(project.unknown ?? 0)} → ${project.overall ?? ''}`
+    const body = marks.length === 0 ? '' : `\n${marks.join('\n')}`
+    return `· ${project.project}（站点 ${project.target}）：${counts}${body}${pageBlock}`
+  })
+
+  const problemBlock =
+    problems.length === 0
+      ? ''
+      : `\n没验成的项目（这些项目这次**没有证据**——**不是**「验出问题」，两者的下一步动作相反）：\n${problems
+          .map((problem) => `  - ${indent(problem, '    ')}`)
+          .join('\n')}`
+
+  // 「调用方不等了」既不是超时也不是站点有问题：不说清的话，剩下的项目会被读成故障。
+  const cancelled =
+    v.cancelled === true
+      ? '\n被调用方取消：剩下的项目没有跑（**不是**超时，也不是站点有问题）——没跑到的都算「没验成」，重跑一次就有结论。'
+      : ''
+
+  return (
+    `${head}\n${sections.join('\n')}${problemBlock}${cancelled}\n` +
+    `整批：${String(totals.total)} 条断言 —— 通过 ${String(totals.passed)} / 失败 ${String(totals.failed)} / ` +
+    `告警未过 ${String(totals.warned)} / 验不了 ${String(totals.unknown)} → overall ${v.overall ?? ''}\n` +
+    '本次只做了「打开 + 观察」：没有点击、没有填值、没有跟随链接；要访问的页面只能来自每个项目清单里逐条声明的断言。'
+  )
 }
 
 /**
@@ -907,6 +1068,64 @@ const plugin = definePlugin<Config>({  name: 'devfront',
       })
     }
 
+    /**
+     * 跑一次**发布清单**（`site_verify_release` 的执行体）：一次调用跨多个项目。
+     *
+     * 循环与「没跑成」的账在 `release-run.ts`（那里全用**注入**的依赖，所以不连浏览器就能逐条
+     * 断言）；这里只做三件宿主层的事：
+     *   - 读发布清单（不成立 / 读不到都在**碰浏览器之前**报出来，与单项目那条同口径）；
+     *   - 把「读站点声明 / 读项目清单 / 跑一个项目」三个真实实现塞进去；
+     *   - 映射成对外契约（每个项目复用 `verifyOutput`——同一份账不写两遍）。
+     *
+     * **不做发现**：跑什么完全由发布清单里逐条列出的项目决定——这里没有 glob、不扫目录，
+     * 连「这个目录下有哪些发布清单」都只用在报错文案上。
+     */
+    const verifyReleaseRun = async (input: Record<string, unknown>, signal?: AbortSignal): Promise<ReleaseOutput> => {
+      const cwd = typeof input.cwd === 'string' && input.cwd.trim() !== '' ? input.cwd.trim() : process.cwd()
+      const release = typeof input.release === 'string' ? input.release.trim() : ''
+      if (release === '') throw new Error('缺少 release 参数（发布清单名：`release/<发布名>.yaml`）')
+
+      const loaded = loadReleaseManifest(release, { roots: [cwd] })
+      if (loaded.kind === 'no-manifest') {
+        const known = listReleaseManifests(cwd)
+        // 「没有」与「你写在哪」要一次说清：发布名与文件名不一致是最常见的写错方式。
+        throw new Error(
+          `没找到发布清单 ${releaseManifestRelativePath(release)}（在 ${cwd} 下）。` +
+            (known.length === 0
+              ? `这个目录的 ${releaseManifestRelativePath('<发布名>')} 现在一份都没有——先由人列出这次要验哪些项目（格式见本包 README 的「一次发布验多个项目」）。`
+              : `这个目录下现在有这些发布清单：${known.join(' / ')}——发布名与文件名必须一致，或者用 release 参数指定。`),
+        )
+      }
+      if (loaded.kind === 'unreadable') throw new Error(loaded.message)
+      if (loaded.kind === 'config-error') {
+        const lines = loaded.errors.map((error) => (error.path === '' ? `- ${error.message}` : `- ${error.path}：${error.message}`))
+        throw new Error(`发布清单不成立（${releaseManifestRelativePath(release)}）：\n${lines.join('\n')}`)
+      }
+
+      const run = await runReleaseVerify({
+        manifest: loaded.manifest,
+        file: loaded.file,
+        // 站点声明按**那个项目自己的目录**算（profile + 项目里的 `web/sites.yaml`，见 `sitesForCall`）。
+        sitesFor: (root) => sitesForCall(root),
+        loadManifest: (project, root) => loadWebManifest(project, { roots: [root] }),
+        runProject: async (request) => {
+          // 驱动**按需**起（`ensureDriver` 自己缓存）：一个项目都跑不起来时不该白起一个 Chrome。
+          const batchDriver = ensureDriver()
+          return runWebVerify({
+            target: request.target,
+            cwd: request.root,
+            project: request.project,
+            assertions: request.assertions,
+            driver: batchDriver,
+            audit: audit(),
+            ...(request.signal === undefined ? {} : { signal: request.signal }),
+          })
+        },
+        ...(signal === undefined ? {} : { signal }),
+      })
+      return releaseOutput(run)
+    }
+
     const cwdParam = {
       type: 'string',
       description: '当前工作目录（作用域判据用它；缺省取宿主进程工作目录。作用域为空的站点处处拒绝）',
@@ -1182,40 +1401,7 @@ const plugin = definePlugin<Config>({  name: 'devfront',
             cwd: cwdParam,
           },
           output: {
-            schema: {
-              type: 'object',
-              additionalProperties: false,
-              properties: {
-                project: { type: 'string', required: true },
-                target: { type: 'string', required: true },
-                overall: { type: 'string', required: true },
-                total: { type: 'number', required: true },
-                passed: { type: 'number', required: true },
-                failed: { type: 'number', required: true },
-                warned: { type: 'number', required: true },
-                unknown: { type: 'number', required: true },
-                pages: { type: 'number', required: true },
-                pagesObserved: { type: 'number', required: true },
-                lines: {
-                  type: 'array',
-                  required: true,
-                  items: {
-                    type: 'object',
-                    additionalProperties: false,
-                    properties: {
-                      id: { type: 'string', required: true },
-                      url: { type: 'string', required: true },
-                      status: { type: 'string', required: true },
-                      severity: { type: 'string', required: true },
-                      message: { type: 'string', required: true },
-                      evidence: { type: 'array', required: true, items: { type: 'string' } },
-                    },
-                  },
-                },
-                problems: { type: 'array', required: true, items: { type: 'string' } },
-                cancelled: { type: 'boolean', required: true },
-              },
-            },
+            schema: verifyOutputSchema(),
             render: (_args: unknown, value: unknown) => [{ type: 'text', text: verifyRenderText(value) }],
           },
           /* 协作式预算：一次跑批的页面数与每页耗时都不定，给一个宽预算（页面级还有各自的导航超时）。 */
@@ -1226,8 +1412,58 @@ const plugin = definePlugin<Config>({  name: 'devfront',
           },
         }),
       )
+
+      /*
+       * `site_verify_release`：一次调用跨多个项目（集合由**人**写在 `release/<发布名>.yaml` 里）。
+       *
+       * 为什么是**另一条工具**而不是给 `site_verify` 加个参数：两者的输出契约不同（这一条多一层
+       * 「项目账」），合成一条会让 schema 变成两种形态的并集——而「声明与实际不符」在本包是**最坏的
+       * 一类失败**（`invalid output`：动作真的做了，agent 却以为没做，见 `tool-contract.test.ts`）。
+       */
+      add(
+        'site_verify_release',
+        defineTool({
+          name: 'site_verify_release',
+          // 与 site_verify 一样开浏览器、翻页、读写浏览器状态。
+          isConcurrencySafe: () => false,
+          description:
+            `按**发布清单**（\`release/<发布名>.yaml\`，**由人写**）一次跑多个项目的验活断言。清单逐条列出「项目名 + 项目根 + 这个项目按哪个站点验」，本工具按那份列表读**每个项目自己的** \`web/<项目>.yaml\` 跑批 ` +
+            `(同一个 URL 仍然只打开一次、只观察一次)，逐个项目给「通过 / 失败 / 验不了」，并把**没跑成的项目**（没配站点 / 没有清单 / 清单不成立 / 那份清单里没有这个站点的断言）单列出来——**没验成**与**验出问题**是两件事。` +
+            `**它不做发现**：跑哪些项目完全来自那份人写的清单（不扫目录、不跟随链接）；每个项目仍然只做「打开 + 观察」：不点击、不填值。`,
+          parameters: {
+            release: {
+              type: 'string',
+              required: true,
+              description: '发布名 = 清单名（`release/<发布名>.yaml`）。文件名与清单里的 `release` 必须一致',
+            },
+            cwd: cwdParam,
+          },
+          output: {
+            schema: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                release: { type: 'string', required: true },
+                projects: { type: 'array', required: true, items: verifyOutputSchema() },
+                overall: { type: 'string', required: true },
+                problems: { type: 'array', required: true, items: { type: 'string' } },
+                cancelled: { type: 'boolean', required: true },
+              },
+            },
+            render: (_args: unknown, value: unknown) => [{ type: 'text', text: releaseRenderText(value) }],
+          },
+          /* 协作式预算：项目数 × 每项目页数都不定，给一个更宽的预算（页面级还有各自的导航超时）。 */
+          timeoutMs: 900_000,
+          async execute(args: unknown, exec?: { signal?: AbortSignal }): Promise<ReleaseOutput> {
+            const input = (args ?? {}) as Record<string, unknown>
+            return verifyReleaseRun(input, exec?.signal)
+          },
+        }),
+      )
       console.log(
-        `[dsh-devfront] agent tools registered (${(['site_open', 'site_shot', 'site_click', 'site_fill', 'site_text', 'site_console', 'site_verify'] as const).join(', ')})`,
+        `[dsh-devfront] agent tools registered (${(
+          ['site_open', 'site_shot', 'site_click', 'site_fill', 'site_text', 'site_console', 'site_verify', 'site_verify_release'] as const
+        ).join(', ')})`,
       )
     }
 

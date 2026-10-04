@@ -45,7 +45,15 @@ import { afterAll, describe, expect, it } from 'vitest'
 
 import { loadManifest, manifestRelativePath, type ManifestLoad } from '../../packages/devdata/src/index.js'
 import { loadReadyProfile, readyManifestRelPath, type ProfileLoad } from '../../packages/devenv/src/index.js'
-import { loadWebManifest, webManifestRelativePath, type WebManifestLoad } from '../../packages/devfront/src/index.js'
+import {
+  loadReleaseManifest,
+  loadWebManifest,
+  releaseManifestRelativePath,
+  resolveProjectRoot,
+  webManifestRelativePath,
+  type ReleaseManifest,
+  type WebManifestLoad,
+} from '../../packages/devfront/src/index.js'
 
 const PROJECT = 'cdqas'
 const dirs: string[] = []
@@ -174,6 +182,42 @@ function devdataSrcFiles(): Array<{ name: string; text: string }> {
     .map((name) => ({ name, text: readFileSync(new URL(name, srcDir), 'utf8') }))
 }
 
+/* ------------------------------------------------------------------ *
+ * 发布清单：**由人给出的**「这次该验哪些项目」（L0 口径，2026-10-04）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 发布清单这一层的判据：**它列的项目必须真有那三份清单，而且项目名都对得上**。
+ *
+ * 这是「不做发现」的代价换来的好处：既然集合是人写死的，那么**唯一能漂的就是名字**——
+ * 发布清单里写 `cdqas`、项目目录里那份清单的 `project` 却是 `ems`，或者那个项目压根没有清单。
+ * 两种都会让「这次发布的数据面 / 页面这一面到底验没验」有两个答案，所以这里逐条报出来。
+ */
+export function releaseAlignmentProblems(
+  release: ReleaseManifest,
+  file: string,
+  loadChainAt: (root: string, project: string) => ChainLoads,
+): string[] {
+  const problems: string[] = []
+  for (const spec of release.projects) {
+    // `root` 相对发布清单所在的目录（与跑批执行器同一处实现，不另解析一遍）
+    const root = resolveProjectRoot(spec.root, file)
+    for (const problem of chainProblems(loadChainAt(root, spec.project), spec.project)) {
+      problems.push(`发布清单里的 ${spec.project}：${problem}`)
+    }
+  }
+  return problems
+}
+
+/** 写一份发布清单到 `<dir>/release/<发布名>.yaml`，返回那个目录。 */
+function releaseDir(release: string, projects: Array<{ project: string; root: string; target: string }>, overrides: Record<string, unknown> = {}): string {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-release-manifest-'))
+  dirs.push(dir)
+  mkdirSync(join(dir, 'release'), { recursive: true })
+  writeFileSync(join(dir, 'release', `${release}.yaml`), JSON.stringify({ version: 1, release, projects, ...overrides }))
+  return dir
+}
+
 afterAll(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
@@ -274,5 +318,55 @@ describe('一次发布的证据链：同一个项目名，三份清单', () => {
     expect(broken).not.toBe(plugin?.text)
     const consumers = manifestConsumersOf(files.map((file) => (file.name === 'plugin.ts' ? { ...file, text: broken } : file)))
     expect(consumers).toEqual([])
+  })
+})
+
+/* ================================================================== *
+ * 发布清单：**由人给出的**「这次该验哪些项目」（2026-10-04）
+ * ================================================================== */
+
+describe('发布清单：由人给出的「这次该验哪些项目」', () => {
+  const RELEASE = '2026-10-04-hg'
+  /** 走三个包**自己**的加载器（与 `loadChain` 同一处）。 */
+  const loadAt = (root: string, project: string): ChainLoads => loadChain(root, project)
+
+  it('路径口径钉住：`release/<发布名>.yaml`（改一处就会红）', () => {
+    expect(releaseManifestRelativePath(RELEASE)).toBe(`release/${RELEASE}.yaml`)
+  })
+
+  it('发布清单列的项目 → 三份清单都在、项目名都一致', () => {
+    const project = projectDir({ ready: true, verify: true, web: true })
+    const work = releaseDir(RELEASE, [{ project: PROJECT, root: project, target: 'local-fixture' }])
+    const loaded = loadReleaseManifest(RELEASE, { roots: [work] })
+    expect(loaded.kind, JSON.stringify(loaded)).toBe('ok')
+    if (loaded.kind !== 'ok') return
+    expect(releaseAlignmentProblems(loaded.manifest, loaded.file, loadAt), JSON.stringify(loaded.manifest)).toEqual([])
+  })
+
+  it('反例①：那份项目的某一份清单**项目名串了** → 报出来（防复制粘贴改漏）', () => {
+    const project = projectDir({ ready: true, verify: true, web: true, projectInFile: { web: 'ems' } })
+    const work = releaseDir(RELEASE, [{ project: PROJECT, root: project, target: 'local-fixture' }])
+    const loaded = loadReleaseManifest(RELEASE, { roots: [work] })
+    if (loaded.kind !== 'ok') throw new Error('夹具不成立')
+    expect(releaseAlignmentProblems(loaded.manifest, loaded.file, loadAt).join('\n')).toContain('页面（devfront）')
+  })
+
+  it('反例②：发布清单列了一个**没有清单**的项目 → 报「这一面这次没有证据」', () => {
+    const empty = mkdtempSync(join(tmpdir(), 'dsh-release-empty-'))
+    dirs.push(empty)
+    const work = releaseDir(RELEASE, [{ project: PROJECT, root: empty, target: 'local-fixture' }])
+    const loaded = loadReleaseManifest(RELEASE, { roots: [work] })
+    if (loaded.kind !== 'ok') throw new Error('夹具不成立')
+    const problems = releaseAlignmentProblems(loaded.manifest, loaded.file, loadAt).join('\n')
+    expect(problems).toContain(`发布清单里的 ${PROJECT}`)
+    expect(problems).toContain('没有读到可用清单')
+  })
+
+  it('反例③：发布清单里的项目名与目录里的清单名对不上（列的是 ems，目录里只有 cdqas）', () => {
+    const project = projectDir({ ready: true, verify: true, web: true })
+    const work = releaseDir(RELEASE, [{ project: 'ems', root: project, target: 'local-fixture' }])
+    const loaded = loadReleaseManifest(RELEASE, { roots: [work] })
+    if (loaded.kind !== 'ok') throw new Error('夹具不成立')
+    expect(releaseAlignmentProblems(loaded.manifest, loaded.file, loadAt).join('\n')).toContain('发布清单里的 ems')
   })
 })

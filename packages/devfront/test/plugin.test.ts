@@ -143,8 +143,8 @@ describe('normalizeConfig：开关与默认值', () => {
 })
 
 describe('能力公告', () => {
-  it('七个动作都点到名（公告里缺一个，agent 就不知道它能用）', () => {
-    for (const tool of ['site_open', 'site_shot', 'site_click', 'site_fill', 'site_text', 'site_console', 'site_verify']) {
+  it('八个动作都点到名（公告里缺一个，agent 就不知道它能用）', () => {
+    for (const tool of ['site_open', 'site_shot', 'site_click', 'site_fill', 'site_text', 'site_console', 'site_verify', 'site_verify_release']) {
       expect(DEVFONT_GUIDANCE).toContain(tool)
     }
   })
