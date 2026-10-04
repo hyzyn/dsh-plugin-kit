@@ -17,6 +17,7 @@
  * 全部走注入（`onDisk` / `collected` / `allowed` 都是参数），不碰真实仓库、不跑 vitest——
  * 所以单测是**秒级**的，而闸门自己的真实收集成本（0.32s）只在 CLI 路径上付一次。
  */
+import * as path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
@@ -129,25 +130,32 @@ describe('路径归一：跨平台不许假阳性', () => {
 
   it('**Windows 的 `/D:/…` 前导斜杠也要归一**（2026-10-04 Windows 腿实测的真 bug）', () => {
     /*
-     * 起因：Windows 上 `new URL(x, import.meta.url).pathname` 返回 `/D:/a/repo/…`，
-     * 而 `path.resolve(root)` 给 `D:\a\repo`（不带前导斜杠）。两者归一后仍差一个斜杠，
+     * 起因：Windows 上 `new URL(x, import.meta.url).pathname` 返回 `/D:/a/repo/…`（带前导
+     * 斜杠），而 `path.resolve(root)` 给 `D:\a\repo`（不带）。两者归一后仍差一个斜杠，
      * 于是 `startsWith` 匹配不上、**归一静默失效**——Windows 腿实测报
-     * `expected '/D:/a/dsh-plugin-kit/dsh-plugin-kit/s…' to be 'scripts/…'`。
+     * `expected 'D:/a/dsh-plugin-kit/scripts/test/x.te…' to be 'scripts/test/x.test.ts'`。
      *
-     * ## 为什么 root 也写成带前导斜杠的形态
+     * ## 为什么这里**真的执行** Windows 分支，而不是在 macOS 上推演
      *
-     * 这条用例要在**任何平台**都跑出同一个结论。`normalizeRepoPath` 内部对 root 调
-     * `path.resolve`，而 POSIX 上 `resolve('D:/a/x')` 会把它当**相对路径**解析成
-     * `<cwd>/D:/a/x`（实测：用例因此在 macOS 上红过一次）。
-     * 写成 `'/D:/a/dsh-plugin-kit'` 则两边都稳：POSIX 上它已是绝对路径、`resolve` 原样返回；
-     * Windows 上 `resolve('/D:/…')` 也给出 `D:\…`。两条路归一后都等于 `D:/a/dsh-plugin-kit`。
+     * 这条 bug 在 Windows 腿上来回红了两次，两次都是「在 macOS 上推演 `path.win32`
+     * 的行为」推错了。所以改成注入 `path.win32`——`normalizeRepoPath` 的第三个参数
+     * 就是为此加的（本仓 `chrome-path.mjs` 早就用同一套路处理平台分支）。
+     *
+     * 这样 root 用**真 Windows 形态**（`C:\a\repo`），输入用 `file://` URL 的形态
+     * （`/C:/a/repo/…`），两边都走 `win32.resolve`，测的就是 Windows 上的真实行为。
      */
-    const root = '/D:/a/dsh-plugin-kit'
-    expect(normalizeRepoPath('/D:/a/dsh-plugin-kit/scripts/test/x.test.ts', root)).toBe('scripts/test/x.test.ts')
-    // 反斜杠 + 前导斜杠的组合（vitest 在 Windows 上的输出形态）
-    expect(normalizeRepoPath('/D:\\a\\dsh-plugin-kit\\packages\\a\\test\\x.test.ts', root)).toBe('packages/a/test/x.test.ts')
-    // root 自身也带前导斜杠时同样成立（两种写法都归一）
-    expect(normalizeRepoPath('D:/a/dsh-plugin-kit/scripts/test/x.test.ts', root)).toBe('scripts/test/x.test.ts')
+    const win = path.win32
+    const root = 'C:\\a\\dsh-plugin-kit'
+    const opts = { pathImpl: win }
+
+    // ① `new URL(...).pathname` 的形态（前导斜杠 + 正斜杠）
+    expect(normalizeRepoPath('/C:/a/dsh-plugin-kit/scripts/test/x.test.ts', root, opts)).toBe('scripts/test/x.test.ts')
+    // ② 反斜杠组合（vitest 在 Windows 上的输出形态）
+    expect(normalizeRepoPath('/C:\\a\\dsh-plugin-kit\\packages\\a\\test\\x.test.ts', root, opts)).toBe('packages/a/test/x.test.ts')
+    // ③ 不带前导斜杠的形态
+    expect(normalizeRepoPath('C:/a/dsh-plugin-kit/scripts/test/x.test.ts', root, opts)).toBe('scripts/test/x.test.ts')
+    // ④ 已经是相对路径的（vitest 的另一种输出）
+    expect(normalizeRepoPath('packages\\a\\test\\x.test.ts', root, opts)).toBe('packages/a/test/x.test.ts')
   })
 
   it('POSIX 路径不被前导斜杠规则误伤（`/usr/…` 必须原样）', () => {

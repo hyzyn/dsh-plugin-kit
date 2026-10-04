@@ -17,7 +17,8 @@
  * 全部走注入（`exists` / `readdir` / `realpath` / `whichDsh` / `npmRootG`），
  * 不碰真实全局安装——所以任何平台都能跑，且是毫秒级。
  */
-import { join } from 'node:path'
+import * as path from 'node:path'
+import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -37,17 +38,29 @@ function fakeFs(existing) {
 }
 
 /**
- * 夹具路径**一律用 `path.join` 拼，不写死分隔符**。
+ * 夹具路径一律用 `path.resolve` / `path.join` 拼，**不写死分隔符、也不留「盘符相对」形态**。
  *
- * 2026-10-04 Windows 腿实测：第一版用模板字符串拼 `/usr/local/...`，12 条用例全红——
- * `path.join` 在 Windows 上产反斜杠，而夹具是正斜杠，于是「存在的路径」与「查的路径」
- * 对不上（`expected false to be true`），另几条直接比出了 `\usr\local\...`。
+ * ## 两次 Windows 腿实测（2026-10-04）
  *
- * 这与 `scripts/test/chrome-path.test.ts` 在 2026-10-03 踩的是**同一个坑**
+ * **第一次**（12 条红）：夹具用模板字符串拼 `/usr/local/...`，而 `join` 在 Windows 上产
+ * 反斜杠——「存在的路径」与「查的路径」对不上（`expected false to be true`，
+ * 另几条直接比出 `\usr\local\...`）。
+ *
+ * **第二次**（2 条红）：改成 `join` 之后**仍然红**，因为 Windows 上**以单个 `\` 开头的
+ * 路径是「盘符相对」**：`join('/usr/local/lib', …)` 产 `\usr\local\lib\…`（无盘符），
+ * 而产品代码对显式参数调 `resolve()`，`resolve('\usr\local\…')` 会**补上当前盘符**
+ * 变成 `D:\usr\local\…`——两者不等，于是 `exists` 查不到、`dir` 返回 `null`
+ * （实测报 `expected null to be '\usr\local\lib\node_modules\@deepseek…'`）。
+ *
+ * 所以夹具的**根**必须用 `resolve()` 建立（与产品代码同一个调用），子路径再用 `join`：
+ * `resolve` 对已解析的绝对路径幂等，于是「夹具」与「代码里 resolve 之后」按构造成立。
+ *
+ * 这与 `scripts/test/chrome-path.test.ts` 在 2026-10-03 踩的是**同一个坑的两种形态**
  * （那边记着「期望值也用 `path.join` 拼，这样在哪个平台跑都对（不写死分隔符）」）。
- * 产品代码 `dsh-app-boot.mjs` 本身**没有**这个问题——它全程用 `join`，错的只是夹具。
+ * 产品代码 `dsh-app-boot.mjs` 本身**没有**这个问题——它全程用 `join` / `resolve`，
+ * 错的只是夹具。
  */
-const GLOBAL = join('/usr/local/lib', 'node_modules')
+const GLOBAL = resolve('/usr/local/lib/node_modules')
 const DSH_PKG = join(GLOBAL, '@deepseek-ai', 'dsh')
 const APP_BOOT = join(DSH_PKG, 'node_modules', '@deepseek-ai', 'dsh-app-boot')
 const APP_BOOT_FILES = [join(APP_BOOT, 'package.json'), join(APP_BOOT, 'lib', 'index.js')]
@@ -269,5 +282,85 @@ describe('describeAppBootSearch：找不到时要能说清试过哪些路径', (
   it('空列表时给一句人话（而不是空字符串）', () => {
     expect(describeAppBootSearch([])).toContain('没有试过任何路径')
     expect(describeAppBootSearch(undefined)).toContain('没有试过任何路径')
+  })
+})
+
+describe('Windows 分支**真的执行**（注入 path.win32，而不是在 macOS 上推演）', () => {
+  /*
+   * 2026-10-04 的教训：这个文件的 Windows 相关夹具在 CI 上来回红了两次，两次都是
+   * 「在 macOS 上推演 path.win32 的行为」推错了。而本仓 chrome-path.mjs 早就给出正解
+   * ——把平台做成可注入的，于是 Windows 分支能在任何平台上**真的跑**。
+   *
+   * 下面这些用例用 win32 的 join/dirname/resolve 真算一遍，断言的是**Windows 上的行为**。
+   */
+  const win = path.win32
+  const opts = { pathImpl: win }
+  // Windows 上的全局安装根（合法形态：盘符在字符串开头）
+  const WIN_GLOBAL = 'C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules'
+  const WIN_DSH = win.join(WIN_GLOBAL, '@deepseek-ai', 'dsh')
+  const WIN_BIN = win.join(WIN_DSH, 'lib', 'bin.js')
+  const WIN_VENDORED = win.join(WIN_DSH, 'node_modules', '@deepseek-ai', 'dsh-app-boot')
+  const WIN_HOISTED = win.join(WIN_GLOBAL, '@deepseek-ai', 'dsh-app-boot')
+
+  it('从 bin 推导出两种布局的候选（顺序：vendored 在前）', () => {
+    const got = appBootCandidatesFromDshBin(WIN_BIN, { realpath: (p) => p, ...opts })
+    expect(got).toEqual([WIN_VENDORED, WIN_HOISTED])
+  })
+
+  it('两种布局都能被 isUsableAppBoot 认出（查的是 package.json 与 lib/index.js）', () => {
+    const files = [
+      win.join(WIN_VENDORED, 'package.json'),
+      win.join(WIN_VENDORED, 'lib', 'index.js'),
+    ]
+    expect(isUsableAppBoot(WIN_VENDORED, { exists: (p) => files.includes(p), ...opts })).toBe(true)
+    expect(isUsableAppBoot(WIN_HOISTED, { exists: (p) => files.includes(p), ...opts })).toBe(false)
+  })
+
+  it('findAppBoot 在 Windows 形态下命中 vendored（显式参数不经过 resolve 二次改写）', () => {
+    const files = [
+      win.join(WIN_VENDORED, 'package.json'),
+      win.join(WIN_VENDORED, 'lib', 'index.js'),
+    ]
+    const r = findAppBoot({ explicit: WIN_VENDORED, exists: (p) => files.includes(p), ...opts })
+    expect(r.dir).toBe(WIN_VENDORED)
+    expect(r.source).toBe('explicit')
+  })
+
+  it('findAppBoot 从 Windows 的 which dsh 结果推导（dsh-bin 来源）', () => {
+    const files = [
+      win.join(WIN_VENDORED, 'package.json'),
+      win.join(WIN_VENDORED, 'lib', 'index.js'),
+    ]
+    const r = findAppBoot({
+      env: {},
+      whichDsh: () => WIN_BIN,
+      realpath: (p) => p,
+      exists: (p) => files.includes(p),
+      ...opts,
+    })
+    expect(r.dir).toBe(WIN_VENDORED)
+    expect(r.source).toBe('dsh-bin')
+  })
+
+  it('findAppBoot 兜底 npm root -g 时也试 Windows 的提升布局', () => {
+    const files = [
+      win.join(WIN_HOISTED, 'package.json'),
+      win.join(WIN_HOISTED, 'lib', 'index.js'),
+    ]
+    const r = findAppBoot({
+      env: {},
+      whichDsh: () => null,
+      npmRootG: () => WIN_GLOBAL,
+      readdir: () => ['dsh'],
+      exists: (p) => files.includes(p),
+      ...opts,
+    })
+    expect(r.dir).toBe(WIN_HOISTED)
+    expect(r.source).toBe('npm-root-g')
+  })
+
+  it('dshPackageRootsUnder 在 Windows 上拼出反斜杠路径', () => {
+    const roots = dshPackageRootsUnder(WIN_GLOBAL, { readdir: () => ['dsh', 'other'], ...opts })
+    expect(roots).toEqual([win.join(WIN_GLOBAL, '@deepseek-ai', 'dsh')])
   })
 })

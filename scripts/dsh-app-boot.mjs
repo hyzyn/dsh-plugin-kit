@@ -39,13 +39,21 @@
  */
 import { execFileSync } from 'node:child_process'
 import { existsSync, readdirSync, realpathSync } from 'node:fs'
+import * as nodePath from 'node:path'
 import { dirname, join, resolve } from 'node:path'
 
 /** 环境变量名（CI 里想钉住某一份判定器时用）。 */
 export const APP_BOOT_ENV_VAR = 'DSH_APP_BOOT_DIR'
 
-/** 包目录相对 dsh 包根的路径（dsh 把自己的依赖嵌在 `node_modules` 下）。 */
-const APP_BOOT_REL = join('node_modules', '@deepseek-ai', 'dsh-app-boot')
+/**
+ * 包目录相对 dsh 包根的路径（dsh 把自己的依赖嵌在 `node_modules` 下）。
+ *
+ * 存**段数组**而不是预先 join 好的字符串：`pathImpl` 可注入（测试传 `path.win32`），
+ * 而预先 join 出的字符串是用**宿主平台**的分隔符算的。实测 `win.join(pkgRoot, 'a/b/c')`
+ * 会把正斜杠归一掉、恰好也对，但那是巧合而非保证——存段数组则两种平台都按各自的
+ * `join` 拼，没有依赖归一行为。
+ */
+const APP_BOOT_SEGMENTS = ['node_modules', '@deepseek-ai', 'dsh-app-boot']
 
 /**
  * 判定一个目录是不是可用的 app-boot：必须有 `package.json` 与 `lib/index.js`。
@@ -56,11 +64,14 @@ const APP_BOOT_REL = join('node_modules', '@deepseek-ai', 'dsh-app-boot')
  *
  * @param dir - 候选目录
  * @param options.exists - 注入「路径在不在」（测试用）
+ * @param options.pathImpl - 注入路径模块（默认 `node:path`；测试传 `path.win32` **真的执行**
+ *   Windows 分支，而不是在 macOS 上推演它——这条在 2026-10-04 被证明是必要的，
+ *   见 `appBootCandidatesFromDshBin` 的注释）
  */
 export function isUsableAppBoot(dir, options = {}) {
-  const { exists = existsSync } = options
+  const { exists = existsSync, pathImpl = nodePath } = options
   if (typeof dir !== 'string' || dir === '') return false
-  return exists(join(dir, 'package.json')) && exists(join(dir, 'lib', 'index.js'))
+  return exists(pathImpl.join(dir, 'package.json')) && exists(pathImpl.join(dir, 'lib', 'index.js'))
 }
 
 /**
@@ -77,10 +88,12 @@ export function isUsableAppBoot(dir, options = {}) {
  *
  * @param dshBinPath - `which dsh` 的结果（可能是符号链接）
  * @param options.realpath - 注入「解析符号链接」（测试用）
+ * @param options.pathImpl - 注入路径模块（测试传 `path.win32` 跑 Windows 分支）
  * @returns `string[]` 候选（可能为空）；形态不认识时返回 `[]`
  */
 export function appBootCandidatesFromDshBin(dshBinPath, options = {}) {
-  const { realpath = (p) => p } = options
+  const { realpath = (p) => p, pathImpl = nodePath } = options
+  const { dirname: dir, join: jn } = pathImpl
   if (typeof dshBinPath !== 'string' || dshBinPath === '') return []
   let real
   try {
@@ -90,17 +103,17 @@ export function appBootCandidatesFromDshBin(dshBinPath, options = {}) {
   }
   if (typeof real !== 'string' || real === '') return []
   // bin.js 的目录是 lib/，再上溯一级才是包根
-  const libDir = dirname(real)
-  const pkgRoot = dirname(libDir)
-  if (pkgRoot === '' || pkgRoot === dirname(pkgRoot)) return []
+  const libDir = dir(real)
+  const pkgRoot = dir(libDir)
+  if (pkgRoot === '' || pkgRoot === dir(pkgRoot)) return []
   // 包根是 `<globalRoot>/@deepseek-ai/dsh`，globalRoot 是它的上两级
-  const scopeDir = dirname(pkgRoot)
-  const globalRoot = dirname(scopeDir)
+  const scopeDir = dir(pkgRoot)
+  const globalRoot = dir(scopeDir)
   return [
-    join(pkgRoot, APP_BOOT_REL),
-    ...(globalRoot === '' || globalRoot === dirname(globalRoot)
+    jn(pkgRoot, ...APP_BOOT_SEGMENTS),
+    ...(globalRoot === '' || globalRoot === dir(globalRoot)
       ? []
-      : [join(globalRoot, '@deepseek-ai', 'dsh-app-boot')]),
+      : [jn(globalRoot, '@deepseek-ai', 'dsh-app-boot')]),
   ]
 }
 
@@ -123,9 +136,9 @@ export function appBootFromDshBin(dshBinPath, options = {}) {
  * @returns `string[]`：各 dsh 包根
  */
 export function dshPackageRootsUnder(globalRoot, options = {}) {
-  const { readdir = readdirSync } = options
+  const { readdir = readdirSync, pathImpl = nodePath } = options
   if (typeof globalRoot !== 'string' || globalRoot === '') return []
-  const scoped = join(globalRoot, '@deepseek-ai')
+  const scoped = pathImpl.join(globalRoot, '@deepseek-ai')
   let names
   try {
     names = readdir(scoped)
@@ -134,7 +147,7 @@ export function dshPackageRootsUnder(globalRoot, options = {}) {
   }
   return names
     .filter((name) => name === 'dsh' || name.startsWith('dsh-'))
-    .map((name) => join(scoped, name))
+    .map((name) => pathImpl.join(scoped, name))
 }
 
 /**
@@ -148,6 +161,7 @@ export function dshPackageRootsUnder(globalRoot, options = {}) {
  * @param options.exists - 注入「路径在不在」
  * @param options.realpath - 注入「解析符号链接」
  * @param options.readdir - 注入「列目录」
+ * @param options.pathImpl - 注入路径模块（测试传 `path.win32` 跑 Windows 分支）
  * @returns `{ dir, source, tried }`：找到时 `dir` + 来源；找不到时 `dir: null` + 试过的路径
  */
 export function findAppBoot(options = {}) {
@@ -159,9 +173,10 @@ export function findAppBoot(options = {}) {
     exists = existsSync,
     realpath,
     readdir,
+    pathImpl = nodePath,
   } = options
 
-  const fsOptions = { exists }
+  const fsOptions = { exists, pathImpl }
   const tried = []
 
   /** 逐个候选试；命中即返回。 */
@@ -176,7 +191,7 @@ export function findAppBoot(options = {}) {
 
   // 1. 显式参数：给了就只认它（指错了要报错，不回落到搜索）
   if (explicit !== undefined && explicit !== '') {
-    const abs = resolve(explicit)
+    const abs = pathImpl.resolve(explicit)
     tried.push(abs)
     if (isUsableAppBoot(abs, fsOptions)) return { dir: abs, source: 'explicit', tried }
     return { dir: null, source: 'explicit', tried }
@@ -187,7 +202,7 @@ export function findAppBoot(options = {}) {
   //    被静默忽略、回落到自动定位并**成功**，于是「我钉住的那一份判定器」根本没被用上。
   const fromEnv = env[APP_BOOT_ENV_VAR]
   if (typeof fromEnv === 'string' && fromEnv !== '') {
-    const abs = resolve(fromEnv)
+    const abs = pathImpl.resolve(fromEnv)
     tried.push(abs)
     if (isUsableAppBoot(abs, fsOptions)) return { dir: abs, source: 'env', tried }
     return { dir: null, source: 'env', tried }
@@ -196,7 +211,7 @@ export function findAppBoot(options = {}) {
   // 3. 从 dsh 真身推导（优先），再兜底 npm root -g
   const binPath = whichDsh()
   if (typeof binPath === 'string' && binPath !== '') {
-    const candidates = appBootCandidatesFromDshBin(binPath, { realpath: realpath ?? defaultRealpath })
+    const candidates = appBootCandidatesFromDshBin(binPath, { realpath: realpath ?? defaultRealpath, pathImpl })
     const hit = firstUsable(candidates, 'dsh-bin')
     if (hit !== null) return hit
   }
@@ -215,8 +230,9 @@ export function findAppBoot(options = {}) {
      * 提升布局排在前面：它更浅、也更可能是 npm 的标准结果。
      */
     const candidates = [
-      join(globalRoot, '@deepseek-ai', 'dsh-app-boot'),
-      ...dshPackageRootsUnder(globalRoot, { readdir }).map((pkgRoot) => join(pkgRoot, APP_BOOT_REL)),
+      pathImpl.join(globalRoot, '@deepseek-ai', 'dsh-app-boot'),
+      ...dshPackageRootsUnder(globalRoot, { readdir, pathImpl }).map((pkgRoot) =>
+        pathImpl.join(pkgRoot, ...APP_BOOT_SEGMENTS)),
     ]
     const hit = firstUsable(candidates, 'npm-root-g')
     if (hit !== null) return hit

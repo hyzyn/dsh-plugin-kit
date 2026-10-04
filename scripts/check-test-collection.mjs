@@ -67,6 +67,7 @@
  */
 import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import * as path from 'node:path'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -102,22 +103,33 @@ export const ALLOWED_UNCOLLECTED = [
  *
  * vitest 在 Windows 上输出反斜杠、`git ls-files` 输出正斜杠，两侧不归一会**全量假阳性**。
  *
- * ## Windows 的前导斜杠（2026-10-04 Windows 腿实测）
+ * ## Windows 的前导斜杠（2026-10-04 Windows 腿实测两次才定下来）
  *
  * Windows 上从 `file://` URL 取的路径是 **`/D:/a/repo/…`**（带前导斜杠），而
  * `path.resolve(root)` 给的是 `D:\a\repo`（不带）。两者归一后仍差一个前导斜杠，
  * 于是 `startsWith` 匹配不上、**归一静默失效**（路径原样返回，闸门误报）。
+ * 所以这里显式剥掉「斜杠 + 盘符 + 冒号」——只处理这一种形态，不误伤 POSIX 的 `/usr/…`。
  *
- * 这不是假想：`new URL(x, import.meta.url).pathname` 就是最常见的来源，
- * 本仓 `scripts/test/check-test-collection.test.ts` 里那条用例正是这么写的，
- * Windows 腿实测报 `expected '/D:/a/dsh-plugin-kit/…' to be 'scripts/…'`。
- * 所以这里显式剥掉「盘符前的那个斜杠」——只处理「斜杠 + 盘符 + 冒号」这一种形态，
- * 不误伤 POSIX 的 `/usr/…`。
+ * ## `pathImpl` 可注入（这条比上面那个修复更重要）
+ *
+ * 上面那个 bug 是**在 Windows 腿上来回红了两次**才定位的：macOS 开发机上推演
+ * `path.win32` 的行为两次都推错（第一版以为 `join` 就够、第二版以为伪造一个
+ * `/D:/…` 的 root 就够——而 `/D:/…` **不是合法的 Windows 绝对路径**，
+ * `resolve` 会把 `D:` 当目录名）。
+ *
+ * 所以这里按本仓 `chrome-path.mjs` 的既有模式，把路径模块做成**可注入**的：
+ * 单测传 `path.win32` 就能在 macOS 上**真的执行** Windows 分支（而不是推演它）。
+ *
+ * @param p - 待归一的路径
+ * @param root - 仓库根（默认本模块所在仓库）
+ * @param options.pathImpl - 注入路径模块（默认 `node:path`；测试传 `path.win32` 跑 Windows 分支）
  */
-export function normalizeRepoPath(p, root = REPO_ROOT) {
+export function normalizeRepoPath(p, root = REPO_ROOT, options = {}) {
+  const { pathImpl = path } = options
+  const toSlashes = (s) => String(s).replace(/\\/g, '/')
   const stripDriveSlash = (s) => s.replace(/^\/([A-Za-z]:\/)/, '$1')
-  let out = stripDriveSlash(String(p).trim().replace(/\\/g, '/'))
-  const abs = stripDriveSlash(resolve(root).replace(/\\/g, '/'))
+  let out = stripDriveSlash(toSlashes(String(p).trim()))
+  const abs = stripDriveSlash(toSlashes(pathImpl.resolve(root)))
   if (out.startsWith(`${abs}/`)) out = out.slice(abs.length + 1)
   return out.replace(/^\.\//, '')
 }
