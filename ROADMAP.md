@@ -242,11 +242,13 @@ release.yml 3，docker 那三条两个 workflow 各写一遍）、方案 A（wor
 
 **已做（2026-10-03）**：落点与门槛见 § 已完成 第 9 项（9.1 发包内容守卫 + 9.2 nightly 两条车道）。
 
-**追加（2026-10-04）**：对照 `ant-design/ant-design` 的 46 个 workflow 后，又找到一条**真实**的洞
+**追加（2026-10-04）**：对照 `ant-design/ant-design` 的 46 个 workflow 后，又找到两条**真实**的洞
 ——**「写了测试但从没运行过」没人守**（放错目录 / 扩展名写成 `.spec.ts` 即静默跳过，
-实测 113 文件 / 1768 用例全绿而那个文件从未执行）。落点见 § 已完成 第 9.5 项。
+实测 113 文件 / 1768 用例全绿而那个文件从未执行），以及**两处版本声明可以静默脱节**
+（vitest 与 `@vitest/coverage-v8` 脱版后覆盖率照常出正常数字；workflow 里的 dsh CLI pin
+漂到 cohort 外后两道闸门都绿）。落点见 § 已完成 第 9.5 / 9.6 项。
 ant-design 那 46 个里 12 个是治理、其余多是社区规模才需要的（分片 / SHA 钉扎 / size-limit），
-**本仓该抄的只有这一条**；反过来「每个 job 都写 `timeout-minutes`」本仓做得比它好（它有 10 个 job 没写）。
+**本仓该抄的只有前一条**；反过来「每个 job 都写 `timeout-minutes`」本仓做得比它好（它有 10 个 job 没写）。
 
 ### 8. `docs/` 的活规矩与已落地档案混在同一层
 
@@ -591,6 +593,38 @@ CI 绿，而那正是它要回答的问题；副作用是本机跑起来瞬间�
 改成**从核数反算每份 worker 数**，让总超订恒定为 2 倍：本机 21 进程 / 2.10x、CI 9 进程 /
 2.25x。取 2 而不是历史上复现用过的 5：这是每天跑的常设闸门，不该长期占满开发机 CPU。
 门槛：新增 3 条用例钉住这个不变量（含「下限是 1，`--maxWorkers=0` 是非法值」）。
+
+#### 9.6 ✅ 工具链钉子守卫：两处版本声明必须自洽（2026-10-04）
+
+**来源**：与 9.5 同一轮——对照 `ant-design/ant-design` 时顺带把本仓「声明层」自查了一遍，
+发现两处「A 处版本必须与 B 处一致」的约束**没有任何闸门守**。两条都逐条实测过脱节后果。
+
+**洞 ①：vitest 与 `@vitest/coverage-v8` 脱版**。改成 `3.2.0` 后：`pnpm install` 装成功
+（pnpm 10 默认不拦 peer，本仓没开 `strict-peer-dependencies`）、`dsh-peers:check` /
+`kit-pins:check` / `package-contents:check` / `artifacts:check` 全绿、`coverage:check`
+**用 3.2.0 跑完并出正常数字**。而 coverage-v8 的 peer 是**精确** `vitest: "3.2.7"`，
+源码里**无任何版本自检**（grep 过 `dist/`）。这是「覆盖率引擎被换掉而报告一模一样」。
+
+**洞 ②：workflow 里的 dsh CLI pin 漂移**。改成 `0.1.6-alpha.2`（真实存在、不在 cohort 里）
+后 `dsh-peers:check` 与 `kit-pins:check` 都绿。诚实说这条**不会假绿**（`--bootstrap` 会自证
+失败），但**症状指向「挂载车道坏了」而不是「pin 漂了」**——闸门的价值是缩短定位路径。
+
+**落点**：`scripts/check-toolchain-pins.mjs`（`pnpm toolchain:check`）。判据 ① 三条
+（实装同版 / coverage 的 peer 被满足 / 声明必须精确），② 两条（pin 在 cohort 里 / 必须是最新档）。
+cohort 列表从**根 peer 范围**拆（`check-dsh-peers.mjs` 是纯 CLI、不可 import），这条耦合由
+用例当场钉住。**刻意不引 semver**：根上解析不到，且本仓对预发布范围的匹配最易出错
+（`check-dsh-peers.mjs` 文件头记了 `^0.1.7-rc.2` 展不开 `0.2.0-rc.1` 那个坑）。
+
+**接线**：`ci.yml` + `release.yml` 成对；发布闸那边放在 `npm install -g dsh@<pin>` **之前**。
+
+**门槛**：24 条用例 + 18 组夹具；六种反例实测都能红（脱版 / peer 不符 / 声明写成范围 /
+pin 不在 cohort / pin 落后一档 / `@latest`），只改 `release.yml` 也报。
+
+**一个真事**：这条闸门**第一次跑就红了**——抓到的是**我写在它自己 step 注释里的示例**
+`npm install -g @deepseek-ai/dsh@<pin>`（`<pin>` 被当成版本号）。修法 = 排除注释行
+（`isCommentLine`，与 `ci-script-truth.mjs` 同名函数同一条教训）。同一个 bug 也被单测里
+「真实仓库的 pin 是最新 cohort」那条抓到——**闸门实现与用例侧各写一遍正则，两边踩同一个坑、
+也就两边验证了修法**。
 
 #### 9.5 ✅ 测试收集守卫：写了的测试不许从不运行（2026-10-04）
 

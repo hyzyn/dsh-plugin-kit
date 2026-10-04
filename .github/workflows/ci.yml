@@ -125,6 +125,17 @@ jobs:
       - name: Check every test file is actually collected by vitest
         if: matrix.os == 'ubuntu-latest'
         run: pnpm test-collection:check
+      # 防回归：两处「版本声明必须自洽」，两处脱节都**不会报错**（2026-10-04 逐条实测）。
+      #   ① vitest 与 @vitest/coverage-v8 脱版：把 coverage 改成 3.2.0 后 pnpm 装成功、
+      #      五道闸门全绿、coverage:check 照常出正常数字——而它的 peer 是精确 3.2.7，
+      #      且源码里没有任何版本自检。「覆盖率引擎被换掉而报告长得一模一样」。
+      #   ② ci.yml / release.yml 里 `npm install -g @deepseek-ai/dsh@<pin>` 漂移：
+      #      改成不在 cohort 里的版本后，dsh-peers:check 与 kit-pins:check 都绿。
+      #      挂载车道会自证失败，但症状指向「车道坏了」而不是「pin 漂了」。
+      # 自检先跑（判据被改坏比没有闸门更糟）。成本毫秒级（纯读 manifest）。
+      - name: Check toolchain pins are self-consistent
+        if: matrix.os == 'ubuntu-latest'
+        run: pnpm toolchain:check
       # 防回归：.github/ISSUE_TEMPLATE 的表单一旦 schema 破（重复 id / label 撞车 / 缩进错），
       # GitHub 只是在 issue 选择器里**不显示这张表**——没有任何东西会红；表单里指向仓库文档的
       # 链接同理（check-doc-links 只扫 markdown，不扫 yml）；config.yml 被删或

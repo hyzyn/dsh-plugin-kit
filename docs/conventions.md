@@ -508,6 +508,59 @@ bundle key 且没有 row 入口、旧宿主只注册两个 row key）——其�
   浅克隆 / `--no-verify` / 直接在 CI 环境重建产物的人），2026-09-25 修好——
   该 step 的注释里也记了这个坑，免得后人「顺手简化」回去。
 
+### 工具链钉子守卫：两处版本声明必须自洽
+
+两组判据是同一形状——「A 处声明的版本必须与 B 处一致」，而两处的脱节**都不会报错**。
+守卫是 `pnpm toolchain:check`（[`scripts/check-toolchain-pins.mjs`](../scripts/check-toolchain-pins.mjs)）。
+
+**① vitest 与 `@vitest/coverage-v8` 必须同版。** 2026-10-04 实测反证——把 coverage 改成
+`3.2.0`、vitest 改成 `^3.9.9` 之后：
+
+```
+pnpm install → 装成功（pnpm 10 默认不拦 peer 冲突，本仓 .npmrc 也没开 strict-peer-dependencies）
+dsh-peers:check ✔ · kit-pins:check ✔ · package-contents:check ✔ · artifacts:check ✔
+coverage:check → 用 3.2.0 跑完、绿、报告数字正常
+```
+
+而 `@vitest/coverage-v8` 的 peer 是**精确** `vitest: "3.2.7"`，且**它源码里没有任何版本自检**
+（grep 过 `dist/`）。所以这是「覆盖率引擎被换掉，而报告长得一模一样」——正是本仓反复在防的
+**绿条里的假成功**。判据三条：**a.** 实装版本必须逐字相同（**自维护**，不写死 `3.2.7`，
+升版自动跟随）；**b.** coverage-v8 自己声明的 peer 必须被实装的 vitest 满足；
+**c.** 根 `package.json` 里的声明必须是**精确版本**（范围就等于允许解析出不同的一份）。
+
+**② workflow 里装的 dsh CLI 必须是最新 cohort。** 2026-10-04 实测反证——把 `ci.yml` 的
+`npm install -g @deepseek-ai/dsh@0.2.1-alpha.1` 改成 `0.1.6-alpha.2`（真实存在、但不在
+cohort 列表里）后，`dsh-peers:check` 与 `kit-pins:check` **都绿**。判据两条：**a.** pin 必须
+在 peer 声明的 cohort 列表里；**b.** pin 必须是最新档——peer 里声称支持 4 档而挂载车道只装
+其中一档时，**最新那一档从来没被任何车道验过**（挂载车道是唯一会真的加载 `client.js` 的车道）。
+要临时下调就写进 `ALLOWED_OLDER_PINS` 并说明理由。
+
+**诚实说**：判据 ② 的漂移**不会假绿**——`live-host-smoke --bootstrap` 会自证失败并打出原因
+（`ci.yml` 该 step 的注释写了）。这条闸门的价值是**缩短定位路径**：没有它，你会以为「挂载车道
+坏了」，而不是「pin 漂了」。
+
+**数据源**：cohort 列表从**根 `package.json` 的 peer 范围**拆（`parseCohorts`），而不是 import
+`check-dsh-peers.mjs` 的 `DSH_COHORTS`——后者是**纯 CLI**（顶层直接跑循环 + `process.exit`，
+没有 `import.meta.url` 守卫），import 它会当场执行。而根 peer 范围**就是** `DSH_COHORTS` 的
+权威投影（`EXPECTED_RANGE` 正是拿它拼的，且各包 peer 被要求逐字等于它），所以两者在闸门绿时
+恒等；这条耦合由 `scripts/test/toolchain-pins.test.ts` 的一条用例**当场**钉住。
+
+**刻意不引 semver**：根上解析不到（pnpm 严格布局，实测 `require.resolve('semver')` 报
+MODULE_NOT_FOUND），而本仓对**预发布范围**的匹配恰好是最容易出错的地方
+（见 `check-dsh-peers.mjs` 文件头：`^0.1.7-rc.2` 展开后 `0.2.0-rc.1` 落在范围外，
+连 `includePrerelease` 都救不回来）。所以这里**只做精确比较**；peer 是范围形态时宁可报
+「无法静态判定」也不假装判过。**也不扫文档**：`conventions.md` 里的 `@<pin>` 是占位符、
+`scripts/windows/README.md` 的 `@next` 是给人工操作写的——闸门只扫**会真的执行安装**的 workflow。
+
+**接线**：`ci.yml` + `release.yml` 成对；发布闸那边放在 `npm install -g dsh@<pin>` **之前**
+（判据之一就是那个 pin 本身）。门槛：24 条用例 + 18 组夹具自检。
+
+**一个真事**：这条闸门**第一次跑就红了**——它抓到了**我写在它自己 step 注释里的示例**
+`` `npm install -g @deepseek-ai/dsh@<pin>` ``（`<pin>` 被当成版本号）。修法是排除注释行
+（`isCommentLine`，与 `ci-script-truth.mjs` 的同名函数是同一条教训）。这个 bug 同时被
+单测里一条「真实仓库的 pin 是最新 cohort」的用例抓到——**用例侧复算与闸门实现各写一遍正则，
+所以两边都踩了同一个坑，也就两边都验证了修法**。
+
 ### 测试收集守卫：写了的测试不许从不运行
 
 **症状**：`vitest.config.ts` 的 `include` 是**写死的两条 glob**

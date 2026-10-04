@@ -64,6 +64,12 @@ jobs:
       # 缺口在 CI 里原先也拦不住，十三道闸门 + 1698 条用例对它是全绿的）。
       - name: Check published package contents include declared entries
         run: pnpm package-contents:check
+      # 发布前的工具链钉子闸（与 ci.yml 成对）：**放在下面那步 `npm install -g dsh@<pin>` 之前**
+      # ——判据之一就是这个 pin 本身（必须在 peer 声明的 cohort 列表里、且是最新档）。
+      # 另一条判据是 vitest 与 @vitest/coverage-v8 必须同版：发出去的包没问题、但仓库自己的
+      # 覆盖率引擎被换掉，会让后续每一次 coverage 结论都不可信，而它**照样出正常数字**。
+      - name: Check toolchain pins are self-consistent
+        run: pnpm toolchain:check
       # 挂载闸（2026-10-03，与 ci.yml 的 mount-smoke job 成对）：**发出去之前**证明这批包真的能
       # 在真 DSH 里挂起来、界面真的能渲染。为什么发布闸必须有它：tag 可以打在没过 CI 的提交上，
       # 而 npm 一旦发出去就只能靠发新版本补救——「只在 CI 补、发布路径照样绕过」正是 docker D119
