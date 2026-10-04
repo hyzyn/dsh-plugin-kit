@@ -508,6 +508,52 @@ bundle key 且没有 row 入口、旧宿主只注册两个 row key）——其�
   浅克隆 / `--no-verify` / 直接在 CI 环境重建产物的人），2026-09-25 修好——
   该 step 的注释里也记了这个坑，免得后人「顺手简化」回去。
 
+### 测试收集守卫：写了的测试不许从不运行
+
+**症状**：`vitest.config.ts` 的 `include` 是**写死的两条 glob**
+（`packages/<pkg>/test/**/*.test.ts` 与 `scripts/test/**/*.test.ts`），于是「测试文件放错目录」
+或「扩展名写成 `.spec.ts`」的后果是**静默**的——vitest 不收集它，套件照旧全绿。
+2026-10-04 实测反证，把一条必然失败的断言 `expect(1).toBe(999)` 放进
+`packages/tty/tests/zz-probe.spec.ts`（目录 `tests`、扩展名 `.spec.ts`）：
+
+```
+vitest 收集      → 0 个（`vitest list --filesOnly` 里没有它）
+pnpm test        → 113 passed / 1768 passed 全绿
+十二道闸门        → 无一变红
+```
+
+也就是说：**这个文件从未被执行过一次，而没有任何东西知道。** 这与本仓已记在案的两次事故
+是同一形状——**tty D61**（推导逻辑埋在 `client-src/index.js` 里 = 没有测试入口，见
+`vitest.config.ts` 文件头）与 **v0.1.20 的 dsh-docker 漏进 `publish-targets.mjs`**
+（workflow 全绿而 registry 上没有它）。三者的共同点：**「该有的东西找不到」不会报错**。
+
+**守卫**：`pnpm test-collection:check`
+（[`scripts/check-test-collection.mjs`](../scripts/check-test-collection.mjs)），判三条：
+
+1. **磁盘上的测试文件必须全部被收集**——盘面用 `git ls-files --cached --others --exclude-standard`
+   （`--others` 让**刚写好、还没 `git add`** 的文件同样被看见，那正是最容易漏掉的时刻），
+   减去 `vitest list --filesOnly` 的结果、减去白名单，**必须为空**；
+2. **收集结果不是 0**——一个都没收集到说明闸门没在工作（与本文其它守卫同一条纪律）；
+3. **白名单不许腐烂**——豁免的文件被删/改名后，那条豁免要跟着删；否则它会在将来同位置出现
+   **真的**漏检时把它一起豁免掉。
+
+**盘面 glob 刻意比 `include` 宽**：认全 `*.{test,spec}.{ts,tsx,js,jsx,mjs,cjs,mts,cts}`，
+因为**照抄 include 就抓不到「把 `.test.ts` 写成 `.spec.ts`」这个最常见的漏法**。
+代价是更多假阳性，所以配了白名单。
+
+**白名单目前只有一条**，且是**设计**不是漏：`templates/hello/test/hello.test.ts` 是
+`create-plugin.mjs` 的脚手架模板，**复制到 `packages/<name>/` 之后**才被 include 收到；
+模板自己待在 `templates/` 下刻意不收集（否则它会 import 模板的 `../src/index.js`
+而模板没装依赖，仓库根 `pnpm test` 直接炸）。
+
+**成本**：`vitest list --filesOnly` 实测 **0.32s**（本机三次 0.32 / 0.31 / 0.32），
+只做收集、**不执行任何用例**。
+
+**接线**：`ci.yml` 与 `release.yml` **成对**；发布闸那边刻意放在 `pnpm test` **之前**——
+先确认「该跑的都被收集了」，再跑它们（顺序反了就变成「跑了一批可能不全的用例」）。
+判据用 `scripts/test/check-test-collection.test.ts` 的 13 条用例钉住（核心反例就是上面那两种漏法），
+外加 8 组夹具自检（`--self-test` 先跑）。
+
 ### 发包内容守卫：`files` 字段漏一项不许静默
 
 **症状**：`package.json` 的 `files` 是**手工清单**，而清单漏一项**没有任何别的东西会红**。

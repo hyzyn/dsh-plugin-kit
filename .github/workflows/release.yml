@@ -73,6 +73,11 @@ jobs:
         run: npm install -g @deepseek-ai/dsh@0.2.1-alpha.1
       - name: Mount + headless render smoke
         run: pnpm live-smoke --bootstrap --strict --render --chrome-arg --no-sandbox
+      # 发布前的测试收集闸（与 ci.yml 成对）：tag 可以打在没过 CI 的提交上，而「测试文件
+      # 放错位置 = 从不执行」这种漏法在发布闸这边同样没人守。放在 pnpm test **之前**：
+      # 先确认「该跑的都被收集了」，再跑它们——顺序反了就变成「跑了一批可能不全的用例」。
+      - name: Check every test file is actually collected by vitest
+        run: pnpm test-collection:check
       # 发布前最后一档：CI 会跑这些，但 tag 可以打在没过 CI 的提交上，发布闸自己也要
       # 挡一次（docker DEFECTS D119：此前只有 CI 补了这套脚本，发布路径仍能整条绕过）
       # 调包内条目（唯一真相源 `package.json`）——CI 那侧同步收敛，见 docs/ci-scripts-plan.md。

@@ -38,6 +38,7 @@
     "dsh-home:check": "node scripts/check-dsh-home.mjs",
     "kit-pins:check": "node scripts/check-kit-pins.mjs",
     "doc-links:check": "node scripts/check-doc-links.mjs",
+    "test-collection:check": "node scripts/check-test-collection.mjs --self-test && node scripts/check-test-collection.mjs",
     "issue-forms:check": "node scripts/check-issue-forms.mjs --self-test && node scripts/check-issue-forms.mjs",
     "i18n:check": "node scripts/check-i18n.mjs --self-test && node scripts/check-i18n.mjs",
     "no-public-ip:check": "node scripts/check-no-public-ip.mjs --self-test && node scripts/check-no-public-ip.mjs",

@@ -242,6 +242,12 @@ release.yml 3，docker 那三条两个 workflow 各写一遍）、方案 A（wor
 
 **已做（2026-10-03）**：落点与门槛见 § 已完成 第 9 项（9.1 发包内容守卫 + 9.2 nightly 两条车道）。
 
+**追加（2026-10-04）**：对照 `ant-design/ant-design` 的 46 个 workflow 后，又找到一条**真实**的洞
+——**「写了测试但从没运行过」没人守**（放错目录 / 扩展名写成 `.spec.ts` 即静默跳过，
+实测 113 文件 / 1768 用例全绿而那个文件从未执行）。落点见 § 已完成 第 9.5 项。
+ant-design 那 46 个里 12 个是治理、其余多是社区规模才需要的（分片 / SHA 钉扎 / size-limit），
+**本仓该抄的只有这一条**；反过来「每个 job 都写 `timeout-minutes`」本仓做得比它好（它有 10 个 job 没写）。
+
 ### 8. `docs/` 的活规矩与已落地档案混在同一层
 
 现算（`wc -l docs/*.md`，2026-10-01 时点）：`docs/` 11 份 2558 行。其中三份**已落地方案的执行记录**
@@ -585,6 +591,37 @@ CI 绿，而那正是它要回答的问题；副作用是本机跑起来瞬间�
 改成**从核数反算每份 worker 数**，让总超订恒定为 2 倍：本机 21 进程 / 2.10x、CI 9 进程 /
 2.25x。取 2 而不是历史上复现用过的 5：这是每天跑的常设闸门，不该长期占满开发机 CPU。
 门槛：新增 3 条用例钉住这个不变量（含「下限是 1，`--maxWorkers=0` 是非法值」）。
+
+#### 9.5 ✅ 测试收集守卫：写了的测试不许从不运行（2026-10-04）
+
+**来源**：对照 `ant-design/ant-design` 的 46 个 workflow 时，在 `test.yml` 里看到一步
+「数磁盘上的测试文件 vs `vitest list --filesOnly` 收集到的数，差值写进 Job Summary」。
+它做的正是「**写了但从没运行过**」这一类检查——本仓此前**没有任何闸门守这一层**。
+
+**洞（实测反证）**：`vitest.config.ts` 的 `include` 是写死的两条 glob，所以「放错目录」或
+「扩展名写成 `.spec.ts`」是**静默**的。把一条必然失败的断言放进
+`packages/tty/tests/zz-probe.spec.ts`：
+
+```
+vitest 收集 → 0 个 · pnpm test → 113 文件 / 1768 用例全绿 · 十二道闸门无一变红
+```
+
+那个文件**从未执行过一次**。与已记在案的 **tty D61**（逻辑埋在 `client-src` 里 = 没有测试入口）、
+**v0.1.20 的 dsh-docker 漏进 `publish-targets.mjs`** 是同一形状：**「该有的东西找不到」不会报错**。
+
+**落点**：`scripts/check-test-collection.mjs`（`pnpm test-collection:check`），三条判据——
+① 盘面（`git ls-files --cached --others --exclude-standard`，`--others` 让**未 `git add`** 的
+新文件也被看见）减去收集结果、减去白名单必须为空；② 收集结果不是 0；③ 白名单不许腐烂。
+盘面 glob 刻意**比 include 宽**（认全 `*.{test,spec}.{ts,tsx,js,jsx,mjs,cjs,mts,cts}`）——
+照抄 include 就抓不到「`.test.ts` 写成 `.spec.ts`」这个最常见的漏法。
+
+**白名单一条**（设计，非漏）：`templates/hello/test/hello.test.ts` 是 `create-plugin` 的模板，
+复制进 `packages/<name>/` 后才被收集；模板自己待在 `templates/` 下刻意不收集。
+
+**接线**：`ci.yml` + `release.yml` 成对；发布闸那边放在 `pnpm test` **之前**。
+**门槛**：`scripts/test/check-test-collection.test.ts` 13 条用例（核心反例 = 两种漏法）
++ `--self-test` 8 组夹具；四种反例实测都能红（放错目录 / `.spec.ts` / 未 `git add` 的新文件 /
+白名单腐烂），真仓库 114 盘面 − 113 收集 − 1 豁免 = 0 违规。成本 **0.32s**。
 
 ## 已由 L0 资产承接（不再是待办）
 

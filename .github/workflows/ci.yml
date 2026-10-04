@@ -115,6 +115,16 @@ jobs:
       - name: Check doc links and anchors
         if: matrix.os == 'ubuntu-latest'
         run: pnpm doc-links:check
+      # 防回归：磁盘上每个测试文件都必须真的会被 vitest 收集。`include` 是写死的两条 glob
+      # （packages/<pkg>/test/ 与 scripts/test/），所以「放错目录」或「扩展名写成 .spec.ts」
+      # 的后果是**静默**的：vitest 不收集它，`pnpm test` 照旧全绿，其余闸门也没有一道会红。
+      # 2026-10-04 实测反证：把一条必然失败的断言放进 packages/tty/tests/zz-probe.spec.ts，
+      # vitest 收集 0 个、113 文件 / 1768 用例全绿、十二道闸门无一变红——**那个文件从未执行过**。
+      # 与本仓已记在案的 tty D61（逻辑埋在 client-src 里 = 没有测试入口）是同一形状。
+      # 成本实测 0.32s（只做收集、不执行用例）。自检先跑（判据被改坏比没有闸门更糟）。
+      - name: Check every test file is actually collected by vitest
+        if: matrix.os == 'ubuntu-latest'
+        run: pnpm test-collection:check
       # 防回归：.github/ISSUE_TEMPLATE 的表单一旦 schema 破（重复 id / label 撞车 / 缩进错），
       # GitHub 只是在 issue 选择器里**不显示这张表**——没有任何东西会红；表单里指向仓库文档的
       # 链接同理（check-doc-links 只扫 markdown，不扫 yml）；config.yml 被删或
