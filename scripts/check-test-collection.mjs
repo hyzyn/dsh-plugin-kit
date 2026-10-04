@@ -101,10 +101,23 @@ export const ALLOWED_UNCOLLECTED = [
  * 归一成仓库根相对路径、正斜杠形态（跨平台比较用）。
  *
  * vitest 在 Windows 上输出反斜杠、`git ls-files` 输出正斜杠，两侧不归一会**全量假阳性**。
+ *
+ * ## Windows 的前导斜杠（2026-10-04 Windows 腿实测）
+ *
+ * Windows 上从 `file://` URL 取的路径是 **`/D:/a/repo/…`**（带前导斜杠），而
+ * `path.resolve(root)` 给的是 `D:\a\repo`（不带）。两者归一后仍差一个前导斜杠，
+ * 于是 `startsWith` 匹配不上、**归一静默失效**（路径原样返回，闸门误报）。
+ *
+ * 这不是假想：`new URL(x, import.meta.url).pathname` 就是最常见的来源，
+ * 本仓 `scripts/test/check-test-collection.test.ts` 里那条用例正是这么写的，
+ * Windows 腿实测报 `expected '/D:/a/dsh-plugin-kit/…' to be 'scripts/…'`。
+ * 所以这里显式剥掉「盘符前的那个斜杠」——只处理「斜杠 + 盘符 + 冒号」这一种形态，
+ * 不误伤 POSIX 的 `/usr/…`。
  */
 export function normalizeRepoPath(p, root = REPO_ROOT) {
-  let out = String(p).trim().replace(/\\/g, '/')
-  const abs = resolve(root).replace(/\\/g, '/')
+  const stripDriveSlash = (s) => s.replace(/^\/([A-Za-z]:\/)/, '$1')
+  let out = stripDriveSlash(String(p).trim().replace(/\\/g, '/'))
+  const abs = stripDriveSlash(resolve(root).replace(/\\/g, '/'))
   if (out.startsWith(`${abs}/`)) out = out.slice(abs.length + 1)
   return out.replace(/^\.\//, '')
 }

@@ -17,6 +17,7 @@
  * 全部走注入（`exists` / `readdir` / `realpath` / `whichDsh` / `npmRootG`），
  * 不碰真实全局安装——所以任何平台都能跑，且是毫秒级。
  */
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -35,11 +36,21 @@ function fakeFs(existing) {
   return { exists: (p) => set.has(p) }
 }
 
-/** 一个真实形态的全局安装根（与 mac 上 nvm 的布局一致）。 */
-const GLOBAL = '/usr/local/lib/node_modules'
-const DSH_PKG = `${GLOBAL}/@deepseek-ai/dsh`
-const APP_BOOT = `${DSH_PKG}/node_modules/@deepseek-ai/dsh-app-boot`
-const APP_BOOT_FILES = [`${APP_BOOT}/package.json`, `${APP_BOOT}/lib/index.js`]
+/**
+ * 夹具路径**一律用 `path.join` 拼，不写死分隔符**。
+ *
+ * 2026-10-04 Windows 腿实测：第一版用模板字符串拼 `/usr/local/...`，12 条用例全红——
+ * `path.join` 在 Windows 上产反斜杠，而夹具是正斜杠，于是「存在的路径」与「查的路径」
+ * 对不上（`expected false to be true`），另几条直接比出了 `\usr\local\...`。
+ *
+ * 这与 `scripts/test/chrome-path.test.ts` 在 2026-10-03 踩的是**同一个坑**
+ * （那边记着「期望值也用 `path.join` 拼，这样在哪个平台跑都对（不写死分隔符）」）。
+ * 产品代码 `dsh-app-boot.mjs` 本身**没有**这个问题——它全程用 `join`，错的只是夹具。
+ */
+const GLOBAL = join('/usr/local/lib', 'node_modules')
+const DSH_PKG = join(GLOBAL, '@deepseek-ai', 'dsh')
+const APP_BOOT = join(DSH_PKG, 'node_modules', '@deepseek-ai', 'dsh-app-boot')
+const APP_BOOT_FILES = [join(APP_BOOT, 'package.json'), join(APP_BOOT, 'lib', 'index.js')]
 
 describe('isUsableAppBoot：必须同时有 package.json 与 lib/index.js', () => {
   it('两样都有 → 可用', () => {
@@ -47,11 +58,11 @@ describe('isUsableAppBoot：必须同时有 package.json 与 lib/index.js', () =
   })
 
   it('**只有目录（缺 lib/index.js）→ 不可用**（那正是 --app-boot 要 import 的入口）', () => {
-    expect(isUsableAppBoot(APP_BOOT, fakeFs([`${APP_BOOT}/package.json`]))).toBe(false)
+    expect(isUsableAppBoot(APP_BOOT, fakeFs([join(APP_BOOT, 'package.json')]))).toBe(false)
   })
 
   it('只有 lib/index.js 没有 package.json → 不可用', () => {
-    expect(isUsableAppBoot(APP_BOOT, fakeFs([`${APP_BOOT}/lib/index.js`]))).toBe(false)
+    expect(isUsableAppBoot(APP_BOOT, fakeFs([join(APP_BOOT, 'lib', 'index.js')]))).toBe(false)
   })
 
   it('空串 / 非字符串 → 不可用', () => {
@@ -62,13 +73,13 @@ describe('isUsableAppBoot：必须同时有 package.json 与 lib/index.js', () =
 
 describe('appBootFromDshBin：从 dsh 真身推出判定器目录', () => {
   it('标准布局：`<root>/@deepseek-ai/dsh/lib/bin.js` → 包内 node_modules', () => {
-    const bin = `${DSH_PKG}/lib/bin.js`
+    const bin = join(DSH_PKG, 'lib', 'bin.js')
     expect(appBootFromDshBin(bin, { realpath: (p) => p })).toBe(APP_BOOT)
   })
 
   it('**先解符号链接**（`which dsh` 给的是链接，不是真身）', () => {
-    const link = '/usr/local/bin/dsh'
-    const real = `${DSH_PKG}/lib/bin.js`
+    const link = join('/usr/local/bin', 'dsh')
+    const real = join(DSH_PKG, 'lib', 'bin.js')
     expect(appBootFromDshBin(link, { realpath: () => real })).toBe(APP_BOOT)
   })
 
@@ -86,8 +97,8 @@ describe('appBootFromDshBin：从 dsh 真身推出判定器目录', () => {
 })
 
 describe('appBootCandidatesFromDshBin：两种 npm 布局都要给候选', () => {
-  const bin = `${DSH_PKG}/lib/bin.js`
-  const HOISTED = `${GLOBAL}/@deepseek-ai/dsh-app-boot`
+  const bin = join(DSH_PKG, 'lib', 'bin.js')
+  const HOISTED = join(GLOBAL, '@deepseek-ai', 'dsh-app-boot')
 
   it('先 vendored（本机实测的布局），再 hoisted（npm 提升）', () => {
     expect(appBootCandidatesFromDshBin(bin, { realpath: (p) => p })).toEqual([APP_BOOT, HOISTED])
@@ -99,7 +110,7 @@ describe('appBootCandidatesFromDshBin：两种 npm 布局都要给候选', () =>
       whichDsh: () => bin,
       realpath: (p) => p,
       // 只有提升布局存在
-      exists: (p) => p === `${HOISTED}/package.json` || p === `${HOISTED}/lib/index.js`,
+      exists: (p) => p === join(HOISTED, 'package.json') || p === join(HOISTED, 'lib', 'index.js'),
     })
     expect(r.dir).toBe(HOISTED)
     expect(r.source).toBe('dsh-bin')
@@ -111,7 +122,7 @@ describe('appBootCandidatesFromDshBin：两种 npm 布局都要给候选', () =>
       whichDsh: () => null,
       npmRootG: () => GLOBAL,
       readdir: () => ['dsh'],
-      exists: (p) => p === `${HOISTED}/package.json` || p === `${HOISTED}/lib/index.js`,
+      exists: (p) => p === join(HOISTED, 'package.json') || p === join(HOISTED, 'lib', 'index.js'),
     })
     expect(r.dir).toBe(HOISTED)
     expect(r.source).toBe('npm-root-g')
@@ -128,9 +139,9 @@ describe('dshPackageRootsUnder：列出全局根下所有 dsh 安装', () => {
     const readdir = () => ['dsh', 'dsh-tools', 'dsh-app-boot', 'other-pkg', '.bin']
     const roots = dshPackageRootsUnder(GLOBAL, { readdir })
     expect(roots).toEqual([
-      `${GLOBAL}/@deepseek-ai/dsh`,
-      `${GLOBAL}/@deepseek-ai/dsh-tools`,
-      `${GLOBAL}/@deepseek-ai/dsh-app-boot`,
+      join(GLOBAL, '@deepseek-ai', 'dsh'),
+      join(GLOBAL, '@deepseek-ai', 'dsh-tools'),
+      join(GLOBAL, '@deepseek-ai', 'dsh-app-boot'),
     ])
   })
 
@@ -153,7 +164,7 @@ describe('findAppBoot：三级优先级与「点了名就只认它」', () => {
     // 自动搜索本可命中（whichDsh 与 npmRootG 都指向真实位置），但显式参数给了就必须只认它
     const r = findAppBoot({
       explicit: '/tmp/nope',
-      whichDsh: () => `${DSH_PKG}/lib/bin.js`,
+      whichDsh: () => join(DSH_PKG, 'lib', 'bin.js'),
       npmRootG: () => GLOBAL,
       realpath: (p) => p,
       ...fakeFs(APP_BOOT_FILES),
@@ -171,7 +182,7 @@ describe('findAppBoot：三级优先级与「点了名就只认它」', () => {
   it('**② 环境变量指错 → dir=null 且不回落到搜索**（2026-10-04 实测过的静默降级）', () => {
     const r = findAppBoot({
       env: { [APP_BOOT_ENV_VAR]: '/tmp/also-missing' },
-      whichDsh: () => `${DSH_PKG}/lib/bin.js`,
+      whichDsh: () => join(DSH_PKG, 'lib', 'bin.js'),
       npmRootG: () => GLOBAL,
       realpath: (p) => p,
       ...fakeFs(APP_BOOT_FILES),
@@ -183,7 +194,7 @@ describe('findAppBoot：三级优先级与「点了名就只认它」', () => {
   it('③ 从 dsh 真身推导 → source=dsh-bin', () => {
     const r = findAppBoot({
       env: {},
-      whichDsh: () => `${DSH_PKG}/lib/bin.js`,
+      whichDsh: () => join(DSH_PKG, 'lib', 'bin.js'),
       realpath: (p) => p,
       ...fakeFs(APP_BOOT_FILES),
     })
@@ -193,13 +204,13 @@ describe('findAppBoot：三级优先级与「点了名就只认它」', () => {
 
   it('**③ dsh-bin 优先于 npm root -g**（nvm 下两者可能来自不同 node 版本）', () => {
     const otherGlobal = '/other/node/lib/node_modules'
-    const otherAppBoot = `${otherGlobal}/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-app-boot`
+    const otherAppBoot = join(otherGlobal, '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai', 'dsh-app-boot')
     const r = findAppBoot({
       env: {},
-      whichDsh: () => `${DSH_PKG}/lib/bin.js`,
+      whichDsh: () => join(DSH_PKG, 'lib', 'bin.js'),
       npmRootG: () => otherGlobal,
       realpath: (p) => p,
-      ...fakeFs([...APP_BOOT_FILES, `${otherAppBoot}/package.json`, `${otherAppBoot}/lib/index.js`]),
+      ...fakeFs([...APP_BOOT_FILES, join(otherAppBoot, 'package.json'), join(otherAppBoot, 'lib', 'index.js')]),
     })
     expect(r.dir, '两个候选都在时，要选 dsh 真身那一份').toBe(APP_BOOT)
     expect(r.source).toBe('dsh-bin')
@@ -220,7 +231,7 @@ describe('findAppBoot：三级优先级与「点了名就只认它」', () => {
   it('全都找不到 → dir=null，且 tried 里留下试过的路径', () => {
     const r = findAppBoot({
       env: {},
-      whichDsh: () => `${DSH_PKG}/lib/bin.js`,
+      whichDsh: () => join(DSH_PKG, 'lib', 'bin.js'),
       npmRootG: () => GLOBAL,
       realpath: (p) => p,
       readdir: () => ['dsh'],

@@ -17,6 +17,7 @@
  * 全部走注入（`onDisk` / `collected` / `allowed` 都是参数），不碰真实仓库、不跑 vitest——
  * 所以单测是**秒级**的，而闸门自己的真实收集成本（0.32s）只在 CLI 路径上付一次。
  */
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 import { ALLOWED_UNCOLLECTED, checkTestCollection, normalizeRepoPath } from '../check-test-collection.mjs'
@@ -120,8 +121,37 @@ describe('路径归一：跨平台不许假阳性', () => {
   })
 
   it('绝对路径（仓库内）归一成相对路径', () => {
-    const abs = normalizeRepoPath(new URL('../check-test-collection.mjs', import.meta.url).pathname)
+    // 用 fileURLToPath 而不是 `new URL(...).pathname`：后者在 Windows 上给 `/D:/a/...`
+    // （带前导斜杠），正是下面那条反例要钉的形态。
+    const abs = normalizeRepoPath(fileURLToPath(new URL('../check-test-collection.mjs', import.meta.url)))
     expect(abs).toBe('scripts/check-test-collection.mjs')
+  })
+
+  it('**Windows 的 `/D:/…` 前导斜杠也要归一**（2026-10-04 Windows 腿实测的真 bug）', () => {
+    /*
+     * 起因：Windows 上 `new URL(x, import.meta.url).pathname` 返回 `/D:/a/repo/…`，
+     * 而 `path.resolve(root)` 给 `D:\a\repo`（不带前导斜杠）。两者归一后仍差一个斜杠，
+     * 于是 `startsWith` 匹配不上、**归一静默失效**——Windows 腿实测报
+     * `expected '/D:/a/dsh-plugin-kit/dsh-plugin-kit/s…' to be 'scripts/…'`。
+     *
+     * ## 为什么 root 也写成带前导斜杠的形态
+     *
+     * 这条用例要在**任何平台**都跑出同一个结论。`normalizeRepoPath` 内部对 root 调
+     * `path.resolve`，而 POSIX 上 `resolve('D:/a/x')` 会把它当**相对路径**解析成
+     * `<cwd>/D:/a/x`（实测：用例因此在 macOS 上红过一次）。
+     * 写成 `'/D:/a/dsh-plugin-kit'` 则两边都稳：POSIX 上它已是绝对路径、`resolve` 原样返回；
+     * Windows 上 `resolve('/D:/…')` 也给出 `D:\…`。两条路归一后都等于 `D:/a/dsh-plugin-kit`。
+     */
+    const root = '/D:/a/dsh-plugin-kit'
+    expect(normalizeRepoPath('/D:/a/dsh-plugin-kit/scripts/test/x.test.ts', root)).toBe('scripts/test/x.test.ts')
+    // 反斜杠 + 前导斜杠的组合（vitest 在 Windows 上的输出形态）
+    expect(normalizeRepoPath('/D:\\a\\dsh-plugin-kit\\packages\\a\\test\\x.test.ts', root)).toBe('packages/a/test/x.test.ts')
+    // root 自身也带前导斜杠时同样成立（两种写法都归一）
+    expect(normalizeRepoPath('D:/a/dsh-plugin-kit/scripts/test/x.test.ts', root)).toBe('scripts/test/x.test.ts')
+  })
+
+  it('POSIX 路径不被前导斜杠规则误伤（`/usr/…` 必须原样）', () => {
+    expect(normalizeRepoPath('/usr/local/x.test.ts', '/repo')).toBe('/usr/local/x.test.ts')
   })
 
   it('仓库外的绝对路径保持原样（不硬塞成相对路径，免得把别处的文件算成「仓库内」）', () => {
