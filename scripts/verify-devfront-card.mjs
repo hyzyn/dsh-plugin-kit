@@ -364,6 +364,13 @@ try {
     const text = cards.map((el) => el.innerText || '').join(' || ')
     // 站点现在是**编辑器**：值在 input.value 里，不在 innerText 里 —— 两条都收
     const values = cards.map((el) => [...el.querySelectorAll('input')].map((input) => input.value).join(' | ')).join(' || ')
+    // 登录摘要那一行是**只读文本**（按站点行取，键是站点 id）——第 ㉑ 步的输入
+    const loginBySite = {}
+    for (const li of document.querySelectorAll('li.df_site')) {
+      const nameEl = li.querySelector('.df_siteName')
+      const lineEl = li.querySelector('.df_siteLogin')
+      loginBySite[nameEl === null ? '' : (nameEl.innerText || '').trim()] = lineEl === null ? null : (lineEl.innerText || '').trim()
+    }
     return {
       rowFound: row !== null,
       status,
@@ -374,6 +381,7 @@ try {
       hasSiteTwo: text.includes('w-two'),
       hasViewport: values.includes('390x844'),
       hasOrigin: values.includes('sso.example.com'),
+      loginBySite,
       textHead: text.slice(0, 400),
       valueHead: values.slice(0, 400),
     }
@@ -500,6 +508,30 @@ try {
       && loginBack?.steps?.[1]?.value === 'verify-user'
       && loginBack?.steps?.[2]?.credentialRef === 'env:one',
     loginBack === undefined ? '（没有 login 了——被保存路径丢了）' : `steps=${String(loginBack.steps.length)} success=${String(loginBack.success?.selector)}`,
+  )
+
+  /*
+   * ㉑ **登录声明在卡片上「看得见」但不被解释**（2026-10-04，追加在编号末尾——不插号改号，理由同 ⑲）。
+   *
+   * 上一轮只保证「保存时别把它弄丢」（⑳），卡片对 `login` 一个字都不显示——于是「这个站点到底
+   * 有没有登录流程」在界面上看不出来。这一行是**纯展示**：卡片不执行、不校验、不可编辑它。
+   *
+   * 三条判据一起钉，缺一条这条断言就不成立：
+   *   ① 有声明的那行**显示出来**（动作链 + 成功判据）；
+   *   ② **没声明**的站点不显示这一行——否则「所有站点都显示」也能让 ① 为真（反例在这里，不在别处）；
+   *   ③ 摘要里**没有 `fill` 的值**（`value: verify-user` 就在夹具里）：那个位置可能是口令，
+   *      「卡片把口令摆到屏幕上」是纯损失。
+   */
+  const loginLine = cardReport.loginBySite?.['w-one']
+  record(
+    '㉑ 站点行上只读摆出登录摘要（3 步 + 动作链 + 成功判据）；没声明的站点不显示；摘要里不含填进去的值',
+    typeof loginLine === 'string'
+      && loginLine.includes('3 步')
+      && loginLine.includes('goto → fill → fill')
+      && loginLine.includes('#app')
+      && !loginLine.includes('verify-user')
+      && cardReport.loginBySite?.['w-two'] === null,
+    JSON.stringify(cardReport.loginBySite),
   )
 
   console.log(`# 截图：${shotFile}`)

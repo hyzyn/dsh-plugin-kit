@@ -12,13 +12,16 @@
  * 这张卡片补上**标量那一半**：`enabled` / `announceToAgent` / `settleMs` / `noSandbox` /
  * `chromePath` / `shotDir` / `auditFile` 可改并落盘。
  *
- * ## 站点列表**只读**（刻意）
+ * ## 站点列表：**可编辑，但一个字段只读**
  *
- * `targets` 是「这个站点、这个范围、这个允许源」的**声明**——与就绪清单、验活断言同一类东西：
- * 随项目评审、DSH 侧只读。把它塞进一个自由编辑的表单等于把评审面抹掉，所以卡片只**摆出来**
- * （含 `scopeDirs` / `allowedOrigins` / 视口 / 凭据引用），编辑仍走
- * `~/.dsh/profiles/<profile>/cordis.patch.yml`。这条边界写在卡片上（`hint.sitesReadonly`），
- * 不靠用户猜。
+ * `targets` 是「这个站点、这个范围、这个允许源」的**声明**，所以 2026-10-03 起它在卡片上是
+ * 可编辑的（结构化表单 + 逐次确认，见本包 ROADMAP 记-24）——但**登录声明 `login` 不在其中**：
+ * 它是一串步骤与选择器，不是几个输入框，评审面是那份配置文件。卡片对它做两件事：
+ *
+ * 1. **原样带回去**（`draftSites` / `sitesPayload`）：保存时 `targets` 整批重建，少带一个字段
+ *    就等于「点一次保存 → 登录流程被悄悄删掉」（`devfront D01`）；
+ * 2. **只读摆一行摘要**（`loginSummary` → `meta.loginSteps`）：几个动作、成功判据是什么。
+ *    **只显示动作名与选择器，不显示 `fill` 里填的值**——那个值可能就是口令。
  *
  * 数据面是宿主那条 `GET/POST /api/dsh-devfront/config`（同源相对路径：宿主地址一律不硬编码，
  * 静态规则见 `scripts/client-lint.mjs`）。
@@ -88,6 +91,7 @@ window.__ModuleLoader__.load({
       'field.siteOrigins': '允许动手的源（逗号分隔）',
       'field.siteViewport': '视口（如 390x844，留空 = 浏览器默认）',
       'field.siteCredential': '凭据引用（留空 = 不登录）',
+      'meta.loginSteps': '登录流程：{count} 步（{steps}），成功判据 {selector}',
       'check.confirmSites': '我知道这会写进 profile 补丁层（~/.dsh/profiles/<profile>/cordis.patch.yml），并进审计',
       'msg.sitesNeedConfirm': '站点改动要先勾选下面那个确认框：它是「工具能在哪些站点、哪些范围、哪些源上动手」的变更。',
       'msg.sitesSaved': '站点已保存（进审计）',
@@ -121,6 +125,7 @@ window.__ModuleLoader__.load({
       'field.siteOrigins': 'Origins allowed to act on (comma separated)',
       'field.siteViewport': 'Viewport (e.g. 390x844; empty = browser default)',
       'field.siteCredential': 'Credential ref (empty = no login)',
+      'meta.loginSteps': 'Login flow: {count} steps ({steps}); success check {selector}',
       'check.confirmSites': 'I understand this is written into the profile patch layer (~/.dsh/profiles/<profile>/cordis.patch.yml) and audited',
       'msg.sitesNeedConfirm': 'Tick the confirmation box first: this changes which sites, scopes and origins the tools may act on.',
       'msg.sitesSaved': 'Sites saved (audited)',
@@ -200,6 +205,29 @@ window.__ModuleLoader__.load({
         // 被悄悄删掉」（`devfront D01`）。卡片脚本的第 ⑳ 步钉着这件事。
         login: site.login,
       }))
+    }
+
+    /**
+     * 登录声明的**只读摘要**（卡片不执行、不校验、也不编辑它——唯一判据是宿主的 `parseLogin`）。
+     *
+     * 读不出形状时返回 `null`，此时**整行不显示**：宿主在**加载期**就会拒掉不合规的声明
+     * （`normalizeTargets` → `parseLogin`），所以那个分支到不了这里；真到了也**不编一句话**
+     * ——这一行是「让声明可见」，不是「猜它成立」。宽容读法与上面 `draftSites` 里那些
+     * `typeof x === 'string' ? … : ''` 同源。
+     *
+     * **只取动作名与成功判据**：`fill` 的 `value` / `credentialRef` 一律不进摘要——那个值可能
+     * 就是口令，而「卡片把口令显示在屏幕上」没有任何理由（真机脚本第 ㉑ 步钉着这一条）。
+     */
+    function loginSummary(login) {
+      if (login === null || typeof login !== 'object') return null
+      const { steps, success } = login
+      if (!Array.isArray(steps) || success === null || typeof success !== 'object') return null
+      if (typeof success.selector !== 'string') return null
+      const actions = steps.map((step) =>
+        step !== null && typeof step === 'object' && typeof step.action === 'string' ? step.action : null,
+      )
+      if (actions.includes(null)) return null
+      return { count: actions.length, steps: actions.join(' → '), selector: success.selector }
     }
 
     /** 逗号分隔 → 字符串数组（空项丢掉；**不去重、不排序**：顺序是用户的意图）。 */
@@ -356,6 +384,9 @@ window.__ModuleLoader__.load({
           ],
         })
 
+      /** 一行草稿的登录摘要（`login` 是 `draftSites` **原样带回**的裸声明）。 */
+      const summaryOf = (row) => loginSummary(row.login)
+
       const siteEditor = jsxs('div', {
         className: 'df_card',
         children: [
@@ -392,6 +423,13 @@ window.__ModuleLoader__.load({
                         siteField(index, 'allowedOrigins', t('field.siteOrigins')),
                         siteField(index, 'viewport', t('field.siteViewport')),
                         siteField(index, 'credentialRef', t('field.siteCredential')),
+                        // 登录声明：**只读一行**（不编辑、不执行）。摘不出形状时不显示整行。
+                        summaryOf(row) === null
+                          ? null
+                          : jsx('p', {
+                              className: 'df_hint df_siteLogin',
+                              children: t('meta.loginSteps', summaryOf(row)),
+                            }),
                       ],
                     },
                     'site-' + String(index),
