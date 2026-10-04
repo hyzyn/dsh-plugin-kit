@@ -539,3 +539,27 @@ yaml。卡片补上这一半（同一个缺口 `devfront` / `devenv` 各记过�
    ⑮⑯⑰ 覆盖，**客户端那一段的其余分支（增删行、勾确认框）没有自动化证据**。
    （另：`§5.1` 的「关」这一半本来就没有入口——两档能力不可写、`bindCapabilitySources` 不接
    `GrantStore`。那不是缺口，是刻意的边界。）
+   > **2026-10-04 追加（原文保留）**：这一处缺口已补——`card-smoke` 多了 **㉕㉖**：真 Chrome 里
+   > 点「+ 添加目标」→ 往新行的 **10 个字段**写值（**两个下拉框走 `change`、文本框走 `input`，
+   > 且都要先过原生 setter**，否则 React 的 value tracker 不认，提交上去的还是旧值）→ 勾确认框
+   > → 点保存 → 卡片回「目标已保存（进审计）」；再用 HTTP 复核 `engine` / `env` / `port` 都在位。
+   > 实跑 **25 PASS / 0 FAIL**（原 23 + 这两条）。见下方记-19。
+
+### 记-19. 目标编辑器的**客户端路径**补验：DOM 上真的加一行目标、点保存（2026-10-04，根 ROADMAP 第 13 项）
+
+**由来**：记-18 自己记着「客户端那一段的其余分支（增删行、勾确认框）没有自动化证据」——㉓ 只点了
+**标量**那一次保存（表单里就是刚 GET 到的那份值）。而目标那一行提交上去要过的是本包**最严的
+一套**判据（`normalizeTargets`：逐行逐字段、引擎认不出整条拒、连接要么两个都给要么都不给）。
+`client.js` 不在 vitest 层，`client-lint` 管语法与地址来源、`check-i18n` 管键集，**都不看 payload**。
+
+| 落点 | 内容 | 门槛（已验） |
+|---|---|---|
+| `scripts/verify-devdata-card.mjs` ㉕ | 真 Chrome：找带目标编辑器的那张卡（确认框必须在**嵌套 `.dd_card`** 里找，否则先命中标量的复选框）→ 点「+ 添加目标」→ 往新行 10 个 `.dd_input` 写值（`setValue` 按 `tagName` 分派：select 走 `change`、input 走 `input`，两者都先过**原生 setter**）→ 引擎/环境档从**真实 options** 里挑第一个非空值 → 勾确认框 → 点保存 → 等 `.dd_msg` 变「目标已保存（进审计）」 | 真宿主 + 真 Chrome：行数 3→4、`fieldCount:10`、engine=`sqlserver`、env=`dev`、消息命中 |
+| 同上 ㉖ | HTTP 复核：`dd-dom` 在位，且 `engine` / `env` / `port` 与刚填的一致（**服务端那套判据真的收下了这份 payload**） | `ids=[redis-248,redis-two,redis-three,dd-dom]`，三个字段都对得上 |
+
+**这一轮没抓到缺陷**（如实记）：㉕㉖ 一次过。价值在把「客户端拼的 payload」这类**静态闸门看不见**
+的东西纳入每次 `pnpm --filter @hyzyn/dsh-devdata run card-smoke`——脚本从 23 条变 25 条。
+
+**顺带两件小的**：① 步骤号连号（`㉔` 已被「真实补丁未变」那句自证占用，所以新两步排 **㉕㉖**，
+不是插在中间改号——那会让文档里已有的编号引用失效）；② `devfront` 同款的两步在
+`scripts/verify-devfront-card.mjs` 的 **⑰⑱**（2026-10-04，见那条提交）。

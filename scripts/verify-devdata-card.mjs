@@ -462,6 +462,10 @@ try {
      * 这里只点标量那一次（表单里就是刚 GET 到的那份值）：它证明 payload 合法、fetch 路径通、
      * i18n 的 `msg.saved` 渲染得出来。**改目标那一次的浏览器交互没点**（要再点两个复选框，
      * 收益是同一段代码的第二次证明）——那是一处如实记下的缺口。
+     *
+     * > **2026-10-04 追加**：那处缺口已由下面 ㉕㉖ 补上（原文保留）。理由在 2026-10-04 变了：
+     * > devfront 的卡片前后被真机抓出过三条静态闸门全绿的缺陷，而「客户端拼的 payload」
+     * > 正是 `client-lint`（语法 / 地址来源）与 `check-i18n`（键集）都看不见的那一块。
      */
     const saveReport = await chrome.evaluate(`(async () => {
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -483,6 +487,99 @@ try {
       saveReport.clicked === true && saveReport.message === '已保存',
       JSON.stringify(saveReport),
     )
+
+    /*
+     * ㉕㉖ **目标编辑器的客户端路径**（2026-10-04）。
+     *
+     * ㉓ 只点了标量那一次（表单里就是刚 GET 到的那份值），所以「目标那一行的 payload 长什么样」
+     * 一直没有真机证据——而它在服务端要过的是**最严的一整套**（`normalizeTargets`：逐行逐字段、
+     * 引擎认不出整条拒、连接要么两个都给要么都不给）。这里在真 Chrome 里把那一行走一遍。
+     */
+    const targetEdit = await chrome.evaluate(`(async () => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+      const card = document.querySelector('[data-plugin-config="true"]')
+      if (card === null) return { ok: false, note: '没有卡片' }
+      // 目标编辑器是卡片里嵌套的那个 .dd_card：确认框要**在这一层**找，否则先命中标量的复选框
+      const editor = card.querySelector('.dd_targets') === null ? null : card.querySelector('.dd_targets').closest('.dd_card')
+      if (editor === null) return { ok: false, note: '没有目标编辑器' }
+      const rows = () => [...editor.querySelectorAll('li.dd_target')]
+      const before = rows().length
+      const add = [...editor.querySelectorAll('button')].find((el) => (el.innerText || '').trim() === '+ 添加目标')
+      if (add === undefined) return { ok: false, note: '没有「+ 添加目标」按钮', before }
+      add.click()
+      await sleep(300)
+      const afterAdd = rows().length
+      const row = rows()[afterAdd - 1]
+      if (row === undefined) return { ok: false, note: '点了添加但没有新行', before, afterAdd }
+      /*
+       * React 受控输入：文本框走 input 事件，下拉框走 change 事件，而且都必须**先过原生 setter**
+       * （直接改 .value 时 React 的 value tracker 不会认，提交上去的还是旧值 / 空值）。
+       */
+      const setValue = (element, value) => {
+        if (element.tagName === 'SELECT') {
+          Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set.call(element, value)
+          element.dispatchEvent(new Event('change', { bubbles: true }))
+          return
+        }
+        Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(element, value)
+        element.dispatchEvent(new Event('input', { bubbles: true }))
+      }
+      const fields = [...row.querySelectorAll('.dd_input')]
+      // 顺序就是渲染顺序：id / 名字 / 引擎 / 环境档 / 作用域 / SCAN 上限 / 主机 / 端口 / 库 / 凭据引用
+      const pickOption = (select) => {
+        const option = [...select.options].find((item) => item.value !== '')
+        return option === undefined ? '' : option.value
+      }
+      const values = ['dd-dom', 'DOM 加的目标']
+      setValue(fields[0], values[0])
+      setValue(fields[1], values[1])
+      const engine = pickOption(fields[2])
+      const env = pickOption(fields[3])
+      setValue(fields[2], engine)
+      setValue(fields[3], env)
+      setValue(fields[4], '/Users/me/coding')
+      setValue(fields[6], '127.0.0.1')
+      setValue(fields[7], '6379')
+      await sleep(300)
+      const confirm = editor.querySelector('input[type="checkbox"]')
+      if (confirm === null) return { ok: false, note: '填了值但确认框没出现', before, afterAdd }
+      confirm.click()
+      await sleep(200)
+      const save = [...card.querySelectorAll('button')].find((el) => (el.innerText || '').trim() === '保存')
+      if (save === undefined) return { ok: false, note: '没有「保存」按钮', before, afterAdd }
+      save.click()
+      for (let i = 0; i < 50; i += 1) {
+        await sleep(200)
+        const node = card.querySelector('.dd_msg')
+        const text = node === null ? '' : (node.innerText || '').trim()
+        if (text !== '' && !text.includes('保存中')) {
+          return { ok: true, before, afterAdd, fieldCount: fields.length, engine, env, message: text }
+        }
+      }
+      return { ok: false, note: '点了保存但卡片没有回消息', before, afterAdd, engine, env }
+    })()`)
+
+    if (dumpOnly) {
+      console.log('# 目标编辑器（DOM 路径）：', JSON.stringify(targetEdit, null, 2))
+    } else {
+      record(
+        '㉕ 卡片上**真的**加一行目标、填 10 个字段（含两个下拉）、勾确认、点保存 → 回「目标已保存（进审计）」',
+        targetEdit.ok === true && targetEdit.afterAdd === targetEdit.before + 1 && targetEdit.message === '目标已保存（进审计）',
+        JSON.stringify(targetEdit),
+      )
+      const get5 = await call('/api/dsh-devdata/config')
+      const targets5 = get5.json?.config?.targets ?? []
+      const added = targets5.find((target) => target.id === 'dd-dom')
+      record(
+        '㉖ 客户端拼的目标 payload 过得了服务端那套最严校验：GET 里有 dd-dom，引擎 / 环境档 / 端口都在位',
+        get5.status === 200
+          && added !== undefined
+          && added.engine === targetEdit.engine
+          && added.env === targetEdit.env
+          && added.port === 6379,
+        JSON.stringify({ status: get5.status, ids: targets5.map((target) => target.id), added: added ?? null }),
+      )
+    }
   }
   console.log(`# 截图：${shotFile}`)
   /*
