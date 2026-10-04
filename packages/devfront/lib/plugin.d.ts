@@ -204,6 +204,8 @@ export interface VerifyOutput {
     lines: VerifyLine[];
     /** 页级问题：打不开 / 观察失败（**没验成**，与「验出问题」分列）。 */
     problems: string[];
+    /** 调用方取消了这次跑批：剩下的页面没有打开（没跑到的断言都判 `unknown`）。 */
+    cancelled: boolean;
 }
 /**
  * 把一次跑批结果收敛成工具的输出契约（**纯函数**，与 `textOutput` / `consoleOutput` 同理：

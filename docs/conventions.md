@@ -267,6 +267,27 @@
   （**守卫**：`scripts/docs-index.mjs` 判据 5 现算 `pnpm-workspace.yaml` 的包集合与这张表逐一对账，
   多一个少一个都报）
 
+## 工具面：长等待的工具必须转发 `exec.signal`
+
+`defineTool` 的 `execute(args, exec)` 第二参里带着 `exec.signal`，SDK 契约原文是
+「Async work must observe or forward `exec.signal` and settle only after its owned work reaches
+quiescence」。**判据**：一个工具的等待上限（自己的 `timeoutSec` / `timeoutMs` / 自己的循环）
+**达到 30 秒**，就必须：
+
+1. `execute(args, exec)` 接第二个参数，并把 `signal` 传进等待处；
+2. 等待里的睡眠 / 竞速要能被 abort **唤醒**（不是「等这一轮睡完再看」）；
+3. 取消**自成一档**（既不是超时，也不是业务失败）：报告与渲染里说清「调用方不等了」，
+   并交代「怎么接着用」（会话 / 页面 / 数据还在不在）；
+4. 声明协作式预算 `timeoutMs`（略大于自己的上限）——声明了就等于承诺可取消，1–3 一起做。
+
+**为什么要有这条**：取消不生效的代价是**静默的**——调用方已经走了，工具还在每 N 秒打一次 SSH /
+开一个页面 / 挂一个监听器。2026-10-04 现算：全仓 **0 个**工具接过这个参数，所以这先是一条
+**缺规矩**（当时上提到根 ROADMAP 第 12 项），再逐包补齐。
+
+**执行点是 runtime 用例，不是静态扫描**：判「这个 `execute` 有没有接第二个参数」需要 AST 级提取，
+而用例直接验「取消之后多久返回」——没接线时它会一直等到自己的上限（或测试超时），
+两边的差距是数量级。四条落点见根 ROADMAP § 已完成第 12 项。
+
 ## 插件配置：`.volatile()` 是**承诺**，不是标注
 
 `Config` 里标 `.volatile()` 的字段 = 「**可以热写、且不重挂插件**」。loader 检出「只变了 volatile

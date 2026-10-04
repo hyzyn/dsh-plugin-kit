@@ -288,7 +288,7 @@ release.yml 3，docker 那三条两个 workflow 各写一遍）、方案 A（wor
 
 **结果**：见 § 已完成 第 11 项（含一条**顺带修好的既有缺陷**：绑定的 owner）。
 
-### 12. 长等待的工具要转发 `exec.signal`（全仓 0/N）
+### 12. ✅ 长等待的工具要转发 `exec.signal`（2026-10-04：四条全收，并写进 conventions）
 
 现算（2026-10-04）：`defineTool` 的 `execute(args, exec)` 第二个参数里带着 `exec.signal`——
 SDK 的契约原文是「Async work must observe or forward `exec.signal` and settle only after its
@@ -298,9 +298,10 @@ owned work reaches quiescence」。**全仓没有任何一个工具接过这个�
 | 工具 | 最久等多久 | 现状 |
 |---|---|---|
 | `devenv` 的 `env_wait` | 900s（15 分钟） | ✅ 2026-10-04 已接（见 devenv 记-12）；顺带把等待过程做进报告 |
-| `tty` 的 `tty_expect` | 600s（10 分钟） | 没接 |
-| `devfront` 的 `site_verify` | 一批断言 × 每页（加载 + settle） | 没接（每开一个页面都可能是一秒级） |
-| `docker` 的日志跟随类工具 | 取决于 --tail/--since 与流 | 没接（它的长活在 SSE 流上，不在工具调用里） |
+| `tty` 的 `tty_expect` | 600s（10 分钟） | ✅ 2026-10-04 已接：取消结算成 `cancelled`，**不消费未读区** |
+| `tty` 的 `tty_run` | 600s（10 分钟） | ✅ 2026-10-04 已接：取消**不关会话**（取消的是这次调用，不是那条命令） |
+| `devfront` 的 `site_verify` | 一批断言 × 每页（加载 + settle） | ✅ 2026-10-04 已接：每一页之前看一次信号，没跑到的断言判 `unknown`（不冒充 `fail`） |
+| `docker` 的日志跟随类工具 | 取决于 --tail/--since 与流 | 不适用：它的长活在面板的 SSE 流上，不在工具调用里（工具本身是一次快照） |
 
 **为什么是 L0**：一次改动跨 ≥2 个包（`tty` / `devfront` / 可能还有 `docker`），而且它其实是一条
 **缺规矩**——「长等待的工具必须转发 `exec.signal`」应当写进 [conventions.md](./docs/conventions.md)，
@@ -310,7 +311,7 @@ owned work reaches quiescence」。**全仓没有任何一个工具接过这个�
 **代价（说清才敢不做）**：不做的后果是「取消之后还在跑」——对共享目标（248 / 161）上的 SSH 与
 浏览器动作，这是持续占用与噪声，而且是**静默的**（没有一条日志说「取消没生效」）。
 
-**结果**：待办——本轮只收了最贵的那一个（`devenv`）。
+**结果**：见 § 已完成 第 12 项；规矩落在 [conventions.md § 工具面](./docs/conventions.md#工具面长等待的工具必须转发-execsignal)。
 
 ## 已完成（落点 + 门槛）
 
@@ -573,6 +574,26 @@ IP 形状的四段式子节号——闸门确实有牙齿）。
   keychain / remote），而本项这份说的是「**这次值实际来自哪一层**」（provider 给的 `env` / `file` /
   `project-env` / `user-env`）——两条轴，不是一份事实的两个副本。合并要等第三个消费者；
 - 「一次发布之后怎么验」那件事（`devfront` 待办 D8 的尾边）仍然不在本项里。
+
+### 12. ✅ 四条长等待全部转发 `exec.signal`（2026-10-04）
+
+**落点**：
+
+| 落点 | 内容 | 门槛（已验） |
+|---|---|---|
+| `devenv` 的 `env_wait` | 见 devenv 记-12（抽成 `src/wait.ts`，顺带把等待过程做进报告） | `test/wait.test.ts` 12 条（假时钟）+ `plugin.test.ts` 真时钟取消一条；反例：去掉转发等满 20s 才失败 |
+| `tty` 的 `tty_expect` | abort 监听 + 已取消的快路径；结果多一档 `cancelled`（**不是超时**，且不消费未读区——水位线不动，重发还能回溯同一段） | `test/expect-backlog.test.ts` 2 条：等待期间取消 → 立刻结算；已取消的信号 → 立刻结算（都在 600s 上限下跑，实测 < 2s） |
+| `tty` 的 `tty_run` | `waitForSessionExit` 三态化（`exited`/`timeout`/`cancelled`）；取消**不关会话**——取消的是这次工具调用，不是那条命令 | `test/tty-run.test.ts` 2 条；**反例实测**：去掉转发两条都等满 20s 超时 |
+| `devfront` 的 `site_verify` | 每一页之前看一次信号（一次跑批可能开好几个页面）；没跑到的断言判 `unknown` 并说明「不是超时、也不是页面有问题」 | `test/web-run.test.ts` 3 条（取消中途 / 已取消 / 未取消时 `cancelled:false`） |
+| 规矩 | [conventions.md § 工具面：长等待的工具必须转发 `exec.signal`](./docs/conventions.md#工具面长等待的工具必须转发-execsignal)：判据（等待上限 ≥ 30s）、四条要求、执行点（runtime 用例而不是静态扫描，附理由） | 规矩正文 + 四组用例；`docs-index` / 文档链接闸门全过 |
+
+**为什么执行点不是静态守卫**：判「这个 `execute` 有没有接第二个参数」要 AST 级提取（本仓的
+文本守卫会被注释与同名参数骗到，`credential-single-source` 那条就因为注释假红过一次）。
+而 runtime 用例直接验「取消之后多久返回」——没接线时它会一直等到自己的上限或测试超时，
+两边的差距是数量级，**不会因为代码搬家而恒绿**。
+
+**没验到的**：`docker` 的日志跟随**不在判据内**（它的长活在面板 SSE 流上，工具本身是一次快照）；
+如果将来出现「等流结束」的工具，按这条规矩补。
 
 ## 已由 L0 资产承接（不再是待办）
 

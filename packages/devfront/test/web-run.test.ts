@@ -311,3 +311,85 @@ describe('跑批执行器：审计', () => {
     ).rejects.toThrow('审计文件写不进去')
   })
 })
+
+describe('跑批执行器：调用方取消（根 ROADMAP 待办第 12 项）', () => {
+  it('★ 取消之后不再开新页面：已验的照旧有结论，没跑到的判「验不了」而不是「失败」', async () => {
+    const list = assertions([
+      { id: 'a1', url: `${SITE}one`, target: 'app', severity: 'fail', expect: { toContain: '订单编号' } },
+      { id: 'a2', url: `${SITE}two`, target: 'app', severity: 'fail', expect: { toContain: '订单编号' } },
+      { id: 'a3', url: `${SITE}three`, target: 'app', severity: 'fail', expect: { toContain: '订单编号' } },
+    ])
+    const controller = new AbortController()
+    // 第一页验完就取消：后面两页不该被打开。
+    const opened: string[] = []
+    const rig = makeDriver({
+      [`${SITE}one`]: goodPage(`${SITE}one`),
+      [`${SITE}two`]: goodPage(`${SITE}two`),
+      [`${SITE}three`]: goodPage(`${SITE}three`),
+    })
+    // 包一层：既记账，又**转调**假驱动的 open（它的观察依赖自己那份「当前页」账）。
+    const base = rig.driver
+    const driver: WebDriver = {
+      ...base,
+      open: async (input) => {
+        opened.push(input.url)
+        // 第一页刚打开就取消：后面两页不该再被打开。
+        if (opened.length === 1) controller.abort()
+        return base.open(input)
+      },
+    }
+
+    const result = await runWebVerify({
+      target: TARGET,
+      cwd: CWD,
+      project: 'app',
+      assertions: list,
+      driver,
+      signal: controller.signal,
+    })
+
+    expect(opened).toEqual([`${SITE}one`])
+    expect(result.cancelled).toBe(true)
+    expect(result.pagesObserved).toBe(1)
+    const byId = new Map(result.results.map((item) => [item.id, item]))
+    expect(byId.get('a1')?.status).toBe('pass')
+    expect(byId.get('a2')?.status).toBe('unknown')
+    expect(byId.get('a3')?.status).toBe('unknown')
+    expect(byId.get('a2')?.message).toContain('被调用方取消')
+    // 没跑到 ≠ 失败：报 fail 会让 agent 去查页面，而实际只是没人等了。
+    expect(result.summary.failed).toBe(0)
+    expect(result.summary.unknown).toBe(2)
+  })
+
+  it('已经取消的信号 → 一个页面都不开（但每条断言都有结论）', async () => {
+    const list = assertions([
+      { id: 'a1', url: `${SITE}one`, target: 'app', severity: 'fail', expect: { toContain: '订单编号' } },
+    ])
+    const controller = new AbortController()
+    controller.abort()
+    const { driver, opens } = makeDriver({ [`${SITE}one`]: goodPage(`${SITE}one`) })
+
+    const result = await runWebVerify({
+      target: TARGET,
+      cwd: CWD,
+      project: 'app',
+      assertions: list,
+      driver,
+      signal: controller.signal,
+    })
+
+    expect(opens).toEqual([])
+    expect(result.cancelled).toBe(true)
+    expect(result.results).toHaveLength(1)
+    expect(result.results[0]?.status).toBe('unknown')
+  })
+
+  it('没取消时 `cancelled` 是 false（这条字段不是常真）', async () => {
+    const list = assertions([
+      { id: 'a1', url: `${SITE}one`, target: 'app', severity: 'fail', expect: { toContain: '订单编号' } },
+    ])
+    const { driver } = makeDriver({ [`${SITE}one`]: goodPage(`${SITE}one`) })
+    const result = await runWebVerify({ target: TARGET, cwd: CWD, project: 'app', assertions: list, driver })
+    expect(result.cancelled).toBe(false)
+  })
+})

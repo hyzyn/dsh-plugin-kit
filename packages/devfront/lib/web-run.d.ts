@@ -55,6 +55,13 @@ export interface WebVerifyRunResult {
     pages: string[];
     /** 实际观察了几次页面：等于 `pages.length - problems.length`，也是「一次取全」的账。 */
     pagesObserved: number;
+    /**
+     * **调用方取消了这次跑批**（`ToolRunContext.signal`）：剩下的页面没有打开。
+     *
+     * 与「页面打不开」分开：那是环境的事实，这一条只是调用方不等了。没跑到的断言一律判 `unknown`
+     * （**不许**因为没打开就报 `fail`——那是拿「没验」冒充「验出问题」）。
+     */
+    cancelled: boolean;
 }
 /**
  * 跑一批断言。
@@ -70,4 +77,6 @@ export declare function runWebVerify(input: {
     driver: WebDriver;
     audit?: WebAuditSink;
     operationId?: string;
+    /** 调用方的取消信号：**每一页之前**看一次（一次跑批可能开好几个页面，每个都是秒级）。 */
+    signal?: AbortSignal;
 }): Promise<WebVerifyRunResult>;

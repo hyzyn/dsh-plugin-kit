@@ -53,7 +53,7 @@ function unknownResult(assertion, note) {
  *   每条的 `id` 唯一——清单校验器（`validateWebManifest`）已经保证，报告按它点名。
  */
 export async function runWebVerify(input) {
-    const { target, cwd, project, assertions, driver, audit, operationId } = input;
+    const { target, cwd, project, assertions, driver, audit, operationId, signal } = input;
     // 分组：同一个 URL 的断言共用一次观察。键的顺序就是清单里首次出现的顺序。
     const groups = new Map();
     for (const assertion of assertions) {
@@ -66,7 +66,17 @@ export async function runWebVerify(input) {
     const byId = new Map();
     const problems = [];
     let pagesObserved = 0;
+    let cancelled = false;
     for (const [url, group] of groups) {
+        /*
+         * 取消要看**在开这一页之前**（根 ROADMAP 待办第 12 项）：一次跑批可能开好几个页面，
+         * 每开一个都是「导航 + settle」的秒级开销，而取消之后开的那一页没人会读。
+         * 已经开了的页面不打断（驱动的调用没法从中途掐断），所以检查点只能在这里。
+         */
+        if (signal?.aborted === true) {
+            cancelled = true;
+            break;
+        }
         // 每一个 URL 都要过**既有**的判定链（目录作用域 + 站点范围），并且**进审计**——
         // 跑批执行的仍然是同一个动作（`open`），没有第二条旁路。
         const opened = await invokeWebAction({
@@ -98,6 +108,19 @@ export async function runWebVerify(input) {
             byId.set(assertion.id, evaluateWebAssertion({ assertion, observation }));
         }
     }
+    /*
+     * 收尾：**没跑到的**断言（只可能是取消之后的那些）一律判 `unknown`。
+     *
+     * 不许报 `fail`：那是拿「没验」冒充「验出问题」——而这两件事的下一步动作正好相反
+     * （一个是重跑，一个是查页面）。`unknownResult` 的文案里也写明了「取消不是超时」。
+     */
+    if (cancelled) {
+        for (const assertion of assertions) {
+            if (byId.has(assertion.id))
+                continue;
+            byId.set(assertion.id, unknownResult(assertion, '被调用方取消：这一页没有打开（取消不是超时，也不是页面有问题）'));
+        }
+    }
     // 报告按**清单顺序**给（分组只影响「观察几次」，不该影响「报告怎么读」）。
     const results = [];
     for (const assertion of assertions) {
@@ -126,6 +149,7 @@ export async function runWebVerify(input) {
         problems,
         pages: [...groups.keys()],
         pagesObserved,
+        cancelled,
     };
 }
 //# sourceMappingURL=web-run.js.map

@@ -349,6 +349,7 @@ export function verifyOutput(result) {
         })),
         // 拒绝话术（`[CODE] 正文`）已经写在 `message` 里；这里只把它挂上 URL，免得「哪一页」要另找。
         problems: result.problems.map((problem) => `${problem.url}：${problem.message}`),
+        cancelled: result.cancelled,
     };
 }
 /**
@@ -382,7 +383,11 @@ export function verifyRenderText(value) {
     const hint = (v.failed ?? 0) + (v.unknown ?? 0) > 0
         ? '\n提示：「应包含某段文字」失败先 `site_shot` 看一眼（图片里的字 `site_text` 取不到）；要交互才有内容的页面请手动走一遍再验。'
         : '';
-    return `${head}\n${body.join('\n')}${problemBlock}${hint}\n本次只做了「打开 + 观察」：没有点击、没有填值、没有跟随链接。`;
+    // 「调用方不等了」既不是超时也不是页面有问题：不说清的话，那些 `unknown` 会被读成故障。
+    const cancelled = v.cancelled === true
+        ? '\n被调用方取消：剩下的页面没有打开（**不是**超时，也不是页面有问题）——没跑到的断言都判「验不了」，重跑一次就有结论。'
+        : '';
+    return `${head}\n${body.join('\n')}${problemBlock}${cancelled}${hint}\n本次只做了「打开 + 观察」：没有点击、没有填值、没有跟随链接。`;
 }
 /**
  * 配置卡片（客户端半体）能改的**标量**字段。
@@ -690,7 +695,7 @@ const plugin = definePlugin({ name: 'devfront',
          * 交执行器。前五步里任何一步不成立都**在碰浏览器之前**抛出去——「还没开工就失败」与
          * 「跑到一半失败」对 agent 是两件事：前者的恢复路径是改配置，后者是查页面。
          */
-        const verifyRun = async (input) => {
+        const verifyRun = async (input, signal) => {
             const resolved = sitesForCall(input.cwd);
             if ('problem' in resolved)
                 throw new Error(resolved.problem);
@@ -718,7 +723,15 @@ const plugin = definePlugin({ name: 'devfront',
                 throw new Error(`清单 ${webManifestRelativePath(project)} 里没有给目标 ${target.id} 的断言。` +
                     `这份清单声明的目标是：${declared.join(' / ') || '（没有）'}——改断言里的 target，或换一个 target 调用`);
             }
-            return runWebVerify({ target, cwd, project, assertions: wanted, driver: ensureDriver(), audit: audit() });
+            return runWebVerify({
+                target,
+                cwd,
+                project,
+                assertions: wanted,
+                driver: ensureDriver(),
+                audit: audit(),
+                ...(signal === undefined ? {} : { signal }),
+            });
         };
         const cwdParam = {
             type: 'string',
@@ -984,13 +997,16 @@ const plugin = definePlugin({ name: 'devfront',
                                 },
                             },
                             problems: { type: 'array', required: true, items: { type: 'string' } },
+                            cancelled: { type: 'boolean', required: true },
                         },
                     },
                     render: (_args, value) => [{ type: 'text', text: verifyRenderText(value) }],
                 },
-                async execute(args) {
+                /* 协作式预算：一次跑批的页面数与每页耗时都不定，给一个宽预算（页面级还有各自的导航超时）。 */
+                timeoutMs: 600_000,
+                async execute(args, exec) {
                     const input = (args ?? {});
-                    return verifyOutput(await verifyRun(input));
+                    return verifyOutput(await verifyRun(input, exec?.signal));
                 },
             }));
             console.log(`[dsh-devfront] agent tools registered (${['site_open', 'site_shot', 'site_click', 'site_fill', 'site_text', 'site_console', 'site_verify'].join(', ')})`);

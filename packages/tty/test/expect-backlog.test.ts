@@ -345,3 +345,44 @@ describe('tty_expect 剔除「刚提交命令的回显」命中（D75）', () =>
     expect(render[0].text).toContain('没有')
   })
 })
+
+describe('tty_expect：调用方取消（根 ROADMAP 待办第 12 项）', () => {
+  it('★ 立刻结算为 `cancelled`（既不是超时，也不是命令结束），且不消费未读缓冲', async () => {
+    const rig = await setup()
+    const controller = new AbortController()
+    const started = Date.now()
+    const promise = (rig.tools.get('tty_expect')!.execute as (args: unknown, exec?: unknown) => Promise<Record<string, unknown>>)(
+      { sid: rig.sid, pattern: '永远不会出现的标记', timeoutSec: 600 },
+      { signal: controller.signal },
+    )
+    await sleep(40)
+    controller.abort()
+    const result = await promise
+
+    // 不取消的话这里要等满 600 秒。
+    expect(Date.now() - started).toBeLessThan(2000)
+    expect(result).toMatchObject({ matched: false, timedOut: false, cancelled: true })
+    // 渲染里说清「不是超时」——否则下一步会去查环境。
+    const rendered = rig.tools
+      .get('tty_expect')!
+      .output.render({ pattern: 'x' }, result)
+      .map((block) => block.text)
+      .join('\n')
+    expect(rendered).toContain('被调用方取消')
+    expect(rendered).toContain('不是**超时')
+  })
+
+  it('已经取消的信号 → 立即结算（不挂 data 监听器等满超时）', async () => {
+    const rig = await setup()
+    const controller = new AbortController()
+    controller.abort()
+    const started = Date.now()
+    const promise = (rig.tools.get('tty_expect')!.execute as (args: unknown, exec?: unknown) => Promise<Record<string, unknown>>)(
+      { sid: rig.sid, pattern: '永远不会出现的标记', timeoutSec: 600 },
+      { signal: controller.signal },
+    )
+    const result = await promise
+    expect(Date.now() - started).toBeLessThan(1000)
+    expect(result.cancelled).toBe(true)
+  })
+})
