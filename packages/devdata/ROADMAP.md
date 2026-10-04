@@ -101,6 +101,17 @@
     ——「没验成」不许冒充「验出问题」、进审计）；要一起定的三件：**工具名**、**清单里 `statement` 的
     表达力**（今天是共用 SQL 那条判据，Redis 语句过不了加载，见 `classifyAssertionStatement`）、
     以及**不做发现**（跑什么完全由清单决定）。守卫见 `scripts/test/release-chain.test.ts` 的 tripwire。
+    > **2026-10-04：第一层已落地（加载契约按目标引擎判）**。`StatementClassifier` 多收一个
+    > `engine` 参数，`loadManifest` 的 `engineOf` 由调用方给目标表，三种取值各有一条判据：
+    > Redis 语句**复用解析层的归类**（`parseRedisCommand` 的 `command.kind`，不另写一份「哪些命令是读」）、
+    > SQL 引擎仍走 `classifySql`、**目标不在这个 profile 里 → `'unknown'` 只查形状**（一份清单的生命周期
+    > 跨机器，不该因为在 B 机器没配那个目标就变成配置错误；这类断言将来在运行时判 `unknown`）。
+    > 不给 `engineOf` 的老调用方行为不变。用例：`test/verify.test.ts` 的两条 ★（含反例——
+    > 同一条 `DBSIZE` 在不给引擎时被 SQL 判据拒、给 `'unknown'` 时放行）。
+    > **仍缺**：执行入口本身（工具名已定 `devdata_verify`；报告要逐条 `pass` / `fail` / `unknown`
+    > 且「没验成」不许冒充「验出问题」、进审计、只接今天真能跑的引擎）。接上之后
+    > `scripts/test/release-chain.test.ts` 的 tripwire 会变红——按它的提示改成正向断言，并同步
+    > conventions.md 那张表的第三列。
 14. **环境编排**（归属 `devenv`，见 plan §16.1）：就绪判据的纯逻辑（记-9：`env-ready.ts` +
     `env-ready-eval.ts`、声明式清单 + 三态判定）**已于 2026-10-02 随建包**迁到 `packages/devenv`
     ——本包不再持有它，也不留转发。剩下的三件都在 `devenv` 那边：**观测层**（经复用通道取

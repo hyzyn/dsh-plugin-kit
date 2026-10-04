@@ -20,6 +20,7 @@ import {
   manifestRelativePath,
   projectsWithManifest,
   validateManifest,
+  type Engine,
   type VerifyConfigError,
 } from '../src/index.js'
 
@@ -191,6 +192,39 @@ describe('清单：语句必须是只读（§3.9 约束 1）', () => {
     const result = validateManifest(PROJECT, manifest({ assertions: [{ ...first(), statement: 'DELETE FROM t' }] }), always)
     expect(result.ok).toBe(true)
     expect(classifyAssertionStatement('DELETE FROM t')).toBeTypeOf('string')
+  })
+
+  it('★ 按**目标引擎**判（2026-10-04）：Redis 语句走解析层那套归类，不套 SQL 判据', () => {
+    const engineOf = (target: string): Engine | undefined => (target === 't-redis' ? 'redis' : 'sqlserver')
+    const check = (statement: string) =>
+      validateManifest(PROJECT, manifest({ assertions: [{ ...first(), target: 't-redis', statement }] }), undefined, engineOf)
+
+    // 读类命令放行——而同一批语句在 SQL 判据下必拒（下一条用例钉的就是那个差别）
+    for (const statement of ['GET order:1', 'DBSIZE', 'HGETALL order:1']) {
+      expect(check(statement).ok, statement).toBe(true)
+    }
+    // 写类命令在**加载时**就被拒：判据复用解析层的 `command.kind`，不另写一份「哪些命令是读」的名单
+    for (const statement of ['SET order:1 x', 'DEL order:1', 'FLUSHALL']) {
+      const result = check(statement)
+      expect(result.ok, statement).toBe(false)
+      expect(result.ok ? '' : (result.errors[0]?.message ?? ''), statement).toContain('只读')
+    }
+  })
+
+  it('★ 目标不在这个 profile 里（引擎 `unknown`）→ 只查形状：清单不该因为换台机器变成配置错误', () => {
+    const engineOf = (): Engine | undefined => undefined
+    const onOtherMachine = (statement: string) =>
+      validateManifest(PROJECT, manifest({ assertions: [{ ...first(), statement }] }), undefined, engineOf)
+
+    // `DBSIZE` 在**不给引擎**的默认判据下必拒（SQL 判据）——引擎 unknown 时不该被它误杀：
+    // 一份清单的生命周期跨机器，它在配了那个目标的机器上合法，就不该在没配的机器上变红。
+    expect(onOtherMachine('DBSIZE').ok).toBe(true)
+    expect(onOtherMachine('SELECT 1').ok).toBe(true)
+    // 形状仍然要查：空语句任何时候都拒
+    expect(onOtherMachine('   ').ok).toBe(false)
+    // 反例：不给引擎时同一条语句被 SQL 判据拒——证明上面那条不是碰巧通过
+    expect(classifyAssertionStatement('DBSIZE')).toBeTypeOf('string')
+    expect(classifyAssertionStatement('DBSIZE', 'unknown')).toBeUndefined()
   })
 })
 

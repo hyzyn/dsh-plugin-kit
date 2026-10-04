@@ -25,20 +25,51 @@
 import { isAbsolute, join, resolve } from 'node:path';
 import { manifestFileName as kitManifestFileName, manifestRelPath, projectsInFiles, readProjectManifest } from '@hyzyn/dsh-kit/manifest';
 import { classifySql, sqlRejectionHint } from './sql.js';
+import { parseRedisCommand } from './redis-command.js';
 /** 全部部署机制。 */
 export const APPLIES_TO = ['backend', 'front', 'build-only'];
 /** 全部严重度。 */
 export const SEVERITIES = ['fail', 'warn'];
 /** 期望算子。全部可**同时**给出，语义是 AND。 */
 export const EXPECT_OPERATORS = ['eq', 'regex', 'gte', 'lte', 'rowCount'];
+/** 走 SQL 判据的那几个引擎（各自方言不同，但「只读语句」这一层共用 `sql.ts` 那一份）。 */
+const SQL_ENGINES = ['sqlserver', 'mysql', 'postgres', 'dm'];
+/** 只查形状：非空。**不套 SQL 的形状规则**（理由见 `StatementClassifier`）。 */
+function shapeOnly(statement) {
+    return statement.trim() === '' ? '语句是空的' : undefined;
+}
 /**
- * 默认语句判据：**复用 §3.6 的全套 SQL 判据**。
+ * Redis 语句的只读判据：**复用解析层的归类**（`parseRedisCommand` 的 `command.kind`）。
+ *
+ * 不另写一份「哪些 Redis 命令是读」的名单：那正是两个真相源漂开的方向（清单这一份更松）。
+ * 解析层已经会拒未登记 / `never` 档 / 危险读，这里只补一句「清单只收读类」。
+ */
+function classifyRedisStatement(statement) {
+    /*
+     * 第二个参数是 `maxScanCount`（目标的配置）。加载时**不知道**它属于哪个目标的哪个值，
+     * 所以给一个宽松上限：这一层判的是**只读**，扫描上限是执行层的事（目标自己那份配置说了算）。
+     * 反过来在这里硬造一个默认值，就会让「清单能加载」与「这条断言真能跑」变成两套判据。
+     */
+    const parsed = parseRedisCommand(statement, Number.MAX_SAFE_INTEGER);
+    if (!parsed.ok)
+        return parsed.hint;
+    if (parsed.command.kind === 'read')
+        return undefined;
+    return `清单里的 Redis 语句只允许读类命令（这条被解析层归为 ${parsed.command.kind}）——写类 / 危险读有专门工具入口，要过能力闸门与逐次确认`;
+}
+/**
+ * 默认语句判据：**按引擎复用既有的那份判据**。
  *
  * 关键在「复用」而不是「再写一份」：断言库**不新增任何写能力**（§3.9 约束 1），
- * 它只是 §3.2 那个只读档的消费者。写一份自己的语句检查就是造第二个真相源——
+ * 它只是只读档的消费者。写一份自己的语句检查就是造第二个真相源——
  * 而两个真相源漂开的方向会是「断言库这一份更松」。
  */
-export const classifyAssertionStatement = (statement) => {
+export const classifyAssertionStatement = (statement, engine) => {
+    if (engine === 'redis')
+        return classifyRedisStatement(statement);
+    // 引擎不知道，或这个引擎还没有语句判据（`rocketmq` 的语句判据还没做，见待办 10/11）→ 只查形状
+    if (engine === 'unknown' || (engine !== undefined && !SQL_ENGINES.includes(engine)))
+        return shapeOnly(statement);
     const verdict = classifySql(statement);
     if (verdict.ok)
         return undefined;
@@ -54,8 +85,9 @@ const ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
  * @param project - 项目名（由文件名推出；清单里的 `project` 必须与它一致）
  * @param data - YAML 解析出来的原始值
  * @param classify - 语句判据（默认 `classifyAssertionStatement`）
+ * @param engineOf - 由 `target` 查引擎；**给了它**，「查不到」才会变成 `'unknown'`（见 `StatementClassifier`）
  */
-export function validateManifest(project, data, classify = classifyAssertionStatement) {
+export function validateManifest(project, data, classify = classifyAssertionStatement, engineOf) {
     const errors = [];
     const fail = (path, message) => {
         errors.push({ path, message });
@@ -107,7 +139,9 @@ export function validateManifest(project, data, classify = classifyAssertionStat
             fail(`${at}.statement`, '必须是非空的只读语句');
         }
         else {
-            const rejected = classify(item.statement);
+            const targetId = typeof item.target === 'string' ? item.target : '';
+            const engine = engineOf === undefined ? undefined : (engineOf(targetId) ?? 'unknown');
+            const rejected = classify(item.statement, engine);
             if (rejected !== undefined) {
                 fail(`${at}.statement`, `语句没通过只读判据：${rejected}`);
             }
@@ -251,7 +285,7 @@ export function loadManifest(project, options = {}) {
         // 空文件不是「无断言」——文件在，说明有人打算写断言。报配置错，让人补上或删掉。
         return { kind: 'config-error', project, errors: [{ path: '', message: `${read.file} 是空的：要么写上断言，要么删掉它（空文件与「没有清单」是两件事）` }] };
     }
-    const validated = validateManifest(project, read.data, classify);
+    const validated = validateManifest(project, read.data, classify, options.engineOf);
     return validated.ok ? { kind: 'ok', manifest: validated.manifest } : { kind: 'config-error', project, errors: validated.errors };
 }
 //# sourceMappingURL=verify.js.map

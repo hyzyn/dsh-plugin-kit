@@ -22,6 +22,7 @@
  *
  * 依据：`docs/devdata-plan.md` §3.9（四条设计约束）、§2 的部署机制分类、`jenkins-release` 技能的 §4 噪声口径。
  */
+import type { Engine } from './operations.js';
 /** 部署机制：决定「该验什么」。与 `jenkins-release` 技能的分类一致。 */
 export type AppliesTo = 'backend' | 'front' | 'build-only';
 /** 全部部署机制。 */
@@ -121,15 +122,29 @@ export interface VerifyConfigError {
 /**
  * 语句判据：返回 `undefined` = 放行；返回字符串 = 拒绝原因（给人看的一句话）。
  *
- * 默认实现走 `sql.ts` 的 `classifySql`，所以写语句 / 多语句 / 未闭合 都会在**加载时**被拦下。
- * 注入是为了让清单校验可以独立测，而不是为了允许别的判据（真源仍只有一处）。
+ * **第二个参数是引擎**——清单里的语句属于哪个引擎，由那条断言声明的 `target` 查到（调用方给），
+ * 而不同引擎的「只读」不是同一件事（SQL 是 `SELECT` 那一族，Redis 是命令名那一族）。三种取值：
+ *
+ * | 传给判据的 `engine` | 怎么判 |
+ * |---|---|
+ * | 一个已知引擎（`'redis'` / `'sqlserver'` / …） | 用**那个引擎自己**的判据（Redis 复用解析层的归类，SQL 复用 `classifySql`） |
+ * | `'unknown'`（这个 profile 里没有配这个目标） | **只查形状**（非空）——理由见下 |
+ * | 不给（老调用方 / 老用例） | 按默认的 SQL 判据，行为与 2026-10-04 之前一致 |
+ *
+ * **为什么 `'unknown'` 只查形状、而不是回落 SQL 判据**（2026-10-04 定，见 ROADMAP 待办 21）：
+ * 一份清单的生命周期**跨机器**——它在 A 机器（配了那个目标）合法，不该在 B 机器（没配）变成
+ * 配置错误。而「写语句 / 多语句 / 未闭合」这三条都是 **SQL 的形状概念**，套到别的引擎上会误伤
+ * （`DBSIZE` 不是写语句，只是不长成 SQL 的样子）。这类断言的处置是**运行时报
+ * `unknown`（没有配这个目标）**，不是加载时报配置错误。
+ *
+ * 注入仍然是为了让清单校验可以独立测；**真源只有一处**（每个引擎各自那份判据）。
  */
-export type StatementClassifier = (statement: string) => string | undefined;
+export type StatementClassifier = (statement: string, engine?: Engine | 'unknown') => string | undefined;
 /**
- * 默认语句判据：**复用 §3.6 的全套 SQL 判据**。
+ * 默认语句判据：**按引擎复用既有的那份判据**。
  *
  * 关键在「复用」而不是「再写一份」：断言库**不新增任何写能力**（§3.9 约束 1），
- * 它只是 §3.2 那个只读档的消费者。写一份自己的语句检查就是造第二个真相源——
+ * 它只是只读档的消费者。写一份自己的语句检查就是造第二个真相源——
  * 而两个真相源漂开的方向会是「断言库这一份更松」。
  */
 export declare const classifyAssertionStatement: StatementClassifier;
@@ -141,8 +156,9 @@ export declare const classifyAssertionStatement: StatementClassifier;
  * @param project - 项目名（由文件名推出；清单里的 `project` 必须与它一致）
  * @param data - YAML 解析出来的原始值
  * @param classify - 语句判据（默认 `classifyAssertionStatement`）
+ * @param engineOf - 由 `target` 查引擎；**给了它**，「查不到」才会变成 `'unknown'`（见 `StatementClassifier`）
  */
-export declare function validateManifest(project: string, data: unknown, classify?: StatementClassifier): {
+export declare function validateManifest(project: string, data: unknown, classify?: StatementClassifier, engineOf?: (targetId: string) => Engine | undefined): {
     ok: true;
     manifest: VerifyManifest;
 } | {
@@ -180,6 +196,14 @@ export interface LoadManifestOptions {
     roots?: readonly string[];
     /** 语句判据（默认真源：`classifyAssertionStatement`）。 */
     classify?: StatementClassifier;
+    /**
+     * 由断言声明的 `target` 查这个目标的引擎（调用方从自己的配置里给）。
+     *
+     * **不传** = 按老的 SQL 判据判所有语句（老调用方的行为不变）；**传了**但查不到某个目标 →
+     * 那条断言按 `'unknown'` 判（只查形状，运行时报 `unknown（没有配这个目标）`）——
+     * 因为一份清单的生命周期跨机器，理由见 `StatementClassifier`。
+     */
+    engineOf?: (targetId: string) => Engine | undefined;
 }
 /**
  * 从项目里读一份清单（**只读**，不写、不改、不生成模板）。
