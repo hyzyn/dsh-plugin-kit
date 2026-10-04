@@ -9,14 +9,16 @@
  * - **入口层**（`entries.ts`）：把「可见面」收成「**这台机器上真的有执行器**的那些入口」。
  * - **引擎层**：今天只有 Redis 的通路 A（`redis-executor.ts` + 自写 RESP，**零依赖**），已真机验证；
  *   SQL / RocketMQ 的驱动按 §2.4 **一律可选**，装了驱动也不等于有执行器。
- * - **宿主半体**（`plugin.ts`）：读配置、注册四个 agent 工具、写审计、把拒绝转成带码与恢复路径的话；
+ * - **宿主半体**（`plugin.ts`）：读配置、注册五个 agent 工具、写审计、把拒绝转成带码与恢复路径的话；
  *   外加配置卡片的**数据面**（`GET/POST /api/dsh-devdata/config`）。
  * - **客户端半体**（`client.js`，2026-10-03 建）：官方「插件配置」里的一张卡片（同 `devenv` /
  *   `devfront`）——标量与目标可改，**两档能力只读**（写入路径上出现即 400，见 `plugin.ts` 的
  *   `CAPABILITY_FIELDS`）。
  *
  * 工具名带 `devdata_` 域前缀（仓库守卫要求 `<域>_<动作>`）；今天注册的是
- * `devdata_list_targets` / `devdata_capabilities` / `devdata_doctor` / `devdata_redis_command`。
+ * `devdata_list_targets` / `devdata_capabilities` / `devdata_doctor` / `devdata_redis_command`
+ * / `devdata_verify`（最后一条不是引擎入口：它按项目清单 `verify/<项目>.yaml` 逐条派发，
+ * 见 `verify-run.ts`；且只在**存在 redis 目标**时注册）。
  *
  * ## 刻意没有的东西
  *
@@ -52,6 +54,7 @@ export * from './credential.js';
 export * from './adjudicate.js';
 export * from './verify.js';
 export * from './verify-eval.js';
+export * from './verify-run.js';
 /**
  * 复用 `kit` 的能力规格类型，而不是自造一个。
  *

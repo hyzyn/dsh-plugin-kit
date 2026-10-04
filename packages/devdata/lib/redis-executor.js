@@ -22,6 +22,7 @@
 import { connect } from 'node:net';
 import { redisArgv } from './redis-command.js';
 import { RespProtocolError, createReplyParser, encodeCommand } from './resp.js';
+import { shapeResult } from './sql.js';
 const DEFAULT_TIMEOUT_MS = 5000;
 /** RESP 回复 → 普通 JS 值（这就是「引擎实现负责整形」的那一步）。 */
 export function shapeReply(reply) {
@@ -38,6 +39,28 @@ export function shapeReply(reply) {
         case 'array':
             return reply.value === null ? null : reply.value.map(shapeReply);
     }
+}
+/**
+ * 把整形后的回复摊成断言库要的**表格**（`verify-run.ts` 的执行通道用它）。
+ *
+ * `shapeReply` 给的是**裸值**（`PING` → `'PONG'`、`DBSIZE` → number、`SCAN` → `[游标, [键]]`），
+ * 命令原文入口照原样交付给 agent（那一层没有表格的概念）；而 `evaluateAssertion` 读的是
+ * `ShapedResult` 的 `rows` / `rowCount` / `truncated`——两者之间这一跳没有别的现成实现，
+ * 所以在这里补齐，口径只有一条：
+ *
+ * - **顶层元素一行、列名 `value`**：标量（`'PONG'` / 数字）→ 1 行；数组 → 每个元素一行
+ *   （`LRANGE` 这类列表命令因此能逐行比，`rowCount` 也就是元素个数）；
+ * - **`nil`（键不存在）→ 空结果**（0 行）：于是值类算子记 `unknown`「结果集是空的」，
+ *   而 `rowCount: 0` 是有意义的——「有没有」请用 `EXISTS` / `rowCount` 表达，别拿 `eq` 去比一个
+ *   不存在的值（那会得到「验不了」而不是「没验过」）。
+ *
+ * **上限今天就是「不截断」**：执行器没配 `maxReplyBytes`，回复已经整条读进来了，再在这里另造一个
+ * 行数上限只会让 `truncated` 说一句执行层没做的事。将来执行器给回复加上限时，把那个值接到
+ * `maxRows` 上（别另造一个数）。
+ */
+export function shapeReplyAsResult(value, options = {}) {
+    const rows = value === null ? [] : Array.isArray(value) ? value : [value];
+    return shapeResult(rows, { maxRows: options.maxRows ?? Number.MAX_SAFE_INTEGER, columns: ['value'] });
 }
 /** 一次请求：连上 → 发（前置命令 + 用户命令）→ 收最后一条回复。 */
 async function roundtrip(input) {

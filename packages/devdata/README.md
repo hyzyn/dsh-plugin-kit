@@ -76,7 +76,7 @@ write-scoped）+ 取目标 key + 夹紧 `SCAN` 的 `COUNT`。
 （它映射到普通读的 `info`，而它一次吐出全部节）。所以档位**只能更严**（`stricterClass`），
 执行器拿到的也必须是**命令原文**而不是重新拼装的命令（否则「审过的」与「跑了的」是两条字符串）。
 
-### 验活断言库（`verify.ts` + `verify-eval.ts`）
+### 验活断言库（`verify.ts` + `verify-eval.ts` + `verify-run.ts`）
 
 把「核对发布后的业务数据」**断言化**，断言写在**项目仓库**里（`verify/<project>.yaml`），DSH 侧只读：
 
@@ -94,13 +94,33 @@ assertions:
 
 四条判据：
 
-- **断言只读**：语句在**加载时**过 `sql.ts` 的判据（写语句 / 多语句 / 未闭合一律拒），
-  本层**不新增任何写能力**——它只是只读档的消费者；
+- **断言只读**：语句在**加载时**过判据（SQL 走 `sql.ts`，Redis 复用解析层的归类），
+  写语句 / 多语句 / 未闭合一律拒——本层**不新增任何写能力**，它只是只读档的消费者；
+  **按目标引擎判**：目标不在这份配置里 → 只查形状（一份清单的生命周期跨机器）；
 - **缺省即无**：没有 `verify/<project>.yaml` = 这个项目**没有断言**，不回落默认断言；
   而「清单写错了」是 `config-error`（点名到字段）——两者是**两种结果**，不是一件事；
 - **三态而非两态**：`pass` / `fail` / **`unknown`**（验不了：结果被截断、列不存在、类型不可比较）。
   把验不了的当 `pass` 就是**用没验过冒充验过**；
 - **结构化差异**：逐算子的 got / expected 并排，agent 一轮就能定位（它的失败模式是循环重试）。
+
+**跑起来是 agent 工具**：`devdata_verify`（`verify-run.ts` 是那一跳的装配层，见下一节）。
+它逐条派发到断言自己声明的 `target`，并把 **「没验成」与「验出问题」分列**——没配目标 / 引擎没接通 /
+被作用域或闸门拒都记 `unknown`，不会冒充成「数据不对」。今天只有 **Redis** 的断言真能跑。
+
+**Redis 的清单怎么写**（回复 → 表格的口径，2026-10-04 定）：
+
+```yaml
+  - id: redis-alive
+    appliesTo: backend
+    target: redis-248
+    statement: PING
+    expect: { eq: PONG }
+    severity: fail
+```
+
+Redis 回复整形成**单列表格**：**顶层元素一行、列名 `value`**（`GET k` → 1 行；`LRANGE` 这类列表
+命令 → 每项一行，`rowCount` 就是项数）；**`nil`（键不存在）= 空结果** → 值类算子记「验不了」。
+所以「有没有」请用 `EXISTS`（`eq: 1`）或 `rowCount: 0` 表达，别拿 `eq` 去比一个不存在的值。
 
 ### 环境就绪判据 → 已迁往 `@hyzyn/dsh-devenv`（2026-10-02）
 
@@ -114,7 +134,7 @@ assertions:
 
 ### 宿主半体（`plugin.ts`）
 
-把上面几层接成 agent 能用的工具。挂上之后注册**四个**工具（名字带 `devdata_` 域前缀：工具名是
+把上面几层接成 agent 能用的工具。挂上之后注册**五个**工具（名字带 `devdata_` 域前缀：工具名是
 模型选工具时唯一看到的标识，仓库守卫要求 `<域>_<动作>`）：
 
 | 工具 | 作用 |
@@ -123,11 +143,15 @@ assertions:
 | `devdata_capabilities` | 这个目标哪些档可用、哪些被闸门挡住、**怎么授权** |
 | `devdata_doctor` | 逐层报告只读 / 闸门在哪几层真的在位（**验不到的一律 `!`，不报 `✓`**） |
 | `devdata_redis_command` | Redis 命令原文入口（今天唯一有执行器的引擎） |
+| `devdata_verify` | 按项目清单 `verify/<项目>.yaml` 跑一批只读断言：逐条派发到断言自己声明的 `target`，`pass` / `fail` / **没验成** 分列（「没验成」不许冒充「验出问题」） |
 
 四条纪律（都有用例）：
 
 1. **没启用 / 没配目标 / 这个引擎没有执行器 → 那个工具不注册**（未注册的 agent 根本看不到，
    不会去试、也不会撞墙）。今天只有 Redis 有执行器，所以 SQL / MQ 的目标只给前三个。
+   清单入口（`devdata_verify`）的判据略有不同：**只要存在 redis 目标就注册**——它按清单里每条断言
+   的 `target` 逐条派发，清单里跑不了的引擎在**运行时逐条**记「没验成」（整条入口消失会让同一份
+   清单里能跑的那些也没法验）。
 2. **写类操作要求持久审计**：没配 `auditFile` 时写类报 `AUDIT_NOT_DURABLE`（§5 把审计写成这一档的
    前提，那它就不能只在文档里成立）。只读不受影响。
 3. **不可逆操作先拒、要逐次二次确认**：第一次报 `CONFIRMATION_REQUIRED`，把影响说清后带
@@ -318,7 +342,7 @@ pnpm --filter @hyzyn/dsh-devdata run verify
 
 ```
 [dsh-devdata] mounted (enabled=true, targets=1, audit=jsonl, engines=redis)
-[dsh-devdata] agent tools registered (devdata_list_targets, devdata_redis_command, devdata_doctor, devdata_capabilities)
+[dsh-devdata] agent tools registered (devdata_list_targets, devdata_redis_command, devdata_doctor, devdata_capabilities, devdata_verify)
 ```
 
 出现 `ValidationError: invalid config` 或 `1 entry did not activate` 就是被拒了，原因就在那几行里
@@ -326,7 +350,7 @@ pnpm --filter @hyzyn/dsh-devdata run verify
 
 ### ③ 会话层 —— 在那个 profile 的会话里让 agent 跑
 
-`web` / `test` 都是 **web 应用**，没有「一次性提问」开关，所以这一层必须在会话里做。四条的期望值：
+`web` / `test` 都是 **web 应用**，没有「一次性提问」开关，所以这一层必须在会话里做。五条的期望值：
 
 | 让 agent 跑 | 期望 |
 |---|---|
@@ -334,6 +358,7 @@ pnpm --filter @hyzyn/dsh-devdata run verify
 | `devdata_capabilities <目标>` | **没有**「配置问题」那一节；两闸门「已接入 … **当前未获授权**」+ 怎么授权 |
 | `devdata_redis_command <目标> PING` | `PONG` |
 | 先 `SET devdata:probe 1`，再 `EXISTS devdata:probe` | 前者 `[CAPABILITY_NOT_GRANTED]`，后者 **`0`** |
+| 在项目目录里放一份 `verify/<项目>.yaml`（含一条 redis 断言）后 `devdata_verify` | 「共 N 条断言，真的跑了 X 条」+ 逐条 `✓/✗/?` + 汇总 `overall`；清单里 SQL 那类断言逐条 `?`「这个引擎的执行通路还没接通」——**不是** `✗` |
 
 最后一条最值得看：它证明「被拒」不是嘴上说说。每个 profile 有自己的审计文件，被拒绝的尝试也在里面：
 
@@ -401,11 +426,13 @@ DEVDATA_DM_161=1 DEVDATA_SSH_PASSWORD=… pnpm vitest run packages/devdata/test/
 `SCAN` 两种参数布局；`redis-route.test.ts` 钉**档位只能更严**（`INFO ALL` 必须走危险读闸门，
 不许被矩阵按动作名抹平）；`verify.test.ts` 钉清单的**缺省即无**与加载期校验；
 `verify-eval.test.ts` 钉 `unknown` 档与**截断语义**（`gte` 与 `lte` 在截断下结论相反）；
+`verify-run.test.ts` 钉**跑批的四种处置**（没配目标 / 引擎没接通 / 被拒一律 `unknown`，只有真跑了的
+才进求值；两条反例证明「没验成」那几条不是恒绿的）；
 `verify-capability.test.ts` 钉「断言库不新增任何写能力」；`tool.test.ts` 钉**可见面 ∩ never = ∅**
 与「不可见的工具不进入执行路径」；`entries.test.ts` 钉**没有执行器就不注册**（只留引擎无关项）；
 `plugin-config.test.ts` 钉配置解析的每一种坏输入都有确定行为；`audit.test.ts` 钉**写不进去就抛**
-（fail-closed 而不是尽力而为）；`plugin.test.ts` 是**假宿主的端到端**（四个工具全跑一遍，含
-审计落成 JSON 行、写类缺审计被拒、不可复现的确认路径）；**`config-route.test.ts` 是配置卡片那条
+（fail-closed 而不是尽力而为）；`plugin.test.ts` 是**假宿主的端到端**（五个工具全跑一遍，含
+清单驱动的四条处置、审计落成 JSON 行、写类缺审计被拒、不可复现的确认路径）；**`config-route.test.ts` 是配置卡片那条
 数据面**（patch 校验先判后写 / 两档能力只读那条 400 / 目标逐次确认 / 能力声明按 id 跟回来 /
 兜底路径的深合并 / 快照 / 围栏与失败审计）；**`verify-script-safety.test.ts`** 与
 `verify-all-script-safety.test.ts` / `host-mount-script-safety.test.ts` 守仓根那三个真机脚本的
@@ -416,12 +443,16 @@ DEVDATA_DM_161=1 DEVDATA_SSH_PASSWORD=… pnpm vitest run packages/devdata/test/
 
 ## 还没做（P3 余下与之后）
 
-- **其余引擎的执行器**：Redis 已落地（通路 A 直连 + 自写 RESP，真机 6/6 + 插件层 5/5）。
+- **其余引擎的执行器**：Redis 已落地（通路 A 直连 + 自写 RESP）。真机两档都打 `248` 且全绿
+  （**2026-10-04 复核**：内核那组 + 插件层那组，后者含清单跑批 `devdata_verify`），
+  门控 `DEVDATA_REDIS_248=1` + `DEVDATA_REDIS_HOST`，默认跳过（CI 不连内网）。
   MySQL / PostgreSQL（`forwardOut`，目标在 `161`）、SQL Server（通路 A 直连 `247:1433`，驱动可选）、
   达梦 / RocketMQ（通路 B，目标侧 CLI）都还没写——**卡在 C2 与防火墙**（见文末）。
   内核只依赖 `ToolExecutor` 接口，所以每个引擎的实现是独立的、互不阻塞。
-- **断言库的跑批与执行器**：清单加载 + 求值 + 差异都已落地且可测，但「真的去跑这些语句」
-  仍要等引擎执行器（同上一项）。本层刻意只做判定。
+- **断言库的跑批**：清单加载 + 求值 + 差异 + **跑批装配层**（`verify-run.ts`）都已落地且可测，
+  工具面入口 `devdata_verify` 也已接进宿主（2026-10-04）；**真能跑的只有 Redis**（`PING` / `GET` /
+  `DBSIZE` 这类只读命令，回复按「顶层元素一行、单列 `value`」整形）。SQL / RocketMQ 的断言在
+  运行时逐条记「没验成」，等各自的执行器落地（同上一项）之后自动带上——**不假装跑过**。
 - **`doctor` 的引擎侧**：只读自证判定（`readonly-probe.ts`）已落地，`devdata_doctor` 也已接进宿主，
   但「连上去取事实」（`ReadOnlyFacts`）的读取层还没写——SQL 目标上那一层因此恒为 `!`（缺证即拒），
   这是**对的默认**，等执行器落地后才会变成 `✓`。

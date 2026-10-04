@@ -11,7 +11,7 @@
  * | 面 | 清单 | 今天谁在读 |
  * |---|---|---|
  * | 容器 | `ready/<项目>.ready.yaml` | `devenv` 的 `env_status` / `env_wait`（agent 工具） |
- * | 数据 | `verify/<项目>.yaml` | **库：`loadManifest` + 求值**（工具面入口还没有——见下） |
+ * | 数据 | `verify/<项目>.yaml` | `devdata` 的 `devdata_verify`（agent 工具，2026-10-04 接上） |
  * | 页面 | `web/<项目>.yaml` | `devfront` 的 `site_verify`（agent 工具） |
  *
  * 这条链**刻意没有聚合器**：「这次发布该验哪些项目」是发现逻辑，而「不做批量发现」是三包共同的
@@ -20,22 +20,22 @@
  * 互不干扰**；`project` 与文件名不一致在三个面上**一律是配置错误**（防复制粘贴改漏——那会让断言
  * 跑到别的项目上去，而报告看起来是绿的）。
  *
- * ## 一条本轮实测出来的发现（所以最后一条用例是「反向」的）
+ * ## 一个曾经的发现：三面原本**不对称**（2026-10-04 当天闭合）
  *
- * 三面**不对称**：`devenv` / `devfront` 各有一个 agent 工具在读自己的清单，而 `devdata` 的
- * `verify/<项目>.yaml` **在 `packages/devdata/src/verify.ts` 之外没有任何消费者**（真机启动日志里
- * 它注册的四个工具是 `devdata_list_targets` / `devdata_redis_command` / `devdata_doctor` /
- * `devdata_capabilities`，没有一个是清单驱动的）。也就是说：这条链今天只能由**人 / 脚本**把中间
- * 那一环接上，**agent 走不通**。
+ * 本轮立这份守卫时实测：`devenv` / `devfront` 各有一个 agent 工具在读自己的清单，而 `devdata` 的
+ * `verify/<项目>.yaml` **在 `packages/devdata/src/verify.ts` 之外没有任何消费者**——也就是说，这条链
+ * **只能由人 / 脚本**把中间那一环接上，**agent 走不通**。当时它被钉成一条**反向 tripwire**
+ * （「还没有消费者」），约定「有人把入口接上时它会红，那时翻成正向断言」。
  *
- * 本轮不改工具面（那是另一件：要定名字、门槛与报告形状），只把它**钉成事实**——最后一条用例会在
- * 「有人把入口接上」时变红，那时把它改成正向断言（并同步 conventions 的那张表）。
+ * 同一天就红了，也照约定翻了：现在的判据是**必须存在**工具面消费者（`plugin.ts` 走 `loadManifest`
+ * 按清单跑 `devdata_verify`），并且**保留反例**——把那个消费者从源码里删掉，同一条判据报空。
+ * 「守卫不许恒绿」在这里的具体形态就是那第二条用例：它证明第一条不是在断言一件永远为真的事。
  *
  * ## 只读
  *
  * 本文件只读文件系统 + 三个包的纯加载器，不起宿主、不连任何目标、不写任何东西——所以它能进 CI。
- * 真机上三个面各自的证据在各自包里（`env_status` 的真机档、`devdata` 的 Redis 真机档、
- * `devfront` 的真 Chrome 档）。
+ * 真机上三个面各自的证据在各自包里（`env_status` 的真机档、`devdata` 的 Redis 真机档 /
+ * `verify-devdata-host-mount.mjs`、`devfront` 的真 Chrome 档）。
  */
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -151,6 +151,29 @@ export function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1')
 }
 
+/**
+ * 「哪些文件**真的**在消费本包的清单加载器」——纯函数（喂 fixture 就能造反例）。
+ *
+ * 只看**代码**（注释里写「将来要接 `loadManifest(...)`」不算），并且跳过清单模块自己那两份
+ * （`verify.ts` 是定义处，`verify-eval.ts` 是求值层——它们不是「消费者」）。
+ */
+export function manifestConsumersOf(files: ReadonlyArray<{ name: string; text: string }>): string[] {
+  const consumers: string[] = []
+  for (const file of files) {
+    if (!file.name.endsWith('.ts') || file.name === 'verify.ts' || file.name === 'verify-eval.ts') continue
+    if (/\b(loadManifest|projectsWithManifest)\s*\(/.test(stripComments(file.text))) consumers.push(file.name)
+  }
+  return consumers
+}
+
+/** `packages/devdata/src/` 下的全部 `.ts`（真源，不给反例用）。 */
+function devdataSrcFiles(): Array<{ name: string; text: string }> {
+  const srcDir = new URL('../../packages/devdata/src/', import.meta.url)
+  return readdirSync(srcDir)
+    .filter((name) => name.endsWith('.ts'))
+    .map((name) => ({ name, text: readFileSync(new URL(name, srcDir), 'utf8') }))
+}
+
 afterAll(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
@@ -225,23 +248,31 @@ describe('一次发布的证据链：同一个项目名，三份清单', () => {
   })
 
   /**
-   * **反向守卫（tripwire）**：中间那一环今天没有工具面入口。
+   * **正向守卫**：devdata 的清单**确实有**工具面消费者（2026-10-04 接上，见文件头）。
    *
-   * 见文件头「一条本轮实测出来的发现」。它**现在必须是红的反面**（也就是说：这一条现在通过，
-   * 因为确实没有消费者）。等有人把入口接上，这一条会失败——那时按提示改成正向断言，
-   * 并把 conventions 那张表的「今天谁在读」一列更新掉。
+   * 它原来是反向的（「还没有消费者」）——按约定在入口接上之后翻成正向。
    */
-  it('tripwire：devdata 的 `verify/<项目>.yaml` 仍没有工具面消费者（接上之后本用例该改成正向断言）', () => {
-    const srcDir = new URL('../../packages/devdata/src/', import.meta.url)
-    const consumers: string[] = []
-    for (const name of readdirSync(srcDir)) {
-      if (!name.endsWith('.ts') || name === 'verify.ts' || name === 'verify-eval.ts') continue
-      const text = readFileSync(new URL(name, srcDir), 'utf8')
-      if (/\b(loadManifest|projectsWithManifest)\s*\(/.test(stripComments(text))) consumers.push(name)
-    }
+  it('devdata 的 `verify/<项目>.yaml` 有工具面消费者（`devdata_verify` 走 `loadManifest`）', () => {
+    const consumers = manifestConsumersOf(devdataSrcFiles())
     expect(
       consumers,
-      'devdata 的清单已经有工具面消费者了——把这条 tripwire 改成正向断言，并更新 conventions.md 「一次发布的证据链」那张表的第三列',
-    ).toEqual([])
+      'devdata 的清单**没有**工具面消费者了——「数据对」那一环又只能由人 / 脚本接上（见 conventions.md § 一次发布的证据链）',
+    ).toContain('plugin.ts')
+  })
+
+  /**
+   * **反例**：把那个消费者从源码里删掉 → 同一条判据报空。
+   *
+   * 「替换真的生效」那一行是必须的：替换没命中（比如函数改名了）时反例会**恒绿**——
+   * 而这正是本仓对「静态判据不许被无关状态满足」的要求。
+   */
+  it('反例：删掉那个消费者（并断言替换生效）→ 判据报空', () => {
+    const files = devdataSrcFiles()
+    const plugin = files.find((file) => file.name === 'plugin.ts')
+    expect(plugin).toBeDefined()
+    const broken = (plugin?.text ?? '').replace(/loadManifest\(/, 'notALoadManifestCall(')
+    expect(broken).not.toBe(plugin?.text)
+    const consumers = manifestConsumersOf(files.map((file) => (file.name === 'plugin.ts' ? { ...file, text: broken } : file)))
+    expect(consumers).toEqual([])
   })
 })

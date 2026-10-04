@@ -21,6 +21,7 @@
  */
 import type { ToolExecutor } from './tool.js';
 import { type RespReply } from './resp.js';
+import { type ShapedResult } from './sql.js';
 /** 一个 Redis 连接（通路 A：从本进程直连）。 */
 export interface RedisConnection {
     host: string;
@@ -45,6 +46,27 @@ export interface RedisExecutorOptions {
 }
 /** RESP 回复 → 普通 JS 值（这就是「引擎实现负责整形」的那一步）。 */
 export declare function shapeReply(reply: RespReply): unknown;
+/**
+ * 把整形后的回复摊成断言库要的**表格**（`verify-run.ts` 的执行通道用它）。
+ *
+ * `shapeReply` 给的是**裸值**（`PING` → `'PONG'`、`DBSIZE` → number、`SCAN` → `[游标, [键]]`），
+ * 命令原文入口照原样交付给 agent（那一层没有表格的概念）；而 `evaluateAssertion` 读的是
+ * `ShapedResult` 的 `rows` / `rowCount` / `truncated`——两者之间这一跳没有别的现成实现，
+ * 所以在这里补齐，口径只有一条：
+ *
+ * - **顶层元素一行、列名 `value`**：标量（`'PONG'` / 数字）→ 1 行；数组 → 每个元素一行
+ *   （`LRANGE` 这类列表命令因此能逐行比，`rowCount` 也就是元素个数）；
+ * - **`nil`（键不存在）→ 空结果**（0 行）：于是值类算子记 `unknown`「结果集是空的」，
+ *   而 `rowCount: 0` 是有意义的——「有没有」请用 `EXISTS` / `rowCount` 表达，别拿 `eq` 去比一个
+ *   不存在的值（那会得到「验不了」而不是「没验过」）。
+ *
+ * **上限今天就是「不截断」**：执行器没配 `maxReplyBytes`，回复已经整条读进来了，再在这里另造一个
+ * 行数上限只会让 `truncated` 说一句执行层没做的事。将来执行器给回复加上限时，把那个值接到
+ * `maxRows` 上（别另造一个数）。
+ */
+export declare function shapeReplyAsResult(value: unknown, options?: {
+    maxRows?: number;
+}): ShapedResult;
 /**
  * 造一个 Redis 通路 A 执行器。
  *

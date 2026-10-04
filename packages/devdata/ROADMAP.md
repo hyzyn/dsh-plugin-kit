@@ -92,14 +92,15 @@
 12. **`test-isolated`**：按 worktree / 任务起副本 + 重置 + 清理（依赖 B7 的答案）。
 13. ~~**验活断言库**~~ —— 纯逻辑**已落地**（记-8）：清单 + 加载校验 + 求值 + 结构化差异。
     剩**跑批执行器**（要引擎执行器先能跑语句，见 A 组）。
-21. **把 `verify/<项目>.yaml` 接进工具面**（2026-10-04，从根 ROADMAP 第 14 项发现）：
+21. ~~**把 `verify/<项目>.yaml` 接进工具面**~~ —— **已落地（2026-10-04，见记-20）**
+    （从根 ROADMAP 第 14 项发现）：
     本包的清单（记-8 那套：加载 + 校验 + 求值 + 结构化差异）**在 `src/verify.ts` 之外没有任何消费者**
-    ——真机启动日志里注册的四个工具（`devdata_list_targets` / `devdata_redis_command` /
+    ——当时真机启动日志里注册的四个工具（`devdata_list_targets` / `devdata_redis_command` /
     `devdata_doctor` / `devdata_capabilities`）没有一个是清单驱动的。后果很具体：一次发布的证据链里
     「数据对」那一环**只能由人 / 脚本接上，agent 走不通**（另两面各有 `env_status` / `site_verify`）。
     门槛：一个**只读**的清单执行动作（按 `verify/<项目>.yaml` 跑断言、逐条给 `pass` / `fail` / `unknown`
     ——「没验成」不许冒充「验出问题」、进审计）；要一起定的三件：**工具名**、**清单里 `statement` 的
-    表达力**（今天是共用 SQL 那条判据，Redis 语句过不了加载，见 `classifyAssertionStatement`）、
+    表达力**（当时是共用 SQL 那条判据，Redis 语句过不了加载，见 `classifyAssertionStatement`）、
     以及**不做发现**（跑什么完全由清单决定）。守卫见 `scripts/test/release-chain.test.ts` 的 tripwire。
     > **2026-10-04：第一层已落地（加载契约按目标引擎判）**。`StatementClassifier` 多收一个
     > `engine` 参数，`loadManifest` 的 `engineOf` 由调用方给目标表，三种取值各有一条判据：
@@ -108,10 +109,12 @@
     > 跨机器，不该因为在 B 机器没配那个目标就变成配置错误；这类断言将来在运行时判 `unknown`）。
     > 不给 `engineOf` 的老调用方行为不变。用例：`test/verify.test.ts` 的两条 ★（含反例——
     > 同一条 `DBSIZE` 在不给引擎时被 SQL 判据拒、给 `'unknown'` 时放行）。
-    > **仍缺**：执行入口本身（工具名已定 `devdata_verify`；报告要逐条 `pass` / `fail` / `unknown`
-    > 且「没验成」不许冒充「验出问题」、进审计、只接今天真能跑的引擎）。接上之后
-    > `scripts/test/release-chain.test.ts` 的 tripwire 会变红——按它的提示改成正向断言，并同步
-    > conventions.md 那张表的第三列。
+    > ~~**仍缺**：执行入口本身~~（当天第二层也落了，见下与记-20）。
+    > **2026-10-04 当天第二层落地（记-20）**：工具名定为 `devdata_verify`，执行入口、报告形状与
+    > 四种处置都在；`scripts/test/release-chain.test.ts` 的 tripwire 按它自己的提示翻成了正向断言
+    > （+ 反例），conventions.md 那张表的第三列同步成 `devdata_verify`。清单里的 `statement`
+    > 表达力这一件只落了一半：**Redis 语句的清单口径定了**（回复整形成单列 `value`），SQL / MQ 的
+    > 真求值仍等各自的执行器（今天逐条记「没验成」——**不假装跑过**）。
 14. **环境编排**（归属 `devenv`，见 plan §16.1）：就绪判据的纯逻辑（记-9：`env-ready.ts` +
     `env-ready-eval.ts`、声明式清单 + 三态判定）**已于 2026-10-02 随建包**迁到 `packages/devenv`
     ——本包不再持有它，也不留转发。剩下的三件都在 `devenv` 那边：**观测层**（经复用通道取
@@ -583,3 +586,41 @@ yaml。卡片补上这一半（同一个缺口 `devfront` / `devenv` 各记过�
 **顺带两件小的**：① 步骤号连号（`㉔` 已被「真实补丁未变」那句自证占用，所以新两步排 **㉕㉖**，
 不是插在中间改号——那会让文档里已有的编号引用失效）；② `devfront` 同款的两步在
 `scripts/verify-devfront-card.mjs` 的 **⑰⑱**（2026-10-04，见那条提交）。
+
+### 记-20. `devdata_verify`：把清单接进工具面（2026-10-04，待办 21 收口 / 根 ROADMAP 第 14 项）
+
+**由来**：待办 21 记着「一次发布的证据链里『数据对』那一环只能由人 / 脚本接上」——本包的清单加载 /
+校验 / 求值在 `src/verify.ts` 之外没有任何消费者。这一轮把它接成 agent 工具（工具名 `devdata_verify`，
+与 `devfront` 的 `site_verify` 对称）。四条判据是这一轮定死的：① 工具名 `devdata_verify`；
+② 加载期的语句判据**按目标引擎**判（上一轮已落，见待办 21 的第一层）；③ **只接今天真能跑的引擎**
+（Redis），SQL / RocketMQ 的断言逐条记「没验成」、不假装跑过；④ 只在**存在 redis 目标**时注册
+（与「没有执行器就不露引擎入口」同一条纪律）。
+
+| 落点 | 内容 | 门槛 |
+|---|---|---|
+| `src/verify-run.ts`（新） | `runManifestVerify({project, cwd, assertions, targets, runner, ceiling?})`：四种处置**一种都不许混**——① 清单里的目标没配 → `unknown` 且**通道一次都不发**；② 引擎没接通 → `unknown`；③ 被作用域 / 闸门拒 → `unknown` + **原样**的码与原因（拒的是这次调用，不是数据）；④ 真跑了 → 交 `evaluateAssertion`。报告顺序 = 清单顺序；`problems` 是**去重后**的跑批级原因；`ran` 只数「真跑到通道且执行成功」的条数 | `test/verify-run.test.ts`（新）6 例：四种处置各一条 + 顺序 + 汇总，含两条**反例**（把没配的目标也发下去 → 那条会变 `pass`；把「引擎没接通」写成 `fail` → 整批变 `fail`） |
+| `src/redis-executor.ts` | `shapeReplyAsResult`：**裸回复 → 断言库要的表格**（顶层元素一行、列名 `value`；`nil` = 空结果）。**这一跳是接的时候抓到的**：`ToolExecutor` 的注释写着「与 `ShapedResult` 结构兼容」，而 redis 执行器实际给的是 `shapeReply` 的裸值（`PING`→`'PONG'`，命令原文入口就靠它）；直接当 `ShapedResult` 用会在真机第一条断言上抛 `TypeError`（`result.rows` 不存在），**纯单测抓不到**（夹具给的是真表格） | `test/redis-executor.test.ts` 10 例（新增 2：标量 / 数组 / `nil` / 上限）+ `plugin.test.ts` 那条端到端（真发 `PING` 判 `eq: PONG`） |
+| `src/plugin.ts` | `runManifestAssertion`（按断言自己声明的 `target` **逐条派发**；不在 `servedEngines()` 里的引擎**在碰执行器之前**短路，免得拿 SQL 语句去问 Redis 解析层得到一句无关的拒绝）+ `runVerify` + `renderVerify`（先「真的跑了 X/Y 条」、再逐条 `✓/✗/?`、再「没验成的原因」、最后汇总）；注册条件 `live.targets.some((t) => t.engine === 'redis')`。**不进 `TOOL_SPECS`**（它不是引擎入口），所以可见面里没有它——启动日志那一行显式追加，观测面才不漏报（**D04**）。拒绝的 `hint`（恢复路径）跟着 `code：message` 一起带出：省掉它等于把记-16 那条纸割（「作用域拒绝不说判了哪个目录」）在这条新入口上重新种一遍 | `test/plugin.test.ts` 36 例：注册面 5 条 + 6 条清单驱动（能跑的、混引擎的、目标没配的、作用域拒的、写语句在加载时被拒、没有清单） |
+| 文档 | `conventions.md` 那张表的第三列 → `devdata_verify`，「不对称」那段改记**当天闭合**（保日期）；根 `ROADMAP.md` 第 14 项补一条；本包 README 的工具面枚举 / 纪律 / 清单示例 / 验证表 / 日志样例 | `check-doc-links` / `docs-index` / `doc-count-drift` 全绿 |
+| 守卫翻正向 | `scripts/test/release-chain.test.ts` 的 tripwire 按它自己的提示翻成**正向断言**（devdata 的清单**确实有**工具面消费者）+ 一条反例（把 `loadManifest(` 从源码里删掉 → 判据报空，并先断言**替换真的生效**） | 该文件 8 例 |
+| 真机脚本 | `scripts/verify-devdata-host-mount.mjs` 期望值 4 → 5（那个 profile 有 redis 目标 → `devdata_verify` 会注册） | 见下 |
+
+**真机证据（本轮实跑）**：
+
+| 档 | 命令 | 结果 |
+|---|---|---|
+| 真 Redis（248，4.0.14） | `DEVDATA_REDIS_248=1 DEVDATA_REDIS_HOST=…/npx vitest run packages/devdata/test/redis-real-machine.test.ts` | **12/12**：内核那组 6 + 插件层那组 6（新增 ⑥：清单里两条 redis 断言真跑出 `✓`、一条 SQL 断言记 `?`「执行通路还没接通」、`overall unknown`、**全文没有 `✗`**） |
+| 真宿主挂载 | `node scripts/verify-devdata-host-mount.mjs` | **10/10**：真 ToolRuntime 接受了这条新工具定义，注册行**恰好**是五条，且真实 `~/.dsh/cordis.patch.yml` 逐字节未变 |
+| 全仓闸门 | `pnpm typecheck && pnpm build && pnpm test && pnpm aggregate` | 全绿；`DEVENV_LOCAL_IMAGE=…openjdk8:v1 pnpm test` → **2803 passed / 30 skipped**（三个本机 docker 档真跑而非 SKIP） |
+| 卡片 | `devdata run card-smoke` / `devfront run verify` | 25 PASS / 17 PASS（0 FAIL） |
+
+**没抓到的（如实记）**：
+
+1. **`exec.signal` / 协作式预算没接**：`execute` 没声明 `timeoutMs`、也没把信号传下去——按本轮定死的
+   形状原样做的（`invokeRedisCommand` 也不收信号）。触发条件在这里：一次跑清单里**全部**断言，
+   单条受目标 `timeoutMs`（默认 5s）约束，**6 条以上就可能超过 30 秒**，而 conventions 那条规矩
+   的门槛正是「工具自己的等待上限达到 30 秒」。要不要补（取消自成一档 + 报告里单列）留给下一轮。
+2. **「只有 SQL 目标时不注册」只在假宿主上验了**（`plugin.test.ts` 三条注册面用例）；host-mount 那条
+   profile 是 redis 目标，真宿主上没造第二个 profile 去验它。
+3. **Redis 清单的真实样本还没有**：口径（单列 `value`）与两条 `PING` / `DBSIZE` 断言是自造的；
+   真实项目里那份 `verify/<项目>.yaml` 长什么样、要断言哪些业务键，得等第一条真清单进项目仓库。

@@ -17,6 +17,10 @@
  * （外加一条「被拒的写**真的没发生**」的只读核对）。
  */
 
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import { describe, expect, it } from 'vitest'
 
 import { createRedisExecutor, invokeRedisCommand, type DevDataTarget, type ToolOutcome } from '../src/index.js'
@@ -231,5 +235,73 @@ describe.skipIf(!CAN_PROBE)(`真机：插件层打 ${HOST}:${String(PORT)}`, () 
     expect(doctor).toContain('— 账号级只读自证')
     expect(doctor).toContain('没有账号级只读概念')
     expect(doctor).toContain('! 审计出口')
+  })
+
+  /**
+   * 清单跑批的**真机**那一半（2026-10-04）。
+   *
+   * 假服务能证明接线，证不了**真 RESP 回复经整形后能不能判**：`PING` 回 `+PONG`、`DBSIZE` 回整数，
+   * 而断言库要的是 `ShapedResult`（`shapeReplyAsResult` 那一跳）。这条把整条链在 4.0.14 上跑一遍，
+   * 顺带钉住「同一份清单里跑不了的引擎记『没验成』而不是『验出问题』」。
+   *
+   * 用的两条语句都是**只读且与数据无关**的（`PING` / `DBSIZE`）——真机用例不该依赖 248 上有什么数据。
+   */
+  it('⑥ `devdata_verify`：按清单在真 Redis 上跑，逐条给结论；SQL 断言记「没验成」', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dsh-devdata-verify-real-'))
+    const dir = join(root, 'cdqas')
+    mkdirSync(join(dir, 'verify'), { recursive: true })
+    writeFileSync(
+      join(dir, 'verify', 'cdqas.yaml'),
+      [
+        'version: 1',
+        'project: cdqas',
+        'assertions:',
+        '  - id: redis-alive',
+        '    appliesTo: backend',
+        '    target: redis-248',
+        '    statement: PING',
+        '    expect: { eq: PONG, rowCount: 1 }',
+        '    severity: fail',
+        '  - id: redis-size',
+        '    appliesTo: backend',
+        '    target: redis-248',
+        '    statement: DBSIZE',
+        '    expect: { gte: 0 }',
+        '    severity: warn',
+        '  - id: sql-orders',
+        '    appliesTo: backend',
+        '    target: sql-1',
+        '    statement: SELECT 1',
+        '    expect: { eq: 1 }',
+        '    severity: fail',
+        '',
+      ].join('\n'),
+    )
+    const host = makeHost()
+    host.mount({
+      auditFile: '',
+      targets: [
+        { id: 'redis-248', label: '248 Redis（共享联调）', engine: 'redis', env: 'test-shared', scopeDirs: [dir], host: HOST, port: PORT },
+        // 只声明、不接执行器：SQL 档今天没通路 → 那条断言必须记「没验成」
+        { id: 'sql-1', label: 'SQL Server（未接通）', engine: 'sqlserver', env: 'test-shared', scopeDirs: [dir], host: '127.0.0.1', port: 1433 },
+      ],
+    })
+
+    try {
+      expect(host.names()).toContain('devdata_verify')
+      const text = await host.call('devdata_verify', { cwd: dir })
+
+      expect(text).toContain('verify/cdqas.yaml')
+      expect(text).toContain('真的跑了 2 条，其余 1 条没验成')
+      expect(text).toContain('✓ redis-alive（fail）')
+      expect(text).toContain('✓ redis-size（warn）')
+      expect(text).toContain('? sql-orders（fail）')
+      expect(text).toContain('这个引擎的执行通路还没接通（sqlserver）')
+      expect(text).toContain('通过 2 / 失败 0 / 告警未过 0 / 没验成 1 → overall unknown')
+      // 「没验成」不许冒充「验出问题」——真机上这一条也要成立
+      expect(text).not.toContain('✗')
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })

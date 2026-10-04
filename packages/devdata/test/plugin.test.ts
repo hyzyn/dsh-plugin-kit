@@ -16,7 +16,7 @@
  * 不碰真 profile、不碰真 Chrome、不连真 Redis。
  */
 
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -47,11 +47,64 @@ const GRANT_WRITE = 'DSH_DEVDATA_WRITE'
 const T = toolNameFor
 const REDIS_COMMAND = toolNameFor('redis_command')
 
+/* ------------------------ `devdata_verify`：项目目录夹具 ------------------------ */
+
+/** 造过的项目目录（用例结束删掉，不在 /tmp 里留东西）。 */
+const projectDirs: string[] = []
+afterEach(() => {
+  for (const dir of projectDirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+})
+
+/**
+ * 造一个项目目录 + 一份验活清单。
+ *
+ * **目录名就是项目名**：清单解析缺省取 `cwd` 的目录名，所以用例里 `cwd: dir` 等价于
+ * `project: <项目名>`——这条正是「项目名只有一处」那条约束的用法（文件名与 `project` 字段必须一致）。
+ */
+function projectWith(project: string, yaml: string): string {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-devdata-verify-'))
+  projectDirs.push(root)
+  const dir = join(root, project)
+  mkdirSync(join(dir, 'verify'), { recursive: true })
+  writeFileSync(join(dir, 'verify', `${project}.yaml`), yaml)
+  return dir
+}
+
+/** 一份清单的 YAML（表头固定，断言逐条拼）。 */
+function verifyYaml(project: string, ...assertions: string[]): string {
+  return ['version: 1', `project: ${project}`, 'assertions:', ...assertions, ''].join('\n')
+}
+
+/** 一条能跑的 Redis 断言（`PING` → 假服务回 `PONG`）。 */
+const PING_ASSERTION = [
+  '  - id: redis-alive',
+  '    appliesTo: backend',
+  '    target: redis-248',
+  '    statement: PING',
+  '    expect: { eq: PONG }',
+  '    severity: fail',
+].join('\n')
+
+/** 一条**引擎没接通**的断言（SQL 档今天没有执行器）。 */
+const SQL_ASSERTION = [
+  '  - id: order-count',
+  '    appliesTo: backend',
+  '    target: sql-1',
+  '    statement: SELECT 1',
+  '    expect: { eq: 1 }',
+  '    severity: fail',
+].join('\n')
+
 describe('注册面：只有这个引擎真的有执行器，才注册它的入口', () => {
-  it('Redis 目标 → 四个工具；未启用 / 无目标 → 一个都不注册', () => {
+  it('Redis 目标 → 五个工具；未启用 / 无目标 → 一个都不注册', () => {
     const redisHost = makeHost()
     redisHost.mount({ targets: [redisTarget()] })
-    expect(redisHost.names()).toEqual([T('capabilities'), T('doctor'), T('list_targets'), REDIS_COMMAND])
+    /*
+     * `devdata_verify` 是第五个，也是唯一**不在 `TOOL_SPECS`** 里的（它不是引擎入口：动作按清单里
+     * 每条断言的 `target` 逐条派发）。它的可见性判据因此只有一条：**这份配置里存在 redis 目标**
+     * ——正是下面 SQL 目标那一条（仍只有三个工具）与「无目标 → 一个都不注册」保持不变的原因。
+     */
+    expect(redisHost.names()).toEqual([T('capabilities'), T('doctor'), T('list_targets'), REDIS_COMMAND, T('verify')])
 
     const empty = makeHost()
     empty.mount({ targets: [] })
@@ -65,6 +118,7 @@ describe('注册面：只有这个引擎真的有执行器，才注册它的入�
   it('**没有执行器**的引擎只给引擎无关项（不给跑起来必失败的 `query` / `schema` / `lag`）', () => {
     const host = makeHost()
     host.mount({ targets: [redisTarget({ id: 'sql-1', engine: 'mysql', host: '10.0.0.1', port: 3306 })] })
+    // 只有 SQL 目标 → 连清单入口也不出现（没有 redis 目标可派发；将来 SQL 通路接通时会自动出现）
     expect(host.names()).toEqual([T('capabilities'), T('doctor'), T('list_targets')])
   })
 
@@ -399,6 +453,116 @@ describe('挂载与公告', () => {
   it('没有 settings 服务的宿主照旧可用（config-only 兜底）', () => {
     const host = makeHost({ settings: false })
     host.mount({ targets: [redisTarget()] })
-    expect(host.names()).toEqual([T('capabilities'), T('doctor'), T('list_targets'), REDIS_COMMAND])
+    expect(host.names()).toEqual([T('capabilities'), T('doctor'), T('list_targets'), REDIS_COMMAND, T('verify')])
+  })
+})
+
+/* ==================== `devdata_verify`：按项目清单跑一批只读断言 ==================== */
+
+describe('devdata_verify：按清单逐条派发（四种处置都要在真工具面上分得开）', () => {
+  it('清单里能跑的断言 → 真跑：裸回复经整形后进求值，报告逐条给结论', async () => {
+    const server = await fakeRedis()
+    const dir = projectWith('cdqas', verifyYaml('cdqas', PING_ASSERTION))
+    const host = makeHost()
+    // 作用域就是这个项目目录（清单驱动的调用不传 target，作用域仍按 cwd 收敛）
+    host.mount({ targets: [redisTarget({ port: server.port, scopeDirs: [dir] })] })
+
+    const text = await host.call(T('verify'), { cwd: dir })
+
+    expect(text).toContain('verify/cdqas.yaml')
+    expect(text).toContain('真的跑了 1 条')
+    expect(text).toContain('✓ redis-alive（fail）')
+    expect(text).toContain('通过 1 / 失败 0 / 告警未过 0 / 没验成 0 → overall pass')
+    // 真的发到了 Redis（不是纸面通过）
+    expect(server.requests).toEqual([['PING']])
+  })
+
+  /*
+   * 「裸回复 → 表格」那一跳（`shapeReplyAsResult`）由上面那条在**工具面**钉住：直接把它当
+   * `ShapedResult` 用会在这一行抛 `TypeError`（`result.rows` 不存在），而不是判 `pass`。
+   */
+
+  it('清单里混了引擎没接通的断言 → 那条记「没验成」并给出原因，能跑的照跑（**不许**混成数据问题）', async () => {
+    const server = await fakeRedis()
+    const dir = projectWith('cdqas', verifyYaml('cdqas', PING_ASSERTION, SQL_ASSERTION))
+    const host = makeHost()
+    host.mount({
+      targets: [
+        redisTarget({ port: server.port, scopeDirs: [dir] }),
+        redisTarget({ id: 'sql-1', engine: 'mysql', host: '10.0.0.1', port: 3306, scopeDirs: [dir] }),
+      ],
+    })
+
+    // redis 目标在 → 清单入口出现（SQL 目标那一条不会把它带走）
+    expect(host.names()).toContain(T('verify'))
+    const text = await host.call(T('verify'), { cwd: dir })
+
+    expect(text).toContain('真的跑了 1 条，其余 1 条没验成')
+    expect(text).toContain('✓ redis-alive（fail）')
+    expect(text).toContain('? order-count（fail）')
+    expect(text).toContain('这个引擎的执行通路还没接通（mysql）')
+    expect(text).toContain('没验成的原因')
+    // 关键：**一条 fail 都没有**——「没验成」不许冒充「验出问题」（两者的下一步动作相反）
+    expect(text).not.toContain('✗')
+    // SQL 那条没有碰任何执行器（假服务只收到 redis 那条的请求）
+    expect(server.requests).toEqual([['PING']])
+  })
+
+  it('清单里的目标没配在这份配置里 → 记「没验成」并说清原因（缺目标不是配置错误）', async () => {
+    const server = await fakeRedis()
+    const dir = projectWith('cdqas', verifyYaml('cdqas', PING_ASSERTION, SQL_ASSERTION))
+    const host = makeHost()
+    // 只配 redis：`sql-1` 不在这份配置里（清单随项目跨机器，这是常态而不是错）
+    host.mount({ targets: [redisTarget({ port: server.port, scopeDirs: [dir] })] })
+
+    const text = await host.call(T('verify'), { cwd: dir })
+
+    expect(text).toContain('? order-count（fail）')
+    expect(text).toContain('目标 sql-1 没有配置')
+    expect(text).toContain('真的跑了 1 条')
+  })
+
+  it('作用域拦下时**原样带出拒绝码与恢复路径**（拒绝的是这次调用，不是数据）', async () => {
+    const server = await fakeRedis()
+    const dir = projectWith('cdqas', verifyYaml('cdqas', PING_ASSERTION))
+    const host = makeHost()
+    // 目标作用域是 CWD（用例的固定目录），而这次调用在另一个目录 → OUT_OF_SCOPE
+    host.mount({ targets: [redisTarget({ port: server.port })] })
+
+    const text = await host.call(T('verify'), { cwd: dir })
+
+    expect(text).toContain('? redis-alive（fail）')
+    expect(text).toContain('OUT_OF_SCOPE')
+    // 恢复路径跟着一起出去（含「按哪个目录判的」）——这条是记-16 那条纸割的回归钉子
+    expect(text).toContain('恢复路径：')
+    expect(text).toContain('宿主进程的工作目录')
+    expect(text).not.toContain('✗')
+    expect(server.requests).toEqual([])
+  })
+
+  it('清单里的写语句在**加载时**就被拒（根本走不到执行），报的是清单与字段', async () => {
+    const dir = projectWith(
+      'cdqas',
+      verifyYaml('cdqas', ['  - id: sneaky', '    appliesTo: backend', '    target: redis-248', '    statement: SET k v', '    expect: { eq: OK }', '    severity: fail'].join('\n')),
+    )
+    const host = makeHost()
+    host.mount({ targets: [redisTarget({ scopeDirs: [dir] })] })
+
+    const error = await host.call(T('verify'), { cwd: dir }).catch((e: unknown) => String(e))
+    expect(error).toContain('验活清单不成立（verify/cdqas.yaml）')
+    expect(error).toContain('assertions[0].statement')
+    expect(error).toContain('只读')
+  })
+
+  it('项目里没有清单 → 说清去哪儿写（而不是给一份空报告）', async () => {
+    const dir = projectWith('cdqas', verifyYaml('cdqas', PING_ASSERTION))
+    rmSync(dir, { recursive: true, force: true })
+    const host = makeHost()
+    host.mount({ targets: [redisTarget({ scopeDirs: [CWD] })] })
+
+    const error = await host.call(T('verify'), { cwd: dir }).catch((e: unknown) => String(e))
+    expect(error).toContain('没找到验活清单')
+    expect(error).toContain('verify/<项目>.yaml')
+    expect(error).toContain('project 参数指定')
   })
 })

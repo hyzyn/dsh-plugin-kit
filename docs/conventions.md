@@ -423,7 +423,7 @@ HTTP 那条管「走出来的东西是对的」。
 | 面 | 清单（相对项目根） | 今天谁在读 |
 |---|---|---|
 | 容器 | `ready/<项目>.ready.yaml` | `devenv` 的 `env_status` / `env_wait`（agent 工具） |
-| 数据 | `verify/<项目>.yaml` | **库路径**（`loadManifest` + 求值）——工具面入口还没有，见下 |
+| 数据 | `verify/<项目>.yaml` | `devdata` 的 `devdata_verify`（agent 工具） |
 | 页面 | `web/<项目>.yaml` | `devfront` 的 `site_verify`（agent 工具） |
 
 **三条约束**（是口径的一部分，不是建议）：
@@ -438,11 +438,15 @@ HTTP 那条管「走出来的东西是对的」。
 **守卫**：[`scripts/test/release-chain.test.ts`](../scripts/test/release-chain.test.ts)——一个项目目录、
 三份清单、三个面各认自己那份（**互不读取**）；三份路径并列钉住；项目名串了要红。
 
-**一处实测出来的不对称（2026-10-04）**：中间那一环**今天只能由人 / 脚本接上**——
-`verify/<项目>.yaml` 在 `packages/devdata/src/verify.ts` 之外**没有任何消费者**（真机启动日志里
-`devdata` 注册的四个工具没有一个是清单驱动的）。所以「三面按同一个项目名跑同一批清单」这句
-**对容器与页面两面成立、对数据面还差一个入口**（已记进 `packages/devdata/ROADMAP.md` 待办 21）。
-守卫里那条 tripwire 就是为这件事留的针：接上之后它会红，那时把它改成正向断言并更新上表第三列。
+**一处实测出来的不对称（2026-10-04，当天已闭合）**：立这份口径时中间那一环**只能由人 / 脚本接上**
+——`verify/<项目>.yaml` 在 `packages/devdata/src/verify.ts` 之外**没有任何消费者**（真机启动日志里
+`devdata` 注册的四个工具没有一个是清单驱动的），于是「三面按同一个项目名跑同一批清单」这句
+**当时对容器与页面两面成立、对数据面还差一个入口**（已记进 `packages/devdata/ROADMAP.md` 待办 21）。
+守卫里那条 tripwire 就是为这件事留的针：**接上之后它会红**——2026-10-04 当天就红了，也按它自己的
+提示翻成了正向断言（保留反例：把消费者删掉就报空），第三列同时改成 `devdata_verify`。
+新入口的判据见 `packages/devdata/ROADMAP.md` 记-20：只读、逐条 `pass` / `fail` / `unknown`、
+**「没验成」不许冒充「验出问题」**、进审计；今天只接得住真能跑的引擎（Redis），
+清单里 SQL / RocketMQ 的断言逐条记「没验成」而不是假装跑过。
 
 ## 常量：什么该提，什么不该提
 

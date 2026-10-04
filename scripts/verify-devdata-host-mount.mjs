@@ -10,7 +10,8 @@
  * 2. **挂得上、配置真的交下来了**：启动日志里出现
  *    `[dsh-devdata] mounted (enabled=true, targets=1, ...)`；
  * 3. **工具真的注册进了工具面**：`[dsh-devdata] agent tools registered (...)` 里的名字**恰好**是
- *    命令原文形态该有的四个，且**没有**任何一个结构化动作名（`devdata_query` / `devdata_set` …）
+ *    命令原文形态该有的**五个**（四条引擎入口 / 自证项 + 清单驱动的 `devdata_verify`），且**没有**
+ *    任何一个结构化动作名（`devdata_query` / `devdata_set` …）
  *    ——「跑起来必失败的工具不注册」这条判据在真宿主上也成立。
  *
  * 它**不**连真 Redis（那由 `test/redis-real-machine.test.ts` 的门控用例覆盖）。目标配的是
@@ -50,8 +51,13 @@ const pkgDir = join(repoRoot, 'packages', 'devdata')
 
 /** 临时资源前缀（**删除时的唯一凭据**，别省）。 */
 const PREFIX = 'dsh-devdata-mount-'
-/** 注册面期望（命令原文形态的引擎：一条入口 + 引擎无关的三个自证项）。 */
-const EXPECTED_TOOLS = ['devdata_capabilities', 'devdata_doctor', 'devdata_list_targets', 'devdata_redis_command']
+/**
+ * 注册面期望（命令原文形态的引擎：一条入口 + 引擎无关的三个自证项 + 清单驱动的 `devdata_verify`）。
+ *
+ * `devdata_verify` 的可见性判据是「**这份配置里存在 redis 目标**」——本脚本的 profile 正是 redis
+ * （见下面写配置那一段），所以它会注册；换成只有 SQL 目标的 profile 时它**不该**出现。
+ */
+const EXPECTED_TOOLS = ['devdata_capabilities', 'devdata_doctor', 'devdata_list_targets', 'devdata_redis_command', 'devdata_verify']
 /** 结构化动作名**不该**出现在工具面上（执行器只收命令原文）。 */
 const FORBIDDEN_TOOLS = ['devdata_query', 'devdata_set', 'devdata_get', 'devdata_keys', 'devdata_schema']
 
@@ -188,7 +194,7 @@ try {
   const names = registered === null ? [] : registered[1].split(',').map((name) => name.trim()).filter((name) => name !== '')
   check('工具注册行了（真 ToolRuntime 接受了这些定义）', registered !== null, names.join(', '))
   check(
-    '注册的**恰好**是命令原文形态该有的四个',
+    '注册的**恰好**是命令原文形态该有的五个',
     JSON.stringify([...names].sort()) === JSON.stringify(EXPECTED_TOOLS),
     names.join(', '),
   )

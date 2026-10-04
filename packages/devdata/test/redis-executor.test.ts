@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { simpleReplies, startFakeRedis, type FakeRedisServer } from './fake-redis.js'
 
-import { createRedisExecutor, shapeReply, type ExecOutcome } from '../src/index.js'
+import { createRedisExecutor, shapeReply, shapeReplyAsResult, type ExecOutcome } from '../src/index.js'
 import type { DevDataTarget } from '../src/index.js'
 
 /* --------------------------------- 假服务 --------------------------------- */
@@ -125,5 +125,30 @@ describe('shapeReply：RESP → 普通值', () => {
         ],
       }),
     ).toEqual(['sysMenu', 1])
+  })
+})
+
+/**
+ * 断言库要的是**表格**，而 `shapeReply` 给的是裸值（命令原文入口照原样交付，见 `plugin.test.ts`
+ * 那条 `PONG`）。两者之间这一跳在 2026-10-04 才补上——当时发现 `ToolExecutor` 的注释写着
+ * 「与 `ShapedResult` 结构兼容」，而 Redis 执行器实际给的是裸值：直接把它当 `ShapedResult` 用会在
+ * 真机上抛 `TypeError`（`result.rows` 不存在），**纯单测抓不到**（夹具给的是真表格）。
+ */
+describe('shapeReplyAsResult：裸值 → 断言库的表格', () => {
+  it('标量一行、数组一行一项、`nil` 空结果；列名恒为 `value`', () => {
+    expect(shapeReplyAsResult('PONG')).toEqual({ columns: ['value'], rows: [{ value: 'PONG' }], rowCount: 1, truncated: false, limit: Number.MAX_SAFE_INTEGER })
+    expect(shapeReplyAsResult(59)).toEqual({ columns: ['value'], rows: [{ value: 59 }], rowCount: 1, truncated: false, limit: Number.MAX_SAFE_INTEGER })
+    expect(shapeReplyAsResult(['a', 'b']).rows).toEqual([{ value: 'a' }, { value: 'b' }])
+    expect(shapeReplyAsResult(['a', 'b']).rowCount).toBe(2)
+    // `nil` = 键不存在 → **空结果**（值类算子记「验不了」）；「有没有」请用 EXISTS / rowCount 表达
+    expect(shapeReplyAsResult(null).rows).toEqual([])
+    expect(shapeReplyAsResult(null).rowCount).toBe(0)
+  })
+
+  it('上限可以由调用方给（今天没人给 = 不截断，理由见函数注释）', () => {
+    const shaped = shapeReplyAsResult(['a', 'b', 'c'], { maxRows: 2 })
+    expect(shaped.rows).toEqual([{ value: 'a' }, { value: 'b' }])
+    expect(shaped.truncated).toBe(true)
+    expect(shaped.limit).toBe(2)
   })
 })

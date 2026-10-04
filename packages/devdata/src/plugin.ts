@@ -33,6 +33,8 @@
  * 「调用方忘了看 ok 字段」这种沉默失败。
  */
 
+import { basename } from 'node:path'
+
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import z from '@deepseek-ai/schemastery'
@@ -67,7 +69,7 @@ import {
   type LiveTarget,
 } from './plugin-config.js'
 import { readOnlySummary, verdictReadOnly } from './readonly-probe.js'
-import { createRedisExecutor } from './redis-executor.js'
+import { createRedisExecutor, shapeReplyAsResult } from './redis-executor.js'
 import { REJECTION_CODES } from './rejection.js'
 import { decideScope } from './scope.js'
 import {
@@ -79,6 +81,8 @@ import {
   type ToolExecutor,
   type ToolOutcome,
 } from './tool.js'
+import { loadManifest, manifestRelativePath } from './verify.js'
+import { runManifestVerify, type AssertionRunner, type ManifestVerifyRun } from './verify-run.js'
 
 /** 能力规格的配置形状（与 `kit` 的 `CapabilitySpec` 一字不差，避免两套写法）。 */
 const CAPABILITY_SCHEMA = z.object({
@@ -897,6 +901,128 @@ const plugin = definePlugin<Config>({
       return finish(outcome)
     }
 
+    /**
+     * 一条断言在某个目标上的**执行通道**（`devdata_verify` 的 runner）。
+     *
+     * 清单里每条断言自带 `target`，所以这里是**逐条派发**——这也正是 `devdata_verify` 不进
+     * `TOOL_SPECS` 的原因（它不是引擎入口，没有「在这个目标上可见吗」这一问）。
+     *
+     * 两处分档刻意放在**碰执行器之前**：
+     *   - **本宿主服务不了的引擎**（今天除 redis 外全部，见 `servedEngines()`）直接短路，报「这个引擎
+     *     的执行通路还没接通」。拿 SQL / RocketMQ 的语句去问 Redis 解析层只会得到一句与事实无关的
+     *     拒绝（「命令解析不出来」），那是错诊断——让 agent 去改一条本来没问题的语句。
+     *   - 放行之后才交给 `invokeRedisCommand`（与 `devdata_redis_command` **同一条**判据链：解析 →
+     *     可见性 → 裁决 → 计划护栏 → 执行 → 审计）。作用域 / 能力闸门的拒绝与执行失败都由它给码，
+     *     这里只把 `code：message` **原样**转出去（`reason` 的措辞随拒绝码走，报告里那一行就是依据）。
+     */
+    const runManifestAssertion: AssertionRunner = async ({ assertion, target, cwd }) => {
+      const started = Date.now()
+      const configured = live.targets.find((row) => row.id === target.id)
+      if (configured === undefined) {
+        // 目标表是这一层从 `live.targets` 现取的，正常到不了这里；到了说明两处取的不是同一份表。
+        return { ok: false, reason: `目标 ${target.id} 在这份配置里找不到了（配置刚变过？重试一次）`, latencyMs: Date.now() - started }
+      }
+      if (!servedEngines().includes(configured.engine)) {
+        return {
+          ok: false,
+          reason: `这个引擎的执行通路还没接通（${configured.engine}）：本宿主今天只接了 ${servedEngines().join(' / ')}，所以这条断言这次只能记「没验成」`,
+          latencyMs: Date.now() - started,
+        }
+      }
+      const outcome = await invokeRedisCommand({
+        target: configured,
+        commandText: assertion.statement,
+        cwd,
+        maxScanCount: configured.maxScanCount,
+        executor: redisExecutor,
+        audit: auditSink(),
+        beforeExecute: auditGate,
+        // 审计行带上断言的 id：一次跑批会落下 N 条「允许 / 拒绝」，事后要能对上清单里的哪一条。
+        operationId: assertion.id,
+      })
+      if (!outcome.ok) {
+        /*
+         * 拒绝**原样**带出去：码 + 正文（判据层写的），以及**恢复路径**。
+         *
+         * `hint` 不能省：它里面有「刚才判的是哪个目录」这类信息（`adjudicate.ts` 的 OUT_OF_SCOPE
+         * 就是 2026-10-02 真机那条纸割换来的，见记-16 / D09）。省掉它，等于在这条新入口上把那条
+         * 纸割重新种一遍——agent 拿到「不在允许目录内」却不知道刚才按哪个目录判的。
+         */
+        const recovery = outcome.hint === undefined ? '' : `；恢复路径：${outcome.hint}`
+        return { ok: false, reason: `${outcome.code}：${outcome.message}${recovery}`, latencyMs: Date.now() - started }
+      }
+      // 裸回复 → 表格：`evaluateAssertion` 只认 `ShapedResult`（口径见 `shapeReplyAsResult`）。
+      return { ok: true, result: shapeReplyAsResult(outcome.result), latencyMs: Date.now() - started }
+    }
+
+    /**
+     * 跑一次项目验活清单（`devdata_verify` 的执行体）。
+     *
+     * 顺序与 `site_verify` 同口径：**读清单之前不碰任何目标**——清单读不到 / 写错是配置问题，
+     * 「还没开工就失败」与「跑到一半失败」对 agent 是两件事（前者的恢复路径是改清单）。
+     *
+     * 项目名缺省取 `cwd` 的目录名（= 清单文件名，两者必须一致，见 `verify.ts`）。
+     */
+    const runVerify = async (input: Record<string, unknown>): Promise<ToolText> => {
+      const cwd = cwdOf(input)
+      const given = typeof input.project === 'string' ? input.project.trim() : ''
+      const project = given === '' ? basename(cwd) : given
+      if (project === '') {
+        throw new Error(`项目名取不到（cwd=${JSON.stringify(cwd)} 的目录名是空的）——用 project 参数指定清单名（\`verify/<项目>.yaml\`）`)
+      }
+      const loaded = loadManifest(project, {
+        roots: [cwd],
+        // 加载期的语句判据按**目标引擎**判（加载契约那一层，2026-10-04）：目标不在这份配置里 →
+        // 只查形状，运行时报「没验成」（一份清单的生命周期跨机器，见 `StatementClassifier`）。
+        engineOf: (targetId) => live.targets.find((target) => target.id === targetId)?.engine,
+      })
+      if (loaded.kind === 'no-manifest') {
+        throw new Error(
+          `没找到验活清单 ${manifestRelativePath(project)}（在 ${cwd} 下）。` +
+            `恢复路径：把断言写进 ${manifestRelativePath('<项目>')} 再验（格式见本包 README 的「验活断言库」）——` +
+            '项目名与文件名必须一致，或者用 project 参数指定。',
+        )
+      }
+      if (loaded.kind === 'unreadable') throw new Error(loaded.message)
+      if (loaded.kind === 'config-error') {
+        const lines = loaded.errors.map((error) => (error.path === '' ? `- ${error.message}` : `- ${error.path}：${error.message}`))
+        throw new Error(`验活清单不成立（${manifestRelativePath(project)}）：\n${lines.join('\n')}`)
+      }
+      const run = await runManifestVerify({
+        project,
+        cwd,
+        assertions: loaded.manifest.assertions,
+        targets: live.targets.map((target) => ({ id: target.id, engine: target.engine })),
+        runner: runManifestAssertion,
+      })
+      return { text: renderVerify(run) }
+    }
+
+    /**
+     * `devdata_verify` 的正文：先一句「跑了 X/Y 条，其余是没验成」，再逐条 `✓/✗/?`，最后汇总。
+     *
+     * 「没验成」单独成块说清原因——它与「验出问题」的下一步动作相反，混在一起报就等于给错指令。
+     */
+    const renderVerify = (run: ManifestVerifyRun): string => {
+      const { summary } = run
+      const head =
+        `验活清单 ${manifestRelativePath(run.project)}：共 ${String(summary.total)} 条断言，` +
+        `真的跑了 ${String(run.ran)} 条，其余 ${String(summary.total - run.ran)} 条没验成（没配目标 / 引擎没接通 / 被作用域或闸门拒）`
+      const body = run.results.map((result) => {
+        const mark = result.status === 'pass' ? '✓' : result.status === 'unknown' ? '?' : result.severity === 'warn' ? '!' : '✗'
+        return `${mark} ${result.id}（${result.severity}）${result.message}`
+      })
+      const parts = [head, '', ...body]
+      if (run.problems.length > 0) {
+        parts.push('', '没验成的原因（这些断言没跑到求值那一步，**不是**「验出问题」）：', ...run.problems.map((problem) => `  - ${problem}`))
+      }
+      parts.push(
+        '',
+        `汇总：通过 ${String(summary.passed)} / 失败 ${String(summary.failed)} / 告警未过 ${String(summary.warned)} / 没验成 ${String(summary.unknown)} → overall ${summary.overall}`,
+        '本次只发清单里声明的只读语句，逐条走与 `devdata_redis_command` 同一道判据（作用域 / 能力闸门 / 审计）；不写目标、不改 Jenkins。',
+      )
+      return parts.join('\n')
+    }
 
     /** `list_targets` 的正文。 */
     const renderTargets = (cwd: string): string => {
@@ -1002,6 +1128,13 @@ const plugin = definePlugin<Config>({
 
       const registrations = unionEntryTools(live.targets, { engines: servedEngines() })
       const names = registrations.map((tool) => tool.name)
+      /**
+       * **绕过 `unionEntryTools`** 注册的那几条（不在 `TOOL_SPECS` 里，所以 `names` 里没有它们）。
+       *
+       * 单独一份是为了**启动日志如实**：`agent tools registered (...)` 那一行是运维与验收脚本的
+       * 观测面（D04 就是「挂上了、日志里却找不到它注册了什么」换来的），漏报等于让那条观测面说谎。
+       */
+      const extraNames: string[] = []
       const failures: string[] = []
       const add = (name: string, definition: unknown): void => {
         try {
@@ -1102,6 +1235,43 @@ const plugin = definePlugin<Config>({
         )
       }
 
+      /*
+       * `devdata_verify`：按项目清单跑一批只读断言。**不进 `TOOL_SPECS`**——它不是引擎入口
+       * （动作按清单里每条断言的 `target` 逐条派发，所以没有「在这个目标上可见吗」这一问）。
+       *
+       * 可见性只有一条判据：**这份配置里存在 redis 目标**。与「没有执行器就不露引擎入口」是同一条
+       * 纪律（`entries.ts`）：将来 SQL 通路接通时它会自动带上那些引擎；而今天清单里那些跑不了的
+       * 引擎（SQL / RocketMQ）的断言在运行时逐条记「没验成」——入口本身不该因此消失，因为
+       * **同一份清单里往往既有能跑的也有跑不了的**，整条入口消失会让能跑的那些也没法验。
+       */
+      if (live.targets.some((target) => target.engine === 'redis')) {
+        const verifyName = toolNameFor('verify')
+        add(
+          verifyName,
+          defineTool({
+            name: verifyName,
+            // 只发清单里声明的只读语句（加载时逐条判过），不改数据、不阻塞目标 → 可并发。
+            isConcurrencySafe: () => true,
+            description:
+              `按项目里的**验活清单**逐条跑只读断言（清单路径 \`verify/<项目>.yaml\`，项目名缺省取 cwd 的目录名，也可用 project 指定）。` +
+              `每条断言派发到它自己声明的 \`target\`（一次调用跑完整份清单），逐条给「通过 / 失败 / 没验成」与依据。` +
+              `**「没验成」与「验出问题」是两件事**：清单里的目标没配、那个引擎的执行通路还没接通、被作用域或闸门挡下——` +
+              `一律记「没验成」，不会冒充成数据不对。它只发清单里声明的只读语句，底下走与 \`devdata_redis_command\` ` +
+              `同一道判据（作用域 / 能力闸门 / 审计）；清单随项目评审，改断言请改那份文件。`,
+            parameters: {
+              project: {
+                type: 'string',
+                description: '项目名 = 清单名（`verify/<项目>.yaml`）。缺省取 cwd 的目录名；文件名与项目名必须一致',
+              },
+              cwd: cwdParam,
+            },
+            output: textOutput(),
+            execute: (args: unknown): Promise<ToolText> => runVerify((args ?? {}) as Record<string, unknown>),
+          }),
+        )
+        extraNames.push(verifyName)
+      }
+
       if (failures.length > 0) {
         console.warn(`[dsh-devdata] ${String(failures.length)} 个工具注册失败（下次配置变更会重试）：${failures.join('；')}`)
       }
@@ -1111,7 +1281,7 @@ const plugin = definePlugin<Config>({
        * 而**真机验收脚本解析的就是这一行**（`live-host-smoke` 对 docker 用的是同一个写法），
        * 运维确认插件有没有生效也看它。本仓其余插件（docker / tty / devfront）都用 stdout。
        */
-      console.log(`[dsh-devdata] agent tools registered (${names.join(', ') || 'none'})`)
+      console.log(`[dsh-devdata] agent tools registered (${[...names, ...extraNames].join(', ') || 'none'})`)
     }
 
     /** 拆掉工具登记。 */
