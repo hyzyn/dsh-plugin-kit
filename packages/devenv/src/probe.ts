@@ -50,6 +50,18 @@ export interface ProbeInput {
  */
 export function probeFailureDetail(error: NodeJS.ErrnoException, host: string, timeoutMs: number): string {
   if (error.code === 'ECONNREFUSED') return '连接被拒（端口还没起来）'
+  /*
+   * `ECONNRESET` 是**一等状态**，不是「其它错误」（devenv D03，2026-10-04 真机档抓到）。
+   *
+   * Docker Desktop（macOS）在「端口已发布、容器里还没有进程监听」时**先收下 TCP 连接再空回**，
+   * 于是 Node 报的是 `socket hang up`——而这恰好是每次冷启动里**最长**的那一段
+   * （2026-10-04 真机档实测：连续 5 次观测 ≈15s 都是这一档，见
+   * `test/real-coldstart-local.test.ts`）。不认它的后果很具体：用户盯得最久的那句话是个英文
+   * Node 错误，既看不出「还没起来」、也看不出「该继续等」。
+   *
+   * 判据认的是 **code**：没有 code 的同名错误照旧原样带出去（下一行那个契约不变）。
+   */
+  if (error.code === 'ECONNRESET') return '连接被重置（多半是端口上还没有能应答的东西）'
   if (error.code === 'ENOTFOUND' || error.code === 'EAI_AGAIN') return `主机名解析不了：${host}`
   // 超时走的是 `req.destroy(new Error('timeout'))`，到这里的 message 就是 'timeout'。
   if (error.message === 'timeout') return `${String(timeoutMs)}ms 内没有响应`

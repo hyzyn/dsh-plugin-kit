@@ -79,8 +79,18 @@ describe('httpProbe：连不上与超时的文案要分开', () => {
     const again = Object.assign(new Error('getaddrinfo EAI_AGAIN'), { code: 'EAI_AGAIN' })
     expect(probeFailureDetail(again, 'nas.example', 1000)).toBe('主机名解析不了：nas.example')
     expect(probeFailureDetail(new Error('timeout'), 'h', 1234)).toBe('1234ms 内没有响应')
-    // 其它错误原样带出去：编一句更好听的话会盖掉真正的原因。
+    /*
+     * ★ 2026-10-04 真机加的一条：`ECONNRESET` 在 Docker Desktop 上是「端口已发布、容器里还没有
+     * 进程监听」那个状态（转发器先收下连接再空回），也就是每次冷启动里**最长**的一段——它是一等
+     * 状态，不是「其它」（真机档 `real-coldstart-local.test.ts` 实测：连续 5 次观测都是它）。
+     */
+    const reset = Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' })
+    expect(probeFailureDetail(reset, 'h', 1000)).toBe('连接被重置（多半是端口上还没有能应答的东西）')
+    // 判据认的是 **code**：没有 code 的同名错误照旧原样带出去（这一档原来的契约不变）
     expect(probeFailureDetail(new Error('socket hang up'), 'h', 1000)).toBe('socket hang up')
+    // 其它错误原样带出去：编一句更好听的话会盖掉真正的原因。
+    const unknown = Object.assign(new Error('EAI_FAIL：解析器内部错'), { code: 'EAI_FAIL' })
+    expect(probeFailureDetail(unknown, 'h', 1000)).toBe('EAI_FAIL：解析器内部错')
   })
 
   it('服务器不回响应 → 超时文案带配置的毫秒数', async () => {

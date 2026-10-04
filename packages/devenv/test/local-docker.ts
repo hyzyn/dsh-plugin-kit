@@ -1,11 +1,16 @@
 /**
- * 本机 docker 的测试夹具（`real-write-local.test.ts` 与 `real-health-local.test.ts` 共用）。
+ * 本机 docker 的测试夹具（`real-write-local.test.ts` / `real-health-local.test.ts` /
+ * `real-coldstart-local.test.ts` 三个本机真 daemon 档共用）。
  *
  * ## 为什么是共享的而不是各抄一份
  *
- * 「探 daemon / 挑靶子镜像 / 跑一条 docker 命令」这三件事在**两个本机真 daemon 档**里一模一样，
- * 而它们各自踩过的坑（见下）只该被记一次。第三个消费者出现时按本仓判据就该上收——这里已经是
- * 第二个，所以先收进测试夹具层（`test/`，不进产物）。
+ * 「探 daemon / 挑靶子镜像 / 跑一条 docker 命令」这三件事在**三个本机真 daemon 档**里一模一样，
+ * 而它们各自踩过的坑（见下）只该被记一次——所以上收进测试夹具层（`test/`，不进产物）。
+ *
+ * **第三个消费者到了（2026-10-04，冷启动等待报告那一档）时的判断：仍然不往 `kit` 抬。**
+ * 那三条「出现第三个消费者就上收」的判据来自**跨包**重复（`fake-host` 是 `devenv` / `devdata` /
+ * `devfront` 各一份才搬进 `kit` 的）；而这三个消费者**都在本包内**，夹具本来就在本包的 L1 测试层，
+ * 再抬一层只会让「本机 docker 的坑」住到一个别的包不会用的地方。
  *
  * ## 两条被真机教过的判据
  *
