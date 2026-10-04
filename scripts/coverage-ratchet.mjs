@@ -52,6 +52,7 @@
  * 不写 shebang：本文件要被 `scripts/test/coverage-ratchet.test.ts` import。
  */
 import { execFileSync } from 'node:child_process'
+import { renderCoverageSummary, writeStepSummary } from './step-summary.mjs'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -169,9 +170,14 @@ if (process.argv[1] !== undefined && import.meta.url === `file://${process.argv[
   }
 
   const baseline = JSON.parse(readFileSync(BASELINE_FILE, 'utf8'))
-  const { ok, report } = compareCoverage({ baseline, current })
+  const { ok, report, drops } = compareCoverage({ baseline, current })
   console.log(`[coverage] 统计范围 ${COVERAGE_INCLUDE}（宿主半体；浏览器半体走挂载车道）`)
   console.log(report)
+  /*
+   * Job Summary：这条车道按天跑，三条指标的「本轮 vs 基线」表格放 job 页面顶部一眼可见。
+   * 本地没设 `$GITHUB_STEP_SUMMARY` → 静默不写（见 step-summary.mjs 的行为约定）。
+   */
+  writeStepSummary(renderCoverageSummary({ current, baseline, ok, drops }))
   if (!ok) {
     console.error('[coverage] 覆盖率回退了。两条出路：')
     console.error('  1. 给新代码补用例（首选）——`--reporter=html` 打开报告看哪些行是红的；')

@@ -36,6 +36,7 @@
  */
 import { spawn } from 'node:child_process'
 import { cpus } from 'node:os'
+import { renderFlakeSummary, writeStepSummary } from './step-summary.mjs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -201,9 +202,15 @@ if (process.argv[1] !== undefined && import.meta.url === `file://${process.argv[
   console.log(`[flake] 并发跑 ${String(runs)} 份全量套件（抓争用 / 墙钟型 flake；形状理由见文件头）…`)
   const started = Date.now()
   const results = await Promise.all(Array.from({ length: runs }, (_, i) => runSuite(i + 1, runs)))
-  const { ok, report } = summarizeRuns({ runs: results })
+  const { ok, report, failed } = summarizeRuns({ runs: results })
   console.log(report)
-  console.log(`[flake] 墙钟耗时 ${String(((Date.now() - started) / 1000).toFixed(1))}s`)
+  const elapsedSec = Number(((Date.now() - started) / 1000).toFixed(1))
+  console.log(`[flake] 墙钟耗时 ${String(elapsedSec)}s`)
+  /*
+   * Job Summary（`$GITHUB_STEP_SUMMARY`）：这条车道按天跑，结论要能一眼看到，
+   * 而不是翻几千行日志。本地没设这个变量 → 静默不写（见 step-summary.mjs 的行为约定）。
+   */
+  writeStepSummary(renderFlakeSummary({ runs, ok, failed, elapsedSec }))
 
   if (!ok) {
     console.error('[flake] 未通过：并发下有用例红了。')

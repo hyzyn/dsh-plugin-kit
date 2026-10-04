@@ -611,6 +611,27 @@ nightly 恰恰相反——它存在的理由就是跑 CI **不该**每次跑的�
    23:15 那个槽位就没赶上。所以**新增 / 改完 workflow 的当天不要等它**，
    要立刻验证就 `gh workflow run <file>`（`workflow_dispatch` 这条入口的用途）。
 
+**按天跑的车道要写 Job Summary**（`$GITHUB_STEP_SUMMARY`，2026-10-04 起两条 nightly 车道都写）：
+结论渲染在 job 页面**顶部**，一眼看到「昨晚绿没绿」，而不是翻几千行日志找
+`[flake] 并发 3 份全绿`。实现是 [`scripts/step-summary.mjs`](../scripts/step-summary.mjs)
+（`writeStepSummary` + 两个渲染函数），**零依赖、零第三方 action**。
+
+**为什么不引第三方 reporter**（有人会问「别的项目有 Vitest Test Report，我们为什么不装」）：
+
+- **vitest 内建的 `github-actions` reporter 做不到这件事**（本仓实测）：它只在**失败**时往
+  标准输出打 `::error file=…,title=…` 注解，**不写 Step Summary**（设了 `GITHUB_STEP_SUMMARY`
+  也不生成文件）。你看到的那种逐 suite 摘要来自 `sapphi-red/vitest-github-actions-reporter`
+  这类第三方。
+- 第三方 = **新依赖 + 新权限面**，而本仓刚做完「最小权限」硬化；它的核心价值（人多时在 PR 上
+  汇总给 reviewer 看）对单人项目不成立。
+- 本仓**已经有全部数据源**：`summarizeRuns` / `compareCoverage` 早就把结论算成结构化结果，
+  缺的只是渲染成 Markdown 并追加——那是几十行的事，不值得引一个依赖。
+
+**行为约定（三条都有用例钉住）**：① 没设 `$GITHUB_STEP_SUMMARY` 时**什么都不做**——
+本地 `pnpm flake:check` 不该凭空建文件；② 写失败**不改变退出码**（摘要只是给人看的）；
+③ 渲染出来的是**判据本身**（份数 / 是否回退 / 三条指标数值），渲染错了比没有更坏，
+因为它会被当成结论。
+
 #### 刻意不进 CI：`preview.mjs` 的 39 个界面场景（2026-10-03 复核，结论：**暂不**）
 
 `packages/tty/scripts/preview.mjs` 是**真的覆盖了挂载车道看不见的东西**——挂载车道的 C1–C5 只回答
