@@ -35,6 +35,7 @@ import { decideScope } from '@hyzyn/dsh-kit'
 
 import { classifyConsoleMessages, summarizeConsole, type ConsoleMessage, type ConsoleSummary } from './console.js'
 import type { CredentialOutcome } from './credential.js'
+import type { LoginDeclaration } from './login.js'
 import type { PageObservation } from './web-verify.js'
 /** 动作名。**这份清单就是白名单**——不在其中的一律拒。 */
 export const WEB_ACTIONS = ['open', 'shot', 'click', 'fill', 'text', 'console'] as const
@@ -84,6 +85,19 @@ export interface WebTarget {
   viewport?: { width: number; height: number }
   /** 登录凭据引用（`env:NAME` 一类）。**永不存明文**，与数据面同口径。 */
   credentialRef?: string
+  /**
+   * **登录流程的声明原文**（2026-10-04 加，ROADMAP 待办 B3 的编排那一半）。
+   *
+   * 形态与判定**不在这里**：`login.ts` 的 `parseLogin` 是唯一一份（`goto` / `fill` / `click` /
+   * `waitFor` + 一条 `success`，步数与总预算都有上限），入口是 `site_login`。
+   *
+   * 这里刻意只放「原文」而不是解析后的计划：解析会**拒**（写错的字段名、越界的 URL、目标没声明过的
+   * 凭据引用……），而配置层（`normalizeConfig`）是**容错**的（缺 id / 缺 url 的行它静默跳过）。
+   * 若在配置层解析并丢弃，一份写坏的登录声明就会变成「这个站点没声明登录流程」——写错与没写是两件事。
+   * 所以原文一路带到 `site_login` 开工前，由**同一份**判据当场拒（项目里的 `web/sites.yaml`
+   * 那条路径更早：`normalizeTargets` 是严格的，保存/加载时就拒）。
+   */
+  login?: LoginDeclaration
 }
 
 /** 一次动作请求。 */

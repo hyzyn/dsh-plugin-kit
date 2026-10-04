@@ -5,8 +5,9 @@
 > **三包中的第三个**（方案 §16）：`devdata`（数据面 + 验活断言库）、`devenv`（环境编排，
 > **已建**：[packages/devenv](../devenv/README.md)）、**本包 = 前端效果验证**。
 >
-> **判定层、CDP 驱动与宿主工具注册都已就位**：七个 `site_*` 工具能真的打开站点、截图、收 console，
-> 还能**按项目清单跑一批断言**（`site_verify`）、**按发布清单一次跑多个项目**（`site_verify_release`），
+> **判定层、CDP 驱动与宿主工具注册都已就位**：八个 `site_*` 工具能真的打开站点、截图、收 console，
+> 还能**按项目清单跑一批断言**（`site_verify`）、**按发布清单一次跑多个项目**（`site_verify_release`）、
+> **按站点声明里写好的步骤走一遍登录**（`site_login`，条件注册），
 > `site_fill` 还能填**凭据引用**（口令不落明文）；
 > **有配置卡片**（客户端半体，2026-10-03）：标量与站点都可改并落盘。**没有独立面板**。
 
@@ -136,6 +137,74 @@ projects:
 | **没跑成的项目单列**（没配站点 / 没有清单 / 清单不成立 / 那份清单里没有这个站点的断言），一律算「没验成」 | 不因为一个项目不成立就丢掉其余项目（一次配置问题只砸那一个项目） |
 | 整批 `fail` > `warn` > `unknown` > `pass`：某项目失败 → 整批失败；有项目没验成 → 至少 `unknown` | 不把「没跑到」算成通过，也不算成失败 |
 
+### 登录编排（`site_login`，2026-10-04）
+
+凭据那一半（下一节）解决了「口令不许进参数与日志」，但**登录这件事仍然要人手串**：`site_open` →
+`site_fill`（账号）→ `site_fill`（口令）→ `site_click` → 再验。驱动在进程里保持着同一个浏览器，
+所以登录态在后续调用里是活的——缺的只是「把这一串写下来、下次照单走一遍」。
+
+补法是**把那份流程写进站点声明**（`WebTarget.login`），入口是 `site_login <站点>`：
+
+```yaml
+# ~/.dsh/profiles/<profile>/cordis.patch.yml（或项目里的 web/sites.yaml，见「站点声明随项目走」）
+- id: devfront
+  config:
+    targets:
+      - id: cdqas-test
+        url: https://cdqas.example.com/
+        scopeDirs: [/Users/me/work/cdqas]
+        credentialRef: env:CDQAS_APP_PWD        # 口令只以**引用**出现
+        login:
+          steps:                                 # 固定小词汇：goto / fill / click / waitFor
+            - action: goto
+              url: /login                        # 相对站点根；不能越出站点声明的范围
+            - action: waitFor
+              selector: "#user"                  # 等它就绪（缺省 5s，可写 timeoutMs）
+            - action: fill
+              selector: "#user"
+              value: admin                       # 非敏感值可以写明文
+            - action: fill
+              selector: "#pwd"
+              credentialRef: env:CDQAS_APP_PWD   # 口令**只认引用**，且必须是这个目标声明过的那一个
+            - action: click
+              selector: "#submit"
+            - action: waitFor
+              selector: "#app"                   # 点击之后要导航：不等会出现「判据跑在新页面之前」的竞态
+          success:
+            selector: "#app"                     # 成功判据：一个**只有登录后才会出现**的元素
+```
+
+```jsonc
+// 调用：**没有** steps 参数——步骤只能来自声明
+{ "target": "cdqas-test", "cwd": "/Users/me/work/cdqas" }
+```
+
+| 它做什么 | 它不做什么 |
+|---|---|
+| 按声明**逐步**执行；每一步都过与 `site_click` / `site_fill` **同一道**判据（同源 + 声明路径前缀 + 目录作用域 + 动手前核**当前页面**的源） | **不接受现编的步骤**：工具只有 `target` 与 `cwd` 两个参数——那正是「验证工具」与「浏览器自动化」的分界 |
+| 每一步各记一行审计（含被拒的尝试），整次登录再留一行（`action: login`） | 不做条件 / 循环 / 任意脚本；步数上限 10、单步等待上限 15s |
+| 三态：`ok` 全过且成功判据命中 / `fail` 步骤都走完但判据没命中（**登录没成**）/ `unknown` 有步骤被拒、没跑成或被取消（**没验成**） | 不把「没走到」报成「没成」：两者的下一步动作正好相反（改声明 vs 改口令 / 查页面） |
+| 总预算 **120s**（硬上限，**不可声明**）：每一步的等待用剩余预算夹取，超了就把剩下的步骤记成 `skipped` | 不让一份写长的声明把上限换走 |
+| 跑到 `ok` 之后浏览器就在登录态上：后续 `site_verify` / `site_open` 直接用 | 不回滚已经执行过的动作（浏览器没有事务）——`unknown` / `fail` 时报告里会把这一点说清 |
+
+三条判出来的形态（每条在 `test/login.test.ts` 里都有反例）：
+
+1. **第一步必须是 `goto`**：否则这次登录依赖「调用前浏览器恰好停在哪一页」，那份声明就不可复现；
+2. **成功判据只有 `selector` 一种**（刻意不做 `url`）：前缀匹配在「登录后跳回站点根」这类声明里会
+   **恒真**（登录页自己就在那个前缀下），于是「没登录成」会被报成成功——恒真的判据比没有判据更坏；
+3. **跨源登录（SSO / IdP）靠页面自己跳**：第一步 `goto` 站内一个受保护页面，再把 IdP 的源写进
+   `allowedOrigins`（`fill` / `click` 才允许在它上面动手）。`goto` 到异源**一律拒**——与 `site_open`
+   同一条判据，而页面自己跳过去**不构成授权**。
+
+> **`site_login` 是条件注册的**：只有在「有站点声明了 `login`」或「打开了 `projectSitesFile`」时才
+> 注册。没写 `login` 又没开项目声明时，注册它只会给 agent 一个必然失败的入口。
+
+> **卡片不编辑 `login`，但也不许删它**：站点编辑器保存时 `targets` 是整批重建的，客户端的编解码
+> 把 `login` **原样带回**（真机脚本第 ⑳ 步钉着这件事：站点编辑保存一次，再读回来，声明还在）。
+> **卡片也不显示它**（刻意）：登录声明是一串步骤与选择器，不是三个输入框——它的评审面是那份
+> 配置文件（profile 补丁层 / `web/sites.yaml`），卡片只负责**别把它弄丢**。要在卡片上看到
+> 「这个站点有没有登录流程」是**纯增量**，今天没做。
+
 ### 凭据（`site_fill` 的 `credentialRef`，2026-10-04）
 
 `WebTarget.credentialRef` 从 2026-10-02 起就在配置里、卡片上，但**没有任何消费者**——于是
@@ -157,8 +226,7 @@ projects:
 3. **每次操作重新解析**（官方 provider 的契约，`kit` 也不缓存）：改完凭据下一个动作即生效，
    不必重启宿主。
 
-**保护强度必须一起回**（plan §3.7-1：不许把「方便」说成「防护」）。返回里带 `protection`
-（`none` / `weak` / `strong` / `unknown`）与一句话说清它到底防不防：
+**保护强度必须一起回**（plan §3.7-1：不许把「方便」说成「防护」）。返回里带 `protection`（`none` / `weak` / `strong` / `unknown`）与一句话说清它到底防不防：
 
 ```
 已填值到 #pwd（来自凭据引用 env:APP_PWD；保护强度 none：继承来的环境变量：agent 与用户同 uid，读得到——方便，不是防护）
@@ -186,8 +254,9 @@ projects:
 
 ### 宿主半体（`plugin.ts`）
 
-Cordis 插件（`{ name, inject, apply }`）+ 八个工具注册：`site_open` / `site_shot` / `site_click` /
-`site_fill` / `site_text` / `site_console` / `site_verify` / `site_verify_release`。三条注册纪律：
+Cordis 插件（`{ name, inject, apply }`）+ 九种工具注册：`site_open` / `site_shot` / `site_click` /
+`site_fill` / `site_text` / `site_console` / `site_verify` / `site_verify_release`，以及**条件注册**的
+`site_login`（有站点声明了 `login`、或打开了项目站点声明时才有）。三条注册纪律：
 
 1. **没启用 / 没配站点 → 一个工具都不注册**。未注册的工具 agent 根本看不到，于是不会去试、不会撞墙；
 2. **作用域 fail-closed**：`scopeDirs` 为空 = 处处拒绝。插件**不替用户补默认目录**——那等于替他授权；
@@ -211,7 +280,7 @@ Cordis 插件（`{ name, inject, apply }`）+ 八个工具注册：`site_open` /
 与 `devdata` / `devenv` 的差别只有一处：本包的动作面是**站点交互**（点一下、填个值），不改共享
 基础设施的状态，所以**没有**「写类动作要求持久审计」那道门——要落盘是配置选择，不是准入条件。
 
-`announceToAgent` 打开时注入一段能力公告（七个动作 + 边界 + console 三档口径）。
+`announceToAgent` 打开时注入一段能力公告（八个动作 + 条件注册的 `site_login` + 边界 + console 三档口径）。
 
 ### 面板（客户端半体，`client.js`）
 
@@ -312,8 +381,10 @@ pnpm vitest run packages/devfront
 `web-run.test.ts` 钉跑批执行器（**同一个 URL 只观察一次**、一次拒绝只砸一页、审计三类行）；
 `tools.test.ts` 用假宿主钉「按 `cwd` 读清单 → 选目标 → 清单问题在碰浏览器之前报出来」；
 `tool-contract.test.ts` 把**声明的**输出契约与实际产出对起来（含 `site_verify` 那份）；
-`tool-smoke.test.ts` **把八个工具真的跑一遍**（真 Chrome，含 `site_verify` 与 `site_verify_release`
-两条端到端）；`release.test.ts` / `release-run.test.ts` 钉发布清单的加载校验与跨项目跑批（后者依赖全注入，
+`tool-smoke.test.ts` **把九个工具真的跑一遍**（真 Chrome，含 `site_verify` / `site_verify_release` /
+`site_login` 三条端到端）；`login.test.ts` 钉登录声明的形态与**每一条写错的反例**（未知字段、越界 URL、
+目标没声明过的凭据引用、`success.url`），`login-run.test.ts` 钉执行器的三态、等待、预算与取消；
+`release.test.ts` / `release-run.test.ts` 钉发布清单的加载校验与跨项目跑批（后者依赖全注入，
 不连浏览器）；
 `cdp-driver.test.ts` 纯函数必跑 + **真的起 Chrome 的集成用例**（`it.skipIf` 门控在「本机有 Chrome」
  上，没装就跳过而不是红掉）；`scope-consistency.test.ts` 钉**本包用的是数据面那一份 `scope.ts`**。
@@ -373,11 +444,10 @@ sites:
 
 ## 还没做
 
-- **一次登录会话的编排**（凭据那一半已通，见上）：今天要验「登录后才有的页面」，得自己
-  按 `site_open` → `site_fill`（可用 `credentialRef`）→ `site_click` → 再验 的顺序走一遍；
-  驱动在进程里保持着这个浏览器与页面，所以**登录状态在后续调用里是活的**，但没有一个
-  「按声明的登录步骤自动走一遍」的动作——那需要先定「登录页/选择器/提交按钮」的声明形态，
-  而那等于把一个站点专属的流程写进配置（要不要做，先看真机用几次之后的手感）；
+- ~~**一次登录会话的编排**~~ —— **已落地（2026-10-04）**：声明形态是 `WebTarget.login`（`goto` /
+  `fill` / `click` / `waitFor` + 一条 `success`），入口是 `site_login`，见 § 登录编排与 ROADMAP 记-32。
+  **仍没做**的那几件（刻意的）：`success.url` 判据（前缀可能恒真）、条件 / 循环 / 任意脚本、
+  agent 现编步骤的参数——前两条是「通用浏览器自动化」的入口，第三条是它的门；
 - **真正有防护的凭据来源**：今天 `credentialRef` 能指到的来源层全是 `none`（见 § 凭据）；
   macOS Keychain 一类带上游 ACL 的 provider 一出现，保护强度那一列就会变成 `strong`——本包
   不用改代码（`source` 已经是数据），但**报告里的那句话会跟着变**；

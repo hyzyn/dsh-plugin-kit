@@ -29,6 +29,8 @@ import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { type AuditLoggerLike } from '@hyzyn/dsh-kit/audit';
 import { type ProtectionLevel } from './credential.js';
+import { type LoginDeclaration } from './login.js';
+import { type LoginRunResult } from './login-run.js';
 import { denialMessage, type WebAuditEntry, type WebAuditSink, type WebTarget } from './page.js';
 import { type ReleaseRunResult } from './release-run.js';
 import { type WebVerifyRunResult } from './web-run.js';
@@ -57,6 +59,8 @@ export interface Config {
         /** 视口 `"390x844"`；不写 = 浏览器默认。 */
         viewport?: string;
         credentialRef?: string;
+        /** 登录流程的声明原文（判定在 `login.ts` 的 `parseLogin`；入口是 `site_login`）。 */
+        login?: LoginDeclaration;
     }>;
     /** 每次导航后等多久（毫秒），给首屏渲染留时间。 */
     settleMs?: number;
@@ -231,6 +235,45 @@ export interface ReleaseOutput {
     /** 调用方取消了这次跑批：剩下的项目没有跑（没跑到的都算「没验成」）。 */
     cancelled: boolean;
 }
+/** `site_login` 输出契约里的一步。 */
+export interface LoginStepLine {
+    index: number;
+    action: string;
+    /** 这一步作用的对象（`goto` 的 URL / 其余的选择器）。**永远不含填进去的值**。 */
+    subject: string;
+    status: string;
+    /** 被拒 / 执行失败时的码（原样带出）。 */
+    code?: string;
+    message: string;
+    /** 恢复路径（判定层给的 `hint`）。 */
+    hint?: string;
+    /** `fill` 用引用时记引用名（**不是值**）。 */
+    credentialRef?: string;
+}
+/**
+ * `site_login` 的输出契约（`docs/devdata-plan.md` §15.2 的登录编排那一行）。
+ *
+ * 三态 `ok` / `fail` / `unknown` 的含义刻意写在**渲染**的第一行：`ok` = 全过且成功判据命中、
+ * `fail` = 步骤都走完但判据没命中（登录没成，别把会话当已登录）、`unknown` = 没走完 / 被取消
+ * （**没验成**，不是「验出问题」）。
+ */
+export interface LoginOutput {
+    target: string;
+    status: 'ok' | 'fail' | 'unknown';
+    /** 结论第一行。 */
+    message: string;
+    steps: LoginStepLine[];
+    success: {
+        selector: string;
+        verdict: 'met' | 'unmet' | 'unknown';
+        /** 实际看到了什么（含当前页面——复核的起点）。 */
+        got: string;
+        message: string;
+    };
+    elapsedMs: number;
+    /** 调用方取消了这次登录：剩下的步骤没有执行（已执行的动作**没有**回滚）。 */
+    cancelled: boolean;
+}
 /**
  * 把一次跑批结果收敛成工具的输出契约（**纯函数**，与 `textOutput` / `consoleOutput` 同理：
  * 声明与实际不符时 DSH 会把整次调用判成 `invalid output`，所以这份契约也要有单测）。
@@ -243,6 +286,13 @@ export declare function verifyOutput(result: WebVerifyRunResult): VerifyOutput;
  * 哪些项目压根没跑成。
  */
 export declare function releaseOutput(run: ReleaseRunResult): ReleaseOutput;
+/**
+ * 把一次登录结果收敛成**输出契约**（**纯函数**，与 `verifyOutput` / `releaseOutput` 同理）。
+ *
+ * 它几乎就是执行器的结果：**不做减法**是有意的——逐步的账就是这份报告的全部价值，
+ * 砍掉「第 3 步为什么没走成」等于把复核推回给 agent（它下一步只能重跑）。
+ */
+export declare function loginOutput(run: LoginRunResult): LoginOutput;
 /**
  * `site_verify` 的渲染：一屏读完「哪几条过了、哪几条没过、凭什么、哪几页压根没验成」。
  *
@@ -258,8 +308,14 @@ export declare function verifyRenderText(value: unknown): string;
  */
 export declare function releaseRenderText(value: unknown): string;
 /**
- * 配置卡片（客户端半体）能改的**标量**字段。
+ * `site_login` 的渲染：一屏读完「登录成没成、每一步走到哪、没走成的那一步为什么」。
  *
+ * 第一行必须是**结论**（三态 + 那句话）：`ok` 之外都紧跟着「别把这次会话当作已登录」或
+ * 「没验成」——登录编排最危险的读法是「跑完了 = 登录上了」，而那正是这份报告要挡住的。
+ */
+export declare function loginRenderText(value: unknown): string;
+/**
+ * 配置卡片（客户端半体）能改的**标量**字段。 *
  * `targets`（站点列表）不在这一列里——它有自己那条路（`normalizeTargets` + 逐次确认），
  * 因为它是「这个站点、这个范围、这个源」的**声明**，与就绪清单、验活断言同一类东西。
  * **回答「这个表单凭什么评审」**（2026-10-03 定的口径，四条一起才成立）：

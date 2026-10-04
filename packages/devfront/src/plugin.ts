@@ -38,6 +38,8 @@ import { createJsonlAuditSink, createLoggerAuditSink, type AuditLoggerLike } fro
 
 import { CdpWebDriver, type CdpWebDriverOptions } from './cdp-driver.js'
 import { resolveTargetCredential, type ProtectionLevel } from './credential.js'
+import { describeLoginErrors, parseLogin, type LoginDeclaration, type LoginPlan } from './login.js'
+import { runLogin, type LoginRunResult } from './login-run.js'
 import {
   denialMessage,
   invokeWebAction,
@@ -79,6 +81,12 @@ const TARGET_SCHEMA = z.object({
   /** 视口 `"宽x高"`（如 `390x844`）；空串 = 浏览器默认。按站点配，理由见 `page.ts` 的 `WebTarget.viewport`。 */
   viewport: z.string().default(''),
   credentialRef: z.string().default(''),
+  /*
+   * 登录流程的声明原文。**用 `z.any()` 是有意的**：形态的唯一一份判据在 `login.ts` 的 `parseLogin`
+   * （它要拿目标比 `url` 与 `credentialRef`，schema 这里做不到），这里只负责**别把它丢掉**——
+   * schema 不声明这个字段时，strict 解析会把未知键剔掉，于是「声明了登录流程」会静默变成「没声明」。
+   */
+  login: z.any(),
 })
 
 /**
@@ -99,6 +107,8 @@ export interface Config {
     /** 视口 `"390x844"`；不写 = 浏览器默认。 */
     viewport?: string
     credentialRef?: string
+    /** 登录流程的声明原文（判定在 `login.ts` 的 `parseLogin`；入口是 `site_login`）。 */
+    login?: LoginDeclaration
   }>
   /** 每次导航后等多久（毫秒），给首屏渲染留时间。 */
   settleMs?: number
@@ -227,6 +237,9 @@ export function normalizeConfig(section: Record<string, unknown>): LiveConfig {
       ...(typeof entry.credentialRef === 'string' && entry.credentialRef !== ''
         ? { credentialRef: entry.credentialRef }
         : {}),
+      // 登录声明的**原文**原样带走（判定在 `site_login` 开工前，见 `WebTarget.login` 的注释）：
+      // 在这一层解析并丢弃，一份写坏的声明就会变成「没声明过」。
+      ...(entry.login === undefined ? {} : { login: entry.login }),
     })
   }
   return {
@@ -275,7 +288,8 @@ export function webAuditSink(options: { auditFile: string; logger: AuditLoggerLi
 export const DEVFONT_GUIDANCE = [
   '本机已安装 dsh-devfront 插件（前端效果验证）：面向「发布之后页面到底对不对」，',
   '不做定时任务、不做爬虫、不做批量操作（唯一的那「一批」是 `site_verify` 按项目清单**跑已声明的',
-  '断言**：要访问哪些页面由清单逐条写死，不由工具去发现或跟随链接）。工具面八个动作：',
+  '断言**：要访问哪些页面由清单逐条写死，不由工具去发现或跟随链接）。工具面以八个动作为主，',
+  '外加一个**只在有站点声明了登录流程时**才出现的 `site_login`（见下）：',
   '',
   '- `site_open`：打开目标声明过的站点（同源且落在声明路径前缀内；异源一律拒）；',
   '- `site_shot`：截图（返回真 PNG 路径，可直接看）；',
@@ -303,6 +317,14 @@ export const DEVFONT_GUIDANCE = [
   '  逐条列出「项目名 + 项目根 + 这个项目按哪个站点验」）。它**不做发现**——跑哪些项目完全来自那份',
   '  人写的清单；每个项目读的还是**它自己**的 `web/<项目>.yaml`，判定与逐条依据同 `site_verify`，',
   '  并额外把**没跑成的项目**（没配站点 / 没有清单 / 清单不成立）单列出来（**没验成 ≠ 验出问题**）。',
+  '- `site_login`：**照站点声明里写好的步骤走一遍登录**（声明是目标的 `login`：`goto` / `fill` /',
+  '  `click` / `waitFor` 加一条 `success`；写进 profile 补丁层或项目里的 `web/sites.yaml`）。',
+  '  **它不接受现编的步骤**——能做的就是声明过的那一串（本套件是验证工具，不做浏览器自动化）：',
+  '  所以「登录后才有内容」的那类页面，正确做法是把登录流程写进声明，再用 `site_login` 走一遍，',
+  '  然后 `site_verify` 直接用那个登录态。每一步都过与 `site_click` / `site_fill` 同一道判据，',
+  '  也各记一行审计；`fill` 的口令只认目标声明过的 `credentialRef`。三态读法：`ok` = 全过且成功',
+  '  判据命中（浏览器已在登录态）；`fail` = 步骤都走完但成功判据没命中（**登录没成**，别当作已登录）；',
+  '  `unknown` = 有步骤被拒 / 没跑成 / 被取消（**没验成**，不是「验出问题」）。',
   '',
   '读 `site_console` 时注意：判成 error 的是**来自本站资源**的错误，那才是「页面坏了」的信号；',
   '异源与来源不明的都只在 warning 里——真实站点的 console 里常驻噪声，噪声淹掉信号等于没信号。',
@@ -498,6 +520,49 @@ export interface ReleaseOutput {
   cancelled: boolean
 }
 
+/* ------------------------- `site_login` 的输出契约 ------------------------- */
+
+/** `site_login` 输出契约里的一步。 */
+export interface LoginStepLine {
+  index: number
+  action: string
+  /** 这一步作用的对象（`goto` 的 URL / 其余的选择器）。**永远不含填进去的值**。 */
+  subject: string
+  status: string
+  /** 被拒 / 执行失败时的码（原样带出）。 */
+  code?: string
+  message: string
+  /** 恢复路径（判定层给的 `hint`）。 */
+  hint?: string
+  /** `fill` 用引用时记引用名（**不是值**）。 */
+  credentialRef?: string
+}
+
+/**
+ * `site_login` 的输出契约（`docs/devdata-plan.md` §15.2 的登录编排那一行）。
+ *
+ * 三态 `ok` / `fail` / `unknown` 的含义刻意写在**渲染**的第一行：`ok` = 全过且成功判据命中、
+ * `fail` = 步骤都走完但判据没命中（登录没成，别把会话当已登录）、`unknown` = 没走完 / 被取消
+ * （**没验成**，不是「验出问题」）。
+ */
+export interface LoginOutput {
+  target: string
+  status: 'ok' | 'fail' | 'unknown'
+  /** 结论第一行。 */
+  message: string
+  steps: LoginStepLine[]
+  success: {
+    selector: string
+    verdict: 'met' | 'unmet' | 'unknown'
+    /** 实际看到了什么（含当前页面——复核的起点）。 */
+    got: string
+    message: string
+  }
+  elapsedMs: number
+  /** 调用方取消了这次登录：剩下的步骤没有执行（已执行的动作**没有**回滚）。 */
+  cancelled: boolean
+}
+
 /** 把一个值写成一行（`undefined` 也要有话说，不能渲染成一个空洞）。 */
 function describeValue(value: unknown): string {
   if (value === undefined) return '（没有这个事实）'
@@ -568,6 +633,33 @@ export function releaseOutput(run: ReleaseRunResult): ReleaseOutput {
 }
 
 /**
+ * 把一次登录结果收敛成**输出契约**（**纯函数**，与 `verifyOutput` / `releaseOutput` 同理）。
+ *
+ * 它几乎就是执行器的结果：**不做减法**是有意的——逐步的账就是这份报告的全部价值，
+ * 砍掉「第 3 步为什么没走成」等于把复核推回给 agent（它下一步只能重跑）。
+ */
+export function loginOutput(run: LoginRunResult): LoginOutput {
+  return {
+    target: run.targetId,
+    status: run.status,
+    message: run.message,
+    steps: run.steps.map((step) => ({
+      index: step.index,
+      action: step.action,
+      subject: step.subject,
+      status: step.status,
+      ...(step.code === undefined ? {} : { code: step.code }),
+      message: step.message,
+      ...(step.hint === undefined ? {} : { hint: step.hint }),
+      ...(step.credentialRef === undefined ? {} : { credentialRef: step.credentialRef }),
+    })),
+    success: run.success,
+    elapsedMs: run.elapsedMs,
+    cancelled: run.cancelled,
+  }
+}
+
+/**
  * 单项目输出契约的 **schema**（`site_verify` 与 `site_verify_release` 的 `projects[]` **共用一份**）。
  *
  * 抽出来是因为它现在有两个消费者：同一份契约写两遍，下一次改一处漏一处就变成 `invalid output`
@@ -605,6 +697,52 @@ function verifyOutputSchema() {
         },
       },
       problems: { type: 'array', required: true, items: { type: 'string' } },
+      cancelled: { type: 'boolean', required: true },
+    },
+  } as const
+}
+
+/** `site_login` 输出契约的 schema（**手写**：它带一层「逐步的账」，与上面两份都不同）。 */
+function loginOutputSchema() {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      target: { type: 'string', required: true },
+      status: { type: 'string', required: true },
+      message: { type: 'string', required: true },
+      steps: {
+        type: 'array',
+        required: true,
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            index: { type: 'number', required: true },
+            action: { type: 'string', required: true },
+            subject: { type: 'string', required: true },
+            status: { type: 'string', required: true },
+            // 可选字段**不声明 required**（`additionalProperties: false` 只挡多出来的键）：
+            // `code` / `hint` / `credentialRef` 只在有话说时才出现，别为它们编一个空串占位。
+            code: { type: 'string' },
+            message: { type: 'string', required: true },
+            hint: { type: 'string' },
+            credentialRef: { type: 'string' },
+          },
+        },
+      },
+      success: {
+        type: 'object',
+        required: true,
+        additionalProperties: false,
+        properties: {
+          selector: { type: 'string', required: true },
+          verdict: { type: 'string', required: true },
+          got: { type: 'string', required: true },
+          message: { type: 'string', required: true },
+        },
+      },
+      elapsedMs: { type: 'number', required: true },
       cancelled: { type: 'boolean', required: true },
     },
   } as const
@@ -719,8 +857,45 @@ export function releaseRenderText(value: unknown): string {
 }
 
 /**
- * 配置卡片（客户端半体）能改的**标量**字段。
+ * `site_login` 的渲染：一屏读完「登录成没成、每一步走到哪、没走成的那一步为什么」。
  *
+ * 第一行必须是**结论**（三态 + 那句话）：`ok` 之外都紧跟着「别把这次会话当作已登录」或
+ * 「没验成」——登录编排最危险的读法是「跑完了 = 登录上了」，而那正是这份报告要挡住的。
+ */
+export function loginRenderText(value: unknown): string {
+  const v = (value ?? {}) as Partial<LoginOutput>
+  const steps = v.steps ?? []
+  const success = v.success
+  const indent = (text: string, pad: string): string => text.replaceAll('\n', `\n${pad}`)
+  const mark = (status: string): string => (status === 'done' ? '✔' : status === 'skipped' ? '·' : '✘')
+
+  const head =
+    `登录站点 ${v.target ?? ''}：**${v.status === 'ok' ? '成功' : v.status === 'fail' ? '没成' : '没有结论'}**` +
+    `（${v.status ?? ''}，用 ${String(v.elapsedMs ?? 0)}ms，共 ${String(steps.length)} 步）`
+  const body = steps.map((step) => {
+    const code = step.code === undefined ? '' : ` [${step.code}]`
+    // 恢复路径另起一行并缩进：判定层的 hint 里带换行，不缩进看着像跑到了条目之外。
+    const hint = step.hint === undefined ? '' : `\n        ↳ 恢复路径：${indent(step.hint, '          ')}`
+    const ref = step.credentialRef === undefined ? '' : `（凭据引用 ${step.credentialRef}）`
+    return `  ${mark(step.status)} ${String(step.index)}. ${step.action} ${step.subject}${ref}${code}\n      ${indent(step.message, '      ')}${hint}`
+  })
+  const successLine =
+    success === undefined
+      ? ''
+      : `\n成功判据 ${success.selector}：**${success.verdict === 'met' ? '命中' : success.verdict === 'unmet' ? '没命中' : '求不出来'}**（${success.got}）`
+  const warn =
+    v.status === 'ok'
+      ? '\n这个浏览器现在处于登录态：后续 `site_verify` / `site_open` 直接用。'
+      : v.status === 'fail'
+        ? '\n**别把这次会话当作已登录**：步骤都执行完了，但没到成功判据那个状态——先看上面那句 `got` 里的当前页面。'
+        : '\n**没验成**（不是「验出问题」）：先看上面没走成的那一步；已经执行过的动作**没有**回滚，浏览器与页面还在原处。'
+  const cancelled = v.cancelled === true ? '\n被调用方取消：剩下的步骤没有执行（**不是**超时，也不是站点有问题）。' : ''
+
+  return `${head}\n${body.join('\n')}${successLine}\n结论：${v.message ?? ''}${warn}${cancelled}`
+}
+
+/**
+ * 配置卡片（客户端半体）能改的**标量**字段。 *
  * `targets`（站点列表）不在这一列里——它有自己那条路（`normalizeTargets` + 逐次确认），
  * 因为它是「这个站点、这个范围、这个源」的**声明**，与就绪清单、验活断言同一类东西。
  * **回答「这个表单凭什么评审」**（2026-10-03 定的口径，四条一起才成立）：
@@ -784,6 +959,31 @@ export function normalizeTargets(input: unknown): { targets: Record<string, unkn
     const credentialRef = typeof entry.credentialRef === 'string' ? entry.credentialRef.trim() : ''
     if (entry.credentialRef !== undefined && typeof entry.credentialRef !== 'string') return { error: `${where}.credentialRef 必须是字符串` }
 
+    /*
+     * 登录声明：**严格**（与 profile 那条路径不同，这里拒绝了就是拒绝了，不静默丢）。
+     *
+     * 为什么这条路径要在加载/保存时就判：项目里的 `web/sites.yaml` 与卡片保存都是**写配置**的动作，
+     * 一份写坏的登录声明在这儿被收下，代价要到某次 `site_login` 才浮出来；而这里报得出来、也报得起
+     * （调用方本来就是「说你哪儿写错了」的场景）。判定借的还是 `parseLogin` 那一份——两套规则必然漂。
+     */
+    const login = entry.login
+    if (login !== undefined) {
+      const viewport = parseViewport(viewportRaw)
+      const parsed = parseLogin(login, {
+        id,
+        label,
+        url,
+        scopeDirs: scopeDirs ?? [],
+        allowedOrigins: allowedOrigins ?? [],
+        ...(viewport === undefined ? {} : { viewport }),
+        ...(credentialRef === '' ? {} : { credentialRef }),
+      })
+      if (!parsed.ok) {
+        const lines = describeLoginErrors(parsed.errors).split('\n').join('\n    ')
+        return { error: `${where}.login 不成立：\n    ${lines}` }
+      }
+    }
+
     out.push({
       id,
       ...(label === '' ? {} : { label }),
@@ -792,6 +992,7 @@ export function normalizeTargets(input: unknown): { targets: Record<string, unkn
       allowedOrigins: allowedOrigins ?? [],
       ...(viewportRaw === '' ? {} : { viewport: viewportRaw }),
       ...(credentialRef === '' ? {} : { credentialRef }),
+      ...(login === undefined ? {} : { login }),
     })
   }
 
@@ -878,6 +1079,13 @@ export function configSnapshotFrom(live: LiveConfig): Record<string, unknown> {
       allowedOrigins: [...(target.allowedOrigins ?? [])],
       ...(target.viewport === undefined ? {} : { viewport: `${String(target.viewport.width)}x${String(target.viewport.height)}` }),
       ...(target.credentialRef === undefined ? {} : { credentialRef: target.credentialRef }),
+      /*
+       * 登录声明的**原文**照样给出去：卡片不编辑它（没有那几个字段的表单），但站点编辑器保存时
+       * 会把 `targets` 整批重建——客户端的编解码必须**原样带回来**，否则一次站点编辑就把登录声明
+       * 悄悄删掉了（`devfront D01`）；`client.js` 的 `draftSites` / `sitesPayload` 与卡片脚本的
+       * 第 ⑳ 步钉的就是这件事。
+       */
+      ...(target.login === undefined ? {} : { login: target.login }),
     })),
   }
 }
@@ -1069,6 +1277,65 @@ const plugin = definePlugin<Config>({  name: 'devfront',
     }
 
     /**
+     * 跑一次**登录**（`site_login` 的执行体）：照站点声明里写好的步骤走一遍。
+     *
+     * 与另两条执行体同一条纪律：**整体性问题在碰浏览器之前抛出去**（没有这个站点 / 这个站点没声明
+     * 登录流程 / 声明不成立）。跑到一半的问题不是抛出，而是结果里的逐步账——抛出去会把已经执行过的
+     * 步骤一起丢掉，而 agent 需要的恰恰是「走到第几步、那一步为什么没成」。
+     *
+     * 每一步都交给 `invokeWebAction`（同一道判定链 + 同一份审计 + 同一套凭据解析）：
+     * 这里**没有第二条旁路**，`login-run.ts` 连驱动都碰不到。
+     */
+    const loginRun = async (input: Record<string, unknown>, signal?: AbortSignal): Promise<LoginRunResult> => {
+      const resolved = sitesForCall(input.cwd)
+      if ('problem' in resolved) throw new Error(resolved.problem)
+      const target = pickTarget(input.target, resolved.sites)
+      const cwd = typeof input.cwd === 'string' && input.cwd.trim() !== '' ? input.cwd.trim() : process.cwd()
+
+      if (target.login === undefined) {
+        const withLogin = resolved.sites.filter((site) => site.login !== undefined).map((site) => site.id)
+        throw new Error(
+          `站点 ${target.id} 没有声明登录流程（配置里的 \`login\`）——登录步骤是**写下来的**，工具不接受现编的步骤。` +
+            (withLogin.length === 0
+              ? '这次可用的站点里一个都没声明：在目标的 `login` 里写 `goto` / `fill` / `click` / `waitFor` 与一条 `success`'
+                + '（格式见本包 README 的「登录编排」；profile 补丁层或项目里的 web/sites.yaml 都能写）。'
+              : `声明了登录流程的站点：${withLogin.join(' / ')}——要么用它们，要么给 ${target.id} 补一份声明。`),
+        )
+      }
+
+      const parsed = parseLogin(target.login, target)
+      if (!parsed.ok) {
+        // 声明不成立 = **配置问题**（与「跑起来没成」相反的那一类）：在碰浏览器之前说清哪儿写错了。
+        throw new Error(
+          `站点 ${target.id} 的登录声明（login）不成立：\n${describeLoginErrors(parsed.errors)}`,
+        )
+      }
+      const plan: LoginPlan = parsed.plan
+      const driver = ensureDriver()
+
+      return runLogin({
+        target,
+        plan,
+        cwd,
+        invoke: (request) =>
+          invokeWebAction({
+            request,
+            driver,
+            audit: audit(),
+            credentials: (ref: string) => resolveTargetCredential({ provider: credentialProvider, ref }),
+            // 一次登录里的每个动作共用这个 id：审计里一眼能看出它们属于同一次登录
+            // （驱动是单例、工具不并发，所以不会串）。
+            operationId: 'login',
+          }),
+        observe: (selectors) => driver.observe({ target, selectors }),
+        currentUrl: () => driver.currentUrl({ target }),
+        audit: audit(),
+        operationId: 'login',
+        ...(signal === undefined ? {} : { signal }),
+      })
+    }
+
+    /**
      * 跑一次**发布清单**（`site_verify_release` 的执行体）：一次调用跨多个项目。
      *
      * 循环与「没跑成」的账在 `release-run.ts`（那里全用**注入**的依赖，所以不连浏览器就能逐条
@@ -1132,10 +1399,13 @@ const plugin = definePlugin<Config>({  name: 'devfront',
     } as const
 
     /**
-     * 注册六个动作（**可重入**）。
+     * 注册工具（**可重入**）。
      *
      * 每次调用先拆掉上一轮的登记：`tools.register` 不覆盖同名工具，而配置一变，工具描述里嵌的
      * 「可用站点名单」就过期了——不拆就会留下同名工具两份，agent 看到的还是旧名单。
+     *
+     * 数量是**可变的**：`site_login` 只在「登录这件事真的可能发生」时注册（见下面那段注释）。
+     * 所以日志那一行必须**现算**，不能写死——它是运维确认插件生效的观测面（`D04`）。
      */
     function refreshTools(): void {
       if (toolsApi === undefined) return
@@ -1150,6 +1420,18 @@ const plugin = definePlugin<Config>({  name: 'devfront',
         console.log('[dsh-devfront] agent tools skipped (targets 为空：先在插件配置里声明站点)')
         return
       }
+      /*
+       * `site_login` 的**可见性判据**（与 `devdata_verify` 的「有 redis 目标才注册」同一条纪律：
+       * 可见的工具才会被尝试，而一排必然失败的入口只会浪费一轮）。
+       *
+       * 它什么时候**可能**有用：
+       *   ① profile 里至少有一个站点写了 `login`（注册时看得见的那一半）；
+       *   ② 或者打开了项目站点声明（`projectSitesFile`）——那条路能**凭空多出一个**声明了登录流程
+       *      的站点，而注册发生在 apply / volatile 更新那一刻，看不到某个具体 `cwd` 的项目文件。
+       *      所以这里按「可能」放行：关掉项目声明时，没写 `login` 就等于永远不会成功，那就不注册。
+       */
+      const loginPossible = live.projectSitesFile !== '' || live.targets.some((target) => target.login !== undefined)
+      const registered: string[] = []
       const targetParam = {
         type: 'string',
         required: true,
@@ -1158,6 +1440,9 @@ const plugin = definePlugin<Config>({  name: 'devfront',
       const add = (name: string, definition: unknown): void => {
         try {
           toolDisposers.push(api.register(definition))
+          // 只记**真的登记成功**的那些：下面那行日志是运维确认插件生效的观测面（D04），
+          // 它要说的是「运行时收下了什么」，不是「我打算注册什么」。
+          registered.push(name)
         } catch (error) {
           // 单个工具注册失败不该把整批带下去（docker D107 同款教训）：其余工具照常可用。
           console.warn(`[dsh-devfront] 工具 ${name} 注册失败：${error instanceof Error ? error.message : String(error)}`)
@@ -1460,11 +1745,46 @@ const plugin = definePlugin<Config>({  name: 'devfront',
           },
         }),
       )
-      console.log(
-        `[dsh-devfront] agent tools registered (${(
-          ['site_open', 'site_shot', 'site_click', 'site_fill', 'site_text', 'site_console', 'site_verify', 'site_verify_release'] as const
-        ).join(', ')})`,
-      )
+      /*
+       * `site_login`：照站点声明里写好的步骤走一遍（B3 的编排那一半）。
+       *
+       * **只接受 `target` 与 `cwd`**：步骤只能来自声明（`WebTarget.login`）。给它加一个
+       * `steps` 参数的那天，这个东西就变成了「通用浏览器自动化」，而那正是 plan §15.3 划掉的。
+       *
+       * 协作式预算 `timeoutMs`（conventions § 长等待的工具必须转发 `exec.signal`）：总预算
+       * `LOGIN_BUDGET_MS`（120s，**不可声明**）加一次导航的 30s 兜底 ≈ 150s，取 180s。
+       */
+      if (loginPossible) {
+        add(
+          'site_login',
+          defineTool({
+            name: 'site_login',
+            // 它开页面、填值、点击，并让浏览器停在登录态：与 site_open 一样**不是**并发安全的。
+            isConcurrencySafe: () => false,
+            description:
+              `按**站点声明里写好的步骤**走一遍登录（声明是目标的 \`login\`：\`goto\` / \`fill\` / \`click\` / \`waitFor\` 加一条 \`success\`；` +
+              `写进 profile 补丁层，或在打开 \`projectSitesFile\` 时写进项目里的 \`web/sites.yaml\`）。` +
+              `**它不接受现编的步骤**：能做的就是声明过的那一串——本套件是验证工具，不做浏览器自动化。` +
+              `每一步都过与 \`site_click\` / \`site_fill\` 同一道判据（同源 + 声明路径前缀 + 目录作用域 + 动手前核**当前页面**的源），` +
+              `也各记一行审计；\`fill\` 的口令只认目标声明过的 \`credentialRef\`（值不进返回 / 会话记录 / 审计）。` +
+              `跑完之后浏览器就在登录态上：后续 \`site_verify\` / \`site_open\` 直接用。` +
+              `三态：\`ok\` 全过且成功判据命中；\`fail\` 步骤都执行完但成功判据没命中（**登录没成**，别把会话当已登录）；` +
+              `\`unknown\` 有步骤被拒 / 没跑成 / 被取消（**没验成**，不是「验出问题」）。`,
+            parameters: { target: targetParam, cwd: cwdParam },
+            output: {
+              schema: loginOutputSchema(),
+              render: (_args: unknown, value: unknown) => [{ type: 'text', text: loginRenderText(value) }],
+            },
+            /* 协作式预算：见上面那段注释（总预算 120s + 一次导航兜底）。 */
+            timeoutMs: 180_000,
+            async execute(args: unknown, exec?: { signal?: AbortSignal }): Promise<LoginOutput> {
+              const input = (args ?? {}) as Record<string, unknown>
+              return loginOutput(await loginRun(input, exec?.signal))
+            },
+          }),
+        )
+      }
+      console.log(`[dsh-devfront] agent tools registered (${registered.join(', ')})`)
     }
 
     /** 拆掉本插件登记的工具（没有就不动）。 */

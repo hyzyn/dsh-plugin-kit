@@ -356,6 +356,17 @@ owned work reaches quiescence」。**全仓没有任何一个工具接过这个�
 
 **结果**：见 § 已完成第 15 项。
 
+### 16. ✅ 登录编排：`devfront` 的 `site_login`（B3 的编排那一半）
+
+`devfront` 待办 B3 的尾边（凭据那一半是第 11 项）：`credentialRef` 通了之后，「登录后才有的页面」
+仍然要人手串五个动作，而那串步骤**谁也复审不了、也攒不下来**。本项把流程**写进站点声明**
+（`WebTarget.login`），入口是 `site_login`——它是一个**照单执行**的工具，不是浏览器自动化。
+
+**为什么是 L0**：它直接压在 plan §15.3 那条边界上（「验证工具 vs 自动化工具」），所以「能做什么由
+声明说了算、agent 只是照单走一遍」这条口径要写进 §15.3，再由包去实现。
+
+**结果**：见 § 已完成第 16 项。
+
 ## 已完成（落点 + 门槛）
 
 ### 1. ✅ 统一安全围栏：docker 的加固口径同步到 tty / dsh-mcp
@@ -720,6 +731,32 @@ IP 形状的四段式子节号——闸门确实有牙齿）。
 **没做的**（刻意）：**不跨面聚合**（发布清单里只有本面要用的 `target`，另外两面要接时各读自己那一列
 ——conventions 的「刻意没有聚合器」不变）；**B3 的登录编排**留待下一轮（声明形态已定
 `WebTarget.login`，主体可写 `web/sites.yaml`）。
+> **2026-10-04 追加**：那一轮做了，见本文件第 16 项与 `devfront` 记-32。原文照旧留着。
+
+### 16. ✅ 登录编排：`devfront` 的 `site_login`（2026-10-04，B3 收口）
+
+**落点**：
+
+- [plan §15.3](./docs/devdata-plan.md) 的边界条补上「编排那一半也落地」：流程写进站点声明
+  （`WebTarget.login`），`site_login` **不接受现编的步骤**、步数 ≤10、单步等待 ≤15s、
+  **总预算 120s 不可声明**、`success` 只有 `selector` 一种（`url` 前缀判据可能恒真）；
+- `packages/devfront/src/login.ts`（声明形态 + 判定，20 例，含 8 条反例）与 `login-run.ts`
+  （执行器：三态 + 逐步的账 + 等待 + 预算 + 取消自成一档，13 例，依赖全注入不连浏览器）；
+- `packages/devfront/src/plugin.ts` 的 `site_login` + `loginOutput` / `loginRenderText` /
+  `loginOutputSchema`：整体性问题在**碰浏览器之前**抛，**条件注册**（有站点声明 `login`、或
+  打开了 `projectSitesFile`），协作式预算 `timeoutMs: 180_000` 并转发 `exec.signal`；
+- 配置层：`TARGET_SCHEMA.login = z.any()`（唯一判据在 `login.ts`）+ `normalizeConfig` 原样携带 +
+  `normalizeTargets` 严格校验不丢行；客户端半体的站点编解码**透传** `login`。
+
+**真机证据**：`test/tool-smoke.test.ts` 三条 ★（真 Chrome + 本地登录夹具）：`ok`（六步全过、值进页面
+但不进报告——同一次调用后 `site_text` 从页面里读出了那个值）、`fail`（步骤都走完、判据 0 命中，
+渲染明说「别把这次会话当作已登录」）、`unknown`（第一步 `OUT_OF_SCOPE` 被拒、判据没求值）。
+该文件 17 → 20/20；卡片脚本新增第 ⑳ 步（站点编辑保存之后 `login` 还在——**这条只回答得了真机**）。
+
+**补充第 12 项**（长等待的工具必须转发 `exec.signal`）：`site_login` 是**第五条**——它的等待上限
+（总预算 120s + 一次导航兜底）远超 30s，所以按那条规矩做全了四条（接 `exec.signal`、睡眠可被 abort
+唤醒、取消自成一档并交代「动作没回滚、页面还在」、声明协作式预算）：证据是
+`login-run.test.ts` 里那条**真实睡眠**用例（abort 后 <1s 返回，而它的上限是 5s）。
 
 ## 已由 L0 资产承接（不再是待办）
 

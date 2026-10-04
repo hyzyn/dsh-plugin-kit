@@ -195,6 +195,10 @@ window.__ModuleLoader__.load({
         allowedOrigins: Array.isArray(site.allowedOrigins) ? site.allowedOrigins.join(', ') : '',
         viewport: typeof site.viewport === 'string' ? site.viewport : '',
         credentialRef: typeof site.credentialRef === 'string' ? site.credentialRef : '',
+        // 登录声明（`login`）这张卡片**不编辑**（它是一串步骤与选择器，不是三个输入框），但必须
+        // **原样带回去**：保存时 `targets` 是整批重建的，少带一个字段 = 「点一次保存 → 登录流程
+        // 被悄悄删掉」（`devfront D01`）。卡片脚本的第 ⑳ 步钉着这件事。
+        login: site.login,
       }))
     }
 
@@ -216,6 +220,8 @@ window.__ModuleLoader__.load({
         allowedOrigins: splitList(row.allowedOrigins),
         ...(row.viewport.trim() === '' ? {} : { viewport: row.viewport.trim() }),
         ...(row.credentialRef.trim() === '' ? {} : { credentialRef: row.credentialRef.trim() }),
+        // 透传：卡片不认识它的内容，但**不许**把它删掉（见 `draftSites` 那段注释）。
+        ...(row.login === undefined ? {} : { login: row.login }),
       }))
     }
 

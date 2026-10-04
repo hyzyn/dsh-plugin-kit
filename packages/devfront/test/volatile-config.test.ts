@@ -28,7 +28,12 @@ const TARGET = (id: string): Record<string, unknown> => ({
   scopeDirs: [`/w/${id}`],
 })
 
-/** 本包注册的**全部**工具名（八个）——撤下 / 重注册那几条用例按它计数。 */
+/**
+ * 本包**无条件**注册的八个工具名——撤下 / 重注册那几条用例按它计数。
+ *
+ * 第九个 `site_login` 是**条件注册**的（有站点声明了 `login`、或打开了项目站点声明时才有），
+ * 它单独有一条用例（下面那个 ★），所以不混进这份基线。
+ */
 const ALL_TOOLS = ['site_open', 'site_shot', 'site_click', 'site_fill', 'site_text', 'site_console', 'site_verify', 'site_verify_release']
 
 /* ------------------------------------------------------------------ *
@@ -138,6 +143,27 @@ describe('volatile 契约的边界', () => {
 
     expect(host.counts.registrations).toBe(before.registrations)
     expect(host.counts.disposals).toBe(before.disposals)
+  })
+
+  it('★ 站点声明里加 / 去 `login`：`site_login` 跟着出现 / 消失（可见性与能力一致）', () => {
+    const host = makeHost()
+    host.stored.targets = [TARGET('a')]
+    host.mount({ targets: [TARGET('a')] })
+    expect(host.tools.has('site_login')).toBe(false)
+
+    // 声明一份登录流程（`goto` 落在那个站点自己的根上）→ 多一个工具。
+    host.stored.targets = [
+      { ...TARGET('a'), login: { steps: [{ action: 'goto', url: '/' }], success: { selector: '#app' } } },
+    ]
+    host.emit('loader/volatile-update')
+    expect(host.tools.has('site_login')).toBe(true)
+    expect(host.tools.size).toBe(ALL_TOOLS.length + 1)
+
+    // 撤掉声明 → 工具也撤掉（不留必然失败的入口）。
+    host.stored.targets = [TARGET('a')]
+    host.emit('loader/volatile-update')
+    expect(host.tools.has('site_login')).toBe(false)
+    expect(host.tools.size).toBe(ALL_TOOLS.length)
   })
 
   it('宿主没有 settings 服务（最小宿主 / 冒烟夹具）：照旧按 config 注册，不因订阅而挂', () => {

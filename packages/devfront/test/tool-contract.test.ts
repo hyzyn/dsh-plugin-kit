@@ -27,8 +27,10 @@
 import { describe, expect, it } from 'vitest'
 
 import type { WebAction, WebDriver, WebTarget } from '../src/index.js'
+import { parseLogin } from '../src/login.js'
+import { runLogin } from '../src/login-run.js'
 import { invokeWebAction } from '../src/page.js'
-import { apply, consoleOutput, denialMessage, releaseOutput, SITE_TEXT_MAX, textOutput, verifyOutput } from '../src/plugin.js'
+import { apply, consoleOutput, denialMessage, loginOutput, releaseOutput, SITE_TEXT_MAX, textOutput, verifyOutput } from '../src/plugin.js'
 import { runReleaseVerify } from '../src/release-run.js'
 import { runWebVerify } from '../src/web-run.js'
 import { validateWebManifest } from '../src/web-verify.js'
@@ -62,7 +64,9 @@ interface ToolDef {
  *
  * 不连浏览器：驱动是**懒创建**的（`ensureDriver`），注册路径碰不到它。
  */
-function mountTools(): Map<string, ToolDef> {
+function mountTools(
+  targets: Array<Record<string, unknown>> = [{ id: TARGET.id, label: TARGET.label, url: SITE, scopeDirs: [CWD] }],
+): Map<string, ToolDef> {
   const tools = new Map<string, ToolDef>()
   const noop = (): void => {}
   const ctx = {
@@ -82,10 +86,7 @@ function mountTools(): Map<string, ToolDef> {
     },
     effect: noop,
   }
-  ;(apply as unknown as (ctx: unknown, config: unknown) => void)(ctx, {
-    targets: [{ id: TARGET.id, label: TARGET.label, url: SITE, scopeDirs: [CWD] }],
-    noSandbox: true,
-  })
+  ;(apply as unknown as (ctx: unknown, config: unknown) => void)(ctx, { targets, noSandbox: true })
   return tools
 }
 
@@ -542,5 +543,108 @@ describe('空值渲染：SPA 置空标题时不该画一对空括号', () => {
     expect(openText({ url: SITE, title: '海关前端' })).toBe(`已打开 ${SITE}（标题：海关前端）`)
     // 首尾空白不带到输出里（标题里有换行会把一行输出撑成多行）
     expect(openText({ url: SITE, title: ' 海关前端\n' })).toContain('（标题：海关前端）')
+  })
+})
+
+/* ------------------------------------------------------------------ *
+ * `site_login`：条件注册 + 一层「逐步的账」的契约，单独守
+ * ------------------------------------------------------------------ */
+
+describe('契约守卫：`site_login` 的输出契约', () => {
+  /** 声明了登录流程的那个站点——注册 `site_login` 的前提（它是**条件注册**的）。 */
+  const LOGIN_DECL = {
+    steps: [
+      { action: 'goto', url: '/login' },
+      { action: 'fill', selector: '#user', value: 'admin' },
+      { action: 'fill', selector: '#pwd', credentialRef: 'env:APP_PWD' },
+      { action: 'click', selector: '#submit' },
+    ],
+    success: { selector: '#app' },
+  }
+  const LOGIN_TARGET: WebTarget = { ...TARGET, credentialRef: 'env:APP_PWD', login: LOGIN_DECL as never }
+  const tools = mountTools([{ id: TARGET.id, label: TARGET.label, url: SITE, scopeDirs: [CWD], credentialRef: 'env:APP_PWD', login: LOGIN_DECL }])
+
+  /** 跑一次登录：每一步都过，成功判据由 `appCount` 决定。 */
+  async function run(appCount: number, denyAt?: { index: number; code: string; message: string; hint?: string }) {
+    const parsed = parseLogin(LOGIN_DECL, LOGIN_TARGET)
+    if (!parsed.ok) throw new Error(`夹具声明不成立：${JSON.stringify(parsed.errors)}`)
+    let step = 0
+    return runLogin({
+      target: LOGIN_TARGET,
+      plan: parsed.plan,
+      cwd: CWD,
+      invoke: async (request) => {
+        step += 1
+        if (denyAt !== undefined && step === denyAt.index) {
+          return {
+            ok: false,
+            action: request.action,
+            code: denyAt.code as never,
+            message: denyAt.message,
+            ...(denyAt.hint === undefined ? {} : { hint: denyAt.hint }),
+          }
+        }
+        return request.action === 'fill'
+          ? {
+              ok: true,
+              action: 'fill',
+              result: {
+                selector: request.selector,
+                ...(request.credentialRef === undefined
+                  ? {}
+                  : { credentialRef: request.credentialRef, protection: 'none', protectionNote: '继承来的环境变量：agent 与用户同 uid' }),
+              },
+            }
+          : { ok: true, action: request.action, result: { selector: request.selector ?? request.url } }
+      },
+      observe: async (selectors) => ({
+        url: `${SITE}login`,
+        elements: Object.fromEntries(selectors.map((selector) => [selector, { count: selector === '#app' ? appCount : 1 }])),
+      }),
+      currentUrl: async () => `${SITE}login`,
+    })
+  }
+
+  it('★ `ok`：产出（含可选字段 `credentialRef`）过自己的 schema，渲染里没有 `undefined`', async () => {
+    const def = tools.get('site_login')
+    if (def === undefined) throw new Error('site_login 没注册上')
+
+    const value = loginOutput(await run(1))
+    expect(validate(def.output.schema, value)).toEqual([])
+
+    const rendered = def.output.render({}, value).map((part) => part.text).join('\n')
+    expect(rendered).toContain('**成功**')
+    expect(rendered).toContain('env:APP_PWD')
+    expect(rendered).toContain('成功判据 #app：**命中**')
+    expect(rendered).not.toContain('undefined')
+    // 值不进输出：明文与口令都不该出现在这一段里。
+    expect(rendered).not.toContain('admin')
+  })
+
+  it('★ 被拒的那一步（可选字段 `code` / `hint` 都出现）同样过 schema', async () => {
+    const def = tools.get('site_login')
+    if (def === undefined) throw new Error('site_login 没注册上')
+
+    const value = loginOutput(
+      await run(1, { index: 3, code: 'PAGE_ORIGIN_NOT_ALLOWED', message: '当前页面在 https://idp.test', hint: '把那个源加进 allowedOrigins' }),
+    )
+    expect(validate(def.output.schema, value)).toEqual([])
+
+    const rendered = def.output.render({}, value).map((part) => part.text).join('\n')
+    expect(rendered).toContain('**没有结论**')
+    expect(rendered).toContain('PAGE_ORIGIN_NOT_ALLOWED')
+    expect(rendered).toContain('↳ 恢复路径：把那个源加进 allowedOrigins')
+    expect(rendered).not.toContain('undefined')
+  })
+
+  it('★ `fail`（步骤都过、判据没命中）也一样：契约对得上，渲染说清「别当作已登录」', async () => {
+    const def = tools.get('site_login')
+    if (def === undefined) throw new Error('site_login 没注册上')
+
+    const value = loginOutput(await run(0))
+    expect(validate(def.output.schema, value)).toEqual([])
+    const rendered = def.output.render({}, value).map((part) => part.text).join('\n')
+    expect(rendered).toContain('**没成**')
+    expect(rendered).toContain('别把这次会话当作已登录')
   })
 })

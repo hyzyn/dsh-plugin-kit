@@ -126,6 +126,66 @@ ${Array.from({ length: 160 }, (_, i) => `<p>第 ${String(i + 1).padStart(3, '0')
 </script>
 </body></html>`
 
+/**
+ * 登录夹具（真 Chrome，2026-10-04）：账号与口令都非空才跳转，并把提交内容写进 `sessionStorage`。
+ *
+ * 为什么写进 `sessionStorage` 而不是页面正文：真实页面不会把口令摆出来，但这次验收要**独立证明**
+ * 「值真的到了页面」——跳转后的页面把它读出来，`site_text` 拿得到它，而 `site_login` 的输出里没有它。
+ */
+const LOGIN_PAGE = `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>登录</title><link rel="icon" href="/favicon.ico"></head>
+<body>
+  <h1>登录</h1>
+  <input id="user" placeholder="账号">
+  <input id="pwd" type="password" placeholder="口令">
+  <button id="submit">登录</button>
+  <div id="out">（还没提交）</div>
+  <script>
+    document.getElementById('submit').addEventListener('click', function () {
+      var u = document.getElementById('user').value
+      var p = document.getElementById('pwd').value
+      document.getElementById('out').textContent = '已提交：' + u
+      if (u !== '' && p !== '') {
+        sessionStorage.setItem('devfront-smoke-login', u + ' / ' + p)
+        location.href = '/app.html'
+      }
+    })
+  </script>
+</body></html>`
+
+/** 登录后的页面：`#app` 是成功判据，`#echo` 是「值真的到了页面」的独立证据。 */
+const APP_PAGE = `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>工作台</title><link rel="icon" href="/favicon.ico"></head>
+<body><h1>工作台</h1><div id="app">工作台</div><div id="echo">（没有回显）</div>
+  <script>
+    var v = sessionStorage.getItem('devfront-smoke-login')
+    if (v !== null) document.getElementById('echo').textContent = '提交内容：' + v
+  </script>
+</body></html>`
+
+/**
+ * 口令不对的登录页：**不**跳转，只在点击之后**新建**一个 `#err`（因此 `waitFor #err` 真的在等，
+ * 而不是命中一个从一开始就在 DOM 里的空 div）。成功判据 `#app` 就是没机会出现。
+ */
+const LOGIN_BAD_PAGE = `<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>登录（口令不对）</title><link rel="icon" href="/favicon.ico"></head>
+<body>
+  <h1>登录</h1>
+  <input id="user" placeholder="账号">
+  <input id="pwd" type="password" placeholder="口令">
+  <button id="submit">登录</button>
+  <script>
+    document.getElementById('submit').addEventListener('click', function () {
+      if (document.getElementById('err') === null) {
+        var div = document.createElement('div')
+        div.id = 'err'
+        div.textContent = '账号或口令不对'
+        document.body.appendChild(div)
+      }
+    })
+  </script>
+</body></html>`
+
 /* ------------------------------------------------------------------ *
  * 假宿主：把工具定义收下来（工具内部用的是真 Chrome 驱动）
  * ------------------------------------------------------------------ */
@@ -237,6 +297,9 @@ function pageFor(path: string): string | undefined {
     '/detail.html': DETAIL,
     '/err.html': ERR,
     '/events.html': EVENTS,
+    '/login.html': LOGIN_PAGE,
+    '/app.html': APP_PAGE,
+    '/login-bad.html': LOGIN_BAD_PAGE,
     '/long.html': LONG,
     // 页面自己跳到异源（`open` 时合法，因为 URL 在声明范围内）——跨源判据的实验台。
     '/redirect.html': `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>重定向页</title></head>
@@ -269,7 +332,7 @@ const listen = async (handler: Parameters<typeof createServer>[0]): Promise<{ se
   return { server, origin: `http://127.0.0.1:${String(port)}` }
 }
 
-describe.skipIf(!CAN_DRIVE_CHROME)('工具面端到端冒烟：八个工具 + 跨源闸门（真 Chrome）', () => {
+describe.skipIf(!CAN_DRIVE_CHROME)('工具面端到端冒烟：九个工具 + 跨源闸门（真 Chrome）', () => {
   beforeAll(async () => {
     // 异源先起（站点页面里的 iframe / 重定向要引用它的地址）。
     const f = await listen((_req, res) => {
@@ -401,6 +464,60 @@ describe.skipIf(!CAN_DRIVE_CHROME)('工具面端到端冒烟：八个工具 + �
         scopeDirs: [CWD],
         credentialRef: 'env:DEVFRONT_SMOKE_PWD',
       },
+      /*
+       * 登录编排（B3 的编排那一半）：三个站点，把三条结局各走一遍。
+       * 声明里那句 `waitFor #app` 是**必需**的：点击之后浏览器要导航，不等就会出现「判据跑在
+       * 新页面加载之前」的竞态——而 `waitFor` 正是声明层表达「等它就绪」的那个词。
+       */
+      {
+        id: 'login-fixture',
+        label: '登录夹具（会成）',
+        url: `${siteOrigin}/`,
+        scopeDirs: [CWD],
+        credentialRef: 'env:DEVFRONT_SMOKE_PWD',
+        login: {
+          steps: [
+            { action: 'goto', url: '/login.html' },
+            { action: 'waitFor', selector: '#user' },
+            { action: 'fill', selector: '#user', value: 'smoke-user' },
+            { action: 'fill', selector: '#pwd', credentialRef: 'env:DEVFRONT_SMOKE_PWD' },
+            { action: 'click', selector: '#submit' },
+            { action: 'waitFor', selector: '#app' },
+          ],
+          success: { selector: '#app' },
+        },
+      },
+      {
+        id: 'login-fail-fixture',
+        label: '登录夹具（口令不对）',
+        url: `${siteOrigin}/`,
+        scopeDirs: [CWD],
+        login: {
+          steps: [
+            { action: 'goto', url: '/login-bad.html' },
+            { action: 'fill', selector: '#user', value: 'smoke-user' },
+            { action: 'fill', selector: '#pwd', value: '错误口令' },
+            { action: 'click', selector: '#submit' },
+            { action: 'waitFor', selector: '#err' },
+          ],
+          success: { selector: '#app' },
+        },
+      },
+      {
+        // 目录作用域之外：第一步 `goto` 就会被闸门拒（拿它验「被拒 → unknown」那条路）。
+        id: 'login-noscope-fixture',
+        label: '登录夹具（作用域外）',
+        url: `${siteOrigin}/`,
+        scopeDirs: ['/nowhere/devfront-smoke'],
+        login: {
+          // 两步：第一步就被拒，第二步该是 `skipped`（「剩下的不执行」要看得见）。
+          steps: [
+            { action: 'goto', url: '/login.html' },
+            { action: 'fill', selector: '#user', value: 'smoke-user' },
+          ],
+          success: { selector: '#app' },
+        },
+      },
     ])
   }, 60_000)
 
@@ -412,11 +529,13 @@ describe.skipIf(!CAN_DRIVE_CHROME)('工具面端到端冒烟：八个工具 + �
     if (releaseWork !== '') rmSync(releaseWork, { recursive: true, force: true })
   })
 
-  it('八个工具都注册上了（少一个，下面的用例会静默少守一条）', () => {
+  it('九个工具都注册上了（少一个，下面的用例会静默少守一条）', () => {
     expect([...tools.keys()].sort()).toEqual([
       'site_click',
       'site_console',
       'site_fill',
+      // 有站点声明了 `login` → 条件注册的那一个也在
+      'site_login',
       'site_open',
       'site_shot',
       'site_text',
@@ -647,6 +766,79 @@ describe.skipIf(!CAN_DRIVE_CHROME)('工具面端到端冒烟：八个工具 + �
     expect(result.text).toContain('没验成的项目')
     expect(result.text).not.toContain('undefined')
   }, 180_000)
+
+  it('★ site_login：照声明的步骤走一遍，每一步都过闸门，成功后**浏览器真的在登录态**', async () => {
+    const SECRET = 's3cret-登录口令'
+    process.env.DEVFRONT_SMOKE_PWD = SECRET
+    try {
+      const result = await call('site_login', 'login-fixture')
+      expect(result.ok, result.text).toBe(true)
+
+      const value = result.value as {
+        status: string
+        steps: Array<{ index: number; action: string; status: string; code?: string }>
+        success: { selector: string; verdict: string; got: string }
+        cancelled: boolean
+      }
+      expect(value.status).toBe('ok')
+      // 逐步的账：六步都「执行了」（`goto` 解析成绝对 URL、两次 `waitFor` 真的等到了元素）。
+      expect(value.steps.map((step) => `${step.action}:${step.status}`)).toEqual([
+        'goto:done',
+        'waitFor:done',
+        'fill:done',
+        'fill:done',
+        'click:done',
+        'waitFor:done',
+      ])
+      expect(value.success).toMatchObject({ selector: '#app', verdict: 'met' })
+      expect(value.cancelled).toBe(false)
+
+      // 报告里有引用名与保护强度，**没有值**，也没有明文账号。
+      expect(result.text).toContain('**成功**')
+      expect(result.text).toContain('env:DEVFRONT_SMOKE_PWD')
+      expect(result.text).toContain('方便，不是防护')
+      expect(result.text).not.toContain(SECRET)
+      expect(result.text).not.toContain('smoke-user')
+      expect(result.text).not.toContain('undefined')
+
+      // 登录态是活的：**同一个浏览器**上直接读页面，拿到跳转后的页面与回显。
+      const text = await call('site_text', 'login-fixture')
+      expect(text.text).toContain('工作台')
+      // 值确实到了页面（独立证据：页面自己把提交内容从 sessionStorage 里读出来写进正文）。
+      expect(text.text).toContain(SECRET)
+    } finally {
+      delete process.env.DEVFRONT_SMOKE_PWD
+    }
+  }, 90_000)
+
+  it('★ site_login：步骤都走完但成功判据没命中 → `fail`（登录没成，别把会话当已登录）', async () => {
+    const result = await call('site_login', 'login-fail-fixture')
+    expect(result.ok, result.text).toBe(true)
+
+    const value = result.value as { status: string; steps: Array<{ action: string; status: string }>; success: { verdict: string; got: string } }
+    // 六步里前五步都执行了（含 `waitFor #err` 真的等到了那个**新建**的元素）。
+    expect(value.steps.slice(0, 4).every((step) => step.status === 'done')).toBe(true)
+    expect(value.status).toBe('fail')
+    expect(value.success.verdict).toBe('unmet')
+    expect(value.success.got).toContain('命中 0 个')
+    expect(result.text).toContain('**没成**')
+    expect(result.text).toContain('别把这次会话当作已登录')
+  }, 90_000)
+
+  it('★ site_login：第一步被闸门拒（目录作用域外）→ `unknown`，剩下的步骤**不执行**', async () => {
+    const result = await call('site_login', 'login-noscope-fixture')
+    expect(result.ok, result.text).toBe(true)
+
+    const value = result.value as { status: string; steps: Array<{ status: string; code?: string; message: string }>; success: { verdict: string; got: string } }
+    expect(value.status).toBe('unknown')
+    expect(value.steps[0]).toMatchObject({ status: 'failed', code: 'OUT_OF_SCOPE' })
+    expect(value.steps[1]?.status).toBe('skipped')
+    // 「没走完」不是「登录没成」：判据没求值。
+    expect(value.success.verdict).toBe('unknown')
+    expect(value.success.got).toContain('没有求值')
+    expect(result.text).toContain('**没有结论**')
+    expect(result.text).toContain('OUT_OF_SCOPE')
+  }, 90_000)
 
   it('★ site_fill 用凭据引用填值：值真的进了页面，但**不进工具输出**', async () => {
     const SECRET = 's3cret-来自环境变量'

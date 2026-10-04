@@ -14,7 +14,18 @@ import { dirname, join } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
-import { CARD_FIELDS, DEVFONT_GUIDANCE, configSnapshotFrom, normalizeCardPatch, normalizeConfig, parseViewport, webAuditSink } from '../src/index.js'
+import {
+  CARD_FIELDS,
+  DEVFONT_GUIDANCE,
+  configSnapshotFrom,
+  loginOutput,
+  loginRenderText,
+  normalizeCardPatch,
+  normalizeConfig,
+  normalizeTargets,
+  parseViewport,
+  webAuditSink,
+} from '../src/index.js'
 
 describe('parseViewport：站点视口（**按站点**，2026-10-02 加）', () => {
   it('收 `390x844` 这类；`x` / `X` / `×` 与前后空白都认', () => {
@@ -143,10 +154,12 @@ describe('normalizeConfig：开关与默认值', () => {
 })
 
 describe('能力公告', () => {
-  it('八个动作都点到名（公告里缺一个，agent 就不知道它能用）', () => {
-    for (const tool of ['site_open', 'site_shot', 'site_click', 'site_fill', 'site_text', 'site_console', 'site_verify', 'site_verify_release']) {
+  it('八个动作 + `site_login` 都点到名（公告里缺一个，agent 就不知道它能用）', () => {
+    for (const tool of ['site_open', 'site_shot', 'site_click', 'site_fill', 'site_text', 'site_console', 'site_verify', 'site_verify_release', 'site_login']) {
       expect(DEVFONT_GUIDANCE).toContain(tool)
     }
+    // 条件注册这件事必须在公告里说清：不说的话，agent 会以为「没看到 site_login = 本套件不会登录」。
+    expect(DEVFONT_GUIDANCE).toContain('只在有站点声明了登录流程时')
   })
 
   it('写明边界：不做定时 / 爬虫 / 批量', () => {
@@ -344,5 +357,137 @@ describe('配置卡片的数据面（宿主侧纯函数，2026-10-03）', () => 
       targets: [{ id: 'w', label: 'w', url: 'https://x.test/', scopeDirs: [] }],
     })
     expect(snapshot.targets).toEqual([{ id: 'w', label: 'w', url: 'https://x.test/', scopeDirs: [], allowedOrigins: [] }])
+  })
+})
+
+/* ------------------------------------------------------------------ *
+ * 登录声明（`login`）：原样穿过配置层 —— 这是「卡片保存不删声明」的前提
+ * （客户端那半边的漏删就是 `devfront D01`；这里守的是服务端这一半）
+ * ------------------------------------------------------------------ */
+
+/** 一份最小的合法登录声明（`url` 落在 `https://x.test/` 里）。 */
+const LOGIN = {
+  steps: [{ action: 'goto', url: '/login' }, { action: 'fill', selector: '#user', value: 'admin' }],
+  success: { selector: '#app' },
+}
+
+describe('登录声明：配置层**不许**把它静默丢掉', () => {
+  it('`normalizeConfig` 原样带出（不解析、不裁剪：判定在 `site_login` 开工前）', () => {
+    const live = normalizeConfig({ targets: [{ id: 'w', url: 'https://x.test/', login: LOGIN }] })
+    expect(live.targets[0]?.login).toEqual(LOGIN)
+    // 没写就是没写（不是空对象占位）。
+    expect(normalizeConfig({ targets: [{ id: 'w', url: 'https://x.test/' }] }).targets[0]?.login).toBeUndefined()
+  })
+
+  it('★ `normalizeTargets`（卡片保存 / 项目清单那条**严格**路径）把 `login` 带过去', () => {
+    const result = normalizeTargets([{ id: 'w', url: 'https://x.test/', login: LOGIN }])
+    expect('targets' in result && result.targets[0]?.login).toEqual(LOGIN)
+  })
+
+  it('★ 声明不成立 → 保存/加载时就拒，报错指到 `targets[0].login.…`（不静默丢弃）', () => {
+    const result = normalizeTargets([
+      { id: 'w', url: 'https://x.test/', login: { steps: [{ action: 'goto', url: 'https://elsewhere.test/' }], success: { selector: '#app' } } },
+    ])
+    expect('error' in result).toBe(true)
+    if ('error' in result) {
+      expect(result.error).toContain('targets[0].login 不成立')
+      expect(result.error).toContain('steps[0].url')
+    }
+    // 卡片保存那条路同样要拒（`normalizeCardPatch` 走的就是 `normalizeTargets`）。
+    const patch = normalizeCardPatch({ confirmSiteEdit: true, targets: [{ id: 'w', url: 'https://x.test/', login: { steps: [] } }] })
+    expect('error' in patch && patch.error).toContain('targets[0].login')
+  })
+
+  it('`configSnapshotFrom` 把原文给出来（客户端要**原样带回**，否则站点编辑会把它删掉）', () => {
+    const snapshot = configSnapshotFrom({
+      enabled: true,
+      announceToAgent: true,
+      settleMs: 800,
+      noSandbox: false,
+      chromePath: '',
+      shotDir: '',
+      auditFile: '',
+      targets: [{ id: 'w', label: 'w', url: 'https://x.test/', scopeDirs: [], login: LOGIN }],
+    })
+    expect(snapshot.targets).toEqual([
+      { id: 'w', label: 'w', url: 'https://x.test/', scopeDirs: [], allowedOrigins: [], login: LOGIN },
+    ])
+  })
+})
+
+/* ------------------------------------------------------------------ *
+ * `site_login` 的输出契约与渲染（判定层的原始结果 → 给 agent 的那段话）
+ * ------------------------------------------------------------------ */
+
+/** 造一份执行器结果（只填渲染要读的字段）。 */
+function loginRun(status: 'ok' | 'fail' | 'unknown', overrides: Record<string, unknown> = {}) {
+  return {
+    targetId: 'w',
+    status,
+    message: '一句话结论',
+    steps: [
+      { index: 1, action: 'goto' as const, subject: 'https://x.test/login', status: 'done' as const, message: '已打开', elapsedMs: 1 },
+      { index: 2, action: 'fill' as const, subject: '#pwd', status: 'done' as const, message: '已填值', credentialRef: 'env:PWD', elapsedMs: 1 },
+    ],
+    success: {
+      selector: '#app',
+      verdict: status === 'ok' ? ('met' as const) : status === 'fail' ? ('unmet' as const) : ('unknown' as const),
+      got: '命中 1 个',
+      message: '判据',
+    },
+    elapsedMs: 2,
+    cancelled: false,
+    ...overrides,
+  }
+}
+
+describe('`site_login` 的渲染：三种结局的第一行必须说清「能不能继续用这个会话」', () => {
+  it('`ok` → 成功，并明说浏览器已在登录态', () => {
+    const text = loginRenderText(loginOutput(loginRun('ok') as never))
+    expect(text).toContain('**成功**')
+    expect(text).toContain('这个浏览器现在处于登录态')
+    expect(text).toContain('env:PWD')
+    expect(text).not.toContain('undefined')
+  })
+
+  it('★ `fail` → 「没成」+ **别把这次会话当作已登录**（最危险的那种读法）', () => {
+    const text = loginRenderText(loginOutput(loginRun('fail') as never))
+    expect(text).toContain('**没成**')
+    expect(text).toContain('别把这次会话当作已登录')
+    expect(text).toContain('成功判据 #app：**没命中**')
+  })
+
+  it('★ `unknown` → 「没有结论」+ **没验成**（不是「验出问题」）', () => {
+    const text = loginRenderText(loginOutput(loginRun('unknown') as never))
+    expect(text).toContain('**没有结论**')
+    expect(text).toContain('没验成')
+    // 「已经执行过的动作不回滚、页面还在」这句必须在：它是下一步怎么接着用的前提。
+    expect(text).toContain('还在原处')
+  })
+
+  it('被拒的那一步：码、hint（另起一行）与逐步的状态都渲染出来', () => {
+    const text = loginRenderText(
+      loginOutput(
+        loginRun('unknown', {
+          steps: [
+            { index: 1, action: 'goto', subject: 'https://x.test/login', status: 'done', message: '已打开', elapsedMs: 1 },
+            {
+              index: 2,
+              action: 'fill',
+              subject: '#pwd',
+              status: 'failed',
+              code: 'PAGE_ORIGIN_NOT_ALLOWED',
+              message: '当前页面在 https://idp.test，不在允许动手的源里',
+              hint: '把那个源加进 allowedOrigins',
+              elapsedMs: 1,
+            },
+            { index: 3, action: 'click', subject: '#go', status: 'skipped', message: '前面的步骤没走成，这一步没执行', elapsedMs: 0 },
+          ],
+        }) as never,
+      ),
+    )
+    expect(text).toContain('✘ 2. fill #pwd [PAGE_ORIGIN_NOT_ALLOWED]')
+    expect(text).toContain('↳ 恢复路径：把那个源加进 allowedOrigins')
+    expect(text).toContain('· 3. click #go')
   })
 })

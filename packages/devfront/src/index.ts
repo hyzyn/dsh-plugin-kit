@@ -41,6 +41,8 @@ export * from './console.js'
 export * from './page.js'
 export * from './cdp-driver.js'
 export * from './credential.js'
+export * from './login.js'
+export * from './login-run.js'
 export * from './web-verify.js'
 export * from './web-run.js'
 export * from './release.js'
@@ -65,6 +67,8 @@ export {
   fillRenderText,
   releaseOutput,
   releaseRenderText,
+  loginOutput,
+  loginRenderText,
 } from './plugin.js'
-export type { LiveConfig, VerifyOutput, VerifyLine, FillOutput, ReleaseOutput } from './plugin.js'
+export type { LiveConfig, VerifyOutput, VerifyLine, FillOutput, ReleaseOutput, LoginOutput, LoginStepLine } from './plugin.js'
 export { PROJECT_SITES_REL, loadProjectSites, mergeSites } from './project-sites.js'

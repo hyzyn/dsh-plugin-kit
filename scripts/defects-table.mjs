@@ -4,8 +4,8 @@
  *
  * ## 为什么需要它
  *
- * 权威数据是各包的 `packages/<pkg>/DEFECTS.md` 索引表（当前五份：`docker` / `tty` / `codegraph` /
- * `kit` / `devenv`），但它们的范围被**复述**在四个地方，全部是手抄的：
+ * 权威数据是各包的 `packages/<pkg>/DEFECTS.md` 索引表（当前七份：`docker` / `tty` / `codegraph` /
+ * `kit` / `devenv` / `devdata` / `devfront`），但它们的范围被**复述**在四个地方，全部是手抄的：
  *
  * | # | 复述点 | 句式 |
  * |---|---|---|
@@ -77,7 +77,7 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 export const CONVENTIONS_PATH = 'docs/conventions.md'
 
 /**
- * 四包台账的**形状声明**。
+ * 各包台账的**形状声明**。
  *
  * 字段是「这份台账必须有哪些句式」的显式清单——**没有的写 `false`**，而不是让正则去碰运气：
  *
@@ -171,6 +171,20 @@ export const LEDGER_SPECS = [
     codeRefs: true,
     // 末列是 `✓`（「这段代码/测试里引用了该编号」）：9 条补立的号都在 src/ 里落了指针，
     // 所以这一列**必须**由守卫现算核对（与 tty 同款），不靠人工记得去更新
+  },
+  {
+    name: 'devfront',
+    prefix: 'D',
+    path: 'packages/devfront/DEFECTS.md',
+    tableHeading: /^## 1\. 编号索引表/,
+    selfSequence: true,
+    nextAnchor: true,
+    crossRefs: [],
+    statusLine: { closedColumn: false, untilSentence: true },
+    mirror: false,
+    codeRefs: true,
+    // 末列是 `✓`：这一条缺陷的修法在 `client.js`（包根，不进 `src/`），所以编号指针落在
+    // `src/plugin.ts` 与 `test/` 的注释里——守卫按包内 `src`/`test` 现算，找不到就报
   },
 ]
 

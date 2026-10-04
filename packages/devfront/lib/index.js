@@ -40,11 +40,13 @@ export * from './console.js';
 export * from './page.js';
 export * from './cdp-driver.js';
 export * from './credential.js';
+export * from './login.js';
+export * from './login-run.js';
 export * from './web-verify.js';
 export * from './web-run.js';
 export * from './release.js';
 export * from './release-run.js';
 /* 宿主半体：DSH 靠这三个导出把本包装成插件（见 conventions.md § 插件包解剖）。 */
-export { name, inject, apply, Config, CARD_FIELDS, configSnapshotFrom, normalizeCardPatch, normalizeTargets, normalizeConfig, parseViewport, DEVFONT_GUIDANCE, webAuditSink, webAuditText, verifyOutput, verifyRenderText, fillRenderText, releaseOutput, releaseRenderText, } from './plugin.js';
+export { name, inject, apply, Config, CARD_FIELDS, configSnapshotFrom, normalizeCardPatch, normalizeTargets, normalizeConfig, parseViewport, DEVFONT_GUIDANCE, webAuditSink, webAuditText, verifyOutput, verifyRenderText, fillRenderText, releaseOutput, releaseRenderText, loginOutput, loginRenderText, } from './plugin.js';
 export { PROJECT_SITES_REL, loadProjectSites, mergeSites } from './project-sites.js';
 //# sourceMappingURL=index.js.map

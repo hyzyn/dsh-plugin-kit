@@ -34,11 +34,14 @@
 
 ### B. 会话与凭据
 
-3. **登录会话** —— **凭据那一半已落地（2026-10-04，见 § 已完成 记-29）**：`site_fill` 的值可以是
-   **凭据引用**（`credentialRef`，只认目标声明过的那一个），解析走官方凭据服务，
-   **值不进返回 / 会话记录 / 审计**；返回里带来源保护强度（今天全是「方便，不是防护」）。
-   剩的是**编排**那一半：没有一个「按声明的登录步骤自动走一遍」的动作（先要定站点专属流程的
-   声明形态）。门槛（已验的部分）：凭据不落明文；强度如实标注——见记-29。
+3. ~~**登录会话**~~ —— **两半都已落地（2026-10-04）**：
+   **凭据那一半**见 § 已完成 记-29（`site_fill` 的值可以是**凭据引用**，只认目标声明过的那一个，
+   值不进返回 / 会话记录 / 审计，返回里带来源保护强度）；
+   **编排那一半**见 § 已完成 记-32：声明形态定为 `WebTarget.login`（`goto` / `fill` / `click` /
+   `waitFor` + 一条 `success.selector`），入口是 `site_login`——它**只收 `target` 与 `cwd`**，
+   每一步过与 `site_click` / `site_fill` 同一道判据、各记一行审计，总预算 120s 硬上限。
+   门槛（已验）：真 Chrome 上三条结局各跑一遍（`tool-smoke.test.ts`），值不进报告（同一次调用里
+   `site_text` 能从页面读出那个值，作为独立证据）——见记-32。
 4. **`WebTarget` 的配置面**：`id` / `label` / `url` / `scopeDirs` / `credentialRef` 从哪来
    （宿主 settings？项目内清单？）。与数据面的 `DevDataTarget` 共用配置面还是各一套，
    要先定——**各一套会让「同一个站点的目录作用域」有两份真相**。
@@ -1133,3 +1136,51 @@ JSONL 出口。三包各写一份必然漂，于是按「第三个消费者出�
    （`invalid output`：动作真的做了，agent 却以为没做，见 `tool-contract.test.ts` 的文件头）；
 3. **B3 的登录编排没做**（本轮只做 D8）：声明形态已定 `WebTarget.login`（主体可写
    `web/sites.yaml`），落地留待下一轮。
+
+### 记-32. 登录编排：`site_login` + `WebTarget.login`（2026-10-04，待办 B3 收口 / 根 ROADMAP 第 16 项）
+
+**由来**：待办 B3 的**编排那一半**。记-29 通了凭据之后，「登录后才有的页面」仍然要人手串五个动作
+（`site_open` → `site_fill` ×2 → `site_click` → 再验），而那串步骤**谁也复审不了、也攒不下来**。
+这一轮把流程**写进站点声明**，入口是 `site_login`。
+
+五条形态是这一轮定死的：① 声明挂在 `WebTarget.login`（profile 补丁层；`projectSitesFile` 打开时
+也能写进项目里的 `web/sites.yaml`）；② 词汇固定 `goto` / `fill` / `click` / `waitFor` + 一条
+`success.selector`；③ 工具**只收 `target` 与 `cwd`**——步骤只能来自声明；④ 每一步过**与
+`site_click` / `site_fill` 同一道**判据（同源 + 声明路径前缀 + 目录作用域 + 动手前核**当前页面**的源），
+各记一行审计；⑤ 总预算 **120s 硬上限、不可声明**（每一步的等待用剩余预算夹取）。
+
+| 落点 | 内容 | 门槛（已验） |
+|---|---|---|
+| `src/login.ts`（新） | 声明形态 + 判定（`parseLogin`，错误**带路径**）：未知字段一律拒、步数 ≤10、第一步必须是 `goto`、`goto` 过 `urlAllowed`、`fill` 的值 / 引用**二选一**、引用必须是 `env:NAME` **且正是目标声明的那一个**、`waitFor` 超时 1~15s、`success.selector` 必写且**刻意不做 `url`** | `test/login.test.ts` **20 例**（含 8 条反例：越界 `goto`、第一步不是 `goto`、口令伪装成引用、借用别人的引用、`success.url`…） |
+| `src/login-run.ts`（新） | 执行器：逐步的账 + 三态 + `waitFor` 轮询 + 取消自成一档；依赖**全注入**（`invoke` / `observe` / `currentUrl` / `sleep` / `now`），**不碰驱动、不碰判定层**（所以没有第二条旁路） | `test/login-run.test.ts` **13 例**：三态、值不进报告、等待的三条出口、预算夹取（`sleeps === [200]` 就是证据）、取消在 250ms 轮询里被唤醒（真实睡眠下 <1s 返回） |
+| `src/plugin.ts` | `site_login`（协作式预算 `timeoutMs: 180_000`，转发 `exec.signal`）+ `loginOutput` / `loginRenderText` / `loginOutputSchema`；整体性问题（没声明 / 声明不成立）在**碰浏览器之前**抛；**条件注册**（有站点声明 `login`、或开了 `projectSitesFile`）；启动日志那一行改成**按真正登记成功的工具现算** | `test/tools.test.ts` **+6 例**、`test/tool-contract.test.ts` **+3 例**（`ok` / 被拒 / `fail` 三态各过自己的 schema）、`test/volatile-config.test.ts` **+1 例**（加 / 撤声明 → 工具出现 / 消失） |
+| 配置层 | `TARGET_SCHEMA.login = z.any()`（唯一判据在 `login.ts`）、`normalizeConfig` 原样携带（**不解析、不丢弃**）、`normalizeTargets` **严格**校验并不丢行、`configSnapshotFrom` 把原文给出去 | `test/plugin.test.ts` **+4 例**（含「保存路径拒 `targets[0].login`」与「原文穿过配置层」） |
+| 客户端半体 | `client.js` 的站点编解码**透传** `login`：卡片不编辑它，但也**不许**在一次站点保存里把它删掉 | 真机卡片脚本 **⑳**：站点编辑保存之后读回，三步声明与 `success` 都还在 |
+| 文档 | README 新增 § 登录编排（含三条判出来的形态）、工具面 8 → 9（条件注册那一个单说）；plan §15.2 一行、§15.3 收口 | `check-doc-links` 等闸门 |
+
+**真机证据（本轮实跑）**：`test/tool-smoke.test.ts` 三条 ★（真 Chrome + 本地登录夹具）——
+① **`ok`**：六步全过（两次 `waitFor` 真的等到了元素，其中一次等的是**点击后导航**出来的 `#app`），
+报告里只有引用名与保护强度、**没有值也没有明文账号**；而同一次调用之后 `site_text` 从页面里读出了
+那个值（页面把它从 `sessionStorage` 里读出来写进正文）——**独立证据**：值真的到了页面；
+② **`fail`**：口令不对的登录页上五步都执行完、成功判据 0 命中 → `fail`，渲染里明说「别把这次会话
+当作已登录」；③ **`unknown`**：目录作用域之外的站点上第一步就被 `OUT_OF_SCOPE` 拒、第二步 `skipped`、
+成功判据**没求值**（没走到 ≠ 没成）。该文件 17 → **20/20**。
+
+**本轮抓到并当场补上的一处**（`devfront D01`——不是旧缺陷，是**这一轮自己引入**的风险，如实记）：卡片保存站点时
+`targets` 是**整批重建**的，而客户端只认识那七个字段——`login` 加上去的当天，任何一次站点编辑都会
+把它**悄悄删掉**（写进去的声明不见了，而界面上一句提示都没有）。它这一轮就立了号（`D01`），
+顺手把本包缺了的那份 `DEFECTS.md` 建起来、并在 [conventions.md § 文档分档](../../docs/conventions.md#文档分档)
+里把 `devfront` 从「中等档」挪到**复杂档**——那份 README 早就超过 250 行，档位是按现算的判据定的。补法是编解码透传 + 真机第 ⑳ 步
+（**读源码推断不算证据**）。顺带把脚本夹具里那个 `credentialRef: secret:one` 改成 `env:one`：
+判定层只认 `env:NAME`，照着夹具抄的人会撞墙。
+
+**刻意没做的**（三条都是通往「通用浏览器自动化」的路）：`success.url` 判据（前缀在「登录后跳回
+站点根」这类声明里**恒真**，恒真的判据比没有判据更坏）、条件 / 循环 / 任意脚本、给 `site_login`
+加 `steps` 参数（agent 现编步骤）；以及跨源 `goto`——SSO / IdP 靠**页面自己跳** + 把那个源写进
+`allowedOrigins`（与 `site_open` 同一道判据，页面自己跳过去**不构成授权**）。另外**卡片不显示**
+`login`（不编辑、但要原样带回）：登录声明是一串步骤与选择器，它的评审面是那份配置文件；在卡片上
+显示「这个站点有没有登录流程」是纯增量，今天没做。
+
+**本轮没验到的**：真 IdP / SSO（真机夹具是本地的同源登录页加一次跳转，`allowedOrigins` 那条路在
+`tool-smoke` 里由 `site_click` / `site_fill` 那两条用例覆盖）；`projectSitesFile` 那条路上的登录声明
+只到「并集之后还在、写坏了会在加载时拒」，没有在真机上从项目文件跑一遍登录。

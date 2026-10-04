@@ -29,11 +29,14 @@ afterAll(() => {
 /** 造一个项目目录；给了 `sites` 就写一份 `web/sites.yaml`。 */
 function project(sites?: Record<string, unknown>[]): string {
   const dir = mkdtempSync(join(root, 'project-'))
-  if (sites !== undefined) {
-    mkdirSync(join(dir, 'web'), { recursive: true })
-    writeFileSync(join(dir, PROJECT_SITES_REL), JSON.stringify({ version: 1, sites }))
-  }
+  if (sites !== undefined) writeProjectSites(dir, sites)
   return dir
+}
+
+/** 往一个**已存在**的目录里写站点声明（要用 `dir` 自己当 `scopeDirs` 时得先有目录）。 */
+function writeProjectSites(dir: string, sites: Record<string, unknown>[]): void {
+  mkdirSync(join(dir, 'web'), { recursive: true })
+  writeFileSync(join(dir, PROJECT_SITES_REL), JSON.stringify({ version: 1, sites }))
 }
 
 const PROFILE_SITE = { id: 'p1', url: 'https://p1.test/', scopeDirs: [process.cwd()] }
@@ -263,6 +266,86 @@ describe('工具级：site_fill 的凭据引用只认目标声明过的那一个
       credentialRef: 'env:P1_APP_PWD',
     })
     expect(message).toContain('CREDENTIAL_AND_VALUE')
+  })
+})
+
+describe('工具级：site_login 的可见性与开工前的两类拒绝', () => {
+  /** 一份最小的合法登录声明（`goto` 落在 `PROFILE_SITE` 的站点范围内）。 */
+  const LOGIN = {
+    steps: [{ action: 'goto', url: '/login' }, { action: 'fill', selector: '#user', value: 'admin' }],
+    success: { selector: '#app' },
+  }
+
+  it('★ 没有站点声明 `login`（且没开项目站点声明）→ **不注册** `site_login`：不留必然失败的入口', () => {
+    const host = makeHost()
+    host.mount({ enabled: true, targets: [PROFILE_SITE] })
+    expect(host.names()).not.toContain('site_login')
+    expect(host.names().length).toBe(8)
+  })
+
+  it('★ 有站点声明 `login` → 多一个 `site_login`（共九个）', () => {
+    const host = makeHost()
+    host.mount({ enabled: true, targets: [{ ...PROFILE_SITE, login: LOGIN }] })
+    expect(host.names()).toContain('site_login')
+    expect(host.names().length).toBe(9)
+  })
+
+  it('★ 打开了项目站点声明（`projectSitesFile`）→ 也注册：那条路能凭空多出一个带登录声明的站点', () => {
+    const host = makeHost()
+    host.mount({ enabled: true, projectSitesFile: PROJECT_SITES_REL, targets: [PROFILE_SITE] })
+    expect(host.names()).toContain('site_login')
+  })
+
+  it('目标没声明登录流程 → 拒，并说清「步骤是写下来的」以及去哪儿写', async () => {
+    const host = makeHost()
+    host.mount({ enabled: true, targets: [{ ...PROFILE_SITE, login: LOGIN }, { id: 'p2', url: 'https://p2.test/', scopeDirs: [process.cwd()] }] })
+    const message = await host.callError('site_login', { target: 'p2' })
+    expect(message).toContain('p2 没有声明登录流程')
+    expect(message).toContain('工具不接受现编的步骤')
+    // 给出路：哪些站点**真的**声明了（agent 的失败模式是原地重试）。
+    expect(message).toContain('p1')
+  })
+
+  it('★ 声明不成立 → **在碰浏览器之前**指到字段（不是「跑起来才发现」）', async () => {
+    const host = makeHost()
+    host.mount({
+      enabled: true,
+      targets: [
+        {
+          ...PROFILE_SITE,
+          login: { steps: [{ action: 'goto', url: 'https://elsewhere.test/login' }], success: { selector: '#app' } },
+        },
+      ],
+    })
+    const message = await host.callError('site_login', { target: 'p1' })
+    expect(message).toContain('登录声明（login）不成立')
+    expect(message).toContain('steps[0].url')
+    expect(message).toContain('allowedOrigins')
+  })
+
+  it('项目文件里的登录声明：**加载时**就判（严格），报错指到 `sites[i].login`', async () => {
+    const host = makeHost()
+    host.mount({ enabled: true, projectSitesFile: PROJECT_SITES_REL, targets: [PROFILE_SITE] })
+    const dir = project([
+      { id: 'j1', url: 'https://j1.test/', login: { steps: [{ action: 'click', selector: '#go' }], success: { selector: '#app' } } },
+    ])
+    // 第一步不是 goto：这份声明不可复现 → 项目清单不成立（**不是**「跑起来才发现」）。
+    const message = await host.callError('site_open', { target: 'p1', cwd: dir })
+    expect(message).toContain('项目站点声明不成立')
+    expect(message).toContain('targets[0].login')
+    expect(message).toContain('第一步必须是 `goto`')
+  })
+
+  it('项目文件里的登录声明**并集之后还在**：拿没声明的那个站点调用，报的是 j1 声明了', async () => {
+    const host = makeHost()
+    host.mount({ enabled: true, projectSitesFile: PROJECT_SITES_REL, targets: [PROFILE_SITE] })
+    const dir = project()
+    writeProjectSites(dir, [{ id: 'j1', url: 'https://j1.test/', scopeDirs: [dir], login: LOGIN }])
+
+    // 拿 p1（没声明）调用：它在**开浏览器之前**就被拒，而那句「声明了登录流程的站点」恰好证明
+    // 项目文件里的 `login` 一路活到了合并后的清单里（没有在配置层被静默丢掉）。
+    const message = await host.callError('site_login', { target: 'p1', cwd: dir })
+    expect(message).toContain('声明了登录流程的站点：j1')
   })
 })
 

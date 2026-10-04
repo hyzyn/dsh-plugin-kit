@@ -57,16 +57,21 @@ const keep = argv.includes('--keep')
 const chromePath = flag('--chrome') ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 
 /**
- * 注册面期望：本包**八个**工具（2026-10-04 加了发布跑批 `site_verify_release`）。
+ * 注册面期望：本包**九个**工具（2026-10-04 加了发布跑批 `site_verify_release` 与登录编排 `site_login`）。
  *
- * 为什么这一步值得单独钉：`site_verify_release` 的输出契约是**手写 schema**
- * （`verifyOutputSchema()`），而假宿主那一层对 schema **照单全收**——「真 ToolRuntime 收不收得下」
- * 只有真宿主回答得了。少一个工具、或某个工具被 `defineTool` 拒掉，都是「本地全绿、真机必坏」。
+ * 为什么这一步值得单独钉：`site_verify_release`（`verifyOutputSchema()`）与 `site_login`
+ * （`loginOutputSchema()`）的输出契约都是**手写 schema**，而假宿主那一层对 schema **照单全收**
+ * ——「真 ToolRuntime 收不收得下」只有真宿主回答得了。少一个工具、或某个工具被 `defineTool` 拒掉，
+ * 都是「本地全绿、真机必坏」。
+ *
+ * `site_login` 是**条件注册**的（有站点声明了 `login`、或打开了项目站点声明时才有），所以下面那份
+ * 夹具配置里给 `w-one` 写了一份登录声明——这一条同时也钉住「配置里写了 `login`，工具真的会出现」。
  */
 const EXPECTED_TOOLS = [
   'site_click',
   'site_console',
   'site_fill',
+  'site_login',
   'site_open',
   'site_shot',
   'site_text',
@@ -164,7 +169,19 @@ try {
       '        scopeDirs: [/Users/me/coding]',
       '        allowedOrigins: [https://sso.example.com]',
       '        viewport: 390x844',
-      '        credentialRef: secret:one',
+      '        credentialRef: env:one',
+      '        login:',
+      '          steps:',
+      '            - action: goto',
+      '              url: /app/login',
+      '            - action: fill',
+      '              selector: "#user"',
+      '              value: verify-user',
+      '            - action: fill',
+      '              selector: "#pwd"',
+      '              credentialRef: env:one',
+      '          success:',
+      '            selector: "#app"',
       '      - id: w-two',
       '        label: 验收站点二',
       '        url: https://two.example.com/',
@@ -237,7 +254,7 @@ try {
     get1.json?.config?.targets?.[0]?.scopeDirs?.[0] === '/Users/me/coding'
       && get1.json?.config?.targets?.[0]?.allowedOrigins?.[0] === 'https://sso.example.com'
       && get1.json?.config?.targets?.[0]?.viewport === '390x844'
-      && get1.json?.config?.targets?.[0]?.credentialRef === 'secret:one',
+      && get1.json?.config?.targets?.[0]?.credentialRef === 'env:one',
     JSON.stringify(get1.json?.config?.targets?.[0] ?? {}),
   )
 
@@ -273,6 +290,8 @@ try {
     allowedOrigins: target.allowedOrigins ?? [],
     ...(target.viewport === undefined ? {} : { viewport: target.viewport }),
     ...(target.credentialRef === undefined ? {} : { credentialRef: target.credentialRef }),
+    // `login` 卡片不编辑，但必须**原样带回**（第 ⑳ 步钉的就是这件事）。
+    ...(target.login === undefined ? {} : { login: target.login }),
   }))
   const siteEdit = await call('/api/dsh-devfront/config', {
     method: 'POST',
@@ -455,14 +474,32 @@ try {
    * 理由与 `devdata` 记-19 同：插号会让文档里已有的编号引用失效）。
    *
    * 判据与 `verify-devdata-host-mount.mjs` 的同名断言一致：那一行是**运维确认插件生效的观测面**，
-   * 而且它必须**恰好**是本包该有的八个（少一个 = 某个 defineTool 被真宿主拒了，而卡片照样渲染）。
+   * 而且它必须**恰好**是本包该有的九个（少一个 = 某个 defineTool 被真宿主拒了，而卡片照样渲染；
+   * `site_login` 的两条手写契约只在真宿主上才被真正校验）。
    */
   const registered = /\[dsh-devfront\] agent tools registered \(([^)]*)\)/.exec(output)
   const registeredNames = registered === null ? [] : registered[1].split(',').map((name) => name.trim()).filter((name) => name !== '')
   record(
-    '⑲ 真 ToolRuntime 收下了八个工具（含 `site_verify_release` 的手写 schema）',
+    '⑲ 真 ToolRuntime 收下了九个工具（含 `site_verify_release` / `site_login` 的两份手写 schema）',
     JSON.stringify([...registeredNames].sort()) === JSON.stringify(EXPECTED_TOOLS) && !output.includes('注册失败'),
     registeredNames.join(', '),
+  )
+
+  /*
+   * ⑳ **站点编辑器不许把 `login` 悄悄删掉**（2026-10-04，追加在编号末尾——不插号改号，理由同 ⑲）。
+   *
+   * 由来：卡片保存站点时 `targets` 是**整批重建**的（客户端只认识那七个字段），于是「加一个卡片不
+   * 认识的字段」与「点一次保存就把它删掉」之间只差一行透传。第 ⑮ 步那次保存带上新的 ID 名单，
+   * 走的正是那条重建路径——所以在这一步读回来，就是端到端的证据（而不是读源码推断）。
+   */
+  const loginBack = (get3.json?.config?.targets ?? []).find((target) => target.id === 'w-one')?.login
+  record(
+    '⑳ 站点编辑保存之后，`login` 声明还在（卡片不编辑它，但不许删它）',
+    loginBack?.steps?.length === 3
+      && loginBack?.success?.selector === '#app'
+      && loginBack?.steps?.[1]?.value === 'verify-user'
+      && loginBack?.steps?.[2]?.credentialRef === 'env:one',
+    loginBack === undefined ? '（没有 login 了——被保存路径丢了）' : `steps=${String(loginBack.steps.length)} success=${String(loginBack.success?.selector)}`,
   )
 
   console.log(`# 截图：${shotFile}`)
