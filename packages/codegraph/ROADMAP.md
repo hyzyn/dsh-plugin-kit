@@ -103,7 +103,7 @@
 | **P1** | ~~**采纳率仪表**~~ **✅ 已完成**（见下） | 把「提示词有没有用」从感觉变成数字；有数据才谈得上调提示词或做预注入 | S–M | `createMetricsCollector()` + `/api/dsh-codegraph/metrics` + 卡片一行 |
 | **P1** | ~~**索引生命周期**：`unlock` + 自动重建~~ **✅ 已完成**（见下；daemon 日志尾与陈旧 pid 判定随 `/diagnose` 已可见） | 把「模型拿到陈旧结果 / 被坏锁挡住」在发生前化解 | M | `unlockArgs()` / `staleReasonsFromStatus()` / `maybeAutoReindex()` + 卡片「解锁」按钮 |
 | **P2** | ~~CLI 面补全~~ **✅ 已完成**（`explore`/`context`/`files`/`affected`/`uninit`/`unlock`/`telemetry` + 查询参数面板；`daemon` 仍缺） | 功能完整度 | M | `makeRoutes` + 卡片 |
-| **P2** | ~~已索引项目列表 + 一键切换 / 查询参数面板 / 遥测提示~~ **✅ 已完成**；其余（卡片 i18n）未做 | 体验与工程面 | M | `/projects` + 卡片胶囊按钮 |
+| **P2** | ~~已索引项目列表 + 一键切换 / 查询参数面板 / 遥测提示~~ **✅ 已完成**；~~卡片 i18n~~ **✅ 已完成**（2026-10-04 更正：本行原先写「未做」，而 `check-i18n` 现算是 **13/13 个客户端半体全部接入**，本包那份在 `client-src/index.js`，`pure.js` 四个函数改成把 `t` 当参数接进来——见 [docs/i18n.md](../../docs/i18n.md) 逐包表） | 体验与工程面 | M | `/projects` + 卡片胶囊按钮 |
 | **P3** | ~~CG32–CG34 销号~~ **✅ 已关闭**（无原文，改为门禁矩阵复核）、~~宿主版本基线对齐~~ **✅ 已完成**（CG42）、~~browser 半体纯逻辑抽测~~ **✅ 已完成**（P3-b） | 可信度与工程债 | S–M | `DEFECTS.md` / `README.md` / CI |
 
 ## 已完成（0.4.2 之后的工作树）

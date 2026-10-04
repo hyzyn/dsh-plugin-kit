@@ -44,6 +44,11 @@
    > （`devdata` 的 `verify/<项目>.yaml`）**仍然只有库路径**——那条不对称与它的待办见
    > `packages/devdata/ROADMAP.md` 待办 21。所以这话现在得说准：三面按同一个项目名读同一批清单
    > **对容器与页面成立**，数据面还差一个入口。
+   >
+   > **2026-10-04 追加更正**：中间那一环**已经接上**——`devdata` 当天落了 `devdata_verify`
+   > （判据见 `packages/devdata/ROADMAP.md` 记-20）。现在三面**都**有自己的工具面入口
+   > （`env_status` / `env_wait` · `devdata_verify` · `site_verify`），不再差那一环；上面原文
+   > 保留：写下它的那一刻确实还差。
 
 ## 应先迁进 L0 的候选项（本文动手前要搬）
 
