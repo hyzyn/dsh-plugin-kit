@@ -32,7 +32,16 @@ import { readJsonBody, writeJson } from '@hyzyn/dsh-kit';
 import { loadProjectSites, mergeSites } from './project-sites.js';
 import { createJsonlAuditSink, createLoggerAuditSink } from '@hyzyn/dsh-kit/audit';
 import { CdpWebDriver } from './cdp-driver.js';
-import { invokeWebAction } from './page.js';
+import { resolveTargetCredential } from './credential.js';
+import { denialMessage, invokeWebAction, } from './page.js';
+import { runWebVerify } from './web-run.js';
+import { listWebProjects, loadWebManifest, webManifestRelativePath, } from './web-verify.js';
+/**
+ * 拒绝话术（`[CODE] 正文`）的实现住在判定层 `page.ts`——跑批执行器也要用同一份格式，
+ * 而它不能 import 宿主半体。这里重新导出，是为了让「本包对外的门面」保持原样
+ * （`index.ts` 与既有用例都从 `plugin.js` 取它）。
+ */
+export { denialMessage };
 /** 一个站点的配置形状。 */
 const TARGET_SCHEMA = z.object({
     id: z.string().required(),
@@ -172,11 +181,15 @@ export function webAuditSink(options) {
 /** 给 agent 的能力公告（只在 `announceToAgent` 打开时注入）。 */
 export const DEVFONT_GUIDANCE = [
     '本机已安装 dsh-devfront 插件（前端效果验证）：面向「发布之后页面到底对不对」，',
-    '不做定时任务、不做爬虫、不做批量操作。工具面六个动作：',
+    '不做定时任务、不做爬虫、不做批量操作（唯一的那「一批」是 `site_verify` 按项目清单**跑已声明的',
+    '断言**：要访问哪些页面由清单逐条写死，不由工具去发现或跟随链接）。工具面七个动作：',
     '',
     '- `site_open`：打开目标声明过的站点（同源且落在声明路径前缀内；异源一律拒）；',
     '- `site_shot`：截图（返回真 PNG 路径，可直接看）；',
-    '- `site_click` / `site_fill`：交互（**只按 CSS 选择器**，不做按坐标点击——那没有可复审的选择依据）；',
+    '- `site_click` / `site_fill`：交互（**只按 CSS 选择器**，不做按坐标点击——那没有可复审的选择依据）。',
+    '  `site_fill` 的值有两种给法：明文 `value`（非敏感值），或 `credentialRef`（凭据引用 `env:NAME`，口令一类）。',
+    '  后者只认**目标配置里声明过的那一个引用**——工具不接受任意引用，也不会把值写进返回、会话记录或审计；',
+    '  返回里会带上该引用来自哪一层的**保护强度**（今天的环境变量 / 凭据文件都是「方便，不是防护」：agent 与用户同 uid）；',
     '  这两个**动手**的动作在执行前会核**当前页面**的源：页面自己跳到别的源之后，读（`site_text` /',
     '  `site_shot`）仍放行——登录流程要靠它——但动手会被拒（`PAGE_ORIGIN_NOT_ALLOWED`）。',
     '  要在那个源上真正动手，必须把它写进该目标的 `allowedOrigins`（缺省为空 = 只能在声明源上动手）：',
@@ -186,6 +199,13 @@ export const DEVFONT_GUIDANCE = [
     '  `background-image`）、canvas、SVG 文本、closed shadow DOM、iframe 内内容——',
     '  所以「应包含某段文字」**失败时先 `site_shot` 看一眼**，别直接当成断言不过；',
     '- `site_console`：收 console 消息并**三档分类**（本站错误 / 告警 / 已知噪声）。',
+    '- `site_verify`：**按项目清单跑一批断言**（清单在项目里的 `web/<项目>.yaml`，随代码评审）。',
+    '  一次调用把一个项目的断言全跑完：同一个 URL 只打开一次、只观察一次（N 条断言一次取全），',
+    '  逐条给「通过 / 失败 / 验不了」与**依据**（期望 vs 实际），并把「页面根本打不开」单列出来。',
+    '  它**只做「打开 + 观察」**：不点击、不填值、不跟随链接——所以「登录后才有内容」「要先查询才',
+    '  出结果」这类页面，得先用 `site_open` / `site_click` / `site_fill` 手动走到那个状态，再验',
+    '  （或者把这类断言降级成 `severity: warn`，别让它天天报红）。URL 只能来自清单，且每条都过',
+    '  同一道站点范围判据；**改断言请改项目里的文件**，不要指望工具能记住你现编的步骤。',
     '',
     '读 `site_console` 时注意：判成 error 的是**来自本站资源**的错误，那才是「页面坏了」的信号；',
     '异源与来源不明的都只在 warning 里——真实站点的 console 里常驻噪声，噪声淹掉信号等于没信号。',
@@ -266,18 +286,103 @@ export function consoleOutput(raw) {
     };
 }
 /**
- * 把一次拒绝拼成给 agent 看的一句话。
+ * `site_fill` 的渲染。
  *
- * **拒绝码要带出去**：判定层算出来的 `OUT_OF_SCOPE` / `SITE_NOT_ALLOWED` 是这件事唯一的稳定
- * 标识符，而消息正文是给人读的中文（会随文案调整）。从前只抛 `message`，于是码只活在单测和
- * 审计日志里——agent 拿到一段散文，只能靠正则去猜（2026-10-02 端到端发现：两次拒绝里都找不到
- * 任何机器可判的错误码）。
- *
- * 格式是契约：`[CODE] 正文`，恢复路径另起一行。抽成纯函数是为了让这份格式有单测。
+ * 用引用时**必须把两件事说出来**：这是引用（不是值），以及这道防线有多硬。只说「已配置」等于
+ * 对外宣称了一个不成立的性质——而 agent 会据此判断「这个口令是安全的」。
  */
-export function denialMessage(outcome) {
-    const head = `[${outcome.code}] ${outcome.message}`;
-    return outcome.hint === undefined ? head : `${head}\n恢复路径：${outcome.hint}`;
+export function fillRenderText(value) {
+    const v = (value ?? {});
+    const selector = v.selector ?? '';
+    if (v.credentialRef === undefined)
+        return `已填值到 ${selector}`;
+    const level = v.protection ?? 'unknown';
+    const note = v.protectionNote ?? '来源未知';
+    return `已填值到 ${selector}（来自凭据引用 ${v.credentialRef}；保护强度 ${level}：${note}）`;
+}
+/** 把一个值写成一行（`undefined` 也要有话说，不能渲染成一个空洞）。 */
+function describeValue(value) {
+    if (value === undefined)
+        return '（没有这个事实）';
+    if (typeof value === 'string')
+        return value;
+    try {
+        const json = JSON.stringify(value);
+        return json === undefined ? String(value) : json;
+    }
+    catch {
+        return String(value);
+    }
+}
+/** 一条 diff 写成「期望 vs 实际」。 */
+function diffText(line) {
+    const note = line.note === undefined ? '' : `（${line.note}）`;
+    return `${line.op}：期望 ${describeValue(line.expected)}，实际 ${describeValue(line.got)}${note}`;
+}
+/** 输出契约里每条断言最多带几条证据。 */
+const VERIFY_EVIDENCE_MAX = 5;
+/** 渲染时每条断言最多列几条证据（屏幕上的那一份比结构化输出更短）。 */
+const VERIFY_RENDER_EVIDENCE_MAX = 3;
+/**
+ * 把一次跑批结果收敛成工具的输出契约（**纯函数**，与 `textOutput` / `consoleOutput` 同理：
+ * 声明与实际不符时 DSH 会把整次调用判成 `invalid output`，所以这份契约也要有单测）。
+ */
+export function verifyOutput(result) {
+    return {
+        project: result.project,
+        target: result.targetId,
+        overall: result.summary.overall,
+        total: result.summary.total,
+        passed: result.summary.passed,
+        failed: result.summary.failed,
+        warned: result.summary.warned,
+        unknown: result.summary.unknown,
+        pages: result.pages.length,
+        pagesObserved: result.pagesObserved,
+        lines: result.results.map((item) => ({
+            id: item.id,
+            url: item.url,
+            status: item.status,
+            severity: item.severity,
+            message: item.message,
+            evidence: item.diff.slice(0, VERIFY_EVIDENCE_MAX).map(diffText),
+        })),
+        // 拒绝话术（`[CODE] 正文`）已经写在 `message` 里；这里只把它挂上 URL，免得「哪一页」要另找。
+        problems: result.problems.map((problem) => `${problem.url}：${problem.message}`),
+    };
+}
+/**
+ * `site_verify` 的渲染：一屏读完「哪几条过了、哪几条没过、凭什么、哪几页压根没验成」。
+ *
+ * 证据要**逐条列出来**：只报「失败 2 条」等于把复核的活又推回给 agent，而它下一步只能重跑一次。
+ */
+export function verifyRenderText(value) {
+    const v = (value ?? {});
+    const lines = v.lines ?? [];
+    const problems = v.problems ?? [];
+    /** 拒绝话术里带换行（恢复路径另起一行）：在缩进的报告里要跟着缩进，否则它看着像跑出了条目之外。 */
+    const indent = (text, pad) => text.replaceAll('\n', `\n${pad}`);
+    const head = `验活清单 web/${v.project ?? ''}.yaml（目标 ${v.target ?? ''}）：${String(v.total ?? 0)} 条断言 —— ` +
+        `通过 ${String(v.passed ?? 0)} / 失败 ${String(v.failed ?? 0)} / 告警未过 ${String(v.warned ?? 0)} / ` +
+        `验不了 ${String(v.unknown ?? 0)}（打开 ${String(v.pages ?? 0)} 个页，观察到 ${String(v.pagesObserved ?? 0)} 个）`;
+    const body = lines.map((line) => {
+        const mark = line.status === 'pass' ? '✔' : line.status === 'unknown' ? '?' : line.severity === 'warn' ? '!' : '✘';
+        const evidence = line.evidence ?? [];
+        const bullets = evidence
+            .slice(0, VERIFY_RENDER_EVIDENCE_MAX)
+            .map((text) => `\n      · ${indent(text, '        ')}`)
+            .join('');
+        const rest = evidence.length - VERIFY_RENDER_EVIDENCE_MAX;
+        const more = rest > 0 ? `\n      · （证据还有 ${String(rest)} 条，见结构化输出）` : '';
+        return `${mark} ${line.id} ${line.url}\n      ${indent(line.message, '      ')}${bullets}${more}`;
+    });
+    const problemBlock = problems.length === 0
+        ? ''
+        : `\n页面问题（这些页面**没验成**，不是「验出问题」）：\n${problems.map((problem) => `  - ${indent(problem, '    ')}`).join('\n')}`;
+    const hint = (v.failed ?? 0) + (v.unknown ?? 0) > 0
+        ? '\n提示：「应包含某段文字」失败先 `site_shot` 看一眼（图片里的字 `site_text` 取不到）；要交互才有内容的页面请手动走一遍再验。'
+        : '';
+    return `${head}\n${body.join('\n')}${problemBlock}${hint}\n本次只做了「打开 + 观察」：没有点击、没有填值、没有跟随链接。`;
 }
 /**
  * 配置卡片（客户端半体）能改的**标量**字段。
@@ -477,6 +582,15 @@ const plugin = definePlugin({ name: 'devfront',
          * 一个标量时用 `{...{}, settleMs}` 重建，**把站点整批抹掉**（响应里 `targets: []`）。
          */
         let rawSectionRef = initialSection;
+        /**
+         * 官方凭据服务（**可选**）：`site_fill` 的 `credentialRef` 靠它解析。
+         *
+         * 与 `tty` / `docker` 不同，本包**不绑 `kit` 那个进程级单例**（`setCredentialResolver`）——
+         * 它按 `apply` 持有自己的服务引用，再把它交给判定层的**每次调用**。理由：那个单例的收尾是
+         * 「谁卸载谁解绑」，一个插件卸载会关掉别人的凭据通道（2026-10-04 `kit` 已改成按 owner 绑，
+         * 那是给既有消费者修的；新消费者连绑都不必）。
+         */
+        let credentialProvider = null;
         /** 审计出口：配了文件走持久出口，否则只进日志（见 `webAuditSink` 的文件头）。 */
         const audit = () => webAuditSink({ auditFile: live.auditFile, logger: ctx.logger });
         /** 取（或起）浏览器。同一插件实例共用一个，避免每次工具调用都重启 Chrome。 */
@@ -547,15 +661,64 @@ const plugin = definePlugin({ name: 'devfront',
                     ...(typeof input.url === 'string' ? { url: input.url } : {}),
                     ...(typeof input.selector === 'string' ? { selector: input.selector } : {}),
                     ...(typeof input.value === 'string' ? { value: input.value } : {}),
+                    // 引用是**引用**（`env:NAME`）：判定层核它、执行层解析它，值从不进参数与审计。
+                    ...(typeof input.credentialRef === 'string' && input.credentialRef.trim() !== ''
+                        ? { credentialRef: input.credentialRef }
+                        : {}),
                     ...(typeof input.path === 'string' && input.path !== '' ? { path: input.path } : {}),
                 },
                 driver: ensureDriver(),
                 audit: audit(),
+                credentials: (ref) => resolveTargetCredential({ provider: credentialProvider, ref }),
             });
             if (!outcome.ok) {
                 throw new Error(denialMessage(outcome));
             }
             return outcome.result;
+        };
+        /** 项目名（清单名）。缺省用当前目录的 basename——与「清单随项目走」的约定一致。 */
+        const projectOf = (input, cwd) => {
+            const given = typeof input.project === 'string' ? input.project.trim() : '';
+            if (given !== '')
+                return given;
+            return cwd.split(/[\\/]/).filter((part) => part !== '').pop() ?? '';
+        };
+        /**
+         * 跑一次项目验活清单（`site_verify` 的执行体）。
+         *
+         * 顺序：站点清单（含项目声明）→ 目标 → `cwd` → 项目名 → 读清单 → 筛出**这个目标**的断言 →
+         * 交执行器。前五步里任何一步不成立都**在碰浏览器之前**抛出去——「还没开工就失败」与
+         * 「跑到一半失败」对 agent 是两件事：前者的恢复路径是改配置，后者是查页面。
+         */
+        const verifyRun = async (input) => {
+            const resolved = sitesForCall(input.cwd);
+            if ('problem' in resolved)
+                throw new Error(resolved.problem);
+            const target = pickTarget(input.target, resolved.sites);
+            const cwd = typeof input.cwd === 'string' && input.cwd.trim() !== '' ? input.cwd.trim() : process.cwd();
+            const project = projectOf(input, cwd);
+            const loaded = loadWebManifest(project, { roots: [cwd] });
+            if (loaded.kind === 'no-manifest') {
+                const known = listWebProjects(cwd);
+                // 「没有」与「你写在哪」要一次说清：清单名与项目名不一致是最常见的写错方式。
+                throw new Error(`没找到验活清单 ${webManifestRelativePath(project)}（在 ${cwd} 下）。` +
+                    (known.length === 0
+                        ? '这个目录的 web/ 下现在一份清单都没有——先把断言写进 web/<项目>.yaml 再验（格式见本包 README 的「验活清单」）。'
+                        : `这个目录下现在有这些清单：${known.join(' / ')}——项目名与文件名必须一致，或者用 project 参数指定。`));
+            }
+            if (loaded.kind === 'unreadable')
+                throw new Error(loaded.message);
+            if (loaded.kind === 'config-error') {
+                const lines = loaded.errors.map((error) => error.path === '' ? `- ${error.message}` : `- ${error.path}：${error.message}`);
+                throw new Error(`验活清单不成立（${webManifestRelativePath(project)}）：\n${lines.join('\n')}`);
+            }
+            const wanted = loaded.manifest.assertions.filter((assertion) => assertion.target === target.id);
+            if (wanted.length === 0) {
+                const declared = [...new Set(loaded.manifest.assertions.map((assertion) => assertion.target))];
+                throw new Error(`清单 ${webManifestRelativePath(project)} 里没有给目标 ${target.id} 的断言。` +
+                    `这份清单声明的目标是：${declared.join(' / ') || '（没有）'}——改断言里的 target，或换一个 target 调用`);
+            }
+            return runWebVerify({ target, cwd, project, assertions: wanted, driver: ensureDriver(), audit: audit() });
         };
         const cwdParam = {
             type: 'string',
@@ -681,21 +844,30 @@ const plugin = definePlugin({ name: 'devfront',
             add('site_fill', defineTool({
                 name: 'site_fill',
                 isConcurrencySafe: () => false,
-                description: '给匹配 CSS 选择器的输入框填值（会派发 input 与 change 事件，前端框架能感知）。',
+                description: '给匹配 CSS 选择器的输入框填值（会派发 input 与 change 事件，前端框架能感知）。**值有两种给法，二选一**：① `value`（明文，用于非敏感值）；② `credentialRef`（凭据引用 `env:NAME`，用于口令一类）——后者只认**目标配置里声明过的那一个引用**，值由官方凭据服务解析，**不会出现在本工具的返回、会话记录与审计里**；返回里会带上「这个引用来自哪一层」的保护强度（今天的环境变量 / 凭据文件都是「方便，不是防护」——agent 与用户同 uid，读得到）。',
                 parameters: {
                     target: targetParam,
                     selector: { type: 'string', required: true, description: 'CSS 选择器' },
-                    value: { type: 'string', required: true, description: '要填入的值（空串合法，表示清空）' },
+                    value: { type: 'string', description: '要填入的明文值（空串合法，表示清空）。与 credentialRef 二选一' },
+                    credentialRef: {
+                        type: 'string',
+                        description: '凭据引用（`env:NAME`）。必须是目标配置 `credentialRef` 里声明的那一个——工具不接受任意引用（否则它就成了「读任意环境变量」）。值不进返回、不进审计',
+                    },
                     cwd: cwdParam,
                 },
                 output: {
                     schema: {
                         type: 'object',
                         additionalProperties: false,
-                        properties: { selector: { type: 'string', required: true } },
+                        properties: {
+                            selector: { type: 'string', required: true },
+                            credentialRef: { type: 'string' },
+                            protection: { type: 'string' },
+                            protectionNote: { type: 'string' },
+                        },
                     },
                     render: (_args, value) => [
-                        { type: 'text', text: `已填值到 ${value.selector ?? ''}` },
+                        { type: 'text', text: fillRenderText(value) },
                     ],
                 },
                 async execute(args) {
@@ -767,7 +939,61 @@ const plugin = definePlugin({ name: 'devfront',
                     return consoleOutput(await run('console', args));
                 },
             }));
-            console.log(`[dsh-devfront] agent tools registered (${['site_open', 'site_shot', 'site_click', 'site_fill', 'site_text', 'site_console'].join(', ')})`);
+            add('site_verify', defineTool({
+                name: 'site_verify',
+                // 它开浏览器、翻页、读写浏览器状态：与 site_open 一样**不是**并发安全的。
+                isConcurrencySafe: () => false,
+                description: `按项目里的**验活清单**跑一批断言（清单路径 \`web/<项目>.yaml\`，项目名缺省取 cwd 的目录名，也可用 project 指定）。一次调用把一个项目的断言全跑完：同一个 URL 只打开一次、只观察一次（N 条断言一次取全），逐条给「通过 / 失败 / 验不了」与依据（期望 vs 实际），并把「页面根本打不开」单列出来——**没验成**与**验出问题**是两件事。它**只做「打开 + 观察」**：不点击、不填值、不跟随链接；要访问的 URL 只能来自清单里逐条声明的断言，且每条都过与 \`site_open\` 同一道站点范围判据（同源 + 声明路径前缀 + 目录作用域）。清单随项目评审，改断言请改那份文件。`,
+                parameters: {
+                    target: targetParam,
+                    project: {
+                        type: 'string',
+                        description: '项目名 = 清单名（`web/<项目>.yaml`）。缺省取 cwd 的目录名；文件名与项目名必须一致',
+                    },
+                    cwd: cwdParam,
+                },
+                output: {
+                    schema: {
+                        type: 'object',
+                        additionalProperties: false,
+                        properties: {
+                            project: { type: 'string', required: true },
+                            target: { type: 'string', required: true },
+                            overall: { type: 'string', required: true },
+                            total: { type: 'number', required: true },
+                            passed: { type: 'number', required: true },
+                            failed: { type: 'number', required: true },
+                            warned: { type: 'number', required: true },
+                            unknown: { type: 'number', required: true },
+                            pages: { type: 'number', required: true },
+                            pagesObserved: { type: 'number', required: true },
+                            lines: {
+                                type: 'array',
+                                required: true,
+                                items: {
+                                    type: 'object',
+                                    additionalProperties: false,
+                                    properties: {
+                                        id: { type: 'string', required: true },
+                                        url: { type: 'string', required: true },
+                                        status: { type: 'string', required: true },
+                                        severity: { type: 'string', required: true },
+                                        message: { type: 'string', required: true },
+                                        evidence: { type: 'array', required: true, items: { type: 'string' } },
+                                    },
+                                },
+                            },
+                            problems: { type: 'array', required: true, items: { type: 'string' } },
+                        },
+                    },
+                    render: (_args, value) => [{ type: 'text', text: verifyRenderText(value) }],
+                },
+                async execute(args) {
+                    const input = (args ?? {});
+                    return verifyOutput(await verifyRun(input));
+                },
+            }));
+            console.log(`[dsh-devfront] agent tools registered (${['site_open', 'site_shot', 'site_click', 'site_fill', 'site_text', 'site_console', 'site_verify'].join(', ')})`);
         }
         /** 拆掉本插件登记的工具（没有就不动）。 */
         function disposeTools() {
@@ -837,6 +1063,19 @@ const plugin = definePlugin({ name: 'devfront',
         /* ---------- 初次登记 ---------- */
         refreshTools();
         refreshAnnouncement();
+        /*
+         * credentials（**可选**依赖）：`site_fill` 的 `credentialRef` 由它解析（官方凭据服务叠
+         * `file` / `env` / `project-env` / `user-env` 各层，且每次操作重新解析）。
+         *
+         * 服务缺失（老宿主 / 未装该 bundle）时不绑：解析会退回 `process.env`（`kit` 的
+         * `resolveCredentialVia` 自己兜底），行为与「只认环境变量」一致——所以不抬高 engines 下限。
+         */
+        ctx.inject(['credentials'], (credCtx) => {
+            credentialProvider = credCtx.credentials ?? null;
+            return () => {
+                credentialProvider = null;
+            };
+        });
         ctx.inject(['tools'], (toolsCtx) => {
             toolsApi = toolsCtx.tools;
             if (toolsApi === undefined) {

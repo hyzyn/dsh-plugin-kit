@@ -3834,8 +3834,8 @@ const plugin = definePlugin({
          * 从前一致 —— 所以这是**可选**依赖，不抬高 engines 下限。
          */
         ctx.inject(['credentials'], (credCtx) => {
-            setCredentialResolver(credCtx.credentials ?? null);
-            return () => { setCredentialResolver(null); };
+            setCredentialResolver(credCtx.credentials ?? null, 'tty');
+            return () => { setCredentialResolver(null, 'tty'); };
         });
         /*
          * 就地提权（见 kit 的 elevation.ts）：卡片上点开关 → 宿主在确认目录里等一个随机名文件出现

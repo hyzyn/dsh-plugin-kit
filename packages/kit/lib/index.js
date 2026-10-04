@@ -11,6 +11,12 @@ export * from './settings.js';
 export * from './http.js';
 export * from './js-expr.js';
 export * from './capability.js';
+/*
+ * `./credentials.js`：凭据引用（`env:NAME`）的解析。**主入口**——它零依赖，而且三个消费者里
+ * 有一个（`devfront`）绝不该为了这 30 行去 `import` 一条会把 `ssh2` 拉进来的子路径。
+ * 它此前嵌在 `./ssh-exec.js` 里，2026-10-04 搬进来，`ssh-exec` 改成再导出。
+ */
+export * from './credentials.js';
 export * from './grant-store.js';
 export * from './elevation.js';
 export * from './managed-block.js';

@@ -436,3 +436,109 @@ describe('allowedActionOrigins：授权集合怎么算', () => {
     expect(pageOriginAllowed('https://order.cdqas.example.com/x', target())).toBe(false)
   })
 })
+
+describe('凭据引用：只认目标声明过的那一个，且值不落明文', () => {
+  const REF = 'env:CDQAS_APP_PWD'
+  /** 声明了凭据引用的目标（`site_fill` 的 `credentialRef` 只对它放行）。 */
+  const withRef = (declared = REF): WebTarget => target({ credentialRef: declared })
+
+  it('目标没声明 → 拒。否则这个参数就是「读任意环境变量」的工具', () => {
+    const decision = adjudicateWebAction(request({ action: 'fill', selector: '#pwd', credentialRef: REF }))
+    expect(decision.allowed).toBe(false)
+    expect(decision.allowed === false && decision.code).toBe(WEB_REJECTION_CODES.CREDENTIAL_NOT_DECLARED)
+    expect(decision.allowed === false && decision.hint).toContain('读任意环境变量')
+  })
+
+  it('声明的是另一个 → 拒，并把它声明的是哪个说清（agent 的下一步是改配置，不是重试）', () => {
+    const decision = adjudicateWebAction(
+      request({ target: withRef('env:OTHER_PWD'), action: 'fill', selector: '#pwd', credentialRef: REF }),
+    )
+    expect(decision.allowed).toBe(false)
+    expect(decision.allowed === false && decision.message).toContain('env:OTHER_PWD')
+  })
+
+  it('把明文写进 credentialRef → 拒（它不是引用）', () => {
+    const decision = adjudicateWebAction(
+      request({ target: withRef('hunter2'), action: 'fill', selector: '#pwd', credentialRef: 'hunter2' }),
+    )
+    expect(decision.allowed).toBe(false)
+    expect(decision.allowed === false && decision.code).toBe(WEB_REJECTION_CODES.CREDENTIAL_NOT_DECLARED)
+    expect(decision.allowed === false && decision.message).toContain('env:NAME')
+  })
+
+  it('value 与 credentialRef 同时给 → 拒（哪个是值说不清，不猜）', () => {
+    const decision = adjudicateWebAction(
+      request({ target: withRef(), action: 'fill', selector: '#pwd', value: '明文', credentialRef: REF }),
+    )
+    expect(decision.allowed === false && decision.code).toBe(WEB_REJECTION_CODES.CREDENTIAL_AND_VALUE)
+  })
+
+  it('两个都没给（沿用从前的报错）', () => {
+    const decision = adjudicateWebAction(request({ target: withRef(), action: 'fill', selector: '#pwd' }))
+    expect(decision.allowed === false && decision.code).toBe(WEB_REJECTION_CODES.ARGUMENT_MISSING)
+  })
+
+  it('★ 声明过的那一个 → 驱动拿到的是**解析出来的值**，而返回与审计里只有引用名', async () => {
+    const { driver, calls } = fakeDriver()
+    const entries: WebAuditEntry[] = []
+    const outcome = await invokeWebAction({
+      request: request({ target: withRef(), action: 'fill', selector: '#pwd', credentialRef: REF }),
+      driver,
+      audit: { record: (entry) => entries.push(entry) },
+      credentials: async (ref) => ({
+        ok: true,
+        ref,
+        value: 's3cret-value',
+        protection: { level: 'none', note: '继承来的环境变量：agent 与用户同 uid，读得到——方便，不是防护' },
+      }),
+    })
+
+    expect(outcome.ok).toBe(true)
+    expect(calls).toEqual(['fill:#pwd=s3cret-value'])
+    // 返回里只有引用名与强度——值一旦回显，会话记录就成了第二个凭据存储。
+    expect(JSON.stringify(outcome)).not.toContain('s3cret-value')
+    expect(outcome.ok && outcome.result).toEqual({
+      selector: '#pwd',
+      credentialRef: REF,
+      protection: 'none',
+      protectionNote: '继承来的环境变量：agent 与用户同 uid，读得到——方便，不是防护',
+    })
+    // 审计行同理：记引用名，不记值。
+    expect(entries.map((entry) => entry.credentialRef)).toEqual([REF])
+    expect(JSON.stringify(entries)).not.toContain('s3cret-value')
+  })
+
+  it('解析失败 → `CREDENTIAL_UNRESOLVED`，且**不进入执行路径**', async () => {
+    const { driver, calls } = fakeDriver()
+    const outcome = await invokeWebAction({
+      request: request({ target: withRef(), action: 'fill', selector: '#pwd', credentialRef: REF }),
+      driver,
+      credentials: async (ref) => ({ ok: false, ref, message: '凭据未设置：CDQAS_APP_PWD' }),
+    })
+    expect(outcome.ok === false && outcome.code).toBe(WEB_REJECTION_CODES.CREDENTIAL_UNRESOLVED)
+    expect(outcome.ok === false && outcome.message).toContain('凭据未设置')
+    expect(calls).toEqual([])
+  })
+
+  it('宿主没有凭据解析器 → 同样拒（声明了却解析不了，比放行一个空值安全）', async () => {
+    const { driver, calls } = fakeDriver()
+    const outcome = await invokeWebAction({
+      request: request({ target: withRef(), action: 'fill', selector: '#pwd', credentialRef: REF }),
+      driver,
+    })
+    expect(outcome.ok === false && outcome.code).toBe(WEB_REJECTION_CODES.CREDENTIAL_UNRESOLVED)
+    expect(outcome.ok === false && outcome.hint).toContain('官方凭据服务')
+    expect(calls).toEqual([])
+  })
+
+  it('明文 `value` 那条路一字未改（既有调用点不受影响）', async () => {
+    const { driver, calls } = fakeDriver()
+    const outcome = await invokeWebAction({
+      request: request({ action: 'fill', selector: '#kw', value: 'CDQ' }),
+      driver,
+    })
+    expect(outcome.ok).toBe(true)
+    expect(calls).toEqual(['fill:#kw=CDQ'])
+    expect(outcome.ok && outcome.result).toEqual({ selector: '#kw' })
+  })
+})

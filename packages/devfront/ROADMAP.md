@@ -27,14 +27,18 @@
    `@hyzyn/dsh-kit`（`chrome-cdp`），本包只做驱动适配。
    门槛（已验）：真 Chrome 上跑通「打开 → 截图 → 取可见文本 → 收 console」；
    截图是**真 PNG**；`console` 带得出 `sourceUrl`。
-2. **模板一次取全**：`selectorsNeeded(assertions)` 已经给出「该取哪些选择器」，
-   驱动要照着它**一次**取回（不是每个断言一轮）。
-   门槛：N 条断言只开一次页面观察；用例钉住「观察结果缺失 → `unknown`」这条不退化。
+2. ~~**模板一次取全**~~ —— **已落地（2026-10-04）**：`WebDriver.observe` 一次往返取回文本 + 声明过的
+   选择器 + console；`site_verify` 照着 `selectorsNeeded(assertions)` 调它。见 § 已完成 记-28。
+   门槛（已验）：N 条断言只观察一次/页（`web-run.test.ts` 与真机冒烟各钉一条）；
+   「观察结果缺失 / 选择器不合法 → `unknown`」这条不退化。
 
 ### B. 会话与凭据
 
-3. **登录会话**：凭据走 `resolveSecret` 口径（方案 §3.7-1），**只对已在 `scopeDirs` 内的目标**。
-   门槛：凭据不落明文；来源保护强度在报告里如实标注（不能把「方便」说成「防护」）。
+3. **登录会话** —— **凭据那一半已落地（2026-10-04，见 § 已完成 记-29）**：`site_fill` 的值可以是
+   **凭据引用**（`credentialRef`，只认目标声明过的那一个），解析走官方凭据服务，
+   **值不进返回 / 会话记录 / 审计**；返回里带来源保护强度（今天全是「方便，不是防护」）。
+   剩的是**编排**那一半：没有一个「按声明的登录步骤自动走一遍」的动作（先要定站点专属流程的
+   声明形态）。门槛（已验的部分）：凭据不落明文；强度如实标注——见记-29。
 4. **`WebTarget` 的配置面**：`id` / `label` / `url` / `scopeDirs` / `credentialRef` 从哪来
    （宿主 settings？项目内清单？）。与数据面的 `DevDataTarget` 共用配置面还是各一套，
    要先定——**各一套会让「同一个站点的目录作用域」有两份真相**。
@@ -81,6 +85,11 @@
 8. **一次发布验多个站点**：7 个 CIFS job 分属不同项目，要能按项目批量取清单并跑批。
    门槛：**批量指的是「按清单跑一批断言」，不是「批量开页面」**——后者就是爬虫，
    与本包 §15.3 的边界冲突。
+   > **2026-10-04：前半条已落地，后半条明确留着。** 「按项目跑一批断言」= `site_verify`
+   > （记-28）；但它是**一次一个项目**（清单 `web/<项目>.yaml`），7 个项目 = 7 次调用。
+   > 「一次调用跨多个项目」**没做**，而且不该顺手做：自动发现「这次发布该验哪些项目」正是
+   > §15.3 要防的发现逻辑。真要做，先得有一条**由人给出**的发布清单（与 `jenkins-release`
+   > 的 job → 项目映射对齐），那是另一件、也是 L0 级的（跨 `devfront` 与那份 manifest 的形态）。
 
 ### E. 已知的债（动手前先看）
 
@@ -996,3 +1005,63 @@ JSONL 出口。三包各写一份必然漂，于是按「第三个消费者出�
 **刻意没做的**：不升 `kit` 版本、不动 13 个钉子。判据：这是**测试脚手架**子路径（没有成文规矩要求为它
 升版本），而升版本要连带改 13 个 `package.json` 并刷 lockfile——收益只是版本号好看。代价照实说：它会随
 `lib/` 一起被发布（多几十 KB 的测试脚手架），换的是三份拷贝不再各自漂。
+
+### 记-28. 跑批验活：`observe` 一次取全 + `site_verify` 按项目清单跑断言（2026-10-04）
+
+**由来**：本包此前有**完整的一套纯逻辑却没有消费者**——`validateWebManifest`（清单校验）、
+`selectorsNeeded`（该取哪些选择器）、`PageObservation`（观察契约）、`evaluateWebAssertion`（求值）、
+`summarizeWebResults`（汇总）全都落地且有用例，但 `selectorsNeeded` 的注释写着「给驱动用」而
+**没有任何驱动用它**；「验活」这件事仍然只能靠 agent 拿六个动作手工串一遍——那不可积累、不可复审。
+本轮把这条接线补上（待办 A2 + D8 的前半条）。
+
+| 落点 | 内容 | 门槛（已验） |
+|---|---|---|
+| `src/page.ts` 的 `WebDriver.observe` + `src/cdp-driver.ts` 的实现 | **一次往返**取回文本 + 声明过的选择器 + console（一个 `Runtime.evaluate`）。选择器**逐个 try/catch**：坏选择器只在结果里带 `error`（由 `PageElementObservation.error` 承载），不让整次观察失败 | `web-run.test.ts` 两条（同一 URL 只观察一次、带的选择器正好是这一页需要的）；真机冒烟 6 条断言 / 3 次观察 |
+| `src/web-verify.ts` | `PageElementObservation.error` + 求值层把「选择器不合法」判 `unknown`（**不是** `fail`：把「清单写错了」报成「页面坏了」会让人去查站点）；`WEB_SUFFIX` / `WEB_DIR` 收成各一处；`listWebProjects`（「没有清单」时给对照） | `web-verify.test.ts` 三条（elementExists / elementText 两条分支 + 同页别的断言照常有结论） |
+| `src/web-run.ts`（新，**没有宿主依赖**） | 断言按 URL 分组 → 每个 URL 走**既有**的 `invokeWebAction`（同一套作用域 + 站点范围判据，同一个审计出口）→ 一次观察 → 逐条求值 → 汇总。一页打不开 / 观察失败：只把**那一页**判 `unknown` 并进 `problems`，其余照跑。跑批自身另记一行审计（`action: 'verify'`） | `web-run.test.ts` **10 条**：分组与 `pagesObserved`、三态、console 两档、坏选择器、越界页只砸自己、空作用域处处拒绝、观察失败、审计三类行、审计写不进去抛（fail-closed） |
+| `src/plugin.ts` 的 `site_verify` | 参数 `target` / `project`（缺省取 `cwd` 的目录名）/ `cwd`。**整体性**问题（清单读不到 / 不成立 / 这份清单没有这个 target 的断言）在**碰浏览器之前**抛，并带「这个目录下现在有哪些清单」的对照。输出契约 `VerifyOutput`（纯函数 `verifyOutput` + `verifyRenderText`）：逐条状态 + **依据**（期望 vs 实际）+ 页级 `problems` | `tools.test.ts` 六条（假宿主，不碰浏览器）；`tool-contract.test.ts` 把声明的 `output.schema` 与产出对上；真机冒烟一条端到端 |
+| 文档 | README 新增 § 跑批验活；plan §15.2 补一行、§15.3 把「不做批量」的口径写清 | `scripts/test/tool-names.test.ts` 的 devfront 清单同步为七个工具 |
+
+**边界怎么守的**（这一轮最要紧的一条）：`site_verify` 与本包「不做批量操作」的边界不冲突，
+判据是**集合由谁给出**——要访问哪些页面只能来自清单里**逐条写死**的 `assertions[].url`，
+`web-run.ts` 里**没有任何发现逻辑**（不跟随链接、不猜 URL），而每个 URL 仍要过 `site_open`
+那道同一套判据。README 与 plan §15.3 都把这条写成了明文，免得下次有人把它当成「批量开页面」的许可。
+
+**顺带收的文档漂移**（都是「判据变了而文档没变」）：devfront README 还写着「没有 `dsh.bundle.patch` /
+没有 `build` script / 卡片里不能改站点 / 站点声明随项目走是下一件」——四条都已过时（三包入库那次
+`b32324c4` 已加前者两条，记-24 / 记-25 已加后两条）；「还没做」里两条已落地项也清了。
+**做法照台账纪律**：不删原文的结论，只补一段带日期的更正（本节与 README 各一处）。
+
+**本轮没验到的（照实记，免得下次当成已验证）**：
+
+1. **真宿主 + 真内网站点**：`tool-smoke.test.ts` 那一条是真 Chrome，但页面是本仓自造的夹具。
+   把 `site_verify` 指向 248 / 卫健委那类真站点要**内网 / VPN**（与 `devdata` 的 SQL 通路同一个前提），
+   本轮没碰；真机上还要确认的一件事是「登录后才有的页面」在跑批里会怎么报（应当是 `fail` 而不是
+   假装通过——它只会 `open` + 观察，不会替调用方登录）；
+2. **7 个 CIFS job 的关联调**：哪次发布该验哪些项目、结论怎么与 CIFS 传输量 / 容器 `StartedAt`
+   并列——那是待办 7 / 8 的尾边，不在本轮。
+
+### 记-29. 凭据通路：`site_fill` 用引用填值（2026-10-04，待办 B3 的凭据那一半）
+
+**由来**：`WebTarget.credentialRef` 从 2026-10-02 起就在配置与卡片里，**没有消费者**——
+「登录后才有的页面」只能靠人手，而人手的两种做法都要么把口令贴进对话、要么放弃这类页面。
+
+| 落点 | 内容 | 门槛（已验） |
+|---|---|---|
+| `src/credential.ts`（新） | provider 的**来源层** → 保护强度（`none`/`weak`/`strong`/`unknown`）；`resolveTargetCredential`（失败**不抛**，给一句能行动的话） | `test/credential.test.ts` **10 条**（四层本机来源全是 `none` 且明说「同 uid」；未登记 → `unknown` 按不防护；provider 报错不吞；退回 env） |
+| `src/page.ts` | 三个新拒绝码：`CREDENTIAL_AND_VALUE`（二选一）、`CREDENTIAL_NOT_DECLARED`（没声明 / 声明的是别的 / 不是 `env:NAME`）、`CREDENTIAL_UNRESOLVED`（解析不了 / 宿主没有解析器）。解析在**判定通过之后、动手之前**；审计行只加 `credentialRef`（引用名），**永不加值** | `test/page.test.ts` **+8 条**：三条拒绝分支、明文伪装引用、同时给两者、「驱动拿到的是解析出来的值而返回/审计里没有它」、解析失败不进入执行路径、既有明文路径一字未改 |
+| `src/plugin.ts` | `site_fill` 多一个 `credentialRef` 参数；输出契约多三个可选字段（`credentialRef` / `protection` / `protectionNote`），渲染里如实带强度；宿主 `ctx.inject(['credentials'])` 按 `apply` 持有 provider（**不绑 `kit` 那个进程级单例**），每次调用把它交给判定层 | `test/tools.test.ts` **+3 条**（假宿主，不碰浏览器）、`test/tool-contract.test.ts` **+2 条**（产出过 schema + 渲染里没有值）、真机冒烟 **+2 条** |
+| `@hyzyn/dsh-kit` 的 `credentials` | 解析实现上收成**一份**（此前 `kit` 与 `tty` 各一份），`tty` / `kit-ssh-exec` 改成再导出，绑定改成按 owner | 见根 ROADMAP 第 11 项（跨包改动，L0） |
+
+**这一轮最要紧的一条判据**：**agent 能取到的凭据集合 = 维护者在 profile 里声明过的那一个**。
+没有它，`credentialRef` 参数就退化成「读任意环境变量」的工具——而「能读任意环境变量」与
+「能读这一个」的差别，正是这套东西有没有边界的差别。三条拒绝码各有用例，真机冒烟里也有一条。
+
+**真机验到的那一条**（`tool-smoke.test.ts`，真 Chrome）：用一个真引用填 `#kw`，然后点查询——
+页面自己把输入框的值写进正文，所以「值真的到了页面」有独立证据；而**同一次调用的渲染文本里
+没有那个值**（断言 `not.toContain`），审计行里也只有引用名。这条用例是本轮唯一同时证明
+「能用」与「不漏」的那一条。
+
+**本轮没验到的**：真宿主 + 真凭据存储（本机跑冒烟走的是 `process.env` 兜底那条路；官方
+`file` 层要真宿主里写一份凭据才碰得到）；以及 macOS Keychain 那一档 `strong`——它要一个
+带上游 ACL 的 provider 才会出现，今天没有，所以那一档的**渲染文案有用例、真机没验**。

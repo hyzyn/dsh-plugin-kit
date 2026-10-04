@@ -138,12 +138,12 @@ describe('工具命名：前缀必须是登记的域', () => {
   })
 })
 
-describe('devfront 的六个工具名', () => {
+describe('devfront 的工具名', () => {
   it('是 site_* 而不是 web_*（这条是那次改名的回归钉子）', () => {
     const names = repoToolNames()
       .filter((tool) => tool.file.startsWith('packages/devfront/'))
       .map((tool) => tool.name)
       .sort()
-    expect(names).toEqual(['site_click', 'site_console', 'site_fill', 'site_open', 'site_shot', 'site_text'])
+    expect(names).toEqual(['site_click', 'site_console', 'site_fill', 'site_open', 'site_shot', 'site_text', 'site_verify'])
   })
 })

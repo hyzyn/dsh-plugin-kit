@@ -28,7 +28,16 @@
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { type AuditLoggerLike } from '@hyzyn/dsh-kit/audit';
-import { type WebAuditEntry, type WebAuditSink, type WebTarget } from './page.js';
+import { type ProtectionLevel } from './credential.js';
+import { denialMessage, type WebAuditEntry, type WebAuditSink, type WebTarget } from './page.js';
+import { type WebVerifyRunResult } from './web-run.js';
+import { type WebStatus } from './web-verify.js';
+/**
+ * 拒绝话术（`[CODE] 正文`）的实现住在判定层 `page.ts`——跑批执行器也要用同一份格式，
+ * 而它不能 import 宿主半体。这里重新导出，是为了让「本包对外的门面」保持原样
+ * （`index.ts` 与既有用例都从 `plugin.js` 取它）。
+ */
+export { denialMessage };
 /**
  * 插件配置的**类型**。
  *
@@ -151,21 +160,62 @@ export interface ConsoleOutput {
  * `test/tool-contract.test.ts`）。告警的**正文**必须给出去——只给计数等于「记下来了但不让人看」。
  */
 export declare function consoleOutput(raw: unknown): ConsoleOutput;
+/** `site_fill` 的输出契约（与 `textOutput` / `consoleOutput` 同理：契约必须有单测）。 */
+export interface FillOutput {
+    selector: string;
+    /** 用了凭据引用时才有：**引用名**（不是值——值从不进输出）。 */
+    credentialRef?: string;
+    /** 该引用的保护强度（`none` / `weak` / `strong` / `unknown`）。 */
+    protection?: ProtectionLevel;
+    /** 一句话说清它到底防不防（plan §3.7-1：不许把「方便」说成「防护」）。 */
+    protectionNote?: string;
+}
 /**
- * 把一次拒绝拼成给 agent 看的一句话。
+ * `site_fill` 的渲染。
  *
- * **拒绝码要带出去**：判定层算出来的 `OUT_OF_SCOPE` / `SITE_NOT_ALLOWED` 是这件事唯一的稳定
- * 标识符，而消息正文是给人读的中文（会随文案调整）。从前只抛 `message`，于是码只活在单测和
- * 审计日志里——agent 拿到一段散文，只能靠正则去猜（2026-10-02 端到端发现：两次拒绝里都找不到
- * 任何机器可判的错误码）。
- *
- * 格式是契约：`[CODE] 正文`，恢复路径另起一行。抽成纯函数是为了让这份格式有单测。
+ * 用引用时**必须把两件事说出来**：这是引用（不是值），以及这道防线有多硬。只说「已配置」等于
+ * 对外宣称了一个不成立的性质——而 agent 会据此判断「这个口令是安全的」。
  */
-export declare function denialMessage(outcome: {
-    code: string;
+export declare function fillRenderText(value: unknown): string;
+/** `site_verify` 输出契约里的一条断言。 */
+export interface VerifyLine {
+    id: string;
+    url: string;
+    status: WebStatus;
+    severity: 'fail' | 'warn';
     message: string;
-    hint?: string;
-}): string;
+    /** 证据行（期望 vs 实际）——失败与「验不了」都必须能看见依据。 */
+    evidence: string[];
+}
+/** `site_verify` 的输出契约。 */
+export interface VerifyOutput {
+    project: string;
+    target: string;
+    overall: 'pass' | 'fail' | 'warn' | 'unknown';
+    total: number;
+    passed: number;
+    failed: number;
+    warned: number;
+    unknown: number;
+    /** 清单里声明、这次真的去打开的页面数。 */
+    pages: number;
+    /** 真的观察到结果的页面数（`pages` 里打不开 / 观察失败的那些不算）。 */
+    pagesObserved: number;
+    lines: VerifyLine[];
+    /** 页级问题：打不开 / 观察失败（**没验成**，与「验出问题」分列）。 */
+    problems: string[];
+}
+/**
+ * 把一次跑批结果收敛成工具的输出契约（**纯函数**，与 `textOutput` / `consoleOutput` 同理：
+ * 声明与实际不符时 DSH 会把整次调用判成 `invalid output`，所以这份契约也要有单测）。
+ */
+export declare function verifyOutput(result: WebVerifyRunResult): VerifyOutput;
+/**
+ * `site_verify` 的渲染：一屏读完「哪几条过了、哪几条没过、凭什么、哪几页压根没验成」。
+ *
+ * 证据要**逐条列出来**：只报「失败 2 条」等于把复核的活又推回给 agent，而它下一步只能重跑一次。
+ */
+export declare function verifyRenderText(value: unknown): string;
 /**
  * 配置卡片（客户端半体）能改的**标量**字段。
  *
@@ -223,4 +273,3 @@ export declare function normalizeCardPatch(input: Record<string, unknown>): {
  */
 export declare function configSnapshotFrom(live: LiveConfig): Record<string, unknown>;
 export declare const name: string, inject: string[] | undefined, apply: (ctx: Context, config?: Config | undefined) => void;
-export {};

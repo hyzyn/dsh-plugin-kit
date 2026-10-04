@@ -258,6 +258,43 @@ describe('等待面：什么时候该停', () => {
     expect((fake?.calls().length ?? 0)).toBeGreaterThanOrEqual(3)
   })
 
+  it('★ 等待过程进报告：等过多久、每轮在等什么、有没有变过（真时钟，验的是接线）', async () => {
+    const dir = projectWith(manifest())
+    const host = mount(
+      { targets: [localTarget(dir)], pollIntervalMs: 400, waitTimeoutMs: 10_000 },
+      { mode: 'missing-then-ok', inspect: 'running|2026-10-01T12:00:00.000000000Z|0|0|' },
+    )
+    const text = await host.call('env_wait', { target: 'here', cwd: dir })
+    expect(text).toContain('等待过程（共观测 2 次）')
+    // 第一轮「还没观测到容器」、第二轮「就绪」——两段的耗时都要带出来（≥1ms 说明真的记了时间）。
+    expect(text).toMatch(/\+\d+m?s 还差/)
+    expect(text).toMatch(/\+\d+m?s 全部 1 个服务就绪/)
+  })
+
+  it('★ 取消：调用方 abort 之后立刻返回，且报告说清「不是超时、也不代表环境有问题」', async () => {
+    const dir = projectWith(manifest())
+    // `missing` = 容器一直不存在（不是否证），按 60s 的上限它会一直等——正好用来验取消。
+    const host = mount({ targets: [localTarget(dir)], pollIntervalMs: 500, waitTimeoutMs: 60_000 }, { mode: 'missing' })
+    const tool = host.tools.get('env_wait')
+    expect(tool?.execute, 'env_wait 没注册上').toBeDefined()
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 700)
+    const started = Date.now()
+    try {
+      const value = (await (tool?.execute as (args: unknown, exec?: unknown) => Promise<{ text: string }>)(
+        { target: 'here', cwd: dir },
+        { signal: controller.signal },
+      )) as { text: string }
+      // 取消前它要等满 60s；能在这点时间内返回就是「取消真的转发下去了」。
+      expect(Date.now() - started).toBeLessThan(5000)
+      expect(value.text).toContain('被调用方取消')
+      expect(value.text).toContain('不是超时')
+      expect(value.text).toContain('等待过程')
+    } finally {
+      clearTimeout(timer)
+    }
+  })
+
   it('等满超时 → 说清等的是多久（而不是只说「超时」）', async () => {
     const dir = projectWith(manifest())
     const host = mount(

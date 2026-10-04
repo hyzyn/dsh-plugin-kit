@@ -2392,8 +2392,8 @@ const plugin = definePlugin({
          * 行为与从前一致——所以这是**可选**依赖，不抬高 engines 下限。
          */
         ctx.inject(['credentials'], (credCtx) => {
-            setCredentialResolver(credCtx.credentials ?? null);
-            return () => { setCredentialResolver(null); };
+            setCredentialResolver(credCtx.credentials ?? null, 'docker');
+            return () => { setCredentialResolver(null, 'docker'); };
         });
         ctx.inject(['tools'], (toolsCtx) => {
             toolsCtx.effect(() => {

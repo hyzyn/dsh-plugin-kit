@@ -37,6 +37,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Duplex } from 'node:stream';
+import { resolveSecret } from './credentials.js';
 import { StringDecoder } from 'node:string_decoder';
 import { Client } from 'ssh2';
 /**
@@ -107,50 +108,15 @@ export function logPrefix(tag) {
     const name = tag === undefined || tag.trim() === '' ? DEFAULT_LOG_TAG : tag.trim();
     return `[${name}] `;
 }
-let credentialsProvider = null;
-/** 由 index.ts 在可选注入里挂上（服务缺失即为 null，退回 process.env）。 */
-export function setCredentialResolver(resolver) {
-    credentialsProvider = resolver;
-}
-/**
- * 解析密钥引用（`env:NAME`）——**纯核心**，provider 由调用方给，便于离线断言。
- *
- * 顺序：官方凭据 provider 优先（它自己会叠 `file` / `env` / `project-env` / `user-env` 各层，
- * 而且"每次操作重新解析"——改完下一个操作即生效，不必重启宿主）；服务不在、或它没有这个引用
- * 时，再退回 `process.env`。
- *
- * provider 抛错**不吞**：记下来，若环境变量也没有就把两个来源一起写进错误里。否则"凭据服务
- * 坏了"会伪装成"你没配"，而那是最难查的一类。
+/* ------------------------------------------------------------------ *
+ * 通用工具
+ * ------------------------------------------------------------------ */
+/*
+ * 凭据引用（`env:NAME`）的解析**不在这里实现**：2026-10-04 搬去了 `./credentials.js`（主入口的
+ * 一部分），因为 `devfront` 也要用它，而本子路径会把 `ssh2` 一起拉进去。
+ * 这里再导出，是为了让本子路径的公开形状一字不改（`tty` / `docker` 的既有调用点不动）。
  */
-export async function resolveSecretVia(provider, value) {
-    if (value === undefined)
-        return undefined;
-    if (!value.startsWith('env:'))
-        return value;
-    const name = value.slice(4);
-    let providerError = null;
-    if (provider !== null && provider !== undefined && typeof provider.resolve === 'function') {
-        try {
-            const resolved = await provider.resolve(name);
-            if (resolved !== null && resolved !== undefined && typeof resolved.value === 'string' && resolved.value !== '') {
-                return resolved.value;
-            }
-        }
-        catch (error) {
-            providerError = error instanceof Error ? error.message : String(error);
-        }
-    }
-    const fromEnv = process.env[name];
-    if (fromEnv !== undefined && fromEnv !== '')
-        return fromEnv;
-    const detail = providerError === null ? '' : `（凭据服务报错：${providerError}）`;
-    const missing = provider === null ? '凭据服务不可用，' : '';
-    throw new Error(`凭据未设置：${name}${detail} —— ${missing}环境变量里也没有`);
-}
-/** 生产路径：用当前注入的 provider。 */
-export async function resolveSecret(value) {
-    return resolveSecretVia(credentialsProvider, value);
-}
+export { currentCredentialResolver, resolveCredential, resolveCredentialVia, resolveSecret, resolveSecretVia, setCredentialResolver, } from './credentials.js';
 export function expandHome(path) {
     if (path === '~')
         return homedir();

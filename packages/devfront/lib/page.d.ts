@@ -31,6 +31,8 @@
  * 依据：`docs/devdata-plan.md` §15.2 / §15.3 / §5（审计面）、`jenkins-release` 技能 §3.2。
  */
 import { classifyConsoleMessages, type ConsoleMessage, type ConsoleSummary } from './console.js';
+import type { CredentialOutcome } from './credential.js';
+import type { PageObservation } from './web-verify.js';
 /** 动作名。**这份清单就是白名单**——不在其中的一律拒。 */
 export declare const WEB_ACTIONS: readonly ["open", "shot", "click", "fill", "text", "console"];
 /** 动作名类型。 */
@@ -90,6 +92,13 @@ export interface WebActionRequest {
     url?: string;
     selector?: string;
     value?: string;
+    /**
+     * `fill` 的**凭据引用**（`env:NAME`）——与 `value` 二选一。
+     *
+     * 它是**引用不是值**：判定层只核「这个引用是不是目标声明过的那一个」，解析（问官方凭据服务）
+     * 在执行那一步由宿主注入的解析器做。于是值从不经过工具参数、会话记录与审计行。
+     */
+    credentialRef?: string;
     /** `shot` 的输出文件（不给则由驱动决定临时路径）。 */
     path?: string;
 }
@@ -126,6 +135,17 @@ export declare const WEB_REJECTION_CODES: {
      * 被投毒的页面）都能换来对任意源执行点击与填值的能力（2026-10-02 验收实测）。
      */
     readonly PAGE_ORIGIN_NOT_ALLOWED: "PAGE_ORIGIN_NOT_ALLOWED";
+    /** `fill` 同时给了 `value` 与 `credentialRef`——哪个是值说不清，一律拒（不猜）。 */
+    readonly CREDENTIAL_AND_VALUE: "CREDENTIAL_AND_VALUE";
+    /**
+     * 用了目标**没有声明**的凭据引用（或目标一个都没声明），或引用不是 `env:NAME` 形状。
+     *
+     * 这条判据就是「agent 能取到的凭据集合 = 维护者写在 profile 里的那一个」的实现：
+     * 没有它，`credentialRef` 参数会变成「任意环境变量的读取器」。
+     */
+    readonly CREDENTIAL_NOT_DECLARED: "CREDENTIAL_NOT_DECLARED";
+    /** 引用是声明过的，但**解析不出来**（凭据没配 / 值为空 / 凭据服务报错）。 */
+    readonly CREDENTIAL_UNRESOLVED: "CREDENTIAL_UNRESOLVED";
     /** 执行失败。 */
     readonly EXECUTION_FAILED: "EXECUTION_FAILED";
 };
@@ -230,6 +250,22 @@ export interface WebDriver {
         target: WebTarget;
     }): Promise<readonly ConsoleMessage[]>;
     /**
+     * **一次取全**：把「这个页面现在是什么样」在一次往返里取回来（文本 + 若干选择器 + console）。
+     *
+     * 为什么要有它，而不是让调用方挨个调 `text` / `console` / 逐个选择器问一遍：
+     * 一批断言里 N 条可能落在同一个页面上，逐个取会让「一个页面」被读 N 次——**读的次数越多，
+     * 拿到的越不是同一个瞬间**（SPA 一秒变三回），于是同一次验活里两条断言的失败原因互相矛盾。
+     * 一次取全把「一次验活里一条断言看到的世界」固定成**同一次往返**的结果。
+     *
+     * `selectors` 由 `selectorsNeeded(assertions)` 给出（**账要算在断言上**，不是驱动自己猜）。
+     * 选择器不合法不算执行失败：结果里那个选择器带 `error`，求值层据此判 `unknown`
+     * （见 `PageElementObservation.error`）。
+     */
+    observe(request: {
+        target: WebTarget;
+        selectors: readonly string[];
+    }): Promise<PageObservation>;
+    /**
      * **实时**问浏览器：当前页面的 URL 是什么。
      *
      * 必须是**实时的**，不能用驱动记的「上次导航的 URL」代替——客户端跳转（`location.replace`、
@@ -249,18 +285,51 @@ export interface WebAuditEntry {
     code?: string;
     /** 打开 / 点击的目标（URL 或选择器）。 */
     subject?: string;
+    /**
+     * 本次用的是哪个**凭据引用**（`env:NAME`）——**只记引用名，永不记值**。
+     *
+     * 记它的理由与记 URL 一样：「谁在什么时候用了哪一份凭据」是这件事的事实，而引用名本身
+     * 不是秘密（它就写在配置里）。值进审计行的那一天，审计文件就成了第二个凭据存储。
+     */
+    credentialRef?: string;
     operationId?: string;
 }
 /** 审计出口。写不进去时不返回结果（fail closed），由调用方实现这条语义。 */
 export interface WebAuditSink {
     record(entry: WebAuditEntry): void;
 }
+/**
+ * 把一次拒绝拼成给 agent 看的一句话。
+ *
+ * **拒绝码要带出去**：判定层算出来的 `OUT_OF_SCOPE` / `SITE_NOT_ALLOWED` 是这件事唯一的稳定
+ * 标识符，而消息正文是给人读的中文（会随文案调整）。从前只抛 `message`，于是码只活在单测和
+ * 审计日志里——agent 拿到一段散文，只能靠正则去猜（2026-10-02 端到端发现：两次拒绝里都找不到
+ * 任何机器可判的错误码）。
+ *
+ * 格式是契约：`[CODE] 正文`，恢复路径另起一行。抽成纯函数是为了让这份格式有单测。
+ *
+ * 2026-10-04 从 `plugin.ts` 挪到这里：跑批执行器（`web-run.ts`）也要把「这个页面打不开」写成
+ * 同一格式，而执行器**不能** import 宿主半体（那是反向依赖，会成环）。话术属于判定层。
+ */
+export declare function denialMessage(outcome: {
+    code: string;
+    message: string;
+    hint?: string;
+}): string;
 /** 调一个动作：**先裁决，再执行**，每次都进审计。 */
 export declare function invokeWebAction(input: {
     request: WebActionRequest;
     driver: WebDriver;
     audit?: WebAuditSink;
     operationId?: string;
+    /**
+     * 凭据解析器（**宿主注入**：官方凭据服务 + `env` 兜底，见 `credential.ts`）。
+     *
+     * 判定层只判「这个引用允不允许用」，解析必须在**执行那一步**做，而且要每次操作重新解析
+     * （provider 的契约：改完凭据下一个动作即生效）。**不给解析器就是拒绝**：声明了引用却没人
+     * 能解析，比放行一个空值安全得多。
+     */
+    credentials?: (ref: string) => Promise<CredentialOutcome>;
 }): Promise<WebOutcome>;
 /** `console` 动作的返回形状（给调用方与用例用）。 */
 export interface ConsoleActionResult {

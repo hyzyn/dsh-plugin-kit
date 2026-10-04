@@ -28,65 +28,19 @@ import { StringDecoder } from 'node:string_decoder';
 import { TMUX_SOCKET } from './tmux.js';
 import { shSingleQuote } from './shell-integration.js';
 import { StatsLineBuffer } from './stats.js';
-let credentialsProvider = null;
-/** 由 index.ts 在可选注入里挂上（服务缺失即为 null，退回 process.env）。 */
-export function setCredentialResolver(resolver) {
-    credentialsProvider = resolver;
-}
-/**
- * 解析密钥引用（`env:NAME`）——**纯核心**，provider 由调用方给，便于离线断言。
+/*
+ * 凭据引用（`env:NAME`）的解析**不在这里实现**：2026-10-04 起只有一份，在
+ * `@hyzyn/dsh-kit`（`src/credentials.ts`）。此前本文件是它的第二份——两份各自演进过
+ * （这一份多一条「引用存在但值为空串」的分支），而同一条判据出现两份的理由只是「当时这里是
+ * 第一个调用点」。搬走时把两条分支合成一份（`kit` 收下这一份更细的语义），本文件只再导出，
+ * 公开形状一字不改（`index.ts` 与既有用例都不用动）。
  *
- * 顺序：官方凭据 provider **优先**（它自己叠 `file`（`$DSH_HOME/.credentials.yaml`）/ `env` /
- * `project-env` / `user-env` 各层，而且"每次操作重新解析"——改完下一个操作即生效，不必重启
- * 宿主）；服务不在、或它没有这个引用时，再退回 `process.env`。
- *
- * 为什么必须走 provider：凭据存储里的值**永远不会被 materialize 进环境**（provider README 原话：
- * "a store the harness owns and never materializes into the environment"），所以只读
- * `process.env` 等于"存进凭据存储的值连接时根本读不到" ✗ —— 这正是「存入凭据存储」这条链此前
- * 断掉的地方（客户端那半切好了、宿主这半没切）。
- *
- * provider 抛错**不吞**：记下来，若环境变量也没有就把两个来源一起写进错误里。否则"凭据服务
- * 坏了"会伪装成"你没配"，而那是最难查的一类。
+ * 顺带改掉的一处：绑定从进程级单例槽改成**按 owner**（`kit` 里那张表）。单例槽的收尾是
+ * `return () => setCredentialResolver(null)`——`tty` 与 `docker` 谁先卸载，谁就把对方（以及
+ * `devfront`）的凭据通道关掉，症状是「刚才还能连，现在报凭据未设置」。现在各绑各的。
  */
-export async function resolveSecretVia(provider, value) {
-    if (value === undefined)
-        return undefined;
-    if (!value.startsWith('env:'))
-        return value;
-    const name = value.slice(4);
-    let providerError = null;
-    /** provider 明确找到了该引用（哪怕值是空串）——与「引用不存在」分开报 */
-    let providerFound = false;
-    if (provider !== null && provider !== undefined && typeof provider.resolve === 'function') {
-        try {
-            const resolved = await provider.resolve(name);
-            if (resolved !== null && resolved !== undefined) {
-                providerFound = true;
-                if (typeof resolved.value === 'string' && resolved.value !== '') {
-                    return resolved.value;
-                }
-            }
-        }
-        catch (error) {
-            providerError = error instanceof Error ? error.message : String(error);
-        }
-    }
-    const fromEnv = process.env[name];
-    if (fromEnv !== undefined && fromEnv !== '')
-        return fromEnv;
-    // 「存在但值为空」单独报：报成「未设置」会把用户引去新建同名引用——那只会再失败一次
-    if (providerFound || fromEnv === '') {
-        const detail = providerError === null ? '' : `（凭据服务报错：${providerError}）`;
-        throw new Error(`凭据 ${name} 的值是空串${detail}——请在凭据存储或环境变量里补上实际值，新建同名引用解决不了`);
-    }
-    const detail = providerError === null ? '' : `（凭据服务报错：${providerError}）`;
-    const missing = provider === null ? '凭据服务不可用，' : '';
-    throw new Error(`凭据未设置：${name}${detail} —— ${missing}环境变量里也没有`);
-}
-/** 生产路径：用当前注入的 provider（`index.ts` 注入；没注入就是 null）。 */
-export async function resolveSecret(value) {
-    return resolveSecretVia(credentialsProvider, value);
-}
+import { resolveSecret } from '@hyzyn/dsh-kit';
+export { resolveSecret, resolveSecretVia, setCredentialResolver } from '@hyzyn/dsh-kit';
 function expandHome(path) {
     if (path === '~')
         return homedir();

@@ -266,6 +266,52 @@ release.yml 3，docker 那三条两个 workflow 各写一遍）、方案 A（wor
 **结果**：选了「部署纪律」这一条并**写清了代价**；另一条（让 docker 也认清单）为什么不做、
 什么时候该重审，都记在落点里。见 § 已完成 第 10 项。
 
+### 11. ✅ 凭据解析只剩一份实现 + `devfront` 用上它（`devfront` B3 的凭据那一半）
+
+现算（2026-10-04）：`resolveSecretVia` 全仓有**两份实现**——`kit` 的 `ssh-exec.ts` 一份、
+`tty` 的 `ssh.ts` 一份（后者是当初把 `kit` 那份抄过去之后又各自演进：`tty` 那份多一条
+「引用存在但值为空串」的分支，`kit` 那份没有）。`docker` 走 `kit` 那份（本地 `ssh-exec.ts` 是
+纯再导出）。而 `devfront` 要把「填值可以用**凭据引用**」做出来时，只要还这么放着，它就只有两条路：
+再抄一份（第三份），或者 import `@hyzyn/dsh-kit/ssh-exec` 把 `ssh2` 拉进一个浏览器工具包。
+
+**为什么是 L0**：一次改动跨 `kit`（搬实现 + 加「值来自哪一层」与按 owner 绑定）、`tty`（改成再导出）、
+`docker`（绑定带 owner）、`devfront`（新的消费者），并要动一条跨包守卫。符合「要同时改 ≥2 个包」。
+
+**判据（动手前先定，免得做一半）**：
+
+- 共享的是**机制**（解析顺序 / 报错语义 / 单例的绑定），不是策略。**保护强度**的词汇表留两处也
+  刻意的：`devdata` 那张表说的是「**计划里打算用哪种方式取**」（process-env / file / command /
+  keychain / remote），而 provider 给的是「**这次值实际来自哪一层**」（env / file / project-env /
+  user-env）——两条轴，不是一份事实的两个副本。合并要等出现第三个消费者；
+- `devfront` **不绑**那个进程级单例：它按 `apply` 持有自己的 provider（`ctx.inject(['credentials'])`），
+  因为「谁卸载都不该把别人的凭据通道关掉」这件事在单例上已经露出来了——本项顺带把它收成按 owner 绑定。
+
+**结果**：见 § 已完成 第 11 项（含一条**顺带修好的既有缺陷**：绑定的 owner）。
+
+### 12. 长等待的工具要转发 `exec.signal`（全仓 0/N）
+
+现算（2026-10-04）：`defineTool` 的 `execute(args, exec)` 第二个参数里带着 `exec.signal`——
+SDK 的契约原文是「Async work must observe or forward `exec.signal` and settle only after its
+owned work reaches quiescence」。**全仓没有任何一个工具接过这个参数**，于是「取消」对每一个
+长等待都等于没取消。已经数得出的：
+
+| 工具 | 最久等多久 | 现状 |
+|---|---|---|
+| `devenv` 的 `env_wait` | 900s（15 分钟） | ✅ 2026-10-04 已接（见 devenv 记-12）；顺带把等待过程做进报告 |
+| `tty` 的 `tty_expect` | 600s（10 分钟） | 没接 |
+| `devfront` 的 `site_verify` | 一批断言 × 每页（加载 + settle） | 没接（每开一个页面都可能是一秒级） |
+| `docker` 的日志跟随类工具 | 取决于 --tail/--since 与流 | 没接（它的长活在 SSE 流上，不在工具调用里） |
+
+**为什么是 L0**：一次改动跨 ≥2 个包（`tty` / `devfront` / 可能还有 `docker`），而且它其实是一条
+**缺规矩**——「长等待的工具必须转发 `exec.signal`」应当写进 [conventions.md](./docs/conventions.md)，
+并配一条守卫（静态扫「声明了 `timeoutMs` 或等待超过 N 秒的工具是否接了 exec」；纯静态判定不容易，
+更可能是逐包补用例）。
+
+**代价（说清才敢不做）**：不做的后果是「取消之后还在跑」——对共享目标（248 / 161）上的 SSH 与
+浏览器动作，这是持续占用与噪声，而且是**静默的**（没有一条日志说「取消没生效」）。
+
+**结果**：待办——本轮只收了最贵的那一个（`devenv`）。
+
 ## 已完成（落点 + 门槛）
 
 ### 1. ✅ 统一安全围栏：docker 的加固口径同步到 tty / dsh-mcp
@@ -497,6 +543,36 @@ IP 形状的四段式子节号——闸门确实有牙齿）。
 **诚实的边界**：这条规矩**只有文档、没有守卫**——它约束的是**人的部署动作**，今天仓库里没有
 「同一目标不许出现两条容器写入口」这种可判定的配置面。文档里写明了将来若合并，
 合的方向是「一处声明、两处生效」（像 tty 连接簿那样），那才是可守卫化的形态。
+
+### 11. ✅ 凭据解析一份实现 + `devfront` 用上它（2026-10-04）
+
+**落点**：
+
+| 落点 | 内容 | 门槛（已验） |
+|---|---|---|
+| `packages/kit/src/credentials.ts`（新） | 凭据引用解析的**唯一实现**：`CredentialResolver` 结构类型、`resolveCredentialVia`（返回值 **+ 来源层** + 走的路）、`resolveSecretVia` / `resolveSecret`（值那条老路径）、按 **owner** 绑定的 `setCredentialResolver` | `packages/kit/test/credentials.test.ts` **13 条**：provider 优先 / env 兜底 / 三种「拿不到」各说各的话 / provider 抛错不吞 / **owner 绑定（该 bug 的回归钉子）** |
+| `packages/kit/src/index.ts` | 进**主入口**（零依赖）。理由写在那里：`devfront` 只要 30 行解析，不该为它 import 一条会把 `ssh2` 拉进来的子路径 | `pnpm typecheck` 全仓；`packages/kit/src/ssh-exec.ts` 改成再导出，子路径公开形状一字未改 |
+| `packages/tty/src/ssh.ts` | 那份**第二实现**（比 `kit` 多一条「引用存在但值为空串」的分支）删除，改成再导出；两条分支合成一份时**以更细的那份为准** | `tty` 793 条用例全绿（含 `host-smoke.test.ts` 里那两条报错语义） |
+| `packages/{tty,docker}/src/index.ts` | 绑定带上 owner（`'tty'` / `'docker'`） | 见下面「顺带修好的缺陷」 |
+| `packages/devfront/src/credential.ts`（新） | 来源层 → **保护强度**（`none` / `weak` / `strong` / `unknown`）；`resolveTargetCredential`（失败**不抛**，给一句能行动的话） | `packages/devfront/test/credential.test.ts` **10 条** |
+| `packages/devfront/src/page.ts` / `plugin.ts` | `site_fill` 的值二选一：明文 `value` 或 `credentialRef`（`env:NAME`）。判定层三条新码：`CREDENTIAL_AND_VALUE` / `CREDENTIAL_NOT_DECLARED` / `CREDENTIAL_UNRESOLVED`；**只认目标 `credentialRef` 声明过的那一个**；解析在执行那一步由宿主注入；回显与审计里只有**引用名 + 强度**，永远没有值 | `page.test.ts` +8、`tools.test.ts` +3（假宿主，不碰浏览器）、`tool-contract.test.ts` +2、真机冒烟 +2 |
+| `scripts/test/credential-single-source.test.ts`（新守卫，L0） | ① 实现只有一份（别处只许再导出，附反例）② 每个绑定点都要带 owner（附反例；**判前先去注释**——`tty` 的说明注释里就写着旧写法） | 6 条全绿 |
+
+**顺带修好的既有缺陷（`devfront` 不是唯一的受益者）**：绑定的载体从前是一个**进程级单例槽**，
+而 `ctx.inject(['credentials'])` 的收尾是 `return () => setCredentialResolver(null)` ——
+**`tty` 与 `docker` 谁先卸载，谁就把对方的凭据通道一起关掉**（此后静默退回 `process.env`，
+症状是「刚才还能连，现在报凭据未设置」；而用户没改过任何配置）。今天改成 `owner → provider` 的映射：
+卸载只摘自己那一份，`resolveSecret()` 取最近绑定的那一个。这一条**必须有守卫**——它错起来毫无症状。
+
+**一条刻意的边界**：`devfront` **不绑**那个单例，它按 `apply` 持有自己的服务引用并交给每次调用。
+新消费者没有理由再往一个共享槽里写。
+
+**两处刻意没合**（写进 `devfront/src/credential.ts` 的头注，免得下次有人顺手合）：
+
+- `devdata` 的 `credential.ts` 说的是「**计划里打算用哪种方式取**」（process-env / file / command /
+  keychain / remote），而本项这份说的是「**这次值实际来自哪一层**」（provider 给的 `env` / `file` /
+  `project-env` / `user-env`）——两条轴，不是一份事实的两个副本。合并要等第三个消费者；
+- 「一次发布之后怎么验」那件事（`devfront` 待办 D8 的尾边）仍然不在本项里。
 
 ## 已由 L0 资产承接（不再是待办）
 

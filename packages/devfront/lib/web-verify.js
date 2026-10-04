@@ -33,6 +33,7 @@
  *
  * 依据：`docs/devdata-plan.md` §15.1 / §15.2 / §15.3。
  */
+import { readdirSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { manifestFileName as kitManifestFileName, manifestRelPath, projectsInFiles, readProjectManifest } from '@hyzyn/dsh-kit/manifest';
 import { classifyConsoleMessages, summarizeConsole } from './console.js';
@@ -175,22 +176,44 @@ function isRecord(value) {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 /**
- * 清单的文件名（唯一一处）：`<project>.yaml`。
+ * 前端清单的后缀（**唯一一处**）。
  *
- * 必须与 `webManifestsIn` 的筛选口径**逐字一致**。两处不一致时 `loadWebManifest` 永远找不到
- * `webManifestsIn` 报出来的那份文件，表现为「明明有清单却报无断言」——
+ * 「文件名」与「列目录」两处口径必须逐字一致：不一致时 `loadWebManifest` 永远找不到
+ * `listWebProjects` 报出来的那份文件，表现为「明明有清单却报无断言」——
  * 而那正好命中「缺省即无」这条 fail-closed 判据的**假阴性**（看起来像设计使然，实际是 bug）。
  */
+const WEB_SUFFIX = '.yaml';
+/** 前端清单所在的子目录（`<项目根>/web/`）。 */
+export const WEB_DIR = 'web';
+/** 清单的文件名：`<project>.yaml`。 */
 export function webManifestFileName(project) {
-    return kitManifestFileName(project, '.yaml');
+    return kitManifestFileName(project, WEB_SUFFIX);
 }
 /** 清单在项目里的相对路径：`web/<project>.yaml`。 */
 export function webManifestRelativePath(project) {
-    return manifestRelPath('web', project, '.yaml');
+    return manifestRelPath(WEB_DIR, project, WEB_SUFFIX);
 }
 /** 从一批已列好的文件名里挑出前端清单（不读目录——保持可测）。实现在 `@hyzyn/dsh-kit/manifest`。 */
 export function webManifestsIn(files) {
-    return projectsInFiles(files, { prefix: 'web/', suffix: '.yaml' });
+    return projectsInFiles(files, { prefix: `${WEB_DIR}/`, suffix: WEB_SUFFIX });
+}
+/**
+ * 列出这个目录下**已有的**项目名（按 `web/*.yaml` 的文件名）。
+ *
+ * 用途只有一处：`no-manifest` 的文案里附上「这里现在有哪些清单」——清单名与项目名不一致
+ * （文件名写成 `ems-service.yaml`、而调用方按目录名找 `ems`）是最常见的写错方式，
+ * 报一句「没有」而不给对照，agent 会去猜目录（与 `devenv` 的 `listReadyProjects` 同一判据）。
+ *
+ * 这里列的是**目录里的文件名**（没有 `web/` 前缀），所以给 `projectsInFiles` 不带 `prefix`
+ * ——与 `devenv` 的 `readdirSync(ready/)` 同一用法。
+ */
+export function listWebProjects(dir) {
+    try {
+        return [...projectsInFiles(readdirSync(join(dir, WEB_DIR)), { suffix: WEB_SUFFIX }).keys()].sort();
+    }
+    catch {
+        return [];
+    }
 }
 /**
  * 从项目里读一份前端清单（**只读**）。
@@ -266,6 +289,17 @@ export function evaluateWebAssertion(input) {
             });
             unknown.push(`${expect.elementExists} 的观察结果缺失`);
         }
+        else if (found.error !== undefined) {
+            // 选择器不合法**不是**「元素不存在」：报 fail 会把「清单写错了」说成「页面坏了」。
+            diff.push({
+                op: 'elementExists',
+                expected: expect.elementExists,
+                got: `选择器不合法（${found.error}）`,
+                verdict: 'unknown',
+                note: '先修清单里的这个选择器：它没通过浏览器解析，与「页面上没有这个元素」是两件事',
+            });
+            unknown.push(`${expect.elementExists} 的选择器不合法`);
+        }
         else if (found.count > 0) {
             diff.push({ op: 'elementExists', expected: expect.elementExists, got: `命中 ${String(found.count)} 个`, verdict: 'pass' });
         }
@@ -285,6 +319,16 @@ export function evaluateWebAssertion(input) {
                 note: `${spec.selector} 的观察结果缺失`,
             });
             unknown.push(`${spec.selector} 的观察结果缺失`);
+        }
+        else if (found.error !== undefined) {
+            diff.push({
+                op: 'elementText',
+                expected: spec,
+                got: `选择器不合法（${found.error}）`,
+                verdict: 'unknown',
+                note: '先修清单里的这个选择器：它没通过浏览器解析，与「元素不存在 / 文本不对」是两件事',
+            });
+            unknown.push(`${spec.selector} 的选择器不合法`);
         }
         else if (found.count === 0) {
             diff.push({ op: 'elementText', expected: spec, got: '元素不存在', verdict: 'fail' });

@@ -377,6 +377,47 @@ const out = await exec.run(books.get('nas')!, ['docker', 'ps'])
 
 
 
+### 凭据引用解析（`credentials`，主入口）
+
+配置里写 `env:NAME`（一个**引用**），值归官方凭据服务（`@deepseek-ai/dsh-credentials` 的
+`ctx.credentials`）。这一层负责「拿引用换值」那条路：**provider 优先**（它叠
+`file`（`$DSH_HOME/.credentials.yaml`）/ `env` / `project-env` / `user-env` 各层，且**每次操作
+重新解析**——改完凭据下一个动作即生效，不必重启），**服务不在时退回 `process.env`**。
+
+```ts
+import { resolveCredentialVia, setCredentialResolver } from '@hyzyn/dsh-kit'
+
+ctx.inject(['credentials'], (credCtx) => {
+  setCredentialResolver(credCtx.credentials ?? null, 'my-plugin')   // ← owner 必给
+  return () => setCredentialResolver(null, 'my-plugin')
+})
+
+// 要值 + 来源层（来源层是标「保护强度」的唯一输入）：
+const resolved = await resolveCredentialVia(provider, 'env:APP_PWD')
+// { value: '…', source: 'file', via: 'provider' }
+```
+
+**三条判据**：
+
+- **provider 优先，`process.env` 兜底**。凭据存储里的值（provider README 原话：
+  *a store the harness owns and never materializes into the environment*）**不会进环境变量**，
+  所以只读 `process.env` 等于「存进凭据存储的值根本读不到」；
+- **三种「拿不到」各说各的话**：引用不存在（`凭据未设置`）、引用在但值是空串（`值是空串`，
+  并明说「新建同名引用解决不了」）、服务报错（把它那句话带出来，**不吞**——否则「凭据服务坏了」
+  会伪装成「你没配」）；
+- **绑定按 owner**。`setCredentialResolver(resolver, owner)` 缺了 owner 就回到那个进程级单例槽：
+  A 插件卸载会把 B 插件的凭据通道一起关掉，此后**静默**退回 `process.env`，症状是
+  「刚才还能连，现在报凭据未设置」。这条有守卫（`scripts/test/credential-single-source.test.ts`），
+  因为它错起来毫无症状。
+
+**只许一份实现**：实现只在 `kit`，`tty` 的 PTY 层与 `kit` 的 `./ssh-exec` 都是**再导出**。
+它进**主入口**而不是 `ssh-exec` 子路径——`devfront` 也要用它（`site_fill` 填一个引用），
+不该为了 30 行解析把 `ssh2` 拉进一个浏览器工具包。
+
+**保护强度不在这一层**：provider 给的 `source` 只是「值来自哪一层」。把它翻成
+「方便，不是防护 / 真的防」是**消费者**的事（`devfront` 的 `src/credential.ts` 是其中一份），
+因为各家的词汇与口径不同。
+
 ### Chrome DevTools Protocol 客户端（`chrome-cdp`）
 
 零依赖的最小 CDP 客户端（Node 22 自带 `fetch` 与全局 `WebSocket`）：起一个 headless

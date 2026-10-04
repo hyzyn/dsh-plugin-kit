@@ -22,6 +22,7 @@
 import { type CdpParams } from '@hyzyn/dsh-kit';
 import type { ConsoleLevel, ConsoleMessage } from './console.js';
 import type { ShotResult, WebDriver, WebTarget } from './page.js';
+import type { PageObservation } from './web-verify.js';
 /** `CdpWebDriver` 的选项。 */
 export interface CdpWebDriverOptions {
     /** Chrome 可执行文件路径（缺省 `CHROME_PATH`，再缺省 macOS 默认位置）。 */
@@ -141,6 +142,23 @@ export declare class CdpWebDriver implements WebDriver {
     console(input: {
         target: WebTarget;
     }): Promise<readonly ConsoleMessage[]>;
+    /**
+     * **一次取全**：一次 `Runtime.evaluate` 把文本、若干选择器的事实与当前 URL 一起取回来
+     * （console 走已经订阅的累积缓冲，不再多问一次）。
+     *
+     * 两处刻意的实现选择：
+     *
+     * 1. **一个选择器不合法不许把整次观察带下去**。`querySelectorAll` 对坏选择器是**抛错**，
+     *    而在页面里逐个 `try/catch` 之后把错误**原样**带回 `error` 字段——于是一条写错的选择器
+     *    只让**用它**的那几条断言判 `unknown`，同页其它断言照样有结论。不这么做的话，
+     *    清单里一个错别字会让整页（含 console 判据）变成一句「观察失败」。
+     * 2. **取的是 `innerText`（可见文本）**，与 `text()` 同一口径：断言里的 `toContain` 是给人写的
+     *    （「订单编号」），拿 HTML 去比会把标签也带上，于是「明明页面上有」却匹配不上。
+     */
+    observe(input: {
+        target: WebTarget;
+        selectors: readonly string[];
+    }): Promise<PageObservation>;
     /**
      * 实时问浏览器：当前页面的 URL。
      *

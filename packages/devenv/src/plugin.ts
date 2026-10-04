@@ -64,7 +64,8 @@ import {
 import { denialMessage, outOfScope, rejectionCodeOf, REJECTION_CODES } from './rejection.js'
 import { httpProbe } from './probe.js'
 import { describeProfileProblem, listReadyProjects, loadReadyProfile, readyManifestRelPath } from './ready-loader.js'
-import { formatMs, renderEvaluation as renderReadyReport, renderMutation } from './render.js'
+import { describeStop, formatMs, renderEvaluation as renderReadyReport, renderMutation } from './render.js'
+import { waitForReady, type WaitTick } from './wait.js'
 
 /**
  * 一份能力规格的形状（`{ env, label }`）。
@@ -809,6 +810,8 @@ const plugin = definePlugin<Config>({
       observations: readonly ServiceObservation[]
       /** 停止等待的原因（`env_status` 不传）。 */
       stoppedBecause?: string
+      /** 等待过程的账（同样只有 `env_wait` 传）。 */
+      waitTicks?: readonly WaitTick[]
     }): string => renderReadyReport({
       targetId: input.target.id,
       targetLabel: input.target.label,
@@ -816,6 +819,7 @@ const plugin = definePlugin<Config>({
       evaluation: input.evaluation,
       observations: input.observations,
       ...(input.stoppedBecause === undefined ? {} : { stoppedBecause: input.stoppedBecause }),
+      ...(input.waitTicks === undefined ? {} : { waitTicks: input.waitTicks }),
     })
 
     /** 一次「看一眼」：清单 → 通道 → 观测 → 判定。 */
@@ -831,8 +835,8 @@ const plugin = definePlugin<Config>({
       return { text: renderEvaluation({ target, project, evaluation, observations }) }
     }
 
-    /** 等到就绪、被明确否证、或超时。 */
-    const waitText = async (input: Record<string, unknown>): Promise<ToolText> => {
+    /** 等到就绪、被明确否证、被调用方取消、或超时。 */
+    const waitText = async (input: Record<string, unknown>, signal?: AbortSignal): Promise<ToolText> => {
       const target = requireTarget(input.target)
       const cwd = cwdOf(input)
       requireScope(target, cwd)
@@ -842,39 +846,29 @@ const plugin = definePlugin<Config>({
 
       const requested = typeof input.timeoutMs === 'number' && Number.isFinite(input.timeoutMs) ? Math.trunc(input.timeoutMs) : live.waitTimeoutMs
       const timeoutMs = Math.min(Math.max(requested, 1_000), 900_000)
-      const startedAt = Date.now()
-      const deadline = startedAt + timeoutMs
 
-      let evaluation: ReadyEvaluation
-      let observations: readonly ServiceObservation[] = []
-      let stoppedBecause: string
-      for (;;) {
-        observations = await observeOnce(target, profile, channel)
-        evaluation = evaluateOnce(profile, observations, Date.now() - startedAt)
-        if (evaluation.ready) {
-          stoppedBecause = '全部就绪'
-          break
-        }
-        if (evaluation.anyRefuted) {
-          // **别等了**：等下去只会看到又一次同样的否证，而「超时」那句话里没有任何线索。
-          stoppedBecause = '有服务被明确否证（它不会自己好起来；先去看那个服务的日志）'
-          break
-        }
-        const remaining = deadline - Date.now()
-        if (remaining <= 0) {
-          stoppedBecause = `等满 ${formatMs(timeoutMs)} 仍未就绪`
-          break
-        }
-        await sleep(Math.min(live.pollIntervalMs, remaining))
-      }
+      /*
+       * 循环本身在 `wait.ts`：取消的转发、等待过程的记账、四种停止原因都在那里，而且都能在没有
+       * 宿主、没有 docker 的情况下断言。这一层只负责把「一次探测」接起来（通道 → 清单 → 观测 → 判定）。
+       */
+      const outcome = await waitForReady({
+        probe: async () => {
+          const observations = await observeOnce(target, profile, channel)
+          return { evaluation: evaluateOnce(profile, observations, 0), observations }
+        },
+        pollIntervalMs: live.pollIntervalMs,
+        timeoutMs,
+        ...(signal === undefined ? {} : { signal }),
+      })
 
       return {
         text: renderEvaluation({
           target,
           project,
-          evaluation,
-          observations,
-          stoppedBecause,
+          evaluation: outcome.evaluation,
+          observations: outcome.observations,
+          stoppedBecause: describeStop(outcome.stop),
+          waitTicks: outcome.ticks,
         }),
       }
     }
@@ -968,9 +962,15 @@ const plugin = definePlugin<Config>({
           timeoutMs: { type: 'number', description: `最多等多少毫秒（缺省 ${String(live.waitTimeoutMs)}，上限 900000）` },
         },
         output: textOutput(),
-        execute: (args: unknown): Promise<ToolText> => {
+        /*
+         * 协作式预算：本工具自己最久等 900000ms（`timeoutMs` 的钳位上限），所以声明的预算必须**大于**
+         * 它，否则宿主的调用超时会先到、把一次正当的长等待砍掉。声明它的另一半意义是契约：声明了
+         * 就必须转发 `exec.signal`（下面那行就是），否则就是「声明了可取消、实际不可取消」。
+         */
+        timeoutMs: MAX_WAIT_TIMEOUT_MS + 30_000,
+        execute: (args: unknown, exec?: { signal?: AbortSignal }): Promise<ToolText> => {
           const input = (args ?? {}) as Record<string, unknown>
-          return audited('env_wait', input, () => waitText(input))
+          return audited('env_wait', input, () => waitText(input, exec?.signal))
         },
       }))
 

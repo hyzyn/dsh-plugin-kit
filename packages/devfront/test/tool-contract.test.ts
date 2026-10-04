@@ -28,7 +28,9 @@ import { describe, expect, it } from 'vitest'
 
 import type { WebAction, WebDriver, WebTarget } from '../src/index.js'
 import { invokeWebAction } from '../src/page.js'
-import { apply, consoleOutput, denialMessage, SITE_TEXT_MAX, textOutput } from '../src/plugin.js'
+import { apply, consoleOutput, denialMessage, SITE_TEXT_MAX, textOutput, verifyOutput } from '../src/plugin.js'
+import { runWebVerify } from '../src/web-run.js'
+import { validateWebManifest } from '../src/web-verify.js'
 
 const CWD = '/work/cdqas'
 const SITE = 'https://cdqas.example.com/'
@@ -148,6 +150,18 @@ function fakeDriver(): WebDriver {
       // 本站资源的错误（这是「页面坏了」的信号）
       { level: 'error', text: '订单行渲染失败', sourceUrl: `${SITE}app.js`, pageUrl: SITE },
     ],
+    // 一次取全：把**问到的**每个选择器都给一份事实（同一次往返的结果）。
+    observe: async ({ selectors }) => ({
+      url: `${SITE}order`,
+      text: '订单列表\n订单编号 CDQ-2026-001',
+      elements: Object.fromEntries(
+        selectors.map((selector) => [selector, { count: 1, text: selector === '#status' ? '状态：已发货' : '合计 1,234.00' }]),
+      ),
+      console: [
+        { level: 'log', text: '页面已渲染', sourceUrl: `${SITE}app.js`, pageUrl: SITE },
+        { level: 'error', text: '订单行渲染失败', sourceUrl: `${SITE}app.js`, pageUrl: SITE },
+      ],
+    }),
   }
 }
 
@@ -180,8 +194,10 @@ const CASES: readonly ContractCase[] = [
 describe('契约守卫：工具声明的 output.schema 与实际产出的键必须一致', () => {
   const tools = mountTools()
 
-  it('六个工具都注册上了（少一个，这张表就悄悄少守一条）', () => {
-    expect([...tools.keys()].sort()).toEqual(CASES.map((item) => item.tool).sort())
+  it('这张表里的动作工具都注册上了（少一个，这张表就悄悄少守一条）', () => {
+    for (const item of CASES) expect(tools.has(item.tool), `${item.tool} 没注册上`).toBe(true)
+    // `site_verify` 不是单个动作（它按清单跑一批），契约在下面的专条用例里守。
+    expect(tools.has('site_verify')).toBe(true)
   })
 
   for (const item of CASES) {
@@ -208,6 +224,124 @@ describe('契约守卫：工具声明的 output.schema 与实际产出的键必�
       expect(rendered).not.toContain('undefined')
     })
   }
+})
+
+/* ------------------------------------------------------------------ *
+ * `site_verify`：它不走单动作那条路（一次调用跑一批），所以契约单独守
+ * ------------------------------------------------------------------ */
+
+describe('契约守卫：`site_verify` 的输出契约', () => {
+  const tools = mountTools()
+
+  /** 一份真的清单（过校验器），两条断言落在**同一个 URL** 上。 */
+  const list = (() => {
+    const validated = validateWebManifest('cdqas', {
+      version: 1,
+      project: 'cdqas',
+      assertions: [
+        {
+          id: 'order-list',
+          url: `${SITE}order`,
+          target: TARGET.id,
+          expect: { toContain: '订单编号', elementExists: '#total', consoleClean: true },
+          severity: 'fail',
+        },
+        {
+          id: 'detail-status',
+          url: `${SITE}order`,
+          target: TARGET.id,
+          expect: { elementText: { selector: '#status', toContain: '已发货' } },
+          severity: 'fail',
+        },
+      ],
+    })
+    if (!validated.ok) throw new Error(`夹具不成立：${JSON.stringify(validated.errors)}`)
+    return [...validated.manifest.assertions]
+  })()
+
+  it('产出通过自己的 output.schema，且渲染读得到字段（含证据，且没有 `undefined`）', async () => {
+    const def = tools.get('site_verify')
+    if (def === undefined) throw new Error('site_verify 没注册上')
+
+    const run = await runWebVerify({
+      target: TARGET,
+      cwd: CWD,
+      project: 'cdqas',
+      assertions: list,
+      driver: fakeDriver(),
+    })
+    const value = verifyOutput(run)
+    expect(validate(def.output.schema, value)).toEqual([])
+
+    const rendered = def.output
+      .render({}, value)
+      .map((part) => part.text)
+      .join('\n')
+    expect(rendered).toContain('web/cdqas.yaml')
+    expect(rendered).toContain('order-list')
+    // 失败那条的**依据**（console 里的本站错误正文）要出现在渲染里：只报「失败 1 条」等于把复核推回去。
+    expect(rendered).toContain('订单行渲染失败')
+    expect(rendered).toContain('本次只做了「打开 + 观察」')
+    expect(rendered).not.toContain('undefined')
+    // 两条断言同一个 URL → 只观察一次（渲染里那行汇总就是这件事的账）。
+    expect(rendered).toContain('打开 1 个页，观察到 1 个')
+  })
+})
+
+/* ------------------------------------------------------------------ *
+ * `site_fill` 的凭据回显：产出里只有**引用名**与**强度**，永远没有值
+ * ------------------------------------------------------------------ */
+
+describe('契约守卫：`site_fill` 用凭据引用时的产出', () => {
+  const tools = mountTools()
+  const REF = 'env:CDQAS_APP_PWD'
+
+  it('产出通过 output.schema；渲染里有引用名与保护强度，**没有值**', async () => {
+    const def = tools.get('site_fill')
+    if (def === undefined) throw new Error('site_fill 没注册上')
+
+    const outcome = await invokeWebAction({
+      request: {
+        target: { ...TARGET, credentialRef: REF },
+        action: 'fill',
+        cwd: CWD,
+        selector: '#pwd',
+        credentialRef: REF,
+      },
+      driver: fakeDriver(),
+      credentials: async (ref) => ({
+        ok: true,
+        ref,
+        value: 's3cret-value',
+        protection: { level: 'none', note: '继承来的环境变量：agent 与用户同 uid，读得到——方便，不是防护' },
+      }),
+    })
+    if (!outcome.ok) throw new Error(`被拒了：${outcome.code} ${outcome.message}`)
+
+    expect(validate(def.output.schema, outcome.result)).toEqual([])
+    const rendered = def.output
+      .render({}, outcome.result)
+      .map((part) => part.text)
+      .join('\n')
+    expect(rendered).toContain(`来自凭据引用 ${REF}`)
+    // 强度必须一起回：只说「已配置」等于对外宣称了一个不成立的性质（plan §3.7-1）。
+    expect(rendered).toContain('方便，不是防护')
+    // 值不许出现在产出里——它一旦回显，会话记录就成了第二个凭据存储。
+    expect(rendered).not.toContain('s3cret-value')
+    expect(rendered).not.toContain('undefined')
+  })
+
+  it('明文那条路的产出形状一字未改（既有调用点不受影响）', async () => {
+    const def = tools.get('site_fill')
+    if (def === undefined) throw new Error('site_fill 没注册上')
+    const outcome = await invokeWebAction({
+      request: { target: TARGET, action: 'fill', cwd: CWD, selector: '#kw', value: 'CDQ' },
+      driver: fakeDriver(),
+    })
+    if (!outcome.ok) throw new Error('被拒了')
+    expect(validate(def.output.schema, outcome.result)).toEqual([])
+    expect(def.output.render({}, outcome.result).map((part) => part.text).join('\n')).toBe('已填值到 #kw')
+  })
 })
 
 /* ------------------------------------------------------------------ *

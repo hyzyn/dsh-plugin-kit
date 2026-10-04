@@ -18,6 +18,7 @@
 import type { ReadyEvaluation, ServiceObservation } from './env-ready-eval.js'
 import { actionLabel, type MutationOutcome, type MutationPlan } from './mutate.js'
 import { readyManifestRelPath } from './ready-loader.js'
+import { collapseTicks, type WaitPhase, type WaitStop, type WaitTick } from './wait.js'
 
 /** 判定图标（与 `devdata` 的 doctor 同一套：三个记号各占一档）。 */
 export const VERDICT_ICON: Record<string, string> = { ready: '✓', unready: '!', refuted: '✗' }
@@ -43,6 +44,50 @@ export interface RenderInput {
   observations: readonly ServiceObservation[]
   /** 停止等待的原因（`env_status` 不传：它本来就不等）。 */
   stoppedBecause?: string
+  /**
+   * 等待过程的账（`env_wait` 传；`env_status` 不传）。
+   *
+   * 这一版工具面没有给工具用的进度通道，所以「等的那段时间它在等什么」只能在**最终报告**里
+   * 回答——这块就是那个回答（见 `wait.ts` 的文件头）。
+   */
+  waitTicks?: readonly WaitTick[]
+}
+
+/** 停止原因 → 一句话（**数据在 `wait.ts`，话术在这里**）。 */
+export function describeStop(stop: WaitStop): string {
+  switch (stop.kind) {
+    case 'ready':
+      return '全部就绪'
+    case 'refuted':
+      return `有服务被明确否证（${stop.refuted ?? '它'} 不会自己好起来；先去看那个服务的日志）`
+    case 'timeout':
+      return `等满 ${formatMs(stop.timeoutMs)} 仍未就绪`
+    case 'cancelled':
+      // 取消**既不是**超时，也**不代表**环境有问题。三件事混成一句的话，下一次就会有人去查环境。
+      return `被调用方取消（已等 ${formatMs(stop.elapsedMs)}；下面是取消那一刻的观测——不是超时，也不代表环境有问题）`
+  }
+}
+
+/** 等待过程里最多列几段（超出就首尾各表 + 中间省略多少段）。 */
+const WAIT_PHASE_MAX = 10
+
+/** 把等待的账渲染成几行。 */
+function renderWaitTicks(ticks: readonly WaitTick[]): string[] {
+  const phases = collapseTicks(ticks)
+  const line = (phase: WaitPhase): string => {
+    const icon = phase.verdict === 'ready' ? '✓' : phase.verdict === 'refuted' ? '✗' : '·'
+    const repeat = phase.repeat > 1 ? `（连续 ${String(phase.repeat)} 次结论相同）` : ''
+    return `  ${icon} +${formatMs(phase.atMs)} ${phase.summary}${repeat}`
+  }
+  const head = `等待过程（共观测 ${String(ticks.length)} 次）`
+  if (phases.length <= WAIT_PHASE_MAX) return [head, ...phases.map(line)]
+  // 首 6 段 + 尾 3 段：中间那些「一直没变」的省掉，但**要说省了多少**。
+  return [
+    head,
+    ...phases.slice(0, 6).map(line),
+    `  …（中间省略 ${String(phases.length - 9)} 段：结论没变）`,
+    ...phases.slice(-3).map(line),
+  ]
 }
 
 /**
@@ -84,6 +129,11 @@ export function renderEvaluation(input: RenderInput): string {
     .map((service) => service.name)
   if (missingObservations.length > 0) {
     parts.push(`（这一轮没有取到观测的服务：${missingObservations.join(' / ')}）`)
+  }
+
+  // 等待过程放**最后**：先给结论，再给「它是怎么等出来的」——否则读者要先读十行才知道现在什么样。
+  if (input.waitTicks !== undefined && input.waitTicks.length > 0) {
+    parts.push('', ...renderWaitTicks(input.waitTicks))
   }
   return parts.join('\n')
 }

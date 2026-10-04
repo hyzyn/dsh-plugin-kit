@@ -171,38 +171,8 @@ export interface HostKeyStore {
     /** 握手时记录指纹（已存在该 host:port 的记录则并入集合）。 */
     record(host: string, port: number, fingerprint: string): void;
 }
-/**
- * 官方凭据服务的**最小结构面**（结构类型，不把这个包加成本插件依赖）。
- *
- * 契约见 `@deepseek-ai/dsh-credentials`：`resolve(ref)` **每次操作重新解析、不得跨操作缓存**，
- * 返回 `{ value, source }` 或 undefined。这里只声明用到的那一个方法——既不必引依赖，也能在
- * 服务缺失时静态看出"没有它"。
- */
-export interface CredentialResolver {
-    resolve(ref: string): Promise<{
-        value: string;
-    } | undefined>;
-}
-/** 由 index.ts 在可选注入里挂上（服务缺失即为 null，退回 process.env）。 */
-export declare function setCredentialResolver(resolver: CredentialResolver | null): void;
-/**
- * 解析密钥引用（`env:NAME`）——**纯核心**，provider 由调用方给，便于离线断言。
- *
- * 顺序：官方凭据 provider **优先**（它自己叠 `file`（`$DSH_HOME/.credentials.yaml`）/ `env` /
- * `project-env` / `user-env` 各层，而且"每次操作重新解析"——改完下一个操作即生效，不必重启
- * 宿主）；服务不在、或它没有这个引用时，再退回 `process.env`。
- *
- * 为什么必须走 provider：凭据存储里的值**永远不会被 materialize 进环境**（provider README 原话：
- * "a store the harness owns and never materializes into the environment"），所以只读
- * `process.env` 等于"存进凭据存储的值连接时根本读不到" ✗ —— 这正是「存入凭据存储」这条链此前
- * 断掉的地方（客户端那半切好了、宿主这半没切）。
- *
- * provider 抛错**不吞**：记下来，若环境变量也没有就把两个来源一起写进错误里。否则"凭据服务
- * 坏了"会伪装成"你没配"，而那是最难查的一类。
- */
-export declare function resolveSecretVia(provider: CredentialResolver | null, value: string | undefined): Promise<string | undefined>;
-/** 生产路径：用当前注入的 provider（`index.ts` 注入；没注入就是 null）。 */
-export declare function resolveSecret(value: string | undefined): Promise<string | undefined>;
+export { resolveSecret, resolveSecretVia, setCredentialResolver } from '@hyzyn/dsh-kit';
+export type { CredentialResolver } from '@hyzyn/dsh-kit';
 declare function expandHome(path: string): string;
 /** 供 ~/.ssh/config 导入路由使用（~ 与 ~/ 前缀展开 home）。 */
 export { expandHome };

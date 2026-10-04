@@ -4255,8 +4255,8 @@ const plugin = definePlugin<Config>({
      * 从前一致 —— 所以这是**可选**依赖，不抬高 engines 下限。
      */
     ctx.inject(['credentials'], (credCtx: Context) => {
-      setCredentialResolver((credCtx as unknown as { credentials?: CredentialResolver }).credentials ?? null)
-      return () => { setCredentialResolver(null) }
+      setCredentialResolver((credCtx as unknown as { credentials?: CredentialResolver }).credentials ?? null, 'tty')
+      return () => { setCredentialResolver(null, 'tty') }
     })
 
     /*

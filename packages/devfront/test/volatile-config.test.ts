@@ -28,7 +28,7 @@ const TARGET = (id: string): Record<string, unknown> => ({
   scopeDirs: [`/w/${id}`],
 })
 
-const SIX = ['site_open', 'site_shot', 'site_click', 'site_fill', 'site_text', 'site_console']
+const SEVEN = ['site_open', 'site_shot', 'site_click', 'site_fill', 'site_text', 'site_console', 'site_verify']
 
 /* ------------------------------------------------------------------ *
  * 核心：改配置 → 真的生效
@@ -45,8 +45,8 @@ describe('volatile 契约：配置改了必须真的生效', () => {
 
     expect(host.descriptionOf('site_open', 'target')).toContain('可用：b')
     expect(host.descriptionOf('site_open', 'target')).not.toContain('可用：a')
-    // 六个工具都得在：只有描述变了，不是一个都没了。
-    expect([...host.tools.keys()].sort()).toEqual([...SIX].sort())
+    // 七个工具都得在：只有描述变了，不是一个都没了。
+    expect([...host.tools.keys()].sort()).toEqual([...SEVEN].sort())
   })
 
   it('重新注册前先拆掉上一轮（同名工具不该留下两份）', () => {
@@ -59,16 +59,16 @@ describe('volatile 契约：配置改了必须真的生效', () => {
 
     host.stored.targets = [TARGET('b')]
     host.emit('loader/volatile-update')
-    expect(host.counts.registrations).toBe(afterMount + SIX.length)
+    expect(host.counts.registrations).toBe(afterMount + SEVEN.length)
     expect(host.counts.disposals).toBe(afterMount)
   })
 
-  it('enabled 关掉：六个工具全部撤下（而不是留在那儿必然失败的入口）', () => {
+  it('enabled 关掉：七个工具全部撤下（而不是留在那儿必然失败的入口）', () => {
     const host = makeHost()
     // settings 层才是「配置页读到的那份」：mount 的 config 只是初始值，二者要一致。
     host.stored.targets = [TARGET('a')]
     host.mount({ targets: [TARGET('a')] })
-    expect(host.tools.size).toBe(SIX.length)
+    expect(host.tools.size).toBe(SEVEN.length)
 
     host.stored.enabled = false
     host.emit('loader/volatile-update')
@@ -77,7 +77,7 @@ describe('volatile 契约：配置改了必须真的生效', () => {
     // 再打开要能回来（不是单向的拆卸）。
     host.stored.enabled = true
     host.emit('loader/volatile-update')
-    expect(host.tools.size).toBe(SIX.length)
+    expect(host.tools.size).toBe(SEVEN.length)
   })
 
   it('targets 清空：工具撤下（没站点可验时不该给 agent 一排必然失败的入口）', () => {
@@ -123,7 +123,7 @@ describe('volatile 契约的边界', () => {
     host.notReady()
     host.emit('loader/volatile-update')
 
-    expect(host.tools.size).toBe(SIX.length)
+    expect(host.tools.size).toBe(SEVEN.length)
     expect(host.descriptionOf('site_open', 'target')).toContain('可用：a')
   })
 
@@ -142,11 +142,11 @@ describe('volatile 契约的边界', () => {
   it('宿主没有 settings 服务（最小宿主 / 冒烟夹具）：照旧按 config 注册，不因订阅而挂', () => {
     const host = makeHost({ settings: false })
     host.mount({ targets: [TARGET('a')] })
-    expect(host.tools.size).toBe(SIX.length)
+    expect(host.tools.size).toBe(SEVEN.length)
     expect(host.descriptionOf('site_open', 'target')).toContain('可用：a')
 
     // 没人订阅，广播不该有任何动静（也不该抛）。
     host.emit('loader/volatile-update')
-    expect(host.tools.size).toBe(SIX.length)
+    expect(host.tools.size).toBe(SEVEN.length)
   })
 })

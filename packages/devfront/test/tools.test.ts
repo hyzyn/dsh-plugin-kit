@@ -39,10 +39,10 @@ function project(sites?: Record<string, unknown>[]): string {
 const PROFILE_SITE = { id: 'p1', url: 'https://p1.test/', scopeDirs: [process.cwd()] }
 
 describe('工具级：站点清单按 cwd 解析', () => {
-  it('六个工具都注册了（启用 + 有站点），且没有站点时一个都不注册', () => {
+  it('七个工具都注册了（启用 + 有站点），且没有站点时一个都不注册', () => {
     const on = makeHost()
     on.mount({ enabled: true, targets: [PROFILE_SITE] })
-    expect(on.names()).toEqual(['site_click', 'site_console', 'site_fill', 'site_open', 'site_shot', 'site_text'])
+    expect(on.names()).toEqual(['site_click', 'site_console', 'site_fill', 'site_open', 'site_shot', 'site_text', 'site_verify'])
 
     const off = makeHost()
     off.mount({ enabled: true, targets: [] })
@@ -120,7 +120,7 @@ describe('工具级：站点清单按 cwd 解析', () => {
   it('卸载后工具与路由都不留（宿主重挂不会撞名）', () => {
     const host = makeHost()
     host.mount({ enabled: true, targets: [PROFILE_SITE] })
-    expect(host.names().length).toBe(6)
+    expect(host.names().length).toBe(7)
     host.unmount()
     expect(host.names()).toEqual([])
     expect([...host.routes.keys()]).toEqual([])
@@ -132,5 +132,126 @@ describe('工具级：站点清单按 cwd 解析', () => {
     await host.update({ targets: [PROFILE_SITE, { id: 'p2', url: 'https://p2.test/' }] })
     const message = await host.callError('site_open', { target: 'nope' })
     expect(message).toContain('p2')
+  })
+})
+
+/** 造一个项目目录并写一份验活清单（`web/<项目>.yaml`）。 */
+function projectWithManifest(project: string, manifest: Record<string, unknown>): string {
+  const dir = mkdtempSync(join(root, 'verify-'))
+  mkdirSync(join(dir, 'web'), { recursive: true })
+  writeFileSync(join(dir, 'web', `${project}.yaml`), JSON.stringify(manifest))
+  return dir
+}
+
+/** 一条合法断言（URL 落在 `PROFILE_SITE` 的站点范围内）。 */
+const assertion = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+  id: 'a1',
+  url: 'https://p1.test/order',
+  target: 'p1',
+  expect: { toContain: '订单' },
+  severity: 'fail',
+  ...overrides,
+})
+
+/**
+ * `site_verify` 的**整体性**问题：清单读不到 / 不成立 / 没有这个目标的断言。
+ *
+ * 这些判据全部发生在 `ensureDriver()` **之前**——所以这一组用例既不碰浏览器，也不需要 Chrome。
+ * 而它们恰恰是最容易写坏的一段：报一句「加载失败」而不说路径与对照，agent 只能猜目录。
+ */
+describe('工具级：site_verify 的清单问题在碰浏览器之前说清', () => {
+  it('没有清单 → 报出找的那个路径，并说清 web/ 下现在有什么', async () => {
+    const host = makeHost()
+    host.mount({ enabled: true, targets: [PROFILE_SITE] })
+    const message = await host.callError('site_verify', { target: 'p1', project: 'p1', cwd: project() })
+    expect(message).toContain('web/p1.yaml')
+    expect(message).toContain('一份清单都没有')
+  })
+
+  it('目录里有别的清单 → 报**对照**（项目名与文件名不一致是最常见的写错方式）', async () => {
+    const host = makeHost()
+    host.mount({ enabled: true, targets: [PROFILE_SITE] })
+    const dir = projectWithManifest('ems', { version: 1, project: 'ems', assertions: [assertion({ target: 'p1' })] })
+    const message = await host.callError('site_verify', { target: 'p1', cwd: dir })
+    expect(message).toContain('现在有这些清单：ems')
+  })
+
+  it('`project` 缺省取 cwd 的目录名（清单随项目走）', async () => {
+    const host = makeHost()
+    host.mount({ enabled: true, targets: [PROFILE_SITE] })
+    const dir = project()
+    const base = dir.split('/').pop() ?? ''
+    const message = await host.callError('site_verify', { target: 'p1', cwd: dir })
+    expect(message).toContain(`web/${base}.yaml`)
+  })
+
+  it('清单里没有这个目标的断言 → 说清这份清单声明了哪些 target（给 agent 出路）', async () => {
+    const host = makeHost()
+    host.mount({ enabled: true, targets: [PROFILE_SITE] })
+    const dir = projectWithManifest('p1', {
+      version: 1,
+      project: 'p1',
+      assertions: [assertion({ target: 'w-elsewhere' })],
+    })
+    const message = await host.callError('site_verify', { target: 'p1', project: 'p1', cwd: dir })
+    expect(message).toContain('没有给目标 p1 的断言')
+    expect(message).toContain('w-elsewhere')
+  })
+
+  it('清单内容不成立 → 指到字段（不是「没找到清单」）', async () => {
+    const host = makeHost()
+    host.mount({ enabled: true, targets: [PROFILE_SITE] })
+    const dir = projectWithManifest('p1', { version: 1, project: 'p1', assertions: [assertion({ url: 'ftp://x/' })] })
+    const message = await host.callError('site_verify', { target: 'p1', project: 'p1', cwd: dir })
+    expect(message).toContain('assertions[0].url')
+  })
+
+  it('站点声明两处冲突时，同样在开工前报出来（不是跑到一半才发现）', async () => {
+    const host = makeHost()
+    host.mount({ enabled: true, projectSitesFile: PROJECT_SITES_REL, targets: [PROFILE_SITE] })
+    const dir = projectWithManifest('p1', { version: 1, project: 'p1', assertions: [assertion()] })
+    mkdirSync(join(dir, 'web'), { recursive: true })
+    writeFileSync(join(dir, PROJECT_SITES_REL), JSON.stringify({ version: 1, sites: [{ id: 'p1', url: 'https://elsewhere.test/' }] }))
+    const message = await host.callError('site_verify', { target: 'p1', cwd: dir })
+    expect(message).toContain('只留一份')
+  })
+})
+
+
+/**
+ * `site_fill` 的凭据引用：**拒绝路径**在碰浏览器之前。
+ *
+ * 这一组刻意只测拒绝：正路（真把值填进去）要真的开页面，在 `tool-smoke.test.ts` 里用真 Chrome 验。
+ * 而拒绝这两条恰恰是最要紧的——它们决定了这个参数是「读目标声明过的那一个引用」还是
+ * 「读任意环境变量」。
+ */
+describe('工具级：site_fill 的凭据引用只认目标声明过的那一个', () => {
+  const WITH_REF = { ...PROFILE_SITE, credentialRef: 'env:P1_APP_PWD' }
+
+  it('目标没声明 → 拒，且 hint 说清「否则就是读任意环境变量」', async () => {
+    const host = makeHost()
+    host.mount({ enabled: true, targets: [PROFILE_SITE] })
+    const message = await host.callError('site_fill', { target: 'p1', selector: '#pwd', credentialRef: 'env:P1_APP_PWD' })
+    expect(message).toContain('CREDENTIAL_NOT_DECLARED')
+    expect(message).toContain('读任意环境变量')
+  })
+
+  it('目标声明的是另一个 → 拒，并把声明的是哪个说出来', async () => {
+    const host = makeHost()
+    host.mount({ enabled: true, targets: [WITH_REF] })
+    const message = await host.callError('site_fill', { target: 'p1', selector: '#pwd', credentialRef: 'env:SOMEONE_ELSE' })
+    expect(message).toContain('env:P1_APP_PWD')
+  })
+
+  it('value 与 credentialRef 同时给 → 拒（不猜哪个是值）', async () => {
+    const host = makeHost()
+    host.mount({ enabled: true, targets: [WITH_REF] })
+    const message = await host.callError('site_fill', {
+      target: 'p1',
+      selector: '#pwd',
+      value: '明文',
+      credentialRef: 'env:P1_APP_PWD',
+    })
+    expect(message).toContain('CREDENTIAL_AND_VALUE')
   })
 })

@@ -39,7 +39,9 @@
 export * from './console.js';
 export * from './page.js';
 export * from './cdp-driver.js';
+export * from './credential.js';
 export * from './web-verify.js';
-export { name, inject, apply, Config, CARD_FIELDS, configSnapshotFrom, normalizeCardPatch, normalizeTargets, normalizeConfig, parseViewport, DEVFONT_GUIDANCE, webAuditSink, webAuditText, } from './plugin.js';
-export type { LiveConfig } from './plugin.js';
+export * from './web-run.js';
+export { name, inject, apply, Config, CARD_FIELDS, configSnapshotFrom, normalizeCardPatch, normalizeTargets, normalizeConfig, parseViewport, DEVFONT_GUIDANCE, webAuditSink, webAuditText, verifyOutput, verifyRenderText, fillRenderText, } from './plugin.js';
+export type { LiveConfig, VerifyOutput, VerifyLine, FillOutput } from './plugin.js';
 export { PROJECT_SITES_REL, loadProjectSites, mergeSites } from './project-sites.js';

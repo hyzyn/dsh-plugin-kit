@@ -17,6 +17,7 @@
  */
 import type { ReadyEvaluation, ServiceObservation } from './env-ready-eval.js';
 import { type MutationOutcome, type MutationPlan } from './mutate.js';
+import { type WaitStop, type WaitTick } from './wait.js';
 /** 判定图标（与 `devdata` 的 doctor 同一套：三个记号各占一档）。 */
 export declare const VERDICT_ICON: Record<string, string>;
 /** 毫秒 → 人能读的时长（报告里用，别让人去数）。 */
@@ -32,7 +33,16 @@ export interface RenderInput {
     observations: readonly ServiceObservation[];
     /** 停止等待的原因（`env_status` 不传：它本来就不等）。 */
     stoppedBecause?: string;
+    /**
+     * 等待过程的账（`env_wait` 传；`env_status` 不传）。
+     *
+     * 这一版工具面没有给工具用的进度通道，所以「等的那段时间它在等什么」只能在**最终报告**里
+     * 回答——这块就是那个回答（见 `wait.ts` 的文件头）。
+     */
+    waitTicks?: readonly WaitTick[];
 }
+/** 停止原因 → 一句话（**数据在 `wait.ts`，话术在这里**）。 */
+export declare function describeStop(stop: WaitStop): string;
 /**
  * 渲染一份判定。
  *

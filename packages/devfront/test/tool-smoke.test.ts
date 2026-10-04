@@ -27,8 +27,10 @@
  * 也能算异源，但**端口不同**更不容易被 DNS/hosts 之类的环境因素干扰。
  */
 
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
@@ -200,6 +202,8 @@ let site: Server | undefined
 let foreign: Server | undefined
 let siteOrigin = ''
 let foreignOrigin = ''
+/** 验活清单所在的项目目录（`site_verify` 按调用的 `cwd` 去找 `web/smoke.yaml`）。 */
+let verifyProject = ''
 
 const FOREIGN_PAGE = `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><title>异源页</title></head>
@@ -250,7 +254,7 @@ const listen = async (handler: Parameters<typeof createServer>[0]): Promise<{ se
   return { server, origin: `http://127.0.0.1:${String(port)}` }
 }
 
-describe.skipIf(!CAN_DRIVE_CHROME)('工具面端到端冒烟：六个工具 + 跨源闸门（真 Chrome）', () => {
+describe.skipIf(!CAN_DRIVE_CHROME)('工具面端到端冒烟：七个工具 + 跨源闸门（真 Chrome）', () => {
   beforeAll(async () => {
     // 异源先起（站点页面里的 iframe / 重定向要引用它的地址）。
     const f = await listen((_req, res) => {
@@ -276,6 +280,49 @@ describe.skipIf(!CAN_DRIVE_CHROME)('工具面端到端冒烟：六个工具 + �
     site = s.server
     siteOrigin = s.origin
 
+    /*
+     * 验活清单：写进一个**项目目录**（`web/<项目>.yaml`），`site_verify` 按调用的 `cwd` 去找它。
+     * 目录名就叫 `smoke`：`project` 参数不传，走「项目名 = cwd 的目录名」那条真实路径。
+     * 断言刻意做成有公有私：3 个 URL / 6 条断言（含 1 条 warn、1 条注定失败），
+     * 这样「一次取全的账」「三态」「告警不算失败」三件事在一条用例里都能看见。
+     */
+    const projectParent = mkdtempSync(join(tmpdir(), 'devfront-verify-'))
+    verifyProject = join(projectParent, 'smoke')
+    mkdirSync(join(verifyProject, 'web'), { recursive: true })
+    writeFileSync(
+      join(verifyProject, 'web', 'smoke.yaml'),
+      JSON.stringify({
+        version: 1,
+        project: 'smoke',
+        assertions: [
+          { id: 'index-title', url: `${siteOrigin}/`, target: 'verify-fixture', expect: { toContain: '订单列表' }, severity: 'fail' },
+          {
+            id: 'index-total',
+            url: `${siteOrigin}/`,
+            target: 'verify-fixture',
+            expect: { elementText: { selector: '#total', toContain: '合计' } },
+            severity: 'fail',
+          },
+          { id: 'index-clean', url: `${siteOrigin}/`, target: 'verify-fixture', expect: { consoleClean: true }, severity: 'fail' },
+          {
+            id: 'index-warn',
+            url: `${siteOrigin}/`,
+            target: 'verify-fixture',
+            expect: { toContain: '这一句页面上不可能有' },
+            severity: 'warn',
+          },
+          {
+            id: 'detail-status',
+            url: `${siteOrigin}/detail.html`,
+            target: 'verify-fixture',
+            expect: { elementText: { selector: '#status', toContain: '已发货' } },
+            severity: 'fail',
+          },
+          { id: 'err-clean', url: `${siteOrigin}/err.html`, target: 'verify-fixture', expect: { consoleClean: true }, severity: 'fail' },
+        ],
+      }),
+    )
+
     mount([
       { id: 'local-fixture', label: '本地夹具', url: `${siteOrigin}/`, scopeDirs: [CWD] },
       {
@@ -286,6 +333,15 @@ describe.skipIf(!CAN_DRIVE_CHROME)('工具面端到端冒烟：六个工具 + �
         allowedOrigins: [foreignOrigin],
       },
       { id: 'foreign-fixture', label: '异源夹具', url: `${foreignOrigin}/`, scopeDirs: [CWD] },
+      { id: 'verify-fixture', label: '验活清单夹具', url: `${siteOrigin}/`, scopeDirs: [verifyProject] },
+      // 声明了一个凭据引用的站点：`site_fill` 的 `credentialRef` 只对它放行。
+      {
+        id: 'cred-fixture',
+        label: '凭据引用夹具',
+        url: `${siteOrigin}/`,
+        scopeDirs: [CWD],
+        credentialRef: 'env:DEVFRONT_SMOKE_PWD',
+      },
     ])
   }, 60_000)
 
@@ -293,9 +349,10 @@ describe.skipIf(!CAN_DRIVE_CHROME)('工具面端到端冒烟：六个工具 + �
     dispose()
     await new Promise<void>((resolve) => site?.close(() => resolve()) ?? resolve())
     await new Promise<void>((resolve) => foreign?.close(() => resolve()) ?? resolve())
+    if (verifyProject !== '') rmSync(verifyProject, { recursive: true, force: true })
   })
 
-  it('六个工具都注册上了（少一个，下面的用例会静默少守一条）', () => {
+  it('七个工具都注册上了（少一个，下面的用例会静默少守一条）', () => {
     expect([...tools.keys()].sort()).toEqual([
       'site_click',
       'site_console',
@@ -303,6 +360,7 @@ describe.skipIf(!CAN_DRIVE_CHROME)('工具面端到端冒烟：六个工具 + �
       'site_open',
       'site_shot',
       'site_text',
+      'site_verify',
     ])
   })
 
@@ -454,5 +512,70 @@ describe.skipIf(!CAN_DRIVE_CHROME)('工具面端到端冒烟：六个工具 + �
     const outOfScope = await call('site_open', 'local-fixture', { cwd: '/etc' })
     expect(outOfScope.ok).toBe(false)
     expect(outOfScope.text.startsWith('[OUT_OF_SCOPE]')).toBe(true)
+  }, 60_000)
+
+  it('★ site_verify：按项目清单跑一批断言（只开清单里的 URL，N 条断言一次取全）', async () => {
+    const result = await call('site_verify', 'verify-fixture', { cwd: verifyProject })
+    expect(result.ok, result.text).toBe(true)
+    const value = result.value as {
+      total: number
+      passed: number
+      failed: number
+      warned: number
+      unknown: number
+      pages: number
+      pagesObserved: number
+      lines: Array<{ id: string; status: string; evidence: string[] }>
+    }
+
+    // 6 条断言落在 3 个 URL 上：打开 3 个页、观察 3 次——这就是「一次取全」的账。
+    expect(value.total).toBe(6)
+    expect(value.pages).toBe(3)
+    expect(value.pagesObserved).toBe(3)
+
+    const byId = new Map(value.lines.map((line) => [line.id, line.status]))
+    expect(byId.get('index-title')).toBe('pass')
+    expect(byId.get('index-total')).toBe('pass')
+    // INDEX 只 console.log 过一行 + favicon 404（噪声）→ 干净。
+    expect(byId.get('index-clean')).toBe('pass')
+    expect(byId.get('index-warn')).toBe('fail')
+    expect(value.warned).toBe(1)
+    expect(byId.get('detail-status')).toBe('pass')
+    // 坏页：console.error + 未捕获异常（后者不走 console API，是另一条通路）。
+    expect(byId.get('err-clean')).toBe('fail')
+
+    // 依据要看得到：坏页那条的证据里有 console 的正文，而不是只有「失败了」。
+    const bad = value.lines.find((line) => line.id === 'err-clean')
+    expect(bad?.evidence.some((line) => line.includes('订单行渲染失败'))).toBe(true)
+
+    expect(result.text).toContain('本次只做了「打开 + 观察」')
+    expect(result.text).not.toContain('undefined')
+  }, 120_000)
+
+  it('★ site_fill 用凭据引用填值：值真的进了页面，但**不进工具输出**', async () => {
+    const SECRET = 's3cret-来自环境变量'
+    process.env.DEVFRONT_SMOKE_PWD = SECRET
+    try {
+      await openPath('cred-fixture', '/index.html')
+      const filled = await call('site_fill', 'cred-fixture', { selector: '#kw', credentialRef: 'env:DEVFRONT_SMOKE_PWD' })
+      expect(filled.ok, filled.text).toBe(true)
+      // 回显里有引用名与保护强度，**没有值**。
+      expect(filled.text).toContain('env:DEVFRONT_SMOKE_PWD')
+      expect(filled.text).toContain('方便，不是防护')
+      expect(filled.text).not.toContain(SECRET)
+
+      // 值确实到了页面：点一下查询，页面会把输入框里的值写进正文。
+      await call('site_click', 'cred-fixture', { selector: '#go' })
+      const text = await call('site_text', 'cred-fixture')
+      expect(text.text).toContain(SECRET)
+    } finally {
+      delete process.env.DEVFRONT_SMOKE_PWD
+    }
+  }, 60_000)
+
+  it('凭据引用：目标没声明的那个引用一律拒（真宿主也走同一条判据）', async () => {
+    const rejected = await call('site_fill', 'cred-fixture', { selector: '#kw', credentialRef: 'env:SOMEONE_ELSE_PWD' })
+    expect(rejected.ok).toBe(false)
+    expect(rejected.text).toContain('CREDENTIAL_NOT_DECLARED')
   }, 60_000)
 })

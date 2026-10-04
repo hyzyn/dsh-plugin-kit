@@ -112,18 +112,25 @@ export declare function validateWebManifest(project: string, data: unknown): {
     ok: false;
     errors: WebConfigError[];
 };
-/**
- * 清单的文件名（唯一一处）：`<project>.yaml`。
- *
- * 必须与 `webManifestsIn` 的筛选口径**逐字一致**。两处不一致时 `loadWebManifest` 永远找不到
- * `webManifestsIn` 报出来的那份文件，表现为「明明有清单却报无断言」——
- * 而那正好命中「缺省即无」这条 fail-closed 判据的**假阴性**（看起来像设计使然，实际是 bug）。
- */
+/** 前端清单所在的子目录（`<项目根>/web/`）。 */
+export declare const WEB_DIR = "web";
+/** 清单的文件名：`<project>.yaml`。 */
 export declare function webManifestFileName(project: string): string;
 /** 清单在项目里的相对路径：`web/<project>.yaml`。 */
 export declare function webManifestRelativePath(project: string): string;
 /** 从一批已列好的文件名里挑出前端清单（不读目录——保持可测）。实现在 `@hyzyn/dsh-kit/manifest`。 */
 export declare function webManifestsIn(files: readonly string[]): Map<string, string>;
+/**
+ * 列出这个目录下**已有的**项目名（按 `web/*.yaml` 的文件名）。
+ *
+ * 用途只有一处：`no-manifest` 的文案里附上「这里现在有哪些清单」——清单名与项目名不一致
+ * （文件名写成 `ems-service.yaml`、而调用方按目录名找 `ems`）是最常见的写错方式，
+ * 报一句「没有」而不给对照，agent 会去猜目录（与 `devenv` 的 `listReadyProjects` 同一判据）。
+ *
+ * 这里列的是**目录里的文件名**（没有 `web/` 前缀），所以给 `projectsInFiles` 不带 `prefix`
+ * ——与 `devenv` 的 `readdirSync(ready/)` 同一用法。
+ */
+export declare function listWebProjects(dir: string): string[];
 /** 加载选项。 */
 export interface LoadWebManifestOptions {
     /** 找清单的根目录（按顺序找；多个根下都有会报歧义）。 */
@@ -154,6 +161,21 @@ export interface WebAssertionResult {
     message: string;
     diff: WebDiffLine[];
 }
+/** 一次观察里**一个选择器**的事实。 */
+export interface PageElementObservation {
+    /** 命中数量。`error` 非空时它没有意义（恒为 0）。 */
+    count: number;
+    /** 首个命中的元素的**可见文本**（取不到时省略）。 */
+    text?: string;
+    /**
+     * 选择器**本身**不合法（浏览器在 `querySelectorAll` 上抛错）。
+     *
+     * 与「命中 0 个」是两件事：一条写错的 CSS 选择器若被当成「元素不存在」，断言会报 `fail`
+     * ——那等于把「清单写错了」伪装成「页面坏了」，而这两件事的下一步动作完全不同
+     * （改清单 vs 查页面）。所以这个字段单独存在，求值层据此判 `unknown` 并原样带上浏览器的报错。
+     */
+    error?: string;
+}
 /**
  * 一次页面的**观察**（由驱动取好）。
  *
@@ -163,11 +185,8 @@ export interface PageObservation {
     url: string;
     /** 页面文本（去标签后的可见文本）。 */
     text?: string;
-    /** 选择器 → 命中数量 与 首个命中的文本。 */
-    elements?: Readonly<Record<string, {
-        count: number;
-        text?: string;
-    }>>;
+    /** 选择器 → 命中数量、首个命中的文本，或「这个选择器根本不合法」。 */
+    elements?: Readonly<Record<string, PageElementObservation>>;
     /** console 原始消息（分类由 `console.ts` 做）。 */
     console?: readonly ConsoleMessage[];
 }

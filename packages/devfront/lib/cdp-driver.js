@@ -315,6 +315,68 @@ export class CdpWebDriver {
         return [...this.collector.messages];
     }
     /**
+     * **一次取全**：一次 `Runtime.evaluate` 把文本、若干选择器的事实与当前 URL 一起取回来
+     * （console 走已经订阅的累积缓冲，不再多问一次）。
+     *
+     * 两处刻意的实现选择：
+     *
+     * 1. **一个选择器不合法不许把整次观察带下去**。`querySelectorAll` 对坏选择器是**抛错**，
+     *    而在页面里逐个 `try/catch` 之后把错误**原样**带回 `error` 字段——于是一条写错的选择器
+     *    只让**用它**的那几条断言判 `unknown`，同页其它断言照样有结论。不这么做的话，
+     *    清单里一个错别字会让整页（含 console 判据）变成一句「观察失败」。
+     * 2. **取的是 `innerText`（可见文本）**，与 `text()` 同一口径：断言里的 `toContain` 是给人写的
+     *    （「订单编号」），拿 HTML 去比会把标签也带上，于是「明明页面上有」却匹配不上。
+     */
+    async observe(input) {
+        const chrome = await this.ensurePage(input.target);
+        const payload = await chrome.evaluate(`(() => {
+      const pick = (selector) => {
+        try {
+          const els = document.querySelectorAll(selector)
+          const first = els[0]
+          const text = first === undefined ? undefined : first.innerText
+          return typeof text === 'string' ? { count: els.length, text } : { count: els.length }
+        } catch (error) {
+          return { count: 0, error: String(error && error.message ? error.message : error) }
+        }
+      }
+      const elements = {}
+      for (const selector of ${JSON.stringify([...input.selectors])}) elements[selector] = pick(selector)
+      return JSON.stringify({
+        url: location.href,
+        text: document.body === null ? '' : document.body.innerText,
+        elements,
+      })
+    })()`);
+        if (typeof payload !== 'string') {
+            // 页面正在导航 / 上下文被销毁时 `evaluate` 给不出串。**抛**：调用方把这一页判成「观察失败」，
+            // 而不是拿一个半截的观察去下结论（那会把「没读到」说成「页面上没有」）。
+            throw new Error('观察页面失败：浏览器没给出结果（页面可能正在导航）');
+        }
+        let parsed;
+        try {
+            parsed = JSON.parse(payload);
+        }
+        catch {
+            throw new Error('观察页面失败：浏览器返回的不是合法 JSON');
+        }
+        const elements = {};
+        for (const [selector, value] of Object.entries((parsed.elements ?? {}))) {
+            const item = (value ?? {});
+            elements[selector] = {
+                count: typeof item.count === 'number' ? item.count : 0,
+                ...(typeof item.text === 'string' ? { text: item.text } : {}),
+                ...(typeof item.error === 'string' ? { error: item.error } : {}),
+            };
+        }
+        return {
+            url: typeof parsed.url === 'string' ? parsed.url : (this.lastUrl ?? ''),
+            ...(typeof parsed.text === 'string' ? { text: parsed.text } : {}),
+            elements,
+            console: [...this.collector.messages],
+        };
+    }
+    /**
      * 实时问浏览器：当前页面的 URL。
      *
      * **刻意不用 `this.lastUrl`**：那是驱动「上次导航到哪」的记账，客户端跳转

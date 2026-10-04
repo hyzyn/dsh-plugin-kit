@@ -55,6 +55,17 @@ export const WEB_REJECTION_CODES = {
      * 被投毒的页面）都能换来对任意源执行点击与填值的能力（2026-10-02 验收实测）。
      */
     PAGE_ORIGIN_NOT_ALLOWED: 'PAGE_ORIGIN_NOT_ALLOWED',
+    /** `fill` 同时给了 `value` 与 `credentialRef`——哪个是值说不清，一律拒（不猜）。 */
+    CREDENTIAL_AND_VALUE: 'CREDENTIAL_AND_VALUE',
+    /**
+     * 用了目标**没有声明**的凭据引用（或目标一个都没声明），或引用不是 `env:NAME` 形状。
+     *
+     * 这条判据就是「agent 能取到的凭据集合 = 维护者写在 profile 里的那一个」的实现：
+     * 没有它，`credentialRef` 参数会变成「任意环境变量的读取器」。
+     */
+    CREDENTIAL_NOT_DECLARED: 'CREDENTIAL_NOT_DECLARED',
+    /** 引用是声明过的，但**解析不出来**（凭据没配 / 值为空 / 凭据服务报错）。 */
+    CREDENTIAL_UNRESOLVED: 'CREDENTIAL_UNRESOLVED',
     /** 执行失败。 */
     EXECUTION_FAILED: 'EXECUTION_FAILED',
 };
@@ -211,22 +222,86 @@ export function adjudicateWebAction(request) {
             hint: '给一个 CSS 选择器；本套件不做「按坐标点击」——那没有可复审的选择依据',
         };
     }
-    if (action === 'fill' && request.value === undefined) {
-        return {
-            allowed: false,
-            action,
-            code: WEB_REJECTION_CODES.ARGUMENT_MISSING,
-            message: 'fill 需要一个值（value）',
-            hint: '给要填进输入框的值',
-        };
+    if (action === 'fill') {
+        const ref = request.credentialRef === undefined ? undefined : request.credentialRef.trim();
+        const hasValue = request.value !== undefined;
+        const hasRef = ref !== undefined && ref !== '';
+        if (hasValue && hasRef) {
+            return {
+                allowed: false,
+                action,
+                code: WEB_REJECTION_CODES.CREDENTIAL_AND_VALUE,
+                message: 'fill 同时给了 value 与 credentialRef——哪个是要填的值说不清，因此不猜',
+                hint: '二选一：非敏感值用 value；口令一类用 credentialRef（写目标声明过的那个引用）',
+            };
+        }
+        if (!hasValue && !hasRef) {
+            return {
+                allowed: false,
+                action,
+                code: WEB_REJECTION_CODES.ARGUMENT_MISSING,
+                message: 'fill 需要一个值：`value`（明文）或 `credentialRef`（凭据引用）',
+                hint: '非敏感值给 value；口令一类请让维护者在目标配置里声明 credentialRef，再用 credentialRef 调用',
+            };
+        }
+        if (hasRef) {
+            // 引用必须是 `env:NAME`：明文值一旦进了工具参数，就会同时进会话记录、审计行与日志。
+            if (!ref.startsWith('env:') || ref.length <= 4) {
+                return {
+                    allowed: false,
+                    action,
+                    code: WEB_REJECTION_CODES.CREDENTIAL_NOT_DECLARED,
+                    message: `credentialRef 必须是一个引用（env:NAME），拿到 ${JSON.stringify(ref)}`,
+                    hint: '明文别写进参数：把值存进凭据存储或环境变量，然后写 env:名字',
+                };
+            }
+            const declared = target.credentialRef;
+            if (declared === undefined || declared === '') {
+                return {
+                    allowed: false,
+                    action,
+                    code: WEB_REJECTION_CODES.CREDENTIAL_NOT_DECLARED,
+                    message: `目标 ${target.id} 没有声明凭据引用，因此不接受任何 credentialRef`,
+                    hint: `为什么这么严：否则这个参数就成了「读任意环境变量」。要用请让维护者在目标 ${target.id} 的配置里写下 credentialRef（一个 env:NAME）`,
+                };
+            }
+            if (declared !== ref) {
+                return {
+                    allowed: false,
+                    action,
+                    code: WEB_REJECTION_CODES.CREDENTIAL_NOT_DECLARED,
+                    message: `目标 ${target.id} 声明的是 ${declared}，不是 ${ref}`,
+                    hint: `agent 能取到的凭据集合 = 维护者声明过的那一个。要换引用请改目标配置（那是随 profile 评审的决定）`,
+                };
+            }
+        }
     }
     return { allowed: true, action };
+}
+/* --------------------------------- 话术 --------------------------------- */
+/**
+ * 把一次拒绝拼成给 agent 看的一句话。
+ *
+ * **拒绝码要带出去**：判定层算出来的 `OUT_OF_SCOPE` / `SITE_NOT_ALLOWED` 是这件事唯一的稳定
+ * 标识符，而消息正文是给人读的中文（会随文案调整）。从前只抛 `message`，于是码只活在单测和
+ * 审计日志里——agent 拿到一段散文，只能靠正则去猜（2026-10-02 端到端发现：两次拒绝里都找不到
+ * 任何机器可判的错误码）。
+ *
+ * 格式是契约：`[CODE] 正文`，恢复路径另起一行。抽成纯函数是为了让这份格式有单测。
+ *
+ * 2026-10-04 从 `plugin.ts` 挪到这里：跑批执行器（`web-run.ts`）也要把「这个页面打不开」写成
+ * 同一格式，而执行器**不能** import 宿主半体（那是反向依赖，会成环）。话术属于判定层。
+ */
+export function denialMessage(outcome) {
+    const head = `[${outcome.code}] ${outcome.message}`;
+    return outcome.hint === undefined ? head : `${head}\n恢复路径：${outcome.hint}`;
 }
 /* --------------------------------- 调用 --------------------------------- */
 /** 调一个动作：**先裁决，再执行**，每次都进审计。 */
 export async function invokeWebAction(input) {
-    const { request, driver, audit, operationId } = input;
+    const { request, driver, audit, operationId, credentials } = input;
     const { target, action } = request;
+    const credentialRef = request.credentialRef === undefined ? undefined : request.credentialRef.trim();
     const denial = (code, message, hint) => {
         audit?.record({
             at: Date.now(),
@@ -235,6 +310,8 @@ export async function invokeWebAction(input) {
             allowed: false,
             code,
             ...(request.url === undefined ? {} : { subject: request.url }),
+            // 只有 `fill` 用凭据引用；别的动作即使被塞了也**不记**——记了就是一条无意义的审计行。
+            ...(action !== 'fill' || credentialRef === undefined || credentialRef === '' ? {} : { credentialRef }),
             ...(operationId === undefined ? {} : { operationId }),
         });
         return hint === undefined ? { ok: false, action, code, message } : { ok: false, action, code, message, hint };
@@ -242,6 +319,25 @@ export async function invokeWebAction(input) {
     const decision = adjudicateWebAction(request);
     if (!decision.allowed) {
         return denial(decision.code, decision.message, decision.hint);
+    }
+    /*
+     * ③' **解析凭据引用**（只对 `fill`，且只在用引用时）。
+     *
+     * 位置刻意在「判定通过之后、动手之前」：判定层管「允不允许用这个引用」，这里管「能不能拿到值」。
+     * 失败也是一条带码的拒绝（`CREDENTIAL_UNRESOLVED`）——凭据没配是常态，不是异常，
+     * 而 agent 需要的是「去哪配」而不是一段栈。
+     *
+     * 这一段**在页源判据之前**：解析不该为了一个可能被拒的动作去读凭据。
+     */
+    let resolved;
+    if (action === 'fill' && credentialRef !== undefined && credentialRef !== '') {
+        if (credentials === undefined) {
+            return denial(WEB_REJECTION_CODES.CREDENTIAL_UNRESOLVED, `目标 ${target.id} 声明了凭据引用 ${credentialRef}，但当前宿主没有可用的凭据解析器`, '宿主需要装官方凭据服务（@deepseek-ai/dsh-credentials）；也可以先直接把值存进进程环境变量');
+        }
+        resolved = await credentials(credentialRef);
+        if (!resolved.ok) {
+            return denial(WEB_REJECTION_CODES.CREDENTIAL_UNRESOLVED, `凭据引用 ${credentialRef} 解析不了：${resolved.message}`, '按这条错误去补凭据（凭据存储 / 环境变量）；值本身不会出现在任何输出与日志里');
+        }
     }
     // ④ **动手前核实时页面源**（只对动作类；读类放行，理由见 `MUTATING_WEB_ACTIONS`）。
     //
@@ -271,6 +367,7 @@ export async function invokeWebAction(input) {
             action,
             allowed: true,
             ...(request.url === undefined ? {} : { subject: request.url }),
+            ...(action !== 'fill' || credentialRef === undefined || credentialRef === '' ? {} : { credentialRef }),
             ...(operationId === undefined ? {} : { operationId }),
         });
         return { ok: true, action, result };
@@ -291,9 +388,25 @@ export async function invokeWebAction(input) {
                 // 且渲染层按 `value.selector` 取字。曾经写成 `clicked`/`filled`，结果是**动作成功但工具报错**
                 // （2026-10-02 端到端复现）——最坏的一种失败：agent 以为没点成，会去重试一个有副作用的动作。
                 return allow({ selector: request.selector ?? '' });
-            case 'fill':
-                await driver.fill({ target, selector: request.selector ?? '', value: request.value ?? '' });
-                return allow({ selector: request.selector ?? '' });
+            case 'fill': {
+                await driver.fill({
+                    target,
+                    selector: request.selector ?? '',
+                    // 用引用时只认解析出来的值（`resolved.ok` 已在上面保证）；否则用调用方给的明文。
+                    value: resolved !== undefined && resolved.ok ? resolved.value : (request.value ?? ''),
+                });
+                /*
+                 * 回显里**只加引用名与保护强度，永远不加值**：`site_fill` 的输出是会被写进会话记录的东西，
+                 * 把值放进去就等于「用一个更长的寿命换一点方便」。强度也必须一起回（plan §3.7-1）：
+                 * 只说「已配置」等于对外宣称了一个不成立的性质。
+                 */
+                return allow({
+                    selector: request.selector ?? '',
+                    ...(resolved !== undefined && resolved.ok
+                        ? { credentialRef: resolved.ref, protection: resolved.protection.level, protectionNote: resolved.protection.note }
+                        : {}),
+                });
+            }
             case 'text':
                 return allow(await driver.text({ target }));
             case 'console': {

@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   WEB_EXPECT_OPERATORS,
   evaluateWebAssertion,
+  listWebProjects,
   loadWebManifest,
   selectorsNeeded,
   summarizeWebResults,
@@ -335,3 +336,63 @@ assertions:
     expect(loadWebManifest(PROJECT, { roots: [a, b] }).kind).toBe('unreadable')
   })
 })
+
+describe('选择器不合法：是 `unknown`，不是「元素不存在」', () => {
+  /** 观察层对坏选择器给的事实（驱动按 `PageElementObservation.error` 填）。 */
+  const BAD: PageObservation = {
+    url: URL_,
+    text: '订单列表',
+    elements: { 'div[': { count: 0, error: 'Failed to execute querySelectorAll: not a valid selector' } },
+  }
+
+  it('elementExists：报验不了并带上浏览器那句话（判 fail 会把「清单写错了」说成「页面坏了」）', () => {
+    const result = evaluateWebAssertion({
+      assertion: assertion({ expect: { elementExists: 'div[' } }),
+      observation: BAD,
+    })
+    expect(result.status).toBe('unknown')
+    expect(result.diff[0]?.got).toContain('not a valid selector')
+    expect(result.diff[0]?.note).toContain('先修清单')
+  })
+
+  it('elementText：同上（元素不存在 / 文本不对 与「选择器不合法」是两回事）', () => {
+    const result = evaluateWebAssertion({
+      assertion: assertion({ expect: { elementText: { selector: 'div[', toContain: 'x' } } }),
+      observation: BAD,
+    })
+    expect(result.status).toBe('unknown')
+    expect(result.diff[0]?.got).toContain('not a valid selector')
+  })
+
+  it('同一次观察里**别的**断言照常有结论（一个错别字不该让整页失去判定）', () => {
+    const good = evaluateWebAssertion({
+      assertion: assertion({ id: 'a2', expect: { toContain: '订单列表' } }),
+      observation: BAD,
+    })
+    expect(good.status).toBe('pass')
+  })
+})
+
+describe('listWebProjects：报「没有清单」时要能给出对照', () => {
+  const dirs: string[] = []
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('列出 web/*.yaml 的项目名（排序），非 yaml 与别的目录不算', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'devfront-list-'))
+    dirs.push(dir)
+    mkdirSync(join(dir, 'web'), { recursive: true })
+    writeFileSync(join(dir, 'web', 'ems.yaml'), 'version: 1\n')
+    writeFileSync(join(dir, 'web', 'cdqas.yaml'), 'version: 1\n')
+    writeFileSync(join(dir, 'web', 'notes.md'), '不是清单\n')
+    expect(listWebProjects(dir)).toEqual(['cdqas', 'ems'])
+  })
+
+  it('没有 web/ 目录 = 空列表（不是抛错：这里只是给文案用的对照）', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'devfront-list-'))
+    dirs.push(dir)
+    expect(listWebProjects(dir)).toEqual([])
+  })
+})
+
