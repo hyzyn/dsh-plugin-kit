@@ -71,6 +71,16 @@ interface LiveConfig {
     hostKeys: HostKeyRecord[];
 }
 /**
+ * `describeLocalProbeFailure` 的额外上下文（都只能由调用方探测得到，所以外挂进来——
+ * 那个函数刻意保持**纯文本进、纯文本出**，好让它能被单测直接驱动）。
+ */
+interface LocalProbeHint {
+    /** 失败是不是超时（来自 `ProbeResult.timedOut`）。 */
+    timedOut?: boolean;
+    /** CLI 缺失时，PATH 里找到的别的容器 CLI（见 findAlternativeLocalCli），如 `podman`。 */
+    alternativeCli?: string;
+}
+/**
  * SSE 帧封装：data 一律 `JSON.stringify` 成**单行**——换行 / 引号被转义，
  * 多字节字符也不会被 SSE 的 `\n` 行边界截断（客户端 JSON.parse 还原）。
  */
@@ -123,13 +133,32 @@ export declare function findLocalTargetName(targets: readonly DockerTarget[]): s
  */
 export declare function nextLocalTargetName(taken: readonly string[]): string | undefined;
 /**
- * 只读探测失败 → 用户能照着做的一句话。三档按**成因**分（而不是原样甩 `exit status 1`）：
- * CLI 不在（装 Docker / 改 `dockerBin`）、daemon 不可达（启动 daemon 或修 socket 权限）、其它（原样透出）。
+ * 「探不到 CLI」的判据（`runLocal` 的 ENOENT 抛错形态）。
+ *
+ * 抽出来当单一来源：文案分档与「要不要去找 podman」都用它，两处各写一遍正则
+ * 迟早会漂移——那时会出现「文案说 CLI 缺失、但不去找候选」或反过来。
+ */
+export declare function isLocalCliMissing(raw: string): boolean;
+/**
+ * 在 PATH 里找**别的**容器 CLI（`dockerBin` 缺失时的候选），返回名字数组（可能为空）。
+ *
+ * 只读探测，**绝不改配置**：返回的候选交给文案去说「你可以把 docker CLI 改成它」，
+ * 改不改由用户在设置卡片决定。静默改写 `dockerBin` 会违背本插件「不替用户决定」的
+ * 一贯取向（何况 podman 与本插件的输出格式兼容性并未逐项验证，见 README）。
+ *
+ * `env` 可注入（测试用）；Windows 按 PATHEXT 补扩展名——本插件明确支持 Windows
+ * 盘符路径，不能只认无扩展名的 POSIX 查找。
+ */
+export declare function findAlternativeLocalCli(bin: string, env?: NodeJS.ProcessEnv): string[];
+/**
+ * 只读探测失败 → 用户能照着做的一句话。按**成因**分档（而不是原样甩 `exit status 1`）：
+ * CLI 不在（装 Docker / 改 `dockerBin`）、超时（daemon 卡死 / context 指错）、
+ * daemon 不可达、socket 无权、其它（原样透出）。
  *
  * `probe()` 的两条失败路径形状不同：`runLocal` 对 ENOENT 是**抛错**（`无法执行 docker：spawn docker ENOENT`），
  * 而 daemon 连不上是 docker CLI 自己以非零退出 + stderr 文案返回；两条都要认得出。
  */
-export declare function describeLocalProbeFailure(raw: string, bin?: string): string;
+export declare function describeLocalProbeFailure(raw: string, bin?: string, hint?: LocalProbeHint): string;
 /**
  * 清洗一份 hostKeys 输入（settings 存储 / 热更新 / 种子复制共用）。
  *

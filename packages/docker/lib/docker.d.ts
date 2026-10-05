@@ -376,9 +376,14 @@ export interface ProbeResult {
     bin: string;
     /** 服务端版本（`docker version --format {{.Server.Version}}`）。 */
     serverVersion: string | null;
-    /** 失败原因（daemon 未运行 / 未安装 / 权限不足）。 */
+    /** 失败原因（daemon 未运行 / 未安装 / 权限不足 / 超时）。 */
     error: string | null;
     target: string;
+    /**
+     * 失败是不是「CLI 挂住到超时」。单独一档而不并进 `error` 文案：调用方要靠它
+     * 区分「没装」与「装了但不应答」——前者去装、后者去看 daemon / context。
+     */
+    timedOut: boolean;
 }
 /** 单个目标上的 Docker 操作集合。 */
 export declare class DockerApi {
@@ -389,7 +394,13 @@ export declare class DockerApi {
         timeoutMs: number;
         maxBytes: number;
     });
-    /** 探测：docker CLI 是否可用 + daemon 是否可达。 */
+    /**
+     * 探测：docker CLI 是否可用 + daemon 是否可达。
+     *
+     * 超时必须单独成一档（`timedOut`），不能落进「退出码 null」——`code` 为 null 时
+     * 那句兜底文案对用户零信息量（D159），而超时的真实成因（daemon 卡死 / `docker
+     * context` 指向连不上的远端 / CLI 是个挂住的包装脚本）恰恰是可修的那一类。
+     */
     probe(): Promise<ProbeResult>;
     /**
      * assertOk + 截断检查（D13）：列表 / 详情类方法拿到的必须是**完整**输出。

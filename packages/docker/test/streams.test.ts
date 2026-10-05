@@ -906,3 +906,60 @@ describe('GET /events/stream（SSE 路由）', () => {
   })
 })
 
+
+/* ------------------------------------------------------------------ *
+ * probe()：CLI 版本探测的四条出口（D159）
+ * ------------------------------------------------------------------ */
+
+describe('DockerApi.probe：超时必须是独立一档', () => {
+  const makeApi = (result: Record<string, unknown> | Error) => {
+    const runner = {
+      label: 'local',
+      async run() {
+        if (result instanceof Error) throw result
+        return { stdout: '', stderr: '', timedOut: false, truncated: false, durationMs: 1, code: 0, ...result }
+      },
+      async stream() { throw new Error('probe 不应走长流') },
+    }
+    return new DockerApi(runner as never, 'docker', { timeoutMs: 1000, maxBytes: 1024 })
+  }
+
+  it('正常：code 0 → ok + serverVersion', async () => {
+    const result = await makeApi({ code: 0, stdout: '27.3.1\n' }).probe()
+    expect(result).toMatchObject({ ok: true, serverVersion: '27.3.1', timedOut: false, bin: 'docker', target: 'local' })
+  })
+
+  it('stdout 为空（daemon 通了但没回版本）→ serverVersion 为 null，仍算 ok', async () => {
+    const result = await makeApi({ code: 0, stdout: '' }).probe()
+    expect(result.ok).toBe(true)
+    expect(result.serverVersion).toBeNull()
+  })
+
+  it('daemon 未起：code 非零 + stderr → 成因取自 stderr 首行', async () => {
+    const result = await makeApi({ code: 1, stderr: 'Cannot connect to the Docker daemon\n第二行不该出现' }).probe()
+    expect(result.ok).toBe(false)
+    expect(result.timedOut).toBe(false)
+    expect(result.error).toBe('Cannot connect to the Docker daemon')
+  })
+
+  it('超时：timedOut=true 且 error 说得清是超时（不是「退出码 null」）', async () => {
+    const result = await makeApi({ code: null, timedOut: true }).probe()
+    expect(result.ok).toBe(false)
+    expect(result.timedOut).toBe(true)
+    expect(result.error).toContain('超时')
+    expect(result.error).not.toContain('退出码 null')
+  })
+
+  it('非超时的 code null（被信号杀掉）仍走退出码兜底', async () => {
+    const result = await makeApi({ code: null, timedOut: false }).probe()
+    expect(result.timedOut).toBe(false)
+    expect(result.error).toBe('退出码 null')
+  })
+
+  it('CLI 不存在（run 抛错）：error 是抛错文案，timedOut=false', async () => {
+    const result = await makeApi(new Error('无法执行 docker：spawn docker ENOENT')).probe()
+    expect(result.ok).toBe(false)
+    expect(result.timedOut).toBe(false)
+    expect(result.error).toContain('ENOENT')
+  })
+})

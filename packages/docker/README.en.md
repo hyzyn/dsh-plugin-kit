@@ -412,11 +412,29 @@ you are genuinely looking for a machine.
 
 After the write succeeds it also runs one **read-only probe** (`docker version`) and puts the result
 into `message`: the server version when the daemon is reachable, or the actual cause when it is not —
-**docker CLI missing** (install Docker, or point "docker CLI" at the right path) / **daemon not
-running** (Linux: `systemctl start docker`; macOS / Windows: start Docker Desktop) / **no permission
-on the socket** (add the account to the `docker` group) — instead of just "no containers". A failed
-probe is **not** a failed operation (the target really was added; `reachable:false` says so
-separately), and it works as soon as the daemon comes up.
+**docker CLI missing** (install Docker, or point "docker CLI" at the right path) / **probe timed
+out** (the daemon is wedged, or `docker context` points at an unreachable remote; check with
+`docker context ls`) / **daemon not running** (Linux: `systemctl start docker`; macOS / Windows:
+start Docker Desktop) / **no permission on the socket** (add the account to the `docker` group) —
+instead of just "no containers". A failed probe is **not** a failed operation (the target really was
+added; `reachable:false` says so separately), and it works as soon as the daemon comes up.
+
+The binary this probe uses is **exactly the "docker CLI" value from the settings card** (`dockerBin`,
+`docker` by default). When that CLI is missing it does one **read-only** lookup for another container
+CLI on `PATH` (`docker` → `podman` → `nerdctl`) and names it in the message ("this machine has
+podman: put podman in 'docker CLI' and it works") — it **only tells you, and never rewrites your
+config**: silently changing `dockerBin` would contradict this plugin's refusal to decide on your
+behalf, and podman's output-format compatibility with this plugin has not been verified item by item
+(see "known limitations"). Candidate matching is by **tool name** (basename), not by the raw string
+in the config, so a `dockerBin` of `/usr/local/bin/docker` does not produce the nonsense "change
+docker to docker".
+
+Timeouts are a **separate case**: `probe()` does not just report an exit code (`code === null` makes
+"exit code null" carry zero information), it returns `timedOut:true` plus an actionable sentence. It
+also **actually returns on time** — SIGKILL only reaches the direct child, so when `dockerBin` points
+at a wrapper script the grandchild keeps holding the pipes and stretches the 15-second cap into
+minutes (measured: a 3-second cap took 60 seconds), so on expiry it kills, allows a 500 ms settle
+window, and then releases the pipes itself if `close` still has not arrived.
 
 Deliberately **not** done (the conservative boundary): installing Docker, starting a daemon,
 switching docker contexts, or touching any environment variable; an empty `targets` (= the user has
@@ -507,7 +525,7 @@ return 400).
 | --- | --- | --- |
 | `enabled` | true | disables the whole plugin (**takes effect on save**: tools are unregistered immediately, the announcement is withdrawn, and all data routes except `/config` return 403; `/config` stays readable and writable — the settings card is the way back in. Unlike tty, which needs a restart) |
 | `announceToAgent` | true | whether to inject a capability announcement into the agent (systemPrompt section `plugin:dsh-docker`) |
-| `dockerBin` | `docker` | the docker CLI executable name or path (`podman` works here); only letters, digits and `_ . / \ : -` plus interior spaces are allowed, and it may not start with `-` (**Windows drive letters and `\` must be allowed**, otherwise no absolute path can be entered at all) |
+| `dockerBin` | `docker` | the docker CLI executable name or path (`podman` works here); only letters, digits and `_ . / \ : -` plus interior spaces are allowed, and it may not start with `-` (**Windows drive letters and `\` must be allowed**, otherwise no absolute path can be entered at all). **"Connect local" probes with exactly this value**; when it is wrong (that CLI does not exist) the message names another container CLI found on `PATH`, but it does **not** rewrite this value for you |
 | `allowMutations` | false | allows **mutating operations**: container start / stop / restart / remove, image removal / dangling pruning / pulling (the panel buttons and the `docker_action`, `docker_image_remove`, `docker_image_prune`, `docker_image_pull` tools; while off, `/action`, `/images/remove`, `/images/prune`, `/images/pull/stream` return 403 and the corresponding tools are not registered) |
 | `allowExec` | false | allows a one-shot `docker exec` (the panel's exec input and the `docker_exec` tool; while off, `/exec` returns 403) |
 | — (capability grant) | not granted | `allowMutations` / `allowExec` have **two out-of-band channels**: ① **launch environment variables** (`DSH_DOCKER_ALLOW_MUTATIONS` / `DSH_DOCKER_ALLOW_EXEC`, values `1` / `true` / `yes` / `on`) — resolved from the host's **launch snapshot**, inherited `process` layer only, so writing project `.env` or `~/.dsh/env.yml` does **not** count as a grant; ② **grant in place** (no restart): click the switch in the settings card and run the command it shows in a terminal on the host — effective within seconds, on its own row (one row per capability — the grants are per capability, so side-by-side revoke buttons would not say which one belongs to which), next to a `Granted · YYYY-MM-DD HH:mm:ss` line and a `Revoke host grant` button (a launch-environment grant has no timestamp and cannot be revoked from the UI). In-place grants are **persistent**: they live in `<DSH home>/dsh-kit/capability-grants.json` (0600; the confirmation dir is `<DSH home>/dsh-kit/grant-confirm/`, 0700 — kept inside the kit's own subdirectory, because mechanism names dropped into the shared home root can collide with the harness or another plugin), are read at the next boot, and then **take effect with no further confirmation** — so every boot logs one `elevation: load capability=… via=file grantedAt=…` line per loaded grant. Over HTTP they can always be **turned off** (the emergency brake must not depend on a restart), but setting `true` without a grant is rejected with 400 and both routes spelled out. A `true` in the config is **not** a grant (it lives in the same store HTTP writes to, so the source is indistinguishable). **Upgrade note**: switches opened through the UI before this change become off — set the variable and restart, or grant in place. **Why**: neither the loopback fence nor the same-origin proof stops cross-site pages or in-page scripts (they can just set `Sec-Fetch-Site: same-origin`), and the docker socket is root on the target host; details (including whom this does *not* stop) in [architecture.md § 7](../../docs/architecture.md#7-一条请求经过什么) |
@@ -567,7 +585,7 @@ and reconnect". The record list can be deleted / reset in the settings card (del
 | Tool | Registration | Parameters | Purpose / typical use |
 | --- | --- | --- | --- |
 | `docker_targets` | always registered | `probe?: boolean` | lists targets (name / kind / label); `probe:true` probes the docker version and daemon reachability for each one (SSH targets open connections, so it is slower). Other tools take their `target` from here |
-| `docker_connect_local` | always registered | — (no parameters) | **Connect local**: makes sure a `kind=local` target exists and selects it (an existing one is reused, never duplicated; SSH / custom targets stay untouched), then probes the daemon read-only: returns `{name, kind, created, saved, reachable, serverVersion?}`. When nothing is configured yet `docker_ps` and friends report "no Docker targets configured" — this is the one step that fixes it. **Requires no capability grant** (it only writes the plugin's own config plus a read-only probe) and never installs Docker / starts a daemon / switches context / touches environment variables. When the daemon is unreachable the result text names the cause (CLI missing / daemon not running / no socket permission) instead of an empty list |
+| `docker_connect_local` | always registered | — (no parameters) | **Connect local**: makes sure a `kind=local` target exists and selects it (an existing one is reused, never duplicated; SSH / custom targets stay untouched), then probes the daemon read-only: returns `{name, kind, created, saved, reachable, serverVersion?}`. When nothing is configured yet `docker_ps` and friends report "no Docker targets configured" — this is the one step that fixes it. **Requires no capability grant** (it only writes the plugin's own config plus a read-only probe) and never installs Docker / starts a daemon / switches context / touches environment variables. When the daemon is unreachable the result text names the cause (CLI missing / probe timed out / daemon not running / no socket permission; when the CLI is missing it also names another container CLI found on PATH, but never rewrites dockerBin for you) instead of an empty list |
 | `docker_ps` | always registered | `target?` (**pass `*` = all targets**), `all?: boolean` | lists containers (name / state / health / image / ports / compose project and service / short ID); by default only running ones, `all:true` includes stopped. With `target:'*'` it returns results grouped by target, and **one unreachable target does not affect the others** (that group carries `error`). Ports are merged across the IPv4/IPv6 dual-stack expansion (one `-p` no longer shows twice, D130); an empty `ports` does **not** mean "nothing exposed" — host-network containers publish on the host itself, and that case now carries a `net` field (D131). The first step of troubleshooting |
 | `docker_attention` | always registered | `target?` (supports `*`), `limit?: number` | a **needs-attention summary**: unhealthy / repeatedly restarting / OOM-killed / non-zero exit / zombie; every item carries `reasons`, `exitCode`, `oomKilled`, `restartCount`. OOM and the real exit code come from one `docker inspect` (a ps summary cannot distinguish a manual kill from 137). The troubleshooting entry point: call it first when you are unsure which machine or container to look at |
 | `docker_inspect` | always registered | `target?`, `id` (required) | `docker inspect`'s authoritative details: state / health check / exit code / restart count / ports / mounts / networks / startup command |
@@ -1037,7 +1055,10 @@ lines), and the gating of the eight `/networks` and `/volumes` endpoints (403 fo
      now exists).
    Neither place may show "the same entry listed twice"; nothing should install Docker, start a daemon
    or switch contexts along the way. On a host without docker you should see a named cause (CLI
-   missing / daemon not running / no socket permission) rather than an empty list.
+   missing / probe timed out / daemon not running / no socket permission) rather than an empty list.
+   - **On a machine that only has podman** (drop docker from `PATH`, leave podman): that sentence
+     should **name podman** and say "put podman in 'docker CLI' and it works", while **not**
+     rewriting `dockerBin` for you (go back to the settings card — the value is still `docker`).
 4. **Read-only interception**: with both switches off, `/action`, `/exec`, `/images/remove`,
    `/images/prune`, `/images/pull/stream` all return 403; on the agent side exactly 12 read-only tools are
    registered (`docker_targets` / `connect_local` / `ps` / `attention` / `inspect` / `logs` / `stats` / `events` / `images` /

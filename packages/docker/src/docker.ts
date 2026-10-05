@@ -1176,9 +1176,14 @@ export interface ProbeResult {
   bin: string
   /** 服务端版本（`docker version --format {{.Server.Version}}`）。 */
   serverVersion: string | null
-  /** 失败原因（daemon 未运行 / 未安装 / 权限不足）。 */
+  /** 失败原因（daemon 未运行 / 未安装 / 权限不足 / 超时）。 */
   error: string | null
   target: string
+  /**
+   * 失败是不是「CLI 挂住到超时」。单独一档而不并进 `error` 文案：调用方要靠它
+   * 区分「没装」与「装了但不应答」——前者去装、后者去看 daemon / context。
+   */
+  timedOut: boolean
 }
 
 /** 单个目标上的 Docker 操作集合。 */
@@ -1189,13 +1194,28 @@ export class DockerApi {
     private readonly limits: { timeoutMs: number; maxBytes: number },
   ) {}
 
-  /** 探测：docker CLI 是否可用 + daemon 是否可达。 */
+  /**
+   * 探测：docker CLI 是否可用 + daemon 是否可达。
+   *
+   * 超时必须单独成一档（`timedOut`），不能落进「退出码 null」——`code` 为 null 时
+   * 那句兜底文案对用户零信息量（D159），而超时的真实成因（daemon 卡死 / `docker
+   * context` 指向连不上的远端 / CLI 是个挂住的包装脚本）恰恰是可修的那一类。
+   */
   async probe(): Promise<ProbeResult> {
-    const base = { bin: this.bin, target: this.runner.label }
+    const base = { bin: this.bin, target: this.runner.label, timedOut: false }
     try {
       const result = await this.runner.run([this.bin, 'version', '--format', '{{.Server.Version}}'], { timeoutMs: 15_000 })
       if (result.code === 0) {
         return { ok: true, serverVersion: result.stdout.trim() || null, error: null, ...base }
+      }
+      if (result.timedOut) {
+        return {
+          ok: false,
+          serverVersion: null,
+          error: `${this.bin} version 超时（15 秒未返回）`,
+          ...base,
+          timedOut: true,
+        }
       }
       const message = (result.stderr.trim() || result.stdout.trim() || `退出码 ${String(result.code)}`).split('\n')[0]
       return { ok: false, serverVersion: null, error: message ?? '未知错误', ...base }

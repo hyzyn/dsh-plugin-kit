@@ -570,6 +570,14 @@ const SWEEP_MS = 30_000;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_BYTES = 512 * 1024;
 /**
+ * 超时后「杀了直接子进程再等管道收敛」的宽限（D159）。
+ *
+ * SIGKILL 只作用于直接子进程；`dockerBin` 是包装脚本时孙进程仍握着 stdout/stderr，
+ * 'close' 便不来。给 500ms 让正常情况下的 close 先到（保持原有的 `code` 语义），
+ * 仍不到就自行收尾——超时路径上，「按时返回」优先于「拿到退出码」（本来就是 null）。
+ */
+const KILL_GRACE_MS = 500;
+/**
  * SSH 建连超时（默认 20s）。
  *
  * `DSH_DOCKER_CONNECT_TIMEOUT_MS` 可覆盖，**只为测试与排障**：20s 这条路径没法在单测里等，
@@ -1459,10 +1467,56 @@ export async function runLocal(argv, options) {
         const stderrDecoder = new StringDecoder('utf8');
         let timedOut = false;
         let settled = false;
+        let reapTimer = null;
         const child = spawn(bin, args, { stdio: ['pipe', 'pipe', 'pipe'], env: process.env });
+        /** 到点收尾（正常 close 与「杀了还赖着不放管道」两条路径共用）。 */
+        const finish = (code) => {
+            if (settled)
+                return;
+            settled = true;
+            clearTimeout(timer);
+            if (reapTimer !== null)
+                clearTimeout(reapTimer);
+            resolve({
+                code,
+                stdout: stdoutSink.decode(stdoutDecoder),
+                stderr: stderrSink.decode(stderrDecoder),
+                timedOut,
+                truncated: stdoutSink.truncated || stderrSink.truncated,
+                durationMs: Date.now() - started,
+            });
+        };
         const timer = setTimeout(() => {
             timedOut = true;
-            child.kill('SIGKILL');
+            try {
+                child.kill('SIGKILL');
+            }
+            catch {
+                /* 进程可能已退出 */
+            }
+            /*
+             * SIGKILL 只杀**直接子进程**：`dockerBin` 指向包装脚本时，孙进程照样握着
+             * stdout/stderr 管道，'close' 便迟迟不来——15s 超时会被拉成分钟级（真机实测
+             * 3s 上限拖到 60s，D159）。所以到点先杀，再给一小段收敛期，仍不 close 就
+             * 自行放掉管道收尾：探测要的是「能不能用」，不是「等它把管道交出来」。
+             */
+            reapTimer = setTimeout(() => {
+                try {
+                    child.stdout?.destroy();
+                    child.stderr?.destroy();
+                }
+                catch {
+                    /* 管道可能已关 */
+                }
+                /*
+                 * 刻意**不** removeAllListeners：还挂着的 'error' 监听是安全网——事后子进程
+                 * 再 emit 'error' 时，没有监听者的 'error' 事件会直接把宿主进程抛崩。监听器
+                 * 自己按 settled 判掉重复收尾，留着它们没有副作用。
+                 */
+                child.unref?.();
+                finish(null);
+            }, KILL_GRACE_MS);
+            reapTimer.unref?.();
         }, timeoutMs);
         child.stdout.on('data', (chunk) => {
             stdoutSink.push(chunk);
@@ -1475,22 +1529,13 @@ export async function runLocal(argv, options) {
                 return;
             settled = true;
             clearTimeout(timer);
+            if (reapTimer !== null)
+                clearTimeout(reapTimer);
             // ENOENT 是最常见的失败：docker CLI 不在 PATH 里
             reject(new Error(`无法执行 ${bin}：${error.message}`));
         });
         child.once('close', (code) => {
-            if (settled)
-                return;
-            settled = true;
-            clearTimeout(timer);
-            resolve({
-                code,
-                stdout: stdoutSink.decode(stdoutDecoder),
-                stderr: stderrSink.decode(stderrDecoder),
-                timedOut,
-                truncated: stdoutSink.truncated || stderrSink.truncated,
-                durationMs: Date.now() - started,
-            });
+            finish(code);
         });
         if (options?.input !== undefined)
             child.stdin.end(options.input);

@@ -378,10 +378,25 @@ agent 侧同一件事是 `docker_connect_local` 工具，HTTP 侧是 `POST /conn
 
 写盘成功之后**顺带做一次只读探测**（`docker version`），结果放进响应的 `message`：
 daemon 可达时给出服务端版本；不可达时把成因说清楚——**docker CLI 缺失**（去装 Docker，
-或把「docker CLI」改成正确路径）/ **daemon 未启动**（Linux `systemctl start docker`，
-macOS / Windows 启动 Docker Desktop）/ **socket 无权访问**（账号加入 `docker` 组），
-而不是只回一句「没有容器」。探测失败**不算这次操作失败**（目标确实加上了，
-`reachable:false` 单独表示），下次 daemon 起来就能直接用。
+或把「docker CLI」改成正确路径）/ **探测超时**（daemon 卡死，或 `docker context` 指向了
+连不上的远端；用 `docker context ls` 看当前指向）/ **daemon 未启动**（Linux
+`systemctl start docker`，macOS / Windows 启动 Docker Desktop）/ **socket 无权访问**
+（账号加入 `docker` 组），而不是只回一句「没有容器」。探测失败**不算这次操作失败**
+（目标确实加上了，`reachable:false` 单独表示），下次 daemon 起来就能直接用。
+
+探测用的二进制**就是设置卡片里的「docker CLI」**（`dockerBin`，默认 `docker`）。
+CLI 缺失时会**只读地**在 `PATH` 里找一下别的容器 CLI（`docker` → `podman` → `nerdctl`），
+找到就在那句话里点名（「这台机器上装了 podman：把『docker CLI』填成 podman 就能用」）——
+**只提示，绝不替你改配置**：静默改写 `dockerBin` 会违背本插件「不替用户决定」的取向，
+而且 podman 与本插件输出格式的兼容性并未逐项验证（见「已知限制」）。比对候选时按
+**工具名**（basename）而不是配置里的原字符串，所以 `dockerBin` 写成
+`/usr/local/bin/docker` 时不会出现「把 docker 改成 docker」这种废话。
+
+超时是**独立一档**：`probe()` 不只报退出码（`code` 为 `null` 时那句「退出码 null」对用户
+零信息量），而是回 `timedOut:true` + 一句可执行的话。超时还会**真的按时返回**——
+SIGKILL 只作用于直接子进程，`dockerBin` 指向包装脚本时孙进程仍握着管道，会把手上的
+15 秒上限拖成分钟级（真机实测 3 秒上限拖到 60 秒），所以到点先杀、再给 500ms 收敛期，
+仍不 `close` 就自行放掉管道收尾。
 
 刻意**不做**的事（保守边界）：不自动安装 Docker、不启动 daemon、不切换 docker
 context、不改任何环境变量；空 `targets`（= 用户没配）的语义不变，不产生隐式默认目标；
@@ -477,7 +492,7 @@ context、不改任何环境变量；空 `targets`（= 用户没配）的语义�
 | --- | --- | --- |
 | `enabled` | true | 关闭整个插件（**保存即热生效**：工具立即注销、公告撤下、除 `/config` 外的数据路由 403；`/config` 始终可读写——设置卡片就是重新启用的入口。与 tty 不同：tty 是重启生效） |
 | `announceToAgent` | true | 是否向 agent 注入能力公告（systemPrompt section `plugin:dsh-docker`） |
-| `dockerBin` | `docker` | docker CLI 可执行名或路径（podman 可填 `podman`）；只允许字母、数字与 `_ . / \ : -` 及内部空格，且不能以 `-` 开头（**Windows 盘符与 `\` 必须放行**，否则任何绝对路径都填不进来） |
+| `dockerBin` | `docker` | docker CLI 可执行名或路径（podman 可填 `podman`）；只允许字母、数字与 `_ . / \ : -` 及内部空格，且不能以 `-` 开头（**Windows 盘符与 `\` 必须放行**，否则任何绝对路径都填不进来）。**「连接本机」的探测用的就是它**；填错（CLI 不存在）时那句话会点名 `PATH` 里找到的别的容器 CLI，但**不会**替你改这个值 |
 | `allowMutations` | false | 允许**变更操作**：容器 start / stop / restart / remove、镜像删除 / dangling 清理 / 拉取（面板按钮与 `docker_action`、`docker_image_remove`、`docker_image_prune`、`docker_image_pull` 工具；关闭时 `/action`、`/images/remove`、`/images/prune`、`/images/pull/stream` 返回 403，对应工具不注册） |
 | —（能力授权） | 未授权 | `allowMutations` / `allowExec` 有**两条提权通道**：① **启动环境变量**（`DSH_DOCKER_ALLOW_MUTATIONS` / `DSH_DOCKER_ALLOW_EXEC`，值为 `1` / `true` / `yes` / `on`）——判定源是宿主的**启动环境快照**，只认继承来的 `process` 层：写项目 `.env` 或 `~/.dsh/env.yml` **不算**授权；② **就地提权**（免重启）：在设置卡片点开关 → 面板给出一条「在宿主终端执行」的命令 → 执行后十秒内生效。HTTP 侧永远可以**关掉**它们（紧急刹车不能依赖重启），但给 `true` 而无授权会被 400 拒绝并说清两条路。配置里的 `true` **不算授权**（它与 HTTP 写进去的值存在同一个存储里，分不出来源）。**升级影响**：升级前靠界面打开的开关会变成关——设环境变量重启，或在卡片里就地确认。**为什么**：回环围栏与同源证明都拦不住跨站页面与页内脚本（它们能自己填 `Sec-Fetch-Site: same-origin`），而 docker socket 等价目标主机 root；细节（含拦不住谁）见 [architecture.md § 7](../../docs/architecture.md#7-一条请求经过什么) |
 | `allowExec` | false | 允许一次性 `docker exec`（面板 exec 输入与 `docker_exec` 工具；关闭时 `/exec` 返回 403） |
@@ -536,7 +551,7 @@ context、不改任何环境变量；空 `targets`（= 用户没配）的语义�
 | 工具 | 注册条件 | 参数 | 作用 / 典型用法 |
 | --- | --- | --- | --- |
 | `docker_targets` | 恒注册 | `probe?: boolean` | 列出目标（name / kind / label）；`probe:true` 逐个探测 docker 版本与 daemon 可达性（SSH 目标会建连接，较慢）。其他工具的 `target` 取自这里 |
-| `docker_connect_local` | 恒注册 | —（无参数） | **连接本机**：确保存在一条 `kind=local` 目标并选中它（已存在则复用，不重复创建；SSH / 自定义目标原样保留），随后只读探测 daemon：返回 `{name, kind, created, saved, reachable, serverVersion?}`。没有任何目标时 `docker_ps` 等会报「尚未配置任何 Docker 目标」，用它一步补上。**不需要任何能力授权**（只写插件自己的配置 + 只读探测）；不会安装 Docker / 启动 daemon / 切 context / 改环境变量。daemon 不可达时在结果文本里说清成因（CLI 缺失 / daemon 未启动 / socket 无权），不是只报空列表 |
+| `docker_connect_local` | 恒注册 | —（无参数） | **连接本机**：确保存在一条 `kind=local` 目标并选中它（已存在则复用，不重复创建；SSH / 自定义目标原样保留），随后只读探测 daemon：返回 `{name, kind, created, saved, reachable, serverVersion?}`。没有任何目标时 `docker_ps` 等会报「尚未配置任何 Docker 目标」，用它一步补上。**不需要任何能力授权**（只写插件自己的配置 + 只读探测）；不会安装 Docker / 启动 daemon / 切 context / 改环境变量。daemon 不可达时在结果文本里说清成因（CLI 缺失 / 探测超时 / daemon 未启动 / socket 无权；CLI 缺失时还会点名 PATH 里找到的别的容器 CLI，但不会替你改 dockerBin），不是只报空列表 |
 | `docker_ps` | 恒注册 | `target?`（**传 `*` = 全部目标**）、`all?: boolean` | 列容器（名称 / 状态 / 健康 / 镜像 / 端口 / compose 项目与服务 / 短 ID）；默认只列运行中，`all:true` 含已停止。`target:'*'` 时按目标分组返回，**单个目标不可达不影响其他目标**（该组带 `error`）。端口是 IPv4/IPv6 双栈归并后的映射（同一次 `-p` 不再出现两遍，D130）；`ports` 为空**不等于**没暴露端口——host 网络容器的端口即宿主机端口，这种情况会给 `net` 字段（D131）。排障第一步 |
 | `docker_attention` | 恒注册 | `target?`（支持 `*`）、`limit?: number` | **需关注汇总**：不健康 / 反复重启 / 被 OOM 杀 / 非零退出 / 僵死；每条带 `reasons`、`exitCode`、`oomKilled`、`restartCount`。OOM 与真实退出码来自一次 `docker inspect`（ps 摘要里 137 无法区分手动 kill）。排障入口：不确定从哪台/哪个容器看起时先调它 |
 | `docker_inspect` | 恒注册 | `target?`、`id`（必填） | `docker inspect` 的权威详情：状态 / 健康检查 / 退出码 / 重启次数 / 端口 / 挂载 / 网络 / 启动命令 |
@@ -993,8 +1008,11 @@ network / volume 的 ls·inspect 解析容错（字符串布尔、缺 `Mountpoin
      **工具条上不该有**任何常驻入口 → 选中该项，应当同样加上 `local` 并切过去，
      且该项随即从下拉里消失（已经有本机目标了）。
    两处都**不该**出现「同一个入口列了两次」；全程**不该**有任何 Docker 安装 / daemon 启动 /
-   context 切换动作。宿主上没有 docker 时，应当看到一句点名的原因（CLI 缺失 / daemon 未启动 /
-   socket 无权访问），而不是一个空列表。
+   context 切换动作。宿主上没有 docker 时，应当看到一句点名的原因（CLI 缺失 / 探测超时 /
+   daemon 未启动 / socket 无权访问），而不是一个空列表。
+   - **只有 podman 的机器**（把 PATH 里的 docker 拿掉、只留 podman）：那句话应当
+     **点名 podman** 并说明「把『docker CLI』填成 podman 就能用」，同时**不该**替你
+     改 `dockerBin`（回头去设置卡片看，值仍是 `docker`）。
 4. **只读拦截**：两个开关都关时，`/action`、`/exec`、`/images/remove`、
    `/images/prune`、`/images/pull/stream` 全部 403；agent 侧恒注册 12 个只读工具
    （`docker_targets` / `connect_local` / `ps` / `attention` / `inspect` / `logs` / `stats` / `events` /

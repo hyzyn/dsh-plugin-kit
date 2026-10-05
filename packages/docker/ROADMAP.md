@@ -72,6 +72,26 @@ i18n 死键 `btn.connectLocalCurrent` 与客户端那份 `localTargetName`（复
 目标、不自动装 Docker / 起 daemon / 切 docker context / 改环境变量、**不放开任何能力授权**
 （只写插件自己的配置 + 只读探测）。
 
+**同日回修 ③（用户对着「docker CLI = docker」那张截图问「是否需要先检测本机是否有 docker
+或者 pdman」）**：探测本来就有，但有两处把话说死/说空，记在 [DEFECTS.md](./DEFECTS.md) 的 D159：
+① `probe()` 不认超时——`docker version` 挂住时 `code` 是 `null`，兜底文案「退出码 null」零信息量，
+而超时（daemon 卡死 / `docker context` 指向连不上的远端）与「daemon 没起」的可修动作完全不同；
+② 探测只认 `dockerBin` 一个二进制，只有 podman 的机器上收到的是「请先安装 Docker」。
+改法：超时单独一档（`ProbeResult.timedOut` + 一句可执行的话）；`PATH` 里只读地找候选 CLI
+（`docker` → `podman` → `nerdctl`）并**点名**它，但**绝不替用户改写 `dockerBin`**——静默改配置
+违背本插件「不替用户决定」的一贯取向，且 podman 与本插件输出格式的兼容性未逐项验证。
+超时还顺带修了实测出来的放大器：只杀直接子进程时，包装脚本的孙进程握着管道会把 15s 上限
+拖成分钟级（真机 3s→60.3s）。
+
+门槛（回修 ③）：`isLocalCliMissing` 当**单一来源**（文案分档与「要不要找候选」共用，两处各写
+一遍正则会漂移）；候选比对按 **basename**——按原字符串比会在 `dockerBin=/usr/local/bin/docker`
+时给出「把 docker 改成 docker」的废话（这条已被用例钉住，且实测判别性）；「只在 CLI 缺失那档
+才 accessSync」（其余档位纯文本判断，不必白跑文件系统）。用例用临时目录造**隔离 PATH + 可执行
+位**，不依赖跑测试的机器恰好装了什么。路由级用例断言 `dockerBin` **未被改写**。
+**判别性已实测**：移除 `probe()` 的超时分支 → `streams.test.ts` 对应断言失败；把 basename 退回
+原字符串比对 → `connect-local.test.ts` 那条失败；断开 `localProbeReason` 的候选接线 → 路由级
+那条失败（旧代码报的是「找不到 docker CLI」而拿不到「装了 podman」）。
+
 ## 已上提到项目级（不在本文展开）
 
 跳板机（ProxyJump）· 统一安全围栏（对齐 tty / dsh-mcp）· 变更端点的信任模型（一次性 token）·

@@ -16,7 +16,7 @@
  * 整个文件把 `DSH_HOME` 指到临时目录，避免开发机上「真用过一次就地提权」导致用例假红。
  */
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -46,7 +46,7 @@ const spawnMock = vi.hoisted(() => vi.fn())
 vi.mock('node:child_process', () => ({ spawn: spawnMock }))
 
 import { apply } from '../src/index.js'
-import { LOCAL_TARGET_NAME, describeLocalProbeFailure, findLocalTargetName, nextLocalTargetName } from '../src/index.js'
+import { LOCAL_TARGET_NAME, describeLocalProbeFailure, findAlternativeLocalCli, findLocalTargetName, isLocalCliMissing, nextLocalTargetName } from '../src/index.js'
 import type { DockerTarget } from '../src/index.js'
 
 /* ------------------------------------------------------------------ *
@@ -310,9 +310,106 @@ describe('本地探测失败 → 可执行的一句话（按成因分档）', ()
     expect(text).toContain('docker 组')
   })
 
-  it('其它原因原样透出（不硬套三档）', () => {
+  it('其它原因原样透出（不硬套前面的档位）', () => {
     expect(describeLocalProbeFailure('context "foo" does not exist')).toContain('context "foo" does not exist')
     expect(describeLocalProbeFailure('')).toContain('没有返回任何信息')
+  })
+
+  it('超时单独一档：不落进「退出码 null」那种零信息量的兜底', () => {
+    const text = describeLocalProbeFailure('docker version 超时（15 秒未返回）', 'docker', { timedOut: true })
+    expect(text).toContain('15 秒没返回')
+    expect(text).toContain('context') // 指向可查的 docker context
+    expect(text).not.toContain('退出码 null')
+  })
+
+  it('CLI 缺失且 PATH 里有别的容器 CLI：点出候选，并写明面板不替你改', () => {
+    const text = describeLocalProbeFailure('无法执行 docker：spawn docker ENOENT', 'docker', { alternativeCli: 'podman' })
+    expect(text).toContain('找不到 docker CLI')
+    expect(text).toContain('装了 podman')
+    expect(text).toContain('面板不会替你改')
+  })
+
+  it('CLI 缺失但没有候选：不提候选（不说一句空话）', () => {
+    const text = describeLocalProbeFailure('无法执行 docker：spawn docker ENOENT', 'docker', {})
+    expect(text).toContain('安装 Docker')
+    expect(text).not.toContain('面板不会替你改')
+  })
+
+  it('文案里的 bin 用配置值原样回显（不是硬编码 docker）', () => {
+    expect(describeLocalProbeFailure('无法执行 podman：spawn podman ENOENT', 'podman')).toContain('（podman）')
+  })
+})
+
+describe('isLocalCliMissing：文案分档与「要不要找候选」共用同一判据', () => {
+  it('ENOENT 三种形态都认', () => {
+    expect(isLocalCliMissing('无法执行 docker：spawn docker ENOENT')).toBe(true)
+    expect(isLocalCliMissing("'docker' is not recognized as an internal or external command")).toBe(true)
+    expect(isLocalCliMissing('docker: command not found')).toBe(true)
+  })
+
+  it('daemon / 权限类失败**不**算 CLI 缺失（否则会去 PATH 乱找候选）', () => {
+    expect(isLocalCliMissing('Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?')).toBe(false)
+    expect(isLocalCliMissing('permission denied while trying to connect to the Docker daemon socket')).toBe(false)
+  })
+})
+
+describe('findAlternativeLocalCli：只读找候选，绝不改配置', () => {
+  /**
+   * 造一个隔离的 PATH 目录（不放真机路径——那会让这几条用例依赖跑测试的机器上
+   * 恰好装了/没装什么，CI 上必飘）。空文件 + 可执行位就够 accessSync(X_OK) 认。
+   */
+  let cliDir = ''
+  let emptyDir = ''
+  beforeEach(() => {
+    cliDir = mkdtempSync(join(tmpdir(), 'dsh-docker-cli-'))
+    emptyDir = mkdtempSync(join(tmpdir(), 'dsh-docker-empty-'))
+  })
+  afterEach(() => {
+    rmSync(cliDir, { recursive: true, force: true })
+    rmSync(emptyDir, { recursive: true, force: true })
+  })
+  const install = (name: string): void => {
+    writeFileSync(join(cliDir, name), '#!/bin/sh\n')
+    chmodSync(join(cliDir, name), 0o755)
+  }
+
+  it('PATH 里没有候选时返回空', () => {
+    expect(findAlternativeLocalCli('docker', { PATH: emptyDir })).toEqual([])
+  })
+
+  it('PATH 为空返回空（不抛错）', () => {
+    expect(findAlternativeLocalCli('docker', { PATH: '' })).toEqual([])
+  })
+
+  it('PATH 里有 podman 时返回它（dockerBin=docker）', () => {
+    install('podman')
+    expect(findAlternativeLocalCli('docker', { PATH: cliDir })).toEqual(['podman'])
+  })
+
+  it('按 basename 比对：dockerBin 写成绝对路径时不会把同一个 docker 当候选', () => {
+    // PATH 里只有 docker 一个 —— 若按原字符串比对（'/x/docker' !== 'docker'），
+    // 就会给出「把 docker CLI 改成 docker」这种废话
+    install('docker')
+    expect(findAlternativeLocalCli(join(cliDir, 'docker'), { PATH: cliDir })).toEqual([])
+  })
+
+  it('dockerBin 已经是 podman 时，docker 成为候选', () => {
+    install('docker')
+    install('podman')
+    const found = findAlternativeLocalCli('podman', { PATH: cliDir })
+    expect(found).toEqual(['docker'])
+  })
+
+  it('多个候选按 docker → podman → nerdctl 的固定顺序返回', () => {
+    install('nerdctl')
+    install('podman')
+    expect(findAlternativeLocalCli('docker', { PATH: cliDir })).toEqual(['podman', 'nerdctl'])
+  })
+
+  it('不可执行的文件不算（X_OK，不是「存在即可」）', () => {
+    writeFileSync(join(cliDir, 'podman'), '#!/bin/sh\n')
+    chmodSync(join(cliDir, 'podman'), 0o644)
+    expect(findAlternativeLocalCli('docker', { PATH: cliDir })).toEqual([])
   })
 })
 
@@ -490,6 +587,35 @@ describe('POST /connect-local：本机 docker 不可用时的口径', () => {
     expect(status).toBe(200)
     expect(json?.result?.reachable).toBe(false)
     expect(json?.result?.message).toContain('找不到 docker CLI')
+  })
+
+  it('CLI 缺失但 PATH 里有 podman：路由原样把候选带进 message（只提示，不改配置）', async () => {
+    /*
+     * 这条走的是**真** accessSync：本文件只 mock 了 child_process，fs 是真的。
+     * 把 PATH 指向一个自造的目录（里面只有一个可执行的 podman），就能确定性地
+     * 驱动 localProbeReason → findAlternativeLocalCli 这条链，而不依赖跑测试的
+     * 机器上装了什么。
+     */
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-docker-alt-'))
+    const originalPath = process.env.PATH
+    try {
+      writeFileSync(join(dir, 'podman'), '#!/bin/sh\n')
+      chmodSync(join(dir, 'podman'), 0o755)
+      process.env.PATH = dir
+      spawnState.mode = 'enoent'
+      const harness = mountPlugin({ targets: [] })
+      const { status, json } = await callConnectLocal(harness)
+      expect(status).toBe(200)
+      expect(json?.result?.saved).toBe(true)
+      expect(json?.result?.message).toContain('装了 podman')
+      expect(json?.result?.message).toContain('面板不会替你改')
+      // 关键不变式：只提示，绝不静默改写用户的 dockerBin
+      expect(harness.updates.some((patch) => 'dockerBin' in patch)).toBe(false)
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH
+      else process.env.PATH = originalPath
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 

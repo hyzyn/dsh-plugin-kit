@@ -17,7 +17,8 @@
  *   显式打开。agent 工具同样受这两个开关约束（未开启时连工具都不注册）。
  */
 import type { Context } from '@deepseek-ai/cordis'
-import { join } from 'node:path'
+import { accessSync, constants } from 'node:fs'
+import { delimiter, basename, join } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 import { definePlugin, hasSameOriginProof, isLoopbackRequestStrict, originProofHint, plainConfig, readSettingsEntry, settingsEntryScope, suppressAutoSettingsPage } from '@hyzyn/dsh-kit'
 import type { SettingsEntryScope } from '@hyzyn/dsh-kit'
@@ -209,6 +210,17 @@ interface ConnectLocalResult {
   reachable: boolean
   serverVersion?: string
   message: string
+}
+
+/**
+ * `describeLocalProbeFailure` 的额外上下文（都只能由调用方探测得到，所以外挂进来——
+ * 那个函数刻意保持**纯文本进、纯文本出**，好让它能被单测直接驱动）。
+ */
+interface LocalProbeHint {
+  /** 失败是不是超时（来自 `ProbeResult.timedOut`）。 */
+  timedOut?: boolean
+  /** CLI 缺失时，PATH 里找到的别的容器 CLI（见 findAlternativeLocalCli），如 `podman`。 */
+  alternativeCli?: string
 }
 
 interface ToolAttentionRow {
@@ -597,16 +609,83 @@ export function nextLocalTargetName(taken: readonly string[]): string | undefine
 }
 
 /**
- * 只读探测失败 → 用户能照着做的一句话。三档按**成因**分（而不是原样甩 `exit status 1`）：
- * CLI 不在（装 Docker / 改 `dockerBin`）、daemon 不可达（启动 daemon 或修 socket 权限）、其它（原样透出）。
+ * 「探不到 CLI」的判据（`runLocal` 的 ENOENT 抛错形态）。
+ *
+ * 抽出来当单一来源：文案分档与「要不要去找 podman」都用它，两处各写一遍正则
+ * 迟早会漂移——那时会出现「文案说 CLI 缺失、但不去找候选」或反过来。
+ */
+export function isLocalCliMissing(raw: string): boolean {
+  return /ENOENT|not recognized as an internal|command not found/i.test(raw)
+}
+
+/** 本机容器 CLI 的候选（除 `dockerBin` 自己之外）：按这个顺序找第一个存在的。 */
+const LOCAL_CLI_ALTERNATIVES = ['docker', 'podman', 'nerdctl'] as const
+
+/**
+ * 在 PATH 里找**别的**容器 CLI（`dockerBin` 缺失时的候选），返回名字数组（可能为空）。
+ *
+ * 只读探测，**绝不改配置**：返回的候选交给文案去说「你可以把 docker CLI 改成它」，
+ * 改不改由用户在设置卡片决定。静默改写 `dockerBin` 会违背本插件「不替用户决定」的
+ * 一贯取向（何况 podman 与本插件的输出格式兼容性并未逐项验证，见 README）。
+ *
+ * `env` 可注入（测试用）；Windows 按 PATHEXT 补扩展名——本插件明确支持 Windows
+ * 盘符路径，不能只认无扩展名的 POSIX 查找。
+ */
+export function findAlternativeLocalCli(bin: string, env: NodeJS.ProcessEnv = process.env): string[] {
+  const dirs = (env.PATH ?? '').split(delimiter).filter((item) => item !== '')
+  const win = process.platform === 'win32'
+  const exts = win ? (env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').filter((item) => item !== '') : ['']
+  /*
+   * 比的是**工具名**（basename，Windows 再去掉扩展名），不是配置里的原字符串：
+   * `dockerBin` 常写成绝对路径（`/usr/local/bin/docker`），拿它直接比对候选名会
+   * 把「同一个 docker」当成可切换的候选，给出「把 docker CLI 改成 docker」这种废话。
+   */
+  const stem = (value: string): string => {
+    const base = basename(value).toLowerCase()
+    return win ? base.replace(/\.[^.]+$/, '') : base
+  }
+  const self = stem(bin)
+  const found: string[] = []
+  for (const candidate of LOCAL_CLI_ALTERNATIVES) {
+    if (candidate === self) continue
+    const dir = dirs.find((item) => exts.some((ext) => {
+      try {
+        accessSync(join(item, candidate + ext), constants.X_OK)
+        return true
+      } catch {
+        return false
+      }
+    }))
+    if (dir !== undefined) found.push(candidate)
+  }
+  return found
+}
+
+/**
+ * 只读探测失败 → 用户能照着做的一句话。按**成因**分档（而不是原样甩 `exit status 1`）：
+ * CLI 不在（装 Docker / 改 `dockerBin`）、超时（daemon 卡死 / context 指错）、
+ * daemon 不可达、socket 无权、其它（原样透出）。
  *
  * `probe()` 的两条失败路径形状不同：`runLocal` 对 ENOENT 是**抛错**（`无法执行 docker：spawn docker ENOENT`），
  * 而 daemon 连不上是 docker CLI 自己以非零退出 + stderr 文案返回；两条都要认得出。
  */
-export function describeLocalProbeFailure(raw: string, bin = 'docker'): string {
+export function describeLocalProbeFailure(raw: string, bin = 'docker', hint: LocalProbeHint = {}): string {
   const text = raw.trim()
-  if (/ENOENT|not recognized as an internal|command not found/i.test(text)) {
-    return `宿主上找不到 docker CLI（${bin}）：请先安装 Docker，或在设置卡片把「docker CLI」改成正确的可执行文件路径`
+  if (isLocalCliMissing(text)) {
+    const head = `宿主上找不到 docker CLI（${bin}）：请先安装 Docker，或在设置卡片把「docker CLI」改成正确的可执行文件路径`
+    // 有候选就点出来——只说「请先安装 Docker」会让 podman 用户以为要装一整套 Docker。
+    // 同时写明**面板不会替你改**：这是提示，不是自动切换（见 findAlternativeLocalCli）。
+    return hint.alternativeCli === undefined || hint.alternativeCli === ''
+      ? head
+      : `${head}。这台机器上装了 ${hint.alternativeCli}：把「docker CLI」填成 ${hint.alternativeCli} 就能用（面板不会替你改）`
+  }
+  /*
+   * 超时单独一档（D159）：它和「daemon 没起」的可修动作完全不同，也不能落进下面
+   * 那句「退出码 null」。判据来自 `ProbeResult.timedOut` 而不是解析文案——CLI 的
+   * 超时输出里根本没有可认的字样。
+   */
+  if (hint.timedOut === true) {
+    return `${bin} version 15 秒没返回：daemon 可能卡死，或 docker context 指向了连不上的远端（用 docker context ls 看当前指向；Docker Desktop 卡死时重启它）`
   }
   if (/ECONNREFUSED|ENOENT.*\.sock|\.sock.*(no such file|不是目录|No such)/i.test(text)) {
     return `docker CLI 可用，但连不上 docker daemon：请确认 daemon 已启动（Linux: systemctl start docker；macOS/Windows: 启动 Docker Desktop）`
@@ -1167,6 +1246,20 @@ const plugin = definePlugin<Config>({
     /* ---------- 一键连接本机（面板按钮 / HTTP 路由 / agent 工具共用这一份实现） ---------- */
 
     /**
+     * 探测失败 → 给用户的一句话（这次探测的 bin 以**配置里的 `dockerBin`** 为准）。
+     *
+     * 只有「CLI 缺失」这一档才去 PATH 里找候选：那要 accessSync 若干次，其余档位全是
+     * 纯文本判断，不该无谓地跑文件系统。
+     */
+    const localProbeReason = (raw: string, timedOut = false): string => {
+      const alternative = isLocalCliMissing(raw) ? findAlternativeLocalCli(live.dockerBin)[0] : undefined
+      return describeLocalProbeFailure(raw, live.dockerBin, {
+        timedOut,
+        ...(alternative === undefined ? {} : { alternativeCli: alternative }),
+      })
+    }
+
+    /**
      * 显式加一个本机目标并选中它，然后把只读探测结果一并回报。
      *
      * 四条不变量（缺任何一条都会变成另一种东西）：
@@ -1252,9 +1345,9 @@ const plugin = definePlugin<Config>({
         const probe = await built.api.probe()
         reachable = probe.ok
         if (probe.serverVersion !== null) serverVersion = probe.serverVersion
-        if (!probe.ok) reason = describeLocalProbeFailure(probe.error ?? '', live.dockerBin)
+        if (!probe.ok) reason = localProbeReason(probe.error ?? '', probe.timedOut)
       } catch (error) {
-        reason = describeLocalProbeFailure(error instanceof Error ? error.message : String(error), live.dockerBin)
+        reason = localProbeReason(error instanceof Error ? error.message : String(error))
       }
       const head = `已${created ? '添加并选中' : '选中'}本机目标「${name}」`
       return {
