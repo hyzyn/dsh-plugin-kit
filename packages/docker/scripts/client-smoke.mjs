@@ -2304,6 +2304,57 @@ await test('连接本机：只在「一个目标都没有」的空态里出现�
   publishConfigForTest(FAKE_CONFIG)
 })
 
+await test('连接本机：目标下拉里的「＋ 连接本机」判定（有 SSH、无本机时才列）', () => {
+  const exports_ = registration.factory((spec) => SEED[spec])
+  const panel = exports_.__panel
+  const SENTINEL = panel.CONNECT_LOCAL_OPTION
+  const offer = panel.shouldOfferConnectLocal
+  assert.equal(typeof SENTINEL, 'string', '哨兵值应作为测试缝暴露')
+  assert.equal(typeof offer, 'function', '判定应作为纯函数暴露')
+
+  /*
+   * 这条对应的正是用户报的场景：手上有几台 SSH、想加本机。第一版把按钮从工具条撤掉后，
+   * 这条路只剩「开设置卡片」，用户直接问「我怎么看到本机的容器」。入口要放在**用户找机器
+   * 的地方**（目标下拉末尾），而不是常驻工具条。
+   *
+   * 为什么驱动纯函数而不是遍历渲染树：离线冒烟的 React 桩把 useState 冻在初值上
+   * （组件里 `targets` 初值是 []），树里永远走不到那一项——所以判定抽成了纯函数。
+   */
+  assert.equal(offer([{ name: 'prod', kind: 'ssh' }]), true,
+    '有目标但没有本机目标时，应列出「＋ 连接本机」')
+  assert.equal(offer([
+    { name: 'prod', kind: 'ssh' },
+    { name: '本机-自定义', kind: 'local' },
+  ]), false, '已经有本机目标时不该再列（选择器里已经有它了）')
+  assert.equal(offer([]), false,
+    '一个目标都没有时入口在正文空态里，下拉里不该重复列一项')
+
+  /*
+   * 哨兵值必须撞不上真实目标名：目标名是用户自由填的（sanitizeTargets 只限非空与长度）。
+   * 若用普通字符串（如 `local`），用户恰好有同名目标时点「连接本机」就会切到那台机器。
+   * NUL 开头的值在输入框里打不出来，所以它不可能与任何真实目标重名。
+   */
+  assert.equal(SENTINEL.charCodeAt(0), 0, '哨兵应以 NUL 开头（输入框里打不出来）')
+  assert.ok(SENTINEL.length > 1, '哨兵不能就是那个 NUL 本身')
+})
+
+await test('连接本机：下拉项接的是 connectLocal（哨兵被拦在换目标逻辑之前）', () => {
+  const source = readFileSync(new URL('../client-src/index.js', import.meta.url), 'utf8')
+  /*
+   * 接线判据（源码级）：哨兵一旦漏进 setTarget 就会把当前目标换成一个不存在的名字，
+   * 面板随即报「未知目标」。所以 `if (... === CONNECT_LOCAL_OPTION)` 分支必须在
+   * `setTarget(event.target.value)` **之前**，且分支里调的是 connectLocal。
+   */
+  const guard = source.indexOf('if (event.target.value === CONNECT_LOCAL_OPTION)')
+  const setTarget = source.indexOf('setTarget(event.target.value)')
+  assert.ok(guard !== -1, 'onChange 里应有哨兵分支')
+  assert.ok(setTarget !== -1, 'onChange 里应有 setTarget')
+  assert.ok(guard < setTarget, '哨兵分支必须排在 setTarget 之前（否则会切到不存在的目标）')
+  const branch = source.slice(guard, setTarget)
+  assert.ok(/connectLocal\(\)/.test(branch), '哨兵分支里应调用 connectLocal()')
+  assert.ok(/return/.test(branch), '哨兵分支必须 return，不能继续走换目标')
+})
+
 /* ------------------------------------------------------------------ *
  * 结果
  * ------------------------------------------------------------------ */

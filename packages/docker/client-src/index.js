@@ -1546,11 +1546,37 @@ const PICK_MAX = 8
  */
 const PICK_MAX_SSH = 6
 
+/**
+ * 目标下拉里要不要列「＋ 连接本机」那一项。
+ *
+ * 入参是**渲染作用域里的目标列表**（与同一个下拉展开的 `<option>` 用同一份数据）——
+ * 刻意不读模块级 configCache：同一个下拉里「列了哪些目标」与「要不要多列这一项」必须同源，
+ * 否则会出现「列表里已经有本机目标、却又多列一项连接本机」这种自相矛盾。
+ *
+ * 两个条件缺一不可：
+ *   - `targets.length > 0`：一个目标都没有时，正文空态里已经有一个大按钮（那里才是它最该
+ *     出现的地方），下拉里再列一项就是同一个入口出现两次；
+ *   - 没有 `kind=local`：已经有了就不列（选择器里已经有那台本机了）。
+ */
+function shouldOfferConnectLocal(targets) {
+  return targets.length > 0 && !targets.some((item) => item.kind === 'local')
+}
+
 /** 目标是不是 SSH —— 决定聚合流的上限。读模块级 configCache，任何组件都能问。 */
 function isSshTarget(name) {
   const targets = configCache !== null && Array.isArray(configCache.targets) ? configCache.targets : []
   return targets.some((item) => item.name === name && item.kind === 'ssh')
 }
+
+/**
+ * 目标选择器里那一项「＋ 连接本机」的哨兵值。
+ *
+ * 为什么不用个普通字符串（如 `local`）：目标名是**用户自由填的**（sanitizeTargets 只限长度与
+ * 非空），任何可打印值都可能与真实目标重名——重名就意味着用户点「连接本机」反而切到了别的机器。
+ * 用 NUL 开头则不可能撞上：目标名来自输入框，NUL 进不去；而 `<option value>` 允许任意字符串，
+ * 比较是纯 JS 字符串比较，不经过任何会截断的路径。
+ */
+const CONNECT_LOCAL_OPTION = '\u0000connect-local'
 
 /** 由勾选数量推导「聚合日志」按钮是否可用 + 操作条提示文案。 */
 function pickDecide(count, ssh = false) {
@@ -6999,6 +7025,15 @@ window.__ModuleLoader__.load({
                 // 总览没有「当前目标」这回事：选择器回落成一条带说明的空值项
                 value: view === 'overview' ? '' : target,
                 onChange: (event) => {
+                  /*
+                   * 下拉里的「＋ 连接本机」哨兵项：它不是一个目标，选中它等于「我想加一台本机」。
+                   * 必须**在**下面那套换目标逻辑之前拦下——否则 setTarget('\0connect-local') 会把
+                   * 当前目标换成一个不存在的名字，面板随即报「未知目标」。
+                   */
+                  if (event.target.value === CONNECT_LOCAL_OPTION) {
+                    connectLocal()
+                    return
+                  }
                   setTarget(event.target.value)
                   // 用户手动选了目标 = 会话级「未匹配」状态结束（D23）：此后 staleList
                   // 的锁与胶囊照常工作，旧目标卡片不再可点
@@ -7022,6 +7057,20 @@ window.__ModuleLoader__.load({
                     : (target === '' ? [jsx('option', { value: '', children: t('option.noTargetSelected') }, '__none')] : [])),
                   ...(targets.length === 0 && target !== '' ? [{ name: target, label: undefined }] : targets)
                     .map((item) => jsx('option', { value: item.name, children: targetLabel(item.name) }, item.name)),
+                  /*
+                   * 「＋ 连接本机」放在列表**末尾**（就是用户找机器时会看的地方）：
+                   *   - 与工具条那版不同，它不占任何常驻位置，只有真的点开下拉才出现；
+                   *   - `targets.length > 0` 才出现：一个目标都没有时，正文空态里已经有一个
+                   *     大按钮（那里才是它最该出现的地方），这里再列一项等于同一入口出现两次；
+                   *   - 已经有本机目标时也不出现（选择器里已经有它了，再列一项等于重复）；
+                   *   - 总览视图没有「当前目标」，但仍可以加目标，所以不排除 overview。
+                   * `disabled` 复用 busy：请求在飞时不给点第二次（与按钮那版防连点一致）。
+                   */
+                  shouldOfferConnectLocal(targets) ? jsx('option', {
+                    value: CONNECT_LOCAL_OPTION,
+                    disabled: connectLocalBusy,
+                    children: connectLocalBusy ? t('msg.connectLocalBusy') : '+ ' + t('btn.connectLocal'),
+                  }, '__connectLocal') : null,
                 ],
               }),
               /*
@@ -8437,6 +8486,13 @@ window.__ModuleLoader__.load({
        * 「连接还没建立时靠连接簿 host 兜底」这条路径。
        */
       matchTargetForSession,
+      /*
+       * 目标下拉里「＋ 连接本机」那一项：哨兵值 + 「要不要列这一项」的判定。两个都挂出来，
+       * 用例才能直接驱动 —— 离线冒烟的 React 桩把 useState 冻在初值上（`targets` 恒为 []），
+       * 遍历渲染树根本走不到那一项，所以判定必须是纯函数。
+       */
+      CONNECT_LOCAL_OPTION,
+      shouldOfferConnectLocal,
     }
     /*
      * 模块级 config 缓存的测试缝：`matchTargetForSession` 这类判定读的是它，而它只由
