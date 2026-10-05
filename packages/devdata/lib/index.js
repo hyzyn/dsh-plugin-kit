@@ -13,7 +13,9 @@
  *   外加配置卡片的**数据面**（`GET/POST /api/dsh-devdata/config`）。
  * - **客户端半体**（`client.js`，2026-10-03 建）：官方「插件配置」里的一张卡片（同 `devenv` /
  *   `devfront`）——标量与目标可改，**两档能力只读**（写入路径上出现即 400，见 `plugin.ts` 的
- *   `CAPABILITY_FIELDS`）。
+ *   `CAPABILITY_FIELDS`）；2026-10-04 起卡片里多一区**证据链总览**（P13 第一版，`evidence.ts`
+ *   + `POST /api/dsh-devdata/evidence`）——只回答「三份清单在不在、项目名对不对」，
+ *   **结论仍归各面自己的工具**。
  *
  * 工具名带 `devdata_` 域前缀（仓库守卫要求 `<域>_<动作>`）；今天注册的是
  * `devdata_list_targets` / `devdata_capabilities` / `devdata_doctor` / `devdata_redis_command`
@@ -55,4 +57,8 @@ export * from './adjudicate.js';
 export * from './verify.js';
 export * from './verify-eval.js';
 export * from './verify-run.js';
+export * from './evidence.js';
+export * from './keyspace.js';
+export * from './project-context.js';
+export * from './config-preflight.js';
 //# sourceMappingURL=index.js.map

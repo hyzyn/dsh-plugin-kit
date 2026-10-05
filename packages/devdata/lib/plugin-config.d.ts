@@ -41,11 +41,19 @@ export interface LiveTarget extends DevDataTarget {
     scopeDirs: string[];
     /** 有连接信息才有（缺了执行器会给出「没有配连接」的可执行错误）。 */
     connection?: LiveConnection;
+    /**
+     * 这个目标**允许浏览**的库号（面板上那棵树上能点着切的那些）。
+     *
+     * 缺省（没写）时允许集只有 `connection.db`（没写就是 0）——也就是「这台机器上只有声明的那一个库
+     * 能看」，与加这个字段之前的行为**逐字一致**。写了 `dbs` 之后，允许集是它 ∪ `db`——**仍然全部来自
+     * 配置**：面板只是在这个集合里挑，浏览器永远不会自己拼一条 `SELECT`（见 `keyspace.ts`
+     * 的 `canBrowseDb`，INFO keyspace 当场报的库也算允许——那也是宿主侧的事实）。
+     */
+    dbs?: number[];
     /** `SCAN` 族 `COUNT` 的策略上限。 */
     maxScanCount: number;
 }
-/** 解析后的整份配置。 */
-export interface LiveConfig {
+/** 解析后的整份配置。 */ export interface LiveConfig {
     enabled: boolean;
     announceToAgent: boolean;
     /** 审计落点（**空 = 只有宿主日志，没有持久记录**；写类操作因此被拒，见 `plugin.ts`）。 */
@@ -56,6 +64,13 @@ export interface LiveConfig {
     /** 被丢掉 / 被纠正的配置项，原样保留给宿主打日志与 `doctor`。**空数组 = 没有问题**。 */
     problems: string[];
 }
+/**
+ * 这个目标**声明允许浏览**的库号集合（升序、去重）。
+ *
+ * 它是面板与路由那两处「能不能去这个库」的唯一判据来源：`db`（缺省 0）**永远**在里面——
+ * 所以「没写 `dbs`」与「写了 `dbs: [0]`」在行为上完全一样，加这个字段不会让已配好的目标换行为。
+ */
+export declare function declaredDbs(target: LiveTarget): number[];
 /**
  * 把一份普通对象解析成生效配置。
  *

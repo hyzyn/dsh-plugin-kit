@@ -42,8 +42,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { afterAll, describe, expect, it } from 'vitest'
+import { manifestRelPath } from '@hyzyn/dsh-kit/manifest'
 
-import { loadManifest, manifestRelativePath, type ManifestLoad } from '../../packages/devdata/src/index.js'
+import { EVIDENCE_FACES, loadManifest, manifestRelativePath, type ManifestLoad } from '../../packages/devdata/src/index.js'
 import { loadReadyProfile, readyManifestRelPath, type ProfileLoad } from '../../packages/devenv/src/index.js'
 import {
   loadReleaseManifest,
@@ -318,6 +319,27 @@ describe('一次发布的证据链：同一个项目名，三份清单', () => {
     expect(broken).not.toBe(plugin?.text)
     const consumers = manifestConsumersOf(files.map((file) => (file.name === 'plugin.ts' ? { ...file, text: broken } : file)))
     expect(consumers).toEqual([])
+  })
+
+  /**
+   * **证据链总览（P13 第一版）里那三条路径，不许自己再拼一份。**
+   *
+   * `devdata` 的卡片新增了一区「证据链总览」（`evidence.ts`）：它要读**三面**的清单，但三面的
+   * 行李规则各在自己包里（`devenv` 的 `readyManifestRelPath` / 本包的 `manifestRelativePath` /
+   * `devfront` 的 `webManifestRelativePath`）。跨包 import 走不通（本仓三包互不 import），所以
+   * 它按 `EVIDENCE_FACES` 里的 `dir` + `suffix` 自己拼——**这一条就是把那三个常量与三面自己的
+   * 路径函数对上的针**：后缀写错（比如 `ready` 那份漏了 `.ready`）会让总览去读一个不存在的
+   * 路径，而它的表现是「这个项目没有清单」——**假阴性**，看起来完全正常。
+   */
+  it('★ `EVIDENCE_FACES` 的三条路径与三面自己的路径函数逐一对齐', () => {
+    const pathOf = (face: string): string => {
+      const spec = EVIDENCE_FACES.find((item) => item.face === face)
+      expect(spec, `EVIDENCE_FACES 里没有 ${face} 这一面`).toBeDefined()
+      return manifestRelPath(spec?.dir ?? '', PROJECT, spec?.suffix ?? '')
+    }
+    expect(pathOf('ready')).toBe(readyManifestRelPath(PROJECT))
+    expect(pathOf('verify')).toBe(manifestRelativePath(PROJECT))
+    expect(pathOf('web')).toBe(webManifestRelativePath(PROJECT))
   })
 })
 

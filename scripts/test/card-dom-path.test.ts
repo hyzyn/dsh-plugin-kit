@@ -45,6 +45,8 @@ export interface CardSpec {
   valueEvents: readonly string[]
   /** DOM 改完之后必须再发一次的那个配置端点（HTTP 复核）。 */
   api: string
+  /** 该卡片的明确保存动作文案（省略沿用「保存」）。 */
+  saveLabel?: string
 }
 
 export const CARDS: readonly CardSpec[] = [
@@ -61,6 +63,7 @@ export const CARDS: readonly CardSpec[] = [
     addLabel: "=== '+ 添加目标'",
     valueEvents: ['input', 'change'],
     api: '/api/dsh-devdata/config',
+    saveLabel: '保存高级设置',
   },
   {
     pkg: 'devenv',
@@ -98,7 +101,9 @@ export function cardDomPathViolations(raw: string, spec: CardSpec): string[] {
   }
 
   // ④ 保存入口：按文案找按钮再点
-  if (!/===\s*'保存'[\s\S]{0,300}?\.click\(\)/.test(source)) {
+  const saveLabel = spec.saveLabel ?? '保存'
+  const savePattern = new RegExp("===\\s*'" + saveLabel + "'[\\s\\S]{0,300}?\\.click\\(\\)")
+  if (!savePattern.test(source)) {
     problems.push(`${spec.pkg}: 没有「按文案找保存按钮 → 点它」这一段`)
   }
 
@@ -154,6 +159,12 @@ describe('反例（每条判据各自能被触发）', () => {
   it('反例④：不点保存 → 报出来', () => {
     const bad = read(devenv.file).replace('save.click()', 'void save')
     expect(cardDomPathViolations(bad, devenv).join('\n')).toContain('保存按钮')
+  })
+
+  it('devdata 明确保存文案的反例：移除所有保存点击 → 报出来', () => {
+    const devdata = CARDS.find((spec) => spec.pkg === 'devdata')!
+    const bad = read(devdata.file).replaceAll('save.click()', 'void save').replaceAll('button.click()', 'void button')
+    expect(cardDomPathViolations(bad, devdata).join('\n')).toContain('保存按钮')
   })
 
   it('反例⑤：删掉 DOM 之后那次 HTTP 复核 → 报出来（DOM 通过 ≠ payload 对）', () => {

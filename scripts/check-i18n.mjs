@@ -199,6 +199,8 @@ export const KEY_DOMAINS = new Set([
   'badge', 'status',
   // 面板内的说明与元信息
   'hint', 'banner', 'meta', 'elev',
+  // 表格的列头（一张表的表头与行内单元格用同一套文案）
+  'col',
   // 具体动作的提示与确认
   'prompt', 'confirm',
   // 包内特有的分组

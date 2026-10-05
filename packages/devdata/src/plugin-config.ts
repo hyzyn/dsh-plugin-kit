@@ -21,6 +21,7 @@ import { expandHome } from '@hyzyn/dsh-kit'
 
 import type { DevDataTarget } from './adjudicate.js'
 import { DEV_ENVS, normalizeEnv, type DevEnv } from './env.js'
+import { MAX_DB_INDEX, defaultDb, normalizeDbs } from './keyspace.js'
 import { ENGINES, type Engine } from './operations.js'
 import type { PlanThresholds } from './plan-guard.js'
 
@@ -52,12 +53,20 @@ export interface LiveTarget extends DevDataTarget {
   scopeDirs: string[]
   /** 有连接信息才有（缺了执行器会给出「没有配连接」的可执行错误）。 */
   connection?: LiveConnection
+  /**
+   * 这个目标**允许浏览**的库号（面板上那棵树上能点着切的那些）。
+   *
+   * 缺省（没写）时允许集只有 `connection.db`（没写就是 0）——也就是「这台机器上只有声明的那一个库
+   * 能看」，与加这个字段之前的行为**逐字一致**。写了 `dbs` 之后，允许集是它 ∪ `db`——**仍然全部来自
+   * 配置**：面板只是在这个集合里挑，浏览器永远不会自己拼一条 `SELECT`（见 `keyspace.ts`
+   * 的 `canBrowseDb`，INFO keyspace 当场报的库也算允许——那也是宿主侧的事实）。
+   */
+  dbs?: number[]
   /** `SCAN` 族 `COUNT` 的策略上限。 */
   maxScanCount: number
 }
 
-/** 解析后的整份配置。 */
-export interface LiveConfig {
+/** 解析后的整份配置。 */export interface LiveConfig {
   enabled: boolean
   announceToAgent: boolean
   /** 审计落点（**空 = 只有宿主日志，没有持久记录**；写类操作因此被拒，见 `plugin.ts`）。 */
@@ -71,6 +80,17 @@ export interface LiveConfig {
 
 const ENGINE_SET = new Set<string>(ENGINES)
 const ENV_SET = new Set<string>(DEV_ENVS)
+
+/**
+ * 这个目标**声明允许浏览**的库号集合（升序、去重）。
+ *
+ * 它是面板与路由那两处「能不能去这个库」的唯一判据来源：`db`（缺省 0）**永远**在里面——
+ * 所以「没写 `dbs`」与「写了 `dbs: [0]`」在行为上完全一样，加这个字段不会让已配好的目标换行为。
+ */
+export function declaredDbs(target: LiveTarget): number[] {
+  const all = [defaultDb(target.connection?.db), ...(target.dbs ?? [])]
+  return [...new Set(all)].sort((left, right) => left - right)
+}
 
 /**
  * 一个原始目标条目（宽松读，字段类型不保证）。
@@ -191,6 +211,27 @@ function parseTarget(value: unknown, index: number, seenIds: Set<string>, proble
     )
   }
 
+  /*
+   * 允许浏览的库（`dbs`）：**只有有连接时才有意义**，坏值逐条报出来（不静默丢）。空 `dbs` 与
+   * 「没写」等价（两边都是「只允许声明的那一个库」），所以这里只把非空的那份放进目标。
+   */
+  const parsedDbs = normalizeDbs(raw.dbs)
+  let dbs: number[] | undefined
+  if (connection === undefined) {
+    if (parsedDbs.dbs.length > 0 || raw.dbs !== undefined) {
+      problems.push(`${where}（${id}）：dbs 只在有连接（host/port）时有意义，已忽略——库号是发 SELECT 用的`)
+    }
+  } else {
+    if (raw.dbs !== undefined && !Array.isArray(raw.dbs)) {
+      problems.push(`${where}（${id}）：dbs 必须是库号数组（如 \`[0, 1]\`），已按「没声明」处理（那只允许 connection.db 那个库）`)
+    } else if (parsedDbs.bad.length > 0) {
+      problems.push(
+        `${where}（${id}）：dbs 里有不是库号的值 ${JSON.stringify(parsedDbs.bad)}，已丢掉它们（库号是 0..${String(MAX_DB_INDEX)} 的整数）`,
+      )
+    }
+    if (parsedDbs.dbs.length > 0) dbs = parsedDbs.dbs
+  }
+
   const scanRaw = raw.maxScanCount
   let maxScanCount = DEFAULT_SCAN_COUNT
   if (scanRaw !== undefined) {
@@ -212,6 +253,7 @@ function parseTarget(value: unknown, index: number, seenIds: Set<string>, proble
     scopeDirs,
     maxScanCount,
     ...(connection === undefined ? {} : { connection }),
+    ...(dbs === undefined ? {} : { dbs }),
     ...(credentialRef === '' ? {} : { credentialRef }),
     ...(writeCapability === undefined ? {} : { writeCapability }),
     ...(dangerousReadCapability === undefined ? {} : { dangerousReadCapability }),

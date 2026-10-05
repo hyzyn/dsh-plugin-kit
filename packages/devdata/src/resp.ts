@@ -83,8 +83,10 @@ function parseAt(buf: Buffer, offset: number): { reply: RespReply; next: number 
     if (line === null) return null
     if (type === '+') return { reply: { kind: 'simple', value: line.line }, next: line.next }
     if (type === '-') return { reply: { kind: 'error', value: line.line }, next: line.next }
-    const value = Number.parseInt(line.line, 10)
-    if (!Number.isFinite(value)) throw new RespProtocolError(`整数回复不是整数：${line.line}`)
+    // 不截断小数或尾随字符，也不把超出 JS 精度的值变成有效观察。
+    if (!/^[+-]?\d+$/.test(line.line)) throw new RespProtocolError(`整数回复不是整数：${line.line}`)
+    const value = Number(line.line)
+    if (!Number.isSafeInteger(value)) throw new RespProtocolError(`整数回复超出安全整数范围：${line.line}`)
     return { reply: { kind: 'integer', value }, next: line.next }
   }
 

@@ -25,7 +25,7 @@
  * 用 `settings:false` 的假宿主验）；② 真机（`scripts/verify-devdata-card.mjs` 走真 settings 栈）。
  */
 
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -35,12 +35,15 @@ import {
   CARD_FIELDS,
   capabilityEditRefusal,
   configSnapshotFrom,
+  declaredDbs,
   mergeSection,
   normalizeCardPatch,
   normalizeConfig,
+  normalizeProjectContext,
   normalizeTargets,
   preserveCapabilities,
 } from '../src/index.js'
+import { callRoute, makeReq, makeRes, type CallResult, type RequestOptions } from './fake-route.js'
 import { CWD, makeHost, redisTarget } from './fake-host.js'
 
 /* ------------------------------------------------------------------ *
@@ -61,64 +64,8 @@ function tempDir(): string {
  * 路由夹具（与 docker 的 config-route.test.ts 同形：极简 req/res）
  * ------------------------------------------------------------------ */
 
-interface FakeRes {
-  status: number
-  headers: Record<string, string>
-  body: string | undefined
-  writeHead(status: number, headers?: Record<string, string>): void
-  end(body?: string): void
-}
-
-function makeRes(): FakeRes {
-  const res: FakeRes = {
-    status: 0,
-    headers: {},
-    body: undefined,
-    writeHead(status, headers) {
-      res.status = status
-      res.headers = headers ?? {}
-    },
-    end(body) {
-      if (body !== undefined) res.body = body
-    },
-  }
-  return res
-}
-
-/** 一个请求（缺省是「浏览器同源、回环」那种，即围栏应放行的那一族）。 */
-function makeReq(options: {
-  method?: string
-  body?: unknown
-  raw?: string
-  remoteAddress?: string
-  host?: string
-  headers?: Record<string, string>
-} = {}): unknown {
-  const payload = options.raw ?? (options.body === undefined ? '' : JSON.stringify(options.body))
-  const chunks = payload === '' ? [] : [Buffer.from(payload)]
-  return {
-    method: options.method ?? 'GET',
-    url: '/api/dsh-devdata/config',
-    headers: {
-      host: options.host ?? '127.0.0.1:3080',
-      'sec-fetch-site': 'same-origin',
-      ...(options.headers ?? {}),
-    },
-    socket: { remoteAddress: options.remoteAddress ?? '127.0.0.1' },
-    async *[Symbol.asyncIterator]() {
-      for (const chunk of chunks) yield chunk
-    },
-  }
-}
-
-type Host = ReturnType<typeof makeHost>
-
-async function call(host: Host, options: Parameters<typeof makeReq>[0] = {}): Promise<{ status: number; json: Record<string, unknown> | undefined }> {
-  const route = host.routes.get('/api/dsh-devdata/config')
-  if (route === undefined) throw new Error('未注册 /api/dsh-devdata/config 路由')
-  const res = makeRes()
-  await route.handler(makeReq(options), res)
-  return { status: res.status, json: res.body === undefined ? undefined : (JSON.parse(res.body) as Record<string, unknown>) }
+async function call(host: Host, options: RequestOptions = {}): Promise<CallResult> {
+  return callRoute(host, '/api/dsh-devdata/config', options)
 }
 
 /** 两个目标 + 两档能力声明 + 持久审计的起手配置（卡片要展示与保存的东西）。 */
@@ -329,6 +276,20 @@ describe('normalizeTargets：逐行逐字段报错（不静默丢行）', () => 
     }
   })
 
+  it('`dbs`（可浏览的库）：坏值 / 非数组 / 没有连接时逐条报错——**卡片与解析层同一套判据**', () => {
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ id: 'x', engine: 'redis', host: '127.0.0.1', port: 6379, dbs: '0,1' }, 'targets[0].dbs 必须是库号数组'],
+      [{ id: 'x', engine: 'redis', host: '127.0.0.1', port: 6379, dbs: [0, -1] }, 'targets[0].dbs 里有不是库号的值'],
+      [{ id: 'x', engine: 'redis', host: '127.0.0.1', port: 6379, dbs: [999] }, 'targets[0].dbs 里有不是库号的值'],
+      [{ id: 'x', engine: 'redis', dbs: [1] }, 'targets[0].dbs 给了但没有连接'],
+    ]
+    for (const [row, needle] of cases) {
+      const result = normalizeTargets([row])
+      expect('error' in result, JSON.stringify(row)).toBe(true)
+      if ('error' in result) expect(result.error, JSON.stringify(row)).toContain(needle)
+    }
+  })
+
   it('空的 `scopeDirs` / 空的环境标签都**保留为空**（不替用户填默认值 = 不替他授权）', () => {
     const result = normalizeTargets([{ id: 'x', engine: 'redis', scopeDirs: [] }])
     expect(result).toEqual({ targets: [{ id: 'x', engine: 'redis', scopeDirs: [] }] })
@@ -336,7 +297,7 @@ describe('normalizeTargets：逐行逐字段报错（不静默丢行）', () => 
 
   it('校验过的行必须被解析层**一行不少**地收下、且**一条 problem 都不报**（两套规则分叉时在这里红）', () => {
     const result = normalizeTargets([
-      { id: 'x', engine: 'redis', env: 'dev', scopeDirs: [CWD], host: '127.0.0.1', port: 6379, db: 1 },
+      { id: 'x', engine: 'redis', env: 'dev', scopeDirs: [CWD], host: '127.0.0.1', port: 6379, db: 1, dbs: [1, 3] },
     ])
     expect('targets' in result).toBe(true)
     if ('targets' in result) {
@@ -344,6 +305,9 @@ describe('normalizeTargets：逐行逐字段报错（不静默丢行）', () => 
       expect(parsed.targets).toHaveLength(1)
       expect(parsed.problems).toEqual([])
       expect(parsed.targets[0]?.connection).toEqual({ host: '127.0.0.1', port: 6379, db: 1 })
+      // 存下来的就是用户写的那份（去重升序），允许集另由 `declaredDbs` 把 `db` 并进去。
+      expect(parsed.targets[0]?.dbs).toEqual([1, 3])
+      expect(declaredDbs(parsed.targets[0]!)).toEqual([1, 3])
     }
   })
 })
@@ -383,6 +347,17 @@ describe('configSnapshotFrom：目标全量只读 + 两档能力的**当前状�
     const snapshot = configSnapshotFrom(live)
     expect(snapshot.engines).toEqual(['sqlserver', 'mysql', 'postgres', 'redis', 'rocketmq', 'dm'])
     expect(snapshot.envs).toEqual(['dev', 'test-shared', 'test-isolated', 'production', 'unknown'])
+  })
+
+  it('环境档的**写权限事实**也由宿主侧给（卡片的环境胶囊不许按名字猜）', () => {
+    const snapshot = configSnapshotFrom(live)
+    expect(snapshot.envFacts).toEqual([
+      { env: 'dev', allowsWrite: true, requiresConfirm: false },
+      { env: 'test-shared', allowsWrite: true, requiresConfirm: true },
+      { env: 'test-isolated', allowsWrite: true, requiresConfirm: false },
+      { env: 'production', allowsWrite: false, requiresConfirm: true },
+      { env: 'unknown', allowsWrite: false, requiresConfirm: true },
+    ])
   })
 
   it('两档能力给出「声明的变量名 + 是否已授权 + 怎么授权」；没接入闸门的**键缺席**（不是 null 占位）', () => {
@@ -449,6 +424,119 @@ describe('mergeSection：兜底路径的深合并（数组与标量一律替换�
 /* ================================================================== *
  * 三、路由：围栏、恢复入口、失败审计、热应用
  * ================================================================== */
+
+describe('POST /api/dsh-devdata/project-context：只读模型预检', () => {
+  const PATH = '/api/dsh-devdata/project-context'
+
+  it('成功结果与纯模型一致：归一化、缺省开关；停用和无 settings 时仍可用', async () => {
+    const host = makeHost({ settings: false })
+    host.mount(seeded({ enabled: false }))
+    const input = { root: ' /nonexistent/devdata-preflight/../project ', project: ' demo-app ' }
+    const res = await callRoute(host, PATH, { method: 'POST', body: input })
+    expect(res.status).toBe(200)
+    expect(res.json).toEqual(normalizeProjectContext(input))
+    expect(res.json?.context).toEqual({
+      root: '/nonexistent/project', project: 'demo-app', mode: 'readonly',
+      enabled: { environment: false, data: false, front: false }, readOnly: true,
+    })
+    expect(host.names()).toEqual([])
+  })
+
+  it('release + 三面启用仍只读；成功与失败均不改配置、工具或审计文件', async () => {
+    const file = join(tempDir(), 'audit.jsonl')
+    writeFileSync(file, 'unchanged\n')
+    const host = makeHost()
+    host.mount(seeded({ auditFile: file }))
+    const before = await call(host)
+    const stored = JSON.stringify(host.stored)
+    const tools = host.names()
+    const input = { root: CWD, project: 'release-app', mode: 'release', enabled: { environment: true, data: true, front: true } }
+    const res = await callRoute(host, PATH, { method: 'POST', body: input })
+    expect(res.status).toBe(200)
+    expect(res.json).toEqual(normalizeProjectContext(input))
+    const refused = await callRoute(host, PATH, { method: 'POST', body: { ...input, writeCapability: { env: 'CI' }, targets: [] } })
+    expect(refused.status).toBe(400)
+    expect(refused.json?.context).toBeNull()
+    expect(refused.json?.problems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: 'writeCapability' }), expect.objectContaining({ field: 'targets' }),
+    ]))
+    expect(JSON.stringify(host.stored)).toBe(stored)
+    expect(await call(host)).toEqual(before)
+    expect(host.names()).toEqual(tools)
+    expect(readFileSync(file, 'utf8')).toBe('unchanged\n')
+  })
+
+  it('逐字段问题与模型一致，不把非法输入产成 context', async () => {
+    const host = makeHost()
+    host.mount(seeded())
+    const input = { root: './relative', project: '../other', mode: 'write', enabled: { data: 'true', extra: true }, readOnly: false }
+    const res = await callRoute(host, PATH, { method: 'POST', body: input })
+    expect(res.status).toBe(400)
+    expect(res.json).toEqual(normalizeProjectContext(input))
+    expect((res.json?.problems as Array<{ field: string }>).map((problem) => problem.field))
+      .toEqual(['readOnly', 'root', 'project', 'mode', 'enabled.extra', 'enabled.data'])
+  })
+
+  it.each([
+    { remoteAddress: '10.0.0.1' },
+    { host: '192.0.2.1:3080' },
+    { headers: { 'sec-fetch-site': 'cross-site' } },
+    { headers: { origin: 'http://example.invalid:3080' } },
+  ])('严格围栏先于方法与 JSON：%j', async (options) => {
+    const host = makeHost()
+    host.mount(seeded())
+    const res = await callRoute(host, PATH, { ...options, method: 'DELETE', raw: '{broken' })
+    expect(res).toEqual({ status: 403, json: { error: 'forbidden: loopback-only' } })
+  })
+
+  it('只允许 POST；坏 JSON、空体、非对象与超大 body 沿用 400 风格', async () => {
+    const host = makeHost()
+    host.mount(seeded())
+    for (const method of ['GET', 'PUT', 'DELETE']) {
+      expect(await callRoute(host, PATH, { method }))
+        .toEqual({ status: 405, json: { error: `method not allowed: ${method}` } })
+    }
+    for (const raw of ['', '{broken', 'null', '[]', 'true', '{"root":"' + 'x'.repeat(1024 * 1024) + '"}']) {
+      expect(await callRoute(host, PATH, { method: 'POST', raw }))
+        .toEqual({ status: 400, json: { error: 'invalid JSON body' } })
+    }
+  })
+
+  it('回环无来源证明可用；JSON 响应保持 no-store / nosniff', async () => {
+    const host = makeHost()
+    host.mount(seeded())
+    const req = makeReq({ method: 'POST', body: { root: CWD, project: 'demo' }, headers: { 'sec-fetch-site': '' } })
+    const res = makeRes()
+    await host.routes.get(PATH)!.handler(req as never, res as never)
+    expect(res.status).toBe(200)
+    expect(res.headers['cache-control']).toBe('no-store')
+    expect(res.headers['x-content-type-options']).toBe('nosniff')
+  })
+
+  /*
+   * **旧 API 原样**：`POST /api/dsh-devdata/preflight` 是**另加**的一条，这一条的行为一个字都不许动
+   * （2026-10-05）。所以这里钉住它与新路由的分工——它**不看配置**（停用、没有目标、没有 settings
+   * 都照常 200），也**不认** `target`（那是新路由的字段，在这里是未知字段 → 400）。
+   * 判据见 `docs/devkit-config.md` 的「模型 MVP」那一行。
+   */
+  it('**不看配置**：停用 + 没有任何目标时照样 200（新路由 `/preflight` 才会因配置不可运行而失败）', async () => {
+    const host = makeHost({ settings: false })
+    host.mount({ enabled: false, targets: [] })
+    const res = await callRoute(host, PATH, { method: 'POST', body: { root: CWD, project: 'demo' } })
+    expect(res.status).toBe(200)
+    expect(res.json).toEqual(normalizeProjectContext({ root: CWD, project: 'demo' }))
+    expect(host.routes.get('/api/dsh-devdata/preflight')?.kind).toBe('exact')
+  })
+
+  it('`target` 是**新路由**的字段：旧路由按未知字段拒（两条 API 不混）', async () => {
+    const host = makeHost()
+    host.mount(seeded())
+    const res = await callRoute(host, PATH, { method: 'POST', body: { root: CWD, project: 'demo', target: 'redis-248' } })
+    expect(res.status).toBe(400)
+    expect(res.json?.context).toBeNull()
+    expect((res.json?.problems as Array<{ field: string }>).map((problem) => problem.field)).toEqual(['target'])
+  })
+})
 
 describe('GET/POST /api/dsh-devdata/config', () => {
   it('GET → 200 快照；`persisted` 如实反映有没有 settings 服务', async () => {
@@ -641,5 +729,196 @@ describe('GET/POST /api/dsh-devdata/config', () => {
     await call(host, { method: 'POST', body: { targets: [{ id: 'x', engine: 'redis' }] } })
     const warned = host.loggerLines().filter((line) => line.startsWith('warn '))
     expect(warned.some((line) => line.includes('拒绝 config.save') && line.includes('CONFIRMATION_REQUIRED'))).toBe(true)
+  })
+})
+
+/* ================================================================== *
+ * 证据链总览：`POST /api/dsh-devdata/evidence`（P13 第一版，2026-10-04）
+ *
+ * 这条路上的东西**一个都不许改**：它只读项目里的三份清单（存在性 / 可否解析 / 项目名一致 /
+ * 条目数），不连目标、不写文件。所以这里要钉的不是「权限够不够」，而是两件相反的事：
+ *   ① **护栏还在**（回环围栏、方法、坏 body）；
+ *   ② **不装**——路径写错与清单缺失分开报；Jenkins 那一格如实说「未接」；
+ *      参数校验在读文件之前（浏览器是本模块新增的调用方）。
+ * ================================================================== */
+
+describe('POST /api/dsh-devdata/evidence', () => {
+  const PATH = '/api/dsh-devdata/evidence'
+  const PROJECT = 'cdqas'
+
+  /** 一个项目目录：只有 `verify/<项目>.yaml`（另两面故意留空，用来看「缺失」那两格）。 */
+  function evidenceRoot(): string {
+    const root = tempDir()
+    mkdirSync(join(root, 'verify'), { recursive: true })
+    writeFileSync(
+      join(root, 'verify', `${PROJECT}.yaml`),
+      ['version: 1', `project: ${PROJECT}`, 'assertions:', '  - id: redis-alive', '    target: redis-248', '    statement: PING', '    expect: { eq: PONG }', '    severity: fail', ''].join('\n'),
+    )
+    return root
+  }
+
+  it('回环 POST → 200，报告里三面都有；**没有的清单如实说没有**，Jenkins 说「未接」', async () => {
+    const host = makeHost()
+    host.mount(seeded())
+    const res = await callRoute(host, PATH, { method: 'POST', body: { root: evidenceRoot(), project: PROJECT } })
+    expect(res.status).toBe(200)
+    expect(res.json?.ok).toBe(true)
+    const report = res.json?.report as Record<string, unknown>
+    expect(report.project).toBe(PROJECT)
+    expect(report.jenkins).toEqual({ state: 'unwired' })
+    const faces = report.faces as Array<Record<string, unknown>>
+    expect(faces.map((item) => [item.face, item.state])).toEqual([
+      ['ready', 'missing'],
+      ['verify', 'parsed'],
+      ['web', 'missing'],
+    ])
+    expect(faces[1]?.count).toBe(1)
+    // 三面各自的归属与「看结论要敲哪个工具」都在——总览只给入口，不给结论。
+    expect(faces.map((item) => item.tool)).toEqual(['env_wait', 'devdata_verify', 'site_verify'])
+  })
+
+  it('非回环 → 403；GET → 405；坏 JSON → 400（围栏先于一切，与 `/config` 同一套）', async () => {
+    const host = makeHost()
+    host.mount(seeded())
+    const forbidden = await callRoute(host, PATH, { method: 'POST', body: {}, remoteAddress: '10.0.0.1' })
+    expect(forbidden.status).toBe(403)
+    expect(forbidden.json?.error).toBe('forbidden: loopback-only')
+
+    const wrongMethod = await callRoute(host, PATH, { method: 'GET' })
+    expect(wrongMethod.status).toBe(405)
+
+    const broken = await callRoute(host, PATH, { method: 'POST', raw: '{not json' })
+    expect(broken.status).toBe(400)
+  })
+
+  it('路径写错与项目名不合法 → 400 带**各自的码**（不是「三份清单都没有」）', async () => {
+    const host = makeHost()
+    host.mount(seeded())
+    const badRoot = await callRoute(host, PATH, { method: 'POST', body: { root: '/definitely/not/here', project: PROJECT } })
+    expect(badRoot.status).toBe(400)
+    expect(badRoot.json?.code).toBe('BAD_ROOT')
+
+    const badProject = await callRoute(host, PATH, { method: 'POST', body: { root: evidenceRoot(), project: '../evil' } })
+    expect(badProject.status).toBe(400)
+    expect(badProject.json?.code).toBe('BAD_PROJECT')
+  })
+
+  it('这一读也进审计（成功与拒绝各一行，`targetId` 记 `card`：调用方就是那张卡）', async () => {
+    const file = join(tempDir(), 'audit.jsonl')
+    const host = makeHost()
+    host.mount(seeded({ auditFile: file }))
+    await callRoute(host, PATH, { method: 'POST', body: { root: evidenceRoot(), project: PROJECT } })
+    await callRoute(host, PATH, { method: 'POST', body: { root: evidenceRoot(), project: 'a/b' } })
+    const lines = readFileSync(file, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    expect(lines.map((line) => [line.action, line.allowed])).toEqual([
+      ['evidence.read', true],
+      ['evidence.read', false],
+    ])
+    expect(lines[0]?.targetId).toBe('card')
+  })
+
+  it('**插件停用时这条路由照常能用**（与 `/config` 同口径：卡片是重新启用的唯一 UI 入口）', async () => {
+    const host = makeHost()
+    host.mount(seeded({ enabled: false }))
+    expect(host.names()).toEqual([])
+    const res = await callRoute(host, PATH, { method: 'POST', body: { root: evidenceRoot(), project: PROJECT } })
+    expect(res.status).toBe(200)
+  })
+})
+
+/* ================================================================== *
+ * 只读数据浏览面：`POST /api/dsh-devdata/query`（P14 第一版，2026-10-04）
+ *
+ * 这条路的全部要点只有一句：**面板不是特权路径**。路由不新写判据，它把请求交给
+ * `invokeRedisCommand`——与 agent 的 `devdata_redis_command` 同一个函数。所以本文件的用例盯的是
+ * 「两边会不会漂开」：同一个写命令，工具面与面板必须得到**同一个拒绝码**；而作用域门照旧按调用方
+ * 给的那个 `cwd` 判（卡片上那个「项目根」），不拿浏览器猜的路径。
+ * ================================================================== */
+
+describe('POST /api/dsh-devdata/query', () => {
+  const PATH = '/api/dsh-devdata/query'
+
+  it('非回环 → 403；GET → 405；坏 JSON → 400', async () => {
+    const host = makeHost()
+    host.mount(seeded())
+    const forbidden = await callRoute(host, PATH, { method: 'POST', body: {}, remoteAddress: '10.0.0.1' })
+    expect(forbidden.status).toBe(403)
+    const wrongMethod = await callRoute(host, PATH, { method: 'GET' })
+    expect(wrongMethod.status).toBe(405)
+    const broken = await callRoute(host, PATH, { method: 'POST', raw: '{not json' })
+    expect(broken.status).toBe(400)
+  })
+
+  it('三个入参各自有码：缺目标 / 缺命令 / 作用域基准不是绝对路径（恢复路径是「把输入框填对」）', async () => {
+    const host = makeHost()
+    host.mount(seeded())
+    const noTarget = await callRoute(host, PATH, { method: 'POST', body: { command: 'DBSIZE', cwd: CWD } })
+    expect([noTarget.status, noTarget.json?.code]).toEqual([400, 'BAD_TARGET'])
+    const noCommand = await callRoute(host, PATH, { method: 'POST', body: { target: 'redis-248', cwd: CWD } })
+    expect([noCommand.status, noCommand.json?.code]).toEqual([400, 'BAD_COMMAND'])
+    const relative = await callRoute(host, PATH, { method: 'POST', body: { target: 'redis-248', command: 'DBSIZE', cwd: 'a/b' } })
+    expect([relative.status, relative.json?.code]).toEqual([400, 'BAD_CWD'])
+  })
+
+  it('目标不存在 / 引擎没有执行通路 → 各自的码（不是「命令解析不出来」那种错诊断）', async () => {
+    const host = makeHost()
+    host.mount(seeded({ targets: [redisTarget(), redisTarget({ id: 'sql-1', engine: 'sqlserver', port: 1433 })] }))
+    const unknown = await callRoute(host, PATH, { method: 'POST', body: { target: 'nope', command: 'PING', cwd: CWD } })
+    expect([unknown.status, unknown.json?.code]).toEqual([400, 'UNKNOWN_TARGET'])
+    const unserved = await callRoute(host, PATH, { method: 'POST', body: { target: 'sql-1', command: 'PING', cwd: CWD } })
+    expect([unserved.status, unserved.json?.code]).toEqual([400, 'ENGINE_NOT_SERVED'])
+  })
+
+  it('★ 与工具面**同一档拒绝码**：未授权的写命令（`SET`）在两边得到同一个码', async () => {
+    const host = makeHost()
+    host.mount(seeded())
+    const viaPanel = await callRoute(host, PATH, { method: 'POST', body: { target: 'redis-248', command: 'SET k v', cwd: CWD } })
+    expect(viaPanel.status).toBe(400)
+    const viaTool = await host.callError('devdata_redis_command', { target: 'redis-248', command: 'SET k v', cwd: CWD })
+    const codeOf = (text) => {
+      const found = /^\[([A-Z_]+)\]/.exec(text)
+      return found === null ? text : found[1]
+    }
+    expect(viaPanel.json?.code).toBe(codeOf(viaTool))
+    // 恢复路径也带出来（判据层那句「怎么开闸门」不该在面板上被丢掉）
+    expect(typeof viaPanel.json?.error).toBe('string')
+  })
+
+  it('★ 作用域门照旧生效：基准是**调用方给的 cwd**，不在 scopeDirs 里就拒', async () => {
+    const host = makeHost()
+    host.mount(seeded())
+    const outside = await callRoute(host, PATH, { method: 'POST', body: { target: 'redis-248', command: 'DBSIZE', cwd: '/tmp' } })
+    expect([outside.status, outside.json?.code]).toEqual([400, 'OUT_OF_SCOPE'])
+  })
+
+  it('审计出口实际异常 → 结构化 AUDIT_FAILED，不返回未审计的观察', async () => {
+    const file = join(tempDir(), 'not-a-directory')
+    writeFileSync(file, 'block parent directory')
+    const host = makeHost()
+    host.mount(seeded({ auditFile: join(file, 'audit.jsonl') }))
+    const result = await callRoute(host, PATH, { method: 'POST', body: { target: 'redis-248', command: 'DBSIZE', cwd: '/outside' } })
+    expect(result.status).toBe(500)
+    expect(result.json).toMatchObject({ code: 'AUDIT_FAILED', category: 'audit' })
+    expect(typeof result.json?.error).toBe('string')
+    expect(result.json?.hint).toContain('尚未验证')
+    expect(result.json?.ok).not.toBe(true)
+    expect(result.json?.text).toBeUndefined()
+  })
+
+  it('被拒也进审计（与工具面同一本账：`allowed:false` + 码 + 解析出的动作名）', async () => {
+    const file = join(tempDir(), 'audit.jsonl')
+    const host = makeHost()
+    host.mount(seeded({ auditFile: file }))
+    await callRoute(host, PATH, { method: 'POST', body: { target: 'redis-248', command: 'SET k v', cwd: CWD } })
+    const lines = readFileSync(file, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    expect(lines).toHaveLength(1)
+    expect([lines[0]?.action, lines[0]?.allowed]).toEqual(['set', false])
+    expect(lines[0]?.targetId).toBe('redis-248')
   })
 })

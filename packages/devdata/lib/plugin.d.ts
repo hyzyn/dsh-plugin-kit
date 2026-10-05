@@ -61,6 +61,7 @@ export interface Config {
         host?: string;
         port?: number;
         db?: number;
+        dbs?: number[];
         credentialRef?: string;
         maxScanCount?: number;
         writeCapability?: {
@@ -218,7 +219,11 @@ export declare function capabilitySnapshot(spec: CapabilitySpec): Record<string,
  *
  *   - 每个目标的两档能力（`capabilitySnapshot`）——**只读**，写入路径一律拒（见 `CAPABILITY_FIELDS`）；
  *   - `engines` / `envs`：枚举的**唯一真相在宿主侧**（`operations.ts` / `env.ts`），卡片拿它渲染
- *     下拉框，而不是自己抄一份字面量（抄一份必然漂）。
+ *     下拉框，而不是自己抄一份字面量（抄一份必然漂）；
+ *   - `envFacts`：每一档环境**能不能写**、**写要不要逐次确认**（同一个 `env.ts` 的档位表）。
+ *     卡片用它渲染「可写 / 写需确认 / 只读」的胶囊——**这层事实不能让卡片按环境名猜**：
+ *     `test-shared` 与 `test-isolated` 光看名字都像「测试」，而写权限正好相反
+ *     （`test-shared` 属「原则允许但要逐次确认」，`test-isolated` 直接放行）。
  *
  * `credentialRef` 是**引用**不是口令（值在凭据服务/文件/环境里），所以可以照原样给卡片。
  */

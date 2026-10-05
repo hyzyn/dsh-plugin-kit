@@ -40,26 +40,91 @@ window.__ModuleLoader__.load({
      * 一起回落 `unset`，而 `border-style` 的初始值就是 `none`）——框会**直接消失**，而布局类
      * 声明照常生效。名字表是生成物 `scripts/fixtures/dsh-theme-tokens.json`，判据在
      * `scripts/client-lint.mjs` 的检查 ③。
+     *
+     * 版式与 `devdata` 那张卡同一套：**面板 → 目标行 → 只读档**三层，字段走两列栅格
+     * （窄窗口回落单列），主色只出现在「保存」。
+     *
+     * 三条**不能动**的约束（`scripts/verify-devenv-card.mjs` 的 ㉓ 按它们定位）：
+     *   - 「+ 添加目标」按钮必须在编辑器那层 `.dv_card` 里（脚本用 `add.closest('.dv_card')` 找它，
+     *     为的是**确认框不能在标量那一层**被先命中）；
+     *   - 目标行的 5 个字段必须带 `dv_input` 且**顺序不变**（id / 文案 / kind / 连接簿条目 / 作用域）；
+     *   - 编辑器那层里**不许出现别的复选框**（`editor.querySelector('input[type="checkbox"]')`）。
      */
     const CSS = [
-      '.dv_card{display:flex;flex-direction:column;gap:10px;max-width:760px;color:var(--dsw-alias-label-primary)}',
-      '.dv_head{display:flex;flex-direction:column;gap:4px}',
-      '.dv_name{margin:0;font-size:15px;font-weight:600}',
-      '.dv_desc{margin:0;font-size:13px;color:var(--dsw-alias-label-tertiary)}',
-      '.dv_field{display:flex;flex-direction:column;gap:4px;margin:0}',
-      '.dv_row{display:flex;align-items:center;gap:8px}',
-      '.dv_label{font-size:13px;font-weight:500}',
-      '.dv_input{padding:4px 8px;border:1px solid var(--dsw-alias-border-l4);border-radius:6px;background:var(--dsw-specific-input-major);color:inherit;font-size:13px}',
-      '.dv_hint{margin:0;font-size:12px;color:var(--dsw-alias-label-tertiary)}',
-      '.dv_list{display:flex;flex-direction:column;gap:6px;margin:0;padding:0;list-style:none}',
-      '.dv_item{padding:6px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;font-size:12px;display:flex;flex-direction:column;gap:4px}',
-      '.dv_itemName{font-weight:600}',
-      '.dv_actions{display:flex;align-items:center;gap:8px}',
-      '.dv_remove{padding:2px 8px;border:1px solid var(--dsw-alias-border-l4);border-radius:6px;background:transparent;color:inherit;cursor:pointer;font-size:12px}',
-      '.dv_save{padding:4px 12px;border:1px solid var(--dsw-alias-border-l4);border-radius:6px;background:var(--dsw-specific-input-major);color:inherit;cursor:pointer;font-size:13px}',
-      '.dv_msg{font-size:12px}',
-      '.dv_msgOk{color:var(--dsw-alias-label-tertiary)}',
-      '.dv_msgErr{color:var(--dsw-alias-state-error-primary, #d33)}',
+      '.dv_card{display:flex;flex-direction:column;gap:14px;max-width:880px;color:var(--dsw-alias-label-primary);font-size:13px}',
+
+      /* 头部 */
+      '.dv_head{display:flex;flex-direction:column;gap:3px}',
+      '.dv_name{margin:0;font-size:15px;font-weight:600;letter-spacing:.01em}',
+      '.dv_desc{margin:0;font-size:12px;line-height:1.55;color:var(--dsw-alias-label-tertiary)}',
+
+      /* 分组面板 */
+      '.dv_panel{display:flex;flex-direction:column;gap:12px;padding:14px;border:1px solid var(--dsw-alias-settings-card-stroke);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-settings-card-fill)}',
+      '.dv_panelHead{display:flex;align-items:center;gap:8px}',
+      '.dv_panelTitle{margin:0;font-size:13px;font-weight:600}',
+      '.dv_count{padding:0 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;font-size:11px;line-height:17px;color:var(--dsw-alias-label-tertiary)}',
+
+      /* 表单栅格：固定两列；`dv_wide` 给长文本字段（URL / 目录清单）占满一行 */
+      '.dv_grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 12px}',
+      '@media (max-width:640px){.dv_grid{grid-template-columns:minmax(0,1fr)}}',
+      '.dv_wide{grid-column:1/-1}',
+      '.dv_field{display:flex;flex-direction:column;gap:5px;margin:0;min-width:0}',
+      '.dv_label{font-size:12px;font-weight:500;line-height:16px;color:var(--dsw-alias-label-secondary)}',
+      '.dv_hint{margin:0;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}',
+
+      /* 输入控件 */
+      '.dv_input{box-sizing:border-box;width:100%;padding:6px 9px;border:1px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-sm);background:var(--dsw-specific-input-major);color:inherit;font-size:13px;line-height:18px}',
+      '.dv_input:hover:not(:disabled){border-color:var(--dsw-alias-label-dimmed)}',
+      '.dv_input:focus,.dv_input:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary);outline-offset:1px}',
+      '.dv_input:disabled{opacity:.55;cursor:not-allowed}',
+
+      /* 开关 */
+      '.dv_switch{display:flex;align-items:flex-start;gap:9px;cursor:pointer}',
+      '.dv_switch input{width:14px;height:14px;margin:1px 0 0;flex:none;accent-color:var(--dsw-alias-brand-primary);cursor:pointer}',
+      '.dv_switchText{display:flex;flex-direction:column;gap:2px;min-width:0}',
+
+      /* 列表（目标 / 写闸门 / 指纹三处共用同一套行样式） */
+      '.dv_list{display:flex;flex-direction:column;gap:10px;margin:0;padding:0;list-style:none}',
+      '.dv_item{display:flex;flex-direction:column;gap:10px;padding:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-3)}',
+      '.dv_itemHead{display:flex;align-items:center;gap:8px;min-height:22px}',
+      '.dv_ordinal{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;flex:none;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;background:var(--dsw-alias-bg-layer-2);font-size:11px;color:var(--dsw-alias-label-tertiary)}',
+      '.dv_itemName{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+
+      /* 状态胶囊：一个色 + 一个点 */
+      '.dv_chip{display:inline-flex;align-items:center;gap:5px;flex:none;padding:1px 8px;border:1px solid currentColor;border-radius:999px;font-size:11px;line-height:16px}',
+      '.dv_dot{width:5px;height:5px;flex:none;border-radius:50%;background:currentColor}',
+      '.dv_chipOk{color:var(--dsw-alias-state-success-primary)}',
+      '.dv_chipWarn{color:var(--dsw-alias-state-warn-label)}',
+      '.dv_chipIdle{color:var(--dsw-alias-label-tertiary)}',
+
+      /* 只读详情块：写闸门那一段的两列网格（名字一列、口径在右） */
+      '.dv_gate{display:grid;grid-template-columns:minmax(0,180px) 1fr;gap:2px 10px;align-items:baseline;margin:0}',
+      '.dv_gateName{font-family:var(--dsw-font-markdown-code-font-family);font-size:12px;color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere;line-height:16px}',
+      '.dv_gateMeta{margin:0;grid-column:2;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}',
+      '.dv_key{font-family:var(--dsw-font-markdown-code-font-family);font-size:12px;color:var(--dsw-alias-label-secondary)}',
+
+      /* 空态与确认提示 */
+      '.dv_empty{margin:0;padding:16px;border:1px dashed var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm);font-size:12px;line-height:1.6;color:var(--dsw-alias-label-tertiary);text-align:center}',
+      '.dv_confirm{display:flex;align-items:flex-start;gap:9px;padding:10px 12px;border:1px solid var(--dsw-alias-border-l2);border-left:3px solid var(--dsw-alias-state-warn-primary);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2);cursor:pointer}',
+      '.dv_confirm input{width:14px;height:14px;margin:1px 0 0;flex:none;accent-color:var(--dsw-alias-brand-primary);cursor:pointer}',
+
+      /* 按钮 */
+      '.dv_btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:6px 14px;border:1px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font-size:13px;line-height:18px;cursor:pointer;transition:background .16s,border-color .16s}',
+      '.dv_btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}',
+      '.dv_btnGhost{border-style:dashed;background:transparent;color:var(--dsw-alias-label-secondary)}',
+      '.dv_addBtn{align-self:flex-start}',
+      '.dv_btnPrimary{border-color:transparent;background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-inverted);font-weight:500}',
+      '.dv_btnPrimary:hover:not(:disabled){background:var(--dsw-alias-button-primary-hover)}',
+      '.dv_btnPrimary:disabled{border-color:transparent;background:var(--dsw-alias-button-primary-dimmed);color:var(--dsw-alias-label-tertiary);cursor:default}',
+      '.dv_remove{margin-left:auto;flex:none;padding:3px 10px;border:1px solid transparent;border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-tertiary);font-size:12px;cursor:pointer}',
+      '.dv_remove:hover{background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary)}',
+
+      /* 底部动作条 */
+      '.dv_actions{display:flex;align-items:center;gap:12px;padding-top:12px;border-top:1px solid var(--dsw-alias-border-l1)}',
+      '.dv_msg{margin:0;font-size:12px}',
+      '.dv_msgOk{color:var(--dsw-alias-state-success-primary)}',
+      '.dv_msgErr{color:var(--dsw-alias-state-error-primary)}',
+      '.dv_spacer{flex:1}',
     ]
 
     let styleEl
@@ -91,15 +156,23 @@ window.__ModuleLoader__.load({
       'btn.removeTarget': '删除',
       'btn.save': '保存',
       'btn.saving': '保存中…',
-      'field.targetId': 'id（工具按它选目标）',
+      /* 字段文案拆成「短标签 + 灰色口径小字」两键：标签一眼扫得过，口径不丢（见 card.desc 上方说明） */
+      'field.targetId': 'id',
+      'field.targetId.hint': '工具按它选目标',
       'field.targetLabel': '名字',
       'field.targetKind': '来源',
-      'field.targetBook': 'tty 连接簿条目名（kind=ssh 时必填）',
-      'field.targetScope': '作用域目录（逗号分隔）',
-      'field.auditFile': '持久审计文件（留空 = 只进宿主日志）',
-      'field.probeTimeoutMs': 'HTTP 探针超时（毫秒）',
-      'field.waitTimeoutMs': 'env_wait 缺省总超时（毫秒）',
-      'field.pollIntervalMs': '轮询间隔（毫秒）',
+      'field.targetBook': 'tty 连接簿条目名',
+      'field.targetBook.hint': 'kind = ssh 时必填',
+      'field.targetScope': '作用域目录',
+      'field.targetScope.hint': '逗号分隔；空 = 处处拒绝（不是「不限制」）',
+      'field.auditFile': '持久审计文件',
+      'field.auditFile.hint': '留空 = 只进宿主日志',
+      'field.probeTimeoutMs': 'HTTP 探针超时',
+      'field.probeTimeoutMs.hint': '毫秒',
+      'field.waitTimeoutMs': 'env_wait 缺省总超时',
+      'field.waitTimeoutMs.hint': '毫秒',
+      'field.pollIntervalMs': '轮询间隔',
+      'field.pollIntervalMs.hint': '毫秒',
       'option.kindLocal': 'local（在宿主这台机器上跑 docker）',
       'option.kindSsh': 'ssh（经连接簿连过去）',
       'check.enabled': '启用本插件',
@@ -119,7 +192,7 @@ window.__ModuleLoader__.load({
       'meta.hostKey': '{host}:{port} · 指纹 {count} 条',
       'msg.saved': '已保存',
       'msg.targetsSaved': '目标已保存（进审计）',
-      'msg.savedNotPersisted': '已在本进程生效，但宿主没有 settings 服务，**没有落盘**',
+      'msg.savedNotPersisted': '已在本进程生效，但宿主没有 settings 服务，没有落盘',
       'msg.targetsNeedConfirm': '改目标要先勾选下面那个确认框：它会影响「agent 能用哪些目标、在哪些目录里动手」。',
       'msg.loading': '正在读取配置…',
       'msg.loadFailed': '读取配置失败：',
@@ -136,15 +209,22 @@ window.__ModuleLoader__.load({
       'btn.removeTarget': 'Remove',
       'btn.save': 'Save',
       'btn.saving': 'Saving…',
-      'field.targetId': 'id (tools pick the target by it)',
+      'field.targetId': 'id',
+      'field.targetId.hint': 'Tools pick the target by it',
       'field.targetLabel': 'Name',
       'field.targetKind': 'Source',
-      'field.targetBook': 'tty connection book entry (required when kind=ssh)',
-      'field.targetScope': 'Scope dirs (comma separated)',
-      'field.auditFile': 'Durable audit file (empty = host log only)',
-      'field.probeTimeoutMs': 'HTTP probe timeout (ms)',
-      'field.waitTimeoutMs': 'env_wait default total timeout (ms)',
-      'field.pollIntervalMs': 'Poll interval (ms)',
+      'field.targetBook': 'tty connection book entry',
+      'field.targetBook.hint': 'Required when kind = ssh',
+      'field.targetScope': 'Scope dirs',
+      'field.targetScope.hint': 'Comma separated; empty = deny everywhere (not "unrestricted")',
+      'field.auditFile': 'Durable audit file',
+      'field.auditFile.hint': 'Empty = host log only',
+      'field.probeTimeoutMs': 'HTTP probe timeout',
+      'field.probeTimeoutMs.hint': 'Milliseconds',
+      'field.waitTimeoutMs': 'env_wait default total timeout',
+      'field.waitTimeoutMs.hint': 'Milliseconds',
+      'field.pollIntervalMs': 'Poll interval',
+      'field.pollIntervalMs.hint': 'Milliseconds',
       'option.kindLocal': 'local (run docker on the host machine)',
       'option.kindSsh': 'ssh (connect through the connection book)',
       'check.enabled': 'Enable this plugin',
@@ -164,7 +244,7 @@ window.__ModuleLoader__.load({
       'meta.hostKey': '{host}:{port} · {count} fingerprints',
       'msg.saved': 'Saved',
       'msg.targetsSaved': 'Targets saved (audited)',
-      'msg.savedNotPersisted': 'Applied in this process, but the host has no settings service — **nothing was persisted**',
+      'msg.savedNotPersisted': 'Applied in this process, but the host has no settings service — nothing was persisted',
       'msg.targetsNeedConfirm': 'Tick the confirmation box first: this changes which targets, and which dirs, the agent may touch.',
       'msg.loading': 'Loading configuration…',
       'msg.loadFailed': 'Failed to load configuration: ',
@@ -324,9 +404,9 @@ window.__ModuleLoader__.load({
           })
       }
 
-      const toggle = (key, label) =>
+      const toggle = (key, label, hint) =>
         jsxs('label', {
-          className: 'dv_row',
+          className: 'dv_switch',
           children: [
             jsx('input', {
               type: 'checkbox',
@@ -336,14 +416,20 @@ window.__ModuleLoader__.load({
                 setField(key, event.target.checked)
               },
             }),
-            jsx('span', { className: 'dv_label', children: label }),
+            jsxs('span', {
+              className: 'dv_switchText',
+              children: [
+                jsx('span', { className: 'dv_label', children: label }),
+                hint === undefined ? null : jsx('span', { className: 'dv_hint', children: hint }),
+              ],
+            }),
           ],
         })
 
-      /** 文本 / 数字字段（数字字段的界由宿主再判一遍：非法值一律 400，不先落地）。 */
-      const scalarField = (key, label, numeric) =>
+      /** 文本 / 数字字段（数字字段的界由宿主再判一遍：非法值一律 400，不先落地）。`wide` = 占满整行。 */
+      const scalarField = (key, label, numeric, hint, wide) =>
         jsxs('label', {
-          className: 'dv_field',
+          className: wide === true ? 'dv_field dv_wide' : 'dv_field',
           children: [
             jsx('span', { className: 'dv_label', children: label }),
             jsx('input', {
@@ -355,13 +441,14 @@ window.__ModuleLoader__.load({
                 setField(key, numeric === true ? Number(event.target.value) : event.target.value)
               },
             }),
+            hint === undefined ? null : jsx('span', { className: 'dv_hint', children: hint }),
           ],
         })
 
-      /** 目标草稿的一个字段（标签 + 输入框）。 */
-      const targetField = (index, key, label) =>
+      /** 目标草稿的一个字段（短标签 + 输入框 + 可选小字）。 */
+      const targetField = (index, key, label, hint, wide) =>
         jsxs('label', {
-          className: 'dv_field',
+          className: wide === true ? 'dv_field dv_wide' : 'dv_field',
           children: [
             jsx('span', { className: 'dv_label', children: label }),
             jsx('input', {
@@ -372,6 +459,7 @@ window.__ModuleLoader__.load({
                 setTargetField(index, key, event.target.value)
               },
             }),
+            hint === undefined ? null : jsx('span', { className: 'dv_hint', children: hint }),
           ],
         })
 
@@ -395,13 +483,46 @@ window.__ModuleLoader__.load({
           ],
         })
 
+      /*
+       * 写闸门快照按 targetId 索引：目标行头上那颗胶囊与下面那张只读表用的是**同一份事实**
+       * （`config.writeGates`，宿主侧 `writeGateSnapshot`）。没有条目 = 没声明写闸门。
+       */
+      const gates = config !== null && Array.isArray(config.writeGates) ? config.writeGates : []
+      const gateByTarget = {}
+      for (const gate of gates) {
+        if (gate !== null && typeof gate === 'object' && typeof gate.targetId === 'string') gateByTarget[gate.targetId] = gate
+      }
+
+      /** 一档写闸门的胶囊（判据只有一条：有没有声明、声明了有没有授权）。 */
+      const gateChip = (gate) => {
+        if (gate === undefined || gate.declared !== true) {
+          return jsxs('span', {
+            className: 'dv_chip dv_chipIdle',
+            children: [jsx('span', { className: 'dv_dot' }), t('status.notDeclared')],
+          })
+        }
+        const granted = gate.granted === true
+        return jsxs('span', {
+          className: 'dv_chip ' + (granted ? 'dv_chipOk' : 'dv_chipWarn'),
+          title: String(gate.env),
+          children: [jsx('span', { className: 'dv_dot' }), granted ? t('status.granted') : t('status.notGranted')],
+        })
+      }
+
       const targetEditor = jsxs('div', {
-        className: 'dv_card',
+        // **这一层必须叫 `dv_card`**：验收脚本 ㉓ 用 `add.closest('.dv_card')` 定位编辑器
+        className: 'dv_card dv_panel',
         children: [
-          jsx('p', { className: 'dv_label', children: t('section.targets') }),
+          jsxs('div', {
+            className: 'dv_panelHead',
+            children: [
+              jsx('span', { className: 'dv_panelTitle', children: t('section.targets') }),
+              jsx('span', { className: 'dv_count', children: String(targets.length) }),
+            ],
+          }),
           jsx('p', { className: 'dv_hint', children: t('hint.targets') }),
           targets.length === 0
-            ? jsx('p', { className: 'dv_hint', children: t('list.emptyTargets') })
+            ? jsx('p', { className: 'dv_empty', children: t('list.emptyTargets') })
             : jsx('ul', {
                 className: 'dv_list',
                 children: targets.map((row, index) =>
@@ -411,9 +532,11 @@ window.__ModuleLoader__.load({
                       className: 'dv_item',
                       children: [
                         jsxs('div', {
-                          className: 'dv_row',
+                          className: 'dv_itemHead',
                           children: [
+                            jsx('span', { className: 'dv_ordinal', children: String(index + 1) }),
                             jsx('span', { className: 'dv_itemName', children: row.id.trim() === '' ? t('field.targetId') : row.id }),
+                            gateChip(gateByTarget[row.id.trim()]),
                             jsx('button', {
                               type: 'button',
                               className: 'dv_remove',
@@ -425,11 +548,21 @@ window.__ModuleLoader__.load({
                             }),
                           ],
                         }),
-                        targetField(index, 'id', t('field.targetId')),
-                        targetField(index, 'label', t('field.targetLabel')),
-                        targetKind(index),
-                        targetField(index, 'book', t('field.targetBook')),
-                        targetField(index, 'scopeDirs', t('field.targetScope')),
+                        /*
+                         * 这 5 个字段的**顺序就是验收脚本按 `.dv_input` 取的顺序**
+                         * （id / 文案 / kind / 连接簿条目 / 作用域）——栅格只改视觉，不改顺序。
+                         * 作用域是长文本，占满整行（五行三排正好不留空洞）。
+                         */
+                        jsxs('div', {
+                          className: 'dv_grid',
+                          children: [
+                            targetField(index, 'id', t('field.targetId'), t('field.targetId.hint')),
+                            targetField(index, 'label', t('field.targetLabel')),
+                            targetKind(index),
+                            targetField(index, 'book', t('field.targetBook'), t('field.targetBook.hint')),
+                            targetField(index, 'scopeDirs', t('field.targetScope'), t('field.targetScope.hint'), true),
+                          ],
+                        }),
                       ],
                     },
                     'target-' + String(index),
@@ -438,7 +571,7 @@ window.__ModuleLoader__.load({
               }),
           jsx('button', {
             type: 'button',
-            className: 'dv_save',
+            className: 'dv_btn dv_btnGhost dv_addBtn',
             onClick: () => {
               setTargets((rows) => [...rows, { id: '', label: '', kind: 'local', book: '', scopeDirs: '' }])
               setConfirmTargets(false)
@@ -446,8 +579,8 @@ window.__ModuleLoader__.load({
             children: t('btn.addTarget'),
           }),
           targetsDirty
-            ? jsx('label', {
-                className: 'dv_row',
+            ? jsxs('label', {
+                className: 'dv_confirm',
                 children: [
                   jsx('input', {
                     type: 'checkbox',
@@ -469,14 +602,19 @@ window.__ModuleLoader__.load({
        * 三个都不是卡片能写的东西——授权判据在宿主启动环境里，而卡片能写配置（见文件头那张表）。
        * 这一档存在的意义是：用户不用去翻 yaml 就知道**为什么 env_up / env_down 不出现**。
        */
-      const gates = config !== null && Array.isArray(config.writeGates) ? config.writeGates : []
       const writeGatePanel = jsxs('div', {
-        className: 'dv_card',
+        className: 'dv_card dv_panel',
         children: [
-          jsx('p', { className: 'dv_label', children: t('section.writeGate') }),
+          jsxs('div', {
+            className: 'dv_panelHead',
+            children: [
+              jsx('span', { className: 'dv_panelTitle', children: t('section.writeGate') }),
+              jsx('span', { className: 'dv_count', children: String(gates.length) }),
+            ],
+          }),
           jsx('p', { className: 'dv_hint', children: t('hint.writeGateReadonly') }),
           gates.length === 0
-            ? jsx('p', { className: 'dv_hint', children: t('hint.writeGateUndeclared') })
+            ? jsx('p', { className: 'dv_empty', children: t('hint.writeGateUndeclared') })
             : jsx('ul', {
                 className: 'dv_list',
                 children: gates.map((gate, index) =>
@@ -485,29 +623,26 @@ window.__ModuleLoader__.load({
                     {
                       className: 'dv_item',
                       children: [
-                        jsx('span', {
-                          className: 'dv_itemName',
-                          children: typeof gate.label === 'string' && gate.label !== '' ? gate.label : String(gate.targetId),
+                        jsxs('div', {
+                          className: 'dv_itemHead',
+                          children: [
+                            jsx('span', {
+                              className: 'dv_itemName',
+                              children: typeof gate.label === 'string' && gate.label !== '' ? gate.label : String(gate.targetId),
+                            }),
+                            gateChip(gate),
+                          ],
                         }),
                         gate.declared === true
                           ? jsxs('div', {
-                              className: 'dv_card',
+                              className: 'dv_gate',
                               children: [
+                                jsx('span', { className: 'dv_gateName', children: 'writeCapability' }),
                                 jsx('span', { className: 'dv_hint', children: t('meta.envName', { env: String(gate.env) }) }),
-                                jsx('span', {
-                                  className: 'dv_hint',
-                                  children: gate.granted === true ? t('status.granted') : t('status.notGranted'),
-                                }),
-                                jsx('span', { className: 'dv_hint', children: t('meta.howTo', { howTo: String(gate.howTo) }) }),
+                                jsx('p', { className: 'dv_gateMeta', children: t('meta.howTo', { howTo: String(gate.howTo) }) }),
                               ],
                             })
-                          : jsxs('div', {
-                              className: 'dv_card',
-                              children: [
-                                jsx('span', { className: 'dv_hint', children: t('status.notDeclared') }),
-                                jsx('span', { className: 'dv_hint', children: t('hint.writeGateUndeclared') }),
-                              ],
-                            }),
+                          : jsx('p', { className: 'dv_hint', children: t('hint.writeGateUndeclared') }),
                       ],
                     },
                     'gate-' + String(index),
@@ -520,12 +655,18 @@ window.__ModuleLoader__.load({
       /* 指纹记录**只读**列表：host / 端口 / 指纹条数（不给指纹本身，也不给编辑）。 */
       const hostKeys = config !== null && Array.isArray(config.hostKeys) ? config.hostKeys : []
       const hostKeyPanel = jsxs('div', {
-        className: 'dv_card',
+        className: 'dv_card dv_panel',
         children: [
-          jsx('p', { className: 'dv_label', children: t('section.hostKeys') }),
+          jsxs('div', {
+            className: 'dv_panelHead',
+            children: [
+              jsx('span', { className: 'dv_panelTitle', children: t('section.hostKeys') }),
+              jsx('span', { className: 'dv_count', children: String(hostKeys.length) }),
+            ],
+          }),
           jsx('p', { className: 'dv_hint', children: t('hint.hostKeys') }),
           hostKeys.length === 0
-            ? jsx('p', { className: 'dv_hint', children: t('list.emptyHostKeys') })
+            ? jsx('p', { className: 'dv_empty', children: t('list.emptyHostKeys') })
             : jsx('ul', {
                 className: 'dv_list',
                 children: hostKeys.map((record, index) =>
@@ -534,7 +675,7 @@ window.__ModuleLoader__.load({
                     {
                       className: 'dv_item',
                       children: jsx('span', {
-                        className: 'dv_hint',
+                        className: 'dv_key',
                         children: t('meta.hostKey', {
                           host: String(record.host),
                           port: String(record.port),
@@ -564,27 +705,45 @@ window.__ModuleLoader__.load({
             : jsxs('div', {
                 className: 'dv_card',
                 children: [
-                  jsx('p', { className: 'dv_hint', children: t('section.config') }),
-                  toggle('enabled', t('check.enabled')),
-                  toggle('announceToAgent', t('check.announce')),
-                  scalarField('auditFile', t('field.auditFile'), false),
-                  scalarField('probeTimeoutMs', t('field.probeTimeoutMs'), true),
-                  scalarField('waitTimeoutMs', t('field.waitTimeoutMs'), true),
-                  scalarField('pollIntervalMs', t('field.pollIntervalMs'), true),
+                  jsxs('section', {
+                    className: 'dv_panel',
+                    children: [
+                      jsx('div', {
+                        className: 'dv_panelHead',
+                        children: jsx('span', { className: 'dv_panelTitle', children: t('section.config') }),
+                      }),
+                      toggle('enabled', t('check.enabled')),
+                      toggle('announceToAgent', t('check.announce')),
+                      jsxs('div', {
+                        className: 'dv_grid',
+                        children: [
+                          // 四个标量正好两行两列——不给中间那一列留空洞（`wide` 只留给目标行的作用域目录）
+                          scalarField('auditFile', t('field.auditFile'), false, t('field.auditFile.hint')),
+                          scalarField('probeTimeoutMs', t('field.probeTimeoutMs'), true, t('field.probeTimeoutMs.hint')),
+                          scalarField('waitTimeoutMs', t('field.waitTimeoutMs'), true, t('field.waitTimeoutMs.hint')),
+                          scalarField('pollIntervalMs', t('field.pollIntervalMs'), true, t('field.pollIntervalMs.hint')),
+                        ],
+                      }),
+                    ],
+                  }),
                   targetEditor,
                   writeGatePanel,
                   hostKeyPanel,
                   jsxs('div', {
                     className: 'dv_actions',
                     children: [
+                      message.text === '' ? null : jsx('span', {
+                        className: 'dv_msg ' + (message.kind === 'err' ? 'dv_msgErr' : 'dv_msgOk'),
+                        children: message.text,
+                      }),
+                      jsx('span', { className: 'dv_spacer' }),
                       jsx('button', {
                         type: 'button',
-                        className: 'dv_save',
+                        className: 'dv_btn dv_btnPrimary',
                         disabled: busy,
                         onClick: save,
                         children: busy ? t('btn.saving') : t('btn.save'),
                       }),
-                      message.text === '' ? null : jsx('span', { className: 'dv_msg' + (message.kind === 'err' ? ' dv_msgErr' : ' dv_msgOk'), children: message.text }),
                     ],
                   }),
                 ],

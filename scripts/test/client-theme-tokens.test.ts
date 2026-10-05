@@ -183,11 +183,18 @@ describe('反例：把真名改成病名，规则必须报出来', () => {
     expect(found.every((use) => use.line > 0 && use.col > 0)).toBe(true)
   })
 
-  it('devdata 的 --dsw-specific-input-major → --dsw-alias-bg-primary 也会被抓', () => {
+  it('devdata 的 --dsw-specific-input-major → --dsw-alias-bg-primary 也会被抓（**每一处**都要报）', () => {
     const real = read('packages/devdata/client.js')
     const mutated = real.replaceAll('--dsw-specific-input-major', '--dsw-alias-bg-primary')
     expect(mutated).not.toBe(real)
-    expect(unknownIn(mutated).map((use) => use.token)).toEqual(['--dsw-alias-bg-primary', '--dsw-alias-bg-primary'])
+    /*
+     * 条数**现算**，不写死：卡片改版会增删这个变量的用处（2026-10-04 版式重做就把 `.dd_save` 那处
+     * 改成了 `--dsw-alias-bg-layer-1`，写死 `['…','…']` 的断言当成就红了——而红的是断言不是规则）。
+     * 判据要守的性质是「**每一处**都报出来、顺序照原文」，与具体出现几次无关。
+     */
+    const expected = real.match(/--dsw-specific-input-major/g) ?? []
+    expect(expected.length).toBeGreaterThan(0)
+    expect(unknownIn(mutated).map((use) => use.token)).toEqual(expected.map(() => '--dsw-alias-bg-primary'))
   })
 })
 

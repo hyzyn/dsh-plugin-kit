@@ -45,6 +45,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "card-smoke": "node ../../scripts/verify-devdata-card.mjs",
+    "client-smoke": "node scripts/client-smoke.mjs",
     "host-mount-smoke": "node ../../scripts/verify-devdata-host-mount.mjs",
     "lint:client": "node ../../scripts/client-lint.mjs",
     "typecheck": "tsc --noEmit && node ../../scripts/client-lint.mjs",

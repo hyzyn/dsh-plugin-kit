@@ -32,17 +32,21 @@
  * `{ok:false}` 信封：DSH 的工具错误本身就是给模型看的一句话，抛错是最短路径，而且不会出现
  * 「调用方忘了看 ok 字段」这种沉默失败。
  */
-import { basename } from 'node:path';
+import { basename, isAbsolute } from 'node:path';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import z from '@deepseek-ai/schemastery';
 import { bindCapabilitySources, capabilityGrantVia, capabilityHowTo, definePlugin, hasSameOriginProof, isLoopbackRequestStrict, plainConfig, settingsEntryScope, } from '@hyzyn/dsh-kit';
 import { readJsonBody, writeJson } from '@hyzyn/dsh-kit';
 import { credentialStatus, snapshotTarget } from './adjudicate.js';
 import { createJsonlAuditSink, createLoggerAuditSink } from './audit.js';
+import { preflightProjectContext } from './config-preflight.js';
 import { entryTools, unionEntryTools } from './entries.js';
 import { DEV_ENVS, envFacts, normalizeEnv } from './env.js';
+import { readEvidence } from './evidence.js';
+import { KEY_MAX_LENGTH, MAX_DB_INDEX, ROW_BATCH_MAX, TYPE_BATCH_MAX, canBrowseDb, checkAddressable, defaultDb, isDbIndex, parseInfoKeyspace, parseScanReply, previewPlan, previewText, scanCommand, shapeKeyView, } from './keyspace.js';
 import { ENGINES, neverActions, matrixFor } from './operations.js';
-import { DEFAULT_SCAN_COUNT, DEFAULT_TIMEOUT_MS, MAX_SCAN_COUNT, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, normalizeConfig, pickTarget, targetIds, } from './plugin-config.js';
+import { DEFAULT_SCAN_COUNT, DEFAULT_TIMEOUT_MS, MAX_SCAN_COUNT, MAX_TIMEOUT_MS, MIN_TIMEOUT_MS, declaredDbs, normalizeConfig, pickTarget, targetIds, } from './plugin-config.js';
+import { normalizeProjectContext } from './project-context.js';
 import { readOnlySummary, verdictReadOnly } from './readonly-probe.js';
 import { createRedisExecutor, shapeReplyAsResult } from './redis-executor.js';
 import { REJECTION_CODES } from './rejection.js';
@@ -88,6 +92,11 @@ const TARGET_SCHEMA = z.object({
     // 0 = 没写（`z.natural()` 缺省会被填成 undefined，那就与「写了 0」分不开；0 不是合法端口，安全）。
     port: z.natural().default(0),
     db: OPTIONAL_DB,
+    /*
+     * 允许浏览的库号。**缺省是空数组而不是 `[0]`**：空 = 没声明（允许集就只由 `db` 决定），
+     * 两者行为一致，而「没写保持没写」让卡片能如实显示「留空 = 只用上面那个库」。
+     */
+    dbs: z.array(z.natural()).default([]),
     credentialRef: z.string().default(''),
     maxScanCount: z.natural().default(DEFAULT_SCAN_COUNT),
     writeCapability: OPTIONAL_CAPABILITY,
@@ -430,6 +439,29 @@ export function normalizeTargets(input) {
         if (dbRaw !== undefined && host === '') {
             return { error: `${where}.db 给了但没有连接（host/port）——库号只在有连接时有意义` };
         }
+        /*
+         * 允许浏览的库（面板上能点着切的那些）。**校验与 `plugin-config.ts` 的解析层同源**
+         * （`isDbIndex` / `MAX_DB_INDEX`）：两套规则分叉的话，卡片放行的值会在解析层变成一条 problem，
+         * 而下面那段复核会因此红——正是我们想要的失败方式（保存路径不许写出「启动时又报配置问题」的配置）。
+         */
+        const dbsRaw = entry.dbs;
+        if (dbsRaw !== undefined && !Array.isArray(dbsRaw)) {
+            return { error: `${where}.dbs 必须是库号数组（如 [0, 1]；留空 = 只用 db 那一个库）` };
+        }
+        const dbs = [];
+        for (const item of Array.isArray(dbsRaw) ? dbsRaw : []) {
+            if (!isDbIndex(item)) {
+                return {
+                    error: `${where}.dbs 里有不是库号的值 ${JSON.stringify(item)}——库号是 0..${String(MAX_DB_INDEX)} 的整数` +
+                        '（这个上限是配置侧的防呆，不是「这台机器有几个库」：那个只有 CONFIG GET databases 答得出，而它在禁表里）',
+                };
+            }
+            if (!dbs.includes(item))
+                dbs.push(item);
+        }
+        if (dbs.length > 0 && host === '') {
+            return { error: `${where}.dbs 给了但没有连接（host/port）——库号只在有连接时有意义` };
+        }
         out.push({
             id,
             ...(label === '' ? {} : { label }),
@@ -439,6 +471,7 @@ export function normalizeTargets(input) {
             ...(host === '' ? {} : { host }),
             ...(port === undefined ? {} : { port }),
             ...(typeof dbRaw === 'number' ? { db: dbRaw } : {}),
+            ...(dbs.length === 0 ? {} : { dbs }),
             ...(maxScanCount === undefined ? {} : { maxScanCount }),
             ...(credentialRef === '' ? {} : { credentialRef }),
         });
@@ -591,7 +624,11 @@ export function capabilitySnapshot(spec) {
  *
  *   - 每个目标的两档能力（`capabilitySnapshot`）——**只读**，写入路径一律拒（见 `CAPABILITY_FIELDS`）；
  *   - `engines` / `envs`：枚举的**唯一真相在宿主侧**（`operations.ts` / `env.ts`），卡片拿它渲染
- *     下拉框，而不是自己抄一份字面量（抄一份必然漂）。
+ *     下拉框，而不是自己抄一份字面量（抄一份必然漂）；
+ *   - `envFacts`：每一档环境**能不能写**、**写要不要逐次确认**（同一个 `env.ts` 的档位表）。
+ *     卡片用它渲染「可写 / 写需确认 / 只读」的胶囊——**这层事实不能让卡片按环境名猜**：
+ *     `test-shared` 与 `test-isolated` 光看名字都像「测试」，而写权限正好相反
+ *     （`test-shared` 属「原则允许但要逐次确认」，`test-isolated` 直接放行）。
  *
  * `credentialRef` 是**引用**不是口令（值在凭据服务/文件/环境里），所以可以照原样给卡片。
  */
@@ -604,6 +641,10 @@ export function configSnapshotFrom(live) {
         plan: { ...live.plan },
         engines: [...ENGINES],
         envs: [...DEV_ENVS],
+        envFacts: DEV_ENVS.map((env) => {
+            const facts = envFacts(env);
+            return { env: facts.env, allowsWrite: facts.allowsWrite, requiresConfirm: facts.requiresConfirm };
+        }),
         targets: live.targets.map((target) => ({
             id: target.id,
             label: target.label,
@@ -618,6 +659,8 @@ export function configSnapshotFrom(live) {
                     port: target.connection.port,
                     ...(target.connection.db === undefined ? {} : { db: target.connection.db }),
                 }),
+            // 允许浏览的库：**空 = 没声明**（那只允许 `db` 那一个），卡片据此显示成「留空」。
+            ...(target.dbs === undefined || target.dbs.length === 0 ? {} : { dbs: [...target.dbs] }),
             ...(target.credentialRef === undefined ? {} : { credentialRef: target.credentialRef }),
             ...(target.writeCapability === undefined ? {} : { writeCapability: capabilitySnapshot(target.writeCapability) }),
             ...(target.dangerousReadCapability === undefined
@@ -719,16 +762,37 @@ const plugin = definePlugin({
          * 执行器是构造时取一次连接表的，而连接表会随配置热改（加目标 / 改端口）。在这里每轮从 `live`
          * 现取，省掉一整类「改了配置但连的还是旧地址」。执行器本身无状态，重建成本可忽略。
          */
+        /** 生效配置里的 Redis 连接表（执行器按 `target.id` 取；每轮现取，见 `redisExecutor`）。 */
+        const redisConnections = () => {
+            const connections = {};
+            for (const target of live.targets) {
+                if (target.engine !== 'redis' || target.connection === undefined)
+                    continue;
+                connections[target.id] = target.connection;
+            }
+            return connections;
+        };
         const redisExecutor = {
-            run: (request) => {
-                const connections = {};
-                for (const target of live.targets) {
-                    if (target.engine !== 'redis' || target.connection === undefined)
-                        continue;
-                    connections[target.id] = target.connection;
-                }
-                return createRedisExecutor({ connections, timeoutMs: live.timeoutMs }).run(request);
-            },
+            run: (request) => createRedisExecutor({ connections: redisConnections(), timeoutMs: live.timeoutMs }).run(request),
+        };
+        /**
+         * 面板选了**别的库**时用的执行器：把这次调用用的连接临时指向那个库。
+         *
+         * 为什么不能只改目标对象：执行器是按 `target.id` 从连接表里取连接的（`redis-executor.ts`），
+         * 目标对象上那个 `db` 根本到不了 `SELECT`。这里覆盖的只有**这一个 id 的这一帧的库号**，
+         * 而库号已经由 `canBrowseDb` 判过（配置声明的 ∪ INFO 报的）——面板不会凭空造一个库号出来。
+         */
+        const executorAtDb = (targetId, db) => {
+            const connections = redisConnections();
+            const base = connections[targetId];
+            if (base === undefined)
+                return redisExecutor;
+            return {
+                run: (request) => createRedisExecutor({
+                    connections: { ...connections, [targetId]: { ...base, db } },
+                    timeoutMs: live.timeoutMs,
+                }).run(request),
+            };
         };
         /** 跑一次 Redis 命令原文。 */
         const runRedisCommand = async (input) => {
@@ -1212,6 +1276,133 @@ const plugin = definePlugin({
          * 唯一 UI 入口。
          */
         ctx.inject(['webServer'], (webCtx) => {
+            const panelTarget = (body) => {
+                const targetId = typeof body.target === 'string' ? body.target.trim() : '';
+                const cwd = typeof body.cwd === 'string' ? body.cwd.trim() : '';
+                if (targetId === '')
+                    return { ok: false, status: 400, code: 'BAD_TARGET', error: '缺少 target 参数（要查哪个目标）' };
+                if (cwd === '' || !isAbsolute(cwd)) {
+                    return {
+                        ok: false,
+                        status: 400,
+                        code: 'BAD_CWD',
+                        error: `作用域基准必须是一个绝对路径（就是面板上那个「项目根」），拿到 ${JSON.stringify(cwd)}`,
+                    };
+                }
+                const target = live.targets.find((row) => row.id === targetId);
+                if (target === undefined) {
+                    return {
+                        ok: false,
+                        status: 400,
+                        code: 'UNKNOWN_TARGET',
+                        error: `这份配置里没有目标 ${JSON.stringify(targetId)}（现有的：${targetIds(live.targets)}）`,
+                    };
+                }
+                if (target.engine !== 'redis') {
+                    return {
+                        ok: false,
+                        status: 400,
+                        code: 'ENGINE_NOT_SERVED',
+                        error: `这个目标今天没有可用的执行通路（${target.engine}）：本宿主只接了 redis`,
+                    };
+                }
+                return { ok: true, target, cwd };
+            };
+            /**
+             * 面板上的一次**只读**引擎调用：与 agent 那条 `devdata_redis_command` **同一个函数**。
+             *
+             * `confirmed` 刻意不传：面板没有「逐次确认」的语义（要确认的是 agent 那一侧），而写命令
+             * 在没闸门 / 没授权时本来就会被拒——拒绝码与工具面完全一致，正是这条路由存在的意义。
+             */
+            const panelCall = async (target, cwd, commandText, operationId, 
+            /** 面板选中的库；`undefined` = 用目标声明的那个（`connection.db`）。 */
+            db, auditOverride) => await invokeRedisCommand({
+                target,
+                commandText,
+                cwd,
+                maxScanCount: target.maxScanCount,
+                executor: db === undefined ? redisExecutor : executorAtDb(target.id, db),
+                audit: auditOverride ?? auditSink(),
+                beforeExecute: auditGate,
+                /*
+                 * 面板一次操作会发好几条命令（看一个 key = TYPE / TTL / 元素数 / 预览），而审计行的
+                 * `action` 是**矩阵动作名**（这几条都归 `get` / `search`）——不留一个相关性 id，事后就
+                 * 分不出「这四行是一次浏览」还是「四次独立调用」。`operationId` 就是为这件事存在的。
+                 */
+                ...(operationId === undefined ? {} : { operationId }),
+            });
+            /** 把一次面板调用的失败**原样**摊给界面：码 + 正文 + 恢复路径。 */
+            const panelDenial = (outcome) => ({
+                code: outcome.code,
+                error: outcome.message,
+                ...(outcome.hint === undefined ? {} : { hint: outcome.hint }),
+            });
+            /**
+             * 同一条拒绝的**一行文本**形态（表格逐行标错时用：那一格只放得下一行字）。
+             *
+             * 码与恢复路径一个都不许省：只写「读不了」等于把「去开闸门 / 改作用域 / 换命令」这三条
+             * 恢复路径一起藏起来，而那正是判据层写这段文案的目的。
+             */
+            const denialText = (outcome) => [outcome.code, outcome.message, ...(outcome.hint === undefined ? [] : [`恢复路径：${outcome.hint}`])].join(' · ');
+            /** 一次拒绝的响应体（`hint` 有就带上——恢复路径与码一样重要）。 */
+            const refusalBody = (refusal) => ({
+                code: refusal.code,
+                error: refusal.error,
+                ...(refusal.hint === undefined ? {} : { hint: refusal.hint }),
+            });
+            /**
+             * 面板要看的那个库**能不能去**，以及去的到底是哪一个（判据全在宿主，浏览器只是挑一个编号）。
+             *
+             *   ① 没写 `db` → 用目标声明的缺省库（`connection.db`，没写就是 0）；
+             *   ② 写了的库号在**声明集**里（`declaredDbs` = `db` ∪ `dbs`）→ 直接放行，**不多发一条命令**；
+             *   ③ 不在声明集里 → 再看服务器**当场**报的库（`INFO keyspace`：它只列有 key 的库）。这一条是
+             *      宿主侧的另一个事实源（服务器说有这个库），所以也要收；代价是一条 INFO，只在 ② 不成立时付。
+             *
+             * 三条都不成立 → `BAD_DB`，并把恢复路径写清楚：去目标的「可浏览的库」里声明它。**不猜、不放行**：
+             * 「浏览器能不能决定 `SELECT` 什么」这条不变量换成了可检验的一条——**库号只能来自配置或服务器回复**。
+             */
+            const panelDb = async (target, cwd, raw) => {
+                /*
+                 * 选中的库与目标声明的那个**相同时不覆盖连接**：否则每个面板调用都会多一帧 `SELECT 0`——
+                 * 那正是 `OPTIONAL_DB` 当初要避免的东西（D07：连默认库时多一条没意义的帧）。
+                 */
+                const pick = (db) => ({
+                    ok: true,
+                    db,
+                    override: db === defaultDb(target.connection?.db) ? undefined : db,
+                });
+                const wanted = raw === undefined || raw === null || raw === '' ? defaultDb(target.connection?.db) : raw;
+                if (!isDbIndex(wanted)) {
+                    return {
+                        ok: false,
+                        status: 400,
+                        code: 'BAD_DB',
+                        error: `db 必须是 0..${String(MAX_DB_INDEX)} 的整数（要连哪个库），拿到 ${JSON.stringify(raw)}`,
+                    };
+                }
+                const declared = declaredDbs(target);
+                if (declared.includes(wanted))
+                    return pick(wanted);
+                const info = await panelCall(target, cwd, 'INFO keyspace', 'panel.keyspace');
+                if (!info.ok)
+                    return { ok: false, status: 400, code: info.code, error: info.message };
+                const parsed = parseInfoKeyspace(info.result);
+                if (!parsed.ok)
+                    return { ok: false, status: 502, code: parsed.code, error: parsed.error };
+                const reported = parsed.dbs.map((row) => row.index);
+                if (canBrowseDb(wanted, declared, reported))
+                    return pick(wanted);
+                return {
+                    ok: false,
+                    status: 400,
+                    code: 'BAD_DB',
+                    error: `目标 ${JSON.stringify(target.id)} 没有声明库 ${String(wanted)}，INFO keyspace 里也没有它` +
+                        `（服务器报的库：${reported.length === 0 ? '一个都没有' : reported.map((index) => `db${String(index)}`).join(' / ')}）。` +
+                        '**库号只能来自配置或服务器回复**（面板不让浏览器决定 SELECT 什么）。',
+                    hint: `要浏览它：在插件配置里把这个库加进该目标的「可浏览的库」（dbs: [${declared.join(', ')}, ${String(wanted)}]）；` +
+                        '空库只有这样才能列出（INFO keyspace 只列有 key 的库）。',
+                };
+            };
             webCtx.effect(() => {
                 const webServer = webCtx.webServer;
                 if (webServer === undefined)
@@ -1307,6 +1498,615 @@ const plugin = definePlugin({
                     },
                 });
             }, 'dsh-devdata: config route');
+            /*
+             * ---------- 快速开始项目上下文预检（`POST /api/dsh-devdata/project-context`） ----------
+             *
+             * 只调用纯模型归一化：不读盘、不联网、不保存，也不把成功结果当成权限或 scope 授权。
+             * 与证据路由同样只接受严格 loopback，并沿用坏 JSON / 方法错误响应。
+             */
+            webCtx.effect(() => {
+                const webServer = webCtx.webServer;
+                if (webServer === undefined)
+                    return () => { };
+                return webServer.register({
+                    kind: 'exact',
+                    path: '/api/dsh-devdata/project-context',
+                    handler: async (req, res) => {
+                        if (!(await isLoopbackRequestStrict(req))) {
+                            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+                            return;
+                        }
+                        if (req.method !== 'POST') {
+                            writeJson(res, 405, { error: `method not allowed: ${String(req.method)}` });
+                            return;
+                        }
+                        const body = await readJsonBody(req);
+                        if (body === undefined) {
+                            writeJson(res, 400, { error: 'invalid JSON body' });
+                            return;
+                        }
+                        const result = normalizeProjectContext(body);
+                        if (!result.ok) {
+                            writeJson(res, 400, result);
+                            return;
+                        }
+                        writeJson(res, 200, result);
+                    },
+                });
+            }, 'dsh-devdata: project context route');
+            /*
+             * ---------- 快速开始的**静态预检**（`POST /api/dsh-devdata/preflight`） ----------
+             *
+             * 与上一条的分工：`/project-context` 只做纯模型归一化（不看配置，所以停用 / 无 settings 时
+             * 照常可用）；这一条在它之上加**宿主侧的事实**——目标是不是已保存的、插件启用没有、作用域
+             * 放不放行、这个引擎有没有执行器、连接信息完不完整。
+             *
+             * 三条纪律（判据在 `config-preflight.ts`，这里只做搬运）：
+             *
+             *   ① **只接受 `{ root, project, target }`**——`target` 是**已保存目标的 id**。作用域、引擎、
+             *      `host`/`port`、能力声明一律由宿主从 `live.targets` 现取：浏览器给的任何一份「快照」
+             *      都不采信（多认一个字段就多一条「页内脚本自己宣布自己有权限」的路）；
+             *   ② **纯静态**：不读盘（不查目录是否存在）、不联网、不保存、不改环境变量、不申请能力；
+             *   ③ **不进审计**——这条路上没有任何东西被改过（与 `/evidence` 那条只读路由不同：那条会读
+             *      文件，这条连文件都不读）。
+             *
+             * 响应：成功 `200 { ok: true, context, target: { id, engine }, problems: [] }`；失败
+             * `400 { ok: false, context, target, problems: [...] }`（`context` 在上下文本身非法时为
+             * `null`，`target` 在 id 认不出时为 `null`）。
+             */
+            webCtx.effect(() => {
+                const webServer = webCtx.webServer;
+                if (webServer === undefined)
+                    return () => { };
+                return webServer.register({
+                    kind: 'exact',
+                    path: '/api/dsh-devdata/preflight',
+                    handler: async (req, res) => {
+                        if (!(await isLoopbackRequestStrict(req))) {
+                            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+                            return;
+                        }
+                        if (req.method !== 'POST') {
+                            writeJson(res, 405, { error: `method not allowed: ${String(req.method)}` });
+                            return;
+                        }
+                        const body = await readJsonBody(req);
+                        if (body === undefined) {
+                            writeJson(res, 400, { error: 'invalid JSON body' });
+                            return;
+                        }
+                        const result = preflightProjectContext(body, { live, servedEngines: servedEngines() });
+                        writeJson(res, result.ok ? 200 : 400, result);
+                    },
+                });
+            }, 'dsh-devdata: preflight route');
+            /*
+             * ---------- 证据链总览的数据面（`POST /api/dsh-devdata/evidence`） ----------
+             *
+             * **P13 第一版**（2026-10-04）：卡片里那一区读三份清单的**通用**形状（存在性 / 可否解析 /
+             * 项目名一致吗 / 条目数）。它与工具面**不共用判据链**，因为它**没有判据**——这条路只读文件、
+             * 不连任何目标、不写任何东西（理由见 `evidence.ts` 头注释）。**这条路上没有能改东西的代码**，
+             * 所以它不需要能力闸门；要守的是另外两件：
+             *
+             *   ① **只有回环能调**（与 `/config` 同一道围栏）；
+             *   ② **项目名与根目录都过校验**（`readEvidence` 的 `BAD_ROOT` / `BAD_PROJECT`）——工具面那边
+             *      调用方是 agent，这里多了一个**浏览器**调用方；多一个调用方就多一次「路径拼到项目根
+             *      之外」的校验（`manifestRelPath` 只做字符串拼接）。
+             *
+             * 用 POST 而不是 GET：路径里有中文与空格，塞进查询串要来回编码，而请求体本来就是 JSON。
+             * **审计照记**（与工具面同口径：只读也留痕，`targetId` 记 `card`——调用方就是那张卡片）。
+             */
+            webCtx.effect(() => {
+                const webServer = webCtx.webServer;
+                if (webServer === undefined)
+                    return () => { };
+                return webServer.register({
+                    kind: 'exact',
+                    path: '/api/dsh-devdata/evidence',
+                    handler: async (req, res) => {
+                        if (!(await isLoopbackRequestStrict(req))) {
+                            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+                            return;
+                        }
+                        if (req.method !== 'POST') {
+                            writeJson(res, 405, { error: `method not allowed: ${String(req.method)}` });
+                            return;
+                        }
+                        const body = await readJsonBody(req);
+                        if (body === undefined) {
+                            writeJson(res, 400, { error: 'invalid JSON body' });
+                            return;
+                        }
+                        const report = readEvidence({ root: body.root, project: body.project });
+                        if (!report.ok) {
+                            auditSink().record({ at: Date.now(), targetId: 'card', action: 'evidence.read', allowed: false, code: report.code });
+                            writeJson(res, 400, { error: report.error, code: report.code });
+                            return;
+                        }
+                        auditSink().record({ at: Date.now(), targetId: 'card', action: 'evidence.read', allowed: true });
+                        writeJson(res, 200, { ok: true, report });
+                    },
+                });
+            }, 'dsh-devdata: evidence route');
+            /*
+             * ---------- **只读数据浏览面**的数据面（`POST /api/dsh-devdata/query`，P14 第一版） ----------
+             *
+             * 这一条是「面板不是特权路径」那句话的落点：它**不新写一份判据**，而是把请求原样交给
+             * `invokeRedisCommand`——与 agent 的 `devdata_redis_command` **同一个函数**（解析 → 可见性 →
+             * 裁决 → 作用域 → 审计 → 执行器）。于是三件事自动成立，不需要在这里各写一遍：
+             *
+             *   ① 未授权时的写命令（`SET` 一类）被**同一个拒绝码**挡下；面板与工具面不会漂开；
+             *   ② 作用域门照常生效——**基准是调用方给的那个 `cwd`**，也就是用户在卡片上填的项目根；
+             *      不拿浏览器猜的路径（卡片在浏览器里，它不知道会话的工作目录）；
+             *   ③ 每一次调用（含被拒）都进审计，与工具面同一本账。
+             *
+             * 三条与路径有关的校验放在前面（`BAD_CWD` / `BAD_TARGET` / `BAD_COMMAND`）：它们的恢复路径是
+             * 「把那个输入框填对」，与「判据层拒绝」不是一回事，不该混成一个码。
+             */
+            webCtx.effect(() => {
+                const webServer = webCtx.webServer;
+                if (webServer === undefined)
+                    return () => { };
+                return webServer.register({
+                    kind: 'exact',
+                    path: '/api/dsh-devdata/query',
+                    handler: async (req, res) => {
+                        if (!(await isLoopbackRequestStrict(req))) {
+                            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+                            return;
+                        }
+                        if (req.method !== 'POST') {
+                            writeJson(res, 405, { error: `method not allowed: ${String(req.method)}` });
+                            return;
+                        }
+                        const body = await readJsonBody(req);
+                        if (body === undefined) {
+                            writeJson(res, 400, { error: 'invalid JSON body' });
+                            return;
+                        }
+                        const command = typeof body.command === 'string' ? body.command.trim() : '';
+                        if (command === '') {
+                            writeJson(res, 400, { code: 'BAD_COMMAND', error: '缺少 command 参数（要发给目标的命令原文，如 `DBSIZE`）' });
+                            return;
+                        }
+                        const resolved = panelTarget(body);
+                        if (!resolved.ok) {
+                            writeJson(res, resolved.status, { code: resolved.code, error: resolved.error });
+                            return;
+                        }
+                        const target = resolved.target;
+                        const sink = auditSink();
+                        let auditFailed = false;
+                        const trackedAudit = {
+                            record(entry) {
+                                try {
+                                    sink.record(entry);
+                                }
+                                catch (error) {
+                                    auditFailed = true;
+                                    throw error;
+                                }
+                            },
+                        };
+                        let outcome;
+                        try {
+                            outcome = await panelCall(target, resolved.cwd, command, undefined, undefined, trackedAudit);
+                        }
+                        catch (error) {
+                            // 仅审计出口实际抛错时分类；不按错误文字猜，也不返回未审计的观察。
+                            if (!auditFailed)
+                                throw error;
+                            writeJson(res, 500, {
+                                code: 'AUDIT_FAILED', category: 'audit',
+                                error: error instanceof Error ? error.message : String(error),
+                                hint: '检查高级设置中的审计文件及其目录权限，修复后重新读取目标。此次读取尚未验证。',
+                            });
+                            return;
+                        }
+                        if (!outcome.ok) {
+                            // 拒绝**原样**带出去：码 + 正文 + 恢复路径（面板上那一行就是判据层说的话）。
+                            writeJson(res, 400, {
+                                code: outcome.code,
+                                error: outcome.message,
+                                ...(outcome.hint === undefined ? {} : { hint: outcome.hint }),
+                            });
+                            return;
+                        }
+                        writeJson(res, 200, { ok: true, text: renderResult(outcome.result) });
+                    },
+                });
+            }, 'dsh-devdata: query route');
+            /*
+             * ---------- **keyspace 树**的数据面（`POST /api/dsh-devdata/keys`，P14 第二版） ----------
+             *
+             * 扫一页 key。命令是**这里拼的固定形态**（`SCAN <游标> [MATCH p] [COUNT n]`），不是调用方
+             * 给的命令原文——面板不该在「浏览器能发任意命令」这条路上再走一步；要看任意命令，那是
+             * `/query` 的活。拼出来的命令**照样过同一条判据链**（可见性 / 裁决 / 作用域 / 审计）。
+             *
+             * 拼之前先拒掉**解析层表达不出来**的输入（含空白 / 控制字符的模式）：命令原文按空白切分，
+             * 那种模式会被切成别的参数——「按 A 判、按 B 跑」正是这套东西最怕的错位。
+             */
+            webCtx.effect(() => {
+                const webServer = webCtx.webServer;
+                if (webServer === undefined)
+                    return () => { };
+                return webServer.register({
+                    kind: 'exact',
+                    path: '/api/dsh-devdata/keys',
+                    handler: async (req, res) => {
+                        if (!(await isLoopbackRequestStrict(req))) {
+                            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+                            return;
+                        }
+                        if (req.method !== 'POST') {
+                            writeJson(res, 405, { error: `method not allowed: ${String(req.method)}` });
+                            return;
+                        }
+                        const body = await readJsonBody(req);
+                        if (body === undefined) {
+                            writeJson(res, 400, { error: 'invalid JSON body' });
+                            return;
+                        }
+                        const resolved = panelTarget(body);
+                        if (!resolved.ok) {
+                            writeJson(res, resolved.status, { code: resolved.code, error: resolved.error });
+                            return;
+                        }
+                        const plan = scanCommand({ cursor: body.cursor, match: body.match, count: body.count });
+                        if (!plan.ok) {
+                            writeJson(res, 400, { code: plan.code, error: plan.error });
+                            return;
+                        }
+                        const wanted = await panelDb(resolved.target, resolved.cwd, body.db);
+                        if (!wanted.ok) {
+                            writeJson(res, wanted.status, refusalBody(wanted));
+                            return;
+                        }
+                        const outcome = await panelCall(resolved.target, resolved.cwd, plan.command, 'panel.keyspace', wanted.override);
+                        if (!outcome.ok) {
+                            writeJson(res, 400, panelDenial(outcome));
+                            return;
+                        }
+                        const scanned = parseScanReply(outcome.result);
+                        if (!scanned.ok) {
+                            // 回复认不出来是**上游**的事（不是调用方写错），所以 502 而不是 400。
+                            writeJson(res, 502, { code: scanned.code, error: scanned.error });
+                            return;
+                        }
+                        // 把「这次真的发了哪条命令」回给界面：面板要能自证它不是另一条路径。
+                        writeJson(res, 200, { ok: true, command: plan.command, db: wanted.db, cursor: scanned.cursor, keys: scanned.keys });
+                    },
+                });
+            }, 'dsh-devdata: keys route');
+            /*
+             * ---------- **一个 key 的预览**（`POST /api/dsh-devdata/key`） ----------
+             *
+             * 四条命令（`TYPE` → `TTL` → 元素数 → 有界预览），**每条各走一次判据链**、各进一次审计。
+             * 代价是每个 key 一次点击要 3~4 个连接（面板上那是人点一下，可以接受）；换来的是
+             * 「任何一条被拒都会如实报出来」，而不是一个看起来正常的半截视图。
+             */
+            webCtx.effect(() => {
+                const webServer = webCtx.webServer;
+                if (webServer === undefined)
+                    return () => { };
+                return webServer.register({
+                    kind: 'exact',
+                    path: '/api/dsh-devdata/key',
+                    handler: async (req, res) => {
+                        if (!(await isLoopbackRequestStrict(req))) {
+                            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+                            return;
+                        }
+                        if (req.method !== 'POST') {
+                            writeJson(res, 405, { error: `method not allowed: ${String(req.method)}` });
+                            return;
+                        }
+                        const body = await readJsonBody(req);
+                        if (body === undefined) {
+                            writeJson(res, 400, { error: 'invalid JSON body' });
+                            return;
+                        }
+                        const resolved = panelTarget(body);
+                        if (!resolved.ok) {
+                            writeJson(res, resolved.status, { code: resolved.code, error: resolved.error });
+                            return;
+                        }
+                        const key = checkAddressable(body.key, { what: 'key', maxLength: KEY_MAX_LENGTH });
+                        if (!key.ok) {
+                            writeJson(res, 400, { code: key.code, error: key.error });
+                            return;
+                        }
+                        const wanted = await panelDb(resolved.target, resolved.cwd, body.db);
+                        if (!wanted.ok) {
+                            writeJson(res, wanted.status, refusalBody(wanted));
+                            return;
+                        }
+                        const typeCall = await panelCall(resolved.target, resolved.cwd, `TYPE ${key.value}`, 'panel.keyspace', wanted.override);
+                        if (!typeCall.ok) {
+                            writeJson(res, 400, panelDenial(typeCall));
+                            return;
+                        }
+                        if (typeof typeCall.result !== 'string') {
+                            writeJson(res, 502, {
+                                code: 'UNEXPECTED_REPLY',
+                                error: `TYPE 的回复不是字符串：${JSON.stringify(typeCall.result)?.slice(0, 120) ?? 'undefined'}`,
+                            });
+                            return;
+                        }
+                        const ttlCall = await panelCall(resolved.target, resolved.cwd, `TTL ${key.value}`, 'panel.keyspace', wanted.override);
+                        if (!ttlCall.ok) {
+                            writeJson(res, 400, panelDenial(ttlCall));
+                            return;
+                        }
+                        const plan = previewPlan(typeCall.result, key.value);
+                        let total = null;
+                        let preview = null;
+                        for (const [index, command] of plan.commands.entries()) {
+                            const call = await panelCall(resolved.target, resolved.cwd, command, 'panel.keyspace', wanted.override);
+                            // 元素数 / 预览被拒或跑不动 → **整条视图失败**：半截视图比失败更难看出问题。
+                            if (!call.ok) {
+                                writeJson(res, 400, panelDenial(call));
+                                return;
+                            }
+                            if (index === 0)
+                                total = call.result;
+                            else
+                                preview = call.result;
+                        }
+                        const view = shapeKeyView({ key: key.value, type: typeCall.result, ttl: ttlCall.result, total, preview });
+                        writeJson(res, 200, {
+                            ok: true,
+                            /*
+                             * `preview` 是**表格那一列**要的单行形态（`previewText`，同一个纯函数也喂 `/rows`）：
+                             * 界面点开一行时顺手就能把它那一格填上，不必再为「填表」多发一条命令。
+                             */
+                            key: { ...view, preview: previewText(view.kind, view.rows, view.truncated) },
+                        });
+                    },
+                });
+            }, 'dsh-devdata: key route');
+            /*
+             * ---------- **库那一层**（`POST /api/dsh-devdata/keyspace`） ----------
+             *
+             * 树里「连接 → 库」这一层要的是「这台机器上有几个库、各有多少 key」。**一条命令就够**：
+             * `INFO keyspace`（允许的读；`CONFIG GET databases` 在禁表里，永远不给）。它只回答
+             * 「有哪些库」，**不代表我们能去那些库**——能扫的始终只有目标声明的那个 `db`（见下面的
+             * `current`）。把这两件事分开写，是因为它们很容易被做成同一件事，而那样就等于让浏览器
+             * 决定 `SELECT` 什么。
+             */
+            webCtx.effect(() => {
+                const webServer = webCtx.webServer;
+                if (webServer === undefined)
+                    return () => { };
+                return webServer.register({
+                    kind: 'exact',
+                    path: '/api/dsh-devdata/keyspace',
+                    handler: async (req, res) => {
+                        if (!(await isLoopbackRequestStrict(req))) {
+                            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+                            return;
+                        }
+                        if (req.method !== 'POST') {
+                            writeJson(res, 405, { error: `method not allowed: ${String(req.method)}` });
+                            return;
+                        }
+                        const body = await readJsonBody(req);
+                        if (body === undefined) {
+                            writeJson(res, 400, { error: 'invalid JSON body' });
+                            return;
+                        }
+                        const resolved = panelTarget(body);
+                        if (!resolved.ok) {
+                            writeJson(res, resolved.status, { code: resolved.code, error: resolved.error });
+                            return;
+                        }
+                        const outcome = await panelCall(resolved.target, resolved.cwd, 'INFO keyspace', 'panel.keyspace');
+                        if (!outcome.ok) {
+                            writeJson(res, 400, panelDenial(outcome));
+                            return;
+                        }
+                        const parsed = parseInfoKeyspace(outcome.result);
+                        if (!parsed.ok) {
+                            writeJson(res, 502, { code: parsed.code, error: parsed.error });
+                            return;
+                        }
+                        writeJson(res, 200, {
+                            ok: true,
+                            command: 'INFO keyspace',
+                            /*
+                             * 两件**不同**的事，界面上也是两行不同的话：
+                             *   - `dbs`：`INFO keyspace` 当场报的（**只含有 key 的库**，空库一行都没有）；
+                             *   - `declared`：目标声明的允许集（`db` ∪ `dbs`）——**只有这些能被浏览**（外加服务器
+                             *     当场报的那些，见 `panelDb`）；`current` 是打开面板时的默认那个（`db`，缺省 0）。
+                             */
+                            current: defaultDb(resolved.target.connection?.db),
+                            declared: declaredDbs(resolved.target),
+                            dbs: parsed.dbs,
+                        });
+                    },
+                });
+            }, 'dsh-devdata: keyspace route');
+            /*
+             * ---------- **按本页统计类型**（`POST /api/dsh-devdata/types`） ----------
+             *
+             * 树上那种「strings 105 / hash tables 29」在 Redis 4 上**没有便宜的来源**（`SCAN … TYPE`
+             * 是 6.0 起的东西，248 那台是 4.0.14；`CONFIG` 被禁）。所以这一档做成**用户点了才付**：
+             * 对**本页已经扫出来的** key 逐个 `TYPE`，每次调用照样一条判据、一行审计。上限写死在
+             * `TYPE_BATCH_MAX`（50），不接受调用方提。
+             */
+            webCtx.effect(() => {
+                const webServer = webCtx.webServer;
+                if (webServer === undefined)
+                    return () => { };
+                return webServer.register({
+                    kind: 'exact',
+                    path: '/api/dsh-devdata/types',
+                    handler: async (req, res) => {
+                        if (!(await isLoopbackRequestStrict(req))) {
+                            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+                            return;
+                        }
+                        if (req.method !== 'POST') {
+                            writeJson(res, 405, { error: `method not allowed: ${String(req.method)}` });
+                            return;
+                        }
+                        const body = await readJsonBody(req);
+                        if (body === undefined) {
+                            writeJson(res, 400, { error: 'invalid JSON body' });
+                            return;
+                        }
+                        const resolved = panelTarget(body);
+                        if (!resolved.ok) {
+                            writeJson(res, resolved.status, { code: resolved.code, error: resolved.error });
+                            return;
+                        }
+                        const raw = Array.isArray(body.keys) ? body.keys : [];
+                        if (raw.length === 0) {
+                            writeJson(res, 400, { code: 'BAD_KEYS', error: 'keys 必须是非空数组（要统计哪些 key）' });
+                            return;
+                        }
+                        if (raw.length > TYPE_BATCH_MAX) {
+                            writeJson(res, 400, {
+                                code: 'TOO_MANY_KEYS',
+                                error: `一次最多统计 ${String(TYPE_BATCH_MAX)} 个 key（每个 key 一次调用、一行审计），拿到 ${String(raw.length)} 个`,
+                            });
+                            return;
+                        }
+                        const types = [];
+                        const wanted = await panelDb(resolved.target, resolved.cwd, body.db);
+                        if (!wanted.ok) {
+                            writeJson(res, wanted.status, refusalBody(wanted));
+                            return;
+                        }
+                        for (const item of raw) {
+                            const key = checkAddressable(item, { what: 'key', maxLength: KEY_MAX_LENGTH });
+                            if (!key.ok) {
+                                writeJson(res, 400, { code: key.code, error: key.error });
+                                return;
+                            }
+                            const call = await panelCall(resolved.target, resolved.cwd, `TYPE ${key.value}`, 'panel.keyspace', wanted.override);
+                            if (!call.ok) {
+                                writeJson(res, 400, panelDenial(call));
+                                return;
+                            }
+                            types.push({ key: key.value, type: typeof call.result === 'string' ? call.result : 'unknown' });
+                        }
+                        writeJson(res, 200, { ok: true, types });
+                    },
+                });
+            }, 'dsh-devdata: types route');
+            /*
+             * ---------- **表格那一页**（`POST /api/dsh-devdata/rows`） ----------
+             *
+             * 「Navicat 那张表」（Key / Type / Value / Size / TTL，2026-10-05 维护者贴的图）每一行都要
+             * 类型、大小、值预览与 TTL——而 **Redis 没有批量取这些的命令**：一个 key 要 `TYPE` + 元素数
+             * （或字符串长度）+ 有界预览 + `TTL`，共 3~4 条。所以这条路由与「按本页统计类型」同一条规矩：
+             * **用户点了才付、代价写在按钮上、一次最多 `ROW_BATCH_MAX` 个 key**（界面按这个上限分批往下
+             * 读，一边读一边把行填上）。
+             *
+             * 与 `/key` 只差一处：那里一个 key 失败就整条失败（半截视图比失败更难看出问题）；这里**逐行
+             * 如实标错**——一页 20 行里第 7 行读不动，不该把另外 19 行一起关掉，但也**不许**把那一行画成
+             * 空值（空值看着像「这个 key 是空的」）。
+             */
+            webCtx.effect(() => {
+                const webServer = webCtx.webServer;
+                if (webServer === undefined)
+                    return () => { };
+                return webServer.register({
+                    kind: 'exact',
+                    path: '/api/dsh-devdata/rows',
+                    handler: async (req, res) => {
+                        if (!(await isLoopbackRequestStrict(req))) {
+                            writeJson(res, 403, { error: 'forbidden: loopback-only' });
+                            return;
+                        }
+                        if (req.method !== 'POST') {
+                            writeJson(res, 405, { error: `method not allowed: ${String(req.method)}` });
+                            return;
+                        }
+                        const body = await readJsonBody(req);
+                        if (body === undefined) {
+                            writeJson(res, 400, { error: 'invalid JSON body' });
+                            return;
+                        }
+                        const resolved = panelTarget(body);
+                        if (!resolved.ok) {
+                            writeJson(res, resolved.status, { code: resolved.code, error: resolved.error });
+                            return;
+                        }
+                        const raw = Array.isArray(body.keys) ? body.keys : [];
+                        if (raw.length === 0) {
+                            writeJson(res, 400, { code: 'BAD_KEYS', error: 'keys 必须是非空数组（要读哪几行）' });
+                            return;
+                        }
+                        if (raw.length > ROW_BATCH_MAX) {
+                            writeJson(res, 400, {
+                                code: 'TOO_MANY_KEYS',
+                                error: `一次最多读 ${String(ROW_BATCH_MAX)} 个 key（每个 3~4 次调用、每次一行审计），拿到 ${String(raw.length)} 个`,
+                            });
+                            return;
+                        }
+                        const wanted = await panelDb(resolved.target, resolved.cwd, body.db);
+                        if (!wanted.ok) {
+                            writeJson(res, wanted.status, refusalBody(wanted));
+                            return;
+                        }
+                        const rows = [];
+                        for (const item of raw) {
+                            const key = checkAddressable(item, { what: 'key', maxLength: KEY_MAX_LENGTH });
+                            if (!key.ok) {
+                                /* 发不出去的 key：**拼命令之前**就标这一行（一个字节都没发），别的行照读 */
+                                rows.push({ key: typeof item === 'string' ? item : '', error: `${key.code} ${key.error}` });
+                                continue;
+                            }
+                            const typeCall = await panelCall(resolved.target, resolved.cwd, `TYPE ${key.value}`, 'panel.keyspace', wanted.override);
+                            if (!typeCall.ok) {
+                                rows.push({ key: key.value, error: denialText(typeCall) });
+                                continue;
+                            }
+                            if (typeof typeCall.result !== 'string') {
+                                rows.push({ key: key.value, error: 'UNEXPECTED_REPLY TYPE 的回复不是字符串' });
+                                continue;
+                            }
+                            const ttlCall = await panelCall(resolved.target, resolved.cwd, `TTL ${key.value}`, 'panel.keyspace', wanted.override);
+                            if (!ttlCall.ok) {
+                                rows.push({ key: key.value, error: denialText(ttlCall) });
+                                continue;
+                            }
+                            const plan = previewPlan(typeCall.result, key.value);
+                            let total = null;
+                            let preview = null;
+                            let failed = '';
+                            for (const [index, command] of plan.commands.entries()) {
+                                const call = await panelCall(resolved.target, resolved.cwd, command, 'panel.keyspace', wanted.override);
+                                if (!call.ok) {
+                                    failed = denialText(call);
+                                    break;
+                                }
+                                if (index === 0)
+                                    total = call.result;
+                                else
+                                    preview = call.result;
+                            }
+                            if (failed !== '') {
+                                rows.push({ key: key.value, type: typeCall.result, error: failed });
+                                continue;
+                            }
+                            const view = shapeKeyView({ key: key.value, type: typeCall.result, ttl: ttlCall.result, total, preview });
+                            rows.push({
+                                key: view.key,
+                                type: view.type,
+                                ttl: view.ttl,
+                                total: view.total,
+                                totalKind: view.totalKind,
+                                preview: previewText(view.kind, view.rows, view.truncated),
+                                truncated: view.truncated,
+                            });
+                        }
+                        writeJson(res, 200, { ok: true, db: wanted.db, rows });
+                    },
+                });
+            }, 'dsh-devdata: rows route');
         });
         ctx.effect(() => {
             return () => {

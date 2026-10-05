@@ -18,6 +18,7 @@
  */
 import { expandHome } from '@hyzyn/dsh-kit';
 import { DEV_ENVS, normalizeEnv } from './env.js';
+import { MAX_DB_INDEX, defaultDb, normalizeDbs } from './keyspace.js';
 import { ENGINES } from './operations.js';
 /** SCAN 族 `COUNT` 的策略上限（候选只能请求更小）。 */
 export const MAX_SCAN_COUNT = 1000;
@@ -30,6 +31,16 @@ export const MIN_TIMEOUT_MS = 100;
 export const MAX_TIMEOUT_MS = 60_000;
 const ENGINE_SET = new Set(ENGINES);
 const ENV_SET = new Set(DEV_ENVS);
+/**
+ * 这个目标**声明允许浏览**的库号集合（升序、去重）。
+ *
+ * 它是面板与路由那两处「能不能去这个库」的唯一判据来源：`db`（缺省 0）**永远**在里面——
+ * 所以「没写 `dbs`」与「写了 `dbs: [0]`」在行为上完全一样，加这个字段不会让已配好的目标换行为。
+ */
+export function declaredDbs(target) {
+    const all = [defaultDb(target.connection?.db), ...(target.dbs ?? [])];
+    return [...new Set(all)].sort((left, right) => left - right);
+}
 function asRecord(value) {
     return typeof value === 'object' && value !== null && !Array.isArray(value) ? value : undefined;
 }
@@ -115,6 +126,27 @@ function parseTarget(value, index, seenIds, problems) {
     else if (host !== '' || Number.isFinite(port) || raw.port !== undefined) {
         problems.push(`${where}（${id}）：连接信息不完整（host=${JSON.stringify(host)}，port=${JSON.stringify(portRaw ?? '')}），已按「没有连接」处理——工具调用会明确报这一点，不会拿默认端口去试`);
     }
+    /*
+     * 允许浏览的库（`dbs`）：**只有有连接时才有意义**，坏值逐条报出来（不静默丢）。空 `dbs` 与
+     * 「没写」等价（两边都是「只允许声明的那一个库」），所以这里只把非空的那份放进目标。
+     */
+    const parsedDbs = normalizeDbs(raw.dbs);
+    let dbs;
+    if (connection === undefined) {
+        if (parsedDbs.dbs.length > 0 || raw.dbs !== undefined) {
+            problems.push(`${where}（${id}）：dbs 只在有连接（host/port）时有意义，已忽略——库号是发 SELECT 用的`);
+        }
+    }
+    else {
+        if (raw.dbs !== undefined && !Array.isArray(raw.dbs)) {
+            problems.push(`${where}（${id}）：dbs 必须是库号数组（如 \`[0, 1]\`），已按「没声明」处理（那只允许 connection.db 那个库）`);
+        }
+        else if (parsedDbs.bad.length > 0) {
+            problems.push(`${where}（${id}）：dbs 里有不是库号的值 ${JSON.stringify(parsedDbs.bad)}，已丢掉它们（库号是 0..${String(MAX_DB_INDEX)} 的整数）`);
+        }
+        if (parsedDbs.dbs.length > 0)
+            dbs = parsedDbs.dbs;
+    }
     const scanRaw = raw.maxScanCount;
     let maxScanCount = DEFAULT_SCAN_COUNT;
     if (scanRaw !== undefined) {
@@ -134,6 +166,7 @@ function parseTarget(value, index, seenIds, problems) {
         scopeDirs,
         maxScanCount,
         ...(connection === undefined ? {} : { connection }),
+        ...(dbs === undefined ? {} : { dbs }),
         ...(credentialRef === '' ? {} : { credentialRef }),
         ...(writeCapability === undefined ? {} : { writeCapability }),
         ...(dangerousReadCapability === undefined ? {} : { dangerousReadCapability }),

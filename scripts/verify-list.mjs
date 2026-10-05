@@ -107,7 +107,7 @@ export const VERIFY_SCRIPTS = [
     pkg: 'devdata',
     entry: 'card-smoke',
     needs: '真 DSH 宿主 + 真 Chrome（自起一次性隔离 profile，独立端口，跑完即删；自证真实补丁未变）',
-    note: '配置卡片（2026-10-03 建）：数据面 + 两档能力**只读**那条 400 + 改目标逐次确认（能力声明按 id 跟回来）+ 审计落盘 + bundle 真被加载 + 插件页那一行 + 详情页卡片渲染出控件（目标编辑器、能力只读面板）+ 真的点一次「保存」',
+    note: '配置卡片：静态目标预检（作用域内外、零 Redis 命令）+ 固定只读读取与无法完成分类 + 改目标逐次确认、保存高级设置与 HTTP 复核 + 能力只读、审计和隔离自证；桌面成功/失败及窄屏截图留在仓内 .artifacts/',
   },
   {
     file: 'verify-devenv-all.mjs',

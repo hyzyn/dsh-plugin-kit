@@ -57,6 +57,7 @@
 | **跳板机（ProxyJump / ProxyCommand）完整实现的方案**（2026-09-25 已按它落地：`ProxyJump` 单跳 + `ProxyCommand` 闸门版，闸门定案表在其 §6.1；**多跳链明确不做**） | 档案 [`docs/landed/proxyjump-plan.md`](./landed/proxyjump-plan.md) |
 | **能力开关「就地提权」的当前权威实施方案**（2026-09-26 已按它落地：两条通道、落点、威胁模型、逐 PR 顺序；实施偏差见其附录 C。原先的 `…-plan.v2.md` 已按命名规范改名成本文件名） | 档案 [`docs/landed/capability-elevation-plan.md`](./landed/capability-elevation-plan.md) |
 | **开发数据套件（SQL 只读 / NoSQL 受限 / 消息中间件控制台）的方案**（2026-10-01 立项：定位与边界、三条数据通路、三档能力模型、必须先真机确认的 C1–C6、分步顺序与验收清单。**进展以三个包各自的状态真源为准，不看本行**：`devdata` → [`packages/devdata/ROADMAP.md`](../packages/devdata/ROADMAP.md)、`devenv` → [`packages/devenv/ROADMAP.md`](../packages/devenv/ROADMAP.md)、`devfront` → [`packages/devfront/ROADMAP.md`](../packages/devfront/ROADMAP.md)。三包均已建并有真机落地记录） | L0 [`docs/devdata-plan.md`](./devdata-plan.md) |
+| **统一开发测试套件配置**（目标流程、项目上下文 API 的编排用法、三包映射、安全不变量、迁移阶段与验收标准；当前为设计，进展仍以三包各自状态真源为准） | L0 [`docs/devkit-config.md`](./devkit-config.md) |
 | **能力开关「就地提权」方案的 v1（已删除，仅历史）**——它设计的「宿主终端确认码」通道**在代码里不存在**（`CapabilityGrantVia` 只有一个值 `'file'`），保留只为追溯取舍过程；**不要照着执行**（改动去上面那份） | 冻结指针 `git show 79ca434e:docs/capability-elevation-plan.md`（223 行）· 检索入口见 [`ROADMAP.md` 的「已由 L0 资产承接」表](../ROADMAP.md) |
 | AI 真机测试约束 | L0 [`docs/agent-real-test.md`](./agent-real-test.md) |
 | 术语 | L0 [`docs/glossary.md`](./glossary.md) |

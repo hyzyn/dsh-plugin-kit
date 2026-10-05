@@ -12,6 +12,7 @@ import {
   DEFAULT_SCAN_COUNT,
   DEFAULT_TIMEOUT_MS,
   MAX_SCAN_COUNT,
+  declaredDbs,
   normalizeConfig,
   pickTarget,
   targetIds,
@@ -194,6 +195,47 @@ describe('连接：两个字段都齐才认（少一个不是「用默认端口�
     const live = normalizeConfig({ targets: [raw] })
     expect(live.targets[0]?.connection).toBeUndefined()
     expect(live.problems).toEqual([])
+  })
+})
+
+describe('可浏览的库（`dbs`）：声明里加一个字段，面板上才多出能切的库', () => {
+  it('★ 正常解析：去重、升序；允许集里**永远**含 `db`（没写就是 0）', () => {
+    const live = normalizeConfig({ targets: [redisTarget({ db: 1, dbs: [3, 1, 3, 7] })] })
+    expect(live.targets[0]?.dbs).toEqual([1, 3, 7])
+    expect(declaredDbs(live.targets[0]!)).toEqual([1, 3, 7])
+    expect(live.problems).toEqual([])
+  })
+
+  it('没写 `dbs` 时允许集只有 `db`（没写 `db` 就是 0）——与加这个字段之前**逐字一致**', () => {
+    const plain = normalizeConfig({ targets: [redisTarget()] })
+    expect(plain.targets[0]?.dbs).toBeUndefined()
+    expect(declaredDbs(plain.targets[0]!)).toEqual([0])
+    const withDb = normalizeConfig({ targets: [redisTarget({ db: 4 })] })
+    expect(declaredDbs(withDb.targets[0]!)).toEqual([4])
+  })
+
+  it('坏值逐个丢掉并留下 problem（**不静默**：写错的库号不许变成「我写了」）', () => {
+    const live = normalizeConfig({ targets: [redisTarget({ dbs: [0, -1, '2', 1.5, 300] })] })
+    expect(live.targets[0]?.dbs).toEqual([0])
+    const text = live.problems.join('\n')
+    expect(text).toContain('dbs 里有不是库号的值')
+    expect(text).toContain('300')
+  })
+
+  it('不是数组 → 按「没声明」处理 + problem（允许集退回 `db` 那一个）', () => {
+    const live = normalizeConfig({ targets: [redisTarget({ dbs: '0,1' })] })
+    expect(live.targets[0]?.dbs).toBeUndefined()
+    expect(declaredDbs(live.targets[0]!)).toEqual([0])
+    expect(live.problems.join('\n')).toContain('dbs 必须是库号数组')
+  })
+
+  it('没有连接却写了 `dbs` → 忽略 + problem（库号只在有连接时有意义）', () => {
+    const raw = redisTarget({ dbs: [1] })
+    delete raw.host
+    delete raw.port
+    const live = normalizeConfig({ targets: [raw] })
+    expect(live.targets[0]?.dbs).toBeUndefined()
+    expect(live.problems.join('\n')).toContain('dbs 只在有连接')
   })
 })
 

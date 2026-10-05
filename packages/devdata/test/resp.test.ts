@@ -49,6 +49,16 @@ describe('解析：五种类型', () => {
     expect(parseOne(':59\r\n')).toEqual({ kind: 'integer', value: 59 }) // 真实（DBSIZE）
   })
 
+  it.each(['3.5', '9garbage', '1e2', '', ' 9', '9007199254740993', '-9007199254740993'])('非法整数回复 %j 不得截断或丢失精度后放行', (value) => {
+    expect(() => createReplyParser().feed(b(`:${value}\r\n`))).toThrow(RespProtocolError)
+  })
+
+  it('零、负整数、显式正号与安全整数边界保留原协议值', () => {
+    for (const value of ['0', '-1', '+9', '9007199254740991', '-9007199254740991']) {
+      expect(parseOne(`:${value}\r\n`)).toEqual({ kind: 'integer', value: Number(value) })
+    }
+  })
+
   it('错误是**回复**不是异常（上层决定怎么报给 agent）', () => {
     // 真实：ACL WHOAMI 在 4.0.14 上的回复
     expect(parseOne('-ERR unknown command `ACL`, with args beginning with: `WHOAMI`,  \r\n')).toEqual({
