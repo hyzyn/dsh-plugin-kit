@@ -511,7 +511,6 @@ const I18N_ZH = {
   'placeholder.passwordSet': '（已设置，留空保持不变）',
   'btn.addTarget': '添加目标',
   'btn.connectLocal': '连接本机',
-  'btn.connectLocalCurrent': '当前目标就是本机',
   'hint.connectLocal': '加一个指向宿主所在机器的本机目标并选中（已有本机目标则直接复用）；SSH 与自定义目标原样保留。',
   'hint.addTarget': 'SSH 目标推荐直接选 tty 终端面板的连接簿条目（凭证只需维护一处）；手填时密码 / 口令建议写 env:NAME（凭据引用：由官方凭据存储解析，缺失时退回环境变量）。',
   'section.tofu': 'SSH 主机密钥记录（TOFU）',
@@ -993,7 +992,6 @@ const I18N_EN = {
   'placeholder.passwordSet': '(already set, leave empty to keep)',
   'btn.addTarget': 'Add target',
   'btn.connectLocal': 'Connect local',
-  'btn.connectLocalCurrent': 'Current target is local',
   'hint.connectLocal': 'Add a local target pointing at the machine running the host and select it (reuses an existing local target); SSH and custom targets stay untouched.',
   'hint.addTarget': 'For an SSH target, prefer picking a tty terminal panel bookmark (credentials live in one place); when filling in manually, write the password / passphrase as env:NAME (credential reference: resolved by the official credential store, falling back to the environment variable).',
   'section.tofu': 'SSH host key records (TOFU)',
@@ -1547,17 +1545,6 @@ const PICK_MAX = 8
  * 本地目标走子进程，没有这个约束，仍是 {@link PICK_MAX}。
  */
 const PICK_MAX_SSH = 6
-
-/**
- * 已配置目标里 `kind=local` 的那条的名字（没有则 undefined）。
- *
- * 「连接本机」按钮靠它决定**复用还是新建**：已有本机目标就直接选中它（宿主侧 /connect-local
- * 同样复用，不重复创建），免得点一次多一条同名目标。
- */
-function localTargetName() {
-  const targets = configCache !== null && Array.isArray(configCache.targets) ? configCache.targets : []
-  return targets.find((item) => item.kind === 'local')?.name
-}
 
 /** 目标是不是 SSH —— 决定聚合流的上限。读模块级 configCache，任何组件都能问。 */
 function isSshTarget(name) {
@@ -6705,30 +6692,26 @@ window.__ModuleLoader__.load({
       }
 
       /**
-       * 渲染「连接本机」按钮（工具条 / 无目标空态共用同一个节点定义，只换 className）。
+       * 渲染「连接本机」按钮——**只出现在「一个目标都没有」的空态里**。
        *
-       * 三态，各有明确含义：
-       *   - 已有本机目标且**就是**当前目标：按钮置灰并说「当前目标就是本机」——再做一遍无事发生，
-       *     留一个可点的按钮只会让人以为点漏了；
-       *   - 已有本机目标但当前看的是别的（例如全是 SSH）：可点，语义是「切到本机」而不是再建一条；
-       *   - 没有任何本机目标：可点 = 新建并选中（宿主侧用 `local` / `local-2`… 的确定性名字）。
-       * 只在单目标列表语境出现（总览没有「当前目标」这回事）。
+       * 为什么不做成常驻的工具条按钮（第一版就是这么写的，用户当场指出多余）：它解决的
+       * 唯一问题是「面板全空、只让你去设置卡片手配」，而**已经有任何目标**时，选择器里
+       * 那台就是用户要用的那台——这时再挂一个按钮，既占掉选择器右边的位置，又要靠强调色
+       * 招人点，属于纯噪音。所以：没有任何目标 = 它是最短路径（主按钮）；有目标 = 不出现。
+       *
+       * 正因为只在 `target === ''` 的空态里渲染，这里**没有**「已有本机目标」的分支：
+       * 列表非空时 `chooseInitialTarget` 一定会选中一个目标，走不到这个空态；空态 ⇒ 没有
+       * 本机目标可复用 ⇒ 这一下必然是「新建并选中」（宿主侧用 `local` / `local-2`… 的确定性
+       * 名字，并自己处理「万一已经有」的复用）。
        */
-      const connectLocalButton = (className) => {
-        const local = localTargetName()
-        const current = local !== undefined && local === target
-        const label = current ? t('btn.connectLocalCurrent') : t('btn.connectLocal')
-        return jsx('button', {
-          type: 'button',
-          className,
-          disabled: current || connectLocalBusy,
-          // 还没有任何本机目标 = 这一下是"新建"（主路径，染强调色）；已有 = "切过去"（普通 pill）
-          'data-fresh': local === undefined ? '1' : undefined,
-          title: label + ' — ' + t('hint.connectLocal'),
-          onClick: connectLocal,
-          children: connectLocalBusy ? t('msg.connectLocalBusy') : label,
-        }, 'connectLocal')
-      }
+      const connectLocalButton = (className) => jsx('button', {
+        type: 'button',
+        className,
+        disabled: connectLocalBusy,
+        title: t('btn.connectLocal') + ' — ' + t('hint.connectLocal'),
+        onClick: connectLocal,
+        children: connectLocalBusy ? t('msg.connectLocalBusy') : t('btn.connectLocal'),
+      }, 'connectLocal')
 
       const empty = () => {
         if (loading) return jsx('div', { className: 'dk_empty', children: [jsx('span', { className: 'dk_spin' }), jsx('div', { children: t('list.loading') })] })
@@ -7070,12 +7053,6 @@ window.__ModuleLoader__.load({
                 },
                 children: t('panel.overview'),
               }),
-              /*
-               * 「连接本机」：整个面板唯一的一键路径。放在目标选择器**紧右边**——
-               * 它解决的正是「选择器里没有我要的那台（宿主自己）」。总览里没有「当前目标」，
-               * 不出现（与总览入口的显隐逻辑各管各的）。
-               */
-              view === 'overview' ? null : connectLocalButton('dk_pill dk_pillLocal'),
               /*
                * 五段：容器 / 镜像 / Compose / 网络 / 卷。都是短词，窄栏放得下；
                * 真的溢出时 .dk_seg 允许横向滚动（见 docker.css），不做二级菜单——
@@ -8460,14 +8437,9 @@ window.__ModuleLoader__.load({
        * 「连接还没建立时靠连接簿 host 兜底」这条路径。
        */
       matchTargetForSession,
-      /*
-       * 「连接本机」按钮的三态判定读的就是它（已有本机目标 → 复用；没有 → 新建）。
-       * 读的是模块级 configCache，所以用例先 primeTargetsCache 再问即可。
-       */
-      localTargetName,
     }
     /*
-     * 模块级 config 缓存的测试缝：`localTargetName` 这类判定读的是它，而它只由
+     * 模块级 config 缓存的测试缝：`matchTargetForSession` 这类判定读的是它，而它只由
      * `/config` 的响应 / 设置卡片保存后推进去。离线冒烟没有真往返，直接把一份 config
      * 写进去是最短的路径（publish 顺带通知订阅者，与生产路径同一份语义）。
      */

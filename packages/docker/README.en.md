@@ -7,7 +7,7 @@
 ## Features
 
 - **A resident session right-sidebar tab**: the panel lives as a session right-sidebar tab (`sidebar.right.pane.tab`) **side by side** with the conversation — after handing an error to the agent the logs stay on the right, without getting in the way of watching it work; collapsing it leaves the viewport. Panel-level state (target / view / filter text / selected container and its tab) is kept **across sessions**, and collapsing drops the live streams to hand the SSH channels back. Hosts without the right-sidebar services fall back to the original dock / modal, behaving exactly as before.
-- **An explicit one-click "connect local"**: the panel toolbar and the "no Docker targets configured yet" empty state each carry a **Connect local** button — one click adds the machine hosting the plugin as a local target and selects it (an existing local target is reused, never duplicated; SSH and custom targets stay untouched), and the same operation is `docker_connect_local` on the agent side. It does **not** change the meaning of an empty `targets`, never invents an implicit default target, never installs Docker / starts a daemon / switches docker contexts, and needs no capability grant (it only adds one local target pointing at the plugin's own host).
+- **An explicit one-click "connect local"**: the "no Docker targets configured yet" empty state carries a **Connect local** button (**empty state only** — it is deliberately not on the toolbar, where it is pure noise once you have a target) — one click adds the machine hosting the plugin as a local target and selects it (an existing local target is reused, never duplicated; SSH and custom targets stay untouched), and the same operation is `docker_connect_local` on the agent side. It does **not** change the meaning of an empty `targets`, never invents an implicit default target, never installs Docker / starts a daemon / switches docker contexts, and needs no capability grant (it only adds one local target pointing at the plugin's own host).
 - **Aggregated fetches across targets**: the Overview page fans out over every `targets[]` entry in parallel, and an unreachable target only spoils its own cell; the agent side exposes the same shape through `docker_ps target:"*"` / `docker_attention target:"*"`, so targets never block one another.
 - **"Needs attention" reads authoritative fields**: unhealthy / repeatedly restarting / OOM-killed / non-zero exit / dead; OOM and the real exit code come from one `docker inspect` — the 137 in a `docker ps` summary cannot separate an OOM kill from a manual kill, so filtering on the summary alone must misreport.
 - **Four long-lived SSE streams on one substrate**: log FOLLOW, `docker stats`, `docker events` and `docker pull` all run through the same `openSseStream` (heartbeat / active-stream registry / teardown on disconnect) and differ only in how they end — logs and pulls finish on their own, stats and events are aborted by the browser. Multi-select merged logs recover true cross-container ordering from the `--timestamps` prefix; "pause" freezes rendering only (the stream keeps receiving and flushes in one batch on resume).
@@ -380,11 +380,18 @@ must satisfy: the docker CLI is installed, and the current account can use docke
 
 #### Connect local (one click)
 
-If you would rather not fill in a target by hand, the panel toolbar (right of the target selector)
-and the "no Docker targets configured yet" empty state each have a **Connect local** button: one
-click appends a `kind=local` target and **selects it right away**, without opening the settings card
-first. The same operation is the `docker_connect_local` agent tool and `POST /connect-local` over
-HTTP — all three entry points share one implementation on the host.
+If you would rather not fill in a target by hand, the **"no Docker targets configured yet" empty
+state** carries a **Connect local** button: one click appends a `kind=local` target and **selects it
+right away**, without opening the settings card first. The same operation is the
+`docker_connect_local` agent tool and `POST /connect-local` over HTTP — all three entry points share
+one implementation on the host.
+
+It appears **only in that empty state** (when you have no targets at all): the panel is completely
+blank then, so one click is the shortest path. Once any target exists, the one in the selector is the
+one you want, so the toolbar deliberately does **not** carry this button — a permanent "Connect
+local" both occupies the spot right of the target selector and has to attract clicks with an accent
+colour, which is pure noise (the first version was permanent, and the user called it out as
+redundant on sight).
 
 | Situation | Behavior |
 | --- | --- |
@@ -1011,11 +1018,12 @@ lines), and the gating of the eight `/networks` and `/volumes` endpoints (403 fo
    prompt again; after manually changing the fingerprint in `hostKeys` and reconnecting, the connection should
    **be rejected** with reset guidance.
 3. **Connect local (one click)**: clear every target and save (or use a fresh profile), open the panel —
-   the empty state and the toolbar each show a "Connect local" button; one click should produce a
-   `kind=local` target named `local`, select it immediately, and load the container list. Clicking again must
-   **not** create a second one (the button is now a greyed-out "Current target is local"). Nothing should
-   install Docker, start a daemon or switch contexts along the way. On a host without docker you should see a
-   named cause (CLI missing / daemon not running / no socket permission) rather than an empty list.
+   the **empty state** shows a "Connect local" button (the toolbar should **not** have one — that was
+   the first version's redundancy); one click should produce a `kind=local` target named `local`,
+   select it immediately, and load the container list. Clicking again must **not** create a second one
+   (there is only one local target in the list). Nothing should install Docker, start a daemon or
+   switch contexts along the way. On a host without docker you should see a named cause (CLI missing /
+   daemon not running / no socket permission) rather than an empty list.
 4. **Read-only interception**: with both switches off, `/action`, `/exec`, `/images/remove`,
    `/images/prune`, `/images/pull/stream` all return 403; on the agent side exactly 12 read-only tools are
    registered (`docker_targets` / `connect_local` / `ps` / `attention` / `inspect` / `logs` / `stats` / `events` / `images` /

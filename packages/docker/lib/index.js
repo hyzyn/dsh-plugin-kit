@@ -93,6 +93,8 @@ const MUTATION_SUBROUTES = new Set([
      * 一键连接本机（POST /connect-local）：它**会写插件配置**（加一个本机目标），
      * 与其它写路径同一档，必须带同源证明——跨站页面不该有权替用户改目标列表。
      * 注意它**不**在能力开关（allowMutations / allowExec）里：见 connectLocal 的注释。
+     * 客户端只在「一个目标都没有」的空态里给入口，但路由本身与调用方无关（agent 工具
+     * 在任何时候都能调），所以这条守卫不能省。
      */
     '/connect-local',
 ]);

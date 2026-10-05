@@ -2226,16 +2226,15 @@ function publishConfigForTest(config) {
   registration.factory((spec) => SEED[spec]).__config.publishConfig(config)
 }
 
-await test('连接本机：本地目标判定（复用已有本机目标，不看名字）', () => {
+/*
+ * 「复用已有本机目标，不看名字」这条判定的**归属**是宿主：它是写路径的一部分，由
+ * /connect-local 的 connectLocal() / findLocalTargetName 决定，用例在 connect-local.test.ts。
+ * 客户端曾经也有一份 localTargetName（按钮三态用），按钮搬进空态后那份就没了——这里不再重复钉。
+ */
+await test('连接本机：客户端不再自己判「复用还是新建」（那是宿主的写路径）', () => {
   const exports_ = registration.factory((spec) => SEED[spec])
-  const panel = exports_.__panel
-  assert.equal(typeof panel.localTargetName, 'function', '缺少 __panel.localTargetName 测试缝')
-  // 读的是模块级 configCache，所以用例先 prime 一份 config 再问
-  publishConfigForTest({ ...FAKE_CONFIG, targets: [{ name: '远程', kind: 'ssh' }, { name: '本机-自定义', kind: 'local' }] })
-  assert.equal(panel.localTargetName(), '本机-自定义', '已有本机目标时必须能找出来（按钮据此复用而不是新建）')
-  publishConfigForTest({ ...FAKE_CONFIG, targets: [{ name: '远程', kind: 'ssh' }] })
-  assert.equal(panel.localTargetName(), undefined, '全是 SSH 目标 = 还没有本机目标')
-  publishConfigForTest(FAKE_CONFIG)
+  assert.equal(exports_.__panel.localTargetName, undefined, '客户端不该保留写路径的判定副本')
+  assert.equal(typeof exports_.__api.connectLocal, 'function', '真正该有的客户端能力是这条 HTTP 接线')
 })
 
 await test('连接本机：api.connectLocal 走 POST /api/dsh-docker/connect-local（不带参数）', async () => {
@@ -2251,44 +2250,57 @@ await test('连接本机：api.connectLocal 走 POST /api/dsh-docker/connect-loc
   await assert.rejects(() => api.connectLocal(), /unexpected \/api\/dsh-docker\/connect-local/)
 })
 
-await test('连接本机：按钮进工具条与无目标空态，三态由 config 目标列表决定', () => {
+await test('连接本机：已配目标时**不得**出现在工具条（用户报的「多余」就是这条）', () => {
   const exports_ = registration.factory((spec) => SEED[spec])
   const Panel = exports_.__render.ContainerPanel
   assert.equal(typeof Panel, 'function')
 
-  // ① 全是 SSH 目标：按钮可点（data-fresh=1 = 这一下是"新建本机目标"）
-  publishConfigForTest({ ...FAKE_CONFIG, targets: [{ name: 'prod', kind: 'ssh', book: 'prod-a' }] })
-  const fresh = Panel({ carrier: 'modal', onClose: () => {}, initialTarget: 'prod' })
-  const freshButtons = treeFind(fresh, (el) => el.props?.className === 'dk_pill dk_pillLocal')
-  assert.equal(freshButtons.length, 1, '工具条里应恰有一个「连接本机」入口')
-  assert.equal(freshButtons[0].props['data-fresh'], '1', '还没有本机目标时是主路径（染强调色）')
-  assert.equal(freshButtons[0].props.disabled, false)
-  assert.equal(freshButtons[0].props.type, 'button')
-  assert.equal(typeof freshButtons[0].props.onClick, 'function')
-  assert.ok(treeText(fresh).includes('连接本机'), '按钮文案应为「连接本机」')
+  /*
+   * 这条用例是**反向**钉住一个设计决定，所以断言方向很重要：第一版把按钮挂在工具条上
+   * （目标选择器右边）常驻，已有目标时它是纯噪音——用户当场指着截图说「有点多余」。
+   * 所以判据不是「按钮在不在」，而是「有目标时它**不在**」。
+   * 只看 dk_pillLocal 这个类：空态那个按钮用的是 dk_btn dk_btnPrimary，不会误命中。
+   */
+  const toolbarButton = (tree) => treeFind(tree, (el) => {
+    const cls = String(el.props?.className ?? '')
+    return cls.includes('dk_pillLocal')
+  })
 
-  // ② 已有本机目标：仍可点（语义是「切到本机」），但不再染强调色
+  // ① 全是 SSH 目标（选择器里有可用目标）：工具条不该有这个按钮
+  publishConfigForTest({ ...FAKE_CONFIG, targets: [{ name: 'prod', kind: 'ssh', book: 'prod-a' }] })
+  const sshOnly = Panel({ carrier: 'modal', onClose: () => {}, initialTarget: 'prod' })
+  assert.equal(toolbarButton(sshOnly).length, 0, '有可用目标时工具条里不该有「连接本机」')
+
+  // ② 已经有本机目标、且当前看的就是它：同样不该出现
   publishConfigForTest({
     ...FAKE_CONFIG,
     targets: [{ name: 'prod', kind: 'ssh', book: 'prod-a' }, { name: 'local', kind: 'local' }],
   })
-  const reused = Panel({ carrier: 'modal', onClose: () => {}, initialTarget: 'prod' })
-  const reusedButtons = treeFind(reused, (el) => el.props?.className === 'dk_pill dk_pillLocal')
-  assert.equal(reusedButtons.length, 1)
-  assert.equal(reusedButtons[0].props['data-fresh'], undefined, '已有本机目标时不该再强调（它只是切过去）')
-  assert.equal(reusedButtons[0].props.disabled, false, '看的是别的目标时点它 = 切到本机')
+  const withLocal = Panel({ carrier: 'modal', onClose: () => {}, initialTarget: 'local' })
+  assert.equal(toolbarButton(withLocal).length, 0, '当前目标就是本机时更不该有它')
+
+  publishConfigForTest(FAKE_CONFIG)
+})
+
+await test('连接本机：只在「一个目标都没有」的空态里出现，且是可点的主按钮', () => {
+  const exports_ = registration.factory((spec) => SEED[spec])
+  const Panel = exports_.__render.ContainerPanel
 
   /*
-   * ③ 一个目标都没有：工具条仍在（选择器 + 这个按钮），**空态里也有一个可点的按钮** ——
-   * 这正是用户报的问题：面板全空、只让你去设置卡片手配。
+   * 这正是它该在的唯一场景：面板全空、原先只让你去设置卡片手配。
+   * 空态里 `target === ''` ⇒ 不可能已有本机目标可复用 ⇒ 这一下必然是「新建并选中」，
+   * 所以这里只断言「有一个可点的主按钮，文案是『连接本机』」——没有三态。
    */
   publishConfigForTest({ ...FAKE_CONFIG, targets: [] })
   const empty = Panel({ carrier: 'modal', onClose: () => {}, initialTarget: '' })
-  const emptyButtons = treeFind(empty, (el) => el.props?.className === 'dk_btn dk_btnPrimary')
-  assert.equal(emptyButtons.length, 1, '无目标空态里应有一个一键入口')
+  const buttons = treeFind(empty, (el) => el.props?.className === 'dk_btn dk_btnPrimary')
+  assert.equal(buttons.length, 1, '无目标空态里应恰有一个一键入口')
+  assert.equal(buttons[0].props.type, 'button')
+  assert.equal(buttons[0].props.disabled, false)
+  assert.equal(typeof buttons[0].props.onClick, 'function')
   assert.ok(treeText(empty).includes('还没有配置 Docker 目标'), '空态文案应保留（一键入口是它的补充，不是替代）')
   assert.ok(treeText(empty).includes('连接本机'))
-  // 恢复模块级 configCache，避免影响后续用例（toolbar 渲染读的就是它）
+  // 恢复模块级 configCache，避免影响后续用例
   publishConfigForTest(FAKE_CONFIG)
 })
 
