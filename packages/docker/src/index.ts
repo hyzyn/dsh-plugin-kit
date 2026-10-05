@@ -194,6 +194,23 @@ interface ToolTargetRow {
   error?: string
 }
 
+/**
+ * 「连接本机」的结果（面板按钮 / `POST /connect-local` / `docker_connect_local` 三条入口共用同一份）。
+ *
+ * `saved` 与 `reachable` 刻意分开：配置写入（本次真正的副作用）与**只读探测**（daemon 现在通不通）
+ * 是两件事——探测失败不该把「目标已添加」说成失败（用户下次启动 daemon 后就能用），
+ * 但也绝不能只说「已连接」而把 daemon 没起来这件事瞒过去（那正是「面板空的、不知道为啥」的来源）。
+ */
+interface ConnectLocalResult {
+  name: string
+  kind: 'local'
+  created: boolean
+  saved: boolean
+  reachable: boolean
+  serverVersion?: string
+  message: string
+}
+
 interface ToolAttentionRow {
   id: string
   name: string
@@ -314,6 +331,12 @@ const MUTATION_SUBROUTES = new Set([
   '/elevate',
   '/elevate/status',
   '/elevate/revoke',
+  /*
+   * 一键连接本机（POST /connect-local）：它**会写插件配置**（加一个本机目标），
+   * 与其它写路径同一档，必须带同源证明——跨站页面不该有权替用户改目标列表。
+   * 注意它**不**在能力开关（allowMutations / allowExec）里：见 connectLocal 的注释。
+   */
+  '/connect-local',
 ])
 
 /** 「这条错误来自目标侧」的标记（见 guardTargetFailures）。 */
@@ -360,7 +383,7 @@ function isTargetFailure(error: unknown): boolean {
 }
 
 const DOCKER_GUIDANCE =
-  '本机已安装 dsh-docker 插件（Docker 容器面板）：Web GUI 侧边栏「容器」入口可查看各目标（本机 / SSH 主机）上的容器列表（含 Compose 项目视图、事件「活动」条）、状态、端口、日志（含实时跟随）与资源占用（含实时跟随 + 迷你趋势图），以及镜像列表与镜像详情（层 / 大小 / 构建历史、拉取进度流）、网络与卷（列表 + 详情；删除 / 清理同样在开关之后）；目标在 插件配置 → Docker 容器面板 里维护（SSH 目标可直接引用 tty 终端面板的连接簿条目）。**默认只读**：启动/停止/重启/删除容器、删除镜像 / 清理 dangling / 拉取镜像、docker exec，都需要用户在设置里显式打开「允许变更操作」「允许 exec」后才有对应工具与按钮。agent 侧配套只读工具 docker_targets（列目标）、docker_ps（列容器，含 compose 项目与服务；**target 传 `*` 可一次列出所有目标**；端口已按 IPv4/IPv6 双栈归并，`ports` 为空时看 `net`——host 网络容器的端口即宿主机端口）、docker_attention（**需关注汇总**：unhealthy / 反复重启 / OOM / 非零退出 / 僵死，同样支持 `*` 跨目标）、docker_inspect（容器详情）、docker_logs（日志快照）、docker_stats（CPU/内存/IO 快照）、docker_images（镜像列表）、docker_image_inspect（镜像详情 + 构建历史）、docker_events（容器事件快照，见面板容器列表的「活动」条）、docker_networks（网络列表）、docker_volumes（卷列表）；排障推荐顺序：不确定从哪台/哪个容器看起时先 docker_attention（可 `*` 跨目标）→ docker_ps → docker_logs → docker_inspect → docker_stats → docker_events，镜像排查用 docker_images → docker_image_inspect。docker_action（容器生命周期）、docker_image_remove（删镜像）、docker_image_prune（清理 dangling）、docker_image_pull（拉取镜像）、docker_exec 仅在用户打开对应开关后可用，执行前须确认目标，破坏性操作（容器 remove / 镜像删除与清理）要向用户复述后果。网络 / 卷的删除与 prune 目前只提供面板按钮（HTTP 端点），没有对应的 agent 工具——不要在 agent 侧绕过面板做这些变更。docker socket 等价于目标主机的 root 权限，不要在用户未明确要求时执行变更操作。'
+  '本机已安装 dsh-docker 插件（Docker 容器面板）：Web GUI 侧边栏「容器」入口可查看各目标（本机 / SSH 主机）上的容器列表（含 Compose 项目视图、事件「活动」条）、状态、端口、日志（含实时跟随）与资源占用（含实时跟随 + 迷你趋势图），以及镜像列表与镜像详情（层 / 大小 / 构建历史、拉取进度流）、网络与卷（列表 + 详情；删除 / 清理同样在开关之后）；目标在 插件配置 → Docker 容器面板 里维护（SSH 目标可直接引用 tty 终端面板的连接簿条目）。**默认只读**：启动/停止/重启/删除容器、删除镜像 / 清理 dangling / 拉取镜像、docker exec，都需要用户在设置里显式打开「允许变更操作」「允许 exec」后才有对应工具与按钮。agent 侧配套只读工具 docker_targets（列目标；没有任何目标时先调 docker_connect_local 一键加上本机目标）、docker_connect_local（把宿主所在机器加成本机目标并选中，复用已有的本机目标、不重复创建；顺带探测 daemon，失败会说明是 daemon 未启动 / CLI 缺失 / socket 无权访问）、docker_ps（列容器，含 compose 项目与服务；**target 传 `*` 可一次列出所有目标**；端口已按 IPv4/IPv6 双栈归并，`ports` 为空时看 `net`——host 网络容器的端口即宿主机端口）、docker_attention（**需关注汇总**：unhealthy / 反复重启 / OOM / 非零退出 / 僵死，同样支持 `*` 跨目标）、docker_inspect（容器详情）、docker_logs（日志快照）、docker_stats（CPU/内存/IO 快照）、docker_images（镜像列表）、docker_image_inspect（镜像详情 + 构建历史）、docker_events（容器事件快照，见面板容器列表的「活动」条）、docker_networks（网络列表）、docker_volumes（卷列表）；排障推荐顺序：不确定从哪台/哪个容器看起时先 docker_attention（可 `*` 跨目标）→ docker_ps → docker_logs → docker_inspect → docker_stats → docker_events，镜像排查用 docker_images → docker_image_inspect。docker_action（容器生命周期）、docker_image_remove（删镜像）、docker_image_prune（清理 dangling）、docker_image_pull（拉取镜像）、docker_exec 仅在用户打开对应开关后可用，执行前须确认目标，破坏性操作（容器 remove / 镜像删除与清理）要向用户复述后果。网络 / 卷的删除与 prune 目前只提供面板按钮（HTTP 端点），没有对应的 agent 工具——不要在 agent 侧绕过面板做这些变更。docker socket 等价于目标主机的 root 权限，不要在用户未明确要求时执行变更操作。'
 
 /* ------------------------------------------------------------------ *
  * 工具函数
@@ -544,6 +567,55 @@ export function sanitizeTargets(input: unknown): DockerTarget[] | undefined {
     })
   }
   return out
+}
+
+/** 一键连接本机时新建目标的基准名。刻意用稳定的小写 `local`（不是 `本机`）：它是可预测的 id，重名时另起 `local-2`…。 */
+export const LOCAL_TARGET_NAME = 'local'
+
+/** 目标列表里第一个 `kind=local` 的名称（没有则 undefined）——「连接本机」靠它判断该新建还是复用。 */
+export function findLocalTargetName(targets: readonly DockerTarget[]): string | undefined {
+  return targets.find((item) => item.kind === 'local')?.name
+}
+
+/**
+ * 新建本机目标时挑一个**确定性无冲突**的名称：`local` 被占就顺着 `local-2`、`local-3`… 找第一个空位。
+ *
+ * 为什么不做随机 / 时间戳后缀：同一个工作区里重复点「连接本机」应当**幂等**（第二次复用第一次那条），
+ * 而重名只可能来自用户自己配的其它 `local*`；顺序探测既确定又与用户已有的名字不冲突（不覆盖、不改名）。
+ * 上界 1000 是防御性截断（真到那时说明列表已经病态，宁可失败也不能无限循环）。
+ */
+export function nextLocalTargetName(taken: readonly string[]): string | undefined {
+  const used = new Set(taken)
+  if (!used.has(LOCAL_TARGET_NAME)) return LOCAL_TARGET_NAME
+  for (let index = 2; index <= 1000; index += 1) {
+    const candidate = `${LOCAL_TARGET_NAME}-${String(index)}`
+    if (!used.has(candidate)) return candidate
+  }
+  return undefined
+}
+
+/**
+ * 只读探测失败 → 用户能照着做的一句话。三档按**成因**分（而不是原样甩 `exit status 1`）：
+ * CLI 不在（装 Docker / 改 `dockerBin`）、daemon 不可达（启动 daemon 或修 socket 权限）、其它（原样透出）。
+ *
+ * `probe()` 的两条失败路径形状不同：`runLocal` 对 ENOENT 是**抛错**（`无法执行 docker：spawn docker ENOENT`），
+ * 而 daemon 连不上是 docker CLI 自己以非零退出 + stderr 文案返回；两条都要认得出。
+ */
+export function describeLocalProbeFailure(raw: string, bin = 'docker'): string {
+  const text = raw.trim()
+  if (/ENOENT|not recognized as an internal|command not found/i.test(text)) {
+    return `宿主上找不到 docker CLI（${bin}）：请先安装 Docker，或在设置卡片把「docker CLI」改成正确的可执行文件路径`
+  }
+  if (/ECONNREFUSED|ENOENT.*\.sock|\.sock.*(no such file|不是目录|No such)/i.test(text)) {
+    return `docker CLI 可用，但连不上 docker daemon：请确认 daemon 已启动（Linux: systemctl start docker；macOS/Windows: 启动 Docker Desktop）`
+  }
+  if (/permission denied/i.test(text)) {
+    return `docker CLI 可用，但当前账号无权访问 docker socket：把运行宿主的账号加入 docker 组，或改用允许的 socket`
+  }
+  if (/Is the docker daemon running|Cannot connect to the Docker daemon|error during connect/i.test(text)) {
+    return `docker CLI 可用，但连不上 docker daemon：请确认 daemon 已启动（Linux: systemctl start docker；macOS/Windows: 启动 Docker Desktop）`
+  }
+  return `docker daemon 探测失败：${text === '' ? 'docker version 没有返回任何信息' : text}`
 }
 
 /**
@@ -875,6 +947,11 @@ interface SettingsLookup {
   get(ns: string): unknown
 }
 
+interface SettingsFormsLike {
+  describe(): Array<{ ns: string; value?: Record<string, unknown>; revision?: number }>
+  update(ns: string, patch: Record<string, unknown>, expectedRevision?: number): Promise<void>
+}
+
 interface ToolsLike {
   register(definition: unknown): () => void
 }
@@ -951,6 +1028,7 @@ const plugin = definePlugin<Config>({
     /* ---------- 主机指纹（TOFU，本插件自持；tty 记录作种子） ---------- */
 
     let settingsScope: SettingsEntryScope | undefined
+    let settingsForms: SettingsFormsLike | undefined
     /**
      * 只读他人 entry（如 tty 的连接簿）：旧 `settings.get(ns)` 在新宿主已不存在，
      * 改走 `settings.describe()` 的 entry 查找（kit 的 readSettingsEntry）。settings
@@ -1080,8 +1158,126 @@ const plugin = definePlugin<Config>({
       const fallback = defaultTargetName()
       if (fallback !== undefined) return { name: fallback }
       const list = targetsNow()
-      if (list.length === 0) return { error: '尚未配置任何 Docker 目标（插件配置 → Docker 容器面板）' }
+      if (list.length === 0) return { error: '尚未配置任何 Docker 目标：可调 docker_connect_local 一键加上本机目标，或到 插件配置 → Docker 容器面板 添加' }
       return { error: 'target 必填（已配置多个目标：' + list.map((item) => item.name).join('、') + '）' }
+    }
+
+    /* ---------- 一键连接本机（面板按钮 / HTTP 路由 / agent 工具共用这一份实现） ---------- */
+
+    /**
+     * 显式加一个本机目标并选中它，然后把只读探测结果一并回报。
+     *
+     * 四条不变量（缺任何一条都会变成另一种东西）：
+     *   - **幂等**：已有 `kind=local` 就复用它（`created:false`），绝不重复创建；重复点、并发点都落到同一条。
+     *   - **不改别人的**：SSH / 自定义目标原样保留，`targets` 顺序也只追加（`[...existing, 新建]`）——
+     *     不排序、不重写已存在的条目（重写会丢掉 `mergeTargetSecrets` 才补得回的密码）。
+     *   - **没有隐式默认目标**：只有本函数被显式调用才动 `targets`；空数组 / `clearTargets` 的既有语义一字不改。
+     *   - **落盘成功才算数**：settings 不可用或保存失败一律**明确报错且不改内存配置**（no-op），
+     *     绝不出现「界面显示已加上了、刷新就没了」。
+     *
+     * 权限：这条路径只写**本插件自己的配置**（加一个指向宿主自身的本机目标）+ 只读探测，
+     * 与服务端 root 等价的那两档能力（`allowMutations` / `exec`）无关，因此不要求任何授权；
+     * 也绝不自动装 Docker、起 daemon、切 docker context 或改 env。
+     */
+    const connectLocalOnce = async (): Promise<
+      { ok: true; result: ConnectLocalResult } | { ok: false; code: number; error: string }
+    > => {
+      if (!live.enabled) return { ok: false, code: 403, error: 'Docker 插件已禁用' }
+      const existing = targetsNow()
+      const found = findLocalTargetName(existing)
+      // Reusing an existing local target only probes it; it does not need a settings write.
+      if (found === undefined && settingsScope === undefined) {
+        return { ok: false, code: 503, error: '设置存储不可用（宿主未提供 settings 服务），无法保存本机目标；请稍后重试' }
+      }
+      const name = found ?? nextLocalTargetName(existing.map((item) => item.name))
+      if (name === undefined) {
+        return { ok: false, code: 400, error: `本机目标名冲突：已有 1000 个 local* 目标，请先删掉一些再试` }
+      }
+      let created = false
+      if (found === undefined) {
+        /* 新条目只写展示名与 kind：其余字段交给 normalizeConfig / sanitizeTargets 的默认值（单一来源）。 */
+        const scope = settingsScope!
+        let entry: { value?: Record<string, unknown>; revision?: number } | undefined
+        try {
+          entry = settingsForms?.describe().find((item) => item.ns === scope.ns)
+        } catch {
+          return { ok: false, code: 503, error: '无法读取当前目标配置，请稍后重试' }
+        }
+        if (entry === undefined) return { ok: false, code: 503, error: '当前设置条目不可用，请稍后重试' }
+        const rawTargets = entry.value?.targets
+        const nextTargets = [...(Array.isArray(rawTargets) ? rawTargets : existing), { name, kind: 'local' as const }]
+        try {
+          await settingsForms!.update(scope.ns, { targets: nextTargets }, entry.revision)
+        } catch (error) {
+          return { ok: false, code: 500, error: '保存本机目标失败：' + (error instanceof Error ? error.message : String(error)) }
+        }
+        created = true
+        /*
+         * `scope.update` 之后必须自己应用一次：真实 loader 会发 `loader/volatile-update` 触发
+         * applySection，但那个事件是**异步**的，单测 / 老宿主还可能完全不发。这里同步应用是幂等的
+         * （applySection 用同一份 settings 值再归一化一次），而**不应用**的后果是「刚加上的目标
+         * 在探测那一步还解析不到」。
+         */
+        try {
+          applySection({ targets: nextTargets })
+        } catch (error) {
+          return {
+            ok: false,
+            code: 500,
+            error: '本机目标已保存但应用失败：' + (error instanceof Error ? error.message : String(error)),
+          }
+        }
+      }
+      // 探测失败一律降级为 message（见 ConnectLocalResult 的注释），不是这次操作的失败
+      const built = apiFor(name)
+      if (built.api === undefined) {
+        return {
+          ok: true,
+          result: {
+            name,
+            kind: 'local',
+            created,
+            saved: true,
+            reachable: false,
+            message: `已${created ? '添加并选中' : '选中'}本机目标「${name}」，但无法构造执行通道：${built.error ?? '未知错误'}`,
+          },
+        }
+      }
+      let reachable = false
+      let serverVersion: string | undefined
+      let reason = ''
+      try {
+        const probe = await built.api.probe()
+        reachable = probe.ok
+        if (probe.serverVersion !== null) serverVersion = probe.serverVersion
+        if (!probe.ok) reason = describeLocalProbeFailure(probe.error ?? '', live.dockerBin)
+      } catch (error) {
+        reason = describeLocalProbeFailure(error instanceof Error ? error.message : String(error), live.dockerBin)
+      }
+      const head = `已${created ? '添加并选中' : '选中'}本机目标「${name}」`
+      return {
+        ok: true,
+        result: {
+          name,
+          kind: 'local',
+          created,
+          saved: true,
+          reachable,
+          ...(serverVersion === undefined ? {} : { serverVersion }),
+          message: reachable
+            ? `${head}：docker daemon 可达${serverVersion === undefined ? '' : `（${serverVersion}）`}`
+            // 连接失败必须说清**为什么**：daemon 没起 / CLI 缺失 / socket 权限，而不是只报「没有容器」
+            : `${head}，但本机 docker 不可用——${reason === '' ? 'docker version 未返回可用信息' : reason}`,
+        },
+      }
+    }
+
+    // Serialize this read-modify-write across HTTP and tool callers. Rejections never poison the queue.
+    let localConnectQueue: Promise<unknown> = Promise.resolve()
+    const connectLocal = (): ReturnType<typeof connectLocalOnce> => {
+      const pending = localConnectQueue.then(connectLocalOnce)
+      localConnectQueue = pending.catch(() => {})
+      return pending
     }
 
     /**
@@ -1855,6 +2051,41 @@ const plugin = definePlugin<Config>({
             })
           }
           return { targets: rows }
+        },
+      }))
+
+      add('docker_connect_local', defineTool({
+        name: 'docker_connect_local',
+        // 只读之外的唯一副作用是**写本插件自己的配置**，没有别的写路径；并发调用被 connectLocal 的幂等语义收敛
+        isConcurrencySafe: () => true,
+        description: '添加或复用本机 Docker 目标并探测 daemon，返回目标名、是否新建和连接状态及失败原因。保留已有 SSH 配置；不启动或安装 Docker，不改变 context 或能力授权。随后将返回的 name 作为 docker_ps 等工具的 target。',
+        parameters: {},
+        output: {
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              name: { type: 'string', required: true },
+              kind: { type: 'string', required: true },
+              created: { type: 'boolean', required: true },
+              saved: { type: 'boolean', required: true },
+              reachable: { type: 'boolean', required: true },
+              message: { type: 'string', required: true },
+              serverVersion: { type: 'string' },
+            },
+          },
+          render: (_args: unknown, value: unknown) => {
+            const row = value as ConnectLocalResult
+            return [{
+              type: 'text',
+              text: `${row.message}\n后续查询请传 target: ${JSON.stringify(row.name)}`,
+            }]
+          },
+        },
+        async execute(): Promise<ConnectLocalResult> {
+          const outcome = await connectLocal()
+          if (!outcome.ok) throw new Error(outcome.error)
+          return outcome.result
         },
       }))
 
@@ -3324,6 +3555,30 @@ const plugin = definePlugin<Config>({
               return
             }
 
+            /*
+             * 一键连接本机：把「加一个 local 目标」从「先开设置卡片、手填名字、保存、再切回来」压缩成一下。
+             * 为什么是显式按钮而不是隐式默认目标：空 `targets` 的语义（= 用户没配、面板给引导）不能被悄悄改掉。
+             * 只读探测的结果作为 `message` 回传（含「daemon 未启动 / CLI 缺失」的成因），
+             * 客户端拿它直接给提示，不必再单独发一次 /probe 往返。
+             */
+            if (sub === '/connect-local') {
+              if (req.method !== 'POST') {
+                writeJson(res, 405, { error: 'method not allowed: ' + String(req.method) })
+                return
+              }
+              if (!hasSameOriginProof(req)) {
+                writeJson(res, 403, { error: originProofHint(req) })
+                return
+              }
+              const outcome = await connectLocal()
+              if (!outcome.ok) {
+                writeJson(res, outcome.code, { error: outcome.error })
+                return
+              }
+              writeJson(res, 200, { ok: true, result: outcome.result, config: snapshot() })
+              return
+            }
+
             if (sub === '/targets') {
               if (req.method !== 'GET' && req.method !== 'POST') {
                 writeJson(res, 405, { error: 'method not allowed: ' + String(req.method) })
@@ -3692,6 +3947,7 @@ const plugin = definePlugin<Config>({
         // 卡片是自定义页（plugins.row.config），别再让 DSH 为本 entry 自动生成一份。
         const offAutoPage = suppressAutoSettingsPage(settingsCtx, ctx)
         settingsScope = scope
+        settingsForms = (settingsCtx as unknown as { settings: SettingsFormsLike }).settings
         settingsApi = { get: (ns: string) => readSettingsEntry(settingsCtx, ns) }
         // 立刻读一次 resolved 值（schema 默认值 ← composition base ← 用户层）。
         // 走 applySection 而不是直接 normalizeConfig：能力开关的**配置值**要一起记下来（见
@@ -3709,6 +3965,7 @@ const plugin = definePlugin<Config>({
           off()
           offAutoPage()
           settingsScope = undefined
+          settingsForms = undefined
           settingsApi = undefined
         }
       }, 'dsh-docker: settings')

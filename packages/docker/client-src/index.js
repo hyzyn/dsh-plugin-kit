@@ -453,6 +453,8 @@ const I18N_ZH = {
   'msg.saved': '已保存并热生效',
   'msg.savedDirty': '已保存并热生效（表单在保存期间有新编辑，未覆盖你正在输入的内容）',
   'error.saveFailed': '保存失败：',
+  'msg.connectLocalBusy': '正在连接本机…',
+  'error.connectLocalFailed': '连接本机失败：',
   'card.desc': '本机与 SSH 主机的容器与镜像：容器 / 镜像 / 网络 / 卷查看，默认只读，变更操作需显式开启。',
   'card.name': 'Docker 容器面板',
   'card.summary': '本机 / SSH 主机上的容器与镜像；默认只读，变更操作需显式开启',
@@ -508,6 +510,9 @@ const I18N_ZH = {
   'hint.keyPath': '支持 ~ 与 ~/ 展开（不支持 ~user）；Windows 请写绝对路径',
   'placeholder.passwordSet': '（已设置，留空保持不变）',
   'btn.addTarget': '添加目标',
+  'btn.connectLocal': '连接本机',
+  'btn.connectLocalCurrent': '当前目标就是本机',
+  'hint.connectLocal': '加一个指向宿主所在机器的本机目标并选中（已有本机目标则直接复用）；SSH 与自定义目标原样保留。',
   'hint.addTarget': 'SSH 目标推荐直接选 tty 终端面板的连接簿条目（凭证只需维护一处）；手填时密码 / 口令建议写 env:NAME（凭据引用：由官方凭据存储解析，缺失时退回环境变量）。',
   'section.tofu': 'SSH 主机密钥记录（TOFU）',
   'list.noHostKeys': '暂无记录 — 首次 SSH 连接成功后自动记录主机指纹（若 tty 已记录同一主机，会直接复用）。',
@@ -930,6 +935,8 @@ const I18N_EN = {
   'msg.saved': 'Saved and applied live',
   'msg.savedDirty': 'Saved and applied live (the form got new edits while saving; what you were typing was not overwritten)',
   'error.saveFailed': 'Save failed: ',
+  'msg.connectLocalBusy': 'Connecting to the local Docker…',
+  'error.connectLocalFailed': 'Connecting local Docker failed: ',
   'card.desc': 'Containers and images on this machine and SSH hosts: containers / images / networks / volumes, read-only by default, changes must be enabled explicitly.',
   'card.name': 'Docker containers',
   'card.summary': 'Containers and images on this machine / SSH hosts; read-only by default, changes must be enabled explicitly',
@@ -985,6 +992,9 @@ const I18N_EN = {
   'hint.keyPath': 'Supports ~ and ~/ expansion (not ~user); use absolute paths on Windows',
   'placeholder.passwordSet': '(already set, leave empty to keep)',
   'btn.addTarget': 'Add target',
+  'btn.connectLocal': 'Connect local',
+  'btn.connectLocalCurrent': 'Current target is local',
+  'hint.connectLocal': 'Add a local target pointing at the machine running the host and select it (reuses an existing local target); SSH and custom targets stay untouched.',
   'hint.addTarget': 'For an SSH target, prefer picking a tty terminal panel bookmark (credentials live in one place); when filling in manually, write the password / passphrase as env:NAME (credential reference: resolved by the official credential store, falling back to the environment variable).',
   'section.tofu': 'SSH host key records (TOFU)',
   'list.noHostKeys': 'No records yet — the host fingerprint is recorded automatically after the first successful SSH connection (reused directly if tty already recorded the same host).',
@@ -1089,6 +1099,12 @@ async function request(path, init) {
 const api = {
   config: () => request('/config'),
   saveConfig: (patch) => request('/config', { method: 'POST', body: JSON.stringify(patch) }),
+  /**
+   * 一键连接本机（宿主同源证明要求 POST）：直接加一个 kind=local 目标并选中它，
+   * 返回 { result: { name, created, saved, reachable, serverVersion?, message }, config }。
+   * 与「设置卡片里手填一个本机目标」是**同一份宿主实现**（/connect-local ↔ connectLocal）。
+   */
+  connectLocal: () => request('/connect-local', { method: 'POST', body: '{}' }),
   targets: () => request('/targets'),
   probe: (target) => request('/probe', { method: 'POST', body: JSON.stringify({ target }) }),
   containers: (target, all) => request('/containers', { method: 'POST', body: JSON.stringify({ target, all }) }),
@@ -1531,6 +1547,17 @@ const PICK_MAX = 8
  * 本地目标走子进程，没有这个约束，仍是 {@link PICK_MAX}。
  */
 const PICK_MAX_SSH = 6
+
+/**
+ * 已配置目标里 `kind=local` 的那条的名字（没有则 undefined）。
+ *
+ * 「连接本机」按钮靠它决定**复用还是新建**：已有本机目标就直接选中它（宿主侧 /connect-local
+ * 同样复用，不重复创建），免得点一次多一条同名目标。
+ */
+function localTargetName() {
+  const targets = configCache !== null && Array.isArray(configCache.targets) ? configCache.targets : []
+  return targets.find((item) => item.kind === 'local')?.name
+}
 
 /** 目标是不是 SSH —— 决定聚合流的上限。读模块级 configCache，任何组件都能问。 */
 function isSshTarget(name) {
@@ -5687,6 +5714,8 @@ window.__ModuleLoader__.load({
       /** 已进入聚合视图（items 由 pickItems(containers, pickedIds) 现算）。 */
       const [aggregateOpen, setAggregateOpen] = useState(false)
       const [loading, setLoading] = useState(false)
+      /** 「连接本机」请求在飞：按钮转圈 + 置灰，避免连点造成一串并发写配置。 */
+      const [connectLocalBusy, setConnectLocalBusy] = useState(false)
       const [error, setError] = useState('')
       const [notice, setNotice] = useState('')
       const [all, setAll] = usePanelState('all', true)
@@ -6167,6 +6196,64 @@ window.__ModuleLoader__.load({
         props.onTargetChange?.(targetLabel(name))
       }
 
+      /**
+       * 「连接本机」：面板工具条 / 无目标空态那一个按钮的唯一实现。
+       *
+       * 三件事一起做，缺任何一件这个按钮都不成立：
+       *   1. 调宿主的 `POST /connect-local`——它才是**唯一**写配置的地方（复用已有本机目标、
+       *      否则用确定性无冲突名新建；settings 不可用 / 保存失败会带原因返回）；
+       *   2. 用响应里的新 config 推送 `publishConfig`（已挂载的面板与连接栏立刻看到新目标）
+       *      并重拉一次 /targets（下拉里的 `name · 本机` label 只有它算得出来）；
+       *   3. 立刻把 target 切到那条本机目标（用户点它就是想说「看这台」），并清掉上一台的
+       *      错误 / 勾选 / 执行中标记——与手动换目标同一套清理。
+       *
+       * 探测结果（daemon 不可达 / CLI 缺失 / socket 无权）走 `notice`：**保存成功但连不上**
+       * 既不能被说成失败（目标真的加上了），也不能不提（否则用户只看到空列表）。
+       */
+      const connectLocal = useCallback(() => {
+        if (connectLocalBusy) return
+        setConnectLocalBusy(true)
+        setNotice(t('msg.connectLocalBusy'))
+        api.connectLocal().then((payload) => {
+          if (!mountedRef.current) return
+          const result = payload.result ?? {}
+          const config_ = payload.config
+          if (config_ !== null && typeof config_ === 'object') {
+            setConfig(config_)
+            primeTargetsCache(config_)
+            publishConfig(config_)
+          }
+          const name = typeof result.name === 'string' ? result.name : ''
+          if (name !== '') {
+            setTarget(name)
+            setSessionScoped(false)
+            setError('')
+            // 「连接本机」= 去看这台主机：容器列表页 + 同一套换目标清理
+            setView('containers')
+            setDetail(null)
+            resetPick()
+            setPending({})
+            props.onTargetChange?.(targetLabel(name))
+          }
+          setNotice(typeof result.message === 'string' && result.message !== '' ? result.message : t('msg.saved'))
+          // 下拉里的 label 只有 /targets 算得出来（config 快照里没有 label 字段）
+          void api.targets().then((targetsPayload) => {
+            if (!mountedRef.current) return
+            const rows = targetsPayload.targets ?? []
+            setTargets(rows)
+            targetsCache = rows
+          }).catch(() => { /* 失败不连坐：上面已按 config 校正过选中项 */ })
+          // 目标增删会影响 tty 连接栏按钮：刷新解析后的目标列表缓存
+          void refreshTargetsCache()
+        }).catch((error_) => {
+          // 设置存储不可用 / 保存失败 / 非 POST 同源拒绝：把宿主给的原因原样带出来
+          if (mountedRef.current) setError(t('error.connectLocalFailed') + error_.message)
+          setNotice('')
+        }).finally(() => {
+          if (mountedRef.current) setConnectLocalBusy(false)
+        })
+      }, [connectLocalBusy])
+
       const refresh = useCallback(() => {
         // 五个列表各有自己的加载器；容器以外的都变化慢，但都走同一条「切页 / 切目标即刷」
         if (view === 'overview') loadOverview()
@@ -6617,6 +6704,32 @@ window.__ModuleLoader__.load({
         return found.label === undefined ? name : name + ' · ' + found.label
       }
 
+      /**
+       * 渲染「连接本机」按钮（工具条 / 无目标空态共用同一个节点定义，只换 className）。
+       *
+       * 三态，各有明确含义：
+       *   - 已有本机目标且**就是**当前目标：按钮置灰并说「当前目标就是本机」——再做一遍无事发生，
+       *     留一个可点的按钮只会让人以为点漏了；
+       *   - 已有本机目标但当前看的是别的（例如全是 SSH）：可点，语义是「切到本机」而不是再建一条；
+       *   - 没有任何本机目标：可点 = 新建并选中（宿主侧用 `local` / `local-2`… 的确定性名字）。
+       * 只在单目标列表语境出现（总览没有「当前目标」这回事）。
+       */
+      const connectLocalButton = (className) => {
+        const local = localTargetName()
+        const current = local !== undefined && local === target
+        const label = current ? t('btn.connectLocalCurrent') : t('btn.connectLocal')
+        return jsx('button', {
+          type: 'button',
+          className,
+          disabled: current || connectLocalBusy,
+          // 还没有任何本机目标 = 这一下是"新建"（主路径，染强调色）；已有 = "切过去"（普通 pill）
+          'data-fresh': local === undefined ? '1' : undefined,
+          title: label + ' — ' + t('hint.connectLocal'),
+          onClick: connectLocal,
+          children: connectLocalBusy ? t('msg.connectLocalBusy') : label,
+        }, 'connectLocal')
+      }
+
       const empty = () => {
         if (loading) return jsx('div', { className: 'dk_empty', children: [jsx('span', { className: 'dk_spin' }), jsx('div', { children: t('list.loading') })] })
         if (target === '') {
@@ -6629,6 +6742,8 @@ window.__ModuleLoader__.load({
           return jsxs('div', { className: 'dk_empty', children: [
             jsx('div', { className: 'dk_emptyTitle', children: t('list.noTargetsConfigured') }),
             jsx('div', { className: 'dk_emptyHint', children: t('hint.addTargetEmpty') }),
+            // 一键路径就放在这里：面板全空、「一个目标都没有」正是这个按钮最该出现的地方
+            connectLocalButton('dk_btn dk_btnPrimary'),
           ] })
         }
         // 读取失败时列表本来就会被清空（切目标失败尤其如此）：此时别把空列表说成
@@ -6955,6 +7070,12 @@ window.__ModuleLoader__.load({
                 },
                 children: t('panel.overview'),
               }),
+              /*
+               * 「连接本机」：整个面板唯一的一键路径。放在目标选择器**紧右边**——
+               * 它解决的正是「选择器里没有我要的那台（宿主自己）」。总览里没有「当前目标」，
+               * 不出现（与总览入口的显隐逻辑各管各的）。
+               */
+              view === 'overview' ? null : connectLocalButton('dk_pill dk_pillLocal'),
               /*
                * 五段：容器 / 镜像 / Compose / 网络 / 卷。都是短词，窄栏放得下；
                * 真的溢出时 .dk_seg 允许横向滚动（见 docker.css），不做二级菜单——
@@ -8339,7 +8460,24 @@ window.__ModuleLoader__.load({
        * 「连接还没建立时靠连接簿 host 兜底」这条路径。
        */
       matchTargetForSession,
+      /*
+       * 「连接本机」按钮的三态判定读的就是它（已有本机目标 → 复用；没有 → 新建）。
+       * 读的是模块级 configCache，所以用例先 primeTargetsCache 再问即可。
+       */
+      localTargetName,
     }
+    /*
+     * 模块级 config 缓存的测试缝：`localTargetName` 这类判定读的是它，而它只由
+     * `/config` 的响应 / 设置卡片保存后推进去。离线冒烟没有真往返，直接把一份 config
+     * 写进去是最短的路径（publish 顺带通知订阅者，与生产路径同一份语义）。
+     */
+    exports.__config = { publishConfig, primeTargetsCache }
+    /*
+     * HTTP 面的测试缝：模块级的 `api` 里的每条都是「路径 + 方法 + body」的直接映射，
+     * 离线冒烟用桩 fetch 调一次就能钉住「一键连接本机打的是 /connect-local 这个 POST」
+     * 这类**接线**错误（路径拼歪了在真机上才暴露）。
+     */
+    exports.__api = api
     /*
      * 日志缓冲的测试缝：环形上限 / 残行分片 / 单调 id / 快照切分都是纯逻辑，离线冒烟
      * 直接驱动（真实 EventSource 时序进不了 Node 桩）。常量挂出来供用例对齐，避免两边漂移。

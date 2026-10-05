@@ -2215,6 +2215,84 @@ await test('日志缓冲:快照切分不把结尾换行算成一行(D136 —— 
 })
 
 /* ------------------------------------------------------------------ *
+ * 一键连接本机：按钮出现的位置与 HTTP 接线
+ * ------------------------------------------------------------------ */
+
+/**
+ * 往模块级 config 缓存里塞一份 config（按钮的三态判定读的就是它，而它平时只由
+ * `/config` 响应推进去）。走 bundle 自己导出的 publishConfig，与生产路径同一份语义。
+ */
+function publishConfigForTest(config) {
+  registration.factory((spec) => SEED[spec]).__config.publishConfig(config)
+}
+
+await test('连接本机：本地目标判定（复用已有本机目标，不看名字）', () => {
+  const exports_ = registration.factory((spec) => SEED[spec])
+  const panel = exports_.__panel
+  assert.equal(typeof panel.localTargetName, 'function', '缺少 __panel.localTargetName 测试缝')
+  // 读的是模块级 configCache，所以用例先 prime 一份 config 再问
+  publishConfigForTest({ ...FAKE_CONFIG, targets: [{ name: '远程', kind: 'ssh' }, { name: '本机-自定义', kind: 'local' }] })
+  assert.equal(panel.localTargetName(), '本机-自定义', '已有本机目标时必须能找出来（按钮据此复用而不是新建）')
+  publishConfigForTest({ ...FAKE_CONFIG, targets: [{ name: '远程', kind: 'ssh' }] })
+  assert.equal(panel.localTargetName(), undefined, '全是 SSH 目标 = 还没有本机目标')
+  publishConfigForTest(FAKE_CONFIG)
+})
+
+await test('连接本机：api.connectLocal 走 POST /api/dsh-docker/connect-local（不带参数）', async () => {
+  const exports_ = registration.factory((spec) => SEED[spec])
+  const api = exports_.__api
+  assert.ok(api !== undefined && typeof api.connectLocal === 'function', '缺少 __api.connectLocal 测试缝')
+  /*
+   * bundle 闭包里的 `fetch` 是 factory 注入的那个参数（见冒烟脚本开头的 fetchStub），
+   * 不是 globalThis.fetch —— 所以「真的打到了哪个 URL」要看桩的兜底错误：
+   * 兜底分支把路径原样写进 error，命中它就等于证明这次调用打的就是这个路径。
+   * （成功路径的响应体由 fetchStub 决定，这里只钉接线，不重复测宿主的行为。）
+   */
+  await assert.rejects(() => api.connectLocal(), /unexpected \/api\/dsh-docker\/connect-local/)
+})
+
+await test('连接本机：按钮进工具条与无目标空态，三态由 config 目标列表决定', () => {
+  const exports_ = registration.factory((spec) => SEED[spec])
+  const Panel = exports_.__render.ContainerPanel
+  assert.equal(typeof Panel, 'function')
+
+  // ① 全是 SSH 目标：按钮可点（data-fresh=1 = 这一下是"新建本机目标"）
+  publishConfigForTest({ ...FAKE_CONFIG, targets: [{ name: 'prod', kind: 'ssh', book: 'prod-a' }] })
+  const fresh = Panel({ carrier: 'modal', onClose: () => {}, initialTarget: 'prod' })
+  const freshButtons = treeFind(fresh, (el) => el.props?.className === 'dk_pill dk_pillLocal')
+  assert.equal(freshButtons.length, 1, '工具条里应恰有一个「连接本机」入口')
+  assert.equal(freshButtons[0].props['data-fresh'], '1', '还没有本机目标时是主路径（染强调色）')
+  assert.equal(freshButtons[0].props.disabled, false)
+  assert.equal(freshButtons[0].props.type, 'button')
+  assert.equal(typeof freshButtons[0].props.onClick, 'function')
+  assert.ok(treeText(fresh).includes('连接本机'), '按钮文案应为「连接本机」')
+
+  // ② 已有本机目标：仍可点（语义是「切到本机」），但不再染强调色
+  publishConfigForTest({
+    ...FAKE_CONFIG,
+    targets: [{ name: 'prod', kind: 'ssh', book: 'prod-a' }, { name: 'local', kind: 'local' }],
+  })
+  const reused = Panel({ carrier: 'modal', onClose: () => {}, initialTarget: 'prod' })
+  const reusedButtons = treeFind(reused, (el) => el.props?.className === 'dk_pill dk_pillLocal')
+  assert.equal(reusedButtons.length, 1)
+  assert.equal(reusedButtons[0].props['data-fresh'], undefined, '已有本机目标时不该再强调（它只是切过去）')
+  assert.equal(reusedButtons[0].props.disabled, false, '看的是别的目标时点它 = 切到本机')
+
+  /*
+   * ③ 一个目标都没有：工具条仍在（选择器 + 这个按钮），**空态里也有一个可点的按钮** ——
+   * 这正是用户报的问题：面板全空、只让你去设置卡片手配。
+   */
+  publishConfigForTest({ ...FAKE_CONFIG, targets: [] })
+  const empty = Panel({ carrier: 'modal', onClose: () => {}, initialTarget: '' })
+  const emptyButtons = treeFind(empty, (el) => el.props?.className === 'dk_btn dk_btnPrimary')
+  assert.equal(emptyButtons.length, 1, '无目标空态里应有一个一键入口')
+  assert.ok(treeText(empty).includes('还没有配置 Docker 目标'), '空态文案应保留（一键入口是它的补充，不是替代）')
+  assert.ok(treeText(empty).includes('连接本机'))
+  // 恢复模块级 configCache，避免影响后续用例（toolbar 渲染读的就是它）
+  publishConfigForTest(FAKE_CONFIG)
+})
+
+/* ------------------------------------------------------------------ *
  * 结果
  * ------------------------------------------------------------------ */
 

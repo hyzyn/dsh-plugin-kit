@@ -7,6 +7,7 @@
 ## Features
 
 - **A resident session right-sidebar tab**: the panel lives as a session right-sidebar tab (`sidebar.right.pane.tab`) **side by side** with the conversation — after handing an error to the agent the logs stay on the right, without getting in the way of watching it work; collapsing it leaves the viewport. Panel-level state (target / view / filter text / selected container and its tab) is kept **across sessions**, and collapsing drops the live streams to hand the SSH channels back. Hosts without the right-sidebar services fall back to the original dock / modal, behaving exactly as before.
+- **An explicit one-click "connect local"**: the panel toolbar and the "no Docker targets configured yet" empty state each carry a **Connect local** button — one click adds the machine hosting the plugin as a local target and selects it (an existing local target is reused, never duplicated; SSH and custom targets stay untouched), and the same operation is `docker_connect_local` on the agent side. It does **not** change the meaning of an empty `targets`, never invents an implicit default target, never installs Docker / starts a daemon / switches docker contexts, and needs no capability grant (it only adds one local target pointing at the plugin's own host).
 - **Aggregated fetches across targets**: the Overview page fans out over every `targets[]` entry in parallel, and an unreachable target only spoils its own cell; the agent side exposes the same shape through `docker_ps target:"*"` / `docker_attention target:"*"`, so targets never block one another.
 - **"Needs attention" reads authoritative fields**: unhealthy / repeatedly restarting / OOM-killed / non-zero exit / dead; OOM and the real exit code come from one `docker inspect` — the 137 in a `docker ps` summary cannot separate an OOM kill from a manual kill, so filtering on the summary alone must misreport.
 - **Four long-lived SSE streams on one substrate**: log FOLLOW, `docker stats`, `docker events` and `docker pull` all run through the same `openSseStream` (heartbeat / active-stream registry / teardown on disconnect) and differ only in how they end — logs and pulls finish on their own, stats and events are aborted by the browser. Multi-select merged logs recover true cross-container ordering from the `--timestamps` prefix; "pause" freezes rendering only (the stream keeps receiving and flushes in one batch on resume).
@@ -377,6 +378,36 @@ must satisfy: the docker CLI is installed, and the current account can use docke
 **without sudo** (usually because it is in the `docker` group); otherwise `probe` passes through errors such as
 `permission denied while trying to connect to the Docker daemon socket` verbatim.
 
+#### Connect local (one click)
+
+If you would rather not fill in a target by hand, the panel toolbar (right of the target selector)
+and the "no Docker targets configured yet" empty state each have a **Connect local** button: one
+click appends a `kind=local` target and **selects it right away**, without opening the settings card
+first. The same operation is the `docker_connect_local` agent tool and `POST /connect-local` over
+HTTP — all three entry points share one implementation on the host.
+
+| Situation | Behavior |
+| --- | --- |
+| A `kind=local` target already exists (whatever its name) | **Reuse it** (`created:false`) and just switch to it; nothing is created, rewritten or renamed |
+| No local target | Append one under the stable name `local`; if `local` is taken by another target, try `local-2`, `local-3`, … (deterministic, conflict-free, never overwriting) |
+| SSH / custom targets configured | **Left exactly as they are** (order and credentials included); only the local entry is appended at the end |
+| Clicked twice / concurrently | Idempotent: exactly one local target in the end |
+| Settings store unavailable / save fails | A clear error (503 / 500 with the reason) and **no in-memory config change** — never "it showed up in the UI but is gone after a refresh" |
+
+After the write succeeds it also runs one **read-only probe** (`docker version`) and puts the result
+into `message`: the server version when the daemon is reachable, or the actual cause when it is not —
+**docker CLI missing** (install Docker, or point "docker CLI" at the right path) / **daemon not
+running** (Linux: `systemctl start docker`; macOS / Windows: start Docker Desktop) / **no permission
+on the socket** (add the account to the `docker` group) — instead of just "no containers". A failed
+probe is **not** a failed operation (the target really was added; `reachable:false` says so
+separately), and it works as soon as the daemon comes up.
+
+Deliberately **not** done (the conservative boundary): installing Docker, starting a daemon,
+switching docker contexts, or touching any environment variable; an empty `targets` (= the user has
+none) keeps its meaning, with no implicit default target; and the `clearTargets` protection against
+accidental clearing is untouched. The path is also **independent of the capability switches** — it
+only writes the plugin's own configuration and involves no target-side write that would need a grant.
+
 ### Merged logs (multi-select / Compose project)
 
 Selecting several containers or opening a Compose project can both merge the logs of several containers into one
@@ -520,6 +551,7 @@ and reconnect". The record list can be deleted / reset in the settings card (del
 | Tool | Registration | Parameters | Purpose / typical use |
 | --- | --- | --- | --- |
 | `docker_targets` | always registered | `probe?: boolean` | lists targets (name / kind / label); `probe:true` probes the docker version and daemon reachability for each one (SSH targets open connections, so it is slower). Other tools take their `target` from here |
+| `docker_connect_local` | always registered | — (no parameters) | **Connect local**: makes sure a `kind=local` target exists and selects it (an existing one is reused, never duplicated; SSH / custom targets stay untouched), then probes the daemon read-only: returns `{name, kind, created, saved, reachable, serverVersion?}`. When nothing is configured yet `docker_ps` and friends report "no Docker targets configured" — this is the one step that fixes it. **Requires no capability grant** (it only writes the plugin's own config plus a read-only probe) and never installs Docker / starts a daemon / switches context / touches environment variables. When the daemon is unreachable the result text names the cause (CLI missing / daemon not running / no socket permission) instead of an empty list |
 | `docker_ps` | always registered | `target?` (**pass `*` = all targets**), `all?: boolean` | lists containers (name / state / health / image / ports / compose project and service / short ID); by default only running ones, `all:true` includes stopped. With `target:'*'` it returns results grouped by target, and **one unreachable target does not affect the others** (that group carries `error`). Ports are merged across the IPv4/IPv6 dual-stack expansion (one `-p` no longer shows twice, D130); an empty `ports` does **not** mean "nothing exposed" — host-network containers publish on the host itself, and that case now carries a `net` field (D131). The first step of troubleshooting |
 | `docker_attention` | always registered | `target?` (supports `*`), `limit?: number` | a **needs-attention summary**: unhealthy / repeatedly restarting / OOM-killed / non-zero exit / zombie; every item carries `reasons`, `exitCode`, `oomKilled`, `restartCount`. OOM and the real exit code come from one `docker inspect` (a ps summary cannot distinguish a manual kill from 137). The troubleshooting entry point: call it first when you are unsure which machine or container to look at |
 | `docker_inspect` | always registered | `target?`, `id` (required) | `docker inspect`'s authoritative details: state / health check / exit code / restart count / ports / mounts / networks / startup command |
@@ -556,8 +588,8 @@ loopback, `localhost`, or a hostname / `/etc/hosts` alias that **resolves to thi
 `referrer-policy: no-referrer`.
 
 **On top of loopback there is a second gate, the "same-origin proof"**: the four SSE streams (`/logs/stream`,
-`/stats/stream`, `/events/stream`, `/images/pull/stream`) and eight mutating sub-routes (`/action`,
-`/images/remove|prune`, `/networks/remove|prune`, `/volumes/remove|prune`, `/exec`) require either
+`/stats/stream`, `/events/stream`, `/images/pull/stream`) and nine write sub-routes (`/action`,
+`/images/remove|prune`, `/networks/remove|prune`, `/volumes/remove|prune`, `/exec`, `/connect-local`) require either
 `Origin: <same origin>` or `Sec-Fetch-Site: same-origin`, otherwise 403 `缺少同源证明` (missing same-origin
 proof). This blocks cross-site side effects such as a malicious page using
 `<img src=.../images/pull/stream>` to trigger a real pull; curl, old Safari and some WebViews do not send those
@@ -579,6 +611,7 @@ returned 403 on Desktop — the symptom was the logs / stats / events / pull str
 | `/config` | GET | — | `{ok:true, config}`: the config snapshot (targets expose only `passwordSet` / `passphraseSet`, plus the read-only `ttyBooks` / `ttyAvailable` / `toolsRegistered`) |
 | `/config` | POST | any subset of the config keys above | `{ok:true, config}`; an unknown key is 400 and invalid JSON is 400 |
 | `/targets` | GET / POST | — | `{ok:true, targets:[{name, kind, label?\|error?}]}` |
+| `/connect-local` | POST | `{}` (the body is ignored) | **Connect local**: reuses or creates a `kind=local` target and returns `{ok:true, result:{name, kind, created, saved, reachable, serverVersion?, message}, config}`; 503 when the host has no settings service and 500 when the save fails (both carry a reason and change no in-memory config). Requires the same-origin proof (it is a write path) but **not** `allowMutations` / `allowExec` |
 | `/probe` | POST | `{target?}` | `{ok:true, probe:{ok, bin, serverVersion, error, target}}` |
 | `/containers` | POST | `{target?, all?}` | `{ok:true, containers: ContainerSummary[]}`; with `target:'*'` it returns `{ok:true, groups:[{target,label,ok,error?,data?}]}` (concurrent cross-target aggregation) |
 | `/attention` | POST | `{target?, limit?}` | for a single target `{ok:true, items: AttentionItem[], total, truncated, degraded}` (`limit` applies **after** filtering + severity sorting; default 100, max 500); with `target:'*'` `{ok:true, groups:[{target,label,ok,error?,data:{items,total,truncated,degraded}}]}` |
@@ -889,7 +922,7 @@ injection)**, `assertBin`, `formatBytes`, `shJoin` escaping, `DockerApi`'s argv 
 
 `scripts/route-smoke.mjs` runs end to end with **a fake cordis ctx + a fake docker CLI script**: plugin
 mounting (settings / tools / routes / capability-announcement registration), the actual calls and returns of
-**26 routes** (including the event sequences and parameter validation of the four SSE streams `/logs/stream`,
+**27 routes** (including the event sequences and parameter validation of the four SSE streams `/logs/stream`,
 `/stats/stream`, `/events/stream`, `/images/pull/stream`, with the event stream additionally asserting that noise is
 dropped by the allowlist), the `docker_events` tool's snapshot output and its `since` character-set validation,
 `/images/inspect`'s details + build history, `/config` credential masking, 400 for unknown config keys, 403 for
@@ -977,15 +1010,21 @@ lines), and the gating of the eight `/networks` and `/volumes` endpoints (403 fo
    details / logs work; the first connection logs "host key fingerprint recorded (TOFU)" and the second does not
    prompt again; after manually changing the fingerprint in `hostKeys` and reconnecting, the connection should
    **be rejected** with reset guidance.
-3. **Read-only interception**: with both switches off, `/action`, `/exec`, `/images/remove`,
-   `/images/prune`, `/images/pull/stream` all return 403; on the agent side exactly 11 read-only tools are
-   registered (`docker_targets` / `ps` / `attention` / `inspect` / `logs` / `stats` / `events` / `images` /
+3. **Connect local (one click)**: clear every target and save (or use a fresh profile), open the panel —
+   the empty state and the toolbar each show a "Connect local" button; one click should produce a
+   `kind=local` target named `local`, select it immediately, and load the container list. Clicking again must
+   **not** create a second one (the button is now a greyed-out "Current target is local"). Nothing should
+   install Docker, start a daemon or switch contexts along the way. On a host without docker you should see a
+   named cause (CLI missing / daemon not running / no socket permission) rather than an empty list.
+4. **Read-only interception**: with both switches off, `/action`, `/exec`, `/images/remove`,
+   `/images/prune`, `/images/pull/stream` all return 403; on the agent side exactly 12 read-only tools are
+   registered (`docker_targets` / `connect_local` / `ps` / `attention` / `inspect` / `logs` / `stats` / `events` / `images` /
    `image_inspect` / `networks` / `volumes` — see the tool table for the authoritative list), and
    the panel's start / stop / remove, image removal, pruning and pull buttons are greyed out. After turning on
    "allow mutations" these routes and tools appear immediately (no restart needed).
-4. **Logs / stats / images**: `tail` and `timestamps` / `since` take effect; stats show
+5. **Logs / stats / images**: `tail` and `timestamps` / `since` take effect; stats show
    CPU, memory, network and block IO; the image list carries a marker on dangling entries.
-5. **FOLLOW live log stream**: turning on `FOLLOW` on the log page → the status line first says
+6. **FOLLOW live log stream**: turning on `FOLLOW` on the log page → the status line first says
    "connecting" and then "following live", and new lines from `docker logs -f` appear immediately (`docker run --rm alpine sh
    -c 'i=0; while :; do echo line-$i; i=$((i+1)); sleep 1; done'` makes this observable);
    with FOLLOW on, `AUTO REFRESH` is greyed out and polling stops; scrolling up brings up "back to bottom",
@@ -996,26 +1035,26 @@ lines), and the gating of the eight `/networks` and `/volumes` endpoints (403 fo
    itself, with no error banner. Run the same with an SSH target and confirm that panel operations such as
    `docker ps` on the same host are unaffected while the stream runs (connection reuse), and that idle reclamation
    (120s) does not cut the stream.
-6. **Stats live following**: turning on `FOLLOW` on the stats page → "connecting to the stats stream…" → "following
+7. **Stats live following**: turning on `FOLLOW` on the stats page → "connecting to the stats stream…" → "following
    live (docker stats)", and the CPU / memory sparklines grow a little every second (run `docker run --rm
    alpine sh -c 'while :; do :; done'` to watch CPU rise); turning FOLLOW off immediately returns to snapshots and
    resumes polling. Stop the containers being measured → the stream receives `end` (stats-exit), hints, and then
    returns to polling automatically.
    Note that **this stream does not end naturally**: switching pages / closing the panel must close the `EventSource`
    (on the host side `docker stats` should be seen being SIGTERM'd).
-7. **Image details / removal / pruning**: click "details" on a row of the images page → the layer count in the
+8. **Image details / removal / pruning**: click "details" on a row of the images page → the layer count in the
    overview matches `docker image inspect` and the build history matches `docker history` (Docker ≥ 26
    goes through `--format`, older versions fall back to the plain-text table); look up a dangling row by image ID.
    Click "remove" → after a second confirmation it runs `docker image rm`; removing an image that a container
    references should fail with a hint.
    "prune dangling" only removes untagged images, and its output ends with `Total reclaimed space`.
-8. **Pull progress stream**: the pull icon in the images toolbar (hovering shows "pull image") → enter a small image
+9. **Pull progress stream**: the pull icon in the images toolbar (hovering shows "pull image") → enter a small image
    you do not have locally (such as `alpine:3.20`)
    → per-layer status lines appear live and are updated in place by layer; when it finishes it hints "pull complete"
    and refreshes the list automatically.
    Clicking "stop" mid-pull or leaving the view → `docker pull` is terminated by SIGTERM with no leftover process.
    With "allow mutations" off the button is greyed out, and going straight to `/images/pull/stream` returns 403.
-9. **Compose project view**: start two or three services with a compose file (`docker compose up -d`) →
+10. **Compose project view**: start two or three services with a compose file (`docker compose up -d`) →
    switch the toolbar to "Compose" → the services are grouped under one project card with the correct
    running / service counts and states;
    click into the project to see the service table, switch to "merged logs" → the services' logs appear mixed by the
@@ -1023,12 +1062,12 @@ lines), and the gating of the eight `/networks` and `/volumes` endpoints (403 fo
    content; after turning "auto
    scroll" off new logs keep entering the buffer without the view jumping. Containers without a compose label are
    grouped under "other containers (non-compose)".
-10. **After turning on `allowMutations`**: stop / start / restart succeed; removing a running container
+11. **After turning on `allowMutations`**: stop / start / restart succeed; removing a running container
     errors with a "stop it before removing" hint, and stopping first and then removing succeeds.
-11. **After turning on `allowExec`**: a command such as `ls -la /app` returns stdout and the exit code; changing the
+12. **After turning on `allowExec`**: a command such as `ls -la /app` returns stdout and the exit code; changing the
      command to `sleep 60` (with `timeoutSec` lowered) should be interrupted and report a timeout; a `command` longer
      than 8000 characters is rejected.
-12. **The exec drawer coexists with the body** (tty ≥ 0.15): after opening the drawer from a card's "Terminal", switch
+13. **The exec drawer coexists with the body** (tty ≥ 0.15): after opening the drawer from a card's "Terminal", switch
     to logs / stats / another container's details, and both the drawer and the terminal session must stay alive;
     **collapsing** (the arrow or double-clicking the top edge) squashes the drawer into one title bar and the session
     keeps running (expanding restores it); **dragging the top edge** changes the height without exceeding 75% of the
@@ -1037,7 +1076,7 @@ lines), and the gating of the eight `/networks` and `/volumes` endpoints (403 fo
     Offline regression: `node packages/tty/scripts/preview.mjs docker-exec-logs`
     (headless Chrome runs the real client: drawer + log page + collapse and expand, asserting that the session was
     not ended).
-13. **Entering the container panel from the connection bar (dock mode, needs tty ≥ 0.16)**: open an SSH tab in the
+14. **Entering the container panel from the connection bar (dock mode, needs tty ≥ 0.16)**: open an SSH tab in the
     tty panel →
     connection bar "Containers" → the container panel should dock **to the right of the terminal** (not a full-screen
     modal) while the terminal stays typable;
@@ -1047,7 +1086,7 @@ lines), and the gating of the eight `/networks` and `/volumes` endpoints (403 fo
     `<container> · exec` tab in the same terminal panel** rather than nesting another terminal drawer.
     Offline regression: `node packages/tty/scripts/preview.mjs docker-dock`
     (asserting docked / no backdrop / the terminal widens after collapsing / the container panel survives).
-14. **Multi-select merged logs**: click `Select for merging` in the container list → checkboxes appear on the left of
+15. **Multi-select merged logs**: click `Select for merging` in the container list → checkboxes appear on the left of
     the cards and the card action bars collapse;
     check 2–3 containers → the action bar shows "3 containers selected", and clicking `merged logs` → the merged
     view's title is
@@ -1055,11 +1094,11 @@ lines), and the gating of the eight `/networks` and `/volumes` endpoints (403 fo
     checked the button is greyed out and hints "select at least 2 containers", and at 9 checked it is greyed out and
     hints at a maximum of 8; stop one of the containers from the list → that stream ends with the usual `end`
     semantics while the others are unaffected.
-15. **Esc leaves selection mode**: pressing Esc in selection mode → back to the normal list, checks cleared and the
+16. **Esc leaves selection mode**: pressing Esc in selection mode → back to the normal list, checks cleared and the
     action bar gone;
     clicking `Select for merging` again (its label is now `Exit selection`) has the same effect; switching targets /
     switching segments / closing the panel also clear the selection mode and the checks together.
-16. **The Activity strip**: the "Activity" strip appears at the head of the container list, its status dot goes from
+17. **The Activity strip**: the "Activity" strip appears at the head of the container list, its status dot goes from
     yellow to green and the copy reads "receiving live
     (docker events)"; running `docker restart <container>` / `docker stop`+`start` → the
     list state follows within 1 second and the Activity strip shows `stop` / `start` (abnormal exits show the coded
@@ -1069,7 +1108,7 @@ lines), and the gating of the eight `/networks` and `/volumes` endpoints (403 fo
     server-side allowlist);
     after the network drops / `dsh web` restarts, recovery briefly shows a yellow status dot and automatically does
     one full list refresh.
-17. **Networks / volumes**: the toolbar segments show "Networks" and "Volumes". The network list should contain
+18. **Networks / volumes**: the toolbar segments show "Networks" and "Volumes". The network list should contain
     `bridge` / `host` / `none`
     plus project networks created by compose; click one to enter details → the subnet / gateway in the overview match
     `docker network
@@ -1082,7 +1121,7 @@ lines), and the gating of the eight `/networks` and `/volumes` endpoints (403 fo
     volume pruning raises a confirmation saying "the data will be deleted as well". **Note**: on docker < 23 volume
     pruning also deletes named volumes, so it is best to confirm on a test target first.
 
-18. **Multi-target Overview**: configure two or more targets (local + one SSH) → the `Overview` pill appears next to
+19. **Multi-target Overview**: configure two or more targets (local + one SSH) → the `Overview` pill appears next to
     the target picker;
     clicking it shows two counter cards on one screen (each badged "local" / "SSH") plus the attention area, with the
     card numbers matching that target's
@@ -1096,7 +1135,7 @@ lines), and the gating of the eight `/networks` and `/volumes` endpoints (403 fo
     "all good"; while targets are still answering it shows "reading…". Turning on "auto refresh" → polls all targets
     at
     `pollIntervalSec` (turning it off stops that).
-19. **Switching targets does not cross-talk (the list write gate)**: let Target1 (an unreachable SSH host) fail first
+20. **Switching targets does not cross-talk (the list write gate)**: let Target1 (an unreachable SSH host) fail first
     and raise an "operation failed" banner,
     then immediately switch to the healthy Target2 → the banner should **disappear with the switch at once** and the
     list should be Target2's containers; then wait 20s

@@ -35,6 +35,20 @@
 那两个开关点不动 + 附一行说明。落点：`normalizeConfig` 折叠出有效值（二十多处使用点一处都不用
 改）、`/config` 写盘前 400、快照新增 `allowMutationsGranted` / `allowExecGranted`。
 
+**2026-10-05 追加**（用户反馈「直接连接本机不方便」）——**一键连接本机**，已落地：
+容器面板工具条（目标选择器右侧）与「还没有配置 Docker 目标」空态各一个**连接本机**按钮，
+agent 侧同一条操作是 `docker_connect_local`。落点：宿主 `connectLocal()`（面板按钮 /
+`POST /connect-local` / 工具三条入口共用同一份实现）、纯函数 `nextLocalTargetName` /
+`findLocalTargetName` / `describeLocalProbeFailure`、客户端 `api.connectLocal` +
+`localTargetName` + 三态按钮节点、宿主 `/connect-local` 路由（写路径，受同源证明）。
+门槛：`test/connect-local.test.ts` 23 条（命名确定性 / 复用不重复创建 / SSH 与自定义目标原样保留 /
+空 `targets` 无隐式默认目标 / 设置不可用 503、保存失败 500 且**不改内存配置** / 连点与并发幂等 /
+daemon 未启动与 CLI 缺失的成因文案 / 工具-路由同一实现）、`scripts/route-smoke.mjs` 四个端到端用例、
+`scripts/client-smoke.mjs` 三条（本地目标判定、HTTP 接线、三态按钮进工具条与空态）。
+边界（刻意不做，已写进 README）：不改空 `targets` / `clearTargets` 的既有语义、不凭空造隐式默认
+目标、不自动装 Docker / 起 daemon / 切 docker context / 改环境变量、**不放开任何能力授权**
+（只写插件自己的配置 + 只读探测）。
+
 ## 已上提到项目级（不在本文展开）
 
 跳板机（ProxyJump）· 统一安全围栏（对齐 tty / dsh-mcp）· 变更端点的信任模型（一次性 token）·

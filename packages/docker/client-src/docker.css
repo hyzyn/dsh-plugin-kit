@@ -1004,6 +1004,18 @@
   cursor: not-allowed;
 }
 
+/*
+ * 「连接本机」（0.16.0）：只有在**一个本机目标都还没有**时染强调色 —— 那时它是「把面板
+ * 救活」的主路径；已经配过本机目标时它只是「切过去」，与普通 pill 同色（否则工具条上老挂着
+ * 一块亮色，反而像状态指示）。当前目标就是本机时由 .dk_pill:disabled 统一置灰。
+ */
+.dk_pillLocal[data-fresh="1"] {
+  border-color: color-mix(in srgb, var(--dk-accent) 52%, transparent);
+  background: color-mix(in srgb, var(--dk-accent) 18%, transparent);
+  color: var(--dk-accent);
+  font-weight: 600;
+}
+
 .dk_pill:disabled:hover { background: var(--dk-surface-2); }
 
 /* FOLLOW 连接状态行：小圆点 + 文案（连接错误只在这里表达，不弹横幅刷屏） */

@@ -2,8 +2,12 @@
  * @hyzyn/dsh-docker — 工具并发性声明的回归测试（项目级 ROADMAP 第 4 项）。
  *
  * 背景：宿主对**未声明** `isConcurrencySafe` 的工具一律按「独占」处理
- * （`dsh-tools/lib/index.js:3059` → `{ kind: 'exclusive' }`），于是 16 个 `docker_*`
- * 工具全被串行化——而其中 11 个是纯只读的列表 / 详情 / 快照，本可以并发。
+ * （`dsh-tools/lib/index.js:3059` → `{ kind: 'exclusive' }`），于是 17 个 `docker_*`
+ * 工具全被串行化——而其中 12 个是纯只读的列表 / 详情 / 快照，本可以并发。
+ *
+ * `docker_connect_local` 归类在只读这一侧：它唯一的副作用是**写本插件自己的配置**
+ * （加一条本机目标，且幂等），没有任何目标侧的写操作、不需要能力授权；并发调用被
+ * connectLocal 的复用语义收敛成同一条，所以声明并发安全是安全的（见 src 里那段注释）。
  *
  * 这门测试的价值在**反向**：只读工具漏声明会静默退回独占（没人会报错，只是慢），
  * 而**变更**工具多声明一次就是真事故（两个 `docker_action` 并发跑）。所以两个方向
@@ -31,6 +35,7 @@ afterAll(() => {
 /** 只读工具（列表 / 详情 / 快照）：与同轮其它调用并发执行。 */
 const READ_ONLY = [
   'docker_targets',
+  'docker_connect_local',
   'docker_ps',
   'docker_attention',
   'docker_inspect',

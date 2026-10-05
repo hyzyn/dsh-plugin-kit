@@ -110,6 +110,26 @@ export declare function createSseCoalescer(options: {
 }): SseCoalescer;
 /** 清洗一份 targets 输入（settings 存储 / 热更新路径共用）。 */
 export declare function sanitizeTargets(input: unknown): DockerTarget[] | undefined;
+/** 一键连接本机时新建目标的基准名。刻意用稳定的小写 `local`（不是 `本机`）：它是可预测的 id，重名时另起 `local-2`…。 */
+export declare const LOCAL_TARGET_NAME = "local";
+/** 目标列表里第一个 `kind=local` 的名称（没有则 undefined）——「连接本机」靠它判断该新建还是复用。 */
+export declare function findLocalTargetName(targets: readonly DockerTarget[]): string | undefined;
+/**
+ * 新建本机目标时挑一个**确定性无冲突**的名称：`local` 被占就顺着 `local-2`、`local-3`… 找第一个空位。
+ *
+ * 为什么不做随机 / 时间戳后缀：同一个工作区里重复点「连接本机」应当**幂等**（第二次复用第一次那条），
+ * 而重名只可能来自用户自己配的其它 `local*`；顺序探测既确定又与用户已有的名字不冲突（不覆盖、不改名）。
+ * 上界 1000 是防御性截断（真到那时说明列表已经病态，宁可失败也不能无限循环）。
+ */
+export declare function nextLocalTargetName(taken: readonly string[]): string | undefined;
+/**
+ * 只读探测失败 → 用户能照着做的一句话。三档按**成因**分（而不是原样甩 `exit status 1`）：
+ * CLI 不在（装 Docker / 改 `dockerBin`）、daemon 不可达（启动 daemon 或修 socket 权限）、其它（原样透出）。
+ *
+ * `probe()` 的两条失败路径形状不同：`runLocal` 对 ENOENT 是**抛错**（`无法执行 docker：spawn docker ENOENT`），
+ * 而 daemon 连不上是 docker CLI 自己以非零退出 + stderr 文案返回；两条都要认得出。
+ */
+export declare function describeLocalProbeFailure(raw: string, bin?: string): string;
 /**
  * 清洗一份 hostKeys 输入（settings 存储 / 热更新 / 种子复制共用）。
  *

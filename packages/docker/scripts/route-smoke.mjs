@@ -389,9 +389,9 @@ function toolNames() {
  * 1. 挂载面
  * ------------------------------------------------------------------ */
 
-await test('挂载：注册 11 个只读 agent 工具', () => {
+await test('挂载：注册 12 个只读 agent 工具', () => {
   const names = toolNames().sort()
-  assert.deepEqual(names, ['docker_attention', 'docker_events', 'docker_image_inspect', 'docker_images', 'docker_inspect', 'docker_logs', 'docker_networks', 'docker_ps', 'docker_stats', 'docker_targets', 'docker_volumes'])
+  assert.deepEqual(names, ['docker_attention', 'docker_connect_local', 'docker_events', 'docker_image_inspect', 'docker_images', 'docker_inspect', 'docker_logs', 'docker_networks', 'docker_ps', 'docker_stats', 'docker_targets', 'docker_volumes'])
 })
 
 await test('挂载：注册能力公告 section', () => {
@@ -426,7 +426,7 @@ await test('GET /config：凭证脱敏 + 只读默认 + 复用 tty 连接簿名'
   const direct = config.targets.find((item) => item.name === '直连')
   assert.equal(direct.passwordSet, true)
   assert.equal(direct.passphraseSet, false)
-  assert.deepEqual(config.toolsRegistered.sort(), ['docker_attention', 'docker_events', 'docker_image_inspect', 'docker_images', 'docker_inspect', 'docker_logs', 'docker_networks', 'docker_ps', 'docker_stats', 'docker_targets', 'docker_volumes'])
+  assert.deepEqual(config.toolsRegistered.sort(), ['docker_attention', 'docker_connect_local', 'docker_events', 'docker_image_inspect', 'docker_images', 'docker_inspect', 'docker_logs', 'docker_networks', 'docker_ps', 'docker_stats', 'docker_targets', 'docker_volumes'])
 })
 
 await test('POST /config：未知键被拒绝', async () => {
@@ -1042,7 +1042,76 @@ await test('GET /config 以 settings 解析值为准（挂载竞态不再返回�
 })
 
 /* ------------------------------------------------------------------ *
- * 7. 禁用与恢复：enabled 热生效（设置卡片路径 + 重启路径）
+ * 7. 一键连接本机：显式、保守、幂等（空 targets 的既有语义不变）
+ * ------------------------------------------------------------------ */
+
+/*
+ * 单独搭一个「一个目标都没有」的宿主：主 ctx 已经历过 clearTargets / 重写目标，
+ * 借用它会分不清「本来就空」还是「被上一节清掉了」。这条路径要的正是**从来没配过**
+ * 的那份初始状态。
+ */
+const localOnly = makeCtx({ dockerBin: fakeBin, targets: [] }, { ttyConfig: TTY_CONFIG })
+host.apply({ ...localOnly.ctx }, { dockerBin: fakeBin, targets: [] })
+const localRoute = localOnly.state.routes.find((item) => item.path === '/api/dsh-docker')
+assert.ok(localRoute !== undefined, '未注册 /api/dsh-docker 路由（空目标宿主）')
+
+async function callOn(route_, method, sub, body) {
+  const res = makeRes()
+  await route_.handler(makeReq(method, '/api/dsh-docker' + sub, body), res)
+  return res
+}
+
+await test('POST /connect-local：空目标宿主上一步加好本机目标并选中', async () => {
+  const before = await callOn(localRoute, 'GET', '/targets')
+  assert.deepEqual(before.body.targets, [], '前置条件：这个宿主一个目标都没有')
+  const res = await callOn(localRoute, 'POST', '/connect-local', {})
+  assert.equal(res.status, 200, JSON.stringify(res.body))
+  assert.equal(res.body.result.name, 'local')
+  assert.equal(res.body.result.created, true)
+  assert.equal(res.body.result.saved, true)
+  // 假 CLI 的 version 返回 27.3.1 → daemon 可达，probe 结果随响应一起回来
+  assert.equal(res.body.result.reachable, true)
+  assert.equal(res.body.result.serverVersion, '27.3.1')
+  assert.match(res.body.result.message, /已添加并选中本机目标「local」/)
+  assert.deepEqual(res.body.config.targets.map((item) => item.name), ['local'])
+  assert.deepEqual(localOnly.state.settingsStored.targets, [{ name: 'local', kind: 'local' }])
+})
+
+await test('POST /connect-local：再点一次复用（不重复创建、不再写盘）', async () => {
+  const writes = localOnly.state.settingsStored.targets.length
+  const res = await callOn(localRoute, 'POST', '/connect-local', {})
+  assert.equal(res.status, 200)
+  assert.equal(res.body.result.name, 'local')
+  assert.equal(res.body.result.created, false)
+  assert.match(res.body.result.message, /已选中本机目标/)
+  assert.equal(res.body.config.targets.length, writes, '目标数不应增加')
+})
+
+await test('POST /connect-local：已有 SSH 目标原样保留，本机目标追加在末尾', async () => {
+  const sshHost = makeCtx({ dockerBin: fakeBin, targets: [{ name: '远程', kind: 'ssh', book: 'prod-a' }] }, { ttyConfig: TTY_CONFIG })
+  host.apply({ ...sshHost.ctx }, { dockerBin: fakeBin, targets: [{ name: '远程', kind: 'ssh', book: 'prod-a' }] })
+  const sshRoute = sshHost.state.routes.find((item) => item.path === '/api/dsh-docker')
+  const res = await callOn(sshRoute, 'POST', '/connect-local', {})
+  assert.equal(res.status, 200)
+  assert.deepEqual(res.body.config.targets.map((item) => item.name), ['远程', 'local'])
+  assert.equal(res.body.config.targets[0].book, 'prod-a', 'SSH 目标的连接簿引用必须一字不动')
+  // 这条路径不需要任何能力授权，也不该顺手打开开关
+  assert.equal(res.body.config.allowMutations, false)
+  assert.equal(res.body.config.allowExec, false)
+})
+
+await test('POST /connect-local：GET 405；空数组防丢保护不受影响（clearTargets 语义不变）', async () => {
+  const wrongMethod = await callOn(localRoute, 'GET', '/connect-local')
+  assert.equal(wrongMethod.status, 405)
+  const cleared = await callOn(localRoute, 'POST', '/config', { targets: [] })
+  assert.equal(cleared.status, 200)
+  assert.match(cleared.body.warning, /已忽略空的目标列表/, '未带 clearTargets 的空数组仍被忽略')
+  const after = await callOn(localRoute, 'GET', '/targets')
+  assert.equal(after.body.targets.length, 1)
+})
+
+/* ------------------------------------------------------------------ *
+ * 8. 禁用与恢复：enabled 热生效（设置卡片路径 + 重启路径）
  * ------------------------------------------------------------------ */
 
 await test('禁用：POST /config enabled=false → 工具清空、公告撤下、数据路由 403', async () => {

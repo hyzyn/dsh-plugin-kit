@@ -8,6 +8,7 @@
 
 - **常驻会话右侧栏**：面板作为会话右侧栏标签（`sidebar.right.pane.tab`）与对话**同屏**——发完错误交给 Agent 后日志留在右边，不影响看它干活；折叠即退出视野、不占屏。面板级状态（目标 / 视图 / 过滤词 / 选中容器及它的页签）**跨会话保留**，而折叠会主动断流、把 SSH 通道还回去。拿不到右侧栏服务的老宿主自动退回原有的 dock / 模态，行为与旧版一致。
 - **日志右键交给 Agent**：日志页拖选报错行 → 右键「直接发送到当前会话 / 填入输入框，我先改改」，把「选中的行 + 目标 / 容器 / 时间窗 + 前后各 20 行上下文」交给会话（内容会进模型上下文，菜单里明写了留意凭证）。投递成功有两处回执：**视口级 toast**（挂 `body`，盖过面板与终端弹窗），以及——终端面板正开着时——**自动折起终端**（`ttyPanel` 契约 v2 的 `minimize()`；会话继续跑，恢复靠侧边栏「终端」入口的徽标），让会话直接露出来。老版本 tty 没有这个能力时退化成 toast 里「会话在面板后面」的指引。需要改稿就先「填入输入框」——**编辑面只有会话输入框一个**（它多行、能看到完整上下文，Agent 收到的就是它），不再另开一张更弱的卡片编辑器。目标会话的定位跨宿主版本：≤0.1.5 读 `sessions.list` 快照的 `current`，**0.1.6 起**该字段随「视图选中项」一起搬出了会话域，改看 `retainedBy.mainView > 0`（官方 `dsh-client-ui-session` 与本地 codegraph 的同一判据）——只认老字段会让菜单判成「当前没有打开的会话」而整组置灰；同一份取值也驱动「切会话把容器标签带过去」。
+- **显式一键连接本机**：面板工具条与「还没有配置 Docker 目标」的空态各有一个「连接本机」按钮——一次点击就把宿主所在机器加成本机目标并选中（已有本机目标则直接复用，不重复创建；SSH / 自定义目标原样保留），agent 侧同一条操作是 `docker_connect_local`。它**不**改空 `targets` 的语义、**不**凭空造隐式默认目标、**不**自动装 Docker / 起 daemon / 切 docker context，也不需要任何能力授权（只加一条指向插件自身的本机目标）。
 - **多目标聚合取数**：总览页对全部 `targets[]` 并行请求，单个目标不可达只污染自己那一格；agent 侧同一口径由 `docker_ps target:"*"` / `docker_attention target:"*"` 暴露，跨目标不互相阻塞。
 - **「需关注」读权威字段**：不健康 / 反复重启 / OOM 被杀 / 非零退出 / 僵死；OOM 与真实退出码由一次 `docker inspect` 补齐——`docker ps` 摘要里的 137 分不出 OOM 与手动 kill，只按摘要筛必然误报。
 - **四条 SSE 长流共用一套基建**：日志 FOLLOW、`docker stats`、`docker events`、`docker pull` 走同一个 `openSseStream`（心跳 / 活跃流登记 / 断开清理），差异只在收尾语义——日志与拉取自然结束，统计与事件由前端主动断。多选聚合日志按 `--timestamps` 前缀还原跨容器真实时序，「暂停」只冻结渲染（流继续接收，恢复时一次性补齐）。
@@ -347,6 +348,33 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
 `permission denied while trying to connect to the Docker daemon socket`
 之类的错误。
 
+#### 连接本机（一键）
+
+不想手填目标时，面板工具条（目标选择器右边）和「还没有配置 Docker 目标」的空态里
+各有一个 **连接本机** 按钮：点一下就加一条 `kind=local` 的目标并**立刻选中它**，
+不用先开设置卡片。同一件事 agent 侧是 `docker_connect_local` 工具，HTTP 侧是
+`POST /connect-local`——三条入口共用宿主里同一份实现。
+
+| 情况 | 行为 |
+| --- | --- |
+| 已有一条 `kind=local` 目标（无论叫什么名字） | **复用它**（`created:false`），只切过去；不新建、不重写、不改名 |
+| 没有本机目标 | 用稳定名 `local` 追加到列表末尾；`local` 已被别的目标占用时依次试 `local-2`、`local-3`…（确定性、不冲突、不覆盖） |
+| 已有 SSH / 自定义目标 | **原样保留**（含顺序与凭据）；只在末尾追加本机那条 |
+| 重复点 / 并发点 | 幂等：最终只有一条本机目标 |
+| 设置存储不可用 / 保存失败 | 明确报错（503 / 500 + 原因），**不改内存配置**——不会出现「界面上加上了、刷新就没了」 |
+
+写盘成功之后**顺带做一次只读探测**（`docker version`），结果放进响应的 `message`：
+daemon 可达时给出服务端版本；不可达时把成因说清楚——**docker CLI 缺失**（去装 Docker，
+或把「docker CLI」改成正确路径）/ **daemon 未启动**（Linux `systemctl start docker`，
+macOS / Windows 启动 Docker Desktop）/ **socket 无权访问**（账号加入 `docker` 组），
+而不是只回一句「没有容器」。探测失败**不算这次操作失败**（目标确实加上了，
+`reachable:false` 单独表示），下次 daemon 起来就能直接用。
+
+刻意**不做**的事（保守边界）：不自动安装 Docker、不启动 daemon、不切换 docker
+context、不改任何环境变量；空 `targets`（= 用户没配）的语义不变，不产生隐式默认目标；
+`clearTargets` 的防误清空逻辑一字未动。这条路径也**与能力开关无关**——它只写插件
+自己的配置，不涉及任何需要授权的目标侧写操作。
+
 ### 聚合日志（多选 / Compose 项目）
 
 多选容器或打开一个 Compose 项目，都能把多个容器的日志聚合成一条流（每个容器一条
@@ -495,6 +523,7 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
 | 工具 | 注册条件 | 参数 | 作用 / 典型用法 |
 | --- | --- | --- | --- |
 | `docker_targets` | 恒注册 | `probe?: boolean` | 列出目标（name / kind / label）；`probe:true` 逐个探测 docker 版本与 daemon 可达性（SSH 目标会建连接，较慢）。其他工具的 `target` 取自这里 |
+| `docker_connect_local` | 恒注册 | —（无参数） | **连接本机**：确保存在一条 `kind=local` 目标并选中它（已存在则复用，不重复创建；SSH / 自定义目标原样保留），随后只读探测 daemon：返回 `{name, kind, created, saved, reachable, serverVersion?}`。没有任何目标时 `docker_ps` 等会报「尚未配置任何 Docker 目标」，用它一步补上。**不需要任何能力授权**（只写插件自己的配置 + 只读探测）；不会安装 Docker / 启动 daemon / 切 context / 改环境变量。daemon 不可达时在结果文本里说清成因（CLI 缺失 / daemon 未启动 / socket 无权），不是只报空列表 |
 | `docker_ps` | 恒注册 | `target?`（**传 `*` = 全部目标**）、`all?: boolean` | 列容器（名称 / 状态 / 健康 / 镜像 / 端口 / compose 项目与服务 / 短 ID）；默认只列运行中，`all:true` 含已停止。`target:'*'` 时按目标分组返回，**单个目标不可达不影响其他目标**（该组带 `error`）。端口是 IPv4/IPv6 双栈归并后的映射（同一次 `-p` 不再出现两遍，D130）；`ports` 为空**不等于**没暴露端口——host 网络容器的端口即宿主机端口，这种情况会给 `net` 字段（D131）。排障第一步 |
 | `docker_attention` | 恒注册 | `target?`（支持 `*`）、`limit?: number` | **需关注汇总**：不健康 / 反复重启 / 被 OOM 杀 / 非零退出 / 僵死；每条带 `reasons`、`exitCode`、`oomKilled`、`restartCount`。OOM 与真实退出码来自一次 `docker inspect`（ps 摘要里 137 无法区分手动 kill）。排障入口：不确定从哪台/哪个容器看起时先调它 |
 | `docker_inspect` | 恒注册 | `target?`、`id`（必填） | `docker inspect` 的权威详情：状态 / 健康检查 / 退出码 / 重启次数 / 端口 / 挂载 / 网络 / 启动命令 |
@@ -529,8 +558,8 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
 `referrer-policy: no-referrer`。
 
 **除 loopback 之外还有一道「同源证明」**：四条 SSE（`/logs/stream`、`/stats/stream`、`/events/stream`、
-`/images/pull/stream`）与八条变更子路由（`/action`、`/images/remove|prune`、`/networks/remove|prune`、
-`/volumes/remove|prune`、`/exec`）要求请求带 `Origin: <同源>` 或 `Sec-Fetch-Site: same-origin`，
+`/images/pull/stream`）与九条写子路由（`/action`、`/images/remove|prune`、`/networks/remove|prune`、
+`/volumes/remove|prune`、`/exec`、`/connect-local`）要求请求带 `Origin: <同源>` 或 `Sec-Fetch-Site: same-origin`，
 否则 403 `缺少同源证明`。这是为了挡住「恶意页面用 `<img src=.../images/pull/stream>` 触发一次真实拉取」
 这类跨站副作用；curl / 老 Safari / 部分 WebView 不带这两个头时会撞上它（浏览器正常使用不受影响）。
 只读路由不要求同源证明。
@@ -550,6 +579,7 @@ add。装完重启 `dsh web`，侧边栏出现「容器」入口；设置 → �
 | `/config` | GET | — | `{ok:true, config}`：配置快照（targets 只给 `passwordSet` / `passphraseSet`，另附只读的 `ttyBooks` / `ttyAvailable` / `toolsRegistered`） |
 | `/config` | POST | 上表配置键的任意子集 | `{ok:true, config}`；未知键 400，非法 JSON 400 |
 | `/targets` | GET / POST | — | `{ok:true, targets:[{name, kind, label?\|error?}]}` |
+| `/connect-local` | POST | `{}`（请求体被忽略） | **一键连接本机**：复用或新建 `kind=local` 目标并返回 `{ok:true, result:{name, kind, created, saved, reachable, serverVersion?, message}, config}`；宿主没有 settings 服务时 503，保存失败时 500（都带原因且不改内存配置）。要求同源证明（它是写路径），但**不需要** `allowMutations` / `allowExec` |
 | `/probe` | POST | `{target?}` | `{ok:true, probe:{ok, bin, serverVersion, error, target}}` |
 | `/containers` | POST | `{target?, all?}` | `{ok:true, containers: ContainerSummary[]}`；`target:'*'` 时返回 `{ok:true, groups:[{target,label,ok,error?,data?}]}`（跨目标并发聚合） |
 | `/attention` | POST | `{target?, limit?}` | 单目标 `{ok:true, items: AttentionItem[], total, truncated, degraded}`（`limit` 在过滤 + 严重度排序**之后**生效，默认 100、上限 500）；`target:'*'` 时 `{ok:true, groups:[{target,label,ok,error?,data:{items,total,truncated,degraded}}]}` |
@@ -864,7 +894,7 @@ inspect 解析（状态 / 健康 / 退出码 / 挂载 / 网络 / 端口 / 缺字
 `resolveTarget` 的四种路径、`mergeTargetSecrets` 的凭证保留语义。
 
 `scripts/route-smoke.mjs` 用**假 cordis ctx + 假 docker CLI 脚本**跑端到端：
-插件挂载（settings / 工具 / 路由 / 能力公告注册）、**26 条路由**的实际调用与返回
+插件挂载（settings / 工具 / 路由 / 能力公告注册）、**27 条路由**的实际调用与返回
 （含 `/logs/stream`、`/stats/stream`、`/events/stream`、`/images/pull/stream` 四条 SSE
 的事件序列与参数校验，事件流另断噪音被白名单丢掉）、`docker_events` 工具的快照
 输出与 `since` 字符集校验、`/images/inspect` 的详情 + 构建历史、`/config` 凭证脱敏、未知配置键
@@ -942,15 +972,21 @@ network / volume 的 ls·inspect 解析容错（字符串布尔、缺 `Mountpoin
 2. **SSH 目标**：tty 连接簿里已有条目时，用 `book` 引用它 → 容器列表 / 详情 /
    日志正常；首次连接日志里出现「已记录 host key 指纹（TOFU）」，第二次不再
    提示；手动改掉 `hostKeys` 里的指纹后重连，应**被拒绝**并给出重置指引。
-3. **只读拦截**：两个开关都关时，`/action`、`/exec`、`/images/remove`、
-   `/images/prune`、`/images/pull/stream` 全部 403；agent 侧恒注册 11 个只读工具
-   （`docker_targets` / `ps` / `attention` / `inspect` / `logs` / `stats` / `events` /
+3. **一键连接本机**：把目标**全部删空**保存（或用一个全新 profile），打开面板 →
+   空态与工具条里各有一个「连接本机」按钮 → 点一下应当：出现一条 `kind=local`
+   的 `local` 并立刻选中、容器列表出来；再点一次**不会**多出第二条（按钮此时
+   置灰显示「当前目标就是本机」）。全程**不该**有任何 Docker 安装 / daemon 启动 /
+   context 切换动作。宿主上没有 docker 时，应当看到一句点名的原因（CLI 缺失 /
+   daemon 未启动 / socket 无权访问），而不是一个空列表。
+4. **只读拦截**：两个开关都关时，`/action`、`/exec`、`/images/remove`、
+   `/images/prune`、`/images/pull/stream` 全部 403；agent 侧恒注册 12 个只读工具
+   （`docker_targets` / `connect_local` / `ps` / `attention` / `inspect` / `logs` / `stats` / `events` /
    `images` / `image_inspect` / `networks` / `volumes`，数量以工具表为准），
    面板的启停删 / 镜像删除 / 清理 / 拉取按钮置灰。打开「允许变更操作」后这些
    路由与工具立即出现（无需重启）。
-4. **日志 / 统计 / 镜像**：`tail` 与 `timestamps` / `since` 生效；统计显示
+5. **日志 / 统计 / 镜像**：`tail` 与 `timestamps` / `since` 生效；统计显示
    CPU、内存、网络与块 IO；镜像列表含 dangling 条目标记。
-5. **FOLLOW 实时日志流**：日志页打开 `FOLLOW` → 状态行先「正在连接」后
+6. **FOLLOW 实时日志流**：日志页打开 `FOLLOW` → 状态行先「正在连接」后
    「实时跟随中」，`docker logs -f` 的新行即时出现（`docker run --rm alpine sh
    -c 'i=0; while :; do echo line-$i; i=$((i+1)); sleep 1; done'` 可观察）；
    高吞吐护栏：换成长行快速打印（如 `head -c 2000 /dev/zero | tr "\\0" x; echo` 循环）
@@ -961,61 +997,61 @@ network / volume 的 ls·inspect 解析容错（字符串布尔、缺 `Mountpoin
    （或热改插件配置）→ 状态行短暂「正在重连」后自愈，不弹错误横幅。SSH 目标
    同样跑一遍，确认流跑着时同一主机的 `docker ps` 面板操作不受影响（连接复用），
    且空闲回收（120s）不会掐断流。
-6. **统计实时跟随**：统计页打开 `FOLLOW` →「正在连接统计流…」→「实时跟随中
+7. **统计实时跟随**：统计页打开 `FOLLOW` →「正在连接统计流…」→「实时跟随中
    （docker stats）」，CPU / 内存 sparkline 每秒长一点（跑 `docker run --rm
    alpine sh -c 'while :; do :; done'` 观察 CPU 起来）；关 FOLLOW 立即回快照并
    恢复轮询。停掉被统计的容器 → 流收到 `end`（stats-exit）提示后自动回轮询。
    注意**这条流不会自然结束**：切页 / 关面板必须断掉 `EventSource`（宿主侧应
    看到 `docker stats` 被 SIGTERM）。
-7. **镜像详情 / 删除 / 清理**：镜像页点某行「详情」→ 概览里的层数与
+8. **镜像详情 / 删除 / 清理**：镜像页点某行「详情」→ 概览里的层数与
    `docker image inspect` 一致、构建历史与 `docker history` 一致（Docker ≥ 26
    走 `--format`，老版本走纯文本表格兜底）；dangling 行用镜像 ID 查。点「删除」→
    二次确认后执行 `docker image rm`；删除被容器引用的镜像应失败并给出提示。
    「清理 dangling」只删无标签镜像，输出末尾带 `Total reclaimed space`。
-8. **拉取进度流**：镜像页工具条的拉取图标（悬停显示「拉取镜像」）→ 输入本地没有的小镜像（如 `alpine:3.20`）
+9. **拉取进度流**：镜像页工具条的拉取图标（悬停显示「拉取镜像」）→ 输入本地没有的小镜像（如 `alpine:3.20`）
    → 逐层状态行实时出现且按层原地更新；完成后提示「拉取完成」并自动刷新列表。
    拉取中点「停止」或离开视图 → `docker pull` 被 SIGTERM 结束，不残留进程。
    未开启「允许变更操作」时该按钮置灰、直接访问 `/images/pull/stream` 返回 403。
-9. **Compose 项目视图**：用一份 compose 起两三个服务（`docker compose up -d`）→
+10. **Compose 项目视图**：用一份 compose 起两三个服务（`docker compose up -d`）→
    工具条切到「Compose」→ 服务归到一个项目卡片下，运行数 / 服务数 / 状态正确；
    点进项目看服务表，切「聚合日志」→ 各服务日志按 `[service]` 前缀混流出现
    （`docker compose logs -f` 的等价物），过滤框可按服务名与内容过滤；关「自动
    滚动」后新日志继续进缓冲但视图不跳。无 compose 标签的容器归入
    「（非 compose 容器）」。
-10. **`allowMutations` 打开后**：stop / start / restart 成功；对运行中容器
+11. **`allowMutations` 打开后**：stop / start / restart 成功；对运行中容器
     remove 报错并附「先停止再删除」提示，先 stop 再 remove 成功。
-11. **`allowExec` 打开后**：`ls -la /app` 之类命令返回 stdout 与退出码；把命令
+12. **`allowExec` 打开后**：`ls -la /app` 之类命令返回 stdout 与退出码；把命令
     换成 `sleep 60`（`timeoutSec` 调小）应被中断并报超时；`command` 超过 8000
     字符被拒绝。
-12. **exec 抽屉与正文共存**（tty ≥ 0.15）：卡片「终端」开抽屉后切到日志 / 统计 /
+13. **exec 抽屉与正文共存**（tty ≥ 0.15）：卡片「终端」开抽屉后切到日志 / 统计 /
    另一台容器的详情，抽屉与终端会话都必须活着；**折叠**（箭头或双击顶边）把抽屉
    压成一条标题栏、会话继续跑（展开即回原样）；**拖拽顶边**能调高度且不超过面板
    的 75%；此时点 backdrop 空白处或面板 ✕ 应弹「结束容器终端会话」确认，取消后
    会话仍在，确认才结束（tty 侧收到 kill）。
    离线回归：`node packages/tty/scripts/preview.mjs docker-exec-logs`
    （无头 Chrome 跑真实客户端：抽屉 + 日志页 + 折叠展开，断言会话未被结束）。
-13. **从连接栏进容器面板（dock 模式，需 tty ≥ 0.16）**：tty 面板里开一个 SSH 标签 →
+14. **从连接栏进容器面板（dock 模式，需 tty ≥ 0.16）**：tty 面板里开一个 SSH 标签 →
    连接栏「容器」→ 容器面板应挂在**终端右侧**（不是全屏弹窗），终端仍可输入；
    拖左边缘可调宽（上限面板宽 72%）、标题栏箭头折叠成窄条（终端拿回全部宽度、
    容器面板不卸载）、✕ 收起面板且 SSH 标签不受影响；此时点卡片「终端」应在同一
    终端面板**新开一个 `<容器> · exec` 标签**，而不是再嵌一个终端抽屉。
    离线回归：`node packages/tty/scripts/preview.mjs docker-dock`
    （断言 docked / 无 backdrop / 折叠后终端变宽 / 容器面板存活）。
-14. **多选聚合日志**：容器列表点 `聚合选择` → 卡片左侧出现勾选框、卡片动作条收起；
+15. **多选聚合日志**：容器列表点 `聚合选择` → 卡片左侧出现勾选框、卡片动作条收起；
    勾 2~3 个容器 → 操作条显示「已选 3 个容器」，点 `聚合日志` → 聚合视图标题为
    「聚合日志 · 3 个容器」，三条流按 `[service]` / 容器名前缀混流出现；只勾 1 个时
    按钮置灰并提示「至少选择 2 个容器」，勾到 9 个时置灰并提示最多 8 个；列表里
    停掉其中一个容器 → 该条流走原有 `end` 语义结束，其余流不受影响。
-15. **Esc 退出选择态**：选择态下按 Esc → 回到普通列表、勾选清空、动作条消失；
+16. **Esc 退出选择态**：选择态下按 Esc → 回到普通列表、勾选清空、动作条消失；
    再点一次 `聚合选择`（此时标签是 `退出选择`）效果相同；切目标 / 切分段 / 关面板
    也都会把选择态和勾选一起清掉。
-16. **事件活动条**：容器列表头部出现「活动」条，状态点先黄后绿、文案「实时接收中
+17. **事件活动条**：容器列表头部出现「活动」条，状态点先黄后绿、文案「实时接收中
    （docker events）」；执行 `docker restart <容器>` / `docker stop`+`start` → 1 秒内
    列表状态跟着变，活动条出现 `stop` / `start`（异常退出显示 `die(137)` 这种带码
    形式）；点标题可折叠（事件流不中断，展开后仍是累积的最新 8 条）；
    `docker exec` 连续几次**不产生任何事件**（`exec_*` 已被服务端白名单丢掉）；
    断网 / 重启 `dsh web` 后恢复时状态点短暂黄色并自动补一次全量列表刷新。
-17. **网络 / 卷**：工具条分段出现「网络」「卷」。网络列表应含 `bridge` / `host` / `none`
+18. **网络 / 卷**：工具条分段出现「网络」「卷」。网络列表应含 `bridge` / `host` / `none`
    与 compose 创建的项目网络；点某条进详情 → 概览里子网 / 网关与 `docker network
    inspect` 一致、`internal` 网络带徽标，「接入的容器」页签列出容器名与 IPv4。
    卷列表的挂载点与 `docker volume ls` 一致（超长路径省略、悬停看全量）。
@@ -1024,7 +1060,7 @@ network / volume 的 ls·inspect 解析容错（字符串布尔、缺 `Mountpoin
    卷清理会弹带「数据会一起删除」的确认框。**注意**：卷清理在 docker < 23 上会连
    命名卷一起删，先在测试目标上确认为妙。
 
-18. **多目标总览**：配两个以上目标（本机 + 一台 SSH）→ 目标选择器旁出现 `总览` pill，
+19. **多目标总览**：配两个以上目标（本机 + 一台 SSH）→ 目标选择器旁出现 `总览` pill，
    点进去一屏出现两张计数卡（各带「本机」/「SSH」徽标）与异常区；卡片数字与该目标
    容器列表的口径一致。把其中一个目标的 SSH 地址改错（或停掉远端 docker）再刷新 →
    只有那张卡描红、顶部出现「1 个目标不可达」，另一张卡照常显示结果，**页面不会**
@@ -1032,7 +1068,7 @@ network / volume 的 ls·inspect 解析容错（字符串布尔、缺 `Mountpoin
    **该目标**的容器列表而不是总览；点计数卡 → 该目标的容器列表。全部正常时异常区显示
    「一切正常」；还有目标没答完时显示「读取中…」。打开「自动刷新」→ 按
    `pollIntervalSec` 轮询全部目标（关掉即停）。
-19. **切目标不串台（列表写入闸）**：让 目标1（不可达的 SSH）先失败出「操作失败」横幅，
+20. **切目标不串台（列表写入闸）**：让 目标1（不可达的 SSH）先失败出「操作失败」横幅，
    随即切到正常的目标2 → 横幅应**随切换立即消失**、列表是 目标2 的容器；再等 20s
    让 目标1 的超时响应**在其之后**才回来 → 横幅不得重新出现、列表也不得被换成
    目标1 的容器。从总览点 目标1 那张红色计数卡进去，同样不该看到上一个目标的失败。
