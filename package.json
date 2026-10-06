@@ -40,6 +40,7 @@
     "doc-links:check": "node scripts/check-doc-links.mjs",
     "test-collection:check": "node scripts/check-test-collection.mjs --self-test && node scripts/check-test-collection.mjs",
     "toolchain:check": "node scripts/check-toolchain-pins.mjs --self-test && node scripts/check-toolchain-pins.mjs",
+    "engines:check": "node scripts/check-engine-strict.mjs --self-test && node scripts/check-engine-strict.mjs",
     "issue-forms:check": "node scripts/check-issue-forms.mjs --self-test && node scripts/check-issue-forms.mjs",
     "i18n:check": "node scripts/check-i18n.mjs --self-test && node scripts/check-i18n.mjs",
     "no-public-ip:check": "node scripts/check-no-public-ip.mjs --self-test && node scripts/check-no-public-ip.mjs",
@@ -53,6 +54,10 @@
     "yaml": "^2.9.1"
   },
   "packageManager": "pnpm@10.30.3",
+  "engines": {
+    "node": ">=22.19.0",
+    "pnpm": ">=10"
+  },
   "license": "Apache-2.0",
   "repository": {
     "type": "git",

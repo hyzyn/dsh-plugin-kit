@@ -19,10 +19,11 @@
 
 ## 命令
 
-**前置**：Node ≥ 22.19 与 pnpm 10（[README.md § 系统要求](README.md#系统要求)）。**注意这是要求，
-不是强制**——根 `package.json` 当前没有顶层 `engines`、`.npmrc` 也没有 `engine-strict=true`，
-所以不满足的环境 `pnpm install` 照样装完（**2026-10-06 实测**：只报 `WARN Unsupported engine`、
-退出码 0）。要让它真的拒装（`ERR_PNPM_UNSUPPORTED_ENGINE`、退出码 1），那两处必须同时补上。
+**前置**：Node ≥ 22.19 与 pnpm 10（[README.md § 系统要求](README.md#系统要求)）。这是**强制**的：
+根 `package.json` 的顶层 `engines` + `.npmrc` 的 `engine-strict=true` 让不满足的环境在
+`pnpm install` 时**直接失败**（`ERR_PNPM_UNSUPPORTED_ENGINE`、退出码 1，不是警告）。
+四处的声明必须自洽，`pnpm engines:check` 会拦（判据与实测见
+[docs/conventions.md § 环境下限](docs/conventions.md#环境下限声明--engine-strict-才真的会拦)）。
 
 ```sh
 pnpm install                                        # 安装

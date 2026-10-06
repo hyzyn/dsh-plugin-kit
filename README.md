@@ -93,7 +93,9 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
   `0.2.0-rc.2` 与 `0.2.1-alpha.1`**；`0.1.6-alpha.2` 及更早不再支持。
 - 兼容性由每个可安装插件在 `peerDependencies` 里声明的 `@deepseek-ai/dsh` 范围保证，DSH 在**安装前**
   与**启动时**各校验一次。被拦下长什么样、怎么临时放行 → [docs/troubleshooting.md § 兼容性校验](docs/troubleshooting.md#兼容性校验)。
-- npm 安装无额外要求；从仓库源码安装需要 Node.js >= 22.19 与 pnpm 10。
+- npm 安装无额外要求；从仓库源码安装需要 Node.js >= 22.19 与 pnpm 10（低于此版本 `pnpm install`
+  会**直接失败**，不是警告——判据见 [docs/conventions.md § 环境下限](docs/conventions.md#环境下限声明--engine-strict-才真的会拦)）。
+  npm 侧只会打 `EBADENGINE` 提示、不阻塞安装。
 
 ### 从 npm 安装
 

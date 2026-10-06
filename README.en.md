@@ -99,7 +99,9 @@ direction and how they cooperate: [docs/architecture.md](docs/architecture.md) (
   rejection looks like and how to admit a combination temporarily →
   [docs/troubleshooting.md § Compatibility](docs/troubleshooting.md#兼容性校验).
 - No extra requirements for npm installs; building from this repository’s sources requires
-  Node.js >= 22.19 and pnpm 10.
+  Node.js >= 22.19 and pnpm 10 (below that, `pnpm install` **fails outright** rather than merely
+  warning — see [docs/conventions.md § Environment floor](docs/conventions.md#环境下限声明--engine-strict-才真的会拦)).
+  On the npm side it is only an `EBADENGINE` notice and does not block installation.
 
 ### Install from npm
 

@@ -46,6 +46,7 @@
 | **发包内容**（`files` 字段漏一项没有任何闸门会红 · 为什么挂载车道看不见它 · 守卫形态） | L0 本文 [§ 发包内容守卫](#发包内容守卫files-字段漏一项不许静默) |
 | **宿主主题的 `--dsw-*` 名字表**（客户端半体允许用的样式变量名；写错名字 = 那条 `border`/`background` 整条作废） | 快照 [`scripts/fixtures/dsh-theme-tokens.json`](../scripts/fixtures/dsh-theme-tokens.json)（403 个名字，**生成物**，`node scripts/sync-dsh-theme-tokens.mjs` 保鲜）+ 规则 [本文 § 客户端半体](#客户端半体四条硬规矩) ④ |
 | **三条车道各管什么**（CI 每次推送 / 挂载车道 / nightly 的 flake + coverage；为什么后两者不进 CI） | L0 本文 [§ 车道分工](#车道分工哪条车道管什么) |
+| **环境前置（Node / pnpm 下限，以及它到底强不强制）** | 声明在 [`package.json`](../package.json) 的 `engines` + [`.npmrc`](../.npmrc) 的 `engine-strict`；判据与实测 [本文 § 环境下限](#环境下限声明--engine-strict-才真的会拦)（`pnpm engines:check` 守四处自洽） |
 | **AI 协作边界**（哪些改动必须先问维护者） | L0 本文 [§ AI 协作边界](#ai-协作边界什么改动要先问) |
 
 ### L0 / L1 的边界判据
@@ -648,6 +649,35 @@ MODULE_NOT_FOUND），而本仓对**预发布范围**的匹配恰好是最容易
 （`isCommentLine`，与 `ci-script-truth.mjs` 的同名函数是同一条教训）。这个 bug 同时被
 单测里一条「真实仓库的 pin 是最新 cohort」的用例抓到——**用例侧复算与闸门实现各写一遍正则，
 所以两边都踩了同一个坑，也就两边都验证了修法**。
+
+### 环境下限：声明 + `engine-strict` 才「真的会拦」
+
+根 `package.json` 的 `engines` **只是声明**：pnpm 默认对不满足的 Node 只发 `WARN`、装完照样跑，
+问题留到别处以难归因的样子冒出来。真正让它生效的是 `.npmrc` 的 `engine-strict=true`
+——**少这一行，`engines.node` 就等于一句注释**。四处声明（`.npmrc` 开关 / 根 `engines` /
+`README.md` / `README.en.md` / `AGENTS.md`）分散在不同文件，任何一处单独改动都不会被发现，
+所以由 `pnpm engines:check`（[`scripts/check-engine-strict.mjs`](../scripts/check-engine-strict.mjs)）
+要求它们自洽；用例见 `scripts/test/engine-strict.test.ts`（含 `--self-test` 夹具）。
+
+**2026-10-06 实测的四种组合**（pnpm 10.30.3，逐条跑过，不是转述）：
+
+| 场景 | 无 `engine-strict` | 有 `engine-strict=true` |
+|---|---|---|
+| 本项目 `engines.node` 不满足 | `WARN`，**退出码 0**，装完照跑 | `ERR_PNPM_UNSUPPORTED_ENGINE`，退出码 1 |
+| **依赖的** `engines.node` 不满足 | 照装，退出码 0 | **也拦**，退出码 1 |
+| 本项目 `engines.pnpm` 不满足 | **拒装**，退出码 1（这条不需要 `.npmrc`） | 拒装，退出码 1 |
+| **依赖的** `engines.pnpm` 不满足 | 放行 | **放行**（pnpm 不查依赖的 pnpm 字段） |
+
+两条**不对称**，写文档时最容易写错，所以单列：`engines.pnpm` 不需要 `.npmrc` 也强制；
+而 `.npmrc` 这一行**会连依赖一起查**（node 那半边），所以开它之前必须确认依赖里没有冲突。
+
+**本仓的冲突核查（开这一行时的前提）**：用 semver 逐条比对 564 个已装依赖的 `engines`，
+node / pnpm **均 0 冲突**。这件事**刻意不做成常驻闸门**：依赖升级会让它立刻变红，而那时该做的是
+处理冲突，不是改闸门；所以它记在 [`.npmrc`](../.npmrc) 的注释里，作为开这项配置的**一次性前提**。
+
+**为什么不碰用户**：`.npmrc` **不随包发布**（根 `package.json` 的 `files` 只有
+`lib` / `cordis.patch.yml` / `README.md`），所以这一行只作用于克隆本仓开发的人；
+12 个可安装包各自在 `peerDependencies` 里声明 DSH 兼容范围，那才是用户侧生效的机制。
 
 ### 测试收集守卫：写了的测试不许从不运行
 
