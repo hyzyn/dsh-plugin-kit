@@ -17,6 +17,7 @@
 
 | 知识类型 | 归宿 |
 |---|---|
+| **AI 代理 / 新读者的第一入口**（先读什么 · 命令与门禁 · 不可逆边界清单） | L0 [`AGENTS.md`](../AGENTS.md)（入口与门禁，**不是知识库**：判据与代价一律指向本文与 `docs/`；存在性与登记由 [`scripts/docs-index.mjs`](../scripts/docs-index.mjs) 判据 6 守） |
 | 项目定位 / 装哪个 | L0 [`README.md`](../README.md) |
 | 12 包关系与协作 | L0 [`docs/architecture.md`](./architecture.md) |
 | 命名 / 提交 / 文档 / 编号规范 | 本文 |

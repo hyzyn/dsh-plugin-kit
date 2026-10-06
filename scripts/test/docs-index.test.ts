@@ -5,7 +5,8 @@
  *
  * 1. **真实仓库必须绿**（`docs/` 每一份都被知识归属表登记 + 文件名里没有版本后缀 +
  *    `ROADMAP.md` 的 ✅ 与落点成对、`§ 已完成` 序号递增、✅ 不混态 + **包内** `ROADMAP.md` 的
- *    落地记录节都排在 `## 已完成` 之后 + **workspace 包集合与 `architecture.md § 2` 包清单一一对应**）；
+ *    落地记录节都排在 `## 已完成` 之后 + **workspace 包集合与 `architecture.md § 2` 包清单一一对应** +
+ *    **仓根入口 `AGENTS.md` 存在且被归属表登记**）；
  * 2. **守卫必须会红**——本仓刚发生过一道「命中 0 个文件、恒绿、拦不住任何东西」的闸门，
  *    所以任何新守卫都要自证会红。反例**全部用 fixture 造**（在真实文本上做一次字符串替换，
  *    并断言替换真的生效），**不修改任何受版本控制的文件**；`docs` 清单类判据直接传合成清单。
@@ -26,9 +27,11 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
+  AGENTS_PATH,
   ATTRIBUTION_HEADING,
   LANDED_HEADING,
   VERSION_SUFFIX_ALLOWLIST,
+  checkAgentsEntry,
   checkDocFilenames,
   checkDocsRegistration,
   checkPackageManifest,
@@ -37,6 +40,7 @@ import {
   checkRepo,
   formatReadmeReport,
   parseAttributedDocs,
+  parseAttributedRootDocs,
   parseManifestPackages,
   parsePackageLandedSections,
   readDocsInputs,
@@ -371,5 +375,67 @@ describe('反例 5：workspace 包与包清单脱钩 → 必须报出来', () =>
   it('闸门对 CRLF 免疫（Windows 检出不该假红）', () => {
     const crlf = real.architecture.replace(/\n/g, '\r\n')
     expect(checkPackageManifest({ workspacePackages: real.workspacePackages, architecture: crlf })).toEqual([])
+  })
+})
+
+describe('判据 6：根级入口文档 AGENTS.md 存在且被登记', () => {
+  it('真实仓库：它存在，且归属表登记了它（命中不是 0）', () => {
+    /*
+     * 「命中不是 0」要单独钉：0 命中时这条判据恒绿——本仓真实发生过一次恒绿闸门
+     * （见 scripts/test/docs-index.test.ts 文件头第 2 条）。这里先钉右边真的扫到了东西。
+     */
+    expect(real.agentsExists, '仓根 AGENTS.md 应存在').toBe(true)
+    const rootDocs = parseAttributedRootDocs(real.conventions)
+    expect(rootDocs.size, '归属表登记的仓根 md 应 ≥ 1（0 = 判据恒绿）').toBeGreaterThan(0)
+    expect(rootDocs.has(AGENTS_PATH), `归属表应登记 ${AGENTS_PATH}`).toBe(true)
+    expect(checkAgentsEntry(real)).toEqual([])
+  })
+
+  it('反例①：文件不在（比如被 git reset 抹掉）→ agents.missing 报出来', () => {
+    const diffs = checkAgentsEntry({ agentsExists: false, conventions: real.conventions })
+    expect(kinds(diffs)).toEqual(['agents.missing'])
+    expect(diffs[0].path).toBe(AGENTS_PATH)
+    expect(diffs[0].message).toContain('不在任何现有闸门的扫描面里')
+    // 恢复路径要写进文案：这正是 2026-10-06 真实找回来的办法
+    expect(diffs[0].message).toContain('git log --all')
+  })
+
+  it('反例②：归属表那一行被删掉 → agents.unregistered 报出来', () => {
+    /*
+     * 用真实归属表做一次替换：删掉登记 AGENTS.md 的那一行。
+     * 行内容不硬编码「整行长什么样」，只按「指向 ../AGENTS.md」认——登记行改写措辞后这条仍然有效。
+     */
+    const lines = real.conventions.split('\n')
+    const index = lines.findIndex((line) => line.includes(`](../${AGENTS_PATH})`))
+    expect(index, `归属表里应有指向 ../${AGENTS_PATH} 的行`).toBeGreaterThan(-1)
+    const dropped = lines.filter((_, n) => n !== index).join('\n')
+    expect(dropped, 'fixture 必须真的改动文本').not.toBe(real.conventions)
+
+    const diffs = checkAgentsEntry({ agentsExists: true, conventions: dropped })
+    expect(kinds(diffs)).toEqual(['agents.unregistered'])
+    expect(diffs[0].path).toBe(AGENTS_PATH)
+    expect(diffs[0].message).toContain(ATTRIBUTION_HEADING)
+  })
+
+  it('反例③：归属表整节被改名 → **报缺失**，不是静默当成空表', () => {
+    const renamed = mutate(real.conventions, ATTRIBUTION_HEADING, `${ATTRIBUTION_HEADING}（fixture 改名）`)
+    const diffs = checkAgentsEntry({ agentsExists: true, conventions: renamed })
+    expect(kinds(diffs)).toContain('attribution.table.absent')
+    expect(diffs[0].message).toContain('报缺失')
+  })
+
+  it('两条判据同时坏 → 两条都报（不许只报第一条）', () => {
+    const lines = real.conventions.split('\n')
+    const index = lines.findIndex((line) => line.includes(`](../${AGENTS_PATH})`))
+    const dropped = lines.filter((_, n) => n !== index).join('\n')
+    const diffs = checkAgentsEntry({ agentsExists: false, conventions: dropped })
+    expect(kinds(diffs).sort()).toEqual(['agents.missing', 'agents.unregistered'])
+  })
+
+  it('仓根层的 `../xxx.md` 与 docs 层的 `./xxx.md` 互不串台', () => {
+    // 只认 `../`：docs 层那些 `./conventions.md` 不该被算成「仓根已登记」
+    const rootDocs = parseAttributedRootDocs(real.conventions)
+    expect(rootDocs.has('conventions.md'), 'docs 层文件不该出现在仓根登记里').toBe(false)
+    expect(rootDocs.has('README.md'), '归属表另有 README 行').toBe(true)
   })
 })

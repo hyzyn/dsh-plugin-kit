@@ -1,7 +1,8 @@
 /**
  * 文档路由守卫：`docs/*.md`（登记 + 命名）、L0 `ROADMAP.md`（✅ ↔ 落点）、**包内**
- * `packages/<pkg>/ROADMAP.md`（落地记录节必须排在 `## 已完成` 之后），以及
- * **workspace 包集合 ↔ `architecture.md § 2 包清单`**（判据 5）。
+ * `packages/<pkg>/ROADMAP.md`（落地记录节必须排在 `## 已完成` 之后）、
+ * **workspace 包集合 ↔ `architecture.md § 2 包清单`**（判据 5），以及
+ * **根级入口文档 `AGENTS.md` 存在且被登记**（判据 6）。
  *
  * ## 为什么有这一份
  *
@@ -31,6 +32,13 @@
  * 都要在 [architecture.md § 2 包清单](./architecture.md#2-包清单) 加一行」，现算 12/12 满足，
  * 但第 13 个包进来时**不会有人红**——判据 1–4 都管不到「workspace 包 ↔ 清单行」这一层。
  * 于是有了判据 5：两边都现算、多一个少一个都报。
+ *
+ * 2026-10-06 再收一条**同形状**的（判据 6）：仓根入口文档 `AGENTS.md` 的消失也是静默的。
+ * 判据 1 只扫 `docs/*.md`，仓根文件不在它的扫描面里；守卫脚本也不被任何构建 / 类型 / 测试
+ * 链路读到。实测反证：它确实在一次 `git reset` 后从 `main` 上整条消失过——`git log HEAD --
+ * AGENTS.md` 为空（**不是被删除，是分支线被换掉**，所以连 `--diff-filter=D` 都搜不到），
+ * 全部闸门照旧全绿，直到有人翻 reflog 才找回来。**「没有守卫的规矩会在下一次改动里漂掉」**
+ * 这句话在本仓是有实例的，这一条只是把它补上。
  *
  * ## 每一类判据都不许「匹配失败就算过」
  *
@@ -100,6 +108,17 @@ export const WORKSPACE_PATH = 'pnpm-workspace.yaml'
 export const ARCHITECTURE_PATH = 'docs/architecture.md'
 /** 包清单节的标题——判据 5 只认这一节里的 README 链接。 */
 export const PACKAGE_MANIFEST_HEADING = '## 2. 包清单'
+
+/**
+ * 根级**入口文档**：`AGENTS.md`（判据 6 守它存在且被归属表登记）。
+ *
+ * 为什么单独守它：它是 AI 代理与新读者的**第一入口**，而删掉它**没有任何东西会红**——
+ * 归属表登记的是 `docs/*.md`（判据 1），仓根文件不在那条判据的扫描面里；它也不被任何
+ * 构建 / 类型 / 测试链路读到。2026-10-06 实测反证：`AGENTS.md` 在一次 `git reset` 后
+ * 从 `main` 上**静默消失**（`git log HEAD -- AGENTS.md` 为空——它不是被删除，是整条分支线
+ * 被换掉），直到有人翻 reflog 才找回来；同一轮实测「把归属表里那一行删掉」也不会有人红。
+ */
+export const AGENTS_PATH = 'AGENTS.md'
 
 /**
  * 包内 ROADMAP 的「已完成」锚点。
@@ -448,6 +467,62 @@ export function parseManifestPackages(architecture) {
 }
 
 /**
+ * 归属表里引用到的**仓根** markdown（`](../AGENTS.md)` 这类）。
+ *
+ * 与 `parseAttributedDocs` 是同一张表的两半：那个只认 `./xxx.md`（`docs/` 层），
+ * 这个只认 `../xxx.md`（仓根层）——两边口径一致，都按链接目标的形状取，不按关键词扫。
+ */
+export function parseAttributedRootDocs(conventions) {
+  const table = sectionOf(conventions, ATTRIBUTION_HEADING)
+  const names = new Set()
+  if (table === undefined) return names
+  for (const match of table.matchAll(/\]\(\.\.\/([A-Za-z0-9._-]+\.md)(?:#[^)]*)?\)/g)) names.add(match[1])
+  return names
+}
+
+/**
+ * 判据 6：根级**入口文档** `AGENTS.md` 必须存在，且被知识归属表登记。
+ *
+ * 为什么需要它：`AGENTS.md` 是 AI 代理与新读者的第一入口，但它此前**没有任何守卫**——
+ * 判据 1 只扫 `docs/*.md`，仓根文件不在扫描面里；它也不被构建 / 类型 / 测试链路读到。
+ * 于是它的消失是**静默**的：2026-10-06 实测反证，一次 `git reset` 后它从 `main` 上
+ * 整条消失（`git log HEAD -- AGENTS.md` 为空：不是被删除，是分支线被换掉），而全部闸门
+ * 照旧全绿；同一轮实测「把归属表里那一行删掉」也不会有人红。这正是本仓反复在防的
+ * **「没有守卫的规矩会在下一次改动里漂掉」**。
+ *
+ * 两条判据都**现算**、不缓存结论：`agentsExists` 由 `readDocsInputs` 用 `existsSync` 取
+ * （**不读内容**——文件不在时读会抛，而这里要的是「报缺失」而不是崩），登记面从归属表现算。
+ *
+ * @param input - `{ agentsExists, conventions }`；单测可传合成值造反例。
+ */
+export function checkAgentsEntry({ agentsExists, conventions }) {
+  const diffs = []
+  if (!agentsExists) {
+    diffs.push({
+      kind: 'agents.missing',
+      path: AGENTS_PATH,
+      message: `仓根 ${AGENTS_PATH} 不见了：它是 AI 代理与新读者的第一入口，且**不在任何现有闸门的扫描面里**（判据 1 只扫 docs/*.md）。恢复方式见 git 历史（\`git log --all -- AGENTS.md\`），别新建一份内容不同的`,
+    })
+  }
+  const table = sectionOf(conventions, ATTRIBUTION_HEADING)
+  if (table === undefined) {
+    diffs.push({
+      kind: 'attribution.table.absent',
+      message: `conventions 里找不到「${ATTRIBUTION_HEADING}」这一节：登记判据无从谈起（报缺失，不静默跳过）`,
+    })
+    return diffs
+  }
+  if (!parseAttributedRootDocs(conventions).has(AGENTS_PATH)) {
+    diffs.push({
+      kind: 'agents.unregistered',
+      path: AGENTS_PATH,
+      message: `归属表没有登记 ${AGENTS_PATH}：去「${ATTRIBUTION_HEADING}」加一行 \`](../${AGENTS_PATH})\`——入口文档的**唯一归宿**也得有个着落，否则它归谁管没有答案`,
+    })
+  }
+  return diffs
+}
+
+/**
  * 从 `pnpm-workspace.yaml` 取通配清单（纯函数；`!` 开头的排除项按规矩不产出包）。
  *
  * 解析用真 YAML（`yaml` 包）：这条判据要的是**准**，而手写正则会在注释 / 引号 / 流式写法上
@@ -602,6 +677,11 @@ export function readDocsInputs(repoRoot = REPO_ROOT) {
     packageRoadmaps,
     architecture: readNormalized(ARCHITECTURE_PATH),
     workspacePackages: resolveWorkspacePackages(repoRoot),
+    /*
+     * 判据 6 的存在性：**只 stat，不读**——文件不在时 `readFileSync` 会抛，
+     * 而这里要的是「报缺失」（差异数组里一条），不是让整道闸门崩掉。
+     */
+    agentsExists: existsSync(join(repoRoot, AGENTS_PATH)),
   }
 }
 
@@ -614,6 +694,7 @@ export function checkRepo(repoRoot = REPO_ROOT) {
     ...checkRoadmapStatus(inputs),
     ...checkPackageRoadmapLanded(inputs),
     ...checkPackageManifest(inputs),
+    ...checkAgentsEntry(inputs),
   ]
 }
 
@@ -632,6 +713,8 @@ if (process.argv[1] !== undefined && import.meta.url === `file://${process.argv[
     console.log(`[docs-index] 包内 ROADMAP 共 ${String(inputs.packageRoadmaps.length)} 份；落地记录节 ${String(landedCount)} 处（判据 4 只管它们排在 \`## 已完成\` 之后）`)
     // 判据 5 的两边也打印出来：同样为了「命中不是 0」看得见。
     console.log(`[docs-index] workspace 包 ${String(inputs.workspacePackages.length)} 个；§ 2 包清单 ${String(parseManifestPackages(inputs.architecture)?.size ?? 0)} 行（判据 5 要求一一对应）`)
+    // 判据 6 同理：入口文档在不在、登记面扫到几份，都要看得见（0 命中 = 闸门恒绿）。
+    console.log(`[docs-index] 根级入口 ${AGENTS_PATH} ${inputs.agentsExists ? '存在' : '**缺失**'}；归属表登记的仓根 md ${String(parseAttributedRootDocs(inputs.conventions).size)} 份（判据 6 要求含它）`)
     // 事实报告（只报告，不判红）：`--quiet` 一并抑制，免得把 CI / 脚本输出搞脏。
     console.log(formatReadmeReport(readReadmeFacts()))
   }
