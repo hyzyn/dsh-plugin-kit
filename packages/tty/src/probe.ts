@@ -24,6 +24,7 @@ import { Client } from 'ssh2'
 import type { ConnectConfig } from 'ssh2'
 import { connect as netConnect } from 'node:net'
 import { attachSshTransport, classifyError, jumpTargetLabel, PROXY_COMMAND_DISABLED, PROXY_COMMAND_NOT_GRANTED, proxyCommandAllowedNow, proxyCommandGrantedNow, proxyFailureSuffix, sanitizeProxyCommand, sshTarget } from './ssh.js'
+import { hostKeyIdentity } from './ssh.js'
 import type { HostKeyStore, SshSpec, SshTransport } from './ssh.js'
 
 /** TCP 预检超时（毫秒）：DNS 解析 + 建连。 */
@@ -77,11 +78,13 @@ export interface ProbeResult {
 
 /** 把底层错误分类为人类可读诊断；原文保留在返回串里便于对照排查。 */
 /** 与 spawnSsh 的 applyHostKeyPolicy 一致的 TOFU 指引文案（多指纹集合版）。 */
-function mismatchMessage(target: string, host: string, port: number, known: string[], current: string): string {
+function mismatchMessage(target: string, host: string, port: number, known: string[], current: string, aliased = false): string {
   const shown = known.slice(0, 3).map((f) => `sha256:${f}`).join(' / ')
   const more = known.length > 3 ? ` 等 ${String(known.length)} 把` : ''
+  // 带别名时点明「按哪个键定位」：用户要去卡片里删记录，说错键等于让他删错行
+  const where = aliased ? `${target}（HostKeyAlias ${host}）` : target
   return (
-    `SSH 主机密钥指纹变更：${target} 已记录 ${shown}${more}，本次为 sha256:${current}。` +
+    `SSH 主机密钥指纹变更：${where} 已记录 ${shown}${more}，本次为 sha256:${current}。` +
     '可能是主机重装或换钥匙，也可能是中间人（MITM）冒充；确认安全后，到 插件配置 → 终端面板 → SSH 主机密钥记录 删除该主机再重连。'
   )
 }
@@ -93,16 +96,18 @@ function makeHostKeyVerifier(options: {
   onResult(result: { state: 'matched' | 'recorded' | 'mismatch'; fingerprint: string; known?: string[]; error?: string }): void
 }): (hash: string) => boolean {
   const { spec, store, onResult } = options
-  const port = spec.port ?? 22
+  // 记录/比对的键走与 spawnSsh 同一个 hostKeyIdentity（HostKeyAlias 语义）：
+  // 两处不一致就会出现「试连说匹配、真连说变更」这种自相矛盾
+  const { host: keyHost, port, aliased } = hostKeyIdentity(spec)
   const target = sshTarget(spec)
   let seen = ''
   return (hash: string) => {
     seen = hash
-    const known = store?.get(spec.host, port)
+    const known = store?.get(keyHost, port)
     if (known === undefined || known.length === 0) {
       if (store !== undefined) {
         // 完整 TOFU：新指纹当场持久化（与 spawnSsh 的 hostVerifier 同语义）
-        store.record(spec.host, port, hash)
+        store.record(keyHost, port, hash)
         onResult({ state: 'recorded', fingerprint: hash })
       } else {
         // 试连（对话框）：只比对不落盘
@@ -114,7 +119,7 @@ function makeHostKeyVerifier(options: {
       onResult({ state: 'matched', fingerprint: hash, known })
       return true
     }
-    onResult({ state: 'mismatch', fingerprint: hash, known, error: mismatchMessage(target, spec.host, port, known, hash) })
+    onResult({ state: 'mismatch', fingerprint: hash, known, error: mismatchMessage(target, keyHost, port, known, hash, aliased) })
     return false
   }
 }

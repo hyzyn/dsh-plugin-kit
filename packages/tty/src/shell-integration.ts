@@ -6,8 +6,8 @@
  * 打标记即可两全，不需要动 DSH 的 spawnTerminal 协议。
  *
  * 注入方式（对用户透明，不要求改 rc）：
- *   - zsh：把桩文件写到**稳定目录**（<DSH_HOME|~/.dsh>/tty/shell/zsh/ 下的
- *     .zshenv/.zprofile/.zshrc/.zlogin，各自先 source 用户 ZDOTDIR/HOME 下的
+ *   - zsh：把桩文件写到**稳定目录**（`<DSH_HOME|~/.dsh>/tty[/<profile>]/shell/zsh/`
+ *     下的 .zshenv/.zprofile/.zshrc/.zlogin，各自先 source 用户 ZDOTDIR/HOME 下的
  *     原文件，.zshrc 追加钩子），spawn 时经 `-c` 包装层 `export ZDOTDIR=<桩目录>`
  *     生效 —— VS Code 同款成熟方案；
  *   - bash：写桩 rc（先 source ~/.bashrc 再挂钩子），`exec bash --rcfile <桩>`；
@@ -34,6 +34,7 @@
  *   OSC 133;D;<exit> —— 命令结束带退出码；OSC 7;file://<host><path> —— cwd 上报。
  */
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { dshHome } from '@hyzyn/dsh-kit'
 import { homedir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
@@ -44,9 +45,64 @@ export interface ShellSpawnPlan {
   env: Record<string, string>
 }
 
-/** 插件运行时资产根目录（稳定路径；DSH_HOME 优先，与 env 插件同语义）。 */
+/** profile 段的安全字符集（同时用于 tmux socket 名与运行时目录名）。 */
+const PROFILE_SAFE_RE = /^[A-Za-z0-9_-]{1,24}$/
+
+/**
+ * 当前 profile 的**路径 / socket 安全段**；未设 profile（不带 profile 启动）时返回空串。
+ *
+ * 为什么需要它（tty D60）：插件有两样东西按**机器**这一层落盘——tmux 专用 socket 与
+ * 运行时资产目录（tmux.conf / inner.sh / shell 桩）。两者都必须**按 profile 各存一份**：
+ * `shellIntegration` 等配置是 per-profile 的，共用一个 `inner.sh` 就是「A 的 pane 用
+ * B 的启动器」；共用 socket 则让会话清单跨 profile 串味、`kill-server` 误杀别人。
+ *
+ * **只在调用时读 `process.env.DSH_PROFILE`**（不在模块加载时快照）：测试里要造两个
+ * profile 各断言一次，模块级快照会让第二组永远读到第一组的值。名字含字符集外字符
+ * （空格 / 斜杠 / 中文…）或超长时退化为「干净前缀 + 6 位摘要」，保证两个不同的
+ * profile **永不**落到同一段。
+ */
+export function dshProfileSegment(): string {
+  const profile = (process.env.DSH_PROFILE ?? '').trim()
+  if (profile === '') return ''
+  if (PROFILE_SAFE_RE.test(profile)) return profile
+  const clean = profile.replace(/[^A-Za-z0-9_-]/g, '-').replace(/^-+|-+$/g, '').slice(0, 16)
+  const digest = createHash('sha256').update(profile).digest('hex').slice(0, 6)
+  return clean === '' ? digest : `${clean}-${digest}`
+}
+
+/**
+ * 专用 tmux socket 名，**按 profile 区分**（tty D60 的第二半）。
+ *
+ * 为什么必须是函数而不是常量：socket 是**机器级资源**，而写死的 `-L dsh-tty` 让同一台
+ * 机器上所有 profile 的宿主共用一个 tmux server——两个后果都实测过：
+ *   1. `tty_list` 的持久会话清单**跨 profile 出现**（另一个 profile 的 dev server 会话
+ *      被当成自己的）；
+ *   2. 「改完 tmux 配置要 `kill-server` 才生效」这一步会**一并杀掉另一个 profile 的
+ *      持久会话**。
+ *
+ * 未设 `DSH_PROFILE`（不带 profile 启动的宿主）时退回历史名 `dsh-tty`：单 profile 的
+ * 用户行为与从前**完全一致**，升级也不需要迁移（老会话仍能用老 socket 接回）。设了
+ * profile 时是 `dsh-tty-<profile 段>`。
+ *
+ * 住在 shell-integration 而不是 tmux：**shell 桩里也要用它**（pane 内的
+ * `tmux capture-pane` 必须连本 profile 的 server，否则 `tty_capture{last}` 永远拿不到
+ * 快照），而 tmux.ts 反过来 import 本模块——放这边才不会形成循环依赖。
+ */
+export function tmuxSocketName(): string {
+  const segment = dshProfileSegment()
+  return segment === '' ? 'dsh-tty' : `dsh-tty-${segment}`
+}
+
+/**
+ * 插件运行时资产根目录（稳定路径；DSH_HOME 优先，与 env 插件同语义）。
+ *
+ * **按 profile 分层**（tty D60）：有 profile 时是 `<DSH_HOME>/tty/<profile>/`，无 profile
+ * 时仍是历史的 `<DSH_HOME>/tty/`——单 profile 用户路径一字不变（老会话的资产仍在原处，
+ * 升级不需要一次性迁移）。内容静态（不含配置），write-if-changed 原子覆盖。
+ */
 export function pluginRuntimeDir(): string {
-  return join(dshHome(), 'tty')
+  const segment = dshProfileSegment()
+  return segment === '' ? join(dshHome(), 'tty') : join(dshHome(), 'tty', segment)
 }
 
 /** 原子 write-if-changed：内容相同跳过；不同则写同目录临时文件后 rename（避免半截文件）。 */
@@ -71,10 +127,30 @@ function writeIfChanged(file: string, content: string): void {
  * 在 Windows 上拿到的是非集成形态。改用 `node:path` 的 dirname（两个分隔符都认）。
  */
 
-/** 桩文件目录（稳定路径，zsh/bash 各一份；进程内缓存避免重复 stat）。 */
+/**
+ * 桩文件路径的进程内缓存（避免每个标签都重复 stat / 重写一遍文件）。
+ *
+ * key 里**必须同时带 `DSH_HOME` 与 profile 段**。只按 `'zsh'` / `'bash'` 做 key 时，
+ * 「桩目录」缓存会在环境变了之后继续指向旧路径——而这两者都可能在同一进程内变：
+ * profile 段决定 tmux socket 名（桩内容随它变，tty D60），`DSH_HOME` 决定落盘根目录
+ * （测试把它指到临时目录，插件运行期也可能被改）。命中陈旧缓存的表现是「桩写到了
+ * 上一个环境的位置，而 spawn 计划按新位置去找」——集成静默降级，正是本仓最忌讳的那类。
+ */
 const stubDirs = new Map<string, string>()
 
-const ZSH_HOOKS = [
+/** 桩缓存 key：`<shell>:<DSH_HOME>:<profile 段>`。 */
+function stubKey(shell: 'zsh' | 'bash'): string {
+  return `${shell}:${dshHome()}:${dshProfileSegment()}`
+}
+
+/**
+ * zsh 钩子片段。**socket 名由参数传进来**（tty D60）：这些行会被写进 tmux pane 里跑的
+ * 桩文件，而 pane 用的 socket 现在是 per-profile 的——写死 `-L dsh-tty` 时，profile
+ * 宿主的 pane 里 `tmux capture-pane` 会去连**另一个 profile** 的 server，`tty_capture{last}`
+ * 永远拿不到快照（假升级成「命令没输出」）。
+ */
+function zshHooks(socket: string): string[] {
+  return [
   '',
   '# >>> dsh-tty shell integration >>>',
   'if [ -z "$DSH_TTY_HOOKS_LOADED" ]; then',
@@ -100,7 +176,7 @@ const ZSH_HOOKS = [
   '  # 宿主优先用 T 快照作为 tty_capture{last} 的输出',
   '  __dsh_tty_capture() {',
   '    local __dsh_tty_precmd_cap',
-  '    __dsh_tty_precmd_cap=$(tmux -L dsh-tty capture-pane -p -t "$TMUX_PANE" -S -200 2>/dev/null)',
+  `    __dsh_tty_precmd_cap=$(tmux -L ${socket} capture-pane -p -t "$TMUX_PANE" -S -200 2>/dev/null)`,
   '    if [ -n "$__dsh_tty_precmd_cap" ]; then',
   '      printf "$__DSH_TTY_FMT_T" "$(printf \'%s\' "$__dsh_tty_precmd_cap" | base64 | tr -d \'\\n\')"',
   '    fi',
@@ -124,9 +200,12 @@ const ZSH_HOOKS = [
   'fi',
   '# <<< dsh-tty shell integration <<<',
   '',
-]
+  ]
+}
 
-const BASH_PRELUDE = [
+/** bash 前置片段；socket 名同样由参数传入（理由见 {@link zshHooks}）。 */
+function bashPrelude(socket: string): string[] {
+  return [
   '',
   '# >>> dsh-tty shell integration >>>',
   'if [ -z "$DSH_TTY_HOOKS_LOADED" ]; then',
@@ -148,7 +227,7 @@ const BASH_PRELUDE = [
   '  # tmux 重画异步：precmd 发 D 前 capture-pane 快照（OSC 133;T base64，同 zsh 桩说明）',
   '  __dsh_tty_capture() {',
   '    local __dsh_tty_precmd_cap',
-  '    __dsh_tty_precmd_cap=$(tmux -L dsh-tty capture-pane -p -t "$TMUX_PANE" -S -200 2>/dev/null)',
+  `    __dsh_tty_precmd_cap=$(tmux -L ${socket} capture-pane -p -t "$TMUX_PANE" -S -200 2>/dev/null)`,
   '    if [ -n "$__dsh_tty_precmd_cap" ]; then',
   '      printf "$__DSH_TTY_FMT_T" "$(printf \'%s\' "$__dsh_tty_precmd_cap" | base64 | tr -d \'\\n\')"',
   '    fi',
@@ -165,7 +244,8 @@ const BASH_PRELUDE = [
   '    printf "$__DSH_TTY_FMT_A"',
   '    printf "$__DSH_TTY_FMT_CWD" "${HOSTNAME}" "${PWD}"',
   '  }',
-]
+  ]
+}
 
 const BASH_POSTLUDE = [
   'fi',
@@ -174,7 +254,7 @@ const BASH_POSTLUDE = [
 ]
 
 function ensureZshStubDir(): string | undefined {
-  const cached = stubDirs.get('zsh')
+  const cached = stubDirs.get(stubKey('zsh'))
   if (cached !== undefined) return cached
   try {
     const dir = join(pluginRuntimeDir(), 'shell', 'zsh')
@@ -192,9 +272,9 @@ function ensureZshStubDir(): string | undefined {
     writeIfChanged(join(dir, '.zshrc'), [
       '# dsh-tty shell integration stub (chain to user file, then add hooks)',
       '[ -f "$DSH_TTY_ORIG_ZDOTDIR/.zshrc" ] && source "$DSH_TTY_ORIG_ZDOTDIR/.zshrc"',
-      ...ZSH_HOOKS,
+      ...zshHooks(tmuxSocketName()),
     ].join('\n'))
-    stubDirs.set('zsh', dir)
+    stubDirs.set(stubKey('zsh'), dir)
     return dir
   } catch {
     return undefined
@@ -202,7 +282,7 @@ function ensureZshStubDir(): string | undefined {
 }
 
 function ensureBashStubRc(): string | undefined {
-  const cached = stubDirs.get('bash')
+  const cached = stubDirs.get(stubKey('bash'))
   if (cached !== undefined) return cached
   try {
     const dir = join(pluginRuntimeDir(), 'shell', 'bash')
@@ -210,7 +290,7 @@ function ensureBashStubRc(): string | undefined {
     writeIfChanged(rc, [
       '# dsh-tty shell integration stub (chain to user file, then add hooks)',
       '[ -f "$HOME/.bashrc" ] && source "$HOME/.bashrc"',
-      ...BASH_PRELUDE,
+      ...bashPrelude(tmuxSocketName()),
       '  # —— B 标记（命令开始）：按 bash 版本二选一 ——',
       '  __dsh_tty_major=${BASH_VERSION%%.*}',
       '  __dsh_tty_minor=${BASH_VERSION#*.}; __dsh_tty_minor=${__dsh_tty_minor%%.*}',
@@ -262,7 +342,7 @@ function ensureBashStubRc(): string | undefined {
       '  fi',
       ...BASH_POSTLUDE,
     ].join('\n'))
-    stubDirs.set('bash', rc)
+    stubDirs.set(stubKey('bash'), rc)
     return rc
   } catch {
     return undefined

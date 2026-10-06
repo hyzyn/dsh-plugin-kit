@@ -143,6 +143,9 @@ describe('连接簿配置往返（settings schema + 两条清洗路径）', () =
       passphrase: '',
       password: '',
       agentForward: false,
+      // hostKeyAlias 一并带上（0.25.0）：它同样要穿过那几道白名单，
+      // 只测 jump 会让「新字段在某一层被静默丢掉」这类回归漏过去
+      hostKeyAlias: 'prod-alias',
       persist: false,
       jump: { host: 'bastion.corp', port: 2222, username: 'jumper' },
     }

@@ -359,6 +359,8 @@ describe('连接簿配置往返（settings schema + 两条清洗路径）', () =
       passphrase: '',
       password: '',
       agentForward: false,
+      // hostKeyAlias 一并带上（0.25.0）：同一条往返链上的新字段，一起钉住
+      hostKeyAlias: 'proxy-alias',
       persist: false,
       proxyCommand: 'ssh -W %h:%p bastion.corp',
     }

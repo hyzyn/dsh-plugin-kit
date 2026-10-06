@@ -55,6 +55,11 @@ const SSH_HOST_SCHEMA = z.object({
     passphrase: z.string().default(''),
     password: z.string().default(''),
     agentForward: z.boolean().default(false),
+    /**
+     * TOFU 定位别名（OpenSSH `HostKeyAlias` 语义）：只影响主机密钥**记在哪条记录里**，
+     * 不改连接地址。缺省空串 = 按 host 定位（与从前一致）。见 SshSpec 的说明。
+     */
+    hostKeyAlias: z.string().default(''),
     /** 经跳板机连接（ProxyJump 单跳）；缺省 = 直连。 */
     jump: SSH_JUMP_SCHEMA,
     /**
@@ -235,7 +240,7 @@ const STATS_RETRY_MAX_MS = 300_000;
  * 调用等得起，而写死的小值会把慢首帧误报成「采不到」。
  */
 const STATS_ONESHOT_TIMEOUT_MS = 15_000;
-const TTY_GUIDANCE = '本机已安装 dsh-tty 插件（终端面板）：Web GUI 侧边栏的「终端」入口可打开交互终端（xterm.js + PTY），可运行任意命令与 TUI 程序（vim/htop 等），支持多标签页与断线自动重连（刷新页面/网络抖动后会话保活并恢复现场）；新标签默认在当前会话工作目录打开。标签栏「+」菜单还能开 SSH 标签页（ssh2 原生连接，连接簿在设置卡片维护，支持 agent forwarding 与主机指纹 TOFU 钉扎；连接簿条目可配单跳跳板机 ProxyJump），像本地终端一样操作远程主机。设置卡片开启「会话持久化（tmux）」后，新开的本地/SSH 标签默认由 tmux server 托管（宿主重启/断线超时后重开即恢复现场），长任务建议在持久化开启时运行。长驻进程（dev server、watch、交互式程序）用 tty_open 开一个会话跑（或引导用户到终端面板里运行），不要在 bash 工具里挂起等待；用户提到「开个终端 / 在终端里跑 / SSH 到某台机器」时引导其打开该面板。agent 侧配套工具：tty_list 列出活跃终端会话（含 SSH 的 target、实时 cwd，以及 `running`——这个会话**有没有命令在跑**，文本里三态写作 `[空闲]` / `[运行中——现在别往里发命令]` / `[命令状态未知]`；命令状态未知**不是**没在跑），tty_capture 读取近期输出（默认清洗 ANSI；last:true 拿「上一条命令」的输出+退出码），tty_screen 读取当前可见屏幕（可读懂 vim/htop 等 TUI），tty_expect 用正则等待输出中的就绪信号（如 dev server URL、构建完成；它**先回看还没读过的已到达输出**，命令瞬间跑完也不会白等——超时若只返回一句诊断文案，别当成「命令没执行」），tty_send 发送按键（控制键/方向键用具名 `keys`，别在 data 里拼转义序列），tty_run 一次调用跑完一条命令并直接拿回尾部输出+退出码（想省掉 open→等→capture→close 四步时用它），tunnel_list 列出端口转发隧道状态——操作会实时显示在用户终端里。SFTP 文件传输：面板内可对 SSH 连接簿条目（或 SSH 连接对话框当前填写的信息）打开文件浏览（上传/下载/建目录/重命名/删除），传输期间进度条右侧 ✕ 可取消（半截文件自动清理）；agent 配套 sftp_list 列远程目录、sftp_tree 递归看目录结构、sftp_read 读远程文本文件（≤1MB）、sftp_write 写远程文本文件（≤1MB，可追加）、sftp_mkdir 建目录（parents 可逐级补齐）、sftp_rename 重命名/移动、sftp_remove 删除（目录需 recursive），book 参数为连接簿条目名。端口转发：连接簿条目可配本地/远程隧道（如把远程数据库映射到本地端口），宿主自动保活重连，用户提到「转发端口 / 访问远程库」时引导其到终端面板设置卡片配置。推荐流程：tty_send 启动长任务 → tty_expect 等就绪标记 → tty_capture{last:true} 拿结果。';
+const TTY_GUIDANCE = '本机已安装 dsh-tty 插件（终端面板）：Web GUI 侧边栏的「终端」入口可打开交互终端（xterm.js + PTY），可运行任意命令与 TUI 程序（vim/htop 等），支持多标签页与断线自动重连（刷新页面/网络抖动后会话保活并恢复现场）；新标签默认在当前会话工作目录打开。标签栏「+」菜单还能开 SSH 标签页（ssh2 原生连接，连接簿在设置卡片维护，支持 agent forwarding 与主机指纹 TOFU 钉扎；连接簿条目可配单跳跳板机 ProxyJump），像本地终端一样操作远程主机。设置卡片开启「会话持久化（tmux）」后，新开的本地/SSH 标签默认由 tmux server 托管（宿主重启/断线超时后重开即恢复现场），长任务建议在持久化开启时运行。长驻进程（dev server、watch、交互式程序）用 tty_open 开一个会话跑（或引导用户到终端面板里运行），不要在 bash 工具里挂起等待；用户提到「开个终端 / 在终端里跑 / SSH 到某台机器」时引导其打开该面板。agent 侧配套工具：tty_list 列出活跃终端会话（含 SSH 的 target、实时 cwd，以及 `running`——这个会话**有没有命令在跑**，文本里三态写作 `[空闲]` / `[运行中——现在别往里发命令]` / `[命令状态未知]`；命令状态未知**不是**没在跑），tty_capture 读取近期输出（默认清洗 ANSI；last:true 拿「上一条命令」的输出+退出码），tty_screen 读取当前可见屏幕（可读懂 vim/htop 等 TUI），tty_expect 用正则等待输出中的就绪信号（如 dev server URL、构建完成；它**先回看还没读过的已到达输出**，命令瞬间跑完也不会白等——超时若只返回一句诊断文案，别当成「命令没执行」），tty_send 发送按键（控制键/方向键用具名 `keys`，别在 data 里拼转义序列），tty_run 一次调用跑完一条命令并直接拿回尾部输出+退出码（想省掉 open→等→capture→close 四步时用它），tunnel_list 列出端口转发隧道状态、tunnel_start / tunnel_stop 启停一条——操作会实时显示在用户终端里。SFTP 文件传输：面板内可对 SSH 连接簿条目（或 SSH 连接对话框当前填写的信息）打开文件浏览（上传/下载/建目录/重命名/删除），传输期间进度条右侧 ✕ 可取消（半截文件自动清理）；agent 配套 sftp_list 列远程目录、sftp_tree 递归看目录结构、sftp_read 读远程文本文件（≤1MB）、sftp_write 写远程文本文件（≤1MB，可追加）、sftp_mkdir 建目录（parents 可逐级补齐）、sftp_rename 重命名/移动、sftp_remove 删除（目录需 recursive），book 参数为连接簿条目名。端口转发：连接簿条目可配本地/远程隧道（如把远程数据库映射到本地端口），宿主自动保活重连，用户提到「转发端口 / 访问远程库」时引导其到终端面板设置卡片配置。推荐流程：tty_send 启动长任务 → tty_expect 等就绪标记 → tty_capture{last:true} 拿结果。';
 /** 本地 PTY 包装成 TermHandle（resize/kill 仍是透传 node-pty 的内部耦合；防御性降级）。 */
 export function wrapLocalPty(handle) {
     let resizeWarned = false;
@@ -1205,6 +1210,7 @@ function sanitizeSshHosts(input) {
             passphrase: typeof raw.passphrase === 'string' ? raw.passphrase : '',
             password: typeof raw.password === 'string' ? raw.password : '',
             agentForward: raw.agentForward === true,
+            hostKeyAlias: typeof raw.hostKeyAlias === 'string' ? raw.hostKeyAlias.trim() : '',
             persist: raw.persist === true,
         });
         // 跳板机：清洗不出可用对象（host 为空）就当没配——不给下游留半个对象
@@ -1251,6 +1257,21 @@ function validateSshHosts(input) {
         }
         if (raw.persist !== undefined && typeof raw.persist !== 'boolean') {
             return { error: 'sshHosts.persist 必须是布尔值' };
+        }
+        if (raw.hostKeyAlias !== undefined && typeof raw.hostKeyAlias !== 'string') {
+            return { error: 'sshHosts.hostKeyAlias 必须是字符串' };
+        }
+        /*
+         * 别名不能含空白（OpenSSH 的 HostKeyAlias 是单个 host 形态）。
+         * 不禁其它字符：它会原样进 hostKeys 记录，而 hostKeys 只是本地存储的键——
+         * 但含 `:` 会被 `host:port` 的拼接读成端口，直接在这里拦掉比事后排查便宜。
+         */
+        if (typeof raw.hostKeyAlias === 'string' && raw.hostKeyAlias.trim() !== '') {
+            const alias = raw.hostKeyAlias.trim();
+            if (/\s/.test(alias))
+                return { error: 'sshHosts.hostKeyAlias 不能含空白' };
+            if (alias.includes(':'))
+                return { error: 'sshHosts.hostKeyAlias 不能含冒号（端口由 port 字段给）' };
         }
         if ((raw.auth === 'key') && (typeof raw.keyPath !== 'string' || raw.keyPath.trim() === '')) {
             return { error: `sshHosts「${String(raw.name)}」auth=key 需要 keyPath` };
@@ -2582,7 +2603,8 @@ export class TtyServer {
                 }
                 this.retireStaleExited(sid); // D77：同 sid 上的只读保留态先摘掉，别让 add() 把它顶成泄漏
                 // 持久化（0.10.0）：配置 persistence=tmux 且帧带 persist 时，spawn 包装层
-                // 换成 `exec tmux -L dsh-tty -A -s <名>`（tmux 托管）；tmux 未安装则降级
+                // 换成 `exec tmux -L <socket> -A -s <名>`（tmux 托管；socket 按 profile 区分，
+                // 见 tmuxSocketName，tty D60）；tmux 未安装则降级
                 // 普通会话并回灰字提示。持久名稳定（客户端生成、随标签规格保存），
                 // 宿主重启后重开标签按同名 attach 回原 tmux 会话
                 // 命令标签（0.14.0）：直接跑一条命令，不做 tmux 持久化（命令短命）
@@ -3297,6 +3319,10 @@ function mergeSshSpec(findSshHost, name, inline) {
         passphrase: typeof inline.passphrase === 'string' && inline.passphrase !== '' ? inline.passphrase : profile?.passphrase,
         password: typeof inline.password === 'string' && inline.password !== '' ? inline.password : profile?.password,
         agentForward: typeof inline.agentForward === 'boolean' ? inline.agentForward : profile?.agentForward ?? false,
+        // TOFU 别名同款「内联优先、否则用连接簿那一份」：空串 = 没给（不改连接簿的值）
+        hostKeyAlias: typeof inline.hostKeyAlias === 'string' && inline.hostKeyAlias.trim() !== ''
+            ? inline.hostKeyAlias.trim()
+            : profile?.hostKeyAlias ?? '',
     };
     /*
      * 跳板机：内联给了就以它为准（清洗不出可用对象则退回连接簿那一份），否则用连接簿的。
@@ -3581,6 +3607,20 @@ const plugin = definePlugin({
         // （连接簿名或内联字段），连接簿凭证热改后天然生效
         const sftpManager = new SftpManager({ info: (m) => ctx.logger.info(m), warn: (m) => ctx.logger.warn(m) }, hostKeyStore);
         const server = new TtyServer(ctx, sessions, live, hostKeyStore, trackPersistSession);
+        /*
+         * 隧道配置回写（agent 的 tunnel_start / tunnel_stop 用）：与卡片保存走**同一个**
+         * settings 通道（`scope.update` → 热应用 → applyPatch → reconcile），所以配置是唯一
+         * 真相源，agent 的操作与用户在卡片上点那个勾结果完全一致。settings 服务缺失
+         * （单测 / 极早期）时回调保持 null，`setEnabled` 退化成「本次进程内生效」。
+         */
+        tunnelManager.setPersist((specs) => {
+            const scope = settingsScope;
+            if (scope === undefined)
+                return;
+            void Promise.resolve(scope.update({ tunnels: specs })).catch((error) => {
+                console.warn('[dsh-tty] 隧道配置回写失败: ' + (error instanceof Error ? error.message : String(error)));
+            });
+        });
         const stateRef = { enabled: true, announceToAgent: config?.announceToAgent !== false, toolsRegistered: false, sftpStyle: config?.sftpStyle === 'dual' ? 'dual' : 'dialog' };
         let settingsScope;
         // 工具/公告的重注册钩子：真正的实现由各自的注入 effect 挂载时回填。
@@ -4367,15 +4407,49 @@ const plugin = definePlugin({
                                     writeJson(res, 200, { ok: true });
                                     return;
                                 }
-                                // download：路径必填（无 home 兜底），流式回包
+                                /*
+                                 * download：路径必填（无 home 兜底），流式回包。
+                                 *
+                                 * **offset 续传**（0.25.0）：`offset > 0` 时从该字节起回包，状态行用 206 +
+                                 * `content-range`——浏览器侧据此知道「这是个片段」，也能自己续。此前
+                                 * `openDownload` 早就支持 `offset`（agent 的 sftp_read 分页在用），但**路由
+                                 * 没接**：面板下载一旦断线就只能从头再来。这是「能力已有、只差接线」的一档。
+                                 *
+                                 * offset 越界（≥ 文件大小）按 416 明确回报，而不是回一个 0 字节的 200——
+                                 * 后者会让客户端把「文件是空的」与「要的东西已经在本地了」混成一件事。
+                                 * 目录 / 不存在仍在 `openDownload` 里抛（下面的 catch 分流 404 / 500）。
+                                 */
                                 const target = strField('path');
                                 if (target === '')
                                     throw new Error('path 必填');
-                                const { stream, size } = await sftpManager.openDownload(spec, target);
-                                res.writeHead(200, {
+                                const rawOffset = Number(body.offset ?? 0);
+                                /*
+                                 * offset 非法 = **调用方给错了**，按 400 回（而不是落到下面那个 500）。
+                                 * 这条分支是新增的，所以自己把状态码说清楚，不去改那层共用的
+                                 * 「业务失败一律 500」的口径（那会连带改掉其它动作的语义）。
+                                 */
+                                if (!Number.isInteger(rawOffset) || rawOffset < 0) {
+                                    writeJson(res, 400, { error: 'offset 必须是非负整数' });
+                                    return;
+                                }
+                                const offset = rawOffset;
+                                const { stream, size } = await sftpManager.openDownload(spec, target, offset > 0 ? { offset } : undefined);
+                                if (offset > 0 && size !== null && offset >= size) {
+                                    // 释放这一条读流：416 之后没人再读它，留着会占着连接池的通道
+                                    stream.destroy();
+                                    res.writeHead(416, {
+                                        'content-type': 'text/plain; charset=utf-8',
+                                        'content-range': `bytes */${String(size)}`,
+                                    });
+                                    res.end(`offset ${String(offset)} 已到达或越过文件末尾（${String(size)} 字节）`);
+                                    return;
+                                }
+                                const remaining = size !== null ? size - offset : null;
+                                res.writeHead(offset > 0 ? 206 : 200, {
                                     'content-type': 'application/octet-stream',
                                     'content-disposition': contentDispositionValue(remoteBasename(target)),
-                                    ...(size !== null ? { 'content-length': String(size) } : {}),
+                                    ...(remaining !== null ? { 'content-length': String(remaining) } : {}),
+                                    ...(offset > 0 && size !== null ? { 'content-range': `bytes ${String(offset)}-${String(size - 1)}/${String(size)}` } : {}),
                                 });
                                 // 客户端中断或写流失败都要回收 SFTP 读流，避免连接池通道悬挂
                                 res.on('close', () => {
@@ -5399,6 +5473,66 @@ const plugin = definePlugin({
                             };
                         },
                     })));
+                    /*
+                     * 隧道启停（agent 侧，0.25.0）——`tunnel_list` 只读，此前「停掉 → 重开 → 再看」
+                     * 这个诊断闭环只能让用户去卡片上点。
+                     *
+                     * 两个工具刻意**分成两个**（而不是一个 `tunnel_action(name, action)`）：启停都是
+                     * 真变更（会掐断/建立真连接），合成一个工具会让「改配置」这件事在模型眼里可合并
+                     * 成一次可重试的调用；分开后每个名字只表达一件事，`enabled` 这个布尔也没有翻转歧义。
+                     *
+                     * 两者都**改配置**（见 TunnelManager.setEnabled 的说明）：与卡片上那个勾同一条路，
+                     * 写完 settings 热应用 → reconcile，配置始终是唯一真相源。
+                     */
+                    for (const [toolName, enable, verb] of [['tunnel_start', true, '启动'], ['tunnel_stop', false, '停止']]) {
+                        activeDisposers.push(tools.register(defineTool({
+                            name: toolName,
+                            description: `${verb}一条端口转发隧道（name 来自 tunnel_list）。**会改写配置**——与在 插件配置 → 终端面板 卡片上勾选/取消「启用」是同一件事，所以是持久的、用户看得到。返回的是操作后的状态快照：state 通常还是 connecting（拨号异步），要最终结论稍后 tunnel_list。`,
+                            parameters: {
+                                name: { type: 'string', required: true, description: '隧道名（tunnel_list 的 name 字段，形如 <连接簿条目>-L<端口>）' },
+                            },
+                            output: {
+                                schema: {
+                                    type: 'object',
+                                    additionalProperties: false,
+                                    properties: {
+                                        name: { type: 'string', required: true },
+                                        enabled: { type: 'boolean', required: true },
+                                        state: { type: 'string', required: true },
+                                        rule: { type: 'string', required: true },
+                                        bookName: { type: 'string', required: true },
+                                        connections: { type: 'number', required: true },
+                                        error: { type: 'string' },
+                                    },
+                                },
+                                render: (args, value) => {
+                                    const a = args;
+                                    const v = value;
+                                    const tail = typeof v.error === 'string' && v.error !== '' ? `（${v.error}）` : '';
+                                    return [{ type: 'text', text: `隧道「${String(a.name ?? '?')}」已${verb}：${String(v.rule ?? '')} · ${String(v.state ?? '')}${tail}` }];
+                                },
+                            },
+                            async execute(args) {
+                                const input = args;
+                                if (typeof input.name !== 'string' || input.name.trim() === '')
+                                    throw new Error('name 必须是非空字符串（隧道名来自 tunnel_list）');
+                                const result = tunnelManager.setEnabled(input.name.trim(), enable);
+                                if (!result.ok)
+                                    throw new Error(result.error);
+                                const t = result.status;
+                                return {
+                                    name: t.name,
+                                    enabled: t.enabled,
+                                    state: t.state,
+                                    rule: t.rule,
+                                    bookName: t.bookName,
+                                    connections: t.connections,
+                                    // error 键必须「不存在」而不是 undefined（同 tunnel_list 的 D52 教训）
+                                    ...(t.error === null || t.error === undefined ? {} : { error: t.error }),
+                                };
+                            },
+                        })));
+                    }
                     // —— SFTP 文件传输工具（0.7.0）——
                     // 只收连接簿条目名（book），不接受内联凭证：agent 上下文不进明文密钥；
                     // 连接与终端/隧道共用同一 HostKeyStore（TOFU 同源）。
@@ -5747,7 +5881,7 @@ const plugin = definePlugin({
                         },
                     })));
                     stateRef.toolsRegistered = true;
-                    console.log('[dsh-tty] agent tools registered (tty_list, tty_open, tty_close, tty_run, tty_stats, tty_capture, tty_screen, tty_expect, tty_send, tunnel_list, sftp_list, sftp_read, sftp_write, sftp_mkdir, sftp_rename, sftp_remove, sftp_tree)');
+                    console.log('[dsh-tty] agent tools registered (tty_list, tty_open, tty_close, tty_run, tty_stats, tty_capture, tty_screen, tty_expect, tty_send, tunnel_list, tunnel_start, tunnel_stop, sftp_list, sftp_read, sftp_write, sftp_mkdir, sftp_rename, sftp_remove, sftp_tree)');
                 };
                 refreshToolsHook = registerAll;
                 registerAll();

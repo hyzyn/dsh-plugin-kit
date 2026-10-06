@@ -177,6 +177,15 @@ export function parseSshConfigDetailed(text) {
             password: '',
             agentForward: false,
         };
+        /*
+         * `HostKeyAlias`（0.25.0）：**照原样导入**。它是纯本地的指纹定位开关、不含任何
+         * 可执行成分（信任级远低于 ProxyCommand），而不导入的后果很实在——同一台主机经
+         * 不同地址触达时，每次都判成指纹变更（假 MITM 告警并拒绝连接），而用户的
+         * known_hosts 里本来就只有一条。
+         */
+        const hostKeyAlias = item.options.get('hostkeyalias');
+        if (hostKeyAlias !== undefined && hostKeyAlias.trim() !== '')
+            entry.hostKeyAlias = hostKeyAlias.trim();
         if (jump !== undefined) {
             entry.jump = jump;
             jumpImported += 1;

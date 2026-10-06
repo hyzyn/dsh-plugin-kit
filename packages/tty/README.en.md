@@ -114,7 +114,7 @@ Both were reproduced on **Windows 11 ARM (24H2) + Node 22 ARM64**. The fix:
 
 ## Agent tools
 
-The plugin injects seventeen tools into the agent (with the same power as the bash tool; operations show up live in the user’s terminal):
+The plugin injects nineteen tools into the agent (with the same power as the bash tool; operations show up live in the user’s terminal):
 
 | Tool | Purpose |
 | --- | --- |
@@ -135,6 +135,7 @@ The plugin injects seventeen tools into the agent (with the same power as the ba
 | `sftp_remove` | Delete a remote file/directory; a directory uses rmdir by default (a non-empty one errors explicitly), and `recursive:true` deletes the whole tree (irrecoverable); paths pointing at `/`, `~`, or containing `.`/`..` segments are refused (guard for an irrecoverable operation, 0.19.0) |
 | `sftp_tree` | Recursively list a remote directory structure (depth-first, directories first; `maxDepth` 1~8 / `maxEntries` 1~2000 cap it, `truncated:true` when exceeded; symlinks are not followed, to avoid cycles) |
 | `tunnel_list` | List port-forwarding tunnels and their live state (active/connecting/error/stopped, rules, connection counts) |
+| `tunnel_start` / `tunnel_stop` | Start or stop one port-forwarding tunnel (0.25.0; `name` comes from `tunnel_list`). These **rewrite the configuration** — the same thing as ticking/unticking “Enable” in the settings card (settings → hot apply → `reconcile`), so the change is persistent and visible to the user. The returned snapshot usually still says `connecting` (dialling is async); call `tunnel_list` again for the final verdict |
 
 Typical agent flow (recommended): for a command that simply runs to completion, use `tty_run` to get its
 output + exit code in one call; for a **long-lived** session, `tty_open` opens one (pass `persistName` for tmux
@@ -422,8 +423,24 @@ slot (`ssh2`’s sftp subsystem, host half in `src/sftp.ts`):
   connection-book entries are resolved live on every (re)connect (a changed password takes effect
   automatically); TOFU shares the same `hostKeys` pinning with terminal sessions/tunnels, and a changed
   fingerprint is rejected the same way; SFTP does not count against `maxSessions`;
+- **Resumable downloads (0.25.0, panel downloads)**: when a download drops, it **resumes from the bytes
+  already received** — the host's `/sftp/download` route now accepts `offset` (`>0` returns 206 +
+  `content-range` with `content-length` reporting the **remaining** length; `offset ≥ file size` returns 416
+  rather than a zero-byte 200, so “what you wanted is already local” is never mistaken for “the file is
+  empty”). The rules live in the pure module `client-src/download-resume.js` (`planResume`): **clicking ✕
+  never resumes** (cancel means “stop”, auto-retrying ignores the user), zero progress never resumes, the
+  retry budget is capped (3 by default), and the progress bar does **not** reset to zero while resuming.
+  Directory-level direct transfer (dual-pane ⇨/⇦) still sends everything again;
+- **Dual-pane drag & drop and hidden files (0.25.0)**: drop a file/folder from the file manager onto the
+  **right-hand remote pane** to upload it into that pane's current directory (folders are expanded through
+  `webkitGetAsEntry` and filled in with `mkdir parents`, same as the single-pane path); dropping onto the
+  **local pane** says explicitly that there is nothing to do instead of failing silently — the rule lives in
+  `client-src/sftp-view.js` (`planDrop`). Each pane's toolbar gains a “Hidden files” toggle (off by default,
+  preference kept in localStorage) so `.env` / `.gitignore` can be shown on demand; **filtering happens only
+  in the render layer** — the host `list` and the agent's `sftp_list` always return every entry (an agent
+  that cannot see hidden files draws wrong conclusions);
 - **Transfer channel**: `POST /api/dsh-tty/sftp/list|mkdir|rename|remove|download|
-  upload` (all loopback-fenced). The connection spec travels in the JSON body (connection-book name or
+  upload` (all loopback-fenced). `download` also accepts an optional `offset` (resume). The connection spec travels in the JSON body (connection-book name or
   inline fields, with the same semantics as WS ssh frames: “entry as the base + inline per-field overrides”)
   or, for upload, in the `x-dsh-sftp-meta` header (base64url) — **credentials never enter the URL/query
   string**; uploads and downloads are streamed pipes, and a whole file never enters memory;
@@ -441,8 +458,14 @@ slot (`ssh2`’s sftp subsystem, host half in `src/sftp.ts`):
 
 The default safety model is unchanged: sessions live and die with the host (kernel-level PTY cleanup). For
 work that must “outlive the host” (dev servers, builds, training jobs), turn on a **persistent terminal** —
-session state is delegated to a tmux server (dedicated socket `dsh-tty`, fully isolated from the user’s own
-tmux), so it survives the keep-alive timeout and can even be reattached after a host restart:
+session state is delegated to a tmux server (a dedicated socket, fully isolated from the user’s own tmux),
+so it survives the keep-alive timeout and can even be reattached after a host restart:
+
+> **The socket is profile-scoped** (since 0.25.0): `tmux -L dsh-tty-<profile>`, and the runtime assets
+> (`tmux.conf` / `inner.sh` / shell stubs under `<DSH_HOME>/tty/<profile>/`) are layered the same way — with
+> several profiles running, each sees only its own persistent sessions and `kill-server` only affects its
+> own. **A host started without a profile keeps the historical `dsh-tty`** (and `<DSH_HOME>/tty/`), so a
+> single-profile user sees no path or behaviour change after upgrading.
 
 - **Entry (simplified in 0.10.1)**: choosing `tmux` for “Session persistence” in the settings card is the
   only switch — once it is on, **every newly opened tab is persistent by default**: “Local terminal” in the
@@ -456,9 +479,10 @@ tmux), so it survives the keep-alive timeout and can even be reattached after a 
   switch is on, and **editing an entry in the settings card no longer drops it** (before 0.17.x, renaming a
   single field silently reset it to `false`);
 - **Mechanism**: spawn/ssh frames carry `persist` plus a stable `persistName` generated by the client and
-  saved with the tab spec — locally the `-c` wrapper layer becomes `exec tmux -L dsh-tty -f
+  saved with the tab spec — locally the `-c` wrapper layer becomes `exec tmux -L <socket> -f
   <conf> new-session -A -s dsh-<name>` (cwd is inherited from the node-pty spawn); over SSH the remote runs
-  `exec tmux -L dsh-tty -f /dev/null new-session -A -s dsh-<name>` to open the pty channel. `-A` is
+  `exec tmux -L <socket> -f /dev/null new-session -A -s dsh-<name>` to open the pty channel
+  (`<socket>` = `tmuxSocketName()`, profile-scoped since 0.25.0). `-A` is
   attach-or-create: after a host restart, reopening a tab reattaches to the same tmux session by name,
   restoring running programs and pane state exactly;
 - **Recovery chain**: after the browser reconnects it queries `sessions` — persistent tabs whose sid is gone
@@ -597,6 +621,17 @@ and the agent tools all reuse the same scheduling.
   all of a host’s rsa/ed25519 entries (no longer first-entry-only); host
   names from the connection book are also used to restore `|1|` hashed entries, and non-default ports are
   parsed as `[host]:port`;
+- **Host-key alias (`hostKeyAlias`, 0.25.0)**: TOFU records and comparisons are located by **connection
+  address** by default, but one real host is often reached through several addresses — the internal IP behind
+  a bastion, or `127.0.0.1:2222` through a port forward. “Same key, different record” then makes every
+  address switch look like a **fingerprint change** (a false MITM alarm that **rejects the connection**),
+  while the user’s `known_hosts` only has one line. Filling in the same alias lets those addresses share a
+  single host-key record. Semantics match OpenSSH’s `HostKeyAlias`: **it only decides where the fingerprint
+  is stored, never the connection address**; empty means address-based (byte-for-byte the old behaviour).
+  A `HostKeyAlias` in `~/.ssh/config` is **imported as-is** (it is a purely local locator with no executable
+  component, a very different trust level from `ProxyCommand`). All four connection points (terminal / SFTP /
+  tunnel / test probe) share one key derivation, so “the test says it matches, the real connection says it
+  changed” cannot happen;
 - **Connection test (0.11.0)**: a “Test” button on each connection-book row of the settings card, plus a
   “Test connection” button in the SSH connection dialog — both perform **link diagnostics only** (no session,
   no `maxSessions` slot, no shell): first a TCP pre-check (DNS + connect, failures classified as
@@ -713,7 +748,7 @@ sub-page under the Plugins sidebar, and `≤0.1.5` uses the settings-page card.
 | `colorTerm` | `truecolor` | COLORTERM value |
 | `cwd` | host startup directory | Fallback working directory (the client’s current session cwd wins) |
 | `reconnectGraceSec` | 120 | Seconds a session is kept alive after an abnormal disconnect (0~3600): the session survives a page refresh/network blip waiting for a reconnect, and the reaper ends it on timeout; `0` = the old behavior, end immediately on disconnect |
-| `sshHosts` | `[]` | SSH connection book (selectable in the panel “+” menu): entries `{name, host, port=22, username, auth=agent\|key\|password, keyPath, passphrase, password, agentForward, persist=false}`; saved as a whole-set replacement, the same name overwrites; `password` / `passphrase` support `env:VAR` references so no plaintext is stored; with persistence on, clicking an entry opens a tmux persistent session by default, and `persist=false` is an **opt-out** |
+| `sshHosts` | `[]` | SSH connection book (selectable in the panel “+” menu): entries `{name, host, port=22, username, auth=agent\|key\|password, keyPath, passphrase, password, agentForward, hostKeyAlias='', persist=false}`; saved as a whole-set replacement, the same name overwrites; `password` / `passphrase` support `env:VAR` references so no plaintext is stored; with persistence on, clicking an entry opens a tmux persistent session by default, and `persist=false` is an **opt-out**; an empty `hostKeyAlias` locates fingerprints by host address (TOFU), while a non-empty one locates them by alias (several addresses of one host share a record — see “SSH connections”) |
 | `hostKeys` | `[]` | SSH host key records (TOFU, maintained automatically): entries `{host, port, fingerprints[]}` (the legacy single `fingerprint` field is migrated and merged on read); unique by host:port, one record holds all of a host’s keys, appended automatically on the first connection, any matching fingerprint is allowed, and a full mismatch rejects the connection; the settings card can delete them to reset |
 | `shellIntegration` | true | Injects the OSC 133/7 shell integration (command boundary markers + cwd reporting; `tty_capture{last}` depends on it); zsh/bash supported, other shells skipped automatically; can be turned off when compatibility problems appear |
 | `tunnels` | `[]` | Port-forwarding tunnels: entries `{name, bookName, direction=local\|remote, localPort?, remoteHost?, remotePort?, localTargetHost?, localTargetPort?, enabled}`; `bookName` references a connection-book entry for host and authentication; maintained graphically in the “Port forwarding” block of the card |
@@ -1060,17 +1095,18 @@ verify things like “is there still a white panel after switching light/dark th
   SSH connection is independent of terminal sessions and both use TOFU pinning and connection-book
   authentication; tunnel spec changes (port/target/start-stop) take effect hot on “save”, while hot-changing
   connection-book credentials takes effect on the next reconnect.
-- **Session persistence (tmux) boundaries**: persistent tabs are hosted by the tmux server (dedicated socket
+- **Session persistence (tmux) boundaries**: persistent tabs are hosted by the tmux server (a dedicated socket,
+  profile-scoped since 0.25.0 — `dsh-tty` without a profile, `dsh-tty-<profile>` with one)
   `dsh-tty`) — when the host is hard-killed / the keep-alive reaper fires / the browser loses the tab spec,
   the tmux session is **retained** (which is exactly what makes recovery possible) until the machine restarts
-  or `tmux -L dsh-tty kill-server` is run manually; the agent’s command-granularity tools
+  or `tmux -L <socket> kill-server` is run manually; the agent’s command-granularity tools
   (capture{last}/expect) depend on DCS `allow-passthrough` in tmux ≥3.3, and on older versions persistence
   works but that capability degrades (SSH remote sessions do not inject shell integration hooks, so
   capture{last} was never available there, independently of persistence); recovery redraws the currently
   visible screen, while pre-disconnect scroll history lives in tmux’s own history buffer (copy-mode), not in
   the outer xterm scrollback; a persistent tab’s `exit` frame exit code is the tmux client’s (0), while the
   shell’s exit code remains available through the OSC 133;D marker as usual; `tmux.conf` is read only when the
-  tmux server first starts (after changing the configuration, run `tmux -L dsh-tty kill-server` so the next
+  tmux server first starts (after changing the configuration, run `tmux -L <socket> kill-server` so the next
   spawn rebuilds the server); with `grace=0`, “end immediately on disconnect” also kill-sessions persistent
   tabs (the tmux session does not survive); persistent SSH sessions require tmux on the remote (without it
   they degrade to a normal session automatically, and the connection bar shows a permanent “not persistent”
@@ -1144,7 +1180,7 @@ Host half (src/index.ts)
   │  truncated packets across chunks) → command boundary capture (tty_capture{last} / tty_expect
   │  early stop) and cwd tracking (tty_list)
   ├─ local path: ctx.get('subprocess').spawnTerminal({ argv: shell -c wrapper, cwd })
-  │  persistent tabs (0.10.0): the wrapper becomes `exec tmux -L dsh-tty -f <conf> new -A -s dsh-<name>`
+  │  persistent tabs (0.10.0): the wrapper becomes `exec tmux -L <socket> -f <conf> new -A -s dsh-<name>`
   │  (src/tmux.ts: probing / asset generation / spawn planning / kill-session; stable assets under
   │  <DSH_HOME|~/.dsh>/tty/ — tmux.conf + inner.sh + zsh/bash stubs; tmux swallows sequences it
   │  does not recognize, so the shell-integration hook detects $TMUX and wraps OSC 133/7 in a DCS
@@ -1166,7 +1202,8 @@ Host half (src/index.ts)
   │  sftp_list/read/write/mkdir/rename/remove/tree tools (accept only a connection-book name;
   │  mkdir supports parents, filling levels bottom-up, tree recurses with depth/count limits)
   ├─ port forwarding (src/tunnels.ts): host-owned tunnels (-L/-R both ways), backoff reconnect on
-  │  drop, TOFU shared, connection counters; GET /api/dsh-tty/tunnels live status + tunnel_list tool
+  │  drop, TOFU shared, connection counters; GET /api/dsh-tty/tunnels live status + tunnel_list /
+  │  tunnel_start / tunnel_stop tools
   └─ frame protocol: spawn|ssh / input / resize / kill / sessions / attach
      ↔ ready/data/exit/error/sessions + backpressure
 
@@ -1176,7 +1213,7 @@ SSH path (src/ssh.ts)
      through HostKeyStore), opening a shell channel wrapped into a TermHandle shaped like a PTY
      (pid=null, kind='ssh', target=user@host[:port]),
      backpressure is passed through to the channel as well — after that it is scheduled just like a local PTY;
-     with persist on it first probes `command -v tmux` and then `exec tmux -L dsh-tty -f /dev/null
+     with persist on it first probes `command -v tmux` and then `exec tmux -L <socket> -f /dev/null
      new -A -s dsh-<name>` to open a pty channel (remote tmux hosting; without tmux it degrades to a plain
      shell channel + a grey-text hint; kill is finished off by `tmux kill-session` inside the connection)
 ```

@@ -298,3 +298,134 @@ describe('TunnelManager live 集合与计数（D15 ②③）', () => {
     sock.destroy()
   })
 })
+
+/*
+ * agent 侧启停（0.25.0：tunnel_start / tunnel_stop）。钉两件事：
+ *   ① 它**改配置**而不是只改运行态——写回回调必须收到翻转后的 enabled，否则
+ *      「停了又自己回来」（下次 settings 热应用按旧配置 reconcile）就是必然；
+ *   ② 停止真的释放资源（连接 end + 本地监听端口可被别人重新占用），
+ *      重启真的再建一条连接（不是「拿旧对象当真」）。
+ * 第三件（写回失败不吞运行态）无从构造——`persist` 的调用方自己 catch。
+ */
+describe('TunnelManager.setEnabled：agent 启停改配置（0.25.0）', () => {
+  it('未知名字 → ok:false 且给出可用名清单（不抛错）', () => {
+    const t = makeHarness()
+    t.manager.reconcile([specOf({ name: 'web-L5432' })])
+    const result = t.manager.setEnabled('nope', false)
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.error).toContain('nope')
+      expect(result.error).toContain('web-L5432') // 现有清单
+    }
+    t.manager.disposeAll()
+  })
+
+  it('停止：写回 enabled:false + 连接 end + 状态 stopped', async () => {
+    const t = makeHarness()
+    const written: TunnelSpec[][] = []
+    t.manager.setPersist((specs) => written.push(specs))
+    const port = await freePort()
+    t.manager.reconcile([specOf({ localPort: port })])
+    await until(() => t.clients.length === 1)
+    t.clients[0].trigger('ready')
+    await until(() => t.status()?.state === 'active')
+
+    const result = t.manager.setEnabled('t1', false)
+    expect(result.ok).toBe(true)
+    expect(t.status()?.enabled).toBe(false)
+    expect(t.status()?.state).toBe('stopped')
+    expect(t.clients[0].ended).toBe(true)
+    // ① 配置被改写（同一条隧道、enabled 翻成 false）
+    expect(written).toHaveLength(1)
+    expect(written[0]).toHaveLength(1)
+    expect(written[0][0]).toMatchObject({ name: 't1', enabled: false })
+    // ② 端口真的还回去了（能重新监听同一个端口）
+    const again = net.createServer()
+    await new Promise<void>((resolve, reject) => {
+      again.once('error', reject)
+      again.listen(port, '127.0.0.1', resolve)
+    })
+    again.close()
+    t.manager.disposeAll()
+  })
+
+  it('启动：写回 enabled:true + 新开一条连接（不是复用旧对象）', async () => {
+    const t = makeHarness()
+    const written: TunnelSpec[][] = []
+    t.manager.setPersist((specs) => written.push(specs))
+    t.manager.reconcile([specOf({ enabled: false })])
+    expect(t.clients).toHaveLength(0)
+    expect(t.status()?.state).toBe('stopped')
+
+    const result = t.manager.setEnabled('t1', true)
+    expect(result.ok).toBe(true)
+    await until(() => t.clients.length === 1)
+    expect(t.status()?.enabled).toBe(true)
+    expect(written.at(-1)?.[0]).toMatchObject({ name: 't1', enabled: true })
+    t.manager.disposeAll()
+  })
+
+  it('已在跑时再次启动不重复拨号（幂等，不打断在途连接）', async () => {
+    const t = makeHarness()
+    t.manager.reconcile([specOf({})])
+    await until(() => t.clients.length === 1)
+    t.clients[0].trigger('ready')
+    await until(() => t.status()?.state === 'active')
+    const before = t.clients[0]
+    const result = t.manager.setEnabled('t1', true)
+    expect(result.ok).toBe(true)
+    expect(t.clients).toHaveLength(1) // 没有新连接
+    expect(before.ended).toBe(false) // 在途连接没被掐
+    t.manager.disposeAll()
+  })
+
+  it('**error 态不算「已在跑」**：tunnel_start 对 fatal 的隧道真的重试（而不是被幂等短路）', async () => {
+    // 连接簿条目先不存在 → fatal error；之后条目出现（模拟用户刚把配置改对）
+    let resolvable: SshHostEntry | undefined
+    const t = makeHarness(() => resolvable)
+    t.manager.reconcile([specOf({ bookName: 'gone' })])
+    await until(() => t.status()?.state === 'error')
+    expect(t.status()?.fatal).toBe(true)
+    expect(t.clients).toHaveLength(0)
+
+    resolvable = BOOK
+    const result = t.manager.setEnabled('t1', true)
+    expect(result.ok).toBe(true)
+    // 真的又拨了一次（幂等短路把它当成「已在跑」的话，这里会是 0）
+    await until(() => t.clients.length === 1)
+    expect(t.status()?.fatal).toBe(false)
+    expect(t.status()?.error).toBeNull()
+    t.manager.disposeAll()
+  })
+
+  it('已在目标状态就不写配置（幂等）：停两次只生效一次，且在跑的连接不被掐', async () => {
+    const t = makeHarness()
+    const written: TunnelSpec[][] = []
+    t.manager.setPersist((specs) => written.push(specs))
+    const port = await freePort()
+    t.manager.reconcile([specOf({ localPort: port })])
+    await until(() => t.clients.length === 1)
+    t.clients[0].trigger('ready')
+    await until(() => t.status()?.state === 'active')
+    const live = t.clients[0]
+
+    const first = t.manager.setEnabled('t1', false)
+    expect(first.ok).toBe(true)
+    expect(written).toHaveLength(1) // 这次真的改了配置
+    // 停完之后**再停一次**：已是目标状态（enabled:false + stopped），不该再写、也不该再动连接
+    const second = t.manager.setEnabled('t1', false)
+    expect(second.ok).toBe(true)
+    expect(written).toHaveLength(1)
+    expect(live.ended).toBe(true) // 第一次停时已 end，第二次没有新的可动
+    t.manager.disposeAll()
+  })
+
+  it('没有注入 persist 回调时也不崩（settings 缺失的降级路径）', async () => {
+    const t = makeHarness()
+    t.manager.reconcile([specOf({})])
+    await until(() => t.clients.length === 1)
+    expect(() => t.manager.setEnabled('t1', false)).not.toThrow()
+    expect(t.status()?.state).toBe('stopped')
+    t.manager.disposeAll()
+  })
+})

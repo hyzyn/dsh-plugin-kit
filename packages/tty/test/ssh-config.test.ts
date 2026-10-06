@@ -97,8 +97,18 @@ Host prod
     expect(firstWins[0].keyPath).toBe('/a')
   })
 
-  it('整行注释与行内「 #」注释截断都生效', () => {
-    const entries = parseSshConfig(['# 整行注释', 'Host h', '  User u # 行内注释', '  HostName h.local # x'].join('\n'))
+  it('HostKeyAlias 照原样导入（0.25.0）；大小写 / 空白 / 缺省都处理对', () => {
+    const entries = parseSshConfig('Host h\n  HostName 10.0.0.5\n  User u\n  HostKeyAlias bastion-box\n')
+    expect(entries[0].hostKeyAlias).toBe('bastion-box')
+    // 键大小写不敏感、值两侧空白剥掉（从 ssh_config 抄过来常带空格）
+    const lower = parseSshConfig('Host h\n  User u\n  hostkeyalias =  bastion-box  \n')
+    expect(lower[0].hostKeyAlias).toBe('bastion-box')
+    // 缺省 / 空值 → 不产出该字段（缺省即「按 host 定位」，与从前逐字一致）
+    expect(parseSshConfig('Host h\n  User u\n')[0].hostKeyAlias).toBeUndefined()
+    expect(parseSshConfig('Host h\n  User u\n  HostKeyAlias   \n')[0].hostKeyAlias).toBeUndefined()
+  })
+
+  it('整行注释与行内「 #」注释截断都生效', () => {    const entries = parseSshConfig(['# 整行注释', 'Host h', '  User u # 行内注释', '  HostName h.local # x'].join('\n'))
     expect(entries[0].username).toBe('u')
     expect(entries[0].host).toBe('h.local')
   })

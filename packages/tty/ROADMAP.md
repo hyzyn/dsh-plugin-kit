@@ -18,36 +18,49 @@
 > **2026-09-20 复核**：7 条中 2 条已被部分做掉（SFTP 双栏、状态条与图元边界，已在原地逐项标注
 > 「已经做掉的 / 仍缺的」），1 条已整条做掉（agent 侧 `tty_open` / `tty_close`，见下方标注），
 > 其余 4 条**截至 2026-09-20**与代码现状一致；其后（D62–D94）未再逐项复核，动手前请自己核一遍。
+> **2026-10-06 复核 + 收口**：又整条做掉 2 项（隧道 agent 侧 start/stop、`HostKeyAlias`）与
+> D60 的第二半（tmux socket / 运行时目录的 profile 维度），SFTP 双栏又补上拖拽上传、隐藏
+> 文件开关与面板下载续传；逐项的「已做 / 仍缺」都在原地标注，落点与门槛见
+> [§ 已完成](#已完成落点--门槛) 的 2026-10-06 一节。
 >
 > **2026-10-04 追加的那条不属于上面 7 项**：它是**已观测到的缺陷**（`windows-smoke` 原生崩溃），
 > 但因为**只观测到 1 次、未定性**，按本仓「先记账、复现够了再动手」的纪律暂不进
 > [DEFECTS.md](./DEFECTS.md) 的索引表（那张表要求 `待修 == 0`，进表就意味着已修）。
 
 - **机器级资源的 profile 维度（D60）** —— 复制 profile 会把固定端口（webserver / 隧道
-  `localPort`）一并拷走，且 tmux socket（`-L dsh-tty`）全 profile 共用。本次只做了
-  「可诊断 + 文档」。**待做**：复制时自动错开/停用隧道端口（或只提示）；保存隧道时探测端口
-  占用；tmux socket 按 profile 命名（`dsh-tty-<profile>`）。*（2026-09-24 新增）*
+  `localPort`）一并拷走，且 tmux socket（`-L dsh-tty`）全 profile 共用。**2026-10-06 部分落地**：
+  tmux socket 与运行时资产目录已按 profile 隔离（见 [§ 已完成](#已完成落点--门槛)）。
+  **仍待做**：复制 profile 时自动错开/停用隧道端口（或只提示）；保存隧道时探测端口占用。
+  *（2026-09-24 新增）*
 - **agent 侧没有 `tty_open` / `tty_close`** —— ✅ **已做（0.20.0）**：`tty_open` 开本地会话
   （可带 `command` / `persistName`），`tty_close` 关自己开的；agent 开的会话是**面板里的普通
   标签**（用户可见可接管），并豁免孤儿回收（理由见 [DEFECTS.md](./DEFECTS.md) §2.2「设计决定：agent 自开终端」）。同时补了
   `tty_stats`（CPU/内存/磁盘/网络/温度）。README「与 bash 工具同权」已订正为「16 个工具 +
   开/关能力，但关不掉用户的标签」。**（2026-10-01：`tty_run` 加入后为 17 个，见本文末尾
   「agent 单会话闭环」一节。）**
-- **隧道没有 agent 侧 start/stop** —— 只有 `tunnel_list`，启停全在设置卡片。*（复核：仍未做）*
+- **隧道没有 agent 侧 start/stop** —— ✅ **已做（0.25.0）**：补 `tunnel_start` / `tunnel_stop`
+  两个工具（共 19 个）。两者**改配置**而不是只改运行态——与卡片上那个勾走同一条路
+  （settings 热应用 → `reconcile`），所以「配置是唯一真相源」这条不变量仍然成立，不会出现
+  「agent 停了、下次改配置又自己回来」。落点与门槛见 [§ 已完成](#已完成落点--门槛)。
 - **SFTP 双栏交互** —— **已经做掉的**：本机栏排序（D32，与远程栏同一套「目录优先 +
-  `localeCompare`」）。**仍缺的**：双栏内的拖拽上传（拖拽只在**单窗体**里有——0.8.0 起，
-  全仓只有一处 `drop` 处理器）、隐藏文件开关、断点续传 / 增量（跳过两侧 size+mtime 相同的文件）。
-  大目录**已有截断渲染兜底**（`RENDER_CAP = 500` + 「其余 N 项未渲染」提示；`sftp_list` 亦有
-  默认 500 的 `maxEntries`），真正的虚拟滚动仍未做。
+  `localeCompare`」）。**2026-10-06 又做掉两项**：双栏内拖拽上传（此前全仓只有**一处**
+  `drop` 处理器，属于单窗体）、隐藏文件开关；面板下载的**断点续传**也接上了（宿主侧
+  `openDownload` 的 `offset` 从 0.19.0 就有，只是路由没接）。**仍缺的**：双栏直传的
+  「跳过两侧 size+mtime 相同的文件」增量（服务端直传那条路仍然整份重传）。大目录**已有截断
+  渲染兜底**（`RENDER_CAP = 500` + 「其余 N 项未渲染」提示；`sftp_list` 亦有默认 500 的
+  `maxEntries`），真正的虚拟滚动仍未做。
 - **状态条与图元边界** —— **已经做掉的**：状态条窄屏布局（D33，改为横向滚动看右侧条目）。
   **仍缺的**：WebGL 上下文丢失后的重试恢复（xterm 自身只回退 DOM，无 `contextlost` 处理）；
   磁盘多挂载点（仍固定取 `/`，Windows 取系统盘）。
-- **`HostKeyAlias` / 别名参与 TOFU 定位**（可搭 D12 的多指纹 schema 一起做）。*（复核：仍未做，
-  全仓无 `HostKeyAlias`）*
+- **`HostKeyAlias` / 别名参与 TOFU 定位** —— ✅ **已做（0.25.0）**：`SshSpec.hostKeyAlias`
+  只改主机密钥**记在哪条记录里**，不改连接地址；`~/.ssh/config` 的 `HostKeyAlias` 照原样
+  导入。四个连接点（终端 / SFTP / 隧道 / 探针）共用 `hostKeyIdentity()` 一个键推导。
+  落点与门槛见 [§ 已完成](#已完成落点--门槛)。
 - **客户端接线进 CI**（D38 遗留，单独立项）—— `preview.mjs` 的 39 个界面场景需要 Chrome：要么加一个
   带浏览器的 CI job，要么继续把 UI 纯逻辑外抽成可单测模块。*（复核：CI 仍未跑 `preview.mjs`；
-  「外抽」这条路已多一个——D49 落地的 `client-src/stats-bar.js` 带 17 条单测，现在这类模块共
-  5 个：`stats-bar` / `status-line` / `dock-owner` / `current-session` / `fit-size`（D79 新增），各有同名测试文件）*
+  「外抽」这条路又多了三个——0.25.0 落地的 `download-resume` / `sftp-view` 带 25 条单测，
+  这类模块现共 8 个：`stats-bar` / `status-line` / `dock-owner` / `current-session` /
+  `fit-size`（D79 新增）/ `download-resume` / `sftp-view` / `tunnel-edit`，各有同名测试文件）*
 
 **2026-09-25 追加**：`allowProxyCommand` 的提权按项目级 ROADMAP 第 5.1 节收口——只认宿主侧
 环境变量 `DSH_TTY_ALLOW_PROXY_COMMAND`（启动时采样一次），HTTP 只能关不能开；未授权时设置卡片
@@ -154,6 +167,75 @@ tty 侧只留三条：
 > 缺陷的症状 / 根因 / 修法仍在 [DEFECTS.md](./DEFECTS.md) 的索引表；逐轮往返的**过程原文**（2026-10-01
 > 按主题重排前那一份）冻结在 git 历史：`git show 2f7dd4f1:packages/tty/ROADMAP.md`。
 > **已发 0.24.0（2026-10-01）**：`lib/`（`tsc -p tsconfig.json`）与 `client.js` 随包入库（预构建产物）。
+
+### 2026-10-06：待办里剩余三条 L1 缺口一次收口（0.25.0）
+
+**动机**：复核 `## 待办` 时确认三条「只差接线 / 能力已有」的缺口仍未做，且都属于
+「改 tty 一个包就能完成」（L1）：
+1. **agent 侧隧道只有 `tunnel_list`**，启停全在设置卡片——诊断闭环「停掉 → 重开 → 看状态」
+   在 agent 侧断了；
+2. **SFTP 双栏**缺拖拽上传与隐藏文件开关，且**面板下载没有断点续传**（宿主 `openDownload`
+   的 `offset` 参数从 0.19.0 就在、agent 的 `sftp_read` 一直在用，只有面板那条路没接）；
+3. **`HostKeyAlias` 全仓无引用**——同一台主机经不同地址触达时每次切换都报「指纹变更」并拒连。
+
+同时把 **D60 的第二半**（tmux socket 全 profile 共用）做掉：它不是新缺陷，是本项复核时
+唯一还能只改 tty 就落地的半条（另半条「复制 profile 时错开隧道端口」要动 Profile 管理，
+仍留在待办里）。
+
+**落点**（全部在 `packages/tty` 内，L1）：
+
+- **agent 隧道启停**：`src/tunnels.ts` 新增 `TunnelManager.setEnabled(name, enabled)` +
+  `setPersist()`；`src/index.ts` 注册 `tunnel_start` / `tunnel_stop`（工具总数 17 → 19）。
+  **关键取舍**：它**改配置**（写回 `settings.tunnels[].enabled`）而不是只改运行态——`tunnels.ts`
+  的一等设计是「settings 即真相源，`reconcile()` 按配置对齐运行态」，再加一层运行态覆盖就会
+  出现「agent 停了、下次随便改个配置又自己回来」。写回走的是与卡片**同一个** settings 通道，
+  所以两条入口结果一致。
+- **SFTP**：`src/index.ts` 的 `/sftp/download` 路由接上 `offset`（>0 → 206 + `content-range`，
+  `content-length` 报**剩余**长度；≥ 文件大小 → 416 并把已开的读流 `destroy()`；非法值 → 400）；
+  `client-src/download-resume.js`（纯模块：`planResume` / `advanceReceived`）承载
+  「要不要续、从哪续」的判定，`client-src/index.js` 的 `downloadWithResume` 用它做自动续传；
+  `client-src/sftp-view.js`（纯模块：`isHiddenName` / `filterEntries` / `planDrop` /
+  `dirsToCreate`）承载双栏的过滤与落点判定，双栏接上拖拽上传（**只有远端栏接**：丢到本机栏
+  等于把文件放到它已经在的地方，明确提示而不是静默）与隐藏文件开关（localStorage 记偏好，
+  不进宿主配置——它是「这次看不看得到」，不是插件行为）。
+- **HostKeyAlias**：`SshSpec.hostKeyAlias` + `hostKeyIdentity()` 单点推导；
+  `applyHostKeyPolicy`（终端 / SFTP / 隧道）与探针的 `makeHostKeyVerifier` **共用同一个键**
+  （否则「试连说匹配、真连说变更」）；`~/.ssh/config` 的 `HostKeyAlias` 照原样导入；
+  settings schema / 两条清洗路径 / 面板融合 / SSH 对话框与设置卡片都补了这一列。
+- **D60 第二半**：`dshProfileSegment()`（`src/shell-integration.ts`）与 `tmuxSocketName()`
+  ——无 `DSH_PROFILE` 时仍是历史的 `dsh-tty`（单 profile 升级零迁移），有 profile 时是
+  `dsh-tty-<profile>`；运行时资产目录同步分层（`<DSH_HOME>/tty/<profile>/`）。**shell 桩里的
+  `tmux capture-pane` 也换成同一个 socket**——它是 pane 内跑的脚本，写死旧 socket 会让
+  `tty_capture{last}` 去连**另一个 profile** 的 server 而永远拿不到快照（假升级成「命令没输出」）。
+
+**门槛**（`pnpm vitest run packages/tty`：49 文件 / 621 条，本轮新增 5 个测试文件、净增 84 条）：
+
+| 判据 | 用例 |
+|---|---|
+| 停真的写回 `enabled:false` + 连接 end + 端口可被重新占用；启动真的新开连接；已在跑时不重复拨号（不打断在途）；**error 态不算「已在跑」**（fatal 的隧道 `tunnel_start` 真的重试）；已在目标状态不重复写配置；无 persist 回调也不崩 | `test/tunnels.test.ts` 的「setEnabled：agent 启停改配置」7 条 |
+| `offset` 透传到 `createReadStream({start})`、200/206、`content-length` 报剩余、`content-range`、越界 416（且读流被 destroy）、非法值 400 | `test/sftp-download-offset.test.ts` 7 条（**真跑路由**） |
+| 续传决策边界：取消一律不续（优先于一切）、零进度不续、预算用尽不续、已收满不续、`total` 为 0/NaN 按未知处理 | `test/sftp-resume.test.ts` 10 条 |
+| 隐藏文件：默认过滤、开关全显、`.`/`..` 不算隐藏、返回新数组、垃圾输入不抛；拖放：只有远端栏 + 真带 `Files` 才接；`dirsToCreate` 父在子前且去重 | `test/sftp-view.test.ts` 15 条 |
+| 别名：只改指纹定位键、缺省逐字不变、**不串味**（不读写未别名那条记录）、文案点明别名、探针与真连共用同一个键推导；配置往返 + 含空白/冒号/非字符串各自 400 | `test/host-key-alias.test.ts` 19 条 |
+| socket / 目录的 profile 维度：无 profile 退历史名、两个 profile 永不撞（含字符集外名字）、`-L` 实参真的带上（spawn / list / kill 三处）、conf 里的 `kill-server` 提示用本 profile 的 socket、shell 桩的 `capture-pane` 也用它 | `test/tmux-profile.test.ts` 11 条 |
+| 新字段穿白名单往返（`hostKeyAlias` 加进既有的 jump / proxyCommand 往返用例） | `test/jump-spec.test.ts` · `test/proxy-command.test.ts` 各 1 条已并入 |
+
+**顺手修掉一条自己写出来的缺陷**：`stubDirs`（shell 桩路径缓存）原先只用 `'zsh'` / `'bash'`
+做 key（D60 之前够用，因为桩路径与 socket 名都不随环境变）。按 profile 分层后**必须同时带
+`DSH_HOME`**——只带 profile 的话，「同一个宿主进程里先按无 profile 落盘、再切到 profile」
+会命中陈旧缓存（桩写到旧目录、spawn 却按新目录找）。这是写测试时当场撞出来的（测试把
+`DSH_HOME` 指来指去），已改 key 为 `<shell>:<DSH_HOME>:<profile 段>`。
+
+**刻意不做的**：
+- **双栏直传的「跳过 size+mtime 相同的文件」增量**（待办原文里有）：那要改服务端直传任务
+  的遍历逻辑（`SftpManager.uploadFromLocal` / `downloadToLocal`），而「跳过什么」需要两侧
+  stat 对账、还要定义 mtime 精度容差（SFTP attrs 是秒）——单独立项，不与本轮续传混在一起；
+- **`git` 层面不动其它包**：`HostKeyAlias` 只落在 tty。docker 的 `SshSpec` 不引用它（docker
+  的目标规格由 `readTtyBooks` 从 tty 连接簿读，本轮没带这一列），若将来要让 docker 也认它，
+  那是 L0（同时改两包）；
+- **别的 profile 的旧 tmux 会话不迁移**：升级后新 socket 是空的，老的（历史 `dsh-tty` 上）
+  会话仍在原 socket 上活着、可用 `tmux -L dsh-tty attach` 手动接回，但插件不再自动接管——
+  自动迁移需要在启动时枚举并 rename，风险大于收益。
 
 ### 2026-10-03：D95 那条回归用例的间歇红——把墙钟断言换成确定性接缝（**产品源码零改动**）
 

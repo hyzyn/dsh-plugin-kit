@@ -1,6 +1,11 @@
 import type { ShellSpawnPlan } from './shell-integration.js';
-/** 专用 tmux socket 名：与用户自己的 tmux server 完全隔离。 */
-export declare const TMUX_SOCKET = "dsh-tty";
+import { tmuxSocketName } from './shell-integration.js';
+/**
+ * 专用 tmux socket 名（`tmux -L <名>`）——**按 profile 区分**，见
+ * `shell-integration.ts` 的 `tmuxSocketName()`（住那边是为了让 shell 桩也能用同一份，
+ * 避免两处各算一遍必然漂）。这里只做转出，方便 tmux 的调用点就近引用。
+ */
+export { tmuxSocketName };
 /** 探测结果：available = tmux 存在；passthrough = 版本 ≥3.3（DCS 信封可转发）。 */
 export interface TmuxProbe {
     available: boolean;
@@ -62,7 +67,12 @@ export declare function buildTmuxSpawnPlan(options: {
     colorTerm: string;
     tmuxName: string;
 }): ShellSpawnPlan;
-/** kill 帧的 tmux 侧收尾：kill-session（不存在/已死同样 resolve，错误吞掉）。 */
+/**
+ * kill 帧的 tmux 侧收尾：kill-session（不存在/已死同样 resolve，错误吞掉）。
+ *
+ * 走 `tmuxExec` 注入缝而不是直连 `execFile`（0.25.0 统一）：否则这条路径在测试里既
+ * 看不见（拿不到实参、无法断言 socket 名）也躲不开（会真的去调机器上的 tmux）。
+ */
 export declare function killTmuxSession(tmuxName: string): Promise<void>;
 /**
  * 专用 socket 上现存的 tmux 会话名（sessions 帧的 tmux 字段）。
@@ -81,4 +91,3 @@ export declare function listTmuxSessions(): Promise<string[] | undefined>;
  * 失败静默吞掉（极端情况下用户敲一次键 tmux 也会重画）。
  */
 export declare function refreshTmuxClient(tmuxName: string): Promise<void>;
-export {};

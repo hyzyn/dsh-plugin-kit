@@ -130,6 +130,14 @@ function ruleOf(spec: TunnelSpec): string {
 
 export class TunnelManager {
   private readonly tunnels = new Map<string, RuntimeTunnel>()
+  /**
+   * 配置回写回调（settings 就绪后由插件注入一次）。
+   *
+   * `setEnabled` 走「翻转 spec.enabled → 写回配置」这条路，所以必须能落盘；回调缺失
+   * （settings 服务不可用的极早期 / 单测）时只改内存里的 spec 与运行态——行为退化成
+   * 「本次进程内生效、重启丢失」，而不是静默什么都不做（返回的 status 一样会反映结果）。
+   */
+  private persist: ((specs: TunnelSpec[]) => void) | null = null
 
   constructor(
     private readonly logger: TunnelLogger,
@@ -188,6 +196,75 @@ export class TunnelManager {
       totalConnections: rt.totalConnections,
       lastForwardError: rt.lastForwardError,
     }))
+  }
+
+  /** 一条隧道的当前状态（不存在返回 undefined）。 */
+  status(name: string): TunnelStatus | undefined {
+    return this.list().find((tunnel) => tunnel.name === name)
+  }
+
+  /**
+   * 启停一条隧道（agent 的 `tunnel_start` / `tunnel_stop`）——**改配置，不只改运行态**。
+   *
+   * 为什么不是「只改运行时开关」：`src/tunnels.ts` 的一等设计是「settings 即真相源，
+   * `reconcile()` 按配置对齐运行态」（见文件头）。再加一层运行态覆盖，就同时存在两个
+   * 真相源，而 `reconcile` 会在下一次 settings 热应用（哪怕只是改了个 Shell 路径）时
+   * **静默把 agent 刚停掉的隧道重新拉起**——这种「停了又自己回来」正是最难查的一类。
+   * 所以这里翻转的就是 `spec.enabled`，与用户在卡片上点那个勾**走同一条路**：
+   * 写入 caller 给的持久化回调 → settings 热应用 → reconcile。结果一致、可预期。
+   *
+   * 返回值是写完配置后的状态快照。**注意 `state` 是异步收敛的**：回来时通常是
+   * `connecting`（拨号还没完成），要拿最终结论就稍后 `tunnel_list`。
+   */
+  setEnabled(name: string, enabled: boolean): { ok: true; status: TunnelStatus } | { ok: false; error: string } {
+    const rt = this.tunnels.get(name)
+    if (rt === undefined) {
+      const known = [...this.tunnels.keys()]
+      return {
+        ok: false,
+        error: `没有名为「${name}」的隧道。${known.length === 0 ? '当前没有任何隧道（在 插件配置 → 终端面板 卡片添加）' : '现有：' + known.join('、')}`,
+      }
+    }
+    /*
+     * 幂等边界：已经处于目标状态就什么都不做。
+     *
+     * `active` / `connecting` 才算「开着」——`error` **不**算：那正是最该重试的情形
+     * （本地监听失败这类 fatal 故障不会自愈，但用户可能刚把配置改对，此时 `tunnel_start`
+     * 就该真的再拨一次）。反过来 `stopped` 才算「关着」。
+     */
+    const running = rt.state === 'active' || rt.state === 'connecting'
+    if ((enabled && rt.spec.enabled && running) || (!enabled && !rt.spec.enabled && rt.state === 'stopped')) {
+      return { ok: true, status: this.status(name) as TunnelStatus }
+    }
+    this.applyEnabled(rt, enabled)
+    const status = this.status(name)
+    /* istanbul ignore next —— 上面刚确认过它在表里；留作类型收窄 */
+    if (status === undefined) return { ok: false, error: `隧道「${name}」状态读取失败` }
+    return { ok: true, status }
+  }
+
+  /** 翻转一条隧道的 enabled 并就地收敛运行态（`setEnabled` 的落点）。 */
+  private applyEnabled(rt: RuntimeTunnel, enabled: boolean): void {
+    rt.spec = { ...rt.spec, enabled }
+    rt.signature = signatureOf(rt.spec)
+    if (enabled) {
+      // fatal 恢复的前置条件是配置被改对；没改配置就重开会在同一条错误上再撞一次，
+      // 但仍允许重开——用户可能刚在卡片上改好、热应用还没到，这里重开就是让它立刻生效
+      if (rt.server !== null || rt.conn !== null) this.stopTunnel(rt)
+      rt.fatal = false
+      rt.error = null
+      this.startTunnel(rt)
+    } else {
+      this.stopTunnel(rt)
+    }
+    // 写回配置（settings 热应用 → reconcile 会按新配置收敛，与卡片上点那个勾同一条路）。
+    // 放在最后：配置写失败（回调抛错）不该让运行态停在一个与配置相反的状态上。
+    this.persist?.([...this.tunnels.values()].map((entry) => entry.spec))
+  }
+
+  /** 持久化回调注入（settings 就绪后一次；`setEnabled` 靠它把意图写回配置）。 */
+  setPersist(persist: (specs: TunnelSpec[]) => void): void {
+    this.persist = persist
   }
 
   disposeAll(): void {

@@ -3,7 +3,46 @@ export interface ShellSpawnPlan {
     argv: string[];
     env: Record<string, string>;
 }
-/** 插件运行时资产根目录（稳定路径；DSH_HOME 优先，与 env 插件同语义）。 */
+/**
+ * 当前 profile 的**路径 / socket 安全段**；未设 profile（不带 profile 启动）时返回空串。
+ *
+ * 为什么需要它（tty D60）：插件有两样东西按**机器**这一层落盘——tmux 专用 socket 与
+ * 运行时资产目录（tmux.conf / inner.sh / shell 桩）。两者都必须**按 profile 各存一份**：
+ * `shellIntegration` 等配置是 per-profile 的，共用一个 `inner.sh` 就是「A 的 pane 用
+ * B 的启动器」；共用 socket 则让会话清单跨 profile 串味、`kill-server` 误杀别人。
+ *
+ * **只在调用时读 `process.env.DSH_PROFILE`**（不在模块加载时快照）：测试里要造两个
+ * profile 各断言一次，模块级快照会让第二组永远读到第一组的值。名字含字符集外字符
+ * （空格 / 斜杠 / 中文…）或超长时退化为「干净前缀 + 6 位摘要」，保证两个不同的
+ * profile **永不**落到同一段。
+ */
+export declare function dshProfileSegment(): string;
+/**
+ * 专用 tmux socket 名，**按 profile 区分**（tty D60 的第二半）。
+ *
+ * 为什么必须是函数而不是常量：socket 是**机器级资源**，而写死的 `-L dsh-tty` 让同一台
+ * 机器上所有 profile 的宿主共用一个 tmux server——两个后果都实测过：
+ *   1. `tty_list` 的持久会话清单**跨 profile 出现**（另一个 profile 的 dev server 会话
+ *      被当成自己的）；
+ *   2. 「改完 tmux 配置要 `kill-server` 才生效」这一步会**一并杀掉另一个 profile 的
+ *      持久会话**。
+ *
+ * 未设 `DSH_PROFILE`（不带 profile 启动的宿主）时退回历史名 `dsh-tty`：单 profile 的
+ * 用户行为与从前**完全一致**，升级也不需要迁移（老会话仍能用老 socket 接回）。设了
+ * profile 时是 `dsh-tty-<profile 段>`。
+ *
+ * 住在 shell-integration 而不是 tmux：**shell 桩里也要用它**（pane 内的
+ * `tmux capture-pane` 必须连本 profile 的 server，否则 `tty_capture{last}` 永远拿不到
+ * 快照），而 tmux.ts 反过来 import 本模块——放这边才不会形成循环依赖。
+ */
+export declare function tmuxSocketName(): string;
+/**
+ * 插件运行时资产根目录（稳定路径；DSH_HOME 优先，与 env 插件同语义）。
+ *
+ * **按 profile 分层**（tty D60）：有 profile 时是 `<DSH_HOME>/tty/<profile>/`，无 profile
+ * 时仍是历史的 `<DSH_HOME>/tty/`——单 profile 用户路径一字不变（老会话的资产仍在原处，
+ * 升级不需要一次性迁移）。内容静态（不含配置），write-if-changed 原子覆盖。
+ */
 export declare function pluginRuntimeDir(): string;
 /**
  * 组装 shell 启动计划：在原有 TERM/COLORTERM 包装层之上，按 shell basename

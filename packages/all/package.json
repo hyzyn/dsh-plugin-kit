@@ -50,7 +50,7 @@
     "@hyzyn/dsh-prompt": "0.2.4",
     "@hyzyn/dsh-rss": "0.4.4",
     "@hyzyn/dsh-search": "0.4.4",
-    "@hyzyn/dsh-tty": "0.24.1"
+    "@hyzyn/dsh-tty": "0.25.0"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.4",

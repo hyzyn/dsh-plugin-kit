@@ -90,6 +90,8 @@ import { applyTunnelEdit, buildTunnelFromDraft as buildTunnelSpec, tunnelNameCla
 import { currentSessionCwd } from './current-session.js'
 import { FALLBACK_COLS, FALLBACK_ROWS, usableFitSize } from './fit-size.js'
 import { countLiveSessions, liveSessionSids } from './session-live.js'
+import { planResume } from './download-resume.js'
+import { dirsToCreate, filterEntries, planDrop } from './sftp-view.js'
 import { eventOwnsStatus, needsStatusResync, statusForTab } from './status-line.js'
 import { formatBytes, formatRate, hasUsableStats, statsFrameFresh, statsItemSpecs, statsItemValues, statsLevel } from './stats-bar.js'
 
@@ -257,6 +259,7 @@ const I18N_ZH = {
   'option.authKey': 'key — 私钥文件',
   'option.authPassword': 'password — 密码',
   'field.keyPath': '私钥路径',
+  'field.hostKeyAlias': '主机密钥别名',
   'field.passphrase': '私钥口令（可空）',
   'field.password': '密码',
   'placeholder.credRef': '或：选择凭据存储里的引用名',
@@ -278,6 +281,8 @@ const I18N_ZH = {
   'hint.noCredRefPassword': '还没有别的连接用过凭据引用 — 勾上面的「保存时存入凭据存储」新建一个，或直接在密码框手输 env:NAME',
   'section.options': '选项',
   'check.agentForward': 'agent forwarding（远程可用本地 ssh-agent 钥匙，如远程 git clone）',
+  'hint.hostKeyAlias': '留空 = 按主机地址记住指纹。同一台主机经不同地址（跳板机后 / 端口转发）触达时，填同一个别名可让它们共用一条主机密钥记录，避免每次切换地址都报「指纹变更」；只影响指纹记在哪，不改连接地址',
+  'placeholder.hostKeyAlias': '留空 = 按主机地址',
   'check.persist': '持久会话（tmux 托管，断线/重启后恢复现场；远程需安装 tmux）',
   'check.saveToBook': '保存到连接簿（同名覆盖）',
   'field.bookName': '连接簿名称',
@@ -302,6 +307,8 @@ const I18N_ZH = {
   'placeholder.remotePath': '远程路径（回车跳转）',
   'btn.refresh': '刷新',
   'btn.mkdir': '新建目录',
+  'btn.hiddenFiles': '隐藏文件',
+  'btn.hiddenFilesTitle': '显示 / 隐藏以 . 开头的文件（.env、.gitignore 等）',
   'error.dirNotReady': '目录尚未定位完成',
   'meta.dir': '目录',
   'btn.transferTo': '传输到{target}：{path}',
@@ -321,6 +328,8 @@ const I18N_ZH = {
   'msg.deleted': '已删除 {name}',
   'list.parentDir': '..（上级目录）',
   'list.emptyDir': '（空目录）',
+  'list.hiddenOnly': '（这里只有隐藏文件 — 点栏上的「隐藏文件」显示）',
+  'error.dropOnLocalPane': '拖到本机栏没有可执行的动作：本机文件要传到对面，请拖到右侧「远程」栏',
   'list.truncated': '…其余 {rest} 项未渲染（共 {total} 项）——用上方路径框跳转到子目录定位',
   'list.itemCount': '{count} 项',
   'placeholder.newDirName': '新目录名（相对当前目录）',
@@ -329,6 +338,7 @@ const I18N_ZH = {
   'btn.confirm': '确认?',
   'btn.cancelTransfer': '取消传输',
   'msg.downloadCanceled': '已取消下载 {name}',
+  'msg.downloadResuming': '连接中断，从 {offset} 处续传 {name}…',
   'error.downloadFailed': '下载失败',
   'msg.downloaded': '已下载 {name}（{size}）',
   'error.downloadTooBig': '文件超过下载上限（{size}）：请用双栏 ⇦ 直传或终端 scp/rsync',
@@ -669,6 +679,7 @@ const I18N_EN = {
   'option.authKey': 'key — private key file',
   'option.authPassword': 'password — password',
   'field.keyPath': 'Private key path',
+  'field.hostKeyAlias': 'Host key alias',
   'field.passphrase': 'Key passphrase (optional)',
   'field.password': 'Password',
   'placeholder.credRef': 'Or: pick a reference name from the credential store',
@@ -690,6 +701,8 @@ const I18N_EN = {
   'hint.noCredRefPassword': 'No other connection uses a credential reference yet — check “Store in the credential store on save” above to create one, or type env:NAME straight into the password box',
   'section.options': 'Options',
   'check.agentForward': 'agent forwarding (the remote side can use local ssh-agent keys, e.g. remote git clone)',
+  'hint.hostKeyAlias': 'Empty = pin the fingerprint by host address. When one host is reached through different addresses (behind a bastion / via port forwarding), give them the same alias so they share one host-key record instead of reporting a fingerprint change on every switch; it only decides where the fingerprint is stored, never the connection address',
+  'placeholder.hostKeyAlias': 'Empty = by host address',
   'check.persist': 'Persistent session (hosted by tmux, survives a disconnect/restart; tmux must be installed on the remote)',
   'check.saveToBook': 'Save to the host book (overwrite the same name)',
   'field.bookName': 'Host book name',
@@ -714,6 +727,8 @@ const I18N_EN = {
   'placeholder.remotePath': 'Remote path (Enter to go)',
   'btn.refresh': 'Refresh',
   'btn.mkdir': 'New folder',
+  'btn.hiddenFiles': 'Hidden files',
+  'btn.hiddenFilesTitle': 'Show / hide dot-files (.env, .gitignore, …)',
   'error.dirNotReady': 'The directory is not resolved yet',
   'meta.dir': 'folder',
   'btn.transferTo': 'Transfer to {target}: {path}',
@@ -733,6 +748,8 @@ const I18N_EN = {
   'msg.deleted': 'Deleted {name}',
   'list.parentDir': '.. (parent folder)',
   'list.emptyDir': '(empty folder)',
+  'list.hiddenOnly': '(only hidden files here — click “Hidden files” on the pane header to show them)',
+  'error.dropOnLocalPane': 'Dropping onto the local pane has no action: to send local files to the other side, drop them on the right-hand “Remote” pane',
   'list.truncated': '…{rest} more not rendered ({total} total) — use the path box above to jump to a subfolder',
   'list.itemCount': '{count} items',
   'placeholder.newDirName': 'New folder name (relative to the current folder)',
@@ -741,6 +758,7 @@ const I18N_EN = {
   'btn.confirm': 'Confirm?',
   'btn.cancelTransfer': 'Cancel transfer',
   'msg.downloadCanceled': 'Download canceled: {name}',
+  'msg.downloadResuming': 'Connection dropped — resuming {name} from {offset}…',
   'error.downloadFailed': 'Download failed',
   'msg.downloaded': 'Downloaded {name} ({size})',
   'error.downloadTooBig': 'The file exceeds the download limit ({size}); use dual-pane ⇦ direct transfer or scp/rsync in the terminal',
@@ -3214,6 +3232,44 @@ let sftpStyleCache = 'dialog'
 let persistenceCache = 'off'
 /** SFTP 传输限制缓存（0 = 不限）：跟随 config 快照，浏览器侧执行。 */
 let sftpLimitsCache = { maxDownloadMb: 1024, maxUploadMb: 2048, maxUploadFiles: 1000 }
+/**
+ * SFTP 列表是否显示隐藏文件（`.` 开头）：**只用 localStorage 记，不进宿主配置**
+ * （0.25.0）。理由与 sftpStyle 不同：这是「这次看不看得到」，不是插件行为配置；
+ * 塞进配置会让每个窗口的临时切换都变成一次 settings 写入。跨窗口共享才有意义，
+ * 所以走 localStorage 而不是 sessionStorage。
+ */
+const HIDDEN_KEY = 'dsh-tty:show-hidden'
+let showHiddenCache = (() => {
+  try {
+    return localStorage.getItem(HIDDEN_KEY) === '1'
+  } catch {
+    return false
+  }
+})()
+
+/** 切换「显示隐藏文件」并广播给已打开的双栏（两栏同步，状态行立即反映）。 */
+function setShowHidden(next) {
+  showHiddenCache = next === true
+  try {
+    localStorage.setItem(HIDDEN_KEY, showHiddenCache ? '1' : '0')
+  } catch {
+    /* 隐私模式 / 配额满：内存态照常生效 */
+  }
+  for (const listener of showHiddenListeners) {
+    try {
+      listener(showHiddenCache)
+    } catch {
+      /* 单个面板出错不影响其它 */
+    }
+  }
+}
+/** 已打开的双栏面板的刷新回调（关闭时移除）。 */
+const showHiddenListeners = new Set()
+/**
+ * 双栏面板的收尾钩子（`openSftpDual` 挂，`closeSftpDialog` 调）：摘掉那些登记在
+ * 模块级集合上的监听。单窗体不需要它——它的状态全在闭包里。
+ */
+let sftpDualCleanup = null
 /** 宿主并发会话上限与最近一次查询的存活会话数（新增标签的前置校验用）。 */
 let maxSessionsCache = null
 /**
@@ -4598,6 +4654,16 @@ function openSshDialog(entry) {
   fwdRow.appendChild(fwdLabel)
   card.appendChild(fwdRow)
 
+  /*
+   * HostKeyAlias（0.25.0）：只改主机指纹**记在哪条记录里**，不改连接地址。放在「选项」段
+   * ——它是排查 TOFU 假告警（同一台机经不同地址触达）时才想起来改的字段。
+   */
+  card.appendChild(fieldRow('hostKeyAlias', t('field.hostKeyAlias'), { placeholder: t('placeholder.hostKeyAlias') }))
+  const aliasHint = document.createElement('span')
+  aliasHint.className = 'tt_cardHint'
+  aliasHint.textContent = t('hint.hostKeyAlias')
+  card.appendChild(aliasHint)
+
   // 持久会话（0.10.0，宿主 persistence=tmux 时显示）：远程 tmux 托管，断线/
   // 宿主重启后重开即恢复；随连接簿条目保存
   const persistRow = document.createElement('label')
@@ -4662,6 +4728,7 @@ function openSshDialog(entry) {
       }
     }
     fwdCheck.checked = editing.agentForward === true
+    fields.hostKeyAlias.value = String(editing.hostKeyAlias ?? '')
     // 代理命令回填（原样字符串：它本来就是一条命令行，不做简写解析）
     fields.proxyCommand.value = String(editing.proxyCommand ?? '')
     syncProxyGate()
@@ -4683,6 +4750,12 @@ function openSshDialog(entry) {
   statusEl.appendChild(probeEl)
   card.appendChild(statusEl)
   syncJumpRows()
+
+  /**
+   * HostKeyAlias（0.25.0）：空串 = 不给这个字段（宿主侧「没写」= 按 host 定位）。
+   * 与跳板机 / 代理命令同一套「留空即不写」的写法，避免把空串当成一次显式的清空。
+   */
+  const collectHostKeyAlias = () => fields.hostKeyAlias.value.trim()
 
   /** 从当前对话框字段收集 probe spec（不含 name/persist）；字段不齐返回 null 并提示。 */
   const collectProbeSpec = () => {
@@ -4720,6 +4793,8 @@ function openSshDialog(entry) {
       spec.password = password
     }
     if (fwdCheck.checked) spec.agentForward = true
+    const alias = collectHostKeyAlias()
+    if (alias !== '') spec.hostKeyAlias = alias
     return spec
   }
 
@@ -4782,6 +4857,8 @@ function openSshDialog(entry) {
       spec.password = password
     }
     if (fwdCheck.checked) spec.agentForward = true
+    const alias = collectHostKeyAlias()
+    if (alias !== '') spec.hostKeyAlias = alias
     closeSshDialog()
     // 连接对话框里填的临时规格：同样归属当前活动标签（规则统一，见「+」菜单那条）
     openSftpBrowser(spec)
@@ -4815,6 +4892,7 @@ function openSshDialog(entry) {
         passphrase: fields.passphrase.value,
         password: fields.password.value,
         agentForward: fwdCheck.checked,
+        hostKeyAlias: collectHostKeyAlias(),
         persist: persistCheck.checked,
       }
       // 跳板机：留空就不写这个字段（宿主侧的「没写」= 直连／继承，空对象反而会走清洗）
@@ -4931,6 +5009,8 @@ function openSshDialog(entry) {
       if (password !== '') spec.password = password
     }
     if (fwdCheck.checked) spec.agentForward = true
+    const alias = collectHostKeyAlias()
+    if (alias !== '') spec.hostKeyAlias = alias
     if (persistCheck.checked) {
       spec.persist = true
       spec.persistName = newPersistName()
@@ -4967,6 +5047,7 @@ function openSshDialog(entry) {
         passphrase: spec.passphrase ?? '',
         password,
         agentForward: fwdCheck.checked,
+        hostKeyAlias: collectHostKeyAlias(),
         persist: persistCheck.checked,
         // 同上：存进连接簿的那一份也要带跳板机 / 代理命令，否则「连接这次成功、下次直连」
         ...(jump !== undefined ? { jump } : {}),
@@ -5106,6 +5187,18 @@ function openSftpDual(spec, label, ownerKey) {
   const panes = {}
 
   /**
+   * 目录 + 名字拼路径（0.19.0 的守卫照旧适用）：**base 为空时抛错**，别拼出 `/name`
+   * ——空 base 发给宿主会被按相对路径 / 宿主进程 cwd 解析。
+   *
+   * 与 `buildPane` 里那个同名局部函数是同一份规则，但它只活在那一栏的闭包里，而
+   * `uploadInto`（拖拽上传）在两栏之上，够不到。
+   */
+  const joinChild = (dir, name) => {
+    if (dir === undefined || dir === '') throw new Error(t('error.dirNotReady'))
+    return dir.endsWith('/') || dir.endsWith('\\') ? dir + name : dir + '/' + name
+  }
+
+  /**
    * 构建一侧栏。api 按 kind 分发：remote → /api/dsh-tty/sftp/*（带 spec），
    * local → /api/dsh-tty/local-fs/*。返回 loadDir / renderRows / 传输入口。
    */
@@ -5141,9 +5234,21 @@ function openSftpDual(spec, label, ownerKey) {
     mkdirBtn.type = 'button'
     mkdirBtn.className = 'tt_toolBtn'
         mkdirBtn.innerHTML = ICON_MKDIR + '<span>' + t('btn.mkdir') + '</span>'
+    /*
+     * 隐藏文件开关（0.25.0）：默认关（与单窗体、与多数文件管理器一致），但必须能打开
+     * ——`.env` / `.gitignore` 这类文件在配置工作里是主角，而 SFTP list 照实返回它们。
+     * 过滤在**渲染层**（宿主与 agent 的 sftp_list 都照实给全部条目，见 sftp-view.js）。
+     */
+    const hiddenBtn = document.createElement('button')
+    hiddenBtn.type = 'button'
+    hiddenBtn.className = 'tt_toolBtn tt_toolToggle'
+    hiddenBtn.textContent = t('btn.hiddenFiles')
+    hiddenBtn.title = t('btn.hiddenFilesTitle')
+    if (showHiddenCache) hiddenBtn.dataset.on = ''
     bar.appendChild(pathInput)
     bar.appendChild(refreshBtn)
     bar.appendChild(mkdirBtn)
+    bar.appendChild(hiddenBtn)
     wrap.appendChild(bar)
 
     const list = document.createElement('div')
@@ -5288,11 +5393,16 @@ function openSftpDual(spec, label, ownerKey) {
         })
         list.appendChild(up)
       }
-      const rows = Array.isArray(entries) ? entries : []
+      /*
+       * 隐藏文件过滤在**渲染层**（0.25.0）：宿主 list 与 agent 的 sftp_list 照实返回
+       * 全部条目——「看不看得到」是界面选择，不是数据缺失。`pane.rawEntries` 留着
+       * 原始列表，切换开关时不必重新请求目录。
+       */
+      const rows = filterEntries(entries, showHiddenCache)
       if (rows.length === 0) {
         const empty = document.createElement('div')
         empty.className = 'tt_addMenuTitle'
-                empty.textContent = t('list.emptyDir')
+                empty.textContent = entries.length > 0 ? t('list.hiddenOnly') : t('list.emptyDir')
         list.appendChild(empty)
         return
       }
@@ -5316,9 +5426,11 @@ function openSftpDual(spec, label, ownerKey) {
         const data = await api('list', { path: pathArg ?? pane.path })
         pane.path = typeof data.path === 'string' && data.path !== '' ? data.path : pane.path
         pathInput.value = pane.path
-        const count = Array.isArray(data.entries) ? data.entries.length : 0
-        renderRows(data.entries)
-                headMeta.textContent = t('list.itemCount', { count })
+        const all = Array.isArray(data.entries) ? data.entries : []
+        pane.rawEntries = all
+        renderRows(all)
+        // 条目数报**实际可见**的数（隐藏项关着时不把它算进去，否则数字与行数对不上）
+        headMeta.textContent = t('list.itemCount', { count: filterEntries(all, showHiddenCache).length })
         setDialogStatus(pane.path)
       } catch (error) {
         setDialogStatus(String(error && error.message ? error.message : error), 'error')
@@ -5327,6 +5439,26 @@ function openSftpDual(spec, label, ownerKey) {
     pane.runTask = runTask
     pane.setBusy = setBusy
     panes[kind] = pane
+
+    /*
+     * 隐藏文件开关（0.25.0）：只重渲染，不重新请求目录——`pane.rawEntries` 就是全部条目，
+     * 「看不看得到」是渲染层的事（宿主与 agent 的工具照实给全部，见 sftp-view.js）。
+     */
+    hiddenBtn.addEventListener('click', () => {
+      setShowHidden(!showHiddenCache)
+    })
+    const onShowHidden = (next) => {
+      if (hiddenBtn !== null) {
+        if (next) hiddenBtn.dataset.on = ''
+        else delete hiddenBtn.dataset.on
+      }
+      pane.rawEntries = pane.rawEntries ?? []
+      // renderRows 自己会清空列表再重建（含「上一级」行），所以这里直接重画即可
+      renderRows(pane.rawEntries)
+      headMeta.textContent = t('list.itemCount', { count: filterEntries(pane.rawEntries, next).length })
+    }
+    showHiddenListeners.add(onShowHidden)
+    pane.onShowHidden = onShowHidden
 
     refreshBtn.addEventListener('click', () => {
             void pane.runTask(t('list.loading'), () => pane.loadDir(pane.path))
@@ -5461,18 +5593,18 @@ function openSftpDual(spec, label, ownerKey) {
     row.appendChild(act)
   }
 
-  /** 远程文件浏览器下载（双栏里保留；整传用 ⇦ 走服务端直传）。 */
+  /** 远程文件浏览器下载（双栏里保留；整传用 ⇦ 走服务端直传）。断线自动从已收字节续传（0.25.0）。 */
     const downloadRemoteEntry = (entry, full) => panes.remote.runTask(t('msg.downloading', { name: entry.name }), async () => {
     progress.reset()
     let blob
     try {
-      blob = await fetchBlobWithProgress('/api/dsh-tty/sftp/download', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ ...spec, path: full }),
-      }, (loaded, total) => {
-        progress.set(loaded, total)
-      }, sftpLimitsCache.maxDownloadMb, (cancel) => progress.setCancel(cancel))
+      blob = await downloadWithResume({
+        makeBody: (offset) => ({ ...spec, path: full, ...(offset > 0 ? { offset } : {}) }),
+        onProgress: (loaded, total) => progress.set(loaded, total),
+        maxMb: sftpLimitsCache.maxDownloadMb,
+        registerCancel: (cancel) => progress.setCancel(cancel),
+        onResume: (offset) => setDialogStatus(t('msg.downloadResuming', { name: entry.name, offset: formatBytes(offset) || String(offset) + ' B' }), 'busy'),
+      })
     } catch (error) {
       if (isCanceled(error)) {
         progress.reset()
@@ -5557,12 +5689,158 @@ function openSftpDual(spec, label, ownerKey) {
     }
   }
 
+  /**
+   * 拖拽上传（0.25.0）：**只有远端栏**接（丢到本机栏等于把文件放到它已经在的地方）。
+   * 此前全仓只有一处 drop 处理器（单窗体），双栏里拖文件没有任何反应——用户看到的是
+   * 「拖进去了但什么都没发生」。
+   *
+   * 两段判据刻意分开：
+   *   - `dragenter` / `dragover` 只看**有没有携带文件**（`types` 一直可读，而 `files`
+   *     出于安全只在 `drop` 那一刻才填好）——所以这两处**不调 `planDrop`**（它在
+   *     dragenter 阶段必然报 `empty`，拿它做高亮判据只会让高亮永不出现）；
+   *   - `drop` 时 `files` 已就绪，才走 `planDrop` 做完整判定（落点 / 类型 / 空）。
+   *
+   * `dragDepth` 计数器防子元素间移动时的 enter/leave 抖动（按栏各一个，两栏互不干扰）。
+   */
+  const setDragActive = (pane, active) => {
+    if (active) pane.wrap.dataset.drag = ''
+    else delete pane.wrap.dataset.drag
+  }
+  /** 这次拖动带没带文件（`drop` 之前的唯一可靠判据）。 */
+  const carriesFiles = (dataTransfer) => Array.isArray(dataTransfer?.types) && dataTransfer.types.includes('Files')
+
+  for (const pane of [panes.local, panes.remote]) {
+    const el = pane.wrap
+    let depth = 0
+    el.addEventListener('dragenter', (event) => {
+      if (pane.kind !== 'remote' || !carriesFiles(event.dataTransfer)) return
+      event.preventDefault()
+      depth += 1
+      setDragActive(pane, true)
+    })
+    el.addEventListener('dragover', (event) => {
+      // 必须 preventDefault，否则浏览器不会派发 drop
+      if (pane.kind !== 'remote') return
+      event.preventDefault()
+      if (event.dataTransfer !== null) event.dataTransfer.dropEffect = 'copy'
+    })
+    el.addEventListener('dragleave', () => {
+      depth = Math.max(0, depth - 1)
+      if (depth === 0) setDragActive(pane, false)
+    })
+    el.addEventListener('drop', (event) => {
+      depth = 0
+      setDragActive(pane, false)
+      const plan = planDrop(pane.kind, event.dataTransfer)
+      if (!plan.accept) {
+        // 丢到本机栏：明确说一句，别让用户以为「拖成功了但没反应」
+        if (plan.reason === 'wrongPane') {
+          event.preventDefault()
+          setDialogStatus(t('error.dropOnLocalPane'), 'error')
+        }
+        return
+      }
+      event.preventDefault()
+      if (jointBusy || panes.remote.busy) return
+      void collectDroppedFiles(event.dataTransfer).then((items) => {
+        if (items.length > 0 || items._limitExceeded === true) void uploadInto(panes.remote, items)
+      })
+    })
+  }
+
+  /**
+   * 把一批拖进来的文件/文件夹传到**远程栏的当前目录**（0.25.0）。
+   *
+   * 与单窗体的 `uploadFiles` 同源（同一套限制、同一套 XHR 单传、同一个 ✕ 取消语义），
+   * 差别只有两处：目标是固定的一侧（remote），进度落在**双栏共用的那条**进度条上。
+   * 抽在这里而不是改 `uploadFiles`：单窗体那条闭包绑着它自己的 `state` / `spec` / DOM，
+   * 强行共用会把两套状态缠在一起；真正共享的是 `uploadItem` 这一层（XHR 与取消）。
+   */
+  const uploadInto = async (pane, items) => {
+    const limits = sftpLimitsCache
+    if (limits.maxUploadFiles > 0 && items.length > limits.maxUploadFiles) {
+      setDialogStatus(t('error.uploadCountExceeded', { max: limits.maxUploadFiles, count: items.length }), 'error')
+      return
+    }
+    const maxBytes = limits.maxUploadMb > 0 ? limits.maxUploadMb * 1024 * 1024 : 0
+    const tooBig = items.find((item) => maxBytes > 0 && (item.file?.size ?? 0) > maxBytes)
+    if (tooBig !== undefined) {
+      setDialogStatus(t('error.uploadTooBig', { size: formatBytes(maxBytes), name: String(tooBig.relPath ?? '') }), 'error')
+      return
+    }
+    if (items._limitExceeded === true) {
+      setDialogStatus(t('error.uploadTotalTooBig'), 'error')
+      return
+    }
+    await runJoint(t('msg.uploading'), async () => {
+      // 先按 relPath 补齐远程父目录（文件夹拖入时必需），父目录已存在不算失败
+      if (pane.path === '') {
+        setDialogStatus(t('error.transferDirsNotReady'), 'error')
+        return
+      }
+      for (const dir of dirsToCreate(items)) {
+        await fetch('/api/dsh-tty/sftp/mkdir', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ ...spec, path: joinChild(pane.path, dir), parents: true }),
+        }).catch(() => {})
+      }
+      progress.reset()
+      const cancelRef = { stopped: false, abort: null }
+      progress.setCancel(() => cancelRef.abort?.())
+      let uploaded = 0
+      try {
+        let index = 0
+        for (const item of items) {
+          if (cancelRef.stopped) break
+          index += 1
+          cancelRef.abort = null
+          try {
+            await uploadItem(item.file, joinChild(pane.path, item.relPath), {
+              spec,
+              label: `${String(index)}/${String(items.length)} ${item.relPath}`,
+              cancelRef,
+              onProgress: (loaded, total) => (Number.isFinite(total) && total > 0 ? progress.set(loaded, total) : progress.pulse(loaded)),
+              onLabel: (name) => setDialogStatus(t('msg.uploadingName', { name }), 'busy'),
+            })
+            uploaded += 1
+          } catch (error) {
+            if (isCanceled(error) || cancelRef.stopped) break
+            throw error
+          }
+        }
+      } finally {
+        progress.setCancel(null)
+      }
+      if (cancelRef.stopped) {
+        progress.reset()
+        setDialogStatus(t('msg.uploadCanceled', { done: uploaded, total: items.length }))
+      } else {
+        progress.done(t('status.allDone'))
+        setTimeout(() => progress.reset(), 1500)
+        setDialogStatus(t('msg.uploadDoneCount', { count: items.length }))
+      }
+      await pane.loadDir(pane.path)
+    })
+  }
+
   // 双栏两栏并排，给足高度（面板卡片高度的 56%，还能自己拖高）
   const cardRect = panelCardRect()
   const dualSize = cardRect === null ? 420 : Math.round(cardRect.height * 0.56)
-    mountSftpSurface(card, t('panel.sftpDual', { label }), dualSize, owner)
+  mountSftpSurface(card, t('panel.sftpDual', { label }), dualSize, owner)
   void panes.local.loadDir('')
   void panes.remote.loadDir('')
+  /*
+   * 面板的清理入口：把两栏登记的「切换隐藏文件」监听摘掉。监听集合是模块级的
+   * （跨面板共享同一个开关），不摘就只增不减——每开关一次面板都多一枚对已销毁 DOM
+   * 的回调。挂在 `sftpDualCleanup` 上由 closeSftpDialog 调（与 cancelActiveTransfer
+   * 同一处收尾点：那是「这个面板没了」的唯一入口）。
+   */
+  sftpDualCleanup = () => {
+    for (const pane of [panes.local, panes.remote]) {
+      if (pane !== undefined && typeof pane.onShowHidden === 'function') showHiddenListeners.delete(pane.onShowHidden)
+    }
+  }
 }
 
 /* ============================ SFTP 文件浏览 ============================ */
@@ -5651,6 +5929,81 @@ function b64uEncode(text) {
   let bin = ''
   for (const byte of bytes) bin += String.fromCharCode(byte)
   return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+}
+
+/**
+ * 单个文件上传（XHR 流式 + 进度 + 可取消）——**单窗体与双栏共用的一份**（0.25.0）。
+ *
+ * 为什么抽到模块顶层：单窗体的 `uploadFiles` 与双栏的 `uploadInto` 都需要它，而这两处
+ * 各自闭包里的另外两个东西（目标目录、状态行）本来就是各自的。此前这段 XHR 逻辑只活在
+ * 单窗体闭包里，双栏想上传就得抄一份——抄一份就是「两套取消语义必然漂」的开始。
+ *
+ * `cancelRef` 由批次共享：点 ✕ 时调 `abort()`——XHR 断开 → 宿主 req 关闭 → 打断 pipeline
+ * 并删除远端半截分片；剩余未发的文件随即被批次循环跳过（`stopped`）。
+ *
+ * 返回的 Promise 只区分「成功 / 取消 / 真失败」三种，不碰任何 DOM（进度回调已在上层包好）。
+ *
+ * @param {File} file
+ * @param {string} remotePath - 目标绝对路径（含文件名）
+ * @param {{spec: object, label?: string, cancelRef: object, onProgress: (loaded: number, total: number) => void, onLabel?: (label: string) => void, onDone?: () => void}} options
+ */
+function uploadItem(file, remotePath, options) {
+  const { spec, label = '', cancelRef, onProgress, onLabel, onDone } = options
+  if (label !== '' && typeof onLabel === 'function') {
+    // 文件名/序号归状态行（进度条只显示百分比，两者不重复）
+    onLabel(label)
+  }
+  return new Promise((resolve, reject) => {
+    const meta = b64uEncode(JSON.stringify({ ...spec, path: remotePath }))
+    const xhr = new XMLHttpRequest()
+    cancelRef.abort = () => {
+      cancelRef.stopped = true
+      xhr.abort()
+    }
+    xhr.open('POST', '/api/dsh-tty/sftp/upload')
+    xhr.setRequestHeader('x-dsh-sftp-meta', meta)
+    xhr.upload.addEventListener('progress', (event) => {
+      if (event.lengthComputable) onProgress(event.loaded, event.total)
+      else onProgress(0, NaN)
+    })
+    // abort 与 error 会成对到达（各浏览器顺序不一）：共用一条「只兑现一次」
+    // 的收尾逻辑，stopped 标记决定它是取消还是真失败
+    let settled = false
+    const finish = (error) => {
+      if (settled) return
+      settled = true
+      if (error === null) resolve()
+      else reject(error)
+    }
+    xhr.addEventListener('load', () => {
+      if (xhr.status === 200) {
+        onDone?.()
+        finish(null)
+        return
+      }
+      if (cancelRef.stopped) return
+      let message = 'HTTP ' + xhr.status
+      try {
+        const data = JSON.parse(xhr.responseText)
+        if (data !== null && typeof data === 'object' && typeof data.error === 'string') message = data.error
+      } catch {
+        /* 保底 HTTP 状态码 */
+      }
+      finish(new Error(message))
+    })
+    xhr.addEventListener('error', () => {
+      if (cancelRef.stopped) {
+        finish(new TransferCanceledError())
+        return
+      }
+      finish(new Error(t('error.networkError')))
+    })
+    // 用户点 ✕ 中断：XHR 以 abort 事件收尾，转成语义明确的信号
+    xhr.addEventListener('abort', () => {
+      finish(new TransferCanceledError())
+    })
+    xhr.send(file)
+  })
 }
 
 /* formatBytes / formatRate 见 client-src/stats-bar.js（状态条与 SFTP 共用同一份实现；
@@ -5880,8 +6233,21 @@ function makeProgressBar() {
  * registerCancel 传入回调登记函数：登记到的动作由调用方（进度条 ✕）触发，
  * 触发即 cancel 掉在途流——服务端 `res.on('close')` 随之回收 SFTP 读流。
  */
-async function fetchBlobWithProgress(url, init, onProgress, maxMb = 0, registerCancel = null) {
+/**
+ * 一次**单程**下载（不分段）：POST 拿字节流，边读边报进度。
+ *
+ * `offset` 是本次请求在文件里的起点（宿主侧 `/sftp/download` 的 `body.offset` 已由调用方
+ * 放进 `init.body`）；它只影响**进度与上限的口径**，不在这里改请求体：
+ *   - 进度报的是「整个文件的已收字节」（`offset + 本段已收`），否则续传时进度条会从 0 跳；
+ *   - 上限 `maxMb` 同样是**整个文件**的上限，不是单段的上限；
+ *   - 总量优先从 `content-range` 的 `/total` 取（206 时 content-length 只是本段长度）。
+ *
+ * 失败时把 `received` / `total` **挂在错误上**带出去：续传的决策（`planResume`）需要它们，
+ * 而这两个数只有读到数据的这一层才知道。
+ */
+async function fetchBlobWithProgress(url, init, onProgress, maxMb = 0, registerCancel = null, offset = 0) {
   const maxBytes = maxMb > 0 ? maxMb * 1024 * 1024 : 0
+  const base = Number.isFinite(offset) && offset > 0 ? offset : 0
   const controller = typeof AbortController === 'function' ? new AbortController() : null
   let canceled = false
   if (controller !== null) {
@@ -5893,41 +6259,48 @@ async function fetchBlobWithProgress(url, init, onProgress, maxMb = 0, registerC
       })
     }
   }
-  const res = await fetch(url, init)
-  if (!res.ok) {
-    let message = 'HTTP ' + res.status
-    try {
-      const data = await res.json()
-      if (data !== null && typeof data === 'object' && typeof data.error === 'string') message = data.error
-    } catch {
-      /* 保底状态码 */
+  /** 已收字节 / 总量：失败时挂到 error 上（续传要靠它） */
+  let received = base
+  let knownTotal = null
+  let res
+  try {
+    res = await fetch(url, init)
+    if (!res.ok) {
+      let message = 'HTTP ' + res.status
+      try {
+        const data = await res.json()
+        if (data !== null && typeof data === 'object' && typeof data.error === 'string') message = data.error
+      } catch {
+        /* 保底状态码 */
+      }
+      throw new Error(message)
     }
-    throw new Error(message)
-  }
-  const total = Number(res.headers.get('content-length'))
-  const totalFinite = Number.isFinite(total) && total > 0
-  if (maxBytes > 0 && totalFinite && total > maxBytes) {
-    try {
-      await res.body?.cancel()
-    } catch {
-      /* 已取消 */
+    // 206 时 content-length 只是本段；文件总量在 content-range 的 `/total`
+    const totalHeader = Number(res.headers.get('content-length'))
+    const range = res.headers.get('content-range') ?? ''
+    const rangeTotal = Number(/\/(\d+)\s*$/.exec(range)?.[1])
+    if (Number.isFinite(rangeTotal) && rangeTotal > 0) knownTotal = rangeTotal
+    else if (Number.isFinite(totalHeader) && totalHeader > 0) knownTotal = base + totalHeader
+    const body = res.body
+    if (body === null || typeof body.getReader !== 'function') {
+      // 极老浏览器无流式 body：退回一次性 blob（无进度）
+      const blob = await res.blob()
+      if (maxBytes > 0 && base + blob.size > maxBytes) {
+        throw new Error(t('error.downloadTooBig', { size: formatBytes(maxBytes) }))
+      }
+      if (knownTotal !== null) onProgress(knownTotal, knownTotal)
+      return blob
     }
-    throw new Error(t('error.downloadTooBig', { size: formatBytes(maxBytes) }))
-  }
-  const body = res.body
-  if (body === null || typeof body.getReader !== 'function') {
-    // 极老浏览器无流式 body：退回一次性 blob（无进度）
-    const blob = await res.blob()
-    if (maxBytes > 0 && blob.size > maxBytes) {
+    if (maxBytes > 0 && knownTotal !== null && knownTotal > maxBytes) {
+      try {
+        await body.cancel()
+      } catch {
+        /* 已取消 */
+      }
       throw new Error(t('error.downloadTooBig', { size: formatBytes(maxBytes) }))
     }
-    if (totalFinite) onProgress(total, total)
-    return blob
-  }
-  const reader = body.getReader()
-  const chunks = []
-  let received = 0
-  try {
+    const reader = body.getReader()
+    const chunks = []
     for (;;) {
       const { done, value } = await reader.read()
       if (done) break
@@ -5942,22 +6315,54 @@ async function fetchBlobWithProgress(url, init, onProgress, maxMb = 0, registerC
           throw new Error(t('error.downloadTooBig', { size: formatBytes(maxBytes) }))
         }
         chunks.push(value)
-        onProgress(received, totalFinite ? total : NaN)
+        onProgress(received, knownTotal !== null ? knownTotal : NaN)
       }
     }
+    return new Blob(chunks, { type: 'application/octet-stream' })
   } catch (error) {
     // 用户点 ✕：abort 让 fetch 以 AbortError 收尾，这里转成语义明确的信号
     if (canceled || (error !== null && typeof error === 'object' && error.name === 'AbortError')) {
-      try {
-        await reader.cancel()
-      } catch {
-        /* 已取消 */
-      }
       throw new TransferCanceledError()
     }
-    throw error
+    // 把进度挂在错误上（续传决策的输入）；非对象错误包一层
+    if (error !== null && typeof error === 'object') {
+      error.received = received
+      error.total = knownTotal
+      throw error
+    }
+    const wrapped = new Error(String(error))
+    wrapped.received = received
+    wrapped.total = knownTotal
+    throw wrapped
   }
-  return new Blob(chunks, { type: 'application/octet-stream' })
+}
+
+/**
+ * 带**断点续传**的下载（0.25.0）：每段失败后按 `planResume` 决定要不要从已收字节接着下。
+ *
+ * `makeBody(offset)` 由调用方给（各处的 spec / path 形状不同），每次重试都用新 offset 重拼。
+ * 用户点 ✕ 一律不续（取消不是「失败」，见 download-resume.js）；重试预算封顶，避免把一次
+ * 故障变成一场拉锯。进度条在续传期间**不回零**（offset 从已收字节接着报）。
+ */
+async function downloadWithResume({ url = '/api/dsh-tty/sftp/download', makeBody, onProgress, maxMb = 0, registerCancel = null, onResume = null }) {
+  let offset = 0
+  let attempt = 0
+  for (;;) {
+    try {
+      return await fetchBlobWithProgress(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(makeBody(offset)),
+      }, onProgress, maxMb, registerCancel, offset)
+    } catch (error) {
+      if (isCanceled(error)) throw error
+      attempt += 1
+      const decision = planResume({ received: error?.received ?? 0, total: error?.total ?? null, attempt })
+      if (!decision.resume) throw error
+      offset = decision.offset
+      if (typeof onResume === 'function') onResume(offset)
+    }
+  }
 }
 
 /** 取消不是失败：单独一类，调用方据此走「已取消」文案而非红色错误态。 */
@@ -6388,13 +6793,14 @@ function openSftpBrowser(specInput, ownerSid) {
     progress.reset()
     let blob
     try {
-      blob = await fetchBlobWithProgress('/api/dsh-tty/sftp/download', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ ...spec, path: full }),
-      }, (loaded, total) => {
-        progress.set(loaded, total)
-      }, sftpLimitsCache.maxDownloadMb, (cancel) => progress.setCancel(cancel))
+      // 断线自动从已收字节续传（0.25.0）：宿主侧 openDownload 早就支持 offset，此前面板没接
+      blob = await downloadWithResume({
+        makeBody: (offset) => ({ ...spec, path: full, ...(offset > 0 ? { offset } : {}) }),
+        onProgress: (loaded, total) => progress.set(loaded, total),
+        maxMb: sftpLimitsCache.maxDownloadMb,
+        registerCancel: (cancel) => progress.setCancel(cancel),
+        onResume: (offset) => setDialogStatus(t('msg.downloadResuming', { name: entry.name, offset: formatBytes(offset) || String(offset) + ' B' }), 'busy'),
+      })
     } catch (error) {
       if (isCanceled(error)) {
         // 取消不是失败：灰色文案 + 留在目录里（服务端已回收读流）
@@ -6416,64 +6822,30 @@ function openSftpBrowser(specInput, ownerSid) {
    * 点 ✕ 时调 abort() —— XHR 断开 → 宿主 req 'aborted' → 打断 pipeline
    * 并删除远端半截文件；剩余未发的文件随即被批次循环跳过（stopped）。
    */
-  const uploadOne = (file, relPath, index, total, cancelRef) => new Promise((resolve, reject) => {
-    const meta = b64uEncode(JSON.stringify({ ...spec, path: joinRemotePath(state.path, relPath) }))
-    const xhr = new XMLHttpRequest()
-    cancelRef.abort = () => {
-      cancelRef.stopped = true
-      xhr.abort()
-    }
-    xhr.open('POST', '/api/dsh-tty/sftp/upload')
-    xhr.setRequestHeader('x-dsh-sftp-meta', meta)
-    const label = total > 1 ? String(index) + '/' + String(total) + ' ' : ''
-    // 文件名/序号归状态行（进度条只显示百分比，两者不重复）
-    setDialogStatus(t('msg.uploadingName', { name: label + relPath }), 'busy')
-    xhr.upload.addEventListener('progress', (event) => {
-      if (event.lengthComputable) {
-        progress.set(event.loaded, event.total)
-      } else {
-        progress.pulse(0)
-      }
-    })
-    // abort 与 error 会成对到达（各浏览器顺序不一）：共用一条「只兑现一次」
-    // 的收尾逻辑，stopped 标记决定它是取消还是真失败
-    let settled = false
-    const finish = (error) => {
-      if (settled) return
-      settled = true
-      if (error === null) resolve()
-      else reject(error)
-    }
-    xhr.addEventListener('load', () => {
-      if (xhr.status === 200) {
-        if (total === 1) progress.done(t('msg.uploadDone'))
-        finish(null)
-        return
-      }
-      if (cancelRef.stopped) return
-      progress.fail(t('error.uploadFailed'))
-      let message = 'HTTP ' + xhr.status
-      try {
-        const data = JSON.parse(xhr.responseText)
-        if (data !== null && typeof data === 'object' && typeof data.error === 'string') message = data.error
-      } catch {
-        /* 保底 HTTP 状态码 */
-      }
-      finish(new Error(message))
-    })
-    xhr.addEventListener('error', () => {
-      if (cancelRef.stopped) {
-        finish(new TransferCanceledError())
-        return
-      }
-      progress.fail(t('error.uploadFailed'))
-      finish(new Error(t('error.networkError')))
-    })
-    // 用户点 ✕ 中断：XHR 以 abort 事件收尾，转成语义明确的信号
-    xhr.addEventListener('abort', () => {
-      finish(new TransferCanceledError())
-    })
-    xhr.send(file)
+  /**
+   * 单个文件上传（本窗体的进度 / 取消 / 状态行接线）——XHR 本体是模块顶层的
+   * `uploadItem`（0.25.0 起与双栏共用同一份，见那边的说明）。
+   *
+   * 这里只负责三件本窗体特有的事：目标路径按 `state.path + relPath` 拼、进度打到
+   * 本窗体的进度条、状态行写 `i/n 文件名`。
+   */
+  const uploadOne = (file, relPath, index, total, cancelRef) => uploadItem(file, joinRemotePath(state.path, relPath), {
+    spec,
+    label: (total > 1 ? String(index) + '/' + String(total) + ' ' : '') + relPath,
+    cancelRef,
+    onProgress: (loaded, uploadTotal) => {
+      if (Number.isFinite(uploadTotal) && uploadTotal > 0) progress.set(loaded, uploadTotal)
+      else progress.pulse(loaded)
+    },
+    onLabel: (name) => setDialogStatus(t('msg.uploadingName', { name }), 'busy'),
+    onDone: () => {
+      if (total === 1) progress.done(t('msg.uploadDone'))
+    },
+  }).catch((error) => {
+    // 失败着色本该在调用方，但单窗体这批的契约是「uploadOne 内部已 fail 着色」
+    // （见 uploadFiles 的 finally 注释），所以在这里补上——取消不算失败。
+    if (!isCanceled(error)) progress.fail(t('error.uploadFailed'))
+    throw error
   })
 
   /**
@@ -6630,6 +7002,10 @@ function closeSftpDialog(ownerKey) {
   if (dialogEl === null && pane === null) return
   // 在途传输随窗体一起收掉（否则关了界面、服务端还在写远端半截文件）
   cancelActiveTransfer()
+  // 双栏收尾（摘掉模块级监听；单窗体没有这一步）
+  const cleanup = sftpDualCleanup
+  sftpDualCleanup = null
+  cleanup?.()
   // 先清引用：pane 的 ✕ 会经 onClose 回到这里，重复调用要是幂等的
   sftpDialogEl = null
   if (pane !== null) sftpDockPane = null
@@ -8022,6 +8398,7 @@ function TtySettingsCard(props) {
       passphrase: host?.passphrase ?? '',
       password: host?.password ?? '',
       agentForward: host?.agentForward === true,
+      hostKeyAlias: host?.hostKeyAlias ?? '',
       // persist 必须一起带出来：否则在设置里编辑一条 tmux 托管条目会**静默丢掉**持久化开关。
       // 没写过这个字段的条目（如 ~/.ssh/config 导入的）默认跟随全局开关注：`!== false` 就是
       // "显式取消过才算取消"，与「+」菜单的判定一致。
@@ -8090,6 +8467,7 @@ function TtySettingsCard(props) {
             passphrase: editForm.passphrase,
             password,
             agentForward: editForm.agentForward,
+            hostKeyAlias: String(editForm.hostKeyAlias ?? '').trim(),
             persist: editForm.persist === true,
           }
         : h),
@@ -8131,6 +8509,7 @@ function TtySettingsCard(props) {
       passphrase: host?.passphrase ?? '',
       password: host?.password ?? '',
       agentForward: host?.agentForward === true,
+      hostKeyAlias: typeof host?.hostKeyAlias === 'string' ? host.hostKeyAlias : '',
     }
     setProbeStates((current) => ({ ...current, [name]: { running: true, text: t('msg.probing') } }))
     const out = await probeSshFetch(spec, true)
@@ -8194,6 +8573,7 @@ function TtySettingsCard(props) {
           passphrase: '',
           password: '',
           agentForward: false,
+          hostKeyAlias: typeof candidate.hostKeyAlias === 'string' ? candidate.hostKeyAlias : '',
         })
         added += 1
       }
@@ -8792,6 +9172,8 @@ function TtySettingsCard(props) {
       spec.password = password
     }
     if (editForm?.agentForward === true) spec.agentForward = true
+    const editAlias = String(editForm?.hostKeyAlias ?? '').trim()
+    if (editAlias !== '') spec.hostKeyAlias = editAlias
     return spec
   }
 
@@ -8892,6 +9274,8 @@ function TtySettingsCard(props) {
           jsx('input', { type: 'checkbox', className: 'tt_cardCheckbox', checked: editForm.agentForward === true, onChange: (event) => setEditForm((current) => ({ ...(current || {}), agentForward: event.target.checked })) }),
           jsx('span', { className: 'tt_cardLabel', children: t('check.agentForward') }),
         ] }),
+        editField(t('field.hostKeyAlias'), 'hostKeyAlias', t('placeholder.hostKeyAlias')),
+        jsx('span', { className: 'tt_cardHint', children: t('hint.hostKeyAlias') }),
         // 条目级持久化：只在设置里开着 tmux 持久化时才有意义（与对话框同款条件）；没写过的条目
         // 跟随全局开关，显式取消过（persist:false）的条目保持取消——「+」菜单按这个值决定是否托管
         persistenceCache === 'tmux'

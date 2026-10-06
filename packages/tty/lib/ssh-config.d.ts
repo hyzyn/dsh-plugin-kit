@@ -5,7 +5,7 @@
  *   - 键大小写不敏感，`key value` 与 `key=value` 都收；
  *   - `Host` 多模式时只收「全具体」块（任一模式含 * ? ! 或首字符为空格否定
  *     即整块跳过），块名取第一个模式；
- *   - 只映射 HostName / User / Port / IdentityFile；Include 不展开（跳过），
+ *   - 只映射 HostName / User / Port / IdentityFile / **HostKeyAlias**；Include 不展开（跳过），
  *     其余选项（ServerAliveInterval 等）原样忽略；
  *   - **`ProxyJump` 解析成结构化的 `jump` 一起导入**（单跳）：值是 `[user@]host[:port]`，
  *     也可以引用**同一份 config 里的另一个具体 Host**（按块名解析，块序任意）；

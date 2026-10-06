@@ -27,7 +27,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { Duplex, PassThrough } from 'node:stream'
 import { StringDecoder } from 'node:string_decoder'
-import { TMUX_SOCKET } from './tmux.js'
+import { tmuxSocketName } from './tmux.js'
 import { shSingleQuote } from './shell-integration.js'
 import { StatsLineBuffer } from './stats.js'
 
@@ -105,6 +105,19 @@ export interface SshSpec {
   password?: string
   /** OpenSSH agent forwarding：远程可用本地 ssh-agent 的钥匙（git clone 等）。 */
   agentForward?: boolean
+  /**
+   * TOFU 定位别名（OpenSSH `HostKeyAlias` 语义）。
+   *
+   * 为什么需要它：known_hosts 的条目按**连接地址**定位，而同一个真实主机常常经不同地址
+   * 触达——跳板机后面直接写内网 IP、或经端口转发落在 `127.0.0.1:2222`。那时「同一把钥匙、
+   * 不同记录」会让每次切换地址都判成**指纹变更**（假 MITM 告警并拒绝连接），而用户的
+   * known_hosts 里本来就只有一条（`HostKeyAlias` 正是 OpenSSH 为这种场景提供的开关）。
+   *
+   * 语义与 OpenSSH 对齐：**只影响主机密钥的存储/比对键**，不改连接地址、不改展示串；
+   * 缺省（空串）= 仍按 `host` 定位，行为与从前完全一致。端口仍参与键
+   * （`别名:port`），因为同一别名下不同端口可能真是不同服务端。
+   */
+  hostKeyAlias?: string
   /** 经跳板机连接（ProxyJump 语义，**单跳**）；缺省 = 直连。 */
   jump?: SshJumpSpec
   /**
@@ -164,7 +177,7 @@ export interface SshSpawnOptions {
   hostKeyStore?: HostKeyStore
   /**
    * tmux 会话持久化（0.10.0）：远程以 `exec tmux new-session -A -s <name>` 开
-   * pty channel（专用 socket dsh-tty），会话托管在远程 tmux server 上，断线/
+   * pty channel（专用 socket，按本机 profile 区分，见 tmuxSocketName），会话托管在远程 tmux server 上，断线/
    * 宿主重启后按同名接回。远程无 tmux 时降级普通 shell channel，
    * startupNotice 带提示。name 须已过 sanitizePersistName（安全字符集）。
    */
@@ -372,7 +385,25 @@ export interface SshLogger {
 /** @types/ssh2 的 ShellOptions 未声明 agentForward（运行时支持），最小补丁类型。 */
 type ShellOptionsWithAgentForward = ShellOptions & { agentForward?: boolean }
 
-/** TOFU 主机指纹策略（hostVerifier 接线）；返回的 mismatchMessage() 供连接错误路径取人类可读拒绝原因。 */
+/**
+ * 记录/比对主机密钥时用的**键**（OpenSSH `HostKeyAlias` 语义）。
+ *
+ * 抽成一处（而不是在 terminal / SFTP / 隧道 / 探针四个连接点各写一遍）的理由与
+ * `prepareSshConnect` 相同：四个点必须用**同一个键**，否则「终端里记下的指纹、SFTP 不认」
+ * 这种半吊子状态就是必然。别名只在非空时生效，且**不改连接地址**——它仅决定这条连接
+ * 的指纹去哪张记录里查/写。
+ *
+ * `port` 与原实现一致：仍按 `spec.port ?? 22`（别名不参与端口的推导）。
+ */
+export function hostKeyIdentity(spec: SshSpec): { host: string; port: number; aliased: boolean } {
+  const host = spec.host.trim()
+  const alias = typeof spec.hostKeyAlias === 'string' ? spec.hostKeyAlias.trim() : ''
+  return { host: alias === '' ? host : alias, port: spec.port ?? 22, aliased: alias !== '' && alias !== host }
+}
+
+/**
+ * TOFU 主机指纹策略（hostVerifier 接线）；返回的 mismatchMessage() 供连接错误路径取人类可读拒绝原因。
+ */
 export function applyHostKeyPolicy(options: {
   connectConfig: ConnectConfig
   spec: SshSpec
@@ -381,23 +412,26 @@ export function applyHostKeyPolicy(options: {
   target: string
 }): { mismatchMessage(): string | null } {
   const { connectConfig, spec, store, logger, target } = options
-  const port = spec.port ?? 22
+  const { host: keyHost, port } = hostKeyIdentity(spec)
+  const aliased = keyHost !== spec.host.trim()
+  /** 记录/比对的键带别名时，文案里点明「按别名 <名> 定位」——否则用户会去删错记录。 */
+  const where = aliased ? `${target}（HostKeyAlias ${keyHost}）` : target
   let hostKeyMismatch: string | null = null
   connectConfig.hostVerifier = (hash: string) => {
-    const known = store?.get(spec.host, port)
+    const known = store?.get(keyHost, port)
     if (known === undefined || known.length === 0) {
-      store?.record(spec.host, port, hash)
-      logger?.info(`[dsh-tty] ssh ${target} 首次连接，已记录 host key 指纹 sha256:${hash}（TOFU）`)
+      store?.record(keyHost, port, hash)
+      logger?.info(`[dsh-tty] ssh ${where} 首次连接，已记录 host key 指纹 sha256:${hash}（TOFU）`)
       return true
     }
     if (known.includes(hash)) {
-      logger?.info(`[dsh-tty] ssh ${target} host key 指纹匹配（sha256:${hash}，该主机共记录 ${String(known.length)} 把钥匙）`)
+      logger?.info(`[dsh-tty] ssh ${where} host key 指纹匹配（sha256:${hash}，该主机共记录 ${String(known.length)} 把钥匙）`)
       return true
     }
     const shown = known.slice(0, 3).map((f) => `sha256:${f}`).join(' / ')
     const more = known.length > 3 ? ` 等 ${String(known.length)} 把` : ''
     hostKeyMismatch =
-      `SSH 主机密钥指纹变更：${target} 已记录 ${shown}${more}，本次为 sha256:${hash}。` +
+      `SSH 主机密钥指纹变更：${where} 已记录 ${shown}${more}，本次为 sha256:${hash}。` +
       '可能是主机重装或换钥匙，也可能是中间人（MITM）冒充；确认安全后，到 插件配置 → 终端面板 → SSH 主机密钥记录 删除该主机再重连。'
     logger?.warn(`[dsh-tty] ${hostKeyMismatch}`)
     return false
@@ -1254,7 +1288,7 @@ export async function spawnSsh(spec: SshSpec, options: SshSpawnOptions): Promise
       // 链式 set-option 幂等重放（attach 已有 server 时也生效）；首 pane 在
       // 选项生效前创建，default-terminal 用 tmux 自身默认（README 已知限制）
       const cmd = [
-        `exec tmux -L ${TMUX_SOCKET} -f /dev/null new-session -A -s ${shSingleQuote(options.persist?.name ?? '')}`,
+        `exec tmux -L ${tmuxSocketName()} -f /dev/null new-session -A -s ${shSingleQuote(options.persist?.name ?? '')}`,
         "';' set-option -g status off",
         "';' set-option -g history-limit 20000",
         "';' set-option -ga terminal-overrides ,*:RGB",
@@ -1401,8 +1435,8 @@ export async function spawnSsh(spec: SshSpec, options: SshSpawnOptions): Promise
       ? (): Promise<void> =>
           new Promise<void>((resolve) => {
             const cmd =
-              `tmux -L ${TMUX_SOCKET} list-clients -t ${shSingleQuote(options.persist?.name ?? '')} -F '#{client_name}' | ` +
-              `while IFS= read -r c; do tmux -L ${TMUX_SOCKET} refresh-client -t "$c"; done`
+              `tmux -L ${tmuxSocketName()} list-clients -t ${shSingleQuote(options.persist?.name ?? '')} -F '#{client_name}' | ` +
+              `while IFS= read -r c; do tmux -L ${tmuxSocketName()} refresh-client -t "$c"; done`
             try {
               conn.exec(cmd, (error, stream) => {
                 if (error !== undefined && error !== null) {
@@ -1426,7 +1460,7 @@ export async function spawnSsh(spec: SshSpec, options: SshSpawnOptions): Promise
       ? (): Promise<void> =>
           new Promise<void>((resolve) => {
             try {
-              conn.exec(`tmux -L ${TMUX_SOCKET} kill-session -t ${shSingleQuote(options.persist?.name ?? '')}`, (error, stream) => {
+              conn.exec(`tmux -L ${tmuxSocketName()} kill-session -t ${shSingleQuote(options.persist?.name ?? '')}`, (error, stream) => {
                 if (error !== undefined && error !== null) {
                   resolve()
                   return

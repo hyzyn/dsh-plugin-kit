@@ -87,6 +87,19 @@ export interface SshSpec {
     password?: string;
     /** OpenSSH agent forwarding：远程可用本地 ssh-agent 的钥匙（git clone 等）。 */
     agentForward?: boolean;
+    /**
+     * TOFU 定位别名（OpenSSH `HostKeyAlias` 语义）。
+     *
+     * 为什么需要它：known_hosts 的条目按**连接地址**定位，而同一个真实主机常常经不同地址
+     * 触达——跳板机后面直接写内网 IP、或经端口转发落在 `127.0.0.1:2222`。那时「同一把钥匙、
+     * 不同记录」会让每次切换地址都判成**指纹变更**（假 MITM 告警并拒绝连接），而用户的
+     * known_hosts 里本来就只有一条（`HostKeyAlias` 正是 OpenSSH 为这种场景提供的开关）。
+     *
+     * 语义与 OpenSSH 对齐：**只影响主机密钥的存储/比对键**，不改连接地址、不改展示串；
+     * 缺省（空串）= 仍按 `host` 定位，行为与从前完全一致。端口仍参与键
+     * （`别名:port`），因为同一别名下不同端口可能真是不同服务端。
+     */
+    hostKeyAlias?: string;
     /** 经跳板机连接（ProxyJump 语义，**单跳**）；缺省 = 直连。 */
     jump?: SshJumpSpec;
     /**
@@ -146,7 +159,7 @@ export interface SshSpawnOptions {
     hostKeyStore?: HostKeyStore;
     /**
      * tmux 会话持久化（0.10.0）：远程以 `exec tmux new-session -A -s <name>` 开
-     * pty channel（专用 socket dsh-tty），会话托管在远程 tmux server 上，断线/
+     * pty channel（专用 socket，按本机 profile 区分，见 tmuxSocketName），会话托管在远程 tmux server 上，断线/
      * 宿主重启后按同名接回。远程无 tmux 时降级普通 shell channel，
      * startupNotice 带提示。name 须已过 sanitizePersistName（安全字符集）。
      */
@@ -226,7 +239,24 @@ export interface SshLogger {
     info(msg: string): void;
     warn(msg: string): void;
 }
-/** TOFU 主机指纹策略（hostVerifier 接线）；返回的 mismatchMessage() 供连接错误路径取人类可读拒绝原因。 */
+/**
+ * 记录/比对主机密钥时用的**键**（OpenSSH `HostKeyAlias` 语义）。
+ *
+ * 抽成一处（而不是在 terminal / SFTP / 隧道 / 探针四个连接点各写一遍）的理由与
+ * `prepareSshConnect` 相同：四个点必须用**同一个键**，否则「终端里记下的指纹、SFTP 不认」
+ * 这种半吊子状态就是必然。别名只在非空时生效，且**不改连接地址**——它仅决定这条连接
+ * 的指纹去哪张记录里查/写。
+ *
+ * `port` 与原实现一致：仍按 `spec.port ?? 22`（别名不参与端口的推导）。
+ */
+export declare function hostKeyIdentity(spec: SshSpec): {
+    host: string;
+    port: number;
+    aliased: boolean;
+};
+/**
+ * TOFU 主机指纹策略（hostVerifier 接线）；返回的 mismatchMessage() 供连接错误路径取人类可读拒绝原因。
+ */
 export declare function applyHostKeyPolicy(options: {
     connectConfig: ConnectConfig;
     spec: SshSpec;
