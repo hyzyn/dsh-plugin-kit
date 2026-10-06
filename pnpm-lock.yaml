@@ -42,7 +42,7 @@ importers:
         specifier: 0.4.4
         version: link:packages/search
       '@hyzyn/dsh-tty':
-        specifier: 0.24.1
+        specifier: 0.25.0
         version: link:packages/tty
     devDependencies:
       '@vitest/coverage-v8':
@@ -91,7 +91,7 @@ importers:
         specifier: 0.4.4
         version: link:../search
       '@hyzyn/dsh-tty':
-        specifier: 0.24.1
+        specifier: 0.25.0
         version: link:../tty
     devDependencies:
       '@deepseek-ai/cordis':
