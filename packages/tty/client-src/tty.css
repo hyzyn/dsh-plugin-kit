@@ -22,12 +22,14 @@
  */
 :where(html, body) {
   /* 圆角 */
-  --tt-r-xs: 4px;
-  --tt-r-sm: 6px;
-  --tt-r-md: 8px;
-  --tt-r-lg: 10px;
-  --tt-r-xl: 12px;
-  --tt-r-2xl: 16px;
+  /* 圆角对齐官方六档（docs/ui-radius.zh.md）：私有名只做宿主令牌的中转，
+     不自造 6/8/10/12 这套「整体偏紧一格」的平行尺度。 */
+  --tt-r-xs: var(--dsw-radius-xs, 4px);
+  --tt-r-sm: var(--dsw-radius-sm, 8px);
+  --tt-r-md: var(--dsw-radius-md, 12px);
+  --tt-r-lg: var(--dsw-radius-lg, 16px);
+  --tt-r-xl: var(--dsw-radius-xl, 20px);
+  --tt-r-2xl: var(--dsw-radius-panel, 28px);
   --tt-r-pill: 999px;
   /* 控件高度 */
   --tt-h-sm: 24px;
@@ -42,36 +44,91 @@
   --tt-gap-lg: 12px;
   --tt-gap-xl: 16px;
   /* 字体 */
-  --tt-mono: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  /* 等宽字体走宿主契约变量（--ds-font-family-code，主题所有）；宿主不在时退回本包原栈。 */
+  --tt-mono: var(--ds-font-family-code, "SF Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace);
   /* 动效 */
   --tt-ease: cubic-bezier(.2, .8, .2, 1);
   --tt-dur: .16s;
-  /* 语义色（带兜底，保证脱离宿主时仍可用） */
-  --tt-accent: var(--dsw-alias-state-business-primary, #4d6bfe);
-  --tt-danger: var(--dsw-alias-state-error-primary, #d1242f);
-  --tt-success: var(--dsw-alias-state-success-primary, #1a7f37);
-  --tt-warn: var(--dsw-alias-state-warn-primary, #bf8700);
-  --tt-border: var(--dsw-alias-border-l1, rgba(127, 127, 127, .22));
-  --tt-border-strong: var(--dsw-alias-border-l2, rgba(127, 127, 127, .32));
-  --tt-hover: var(--dsw-alias-interactive-bg-hover, rgba(127, 127, 127, .1));
-  --tt-hover-solid: var(--dsw-alias-interactive-bg-hover-solid, rgba(127, 127, 127, .16));
-  --tt-label: var(--dsw-alias-label-primary, #1a1a1a);
-  --tt-label-2: var(--dsw-alias-label-secondary, #555);
-  --tt-label-3: var(--dsw-alias-label-tertiary, #888);
-  --tt-surface: var(--dsw-alias-bg-base, #fff);
+  /* 语义色：只引用宿主令牌。**生产 CSS 不写颜色字面量兜底**——带兜底的
+     var(--dsw-alias-bg-base, #fff) 在宿主改名后不会报错，只会安静地换成另一个颜色
+     （client-lint 检查十六）；脱离宿主时的兜底由预览夹具的假主题负责
+     （scripts/preview.mjs 的 FALLBACK_SKIN_CSS）。 */
+  --tt-accent: var(--dsw-alias-state-business-primary);
+  --tt-danger: var(--dsw-alias-state-error-primary);
+  --tt-success: var(--dsw-alias-state-success-primary);
+  --tt-warn: var(--dsw-alias-state-warn-primary);
+  --tt-border: var(--dsw-alias-border-l1);
+  --tt-border-strong: var(--dsw-alias-border-l2);
+  --tt-hover: var(--dsw-alias-interactive-bg-hover);
+  --tt-hover-solid: var(--dsw-alias-interactive-bg-hover-solid);
+  --tt-label: var(--dsw-alias-label-primary);
+  --tt-label-2: var(--dsw-alias-label-secondary);
+  --tt-label-3: var(--dsw-alias-label-tertiary);
+  --tt-surface: var(--dsw-alias-bg-base);
   /* 面板实底：皮肤/壁纸模式下 --dsw-alias-bg-base 可能带透明度（壁纸透出来），
      面板用它当底色 + 用 bg-base 做一层覆盖 → 既不丢主题色，又保证可读性 */
-  --tt-surface-solid: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-base, #fff));
-  --tt-surface-2: var(--dsw-alias-bg-layer-2, #f2f2f2);
-  --tt-surface-3: var(--dsw-alias-bg-layer-3, #e8e8e8);
-  --tt-input: var(--dsw-specific-input-major, var(--dsw-alias-bg-base, #fff));
-  --tt-menu: var(--dsw-specific-menu, var(--dsw-alias-bg-base, #fff));
-  --tt-shadow: 0 16px 40px -12px rgba(0, 0, 0, .32), var(--dsw-shadow-lv3, 0 4px 12px rgba(0, 0, 0, .12));
-  --tt-shadow-lg: 0 32px 72px -24px rgba(0, 0, 0, .48), 0 2px 8px rgba(0, 0, 0, .16);
+  --tt-surface-solid: var(--dsw-alias-bg-layer-2);
+  --tt-surface-2: var(--dsw-alias-bg-layer-2);
+  --tt-surface-3: var(--dsw-alias-bg-layer-3);
+  /* 设置卡片材质：与宿主 base.css 的权威卡片同源（settings-account / plugin-inventory /
+     agent-preset 三处逐字相同：`.5px solid settings-card-stroke` + radius-xl + settings-card-fill）。
+     走令牌中转只为保留本包的语义名；宿主缺席时的兜底由预览夹具的假主题提供，生产 CSS 不写。 */
+  --tt-surface-card: var(--dsw-alias-settings-card-fill);
+  --tt-stroke-card: var(--dsw-alias-settings-card-stroke);
+  --tt-input: var(--dsw-specific-input-major);
+  --tt-menu: var(--dsw-specific-menu);
+  /* elevation 一律取宿主的三档权威令牌（theme 包 gradient-shadow-text.css），本包不自造
+     阴影配方——自造的数值 + 已退役的 --dsw-shadow-lv1..3 是**第二份 elevation 权威**，层级
+     语言会和主题对不上（检查八的提示词也写明「不要再 --dsw-shadow-lv1..3」）：
+       -panel 浮层（菜单 / 卡片悬停 / toast）· -prominent 更高一层（对话框 / 悬浮按钮）
+       · -soft 柔光那档（规则里直接写 var(--dsw-elevation-soft)）。 */
+  --tt-shadow: var(--dsw-elevation-panel);
+  --tt-shadow-lg: var(--dsw-elevation-prominent);
   --tt-ring: 0 0 0 2px color-mix(in srgb, var(--tt-accent) 42%, transparent);
   --tt-term-bg: #0b0e14;
   --tt-term-fg: #d7dce5;
   --tt-term-chrome: #12161f;
+  /* ---- 终端域的固定深色调色板：**本块是本包颜色字面量的唯一登记处** ----
+     终端区刻意不跟随明暗主题（见文件头约定与 DEFECTS D86），所以这些值不取 --dsw-*；
+     但规则与 JS 一律 var() / cssVar() 读（client-lint 检查十六）。 */
+  --tt-term-cursor-accent: var(--tt-term-bg);
+  --tt-term-selection: rgba(124, 156, 255, .30);
+  /* xterm 的 16 个 ANSI 仿真色（black/red/… 与 bright*） */
+  --tt-an-black: #1b2028;
+  --tt-an-red: #f07178;
+  --tt-an-green: #7ec699;
+  --tt-an-yellow: #e6b673;
+  --tt-an-blue: #7aa2f7;
+  --tt-an-magenta: #c792ea;
+  --tt-an-cyan: #7fdbca;
+  --tt-an-white: #c8d0dc;
+  --tt-an-bright-black: #556070;
+  --tt-an-bright-red: #ff8b92;
+  --tt-an-bright-green: #9fe0b4;
+  --tt-an-bright-yellow: #f5cc8c;
+  --tt-an-bright-blue: #9ab8ff;
+  --tt-an-bright-magenta: #dbb3ff;
+  --tt-an-bright-cyan: #a3f0e2;
+  --tt-an-bright-white: #eef2f8;
+  /* 搜索高亮装饰（深色终端底上的高对比配色，供 xterm SearchAddon 的 decorations 读） */
+  --tt-term-search-match: #3d2b00;
+  --tt-term-search-match-border: #8a5a00;
+  --tt-term-search-active: #b06a00;
+  --tt-term-search-active-border: #ffb84d;
+  /* 终端区固定深色的 chrome：状态条 / 滚动条 / 遮罩 / 浮层卡片 */
+  --tt-term-sheen: rgba(255, 255, 255, .045);
+  --tt-term-scrollbar: rgba(255, 255, 255, .16);
+  --tt-term-scrollbar-hover: rgba(255, 255, 255, .3);
+  --tt-term-stats-fg: rgba(255, 255, 255, .82);
+  --tt-term-stats-bg: rgba(255, 255, 255, .04);
+  --tt-term-stats-border: rgba(255, 255, 255, .08);
+  --tt-term-stats-divider: rgba(255, 255, 255, .14);
+  --tt-term-stats-label: rgba(255, 255, 255, .5);
+  --tt-term-stats-value: rgba(255, 255, 255, .86);
+  --tt-term-stats-track: rgba(255, 255, 255, .14);
+  --tt-term-overlay: rgba(6, 9, 15, .58);
+  --tt-term-card-bg: rgba(18, 22, 31, .92);
+  --tt-term-card-border: rgba(255, 255, 255, .12);
 }
 
 /* ============================ 通用 ============================ */
@@ -91,7 +148,7 @@
 .tt_dock,
 [data-dsh-tty-entry] {
   scrollbar-width: thin;
-  scrollbar-color: var(--dsw-alias-scrollbar-bg-l1, rgba(127, 127, 127, .45)) transparent;
+  scrollbar-color: var(--dsw-alias-scrollbar-bg-l1) transparent;
 }
 .tt_modal *::-webkit-scrollbar,
 .tt_sshBackdrop *::-webkit-scrollbar,
@@ -113,7 +170,7 @@
 .tt_card *::-webkit-scrollbar-thumb,
 .tt_tunnelPop::-webkit-scrollbar-thumb,
 .tt_addMenu::-webkit-scrollbar-thumb {
-  background: var(--dsw-alias-scrollbar-bg-l1, rgba(127, 127, 127, .4));
+  background: var(--dsw-alias-scrollbar-bg-l1);
   border-radius: var(--tt-r-pill);
   border: 2px solid transparent;
   background-clip: content-box;
@@ -121,7 +178,7 @@
 .tt_modal *::-webkit-scrollbar-thumb:hover,
 .tt_sshBackdrop *::-webkit-scrollbar-thumb:hover,
 .tt_card *::-webkit-scrollbar-thumb:hover {
-  background: var(--dsw-alias-scrollbar-hover-l1, rgba(127, 127, 127, .6));
+  background: var(--dsw-alias-scrollbar-hover-l1);
   background-clip: content-box;
 }
 
@@ -145,6 +202,7 @@
   background: 0 0;
   color: var(--tt-label-2);
   font-size: 13px;
+  line-height: 20px;
   white-space: nowrap;
   cursor: pointer;
   transition: background var(--tt-dur) var(--tt-ease), color var(--tt-dur) var(--tt-ease);
@@ -196,6 +254,7 @@
   padding-left: 8px;
   font-family: var(--tt-mono);
   font-size: 11px;
+  line-height: 16px;
   color: var(--tt-label-3);
 }
 .tt_sidebarEntry[data-minimized] .tt_sidebarEntryBadge {
@@ -219,6 +278,7 @@
   width: 7px;
   height: 7px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--tt-label-3);
   transition: background var(--tt-dur) var(--tt-ease), box-shadow var(--tt-dur) var(--tt-ease);
 }
@@ -268,7 +328,7 @@
   align-items: flex-start;
   justify-content: center;
   padding-top: 4.5vh;
-  background: var(--dsw-alias-bg-mask-1, rgba(0, 0, 0, .45));
+  background: var(--dsw-alias-bg-mask-1);
   -webkit-backdrop-filter: blur(3px);
   backdrop-filter: blur(3px);
   animation: ttFadeIn .18s var(--tt-ease);
@@ -282,12 +342,10 @@
   width: min(1280px, 96vw);
   height: min(86vh, 960px);
   overflow: hidden;
-  border: 1px solid var(--tt-border-strong);
+  border: 0;
   border-radius: var(--tt-r-2xl);
   color: var(--tt-label);
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--tt-label) 7%, transparent),
-    var(--tt-shadow-lg);
+  box-shadow: var(--dsw-elevation-prominent);
   animation: ttModalIn .2s var(--tt-ease);
 }
 @keyframes ttFadeIn {
@@ -307,7 +365,7 @@
   align-items: center;
   gap: var(--tt-gap-md);
   padding: 7px 10px;
-  border-bottom: 1px solid var(--tt-border);
+  border-bottom: 0.5px solid var(--tt-border);
   background: linear-gradient(180deg, var(--tt-surface-2), var(--tt-surface));
 }
 .tt_titleIcon {
@@ -391,6 +449,7 @@
   background: 0 0;
   color: var(--tt-label-2);
   font-size: 12px;
+  line-height: 18px;
   white-space: nowrap;
   cursor: pointer;
   transition: background var(--tt-dur) var(--tt-ease), border-color var(--tt-dur) var(--tt-ease), color var(--tt-dur) var(--tt-ease);
@@ -419,6 +478,7 @@
   width: 7px;
   height: 7px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--tt-label-3);
   transition: background var(--tt-dur) var(--tt-ease), box-shadow var(--tt-dur) var(--tt-ease);
 }
@@ -459,10 +519,23 @@
   cursor: pointer;
   transition: opacity var(--tt-dur) var(--tt-ease), background var(--tt-dur) var(--tt-ease), color var(--tt-dur) var(--tt-ease);
 }
+/* 图标化后 svg 默认是 inline：留着基线会让它在 18px 的盒里上下偏一点，这里压成块由 flex 居中 */
+.tt_tabClose svg {
+  display: block;
+}
 .tt_tab:hover .tt_tabClose,
 .tt_tab[data-active] .tt_tabClose,
 .tt_tabClose:focus-visible {
   opacity: .7;
+  box-shadow: var(--tt-ring);
+}
+/*
+ * 键盘焦点环换成官方写法（.tt_tab:hover 那条是 0,3,0，它给「悬停 / 激活标签的 ✕」加亮的
+ * 私有环照旧保留——那不是焦点态）。这里用同权重、写在后面，只把键盘态那枚私有环抹掉。
+ */
+.tt_tabClose:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  box-shadow: none;
 }
 .tt_tabClose:hover {
   opacity: 1;
@@ -479,6 +552,7 @@
   color: inherit;
   font: inherit;
   font-size: 12px;
+  line-height: 18px;
   box-sizing: border-box;
 }
 .tt_tabAdd,
@@ -494,6 +568,7 @@
   background: 0 0;
   color: var(--tt-label-2);
   font-size: 15px;
+  line-height: 22px;
   cursor: pointer;
   transition: background var(--tt-dur) var(--tt-ease), color var(--tt-dur) var(--tt-ease), border-color var(--tt-dur) var(--tt-ease), transform var(--tt-dur) var(--tt-ease);
 }
@@ -509,8 +584,7 @@
 }
 .tt_tabAdd:focus-visible,
 .tt_tabMore:focus-visible {
-  outline: none;
-  box-shadow: var(--tt-ring);
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
 }
 /*
  * 「⋯」= 标签列表入口，**只在标签栏溢出时**出现（syncTabOverflow 维护 hidden）。
@@ -528,11 +602,13 @@
   gap: var(--tt-gap-sm);
   flex: none;
   padding: 3px 10px;
-  border: 1px solid var(--tt-border);
+  border: 0.5px solid var(--tt-border);
   border-radius: var(--tt-r-pill);
+  corner-shape: round;
   background: var(--tt-surface-2);
   color: var(--tt-label-2);
   font-size: 11px;
+  line-height: 16px;
   white-space: nowrap;
   animation: ttFadeIn .16s var(--tt-ease);
 }
@@ -550,6 +626,7 @@
   width: 7px;
   height: 7px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--tt-label-3);
   transition: background var(--tt-dur) var(--tt-ease), box-shadow var(--tt-dur) var(--tt-ease);
 }
@@ -568,12 +645,13 @@
   width: 190px;
   height: var(--tt-h-md);
   padding: 0 10px;
-  border: 1px solid var(--tt-border-strong);
-  border-radius: var(--tt-r-md);
+  border: 0.5px solid var(--tt-border-strong);
+  border-radius: var(--tt-r-sm);
   background: var(--tt-input);
   color: inherit;
   font: inherit;
   font-size: 12px;
+  line-height: 18px;
   transition: border-color var(--tt-dur) var(--tt-ease), box-shadow var(--tt-dur) var(--tt-ease);
 }
 .tt_searchInput::placeholder {
@@ -586,7 +664,15 @@
 }
 
 /* ---- 工具按钮 ---- */
+/*
+ * 对齐宿主 Button size="sm"（ui-primitives/Button.module.css 的 .button + .sm + .outline）：
+ * H28 → R8(--dsw-radius-sm)、12px 与 18px 成对的字号/行高、0.5px 中性发丝描边取
+ * border-l3（宿主 .outline 用的档位；原先的 --tt-border 是 l1，比官方淡一档）。
+ * 底色仍用本包的 --tt-input：令牌层保证「脱离宿主也画得出」，换成官方 outline 的 transparent
+ * 会改变明暗两套皮肤下的观感，不在这轮「按钮族对齐」的点名范围内（见报告）。
+ */
 .tt_toolBtn {
+  box-sizing: border-box;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -594,35 +680,53 @@
   flex: none;
   height: var(--tt-h-md);
   padding: 0 10px;
-  border: 1px solid var(--tt-border);
-  border-radius: var(--tt-r-md);
+  border: 0.5px solid var(--dsw-alias-border-l3, var(--tt-border-strong));
+  border-radius: var(--dsw-radius-sm);
   background: var(--tt-input);
   color: var(--tt-label-2);
   font-size: 12px;
   font-family: inherit;
+  line-height: 18px;
   white-space: nowrap;
   cursor: pointer;
   transition: background var(--tt-dur) var(--tt-ease), color var(--tt-dur) var(--tt-ease), border-color var(--tt-dur) var(--tt-ease), transform .1s var(--tt-ease);
 }
 .tt_toolBtn:hover:not(:disabled) {
-  border-color: var(--tt-border-strong);
-  background: var(--tt-hover);
+  /*
+   * 只换底、不动描边：官方 .outline:hover 也只覆盖 background，而基类已经是 l3——
+   * 原来的 --tt-border-strong 是更淡一档的 l2，留在这里会让描边「一悬停就变浅」。
+   */
+  background: var(--dsw-alias-interactive-bg-hover, var(--tt-hover));
   color: var(--tt-label);
 }
 .tt_toolBtn:active:not(:disabled) {
+  /* 官方 .ghost:active 的按下底：比 hover 再深一档 */
+  background: var(--dsw-alias-interactive-bg-active, var(--tt-hover-solid));
   transform: scale(.97);
 }
 .tt_toolBtn:focus-visible {
-  outline: none;
-  box-shadow: var(--tt-ring);
+  /* 宿主 51 处组件同款：不带 outline-offset */
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
 }
 .tt_toolBtn:disabled {
-  opacity: .45;
-  cursor: default;
+  opacity: .4;
+  cursor: not-allowed;
 }
+/*
+ * 图标按钮：正方形，边长就是本包紧凑档 --tt-h-sm。
+ * 原先 width 取的是 --tt-h-md(28) 而高度来自 .tt_toolBtn(28)——但它在 .tt_toolGroup 里
+ * 又会被压到 24，于是实际渲染成 28×24 的矩形；这里把尺寸钉成一处。
+ */
 .tt_iconBtn {
-  width: var(--tt-h-md);
+  width: var(--tt-h-sm);
+  height: var(--tt-h-sm);
   padding: 0;
+}
+/* 粘贴图标里那块「纸」的镂空：填宿主底色。
+   SVG 的 presentation attribute **不解析 var()**（原来写的 fill="var(--dsw-…)" 一直是无效值），
+   所以走类名 + CSS 规则。 */
+.tt_iconPasteHole {
+  fill: var(--dsw-alias-bg-base);
 }
 .tt_toolGroup {
   display: flex;
@@ -630,15 +734,19 @@
   gap: 2px;
   flex: none;
   padding: 2px;
-  border: 1px solid var(--tt-border);
+  border: 0.5px solid var(--tt-border);
   border-radius: var(--tt-r-lg);
   background: var(--tt-surface-2);
 }
+/*
+ * 工具组内的按钮：只改外观，不再自己声明 height——同一族的规则里重复声明尺寸就是
+ * 「同一个类在两种容器里两个尺寸」，与官方「各变体保持相同尺寸与圆角」冲突。
+ * 紧凑高度由 .tt_iconBtn（组内全是图标按钮）给出，圆角与描边按官方 .outline 取尺。
+ */
 .tt_toolGroup .tt_toolBtn {
-  height: var(--tt-h-sm);
   border: none;
   background: 0 0;
-  border-radius: var(--tt-r-sm);
+  border-radius: var(--dsw-radius-sm);
   color: var(--tt-label-2);
 }
 .tt_toolGroup .tt_toolBtn:hover {
@@ -687,8 +795,7 @@
 }
 .tt_min:focus-visible,
 .tt_close:focus-visible {
-  outline: none;
-  box-shadow: var(--tt-ring);
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
 }
 
 /* ======================= 连接栏 ======================= */
@@ -699,7 +806,7 @@
   gap: var(--tt-gap-md);
   flex: none;
   padding: 5px 10px;
-  border-bottom: 1px solid var(--tt-border);
+  border-bottom: 0.5px solid var(--tt-border);
   /* 比头部再深/浅一档，和终端区拉开层次（明暗主题方向相反，故用 layer-3） */
   background: var(--tt-surface-3);
 }
@@ -718,6 +825,7 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--tt-label-3);
   transition: background var(--tt-dur) var(--tt-ease), box-shadow var(--tt-dur) var(--tt-ease);
 }
@@ -744,12 +852,14 @@
 .tt_connTarget {
   min-width: 0;
   padding: 3px 10px;
-  border: 1px solid var(--tt-border);
+  border: 0.5px solid var(--tt-border);
   border-radius: var(--tt-r-pill);
+  corner-shape: round;
   background: var(--tt-input);
   color: var(--tt-label-2);
   font-family: var(--tt-mono);
   font-size: 12px;
+  line-height: 18px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -759,6 +869,7 @@
   padding: 2px 8px;
   border: 1px solid transparent;
   border-radius: var(--tt-r-pill);
+  corner-shape: round;
   font-size: 11px;
   line-height: 1.4;
   white-space: nowrap;
@@ -803,15 +914,16 @@
   min-width: 300px;
   max-width: 400px;
   padding: 12px 14px;
-  border: 1px solid var(--tt-border-strong);
+  border: 0;
   border-radius: var(--tt-r-xl);
   color: var(--tt-label);
-  box-shadow: var(--tt-shadow);
+  box-shadow: var(--dsw-elevation-panel);
   animation: ttPopIn .16s var(--tt-ease);
 }
 .tt_tunnelPopTitle {
   font-size: 12px;
-  font-weight: 600;
+  line-height: 18px;
+  font-weight: 500;
   color: var(--tt-label);
 }
 .tt_tunnelPopRow {
@@ -852,7 +964,7 @@
   flex-direction: column;
   width: 460px; /* 初值；挂载/拖拽时由 JS 写成 inline 宽度 */
   min-width: 0;
-  border-left: 1px solid var(--tt-border-strong);
+  border-left: 0.5px solid var(--tt-border-strong);
   background: var(--tt-surface-2);
 }
 
@@ -880,13 +992,14 @@
   gap: var(--tt-gap-sm);
   min-height: 34px;
   padding: var(--tt-gap-xs) var(--tt-gap-sm) var(--tt-gap-xs) var(--tt-gap-lg);
-  border-bottom: 1px solid var(--tt-border);
+  border-bottom: 0.5px solid var(--tt-border);
 }
 
 .tt_dockPaneTitle {
   min-width: 0;
   font-size: 12px;
-  font-weight: 600;
+  line-height: 18px;
+  font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -895,7 +1008,8 @@
 .tt_dockPaneHint {
   flex: none;
   color: var(--tt-label-3);
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 18px;
   white-space: nowrap;
 }
 
@@ -918,7 +1032,18 @@
 }
 
 .tt_dockPaneFold:hover,
-.tt_dockPaneClose:hover { background: var(--tt-hover); color: var(--tt-label); }
+.tt_dockPaneClose:hover { background: var(--dsw-alias-interactive-bg-hover, var(--tt-hover)); color: var(--tt-label); }
+
+.tt_dockPaneFold:focus-visible,
+.tt_dockPaneClose:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+}
+/* 按下态比 hover 再深一档（同官方 .ghost:active） */
+.tt_dockPaneFold:active,
+.tt_dockPaneClose:active {
+  background: var(--dsw-alias-interactive-bg-active, var(--tt-hover-solid));
+  color: var(--tt-label);
+}
 
 .tt_dockPaneBody {
   position: relative;
@@ -983,7 +1108,7 @@
   flex-basis: auto;
   min-height: 0;
   border-left: none;
-  border-top: 1px solid var(--tt-border-strong);
+  border-top: 0.5px solid var(--tt-border-strong);
 }
 
 .tt_dockPane[data-side="bottom"] .tt_dockPaneResize {
@@ -1023,7 +1148,7 @@
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  background: radial-gradient(120% 70% at 50% 0%, rgba(255, 255, 255, .045), transparent 62%);
+  background: radial-gradient(120% 70% at 50% 0%, var(--tt-term-sheen), transparent 62%);
 }
 .tt_term {
   position: absolute;
@@ -1068,11 +1193,11 @@
 .tt_term .xterm-viewport::-webkit-scrollbar-thumb {
   border: 3px solid transparent;
   border-radius: var(--tt-r-pill);
-  background: rgba(255, 255, 255, .16);
+  background: var(--tt-term-scrollbar);
   background-clip: content-box;
 }
 .tt_term .xterm-viewport::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, .3);
+  background: var(--tt-term-scrollbar-hover);
   background-clip: content-box;
 }
 
@@ -1107,9 +1232,9 @@
   font-family: var(--tt-mono);
   font-size: 11px;
   line-height: 1;
-  color: rgba(255, 255, 255, .82);
-  background: rgba(255, 255, 255, .04);
-  border-bottom: 1px solid rgba(255, 255, 255, .08);
+  color: var(--tt-term-stats-fg);
+  background: var(--tt-term-stats-bg);
+  border-bottom: 1px solid var(--tt-term-stats-border);
 }
 .tt_statsBar::-webkit-scrollbar {
   display: none;
@@ -1134,11 +1259,11 @@
   width: 1px;
   align-self: stretch;
   margin: 7px var(--tt-gap-md);
-  background: rgba(255, 255, 255, .14);
+  background: var(--tt-term-stats-divider);
 }
 .tt_statsLabel {
   margin-right: 4px;
-  color: rgba(255, 255, 255, .5);
+  color: var(--tt-term-stats-label);
 }
 /*
  * 值槽位（D49）：每个值的**最小宽度**由 JS 按 STATS_ITEM_SPECS 的 slot 写成 inline
@@ -1147,7 +1272,7 @@
  * 这里只负责对齐；宽度是数据驱动的，写死在 CSS 里会随条目增删漂移。
  */
 .tt_statsValue {
-  color: rgba(255, 255, 255, .86);
+  color: var(--tt-term-stats-value);
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
@@ -1156,14 +1281,14 @@
   width: 34px;
   height: 7px;
   margin: 0 5px 0 1px;
-  border-radius: 2px;
+  border-radius: var(--dsw-radius-xs);
   overflow: hidden;
-  background: rgba(255, 255, 255, .14);
+  background: var(--tt-term-stats-track);
 }
 .tt_statsMeterFill {
   display: block;
   height: 100%;
-  border-radius: 2px;
+  border-radius: var(--dsw-radius-xs);
   background: var(--tt-success);
   transition: width var(--tt-dur) var(--tt-ease);
 }
@@ -1181,11 +1306,12 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(6, 9, 15, .58);
+  background: var(--tt-term-overlay);
   -webkit-backdrop-filter: blur(1.5px);
   backdrop-filter: blur(1.5px);
   color: var(--tt-term-fg);
   font-size: 13px;
+  line-height: 20px;
   cursor: pointer;
 }
 .tt_overlay:empty {
@@ -1201,10 +1327,10 @@
   gap: var(--tt-gap-md);
   max-width: 80%;
   padding: 12px 18px;
-  border: 1px solid rgba(255, 255, 255, .12);
+  border: 1px solid var(--tt-term-card-border);
   border-radius: var(--tt-r-xl);
-  background: rgba(18, 22, 31, .92);
-  box-shadow: 0 18px 44px -18px rgba(0, 0, 0, .8);
+  background: var(--tt-term-card-bg);
+  box-shadow: var(--dsw-elevation-prominent);
   text-align: left;
 }
 .tt_overlayIcon {
@@ -1238,6 +1364,7 @@
   background: color-mix(in srgb, var(--tt-accent) 15%, transparent);
   color: var(--tt-accent);
   font-size: 12px;
+  line-height: 18px;
   font-weight: 500;
 }
 
@@ -1253,11 +1380,12 @@
   gap: 10px;
   height: 40px;
   padding: 0 8px 0 10px;
-  border: 1px solid var(--tt-border-strong);
+  border: 0;
   border-radius: var(--tt-r-xl);
   color: var(--tt-label);
   font-size: 13px;
-  box-shadow: var(--tt-shadow);
+  line-height: 20px;
+  box-shadow: var(--dsw-elevation-panel);
   cursor: pointer;
   user-select: none;
   transition: border-color var(--tt-dur) var(--tt-ease), transform var(--tt-dur) var(--tt-ease), box-shadow var(--tt-dur) var(--tt-ease);
@@ -1272,7 +1400,7 @@
   display: flex;
   align-items: center;
   gap: var(--tt-gap-md);
-  font-weight: 600;
+  font-weight: 500;
   white-space: nowrap;
 }
 .tt_dockTitle svg {
@@ -1282,12 +1410,14 @@
   color: var(--tt-label-3);
   font-family: var(--tt-mono);
   font-size: 11px;
+  line-height: 16px;
   font-weight: 400;
 }
 .tt_dockStatus {
   max-width: 220px;
   color: var(--tt-label-3);
   font-size: 12px;
+  line-height: 18px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1300,6 +1430,7 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--tt-label-3);
 }
 .tt_dockDot[data-state=connected] {
@@ -1324,8 +1455,19 @@
   cursor: pointer;
   transition: background var(--tt-dur) var(--tt-ease), color var(--tt-dur) var(--tt-ease);
 }
+.tt_dockClose svg {
+  display: block;
+}
 .tt_dockClose:hover {
   background: color-mix(in srgb, var(--tt-danger) 14%, transparent);
+  color: var(--tt-danger);
+}
+.tt_dockClose:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+}
+/* 红底这一族按下再深一档红（灰的 interactive-bg-active 会跟 hover 打架） */
+.tt_dockClose:active {
+  background: color-mix(in srgb, var(--tt-danger) 20%, transparent);
   color: var(--tt-danger);
 }
 
@@ -1341,13 +1483,13 @@
   gap: 10px;
   max-width: min(560px, 92vw);
   padding: 11px 15px;
-  border: 1px solid var(--tt-border-strong);
+  border: 0;
   border-left: 3px solid var(--tt-warn);
   border-radius: var(--tt-r-xl);
   color: var(--tt-label);
   font-size: 13px;
   line-height: 1.55;
-  box-shadow: var(--tt-shadow-lg);
+  box-shadow: var(--dsw-elevation-prominent);
   transform: translateX(-50%);
   pointer-events: none;
   animation: ttToastIn .2s var(--tt-ease);
@@ -1388,9 +1530,9 @@
   min-width: 260px;
   max-width: 340px;
   padding: 6px;
-  border: 1px solid var(--tt-border-strong);
+  border: 0;
   border-radius: var(--tt-r-xl);
-  box-shadow: var(--tt-shadow);
+  box-shadow: var(--dsw-elevation-prominent);
   animation: ttPopIn .16s var(--tt-ease);
 }
 /*
@@ -1417,6 +1559,7 @@
   color: var(--tt-label);
   font: inherit;
   font-size: 13px;
+  line-height: 20px;
   text-align: left;
   white-space: nowrap;
   overflow: hidden;
@@ -1457,7 +1600,8 @@
 }
 .tt_addMenuSub {
   color: var(--tt-label-3);
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 18px;
 }
 .tt_addMenuRow {
   display: flex;
@@ -1484,8 +1628,16 @@
   cursor: pointer;
   transition: background var(--tt-dur) var(--tt-ease), color var(--tt-dur) var(--tt-ease);
 }
+.tt_addMenuEdit svg {
+  display: block;
+}
 .tt_addMenuEdit:hover {
-  background: var(--tt-hover);
+  background: var(--dsw-alias-interactive-bg-hover, var(--tt-hover));
+  color: var(--tt-label);
+}
+/* 按下比 hover 再深一档（同官方 .ghost:active） */
+.tt_addMenuEdit:active {
+  background: var(--dsw-alias-interactive-bg-active, var(--tt-hover-solid));
   color: var(--tt-label);
 }
 .tt_addMenuSep {
@@ -1496,7 +1648,12 @@
 .tt_addMenuTitle {
   padding: 6px 10px 3px;
   color: var(--tt-label-3);
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 18px;
+  /* 分组小标题：与 .tt_cardSection / .tt_sshSection 同角色，字重取同一个 500
+     （宿主 sectionTitle 就是 14/500/20）。少了这一条，同一族三个同角色标题
+     会出现 400 / 500 两种字重——比统一 500 更显眼。 */
+  font-weight: 500;
   letter-spacing: .02em;
 }
 
@@ -1534,7 +1691,8 @@
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--tt-label-3);
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 18px;
 }
 /*
  * 尾部 ✕：默认压暗（一屏十几个亮叉子太吵），行 hover / 键盘聚焦时才亮起来。
@@ -1548,6 +1706,10 @@
 .tt_tabMenuRow .tt_addMenuEdit:focus-visible {
   opacity: 1;
 }
+/* 键盘焦点环用官方写法。（原先这里连写两条同样的私有环，第二条是重复声明的笔误。） */
+.tt_tabMenuRow .tt_addMenuEdit:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+}
 
 /* ======================= 对话框通用 ======================= */
 
@@ -1559,7 +1721,7 @@
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: var(--dsw-alias-bg-mask-1, rgba(0, 0, 0, .45));
+  background: var(--dsw-alias-bg-mask-1);
   -webkit-backdrop-filter: blur(3px);
   backdrop-filter: blur(3px);
   animation: ttFadeIn .16s var(--tt-ease);
@@ -1572,10 +1734,10 @@
   max-height: 86vh;
   padding: 20px;
   overflow-y: auto;
-  border: 1px solid var(--tt-border);
+  border: 0;
   border-radius: var(--tt-r-2xl);
   color: var(--tt-label);
-  box-shadow: var(--tt-shadow-lg);
+  box-shadow: var(--dsw-elevation-prominent);
   animation: ttModalIn .18s var(--tt-ease);
 }
 .tt_sshTitle {
@@ -1584,6 +1746,7 @@
   gap: var(--tt-gap-md);
   margin: 0;
   font-size: 15px;
+  line-height: 22px;
   font-weight: 600;
 }
 .tt_sshTitle svg {
@@ -1640,6 +1803,7 @@
   gap: 6px;
   color: var(--tt-label-2);
   font-size: 12px;
+  line-height: 18px;
   cursor: pointer;
 }
 
@@ -1664,8 +1828,9 @@
 .tt_sshSection {
   margin: 4px 0 -2px;
   color: var(--tt-label-3);
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 500;
   letter-spacing: .04em;
 }
 .tt_sshGrid {
@@ -1685,13 +1850,12 @@
   align-items: center;
   gap: var(--tt-gap-md);
 }
-.tt_sshActions .tt_toolBtn,
-.tt_sshActions .tt_cardSave {
-  height: var(--tt-h-lg);
-  padding: 0 14px;
-  font-size: 12.5px;
-  box-sizing: border-box;
-}
+/*
+ * 原先这里把 SSH 对话框里的两个按钮单独抬到 H32 / 0 14px / 12.5px，而同一颗
+ * .tt_toolBtn / .tt_cardSave 在隧道对话框（.tt_tunnelActions 不覆盖）与设置卡片里都是
+ * sm 档（H28 / 0 10px / 12px·18px）——同一个变体在同一个包里两套尺寸，正是官方
+ * 「各变体保持相同尺寸与圆角」要排除的情况。尺寸与 box-sizing 现已由基类声明。
+ */
 /*
  * 状态带：定高（两行），错误与试连结果都落在这里。
  * 定高 = 消息出现 / 消失不改变卡片高度——卡片在遮罩里垂直居中，一变高整个对话框
@@ -1719,7 +1883,7 @@
   align-items: center;
   gap: var(--tt-gap-md);
   padding: 7px 0;
-  border-top: 1px solid var(--tt-border);
+  border-top: 0.5px solid var(--tt-border);
 }
 .tt_sshHostMeta {
   display: flex;
@@ -1731,6 +1895,7 @@
 .tt_sshHostName {
   color: var(--tt-label);
   font-size: 13px;
+  line-height: 20px;
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
@@ -1740,6 +1905,7 @@
   color: var(--tt-label-3);
   font-family: var(--tt-mono);
   font-size: 11.5px;
+  line-height: 18px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1781,8 +1947,10 @@
   padding: 1px 6px;
   border: 1px solid color-mix(in srgb, var(--tt-warn) 45%, transparent);
   border-radius: 999px;
+  corner-shape: round;
   color: var(--tt-warn);
   font-size: 11px;
+  line-height: 16px;
   white-space: nowrap;
 }
 /* 授权状态行：授权是逐能力的，撤销按钮与时刻要贴着**这个**开关，不跟别的开关混在一行 */
@@ -1792,6 +1960,7 @@
   gap: var(--tt-gap-sm);
   flex-wrap: wrap;
   font-size: 12px;
+  line-height: 18px;
   color: var(--tt-label-3);
 }
 .tt_capRevoke {
@@ -1846,11 +2015,12 @@
   flex: 1 1 auto;
   min-width: 0;
   padding: 6px 8px;
-  border: 1px solid var(--tt-border);
-  border-radius: var(--tt-r-sm, 6px);
+  border: 0.5px solid var(--tt-border);
+  border-radius: var(--tt-r-sm);
   background: var(--tt-input);
   font-family: var(--tt-mono);
   font-size: 11px;
+  line-height: 16px;
   overflow-wrap: anywhere;
   user-select: all;
 }
@@ -1860,7 +2030,7 @@
   gap: var(--tt-gap-md);
   margin: 4px 0 8px;
   padding: 12px;
-  border: 1px solid var(--tt-border);
+  border: 0.5px solid var(--tt-border);
   border-radius: var(--tt-r-lg);
   background: var(--tt-surface-2);
 }
@@ -1921,7 +2091,7 @@
   gap: 0;
   flex: 1 1 190px;
   min-width: 0;
-  border: 1px solid var(--tt-border);
+  border: 0.5px solid var(--tt-border);
   border-radius: var(--tt-r-md);
   background: var(--tt-surface-2);
   overflow: hidden;
@@ -1991,7 +2161,7 @@
   flex: none;
   padding: 2px;
   gap: 2px;
-  border: 1px solid var(--tt-border);
+  border: 0.5px solid var(--tt-border);
   border-radius: var(--tt-r-md);
   background: var(--tt-surface-2);
 }
@@ -2003,21 +2173,39 @@
   color: var(--tt-label-2);
   font: inherit;
   font-size: 12px;
+  /* 字号必须与行高成对（官方 web-styling）：只写 font-size 时行高走 normal，
+     分段高度会随字体度量漂移；12px 对应 18px。 */
+  line-height: 18px;
   cursor: pointer;
 }
+.tt_segmentedBtn:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+}
+/* 按下态写在 [data-active] 之前：同权重下后者必须仍然赢，选中的那段按下去不能闪成灰 */
+.tt_segmentedBtn:active:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-active, var(--tt-hover-solid));
+}
+.tt_segmentedBtn:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
 .tt_segmentedBtn:hover {
-  color: var(--tt-label-1);
+  /* 悬停加深一档：--tt-label（同族里最深的那个）。原先写的是 --tt-label-1——
+     本文件从未定义过这个名字，而这条 color 没有 fallback，**整条声明因此作废**
+     （悬停时文字不变色，看起来像「hover 没生效」）。守卫：client-lint 检查五。 */
+  color: var(--tt-label);
 }
 .tt_segmentedBtn[data-active] {
   background: var(--tt-accent);
-  color: #fff;
+  color: var(--dsw-alias-label-primary-foreground);
 }
 /* 端点下方那行说明（这一端到底是什么角色） */
 .tt_tunnelEndLabel {
   flex: 1 1 190px;
   min-width: 0;
   color: var(--tt-label-3);
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 18px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2042,6 +2230,7 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
+  corner-shape: round;
   background: var(--tt-label-3);
 }
 .tt_tunnelDot[data-state=active] {
@@ -2061,7 +2250,7 @@
   max-height: 136px;
   padding: 4px;
   overflow-y: auto;
-  border: 1px solid var(--tt-border);
+  border: 0.5px solid var(--tt-border);
   border-radius: var(--tt-r-md);
   background: var(--tt-surface-2);
 }
@@ -2076,6 +2265,7 @@
   color: var(--tt-label);
   font-family: var(--tt-mono);
   font-size: 12px;
+  line-height: 18px;
   text-align: left;
   cursor: pointer;
   transition: background var(--tt-dur) var(--tt-ease);
@@ -2090,7 +2280,8 @@
 .tt_envMore {
   padding: 4px 8px;
   color: var(--tt-label-3);
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 18px;
 }
 .tt_shellList {
   margin-top: 6px;
@@ -2140,10 +2331,10 @@
   height: min(660px, 86vh);
   padding: 18px;
   overflow: hidden;
-  border: 1px solid var(--tt-border);
+  border: 0;
   border-radius: var(--tt-r-2xl);
   color: var(--tt-label);
-  box-shadow: var(--tt-shadow-lg);
+  box-shadow: var(--dsw-elevation-prominent);
   animation: ttModalIn .18s var(--tt-ease);
 }
 .tt_sftpDualCard {
@@ -2154,10 +2345,10 @@
   height: min(760px, 88vh);
   padding: 18px;
   overflow: hidden;
-  border: 1px solid var(--tt-border);
+  border: 0;
   border-radius: var(--tt-r-2xl);
   color: var(--tt-label);
-  box-shadow: var(--tt-shadow-lg);
+  box-shadow: var(--dsw-elevation-prominent);
   animation: ttModalIn .18s var(--tt-ease);
 }
 .tt_sftpTitleRow {
@@ -2179,12 +2370,13 @@
   min-width: 0;
   height: var(--tt-h-lg);
   padding: 0 11px;
-  border: 1px solid var(--tt-border-strong);
+  border: 0.5px solid var(--tt-border-strong);
   border-radius: var(--tt-r-md);
   background: var(--tt-input);
   color: inherit;
   font-family: var(--tt-mono);
   font-size: 12px;
+  line-height: 18px;
   box-sizing: border-box;
   transition: border-color var(--tt-dur) var(--tt-ease), box-shadow var(--tt-dur) var(--tt-ease);
 }
@@ -2200,7 +2392,7 @@
   min-height: 200px;
   padding: 4px;
   overflow-y: auto;
-  border: 1px solid var(--tt-border);
+  border: 0.5px solid var(--tt-border);
   border-radius: var(--tt-r-lg);
   background: var(--tt-surface-2);
 }
@@ -2221,6 +2413,7 @@
   color: var(--tt-label);
   font: inherit;
   font-size: 13px;
+  line-height: 20px;
   text-align: left;
   cursor: pointer;
   transition: background var(--tt-dur) var(--tt-ease);
@@ -2258,6 +2451,7 @@
   color: var(--tt-label-3);
   font-family: var(--tt-mono);
   font-size: 11px;
+  line-height: 16px;
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
@@ -2283,6 +2477,15 @@
 .tt_sftpAct[data-danger] {
   opacity: 1;
 }
+
+.tt_sftpAct:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+}
+/* 按下比 hover 再深一档；红字变体（[data-danger]）有自己的红底，不吃这层灰 */
+.tt_sftpAct:active:not([data-danger]) {
+  background: var(--dsw-alias-interactive-bg-active, var(--tt-hover-solid));
+  color: var(--tt-label);
+}
 .tt_sftpAct:hover {
   background: var(--tt-hover);
   color: var(--tt-label);
@@ -2292,6 +2495,7 @@
   padding: 0 7px;
   color: var(--tt-danger);
   font-size: 12px;
+  line-height: 18px;
   font-weight: 600;
 }
 .tt_sftpAct[data-danger]:hover {
@@ -2307,6 +2511,7 @@
   min-width: 0;
   height: var(--tt-h-lg);
   font-size: 12px;
+  line-height: 18px;
 }
 .tt_sftpFoot {
   display: flex;
@@ -2344,12 +2549,14 @@
   height: 5px;
   overflow: hidden;
   border-radius: var(--tt-r-pill);
+  corner-shape: round;
   background: color-mix(in srgb, var(--tt-label-3) 24%, transparent);
 }
 .tt_sftpFill {
   width: 0;
   height: 100%;
   border-radius: var(--tt-r-pill);
+  corner-shape: round;
   background: linear-gradient(90deg, color-mix(in srgb, var(--tt-accent) 70%, #fff 6%), var(--tt-accent));
   transition: width .15s linear;
 }
@@ -2366,6 +2573,7 @@
   color: var(--tt-label-3);
   font-family: var(--tt-mono);
   font-size: 11px;
+  line-height: 16px;
   text-align: right;
   white-space: nowrap;
   overflow: hidden;
@@ -2379,7 +2587,7 @@
   width: 18px;
   height: 18px;
   padding: 0;
-  border: 1px solid var(--tt-border);
+  border: 0.5px solid var(--tt-border);
   border-radius: var(--tt-r-sm);
   background: 0 0;
   color: var(--tt-label-3);
@@ -2388,14 +2596,24 @@
   cursor: pointer;
   transition: color var(--tt-dur) var(--tt-ease), border-color var(--tt-dur) var(--tt-ease), background var(--tt-dur) var(--tt-ease);
 }
+.tt_sftpCancel svg {
+  display: block;
+}
 .tt_sftpCancel:hover:not(:disabled) {
   border-color: var(--tt-danger);
   background: color-mix(in srgb, var(--tt-danger) 12%, transparent);
   color: var(--tt-danger);
 }
+.tt_sftpCancel:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+}
+/* 这一族的 hover 是红底，按下就再深一档红：换成灰的 interactive-bg-active 会跟 hover 打架 */
+.tt_sftpCancel:active:not(:disabled) {
+  background: color-mix(in srgb, var(--tt-danger) 20%, transparent);
+}
 .tt_sftpCancel:disabled {
   opacity: .4;
-  cursor: default;
+  cursor: not-allowed;
 }
 .tt_sftpDual {
   display: flex;
@@ -2417,13 +2635,15 @@
   gap: var(--tt-gap-md);
   color: var(--tt-label-2);
   font-size: 12px;
-  font-weight: 600;
+  line-height: 18px;
+  font-weight: 500;
   white-space: nowrap;
 }
 .tt_sftpPaneMeta {
   color: var(--tt-label-3);
   font-family: var(--tt-mono);
   font-size: 11px;
+  line-height: 16px;
   font-weight: 400;
   font-variant-numeric: tabular-nums;
 }
@@ -2436,17 +2656,20 @@
 .tt_pageHost { display: block; }
 
 .tt_card {
-  border: 1px solid var(--tt-border-strong);
-  border-radius: var(--tt-r-2xl);
-  background: var(--tt-surface-3);
+  /* 与宿主设置卡片同材质：.5px 发丝描边 + settings-card 底 + radius-xl。
+     原先的 1px border-strong + 16px 圆角 + surface-3 是「另一套」——宿主自己三张卡片都不这么写。 */
+  border: .5px solid var(--tt-stroke-card);
+  border-radius: var(--dsw-radius-xl);
+  background: var(--tt-surface-card);
   list-style: none;
   transition: border-color var(--tt-dur) var(--tt-ease), background var(--tt-dur) var(--tt-ease);
 }
 .tt_card:hover {
   border-color: var(--dsw-alias-label-dimmed, var(--tt-border-strong));
 }
+/* 展开态比折叠态低一档：底色整体上移一档（fill 已是 layer-2）后，这里落到 layer-1 */
 .tt_cardOpen {
-  background: var(--tt-surface-2);
+  background: var(--dsw-alias-bg-layer-1);
   border-color: var(--dsw-alias-label-dimmed, var(--tt-border-strong));
 }
 .tt_cardHeader {
@@ -2456,7 +2679,7 @@
   width: 100%;
   padding: 14px 16px;
   border: 0;
-  border-radius: var(--tt-r-2xl);
+  border-radius: var(--dsw-radius-xl);
   background: 0 0;
   color: inherit;
   font: inherit;
@@ -2477,7 +2700,7 @@
 .tt_cardName {
   color: var(--tt-label);
   font-size: 15px;
-  font-weight: 600;
+  font-weight: 500;
   line-height: 1.4;
 }
 /* dsh-plugin-kit 套件徽标（约定见 @hyzyn/dsh-kit README：全部 kit 设置卡片共用） */
@@ -2486,13 +2709,17 @@
   margin-left: auto;
   padding: 1px 8px;
   border-radius: 999px;
+  corner-shape: round;
   font-size: 11px;
   font-weight: 600;
   line-height: 16px;
   letter-spacing: 0.02em;
   color: var(--tt-label-3);
-  background: var(--tt-bg-2, var(--dsw-alias-bg-layer-2));
-  border: 1px solid var(--tt-border, var(--dsw-alias-border-l1));
+  /* 原先写的是 --tt-bg-2（本文件从未定义）——有 fallback 所以不报错，但会**静默降级**成
+     --dsw-alias-bg-layer-2，绕过了 --tt-* 令牌层（皮肤下拿不到本包的层 2 取值）。
+     真名是 --tt-surface-2。守卫：client-lint 检查五。 */
+  background: var(--tt-surface-2, var(--dsw-alias-bg-layer-2));
+  border: 0.5px solid var(--tt-border, var(--dsw-alias-border-l1));
 }
 .tt_cardDescription {
   color: var(--tt-label-3);
@@ -2510,15 +2737,16 @@
 .tt_cardBody {
   margin: 0 16px;
   padding-bottom: 10px;
-  border-top: 1px solid var(--tt-border-strong);
+  border-top: 0.5px solid var(--tt-border-strong);
 }
 .tt_cardSection {
   margin: 14px 0 -4px;
   padding-top: 12px;
-  border-top: 1px solid var(--tt-border-strong);
+  border-top: 0.5px solid var(--tt-border-strong);
   color: var(--tt-label-2);
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 12px;
+  line-height: 18px;
+  font-weight: 500;
   letter-spacing: .04em;
 }
 .tt_cardSection:first-child {
@@ -2533,7 +2761,7 @@
   padding: 12px 0;
 }
 .tt_cardField + .tt_cardField {
-  border-top: 1px solid var(--tt-border);
+  border-top: 0.5px solid var(--tt-border);
 }
 .tt_cardLabel {
   flex: 1;
@@ -2546,7 +2774,7 @@
 .tt_cardInput {
   height: 34px;
   padding: 0 12px;
-  border: 1px solid var(--tt-border-strong);
+  border: 0.5px solid var(--tt-border-strong);
   border-radius: var(--tt-r-md);
   background: var(--tt-input);
   color: var(--tt-label);
@@ -2562,10 +2790,23 @@
   outline: none;
   box-shadow: var(--tt-ring);
 }
+/*
+ * 「选中态」走宿主的中性 brand，不走 --tt-accent：宿主 Checkbox 的 accent-color 与 Switch
+ * 的开启态都是 `--dsw-alias-brand-primary`（浅色近黑、深色近白），而 --tt-accent 是本包的
+ * **强调蓝**（business-primary #4176e6，给状态与徽标用）。尺寸 16×16 与宿主一致。
+ * 判据见 scripts/client-style-spec.mjs 检查十四。
+ */
 .tt_cardCheckbox {
   width: 16px;
   height: 16px;
-  accent-color: var(--tt-accent);
+  margin: 0;
+  flex: none;
+  cursor: pointer;
+  accent-color: var(--dsw-alias-brand-primary);
+}
+.tt_cardCheckbox:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: 2px;
 }
 .tt_cardRow {
   display: flex;
@@ -2600,15 +2841,29 @@
   /* 与字段标题拉开层级：说明文字用更细的字重 + 略松的行高 */
   font-weight: 400;
 }
+/*
+ * 主按钮 = 宿主 Button variant="primary" size="sm"：H28 / R8 / 12px·18px / 0 10px。
+ * 原先是 padding 6px 16px + 13px/1.5 + R12（实高 ≈34px，落在 sm 与 md 之间），
+ * 与同一行的次要按钮（.tt_toolBtn 的 0 10px）逐项对不上——官方要求填充/描边/
+ * ghost/禁用各变体保持同一尺寸与圆角，所以这里按 sm 档收齐。
+ * border 用 none 跟 .button 基类一致（原 1px solid transparent 会白占 1px 宽）。
+ */
 .tt_cardSave {
-  padding: 6px 16px;
-  border: 1px solid transparent;
-  border-radius: var(--tt-r-md);
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: var(--tt-h-md);
+  padding: 0 10px;
+  border: none;
+  border-radius: var(--dsw-radius-sm);
   background: var(--dsw-alias-button-primary-fill, var(--tt-label));
-  color: var(--dsw-alias-label-primary-foreground, #fff);
+  color: var(--dsw-alias-label-primary-foreground);
   font: inherit;
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
   cursor: pointer;
   transition: background var(--tt-dur) var(--tt-ease), transform .1s var(--tt-ease);
 }
@@ -2616,11 +2871,15 @@
   background: var(--dsw-alias-button-primary-hover, var(--tt-accent));
 }
 .tt_cardSave:active:not(:disabled) {
+  /* 官方 .primary 没有按下底色（只有 .ghost 有），保留本包的轻微缩放反馈 */
   transform: scale(.98);
 }
+.tt_cardSave:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+}
 .tt_cardSave:disabled {
-  opacity: .45;
-  cursor: default;
+  opacity: .4;
+  cursor: not-allowed;
 }
 .tt_cardMessage {
   margin: 8px 0 0;
@@ -2653,8 +2912,9 @@
   max-width: calc(100% - var(--tt-gap-xl) * 2);
   height: var(--tt-h-sm);
   padding: 0 10px;
-  border: 1px solid var(--tt-border-strong);
+  border: 0;
   border-radius: var(--tt-r-pill);
+  corner-shape: round;
   background: var(--tt-surface-solid);
   color: var(--tt-label-2);
   font: inherit;
@@ -2662,7 +2922,7 @@
   line-height: 1;
   white-space: nowrap;
   cursor: pointer;
-  box-shadow: var(--tt-shadow);
+  box-shadow: var(--dsw-elevation-panel);
   transition: color var(--tt-dur) var(--tt-ease), border-color var(--tt-dur) var(--tt-ease),
     box-shadow var(--tt-dur) var(--tt-ease), transform var(--tt-dur) var(--tt-ease);
 }
@@ -2675,6 +2935,7 @@
   width: 6px;
   height: 6px;
   border-radius: var(--tt-r-pill);
+  corner-shape: round;
   background: var(--tt-danger);
 }
 /* flex 子项的 min-width 默认是 auto，不写这条省略号永远不生效（只会把按钮撑宽） */
@@ -2693,8 +2954,7 @@
   transform: scale(.97);
 }
 .tt_assistBadge:focus-visible {
-  outline: none;
-  box-shadow: var(--tt-ring);
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
 }
 /*
  * 这条 [hidden] 兜底不是冗余：上面给了作者样式的 display:inline-flex，UA 表那条
@@ -2717,7 +2977,7 @@
   align-items: center;
   gap: var(--tt-gap-md);
   padding-bottom: 10px;
-  border-bottom: 1px solid var(--tt-border);
+  border-bottom: 0.5px solid var(--tt-border);
 }
 /* 标题前的红点与徽标呼应：一眼认出这是「刚才那条失败」的同一个面 */
 .tt_assistTitle {
@@ -2726,7 +2986,8 @@
   gap: 7px;
   color: var(--tt-label);
   font-size: 13.5px;
-  font-weight: 600;
+  line-height: 20px;
+  font-weight: 500;
 }
 .tt_assistTitle::before {
   content: '';
@@ -2734,6 +2995,7 @@
   width: 6px;
   height: 6px;
   border-radius: var(--tt-r-pill);
+  corner-shape: round;
   background: var(--tt-danger);
 }
 /* 退出码做成药丸：它是这一屏信息量最大的一条，不该是一行右对齐的灰色小字 */
@@ -2741,6 +3003,7 @@
   margin-left: auto;
   padding: 2px 8px;
   border-radius: var(--tt-r-pill);
+  corner-shape: round;
   background: color-mix(in srgb, var(--tt-danger) 12%, transparent);
   color: var(--tt-danger);
   font-family: var(--tt-mono);
@@ -2773,6 +3036,7 @@
   border: 1.5px solid color-mix(in srgb, var(--tt-label-3) 40%, transparent);
   border-top-color: var(--tt-accent);
   border-radius: var(--tt-r-pill);
+  corner-shape: round;
   animation: ttSpin .7s linear infinite;
 }
 @keyframes ttSpin {
@@ -2806,7 +3070,8 @@
   display: block;
   padding: 6px 10px 0;
   color: color-mix(in srgb, var(--tt-term-fg) 55%, transparent);
-  font-size: 11px;
+  font-size: 12px;
+  line-height: 18px;
 }
 .tt_assistCmd {
   padding: 3px 10px 8px;
@@ -2826,12 +3091,19 @@
 /* 主操作做实心：三个按钮里只有「填入」会动你的终端，层级就该跟另外两个不一样 */
 .tt_assistFill,
 .tt_assistFill:hover:not(:disabled) {
+  /*
+   * 「填入」是浮层里唯一会动终端的主操作 → 取宿主 Button variant="primary" 的填充令牌。
+   * 原先的 --tt-accent 展开是 --dsw-alias-state-business-primary（强调蓝）：宿主拿它当
+   * 图标 / 徽标 / 圆形发送键的颜色，按钮填充用的是 --dsw-alias-button-primary-fill
+   * （浅色近黑、深色近白）——这是肉眼可辨的色差。hover 同理交给 -primary-hover，
+   * 不再手工 color-mix 压暗（那条公式只对强调蓝成立）。
+   */
   border-color: transparent;
-  background: var(--tt-accent);
-  color: #fff;
+  background: var(--dsw-alias-button-primary-fill, var(--tt-label));
+  color: var(--dsw-alias-label-primary-foreground);
 }
 .tt_assistFill:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--tt-accent) 86%, #000);
+  background: var(--dsw-alias-button-primary-hover, var(--tt-accent));
 }
 /* 关闭是「什么都不做」的那条路：去边框、推到最右，与两个动作分开 */
 .tt_assistClose {
@@ -2848,8 +3120,8 @@
   display: block;
   margin-top: 8px;
   color: var(--tt-label-2);
-  font-size: 11.5px;
-  line-height: 1.5;
+  font-size: 12px;
+  line-height: 18px;
 }
 
 /* ======================= 动效降级 ======================= */

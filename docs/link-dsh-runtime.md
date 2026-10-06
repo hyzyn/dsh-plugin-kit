@@ -64,7 +64,7 @@ tail node_modules/.dsh-links.log
 
 客户端半体只许引用宿主主题里**真实存在**的 `--dsw-*` 变量——写错一个名字，那条
 `border` / `background` 声明会**整条作废**（框直接消失，规则与四个真机现场见
-[conventions.md § 客户端半体 ④](./conventions.md#客户端半体四条硬规矩)）。那张名字表是**生成物**，
+[conventions.md § 客户端半体 ④](./conventions.md#客户端半体六条硬规矩)）。那张名字表是**生成物**，
 从同一个运行时存储目录里的 `@deepseek-ai/dsh-client-ui-theme/lib/client.js` 抽出来：
 
 ```bash

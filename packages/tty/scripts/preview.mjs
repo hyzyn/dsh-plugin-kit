@@ -70,6 +70,7 @@ const SCENARIOS = [
   ['settings-docker', '设置卡片（docker 与 tty 并排对照）'],
   ['docker-stale-book', 'docker 设置卡片：失效的连接簿引用要看得出来'],
   ['tunnel-edit', '端口转发：编辑隧道（回填 / 改端口换名 / 停用的不被启用）'],
+  ['port-warn', '端口转发：保存时宿主报端口占用（警告档，不是成功也不是失败）'],
   ['sftp', 'SFTP 单窗体（挂右侧挂载位）'],
   ['sftp-dual', 'SFTP 双栏（挂右侧挂载位）'],
   ['sftp-fallback', 'SFTP 落点回退（抽屉被容器面板占用 → 对话框）'],
@@ -151,10 +152,46 @@ function skinCss() {
       if (existsSync(file)) candidates.push(file)
     }
   }
-  if (candidates.length > 0) return readFileSync(candidates[0], 'utf8')
+  // 基础层**始终**在前：它住在宿主的 base.css / focus.css / corner-shape.css 里，
+  // 真皮肤表里没有这些名字（实测 blue-fantasy 一条都不含）。
+  if (candidates.length > 0) return BASE_LAYER_CSS + '\n' + readFileSync(candidates[0], 'utf8')
   log('未找到本机 skin token 表，使用内置兜底变量')
-  return FALLBACK_SKIN_CSS
+  return BASE_LAYER_CSS + '\n' + FALLBACK_SKIN_CSS
 }
+
+/**
+ * 宿主基础层：圆角阶梯、卡片材质、焦点环、全局超椭圆。
+ *
+ * 值取自 `@deepseek-ai/dsh-client-ui-theme` 的 `base.css` / `focus.css` / `corner-shape.css`
+ * ——**名字与值都必须与真主题逐字一致**：夹具里缺一个名字的代价是「预览是对的、只有真机是错的」
+ * （卡片改走 `--dsw-radius-xl` 后，缺了它圆角算成 0，而真机是 20px）。
+ * 真皮肤表只有「皮肤」那一层，基础层必须由这里补。
+ *
+ * 本包 client-src 引用的**每一个** --dsw-* 都必须在这里（或真皮肤表里）能解析出值：生产 CSS
+ * 已按 client-lint 检查十六去掉所有颜色字面量兜底，假主题就是「脱离宿主」时唯一的兜底。
+ */
+const BASE_LAYER_CSS = `
+:root{
+  --dsw-radius-xs:4px; --dsw-radius-sm:8px; --dsw-radius-md:12px; --dsw-radius-lg:16px; --dsw-radius-xl:20px;
+  --dsw-radius-panel:28px;
+  --dsw-alias-settings-card-fill:var(--dsw-alias-bg-layer-2);
+  --dsw-alias-settings-card-stroke:var(--dsw-alias-border-l4);
+  --dsw-focus-ring-width:2px;
+  /* 宿主 focus.css 只声明宽度，颜色走 var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary))
+     —— 这里按宿主那条兜底表达式把「最近语义令牌」补上，别写死某个蓝。 */
+  --dsw-focus-ring-color:var(--dsw-alias-state-business-primary);
+}
+/* elevation 与宿主 gradient-shadow-text.css 逐字相同，且必须声明在 body 上（不是 :root）：
+   它内含 var(--dsw-elevation-stroke-color) → var(--dsw-alias-border-l4)，在 :root 上求值就
+   钉死了浅色档，深色主题下描边色不会跟着走。 */
+body, body *{
+  --dsw-elevation-stroke-color:var(--dsw-alias-border-l4);
+  --dsw-elevation-stroke:0 0 0 .5px var(--dsw-elevation-stroke-color);
+  --dsw-elevation-panel:var(--dsw-elevation-stroke), 0 3px 8px 0 #00000008, 0 0 16px 0 #00000005;
+  --dsw-elevation-prominent:var(--dsw-elevation-stroke), 0 3px 8px 0 #0000000a, 0 0 20px 0 #0000000d;
+}
+@supports (corner-shape:superellipse(1.5)){:root{--dsw-corner-shape:superellipse(1.5)}*,:before,:after{corner-shape:var(--dsw-corner-shape)}}
+`
 
 const FALLBACK_SKIN_CSS = `
 :root {
@@ -181,6 +218,10 @@ const FALLBACK_SKIN_CSS = `
   --dsw-alias-state-error-primary: #d1242f;
   --dsw-alias-state-success-primary: #1a7f37;
   --dsw-alias-state-warn-primary: #bf8700;
+  --dsw-alias-button-primary-fill: #0f1115;
+  --dsw-alias-button-primary-hover: #43454a;
+  --dsw-alias-interactive-bg-hover-solid: #f1f3f5;
+  --dsw-alias-label-primary-foreground: #fff;
   --dsw-specific-input-major: #ffffff;
   --dsw-specific-menu: #ffffff;
   --dsw-specific-tip: #f6f7f9;
@@ -215,6 +256,10 @@ body[data-ds-dark-theme] {
   --dsw-alias-state-error-primary: #ff6b6b;
   --dsw-alias-state-success-primary: #4cc38a;
   --dsw-alias-state-warn-primary: #e0a94a;
+  --dsw-alias-button-primary-fill: #f9fafb;
+  --dsw-alias-button-primary-hover: #ebeef2;
+  --dsw-alias-interactive-bg-hover-solid: #353638;
+  --dsw-alias-label-primary-foreground: #0f1115;
   --dsw-specific-input-major: #17171a;
   --dsw-specific-menu: #24242af0;
   --dsw-specific-tip: #24242a;

@@ -171,6 +171,7 @@ build + typecheck + 聚合检查 → 按依赖序发布全部包（registry 上�
 | `404 Not found - PUT <包名>` / `404 ... install from a tarball` | token 对该包无发布权（npm 故意 404 隐藏存在性）：检查 granular token 的 Packages and scopes 是否勾到该包、权限是否 Read and write |
 | 用户报 `ERR_PNPM_WORKSPACE_PKG_NOT_FOUND ... "@hyzyn/dsh-kit@workspace:*"` | 某包依赖残留 `workspace:*`：从 git 子路径安装必炸（npm 安装正常，因为 publish 期已转换）。改真实版本 + bump 受影响包重发；本地先跑 `node scripts/check-publishable.mjs` 确认 |
 | `check-kit-pins` 报「全仓出现 N 个不同的 kit 钉子」或「全仓钉子 X ≠ packages/kit 的版本 Y」 | 本轮的 bump 只跟了部分消费者。把点名的包改成本轮 kit 的精确版本、**同一轮一起发**（顺序照门槛 1：bump → `pnpm aggregate` → `pnpm install --lockfile-only`）。为什么不能只发一半：hoisted 布局下两份 kit 会让 `kit D11` 的模块级单例失效 |
+| 手动兜底发布时 `pnpm publish` 说 `This command requires you to be logged in to https://registry.npmmirror.com/`，或包发完在 npmjs 上查不到 | **本机 registry 指向了镜像**（`npm config get registry`，2026-10-06 实测本机为 `registry.npmmirror.com`）：手动流会把包往镜像发、真 registry 上自然没有。**CI 路径不受影响**——runner 上是干净的 npmjs 配置，脚本又显式把 token 写进 `~/.npmrc`、回查直接打 `registry.npmjs.org`。本地手动发布前改用 `pnpm publish --registry https://registry.npmjs.org`（或临时 `npm config set registry`），发完确认改回 |
 
 校验 token 身份（不泄露值）：
 

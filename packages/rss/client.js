@@ -22,125 +22,171 @@ window.__ModuleLoader__.load({
 
     const CSS = [
       '.rss_pageHost{display:block}',
-      '.rss_pluginCard{list-style:none;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);border-radius:12px;transition:border-color .16s,background .16s}',
+      '.rss_pluginCard{list-style:none;border:.5px solid var(--dsw-alias-settings-card-stroke);background:var(--dsw-alias-settings-card-fill);border-radius:var(--dsw-radius-xl);transition:border-color .16s,background .16s}',
       '.rss_pluginCard:hover{border-color:var(--dsw-alias-label-dimmed)}',
-      '.rss_pluginCardOpen{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-label-dimmed)}',
-      '.rss_cardHeader{appearance:none;width:100%;color:inherit;font:inherit;text-align:left;cursor:pointer;background:0 0;border:0;border-radius:12px;display:flex;align-items:center;gap:12px;padding:14px 16px}',
-      '.rss_cardHeader:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}',
+      '.rss_pluginCardOpen{background:var(--dsw-alias-bg-layer-1);border-color:var(--dsw-alias-label-dimmed)}',
+      '.rss_cardHeader{appearance:none;width:100%;color:inherit;font:inherit;text-align:left;cursor:pointer;background:0 0;border:0;border-radius:var(--dsw-radius-xl);display:flex;align-items:center;gap:12px;padding:14px 16px}',
+      '.rss_cardHeader:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:-2px}',
       '.rss_cardHeadText{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}',
-      '.rss_cardName{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:600}',
-      '.dshkit_badge{flex:none;margin-left:auto;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:600;line-height:16px;letter-spacing:.02em;color:var(--dsw-alias-label-dimmed);background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1)}',
-      '.rss_cardDescription{color:var(--dsw-alias-label-secondary);font-size:12px}',
+      // 卡片标题 = 宿主 cardTitle 的角色（14 / 500 / 20）；说明行是正文 12/18。
+      // 行高按官方成对值写（规范：font-size 必须配 line-height）。
+      '.rss_cardName{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:500;line-height:20px}',
+      '.dshkit_badge{flex:none;margin-left:auto;padding:1px 8px;border-radius:999px;corner-shape:round;font-size:11px;font-weight:600;line-height:16px;letter-spacing:.02em;color:var(--dsw-alias-label-dimmed);background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1)}',
+      '.rss_cardDescription{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}',
       '.rss_chevron{flex:none;color:var(--dsw-alias-label-tertiary);transition:transform .16s}',
       '.rss_pluginCardOpen .rss_chevron{transform:rotate(180deg)}',
       '.rss_cardBody{padding:2px 16px 16px}',
       '.rss_panel{display:flex;flex-direction:column;gap:12px;color:var(--dsw-alias-label-primary);font-family:var(--dsw-font-family);box-sizing:border-box}',
       '.rss_panelHeader{display:flex;align-items:center;gap:8px 10px;flex:none;flex-wrap:wrap;position:sticky;top:0;z-index:20;background:var(--dsw-alias-bg-layer-3);padding:8px 0;margin:-2px 0 0}',
-      '.rss_panelTitle{margin:0;font-size:15px;font-weight:700;white-space:nowrap;flex:1;min-width:0}',
+      '.rss_panelTitle{margin:0;font-size:15px;font-weight:500;line-height:22px;white-space:nowrap;flex:1;min-width:0}',
       '.rss_toolbar{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex:1 1 100%;min-width:0;flex-wrap:wrap}',
-      '.rss_btn{color:var(--dsw-alias-label-primary-foreground);background:var(--dsw-alias-button-info-fill);border:none;border-radius:8px;padding:6px 14px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}',
-      '.rss_btn:hover:not(:disabled){background:var(--dsw-alias-button-info-hover)}',
-      '.rss_btn:disabled{opacity:.5;cursor:default}',
-      '.rss_btnGhost{color:var(--dsw-alias-label-primary);background:0 0;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:5px 12px;font-size:12px;cursor:pointer;white-space:nowrap}',
+      // 按钮族对齐宿主 ui-primitives 的 Button：本包属 H28 档，故统一取官方 size="sm"
+      // （H28 / R8 / 12px + 18px / padding 0 10px），填充与描边**逐项同尺寸**。
+      // 底色从 --dsw-alias-button-info-fill 换成 button-primary-fill：前者是宿主给图标/徽标/
+      // 圆形发送键的**强调蓝**，后者才是 .primary 的填充（浅色近黑、深色近白）；不设字重。
+      '.rss_btn{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;gap:4px;height:28px;padding:0 10px;border:none;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground);font-family:inherit;font-size:12px;line-height:18px;white-space:nowrap;cursor:pointer}',
+      '.rss_btn:hover:not(:disabled){background:var(--dsw-alias-button-primary-hover)}',
+      '.rss_btn:disabled{opacity:.4;cursor:not-allowed}',
+      '.rss_btn:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary))}',
+      // 描边档 = Button variant="outline" size="sm"：尺寸与主按钮逐项一致，只差描边与底色；
+      // 描边取 border-l3（宿主 .outline 那一档）。焦点环去掉 outline-offset——宿主 51 处官方写法都不带。
+      '.rss_btnGhost{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;gap:4px;height:28px;padding:0 10px;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-primary);font-family:inherit;font-size:12px;line-height:18px;white-space:nowrap;cursor:pointer}',
       '.rss_btnGhost:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}',
-      '.rss_btnGhost:disabled{opacity:.45;cursor:default}',
-      '.rss_btnGhost:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}',
+      '.rss_btnGhost:active:not(:disabled){background:var(--dsw-alias-interactive-bg-active)}',
+      '.rss_btnGhost:disabled{opacity:.4;cursor:not-allowed}',
+      '.rss_btnGhost:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary))}',
+      // 危险按钮 = 宿主 plugin-manager「卸载」的 danger 配方（透明底 + 30% 红描边 + 8% 红 hover），
+      // 与 docker / codegraph / env / mcp 的 *.btnDanger 同一套。用法：class="rss_btnGhost rss_btnDanger"
+      // （几何与禁用态/焦点态都走 .rss_btnGhost，这里只覆盖颜色）。
+      // 必须写在 .rss_btnGhost:hover 之后：两者权重相同，先写会被中性灰 hover 盖掉。
+      // 此前这里是红字链接 + 点状下划线——那是「链接」的示能，不是按钮。
+      '.rss_btnDanger{color:var(--dsw-alias-state-error-primary);border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 30%,transparent)}',
+      '.rss_btnDanger:hover:not(:disabled){background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 8%,transparent)}',
       // 图标按钮不带可见边框：这个家族里图标按钮一律靠 hover 底色表达可点（宿主 .hHd-Xa_iconButton、
       // 同弹窗 .rss_modalClose、docker .dk_iconBtn 都如此），边框是文字按钮的语汇。
       // 仍留 1px transparent 占位，保证盒子尺寸与 hover 时不跳动。
-      '.rss_btnIcon{width:28px;height:28px;padding:0;border:1px solid transparent;border-radius:8px;background:0 0;color:var(--dsw-alias-label-secondary);display:inline-flex;align-items:center;justify-content:center;flex:none;transition:background .16s,color .16s}',
+      // 尺寸与圆角不动（28×28 → R8 本就合规），只统一状态：禁用 .4 + not-allowed、补 :active，
+      // 焦点环与描边按钮同一条官方 outline；圆角写成 token（值仍是 R8，视觉不变）。
+      '.rss_btnIcon{width:28px;height:28px;padding:0;border:1px solid transparent;border-radius:var(--dsw-radius-sm);background:0 0;color:var(--dsw-alias-label-secondary);display:inline-flex;align-items:center;justify-content:center;flex:none;transition:background .16s,color .16s}',
       '.rss_btnIcon:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
+      '.rss_btnIcon:active:not(:disabled){background:var(--dsw-alias-interactive-bg-active)}',
+      '.rss_btnIcon:disabled{opacity:.4;cursor:not-allowed}',
+      '.rss_btnIcon:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary))}',
       '.rss_btnIcon svg{display:block}',
       '@keyframes rss_spin{to{transform:rotate(360deg)}}',
       '.rss_btnIcon[data-loading] svg{animation:rss_spin .9s linear infinite}',
       '@media (prefers-reduced-motion:reduce){.rss_btnIcon[data-loading] svg{animation:none}}',
-      '.rss_dirtyChip{flex:none;display:inline-flex;align-items:center;gap:5px;border:1px solid var(--dsw-alias-state-warn-primary);color:var(--dsw-alias-state-warn-primary);border-radius:999px;padding:1px 9px;font-size:11px;line-height:1.6;white-space:nowrap}',
-      '.rss_dirtyChip::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}',
-      '.rss_meta{display:flex;flex-wrap:wrap;gap:6px 14px;color:var(--dsw-alias-label-secondary);font-size:12px}',
-      '.rss_file{color:var(--dsw-alias-label-tertiary);font-size:11.5px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}',
-      '.rss_banner{border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:8px;padding:8px 12px;font-size:12.5px;line-height:1.5;overflow-wrap:anywhere;flex:none}',
+      '.rss_dirtyChip{flex:none;display:inline-flex;align-items:center;gap:5px;border:1px solid var(--dsw-alias-state-warn-primary);color:var(--dsw-alias-state-warn-primary);border-radius:999px;corner-shape:round;padding:1px 9px;font-size:11px;line-height:16px;white-space:nowrap}',
+      '.rss_dirtyChip::before{content:"";width:6px;height:6px;border-radius:50%;corner-shape:round;background:currentColor;flex:none}',
+      '.rss_meta{display:flex;flex-wrap:wrap;gap:6px 14px;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}',
+      '.rss_file{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;font-family:var(--ds-font-family-code);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}',
+      '.rss_banner{border:.5px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:8px;padding:8px 12px;font-size:12.5px;line-height:18px;overflow-wrap:anywhere;flex:none}',
       '.rss_banner[data-kind=error]{color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary)}',
       '.rss_banner[data-kind=warn]{color:var(--dsw-alias-state-warn-primary);border-color:var(--dsw-alias-state-warn-primary)}',
       '.rss_banner[data-kind=ok]{color:var(--dsw-alias-state-success-primary);border-color:var(--dsw-alias-state-success-primary)}',
-      '.rss_loading,.rss_empty{text-align:center;color:var(--dsw-alias-label-tertiary);padding:24px 12px;font-size:12.5px}',
+      '.rss_loading,.rss_empty{text-align:center;color:var(--dsw-alias-label-tertiary);padding:24px 12px;font-size:12.5px;line-height:18px}',
       // 骨架屏：只在「真没数据 + 加载已过消抖阈值」时出现（见 renderSkeleton / beginLoading）。
       // 卡片几何与 .rss_item 完全一致，避免真内容替换时跳版。
       '.rss_skel{display:flex;flex-direction:column;gap:6px;transition:opacity .18s}',
       '.rss_skel[data-pending]{opacity:0}',
-      '.rss_skelCard{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:8px 12px;display:flex;flex-direction:column;gap:4px}',
-      '.rss_skelLine{height:13px;border-radius:6px;background:linear-gradient(90deg,color-mix(in srgb,var(--dsw-alias-label-tertiary) 10%,transparent) 25%,color-mix(in srgb,var(--dsw-alias-label-tertiary) 22%,transparent) 37%,color-mix(in srgb,var(--dsw-alias-label-tertiary) 10%,transparent) 63%);background-size:400% 100%;animation:rss_shimmer 1.4s linear infinite}',
+      '.rss_skelCard{background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-md);padding:8px 12px;display:flex;flex-direction:column;gap:4px}',
+      '.rss_skelLine{height:13px;border-radius:var(--dsw-radius-sm);background:linear-gradient(90deg,color-mix(in srgb,var(--dsw-alias-label-tertiary) 10%,transparent) 25%,color-mix(in srgb,var(--dsw-alias-label-tertiary) 22%,transparent) 37%,color-mix(in srgb,var(--dsw-alias-label-tertiary) 10%,transparent) 63%);background-size:400% 100%;animation:rss_shimmer 1.4s linear infinite}',
       '.rss_skelLine[data-w=sm]{height:9px}',
       '@keyframes rss_shimmer{from{background-position:100% 0}to{background-position:0 0}}',
       '@media (prefers-reduced-motion:reduce){.rss_skelLine{animation:none}}',
       // 刷新中：旧列表继续显示（stale-while-revalidate），压暗表示「正在更新」。
       // 不用 pointer-events:none —— 那会连滚轮一起吃掉，刷新期间列表就滚不动了。
       '.rss_modalBody[data-updating]{opacity:.55;transition:opacity .16s}',
-      '.rss_digestStats{color:var(--dsw-alias-label-secondary);font-size:12px;margin:2px 0 8px;line-height:1.5}',
+      '.rss_digestStats{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;margin:2px 0 8px}',
       '.rss_digestActions{display:flex;gap:8px;flex-wrap:wrap}',
-      '.rss_customCount{flex:none;color:var(--dsw-alias-label-tertiary);font-size:12px;white-space:nowrap}',
+      '.rss_customCount{flex:none;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;white-space:nowrap}',
       '.rss_srcNameCell{display:flex;flex-direction:column;gap:4px;min-width:0}',
       '.rss_dupRow{border-left:2px solid var(--dsw-alias-state-warn-primary)}',
-      '.rss_dupBadge{display:inline-block;align-self:flex-start;color:var(--dsw-alias-state-warn-primary);border:1px solid var(--dsw-alias-state-warn-primary);border-radius:999px;font-size:10px;line-height:1.4;padding:0 6px}',
+      '.rss_dupBadge{display:inline-block;align-self:flex-start;color:var(--dsw-alias-state-warn-primary);border:1px solid var(--dsw-alias-state-warn-primary);border-radius:999px;corner-shape:round;font-size:10px;line-height:14px;padding:0 6px}',
       '.rss_catalogToolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}',
-      '.rss_catalogStats{flex:1;min-width:0;color:var(--dsw-alias-label-tertiary);font-size:12px}',
+      '.rss_catalogStats{flex:1;min-width:0;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}',
       '.rss_customImport{display:flex;gap:8px;align-items:center;flex-wrap:wrap;flex:none}',
-      '.rss_customImportHint{flex:1 1 100%;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:1.5}',
+      '.rss_customImportHint{flex:1 1 100%;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}',
       '.rss_importPaste{display:flex;gap:8px;align-items:flex-end}',
-      '.rss_importTextarea{min-height:76px;resize:vertical;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11.5px;line-height:1.5}',
-      '.rss_itemTop input[type=checkbox]{accent-color:var(--dsw-alias-state-business-primary);width:15px;height:15px;margin:2px 0 0;flex:none;cursor:pointer}',
+      // 选择器带上 .rss_input：两条规则同权重时源码顺序决定胜负，而 .rss_input 在后面——不加这一级，
+      // 这里的 padding 与行高会被输入档覆盖（文本贴顶、行高变 1.5）。
+      '.rss_input.rss_importTextarea{min-height:76px;height:auto;padding:8px 12px;resize:vertical;font-family:var(--ds-font-family-code);font-size:12px;line-height:18px}',
+      // 复选框的「选中态」走宿主的中性 brand：宿主 Checkbox 的 accent-color 与 Switch 的开启态都是
+      // --dsw-alias-brand-primary（浅色近黑），而 state-business-primary 是本包的**强调蓝**（给状态与
+      // 徽标用）。尺寸 16×16 与宿主一致（原来是 15 / 14）。判据见 client-style-spec.mjs 检查十四。
+      // 三个复选框容器共用一条规则：摘要弹窗的行首（.rss_itemTop）、渠道行（.rss_builtinRow）、
+      // 设置卡里的开关行（.rss_checkRow，AI 摘要与总开关那两处——它们此前完全没有样式，
+      // 于是走的是浏览器 UA 的蓝勾 #0275ff）。
+      '.rss_itemTop input[type=checkbox],.rss_builtinRow input[type=checkbox],.rss_checkRow input[type=checkbox]{width:16px;height:16px;margin:0;flex:none;cursor:pointer;accent-color:var(--dsw-alias-brand-primary)}',
+      '.rss_itemTop input[type=checkbox],.rss_checkRow input[type=checkbox]{margin:2px 0 0}',
+      '.rss_itemTop input[type=checkbox]:focus-visible,.rss_builtinRow input[type=checkbox]:focus-visible,.rss_checkRow input[type=checkbox]:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}',
       '.rss_itemTop input[type=checkbox]:disabled{opacity:.5;cursor:default}',
       '.rss_catalogSources{display:flex;flex-direction:column;gap:6px;border:1px dashed var(--dsw-alias-border-l2);border-radius:8px;padding:10px}',
-      '.rss_catalogSourceRow{display:flex;align-items:center;gap:10px;font-size:12px}',
-      '.rss_catalogSourceName{flex:none;max-width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--dsw-alias-label-primary);font-weight:600}',
+      '.rss_catalogSourceRow{display:flex;align-items:center;gap:10px;font-size:12px;line-height:18px}',
+      '.rss_catalogSourceName{flex:none;max-width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--dsw-alias-label-primary);font-weight:500}',
       '.rss_catalogSourceMeta{flex:1;min-width:0;color:var(--dsw-alias-label-tertiary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
       '.rss_catalogSourceError{color:var(--dsw-alias-state-error-primary)}',
       '.rss_catalogSourcePending{color:var(--dsw-alias-state-warn-primary)}',
       '.rss_catalogSourceActions{flex:none}',
       '.rss_catalogOrigin{border-color:var(--dsw-alias-state-business-primary);color:var(--dsw-alias-state-business-primary)}',
       '.rss_source{margin-top:4px}',
-      '.rss_sourceName{font-size:13px;font-weight:700;margin:8px 0 6px}',
-      '.rss_subSource{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12.5px;font-weight:600;color:var(--dsw-alias-label-secondary);margin:2px 0 4px}',
+      '.rss_sourceName{font-size:13px;font-weight:500;line-height:20px;margin:8px 0 6px}',
+      '.rss_subSource{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12.5px;font-weight:500;line-height:18px;color:var(--dsw-alias-label-secondary);margin:2px 0 4px}',
       '.rss_list{display:flex;flex-direction:column;gap:8px;max-height:420px;overflow-y:auto}',
-      '.rss_item{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:8px 12px;display:flex;flex-direction:column;gap:4px}',
+      '.rss_item{background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-md);padding:8px 12px;display:flex;flex-direction:column;gap:4px}',
       '.rss_itemTop{display:flex;align-items:flex-start;gap:8px}',
       '.rss_itemMain{flex:1;min-width:0}',
-      '.rss_itemTitle{font-size:13px;line-height:1.45}',
+      '.rss_itemTitle{font-size:13px;line-height:20px}',
       '.rss_itemTitle a{color:var(--dsw-alias-state-business-primary);text-decoration:none}',
       '.rss_itemTitle a:hover{text-decoration:underline}',
-      '.rss_itemMeta{color:var(--dsw-alias-label-tertiary);font-size:11.5px;font-weight:400}',
-      '.rss_itemSummary{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:1.5}',
-      '.rss_sourcesTitle{font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary);margin-top:4px}',
+      '.rss_itemMeta{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;font-weight:400}',
+      '.rss_itemSummary{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}',
+      '.rss_sourcesTitle{font-size:12px;font-weight:500;line-height:18px;color:var(--dsw-alias-label-secondary);margin-top:4px}',
       '.rss_sources{display:flex;flex-wrap:wrap;gap:6px}',
-      '.rss_sourceChip{display:inline-block;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:999px;padding:1px 8px;font-size:11px;line-height:1.6;white-space:nowrap}',
-      '.rss_settingSection{position:relative;display:flex;flex-direction:column;gap:8px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);border-radius:10px;padding:12px}',
-      '.rss_checkRow{display:flex;gap:8px;align-items:flex-start;font-size:13px;line-height:1.5;color:var(--dsw-alias-label-primary);cursor:pointer}',
-      '.rss_settingTitle{font-size:13px;font-weight:700}',
-      '.rss_settingHint{color:var(--dsw-alias-label-tertiary);font-size:11.5px;line-height:1.5}',
+      '.rss_sourceChip{display:inline-block;border:.5px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:999px;corner-shape:round;padding:1px 8px;font-size:11px;line-height:16px;white-space:nowrap}',
+      // 区块：R16 是官方「嵌套编辑器」那一档（R20 设置卡内）。不再写 background——原来填的
+      // bg-layer-2 与设置卡自己的 settings-card-fill 是**同一个 token**（浅色主题下都是纯白），
+      // 那条声明不产生任何视觉差，只让「三层同底色」看起来像是有层级。
+      '.rss_settingSection{position:relative;display:flex;flex-direction:column;gap:8px;border:.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-lg);padding:12px}',
+      '.rss_checkRow{display:flex;gap:8px;align-items:flex-start;font-size:13px;line-height:20px;color:var(--dsw-alias-label-primary);cursor:pointer}',
+      '.rss_settingTitle{font-size:13px;font-weight:500;line-height:20px}',
+      '.rss_settingHint{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}',
       '.rss_sourceEditorList{display:flex;flex-direction:column;gap:8px}',
       '.rss_sourceEditor{display:grid;grid-template-columns:1fr 2fr 1fr 70px auto;gap:6px;align-items:center}',
       '.rss_sourceEditor .rss_input{min-width:0}',
-      '.rss_channelList{display:flex;flex-direction:column;gap:6px;min-width:0}',
-      '.rss_channelRow{display:grid;grid-template-columns:20px 24px minmax(80px,1.2fr) minmax(100px,1.5fr) minmax(80px,0.8fr) 52px 52px;gap:6px;align-items:center;padding:6px 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-layer-2);min-width:0}',
+      // 行列表对齐宿主设置页的形态（settings-form/fields.module.css 是 .field + .field{border-top:.5px}）：
+      // 行与行之间用发丝线分隔，不再每行一个盒子。盒子的底色 bg-layer-2 与设置卡的 settings-card-fill
+      // 是同一个 token，套三层盒子只会多出两圈线、分不出层级。第一列 24px 给拖拽把手的命中盒。
+      '.rss_channelList{display:flex;flex-direction:column;min-width:0}',
+      '.rss_channelRow{display:grid;grid-template-columns:24px 24px minmax(80px,1.2fr) minmax(100px,1.5fr) minmax(80px,0.8fr) 52px 52px;gap:6px;align-items:center;padding:8px 0;min-width:0}',
+      '.rss_channelRow + .rss_channelRow{border-top:.5px solid var(--dsw-alias-border-l2)}',
       '.rss_channelRow .rss_input{min-width:0}',
       '.rss_channelRow > *{min-width:0}',
       '.rss_channelRow.rss_dragging{opacity:.45}',
-      '.rss_dragHandle{cursor:grab;color:var(--dsw-alias-label-tertiary);text-align:center;user-select:none;font-size:14px;line-height:1}',
+      // 拖拽把手是**图形**不是文字：原来用「⋮⋮」字形（14px / line-height:1），字距与命中盒都随字体漂移。
+      // 现在 24×24 的盒 + SVG（宿主 DisclosureRow 的 leading 就是 16px 盒 + 图标）。
+      '.rss_dragHandle{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;cursor:grab;color:var(--dsw-alias-label-tertiary);user-select:none}',
+      '.rss_dragHandle svg{display:block}',
       '.rss_dragHandle:active{cursor:grabbing}',
-      '.rss_channelName,.rss_channelUrl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--dsw-alias-label-primary)}',
+      '.rss_channelName,.rss_channelUrl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary)}',
       '.rss_channelUrl{color:var(--dsw-alias-label-tertiary)}',
-      '.rss_channelType{font-size:11px;color:var(--dsw-alias-label-tertiary);white-space:nowrap}',
-      '.rss_disabledTitle{font-size:11.5px;font-weight:600;color:var(--dsw-alias-label-tertiary);margin:8px 0 2px}',
+      // 「内置 / 自定义」是徽标档，对齐宿主 Tag 原语：11px / 17px / 500（原来没有字重、行高也差 1px）。
+      '.rss_channelType{font-size:11px;font-weight:500;line-height:17px;color:var(--dsw-alias-label-tertiary);white-space:nowrap}',
+      '.rss_disabledTitle{font-size:12px;font-weight:500;line-height:18px;color:var(--dsw-alias-label-tertiary);margin:8px 0 2px}',
       '.rss_builtinList{display:flex;flex-direction:column;gap:2px}',
-      '.rss_builtinRow{display:flex;align-items:center;gap:10px;font-size:13px;color:var(--dsw-alias-label-primary);cursor:pointer;padding:3px 0}',
-      '.rss_builtinRow input[type=checkbox]{accent-color:var(--dsw-alias-state-business-primary);width:14px;height:14px;margin:0;flex:none}',
+      '.rss_builtinRow{display:flex;align-items:center;gap:10px;font-size:13px;line-height:20px;color:var(--dsw-alias-label-primary);cursor:pointer;padding:3px 0}',
       '.rss_builtinName{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
       '.rss_builtinRow .rss_builtinCategory{flex:none;width:120px}',
-      '.rss_builtinNote{font-size:11px;color:var(--dsw-alias-label-tertiary);padding:0 0 2px 24px;line-height:1.5}',
-      '.rss_channelRow.rss_builtinRow{display:grid;padding:6px 8px;gap:6px}',
+      '.rss_builtinNote{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary);padding:0 0 2px 24px}',
+      '.rss_channelRow.rss_builtinRow{display:grid;padding:8px 0;gap:6px}',
       '.rss_channelRow.rss_builtinRow .rss_builtinCategory{width:auto;flex:none}',
-      '.rss_input{color:var(--dsw-alias-label-primary);background:var(--dsw-specific-input-major);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;outline:none;padding:6px 9px;font-family:inherit;font-size:12px;box-sizing:border-box;width:100%}',
+      // 输入档对齐宿主 settings-form 的 .input（fields.module.css）：H34 / R12 / border-l4 /
+      // bg-layer-3 / 13px + 1.5 行高；placeholder 用 label-dimmed（Input 原语那一档）。
+      // 显式高度是为了 <select>：它复用同一个类，而 Chrome 给 select 算内容高时不看继承的
+      // line-height（实测内容高 16px），于是下拉比同排输入框矮 2px、上下沿对不齐。
+      '.rss_input{box-sizing:border-box;width:100%;height:34px;padding:0 12px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-3);border:.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-md);outline:none;font-family:inherit;font-size:13px;line-height:1.5}',
       '.rss_input:focus{border-color:var(--dsw-alias-state-business-primary)}',
-      '.rss_input::placeholder{color:var(--dsw-alias-label-tertiary)}',
+      '.rss_input::placeholder{color:var(--dsw-alias-label-dimmed)}',
       '.rss_addRow{display:flex;gap:6px;align-items:center}',
       '.rss_addRow > .rss_input:first-child{flex:1;min-width:0}',
       '.rss_addRow > .rss_input:last-child{flex:none;width:auto;max-width:55%}',
@@ -149,23 +195,28 @@ window.__ModuleLoader__.load({
       '.rss_catalogSearchRow{display:grid;grid-template-columns:minmax(220px,2fr) minmax(110px,1fr) minmax(110px,1fr);gap:6px;align-items:center}',
       '.rss_catalogSearchRow .rss_input{min-width:0}',
       '.rss_categories{display:flex;flex-wrap:wrap;gap:6px}',
-      '.rss_categoryChip{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:999px;padding:2px 6px 2px 10px;font-size:11px;line-height:1.6;white-space:nowrap}',
-      '.rss_categoryRemove{appearance:none;background:0 0;border:0;color:var(--dsw-alias-label-tertiary);cursor:pointer;font-size:13px;line-height:1;padding:2px}',
+      '.rss_categoryChip{display:inline-flex;align-items:center;gap:6px;border:.5px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:999px;corner-shape:round;padding:2px 6px 2px 10px;font-size:11px;line-height:16px;white-space:nowrap}',
+      // 分类 chip 上的「×」也是图形：给 20×20 命中盒 + SVG，不再拿 "×" 字形撑（它随字体漂移、
+      // 命中盒就是字形本身，键盘焦点也画不出来）。
+      '.rss_categoryRemove{appearance:none;display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;background:0 0;border:0;border-radius:var(--dsw-radius-xs);color:var(--dsw-alias-label-tertiary);cursor:pointer}',
       '.rss_categoryRemove:hover{color:var(--dsw-alias-state-error-primary)}',
-      '.rss_linkBtn{color:var(--dsw-alias-state-business-primary);background:0 0;border:none;padding:0;font-size:12px;cursor:pointer;white-space:nowrap}',
-      '.rss_linkBtn:hover:not(:disabled){text-decoration:underline}',
-      '.rss_linkBtn[data-danger]{color:var(--dsw-alias-state-error-primary)}',
+      '.rss_categoryRemove:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:1px}',
+      '.rss_categoryRemove svg{display:block}',
+      // 链接式按钮：配方本已是官方的（link 色 + 500 + 点状下划线），只补字号配行高这一条硬性条款。
+      '.rss_linkBtn{color:var(--dsw-alias-link);background:0 0;border:none;padding:0;font-size:12px;line-height:18px;font-weight:500;cursor:pointer;white-space:nowrap;text-decoration:none}',
+      '.rss_linkBtn:hover:not(:disabled){text-decoration:underline dotted;text-underline-offset:3px}',
       '.rss_formGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}',
       '.rss_field{display:flex;flex-direction:column;gap:5px}',
-      '.rss_fieldLabel{color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:600}',
-      '.rss_toast{position:fixed;left:50%;bottom:36px;transform:translateX(-50%);transform-origin:center;z-index:2147483647;pointer-events:none;display:flex;align-items:center;gap:8px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary);border-radius:10px;padding:9px 16px;font-size:13px;box-shadow:var(--dsw-shadow-lv3);max-width:70vw;animation:rss_toastIn .18s ease-out}',
-      '.rss_toast[data-kind=ok]{border-color:var(--dsw-alias-state-success-primary);color:var(--dsw-alias-state-success-primary)}',
-      '.rss_toast[data-kind=error]{border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}',
-      '.rss_toastIcon{flex:none;font-weight:700}',
+      '.rss_fieldLabel{color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:500;line-height:18px}',
+      '.rss_toast{position:fixed;left:50%;bottom:36px;transform:translateX(-50%);transform-origin:center;z-index:2147483647;pointer-events:none;display:flex;align-items:center;gap:8px;background:var(--dsw-alias-bg-layer-2);border:0;color:var(--dsw-alias-label-primary);border-radius:var(--dsw-radius-md);padding:9px 16px;font-size:13px;line-height:20px;box-shadow:var(--dsw-elevation-prominent);max-width:70vw;animation:rss_toastIn .18s ease-out}',
+      '.rss_toast[data-kind=ok]{color:var(--dsw-alias-state-success-primary);box-shadow:var(--dsw-elevation-prominent), inset 0 0 0 .5px var(--dsw-alias-state-success-primary)}',
+      '.rss_toast[data-kind=error]{color:var(--dsw-alias-state-error-primary);box-shadow:var(--dsw-elevation-prominent), inset 0 0 0 .5px var(--dsw-alias-state-error-primary)}',
+      // toast 图标是图标不是正文：字重按「强调」档留 600（宿主自家组件没有 700）。
+      '.rss_toastIcon{flex:none;font-weight:600}',
       '@keyframes rss_toastIn{from{opacity:0;transform:translate(-50%,8px)}to{opacity:1;transform:translate(-50%,0)}}',
       // 侧边栏不在宿主 box-sizing reset 的作用域内：width:100% + 左右 padding 会按
       // content-box 撑出 24px，右侧被侧边栏裁掉（hover 底色右边缺角）。必须显式声明。
-      '.rss_sidebarEntry{box-sizing:border-box;width:100%;height:32px;color:var(--dsw-alias-label-secondary);cursor:pointer;white-space:nowrap;background:0 0;border:none;border-radius:8px;align-items:center;gap:8px;padding:0 12px;font-size:13px;display:flex}',
+      '.rss_sidebarEntry{box-sizing:border-box;width:100%;height:32px;color:var(--dsw-alias-label-secondary);cursor:pointer;white-space:nowrap;background:0 0;border:none;border-radius:8px;align-items:center;gap:8px;padding:0 12px;font-size:13px;line-height:20px;display:flex}',
       '.rss_sidebarEntry:hover{background:var(--dsw-specific-sidebar-nav-item-hover);color:var(--dsw-alias-label-primary)}',
       '.rss_sidebarEntry[data-active]{background:var(--dsw-specific-sidebar-nav-item-active);color:var(--dsw-alias-label-primary);font-weight:600}',
       '.rss_sidebarEntryIcon{flex:none;justify-content:center;align-items:center;display:inline-flex}',
@@ -181,7 +232,7 @@ window.__ModuleLoader__.load({
        * 是 #0f1115（品牌墨色、近黑），拿它画进度条就是一条黑波纹；
        * 强调色 `--dsw-alias-state-business-primary` 实测 #4176e6，与胶囊同一个 token。
        */
-      '.rss_busyBar::before{content:"";position:absolute;inset:0;background-image:linear-gradient(90deg,transparent,var(--dsw-alias-state-business-primary,#4d6bfe),transparent);background-size:35% 100%;background-repeat:no-repeat;animation:rss_busy 1.15s linear infinite}',
+      '.rss_busyBar::before{content:"";position:absolute;inset:0;background-image:linear-gradient(90deg,transparent,var(--dsw-alias-state-business-primary),transparent);background-size:35% 100%;background-repeat:no-repeat;animation:rss_busy 1.15s linear infinite}',
       '@keyframes rss_busy{from{background-position:-40% 0}to{background-position:140% 0}}',
       /*
        * 胶囊外观：走这个弹窗自己的语汇——边框用 border-l2、文字用 label-secondary，
@@ -189,7 +240,7 @@ window.__ModuleLoader__.load({
        * 不用「层」token + color-mix：那在不同皮肤下会算出深色块，有的环境还不支持
        * color-mix（整条声明失效 → 背景全无），两种都会跟白底对话框对不上。
        */
-      '.rss_busyPill{flex:none;display:flex;align-items:center;gap:6px;max-width:min(420px,70%);padding:4px 12px;border:1px solid color-mix(in srgb,var(--dsw-alias-state-business-primary) 42%,transparent);border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 12%,var(--dsw-alias-bg-base));box-shadow:0 2px 10px rgba(0,0,0,.10);font-size:11.5px;line-height:1.6;color:var(--dsw-alias-state-business-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}',
+      '.rss_busyPill{flex:none;display:flex;align-items:center;gap:6px;max-width:min(420px,70%);padding:4px 12px;border:1px solid color-mix(in srgb,var(--dsw-alias-state-business-primary) 42%,transparent);border-radius:999px;corner-shape:round;background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 12%,var(--dsw-alias-bg-base));box-shadow:var(--dsw-elevation-panel);font-size:12px;line-height:18px;color:var(--dsw-alias-state-business-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}',
       '.rss_busyPill svg{flex:none;animation:rss_spin .9s linear infinite;color:var(--dsw-alias-state-business-primary)}',
       '.rss_busyPill strong{color:var(--dsw-alias-state-business-primary);font-weight:600}',
       '.rss_busyPill .rss_busyDim{color:color-mix(in srgb,var(--dsw-alias-state-business-primary) 72%,var(--dsw-alias-label-secondary))}',
@@ -215,16 +266,20 @@ window.__ModuleLoader__.load({
       // 设置卡：进度条贴区块顶边，胶囊落在区块标题行右侧（那边本来就是空的）
       '.rss_settingSection{overflow:hidden}',
       '.rss_settingSection .rss_busyPill{position:absolute;top:10px;right:12px}',
-      '.rss_settingSection .rss_busyBar{border-radius:10px 10px 0 0}',
+      '.rss_settingSection .rss_busyBar{border-radius:var(--dsw-radius-lg) var(--dsw-radius-lg) 0 0}',
       // 数据落地：8px 上滑 + 淡入，让「换了一批内容」看得见
       '.rss_modalBody[data-landed] > *{animation:rss_landIn .2s ease both}',
       '.rss_settingSection[data-landed] > *{animation:rss_landIn .2s ease both}',
       '@keyframes rss_landIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}',
       '@media (prefers-reduced-motion:reduce){.rss_busyBar::before,.rss_busyPill svg{animation:none}.rss_modalBody[data-landed] > *{animation:none}}',
-      '.rss_modal{background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);width:min(720px,100vw - 48px);max-height:calc(100vh - 96px);box-shadow:var(--dsw-shadow-lv3);color:var(--dsw-alias-label-primary);border-radius:14px;flex-direction:column;gap:12px;padding:16px;display:flex;overflow:hidden}',
+      '.rss_modal{background:var(--dsw-alias-bg-base);border:0;width:min(720px,100vw - 48px);max-height:calc(100vh - 96px);box-shadow:var(--dsw-elevation-prominent);color:var(--dsw-alias-label-primary);border-radius:var(--dsw-radius-lg);flex-direction:column;gap:12px;padding:16px;display:flex;overflow:hidden}',
       '.rss_modalHeader{flex:none;align-items:center;gap:10px;display:flex}',
-      '.rss_modalTitle{flex:1;min-width:0;margin:0;font-size:16px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
-      '.rss_modalClose{appearance:none;background:0 0;border:none;color:var(--dsw-alias-label-tertiary);border-radius:8px;width:30px;height:30px;cursor:pointer;font-size:18px;line-height:1}',
+      // 弹窗标题属于「强调」档：16 / 600 / 24（不是 700——宿主自家组件的弹窗标题就是 600）。
+      '.rss_modalTitle{flex:1;min-width:0;margin:0;font-size:16px;font-weight:600;line-height:24px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+      // 关闭键也是图形不是文字（原来用 18px 的 "×" 字形撑 30px 盒子）：同上，换成 SVG + 固定盒。
+      '.rss_modalClose{appearance:none;display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;padding:0;background:0 0;border:none;border-radius:var(--dsw-radius-sm);color:var(--dsw-alias-label-tertiary);cursor:pointer}',
+      '.rss_modalClose svg{display:block;width:16px;height:16px}',
+      '.rss_modalClose:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary))}',
       '.rss_modalClose:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}',
       '.rss_modalBody{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:10px}',
       // 筛选 + 动作行改成 .rss_modal 的固定子项（不再放进滚动区）：不必再靠 sticky +
@@ -235,16 +290,23 @@ window.__ModuleLoader__.load({
       // 计数贴住右侧动作簇；无 digest 时不渲染搜索框，此时靠 margin-left:auto 把动作推到右边
       '.rss_modalToolbar .rss_modalCount{flex:none;margin-left:auto;white-space:nowrap}',
       '.rss_modalChips{display:flex;flex-wrap:wrap;gap:6px;flex:none}',
-      '.rss_modalChip{border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);background:0 0;border-radius:999px;padding:2px 10px;font-size:11.5px;line-height:1.6;cursor:pointer}',
+      '.rss_modalChip{border:.5px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);background:0 0;border-radius:999px;corner-shape:round;padding:2px 10px;font-size:12px;line-height:18px;cursor:pointer}',
       '.rss_modalChip:hover{border-color:var(--dsw-alias-label-dimmed);color:var(--dsw-alias-label-primary)}',
       '.rss_modalChipActive{border-color:var(--dsw-alias-state-business-primary);color:var(--dsw-alias-state-business-primary)}',
       '.rss_modalFooter{flex:none;display:flex;justify-content:flex-end;gap:8px;align-items:center}',
-      '.rss_modalCount{flex:1;color:var(--dsw-alias-label-tertiary);font-size:12px;align-self:center;min-width:0}',
+      '.rss_modalCount{flex:1;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;align-self:center;min-width:0}',
     ].join('\n')
 
     /* 底栏图标：与 dsh-tty 同一套 16×16 描边风格（1.6 线宽），语义靠 title/aria-label */
     const ICON_COPY = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.4"/><path d="M3.5 10.5h-1v-8h8v1"/></svg>'
     const ICON_REFRESH = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/><path d="M13.7 1.8v2.7H11"/></svg>'
+    /*
+     * 拖拽把手与分类 chip 的「×」原来是**文本字形**（"⋮⋮" / "×"）：字距与命中盒随字体漂移，
+     * 也没法给屏幕阅读器一个稳定的名字。宿主一律是固定盒 + SVG（DisclosureRow 的 leading 就是
+     * 16px 盒 + 图标）。这两个图标同 ICON_COPY / ICON_REFRESH 一套 16×16 描边风格。
+     */
+    const ICON_GRIP = '<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" aria-hidden="true"><circle cx="6" cy="4" r="1.1"/><circle cx="10" cy="4" r="1.1"/><circle cx="6" cy="8" r="1.1"/><circle cx="10" cy="8" r="1.1"/><circle cx="6" cy="12" r="1.1"/><circle cx="10" cy="12" r="1.1"/></svg>'
+    const ICON_CLOSE = '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg>'
 
     let styleEl
     function ensureStyle() {
@@ -794,7 +856,7 @@ window.__ModuleLoader__.load({
       if (builtin) {
         const category = source.category?.trim() || builtin.category
         return '<div class="rss_channelRow rss_builtinRow" data-channel-index="' + index + '">' +
-          '<span class="rss_dragHandle" draggable="true" data-drag-index="' + index + '" title="' + esc(t('btn.dragToSort')) + '">⋮⋮</span>' +
+          '<span class="rss_dragHandle" draggable="true" data-drag-index="' + index + '" role="img" aria-label="' + esc(t('btn.dragToSort')) + '" title="' + esc(t('btn.dragToSort')) + '">' + ICON_GRIP + '</span>' +
           '<input type="checkbox" data-action="builtin-toggle" data-key="' + esc(builtin.key) + '" checked />' +
           '<span class="rss_channelName" title="' + esc(builtin.name) + '">' + esc(builtin.name) + '</span>' +
           '<span class="rss_channelUrl" title="' + esc(builtin.url) + '">' + esc(builtin.url) + '</span>' +
@@ -804,19 +866,19 @@ window.__ModuleLoader__.load({
           '</div>'
       }
       return '<div class="rss_channelRow' + (dup ? ' rss_dupRow' : '') + '" data-channel-index="' + index + '">' +
-        '<span class="rss_dragHandle" draggable="true" data-drag-index="' + index + '" title="' + esc(t('btn.dragToSort')) + '">⋮⋮</span>' +
+        '<span class="rss_dragHandle" draggable="true" data-drag-index="' + index + '" role="img" aria-label="' + esc(t('btn.dragToSort')) + '" title="' + esc(t('btn.dragToSort')) + '">' + ICON_GRIP + '</span>' +
         '<span></span>' +
         '<input class="rss_input" data-field="rss-source-name" data-index="' + index + '" value="' + esc(source.name || '') + '" placeholder="' + esc(t('placeholder.name')) + '" />' +
         '<input class="rss_input" data-field="rss-source-url" data-index="' + index + '" value="' + esc(source.url || '') + '" placeholder="RSS/Atom URL" spellcheck="false" />' +
         '<select class="rss_input" data-field="rss-source-category" data-index="' + index + '">' + categoryOptions(source.category) + '</select>' +
         '<span class="rss_channelType">' + t('panel.custom') + '</span>' +
-        '<button class="rss_linkBtn" data-danger="true" data-action="config-remove-source" data-index="' + index + '">' + t('btn.delete') + '</button>' +
+        '<button class="rss_btnGhost rss_btnDanger" data-action="config-remove-source" data-index="' + index + '">' + t('btn.delete') + '</button>' +
         '</div>'
     }
 
     function renderDisabledBuiltinRow(builtin) {
       return '<div class="rss_channelRow rss_builtinRow" data-disabled="true">' +
-        '<span class="rss_dragHandle" style="visibility:hidden">⋮⋮</span>' +
+        '<span class="rss_dragHandle" aria-hidden="true" style="visibility:hidden">' + ICON_GRIP + '</span>' +
         '<input type="checkbox" data-action="builtin-toggle" data-key="' + esc(builtin.key) + '" />' +
         '<span class="rss_channelName" title="' + esc(builtin.name) + '">' + esc(builtin.name) + '</span>' +
         '<span class="rss_channelUrl" title="' + esc(builtin.url) + '">' + esc(builtin.url) + '</span>' +
@@ -1076,7 +1138,7 @@ window.__ModuleLoader__.load({
         parts.push('<div class="rss_catalogSourceRow">')
         parts.push('<span class="rss_catalogSourceName" title="' + esc(catalog.name) + '">' + esc(catalog.name) + '</span>')
         parts.push('<span class="rss_catalogSourceMeta" ' + (meta || 'title="' + esc(catalog.url) + '"') + '>' + stateText + '</span>')
-        parts.push('<span class="rss_catalogSourceActions"><button class="rss_linkBtn" data-danger="true" data-action="catalog-remove-source" data-url="' + esc(catalog.url) + '">' + (status === undefined ? t('btn.cancel') : t('btn.remove')) + '</button></span>')
+        parts.push('<span class="rss_catalogSourceActions"><button class="' + (status === undefined ? 'rss_btnGhost' : 'rss_btnGhost rss_btnDanger') + '" data-action="catalog-remove-source" data-url="' + esc(catalog.url) + '">' + (status === undefined ? t('btn.cancel') : t('btn.remove')) + '</button></span>')
         parts.push('</div>')
       }
       parts.push('<div class="rss_addRow rss_catalogAddRow">')
@@ -1097,7 +1159,7 @@ window.__ModuleLoader__.load({
       if (categories.length > 0) {
         parts.push('<div class="rss_categories">')
         for (const category of categories) {
-          parts.push('<span class="rss_categoryChip">' + esc(category) + '<button class="rss_categoryRemove" data-action="config-remove-category" data-value="' + esc(category) + '" aria-label="' + esc(t('btn.removeCategory', { category })) + '">×</button></span>')
+          parts.push('<span class="rss_categoryChip">' + esc(category) + '<button class="rss_categoryRemove" data-action="config-remove-category" data-value="' + esc(category) + '" aria-label="' + esc(t('btn.removeCategory', { category })) + '">' + ICON_CLOSE + '</button></span>')
         }
         parts.push('</div>')
       } else {
@@ -1540,7 +1602,7 @@ window.__ModuleLoader__.load({
           '<div class="rss_modal" role="dialog" aria-modal="true" aria-label="' + title + '">' +
             '<div class="rss_modalHeader">' +
               '<h3 class="rss_modalTitle">' + title + '</h3>' +
-              '<button class="rss_modalClose" data-action="modal-close" aria-label="' + esc(t('btn.close')) + '">×</button>' +
+              '<button class="rss_modalClose" data-action="modal-close" aria-label="' + esc(t('btn.close')) + '">' + ICON_CLOSE + '</button>' +
             '</div>' +
             renderModalFilter() +
             // 过渡层（进度条 + 胶囊）在 renderModalFilter 里，绝对定位在 .rss_modalFilter 上；
@@ -1683,7 +1745,7 @@ window.__ModuleLoader__.load({
         '<div class="rss_modal rss_catalogModal" role="dialog" aria-modal="true" aria-label="' + esc(t('panel.feedCatalog')) + '">' +
           '<div class="rss_modalHeader">' +
             '<h3 class="rss_modalTitle">' + t('panel.feedCatalog') + '</h3>' +
-            '<button class="rss_modalClose" data-action="catalog-close" aria-label="' + esc(t('btn.close')) + '">×</button>' +
+            '<button class="rss_modalClose" data-action="catalog-close" aria-label="' + esc(t('btn.close')) + '">' + ICON_CLOSE + '</button>' +
           '</div>' +
           '<div class="rss_modalBody">' + renderCatalogSection() + '</div>' +
           '<div class="rss_modalFooter">' +

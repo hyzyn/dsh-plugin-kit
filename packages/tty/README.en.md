@@ -338,6 +338,21 @@ references one connection-book entry (host and authentication come with it), in 
   profiles running the same tunnel at the same time leave the later one with `EADDRINUSE`, stuck in
   `error` with `fatal:true` (**no retry**; changing the configuration rebuilds it from the new spec). The
   error message names “possibly the host process of another DSH profile” and offers two ways out;
+- **Ports are probed at save time (0.26.0)**: saving the tunnel configuration first **probes each local
+  port** (an exclusive probe: `listen`, then release immediately) so two classes of problem surface at the
+  moment you save instead of later — ① the configuration being submitted has two local tunnels on the same
+  `localPort` (decidable at configuration level), and ② the port is held by something **outside this
+  process** (another profile's host, or another program).
+  **The probe only warns; it never blocks the save**: the 200 response carries an extra `warnings` array and
+  the card shows it in the **yellow** warning slot (which replaces the green “is active” — that tunnel will
+  sit in red `error` and never retry, so “is active” would read as everything being fine). Why not reject:
+  the card saves the **whole table at once**, so rejecting would lock a user whose config already contains a
+  conflict out of saving *anything* — and fixing it is exactly what requires saving first.
+  Two rules worth remembering: a port **this process already holds is exempt** (editing a running tunnel's
+  other fields leaves its port held by itself — that is not a conflict, since reconcile stops then starts and
+  the port returns in the same tick), while a **disabled** tunnel still counts as a duplicate (it can be
+  enabled at any moment). A remote direction's `remotePort` is listened on the server side and is not probed
+  locally;
 - **Status badges**: while the card is expanded it polls live status every 2s (active green/connecting
   blue/error red/stopped grey + last error); connection-book entries in the “+” menu show a `⇄N` tunnel
   badge; the agent can query status with the `tunnel_list` tool;

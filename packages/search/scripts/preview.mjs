@@ -138,6 +138,24 @@ const FALLBACK_SKIN_CSS = [
   '}',
 ].join('\n')
 
+/**
+ * 宿主基础层：圆角阶梯、卡片材质、焦点环、全局超椭圆。
+ *
+ * 值取自 `@deepseek-ai/dsh-client-ui-theme` 的 `base.css` / `focus.css` / `corner-shape.css`
+ * ——**名字与值都必须与真主题逐字一致**：夹具里缺一个名字的代价是「预览是对的、只有真机是错的」
+ * （卡片改走 `--dsw-radius-xl` 后，缺了它圆角算成 0，而真机是 20px）。
+ * 真皮肤表只有「皮肤」那一层（实测 blue-fantasy 一条基础层名字都不含），所以这里**始终**前置。
+ */
+const BASE_LAYER_CSS = [
+  ':root {',
+  '  --dsw-radius-xs: 4px; --dsw-radius-sm: 8px; --dsw-radius-md: 12px; --dsw-radius-lg: 16px; --dsw-radius-xl: 20px;',
+  '  --dsw-alias-settings-card-fill: var(--dsw-alias-bg-layer-2);',
+  '  --dsw-alias-settings-card-stroke: var(--dsw-alias-border-l4);',
+  '  --dsw-focus-ring-width: 2px;',
+  '}',
+  '@supports (corner-shape: superellipse(1.5)) { :root { --dsw-corner-shape: superellipse(1.5) } *, :before, :after { corner-shape: var(--dsw-corner-shape) } }',
+].join('\n')
+
 /** 皮肤变量：优先用本机 skin-center 的真实 token 表，找不到则用内置兜底。 */
 function skinCss() {
   const candidates = []
@@ -148,9 +166,10 @@ function skinCss() {
       if (existsSync(file)) candidates.push(file)
     }
   }
-  if (candidates.length > 0) return readFileSync(candidates[0], 'utf8')
+  // 基础层**始终**在前：它住在宿主的 base.css / focus.css / corner-shape.css 里，真皮肤表里没有这些名字。
+  if (candidates.length > 0) return BASE_LAYER_CSS + '\n' + readFileSync(candidates[0], 'utf8')
   log('未找到本机 skin token 表，使用内置兜底变量')
-  return FALLBACK_SKIN_CSS
+  return BASE_LAYER_CSS + '\n' + FALLBACK_SKIN_CSS
 }
 
 function prepare() {

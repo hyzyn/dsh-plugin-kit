@@ -19,39 +19,55 @@ window.__ModuleLoader__.load({
 
     const CSS = [
       '.env_pageHost{display:block}',
-      '.env_pluginCard{list-style:none;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);border-radius:12px;transition:border-color .16s,background .16s}',
+      '.env_pluginCard{list-style:none;border:.5px solid var(--dsw-alias-settings-card-stroke);background:var(--dsw-alias-settings-card-fill);border-radius:var(--dsw-radius-xl);transition:border-color .16s,background .16s}',
       '.env_pluginCard:hover{border-color:var(--dsw-alias-label-dimmed)}',
-      '.env_pluginCardOpen{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-label-dimmed)}',
-      '.env_cardHeader{appearance:none;width:100%;color:inherit;font:inherit;text-align:left;cursor:pointer;background:0 0;border:0;border-radius:12px;display:flex;align-items:center;gap:12px;padding:14px 16px}',
-      '.env_cardHeader:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}',
+      '.env_pluginCardOpen{background:var(--dsw-alias-bg-layer-1);border-color:var(--dsw-alias-label-dimmed)}',
+      '.env_cardHeader{appearance:none;width:100%;color:inherit;font:inherit;text-align:left;cursor:pointer;background:0 0;border:0;border-radius:var(--dsw-radius-xl);display:flex;align-items:center;gap:12px;padding:14px 16px}',
+      '.env_cardHeader:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:-2px}',
       '.env_cardHeadText{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}',
-      '.env_cardName{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:600}',
-      '.dshkit_badge{flex:none;margin-left:auto;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:600;line-height:16px;letter-spacing:.02em;color:var(--dsw-alias-label-dimmed);background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1)}',
-      '.env_cardDescription{color:var(--dsw-alias-label-secondary);font-size:12px}',
+      '.env_cardName{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:500;line-height:22px}',
+      '.dshkit_badge{flex:none;margin-left:auto;padding:1px 8px;border-radius:999px;corner-shape:round;font-size:11px;font-weight:600;line-height:16px;letter-spacing:.02em;color:var(--dsw-alias-label-dimmed);background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1)}',
+      '.env_cardDescription{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}',
       '.env_chevron{flex:none;color:var(--dsw-alias-label-tertiary);transition:transform .16s}',
       '.env_pluginCardOpen .env_chevron{transform:rotate(180deg)}',
       '.env_cardBody{padding:2px 16px 16px}',
       '.env_panel{display:flex;flex-direction:column;gap:12px;color:var(--dsw-alias-label-primary);font-family:var(--dsw-font-family);box-sizing:border-box}',
       '.env_panelHeader{display:flex;align-items:center;gap:10px;flex:none}',
-      '.env_panelTitle{margin:0;font-size:15px;font-weight:700;white-space:nowrap;flex:1}',
-      '.env_subtitle{color:var(--dsw-alias-label-tertiary);font-size:11.5px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:360px}',
+      '.env_panelTitle{margin:0;font-size:15px;font-weight:500;line-height:22px;white-space:nowrap;flex:1}',
+      // 11.5px 的提示/次级正文上收到官方 hint 的 12/18（10–11px 只留给徽标与小 tag）。
+      '.env_subtitle{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;font-family:var(--ds-font-family-code);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:360px}',
       '.env_toolbar{display:flex;align-items:center;gap:8px;flex:none}',
       '.env_toolbarSpacer{flex:1}',
-      '.env_btn{color:var(--dsw-alias-label-primary-foreground);background:var(--dsw-alias-button-info-fill);border:none;border-radius:8px;padding:6px 14px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}',
-      '.env_btn:hover:not(:disabled){background:var(--dsw-alias-button-info-hover)}',
-      '.env_btn:disabled{opacity:.5;cursor:default}',
-      '.env_btnGhost{color:var(--dsw-alias-label-primary);background:0 0;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:5px 12px;font-size:12px;cursor:pointer;white-space:nowrap}',
+      // 按钮族对齐宿主 Button primitives：本包属 H28 档（size="sm"），故统一 H28/R8/12px/18px/padding 0 10px，
+      // 填充与描边两个变体逐项同尺寸；主按钮底色是 button-primary-fill（button-info 一族是强调蓝，非按钮填充）。
+      '.env_btn{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;gap:4px;height:28px;padding:0 10px;border:none;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground);font-family:inherit;font-size:12px;line-height:18px;white-space:nowrap;cursor:pointer}',
+      '.env_btn:hover:not(:disabled){background:var(--dsw-alias-button-primary-hover)}',
+      '.env_btn:disabled{opacity:.4;cursor:not-allowed}',
+      '.env_btn:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary))}',
+      '.env_btnGhost{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;gap:4px;height:28px;padding:0 10px;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-primary);font-family:inherit;font-size:12px;line-height:18px;white-space:nowrap;cursor:pointer}',
       '.env_btnGhost:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}',
-      '.env_btnDanger{color:var(--dsw-alias-state-error-primary)}',
+      '.env_btnGhost:active:not(:disabled){background:var(--dsw-alias-interactive-bg-active)}',
+      '.env_btnGhost:disabled{opacity:.4;cursor:not-allowed}',
+      '.env_btnGhost:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary))}',
+      '.env_btnDanger{color:var(--dsw-alias-state-error-primary);border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 30%,transparent)}',
+      '.env_btnDanger:hover:not(:disabled){background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 8%,transparent)}',
       '.env_list{display:flex;flex-direction:column;gap:8px;max-height:420px;overflow-y:auto}',
-      '.env_row{display:grid;grid-template-columns:minmax(140px,1fr) minmax(180px,2fr) auto auto;gap:8px;align-items:center;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:8px 10px}',
-      '.env_input{color:var(--dsw-alias-label-primary);background:var(--dsw-specific-input-major);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;outline:none;padding:6px 10px;font-family:inherit;font-size:13px;box-sizing:border-box;width:100%}',
+      '.env_row{display:grid;grid-template-columns:minmax(140px,1fr) minmax(180px,2fr) auto auto;gap:8px;align-items:center;background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-md);padding:8px 10px}',
+      // 输入档对齐宿主 settings-form 的 .input（H34 / R12 / border-l4 / bg-layer-3 / 13px）：
+      // 显式 height 是关键——同一个类套到 <select> 上时 Chrome 不看继承的 line-height，
+      // 没有它就会比同排的 <input> 矮 2px；圆角取 token 而非 8px 字面量。
+      '.env_input{box-sizing:border-box;width:100%;height:34px;padding:0 12px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-3);border:.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-md);outline:none;font-family:inherit;font-size:13px;line-height:1.5}',
       '.env_input:focus{border-color:var(--dsw-alias-state-business-primary)}',
       '.env_input::placeholder{color:var(--dsw-alias-label-tertiary)}',
-      '.env_check{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--dsw-alias-label-secondary);cursor:pointer;white-space:nowrap}',
-      '.env_empty,.env_loading{text-align:center;color:var(--dsw-alias-label-tertiary);padding:24px 12px;font-size:12.5px}',
-      '.env_error{color:var(--dsw-alias-state-error-primary);font-size:12px;margin:0;white-space:pre-wrap}',
-      '.env_ok{color:var(--dsw-alias-state-success-primary);font-size:12px;margin:0}',
+      '.env_check{display:inline-flex;align-items:center;gap:6px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary);cursor:pointer;white-space:nowrap}',
+      // 原生复选框的选中态走宿主的中性 brand（Checkbox.module.css 是唯一原语）：
+      // brand-primary 浅色近黑，而 business-primary(#4176e6) 是状态与徽标用的强调蓝——
+      // 用后者就是浏览器默认蓝勾那种错。尺寸也取宿主的 16×16。
+      '.env_check input[type=checkbox]{width:16px;height:16px;margin:0;flex:none;cursor:pointer;accent-color:var(--dsw-alias-brand-primary)}',
+      '.env_check input[type=checkbox]:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}',
+      '.env_empty,.env_loading{text-align:center;color:var(--dsw-alias-label-tertiary);padding:24px 12px;font-size:12.5px;line-height:18px}',
+      '.env_error{color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px;margin:0;white-space:pre-wrap}',
+      '.env_ok{color:var(--dsw-alias-state-success-primary);font-size:12px;line-height:18px;margin:0}',
     ].join('\n')
 
     let styleEl

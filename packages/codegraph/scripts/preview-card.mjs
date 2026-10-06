@@ -171,18 +171,37 @@ const SESSION = { byId: { s1: { cwd: '/Users/zz/code/my-app' } }, current: 's1' 
  * **名字必须与真主题逐字一致**：这张表是预览脚本自己造的假主题，写错一个名字的代价是
  * 「预览里颜色/框都对、装进真宿主就变样」——`state-warning` 那一族就是这么漏过去的
  * （真名是 `--dsw-alias-state-warn-primary`；见 `scripts/client-lint.mjs` 的检查四）。
+ *
+ * **基础层（圆角阶梯 / 卡片材质 / 焦点环 / 全局超椭圆）也必须在这里**：它们住在宿主的
+ * `base.css` / `focus.css` / `corner-shape.css` 里，不在「皮肤」那份 token 表里。缺了它们的
+ * 后果同样是「预览是对的、只有真机是错的」——卡片改走 `--dsw-radius-xl` 后，夹具里没有这个
+ * 名字 → 圆角算成 0，而真机是 20px。
  */
 const TOKENS = `:root{
   --dsw-font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
-  --dsw-alias-bg-layer-2:#fff; --dsw-alias-bg-layer-3:#fff;
-  --dsw-alias-border-l1:#0000000a; --dsw-alias-border-l2:#0000001a;
+  /* 基础层：圆角阶梯与卡片材质（宿主 base.css） */
+  --dsw-radius-xs:4px; --dsw-radius-sm:8px; --dsw-radius-md:12px; --dsw-radius-lg:16px; --dsw-radius-xl:20px;
+  --dsw-alias-settings-card-fill:var(--dsw-alias-bg-layer-2); --dsw-alias-settings-card-stroke:var(--dsw-alias-border-l4);
+  /* 焦点环（宿主 focus.css） */
+  --dsw-focus-ring-width:2px;
+  /* bg-base：探针详情块（.cg_probeDetail）读它。2026-10-06 起客户端半体去掉了那里的
+     字面量兜底（检查十六），夹具必须自己给值——否则预览里那一块的 background 整条作废。 */
+  --dsw-alias-bg-base:#fff;
+  --dsw-alias-bg-layer-1:#f6f7f9; --dsw-alias-bg-layer-2:#fff; --dsw-alias-bg-layer-3:#fff;
+  --dsw-alias-border-l1:#0000000a; --dsw-alias-border-l2:#0000001a; --dsw-alias-border-l3:#0000001f; --dsw-alias-border-l4:#00000029;
   --dsw-alias-label-primary:#0f1115; --dsw-alias-label-secondary:#61666b; --dsw-alias-label-tertiary:#81858c;
   --dsw-alias-label-dimmed:#e1e5ee; --dsw-alias-label-primary-foreground:#fff;
   --dsw-alias-brand-primary:#0f1115; --dsw-alias-button-info-fill:#4176e6; --dsw-alias-button-info-hover:#5686fe;
-  --dsw-specific-input-major:#fff; --dsw-alias-interactive-bg-hover:#2631480f;
+  /* 按钮族（宿主 Button.module.css）：填充变体用的是 brand 系，不是上面那组强调蓝。
+     少了这两行，主按钮 background 简写里的无效 var() 会让**整条声明作废**，预览里就是「白字没底」。 */
+  --dsw-alias-button-primary-fill:var(--dsw-alias-brand-primary); --dsw-alias-button-primary-hover:#43454a;
+  --dsw-specific-input-major:#fff; --dsw-alias-interactive-bg-hover:#2631480f; --dsw-alias-interactive-bg-active:#2631481a;
   --dsw-alias-state-success-primary:#22c55e; --dsw-alias-state-error-primary:#ec1313;
   --dsw-alias-state-warn-primary:#f59e0b; --dsw-alias-state-business-primary:#4176e6;
 }
+/* 宿主 corner-shape.css：全局超椭圆（不带这一条，预览就看不到「胶囊被拉变形」这件事，
+   也就验不出补上的 corner-shape:round 到底有没有用） */
+@supports (corner-shape:superellipse(1.5)){:root{--dsw-corner-shape:superellipse(1.5)}*,:before,:after{corner-shape:var(--dsw-corner-shape)}}
 body{margin:0;padding:26px 30px 30px;background:#f5f6f7;font-family:var(--dsw-font-family);-webkit-font-smoothing:antialiased}
 .panel{max-width:820px;margin:0 auto}
 .panelTitle{color:#0f1115;font-size:18px;font-weight:700;margin:0 0 14px}

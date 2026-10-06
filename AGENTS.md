@@ -27,7 +27,7 @@
 
 ```sh
 pnpm install                                        # 安装
-pnpm -r typecheck                                   # 全仓类型检查 + 客户端四条硬规矩的静态检查
+pnpm -r typecheck                                   # 全仓类型检查 + 客户端六条硬规矩的静态检查
 pnpm -r build                                       # 构建（lib/ 是**入库产物**，改源码后必须重建）
 pnpm test                                           # 全仓单测（根 script 是 `vitest run`，**不是** -r 的别名）
 pnpm create-plugin <name> [id]                      # 生成新插件包（复制 templates/hello）

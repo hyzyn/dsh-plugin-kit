@@ -614,6 +614,59 @@
       }
     },
     /*
+     * 设置卡片：保存隧道时宿主报了**端口问题**（tty D60 前半）。
+     *
+     * 这一条是纯客户端的一半：宿主在 200 里带回 `warnings`，卡片必须
+     *   ① **说**出来（不能说「已生效」就完事——那条隧道会停在红色 error 且不重试）；
+     *   ② 说成**警告**而不是成功（绿色）也不是失败（红色）——保存**真的成功了**，
+     *      配置落盘了，只是端口有问题。颜色就是这三态唯一的区别。
+     */
+    async 'port-warn'() {
+      window.__PREVIEW_PORT_WARNINGS = [
+        '本地端口 15432（隧道「staging-db-L15432」）已被占用：端口转发是机器级资源，最常见的原因是另一个 DSH profile 的宿主进程还在跑同一条隧道。这条隧道会停在 error 且不重试；换一个没被占用的 localPort，或在那个 profile 里关掉它。',
+      ]
+      const host = document.createElement('div')
+      host.id = 'preview-settings'
+      host.style.cssText = 'position:fixed;inset:24px 24px 24px 260px;overflow:auto;z-index:2000;background:var(--dsw-alias-bg-base);padding:8px;border-radius:16px'
+      document.body.appendChild(host)
+      const root = window.ReactDOM.createRoot(host)
+      root.render(window.React.createElement(cards[0].Component))
+      await waitFor(() => q('#preview-settings .tt_card'))
+      await sleep(80)
+      q('#preview-settings .tt_cardHeader').click()
+      await waitFor(() => q('#preview-settings .tt_cardBody'))
+      await sleep(400)
+
+      const buttonsIn = (el) => [...el.querySelectorAll('button')]
+      const body = q('#preview-settings .tt_cardBody')
+      // 勾掉一条既有隧道的启停 → 走 commitTunnels 那条路（保存隧道 → 宿主报端口问题）
+      const row = [...document.querySelectorAll('#preview-settings .tt_sshHostRow')]
+        .find((r) => (r.querySelector('.tt_sshHostName')?.textContent ?? '').startsWith('staging-pg'))
+      if (row === undefined) throw new Error('找不到 staging-pg 隧道行（fixture 应有该隧道）')
+      const box = row.querySelector('input[type=checkbox]')
+      if (box === null) throw new Error('隧道行没有启停勾选（夹具失效）')
+      box.click()
+      await sleep(700)
+
+      // 消息落在卡片最下方（保存按钮那一行）：截图要能拍到它，否则这条走查图是废的
+      const msgEl = q('#preview-settings .tt_cardMessage')
+      if (msgEl !== null) msgEl.scrollIntoView({ block: 'center' })
+      await sleep(200)
+
+      window.__previewAssert = async () => {
+        const msg = q('#preview-settings .tt_cardMessage')
+        if (msg === null) return '夹具失效：卡片里没有消息节点'
+        const text = msg.textContent ?? ''
+        if (!text.includes('15432')) return '端口问题的警告没有显示出来（消息为「' + text + '」）'
+        if (msg.classList.contains('tt_cardMessageOk')) return '端口有问题却报成了成功（绿色）——那条隧道会停在 error'
+        if (msg.classList.contains('tt_cardMessageError')) return '端口问题报成了保存失败（红色）——配置其实已经存下了'
+        if (!msg.classList.contains('tt_cardMessageWarn')) return '端口警告的样式类不对：' + msg.className
+        // 警告必须真的顶掉成功文案：两条同时出现用户只会挑好听的那条看
+        if (text.includes('已生效') || text.includes('is active')) return '成功文案与警告同时出现：' + text
+        return null
+      }
+    },
+    /*
      * 设置卡片：AI 辅助小节（0.24.0）。
      *
      * 新小节排在卡片**最下面**，默认视口看不到——这个场景负责把它滚进来，并核对四个控件

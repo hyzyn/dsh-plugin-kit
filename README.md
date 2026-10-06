@@ -187,8 +187,9 @@ dsh plugin --profile web add link:$(pwd)/packages/<name>
 ```
 
 **新包要建哪些文档、多长、编号怎么起**，**插件包的解剖**（`dsh.bundle.patch` / `cordis.patch.yml` /
-`src/index.ts` / `dsh.client`），以及**两条容易踩的硬规矩**（客户端半体的地址来源、纯逻辑抽模块）
-→ [docs/conventions.md](docs/conventions.md)。
+`src/index.ts` / `dsh.client`），以及**六条容易踩的硬规矩**（客户端半体的地址来源、逻辑抽模块、
+点击委托作用域、样式变量名与取值等）
+→ [docs/conventions.md § 客户端半体](docs/conventions.md#客户端半体六条硬规矩)。
 
 ## 文档地图
 

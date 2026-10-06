@@ -20,6 +20,143 @@
 import net from 'node:net';
 import { Client } from 'ssh2';
 import { classifyError, prepareSshConnect, proxyFailureSuffix } from './ssh.js';
+/** 本地端口占用的中文文案（`duplicate` / `in-use` 各一条，措辞与 tunnels.ts 的 EADDRINUSE 说明同源）。 */
+export function tunnelPortIssueMessage(kind, names, port) {
+    if (kind === 'duplicate') {
+        return `隧道「${names[1] ?? '?'}」与「${names[0] ?? '?'}」的本地端口都是 ${String(port)}——同一端口只能有一条本地转发（先起来的那条会占住它，后一条必定 EADDRINUSE）。改掉其中一条的 localPort。`;
+    }
+    return `本地端口 ${String(port)}（隧道「${names[0] ?? '?'}」）已被占用：端口转发是机器级资源，最常见的原因是另一个 DSH profile 的宿主进程还在跑同一条隧道。这条隧道会停在 error 且不重试；换一个没被占用的 localPort，或在那个 profile 里关掉它。`;
+}
+/**
+ * **纯函数**：在待保存的隧道列表里找「同一个 localPort 被两条 local 隧道用」。
+ *
+ * 只判 local 方向——remote 方向的 `remotePort` 在**服务端**监听，不在本机资源里，
+ * 本机探测对它没有意义（而且它由 forwardIn 的结果定论，能自愈）。
+ * 返回按端口升序、每端口一条（文本渲染与测试都按这个顺序断言）。
+ */
+export function findDuplicateLocalPorts(specs) {
+    const byPort = new Map();
+    for (const spec of specs) {
+        if (spec.direction !== 'local')
+            continue;
+        const port = Number(spec.localPort ?? 0);
+        if (!Number.isInteger(port) || port < 1 || port > 65535)
+            continue;
+        const names = byPort.get(port);
+        if (names === undefined)
+            byPort.set(port, [String(spec.name)]);
+        else if (!names.includes(String(spec.name)))
+            names.push(String(spec.name));
+    }
+    const out = [];
+    for (const port of [...byPort.keys()].sort((a, b) => a - b)) {
+        const names = byPort.get(port);
+        if (names.length < 2)
+            continue;
+        out.push({ kind: 'duplicate', names, port, message: tunnelPortIssueMessage('duplicate', names, port) });
+    }
+    return out;
+}
+/**
+ * 探测「这个本地端口现在能不能绑」。
+ *
+ * 语义是**独占探测**（`listen` 成功即立刻 `close`），不是「连一下看看」——后者对
+ * 「端口空着但 DHCP/防火墙挡着」这类情形给不出结论，而我们要答的正是「bind 会不会
+ * 失败」。探测窗口是微秒级，探完立即释放，不会与随后 reconcile 的真监听打架
+ * （本机实测：同一 tick 内 `close()` 之后立刻 `listen` 同一端口可以成功）。
+ *
+ * `host` 固定 `127.0.0.1`——本地转发只绑回环（见 `startTunnel`），去探 `0.0.0.0`
+ * 会把「别人绑在外部接口上」误报成冲突。
+ */
+export function probeLocalPort(port, timeoutMs = 500) {
+    return new Promise((resolve) => {
+        const server = net.createServer();
+        let settled = false;
+        const done = (free) => {
+            if (settled)
+                return;
+            settled = true;
+            clearTimeout(timer);
+            server.removeAllListeners();
+            try {
+                server.close();
+            }
+            catch {
+                /* 未监听成功时 close 会抛，忽略 */
+            }
+            resolve(free);
+        };
+        const timer = setTimeout(() => { done(true); }, timeoutMs);
+        timer.unref?.();
+        server.once('error', () => { done(false); });
+        // 'listening' 是唯一算「空着」的信号：error 之外还有 close 等路径，不能靠它们推定
+        server.once('listening', () => { done(true); });
+        try {
+            server.listen(port, '127.0.0.1');
+        }
+        catch {
+            done(false);
+        }
+    });
+}
+/**
+ * 保存隧道配置时的**保存前探测**（tty D60 前半）。
+ *
+ * ## 为什么只警告、不拒绝保存
+ *
+ * `duplicate` 能判死，但**不能**用它拒绝整个 POST：设置卡片的保存是**整表提交**
+ * （`toPayload` 把所有字段一起发上来），一旦配置里已经躺着一条重名端口的隧道
+ * （老配置 / 另一个窗口写的），硬拒就等于把用户锁死在「任何一项都存不下去」上——
+ * 而修它恰恰需要先能保存。所以这里把它降成**响应里的 warnings**，由客户端点名通报。
+ *
+ * `in-use` 更进一步：端口可能属于**用户故意**在跑的东西，探测本身也有极小的误报面
+ * （IPv6-only 的占用、探测期间的竞态），拿它拦保存是越权。它的价值在「不等那条
+ * 红色 error 出现就先说一声」。
+ *
+ * 每条隧道最多一条 in-use 警告；duplicate 优先（它更确定、且不必探端口）。
+ */
+export async function probeTunnelPorts(specs, probe = probeLocalPort, heldByUs = new Set()) {
+    const warnings = [];
+    const seen = new Set();
+    for (const issue of findDuplicateLocalPorts(specs)) {
+        warnings.push(issue.message);
+        seen.add(issue.port);
+    }
+    for (const spec of specs) {
+        if (spec.direction !== 'local')
+            continue;
+        const port = Number(spec.localPort ?? 0);
+        if (!Number.isInteger(port) || port < 1 || port > 65535)
+            continue;
+        if (seen.has(port))
+            continue;
+        /*
+         * **本进程自己正占着的端口不探**：改一条正在跑的隧道的其它字段（换个 remoteHost）
+         * 时端口当然是被自己占着的——那不是冲突，reconcile 会先 stop 再 start，端口在
+         * 同一拍里就还回来了（本机实测：同 tick `close()` 后立刻 `listen` 可以成功）。
+         * 不豁免这一条的话，每次编辑都会得到一条假警告，警告立刻会退化成没人看的东西。
+         * 同理，「删掉 A 再在同端口加 B」也不该报——A 会先被停掉。
+         */
+        if (heldByUs.has(port))
+            continue;
+        seen.add(port);
+        /*
+         * 探测失败（注入的实现抛错 / 极端情况下的同步异常）一律按「没探到」处理：
+         * 这是一条**提示**，为它把整个保存打挂是本末倒置——用户会看到「保存失败」，
+         * 却完全不知道是哪来的（端口探测的失败原因与配置的正确性无关）。
+         */
+        let free = true;
+        try {
+            free = await probe(port);
+        }
+        catch {
+            free = true;
+        }
+        if (!free)
+            warnings.push(tunnelPortIssueMessage('in-use', [String(spec.name)], port));
+    }
+    return warnings;
+}
 /**
  * 本地监听失败的文案（D58 补充）：`EADDRINUSE` 在多 profile 场景下**几乎总是**
  * 「另一个 profile 的宿主进程还占着这个端口」——端口转发是**机器级**资源，而配置是按
@@ -121,6 +258,26 @@ export class TunnelManager {
     /** 一条隧道的当前状态（不存在返回 undefined）。 */
     status(name) {
         return this.list().find((tunnel) => tunnel.name === name);
+    }
+    /**
+     * **本进程此刻真的持有**的本地监听端口集合（`probeTunnelPorts` 的豁免依据）。
+     *
+     * 为什么不是「配置里所有 localPort」：那条判据会把「A 已停用、B 想用同一个端口」
+     * （完全合法）误报成冲突。只有 `server.listening === true` 才算**真的绑上了**——
+     * `rt.server !== null` 不够：`startTunnel` 先建 server 再 `listen`，监听失败
+     * （EADDRINUSE）时句柄仍在表里，按它判会把「其实没占住」说成「我占着」，
+     * 于是端口被**别人**占着的那条真冲突反被豁免掉。
+     */
+    localPortsInUse() {
+        const out = new Set();
+        for (const rt of this.tunnels.values()) {
+            if (rt.server?.listening !== true)
+                continue;
+            const port = Number(rt.spec.localPort ?? 0);
+            if (Number.isInteger(port) && port >= 1 && port <= 65535)
+                out.add(port);
+        }
+        return out;
     }
     /**
      * 启停一条隧道（agent 的 `tunnel_start` / `tunnel_stop`）——**改配置，不只改运行态**。

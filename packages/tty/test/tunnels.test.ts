@@ -46,6 +46,11 @@ class FakeClient extends EventEmitter {
   forwardOut(_srcIP: string, _srcPort: number, _dstIP: string, _dstPort: number, cb: (error: Error | null, stream?: unknown) => void): void {
     this.forwardOutImpl?.(cb)
   }
+  /** remote 方向 ready 后会走 forwardIn（tunnels.ts 的 bindRemoteListen）。 */
+  forwardIn(_host: string, _port: number, cb: (error: Error | null, realPort?: number) => void): void {
+    this.forwardInImpl?.(cb)
+  }
+  forwardInImpl: ((cb: (error: Error | null, realPort?: number) => void) => void) | null = null
   trigger(event: string, ...args: unknown[]): void {
     this.emit(event, ...args)
   }
@@ -426,6 +431,70 @@ describe('TunnelManager.setEnabled：agent 启停改配置（0.25.0）', () => {
     await until(() => t.clients.length === 1)
     expect(() => t.manager.setEnabled('t1', false)).not.toThrow()
     expect(t.status()?.state).toBe('stopped')
+    t.manager.disposeAll()
+  })
+})
+
+/**
+ * `localPortsInUse()`（tty D60 前半）：保存前端口探测的**豁免依据**。
+ *
+ * 为什么它必须单独钉住：它是 `probeTunnelPorts` 与真实运行态之间**唯一**的桥——判松了，
+ * 「端口被别人占着」这条真冲突会被误豁免；判紧了，编辑一条在跑的隧道每次都会得到假警告。
+ * 两个方向都在这里反证过（见 ROADMAP 0.26.0 一节的「本进程已持有的端口豁免」）。
+ */
+describe('localPortsInUse：只有**真的 listen 成功**的端口才算被本进程持有', () => {
+  it('active 的 local 隧道：端口在集合里', async () => {
+    const t = makeHarness()
+    const port = await freePort()
+    t.manager.reconcile([specOf({ localPort: port })])
+    await until(() => t.clients.length === 1)
+    t.clients[0].trigger('ready')
+    await until(() => t.status()?.state === 'active')
+    expect(t.manager.localPortsInUse().has(port)).toBe(true)
+    t.manager.disposeAll()
+  })
+
+  it('**listen 失败**的隧道（端口被别人占）不在集合里——判据是 listening 而不是「句柄非 null」', async () => {
+    /*
+     * 这是本方法最容易写错的一处：`startTunnel` 先建 server 再 `listen`，监听失败
+     * （EADDRINUSE）时句柄**仍留在表里**。若按 `rt.server !== null` 判，就会把
+     * 「其实没占住」说成本进程占着——而端口正被**别人**占着，那条真冲突反被豁免。
+     */
+    const occupied = net.createServer()
+    await new Promise<void>((resolve) => occupied.listen(0, '127.0.0.1', resolve))
+    const takenPort = (occupied.address() as AddressInfo).port
+    const t = makeHarness()
+    try {
+      t.manager.reconcile([specOf({ localPort: takenPort })])
+      await until(() => t.status()?.state === 'error')
+      expect(t.manager.localPortsInUse().has(takenPort)).toBe(false)
+    } finally {
+      t.manager.disposeAll()
+      occupied.close()
+    }
+  })
+
+  it('停用后端口从集合里消失（否则「停掉 A、B 用同端口」会被假豁免）', async () => {
+    const t = makeHarness()
+    const port = await freePort()
+    t.manager.reconcile([specOf({ localPort: port })])
+    await until(() => t.clients.length === 1)
+    t.clients[0].trigger('ready')
+    await until(() => t.manager.localPortsInUse().has(port))
+    t.manager.setEnabled('t1', false)
+    expect(t.manager.localPortsInUse().has(port)).toBe(false)
+    t.manager.disposeAll()
+  })
+
+  it('remote 方向的隧道不进集合（它的 remotePort 在服务端监听，不是本机资源）', async () => {
+    const t = makeHarness()
+    t.manager.reconcile([specOf({ direction: 'remote', localPort: undefined, remotePort: 8080, localTargetPort: 3000 })])
+    await until(() => t.clients.length === 1)
+    t.clients[0].forwardInImpl = (cb) => { cb(null, 8080) }
+    t.clients[0].trigger('ready')
+    // 必须真的到了 active——否则「集合为空」可能只是因为它压根没起来（空断言）
+    await until(() => t.status()?.state === 'active')
+    expect(t.manager.localPortsInUse().size).toBe(0)
     t.manager.disposeAll()
   })
 })

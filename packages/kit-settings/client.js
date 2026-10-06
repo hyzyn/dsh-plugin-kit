@@ -23,10 +23,11 @@ window.__ModuleLoader__.load({
     const CSS = [
       '.kit_section{display:flex;flex-direction:column;gap:12px;max-width:760px;color:var(--dsw-alias-label-primary)}',
       '.kit_head{display:flex;flex-direction:column;gap:4px}',
-      '.kit_title{margin:0;font-size:18px;font-weight:600}',
-      '.kit_intro{margin:0;font-size:13px;color:var(--dsw-alias-label-tertiary)}',
+      // 页面标题对齐官方 pageTitle：500（宿主标题不用 600/700），18px 取 26px 成对行高。
+      '.kit_title{margin:0;font-size:18px;font-weight:500;line-height:26px}',
+      '.kit_intro{margin:0;font-size:13px;line-height:20px;color:var(--dsw-alias-label-tertiary)}',
       '.kit_list{display:flex;flex-direction:column;gap:10px;margin:0;padding:0}',
-      '.kit_note{color:var(--dsw-alias-label-tertiary);font-size:13px;margin:0}',
+      '.kit_note{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:20px;margin:0}',
     ]
 
     let styleEl

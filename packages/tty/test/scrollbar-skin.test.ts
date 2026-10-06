@@ -49,6 +49,8 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
+import { declValue, parseCssRules } from '../../../scripts/client-design-tokens.mjs'
+
 const css = readFileSync(new URL('../client-src/tty.css', import.meta.url), 'utf8')
 
 interface Rule {
@@ -58,50 +60,14 @@ interface Rule {
   decls: string
 }
 
-/**
- * 极简 CSS 规则扫描：`@media` / `@keyframes` 这类带嵌套块的 at-rule 往里递归，
- * 普通规则收成 `{ selector, decls }`。只为本用例服务，不追求通用。
+/*
+ * 规则扫描与取值走**仓库级共享实现** `scripts/client-design-tokens.mjs`：本文件原本带着一份
+ * 私有的 `parseRules` / `decl`，而 client-lint 的检查六要按同一份文本形状判「胶囊有没有配对
+ * corner-shape」——两份实现一定会漂，漂了就是「一边改对了、另一边还按老形状判」。
+ * 2026-10-06 合并时实测：两者在 tty.css 上给出**同一批 403 条规则、逐条声明零差异**。
  */
-function parseRules(text: string): Rule[] {
-  const out: Rule[] = []
-  const walk = (source: string): void => {
-    let i = 0
-    while (i < source.length) {
-      const open = source.indexOf('{', i)
-      if (open === -1) return
-      const prelude = source.slice(i, open).trim().replace(/\s+/g, ' ')
-      let depth = 1
-      let j = open + 1
-      while (j < source.length && depth > 0) {
-        if (source[j] === '{') depth += 1
-        else if (source[j] === '}') depth -= 1
-        j += 1
-      }
-      const body = source.slice(open + 1, j - 1)
-      if (body.includes('{')) walk(body)
-      else if (prelude !== '') out.push({ selector: prelude, decls: body })
-      i = j
-    }
-  }
-  walk(text.replace(/\/\*[\s\S]*?\*\//g, ''))
-  return out
-}
-
-/** 取某条声明的值（去 `!important`）；没有该声明返回 undefined。 */
-function decl(decls: string, name: string): string | undefined {
-  for (const part of decls.split(';')) {
-    const colon = part.indexOf(':')
-    if (colon === -1) continue
-    if (part.slice(0, colon).trim() !== name) continue
-    return part
-      .slice(colon + 1)
-      .replace(/!important/gu, '')
-      .trim()
-  }
-  return undefined
-}
-
-const rules = parseRules(css)
+const rules = parseCssRules(css)
+const decl = declValue
 const selectorList = (rule: Rule): string[] => rule.selector.split(',').map((part) => part.trim())
 const withSelector = (selector: string): Rule[] =>
   rules.filter((rule) => selectorList(rule).includes(selector))
@@ -125,12 +91,22 @@ function viewportDecl(name: string): string | undefined {
 
 const thumbSkins = withSelector('.tt_term .xterm-viewport::-webkit-scrollbar-thumb')
 
+/** 域调色板（`--tt-*` 的定义位）里某个自定义属性的登记值。 */
+const tokenValue = (name: string): string | undefined =>
+  rules.map((rule) => decl(rule.decls, name)).filter((value): value is string => value !== undefined).at(-1)
+
 describe('终端滚动条皮肤（D86）', () => {
   it('CSS 解析得到规则（自证：解析器坏了下面几条会假绿）', () => {
     expect(rules.length).toBeGreaterThan(100)
     expect(selectorList(hazards[0] ?? { selector: '', decls: '' })).toContain('.tt_modal *')
     expect(thumbSkins.length).toBeGreaterThan(0)
-    expect(decl(thumbSkins[0]!.decls, 'background')).toBe('rgba(255, 255, 255, .16)')
+    /*
+     * 皮肤色不再写死在规则体里：它是终端域调色板的一项（client-lint 检查十六要求规则体
+     * 一律 var() 读、字面量只许登记在 --tt-* 的定义位）。两条一起钉：规则读的是哪个令牌，
+     * 令牌登记的是哪个值。
+     */
+    expect(decl(thumbSkins[0]!.decls, 'background')).toBe('var(--tt-term-scrollbar)')
+    expect(tokenValue('--tt-term-scrollbar')).toBe('rgba(255, 255, 255, .16)')
   })
 
   it('危险规则还在（面板后代设了非 auto 的标准属性）→ 视口必须自己复位', () => {

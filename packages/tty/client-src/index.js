@@ -1174,7 +1174,7 @@ const ICON_CLEAR =
 const ICON_COPY =
   '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.4"/><path d="M3.5 10.5h-1v-8h8v1"/></svg>'
 const ICON_PASTE =
-  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="3" width="9" height="11" rx="1.4"/><rect x="5.5" y="1.5" width="5" height="3" rx="1" fill="var(--dsw-alias-bg-base,#fff)"/></svg>'
+  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="3" width="9" height="11" rx="1.4"/><rect x="5.5" y="1.5" width="5" height="3" rx="1" class="tt_iconPasteHole"/></svg>'
 // 连接栏扩展按钮图标（14px）：重新连接 / SFTP / 端口转发隧道
 const ICON_RECONNECT =
   '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/><path d="M13.7 1.8v2.7H11"/></svg>'
@@ -1190,6 +1190,13 @@ const ICON_MIN =
   '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4 8h8"/></svg>'
 const ICON_CLOSE =
   '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4.5 4.5l7 7"/><path d="M11.5 4.5l-7 7"/></svg>'
+/*
+ * 小号的 ✕（12px）：压在 18px / 26px 的命中盒里，比 ICON_CLOSE 再小一档。
+ * 之前这四处直接把「✕」（U+2715）当文本写进按钮，字形会随字体回退漂（字重 / 基线不定，
+ * 与同面板其它 16 网格描边图标不是一套语言）；换成同族描边图标后由 CSS 的 flex 居中保证对位。
+ */
+const ICON_CLOSE_SM =
+  '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg>'
 const ICON_PLUS =
   '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M8 3.6v8.8"/><path d="M3.6 8h8.8"/></svg>'
 // 文件系统（SFTP 列表 / 菜单）
@@ -1943,10 +1950,21 @@ function showTabOverlay(tab, text, hint, kind) {
   if (hint !== undefined && hint !== '') el.querySelector('.tt_overlayHint').textContent = hint
 }
 
-/** 读取宿主主题变量（拿不到时用兜底值），让 xterm 配色跟随皮肤。 */
-function cssVar(name, fallback) {
+/**
+ * 读取宿主主题变量。**必须在声明令牌的元素上读**：宿主把 alias 令牌声明在 body 上
+ * （如 `--dsw-alias-bg-base`，明暗两档都挂在 body / `body[data-ds-dark-theme]` 上），
+ * 而自定义属性只向**下**继承
+ * ——在 `document.documentElement`（html）上永远取不到，读它只会一直拿到兜底值
+ * （本包的终端强调色因此长期是 #7c9cff，主题给的 #4176e6 从没生效过）。
+ * 本包的 --tt-* 声明在 `:where(html, body)` 上，从 body 也读得到。
+ *
+ * @param {string} name 自定义属性名（含 `--`）。
+ * @param {string} [fallback] 取不到时的返回值；**不许传颜色字面量**（client-lint 检查十六）。
+ * @returns {string}
+ */
+function cssVar(name, fallback = '') {
   try {
-    const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+    const value = getComputedStyle(document.body).getPropertyValue(name).trim()
     return value !== '' ? value : fallback
   } catch {
     return fallback
@@ -1954,8 +1972,39 @@ function cssVar(name, fallback) {
 }
 
 function createTerminal(tab) {
-  // 终端底色固定深色（与主流终端一致），强调色跟随宿主皮肤
-  const accent = cssVar('--dsw-alias-state-business-primary', '#7c9cff')
+  // 终端底色固定深色（与主流终端一致），强调色跟随宿主皮肤（--tt-accent 登记在 tty.css 的令牌块）
+  const accent = cssVar('--tt-accent')
+  /*
+   * xterm 配色：值全部登记在 tty.css 的 --tt-term-* / --tt-an-* 定义位（域调色板只在一处登记）。
+   * 这里**逐个赋值**而不是写成一个对象字面量：`{ k: v }` 块会被内联 CSS 的扫描口径当成一条声明，
+   * `black:` / `red:` / `white:` 这些 xterm 键名会落进「值」里被当成具名色（**那个误报已修**：
+   * scanColorLiterals 现在会掩掉键位，scripts/test/client-design-tokens.test.ts 有用例）。
+   * 保留逐个赋值是因为每个键的取值各自带一行出处，改哪一项就不用在大对象里数位置。
+   *
+   * @type {Record<string, string>}
+   */
+  const theme = {}
+  theme.background = cssVar('--tt-term-bg')
+  theme.foreground = cssVar('--tt-term-fg')
+  theme.cursor = accent
+  theme.cursorAccent = cssVar('--tt-term-cursor-accent')
+  theme.selectionBackground = cssVar('--tt-term-selection')
+  theme.black = cssVar('--tt-an-black')
+  theme.red = cssVar('--tt-an-red')
+  theme.green = cssVar('--tt-an-green')
+  theme.yellow = cssVar('--tt-an-yellow')
+  theme.blue = cssVar('--tt-an-blue')
+  theme.magenta = cssVar('--tt-an-magenta')
+  theme.cyan = cssVar('--tt-an-cyan')
+  theme.white = cssVar('--tt-an-white')
+  theme.brightBlack = cssVar('--tt-an-bright-black')
+  theme.brightRed = cssVar('--tt-an-bright-red')
+  theme.brightGreen = cssVar('--tt-an-bright-green')
+  theme.brightYellow = cssVar('--tt-an-bright-yellow')
+  theme.brightBlue = cssVar('--tt-an-bright-blue')
+  theme.brightMagenta = cssVar('--tt-an-bright-magenta')
+  theme.brightCyan = cssVar('--tt-an-bright-cyan')
+  theme.brightWhite = cssVar('--tt-an-bright-white')
   const term = new Terminal({
     cursorBlink: true,
     cursorStyle: 'bar',
@@ -1969,29 +2018,7 @@ function createTerminal(tab) {
     convertEol: false,
     // 搜索高亮装饰（SearchAddon decorations）依赖提案 API
     allowProposedApi: true,
-    theme: {
-      background: '#0b0e14',
-      foreground: '#d7dce5',
-      cursor: accent,
-      cursorAccent: '#0b0e14',
-      selectionBackground: 'rgba(124, 156, 255, .30)',
-      black: '#1b2028',
-      red: '#f07178',
-      green: '#7ec699',
-      yellow: '#e6b673',
-      blue: '#7aa2f7',
-      magenta: '#c792ea',
-      cyan: '#7fdbca',
-      white: '#c8d0dc',
-      brightBlack: '#556070',
-      brightRed: '#ff8b92',
-      brightGreen: '#9fe0b4',
-      brightYellow: '#f5cc8c',
-      brightBlue: '#9ab8ff',
-      brightMagenta: '#dbb3ff',
-      brightCyan: '#a3f0e2',
-      brightWhite: '#eef2f8',
-    },
+    theme,
   })
   const fit = new FitAddon()
   const search = new SearchAddon()
@@ -2859,7 +2886,7 @@ function renderTabbar() {
     const closeEl = document.createElement('span')
     closeEl.className = 'tt_tabClose'
     closeEl.title = t('btn.close')
-    closeEl.textContent = '✕'
+    closeEl.innerHTML = ICON_CLOSE_SM
     // 键盘可达（0.19.0）：✕ 此前只能鼠标点（tab 本身的 Enter 走 switchTab）
     closeEl.setAttribute('role', 'button')
     closeEl.setAttribute('aria-label', t('btn.closeTabAria', { label: tab.label || '' }))
@@ -3649,7 +3676,7 @@ function renderTabListItems() {
     const closeBtn = document.createElement('button')
     closeBtn.type = 'button'
     closeBtn.className = 'tt_addMenuEdit'
-    closeBtn.textContent = '✕'
+    closeBtn.innerHTML = ICON_CLOSE_SM
     closeBtn.title = t('btn.close')
     closeBtn.setAttribute('aria-label', t('btn.closeTabAria', { label: label }))
     closeBtn.addEventListener('click', () => {
@@ -4526,8 +4553,11 @@ function openSshDialog(entry) {
   card.appendChild(jumpHostRow)
   const jumpOwnRow = document.createElement('label')
   jumpOwnRow.className = 'tt_sshRow'
+  // 与卡片里其它开关同一档：16×16 + 官方中性 brand 的选中色 + 焦点环（.tt_cardCheckbox）。
+  // 少了这条就落到浏览器 UA 的蓝勾（#0275ff）上，和宿主设置页并排是两种语言。
   const jumpOwnCheck = document.createElement('input')
   jumpOwnCheck.type = 'checkbox'
+  jumpOwnCheck.className = 'tt_cardCheckbox'
   const jumpOwnText = document.createElement('span')
   jumpOwnText.className = 'tt_cardLabel'
   jumpOwnText.textContent = t('check.jumpOwnCred')
@@ -6087,7 +6117,7 @@ function makeProgressBar() {
   cancelBtn.type = 'button'
   cancelBtn.className = 'tt_sftpCancel'
     cancelBtn.title = t('btn.cancelTransfer')
-  cancelBtn.textContent = '✕'
+  cancelBtn.innerHTML = ICON_CLOSE_SM
   cancelBtn.style.display = 'none'
   let onCancel = null
   cancelBtn.addEventListener('click', (event) => {
@@ -7025,14 +7055,20 @@ function toggleSearch() {
   if (hidden) searchInputEl.focus()
 }
 
-/** 搜索高亮装饰：深色终端背景（#0d1117）下的高对比配色。 */
-const SEARCH_DECORATIONS = {
-  matchBackground: '#3d2b00',
-  matchBorder: '#8a5a00',
-  activeMatchBackground: '#b06a00',
-  activeMatchBorder: '#ffb84d',
-  matchOverviewRuler: '#8a5a00',
-  activeMatchColorOverviewRuler: '#ffb84d',
+/**
+ * 搜索高亮装饰：深色终端背景下的高对比配色，值登记在 tty.css 的 --tt-term-search-* 定义位
+ * （域调色板只在一处登记，client-lint 检查十六）。**每次调用现读**：模块加载时样式表还没注入，
+ * 那时读不到令牌。
+ */
+function searchDecorations() {
+  return {
+    matchBackground: cssVar('--tt-term-search-match'),
+    matchBorder: cssVar('--tt-term-search-match-border'),
+    activeMatchBackground: cssVar('--tt-term-search-active'),
+    activeMatchBorder: cssVar('--tt-term-search-active-border'),
+    matchOverviewRuler: cssVar('--tt-term-search-match-border'),
+    activeMatchColorOverviewRuler: cssVar('--tt-term-search-active-border'),
+  }
 }
 
 function doSearch(backwards) {
@@ -7040,7 +7076,7 @@ function doSearch(backwards) {
   if (tab === undefined || tab.search === undefined) return
   const query = searchInputEl.value
   if (query === '') return
-  const options = { decorations: SEARCH_DECORATIONS }
+  const options = { decorations: searchDecorations() }
   if (backwards) tab.search.findPrevious(query, options)
   else tab.search.findNext(query, options)
 }
@@ -7671,7 +7707,7 @@ function buildDock() {
     '<span class="tt_dockTitle">' + TERMINAL_ICON + '<span>' + t('panel.title') + '</span><span class="tt_dockCount"></span></span>' +
     '<span class="tt_dockStatus"></span>' +
     '<span class="tt_dockDot"></span>' +
-    '<button class="tt_dockClose" title="' + t('btn.closePanelTitle') + '">✕</button>'
+    '<button class="tt_dockClose" title="' + t('btn.closePanelTitle') + '">' + ICON_CLOSE_SM + '</button>'
   dockCountEl = dockEl.querySelector('.tt_dockCount')
   dockStatusEl = dockEl.querySelector('.tt_dockStatus')
   dockDotEl = dockEl.querySelector('.tt_dockDot')
@@ -8253,7 +8289,14 @@ function TtySettingsCard(props) {
     ? t('meta.tunnelRemote', { host: tunnel.remoteHost || '127.0.0.1', port: String(tunnel.remotePort ?? 0), local: String(tunnel.localTargetPort ?? 0) })
     : t('meta.tunnelLocal', { local: String(tunnel?.localPort ?? 0), host: tunnel?.remoteHost ?? '?', port: String(tunnel?.remotePort ?? 0) }))
   const selectedBook = (form?.sshHosts ?? []).find((host) => host?.name === tunnelDraft?.bookName)
-  /** 立即提交当前隧道列表（写 settings → reconcile 热生效）；失败回滚提示。 */
+  /**
+   * 立即提交当前隧道列表（写 settings → reconcile 热生效）；失败回滚提示。
+   *
+   * 返回 `{ ok, warnings }` 而不是布尔：宿主在 200 里带回**保存前端口探测**的结果
+   * （tty D60 前半），调用方要据此在「已生效」与「生效了但端口有问题」之间选一条文案。
+   * 探测**不拒绝保存**（那条路由是整表提交，拒了用户就什么都存不下去），所以
+   * `ok: true` 与 `warnings.length > 0` 是会同时出现的——这正是要分开说的两种结果。
+   */
   const pushTunnels = async (next) => {
     try {
       const res = await fetch('/api/dsh-tty/config', {
@@ -8264,13 +8307,27 @@ function TtySettingsCard(props) {
       const data = await res.json().catch(() => ({}))
       if (!res.ok || !data.ok) {
         setMessage({ kind: 'error', text: String(data.error || t('error.saveTunnelFailed')) })
-        return false
+        return { ok: false, warnings: [] }
       }
-      return true
+      const warnings = Array.isArray(data.warnings) ? data.warnings.map((w) => String(w)).filter((w) => w !== '') : []
+      return { ok: true, warnings }
     } catch (error) {
       setMessage({ kind: 'error', text: String(error && error.message ? error.message : error) })
-      return false
+      return { ok: false, warnings: [] }
     }
+  }
+  /**
+   * 隧道操作收尾的统一文案：有警告说警告（黄色），没有才说成功。
+   *
+   * 为什么警告要**顶掉**成功文案：端口被占时那条隧道会停在红色 error 且不重试，
+   * 而「已生效」三个字会让人以为一切正常——两条消息同时出现只会让用户挑好听的那条看。
+   */
+  const reportTunnelResult = (result, okText) => {
+    if (result.warnings.length > 0) {
+      setMessage({ kind: 'warn', text: result.warnings.join(' ') })
+      return
+    }
+    setMessage({ kind: 'ok', text: okText })
   }
   /** 添加隧道（append 进 form.tunnels 并立即生效；重名自动加后缀）。 */
   /**
@@ -8316,8 +8373,8 @@ function TtySettingsCard(props) {
     const next = [...list, tunnel]
     setForm((current) => ({ ...(current || {}), tunnels: next }))
     setTunnelDraft((current) => ({ ...(current || {}), localPort: '', remoteHost: '', remotePort: '', localTargetPort: '' }))
-    void pushTunnels(next).then((ok) => {
-      if (ok) setMessage({ kind: 'ok', text: t('msg.tunnelApplied', { name: tunnel.name }) })
+    void pushTunnels(next).then((result) => {
+      if (result.ok) reportTunnelResult(result, t('msg.tunnelApplied', { name: tunnel.name }))
     })
   }
 
@@ -8340,14 +8397,14 @@ function TtySettingsCard(props) {
     }
     const next = applied.tunnels
     setForm((current) => ({ ...(current || {}), tunnels: next }))
-    void pushTunnels(next).then((ok) => {
-      if (ok !== true) {
+    void pushTunnels(next).then((result) => {
+      if (result.ok !== true) {
         setForm((current) => ({ ...(current || {}), tunnels: before }))
         return
       }
       setEditingTunnel(null)
       setTunnelDraft((current) => ({ ...(current || {}), localPort: '', remoteHost: '', remotePort: '', localTargetPort: '' }))
-      setMessage({ kind: 'ok', text: t('msg.tunnelUpdated', { name: built.tunnel.name }) })
+      reportTunnelResult(result, t('msg.tunnelUpdated', { name: built.tunnel.name }))
     })
   }
   /**
@@ -8360,8 +8417,15 @@ function TtySettingsCard(props) {
    */
   const commitTunnels = (next, before) => {
     setForm((current) => ({ ...(current || {}), tunnels: next }))
-    void pushTunnels(next).then((ok) => {
-      if (ok !== true) setForm((current) => ({ ...(current || {}), tunnels: before }))
+    void pushTunnels(next).then((result) => {
+      if (result.ok !== true) {
+        setForm((current) => ({ ...(current || {}), tunnels: before }))
+        return
+      }
+      // 删除 / 勾选启停这两条路原先什么都不说（改的是列表里看得见的东西）；一旦宿主报了
+      // 端口问题就必须说——**删除**一条撞端口的隧道正是把警告消掉的动作，此时沉默会让
+      // 用户以为问题还在，而**启用**一条撞端口的隧道正是警告的来源。
+      if (result.warnings.length > 0) setMessage({ kind: 'warn', text: result.warnings.join(' ') })
     })
   }
   const removeTunnel = (name) => {
@@ -9855,7 +9919,7 @@ function TtySettingsCard(props) {
                   className: 'tt_cardField tt_cardRow',
                   children: [
                     jsx('button', { className: 'tt_cardSave', disabled: saving, onClick: () => void save(), children: saving ? t('msg.saving') : t('btn.save') }),
-                    jsx('span', { className: 'tt_cardMessage' + (message.kind === 'ok' ? ' tt_cardMessageOk' : message.kind === 'error' ? ' tt_cardMessageError' : ''), children: message.text }),
+                    jsx('span', { className: 'tt_cardMessage' + (message.kind === 'ok' ? ' tt_cardMessageOk' : message.kind === 'error' ? ' tt_cardMessageError' : message.kind === 'warn' ? ' tt_cardMessageWarn' : ''), children: message.text }),
                   ],
                 }),
               ] }),

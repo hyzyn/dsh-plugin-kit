@@ -18,69 +18,85 @@ window.__ModuleLoader__.load({
 
     const CSS = [
       '.pM_pageHost{display:block}',
-      '.pM_pluginCard{list-style:none;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);border-radius:12px;transition:border-color .16s,background .16s}',
+      '.pM_pluginCard{list-style:none;border:.5px solid var(--dsw-alias-settings-card-stroke);background:var(--dsw-alias-settings-card-fill);border-radius:var(--dsw-radius-xl);transition:border-color .16s,background .16s}',
       '.pM_pluginCard:hover{border-color:var(--dsw-alias-label-dimmed)}',
-      '.pM_pluginCardOpen{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-label-dimmed)}',
-      '.pM_cardHeader{appearance:none;width:100%;color:inherit;font:inherit;text-align:left;cursor:pointer;background:0 0;border:0;border-radius:12px;display:flex;align-items:center;gap:12px;padding:14px 16px}',
-      '.pM_cardHeader:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}',
+      '.pM_pluginCardOpen{background:var(--dsw-alias-bg-layer-1);border-color:var(--dsw-alias-label-dimmed)}',
+      '.pM_cardHeader{appearance:none;width:100%;color:inherit;font:inherit;text-align:left;cursor:pointer;background:0 0;border:0;border-radius:var(--dsw-radius-xl);display:flex;align-items:center;gap:12px;padding:14px 16px}',
+      '.pM_cardHeader:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:-2px}',
       '.pM_cardHeadText{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}',
-      '.pM_cardName{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:600}',
-      '.dshkit_badge{flex:none;margin-left:auto;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:600;line-height:16px;letter-spacing:.02em;color:var(--dsw-alias-label-dimmed);background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1)}',
-      '.pM_cardDescription{color:var(--dsw-alias-label-secondary);font-size:12px}',
+      // 卡片标题：本文件另有一条 .pM_cardName（面板内 prompt 名）——同选择器后者整条覆盖前者，
+      // 那两条 14px/600 与 13.5px/700 都是死声明；合并为官方 cardTitle 角色 14px/500/22px。
+      '.pM_cardName{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:500;line-height:22px}',
+      '.dshkit_badge{flex:none;margin-left:auto;padding:1px 8px;border-radius:999px;corner-shape:round;font-size:11px;font-weight:600;line-height:16px;letter-spacing:.02em;color:var(--dsw-alias-label-dimmed);background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1)}',
+      '.pM_cardDescription{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}',
       '.pM_chevron{flex:none;color:var(--dsw-alias-label-tertiary);transition:transform .16s}',
       '.pM_pluginCardOpen .pM_chevron{transform:rotate(180deg)}',
       '.pM_cardBody{padding:2px 16px 16px}',
       '.pM_panel{display:flex;flex-direction:column;gap:12px;color:var(--dsw-alias-label-primary);font-family:var(--dsw-font-family);box-sizing:border-box}',
       '.pM_panelHeader{display:flex;align-items:center;gap:8px 10px;flex:none;flex-wrap:wrap}',
-      '.pM_panelTitle{margin:0;font-size:15px;font-weight:700;white-space:nowrap;flex:1;min-width:0}',
-      '.pM_subtitle{color:var(--dsw-alias-label-tertiary);font-size:11.5px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:320px;min-width:0;flex:0 1 auto}',
+      '.pM_panelTitle{margin:0;font-size:15px;font-weight:500;line-height:22px;white-space:nowrap;flex:1;min-width:0}',
+      // 11.5px 的提示/次级正文上收到官方 hint 的 12/18（10–11px 只留给徽标与小 tag）。
+      '.pM_subtitle{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;font-family:var(--ds-font-family-code);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:320px;min-width:0;flex:0 1 auto}',
       '.pM_toolbar{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex:1 1 100%;min-width:0;flex-wrap:wrap}',
-      '.pM_btn{color:var(--dsw-alias-label-primary-foreground);background:var(--dsw-alias-button-info-fill);border:none;border-radius:8px;padding:6px 14px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}',
-      '.pM_btn:hover:not(:disabled){background:var(--dsw-alias-button-info-hover)}',
-      '.pM_btn:disabled{opacity:.5;cursor:default}',
-      '.pM_btnGhost{color:var(--dsw-alias-label-primary);background:0 0;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:5px 12px;font-size:12px;cursor:pointer;white-space:nowrap}',
+      // 按钮族对齐宿主 Button primitives：本包属 H28 档（size="sm"），故统一 H28/R8/12px/18px/padding 0 10px，
+      // 填充与描边两个变体逐项同尺寸；主按钮底色是 button-primary-fill（button-info 一族是强调蓝，非按钮填充）。
+      '.pM_btn{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;gap:4px;height:28px;padding:0 10px;border:none;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground);font-family:inherit;font-size:12px;line-height:18px;white-space:nowrap;cursor:pointer}',
+      '.pM_btn:hover:not(:disabled){background:var(--dsw-alias-button-primary-hover)}',
+      '.pM_btn:disabled{opacity:.4;cursor:not-allowed}',
+      '.pM_btn:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary))}',
+      '.pM_btnGhost{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;gap:4px;height:28px;padding:0 10px;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-primary);font-family:inherit;font-size:12px;line-height:18px;white-space:nowrap;cursor:pointer}',
       '.pM_btnGhost:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}',
-      '.pM_btnGhost:disabled{opacity:.45;cursor:default}',
-      '.pM_btnDanger{color:var(--dsw-alias-state-error-primary)}',
-      '.pM_linkBtn{color:var(--dsw-alias-state-business-primary);background:0 0;border:none;padding:0;font-size:12px;cursor:pointer;white-space:nowrap}',
-      '.pM_linkBtn:hover:not(:disabled){text-decoration:underline}',
-      '.pM_linkBtn[data-danger]{color:var(--dsw-alias-state-error-primary)}',
+      '.pM_btnGhost:active:not(:disabled){background:var(--dsw-alias-interactive-bg-active)}',
+      '.pM_btnGhost:disabled{opacity:.4;cursor:not-allowed}',
+      '.pM_btnGhost:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary))}',
+      '.pM_btnDanger{color:var(--dsw-alias-state-error-primary);border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 30%,transparent)}',
+      '.pM_btnDanger:hover:not(:disabled){background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 8%,transparent)}',
+      '.pM_linkBtn{color:var(--dsw-alias-link);background:0 0;border:none;padding:0;font-size:12px;line-height:18px;font-weight:500;cursor:pointer;white-space:nowrap;text-decoration:none}',
+      '.pM_linkBtn:hover:not(:disabled){text-decoration:underline dotted;text-underline-offset:3px}',
       '.pM_list{display:flex;flex-direction:column;gap:8px;max-height:480px;overflow-y:auto}',
-      '.pM_card{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:6px}',
+      '.pM_card{background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-md);padding:10px 12px;display:flex;flex-direction:column;gap:6px}',
       '.pM_cardRow{display:flex;align-items:center;gap:8px;flex-wrap:wrap}',
-      '.pM_cardName{font-weight:700;font-size:13.5px}',
-      '.pM_cardSummary{color:var(--dsw-alias-label-secondary);font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}',
+      '.pM_cardSummary{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px;font-family:var(--ds-font-family-code);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}',
       '.pM_cardActions{display:flex;align-items:center;gap:6px;margin-left:auto;flex-wrap:wrap}',
-      '.pM_badge{display:inline-block;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:999px;padding:1px 8px;font-size:11px;line-height:1.6;white-space:nowrap}',
+      '.pM_badge{display:inline-block;border:.5px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:999px;corner-shape:round;padding:1px 8px;font-size:11px;line-height:16px;white-space:nowrap}',
       '.pM_badge[data-kind=active]{color:var(--dsw-alias-state-success-primary);border-color:var(--dsw-alias-state-success-primary)}',
       '.pM_badge[data-kind=ab]{color:var(--dsw-alias-state-business-primary);border-color:var(--dsw-alias-state-business-primary)}',
-      '.pM_banner{border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:8px;padding:8px 12px;font-size:12.5px;line-height:1.5;overflow-wrap:anywhere;flex:none}',
+      '.pM_banner{border:.5px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:8px;padding:8px 12px;font-size:12.5px;line-height:18px;overflow-wrap:anywhere;flex:none}',
       '.pM_banner[data-kind=ok]{color:var(--dsw-alias-state-success-primary);border-color:var(--dsw-alias-state-success-primary)}',
       '.pM_banner[data-kind=error]{color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary)}',
       '.pM_banner[data-kind=info]{color:var(--dsw-alias-state-business-primary);border-color:var(--dsw-alias-state-business-primary)}',
       '.pM_banner[data-kind=warn]{color:var(--dsw-alias-state-warn-primary);border-color:var(--dsw-alias-state-warn-primary)}',
-      '.pM_empty,.pM_loading{text-align:center;color:var(--dsw-alias-label-tertiary);padding:24px 12px;font-size:12.5px}',
+      '.pM_empty,.pM_loading{text-align:center;color:var(--dsw-alias-label-tertiary);padding:24px 12px;font-size:12.5px;line-height:18px}',
       '.pM_editor{display:grid;grid-template-columns:minmax(180px,240px) 1fr;gap:12px;align-items:start}',
       '.pM_editorMain{display:flex;flex-direction:column;gap:10px;min-width:0}',
       '.pM_editorSide{display:flex;flex-direction:column;gap:8px;max-height:420px;overflow-y:auto}',
-      '.pM_versionItem{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;gap:4px;cursor:pointer}',
+      '.pM_versionItem{background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;gap:4px;cursor:pointer}',
       '.pM_versionItem[data-selected]{border-color:var(--dsw-alias-state-business-primary)}',
-      '.pM_versionTitle{font-weight:600;font-size:12.5px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}',
-      '.pM_versionMeta{color:var(--dsw-alias-label-tertiary);font-size:11px}',
+      '.pM_versionTitle{font-weight:500;font-size:12.5px;line-height:18px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}',
+      '.pM_versionMeta{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}',
       '.pM_field{display:flex;flex-direction:column;gap:5px}',
-      '.pM_fieldLabel{color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:600}',
-      '.pM_input{color:var(--dsw-alias-label-primary);background:var(--dsw-specific-input-major);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;outline:none;padding:7px 10px;font-family:inherit;font-size:13px;box-sizing:border-box;width:100%}',
+      '.pM_fieldLabel{color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:500;line-height:18px}',
+      // 输入档对齐宿主 settings-form 的 .input：显式 H34 + --dsw-radius-md（原来靠 7px 10px 撑高、
+      // 圆角写死 8px）。高度必须显式：A/B 两个 <select> 复用同一个类，而 Chrome 给 select 算内容高时
+      // 不看继承的 line-height（内容高实测 16px），没有高度就会比同排输入框矮 2px；
+      // textarea 由下面的 .pM_textarea 覆盖回 height:auto。
+      '.pM_input{box-sizing:border-box;width:100%;height:34px;padding:0 12px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-3);border:.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-md);outline:none;font-family:inherit;font-size:13px;line-height:1.5}',
       '.pM_input:focus{border-color:var(--dsw-alias-state-business-primary)}',
-      '.pM_input::placeholder{color:var(--dsw-alias-label-tertiary)}',
-      '.pM_textarea{min-height:220px;resize:vertical;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;line-height:1.55;white-space:pre-wrap}',
-      '.pM_hint{color:var(--dsw-alias-label-tertiary);font-size:11.5px;line-height:1.5}',
+      '.pM_input::placeholder{color:var(--dsw-alias-label-dimmed)}',
+      // 多行 textarea 不吃输入档的 H34（官方：textarea 用 height:auto + min-height）与横向内边距。
+      '.pM_textarea{height:auto;min-height:220px;padding:8px 12px;resize:vertical;font-family:var(--ds-font-family-code);font-size:12px;line-height:18px;white-space:pre-wrap}',
+      '.pM_hint{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}',
       '.pM_radioRow{display:flex;align-items:center;gap:16px}',
-      '.pM_checkRow{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--dsw-alias-label-primary);cursor:pointer}',
-      '.pM_formError{color:var(--dsw-alias-state-error-primary);font-size:12px;margin:0;white-space:pre-wrap}',
-      '.pM_toast{position:fixed;left:50%;bottom:36px;transform:translateX(-50%);z-index:2147483647;pointer-events:none;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary);border-radius:10px;padding:9px 16px;font-size:13px;box-shadow:var(--dsw-shadow-lv3);max-width:70vw}',
-      '.pM_toast[data-kind=ok]{border-color:var(--dsw-alias-state-success-primary);color:var(--dsw-alias-state-success-primary)}',
-      '.pM_toast[data-kind=error]{border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}',
-      '.pM_mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}',
+      '.pM_checkRow{display:flex;align-items:center;gap:8px;font-size:13px;line-height:20px;color:var(--dsw-alias-label-primary);cursor:pointer}',
+      // 原生复选框按宿主 Checkbox 写：16×16 + accent-color 走中性 brand（浅色近黑）。
+      // 用强调蓝 state-business-primary（#4176e6）就是浏览器默认蓝勾那种错——那是状态与徽标的颜色。
+      '.pM_checkRow input[type=checkbox]{width:16px;height:16px;margin:0;flex:none;cursor:pointer;accent-color:var(--dsw-alias-brand-primary)}',
+      '.pM_checkRow input[type=checkbox]:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}',
+      '.pM_formError{color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px;margin:0;white-space:pre-wrap}',
+      '.pM_toast{position:fixed;left:50%;bottom:36px;transform:translateX(-50%);z-index:2147483647;pointer-events:none;background:var(--dsw-alias-bg-layer-2);border:0;color:var(--dsw-alias-label-primary);border-radius:var(--dsw-radius-md);padding:9px 16px;font-size:13px;line-height:20px;box-shadow:var(--dsw-elevation-prominent);max-width:70vw}',
+      '.pM_toast[data-kind=ok]{color:var(--dsw-alias-state-success-primary);box-shadow:var(--dsw-elevation-prominent), inset 0 0 0 .5px var(--dsw-alias-state-success-primary)}',
+      '.pM_toast[data-kind=error]{color:var(--dsw-alias-state-error-primary);box-shadow:var(--dsw-elevation-prominent), inset 0 0 0 .5px var(--dsw-alias-state-error-primary)}',
+      '.pM_mono{font-family:var(--ds-font-family-code)}',
     ].join('\n')
 
     let styleEl
@@ -440,7 +456,7 @@ window.__ModuleLoader__.load({
           parts.push('<button class="pM_linkBtn" data-action="export-json" data-id="' + esc(prompt.id) + '">' + t('btn.exportJson') + '</button>')
           parts.push('<button class="pM_linkBtn" data-action="export-md" data-id="' + esc(prompt.id) + '">' + t('btn.exportMd') + '</button>')
           parts.push('<button class="pM_linkBtn" data-action="share" data-id="' + esc(prompt.id) + '">' + t('btn.share') + '</button>')
-          parts.push('<button class="pM_linkBtn" data-danger="true" data-action="delete" data-id="' + esc(prompt.id) + '">' + t('btn.delete') + '</button>')
+          parts.push('<button class="pM_btnGhost pM_btnDanger" data-action="delete" data-id="' + esc(prompt.id) + '">' + t('btn.delete') + '</button>')
           parts.push('</div>')
           parts.push('</div>')
         }
@@ -480,7 +496,7 @@ window.__ModuleLoader__.load({
         parts.push('<span class="pM_cardActions">')
         parts.push('<button class="pM_linkBtn" data-action="set-active" data-id="' + esc(version.id) + '">' + t('btn.setActive') + '</button>')
         if (prompt.versions.length > 1) {
-          parts.push('<button class="pM_linkBtn" data-danger="true" data-action="remove-version" data-id="' + esc(version.id) + '">' + t('btn.delete') + '</button>')
+          parts.push('<button class="pM_btnGhost pM_btnDanger" data-action="remove-version" data-id="' + esc(version.id) + '">' + t('btn.delete') + '</button>')
         }
         parts.push('</span>')
         parts.push('</div>')

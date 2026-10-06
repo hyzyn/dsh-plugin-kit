@@ -101,7 +101,18 @@
           CONFIG[key] = value
         }
       }
-      return { ok: true, config: CONFIG }
+      /*
+       * 保存前端口探测（tty D60 前半）：真宿主在 **200** 里带回 `warnings`，客户端据此
+       * 把「已生效」换成黄色警告。夹具必须照这个形状回，否则 `port-warn` 场景验的是
+       * 一条不存在的路（同 D91 那条：夹具自己扮演宿主，它撒谎测试就永远绿）。
+       *
+       * `window.__PREVIEW_PORT_WARNINGS` 决定回什么：数组即照发，缺省 = 一次都不报
+       * （与真实宿主「端口都空着」的常态一致）。
+       */
+      const warnings = window.__PREVIEW_PORT_WARNINGS
+      return Array.isArray(warnings) && warnings.length > 0
+        ? { ok: true, config: CONFIG, warnings }
+        : { ok: true, config: CONFIG }
     }
     if (url.indexOf('/api/dsh-tty/shells') === 0) return { ok: true, shells: ['/bin/zsh', '/bin/bash', '/bin/sh', '/opt/homebrew/bin/fish'] }
     /*

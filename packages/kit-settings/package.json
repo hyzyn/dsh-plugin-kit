@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-kit-settings",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "DSH Web GUI 的 kit 插件配置入口：在官方「设置」里补一行与「通用设置」平级的「插件配置」页，把 dsh-plugin-kit 各插件的配置表单收在一处。",
   "type": "module",
   "engines": {

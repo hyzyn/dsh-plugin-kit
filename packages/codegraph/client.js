@@ -720,15 +720,17 @@ window.__ModuleLoader__.load({
 
     const CSS = [
       '.cg_pageHost{display:block}',
-      '.cg_pluginCard{list-style:none;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);border-radius:12px;transition:border-color .16s,background .16s}',
+      '.cg_pluginCard{list-style:none;border:.5px solid var(--dsw-alias-settings-card-stroke);background:var(--dsw-alias-settings-card-fill);border-radius:var(--dsw-radius-xl);transition:border-color .16s,background .16s}',
       '.cg_pluginCard:hover{border-color:var(--dsw-alias-label-dimmed)}',
-      '.cg_pluginCardOpen{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-label-dimmed)}',
-      '.cg_cardHeader{appearance:none;width:100%;color:inherit;font:inherit;text-align:left;cursor:pointer;background:0 0;border:0;border-radius:12px;display:flex;align-items:center;gap:12px;padding:14px 16px}',
-      '.cg_cardHeader:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}',
+      '.cg_pluginCardOpen{background:var(--dsw-alias-bg-layer-1);border-color:var(--dsw-alias-label-dimmed)}',
+      '.cg_cardHeader{appearance:none;width:100%;color:inherit;font:inherit;text-align:left;cursor:pointer;background:0 0;border:0;border-radius:var(--dsw-radius-xl);display:flex;align-items:center;gap:12px;padding:14px 16px}',
+      '.cg_cardHeader:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:-2px}',
       '.cg_cardHeadText{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}',
-      '.cg_cardName{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:600}',
-      '.dshkit_badge{flex:none;margin-left:auto;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:600;line-height:16px;letter-spacing:.02em;color:var(--dsw-alias-label-dimmed);background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1)}',
-      '.cg_cardDescription{color:var(--dsw-alias-label-secondary);font-size:12px}',
+      // 卡片标题 = 宿主 cardTitle 的角色（14 / 500 / 20）：600/700 会让插件卡片的标题比宿主
+      // 自己那排卡片重一档；行高按官方成对值写（规范：font-size 必须配 line-height）。
+      '.cg_cardName{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:500;line-height:20px}',
+      '.dshkit_badge{flex:none;margin-left:auto;padding:1px 8px;border-radius:999px;corner-shape:round;font-size:11px;font-weight:600;line-height:16px;letter-spacing:.02em;color:var(--dsw-alias-label-dimmed);background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1)}',
+      '.cg_cardDescription{color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}',
       '.cg_chevron{flex:none;color:var(--dsw-alias-label-tertiary);transition:transform .16s}',
       '.cg_pluginCardOpen .cg_chevron{transform:rotate(180deg)}',
       '.cg_cardBody{padding:2px 16px 16px}',
@@ -736,31 +738,36 @@ window.__ModuleLoader__.load({
       // 面板头只剩标题（布局分组后工具栏自成分组，不再挤在标题旁边），包一层的
       // .cg_panelHeader 随之删除；.cg_panelTitle 原来的 flex:1 是给「标题 + 按钮组」
       // 那个 flex 行用的，单独成行后留着只会在列布局里引入无意义的伸缩。
-      '.cg_panelTitle{margin:0;font-size:15px;font-weight:700;white-space:nowrap}',
+      '.cg_panelTitle{margin:0;font-size:15px;font-weight:500;line-height:22px;white-space:nowrap}',
       // 面板标题行：标题 + 忙碌指示器（+ 取消）。忙碌指示器放在这里而不是正文中间，
       // 是因为索引操作可能跑十分钟——放正文里会随滚动移出视野，而且插入/移除会让
       // 下面整组控件上下跳动。标题行本来就在，挂在它右边是**零布局跳动**且常驻可见。
       '.cg_panelHeader{display:flex;align-items:center;gap:10px;flex-wrap:wrap}',
       // 忙碌指示器：转圈 + 「在做什么」+（可取消时）取消按钮，三者挨着——
       // 「停」的对象就是左边那件事，不该分到另一行去。
-      '.cg_busy{display:inline-flex;align-items:center;gap:7px;font-size:12px;color:var(--dsw-alias-label-secondary);min-width:0}',
+      '.cg_busy{display:inline-flex;align-items:center;gap:7px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary);min-width:0}',
       // 纯 CSS 转圈：不引图标、不加 DOM。用当前色描边 + 主题色顶边，跟着文字颜色走。
-      '.cg_spinner{flex:none;width:12px;height:12px;border:2px solid var(--dsw-alias-border-l2);border-top-color:var(--dsw-alias-state-business-primary);border-radius:50%;animation:cg_spin .7s linear infinite}',
+      '.cg_spinner{flex:none;width:12px;height:12px;border:2px solid var(--dsw-alias-border-l2);border-top-color:var(--dsw-alias-state-business-primary);border-radius:50%;corner-shape:round;animation:cg_spin .7s linear infinite}',
       // 按钮内的忙碌内容（转圈 + 文案）。按钮本身是 inline 元素，包一层 inline-flex
       // 才能让转圈与文字基线对齐；不设固定宽度——忙碌文案比静止时略长，按钮会宽一点，
       // 这点局部位移远好过「点了没有任何反馈」。
-      '.cg_btnBusy{display:inline-flex;align-items:center;gap:6px}',
+      // gap 取 4px = 宿主 .button 的 gap：转圈与忙碌文案的间距跟按钮原语一致。
+      '.cg_btnBusy{display:inline-flex;align-items:center;gap:4px}',
       '@keyframes cg_spin{to{transform:rotate(360deg)}}',
       // 尊重「减少动态效果」：关掉旋转，靠文案与取消按钮继续表达「正在进行」。
       // 组头里的图标按钮：紧凑、无边框，hover 才给底色——它是辅助动作，不抢视觉。
-      '.cg_iconBtn{display:inline-flex;align-items:center;justify-content:center;flex:none;width:24px;height:24px;padding:0;color:var(--dsw-alias-label-secondary);background:0 0;border:1px solid transparent;border-radius:6px;cursor:pointer}',
+      // 尺寸与圆角不动（24×24/R8 本就合规），只统一状态：禁用 .4 + not-allowed、补 :active，
+      // 焦点环换成宿主 51 处组件用的官方 outline（不自造私有环——那会顶掉宿主全局 :focus-visible）。
+      '.cg_iconBtn{display:inline-flex;align-items:center;justify-content:center;flex:none;width:24px;height:24px;padding:0;color:var(--dsw-alias-label-secondary);background:0 0;border:1px solid transparent;border-radius:var(--dsw-radius-sm);cursor:pointer}',
       '.cg_iconBtn:hover:not(:disabled){color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}',
-      '.cg_iconBtn:disabled{opacity:.5;cursor:default}',
+      '.cg_iconBtn:active:not(:disabled){background:var(--dsw-alias-interactive-bg-active)}',
+      '.cg_iconBtn:disabled{opacity:.4;cursor:not-allowed}',
+      '.cg_iconBtn:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary))}',
       // 刷新进行中：图标自转（复用 cg_spin）。只在**本动作**在跑时转（data-busy 由
       // busyAction 驱动），否则搜个符号也会让刷新图标转起来，等于报错信息。
       '.cg_iconBtn[data-busy="1"] svg{animation:cg_spin .7s linear infinite}',
       '@media (prefers-reduced-motion:reduce){.cg_spinner,.cg_iconBtn[data-busy="1"] svg{animation:none}}',
-      '.cg_subtitle{color:var(--dsw-alias-label-tertiary);font-size:11.5px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:360px}',
+      '.cg_subtitle{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;font-family:var(--ds-font-family-code);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:360px}',
       // 索引维护按钮组改成「可换行的行」而不是「整组 nowrap」：
       // 早先只有 5 个按钮，整组 nowrap + margin-left:auto 能让它们要么留在标题右边、
       // 要么整组换行；P2 加到 12 个之后这招失效——12 个按钮约 900px，而侧边栏只有
@@ -769,14 +776,34 @@ window.__ModuleLoader__.load({
       // 右对齐只会让折行后的行尾参差（截图实证：「诊断包 / 撤销索引」孤零零悬在
       // 第二行右侧）。现在组自成分组、左对齐自然换行，阅读顺序 = 视觉顺序。
       '.cg_toolbarBtns{display:flex;align-items:center;gap:8px;flex-wrap:wrap}',
-      '.cg_btn{color:var(--dsw-alias-label-primary-foreground);background:var(--dsw-alias-button-info-fill);border:none;border-radius:8px;padding:6px 14px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}',
-      '.cg_btn:hover:not(:disabled){background:var(--dsw-alias-button-info-hover)}',
-      '.cg_btn:disabled{opacity:.5;cursor:default}',
-      '.cg_btnGhost{color:var(--dsw-alias-label-primary);background:0 0;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:5px 12px;font-size:12px;cursor:pointer;white-space:nowrap}',
-      // 「初始化索引」的二次确认态：它会往用户项目里写 .codegraph/，用告警色区别于普通按钮
-      '.cg_btnDanger{color:var(--dsw-alias-state-error-primary);background:0 0;border:1px solid color-mix(in srgb,var(--dsw-alias-state-error-primary) 45%,transparent);border-radius:8px;padding:5px 12px;font-size:12px;cursor:pointer;white-space:nowrap}',
+      // 按钮族对齐宿主 ui-primitives 的 Button：本包按钮原本就是 H28 档，故统一取官方 size="sm"
+      // （H28 / R8 / 12px + 18px / padding 0 10px）。填充与描边**逐项同尺寸**——否则同一枚按钮
+      // 换变体时会跳一下。底色从 --dsw-alias-button-info-fill 换成 button-primary-fill：前者是
+      // 宿主给图标/徽标/圆形发送键的**强调蓝**，后者才是 .primary 的填充；不设字重（宿主 Button
+      // 不设，跟着容器继承）；字号必须配行高（官方规范硬性条款）。
+      '.cg_btn{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;gap:4px;height:28px;padding:0 10px;border:none;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground);font-family:inherit;font-size:12px;line-height:18px;white-space:nowrap;cursor:pointer}',
+      '.cg_btn:hover:not(:disabled){background:var(--dsw-alias-button-primary-hover)}',
+      '.cg_btn:disabled{opacity:.4;cursor:not-allowed}',
+      '.cg_btn:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary))}',
+      // 描边档 = Button variant="outline" size="sm"：尺寸与主按钮逐项一致，只差描边与底色。
+      // 描边取 border-l3（宿主 .outline 用的那一档，-l2 更淡）。
+      '.cg_btnGhost{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;gap:4px;height:28px;padding:0 10px;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-sm);background:transparent;color:var(--dsw-alias-label-primary);font-family:inherit;font-size:12px;line-height:18px;white-space:nowrap;cursor:pointer}',
       '.cg_btnGhost:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}',
-      '.cg_input{color:var(--dsw-alias-label-primary);background:var(--dsw-specific-input-major);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;outline:none;padding:6px 10px;font-family:inherit;font-size:13px;box-sizing:border-box;width:100%}',
+      '.cg_btnGhost:active:not(:disabled){background:var(--dsw-alias-interactive-bg-active)}',
+      '.cg_btnGhost:disabled{opacity:.4;cursor:not-allowed}',
+      '.cg_btnGhost:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary))}',
+      // 「初始化索引」的二次确认态：它会往用户项目里写 .codegraph/，用告警色区别于普通按钮。
+      // 它与被替换掉的 Ghost 是**同一个按钮元素**（JSX 里二选一），所以几何必须逐项相同，
+      // 只有 color / border / hover 是危险色——尺寸不同会让「确认」那一下按钮跳一格。
+      '.cg_btnDanger{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;gap:4px;height:28px;padding:0 10px;border:.5px solid color-mix(in srgb,var(--dsw-alias-state-error-primary) 30%,transparent);border-radius:var(--dsw-radius-sm);background:0 0;color:var(--dsw-alias-state-error-primary);font-family:inherit;font-size:12px;line-height:18px;white-space:nowrap;cursor:pointer}',
+      // danger 是独立类（不叠加 Ghost），必须自带 hover：否则悬停只吃到 Ghost 的中性灰底。
+      // 两条同为 :not(:disabled) 形状、权重相同 (0,3,0)，靠源码顺序（本行在 Ghost 之后）取胜；
+      // 底色 8% 红对齐官方 danger 的 interactive-bg-hover 重绑。
+      '.cg_btnDanger:hover:not(:disabled){background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 8%,transparent)}',
+      // 输入档对齐宿主 settings-form 的 .input（H34 / R12 / border-l4 / bg-layer-3 / 13px）：
+      // 显式 height 是关键——同一个类套到 <select> 上时 Chrome 不看继承的 line-height，
+      // 没有它就会比同排的 <input> 矮 2px；圆角取 token 而非 8px 字面量，才看得出选的是哪一档。
+      '.cg_input{box-sizing:border-box;width:100%;height:34px;padding:0 12px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-3);border:.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-md);outline:none;font-family:inherit;font-size:13px;line-height:1.5}',
       '.cg_input:focus{border-color:var(--dsw-alias-state-business-primary)}',
       '.cg_input::placeholder{color:var(--dsw-alias-label-tertiary)}',
       // 搜索行：原来固定 3 列 grid（路径输入 / 搜索输入 / 搜索按钮）。P2 把「探索」「上下文」
@@ -785,24 +812,24 @@ window.__ModuleLoader__.load({
       '.cg_row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}',
       '.cg_row .cg_input{flex:1 1 160px;width:auto;min-width:120px}',
       '.cg_list{display:flex;flex-direction:column;gap:8px;max-height:360px;overflow-y:auto}',
-      '.cg_item{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:8px 10px;cursor:pointer;font-size:12.5px}',
+      '.cg_item{background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-md);padding:8px 10px;cursor:pointer;font-size:12.5px;line-height:18px}',
       '.cg_item:hover{border-color:var(--dsw-alias-label-dimmed)}',
-      '.cg_itemName{font-weight:600;color:var(--dsw-alias-label-primary)}',
-      '.cg_itemMeta{color:var(--dsw-alias-label-tertiary);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;margin-top:2px}',
-      '.cg_pre{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-radius:8px;padding:10px;max-height:320px;overflow:auto;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11.5px;white-space:pre-wrap;word-break:break-all;color:var(--dsw-alias-label-primary)}',
+      '.cg_itemName{font-weight:500;color:var(--dsw-alias-label-primary)}',
+      '.cg_itemMeta{color:var(--dsw-alias-label-tertiary);font-family:var(--ds-font-family-code);font-size:12px;line-height:18px;margin-top:2px}',
+      '.cg_pre{background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);border-radius:8px;padding:10px;max-height:320px;overflow:auto;font-family:var(--ds-font-family-code);font-size:12px;line-height:18px;white-space:pre-wrap;word-break:break-all;color:var(--dsw-alias-label-primary)}',
       // 空态文案（列表为空时的占位）。`.cg_loading` 已退役：忙碌态改成标题行里的
       // 内联指示器（见 .cg_busy / .cg_spinner）——原先它是**居中大块**
       // （padding:24px 12px），既不说在加载什么、又把下面整组控件推下去（布局跳动），
       // 而且 Sync 跑十分钟时它会随滚动移出视野。
-      '.cg_empty{text-align:center;color:var(--dsw-alias-label-tertiary);padding:24px 12px;font-size:12.5px}',
+      '.cg_empty{text-align:center;color:var(--dsw-alias-label-tertiary);padding:24px 12px;font-size:12.5px;line-height:18px}',
       // 反馈容器：面板统一 12px 间距，但「刚才那次操作的结果」这几条之间用 6px——
       // 收紧后它们读成一个整体，而不是几条互不相干的段落（用户反馈「这一块挺乱」）。
       '.cg_feedback{display:flex;flex-direction:column;gap:6px}',
       // 问题区（页面最前）：与反馈区同样收紧间距，让几条警告读成一个整体。
       '.cg_alerts{display:flex;flex-direction:column;gap:6px}',
-      '.cg_error{color:var(--dsw-alias-state-error-primary);font-size:12px;margin:0;white-space:pre-wrap}',
-      '.cg_ok{color:var(--dsw-alias-state-success-primary);font-size:12px;margin:0}',
-      '.cg_sectionTitle{margin:0;font-size:13px;font-weight:700;color:var(--dsw-alias-label-secondary)}',
+      '.cg_error{color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px;margin:0;white-space:pre-wrap}',
+      '.cg_ok{color:var(--dsw-alias-state-success-primary);font-size:12px;line-height:18px;margin:0}',
+      '.cg_sectionTitle{margin:0;font-size:13px;font-weight:500;line-height:20px;color:var(--dsw-alias-label-secondary)}',
       // 面板分组（布局重构）：小标题 + 通栏细线。把原先「12 个按钮 + 5 类控件挤在一条
       // 无分层长列」的面板（截图实证：按钮换行后行尾参差、复选框和说明文字混排、
       // 「设为默认项目」孤悬在两组控件之间）按语义分组，每组内部仍是可换行的 flex 行。
@@ -813,53 +840,63 @@ window.__ModuleLoader__.load({
       // 按钮上下相邻。
       '.cg_section{display:flex;flex-direction:column;gap:8px}',
       '.cg_sectionHead{display:flex;align-items:center;gap:10px}',
-      '.cg_sectionHeadText{font-size:11px;font-weight:700;letter-spacing:.08em;color:var(--dsw-alias-label-tertiary);white-space:nowrap}',
+      // 小号分区标签（11px + 字距）属于「小 tag」档：字号保留，只补官方成对行高 16，
+      // 并把区块标题的 700 降回宿主标题用的 500。
+      '.cg_sectionHeadText{font-size:11px;font-weight:500;line-height:16px;letter-spacing:.08em;color:var(--dsw-alias-label-tertiary);white-space:nowrap}',
       '.cg_sectionRule{flex:1;height:1px;background:var(--dsw-alias-border-l1)}',
       '.cg_grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px}',
-      '.cg_cell{background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-radius:10px;padding:8px 10px;min-width:0}',
-      '.cg_k{color:var(--dsw-alias-label-tertiary);font-size:11px;letter-spacing:.02em}',
-      '.cg_v{color:var(--dsw-alias-label-primary);font-size:13px;font-weight:600;margin-top:3px;overflow-wrap:anywhere}',
-      '.cg_vMono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11.5px;font-weight:500}',
+      '.cg_cell{background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-md);padding:8px 10px;min-width:0}',
+      '.cg_k{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;letter-spacing:.02em}',
+      '.cg_v{color:var(--dsw-alias-label-primary);font-size:13px;font-weight:500;line-height:20px;margin-top:3px;overflow-wrap:anywhere}',
+      '.cg_vMono{font-family:var(--ds-font-family-code);font-size:12px;font-weight:500;line-height:18px}',
       '.cg_badgeOk{color:var(--dsw-alias-state-success-primary)}',
       '.cg_badgeWarn{color:var(--dsw-alias-state-warn-primary,var(--dsw-alias-state-error-primary))}',
-      '.cg_details{border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-layer-2)}',
-      '.cg_details>summary{cursor:pointer;padding:7px 10px;font-size:12px;color:var(--dsw-alias-label-secondary);list-style:none}',
+      '.cg_details{border:.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-2)}',
+      '.cg_details>summary{cursor:pointer;padding:7px 10px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary);list-style:none}',
       '.cg_details>summary::-webkit-details-marker{display:none}',
       '.cg_details>summary::before{content:"▸ ";color:var(--dsw-alias-label-tertiary)}',
       '.cg_details[open]>summary::before{content:"▾ "}',
-      '.cg_details .cg_pre{border:0;border-top:1px solid var(--dsw-alias-border-l1);border-radius:0 0 9px 9px;max-height:260px;margin:0}',
+      '.cg_details .cg_pre{border:0;border-top:.5px solid var(--dsw-alias-border-l1);border-radius:0 0 9px 9px;max-height:260px;margin:0}',
       '.cg_rel{display:flex;flex-direction:column;gap:4px}',
-      '.cg_relItem{display:flex;gap:8px;align-items:baseline;font-size:12px;min-width:0}',
-      '.cg_relName{color:var(--dsw-alias-label-primary);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
-      '.cg_relMeta{color:var(--dsw-alias-label-tertiary);font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
-      '.cg_mcpMeta{color:var(--dsw-alias-label-tertiary);font-size:11.5px;line-height:1.5;min-width:0}',
-      '.cg_warn{color:var(--dsw-alias-state-warn-primary,var(--dsw-alias-state-error-primary));font-size:12px;line-height:1.55;margin:0;white-space:pre-wrap}',
+      '.cg_relItem{display:flex;gap:8px;align-items:baseline;font-size:12px;line-height:18px;min-width:0}',
+      '.cg_relName{color:var(--dsw-alias-label-primary);font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+      '.cg_relMeta{color:var(--dsw-alias-label-tertiary);font-family:var(--ds-font-family-code);font-size:12px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+      '.cg_mcpMeta{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;min-width:0}',
+      '.cg_warn{color:var(--dsw-alias-state-warn-primary,var(--dsw-alias-state-error-primary));font-size:12px;line-height:18px;margin:0;white-space:pre-wrap}',
       // 探测失败的实测原文：用等宽 + 淡色和上面的指引分开，让「ENOENT / 非零退出 / 超时」
       // 一眼可辨，而不是混在说明文字里被当成人话略过去。
-      '.cg_probeDetail{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-base,#00000010);border-radius:6px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;line-height:1.5;margin:0;padding:6px 8px;white-space:pre-wrap;word-break:break-all}',
-      '.cg_checks{display:flex;align-items:center;gap:16px;flex-wrap:wrap;font-size:12.5px;color:var(--dsw-alias-label-secondary)}',
+      '.cg_probeDetail{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-base);border-radius:var(--dsw-radius-sm);font-family:var(--ds-font-family-code);font-size:12px;line-height:18px;margin:0;padding:6px 8px;white-space:pre-wrap;word-break:break-all}',
+      '.cg_checks{display:flex;align-items:center;gap:16px;flex-wrap:wrap;font-size:12.5px;line-height:18px;color:var(--dsw-alias-label-secondary)}',
       '.cg_check{display:inline-flex;align-items:center;gap:6px;cursor:pointer}',
       '.cg_check input{cursor:pointer}',
+      // 原生复选框的选中态走宿主的中性 brand（Checkbox.module.css 是唯一原语）：
+      // brand-primary 浅色近黑，而 business-primary(#4176e6) 是状态与徽标用的强调蓝——
+      // 用后者就是浏览器默认蓝勾那种错。尺寸也取宿主的 16×16。
+      '.cg_check input[type=checkbox]{width:16px;height:16px;margin:0;flex:none;cursor:pointer;accent-color:var(--dsw-alias-brand-primary)}',
+      '.cg_check input[type=checkbox]:focus-visible{outline:var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}',
       '.cg_check[data-off="1"]{opacity:.55;cursor:default}',
       // P2 项目列表：一行横向滚动的胶囊按钮。flex-wrap 而不是滚动条——项目一般
       // 个位数，换行比隐藏更利于发现；窄屏下自动堆成多行。
-      '.cg_projects{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px}',
-      '.cg_projectsLabel{color:var(--dsw-alias-label-tertiary);font-size:11px;white-space:nowrap}',
-      '.cg_projectBtn{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);border-radius:999px;padding:2px 10px;font-size:11.5px;cursor:pointer;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:nowrap;max-width:260px;overflow:hidden;text-overflow:ellipsis}',
+      '.cg_projects{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px;line-height:18px}',
+      '.cg_projectsLabel{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;white-space:nowrap}',
+      // 胶囊按钮：形状保持不动（999px + corner-shape 是既有形状），排版改回按钮族的官方 sm 配方
+      // （12px + 18px）——它此前是全包唯一漏网的 11.5/16，跟同族的 .cg_btn 不同档；
+      // 禁用态跟族里其它按钮统一成 .4 + not-allowed。
+      '.cg_projectBtn{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l2);border-radius:999px;corner-shape:round;padding:2px 10px;font-size:12px;line-height:18px;cursor:pointer;font-family:var(--ds-font-family-code);white-space:nowrap;max-width:260px;overflow:hidden;text-overflow:ellipsis}',
       '.cg_projectBtn:hover:not(:disabled){border-color:var(--dsw-alias-state-business-primary)}',
-      '.cg_projectBtn:disabled{opacity:.45;cursor:default}',
+      '.cg_projectBtn:disabled{opacity:.4;cursor:not-allowed}',
       // P2 查询参数面板：小号输入 + 内联标签，跟搜索行区分开（搜索行是主操作）
-      '.cg_queryOpts{display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:12px}',
+      '.cg_queryOpts{display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:12px;line-height:18px}',
       '.cg_opt{display:inline-flex;align-items:center;gap:6px;color:var(--dsw-alias-label-tertiary);white-space:nowrap}',
       '.cg_optWide{flex:1;min-width:220px}',
       '.cg_optWide .cg_inputSm{flex:1}',
-      '.cg_inputSm{width:150px;padding:4px 8px;font-size:12px}',
+      '.cg_inputSm{width:150px;padding:4px 8px;font-size:12px;line-height:18px}',
       // 「上限」这类纯数字小输入用不着 150px，紧凑尺寸让参数行一行能多放一项
-      '.cg_inputXs{width:64px;padding:4px 8px;font-size:12px}',
+      '.cg_inputXs{width:64px;padding:4px 8px;font-size:12px;line-height:18px}',
       // 组内小标题（UX 重构）：比 .cg_sectionHeadText 更轻，用于一个分组内部的子层级——
       // 「生命周期 / 查看与诊断 / 危险」「符号查询 / 改动影响」「跟随与提示词 / MCP 挂载」。
       // 只留文字不带通栏线：组已经有自己的分隔线，组内再画一条就是噪音。
-      '.cg_rowLabel{font-size:11px;font-weight:600;letter-spacing:.06em;color:var(--dsw-alias-label-tertiary);white-space:nowrap}',
+      '.cg_rowLabel{font-size:11px;font-weight:500;line-height:16px;letter-spacing:.06em;color:var(--dsw-alias-label-tertiary);white-space:nowrap}',
       // 删除类动作的行内槽位：与左侧常规按钮之间一道**竖向虚线**。
       // 为什么是行内槽而不是独立一行：独立成行会让「一个按钮 + 右侧大片空白」看起来
       // 像换行 bug（用户实证提问），而它本来就属于「生命周期」这一档。竖向虚线保留
@@ -867,8 +904,8 @@ window.__ModuleLoader__.load({
       // 换行时它可能落到行首，那时左边虚线正好当行首标记，仍然成立。
       '.cg_dangerSlot{display:inline-flex;align-items:center;padding-left:9px;margin-left:1px;border-left:1px dashed var(--dsw-alias-border-l2)}',
       // 结果区页签栏：下划线的页签（比按钮更像「视图切换」），底部一条细线把整栏连起来。
-      '.cg_tabs{display:flex;align-items:center;gap:2px;flex-wrap:wrap;border-bottom:1px solid var(--dsw-alias-border-l1)}',
-      '.cg_tab{color:var(--dsw-alias-label-secondary);background:0 0;border:0;border-bottom:2px solid transparent;padding:5px 10px;font-size:12.5px;font-family:inherit;cursor:pointer;white-space:nowrap}',
+      '.cg_tabs{display:flex;align-items:center;gap:2px;flex-wrap:wrap;border-bottom:.5px solid var(--dsw-alias-border-l1)}',
+      '.cg_tab{color:var(--dsw-alias-label-secondary);background:0 0;border:0;border-bottom:2px solid transparent;padding:5px 10px;font-size:12.5px;line-height:18px;font-family:inherit;cursor:pointer;white-space:nowrap}',
       '.cg_tab:hover{color:var(--dsw-alias-label-primary)}',
       '.cg_tabOn{color:var(--dsw-alias-label-primary);font-weight:600;border-bottom-color:var(--dsw-alias-state-business-primary)}',
       // 面板给个内边距，让内容与页签栏分开；min-height 避免空态时整块塌成一条线。

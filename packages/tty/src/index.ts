@@ -104,7 +104,7 @@ import { buildCommandSpawn, buildShellSpawn, commandShellHint, defaultShellPath 
 import { KEY_VOCABULARY, resolveKeys } from './keys.js'
 import { parseSshConfigDetailed } from './ssh-config.js'
 import { parseKnownHostsDetailed } from './known-hosts.js'
-import { TunnelManager } from './tunnels.js'
+import { TunnelManager, probeTunnelPorts } from './tunnels.js'
 import type { TunnelSpec } from './tunnels.js'
 import { SftpManager } from './sftp.js'
 import { buildTmuxSpawnPlan, ensureTmuxAssets, killTmuxSession, listTmuxSessions, probeTmux, refreshTmuxClient, sanitizePersistName } from './tmux.js'
@@ -4376,6 +4376,27 @@ const plugin = definePlugin<Config>({
               return
             }
             const patch = normalized.patch ?? {}
+            /*
+             * 保存前端口探测（tty D60 前半）：只警告、不拒绝。
+             *
+             * **必须在 `applyPatch` 之前探**（这一点是实测出来的，不是推演）：applyPatch 会
+             * 立刻 `reconcile`，于是本进程自己刚起来的隧道已经占住了那个端口——探测就会把
+             * 「自己占的」报成冲突。实测形状：往一个**空闲**端口新增一条隧道，回的是
+             * `warnings: ["…已被占用…"]`（假警告，而且是最常见的那条路径）。
+             * 豁免集取**改动前**的 `localPortsInUse()`：这正是「编辑一条在跑的隧道」与
+             * 「删掉 A、同端口加 B」两种合法情形。
+             *
+             * 为什么不能拒（400）：这条路由是**整表提交**（卡片把全部配置一起发上来），
+             * 配置里已经躺着一条重名端口的隧道时（老配置 / 另一个窗口写的），硬拒会把
+             * 用户锁死在「任何一项都存不下去」上——而修它恰恰要先能保存。所以探测结果
+             * 走**响应里的 warnings**，由卡片点名通报（客户端只认 `data.warnings`）。
+             *
+             * 只在这次真的提交了 tunnels 时探：其余字段的保存与端口无关，白探一轮是
+             * 白白拖慢每一次保存（探测含一次 listen/close）。
+             */
+            const warnings = patch.tunnels !== undefined
+              ? await probeTunnelPorts(patch.tunnels as TunnelSpec[], undefined, tunnelManager.localPortsInUse())
+              : []
             const scope = settingsScope
             if (scope !== undefined) {
               try {
@@ -4389,7 +4410,7 @@ const plugin = definePlugin<Config>({
             }
             // 无 settings 服务（或 stub）时直接应用；有服务时也再应用一次（幂等）
             applyPatch(patch)
-            writeJson(res, 200, { ok: true, config: snapshot() })
+            writeJson(res, 200, { ok: true, config: snapshot(), ...(warnings.length > 0 ? { warnings } : {}) })
           },
         }))
         /*

@@ -1,6 +1,6 @@
 {
   "name": "@hyzyn/dsh-profile",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "DSH Web GUI 的 Profile 管理插件：可视化查看 / 创建 / 复制 / 删除 DSH profiles，管理 ~/.dsh/profiles 下的 profile 目录；表单内联在插件详情页「说明」下方（设置 → 插件配置 页里也有同一份）。",
   "type": "module",
   "engines": {

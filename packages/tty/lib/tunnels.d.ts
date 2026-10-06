@@ -18,6 +18,63 @@ export interface TunnelSpec {
     enabled: boolean;
 }
 export type TunnelState = 'connecting' | 'active' | 'error' | 'stopped';
+/**
+ * 一条 local 隧道的本地端口占用问题（tty D60 的前半：保存时就地探测，不等 listen 那一跳）。
+ *
+ * `kind` 是**机器可读**的判据（调用方按它决定文案，不做字符串匹配）：
+ *   - `duplicate`：**这一次提交的配置里**有另一条 local 隧道用同一个 `localPort`；
+ *     它必然失败（先立起来的那条占住端口，后一条 EADDRINUSE），但在配置层就能判死，
+ *     连试探都不必——而且这条**不区分 enabled**：停用的那条随时会被启用，两条都留着
+ *     就是一颗定时炸弹；
+ *   - `in-use`：端口被**本进程之外**的东西占着（另一个 profile 的宿主、别的程序）。
+ *     这一条**不拒绝保存**（见下 `probeTunnelPorts` 的取舍）。
+ */
+export interface TunnelPortIssue {
+    kind: 'duplicate' | 'in-use';
+    /** 涉及的两条隧道名（duplicate 用得上；in-use 只有一个） */
+    names: string[];
+    port: number;
+    message: string;
+}
+/** 本地端口占用的中文文案（`duplicate` / `in-use` 各一条，措辞与 tunnels.ts 的 EADDRINUSE 说明同源）。 */
+export declare function tunnelPortIssueMessage(kind: TunnelPortIssue['kind'], names: string[], port: number): string;
+/**
+ * **纯函数**：在待保存的隧道列表里找「同一个 localPort 被两条 local 隧道用」。
+ *
+ * 只判 local 方向——remote 方向的 `remotePort` 在**服务端**监听，不在本机资源里，
+ * 本机探测对它没有意义（而且它由 forwardIn 的结果定论，能自愈）。
+ * 返回按端口升序、每端口一条（文本渲染与测试都按这个顺序断言）。
+ */
+export declare function findDuplicateLocalPorts(specs: readonly TunnelSpec[]): TunnelPortIssue[];
+/**
+ * 探测「这个本地端口现在能不能绑」。
+ *
+ * 语义是**独占探测**（`listen` 成功即立刻 `close`），不是「连一下看看」——后者对
+ * 「端口空着但 DHCP/防火墙挡着」这类情形给不出结论，而我们要答的正是「bind 会不会
+ * 失败」。探测窗口是微秒级，探完立即释放，不会与随后 reconcile 的真监听打架
+ * （本机实测：同一 tick 内 `close()` 之后立刻 `listen` 同一端口可以成功）。
+ *
+ * `host` 固定 `127.0.0.1`——本地转发只绑回环（见 `startTunnel`），去探 `0.0.0.0`
+ * 会把「别人绑在外部接口上」误报成冲突。
+ */
+export declare function probeLocalPort(port: number, timeoutMs?: number): Promise<boolean>;
+/**
+ * 保存隧道配置时的**保存前探测**（tty D60 前半）。
+ *
+ * ## 为什么只警告、不拒绝保存
+ *
+ * `duplicate` 能判死，但**不能**用它拒绝整个 POST：设置卡片的保存是**整表提交**
+ * （`toPayload` 把所有字段一起发上来），一旦配置里已经躺着一条重名端口的隧道
+ * （老配置 / 另一个窗口写的），硬拒就等于把用户锁死在「任何一项都存不下去」上——
+ * 而修它恰恰需要先能保存。所以这里把它降成**响应里的 warnings**，由客户端点名通报。
+ *
+ * `in-use` 更进一步：端口可能属于**用户故意**在跑的东西，探测本身也有极小的误报面
+ * （IPv6-only 的占用、探测期间的竞态），拿它拦保存是越权。它的价值在「不等那条
+ * 红色 error 出现就先说一声」。
+ *
+ * 每条隧道最多一条 in-use 警告；duplicate 优先（它更确定、且不必探端口）。
+ */
+export declare function probeTunnelPorts(specs: readonly TunnelSpec[], probe?: (port: number) => Promise<boolean>, heldByUs?: ReadonlySet<number>): Promise<string[]>;
 export interface TunnelStatus {
     name: string;
     bookName: string;
@@ -61,6 +118,16 @@ export declare class TunnelManager {
     list(): TunnelStatus[];
     /** 一条隧道的当前状态（不存在返回 undefined）。 */
     status(name: string): TunnelStatus | undefined;
+    /**
+     * **本进程此刻真的持有**的本地监听端口集合（`probeTunnelPorts` 的豁免依据）。
+     *
+     * 为什么不是「配置里所有 localPort」：那条判据会把「A 已停用、B 想用同一个端口」
+     * （完全合法）误报成冲突。只有 `server.listening === true` 才算**真的绑上了**——
+     * `rt.server !== null` 不够：`startTunnel` 先建 server 再 `listen`，监听失败
+     * （EADDRINUSE）时句柄仍在表里，按它判会把「其实没占住」说成「我占着」，
+     * 于是端口被**别人**占着的那条真冲突反被豁免掉。
+     */
+    localPortsInUse(): Set<number>;
     /**
      * 启停一条隧道（agent 的 `tunnel_start` / `tunnel_stop`）——**改配置，不只改运行态**。
      *

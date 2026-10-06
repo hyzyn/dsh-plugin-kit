@@ -14,6 +14,7 @@
  * 它只能验客户端那一半。
  */
 import './isolated-home.js'
+import net from 'node:net'
 import { describe, expect, it } from 'vitest'
 import { apply } from '../src/index.js'
 
@@ -164,5 +165,84 @@ describe('/config 的拒绝面：客户端「否定清单」的另一半', () =>
       expect(res.status).toBe(400)
       expect(String(res.json.error)).toContain('未知配置项: ' + key)
     }
+  })
+})
+
+/* ------------------- 保存前端口探测（tty D60 前半） ------------------- */
+
+describe('/config 的端口探测：**只警告、不拒绝**（tty D60 前半）', () => {
+  /*
+   * 判据的核心不是「能探到占用」，而是**探测结果不许变成拒绝面**：这条路由是整表提交，
+   * 配置里已经躺着一条冲突隧道时硬拒 = 用户任何一项都保存不了，而修它恰恰要先能保存。
+   * 所以下面第一条断言盯的是 200 + warnings 同时出现——**两者必须并存**。
+   */
+  const book = { name: 'pg', host: '127.0.0.1', username: 'root' }
+  const tunnel = (name: string, localPort: number, enabled = true): Record<string, unknown> => ({
+    name,
+    bookName: 'pg',
+    direction: 'local',
+    localPort,
+    remoteHost: 'db',
+    remotePort: 5432,
+    enabled,
+  })
+
+  it('配置内部撞端口：200（不是 400）+ 响应里点名两条隧道', async () => {
+    const h = mount()
+    const res = await h.callPath(CONFIG_PATH, 'POST', { sshHosts: [book], tunnels: [tunnel('a', 15432), tunnel('b', 15432)] })
+    expect(res.status).toBe(200)
+    const warnings = res.json.warnings as string[]
+    expect(Array.isArray(warnings)).toBe(true)
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain('a')
+    expect(warnings[0]).toContain('b')
+    expect(warnings[0]).toContain('15432')
+    // 配置照常落盘：探测是提示，不是校验
+    expect((configOf(res.json).tunnels as unknown[]).length).toBe(2)
+  })
+
+  it('没有 tunnels 的保存**不带** warnings 字段（其余字段的保存不该白探一轮）', async () => {
+    const h = mount()
+    const res = await h.callPath(CONFIG_PATH, 'POST', { shell: '/bin/zsh' })
+    expect(res.status).toBe(200)
+    expect('warnings' in res.json).toBe(false)
+  })
+
+  it('remote 方向不参与本机端口探测（remotePort 在服务端监听）', async () => {
+    const h = mount()
+    const res = await h.callPath(CONFIG_PATH, 'POST', {
+      sshHosts: [book],
+      tunnels: [
+        { name: 'r1', bookName: 'pg', direction: 'remote', remotePort: 8080, localTargetPort: 3000, enabled: true },
+        { name: 'r2', bookName: 'pg', direction: 'remote', remotePort: 8080, localTargetPort: 3001, enabled: true },
+      ],
+    })
+    expect(res.status).toBe(200)
+    expect('warnings' in res.json).toBe(false)
+  })
+
+  /*
+   * **探测必须在 applyPatch 之前**（这条是实测抓出来的真缺陷，不是推演）：
+   * applyPatch 会立刻 reconcile，本进程自己刚起来的隧道就占住了那个端口——探测于是把
+   * 「自己占的」报成冲突。现场形状：往一个**空闲**端口新增一条隧道，回一句「已被占用」。
+   * 这是**最常见**的那条路径（每次新增/编辑都会走），假警告会让警告本身退化成没人看的东西。
+   */
+  it('新增一条**空闲端口**的隧道不得报 in-use（探测早于 applyPatch，否则会和自己打架）', async () => {
+    const h = mount()
+    const port = await new Promise<number>((resolve) => {
+      const srv = net.createServer()
+      srv.listen(0, '127.0.0.1', () => {
+        const p = (srv.address() as net.AddressInfo).port
+        srv.close(() => { resolve(p) })
+      })
+    })
+    const res = await h.callPath(CONFIG_PATH, 'POST', {
+      sshHosts: [book],
+      tunnels: [tunnel('fresh', port)],
+    })
+    expect(res.status).toBe(200)
+    expect('warnings' in res.json).toBe(false)
+    // 配置照常落盘（顺带证明这条确实走到了「应用」那一步）
+    expect(configOf(res.json).tunnels).toHaveLength(1)
   })
 })

@@ -44,7 +44,8 @@
 | **插件市场索引**（卡片分类标签从哪来 · 我们 8 条的现状 · 改分类怎么提 PR） | L0 [`docs/market-index.md`](./market-index.md) |
 | **CI 与 `package.json` 的脚本双真相源：收敛方案**（改动点 / rename 面 / CI 影响 / 验收；**已执行——方案 A + 守卫，含 2026-10-03 根级扩展**） | L0 [`docs/ci-scripts-plan.md`](./ci-scripts-plan.md) |
 | **发包内容**（`files` 字段漏一项没有任何闸门会红 · 为什么挂载车道看不见它 · 守卫形态） | L0 本文 [§ 发包内容守卫](#发包内容守卫files-字段漏一项不许静默) |
-| **宿主主题的 `--dsw-*` 名字表**（客户端半体允许用的样式变量名；写错名字 = 那条 `border`/`background` 整条作废） | 快照 [`scripts/fixtures/dsh-theme-tokens.json`](../scripts/fixtures/dsh-theme-tokens.json)（403 个名字，**生成物**，`node scripts/sync-dsh-theme-tokens.mjs` 保鲜）+ 规则 [本文 § 客户端半体](#客户端半体四条硬规矩) ④ |
+| **宿主主题的 `--dsw-*` 名字表**（客户端半体允许用的样式变量名；写错名字 = 那条 `border`/`background` 整条作废） | 快照 [`scripts/fixtures/dsh-theme-tokens.json`](../scripts/fixtures/dsh-theme-tokens.json)（403 个名字，**生成物**，`node scripts/sync-dsh-theme-tokens.mjs` 保鲜）+ 规则 [本文 § 客户端半体](#客户端半体六条硬规矩) ④ |
+| **客户端样式的取值规范**（发丝线 / elevation 配对 / 圆角档位 / 危险按钮与按钮族 / 排版角色 / 选中色 / 输入档 / 颜色来源） | 规范原文在两份上游文档（`deepseek-ai/deepseek-harness` 的 `docs/web-styling.zh.md` / `docs/ui-radius.zh.md`）；本仓判据的**唯一定义处**是 [`scripts/client-style-spec.mjs`](../scripts/client-style-spec.mjs)（`client-lint` 检查七 ~ 十六，用例在 [`scripts/test/client-design-tokens.test.ts`](../scripts/test/client-design-tokens.test.ts)），规则与实测后果 [本文 § 客户端半体](#客户端半体六条硬规矩) ⑥ |
 | **三条车道各管什么**（CI 每次推送 / 挂载车道 / nightly 的 flake + coverage；为什么后两者不进 CI） | L0 本文 [§ 车道分工](#车道分工哪条车道管什么) |
 | **环境前置（Node / pnpm 下限，以及它到底强不强制）** | 声明在 [`package.json`](../package.json) 的 `engines` + [`.npmrc`](../.npmrc) 的 `engine-strict`；判据与实测 [本文 § 环境下限](#环境下限声明--engine-strict-才真的会拦)（`pnpm engines:check` 守四处自洽） |
 | **AI 协作边界**（哪些改动必须先问维护者） | L0 本文 [§ AI 协作边界](#ai-协作边界什么改动要先问) |
@@ -241,7 +242,7 @@
   （**守卫**：`scripts/docs-index.mjs` 判据 5 现算 `pnpm-workspace.yaml` 的包集合与这张表逐一对账，
   多一个少一个都报）
 
-## 客户端半体：四条硬规矩
+## 客户端半体：六条硬规矩
 
 ### ① 跟宿主建连的地址，基址只能来自宿主注入的 `__DSH_TRANSPORT__`
 
@@ -267,7 +268,7 @@ origin 上。从 `location` 推出来的地址在浏览器里完全正常、**�
 ### ② 要判对错的客户端逻辑，抽成 `client-src/*.js` 纯模块 + vitest 用例
 
 `client.js` 是构建产物、不在 vitest 层测；`client-lint` 只查静态问题（名字解析、宿主地址来源、
-点击委托作用域、样式变量）、
+点击委托作用域、样式变量名与取值）、
 **不验行为**——逻辑留在组件闭包里就等于没有测试入口。`client-lint` 查的是**全量**
 `client-src/**` 而不只是入口，兄弟模块同样受管。
 
@@ -340,6 +341,95 @@ function handleClick(event) {
 `node scripts/sync-dsh-theme-tokens.mjs` 从真宿主生成、`--check` 逐字比对宿主与快照
 （**真机档，不进 CI**——与 `check-dsh-peers.mjs --app-boot` 同一档）。宿主换版本后要重新生成，
 别手改快照。
+
+**同一失效家族的另一半：非 `--dsw-*` 的自定义属性必须先在本包定义。** 上面那条管「宿主主题里
+有没有这个名字」，这条管「**本包自己**有没有这个名字」——后果一模一样（无 fallback 时那条声明
+整条作废、有 fallback 时静默降级），所以并入同一条规矩而不是单开。2026-10-06 实测三处：
+
+- `packages/tty/client-src/tty.css` 的 `.tt_segmentedBtn:hover` 引用 `--tt-label-1`——本文件
+  **从未定义**这个名字，而这条 `color` 没有 fallback → **整条声明作废**（悬停时文字不变色，
+  现场看起来像「hover 没生效」）；
+- 同文件 `.dshkit_badge` 的 `--tt-bg-2` 与 `packages/docker/client-src/docker.css`
+  `.dshkit_badge` 的 `--dk-bg-2`——都有 fallback，于是**静默降级**成 `--dsw-alias-bg-layer-2`，
+  绕过了 `--tt-*` / `--dk-*` 令牌层（真名分别是 `--tt-surface-2` / `--dk-surface-2`）。
+
+判据同样是 `client-lint` 的**检查五**（`scripts/client-design-tokens.mjs`）：扫 `client-src/**`
+的 `.js` 与 `.css`，引用位（`var(--x)`）里的名字要么是宿主主题的 `--dsw-*`（归检查四），要么在
+**本包**里有 `--x:` 定义位。宿主拥有的前缀（`--dsh-` / `--ds-` / `--dsl-`）显式豁免——那是宿主
+契约变量，清单写在模块里而不是靠正则碰运气。**按 `var(...)` 的配对括号取全名，不按前缀截断**：
+首轮粗扫用前缀切，把真名 `--dk-pad-cardHead` 误报成了 `--dk-pad-card`。
+
+### ⑤ 胶囊与正圆必须与 `corner-shape: round` 成对声明
+
+宿主 `ui-theme` 的 `corner-shape.css` 在 `@supports (corner-shape: superellipse(1.5))` 里对
+**所有元素**设 `corner-shape: var(--dsw-corner-shape)`（= `superellipse(1.5)`）。本机 Chrome 154
+实测该 at-rule **生效**，于是**没配对的胶囊与正圆会被超椭圆拉变形**：
+
+| 声明 | 计算值 | 结果 |
+|---|---|---|
+| `border-radius:999px`（无 `corner-shape`） | `superellipse(1.5)` | 胶囊变形 |
+| `border-radius:50%`（无 `corner-shape`） | `superellipse(1.5)` | 正圆变形 |
+| `border-radius:999px; corner-shape:round` | `superellipse(1)` | 圆回来了 |
+
+宿主自己的 `Pill` / `Tag` / `Switch` / `StateDot` / `ImageLightbox` 都**成对写**（`ui-primitives`
+里 7 处，无一例外），而本仓 10 个客户端半体此前**一处都没有**（2026-10-06 实测 53 处站点）。
+
+判据是 `client-lint` 的**检查六**（同一模块）：`border-radius` 值为 `999px` / `50%`，或引用了
+本包**值为 `999px`** 的私有令牌（`--tt-r-pill` / `--dk-r-pill`）时，该选择器必须同时声明
+`corner-shape: round`（拆成两条规则写也算）。**`::-webkit-scrollbar*` 伪元素刻意跳过**——宿主
+`scrollbar.css` 已经给 `::-webkit-scrollbar-thumb` 写了 `corner-shape: round`，插件再写是重复。
+
+**为什么必须做成静态检查**：`corner-shape` 是宿主全局规则的效果，只在**真机渲染**时才看得见；
+`tsc` 不查它、preview 夹具如果没带上宿主那条 `@supports` 块就永远看不出差异、冒烟只断言文案与
+控件值。所以**改样式的预览夹具必须补宿主基础层**（圆角阶梯 / 卡片材质 / 焦点环 / 全局超椭圆）：
+它们住在宿主的 `base.css` / `focus.css` / `corner-shape.css` 里，**真皮肤表里一条都没有**
+（实测本机 `blue-fantasy/skin.css` 179 个名字里零命中）——夹具缺了它们，预览就是「对的」而真机是错的。
+
+### ⑥ 样式取值只能取官方规范里的档位（检查七 ~ 十六）
+
+① ~ ⑤ 管的是「这条声明会不会整条失效 / 会不会接到别人的 DOM」，这一条管**观感**：值本身合法、
+浏览器照常渲染，只是与宿主官方组件并排放在一起时不一致。三层防线同样是零信号——`tsc` 不查 CSS
+值、各包 preview 用的是自己造的假主题（宿主基础层里的圆角阶梯 / 卡片材质 / 焦点环 / 全局超椭圆
+一条都没有，见 ⑤ 末尾）、真机冒烟只断言文案与控件值。所以它也必须做成静态检查。
+
+判据在 `client-lint` 的**检查七 ~ 十六**，**全部对齐宿主官方规范**——规范原文在两份上游文档里
+（`deepseek-ai/deepseek-harness` 的 `docs/web-styling.zh.md` 组件规则与 `docs/ui-radius.zh.md`
+选择圆角），它们是宿主 `ui-primitives` / `ui-theme` README 反复引用的 authoritative styling
+rules；官方**没有** lint 命令，这套静态判据就是本仓的替代品。每条判据的原文与出处写在
+[`scripts/client-style-spec.mjs`](../scripts/client-style-spec.mjs) 各自规则的注释里：
+
+| 检查 | 规矩 | 官方出处 |
+|---|---|---|
+| 七 | 中性 `--dsw-alias-border-*` 的平面边框与分割线一律 **0.5px**（dashed 记号、状态色 border、spinner 圆环按规范豁免） | `web-styling.zh.md` 组件规则 |
+| 八 | 高层级表面写 `border:0` + `box-shadow: var(--dsw-elevation-panel\|-prominent\|-soft)`；**中性 border 不许与投影配对**（elevation spec 会拒绝），也别再用 `--dsw-shadow-lv*` | 同上 + elevation spec |
+| 九 | 圆角只许六档 `--dsw-radius-xs/sm/md/lg/xl/panel`；不许出现 10px / 14px / 18px / 24px 这类局部数值 | `ui-radius.zh.md` |
+| 十 | 不许**悬空声明**（没有选择器的 `prop: value`）——浏览器静默丢弃，连 DevTools 样式面板都不显示 | — |
+| 十一 | 危险按钮（删除 / 撤销这类不可逆动作）用宿主 `.danger` 配方：透明底 + 红字 + 30% 红描边 + hover 8% 红底 | plugin-manager 的「卸载」按钮 |
+| 十二 | 按钮族对齐 `ui-primitives` 的 `Button`：填充用 `button-primary-fill`（`info-fill` 是强调蓝、不是按钮填充）、同族变体几何逐项一致、禁用态 `opacity:.4`、键盘焦点不自造环 | `Button.module.css` |
+| 十三 | `font-size` 必须配 `line-height`（官方成对值表）；字重只用 400 / 500 / 600，标题是 500，**不用 700 / `bold`** | `web-styling.zh.md` |
+| 十四 | 复选框 / 开关的选中态走宿主中性 brand（`accent-color: var(--dsw-alias-brand-primary)`、16×16），不是强调蓝 `state-business-primary` | `Checkbox.module.css` / `Switch.module.css` |
+| 十五 | 输入框 / 下拉写**显式 `height`** + token 圆角（`<select>` 不按继承的 `line-height` 算高，会矮 2px） | `settings-form/fields.module.css` / `Input.module.css` |
+| 十六 | 颜色只从宿主主题来：`var(--dsw-*)` 不许带字面量兜底（`var(--dsw-x, #fff)`）、规则体不出现 `#hex` / `rgb()` / 具名色、JS 读令牌要在**声明令牌的元素**（宿主 alias 令牌挂在 `body`，不是 `documentElement`）上读 | theme README「the token sheets are the sole color authority」 |
+
+**几条值得单独记的后果**（2026-10-06 实测，不是推演）：
+
+- **发丝线是本仓与官方观感差异最大的一条**：10 个客户端半体共 139 处中性 `1px solid`，
+  宿主侧只有 16 处、且多为 dashed / 错误态 / 滚动条。
+- **圆角字面量会盖掉意图**：`border-radius:8px` 落在「紧凑控件」那一档（H31），与宿主 H34 的输入
+  并排看着更方；写成 `var(--dsw-radius-md)`（H32–40）才看得出来选的是哪一档。本仓曾有 5 个包
+  共用同一段抄来的 `padding:6px 10px; border-radius:8px`。
+- **`<select>` 会矮 2px**：Chrome 给 `select` 算内容高时不看继承的 `line-height`，同一个类套在
+  `<select>` 上比同排 `<input>` 矮 2px（rss 实测 29 vs 31）——同排控件上下沿对不齐，而两个控件
+  各自的样式单看都是「对」的。
+- **危险按钮同名混用**：宿主把 `--dsw-alias-interactive-bg-hover` 重绑成 8% 红来做 hover；插件若
+  自造一个同名类，插件的「删除」看起来只是普通次要按钮，而宿主的「卸载」是红框。要做实心红按钮
+  请另起类名（如 `btnDangerSolid`）。
+
+判据的**唯一定义处**是 `scripts/client-style-spec.mjs`，覆盖它的用例在
+[`scripts/test/client-design-tokens.test.ts`](../scripts/test/client-design-tokens.test.ts)
+（检查五 / 六 与七 ~ 十六 共用这一个测试文件）。**改样式前先读规范原文，别照抄隔壁包的旧写法。**
+闸门自身也要求「命中不是 0」：每条检查都数一遍扫到的站点并打进通过行——只会在 0 命中时绿的检查
+等于没有检查。
 
 ## 客户端设置面：内联优先
 

@@ -20,7 +20,9 @@ window.__ModuleLoader__.load({
     const CSS = [
       // 侧边栏不在宿主 box-sizing reset 的作用域内：width:100% + 左右 padding 会按
       // content-box 撑出 24px，右侧被侧边栏裁掉（hover 底色右边缺角）。必须显式声明。
-      '.gs_sidebarSearch{box-sizing:border-box;width:100%;height:32px;color:var(--dsw-alias-label-secondary);cursor:text;white-space:nowrap;background:0 0;border:1px solid transparent;border-radius:8px;align-items:center;gap:8px;padding:0 10px;font-size:13px;display:flex}',
+      // 侧边栏搜索框与行文本取宿主正文的角色（13 / 20）；行高按官方成对值写
+      // （规范：font-size 必须配 line-height，单行看不出、换行才不挤）。
+      '.gs_sidebarSearch{box-sizing:border-box;width:100%;height:32px;color:var(--dsw-alias-label-secondary);cursor:text;white-space:nowrap;background:0 0;border:1px solid transparent;border-radius:8px;align-items:center;gap:8px;padding:0 10px;font-size:13px;line-height:20px;display:flex}',
       '.gs_sidebarSearch:hover{background:var(--dsw-specific-sidebar-nav-item-hover);color:var(--dsw-alias-label-primary)}',
       '.gs_sidebarSearch:focus-within{border-color:var(--dsw-alias-state-business-primary);background:var(--dsw-specific-sidebar-nav-item-active);color:var(--dsw-alias-label-primary)}',
       '.gs_sidebarSearchInput{flex:1;min-width:0;background:0 0;border:none;outline:none;color:inherit;font:inherit;padding:0}',
@@ -32,27 +34,28 @@ window.__ModuleLoader__.load({
 
       /* ---------- 面板骨架 ---------- */
       '.gs_backdrop{z-index:1300;background:var(--dsw-alias-bg-mask-1);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);justify-content:center;align-items:flex-start;display:flex;position:fixed;inset:0;padding:12vh 16px 24px}',
-      '.gs_palette{background:var(--dsw-alias-bg-base);border:1px solid var(--dsw-alias-border-l2);border-radius:16px;width:min(640px,100%);max-height:min(600px,76vh);box-shadow:var(--dsw-shadow-lv3);color:var(--dsw-alias-label-primary);flex-direction:column;display:flex;overflow:hidden}',
-      '.gs_inputRow{flex:none;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-tertiary);display:flex}',
+      '.gs_palette{background:var(--dsw-alias-bg-base);border:0;border-radius:16px;width:min(640px,100%);max-height:min(600px,76vh);box-shadow:var(--dsw-elevation-prominent);color:var(--dsw-alias-label-primary);flex-direction:column;display:flex;overflow:hidden}',
+      '.gs_inputRow{flex:none;align-items:center;gap:10px;padding:14px 16px;border-bottom:.5px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-tertiary);display:flex}',
       '.gs_inputRow:focus-within{color:var(--dsw-alias-label-secondary)}',
       '.gs_inputIcon{flex:none;justify-content:center;align-items:center;display:inline-flex}',
-      '.gs_input{flex:1;min-width:0;background:0 0;border:none;outline:none;color:var(--dsw-alias-label-primary);font:inherit;font-size:15px;line-height:1.4;padding:0}',
+      '.gs_input{flex:1;min-width:0;background:0 0;border:none;outline:none;color:var(--dsw-alias-label-primary);font:inherit;font-size:15px;line-height:22px;padding:0}',
       '.gs_input:focus,.gs_input:focus-visible{outline:none}',
       '.gs_input::placeholder{color:var(--dsw-alias-label-tertiary)}',
       '.gs_list{flex:1;min-height:0;overflow-y:auto;padding:6px 8px 10px;scrollbar-width:thin}',
       '.gs_list::-webkit-scrollbar{width:10px}',
       '.gs_list::-webkit-scrollbar-track{background:transparent}',
       '.gs_list::-webkit-scrollbar-thumb{background:var(--dsw-alias-scrollbar-bg-l2,var(--dsw-alias-border-l2));border:3px solid transparent;border-radius:999px;background-clip:content-box}',
-      '.gs_footer{flex:none;align-items:center;gap:14px;padding:8px 14px;border-top:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-tertiary);font-size:11px;display:flex}',
+      '.gs_footer{flex:none;align-items:center;gap:14px;padding:8px 14px;border-top:.5px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;display:flex}',
       '.gs_footerItem{align-items:center;display:inline-flex}',
-      '.gs_key{min-width:18px;height:18px;border:1px solid var(--dsw-alias-border-l2);border-radius:5px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);font-size:10px;line-height:1;justify-content:center;align-items:center;margin-right:5px;padding:0 4px;display:inline-flex}',
+      '.gs_key{min-width:18px;height:18px;border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);font-size:10px;line-height:1;justify-content:center;align-items:center;margin-right:5px;padding:0 4px;display:inline-flex}',
 
       /* ---------- 分组与行 ---------- */
       '.gs_group{flex-direction:column;gap:1px;display:flex;padding-top:8px}',
       '.gs_group:first-child{padding-top:2px}',
-      '.gs_groupLabel{color:var(--dsw-alias-label-tertiary);font-size:11px;font-weight:600;letter-spacing:.04em;padding:0 10px 5px}',
+      // 分组标签是小号标签档（11px + 字距）：字号保留，只补官方成对行高 16，字重按区块标题取 500。
+      '.gs_groupLabel{color:var(--dsw-alias-label-tertiary);font-size:11px;font-weight:500;line-height:16px;letter-spacing:.04em;padding:0 10px 5px}',
       // 统一行：图标 + 主列（标题/副标题）+ 右侧元信息 + 快捷键胶囊
-      '.gs_row{align-items:center;gap:10px;width:100%;min-height:38px;box-sizing:border-box;background:0 0;border:none;border-radius:9px;padding:6px 10px;color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;text-align:left;cursor:pointer;display:flex}',
+      '.gs_row{align-items:center;gap:10px;width:100%;min-height:38px;box-sizing:border-box;background:0 0;border:none;border-radius:var(--dsw-radius-sm);padding:6px 10px;color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:20px;text-align:left;cursor:pointer;display:flex}',
       '.gs_row:hover{background:var(--dsw-alias-interactive-bg-hover)}',
       '.gs_row[data-active]{background:var(--dsw-alias-interactive-bg-active)}',
       '.gs_rowIcon{flex:none;color:var(--dsw-alias-label-tertiary);justify-content:center;align-items:center;display:inline-flex}',
@@ -61,23 +64,23 @@ window.__ModuleLoader__.load({
       // 标题/副标题都是普通行内流：写成 flex 会把「文本 + <mark> + 文本」拆成匿名 flex 项，
       // 高亮词组被拦腰折断
       '.gs_rowTitle{font-weight:500;line-height:1.45;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-      '.gs_rowSub{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.4;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-      '.gs_rowMeta{flex:none;color:var(--dsw-alias-label-tertiary);font-size:11.5px;white-space:nowrap}',
-      '.gs_rowChip{flex:none;min-width:22px;height:20px;border-radius:6px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-tertiary);font-size:10.5px;font-weight:600;justify-content:center;align-items:center;padding:0 5px;display:inline-flex}',
+      '.gs_rowSub{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.gs_rowMeta{flex:none;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;white-space:nowrap}',
+      '.gs_rowChip{flex:none;min-width:22px;height:20px;border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-tertiary);font-size:11px;font-weight:600;line-height:16px;justify-content:center;align-items:center;padding:0 5px;display:inline-flex}',
       '.gs_rowGhost{color:var(--dsw-alias-label-tertiary);cursor:default}',
       '.gs_rowGhost:hover{background:0 0}',
-      '.gs_badge{display:inline-block;border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:999px;padding:0 7px;font-size:10px;line-height:1.7;white-space:nowrap;margin-left:8px;vertical-align:middle}',
+      '.gs_badge{display:inline-block;border:.5px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary);border-radius:999px;corner-shape:round;padding:0 7px;font-size:10px;line-height:14px;white-space:nowrap;margin-left:8px;vertical-align:middle}',
       // 高亮词是「一个整体」，不能被行尾折断（CJK 会逐字断行 → 词组被劈成两行）
-      '.gs_highlight{background:var(--dsw-alias-state-warn-tertiary);color:inherit;border-radius:3px;padding:0 1px;white-space:nowrap}',
-      '.gs_hint{text-align:center;color:var(--dsw-alias-label-tertiary);padding:26px 12px;font-size:12.5px;line-height:1.7}',
-      '.gs_error{text-align:center;color:var(--dsw-alias-state-error-primary);padding:22px 12px;font-size:12.5px}',
-      '.gs_spinner{width:12px;height:12px;border:1.6px solid var(--dsw-alias-border-l3);border-top-color:var(--dsw-alias-label-tertiary);border-radius:50%;animation:gs_spin .8s linear infinite;display:inline-block}',
+      '.gs_highlight{background:var(--dsw-alias-state-warn-tertiary);color:inherit;border-radius:var(--dsw-radius-xs);padding:0 1px;white-space:nowrap}',
+      '.gs_hint{text-align:center;color:var(--dsw-alias-label-tertiary);padding:26px 12px;font-size:12.5px;line-height:18px}',
+      '.gs_error{text-align:center;color:var(--dsw-alias-state-error-primary);padding:22px 12px;font-size:12.5px;line-height:18px}',
+      '.gs_spinner{width:12px;height:12px;border:1.6px solid var(--dsw-alias-border-l3);border-top-color:var(--dsw-alias-label-tertiary);border-radius:50%;corner-shape:round;animation:gs_spin .8s linear infinite;display:inline-block}',
       '@keyframes gs_spin{to{transform:rotate(360deg)}}',
 
       /* ---------- toast ---------- */
-      '.gs_toast{position:fixed;left:50%;bottom:36px;transform:translateX(-50%);z-index:2147483647;pointer-events:none;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary);border-radius:10px;padding:9px 16px;font-size:13px;box-shadow:var(--dsw-shadow-lv3);max-width:70vw}',
-      '.gs_toast[data-kind=ok]{border-color:var(--dsw-alias-state-success-primary);color:var(--dsw-alias-state-success-primary)}',
-      '.gs_toast[data-kind=error]{border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}',
+      '.gs_toast{position:fixed;left:50%;bottom:36px;transform:translateX(-50%);z-index:2147483647;pointer-events:none;background:var(--dsw-alias-bg-layer-2);border:0;color:var(--dsw-alias-label-primary);border-radius:var(--dsw-radius-md);padding:9px 16px;font-size:13px;line-height:20px;box-shadow:var(--dsw-elevation-prominent);max-width:70vw}',
+      '.gs_toast[data-kind=ok]{color:var(--dsw-alias-state-success-primary);box-shadow:var(--dsw-elevation-prominent), inset 0 0 0 .5px var(--dsw-alias-state-success-primary)}',
+      '.gs_toast[data-kind=error]{color:var(--dsw-alias-state-error-primary);box-shadow:var(--dsw-elevation-prominent), inset 0 0 0 .5px var(--dsw-alias-state-error-primary)}',
     ].join('\n')
 
     let styleEl
