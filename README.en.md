@@ -202,7 +202,7 @@ dsh plugin --profile web add link:$(pwd)/packages/<name>
 `dsh.client`) → [docs/conventions.md § Package anatomy](docs/conventions.md#插件包解剖).
 **Three rules that are easy to trip over** (where a client half may derive its host address; extracting
 pure logic into modules; scoping a `document`-level click delegate) →
-[docs/conventions.md § Client half](docs/conventions.md#客户端半体三条硬规矩).
+[docs/conventions.md § Client half](docs/conventions.md#客户端半体四条硬规矩).
 
 ## Documentation map
 

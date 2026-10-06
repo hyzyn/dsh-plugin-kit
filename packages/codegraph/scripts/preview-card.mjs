@@ -165,7 +165,13 @@ const RESPONSES = {
 }
 const SESSION = { byId: { s1: { cwd: '/Users/zz/code/my-app' } }, current: 's1' }
 
-/** 亮色主题 token（值取自 @deepseek-ai/dsh-client-ui-theme）。 */
+/**
+ * 亮色主题 token 子集（值取自 @deepseek-ai/dsh-client-ui-theme）。
+ *
+ * **名字必须与真主题逐字一致**：这张表是预览脚本自己造的假主题，写错一个名字的代价是
+ * 「预览里颜色/框都对、装进真宿主就变样」——`state-warning` 那一族就是这么漏过去的
+ * （真名是 `--dsw-alias-state-warn-primary`；见 `scripts/client-lint.mjs` 的检查 ③）。
+ */
 const TOKENS = `:root{
   --dsw-font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
   --dsw-alias-bg-layer-2:#fff; --dsw-alias-bg-layer-3:#fff;
@@ -175,7 +181,7 @@ const TOKENS = `:root{
   --dsw-alias-brand-primary:#0f1115; --dsw-alias-button-info-fill:#4176e6; --dsw-alias-button-info-hover:#5686fe;
   --dsw-specific-input-major:#fff; --dsw-alias-interactive-bg-hover:#2631480f;
   --dsw-alias-state-success-primary:#22c55e; --dsw-alias-state-error-primary:#ec1313;
-  --dsw-alias-state-warning-primary:#f59e0b; --dsw-alias-state-business-primary:#4176e6;
+  --dsw-alias-state-warn-primary:#f59e0b; --dsw-alias-state-business-primary:#4176e6;
 }
 body{margin:0;padding:26px 30px 30px;background:#f5f6f7;font-family:var(--dsw-font-family);-webkit-font-smoothing:antialiased}
 .panel{max-width:820px;margin:0 auto}

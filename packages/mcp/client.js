@@ -100,7 +100,7 @@ window.__ModuleLoader__.load({
       '.mX_toolWrap{border:1px solid var(--dsw-alias-border-l1);border-radius:10px;flex:none;overflow:hidden}',
       '.mX_toolHeader{background:var(--dsw-alias-bg-layer-2);border-bottom:1px solid var(--dsw-alias-border-l1);padding:8px 10px;font-size:12px;color:var(--dsw-alias-label-secondary);display:flex;gap:12px;flex-wrap:wrap}',
       '.mX_toolList{max-height:220px;overflow-y:auto;padding:4px 0}',
-      '.mX_toolItem{padding:5px 10px;font-size:12px;display:flex;flex-direction:column;gap:2px;border-bottom:1px solid var(--dsw-alias-separator-primary)}',
+      '.mX_toolItem{padding:5px 10px;font-size:12px;display:flex;flex-direction:column;gap:2px;border-bottom:1px solid var(--dsw-alias-border-l2)}',
       '.mX_toolItem:last-child{border-bottom:none}',
       '.mX_toolName{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:var(--dsw-alias-state-business-primary)}',
       '.mX_toolDesc{color:var(--dsw-alias-label-tertiary)}',

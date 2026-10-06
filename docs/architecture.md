@@ -112,8 +112,8 @@
   改源码**必须**重建产物；**`lib/` 那半边在 CI 里目前是失效的**，细节与实测见
   [conventions.md § 真机脚本与 CI 接线](./conventions.md#真机脚本与-ci-接线)。
 - **纯逻辑抽模块**：要判对错的客户端逻辑抽成 `client-src/*.js` 纯模块 + vitest 用例，
-  由构建脚本内联进单文件 `client.js`。理由与三条硬规矩见
-  [conventions.md § 客户端半体](./conventions.md#客户端半体三条硬规矩)。
+  由构建脚本内联进单文件 `client.js`。理由与四条硬规矩见
+  [conventions.md § 客户端半体](./conventions.md#客户端半体四条硬规矩)。
 - **三代插槽**：客户端半体同时注册 `plugins.row.config`（官方新版行配置）、
   `settings.kit.item`、`settings.plugin.item`，一份产物在各代宿主上都能用。
 - **界面文案的语言**：只认宿主提供的 `ctx.locale`（`@deepseek-ai/dsh-client-locale`），

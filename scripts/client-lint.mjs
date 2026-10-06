@@ -51,6 +51,7 @@ import { dirname, join, relative } from 'node:path'
 
 import { describeHostUrlUse, HOST_URL_RULE_HINT, listClientSourceFiles, scanHostUrlUses } from './client-host-url.mjs'
 import { CLICK_SCOPE_RULE_HINT, listClickScopeTargets, scanClickScopeUses } from './client-click-scope.mjs'
+import { describeThemeTokenUse, listThemeScanFiles, loadThemeTokenSnapshot, scanThemeTokenUses, THEME_TOKEN_RULE_HINT } from './client-theme-tokens.mjs'
 
 // 在「包目录」里调用（`pnpm -r typecheck` 就是这样跑的）：tsc 输出的路径也相对它，
 // 于是下面的解析与提示都是包内相对路径。
@@ -99,6 +100,29 @@ const hostUrlFindings = listClientSourceFiles(root).flatMap((file) =>
  */
 const clickScopeFindings = listClickScopeTargets(root).flatMap(({ file, source }) =>
   scanClickScopeUses(relative(root, file).replaceAll('\\', '/'), source))
+
+/* ------------------------------------------------------------------ *
+ * 检查四：样式变量（快照比对；规则与成因见 client-theme-tokens.mjs）
+ * ------------------------------------------------------------------ */
+
+/*
+ * 客户端半体引用的每个 `--dsw-*` 都必须在宿主主题里**真实存在**。写错一个名字的后果不是
+ * 「退回默认样式」：`border` / `background` 这类**简写**含无效 var() 时整条声明作废
+ * （longhand 一起回落 unset，`border-style` 的初始值就是 `none`）——**框会直接消失**，
+ * 而布局类声明不含变量、照常生效，于是看起来「排版是对的，就是什么都没有」。
+ * 2026-10-04 的三张 dev* 卡片、以及 2026-10-06 实测仍在 main 上的 codegraph / mcp 两处，
+ * 都是这么发生的。四层防线（tsc / preview 假主题 / 冒烟 / 人眼）全都看不见它，所以必须在静态层拦。
+ *
+ * 先在**每个**受管文件上把引用扫全，再拿快照过滤：扫全的那个数量会打进通过行
+ * （`样式变量 N 处`）——本仓的规矩是闸门必须自证「命中不是 0」，只会在 0 命中时绿的
+ * 检查等于没有检查。快照读不到会在这里抛（不静默跳过，理由见 client-theme-tokens.mjs）。
+ */
+const { tokens: knownThemeTokens } = loadThemeTokenSnapshot(repoRoot)
+const themeTokenUses = listThemeScanFiles(root).flatMap((file) => {
+  const fileRel = relative(root, file).replaceAll('\\', '/')
+  return scanThemeTokenUses(readFileSync(file, 'utf8')).map((use) => ({ ...use, file: fileRel }))
+})
+const themeFindings = themeTokenUses.filter((use) => !knownThemeTokens.has(use.token))
 
 /* ------------------------------------------------------------------ *
  * 检查二：名字解析（tsc --checkJs）
@@ -154,11 +178,22 @@ for (const item of clickScopeFindings) {
   console.error('[client-lint] ' + item.file + ':' + String(item.line) + ':' + String(item.col) + ' 点击委托缺少作用域判定（处理器 ' + item.handler + '）：' + item.detail)
 }
 
+for (const item of themeFindings) {
+  console.error('[client-lint] ' + item.file + ':' + String(item.line) + ':' + String(item.col) + ' ' + describeThemeTokenUse(item))
+}
+
 if (clickScopeFindings.length > 0) {
   console.error('\n[' + packageName + '] document 级点击委托检查失败：' + String(clickScopeFindings.length) + ' 处。')
   console.error('  ' + CLICK_SCOPE_RULE_HINT)
   console.error('  为什么：同一个设置页上挂着多张插件的卡片，各自把 click 绑在 document 上；'
     + '没有作用域判定就会接走别张卡片的按钮（2026-10-03 实测：点 profile 的「删除」报 `prompt 不存在: `）。')
+}
+
+if (themeFindings.length > 0) {
+  console.error('\n[' + packageName + '] 样式变量检查失败：' + String(themeFindings.length) + ' 处引用了宿主主题里不存在的样式变量。')
+  console.error('  ' + THEME_TOKEN_RULE_HINT)
+  console.error('  这类错**编译不报、preview 也报不出来**（preview 用的是自己造的假主题）、冒烟只断言文案与控件值'
+    + '——一个没有边框的输入框照样满足断言。真机代价见 2026-10-04 的三张 dev* 卡片：输入框/按钮/目标行全部无框。')
 }
 
 if (hostUrlFindings.length > 0) {
@@ -178,7 +213,9 @@ if (hostUrlFindings.length > 0) process.exit(1)
 
 if (clickScopeFindings.length > 0) process.exit(1)
 
-const verdict = '宿主地址来源 0 处'
+if (themeFindings.length > 0) process.exit(1)
+
+const verdict = '宿主地址来源 0 处 · 样式变量 ' + String(themeTokenUses.length) + ' 处全部存在'
 if (noise.length > 0) {
   const byCode = new Map()
   for (const item of noise) byCode.set(item.code, (byCode.get(item.code) ?? 0) + 1)

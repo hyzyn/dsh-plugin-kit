@@ -44,6 +44,7 @@
 | **插件市场索引**（卡片分类标签从哪来 · 我们 8 条的现状 · 改分类怎么提 PR） | L0 [`docs/market-index.md`](./market-index.md) |
 | **CI 与 `package.json` 的脚本双真相源：收敛方案**（改动点 / rename 面 / CI 影响 / 验收；**已执行——方案 A + 守卫，含 2026-10-03 根级扩展**） | L0 [`docs/ci-scripts-plan.md`](./ci-scripts-plan.md) |
 | **发包内容**（`files` 字段漏一项没有任何闸门会红 · 为什么挂载车道看不见它 · 守卫形态） | L0 本文 [§ 发包内容守卫](#发包内容守卫files-字段漏一项不许静默) |
+| **宿主主题的 `--dsw-*` 名字表**（客户端半体允许用的样式变量名；写错名字 = 那条 `border`/`background` 整条作废） | 快照 [`scripts/fixtures/dsh-theme-tokens.json`](../scripts/fixtures/dsh-theme-tokens.json)（403 个名字，**生成物**，`node scripts/sync-dsh-theme-tokens.mjs` 保鲜）+ 规则 [本文 § 客户端半体](#客户端半体四条硬规矩) ④ |
 | **三条车道各管什么**（CI 每次推送 / 挂载车道 / nightly 的 flake + coverage；为什么后两者不进 CI） | L0 本文 [§ 车道分工](#车道分工哪条车道管什么) |
 | **AI 协作边界**（哪些改动必须先问维护者） | L0 本文 [§ AI 协作边界](#ai-协作边界什么改动要先问) |
 
@@ -239,7 +240,7 @@
   （**守卫**：`scripts/docs-index.mjs` 判据 5 现算 `pnpm-workspace.yaml` 的包集合与这张表逐一对账，
   多一个少一个都报）
 
-## 客户端半体：三条硬规矩
+## 客户端半体：四条硬规矩
 
 ### ① 跟宿主建连的地址，基址只能来自宿主注入的 `__DSH_TRANSPORT__`
 
@@ -265,7 +266,7 @@ origin 上。从 `location` 推出来的地址在浏览器里完全正常、**�
 ### ② 要判对错的客户端逻辑，抽成 `client-src/*.js` 纯模块 + vitest 用例
 
 `client.js` 是构建产物、不在 vitest 层测；`client-lint` 只查静态问题（名字解析、宿主地址来源、
-点击委托作用域）、
+点击委托作用域、样式变量）、
 **不验行为**——逻辑留在组件闭包里就等于没有测试入口。`client-lint` 查的是**全量**
 `client-src/**` 而不只是入口，兄弟模块同样受管。
 
@@ -300,6 +301,35 @@ function handleClick(event) {
 `document` 的卡片（mcp / profile / prompt / rss）还有 `refresh` / `edit` / `editor-save` 三处
 同类误触。`scripts/client-lint.mjs` 的**检查三**静态拦下这类处理器（规则与成因见
 `scripts/client-click-scope.mjs`，用例见 `scripts/test/client-click-scope.test.ts`）。
+
+### ④ 样式变量只能用宿主主题里**真实存在**的名字
+
+写错一个 `--dsw-*` 名字的后果**不是「退回默认样式」，而是那条声明整条作废**：CSS 变量在
+计算值阶段无效时，`border:1px solid var(--不存在的变量)` 这个 **shorthand 的所有 longhand
+一起回落 `unset`**，而 `border-style` 的初始值就是 `none`——**框直接消失**；
+`background:var(--…)` 同理变成透明。2026-10-04 的三张 dev* 卡片就是这样变成一堵裸文本的：
+它们引用了 `--dsw-alias-border-secondary` 与 `--dsw-alias-bg-primary`，而宿主主题的 403 个
+token 里**一个都没有**（真名是 `--dsw-alias-border-l1..l4` / `--dsw-alias-bg-base` /
+`--dsw-alias-bg-layer-1` / `--dsw-specific-input-major`）。
+注意**不含变量的布局类声明照常生效**（`display` / `gap` / `max-width` / 字号），所以现场看起来是
+「排版是对的，就是什么都没有」——最容易被当成「样式没加载」往错方向查。
+
+四层防线**都看不见它**，这才是它必须做成静态检查的理由：
+
+- `tsc` 不查 CSS 变量名（它藏在**字符串字面量**里）；宿主地址来源与点击作用域那两条也零信号；
+- 各包 preview harness 用的是**自己造的假主题**：名字写错时**预览仍然是对的、只有真机是错的**
+  （`packages/codegraph/scripts/preview-card.mjs` 里原本就写着 `--dsw-alias-state-warning-primary`；
+  真名 `state-warn-primary`——**2026-10-06 实测这一处与 mcp 的 `separator-primary` 在 main 上仍然存在**）；
+- 真机冒烟（CDP）只断言**文案与控件值**——一个没有边框的输入框照样满足断言。
+
+判据：`pnpm -r typecheck` 里的 `scripts/client-lint.mjs` **检查四** 拿宿主主题的名字快照
+（[`scripts/fixtures/dsh-theme-tokens.json`](../scripts/fixtures/dsh-theme-tokens.json)，403 个名字，
+**生成物**）比对全部客户端半体——扫描面是 `client-src/**` 下的 **`.js` 与 `.css`**（docker 与 tty
+的样式住在独立 `.css` 里；只按 `.js` 枚举时 docker 报「0 处」，那道防线是空的）；规则的取用口径与成因见
+[`scripts/client-theme-tokens.mjs`](../scripts/client-theme-tokens.mjs)。快照由
+`node scripts/sync-dsh-theme-tokens.mjs` 从真宿主生成、`--check` 逐字比对宿主与快照
+（**真机档，不进 CI**——与 `check-dsh-peers.mjs --app-boot` 同一档）。宿主换版本后要重新生成，
+别手改快照。
 
 ## 客户端设置面：内联优先
 

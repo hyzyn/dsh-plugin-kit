@@ -1,9 +1,9 @@
 import { appendFileSync } from 'node:fs'
-import { execSync } from 'node:child_process'
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import { dshStoreCandidates } from './lib/dsh-runtime-store.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const args = process.argv.slice(2)
@@ -44,38 +44,18 @@ function sameTarget(link, target) {
   }
 }
 
-function findDshRuntime() {
-  /*
-   * HOME 在 Windows 上**不存在**（那边是 USERPROFILE），旧版直接 join(process.env.HOME, …)
-   * 会在**构造候选数组的那一刻**就抛 ERR_INVALID_ARG_TYPE：连先 push 进去的 npm prefix
-   * 候选都没机会被检查，脚本第一步就死（Windows 真机实测：就是这条）。
-   * os.homedir() 两个平台都对。
-   */
-  const home = homedir()
-  const candidates = []
-  // npm 全局前缀：POSIX 在 <prefix>/lib/node_modules，Windows 直接在 <prefix>/node_modules
-  try {
-    const prefix = execSync('npm prefix -g', { encoding: 'utf8' }).trim()
-    if (prefix !== '') {
-      candidates.push(
-        join(prefix, 'lib', 'node_modules', '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai'),
-        join(prefix, 'node_modules', '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai'),
-      )
-    }
-  } catch {
-    // npm 不在 PATH 时不致命：下面还有 home 兜底
-  }
-  candidates.push(
-    join(home, '.npm-global', 'lib', 'node_modules', '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai'),
-    join(home, '.dsh', 'profiles', 'node_modules', '@deepseek-ai'),
-  )
-  for (const c of candidates) {
-    if (existsSync(c)) return c
-  }
-  throw new Error(`cannot locate dsh runtime @deepseek-ai store (tried: ${candidates.join(', ')})`)
+/*
+ * 宿主 runtime 存储目录的定位搬到 scripts/lib/dsh-runtime-store.mjs —— 与
+ * scripts/sync-dsh-theme-tokens.mjs 共用同一份候选列表（两处各写一份时，下次换
+ * npm prefix / 换 profile 布局只会改一处，另一处静默失效）。
+ * 候选列表里 Windows 的 HOME 教训与 npm prefix 的两个布局都原样保留在那份里。
+ */
+const runtimeCandidates = dshStoreCandidates()
+const runtime = runtimeRoot ?? runtimeCandidates.find((candidate) => existsSync(candidate))
+if (runtime === undefined) {
+  throw new Error(`cannot locate dsh runtime @deepseek-ai store (tried: ${runtimeCandidates.join(', ')})`)
 }
 
-const runtime = runtimeRoot ?? findDshRuntime()
 const dshVersion = JSON.parse(readFileSync(join(runtime, '..', '..', 'package.json'))).version
 console.log(`dsh runtime store: ${runtime}`)
 console.log(`dsh version      : ${dshVersion}`)
