@@ -170,7 +170,7 @@ const SESSION = { byId: { s1: { cwd: '/Users/zz/code/my-app' } }, current: 's1' 
  *
  * **名字必须与真主题逐字一致**：这张表是预览脚本自己造的假主题，写错一个名字的代价是
  * 「预览里颜色/框都对、装进真宿主就变样」——`state-warning` 那一族就是这么漏过去的
- * （真名是 `--dsw-alias-state-warn-primary`；见 `scripts/client-lint.mjs` 的检查 ③）。
+ * （真名是 `--dsw-alias-state-warn-primary`；见 `scripts/client-lint.mjs` 的检查四）。
  */
 const TOKENS = `:root{
   --dsw-font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;

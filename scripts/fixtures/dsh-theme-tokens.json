@@ -1,8 +1,8 @@
 {
-  "$comment": "宿主主题（--dsw-*）名字快照：生成物，别手改；重新生成见 scripts/sync-dsh-theme-tokens.mjs。client-lint 的检查 ③ 用它拦「引用了宿主主题里不存在的样式变量」。",
+  "$comment": "宿主主题（--dsw-*）名字快照：生成物，别手改；重新生成见 scripts/sync-dsh-theme-tokens.mjs。client-lint 的检查四用它拦「引用了宿主主题里不存在的样式变量」。",
   "source": "@deepseek-ai/dsh-client-ui-theme/lib/client.js",
   "dshVersion": "0.2.1-alpha.1",
-  "generatedAt": "2026-10-04T10:09:35.954Z",
+  "generatedAt": "2026-10-06T03:55:36.899Z",
   "generator": "scripts/sync-dsh-theme-tokens.mjs",
   "count": 403,
   "tokens": [

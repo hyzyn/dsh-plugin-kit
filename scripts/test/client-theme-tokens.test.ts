@@ -16,11 +16,10 @@
  * 的证据，也是「以后有人写回去」的拦截网）。反例一律**拿真实源码做字符串替换**并先断言
  * 替换生效——本仓刚发生过「命中 0 个文件、恒绿、拦不住任何东西」的闸门。
  *
- * 2026-10-04 的真实回归写在第三组里：卡片引用了不存在的 `--dsw-alias-border-secondary` /
- * `--dsw-alias-bg-primary`（宿主主题 403 个 token 里一个都没有）——输入框、按钮、目标行
- * **全部没有框**（shorthand 的 longhand 回落 `unset`）。2026-10-06 实测同一类错**仍在 main 上
- * 活着**（codegraph 的 `state-warning-primary`、mcp 的 `separator-primary`），所以第三组的
- * 反例直接用它们，而不是造一个假想的名字。
+ * 第三组是**对本分支两处真实坏名**的拦截证明：`packages/codegraph/client-src/index.js` 的
+ * `--dsw-alias-state-warning-primary`（真名 `state-warn-primary`，只差一个 `ing`）与
+ * `packages/mcp/client.js` 的 `--dsw-alias-separator-primary`（宿主 403 个 token 里一个都没有）。
+ * 两者 2026-10-06 实测**都在 main 上活着**——反例直接用它们，而不是造一个假想的名字。
  */
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -55,7 +54,7 @@ const PACKAGES = readdirSync(join(repoRoot, 'packages'))
   .filter((name) => listThemeScanFiles(join(repoRoot, 'packages', name)).length > 0)
   .sort()
 
-/** 真实语料里引用的未知名字（判据与 client-lint 检查 ③ 完全一致）。 */
+/** 真实语料里引用的未知名字（判据与 client-lint 检查四 完全一致）。 */
 const unknownIn = (text) => scanThemeTokenUses(text).filter((use) => !knownTokens.has(use.token))
 
 describe('parseThemeTokenDefinitions · 只认「定义位」', () => {

@@ -5,7 +5,7 @@
  *
  * ## 这份快照是给谁用的
  *
- * [`scripts/client-lint.mjs`](./client-lint.mjs) 的**检查 ③**：客户端半体里引用的每个
+ * [`scripts/client-lint.mjs`](./client-lint.mjs) 的**检查四**：客户端半体里引用的每个
  * `--dsw-*` 都必须在宿主主题里真实存在。判据与四条防线为什么都拦不住那类错，写在
  * [`scripts/client-theme-tokens.mjs`](./client-theme-tokens.mjs) 的文件头。
  *
@@ -132,7 +132,7 @@ if (checkOnly) {
 
 const payload = {
   $comment: '宿主主题（--dsw-*）名字快照：生成物，别手改；重新生成见 scripts/sync-dsh-theme-tokens.mjs。'
-    + 'client-lint 的检查 ③ 用它拦「引用了宿主主题里不存在的样式变量」。',
+    + 'client-lint 的检查四用它拦「引用了宿主主题里不存在的样式变量」。',
   source: '@deepseek-ai/dsh-client-ui-theme/lib/client.js',
   dshVersion,
   generatedAt: new Date().toISOString(),

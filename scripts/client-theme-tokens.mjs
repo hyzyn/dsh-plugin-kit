@@ -1,5 +1,5 @@
 /**
- * **宿主主题变量规则**（供 `scripts/client-lint.mjs` 的检查 ③ 用）：
+ * **宿主主题变量规则**（供 `scripts/client-lint.mjs` 的检查四用）：
  * 客户端半体里引用的每个 `--dsw-*` 名字，都必须在宿主主题里**真实存在**。
  *
  * ## 为什么这是一条正确性判据，而不是整洁度
@@ -9,20 +9,23 @@
  * 的初始值就是 `none`。于是「写错一个变量名」的后果不是「退回默认边框颜色」，而是
  * **整条边框消失**；`background:var(--…)` 同理变成透明。
  *
- * 2026-10-04 就是这样：`devdata` / `devenv` / `devfront` 三张卡片引用了
- * `--dsw-alias-border-secondary` 与 `--dsw-alias-bg-primary`——宿主主题的 403 个 token 里
- * **一个都没有**（真名是 `--dsw-alias-border-l1..l4` 与 `--dsw-alias-bg-base` /
- * `--dsw-alias-bg-layer-1` / `--dsw-specific-input-major`）。三张卡片的输入框、按钮、
- * 目标行**全部没有框**，整张卡看起来像一堵裸文本；而布局类声明（`display` / `gap` /
- * `max-width` / 字号）不含变量、照常生效——于是**看起来"排版是对的，就是什么都没有"**。
+ * 2026-10-06 在本分支实测到两处**当时仍在**的实例（修复见同日的 `fix(client)` 提交）：
+ *
+ *   - `packages/codegraph/client-src/index.js` 的 `.cg_badgeWarn` / `.cg_warn` 引用了
+ *     `--dsw-alias-state-warning-primary`——真名是 `state-warn-primary`，**只差一个 `ing`**；
+ *   - `packages/mcp/client.js` 的 `.mX_toolItem` 引用 `--dsw-alias-separator-primary`
+ *     ——`separator` 这一族在宿主 403 个 token 里**一个都没有**（真名 `--dsw-alias-border-l2`）。
+ *
+ * 后者是 `border-bottom` 简写的一部分：**分隔线整条消失**，而布局类声明（`display` / `gap` /
+ * `max-width` / 字号）不含变量、照常生效——于是现场看起来是「排版是对的，就是什么都没有」，
+ * 最容易被当成「样式没加载」往错方向查。
  *
  * ## 为什么四种防线都没拦住（这才是要静态检查的理由）
  *
  *   - `tsc` 不查 CSS 变量名（它在**字符串字面量**里）；
  *   - `check-i18n` / `client-lint` 原先只查名字解析与宿主地址来源，**零信号**；
- *   - 各包的 preview harness 用的是**自己造的假主题**——codegraph 的
- *     `scripts/preview-card.mjs` 里就写着 `--dsw-alias-state-warning-primary`（真名
- *     `state-warn-primary`），**预览因此一直是"对的"，只有真机是错的**；
+ *   - 各包的 preview harness 用的是**自己造的假主题**——`packages/codegraph/scripts/preview-card.mjs`
+ *     里就写着 `--dsw-alias-state-warning-primary`，**预览因此一直是"对的"、只有真机是错的**；
  *   - 真机冒烟（CDP）只断言**文案与控件值**，一个没有边框的输入框照样满足断言。
  *
  * 所以这条判据必须在**静态层**：拿一份宿主主题的名字快照（

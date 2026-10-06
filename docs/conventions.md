@@ -307,19 +307,28 @@ function handleClick(event) {
 写错一个 `--dsw-*` 名字的后果**不是「退回默认样式」，而是那条声明整条作废**：CSS 变量在
 计算值阶段无效时，`border:1px solid var(--不存在的变量)` 这个 **shorthand 的所有 longhand
 一起回落 `unset`**，而 `border-style` 的初始值就是 `none`——**框直接消失**；
-`background:var(--…)` 同理变成透明。2026-10-04 的三张 dev* 卡片就是这样变成一堵裸文本的：
-它们引用了 `--dsw-alias-border-secondary` 与 `--dsw-alias-bg-primary`，而宿主主题的 403 个
-token 里**一个都没有**（真名是 `--dsw-alias-border-l1..l4` / `--dsw-alias-bg-base` /
-`--dsw-alias-bg-layer-1` / `--dsw-specific-input-major`）。
-注意**不含变量的布局类声明照常生效**（`display` / `gap` / `max-width` / 字号），所以现场看起来是
-「排版是对的，就是什么都没有」——最容易被当成「样式没加载」往错方向查。
+`background:var(--…)` 同理变成透明。注意**不含变量的布局类声明照常生效**（`display` / `gap` /
+`max-width` / 字号），所以现场看起来是「排版是对的，就是什么都没有」——最容易被当成
+「样式没加载」往错方向查。
+
+**本仓实测到的两处**（2026-10-06，修复见同日的 `fix(client)` 提交；两条都用
+`git log -S` 可查）：
+
+- `packages/codegraph/client-src/index.js` 的 `.cg_badgeWarn` / `.cg_warn` 引用了
+  `--dsw-alias-state-warning-primary`——真名是 `--dsw-alias-state-warn-primary`，**只差一个 `ing`**；
+- `packages/mcp/client.js` 的 `.mX_toolItem` 引用 `--dsw-alias-separator-primary`——`separator`
+  这一族在宿主 403 个 token 里**一个都没有**（真名 `--dsw-alias-border-l2`），而它是
+  `border-bottom` 简写的一部分：后果不是「分隔线颜色不对」，是**分隔线整条消失**。
+
+`codegraph` 那处的成因还多一层：**预览夹具自己也用错了名字**
+（`packages/codegraph/scripts/preview-card.mjs` 的假主题里写着同一个病名），于是预览一直是
+「对的」、只有真机是错的——夹具名写错等于那道预览永远验不出真问题。
 
 四层防线**都看不见它**，这才是它必须做成静态检查的理由：
 
 - `tsc` 不查 CSS 变量名（它藏在**字符串字面量**里）；宿主地址来源与点击作用域那两条也零信号；
 - 各包 preview harness 用的是**自己造的假主题**：名字写错时**预览仍然是对的、只有真机是错的**
-  （`packages/codegraph/scripts/preview-card.mjs` 里原本就写着 `--dsw-alias-state-warning-primary`；
-  真名 `state-warn-primary`——**2026-10-06 实测这一处与 mcp 的 `separator-primary` 在 main 上仍然存在**）；
+  （`packages/codegraph/scripts/preview-card.mjs` 里原本就写着 `--dsw-alias-state-warning-primary`）；
 - 真机冒烟（CDP）只断言**文案与控件值**——一个没有边框的输入框照样满足断言。
 
 判据：`pnpm -r typecheck` 里的 `scripts/client-lint.mjs` **检查四** 拿宿主主题的名字快照

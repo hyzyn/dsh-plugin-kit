@@ -110,8 +110,10 @@ const clickScopeFindings = listClickScopeTargets(root).flatMap(({ file, source }
  * 「退回默认样式」：`border` / `background` 这类**简写**含无效 var() 时整条声明作废
  * （longhand 一起回落 unset，`border-style` 的初始值就是 `none`）——**框会直接消失**，
  * 而布局类声明不含变量、照常生效，于是看起来「排版是对的，就是什么都没有」。
- * 2026-10-04 的三张 dev* 卡片、以及 2026-10-06 实测仍在 main 上的 codegraph / mcp 两处，
- * 都是这么发生的。四层防线（tsc / preview 假主题 / 冒烟 / 人眼）全都看不见它，所以必须在静态层拦。
+ * 2026-10-06 实测到的两处（修复见同日的 `fix(client)` 提交）：`packages/codegraph/client-src/index.js`
+ * 的 `state-warning-primary`（真名 `state-warn-primary`，只差一个 `ing`）与 `packages/mcp/client.js`
+ * 的 `separator-primary`（`separator` 这一族在宿主 403 个 token 里一个都没有，真名 `border-l2`）。
+ * 四层防线（tsc / preview 假主题 / 冒烟 / 人眼）全都看不见它，所以必须在静态层拦。
  *
  * 先在**每个**受管文件上把引用扫全，再拿快照过滤：扫全的那个数量会打进通过行
  * （`样式变量 N 处`）——本仓的规矩是闸门必须自证「命中不是 0」，只会在 0 命中时绿的
@@ -193,7 +195,7 @@ if (themeFindings.length > 0) {
   console.error('\n[' + packageName + '] 样式变量检查失败：' + String(themeFindings.length) + ' 处引用了宿主主题里不存在的样式变量。')
   console.error('  ' + THEME_TOKEN_RULE_HINT)
   console.error('  这类错**编译不报、preview 也报不出来**（preview 用的是自己造的假主题）、冒烟只断言文案与控件值'
-    + '——一个没有边框的输入框照样满足断言。真机代价见 2026-10-04 的三张 dev* 卡片：输入框/按钮/目标行全部无框。')
+    + '——一个没有边框的输入框照样满足断言。真机代价：写错名字的那条 border/background 会整条作废（框或分隔线直接消失）。')
 }
 
 if (hostUrlFindings.length > 0) {
