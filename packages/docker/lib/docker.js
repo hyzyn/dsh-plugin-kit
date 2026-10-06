@@ -1491,14 +1491,35 @@ export class DockerApi {
         throw new Error(`${what}失败（${this.runner.label}）：${firstLine(result.stderr, result.stdout, result.code)}`);
     }
 }
-/** 为一个目标构造 Runner。 */
+/**
+ * 为一个目标构造 Runner。
+ *
+ * `signal`（D161）是**构造时**绑定的外部取消信号：跨目标聚合给每个目标各配一个
+ * `AbortController`，预算到点就 abort 这一条。绑定在构造期而不是每个调用点，是为了
+ * **不改那 20+ 个 `runner.run(...)` 调用点**——它们都不需要这个信号（单目标路径的
+ * 截止时间本来就是 `timeoutMs`）。
+ *
+ * 两个分支（local / ssh）**必须都透传**：只给一边接，就会出现「本机能取消、SSH 不能」
+ * 的半截行为——比不改更糟（见项目级 ROADMAP 里跳板机那条的同一判据）。
+ */
 export function createRunner(options) {
     const { target, remote, logger } = options;
+    const signal = options.signal;
+    /**
+     * 把构造期绑定的 `signal` 并进单次调用的选项。调用方**自带** signal 时以它为准
+     * （当前无调用点传，留给将来单命令级的取消）；否则用聚合绑定的那个。
+     * 都不传时返回原样，避免多造一个对象。
+     */
+    const withSignal = (runOptions) => {
+        const merged = runOptions?.signal ?? signal;
+        return merged === undefined ? (runOptions ?? {}) : { ...runOptions, signal: merged };
+    };
     if (target.kind === 'local') {
         return {
             label: `本机（${target.name}）`,
-            run: (argv, runOptions) => runLocal(argv, runOptions),
-            stream: (argv, handlers, signal) => runLocalStream(argv, handlers, signal),
+            run: (argv, runOptions) => runLocal(argv, withSignal(runOptions)),
+            // 长流**不**接聚合信号：它的取消由面板的 SSE 关闭单独驱动（见 runLocalStream 的文档）。
+            stream: (argv, handlers, signal_) => runLocalStream(argv, handlers, signal_),
         };
     }
     const spec = target.spec;
@@ -1506,8 +1527,8 @@ export function createRunner(options) {
         throw new Error(`目标 ${target.name} 缺少 SSH 规格`);
     return {
         label: `${sshTarget(spec)}（${target.name}）`,
-        run: (argv, runOptions) => remote.run(spec, argv, runOptions),
-        stream: (argv, handlers, signal) => remote.stream(spec, argv, handlers, signal),
+        run: (argv, runOptions) => remote.run(spec, argv, withSignal(runOptions)),
+        stream: (argv, handlers, signal_) => remote.stream(spec, argv, handlers, signal_),
     };
 }
 /**

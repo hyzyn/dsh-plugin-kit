@@ -6,7 +6,7 @@
 > 缺陷仍按 `Dxx` 编号记在 DEFECTS.md 的索引表里；本文每一项在动手前先转成可验收条目
 > （做完回填「落点 + 门槛」），不要只停留在规划里。
 
-## 待办（3 项，其中 1 项已完成）
+## 待办（3 项，其中 2 项已完成）
 
 > 下面都是**规划**，不是缺陷：单人项目不另开 Issue，待办记在这里，做完打勾。
 > 新发现的缺陷接着编号记进 [DEFECTS.md](./DEFECTS.md) 的索引表（加一行），不在本文展开。
@@ -27,8 +27,29 @@
   洪泛结束后最后一行必须是最新行）。约束（都守住了）：`content-visibility` 不开（D91）、虚拟化用
   **实测**行高缓存撑垫高、右键「问 Agent」的前后 20 行上下文由 `overscan ≥ 20` 保住（有断言）、
   导出走数据层不受影响。细节与取舍见 [DEFECTS.md](./DEFECTS.md) 的 D152。
-- **跨目标聚合的取消语义** —— 45s 超时只 `race`，不 abort 底层命令（超时的目标仍在后台跑完）。
-  要么把 AbortSignal 串下去，要么在文案里说明。
+- [x] **跨目标聚合的取消语义** —— **2026-10-06 完成（D161）**。原先 45s 超时只
+  `Promise.race`、不取消底层命令：外层拿到 `ok:false` 时那条 SSH channel 还在跑，仍占着
+  `MaxSessions` 的会话槽（sshd 在子进程活着时不释放，见 D150），于是这台慢机器上的后续
+  短命令被远端拒绝。落点：`src/docker.ts` 的 `Runner.run` 新增**可选** `signal` +
+  `createRunner()` 的 local / ssh **两个分支都透传**；`src/ssh-exec.ts` 的 `ExecOptions.signal`
+  与 `RemoteExec.run` / `runLocal` 的 abort 收尾（各自**并入已有的那一条**收尾路径——SSH 是
+  `signal('KILL')` + `close()` + `finish(null)`，本地是 `SIGKILL` + 复用 D159 的 `KILL_GRACE_MS`
+  收敛期）；`src/index.ts` 的 `aggregateAcrossTargets`（AbortController 建在 `run()` 之前、
+  超时先 `abort()` 再 `reject`、`finally` 兜底 `abort()`）。
+  预算取舍：**内层每命令超时是唯一真相源，外层只做兜底**（`attention` 最坏 = 1 条 ps +
+  最多 9 批 inspect，10 × 30s ≈ 300s，按「大于单目标最坏序列」设会把总览拖到五分钟），
+  外层取 3 × 单条预算 = 90s，
+  `DSH_DOCKER_AGG_TIMEOUT_MS` 可覆盖（仅测试 / 排障）。返回契约不变：超时只污染自己那一格。
+  门槛：`test/aggregate-cancel.test.ts` **16 条**（假 channel / 假 ChildProcess / 假宿主三套桩）——
+  **判据是「abort 后底层真的收到取消」而不是「返回了 ok:false」**：SSH 断言 `channel.signal('KILL')`
+  与 `close()` 被调用、`inflight` 归零、闸门名额归还；本地断言子进程 `kill('SIGKILL')`、
+  D159 收敛期仍在 500ms 内落定、已 abort 不再 spawn；端到端断言超时那一格被 SIGKILL 而
+  正常那格不被杀。
+  **判别性已实测**：去掉超时分支的 `controller.abort()` → 3 条红；摘掉 `createRunner` 的
+  signal 透传 → 5 条红。
+  > ⚠️ **与 `feat/dev-data-suite` 分支有重叠**：那份 `src/index.ts` 改的是同一片区域
+  > （它那边 `AGG_TIMEOUT_MS` 在约 1010 行、`aggregateAcrossTargets` 在约 1037 行），且两边
+  > 已双向分叉——将来合并大概率要在这里解冲突，别再把它当回归查。
 
 **2026-09-25 追加**：能力开关的信任模型按项目级 ROADMAP 第 5.1 节落地——`allowMutations` /
 `allowExec` 的**提权只认宿主侧环境变量**（启动时采样一次），HTTP 只能关不能开；未授权时卡片里

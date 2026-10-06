@@ -872,10 +872,12 @@ read-only first:
 - **Mutating operations have no separate audit log**: only docker's own records and the host `ctx.logger`'s
   ordinary output.
 
-- **The boundaries of cross-target aggregation**: concurrency cap 4, per-target timeout 45s; a single target failing
-  or timing out affects only its own cell (the group carries `error`). With many targets the Overview's request
-  volume grows linearly with the target count (2 requests per target), and auto refresh multiplies that volume —
-  with many targets it is best to turn auto refresh off.
+- **The boundaries of cross-target aggregation**: concurrency cap 4; a **90s per-target budget (fallback)**, while
+  each command's own timeout (30s) is the one actually honoured — when a budget fires, the underlying child process /
+  SSH channel is **really cancelled** (not merely reported as a failed cell), otherwise the timed-out command keeps
+  holding a remote session slot (D161). A single target failing or timing out affects only its own cell (the group
+  carries `error`). With many targets the Overview's request volume grows linearly with the target count (2 requests
+  per target), and auto refresh multiplies that volume — with many targets it is best to turn auto refresh off.
 
 ## How it works
 

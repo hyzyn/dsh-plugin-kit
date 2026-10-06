@@ -93,6 +93,15 @@ export interface ExecOptions {
      * prune 的总计都在输出末尾——这类命令超出上限时该丢的是头部（D14）。
      */
     keepTail?: boolean;
+    /**
+     * 外部取消信号（D161）：聚合总览的单目标预算到点后，必须能**真的停掉**这条命令。
+     *
+     * 不传 = 老行为（只有 timeoutMs 一个截止）。abort 与 timeout 走**同一套收尾**：
+     * 本地子进程 SIGKILL + 收敛期，SSH channel `signal('KILL')` + `close()` + 直接 settle。
+     * 只 reject 外层 `Promise.race` 而不 abort 底层，命令会继续占着远端 session 槽
+     *（sshd 在子进程活着时不释放槽位，见 D150）——后续短命令就会被远端拒绝。
+     */
+    signal?: AbortSignal;
 }
 export interface ExecLogger {
     info(msg: string): void;

@@ -847,6 +847,13 @@ export class RemoteExec {
          */
         const releaseSlot = await this.gateFor(key).acquire();
         try {
+            /*
+             * 已经 abort 了就别再开门（D161）：排队等名额期间外层预算到点时，这条命令
+             * 一次都不该落到远端——否则刚拿到名额就去占一个 session 槽，正好是要防的事。
+             */
+            if (options?.signal?.aborted === true) {
+                return { code: null, stdout: '', stderr: '', timedOut: false, truncated: false, durationMs: Date.now() - started };
+            }
             const channel = await this.openChannel(spec, command, timeoutMs, 0);
             // 一次性命令也计入「在途」（D01）：docker pull 默认 600s，期间没有任何请求
             // 刷新 lastUsed， sweeper 若只认 busy 会把跑了一半的命令连人带输出掐断。
@@ -862,13 +869,18 @@ export class RemoteExec {
                     const stderrDecoder = new StringDecoder('utf8');
                     let timedOut = false;
                     let settled = false;
+                    /** 打断只做一次：abort 与 timeout 谁先到谁生效，另一个不许再把 `timedOut` 翻上去。 */
+                    let interrupted = false;
                     let timer = null;
+                    /** 摘掉 abort 监听（D161）：命令收尾后 signal 还活着，不摘就是一条悬着的闭包链。 */
+                    let cleanupAbort = () => { };
                     const finish = (code) => {
                         if (settled)
                             return;
                         settled = true;
                         if (timer !== null)
                             clearTimeout(timer);
+                        cleanupAbort();
                         const current = this.conns.get(key);
                         if (current !== undefined)
                             current.lastUsed = Date.now();
@@ -886,8 +898,19 @@ export class RemoteExec {
                     // 'error'），promise 永不落定 → finally 里的 inflight 减不掉 → 该连接对
                     // shouldRecycleConn 永远是「在途」，sweeper 再也回收不了它。
                     // settled 守卫保证与随后的 'close' 事件不会重复 resolve（幂等）。
-                    timer = setTimeout(() => {
-                        timedOut = true;
+                    /*
+                     * 收尾只有这一处（D161）：超时与外部 abort 共用同一段 `signal('KILL') + close() +
+                     * finish(null)`。**不要**给 abort 另写一条路径——D112 的教训正是「只 signal + close
+                     * 而不 settle」会让 promise 永不落定、inflight 减不掉、连接再也回收不了。
+                     */
+                    const interrupt = (why) => {
+                        if (settled || interrupted)
+                            return;
+                        interrupted = true;
+                        if (timer !== null)
+                            clearTimeout(timer);
+                        if (why === 'timeout')
+                            timedOut = true;
                         try {
                             channel.signal('KILL');
                         }
@@ -896,7 +919,24 @@ export class RemoteExec {
                         }
                         channel.close();
                         finish(null);
+                    };
+                    timer = setTimeout(() => {
+                        interrupt('timeout');
                     }, timeoutMs);
+                    if (options?.signal !== undefined) {
+                        const onAbort = () => {
+                            interrupt('abort');
+                        };
+                        if (options.signal.aborted)
+                            onAbort();
+                        else
+                            options.signal.addEventListener('abort', onAbort, { once: true });
+                        // finish / reject 都要摘监听：聚合是**每个目标一个 signal**，不摘就是一条
+                        // 永不释放的闭包链（命令早已结束，监听器还挂在长命的 signal 上）
+                        cleanupAbort = () => {
+                            options.signal?.removeEventListener('abort', onAbort);
+                        };
+                    }
                     channel.on('data', (chunk) => {
                         stdoutSink.push(chunk);
                     });
@@ -912,6 +952,7 @@ export class RemoteExec {
                         settled = true;
                         if (timer !== null)
                             clearTimeout(timer);
+                        cleanupAbort();
                         reject(new Error(`SSH exec channel 异常：${error.message}`));
                     });
                     if (options?.input !== undefined)
@@ -1460,6 +1501,14 @@ export async function runLocal(argv, options) {
     const [bin, ...args] = argv;
     if (bin === undefined)
         throw new Error('runLocal 需要至少一个 argv 元素');
+    /*
+     * 已经 abort 了就别再 spawn（D161）：外层预算到点时不该再拉起一个注定被杀的进程，
+     * 少一次 fork 就少一次「杀了还赖着不放管道」的机会。返回 null code 与「被中止」
+     * 同义——调用方的 assertOk 会把它变成明确的失败，不会静默当成功。
+     */
+    if (options?.signal?.aborted === true) {
+        return { code: null, stdout: '', stderr: '', timedOut: false, truncated: false, durationMs: 0 };
+    }
     return await new Promise((resolve, reject) => {
         const stdoutSink = new ByteSink(maxBytes, options?.keepTail === true);
         const stderrSink = new ByteSink(maxBytes, options?.keepTail === true);
@@ -1467,7 +1516,11 @@ export async function runLocal(argv, options) {
         const stderrDecoder = new StringDecoder('utf8');
         let timedOut = false;
         let settled = false;
+        /** 打断只做一次：abort 与 timeout 谁先到谁生效，另一个不许再把 `timedOut` 翻上去。 */
+        let interrupted = false;
         let reapTimer = null;
+        /** 摘掉 abort 监听（D161）：命令收尾后 signal 还活着，不摘就是一条悬着的闭包链。 */
+        let cleanupAbort = () => { };
         const child = spawn(bin, args, { stdio: ['pipe', 'pipe', 'pipe'], env: process.env });
         /** 到点收尾（正常 close 与「杀了还赖着不放管道」两条路径共用）。 */
         const finish = (code) => {
@@ -1477,6 +1530,7 @@ export async function runLocal(argv, options) {
             clearTimeout(timer);
             if (reapTimer !== null)
                 clearTimeout(reapTimer);
+            cleanupAbort();
             resolve({
                 code,
                 stdout: stdoutSink.decode(stdoutDecoder),
@@ -1486,8 +1540,24 @@ export async function runLocal(argv, options) {
                 durationMs: Date.now() - started,
             });
         };
-        const timer = setTimeout(() => {
-            timedOut = true;
+        /**
+         * 打断这条命令（D161）：**超时与外部 abort 共用这一条收尾**，不要写第二条。
+         *
+         * D159 那段「SIGKILL 只杀直接子进程、孙进程还握着管道」的 `reapTimer` 收敛期
+         * 必须原样复用：abort 若只 `child.kill('SIGKILL')` 就等 'close'，包装脚本场景下
+         * 3s 上限会拖成 60.3s（真机实测）——外层预算到点却收不回底层，正是这次要修的事。
+         *
+         * `why` 只影响 `timedOut` 这个**事实标记**：它说的是「按自己的截止时间超时」。
+         * 被外层预算取消不是它的超时，调用方那边另有信号（见 ExecOptions.signal）。
+         */
+        const interrupt = (why) => {
+            if (settled || interrupted)
+                return;
+            interrupted = true;
+            if (timer !== null)
+                clearTimeout(timer);
+            if (why === 'timeout')
+                timedOut = true;
             try {
                 child.kill('SIGKILL');
             }
@@ -1500,6 +1570,8 @@ export async function runLocal(argv, options) {
              * 3s 上限拖到 60s，D159）。所以到点先杀，再给一小段收敛期，仍不 close 就
              * 自行放掉管道收尾：探测要的是「能不能用」，不是「等它把管道交出来」。
              */
+            if (reapTimer !== null)
+                return;
             reapTimer = setTimeout(() => {
                 try {
                     child.stdout?.destroy();
@@ -1517,7 +1589,22 @@ export async function runLocal(argv, options) {
                 finish(null);
             }, KILL_GRACE_MS);
             reapTimer.unref?.();
+        };
+        const timer = setTimeout(() => {
+            interrupt('timeout');
         }, timeoutMs);
+        if (options?.signal !== undefined) {
+            const onAbort = () => {
+                interrupt('abort');
+            };
+            if (options.signal.aborted)
+                onAbort();
+            else
+                options.signal.addEventListener('abort', onAbort, { once: true });
+            cleanupAbort = () => {
+                options.signal?.removeEventListener('abort', onAbort);
+            };
+        }
         child.stdout.on('data', (chunk) => {
             stdoutSink.push(chunk);
         });
@@ -1531,6 +1618,7 @@ export async function runLocal(argv, options) {
             clearTimeout(timer);
             if (reapTimer !== null)
                 clearTimeout(reapTimer);
+            cleanupAbort();
             // ENOENT 是最常见的失败：docker CLI 不在 PATH 里
             reject(new Error(`无法执行 ${bin}：${error.message}`));
         });

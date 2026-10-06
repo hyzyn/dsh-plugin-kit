@@ -885,13 +885,19 @@ const plugin = definePlugin({
             }
             return resolveTarget(target, readTtyBooks(settingsApi));
         };
-        /** 取某个目标上的 DockerApi（Runner 每次新建，连接由 RemoteExec 池化）。 */
-        const apiFor = (name) => {
+        /**
+         * 取某个目标上的 DockerApi（Runner 每次新建，连接由 RemoteExec 池化）。
+         *
+         * `signal`（D161）只有**跨目标聚合**会传：它把「这一格的预算到点了」串到该目标
+         * **底层每一条命令**上（`createRunner` 绑到 Runner 上，见那边的注释）。其余调用点
+         * 不传，行为与之前完全一致。
+         */
+        const apiFor = (name, signal) => {
             const { resolved, error } = resolveByName(name);
             if (resolved === undefined)
                 return { error };
             try {
-                const runner = createRunner({ target: resolved, remote, logger });
+                const runner = createRunner({ target: resolved, remote, logger, ...(signal === undefined ? {} : { signal }) });
                 return { api: new DockerApi(runner, live.dockerBin, { timeoutMs: 30_000, maxBytes: live.maxOutputKb * 1024 }), resolved };
             }
             catch (error_) {
@@ -1066,9 +1072,42 @@ const plugin = definePlugin({
          *   - **并发上限**：ssh exec 扇出太多会互相挤（远端 sshd MaxStartups / 本机 fd）；
          *   - **单目标超时**：一台网络不通不能把整个聚合页拖住；
          *   - **错误隔离**：失败的组带上 error 照常返回，其余目标的结果照常可用。
+         *
+         * 第四个性质是 **D161 补上的**：单个目标超时的那一刻，**它底下正在跑的命令必须真的被
+         * 停掉**。旧写法只 `Promise.race` 出一个 `ok:false`，底层那条 SSH channel 继续跑完——
+         * 而它占着的正是 `MaxSessions` 的 session 槽（sshd 在子进程活着时不释放，见 D150）。
          */
         const AGG_CONCURRENCY = 4;
-        const AGG_TIMEOUT_MS = 45_000;
+        /**
+         * 单目标上**每一条**命令的内层预算（30s，DockerApi 构造时传下去的那一个）。
+         *
+         * 单独取个名字是为了让「外层兜底」与「内层真相」共用一个来源：D161 之前这里是
+         * `apiFor` 里的裸字面量 `30_000`，而外层是另一个裸字面量 `45_000`——两个数字各写各的，
+         * 谁也不知道它们的关系，于是 45s 那个到底会不会打断一条健康命令，没人说得清。
+         */
+        const AGG_CMD_TIMEOUT_MS = 30_000;
+        /**
+         * 单个目标那一格的**兜底**预算（D161）。
+         *
+         * 取舍（两种做法里选了后者）：
+         *   - ①「把外层提到大于单目标最坏序列耗时」——`attention()` 是 `listContainers` +
+         *     最多约 9 批 `inspect` 的**串行**序列（`ATTENTION_INSPECT_CAP 300 + 补捞 50`，
+         *     每批 ≤ 40），最坏 10 × 30s ≈ 300s。真按这个上界设，总览页等一台卡住的机器要
+         *     等五分钟，等于没有预算；
+         *   - ②**内层超时是唯一真相源，外层只做兜底** ← 选这个。30s/命令已经给每条命令兜了底，
+         *     外层存在的意义只是「内层没兜住时（连接获取 / 闸门排队 / 某个实现没遵守
+         *     timeoutMs）别把整页拖死」。所以它取 3 倍单条预算（90s）：大于 `attention` 的
+         *     典型两段（ps + 首批 inspect ≈ 60s），不会被健康命令序列撞上；又给异常留了一档
+         *     天花板。到点即 `abort()`——**这是这次修复的实质**，配置数字只是顺带对齐。
+         *
+         * `DSH_DOCKER_AGG_TIMEOUT_MS` 可覆盖，**只为测试与排障**（同 `DSH_DOCKER_SHORT_CHANNELS`
+         * 的口径）：90s 这条路径没法在单测里等，而「超时后底层有没有真的被取消」恰恰是本轮
+         * 的验收点——没有这个口子就只能测到「返回了 ok:false」，那正是修复前就恒绿的那条。
+         */
+        function aggTimeoutMs() {
+            const raw = Number(process.env.DSH_DOCKER_AGG_TIMEOUT_MS);
+            return Number.isFinite(raw) && raw > 0 ? raw : AGG_CMD_TIMEOUT_MS * 3;
+        }
         async function mapLimit(items, limit, run) {
             const results = new Array(items.length);
             let cursor = 0;
@@ -1087,18 +1126,35 @@ const plugin = definePlugin({
         /** 在所有（或指定）目标上跑同一件事，返回按目标分组的「部分成功」结果。 */
         const aggregateAcrossTargets = async (names, run) => {
             return await mapLimit(names, AGG_CONCURRENCY, async (name) => {
-                const built = apiFor(name);
+                /*
+                 * 控制器必须建在 `run()` **之前**（D161）：Runner 是在 `apiFor` 里构造的，signal
+                 * 当场绑到 Runner 上（见 createRunner）。先跑再建的话，abort 时底层根本不知道
+                 * 自己被取消——那正是修复前的行为。
+                 */
+                const controller = new AbortController();
+                const budget = aggTimeoutMs();
+                const built = apiFor(name, controller.signal);
                 const resolved = built.resolved;
                 const label = resolved === undefined
                     ? name
                     : (resolved.kind === 'local' ? '本机' : sshTarget(resolved.spec));
-                if (built.api === undefined)
+                if (built.api === undefined) {
+                    controller.abort();
                     return { target: name, label, ok: false, error: built.error ?? '无法构造执行通道' };
+                }
                 const api = built.api;
                 let timer = null;
                 try {
                     const timeout = new Promise((_resolve, reject) => {
-                        timer = setTimeout(() => reject(new Error(`聚合超时（>${String(AGG_TIMEOUT_MS / 1000)}s）`)), AGG_TIMEOUT_MS);
+                        timer = setTimeout(() => {
+                            /*
+                             * 顺序是**先取消、后拒绝**（D161）：反过来的话调用方在 reject 的那一刻就拿到
+                             * `ok:false` 返回了，而底层（本地子进程 / SSH channel）还在跑——用户看到的是
+                             * 「这一格失败了」，实际那条 inspect 还占着远端的 session 槽，后续短命令被拒。
+                             */
+                            controller.abort();
+                            reject(new Error(`聚合超时（>${String(budget / 1000)}s）`));
+                        }, budget);
                         timer.unref?.();
                     });
                     const data = await Promise.race([run(api, name), timeout]);
@@ -1110,6 +1166,12 @@ const plugin = definePlugin({
                 finally {
                     if (timer !== null)
                         clearTimeout(timer);
+                    /*
+                     * race 另一侧赢（命令正常跑完 / 抛错）时也要兜底取消：`abort()` 是幂等的，命令
+                     * 已 settle 时它是**无害的空操作**（监听器在收尾时已摘掉），但漏了这一句就会留下
+                     * 「signal 永不 abort、挂在它上面的闭包链不放」的尾巴。
+                     */
+                    controller.abort();
                 }
             });
         };
