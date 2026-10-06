@@ -1512,10 +1512,22 @@
   overflow: hidden;
 }
 
+/*
+ * 头行：折叠按钮占满剩余宽度，「重连」是它的兄弟而不是子元素
+ * （按钮里嵌按钮既非法，也会把两个动作读成一个）。所以这里用 flex 行做容器，
+ * 让折叠按钮 flex:1 吃掉可用宽度，重连按钮贴右侧。
+ */
+.dk_activityHeadRow {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
 .dk_activityHead {
   display: flex;
   align-items: center;
   gap: var(--dk-gap-md);
+  flex: 1;
   width: 100%;
   min-width: 0;
   padding: var(--dk-gap-sm) var(--dk-gap-lg);
@@ -1531,6 +1543,23 @@
 .dk_activityHead:hover { background: var(--dk-hover); }
 .dk_activityHead:focus-visible { outline: none; box-shadow: var(--dk-ring); }
 .dk_activityTitle { flex: none; font-weight: 600; letter-spacing: .3px; }
+
+/* 断开时的「重连」：只在终止态出现，用危险色的边框暗示「这里出事了，点它修」 */
+.dk_activityRetry {
+  flex: none;
+  margin-right: var(--dk-gap-lg);
+  padding: 2px 10px;
+  border: 1px solid var(--dk-danger);
+  border-radius: var(--dk-r-sm);
+  background: transparent;
+  color: var(--dk-danger);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.dk_activityRetry:hover { background: var(--dk-hover); }
+.dk_activityRetry:focus-visible { outline: none; box-shadow: var(--dk-ring); }
 
 /* 状态点沿用 .dk_followState 的语义色，但内联在标题行里、不占整行也没有下边框 */
 .dk_activityState {

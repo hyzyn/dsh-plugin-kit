@@ -1589,6 +1589,70 @@ await test('活动条：时间格式化（本地时区）与防抖（连续事�
   assert.equal(runs, 1, 'cancel 后不应再触发（切 target / 关面板的清理路径）')
 })
 
+await test('事件流断开：状态判定只认 closed，unsupported 不给重连', () => {
+  const api = eventsApi()
+  assert.ok(api.canReconnect !== undefined, '缺少 __events.canReconnect 测试缝')
+  assert.equal(api.canReconnect('closed'), true, 'closed 是终止态，必须能重连')
+  // 其余都不是「需要人工重连」：open 正常、connecting / reconnecting 在自愈路上
+  assert.equal(api.canReconnect('open'), false)
+  assert.equal(api.canReconnect('connecting'), false)
+  assert.equal(api.canReconnect('reconnecting'), false)
+  // 环境没有 EventSource：重连必然再失败，给按钮等于骗人
+  assert.equal(api.canReconnect('unsupported'), false)
+  assert.equal(api.canReconnect(''), false)
+  assert.equal(api.canReconnect(undefined), false)
+})
+
+await test('事件流断开：活动条接线（兄弟按钮、不是嵌套按钮）与 ⟳ 接手动刷新', () => {
+  const decoded = decodeBundle(code)
+  assert.ok(decoded.includes('重连'), '缺少重连按钮文案')
+  assert.ok(decoded.includes('不会自己回来'), '缺少「不会自愈」的说明')
+  assert.ok(code.includes('dk_activityHeadRow'), '缺少头行容器（兄弟布局的前提）')
+  assert.ok(code.includes('dk_activityRetry'), '缺少重连按钮样式钩子')
+
+  /*
+   * 接线判据走**源码级**（局部标识符会被压缩改名，产物里只剩属性名 / 字符串）：
+   * 与上面那条「哨兵被拦在换目标逻辑之前」同一套路。
+   */
+  const source = readFileSync(new URL('../client-src/index.js', import.meta.url), 'utf8')
+
+  // 按钮不能嵌套：折叠头本身是 <button>，重连必须是它的兄弟
+  const headRow = source.indexOf('dk_activityHeadRow')
+  const retry = source.indexOf('dk_activityRetry')
+  assert.ok(headRow !== -1, 'ActivityBar 应有头行容器')
+  assert.ok(retry !== -1, 'ActivityBar 应有重连按钮')
+  assert.ok(headRow < retry, '重连按钮应挂在头行容器（head 的兄弟）里')
+  const headOpen = source.indexOf("className: 'dk_activityHead'")
+  assert.ok(headOpen !== -1)
+  assert.ok(retry > headOpen, '重连是要排在折叠头之后的兄弟')
+  // 折叠头的 children 里不许出现重连按钮（那就是嵌套按钮）
+  const headClose = source.indexOf("}, 'head')", headOpen)
+  assert.ok(headClose !== -1, '折叠头应有结束标记')
+  assert.ok(!source.slice(headOpen, headClose).includes('dk_activityRetry'), '重连按钮不能嵌在折叠按钮里（非法 HTML + 读屏会听成一个动作）')
+
+  // 事件流 effect 的依赖里必须有重连令牌，否则点了不重开
+  assert.ok(/\}, \[active, view, target, eventsReconnect\]\)/.test(source), '事件流 effect 的依赖数组里必须含 eventsReconnect（否则点了不重开）')
+  // 令牌必须自增：布尔翻回 false 时 effect 看不出「又要求了一次」
+  assert.ok(/setEventsReconnect\(\(value\) => value \+ 1\)/.test(source), '重连令牌必须自增')
+
+  /*
+   * ⟳ 走 refreshManually（既刷列表也重连）；AUTO REFRESH 轮询必须仍只调 refresh——
+   * 塞进轮询会让一条已终止的流被不断重开，既掩盖「它断了」，又白建 SSE。
+   */
+  assert.ok(source.includes('refreshManually'), '缺少 ⟳ 的手动刷新包装')
+  assert.ok(/setInterval\(refresh,/.test(source), 'AUTO REFRESH 轮询不该被改成重连（否则把终止态掩盖成自愈）')
+  assert.ok(/onClick: refreshManually/.test(source), '⟳ 按钮应接手动刷新')
+
+  /*
+   * 重连成功后要补一次全量列表刷新：daemon 全程没起时流**从未 open 过**，只按
+   * 「opened」判会把补偿一起省掉——活动条绿了但列表还停在「这个目标的数据没读到」，
+   * 看着像好了其实没好。所以判据里必须把「这次是用户点的重连」也算进去。
+   */
+  assert.ok(/manualReconnect/.test(source), '缺少「这次是手动重连」的判定')
+  assert.ok(/eventsOpenedRef\.current\.opened \|\| manualReconnect/.test(source),
+    '重连补偿的判据必须含 manualReconnect（否则从未 open 过的流重连后列表不刷新）')
+})
+
 await test('变更操作执行中态：按钮转圈 + 卡片锁组 + 确认框不关', () => {
   // 三处过渡态钩子：按钮 data-busy（图标换转圈）、卡片 data-pending（整组变更按钮压暗锁住）、
   // 确认框 k_confirmBusy（保持打开 + 「执行中…」）。真实点击路径需要浏览器，这里锁契约。

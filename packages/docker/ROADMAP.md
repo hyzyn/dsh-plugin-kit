@@ -92,6 +92,22 @@ i18n 死键 `btn.connectLocalCurrent` 与客户端那份 `localTargetName`（复
 原字符串比对 → `connect-local.test.ts` 那条失败；断开 `localProbeReason` 的候选接线 → 路由级
 那条失败（旧代码报的是「找不到 docker CLI」而拿不到「装了 podman」）。
 
+**同日回修 ④（用户看着「活动 · 事件流已断开」的截图问「刷新无法重连断开的事件流吗」）**：
+答对了，⟳ **救不活**。事件流进 `closed` 是终止态（`docker events` 退出 / 服务端发 `end` 都会
+`close()`），而 `refresh()` 只刷列表 + 自增 `refreshToken`——那个令牌根本没进事件流 effect 的依赖
+（`[active, view, target]`），它只被详情抽屉的三个 effect 消费。所以当时只有刷新整个页面或切页 /
+切目标能恢复。记在 [DEFECTS.md](./DEFECTS.md) 的 D160。改法：新增自增的重连令牌并进依赖；
+活动条断开时给一个 **重连** 按钮（`closed` 才有；`unsupported` 不给——重连必然再失败）；⟳ 走
+新的 `refreshManually()`（刷列表 + 重连），而 **AUTO REFRESH 轮询仍只调 `refresh()`**——塞进轮询
+会让终止态被不断重开，既掩盖「它断了」又白建 SSE。
+
+门槛（回修 ④）：`canReconnectEvents` 抽**纯函数**（离线冒烟的 React 桩把 `useState` 冻在初值，
+组件里 `eventsStatus` 恒为 `''`，判定必须能直接驱动）；重连按钮必须是折叠头的**兄弟**——那层
+已经是 `<button>`，按钮里嵌按钮既非法 HTML 也让读屏把「折叠」「重连」听成一个动作（用例同时
+断言「不在折叠头的 children 里」）；补偿判据是 `opened || manualReconnect`，只按 `opened` 会漏掉
+「daemon 全程没起、流从未 open 过」——那时重连成功却不刷列表，活动条绿了而列表还停在错误态。
+**判别性已实测**：移除依赖里的令牌 / 把重连按钮挪进折叠头 / 退回只按 `opened` 判，三条用例分别红。
+
 ## 已上提到项目级（不在本文展开）
 
 跳板机（ProxyJump）· 统一安全围栏（对齐 tty / dsh-mcp）· 变更端点的信任模型（一次性 token）·

@@ -351,7 +351,10 @@ const I18N_ZH = {
   'status.eventsClosed': '事件流已断开',
   'status.eventsStream': '事件流',
   'status.eventsEnded': '事件流已结束',
-  'status.backToListRefresh': '，列表回到 AUTO REFRESH / 手动刷新',
+  'status.backToListRefresh': '，列表回到 AUTO REFRESH / 手动刷新；活动条上点「重连」可重新订阅',
+  'btn.reconnectEvents': '重连',
+  'hint.reconnectEvents': '重新打开容器事件流（docker events）；列表刷新按钮也会一并重连',
+  'hint.eventsClosedNoAuto': '事件流断开后不会自己回来（EventSource 只在连接层抖动时自愈；docker events 进程退出属于终止态）——点它重连，或点右上角刷新列表',
   'hint.conversationHidden': ' · 会话在面板后面：关掉或最小化面板/终端即可看到',
   'msg.copied': '已复制：',
   'error.copyManual': '复制失败，请手动执行：',
@@ -832,7 +835,10 @@ const I18N_EN = {
   'status.eventsClosed': 'Event stream closed',
   'status.eventsStream': 'Event stream',
   'status.eventsEnded': 'Event stream ended',
-  'status.backToListRefresh': ', the list returns to AUTO REFRESH / manual refresh',
+  'status.backToListRefresh': ', the list returns to AUTO REFRESH / manual refresh; hit “Reconnect” on the activity bar to resubscribe',
+  'btn.reconnectEvents': 'Reconnect',
+  'hint.reconnectEvents': 'Reopen the container event stream (docker events); the list refresh button reconnects it too',
+  'hint.eventsClosedNoAuto': 'A closed event stream does not come back on its own (EventSource only self-heals connection blips; the docker events process exiting is terminal) — click to reconnect, or hit refresh in the top right',
   'hint.conversationHidden': ' · the session is behind this panel: close or minimise the panel/terminal to see it',
   'msg.copied': 'Copied: ',
   'error.copyManual': 'Copy failed, run it manually: ',
@@ -1934,6 +1940,19 @@ const EVENT_RECENT = 8
  * 每帧一次 POST /containers 等于把刚解决掉的轮询成本原样搬回来。
  */
 const EVENTS_REFRESH_DEBOUNCE_MS = 500
+
+/**
+ * 事件流处在「需要人工重连」的终止态吗（D160）。
+ *
+ * 抽成纯函数而不是写在组件里：离线冒烟的 React 桩把 `useState` 冻在初值上，组件里
+ * 那个 `eventsStatus` 永远是 `''`，遍历渲染树根本走不到重连按钮——判定必须能直接驱动。
+ *
+ * **只认 `closed`**：`open` / `connecting` / `reconnecting` 都还在自动恢复的路上；
+ * `unsupported`（环境没有 EventSource）重连必然再失败，给按钮等于骗人。
+ */
+function canReconnectEvents(status) {
+  return status === 'closed'
+}
 
 /** 新事件放最前（活动条按时间倒序读），超出上限丢最旧。 */
 function pushEvent(list, event, limit) {
@@ -5441,21 +5460,45 @@ window.__ModuleLoader__.load({
       const open = props.open === true
       const events = Array.isArray(props.events) ? props.events : []
       const recent = events.slice(0, EVENT_RECENT)
+      /*
+       * 断开时给一个显式的「重连」（D160）：这条流进了 closed 就是**终止态**，没有任何
+       * 东西会再开它；而活动条上那句「事件流已断开」看着却像会自愈（EventSource 平时
+       * 确实会自动重连），用户点工具条的 ⟳ 也不见好。
+       * `unsupported` 刻意不给这个按钮：那个环境根本没有 EventSource，重连必然还是失败。
+       */
+      const canReconnect = canReconnectEvents(props.status)
       return jsxs('div', { className: 'dk_activity', 'data-open': open ? '1' : '0', children: [
-        jsx('button', {
-          type: 'button',
-          className: 'dk_activityHead',
-          'aria-expanded': open,
-          title: t('hint.eventsToggle'),
-          onClick: props.onToggle,
-          children: [
-            jsx('span', { className: 'dk_activityTitle', children: t('panel.activity') }),
-            jsx('span', { className: 'dk_activityState', 'data-state': props.status ?? '', children: props.statusText ?? '' }),
-            jsx('span', { className: 'dk_headerSpacer' }),
-            jsx('span', { className: 'dk_hint', children: events.length === 0 ? t('list.noEvents') : t('list.recentEvents', { recent: recent.length, total: events.length }) }),
-            jsx('span', { className: 'dk_activityChevron', dangerouslySetInnerHTML: { __html: ICON_CHEVRON } }),
-          ],
-        }),
+        /*
+         * 折叠按钮与「重连」是**兄弟**，不是嵌套——按钮里嵌按钮既不是合法 HTML，
+         * 也会让读屏把「折叠」与「重连」两个动作听成一个。
+         */
+        jsxs('div', { className: 'dk_activityHeadRow', children: [
+          jsx('button', {
+            type: 'button',
+            className: 'dk_activityHead',
+            'aria-expanded': open,
+            title: t('hint.eventsToggle'),
+            onClick: props.onToggle,
+            children: [
+              jsx('span', { className: 'dk_activityTitle', children: t('panel.activity') }),
+              jsx('span', { className: 'dk_activityState', 'data-state': props.status ?? '', children: props.statusText ?? '' }),
+              jsx('span', { className: 'dk_headerSpacer' }),
+              // 断开时右侧那句「暂无事件」是误导（不是「没动静」，是「听不见了」），
+              // 换成一句说明为什么需要手动重连
+              jsx('span', { className: 'dk_hint', children: canReconnect
+                ? t('hint.eventsClosedNoAuto')
+                : (events.length === 0 ? t('list.noEvents') : t('list.recentEvents', { recent: recent.length, total: events.length })) }),
+              jsx('span', { className: 'dk_activityChevron', dangerouslySetInnerHTML: { __html: ICON_CHEVRON } }),
+            ],
+          }, 'head'),
+          canReconnect ? jsx('button', {
+            type: 'button',
+            className: 'dk_activityRetry',
+            title: t('hint.reconnectEvents'),
+            onClick: props.onReconnect,
+            children: t('btn.reconnectEvents'),
+          }, 'retry') : null,
+        ] }),
         open === false ? null : (
           recent.length === 0
             ? jsx('div', { className: 'dk_activityEmpty', children: t('list.noEventsHint') })
@@ -5743,11 +5786,30 @@ window.__ModuleLoader__.load({
       /** 面板是否可见（S3）：折叠的 tab 不建流；模态 / dock 形态恒为 true。 */
       const active = usePanelActive()
       const [eventsStatus, setEventsStatus] = useState('')
+      /**
+       * 手动重连令牌（D160）：事件流断开后是**终止态**（EventSource 只在连接层抖动时自愈；
+       * `docker events` 进程退出 / 服务端发 `end` 帧都会走 close()，之后没有东西会再开流）。
+       *
+       * 为什么是计数器而不是布尔：布尔翻回 false 时 effect 看不出「又要求了一次」——
+       * 连点两次重连、或在已经 closed 的状态下再点一次都必须重开。自增的值天然两两不同。
+       */
+      const [eventsReconnect, setEventsReconnect] = useState(0)
       const [activityOpen, setActivityOpen] = usePanelState('activityOpen', true)
       /** 建流时用的列表加载器（用 ref 拿最新的，避免 all 一变就重连事件流）。 */
       const loadContainersRef = useRef(null)
       /** 事件流当前绑定的目标：换目标要清空活动条缓冲，免得混着两台主机的事件。 */
       const eventsTargetRef = useRef('')
+      /**
+       * 当前目标上是否**成功开过**事件流（D160）：重连补偿的判据。
+       *
+       * 用 ref 而不是 state：它只影响下一次建流时的补偿决定，不该触发重渲染；
+       * 而且必须**跨 effect 运行存活**——`eventsReconnect` 一变 effect 就重跑，
+       * 局部变量会归零，手动重连就会被误判成「首次」而不补偿。
+       * 换目标时重置（见 events effect），新目标的第一次 open 不该补。
+       */
+      const eventsOpenedRef = useRef({ opened: false })
+      /** 上一次建流时看到的**手动**重连令牌（D160）：用来认出「这次 effect 跑是用户点的重连」。 */
+      const eventsReconnectRef = useRef(0)
       /** 打开中的容器详情：{ id, tab, item }（item 为快照，列表刷新后优先用新数据）。 */
       const [detail, setDetail] = usePanelState('detail', null)
       const [refreshToken, setRefreshToken] = useState(0)
@@ -6277,6 +6339,20 @@ window.__ModuleLoader__.load({
         setRefreshToken((value) => value + 1)
       }, [view, loadOverview, loadContainers, loadImages, loadNetworks, loadVolumes])
 
+      /**
+       * 工具条的 ⟳：**手动**刷新，比 `refresh()` 多做一件事——重开事件流（D160）。
+       *
+       * 为什么与 `refresh()` 分开：AUTO REFRESH 轮询也调 `refresh()`（默认 5 秒一次），
+       * 若把重连塞进去，一条因为 docker events 退出而进入终止态的流会被轮询不断重开——
+       * 既掩盖了「它已经断了」，又让每次轮询都多建一条 SSE。用户点 ⟳ 是**明确的**
+       * 「按现在的情况重新来一遍」，那时重连才对；自动轮询没有这个语义。
+       * `eventsReconnect` 自增即触发事件流 effect 重跑（见那里的依赖数组）。
+       */
+      const refreshManually = useCallback(() => {
+        refresh()
+        setEventsReconnect((value) => value + 1)
+      }, [refresh])
+
       useEffect(() => {
         // 总览有自己的取数 effect（它不依赖任何单个 target），这里只服务单目标视图
         if (view === 'overview') return undefined
@@ -6343,16 +6419,36 @@ window.__ModuleLoader__.load({
           return undefined
         }
         // 换目标就清空缓冲：活动条里不该混着另一台主机的事件
-        if (eventsTargetRef.current !== target) {
+        const sameTarget = eventsTargetRef.current === target
+        if (!sameTarget) {
           eventsTargetRef.current = target
           setEvents([])
+          eventsOpenedRef.current.opened = false
         }
+        /*
+         * 这一次 effect 跑是不是**用户点了「重连」**（令牌变了就是）。必须在建流前算好
+         * 并记下，否则下一次跑就没得比了。
+         */
+        const manualReconnect = eventsReconnect !== eventsReconnectRef.current
+        eventsReconnectRef.current = eventsReconnect
+        /*
+         * `hadOpen` 初值决定「这一次 open 要不要补一次全量列表刷新」（重连补偿）。
+         *
+         * 判据是**同一个目标上已经成功开过一次**，而不是「本次 effect 运行内开过」：
+         * 后者会让手动重连（D160）与折叠后展开都退化成「首次」，而这两条路径恰恰
+         * 都是「流断了一段时间、列表可能已经落后」——正是补偿要覆盖的情形。
+         * 换目标仍算首次：那边 loadContainers 的 effect 刚拉过一份新的。
+         *
+         * `manualReconnect` 单独兜一种情形：daemon 全程没起时流**从未 open 过**，
+         * 只按 `opened` 判就会把重连成功后的补偿一起省掉——那时列表还停在「这个目标
+         * 的数据没读到」，活动条却已经绿了，看着像好了其实没好。
+         */
+        let hadOpen = sameTarget && (eventsOpenedRef.current.opened || manualReconnect)
         setEventsStatus('connecting')
         const debounced = makeDebounced(EVENTS_REFRESH_DEBOUNCE_MS, () => {
           const load = loadContainersRef.current
           if (load !== null) load()
         })
-        let hadOpen = false
         const es = new EventSource(streamUrl('/events/stream', { target }))
         let closed = false
         const close = () => {
@@ -6401,12 +6497,13 @@ window.__ModuleLoader__.load({
             void loadContainersRef.current?.()
           }
           hadOpen = true
+          eventsOpenedRef.current.opened = true
         }
         return () => {
           close()
           debounced.cancel()
         }
-      }, [active, view, target])
+      }, [active, view, target, eventsReconnect])
 
       useEffect(() => {
         if (notice === '') return undefined
@@ -7015,7 +7112,7 @@ window.__ModuleLoader__.load({
               config?.allowMutations === true ? null : jsx('span', { className: 'dk_badge', 'data-state': 'paused', children: t('badge.readOnly') }),
               jsx('span', { className: 'dk_headerSpacer' }),
               // 刷新中让图标自己转（loading 也用于镜像列表）
-              selected !== null ? null : jsx('button', { type: 'button', className: 'dk_iconBtn', title: t('btn.refreshList'), 'data-spin': loading ? '1' : undefined, onClick: refresh, children: jsx('span', { className: 'dk_iconGlyph', dangerouslySetInnerHTML: { __html: ICON_REFRESH } }) }),
+              selected !== null ? null : jsx('button', { type: 'button', className: 'dk_iconBtn', title: t('btn.refreshList'), 'data-spin': loading ? '1' : undefined, onClick: refreshManually, children: jsx('span', { className: 'dk_iconGlyph', dangerouslySetInnerHTML: { __html: ICON_REFRESH } }) }),
               jsx('button', { type: 'button', className: 'dk_iconBtn', title: t('btn.closePanel'), onClick: requestClose, children: jsx('span', { dangerouslySetInnerHTML: { __html: ICON_CLOSE } }) }),
             ] }),
             /* 工具栏：只在列表视图显示；容器详情是整栏视图，列表筛选在这里没有意义 */
@@ -7213,7 +7310,7 @@ window.__ModuleLoader__.load({
               docked ? jsxs('div', { className: 'dk_toolbarEnd', children: [
                 config?.allowMutations !== true ? jsx('span', { className: 'dk_badge', 'data-state': 'paused', children: t('badge.readOnly') }, 'readonly') : null,
                 // 刷新中图标自己转，所以这里不再另挂 spinner
-                jsx('button', { type: 'button', className: 'dk_iconBtn', title: t('btn.refreshList'), 'data-spin': loading ? '1' : undefined, onClick: refresh, children: jsx('span', { className: 'dk_iconGlyph', dangerouslySetInnerHTML: { __html: ICON_REFRESH } }) }, 'refresh'),
+                jsx('button', { type: 'button', className: 'dk_iconBtn', title: t('btn.refreshList'), 'data-spin': loading ? '1' : undefined, onClick: refreshManually, children: jsx('span', { className: 'dk_iconGlyph', dangerouslySetInnerHTML: { __html: ICON_REFRESH } }) }, 'refresh'),
               ] }) : null,
             ] }),
             /*
@@ -7278,6 +7375,9 @@ window.__ModuleLoader__.load({
                   statusText: eventsStatusText(),
                   open: activityOpen,
                   onToggle: () => setActivityOpen((value) => !value),
+                  // 只重开事件流，不顺带刷列表：列表有自己的 ⟳ 与 AUTO REFRESH，
+                  // 而用户点这句「重连」想救的就是那条听不见事件的活动条
+                  onReconnect: () => setEventsReconnect((value) => value + 1),
                 }, 'activity') : null,
                 body(),
               ] }),
@@ -8451,6 +8551,7 @@ window.__ModuleLoader__.load({
       actionText: eventActionText,
       timeText: eventTimeText,
       debounce: makeDebounced,
+      canReconnect: canReconnectEvents,
     }
     /*
      * 同一类测试缝：总览的折叠逻辑与**正文渲染**都是纯函数（正文刻意写成普通函数而不是

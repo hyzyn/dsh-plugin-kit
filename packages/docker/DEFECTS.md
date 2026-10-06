@@ -7,8 +7,8 @@
 > 知道**当年坏了什么**，再查 [§2 编号字典](#2-编号字典这段代码为什么长这样) 知道**所以代码为什么
 > 写成这样**。
 >
-> **编号是硬契约**：`D01–D159` 是 `packages/docker` 内部序列，与 `packages/tty/DEFECTS.md` 的
-> `D01–D95` **不共享**；跨包引用请写「docker D03 / tty D12」。新缺陷接在 `D159` 之后，
+> **编号是硬契约**：`D01–D160` 是 `packages/docker` 内部序列，与 `packages/tty/DEFECTS.md` 的
+> `D01–D95` **不共享**；跨包引用请写「docker D03 / tty D12」。新缺陷接在 `D160` 之后，
 > **不得重号、不得回收空号**——源码里已有注释指向它们。
 
 > **本文不含**：逐条 postmortem（症状 / 现场复现 / 根因 / 修法 / 回归 / 反向验证）。
@@ -36,7 +36,7 @@
 
 ## 现状
 
-**已修 159 / 待修 0**，编号至 `D159`。逐条症状见 §1，设计意图见 §2，**还没做的见
+**已修 160 / 待修 0**，编号至 `D160`。逐条症状见 §1，设计意图见 §2，**还没做的见
 [ROADMAP.md](./ROADMAP.md)**。
 
 > ⚠️ **标注（本次未擅改）——两处口径不一致，原文未改：**
@@ -224,6 +224,7 @@
 | D157 | `skip` 提示两处小洞：① 客户端**覆盖**不累计——skip 是增量通知（每丢一批报一批），只显示最后一批在长洪泛里严重少报；② 聚合视图重连成功后**不清除**（单容器视图清），提示跨过重连一直挂着 | `client-src/index.js` 两个日志视图：各加一个累计 ref，`onSkip` 累加后显示累计值；`onStatus 'open'`（重连成功）时计数与提示一并清零——语义是「本次连接共跳过多少」。i18n 无新增（复用 `hint.logSkipped`，数字变累计值） |
 | D158 | 设置面改挂 `plugins.bundle.config` 时**把共享的聚合包 key 当成了每包私有**：该槽的 key 是**共享命名空间**（同一 key 只能有一个注册者，重复注册**直接抛错**），而 `@hyzyn/dsh-all` 是所有插件共用的聚合 bundle —— 于是八个插件都去注册它，第二个注册者抛 `keyed slot "plugins.bundle.config" already has an entry for key "@hyzyn/dsh-all"`，客户端 `apply` 抛错 = 整个插件起不来，用户启动页直接变「Failed to load plugins」（现场两条：`@hyzyn/dsh-codegraph` / `@hyzyn/dsh-tty`，即抢 key 输掉的那些）。窗口期极短：从 `8ef7b6a9` 引入到 `237e8ac5` 修掉 | `client-src/index.js` 的注册块（八个包同一段）：**只挂本包自己的 bundle 名**；聚合包不挂内联位、继续走 `plugins.row.config` 的 `@hyzyn/dsh-all#<rowId>`（那份 row 入口即使内联可用也保留）；内联可用时只撤掉**本包**那份 row 入口；旧宿主回退注册全部 row 槽。定位方式（可复用）：把 profile + `$DSH_HOME` 复制到 `/tmp`，`DSH_HOME=… dsh --profile test --port <空闲端口>` 起隔离宿主，再用 `scripts/chrome-cdp.mjs` 抓浏览器侧 `Runtime.exceptionThrown`。回归：`scripts/test/plugin-settings-surface.test.ts` 新增 **bundle key 全仓两两不同、且不得是聚合包** 的跨包守卫（判别性已实测）；`packages/docker/scripts/client-smoke.mjs` 两条用例改成新期望（内联只注册本包 key / 内联可用时仍保留聚合包 row key / 旧宿主两条 row key 都在） |
 | D159 | 「连接本机」的只读探测有两处把话说死/说空：① `probe()` **不认超时**——`docker version` 挂住时 `code` 是 `null`，兜底文案「退出码 null」对用户零信息量，而超时（daemon 卡死 / `docker context` 指向连不上的远端）恰恰是可修的一类，且它与「daemon 没起」的可修动作完全不同；② 探测只认 `dockerBin` 一个二进制、**完全没考虑 podman**——只有 podman 的机器上收到的是「请先安装 Docker」，用户得自己猜到去设置卡片把「docker CLI」改成 podman（README 也只写了这条手动路径）。另有一个实测出来的放大器：超时**只杀直接子进程**，`dockerBin` 指向包装脚本时孙进程仍握着 stdout/stderr，'close' 迟迟不来，15s 上限被拖成分钟级（真机实测 3s 上限拖到 60.3s） | `src/docker.ts` 的 `probe()`：新增 `ProbeResult.timedOut`，超时单独一档返回 `${bin} version 超时（15 秒未返回）`，不再落进退出码兜底；`src/index.ts` 新增 `isLocalCliMissing`（判据单一来源，文案分档与「要不要找候选」共用）、`findAlternativeLocalCli`（只读扫 `PATH`，按 **basename** 比对——按原字符串比会在 `dockerBin=/usr/local/bin/docker` 时给出「把 docker 改成 docker」的废话）、`localProbeReason`（接线，且**只在 CLI 缺失那一档**才去 accessSync），`describeLocalProbeFailure` 加 `LocalProbeHint` 入参（超时档 + 候选 CLI）。**只提示不静默改配置**：绝不替用户改写 `dockerBin`。`src/ssh-exec.ts` 的 `runLocal`：到点先 SIGKILL，再给 `KILL_GRACE_MS`(500ms) 收敛期，仍不 close 就自行 destroy 管道收尾——超时路径上「按时返回」优先于「拿到退出码」（本来就是 null）。回归：`test/connect-local.test.ts`（13 条新增，含用临时目录造 隔离 `PATH` 的可执行位用例——不依赖跑测试的机器装了什么）、`test/streams.test.ts` 的 `probe()` 六条出口、路由级用例（真 `accessSync` + 断言 `dockerBin` 未被改写）。**判别性已实测**：移除超时分支 / 断开候选接线后对应断言确实失败 |
+| D160 | 「活动」条（docker events 事件流）进了 `closed` 是**终止态**，但界面把它渲染得像会自愈：`onEnd`（`docker events` 退出 / 服务端发 `end`）与带 `data` 的 `onError` 都 `setEventsStatus('closed')` **并 `close()`**，之后没有任何东西会再开它；而文案「事件流已断开」加上 EventSource 平时确实会自动重连，让人以为等等就好。实测用户路径：daemon 没起时开面板 → 流立刻带错退出 → 用户看到「事件流已断开」；随后 daemon 起来、点工具条 ⟳，列表正常回来了，活动条却永远停在那句。**⟳ 也救不活**：`refresh()` 只做 `loadContainers()` + `setRefreshToken(v+1)`，而事件流 effect 的依赖是 `[active, view, target]`——`refreshToken` 根本没进那条 effect（它只被详情抽屉的三个 effect 消费）。当时只有刷新整个页面（重挂载）或切页 / 切目标能恢复 | `client-src/index.js`：新增 `eventsReconnect` 自增令牌并进事件流 effect 依赖；`refreshManually()` 抽出「刷列表 + 重连」（⟳ 与活动条重连按钮都走它），而 **AUTO REFRESH 轮询仍只调 `refresh()`**——塞进轮询会让终止态被不断重开，既掩盖「它断了」又白建 SSE；`canReconnectEvents(status)` 抽成纯函数（离线冒烟的 React 桩把 `useState` 冻在初值上，组件里那个 `eventsStatus` 恒为 `''`，判定必须能直接驱动），**只认 `closed`**（`unsupported` 不给——重连必然再失败）；`ActivityBar` 加 `dk_activityHeadRow` 容器，重连按钮是折叠头的**兄弟**而非子元素（原来那层已经是 `<button>`，按钮里嵌按钮既非法也让读屏把两个动作听成一个）；断开时右侧那句「暂无事件」换成「不会自己回来」的说明。补偿判据 `sameTarget && (opened || manualReconnect)`：只用 `opened` 会漏掉「daemon 全程没起、流从未 open 过」——重连成功却不刷列表，活动条绿了而列表仍停在错误态。回归：`scripts/client-smoke.mjs` 三条用例（纯函数四态 + 源码级接线判据：依赖含令牌、令牌自增、按钮不嵌套、⟳ 接 `refreshManually`、轮询仍 `setInterval(refresh`、补偿含 `manualReconnect`）。**判别性已实测**：移除依赖里的令牌 / 把按钮挪进折叠头 / 退回只按 `opened` 判，三条分别红 |
 
 ## 2. 编号字典：这段代码为什么长这样
 

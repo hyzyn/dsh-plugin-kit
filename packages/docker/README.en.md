@@ -192,6 +192,15 @@ Inside the panel:
   health_status / destroy / rename / update): noise such as `exec_*` and `archive-path` (`docker cp`)
   is dropped server-side — on one batch machine 47 events over 24 hours were all exec with 0 allowlist hits, so on
   machines that are only ever exec'd the Activity strip is empty, and that is deliberate.
+  A closed stream needs a **manual reconnect**: entering `closed` is terminal (EventSource only self-heals
+  connection blips; the `docker events` process exiting or the server sending an `end` frame both close it), so the
+  Activity strip offers a **Reconnect** button (shown only while `closed`; not in `unsupported` environments, where
+  reconnecting would just fail again), and the toolbar's ⟳ reconnects as well. The **AUTO REFRESH poll deliberately
+  does not reconnect**: folding it into the poll would reopen a terminated stream forever, both hiding that it broke
+  and pointlessly creating SSE connections. A successful reconnect compensates with one full list refetch (the list
+  may have fallen behind while the stream was down), including the case where the daemon never came up and the
+  stream never opened at all — otherwise the strip turns green while the list still shows its error state, looking
+  fixed when it is not.
 - **Select for merging (temporary multi-select merged logs)**: the toolbar's `Select for merging` enters selection
   mode — a checkbox appears on the left of every card, clicking a card body becomes **select / deselect** (it no
   longer opens details; the action bar collapses temporarily so that multi-selecting does not mis-click
