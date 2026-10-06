@@ -128,7 +128,10 @@ describe('运行时资产目录按 profile 分层（D60 的同一根因）', () 
 describe('shell 桩里的 capture-pane 连本 profile 的 socket', () => {
   it('zsh 桩：capture-pane 的 -L 与 tmuxSocketName() 一致', async () => {
     const { buildShellSpawn } = await import('../src/shell-integration.js')
-    const plan = withProfile('web', () => buildShellSpawn('/bin/zsh', 'xterm-256color', 'truecolor', true))
+    // 显式传 'linux'：这两条测的是 **POSIX 桩的生成**，而 buildShellSpawn 在 Windows 上
+    // 直接走 buildWindowsShellSpawn（不生成 zsh/bash 桩）——不传平台的话它们只在 POSIX
+    // 上有效（2026-10-06 首次跑 Windows CI 时暴露）。
+    const plan = withProfile('web', () => buildShellSpawn('/bin/zsh', 'xterm-256color', 'truecolor', true, 'linux'))
     // zsh 走 ZDOTDIR 桩：从桩目录里读回写下的钩子
     const zshrc = join(home, 'tty', 'web', 'shell', 'zsh', '.zshrc')
     expect(existsSync(zshrc), `桩没写到 ${zshrc}`).toBe(true)
@@ -143,7 +146,7 @@ describe('shell 桩里的 capture-pane 连本 profile 的 socket', () => {
 
   it('bash 桩同样带本 profile 的 socket', async () => {
     const { buildShellSpawn } = await import('../src/shell-integration.js')
-    withProfile('work', () => buildShellSpawn('/bin/bash', 'xterm-256color', 'truecolor', true))
+    withProfile('work', () => buildShellSpawn('/bin/bash', 'xterm-256color', 'truecolor', true, 'linux'))
     const rc = join(home, 'tty', 'work', 'shell', 'bash', 'bashrc')
     expect(existsSync(rc), `桩没写到 ${rc}`).toBe(true)
     const text = readFileSync(rc, 'utf8')

@@ -37,8 +37,12 @@ describe('dshStoreCandidates · 两个布局 + home 兜底，顺序即优先级'
 
   it('npm 不在 PATH（null）→ 只剩 home 兜底，不抛', () => {
     const candidates = dshStoreCandidates({ home: '/home/u', npmPrefix: null })
-    expect(candidates).toHaveLength(2)
-    expect(candidates.every((candidate) => candidate.startsWith('/home/u'))).toBe(true)
+    // 用 join 构造期望，而不是 `startsWith('/home/u')`：Windows 上 join 产出的是反斜杠，
+    // 写死正斜杠的断言只在 POSIX 成立（2026-10-06 首次跑 Windows CI 时暴露）。
+    expect(candidates).toEqual([
+      join('/home/u', '.npm-global', 'lib', 'node_modules', '@deepseek-ai', 'dsh', 'node_modules', '@deepseek-ai'),
+      join('/home/u', '.dsh', 'profiles', 'node_modules', '@deepseek-ai'),
+    ])
   })
 
   it('HOME 未定义时也不许抛（Windows 上没有 HOME —— 那条真机教训）', () => {

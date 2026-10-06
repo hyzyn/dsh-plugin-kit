@@ -1585,9 +1585,9 @@ async function run() {
     if (on.status === 200 && on.body.config?.enabled === true) pass('B29h 重新启用生效')
     else fail('B29h 重新启用生效', `status=${String(on.status)}`)
     await sleep(100)
-    // 0.23.0：tty_run 加入后是 17 个
-    if (toolDefs.length === 17) pass('B29i 重新启用后 17 个 agent 工具回归')
-    else fail('B29i 重新启用后 17 个 agent 工具回归', `当前 ${String(toolDefs.length)}`)
+    // 0.25.0：tunnel_start / tunnel_stop 加入后是 19 个（0.23.0 加 tty_run 时是 17 个）
+    if (toolDefs.length === 19) pass('B29i 重新启用后 19 个 agent 工具回归')
+    else fail('B29i 重新启用后 19 个 agent 工具回归', `当前 ${String(toolDefs.length)}`)
     if (promptParts.length === 2) pass('B29j 重新启用后公告与动态快照恢复')
     else fail('B29j 重新启用后公告与动态快照恢复', `当前 ${String(promptParts.length)}`)
     const again = openSession(port)

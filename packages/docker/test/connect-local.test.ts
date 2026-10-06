@@ -368,9 +368,15 @@ describe('findAlternativeLocalCli：只读找候选，绝不改配置', () => {
     rmSync(cliDir, { recursive: true, force: true })
     rmSync(emptyDir, { recursive: true, force: true })
   })
+  /**
+   * Windows 上可执行文件靠 PATHEXT 扩展名才被认出来（叫 `podman` 的无扩展名文件过不了
+   * `accessSync`），POSIX 上没有扩展名——桩文件名必须按平台取，否则这几条用例只在
+   * POSIX 上有效（2026-10-06 首次把它们送上 Windows CI 时暴露）。
+   */
+  const stubPath = (name: string): string => join(cliDir, process.platform === 'win32' ? name + '.EXE' : name)
   const install = (name: string): void => {
-    writeFileSync(join(cliDir, name), '#!/bin/sh\n')
-    chmodSync(join(cliDir, name), 0o755)
+    writeFileSync(stubPath(name), '#!/bin/sh\n')
+    chmodSync(stubPath(name), 0o755)
   }
 
   it('PATH 里没有候选时返回空', () => {
@@ -406,9 +412,11 @@ describe('findAlternativeLocalCli：只读找候选，绝不改配置', () => {
     expect(findAlternativeLocalCli('docker', { PATH: cliDir })).toEqual(['podman', 'nerdctl'])
   })
 
-  it('不可执行的文件不算（X_OK，不是「存在即可」）', () => {
-    writeFileSync(join(cliDir, 'podman'), '#!/bin/sh\n')
-    chmodSync(join(cliDir, 'podman'), 0o644)
+  // Windows 上没有 POSIX 权限位，`accessSync(X_OK)` 在那里等价于 F_OK，0644 的桩照样算
+  // 候选——「不可执行不算」这条判据只对 POSIX 成立（同一天的 Windows CI 实测）。
+  it.skipIf(process.platform === 'win32')('不可执行的文件不算（X_OK，不是「存在即可」）', () => {
+    writeFileSync(stubPath('podman'), '#!/bin/sh\n')
+    chmodSync(stubPath('podman'), 0o644)
     expect(findAlternativeLocalCli('docker', { PATH: cliDir })).toEqual([])
   })
 })
@@ -599,8 +607,10 @@ describe('POST /connect-local：本机 docker 不可用时的口径', () => {
     const dir = mkdtempSync(join(tmpdir(), 'dsh-docker-alt-'))
     const originalPath = process.env.PATH
     try {
-      writeFileSync(join(dir, 'podman'), '#!/bin/sh\n')
-      chmodSync(join(dir, 'podman'), 0o755)
+      // 同 findAlternativeLocalCli 那组：Windows 上桩要带 PATHEXT 扩展名才被认出来
+      const stub = join(dir, process.platform === 'win32' ? 'podman.EXE' : 'podman')
+      writeFileSync(stub, '#!/bin/sh\n')
+      chmodSync(stub, 0o755)
       process.env.PATH = dir
       spawnState.mode = 'enoent'
       const harness = mountPlugin({ targets: [] })
