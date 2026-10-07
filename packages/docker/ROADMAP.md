@@ -206,7 +206,7 @@ pull 流两行、只读与 connect-local 零行、工具 `source=tool`、403 不
 跳板机（ProxyJump）· 统一安全围栏（对齐 tty / dsh-mcp）· 变更端点的信任模型（一次性 token）·
 `isConcurrencySafe` 未声明 · 面板端 i18n —— 见 [项目级 ROADMAP.md](../../ROADMAP.md)。
 
-**在项目级待办（代码已落地，真机验收待跑）**：**插件工具接入会话权限档位（tier gate）**——项目级
+**在项目级待办（代码已落地）**：**插件工具接入会话权限档位（tier gate）**——项目级
 [ROADMAP.md § 待办](../../ROADMAP.md#待办) 第 10 项（2026-10-07 立项并实施）。本包的分工：全部
 agent 工具的档位分类表（`docker_action` / `docker_image_*` 归 `write`、`docker_exec` 归 `exec`）
 与 `tools/pre-execute` 接线，已落在 `src/index.ts`（`DOCKER_TIER_CLASS`）；与既有 `allowMutations` /
