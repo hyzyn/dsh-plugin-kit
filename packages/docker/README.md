@@ -510,7 +510,7 @@ challenge 的 TTL 与探测周期各自独立，所以文案只说「执行后�
 | `dockerBin` | `docker` | docker CLI 可执行名或路径（podman 可填 `podman`）；只允许字母、数字与 `_ . / \ : -` 及内部空格，且不能以 `-` 开头（**Windows 盘符与 `\` 必须放行**，否则任何绝对路径都填不进来）。**「连接本机」的探测用的就是它**；填错（CLI 不存在）时那句话会点名 `PATH` 里找到的别的容器 CLI，但**不会**替你改这个值 |
 | `allowMutations` | false | 允许**变更操作**：容器 start / stop / restart / remove、镜像删除 / dangling 清理 / 拉取（面板按钮与 `docker_action`、`docker_image_remove`、`docker_image_prune`、`docker_image_pull` 工具；关闭时 `/action`、`/images/remove`、`/images/prune`、`/images/pull/stream` 返回 403，对应工具不注册） |
 | —（能力授权） | 未授权 | `allowMutations` / `allowExec` 有**两条提权通道**：① **启动环境变量**（`DSH_DOCKER_ALLOW_MUTATIONS` / `DSH_DOCKER_ALLOW_EXEC`，值为 `1` / `true` / `yes` / `on`）——判定源是宿主的**启动环境快照**，只认继承来的 `process` 层：写项目 `.env` 或 `~/.dsh/env.yml` **不算**授权；② **就地提权**（免重启）：在设置卡片点开关 → 面板给出一条「在宿主终端执行」的命令 → 执行后十秒内生效；两个能力各点一次后，面板组顶部会给一个「复制全部（N 条）」（仍 pending 的命令按发起顺序换行连接），终端粘贴一次即可全部解锁（各自探测周期内先后生效，不承诺同一时刻）。HTTP 侧永远可以**关掉**它们（紧急刹车不能依赖重启），但给 `true` 而无授权会被 400 拒绝并说清两条路。配置里的 `true` **不算授权**（它与 HTTP 写进去的值存在同一个存储里，分不出来源）。**升级影响**：升级前靠界面打开的开关会变成关——设环境变量重启，或在卡片里就地确认。**为什么**：回环围栏与同源证明都拦不住跨站页面与页内脚本（它们能自己填 `Sec-Fetch-Site: same-origin`），而 docker socket 等价目标主机 root；细节（含拦不住谁）见 [architecture.md § 7](../../docs/architecture.md#7-一条请求经过什么) |
-| `allowExec` | false | 允许**一次性** `docker exec`（概览页的 exec 输入框与 `docker_exec` 工具；关闭时 `/exec` 返回 403）。**不管**卡片「终端」按钮的 `docker exec -it` 交互式 shell——那条由 tty 承载（见「已知限制」） |
+| `allowExec` | false | 允许**一次性** `docker exec`（**容器详情抽屉**「概览」页签里的一次性命令框，与 `docker_exec` 工具；关闭时 `/exec` 返回 403）。**不管**卡片「终端」按钮的 `docker exec -it` 交互式 shell——那条由 tty 承载（见「已知限制」） |
 | `execTimeoutSec` | 30 | exec 默认超时秒数（1~120） |
 | `pollIntervalSec` | 5 | 面板统计刷新间隔秒数（1~60） |
 | `logTailDefault` | 200 | 日志默认尾部行数（1~5000） |
@@ -720,7 +720,7 @@ abort）、客户端断开静默中止。各自只差执行器与结束原因：
    独立，必须在设置卡片由用户显式打开。读取类路由（`/logs/stream`、
    `/stats/stream`、`/events/stream`、`/images/inspect`）不受这两个开关影响。
    **`allowExec` 只管本插件的「一次性」exec 通道**（`/exec` 路由、`docker_exec`
-   工具、概览页的一次性命令框）——卡片上的**「终端」按钮跑的是 `docker exec -it`
+   工具、容器详情抽屉「概览」页签的一次性命令框）——卡片上的**「终端」按钮跑的是 `docker exec -it`
    交互式 shell，由 tty 承载、不经过这两个开关**，只读模式下也可用（见下面
    「已知限制」里的边界说明：它不是漏了门，是刻意留的进入通道）。
 2. **破坏性操作要复述后果**。`remove` 映射为 `docker rm`（**不带 `-f`**），

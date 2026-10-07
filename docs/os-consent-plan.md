@@ -87,12 +87,19 @@ $NM/dsh-user-approval/lib/index.js:176
 ctx.waterfall(scopeTarget(req.agent, req.agent), 'approval/request', req, () => Promise.resolve('unavailable'))
 ```
 
-而**今天回答它的唯一实现是客户端**（浏览器侧）：
+它有两个 answerer（**这条瀑布不是一个，别写成「唯一」**）：宿主侧的 ACP
+（`$NM/dsh-acp/lib/index.js:1116` 的 `ctx.on('approval/request', …)`，但它在
+`record === undefined || request.callId === undefined` 时立刻 `next()` 让位——它只认自己
+拥有的 ACP 会话的**工具调用**），以及**浏览器侧的审批面板**：
 
 ```
 $NM/dsh-client-ui-approval/lib/client.js:355
 ctx.remote.$on('approval/request', function(request, next) { return answerApproval(...) })
 ```
+
+**对本方案要紧的是**：在 Web 会话里，实际拍板的是**页面**那个 answerer（ACP 那条对普通
+Web 会话直接让位——§2.2 形态 A 的否决理由正是建立在这一点上，见下面 §2.2 的同一条引用）。
+所以下文的「答案走页面」是指**有效路径**，不是「全宿主只有这一个 answerer」。
 
 答案经 HTTP RPC 回到宿主：`$NM/dsh-api-gateway/lib/client.js:867`
 `rpc.call("/api", "$events/result", { args: result })`（端点名见同文件 `:110`）。

@@ -876,8 +876,13 @@ ctx.inject(['ttyTerminal'], (c) => {
   consumers must not describe it the other way round): this service and the `{t:'spawn'}` frame both accept an
   arbitrary `command` and are **not governed by any `DSH_*_ALLOW_*`** (this plugin’s own static gate covers only
   ProxyCommand, the “a config field drives a local command” tier). That is deliberate — the terminal panel *is*
-  the product, and its permission ceiling comes from the session permission tier gate (the tier gate above,
-  which applies per call to `tty_*` agent tools) plus the user’s own tier choice, not from a plugin-level switch.
+  the product, and **its permission ceiling rests on the user acting directly**: a human clicks “+” to open a
+  tab and types commands inside it. **Note carefully that the tier gate does not reach here**: the tier gate
+  above hangs on the `tools/pre-execute` waterfall and filters by the `tty_` / `sftp_` / `tunnel_` **prefixes**
+  (`TTY_TIER_PREFIXES`) — i.e. it gates **agent tool calls only**. A browser `spawn` frame or a
+  `ttyTerminal.open` call is a **WS / client-service** path and **never passes through it**. So do not treat it
+  as this command surface’s gate: it does not block a single byte of it (only the `tty_open` agent path is
+  governed).
   **The cost**: no consumer should advertise “the plugin’s own exec switch” as the boundary that keeps you out of
   a container — once tty is installed, an in-page script can use `ttyTerminal.open` or a WS `spawn` frame to get
   an arbitrary command surface strictly stronger than a one-shot exec. See

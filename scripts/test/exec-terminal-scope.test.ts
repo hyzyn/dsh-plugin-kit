@@ -21,7 +21,8 @@
  * 1. **事实层**（正控制）：卡片「终端」按钮的路径里**真的**没有 `allowExec` 判断——从
  *    `client-src/index.js` 的 `openExec` 抽出来现算，证明「不受门控」这句说的是实话；同时
  *    那两处**该有**闸的地方（`/exec` 路由与 `docker_exec` 工具）**必须**还在判 `allowExec`。
- * 2. **文案层**：五处对外文案各有一条锚点句，锚点句里必须出现「一次性 / one-shot」限定，
+ * 2. **文案层**：`CLAIM_SITES` 里每一处对外文案各有一条锚点句，锚点句里必须出现「一次性 /
+ *    one-shot」限定，
  *    且必须点明终端按钮不受它管；公告里还**不许**退回「…docker exec，都需要…」的笼统说法。
  * 3. **反例层**：把文案退回旧措辞 / 抹掉限定词 / 删掉「不受门控」那句 → 必须红。反例在
  *    **真实文本**上做一次替换并断言替换生效，不修改任何受版本控制的文件。
@@ -56,7 +57,10 @@ const TTY_README_ZH = 'packages/tty/README.md'
 const TTY_README_EN = 'packages/tty/README.en.md'
 
 /**
- * 五处对外文案。每处给一个**锚点**（它必须存在）与**锚点句**必须命中的性质。
+ * 对外文案清单。每处给一个**锚点**（它必须存在）与**锚点句**必须命中的性质。
+ *
+ * **不写死「几处 / 几份文件」**（本仓规矩：不写会漂的数字）——要看数量就现算 `CLAIM_SITES.length`
+ * 与它引用的去重路径数，判据见「文案层」那条自检。
  *
  * `window` 是锚点之后取多长的文本当「锚点句」——取够了就行，不追求句号切分（中英混排与
  * 行内代码里的句号会把朴素的切句弄坏，那种脆弱判据比没有更坏）。
@@ -94,12 +98,31 @@ const CLAIM_SITES: ClaimSite[] = [
     window: WINDOW_DEFAULT,
     must: [/一次性/, /终端/, /不受这两个开关|不经过这两个开关/],
   },
+  /*
+   * B2（2026-10-07 review）：配置表那行原写「概览页的 exec 输入框」，而面板里
+   * **详情抽屉的页签**叫「概览」、**顶层多目标视图**叫「总览」——写成「概览页」容易被读成
+   * 后者（那是只读页，上面根本没有 exec 输入框）。判据钉住「抽屉 + 页签」这个限定。
+   */
+  {
+    name: 'docker README（zh）allowExec 行点明是抽屉页签',
+    path: DOCKER_README_ZH,
+    anchor: '| `allowExec` | false |',
+    window: WINDOW_DEFAULT,
+    must: [/容器详情抽屉/, /「概览」页签/],
+  },
   {
     name: 'docker README（en）安全模型',
     path: DOCKER_README_EN,
     anchor: "**`allowExec` only governs this plugin's *one-shot* exec channel**",
     window: WINDOW_DEFAULT,
     must: [/one-shot/, /Terminal button/, /passes through neither switch|not gated by `allowExec`/],
+  },
+  {
+    name: 'docker README（en）allowExec row names the detail tab (B2)',
+    path: DOCKER_README_EN,
+    anchor: '| `allowExec` | false |',
+    window: WINDOW_DEFAULT,
+    must: [/container detail drawer/, /Overview.*tab/],
   },
   {
     name: 'docker README（zh）已知限制：终端按钮不受门控',
@@ -139,15 +162,22 @@ const CLAIM_SITES: ClaimSite[] = [
     name: 'tty README（zh）无静态能力闸',
     path: TTY_README_ZH,
     anchor: '**`ttyTerminal` / WS `spawn` 是「没有静态能力闸」的命令面**',
-    window: WINDOW_DEFAULT,
-    must: [/不受任何 `DSH_\*_ALLOW_\*` 管辖/, /ProxyCommand/],
+    window: 1200,
+    /*
+     * B3（2026-10-07 review）：这两条原先说「权限上界由 tier gate 承担」，但 tier gate 挂在
+     * `tools/pre-execute` 上、只按 `tty_`/`sftp_`/`tunnel_` **前缀**过滤 agent 工具调用，
+     * **浏览器 WS `spawn` 完全不经过它**——那等于把 tier gate 说成了这个命令面的闸门。
+     * 所以必须点明「它管不到这里」，并点名 `TTY_TIER_PREFIXES`（判据锚点）。
+     */
+    must: [/不受任何 `DSH_\*_ALLOW_\*` 管辖/, /ProxyCommand/, /TTY_TIER_PREFIXES/, /不经过它|never passes through it/],
   },
   {
     name: 'tty README（en）no static capability gate',
     path: TTY_README_EN,
     anchor: '**`ttyTerminal` / WS `spawn` is a command surface with no static capability gate**',
-    window: WINDOW_DEFAULT,
-    must: [/not governed by any `DSH_\*_ALLOW_\*`/, /ProxyCommand/],
+    window: 1600,
+    // B3：同 zh 那条——必须点明 tier gate 管不到 WS 通道
+    must: [/not governed by any `DSH_\*_ALLOW_\*`/, /ProxyCommand/, /TTY_TIER_PREFIXES/, /never passes through it/],
   },
 ]
 
@@ -190,7 +220,7 @@ function guidanceText(src: string): string | undefined {
   return src.slice(open + 1, close)
 }
 
-/** 真实仓库的七份文本（只读；反例都在它的副本上改）。 */
+/** 真实仓库的文本（只读；反例都在它的副本上改）。**份数现算**，别写死。 */
 function realFiles(): Map<string, string> {
   const paths = new Set(CLAIM_SITES.map((site) => site.path))
   return new Map([...paths].map((path) => [path, read(path)]))
@@ -229,9 +259,30 @@ describe('allowExec 的作用域：事实层（先证明「不受门控」是真
   })
 })
 
-describe('allowExec 的作用域：文案层（五处锚点句都得把两条通道分清）', () => {
-  it('真实仓库七份文本全部通过', () => {
+describe('allowExec 的作用域：文案层（每条锚点句都得把两条通道分清）', () => {
+  it('真实仓库全部文案通过', () => {
     expect(claimViolations(realFiles())).toEqual([])
+  })
+
+  /*
+   * B4（2026-10-07 review）：本文件原先在三处写了三个不同的计数（文件头「五处」、用例名
+   * 「七份文本」、docker D163「四处」），而实为 9 个 site、7 个文件——**写死的计数必漂**。
+   * 处置有两条：① 把数字从散文里删掉（改说「CLAIM_SITES 里每一处」）；② 在这里现算一条判据，
+   * 让「site 数 / 覆盖的文件数」在测试里**可查**，谁改了 `CLAIM_SITES` 都看得到。
+   */
+  it('覆盖范围现算：site 数与文件数都可查（不写死计数，B4）', () => {
+    const paths = new Set(CLAIM_SITES.map((site) => site.path))
+    // 这两条是**结构性下界**，不是「等于某个写死的数」：
+    // 少于这两条说明有人把 claim site 删空了（而实测此刻是 9 site / 7 文件）
+    expect(CLAIM_SITES.length, 'claim site 太少——文案覆盖面被削了').toBeGreaterThanOrEqual(7)
+    expect(paths.size, '覆盖的文件太少——文案覆盖面被削了').toBeGreaterThanOrEqual(5)
+    // 每个 site 的锚点必须**真的**在它声明的文件里（防「声明了但锚点写错 → 恒红或静默」）
+    const files = realFiles()
+    for (const site of CLAIM_SITES) {
+      const text = files.get(site.path)
+      expect(text, `${site.name}：${site.path} 没被读进来`).toBeDefined()
+      expect(text?.includes(site.anchor), `${site.name}：锚点不在 ${site.path} 里`).toBe(true)
+    }
   })
 
   /*
@@ -268,14 +319,18 @@ describe('allowExec 的作用域：文案层（五处锚点句都得把两条通
 describe('allowExec 的作用域：反例层（旧措辞必须能让守卫变红）', () => {
   it('公告退回「…docker exec，都需要…才有对应工具与按钮」→ 红', () => {
     const files = realFiles()
-    const src = mutate(
-      read(DOCKER_SRC),
-      '**一次性** docker exec（docker_exec 工具与面板概览页的一次性命令框）',
-      'docker exec',
-    )
+    /*
+     * 针从真实文本里**现取**（B2 之后又踩了一次：措辞一改，写死的 fixture 就以
+     * 「fixture 替换没匹配上」的形式炸掉——报的是反例自己的错，不是被测物的错）。
+     * 这里取「**一次性** docker exec（…）」整段括号内容，退回成裸的 `docker exec`。
+     */
+    const current = read(DOCKER_SRC)
+    const needle = /\*\*一次性\*\* docker exec（[^）]*）/.exec(current)?.[0]
+    expect(needle, '公告里找不到「**一次性** docker exec（…）」这段（判据要跟着改）').toBeDefined()
+    const src = mutate(current, needle ?? '', 'docker exec')
     files.set(DOCKER_SRC, src)
     const violations = claimViolations(files)
-    expect(violations.join('\n'), '退回笼统说法必须被抓住').toMatch(/退回|一次性|不受它门控/)
+    expect(violations.join('\n'), '退回笼统说法必须被抓住').toMatch(/退回|一次性|不受/)
   })
 
   it('公告删掉「不受…门控」那半句 → 红', () => {

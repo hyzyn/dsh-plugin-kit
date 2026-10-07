@@ -794,10 +794,14 @@ ctx.inject(['ttyTerminal'], (c) => {
 - **`ttyTerminal` / WS `spawn` 是「没有静态能力闸」的命令面**（2026-10-07 补，消费方文案别写反）：
   本服务与 `{t:'spawn'}` 帧都直接接受任意 `command`，**不受任何 `DSH_*_ALLOW_*` 管辖**（本插件的
   那个静态闸只覆盖 ProxyCommand 这一档「配置字段驱动本机命令」）。这是刻意的——终端面板本身就是
-  产品，权限上界由会话权限档位闸（上面的 tier gate，对 `tty_*` agent 工具逐调用生效）与用户自己
-  的档位选择承担，而不是一个插件级开关。**代价**：任何消费方都不该把「配上 tty 之后本插件自己的
-  exec 开关」宣传成「进不了容器」的边界——装上 tty 后，页内脚本经 `ttyTerminal.open` 或 WS `spawn`
-  就能拿到比一次性 exec 更强的任意命令面。威胁模型边界见
+  产品，**它的权限上界由用户的直接操作承担**：人点「+」开标签、人在里面敲命令。
+  **务必看清 tier gate 管不到这里**：上面的 tier gate 挂在 `tools/pre-execute` 瀑布上、只按
+  `tty_` / `sftp_` / `tunnel_` **前缀**过滤（`TTY_TIER_PREFIXES`），也就是只闸 **agent 工具调用**；
+  浏览器发来的 `spawn` 帧与 `ttyTerminal.open` 是 **WS / 客户端服务**通道，**完全不经过它**。
+  所以别把它当这条命令面的闸门——它一个字节都不拦（`tty_open` 那条 agent 路径才受它管）。
+  **代价**：任何消费方都不该把「配上 tty 之后本插件自己的 exec 开关」宣传成「进不了容器」的
+  边界——装上 tty 后，页内脚本经 `ttyTerminal.open` 或 WS `spawn` 就能拿到比一次性 exec 更强的
+  任意命令面。威胁模型边界见
   [architecture.md § 7](../../docs/architecture.md#7-一条请求经过什么)；docker 侧的同一句边界写在
   它的 README「已知限制」。
 

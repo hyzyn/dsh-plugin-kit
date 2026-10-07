@@ -147,9 +147,15 @@ function looksLikeHostRuntime(dir: string): boolean {
 /**
  * 找真实 DSH 宿主运行时的 `@deepseek-ai` 目录。
  *
- * 顺序：本仓 `node_modules`（CI 在这里是 peer stub，会落到下一档）→ 全局安装的
- * `@deepseek-ai/dsh` 随附依赖树 → 扫 `~/.nvm/versions/node/<ver>/...`（nvm 的目录名带 `v`，
- * 用 `process.version` 直接拼拼不出来）。三处都没有 = `absent`。
+ * 顺序：① 本仓 `node_modules`（CI 在这里是 peer stub，落到下一档）；
+ * ② 扫 `~/.nvm/versions/node/<ver>/lib/node_modules/...`。
+ *
+ * 为什么第 ② 档是**扫描**而不是用 `process.version` 直接拼（2026-10-07 review B5 指出
+ * 本注释原来给的理由是错的）：`process.version` **带** `v`（本机是 `v22.23.2`），nvm 的目录名
+ * 也是 `v22.23.2`——所以「拼不出来」不成立，实测在本机拼得上。真实的理由是**另一个**：
+ * **跑测试的 node 未必是装 DSH 的那个版本**（nvm 下多版本共存是常态，本机就有 `v16`–`v22` 七个）。
+ * DSH 装在 `v22.23.2`、而 `pnpm test` 跑在 `v20.19.1` 时，按 `process.version` 拼就 miss 了，
+ * 得扫目录才找得到。所以扫描不是兜底、是**正确**做法。
  */
 function resolveHostDir(): string | undefined {
   const direct = join(REPO, 'node_modules', '@deepseek-ai')
@@ -234,6 +240,17 @@ function checkRepoWorld(files: Map<string, string>): string[] {
     if (!/CSP|Content-Security-Policy/.test(plan)) {
       out.push('方案没有把「宿主不发 CSP」这条腿写进论证（页内脚本够得着官方面板靠的是同 realm + 无 CSP 两条）')
     }
+    /*
+     * B1（2026-10-07 review）：方案曾写「今天回答它的**唯一**实现是客户端」——而 ACP 也在这条
+     * 瀑布上（同一文档 §2.2 自己就点了 ACP），**自相矛盾**。结论没错（Web 会话里生效的是页面
+     * 那个 answerer），错在「唯一」。这里钉住措辞：不许再出现「唯一实现是客户端」这种说法。
+     */
+    if (/唯一实现是客户端|唯一.{0,6}answerer/.test(plan)) {
+      out.push('方案又把这条瀑布写成了「唯一 answerer」——ACP 也在上面（B1），结论没错但「唯一」是错的')
+    }
+    if (!/ACP/.test(plan)) {
+      out.push('方案不再提 ACP——那 §2.2「会与 ACP 争抢」那段论证就悬空了')
+    }
   }
 
   // ---- 1. §9 的「唯一正解」必须带上实现约束与指针 ----
@@ -261,7 +278,7 @@ function checkRepoWorld(files: Map<string, string>): string[] {
       if (sectionStart !== -1 && at >= sectionStart && at < sectionEnd) continue
       /*
        * 窗口必须**跨行**：中文 markdown 常把一句话折成多行、指针落在下一行
-       * （第一版按单行判，把已经写对了的三处全报成违规）。取「本行行首 → 其后 400 字符」。
+       * （第一版按单行判，把已经写对的那几处全报成了违规）。取「本行行首 → 其后 400 字符」。
        */
       const lineStart = elevationPlan.lastIndexOf('\n', at) + 1
       const window = elevationPlan.slice(lineStart, lineStart + WINDOW)
@@ -277,7 +294,7 @@ function checkRepoWorld(files: Map<string, string>): string[] {
     }
   }
 
-  // ---- 3. 三处「要拦它只有 OS 级同意」收窄成「速度楔子 / 非结构性屏障」 ----
+  // ---- 3. 每一处「要拦它只有 OS 级同意」都必须收窄成「速度楔子 / 非结构性屏障」 ----
   for (const rel of [REPO_FILES.architecture, REPO_FILES.capability, REPO_FILES.elevation]) {
     const text = get(rel)
     if (text === undefined) {
@@ -322,6 +339,16 @@ function checkHostWorld(world: HostWorld): string[] {
   if (remoteEvents !== '') {
     if (!remoteEvents.includes('approval/request')) out.push('approval/request 不在 forwarded-events 白名单里了')
     if (!/approval\/request[\s\S]{0,40}waterfall/.test(remoteEvents)) out.push('转发模式不再是 waterfall')
+  }
+
+  // ---- 事实 1c（B1）：这条瀑布**不止一个** answerer；ACP 也在上面 ----
+  // 方案措辞已从「唯一实现」改成「两个 answerer，Web 会话里生效的是页面那个」。
+  // 钉住 ACP 那条仍在：它一旦消失，方案里「形状不对 + 会与 ACP 争抢」这段论证就少了一半。
+  const acp = world.packages.get('dsh-acp')
+  if (acp === undefined) {
+    out.push('宿主里没有 dsh-acp 包——方案 §2.2 提到「ACP 也在这条瀑布上」，请核对后再删那段论证')
+  } else if (!/ctx\.on\(\s*["']approval\/request["']/.test(acp)) {
+    out.push('dsh-acp 不再监听 approval/request——它要么被移除、要么换了接法，重读方案 §2.1 事实 1')
   }
 
   // ---- 事实 2：插件 client 半体是同源 classic script ----
@@ -524,7 +551,7 @@ describe('OS 级同意：反例层（结论过期时必须变红）', () => {
     expect(violations.join('\n')).toMatch(/既无指针也无形态限定/)
   })
 
-  it('三处收窄被退回「只有 OS 级同意」→ 本仓判据红', () => {
+  it('收窄被退回「只有 OS 级同意」→ 本仓判据红', () => {
     const world = repoWorldWith(REPO_FILES.architecture, '**但这句话只对「没那么顺手」成立，不是结构性屏障**', '')
     expect(checkRepoWorld(world).length).toBeGreaterThan(0)
   })
@@ -544,6 +571,22 @@ describe('OS 级同意：反例层（结论过期时必须变红）', () => {
     const world = new Map(REPO_WORLD)
     const text = (world.get(plan) ?? '').replace(/CSP|Content-Security-Policy/g, '某某')
     world.set(plan, text)
+    expect(checkRepoWorld(world).length).toBeGreaterThan(0)
+  })
+
+  it('方案又把瀑布写成「唯一 answerer」→ 本仓判据红（B1）', () => {
+    const world = repoWorldWith(
+      REPO_FILES.plan,
+      '它有两个 answerer（**这条瀑布不是一个，别写成「唯一」**）：宿主侧的 ACP',
+      '而**今天回答它的唯一实现是客户端**：宿主侧的 ACP',
+    )
+    expect(checkRepoWorld(world).join('\n')).toMatch(/唯一 answerer/)
+  })
+
+  it('方案抹掉 ACP → 本仓判据红（B1：§2.2 的争抢论证会悬空）', () => {
+    const plan = REPO_FILES.plan
+    const world = new Map(REPO_WORLD)
+    world.set(plan, (world.get(plan) ?? '').replace(/ACP/g, '某某'))
     expect(checkRepoWorld(world).length).toBeGreaterThan(0)
   })
 
