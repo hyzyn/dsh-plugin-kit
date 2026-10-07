@@ -260,6 +260,27 @@ ant-design 那 46 个里 12 个是治理、其余多是社区规模才需要的�
 **为什么是 L0**：要动 `docs/` 结构与归属表。**这是可发现性问题，不是正确性问题**，不急；
 真要动，方向是分层（例如 `docs/landed/`）而不是继续加规矩。
 
+### 10. 插件工具接入会话权限档位（tier gate）
+
+会话权限档位菜单（仅可查看 / 工作区内修改 / 完全权限 / Auto review）目前只约束宿主自带的
+bash / fs 工具；插件工具完全不受档位约束——`tty_run` / `tty_send` 是**无沙箱**的任意命令执行面
+（注册只受插件总开关门控），模型用它跑 bash 被沙箱拒绝的同一条命令直接生效；docker 破坏档工具
+授权一次后 AI 调多少次人都看不到。[capability-elevation-plan.md](./docs/capability-elevation-plan.md)
+§9 当年后置的「动作分级 / 逐次确认」就是这条。
+
+**为什么是 L0**：机制只有一份（kit：档位解析 + 决策矩阵 + 监听器工厂），tty 与 docker 各出一份
+工具分类表与接线——单包先做会造出两套档位语义。宿主侧接缝（`tools/pre-execute` 的 `ask` 决策、
+`approval` 服务与 UI answerer、`sandboxPolicy.resolve`）已在 peer 下限 `0.1.7-rc.2` 齐备，
+运行时实测见方案附录 A。
+
+**状态**：**代码已落地并真机验证（2026-10-07，R1–R4 按推荐值决议）**——kit `tier-gate.ts`、
+两包分类表与 `tools/pre-execute` 接线、对账守卫与单测、README / architecture §7 都已就位（实施
+偏差见方案附录 B）。**真机验收：V1/V2/V3/V4/V5/V8 与 docker 侧读写分级全部通过**（浏览器驱动
+真 agent 回合逐格跑的，逐项证据见方案 §7 实测记录），V0 事件级核对与 V6/V7（服务缺位构造、
+撤销授权半边）留待维护者。决策矩阵、两包分类表与 R1–R4 决议都在
+[docs/permission-tier-plan.md](./docs/permission-tier-plan.md)。编号未动（实施中挖出的缺陷按
+各包序列、动手时先问）。
+
 ## 已完成（落点 + 门槛）
 
 ### 1. ✅ 统一安全围栏：docker 的加固口径同步到 tty / dsh-mcp

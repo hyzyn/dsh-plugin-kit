@@ -134,6 +134,14 @@ i18n 死键 `btn.connectLocalCurrent` 与客户端那份 `localTargetName`（复
 跳板机（ProxyJump）· 统一安全围栏（对齐 tty / dsh-mcp）· 变更端点的信任模型（一次性 token）·
 `isConcurrencySafe` 未声明 · 面板端 i18n —— 见 [项目级 ROADMAP.md](../../ROADMAP.md)。
 
+**在项目级待办（代码已落地，真机验收待跑）**：**插件工具接入会话权限档位（tier gate）**——项目级
+[ROADMAP.md § 待办](../../ROADMAP.md#待办) 第 10 项（2026-10-07 立项并实施）。本包的分工：全部
+agent 工具的档位分类表（`docker_action` / `docker_image_*` 归 `write`、`docker_exec` 归 `exec`）
+与 `tools/pre-execute` 接线，已落在 `src/index.ts`（`DOCKER_TIER_CLASS`）；与既有 `allowMutations` /
+`allowExec` 静态开关是**双层并存**（静态管注册、档位管已注册调用的放行），不是取代。决策矩阵、
+真机验收 V0–V8 与开放决策 R1–R4 的决议都在
+[docs/permission-tier-plan.md](../../docs/permission-tier-plan.md)，本文不复述。
+
 **2026-09-25 更新**（三项已落地，落点与门槛见项目级 ROADMAP 的 § 已完成）：
 
 - **统一安全围栏**：本包那份加固档（D31 / D32 / D80 / D110 / D139 的实现）**整体上提到

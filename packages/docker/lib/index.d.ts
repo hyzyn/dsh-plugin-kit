@@ -20,9 +20,13 @@ import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { DockerApi, assertBin, assertImageRef, parseImageHistoryJson, parseImageHistoryText, parseImageInspectJson, parseInspectJson, parsePsJson, parseStatsJson } from './docker.js';
 import type { DockerTarget, ResolvedTarget } from './docker.js';
+import type { TierClass } from '@hyzyn/dsh-kit';
 import type { HostKeyRecord, SshSpec } from './ssh-exec.js';
 export type { HostKeyRecord } from './ssh-exec.js';
 export type { ContainerSummary, ContainerDetail, ContainerStats, ContainerEvent, ImageSummary, NetworkSummary, NetworkDetail, VolumeSummary, VolumeDetail, DockerTarget } from './docker.js';
+export declare const DOCKER_TIER_CLASS: Record<string, TierClass>;
+/** 本插件 agent 工具的名单前缀（档位闸只听这些名字）。 */
+export declare const DOCKER_TIER_PREFIXES: readonly ["docker_"];
 export interface Config {
     /** 关闭整个插件。默认开。 */
     enabled?: boolean;

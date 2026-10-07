@@ -61,6 +61,7 @@ import type {
 import { RemoteExec, sanitizeJumpSpec, sanitizeProxyCommand, setCredentialResolver, sshTarget } from './ssh-exec.js'
 import {
   auditLoadedGrants,
+  attachTierGate,
   bindCapabilitySources,
   capabilityDeniedMessage,
   capabilityGrantAt,
@@ -71,10 +72,43 @@ import {
   dshHome,
   sharedGrantStore,
 } from '@hyzyn/dsh-kit'
+import type { TierClass } from '@hyzyn/dsh-kit'
 import type { CredentialResolver, ExecLogger, HostKeyRecord, HostKeyStore, SshSpec } from './ssh-exec.js'
 
 export type { HostKeyRecord } from './ssh-exec.js'
 export type { ContainerSummary, ContainerDetail, ContainerStats, ContainerEvent, ImageSummary, NetworkSummary, NetworkDetail, VolumeSummary, VolumeDetail, DockerTarget } from './docker.js'
+
+/*
+ * 档位闸的分类表（docs/permission-tier-plan.md §2.1）：`read` 纯读 / 固定二进制探测
+ * （docker_connect_local 不在能力开关里，见 connectLocal 的注释）；`write` 容器与镜像的变更
+ * （docker_image_pull 是拉取非破坏，但改本地状态，且本就注册在 allowMutations 组里）；
+ * `exec` 容器内一次性命令。名单必须与 refreshTools 里 add() 注册的工集一一对应——对账由
+ * test/tier-gate.test.ts 从 add() 调用处现算（漏分类 → 红）。与 allowMutations / allowExec
+ * 的关系是**双层并存**：静态开关管注册（宿主级、持久授权），档位闸管已注册调用的放行
+ * （逐调用、会话级），谁也不取代谁。
+ */
+export const DOCKER_TIER_CLASS: Record<string, TierClass> = {
+  docker_targets: 'read',
+  docker_connect_local: 'read',
+  docker_ps: 'read',
+  docker_attention: 'read',
+  docker_inspect: 'read',
+  docker_logs: 'read',
+  docker_stats: 'read',
+  docker_events: 'read',
+  docker_images: 'read',
+  docker_image_inspect: 'read',
+  docker_networks: 'read',
+  docker_volumes: 'read',
+  docker_action: 'write',
+  docker_image_remove: 'write',
+  docker_image_prune: 'write',
+  docker_image_pull: 'write',
+  docker_exec: 'exec',
+}
+
+/** 本插件 agent 工具的名单前缀（档位闸只听这些名字）。 */
+export const DOCKER_TIER_PREFIXES = ['docker_'] as const
 
 /* ------------------------------------------------------------------ *
  * 配置
@@ -3165,6 +3199,13 @@ const plugin = definePlugin<Config>({
           },
         }))
       }
+      // 档位闸与工具同生命周期：refreshTools 幂等重建时随 toolDisposers 一起撤下/重挂
+      // （禁用热生效时工具与闸一起撤；机制见 kit 的 tier-gate.ts，方案见 docs/permission-tier-plan.md）。
+      toolDisposers.push(attachTierGate(ctx, {
+        pkg: 'docker',
+        prefixes: DOCKER_TIER_PREFIXES,
+        classify: (tool) => DOCKER_TIER_CLASS[tool],
+      }))
       if (failures.length > 0) {
         console.warn(`[dsh-docker] ${String(failures.length)} 个 agent 工具注册失败（下次配置变更会重试）：${failures.join('；')}`)
       }

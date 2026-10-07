@@ -615,6 +615,18 @@ and reconnect". The record list can be deleted / reset in the settings card (del
   required, and the error message lists the available target names.
 - Changing either switch **re-registers the tools immediately**: after turning off `allowMutations` / `allowExec`
   the corresponding tools (including the three image mutation tools) disappear from the agent side, with no restart.
+- **Registered calls are also subject to the session permission tier gate (tier gate)**: by class — every
+  “always registered” tool in the table above is `read` (allowed on every tier); `docker_action` /
+  `docker_image_remove` / `docker_image_prune` / `docker_image_pull` are `write`, `docker_exec` is `exec`,
+  and these two classes trigger an **approval prompt on every call** under a confined tier (Read Only /
+  Workspace Write — the call runs only if the user allows this one; deterministically denied when unattended,
+  i.e. approval policy `never`). Full access never prompts, and under Auto review the plugin does not add its
+  own prompt (the host’s model pre-review already covers every call). When the host has not composed the
+  `sandboxPolicy` / `approval` services the gate is off (behaviour identical to before), and the startup log
+  says so: `tier-gate: services absent (…), per-call gate disabled`. This is a **separate layer** from the two
+  static switches above: the switches govern registration (host-level, persistent grant), the tier gate governs
+  each registered call (per call, follows the tier immediately). Mechanism:
+  [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md).
 - Recommended troubleshooting order: `docker_targets` → `docker_ps` → `docker_logs` →
   `docker_inspect` → `docker_stats`; for image problems `docker_images` →
   `docker_image_inspect`.

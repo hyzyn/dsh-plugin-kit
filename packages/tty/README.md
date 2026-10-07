@@ -105,7 +105,7 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
 
 ## agent 工具
 
-插件向 agent 注入十九个工具（与 bash 工具同权，操作实时显示在用户终端里）：
+插件向 agent 注入十九个工具（操作实时显示在用户终端里；**每次调用受会话权限档位约束**，见下节）：
 
 | 工具 | 作用 |
 | --- | --- |
@@ -127,6 +127,23 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
 | `sftp_tree` | 递归列举远程目录结构（深度优先、目录优先；`maxDepth` 1~8 / `maxEntries` 1~2000 限流，超限 `truncated:true`；symlink 不跟随防环） |
 | `tunnel_list` | 列出端口转发隧道及其实时状态（活跃/连接中/错误/停止、规则、连接数）；`fatal:true` = 人工介入级故障（本地监听失败 / 连接簿缺失），**不会自动重试**，修配置后重建 |
 | `tunnel_start` / `tunnel_stop` | 启停一条端口转发隧道（0.25.0，`name` 来自 `tunnel_list`）。**会改写配置**——与在设置卡片里勾选/取消那个「启用」是同一件事（写回 settings → 热应用 → `reconcile`），所以是持久的、用户在卡片上看得见。返回值是操作后的状态快照：`state` 通常还是 `connecting`（拨号异步），要最终结论稍后 `tunnel_list` |
+
+### 会话权限档位闸（tier gate）
+
+工具按风险分三类，**每次调用**按会话的权限档位（仅可查看 / 工作区内修改 / 完全权限 / Auto review）
+决定放行、询问还是拒绝——档位是用户在会话里切的，切完下一个调用立即按新档走：
+
+| 类 | 工具 | 受限档（仅可查看 / 工作区内修改）下的行为 |
+| --- | --- | --- |
+| 读 | `tty_list` `tty_capture` `tty_screen` `tty_expect` `tty_stats` `tunnel_list` `sftp_list` `sftp_read` `sftp_tree` `tty_close` | 全档放行 |
+| 写（有界变更） | `sftp_write` `sftp_mkdir` `sftp_rename` `sftp_remove` `tunnel_stop` | 弹授权询问（人允许这一次才执行）；无人值守（审批策略 never）确定性拒绝 |
+| 执行（无界命令面） | `tty_open` `tty_run` `tty_send` `tunnel_start` | 同上——这些工具能在本机或远程 shell 里跑任意命令、开监听端口，是围栏敏感面 |
+
+**完全权限档零询问**（该档的 intent 就是减少确认步骤）；**Auto review 档插件不叠加询问**
+（宿主的模型预审已在逐调用审查）。宿主未组合 `sandboxPolicy` / `approval` 服务（老宿主、最小
+部署）时**不闸**（与引入前行为一致），启动日志会打一行
+`tier-gate: services absent (…), per-call gate disabled` 说明这件事。机制（决策矩阵 / 与静态能力
+开关 `allowProxyCommand` 的双层关系）见 [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md)。
 
 典型 agent 流程（推荐）：跑完就算完的命令用 `tty_run` 一次调用拿回输出 + 退出码；
 需要**长驻**的会话用 `tty_open`（长驻进程用 `persistName` 要 tmux 持久化）→ `tty_send` 启动命令

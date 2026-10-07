@@ -15,7 +15,7 @@ const HeadlessTerminal = xtermHeadless.Terminal;
 import { definePlugin, dshHome as resolveDshHome, getService, hasSameOriginProof, isLoopbackRequestStrict, plainConfig, settingsEntryScope, suppressAutoSettingsPage } from '@hyzyn/dsh-kit';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { sanitizeJumpSpec, sanitizeProxyCommand, spawnSsh, sshTarget, expandHome, setCredentialResolver, setProxyCommandPolicy, validateJumpSpec, validateProxyCommand } from './ssh.js';
-import { sharedGrantStore, auditLoadedGrants, bindCapabilitySources, capabilityDeniedMessage, capabilityGrantAt, capabilityGrantVia, capabilityGranted, capabilityPaths, createElevationManager, } from '@hyzyn/dsh-kit';
+import { sharedGrantStore, auditLoadedGrants, attachTierGate, bindCapabilitySources, capabilityDeniedMessage, capabilityGrantAt, capabilityGrantVia, capabilityGranted, capabilityPaths, createElevationManager, } from '@hyzyn/dsh-kit';
 import { probeSsh } from './probe.js';
 import { buildCommandSpawn, buildShellSpawn, commandShellHint, defaultShellPath } from './shell-integration.js';
 import { KEY_VOCABULARY, resolveKeys } from './keys.js';
@@ -169,6 +169,37 @@ const DEFAULT_RECONNECT_GRACE_SEC = 120;
  * 条数上限的行为护栏。
  */
 export const EXITED_RETAIN_MS = Number.POSITIVE_INFINITY;
+/*
+ * 档位闸的分类表（docs/permission-tier-plan.md §2.1）：`read` 纯读；`write` 有界变更（远程
+ * ≤1MB 文本 / 目录 / 停隧道转发）；`exec` 无界命令面——tty_open / tty_run / tty_send 能在本机
+ * 或远程 shell 里跑任意命令（tty_send 是往**活 shell** 里敲命令，同样是执行面），tunnel_start
+ * 在本机开监听端口。名单必须与 registerAll 注册的工集一一对应：对账由 test/tier-gate.test.ts
+ * 从注册处的启动日志行现算（漏分类 → 红）。悬而未决的格子（R2 tty_close / R3 tunnel_start）
+ * 按方案推荐值落，改格子就是改这张表。
+ */
+export const TTY_TIER_CLASS = {
+    tty_list: 'read',
+    tty_capture: 'read',
+    tty_screen: 'read',
+    tty_expect: 'read',
+    tty_stats: 'read',
+    tunnel_list: 'read',
+    sftp_list: 'read',
+    sftp_read: 'read',
+    sftp_tree: 'read',
+    tty_close: 'read',
+    sftp_write: 'write',
+    sftp_mkdir: 'write',
+    sftp_rename: 'write',
+    sftp_remove: 'write',
+    tunnel_stop: 'write',
+    tty_open: 'exec',
+    tty_run: 'exec',
+    tty_send: 'exec',
+    tunnel_start: 'exec',
+};
+/** 本插件 agent 工具的名单前缀（档位闸只听这些名字，bash / 其它插件工具零介入）。 */
+export const TTY_TIER_PREFIXES = ['tty_', 'sftp_', 'tunnel_'];
 /**
  * 只读保留的会话数上限（超出按最旧淘汰，见 SessionManager.capExited）。
  *
@@ -4747,9 +4778,11 @@ const plugin = definePlugin({
             }, 'dsh-tty: settings');
         });
         // agent 工具集（P1）：tty_list / tty_open / tty_close / tty_stats / tty_capture / tty_send …
-        // 信任模型：与 bash 工具同权（agent 本就能执行任意命令），不额外加确认层；
-        // agent 对终端的操作会实时出现在浏览器面板里（同一 PTY），天然可被用户观察。
-        // inject: ['tools'] 声明后（见上方），ctx.get('tools') 才能解析到服务。
+        // 信任模型（2026-10-07 起，档位闸落地）：注册仍只受 enabled 门控，但**每次调用**受会话权限
+        // 档位约束——受限档（仅可查看 / 工作区内修改）下 write/exec 类要经宿主 approval 服务逐次
+        // 确认，完全权限档零询问（机制见 kit 的 tier-gate.ts，方案见 docs/permission-tier-plan.md）。
+        // 「agent 对终端的操作实时出现在面板里」的可见性仍然成立，但不再是唯一的监督手段——
+        // 旧注释「与 bash 工具同权、不额外加确认层」描述的是档位闸落地前的模型，已作废。
         const toolsHost = ctx.get('tools');
         if (toolsHost !== undefined) {
             ctx.effect(() => {
@@ -5901,6 +5934,12 @@ const plugin = definePlugin({
                             return result;
                         },
                     })));
+                    // 档位闸与工具同生命周期：enabled 热切换撤工具时一并撤下（activeDisposers 统一管理）。
+                    activeDisposers.push(attachTierGate(ctx, {
+                        pkg: 'tty',
+                        prefixes: TTY_TIER_PREFIXES,
+                        classify: (tool) => TTY_TIER_CLASS[tool],
+                    }));
                     stateRef.toolsRegistered = true;
                     console.log('[dsh-tty] agent tools registered (tty_list, tty_open, tty_close, tty_run, tty_stats, tty_capture, tty_screen, tty_expect, tty_send, tunnel_list, tunnel_start, tunnel_stop, sftp_list, sftp_read, sftp_write, sftp_mkdir, sftp_rename, sftp_remove, sftp_tree)');
                 };

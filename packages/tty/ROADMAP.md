@@ -166,6 +166,13 @@ tty 侧只留三条：
 - **仍未做：只有多跳链（明确不做）**——方案与全部坑见
   [docs/proxyjump-plan.md](../../docs/proxyjump-plan.md)（第 6.1 节是 `ProxyCommand` 的闸门定案表）。
 
+**在项目级待办（代码已落地，真机验收待跑）**：**插件工具接入会话权限档位（tier gate）**——项目级
+[ROADMAP.md § 待办](../../ROADMAP.md#待办) 第 10 项（2026-10-07 立项并实施）。本包的分工：全部
+agent 工具的档位分类表（`tty_run` / `tty_send` / `tty_open` / `tunnel_start` 归 `exec` 是其中的
+关键格子）与 `tools/pre-execute` 接线，已落在 `src/index.ts`（`TTY_TIER_CLASS`）；
+决策矩阵、真机验收 V0–V8 与开放决策 R1–R4 的决议都在
+[docs/permission-tier-plan.md](../../docs/permission-tier-plan.md)，本文不复述。
+
 ## 已完成（落点 + 门槛）
 
 > 已落地的批次按**主题**记在这里：结论 → 为什么（用户原话照录）→ 落点 / 门槛 → 刻意不做的边界。

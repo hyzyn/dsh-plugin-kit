@@ -579,6 +579,15 @@ context、不改任何环境变量；空 `targets`（= 用户没配）的语义�
   列出可用目标名。
 - 两个开关变化会**立即重注册**工具：关掉 `allowMutations` / `allowExec` 后，
   对应工具（含三个镜像变更工具）从 agent 侧消失，无需重启。
+- **已注册的调用还受会话权限档位闸（tier gate）约束**：按类分——`read` 类（上表「恒注册」
+  的全部）全档放行；`docker_action` / `docker_image_remove` / `docker_image_prune` /
+  `docker_image_pull` 归 `write` 类，`docker_exec` 归 `exec` 类，这两类在受限档（仅可查看 /
+  工作区内修改）下**每次调用弹授权询问**（人允许这一次才执行；无人值守即审批策略 `never`
+  时确定性拒绝），完全权限档零询问，Auto review 档不叠加（宿主的模型预审已在管）。宿主未组合
+  `sandboxPolicy` / `approval` 服务时不闸（行为与引入前一致），启动日志打一行
+  `tier-gate: services absent (…), per-call gate disabled`。它与上面两个静态开关是**双层**：
+  静态开关管注册（宿主级、持久授权），档位闸管已注册调用的放行（逐调用、随档位即时变）。
+  机制见 [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md)。
 - 推荐排障顺序：`docker_targets` → `docker_ps` → `docker_logs` →
   `docker_inspect` → `docker_stats`；镜像排查 `docker_images` →
   `docker_image_inspect`。

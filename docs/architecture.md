@@ -182,6 +182,18 @@
    能在本机执行命令的同用户进程**不在模型内**——它读得到自己那次 `begin` 的响应、写得了
    那个文件，本来也就能读 `~/.dsh/.credentials.yaml`、直接跑 `docker`。要拦它只有 OS 级同意
    （原生对话框 / polkit），不在本轮范围。
+
+   **与之互补的第二层：会话权限档位闸（tier gate，2026-10-07 起）**。能力开关管**注册不注册**
+   （宿主级、持久授权）；档位闸管**已注册的这一次调用放不放行**（逐调用、随会话档位即时变）——
+   防的对手也不同：前者拦页面与脚本凭空提权，后者把「被误导的 agent」的关键动作拉回人的视野。
+   插件在 `tools/pre-execute` 瀑布上挂监听（实现只有一份：kit 的 `tier-gate.ts`，docker 与 tty
+   各出一张工具分类表），每次调用解析会话的有效档位（`sandboxPolicy.resolve` × 审批策略），
+   按矩阵决定放行 / 走宿主 approval 服务逐次询问 / 拒绝；受限档下 `write` / `exec` 类必问或必拒，
+   完全权限档零询问（该档审批策略是 `never`，ask 会被确定性拒绝），Auto review 档插件让位给
+   宿主的模型预审。服务未组合（老宿主）时不闸 + 启动审计一行；监听器永不 claim `allow`
+   （要么 `next()` 透传，要么 `deny` / `ask`）。机制推演、决策矩阵与运行时证据见
+   [permission-tier-plan.md](./permission-tier-plan.md)；各包的分类表在其 `src/index.ts`
+   （`TTY_TIER_CLASS` / `DOCKER_TIER_CLASS`，与注册处对账的守卫测试在各包 test）。
 3. **body 围栏**：`readJsonBody` 对畸形 / 超限 / 空 body **返回 `undefined` 而不抛错**——
    调用方必须把 `undefined` 当 **400**，**不能**当「没传这个字段」。写操作尤其。
 4. **截断要有信号**：任何截断（列表、日志、输出）都要显式报 `truncated` / 计数说明，

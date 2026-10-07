@@ -74,6 +74,7 @@ import WebSocket from 'ws';
 import xtermHeadless from '@xterm/headless';
 declare const HeadlessTerminal: typeof xtermHeadless.Terminal;
 type HeadlessTerminal = InstanceType<typeof HeadlessTerminal>;
+import type { TierClass } from '@hyzyn/dsh-kit';
 import type { HostKeyRecord, SshHostEntry, TermHandle } from './ssh.js';
 import type { TunnelSpec } from './tunnels.js';
 import type { StatsFrame } from './stats.js';
@@ -179,6 +180,9 @@ export declare const Config: z;
  * 条数上限的行为护栏。
  */
 export declare const EXITED_RETAIN_MS: number;
+export declare const TTY_TIER_CLASS: Record<string, TierClass>;
+/** 本插件 agent 工具的名单前缀（档位闸只听这些名字，bash / 其它插件工具零介入）。 */
+export declare const TTY_TIER_PREFIXES: readonly ["tty_", "sftp_", "tunnel_"];
 /**
  * 只读保留的会话数上限（超出按最旧淘汰，见 SessionManager.capExited）。
  *

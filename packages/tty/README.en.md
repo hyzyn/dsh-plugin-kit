@@ -114,7 +114,7 @@ Both were reproduced on **Windows 11 ARM (24H2) + Node 22 ARM64**. The fix:
 
 ## Agent tools
 
-The plugin injects nineteen tools into the agent (with the same power as the bash tool; operations show up live in the user’s terminal):
+The plugin injects nineteen tools into the agent (operations show up live in the user’s terminal; **every call is subject to the session permission tier**, see below):
 
 | Tool | Purpose |
 | --- | --- |
@@ -136,6 +136,26 @@ The plugin injects nineteen tools into the agent (with the same power as the bas
 | `sftp_tree` | Recursively list a remote directory structure (depth-first, directories first; `maxDepth` 1~8 / `maxEntries` 1~2000 cap it, `truncated:true` when exceeded; symlinks are not followed, to avoid cycles) |
 | `tunnel_list` | List port-forwarding tunnels and their live state (active/connecting/error/stopped, rules, connection counts) |
 | `tunnel_start` / `tunnel_stop` | Start or stop one port-forwarding tunnel (0.25.0; `name` comes from `tunnel_list`). These **rewrite the configuration** — the same thing as ticking/unticking “Enable” in the settings card (settings → hot apply → `reconcile`), so the change is persistent and visible to the user. The returned snapshot usually still says `connecting` (dialling is async); call `tunnel_list` again for the final verdict |
+
+### Session permission tier gate (tier gate)
+
+Tools are classified by risk; **every call** is judged against the session’s permission tier
+(Read Only / Workspace Write / Full access / Auto review) and allowed, asked, or denied — the tier is
+switched by the user in the session, and the very next call follows the new tier:
+
+| Class | Tools | Behaviour under a confined tier (Read Only / Workspace Write) |
+| --- | --- | --- |
+| Read | `tty_list` `tty_capture` `tty_screen` `tty_expect` `tty_stats` `tunnel_list` `sftp_list` `sftp_read` `sftp_tree` `tty_close` | Allowed on every tier |
+| Write (bounded mutation) | `sftp_write` `sftp_mkdir` `sftp_rename` `sftp_remove` `tunnel_stop` | Approval prompt (runs only if the user allows this one call); deterministically denied when unattended (approval policy `never`) |
+| Execute (unbounded command surface) | `tty_open` `tty_run` `tty_send` `tunnel_start` | Same — these tools can run arbitrary commands on the local or a remote shell and open listening ports; they are the fence-sensitive surface |
+
+**Full access never prompts** (that tier’s intent is fewer confirmation steps); under **Auto review the
+plugin does not add its own prompt** (the host’s model pre-review already examines every call). When the
+host has not composed the `sandboxPolicy` / `approval` services (older hosts, minimal deployments) the
+gate is **off** (behaviour identical to before the gate), and the startup log says so:
+`tier-gate: services absent (…), per-call gate disabled`. The mechanism (decision matrix / the two-layer
+relationship with the static `allowProxyCommand` switch) lives in
+[docs/permission-tier-plan.md](../../docs/permission-tier-plan.md).
 
 Typical agent flow (recommended): for a command that simply runs to completion, use `tty_run` to get its
 output + exit code in one call; for a **long-lived** session, `tty_open` opens one (pass `persistName` for tmux

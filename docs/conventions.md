@@ -28,6 +28,7 @@
 | **跳板机（ProxyJump / ProxyCommand）完整实现的方案**（2026-09-25 已按它落地，`ProxyCommand` 见其 §6.1 的闸门定案表；保留为**活**的作业面：多跳链与后续坑仍以它为准） | L0 [`docs/proxyjump-plan.md`](./proxyjump-plan.md) |
 | **能力开关「就地提权」的当前权威实施方案**（2026-09-26 已按它落地：两条通道、落点、威胁模型、逐 PR 顺序；实施偏差见其附录 C。原先的 `…-plan.v2.md` 已按命名规范改名成本文件名） | L0 [`docs/capability-elevation-plan.md`](./capability-elevation-plan.md) |
 | **能力开关「就地提权」方案的 v1（已删除，仅历史）**——它设计的「宿主终端确认码」通道**在代码里不存在**（`CapabilityGrantVia` 只有一个值 `'file'`），保留只为追溯取舍过程；**不要照着执行**（改动去上面那份） | 冻结指针 `git show 79ca434e:docs/capability-elevation-plan.md`（223 行）· 检索入口见 [`ROADMAP.md` 的「已由 L0 资产承接」表](../ROADMAP.md) |
+| **插件工具接入会话权限档位（tier gate）的实施方案**（2026-10-07 立项，**待评审待执行**：决策矩阵、tty/docker 分类表、真机验收 V0–V8；实施前先过其 §9 的开放决策 R1–R4） | L0 [`docs/permission-tier-plan.md`](./permission-tier-plan.md) |
 | AI 真机测试约束 | L0 [`docs/agent-real-test.md`](./agent-real-test.md) |
 | 术语 | L0 [`docs/glossary.md`](./glossary.md) |
 | 发布流程 | L0 [`RELEASING.md`](../RELEASING.md) |
