@@ -308,10 +308,16 @@ describe('反例 4：包内 ROADMAP 的落地记录节住错了地方 → 必须
     expect(parsePackageLandedSections(tty).landed.map((item) => item.line)).not.toContain(inlineLine)
   })
 
-  it('只有待办、一处记录都没有的文件（docker）不受这条约束：不许逼它凭空造一节', () => {
-    const docker = real.packageRoadmaps.find((file) => file.pkg === 'docker')
-    expect(parsePackageLandedSections(docker.text).landed).toEqual([])
-    expect(checkPackageRoadmapLanded({ packageRoadmaps: [docker] })).toEqual([])
+  it('只有待办、一处记录都没有的文件不受这条约束：不许逼它凭空造一节', () => {
+    /*
+     * 最初这条用例点名真实的 docker（当时它的 ROADMAP 只有待办）。2026-10-07 docker 也
+     * 有了自己的落地节（能力使用审计），这个前提就过时了——三个有 ROADMAP 的包全都有了
+     * 落地记录。判据本身还有效（判据口径 a：没有落地记录节的文件不受约束），改用**合成
+     * 夹具**表达，不再跟任何一个真实包的当前状态绑死。
+     */
+    const todoOnly = { pkg: 'fixture', path: 'packages/fixture/ROADMAP.md', text: '# fixture 路线图\n\n## 待办\n\n- 还没做的事\n' }
+    expect(parsePackageLandedSections(todoOnly.text).landed).toEqual([])
+    expect(checkPackageRoadmapLanded({ packageRoadmaps: [todoOnly] })).toEqual([])
   })
 
   it('闸门对 CRLF 免疫（Windows 检出不该假红）', () => {

@@ -281,6 +281,25 @@ bash / fs 工具；插件工具完全不受档位约束——`tty_run` / `tty_se
 [docs/permission-tier-plan.md](./docs/permission-tier-plan.md)。编号未动（实施中挖出的缺陷按
 各包序列、动手时先问）。
 
+### 11. kit elevation 的审计行改走 stdout（与 docker D162 同一课）
+
+**真机发现（2026-10-07，DSH 0.2.1-alpha.1）**：插件经 `ctx.logger.info` 打的行**既不出现在
+宿主 stdout、也找不到落盘文件**——能看到的 `[dsh-docker]` 行全部是 `console.log` 调用点。
+kit `elevation.ts` 的五种审计行（begin / grant / expire / revoke / `auditLoadedGrants` 的
+load，即 kit D09 的可见性承诺）走的全是 `ctx.logger`，等于在真宿主上**无处可查**——
+「持久授权今天一开机就静默开着」恰恰是这些行存在要回答的问题。docker 的 capability-use
+审计行已按同课改走 `console.log`（docker D162，出口取舍见 `packages/docker/src/audit.ts`
+文件头）；kit 的 tier-gate 日志出口本来就是 console（先例）。
+
+**为什么是 L0**：改的是 kit 的共享模块（`elevation.ts` 的 `audit()` 与 `auditLoadedGrants()`），
+docker 与 tty 两个消费包的调用点与测试要同步；kit 版本一动，全仓的 kit 钉子（精确版本）
+跟着走。
+
+**怎么修**：`audit()` 与 `auditLoadedGrants()` 的出口改 `console.log`（行前缀与格式不变，
+`ElevationOptions.logger` 保留给 `removeFile` 的 best-effort 告警），`/elevate` 相关测试的
+断言面从注入 logger 改为 console 捕获；两包 README 里「审计行可见性」的表述同步。修好后
+docker README 已知限制里「与 kit elevation 的授权行同通道」那句的保留条件即可删掉。
+
 ## 已完成（落点 + 门槛）
 
 ### 1. ✅ 统一安全围栏：docker 的加固口径同步到 tty / dsh-mcp

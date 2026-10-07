@@ -466,6 +466,14 @@ context、不改任何环境变量；空 `targets`（= 用户没配）的语义�
 所以必须有个名字。**一个能力一行**：开关后面跟这个能力自己的授权状态与**授权时刻**（`已授权 · 2026-09-26 22:31:08`），
 撤销按钮右对齐——两个能力的授权是分开的，并排放会看不出哪个撤销管哪个能力。
 
+**两个能力的确认也能一次粘贴搞定**：面板开着时再点另一个开关不会顶掉前一块面板（两个能力的
+授权本来就互不影响），两块面板**纵向堆叠**，顶部多出一个「复制全部（N 条）」——它把仍 pending 的
+命令按**发起顺序**用**换行符**连接后一次复制，用户去宿主终端**粘贴一次**即可：`bash` / `zsh` /
+PowerShell / cmd 粘贴多行都逐行执行，所以刻意不用 `&&`（PowerShell 5.1 不认）或 `;`（cmd 不认）
+连接。某条过期后，合并按钮只复制仍 pending 的那些；全部解锁（或全部收起）后它自己消失。两个
+challenge 的 TTL 与探测周期各自独立，所以文案只说「执行后全部开关自动解锁」、**不承诺同一时刻**
+——倒计时仍是逐面板显示，每块面板的复制 / 重新生成 / 收起也照旧只管自己那一个能力。
+
 为什么显示时刻：带外授权是**持久**的——宿主重启后它**直接生效、不再有任何一次确认**。也就是说
 「上个月授权的能力今天一开机就开着」这件事不会有任何提示，除非界面与日志说出来。所以宿主启动时会
 逐条打一行 `[dsh-docker] elevation: load capability=… via=file grantedAt=…`（不含 nonce 与路径），
@@ -501,7 +509,7 @@ context、不改任何环境变量；空 `targets`（= 用户没配）的语义�
 | `announceToAgent` | true | 是否向 agent 注入能力公告（systemPrompt section `plugin:dsh-docker`） |
 | `dockerBin` | `docker` | docker CLI 可执行名或路径（podman 可填 `podman`）；只允许字母、数字与 `_ . / \ : -` 及内部空格，且不能以 `-` 开头（**Windows 盘符与 `\` 必须放行**，否则任何绝对路径都填不进来）。**「连接本机」的探测用的就是它**；填错（CLI 不存在）时那句话会点名 `PATH` 里找到的别的容器 CLI，但**不会**替你改这个值 |
 | `allowMutations` | false | 允许**变更操作**：容器 start / stop / restart / remove、镜像删除 / dangling 清理 / 拉取（面板按钮与 `docker_action`、`docker_image_remove`、`docker_image_prune`、`docker_image_pull` 工具；关闭时 `/action`、`/images/remove`、`/images/prune`、`/images/pull/stream` 返回 403，对应工具不注册） |
-| —（能力授权） | 未授权 | `allowMutations` / `allowExec` 有**两条提权通道**：① **启动环境变量**（`DSH_DOCKER_ALLOW_MUTATIONS` / `DSH_DOCKER_ALLOW_EXEC`，值为 `1` / `true` / `yes` / `on`）——判定源是宿主的**启动环境快照**，只认继承来的 `process` 层：写项目 `.env` 或 `~/.dsh/env.yml` **不算**授权；② **就地提权**（免重启）：在设置卡片点开关 → 面板给出一条「在宿主终端执行」的命令 → 执行后十秒内生效。HTTP 侧永远可以**关掉**它们（紧急刹车不能依赖重启），但给 `true` 而无授权会被 400 拒绝并说清两条路。配置里的 `true` **不算授权**（它与 HTTP 写进去的值存在同一个存储里，分不出来源）。**升级影响**：升级前靠界面打开的开关会变成关——设环境变量重启，或在卡片里就地确认。**为什么**：回环围栏与同源证明都拦不住跨站页面与页内脚本（它们能自己填 `Sec-Fetch-Site: same-origin`），而 docker socket 等价目标主机 root；细节（含拦不住谁）见 [architecture.md § 7](../../docs/architecture.md#7-一条请求经过什么) |
+| —（能力授权） | 未授权 | `allowMutations` / `allowExec` 有**两条提权通道**：① **启动环境变量**（`DSH_DOCKER_ALLOW_MUTATIONS` / `DSH_DOCKER_ALLOW_EXEC`，值为 `1` / `true` / `yes` / `on`）——判定源是宿主的**启动环境快照**，只认继承来的 `process` 层：写项目 `.env` 或 `~/.dsh/env.yml` **不算**授权；② **就地提权**（免重启）：在设置卡片点开关 → 面板给出一条「在宿主终端执行」的命令 → 执行后十秒内生效；两个能力各点一次后，面板组顶部会给一个「复制全部（N 条）」（仍 pending 的命令按发起顺序换行连接），终端粘贴一次即可全部解锁（各自探测周期内先后生效，不承诺同一时刻）。HTTP 侧永远可以**关掉**它们（紧急刹车不能依赖重启），但给 `true` 而无授权会被 400 拒绝并说清两条路。配置里的 `true` **不算授权**（它与 HTTP 写进去的值存在同一个存储里，分不出来源）。**升级影响**：升级前靠界面打开的开关会变成关——设环境变量重启，或在卡片里就地确认。**为什么**：回环围栏与同源证明都拦不住跨站页面与页内脚本（它们能自己填 `Sec-Fetch-Site: same-origin`），而 docker socket 等价目标主机 root；细节（含拦不住谁）见 [architecture.md § 7](../../docs/architecture.md#7-一条请求经过什么) |
 | `allowExec` | false | 允许一次性 `docker exec`（面板 exec 输入与 `docker_exec` 工具；关闭时 `/exec` 返回 403） |
 | `execTimeoutSec` | 30 | exec 默认超时秒数（1~120） |
 | `pollIntervalSec` | 5 | 面板统计刷新间隔秒数（1~60） |
@@ -735,6 +743,11 @@ abort）、客户端断开静默中止。各自只差执行器与结束原因：
    `id` 过 `assertRef` 白名单、参数经同样的夹紧。与快照不同，长流没有
    `maxOutputKb` 上限（跟随被截断就失去意义），内存防护由客户端的 5000 行
    环形缓冲与 2000 行着色上限承担。
+9. **变更操作有逐条使用审计**。kit elevation 的五行审计回答「授权了」，这里回答
+   「用了」：每一次**过了能力闸**的变更 / exec 都落一行 `[dsh-docker] capability-use: …`
+   结构化审计行（出口是宿主 stdout），面板路由与 agent 工具两条入口都覆盖。行格式与
+   不记什么（403 / tier-gate ask）、以及「exec 命令会随行出现」这条代价，见「已知限制」
+   的使用审计条。
 
 ## 已知限制
 
@@ -831,8 +844,22 @@ abort）、客户端断开静默中止。各自只差执行器与结束原因：
   数据路由一律 403（进行中的长流——日志 / 统计 / 拉取——也会被立即收尾）。
   路由对象本身不卸载、靠 403 拦截；`/config` 始终可读写，设置卡片就是重新
   启用的入口，无需重启 `dsh web`。
-- **变更操作无独立审计日志**：只有 docker 自身的记录与宿主 `ctx.logger` 的
-  常规输出。
+- **使用审计走宿主 stdout，exec 命令会随行出现**：每一次**过了能力闸**的变更 / exec
+  （面板的变更 / exec 路由与 agent 的 `docker_action` / `docker_image_remove` /
+  `docker_image_prune` / `docker_image_pull` / `docker_exec`；403 与参数校验 400 不记，
+  「使用 = 过了闸」）落一行 `[dsh-docker] capability-use: capability=allowMutations|allowExec
+  source=http|tool action=container.remove|… target=… ref=… ok=true|false durationMs=…`，
+  key=value 风格与 kit elevation 的授权行一致，`capability` 与授权行直接对得上号；pull
+  进度流拆 start / end 两行（宿主中途挂掉时至少 start 还在）。**出口是 `console.log`**
+  （docker D162：真机实测 `ctx.logger` 的行在 0.2.x 宿主上既不进 stdout 也不落盘，而审计行的
+  意义全在「出问题时翻得到」；tier-gate 的日志出口同此取向）——跑 `dsh web` 的那个终端里
+  就能看到、可 grep。kit elevation 的授权行目前仍走 `ctx.logger`（同问题记在根 ROADMAP
+  待办 11，kit 修好后两类行同通道）。**代价**：exec 的命令会记进行尾 `detail`（连同退出码，
+  如 `detail=code=0 cmd=ls -la /app`），整段截断 200 字符、控制字符转义成 `\n` 等字面量——
+  行是给人看的，就得接受它出现在终端可见的日志流里，与 elevation「nonce 绝不进日志」是
+  同一类取舍的正面。docker 报错也算一次使用（`ok=false` + `detail=` 截断后的错误文案）；
+  tier-gate 的 ask / deny 不记（没执行不算使用，放行与否由宿主 approval 日志覆盖）。
+  没有查询界面、没有独立审计文件——要检索就翻宿主 stdout。
 
 - **跨目标聚合的边界**：并发上限 4；**单目标预算 90s（兜底）**，而每条命令自己的超时
   （30s）才是被遵守的那个——到点时**底层的子进程 / SSH 通道会被真的取消**（不是只让这一格

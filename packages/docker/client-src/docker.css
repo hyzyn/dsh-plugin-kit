@@ -2231,7 +2231,24 @@
 /*
  * 就地授权面板：一段「带外确认」的说明 + 一条要复制到宿主终端的命令。
  * 左侧色条把它与普通设置项区分开——它不是配置项，是一个**动作区**。
+ *
+ * 面板组（`dk_elevPanels`）：两个能力可以同时 pending（面板开着时再点另一个开关），
+ * 于是多块面板**纵向堆叠**、顶部出一次「复制全部」。最小限度的间距规则，不做视觉重设计。
  */
+.dk_elevPanels {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  gap: var(--dk-gap-md);
+}
+/* 合并复制行：主按钮 + 一句说明并排，窄栏下允许换行（说明文案中英都较长） */
+.dk_elevMerge {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--dk-gap-sm);
+  min-width: 0;
+}
 .dk_elevPanel {
   display: grid;
   /*

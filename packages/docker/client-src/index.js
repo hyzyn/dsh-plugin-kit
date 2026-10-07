@@ -22,6 +22,13 @@ import { currentSessionIdOf } from './current-session.js'
 import { createLogBuffer, splitLogLines } from './log-buffer.js'
 import { createLogWindow, LOG_ROW_ESTIMATE_PX, LOG_WINDOW_OVERSCAN, LOG_HEIGHT_CACHE_LIMIT } from './log-window.js'
 import { subscribeLogStream, reconnectTail, LOG_RECONNECT_BASE_MS, LOG_RECONNECT_MAX_MS } from './log-stream.js'
+import { upsertElevationRecord, removeElevationRecord, markElevationGranted, pruneElevationRecords, buildMergedElevationText, mergeElevationCommands, joinElevationCommands, shouldOfferMerge } from './elevation.js'
+
+/**
+ * 「复制全部」按钮的反馈归属哨兵键：能力名不会取这个值，所以它与单条按钮的反馈天然不串。
+ * （`copiedKey` 逐能力隔离见卡片里那段注释。）
+ */
+const ELEVATION_COPY_ALL = '__all__'
 
 /* ================================ 国际化 ================================ */
 
@@ -479,6 +486,9 @@ const I18N_ZH = {
   'hint.capabilityNotGranted': '⚠ 宿主尚未授权：这两个开关现在打不开，点它会给出一条就地确认的命令（免重启）。关掉它们随时可用。',
   'badge.notEffective': '未生效：未获宿主授权',
   'elev.title': '就地授权（免重启）',
+  'elev.copyAll': '复制全部（{count} 条）',
+  'elev.copyAllHint': '每个能力各要一条命令。一次粘贴全部命令，执行后全部开关自动解锁（各自的探测周期内先后生效）。',
+  'elev.copyAllCopied': '已复制全部 {count} 条',
   'elev.lockedWhy': '本机任意进程都能发回环请求，所以「打开危险能力」这件事不能由这个页面自己说了算——必须在宿主的文件系统上确认一次。',
   'elev.step': '在宿主的终端里执行下一条命令，开关会自动解锁：',
   'elev.copy': '复制命令',
@@ -963,6 +973,9 @@ const I18N_EN = {
   'hint.capabilityNotGranted': '⚠ Not granted by the host: these two switches cannot be turned on right now — clicking one gives you a command to confirm in place (no restart). Turning them off always works.',
   'badge.notEffective': 'Not effective: not granted by the host',
   'elev.title': 'Grant in place (no restart)',
+  'elev.copyAll': 'Copy all ({count})',
+  'elev.copyAllHint': 'Each capability needs its own command. Paste both lines at once; every switch unlocks by itself once they run (each on its own probe cycle).',
+  'elev.copyAllCopied': 'Copied all {count}',
   'elev.lockedWhy': 'Any local process can send loopback requests, so “turn on a dangerous capability” cannot be decided by this page alone — it has to be confirmed on the host’s filesystem once.',
   'elev.step': 'Run the command below in a terminal on the host and the switch unlocks by itself:',
   'elev.copy': 'Copy command',
@@ -7534,6 +7547,118 @@ window.__ModuleLoader__.load({
      * 设置卡片
      * ------------------------------------------------------------------ */
 
+    /** 能力开关名 → 宿主侧环境变量名（「另一种方式」那一栏要写出具体变量名）。 */
+    const CAPABILITY_ENV = {
+      allowMutations: 'DSH_DOCKER_ALLOW_MUTATIONS',
+      allowExec: 'DSH_DOCKER_ALLOW_EXEC',
+    }
+
+    /** 能力名 → 开关文案（面板标题靠它）。 */
+    function capabilityLabelOf(capability) {
+      return capability === 'allowMutations' ? t('check.allowMutations') : t('check.allowExec')
+    }
+
+    /**
+     * 就地提权面板组——**纯渲染函数**（入参是纯数据 + 一组回调，返回 jsx 树），刻意不做成组件：
+     * 离线冒烟的 React 桩把 `useState` 冻在初值上、`useEffect` 是空实现，「两个能力同时 pending」
+     * 这件事在组件里根本走不到，而它正是本次改造要保证的行为。做成普通函数后，用例可以真的调用它、
+     * 遍历返回的 jsx 树、并**驱动合并按钮的 onClick** 断言被复制下去的字节（见 scripts/client-smoke.mjs）。
+     *
+     * 结构：合并复制行（≥2 个能力 pending 时才有）→ 逐能力堆叠的面板（已授权的留痕不渲染）。
+     */
+    function elevationPanelsView(records, options) {
+      const list = Array.isArray(records) ? records : []
+      const now = options.now === undefined ? Date.now() : options.now
+      const pending = list.filter((record) => record !== null && record !== undefined && record.granted !== true)
+      if (pending.length === 0) return null
+      const merged = mergeElevationCommands(list, now)
+      const panel = (record) => {
+        const capability = String(record.capability)
+        const seconds = Number.isFinite(record.expiresAt)
+          ? Math.max(0, Math.ceil((Number(record.expiresAt) - now) / 1000))
+          : 0
+        return jsxs('div', { className: 'dk_elevPanel', children: [
+          jsxs('div', { className: 'dk_row', children: [
+            jsx('span', { className: 'dk_label', children: t('elev.title') + ' · ' + capabilityLabelOf(capability) }),
+            jsx('button', {
+              type: 'button',
+              className: 'dk_btn',
+              onClick: () => options.onClose(capability),
+              children: t('elev.close'),
+            }, 'close'),
+          ] }),
+          jsx('span', { className: 'dk_hint', children: t('elev.lockedWhy') }),
+          record.error === undefined
+            ? null
+            : jsx('span', { className: 'dk_hint dk_hintWarn', children: t('elev.error') + String(record.error) }),
+          record.command === undefined
+            ? null
+            : jsxs('div', { className: 'dk_elevSteps', children: [
+              jsx('span', { className: 'dk_hint', children: t('elev.step') }),
+              jsx('code', { className: 'dk_elevCommand', children: String(record.command) }),
+              /*
+               * 动作行：复制 / 重新生成 / 倒计时**并排一行、紧贴命令**。
+               *
+               * 早先这三样各自占一条栅格行，而且「重新生成」被「282 秒后失效」「等待确认…」两行
+               * 说明文字隔在下面——2026-09-27 的真机报告（Windows）里那块看上去就是散的：
+               * 按钮离自己的命令越远，越像「不知道点了会发生什么」。命令与它的按钮是一件事（docker D149）。
+               */
+              jsxs('div', { className: 'dk_elevActions', children: [
+                jsx('button', {
+                  type: 'button',
+                  className: 'dk_btn dk_btnPrimary',
+                  // 复制反馈**逐能力**隔离：这个按钮只认自己能力的键
+                  onClick: () => options.onCopy(capability, String(record.command)),
+                  children: options.copiedKey === capability ? t('elev.copied') : t('elev.copy'),
+                }, 'copy'),
+                jsx('button', {
+                  type: 'button',
+                  className: 'dk_btn',
+                  onClick: () => options.onRegenerate(capability),
+                  children: t('elev.regenerate'),
+                }, 'regen'),
+                jsx('span', {
+                  className: seconds > 0 ? 'dk_hint' : 'dk_hint dk_hintWarn',
+                  children: seconds > 0 ? t('elev.expiresIn', { sec: seconds }) : t('elev.expired'),
+                }),
+              ] }),
+              jsx('span', { className: 'dk_hint', children: t('elev.waiting') }),
+              jsxs('details', { className: 'dk_elevOther', children: [
+                jsx('summary', { children: t('elev.otherWay') }),
+                jsx('span', {
+                  className: 'dk_hint',
+                  children: t('elev.envHow', { env: CAPABILITY_ENV[capability] ?? '' }),
+                }),
+              ] }),
+            ] }),
+          options.configured(capability) === true
+            ? jsx('button', {
+              type: 'button',
+              className: 'dk_btn',
+              onClick: () => options.onDisableFirst(capability),
+              children: t('elev.disableFirst'),
+            }, 'disable')
+            : null,
+        ] })
+      }
+      return jsxs('div', { className: 'dk_elevPanels', children: [
+        shouldOfferMerge(list, now)
+          ? jsxs('div', { className: 'dk_elevMerge', children: [
+            jsx('button', {
+              type: 'button',
+              className: 'dk_btn dk_btnPrimary',
+              onClick: () => options.onCopyAll(joinElevationCommands(merged), merged.length),
+              children: options.copiedKey === ELEVATION_COPY_ALL
+                ? t('elev.copyAllCopied', { count: merged.length })
+                : t('elev.copyAll', { count: merged.length }),
+            }, 'copyAll'),
+            jsx('span', { className: 'dk_hint', children: t('elev.copyAllHint') }),
+          ] })
+          : null,
+        ...pending.map((record) => panel(record)),
+      ] })
+    }
+
     function DockerSettingsCard(props) {
       // DSH ≥0.1.6 的插件配置页把同一条目按 view 渲染两次：summary 一句话摘要、page 完整表单。
       // 旧版（≤0.1.5）的 settings.plugin.item 卡片不带 view，走原有可折叠卡片分支。
@@ -7565,10 +7690,26 @@ window.__ModuleLoader__.load({
        * 就地提权（见 kit 的 elevation.ts）：点开关 → 面板给出一条「在宿主上落地一个随机名文件」的
        * 命令 → 宿主发现文件即授权，免重启。状态放在卡片里而不是子组件里：离线冒烟的 React 桩不执行
        * 函数组件体（见文件里其它地方的说明），状态留在卡片里才测得动。
+       *
+       * **逐能力**记录（数组，按发起顺序）而不是单槽：面板开着时再点另一个开关，单槽会把前一个
+       * 能力的面板**替换**掉——它的命令从界面消失（宿主侧 challenge 仍 pending），用户于是要在宿主
+       * 终端粘贴两次（2026-09-26 截图实测：两次授权差 14 秒）。逐能力记录让两块面板同时在场，
+       * 顶部出一个「复制全部」。纯逻辑在 `client-src/elevation.js`（冒烟能直接驱动）。
+       *
+       * 为什么不做「kit 侧 begin 返回合并命令」（备选方案，已否）：`finishElevation` 只处理**被轮询
+       * 到的那个**能力，合并命令会让另一个能力停在「宿主已授权、配置开关没开」的半状态；还要处理
+       * 两条独立探测定时器之间的授权竞态。客户端合并零 API 变更、零新安全面——kit 的
+       * begin / status / revoke 契约一字不动（nonce 仍只出现在 begin 响应里）。
        */
-      const [elevation, setElevation] = useState(null)
+      const [elevations, setElevations] = useState([])
       const [elevationNotice, setElevationNotice] = useState('')
-      const [copied, setCopied] = useState(false)
+      /**
+       * 复制反馈的归属键（**不是**布尔）：单条按钮传自己的能力名、合并按钮传哨兵
+       * `ELEVATION_COPY_ALL`，渲染时各自判自己的键——于是「复制了 A」不会让 B 的按钮也显示
+       * 「已复制」，而「复制全部」也不会让每一块面板都亮起来（改前是一个全局 `copied` 布尔，
+       * 两个按钮会一起变成已复制）。同一时刻只留一处反馈是刻意的：它说的是「你刚复制的是哪一份」。
+       */
+      const [copiedKey, setCopiedKey] = useState('')
       /** 每秒推进一次的计数：只为了让「还剩 N 秒」自己走（读的是渲染期的时间差）。 */
       const [nowTick, setNowTick] = useState(0)
       /** 授权到达后要「先把开关写进表单、再自动保存」：保存读的是表单镜像，得等一次提交。 */
@@ -7691,12 +7832,6 @@ window.__ModuleLoader__.load({
 
       /* ---------------- 就地提权（capability elevation） ---------------- */
 
-      /** 能力开关名 → 宿主侧环境变量名（「另一种方式」那一栏要写出具体变量名）。 */
-      const CAPABILITY_ENV = {
-        allowMutations: 'DSH_DOCKER_ALLOW_MUTATIONS',
-        allowExec: 'DSH_DOCKER_ALLOW_EXEC',
-      }
-
       /**
        * 快照 → 表单：能力开关在表单里存**配置值**（用户写下的那个），不是快照里的有效值。
        *
@@ -7735,8 +7870,18 @@ window.__ModuleLoader__.load({
        * 一起写进去。脏的时候只把开关置上并提示「点保存生效」——不替用户做决定。
        */
       const finishElevation = (capability) => {
-        setElevation(null)
-        setCopied(false)
+        /*
+         * **不删记录**，只把它标成已授权并把命令清掉（面板据此消失）。为什么留着这条痕迹：
+         * 合并按钮的存续跟着「面板组里有过几个能力」，不是跟着当前还剩几条命令——两个能力
+         * 都点过之后，其中一个先解锁，按钮要留着把**剩下那条**交给用户（此时再让他回单条面板
+         * 里找命令，等于把刚刚那次「一次粘贴」的动作拆回去）。两个都解锁后组里没有可复制命令，
+         * 按钮自然消失（见 shouldOfferMerge）。
+         *
+         * 反向也成立：「单个 pending → 无合并按钮」——只动过一个开关时组里只有一条记录，
+         * 那条命令就在它自己的面板里，不需要一个「复制全部（1 条）」的按钮。
+         */
+        setElevations((current) => markElevationGranted(current, capability))
+        setCopiedKey('')
         const clean = JSON.stringify(toPayload(formRef.current)) === cleanPayloadRef.current
         setForm((current) => (current === null ? current : { ...current, [capability]: true }))
         setElevationNotice(clean ? t('elev.granted') : t('elev.grantedNeedSave'))
@@ -7746,19 +7891,37 @@ window.__ModuleLoader__.load({
 
       const beginElevation = (capability) => {
         setElevationNotice('')
-        setCopied(false)
-        setElevation({ capability })
+        setCopiedKey('')
+        // 只增改**这一个**能力的记录，别的 pending 原样留着（面板不再被替换）
+        setElevations((current) => upsertElevationRecord(current, capability, {
+          capability,
+          command: undefined,
+          expiresAt: undefined,
+          error: undefined,
+          // 清掉上一轮的「已授权」痕迹：撤销授权后再点这个开关要能重新出面板
+          granted: false,
+        }))
         api.elevateBegin(capability).then((result) => {
           if (result !== null && result.status === 'granted') {
             finishElevation(capability)
             return
           }
           if (result !== null && result.status === 'pending') {
-            setElevation({ capability, command: String(result.command), expiresAt: Number(result.expiresAt) })
+            setElevations((current) => upsertElevationRecord(current, capability, {
+              capability,
+              command: String(result.command),
+              expiresAt: Number(result.expiresAt),
+            }))
             return
           }
-          setElevation({ capability, error: String((result && result.error) ?? '') })
-        }).catch((error) => setElevation({ capability, error: String(error.message) }))
+          setElevations((current) => upsertElevationRecord(current, capability, {
+            capability,
+            error: String((result && result.error) ?? ''),
+          }))
+        }).catch((error) => setElevations((current) => upsertElevationRecord(current, capability, {
+          capability,
+          error: String(error.message),
+        })))
       }
 
       const revokeElevation = (capability) => {
@@ -7769,14 +7932,36 @@ window.__ModuleLoader__.load({
         }).catch((error) => setElevationNotice(t('elev.error') + String(error.message)))
       }
 
-      /** 复制命令：拿不到剪贴板（老宿主 / 非安全上下文）时退回「请手动复制」。 */
-      const copyCommand = (command) => {
+      /**
+       * 复制命令：拿不到剪贴板（老宿主 / 非安全上下文）时退回「请手动复制」。
+       *
+       * `key` 是反馈的归属：单条按钮传能力名，合并按钮传 `ELEVATION_COPY_ALL`——
+       * 于是「复制了 A」不会让 B 的按钮也显示「已复制」（早先是一个全局 `copied`）。
+       */
+      const copyCommand = (key, command) => {
         const clipboard = typeof navigator === 'undefined' ? undefined : navigator.clipboard
         if (clipboard === undefined || typeof clipboard.writeText !== 'function') {
           setElevationNotice(t('elev.copyManual'))
           return
         }
-        clipboard.writeText(command).then(() => setCopied(true)).catch(() => setElevationNotice(t('elev.copyManual')))
+        clipboard.writeText(command).then(() => setCopiedKey(key)).catch(() => setElevationNotice(t('elev.copyManual')))
+      }
+
+      /**
+       * 合并复制：把所有**仍 pending**（未过期、已拿到命令）的命令按发起顺序用换行连接后一次复制。
+       *
+       * 命令的取用 / 排序 / 连接全在纯函数里（`client-src/elevation.js` 的 `buildMergedElevationText`
+       * 与 `joinElevationCommands`），这里只负责把它交给剪贴板。连接方式为什么是换行而不是 `&&` / `;`：
+       * bash / zsh / PowerShell / cmd 粘贴多行都逐行执行，平台无关；`&&` 在 PS 5.1 上不认，`;` 在 cmd
+       * 上不认。文案只说「执行后全部开关自动解锁」，不承诺同一时刻：两个 challenge 的 TTL 与探测
+       * 周期各自独立（逐面板倒计时照旧显示）。
+       */
+      const copyAllElevations = (text) => {
+        if (text === '') {
+          setElevationNotice(t('elev.copyManual'))
+          return
+        }
+        copyCommand(ELEVATION_COPY_ALL, text)
       }
 
       /*
@@ -7793,20 +7978,33 @@ window.__ModuleLoader__.load({
       /*
        * 面板开着时轮询授权状态（1.5s）并顺带推进倒计时。轮询而不是等推送：这条通道本来就是
        * 「用户在别的终端里做了一件事」，宿主没有可订阅的事件面。
+       *
+       * **轮询全部 pending 能力**（不再只盯单槽那一个）：两个 challenge 是各自独立开始的，
+       * 各自的授权时刻可以差十几秒；只轮询一个会让另一个停在「宿主已授权、开关没开」。
+       * deps 用**能力名的拼接串**而不是数组：数组每次渲染都是新引用，effect 会被反复拆装，
+       * 1.5s 的节拍随之漂成「每渲染一次就重建定时器」。内容不变时它一字不变，effect 就不动。
        */
-      const elevationCapability = elevation === null ? '' : String(elevation.capability)
+      const elevationPendingKey = elevations
+        // 已授权的那条只是「留痕」（面板已消失），不再轮询——否则每 1.5s 又会走一遍 finishElevation
+        .filter((item) => item.granted !== true)
+        .map((item) => String(item.capability))
+        .sort()
+        .join(',')
       useEffect(() => {
-        if (elevationCapability === '') return undefined
+        if (elevationPendingKey === '') return undefined
+        const capabilities = elevationPendingKey.split(',')
         const timer = setInterval(() => {
           setNowTick((value) => value + 1)
-          api.elevateStatus(elevationCapability).then((status) => {
-            if (status !== null && status.status === 'granted') finishElevation(elevationCapability)
-          }).catch(() => {
-            /* 轮询失败静默：宿主可能在重启，下一次再试 */
-          })
+          for (const capability of capabilities) {
+            api.elevateStatus(capability).then((status) => {
+              if (status !== null && status.status === 'granted') finishElevation(capability)
+            }).catch(() => {
+              /* 轮询失败静默：宿主可能在重启，下一次再试 */
+            })
+          }
         }, 1500)
         return () => clearInterval(timer)
-      }, [elevationCapability])
+      }, [elevationPendingKey])
 
       /* ---------------- 能力开关那一段的渲染 ---------------- */
 
@@ -7912,78 +8110,34 @@ window.__ModuleLoader__.load({
         ] })
       }
 
-      /** 就地提权面板（内联展开；不用 confirm()——那会在 React 之外同步阻塞渲染）。 */
-      const elevationPanel = () => {
-        const capability = String(elevation.capability)
-        const label = capability === 'allowMutations' ? t('check.allowMutations') : t('check.allowExec')
-        const seconds = elevation.expiresAt === undefined
-          ? 0
-          : Math.max(0, Math.ceil((Number(elevation.expiresAt) - Date.now()) / 1000))
-        const close = () => {
-          setElevation(null)
-          setCopied(false)
-        }
-        return jsxs('div', { className: 'dk_elevPanel', children: [
-          jsxs('div', { className: 'dk_row', children: [
-            jsx('span', { className: 'dk_label', children: t('elev.title') + ' · ' + label }),
-            jsx('button', { type: 'button', className: 'dk_btn', onClick: close, children: t('elev.close') }, 'close'),
-          ] }),
-          jsx('span', { className: 'dk_hint', children: t('elev.lockedWhy') }),
-          elevation.error === undefined
-            ? null
-            : jsx('span', { className: 'dk_hint dk_hintWarn', children: t('elev.error') + String(elevation.error) }),
-          elevation.command === undefined
-            ? null
-            : jsxs('div', { className: 'dk_elevSteps', children: [
-              jsx('span', { className: 'dk_hint', children: t('elev.step') }),
-              jsx('code', { className: 'dk_elevCommand', children: String(elevation.command) }),
-              /*
-               * 动作行：复制 / 重新生成 / 倒计时**并排一行、紧贴命令**。
-               *
-               * 早先这三样各自占一条栅格行，而且「重新生成」被「282 秒后失效」「等待确认…」两行
-               * 说明文字隔在下面——2026-09-27 的真机报告（Windows）里那块看上去就是散的：
-               * 按钮离自己的命令越远，越像「不知道点了会发生什么」。命令与它的按钮是一件事（docker D149）。
-               */
-              jsxs('div', { className: 'dk_elevActions', children: [
-                jsx('button', {
-                  type: 'button',
-                  className: 'dk_btn dk_btnPrimary',
-                  onClick: () => copyCommand(String(elevation.command)),
-                  children: copied ? t('elev.copied') : t('elev.copy'),
-                }, 'copy'),
-                jsx('button', {
-                  type: 'button',
-                  className: 'dk_btn',
-                  onClick: () => beginElevation(capability),
-                  children: t('elev.regenerate'),
-                }, 'regen'),
-                jsx('span', {
-                  className: seconds > 0 ? 'dk_hint' : 'dk_hint dk_hintWarn',
-                  children: seconds > 0 ? t('elev.expiresIn', { sec: seconds }) : t('elev.expired'),
-                }),
-              ] }),
-              jsx('span', { className: 'dk_hint', children: t('elev.waiting') }),
-              jsxs('details', { className: 'dk_elevOther', children: [
-                jsx('summary', { children: t('elev.otherWay') }),
-                jsx('span', {
-                  className: 'dk_hint',
-                  children: t('elev.envHow', { env: CAPABILITY_ENV[capability] ?? '' }),
-                }),
-              ] }),
-            ] }),
-          form[capability] === true
-            ? jsx('button', {
-              type: 'button',
-              className: 'dk_btn',
-              onClick: () => {
-                patch({ [capability]: false })
-                close()
-              },
-              children: t('elev.disableFirst'),
-            }, 'disable')
-            : null,
-        ] })
+      /**
+       * 一块能力的面板（✕）与整个面板组都渲染自 `elevationPanelsView`（factory 级纯函数，
+       * 见那段注释）：组件这边只提供**状态与回调**，界面结构留在纯函数里，冒烟才驱动得动。
+       *
+       * 逐个能力的动作语义：
+       * - ✕ 只收起**这一个**能力的面板；别的 pending 原样留着（也不撤销宿主侧 challenge，
+       *   与改造前 close 的语义一致——challenge 仍在 pending，重新点开关即复用同一条命令）。
+       * - 「重新生成」= 再走一次 `beginElevation`（逐能力幂等，不动别的能力）。
+       * - 「先关掉这个配置开关」= 关配置 + 收起自己那块面板。
+       */
+      const closeElevationPanel = (capability) => {
+        setElevations((current) => pruneElevationRecords(removeElevationRecord(current, capability)))
+        setCopiedKey('')
       }
+
+      const elevationPanels = () => elevationPanelsView(elevations, {
+        now: Date.now(),
+        copiedKey,
+        configured: (capability) => form[capability] === true,
+        onCopy: (capability, command) => copyCommand(capability, command),
+        onCopyAll: (text) => copyAllElevations(text),
+        onRegenerate: (capability) => beginElevation(capability),
+        onClose: (capability) => closeElevationPanel(capability),
+        onDisableFirst: (capability) => {
+          patch({ [capability]: false })
+          closeElevationPanel(capability)
+        },
+      })
 
       const sectionTitle = (text) => jsx('div', { className: 'dk_cardSection', children: text })
 
@@ -8096,7 +8250,7 @@ window.__ModuleLoader__.load({
         elevationNotice === ''
           ? null
           : jsx('span', { className: 'dk_hint', children: elevationNotice }),
-        elevation === null ? null : elevationPanel(),
+        elevations.length === 0 ? null : elevationPanels(),
 
         sectionTitle(t('field.target')),
         ...form.targets.map((item, index) => {
@@ -8618,6 +8772,29 @@ window.__ModuleLoader__.load({
       BYTE_LIMIT: FOLLOW_BYTE_LIMIT,
       PENDING_MAX: LOG_PENDING_MAX,
       FLUSH_MS: FOLLOW_FLUSH_MS,
+    }
+    /*
+     * 就地提权「合并复制」的测试缝：逐能力记录的增改 / 收尾、取哪几条命令、顺序、怎么连接，
+     * 全是纯逻辑（`client-src/elevation.js`）。**必须直接驱动**而不是渲染卡片：离线冒烟的
+     * React 桩把 `useState` 冻在初值上、且 `useEffect` 是空实现，两块面板同时在场这件事
+     * 在组件里根本走不到（这正是 2026-09-26 那次「必须粘贴两次」漏掉测试入口的原因）。
+     */
+    exports.__elevation = {
+      upsert: upsertElevationRecord,
+      remove: removeElevationRecord,
+      markGranted: markElevationGranted,
+      prune: pruneElevationRecords,
+      merge: mergeElevationCommands,
+      join: joinElevationCommands,
+      text: buildMergedElevationText,
+      shouldOfferMerge,
+      COPY_ALL_KEY: ELEVATION_COPY_ALL,
+      /**
+       * 面板组的**渲染**（与 `__overview.body` 同一形态）：用例据它断言「几个 pending 才出
+       * 合并按钮」「按钮的 onClick 到底把什么字符串交下去」——只钉纯函数的话，「界面上没有
+       * 那个按钮」与「按钮接错了内容」这两类错都漏得掉。
+       */
+      view: elevationPanelsView,
     }
     /*
      * 窗口化挂载（D152）的测试缝：布局是纯逻辑，离线冒烟直接驱动（真 DOM 里的量高与

@@ -129,6 +129,78 @@ i18n 死键 `btn.connectLocalCurrent` 与客户端那份 `localTargetName`（复
 「daemon 全程没起、流从未 open 过」——那时重连成功却不刷列表，活动条绿了而列表还停在错误态。
 **判别性已实测**：移除依赖里的令牌 / 把重连按钮挪进折叠头 / 退回只按 `opened` 判，三条用例分别红。
 
+## 已完成（落点 + 门槛）
+
+### ✅ 就地提权：两个能力一次粘贴全部解锁（2026-10-07 完成）
+
+**现场**：就地提权是**逐能力**的（`allowMutations` / `allowExec` 各有自己的 challenge），而客户端的
+`elevation` 是**单槽** state（`setElevation({ capability })`）——面板开着时再点另一个开关，前一个
+能力的面板被**替换**、它的命令从界面消失（宿主侧 challenge 仍在 pending，`begin` 幂等、不耗额度）。
+2026-09-26 的设置卡片截图实测：两次授权时刻差 14 秒，用户必须在宿主终端**粘贴两次**。纯客户端
+可解的高频摩擦点。
+
+**落点**：新增 `client-src/elevation.js`（纯逻辑：逐能力记录的增改 / 留痕 / 收尾，取哪几条命令、
+按什么顺序、怎么连接）；`client-src/index.js` 的 `elevation` 单槽 → **逐能力数组**（按发起顺序），
+`elevationPanelsView`（factory 级**纯渲染函数**，入参是纯数据 + 回调，与 `overviewBody` 同形）
+渲染纵向堆叠的多块面板，组顶部在「≥2 个能力拿到过命令且有可复制命令」时出一个「复制全部（N 条）」；
+轮询 effect 从单能力改为**轮询全部 pending 能力**（某个 granted → 走既有 `finishElevation(cap)`，
+该块面板消失）；`copied` 反馈逐能力隔离（合并按钮用 `'__all__'` 哨兵键）；`docker.css` 加
+`dk_elevPanels` / `dk_elevMerge` 两条最小间距规则；i18n 新增 `elev.copyAll` / `elev.copyAllHint` /
+`elev.copyAllCopied`（zh + en 齐平）。
+
+**合并命令的连接方式是换行符，刻意不用 `&&` / `;`**：bash / zsh / PowerShell / cmd 粘贴多行都
+逐行执行，平台无关；`&&` 在 PowerShell 5.1 上不认、`;` 在 cmd 上不认。文案只说「执行后全部开关
+自动解锁」，**不承诺同一时刻**——两个 challenge 的 TTL 与探测周期各自独立，倒计时仍逐面板显示。
+
+**已授权的那条记录只「留痕」不立刻删**：合并按钮的存续跟着「这一组里点过几个能力」，不是跟着
+「当前还有几条命令」——两个都点过、其中一个先解锁是常态，此时按钮要留着把**剩下那条**交给用户；
+全都解锁后留痕由 `pruneElevationRecords` 收掉、按钮自然消失；只点过一个时压根不出按钮（那条命令
+就在自己的面板里）。过期的命令从合并里剔掉（复制过去只会让宿主落一个过期后才出现的文件）。
+
+**边界（明确不做）**：不改 kit、不改 `/elevate` 任何路由与响应形状、不碰 nonce / 日志 / 限流语义
+（`begin` 幂等、`status` 不回 nonce、TTL 与每小时 3 次全原样）；不做跨插件合并（docker 与 tty 的
+challenge 在不同插件进程）；「重新生成」仍逐能力。「kit 侧 `begin` 返回合并命令」这条备选**已否**：
+`finishElevation` 只处理被轮询到的那个能力，另一个会停在「宿主已授权、配置开关没开」的半状态，
+还要处理两条独立探测定时器的授权竞态——客户端合并零 API 变更、零新安全面。
+
+**门槛**：`test/elevation.test.ts` 27 条（增改不替换 / 原地替换不重排 / 留痕与收尾 / 发起顺序不是
+字典序 / 过期与边界 / 换行连接逐字节且不含 `&&` 与 `;` / 按钮出与不出的六种组合 / 参与计数口径）；
+`scripts/client-smoke.mjs` 新增 7 条**渲染树级**用例（两个 pending → 驱动合并按钮的 onClick，
+断言交下去的字符串逐字节等于两条命令的换行连接、顺序 = 发起顺序、反馈键与单条隔离；单个 pending
+无按钮；一个 granted 后按钮只剩一条且已授权的面板消失、全部 granted 后整组清空；过期的不进合并；
+✕ 只关一个；一条出错 / 在途不影响另一条；i18n 双份 + 产物钩子）。
+**判别性已实测**（三条反证各自红）：把连接符换成 `&&` → 冒烟 1 条 + 单测 3 条红；把按钮门槛从
+「≥2 个拿到过命令」放宽到 ≥1 → 冒烟 3 条红；让已授权的留痕不参与计数 → 冒烟 2 条红。
+
+### ✅ 能力使用审计（capability-use）：把「授权了」和「用了」接成闭环（2026-10-07 完成）
+
+**落点**：新增 `src/audit.ts`（行格式 + `sanitizeAuditValue` 的统一 200 截断与控制字符转义 +
+`audited` 的计时包装；文件头写明**晋升条件**：当第二个插件（tty）也需要使用审计时才上提
+`@hyzyn/dsh-kit`——按 conventions 的 L0/L1 边界判据，现在只有一个包需要，不提前抽象）。
+`src/index.ts` 接线：八条变更 / exec 路由（`/action`、`/images/remove|prune`、
+`/networks/remove|prune`、`/volumes/remove|prune`、`/exec`）在 403 判定之后包
+`audited(logger, …, () => api.xxx(...))`（成功与失败都记、失败原样 rethrow，不改既有错误处理）；
+`/images/pull/stream` 在 run 里记 `event=start` / `event=end` 两行（宿主中途挂掉时至少 start
+还在；被中止时 runner 以 code=null 落定，end 省略 code）；agent 工具 `docker_action` /
+`docker_image_remove` / `docker_image_prune` / `docker_image_pull` / `docker_exec` 在 api 调用处
+包 `audited(..., source='tool')`——它们走 DockerApi 不经 HTTP 路由，两条入口不重复计数。
+语义（单一）：**使用 = 过了闸**——403 与参数校验 400 不记、tier-gate 的 ask / deny 不记
+（宿主 approval 日志已覆盖）、docker 报错也算一次使用（`ok=false` + `detail=` 截断后的错误
+文案）。exec 的命令随行进日志（`detail=code=… cmd=…`），这是写进 README 已知限制的代价；
+截断与转义只在 helper 一处发生，不靠调用点自觉。
+
+**门槛**：`test/capability-audit.test.ts` 26 条——helper 单测（200 截断带 `…` 信号、控制字符
+转义保证一行就是一次事件、缺 ref 字段省略、`audited` 成功/失败两路与原样 rethrow）；逐操作
+断言（每条路由 / 工具**恰好一行**、`capability/source/action/target/ref/ok` 逐字段对上、pull 流
+start+end 两行、只读路由与 `/connect-local` 零行、403 零行）；失败路径（`ok=false` + detail
+截断、错误按原路径返回不吞）；`scripts/route-smoke.mjs` 新增 5 个端到端用例（八条路由逐字段、
+pull 流两行、只读与 connect-local 零行、工具 `source=tool`、403 不记且开关恢复后照旧）。
+
+**真机验收（2026-10-07，真宿主 + 真 Chrome + 真 docker）**：隔离一次性 profile 驱动设置卡片，
+撤销 → 提权 → 真实 exec 走 `audited()` 路径全通；顺带挖出 **D162**（出口走了 `ctx.logger`，
+真宿主上无处可查）——出口已改 `console.log`，测试与冒烟的断言面随之改为 console 捕获（捕到的
+就是真宿主 stdout 上会出现的字节）。kit elevation 授权行的同一问题记在根 ROADMAP 待办 11。
+
 ## 已上提到项目级（不在本文展开）
 
 跳板机（ProxyJump）· 统一安全围栏（对齐 tty / dsh-mcp）· 变更端点的信任模型（一次性 token）·

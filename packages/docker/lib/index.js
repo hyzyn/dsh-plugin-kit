@@ -3,6 +3,7 @@ import { delimiter, basename, join } from 'node:path';
 import z from '@deepseek-ai/schemastery';
 import { definePlugin, hasSameOriginProof, isLoopbackRequestStrict, originProofHint, plainConfig, readSettingsEntry, settingsEntryScope, suppressAutoSettingsPage } from '@hyzyn/dsh-kit';
 import { defineTool } from '@deepseek-ai/dsh-tools';
+import { auditCapabilityUse, audited } from './audit.js';
 import { DockerApi, assertBin, assertImageRef, assertName, assertRef, assertSince, createRunner, parseImageHistoryJson, parseImageHistoryText, parseContainerEvent, parseEventsJson, parseImageInspectJson, parseInspectJson, parsePsJson, parseStatsJson, suggestContainerNames, } from './docker.js';
 import { RemoteExec, sanitizeJumpSpec, sanitizeProxyCommand, setCredentialResolver, sshTarget } from './ssh-exec.js';
 import { auditLoadedGrants, attachTierGate, bindCapabilitySources, capabilityDeniedMessage, capabilityGrantAt, capabilityGranted, capabilityGrantVia, capabilityPaths, createElevationManager, dshHome, sharedGrantStore, } from '@hyzyn/dsh-kit';
@@ -2672,6 +2673,7 @@ const plugin = definePlugin({
                             throw new Error(picked.error ?? '无效的 target');
                         if (typeof input.id !== 'string')
                             throw new Error('id 必填');
+                        const id = input.id;
                         const action = input.action;
                         if (action !== 'start' && action !== 'stop' && action !== 'restart' && action !== 'remove') {
                             throw new Error('action 必须是 start / stop / restart / remove');
@@ -2679,7 +2681,7 @@ const plugin = definePlugin({
                         const { api } = apiFor(picked.name);
                         if (api === undefined)
                             throw new Error(resolveByName(picked.name).error ?? '无法构造执行通道');
-                        const result = await api.action({ action, id: input.id });
+                        const result = await audited({ capability: 'allowMutations', source: 'tool', action: `container.${action}`, target: picked.name, ref: id }, () => api.action({ action, id }));
                         return { target: picked.name, id: result.id, action: result.action, message: result.message };
                     },
                 }));
@@ -2714,10 +2716,11 @@ const plugin = definePlugin({
                             throw new Error(picked.error ?? '无效的 target');
                         if (typeof input.ref !== 'string' || input.ref.trim() === '')
                             throw new Error('ref 必填');
+                        const ref = input.ref;
                         const { api } = apiFor(picked.name);
                         if (api === undefined)
                             throw new Error(resolveByName(picked.name).error ?? '无法构造执行通道');
-                        const result = await api.imageRemove(input.ref);
+                        const result = await audited({ capability: 'allowMutations', source: 'tool', action: 'image.remove', target: picked.name, ref }, () => api.imageRemove(ref));
                         return { target: picked.name, ref: result.ref, message: result.message };
                     },
                 }));
@@ -2749,7 +2752,7 @@ const plugin = definePlugin({
                         const { api } = apiFor(picked.name);
                         if (api === undefined)
                             throw new Error(resolveByName(picked.name).error ?? '无法构造执行通道');
-                        const result = await api.imagePrune();
+                        const result = await audited({ capability: 'allowMutations', source: 'tool', action: 'image.prune', target: picked.name }, () => api.imagePrune());
                         return { target: picked.name, message: result.message };
                     },
                 }));
@@ -2788,11 +2791,12 @@ const plugin = definePlugin({
                             throw new Error(picked.error ?? '无效的 target');
                         if (typeof input.ref !== 'string' || input.ref.trim() === '')
                             throw new Error('ref 必填');
+                        const ref = input.ref;
                         const { api } = apiFor(picked.name);
                         if (api === undefined)
                             throw new Error(resolveByName(picked.name).error ?? '无法构造执行通道');
                         const timeoutSec = typeof input.timeoutSec === 'number' && Number.isInteger(input.timeoutSec) ? input.timeoutSec : 600;
-                        const result = await api.pull(input.ref, timeoutSec * 1000);
+                        const result = await audited({ capability: 'allowMutations', source: 'tool', action: 'image.pull', target: picked.name, ref }, () => api.pull(ref, timeoutSec * 1000), (row) => row.code === null ? undefined : `code=${String(row.code)}`);
                         return {
                             target: picked.name,
                             ref: result.ref,
@@ -2849,11 +2853,13 @@ const plugin = definePlugin({
                             throw new Error('id 必填');
                         if (typeof input.command !== 'string' || input.command.trim() === '')
                             throw new Error('command 必填');
+                        const id = input.id;
+                        const command = input.command;
                         const timeoutSec = typeof input.timeoutSec === 'number' && Number.isInteger(input.timeoutSec) ? input.timeoutSec : live.execTimeoutSec;
                         const { api } = apiFor(picked.name);
                         if (api === undefined)
                             throw new Error(resolveByName(picked.name).error ?? '无法构造执行通道');
-                        const result = await api.exec(input.id, input.command, timeoutSec * 1000);
+                        const result = await audited({ capability: 'allowExec', source: 'tool', action: 'exec', target: picked.name, ref: id }, () => api.exec(id, command, timeoutSec * 1000), (row) => `code=${String(row.code)} cmd=${row.command}`);
                         return {
                             target: picked.name,
                             id: result.id,
@@ -3234,6 +3240,8 @@ const plugin = definePlugin({
                 writeJson(res, 400, { error: built.error ?? '无法构造执行通道' });
                 return;
             }
+            // run 回调里 TS 不保留 picked.name 的属性窄化，先落局部 const
+            const targetName = picked.name;
             await openSseStream(res, {
                 reason: 'pull-exit',
                 // 同日志流：逐层进度是文本尾部流，积压时丢最旧而不是把整条流掐掉（D153）
@@ -3244,12 +3252,25 @@ const plugin = definePlugin({
                     const coalescer = createSseCoalescer({
                         emit: (channel, text) => sendEvent('line', channel === 'd' ? { d: text } : { e: text }),
                     });
+                    /*
+                     * 使用审计拆成 start / end 两行（capability-use 是逐次事件，不是逐行日志）：
+                     * 开流记 start（宿主中途挂掉时至少「有人拉过这个镜像」还在），收尾记 end——
+                     * 被中止时 runner 以 code=null 落定，end 行省略 code；抛错则 ok=false + detail。
+                     */
+                    const useFields = { capability: 'allowMutations', source: 'http', action: 'image.pull', target: targetName, ref: safeRef };
+                    const startedAt = Date.now();
+                    auditCapabilityUse({ ...useFields, event: 'start' });
                     try {
                         const result = await api.pullStream(safeRef, {
                             onStdout: (chunk) => coalescer.push('d', chunk),
                             onStderr: (chunk) => coalescer.push('e', chunk),
                         }, signal);
+                        auditCapabilityUse({ ...useFields, event: 'end', ok: true, durationMs: Date.now() - startedAt, reason: 'pull-exit', ...(result.code === null ? {} : { code: result.code }) });
                         return result.code;
+                    }
+                    catch (error) {
+                        auditCapabilityUse({ ...useFields, event: 'end', ok: false, durationMs: Date.now() - startedAt, detail: error instanceof Error ? error.message : String(error) });
+                        throw error;
                     }
                     finally {
                         coalescer.flush();
@@ -3685,7 +3706,10 @@ const plugin = definePlugin({
                                         writeJson(res, 400, { error: 'ref 必填' });
                                         return;
                                     }
-                                    writeJson(res, 200, { ok: true, result: await api.imageRemove(body.ref) });
+                                    // 能力闸之后包审计（「使用 = 过了闸」；403 不记）——下同；
+                                    // ref 先落局部 const：回调里 TS 不保留属性窄化
+                                    const ref = body.ref;
+                                    writeJson(res, 200, { ok: true, result: await audited({ capability: 'allowMutations', source: 'http', action: 'image.remove', target: picked.name, ref }, () => api.imageRemove(ref)) });
                                     return;
                                 }
                                 case '/images/prune': {
@@ -3693,7 +3717,7 @@ const plugin = definePlugin({
                                         writeJson(res, 403, { error: mutationsOffMessage() });
                                         return;
                                     }
-                                    writeJson(res, 200, { ok: true, result: await api.imagePrune() });
+                                    writeJson(res, 200, { ok: true, result: await audited({ capability: 'allowMutations', source: 'http', action: 'image.prune', target: picked.name }, () => api.imagePrune()) });
                                     return;
                                 }
                                 case '/networks': {
@@ -3717,7 +3741,8 @@ const plugin = definePlugin({
                                         writeJson(res, 400, { error: 'name 必填' });
                                         return;
                                     }
-                                    writeJson(res, 200, { ok: true, result: await api.networkRemove(body.name) });
+                                    const name = body.name;
+                                    writeJson(res, 200, { ok: true, result: await audited({ capability: 'allowMutations', source: 'http', action: 'network.remove', target: picked.name, ref: name }, () => api.networkRemove(name)) });
                                     return;
                                 }
                                 case '/networks/prune': {
@@ -3725,7 +3750,7 @@ const plugin = definePlugin({
                                         writeJson(res, 403, { error: mutationsOffMessage() });
                                         return;
                                     }
-                                    writeJson(res, 200, { ok: true, result: await api.networkPrune() });
+                                    writeJson(res, 200, { ok: true, result: await audited({ capability: 'allowMutations', source: 'http', action: 'network.prune', target: picked.name }, () => api.networkPrune()) });
                                     return;
                                 }
                                 case '/volumes': {
@@ -3749,7 +3774,8 @@ const plugin = definePlugin({
                                         writeJson(res, 400, { error: 'name 必填' });
                                         return;
                                     }
-                                    writeJson(res, 200, { ok: true, result: await api.volumeRemove(body.name) });
+                                    const name = body.name;
+                                    writeJson(res, 200, { ok: true, result: await audited({ capability: 'allowMutations', source: 'http', action: 'volume.remove', target: picked.name, ref: name }, () => api.volumeRemove(name)) });
                                     return;
                                 }
                                 case '/volumes/prune': {
@@ -3757,7 +3783,7 @@ const plugin = definePlugin({
                                         writeJson(res, 403, { error: mutationsOffMessage() });
                                         return;
                                     }
-                                    writeJson(res, 200, { ok: true, result: await api.volumePrune() });
+                                    writeJson(res, 200, { ok: true, result: await audited({ capability: 'allowMutations', source: 'http', action: 'volume.prune', target: picked.name }, () => api.volumePrune()) });
                                     return;
                                 }
                                 case '/action': {
@@ -3774,7 +3800,8 @@ const plugin = definePlugin({
                                         writeJson(res, 400, { error: 'action 必须是 start / stop / restart / remove' });
                                         return;
                                     }
-                                    writeJson(res, 200, { ok: true, result: await api.action({ action, id: body.id }) });
+                                    const id = body.id;
+                                    writeJson(res, 200, { ok: true, result: await audited({ capability: 'allowMutations', source: 'http', action: `container.${action}`, target: picked.name, ref: id }, () => api.action({ action, id })) });
                                     return;
                                 }
                                 case '/exec': {
@@ -3787,7 +3814,11 @@ const plugin = definePlugin({
                                         return;
                                     }
                                     const timeoutSec = typeof body.timeoutSec === 'number' && Number.isInteger(body.timeoutSec) ? body.timeoutSec : live.execTimeoutSec;
-                                    writeJson(res, 200, { ok: true, result: await api.exec(body.id, body.command, timeoutSec * 1000) });
+                                    const id = body.id;
+                                    const command = body.command;
+                                    // exec 的退出码是命令自己的结果（非 0 不是 docker 报错）：ok 只随 api 成败；
+                                    // 命令随行进日志（这是要写进 README 的代价）——截断与控制字符转义由 helper 统一做
+                                    writeJson(res, 200, { ok: true, result: await audited({ capability: 'allowExec', source: 'http', action: 'exec', target: picked.name, ref: id }, () => api.exec(id, command, timeoutSec * 1000), (row) => `code=${String(row.code)} cmd=${row.command}`) });
                                     return;
                                 }
                                 default: {

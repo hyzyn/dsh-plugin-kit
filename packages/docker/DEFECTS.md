@@ -7,8 +7,8 @@
 > 知道**当年坏了什么**，再查 [§2 编号字典](#2-编号字典这段代码为什么长这样) 知道**所以代码为什么
 > 写成这样**。
 >
-> **编号是硬契约**：`D01–D161` 是 `packages/docker` 内部序列，与 `packages/tty/DEFECTS.md` 的
-> `D01–D95` **不共享**；跨包引用请写「docker D03 / tty D12」。新缺陷接在 `D161` 之后，
+> **编号是硬契约**：`D01–D162` 是 `packages/docker` 内部序列，与 `packages/tty/DEFECTS.md` 的
+> `D01–D95` **不共享**；跨包引用请写「docker D03 / tty D12」。新缺陷接在 `D162` 之后，
 > **不得重号、不得回收空号**——源码里已有注释指向它们。
 
 > **本文不含**：逐条 postmortem（症状 / 现场复现 / 根因 / 修法 / 回归 / 反向验证）。
@@ -36,7 +36,7 @@
 
 ## 现状
 
-**已修 161 / 待修 0**，编号至 `D161`。逐条症状见 §1，设计意图见 §2，**还没做的见
+**已修 162 / 待修 0**，编号至 `D162`。逐条症状见 §1，设计意图见 §2，**还没做的见
 [ROADMAP.md](./ROADMAP.md)**。
 
 > ⚠️ **标注（本次未擅改）——两处口径不一致，原文未改：**
@@ -226,6 +226,7 @@
 | D159 | 「连接本机」的只读探测有两处把话说死/说空：① `probe()` **不认超时**——`docker version` 挂住时 `code` 是 `null`，兜底文案「退出码 null」对用户零信息量，而超时（daemon 卡死 / `docker context` 指向连不上的远端）恰恰是可修的一类，且它与「daemon 没起」的可修动作完全不同；② 探测只认 `dockerBin` 一个二进制、**完全没考虑 podman**——只有 podman 的机器上收到的是「请先安装 Docker」，用户得自己猜到去设置卡片把「docker CLI」改成 podman（README 也只写了这条手动路径）。另有一个实测出来的放大器：超时**只杀直接子进程**，`dockerBin` 指向包装脚本时孙进程仍握着 stdout/stderr，'close' 迟迟不来，15s 上限被拖成分钟级（真机实测 3s 上限拖到 60.3s） | `src/docker.ts` 的 `probe()`：新增 `ProbeResult.timedOut`，超时单独一档返回 `${bin} version 超时（15 秒未返回）`，不再落进退出码兜底；`src/index.ts` 新增 `isLocalCliMissing`（判据单一来源，文案分档与「要不要找候选」共用）、`findAlternativeLocalCli`（只读扫 `PATH`，按 **basename** 比对——按原字符串比会在 `dockerBin=/usr/local/bin/docker` 时给出「把 docker 改成 docker」的废话）、`localProbeReason`（接线，且**只在 CLI 缺失那一档**才去 accessSync），`describeLocalProbeFailure` 加 `LocalProbeHint` 入参（超时档 + 候选 CLI）。**只提示不静默改配置**：绝不替用户改写 `dockerBin`。`src/ssh-exec.ts` 的 `runLocal`：到点先 SIGKILL，再给 `KILL_GRACE_MS`(500ms) 收敛期，仍不 close 就自行 destroy 管道收尾——超时路径上「按时返回」优先于「拿到退出码」（本来就是 null）。回归：`test/connect-local.test.ts`（13 条新增，含用临时目录造 隔离 `PATH` 的可执行位用例——不依赖跑测试的机器装了什么）、`test/streams.test.ts` 的 `probe()` 六条出口、路由级用例（真 `accessSync` + 断言 `dockerBin` 未被改写）。**判别性已实测**：移除超时分支 / 断开候选接线后对应断言确实失败 |
 | D160 | 「活动」条（docker events 事件流）进了 `closed` 是**终止态**，但界面把它渲染得像会自愈：`onEnd`（`docker events` 退出 / 服务端发 `end`）与带 `data` 的 `onError` 都 `setEventsStatus('closed')` **并 `close()`**，之后没有任何东西会再开它；而文案「事件流已断开」加上 EventSource 平时确实会自动重连，让人以为等等就好。实测用户路径：daemon 没起时开面板 → 流立刻带错退出 → 用户看到「事件流已断开」；随后 daemon 起来、点工具条 ⟳，列表正常回来了，活动条却永远停在那句。**⟳ 也救不活**：`refresh()` 只做 `loadContainers()` + `setRefreshToken(v+1)`，而事件流 effect 的依赖是 `[active, view, target]`——`refreshToken` 根本没进那条 effect（它只被详情抽屉的三个 effect 消费）。当时只有刷新整个页面（重挂载）或切页 / 切目标能恢复 | `client-src/index.js`：新增 `eventsReconnect` 自增令牌并进事件流 effect 依赖；`refreshManually()` 抽出「刷列表 + 重连」（⟳ 与活动条重连按钮都走它），而 **AUTO REFRESH 轮询仍只调 `refresh()`**——塞进轮询会让终止态被不断重开，既掩盖「它断了」又白建 SSE；`canReconnectEvents(status)` 抽成纯函数（离线冒烟的 React 桩把 `useState` 冻在初值上，组件里那个 `eventsStatus` 恒为 `''`，判定必须能直接驱动），**只认 `closed`**（`unsupported` 不给——重连必然再失败）；`ActivityBar` 加 `dk_activityHeadRow` 容器，重连按钮是折叠头的**兄弟**而非子元素（原来那层已经是 `<button>`，按钮里嵌按钮既非法也让读屏把两个动作听成一个）；断开时右侧那句「暂无事件」换成「不会自己回来」的说明。补偿判据 `sameTarget && (opened || manualReconnect)`：只用 `opened` 会漏掉「daemon 全程没起、流从未 open 过」——重连成功却不刷列表，活动条绿了而列表仍停在错误态。回归：`scripts/client-smoke.mjs` 三条用例（纯函数四态 + 源码级接线判据：依赖含令牌、令牌自增、按钮不嵌套、⟳ 接 `refreshManually`、轮询仍 `setInterval(refresh`、补偿含 `manualReconnect`）。**判别性已实测**：移除依赖里的令牌 / 把按钮挪进折叠头 / 退回只按 `opened` 判，三条分别红 |
 | D161 | 跨目标聚合的单目标预算到点**只 `Promise.race`、不取消底层**：外层 `reject` 后 `aggregateAcrossTargets` 那一格返回 `ok:false`，而底下的命令**继续跑完**——超时那条 SSH channel 仍占着 `MaxSessions` 的会话槽（sshd 在子进程活着时不释放，见 D150），于是这台慢机器上的后续短命令被远端拒绝（`error: no more sessions` / `(SSH) Channel open failure: open failed`）。真实触发面是**多目标总览 / `docker_attention` 打慢目标**：`attention()` 是 `listContainers(true) → inspect(...)` 的**串行**序列——1 条 ps + 最多 9 批 inspect（`ATTENTION_INSPECT_CAP 300 + 补捞 50`，每批 ≤ 40），**最少两段 60s 就已越过外层的 45s**，最坏 10 × 30s ≈ 300s；`listContainers` 单发一条命令的 `docker_ps` / `/containers` 则由内层 30s 先到期，外层那个 45s 基本是死代码 | `src/docker.ts`：`Runner.run` 的 options 增**可选** `signal`（可选才不会波及 20+ 个既有调用点与假 runner），`createRunner()` 的 **local 与 ssh 两个分支都透传**（只改一边 = 「本机能取消、SSH 不能」，比不改更糟）；`src/ssh-exec.ts`：`ExecOptions.signal`，`RemoteExec.run` / `runLocal` 各自把 abort **并入已有的那一条收尾路径**（SSH 是 `signal('KILL')` + `close()` + `finish(null)`，复用 D112 的 `settled` 幂等守卫与 `finally` 里的 `inflight` 递减；本地是 `SIGKILL` + 复用 D159 的 `KILL_GRACE_MS` `reapTimer` 收敛期），收尾后摘 abort 监听，已 abort 的信号**不再开门 / 不再 spawn**；`src/index.ts`：`AbortController` 建在 `run()` **之前**（Runner 在 `apiFor` 里构造，signal 当场绑定），超时分支**先 `abort()` 再 `reject`**，`finally` 兜底 `abort()`（幂等）。**预算取舍**：不把外层提到「单目标最坏序列」（`attention` 最坏 = 1 条 ps + 最多 9 批 inspect，即 10 × 30s ≈ 300s，那样总览要等五分钟），改为**内层超时是唯一真相源、外层只做兜底**，外层取 3 × 单条预算 = 90s（`DSH_DOCKER_AGG_TIMEOUT_MS` 可覆盖，仅测试 / 排障）。返回契约不变：超时只污染自己那一格。回归：`test/aggregate-cancel.test.ts` 16 条（假 channel / 假 ChildProcess / 假宿主三套桩，端到端断言「abort 后底层真的收到取消」而不只是 `ok:false`）。**判别性已实测**：去掉超时分支的 `controller.abort()` → 3 条红；摘掉 `createRunner` 的 signal 透传 → 5 条红 |
+| D162 | 能力使用审计的出口走了 `ctx.logger`：真机验收（2026-10-07，DSH 0.2.1-alpha.1）实测插件经 `ctx.logger.info` 打的行**既不出现在宿主 stdout、也找不到落盘文件**——能看到的 `[dsh-docker]` 行全部是 `console.log` 调用点（mounted / config applied / agent tools registered / tier-gate；tier-gate 的日志出口默认就是 console，见 kit `tier-gate.ts`），而审计行的意义全在「出问题时翻得到」，走一个不可见的通道等于没写 | `src/audit.ts`：出口固定 `console.log`（行前缀已带 `[dsh-docker]`），**刻意不做参数**——出口是本模块的取舍、不是调用方的选择（文件头有 D162 锚点）；`auditCapabilityUse` / `audited` 因此去掉 logger 形参，`src/index.ts` 全部调用点随之瘦身；`test/capability-audit.test.ts` 与 `scripts/route-smoke.mjs` 的断言面改为 **console 捕获**（捕到的就是真宿主 stdout 上会出现的字节）。kit elevation 的授权行（begin / grant / expire / revoke / load）走 `ctx.logger` 是同一问题，因台账守卫「待修必须为 0」不能以未修条目入 kit 台账，记在根 ROADMAP 待办（kit 修好后两类行同通道，README 的表述同步） |
 
 ## 2. 编号字典：这段代码为什么长这样
 

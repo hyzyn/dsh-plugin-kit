@@ -2420,6 +2420,195 @@ await test('连接本机：下拉项接的是 connectLocal（哨兵被拦在换�
 })
 
 /* ------------------------------------------------------------------ *
+ * 就地提权：多能力 pending → 一条命令解锁全部（一次粘贴）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 为什么这一组用例必须存在：改前 `elevation` 是**单槽** state（`setElevation({capability})`），
+ * 面板开着时再点另一个开关会把前一个能力的面板**替换**掉、它的命令从界面消失（宿主侧 challenge
+ * 仍在 pending）。2026-09-26 的设置卡片截图实测：两次授权时刻差 14 秒——用户必须在宿主终端
+ * **粘贴两次**。逐能力记录 + 合并复制修掉的就是这件事：两个开关各点一次，界面上同时有两块面板
+ * 与一个「复制全部」，终端**粘贴一次**两行。
+ *
+ * 断言打在**渲染树**与**按钮交下去的字节**上（不只是纯函数）：纯函数对而接线错（按钮接错回调、
+ * 只复制了第一条、顺序反了）在真机上才暴露，正是离线冒烟要拦的那一类。
+ */
+function elevationApi() {
+  const exports_ = registration.factory((spec) => SEED[spec])
+  assert.ok(exports_.__elevation !== undefined, '缺少 __elevation 测试缝')
+  return exports_.__elevation
+}
+
+/** 面板组的渲染：回调用桩记录，配置值默认都关着（与「开关还没打开」的真实初态一致）。 */
+function renderElevationPanels(records, overrides = {}) {
+  const api = elevationApi()
+  const copied = []
+  const closed = []
+  const regenerated = []
+  const tree = api.view(records, {
+    now: overrides.now ?? 1_700_000_000_000,
+    copiedKey: overrides.copiedKey ?? '',
+    configured: overrides.configured ?? (() => false),
+    onCopy: (capability, command) => copied.push({ capability, command }),
+    onCopyAll: (text) => copied.push({ capability: api.COPY_ALL_KEY, command: text }),
+    onRegenerate: (capability) => regenerated.push(capability),
+    onClose: (capability) => closed.push(capability),
+    onDisableFirst: () => {},
+  })
+  return { api, tree, copied, closed, regenerated }
+}
+
+/** 合并按钮：从渲染树里找（而不是读入参），保证「界面上真的有」这件事被测到。 */
+function mergeButtonOf(tree) {
+  return treeFind(tree, (node) => node.type === 'button' && node.props?.key === 'copyAll')[0]
+}
+
+await test('就地提权：两个 pending → 合并按钮复制的内容 = 两条命令按发起顺序的换行连接（逐字节）', () => {
+  const api = elevationApi()
+  const expiresAt = 1_700_000_000_000 + 300_000
+  // 发起顺序：先点 allowMutations，再点 allowExec（数组顺序就是点击顺序）
+  const records = [
+    { capability: 'allowMutations', command: "touch '/home/u/.dsh/dsh-kit/grant-confirm/aaa'", expiresAt },
+    { capability: 'allowExec', command: "touch '/home/u/.dsh/dsh-kit/grant-confirm/bbb'", expiresAt },
+  ]
+  const { tree, copied } = renderElevationPanels(records)
+  const button = mergeButtonOf(tree)
+  assert.ok(button !== undefined, '两个 pending 时必须出「复制全部」按钮')
+
+  /*
+   * 驱动按钮的 onClick（真跑一次「点了会怎样」）：断言的是**交给复制动作的那个字符串**
+   * （桩里没有 navigator，剪贴板本身是浏览器的事）——内容错（少一条 / 顺序反 / 用 && 连接）
+   * 才是本用例要拦的。
+   */
+  button.props.onClick()
+  assert.equal(copied.length, 1, '点一次合并按钮应恰好触发一次复制')
+  const text = copied[0].command
+  const expected = records[0].command + '\n' + records[1].command
+  assert.equal(text, expected, '合并内容必须逐字节等于两条命令的换行连接')
+  assert.equal(
+    Buffer.from(text, 'utf8').toString('base64'),
+    Buffer.from(expected, 'utf8').toString('base64'),
+    '按字节比对（换行符形态也是契约）',
+  )
+  assert.equal(text.split('\n').length, 2, '两条命令 = 两行')
+  assert.ok(!text.includes('&&'), '不得用 && 连接（PS 5.1 不认）')
+  assert.ok(!text.includes('; '), '不得用 ; 连接（cmd 不认）')
+  assert.ok(text.indexOf(records[0].command) < text.indexOf(records[1].command), '顺序必须是发起顺序（先点的在前）')
+  assert.equal(copied[0].capability, api.COPY_ALL_KEY, '合并复制的反馈键必须与单条按钮隔离')
+
+  // 每块面板自己的单条复制按钮仍在（用户仍可只复制一条），且只复制自己那条
+  const singleButtons = treeFind(tree, (node) => node.type === 'button' && node.props?.key === 'copy')
+  assert.equal(singleButtons.length, 2, '两块面板各自保留单条复制按钮')
+  singleButtons[0].props.onClick()
+  assert.equal(copied[1].command, records[0].command, '单条复制只复制自己那条命令')
+  assert.equal(copied[1].capability, 'allowMutations', '单条复制的反馈键是能力名（与合并按钮互不串）')
+})
+
+await test('就地提权：单个 pending → 无合并按钮（那条命令就在自己的面板里）', () => {
+  const expiresAt = 1_700_000_000_000 + 300_000
+  const single = [{ capability: 'allowMutations', command: "touch '/tmp/a'", expiresAt }]
+  const { tree, api } = renderElevationPanels(single)
+  assert.equal(mergeButtonOf(tree), undefined, '只点过一个开关时不该出现「复制全部（1 条）」')
+  // 反面判据：纯判定同样为假（防止某天有人把「≥2」放宽成「≥1」而用例只看渲染树）
+  assert.equal(api.shouldOfferMerge(single, 1_700_000_000_000), false)
+  // 界面结构不变形：一块面板 + 一个单条复制按钮
+  assert.equal(treeFind(tree, (node) => node.props?.className === 'dk_elevPanel').length, 1)
+  assert.equal(treeFind(tree, (node) => node.type === 'button' && node.props?.key === 'copy').length, 1)
+})
+
+await test('就地提权：一个 granted 后 → 合并按钮只剩剩下那一条（组里还有别的能力没解锁）', () => {
+  const api = elevationApi()
+  const expiresAt = 1_700_000_000_000 + 300_000
+  const two = [
+    { capability: 'allowMutations', command: "touch '/tmp/a'", expiresAt },
+    { capability: 'allowExec', command: "touch '/tmp/b'", expiresAt },
+  ]
+  // allowMutations 先解锁：记录留痕（面板消失），命令清掉
+  const afterGrant = api.markGranted(two, 'allowMutations')
+  assert.equal(api.shouldOfferMerge(afterGrant, 1_700_000_000_000), true, '还有一条没解锁时按钮要留着')
+  assert.deepEqual(api.merge(afterGrant, 1_700_000_000_000), ["touch '/tmp/b'"], '只剩仍 pending 的那一条')
+  assert.equal(api.text(afterGrant, 1_700_000_000_000), "touch '/tmp/b'", '合并内容退化成那一行（没有多余换行）')
+
+  const { tree, copied } = renderElevationPanels(afterGrant)
+  const button = mergeButtonOf(tree)
+  assert.ok(button !== undefined, '一个 granted 后合并按钮仍在')
+  button.props.onClick()
+  assert.equal(copied[0].command, "touch '/tmp/b'", '按钮此刻只复制仍 pending 的那条')
+  // 已授权的那块面板消失，仍 pending 的那块还在
+  assert.equal(treeFind(tree, (node) => node.props?.className === 'dk_elevPanel').length, 1, '已授权的面板必须消失')
+
+  // 两条都解锁 → 组里没有可复制命令：留痕被收掉，按钮自然消失
+  const allGranted = api.markGranted(afterGrant, 'allowExec')
+  assert.deepEqual(allGranted, [], '全部解锁后整组清空（含留痕）')
+  assert.equal(
+    api.view(allGranted, { copiedKey: '', configured: () => false, onCopy() {}, onCopyAll() {}, onRegenerate() {}, onClose() {}, onDisableFirst() {} }),
+    null,
+    '全部结束后面板组不渲染',
+  )
+})
+
+await test('就地提权：过期的那条不进合并（复制过去只会让宿主落一个过期后才出现的文件）', () => {
+  const api = elevationApi()
+  const now = 1_700_000_000_000
+  const records = [
+    { capability: 'allowMutations', command: "touch '/tmp/a'", expiresAt: now - 1 },
+    { capability: 'allowExec', command: "touch '/tmp/b'", expiresAt: now + 300_000 },
+  ]
+  assert.deepEqual(api.merge(records, now), ["touch '/tmp/b'"], '过期的从合并里剔掉')
+  const { tree, copied } = renderElevationPanels(records, { now })
+  const button = mergeButtonOf(tree)
+  assert.ok(button !== undefined, '组里仍有两条记录时按钮在（只是内容少了一条）')
+  button.props.onClick()
+  assert.equal(copied[0].command, "touch '/tmp/b'", '合并按钮只复制仍 pending 的那些')
+  // 两条都过期 → 没有可复制的：按钮收起（不再承诺一个不可能发生的解锁）
+  const bothExpired = records.map((record) => ({ ...record, expiresAt: now - 1 }))
+  assert.equal(api.shouldOfferMerge(bothExpired, now), false)
+})
+
+await test('就地提权：✕ 只关一个能力的面板，另一个照常解锁（不撤销宿主 challenge）', () => {
+  const api = elevationApi()
+  const expiresAt = 1_700_000_000_000 + 300_000
+  const records = [
+    { capability: 'allowMutations', command: "touch '/tmp/a'", expiresAt },
+    { capability: 'allowExec', command: "touch '/tmp/b'", expiresAt },
+  ]
+  const { tree, closed } = renderElevationPanels(records)
+  const closeButtons = treeFind(tree, (node) => node.type === 'button' && node.props?.key === 'close')
+  assert.equal(closeButtons.length, 2, '每块面板各有自己的收起按钮')
+  closeButtons[0].props.onClick()
+  assert.deepEqual(closed, ['allowMutations'], '✕ 只收起被点的那一个能力')
+  // 关掉 A 之后 B 照常解锁：记录集里仍留着 B，合并内容只剩 B 那条
+  const afterClose = api.remove(records, 'allowMutations')
+  assert.deepEqual(api.merge(afterClose, 1_700_000_000_000), ["touch '/tmp/b'"])
+  assert.equal(api.shouldOfferMerge(afterClose, 1_700_000_000_000), false, '只剩一个 pending 时合并按钮收起')
+})
+
+await test('就地提权：两条命令各自独立——一条出错 / 在途不影响另一条的合并', () => {
+  const api = elevationApi()
+  const expiresAt = 1_700_000_000_000 + 300_000
+  const records = [
+    { capability: 'allowMutations', error: 'HTTP 429' },
+    { capability: 'allowExec', command: "touch '/tmp/b'", expiresAt },
+  ]
+  assert.deepEqual(api.merge(records, 1_700_000_000_000), ["touch '/tmp/b'"], '出错那条没有命令，不进合并')
+  assert.equal(api.shouldOfferMerge(records, 1_700_000_000_000), false, '只有一条可复制时不出按钮')
+  // 在途（begin 还没回）同样不参与合并
+  assert.deepEqual(api.merge([{ capability: 'allowExec' }], 1_700_000_000_000), [])
+})
+
+await test('就地提权：i18n 双份齐（新增键 zh/en 都在，且都进了产物）', () => {
+  const source = readFileSync(new URL('../client-src/index.js', import.meta.url), 'utf8')
+  for (const key of ['elev.copyAll', 'elev.copyAllHint', 'elev.copyAllCopied']) {
+    const hits = source.split(`'${key}':`).length - 1
+    assert.equal(hits, 2, `${key} 必须在 zh / en 两份目录里各出现一次（现在是 ${String(hits)} 次）`)
+  }
+  const decoded = decodeBundle(code)
+  assert.ok(decoded.includes('复制全部'), 'bundle 里应有合并按钮的中文兜底文案')
+  assert.ok(code.includes('dk_elevPanels'), 'bundle 里应有面板组的样式钩子')
+  assert.ok(code.includes('dk_elevMerge'), 'bundle 里应有合并复制行的样式钩子')
+})
+
+/* ------------------------------------------------------------------ *
  * 结果
  * ------------------------------------------------------------------ */
 

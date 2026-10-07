@@ -181,6 +181,8 @@ function makeCtx(config, options = {}) {
     settingsStored: {},
     ttyConfig: options.ttyConfig,
     disposers: [],
+    // 宿主日志捕获：info / warn 都进这里（其余宿主侧断言用）
+    logs: [],
     /**
      * 本插件 entry 的安装级配置（= apply 拿到的 config）。DSH ≥0.1.7 的
      * `settings.describe()` 返回的是「默认值 ← 组合 base ← 用户层」的 resolved 值，
@@ -202,7 +204,10 @@ function makeCtx(config, options = {}) {
       return () => {}
     }
     const child = {
-      logger: { info: () => {}, warn: () => {} },
+      logger: {
+        info: (msg) => { state.logs.push(msg) },
+        warn: (msg) => { state.logs.push(msg) },
+      },
       effect: (callback, _name) => {
         const dispose = callback()
         state.disposers.push(typeof dispose === 'function' ? dispose : () => {})
@@ -1183,6 +1188,143 @@ await test('重启路径：settings 命名空间已禁用时挂载 → 挂载即
   const config = await req('GET', '/config')
   assert.equal(config.status, 200, '禁用态下 /config 必须保持可读（卡片依赖）')
   assert.equal(config.body.config.enabled, false)
+})
+
+/* ------------------------------------------------------------------ *
+ * 7.5 能力使用审计（capability-use）：过闸的变更 / exec 每次一行
+ * ------------------------------------------------------------------ */
+
+const USE_PREFIX = '[dsh-docker] capability-use: '
+/*
+ * 审计行的出口是宿主 stdout（console.log，docker D162）——断言面因此是 console 捕获，
+ * 不是假 ctx 的 logger（那是其余宿主侧断言用的）。捕获行原样放行，不影响人工排障。
+ */
+const consoleLogs = []
+const origConsoleLog = console.log.bind(console)
+console.log = (...args) => {
+  consoleLogs.push(args.map((arg) => String(arg)).join(' '))
+  origConsoleLog(...args)
+}
+const useLines = () => consoleLogs.filter((line) => line.startsWith(USE_PREFIX))
+/** 前段字段无空格；detail 恒在行尾且值可含空格、可含像 key=value 的文本（exec 命令）——从最后一个 ` detail=` 处整段吃下。 */
+function parseUseLine(line) {
+  const fields = {}
+  const body = line.slice(USE_PREFIX.length)
+  const detailAt = body.lastIndexOf(' detail=')
+  const head = detailAt === -1 ? body : body.slice(0, detailAt)
+  for (const pair of head.split(' ')) {
+    const eq = pair.indexOf('=')
+    if (eq > 0) fields[pair.slice(0, eq)] = pair.slice(eq + 1)
+  }
+  if (detailAt !== -1) fields.detail = body.slice(detailAt + ' detail='.length)
+  return fields
+}
+/** 跑一条变更路由，断言它**恰好**产生一行 use 行且指定字段逐一对上。 */
+async function auditCase(sub, body, expected) {
+  const before = useLines().length
+  const res = await call('POST', sub, body)
+  assert.equal(res.status, 200, `${sub} 前置：路由本身要成功`)
+  const lines = useLines().slice(before)
+  assert.equal(lines.length, 1, `${sub} 应恰好产生一行 use 行，实际 ${String(lines.length)} 行`)
+  const fields = parseUseLine(lines[0])
+  for (const [key, value] of Object.entries(expected)) {
+    assert.equal(fields[key], value, `${sub}: 字段 ${key}`)
+  }
+  assert.equal(fields.target, '本机', `${sub}: target`)
+  assert.equal(fields.ok, 'true', `${sub}: ok`)
+  assert.notEqual(Number(fields.durationMs), NaN, `${sub}: durationMs 应是数字`)
+  return fields
+}
+
+await test('审计：八条变更 / exec 路由各恰好一行，字段与操作一一对应', async () => {
+  await auditCase('/images/remove', { target: '本机', ref: 'nginx:1.27' }, { capability: 'allowMutations', source: 'http', action: 'image.remove', ref: 'nginx:1.27' })
+  const prune = await auditCase('/images/prune', { target: '本机' }, { capability: 'allowMutations', source: 'http', action: 'image.prune' })
+  assert.equal('ref' in prune, false, 'prune 无目标：ref 字段应省略')
+  await auditCase('/networks/remove', { target: '本机', name: 'shop_default' }, { capability: 'allowMutations', source: 'http', action: 'network.remove', ref: 'shop_default' })
+  await auditCase('/networks/prune', { target: '本机' }, { capability: 'allowMutations', source: 'http', action: 'network.prune' })
+  await auditCase('/volumes/remove', { target: '本机', name: 'pgdata' }, { capability: 'allowMutations', source: 'http', action: 'volume.remove', ref: 'pgdata' })
+  await auditCase('/volumes/prune', { target: '本机' }, { capability: 'allowMutations', source: 'http', action: 'volume.prune' })
+  await auditCase('/action', { target: '本机', action: 'start', id: 'shop-web-1' }, { capability: 'allowMutations', source: 'http', action: 'container.start', ref: 'shop-web-1' })
+  await auditCase('/exec', { target: '本机', id: 'shop-web-1', command: 'echo hi' }, { capability: 'allowExec', source: 'http', action: 'exec', ref: 'shop-web-1', detail: 'code=0 cmd=echo hi' })
+})
+
+await test('审计：pull 流开记 start、收尾记 end（reason / code / durationMs）', async () => {
+  const before = useLines().length
+  const res = await call('GET', '/images/pull/stream?target=本机&ref=nginx:1.27')
+  assert.equal(res.status, 200)
+  const lines = useLines().slice(before)
+  assert.equal(lines.length, 2, 'pull 流应恰好产生 start + end 两行')
+  const start = parseUseLine(lines[0])
+  assert.equal(start.event, 'start')
+  assert.equal(start.action, 'image.pull')
+  assert.equal(start.ref, 'nginx:1.27')
+  assert.equal('ok' in start, false, 'start 行还没有结果：不带 ok')
+  const end = parseUseLine(lines[1])
+  assert.equal(end.event, 'end')
+  assert.equal(end.ok, 'true')
+  assert.equal(end.reason, 'pull-exit')
+  assert.equal(end.code, '0')
+  assert.notEqual(Number(end.durationMs), NaN)
+})
+
+await test('审计：只读路由与 /connect-local 产生零 use 行', async () => {
+  const before = useLines().length
+  for (const [method, sub, body] of [
+    ['POST', '/probe', { target: '本机' }],
+    ['POST', '/containers', { target: '本机' }],
+    ['POST', '/inspect', { target: '本机', id: 'shop-web-1' }],
+    ['POST', '/logs', { target: '本机', id: 'shop-web-1' }],
+    ['POST', '/stats', { target: '本机', ids: ['shop-web-1'] }],
+    ['POST', '/images', { target: '本机' }],
+    ['POST', '/networks', { target: '本机' }],
+    ['POST', '/volumes', { target: '本机' }],
+    ['POST', '/connect-local', {}],
+  ]) {
+    const res = await call(method, sub, body)
+    assert.equal(res.status, 200, `${sub} 前置`)
+  }
+  assert.equal(useLines().length - before, 0, '只读操作与 /connect-local 不该产生 use 行')
+})
+
+await test('审计：agent 工具 source=tool（不经 HTTP 路由，不与路由重复计数）', async () => {
+  const before = useLines().length
+  const action = state.tools.find((item) => item.name === 'docker_action')
+  assert.ok(action !== undefined)
+  await action.execute({ target: '本机', action: 'stop', id: 'shop-web-1' })
+  const exec = state.tools.find((item) => item.name === 'docker_exec')
+  assert.ok(exec !== undefined)
+  await exec.execute({ target: '本机', id: 'shop-web-1', command: 'ls -la' })
+  const lines = useLines().slice(before)
+  assert.equal(lines.length, 2, '两个工具各恰好一行')
+  const stop = parseUseLine(lines[0])
+  assert.equal(stop.source, 'tool')
+  assert.equal(stop.capability, 'allowMutations')
+  assert.equal(stop.action, 'container.stop')
+  assert.equal(stop.ref, 'shop-web-1')
+  const execLine = parseUseLine(lines[1])
+  assert.equal(execLine.source, 'tool')
+  assert.equal(execLine.capability, 'allowExec')
+  assert.equal(execLine.action, 'exec')
+  assert.equal(execLine.detail, 'code=0 cmd=ls -la')
+})
+
+await test('审计：403 不记（使用 = 过了闸）；开关恢复后一切照旧', async () => {
+  const before = useLines().length
+  const off = await call('POST', '/config', { allowMutations: false, allowExec: false })
+  assert.equal(off.status, 200)
+  const action = await call('POST', '/action', { target: '本机', action: 'stop', id: 'shop-web-1' })
+  assert.equal(action.status, 403)
+  const exec = await call('POST', '/exec', { target: '本机', id: 'shop-web-1', command: 'ls' })
+  assert.equal(exec.status, 403)
+  const pull = await call('GET', '/images/pull/stream?target=本机&ref=nginx:1.27')
+  assert.equal(pull.status, 403)
+  assert.equal(useLines().length - before, 0, '被闸挡回的请求不算使用')
+
+  // 恢复开关：后续用例（若有）不受影响，工具重新注册
+  const on = await call('POST', '/config', { allowMutations: true, allowExec: true })
+  assert.equal(on.status, 200)
+  assert.equal(toolNames().includes('docker_action'), true)
+  await auditCase('/action', { target: '本机', action: 'start', id: 'shop-web-1' }, { capability: 'allowMutations', source: 'http', action: 'container.start', ref: 'shop-web-1' })
 })
 
 /* ------------------------------------------------------------------ *
