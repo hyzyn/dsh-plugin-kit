@@ -665,11 +665,12 @@
 
 /* ---- 工具按钮 ---- */
 /*
- * 对齐宿主 Button size="sm"（ui-primitives/Button.module.css 的 .button + .sm + .outline）：
- * H28 → R8(--dsw-radius-sm)、12px 与 18px 成对的字号/行高、0.5px 中性发丝描边取
- * border-l3（宿主 .outline 用的档位；原先的 --tt-border 是 l1，比官方淡一档）。
- * 底色仍用本包的 --tt-input：令牌层保证「脱离宿主也画得出」，换成官方 outline 的 transparent
- * 会改变明暗两套皮肤下的观感，不在这轮「按钮族对齐」的点名范围内（见报告）。
+ * 对齐宿主 Button variant="outline" size="sm"（ui-primitives/Button.module.css 的
+ * .button + .sm + .outline）：H28 → R8(--dsw-radius-sm)、12px 与 18px 成对的字号/行高、
+ * 0.5px 中性发丝描边取 border-l3（宿主 .outline 用的档位；原先的 --tt-border 是 l1，
+ * 比官方淡一档）。底色与文字色也按官方 outline 取：transparent 底 + label-primary 字——
+ * 实心底（原先的 --tt-input）会让按钮在行底上浮成不透明白块，与宿主并排观感对不上
+ * （docker 的 .dk_btn 同一轮改的同一处，见那条注释）；文字用 label-2 会比宿主淡一档。
  */
 .tt_toolBtn {
   box-sizing: border-box;
@@ -682,8 +683,8 @@
   padding: 0 10px;
   border: 0.5px solid var(--dsw-alias-border-l3, var(--tt-border-strong));
   border-radius: var(--dsw-radius-sm);
-  background: var(--tt-input);
-  color: var(--tt-label-2);
+  background: transparent;
+  color: var(--tt-label);
   font-size: 12px;
   font-family: inherit;
   line-height: 18px;
@@ -693,11 +694,10 @@
 }
 .tt_toolBtn:hover:not(:disabled) {
   /*
-   * 只换底、不动描边：官方 .outline:hover 也只覆盖 background，而基类已经是 l3——
-   * 原来的 --tt-border-strong 是更淡一档的 l2，留在这里会让描边「一悬停就变浅」。
+   * 只换底、不动描边与文字：官方 .outline:hover 只覆盖 background——文字色若在这里
+   * 抬到 label，下面 .tt_btnDanger 的红字会在悬停时被这条更高权重的规则盖回灰色。
    */
   background: var(--dsw-alias-interactive-bg-hover, var(--tt-hover));
-  color: var(--tt-label);
 }
 .tt_toolBtn:active:not(:disabled) {
   /* 官方 .ghost:active 的按下底：比 hover 再深一档 */
@@ -711,6 +711,21 @@
 .tt_toolBtn:disabled {
   opacity: .4;
   cursor: not-allowed;
+}
+/*
+ * 危险变体（删除这类不可逆动作）＝宿主 plugin-manager「卸载」的 .danger 配方
+ * （conventions § 客户端半体 检查十一）：描边按钮骨架不变，红字 + 30% 红描边 +
+ * hover 底换 8% 红。--tt-danger 在本包定义为 state-error-primary 的别名，
+ * 按检查十一的别名展开口径与官方 token 等效。
+ * hover 必须带 :not(:disabled) 并写在上面的 .tt_toolBtn:hover 之后——同权重
+ * (0,3,0) 下源码顺序决定胜负，位置错了红色悬停底会被灰色盖掉。
+ */
+.tt_btnDanger {
+  color: var(--tt-danger);
+  border-color: color-mix(in srgb, var(--tt-danger) 30%, transparent);
+}
+.tt_btnDanger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--tt-danger) 8%, transparent);
 }
 /*
  * 图标按钮：正方形，边长就是本包紧凑档 --tt-h-sm。

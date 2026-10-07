@@ -9744,7 +9744,7 @@ function TtySettingsCard(props) {
                                   ] }),
                                   jsx('button', { type: 'button', className: 'tt_toolBtn', disabled: probeStates[host?.name]?.running === true, onClick: () => void testSshHost(host), title: t('btn.probeRowTitle'), children: probeStates[host?.name]?.running === true ? t('msg.testing') : t('btn.test') }),
                                   jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => startEditSshHost(host), children: t('btn.edit') }),
-                                  jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => removeSshHost(host?.name), children: t('btn.delete') }),
+                                  jsx('button', { type: 'button', className: 'tt_toolBtn tt_btnDanger', onClick: () => removeSshHost(host?.name), children: t('btn.delete') }),
                                 ],
                               }),
                               probeStates[host?.name] && probeStates[host?.name].text
@@ -9790,7 +9790,7 @@ function TtySettingsCard(props) {
                                 jsx('input', { type: 'checkbox', className: 'tt_cardCheckbox', checked: tunnel?.enabled !== false, title: t('check.tunnelEnabled'), onChange: (event) => toggleTunnelEnabled(tunnel?.name, event.target.checked) }),
                                 // 编辑：回填到下方表单（改端口/条目 = 换名字，按原始 name 定位保存）
                                 jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => startEditTunnel(tunnel), children: t('btn.edit') }),
-                                jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => removeTunnel(tunnel?.name), children: t('btn.delete') }),
+                                jsx('button', { type: 'button', className: 'tt_toolBtn tt_btnDanger', onClick: () => removeTunnel(tunnel?.name), children: t('btn.delete') }),
                               ],
                             }, String(tunnel?.name ?? ''))
                           }),
@@ -9907,7 +9907,7 @@ function TtySettingsCard(props) {
                                 jsx('span', { className: 'tt_sshHostName', children: String(hk?.host ?? '') + ':' + String(hk?.port ?? 22) }),
                                 jsx('span', { className: 'tt_sshHostTarget', children: hostKeyFingerprints(hk).map((fp) => 'sha256:' + fp).join(' / ') }),
                               ] }),
-                              jsx('button', { type: 'button', className: 'tt_toolBtn', onClick: () => void removeHostKey(hk), children: t('btn.delete') }),
+                              jsx('button', { type: 'button', className: 'tt_toolBtn tt_btnDanger', onClick: () => void removeHostKey(hk), children: t('btn.delete') }),
                             ],
                           }, String(hk?.host ?? '') + ':' + String(hk?.port ?? 22) + '#' + String(index))),
                         })]
