@@ -3,6 +3,9 @@
 > 执行对象：AI 代理。本文自包含，按 PR 顺序执行；每节末尾有可勾选验收项。
 > **状态**：**方案已定，代码未动（2026-10-07）**。§0 的威胁模型与 §1 的不变量是动手前必须先读的；
 > §2 给出现算事实与**一条决定成败的实现约束**。
+> **实测基准**：本文 §2.1 的三条事实全部是照着 **DSH `0.2.1-alpha.1`** 现算的。
+> 宿主是外部依赖，**它升级后这三条都可能变**——所以基准版本必须留在这里，
+> 且 `scripts/test/os-consent-scope.test.ts` 会拿它当升级绊线（版本对不上就报错，逼人回来复核）。
 > **编号纪律**：本方案**不预设任何 `Dxx`**；实施中挖出的缺陷按各包台账序列接在当时的最大号之后，
 > 编号增改属 [AI 协作边界](./conventions.md#ai-协作边界什么改动要先问) 的「先问」项。
 >
@@ -96,7 +99,7 @@ ctx.remote.$on('approval/request', function(request, next) { return answerApprov
 `approval/request` 在 forwarded-Remote 白名单里（`$NM/dsh-api-remotes/lib/types/remote-events.js:14`
 `{ event: 'approval/request', mode: 'waterfall' }`），所以它是**合法的 `ctx.remote.$on` 键**。
 
-**事实 2：第三方插件的 client 半体与宿主 UI 在同一个 JS realm，没有 iframe / 沙箱。**
+**事实 2：第三方插件的 client 半体与宿主 UI 在同一个 JS realm，没有 iframe / 沙箱、也没有 CSP 拦。**
 
 ```
 $NM/dsh-client-modules/lib/client.js:450-463
@@ -108,8 +111,22 @@ const defaultLoadBundle = (url) => { … el.src = url; document.head.append(el) 
 不是 iframe / `srcdoc` / worker（`dsh-client-*/lib` 下 `iframe|srcdoc` 零命中）。
 动态装入的半体更进一步：`new Function(...)` 后注册进 `globalThis.__ModuleLoader__`
 （`$NM/dsh-cordis-client-runner/lib/client.js:166,558`），该文件自己写明
-「This is API discipline, not a security boundary」。宿主也不发 CSP（`dsh-web-frontend/dist/index.html`
-无 CSP meta，webserver / frontend-static 不发该头）。
+「This is API discipline, not a security boundary」。
+
+**「页内脚本够得着官方面板」这条论证有两条腿，缺一条都不完整**（2026-10-07 review 指出此处
+原先只写了第一条）：
+
+1. **同 realm**（上面那段）：脚本与官方面板共享 `window` / `document` / `ctx`；
+2. **宿主不发 CSP**：实测 `dsh-web-frontend/dist/index.html` **0** 处 `Content-Security-Policy`，
+   `dsh-host-webserver` 与 `dsh-host-frontend-static` 也**都不发**该响应头
+   （唯一设它的地方是 `$NM/dsh-api-session-controller/lib/index.js:2361`，作用域仅
+   `/api/file` 的媒体响应，与页面无关）。
+
+第二条腿的意义要说准：**今天它让「够得着」更容易，但即便宿主加了 CSP，这条结论仍然成立**——
+CSP 管不了**同源**脚本。所以它不是「因为没 CSP 才成立」，而是「连 CSP 这层都没有」。
+`scripts/test/os-consent-scope.test.ts` 把两条腿都钉住：一旦宿主开始发 CSP，
+守卫会提醒回来复核（那说明宿主在往隔离方向走）。
+
 ⇒ 官方面板 `div[data-approval-key]` 与插件脚本共享 `window`/`document`。
 
 **事实 3：宿主确实有原生对话框的**能力**，且它的答案是宿主自读的。**
@@ -169,8 +186,11 @@ win32:  IFileOpenDialog（spawned worker + koffi COM，worker.cjs）
       不报错、不挂住（不变量 6、7）；
 - [ ] **审计行落 `console.log` 且不含凭据**（不变量 8）；
 - [ ] **§2.1 三条事实各有守卫**：宿主仍是页面 remote answerer、插件 client 仍是同源 script、
-      原生框仍只在 directory-picker 接缝。三处任一变化 → 红，逼人重读本文
-      （本文结论依赖它们；与 `scripts/test/exec-terminal-scope.test.ts` 同款：真实文本现算 + 反例）；
+      **宿主仍不发 CSP**、原生框仍只在 directory-picker 接缝。任一处变化 → 红，逼人重读本文
+      （本文结论依赖它们；与 `scripts/test/exec-terminal-scope.test.ts` 同款：真实文本现算 + 反例）。
+      **已落地（2026-10-07，PR3 完成）**：`scripts/test/os-consent-scope.test.ts`——
+      判据抽成纯函数、真实世界与反例**共用同一条代码路径**；宿主缺失时整块 `skipped`（响亮），
+      宿主在而文件缺失则**判红**；另有「基准版本对得上」的升级绊线；
 - [ ] **真机（macOS）**：点一次框 → 授权生效、审计行出现；**并且**用 CDP 在页面里跑
       `ctx.remote.$on('approval/request', …)` 抢答 —— 在形态 B 下**应当抢不到任何东西**
       （提权根本不走那条瀑布）。这一条是形态 B 与形态 A 的**判别实验**。

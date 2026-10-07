@@ -51,6 +51,9 @@ const DOCKER_README_ZH = 'packages/docker/README.md'
 const DOCKER_README_EN = 'packages/docker/README.en.md'
 const KIT_CAPABILITY = 'packages/kit/src/capability.ts'
 const ARCHITECTURE = 'docs/architecture.md'
+/** tty 中英两条「承载性前提」（无静态能力闸）——见 CLAIM_SITES 里的 A5 说明。 */
+const TTY_README_ZH = 'packages/tty/README.md'
+const TTY_README_EN = 'packages/tty/README.en.md'
 
 /**
  * 五处对外文案。每处给一个**锚点**（它必须存在）与**锚点句**必须命中的性质。
@@ -76,7 +79,13 @@ const CLAIM_SITES: ClaimSite[] = [
     anchor: 'const DOCKER_GUIDANCE',
     // 公告是一整行超长字符串：窗口要够长才能覆盖到 exec 那半句
     window: 4000,
-    must: [/一次性/, /不受它门控|不受.{0,8}门控/],
+    /*
+     * 「不受…门控」中间的字符数**不许写小**：本判据第一版写的是 `{0,8}`，于是把措辞改得更准
+     * （「不受它门控」→「不受 `allowExec` 门控」）反而会红——而文件头写着「报红就改文案、
+     * 不许放松判据」，那就把人推向**更差**的措辞。这里放到 24，并用「不跨句」兜住范围
+     * （句号 / 分号 / 换行即止，免得窗口里的另一句话把这条凑出来）。
+     */
+    must: [/一次性/, /不受[^。；;！\n]{0,24}门控/],
   },
   {
     name: 'docker README（zh）安全模型',
@@ -119,6 +128,26 @@ const CLAIM_SITES: ClaimSite[] = [
     anchor: '**同一条边界还适用于「能力面」**',
     window: 900,
     must: [/不检查 `allowExec`/, /ttyTerminal/],
+  },
+  /*
+   * A5（2026-10-07 review 指出）：上轮改了 tty README 中英两条「承载性前提」——即
+   * 「`ttyTerminal` / WS `spawn` 是没有静态能力闸的命令面」——却是**零判据**。
+   * 那两句正是本文件整套论证的**承重墙**：docker 的 `allowExec` 之所以「只管一次性通道」，
+   * 前提就是「交互式那条另有归属、且它自己没有静态闸」。少了判据，它被删掉不会有人知道。
+   */
+  {
+    name: 'tty README（zh）无静态能力闸',
+    path: TTY_README_ZH,
+    anchor: '**`ttyTerminal` / WS `spawn` 是「没有静态能力闸」的命令面**',
+    window: WINDOW_DEFAULT,
+    must: [/不受任何 `DSH_\*_ALLOW_\*` 管辖/, /ProxyCommand/],
+  },
+  {
+    name: 'tty README（en）no static capability gate',
+    path: TTY_README_EN,
+    anchor: '**`ttyTerminal` / WS `spawn` is a command surface with no static capability gate**',
+    window: WINDOW_DEFAULT,
+    must: [/not governed by any `DSH_\*_ALLOW_\*`/, /ProxyCommand/],
   },
 ]
 
@@ -205,6 +234,25 @@ describe('allowExec 的作用域：文案层（五处锚点句都得把两条通
     expect(claimViolations(realFiles())).toEqual([])
   })
 
+  /*
+   * A4 的**直接**防护：光靠「真实文本通过」是不够的——真实文本只覆盖**当前**那种措辞，
+   * 而 A4 说的是「把措辞改得**更准**会被误判成红」。所以这里直接对那条正则做单元测试，
+   * 把「更准的写法」与「凑数的写法」两种输入都钉住。
+   */
+  it('「不受…门控」的正则容得下更准的措辞，但挡住跨句凑数（A4）', () => {
+    const site = CLAIM_SITES.find((entry) => entry.name === 'docker agent 公告（DOCKER_GUIDANCE）')
+    expect(site, '找不到公告那条 claim site').toBeDefined()
+    const gate = site?.must.find((pattern) => pattern.source.includes('门控'))
+    expect(gate, '公告那条里找不到「门控」判据').toBeDefined()
+    const matches = (text: string): boolean => new RegExp(gate?.source ?? 'x').test(text)
+    // 应当命中：不论措辞长短，只要在同句里点明「不受谁的门控」
+    expect(matches('不受它门控'), '旧措辞必须仍命中').toBe(true)
+    expect(matches('不受 `allowExec` 门控'), '**更准的措辞必须命中**（A4：这条曾经误红）').toBe(true)
+    expect(matches('不受 docker 的 allowExec 开关门控'), '更长的同句写法也要命中').toBe(true)
+    // 应当不命中：跨句凑数（另起一句里出现「门控」不能算数）
+    expect(matches('不受影响。这句话里另有门控二字。'), '跨句凑数必须被挡住').toBe(false)
+  })
+
   it('判据不是恒绿：锚点句本身真的被取到并用上了', () => {
     // 抽到的锚点句长度必须远大于空串（否则 must 正则会因为空串而命中 0 次，恒红或恒绿都可能）
     const files = realFiles()
@@ -230,9 +278,18 @@ describe('allowExec 的作用域：反例层（旧措辞必须能让守卫变红
     expect(violations.join('\n'), '退回笼统说法必须被抓住').toMatch(/退回|一次性|不受它门控/)
   })
 
-  it('公告删掉「不受它门控」那半句 → 红', () => {
+  it('公告删掉「不受…门控」那半句 → 红', () => {
     const files = realFiles()
-    const src = mutate(read(DOCKER_SRC), '**不受它门控**（只读模式下也能用）', '')
+    /*
+     * 针**从真实文本里现取**，不写死措辞：写死的话，一旦有人把这句话改得更准
+     * （本文件已经历过一次：「不受它门控」→「不受 `allowExec` 门控」），
+     * 这个反例就会以「fixture 替换没匹配上」的形式炸掉——**报的是反例自己的错，
+     * 而不是被测物的错**，读起来完全误导（A4 的第二次踩坑）。
+     */
+    const current = read(DOCKER_SRC)
+    const needle = /不受[^。；;！\n]{0,24}门控/.exec(current)?.[0]
+    expect(needle, '公告里找不到「不受…门控」这句（判据要跟着改）').toBeDefined()
+    const src = mutate(current, needle ?? '', '')
     files.set(DOCKER_SRC, src)
     expect(claimViolations(files).join('\n')).toMatch(/公告.*锚点句缺少/)
   })
