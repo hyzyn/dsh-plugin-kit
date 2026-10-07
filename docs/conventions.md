@@ -29,6 +29,7 @@
 | **能力开关「就地提权」的当前权威实施方案**（2026-09-26 已按它落地：两条通道、落点、威胁模型、逐 PR 顺序；实施偏差见其附录 C。原先的 `…-plan.v2.md` 已按命名规范改名成本文件名） | L0 [`docs/capability-elevation-plan.md`](./capability-elevation-plan.md) |
 | **能力开关「就地提权」方案的 v1（已删除，仅历史）**——它设计的「宿主终端确认码」通道**在代码里不存在**（`CapabilityGrantVia` 只有一个值 `'file'`），保留只为追溯取舍过程；**不要照着执行**（改动去上面那份） | 冻结指针 `git show 79ca434e:docs/capability-elevation-plan.md`（223 行）· 检索入口见 [`ROADMAP.md` 的「已由 L0 资产承接」表](../ROADMAP.md) |
 | **插件工具接入会话权限档位（tier gate）的当前权威实施方案**（2026-10-07 已按它落地 PR1–PR4：决策矩阵、tty/docker 分类表与接线、守卫与单测；R1–R4 决议与实施偏差见其附录 B，真机验收跑到哪一格以其 §7 实测记录为准） | L0 [`docs/permission-tier-plan.md`](./permission-tier-plan.md) |
+| **能力开关「OS 级同意」通道的立项与结论**（2026-10-07 立项：补齐 `capability-elevation-plan.md` §9 后置的那一项。**结论是本轮不按「挡页内脚本的正解」落地**——原生对话框换不掉回答通道，页内脚本仍够得着；§4 给出唯一有正收益的形态「原生框替粘贴」，且它是 UX 改进、不是安全等级提升） | L0 [`docs/os-consent-plan.md`](./os-consent-plan.md) |
 | AI 真机测试约束 | L0 [`docs/agent-real-test.md`](./agent-real-test.md) |
 | 术语 | L0 [`docs/glossary.md`](./glossary.md) |
 | 发布流程 | L0 [`RELEASING.md`](../RELEASING.md) |
