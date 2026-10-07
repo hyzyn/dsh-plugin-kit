@@ -853,8 +853,8 @@ abort）、客户端断开静默中止。各自只差执行器与结束原因：
   进度流拆 start / end 两行（宿主中途挂掉时至少 start 还在）。**出口是 `console.log`**
   （docker D162：真机实测 `ctx.logger` 的行在 0.2.x 宿主上既不进 stdout 也不落盘，而审计行的
   意义全在「出问题时翻得到」；tier-gate 的日志出口同此取向）——跑 `dsh web` 的那个终端里
-  就能看到、可 grep。kit elevation 的授权行目前仍走 `ctx.logger`（同问题记在根 ROADMAP
-  待办 11，kit 修好后两类行同通道）。**代价**：exec 的命令会记进行尾 `detail`（连同退出码，
+  就能看到、可 grep。kit elevation 的授权行同走宿主
+  stdout（**kit D14**，两类行同通道，可对照检索）。**代价**：exec 的命令会记进行尾 `detail`（连同退出码，
   如 `detail=code=0 cmd=ls -la /app`），整段截断 200 字符、控制字符转义成 `\n` 等字面量——
   行是给人看的，就得接受它出现在终端可见的日志流里，与 elevation「nonce 绝不进日志」是
   同一类取舍的正面。docker 报错也算一次使用（`ok=false` + `detail=` 截断后的错误文案）；

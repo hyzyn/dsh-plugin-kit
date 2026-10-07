@@ -32,7 +32,7 @@
     }
   },
   "dependencies": {
-    "@hyzyn/dsh-kit": "0.5.1",
+    "@hyzyn/dsh-kit": "0.5.2",
     "js-yaml": "^4.1.0"
   },
   "devDependencies": {

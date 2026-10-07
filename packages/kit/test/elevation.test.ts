@@ -11,7 +11,7 @@
 import { existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { KIT_DIR_NAME, GrantStore, auditLoadedGrants, createElevationManager } from '../src/index.js'
 import type { ElevationBegin, ElevationManager, ElevationOptions } from '../src/index.js'
 
@@ -19,11 +19,28 @@ const ENV = 'DSH_TEST_ALLOW_THING'
 const OTHER = 'DSH_TEST_ALLOW_OTHER'
 const IS_WINDOWS = process.platform === 'win32'
 
+/*
+ * 审计行的出口是宿主 stdout（console.log，kit D14）——测试用 console 捕获当接缝，
+ * 捕到的就是「真宿主 stdout 上会出现的字节」。harness 的 `events` 只剩 WARN 路
+ * （removeFile 的 best-effort 告警还走注入的 logger）。
+ */
+const consoleLines: string[] = []
+let consoleSpy: ReturnType<typeof vi.spyOn>
+beforeEach(() => {
+  consoleLines.length = 0
+  consoleSpy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+    consoleLines.push(args.map((arg) => String(arg)).join(' '))
+  })
+})
+afterEach(() => {
+  consoleSpy.mockRestore()
+})
+
 interface Harness {
   home: string
   confirmDir: string
   store: GrantStore
-  /** 审计行（info 与 warn 都进这里）。 */
+  /** best-effort 告警（warn 路还走注入的 logger）；审计行已改走 stdout，见 consoleLines。 */
   events: string[]
   /** `onGrantChange` 收到的 (env, granted)。 */
   changes: Array<[string, boolean]>
@@ -101,7 +118,7 @@ describe('elevation：begin 与确认文件', () => {
     expect(dirname(path)).toBe(h.confirmDir)
     expect(basename(path)).toMatch(/^[0-9a-f]{32}$/)
     expect(existsSync(path)).toBe(false)
-    expect(h.events.some((line) => line.includes('elevation: begin'))).toBe(true)
+    expect(consoleLines.some((line) => line.includes('elevation: begin'))).toBe(true)
     if (!IS_WINDOWS) {
       expect(readdirSync(h.confirmDir)).toEqual([])
     }
@@ -114,7 +131,7 @@ describe('elevation：begin 与确认文件', () => {
     await until(() => h.store.has(ENV))
     expect(existsSync(path)).toBe(false)
     expect(h.changes).toEqual([[ENV, true]])
-    expect(h.events.some((line) => line.includes('elevation: grant'))).toBe(true)
+    expect(consoleLines.some((line) => line.includes('elevation: grant'))).toBe(true)
     expect(h.manager.status(ENV)).toEqual({ status: 'granted', via: 'file' })
   })
 
@@ -137,8 +154,8 @@ describe('elevation：begin 与确认文件', () => {
   it('审计行不含 nonce / 路径（日志会落盘，凭据不许进日志）', () => {
     const h = mount()
     const path = pathOf(h.begin().command)
-    expect(h.events.length).toBeGreaterThan(0)
-    for (const line of h.events) {
+    expect(consoleLines.length).toBeGreaterThan(0)
+    for (const line of consoleLines) {
       expect(line).not.toContain(basename(path))
       expect(line).not.toContain(path)
     }
@@ -186,7 +203,7 @@ describe('elevation：时效、限流与撤销', () => {
     const h = mount({ ttlMs: 40 })
     const path = pathOf(h.begin().command)
     expect(h.manager.status(ENV).status).toBe('pending')
-    await until(() => h.events.some((line) => line.includes('elevation: expire')))
+    await until(() => consoleLines.some((line) => line.includes('elevation: expire')))
     expect(h.store.has(ENV)).toBe(false)
     expect(h.manager.status(ENV)).toEqual({ status: 'none' })
     expect(existsSync(path)).toBe(false)
@@ -235,7 +252,7 @@ describe('elevation：时效、限流与撤销', () => {
       [ENV, true],
       [ENV, false],
     ])
-    expect(h.events.some((line) => line.includes('elevation: revoke'))).toBe(true)
+    expect(consoleLines.some((line) => line.includes('elevation: revoke'))).toBe(true)
     expect(h.manager.status(ENV)).toEqual({ status: 'none' })
   })
 
@@ -273,45 +290,35 @@ describe('elevation：时效、限流与撤销', () => {
 describe('auditLoadedGrants：持久授权的「载入」也要留痕', () => {
   const UNGRANTED = 'DSH_TEST_ALLOW_UNGRANTED'
 
-  /** 收集审计行的小 logger。 */
-  function collector(): { lines: string[]; logger: { info(m: string): void; warn(m: string): void } } {
-    const lines: string[] = []
-    return { lines, logger: { info: (m) => lines.push(m), warn: (m) => lines.push(`WARN ${m}`) } }
-  }
-
   it('逐条打出已载入的 file 授权（含 via 与**人类可读**的时刻），未授权的一句不打', () => {
     const root = mkdtempSync(join(tmpdir(), 'kit-elev-audit-'))
     try {
       const store = new GrantStore(join(root, KIT_DIR_NAME))
       store.grant(ENV)
       store.grant(OTHER)
-      const { lines, logger } = collector()
+      auditLoadedGrants(store, [ENV, OTHER, UNGRANTED], '[dsh-test]')
 
-      auditLoadedGrants(store, [ENV, OTHER, UNGRANTED], logger, '[dsh-test]')
-
-      expect(lines).toHaveLength(2)
-      expect(lines[0]).toContain(`[dsh-test] elevation: load capability=${ENV} via=file grantedAt=`)
+      expect(consoleLines).toHaveLength(2)
+      expect(consoleLines[0]).toContain(`[dsh-test] elevation: load capability=${ENV} via=file grantedAt=`)
       // 时刻是 ISO（审计要能直接读），不是裸 Unix 秒
       const grantedAt = store.source(ENV)?.grantedAt ?? 0
-      expect(lines[0]).toContain(new Date(grantedAt * 1000).toISOString())
-      expect(lines.join('\n')).not.toContain(UNGRANTED)
+      expect(consoleLines[0]).toContain(new Date(grantedAt * 1000).toISOString())
+      expect(consoleLines.join('\n')).not.toContain(UNGRANTED)
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
   })
 
   it('只有 has() 的最小存储：说出「有授权」，但**不编**一个时刻', () => {
-    const { lines, logger } = collector()
-    auditLoadedGrants({ has: (env) => env === ENV }, [ENV, UNGRANTED], logger, '[dsh-test]')
-    expect(lines).toEqual([`[dsh-test] elevation: load capability=${ENV} via=file grantedAt=unknown`])
+    auditLoadedGrants({ has: (env) => env === ENV }, [ENV, UNGRANTED], '[dsh-test]')
+    expect(consoleLines).toEqual([`[dsh-test] elevation: load capability=${ENV} via=file grantedAt=unknown`])
   })
 
   it('什么都没授权时一行都不写（不制造「看起来有事」的噪音）', () => {
     const root = mkdtempSync(join(tmpdir(), 'kit-elev-audit-'))
     try {
-      const { lines, logger } = collector()
-      auditLoadedGrants(new GrantStore(join(root, KIT_DIR_NAME)), [ENV, OTHER], logger)
-      expect(lines).toEqual([])
+      auditLoadedGrants(new GrantStore(join(root, KIT_DIR_NAME)), [ENV, OTHER])
+      expect(consoleLines).toEqual([])
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

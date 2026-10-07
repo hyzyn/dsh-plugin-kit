@@ -1,5 +1,5 @@
 import type { CapabilityGrantSource, CapabilityGrantVia, GrantStore } from './grant-store.js';
-/** 就地提权需要的日志形状（插件的 logger 子集）。 */
+/** 管理器内部 best-effort 告警（确认文件清理失败等）需要的日志形状——审计行不走它（kit D14）。 */
 export interface ElevationLogger {
     info(message: string): void;
     warn(message: string): void;
@@ -77,12 +77,14 @@ export declare function createElevationManager(options: ElevationOptions): Eleva
  * 的能力，今天一开机就静默开着」在日志里与界面上都看不见（宿主原来的四条审计只覆盖
  * begin / grant / expire / revoke，**load 不在内**）。这一行就是为了让那次「静默继承」留下痕迹。
  *
+ * 出口走 console 而不是插件的 `ctx.logger`（kit D14，理由见 `createElevationManager` 内
+ * `audit()` 处的注释）。
+ *
  * 只报 `store` 里的记录（`file` 通道）：环境变量通道的授权由启动环境本身表达，界面另有说明。
- * 与其它审计行同样**不含 nonce 与路径**（日志会落盘）。
+ * 与其它审计行同样**不含 nonce 与路径**（stdout 会进终端回滚）。
  *
  * @param store - 授权存储（或任何实现 `source?()` 的最小对象）。
  * @param capabilities - 本插件关心的能力环境变量名（没授权的不会输出）。
- * @param logger - 插件的 logger 子集。
  * @param logPrefix - 审计行前缀（如 `[dsh-docker]`）。
  */
-export declare function auditLoadedGrants(store: CapabilityGrantSource, capabilities: readonly string[], logger: ElevationLogger, logPrefix?: string): void;
+export declare function auditLoadedGrants(store: CapabilityGrantSource, capabilities: readonly string[], logPrefix?: string): void;

@@ -3556,7 +3556,7 @@ const plugin = definePlugin({
          * 「静默继承」必须在日志里留下痕迹（kit D09）。刻意放在 `enabled` 判定**之前**：授权是宿主级的，
          * 与插件这次是否启用无关。
          */
-        auditLoadedGrants(grantStore, [CAP_PROXY_COMMAND.env], { info: (msg) => ctx.logger.info(msg), warn: (msg) => ctx.logger.warn(msg) }, '[dsh-tty]');
+        auditLoadedGrants(grantStore, [CAP_PROXY_COMMAND.env], '[dsh-tty]');
         // volatile 字段解析后是 `{ get() }` 引用，先还原成纯数据（见 @hyzyn/dsh-kit 的 plainConfig）。
         const config = plainConfig((rawConfig ?? {}));
         if (config?.enabled === false)

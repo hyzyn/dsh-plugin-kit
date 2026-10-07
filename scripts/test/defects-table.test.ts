@@ -137,7 +137,7 @@ describe('反例 1：L0 查表的数字写错 → 必须报出来', () => {
   it('把 kit 那行的两段范围合成一段 → conventions.kit.shape 差异', () => {
     const fixture = mutate(
       real.conventions,
-      '`D06`–`D13` 是**本包自研**',
+      '`D06`–`D14` 是**本包自研**',
       '`D12` 起是**本包自研**',
     )
     const diffs = checkWithConventions(fixture)
@@ -145,7 +145,7 @@ describe('反例 1：L0 查表的数字写错 → 必须报出来', () => {
   })
 
   it('把 kit 行的自研段停在旧号（D06–D05）→ conventions.kit.own 差异', () => {
-    const fixture = mutate(real.conventions, '`D06`–`D13` 是**本包自研**', '`D05`–`D05` 是**本包自研**')
+    const fixture = mutate(real.conventions, '`D06`–`D14` 是**本包自研**', '`D05`–`D05` 是**本包自研**')
     const diffs = checkWithConventions(fixture)
     expect(kinds(diffs)).toContain('conventions.kit.own')
   })
@@ -183,7 +183,7 @@ describe('反例 2：「接在 Dxx 之后」写成旧号 → 必须报出来', (
   })
 
   it('kit 的三处「接在 D12 之后」只要有一处写旧号就报 → ledger.nextAnchor', () => {
-    const fixture = mutate(real.ledgers.kit, '直接接在 `D13` 之后编号', '直接接在 `D05` 之后编号')
+    const fixture = mutate(real.ledgers.kit, '直接接在 `D14` 之后编号', '直接接在 `D05` 之后编号')
     expect(kinds(checkWithLedger('kit', fixture))).toContain('ledger.nextAnchor')
   })
 

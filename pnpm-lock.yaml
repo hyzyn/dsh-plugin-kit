@@ -110,7 +110,7 @@ importers:
         specifier: ^3.18.4
         version: 3.18.4
       '@hyzyn/dsh-kit':
-        specifier: 0.5.1
+        specifier: 0.5.2
         version: link:../kit
       js-yaml:
         specifier: ^4.1.0
@@ -141,7 +141,7 @@ importers:
         specifier: ^3.18.4
         version: 3.18.4
       '@hyzyn/dsh-kit':
-        specifier: 0.5.1
+        specifier: 0.5.2
         version: link:../kit
       ssh2:
         specifier: ^1.17.0
@@ -178,7 +178,7 @@ importers:
         specifier: ^3.18.4
         version: 3.18.4
       '@hyzyn/dsh-kit':
-        specifier: 0.5.1
+        specifier: 0.5.2
         version: link:../kit
       js-yaml:
         specifier: ^4.1.0
@@ -238,7 +238,7 @@ importers:
         specifier: ^3.18.4
         version: 3.18.4
       '@hyzyn/dsh-kit':
-        specifier: 0.5.1
+        specifier: 0.5.2
         version: link:../kit
       js-yaml:
         specifier: ^4.1.0
@@ -266,7 +266,7 @@ importers:
         specifier: ^3.18.4
         version: 3.18.4
       '@hyzyn/dsh-kit':
-        specifier: 0.5.1
+        specifier: 0.5.2
         version: link:../kit
     devDependencies:
       '@deepseek-ai/cordis':
@@ -291,7 +291,7 @@ importers:
         specifier: ^3.18.4
         version: 3.18.4
       '@hyzyn/dsh-kit':
-        specifier: 0.5.1
+        specifier: 0.5.2
         version: link:../kit
       js-yaml:
         specifier: ^4.1.0
@@ -319,7 +319,7 @@ importers:
         specifier: ^3.18.4
         version: 3.18.4
       '@hyzyn/dsh-kit':
-        specifier: 0.5.1
+        specifier: 0.5.2
         version: link:../kit
     devDependencies:
       '@deepseek-ai/cordis':
@@ -341,7 +341,7 @@ importers:
         specifier: link:../../scripts/dsh-peer-stub
         version: link:../../scripts/dsh-peer-stub
       '@hyzyn/dsh-kit':
-        specifier: 0.5.1
+        specifier: 0.5.2
         version: link:../kit
       js-yaml:
         specifier: ^4.1.0
@@ -366,7 +366,7 @@ importers:
         specifier: ^3.18.4
         version: 3.18.4
       '@hyzyn/dsh-kit':
-        specifier: 0.5.1
+        specifier: 0.5.2
         version: link:../kit
       '@xterm/headless':
         specifier: ^5.5.0

@@ -172,9 +172,11 @@ HTTP，也能自己填 `Sec-Fetch-Site: same-origin`——那是请求头不是�
 - `GrantStore` / `createElevationManager({ confirmDir, store, logger, onGrantChange })` ——
   授权存储与就地提权管理器。`onGrantChange` **必填**：授权到达与撤销都要回调宿主重算
   （少了它，症状是「授权成功但工具没注册」或者「撤销了工具还开着」）；
-- `auditLoadedGrants(store, capabilities, logger, logPrefix?)` —— **启动期审计**：把盘上已有的
+- `auditLoadedGrants(store, capabilities, logPrefix?)` —— **启动期审计**：把盘上已有的
   带外授权逐条打出来（`elevation: load capability=… via=file grantedAt=…`）。不带它，重启后
-  「静默继承」的授权在日志里查不到（**kit D09**）。
+  「静默继承」的授权在日志里查不到（**kit D09**）。审计行（含管理器的 begin / grant / expire /
+  revoke）的出口是 **stdout（console.log）**，不是插件的 `ctx.logger`——真机实测后者在 0.2.x
+  宿主上无处可见（**kit D14**，与 tier-gate 的日志出口同一取向）。
 
 **已知限制**（经复核确认，刻意不修，别当缺陷重报）：运行期改 / 删授权文件**不生效**（要重启才
 读到——删文件当撤销是容易误以为生效的一侧，界面上的「撤销宿主授权」才是正路）；授权记录的 key 是
@@ -187,7 +189,7 @@ apply(ctx) {
   const paths = capabilityPaths(dshHome())
   const store = sharedGrantStore(paths.dir)               // 必须在第一次 capabilityGranted 之前
   bindCapabilitySources(ctx, store)
-  auditLoadedGrants(store, [CAP.env], logger, '[dsh-docker]')   // 持久授权的「载入」也要留痕
+  auditLoadedGrants(store, [CAP.env], '[dsh-docker]')         // 持久授权的「载入」也要留痕
 }
 // 有效值 = 配置值 && 授权；HTTP 侧给 true 而无授权直接 400（不能凭空升）
 if (patch.allowMutations === true && !capabilityGranted(CAP)) return writeJson(res, 400, { error: capabilityDeniedMessage(CAP, { inPlace: true }) })

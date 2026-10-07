@@ -896,9 +896,8 @@ read-only first:
   host dies mid-stream, at least the start line remains). **The outlet is `console.log`** (docker D162: on a real
   host, `ctx.logger` lines were measured to reach neither the host's stdout nor any file, and an audit line whose
   whole point is "findable when something goes wrong" is worthless in an invisible channel; tier-gate's log outlet
-  makes the same call) — the terminal running `dsh web` shows them, grep works. Kit elevation's authorization
-  lines currently still go through `ctx.logger` (same issue, recorded as item 11 in the root ROADMAP; once kit is
-  fixed both line families share one channel). **The cost**: the exec command is recorded in the
+  makes the same call) — the terminal running `dsh web` shows them, grep works. Kit elevation's authorization lines share the same stdout outlet
+  (kit D14 — both line families on one channel, searchable side by side). **The cost**: the exec command is recorded in the
   trailing `detail` field (together with the exit code, e.g. `detail=code=0 cmd=ls -la /app`), truncated to 200
   characters overall with control characters escaped as `\n` literals — a line meant for humans to read has to
   accept appearing in the terminal-visible log stream, the same trade-off in the positive direction as elevation's

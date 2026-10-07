@@ -793,7 +793,7 @@ const plugin = definePlugin({
          * 刻意放在 `enabled` 判定**之前**：授权是宿主级的、与插件这次是否启用无关；插件这次是禁用态时
          * 反而更该说一句（「盘上有授权，但插件没开」与「点了没反应」是两回事）。
          */
-        auditLoadedGrants(grantStore, [CAP_MUTATIONS.env, CAP_EXEC.env], { info: (msg) => ctx.logger.info(msg), warn: (msg) => ctx.logger.warn(msg) }, '[dsh-docker]');
+        auditLoadedGrants(grantStore, [CAP_MUTATIONS.env, CAP_EXEC.env], '[dsh-docker]');
         // volatile 字段解析后是 `{ get() }` 引用，先还原成纯数据（见 @hyzyn/dsh-kit 的 plainConfig）。
         const config = plainConfig((rawConfig ?? {}));
         /*

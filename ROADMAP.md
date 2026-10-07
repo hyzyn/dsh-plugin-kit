@@ -281,7 +281,7 @@ bash / fs 工具；插件工具完全不受档位约束——`tty_run` / `tty_se
 [docs/permission-tier-plan.md](./docs/permission-tier-plan.md)。编号未动（实施中挖出的缺陷按
 各包序列、动手时先问）。
 
-### 11. kit elevation 的审计行改走 stdout（与 docker D162 同一课）
+### 11. ✅ kit elevation 的审计行改走 stdout（与 docker D162 同一课）
 
 **真机发现（2026-10-07，DSH 0.2.1-alpha.1）**：插件经 `ctx.logger.info` 打的行**既不出现在
 宿主 stdout、也找不到落盘文件**——能看到的 `[dsh-docker]` 行全部是 `console.log` 调用点。
@@ -295,10 +295,12 @@ load，即 kit D09 的可见性承诺）走的全是 `ctx.logger`，等于在真
 docker 与 tty 两个消费包的调用点与测试要同步；kit 版本一动，全仓的 kit 钉子（精确版本）
 跟着走。
 
-**怎么修**：`audit()` 与 `auditLoadedGrants()` 的出口改 `console.log`（行前缀与格式不变，
-`ElevationOptions.logger` 保留给 `removeFile` 的 best-effort 告警），`/elevate` 相关测试的
-断言面从注入 logger 改为 console 捕获；两包 README 里「审计行可见性」的表述同步。修好后
-docker README 已知限制里「与 kit elevation 的授权行同通道」那句的保留条件即可删掉。
+**状态**：**同日修复（2026-10-07，kit 0.5.2 / kit D14）**——`audit()` 与 `auditLoadedGrants()`
+出口固定 `console.log`（前缀与格式不变；`ElevationOptions.logger` 保留给 removeFile 告警），
+`auditLoadedGrants` 去掉 logger 形参（docker / tty 两个调用点同步），三份 elevate 相关测试的
+断言面改为 console 捕获；kit 台账记 **kit D14**（已修 14），conventions 范围表与守卫 fixture
+跟到 D14，全仓 9 个 kit 钉子 bump 0.5.1 → 0.5.2。kit 修好后两类行同通道，docker README
+的保留条件已删。
 
 ## 已完成（落点 + 门槛）
 
@@ -728,6 +730,21 @@ job（它已装 pinned dsh），放在 `Install dsh CLI` 之后、`live-smoke` �
 **门槛**：`scripts/test/dsh-app-boot.test.ts` 26 条用例（含两种 npm 布局、三级优先级、
 「点了名就只认它」、未装 dsh 时 tried 为空）。实测：本机定位到 `dsh-bin` 来源、13 包 × 4 cohort
 全放行；真正不含 dsh 的 PATH 下报错退出（exit=1）；`DSH_APP_BOOT_DIR` 指错时报错而非回落。
+
+### 11. ✅ kit elevation 的审计行改走 stdout（与 docker D162 同一课）
+
+**落点**：[`packages/kit/src/elevation.ts`](./packages/kit/src/elevation.ts) 的 `audit()`
+与 `auditLoadedGrants()` 出口固定 `console.log`（行前缀与格式不变，代码注释落 **kit D14**；
+`ElevationOptions.logger` 保留给 removeFile 的 best-effort 告警）；`auditLoadedGrants` 去掉
+logger 形参，docker / tty 两个调用点同步瘦身；kit 台账记 **kit D14**（已修 14 / 待修 0），
+conventions 范围表与 `defects-table` 守卫 fixture 跟到 D14；全仓 9 个 kit 精确钉子
+0.5.1 → 0.5.2（aggregate + lockfile 同步）；kit README 的 API 签名与通道表述、docker
+README 中英「两类行同通道」的收口同步。
+
+**门槛**：kit `test/elevation.test.ts` 18 条、docker / tty 各自 `test/elevate-route.test.ts`
+（断言面从注入 logger 改为 **console 捕获**——捕到的就是真宿主 stdout 上会出现的字节，
+这一步同时让测试与真机行为对齐：此前这些断言消费的是 `ctx.logger`，而真宿主上它不可见）；
+`defects-table` 守卫 33 条（kit 两段范围 D06–D14 现算 + 反例针更新）。
 
 ## 已由 L0 资产承接（不再是待办）
 

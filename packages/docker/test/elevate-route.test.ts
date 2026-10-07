@@ -22,6 +22,18 @@ import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 const spawnMock = vi.hoisted(() => vi.fn())
 vi.mock('node:child_process', () => ({ spawn: spawnMock }))
 
+/*
+ * elevation 审计行的出口是宿主 stdout（console.log，kit D14 / docker D162）——
+ * 断言面用 console 捕获，捕到的就是真宿主 stdout 上会出现的字节。
+ */
+const consoleLines: string[] = []
+beforeEach(() => {
+  consoleLines.length = 0
+  vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+    consoleLines.push(args.map((arg) => String(arg)).join(' '))
+  })
+})
+
 import { apply } from '../src/index.js'
 import { __resetSharedGrantStoresForTest, capabilityPaths } from '@hyzyn/dsh-kit'
 
@@ -188,7 +200,7 @@ function mount(config: Record<string, unknown> = {}, options: { requireRoutes?: 
   if (route === undefined && options.requireRoutes !== false) throw new Error('未注册 /api/dsh-docker 路由')
   return {
     updates: state.updates,
-    logs: state.logs,
+    logs: consoleLines,
     toolNames: () => state.registered.map((definition) => definition.name ?? '(未命名)'),
     async call(url, method, body, options) {
       const res = makeRes()

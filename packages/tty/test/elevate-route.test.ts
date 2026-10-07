@@ -14,13 +14,25 @@ import './isolated-home.js'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname } from 'node:path'
-import { afterAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { __resetSharedGrantStoresForTest, capabilityPaths } from '@hyzyn/dsh-kit'
 import { apply } from '../src/index.js'
 import { bindCapabilitySources } from '@hyzyn/dsh-kit'
 import { proxyCommandAllowedNow, proxyCommandGrantedNow, setProxyCommandPolicy } from '../src/ssh.js'
 
 const ENV = 'DSH_TTY_ALLOW_PROXY_COMMAND'
+
+/*
+ * elevation 审计行的出口是宿主 stdout（console.log，kit D14）——断言面用 console 捕获，
+ * 捕到的就是真宿主 stdout 上会出现的字节。
+ */
+const consoleLines: string[] = []
+beforeEach(() => {
+  consoleLines.length = 0
+  vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+    consoleLines.push(args.map((arg) => String(arg)).join(' '))
+  })
+})
 const { grantsFile: grantFile, confirmDir } = capabilityPaths(process.env.DSH_HOME ?? tmpdir())
 
 interface FakeRoute {
@@ -141,7 +153,7 @@ function mount(config: Record<string, unknown> = {}): Harness {
   }
   return {
     writes,
-    logs,
+    logs: consoleLines,
     callPath,
     async call(sub, method, body, options) {
       return callPath('/api/dsh-tty/elevate' + sub, method, body, options)

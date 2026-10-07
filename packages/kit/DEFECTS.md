@@ -2,7 +2,7 @@
 
 > **本文件是「转入台账」，不是本包的权威序列。** 下表 `kit D01`–`kit D05` 是**转入镜像**——
 > 权威记录在**原包**（主要是 `codegraph CGxx`），kit 侧只是「改 kit 的人不必翻别人的台账」的入口。
-> **引用时优先写原编号**（如 `codegraph CG05`）；kit 内部新发现的缺陷才接在 `D13` 之后编号。
+> **引用时优先写原编号**（如 `codegraph CG05`）；kit 内部新发现的缺陷才接在 `D14` 之后编号。
 > 跨包引用一律写 `<包名> <前缀><号>`（如 `codegraph CG05`、`tty D61`、`docker D13`），
 > 裸编号只在本包文件内使用。规范见 [docs/conventions.md § 编号规范](../../docs/conventions.md#编号规范)。
 
@@ -19,11 +19,11 @@
 
 - 每条只写**一句话**（这段代码为什么长这样）+ **指回原编号**；
 - **不复制原文、不重新编号、不删除原编号**（原编号仍是权威记录）；
-- 新的、**在 kit 内部发现**的缺陷，直接接在 `D13` 之后编号，写在本文件里。
+- 新的、**在 kit 内部发现**的缺陷，直接接在 `D14` 之后编号，写在本文件里。
 
 ## 现状
 
-**已修 13 / 待修 0**（`D01–D05` 为「在消费包发现、修在 kit」，`D06`–`D13` 是**本包内部**发现的）。
+**已修 14 / 待修 0**（`D01–D05` 为「在消费包发现、修在 kit」，`D06`–`D14` 是**本包内部**发现的）。
 逐条见下表；`D01–D05` 原文见 [codegraph 的台账](../codegraph/DEFECTS.md)对应行。
 
 ## 转入清单
@@ -45,10 +45,11 @@
 
 | **kit D12** | —（本包内部） | 真宿主验收里的「**无授权实例**」会**继承开发机上的持久授权**：带外授权是持久的（落在 `<DSH home>/dsh-kit/`，kit D09），而验收必须跑在用户真实的 DSH 主目录里（profile 里的 `node_modules` 是相对符号链接，换 `DSH_HOME` 会整批失联），于是只要用户在卡片上授权过一次，那个「无授权」实例就白拿那份授权。真机实测（2026-09-27）：`live-host-smoke` 的 A 段 **9/9 全红**（A1/A2/A3/A5/A5b/A5c/A6/A7/A7b），红的理由却与产品行为无关（该实例其实已授权；同轮 B 段 7/7 绿，A7 甚至显示代理命令真的跑起来了——那是闸门放行，不是缺陷）。这类闸门最坏的地方是**恒红且理由错**：跑几次之后没人再看它，真正的回归会一起被无视。修法：kit 新增 `DSH_KIT_HOME` 覆写（**测试 / 诊断用**，不是给用户调的旋钮——能设置宿主环境变量的人本来就能用启动环境变量直接授权，那条通道更强；这里只是把「授权落在哪个目录」也变成可注入的），验收给每个实例一份一次性 profile 里的 `.kit-home` 作授权目录，并把自己那份授权文件**只读地**念一遍（打印条数）留作现场 | [src/grant-store.ts](../../packages/kit/src/grant-store.ts) · [scripts/live-host-smoke.mjs](../../scripts/live-host-smoke.mjs) · [scripts/test/live-host-smoke-safety.test.ts](../../scripts/test/live-host-smoke-safety.test.ts) · [test/grant-store.test.ts](../../packages/kit/test/grant-store.test.ts) |
 | **kit D13** | —（本包内部） | `consoleEncoding`（Windows 控制台代码页探测）把**超时**与「没有控制台」合成同一个确定性结论、并**进程级缓存**：`chcp` 探测超时是瞬态的（宿主启动争抢期 `cmd.exe` 能被拉起过 3s），而结论写入 `cachedConsoleEncoding` 后再不重试——**一次争抢就把整个会话钉死成错码表解码**，此后每条 CLI 输出都按 `windows-1252` 重解（CP936 中文系统上就是乱码被当成真实工具输出），恢复要重启宿主。同一条路径还漏了「为什么失败」：裸 `catch` 把超时与「没有控制台」写成了同一句话。修法：探测用 `undefined` 表示「没探明白」（判据只认 `killed` / `signal` / `ETIMEDOUT` 标记，不猜文案），超时结论**不缓存**、只在 30s 退避窗口内直接给兜底（免得每次建解码器都同步起一次 `cmd.exe`），窗口过后自动重探；确定性失败照旧缓存。`setConsoleEncodingProbe` 是给三平台矩阵用的注入缝——非 Windows 恒返回 UTF-8，跑不到这条分支 | [src/decode.ts](../../packages/kit/src/decode.ts) · [test/decode.test.ts](../../packages/kit/test/decode.test.ts) |
+| **kit D14** | —（本包内部） | elevation 审计行（begin / grant / expire / revoke / load 五种，即 kit D09 可见性承诺的载体）的出口走了**注入的插件 logger（`ctx.logger`）**：真机验收（2026-10-07，DSH 0.2.1-alpha.1，同一发现见 docker D162）实测插件经 `ctx.logger.info` 打的行**既不出现在宿主 stdout、也找不到落盘文件**——「持久授权今天一开机就静默开着」恰恰是这些行存在要回答的问题，走一个不可见的通道等于没写。修法：`audit()` 与 `auditLoadedGrants()` 的出口固定 `console.log`（行前缀与格式不变；tier-gate 的日志出口默认就是 console，kit 内先例），`auditLoadedGrants` 去掉 logger 形参（docker / tty 两个调用点同步瘦身后重启可见）；`ElevationOptions.logger` 保留给 removeFile 的 best-effort 告警。测试断言面改为 console 捕获（kit elevation.test.ts 与 docker / tty 各自的 elevate-route.test.ts） | [src/elevation.ts](../../packages/kit/src/elevation.ts) · [test/elevation.test.ts](../../packages/kit/test/elevation.test.ts) |
 
 ## 维护规则
 
-1. **在 kit 内部发现**的缺陷：接在 `D13` 之后编号，只加一行 + 在代码注释里落编号；
+1. **在 kit 内部发现**的缺陷：接在 `D14` 之后编号，只加一行 + 在代码注释里落编号；
    详细 postmortem 写进 commit message。
 2. **在消费包发现、修在 kit** 的缺陷：原编号留在那个包的台账（权威），本文加一行转入记录。
    **不要**在两个地方都写详细正文。

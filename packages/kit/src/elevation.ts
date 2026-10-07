@@ -35,7 +35,7 @@ import { chmodSync, existsSync, mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import type { CapabilityGrantSource, CapabilityGrantVia, GrantStore } from './grant-store.js'
 
-/** 就地提权需要的日志形状（插件的 logger 子集）。 */
+/** 管理器内部 best-effort 告警（确认文件清理失败等）需要的日志形状——审计行不走它（kit D14）。 */
 export interface ElevationLogger {
   info(message: string): void
   warn(message: string): void
@@ -122,9 +122,16 @@ export function createElevationManager(options: ElevationOptions): ElevationMana
   /** 每个能力新建挑战的时刻（限流用；进程级，不持久化）。 */
   const begins = new Map<string, number[]>()
 
+  /*
+   * 审计行的出口走 console 而不是 ctx.logger（kit D14）：真机验收（2026-10-07，DSH
+   * 0.2.1-alpha.1，同一发现见 docker D162 与根 ROADMAP 待办 11）实测插件经 `ctx.logger.info`
+   * 打的行**既不出现在宿主 stdout、也找不到落盘文件**——而「持久授权今天一开机就静默开着」
+   * 恰恰是这些行存在要回答的问题，走一个不可见的通道等于没写。tier-gate 的日志出口默认就是
+   * console（kit 内先例）；docker 的 capability-use 同日已改（docker D162），修好后两类行同通道。
+   */
   const audit = (action: 'begin' | 'grant' | 'expire' | 'revoke', env: string): void => {
-    // 刻意不含 nonce / 路径：日志会落盘（宿主的启动失败报告会带上最近日志），而 nonce 是凭据
-    logger.info(`${logPrefix} elevation: ${action} capability=${env} via=file`)
+    // 刻意不含 nonce / 路径：nonce 是凭据，任何日志面都不得出现（不变量 1）
+    console.log(`${logPrefix} elevation: ${action} capability=${env} via=file`)
   }
 
   const stopChallenge = (challenge: Challenge): void => {
@@ -250,31 +257,32 @@ export function createElevationManager(options: ElevationOptions): ElevationMana
  * 的能力，今天一开机就静默开着」在日志里与界面上都看不见（宿主原来的四条审计只覆盖
  * begin / grant / expire / revoke，**load 不在内**）。这一行就是为了让那次「静默继承」留下痕迹。
  *
+ * 出口走 console 而不是插件的 `ctx.logger`（kit D14，理由见 `createElevationManager` 内
+ * `audit()` 处的注释）。
+ *
  * 只报 `store` 里的记录（`file` 通道）：环境变量通道的授权由启动环境本身表达，界面另有说明。
- * 与其它审计行同样**不含 nonce 与路径**（日志会落盘）。
+ * 与其它审计行同样**不含 nonce 与路径**（stdout 会进终端回滚）。
  *
  * @param store - 授权存储（或任何实现 `source?()` 的最小对象）。
  * @param capabilities - 本插件关心的能力环境变量名（没授权的不会输出）。
- * @param logger - 插件的 logger 子集。
  * @param logPrefix - 审计行前缀（如 `[dsh-docker]`）。
  */
 export function auditLoadedGrants(
   store: CapabilityGrantSource,
   capabilities: readonly string[],
-  logger: ElevationLogger,
   logPrefix = '[dsh-kit]',
 ): void {
   for (const env of capabilities) {
     const grant = store.source?.(env)
     if (grant !== undefined) {
-      logger.info(`${logPrefix} elevation: load capability=${env} via=${grant.via} grantedAt=${isoSeconds(grant.grantedAt)}`)
+      console.log(`${logPrefix} elevation: load capability=${env} via=${grant.via} grantedAt=${isoSeconds(grant.grantedAt)}`)
       continue
     }
     /*
      * 问不到时刻（存储只有 `has()`，或 `source` 不认识这条能力）但确实有授权：也该说出来。
      * 只写 `grantedAt=unknown` 而**不编一个时刻**——审计的价值全在「这一行是真的」。
      */
-    if (store.has(env)) logger.info(`${logPrefix} elevation: load capability=${env} via=file grantedAt=unknown`)
+    if (store.has(env)) console.log(`${logPrefix} elevation: load capability=${env} via=file grantedAt=unknown`)
   }
 }
 

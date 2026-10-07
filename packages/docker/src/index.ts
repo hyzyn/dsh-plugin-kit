@@ -1113,7 +1113,6 @@ const plugin = definePlugin<Config>({
     auditLoadedGrants(
       grantStore,
       [CAP_MUTATIONS.env, CAP_EXEC.env],
-      { info: (msg) => ctx.logger.info(msg), warn: (msg) => ctx.logger.warn(msg) },
       '[dsh-docker]',
     )
     // volatile 字段解析后是 `{ get() }` 引用，先还原成纯数据（见 @hyzyn/dsh-kit 的 plainConfig）。
