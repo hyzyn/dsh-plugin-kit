@@ -872,6 +872,17 @@ ctx.inject(['ttyTerminal'], (c) => {
 - The service name `ttyTerminal` is likewise not declared on the `Context` type surface; inject it as an
   optional dependency; when tty is not installed or is older than 0.14.0 it never fires (dsh-docker degrades
   to “copy command”).
+- **`ttyTerminal` / WS `spawn` is a command surface with no static capability gate** (added 2026-10-07;
+  consumers must not describe it the other way round): this service and the `{t:'spawn'}` frame both accept an
+  arbitrary `command` and are **not governed by any `DSH_*_ALLOW_*`** (this plugin’s own static gate covers only
+  ProxyCommand, the “a config field drives a local command” tier). That is deliberate — the terminal panel *is*
+  the product, and its permission ceiling comes from the session permission tier gate (the tier gate above,
+  which applies per call to `tty_*` agent tools) plus the user’s own tier choice, not from a plugin-level switch.
+  **The cost**: no consumer should advertise “the plugin’s own exec switch” as the boundary that keeps you out of
+  a container — once tty is installed, an in-page script can use `ttyTerminal.open` or a WS `spawn` frame to get
+  an arbitrary command surface strictly stronger than a one-shot exec. See
+  [architecture.md § 7](../../docs/architecture.md#7-一条请求经过什么) for the threat-model boundary; docker states
+  the same boundary in its own README under “Known limitations”.
 
 ### Embedded in-place terminal (`ttyTerminal.mount`, 0.15.0)
 

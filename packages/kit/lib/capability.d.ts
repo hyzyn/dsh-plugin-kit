@@ -39,6 +39,15 @@
  * 拦的是**凭空提权**：跨站页面、页内脚本（读不到带外凭据）、只会盲发 HTTP 的进程。能读写本机
  * 文件、能在本机执行命令的**同用户进程不在模型内**：它本来就能读 `~/.dsh/.credentials.yaml`、
  * 能直接跑 `docker`。任何进程内机制都拦不住它。
+ *
+ * 还有一条**能力面**的边界（2026-10-07 补，别把它读成「docker exec 已被挡住」）：本层只闸**它自己
+ * 管辖的那条通道**，不闸同部署里等价的其它入口。实例：docker 的 `allowExec` 管的是 `/exec` 与
+ * `docker_exec`（本插件自持的一次性 exec），而容器卡片「终端」按钮跑 `docker exec -it`、经 tty 的
+ * `ttyTerminal` / WS `spawn` 承载——那条通道不检查 `allowExec`，**页内脚本**由此可以直接拿到比
+ * 一次性 exec 更强的任意命令面（tty 的 `spawn` 帧接受任意 `command`）。所以「页内脚本被拦」这句话
+ * 只在**被闸的那条通道**上成立；要评估一个部署的真实命令面，得把所有装了的能力面一起看
+ * （docker README「已知限制」与 [docs/architecture.md § 7](../../../docs/architecture.md#7-一条请求经过什么)
+ * 各写了一份）。这不是本层的漏洞，但**不许**在对外文案里把它说成「exec 一律需要授权」。
  */
 import type { CapabilityGrantSource, CapabilityGrantVia } from './grant-store.js';
 /** 一条能力开关的宿主侧授权说明。 */

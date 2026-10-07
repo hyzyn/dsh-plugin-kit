@@ -791,6 +791,15 @@ ctx.inject(['ttyTerminal'], (c) => {
   只受工具参数的字符串约束。两条通道的入参规则不同，别把这里当 `tty_open` 的限制。
 - 服务名 `ttyTerminal` 同样未声明在 `Context` 类型面上，按可选依赖注入；tty 未安装
   或版本 < 0.14.0 时不会触发（dsh-docker 会退化为「复制命令」）。
+- **`ttyTerminal` / WS `spawn` 是「没有静态能力闸」的命令面**（2026-10-07 补，消费方文案别写反）：
+  本服务与 `{t:'spawn'}` 帧都直接接受任意 `command`，**不受任何 `DSH_*_ALLOW_*` 管辖**（本插件的
+  那个静态闸只覆盖 ProxyCommand 这一档「配置字段驱动本机命令」）。这是刻意的——终端面板本身就是
+  产品，权限上界由会话权限档位闸（上面的 tier gate，对 `tty_*` agent 工具逐调用生效）与用户自己
+  的档位选择承担，而不是一个插件级开关。**代价**：任何消费方都不该把「配上 tty 之后本插件自己的
+  exec 开关」宣传成「进不了容器」的边界——装上 tty 后，页内脚本经 `ttyTerminal.open` 或 WS `spawn`
+  就能拿到比一次性 exec 更强的任意命令面。威胁模型边界见
+  [architecture.md § 7](../../docs/architecture.md#7-一条请求经过什么)；docker 侧的同一句边界写在
+  它的 README「已知限制」。
 
 ### 就地嵌入终端（`ttyTerminal.mount`，0.15.0）
 

@@ -228,7 +228,7 @@ Inside the panel:
 
   | Group | Buttons | Description |
   | --- | --- | --- |
-  | View / enter | Terminal, logs, resource usage | Does not change container state; always available even in read-only mode |
+  | View / enter | Terminal, logs, resource usage | Does not change container state; always available even in read-only mode. **The Terminal button runs an interactive `docker exec -it` shell and is not gated by `allowExec`** (that switch only covers this plugin's one-shot exec channel — see "Known limitations") |
   | Mutate | start / stop, restart, remove | Ordered by increasing destructiveness; available only with `allowMutations` on, otherwise the whole group is greyed out |
 
   Remove gets two extra protections: destructive colouring plus a gap between it and "restart", and a second
@@ -536,7 +536,7 @@ return 400).
 | `announceToAgent` | true | whether to inject a capability announcement into the agent (systemPrompt section `plugin:dsh-docker`) |
 | `dockerBin` | `docker` | the docker CLI executable name or path (`podman` works here); only letters, digits and `_ . / \ : -` plus interior spaces are allowed, and it may not start with `-` (**Windows drive letters and `\` must be allowed**, otherwise no absolute path can be entered at all). **"Connect local" probes with exactly this value**; when it is wrong (that CLI does not exist) the message names another container CLI found on `PATH`, but it does **not** rewrite this value for you |
 | `allowMutations` | false | allows **mutating operations**: container start / stop / restart / remove, image removal / dangling pruning / pulling (the panel buttons and the `docker_action`, `docker_image_remove`, `docker_image_prune`, `docker_image_pull` tools; while off, `/action`, `/images/remove`, `/images/prune`, `/images/pull/stream` return 403 and the corresponding tools are not registered) |
-| `allowExec` | false | allows a one-shot `docker exec` (the panel's exec input and the `docker_exec` tool; while off, `/exec` returns 403) |
+| `allowExec` | false | allows a **one-shot** `docker exec` (the Overview page's exec input and the `docker_exec` tool; while off, `/exec` returns 403). **Does not** cover the card's Terminal button (`docker exec -it`), which tty hosts (see "Known limitations") |
 | — (capability grant) | not granted | `allowMutations` / `allowExec` have **two out-of-band channels**: ① **launch environment variables** (`DSH_DOCKER_ALLOW_MUTATIONS` / `DSH_DOCKER_ALLOW_EXEC`, values `1` / `true` / `yes` / `on`) — resolved from the host's **launch snapshot**, inherited `process` layer only, so writing project `.env` or `~/.dsh/env.yml` does **not** count as a grant; ② **grant in place** (no restart): click the switch in the settings card and run the command it shows in a terminal on the host — effective within seconds, on its own row (one row per capability — the grants are per capability, so side-by-side revoke buttons would not say which one belongs to which), next to a `Granted · YYYY-MM-DD HH:mm:ss` line and a `Revoke host grant` button (a launch-environment grant has no timestamp and cannot be revoked from the UI). **Both capabilities can be confirmed with a single paste**: clicking the second switch while the first panel is open no longer replaces it (the two grants are independent anyway) — the panels stack vertically and a **Copy all (N)** button appears at the top of the group, copying the still-pending commands in the order they were started, joined by a **newline**, so one paste in a host terminal runs them all (`bash` / `zsh` / PowerShell / cmd all run a multi-line paste line by line, which is exactly why `&&` — not understood by PowerShell 5.1 — and `;` — not understood by `cmd` — are deliberately **not** used as separators). Once a command expires, Copy all copies only the still-pending ones; when everything is granted (or every panel is collapsed) the button disappears by itself. The two challenges have independent TTLs and probe cycles, so the wording only promises "every switch unlocks by itself once they run" and **never the same instant** — the countdown stays per panel, and each panel's copy / regenerate / collapse keeps acting on its own capability only. In-place grants are **persistent**: they live in `<DSH home>/dsh-kit/capability-grants.json` (0600; the confirmation dir is `<DSH home>/dsh-kit/grant-confirm/`, 0700 — kept inside the kit's own subdirectory, because mechanism names dropped into the shared home root can collide with the harness or another plugin), are read at the next boot, and then **take effect with no further confirmation** — so every boot logs one `elevation: load capability=… via=file grantedAt=…` line per loaded grant. Over HTTP they can always be **turned off** (the emergency brake must not depend on a restart), but setting `true` without a grant is rejected with 400 and both routes spelled out. A `true` in the config is **not** a grant (it lives in the same store HTTP writes to, so the source is indistinguishable). **Upgrade note**: switches opened through the UI before this change become off — set the variable and restart, or grant in place. **Why**: neither the loopback fence nor the same-origin proof stops cross-site pages or in-page scripts (they can just set `Sec-Fetch-Site: same-origin`), and the docker socket is root on the target host; details (including whom this does *not* stop) in [architecture.md § 7](../../docs/architecture.md#7-一条请求经过什么) |
 | `execTimeoutSec` | 30 | default exec timeout in seconds (1–120) |
 | `pollIntervalSec` | 5 | stats refresh interval for the panel, in seconds (1–60) |
@@ -760,6 +760,11 @@ read-only first:
    off, `/exec` returns 403 and the `docker_exec` tool is likewise not registered. The two switches are
    independent and must be turned on explicitly by the user in the settings card. Read-type routes (`/logs/stream`,
    `/stats/stream`, `/events/stream`, `/images/inspect`) are unaffected by either switch.
+   **`allowExec` only governs this plugin's *one-shot* exec channel** (the `/exec` route, the `docker_exec`
+   tool, the Overview page's one-off command box) — the card's **Terminal button runs an interactive
+   `docker exec -it` shell hosted by tty, which passes through neither switch** and is available even in
+   read-only mode (see the boundary note under "Known limitations": it is not a missing gate, it is a
+   deliberately kept entry path).
 2. **Destructive operations restate their consequences**. `remove` maps to `docker rm` (**without `-f`**), and the
    agent announcement requires confirming the target container with the user before running; a running container
    errors with a hint that "the container is still running: stop it before removing", never a silent force-delete.
@@ -799,6 +804,18 @@ read-only first:
   without `-i` / `-t`), so it cannot run vim / top / an interactive shell, nor feed stdin for a
   dialogue. For interactive troubleshooting run `docker exec -it <container> sh` in the tty panel (this works for
   both local and SSH targets).
+- **`allowExec` is not the gate that keeps you out of the container**: the card's Terminal button
+  (`docker exec -it '<container>' sh`) is hosted through tty's `ttyTerminal` and **does not check
+  `allowExec`** — it stays available in read-only mode, exactly as the panel's own hint says when exec is
+  off ("turn on *Allow exec*, or copy the exec command from the card into the terminal panel to enter the
+  container interactively"). This is deliberate: dropping into a container to look at the scene is the most
+  common read-only inspection path, and the gate governs **this plugin's own** one-shot channel (`/exec` and
+  `docker_exec`: they change local state and can be called in bulk by agent tools), while the interactive
+  shell belongs to tty (user-driven; tty is the PTY's owner). **The cost, stated plainly**: once tty is
+  installed, `allowExec` was never a boundary against **in-page scripts** (a third-party plugin's client half
+  / XSS) anyway — via `ttyTerminal.open` or a WS `spawn` frame they can run arbitrary commands, which is
+  strictly stronger than this plugin's one-shot exec. See
+  [architecture.md § 7](../../docs/architecture.md#7-一条请求经过什么) for that layer's threat-model boundary.
 - **The event stream has a window while disconnected**: `docker events` is a stream of "from now on", so events that
   happen while the browser is disconnected and reconnecting have already been pushed by the server and are not
   resent. The client compensates with "do a full list refresh right after a successful reconnect"
