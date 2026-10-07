@@ -10,7 +10,7 @@
  *
  * 为什么不用一次性 token 覆盖它：危险的正是 `/config`——而它必须保持免证明，因为它是插件被禁用后
  * 唯一的恢复入口（token 化就等于把用户锁在外面）。详见项目级 ROADMAP 的「变更端点的信任模型」
- * 条目与 [docs/architecture.md § 能力开关](../../../docs/architecture.md)。
+ * 条目与 `docs/architecture.md` 的 § 能力开关（仓内路径，随包发布后不保证可点）。
  *
  * ## 两条授权通道
  *
@@ -41,7 +41,7 @@
  * 能直接跑 `docker`。任何进程内机制都拦不住它。**OS 级同意也不是万能**（2026-10-07 立项复核）：
  * 那个进程能自己 spawn 一个同名原生对话框、能合成点击、也能直接写 grant 文件——它是「没那么
  * 顺手」的速度楔子，不是结构性屏障。逐条实测与「对话框的答案只许从子进程读回」那条实现约束见
- * [docs/os-consent-plan.md](../../../docs/os-consent-plan.md)。
+ * `docs/os-consent-plan.md`（仓内路径，随包发布后不保证可点）。
  *
  * 还有一条**能力面**的边界（2026-10-07 补，别把它读成「docker exec 已被挡住」）：本层只闸**它自己
  * 管辖的那条通道**，不闸同部署里等价的其它入口。实例：docker 的 `allowExec` 管的是 `/exec` 与
@@ -49,8 +49,8 @@
  * `ttyTerminal` / WS `spawn` 承载——那条通道不检查 `allowExec`，**页内脚本**由此可以直接拿到比
  * 一次性 exec 更强的任意命令面（tty 的 `spawn` 帧接受任意 `command`）。所以「页内脚本被拦」这句话
  * 只在**被闸的那条通道**上成立；要评估一个部署的真实命令面，得把所有装了的能力面一起看
- * （docker README「已知限制」与 [docs/architecture.md § 7](../../../docs/architecture.md#7-一条请求经过什么)
- * 各写了一份）。这不是本层的漏洞，但**不许**在对外文案里把它说成「exec 一律需要授权」。
+ * （docker README「已知限制」与 `docs/architecture.md` 的 § 7 各写了一份；两者都是仓内路径，
+ * 随包发布后不保证可点）。这不是本层的漏洞，但**不许**在对外文案里把它说成「exec 一律需要授权」。
  */
 import type { CapabilityGrantSource, CapabilityGrantVia } from './grant-store.js'
 

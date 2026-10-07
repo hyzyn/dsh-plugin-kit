@@ -6,6 +6,12 @@
 > **实测基准**：本文 §2.1 的三条事实全部是照着 **DSH `0.2.1-alpha.1`** 现算的。
 > 宿主是外部依赖，**它升级后这三条都可能变**——所以基准版本必须留在这里，
 > 且 `scripts/test/os-consent-scope.test.ts` 会拿它当升级绊线（版本对不上就报错，逼人回来复核）。
+> **引用宿主的写法**（2026-10-07 review C2 定的）：只写 **包名 + 符号名**
+> （如「`dsh-user-approval` 的 `ApprovalService.request()`」），**不写行号**。
+> 理由是 [conventions.md § 编号规范 硬规矩 4](./conventions.md#编号规范) 的同一条道理在本仓
+> 早已成立（「索引表不写行号——修复后代码可能移位」），而**对外部依赖成立得更彻底**：
+> 宿主的行号会随它自己的每个补丁漂，而这里没有任何守卫能发现（守卫只钉形态、不钉行号）。
+> 需要定位实现时，按符号名 grep——那比一个会过期的行号可靠。
 > **编号纪律**：本方案**不预设任何 `Dxx`**；实施中挖出的缺陷按各包台账序列接在当时的最大号之后，
 > 编号增改属 [AI 协作边界](./conventions.md#ai-协作边界什么改动要先问) 的「先问」项。
 >
@@ -13,7 +19,7 @@
 > 「『一键开 **且** 挡页内脚本』的唯一正解，值得单独立项」。本文就是那次立项。
 > **结论**：§9 **是对的**——原生对话框确实能同时做到「一键开」与「挡住页内脚本」，
 > **但只在一个形态下成立**：对话框由**宿主进程自己 spawn**、用户的选择由**子进程的退出码 / stdout**
-> 读回（宿主自带的 directory-picker 就是这个形态：`…/dsh-host-directory-picker-native/lib/index.js:234-263`
+> 读回（宿主自带的 directory-picker 就是这个形态：`dsh-host-directory-picker-native` 的 `pickNativeDirectory`
 > 把答案从 `.stdout` 与 `code === 1` 读出来，**不经过页面**）。
 > **诱人的那个替代形态**——把对话框接到宿主现成的 `approval/request` 瀑布上——**会静默丢掉这条防护**
 > （那个 waterfall 的答案今天由**页面**回答，见 §2.1 事实 1）。所以本文真正的产出不是「要不要做」，
@@ -70,7 +76,7 @@
    弹不出框时**必须**退回「就地提权那条命令」的既有路径，而不是报错或挂住。
 7. **不许引入平台专属的必装依赖**。macOS `osascript` 系统自带；Linux 的 `zenity` / `kdialog`
    **不一定装了**（宿主自己的 picker 就为此写了「两个都试、都没有就报错」：
-   `…/dsh-host-directory-picker-native/lib/index.js:247-267`）。缺工具 = 走不变量 6 的降级路径。
+   `dsh-host-directory-picker-native` 的「两个都试、都没有就报错」）。缺工具 = 走不变量 6 的降级路径。
 8. **审计**：决定落一行（沿 elevation 的 `grant` / `revoke` 审计行，出口 `console.log`，kit D14），
    **不含凭据**（不变量 3）。
 
@@ -83,17 +89,17 @@
 宿主的 approval 服务把请求派发到一条 agent 作用域的 waterfall：
 
 ```
-$NM/dsh-user-approval/lib/index.js:176
+dsh-user-approval · ApprovalService.request()
 ctx.waterfall(scopeTarget(req.agent, req.agent), 'approval/request', req, () => Promise.resolve('unavailable'))
 ```
 
 它有两个 answerer（**这条瀑布不是一个，别写成「唯一」**）：宿主侧的 ACP
-（`$NM/dsh-acp/lib/index.js:1116` 的 `ctx.on('approval/request', …)`，但它在
+（`dsh-acp` 的 `ctx.on('approval/request', …)`，但它在
 `record === undefined || request.callId === undefined` 时立刻 `next()` 让位——它只认自己
 拥有的 ACP 会话的**工具调用**），以及**浏览器侧的审批面板**：
 
 ```
-$NM/dsh-client-ui-approval/lib/client.js:355
+dsh-client-ui-approval · client.js
 ctx.remote.$on('approval/request', function(request, next) { return answerApproval(...) })
 ```
 
@@ -101,15 +107,15 @@ ctx.remote.$on('approval/request', function(request, next) { return answerApprov
 Web 会话直接让位——§2.2 形态 A 的否决理由正是建立在这一点上，见下面 §2.2 的同一条引用）。
 所以下文的「答案走页面」是指**有效路径**，不是「全宿主只有这一个 answerer」。
 
-答案经 HTTP RPC 回到宿主：`$NM/dsh-api-gateway/lib/client.js:867`
+答案经 HTTP RPC 回到宿主：`dsh-api-gateway` 的 `$events/result` 端点
 `rpc.call("/api", "$events/result", { args: result })`（端点名见同文件 `:110`）。
-`approval/request` 在 forwarded-Remote 白名单里（`$NM/dsh-api-remotes/lib/types/remote-events.js:14`
+`approval/request` 在 forwarded-Remote 白名单里（`dsh-api-remotes` 的 `API_REMOTE_FORWARDED_EVENTS`
 `{ event: 'approval/request', mode: 'waterfall' }`），所以它是**合法的 `ctx.remote.$on` 键**。
 
 **事实 2：第三方插件的 client 半体与宿主 UI 在同一个 JS realm，没有 iframe / 沙箱、也没有 CSP 拦。**
 
 ```
-$NM/dsh-client-modules/lib/client.js:450-463
+`dsh-client-modules` 的 `defaultLoadBundle`
 /** Default bundle-load hook: same-origin external classic script. */
 const defaultLoadBundle = (url) => { … el.src = url; document.head.append(el) }
 ```
@@ -117,7 +123,7 @@ const defaultLoadBundle = (url) => { … el.src = url; document.head.append(el) 
 插件 bundle 是**同源 classic script**（`window.__ModuleLoader__.load({id, factory})` 注册），
 不是 iframe / `srcdoc` / worker（`dsh-client-*/lib` 下 `iframe|srcdoc` 零命中）。
 动态装入的半体更进一步：`new Function(...)` 后注册进 `globalThis.__ModuleLoader__`
-（`$NM/dsh-cordis-client-runner/lib/client.js:166,558`），该文件自己写明
+（`dsh-cordis-client-runner` 的 `new Function(...)` 与 `globalThis.__ModuleLoader__.load`），该文件自己写明
 「This is API discipline, not a security boundary」。
 
 **「页内脚本够得着官方面板」这条论证有两条腿，缺一条都不完整**（2026-10-07 review 指出此处
@@ -126,7 +132,7 @@ const defaultLoadBundle = (url) => { … el.src = url; document.head.append(el) 
 1. **同 realm**（上面那段）：脚本与官方面板共享 `window` / `document` / `ctx`；
 2. **宿主不发 CSP**：实测 `dsh-web-frontend/dist/index.html` **0** 处 `Content-Security-Policy`，
    `dsh-host-webserver` 与 `dsh-host-frontend-static` 也**都不发**该响应头
-   （唯一设它的地方是 `$NM/dsh-api-session-controller/lib/index.js:2361`，作用域仅
+   （唯一设它的地方是 `dsh-api-session-controller` 的 `/api/file` 响应，作用域仅
    `/api/file` 的媒体响应，与页面无关）。
 
 第二条腿的意义要说准：**今天它让「够得着」更容易，但即便宿主加了 CSP，这条结论仍然成立**——
@@ -139,7 +145,7 @@ CSP 管不了**同源**脚本。所以它不是「因为没 CSP 才成立」，�
 **事实 3：宿主确实有原生对话框的**能力**，且它的答案是宿主自读的。**
 
 ```
-$NM/dsh-host-directory-picker-native/lib/index.js:234-263
+`dsh-host-directory-picker-native` 的 `pickNativeDirectory`
 darwin: osascript -e 'choose folder with prompt "…"'   → 读 .stdout
 linux:  zenity --file-selection --directory            → 读 .stdout；kdialog 兜底
 win32:  IFileOpenDialog（spawned worker + koffi COM，worker.cjs）
@@ -155,11 +161,11 @@ win32:  IFileOpenDialog（spawned worker + koffi COM，worker.cjs）
 两个独立的理由否掉它：
 
 - **形状不对**。`ApprovalRequest` 是 `{agent, toolName, callId?, reason?, displayReason?, signal?}`
-  （`$NM/dsh-user-approval/lib/types/index.d.ts`），`request()` 还要求**有打开的回合**
+  （`dsh-user-approval` 的 `ApprovalRequest` 类型），`request()` 还要求**有打开的回合**
   （`lib/index.js:130` `if (!hasOpenTurn(session)) throw new Error('approval.request() outside an open turn…')`）。
   它天然回答的是**「某个 agent 的某次工具调用」**，不是「页面上这次提权点击」。
   拿它回答提权，等于把会话级的追问塞进一条只在 agent 上下文成立的通道，还会与 tier gate 和
-  ACP（`$NM/dsh-acp/lib/index.js:1116` 也在这条瀑布上）争抢同一个请求。
+  ACP（`dsh-acp` 也在这条瀑布上）争抢同一个请求。
 - **更要紧的是**：即便硬塞进去，**答案仍走页面**（事实 1）。任何与宿主 UI 同 realm 的脚本
   都能 `ctx.remote.$on('approval/request', …)` **先于**官方面板回答，或直接读转发帧、
   用自己已观察到的 `clientId` 向 `$events/result` POST 一个伪结果。
@@ -207,9 +213,33 @@ win32:  IFileOpenDialog（spawned worker + koffi COM，worker.cjs）
 1. **复用现有机制，不新增通道**。对话框写的就是那个随机名文件（`commandFor()` 今天生成给用户
    粘贴的那条 `touch '<path>'`，改成宿主自己执行）。于是 `elevation.ts` 的探测循环、TTL、
    限流、`grant-store` 的 0600 **全部原样复用**。
-2. **只许在「宿主坐在屏幕前」时启用**（不变量 6）。判据与宿主 picker 同档：拿不到显示器
-   （Linux 无 `DISPLAY` / `WAYLAND_DISPLAY`，或 `zenity`/`kdialog` 都不在；macOS `osascript` 失败）
-   → 不弹，走**今天的**「给一条命令去粘贴」路径。
+2. **「宿主坐在屏幕前吗」**这点**不许另写一份判据**（2026-10-07 review C1）。宿主**已经有**
+   这套 resolver，而且是**可以复用**的：
+
+   ```
+   dsh-host-directory-picker-auto · resolveDirectoryPickerBackend(facts)
+   // 它的判据（四条，全是必需的——缺一条就得回落 browse）：
+   //   ① bindHost !== '127.0.0.1'            → browse（全网卡绑定会招来远程浏览器，而 OS 框它够不着）
+   //   ② launchedThroughSsh(launchEnvironment) → browse（SSH 端口转发下，框会开在**无人值守的那台**上）
+   //   ③ platform 是 darwin / win32          → native
+   //   ④ platform 是 linux 且 PATH 里有可用 chooser（zenity / kdialog）
+   //                                          且 DISPLAY 或 WAYLAND_DISPLAY 非空 → native
+   ```
+
+   原先这里只写了「判据与宿主 picker 同级」——**同级 ≠ 复用**，那句话会引导 PR4 另写一份
+   `DISPLAY`/`SSH_*` 判断，于是仓里就出现**第二处「宿主坐在屏幕前吗」的真相源**，
+   而两边迟早会漂（这正是本仓最忌讳的重复）。正确做法是**复用 `resolveDirectoryPickerBackend`**：
+
+   - 它**已被该包 `export`**（不是私有函数），可直接 import；
+   - 它吃的 `facts` 全是**外部可采**的（`ctx.webServer.host` / `process.platform` /
+     `process.env` / `PATH` 探测），**不需要**该包内部状态；
+   - ② 用到的 `launchedThroughSsh` 只是读 `SSH_CONNECTION` / `SSH_TTY` 两个环境变量
+     （`dsh-launch-environment` 的实现），而 **kit 已经有读启动快照的通道**
+     （`capability.ts` 的 `resolveEnvSource` 就是结构读 `launchEnvironment` 槽位）——
+     所以 kit 侧**不必新增对宿主包的依赖**也能采到同一个事实。
+   - **若该包不在**（老宿主 / 没装它）：退回「找不到判据 ⇒ 不弹框，走粘贴路径」，
+     与不变量 6 的 fail-closed 方向一致——**不**自己现编一套。
+
 3. **平台**：macOS `osascript -e 'display dialog …'`（取消 = 退出码 1 / `-128`）、
    Linux `zenity --question` / `kdialog --yesno`。**Windows 不实现**：宿主自己的 native picker
    在 win32 上要 spawn 一个 koffi COM worker + 合成 Alt 按键（`lib/worker.cjs`），
@@ -245,10 +275,10 @@ win32:  IFileOpenDialog（spawned worker + koffi COM，worker.cjs）
 ## 附录 B：顺手发现、但不属本项的一件事（留给维护者）
 
 调查中实测到：`webServer.register()` 是**无内建鉴权的原始席位**
-（`$NM/dsh-host-webserver/lib/index.js:177-184` 只登记，`:229-245` 派发时不查信任），
-而插件 bundle 路由 `/plugins`（`$NM/dsh-client-modules/lib/index.js:201,544-550,973-978`）
-与 HMR 流 `/plugins/events`（`$NM/dsh-client-hmr/lib/index.js:141`）**都没有调用 `admit`**——
-对比 `/api`（`$NM/dsh-client-connection/lib/index.js:833-843` 调 `admit`）、Remote mux WebSocket、
+（`dsh-host-webserver` 的 `register()` 只登记、派发时不查信任），
+而插件 bundle 路由 `/plugins`（`dsh-client-modules` 的 `PLUGIN_ROUTE` + `serveBundle`）
+与 HMR 流 `/plugins/events`（`dsh-client-hmr` 的 `EVENTS_ENDPOINT`）**都没有调用 `admit`**——
+对比 `/api`（`dsh-client-connection` 的 `admit()`）、Remote mux WebSocket、
 inspector 等路由都是过的。
 
 **影响面**：这两个路由只提供**插件 JS 与 HMR 事件**，其内容本来就要发给页面，所以「未鉴权」

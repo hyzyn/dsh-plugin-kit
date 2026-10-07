@@ -251,6 +251,26 @@ function checkRepoWorld(files: Map<string, string>): string[] {
     if (!/ACP/.test(plan)) {
       out.push('方案不再提 ACP——那 §2.2「会与 ACP 争抢」那段论证就悬空了')
     }
+    /*
+     * C2（2026-10-07 review）：方案原带 15+ 处**宿主行号**引用（`dsh-xxx/lib/…:123`）。
+     * 宿主的行号会随它自己的每个补丁漂，而**没有任何守卫能发现**（本文件只钉形态、不钉行号）——
+     * 这与 conventions 硬规矩 4（「索引表不写行号」）是同一条道理，对外部依赖成立得更彻底。
+     * 引宿主的写法定为「包名 + 符号名」，所以这里禁掉 `包/lib/…:数字` 这种形态。
+     */
+    const hostLineRefs = [...plan.matchAll(/dsh-[a-z0-9-]+\/lib\/[^\s`:)]*:\d+/g)].map((m) => m[0])
+    if (hostLineRefs.length > 0) {
+      out.push(
+        `方案里又有宿主行号引用（${hostLineRefs.slice(0, 3).join('、')}…）——` +
+          '按 §0 的「引用宿主的写法」只写包名 + 符号名（C2）',
+      )
+    }
+    // C1：§4 必须写「复用宿主那份 resolver」，不许只说「与它同档」
+    if (/判据与宿主 picker 同档/.test(plan)) {
+      out.push('§4 又写成了「判据与宿主 picker 同档」——同档 ≠ 复用，会造出第二处真相源（C1）')
+    }
+    if (!/resolveDirectoryPickerBackend/.test(plan)) {
+      out.push('§4 没有点名要复用 resolveDirectoryPickerBackend（C1：那份判据宿主已有，不许另写）')
+    }
   }
 
   // ---- 1. §9 的「唯一正解」必须带上实现约束与指针 ----
@@ -402,8 +422,31 @@ function checkHostWorld(world: HostWorld): string[] {
   if (hits.length > 0) {
     out.push(
       `宿主树里出现了确认框 / polkit 原语（${hits.join('、')}）——宿主可能已自带确认设施，` +
-        '方案 §4 应改为「复用」；若确认不是确认框（只是 chooser 探测），核对后收窄本判据',
+        '方案 §4 的「新写一个框」应改为「复用」；若确认不是确认框（只是 chooser 探测），核对后收窄本判据',
     )
+  }
+
+  // ---- 事实 3b（C1）：宿主**已有**「宿主坐在屏幕前吗」的判据，方案 §4 必须复用它 ----
+  // review C1：方案原写「判据与宿主 picker 同档」——同档 ≠ 复用，会引导 PR4 另写一份，
+  // 于是仓里出现第二处「宿主坐在屏幕前吗」的真相源。这里钉住那份 resolver 仍在且仍可复用。
+  const auto = world.packages.get('dsh-host-directory-picker-auto')
+  if (auto === undefined) {
+    out.push('宿主里没有 dsh-host-directory-picker-auto——方案 §4 说「复用它的 resolver」，请核对后再改那段')
+  } else {
+    if (!/function resolveDirectoryPickerBackend/.test(auto)) {
+      out.push('picker-auto 里找不到 resolveDirectoryPickerBackend——方案 §4 的复用前提变了，重读 §4 第 2 条')
+    }
+    if (!/export \{[^}]*resolveDirectoryPickerBackend/.test(auto)) {
+      out.push('resolveDirectoryPickerBackend 不再被 export——§4 的「可直接 import」不成立，得改方案或改用结构读')
+    }
+    // 「宿主坐在屏幕前」的判据必须仍在（缺任一条就是判定口径变了）
+    for (const [signal, pattern] of [
+      ['bindHost 判据', /facts\.bindHost !== "127\.0\.0\.1"/],
+      ['SSH 判据', /facts\.ssh/],
+      ['Linux 显示会话判据', /DISPLAY\) \|\| present\(facts\.env\.WAYLAND_DISPLAY\)/],
+    ] as const) {
+      if (!pattern.test(auto)) out.push(`picker-auto 的 ${signal} 不见了——§4 复用的那份 resolver 变了口径`)
+    }
   }
   return out
 }
@@ -619,5 +662,26 @@ describe('OS 级同意：反例层（结论过期时必须变红）', () => {
     if (HOST_WORLD.kind !== 'present') return
     const violations = checkHostWorld({ ...HOST_WORLD, missing: ['dsh-client-ui-approval/lib/client.js'] })
     expect(violations.join('\n'), '文件缺失被当成「跳过」了——A2 会因此漏掉真实的宿主结构变化').toMatch(/找不到/)
+  })
+
+  it('宿主不再导出那份 resolver → 判据红（C1：§4 的复用前提没了）', () => {
+    if (HOST_WORLD.kind !== 'present') return
+    const current = HOST_WORLD.packages.get('dsh-host-directory-picker-auto')
+    if (current === undefined) return
+    const packages = new Map(HOST_WORLD.packages)
+    packages.set('dsh-host-directory-picker-auto', mutate(current, 'function resolveDirectoryPickerBackend', 'function renamedBackendResolver'))
+    const violations = checkHostWorld({ ...HOST_WORLD, packages })
+    expect(violations.join('\n'), '§4 说「复用它的 resolver」，那名/签名一改就该提醒').toMatch(/resolveDirectoryPickerBackend/)
+  })
+
+  it('宿主换了「坐在屏幕前」的口径（去掉 SSH 判据）→ 判据红（C1）', () => {
+    if (HOST_WORLD.kind !== 'present') return
+    const current = HOST_WORLD.packages.get('dsh-host-directory-picker-auto')
+    if (current === undefined) return
+    const packages = new Map(HOST_WORLD.packages)
+    // 模拟宿主不再排除 SSH 启动（那会让框开在无人值守的机器上）
+    packages.set('dsh-host-directory-picker-auto', mutate(current, 'if (facts.ssh) return "browse";', '// ssh 判据被移除'))
+    const violations = checkHostWorld({ ...HOST_WORLD, packages })
+    expect(violations.join('\n'), 'SSH 判据不见了必须报——那正是 §4 要不变量 6 防的场景').toMatch(/SSH 判据/)
   })
 })

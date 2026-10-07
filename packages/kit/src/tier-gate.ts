@@ -8,7 +8,7 @@
  * 完全不受档位约束——`tty_run` / `tty_send` 是**无沙箱**的任意命令执行面，模型用它跑 bash 被
  * 沙箱拒绝的同一条命令会直接生效。本模块把档位接进插件工具：**每次调用**解析会话的有效档位
  * （`sandbox/mode` × `approval/policy` 两个会话旋钮），按「分类表 × 档位」矩阵决定 放行 / 询问 /
- * 拒绝。方案与运行时证据见 [docs/permission-tier-plan.md](../../../docs/permission-tier-plan.md)。
+ * 拒绝。方案与运行时证据见 `docs/permission-tier-plan.md`（仓内路径，随包发布后不保证可点）。
  *
  * ## 两层的分工（与 capability.ts 的关系）
  *
