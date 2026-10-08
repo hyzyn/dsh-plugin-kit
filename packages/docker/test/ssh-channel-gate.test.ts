@@ -261,7 +261,7 @@ describe('RemoteExec：额度满 → 重建连接 + 重试一次', () => {
     exec.disposeAll()
   })
 
-  it('重连后仍被拒：只重试一次，且文案仍指向 MaxSessions 与可操作步骤', async () => {
+  it('重连后仍被拒：只重试一次，且文案仍指向可操作步骤', async () => {
     const log = collector()
     const exec = new RemoteExec(log, { get: () => undefined, record: () => {} })
     // 第三条剧本故意留着 'ok'：它被消费掉就说明重试不止一次
@@ -274,7 +274,8 @@ describe('RemoteExec：额度满 → 重建连接 + 重试一次', () => {
 
     expect(error).not.toBeNull()
     expect(error?.message).toContain('Channel open failure')
-    expect(error?.message).toContain('MaxSessions')
+    // 文案已收短（2026-10-08 用户反馈）：不再堆 OpenSSH 术语，只留「怎么了 + 怎么办」
+    expect(error?.message).toContain('通道已满')
     expect(error?.message).toContain('聚合容器数')
     expect(state.clients).toHaveLength(2)
     expect(state.plan).toEqual(['ok'])

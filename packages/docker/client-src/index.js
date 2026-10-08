@@ -361,8 +361,8 @@ const I18N_ZH = {
   'status.backToListRefresh': '，列表回到 AUTO REFRESH / 手动刷新；活动条上点「重连」可重新订阅',
   'btn.reconnectEvents': '重连',
   'hint.reconnectEvents': '重新打开容器事件流（docker events）；列表刷新按钮也会一并重连',
-  'hint.eventsClosedNoAuto': '事件流断开后不会自己回来（EventSource 只在连接层抖动时自愈；docker events 进程退出属于终止态）——点它重连，或点右上角刷新列表',
-  'hint.eventsReconnectRefused': '事件流断开后不会自己回来（EventSource 只在连接层抖动时自愈）——上次重连被拒绝：{message}',
+  'hint.eventsClosedNoAuto': '不会自动恢复，点「重连」',
+  'hint.eventsReconnectRefused': '重连被拒：{message}',
   'hint.conversationHidden': ' · 会话在面板后面：关掉或最小化面板/终端即可看到',
   'msg.copied': '已复制：',
   'error.copyManual': '复制失败，请手动执行：',
@@ -851,8 +851,8 @@ const I18N_EN = {
   'status.backToListRefresh': ', the list returns to AUTO REFRESH / manual refresh; hit “Reconnect” on the activity bar to resubscribe',
   'btn.reconnectEvents': 'Reconnect',
   'hint.reconnectEvents': 'Reopen the container event stream (docker events); the list refresh button reconnects it too',
-  'hint.eventsClosedNoAuto': 'A closed event stream does not come back on its own (EventSource only self-heals connection blips; the docker events process exiting is terminal) — click to reconnect, or hit refresh in the top right',
-  'hint.eventsReconnectRefused': 'A closed event stream does not come back on its own (EventSource only self-heals connection blips) — the last reconnect was refused: {message}',
+  'hint.eventsClosedNoAuto': 'Will not recover on its own — click Reconnect',
+  'hint.eventsReconnectRefused': 'Reconnect refused: {message}',
   'hint.conversationHidden': ' · the session is behind this panel: close or minimise the panel/terminal to see it',
   'msg.copied': 'Copied: ',
   'error.copyManual': 'Copy failed, run it manually: ',
@@ -5518,6 +5518,10 @@ window.__ModuleLoader__.load({
        * 断开时右侧那句提示（D164）：**被拒过就优先说原因**。「事件流已断开」只说状态，
        * 用户据此以为点一下就好；而真正拦着重连的是服务端那句话（例如长流配额满），
        * 不显示出来，「重连」按钮点多少次都像假的。
+       *
+       * 文案要**短**（2026-10-08 用户反馈「啰嗦又生硬」）：这里是折叠头右侧的单行小字，
+       * 长句会挤成多行墙。状态行左边已经写着「事件流已断开」，这句不再复述，
+       * 只说「不会自愈 + 点哪」；成因与上限写进 README，不塞进界面。
        */
       const refused = typeof props.refused === 'string' ? props.refused : ''
       const hintText = canReconnect

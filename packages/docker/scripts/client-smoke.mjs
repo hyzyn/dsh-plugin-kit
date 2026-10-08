@@ -1606,7 +1606,7 @@ await test('事件流断开：状态判定只认 closed，unsupported 不给重�
 await test('事件流断开：活动条接线（兄弟按钮、不是嵌套按钮）与 ⟳ 接手动刷新', () => {
   const decoded = decodeBundle(code)
   assert.ok(decoded.includes('重连'), '缺少重连按钮文案')
-  assert.ok(decoded.includes('不会自己回来'), '缺少「不会自愈」的说明')
+  assert.ok(decoded.includes('不会自动恢复'), '缺少「不会自愈」的说明')
   assert.ok(code.includes('dk_activityHeadRow'), '缺少头行容器（兄弟布局的前提）')
   assert.ok(code.includes('dk_activityRetry'), '缺少重连按钮样式钩子')
 
@@ -1681,8 +1681,8 @@ await test('D164：事件流的 error 帧要解出服务端原因（而不是丢
 
 await test('D164：被拒原因要接到界面上（接线判据）', () => {
   const decoded = decodeBundle(code)
-  assert.ok(decoded.includes('上次重连被拒绝'), '缺少「被拒绝」的提示文案')
-  assert.ok(decoded.includes('不会自己回来'), '原有的「不会自愈」说明必须保留')
+  assert.ok(decoded.includes('重连被拒'), '缺少「被拒绝」的提示文案')
+  assert.ok(decoded.includes('不会自动恢复'), '原有的「不会自愈」说明必须保留')
   const source = readFileSync(new URL('../client-src/index.js', import.meta.url), 'utf8')
   // 拒绝原因必须进 state，并作为 props 传给活动条（只解出来不传等于没修）
   assert.ok(/setEventsRefused\(message\)/.test(source), 'error 帧的原因必须写进 state')

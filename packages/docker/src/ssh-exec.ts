@@ -797,9 +797,8 @@ const MAX_STREAMS_PER_TARGET = 8
  */
 export function streamBudgetError(target: string, busy: number, max: number = MAX_STREAMS_PER_TARGET): string | null {
   if (busy < max) return null
-  return `${target} 上已有 ${String(busy)} 条实时流（上限 ${String(max)}）：同一连接上的通道额度`
-    + `（OpenSSH MaxSessions 默认 10）被长流占满后，连「刷新列表」这类短命令都会被远端拒绝。`
-    + `请关掉部分实时跟随、把聚合容器数减到 6 个以内，或稍后重试。`
+  return `${target} 实时流已达上限（${String(busy)}/${String(max)}）：`
+    + `关掉一些日志跟随、或减少聚合容器数后重试`
 }
 
 /**
@@ -826,9 +825,8 @@ export const SSH_TIMEOUT_HINT =
 export function describeExecError(message: string): string {
   if (/Timed out|ETIMEDOUT/i.test(message)) return `${message}：${SSH_TIMEOUT_HINT}`
   if (!isChannelExhaustedError(message)) return message
-  return `${message}（远端 sshd 拒绝了新通道：同一连接上的通道额度可能已被实时流占满——`
-    + `OpenSSH MaxSessions 默认 10；插件遇到该错误会重建连接自动重试一次，仍失败请关掉`
-    + `部分实时跟随 / 减少聚合容器数后重试）`
+  return `${message}（远端 sshd 通道已满：关掉一些日志跟随、或减少聚合容器数后重试；`
+    + `插件已自动重建连接重试过一次）`
 }
 
 /**

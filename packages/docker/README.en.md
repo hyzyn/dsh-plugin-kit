@@ -203,10 +203,14 @@ Inside the panel:
   fixed when it is not.
   **A refused reconnect must say why** (`D164`): when the server actively refuses this stream it sends an
   `event: error` frame carrying a `message` (typically the long-stream quota being full — see "Known limitations";
-  that sentence says what to do about it). The client now **shows it on the Activity strip** ("the last reconnect
-  was refused: …") instead of discarding it. It used to just set `closed`, which made "refused → back to where it
+  that sentence says what to do about it). The client now **shows it on the Activity strip** ("Reconnect refused: …")
+  instead of discarding it. It used to just set `closed`, which made "refused → back to where it
   was" indistinguishable from "the click did nothing", leaving the user to click over and over. The reason is
   cleared on a successful reconnect (or when the stream is rebuilt).
+  The hint on the right of that header row is **small text inside a single line**, so it is deliberately short
+  (2026-10-08 user feedback: "verbose and stiff"): the state label on the left already says the stream is closed,
+  so this only says "will not recover on its own — click Reconnect". The cause, the cap and the `MaxSessions`
+  details live in this page, not in the UI.
 - **Select for merging (temporary multi-select merged logs)**: the toolbar's `Select for merging` enters selection
   mode — a checkbox appears on the left of every card, clicking a card body becomes **select / deselect** (it no
   longer opens details; the action bar collapses temporarily so that multi-selecting does not mis-click

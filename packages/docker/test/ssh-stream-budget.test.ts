@@ -28,16 +28,21 @@ describe('SSH 长流配额', () => {
   it('被拒时文案要能指导操作，而不是丢一句「不行」', () => {
     const message = streamBudgetError('目标1', 8) ?? ''
     expect(message).toContain('目标1')
-    expect(message).toContain('上限 8')
+    expect(message).toContain('8/8')
     // 用户读到这句话得知道下一步做什么：关跟随 / 减聚合 / 稍后重试
-    expect(message).toContain('实时跟随')
+    expect(message).toContain('日志跟随')
     expect(message).toContain('聚合容器数')
-    expect(message).toContain('MaxSessions')
+    /*
+     * 文案要**短**（2026-10-08 用户反馈「啰嗦又生硬」）：活动条里那句提示是单行小字，
+     * 超过一行就会挤成多行墙。上限与成因写进 README / DEFECTS，不塞进这一句。
+     */
+    expect(message.length, `文案过长（${String(message.length)} 字）：${message}`).toBeLessThanOrEqual(60)
+    expect(message).not.toContain('MaxSessions')
   })
 
   it('上限可显式传入（不同 sshd 的 MaxSessions 不一样）', () => {
     expect(streamBudgetError('目标1', 3, 4)).toBeNull()
-    expect(streamBudgetError('目标1', 4, 4)).toContain('上限 4')
+    expect(streamBudgetError('目标1', 4, 4)).toContain('4/4')
   })
 })
 
@@ -45,8 +50,8 @@ describe('ssh2 通道错误的可读化', () => {
   it('通道打开失败补上指向性说明', () => {
     const text = describeExecError('(SSH) Channel open failure: open failed')
     expect(text).toContain('Channel open failure')
-    expect(text).toContain('MaxSessions')
-    expect(text).toContain('实时流')
+    expect(text).toContain('通道已满')
+    expect(text).toContain('日志跟随')
   })
 
   /**
@@ -58,7 +63,7 @@ describe('ssh2 通道错误的可读化', () => {
     const text = describeExecError('(SSH) Channel open failure: open failed')
     expect(text).toContain('重建连接')
     expect(text).toContain('重试')
-    expect(text).toContain('实时跟随')
+    expect(text).toContain('日志跟随')
     expect(text).toContain('聚合容器数')
   })
 
@@ -108,8 +113,8 @@ describe('传输层错误的识别（决定要不要丢连接重试一次）', (
 
   it('配额被拒时用户拿到的文案必须可操作（不是裸的 ssh2 报错）', () => {
     const text = describeExecError('(SSH) Channel open failure: open failed')
-    expect(text).toContain('MaxSessions')
-    expect(text).toContain('实时跟随')
+    expect(text).toContain('通道已满')
+    expect(text).toContain('日志跟随')
   })
 
   it('业务失败绝不能被当成传输层错误 —— 否则一条命令会被重发一次', () => {
