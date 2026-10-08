@@ -182,11 +182,33 @@ function buildHostWorld(): HostWorld {
     else files.set(rel, text)
   }
 
-  // 全树扫描用（A3）：把每个包的 lib/index.js 收进来
+  /*
+   * 全树扫描用（A3 / N3）：把每个包 **lib/ 下所有文件** 收进来。
+   *
+   * N3（2026-10-07 review）：原先只读 `lib/index.js` 一个文件，于是宿主若把确认框原语放进
+   * `lib/client.js`（浏览器半体）/ `lib/worker.cjs`（如 picker-native 的 win32 worker）/
+   * 子目录，这道 absence 判据**仍看不见**——而方案那句是**树级**断言。
+   * 修法：按包**递归收 lib/**（含 .js / .cjs / .mjs / .d.ts），而不是按扩展名过滤掉别的形态。
+   * 仍不收整个包目录：`src/`（源码）与 `node_modules/`（依赖）不属于「宿主自带设施」这一问。
+   */
   const packages = new Map<string, string>()
   for (const pkg of readdirSafe(dir)) {
-    const text = readFileSafe(join(dir, pkg, 'lib', 'index.js'))
-    if (text !== undefined) packages.set(pkg, text)
+    const libDir = join(dir, pkg, 'lib')
+    if (!existsSync(libDir)) continue
+    const chunks: string[] = []
+    const collect = (current: string): void => {
+      for (const entry of readdirSafe(current)) {
+        const child = join(current, entry)
+        const text = readFileSafe(child)
+        if (text !== undefined) chunks.push(text)
+      }
+    }
+    collect(libDir) // lib/ 根
+    for (const sub of readdirSafe(libDir)) {
+      const subDir = join(libDir, sub)
+      if (existsSync(subDir) && readFileSafe(subDir) === undefined) collect(subDir) // 一层子目录
+    }
+    if (chunks.length > 0) packages.set(pkg, chunks.join('\n'))
   }
 
   // CSP 位点（A6）：只收**存在**的文件
@@ -196,15 +218,36 @@ function buildHostWorld(): HostWorld {
     if (raw !== undefined) cspSites.set(site.rel, /Content-Security-Policy/.test(raw))
   }
 
+  /**
+   * 宿主版本（`@deepseek-ai/dsh` 自己的 package.json）。
+   *
+   * **N1（2026-10-07 review）**：这里原先是 `join(dir, 'dsh', 'package.json')`——**路径是错的**，
+   * 于是 `version` 恒为 `undefined`，下游「基准版本要对得上」那条判据一命中
+   * `if (HOST_WORLD.version === undefined) return` 就直接放行，**升级绊线成了死代码**；
+   * 而 `dir` 已经是 `…/@deepseek-ai/dsh/node_modules/@deepseek-ai`，真实版本在它**上两级**。
+   * 更糟的是只有「真宿主在仓 node_modules」那条分支才可能读到（CI 的 stub 走不到），
+   * 所以本机与 CI **双双空转**——这正是 A2 的同一形状搬到了新位置。
+   *
+   * 修法：**向上逐级找**名为 `@deepseek-ai/dsh` 的 package.json，而不是拼一个写死的相对层数
+   * （层数随安装形态变：全局装 / 仓内 link / pnpm store 各不相同）。
+   */
   const version = (() => {
-    const raw = readFileSafe(join(dir, 'dsh', 'package.json'))
-    if (raw === undefined) return undefined
-    try {
-      const parsed = JSON.parse(raw) as { version?: unknown }
-      return typeof parsed.version === 'string' ? parsed.version : undefined
-    } catch {
-      return undefined
+    let cursor = dir
+    for (let depth = 0; depth < 6; depth += 1) {
+      const raw = readFileSafe(join(cursor, 'package.json'))
+      if (raw !== undefined) {
+        try {
+          const parsed = JSON.parse(raw) as { name?: unknown; version?: unknown }
+          if (parsed.name === '@deepseek-ai/dsh' && typeof parsed.version === 'string') return parsed.version
+        } catch {
+          /* 不是 JSON 就继续往上找 */
+        }
+      }
+      const parent = join(cursor, '..')
+      if (parent === cursor) break
+      cursor = parent
     }
+    return undefined
   })()
 
   return { kind: 'present', dir, files, missing, packages, cspSites, version }
@@ -469,6 +512,33 @@ function buildRepoWorld(): Map<string, string> {
 
 const REPO_WORLD = buildRepoWorld()
 
+/**
+ * 升级绊线的**纯判据**（N1）：宿主版本 vs 方案基准，返回违规描述（undefined = 通过）。
+ *
+ * 抽成纯函数的理由与 `checkRepoWorld` 同一条（A1 的结构性修复）：**真实断言与反例必须走
+ * 同一条代码路径**，否则反例只能断言「当前状态恰好如此」，证不了绊线有牙。
+ *
+ * 三条语义（每一条都有对应反例）：
+ *   - `version === undefined` → **报错**。原实现是 `return`（静默放行），而宿主在、却读不到
+ *     它的版本 = 宿主布局变了，那是回归信号。这正是 N1 那个死代码的形状。
+ *   - 与基准不一致 → 报错（DSH 升级可能改变方案依赖的三条事实）。
+ *   - 一致 → undefined。
+ */
+export function baselineVersionViolation(version: string | undefined, plan: string): string | undefined {
+  const baseline = /DSH `(\d+\.\d+\.\d+[^`]*)`/.exec(plan)?.[1]
+  if (baseline === undefined) return '方案里没有基准版本号——绊线无从比较'
+  if (version === undefined) {
+    return '宿主在、但取不到 @deepseek-ai/dsh 的版本——宿主布局变了（判据读法要跟着改），不许静默放行'
+  }
+  if (version !== baseline) {
+    return (
+      `宿主版本 ${version} 与方案基准 ${baseline} 不一致：` +
+      'DSH 升级可能改变三条事实，请重读 docs/os-consent-plan.md §2.1 并更新基准'
+    )
+  }
+  return undefined
+}
+
 describe('OS 级同意：本仓文档与结论必须成对（宿主不存在也跑）', () => {
   it('真实仓库通过', () => {
     expect(checkRepoWorld(REPO_WORLD)).toEqual([])
@@ -486,20 +556,22 @@ describe('OS 级同意：本仓文档与结论必须成对（宿主不存在也�
      * **有人把真实世界那两行调用删了**（判据函数还在，只是没人调），于是真实仓库再没人检查，
      * 而反例层照旧全绿（它们喂的是合成世界）。
      *
-     * 这个自检**自己踩过两次坑**，记在这里免得后人重犯：
+     * 这个自检**自己踩过三个坑**，记在这里免得后人重犯：
      *   ① 第一版 `toContain('checkHostWorld(HOST_WORLD)')`——**它自己的注释里**就写着这个字符串，
      *      于是把调用删掉照样绿（实测：删掉真实调用 → 14 passed）；
-     *   ② 第二版「剥掉注释再数」——但**它自己的参数里**又写着同一个字符串，数出来 ≥1，照旧绿。
-     * 结论：**被搜索的针不能完整地出现在本文件里**。做法是把针拆成两段拼接，
-     * 并匹配**调用语句的完整形状**（含 `expect(` 与 `)`），而不是裸标识符。
+     *   ② 第二版「剥掉注释再数」——但**它自己的参数里**又写着同一个字符串，数出来 ≥1，照旧绿；
+     *   ③ 第三版把针改成「整条语句」`expect(checkHostWorld(HOST_WORLD))`——那会**误红**：
+     *      把调用重构成 `const v = …; expect(v)` 是等价且更好读的写法（N4）。
+     * 结论：① **被搜索的针不能完整地出现在本文件里**（拆成两段拼接）；
+     *      ② 判据盯的是「**那个调用还在**」，不是「那句写法没换」——所以匹配调用表达式本体。
      */
     const self = read('scripts/test/os-consent-scope.test.ts')
     const withoutComments = self
       .replace(/\/\*[\s\S]*?\*\//g, '') // 块注释（含文件头）
       .replace(/\/\/.*$/gm, '') // 行注释
-    // 针拆开拼：本文件里因此不会出现完整字面量
-    const repoCall = 'expect(checkRepoWorld' + '(REPO_WORLD))'
-    const hostCall = 'expect(checkHostWorld' + '(HOST_WORLD))'
+    // 针拆开拼（本文件里因此不会出现完整字面量）；匹配**调用表达式本体**，不受语句形态影响
+    const repoCall = 'checkRepoWorld' + '(REPO_WORLD)'
+    const hostCall = 'checkHostWorld' + '(HOST_WORLD)'
     expect(
       withoutComments.includes(repoCall),
       '真实本仓世界的检查没有被调用（判据还在但没人调 = 真实仓库不再被检查）',
@@ -524,17 +596,10 @@ describe.skipIf(HOST_WORLD.kind === 'absent')('OS 级同意：宿主侧三条事
   })
 
   it('基准版本要对得上：宿主升级后必须回来复核（A2 的升级绊线）', () => {
-    if (HOST_WORLD.kind !== 'present') return
     const plan = REPO_WORLD.get(REPO_FILES.plan) ?? ''
-    const baseline = /DSH `(\d+\.\d+\.\d+[^`]*)`/.exec(plan)?.[1]
-    expect(baseline, '方案里没有基准版本号').toBeDefined()
-    if (HOST_WORLD.version === undefined) return // 取不到版本就不判（不假装通过也不误红）
-    if (HOST_WORLD.version !== baseline) {
-      throw new Error(
-        `宿主版本 ${HOST_WORLD.version} 与方案基准 ${String(baseline)} 不一致：` +
-          'DSH 升级可能改变三条事实，请重读 docs/os-consent-plan.md §2.1 并更新基准',
-      )
-    }
+    // 走抽出来的纯判据（N1）；三条语义的反例见「宿主侧反例」那一块
+    const violation = baselineVersionViolation(HOST_WORLD.version, plan)
+    expect(violation, '升级绊线报错').toBeUndefined()
   })
 })
 
@@ -633,22 +698,28 @@ describe('OS 级同意：反例层（结论过期时必须变红）', () => {
     expect(checkRepoWorld(world).length).toBeGreaterThan(0)
   })
 
+/*
+ * 宿主侧反例：
+ *
+ * **N2（2026-10-07 review）**：这些用例原先留在「反例层」里，各自靠
+ * `if (HOST_WORLD.kind !== 'present') return` 提前返回——宿主不在时它们**报 ✓**（静默通过），
+ * 于是 CI 的计数里混着空转。这与 A2 的纪律（「跳过要响亮」）冲突：宿主缺失应当整块 `skipped`。
+ * 所以单独成块 + `skipIf`，与「宿主侧三条事实」那条同款。
+ */
+describe.skipIf(HOST_WORLD.kind === 'absent')('OS 级同意：宿主侧反例（需真实 DSH）', () => {
   it('宿主把审批改由宿主 answerer 回答（不再是页面 remote）→ 宿主判据红', () => {
     const world = hostWorldWith(HOST_FILES.approvalClient, 'ctx.remote.$on("approval/request"', 'ctx.notTheRemoteAnymore("approval/request"')
-    if (world === undefined) return
     expect(checkHostWorld(world).length, '反例必须让真判据报错（A1：不能只断言 replace 成功）').toBeGreaterThan(0)
   })
 
   it('宿主换成 iframe 隔离插件半体 → 宿主判据红', () => {
     const world = hostWorldWith(HOST_FILES.moduleLoader, 'same-origin external classic script', 'sandboxed iframe bundle')
-    if (world === undefined) return
     const violations = checkHostWorld(world)
     expect(violations.length).toBeGreaterThan(0)
     expect(violations.join('\n')).toMatch(/iframe|装载说明/)
   })
 
   it('宿主里出现确认框原语（全树扫描）→ 宿主判据红', () => {
-    if (HOST_WORLD.kind !== 'present') return
     // 往**任意一个**包里塞一个确认框原语，验证全树扫描真的在扫（A3）
     const somePkg = [...HOST_WORLD.packages.keys()][0]
     if (somePkg === undefined) return
@@ -659,23 +730,61 @@ describe('OS 级同意：反例层（结论过期时必须变红）', () => {
   })
 
   it('宿主在但需要的文件缺失 → 判红，而不是跳过（A2 的 fail-closed 半边）', () => {
-    if (HOST_WORLD.kind !== 'present') return
     const violations = checkHostWorld({ ...HOST_WORLD, missing: ['dsh-client-ui-approval/lib/client.js'] })
     expect(violations.join('\n'), '文件缺失被当成「跳过」了——A2 会因此漏掉真实的宿主结构变化').toMatch(/找不到/)
   })
 
   it('宿主不再导出那份 resolver → 判据红（C1：§4 的复用前提没了）', () => {
-    if (HOST_WORLD.kind !== 'present') return
     const current = HOST_WORLD.packages.get('dsh-host-directory-picker-auto')
     if (current === undefined) return
+    /*
+     * 替换**全部**出现处（不是第一处）：N3 之后 `packages` 收的是 lib/ 下**所有**文件，
+     * 于是同一个符号在 `index.js`（`function …`）与 `types/index.d.ts`（`declare function …`）
+     * 里各出现一次——只换第一处，另一处仍匹配，判据照旧放行，反例就成了空转
+     * （这正是 A1 那条纪律说的「假反例」）。`mutate` 用 `.replace` 只换一处，所以这里显式 replaceAll。
+     */
+    const mutated = current.replaceAll('resolveDirectoryPickerBackend', 'renamedBackendResolver')
+    expect(mutated, '反例没生效：符号名没被替换掉').not.toBe(current)
     const packages = new Map(HOST_WORLD.packages)
-    packages.set('dsh-host-directory-picker-auto', mutate(current, 'function resolveDirectoryPickerBackend', 'function renamedBackendResolver'))
+    packages.set('dsh-host-directory-picker-auto', mutated)
     const violations = checkHostWorld({ ...HOST_WORLD, packages })
     expect(violations.join('\n'), '§4 说「复用它的 resolver」，那名/签名一改就该提醒').toMatch(/resolveDirectoryPickerBackend/)
   })
 
+  /*
+   * N1（2026-10-07 review）：升级绊线（「基准版本要对得上」）此前**是死代码**——读版本的
+   * 路径写错（`join(dir, 'dsh', 'package.json')`，而 dir 已经是 `…/@deepseek-ai/dsh/node_modules/@deepseek-ai`），
+   * 于是 `version` 恒 undefined、判据当场 `return`，**报 ✓ 而什么都没比较**；且只有真宿主那条
+   * 分支才可能读到，CI 的 stub 走不到 ⇒ 本机与 CI 双双空转。
+   *
+   * 这两条反例喂的是**抽出来的纯函数** `baselineVersionViolation`（与真实断言同一条代码路径），
+   * 所以它们证的是「绊线有牙」，而不是「当前状态恰好如此」——后者是 A1 明令禁止的那种假反例。
+   */
+  it('宿主版本取不到（布局变了）→ 绊线判红，不再静默放行（N1）', () => {
+    const plan = REPO_WORLD.get(REPO_FILES.plan) ?? ''
+    const violation = baselineVersionViolation(undefined, plan)
+    expect(violation, 'version 缺失必须报错（原先是静默 return）').toBeDefined()
+    expect(violation).toMatch(/取不到/)
+  })
+
+  it('宿主版本与方案基准不一致 → 绊线判红（N1：绊线有牙）', () => {
+    const plan = REPO_WORLD.get(REPO_FILES.plan) ?? ''
+    const violation = baselineVersionViolation('0.0.1-whatever', plan)
+    expect(violation, '版本对不上必须报错').toBeDefined()
+    expect(violation).toMatch(/不一致/)
+  })
+
+  it('宿主版本与基准一致 → 不报（绊线不能恒红）', () => {
+    const plan = REPO_WORLD.get(REPO_FILES.plan) ?? ''
+    const baseline = /DSH `(\d+\.\d+\.\d+[^`]*)`/.exec(plan)?.[1]
+    expect(baseline, '方案里没有基准版本号').toBeDefined()
+    expect(baselineVersionViolation(baseline, plan), '版本一致时不该报错').toBeUndefined()
+    // 并确认真实宿主确实读到了版本、且与基准一致（否则上面那条就是空转）
+    expect(HOST_WORLD.version, '真实宿主的版本读不到——N1 的读法（向上逐级找）失效了').toBeDefined()
+    expect(HOST_WORLD.version).toBe(baseline)
+  })
+
   it('宿主换了「坐在屏幕前」的口径（去掉 SSH 判据）→ 判据红（C1）', () => {
-    if (HOST_WORLD.kind !== 'present') return
     const current = HOST_WORLD.packages.get('dsh-host-directory-picker-auto')
     if (current === undefined) return
     const packages = new Map(HOST_WORLD.packages)
@@ -684,4 +793,5 @@ describe('OS 级同意：反例层（结论过期时必须变红）', () => {
     const violations = checkHostWorld({ ...HOST_WORLD, packages })
     expect(violations.join('\n'), 'SSH 判据不见了必须报——那正是 §4 要不变量 6 防的场景').toMatch(/SSH 判据/)
   })
+})
 })

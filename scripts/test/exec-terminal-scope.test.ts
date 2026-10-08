@@ -110,6 +110,19 @@ const CLAIM_SITES: ClaimSite[] = [
     window: WINDOW_DEFAULT,
     must: [/容器详情抽屉/, /「概览」页签/],
   },
+  /*
+   * E1（2026-10-07 review）：设置卡片上的**开关标签**是用户第一眼看到的地方，而它原先写
+   * 「允许 exec（在容器内执行命令）」——**这正是 D163 那个 overclaim 的最外层**：
+   * 读起来像「exec 整体要授权」，而卡片「终端」按钮的 `docker exec -it` 根本不受它管。
+   * 改了 label 就得钉住，否则下次谁顺手改回去也没人知道。
+   */
+  {
+    name: 'docker 设置卡片 allowExec 标签点明「一次性」（zh）',
+    path: DOCKER_CLIENT,
+    anchor: "'check.allowExec':",
+    window: WINDOW_DEFAULT,
+    must: [/一次性/, /不由它管|不受它管/],
+  },
   {
     name: 'docker README（en）安全模型',
     path: DOCKER_README_EN,

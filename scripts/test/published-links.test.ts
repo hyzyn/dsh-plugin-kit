@@ -101,13 +101,24 @@ function publishedArtifacts(packageDir: string): string[] {
 /** 找一处文本里的「仓内相对链接」；返回违规描述（空数组 = 干净）。 */
 export function relativeLinkViolations(text: string, filePath: string, repoRoot: string): string[] {
   const out: string[] = []
-  // markdown 链接语法 ](path)，path 里含 ../ 即「按当前文件位置解析」= 仓内跳转
-  for (const match of text.matchAll(/\]\(([^)\s]+)\)/g)) {
-    const target = match[1]
+  /*
+   * markdown 链接语法 `](path)` 或 `](path "title")`，path 里含 `../` 即「按当前文件位置解析」
+   * = 仓内跳转。
+   *
+   * N5（2026-10-07 review）：原判据是 `/\]\(([^)\s]+)\)/`——它**放过带标题的链接**
+   * （`](x "../docs/a.md" "标题")` 里的空格让整个括号内容匹配不上）。今天全仓 0 命中，
+   * 所以无实害，但判据有个洞：只要有人写出带标题的相对链接，它就静默漏掉。
+   * 修法：先取括号内容，再按 markdown 的 title 语法切出**路径**那一段
+   * （尖括号形式 `](<path> "title")` 解一层，裸路径取首个空白前的部分）。
+   */
+  for (const match of text.matchAll(/\]\(([^)]*)\)/g)) {
+    const raw = match[1]
+    const angle = /^<([^>]*)>/.exec(raw)
+    const target = angle !== null ? angle[1] : (raw.split(/\s+/)[0] ?? '')
     if (!target.includes('../')) continue
     // 绝对 URL 不可能含 ../（真含了也是外部地址，不归本守卫管）
     if (/^[a-z][a-z0-9+.-]*:/i.test(target)) continue
-    out.push(`${relative(repoRoot, filePath)} 里有仓内相对链接：](${target})`)
+    out.push(`${relative(repoRoot, filePath)} 里有仓内相对链接：](${raw})`)
   }
   return out
 }
@@ -168,5 +179,26 @@ describe('死链守卫：反例（必须红）', () => {
 
   it('不含 ../ 的同目录链接不算违规', () => {
     expect(relativeLinkViolations('[x](./other.md)', 'x.md', REPO)).toEqual([])
+  })
+
+  /*
+   * N5（2026-10-07 review）：原正则 `/\]\(([^)\s]+)\)/` **放过带标题的链接**——
+   * `](path "title")` 里的空格让整个括号内容匹配不上。今天全仓 0 命中所以无实害，
+   * 但判据有个洞，这里把三种语法都钉住。
+   */
+  it('带标题的链接也要抓住（N5：原判据在这里漏检）', () => {
+    for (const text of [
+      '[x](../docs/a.md "标题")',
+      "[x](../docs/a.md '标题')",
+      '[x](<../docs/a.md> "标题")',
+    ]) {
+      const violations = relativeLinkViolations(text, 'x.md', REPO)
+      expect(violations.length, `带标题的相对链接漏检了：${text}`).toBeGreaterThan(0)
+    }
+  })
+
+  it('带标题的**绝对 URL / 同目录**链接仍不算违规（修完不能误伤）', () => {
+    expect(relativeLinkViolations('[x](https://a.example/b.md "标题")', 'x.md', REPO)).toEqual([])
+    expect(relativeLinkViolations('[x](./a.md "标题")', 'x.md', REPO)).toEqual([])
   })
 })

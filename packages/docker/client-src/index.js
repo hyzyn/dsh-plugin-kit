@@ -481,7 +481,9 @@ const I18N_ZH = {
   'field.execTimeout': 'exec 超时（秒）',
   'section.capabilities': '能力开关（默认关闭）',
   'check.allowMutations': '允许变更操作（容器启停删、镜像拉取 / 删除 / 清理）',
-  'check.allowExec': '允许 exec（在容器内执行命令）',
+  // 限定到「一次性」通道：旧文案「（在容器内执行命令）」会被读成「exec 整体要授权」，
+  // 而卡片「终端」按钮的 docker exec -it 不受它管（D163）。设置卡片是用户第一眼看到的地方。
+  'check.allowExec': '允许一次性 exec（面板命令框与 docker_exec；交互式进容器不由它管）',
   'hint.socketRoot': 'docker socket 等价于目标主机的 root 权限。开启后，浏览器面板与 agent 都能执行对应操作，请只在可信环境下打开。',
   'hint.capabilityNotGranted': '⚠ 宿主尚未授权：这两个开关现在打不开，点它会给出一条就地确认的命令（免重启）。关掉它们随时可用。',
   'badge.notEffective': '未生效：未获宿主授权',
@@ -968,7 +970,7 @@ const I18N_EN = {
   'field.execTimeout': 'exec timeout (seconds)',
   'section.capabilities': 'Capability switches (off by default)',
   'check.allowMutations': 'Allow changes (start/stop/remove containers, pull / remove / prune images)',
-  'check.allowExec': 'Allow exec (run commands inside containers)',
+  'check.allowExec': 'Allow one-shot exec (panel command box and docker_exec; interactive container access is not gated by it)',
   'hint.socketRoot': 'The docker socket is equivalent to root on the target host. Once enabled, both the browser panel and the agent can run these operations — only turn it on in a trusted environment.',
   'hint.capabilityNotGranted': '⚠ Not granted by the host: these two switches cannot be turned on right now — clicking one gives you a command to confirm in place (no restart). Turning them off always works.',
   'badge.notEffective': 'Not effective: not granted by the host',
