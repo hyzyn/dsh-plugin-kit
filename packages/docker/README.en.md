@@ -201,6 +201,12 @@ Inside the panel:
   may have fallen behind while the stream was down), including the case where the daemon never came up and the
   stream never opened at all — otherwise the strip turns green while the list still shows its error state, looking
   fixed when it is not.
+  **A refused reconnect must say why** (`D164`): when the server actively refuses this stream it sends an
+  `event: error` frame carrying a `message` (typically the long-stream quota being full — see "Known limitations";
+  that sentence says what to do about it). The client now **shows it on the Activity strip** ("the last reconnect
+  was refused: …") instead of discarding it. It used to just set `closed`, which made "refused → back to where it
+  was" indistinguishable from "the click did nothing", leaving the user to click over and over. The reason is
+  cleared on a successful reconnect (or when the stream is rebuilt).
 - **Select for merging (temporary multi-select merged logs)**: the toolbar's `Select for merging` enters selection
   mode — a checkbox appears on the left of every card, clicking a card body becomes **select / deselect** (it no
   longer opens details; the action bar collapses temporarily so that multi-selecting does not mis-click
@@ -842,6 +848,14 @@ read-only first:
   the cap, and the far end refusing a channel, both produce pointed messages rather than ssh2's raw text. If your sshd
   tunes `MaxSessions` (`sshd -T | grep maxsessions`), the current cap is a compile-time constant — file an issue if it
   needs to follow.
+  Two more remedies attach to this (`D150`): short commands **queue per target** (at most 2 concurrent per connection,
+  `DSH_DOCKER_SHORT_CHANNELS` overrides, for testing / troubleshooting only), and a full budget **self-heals** by
+  dropping and `end()`ing the connection and retrying once on a fresh one. And (`D164`): aborting a long stream now
+  **settles it on the spot** instead of waiting for the far end — previously, if the far end never confirmed (the
+  `KILL` above being refused, or a silent channel), that stream's `busy` count never came down; after 8 such leaks
+  **every** long stream on that target was refused with no self-healing path at all (observed: 248 pinned at 8/8 with
+  the Activity strip's Reconnect appearing to do nothing). `run()` had already hit this same trap twice (`D112` /
+  `D161`); all three teardown paths now settle themselves.
 - **Docker CLI version differences**: parsing goes through `--format '{{json .}}'`, and fields come and go between
   versions; the parser always degrades instead of throwing (for example, a missing `State` has the state derived from
   `Status`, and health is extracted from `(healthy)` / `(unhealthy)`); with fields missing the corresponding columns
@@ -1040,12 +1054,14 @@ ring buffer / action labels / debounce** (pure logic through the `__events` test
 the entry label when the sidebar is collapsed (`data-sidebar-collapsed`).
 Verification that needs a real daemon follows the manual checklist below.
 
-`test/logs-stream.test.ts` (37 cases, run by the root `pnpm test`) covers four layers of the live log stream:
+`test/logs-stream.test.ts` (case count deliberately not hardcoded — `vitest run`'s output is the single source of truth) covers four layers of the live log stream:
 `logsStream`'s argv construction and `assertRef` allowlist, the single-line JSON encapsulation of SSE frames
 (newlines / multi-byte), the local stream lifecycle (fake spawn: multi-byte across chunks, the SIGTERM→SIGKILL
 ladder, close resolve, spawn error) plus the SSH long stream's busy-count pairing / sweeper skip, and the route
 layer's event sequence / heartbeat / silent abort when the client disconnects / uniform wrap-up when the plugin is
-disabled — plus **chunk coalescing** (D151: ten chunks produce a single `line` frame; when the stream ends before the
+disabled — plus **the `busy` count must return to zero after a long stream is aborted** (D164: neither a far end that
+never confirms the channel close nor eight such leaks in a row may pin the target, and chunks arriving after teardown
+are not delivered) — plus **chunk coalescing** (D151: ten chunks produce a single `line` frame; when the stream ends before the
 window elapses, `end` still comes after those rows) and **exact skip accounting** (D156: frames dropped while a queued
 `skip` has not been written yet must still be reported — a 46-frame ledger where every frame is either delivered or
 accounted for). The coalescer's own rules (window merge / flush on the size cap /

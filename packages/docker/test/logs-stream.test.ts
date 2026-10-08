@@ -23,7 +23,7 @@ vi.mock('node:child_process', () => ({ spawn: spawnMock }))
 
 import { DockerApi, createRunner } from '../src/docker.js'
 import type { Runner, StreamHandlers } from '../src/docker.js'
-import { RemoteExec, runLocalStream, shouldRecycleConn } from '../src/ssh-exec.js'
+import { RemoteExec, runLocalStream, shouldRecycleConn, streamBudgetError } from '../src/ssh-exec.js'
 import type { SshSpec } from '../src/ssh-exec.js'
 import { apply, sseFrame } from '../src/index.js'
 
@@ -375,6 +375,60 @@ describe('RemoteExec.stream', () => {
     channel.emit('error', new Error('connection lost'))
     await expect(pending).rejects.toThrow(/SSH exec channel 异常：connection lost/)
     expect(conn.busy).toBe(0)
+  })
+
+  /*
+   * D164：远端**不确认**关通道时的 `busy` 泄漏（真机现场：248 上 8/8 恒满，
+   * 活动条「事件流已断开」点重连毫无反应）。
+   *
+   * 成因不是远端槽位（那是 D150，由 openChannel 重建连接兜底），而是**插件自己的账**：
+   * `onAbort` 原先只 `signal('KILL') + close()` 就等远端回话，而部分 sshd 会拒绝这个
+   * KILL、通道也可能静默（既不 emit('close') 也不 emit('error')）——于是 Promise 永不
+   * 落定、`finally` 里的 `release()` 永不执行、`busy` 永久 +1。累积 8 次之后，该目标的
+   * **每一条**长流都被 streamBudgetError 拒绝，且没有任何自愈路径。
+   *
+   * 这与 D112（run() 的超时）/ D161（run() 的 abort）是同一个坑的第三次出现：**收尾必须
+   * 自己 settle，不能只 signal + close**。下面三条都是判别性的——退回「只 close」即红。
+   */
+  it('D164：abort 后远端不确认 close，busy 仍必须归零且 Promise 落定', async () => {
+    const { remote, channel, conn } = makeRemoteHarness()
+    const controller = new AbortController()
+    const pending = remote.stream(SPEC, ['docker', 'logs', '--follow', 'web'], makeHandlers(), controller.signal)
+    await tick()
+    expect(conn.busy).toBe(1)
+    controller.abort()
+    expect(channel.close).toHaveBeenCalledTimes(1)
+    // 关键：**不** emit('close')——模拟 sshd 拒绝 signal('KILL') / 通道静默
+    await expect(pending).resolves.toEqual({ code: null })
+    expect(conn.busy).toBe(0)
+  })
+
+  it('D164：累积 8 次「放弃后远端不确认」也不会把目标钉死（第 9 条长流仍被放行）', async () => {
+    const { remote, conn } = makeRemoteHarness()
+    for (let i = 0; i < 8; i += 1) {
+      const controller = new AbortController()
+      const pending = remote.stream(SPEC, ['docker', 'logs', '--follow', 'web'], makeHandlers(), controller.signal)
+      await tick()
+      controller.abort()
+      await pending
+    }
+    expect(conn.busy).toBe(0)
+    // 配额判定读的就是 busy：归零之后必须放行，否则现场那句「已有 8 条实时流」永远甩不掉
+    expect(streamBudgetError('root@10.0.0.5:22', conn.busy)).toBeNull()
+  })
+
+  it('D164：收尾之后到达的分片不再投递给 handler（不重复投递）', async () => {
+    const { remote, channel } = makeRemoteHarness()
+    const handlers = makeHandlers()
+    const controller = new AbortController()
+    const pending = remote.stream(SPEC, ['docker', 'logs', '--follow', 'web'], handlers, controller.signal)
+    await tick()
+    controller.abort()
+    await pending
+    // 远端并不知道我们已把这条流当结束了，仍可能推来几块
+    channel.emit('data', Buffer.from('迟到的日志\n'))
+    await tick()
+    expect(handlers.stdout).toEqual([])
   })
 
   it('stderr 分片与 stdout 分开回调，跨 chunk 多字节不丢', async () => {

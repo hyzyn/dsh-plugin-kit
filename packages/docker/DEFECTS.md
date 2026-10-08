@@ -7,8 +7,8 @@
 > 知道**当年坏了什么**，再查 [§2 编号字典](#2-编号字典这段代码为什么长这样) 知道**所以代码为什么
 > 写成这样**。
 >
-> **编号是硬契约**：`D01–D163` 是 `packages/docker` 内部序列，与 `packages/tty/DEFECTS.md` 的
-> `D01–D95` **不共享**；跨包引用请写「docker D03 / tty D12」。新缺陷接在 `D163` 之后，
+> **编号是硬契约**：`D01–D164` 是 `packages/docker` 内部序列，与 `packages/tty/DEFECTS.md` 的
+> `D01–D95` **不共享**；跨包引用请写「docker D03 / tty D12」。新缺陷接在 `D164` 之后，
 > **不得重号、不得回收空号**——源码里已有注释指向它们。
 
 > **本文不含**：逐条 postmortem（症状 / 现场复现 / 根因 / 修法 / 回归 / 反向验证）。
@@ -36,7 +36,7 @@
 
 ## 现状
 
-**已修 163 / 待修 0**，编号至 `D163`。逐条症状见 §1，设计意图见 §2，**还没做的见
+**已修 164 / 待修 0**，编号至 `D164`。逐条症状见 §1，设计意图见 §2，**还没做的见
 [ROADMAP.md](./ROADMAP.md)**。
 
 > ⚠️ **标注（本次未擅改）——两处口径不一致，原文未改：**
@@ -229,6 +229,8 @@
 | D162 | 能力使用审计的出口走了 `ctx.logger`：真机验收（2026-10-07，DSH 0.2.1-alpha.1）实测插件经 `ctx.logger.info` 打的行**既不出现在宿主 stdout、也找不到落盘文件**——能看到的 `[dsh-docker]` 行全部是 `console.log` 调用点（mounted / config applied / agent tools registered / tier-gate；tier-gate 的日志出口默认就是 console，见 kit `tier-gate.ts`），而审计行的意义全在「出问题时翻得到」，走一个不可见的通道等于没写 | `src/audit.ts`：出口固定 `console.log`（行前缀已带 `[dsh-docker]`），**刻意不做参数**——出口是本模块的取舍、不是调用方的选择（文件头有 D162 锚点）；`auditCapabilityUse` / `audited` 因此去掉 logger 形参，`src/index.ts` 全部调用点随之瘦身；`test/capability-audit.test.ts` 与 `scripts/route-smoke.mjs` 的断言面改为 **console 捕获**（捕到的就是真宿主 stdout 上会出现的字节）。kit elevation 的授权行（begin / grant / expire / revoke / load）走 `ctx.logger` 是同一问题，因台账守卫「待修必须为 0」不能以未修条目入 kit 台账，记在根 ROADMAP 待办（kit 修好后两类行同通道，README 的表述同步） |
 | D163 | **「`allowExec` 闸住了 docker exec」这句声称的安全性质比实际多一条**（2026-10-07 用户拿着一张设置卡片 + 面板截图问「这算是漏洞吗」）：卡片上两个开关都显示「未生效：未获宿主授权」，而面板里容器卡片的**终端按钮照常能进容器敲命令**（`docker exec -it '<容器>' sh`，经 tty 的 `ttyTerminal` 承载）。实现本身是**刻意的**——那个按钮从设计起就属「查看 / 进入」组、只读模式下也永远可用（README 的动作条表格就是这么定的），exec 被关时面板的提示原文甚至直接让用户「复制卡片上的 exec 命令到终端面板交互式进入容器」；坏的是**说法**：`DOCKER_GUIDANCE` 写的是「…拉取镜像、docker exec，都需要用户显式打开『允许变更操作』『允许 exec』后才有对应**工具和按钮**」，而 README 的安全模型只列 `/exec` 与 `docker_exec` 被挡、没有一句说明**另一条同效通道不在它管辖内**——读者（包括当时在场的用户）会推成「exec 整体被挡住」。**同时暴露一条没写进威胁模型的效力缺口**：仓库四处都声称能力开关能拦「页内脚本（第三方 client 半体 / XSS）」，但装上 tty 之后，页内脚本经 `ttyTerminal.open` 或 WS `spawn` 帧就能跑任意命令，**比本插件的一次性 exec 还强**——`allowExec` 对页内脚本从来不是边界。功能无改动，纯口径修正 | 对外文案统一收窄到「**一次性**的 exec 通道」并各自点明终端按钮不受门控：`src/index.ts` 的 `DOCKER_GUIDANCE`；`packages/docker/README.md` / `README.en.md` 的安全模型第 1 条 + 动作条表格「查看 / 进入」行 + 配置表的 `allowExec` 行 + 「已知限制」新增「`allowExec` 不是『进不了容器』的闸」一条（含代价段）；威胁模型的边界补在 `packages/kit/src/capability.ts` 与 `docs/architecture.md` § 7（两处都是「同一条边界还适用于**能力面**」）；tty README 中英各补一条「`ttyTerminal` / WS `spawn` 是没有静态能力闸的命令面，消费方别把别人的 exec 开关宣传成进不了容器的边界」。回归：`scripts/test/exec-terminal-scope.test.ts`（**条数不写死**：`pnpm test` 现算；2026-10-07 review B4 指出本行原先「9 条」与「四处文案 / 七份文本 / 四类漂法」三处计数互相打架、且都与实际不符——实为 9 个 claim site / 7 个文件 / 5 条反例，现已把散文里的数字删掉并加一条「覆盖范围现算」判据）三层判据——① **事实层**从 `client-src/index.js` 的 `openExec` 现算函数体，断言它**不含** `allowExec`（正控制：确实走 `buildExecCommand` 的交互式路径），同时断言该有闸的两处（`docker_exec` 工具、`/exec` 路由）仍在判；② **文案层**`CLAIM_SITES` 里每一处文案各有一条锚点句，该句必含「一次性 / one-shot」与「终端按钮不受门控」；③ **反例层**每一类漂法各造一个反例。**判别性已实测**：`git stash` 掉全部文案改动后重跑 → `7 failed / 2 passed`（红的正是文案层与反例层的「锚点句不见了」，绿的两条是事实层——`openExec` 本来就没有 `allowExec` 判断）。**第一版判据是「全文含『一次性』」的全文匹配，反例当场证明它恒绿**（README 的配置表里本来就写着「允许一次性 exec」），故判据改成「先定位锚点句、只查那句」——这一条也写进了用例文件头 | src/index.ts、README.md、README.en.md、packages/kit/src/capability.ts、docs/architecture.md、packages/tty/README.md、packages/tty/README.en.md、scripts/test/exec-terminal-scope.test.ts |
 
+| D164 | **长流被中止时插件自己的 `busy` 账不平**（真机现场 2026-10-08：248 上恒满 8/8，界面「事件流已断开」点**重连毫无反应**——12 次探针文案一字不差，而同一时刻浏览器只握着 4~5 条 TCP，数目对不上）。成因不是远端槽位（那是 D150，由「额度满 → 重建连接」兜底），而是 `RemoteExec.stream()` 的收尾：`AbortSignal` 触发时 `onAbort` 只做 `signal('KILL') + channel.close()` 就**等远端回话**，而部分 sshd 拒绝这个 KILL（D150 实测原文 `session_signal_req: session signalling requires privilege separation`），通道也可能**静默**（既不 `emit('close')` 也不 `emit('error')`）。于是那条流的 Promise 永不落定 → `finally` 里的 `release()` 永不执行 → `busy` **永久 +1**（`busy` 是配额判定的唯一输入，也是 sweeper 的跳过依据）。累积 8 次之后，该目标的**每一条**长流都被 `streamBudgetError` 拒绝，且**没有任何自愈路径**：`busy` 不会自己降，而 `openChannel` 的重建分支只在**开通道被远端拒绝**时触发——这一层拒绝发生在开门之前。叠加上同一现场的第二件事：客户端把 `event: error` 的 `data` **整个丢掉**、只置 `closed`，于是「被拒 → 回到原位」与「点了没反应」在像素上不可区分。这与 D112（`run()` 超时只 `signal` 不 settle）、D161（`run()` 的 abort 同形）是**同一个坑的第三次出现** | `src/ssh-exec.ts` 的 `stream()`：`onAbort` 补 `finish(null)`——向远端 `KILL` + 关通道之后**当场 settle**，不再等远端确认（幂等靠已有的 `settled` 守卫，远端稍后的 `close` 事件照样走 `finish`，不会重复 resolve）；`channel.on('data')` 与 `stderr.on('data')` 各加 `if (settled) return`——收尾之后到达的分片不再投递（远端并不知道我们已经把这条流当结束了），否则调用方会收到「resolve 之后还来的」分片。**同一现场的第二件事**（UI 侧，同属 D164）：`client-src/index.js` 新增纯函数 `eventsErrorMessage()` 解出服务端 `message`（非 JSON 的 `data` 原样返回；无 `data` 返回空串——连接层错误不是「服务端说了什么」，那种情况 EventSource 会自愈，不能冒充成一次被拒的重连），`onError` 把它写进新的 `eventsRefused` state，活动条据此把右侧提示换成「上次重连被拒绝：<那句话>」（`hint.eventsReconnectRefused`，zh/en 各一份），重连成功 / 重新建流时清空。**显示的正是宿主那句可执行文案**（例如「关掉部分实时跟随、把聚合容器数减到 6 个以内」）——修前用户永远看不到它 | src/ssh-exec.ts、client-src/index.js |
+
 ## 2. 编号字典：这段代码为什么长这样
 
 > 本节由原「修复记录摘要（第一轮 D01–D79 / 第二轮 D80–D125）」**重排**而来，「决策 / 机制」
@@ -238,6 +240,8 @@
 | 主题 | 决策 / 机制（原文，未改写） | 相关编号 |
 |---|---|---|
 | 连接生命周期 | 空闲回收把**在途的一次性命令**计入 `inflight`——长流之外的一次性长命令不能被中途掐断 | D01、D112 |
+| | **中止长流同样要自己 settle**：`stream()` 的 `onAbort` 除了向远端 `KILL` + 关通道，还要**当场 `finish(null)`**——只等远端回话时，远端不确认（KILL 被拒 / 通道静默）就等于 `busy` 永远不平、整台目标的长流被自己的配额钉死。收尾之后到达的分片一律不再投递 | D112、D161、D164 |
+| | 结构化流的 `error` 帧**带着原因**时，客户端必须把它显示出来——丢掉它，「被拒」与「点了没反应」在界面上不可区分 | D164 |
 | | **外部取消（`AbortSignal`）并入已有的收尾路径**：超时与 abort 走同一段 `signal('KILL') + close()` / `SIGKILL` + 收敛期，靠同一个 `settled` 幂等守卫收尾。**超时不能只 `race` 不取消**——外层拿到 `ok:false` 时底层还在跑，占的资源（SSH 会话槽）要等它自然结束才还 | D112、D159、D161 |
 | | 并发首连**先占坑再 `await`** 建连配置，避免同目标并存两条连接、先建的那条脱管 | D02、D94 |
 | | `dropConn(key, client)` 带**身份校验**：陈旧 close/error 不得摘掉同键上的新连接 | D06 |
@@ -315,6 +319,9 @@
   `node scripts/smoke.mjs`（44/44）、`node scripts/route-smoke.mjs`（61/61，hermetic，实测 0.7s）、
   `node scripts/client-smoke.mjs`（72/72，实测 0.6s）。三套都在 CI（ubuntu-only step）与发布闸里跑，
   并带看门狗（单例 25s / 全局 90s；末尾 `process.exit` 保证退出）。
+  > ⚠️ **标注（本次未擅改）**：上面三组计数都是 **0.7.0 时点的基线**，此后各自增长
+  > （`route-smoke` 与 `client-smoke` 现为 71/71 与 92/92）——按纪律 3「不写死计数」，
+  > 现算值以脚本自身的输出与 CI 为准，这里只保留当年的基线作为对照。
 - **产物与源码一致**：`pnpm -r build` 后
   `git diff --exit-code -- 'packages/*/client.js' ':(glob)packages/*/lib/**'`（CI 闸门；
   `:(glob)` 为什么必需见 [conventions.md § 真机脚本与 CI 接线](../../docs/conventions.md#真机脚本与-ci-接线)）；

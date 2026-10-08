@@ -1192,13 +1192,22 @@ export class RemoteExec {
         const stderrDecoder = new StringDecoder('utf8')
         let settled = false
         /*
-         * 中止长流：先请远端 KILL，再关通道。
+         * 中止长流：先请远端 KILL，再关通道，**然后自己 settle**。
          *
          * 注意 `signal('KILL')` **不保证生效**（D150，2026-09-29 实测 248：sshd 记
          * `session_signal_req: session signalling requires privilege separation` 并拒绝），
-         * 而 sshd 在子进程仍活着时会延迟释放 session 槽。也就是说：这一关通道之后，远端
-         * 可能还留着一条 `docker logs -f`，并继续占着 10 个槽里的一个——插件侧的 `busy` 已经
-         * 归零，自己看不出来。真正兜底的是 openChannel 的「额度满 → 重建连接」（D150）。
+         * 而 sshd 在子进程仍活着时会延迟释放 session 槽。
+         *
+         * **D164（所以这里必须有 `finish(null)`）**：远端**不确认**关通道时（上面那种拒绝，
+         * 或通道静默——既不 `emit('close')` 也不 `emit('error')`），原先这个 Promise 永不
+         * 落定 → `finally` 里的 `release()` 永不执行 → `busy` 永久 +1。累积到 8 之后，
+         * 该目标的**每一条**长流都被 `streamBudgetError` 拒绝，而面板上只看到「事件流已断开」、
+         * 点「重连」毫无反应（拒绝原因被客户端丢掉，见 D164 的另一半）。
+         *
+         * 这是 D112（`run()` 的超时）与 D161（`run()` 的 abort）已经踩过两次的同一个坑：
+         * **只 `signal` + `close` 而不 settle，账就永远平不了**。两条路径已合并到一处
+         * `interrupt()`，长流这条也照办。兜底仍保留：openChannel 的「额度满 → 重建连接」
+         * （D150）管的是**远端**槽位，插件自己的 `busy` 必须当场归零。
          */
         const onAbort = (): void => {
           if (settled) return
@@ -1208,6 +1217,7 @@ export class RemoteExec {
             /* 远端可能已结束 */
           }
           channel.close()
+          finish(null)
         }
         const finish = (code: number | null): void => {
           if (settled) return
@@ -1223,11 +1233,18 @@ export class RemoteExec {
           if (signal.aborted) onAbort()
           else signal.addEventListener('abort', onAbort, { once: true })
         }
+        /*
+         * D164：收尾之后一律不再回调。`onAbort` 现在会主动 settle，而远端**仍可能**在稍后
+         * 推来几块数据 / 事件（它并不知道我们已经把这条流当结束了）；不做这个闸的话，
+         * 调用方会收到「已经 resolve 之后还来的」分片，语义上是重复投递。
+         */
         channel.on('data', (chunk: Buffer) => {
+          if (settled) return
           const text = stdoutDecoder.write(chunk)
           if (text !== '') handlers.onStdout(text)
         })
         channel.stderr.on('data', (chunk: Buffer) => {
+          if (settled) return
           const text = stderrDecoder.write(chunk)
           if (text !== '') handlers.onStderr(text)
         })

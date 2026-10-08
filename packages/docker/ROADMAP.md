@@ -201,6 +201,47 @@ pull 流两行、只读与 connect-local 零行、工具 `source=tool`、403 不
 真宿主上无处可查）——出口已改 `console.log`，测试与冒烟的断言面随之改为 console 捕获（捕到的
 就是真宿主 stdout 上会出现的字节）。kit elevation 授权行的同一问题记在根 ROADMAP 待办 11。
 
+### ✅ 长流被中止后 `busy` 账不平 + 拒绝原因被客户端丢掉（2026-10-08 完成）
+
+**现场**：用户拿着面板截图问「点击重连没反应」——248 上的活动条停在「事件流已断开」，
+点那个按钮页面毫无变化。探针复现：`GET /events/stream?target=248` 连续 12 次都回同一句
+`已有 8 条实时流（上限 8）…`，跨 15 分钟一字不差；而同一时刻浏览器到宿主只握着 4~5 条
+TCP（真有 8 条流在推的话不该是这个数）。对照组：切到没被面板占用的 目标2，同样的实验
+一次连开 8 条成功、8 条退出后再连仍是 8 条成功——**配额逻辑本身会正常释放**。
+
+**根因（两件事叠在一起，记在 [DEFECTS.md](./DEFECTS.md) 的 D164）**：
+① `RemoteExec.stream()` 的 `onAbort` 只做 `signal('KILL') + channel.close()` 就**等远端回话**。
+部分 sshd 会拒绝那个 KILL（D150 实测原文），通道也可能静默（既不 `emit('close')` 也不
+`emit('error')`）——于是 Promise 永不落定、`finally` 里的 `release()` 永不执行、`busy` **永久
++1**。累积 8 次之后该目标的每条长流都被 `streamBudgetError` 拒绝，且没有任何自愈路径
+（`openChannel` 的重建分支只在**开通道被远端拒绝**时触发，而这一层拒绝发生在开门之前）。
+这是 D112（`run()` 超时）与 D161（`run()` 的 abort）**同一个坑的第三次出现**。
+② 客户端把 `event: error` 的 `data` **整个丢掉**、只置 `closed`（统计流一直是读 message 的），
+于是「被拒 → 回到原位」与「点了没反应」在界面上逐像素相同，用户只能反复点。
+
+**落点**：`src/ssh-exec.ts`——`onAbort` 补 `finish(null)`（当场 settle，幂等靠已有的 `settled`
+守卫），数据回调各加 `if (settled) return`（收尾后的分片不再投递）。`client-src/index.js`
+——新增纯函数 `eventsErrorMessage()`，`onError` 把服务端那句话写进新的 `eventsRefused`
+state，活动条据此显示「上次重连被拒绝：<原文>」（i18n `hint.eventsReconnectRefused`，zh/en
+各一份），重连成功 / 重新建流时清空。
+
+**门槛**：`test/logs-stream.test.ts` 新增 3 条（远端不确认时 `busy` 归零且 Promise 落定 /
+累积 8 次后第 9 条仍被放行 / 收尾后的分片不投递），`scripts/client-smoke.mjs` 新增 2 条
+（`errorMessage` 的六种输入语义 + 接线判据）。**判别性已实测**：退回 `onAbort`（去掉
+`finish(null)`）→ 单测 3 条红，其中两条挂满 20s 超时正是「Promise 永不落定」的现场；
+退回客户端（`setEventsRefused` 不接）→ 冒烟 1 条红（91/92）。
+**顺带实测的负结论**（免得后人重做）：`StringDecoder.end()` 之后再 `write` 不抛、只返回空串，
+所以那两个 `settled` 守卫是**防重复投递**，不是防崩溃。
+
+**未在本机端到端验证的部分（本次只做到「复现 + 单测/冒烟判别性」）**：
+① 修复要**装到宿主上**才生效——跑着的那个宿主从 profile 的 `node_modules` 加载**已发布**的
+`@hyzyn/dsh-docker`（实体拷贝，不是仓库链接），所以仓库里的改动得走发布，或在开发 profile 里
+`dsh plugin --profile web add link:$(pwd)/packages/docker` 链接过去；
+② 现场那 8 个泄漏的计数只存在于旧进程的内存里（`busy` 从不落盘），**重启宿主即清零**——
+这也是当时唯一可用的解锁办法（关一次插件「启用」再打开也会走 `disposeAll()` 清池）。
+真机复核的判据是：重启后 `GET /events/stream?target=248` 不再回「已有 8 条实时流」，
+且反复开关活动条的重连不把它重新钉满。
+
 ## 已上提到项目级（不在本文展开）
 
 跳板机（ProxyJump）· 统一安全围栏（对齐 tty / dsh-mcp）· 变更端点的信任模型（一次性 token）·

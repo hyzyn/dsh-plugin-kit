@@ -362,6 +362,7 @@ const I18N_ZH = {
   'btn.reconnectEvents': '重连',
   'hint.reconnectEvents': '重新打开容器事件流（docker events）；列表刷新按钮也会一并重连',
   'hint.eventsClosedNoAuto': '事件流断开后不会自己回来（EventSource 只在连接层抖动时自愈；docker events 进程退出属于终止态）——点它重连，或点右上角刷新列表',
+  'hint.eventsReconnectRefused': '事件流断开后不会自己回来（EventSource 只在连接层抖动时自愈）——上次重连被拒绝：{message}',
   'hint.conversationHidden': ' · 会话在面板后面：关掉或最小化面板/终端即可看到',
   'msg.copied': '已复制：',
   'error.copyManual': '复制失败，请手动执行：',
@@ -851,6 +852,7 @@ const I18N_EN = {
   'btn.reconnectEvents': 'Reconnect',
   'hint.reconnectEvents': 'Reopen the container event stream (docker events); the list refresh button reconnects it too',
   'hint.eventsClosedNoAuto': 'A closed event stream does not come back on its own (EventSource only self-heals connection blips; the docker events process exiting is terminal) — click to reconnect, or hit refresh in the top right',
+  'hint.eventsReconnectRefused': 'A closed event stream does not come back on its own (EventSource only self-heals connection blips) — the last reconnect was refused: {message}',
   'hint.conversationHidden': ' · the session is behind this panel: close or minimise the panel/terminal to see it',
   'msg.copied': 'Copied: ',
   'error.copyManual': 'Copy failed, run it manually: ',
@@ -1967,6 +1969,36 @@ const EVENTS_REFRESH_DEBOUNCE_MS = 500
  */
 function canReconnectEvents(status) {
   return status === 'closed'
+}
+
+/**
+ * 从事件流的 `error` 事件里解出**服务端给的原因**（D164）。
+ *
+ * 为什么必须解出来：这条流的 `event: error` 带着 data 时（服务端主动拒绝 / 收尾），原文案
+ * 是宿主侧唯一一句可执行的话——例如长流配额满时的「关掉部分实时跟随、把聚合容器数减到 6 个
+ * 以内」。老代码把它整个丢掉、只置 `closed`，于是**点「重连」看起来毫无反应**：拒绝 →
+ * 状态回 `closed` → 界面与点击前逐像素相同，用户只能反复点。统计流一直是对的
+ * （`setStatsError(message)`），这里补齐同一套语义。
+ *
+ * 连接层错误（无 data 的普通 Event）不是「服务端说了什么」，返回空串——那种情况
+ * EventSource 会自己重连，不该冒充成一次被拒绝的重连。
+ *
+ * 抽成纯函数而不是写在组件闭包里：离线冒烟的 React 桩把 `useState` 冻在初值，组件里
+ * 遍历渲染树取不到真实调用结果，判定必须能直接驱动（与 canReconnectEvents 同一个理由）。
+ */
+function eventsErrorMessage(raw) {
+  if (raw === null || raw === undefined) return ''
+  const data = raw.data
+  if (typeof data !== 'string' || data === '') return ''
+  try {
+    const payload = JSON.parse(data)
+    if (payload !== null && typeof payload === 'object' && typeof payload.message === 'string') {
+      return payload.message
+    }
+  } catch {
+    /* 畸形载荷：按「没有可读原因」处理，不要拿半截 JSON 当文案 */
+  }
+  return data
 }
 
 /** 新事件放最前（活动条按时间倒序读），超出上限丢最旧。 */
@@ -5482,6 +5514,15 @@ window.__ModuleLoader__.load({
        * `unsupported` 刻意不给这个按钮：那个环境根本没有 EventSource，重连必然还是失败。
        */
       const canReconnect = canReconnectEvents(props.status)
+      /*
+       * 断开时右侧那句提示（D164）：**被拒过就优先说原因**。「事件流已断开」只说状态，
+       * 用户据此以为点一下就好；而真正拦着重连的是服务端那句话（例如长流配额满），
+       * 不显示出来，「重连」按钮点多少次都像假的。
+       */
+      const refused = typeof props.refused === 'string' ? props.refused : ''
+      const hintText = canReconnect
+        ? (refused === '' ? t('hint.eventsClosedNoAuto') : t('hint.eventsReconnectRefused', { message: refused }))
+        : (events.length === 0 ? t('list.noEvents') : t('list.recentEvents', { recent: recent.length, total: events.length }))
       return jsxs('div', { className: 'dk_activity', 'data-open': open ? '1' : '0', children: [
         /*
          * 折叠按钮与「重连」是**兄弟**，不是嵌套——按钮里嵌按钮既不是合法 HTML，
@@ -5499,10 +5540,8 @@ window.__ModuleLoader__.load({
               jsx('span', { className: 'dk_activityState', 'data-state': props.status ?? '', children: props.statusText ?? '' }),
               jsx('span', { className: 'dk_headerSpacer' }),
               // 断开时右侧那句「暂无事件」是误导（不是「没动静」，是「听不见了」），
-              // 换成一句说明为什么需要手动重连
-              jsx('span', { className: 'dk_hint', children: canReconnect
-                ? t('hint.eventsClosedNoAuto')
-                : (events.length === 0 ? t('list.noEvents') : t('list.recentEvents', { recent: recent.length, total: events.length })) }),
+              // 换成一句说明为什么需要手动重连；**被拒过就改成说原因**（D164）
+              jsx('span', { className: 'dk_hint', children: hintText }),
               jsx('span', { className: 'dk_activityChevron', dangerouslySetInnerHTML: { __html: ICON_CHEVRON } }),
             ],
           }, 'head'),
@@ -5801,6 +5840,12 @@ window.__ModuleLoader__.load({
       /** 面板是否可见（S3）：折叠的 tab 不建流；模态 / dock 形态恒为 true。 */
       const active = usePanelActive()
       const [eventsStatus, setEventsStatus] = useState('')
+      /**
+       * 上一次被服务端**拒绝**的原因（D164）：配额满这类拒绝在界面上必须看得见，
+       * 否则「点重连 → 被拒 → 回到 closed」在视觉上与「点了没反应」不可区分。
+       * 重连**成功**时清空（那说明这个原因已经过去了）。
+       */
+      const [eventsRefused, setEventsRefused] = useState('')
       /**
        * 手动重连令牌（D160）：事件流断开后是**终止态**（EventSource 只在连接层抖动时自愈；
        * `docker events` 进程退出 / 服务端发 `end` 帧都会走 close()，之后没有东西会再开流）。
@@ -6460,6 +6505,9 @@ window.__ModuleLoader__.load({
          */
         let hadOpen = sameTarget && (eventsOpenedRef.current.opened || manualReconnect)
         setEventsStatus('connecting')
+        // 每次重新建流都先把上一条拒绝原因清掉（D164）：这是「又试了一次」，不是「一直坏着」；
+        // 若这次仍被拒，onError 会立刻把它写回来。
+        setEventsRefused('')
         const debounced = makeDebounced(EVENTS_REFRESH_DEBOUNCE_MS, () => {
           const load = loadContainersRef.current
           if (load !== null) load()
@@ -6488,8 +6536,15 @@ window.__ModuleLoader__.load({
           close()
         }
         const onError = (raw) => {
-          if (typeof raw.data === 'string' && raw.data !== '') {
+          /*
+           * 服务端主动说了原因（带 data 的 error 帧）：**显式收尾**，并把那句话留下来
+           * （D164）。老代码把它丢掉、只置 `closed`，于是「重连」点了看起来毫无反应——
+           * 拒绝 → 回 `closed` → 界面与点击前一样。统计流一直是读出 message 的。
+           */
+          const message = eventsErrorMessage(raw)
+          if (message !== '') {
             setEventsStatus('closed')
+            setEventsRefused(message)
             close()
             return
           }
@@ -6501,6 +6556,8 @@ window.__ModuleLoader__.load({
         es.addEventListener('error', onError)
         es.onopen = () => {
           setEventsStatus('open')
+          // 连上了就说明上次那条拒绝原因已经过去（D164）：留着会让人以为现在还坏着
+          setEventsRefused('')
           if (hadOpen) {
             // 重连补偿**不走事件驱动的那条防抖**（D93）：debounced 是 500ms 尾沿防抖，
             // 每条事件都 schedule() 一次；容器多 + healthcheck 时事件持续 >2 条/秒，
@@ -7388,6 +7445,7 @@ window.__ModuleLoader__.load({
                   events,
                   status: eventsStatus,
                   statusText: eventsStatusText(),
+                  refused: eventsRefused,
                   open: activityOpen,
                   onToggle: () => setActivityOpen((value) => !value),
                   // 只重开事件流，不顺带刷列表：列表有自己的 ⟳ 与 AUTO REFRESH，
@@ -8708,6 +8766,7 @@ window.__ModuleLoader__.load({
       timeText: eventTimeText,
       debounce: makeDebounced,
       canReconnect: canReconnectEvents,
+      errorMessage: eventsErrorMessage,
     }
     /*
      * 同一类测试缝：总览的折叠逻辑与**正文渲染**都是纯函数（正文刻意写成普通函数而不是

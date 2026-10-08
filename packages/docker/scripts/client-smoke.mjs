@@ -1653,6 +1653,45 @@ await test('事件流断开：活动条接线（兄弟按钮、不是嵌套按�
     '重连补偿的判据必须含 manualReconnect（否则从未 open 过的流重连后列表不刷新）')
 })
 
+/*
+ * D164：服务端**拒绝了**这条流时，「重连」看起来毫无反应——真机现场（2026-10-08）：
+ * 248 上长流配额恒满 8/8，每次点重连都被拒；而客户端把 `event: error` 的 data 整个丢掉，
+ * 只置 `closed`，于是界面与点击前逐像素相同。统计流一直是读出 message 的，这里补齐。
+ */
+await test('D164：事件流的 error 帧要解出服务端原因（而不是丢掉）', () => {
+  const api = eventsApi()
+  assert.ok(api.errorMessage !== undefined, '缺少 __events.errorMessage 测试缝')
+  // 配额拒绝：必须原样带出那句可执行的文案
+  const refused = api.errorMessage({ data: JSON.stringify({ message: '目标 248 上已有 8 条实时流（上限 8）' }) })
+  assert.equal(refused, '目标 248 上已有 8 条实时流（上限 8）')
+  // 非 JSON 的 data：整段当原因（宁可显示原文，也别显示「不知道」）
+  assert.equal(api.errorMessage({ data: 'boom' }), 'boom')
+  // 连接层错误（无 data）：不是「服务端说了什么」，必须返回空串——
+  // 那种情况 EventSource 会自己重连，不能冒充成一次被拒绝的重连
+  assert.equal(api.errorMessage({}), '')
+  assert.equal(api.errorMessage({ data: '' }), '')
+  assert.equal(api.errorMessage(new Event('error')), '')
+  assert.equal(api.errorMessage(null), '')
+  assert.equal(api.errorMessage(undefined), '')
+  // 畸形 JSON 不许把半截载荷当文案漏出去
+  assert.equal(api.errorMessage({ data: '{"message":' }), '{"message":')
+  // message 不是字符串时退回原文，而不是渲染出 [object Object]
+  assert.equal(api.errorMessage({ data: JSON.stringify({ message: 42 }) }), '{"message":42}')
+})
+
+await test('D164：被拒原因要接到界面上（接线判据）', () => {
+  const decoded = decodeBundle(code)
+  assert.ok(decoded.includes('上次重连被拒绝'), '缺少「被拒绝」的提示文案')
+  assert.ok(decoded.includes('不会自己回来'), '原有的「不会自愈」说明必须保留')
+  const source = readFileSync(new URL('../client-src/index.js', import.meta.url), 'utf8')
+  // 拒绝原因必须进 state，并作为 props 传给活动条（只解出来不传等于没修）
+  assert.ok(/setEventsRefused\(message\)/.test(source), 'error 帧的原因必须写进 state')
+  assert.ok(/refused: eventsRefused/.test(source), '活动条必须拿到被拒原因')
+  assert.ok(/hint\.eventsReconnectRefused/.test(source), '活动条必须渲染被拒文案')
+  // 重连成功要清掉（否则「上次被拒」会一直挂着，看着像现在还坏着）
+  assert.ok(/setEventsRefused\(''\)/.test(source), '重连成功 / 重新建流时必须清掉上一条原因')
+})
+
 await test('变更操作执行中态：按钮转圈 + 卡片锁组 + 确认框不关', () => {
   // 三处过渡态钩子：按钮 data-busy（图标换转圈）、卡片 data-pending（整组变更按钮压暗锁住）、
   // 确认框 k_confirmBusy（保持打开 + 「执行中…」）。真实点击路径需要浏览器，这里锁契约。
