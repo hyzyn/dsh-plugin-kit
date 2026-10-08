@@ -62,10 +62,11 @@ const I18N_ZH = {
   'status.restarting': '重启中',
   'status.removing': '删除中',
   'status.unknown': '未知',
-  'hint.pickMaxLocal': '最多 {max} 个容器，浏览器并发长连接有限制',
-  'hint.pickMaxSsh': '最多 {max} 个容器（SSH 目标上一条连接要同时装实时流与刷新等短命令）',
-  'hint.pickMany': '连接数较多，浏览器并发长连接有限制',
+  'hint.pickMaxLocal': '最多 {max} 个容器——再多会占满浏览器的同源连接，整个页面都会卡',
+  'hint.pickMaxSsh': '最多 {max} 个容器——再多会占满浏览器的同源连接，整个页面都会卡',
+  'hint.pickMany': '已接近上限，再选下去整个页面会变卡',
   'hint.pickAtLeastTwo': '至少选择 2 个容器',
+  'hint.pickBudget': '浏览器每个站点最多同时保持 4 条实时流（含活动条的事件流），再多页面就会卡住',
   'option.presetAll': '全部可见',
   'status.unhealthy': '不健康',
   'status.attention': '需关注',
@@ -552,10 +553,11 @@ const I18N_EN = {
   'status.restarting': 'Restarting',
   'status.removing': 'Removing',
   'status.unknown': 'Unknown',
-  'hint.pickMaxLocal': 'At most {max} containers; browsers limit concurrent long-lived connections',
-  'hint.pickMaxSsh': 'At most {max} containers (a single SSH connection must also carry live streams and short refresh commands)',
-  'hint.pickMany': 'Many streams — browsers limit concurrent long-lived connections',
+  'hint.pickMaxLocal': 'At most {max} containers — more would exhaust the browser\'s per-origin connections and stall the whole page',
+  'hint.pickMaxSsh': 'At most {max} containers — more would exhaust the browser\'s per-origin connections and stall the whole page',
+  'hint.pickMany': 'Close to the limit — selecting more will slow the whole page down',
   'hint.pickAtLeastTwo': 'Select at least 2 containers',
+  'hint.pickBudget': 'A browser keeps at most 4 live streams per origin (including the Activity strip\'s event stream); more will stall the page',
   'option.presetAll': 'All visible',
   'status.unhealthy': 'Unhealthy',
   'status.attention': 'Needs attention',
@@ -1557,17 +1559,42 @@ const ICON_VOLUME =
  * 不进 settings，也不新增任何服务端字段，刷新后按 id 对账即可。
  */
 
-/** 超过这个数就给「浏览器并发长连接有限制」的软提示（仍可聚合）。 */
-const PICK_SOFT_MAX = 6
-/** 硬上限：再多就置灰——同源长连接排队后，聚合流反而会「看起来卡住」。 */
-const PICK_MAX = 8
-/**
- * SSH 目标的硬上限：一个目标只维持**一条** TCP 连接，通道额度（OpenSSH `MaxSessions`
- * 默认 10）要同时装下聚合流、统计流、事件流与「刷新列表」这类短命令。留出余量之后
- * 聚合最多 6 条——正好等于软提示线，于是 SSH 上不再有「可点但已偏多」的区间。
- * 本地目标走子进程，没有这个约束，仍是 {@link PICK_MAX}。
+/*
+ * 浏览器**同源并发连接**预算（D165，2026-10-08 实测）。
+ *
+ * 为什么这是硬约束而不是「性能建议」：宿主是 **HTTP/1.1**（没有 h2 多路复用），浏览器对
+ * 每个源只放这么多条 TCP；而**每条 EventSource 独占一条连接、且永不主动释放**。吃满之后
+ * 同一个页面里**所有**普通请求（`/api/*`、列表刷新、会话加载……）全部排队——用户看到的是
+ * 「整个 DSH 页面卡住」，不只是 docker 面板。
+ *
+ * 实测（真 Chrome + test profile 宿主，页内连打 10 次普通请求、2s 超时）：
+ *   常驻流 4 条 → 6/6 成功、中位 29ms；常驻流 5 条 → **0/6 全部超时**。
+ * 宿主侧同时刻实测 41ms（进程外请求正常）——**堵在浏览器，不在宿主**。
+ * 所以预算是 4 条常驻流，且要**连同事件流一起算**：面板停在容器页时事件流恒开
+ * （见下方 events effect），聚合日志只能用掉剩下的 3 条。
+ *
+ * 这个数**不是猜的**，是量出来的；改它之前请重跑那组实验（README「已知限制」有复现步骤）。
  */
-const PICK_MAX_SSH = 6
+const SAME_ORIGIN_STREAM_BUDGET = 4
+/** 容器页常开的那条事件流（活动条）。它在预算里，不能被聚合日志挤掉。 */
+const RESERVED_STREAMS = 1
+/** 聚合日志可达的硬上限 = 预算 − 事件流。 */
+const PICK_MAX = SAME_ORIGIN_STREAM_BUDGET - RESERVED_STREAMS
+/**
+ * 超过这个数就给软提示（仍可聚合）。
+ *
+ * 与硬上限之间刻意**留一档**：硬上限是「再点就连页面都卡」的红线，而用户在 3 条时
+ * 已经在消耗大部分预算——给一句提醒，但不禁用。
+ */
+const PICK_SOFT_MAX = 2
+/**
+ * SSH 目标为什么不再单独降一档：真正卡住页面的是**浏览器同源预算**（上面那条，与目标
+ * 类型无关），而不是 SSH 的 `MaxSessions`。旧代码把上限按「SSH 要同时装实时流与短命令」
+ * 设成 6——那条例由针对的是**宿主侧**通道额度，与浏览器这一层是两笔独立的账，写成同一个
+ * 数字正好把两者都算错（6 > 实测安全值）。现在两者各归各：浏览器预算管上限，
+ * `MaxSessions` 由宿主侧的 `MAX_STREAMS_PER_TARGET` 管。
+ */
+const PICK_MAX_SSH = PICK_MAX
 
 /**
  * 目标下拉里要不要列「＋ 连接本机」那一项。
@@ -1632,8 +1659,8 @@ function pickReconcile(ids, containers) {
 
 /**
  * 「按条件一键选择」的预设（0.15.0）。
- * 为什么需要：跨 30+ 容器里挑 4 个不健康的，手动点既慢又容易漏；而聚合日志的上限是
- * 8 条流，所以条件选择必须能**按上限截断并如实告知略过了几个**。
+ * 为什么需要：跨 30+ 容器里挑几个不健康的，手动点既慢又容易漏；而聚合日志有上限
+ * （见 {@link PICK_MAX}），所以条件选择必须能**按上限截断并如实告知略过了几个**。
  * `needsBase` 的项要先有勾选（拿第一个勾选的容器当基准：同镜像 / 同项目）。
  */
 const PICK_PRESETS = [
@@ -5615,6 +5642,7 @@ window.__ModuleLoader__.load({
             onClick: props.onClear,
             children: t('btn.clear'),
           }, 'clear') : null,
+          props.budget === undefined ? null : jsx('span', { className: 'dk_hint dk_pickBudget', children: props.budget }),
           props.notice === '' ? null : jsx('span', { className: 'dk_hint dk_pickNotice', children: props.notice }),
         ] }) : null,
       ] })
@@ -7403,6 +7431,9 @@ window.__ModuleLoader__.load({
               info: pickInfo,
               presets: pickPresetList,
               max: pickMax,
+              // 上限为什么是 3 得写在脸上（D165）：它是量出来的浏览器连接预算，
+              // 不写清楚，看起来就只是一个随手定的数字，用户只会觉得「怎么才 3 个」。
+              budget: t('hint.pickBudget'),
               notice: pickNotice,
               onPreset: applyPreset,
               onClear: () => { setPickedIds([]); setPickNotice('') },
@@ -8746,8 +8777,11 @@ window.__ModuleLoader__.load({
     }
     exports.__pick = {
       MAX: PICK_MAX,
-      /** SSH 目标的上限（= MAX 之外更紧的一档）：一条连接要同时装实时流与短命令。 */
+      /** SSH 目标的上限（D165 后与本地同值：卡页面的是浏览器同源预算）。 */
       SSH_MAX: PICK_MAX_SSH,
+      /** 同源常驻流预算与其中留给事件流的名额（上限的推导依据，测试直接钉住）。 */
+      BUDGET: SAME_ORIGIN_STREAM_BUDGET,
+      RESERVED: RESERVED_STREAMS,
       PRESETS: PICK_PRESETS,
       presetCounts: pickPresetCounts,
       apply: pickApply,

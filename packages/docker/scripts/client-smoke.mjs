@@ -1451,43 +1451,51 @@ await test('聚合选择：入口 / 勾选框 / 操作条装配进 bundle', () =
   assert.ok(decoded.includes('已选 '), '缺少「已选 N 个容器」计数')
   assert.ok(decoded.includes('聚合日志 · '), '缺少聚合视图标题')
   assert.ok(decoded.includes('至少选择 2 个容器'), '缺少 N<2 的提示')
-  assert.ok(decoded.includes('连接数较多，浏览器并发长连接有限制'), '缺少软上限提示')
-  // 硬上限文案由「数字 + 后缀」拼出来（数字不写死），且 SSH 与本地后缀不同，
-  // 所以这里分开锁静态部分；具体数字由下面 pickDecide 的用例断言。
+  assert.ok(decoded.includes('已接近上限，再选下去整个页面会变卡'), '缺少软上限提示')
+  // 硬上限文案由「数字 + 后缀」拼出来（数字不写死），所以这里只锁静态部分；
+  // 具体数字由下面 pickDecide 的用例断言（它同时钉住「数字从哪来」）。
   assert.ok(decoded.includes('最多 '), '缺少硬上限的「最多」前缀')
   assert.ok(decoded.includes('个容器'), '缺少硬上限的「个容器」文案')
-  assert.ok(decoded.includes('，浏览器并发长连接有限制'), '缺少本地目标的硬上限后缀')
-  assert.ok(decoded.includes('（SSH 目标上一条连接要同时装实时流与刷新等短命令）'), '缺少 SSH 目标的硬上限后缀')
+  assert.ok(decoded.includes('会占满浏览器的同源连接，整个页面都会卡'), '缺少硬上限的成因后缀')
+  // 上限的来由要写在选择条上（D165）：不写清楚，3 看起来就只是个随手定的数字
+  assert.ok(decoded.includes('浏览器每个站点最多同时保持 4 条实时流'), '缺少「预算从哪来」的说明')
+  assert.ok(code.includes('dk_pickBudget'), '缺少预算说明的样式钩子')
+  // 接线判据走源码级：局部标识符会被压缩改名，产物里 `budget: t(` 认不出来
+  const pickSource = readFileSync(new URL('../client-src/index.js', import.meta.url), 'utf8')
+  assert.ok(/budget: t\('hint\.pickBudget'\)/.test(pickSource), '预算说明必须真的接到操作条上')
+  assert.ok(/props\.budget === undefined \? null/.test(pickSource), '操作条要渲染 budget（拿到不渲染等于没接）')
   assert.ok(decoded.includes('Escape'), '缺少 Esc 退出选择态')
   assert.ok(code.includes('dk_pick'), '缺少勾选框样式钩子')
   assert.ok(code.includes('dk_pickBar'), '缺少聚合操作条样式钩子')
   assert.ok(code.includes('dk_pillPick'), '缺少「聚合选择」激活态样式钩子')
 })
 
-await test('聚合选择：N<2 置灰、2~6 可聚合、7~8 软提示、>8 置灰（SSH 目标上限收到 6）', () => {
+await test('聚合选择：上限绑在浏览器同源连接预算上（4 条流 − 事件流 = 3）', () => {
   const pick = pickApi()
-  assert.equal(pick.MAX, 8)
-  assert.equal(pick.SOFT_MAX, 6)
+  /*
+   * D165（2026-10-08 真机实测）：宿主是 HTTP/1.1，每条 EventSource 独占一条同源
+   * 连接且不释放。实测常驻流 4 条 → 页内请求 6/6 成功（中位 29ms）；5 条 → 0/6 全部超时
+   * （同时刻进程外请求 41ms 正常，堵在浏览器不在宿主）。容器页常开着事件流，所以聚合
+   * 只能用掉剩下的 3 条。这条用例把「数字从哪来」钉住，免得后人凭手感调大。
+   */
+  assert.equal(pick.MAX, 3)
+  assert.equal(pick.SSH_MAX, 3, 'SSH 与本地共用同一个浏览器预算（卡页面的是浏览器，不是 MaxSessions）')
+  assert.equal(pick.SOFT_MAX, 2)
+  assert.equal(pick.BUDGET, 4, '同源预算：4 条常驻流')
+  assert.equal(pick.RESERVED, 1, '其中 1 条留给活动条的事件流')
   assert.deepEqual(pick.decide(0), { canRun: false, hint: '' })
   assert.deepEqual(pick.decide(1), { canRun: false, hint: '至少选择 2 个容器' })
   assert.deepEqual(pick.decide(2), { canRun: true, hint: '' })
-  assert.deepEqual(pick.decide(6), { canRun: true, hint: '' })
-  assert.deepEqual(pick.decide(7), { canRun: true, hint: '连接数较多，浏览器并发长连接有限制' })
-  assert.deepEqual(pick.decide(8), { canRun: true, hint: '连接数较多，浏览器并发长连接有限制' })
-  const over = pick.decide(9)
+  // 第 3 个已经在吃满预算前的最后一格：可点，但给一句软提示
+  assert.equal(pick.decide(3).canRun, true)
+  assert.match(pick.decide(3).hint, /整个页面会变卡/)
+  const over = pick.decide(4)
   assert.equal(over.canRun, false, '超过硬上限必须置灰')
-  assert.match(over.hint, /最多 8 个容器/)
+  assert.match(over.hint, /最多 3 个容器/)
 
-  // SSH 目标更紧：一条 TCP 连接的通道额度（MaxSessions 默认 10）要同时装下聚合流、
-  // 统计流、事件流与「刷新列表」这类短命令，所以聚合上限收到 6（= 软提示线，于是 SSH
-  // 上不再有「可点但已偏多」的区间）。本地目标走子进程，没有这个约束。
-  assert.equal(pick.SSH_MAX, 6)
-  assert.deepEqual(pick.decide(6, true), { canRun: true, hint: '' })
-  const sshOver = pick.decide(7, true)
-  assert.equal(sshOver.canRun, false, 'SSH 目标上 7 个容器必须置灰')
-  assert.match(sshOver.hint, /最多 6 个容器/)
-  assert.match(sshOver.hint, /SSH 目标/, '提示必须说明 SSH 上为什么更紧')
-  assert.equal(pick.decide(7, false).canRun, true, '本地目标不受 SSH 上限影响')
+  // 两个目标类型走同一套上限：真正卡住页面的是浏览器同源预算，与目标是 SSH 还是本机无关
+  assert.deepEqual(pick.decide(4, true).canRun, false, 'SSH 目标同样在 4 个时置灰')
+  assert.match(pick.decide(4, true).hint, /最多 3 个容器/)
 })
 
 await test('聚合选择：勾选增删保序 + 列表刷新按 id 对账', () => {

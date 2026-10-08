@@ -1595,6 +1595,15 @@
 .dk_chipQuiet { border-color: var(--dk-border); color: var(--dk-label-3); }
 .dk_pickNotice { margin-left: auto; }
 
+/*
+ * 上限的来由（D165）：它是浏览器同源连接预算量出来的，不是随手定的数字。
+ * 与 notice 共用行尾——notice 是「刚发生的事」（选择结果），排在更靠右的位置。
+ */
+.dk_pickBudget { color: var(--dk-label-3); }
+/* 只有它一个时贴右，与 notice 同位置（两个都在时 notice 更靠右） */
+.dk_pickBudget:last-child { margin-left: auto; }
+.dk_pickBudget + .dk_pickNotice { margin-left: var(--dk-gap-md); }
+
 .dk_pickCount {
   font-size: 12px;
   line-height: 18px;

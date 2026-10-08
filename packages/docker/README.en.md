@@ -215,9 +215,9 @@ Inside the panel:
   mode — a checkbox appears on the left of every card, clicking a card body becomes **select / deselect** (it no
   longer opens details; the action bar collapses temporarily so that multi-selecting does not mis-click
   start / stop / remove), and an action bar appears between the toolbar and the list: "N containers selected" +
-  `merged logs` + `Cancel`. `merged logs` needs at least 2 containers; at 7–8 selected it gives a soft hint
-  (browsers limit same-origin concurrent long connections), and above **8** the button is greyed out with a hint
-  about the cap. Clicking `merged logs` opens the merged view: it reuses exactly the merged logs of the Compose
+  `merged logs` + `Cancel`. `merged logs` needs at least 2 containers; selecting the 3rd gives a soft hint, and above
+  **3** the button is greyed out with a hint about the cap (**where that cap comes from is in "Known limitations" —
+  the browser's per-origin connection budget**; the selection bar states it too). Clicking `merged logs` opens the merged view: it reuses exactly the merged logs of the Compose
   project view (one `/logs/stream` per container, mixed by the `[service]` / container-name prefix, with filtering
   and auto-scroll), and going back exits selection mode and clears it. The merged view's **content controls are
   fully aligned with the single-container log view** (text filter + level threshold + `⬇ .log` / `⬇ .md` exporting
@@ -229,7 +229,7 @@ Inside the panel:
   refresh are pruned by id.
 - **One-click selection by condition** (in selection mode): the action bar's second row offers a row of condition
   chips (`all visible / unhealthy / needs attention / stopped`, plus `same image / same project` once something is
-  selected), with counts **truncated to the remaining slots** — a chip reading 8 really does select 8; anything over
+  selected), with counts **truncated to the remaining slots** — a chip reading 3 really does select 3; anything over
   the cap is stated honestly in the title and the result hint. Conditions only apply within the
   **current filtered result** (search / filter the state first, then select in one click).
 - **Container cards**: "label + value" rows matching the reference layout (image / ID / ports / created /
@@ -842,13 +842,34 @@ read-only first:
   A long SSH stream holds that connection in the pool (busy) while other commands on the same host still reuse the
   same connection without affecting each other. **The stats stream does not end naturally**, so closing it must be
   the frontend actively aborting the `EventSource`.
+- **The browser's per-origin budget is 4 live streams (this is what really sets the merge cap — D165)**:
+  the host speaks **HTTP/1.1** (no h2 multiplexing), a browser allows only so many TCP connections **per origin**, and
+  **every `EventSource` owns one connection and never releases it voluntarily**. Once that budget is used up, **every**
+  ordinary request from the same page (list refreshes, `/api/*`, session loading…) queues behind it — the user sees the
+  **whole DSH page freeze**, not just the Docker panel.
+  Measured (2026-10-08, real Chrome + real host; 10 in-page requests, 2s timeout):
+
+  | Live streams | In-page requests | Out-of-process request (same moment) |
+  |---|---|---|
+  | 0 | 10/10, median 27ms | 26ms |
+  | 4 | 8/8, median 25ms | — |
+  | **5** | **0/10, all timed out** | **41ms (fine)** |
+
+  That last column is the point: **the jam is in the browser, not the host**. The live-stream budget is therefore
+  **4**; while the panel sits on the container list the Activity strip's event stream is always open (1 of them), so
+  merged logs get **3** — that is where the merge cap (`PICK_MAX = 4 − 1`) comes from, and the selection bar says so.
+  **This is a hard constraint, not a performance tip**: going over does not mean "a bit slower", it means every request
+  on that page fails together. To reproduce: open `new EventSource('/api/dsh-docker/events/stream?target=<target>')`
+  in devtools until the 5th one, then fire an ordinary request and watch it hang; closing them restores it.
+  (WebSockets do **not** draw on this budget — the tty terminal's WS coexisted fine with 4 SSE streams, measured.)
 - **The SSH channel budget is shared per target (`MaxSessions`)**: a target keeps only **one** TCP connection, and
   every long stream and short command shares that connection's channels — while OpenSSH's `MaxSessions` defaults to
-  just 10. Long streams (logs / stats / events) hold a channel until the user closes the panel, and merged logs can
-  take 8 at once, which uses the budget up exactly; the next "refresh list" (a short command) is then rejected by the
+  just 10. Long streams (logs / stats / events) hold a channel until the user closes the panel; the next
+  "refresh list" (a short command) can then be rejected by the
   far end with `(SSH) Channel open failure: open failed`. The plugin therefore caps each SSH target at **8 concurrent
-  long streams** (= 10 − 2, leaving two for short commands such as refresh / inspect), and the merged-log selection
-  cap on an **SSH target** drops from 8 to 6 (local targets go through subprocesses and are unaffected). Going over
+  long streams** (= 10 − 2, leaving two for short commands such as refresh / inspect). Note the **merge cap is set by
+  the browser budget above, not by `MaxSessions`** — those are two independent accounts, and an earlier version
+  conflated them (it used 6, derived from `MaxSessions`, which was above the measured safe value). Going over
   the cap, and the far end refusing a channel, both produce pointed messages rather than ssh2's raw text. If your sshd
   tunes `MaxSessions` (`sshd -T | grep maxsessions`), the current cap is a compile-time constant — file an issue if it
   needs to follow.
