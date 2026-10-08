@@ -18,10 +18,10 @@ importers:
         specifier: 0.6.6
         version: link:packages/codegraph
       '@hyzyn/dsh-docker':
-        specifier: 0.10.0
+        specifier: 0.11.0
         version: link:packages/docker
       '@hyzyn/dsh-env':
-        specifier: 0.3.6
+        specifier: 0.3.7
         version: link:packages/env
       '@hyzyn/dsh-kit-settings':
         specifier: 0.2.4
@@ -67,10 +67,10 @@ importers:
         specifier: 0.6.6
         version: link:../codegraph
       '@hyzyn/dsh-docker':
-        specifier: 0.10.0
+        specifier: 0.11.0
         version: link:../docker
       '@hyzyn/dsh-env':
-        specifier: 0.3.6
+        specifier: 0.3.7
         version: link:../env
       '@hyzyn/dsh-kit-settings':
         specifier: 0.2.4
