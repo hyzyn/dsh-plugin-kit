@@ -233,14 +233,27 @@ state，活动条据此显示「上次重连被拒绝：<原文>」（i18n `hint
 **顺带实测的负结论**（免得后人重做）：`StringDecoder.end()` 之后再 `write` 不抛、只返回空串，
 所以那两个 `settled` 守卫是**防重复投递**，不是防崩溃。
 
-**未在本机端到端验证的部分（本次只做到「复现 + 单测/冒烟判别性」）**：
-① 修复要**装到宿主上**才生效——跑着的那个宿主从 profile 的 `node_modules` 加载**已发布**的
-`@hyzyn/dsh-docker`（实体拷贝，不是仓库链接），所以仓库里的改动得走发布，或在开发 profile 里
-`dsh plugin --profile web add link:$(pwd)/packages/docker` 链接过去；
-② 现场那 8 个泄漏的计数只存在于旧进程的内存里（`busy` 从不落盘），**重启宿主即清零**——
-这也是当时唯一可用的解锁办法（关一次插件「启用」再打开也会走 `disposeAll()` 清池）。
-真机复核的判据是：重启后 `GET /events/stream?target=248` 不再回「已有 8 条实时流」，
-且反复开关活动条的重连不把它重新钉满。
+**真机验收（2026-10-08，test profile 宿主 + 真 Chrome + 真实 SSH 目标）**：
+`test` profile 本就以 `link:` 指向本仓（`dsh plugin --profile test add link:<仓>/packages/docker`），
+产物与仓库逐字节一致，所以**无需另装**——起宿主即加载修复版：
+
+- **宿主侧（配额真的会回收）**：对 248 连开 10 条 → 恰好 8 条被接受、2 条被拒（上限仍然生效）；
+  被 `--max-time` 掐断（= 模拟远端不确认关通道）后**再开一轮仍是 8 条被接受**；连做 3 轮、
+  累计 24 次 abort 之后**仍然稳定 8/8**。修前第二轮就会被自己的账钉死在 8/8。
+  短命令（`POST /containers`）全程正常，配额不误伤。
+- **浏览器侧（拒绝原因真的显示出来了）**：把 248 打满后，在真 Chrome 里打开面板并触发重连，
+  活动条文案为「事件流断开后不会自己回来（EventSource 只在连接层抖动时自愈）——**上次重连
+  被拒绝：root@hosths-test-248 上已有 8 条实时流（上限 8）…请关掉部分实时跟随、把聚合容器数
+  减到 6 个以内，或稍后重试。**」并保留「重连」按钮。修前这里只有「事件流已断开」，点按钮
+  在像素上毫无变化。
+- 应用壳加载：`scripts/verify-client-ui.mjs --mode boot` **6 PASS / 0 FAIL**（10 个
+  `@hyzyn` bundle 全加载、0 未捕获异常、0 控制台 error、0 失败请求）。
+- 清理后复核：杀掉全部占位流 → 248 **立即恢复**（新流正常连上），确认没有残留账。
+
+> 受限环境提示：本机沙箱下 headless Chrome 会因 GPU 进程崩溃而连不上 CDP
+> （`Runtime.enable 超时`），按 `scripts/verify-client-ui.mjs` 文件头加
+> `--chrome-arg --no-sandbox` 即可——那是**环境限制**，不是代码问题
+> （见 [agent-real-test.md § 三条硬约束 ②](../../docs/agent-real-test.md)）。
 
 ## 已上提到项目级（不在本文展开）
 
