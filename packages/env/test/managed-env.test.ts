@@ -9,7 +9,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { readManagedEntries, renderManagedBlock, writeManagedEntries } from '../src/index.js'
+import { apply, readManagedEntries, renderManagedBlock, validateEntries, writeManagedEntries } from '../src/index.js'
 
 const MARK_START = '# --- dsh-env-manager managed (auto-generated; do not edit) ---'
 const MARK_END = '# --- end dsh-env-manager managed ---'
@@ -144,5 +144,73 @@ describe('readManagedEntries 容错', () => {
       { key: 'PLAIN', value: '', secret: false },
       { key: 'SECRET', value: undefined, secret: true },
     ])
+  })
+})
+
+/**
+ * 密钥条目上的「内联空串」必须与「缺 value 字段」同义（2026-10-08 真机回归）。
+ *
+ * 现场：`~/.dsh/env.yml` 里 JENKINS_AUTH 写成 `value: ''` + `secret: true`，而真值在官方
+ * 凭据存储里。旧代码把它当**权威空值**：`applyToProcessEnv` 先 `delete process.env.JENKINS_AUTH`，
+ * `applyStoreEntriesToProcessEnv` 又因 `value !== undefined` 跳过存储解析 —— 于是
+ * `process.env.JENKINS_AUTH` 恒为 undefined。mcp 托管行的 `js:process.env.JENKINS_AUTH`
+ * 求值成 undefined，Authorization 变成 `Basic base64("mcp-ro:undefined")`，Jenkins 回 **401**，
+ * 卡片显示 active 而 toolCount 0 —— 19 个工具一个都没注册，看起来就是「这条 MCP 卡死了」。
+ *
+ * 下面四条里前两条钉语义（密钥空串 ≡ 缺字段、且**不**外溢到普通条目），
+ * 后两条是反例：写侧不再制造空串；启动路径必须让存储里的值真的落进 process.env。
+ */
+describe('密钥条目的内联空串 ≡ 缺 value 字段', () => {
+  it('secret + value: "" 读成 ref（undefined）', () => {
+    writeFileSync(
+      file,
+      [MARK_START, '- key: JENKINS_AUTH', "  value: ''", '  secret: true', MARK_END, ''].join('\n'),
+    )
+    expect(readManagedEntries().entries).toStrictEqual([{ key: 'JENKINS_AUTH', value: undefined, secret: true }])
+  })
+
+  it('反例：普通条目的空串仍是空串（删除该变量），规则不得外溢', () => {
+    writeFileSync(file, [MARK_START, '- key: PLAIN', "  value: ''", '  secret: false', MARK_END, ''].join('\n'))
+    expect(readManagedEntries().entries).toStrictEqual([{ key: 'PLAIN', value: '', secret: false }])
+  })
+
+  it('写侧：新建的密钥条目不留 value 字段，普通条目缺值仍是空串', () => {
+    expect(validateEntries([{ key: 'NEW_TOKEN', secret: true }], []).entries).toStrictEqual([
+      { key: 'NEW_TOKEN', value: undefined, secret: true },
+    ])
+    expect(validateEntries([{ key: 'NEW_PLAIN', secret: false }], []).entries).toStrictEqual([
+      { key: 'NEW_PLAIN', value: '', secret: false },
+    ])
+  })
+
+  it('启动路径：凭据存储里的值必须落进 process.env（旧代码会把它 delete 掉）', async () => {
+    writeFileSync(
+      file,
+      [MARK_START, '- key: TOKEN', "  value: ''", '  secret: true', MARK_END, ''].join('\n'),
+    )
+    const seam = {
+      describe: async () => ({ configured: true, source: 'refs', writable: true }),
+      resolve: async (ref: string) => (ref === 'TOKEN' ? { value: 'stored-secret' } : undefined),
+      set: async () => {},
+      unset: async () => {},
+    }
+    // 只喂 credentials 一条 inject：webServer / systemPrompt 的回调不触发，
+    // 本用例只关心「启动时把条目应用进 process.env」这一段。
+    const ctx = {
+      inject(names: string[], callback: (ctx: unknown) => unknown) {
+        if (names.includes('credentials')) callback({ credentials: seam })
+      },
+      effect: () => {},
+    }
+    const previous = process.env.TOKEN
+    try {
+      apply(ctx as never, { announceToAgent: false })
+      // 凭据解析在启动路径里是异步的（void 起的 IIFE）：冲掉微任务链
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(process.env.TOKEN).toBe('stored-secret')
+    } finally {
+      if (previous === undefined) delete process.env.TOKEN
+      else process.env.TOKEN = previous
+    }
   })
 })

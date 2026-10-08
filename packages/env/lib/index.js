@@ -114,8 +114,18 @@ export function readManagedEntries() {
             const secret = entry.secret === true;
             result.entries.push({
                 key: entry.key,
-                // 密钥条目缺 value 字段 = 值在官方凭据存储；其余缺值沿用空串语义。
-                value: entry.value === undefined || entry.value === null ? (secret ? undefined : '') : entry.value,
+                // 密钥条目的「没有内联值」有两种写法：**缺 value 字段**，或**写了空串**。
+                // 两者必须同义，否则值是「取不到」而不是「为空」：
+                //   - `applyToProcessEnv` 把空串当权威空值 → `delete process.env[key]`；
+                //   - `applyStoreEntriesToProcessEnv` 只处理 `value === undefined` → 跳过存储解析。
+                // 两边一夹，官方凭据存储里明明有值，`process.env[key]` 却恒为 undefined。
+                // 实测（2026-10-08）：mcp 托管行的 `js:process.env.JENKINS_AUTH` 因此求值成
+                // undefined → `Authorization: Basic base64("<user>:undefined")` → 服务端 401 →
+                // 卡片显示 active 而 toolCount 0（该服务器上的工具一个都没注册）。
+                // 普通条目的空串仍表示「删除该变量」，语义不变。
+                value: entry.value === undefined || entry.value === null || (secret && entry.value === '')
+                    ? (secret ? undefined : '')
+                    : entry.value,
                 secret,
             });
         }
@@ -164,7 +174,7 @@ export function writeManagedEntries(entries) {
 /* ------------------------------------------------------------------ *
  * 校验
  * ------------------------------------------------------------------ */
-function validateEntries(rawEntries, previous) {
+export function validateEntries(rawEntries, previous) {
     if (!Array.isArray(rawEntries))
         return { error: 'entries 必须是数组' };
     const entries = [];
@@ -185,7 +195,10 @@ function validateEntries(rawEntries, previous) {
             const prior = previous.find((p) => p.key === key);
             if (prior !== undefined)
                 inherited.add(key);
-            entries.push({ key, value: prior !== undefined ? prior.value : '', secret: input.secret === true });
+            // 新建的密钥条目同样「没有内联值」：写 undefined（渲染时省略 value 字段），而不是空串。
+            // 空串在密钥条目上正是那个让官方凭据存储里的值取不到的坑，见 readManagedEntries。
+            const secret = input.secret === true;
+            entries.push({ key, value: prior !== undefined ? prior.value : (secret ? undefined : ''), secret });
         }
         else {
             entries.push({ key, value: fromDtoValue(input.value), secret: input.secret === true });

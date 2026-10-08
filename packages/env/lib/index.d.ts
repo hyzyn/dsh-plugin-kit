@@ -30,5 +30,10 @@ export declare function readManagedEntries(): ManagedRead;
 export declare function renderManagedBlock(entries: EnvEntry[]): string;
 /** 把托管区块写回 env 文件（原子替换，保留文件其它内容；权限一律收紧为 0600）。 */
 export declare function writeManagedEntries(entries: EnvEntry[]): void;
+export declare function validateEntries(rawEntries: unknown, previous: EnvEntry[]): {
+    entries?: EnvEntry[];
+    inherited?: Set<string>;
+    error?: string;
+};
 export declare function apply(ctx: Context, config?: Config): void;
 export {};
