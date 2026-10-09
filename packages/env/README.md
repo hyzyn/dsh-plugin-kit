@@ -9,6 +9,7 @@
 - **密钥值不入 env 文件**：密钥值写入官方凭据存储（`~/.dsh/.credentials.yaml` 的 refs），env 文件只留清单；接口不下发明文（`value: null`），GUI 以密码框呈现，留空保存＝保持原值。
 - **`js:` 表达式由宿主延迟求值**：`js:process.env.API_KEY` 这类表达式留在文件里、由宿主求值（YAML `!!js` 方言，与 dsh 补丁文件一致），密钥不必写死。
 - **保存即写入当前进程**：解析结果写进当前进程的 `process.env`，宿主与后续子进程立刻可用，无需重启。
+- **启动期同步预注入**：冷启动时，凭据存储（ref 托管）里的密钥在 `apply()` 返回前就已同步写进 `process.env`，赶得上其它插件条目的求值时机——MCP 认证头写的就是 `js:process.env.XXX`，等异步凭据 seam 会输掉这场竞态（症状：卡片「未连接」/ `ValidationError` + 「1 entry did not activate」）。
 - **存储降级是全有全无**：宿主没有凭据 seam 或关掉 `secretsInCredentials` 时退回「env 文件单存储」，不产生半迁移状态。
 - **围栏与文件权限显式约束**：路由仅 loopback + 同源，env 文件固定 0600；明确提示不要把 GUI 端口经隧道 / 反代暴露。
 
@@ -53,7 +54,8 @@ interface Config {
 
 - 托管区块以 `# --- dsh-env-manager managed ...` 标记，插件只改写该区块，其余内容原样保留。
 - **凭据存储迁移**：启动时自动把带明文值的密钥条目迁入官方凭据存储，幂等且非破坏——只有写入成功的条目才从 env 文件移除值。三类条目保留在 env 文件：`js:` 引用、空值（官方存储拒绝空串）、被启动环境遮蔽或 refs 已有同名键（**不覆盖**用户经官方界面存过的值）。
-- 宿主未提供凭据 seam 或配置 `secretsInCredentials: false` 时，插件整体退回 env 文件单存储模式。
+- **启动期同步预注入**：`secret: true` 且没有内联 `value` 的条目，值在 `.credentials.yaml` 的 `refs` 里。插件启动时**同步**读该文档（`$DSH_HOME/.credentials.yaml`，可用 `DSH_ENV_CREDENTIALS_FILE` 覆盖）并把值补进 `process.env`，**`apply()` 返回时值已就位**——这是 MCP 认证头那类 `!!js process.env.X` 在冷启动时能取到值的唯一原因。只补空位：继承自启动环境的值优先（与凭据 seam 的 `inherited → stored → fallback` 一致），删除语义留给那条异步的 seam 对账；凭据文档缺失/损坏只是这一次不预注入，不影响插件启动。
+- 宿主未提供凭据 seam 或配置 `secretsInCredentials: false` 时，插件整体退回 env 文件单存储模式（**此时也不做启动期预注入**：那种模式下凭据存储不是真源）。
 - 键名只允许 `[A-Za-z_][A-Za-z0-9_]*`，且不能重复。
 - `js:` 表达式在宿主内评估（与 loader 相同的信任模型），仅建议存放本机可解析的表达式。
 - env 文件落盘固定 0600（承载清单与少量遗留明文，不继承既有宽松权限）。

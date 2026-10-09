@@ -19,6 +19,12 @@
  * 保存后若开启 applyToProcessEnv，会把解析后的值写入当前进程的 process.env，
  * 供宿主和后续启动的子进程使用。
  *
+ * **启动期时序不变式**：apply() 返回时，ref 托管的密钥必须已经在 process.env 里。
+ * 凭据 seam 的 resolve() 是异步的，而其它插件条目（mcp 的认证头就是 `!!js process.env.X`）
+ * 在同一次组装里**同步**求值——异步注入必然输掉这场竞态。所以启动注入走**同步**的
+ * readStoreRefs()（直接读 .credentials.yaml 的 refs），不依赖 seam；seam 那条路继续
+ * 负责迁移与对账。判据与代价见 applyStoreRefsToProcessEnv 的注释。
+ *
  * 浏览器半体（./client）通过 /api/dsh-env/* 路由读写配置；路由带
  * loopback-only 信任围栏，密钥条目不下发明文（write-only）。
  */
@@ -53,6 +59,15 @@ const MAX_JSON_BODY_BYTES = 512 * 1024
 
 // codegraph CG35：DSH_HOME 推导统一走 @hyzyn/dsh-kit（~ 展开 + resolve），别再手抄一份 raw 副本
 const envFilePath = () => process.env.DSH_ENV_FILE?.trim() || join(dshHome(), 'env.yml')
+
+/**
+ * 官方凭据文档（.credentials.yaml）的路径。默认落点必须与上游
+ * `@deepseek-ai/dsh-credentials-local` 的 `resolveSpec()` 一致：
+ * `resolve(config.path ?? join(resolveDshHome(config.dshHome), ".credentials.yaml"))`
+ * ——即 `<DSH_HOME>/.credentials.yaml`。上游若被配了显式 `path`（插件配置里改了落点），
+ * 本插件看不到那份配置，只能靠 DSH_ENV_CREDENTIALS_FILE 覆盖（与 DSH_ENV_FILE 同族）。
+ */
+const credentialsFilePath = () => process.env.DSH_ENV_CREDENTIALS_FILE?.trim() || join(dshHome(), '.credentials.yaml')
 
 interface JsExpr {
   __jsExpr: string
@@ -242,18 +257,91 @@ export function validateEntries(rawEntries: unknown, previous: EnvEntry[]): { en
 }
 
 /* ------------------------------------------------------------------ *
+ * 官方凭据文档（.credentials.yaml）的**同步**读取
+ * ------------------------------------------------------------------ */
+
+/**
+ * 同步读出凭据文档的 refs 段（`{ <KEY>: <value> }`）。
+ *
+ * 存在的理由只有一个：**时序**。凭据 seam 的 resolve() 是 Promise（要先等 seam 注入、
+ * 再读文件），而别的插件条目在同一次组装里**同步**求值 `!!js process.env.X`
+ * （mcp 的认证头就是它）——异步那条路必然输掉竞态，见 applyStoreRefsToProcessEnv。
+ * 这个函数直接读文档本身，因此可以在 apply() 里同步走完。
+ *
+ * 容错是刻意的：文件不存在 / 读不动 / 解析失败 / 形状不对，一律返回 `{}`——
+ * 读不到凭据只是「这次不预注入」，绝不能让插件启动失败（异步那条路仍会兜底）。
+ * 只认 version 1 的 `refs:` 段（`records:` 与其它顶层键一概不看）；上游会把
+ * 未带 version 的旧扁平布局在加载时迁成这个形状，本函数不重复那份迁移逻辑。
+ * 值的形状照上游 parseRefs() 的口径——非字符串或空串都不是凭据文档里的合法值，
+ * 跳过（上游对同样的输入是直接拒绝整个文档）。
+ */
+export function readStoreRefs(): Record<string, string> {
+  const file = credentialsFilePath()
+  let text: string
+  try {
+    if (!existsSync(file)) return {}
+    text = readFileSync(file, 'utf8')
+  } catch {
+    return {}
+  }
+  try {
+    const doc = yaml.load(text, { schema: YAML_SCHEMA })
+    if (typeof doc !== 'object' || doc === null || Array.isArray(doc)) return {}
+    const refs = (doc as { refs?: unknown }).refs
+    if (typeof refs !== 'object' || refs === null || Array.isArray(refs)) return {}
+    const out: Record<string, string> = {}
+    for (const [key, value] of Object.entries(refs as Record<string, unknown>)) {
+      if (typeof value !== 'string' || value === '') continue
+      out[key] = value
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+/* ------------------------------------------------------------------ *
  * process.env 应用
  * ------------------------------------------------------------------ */
 
 function applyToProcessEnv(entries: EnvEntry[]): void {
   for (const entry of entries) {
-    if (entry.value === undefined) continue // ref 托管：由 applyStoreEntriesToProcessEnv 经凭据存储解析
+    // ref 托管：**启动期**由 applyStoreRefsToProcessEnv 同步预注入（apply() 返回前落地），
+    // 异步的 applyStoreEntriesToProcessEnv 只负责迁移后的对账——它不是这条值的唯一来源。
+    if (entry.value === undefined) continue
     const resolved = evalValue(entry.value)
     if (resolved === '') {
       delete process.env[entry.key]
     } else {
       process.env[entry.key] = resolved
     }
+  }
+}
+
+/**
+ * 启动期**同步**预注入：把 ref 托管的密钥从凭据文档 refs 写进 process.env。
+ *
+ * 这是本包唯一的时序不变式，也是它不能复用 seam 的全部理由：`!!js` 在**加载器组装
+ * 该条目配置的那一刻**求值，而 seam 的 resolve() 要等异步。两条路的差距在真机上
+ * 只有十几条组合树条目——desktop profile 实测 `env-manager (1795) → mcp-jenkins (1808)`，
+ * 异步注入落地时 header 早就求值完了；web profile 相隔 600+ 条才侥幸来得及。
+ * 求值成 undefined 的症状分两种：裸的 `process.env.X` 让 headers 变成 `{}`（core 的
+ * config 校验拒绝整条，日志里是 ValidationError +「1 entry did not activate」），
+ * 字符串拼接（`'Basic ' + …`）照常产出合法字符串、条目正常挂载，只是服务端 401
+ * （卡片「未连接」、工具数 0）。同一个根因、两种现场。
+ *
+ * 只 set、不 delete，且只补空位：删除语义留给异步的 applyStoreEntriesToProcessEnv
+ * 去对账，免得启动期误删「继承自启动环境」的值——seam 的 resolve 优先级是
+ * inherited → stored → fallback，继承值本来就该赢。
+ */
+function applyStoreRefsToProcessEnv(entries: EnvEntry[]): void {
+  const refs = readStoreRefs()
+  for (const entry of entries) {
+    if (entry.secret !== true || entry.value !== undefined) continue
+    const stored = refs[entry.key]
+    if (stored === undefined) continue
+    const current = process.env[entry.key]
+    if (current === undefined || current === '') process.env[entry.key] = stored
   }
 }
 
@@ -309,7 +397,12 @@ async function migrateSecretsToStore(seam: CredentialSeam): Promise<{ migrated: 
   return { migrated: moved.size, conflicts }
 }
 
-/** 把 ref 托管的密钥解析进 process.env——tty/docker 的 env:VAR 与 mcp 的 js:process.env 消费链依赖它。 */
+/**
+ * 把 ref 托管的密钥解析进 process.env。**启动期不再是这条链的第一手**——值已由
+ * applyStoreRefsToProcessEnv 同步放好（那才是 mcp 认证头赶得上的那一次），这里负责
+ * resolve 之后的**对账**（含「存储里已删」→ 删除变量）与迁移后的收敛；正常路径下
+ * 它对已是同值的键是幂等的 no-op。
+ */
 async function applyStoreEntriesToProcessEnv(seam: CredentialSeam, entries: EnvEntry[]): Promise<void> {
   for (const entry of entries) {
     if (entry.secret !== true || entry.value !== undefined) continue
@@ -519,7 +612,7 @@ function makeRoutes(ctx: Context, applyOnSave: boolean, store: SeamHolder): Arra
  * 插件本体
  * ------------------------------------------------------------------ */
 
-const ENV_GUIDANCE = '本机已安装 dsh-env-manager 插件（环境变量 / 密钥管理）：Web GUI 的 插件配置里有「环境变量 / 密钥管理」卡片，提供图形化管理。配置保存在 ~/.dsh/env.yml 的托管区块（auto-generated，勿手改），支持普通值与 js: 前缀表达式（如 js:process.env.XXX）；密钥条目的明文值默认存入官方凭据存储（~/.dsh/.credentials.yaml），env 文件只保留清单不落密钥明文。保存后默认写入当前进程的 process.env，供宿主和后续启动的子进程使用。用户提到「环境变量 / 密钥 / env / secret」时即指本插件，请引导用户打开设置里的环境变量卡片操作，而不是直接修改配置文件。'
+const ENV_GUIDANCE = '本机已安装 dsh-env-manager 插件（环境变量 / 密钥管理）：Web GUI 的 插件配置里有「环境变量 / 密钥管理」卡片，提供图形化管理。配置保存在 ~/.dsh/env.yml 的托管区块（auto-generated，勿手改），支持普通值与 js: 前缀表达式（如 js:process.env.XXX）；密钥条目的明文值默认存入官方凭据存储（~/.dsh/.credentials.yaml），env 文件只保留清单不落密钥明文。保存后默认写入当前进程的 process.env；启动时也会把凭据存储里的密钥**同步**预注入 process.env（早于其它插件条目的 !!js 求值），所以 MCP 认证头这类 js:process.env.XXX 引用在冷启动时就能取到值。用户提到「环境变量 / 密钥 / env / secret」时即指本插件，请引导用户打开设置里的环境变量卡片操作，而不是直接修改配置文件。'
 
 export function apply(ctx: Context, config?: Config): void {
   if (config?.enabled === false) return
@@ -529,10 +622,15 @@ export function apply(ctx: Context, config?: Config): void {
   const routes = makeRoutes(ctx, applyOnSave, store)
   const announce = config?.announceToAgent !== false
 
-  // 启动时也把已有条目应用一次，保证宿主进程内立即可用（ref 托管条目由下方回调补齐）。
+  // 启动时也把已有条目应用一次，保证宿主进程内立即可用。
   if (applyOnSave) {
     try {
-      applyToProcessEnv(readManagedEntries().entries)
+      const entries = readManagedEntries().entries
+      applyToProcessEnv(entries)
+      // ref 托管条目必须**同步**补齐：apply() 一旦返回，后面那些条目的 `!!js` 就可能已经
+      // 求值完了（desktop profile 里只隔十几条）。见 applyStoreRefsToProcessEnv。
+      // secretsInCredentials === false 时凭据存储不是真源，跳过。
+      if (useStore) applyStoreRefsToProcessEnv(entries)
     } catch {
       /* 启动时应用失败不阻塞插件 */
     }
@@ -541,6 +639,8 @@ export function apply(ctx: Context, config?: Config): void {
   if (useStore) {
     // 凭据 seam 由 base 组合提供（ctx.inject 动态回调与 webServer 同款模式）；
     // 服务缺失时回调不执行，插件整体退回 env 文件单存储的旧模式。
+    // 这条异步路径**不承担启动注入**（值已在 apply() 返回前同步放好）：它负责
+    // migrateSecretsToStore() 迁移与随后的对账，正常路径下基本是幂等的 no-op。
     ctx.inject(['credentials'], (credCtx: Context) => {
       const seam = (credCtx as unknown as { credentials: CredentialSeam }).credentials
       store.current = seam

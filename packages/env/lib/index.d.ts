@@ -35,5 +35,21 @@ export declare function validateEntries(rawEntries: unknown, previous: EnvEntry[
     inherited?: Set<string>;
     error?: string;
 };
+/**
+ * 同步读出凭据文档的 refs 段（`{ <KEY>: <value> }`）。
+ *
+ * 存在的理由只有一个：**时序**。凭据 seam 的 resolve() 是 Promise（要先等 seam 注入、
+ * 再读文件），而别的插件条目在同一次组装里**同步**求值 `!!js process.env.X`
+ * （mcp 的认证头就是它）——异步那条路必然输掉竞态，见 applyStoreRefsToProcessEnv。
+ * 这个函数直接读文档本身，因此可以在 apply() 里同步走完。
+ *
+ * 容错是刻意的：文件不存在 / 读不动 / 解析失败 / 形状不对，一律返回 `{}`——
+ * 读不到凭据只是「这次不预注入」，绝不能让插件启动失败（异步那条路仍会兜底）。
+ * 只认 version 1 的 `refs:` 段（`records:` 与其它顶层键一概不看）；上游会把
+ * 未带 version 的旧扁平布局在加载时迁成这个形状，本函数不重复那份迁移逻辑。
+ * 值的形状照上游 parseRefs() 的口径——非字符串或空串都不是凭据文档里的合法值，
+ * 跳过（上游对同样的输入是直接拒绝整个文档）。
+ */
+export declare function readStoreRefs(): Record<string, string>;
 export declare function apply(ctx: Context, config?: Config): void;
 export {};
