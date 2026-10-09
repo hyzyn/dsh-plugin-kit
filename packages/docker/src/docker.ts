@@ -1149,6 +1149,23 @@ export function parseInspectPorts(value: unknown): PortMapping[] {
  * 执行器抽象：本地 / SSH 共用一套 DockerApi
  * ------------------------------------------------------------------ */
 
+/**
+ * 一次性命令的选项**子集**（Runner 面）：= `ExecOptions` 去掉 `input`（这条通道喂不了
+ * stdin）并加上 `signal`。
+ *
+ * 刻意写成具名类型：它原先在 `Runner.run` 与 `createRunner` 的 `withSignal` 里各写了一份
+ * 字面量，于是新增一个字段只能靠对象字面量处的 tsc 报错兜住——`lineAlign` 那次就是先漏在
+ * 第二份上。具名类型之后不存在「第二份」。
+ */
+export interface RunnerRunOptions {
+  timeoutMs?: number
+  maxBytes?: number
+  keepTail?: boolean
+  /** 截断后对齐到行边界（见 `ExecOptions.lineAlign`）；只有 `docker_logs_grep` 用。 */
+  lineAlign?: boolean
+  signal?: AbortSignal
+}
+
 /** 一个目标（target）背后的命令执行通道。 */
 export interface Runner {
   /** 展示用标签：`本机` 或 `user@host`。 */
@@ -1159,7 +1176,7 @@ export interface Runner {
    * 目前只有跨目标聚合（`aggregateAcrossTargets`）会传——单目标路径的截止时间是
    * `timeoutMs`，它本来就够。
    */
-  run(argv: readonly string[], options?: { timeoutMs?: number; maxBytes?: number; keepTail?: boolean; signal?: AbortSignal }): Promise<ExecResult>
+  run(argv: readonly string[], options?: RunnerRunOptions): Promise<ExecResult>
   /** 长流（logs --follow）：逐块回调，signal 中止；无总超时与输出上限。 */
   stream(argv: readonly string[], handlers: StreamHandlers, signal?: AbortSignal): Promise<StreamResult>
 }
@@ -1173,8 +1190,67 @@ export interface LogsOptions {
   tail?: number
   timestamps?: boolean
   since?: string
+  /** 结束时间（docker --until 语法：ISO 8601 时间戳或 Go duration，如 2026-09-09T10:00:00、1h）。*/
+  until?: string
   /** 实时跟随（`docker logs --follow`）：仅 logsStream() 使用，logs() 忽略。 */
   follow?: boolean
+}
+
+/**
+ * 日志检索选项：**默认字面子串**匹配（grep -F 等价），零 ReDoS 风险；
+ * `regexp: true` 时才按 JS 正则解释 pattern（仍建议配 since/until 收窄窗口）。
+ */
+export interface LogGrepOptions {
+  /** 要搜索的字面子串，或（regexp=true 时）正则表达式源文。 */
+  pattern: string
+  /** true = 把 pattern 当正则；默认 false = 字面子串。 */
+  regexp?: boolean
+  /** 忽略大小写（字面模式 = grep -i，正则模式 = /i 标志）。 */
+  ignoreCase?: boolean
+  /** 扫描行数上限（1~5000）；缺省 = `--tail all` 扫全部历史。 */
+  tail?: number
+  /** 起始时间（与 docker_logs 的 since 同一口径，D45）。 */
+  since?: string
+  /** 结束时间（docker --until 语法，与 since 同一口径）。 */
+  until?: string
+  /** 每个命中前后各保留的上下文行数（0~20，默认 2）。 */
+  context?: number
+  /** 返回命中数上限（1~500，默认 200）。 */
+  limit?: number
+  /** 时间戳（默认开——深处的命中没有时间等于没用）。 */
+  timestamps?: boolean
+}
+
+/** 检索结果里的一行（命中行或它的上下文行）。 */
+export interface LogGrepLine {
+  /** 该通道内的行号（从 1 开始；stdout 在前、stderr 在后，与 logs() 的拼接序一致）。 */
+  seq: number
+  stream: 'out' | 'err'
+  text: string
+  /** 这行本身是否命中（false = 只是上下文）。 */
+  hit: boolean
+  /** 命中时：匹配到的子串（供调用方定位；上下文行为 null）。 */
+  highlight: string | null
+}
+
+/** 日志检索结果。两个「截断」要分清：truncated = 扫描侧字节闸截断，limited = 命中数达到 limit。 */
+export interface LogGrepResult {
+  id: string
+  /** 命中总行数（即使超过 limit 也如实计数）。 */
+  matched: number
+  /** 实际扫描的行数。 */
+  scanned: number
+  /** 返回的行数（命中 + 去重后的上下文）。 */
+  returned: number
+  /** 命中数达到 limit、还有命中没返回。 */
+  limited: boolean
+  /**
+   * 扫描输出超过字节上限（按**字节**丢最旧——窗口偏新，缩小 since/until 或换目标时段）。
+   * 窗口已对齐到行边界，所以 `lines` 里不会出现半行；但切口之前的内容确实没参与检索。
+   */
+  truncated: boolean
+  contextLines: number
+  lines: LogGrepLine[]
 }
 
 export interface ProbeResult {
@@ -1732,21 +1808,134 @@ export class DockerApi {
   }
 
   /**
+   * 日志检索（grep）：**宿主侧逐行过滤，不碰远端 shell**——绝不拼 `| grep`
+   * （那会违反「argv 构造、绝不做字符串拼接」的铁律，且 SSH 路径的转义面完全不同）。
+   *
+   * 与 logs() 的分工（写进工具描述，供模型选择）：「报错在最近尾部」→ docker_logs；
+   * 「埋在深处 / 特定时间窗 / 找关键词」→ docker_logs_grep。扫描与返回的预算是**分开**
+   * 的：扫描侧给到 8~32MB（maxOutputKb 只是单命令返回闸，grep 的意义就是从大量原文里
+   * 筛出少量命中），返回侧由 limit × context 夹住；两侧截断各有独立信号位
+   * （truncated = 扫描侧溢出丢最旧、limited = 命中超过 limit），都不静默。扫描窗口
+   * **对齐到行边界**（`lineAlign`）：切口处的半行不当作一行返回，否则它会以没有时间戳的
+   * 噪音形式进模型上下文，看起来像「检索结果里有脏行」。
+   *
+   * 默认字面子串匹配（grep -F 等价，零 ReDoS）；regexp=true 才按 JS 正则解释，
+   * pattern 上限 512 字符。时间戳默认开——深处的命中没有时间等于没用。
+   */
+  async logsGrep(id: string, options: LogGrepOptions): Promise<LogGrepResult> {
+    const safe = assertRef(id, 'container')
+    if (typeof options.pattern !== 'string' || options.pattern === '') throw new Error('pattern 必填（要搜索的字面子串或正则表达式）')
+    if (options.pattern.length > 512) throw new Error('pattern 过长（≤512 字符）')
+    const useRegexp = options.regexp === true
+    const ignoreCase = options.ignoreCase === true
+    /** 单行判定：命中返回匹配子串（用作 highlight），未命中返回 null。 */
+    let testLine: (line: string) => string | null
+    if (useRegexp) {
+      let re: RegExp
+      try {
+        re = new RegExp(options.pattern, ignoreCase ? 'i' : '')
+      } catch (error) {
+        throw new Error(`无效的正则表达式：${error instanceof Error ? error.message : String(error)}`)
+      }
+      testLine = (line) => {
+        const match = re.exec(line)
+        return match === null ? null : match[0]
+      }
+    } else {
+      const needle = ignoreCase ? options.pattern.toLowerCase() : options.pattern
+      testLine = (line) => {
+        const hay = ignoreCase ? line.toLowerCase() : line
+        const at = hay.indexOf(needle)
+        return at === -1 ? null : line.slice(at, at + needle.length)
+      }
+    }
+    const contextLines = Math.min(Math.max(Math.trunc(options.context ?? 2), 0), 20)
+    const limit = Math.min(Math.max(Math.trunc(options.limit ?? 200), 1), 500)
+    // tail 缺省 = all（docker logs --tail all）；给了数字就夹到 1~5000——检索的默认语义是「全历史里找」
+    const tailOverride = typeof options.tail === 'number' && Number.isInteger(options.tail) && options.tail > 0
+      ? String(Math.min(options.tail, 5000))
+      : 'all'
+    const argv = this.logsArgv(safe, {
+      timestamps: options.timestamps !== false,
+      ...(typeof options.since === 'string' && options.since.trim() !== '' ? { since: options.since.trim() } : {}),
+      ...(typeof options.until === 'string' && options.until.trim() !== '' ? { until: options.until.trim() } : {}),
+    }, false, tailOverride)
+    // 扫描预算独立于返回预算：下限 8MB、上限 32MB（宿主内存有界），超时给到 60s 档
+    const scanBytes = Math.min(Math.max(this.limits.maxBytes, 8 * 1024 * 1024), 32 * 1024 * 1024)
+    const result = await this.runner.run(argv, {
+      timeoutMs: Math.max(this.limits.timeoutMs, 60_000),
+      maxBytes: scanBytes,
+      keepTail: true, // 溢出丢最旧（与 logs() 同方向，D14）；报告里如实说明窗口偏新
+      // 再对齐到行边界：保留尾部是按字节切的，不对齐的话窗口第一行是**半行**（没有时间戳、
+      // 内容从中途开始），会以噪音形式进模型上下文。理由与边界见 ExecOptions.lineAlign。
+      lineAlign: true,
+    })
+    this.assertOk(result, '检索容器日志')
+    // 拆行（stdout 在前、stderr 在后，与 logs() 的拼接序一致；只去掉块尾的空行）
+    const splitChunk = (text: string): string[] => {
+      const lines = text.split('\n')
+      if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop()
+      return lines
+    }
+    const rows = [
+      ...splitChunk(result.stdout).map((text) => ({ text, stream: 'out' as const })),
+      ...splitChunk(result.stderr).map((text) => ({ text, stream: 'err' as const })),
+    ]
+    // 全量扫命中（matched 如实计数，即使超过 limit）；limit 只决定「返回哪些窗」
+    const hitIndexes: number[] = []
+    for (let i = 0; i < rows.length; i++) {
+      if (testLine(rows[i].text) !== null) hitIndexes.push(i)
+    }
+    const limited = hitIndexes.length > limit
+    const keptHits = hitIndexes.slice(0, limit)
+    // 上下文窗口合并去重（相邻命中共享的行只输出一份），按原序输出
+    const take = new Set<number>()
+    const hitSet = new Set(keptHits)
+    for (const idx of keptHits) {
+      for (let j = Math.max(0, idx - contextLines); j <= Math.min(rows.length - 1, idx + contextLines); j++) take.add(j)
+    }
+    const lines: LogGrepLine[] = [...take]
+      .sort((a, b) => a - b)
+      .map((j) => {
+        const row = rows[j]
+        return {
+          seq: j + 1,
+          stream: row.stream,
+          text: row.text,
+          hit: hitSet.has(j),
+          highlight: hitSet.has(j) ? testLine(row.text) : null,
+        }
+      })
+    return {
+      id: safe,
+      matched: hitIndexes.length,
+      scanned: rows.length,
+      returned: lines.length,
+      limited,
+      truncated: result.truncated,
+      contextLines,
+      lines,
+    }
+  }
+
+  /**
    * 日志 argv 的唯一构造点：快照与流式只在 `--follow` 与 tail 下限上有差异，
    * 校验与夹紧必须逐字一致（否则同一 id 在两条路径上行为漂移）。
+   * `tailOverride` 供 logsGrep 传 `all`（检索要扫全部历史，而不是尾部 5000 行）。
    */
-  private logsArgv(id: string, options: LogsOptions | undefined, follow: boolean): string[] {
+  private logsArgv(id: string, options: LogsOptions | undefined, follow: boolean, tailOverride?: string): string[] {
     // 流式允许 0（D133：重连只补新行）；快照路径保持 1 起步——「取 0 行快照」没有意义
     const min = follow ? 0 : 1
-    const tail = Math.min(Math.max(Math.trunc(options?.tail ?? 200), min), 5000)
+    const tail = tailOverride ?? String(Math.min(Math.max(Math.trunc(options?.tail ?? 200), min), 5000))
     return [
       this.bin,
       'logs',
       ...(follow ? ['--follow'] : []),
       '--tail',
-      String(tail),
+      tail,
       ...(options?.timestamps === true ? ['--timestamps'] : []),
       ...(typeof options?.since === 'string' && options.since.trim() !== '' ? ['--since', options.since.trim()] : []),
+      ...(typeof options?.until === 'string' && options.until.trim() !== '' ? ['--until', options.until.trim()] : []),
       id,
     ]
   }
@@ -1854,7 +2043,7 @@ export function createRunner(options: {
    * （当前无调用点传，留给将来单命令级的取消）；否则用聚合绑定的那个。
    * 都不传时返回原样，避免多造一个对象。
    */
-  const withSignal = (runOptions?: { timeoutMs?: number; maxBytes?: number; keepTail?: boolean; signal?: AbortSignal }): { timeoutMs?: number; maxBytes?: number; keepTail?: boolean; signal?: AbortSignal } => {
+  const withSignal = (runOptions?: RunnerRunOptions): RunnerRunOptions => {
     const merged = runOptions?.signal ?? signal
     return merged === undefined ? (runOptions ?? {}) : { ...runOptions, signal: merged }
   }

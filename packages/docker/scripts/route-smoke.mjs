@@ -394,9 +394,9 @@ function toolNames() {
  * 1. 挂载面
  * ------------------------------------------------------------------ */
 
-await test('挂载：注册 12 个只读 agent 工具', () => {
+await test('挂载：注册 13 个只读 agent 工具', () => {
   const names = toolNames().sort()
-  assert.deepEqual(names, ['docker_attention', 'docker_connect_local', 'docker_events', 'docker_image_inspect', 'docker_images', 'docker_inspect', 'docker_logs', 'docker_networks', 'docker_ps', 'docker_stats', 'docker_targets', 'docker_volumes'])
+  assert.deepEqual(names, ['docker_attention', 'docker_connect_local', 'docker_events', 'docker_image_inspect', 'docker_images', 'docker_inspect', 'docker_logs', 'docker_logs_grep', 'docker_networks', 'docker_ps', 'docker_stats', 'docker_targets', 'docker_volumes'])
 })
 
 await test('挂载：注册能力公告 section', () => {
@@ -431,7 +431,7 @@ await test('GET /config：凭证脱敏 + 只读默认 + 复用 tty 连接簿名'
   const direct = config.targets.find((item) => item.name === '直连')
   assert.equal(direct.passwordSet, true)
   assert.equal(direct.passphraseSet, false)
-  assert.deepEqual(config.toolsRegistered.sort(), ['docker_attention', 'docker_connect_local', 'docker_events', 'docker_image_inspect', 'docker_images', 'docker_inspect', 'docker_logs', 'docker_networks', 'docker_ps', 'docker_stats', 'docker_targets', 'docker_volumes'])
+  assert.deepEqual(config.toolsRegistered.sort(), ['docker_attention', 'docker_connect_local', 'docker_events', 'docker_image_inspect', 'docker_images', 'docker_inspect', 'docker_logs', 'docker_logs_grep', 'docker_networks', 'docker_ps', 'docker_stats', 'docker_targets', 'docker_volumes'])
 })
 
 await test('POST /config：未知键被拒绝', async () => {
@@ -884,6 +884,7 @@ await test('agent 工具：每个工具的 render 都能跑，且输出里不出
     ['docker_attention', { target: '本机' }],
     ['docker_inspect', { target: '本机', id: 'shop-web-1' }],
     ['docker_logs', { target: '本机', id: 'shop-web-1', tail: 5 }],
+    ['docker_logs_grep', { target: '本机', id: 'shop-web-1', pattern: 'stdout line' }],
     ['docker_stats', { target: '本机' }],
     ['docker_images', { target: '本机' }],
     ['docker_image_inspect', { target: '本机', ref: 'nginx:1.27' }],
@@ -925,6 +926,27 @@ await test('agent 工具：docker_logs 返回日志文本', async () => {
   const value = await tool.execute({ target: '本机', id: 'shop-web-1', tail: 10 })
   assert.match(value.text, /stdout line 1/)
   assert.match(value.text, /stderr line 1/)
+})
+
+await test('agent 工具：docker_logs_grep 服务端检索（假 CLI：out/err 各一行命中 line）', async () => {
+  const tool = state.tools.find((item) => item.name === 'docker_logs_grep')
+  assert.ok(tool !== undefined)
+  const value = await tool.execute({ target: '本机', id: 'shop-web-1', pattern: 'line', context: 0 })
+  assert.equal(value.matched, 2)
+  assert.equal(value.scanned, 2)
+  assert.equal(value.returned, 2)
+  assert.equal(value.limited, undefined)
+  assert.equal(value.truncated, undefined)
+  const streams = value.lines.map((l) => l.stream).sort()
+  assert.deepEqual(streams, ['err', 'out'])
+  assert.ok(value.lines.every((l) => l.hit === true && l.highlight === 'line'))
+  // 正则路径 + 大小写：code=… 不存在于假 CLI 输出，应 0 命中（无命中也要能渲染，不能抛）
+  const none = await tool.execute({ target: '本机', id: 'shop-web-1', pattern: 'no-such-token', context: 0 })
+  assert.equal(none.matched, 0)
+  assert.match(tool.output.render({}, none).map((p) => p.text).join(''), /无命中/)
+  // 非法 since 与 docker_logs 同一口径报错（D45）
+  await assert.rejects(tool.execute({ target: '本机', id: 'shop-web-1', pattern: 'x', since: '昨天' }), /since 无法识别/)
+  await assert.rejects(tool.execute({ target: '本机', id: 'shop-web-1', pattern: 'x', until: 'bad' }), /until 无法识别/)
 })
 
 await test('agent 工具：docker_image_inspect 返回层数与构建历史', async () => {
@@ -1156,7 +1178,7 @@ await test('重新启用：工具（含能力开关项）、公告、数据路�
   assert.equal(res.status, 200)
   assert.equal(res.body.config.enabled, true)
   const names = toolNames()
-  for (const readonly of ['docker_targets', 'docker_ps', 'docker_inspect', 'docker_logs', 'docker_stats', 'docker_images', 'docker_image_inspect', 'docker_events', 'docker_networks', 'docker_volumes']) {
+  for (const readonly of ['docker_targets', 'docker_ps', 'docker_inspect', 'docker_logs', 'docker_logs_grep', 'docker_stats', 'docker_images', 'docker_image_inspect', 'docker_events', 'docker_networks', 'docker_volumes']) {
     assert.equal(names.includes(readonly), true, `缺少只读工具 ${readonly}`)
   }
   // allowMutations / allowExec 在此前的用例里已打开：重启用后对应工具一并回来

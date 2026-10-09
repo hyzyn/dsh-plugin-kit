@@ -2,8 +2,8 @@
  * @hyzyn/dsh-docker — 工具并发性声明的回归测试（项目级 ROADMAP 第 4 项）。
  *
  * 背景：宿主对**未声明** `isConcurrencySafe` 的工具一律按「独占」处理
- * （`dsh-tools/lib/index.js:3059` → `{ kind: 'exclusive' }`），于是 17 个 `docker_*`
- * 工具全被串行化——而其中 12 个是纯只读的列表 / 详情 / 快照，本可以并发。
+ * （`dsh-tools/lib/index.js:3059` → `{ kind: 'exclusive' }`），于是十几个 `docker_*`
+ * 工具全被串行化——而其中绝大多数是纯只读的列表 / 详情 / 快照 / 检索，本可以并发。
  *
  * `docker_connect_local` 归类在只读这一侧：它唯一的副作用是**写本插件自己的配置**
  * （加一条本机目标，且幂等），没有任何目标侧的写操作、不需要能力授权；并发调用被
@@ -40,6 +40,7 @@ const READ_ONLY = [
   'docker_attention',
   'docker_inspect',
   'docker_logs',
+  'docker_logs_grep',
   'docker_stats',
   'docker_events',
   'docker_images',
@@ -130,7 +131,7 @@ function mountPlugin(): Map<string, FakeToolDef> {
     cb(makeChild(names))
     return () => {}
   }
-  // 两个开关都打开：16 个工具全部注册（只读的本来就不受开关约束）
+  // 两个开关都打开：18 个工具全部注册（只读的本来就不受开关约束）
   ;(apply as unknown as (ctx: unknown, config: unknown) => void)(root, {
     dockerBin: 'docker',
     allowMutations: true,

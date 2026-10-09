@@ -608,7 +608,8 @@ and reconnect". The record list can be deleted / reset in the settings card (del
 | `docker_ps` | always registered | `target?` (**pass `*` = all targets**), `all?: boolean` | lists containers (name / state / health / image / ports / compose project and service / short ID); by default only running ones, `all:true` includes stopped. With `target:'*'` it returns results grouped by target, and **one unreachable target does not affect the others** (that group carries `error`). Ports are merged across the IPv4/IPv6 dual-stack expansion (one `-p` no longer shows twice, D130); an empty `ports` does **not** mean "nothing exposed" — host-network containers publish on the host itself, and that case now carries a `net` field (D131). The first step of troubleshooting |
 | `docker_attention` | always registered | `target?` (supports `*`), `limit?: number` | a **needs-attention summary**: unhealthy / repeatedly restarting / OOM-killed / non-zero exit / zombie; every item carries `reasons`, `exitCode`, `oomKilled`, `restartCount`. OOM and the real exit code come from one `docker inspect` (a ps summary cannot distinguish a manual kill from 137). The troubleshooting entry point: call it first when you are unsure which machine or container to look at |
 | `docker_inspect` | always registered | `target?`, `id` (required) | `docker inspect`'s authoritative details: state / health check / exit code / restart count / ports / mounts / networks / startup command |
-| `docker_logs` | always registered | `target?`, `id`, `tail?` (1–5000, default `logTailDefault`), `timestamps?`, `since?` | the tail from `docker logs --tail`; `since` uses docker syntax (such as `10m`, `2026-09-09T10:00:00`); over the cap it is marked `truncated` |
+| `docker_logs` | always registered | `target?`, `id`, `tail?` (1–5000, default `logTailDefault`), `timestamps?`, `since?`, `until?` | the tail from `docker logs --tail`; `since` / `until` use docker syntax (e.g. `10m`, `2026-09-09T10:00:00`) to bound a time window; over the cap it is marked `truncated` |
+| `docker_logs_grep` | always registered | `target?`, `id`, `pattern` (required, ≤512 chars), `regexp?`, `ignoreCase?`, `since?`, `until?`, `context?` (0–20, default 2), `limit?` (1–500, default 200), `tail?` (omitted = scan all history), `timestamps?` (on by default) | **server-side log search**: line-by-line filtering in the host (never touches the remote shell, never pipes `| grep`), returns hit lines plus ±context lines, and honestly reports `matched` (all hits even when not returned) / `scanned` / `limited` / `truncated` — "only scanned this far" is distinguishable from "scanned everything"; the scan window is **aligned to line boundaries** (the partial line left by a byte-level cut is never returned as a line, so every entry in `lines` is a complete line). Division of labour with `docker_logs`: error in the recent tail → `docker_logs` (cheaper); buried deep / a specific time window / keywords, error codes, request IDs → this tool. Literal substring by default (grep -F semantics, zero ReDoS); JS regex only with `regexp: true` |
 | `docker_stats` | always registered | `target?`, `ids?` (comma-separated container names/IDs) | a `docker stats --no-stream` snapshot: CPU% / memory usage and share / network IO / block IO / PIDs; omitting `ids` means all running containers. Live following is a panel capability (SSE), and the tool keeps single-value snapshot semantics |
 | `docker_images` | always registered | `target?` | image list (repository:tag / size / created / short ID) |
 | `docker_events` | always registered | `target?`, `since?` (docker `--since` syntax, default `10m`) | a container-event snapshot (`docker events --since <d> --until <now>`, likewise through the server-side allowlist): the nine kinds start / die / stop / kill / oom / health_status / destroy / rename / update, with noise such as `exec_*` already dropped server-side. For continuous observation have the user watch the "Activity" strip in the panel's container list |
@@ -637,7 +638,9 @@ and reconnect". The record list can be deleted / reset in the settings card (del
   static switches above: the switches govern registration (host-level, persistent grant), the tier gate governs
   each registered call (per call, follows the tier immediately). Mechanism:
   [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md).
-- Recommended troubleshooting order: `docker_targets` → `docker_ps` → `docker_logs` →
+- Recommended troubleshooting order: `docker_targets` → `docker_ps` → `docker_logs`
+  (when the tail does not explain the failure, `docker_logs_grep` with `pattern` /
+  `since` / `until` to search deeper) →
   `docker_inspect` → `docker_stats`; for image problems `docker_images` →
   `docker_image_inspect`.
 - With `announceToAgent` on, the plugin injects a capability announcement into the systemPrompt (including the
@@ -1028,7 +1031,7 @@ Host half (src/index.ts)
   ├─ image routes: /images/inspect (read-only) · /images/remove · /images/prune (allowMutations)
   ├─ network / volume routes: /networks · /volumes and their inspect (read-only), remove / prune (allowMutations)
   └─ agent tools: docker_targets / docker_ps / docker_inspect /
-     docker_logs (snapshot semantics unchanged) / docker_stats / docker_events / docker_images /
+     docker_logs (snapshot semantics unchanged) / docker_logs_grep (server-side search) / docker_stats / docker_events / docker_images /
      docker_image_inspect / docker_networks / docker_volumes (always registered)
      + docker_action / docker_image_remove / docker_image_prune / docker_image_pull
        (allowMutations) / docker_exec (allowExec)
@@ -1162,8 +1165,8 @@ lines), and the gating of the eight `/networks` and `/volumes` endpoints (403 fo
      should **name podman** and say "put podman in 'docker CLI' and it works", while **not**
      rewriting `dockerBin` for you (go back to the settings card — the value is still `docker`).
 4. **Read-only interception**: with both switches off, `/action`, `/exec`, `/images/remove`,
-   `/images/prune`, `/images/pull/stream` all return 403; on the agent side exactly 12 read-only tools are
-   registered (`docker_targets` / `connect_local` / `ps` / `attention` / `inspect` / `logs` / `stats` / `events` / `images` /
+   `/images/prune`, `/images/pull/stream` all return 403; on the agent side exactly 13 read-only tools are
+   registered (`docker_targets` / `connect_local` / `ps` / `attention` / `inspect` / `logs` / `logs_grep` / `stats` / `events` / `images` /
    `image_inspect` / `networks` / `volumes` — see the tool table for the authoritative list), and
    the panel's start / stop / remove, image removal, pruning and pull buttons are greyed out. After turning on
    "allow mutations" these routes and tools appear immediately (no restart needed).
@@ -1291,6 +1294,25 @@ lines), and the gating of the eight `/networks` and `/volumes` endpoints (403 fo
     Reverse check: switch to Target2 and then immediately back to Target1 (which still cannot connect) → the banner
     should describe Target1's own
     failure, not treat Target2's successful result as Target1's.
+21. **`docker_logs_grep` server-side search** (the shape used for the 2026-10-09 real-machine run): start a
+   container whose log content you know in advance (any image you already have locally; no network needed):
+   `docker run -d --rm --name dsh-grep-probe <local image> sh -c 'echo "[boot] starting"; for i in 1 2 3 4 5; do echo "tick $i ok"; done; echo "FATAL request-id=REQ-7788"; echo "WARN disk 91%" >&2; sleep 3600'`
+   Then have the agent search it with `docker_logs_grep` and **check the raw return value item by item** (do not
+   accept a paraphrase):
+   - search `FATAL` → 1 hit, "scanned 8 lines", the hit marked `>` with ±2 context lines;
+   - `tick [0-9]+` **without** `regexp` → 0 hits; with `regexp=true` → 5 hits (proves the default is **literal**);
+   - `fatal` without `ignoreCase` → 0; with `ignoreCase=true` → 1;
+   - `tick` + `limit=1` → "5 hits" reported but only one window returned, plus the "hits exceed the limit" note (`limited`);
+   - `since=1h` hits / `until=1h` and `since=1s` both 0 hits **and "scanned 0 lines"** (proves `--since`/`--until` really pass through);
+   - search `WARN` → the hit line's stream is `[err]`;
+   - search a container that does not exist → docker's own error text, **not** an empty result.
+   Forcing `truncated` needs a log **>8MB** (the 8MB scan floor is hard; lowering "output limit (KB)" does not move it):
+   let a container write ~300k lines with the needles at the **very head** and the **very tail** → a full scan gives
+   0 hits + the "scan output exceeded the byte limit" note for the former and a hit + the same note for the latter;
+   adding `tail=5000` makes the note disappear in both (proving it reports a **real** scan-side overflow, not
+   "the log is big so it is always true"). Also, **every returned line must be a complete line** (timestamp prefix):
+   the byte gate cuts mid-line, and `lineAlign` drops that partial line (see the real-machine correction in ROADMAP)
+   — a fragment such as `g line 174798` without a timestamp means this has regressed.
 
 ## Version / license
 

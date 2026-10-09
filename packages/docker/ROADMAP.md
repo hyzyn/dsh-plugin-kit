@@ -131,6 +131,67 @@ i18n 死键 `btn.connectLocalCurrent` 与客户端那份 `localTargetName`（复
 
 ## 已完成（落点 + 门槛）
 
+### ✅ docker_logs_grep：日志服务端检索 + `--until` 时间窗（2026-10-09 完成）
+
+**现场**：`docker_logs` 是「取尾工具」不是「检索工具」——三个结构性缺口都在代码里：
+① 没有服务端过滤参数（面板的「过滤日志」在前端、发生在「输出上限（KB）」截断**之后**，
+大日志里深处的报错永远搜不到）；② 只有 `--since` 没有 `--until`，圈不出「凌晨 2:00~2:15
+事故窗口」；③ `tail` 硬上限 5000 行，话痨容器只覆盖最近几十秒。
+
+**为什么不把 `filter` 塞进 `docker_logs`**（决策记档）：两者预算模型不同——`logs` 是
+「返回 = 收到」（keepTail 丢旧留新），grep 是「扫得多、返回少」，混在一个工具里同一个
+参数要当两种闸用、返回形状表达不了「扫了 40 万行命中 3 行」，条件化 schema 还会诱发
+模型误用。**同领域、不同语义 = 不同工具**（与 ps/attention、快照/FOLLOW 流的既有分法一致）。
+
+**落点**：
+- `src/docker.ts`——`LogsOptions.until`（与 `since` 同一构造点 `logsArgv`，`tailOverride`
+  参数供 grep 传 `all`）；`logsGrep()`：**宿主侧逐行过滤，不碰远端 shell**（绝不拼
+  `| grep`——违反「argv 构造」铁律，且 SSH 路径转义面完全不同）；默认字面子串
+  （grep -F 语义，零 ReDoS），`regexp:true` 才按 JS 正则、pattern ≤512 字符；上下文
+  窗口合并去重（相邻命中共享行只输出一份）；**扫描预算与返回预算分离**（扫描侧
+  8~32MB、60s 档、keepTail；返回侧 limit × context 夹住），`truncated`（扫描溢出，
+  窗口偏新）与 `limited`（命中超上限）两个独立信号位；`matched` 如实报全量命中即使
+  没返回。
+- `src/index.ts`——`docker_logs_grep` 工具（恒注册、只读档 `read`、`isConcurrencySafe`）；
+  `docker_logs` 加 `until` 参数（`assertSince(v,'until')` 同口径校验，D45）；能力公告
+  写明两工具分工（「尾部看不到成因就 grep」），推荐排障顺序同步。
+
+**刻意不做**：这一轮只做 **agent 工具层**——不加 `/logs/grep` HTTP 路由、面板日志页维持
+前端过滤（面板有人眼看，工具没有「扫过一遍再人眼挑」的路）；不做跨容器 grep（聚合是
+面板的事）；不加远端 `grep`（安全铁律）；stderr/stdout 编号沿用 `logs()` 的
+「两段拼接」语义（D44），不假装真实到达序。
+
+**门槛**：`test/logs-grep.test.ts` 17 条（argv 逐字：`--tail all` 缺省 / 数字夹紧 /
+timestamps 默认开 / since+until 透传；参数校验：pattern 必填 / 512 上限 / 无效正则点名 /
+字面模式不误伤 `[`；匹配内核：大小写 / ignoreCase 高亮取原文 / 正则 match[0]；返回契约：
+±context 边界不越界 / 窗口合并去重 / `limit` 截返回但 `matched` 报全量 / `truncated` 与
+`limited` 各自独立 / out-err 分段编号 / docker 报错走 assertOk）；`logs()` 的 `--until`
+正反两条（不传时 argv 与旧行为逐字一致）。`scripts/route-smoke.mjs`：挂载与
+`toolsRegistered` 两处清单进 13 只读、重启用清单进 grep、render 冒烟进 grep、新增端到端
+一条（假 CLI：out/err 各一行命中、0 命中可渲染不抛、非法 since/until 同口径报错）。
+`test/tool-concurrency.test.ts` 守卫如期变红并把 grep 归进只读侧（**反向验证了这张表
+确实在拦新增工具**）。全仓 `pnpm --filter @hyzyn/dsh-docker typecheck && smoke`、
+`pnpm vitest run packages/docker/test` 全绿。
+
+**真机验收补正（2026-10-09，同轮）**：真 daemon 复验 10.7MB / 30 万行日志时发现 `lines` 的
+**第一行是半行**——`keepTail` 按**字节**保留尾部，切口落在行中间，于是窗口开头是
+`"g line 174798"`（`…padding line 174798` 的尾巴），没有时间戳、内容从中途开始，会以噪音
+形式进模型上下文，看起来像「检索结果里有脏行」。落点：`ExecOptions.lineAlign`（**opt-in**，
+只对 `keepTail` 有意义）→ `ByteSink.decode()` 丢掉首个不完整行（切口正好落在换行上时只丢
+那个换行、整行保住；窗口内连一个换行都没有则整段都是碎片，只能全丢）；`logsGrep()` 传
+`lineAlign: true`。刻意**不改** `keepTail` 自身的契约：D14/D123 的逐字断言（`xxxxTAIL`）是
+prune / pull / 面板日志尾部共同依赖的「按字节保留尾部」，所以对齐做成开关而不是改语义；顺手
+把 `Runner.run` 与 `createRunner` 的 `withSignal` 里各写一份的选项字面量收成具名类型 `RunnerRunOptions`
+（`lineAlign` 先只加在一份上，是 tsc 在对象字面量处报出来的）。门槛：`ssh-connect.test.ts`
+两条行为用例（反例：不传 `lineAlign` 仍逐字节保留尾部，即 D14/D123 契约未动；边界：切口
+正好落在换行上时整行保住、窗口内无换行则整段全丢、未截断时完全不动输出）+
+`logs-grep.test.ts` 的接线钉子（grep 路径确实开了这个开关；本节上方的「17 条」是当时基线，
+补正后 18 条）。真机复验：同一容器重跑，首行恢复为带时间戳的完整行，`scanned` 由 125204
+→ 125203 —— 少掉的正是那半行。
+
+**后续可选**（未立项，遇到再说）：面板日志页要「先扫全量再挑」时补 `/logs/grep` 路由；
+正则灾难性回溯的显式超时护栏（当前靠 60s 命令级超时兜底）。
+
 ### ✅ 就地提权：两个能力一次粘贴全部解锁（2026-10-07 完成）
 
 **现场**：就地提权是**逐能力**的（`allowMutations` / `allowExec` 各有自己的 challenge），而客户端的

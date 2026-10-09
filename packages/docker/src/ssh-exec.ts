@@ -165,6 +165,17 @@ export interface ExecOptions {
    */
   keepTail?: boolean
   /**
+   * 截断后**对齐到行边界**：`keepTail` 是按**字节**保留尾部，切口落在行中间时窗口开头
+   * 剩下一个半行（没有时间戳、内容从中途开始）。打开这一项就把那个半行丢掉，于是
+   * 「返回的每一行都是完整的行」；切口正好落在换行上时这一刀只丢掉那个换行、整行保住。
+   *
+   * 只对 `keepTail` 有意义（保留头部时开头永远是行首）。刻意做成**开关**而不是
+   * `keepTail` 本身的行为：`keepTail` 的契约就是「按字节保留尾部」（D14/D123，用例
+   * 逐字断言 `xxxxTAIL`），改它会连带改掉 prune 的总计、pull 的 digest 与面板日志尾部
+   * ——那些调用方要的正是原始的尾部字节。
+   */
+  lineAlign?: boolean
+  /**
    * 外部取消信号（D161）：聚合总览的单目标预算到点后，必须能**真的停掉**这条命令。
    *
    * 不传 = 老行为（只有 timeoutMs 一个截止）。abort 与 timeout 走**同一套收尾**：
@@ -654,7 +665,7 @@ class ByteSink {
   private bytes = 0
   truncated = false
 
-  constructor(private readonly maxBytes: number, private readonly keepTail: boolean) {}
+  constructor(private readonly maxBytes: number, private readonly keepTail: boolean, private readonly lineAlign = false) {}
 
   push(chunk: Buffer): void {
     this.chunks.push(chunk)
@@ -690,7 +701,19 @@ class ByteSink {
   decode(decoder: StringDecoder): string {
     let text = ''
     for (const chunk of this.chunks) text += decoder.write(chunk)
-    return text + decoder.end()
+    text += decoder.end()
+    /*
+     * 行边界对齐（只对 keepTail 截断有意义，见 ExecOptions.lineAlign）：保留尾部是按
+     * **字节**切的，切口落在行中间时窗口开头是一个半行。丢掉它，返回的每一行才是完整的；
+     * 切口正好落在 `\n` 上时这一刀只丢掉那个换行，整行保住（不丢内容）。
+     * 窗口里连一个 `\n` 都没有 ⇒ 整个窗口都是同一行的碎片，只能全丢——留下它就不是
+     * 「每一行都完整」了。
+     */
+    if (this.lineAlign && this.keepTail && this.truncated) {
+      const nl = text.indexOf('\n')
+      return nl === -1 ? '' : text.slice(nl + 1)
+    }
+    return text
   }
 }
 
@@ -1029,8 +1052,8 @@ export class RemoteExec {
       if (rt !== undefined) rt.inflight += 1
       try {
         return await new Promise<ExecResult>((resolve, reject) => {
-          const stdoutSink = new ByteSink(maxBytes, options?.keepTail === true)
-          const stderrSink = new ByteSink(maxBytes, options?.keepTail === true)
+          const stdoutSink = new ByteSink(maxBytes, options?.keepTail === true, options?.lineAlign === true)
+          const stderrSink = new ByteSink(maxBytes, options?.keepTail === true, options?.lineAlign === true)
           const stdoutDecoder = new StringDecoder('utf8')
           const stderrDecoder = new StringDecoder('utf8')
           let timedOut = false
@@ -1658,8 +1681,8 @@ export async function runLocal(argv: readonly string[], options?: ExecOptions): 
   }
 
   return await new Promise<ExecResult>((resolve, reject) => {
-    const stdoutSink = new ByteSink(maxBytes, options?.keepTail === true)
-    const stderrSink = new ByteSink(maxBytes, options?.keepTail === true)
+    const stdoutSink = new ByteSink(maxBytes, options?.keepTail === true, options?.lineAlign === true)
+    const stderrSink = new ByteSink(maxBytes, options?.keepTail === true, options?.lineAlign === true)
     const stdoutDecoder = new StringDecoder('utf8')
     const stderrDecoder = new StringDecoder('utf8')
     let timedOut = false

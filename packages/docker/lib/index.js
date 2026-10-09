@@ -23,6 +23,7 @@ export const DOCKER_TIER_CLASS = {
     docker_attention: 'read',
     docker_inspect: 'read',
     docker_logs: 'read',
+    docker_logs_grep: 'read',
     docker_stats: 'read',
     docker_events: 'read',
     docker_images: 'read',
@@ -182,7 +183,7 @@ function isTargetFailure(error) {
  * 安全性质**（2026-10-07 用户正是照着旧措辞问「这算是漏洞吗」）。守卫：
  * `scripts/test/exec-terminal-scope.test.ts`（含「退回旧措辞必须变红」的反例）。
  */
-const DOCKER_GUIDANCE = '本机已安装 dsh-docker 插件（Docker 容器面板）：Web GUI 侧边栏「容器」入口可查看各目标（本机 / SSH 主机）上的容器列表（含 Compose 项目视图、事件「活动」条）、状态、端口、日志（含实时跟随）与资源占用（含实时跟随 + 迷你趋势图），以及镜像列表与镜像详情（层 / 大小 / 构建历史、拉取进度流）、网络与卷（列表 + 详情；删除 / 清理同样在开关之后）；目标在 插件配置 → Docker 容器面板 里维护（SSH 目标可直接引用 tty 终端面板的连接簿条目）。**默认只读**：启动/停止/重启/删除容器、删除镜像 / 清理 dangling / 拉取镜像、**一次性** docker exec（docker_exec 工具与容器详情抽屉「概览」页签的一次性命令框），都需要用户在设置里显式打开「允许变更操作」「允许 exec」后才有对应工具与按钮；「允许 exec」**只管这条一次性通道**——卡片上的「终端」按钮跑的是 `docker exec -it` 交互式 shell，由 tty 终端面板承载、**不受它门控**（只读模式下也能用），别把它当成被关着。agent 侧配套只读工具 docker_targets（列目标；没有任何目标时先调 docker_connect_local 一键加上本机目标）、docker_connect_local（把宿主所在机器加成本机目标并选中，复用已有的本机目标、不重复创建；顺带探测 daemon，失败会说明是 daemon 未启动 / CLI 缺失 / socket 无权访问）、docker_ps（列容器，含 compose 项目与服务；**target 传 `*` 可一次列出所有目标**；端口已按 IPv4/IPv6 双栈归并，`ports` 为空时看 `net`——host 网络容器的端口即宿主机端口）、docker_attention（**需关注汇总**：unhealthy / 反复重启 / OOM / 非零退出 / 僵死，同样支持 `*` 跨目标）、docker_inspect（容器详情）、docker_logs（日志快照）、docker_stats（CPU/内存/IO 快照）、docker_images（镜像列表）、docker_image_inspect（镜像详情 + 构建历史）、docker_events（容器事件快照，见面板容器列表的「活动」条）、docker_networks（网络列表）、docker_volumes（卷列表）；排障推荐顺序：不确定从哪台/哪个容器看起时先 docker_attention（可 `*` 跨目标）→ docker_ps → docker_logs → docker_inspect → docker_stats → docker_events，镜像排查用 docker_images → docker_image_inspect。docker_action（容器生命周期）、docker_image_remove（删镜像）、docker_image_prune（清理 dangling）、docker_image_pull（拉取镜像）、docker_exec 仅在用户打开对应开关后可用，执行前须确认目标，破坏性操作（容器 remove / 镜像删除与清理）要向用户复述后果。网络 / 卷的删除与 prune 目前只提供面板按钮（HTTP 端点），没有对应的 agent 工具——不要在 agent 侧绕过面板做这些变更。docker socket 等价于目标主机的 root 权限，不要在用户未明确要求时执行变更操作。';
+const DOCKER_GUIDANCE = '本机已安装 dsh-docker 插件（Docker 容器面板）：Web GUI 侧边栏「容器」入口可查看各目标（本机 / SSH 主机）上的容器列表（含 Compose 项目视图、事件「活动」条）、状态、端口、日志（含实时跟随）与资源占用（含实时跟随 + 迷你趋势图），以及镜像列表与镜像详情（层 / 大小 / 构建历史、拉取进度流）、网络与卷（列表 + 详情；删除 / 清理同样在开关之后）；目标在 插件配置 → Docker 容器面板 里维护（SSH 目标可直接引用 tty 终端面板的连接簿条目）。**默认只读**：启动/停止/重启/删除容器、删除镜像 / 清理 dangling / 拉取镜像、**一次性** docker exec（docker_exec 工具与容器详情抽屉「概览」页签的一次性命令框），都需要用户在设置里显式打开「允许变更操作」「允许 exec」后才有对应工具与按钮；「允许 exec」**只管这条一次性通道**——卡片上的「终端」按钮跑的是 `docker exec -it` 交互式 shell，由 tty 终端面板承载、**不受它门控**（只读模式下也能用），别把它当成被关着。agent 侧配套只读工具 docker_targets（列目标；没有任何目标时先调 docker_connect_local 一键加上本机目标）、docker_connect_local（把宿主所在机器加成本机目标并选中，复用已有的本机目标、不重复创建；顺带探测 daemon，失败会说明是 daemon 未启动 / CLI 缺失 / socket 无权访问）、docker_ps（列容器，含 compose 项目与服务；**target 传 `*` 可一次列出所有目标**；端口已按 IPv4/IPv6 双栈归并，`ports` 为空时看 `net`——host 网络容器的端口即宿主机端口）、docker_attention（**需关注汇总**：unhealthy / 反复重启 / OOM / 非零退出 / 僵死，同样支持 `*` 跨目标）、docker_inspect（容器详情）、docker_logs（日志快照，支持 since/until 时间窗）、docker_logs_grep（**日志服务端检索**：在全量历史里找关键词/异常码/请求 ID，可配 since/until 圈时间窗，返回命中行 + 上下文并如实报告 matched/scanned——「报错不在最近尾部」时用它，别拿 docker_logs 的 5000 行硬赌）、docker_stats（CPU/内存/IO 快照）、docker_images（镜像列表）、docker_image_inspect（镜像详情 + 构建历史）、docker_events（容器事件快照，见面板容器列表的「活动」条）、docker_networks（网络列表）、docker_volumes（卷列表）；排障推荐顺序：不确定从哪台/哪个容器看起时先 docker_attention（可 `*` 跨目标）→ docker_ps → docker_logs（报错通常在尾部；尾部看不到成因就用 docker_logs_grep 带 pattern/since/until 检索深处）→ docker_inspect → docker_stats → docker_events，镜像排查用 docker_images → docker_image_inspect。docker_action（容器生命周期）、docker_image_remove（删镜像）、docker_image_prune（清理 dangling）、docker_image_pull（拉取镜像）、docker_exec 仅在用户打开对应开关后可用，执行前须确认目标，破坏性操作（容器 remove / 镜像删除与清理）要向用户复述后果。网络 / 卷的删除与 prune 目前只提供面板按钮（HTTP 端点），没有对应的 agent 工具——不要在 agent 侧绕过面板做这些变更。docker socket 等价于目标主机的 root 权限，不要在用户未明确要求时执行变更操作。';
 /**
  * SSE 帧封装：data 一律 `JSON.stringify` 成**单行**——换行 / 引号被转义，
  * 多字节字符也不会被 SSE 的 `\n` 行边界截断（客户端 JSON.parse 还原）。
@@ -2265,13 +2266,14 @@ const plugin = definePlugin({
                 name: 'docker_logs',
                 // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
                 isConcurrencySafe: () => true,
-                description: '读取某个容器的日志尾部（docker logs --tail）。默认行数取插件配置 logTailDefault（出厂 200）、不带时间戳；可加 timestamps / since。日志可能很大，优先用 tail 而不是全量。',
+                description: '读取某个容器的日志尾部（docker logs --tail）。默认行数取插件配置 logTailDefault（出厂 200）、不带时间戳；可加 timestamps / since / until。日志可能很大，优先用 tail 而不是全量。报错埋在更早的深处、或要看特定时间窗时改用 docker_logs_grep（服务端检索）。',
                 parameters: {
                     target: targetParam,
                     id: { type: 'string', required: true, description: '容器名或 ID' },
                     tail: { type: 'number', description: '尾部行数（1~5000，默认取配置 logTailDefault；越界值会被静默夹紧到边界）' },
                     timestamps: { type: 'boolean', description: 'true 时每行带时间戳' },
                     since: { type: 'string', description: '起始时间（docker --since 语法，如 10m、2026-09-09T10:00:00）' },
+                    until: { type: 'string', description: '结束时间（docker --until 语法，与 since 同一口径，如 2026-09-09T10:05:00；配 since 圈定时间窗）' },
                 },
                 output: {
                     schema: {
@@ -2307,8 +2309,113 @@ const plugin = definePlugin({
                         // 完全不校验，docker 的参数错误会变成一句不可读的报错。空/纯空白按「未传」处理（D98）：
                         // 否则模型传个空串会拿到「since 必填」这种与事实相反的提示。
                         ...(typeof input.since === 'string' && input.since.trim() !== '' ? { since: assertSince(input.since) } : {}),
+                        // until 与 since 同一口径（docker --until 语法一致），复用同一个校验函数
+                        ...(typeof input.until === 'string' && input.until.trim() !== '' ? { until: assertSince(input.until, 'until') } : {}),
                     });
                     return { target: picked.name, id: result.id, text: result.text, truncated: result.truncated };
+                },
+            }));
+            add('docker_logs_grep', defineTool({
+                name: 'docker_logs_grep',
+                // 只读工具：与同轮其它工具并发执行（同 docker_logs）
+                isConcurrencySafe: () => true,
+                description: '在容器日志里做**服务端检索**：扫全部历史（可用 since/until 圈时间窗），返回命中行及其前后 context 行。与 docker_logs 的分工：报错就在最近尾部 → docker_logs（更便宜）；埋在大量日志深处 / 找关键词、异常码、请求 ID / 特定时间段 → 本工具。默认字面子串匹配（grep -F 语义，零 ReDoS）；regexp=true 才按 JS 正则解释。返回如实报告 matched（总命中数，即使没返回）/ scanned（扫描行数）/ limited / truncated——「只扫到这些」与「扫完了没更多」是可区分的。',
+                parameters: {
+                    target: targetParam,
+                    id: { type: 'string', required: true, description: '容器名或 ID' },
+                    pattern: { type: 'string', required: true, description: '要搜索的字面子串（默认），或 regexp=true 时的 JS 正则源文；≤512 字符' },
+                    regexp: { type: 'boolean', description: 'true = 把 pattern 当 JS 正则；默认 false = 字面子串。正则请避免嵌套量词（回溯风险）' },
+                    ignoreCase: { type: 'boolean', description: 'true = 忽略大小写（字面模式等价 grep -i，正则模式加 i 标志）' },
+                    since: { type: 'string', description: '起始时间（与 docker_logs 同一口径，如 2h、2026-09-09T10:00:00）；大日志强烈建议配 since/until 圈窗' },
+                    until: { type: 'string', description: '结束时间（docker --until 语法，与 since 同一口径）' },
+                    context: { type: 'number', description: '每个命中前后各保留的上下文行数（0~20，默认 2；堆栈需要更大值）' },
+                    limit: { type: 'number', description: '返回命中数上限（1~500，默认 200；matched 仍报全量命中数）' },
+                    tail: { type: 'number', description: '扫描行数上限（1~5000）；缺省 = 扫全部历史（--tail all）' },
+                    timestamps: { type: 'boolean', description: '每行带时间戳（默认 true——深处的命中没有时间等于没用；传 false 关闭）' },
+                },
+                output: {
+                    schema: {
+                        type: 'object',
+                        additionalProperties: false,
+                        properties: {
+                            target: { type: 'string', required: true },
+                            id: { type: 'string', required: true },
+                            matched: { type: 'number', required: true },
+                            scanned: { type: 'number', required: true },
+                            returned: { type: 'number', required: true },
+                            limited: { type: 'boolean' },
+                            truncated: { type: 'boolean' },
+                            contextLines: { type: 'number', required: true },
+                            lines: {
+                                type: 'array',
+                                required: true,
+                                items: {
+                                    type: 'object',
+                                    additionalProperties: false,
+                                    properties: {
+                                        seq: { type: 'number', required: true },
+                                        stream: { type: 'string', required: true },
+                                        text: { type: 'string', required: true },
+                                        hit: { type: 'boolean', required: true },
+                                        highlight: { type: 'string' },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                    render: (_args, value) => {
+                        const v = value;
+                        const notes = [];
+                        if (v.limited === true)
+                            notes.push(`命中超过上限，只返回前几组窗口（总命中 ${String(v.matched ?? 0)}，可加大 limit 或缩小时间窗）`);
+                        if (v.truncated === true)
+                            notes.push('扫描输出超过字节上限，最旧部分未参与检索（窗口偏新；请缩小 since/until）');
+                        const head = `容器 ${v.id ?? '?'}（目标 ${v.target ?? '?'}）日志检索：扫描 ${String(v.scanned ?? 0)} 行，命中 ${String(v.matched ?? 0)} 行，返回 ${String(v.returned ?? 0)} 行（含 ±${String(v.contextLines ?? 0)} 行上下文）${notes.length > 0 ? `——${notes.join('；')}` : ''}：\n\n`;
+                        const body = (v.lines ?? []).map((line) => `${String(line.seq ?? '?').padStart(6, ' ')} ${line.hit === true ? '>' : ' '} [${line.stream ?? 'out'}] ${line.text ?? ''}`).join('\n');
+                        return [{ type: 'text', text: head + (body === '' ? '(无命中)' : body) }];
+                    },
+                },
+                async execute(args) {
+                    const input = (args ?? {});
+                    const picked = pickTarget(input.target);
+                    if (picked.name === undefined)
+                        throw new Error(picked.error ?? '无效的 target');
+                    if (typeof input.id !== 'string')
+                        throw new Error('id 必填');
+                    if (typeof input.pattern !== 'string' || input.pattern === '')
+                        throw new Error('pattern 必填（要搜索的字面子串或正则）');
+                    const { api } = apiFor(picked.name);
+                    if (api === undefined)
+                        throw new Error(resolveByName(picked.name).error ?? '无法构造执行通道');
+                    // since/until 与 docker_logs / docker_events 同一口径（D45），同一个校验函数
+                    const result = await api.logsGrep(input.id, {
+                        pattern: input.pattern,
+                        ...(input.regexp === true ? { regexp: true } : {}),
+                        ...(input.ignoreCase === true ? { ignoreCase: true } : {}),
+                        ...(typeof input.since === 'string' && input.since.trim() !== '' ? { since: assertSince(input.since) } : {}),
+                        ...(typeof input.until === 'string' && input.until.trim() !== '' ? { until: assertSince(input.until, 'until') } : {}),
+                        ...(typeof input.context === 'number' && Number.isInteger(input.context) ? { context: input.context } : {}),
+                        ...(typeof input.limit === 'number' && Number.isInteger(input.limit) ? { limit: input.limit } : {}),
+                        ...(typeof input.tail === 'number' && Number.isInteger(input.tail) ? { tail: input.tail } : {}),
+                        ...(input.timestamps === false ? { timestamps: false } : {}),
+                    });
+                    return {
+                        target: picked.name,
+                        id: result.id,
+                        matched: result.matched,
+                        scanned: result.scanned,
+                        returned: result.returned,
+                        ...(result.limited ? { limited: true } : {}),
+                        ...(result.truncated ? { truncated: true } : {}),
+                        contextLines: result.contextLines,
+                        lines: result.lines.map((line) => ({
+                            seq: line.seq,
+                            stream: line.stream,
+                            text: line.text,
+                            hit: line.hit,
+                            ...(line.highlight === null ? {} : { highlight: line.highlight }),
+                        })),
+                    };
                 },
             }));
             add('docker_stats', defineTool({

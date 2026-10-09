@@ -579,7 +579,8 @@ challenge 的 TTL 与探测周期各自独立，所以文案只说「执行后�
 | `docker_ps` | 恒注册 | `target?`（**传 `*` = 全部目标**）、`all?: boolean` | 列容器（名称 / 状态 / 健康 / 镜像 / 端口 / compose 项目与服务 / 短 ID）；默认只列运行中，`all:true` 含已停止。`target:'*'` 时按目标分组返回，**单个目标不可达不影响其他目标**（该组带 `error`）。端口是 IPv4/IPv6 双栈归并后的映射（同一次 `-p` 不再出现两遍，D130）；`ports` 为空**不等于**没暴露端口——host 网络容器的端口即宿主机端口，这种情况会给 `net` 字段（D131）。排障第一步 |
 | `docker_attention` | 恒注册 | `target?`（支持 `*`）、`limit?: number` | **需关注汇总**：不健康 / 反复重启 / 被 OOM 杀 / 非零退出 / 僵死；每条带 `reasons`、`exitCode`、`oomKilled`、`restartCount`。OOM 与真实退出码来自一次 `docker inspect`（ps 摘要里 137 无法区分手动 kill）。排障入口：不确定从哪台/哪个容器看起时先调它 |
 | `docker_inspect` | 恒注册 | `target?`、`id`（必填） | `docker inspect` 的权威详情：状态 / 健康检查 / 退出码 / 重启次数 / 端口 / 挂载 / 网络 / 启动命令 |
-| `docker_logs` | 恒注册 | `target?`、`id`、`tail?`（1~5000，默认 `logTailDefault`）、`timestamps?`、`since?` | `docker logs --tail` 尾部；`since` 用 docker 语法（如 `10m`、`2026-09-09T10:00:00`）；超上限标记 `truncated` |
+| `docker_logs` | 恒注册 | `target?`、`id`、`tail?`（1~5000，默认 `logTailDefault`）、`timestamps?`、`since?`、`until?` | `docker logs --tail` 尾部；`since` / `until` 用 docker 语法（如 `10m`、`2026-09-09T10:00:00`）圈时间窗；超上限标记 `truncated` |
+| `docker_logs_grep` | 恒注册 | `target?`、`id`、`pattern`（必填，≤512 字符）、`regexp?`、`ignoreCase?`、`since?`、`until?`、`context?`（0~20，默认 2）、`limit?`（1~500，默认 200）、`tail?`（缺省 = 扫全部历史）、`timestamps?`（默认开） | **日志服务端检索**：宿主侧逐行过滤（不碰远端 shell、不拼 `\| grep`），返回命中行 + 前后上下文，并如实报告 `matched`（全量命中数，即使没返回）/ `scanned` / `limited` / `truncated`——「只扫到这些」与「扫完了没更多」可区分；扫描窗口**对齐到行边界**（按字节截断处的半行不当作一行返回，所以 `lines` 里每一行都是完整的行）。与 `docker_logs` 的分工：报错就在最近尾部 → `docker_logs`（便宜）；埋在深处 / 特定时间窗 / 找关键词、异常码、请求 ID → 本工具。默认字面子串（grep -F 语义，零 ReDoS），`regexp: true` 才按 JS 正则 |
 | `docker_stats` | 恒注册 | `target?`、`ids?`（逗号分隔的容器名/ID） | `docker stats --no-stream` 快照：CPU% / 内存用量与占比 / 网络 IO / 块 IO / PIDs；`ids` 省略 = 全部运行中容器。实时跟随是面板能力（SSE），工具保持单值快照语义 |
 | `docker_images` | 恒注册 | `target?` | 镜像列表（仓库:标签 / 大小 / 创建时间 / 短 ID） |
 | `docker_events` | 恒注册 | `target?`、`since?`（docker `--since` 语法，默认 `10m`） | 容器事件快照（`docker events --since <d> --until <now>`，同样过服务端白名单）：start / die / stop / kill / oom / health_status / destroy / rename / update 九类，`exec_*` 等噪音已在服务端丢掉。要持续观察请让用户看面板容器列表的「活动」条 |
@@ -605,7 +606,8 @@ challenge 的 TTL 与探测周期各自独立，所以文案只说「执行后�
   `tier-gate: services absent (…), per-call gate disabled`。它与上面两个静态开关是**双层**：
   静态开关管注册（宿主级、持久授权），档位闸管已注册调用的放行（逐调用、随档位即时变）。
   机制见 [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md)。
-- 推荐排障顺序：`docker_targets` → `docker_ps` → `docker_logs` →
+- 推荐排障顺序：`docker_targets` → `docker_ps` → `docker_logs`（尾部看不到成因就
+  `docker_logs_grep` 带 `pattern` / `since` / `until` 检索深处）→
   `docker_inspect` → `docker_stats`；镜像排查 `docker_images` →
   `docker_image_inspect`。
 - `announceToAgent` 开启时，插件向 systemPrompt 注入一段能力公告（含「默认
@@ -977,7 +979,7 @@ abort）、客户端断开静默中止。各自只差执行器与结束原因：
   ├─ 镜像路由：/images/inspect（只读）· /images/remove · /images/prune（allowMutations）
   ├─ 网络 / 卷路由：/networks · /volumes 与各自的 inspect（只读）、remove / prune（allowMutations）
   └─ agent 工具：docker_targets / docker_ps / docker_inspect /
-     docker_logs（快照语义不变）/ docker_stats / docker_events / docker_images /
+     docker_logs（快照语义不变）/ docker_logs_grep（服务端检索）/ docker_stats / docker_events / docker_images /
      docker_image_inspect / docker_networks / docker_volumes（恒注册）
      + docker_action / docker_image_remove / docker_image_prune / docker_image_pull
        （allowMutations）/ docker_exec（allowExec）
@@ -1110,9 +1112,9 @@ network / volume 的 ls·inspect 解析容错（字符串布尔、缺 `Mountpoin
      **点名 podman** 并说明「把『docker CLI』填成 podman 就能用」，同时**不该**替你
      改 `dockerBin`（回头去设置卡片看，值仍是 `docker`）。
 4. **只读拦截**：两个开关都关时，`/action`、`/exec`、`/images/remove`、
-   `/images/prune`、`/images/pull/stream` 全部 403；agent 侧恒注册 12 个只读工具
-   （`docker_targets` / `connect_local` / `ps` / `attention` / `inspect` / `logs` / `stats` / `events` /
-   `images` / `image_inspect` / `networks` / `volumes`，数量以工具表为准），
+   `/images/prune`、`/images/pull/stream` 全部 403；agent 侧恒注册 13 个只读工具
+   （`docker_targets` / `connect_local` / `ps` / `attention` / `inspect` / `logs` /
+   `logs_grep` / `stats` / `events` / `images` / `image_inspect` / `networks` / `volumes`，数量以工具表为准），
    面板的启停删 / 镜像删除 / 清理 / 拉取按钮置灰。打开「允许变更操作」后这些
    路由与工具立即出现（无需重启）。
 5. **日志 / 统计 / 镜像**：`tail` 与 `timestamps` / `since` 生效；统计显示
@@ -1205,6 +1207,23 @@ network / volume 的 ls·inspect 解析容错（字符串布尔、缺 `Mountpoin
    目标1 的容器。从总览点 目标1 那张红色计数卡进去，同样不该看到上一个目标的失败。
    反向验证：切到目标2 后立刻切回目标1（它仍然连不上）→ 横幅应写的是目标1 自己的
    失败，而不是把目标2 的成功结果当成了目标1 的。
+21. **`docker_logs_grep` 服务端检索**（2026-10-09 真机实测的口径）：起一个日志内容已知的容器
+   （用本地已有镜像即可，不必联网）：
+   `docker run -d --rm --name dsh-grep-probe <本地镜像> sh -c 'echo "[boot] starting"; for i in 1 2 3 4 5; do echo "tick $i ok"; done; echo "FATAL request-id=REQ-7788"; echo "WARN disk 91%" >&2; sleep 3600'`
+   然后在会话里让 agent 用 `docker_logs_grep` 检索它，**逐项看原始返回值**（别接受转述）：
+   - 找 `FATAL` → 命中 1 行、「扫描 8 行」、命中行标 `>` 且带 ±2 行上下文；
+   - `tick [0-9]+` **不传** `regexp` → 0 命中；传 `regexp=true` → 5 命中（证明默认是**字面**匹配）；
+   - `fatal` 不传 `ignoreCase` → 0；传 `ignoreCase=true` → 1；
+   - `tick` + `limit=1` → 「命中 5 行」但只返回 1 组窗口，并出现「命中超过上限」提示（`limited`）；
+   - `since=1h` 命中 / `until=1h` 与 `since=1s` 各 0 命中**且「扫描 0 行」**（证明 `--since`/`--until` 真透传）；
+   - 找 `WARN` → 命中行的 stream 是 `[err]`；
+   - 检索不存在的容器 → 报 docker 原文错误，**不是**空结果。
+   `truncated` 只能用 **>8MB** 日志逼出来（扫描侧 8MB 硬下限，调小「输出上限（KB）」没用）：
+   让容器打 ~30 万行、探针分别写在**最开头**与**最末尾** → 全量扫时前者 0 命中 + 「扫描输出超过
+   字节上限」提示，后者命中 + 同一提示；加 `tail=5000` 后两者都不再出现该提示（证明它报的是
+   扫描侧**真溢出**，不是「日志大就恒 true」）。另外**返回的每一行都必须是完整行**（带时间戳
+   前缀）：字节闸的切口会切在行中间，`lineAlign` 负责丢掉那个半行（见 ROADMAP 的真机验收补正）
+   —— 看到 `g line 174798` 这种没时间戳的碎片，就是这条回归了。
 
 ## 版本 / 许可证
 

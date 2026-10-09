@@ -348,6 +348,22 @@ export interface ContainerDetail {
 export declare function parseInspectJson(text: string): ContainerDetail[];
 /** inspect 的 `NetworkSettings.Ports`：`{ "80/tcp": [{HostIp, HostPort}] }`。 */
 export declare function parseInspectPorts(value: unknown): PortMapping[];
+/**
+ * 一次性命令的选项**子集**（Runner 面）：= `ExecOptions` 去掉 `input`（这条通道喂不了
+ * stdin）并加上 `signal`。
+ *
+ * 刻意写成具名类型：它原先在 `Runner.run` 与 `createRunner` 的 `withSignal` 里各写了一份
+ * 字面量，于是新增一个字段只能靠对象字面量处的 tsc 报错兜住——`lineAlign` 那次就是先漏在
+ * 第二份上。具名类型之后不存在「第二份」。
+ */
+export interface RunnerRunOptions {
+    timeoutMs?: number;
+    maxBytes?: number;
+    keepTail?: boolean;
+    /** 截断后对齐到行边界（见 `ExecOptions.lineAlign`）；只有 `docker_logs_grep` 用。 */
+    lineAlign?: boolean;
+    signal?: AbortSignal;
+}
 /** 一个目标（target）背后的命令执行通道。 */
 export interface Runner {
     /** 展示用标签：`本机` 或 `user@host`。 */
@@ -358,12 +374,7 @@ export interface Runner {
      * 目前只有跨目标聚合（`aggregateAcrossTargets`）会传——单目标路径的截止时间是
      * `timeoutMs`，它本来就够。
      */
-    run(argv: readonly string[], options?: {
-        timeoutMs?: number;
-        maxBytes?: number;
-        keepTail?: boolean;
-        signal?: AbortSignal;
-    }): Promise<ExecResult>;
+    run(argv: readonly string[], options?: RunnerRunOptions): Promise<ExecResult>;
     /** 长流（logs --follow）：逐块回调，signal 中止；无总超时与输出上限。 */
     stream(argv: readonly string[], handlers: StreamHandlers, signal?: AbortSignal): Promise<StreamResult>;
 }
@@ -375,8 +386,64 @@ export interface LogsOptions {
     tail?: number;
     timestamps?: boolean;
     since?: string;
+    /** 结束时间（docker --until 语法：ISO 8601 时间戳或 Go duration，如 2026-09-09T10:00:00、1h）。*/
+    until?: string;
     /** 实时跟随（`docker logs --follow`）：仅 logsStream() 使用，logs() 忽略。 */
     follow?: boolean;
+}
+/**
+ * 日志检索选项：**默认字面子串**匹配（grep -F 等价），零 ReDoS 风险；
+ * `regexp: true` 时才按 JS 正则解释 pattern（仍建议配 since/until 收窄窗口）。
+ */
+export interface LogGrepOptions {
+    /** 要搜索的字面子串，或（regexp=true 时）正则表达式源文。 */
+    pattern: string;
+    /** true = 把 pattern 当正则；默认 false = 字面子串。 */
+    regexp?: boolean;
+    /** 忽略大小写（字面模式 = grep -i，正则模式 = /i 标志）。 */
+    ignoreCase?: boolean;
+    /** 扫描行数上限（1~5000）；缺省 = `--tail all` 扫全部历史。 */
+    tail?: number;
+    /** 起始时间（与 docker_logs 的 since 同一口径，D45）。 */
+    since?: string;
+    /** 结束时间（docker --until 语法，与 since 同一口径）。 */
+    until?: string;
+    /** 每个命中前后各保留的上下文行数（0~20，默认 2）。 */
+    context?: number;
+    /** 返回命中数上限（1~500，默认 200）。 */
+    limit?: number;
+    /** 时间戳（默认开——深处的命中没有时间等于没用）。 */
+    timestamps?: boolean;
+}
+/** 检索结果里的一行（命中行或它的上下文行）。 */
+export interface LogGrepLine {
+    /** 该通道内的行号（从 1 开始；stdout 在前、stderr 在后，与 logs() 的拼接序一致）。 */
+    seq: number;
+    stream: 'out' | 'err';
+    text: string;
+    /** 这行本身是否命中（false = 只是上下文）。 */
+    hit: boolean;
+    /** 命中时：匹配到的子串（供调用方定位；上下文行为 null）。 */
+    highlight: string | null;
+}
+/** 日志检索结果。两个「截断」要分清：truncated = 扫描侧字节闸截断，limited = 命中数达到 limit。 */
+export interface LogGrepResult {
+    id: string;
+    /** 命中总行数（即使超过 limit 也如实计数）。 */
+    matched: number;
+    /** 实际扫描的行数。 */
+    scanned: number;
+    /** 返回的行数（命中 + 去重后的上下文）。 */
+    returned: number;
+    /** 命中数达到 limit、还有命中没返回。 */
+    limited: boolean;
+    /**
+     * 扫描输出超过字节上限（按**字节**丢最旧——窗口偏新，缩小 since/until 或换目标时段）。
+     * 窗口已对齐到行边界，所以 `lines` 里不会出现半行；但切口之前的内容确实没参与检索。
+     */
+    truncated: boolean;
+    contextLines: number;
+    lines: LogGrepLine[];
 }
 export interface ProbeResult {
     ok: boolean;
@@ -587,8 +654,25 @@ export declare class DockerApi {
      */
     logsStream(id: string, options: LogsOptions | undefined, handlers: StreamHandlers, signal?: AbortSignal): Promise<StreamResult>;
     /**
+     * 日志检索（grep）：**宿主侧逐行过滤，不碰远端 shell**——绝不拼 `| grep`
+     * （那会违反「argv 构造、绝不做字符串拼接」的铁律，且 SSH 路径的转义面完全不同）。
+     *
+     * 与 logs() 的分工（写进工具描述，供模型选择）：「报错在最近尾部」→ docker_logs；
+     * 「埋在深处 / 特定时间窗 / 找关键词」→ docker_logs_grep。扫描与返回的预算是**分开**
+     * 的：扫描侧给到 8~32MB（maxOutputKb 只是单命令返回闸，grep 的意义就是从大量原文里
+     * 筛出少量命中），返回侧由 limit × context 夹住；两侧截断各有独立信号位
+     * （truncated = 扫描侧溢出丢最旧、limited = 命中超过 limit），都不静默。扫描窗口
+     * **对齐到行边界**（`lineAlign`）：切口处的半行不当作一行返回，否则它会以没有时间戳的
+     * 噪音形式进模型上下文，看起来像「检索结果里有脏行」。
+     *
+     * 默认字面子串匹配（grep -F 等价，零 ReDoS）；regexp=true 才按 JS 正则解释，
+     * pattern 上限 512 字符。时间戳默认开——深处的命中没有时间等于没用。
+     */
+    logsGrep(id: string, options: LogGrepOptions): Promise<LogGrepResult>;
+    /**
      * 日志 argv 的唯一构造点：快照与流式只在 `--follow` 与 tail 下限上有差异，
      * 校验与夹紧必须逐字一致（否则同一 id 在两条路径上行为漂移）。
+     * `tailOverride` 供 logsGrep 传 `all`（检索要扫全部历史，而不是尾部 5000 行）。
      */
     private logsArgv;
     /** 生命周期操作；调用方负责 readOnly / allowMutations 门禁。 */

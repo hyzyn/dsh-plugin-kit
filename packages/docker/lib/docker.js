@@ -1422,21 +1422,140 @@ export class DockerApi {
         return await this.runner.stream(this.logsArgv(safe, options, true), handlers, signal);
     }
     /**
+     * 日志检索（grep）：**宿主侧逐行过滤，不碰远端 shell**——绝不拼 `| grep`
+     * （那会违反「argv 构造、绝不做字符串拼接」的铁律，且 SSH 路径的转义面完全不同）。
+     *
+     * 与 logs() 的分工（写进工具描述，供模型选择）：「报错在最近尾部」→ docker_logs；
+     * 「埋在深处 / 特定时间窗 / 找关键词」→ docker_logs_grep。扫描与返回的预算是**分开**
+     * 的：扫描侧给到 8~32MB（maxOutputKb 只是单命令返回闸，grep 的意义就是从大量原文里
+     * 筛出少量命中），返回侧由 limit × context 夹住；两侧截断各有独立信号位
+     * （truncated = 扫描侧溢出丢最旧、limited = 命中超过 limit），都不静默。扫描窗口
+     * **对齐到行边界**（`lineAlign`）：切口处的半行不当作一行返回，否则它会以没有时间戳的
+     * 噪音形式进模型上下文，看起来像「检索结果里有脏行」。
+     *
+     * 默认字面子串匹配（grep -F 等价，零 ReDoS）；regexp=true 才按 JS 正则解释，
+     * pattern 上限 512 字符。时间戳默认开——深处的命中没有时间等于没用。
+     */
+    async logsGrep(id, options) {
+        const safe = assertRef(id, 'container');
+        if (typeof options.pattern !== 'string' || options.pattern === '')
+            throw new Error('pattern 必填（要搜索的字面子串或正则表达式）');
+        if (options.pattern.length > 512)
+            throw new Error('pattern 过长（≤512 字符）');
+        const useRegexp = options.regexp === true;
+        const ignoreCase = options.ignoreCase === true;
+        /** 单行判定：命中返回匹配子串（用作 highlight），未命中返回 null。 */
+        let testLine;
+        if (useRegexp) {
+            let re;
+            try {
+                re = new RegExp(options.pattern, ignoreCase ? 'i' : '');
+            }
+            catch (error) {
+                throw new Error(`无效的正则表达式：${error instanceof Error ? error.message : String(error)}`);
+            }
+            testLine = (line) => {
+                const match = re.exec(line);
+                return match === null ? null : match[0];
+            };
+        }
+        else {
+            const needle = ignoreCase ? options.pattern.toLowerCase() : options.pattern;
+            testLine = (line) => {
+                const hay = ignoreCase ? line.toLowerCase() : line;
+                const at = hay.indexOf(needle);
+                return at === -1 ? null : line.slice(at, at + needle.length);
+            };
+        }
+        const contextLines = Math.min(Math.max(Math.trunc(options.context ?? 2), 0), 20);
+        const limit = Math.min(Math.max(Math.trunc(options.limit ?? 200), 1), 500);
+        // tail 缺省 = all（docker logs --tail all）；给了数字就夹到 1~5000——检索的默认语义是「全历史里找」
+        const tailOverride = typeof options.tail === 'number' && Number.isInteger(options.tail) && options.tail > 0
+            ? String(Math.min(options.tail, 5000))
+            : 'all';
+        const argv = this.logsArgv(safe, {
+            timestamps: options.timestamps !== false,
+            ...(typeof options.since === 'string' && options.since.trim() !== '' ? { since: options.since.trim() } : {}),
+            ...(typeof options.until === 'string' && options.until.trim() !== '' ? { until: options.until.trim() } : {}),
+        }, false, tailOverride);
+        // 扫描预算独立于返回预算：下限 8MB、上限 32MB（宿主内存有界），超时给到 60s 档
+        const scanBytes = Math.min(Math.max(this.limits.maxBytes, 8 * 1024 * 1024), 32 * 1024 * 1024);
+        const result = await this.runner.run(argv, {
+            timeoutMs: Math.max(this.limits.timeoutMs, 60_000),
+            maxBytes: scanBytes,
+            keepTail: true, // 溢出丢最旧（与 logs() 同方向，D14）；报告里如实说明窗口偏新
+            // 再对齐到行边界：保留尾部是按字节切的，不对齐的话窗口第一行是**半行**（没有时间戳、
+            // 内容从中途开始），会以噪音形式进模型上下文。理由与边界见 ExecOptions.lineAlign。
+            lineAlign: true,
+        });
+        this.assertOk(result, '检索容器日志');
+        // 拆行（stdout 在前、stderr 在后，与 logs() 的拼接序一致；只去掉块尾的空行）
+        const splitChunk = (text) => {
+            const lines = text.split('\n');
+            if (lines.length > 0 && lines[lines.length - 1] === '')
+                lines.pop();
+            return lines;
+        };
+        const rows = [
+            ...splitChunk(result.stdout).map((text) => ({ text, stream: 'out' })),
+            ...splitChunk(result.stderr).map((text) => ({ text, stream: 'err' })),
+        ];
+        // 全量扫命中（matched 如实计数，即使超过 limit）；limit 只决定「返回哪些窗」
+        const hitIndexes = [];
+        for (let i = 0; i < rows.length; i++) {
+            if (testLine(rows[i].text) !== null)
+                hitIndexes.push(i);
+        }
+        const limited = hitIndexes.length > limit;
+        const keptHits = hitIndexes.slice(0, limit);
+        // 上下文窗口合并去重（相邻命中共享的行只输出一份），按原序输出
+        const take = new Set();
+        const hitSet = new Set(keptHits);
+        for (const idx of keptHits) {
+            for (let j = Math.max(0, idx - contextLines); j <= Math.min(rows.length - 1, idx + contextLines); j++)
+                take.add(j);
+        }
+        const lines = [...take]
+            .sort((a, b) => a - b)
+            .map((j) => {
+            const row = rows[j];
+            return {
+                seq: j + 1,
+                stream: row.stream,
+                text: row.text,
+                hit: hitSet.has(j),
+                highlight: hitSet.has(j) ? testLine(row.text) : null,
+            };
+        });
+        return {
+            id: safe,
+            matched: hitIndexes.length,
+            scanned: rows.length,
+            returned: lines.length,
+            limited,
+            truncated: result.truncated,
+            contextLines,
+            lines,
+        };
+    }
+    /**
      * 日志 argv 的唯一构造点：快照与流式只在 `--follow` 与 tail 下限上有差异，
      * 校验与夹紧必须逐字一致（否则同一 id 在两条路径上行为漂移）。
+     * `tailOverride` 供 logsGrep 传 `all`（检索要扫全部历史，而不是尾部 5000 行）。
      */
-    logsArgv(id, options, follow) {
+    logsArgv(id, options, follow, tailOverride) {
         // 流式允许 0（D133：重连只补新行）；快照路径保持 1 起步——「取 0 行快照」没有意义
         const min = follow ? 0 : 1;
-        const tail = Math.min(Math.max(Math.trunc(options?.tail ?? 200), min), 5000);
+        const tail = tailOverride ?? String(Math.min(Math.max(Math.trunc(options?.tail ?? 200), min), 5000));
         return [
             this.bin,
             'logs',
             ...(follow ? ['--follow'] : []),
             '--tail',
-            String(tail),
+            tail,
             ...(options?.timestamps === true ? ['--timestamps'] : []),
             ...(typeof options?.since === 'string' && options.since.trim() !== '' ? ['--since', options.since.trim()] : []),
+            ...(typeof options?.until === 'string' && options.until.trim() !== '' ? ['--until', options.until.trim()] : []),
             id,
         ];
     }

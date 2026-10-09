@@ -517,12 +517,14 @@ export function proxyFailureSuffix(proxy) {
 class ByteSink {
     maxBytes;
     keepTail;
+    lineAlign;
     chunks = [];
     bytes = 0;
     truncated = false;
-    constructor(maxBytes, keepTail) {
+    constructor(maxBytes, keepTail, lineAlign = false) {
         this.maxBytes = maxBytes;
         this.keepTail = keepTail;
+        this.lineAlign = lineAlign;
     }
     push(chunk) {
         this.chunks.push(chunk);
@@ -562,7 +564,19 @@ class ByteSink {
         let text = '';
         for (const chunk of this.chunks)
             text += decoder.write(chunk);
-        return text + decoder.end();
+        text += decoder.end();
+        /*
+         * 行边界对齐（只对 keepTail 截断有意义，见 ExecOptions.lineAlign）：保留尾部是按
+         * **字节**切的，切口落在行中间时窗口开头是一个半行。丢掉它，返回的每一行才是完整的；
+         * 切口正好落在 `\n` 上时这一刀只丢掉那个换行，整行保住（不丢内容）。
+         * 窗口里连一个 `\n` 都没有 ⇒ 整个窗口都是同一行的碎片，只能全丢——留下它就不是
+         * 「每一行都完整」了。
+         */
+        if (this.lineAlign && this.keepTail && this.truncated) {
+            const nl = text.indexOf('\n');
+            return nl === -1 ? '' : text.slice(nl + 1);
+        }
+        return text;
     }
 }
 const IDLE_MS = 120_000;
@@ -861,8 +875,8 @@ export class RemoteExec {
                 rt.inflight += 1;
             try {
                 return await new Promise((resolve, reject) => {
-                    const stdoutSink = new ByteSink(maxBytes, options?.keepTail === true);
-                    const stderrSink = new ByteSink(maxBytes, options?.keepTail === true);
+                    const stdoutSink = new ByteSink(maxBytes, options?.keepTail === true, options?.lineAlign === true);
+                    const stderrSink = new ByteSink(maxBytes, options?.keepTail === true, options?.lineAlign === true);
                     const stdoutDecoder = new StringDecoder('utf8');
                     const stderrDecoder = new StringDecoder('utf8');
                     let timedOut = false;
@@ -1527,8 +1541,8 @@ export async function runLocal(argv, options) {
         return { code: null, stdout: '', stderr: '', timedOut: false, truncated: false, durationMs: 0 };
     }
     return await new Promise((resolve, reject) => {
-        const stdoutSink = new ByteSink(maxBytes, options?.keepTail === true);
-        const stderrSink = new ByteSink(maxBytes, options?.keepTail === true);
+        const stdoutSink = new ByteSink(maxBytes, options?.keepTail === true, options?.lineAlign === true);
+        const stderrSink = new ByteSink(maxBytes, options?.keepTail === true, options?.lineAlign === true);
         const stdoutDecoder = new StringDecoder('utf8');
         const stderrDecoder = new StringDecoder('utf8');
         let timedOut = false;

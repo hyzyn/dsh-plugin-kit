@@ -263,6 +263,43 @@ describe('第二轮修复的回归', () => {
     expect(tail.stdout).toBe('xxxxTAIL')
   })
 
+  /**
+   * 行边界对齐（`lineAlign`）：真机实测（2026-10-09）发现 keepTail 的切口落在行中间时，
+   * 扫描窗口的第一行是个**半行** —— `docker_logs_grep` 对 10.7MB 日志返回的首行是
+   * `"g line 174798"`（`…padding line 174798` 的尾巴），没有时间戳、内容从中途开始，
+   * 会以噪音形式进模型上下文。修法是把那个半行丢掉（只在 grep 那条路径上开关）。
+   *
+   * 前两条是**反例**：不传 `lineAlign` 时 `keepTail` 仍逐字节保留尾部（D14/D123 的契约，
+   * 上面那条用例逐字钉着 `xxxxTAIL`）——对齐是 opt-in，不是把契约改了。
+   */
+  it('lineAlign：keepTail 截断后对齐到行边界（切口正好落在换行上时不丢整行）', async () => {
+    const argv = [process.execPath, '-e', 'process.stdout.write("HEAD" + "x".repeat(40) + "\\nLINE-A\\nLINE-B")']
+    // 反例一：默认契约 = 按字节保留尾部，窗口开头是 "xxxxxx"（40 个 x 的尾巴，半行）
+    const raw = await runLocal(argv, { maxBytes: 20, keepTail: true })
+    expect(raw.truncated).toBe(true)
+    expect(raw.stdout).toBe('xxxxxx\nLINE-A\nLINE-B')
+    // 对齐后：丢掉那个半行，剩下的每一行都完整
+    const aligned = await runLocal(argv, { maxBytes: 20, keepTail: true, lineAlign: true })
+    expect(aligned.truncated).toBe(true)
+    expect(aligned.stdout).toBe('LINE-A\nLINE-B')
+    // 反例二：切口正好落在换行上（窗口 = "\nLINE-A\nLINE-B"）——这一刀只丢那个换行，整行保住
+    const onBoundary = await runLocal(argv, { maxBytes: 14, keepTail: true, lineAlign: true })
+    expect(onBoundary.stdout).toBe('LINE-A\nLINE-B')
+  })
+
+  it('lineAlign：窗口里连一个换行都没有时整段都是碎片，只能全丢（否则首行仍是半行）', async () => {
+    const oneLine = [process.execPath, '-e', 'process.stdout.write("y".repeat(64))']
+    const raw = await runLocal(oneLine, { maxBytes: 8, keepTail: true })
+    expect(raw.stdout).toBe('yyyyyyyy')
+    const aligned = await runLocal(oneLine, { maxBytes: 8, keepTail: true, lineAlign: true })
+    expect(aligned.truncated).toBe(true)
+    expect(aligned.stdout).toBe('')
+    // 未截断时 lineAlign 什么都不做（窗口就是完整的输出）
+    const small = await runLocal([process.execPath, '-e', 'process.stdout.write("A\\nB\\n")'], { maxBytes: 4096, keepTail: true, lineAlign: true })
+    expect(small.truncated).toBe(false)
+    expect(small.stdout).toBe('A\nB\n')
+  })
+
   it('assertSince：duration（含小数）/ 0 / Unix 秒 / 含时间的时间戳放行，裸日期拒绝并回显原文（D99）', () => {
     for (const ok of ['30m', '1h30m', '1.5h', '0', '3600', '100µs', '100μs', '2026-09-13T10:00:00', '2026-09-13 10:00']) {
       expect(assertSince(ok)).toBe(ok)
