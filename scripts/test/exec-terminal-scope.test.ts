@@ -64,6 +64,20 @@ const TTY_README_EN = 'packages/tty/README.en.md'
  *
  * `window` 是锚点之后取多长的文本当「锚点句」——取够了就行，不追求句号切分（中英混排与
  * 行内代码里的句号会把朴素的切句弄坏，那种脆弱判据比没有更坏）。
+ *
+ * ## `occurrence`：同一个锚点在一份文件里出现多次时，钉**哪一处**（默认第一处）
+ *
+ * 默认 `'first'` 是**有意的窄判据**，但它有一个已经踩过三次的坑：
+ * 「改了一处文案、另一处同名条目原样没改」时，判据只查第一处 ⇒ **静默放行**。
+ *
+ *   - A4：`must` 的全文本匹配版恒绿（真实文本里本来就有那个词）；
+ *   - A5：tty README 改了两条承重墙却零判据；
+ *   - E1（2026-10-07 review）：`'check.allowExec':` 在 `client-src/index.js` 里 **zh(:486) 与
+ *     en(:973) 各一次**，而 anchor 只取第一处、400 字窗口够不到 en ⇒ **把 en 标签退回旧文案
+ *     仍然全绿**（实测）。
+ *
+ * 所以**同一份文件里有多个同名条目时，必须显式声明 `occurrence: 'all'`**——那样每一处
+ * 都要各自满足 `must`，改一处漏一处会红。规矩：**锚点在文件里出现几次，就要钉几次**。
  */
 interface ClaimSite {
   name: string
@@ -72,6 +86,8 @@ interface ClaimSite {
   window: number
   /** 锚点句里必须命中的正则（全部命中才算这处说清了）。 */
   must: RegExp[]
+  /** `'first'`（默认）= 只查第一处；`'all'` = 文件里每一处都要满足 `must`。 */
+  occurrence?: 'first' | 'all'
 }
 
 const WINDOW_DEFAULT = 400
@@ -115,14 +131,10 @@ const CLAIM_SITES: ClaimSite[] = [
    * 「允许 exec（在容器内执行命令）」——**这正是 D163 那个 overclaim 的最外层**：
    * 读起来像「exec 整体要授权」，而卡片「终端」按钮的 `docker exec -it` 根本不受它管。
    * 改了 label 就得钉住，否则下次谁顺手改回去也没人知道。
+   *
+   * **判据在文件末尾**（那一条用 `occurrence: 'all'` 同时覆盖 zh 与 en 两处）——刻意不在这里
+   * 再放一条 zh-only 的：同一个锚点写两条会让"只钉一半"看起来像已覆盖（E1 就是这么漏的）。
    */
-  {
-    name: 'docker 设置卡片 allowExec 标签点明「一次性」（zh）',
-    path: DOCKER_CLIENT,
-    anchor: "'check.allowExec':",
-    window: WINDOW_DEFAULT,
-    must: [/一次性/, /不由它管|不受它管/],
-  },
   {
     name: 'docker README（en）安全模型',
     path: DOCKER_README_EN,
@@ -192,6 +204,27 @@ const CLAIM_SITES: ClaimSite[] = [
     // B3：同 zh 那条——必须点明 tier gate 管不到 WS 通道
     must: [/not governed by any `DSH_\*_ALLOW_\*`/, /ProxyCommand/, /TTY_TIER_PREFIXES/, /never passes through it/],
   },
+  /*
+   * E1 的**标签**判据。
+   *
+   * **`occurrence: 'all'` 是这条的关键**（2026-10-07 review 指出）：`'check.allowExec':` 在同一份
+   * `client-src/index.js` 里出现**两次**（zh 目录 :486、en 目录 :973），而 `indexOf` 只取第一处、
+   * 400 字窗口够不到第二处 ⇒ 只把 **en** 标签退回旧文案（`Allow exec (run commands inside containers)`）
+   * 时判据**全绿放行**（实测 11 passed）。这正是 A4/A5 那个错误的第三次出现：
+   * **锚点在文件里出现几次，就要钉几次**。
+   *
+   * 用完整字面量当 anchor 是"更窄"的做法，但这里**故意**用短锚点 `'check.allowExec':` +
+   * `occurrence: 'all'`：它对文案调整（措辞变化）更耐用，同时靠 `all` 保住覆盖——
+   * 换成完整字面量的话，每次微调措辞都要同步改 anchor（那会把人推向"别改文案"）。
+   */
+  {
+    name: 'docker 设置卡片 allowExec 标签点明「一次性」（zh + en 每一处）',
+    path: DOCKER_CLIENT,
+    anchor: "'check.allowExec':",
+    window: WINDOW_DEFAULT,
+    occurrence: 'all',
+    must: [/一次性|one-shot/, /不由它管|不受它管|not gated by it/],
+  },
 ]
 
 /** 对一组（路径 → 文本）跑全部文案判据；返回违规描述（空数组 = 全过）。 */
@@ -203,14 +236,31 @@ function claimViolations(files: Map<string, string>): string[] {
       out.push(`${site.name}：文件 ${site.path} 不在输入里`)
       continue
     }
-    const at = text.indexOf(site.anchor)
-    if (at === -1) {
+    /*
+     * `occurrence` 决定钉**几处**：默认只钉第一处；`'all'` 时把文件里每一处出现都钉一遍。
+     * 「只钉第一处」这个默认值踩过三次坑（A4 / A5 / E1）——凡同一份文件里有多个同名条目，
+     * 就必须显式写 `occurrence: 'all'`（见 `ClaimSite` 的注释）。
+     */
+    const offsets: number[] = []
+    if (site.occurrence === 'all') {
+      for (let at = text.indexOf(site.anchor); at !== -1; at = text.indexOf(site.anchor, at + 1)) {
+        offsets.push(at)
+      }
+    } else {
+      const at = text.indexOf(site.anchor)
+      if (at !== -1) offsets.push(at)
+    }
+    if (offsets.length === 0) {
       out.push(`${site.name}：锚点句不见了（${site.anchor.slice(0, 40)}）`)
       continue
     }
-    const sentence = text.slice(at, at + site.window)
-    for (const pattern of site.must) {
-      if (!pattern.test(sentence)) out.push(`${site.name}：锚点句缺少 ${String(pattern)}`)
+    for (const at of offsets) {
+      const sentence = text.slice(at, at + site.window)
+      // 多出现时把「第几处」写进报错，否则修的人不知道该看哪儿
+      const where = offsets.length > 1 ? `（第 ${String(offsets.indexOf(at) + 1)} 处）` : ''
+      for (const pattern of site.must) {
+        if (!pattern.test(sentence)) out.push(`${site.name}${where}：锚点句缺少 ${String(pattern)}`)
+      }
     }
   }
   // 公告专属：不许退回笼统说法（「docker exec，都需要…才有对应工具与按钮」）
@@ -326,6 +376,50 @@ describe('allowExec 的作用域：文案层（每条锚点句都得把两条通
       expect(at, `${site.name} 锚点找不到`).toBeGreaterThan(-1)
       expect(text.slice(at, at + site.window).length, `${site.name} 的锚点句窗口取不到内容`).toBeGreaterThan(40)
     }
+  })
+
+  /*
+   * **结构性守卫（E1 的根因，2026-10-07 review）**：判据的默认语义是「只钉第一处」，
+   * 于是同一份文件里出现多次的锚点，只要没显式写 `occurrence: 'all'`，就会有"改了一处、
+   * 另一处静默漏掉"的洞。E1 就是这么漏的（`'check.allowExec':` 在 zh/en 各一次）。
+   *
+   * 与其等下一次 review 再抓，不如让判据自己发现：**锚点在同一份文件里出现多于一次、
+   * 而该 site 没声明 `'all'` → 报出来**。它抓的是"这类洞会不会再出现"，不依赖具体措辞。
+   */
+  it('锚点在文件里出现多次时，必须显式声明 occurrence: all（防 E1 复现）', () => {
+    const files = realFiles()
+    const offenders: string[] = []
+    for (const site of CLAIM_SITES) {
+      const text = files.get(site.path) ?? ''
+      let count = 0
+      for (let at = text.indexOf(site.anchor); at !== -1; at = text.indexOf(site.anchor, at + 1)) count += 1
+      if (count > 1 && site.occurrence !== 'all') {
+        offenders.push(`${site.name}：锚点出现 ${String(count)} 次，但没写 occurrence: 'all'（只会钉第一处）`)
+      }
+    }
+    expect(
+      offenders,
+      '这些 site 的锚点在同一份文件里出现多次却只钉第一处——改一处漏一处不会有人知道（E1 的洞）',
+    ).toEqual([])
+  })
+
+  it('occurrence: all 真的在钉每一处（反例：改第 2 处必须红）', () => {
+    // 取一条声明了 all 的 site，改它**第二处**出现所在的段落，验证会被抓住
+    const site = CLAIM_SITES.find((entry) => entry.occurrence === 'all')
+    expect(site, '没有声明 occurrence: all 的 site——本用例失去对象（E1 的修法被回退了？）').toBeDefined()
+    const text = realFiles().get(site?.path ?? '') ?? ''
+    const second = (() => {
+      const first = text.indexOf(site?.anchor ?? '')
+      return first === -1 ? -1 : text.indexOf(site?.anchor ?? '', first + 1)
+    })()
+    expect(second, `$${String(site?.name)} 的第 2 处锚点找不到`).toBeGreaterThan(-1)
+    // 把第 2 处之后的窗口内容整段抹掉 → 该处必然缺 must
+    const window = (site?.window ?? 0) + 20
+    const mutated = text.slice(0, second) + (site?.anchor ?? '') + text.slice(second + window)
+    const files = realFiles()
+    files.set(site?.path ?? '', mutated)
+    const violations = claimViolations(files)
+    expect(violations.join('\n'), '改了第 2 处却没报 = all 没生效').toMatch(/第 2 处/)
   })
 })
 
