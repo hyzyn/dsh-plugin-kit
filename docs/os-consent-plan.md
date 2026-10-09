@@ -3,7 +3,8 @@
 > 执行对象：AI 代理。本文自包含，按 PR 顺序执行；每节末尾有可勾选验收项。
 > **状态**：**方案已定，代码未动（2026-10-07）**。§0 的威胁模型与 §1 的不变量是动手前必须先读的；
 > §2 给出现算事实与**一条决定成败的实现约束**。
-> **实测基准**：本文 §2.1 的三条事实全部是照着 **DSH `0.2.1-alpha.1`** 现算的。
+> **实测基准**：本文 §2.1 的三条事实全部是照着 **DSH `0.2.1-alpha.2`** 现算的
+> （2026-10-07 首测于 `0.2.1-alpha.1`，2026-10-09 随宿主升级逐条复核，见 §2.1 末「升级复核」）。
 > 宿主是外部依赖，**它升级后这三条都可能变**——所以基准版本必须留在这里，
 > 且 `scripts/test/os-consent-scope.test.ts` 会拿它当升级绊线（版本对不上就报错，逼人回来复核）。
 > **引用宿主的写法**（2026-10-07 review C2 定的）：只写 **包名 + 符号名**
@@ -82,7 +83,7 @@
 
 ## 2. 现算事实与那条实现约束
 
-### 2.1 三条实测事实（DSH `0.2.1-alpha.1`，2026-10-07）
+### 2.1 三条实测事实（DSH `0.2.1-alpha.2`，2026-10-07 首测 · 10-09 复核）
 
 **事实 1：审批瀑布的答案今天由「页面」给出。**
 
@@ -154,6 +155,21 @@ win32:  IFileOpenDialog（spawned worker + koffi COM，worker.cjs）
 它是**能力证明**：技术上弹得出原生框，且**答案是子进程的 stdout / 退出码**（`:239/251/263` 的
 `.stdout`，`:241` 用 `errorCode === 1` 判取消）——**整条通路在宿主侧，页面够不着**。
 
+**升级复核（2026-10-09，宿主 `0.2.1-alpha.1` → `0.2.1-alpha.2`）**：三条事实逐条重跑，都还成立——
+① 审批瀑布仍是 `dsh-user-approval` 的 `ctx.waterfall(…, "approval/request", req, () => Promise.resolve("unavailable"))`，
+浏览器侧的 answerer 仍是 `dsh-client-ui-approval` 的 `.$on("approval/request", …)` → `answerApproval(…)`
+（面板节点 `data-approval-key` 也还在）；② `dsh-client-modules` 的 `defaultLoadBundle` 仍是同源 classic
+script，`dsh-web-frontend/dist/index.html` 与 `dsh-host-webserver` / `dsh-host-frontend-static` 仍是
+**0** 处 CSP（唯一那条仍在 `dsh-api-session-controller` 的 `/api/file` 响应上）；
+③ `dsh-host-directory-picker-native` 仍是 `osascript` / `zenity` / `kdialog` + 子进程 `.stdout`，
+取消仍按 `errorCode(error) === 1`（或 `-128`）判。载体包的逐字节比对：`dsh-user-approval` /
+`dsh-client-ui-approval` / `dsh-client-modules` / `dsh-host-directory-picker-native` / `dsh-api-gateway` /
+`dsh-host-frontend-static` **除 `package.json` 外无变化**；变了的是 `dsh-acp`（0 行 approval 相关改动）、
+`dsh-api-remotes` 的 `client.js`（只有行号字符串位移）、`dsh-web-frontend` 的 dist 产物（重建，`index.html`
+仍无 CSP）与 `dsh-cordis-client-runner` 的 `client.js`（`new Function(…)` 与 `__ModuleLoader__.load` 仍在）。
+同一轮里 `scripts/test/os-consent-scope.test.ts` 的 18 条结构断言全绿，红的只有「基准版本对不上」
+这条绊线——本节基准随之更新到 `0.2.1-alpha.2`。
+
 ### 2.2 把事实合起来：两个形态，只有一个成立
 
 **形态 A（诱人，但会丢掉 (b) 防护）：把对话框接到 `approval/request` 瀑布上。**
@@ -204,6 +220,8 @@ win32:  IFileOpenDialog（spawned worker + koffi COM，worker.cjs）
       **已落地（2026-10-07，PR3 完成）**：`scripts/test/os-consent-scope.test.ts`——
       判据抽成纯函数、真实世界与反例**共用同一条代码路径**；宿主缺失时整块 `skipped`（响亮），
       宿主在而文件缺失则**判红**；另有「基准版本对得上」的升级绊线；
+      **2026-10-09 宿主升到 `0.2.1-alpha.2` 时它按设计红过一次**（基准版本 + picker 判据两处口径），
+      三条事实与那份 resolver 逐条复核后已收敛，复核记录见 §2.1 末与 §4 第 2 条；
 - [ ] **真机（macOS）**：点一次框 → 授权生效、审计行出现；**并且**用 CDP 在页面里跑
       `ctx.remote.$on('approval/request', …)` 抢答 —— 在形态 B 下**应当抢不到任何东西**
       （提权根本不走那条瀑布）。这一条是形态 B 与形态 A 的**判别实验**。
@@ -218,11 +236,14 @@ win32:  IFileOpenDialog（spawned worker + koffi COM，worker.cjs）
 
    ```
    dsh-host-directory-picker-auto · resolveDirectoryPickerBackend(facts)
-   // 它的判据（四条，全是必需的——缺一条就得回落 browse）：
-   //   ① bindHost !== '127.0.0.1'            → browse（全网卡绑定会招来远程浏览器，而 OS 框它够不着）
-   //   ② launchedThroughSsh(launchEnvironment) → browse（SSH 端口转发下，框会开在**无人值守的那台**上）
-   //   ③ platform 是 darwin / win32          → native
-   //   ④ platform 是 linux 且 PATH 里有可用 chooser（zenity / kdialog）
+   // 它的判据（五条，全是必需的——缺一条就得回落 browse）
+   // 2026-10-09 按 `0.2.1-alpha.2` 的实际口径逐条复核（上一版基准是三条，见下面第 2 条）：
+   //   ① allowsRemoteAuthorities             → browse（Connection 信任策略放行了远端 authority，
+   //                                           那会招来远程浏览器，而 OS 框它够不着）
+   //   ② !isLoopbackHost(bindHost)           → browse（具体网卡地址与「全网卡绑定」同样够不着）
+   //   ③ launchedThroughSsh(launchEnvironment) → browse（SSH 端口转发下，框会开在**无人值守的那台**上）
+   //   ④ platform 是 darwin / win32          → native
+   //   ⑤ platform 是 linux 且 PATH 里有可用 chooser（zenity / kdialog）
    //                                          且 DISPLAY 或 WAYLAND_DISPLAY 非空 → native
    ```
 
@@ -231,9 +252,13 @@ win32:  IFileOpenDialog（spawned worker + koffi COM，worker.cjs）
    而两边迟早会漂（这正是本仓最忌讳的重复）。正确做法是**复用 `resolveDirectoryPickerBackend`**：
 
    - 它**已被该包 `export`**（不是私有函数），可直接 import；
-   - 它吃的 `facts` 全是**外部可采**的（`ctx.webServer.host` / `process.platform` /
-     `process.env` / `PATH` 探测），**不需要**该包内部状态；
-   - ② 用到的 `launchedThroughSsh` 只是读 `SSH_CONNECTION` / `SSH_TTY` 两个环境变量
+   - 它吃的 `facts` 全是**调用方采样**的（`ctx.webServer.host` / `process.platform` /
+     `process.env` / `PATH` 探测），**不需要**该包内部状态。**但 `0.2.1-alpha.2` 起要多采两条**
+     （这一档宿主换了口径，绊线当轮报过红）：`allowsRemoteAuthorities` 取自 Connection 信任策略
+     （`ctx.connection` 上已有的字段），`bindHost` 的环回判定要用**同一个** `isLoopbackHost()`
+     （`dsh-host-webserver` 的导出）——各写各的，两边口径迟早又漂成两份真相源。采不到就
+     **落 `browse`**（不弹框、走粘贴路径），与不变量 6 的 fail-closed 同向。
+   - ③ 用到的 `launchedThroughSsh` 只是读 `SSH_CONNECTION` / `SSH_TTY` 两个环境变量
      （`dsh-launch-environment` 的实现），而 **kit 已经有读启动快照的通道**
      （`capability.ts` 的 `resolveEnvSource` 就是结构读 `launchEnvironment` 槽位）——
      所以 kit 侧**不必新增对宿主包的依赖**也能采到同一个事实。

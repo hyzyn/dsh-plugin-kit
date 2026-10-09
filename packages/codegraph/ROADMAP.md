@@ -30,7 +30,7 @@
 | `npx vitest run packages/codegraph` | 202 passed / 10 files | **14 files / 317 tests**（该时点输出）<br>`npx vitest run packages/codegraph --reporter=dot` |
 | `npx vitest run`（全仓） | 779 passed / 48 files | **56 files / 965 tests**（该时点输出）<br>`pnpm test` |
 | 本包可用的运行时依赖 | `cordis` + `schemastery` | **`cordis` + `dsh-mcp-client` + `schemastery`**（`dsh-mcp-client` 是 optional peer，pnpm 已装） |
-| 宿主基线 | 本机 `0.1.6-alpha.2`；`engines` 下限 `0.1.2-rc.1` | 本机 **`0.1.7-rc.2` + `0.2.0-rc.1` + `0.2.0-rc.2` + `0.2.1-alpha.1`**；peer `^0.1.7-rc.2 \|\| ^0.2.0-rc.1 \|\| ^0.2.0-rc.2 \|\| ^0.2.1-alpha.1`；`dsh.engines.dsh` `>=0.1.7-rc.2`（最低档） |
+| 宿主基线 | 本机 `0.1.6-alpha.2`；`engines` 下限 `0.1.2-rc.1` | 本机 **`0.1.7-rc.2` + `0.2.0-rc.1` + `0.2.0-rc.2` + `0.2.1-alpha.1` + `0.2.1-alpha.2`**；peer `^0.1.7-rc.2 \|\| ^0.2.0-rc.1 \|\| ^0.2.0-rc.2 \|\| ^0.2.1-alpha.1 \|\| ^0.2.1-alpha.2`；`dsh.engines.dsh` `>=0.1.7-rc.2`（最低档） |
 | host-contract 真机 | P3-a 记 25/25、P2-b 记 31/31（均 `0.1.6-alpha.2`） | **42/42**（`0.1.7-rc.1`、`0.1.7-rc.2`、`0.2.0-rc.2` 与 `0.2.1-alpha.1` 各一次，见 [README § 兼容性](./README.md#兼容性dsh--codegraph-cli)） |
 | 路由条数 | P3-a 时点记 18 条 | **25**（该时点输出）<br>`grep -oE "/api/dsh-codegraph/[a-z-]+" packages/codegraph/src/index.ts \| sort -u \| wc -l` |
 

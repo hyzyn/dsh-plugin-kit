@@ -247,7 +247,7 @@ jobs:
       # pin 住要挂进去的 DSH 版本：它与根 package.json 的 peer 范围同档，升 cohort 时一起改。
       # 装不上（或版本与 cohort 不匹配）时 `--bootstrap` 会**自证失败**并把原因打出来——不会假绿。
       - name: Install dsh CLI (pinned)
-        run: npm install -g @deepseek-ai/dsh@0.2.1-alpha.1
+        run: npm install -g @deepseek-ai/dsh@0.2.1-alpha.2
       # 用 **DSH 自己的判定器**逐包 × 逐 cohort 复核兼容性声明（2026-10-04 接进 CI）。
       #
       # 为什么必须有它：上面 build 那个 job 的 `dsh-peers:check` 只回答「我们的声明自洽吗」

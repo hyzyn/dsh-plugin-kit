@@ -482,9 +482,18 @@ function checkHostWorld(world: HostWorld): string[] {
     if (!/export \{[^}]*resolveDirectoryPickerBackend/.test(auto)) {
       out.push('resolveDirectoryPickerBackend 不再被 export——§4 的「可直接 import」不成立，得改方案或改用结构读')
     }
-    // 「宿主坐在屏幕前」的判据必须仍在（缺任一条就是判定口径变了）
+    /*
+     * 「宿主坐在屏幕前」的判据必须仍在（缺任一条就是判定口径变了）。
+     *
+     * 2026-10-09 宿主升到 `0.2.1-alpha.2` 时这套口径**真的变过一次**（升级绊线按设计报红）：
+     * ① 环回判定从写死 `'127.0.0.1'` 换成 `dsh-host-webserver` 的 `isLoopbackHost()`——
+     *    与同轮「监听地址只收环回或具体网卡」一致，具体网卡地址同样算「框够不着」；
+     * ② 新增 `allowsRemoteAuthorities`（Connection 信任策略放行了远端 authority 就回落 browse）。
+     * 判据因此从三条变四条，这里跟着换成新口径；**再变还会红**，那时回读 §4 第 2 条。
+     */
     for (const [signal, pattern] of [
-      ['bindHost 判据', /facts\.bindHost !== "127\.0\.0\.1"/],
+      ['bindHost 判据（环回）', /!isLoopbackHost\(facts\.bindHost\)/],
+      ['远端授权判据', /facts\.allowsRemoteAuthorities/],
       ['SSH 判据', /facts\.ssh/],
       ['Linux 显示会话判据', /DISPLAY\) \|\| present\(facts\.env\.WAYLAND_DISPLAY\)/],
     ] as const) {
@@ -792,6 +801,16 @@ describe.skipIf(HOST_WORLD.kind === 'absent')('OS 级同意：宿主侧反例（
     packages.set('dsh-host-directory-picker-auto', mutate(current, 'if (facts.ssh) return "browse";', '// ssh 判据被移除'))
     const violations = checkHostWorld({ ...HOST_WORLD, packages })
     expect(violations.join('\n'), 'SSH 判据不见了必须报——那正是 §4 要不变量 6 防的场景').toMatch(/SSH 判据/)
+  })
+
+  it('宿主换了「坐在屏幕前」的口径（去掉远端授权判据）→ 判据红（C1，2026-10-09 新增的那条）', () => {
+    const current = HOST_WORLD.packages.get('dsh-host-directory-picker-auto')
+    if (current === undefined) return
+    const packages = new Map(HOST_WORLD.packages)
+    // 模拟宿主不再排除「信任策略放行了远端 authority」的部署（那种部署会招来远程浏览器，而 OS 框它够不着）
+    packages.set('dsh-host-directory-picker-auto', mutate(current, 'facts.allowsRemoteAuthorities', 'false'))
+    const violations = checkHostWorld({ ...HOST_WORLD, packages })
+    expect(violations.join('\n'), '远端授权判据不见了必须报——它是 0.2.1-alpha.2 新加的一条「框够不着」').toMatch(/远端授权判据/)
   })
 })
 })

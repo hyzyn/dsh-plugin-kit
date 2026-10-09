@@ -76,7 +76,7 @@ jobs:
       # 那次的形状（docs/conventions.md § 真机脚本与 CI 接线：CI 与发布闸要成对）。
       # 命令与 ci.yml **逐字一致**（守卫第 3 条要求两侧同一条目命令相同）。
       - name: Install dsh CLI (pinned)
-        run: npm install -g @deepseek-ai/dsh@0.2.1-alpha.1
+        run: npm install -g @deepseek-ai/dsh@0.2.1-alpha.2
       - name: Mount + headless render smoke
         run: pnpm live-smoke --bootstrap --strict --render --chrome-arg --no-sandbox
       # 发布前的测试收集闸（与 ci.yml 成对）：tag 可以打在没过 CI 的提交上，而「测试文件

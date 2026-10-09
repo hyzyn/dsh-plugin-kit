@@ -123,7 +123,7 @@ dsh plugin --profile web ls @hyzyn/dsh-tty --depth 0
 
 **② 先判是哪一条下限** —— 判定依据是 `peerDependencies` 里的 `@deepseek-ai/dsh` /
 `@deepseek-ai/dsh-*`（预发布参与范围匹配；范围是**逐 cohort 用 `||` 写全**的，
-例如 `^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1`，命中任一段即放行）；`dsh.engines.dsh` 是**市场展示位**，
+例如 `^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1 || ^0.2.1-alpha.2`，命中任一段即放行）；`dsh.engines.dsh` 是**市场展示位**，
 宿主不读它，只有插件市场 / 社区条目按它展示。所以分两种情形：
 
 - 宿主版本落在**所有 cohort 段之外** → 升插件或升宿主；
@@ -142,7 +142,7 @@ dsh plugin --profile <p> allow-version <pkg@ver> --dsh-version <ver> --accept-ri
 而且它绕过的是「这个版本组合没有被验证过」这件事本身——命令里那句 `--accept-risk` 就是这个意思。
 （出处：`RELEASING.md`「发布门槛」第 5 条；旧版 `README.md` 的系统要求段）
 
-> **cohort 列表（当前是 `0.1.7-rc.2` + `0.2.0-rc.1` + `0.2.0-rc.2` + `0.2.1-alpha.1`）变更时该动哪些文件、按什么顺序动**，是**发布动作**而不是排障动作——
+> **cohort 列表（当前是 `0.1.7-rc.2` + `0.2.0-rc.1` + `0.2.0-rc.2` + `0.2.1-alpha.1` + `0.2.1-alpha.2`）变更时该动哪些文件、按什么顺序动**，是**发布动作**而不是排障动作——
 > 权威在 [RELEASING.md § 发布门槛](../RELEASING.md#发布门槛每次-tag-前过一遍)，本文不复制。
 
 ## 各插件的高频症状

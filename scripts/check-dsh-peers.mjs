@@ -58,18 +58,28 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
  *    子路径导出（本仓零引用，`index.d.ts` 逐字节相同），`evaluatePluginCompatibility` 语义
  *    等价；`dsh-cordis-client-runner` 的 slot 目录 98 → 100 条，**只增不减**
  *    （新增 `plugins.add.actions` / `shell.bottom`）。
- * `cordis` 4.0.4 与 `schemastery` 3.18.4 在前三档同版本；第四档的宿主带 4.0.5-alpha.1 与
- * 3.18.5-alpha.1，但两份 tarball 除 `package.json` 外**逐字节相同**，且 app-boot 用
+ *  - 0.2.1-alpha.2 vs 0.2.1-alpha.1：本仓 import 的宿主包里 `dsh-mcp-client`（MCP 托管行）/
+ *    `dsh-settings` / `dsh-credentials` / `dsh-launch-environment` / `dsh-sandbox` / `dsh-scope` /
+ *    `dsh-user-approval` / `dsh-agent` / `dsh-client-locale` / `dsh-subprocess`
+ *    **除 `package.json` 外逐字节相同**；`dsh-tools` 里本仓用的 `defineTool` 导出行逐字节相同，
+ *    改动只有 `ToolPresentationMode` 去掉 `'both'`（本仓零使用）与 PTC 内部桥
+ *    `RunCodeBridgeOptions` 多一个必填的 `resolveWorkingDirectory`（本仓没有实现方）；
+ *    客户端槽面**只增不减**——新增 `conversation.chat.flow` / `conversation.chat.reasoning.body`
+ *    两条，零删除零改名，本仓注册的槽（含给老宿主留的回退槽）一个没被拿掉；
+ *    `dsh-host-webserver` 与 `dsh-web-app` 的改动都在**宿主配置面**（监听地址只收环回或具体
+ *    网卡、新增 TLS 配置、`webRuntime` → `webStartup`），本仓对这些名字零引用。
+ * `cordis` 4.0.4 与 `schemastery` 3.18.4 在前三档同版本；第四、五档的宿主带的是同一对
+ * 4.0.5-alpha.1 与 3.18.5-alpha.1，但两份 tarball 除 `package.json` 外**逐字节相同**，且 app-boot 用
  * `Symbol.for('schemastery')` 判定原生 schema（不是 `instanceof`），所以同一条范围同时声明
  * 多段是如实表述，而不是「先放宽再说」。
  */
-const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1']
+const DSH_COHORTS = ['0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2']
 /** 成熟下限：最低支持的 cohort，市场展示位与它一致，也是本仓历史文档里的基线。 */
 const DSH_COHORT = DSH_COHORTS[0]
 /**
  * 唯一支持的 peer 写法：逐 cohort 的 `^<cohort>` 用 `||` 连起来（预发布参与匹配，见文件头）。
  * 单 cohort 时就是 `^0.1.7-rc.2` 这种老写法，多 cohort 时是
- * `^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1`。
+ * `^0.1.7-rc.2 || ^0.2.0-rc.1 || ^0.2.0-rc.2 || ^0.2.1-alpha.1 || ^0.2.1-alpha.2`。
  */
 const EXPECTED_RANGE = DSH_COHORTS.map((cohort) => `^${cohort}`).join(' || ')
 /**
