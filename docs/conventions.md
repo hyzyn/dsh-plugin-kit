@@ -540,6 +540,15 @@ bundle key 且没有 row 入口、旧宿主只注册两个 row key）——其�
     「全红的基线」。
   - **改 `src/` 后必须重建 `lib/`**（`pnpm --filter @hyzyn/dsh-<pkg> build`）：测试跑的是入库的
     预构建产物，只改 `src/` 会让反证实验「全绿」——本轮据此差点得出「用例没问题」的错误结论。
+  - **2026-10-10 新增一例：判据模块自己重复劳动**。`scripts/client-style-spec.mjs` 的 10 个扫描器
+    各自对同一份 source 调 `parseCssRules` / `maskComments`，而 tty 的 `client-src/index.js` 是
+    427KB / 10900 行——同一份文件被解析 10 次。flake 车道当场抓到：tty 那条用例在 2× 超订下
+    **24.8s** 撞穿 20s `testTimeout`（单跑 3.7s；6 个忙循环压着跑也只 3.7s——**争用形状不同，
+    灵敏度完全不同**），三份**全红**，`pnpm repro-flake` 1/6 稳定复现。修法是**按 source 全串
+    记忆化解析结果**（纯去重、判据一字不动，扫描器只读规则对象），全仓扫描 6260ms → **760ms**；
+    等价性用「重构前后 10 份语料 × 10 个扫描器的完整输出哈希逐字节一致」取证，而不是靠「看起来
+    没变」。**遇到这种红先看预算花在哪，别先放宽预算**——同一形状（判据先于预算）在
+    [vitest.config.ts](../vitest.config.ts) 里已记过两次（testTimeout 5→20s / hookTimeout 10→60s）。
 - **要真宿主的验收放根 `scripts/`**：`scripts/live-host-smoke.mjs`（`pnpm live-smoke`）
   是唯一需要**真 DSH 宿主**的脚本——它起两个一次性宿主实例，验能力开关的授权阶梯 / 路由门控 /
   agent 工具清单 / 试连文案 / 宿主正在服务的 `client.js`。它是**发布门槛 #3 的自动化形态**；

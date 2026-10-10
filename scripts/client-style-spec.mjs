@@ -60,6 +60,41 @@
 
 import { declValue, maskComments, parseCssRules } from './client-design-tokens.mjs'
 
+/*
+ * 语料解析的**进程级去重**（2026-10-10）。
+ *
+ * 为什么需要：本模块 10 个扫描器各自对同一份 source 调 `parseCssRules` / `maskComments`，而 tty 的
+ * `client-src/index.js` 是 427KB / 10900 行——同一份文件被反复解析，实测每次 ~285ms、单包 9 个扫描器
+ * 合计约 2.6s（全仓 6.3s）。`pnpm flake:check` 的 2× 超订把这段放大 3–9 倍，于是 tty 那条用例在
+ * 车道上以 **24.8s 撞穿 20s 的 testTimeout**（单跑 3.7s 永不复现——它就是那样漏进来的）。
+ *
+ * 这是**纯函数式去重**：解析结果只依赖 source 字符串本身，而所有扫描器都只读规则对象（没有任何一
+ * 处就地改它）。所以判据一字不动，只是不再重复劳动；等价性用「重构前后全部扫描器的输出哈希一致」
+ * 取证（见脚本头注释与 ROADMAP）。
+ *
+ * 键是源码全串：一个进程里扫的就是那几十份文件，内存上界由语料本身决定，不需要淘汰策略。
+ */
+const parsedBySource = new Map()
+/** `parseCssRules` 的记忆化版本（键 = 源码全串）。 */
+function parsedRules(source) {
+  let parsed = parsedBySource.get(source)
+  if (parsed === undefined) {
+    parsed = parseCssRules(source)
+    parsedBySource.set(source, parsed)
+  }
+  return parsed
+}
+const maskedBySource = new Map()
+/** `maskComments` 的记忆化版本（键 = 源码全串）。 */
+function maskedSource(source) {
+  let masked = maskedBySource.get(source)
+  if (masked === undefined) {
+    masked = maskComments(source)
+    maskedBySource.set(source, masked)
+  }
+  return masked
+}
+
 /**
  * 官方圆角尺度：值 → token。取自 base.css 的共享数值与 ui-radius 规范表。
  * R4 小细节 / R8 紧凑控件 / R12 标准控件与单行 cell / R16 大控件与分组 / R20 独立内容卡片 /
@@ -134,7 +169,7 @@ function isSpinnerRing(decls) {
 export function scanNonHairlineBorders(files) {
   const findings = []
   for (const { file, source } of files) {
-    for (const rule of parseCssRules(source)) {
+    for (const rule of parsedRules(source)) {
       for (const prop of ['border', 'border-top', 'border-bottom', 'border-left', 'border-right']) {
         const value = declValue(rule.decls, prop)
         if (value === undefined) continue
@@ -177,7 +212,7 @@ export function describeNonHairlineBorder(finding) {
 export function scanBorderWithElevation(files) {
   const findings = []
   for (const { file, source } of files) {
-    for (const rule of parseCssRules(source)) {
+    for (const rule of parsedRules(source)) {
       const border = declValue(rule.decls, 'border')
       const shadow = declValue(rule.decls, 'box-shadow')
       if (border === undefined || shadow === undefined) continue
@@ -213,7 +248,7 @@ export function describeBorderWithElevation(finding) {
 export function scanOffScaleRadii(files) {
   const findings = []
   for (const { file, source } of files) {
-    maskComments(source).split('\n').forEach((line, index) => {
+    maskedSource(source).split('\n').forEach((line, index) => {
       const decl = /border-radius:\s*([0-9.]+px)/.exec(line)
       if (decl !== null && OFF_SCALE_RADIUS.test(line)) {
         findings.push({ file, line: index + 1, value: decl[1], suggestion: RADIUS_SCALE[decl[1]], kind: 'declaration' })
@@ -247,7 +282,7 @@ export function scanStyleSpecTotals(files) {
   let tokenRadii = 0
   const dangerClasses = new Set()
   for (const { source } of files) {
-    for (const rule of parseCssRules(source)) {
+    for (const rule of parsedRules(source)) {
       for (const cls of classTokensOf(rule.selector)) {
         if (DANGER_BUTTON_CLASS.test(cls)) dangerClasses.add(cls)
       }
@@ -291,7 +326,7 @@ export function scanDanglingDeclarations(files) {
   for (const { file, source } of files) {
     if (!file.endsWith('.css')) continue // 见上方注释：内联 CSS 不适用深度跟踪
     let depth = 0
-    maskComments(source).split('\n').forEach((line, index) => {
+    maskedSource(source).split('\n').forEach((line, index) => {
       const text = line.trim()
       if (depth === 0 && /^[a-z-]+\s*:\s*[^;{]+;$/i.test(text)) {
         findings.push({ file, line: index + 1, text })
@@ -363,7 +398,7 @@ function escapeRegExp(text) {
 function dangerTokenPattern(files) {
   const names = new Set([HOST_DANGER_TOKEN])
   for (const { source } of files) {
-    for (const match of maskComments(source).matchAll(/(--[A-Za-z0-9-]+)\s*:\s*([^;{}]*state-error-primary[^;{}]*)/g)) {
+    for (const match of maskedSource(source).matchAll(/(--[A-Za-z0-9-]+)\s*:\s*([^;{}]*state-error-primary[^;{}]*)/g)) {
       names.add(match[1])
     }
   }
@@ -392,7 +427,7 @@ export function scanDangerButtonRecipes(files) {
   const dangerToken = dangerTokenPattern(files)
 
   for (const { file, source } of files) {
-    const rules = parseCssRules(source)
+    const rules = parsedRules(source)
     const groups = new Map()
     for (const rule of rules) {
       for (const cls of classTokensOf(rule.selector)) {
@@ -548,7 +583,7 @@ export function scanButtonRecipes(files) {
   for (const { file, source } of files) {
     /** family → { props: Map<prop, {value, line, selector}> } */
     const families = new Map()
-    for (const rule of parseCssRules(source)) {
+    for (const rule of parsedRules(source)) {
       const buttons = classTokensOf(rule.selector).filter((cls) => BUTTON_CLASS.test(cls))
       if (buttons.length === 0) continue
       const isFocus = rule.selector.includes(':focus-visible')
@@ -662,7 +697,7 @@ export const TYPOGRAPHY_RULE_HINT = '文字要与宿主的排版角色一致：�
 export function scanTypographyRoles(files) {
   const findings = []
   for (const { file, source } of files) {
-    for (const rule of parseCssRules(source)) {
+    for (const rule of parsedRules(source)) {
       const fontSize = declValue(rule.decls, 'font-size')
       if (fontSize !== undefined && declValue(rule.decls, 'line-height') === undefined) {
         findings.push({
@@ -702,7 +737,7 @@ export function describeTypographyRole(finding) {
 export function scanFontSizeSites(files) {
   let total = 0
   for (const { source } of files) {
-    for (const rule of parseCssRules(source)) {
+    for (const rule of parsedRules(source)) {
       if (declValue(rule.decls, 'font-size') !== undefined) total += 1
     }
   }
@@ -719,7 +754,7 @@ export function scanFontSizeSites(files) {
 export function scanButtonClasses(files) {
   const classes = new Set()
   for (const { source } of files) {
-    for (const rule of parseCssRules(source)) {
+    for (const rule of parsedRules(source)) {
       for (const cls of classTokensOf(rule.selector)) {
         if (BUTTON_CLASS.test(cls)) classes.add(cls)
       }
@@ -849,7 +884,7 @@ export function scanAccentColors(files) {
   let hasCatchAll = false
   let hasCheckboxRule = false
   for (const { source } of files) {
-    for (const rule of parseCssRules(source)) {
+    for (const rule of parsedRules(source)) {
       /*
        * 复选框规则的识别口径是**选择器里出现 checkbox**：既有 input[type=checkbox] 那种，
        * 也有 tty 那种把类挂在 input 自己身上的 .tt_cardCheckbox{…accent-color…}。
@@ -885,7 +920,7 @@ export function scanAccentColors(files) {
     }
   }
   for (const { file, source } of files) {
-    for (const rule of parseCssRules(source)) {
+    for (const rule of parsedRules(source)) {
       const accent = declValue(rule.decls, 'accent-color')
       if (accent !== undefined && accent !== HOST_ACCENT_COLOR) {
         findings.push({
@@ -975,7 +1010,7 @@ function isBorderedControl(rule) {
 export function scanInputRecipes(files) {
   const findings = []
   for (const { file, source } of files) {
-    for (const rule of parseCssRules(source)) {
+    for (const rule of parsedRules(source)) {
       const classes = classTokensOf(rule.selector)
       if (!classes.some((cls) => INPUT_CLASS.test(cls))) continue
       if (!isBorderedControl(rule)) continue
@@ -1017,7 +1052,7 @@ export function describeInputRecipe(finding) {
 export function scanInputSites(files) {
   let total = 0
   for (const { source } of files) {
-    for (const rule of parseCssRules(source)) {
+    for (const rule of parsedRules(source)) {
       const classes = classTokensOf(rule.selector)
       if (classes.some((cls) => INPUT_CLASS.test(cls)) && isBorderedControl(rule)) total += 1
     }
@@ -1034,7 +1069,7 @@ export function scanInputSites(files) {
 export function scanAccentColorSites(files) {
   let total = 0
   for (const { source } of files) {
-    for (const rule of parseCssRules(source)) {
+    for (const rule of parsedRules(source)) {
       if (declValue(rule.decls, 'accent-color') !== undefined) total += 1
     }
   }
@@ -1153,7 +1188,7 @@ function colorMixRangeAt(value, index) {
 export function scanColorLiterals(files) {
   const findings = []
   for (const { file, source } of files) {
-    const masked = maskComments(source)
+    const masked = maskedSource(source)
     /* ① 引用宿主令牌时的颜色字面量兜底（也覆盖 cssVar('--dsw-x', '#fff') 这种 JS 读法）。 */
     const fallbackRanges = []
     const FALLBACK = /(--dsw-[a-z0-9-]+)["']?\s*,\s*["']?\s*(#[0-9a-fA-F]{3,8}\b|rgba?\([^()]*\)|hsla?\([^()]*\)|(?:white|black)\b)/g
@@ -1169,7 +1204,7 @@ export function scanColorLiterals(files) {
     }
     /* ② CSS 规则体的声明位；同时记下规则体范围，供 ③ 排除「写在 JS 字符串里的 CSS」。 */
     const cssRanges = []
-    for (const rule of parseCssRules(source)) {
+    for (const rule of parsedRules(source)) {
       cssRanges.push([rule.bodyStart, rule.bodyEnd])
       let consumed = 0
       for (const part of rule.decls.split(';')) {
@@ -1261,7 +1296,7 @@ export function describeColorSource(finding) {
 export function scanThemeTokenRefs(files) {
   let total = 0
   for (const { source } of files) {
-    const masked = maskComments(source)
+    const masked = maskedSource(source)
     for (const match of masked.matchAll(/--dsw-[a-z0-9-]+/g)) {
       if (/^\s*:/.test(masked.slice(match.index + match[0].length))) continue
       total += 1
