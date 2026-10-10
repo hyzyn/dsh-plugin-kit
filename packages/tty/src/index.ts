@@ -19,6 +19,11 @@
  *   C→S  {t:'resize', sid?, cols, rows}        xterm fit 触发
  *   C→S  {t:'refresh', sid?}                   请宿主 refresh-client 强制 tmux
  *                                              重画（tmux 会话；非 tmux no-op）
+ *   C→S  {t:'hidden', sid?, hidden}            把用户自己的标签设为「对 agent
+ *                                              不可见」（0.30.0）：agent 侧列不到它、
+ *                                              按 sid 取内容也一律被拒；宿主回一帧
+ *                                              同名字段确认。共享的 tmux 会话只有一个
+ *                                              hidden 位（后写胜）
  *   C→S  {t:'kill', sid?}                      关闭会话（孤儿会话也可跨连接 kill；
  *                                              tmux 会话先 kill-session 再杀客户端）
  *   C→S  {t:'sessions'}                        列出全局会话（attachable 标记可重连者）
@@ -102,7 +107,7 @@ import {
 import type { TierClass } from '@hyzyn/dsh-kit'
 import type { CredentialResolver, HostKeyRecord, SshHostEntry, SshSpec, TermExit, TermHandle } from './ssh.js'
 import { probeSsh } from './probe.js'
-import { buildCommandSpawn, buildShellSpawn, commandShellHint, defaultShellPath } from './shell-integration.js'
+import { buildCommandSpawn, buildShellSpawn, commandShellHint, defaultShellPath, tmuxSocketName } from './shell-integration.js'
 import { KEY_VOCABULARY, resolveKeys } from './keys.js'
 import { parseSshConfigDetailed } from './ssh-config.js'
 import { parseKnownHostsDetailed } from './known-hosts.js'
@@ -419,6 +424,33 @@ const BUFFER_CAP = 256 * 1024
 const TERM_RE = /^[A-Za-z0-9_.+-]+$/
 /** 孤儿会话回收器的扫描间隔。 */
 const REAPER_INTERVAL_MS = 10_000
+
+/** 进程级挂载序号在 `globalThis` 上的键（见 `nextMountSerial`）。 */
+const MOUNT_SERIAL_KEY = '__dshTtyMountSerial'
+
+/**
+ * 本进程内第几次挂载（0.30.0 可观测性）。
+ *
+ * 为什么放 `globalThis` 而不是模块态：**模块态在 HMR 重挂时会被重新求值**——序号从 1 重来，
+ * 而这里要回答的恰恰是「同一个 pid 里这是第几次挂载」，模块态答不了这个问题。宿主重启会清零
+ * （换了进程），那正是我们要的语义。
+ */
+function nextMountSerial(): number {
+  const bag = globalThis as unknown as Record<string, number | undefined>
+  const next = (bag[MOUNT_SERIAL_KEY] ?? 0) + 1
+  bag[MOUNT_SERIAL_KEY] = next
+  return next
+}
+
+/**
+ * 孤儿会话被回收时的留痕文案（导出仅供单测）。
+ *
+ * 报数与被回收的 sid **同源**（`SessionManager.reapOrphans` 的返回值），不在调用方另数一遍；
+ * 断线保活的秒数一起写进去——读日志的人不必回头翻配置。
+ */
+export function reapedOrphansMessage(sids: string[], graceSec: number): string {
+  return `[dsh-tty] 断线保活已过（${String(graceSec)}s）：回收 ${String(sids.length)} 个孤儿会话 ${sids.join(', ')} —— 它们里面跑的程序一并结束；想跨断线留住现场请用 tmux 持久标签，或在设置卡片把「断线保活」调大`
+}
 /** 服务器状态条的采集/推送间隔（mvp 固定 1s，不做配置项）。 */
 const STATS_INTERVAL_MS = 1000
 /**
@@ -439,8 +471,24 @@ const STATS_RETRY_MAX_MS = 300_000
  */
 const STATS_ONESHOT_TIMEOUT_MS = 15_000
 
+/**
+ * 注入 systemPrompt 的常驻指引。
+ *
+ * **先写「什么时候别用它」**（决策句在最前）：这段文本每一轮都在上下文里，而模型
+ * 真正的失败模式是「本来 bash 一句就够，却去开一个终端会话」——把判据放最前比放末尾
+ * 有用。各工具的用法（`running` 三态、`last:true`、具名 `keys`、回溯语义…）**只写在
+ * 各自的工具描述里**，这里不再复述一遍：同一件事写两处，既白占每轮上下文，又会随
+ * 改动漂成两份互相矛盾的真相（本文件历史上这两处就重复过）。
+ *
+ * 这里只留工具描述里**没有**的东西：面板侧能力（SSH / SFTP / 隧道 / tmux 持久化在哪配）
+ * 与引导用户的话术。
+ */
 const TTY_GUIDANCE =
-  '本机已安装 dsh-tty 插件（终端面板）：Web GUI 侧边栏的「终端」入口可打开交互终端（xterm.js + PTY），可运行任意命令与 TUI 程序（vim/htop 等），支持多标签页与断线自动重连（刷新页面/网络抖动后会话保活并恢复现场）；新标签默认在当前会话工作目录打开。标签栏「+」菜单还能开 SSH 标签页（ssh2 原生连接，连接簿在设置卡片维护，支持 agent forwarding 与主机指纹 TOFU 钉扎；连接簿条目可配单跳跳板机 ProxyJump），像本地终端一样操作远程主机。设置卡片开启「会话持久化（tmux）」后，新开的本地/SSH 标签默认由 tmux server 托管（宿主重启/断线超时后重开即恢复现场），长任务建议在持久化开启时运行。长驻进程（dev server、watch、交互式程序）用 tty_open 开一个会话跑（或引导用户到终端面板里运行），不要在 bash 工具里挂起等待；用户提到「开个终端 / 在终端里跑 / SSH 到某台机器」时引导其打开该面板。agent 侧配套工具：tty_list 列出活跃终端会话（含 SSH 的 target、实时 cwd，以及 `running`——这个会话**有没有命令在跑**，文本里三态写作 `[空闲]` / `[运行中——现在别往里发命令]` / `[命令状态未知]`；命令状态未知**不是**没在跑），tty_capture 读取近期输出（默认清洗 ANSI；last:true 拿「上一条命令」的输出+退出码），tty_screen 读取当前可见屏幕（可读懂 vim/htop 等 TUI），tty_expect 用正则等待输出中的就绪信号（如 dev server URL、构建完成；它**先回看还没读过的已到达输出**，命令瞬间跑完也不会白等——超时若只返回一句诊断文案，别当成「命令没执行」），tty_send 发送按键（控制键/方向键用具名 `keys`，别在 data 里拼转义序列），tty_run 一次调用跑完一条命令并直接拿回尾部输出+退出码（想省掉 open→等→capture→close 四步时用它），tunnel_list 列出端口转发隧道状态、tunnel_start / tunnel_stop 启停一条——操作会实时显示在用户终端里。SFTP 文件传输：面板内可对 SSH 连接簿条目（或 SSH 连接对话框当前填写的信息）打开文件浏览（上传/下载/建目录/重命名/删除），传输期间进度条右侧 ✕ 可取消（半截文件自动清理）；agent 配套 sftp_list 列远程目录、sftp_tree 递归看目录结构、sftp_read 读远程文本文件（≤1MB）、sftp_write 写远程文本文件（≤1MB，可追加）、sftp_mkdir 建目录（parents 可逐级补齐）、sftp_rename 重命名/移动、sftp_remove 删除（目录需 recursive），book 参数为连接簿条目名。端口转发：连接簿条目可配本地/远程隧道（如把远程数据库映射到本地端口），宿主自动保活重连，用户提到「转发端口 / 访问远程库」时引导其到终端面板设置卡片配置。推荐流程：tty_send 启动长任务 → tty_expect 等就绪标记 → tty_capture{last:true} 拿结果。'
+  '**先判断要不要用终端**：只有「需要跨调用保留状态（REPL / 调试器）、要跑长驻或交互式进程、或用户要看着这条命令跑」才用 tty_open / tty_run；一次跑完的有界命令直接用 bash 工具，别在 bash 里挂起等待。用完的会话记得 tty_close——agent 开的会话不随连接回收，攒着会占会话名额与面板标签。'
+  + '面板（Web GUI 侧边栏「终端」）是真 PTY：vim / htop 等 TUI、多标签、断线重连都能跑，新标签默认在当前会话工作目录打开。agent 开的会话**就出现在用户面板里、用户可接管**，所以别开隐形会话。'
+  + '标签栏「+」还能开 SSH 标签（ssh2 原生连接；连接簿、agent forwarding、主机指纹 TOFU、单跳跳板机都在设置卡片维护）；面板内另有 SFTP 文件浏览（上传/下载/建目录/重命名/删除），以及由连接簿条目配置的端口转发隧道；设置卡片开「会话持久化（tmux）」后新标签由 tmux 托管，能跨宿主重启恢复，长任务建议开着它跑。'
+  + '用户提到「开个终端 / 在终端里跑 / SSH 到某台机器 / 传文件 / 转发端口」时，引导他打开这个面板。'
+  + '典型流程：tty_send 启动长任务 → tty_expect 等就绪标记 → tty_capture{last:true} 拿结果。'
 
 /* ------------------------------------------------------------------ *
  * 类型
@@ -568,6 +616,19 @@ interface TtySession {
    */
   owner: 'user' | 'agent'
   /**
+   * 用户把这条标签标成「对 agent 不可见」（0.30.0）。
+   *
+   * 为什么要有：面板里的标签是用户自己的终端——里面可能有密钥、私事、与本轮任务无关
+   * 的活。此前 agent 侧能看到**全部**会话（`tty_list` 与每轮 prompt 都会列 cwd 与
+   * 活动状态），`tty_capture` / `tty_screen` 还能 dump 任意标签的屏。这个开关把「哪条
+   * 标签归 AI 用」的选择权交回用户。
+   *
+   * **只可能是用户标签**：agent 自己开的会话没有隐藏自己的理由，`tty_open` 恒传
+   * false。**拦截必须在宿主侧**（工具解析 sid 的入口 + `listForAgent`）——只让客户端
+   * 不过滤显示是假安全：知道 sid 就能绕过。
+   */
+  hiddenFromAgent: boolean
+  /**
    * **只读保留态**（D77）：进程已退出，但会话**还留在表里**——读侧工具照常可用，
    * 写侧明确拒写，用户与 agent 都能显式关掉它（`tty_close` / 面板关标签 / TTL 到点）。
    *
@@ -648,6 +709,33 @@ interface TtySession {
 function describeExit(exited: { code: number | null; signal: string | null }): string {
   if (exited.signal !== null && exited.signal !== '') return `signal=${exited.signal}`
   return exited.code === null ? '退出码未知' : `exitCode=${String(exited.code)}`
+}
+
+/**
+ * 「另有 N 条标签被用户设为对 agent 不可见」那句话（0.30.0）。
+ *
+ * 两处共用这一份：`tty_list` 的渲染与每轮 systemPrompt 的会话块。同一件事写两遍必然漂，
+ * 而漂出来的结果是「工具里说 3 条、prompt 里说 2 条」这种对不上的话术。
+ *
+ * `count <= 0` 返回空串（调用方直接拼接，不必自己判）。
+ */
+export function hiddenSessionsNote(count: number): string {
+  if (count <= 0) return ''
+  return `\n另有 ${String(count)} 条标签被用户设为「对 agent 不可见」：读不到、发不了命令，也不要拿其它 sid 去试——需要它们对 AI 开放时请用户在面板里取消隐藏。`
+}
+
+/**
+ * 隐藏会话的拒绝文案（0.30.0，agent 侧工具文案只此一处）。
+ *
+ * 为什么明说「被隐藏」而不是伪装成「会话不存在」：模型拿到莫名的不存在会换个 sid 重试、
+ * 或以为会话崩了去重开一条——**明确的拒绝才能让它停下来并转告用户**。要藏的从来不是
+ * 「有这条会话」，而是它的内容与在干什么（那部分由 `listForAgent` 整条不列出负责）。
+ */
+function hiddenRefusal(sid: string): Error {
+  return new Error(
+    `会话 ${sid} 被用户设为「对 agent 不可见」：它不对 agent 开放（读输出、发命令、取指标都不行）。` +
+    '请让用户在终端面板里对该标签取消隐藏，或由用户自己操作它；不要用其它 sid 试探——那不是同一个终端。',
+  )
 }
 
 /**
@@ -2042,6 +2130,12 @@ export interface SessionSnapshot {
   lastOutputAt: number
   persist?: true
   owner: 'user' | 'agent'
+  /**
+   * 用户把这条标签设为「对 agent 不可见」（0.30.0）。**只在为 true 时出现**（沿用
+   * 「省略的键不出现」的约定，见 D52/B33）。它出现在 `listForAttach()`（面板据此
+   * 渲染标记），而 `listForAgent()` 里这类会话**整条都不在**。
+   */
+  hidden?: true
   /** 进程已退出、会话仍在只读保留期内（D77）。 */
   exited?: true
   /** 退出码（拿不到时省略）。 */
@@ -2153,15 +2247,45 @@ export class SessionManager {
       lastOutputAt: session.lastOutputAt,
       owner: session.owner,
       ...runFields,
+      ...(session.hiddenFromAgent ? { hidden: true as const } : {}),
       ...(session.tmuxName !== null ? { persist: true as const } : {}),
       ...exitInfo,
     }
     return session.handle.pid === null ? base : { ...base, pid: session.handle.pid }
   }
 
-  /** agent 工具用的只读快照。 */
-  list(): SessionSnapshot[] {
-    return [...this.sessions.values()].map((session) => this.snapshotOf(session))
+  /**
+   * agent 侧用的只读快照（`tty_list` 工具与每轮 systemPrompt 的会话块）。
+   *
+   * **用户标了「对 agent 不可见」的会话整条不在**（0.30.0）：不能只抹掉输出——会话的
+   * 存在、cwd、有没有命令在跑，本身就是要藏的东西（它泄漏用户在干什么）。面板侧走
+   * `listForAttach()`，那条路照旧给全部会话。
+   */
+  listForAgent(): SessionSnapshot[] {
+    return [...this.sessions.values()]
+      .filter((session) => !session.hiddenFromAgent)
+      .map((session) => this.snapshotOf(session))
+  }
+
+  /** agent 侧按 sid 取会话（0.30.0）：隐藏会话与「不存在」**同样拒绝**，见 hiddenRefusal。 */
+  agentView(sid: string): TtySession | undefined {
+    const session = this.sessions.get(sid)
+    if (session !== undefined && session.hiddenFromAgent) throw hiddenRefusal(sid)
+    return session
+  }
+
+  /**
+   * 被用户隐藏的会话条数（0.30.0）。
+   *
+   * 存在的意义是**别让模型把话说过头**：一条都不列之后，`listForAgent()` 为空会被读成
+   * 「用户没开终端」，于是它可能回一句「当前没有终端面板会话」——而用户正盯着三个标签。
+   * 只报条数、不报 cwd 与活动（要藏的正是后者）。这一位信息量极低（人人都有终端），
+   * 换来的是模型不再因为「看不见」而误导用户。
+   */
+  hiddenCount(): number {
+    let count = 0
+    for (const session of this.sessions.values()) if (session.hiddenFromAgent) count += 1
+    return count
   }
 
   /** sessions 帧用：额外带 attachable（孤儿且未关闭的会话可被新连接 attach）。 */
@@ -2223,8 +2347,10 @@ export class SessionManager {
    * 「orphanedAt !== null」对它要么永不成立（不回收）要么被误当孤儿（一开就收）。
    * 它的关闭入口是 agent 的 tty_close 或用户在面板里接管后关标签。
    */
-  async reapOrphans(graceMs: number): Promise<void> {
+  async reapOrphans(graceMs: number): Promise<TtySession[]> {
     const now = Date.now()
+    /** 本轮真的被回收的会话——**返回值就是日志报数的来源**，别在调用方另数一遍。 */
+    const reaped: TtySession[] = []
     for (const session of [...this.sessions.values()]) {
       if (session.owner === 'agent') continue
       // D77：只读保留态不归孤儿回收管——它可能本来就带着 orphanedAt（断线后
@@ -2233,9 +2359,11 @@ export class SessionManager {
       if (session.exited !== null) continue
       if (session.orphanedAt === null) continue
       if (graceMs <= 0 || now - session.orphanedAt >= graceMs) {
+        reaped.push(session)
         void this.destroy(session) // 后台收尾：terminate 最慢可达 ~20s，不阻塞回收器
       }
     }
+    return reaped
   }
 
   /**
@@ -2556,6 +2684,18 @@ export class TtyServer {
     })
   }
 
+  /**
+   * 会话生命周期留痕（0.30.0）：一行一件事，落进宿主的 startup 日志
+   * （`~/.dsh/logs/startup-*.log` —— `ctx.logger` 的输出实测会进那里，`console.log` 不会）。
+   *
+   * 加这一组的起因见 ROADMAP 的 0.30.0 那节（会话生命周期留痕）：一次「面板标签自己消失」的排查里，宿主侧
+   * **一条生命周期日志都没有**，于是「插件被重挂」与「孤儿被回收」这两种解释只能靠时间吻合去猜。
+   * 所以挂载/卸载、面板连接/断开、会话创建/结束、孤儿回收各留一行——宁可多几句噪音。
+   */
+  private lifecycle(message: string): void {
+    this.ctx.logger.info(`[dsh-tty] ${message}`)
+  }
+
   private onConnection(ws: WebSocket): void {
     /** 本连接的上下文：id 参与跨连接绑定键（D07）；open 供在途异步路径判「连接已死」（D06）。 */
     const conn: TtyConnContext = { id: randomUUID(), open: true }
@@ -2563,6 +2703,7 @@ export class TtyServer {
     const local = new Map<string, TtySession>()
     this.panels.add(ws)
     ws.on('close', () => { this.panels.delete(ws) })
+    this.lifecycle(`面板连接建立（当前 ${String(this.panels.size)} 个连接）`)
 
     const cleanupAll = async (): Promise<void> => {
       const all = [...local.entries()]
@@ -2601,7 +2742,13 @@ export class TtyServer {
 
     ws.on('close', () => {
       conn.open = false
+      const owned = local.size
       void cleanupAll()
+      /*
+       * 断开这一行是排查「标签自己没了」的第二个锚点（第一个是挂载/卸载那一对）：宽限秒数
+       * 与「几个会话转孤儿」都写进去——断线超过保活期就是回收器动手，两行能对上账。
+       */
+      this.lifecycle(`面板连接断开（本连接 ${String(owned)} 个会话 → 转孤儿，${String(Math.round(this.options.reconnectGraceMs / 1000))}s 内没重连就回收；还剩 ${String(this.panels.size)} 个连接）`)
     })
     ws.on('error', (error) => {
       this.ctx.logger.warn('[dsh-tty] ws error: ' + error.message)
@@ -2665,8 +2812,28 @@ export class TtyServer {
       kind: session.kind,
       target: session.target !== '' ? session.target : undefined,
       ...(session.tmuxName !== null ? { persist: true as const } : {}),
+      ...(session.hiddenFromAgent ? { hidden: true as const } : {}),
     })
     if (session.tmuxName !== null) void session.handle.tmuxRefresh?.()
+  }
+
+  /**
+   * 设置「对 agent 不可见」（0.30.0）：`spawn` / `ssh` 帧（含跨窗口重绑定）与运行期的
+   * `hidden` 帧**共用这一处**，避免两条路各写一遍判定。
+   *
+   * **只对用户标签生效**（`owner === 'user'`）：隐藏是用户对「我的标签」的处置；agent
+   * 若能把自己开的会话藏起来，等于把它的行为从用户眼前抹掉（D06「隐形会话」的反面）。
+   * 判据放在这个唯一写入口而不是各调用点——重绑定那条路（同 persistName 撞上别的
+   * 窗口/agent 的会话）也一并兜住。
+   *
+   * 值没变时不打日志：重连 / 重绑定会带同一个值反复走这里，每次都记一行会把
+   * lifecycle 日志淹掉（那条日志的用途是「查会话为什么消失」）。
+   */
+  private setHiddenFromAgent(session: TtySession, hidden: boolean): void {
+    if (hidden && session.owner !== 'user') return
+    if (session.hiddenFromAgent === hidden) return
+    session.hiddenFromAgent = hidden
+    this.lifecycle(`会话可见性：sid=${session.id} kind=${session.kind} hiddenFromAgent=${String(hidden)}（${hidden ? 'agent 侧看不到这条会话' : '恢复对 agent 开放'}）`)
   }
 
   /**
@@ -2706,6 +2873,7 @@ export class TtyServer {
       client: null, // agent 路径：无客户端
       local: new Map(),
       owner: 'agent',
+      hidden: false, // agent 自己开的会话没有隐藏自己的理由
     })
     // D72：agent 自己开的会话从出生起「什么都没读过」（水位线落在 seq 0）——
     // 包括 `command` 型会话在第一次 expect 之前打印的启动输出。用户开的标签
@@ -2841,8 +3009,10 @@ export class TtyServer {
     client: { ws: WebSocket; connId: string } | null
     local: Map<string, TtySession>
     owner: 'user' | 'agent'
+    /** 用户标签的「对 agent 不可见」（0.30.0）；agent 路径恒 false。 */
+    hidden: boolean
   }): Promise<{ session: TtySession; wantsPersist: boolean; degraded: boolean; degradedInconclusive: boolean }> {
-    const { sid, cols, rows, cwd, command, persistName, client, local, owner } = input
+    const { sid, cols, rows, cwd, command, persistName, client, local, owner, hidden } = input
     const subprocess = (this.ctx as unknown as { get(name: string): { spawnTerminal(spec: unknown): Promise<PtyHandle> } | undefined }).get('subprocess')
     if (subprocess === undefined) throw new Error('subprocess 服务不可用')
     const wantsPersist = persistName !== null
@@ -2885,6 +3055,7 @@ export class TtyServer {
         exited: null,
         paused: false,
         owner,
+        hiddenFromAgent: hidden,
         cwd,
         kind: 'local',
         target: '',
@@ -2919,6 +3090,7 @@ export class TtyServer {
       if (client !== null) next.clients.set(client.connId + ':' + sid, { ws: client.ws, sid })
       local.set(sid, next)
       this.sessions.add(next)
+      this.lifecycle(`会话创建：sid=${sid} kind=local owner=${owner}${tmuxName !== null ? ` persist=${tmuxName}` : ''}${command !== null ? ' command' : ''}`)
       // spawn 在途连接断开（0.19.0）：cleanupAll 已跑过、扫不到此刻才入表的
       // 会话——转孤儿（等重连 attach 或回收器清理）。不处理的话会话绑死已
       // 关闭的 ws 且 orphanedAt 永为 null：回收器永不扫到，PTY 与名额永久泄漏，
@@ -3058,6 +3230,9 @@ export class TtyServer {
           const existing = (this.sessions.findByTmuxName(persistName) ?? (await this.waitPendingTmux(persistName))) ?? null
           if (existing !== null) {
             if (!conn.open) return // 等待在途创建期间连接断了：不往死连接上绑
+            // 跨窗口共享的同一条 tmux 会话只有**一个** hidden 位：以本次帧为准（后写胜），
+            // 与 `hidden` 帧同一条规则——不给共享会话另立一套语义
+            this.setHiddenFromAgent(existing, msg.hidden === true)
             this.rebindClient(existing, sid, ws, local, conn.id)
             return
           }
@@ -3086,6 +3261,7 @@ export class TtyServer {
             client: { ws, connId: conn.id },
             local,
             owner: 'user',
+            hidden: msg.hidden === true,
           })
         } catch (error) {
           send(ws, { t: 'error', sid, m: error instanceof Error ? error.message : String(error) })
@@ -3129,6 +3305,7 @@ export class TtyServer {
           const existing = (this.sessions.findByTmuxName(persistName) ?? (await this.waitPendingTmux(persistName))) ?? null
           if (existing !== null && existing.kind === 'ssh' && !existing.closed && existing.exited === null) {
             if (!conn.open) return // 等待在途创建期间连接断了：不往死连接上绑
+            this.setHiddenFromAgent(existing, msg.hidden === true) // 同上：共享会话一个 hidden 位
             this.rebindClient(existing, sid, ws, local, conn.id)
             return
           }
@@ -3176,6 +3353,7 @@ export class TtyServer {
             exited: null,
             paused: false,
             owner: 'user',
+            hiddenFromAgent: msg.hidden === true,
             cwd: '',
             kind: 'ssh',
             target,
@@ -3207,6 +3385,7 @@ export class TtyServer {
           }
           local.set(sid, next)
           this.sessions.add(next)
+          this.lifecycle(`会话创建：sid=${sid} kind=ssh owner=user target=${target}${tmuxName !== null ? ` persist=${tmuxName}` : ''}`)
           // spawn 在途连接断开（0.19.0）：转孤儿，理由与本地分支相同；SSH 连接
           // （含远程 tmux 持久会话）保持存活等重连 attach，到点由回收器收尾
           if (!conn.open || ws.readyState !== WebSocket.OPEN) {
@@ -3268,6 +3447,20 @@ export class TtyServer {
           } catch {
             /* 非法尺寸或已释放 */
           }
+        }
+      } else if (msg.t === 'hidden') {
+        // 「对 agent 不可见」（0.30.0）：用户在自己面板里对**本条连接绑定的**标签切换。
+        // 走 `local` 而不是全局 sid——能改这个位的只有持有该标签的那个窗口
+        // （与 `resize` / `refresh` 同一条绑定语义）；共享的 tmux 会话只此一个位，
+        // 后写胜（与 spawn 帧重绑定时的规则一致）。
+        const resolved = this.resolveSid(ws, msg, local)
+        if (resolved === undefined || 'unknown' in resolved) return
+        const session = local.get(resolved.sid)
+        if (session !== undefined && !session.closed) {
+          this.setHiddenFromAgent(session, msg.hidden === true)
+          // 回帧**如实回报结果**（不是回报请求）：agent 开的会话会被上面的唯一写入口
+          // 拒绝，客户端据实际值收敛标记——不回帧或回请求值，切换失败都长得像成功。
+          send(ws, { t: 'hidden', sid: resolved.sid, hidden: session.hiddenFromAgent })
         }
       } else if (msg.t === 'refresh') {
         // 强制 tmux 重画（0.10.1）：客户端 reset 清掉残 scrollback 后请宿主
@@ -3419,6 +3612,8 @@ export class TtyServer {
     // `session.closed` 守卫要放保留态过去。终局之后的字节因 clients 已清空而不再
     // 成帧（`onData` 照常入环形缓冲与屏：读到的是更完整的尾巴，不是更少的）。
     session.exited = { code: outcome.exitCode, signal: outcome.signal, at: Date.now() }
+    // 终局留痕（0.30.0）：进程退出 ≠ 退役（D77 起转只读保留），这一行回答「它为什么不活着了」
+    this.lifecycle(`会话结束：sid=${session.id} kind=${session.kind} owner=${session.owner} ${outcome.exitCode !== null ? `code=${String(outcome.exitCode)}` : `signal=${outcome.signal ?? '未知'}`}（转只读保留：输出与屏仍可读，直到显式关闭）`)
     for (const victim of this.sessions.capExited(MAX_EXITED_SESSIONS)) {
       // 被条数上限淘汰的：连同它在连接侧 local 表里的绑定一起摘掉（否则那条连接
       // 还拿得到 sid、却指着一个已退役的会话）
@@ -5233,10 +5428,16 @@ const plugin = definePlugin<Config>({
                 },
               },
               render: (_args: unknown, value: unknown) => {
-                const sessions = (value as { sessions?: SessionSnapshot[] })?.sessions ?? []
-                const text = sessions.length === 0
-                  ? '当前没有终端面板会话（可用 tty_open 自己开一个，或引导用户打开终端面板）'
-                  : '终端面板会话：' + sessions.map((s) => {
+                // 局部名用 `list`：`sessions` 在这个作用域里是**宿主的 SessionManager**
+                // （下面要问它 hiddenCount），叫 sessions 会把它遮住。
+                const list = (value as { sessions?: SessionSnapshot[] })?.sessions ?? []
+                // 隐藏标签（0.30.0）：列表里没有它们，但**得让 agent 知道「没有」不等于
+                // 「用户没开终端」**——否则它会把这句话原样转述给正盯着自己标签的用户。
+                // 只报条数；文案与每轮 prompt 块**共用** hiddenSessionsNote（一处口径）。
+                const hiddenNote = hiddenSessionsNote(sessions.hiddenCount())
+                const text = list.length === 0
+                  ? '当前没有可用的终端面板会话（可用 tty_open 自己开一个，或引导用户打开终端面板）。'
+                  : '终端面板会话：' + list.map((s) => {
                       const where = s.kind === 'ssh' ? `ssh ${s.target}` : `pid=${String(s.pid ?? '?')} cwd=${s.cwd}`
                       const persist = s.persist === true ? ' [tmux 持久]' : ''
                       const owner = s.owner === 'agent' ? ' [agent 开的]' : ''
@@ -5259,14 +5460,18 @@ const plugin = definePlugin<Config>({
                       const gone = s.exited === true ? ` [已退出 ${detail}·只读保留${left}——只能读，写会报错]` : ''
                       return `\n- sid=${s.sid} [${s.kind}]${owner}${persist}${runMark}${lastExit}${gone} ${where} (启动于 ${new Date(s.startedAt).toLocaleString()})`
                     }).join('')
-                return [{ type: 'text', text }]
+                return [{ type: 'text', text: text + hiddenNote }]
               },
             },
-            async execute(): Promise<{ sessions: ReturnType<SessionManager['list']> }> {
+            async execute(): Promise<{ sessions: ReturnType<SessionManager['listForAgent']> }> {
               // D72：agent 第一次「看见」这些会话时把水位线落在当下——否则第一次
               // tty_expect 会把用户早先的历史输出当成「还没读过的输出」回扫过来
+              // 隐藏会话（0.30.0）**照旧被落水位线**：`forEach` 遍历全部会话，包括
+              // `listForAgent` 列不出来的那些。这是有意的——水位线是「agent 已读到这里」，
+              // 而隐藏期间产生的输出**本来就不该**在取消隐藏后被回扫给 agent；落水位线
+              // 正好让那一段留在隐藏期之内。
               sessions.forEach((session) => { ensureReadMark(session) })
-              return { sessions: sessions.list() }
+              return { sessions: sessions.listForAgent() }
             },
           })))
           activeDisposers.push(tools.register(defineTool({
@@ -5450,7 +5655,7 @@ const plugin = definePlugin<Config>({
             async execute(args: unknown): Promise<{ sid: string; available: boolean; reason?: string; target?: string; cpuPct?: number; cores?: number; memPct?: number; memUsed?: number; memTotal?: number; diskPct?: number; diskUsed?: number; diskTotal?: number; tcpConns?: number; rxRate?: number; txRate?: number; tempC?: number; uptimeSec?: number }> {
               const input = args as { sid?: unknown }
               if (typeof input.sid !== 'string' || input.sid === '') throw new Error('sid 必须是非空字符串')
-              const session = sessions.get(input.sid)
+              const session = sessions.agentView(input.sid)
               if (session === undefined || session.closed) throw new Error(`会话不存在或已退出: ${input.sid}`)
               if (session.exited !== null) {
                 // D77：进程没了就没有「这台会话所在机器」的此刻指标可言（本地会话会取到
@@ -5507,7 +5712,7 @@ const plugin = definePlugin<Config>({
             async execute(args: unknown): Promise<{ sid: string; tail: string; source?: string; exitCode?: number; inProgress?: boolean; exited?: boolean; signal?: string }> {
               const input = args as { sid?: unknown; lines?: unknown; last?: unknown; raw?: unknown }
               if (typeof input.sid !== 'string' || input.sid === '') throw new Error('sid 必须是非空字符串')
-              const session = sessions.get(input.sid)
+              const session = sessions.agentView(input.sid)
               if (session === undefined || session.closed) throw new Error(`会话不存在或已退出: ${input.sid}`)
               const useRaw = input.raw === true
               // D77：只读保留态的标记（读得到，但要如实告诉 agent 这是已退出会话的输出）
@@ -5588,7 +5793,7 @@ const plugin = definePlugin<Config>({
             async execute(args: unknown): Promise<{ sid: string; cols: number; rows: number; text: string; exited?: boolean; signal?: string }> {
               const input = args as { sid?: unknown }
               if (typeof input.sid !== 'string' || input.sid === '') throw new Error('sid 必须是非空字符串')
-              const session = sessions.get(input.sid)
+              const session = sessions.agentView(input.sid)
               if (session === undefined || session.closed) throw new Error(`会话不存在或已退出: ${input.sid}`)
               const screen = session.screen
               if (screen === null) {
@@ -5659,7 +5864,7 @@ const plugin = definePlugin<Config>({
               const input = args as { sid?: unknown; pattern?: unknown; timeoutSec?: unknown }
               if (typeof input.sid !== 'string' || input.sid === '') throw new Error('sid 必须是非空字符串')
               if (typeof input.pattern !== 'string' || input.pattern === '') throw new Error('pattern 必须是非空字符串')
-              const session = sessions.get(input.sid)
+              const session = sessions.agentView(input.sid)
               if (session === undefined || session.closed) throw new Error(`会话不存在或已退出: ${input.sid}`)
               let re: RegExp
               try {
@@ -5796,7 +6001,7 @@ const plugin = definePlugin<Config>({
               }
               // 按键名先解析（未知名字在这里就报错，别等写进 PTY 才发现）
               const keyBytes = resolveKeys(keys)
-              const session = sessions.get(input.sid)
+              const session = sessions.agentView(input.sid)
               if (session === undefined || session.closed) throw new Error(`会话不存在或已退出: ${input.sid}`)
               if (session.exited !== null) {
                 // D77：只读保留态明确拒写——进程已经没了，写进去只会在死 PTY 上静默消失
@@ -6332,11 +6537,15 @@ const plugin = definePlugin<Config>({
             name: 'plugin:dsh-tty:terminals',
             order: 150,
             text: () => {
-              const list = sessions.list()
+              const list = sessions.listForAgent()
               // D78 补：本地命令的语法随宿主 shell 变（POSIX / cmd / PowerShell），
               // 而「Shell 路径」是热改的配置——所以这行每轮现算，不冻在工具描述里。
               const shellLine = commandShellHint(live.shell)
-              if (list.length === 0) return `当前没有终端面板会话（可用 tty_open 自己开一个，或引导用户打开「终端」面板）。\n${shellLine}`
+              // 被用户隐藏的标签（0.30.0）：**只报条数**，不报 sid / cwd / 活动。没有
+              // 这一行时，上面列不出任何会话会被读成「用户没开终端」，模型就会回一句
+              // 「当前没有终端面板会话」——而用户正盯着自己的标签（见 hiddenCount）。
+              const hiddenNote = hiddenSessionsNote(sessions.hiddenCount())
+              if (list.length === 0) return `当前没有可用的终端面板会话（可用 tty_open 自己开一个，或引导用户打开「终端」面板）。${hiddenNote}\n${shellLine}`
               // D77：只读保留态（进程已退出）**不能冒充活会话**——模型会以为那个长驻
               // 任务还在跑、或者对它发命令。这里把两者分开：活会话逐条列，保留态压成
               // 一行汇总（每轮 prompt 的增量是常数，不随条数线性膨胀）。
@@ -6365,7 +6574,7 @@ const plugin = definePlugin<Config>({
                     const how = s.signal !== undefined ? `signal=${s.signal}` : s.exitCode === undefined ? '退出码未知' : `exitCode=${String(s.exitCode)}`
                     return `sid=${s.sid} (${how})`
                   }).join('、')
-              return head + tail + '\n' + shellLine
+              return head + tail + hiddenNote + '\n' + shellLine
             },
           })
           sectionDisposable = systemPrompt.section({ name: 'plugin:dsh-tty', order: 150, text: TTY_GUIDANCE })
@@ -6396,7 +6605,14 @@ const plugin = definePlugin<Config>({
     // 孤儿会话回收器：超过保活期的异常断开会话定期清理（grace=0 时为 no-op，
     // 断开时立即结束）；插件卸载时随 effect 一起停掉
     const reaperTimer = setInterval(() => {
-      void sessions.reapOrphans(live.reconnectGraceMs)
+      void sessions.reapOrphans(live.reconnectGraceMs).then((reaped) => {
+        /*
+         * 「断线太久 → 孤儿被回收」是「标签为什么自己没了」最常见的答案，必须留痕，
+         * 而且是 warn 档：它真的结束了用户的东西（与只读保留超限淘汰同一档）。
+         */
+        if (reaped.length === 0) return
+        ctx.logger.warn(reapedOrphansMessage(reaped.map((session) => session.id), Math.round(live.reconnectGraceMs / 1000)))
+      })
       sessions.reapExited(EXITED_RETAIN_MS) // D77：保留期策略为有限值时到点退役（∞ 时不动作，条数由 capExited 兜）
     }, REAPER_INTERVAL_MS)
     reaperTimer.unref?.()
@@ -6407,16 +6623,30 @@ const plugin = definePlugin<Config>({
     // 都会直接打死宿主进程（Web GUI 掉线、会话表清空、agent 全丢）。插件卸载时摘掉。
     ctx.effect(() => installXtermScreenCrashGuard(), 'dsh-tty: xterm crash guard')
 
+    // 本次挂载的**进程级**序号：卸载清点与挂载留痕共用同一个号（见 nextMountSerial）
+    const mountSerial = nextMountSerial()
     // 插件卸载时回收全部会话、隧道与 SFTP 连接
     ctx.effect(() => {
       return () => {
+        /*
+         * 卸载清点（0.30.0）：**实例被换掉 = 这张会话表随之清空**，面板上的标签会跟着消失，
+         * 非 tmux 会话的内容再也回不来。所以「第几次挂载的那个实例被卸了、卸的时候还剩几条」
+         * 是那类现象的第一手证据——必须打在 `disposeAll()` **之前**（之后表就空了）。
+         */
+        ctx.logger.info(`[dsh-tty] 插件卸载（本进程第 ${String(mountSerial)} 次挂载的实例）：清点 ${String(sessions.liveCount)} 个在线会话、${String(sessions.exitedCount)} 个只读保留 —— 一并结束（非 tmux 会话的内容不可恢复）`)
         void sessions.disposeAll()
         tunnelManager.disposeAll()
         sftpManager.disposeAll()
       }
     }, 'dsh-tty: session cleanup')
 
-    console.log(`[dsh-tty] mounted (shell=${live.shell}, term=${live.term}, cwd=${live.cwd}, maxSessions=${sessions.limitValue})`)
+    /*
+     * 挂载留痕（0.30.0）：**序号是进程级的**（见 `nextMountSerial`）——同一个 pid 里出现
+     * 「第 2 次挂载」就意味着插件被重挂过一次，而那次重挂正是「标签自己消失」的头号嫌疑。
+     * `tmux socket` 也写进来：`dsh --profile X` 起的宿主里 `DSH_PROFILE` 可能是空的，于是它
+     * 和别的宿主共用裸 `dsh-tty`（2026-10-10 实测）——这种事只有打出来才看得见。
+     */
+    ctx.logger.info(`[dsh-tty] 插件挂载（本进程第 ${String(mountSerial)} 次，pid=${String(process.pid)}）：持久化=${live.persistence} 断线保活=${String(Math.round(live.reconnectGraceMs / 1000))}s 并发上限=${String(sessions.limitValue)} tmux socket=${tmuxSocketName()} shell=${live.shell} cwd=${live.cwd}`)
   },
 })
 

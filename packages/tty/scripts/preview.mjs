@@ -67,6 +67,7 @@ const SCENARIOS = [
   ['ssh-edit', 'SSH 连接对话框（编辑）'],
   ['settings', '设置卡片'],
   ['settings-assist', '设置卡片：AI 辅助小节（默认关 + 模型路由一个控件）'],
+  ['settings-shell', '设置卡片：Shell 路径候选表（浮层，不顶动卡片布局）'],
   ['settings-docker', '设置卡片（docker 与 tty 并排对照）'],
   ['docker-stale-book', 'docker 设置卡片：失效的连接簿引用要看得出来'],
   ['tunnel-edit', '端口转发：编辑隧道（回填 / 改端口换名 / 停用的不被启用）'],

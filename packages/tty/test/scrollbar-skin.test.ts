@@ -83,11 +83,22 @@ const hazards = rules.filter((rule) => {
 
 /** 视口本体上的标准属性声明（可能多处，后者覆盖前者：取最后一条有效值）。 */
 function viewportDecl(name: string): string | undefined {
-  const values = withSelector('.tt_term .xterm-viewport')
+  const values = viewportRules()
     .map((rule) => decl(rule.decls, name))
     .filter((value): value is string => value !== undefined)
   return values.at(-1)
 }
+
+/*
+ * 视口规则的选择器有两处，不是「随便多写一层」：皮肤那几条写在 `.tt_term .xterm-viewport`
+ * （(0,2,0)），而贴边的外扩必须压过 xterm.css 自己的 `.xterm .xterm-viewport { right: 0 }`
+ * ——两者同权重，而注入顺序是 `ttyCss + '\n' + xtermCss`（client-src 的 ensureStyle），
+ * 同权重下后写的 xterm.css 胜。所以外扩那条多带一层 `.xterm`（(0,3,0)），与顺序无关。
+ */
+const VIEWPORT_SELECTORS = ['.tt_term .xterm-viewport', '.tt_term .xterm .xterm-viewport']
+
+const viewportRules = (): Rule[] =>
+  rules.filter((rule) => selectorList(rule).some((sel) => VIEWPORT_SELECTORS.includes(sel)))
 
 const thumbSkins = withSelector('.tt_term .xterm-viewport::-webkit-scrollbar-thumb')
 
@@ -139,5 +150,39 @@ describe('终端滚动条皮肤（D86）', () => {
     const spec = (selector: string): number => (selector.match(/[.[]/gu) ?? []).length
     expect(spec('.tt_term .xterm-viewport')).toBeGreaterThan(spec('.tt_modal *'))
     expect(hazards.flatMap((rule) => selectorList(rule)).some((sel) => sel.includes(':not('))).toBe(false)
+  })
+
+  /*
+   * 滚动条**贴边**（用户反馈「滚动条可以优化靠边一点吗」）：视口止步于 `.tt_term` 的内容盒，
+   * 而滚动条画在视口自己的右缘——于是它离面板边缘整整一个水平内边距（截图实测滑块右缘 15px），
+   * 看着像悬空。修法是把视口的右边界反向外扩同一段内边距（留 2px 贴边余量），文字内缩不动
+   * （`.xterm-screen` 与视口是兄弟节点，宽度由 `.tt_term` 的内容盒决定）。
+   *
+   * 这一条钉的是「同源」：内缩与外扩必须写同一个 `--tt-term-pad-x`。各写一个数字的话，
+   * 迟早漂成「文字贴边」或「滚动条伸出面板外」——两种都不会有任何闸门变红。
+   */
+  it('滚动条贴边：视口的右外扩与 .tt_term 的水平内边距同源，且余量小于内边距', () => {
+    const pad = tokenValue('--tt-term-pad-x')
+    expect(pad, '--tt-term-pad-x 没登记 → 内缩与外扩各写一个数字，迟早漂').toBe('12px')
+    const termRule = withSelector('.tt_term')[0]
+    expect(
+      decl(termRule?.decls ?? '', 'padding'),
+      '.tt_term 的水平内边距不再读 --tt-term-pad-x：外扩的值就与它脱钩了',
+    ).toBe('10px var(--tt-term-pad-x)')
+    const right = viewportDecl('right')
+    expect(
+      right,
+      '视口没有反向外扩 → 滚动条会离面板边缘一整个内边距（实测滑块右缘 15px）',
+    ).toBe('calc(2px - var(--tt-term-pad-x))')
+    // 外扩那条必须比 xterm.css 的 `.xterm .xterm-viewport` 更具体，否则被它的 right: 0 顶掉
+    const px = (value: string | undefined): number => Number((value ?? '').replace('px', ''))
+    const spec = (selector: string): number => (selector.match(/[.[]/gu) ?? []).length
+    expect(
+      spec(VIEWPORT_SELECTORS[1]!),
+      '外扩写在 (0,2,0) 的选择器上会被 xterm.css 的 `.xterm .xterm-viewport { right: 0 }` 顶掉',
+    ).toBeGreaterThan(spec('.xterm .xterm-viewport'))
+    const margin = px(pad) - px(/calc\((\d+px)/u.exec(right ?? '')?.[1])
+    expect(margin, '贴边余量必须 > 0 且 < 内边距：等于 0 会顶到面板边，≥ 内边距则等于没改').toBeGreaterThan(0)
+    expect(margin).toBeLessThan(px(pad))
   })
 })

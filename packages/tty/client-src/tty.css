@@ -39,6 +39,9 @@
   --tt-statsbar-h: 24px;
   /* 退出提示条高度（issue #7①②）：里面有一颗 28px 的按钮，比状态条高一档 */
   --tt-exitbar-h: 32px;
+  /* 终端区的水平内边距 = 文字与面板边缘的呼吸位。**它同时决定滚动条离面板边缘多远**：
+     `.tt_term .xterm-viewport` 按同一个值反向拉出内边距，别在这两处各写一个数字。 */
+  --tt-term-pad-x: 12px;
   /* 间距 */
   --tt-gap-xs: 4px;
   --tt-gap-sm: 6px;
@@ -647,8 +650,14 @@
 
 /* ---- 搜索框 ---- */
 .tt_searchInput {
-  flex: none;
-  width: 190px;
+  /*
+   * 宽度：240px 是「短版 placeholder 完整可见」的实测值（原先 190px 连
+   * `搜索 (Enter ↓ / Shift+Enter ↑)` 都放不下，占位文案被截掉半句）。
+   * 头部的主弹性项是标签栏（.tt_tabbar 是 flex:1 1 0），所以这里**不抢**宽度：
+   * flex-basis 给 240、只留 shrink 在窄窗口兜底，min-width 保证还看得见输入的字。
+   */
+  flex: 0 1 240px;
+  min-width: 120px;
   height: var(--tt-h-md);
   padding: 0 10px;
   border: 0.5px solid var(--tt-border-strong);
@@ -742,12 +751,6 @@
   width: var(--tt-h-sm);
   height: var(--tt-h-sm);
   padding: 0;
-}
-/* 粘贴图标里那块「纸」的镂空：填宿主底色。
-   SVG 的 presentation attribute **不解析 var()**（原来写的 fill="var(--dsw-…)" 一直是无效值），
-   所以走类名 + CSS 规则。 */
-.tt_iconPasteHole {
-  fill: var(--dsw-alias-bg-base);
 }
 .tt_toolGroup {
   display: flex;
@@ -1175,7 +1178,7 @@
   position: absolute;
   inset: 0;
   z-index: 1;
-  padding: 10px 12px;
+  padding: 10px var(--tt-term-pad-x);
 }
 .tt_term .xterm {
   height: 100%;
@@ -1211,6 +1214,7 @@
 .tt_term .xterm-viewport::-webkit-scrollbar {
   width: 10px;
 }
+
 .tt_term .xterm-viewport::-webkit-scrollbar-thumb {
   border: 3px solid transparent;
   border-radius: var(--tt-r-pill);
@@ -1220,6 +1224,29 @@
 .tt_term .xterm-viewport::-webkit-scrollbar-thumb:hover {
   background: var(--tt-term-scrollbar-hover);
   background-clip: content-box;
+}
+
+/*
+ * 滚动条贴边（用户反馈「滚动条可以优化靠边一点吗」；截图实测滑块右缘距面板边缘 15px）：
+ * 视口止步于 `.tt_term` 的内容盒（= 面板边缘再往里一整个 `--tt-term-pad-x`），而滚动条画在
+ * 视口自己的右缘——于是 10px 的轨道整条躺在内边距里、4px 的滑块被推到离边缘 15–19px，
+ * 看着像悬空。这里只把**视口**的右边界往外拉出内边距、留 2px 贴边余量，滚动条就落进那条
+ * 空隙，而**文字的内缩一点不动**——`.xterm-screen` 与视口是兄弟节点（实测同挂 `.xterm`），
+ * 宽度由 `.tt_term` 的内容盒（也就是 cols）决定，加宽视口只是让右边多出一段空白；实测改后
+ * `.xterm-screen` 仍是 1239×800、`scrollWidth == clientWidth`（不会冒出横向滚动条），上下还
+ * 各有 `.tt_term` 的 10px 内边距，不会顶到面板圆角。
+ *
+ * ⚠️ 多带的这一层 `.xterm` 不是冗余：xterm.css 自己的 `.xterm .xterm-viewport { right: 0 }`
+ * 与本包原选择器**同为 (0,2,0)**，而注入顺序是 `ttyCss + '\n' + xtermCss`（见 client-src 的
+ * ensureStyle）——同权重下 xterm.css 后写者胜，把 `right` 写进上面那条规则会被它的 0 顶掉
+ * （实测 computed right 仍是 `0px`）。多一层即 (0,3,0)，与注入顺序无关。
+ *
+ * 想调贴边程度只动 `--tt-term-pad-x`（文字内缩与外扩同源）：2px 余量改大 = 离边缘更远，
+ * 改到 ≥ 内边距就等于回到「滚动条躺在内边距里」的老样子；`test/scrollbar-skin.test.ts`
+ * 钉着这层关系。
+ */
+.tt_term .xterm .xterm-viewport {
+  right: calc(2px - var(--tt-term-pad-x));
 }
 
 /* ======================= 服务器状态条（0.17.0） ======================= */
@@ -1904,8 +1931,9 @@
  * 实测症状是聚焦筛选框的一瞬间整块内容位移，看着像对话框在跳——列表本来是文档流里的
  * flex 子项，长一截就撑长整张卡片。
  *
- * 只作用于 .tt_sshRow 内：同一个 .tt_envList 在**设置卡片**（React 侧）是内联的 shell 路径
- * 候选，那里推动内容是正常的，别一起改。
+ * 只作用于 .tt_sshRow 内：同一个 .tt_envList 在**设置卡片**（React 侧）另有浮层形态
+ * （`.tt_routeList` / `.tt_shellList`，`position: fixed` + placePopover，见下），那边由 JS 逐次
+ * 定位、天然逃出卡片的 overflow，与这里的 absolute 版各管一处，别一起改。
  *
  * 已知边界：卡片是 `overflow-y: auto`，浮层如果贴到卡片下缘会被裁。当前两个选择器
  * （私钥口令 / 密码）都在对话框中段，180px 放得下；真遇到贴底的位置，再改成 `position: fixed`
@@ -2219,20 +2247,30 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  flex: 1 1 auto;
+  /* 贴合内容：箭头紧跟源端点。原先 `1 1 auto` 会把「跳」抻满整行，端点跟着被抻开 */
+  flex: 0 1 auto;
   min-width: 0;
 }
-/* 一个端点 = 主机 + 冒号 + 端口；用同一底色连成一体，看得出是一组 */
+/*
+ * 一个端点 = 主机 + 冒号 + 端口；用同一底色连成一体，看得出是一组。
+ *
+ * **宽度贴合内容**（`0 1 auto`），不跟着行宽抻开。原先的 `1 1 190px` 在宽卡片里有对称的两个
+ * 症状（用户两张截图各拍到一处）：① 左组（静态 `127.0.0.1` + 冒号 + 端口框，三个孩子都不增长）
+ * 被抻到 ~900px，端口框后面留下一大片**组内死区**；② 右组的 host 是 `1 1 auto`、自己吃掉全部
+ * 余量，于是冒号 + 端口被顶到卡片右缘，离「服务器侧主机」占位符几百像素。现在 host 有确定
+ * 宽度（见下），整组宽度 = 内容宽度，两个症状一起消失。
+ */
 .tt_tunnelEndpoint {
   display: flex;
   align-items: center;
   gap: 0;
-  flex: 1 1 190px;
+  flex: 0 1 auto;
   min-width: 0;
   border: 0.5px solid var(--tt-border);
   border-radius: var(--tt-r-md);
   background: var(--tt-surface-2);
   overflow: hidden;
+  transition: border-color var(--tt-dur) var(--tt-ease), box-shadow var(--tt-dur) var(--tt-ease);
 }
 .tt_tunnelEndpoint .tt_cardInput {
   border: 0;
@@ -2240,6 +2278,20 @@
   background: transparent;
   min-width: 0;
   width: auto;
+}
+/*
+ * 组内输入框**不自己画聚焦环**：本包输入框的聚焦态是 `border-color` + `--tt-ring`（2px 外扩），
+ * 而这一组是 `overflow: hidden` 的——环被裁掉大半，只剩输入框两侧各一条竖线。用户截图里
+ * 「冒号左边 / 右边多出来一道线」就是它，读起来像多了一道分隔线而不是聚焦提示。
+ * 改成聚焦落在组内任一格时**整组亮**（`box-shadow` 画在组自己身上，不会被自己的 overflow 裁）。
+ */
+.tt_tunnelEndpoint .tt_cardInput:focus,
+.tt_tunnelEndpoint .tt_cardInput:focus-visible {
+  box-shadow: none;
+}
+.tt_tunnelEndpoint:focus-within {
+  border-color: var(--tt-accent);
+  box-shadow: var(--tt-ring);
 }
 /* 固定端（本地 127.0.0.1 监听 / 拨号地址）渲染成静态文本而不是输入框：
    宿主把这一端硬编码了，给个可编辑的框是骗人 */
@@ -2261,7 +2313,9 @@
   user-select: none;
 }
 .tt_tunnelEndpoint .tt_tunnelHost {
-  flex: 1 1 auto;
+  /* 主机名给足位置；窄容器里可以缩（min-width 兜住，别缩到看不见） */
+  flex: 0 1 220px;
+  min-width: 96px;
 }
 .tt_tunnelEndpoint .tt_tunnelPort {
   flex: 0 0 78px;
@@ -2421,22 +2475,24 @@
   font-size: 12px;
   line-height: 18px;
 }
-.tt_shellList {
-  margin-top: 6px;
-}
 /*
- * 模型路由的候选表：**浮层**，不是内联列表。
+ * 卡片里的候选表（模型路由 / Shell 路径）：**浮层**，不是内联列表。
  *
- * 内联（`.tt_shellList` 那种做法）会把设置卡片顶高、把下面的字段整段推走——用户实测原话
- * 「下拉选会破坏布局」。固定定位 + placePopover 逐次定位，与「+」菜单、终端那边几个浮层同一套；
- * 宽度由 JS 对齐输入框（见 client-src 的定位 effect）。
+ * 内联会把设置卡片顶高、把下面的字段整段推走——用户两处都实测过：模型路由那次**顶动 134px**，
+ * Shell 路径那次是截图里输入框正下方多出一整块（「这个选择会挤占空间破坏布局」）。固定定位 +
+ * placePopover 逐次定位，与「+」菜单、终端那边几个浮层同一套；宽度由 JS 对齐输入框
+ * （见 client-src 的定位 effect）。
  */
-.tt_routeList {
+.tt_routeList,
+.tt_shellList {
   position: fixed;
   z-index: 1400;
   max-width: min(560px, 92vw);
-  max-height: 260px;
   box-shadow: var(--tt-shadow);
+}
+/* 模型候选按渠道分组、行数多（几十条），比 Shell 路径多给一档高度 */
+.tt_routeList {
+  max-height: 260px;
 }
 /* 模型路由是**只读**的（只能选，不能打字）：手型 + 藏光标，别让它看起来像能输 */
 .tt_routeInput {

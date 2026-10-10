@@ -13,7 +13,7 @@
 - **Two client services exposed to other plugins**: `ttyConnbar` (connection-bar actions) and `ttyTerminal` (open a terminal in place); dsh-docker’s “Containers / Terminal” buttons go through them.
 - **AI assist: explain failures (0.24.0, off by default)**: when a command exits non-zero a chip appears in the corner; clicking it sends **that command's output tail** (cleaned / truncated / secrets masked) plus the current screen to the model and renders a short "what happened / next step". A suggested command is only typed into the prompt line — never submitted for you. See [AI assist](#ai-assist-explain-failures-0240-off-by-default).
 
-![Terminal panel: a multi-tab xterm modal, the toolbar has search/clear/copy/paste, and the title bar has the minimize “—” and close ✕](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty.png)
+![Terminal panel: a multi-tab xterm modal; the header toolbar has the search box expanded (hint “Search (Enter ↓ / Shift+Enter ↑)”) plus clear, and the title bar has the minimize “—” and close ✕](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty.png)
 
 ## Installation
 
@@ -46,6 +46,17 @@ After installing, restart `dsh web`; a “Terminal” entry appears in the sideb
   (how many, and how many of those the AI opened); closing a single live session is the same as clicking its
   own ✕, so it does not ask (the rule lives in `client-src/tab-bulk.js`, same “what do you lose” criterion
   as the D98 panel-close guard);
+- **“Hidden from the AI” tabs (0.30.0, off by default)**: the context menu gains “Hide this tab from the AI” —
+  once hidden, the **agent side cannot see it at all**: it is absent from `tty_list` and from the per-turn
+  systemPrompt session block (not even cwd or whether a command is running; that block only reports
+  “N more tabs are set to be invisible to the agent”), and `tty_capture` / `tty_screen` / `tty_send` /
+  `tty_expect` / `tty_stats` are refused for it by sid. The marker is a 🙈 before the tab title plus a
+  tooltip (the “⋯” list shows it too). **In your own panel the tab stays fully usable** (view, type, close);
+  enforcement happens on the host and applies to the agent only — keep one terminal of your own for keys,
+  personal work, or anything unrelated to this turn without worrying about it being screen-scraped.
+  **Tabs the AI opened do not get this item** (hiding them would erase its behaviour from your view); the
+  rule lives in `client-src/tab-hidden.js` plus the host’s `setHiddenFromAgent`, and after a reconnect only
+  “hidden” is re-asserted (the hidden state is never silently cleared);
 - **The working directory follows the current DSH session**: new tabs open in the current session’s
   working directory (the host `cwd` configuration is the fallback). Since 0.1.6 the session list
   snapshot no longer carries `current` (view selection moved to the workspace domain), so the client
@@ -56,7 +67,8 @@ After installing, restart `dsh web`; a “Terminal” entry appears in the sideb
   follow** — each keeps its own last valid size (D79: when the container is invisible or the probe is
   degenerate, no resize frame is sent at all);
 - **Ctrl+F searches inside the terminal** (Enter next / Shift+Enter previous / Esc closes only the search
-  box), links in the output are clickable, and the toolbar offers clear / copy selection / paste;
+  box), links in the output are clickable, and the header toolbar keeps just search / clear — copy and
+  paste use the terminal’s own shortcuts (Cmd+C / Ctrl+Shift+C to copy a selection, Cmd+V / Ctrl+V to paste);
 - **Reconnect on disconnect (0.3.0)**: after an abnormal disconnect such as a page refresh or a network
   blip, the session is kept alive on the host for `reconnectGraceSec` (120 seconds by default) and the
   client reconnects automatically with exponential backoff (capped at 5s); after reconnecting it
@@ -427,6 +439,12 @@ references one connection-book entry (host and authentication come with it), in 
     the SSH-server-side target;
   - `-R`: the left end takes the SSH-server-side listen address; the right end is fixed at `127.0.0.1`
     (the local service being reached).
+  Two styling rules (from a user screenshot: “输入框的样式优化一下”): the group **hugs its content** instead of
+  stretching with the row (otherwise the left group leaves a dead zone after the port box, while the right
+  group's host soaks up all the slack and pushes the colon and port to the card's right edge); and the inputs
+  inside the group **do not paint their own focus ring** — the group is `overflow: hidden`, so a 2px ring gets
+  clipped down to a single vertical line that reads like a stray separator; the whole group lights up instead
+  (`test/tunnel-endpoint.test.ts` pins that pairing).
 - **Editing (0.20.0)**: “Edit” on a row loads it back into the form below and the button pair becomes
   “Save changes / Cancel”. Saving locates the entry by its **original name** — a tunnel name is derived
   (`<book>-L<localPort>`), so changing the port *is* changing the name and the new name cannot find the old
@@ -813,7 +831,7 @@ sub-page under the Plugins sidebar, and `≤0.1.5` uses the settings-page card.
 | `enabled` | true | Disables the whole plugin (needs a restart) |
 | `announceToAgent` | true | Whether to announce the terminal panel capability to the agent (systemPrompt injection) |
 | `maxSessions` | 4 | Concurrent PTY session limit (1~16) |
-| `shell` | `$SHELL` | Shell path; the settings card offers a picker and free input (candidates come from `/etc/shells` + `$SHELL` + common install paths, listing only existing and executable ones, with `$SHELL` first), and any path can also be typed |
+| `shell` | `$SHELL` | Shell path; the settings card offers a picker and free input (its dropdown is a **floating** list that never shifts the card's layout; candidates come from `/etc/shells` + `$SHELL` + common install paths, listing only existing and executable ones, with `$SHELL` first), and any path can also be typed |
 | `term` | `xterm-256color` | TERM value |
 | `colorTerm` | `truecolor` | COLORTERM value |
 | `cwd` | host startup directory | Fallback working directory (the client’s current session cwd wins) |
@@ -954,7 +972,7 @@ ctx.inject(['ttyTerminal'], (c) => {
   to reopen after exit all reuse the existing logic; `dispose()` ends the session and unmounts the DOM.
   Mounting is **cold-start safe** — with the tty panel closed and no connection yet, `mount` still brings the
   connection up (creation frames are queued first and sent after `onopen`).
-- An embedded terminal has no search/clear/copy toolbar from the tty panel header, and Ctrl+F is handed back to the browser.
+- An embedded terminal has no search/clear toolbar from the tty panel header, and Ctrl+F is handed back to the browser.
 
 ### In-panel mount slots (client service `ttyPanel`, 0.16.0)
 

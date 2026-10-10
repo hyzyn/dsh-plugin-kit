@@ -107,14 +107,20 @@ interface Harness {
   ptys: FakePty[]
   /** 宿主 logger.warn 的内容（淘汰留痕这类「事后可查」的证据靠它断言）。 */
   warns: string[]
+  /** 宿主 logger.info 的内容（会话生命周期留痕，0.30.0）。 */
+  infos: string[]
   connect(): FakeWs
 }
 
 function makeHarness(overrides: Partial<{ graceSec: number; maxSessions: number; assistEnabled: boolean }> = {}): Harness {
   const ptys: FakePty[] = []
   const warns: string[] = []
+  const infos: string[] = []
   const ctx = {
-    logger: { info: () => {}, warn: (message: string) => { warns.push(message) } },
+    logger: {
+      info: (message: string) => { infos.push(message) },
+      warn: (message: string) => { warns.push(message) },
+    },
     get(name: string): unknown {
       if (name === 'subprocess') {
         return {
@@ -161,6 +167,7 @@ function makeHarness(overrides: Partial<{ graceSec: number; maxSessions: number;
     sessions,
     ptys,
     warns,
+    infos,
     connect: () => {
       const ws = new FakeWs()
       // onConnection 是 private：测试经类型断言走真实入口（含 cleanupAll 接线）
@@ -477,13 +484,27 @@ describe('SessionManager', () => {
     expect(sm.canSpawn()).toBe(true)
   })
 
+  it('面板连接与断开各留一行：断开那行带会话数与保活秒数（0.30.0）', async () => {
+    const h = makeHarness({ graceSec: 7 })
+    const ws = h.connect()
+    await spawnLocal(ws, 's1')
+    expect(h.infos.some((message) => message.includes('面板连接建立（当前 1 个连接）')), '连接没留痕').toBe(true)
+    ws.emit('close')
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const line = h.infos.find((message) => message.includes('面板连接断开')) ?? ''
+    expect(line, '断开没留痕：宽限到点回收会话时，没人知道面板是什么时候走的').toContain('本连接 1 个会话')
+    expect(line).toContain('7s 内没重连就回收')
+  })
+
   it('reapOrphans(0) 立即回收全部孤儿，不动在线会话（D08）', async () => {
     const sm = new SessionManager(4)
     const orphan = makeSession('o1', { orphanedAt: Date.now() })
     const online = makeSession('on1')
     sm.add(orphan)
     sm.add(online)
-    await sm.reapOrphans(0)
+    const reaped = await sm.reapOrphans(0)
+    // 回收清单是那条 warn 留痕的**唯一数据源**（0.30.0）：它空了，日志只会说「回收 0 个」
+    expect(reaped.map((session) => session.id)).toEqual(['o1'])
     expect((orphan as { _state: { terminated: boolean } })._state.terminated).toBe(true)
     expect((online as { _state: { terminated: boolean } })._state.terminated).toBe(false)
     expect(sm.count).toBe(1)
@@ -626,7 +647,7 @@ describe('agent 开的终端会话（tty_open / tty_close）', () => {
   it('openAgentSession → 无客户端会话入表，且不被孤儿回收器收掉', async () => {
     const h = makeHarness()
     const { sid } = await h.server.openAgentSession({ cwd: tmpdir() })
-    const snapshot = h.sessions.list().find((s) => s.sid === sid)
+    const snapshot = h.sessions.listForAgent().find((s) => s.sid === sid)
     expect(snapshot).toBeDefined()
     expect(snapshot?.owner).toBe('agent')
     // 关键：没有客户端绑定的 agent 会话，grace=0 的回收也不能杀它
@@ -641,7 +662,7 @@ describe('agent 开的终端会话（tty_open / tty_close）', () => {
     const h = makeHarness()
     const ws = h.connect()
     await spawnLocal(ws, 'user1')
-    expect(h.sessions.list()[0]?.owner).toBe('user')
+    expect(h.sessions.listForAgent()[0]?.owner).toBe('user')
     ws.emit('close') // 断开 → 孤儿
     await until(() => h.sessions.listForAttach()[0]?.attachable === true)
     await h.sessions.reapOrphans(0)
@@ -751,10 +772,10 @@ describe('退出后的只读保留（D77）', () => {
     expect(session?.buffer).toContain('BEFORE-EXIT')
     expect(session?.screen).not.toBeNull()
     // 快照如实带保留态（tty_list / sessions 帧的数据源）
-    expect(h.sessions.list()[0]).toMatchObject({ sid: 'keep1', exited: true, signal: 'SIGSEGV' })
+    expect(h.sessions.listForAgent()[0]).toMatchObject({ sid: 'keep1', exited: true, signal: 'SIGSEGV' })
     // 默认策略是 ∞（保留到显式关闭）：不报剩余时间——不能塞 Infinity（JSON → null），
     // 省略该字段才是「不按时间释放」
-    expect(h.sessions.list()[0]?.retainMs).toBeUndefined()
+    expect(h.sessions.listForAgent()[0]?.retainMs).toBeUndefined()
     // 保留态不可 attach（没有活着的 PTY 可接回）
     expect(h.sessions.listForAttach()[0]?.attachable).toBe(false)
     await h.sessions.disposeAll()

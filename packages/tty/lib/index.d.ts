@@ -19,6 +19,11 @@
  *   C→S  {t:'resize', sid?, cols, rows}        xterm fit 触发
  *   C→S  {t:'refresh', sid?}                   请宿主 refresh-client 强制 tmux
  *                                              重画（tmux 会话；非 tmux no-op）
+ *   C→S  {t:'hidden', sid?, hidden}            把用户自己的标签设为「对 agent
+ *                                              不可见」（0.30.0）：agent 侧列不到它、
+ *                                              按 sid 取内容也一律被拒；宿主回一帧
+ *                                              同名字段确认。共享的 tmux 会话只有一个
+ *                                              hidden 位（后写胜）
  *   C→S  {t:'kill', sid?}                      关闭会话（孤儿会话也可跨连接 kill；
  *                                              tmux 会话先 kill-session 再杀客户端）
  *   C→S  {t:'sessions'}                        列出全局会话（attachable 标记可重连者）
@@ -197,6 +202,13 @@ export declare const TTY_TIER_PREFIXES: readonly ["tty_", "sftp_", "tunnel_"];
  * 淘汰一律 `logger.warn` 留痕（见 finishSession），否则这件事在事后完全不可查。
  */
 export declare const MAX_EXITED_SESSIONS = 16;
+/**
+ * 孤儿会话被回收时的留痕文案（导出仅供单测）。
+ *
+ * 报数与被回收的 sid **同源**（`SessionManager.reapOrphans` 的返回值），不在调用方另数一遍；
+ * 断线保活的秒数一起写进去——读日志的人不必回头翻配置。
+ */
+export declare function reapedOrphansMessage(sids: string[], graceSec: number): string;
 /** DSH spawnTerminal 返回 handle 的最小形状（含内部耦合的 terminal 字段）。 */
 interface PtyHandle {
     pid: number;
@@ -273,6 +285,19 @@ interface TtySession {
      * agent 的 `tty_close`，或用户在面板里接管后照常关标签。
      */
     owner: 'user' | 'agent';
+    /**
+     * 用户把这条标签标成「对 agent 不可见」（0.30.0）。
+     *
+     * 为什么要有：面板里的标签是用户自己的终端——里面可能有密钥、私事、与本轮任务无关
+     * 的活。此前 agent 侧能看到**全部**会话（`tty_list` 与每轮 prompt 都会列 cwd 与
+     * 活动状态），`tty_capture` / `tty_screen` 还能 dump 任意标签的屏。这个开关把「哪条
+     * 标签归 AI 用」的选择权交回用户。
+     *
+     * **只可能是用户标签**：agent 自己开的会话没有隐藏自己的理由，`tty_open` 恒传
+     * false。**拦截必须在宿主侧**（工具解析 sid 的入口 + `listForAgent`）——只让客户端
+     * 不过滤显示是假安全：知道 sid 就能绕过。
+     */
+    hiddenFromAgent: boolean;
     /**
      * **只读保留态**（D77）：进程已退出，但会话**还留在表里**——读侧工具照常可用，
      * 写侧明确拒写，用户与 agent 都能显式关掉它（`tty_close` / 面板关标签 / TTL 到点）。
@@ -353,6 +378,15 @@ interface TtySession {
     /** 连续失败次数：退避倍数按它递增，出过帧即归零。 */
     statsFailures: number;
 }
+/**
+ * 「另有 N 条标签被用户设为对 agent 不可见」那句话（0.30.0）。
+ *
+ * 两处共用这一份：`tty_list` 的渲染与每轮 systemPrompt 的会话块。同一件事写两遍必然漂，
+ * 而漂出来的结果是「工具里说 3 条、prompt 里说 2 条」这种对不上的话术。
+ *
+ * `count <= 0` 返回空串（调用方直接拼接，不必自己判）。
+ */
+export declare function hiddenSessionsNote(count: number): string;
 interface ReqLike {
     method?: string;
     headers: Record<string, string | string[] | undefined>;
@@ -716,6 +750,12 @@ export interface SessionSnapshot {
     lastOutputAt: number;
     persist?: true;
     owner: 'user' | 'agent';
+    /**
+     * 用户把这条标签设为「对 agent 不可见」（0.30.0）。**只在为 true 时出现**（沿用
+     * 「省略的键不出现」的约定，见 D52/B33）。它出现在 `listForAttach()`（面板据此
+     * 渲染标记），而 `listForAgent()` 里这类会话**整条都不在**。
+     */
+    hidden?: true;
     /** 进程已退出、会话仍在只读保留期内（D77）。 */
     exited?: true;
     /** 退出码（拿不到时省略）。 */
@@ -763,8 +803,25 @@ export declare class SessionManager {
     /** 会话的只读快照（SSH 会话无本地 pid，该字段省略；tmux 持久会话带 persist；
      *  只读保留态（D77）额外带 exited/exitCode|signal/retainMs）。 */
     private snapshotOf;
-    /** agent 工具用的只读快照。 */
-    list(): SessionSnapshot[];
+    /**
+     * agent 侧用的只读快照（`tty_list` 工具与每轮 systemPrompt 的会话块）。
+     *
+     * **用户标了「对 agent 不可见」的会话整条不在**（0.30.0）：不能只抹掉输出——会话的
+     * 存在、cwd、有没有命令在跑，本身就是要藏的东西（它泄漏用户在干什么）。面板侧走
+     * `listForAttach()`，那条路照旧给全部会话。
+     */
+    listForAgent(): SessionSnapshot[];
+    /** agent 侧按 sid 取会话（0.30.0）：隐藏会话与「不存在」**同样拒绝**，见 hiddenRefusal。 */
+    agentView(sid: string): TtySession | undefined;
+    /**
+     * 被用户隐藏的会话条数（0.30.0）。
+     *
+     * 存在的意义是**别让模型把话说过头**：一条都不列之后，`listForAgent()` 为空会被读成
+     * 「用户没开终端」，于是它可能回一句「当前没有终端面板会话」——而用户正盯着三个标签。
+     * 只报条数、不报 cwd 与活动（要藏的正是后者）。这一位信息量极低（人人都有终端），
+     * 换来的是模型不再因为「看不见」而误导用户。
+     */
+    hiddenCount(): number;
     /** sessions 帧用：额外带 attachable（孤儿且未关闭的会话可被新连接 attach）。 */
     listForAttach(): Array<SessionSnapshot & {
         attachable: boolean;
@@ -789,7 +846,7 @@ export declare class SessionManager {
      * 「orphanedAt !== null」对它要么永不成立（不回收）要么被误当孤儿（一开就收）。
      * 它的关闭入口是 agent 的 tty_close 或用户在面板里接管后关标签。
      */
-    reapOrphans(graceMs: number): Promise<void>;
+    reapOrphans(graceMs: number): Promise<TtySession[]>;
     /**
      * 只读保留到点退役（D77；回收器每轮调用）：超过保留期的会话出表 + 释放屏。
      *
@@ -881,6 +938,15 @@ export declare class TtyServer {
     handleUpgrade(req: ReqLike, socket: SocketLike, head: Buffer): void;
     /** 围栏放行之后的实际握手（与上面的异步分支共用）。 */
     private finishUpgrade;
+    /**
+     * 会话生命周期留痕（0.30.0）：一行一件事，落进宿主的 startup 日志
+     * （`~/.dsh/logs/startup-*.log` —— `ctx.logger` 的输出实测会进那里，`console.log` 不会）。
+     *
+     * 加这一组的起因见 ROADMAP 的 0.30.0 那节（会话生命周期留痕）：一次「面板标签自己消失」的排查里，宿主侧
+     * **一条生命周期日志都没有**，于是「插件被重挂」与「孤儿被回收」这两种解释只能靠时间吻合去猜。
+     * 所以挂载/卸载、面板连接/断开、会话创建/结束、孤儿回收各留一行——宁可多几句噪音。
+     */
+    private lifecycle;
     private onConnection;
     /**
      * 摘掉同 sid 上残留的**只读保留**会话（D77）：spawn / ssh 新建同名会话前调用。
@@ -900,6 +966,19 @@ export declare class TtyServer {
     private resolveSid;
     /** 把一个客户端连接重绑定到既有会话（跨窗口共享 / 并发恢复收敛共用）。 */
     private rebindClient;
+    /**
+     * 设置「对 agent 不可见」（0.30.0）：`spawn` / `ssh` 帧（含跨窗口重绑定）与运行期的
+     * `hidden` 帧**共用这一处**，避免两条路各写一遍判定。
+     *
+     * **只对用户标签生效**（`owner === 'user'`）：隐藏是用户对「我的标签」的处置；agent
+     * 若能把自己开的会话藏起来，等于把它的行为从用户眼前抹掉（D06「隐形会话」的反面）。
+     * 判据放在这个唯一写入口而不是各调用点——重绑定那条路（同 persistName 撞上别的
+     * 窗口/agent 的会话）也一并兜住。
+     *
+     * 值没变时不打日志：重连 / 重绑定会带同一个值反复走这里，每次都记一行会把
+     * lifecycle 日志淹掉（那条日志的用途是「查会话为什么消失」）。
+     */
+    private setHiddenFromAgent;
     /**
      * agent 开一个本地终端（tty_open 的实现）。
      *

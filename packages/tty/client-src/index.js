@@ -92,9 +92,11 @@ import { FALLBACK_COLS, FALLBACK_ROWS, usableFitSize } from './fit-size.js'
 import { agentTabDisposition, countLiveSessions, liveSessionSids, sessionFrameIndex } from './session-live.js'
 import { closePanelSummary } from './close-guard.js'
 import { bulkClosePlan, panelTabCount } from './tab-bulk.js'
+import { canHideFromAgent, hiddenMenuKey, isHiddenFromAgentSpec, withHiddenFromAgent } from './tab-hidden.js'
 import { planResume } from './download-resume.js'
 import { dirsToCreate, filterEntries, planDrop } from './sftp-view.js'
 import { eventOwnsStatus, needsStatusResync, statusForTab } from './status-line.js'
+import { SEARCH_CLOSED_DISPLAY, nextSearchOpen, searchDisplayFor } from './search-state.js'
 import { formatBytes, formatRate, hasUsableStats, statsFrameFresh, statsItemSpecs, statsItemValues, statsLevel } from './stats-bar.js'
 
 /* ================================ CSS ================================ */
@@ -174,10 +176,13 @@ const I18N_ZH = {
   'list.tabsAllVisible': '没有藏在视野外的标签',
   'list.cleanExited': '清理已退出的标签（{n}）',
   'btn.closeTab': '关闭此标签',
+  'btn.hideFromAgent': '对 AI 隐藏此标签',
+  'btn.showToAgent': '取消隐藏（让 AI 可用）',
+  'btn.hiddenMark': '对 AI 不可见',
   'btn.closeLeft': '关闭左侧标签（{n}）',
   'btn.closeOthers': '关闭其他标签（{n}）',
   'btn.closeRight': '关闭右侧标签（{n}）',
-  'list.subLive': '其中 {n} 个还没退出',
+  'list.subLive': '其中 {n} 个还开着',
   'meta.tunnelRemote': '远程:{host}:{port} → 本机:{local}',
   'meta.tunnelLocal': '本机:{local} → {host}:{port}',
   'status.tmuxPersistedTitle': '已由 tmux 托管 — 断线 / 宿主重启后按名接回现场',
@@ -382,23 +387,20 @@ const I18N_ZH = {
   'status.disconnected': '连接断开',
   'status.reconnecting': '自动重连中…',
   'error.copyFailed': '复制失败：当前环境不允许访问剪贴板（http 访问时请改用 localhost 或终端内快捷键）',
-  'error.pasteFailed': '浏览器不允许网页读取剪贴板（http 访问时常见）：请在终端里按 Ctrl+V / Cmd+V 粘贴',
   'status.initializing': '初始化…',
-  'placeholder.search': '搜索 (Enter 下一个, Shift+Enter 上一个)',
-  'btn.searchTitle': '搜索 (Ctrl+F)',
+  'placeholder.search': '搜索 (Enter ↓ / Shift+Enter ↑)',
+  'btn.searchTitle': '搜索 (Ctrl+F)：Enter 下一个 / Shift+Enter 上一个',
   'btn.clearTitle': '清屏',
-  'btn.copyTitle': '复制选中内容',
-  'btn.pasteTitle': '粘贴',
   'btn.minimizeTitle': '最小化（会话保持运行，状态并入侧边栏入口）',
   'btn.minimize': '最小化',
-  'btn.closePanelTitle': '关闭面板并结束全部会话（还有会话没退出时会先确认；只是想收起就点「—」，会话保持运行）',
+  'btn.closePanelTitle': '关闭面板并结束全部会话（有会话还开着时会先确认；只是想收起就点「—」，会话保持运行）',
   'confirm.closeTitle': '结束 {n} 个会话并关闭面板？',
-  'confirm.closeText': '关闭面板会一并结束这 {n} 个还没退出的会话（面板里的标签会跟着关掉）。',
+  'confirm.closeText': '关闭面板会一并结束这 {n} 个还开着的会话（面板里的标签会跟着关掉）。',
   'confirm.closeTextAgent': '关闭面板会一并结束这 {n} 个会话，其中 {agent} 个是 AI 开的（可能正在跑命令）。',
   'confirm.closeHint': '只是想给别的窗口腾地方？点「最小化」—— 会话与输出都保持运行。',
   'confirm.closeOk': '结束 {n} 个会话并关闭',
   'confirm.tabsTitle': '结束 {n} 个会话并关掉这些标签？',
-  'confirm.tabsText': '这一下会结束 {n} 个还没退出的会话，它们的标签也跟着关掉。',
+  'confirm.tabsText': '这一下会结束 {n} 个还开着的会话，它们的标签也跟着关掉。',
   'confirm.tabsTextAgent': '这一下会结束 {n} 个会话，其中 {agent} 个是 AI 开的（可能正在跑命令）。',
   'confirm.tabsHint': '已退出的标签只是只读保留，清掉它们不丢任何东西。',
   'confirm.tabsOk': '结束 {n} 个会话',
@@ -617,10 +619,13 @@ const I18N_EN = {
   'list.tabsAllVisible': 'No tabs are out of view',
   'list.cleanExited': 'Clean up exited tabs ({n})',
   'btn.closeTab': 'Close this tab',
+  'btn.hideFromAgent': 'Hide this tab from the AI',
+  'btn.showToAgent': 'Unhide (make it available to the AI)',
+  'btn.hiddenMark': 'Hidden from AI',
   'btn.closeLeft': 'Close tabs to the left ({n})',
   'btn.closeOthers': 'Close other tabs ({n})',
   'btn.closeRight': 'Close tabs to the right ({n})',
-  'list.subLive': '{n} of them have not exited yet',
+  'list.subLive': '{n} of them are still open',
   'meta.tunnelRemote': 'remote:{host}:{port} → local:{local}',
   'meta.tunnelLocal': 'local:{local} → {host}:{port}',
   'status.tmuxPersistedTitle': 'Hosted by tmux — the session is reattached by name after a disconnect or host restart',
@@ -825,23 +830,20 @@ const I18N_EN = {
   'status.disconnected': 'Disconnected',
   'status.reconnecting': 'Reconnecting…',
   'error.copyFailed': 'Copy failed: this environment does not allow clipboard access (over http, use localhost or the terminal\'s own shortcuts)',
-  'error.pasteFailed': 'The browser does not allow pages to read the clipboard (common over http): paste with Ctrl+V / Cmd+V inside the terminal',
   'status.initializing': 'Initializing…',
-  'placeholder.search': 'Search (Enter next, Shift+Enter previous)',
-  'btn.searchTitle': 'Search (Ctrl+F)',
+  'placeholder.search': 'Search (Enter ↓ / Shift+Enter ↑)',
+  'btn.searchTitle': 'Search (Ctrl+F) — Enter next / Shift+Enter previous',
   'btn.clearTitle': 'Clear',
-  'btn.copyTitle': 'Copy selection',
-  'btn.pasteTitle': 'Paste',
   'btn.minimizeTitle': 'Minimize (sessions keep running; the status moves into the sidebar entry)',
   'btn.minimize': 'Minimize',
-  'btn.closePanelTitle': 'Close the panel and end every session (you are asked first when sessions are live; to just put it away hit “—”, sessions keep running)',
+  'btn.closePanelTitle': 'Close the panel and end every session (you are asked first when sessions are still open; to just put it away hit “—”, sessions keep running)',
   'confirm.closeTitle': 'End {n} sessions and close the panel?',
-  'confirm.closeText': 'Closing the panel ends these {n} sessions that have not exited yet (the tabs go with them).',
+  'confirm.closeText': 'Closing the panel ends these {n} sessions that are still open (the tabs go with them).',
   'confirm.closeTextAgent': 'Closing the panel ends these {n} sessions, {agent} of which the AI opened (they may be running commands).',
   'confirm.closeHint': 'Only need room for other windows? Hit “Minimize” — sessions and output keep running.',
   'confirm.closeOk': 'End {n} sessions and close',
   'confirm.tabsTitle': 'End {n} sessions and close those tabs?',
-  'confirm.tabsText': 'This ends {n} sessions that have not exited yet, and their tabs go with them.',
+  'confirm.tabsText': 'This ends {n} sessions that are still open, and their tabs go with them.',
   'confirm.tabsTextAgent': 'This ends {n} sessions, {agent} of which the AI opened (they may be running commands).',
   'confirm.tabsHint': 'Already-exited tabs are read-only leftovers — cleaning those loses nothing.',
   'confirm.tabsOk': 'End {n} sessions',
@@ -1214,15 +1216,11 @@ function ensureStyle() {
 const TERMINAL_ICON =
   '<svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 5l3.5 3L3 11"/><path d="M8.5 11H13"/></svg>'
 
-// 头部工具按钮图标（14px 线性风格，与 TERMINAL_ICON 同族）：搜索 / 清屏 / 复制 / 粘贴
+// 头部工具按钮图标（14px 线性风格，与 TERMINAL_ICON 同族）：搜索 / 清屏
 const ICON_SEARCH =
   '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4L14 14"/></svg>'
 const ICON_CLEAR =
   '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 4.5h11"/><path d="M6 4.5V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5"/><path d="M4.5 4.5l.7 8.1a1 1 0 0 0 1 .9h3.6a1 1 0 0 0 1-.9l.7-8.1"/></svg>'
-const ICON_COPY =
-  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.4"/><path d="M3.5 10.5h-1v-8h8v1"/></svg>'
-const ICON_PASTE =
-  '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="3" width="9" height="11" rx="1.4"/><rect x="5.5" y="1.5" width="5" height="3" rx="1" class="tt_iconPasteHole"/></svg>'
 // 连接栏扩展按钮图标（14px）：重新连接 / SFTP / 端口转发隧道
 const ICON_RECONNECT =
   '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/><path d="M13.7 1.8v2.7H11"/></svg>'
@@ -1245,6 +1243,12 @@ const ICON_CLOSE =
  */
 const ICON_CLOSE_SM =
   '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg>'
+// 「对 AI 不可见」的两个图标（0.30.0）：睁眼 = 现在对 AI 开放（点它即隐藏），
+// 划掉的眼 = 已隐藏（点它即恢复）。形状与 ICON_CLOSE_SM 同一套笔画参数。
+const ICON_EYE =
+  '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.6 8s2.4-4.2 6.4-4.2S14.4 8 14.4 8s-2.4 4.2-6.4 4.2S1.6 8 1.6 8z"/><circle cx="8" cy="8" r="1.9"/></svg>'
+const ICON_EYE_OFF =
+  '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.6 8s2.4-4.2 6.4-4.2S14.4 8 14.4 8s-2.4 4.2-6.4 4.2S1.6 8 1.6 8z"/><circle cx="8" cy="8" r="1.9"/><path d="M3 13L13 3"/></svg>'
 const ICON_PLUS =
   '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M8 3.6v8.8"/><path d="M3.6 8h8.8"/></svg>'
 // 文件系统（SFTP 列表 / 菜单）
@@ -2300,7 +2304,9 @@ function createTerminal(tab) {
  */
 function specReuseKey(spec) {
   if (spec === null || typeof spec !== 'object') return ''
-  const fields = ['t', 'name', 'host', 'port', 'username', 'command', 'cwd', 'persist', 'persistName']
+  // `hidden` 参与复用键（0.30.0）：隐藏过的标签与普通标签**不是**同一个规格——否则点
+  // 「新建本地终端」会复用那条被用户藏起来的标签，等于把 AI 的可见性换来换去。
+  const fields = ['t', 'name', 'host', 'port', 'username', 'command', 'cwd', 'persist', 'persistName', 'hidden']
   return fields.map((field) => field + '=' + String(spec[field] ?? '')).join('\u0000')
 }
 
@@ -2540,6 +2546,47 @@ function spawnTab(tab) {
     return
   }
   sendFrame(frame)
+}
+
+/**
+ * 切换「对 AI 不可见」（0.30.0）。
+ *
+ * 两件事必须一起做，缺一个都会出现「界面上是隐藏的、AI 其实还能读」：
+ *   ① 本地规格写上标记（`spawnTab` 会把它带进创建帧，刷新/重连后也照旧）；
+ *   ② **宿主**收到 `hidden` 帧（真正的拒绝在那边——客户端过滤只是显示层）。
+ *
+ * 宿主可能拒（agent 自己开的会话不允许被藏），它回的 `hidden` 帧带着**实际**结果，
+ * 由入帧那条路收敛本地标记：所以这里只发意图，不擅自认定成功。
+ *
+ * 连接断着时 `sendFrame` 静默丢弃——所以 `ready` 帧那条路会按规格**重报**一次（见
+ * onMessage 的 ready 分支），保证重连后宿主的位最终与标签一致。
+ */
+function setTabHiddenFromAgent(sid, hidden) {
+  const tab = tabs.get(sid)
+  if (tab === undefined || tab.embedded === true) return
+  if (hidden === true && !canHideFromAgent(tab)) return
+  const next = hidden === true
+  if (isHiddenFromAgentSpec(tab.spawnSpec) === next) return
+  tab.spawnSpec = withHiddenFromAgent(tab.spawnSpec, next)
+  sendFrame({ t: 'hidden', sid, hidden: next })
+  persistTabs()
+  renderTabbar()
+  syncTabOverflow()
+}
+
+/**
+ * 标签标题的显示文本（「对 AI 不可见」的标记在这里统一加，标签栏与「⋯」列表共用一处）。
+ *
+ * 标记用**一个字形**而不是 i18n 文案：标签栏宽度是稀缺资源（标签多了会溢出，见 D89/D90），
+ * 而「对 AI 不可见」这句话留给 `title` 提示与右键菜单（那里放得下整句）。🙈 取「看不见」
+ * 的意思——与状态点（连接态）分开表达，不把「隐私」塞进连接状态那个点里。
+ */
+const HIDDEN_TAB_GLYPH = '🙈'
+function tabDisplayLabel(sid) {
+  const tab = tabs.get(sid)
+  const base = tab === undefined ? '' : (tab.label || t('panel.tabLabel', { n: tabCounterLabel(sid) }))
+  if (tab === undefined || !isHiddenFromAgentSpec(tab.spawnSpec)) return base
+  return `${HIDDEN_TAB_GLYPH} ${base}`
 }
 
 /**
@@ -3159,7 +3206,7 @@ function renderTabbar() {
     // 标签标题：SSH 标签用 label（连接名 / target），本地标签用「终端 N」
     const labelEl = document.createElement('span')
     labelEl.className = 'tt_tabLabel'
-    labelEl.textContent = tab.label || t('panel.tabLabel', { n: tabCounterLabel(sid) })
+    labelEl.textContent = tabDisplayLabel(sid)
     // 双击重命名：行内 input，Enter/失焦提交（空还原），Esc 取消
     labelEl.addEventListener('dblclick', (event) => {
       event.stopPropagation()
@@ -3180,7 +3227,10 @@ function renderTabbar() {
         closeTab(sid)
       }
     })
-    btn.title = labelEl.textContent
+    // 提示里给出整句（标签栏只放得下一个字形）：隐藏状态必须有**不用右键**就能看到的地方
+    btn.title = isHiddenFromAgentSpec(tab.spawnSpec)
+      ? `${labelEl.textContent} — ${t('btn.hiddenMark')}`
+      : labelEl.textContent
     btn.appendChild(labelEl)
     btn.appendChild(closeEl)
     btn.addEventListener('click', (event) => {
@@ -3944,7 +3994,9 @@ function renderTabListItems() {
     return
   }
   for (const [sid, tab] of hidden) {
-    const label = tab.label || t('panel.tabLabel', { n: tabCounterLabel(sid) })
+    // 与标签栏同一份显示文本（tabDisplayLabel）：隐藏标记在「⋯」列表里也要看得见，
+    // 否则被挤出视野的私有标签就成了唯一没有标记的那个
+    const label = tabDisplayLabel(sid) || tab.label || t('panel.tabLabel', { n: tabCounterLabel(sid) })
     const meta = tabListMeta(tab)
     const row = document.createElement('div')
     row.className = 'tt_addMenuRow tt_tabMenuRow'
@@ -4017,8 +4069,11 @@ function tabListForBulk() {
  * 目标为空的行**不出现**（参照是第一个标签时没有「左侧」、是最后一个时没有「右侧」）：
  * 不出现就不会点空。顺序是「其他（= 左侧 ∪ 右侧）→ 左 → 右」：先给最强的那一下，再按
  * 标签栏的两个方向成对——用户 2026-10-10 看到菜单后要求补上「左侧」，与「右侧」同一处切片。
- * 副文案写清「这一下会结束几条**还没退出**的会话」——菜单行本身只说「几个标签」，
- * 而用户真正会心疼的是里面的进程。
+ * 副文案写清「这一下会结束几条**还开着**的会话」——菜单行本身只说「几个标签」，
+ * 而用户真正会心疼的是里面的进程。**「还开着」是判据的用户语言**：判据只到
+ * `exited !== true`（`close-guard.js`），所以不能写「正在运行」——停在提示符的空 shell
+ * 与跑着构建的那条，在判据眼里是一样的「还开着」。2026-10-10 用户看过这张菜单的截图后问
+ * 「什么叫『还没退出』」，同一判据（一字未动）换成了用户词，与「已退出」成对。
  */
 function appendTabActionRows(menu, refSid) {
   const plan = bulkClosePlan(tabListForBulk(), refSid)
@@ -4140,6 +4195,16 @@ function renderTabContextItems(menu, sid) {
     closeTabContextMenu()
     closeTab(sid)
   }, undefined, ICON_CLOSE_SM)
+  // 「对 AI 不可见」（0.30.0）：只给**用户自己的**标签——agent 开的（agentOwned）与
+  // 嵌入终端（embedded）不给这一项。判据在 tab-hidden.js（与宿主 setHiddenFromAgent
+  // 同一口径：宿主那边才是拒绝，这里只是不让菜单出现一个注定失败的选项）。
+  if (canHideFromAgent(tab)) {
+    const hidden = isHiddenFromAgentSpec(tab.spawnSpec)
+    addMenuItem(menu, t(hiddenMenuKey(hidden)), label, () => {
+      closeTabContextMenu()
+      setTabHiddenFromAgent(sid, !hidden)
+    }, undefined, hidden ? ICON_EYE_OFF : ICON_EYE)
+  }
   appendTabActionRows(menu, sid)
   appendCleanExitedRow(menu)
 }
@@ -7563,16 +7628,29 @@ function closeSftpDialog(ownerKey) {
   if (pane !== null) pane.dispose()
 }
 
-function toggleSearch() {
+/**
+ * 搜索框开合与放大镜按钮按下态（`data-on`）的**唯一**写入口（D99）。
+ *
+ * 为什么必须收成一处：这对状态是同一个事实的两个投影，而此前初始态、Esc、最小化各写各的——
+ * 于是面板一打开就是「框关着、放大镜亮着」（截图回归拍到的就是这一帧），Esc 只关框不带按钮，
+ * 亮着的放大镜会一直骗人；旧代码还把「开」写成空串，而读取判据把空串当「关」，于是点开之后
+ * 再也点不关。开态的值本身由 `client-src/search-state.js` 定（可读回的 `block`，不是空串），
+ * 这里只做写入与联动。
+ */
+function setSearchOpen(open) {
   if (searchInputEl === null) return
-  const hidden = searchInputEl.style.display === 'none' || searchInputEl.style.display === ''
-  searchInputEl.style.display = hidden ? '' : 'none'
+  searchInputEl.style.display = searchDisplayFor(open)
   const btn = modalEl !== null ? modalEl.querySelector('[data-act=search]') : null
   if (btn !== null) {
-    if (hidden) btn.dataset.on = ''
+    if (open) btn.dataset.on = ''
     else delete btn.dataset.on
   }
-  if (hidden) searchInputEl.focus()
+  if (open) searchInputEl.focus()
+}
+
+function toggleSearch() {
+  if (searchInputEl === null) return
+  setSearchOpen(nextSearchOpen(searchInputEl.style.display))
 }
 
 /**
@@ -7844,7 +7922,26 @@ function connect() {
         syncEntryBadge() // 断线重连后徽标计数恢复
         // 就绪/重连后对齐状态条订阅（spawn 前的 statsOn 会被宿主按未知 sid 忽略）
         resubscribeStats(sid)
+        // 「对 AI 不可见」的重连重报（0.30.0）：`hidden` 帧在连接断着时会被 sendFrame
+        // 静默丢掉，而宿主会话在保活期内还活着——不重报就会出现「界面标着隐藏、宿主那边
+        // 其实还开着」。**只重报 true，从不主动发 false**：隐藏状态宁可多留一会儿，
+        // 也不能被另一个窗口或一次重连悄悄解掉（解除只走用户显式点菜单）。
+        if (isHiddenFromAgentSpec(tab.spawnSpec)) sendFrame({ t: 'hidden', sid, hidden: true })
         persistTabs()
+      }
+    } else if (msg.t === 'hidden') {
+      // 切换「对 AI 不可见」的回帧（0.30.0）：带的是宿主的**实际**结果，不是我们发出去的
+      // 请求（agent 用 tty_open 开的会话会被宿主拒，回的是 hidden=false）。据此收敛本地
+      // 规格——否则界面会显示一个宿主根本不认的状态，下次重连又被重报成 true。
+      const tab = tabs.get(sid)
+      if (tab !== undefined && tab.embedded !== true) {
+        const actual = msg.hidden === true
+        if (isHiddenFromAgentSpec(tab.spawnSpec) !== actual) {
+          tab.spawnSpec = withHiddenFromAgent(tab.spawnSpec, actual)
+          persistTabs()
+          renderTabbar()
+          syncTabOverflow()
+        }
       }
     } else if (msg.t === 'sessions') {
       // agent 开关会话时宿主主动推的清单（0.20.0）：把 agent 开的会话建成可见标签。
@@ -7985,16 +8082,17 @@ function formatGrantedAt(seconds) {
 }
 
 /**
- * 剪贴板降级（0.19.0）：`navigator.clipboard` 在非 secure context（如
- * `http://<局域网IP>:3080`）下是 undefined——此前直接调 writeText/readText
- * 会在「粘贴」处同步取属性抛 TypeError，整条复制/粘贴不可用（localhost 自测
- * 发现不了）。降级路径：隐藏 textarea + execCommand（copy 普遍可用；paste 在
- * 部分浏览器被禁，失败时提示用 Ctrl+V）。
+ * 剪贴板能力探测（0.19.0）：`navigator.clipboard` 在非 secure context（如
+ * `http://<局域网IP>:3080`）下是 undefined——直接取属性/调用会抛 TypeError
+ * （localhost 自测发现不了）。当前只服务「AI 辅助」浮层里的「复制答案」，
+ * 终端自己的复制 / 粘贴走 xterm 的浏览器原生通路（选中后 Cmd+C / Ctrl+Shift+C、
+ * Cmd+V / Ctrl+V），面板头部不再提供这两个按钮。
  */
 function clipboardAvailable() {
   return typeof navigator !== 'undefined' && navigator.clipboard !== undefined && typeof navigator.clipboard.writeText === 'function'
 }
 
+/** 复制一段文本（写剪贴板，失败落到隐藏 textarea + execCommand）。 */
 async function copyTerminalText(text) {
   if (clipboardAvailable()) {
     try {
@@ -8018,34 +8116,6 @@ async function copyTerminalText(text) {
   }
   textarea.remove()
   if (!ok) setStatus(t('error.copyFailed'), 'error')
-  return ok
-}
-
-async function pasteTerminalText(tab) {
-  if (clipboardAvailable() && typeof navigator.clipboard.readText === 'function') {
-    try {
-      const text = await navigator.clipboard.readText()
-      if (text !== '') sendFrame({ t: 'input', sid: tab.sid, d: text })
-      return true
-    } catch {
-      /* 无权限：落到降级 */
-    }
-  }
-  const textarea = document.createElement('textarea')
-  textarea.style.position = 'fixed'
-  textarea.style.opacity = '0'
-  document.body.appendChild(textarea)
-  textarea.focus()
-  let ok = false
-  try {
-    ok = document.execCommand('paste')
-    const text = ok ? textarea.value : ''
-    if (text !== '') sendFrame({ t: 'input', sid: tab.sid, d: text })
-  } catch {
-    ok = false
-  }
-  textarea.remove()
-  if (!ok) setStatus(t('error.pasteFailed'), 'error')
   return ok
 }
 
@@ -8077,12 +8147,10 @@ function openModal() {
     '<button type="button" class="tt_tabAdd"></button>' +
     '</div>' +
     '<div class="tt_status"><span class="tt_statusDot"></span><span class="tt_statusText">' + t('status.initializing') + '</span></div>' +
-    '<input class="tt_searchInput" style="display:none" placeholder="' + t('placeholder.search') + '" />' +
+    '<input class="tt_searchInput" style="display:' + SEARCH_CLOSED_DISPLAY + '" placeholder="' + t('placeholder.search') + '" />' +
     '<span class="tt_toolGroup">' +
     '<button class="tt_toolBtn tt_iconBtn" data-act="search" title="' + t('btn.searchTitle') + '">' + ICON_SEARCH + '</button>' +
     '<button class="tt_toolBtn tt_iconBtn" data-act="clear" title="' + t('btn.clearTitle') + '">' + ICON_CLEAR + '</button>' +
-    '<button class="tt_toolBtn tt_iconBtn" data-act="copy" title="' + t('btn.copyTitle') + '">' + ICON_COPY + '</button>' +
-    '<button class="tt_toolBtn tt_iconBtn" data-act="paste" title="' + t('btn.pasteTitle') + '">' + ICON_PASTE + '</button>' +
     '</span>' +
     '<span class="tt_winGroup">' +
     '<button class="tt_min" title="' + t('btn.minimizeTitle') + '">' + ICON_MIN + '</button>' +
@@ -8170,12 +8238,10 @@ function openModal() {
     connect()
   })
   const searchBtn = modalEl.querySelector('[data-act=search]')
+  // 开合与按下态都在 setSearchOpen 里（它自己会聚焦，这里不再补一次）
   searchBtn.addEventListener('click', () => {
     toggleSearch()
-    if (searchInputEl.style.display !== 'none') searchInputEl.focus()
   })
-  // 搜索框开合与按钮按下态联动（data-on 由 toggleSearch 维护）
-  searchBtn.dataset.on = ''
   searchInputEl.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
       event.preventDefault()
@@ -8183,23 +8249,12 @@ function openModal() {
     } else if (event.key === 'Escape') {
       // 只收起搜索框：阻断冒泡，避免文档级 Esc 处理器把整个面板最小化
       event.stopPropagation()
-      searchInputEl.style.display = 'none'
+      setSearchOpen(false)
     }
   })
   modalEl.querySelector('[data-act=clear]').addEventListener('click', () => {
     const tab = activeTab()
     if (tab !== undefined && tab.term !== null) tab.term.clear()
-  })
-  modalEl.querySelector('[data-act=copy]').addEventListener('click', () => {
-    const tab = activeTab()
-    if (tab === undefined || tab.term === null) return
-    const selection = tab.term.getSelection()
-    if (selection !== '') void copyTerminalText(selection)
-  })
-  modalEl.querySelector('[data-act=paste]').addEventListener('click', () => {
-    const tab = activeTab()
-    if (tab === undefined) return
-    void pasteTerminalText(tab)
   })
   modalEl.querySelector('.tt_min').addEventListener('click', () => {
     minimizeModal()
@@ -8283,7 +8338,8 @@ function minimizeModal() {
   // ——最小化只是想看别的窗口，不该把在途传输取消掉（远端留半截文件）
   minimized = true
   if (sftpDialogEl !== null) sftpDialogEl.style.display = 'none'
-  if (searchInputEl !== null) searchInputEl.style.display = 'none'
+  // 收起面板也收起搜索框（开合与放大镜按下态一起走 setSearchOpen，别手动改 display）
+  setSearchOpen(false)
   modalEl.dataset.minimized = ''
   // 最小化 = 没有可见终端：退订（宿主侧停表、关远端 exec channel），收起状态条，
   // 陈旧检测定时器一并停（0.19.0：此前只在 closeModal 停，最小化期间空转）
@@ -8780,6 +8836,8 @@ function TtySettingsCard(props) {
   const [routeListOpen, setRouteListOpen] = React.useState(false)
   /** 候选浮层的锚点（定位用）；列表本身是 position:fixed，不进卡片布局。 */
   const routeInputRef = React.useRef(null)
+  /** Shell 路径候选浮层的锚点（同上：列表 fixed，只是宽度与位置对齐这个输入框）。 */
+  const shellInputRef = React.useRef(null)
   /** 候选请求的序号（见 loadModelCatalog）：迟到的响应不许覆盖新结果。 */
   const catalogSeqRef = React.useRef(0)
 
@@ -8810,19 +8868,23 @@ function TtySettingsCard(props) {
     }
   }
   /*
-   * 候选浮层的定位。**必须**在 layout 阶段做：列表是 position:fixed，渲染完才知道多高、
-   * placePopover 要按高度决定往上翻还是往下放（同「+」菜单）。
-   * 依赖里带上 loading/failed/groups：数据到达会改变列表高度，不重定位就会飘。
+   * 卡片里两张候选表（模型路由 / Shell 路径）的浮层定位。**必须**在 layout 阶段做：列表是
+   * position:fixed，渲染完才知道多高、placePopover 要按高度决定往上翻还是往下放（同「+」菜单）。
+   * 依赖里带上候选数据与筛选用到的表单值：它们会改变列表高度，不重定位就会飘。
    */
+  const anchorCardList = (inputRef, selector) => {
+    const input = inputRef.current
+    const list = input === null || input.parentElement === null ? null : input.parentElement.querySelector(selector)
+    if (input === null || list === null) return
+    // 宽度对齐输入框（placePopover 要用宽度算左右夹取，所以先定宽再定位）
+    list.style.width = String(Math.round(input.getBoundingClientRect().width)) + 'px'
+    placePopover(list, input)
+  }
   React.useLayoutEffect(() => {
-    if (!routeListOpen) return undefined
+    if (!routeListOpen && !shellListOpen) return undefined
     const place = () => {
-      const input = routeInputRef.current
-      const list = input === null || input.parentElement === null ? null : input.parentElement.querySelector('.tt_routeList')
-      if (input === null || list === null) return
-      // 宽度对齐输入框（placePopover 要用宽度算左右夹取，所以先定宽再定位）
-      list.style.width = String(Math.round(input.getBoundingClientRect().width)) + 'px'
-      placePopover(list, input)
+      if (routeListOpen) anchorCardList(routeInputRef, '.tt_routeList')
+      if (shellListOpen) anchorCardList(shellInputRef, '.tt_shellList')
     }
     place()
     // 卡片是可滚动的：滚动/改窗口时列表要跟着锚点走，不能钉在原地
@@ -8832,7 +8894,7 @@ function TtySettingsCard(props) {
       window.removeEventListener('scroll', place, true)
       window.removeEventListener('resize', place)
     }
-  }, [routeListOpen, modelCatalog.loading, modelCatalog.failed, modelCatalog.groups])
+  }, [routeListOpen, shellListOpen, modelCatalog.loading, modelCatalog.failed, modelCatalog.groups, shellOptions, form?.shell])
 
   /**
    * 取模型候选（**整张表一次拿回来**：宿主会并行问每个 provider）。
@@ -10362,6 +10424,7 @@ function TtySettingsCard(props) {
                     jsx('span', { className: 'tt_cardLabel', children: winHost ? t('field.shellWindows') : t('field.shell') }),
                     jsx('input', {
                       className: 'tt_cardInput',
+                      ref: shellInputRef,
                       value: form.shell ?? '',
                       placeholder: winHost ? t('placeholder.shellWindows') : t('placeholder.shell'),
                       autoComplete: 'off',
@@ -10376,6 +10439,8 @@ function TtySettingsCard(props) {
                         setShellListOpen(true)
                       },
                     }),
+                    // 浮层（不是内联列表）：固定定位 + placePopover，不进卡片布局——与模型路由同一套
+                    // （用户实测：内联时输入框下方多出一整块，把下面的字段整段推走）
                     ...(shellListOpen ? [jsx('div', {
                       className: 'tt_envList tt_shellList',
                       children: (() => {

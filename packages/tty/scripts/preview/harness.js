@@ -503,6 +503,25 @@
       if (endpointCount !== 2) throw new Error('端点组数不为 2：' + String(endpointCount))
       if (document.querySelector('#preview-settings .tt_tunnelArrow') === null) throw new Error('缺少方向箭头')
 
+      /*
+       * 端点组的几何（用户两张截图的正题：「输入框的样式优化一下」）：**贴合内容**——
+       * 组宽 ≈ 组内孩子宽度之和。原先是 `flex: 1 1 190px`，宽卡片里左组被抻到几百像素
+       * （端口框后面一片组内死区），右组的 host 又吃掉全部余量、把冒号 + 端口顶到卡片右缘
+       * （离「服务器侧主机」占位符几百像素）。
+       *
+       * 聚焦环那条**不在这里判**：headless 里 `document.hasFocus()` 是 false，`:focus` 压根
+       * 不匹配（实测 mFocus=false、:focus-within 照常匹配），所以「内层输入有没有自己画环」
+       * 在这一层恒为 none——那种恒绿的断言比没有更坏。它由 test/tunnel-endpoint.test.ts 从
+       * CSS 源上钉（内层 box-shadow: none + 组上 :focus-within 有环，两条成对）。
+       *
+       * 量成纯数字存下来——方向切换会重渲表单、DOM 引用会失效。
+       */
+      const endpointGroups = [...document.querySelectorAll('#preview-settings .tt_tunnelEndpoint')]
+      const endpointSlack = endpointGroups.map((group) => {
+        const inner = [...group.children].reduce((n, el) => n + el.getBoundingClientRect().width, 0)
+        return group.getBoundingClientRect().width - inner
+      })
+
       // 分段控件：本地/远程可切换，当前项高亮
       const segBtns = [...document.querySelectorAll('#preview-settings .tt_segmentedBtn')]
       if (segBtns.length !== 2) throw new Error('分段控件按钮数不为 2：' + String(segBtns.length))
@@ -612,6 +631,18 @@
         // 另一条隧道不能受影响（编辑只动被编辑的那条）
         if (!names.some((n) => n.startsWith('prod-redis'))) {
           problems.push('编辑波及了别的隧道')
+        }
+        /*
+         * 端点组：贴合内容（不许抻出组内死区）。判据与采集处的注释同源；聚焦环那两条见
+         * test/tunnel-endpoint.test.ts（headless 里判不了）。
+         */
+        if (endpointSlack.length !== 2) {
+          problems.push('夹具失效：端点组数不是 2（实测 ' + String(endpointSlack.length) + '）')
+        }
+        for (const slack of endpointSlack) {
+          if (slack > 2.5) {
+            problems.push('端点组没有贴合内容（组内死区 ' + String(Math.round(slack)) + 'px）——用户实测现场')
+          }
         }
         if (buttonsIn(document.querySelector('#preview-settings .tt_cardBody')).find((b) => saysExact(b, '添加隧道', 'Add tunnel')) === undefined) {
           problems.push('保存后没有退出编辑态')
@@ -745,6 +776,9 @@
       let defaultLabel = ''
       let defaultCleared = ''
       let labelsRepeatId = false
+      // 「保存」按钮是**两张候选表共用**的布局标尺（都用它量「打开候选表有没有把卡片顶动」），
+      // 所以定义提到这里，别在各自的块里各找一次
+      const saveBtn = qa('.tt_cardSave').find((el) => saysExact(el, '保存', 'Save'))
       if (routeInput !== null) {
         // ① 挂载时目录取不到（夹具预先置了 __PREVIEW_CATALOG.fail）
         routeInput.click()
@@ -752,7 +786,6 @@
         unavailableText = routeField.textContent
         // ② 目录恢复：再聚焦一次会重取（失败时 groups 仍为空，守卫放行）
         delete window.__PREVIEW_CATALOG
-        const saveBtn = qa('.tt_cardSave').find((el) => saysExact(el, '保存', 'Save'))
         const saveTopBefore = saveBtn === undefined ? null : saveBtn.getBoundingClientRect().top
         routeInput.click()
         await sleep(400)
@@ -783,6 +816,62 @@
         pickedPair = routeInput.value
         // ⑤ 只能选，不能打字：控件是只读的（用户定的——目录空的话 DSH 自己的对话也选不出模型）
         routeReadOnly = routeInput.readOnly
+      }
+
+      /*
+       * Shell 路径的候选表：同一张卡片里的**第二张**候选表，同样必须是浮层。
+       *
+       * 用户截图现场就是内联版——输入框正下方多出一整块，把下面的字段整段推走（原话「这个选择会
+       * 挤占空间破坏布局」）。判据与模型路由一式一样：量「保存」按钮的位置有没有被顶动 + 候选表
+       * 的 computed position；再加两条行为断言——点一条要真的写进输入框、并进保存 payload。
+       */
+      const shellField = qa('.tt_cardField').find((el) => {
+        const label = el.querySelector('.tt_cardLabel')
+        return label !== null && (label.textContent.indexOf('Shell 路径') >= 0 || label.textContent.indexOf('Shell path') >= 0)
+      })
+      const shellInput = shellField === undefined ? null : shellField.querySelector('input.tt_cardInput')
+      const shellList = () => (shellField === undefined ? null : shellField.querySelector('.tt_shellList'))
+      let shellListPosition = ''
+      let shellShift = null
+      let shellShiftTyped = null
+      let shellRows = 0
+      let shellValueBefore = ''
+      let shellPickedItem = ''
+      let shellPicked = ''
+      let shellClosedAfterPick = null
+      if (shellInput !== null) {
+        shellValueBefore = shellInput.value
+        const shellTopBefore = saveBtn === undefined ? null : saveBtn.getBoundingClientRect().top
+        /*
+         * 用例 A：值已经是**完整路径**（`/bin/zsh`）——候选被这个值自己过滤成**同一行**
+         * （用户截图里就是这一幕：输入框下面孤零零一行 `/bin/zsh`）。
+         */
+        shellInput.click()
+        await sleep(300)
+        const listEl = shellList()
+        shellListPosition = listEl === null ? '' : window.getComputedStyle(listEl).position
+        const shellTopOpen = saveBtn === undefined ? null : saveBtn.getBoundingClientRect().top
+        shellShift = shellTopBefore === null || shellTopOpen === null ? null : shellTopOpen - shellTopBefore
+        /*
+         * 用例 B：打字过滤（`/bin/`）→ 候选变成 3 行、列表长高一大截。内联版正是**这里**把
+         * 下面的字段整段推走（列表越高推得越远），所以位移要在这一档再量一次。
+         */
+        setReactInput(shellInput, '/bin/')
+        await sleep(300)
+        const typedList = shellList()
+        shellRows = typedList === null ? 0 : typedList.querySelectorAll('.tt_envItem').length
+        const shellTopTyped = saveBtn === undefined ? null : saveBtn.getBoundingClientRect().top
+        shellShiftTyped = shellTopBefore === null || shellTopTyped === null ? null : shellTopTyped - shellTopBefore
+        // 挑一条与**聚焦前的值**不同的候选：值真的变了才证明「点一下写进去了」，而不是本来就长这样
+        const items = typedList === null ? [] : Array.from(typedList.querySelectorAll('.tt_envItem'))
+        const item = items.find((el) => el.textContent !== shellValueBefore) ?? null
+        if (item !== null) {
+          shellPickedItem = item.textContent
+          item.click()
+          await sleep(250)
+          shellPicked = shellInput.value
+          shellClosedAfterPick = shellList() === null
+        }
       }
 
       const toggleBefore = qa('.tt_cardLabel').find((el) => says(el, '失败即解释', 'Explain failures'))
@@ -864,6 +953,28 @@
         if (postedPayload.assistProvider !== 'mock-provider' || postedPayload.assistModel !== 'mock-fast') {
           return '选中的那一对没进保存 payload：' + JSON.stringify([postedPayload.assistProvider, postedPayload.assistModel])
         }
+        // Shell 路径的候选表：同一张卡片里的第二张候选表，判据同模型路由（用户截图现场）
+        if (shellInput === null) return '设置卡片里没有「Shell 路径」控件'
+        if (shellShift === null || shellShiftTyped === null) return '夹具失效：量不到「保存」按钮的位置（Shell 路径那一栏）'
+        if (Math.abs(shellShift) > 0.5 || Math.abs(shellShiftTyped) > 0.5) {
+          return '打开 Shell 候选表把卡片布局顶动了 '
+            + String(Math.round(shellShift)) + 'px（同值一行）/ ' + String(Math.round(shellShiftTyped)) + 'px（过滤后 3 行）——用户实测现场'
+        }
+        if (shellListPosition !== 'fixed') {
+          return 'Shell 候选表不是浮层（会顶动卡片布局）：position=' + shellListPosition
+        }
+        if (shellRows < 2) return '夹具失效：打字过滤之后候选该有好几行，实测 ' + String(shellRows) + ' 行'
+        if (shellPickedItem === '') return '夹具失效：Shell 候选表里没有可点的候选'
+        if (shellPicked !== shellPickedItem) {
+          return '点 Shell 候选没有写进输入框：' + JSON.stringify([shellPickedItem, shellPicked])
+        }
+        if (shellPicked === shellValueBefore) {
+          return '点 Shell 候选之后值没变（这条断言证明不了「写入」）：' + JSON.stringify(shellPicked)
+        }
+        if (shellClosedAfterPick !== true) return '选中 Shell 候选之后候选表没有收起'
+        if (postedPayload.shell !== shellPicked) {
+          return '选中的 Shell 没进保存 payload：' + JSON.stringify([shellPicked, postedPayload.shell])
+        }
         // 路由是**一个**控件（渠道 + 模型一对）：两栏并列的旧形态不许回来
         const labels = qa('.tt_cardLabel').map((el) => el.textContent)
         const routeLabels = labels.filter((text) => text.indexOf('模型路由') >= 0 || text.indexOf('Model route') >= 0)
@@ -872,6 +983,46 @@
         if (hint.indexOf('默认关') < 0 && hint.indexOf('Off by default') < 0) return 'AI 辅助的说明里没有写明「默认关」'
         return null
       }
+    },
+    /*
+     * 设置卡片：Shell 路径的候选表（浮层）。
+     *
+     * 这个场景**只为出图**：把值改成 `/bin/` 让候选变成多行、留着列表打开截图。布局那几条判据
+     * 在 `settings-assist` 里（同一张卡片，量「保存」按钮的位移），这里给的是同一幕的肉眼版本——
+     * 用户上报的就是它（内联版会把这下面整段字段推走）。
+     */
+    async 'settings-shell'() {
+      const host = document.createElement('div')
+      host.id = 'preview-settings'
+      host.style.cssText = 'position:fixed;inset:24px 24px 24px 260px;overflow:auto;z-index:2000;background:var(--dsw-alias-bg-base);padding:8px;border-radius:16px'
+      document.body.appendChild(host)
+      const list = document.createElement('ul')
+      list.style.cssText = 'display:flex;flex-direction:column;gap:12px;margin:0;padding:0'
+      host.appendChild(list)
+      const tty = cards.find((c) => c.spec.key === 'tty')
+      if (tty === undefined) throw new Error('未注册 tty 设置卡片')
+      const root = window.ReactDOM.createRoot(list)
+      root.render(window.React.createElement(tty.Component))
+      await waitFor(() => q('.tt_card'), 3000)
+      q('.tt_cardHeader').click()
+      await waitFor(() => q('.tt_cardBody'), 4000)
+      await sleep(400)
+      const field = qa('.tt_cardField').find((el) => {
+        const label = el.querySelector('.tt_cardLabel')
+        return label !== null && (label.textContent.indexOf('Shell 路径') >= 0 || label.textContent.indexOf('Shell path') >= 0)
+      })
+      const input = field === undefined ? null : field.querySelector('input.tt_cardInput')
+      if (input === null) throw new Error('设置卡片里没有「Shell 路径」控件')
+      // 先滚到这一栏再聚焦：滚动后浮层要跟着锚点重新定位（夹具顺带把那条路径也走一遍）
+      field.scrollIntoView({ block: 'center' })
+      await sleep(250)
+      input.click()
+      await sleep(250)
+      // 打字过滤走原生 setter + input 事件（直接赋值 React 读到的还是旧值）：候选从「同值一行」变 3 行
+      const desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')
+      desc.set.call(input, '/bin/')
+      input.dispatchEvent(new window.Event('input', { bubbles: true }))
+      await sleep(400)
     },
     /* 设置卡片：docker 与 tty 并排（同一张 ul 里），核对两家的观感是否一致 */
     async 'settings-docker'() {
@@ -1434,22 +1585,26 @@
         if (!okText.includes('1')) return '主按钮没写明会结束几条会话：' + okText
         if (!says(layer, '最小化', 'Minimize')) return '确认里没给出「最小化」这条出路（hint 与按钮都算）'
         /*
-         * issue #8 的口径守卫（2026-10-10 核对挖出来的那处出入）：判据是「活会话」= **还没退出**
+         * issue #8 的口径守卫（2026-10-10 核对挖出来的那处出入）：判据是「活会话」= **还开着**
          * （`close-guard.js` 只看 `exited !== true`），**判不出命令在不在跑**——面板上挂着一个停在
          * 提示符的空 shell，与跑着 `pnpm build` 的那条，在判据眼里一模一样。所以文案不许把这批会话
          * 说成「正在运行 / running sessions」：那是替实现吹一个它做不到的牛，报告者照回帖原文验收时
          * 就会发现对不上。要改这条断言，先把「在跑」这个态真的接上线（宿主已有 `runningOf`，见
          * `src/index.ts` 与 ROADMAP 的 0.28.0 那节），别直接改字。
+         *
+         * 措辞本身改过一轮（2026-10-10 晚些，用户看过右键菜单截图后问「什么叫还没退出」）：
+         * 「还没退出」→「还开着」——**判据一字未动**，只是把内部判据词换成用户词（与菜单里
+         * 已有的「已退出」成对）。下面那句正向断言跟着改，正向要钉的仍是「不许超出判据」。
          */
         const layerText = String(layer.textContent || '')
         if (/正在运行|running sessions|are running/.test(layerText)) {
-          return '确认文案把这批会话说成「正在运行」了，而判据只是「还没退出」（#8 口径）：' + layerText
+          return '确认文案把这批会话说成「正在运行」了，而判据只是「还开着」（#8 口径）：' + layerText
         }
-        if (!says(layer, '还没退出', 'have not exited')) return '确认文案没说清这批会话是「还没退出」的：' + layerText
+        if (!says(layer, '还开着', 'still open')) return '确认文案没说清这批会话是「还开着」的：' + layerText
         // ✕ 的 tooltip 是同一句话的另一个出口（`btn.closePanelTitle`），一并钉
         const closeTitle = (q('.tt_close') || {}).title || ''
         if (/在跑|正在运行|running sessions/.test(closeTitle)) {
-          return '✕ 的 tooltip 说成「在跑 / 正在运行」了（#8 口径同样只到「还没退出」）：' + closeTitle
+          return '✕ 的 tooltip 说成「在跑 / 正在运行」了（#8 口径同样只到「还开着」）：' + closeTitle
         }
         return null
       }
@@ -2274,12 +2429,12 @@
         const others = row('关闭其他标签', 'Close other tabs')
         if (others === undefined) return '「⋯」里没有「关闭其他标签」这一行'
         if (!others.textContent.includes('2')) return '「关闭其他」没写明条数：' + String(others.textContent)
-        // 批量行副文案是同一口径的第四个出口（`list.subLive`）：同样只能说「还没退出」
+        // 批量行副文案是同一口径的第四个出口（`list.subLive`）：同样只能说「还开着」
         if (/正在运行|are running/.test(String(others.textContent))) {
-          return '批量行副文案说成「正在运行」了（#8 口径只到「还没退出」）：' + String(others.textContent)
+          return '批量行副文案说成「正在运行」了（#8 口径只到「还开着」）：' + String(others.textContent)
         }
-        if (!says(others, '还没退出', 'have not exited')) {
-          return '批量行副文案没说清这批标签是「还没退出」的：' + String(others.textContent)
+        if (!says(others, '还开着', 'still open')) {
+          return '批量行副文案没说清这批标签是「还开着」的：' + String(others.textContent)
         }
         // 活动标签是最后一个 → 「关闭左侧」有目标（左边两个）、「关闭右侧」没有
         const left = row('关闭左侧标签', 'Close tabs to the left')
