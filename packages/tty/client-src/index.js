@@ -91,6 +91,7 @@ import { currentSessionCwd } from './current-session.js'
 import { FALLBACK_COLS, FALLBACK_ROWS, usableFitSize } from './fit-size.js'
 import { agentTabDisposition, countLiveSessions, liveSessionSids, sessionFrameIndex } from './session-live.js'
 import { closePanelSummary } from './close-guard.js'
+import { bulkClosePlan, panelTabCount } from './tab-bulk.js'
 import { planResume } from './download-resume.js'
 import { dirsToCreate, filterEntries, planDrop } from './sftp-view.js'
 import { eventOwnsStatus, needsStatusResync, statusForTab } from './status-line.js'
@@ -172,6 +173,11 @@ const I18N_ZH = {
   'btn.tabListTitle': '标签列表（{n} 个）',
   'list.tabsAllVisible': '没有藏在视野外的标签',
   'list.cleanExited': '清理已退出的标签（{n}）',
+  'btn.closeTab': '关闭此标签',
+  'btn.closeLeft': '关闭左侧标签（{n}）',
+  'btn.closeOthers': '关闭其他标签（{n}）',
+  'btn.closeRight': '关闭右侧标签（{n}）',
+  'list.subLive': '其中 {n} 个还没退出',
   'meta.tunnelRemote': '远程:{host}:{port} → 本机:{local}',
   'meta.tunnelLocal': '本机:{local} → {host}:{port}',
   'status.tmuxPersistedTitle': '已由 tmux 托管 — 断线 / 宿主重启后按名接回现场',
@@ -391,6 +397,11 @@ const I18N_ZH = {
   'confirm.closeTextAgent': '关闭面板会一并结束这 {n} 个会话，其中 {agent} 个是 AI 开的（可能正在跑命令）。',
   'confirm.closeHint': '只是想给别的窗口腾地方？点「最小化」—— 会话与输出都保持运行。',
   'confirm.closeOk': '结束 {n} 个会话并关闭',
+  'confirm.tabsTitle': '结束 {n} 个会话并关掉这些标签？',
+  'confirm.tabsText': '这一下会结束 {n} 个还没退出的会话，它们的标签也跟着关掉。',
+  'confirm.tabsTextAgent': '这一下会结束 {n} 个会话，其中 {agent} 个是 AI 开的（可能正在跑命令）。',
+  'confirm.tabsHint': '已退出的标签只是只读保留，清掉它们不丢任何东西。',
+  'confirm.tabsOk': '结束 {n} 个会话',
   'btn.restoreDock': '点击恢复终端窗口',
   'panel.title': '终端',
   'status.minimized': '终端已最小化 — 点击恢复',
@@ -605,6 +616,11 @@ const I18N_EN = {
   'btn.tabListTitle': 'Tab list ({n})',
   'list.tabsAllVisible': 'No tabs are out of view',
   'list.cleanExited': 'Clean up exited tabs ({n})',
+  'btn.closeTab': 'Close this tab',
+  'btn.closeLeft': 'Close tabs to the left ({n})',
+  'btn.closeOthers': 'Close other tabs ({n})',
+  'btn.closeRight': 'Close tabs to the right ({n})',
+  'list.subLive': '{n} of them have not exited yet',
   'meta.tunnelRemote': 'remote:{host}:{port} → local:{local}',
   'meta.tunnelLocal': 'local:{local} → {host}:{port}',
   'status.tmuxPersistedTitle': 'Hosted by tmux — the session is reattached by name after a disconnect or host restart',
@@ -824,6 +840,11 @@ const I18N_EN = {
   'confirm.closeTextAgent': 'Closing the panel ends these {n} sessions, {agent} of which the AI opened (they may be running commands).',
   'confirm.closeHint': 'Only need room for other windows? Hit “Minimize” — sessions and output keep running.',
   'confirm.closeOk': 'End {n} sessions and close',
+  'confirm.tabsTitle': 'End {n} sessions and close those tabs?',
+  'confirm.tabsText': 'This ends {n} sessions that have not exited yet, and their tabs go with them.',
+  'confirm.tabsTextAgent': 'This ends {n} sessions, {agent} of which the AI opened (they may be running commands).',
+  'confirm.tabsHint': 'Already-exited tabs are read-only leftovers — cleaning those loses nothing.',
+  'confirm.tabsOk': 'End {n} sessions',
   'btn.restoreDock': 'Click to restore the terminal window',
   'panel.title': 'Terminal',
   'status.minimized': 'Terminal minimized — click to restore',
@@ -2598,6 +2619,9 @@ function closeTab(sid, options) {
   // 已经删了会话，kill 只会换来一个错误帧。
   if (!silent) sendFrame({ t: 'kill', sid })
   tabs.delete(sid)
+  // 标签右键菜单描述的就是某个标签 / 某几个标签的条数：标签一关就作废（里面的批量行
+  // 会照着过期的名单关人），一律收掉
+  closeTabContextMenu()
   // 会话没了，它的失败徽标也没什么可解释的了（浮层若正开着先收起）
   if (assistMenuSid === sid) closeAssistMenu()
   assistHints.delete(sid)
@@ -3195,15 +3219,21 @@ function syncTabOverflow() {
   if (tabbarEl === null) return
   const max = tabbarEl.scrollWidth - tabbarEl.clientWidth
   const overflow = max > 1
+  const panelTabs = panelTabCount(tabListForBulk())
   /*
    * #7③：「⋯」不再只在溢出时出现——面板里攒着**已退出的标签**时，它是「清理」的入口
-   * （不出现的话，47 个死标签只能一个一个点标签上的 ✕）。溢出与有死标签这两件事都不成立
-   * 时它才是噪音，照旧藏起来。
+   * （不出现的话，47 个死标签只能一个一个点标签上的 ✕）。
+   *
+   * 0.29.0 起再放宽一格：**标签 ≥ 2 个就在**。它现在同时是「关闭其他 / 关闭左侧 / 关闭右侧」的
+   * 可见入口（右键是快路径，但「不试右键就不知道」不能是唯一出路）；标签只剩一个时
+   * 没有任何可管理的对象，那才是噪音，照旧藏起来（`≥ 2` 这个门槛也正好让
+   * D89 的「单标签时『+』紧贴页签」与 D90/「⋯」的既有断言原样成立）。
    */
-  const moreNeeded = overflow || exitedPanelTabs().length > 0
+  const moreNeeded = overflow || exitedPanelTabs().length > 0 || panelTabs >= 2
   if (tabMoreEl !== null) {
     tabMoreEl.hidden = !moreNeeded
-    if (moreNeeded) tabMoreEl.title = t('btn.tabListTitle', { n: tabs.size })
+    // 条数按**标签栏上的**标签算：`tabs.size` 把其他插件挂进来的嵌入终端也算进去了
+    if (moreNeeded) tabMoreEl.title = t('btn.tabListTitle', { n: String(panelTabs) })
     // 入口藏起来时菜单不能还挂着
     else if (tabListMenuEl !== null) closeTabListMenu()
   }
@@ -3908,6 +3938,8 @@ function renderTabListItems() {
     hint.className = 'tt_addMenuTitle'
     hint.textContent = t('list.tabsAllVisible')
     menu.appendChild(hint)
+    // 名单为空也要往下走：批量入口（关闭其他 / 左侧 / 右侧 / 清理已退出）与溢出无关
+    appendTabActionRows(menu, activeSid)
     appendCleanExitedRow(menu)
     return
   }
@@ -3963,9 +3995,194 @@ function renderTabListItems() {
   if (activeRow !== null && typeof activeRow.scrollIntoView === 'function') {
     activeRow.scrollIntoView({ block: 'nearest' })
   }
+  appendTabActionRows(menu, activeSid)
   appendCleanExitedRow(menu)
 }
 
+/** 标签栏顺序的纯数据快照（嵌入终端与 sid 的过滤统一交给 `tab-bulk.js`：判据只写一处）。 */
+function tabListForBulk() {
+  return [...tabs].map(([sid, tab]) => ({
+    sid,
+    embedded: tab.embedded === true,
+    exited: tab.exited === true,
+    agentOwned: tab.agentOwned === true,
+  }))
+}
+
+/* ============ 批量关标签（0.29.0：右键菜单 + 「⋯」列表共用一份判据） ============ */
+
+/**
+ * 「关闭其他标签 / 关闭左侧标签 / 关闭右侧标签」三行。
+ *
+ * 目标为空的行**不出现**（参照是第一个标签时没有「左侧」、是最后一个时没有「右侧」）：
+ * 不出现就不会点空。顺序是「其他（= 左侧 ∪ 右侧）→ 左 → 右」：先给最强的那一下，再按
+ * 标签栏的两个方向成对——用户 2026-10-10 看到菜单后要求补上「左侧」，与「右侧」同一处切片。
+ * 副文案写清「这一下会结束几条**还没退出**的会话」——菜单行本身只说「几个标签」，
+ * 而用户真正会心疼的是里面的进程。
+ */
+function appendTabActionRows(menu, refSid) {
+  const plan = bulkClosePlan(tabListForBulk(), refSid)
+  const rows = [
+    [t('btn.closeOthers', { n: String(plan.others.sids.length) }), plan.others, ICON_TRASH],
+    [t('btn.closeLeft', { n: String(plan.left.sids.length) }), plan.left, ICON_ARROW_LEFT],
+    [t('btn.closeRight', { n: String(plan.right.sids.length) }), plan.right, ICON_ARROW_RIGHT],
+  ].filter(([, group]) => group.sids.length > 0)
+  if (rows.length === 0) return
+  const sep = document.createElement('div')
+  sep.className = 'tt_addMenuSep'
+  menu.appendChild(sep)
+  for (const [label, group, icon] of rows) {
+    addMenuItem(menu, label, group.live > 0 ? t('list.subLive', { n: String(group.live) }) : '', () => {
+      runBulkClose(group)
+    }, undefined, icon)
+  }
+}
+
+/**
+ * 批量关闭的落点：**逐个走 `closeTab`**——D77 的 kill 帧、挂载位归属、侧边栏入口徽标、
+ * 标签持久化、空面板收尾全在那一个函数里，绕过去就是僵尸面板（这正是它存在的理由）。
+ *
+ * 要结束 ≥2 条活会话时先问一句（判据在 `tab-bulk.js`，与关面板的 `close-guard.js` 同思路：
+ * 按「会损失什么」判，不按「开了几个标签」判）；只关一条活会话与点它自己的 ✕ 等价，
+ * 不弹框。
+ */
+function runBulkClose(group) {
+  closeTabContextMenu()
+  closeTabListMenu()
+  if (group.sids.length === 0) return
+  // 快照：closeTab 会一边关一边重建标签栏（也会把菜单收掉）
+  const targets = group.sids.slice()
+  const close = () => {
+    for (const sid of targets) closeTab(sid)
+  }
+  if (group.confirm !== true) {
+    close()
+    return
+  }
+  openConfirmCard({
+    title: t('confirm.tabsTitle', { n: String(group.live) }),
+    text: group.agentLive > 0
+      ? t('confirm.tabsTextAgent', { n: String(group.live), agent: String(group.agentLive) })
+      : t('confirm.tabsText', { n: String(group.live) }),
+    hint: t('confirm.tabsHint'),
+    okLabel: t('confirm.tabsOk', { n: String(group.live) }),
+    onOk: close,
+  })
+}
+
+/* ========================= 标签右键菜单（0.29.0） ========================= */
+
+let tabCtxMenuEl = null
+/** 右键菜单的参照标签：它被关掉时菜单跟着收（否则菜单在描述一个不存在的标签）。 */
+let tabCtxMenuSid = null
+
+/**
+ * 为什么入口是右键（而不是在「+」后面再加一个菜单按钮）：
+ *
+ * - 「关闭其他 / 关闭右侧」必须**以某个标签为参照**（「左侧 / 右侧」尤其只有参照物才说得通），而「+」是面板级动作（D89 的排版
+ *   注释里就写着这句），它没有参照物——点开还得再问「以哪个为准」。
+ * - 「+」**自己就是一个菜单触发器**（`openAddMenu`）。两个紧挨着、长得一样、内容不同的
+ *   菜单按钮是明确的歧义源。
+ * - 右键零常驻 chrome：标签栏本身就容易溢出（D90 那套判据就是为它写的），不该再加按钮；
+ *   而「⋯」已经承担了可见入口那一半（见 `syncTabOverflow` 的显隐判据）。
+ *
+ * 键盘触发的 contextmenu（Shift+F10 / 菜单键）clientX/Y 都是 0——dsh-docker 的日志右键菜单
+ * 踩过同一个坑（`packages/docker/client-src/index.js` 的 `onLogContextMenu` 用选区矩形兜底）：
+ * 那种情况改用标签自己的矩形定位，别把菜单夹到左上角。**刻意不引那边的缺陷号**：编号是
+ * 按包各排一套的，在 tty 的代码里写一个别包的 `Dxx` 会把两套台账搅在一起
+ * （`scripts/test/defects-table.test.ts` 正在钉这件事）。
+ */
+function openTabContextMenu(sid, x, y) {
+  if (tabs.get(sid) === undefined) return
+  closeTabContextMenu()
+  closeAddMenu()
+  closeTabListMenu() // 三个浮层别叠在一起
+  const menu = document.createElement('div')
+  menu.className = 'tt_addMenu tt_tabCtxMenu'
+  tabCtxMenuEl = menu
+  tabCtxMenuSid = sid
+  renderTabContextItems(menu, sid)
+  document.body.appendChild(menu)
+  placePopoverAt(menu, { left: x, right: x, top: y, bottom: y })
+  document.addEventListener('mousedown', onDocTabCtxMouseDown, true)
+  document.addEventListener('keydown', onTabCtxKeydown, true)
+}
+
+function closeTabContextMenu() {
+  if (tabCtxMenuEl === null) return
+  document.removeEventListener('mousedown', onDocTabCtxMouseDown, true)
+  document.removeEventListener('keydown', onTabCtxKeydown, true)
+  tabCtxMenuEl.remove()
+  tabCtxMenuEl = null
+  tabCtxMenuSid = null
+}
+
+function onDocTabCtxMouseDown(event) {
+  if (tabCtxMenuEl === null) return
+  if (event.target instanceof Element && tabCtxMenuEl.contains(event.target)) return
+  closeTabContextMenu()
+}
+
+function onTabCtxKeydown(event) {
+  if (event.key !== 'Escape') return
+  // 捕获阶段先收浮层：面板级的 Esc 是「最小化面板」（onModalKeydown），不能让它抢走
+  event.preventDefault()
+  event.stopPropagation()
+  closeTabContextMenu()
+}
+
+/** 右键菜单内容：这一个标签 + 以它为参照的批量动作（两处入口共用 `appendTabActionRows`）。 */
+function renderTabContextItems(menu, sid) {
+  const tab = tabs.get(sid)
+  if (tab === undefined) return
+  const label = tab.label || t('panel.tabLabel', { n: tabCounterLabel(sid) })
+  addMenuItem(menu, t('btn.closeTab'), label, () => {
+    closeTabContextMenu()
+    closeTab(sid)
+  }, undefined, ICON_CLOSE_SM)
+  appendTabActionRows(menu, sid)
+  appendCleanExitedRow(menu)
+}
+
+/** 右键落在哪个标签上（标签栏是复用容器：按钮每次重建，所以监听挂在外壳上做委托）。 */
+function onTabbarContextMenu(event) {
+  const sid = tabSidFromTarget(event.target)
+  if (sid === null) return
+  event.preventDefault() // 面板里不给原生菜单
+  let x = event.clientX
+  let y = event.clientY
+  if (x === 0 && y === 0) {
+    const btn = event.target instanceof Element ? event.target.closest('.tt_tab') : null
+    if (btn !== null) {
+      const rect = btn.getBoundingClientRect()
+      x = rect.left
+      y = rect.bottom
+    }
+  }
+  openTabContextMenu(sid, x, y)
+}
+
+/**
+ * 中键关标签（浏览器 / 编辑器的通用手感，零新增 UI）。中键在别的元素上什么也不做，
+ * 只有落在标签上才拦。
+ */
+function onTabbarAuxClick(event) {
+  if (event.button !== 1) return
+  const sid = tabSidFromTarget(event.target)
+  if (sid === null) return
+  event.preventDefault()
+  closeTab(sid)
+}
+
+/** 事件目标 → 它所属标签的 sid（不在标签上返回 null）。 */
+function tabSidFromTarget(target) {
+  if (!(target instanceof Element)) return null
+  const btn = target.closest('.tt_tab')
+  if (btn === null) return null
+  const sid = btn.dataset.sid
+  if (sid === undefined || sid === '' || !tabs.has(sid)) return null
+  return sid
+}
 
 /** 面板里已退出的标签（嵌入终端不算：它不进标签栏、也不归这个菜单管）。 */
 function exitedPanelTabs() {
@@ -3988,6 +4205,9 @@ function appendCleanExitedRow(menu) {
   menu.appendChild(sep)
   addMenuItem(menu, t('list.cleanExited', { n: String(exited.length) }), '', () => {
     closeTabListMenu()
+    // 右键菜单里也有这一行（两处入口共用这个构造）：一并收掉，别留下一个描述着
+    // 已经不存在的标签的浮层
+    closeTabContextMenu()
     // 快照着关：每关一个都会重建标签栏与菜单内容
     for (const tab of exited) closeTab(tab.sid)
   }, undefined, ICON_CLEAR)
@@ -7912,6 +8132,10 @@ function openModal() {
   // 标签栏溢出（0.23.0）：滚动条已隐藏，改由两侧渐隐提示；滚轮纵向 delta 手动换轴
   tabbarEl.addEventListener('scroll', syncTabOverflow)
   tabbarEl.addEventListener('wheel', onTabbarWheel, { passive: false })
+  // 批量关标签（0.29.0）：右键 = 以这个标签为参照（关闭其他 / 左侧 / 右侧），中键 = 直接关。
+  // 监听挂在外壳上做委托：`.tt_tab` 是每次 renderTabbar 重建的
+  tabbarEl.addEventListener('contextmenu', onTabbarContextMenu)
+  tabbarEl.addEventListener('auxclick', onTabbarAuxClick)
   connbarEl = modalEl.querySelector('.tt_connbar')
   connDotEl = modalEl.querySelector('.tt_connDot')
   connTargetEl = modalEl.querySelector('.tt_connTarget')
@@ -8289,6 +8513,7 @@ function closeModal() {
   minimized = false
   closeAddMenu()
   closeTabListMenu()
+  closeTabContextMenu()
   closeAssistMenu()
   closeConnbarMoreMenu()
   closeTunnelPopover()

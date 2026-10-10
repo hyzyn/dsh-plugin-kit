@@ -2230,6 +2230,202 @@
       }
     },
 
+    /*
+     * 批量关标签 ①（0.29.0）：用户报告「现在一个个关闭体验不是特别好」。
+     *
+     * 「⋯」的显隐判据从「溢出 **或** 有死标签」再放宽一格到「**标签 ≥ 2 个就在**」——
+     * 它现在同时是「关闭其他 / 关闭左侧 / 关闭右侧」的可见入口（右键是快路径，但不该是唯一出路）。
+     * 门槛正好留在 2：只剩一个标签时没有任何可管理的对象，仍要藏起来（D89 的「单标签时
+     * 『+』紧贴页签」和 tab-list 里那条「不溢出时不该可见」也正因此原样成立）。
+     *
+     * 钉三件事：① 单标签时入口不可见；② 3 个标签、**不溢出**时它也在；③ 菜单里有
+     * 「关闭其他标签（2）」，而活动标签是最后一个 → **「关闭右侧」这一行不该出现**
+     * （目标为空的行不出现，点了才不会空转）。
+     */
+    async 'tab-bulk-menu'() {
+      window.__PREVIEW_CONFIG.maxSessions = 12
+      await openPanel()
+      await sleep(200)
+      const moreAtOneTab = q('.tt_tabMore')
+      const visibleAtOneTab = moreAtOneTab === null ? null : moreAtOneTab.getBoundingClientRect().width > 0
+      for (let i = 0; i < 2; i += 1) {
+        await clickAdd()
+        await clickMenuItem('本地终端', 'Local terminal')
+        await waitFor(() => tabs().length === i + 2, 4000)
+      }
+      await sleep(220)
+      const strip = q('.tt_tabs')
+      const overflow = strip === null ? null : strip.scrollWidth > strip.clientWidth + 1
+      const more = q('.tt_tabMore')
+      const moreVisible = more === null ? null : more.getBoundingClientRect().width > 0
+      if (moreVisible === true) {
+        more.click()
+        await waitFor(() => q('.tt_tabMenu'))
+        await sleep(120)
+      }
+      window.__previewAssert = async () => {
+        if (tabs().length !== 3) return '夹具失效：期望 3 个标签，实际 ' + String(tabs().length)
+        if (visibleAtOneTab !== false) return '只有一个标签时「⋯」不该可见（实测 ' + String(visibleAtOneTab) + '）'
+        if (overflow !== false) return '夹具失效：三个标签就溢出了，量不到「不溢出也常驻」'
+        if (moreVisible !== true) return '标签 ≥ 2 个时「⋯」没出现（批量入口够不着）'
+        const menu = q('.tt_tabMenu')
+        if (menu === null) return '「⋯」菜单没打开'
+        const row = (zh, en) => qa('.tt_addMenuItem').find((el) => says(el, zh, en))
+        const others = row('关闭其他标签', 'Close other tabs')
+        if (others === undefined) return '「⋯」里没有「关闭其他标签」这一行'
+        if (!others.textContent.includes('2')) return '「关闭其他」没写明条数：' + String(others.textContent)
+        // 批量行副文案是同一口径的第四个出口（`list.subLive`）：同样只能说「还没退出」
+        if (/正在运行|are running/.test(String(others.textContent))) {
+          return '批量行副文案说成「正在运行」了（#8 口径只到「还没退出」）：' + String(others.textContent)
+        }
+        if (!says(others, '还没退出', 'have not exited')) {
+          return '批量行副文案没说清这批标签是「还没退出」的：' + String(others.textContent)
+        }
+        // 活动标签是最后一个 → 「关闭左侧」有目标（左边两个）、「关闭右侧」没有
+        const left = row('关闭左侧标签', 'Close tabs to the left')
+        if (left === undefined) return '活动标签在末尾时「关闭左侧标签」该出现（左边还有两个）'
+        if (!left.textContent.includes('2')) return '「关闭左侧」条数不对：' + String(left.textContent)
+        if (row('关闭右侧标签', 'Close tabs to the right') !== undefined) {
+          return '活动标签是最后一个，「关闭右侧」这一行不该出现（目标为空 = 点了空转）'
+        }
+        if (row('清理已退出', 'Clean up exited') !== undefined) return '没有已退出的标签，不该有清理行'
+        return null
+      }
+    },
+
+    /*
+     * 批量关标签 ②（0.29.0）：**右键**一个标签 = 以它为参照。
+     *
+     * 为什么是右键而不是「+」后面再加一个菜单按钮：「关闭其他 / 关闭左侧 / 关闭右侧」必须以
+     * 某个标签为参照，而「+」本身就是一个菜单触发器（`openAddMenu`），两个挨着的内容不同的
+     * 菜单按钮是明确的歧义源（理由全文见 client-src 的 `openTabContextMenu`）。
+     *
+     * 这里右键**中间**那个（3 个标签）：菜单要同时有「关闭此标签」「关闭其他标签（2）」
+     * 「关闭左侧标签（1）」「关闭右侧标签（1）」，且落在光标附近而不是被夹到左上角。
+     */
+    async 'tab-context-menu'() {
+      window.__PREVIEW_CONFIG.maxSessions = 12
+      await openPanel()
+      for (let i = 0; i < 2; i += 1) {
+        await clickAdd()
+        await clickMenuItem('本地终端', 'Local terminal')
+        await waitFor(() => tabs().length === i + 2, 4000)
+      }
+      await sleep(220)
+      const all = tabs()
+      const mid = all[1]
+      const rect = mid.getBoundingClientRect()
+      const at = { x: Math.round(rect.left + 24), y: Math.round(rect.bottom) }
+      mid.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: at.x, clientY: at.y }))
+      await waitFor(() => q('.tt_tabCtxMenu'))
+      await sleep(120)
+      window.__previewAssert = async () => {
+        if (tabs().length !== 3) return '夹具失效：期望 3 个标签，实际 ' + String(tabs().length)
+        const menu = q('.tt_tabCtxMenu')
+        if (menu === null) return '右键标签没弹出菜单'
+        if (q('.tt_tabMenu') !== null) return '右键时「⋯」列表还挂着（两个浮层叠在一起）'
+        if (q('.tt_addMenu:not(.tt_tabCtxMenu)') !== null) return '右键时「+」菜单还挂着（两个浮层叠在一起）'
+        const row = (zh, en) => qa('.tt_addMenuItem').find((el) => says(el, zh, en))
+        if (row('关闭此标签', 'Close this tab') === undefined) return '菜单里没有「关闭此标签」'
+        const others = row('关闭其他标签', 'Close other tabs')
+        if (others === undefined) return '菜单里没有「关闭其他标签」'
+        if (!others.textContent.includes('2')) return '「关闭其他」条数不对（参照在中间，另有两个）：' + String(others.textContent)
+        const left = row('关闭左侧标签', 'Close tabs to the left')
+        if (left === undefined) return '参照在中间时「关闭左侧」该出现'
+        if (!left.textContent.includes('1')) return '「关闭左侧」条数不对（参照左边还有一个）：' + String(left.textContent)
+        const right = row('关闭右侧标签', 'Close tabs to the right')
+        if (right === undefined) return '参照在中间时「关闭右侧」该出现'
+        if (!right.textContent.includes('1')) return '「关闭右侧」条数不对（参照右边还有一个）：' + String(right.textContent)
+        const box = menu.getBoundingClientRect()
+        if (Math.abs(box.left - at.x) > 320 || Math.abs(box.top - at.y) > 120) {
+          return '菜单没落在光标附近：光点 (' + String(at.x) + ',' + String(at.y) + ') → 菜单 (' + String(Math.round(box.left)) + ',' + String(Math.round(box.top)) + ')'
+        }
+        return null
+      }
+    },
+
+    /*
+     * 批量关标签 ③（0.29.0）：功能面 + 确认层。
+     *
+     * 右键第 1 个 → 「关闭其他标签（2）」：这一下要结束 **2 条活会话**，所以先弹确认
+     * （判据在 `client-src/tab-bulk.js`：只关一条与点它自己的 ✕ 等价，不弹）；点「结束」后
+     * 只留下被右键的那一个，**而且它要成为活动标签**（关掉活动标签时 closeTab 自己会接续）。
+     */
+    async 'tab-context-close-others'() {
+      window.__PREVIEW_CONFIG.maxSessions = 12
+      await openPanel()
+      for (let i = 0; i < 2; i += 1) {
+        await clickAdd()
+        await clickMenuItem('本地终端', 'Local terminal')
+        await waitFor(() => tabs().length === i + 2, 4000)
+      }
+      await sleep(220)
+      const refSid = sidOf(tabs()[0])
+      const rect = tabs()[0].getBoundingClientRect()
+      tabs()[0].dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: Math.round(rect.left + 24), clientY: Math.round(rect.bottom) }))
+      await waitFor(() => q('.tt_tabCtxMenu'))
+      await sleep(120)
+      const others = await waitFor(() => qa('.tt_addMenuItem').find((el) => says(el, '关闭其他标签', 'Close other tabs')))
+      others.click()
+      await waitFor(() => q('.tt_confirmLayer'))
+      await sleep(150)
+      const layer = q('.tt_confirmLayer')
+      const title = layer === null ? '' : String(layer.querySelector('.tt_confirmTitle').textContent)
+      const okText = layer === null ? '' : String(layer.querySelector('.tt_confirmOk').textContent)
+      if (layer !== null) layer.querySelector('.tt_confirmOk').click()
+      await sleep(320)
+      const left = tabs()
+      const state = {
+        count: left.length,
+        kept: left.length === 1 ? sidOf(left[0]) : null,
+        active: sidOf(q('.tt_tab[data-active]') || {}),
+        ctxMenu: q('.tt_tabCtxMenu') !== null,
+      }
+      window.__previewAssert = async () => {
+        if (state.count !== 1) return '「关闭其他」没关干净：还剩 ' + String(state.count) + ' 个标签'
+        if (state.kept !== refSid) return '留下的不是被右键的那个标签（' + String(state.kept) + ' ≠ ' + String(refSid) + '）'
+        if (state.active !== refSid) return '关完之后活动标签没接续到留下的那个'
+        if (state.ctxMenu) return '关完之后右键菜单还挂着'
+        if (!title.includes('2')) return '确认层没写清这一下要结束几条会话：' + title
+        if (!okText.includes('2')) return '确认按钮没写清条数：' + okText
+        return null
+      }
+    },
+
+    /*
+     * 批量关标签 ④（0.29.0）：中键 = 直接关（浏览器 / 编辑器的通用手感，零新增 UI）。
+     * 与 ✕ 同一条落点（`closeTab`），所以**不问**。
+     */
+    async 'tab-mid-click'() {
+      window.__PREVIEW_CONFIG.maxSessions = 12
+      await openPanel()
+      for (let i = 0; i < 2; i += 1) {
+        await clickAdd()
+        await clickMenuItem('本地终端', 'Local terminal')
+        await waitFor(() => tabs().length === i + 2, 4000)
+      }
+      await sleep(220)
+      const victim = sidOf(tabs()[1])
+      const before = tabs().length
+      tabs()[1].dispatchEvent(new MouseEvent('auxclick', { bubbles: true, cancelable: true, button: 1 }))
+      await sleep(300)
+      const after = tabs().length
+      const gone = !tabs().some((el) => sidOf(el) === victim)
+      const askLayer = q('.tt_confirmLayer') !== null
+      // 再中键一次量「连着关」（留下 1 个标签：截图要看清的还是标签栏）
+      const second = tabs()[1]
+      if (second !== undefined) second.dispatchEvent(new MouseEvent('auxclick', { bubbles: true, cancelable: true, button: 1 }))
+      await sleep(300)
+      const finalCount = tabs().length
+      window.__previewAssert = async () => {
+        if (before !== 3) return '夹具失效：期望 3 个标签，实际 ' + String(before)
+        if (!gone) return '中键没有关掉标签'
+        if (after !== 2) return '中键关了不止一个标签：' + String(after)
+        if (askLayer) return '中键关一个标签不该弹确认（与点 ✕ 同一条路）'
+        if (finalCount !== 1) return '连着中键关两次只该剩 1 个标签，实际 ' + String(finalCount)
+        return null
+      }
+    },
   }
 
   const name = new URLSearchParams(location.search).get('scenario') || 'local'

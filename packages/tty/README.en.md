@@ -35,6 +35,17 @@ After installing, restart `dsh web`; a “Terminal” entry appears in the sideb
   **“⋯” tab list** appears at the strip’s right edge listing only the tabs **scrolled out of view**
   (status dot + target, with the current tab highlighted when it is one of them): one click to switch,
   and an inline ✕ to close it right there (the list stays open so you can close several in a row);
+- **Close a batch of tabs at once (0.29.0)**: no more clicking ✕ one by one — **right-click** any tab to get
+  a menu anchored on it (Close this tab / Close other tabs (N) / Close tabs to the left (N) / Close tabs to
+  the right (N) / Clean up exited tabs (N); rows with nothing to close are not shown — no “left” row when the
+  anchored tab is first, no “right” row when it is last), and **middle-click** closes the tab under the
+  pointer. The **“⋯” menu carries the same batch rows** (anchored on the current tab) and, since 0.29.0,
+  **appears whenever there are ≥ 2 tabs** (overflow or dead tabs are no longer required): right-click is the
+  fast path, but it must not be the only way in; with a single tab it still stays hidden (there is nothing to
+  manage — that is the only real noise here). Actions that would **end ≥ 2 live sessions** ask once first
+  (how many, and how many of those the AI opened); closing a single live session is the same as clicking its
+  own ✕, so it does not ask (the rule lives in `client-src/tab-bulk.js`, same “what do you lose” criterion
+  as the D98 panel-close guard);
 - **The working directory follows the current DSH session**: new tabs open in the current session’s
   working directory (the host `cwd` configuration is the fallback). Since 0.1.6 the session list
   snapshot no longer carries `current` (view selection moved to the workspace domain), so the client
@@ -1107,7 +1118,8 @@ settings card (also side by side with docker)/ SFTP (single pane, dual pane, pla
 **mount slot follows the tab** (`dock-pane-tab`, the 0.19.0 regression)/ minimized badge / exit and error
 overlays / “clean up exited tabs” in the “⋯” menu (and after clicking it)/ where tabs go when the AI
 releases a session / the panel-close confirmation (with live sessions and with only exited tabs)/
-tunnel popover / search box / toast / embedded terminals (alone and alongside the panel)/
+batch tab closing (the “⋯” batch rows, the tab context menu, the “close others” confirmation, middle-click;
+0.29.0)/ tunnel popover / search box / toast / embedded terminals (alone and alongside the panel)/
 docker panel and “containers → terminal drawer”.
 
 A scene may attach a **function-shaped** assertion to `window.__previewAssert` (returning `null` means pass,
