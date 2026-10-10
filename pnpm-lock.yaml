@@ -15,7 +15,7 @@ importers:
         specifier: link:scripts/dsh-peer-stub
         version: link:scripts/dsh-peer-stub
       '@hyzyn/dsh-codegraph':
-        specifier: 0.6.7
+        specifier: 0.6.8
         version: link:packages/codegraph
       '@hyzyn/dsh-docker':
         specifier: 0.12.0
@@ -42,7 +42,7 @@ importers:
         specifier: 0.4.7
         version: link:packages/search
       '@hyzyn/dsh-tty':
-        specifier: 0.27.1
+        specifier: 0.30.0
         version: link:packages/tty
     devDependencies:
       '@vitest/coverage-v8':
@@ -64,7 +64,7 @@ importers:
         specifier: link:../../scripts/dsh-peer-stub
         version: link:../../scripts/dsh-peer-stub
       '@hyzyn/dsh-codegraph':
-        specifier: 0.6.7
+        specifier: 0.6.8
         version: link:../codegraph
       '@hyzyn/dsh-docker':
         specifier: 0.12.0
@@ -91,7 +91,7 @@ importers:
         specifier: 0.4.7
         version: link:../search
       '@hyzyn/dsh-tty':
-        specifier: 0.27.1
+        specifier: 0.30.0
         version: link:../tty
     devDependencies:
       '@deepseek-ai/cordis':

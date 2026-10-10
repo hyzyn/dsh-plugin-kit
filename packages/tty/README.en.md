@@ -35,11 +35,11 @@ After installing, restart `dsh web`; a “Terminal” entry appears in the sideb
   **“⋯” tab list** appears at the strip’s right edge listing only the tabs **scrolled out of view**
   (status dot + target, with the current tab highlighted when it is one of them): one click to switch,
   and an inline ✕ to close it right there (the list stays open so you can close several in a row);
-- **Close a batch of tabs at once (0.29.0)**: no more clicking ✕ one by one — **right-click** any tab to get
+- **Close a batch of tabs at once (0.30.0)**: no more clicking ✕ one by one — **right-click** any tab to get
   a menu anchored on it (Close this tab / Close other tabs (N) / Close tabs to the left (N) / Close tabs to
   the right (N) / Clean up exited tabs (N); rows with nothing to close are not shown — no “left” row when the
   anchored tab is first, no “right” row when it is last), and **middle-click** closes the tab under the
-  pointer. The **“⋯” menu carries the same batch rows** (anchored on the current tab) and, since 0.29.0,
+  pointer. The **“⋯” menu carries the same batch rows** (anchored on the current tab) and, since 0.30.0,
   **appears whenever there are ≥ 2 tabs** (overflow or dead tabs are no longer required): right-click is the
   fast path, but it must not be the only way in; with a single tab it still stays hidden (there is nothing to
   manage — that is the only real noise here). Actions that would **end ≥ 2 live sessions** ask once first
@@ -1137,7 +1137,7 @@ settings card (also side by side with docker)/ SFTP (single pane, dual pane, pla
 overlays / “clean up exited tabs” in the “⋯” menu (and after clicking it)/ where tabs go when the AI
 releases a session / the panel-close confirmation (with live sessions and with only exited tabs)/
 batch tab closing (the “⋯” batch rows, the tab context menu, the “close others” confirmation, middle-click;
-0.29.0)/ tunnel popover / search box / toast / embedded terminals (alone and alongside the panel)/
+0.30.0)/ tunnel popover / search box / toast / embedded terminals (alone and alongside the panel)/
 docker panel and “containers → terminal drawer”.
 
 A scene may attach a **function-shaped** assertion to `window.__previewAssert` (returning `null` means pass,
