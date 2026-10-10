@@ -8,7 +8,9 @@ dist/
 .idea/
 
 .dsh-vision-toolkit/
-.jspace/
+# 项目级 skill 目录（DSH 从 <项目根>/.dsh/skills 发现）：
+# 本仓的 dsh-plugin-kit 工作法只在本机生效，不入库——与 .dsh-vision-toolkit/ 同理
+.dsh/
 # 各插件视觉预览夹具产物（scripts/preview.mjs 生成）
 .preview/
 # 本地杂项：贡献导出 bundle 与 smoke 测试脚本，不入库
