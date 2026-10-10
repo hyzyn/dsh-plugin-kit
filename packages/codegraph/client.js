@@ -767,7 +767,11 @@ window.__ModuleLoader__.load({
       // busyAction 驱动），否则搜个符号也会让刷新图标转起来，等于报错信息。
       '.cg_iconBtn[data-busy="1"] svg{animation:cg_spin .7s linear infinite}',
       '@media (prefers-reduced-motion:reduce){.cg_spinner,.cg_iconBtn[data-busy="1"] svg{animation:none}}',
-      '.cg_subtitle{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;font-family:var(--ds-font-family-code);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:360px}',
+      // 采纳率那行**不截断**：它是卡片里唯一一行长度不可控的说明文案（数字随两个口径与
+      // 工具种类变化），而 nowrap + ellipsis + max-width:360px 会把它切成半句——用户实测
+      // 看到的是「…→ 50%（宽口径含」，后半句（宽口径的解释）永远读不到。数字说明宁可两行、
+      // 不可半句：与同分区的 .cg_mcpMeta / .cg_warn 一致地换行，只保留等宽字体。
+      '.cg_subtitle{color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;font-family:var(--ds-font-family-code);min-width:0}',
       // 索引维护按钮组改成「可换行的行」而不是「整组 nowrap」：
       // 早先只有 5 个按钮，整组 nowrap + margin-left:auto 能让它们要么留在标题右边、
       // 要么整组换行；P2 加到 12 个之后这招失效——12 个按钮约 900px，而侧边栏只有

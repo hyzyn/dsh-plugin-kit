@@ -204,6 +204,15 @@ owner 判定；会话目录无有效索引时不写盘（现有行为，保持�
 
 **宿主契约核对**（读运行时源码，不是猜）：`dsh-session/lib/index.js:1262` 的 `callbackArgs = [this, event]`——第一个参数是 Session 实例；`this.header` 是公开实例字段（`dsh-session/lib/index.js:1139`），`header.cwd` 可取。消费方形状与 `dsh-acp/lib/index.js:1102`、`dsh-agent-instructions/lib/index.js:1263` 一致。
 
+> ⚠️ **更正（CG66，2026-10-10）**：上面这次核对只核到「回调有**两个参数**」，**漏了事件自身的字段层级**——
+> 第二个参数是 `SessionEvent` **信封** `{ type, seq, time, data }`，`tool/call` 的工具名在 `event.data.name`。
+> 监听器当时读的是顶层 `event.name`（**不存在的字段**），于是每一次真实调用都命中「畸形事件，宁可少记」的
+> 守卫被丢掉：仪表在真机上恒为 0，而 `type` **恰好在顶层**，所以既不报错、也没有可疑数字——静默归零。
+> 本机实测：宿主跑满 3.8 小时、会话一直在调工具，`/metrics` 的 `summaries` 仍为空、连 `other` 都是 0。
+> 修法（读 `event.data?.name`，顶层留兜底）与回归用例（派发改用真实信封 `toolCallEvent()`）见
+> [DEFECTS.md CG66](./DEFECTS.md)。**教训**：核对订阅面时要连**载荷层级**一起核，并让测试用真实信封而不是
+> 手工造的扁平对象——否则守卫与被守卫的代码共享同一个错误假设。
+
 ### P1-d：索引生命周期（解锁 + 自动重建）✅
 
 **问题**：`status` 早就在报过期信号（`reindexRecommended` / 提取器版本落后），卡片**只做了警告**：用户看到「⚠ 索引可能过期」，但要做的事得自己去终端。坏锁同理——一次被强杀的 index 留下的 `codegraph.lock` 会挡住后续**所有**索引操作，而卡片没有任何入口。

@@ -81,7 +81,7 @@ describe('缺陷台账：现算（唯一真值来源）', () => {
   it('codegraph 的「已关闭」是真的当一列处理（不是当 0 蒙过去）', () => {
     const fact = facts.get('codegraph')
     expect(fact.statuses.some((status) => status.closed > 0), 'codegraph 的现状行应带「已关闭 N」').toBe(true)
-    // 60 + 3 == 63：这一条只有把「已关闭」算进等式才可能成立
+    // 63 + 3 == 66：这一条只有把「已关闭」算进等式才可能成立
     expect(fact.statuses[0].fixed + fact.statuses[0].closed).toBe(fact.unique)
   })
 
@@ -244,8 +244,8 @@ describe('反例 4：台账本身不自洽（唯一号数 / 最大号 / 现状�
     expect(kinds(checkWithLedger('docker', fixture))).toContain('ledger.status.until')
   })
 
-  it('codegraph 的「已关闭」被漏掉（63 + 3 ≠ 65）→ ledger.status.fixed 差异', () => {
-    const fixture = mutate(real.ledgers.codegraph, '**已修 62 / 已关闭 3 / 待修 0**', '**已修 63 / 已关闭 3 / 待修 0**')
+  it('codegraph 的「已修」被写错（64 + 3 ≠ 66）→ ledger.status.fixed 差异', () => {
+    const fixture = mutate(real.ledgers.codegraph, '**已修 63 / 已关闭 3 / 待修 0**', '**已修 64 / 已关闭 3 / 待修 0**')
     expect(kinds(checkWithLedger('codegraph', fixture))).toContain('ledger.status.fixed')
   })
 

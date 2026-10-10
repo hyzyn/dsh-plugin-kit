@@ -153,6 +153,25 @@ describe('卡片预览渲染器：三种模式都要能跑出产物', () => {
     expect(agentSection, 'Agent 集成里不该再有 CLI 警告').not.toContain('探测不到可执行的 CLI 命令')
   })
 
+  it('--adoption：采纳率整行必须可见（不许 nowrap/ellipsis 截成半句）', () => {
+    /*
+     * 用户反馈（截图）：卡片上那行被截成
+     *   `采纳率：codegraph 1 次 / 发现类 1 次 → 50%（宽口径含…`
+     * ——后半句（另一个口径的解释）永远读不到。根因是 `.cg_subtitle` 沿用了
+     * `nowrap + text-overflow:ellipsis + max-width:360px`，而这行是卡片里唯一一行
+     * **长度不可控**的说明文案（数字随两个口径与工具种类变化；空态那句更长）。
+     *
+     * 两条判据缺一不可：① 整句确实在 HTML 里；② 承载它的规则不再带 nowrap / ellipsis。
+     * 只看 ① 会漏掉「文本在、样式把它裁了」——而这次现场恰恰是后者。
+     */
+    const html = render(['--adoption'], 'codegraph-card-adoption.html')
+    expect(html, '整句（含宽口径那半句）必须都在').toContain('宽口径含读取 50%')
+    const rule = /\.cg_subtitle\{([^}]*)\}/.exec(html)?.[1] ?? ''
+    expect(rule, '.cg_subtitle 规则没渲染出来（选择器改名了？）').not.toBe('')
+    expect(rule, 'cg_subtitle 不许 nowrap：它就是「截成半句」的那一半原因').not.toContain('nowrap')
+    expect(rule, 'cg_subtitle 不许 text-overflow：省略号就是用户看到的那半句').not.toContain('text-overflow')
+  })
+
   it('三种模式写不同文件（互不覆盖）', () => {
     render([], 'codegraph-card.html')
     render(['--per-agent'], 'codegraph-card-per-agent.html')

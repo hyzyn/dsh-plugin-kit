@@ -16,6 +16,7 @@
  *   node packages/codegraph/scripts/preview-card.mjs --result    # 点一次「文件」，看结果区（页签）带内容的样子
  *   node packages/codegraph/scripts/preview-card.mjs --feedback  # 点「重新探测」「诊断包」，看反馈区与脚注的顺序
  *   node packages/codegraph/scripts/preview-card.mjs --alert     # 让 CLI 探测失败，看页面最前的「问题区」
+ *   node packages/codegraph/scripts/preview-card.mjs --adoption  # 给采纳率一份真实数据，看那行会不会被截断
  *   DSH_PREVIEW_LOCALE=en node packages/codegraph/scripts/preview-card.mjs  # 预览英文界面（i18n）
  *
  * 注意：无头 Chrome 在 DSH 文件沙箱里起不来（它要初始化自己的 sandbox），--png 需要在
@@ -78,8 +79,16 @@ const feedback = process.argv.includes('--feedback')
  * 改动的对象（把「什么都干不了」的警告从卡片最底部挪到最前面）。
  */
 const alert = process.argv.includes('--alert')
-const htmlPath = join(outDir, perAgent ? 'codegraph-card-per-agent.html' : fallback ? 'codegraph-card-fallback.html' : busy ? 'codegraph-card-busy.html' : result ? 'codegraph-card-result.html' : feedback ? 'codegraph-card-feedback.html' : alert ? 'codegraph-card-alert.html' : 'codegraph-card.html')
-const pngPath = join(outDir, perAgent ? 'codegraph-card-per-agent.png' : fallback ? 'codegraph-card-fallback.png' : busy ? 'codegraph-card-busy.png' : result ? 'codegraph-card-result.png' : feedback ? 'codegraph-card-feedback.png' : alert ? 'codegraph-card-alert.png' : 'codegraph-card.png')
+/**
+ * --adoption：给 `/metrics` 一份真实的 summary，把「采纳率」那行渲染出来。
+ *
+ * 为什么需要单独一个模式：那行的长度随两个口径的数字变化（空态 / 只有读取 / 正常三档），
+ * 而它承担的信息比一行 360px 能放下的多——不给它数据，预览里这一行根本不出现，
+ * 「整句被截成半句」就只有真机截图能发现（实测就是这么来的）。
+ */
+const adoption = process.argv.includes('--adoption')
+const htmlPath = join(outDir, perAgent ? 'codegraph-card-per-agent.html' : fallback ? 'codegraph-card-fallback.html' : busy ? 'codegraph-card-busy.html' : result ? 'codegraph-card-result.html' : feedback ? 'codegraph-card-feedback.html' : alert ? 'codegraph-card-alert.html' : adoption ? 'codegraph-card-adoption.html' : 'codegraph-card.html')
+const pngPath = join(outDir, perAgent ? 'codegraph-card-per-agent.png' : fallback ? 'codegraph-card-fallback.png' : busy ? 'codegraph-card-busy.png' : result ? 'codegraph-card-result.png' : feedback ? 'codegraph-card-feedback.png' : alert ? 'codegraph-card-alert.png' : adoption ? 'codegraph-card-adoption.png' : 'codegraph-card.png')
 
 /** 预览用的假数据：跟随开启、会话目录与绑定路径不同，好让「跟随会话」这一行有内容。 */
 const RESPONSES = {
@@ -162,6 +171,32 @@ const RESPONSES = {
       languages: ['javascript', 'typescript', 'yaml'],
     },
   },
+  // --adoption 用：真机实测那一档（1 次 codegraph / 1 次发现类 → 50%，另含 1 次读取）。
+  // 特意取**真实数字**而不是 `0/0`：0 分母那档文案更短，短文案本来就放得下，
+  // 用它会恰好绕开「截断」这个要验的问题。
+  ...(adoption
+    ? {
+        '/api/dsh-codegraph/metrics': {
+          ok: true,
+          path: '/Users/zz/code/my-app',
+          project: '/Users/zz/code/my-app',
+          summary: {
+            project: '/Users/zz/code/my-app',
+            indexed: true,
+            codegraph: 1,
+            file: 1,
+            discovery: 1,
+            other: 0,
+            exploratory: 2,
+            discoveryTotal: 2,
+            rate: 0.5,
+            discoveryRate: 0.5,
+          },
+          text: '采纳率：codegraph 1 次 / 发现类 1 次 → 50%（宽口径含读取共 1 次，50%）',
+          since: 1789000000000,
+        },
+      }
+    : {}),
 }
 const SESSION = { byId: { s1: { cwd: '/Users/zz/code/my-app' } }, current: 's1' }
 

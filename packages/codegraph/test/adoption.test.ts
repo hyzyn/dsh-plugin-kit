@@ -26,7 +26,27 @@ import { adoptionText } from '../client-src/pure.js'
  *   2. **事件订阅**走宿主的 `session/event`（与 dsh-agent-instructions / dsh-acp
  *      同一个订阅面）。这一半用一个假 ctx 真派发事件来测，钉住「事件类型不对不计数」
  *      「项目键按索引根归并」「同一次事件流不被重复计数」这些接线细节。
+ *
+ * 派发的事件一律用 {@link toolCallEvent} 造**真实信封**：监听器的形状契约是宿主的
+ * `SessionEvent`，不是本文件方便造出来的扁平对象——第一版用例图省事直接造
+ * `{ type, name }`，于是「读顶层字段」这个致命错误一路绿灯，真机上表永远是空的。
  */
+
+/**
+ * 造一个**真实的** `SessionEvent` 信封（`{ type, seq, time, data }`）。
+ *
+ * `session/event` 的第二个参数是信封，`tool/call` 的载荷（`name` / `arguments` /
+ * `turn` / `step`）在 `event.data` 下（见 `dsh-session` 的 `SessionEvent` 类型；
+ * 同一订阅面的 `dsh-acp` 也按这个层级读：`event.data.turn`）。
+ */
+function toolCallEvent(name: unknown): Record<string, unknown> {
+  return {
+    type: 'tool/call',
+    seq: 0,
+    time: 0,
+    data: { turn: 1, step: 1, callId: 'call-1', name, arguments: '{}' },
+  }
+}
 
 describe('P1 采纳率：工具归类', () => {
   it('codegraph 工具：MCP 命名空间命中', () => {
@@ -253,10 +273,10 @@ describe('P1 采纳率：session/event 接线', () => {
       }
     }
     return {
-      /** 派发一次 tool/call（带会话 cwd）。 */
+      /** 派发一次 tool/call（带会话 cwd），事件按宿主真实的 SessionEvent 信封造。 */
       dispatch(cwd: string, name: unknown) {
         for (const listener of listeners.get('session/event') ?? []) {
-          listener({ header: { cwd } }, { type: 'tool/call', name })
+          listener({ header: { cwd } }, toolCallEvent(name))
         }
       },
       /** 派发任意事件对象（不补 type）。 */
@@ -290,11 +310,15 @@ describe('P1 采纳率：session/event 接线', () => {
   it('只数 tool/call：其它事件类型与畸形事件一律忽略', async () => {
     const harness = mountWithEvents()
     try {
-      // 全是「不该计数」的形状：结果事件、缺 name 的调用、null / 字符串 / 缺事件对象
+      // 全是「不该计数」的形状：结果事件、缺 name 的调用（信封与顶层两种形状都要拦）、
+      // null / 字符串 / 缺事件对象
       harness.dispatchEvent({ type: 'tool/result', name: 'grep' })
       harness.dispatchEvent({ type: 'step/end' })
       harness.dispatchEvent({ type: 'tool/call' })
       harness.dispatchEvent({ type: 'tool/call', name: '' })
+      harness.dispatchEvent({ type: 'tool/call', data: {} })
+      harness.dispatchEvent({ type: 'tool/call', data: { name: '' } })
+      harness.dispatchEvent({ type: 'tool/call', data: { name: 42 } })
       harness.dispatchEvent(null)
       harness.dispatchEvent('nonsense')
       harness.emitRaw('session/event')
@@ -302,6 +326,39 @@ describe('P1 采纳率：session/event 接线', () => {
       const all = await harness.call('/api/dsh-codegraph/metrics')
       expect(all.status).toBe(200)
       expect(all.body?.summaries).toEqual([])
+    } finally {
+      harness.cleanup()
+    }
+  })
+
+  it('真实信封：工具名在 event.data 下，必须计数', async () => {
+    // CG66 的回归守卫（真机抓回来的，不是构造出来的边界）：宿主送来的第二个参数是
+    // SessionEvent 信封 `{ type, seq, time, data }`，工具名在 `data.name`。第一版
+    // 监听器读的是顶层 `event.name`——一个**不存在的字段**，于是每一次真实
+    // tool/call 都命中上面那条「畸形事件，宁可少记」的守卫被丢掉，仪表在真机上
+    // 永远显示「还没有工具调用记录」。而 `type` 恰好在顶层，所以既不报错、也没有
+    // 可疑数字：静默归零，最坏的一种错法。
+    //
+    // 断言同时钉两端：data 下的名字必须计上；顶层只有名字（旧形状）也得计上，
+    // 免得同一个故障换个版本再静默一次。
+    const harness = mountWithEvents()
+    try {
+      harness.dispatchEvent(toolCallEvent('mcp__codegraph__codegraph_explore'))
+      harness.dispatchEvent(toolCallEvent('grep'))
+      harness.dispatchEvent(toolCallEvent('bash'))
+
+      const envelope = await harness.call('/api/dsh-codegraph/metrics')
+      const row = (envelope.body?.summaries as Array<Record<string, unknown>>)?.[0]
+      expect(row?.codegraph).toBe(1)
+      expect(row?.discovery).toBe(1)
+      expect(row?.other).toBe(1)
+
+      // 顶层兜底：载荷摊平的形状也计（不重复计同一次调用）
+      harness.dispatchEvent({ type: 'tool/call', name: 'glob' })
+      const flat = await harness.call('/api/dsh-codegraph/metrics')
+      const flatRow = (flat.body?.summaries as Array<Record<string, unknown>>)?.[0]
+      expect(flatRow?.discovery).toBe(2)
+      expect(flatRow?.other).toBe(1)
     } finally {
       harness.cleanup()
     }
@@ -399,8 +456,8 @@ describe('P1 采纳率：session/event 接线', () => {
     }
     apply(ctx as never, { command: 'codegraph', defaultPath: repo, announceToAgent: false, usageGuidance: false })
     for (const listener of listeners.get('session/event') ?? []) {
-      listener({ header: { cwd: repo } }, { type: 'tool/call', name: 'mcp__codegraph__codegraph_explore' })
-      listener({ header: { cwd: repo } }, { type: 'tool/call', name: 'grep' })
+      listener({ header: { cwd: repo } }, toolCallEvent('mcp__codegraph__codegraph_explore'))
+      listener({ header: { cwd: repo } }, toolCallEvent('grep'))
     }
 
     let body: Record<string, unknown> | undefined

@@ -2325,14 +2325,32 @@ function createMetricsCollector(): {
     attach(ctx) {
       ctx.on('session/event', (...args: unknown[]) => {
         const session = args[0]
-        const event = args[1] as { type?: unknown; name?: unknown } | undefined
+        const event = args[1] as
+          | { type?: unknown; name?: unknown; data?: { name?: unknown } }
+          | undefined
         if (event === null || typeof event !== 'object') return
         if (event.type !== 'tool/call') return
+        /**
+         * CG66：工具名在**信封的 `data` 里**，不在顶层：`session/event` 的第二个参数是
+         * `SessionEvent` 信封 `{ type, seq, time, data }`，`tool/call` 的载荷
+         * （`name` / `arguments` / `turn` / `step`）全在 `event.data` 下。同一订阅面的
+         * 消费方都按这个层级读（`dsh-acp`：`event.data.turn`；`dsh-agent-instructions`
+         * 只读顶层 `event.type`）。
+         *
+         * 曾经这里直读顶层 `event.name`——那是个**不存在的字段**，于是每一次真实
+         * tool/call 都命中下面那条「畸形事件，宁可少记」的守卫被丢掉，仪表在本机上
+         * 永远显示「还没有工具调用记录」。而 `type` **恰恰**在顶层，所以既不报错、
+         * 也没有可疑数字：静默归零，最坏的一种错法。
+         *
+         * 顶层兜底（`?? event.name`）留着：宿主如果把载荷摊平送到这里，也该计上，
+         * 而不是让同一个故障换个版本再静默一次。
+         */
+        const name = event.data?.name ?? event.name
         // 没有可读名字的 tool/call 是**畸形事件**，直接丢弃而不是记进 other：
         // 它会凭空抬高分母（「其它工具」那一列）并让「探索次数」看起来更可信，
         // 而真实原因是事件载荷不对——宁可少记，不要记错。
-        if (typeof event.name !== 'string' || event.name.trim() === '') return
-        table = foldToolCall(table, event.name, projectKeyFor(session))
+        if (typeof name !== 'string' || name.trim() === '') return
+        table = foldToolCall(table, name, projectKeyFor(session))
       })
     },
   }
