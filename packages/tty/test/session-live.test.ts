@@ -16,7 +16,13 @@
  * 能不能 attach 用 `attachable`，还活着 / 占不占名额用 `exited !== true`。
  */
 import { describe, expect, it } from 'vitest'
-import { countLiveSessions, isLiveSessionEntry, liveSessionSids } from '../client-src/session-live.js'
+import {
+  agentTabDisposition,
+  countLiveSessions,
+  isLiveSessionEntry,
+  liveSessionSids,
+  sessionFrameIndex,
+} from '../client-src/session-live.js'
 
 /** 活会话快照：宿主的 `exited` 字段缺席（只有保留态才带 true）。 */
 const live = (sid, extra = {}) => ({ sid, kind: 'local', target: '', ...extra })
@@ -89,5 +95,70 @@ describe('liveSessionSids（判「这个 sid 还活着 / 还能 attach」）', (
     expect(liveSessionSids(undefined).size).toBe(0)
     expect(liveSessionSids(null).size).toBe(0)
     expect(liveSessionSids({ list: [] }).size).toBe(0)
+  })
+})
+
+/**
+ * D97（#7④）：agent 标签的处置。这三张表把「还在不在表里」与「还活着吗」分开——
+ * 只读保留态**在表里、不活着**（标签留着可读），宿主显式退役之后**连表都不在**
+ * （标签跟着关）。混成一件事就会出现两种错：把 `tty_run keep:true` 的可读现场收掉，
+ * 或者让 agent 释放过的标签永远挂着。
+ */
+describe('sessionFrameIndex', () => {
+  it('三张表各管一件事：present（在不在表里）/ retained（只读保留）/ live（活着）', () => {
+    const index = sessionFrameIndex([live('alive'), retained('kept'), live('shared', { attachable: false })])
+    expect([...index.present].sort()).toEqual(['alive', 'kept', 'shared'])
+    expect([...index.retained]).toEqual(['kept'])
+    expect([...index.live].sort()).toEqual(['alive', 'shared'])
+  })
+
+  it('退役的会话三张表里都没有（它不在帧里）', () => {
+    const index = sessionFrameIndex([live('alive')])
+    expect(index.present.has('released')).toBe(false)
+    expect(index.retained.has('released')).toBe(false)
+    expect(index.live.has('released')).toBe(false)
+  })
+
+  it('帧形态不对 / 垃圾条目：只收 sid 是非空字符串的对象', () => {
+    expect(sessionFrameIndex(undefined).present.size).toBe(0)
+    expect(sessionFrameIndex({ list: [] }).present.size).toBe(0)
+    const index = sessionFrameIndex([null, 'sid', 7, { kind: 'local' }, live(''), live('ok')])
+    expect([...index.present]).toEqual(['ok'])
+  })
+
+  it('exited 字段缺席按活着算（与 isLiveSessionEntry 同一口径）', () => {
+    const index = sessionFrameIndex([{ sid: 'x', kind: 'local' }])
+    expect(index.live.has('x')).toBe(true)
+    expect(index.retained.has('x')).toBe(false)
+  })
+})
+
+describe('agentTabDisposition', () => {
+  const agent = (sid) => ({ sid, agentOwned: true, exited: false })
+
+  it('宿主表里还有、活着 → 不动', () => {
+    expect(agentTabDisposition(agent('a'), sessionFrameIndex([live('a')]))).toBe('keep')
+  })
+
+  it('仍在只读保留里 → 标已退出（标签留着，输出还能读）', () => {
+    expect(agentTabDisposition(agent('a'), sessionFrameIndex([retained('a')]))).toBe('mark-exited')
+  })
+
+  it('宿主显式释放（连表都不在）→ 收标签', () => {
+    expect(agentTabDisposition(agent('a'), sessionFrameIndex([live('other')]))).toBe('remove')
+    expect(agentTabDisposition(agent('a'), sessionFrameIndex([]))).toBe('remove')
+  })
+
+  it('用户自己的标签不归这条规则管（agentOwned 不置 true）', () => {
+    const user = { sid: 'u', exited: false }
+    expect(agentTabDisposition(user, sessionFrameIndex([]))).toBe('keep')
+    expect(agentTabDisposition({ sid: 'u', agentOwned: false }, sessionFrameIndex([]))).toBe('keep')
+  })
+
+  it('嵌入终端与坏输入一律 keep（别把别人的面板收掉）', () => {
+    expect(agentTabDisposition({ sid: 'e', agentOwned: true, embedded: true }, sessionFrameIndex([]))).toBe('keep')
+    expect(agentTabDisposition(null, sessionFrameIndex([]))).toBe('keep')
+    expect(agentTabDisposition(agent(''), sessionFrameIndex([]))).toBe('keep')
+    expect(agentTabDisposition(agent('a'), null)).toBe('keep')
   })
 })

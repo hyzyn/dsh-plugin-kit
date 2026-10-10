@@ -183,6 +183,12 @@
     const s = socket()
     if (s) s._deliver(msg)
   }
+  /**
+   * 造一帧 `sessions`（宿主视角的会话表）——给需要**逐帧改变**清单的场景用（#7④：先有这条
+   * agent 会话、下一帧它出表）。基准表来自 mock 宿主自己的会话表（`__mockSessionList`），
+   * 不要在场景里拿客户端标签推算：那等于用被测对象造夹具。
+   */
+  const sessionList = (extra = []) => window.__mockSessionList().concat(extra)
 
   const openPanel = async () => {
     await waitFor(() => entry())
@@ -1133,12 +1139,340 @@
       await waitFor(() => q('[data-dsh-tty-entry][data-minimized]'))
       await sleep(150)
     },
-    /* 会话退出遮罩 */
+    /*
+     * 会话退出：**不画遮罩** + 顶部提示条（issue #7①②）。
+     *
+     * 现场（用户截图）：agent 跑的每条命令都会落一个标签，退出后被一层铺满终端区的遮罩
+     * （inset:0 + 半透明底 + 模糊 + 整块可点）盖住——结果看不清、连选中复制都做不到，
+     * 用户的绕过手段是 F12 里把 `.tt_overlay` 藏掉。
+     *
+     * 断言四条（缺一条都是静默回归）：① 面板标签的退出遮罩是空的；② 顶部提示条出现且文案
+     * 是「已退出」；③ 条子真的把终端往下推了（`.tt_term` 的 top 偏移 ≥ 条高，否则第一行被盖）；
+     * ④ 条上有「重新打开」这颗按钮（原来那个入口是「点遮罩」，撤了遮罩就必须补上它）。
+     */
     async exited() {
       await openPanel()
       const el = activeTabEl()
       emit({ t: 'exit', sid: sidOf(el), code: 0 })
+      await sleep(250)
+      window.__previewAssert = async () => {
+        const term = qa('.tt_term').find((node) => node.style.display !== 'none')
+        if (term === undefined) return '夹具失效：没有可见的终端容器'
+        const overlay = term.querySelector('.tt_overlay')
+        if (overlay !== null && (overlay.textContent || '') !== '') {
+          return '退出态又画上了遮罩（输出会被挡住）：' + String(overlay.textContent)
+        }
+        const bar = q('.tt_exitBar')
+        if (bar === null || bar.hidden === true) return '退出提示条没出现（撤了遮罩就没人告诉用户会话已退出）'
+        if (!says(bar, '已退出', 'Exited')) return '提示条文案不对：' + String(bar.textContent)
+        const body = q('.tt_body')
+        const offset = Math.round(term.getBoundingClientRect().top - body.getBoundingClientRect().top)
+        if (offset < 24) return '提示条没让位：终端 top 偏移只有 ' + String(offset) + 'px'
+        if (bar.querySelector('.tt_exitBarBtn') === null) return '提示条上没有「重新打开」这颗按钮'
+        return null
+      }
+    },
+    /*
+     * #7③：「⋯」标签列表里的「清理已退出的标签」——**长什么样**。
+     *
+     * 现场：用户攒了 47 个已退出的标签，只能一个一个点标签上的 ✕。入口在「⋯」里，而那个
+     * 按钮此前**只在标签栏溢出时**才出现。这条钉「没溢出但有死标签时它也在」以及菜单里那
+     * 一行（截图要看清的就是它）；「点一下真的收走」在 `clean-exited-apply` 里做——
+     * 断言在截图**之前**跑，凡是会改界面的检查都不该放在断言里（截图会变成点完的样子）。
+     */
+    async 'clean-exited'() {
+      await openPanel()
+      // 造三个标签，退掉其中两个：留一条活会话，面板不会因为清理把自己关掉
+      for (let i = 0; i < 2; i += 1) {
+        await clickAdd()
+        await clickMenuItem('本地终端', 'Local terminal')
+        await waitFor(() => tabs().length === i + 2, 4000)
+      }
+      const all = tabs()
+      emit({ t: 'exit', sid: sidOf(all[1]), code: 0 })
+      emit({ t: 'exit', sid: sidOf(all[2]), code: 0 })
+      await sleep(250)
+      const more = q('.tt_tabMore')
+      if (more !== null && more.hidden !== true) {
+        more.click()
+        await waitFor(() => q('.tt_tabMenu'))
+        await sleep(120)
+      }
+      window.__previewAssert = async () => {
+        if (tabs().length !== 3) return '夹具失效：期望 3 个标签，实际 ' + String(tabs().length)
+        if (more === null || more.hidden === true) return '有已退出的标签时「⋯」没出现（清理入口够不着）'
+        const menu = q('.tt_tabMenu')
+        if (menu === null) return '「⋯」菜单没打开'
+        const row = qa('.tt_addMenuItem').find((el) => says(el, '清理已退出', 'Clean up exited'))
+        if (row === undefined) return '菜单里没有「清理已退出的标签」这一行'
+        if (!row.textContent.includes('2')) return '清理行没写明条数：' + String(row.textContent)
+        return null
+      }
+    },
+    /*
+     * #7③ 的功能面：点那一下真的把死标签收走，且「⋯」自己藏回去（没有死标签、也没溢出）。
+     * 断言只读（收集结果），界面动作全在场景体里——同 `clean-exited` 的理由。
+     */
+    async 'clean-exited-apply'() {
+      await openPanel()
+      for (let i = 0; i < 2; i += 1) {
+        await clickAdd()
+        await clickMenuItem('本地终端', 'Local terminal')
+        await waitFor(() => tabs().length === i + 2, 4000)
+      }
+      const all = tabs()
+      emit({ t: 'exit', sid: sidOf(all[1]), code: 0 })
+      emit({ t: 'exit', sid: sidOf(all[2]), code: 0 })
+      await sleep(250)
+      const more = q('.tt_tabMore')
+      if (more !== null) more.click()
+      await waitFor(() => q('.tt_tabMenu'))
+      await sleep(120)
+      const row = await waitFor(() => qa('.tt_addMenuItem').find((el) => says(el, '清理已退出', 'Clean up exited')))
+      row.click()
+      await sleep(300)
+      const state = { tabs: tabs().length, moreHidden: more === null ? null : more.hidden === true, menu: q('.tt_tabMenu') !== null }
+      window.__previewAssert = async () => {
+        if (state.tabs !== 1) return '清理没生效：还剩 ' + String(state.tabs) + ' 个标签'
+        if (state.menu) return '清理后菜单还挂着'
+        if (state.moreHidden === false) return '死标签清完了，「⋯」没藏回去'
+        return null
+      }
+    },
+    /*
+     * #7④：AI 显式释放会话 → 标签跟着走。
+     *
+     * 判据是「宿主表里还有没有这一条」（agent 的 tty_close / tty_run 收尾会让它出表），
+     * 而不是「进程退没退出」——只读保留（exited: true）的那种要**留着可读**。
+     *
+     * 两条路一起钉：后台的 agent 标签当场收走；**正在看的**那一条先留一台阶（提示条写
+     * 「AI 已结束这个会话」），切走时再收。反向验证：把 `holdReleasedTab` 摘掉 → 第一条红；
+     * 把「出表」也当只读保留 → 第二条红（标签不会消失）。
+     */
+    async 'agent-release'() {
+      await openPanel()
+      await waitFor(() => tabs().length === 1, 4000)
+      const agentOf = (sid) => ({ sid, owner: 'agent', kind: 'local', cwd: window.__PREVIEW_CWD, attachable: true })
+      // ① 后台的 agent 标签：宿主推的会话清单里多一条 owner:'agent'
+      emit({ t: 'sessions', list: sessionList([agentOf('agent-bg')]) })
+      await waitFor(() => tabs().length === 2, 4000)
       await sleep(200)
+      // AI 释放它（宿主表里撤掉）→ 后台标签应当当场消失
+      emit({ t: 'sessions', list: sessionList() })
+      await sleep(300)
+      const bgClosed = qa('.tt_tab').every((el) => sidOf(el) !== 'agent-bg')
+      // ② 正在看的那一条：再开一条 agent 会话，切到它，然后释放
+      emit({ t: 'sessions', list: sessionList([agentOf('agent-watch')]) })
+      await waitFor(() => qa('.tt_tab').some((el) => sidOf(el) === 'agent-watch'), 4000)
+      qa('.tt_tab').find((el) => sidOf(el) === 'agent-watch').click()
+      await sleep(200)
+      emit({ t: 'sessions', list: sessionList() })
+      await sleep(300)
+      const held = {
+        count: tabs().length,
+        stillThere: qa('.tt_tab').some((el) => sidOf(el) === 'agent-watch'),
+        text: q('.tt_exitBar') === null ? '' : String(q('.tt_exitBar').textContent),
+      }
+      // ③ 切走 → 台阶结束，标签被收走
+      const other = qa('.tt_tab').find((el) => sidOf(el) !== 'agent-watch')
+      if (other !== undefined) other.click()
+      await sleep(300)
+      const closedOnSwitch = !qa('.tt_tab').some((el) => sidOf(el) === 'agent-watch')
+      /*
+       * ④ 再走一遍，把「AI 已结束这个会话 + 收起」的样子留给截图（截图在断言之后拍，
+       * 断言又必须只读——所以要在场景体里把界面弄成要拍的样子，不能等断言去点）。
+       */
+      emit({ t: 'sessions', list: sessionList([agentOf('agent-shot')]) })
+      await waitFor(() => qa('.tt_tab').some((el) => sidOf(el) === 'agent-shot'), 4000)
+      qa('.tt_tab').find((el) => sidOf(el) === 'agent-shot').click()
+      await sleep(200)
+      emit({ t: 'sessions', list: sessionList() })
+      await sleep(300)
+      const shotState = {
+        tabs: tabs().length,
+        text: q('.tt_exitBar') === null ? '' : String(q('.tt_exitBar').textContent),
+        dismiss: q('.tt_exitBarBtn') === null ? '' : String(q('.tt_exitBarBtn').textContent),
+      }
+      window.__previewAssert = async () => {
+        if (!bgClosed) return '后台的 agent 标签没被收走（AI 释放后还留着）'
+        if (!held.stillThere || held.count !== 2) return '正在看的 agent 标签被当场收走了（少了那一步台阶）'
+        if (!held.text.includes('AI 已结束') && !held.text.includes('The AI finished')) {
+          return '提示条没说明「AI 已结束这个会话」：' + held.text
+        }
+        if (!closedOnSwitch) return '切走之后台阶没结束：标签还在'
+        if (!shotState.text.includes('AI 已结束') && !shotState.text.includes('The AI finished')) {
+          return '台阶态的提示条文案不对：' + shotState.text
+        }
+        if (!/收起|Dismiss/.test(shotState.dismiss)) return '台阶态没有「收起」这颗按钮：' + shotState.dismiss
+        return null
+      }
+    },
+    /*
+     * 4b 现场回归（2026-10-10 真机验收）：**客户端自己顶上去的活动标签不算「正在看」**。
+     *
+     * 现场：AI 在后台开了一条 `sleep 300`，随即 `tty_close`；工具侧确实没有这条会话了，
+     * 可标签栏里还留着它——「标签退出了，但是还在」。根因不在删除逻辑，而在台阶的判据：
+     * 那一刻它的 `sid === activeSid` 成立（客户端自己把它顶成了活动标签：关掉一个标签时
+     * `closeTab` 会选一个邻居、`adoptAgentSessions` 在没有活动标签时也会切过去），于是走
+     * 了「AI 已结束这个会话 + 收起」那条保留分支。
+     *
+     * 修法：台阶只认**用户自己切过**的标签（`switchTab(sid, { user: true })` 打的
+     * `watched` 标记）。本场景正是那条路：先让关标签的「邻居选择」把 agent 标签顶成活动
+     * 标签（没有用户点击），再释放它——**必须直接收走**。
+     * 反向验证：把 `holdReleasedTab` 里的 `tab.watched !== true` 去掉 → 本场景红。
+     */
+    async 'agent-release-neighbor'() {
+      await openPanel()
+      // 再开一个用户标签（两个用户标签 + 一个后台 agent 标签，面板不会因为清空而关掉）
+      await clickAdd()
+      await clickMenuItem('本地终端', 'Local terminal')
+      await waitFor(() => tabs().length === 2, 4000)
+      const agentOf = (sid) => ({ sid, owner: 'agent', kind: 'local', cwd: window.__PREVIEW_CWD, attachable: true })
+      emit({ t: 'sessions', list: sessionList([agentOf('agent-nb')]) })
+      await waitFor(() => qa('.tt_tab').some((el) => sidOf(el) === 'agent-nb'), 4000)
+      await sleep(200)
+      const adopted = {
+        tabs: tabs().length,
+        agentIsActive: sidOf(activeTabEl()) === 'agent-nb',
+      }
+      // 关掉当前活动标签：closeTab 会选「最后一个标签」当邻居 = 刚采纳的 agent 标签
+      const activeClose = activeTabEl().querySelector('.tt_tabClose')
+      activeClose.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await sleep(250)
+      const promoted = {
+        active: sidOf(activeTabEl()),
+        tabs: tabs().length,
+      }
+      // AI 释放它（宿主表里撤掉）→ 必须直接收走，不能留台阶
+      emit({ t: 'sessions', list: sessionList() })
+      await sleep(350)
+      window.__previewAssert = async () => {
+        if (adopted.tabs !== 3) return '夹具失效：期望 3 个标签，实际 ' + String(adopted.tabs)
+        if (adopted.agentIsActive) return '夹具失效：agent 标签一开始就该在后台'
+        if (promoted.active !== 'agent-nb') return '夹具失效：关标签的邻居选择没把 agent 标签顶成活动标签（' + String(promoted.active) + '）'
+        if (qa('.tt_tab').some((el) => sidOf(el) === 'agent-nb')) {
+          return 'AI 释放的是**客户端自己顶上去**的活动标签，标签却留下了（4b 现场：标签退出了但还在）'
+        }
+        const bar = q('.tt_exitBar')
+        if (bar !== null && bar.hidden !== true && says(bar, 'AI 已结束', 'The AI finished')) {
+          return '错误地走了「AI 已结束 + 收起」的保留分支'
+        }
+        if (tabs().length !== 1) return '收走之后标签数不对：' + String(tabs().length)
+        return null
+      }
+    },
+    /*
+     * issue #8：点 ✕ 关面板时，有活会话就先问一句。
+     *
+     * 判据是「这一下会结束几条**活会话**」，不是「开了几个标签」：本场景只有一条活会话
+     * 也必须问；而「只剩已退出的标签」时不该问（那条由 `close-confirm-empty` 钉）。
+     * 「取消不关面板 / 不结束会话」这一段在场景体里做（断言必须只读：它跑在截图之前，
+     * 在断言里点掉确认会让截图变成点完的样子）。
+     */
+    async 'close-confirm'() {
+      await openPanel()
+      await sleep(120)
+      q('.tt_close').click()
+      await waitFor(() => q('.tt_confirmLayer'))
+      await sleep(150)
+      // 先验证「取消」这条路，再重新打开确认层留给截图
+      const before = tabs().length
+      q('.tt_confirmCancel').click()
+      await sleep(150)
+      const afterCancel = { layer: q('.tt_confirmLayer') !== null, panel: modal() !== null, tabs: tabs().length, before }
+      q('.tt_close').click()
+      await waitFor(() => q('.tt_confirmLayer'))
+      await sleep(150)
+      // 再验证「点层内空白 = 取消」（下面留给截图的那一份重新打开）
+      q('.tt_confirmLayer').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+      await sleep(150)
+      const afterBlank = { layer: q('.tt_confirmLayer') !== null, panel: modal() !== null }
+      q('.tt_close').click()
+      await waitFor(() => q('.tt_confirmLayer'))
+      await sleep(150)
+      /*
+       * 第三颗按钮「最小化」（2026-10-10，用户看过截图后加的）：这次的错点往往不是「结束」，
+       * 而是「想收起来」——而确认层盖住整个视口，hint 里那句「点「—」」在这时候根本点不到。
+       * 所以把它放到手边，并在这里钉死**它只能收起、绝不能结束会话**：接成 `closeModal` 的话
+       * 这条断言会当场红（这是本仓最该拦住的一类事故：把安全出路做成破坏按钮）。
+       * 走完这一步把面板恢复出来，最后再开一次确认层留给截图。
+       */
+      const minBtnExists = q('.tt_confirmMin') !== null
+      const minLabel = minBtnExists ? String(q('.tt_confirmMin').textContent) : ''
+      const beforeMin = tabs().length
+      if (minBtnExists) q('.tt_confirmMin').click()
+      await sleep(200)
+      const afterMin = {
+        layer: q('.tt_confirmLayer') !== null,
+        minimized: isMinimized(),
+        panelAlive: modal() !== null,
+        tabs: tabs().length,
+        before: beforeMin,
+      }
+      // 恢复面板：点侧边栏入口（收起态下它就是「恢复」那条路）
+      entry().click()
+      await waitFor(() => !isMinimized())
+      await sleep(150)
+      q('.tt_close').click()
+      await waitFor(() => q('.tt_confirmLayer'))
+      await sleep(150)
+      window.__previewAssert = async () => {
+        if (afterCancel.layer) return '点「取消」没关掉确认层'
+        if (!afterCancel.panel) return '点「取消」把面板关掉了'
+        if (afterCancel.tabs !== afterCancel.before) return '点「取消」把会话结束了'
+        if (afterBlank.layer) return '点确认层里的空白没关掉它（对话框的常规手感）'
+        if (!afterBlank.panel) return '点空白把面板也关掉了'
+        if (!minBtnExists) return '确认框里没有「最小化」这颗按钮（用户看过截图后要求加的那颗）'
+        if (!/最小化|Minimize/.test(minLabel)) return '第三颗按钮不是「最小化」：' + minLabel
+        if (afterMin.layer) return '点「最小化」没关掉确认层'
+        if (!afterMin.minimized) return '点「最小化」没把面板收起来'
+        if (!afterMin.panelAlive) return '点「最小化」把面板 DOM 也拆了（那等于关了面板）'
+        if (afterMin.tabs !== afterMin.before) return '点「最小化」把会话结束了：' + String(afterMin.before) + ' → ' + String(afterMin.tabs)
+        const layer = q('.tt_confirmLayer')
+        if (layer === null) return '有活会话时点 ✕ 没弹确认'
+        const okText = (q('.tt_confirmOk') || {}).textContent || ''
+        if (!okText.includes('1')) return '主按钮没写明会结束几条会话：' + okText
+        if (!says(layer, '最小化', 'Minimize')) return '确认里没给出「最小化」这条出路（hint 与按钮都算）'
+        /*
+         * issue #8 的口径守卫（2026-10-10 核对挖出来的那处出入）：判据是「活会话」= **还没退出**
+         * （`close-guard.js` 只看 `exited !== true`），**判不出命令在不在跑**——面板上挂着一个停在
+         * 提示符的空 shell，与跑着 `pnpm build` 的那条，在判据眼里一模一样。所以文案不许把这批会话
+         * 说成「正在运行 / running sessions」：那是替实现吹一个它做不到的牛，报告者照回帖原文验收时
+         * 就会发现对不上。要改这条断言，先把「在跑」这个态真的接上线（宿主已有 `runningOf`，见
+         * `src/index.ts` 与 ROADMAP 的 0.28.0 那节），别直接改字。
+         */
+        const layerText = String(layer.textContent || '')
+        if (/正在运行|running sessions|are running/.test(layerText)) {
+          return '确认文案把这批会话说成「正在运行」了，而判据只是「还没退出」（#8 口径）：' + layerText
+        }
+        if (!says(layer, '还没退出', 'have not exited')) return '确认文案没说清这批会话是「还没退出」的：' + layerText
+        // ✕ 的 tooltip 是同一句话的另一个出口（`btn.closePanelTitle`），一并钉
+        const closeTitle = (q('.tt_close') || {}).title || ''
+        if (/在跑|正在运行|running sessions/.test(closeTitle)) {
+          return '✕ 的 tooltip 说成「在跑 / 正在运行」了（#8 口径同样只到「还没退出」）：' + closeTitle
+        }
+        return null
+      }
+    },
+    /*
+     * 关面板确认的反面：只剩已退出的标签时**不问**，直接关。
+     *
+     * 为什么要有这一条：判据若写成「有标签就问」，用户关掉一个跑完的终端也会被拦一次，
+     * 确认会被点成习惯（那时真正的拦阻就失效了）。反向验证：把判据换成 `tabs.size > 0`
+     * → 本场景红。
+     */
+    async 'close-confirm-empty'() {
+      await openPanel()
+      const el = activeTabEl()
+      emit({ t: 'exit', sid: sidOf(el), code: 0 })
+      await sleep(200)
+      q('.tt_close').click()
+      await sleep(250)
+      window.__previewAssert = async () => {
+        if (q('.tt_confirmLayer') !== null) return '只剩已退出的标签也弹了确认（纯噪音）'
+        if (modal() !== null) return '没有活会话时点 ✕ 没关掉面板'
+        return null
+      }
     },
     /* 连接错误遮罩 */
     async error() {
@@ -1895,6 +2229,7 @@
         return null
       }
     },
+
   }
 
   const name = new URLSearchParams(location.search).get('scenario') || 'local'

@@ -93,6 +93,43 @@ dsh --profile <测试 profile> --patch <port.yml>
   日志一切正常，`netstat` 里却什么都没有。阶段 B 的活体探针全部无从谈起——
   所以上面第 4 步那两条 `dsh plugin add` 缺一不可。
 
+## 驱动真宿主的面板：浏览器半体的真机验证
+
+客户端半体（面板 / 卡片）的行为只有**真浏览器 + 真宿主**能验：`packages/tty` 的 `preview`
+是 mock 宿主（验布局与文案，见 [tty 包 README](../packages/tty/README.md) 的预览一节），验不到
+「宿主推的真帧到达之后，客户端怎么反应」。这条路有四条实测约束（2026-10-10 走通一次，方法照抄即可）：
+
+1. **token 只有自己起的宿主才有。** `dsh web` 打印的 `?token=…` 是**进程内随机**
+   （`processLaunchToken` → `randomBytes`，不落盘），而子进程环境里的 `DSH_WEB_URL`
+   **不带 token**。于是**已经在跑的宿主，agent 驱动不了它的页面**（`GET /` 与 `/api/*` 都是 401）
+   ——`verify-client-ui.mjs --url <宿主> --token <token>` 里那个 token，只能是**你自己起的那一个**，
+   或由用户从他的地址栏给你。
+2. **要「真设置 + 能跑 agent」，用真 `DSH_HOME` + 复制一份 profile**（不要隔离 home）：
+
+   ```sh
+   cp -R ~/.dsh/profiles/<源> ~/.dsh/profiles/<临时名>   # 相对符号链接同深度，拷完照常可用
+   dsh --profile <临时名> --port <空闲端口>              # stdout 那行 `dsh web: …/?token=…` 就是入口
+   ```
+
+   副本跑在**真 `DSH_HOME`** 上，所以用户的设置、模型路由与凭据都在（隔离 home 里没有这些，
+   除非另行播种）⇒ **宿主里的 agent 真能跑**；profile 名与端口都不同，也不会去抢源 profile 的 tmux socket。Windows 上别用 `fs.cpSync`
+   （会把 junction 展开成真副本）——`scripts/live-host-smoke.mjs` 的 `copyProfileTree` 就是为这个写的。
+   收尾：关宿主、关页面；临时 profile 的删除先问用户。
+3. **驱动用会话里的浏览器自动化**（Playwright MCP 的 `browser_*`，或仓内零依赖的
+   `scripts/chrome-cdp.mjs`）。三个坑都是实测踩到的：
+   - **先确认页面跑的是哪一版产物**：bundle 从磁盘现读、rev 按 `mtime/ctime/size` 现算，
+     所以「源码改了」不等于「这个页面加载了新代码」。拿**新版才有的 DOM 节点 / 样式规则**当探针
+     最省事（本次用的是面板骨架里的 `.tt_exitBar` 节点与样式表里的 `.tt_confirmLayer` 规则）。
+   - **模态背后的输入框点不到、但能键入**：`element.focus()` + `page.keyboard.type()` 照常送达；
+     `document.execCommand('insertText')` 在那套富文本编辑器上**不生效**（`textContent` 仍是空），
+     别用它；也别在核对 `textContent` 之前按 Enter（会发出一条空/半截的消息）。
+   - **权限档位会拦 agent 的工具调用**：默认「工作区内修改」下 `tty_open` 之类会停在
+     「等待审批：拒绝 / 允许一次」——驱动脚本要能等到并点掉它，否则断言卡在「目标没出现」，
+     看起来像产品缺陷。
+4. **断言要取两侧**：宿主侧的工具输出只说明「会话没了」，面板里的标签有没有收走是**客户端**的行为
+   （`tty_list` 看到 0 条、标签栏却还挂着，正是 tty D97 的现场）。要区分「用户亲手点过」与
+   「客户端自己顶上来」，就用**真点击**（`page.click()`）制造前者。
+
 ## 各包真机入口
 
 **入口一律写成一条可粘贴命令**（包的脚本条目在各自 `package.json` 里）。仓库根那 9 个
@@ -102,12 +139,12 @@ dsh --profile <测试 profile> --patch <port.yml>
 
 | 包 | 一条可粘贴命令 | 需要什么 |
 |---|---|---|
-| `tty` | `pnpm --filter @hyzyn/dsh-tty run integration`（真实 PTY 全链路）、`… run ssh-smoke`（内存 sshd）、`… run probe-smoke`、`… run probe-route-smoke`、`… run sftplimits-smoke`、`… run preview`（Chrome，界面场景）、`… run windows-smoke`（仅 Windows 有意义） | 真实 PTY / Chrome / Windows |
+| `tty` | `pnpm --filter @hyzyn/dsh-tty run integration`（真实 PTY 全链路）、`… run ssh-smoke`（内存 sshd）、`… run probe-smoke`、`… run probe-route-smoke`、`… run sftplimits-smoke`、`… run preview`（Chrome，**mock** 宿主，界面场景）、`… run windows-smoke`（仅 Windows 有意义）；「真宿主 + 真浏览器驱动面板」见 [§ 驱动真宿主的面板](#驱动真宿主的面板浏览器半体的真机验证） | 真实 PTY / Chrome / Windows |
 | `codegraph` | `pnpm --filter @hyzyn/dsh-codegraph run agent-scope-smoke`（最小 Cordis 根）、`… run agent-integration-smoke`（真 `AgentRegistry` 驱动真 `agent/created`）、`… run indexforce-smoke`、`… run host-contract-smoke`（真宿主路由与开关）、`… run client-ui-smoke`（自起隔离宿主 + 真 Chrome） | 真 DSH 宿主 / 真 CLI / Chrome |
 | `mcp` | `pnpm --filter @hyzyn/dsh-mcp run http-smoke`（streamable-http 的三种响应模式；只打 `/api/dsh-mcp/test`，不写配置）、`… run tools-smoke`（保存 → 热加载 → 工具真的进注册表；会写宿主 MCP 配置并**逐条写回**） | 正在跑的宿主（装了 `dsh-mcp`；`tools-smoke` 的 L2 那半还需 `dsh-search` 与一次 agent 回合） |
 | `rss` | `pnpm --filter @hyzyn/dsh-rss run opml-smoke`（OPML 导入 / 导出 / 回环；先存基线，收尾写回并重刷 digest） | 正在跑的宿主 + token + 真 Chrome（受限沙箱加 `--chrome-arg --no-sandbox`） |
 | `docker` | `pnpm --filter @hyzyn/dsh-docker run smoke`（`smoke.mjs` + `route-smoke.mjs` + `client-smoke.mjs`，hermetic，能进 CI）；真机项需真 docker daemon | 真 docker |
-| 通用（L0） | `node scripts/verify-client-ui.mjs --url <宿主> --token <token>`（应用壳 + 逐插件配置页；`--mode boot` 只验壳）、`pnpm verify:list`（只列不跑） | 正在跑的宿主 + token + 真 Chrome |
+| 通用（L0） | `node scripts/verify-client-ui.mjs --url <宿主> --token <token>`（应用壳 + 逐插件配置页；`--mode boot` 只验壳；**token 从哪来见 [§ 驱动真宿主的面板](#驱动真宿主的面板浏览器半体的真机验证）**）、`pnpm verify:list`（只列不跑） | 正在跑的宿主 + token + 真 Chrome |
 | 全部 | `pnpm live-smoke`（= `node scripts/live-host-smoke.mjs`；干净机器 `node scripts/live-host-smoke.mjs --bootstrap --strict`）（真宿主：能力开关授权阶梯 / 路由门控 / 工具清单 / 试连文案 / 宿主正服务的 `client.js`） | 装了 DSH 的任意机器（干净机器加 `--bootstrap`） |
 | 全部 | `node scripts/windows/setup-dsh-testenv.ps1 -WithRepo` | Windows 11 |
 

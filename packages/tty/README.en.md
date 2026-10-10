@@ -57,8 +57,32 @@ After installing, restart `dsh web`; a “Terminal” entry appears in the sideb
   title-bar “—” collapses the panel — PTY sessions and output buffers stay alive, the sidebar “Terminal”
   entry shows a “running / total” badge and a status dot (pulsing when there is output), and clicking the
   entry restores it; only the floating bar’s ✕ / the title-bar ✕ really closes it and ends every session;
+- **Closing the panel asks first (issue #8)**: while the panel still has live sessions, ✕ (including the
+  one on the floating bar) opens a confirmation that states how many sessions this ends, how many of them
+  the AI opened, and puts **Minimize** (sessions and output keep running) on the same button row — it used
+  to only point at «—» on the title bar, which that very layer covers and swallows, so the way out was
+  “cancel first, then go find «—»”; putting it in reach turns the misclick into the right action. With only
+  exited tabs (or none) it closes straight away: the predicate is *what would be lost*, not *how many tabs
+  are open* (a confirmation that fires too often gets clicked out of habit, and then the real one stops
+  working);
+- **Exited sessions no longer cover their output (issue #7①②)**: the exited state is now a strip at the top
+  of the terminal area (one line — “Exited code=…” / “The AI finished this session” — plus at most one action
+  button), so output stays readable, scrollable and selectable. The previous full-area overlay was both why
+  “the AI’s command output is unreadable” (users hid `.tt_overlay` from devtools) and why clicking anywhere
+  was swallowed — even selecting text was impossible. Error and “reconnecting” overlays stay: their job is
+  to explain why there is no output;
+- **“Clean up exited tabs (N)” in the “⋯” menu (issue #7③)**: removes every exited tab in one go (which also
+  makes the host release their read-only retention right away); the “⋯” button now also appears when there
+  are dead tabs without overflow — it used to show up only on overflow, while the AI leaves one dead tab per
+  command (a user collected 47 of them and had to close them one by one);
+- **Tabs opened by the AI follow their session (issue #7④)**: once the AI releases a session (`tty_close`,
+  or `tty_run`’s default cleanup), its tab goes away with it — the one **you switched to and are looking at** gets
+  one step of grace (a tab the client itself promoted to the foreground does not count) (the strip says “The AI finished this session” with a “Dismiss” button; switching away or
+  clicking it closes the tab). Sessions still in read-only retention (`tty_run keep:true`, `tty_open command=`
+  that was never closed) keep their tabs — readable, swept by the cleanup entry above;
 - The title-bar ✕ closes the panel and ends every session (PTY tree-level cleanup; tmux persistent tabs also
-  get kill-session); after a session exits, clicking the terminal area reopens it;
+  get kill-session); after a session exits, reopen it from the top strip (a local tab opens a fresh session
+  from its spec, persistent tabs reattach to tmux, command tabs run again);
 - The concurrency limit defaults to 4 (`maxSessions` configuration, 1~16).
 
 ![Terminal panel settings card: shell / TERM / concurrency limit and so on take effect on save](https://cdn.jsdelivr.net/gh/hyzyn/dsh-plugin-kit@main/docs/dsh-plugin-kit-tty-setting.png)
@@ -1068,7 +1092,7 @@ client-side changes.
 
 Styles should not be changed by “refresh the page and take a look”: the script loads `client.js` into a pure
 static fixture page (`scripts/preview/harness.html` + a fake DSH host from `mock-host.js`: module
-loader / fetch / WebSocket) and renders 29 UI states one by one with headless Chrome, screenshotting them to
+loader / fetch / WebSocket) and renders 50 UI states one by one with headless Chrome, screenshotting them to
 `packages/tty/.preview/shots/`:
 
 ```bash
@@ -1081,7 +1105,9 @@ node scripts/preview.mjs --theme=light   # light theme
 Coverage: local terminal / multi-tab + SSH connection bar / the “+” menu / SSH dialog (new, edit, probe)/
 settings card (also side by side with docker)/ SFTP (single pane, dual pane, placement fallback)/
 **mount slot follows the tab** (`dock-pane-tab`, the 0.19.0 regression)/ minimized badge / exit and error
-overlays / tunnel popover / search box / toast / embedded terminals (alone and alongside the panel)/
+overlays / “clean up exited tabs” in the “⋯” menu (and after clicking it)/ where tabs go when the AI
+releases a session / the panel-close confirmation (with live sessions and with only exited tabs)/
+tunnel popover / search box / toast / embedded terminals (alone and alongside the panel)/
 docker panel and “containers → terminal drawer”.
 
 A scene may attach a **function-shaped** assertion to `window.__previewAssert` (returning `null` means pass,

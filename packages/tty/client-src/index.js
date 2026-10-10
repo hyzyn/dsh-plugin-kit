@@ -89,7 +89,8 @@ import { asciiRefToken, derivedCredentialRef } from './credential-ref.js'
 import { applyTunnelEdit, buildTunnelFromDraft as buildTunnelSpec, tunnelNameClash } from './tunnel-edit.js'
 import { currentSessionCwd } from './current-session.js'
 import { FALLBACK_COLS, FALLBACK_ROWS, usableFitSize } from './fit-size.js'
-import { countLiveSessions, liveSessionSids } from './session-live.js'
+import { agentTabDisposition, countLiveSessions, liveSessionSids, sessionFrameIndex } from './session-live.js'
+import { closePanelSummary } from './close-guard.js'
 import { planResume } from './download-resume.js'
 import { dirsToCreate, filterEntries, planDrop } from './sftp-view.js'
 import { eventOwnsStatus, needsStatusResync, statusForTab } from './status-line.js'
@@ -145,8 +146,14 @@ const I18N_ZH = {
   'btn.reopenSession': '重新打开会话',
   'status.exited': '会话已退出',
   'status.ended': '会话已结束',
-  'btn.clickReopen': '点击重新打开',
   'btn.clickRerun': '点击重新执行',
+  'status.aiEnded': 'AI 已结束这个会话',
+  'hint.aiEndedTab': '内容先留着：切走或点「收起」即关闭这个标签',
+  'btn.dismiss': '收起',
+  'btn.dismissTitle': '关闭这个标签（会话已经结束了）',
+  'hint.reopenWithSpec': '按原规格重开一条会话（持久标签接回 tmux，命令标签重跑一次）',
+  'btn.newLocalTerminal': '新开本地终端',
+  'hint.reopenAgentLocal': '这条会话是 AI 开的、已经结束：点了会新开一个本地终端，不会接回原来那条',
   'msg.passwordNotStored': '出于安全考虑，明文密码/口令不随浏览器存储保留，本次连接需要重新输入：重开标签时再填一次，或在设置卡片把凭据换成 env: 引用（值存宿主凭据存储）。',
   'error.terminalNeedsCommand': 'ttyTerminal 需要 command',
   'error.terminalCommandSingleLine': 'command 必须是单行',
@@ -164,6 +171,7 @@ const I18N_ZH = {
   'btn.tabList': '标签列表',
   'btn.tabListTitle': '标签列表（{n} 个）',
   'list.tabsAllVisible': '没有藏在视野外的标签',
+  'list.cleanExited': '清理已退出的标签（{n}）',
   'meta.tunnelRemote': '远程:{host}:{port} → 本机:{local}',
   'meta.tunnelLocal': '本机:{local} → {host}:{port}',
   'status.tmuxPersistedTitle': '已由 tmux 托管 — 断线 / 宿主重启后按名接回现场',
@@ -376,7 +384,13 @@ const I18N_ZH = {
   'btn.copyTitle': '复制选中内容',
   'btn.pasteTitle': '粘贴',
   'btn.minimizeTitle': '最小化（会话保持运行，状态并入侧边栏入口）',
-  'btn.closePanelTitle': '关闭面板（结束会话，标签保留，重开即恢复列表）',
+  'btn.minimize': '最小化',
+  'btn.closePanelTitle': '关闭面板并结束全部会话（还有会话没退出时会先确认；只是想收起就点「—」，会话保持运行）',
+  'confirm.closeTitle': '结束 {n} 个会话并关闭面板？',
+  'confirm.closeText': '关闭面板会一并结束这 {n} 个还没退出的会话（面板里的标签会跟着关掉）。',
+  'confirm.closeTextAgent': '关闭面板会一并结束这 {n} 个会话，其中 {agent} 个是 AI 开的（可能正在跑命令）。',
+  'confirm.closeHint': '只是想给别的窗口腾地方？点「最小化」—— 会话与输出都保持运行。',
+  'confirm.closeOk': '结束 {n} 个会话并关闭',
   'btn.restoreDock': '点击恢复终端窗口',
   'panel.title': '终端',
   'status.minimized': '终端已最小化 — 点击恢复',
@@ -565,8 +579,14 @@ const I18N_EN = {
   'btn.reopenSession': 'Reopen session',
   'status.exited': 'Session exited',
   'status.ended': 'Session ended',
-  'btn.clickReopen': 'Click to reopen',
   'btn.clickRerun': 'Click to run again',
+  'status.aiEnded': 'The AI finished this session',
+  'hint.aiEndedTab': 'The content stays for now: switch away or hit “Dismiss” to close this tab',
+  'btn.dismiss': 'Dismiss',
+  'btn.dismissTitle': 'Close this tab (the session has already ended)',
+  'hint.reopenWithSpec': 'Open a session again from the same spec (persistent tabs reattach to tmux, command tabs run again)',
+  'btn.newLocalTerminal': 'New local terminal',
+  'hint.reopenAgentLocal': 'This session was opened by the AI and has ended: this opens a new local terminal, it does not reattach to the original one',
   'msg.passwordNotStored': 'For security, plaintext passwords/passphrases are not kept in browser storage, so this connection needs them again: re-enter them when reopening the tab, or switch the credential to an env: reference in the settings card (the value lives in the host credential store).',
   'error.terminalNeedsCommand': 'ttyTerminal requires a command',
   'error.terminalCommandSingleLine': 'command must be a single line',
@@ -584,6 +604,7 @@ const I18N_EN = {
   'btn.tabList': 'Tab list',
   'btn.tabListTitle': 'Tab list ({n})',
   'list.tabsAllVisible': 'No tabs are out of view',
+  'list.cleanExited': 'Clean up exited tabs ({n})',
   'meta.tunnelRemote': 'remote:{host}:{port} → local:{local}',
   'meta.tunnelLocal': 'local:{local} → {host}:{port}',
   'status.tmuxPersistedTitle': 'Hosted by tmux — the session is reattached by name after a disconnect or host restart',
@@ -796,7 +817,13 @@ const I18N_EN = {
   'btn.copyTitle': 'Copy selection',
   'btn.pasteTitle': 'Paste',
   'btn.minimizeTitle': 'Minimize (sessions keep running; the status moves into the sidebar entry)',
-  'btn.closePanelTitle': 'Close the panel (ends sessions; tabs are kept and the list comes back on reopen)',
+  'btn.minimize': 'Minimize',
+  'btn.closePanelTitle': 'Close the panel and end every session (you are asked first when sessions are live; to just put it away hit “—”, sessions keep running)',
+  'confirm.closeTitle': 'End {n} sessions and close the panel?',
+  'confirm.closeText': 'Closing the panel ends these {n} sessions that have not exited yet (the tabs go with them).',
+  'confirm.closeTextAgent': 'Closing the panel ends these {n} sessions, {agent} of which the AI opened (they may be running commands).',
+  'confirm.closeHint': 'Only need room for other windows? Hit “Minimize” — sessions and output keep running.',
+  'confirm.closeOk': 'End {n} sessions and close',
   'btn.restoreDock': 'Click to restore the terminal window',
   'panel.title': 'Terminal',
   'status.minimized': 'Terminal minimized — click to restore',
@@ -1344,6 +1371,23 @@ let sshHostsCache = []
 let statsEnabledCache = true
 /** 状态条 DOM（每个面板一条，跟随活动标签；挂在 .tt_body 里、终端容器之前）。 */
 let statsBarEl = null
+/* ---------- 退出提示条（D96 / issue #7①②） ---------- */
+/**
+ * 退出提示条 DOM（与状态条同级、同机制：绝对定位在 .tt_body 顶部，显隐只把 .tt_term
+ * 的 top 往下推）。它取代了原来那层**铺满整个终端区**的退出遮罩——那层把输出挡住了
+ * （用户上报「AI 打开的终端跑出来的结果看不清」，还得去 F12 里把 `.tt_overlay` 藏掉）。
+ */
+let exitBarEl = null
+/** 退出提示条的数据签名：同一条不重复重画（重建会丢掉刚聚焦的按钮）。 */
+let exitBarRenderKey = ''
+/* ---------- 关面板二次确认（issue #8） ---------- */
+/**
+ * 确认层 DOM（每个面板最多一个）。判据是「这一下会结束几条活会话」，不是「开了几个
+ * 标签」——见 client-src/close-guard.js 的文件头。
+ */
+let confirmEl = null
+/** 显示确认层之前那个获得焦点的元素（关掉后还给它）。 */
+let confirmReturnFocus = null
 /** 当前已向宿主订阅的 sid（可见性驱动；null = 没订阅）。 */
 let statsSubSid = null
 /** 陈旧检测定时器：面板打开期间每秒复查（采集端静默停止时要能自己收起状态条）。 */
@@ -1691,6 +1735,115 @@ function resubscribeStats(sid) {
   sendFrame({ t: 'statsOn', sid })
 }
 
+/* ---------- 退出提示条（D96 / issue #7①②） ---------- */
+
+/**
+ * 当前标签该在退出提示条上说什么（没有就 null）。
+ *
+ * 两态：
+ *   - `released`：D97（#7④）里「AI 显式释放了这条会话、而这恰好是你正在看的标签」——先提示，
+ *     切走或点「收起」再收标签（后台的标签当场就收，不进这里）；
+ *   - `exited`  ：会话自己跑完 / 停在只读保留里——标签留着、输出可读可复制。
+ *
+ * 嵌入终端（dsh-docker 抽屉里那块）不走这条：它没有面板的顶部条，退出态仍由遮罩 +
+ * 「点击重新执行」表达（`showTabOverlay` 里那条 `embedded` 分支）。
+ */
+function exitBarState() {
+  const tab = activeTab()
+  if (tab === undefined || tab.embedded === true) return null
+  if (tab.releasePending === true) return { kind: 'released', tab }
+  if (tab.exited === true) return { kind: 'exited', tab }
+  return null
+}
+
+/**
+ * 重画退出提示条（幂等）。与服务器状态条同一套几何机制：条子绝对定位在 `.tt_body`
+ * 顶部，显隐只把 `.tt_term` 的 top 往下推，所以**只有显隐翻转时**才需要重跑 fit
+ * （数据没变时反复 fit 会让终端抖动）。
+ */
+function applyExitBar() {
+  if (bodyEl === null || exitBarEl === null) return
+  const state = exitBarState()
+  const visible = state !== null
+  const changed = (bodyEl.dataset.exited !== undefined) !== visible
+  if (!visible) {
+    exitBarEl.hidden = true
+    exitBarEl.textContent = ''
+    exitBarRenderKey = ''
+    if (changed) {
+      delete bodyEl.dataset.exited
+      refitActiveTab()
+    }
+    return
+  }
+  exitBarEl.hidden = false
+  renderExitBar(state)
+  if (changed) {
+    bodyEl.dataset.exited = ''
+    refitActiveTab()
+  }
+}
+
+/** 退出提示条的内容（签名不变就不重画：重建会把刚聚焦的按钮、正在读的文本顶掉）。 */
+function renderExitBar(state) {
+  const { kind, tab } = state
+  const detail = typeof tab.exitDetail === 'string' ? tab.exitDetail : ''
+  const key = kind + ':' + tab.sid + ':' + detail
+  if (key === exitBarRenderKey) return
+  exitBarRenderKey = key
+  exitBarEl.textContent = ''
+
+  const text = document.createElement('span')
+  text.className = 'tt_exitBarText'
+  text.textContent = kind === 'released'
+    ? t('status.aiEnded')
+    : detail === '' ? t('status.exited') : t('status.exitedWith', { detail })
+  if (kind === 'released') text.title = t('hint.aiEndedTab')
+  exitBarEl.appendChild(text)
+
+  const spacer = document.createElement('span')
+  spacer.className = 'tt_exitBarSpacer'
+  exitBarEl.appendChild(spacer)
+
+  if (kind === 'released') {
+    // 「收起」= 关掉这个标签：会话已经没了，标签只是留给你把最后一眼看完
+    addExitBarButton(t('btn.dismiss'), t('btn.dismissTitle'), () => {
+      closeTab(tab.sid, { silent: true })
+    })
+    return
+  }
+  /*
+   * 「重新打开」对所有面板标签都给（与旧遮罩的「点击重新打开」同一个覆盖面）：
+   * `respawnTab` 拿标签自己的 spawnSpec 重开一条，普通本地标签就是新开一个 shell。
+   * ⚠️ 判据**不能**用 `isRerunnableSpec`：那个判据是给「断线重连 / 宿主重启后要不要自动
+   * 重跑」用的，普通本地标签（`{t:'spawn', cwd}`）在里面是 false——用它会让本地标签的
+   * 「重新打开」凭空消失（预览场景 `exited` 当场抓到过这一条）。
+   */
+  if (tab.spawnSpec === null || typeof tab.spawnSpec !== 'object') return
+  /*
+   * AI 开的标签上「重新打开」**接不回**那条会话：`adoptAgentSessions` 给的 spawnSpec 是
+   * 占位本地终端（{t:'spawn',cwd}），点了只会新开一个本地 shell。文案如实写，不留一个
+   * 看起来能恢复、实际换了一条的按钮。
+   */
+  const agentOwned = tab.agentOwned === true
+  addExitBarButton(
+    agentOwned ? t('btn.newLocalTerminal') : t('btn.reopenSession'),
+    agentOwned ? t('hint.reopenAgentLocal') : t('hint.reopenWithSpec'),
+    () => respawnTab(tab.sid),
+  )
+}
+
+/** 提示条上的按钮：与面板其它次要按钮同一族（尺寸 / 圆角 / 四态由 .tt_toolBtn 基类给）。 */
+function addExitBarButton(label, title, onClick) {
+  const btn = document.createElement('button')
+  btn.type = 'button'
+  btn.className = 'tt_toolBtn tt_exitBarBtn'
+  btn.textContent = label
+  if (typeof title === 'string' && title !== '') btn.title = title
+  btn.addEventListener('click', onClick)
+  exitBarEl.appendChild(btn)
+}
+
 function activeTab() {
   return activeSid !== null ? tabs.get(activeSid) : undefined
 }
@@ -1931,16 +2084,30 @@ function refitTerminal(tab) {
 
 /**
  * 终端区遮罩：空串清除，否则渲染成「图标 + 主文案 + 副文案」的动作卡片
- * （会话退出 / 连接错误 / 断线重连中三种语义）。整块可点，点击重开或重连。
+ * （连接错误 / 断线重连中两种语义；嵌入终端的退出态仍走这里）。
+ *
+ * ⚠️ **面板标签的退出态不再铺满遮罩**（D96 / issue #7①）：那层 `inset:0` + 半透明底 +
+ * 模糊 + 整块可点，把 AI 跑出来的结果压在下面（用户上报：得去 F12 把 `.tt_overlay`
+ * 藏掉才看得清），而且它整块吃点击——连选中复制都做不到。面板标签的退出态改由顶部
+ * 提示条表达（`applyExitBar`），输出照常可读、可滚、可复制。
+ *
+ * 这条守卫把「不许再给面板标签画退出遮罩」变成结构性约束：调用点即使照旧传 'exited'，
+ * 也只会把遮罩清空。嵌入终端（`tab.embedded`）维持原样——它挂在消费方（dsh-docker
+ * 抽屉）的容器里，没有面板的顶部条，退出态只有这块遮罩能承载「点击重新执行」。
+ * 回归：`test/exit-overlay.test.ts` 钉住本分支与顶部条的存在。
  */
 function showTabOverlay(tab, text, hint, kind) {
   if (tab.overlayEl === null || tab.overlayEl === undefined) return
   const el = tab.overlayEl
+  const level = kind === 'error' || kind === 'info' ? kind : 'exited'
+  if (level === 'exited' && tab.embedded !== true) {
+    el.textContent = ''
+    return
+  }
   if (text === '' || text === undefined) {
     el.textContent = ''
     return
   }
-  const level = kind === 'error' || kind === 'info' ? kind : 'exited'
   el.innerHTML = '<div class="tt_overlayCard" data-kind="' + level + '">' +
     '<span class="tt_overlayIcon">' + (level === 'error' ? ICON_STOP : level === 'info' ? ICON_REFRESH : ICON_POWER) + '</span>' +
     '<span class="tt_overlayText"><span class="tt_overlayMain"></span>' +
@@ -2146,7 +2313,7 @@ function addTab(spawnSpec, label) {
   tabs.set(sid, tab)
   tabCounter += 1
   renderTabbar()
-  switchTab(sid)
+  switchTab(sid, { user: true })
   spawnTab(tab)
   persistTabs()
   return tab
@@ -2220,23 +2387,76 @@ function persistTabsForAgent() {
  * 同步「agent 开的会话」标签集合：宿主推来的清单里 owner=agent 且本地没有的
  * 建标签；本地有、宿主已不在的 agent 标签标记退出（用户可手动关掉）。
  */
+/**
+ * 同步「agent 开的会话」标签集合（D97 / issue #7④：**标签生命周期 = 会话生命周期**）。
+ *
+ * 宿主 `sessions` 帧里三种状态各有归宿（判据在纯模块 `session-live.js`）：
+ *   - **活着**（在表里、没退出）→ 不动；
+ *   - **只读保留**（`exited: true`，D77：输出还能读）→ 标成已退出，标签留着（不遮罩）；
+ *   - **表里没有**（agent 显式释放 `tty_close` / `tty_run` 收尾，或上限淘汰 / 宿主重启）
+ *     → 标签跟着关。用户的标签不归这条规则管（`agentOwned` 才收）。
+ *
+ * 台阶（只有一种情况不给当场收）：被释放的那条**正是你此刻在看的标签**——先把它标成
+ * `releasePending`，等你在顶部提示条上点「收起」或切走时再收（`switchTab` / 退出提示条）。
+ * 后台的标签一律立即收走：这正是「AI 跑完一批命令，面板里留一堆死标签」的来源。
+ */
 function syncAgentTabs(list) {
   adoptAgentSessions(list)
   if (!Array.isArray(list)) return
-  // D85：只把**活着**的 agent 会话算成还在。保留态（进程已退出、只读留着）也是一条
-  // 「宿主表里还有」的条目——按旧写法它会让标签永远停在「活着」的样子：exit 帧一旦没
-  // 收到（刷新页面后重连），这条标签就再也没机会被标成已退出。
-  const alive = liveSessionSids(list.filter((e) => e !== null && typeof e === 'object' && e.owner === 'agent'))
-  for (const [sid, tab] of [...tabs]) {
-    if (tab.agentOwned !== true) continue
-    if (alive.has(sid)) continue
-    // 宿主侧已结束（agent 调了 tty_close 或进程退出）：标退出，等 exit 帧或用户关闭
-    if (tab.exited !== true && tab.live === true) {
-      tab.exited = true
-      tab.live = false
-      renderTabbar()
-    }
+  /*
+   * 先把「AI 开的」这个标记认领回来：页面刷新后从 sessionStorage 恢复的 agent 标签只带
+   * sid 与占位规格，`agentOwned` 丢了——不认领的话它此后**不再受 ④ 的规则管**
+   * （AI 释放了也不收，又攒回一堆尸体）。宿主帧里的 `owner` 是权威。
+   */
+  for (const entry of list) {
+    if (entry === null || typeof entry !== 'object' || entry.owner !== 'agent') continue
+    const tab = typeof entry.sid === 'string' ? tabs.get(entry.sid) : undefined
+    if (tab !== undefined && tab.embedded !== true && tab.agentOwned !== true) tab.agentOwned = true
   }
+  const index = sessionFrameIndex(list)
+  let tabbarDirty = false
+  for (const [sid, tab] of [...tabs]) {
+    const disposition = agentTabDisposition(tab, index)
+    if (disposition === 'keep') continue
+    if (disposition === 'mark-exited') {
+      // 只读保留：exit 帧漏收（刷新页面后重连）时也要能落到「已退出」的样子
+      if (tab.exited !== true) {
+        tab.exited = true
+        tab.live = false
+        tabbarDirty = true
+      }
+      continue
+    }
+    if (holdReleasedTab(tab)) continue
+    // 会话已出表：标签是本地残留的影子，关它不必也不会再发 kill
+    closeTab(sid, { silent: true })
+  }
+  if (tabbarDirty) {
+    renderTabbar()
+    refreshDockCount()
+  }
+}
+
+/**
+ * 「这一条被释放了，但标签正被看着」→ 先留着（返回 true 表示拦下）。
+ * 判据是「活动标签 + 面板没最小化」：最小化时没人看它，直接收掉不会打断任何阅读。
+ */
+/**
+ * 「这一条被释放了，但标签正被看着」→ 先留着（返回 true 表示拦下）。
+ *
+ * 判据是「**用户自己**切过去看过它」（`watched`）+ 它现在还是活动标签 + 面板没最小化。
+ * 为什么不能只看「是不是活动标签」：活动标签会被客户端**自己**顶上去——关掉一个标签时
+ * 会选一个邻居（`closeTab` 的 `pop()`），采纳 agent 标签时若当时没有活动标签也会切过去
+ * （`adoptAgentSessions`）。2026-10-10 的 4b 现场就是这么来的：AI 在后台开一条、随即
+ * `tty_close`，标签却「退出了但还在」——它已经被邻居选择顶成了活动标签，于是错误地走了
+ * 这条台阶分支。台阶的语义本来就是「你正在看的那一条」，而「正在看」应当是用户切的。
+ */
+function holdReleasedTab(tab) {
+  if (!panelVisible() || tab.watched !== true || tab.sid !== activeSid) return false
+  if (tab.releasePending === true) return true
+  tab.releasePending = true
+  applyExitBar()
+  return true
 }
 
 /**
@@ -2352,14 +2572,23 @@ function respawnTab(oldSid) {
   createTerminal(tab)
   tabs.set(tab.sid, tab)
   renderTabbar()
-  switchTab(tab.sid)
+  switchTab(tab.sid, { user: true })
   spawnTab(tab)
   persistTabs()
 }
 
-function closeTab(sid) {
+/**
+ * 关掉一个标签。
+ *
+ * `options.silent`（#7④）：宿主**已经退役**了这条会话时用——那种情况下标签是本地残留的
+ * 影子，再发 `kill` 只会打在一个已出表的 sid 上（宿主侧是个空操作）。默认为 false，
+ * 也就是照 D77 的约定把「用户在面板里关标签 = 显式释放」告诉宿主，让只读保留的屏与
+ * 缓冲立刻释放，而不是等上限淘汰。
+ */
+function closeTab(sid, options) {
   const tab = tabs.get(sid)
   if (tab === undefined) return
+  const silent = options?.silent === true
   // 挂载位归属这个标签：标签都没了，面板不能再留着——收起态的面板 DOM 还在，
   // 里面的 SFTP 在途传输 / docker 轮询会继续对着已经关掉的连接干活，而且它的
   // 归属标签永远回不来（切不回这个标签），等于一块看不见的僵尸面板。
@@ -2367,7 +2596,7 @@ function closeTab(sid) {
   // D77：已退出的标签在宿主侧**仍挂着只读保留的会话**，关标签要把这件事告诉宿主、
   // 让它立刻释放（屏与缓冲）；宿主那边到点也会自己收。旧行为之所以跳过：那时宿主
   // 已经删了会话，kill 只会换来一个错误帧。
-  sendFrame({ t: 'kill', sid })
+  if (!silent) sendFrame({ t: 'kill', sid })
   tabs.delete(sid)
   // 会话没了，它的失败徽标也没什么可解释的了（浮层若正开着先收起）
   if (assistMenuSid === sid) closeAssistMenu()
@@ -2397,6 +2626,11 @@ function closeTab(sid) {
   // 关掉的正是胶囊「讲」的那个标签时，把文案换成剩下那个活动标签自己的——
   // 否则用户关掉连不上的窗口后，那行红字还会一直挂在头上
   syncStatusToActiveTab()
+  // 退出提示条跟着活动标签走：关掉的若是它，条子得跟着收起（否则描述一个没有的标签）
+  applyExitBar()
+  // 侧边栏入口徽标（最小化时的「运行中/总数」）与悬浮条计数
+  syncEntryBadge()
+  if (dockEl !== null) refreshDockCount()
   // 注意判据是「没有自己的标签了」：嵌入终端不占标签位，不该因为它而留住空面板
   if (![...tabs.values()].some((tab) => tab.embedded !== true)) closeModal()
   else persistTabs()
@@ -2791,12 +3025,33 @@ function syncDockPaneVisibility() {
   if (workEl !== null) delete workEl.dataset.side
 }
 
-function switchTab(sid) {
+/**
+ * 切到某个标签。
+ *
+ * `options.user === true` 表示**这次切换是用户发起的**（点标签 / 点「⋯」列表里那一项 /
+ * 「+」新建 / 点「重新打开」/ 消费方 `open()` 聚焦已有标签），据此打上 `watched` 标记：
+ * 只有用户自己切过去看过的标签，才在 AI 释放会话时享受「先提示再收」那一步台阶
+ * （见 `holdReleasedTab`）。客户端自己顶上去的活动标签（关标签选邻居、采纳 agent 标签
+ * 时没有活动标签）**不算**——4b 现场的误判就是这么来的。
+ */
+function switchTab(sid, options) {
   const tab = tabs.get(sid)
   if (tab === undefined) return
   // 嵌入会话不是标签页（0.19.0）：不进标签栏、由挂载方控制显隐——
   // 拒绝把它设为 activeSid（否则面板空白、连接栏描述一个看不见的会话）
   if (tab.embedded === true) return
+  if (options?.user === true) tab.watched = true
+  /*
+   * #7④ 的台阶：AI 释放掉的会话，如果它的标签**正是你在看的那个**，先不收——
+   * 你切走的那一刻再收（「看一眼再走」是正常动作，不该被当成「丢了个现场」）。
+   * 收在切换之前：`closeTab` 内部对「关掉的正是活动标签」有自己的接续逻辑，
+   * 这里只处理「还有别的标签可切」的情况（只剩自己时没有「切走」这回事）。
+   */
+  const previous = activeSid !== null ? tabs.get(activeSid) : undefined
+  if (previous !== undefined && previous.releasePending === true && previous.sid !== sid && tabs.size > 1) {
+    closeTab(previous.sid, { silent: true })
+    if (tabs.get(sid) === undefined) return // 上面那一关把面板收掉了
+  }
   activeSid = sid
   // 答案浮层属于**某个**会话：切走就收起，免得它挂在新终端上（徽标则跟着新活动标签重算）
   closeAssistMenu()
@@ -2825,7 +3080,10 @@ function switchTab(sid) {
   if (tab.spawned && !tab.exited) {
     sendResize(tab)
   }
-  showTabOverlay(tab, tab.exited ? t('status.exited') : '', tab.exited ? t('btn.clickReopen') : '', 'exited')
+  // 退出态不再铺遮罩，改由顶部提示条表达（issue #7①②）；错误 / 重连中的遮罩照旧由
+  // 各自的帧挂上，这里只负责把不属于当前标签的旧退出文案清掉
+  showTabOverlay(tab, '')
+  applyExitBar()
   // 胶囊跟着活动标签走：上一个标签留下的错误（如 SSH 握手超时）不该跟着切过来
   syncStatusToActiveTab()
 }
@@ -2907,7 +3165,7 @@ function renderTabbar() {
         closeTab(sid)
         return
       }
-      switchTab(sid)
+      switchTab(sid, { user: true })
     })
     tabbarEl.appendChild(btn)
   }
@@ -2931,20 +3189,29 @@ function renderTabbar() {
  *      用户「那边还有标签」：`end` = 右边还有、`start` = 左边还有、`both` = 中间；
  *      不溢出时**删掉属性**，于是完全没有遮罩。
  *   ② 「⋯」标签列表入口的显隐——它是兜底：渐隐只提示得出「还有」，提示不出「还有哪几个」，
- *      10 个以上标签时找会话就成了盲找。只在溢出时出现（不溢出时它纯属噪音）。
+ *      10 个以上标签时找会话就成了盲找。
  */
 function syncTabOverflow() {
   if (tabbarEl === null) return
   const max = tabbarEl.scrollWidth - tabbarEl.clientWidth
   const overflow = max > 1
+  /*
+   * #7③：「⋯」不再只在溢出时出现——面板里攒着**已退出的标签**时，它是「清理」的入口
+   * （不出现的话，47 个死标签只能一个一个点标签上的 ✕）。溢出与有死标签这两件事都不成立
+   * 时它才是噪音，照旧藏起来。
+   */
+  const moreNeeded = overflow || exitedPanelTabs().length > 0
   if (tabMoreEl !== null) {
-    tabMoreEl.hidden = !overflow
-    if (overflow) tabMoreEl.title = t('btn.tabListTitle', { n: tabs.size })
-    // 溢出消失（面板被拉宽 / 标签被关少）时入口会藏起来，菜单不能还挂着
+    tabMoreEl.hidden = !moreNeeded
+    if (moreNeeded) tabMoreEl.title = t('btn.tabListTitle', { n: tabs.size })
+    // 入口藏起来时菜单不能还挂着
     else if (tabListMenuEl !== null) closeTabListMenu()
   }
   if (!overflow) {
     delete tabbarEl.dataset.edge
+    // 列表内容还有「与溢出无关」的那半（清理行的条数与已退出标签的出现 / 消失）：
+    // 非溢出路径以前直接 return，菜单开着时那份名单就会停在旧状态
+    if (tabListMenuEl !== null) renderTabListItems()
     return
   }
   const moreLeft = tabbarEl.scrollLeft > 1
@@ -3531,11 +3798,15 @@ function onDocAddMenuMouseDown(event) {
 }
 
 /**
- * 浮层定位（「+」菜单与「⋯」标签列表共用）：横向贴锚点、越界时夹回视口；
+ * 浮层定位（「+」菜单、「⋯」标签列表、标签右键菜单共用）：横向贴锚点、越界时夹回视口；
  * 纵向优先贴锚点下沿，下面放不下就翻到上面——标签列表能长到几十行，翻上去比被裁好。
  */
 function placePopover(menu, anchorBtn) {
-  const rect = anchorBtn.getBoundingClientRect()
+  placePopoverAt(menu, anchorBtn.getBoundingClientRect())
+}
+
+/** 同一个定位算法的「按矩形放」（右键菜单只有光标坐标，没有锚点元素）。 */
+function placePopoverAt(menu, rect) {
   const width = menu.offsetWidth
   const height = menu.offsetHeight
   const preferRight = rect.left + width > window.innerWidth - 8
@@ -3637,6 +3908,7 @@ function renderTabListItems() {
     hint.className = 'tt_addMenuTitle'
     hint.textContent = t('list.tabsAllVisible')
     menu.appendChild(hint)
+    appendCleanExitedRow(menu)
     return
   }
   for (const [sid, tab] of hidden) {
@@ -3669,7 +3941,7 @@ function renderTabListItems() {
     item.appendChild(text)
     item.title = meta === '' ? label : label + ' · ' + meta
     item.addEventListener('click', () => {
-      switchTab(sid)
+      switchTab(sid, { user: true })
       closeTabListMenu()
     })
     row.appendChild(item)
@@ -3691,6 +3963,34 @@ function renderTabListItems() {
   if (activeRow !== null && typeof activeRow.scrollIntoView === 'function') {
     activeRow.scrollIntoView({ block: 'nearest' })
   }
+  appendCleanExitedRow(menu)
+}
+
+
+/** 面板里已退出的标签（嵌入终端不算：它不进标签栏、也不归这个菜单管）。 */
+function exitedPanelTabs() {
+  return [...tabs.values()].filter((tab) => tab.embedded !== true && tab.exited === true)
+}
+
+/**
+ * 「⋯」菜单底部的「清理已退出的标签（N）」（issue #7③）。
+ *
+ * 为什么需要它：宿主侧的只读保留有硬上限（超了按最旧淘汰），而客户端标签此前**既没有
+ * 上限、也没有清理入口**——agent 每跑一条一次性命令就留一个已退出的标签，用户报告里攒到
+ * 47 个只能一个一个点 ✕。关这些标签会照 D77 的约定顺手把宿主侧保留的会话释放掉
+ * （`closeTab` 默认发 kill），所以它同时是省内存的动作。
+ */
+function appendCleanExitedRow(menu) {
+  const exited = exitedPanelTabs()
+  if (exited.length === 0) return
+  const sep = document.createElement('div')
+  sep.className = 'tt_addMenuSep'
+  menu.appendChild(sep)
+  addMenuItem(menu, t('list.cleanExited', { n: String(exited.length) }), '', () => {
+    closeTabListMenu()
+    // 快照着关：每关一个都会重建标签栏与菜单内容
+    for (const tab of exited) closeTab(tab.sid)
+  }, undefined, ICON_CLEAR)
 }
 
 /**
@@ -7346,11 +7646,20 @@ function connect() {
         if (sid === activeSid) applyStatsBar()
         const code = msg.code !== null && msg.code !== undefined ? 'code=' + msg.code : ''
         const signal = msg.signal !== null && msg.signal !== undefined ? 'signal=' + msg.signal : ''
-        setTabStatus(sid, t('status.exitedWith', { detail: [code, signal].filter(Boolean).join(' ') }), '')
+        // 退出码 / 信号留在标签上：顶部退出提示条要把它写进那一行（#7②）
+        tab.exitDetail = [code, signal].filter(Boolean).join(' ')
+        setTabStatus(sid, t('status.exitedWith', { detail: tab.exitDetail }), '')
         renderConnbar()
         refreshTabDot(sid)
-        showTabOverlay(tab, t('status.exited'), t('btn.clickReopen'), 'exited')
+        // #7①：退出态**不铺遮罩**（只读保留的输出要能读、能选中复制）。面板标签的退出态
+        // 由顶部提示条表达；嵌入终端没有那条条，仍由遮罩承载「点击重新执行」。
+        showTabOverlay(tab, '')
+        applyExitBar()
+        // 「⋯」的出现条件里有「面板里有已退出的标签」这一条（#7③），退出帧必须重算它——
+        // 标签栏本身只更新了状态点（refreshTabDot），不会走到 renderTabbar 里的那次重算
+        syncTabOverflow()
         syncEntryBadge() // 最小化时徽标计数同步减少
+        refreshDockCount()
         persistTabs() // 已退出的标签不再持久化
       }
     } else if (msg.t === 'stats') {
@@ -7567,7 +7876,7 @@ function openModal() {
     '<div class="tt_work">' +
     // 状态条（0.17.0）与终端容器同级：绝对定位在 body 顶部，显隐只改 .tt_term 的
     // top 偏移——不能塞进 .tt_term 里，否则 FitAddon 会把条高算进行数
-    '<div class="tt_body"><div class="tt_statsBar" hidden></div><button type="button" class="tt_assistBadge" hidden><span class="tt_assistDot"></span><span class="tt_assistBadgeText"></span></button><div class="tt_overlay"></div></div>' +
+    '<div class="tt_body"><div class="tt_statsBar" hidden></div><div class="tt_exitBar" hidden></div><button type="button" class="tt_assistBadge" hidden><span class="tt_assistDot"></span><span class="tt_assistBadgeText"></span></button><div class="tt_overlay"></div></div>' +
     '</div>' +
     '</div>'
   document.body.appendChild(modalEl)
@@ -7611,6 +7920,8 @@ function openModal() {
   workEl = modalEl.querySelector('.tt_work')
   bodyEl = modalEl.querySelector('.tt_body')
   statsBarEl = modalEl.querySelector('.tt_statsBar')
+  exitBarEl = modalEl.querySelector('.tt_exitBar')
+  exitBarRenderKey = ''
   // 新面板 = 新的（空的）状态条节点：上一份条目引用与数据签名一起作废，下次显示重建
   discardStatsItems()
   statsSubSid = null
@@ -7669,11 +7980,14 @@ function openModal() {
   modalEl.querySelector('.tt_min').addEventListener('click', () => {
     minimizeModal()
   })
+  // ✕ 是破坏性动作（结束全部会话）：有活会话时先问一句（issue #8），见 requestClosePanel
   modalEl.querySelector('.tt_close').addEventListener('click', () => {
-    closeModal()
+    requestClosePanel()
   })
-  // 点空白处 = 最小化而不是关闭：会话保活，随时从悬浮条恢复
+  // 点空白处 = 最小化而不是关闭：会话保活，随时从悬浮条恢复。
+  // 确认层开着时不生效——那时用户面对的是一个待回答的问题，不该被顺手最小化掉。
   modalEl.addEventListener('mousedown', (event) => {
+    if (confirmEl !== null) return
     if (event.target === modalEl) minimizeModal()
   })
   document.addEventListener('keydown', onModalKeydown)
@@ -7699,6 +8013,13 @@ function openModal() {
 }
 
 /** 右下角悬浮条：展示会话数 / 连接状态，点击恢复窗口。 */
+/** 悬浮条上的「运行中 / 总数」：关标签、会话退出、宿主推 agent 会话时都要跟着更新。 */
+function refreshDockCount() {
+  if (dockCountEl === null) return
+  const running = [...tabs.values()].filter((tab) => !tab.exited).length
+  dockCountEl.textContent = tabs.size > 0 ? '· ' + running + '/' + tabs.size : ''
+}
+
 function buildDock() {
   dockEl = document.createElement('div')
   dockEl.className = 'tt_dock'
@@ -7711,15 +8032,14 @@ function buildDock() {
   dockCountEl = dockEl.querySelector('.tt_dockCount')
   dockStatusEl = dockEl.querySelector('.tt_dockStatus')
   dockDotEl = dockEl.querySelector('.tt_dockDot')
-  const running = [...tabs.values()].filter((tab) => !tab.exited).length
-  dockCountEl.textContent = tabs.size > 0 ? '· ' + running + '/' + tabs.size : ''
+  refreshDockCount()
   // 快照当前状态（此后 setStatus 会持续同步）
   if (statusEl !== null) dockStatusEl.textContent = statusEl.textContent
   if (statusDotEl !== null) dockDotEl.dataset.state = statusDotEl.dataset.state ?? ''
   dockEl.addEventListener('click', (event) => {
     if (event.target.closest('.tt_dockClose') !== null) {
       event.stopPropagation()
-      closeModal()
+      requestClosePanel()
       return
     }
     restoreModal()
@@ -7815,6 +8135,9 @@ function restoreModal() {
   ensureStatsStaleTimer() // 与 minimizeModal 成对（0.19.0）：恢复时重新起陈旧检测
   syncStatsSubscription()
   applyStatsBar()
+  // 退出提示条：最小化期间到达的 exit 帧 / agent 释放事件已经改过它的显隐（那时 fit 被
+  // refitActiveTab 的 minimized 守卫跳过），这里恢复时补一次几何重算
+  applyExitBar()
   const tab = activeTab()
   if (tab !== undefined && tab.fit !== undefined) {
     try {
@@ -7827,8 +8150,136 @@ function restoreModal() {
   if (tab !== undefined && tab.term !== null) tab.term.focus()
 }
 
+/**
+ * 关面板前的守卫（D98 / issue #8）：✕ 与悬浮条 ✕ 的入口都走这里。
+ *
+ * 判据是「这一下会结束几条**活会话**」（纯模块 `close-guard.js`），不是「开了几个标签」：
+ * 一条正在跑命令的会话也值得拦一下，而空面板 / 只剩只读保留时弹框纯属噪音。
+ * 说「只是想收起」的出路写在确认文案里（点「—」最小化，会话保持运行）——这是用户
+ * 真正需要的那个动作，比一句「确定吗」有用。
+ */
+function requestClosePanel() {
+  const summary = closePanelSummary(tabs.values())
+  if (!summary.confirm) {
+    closeModal()
+    return
+  }
+  // 悬浮条上的 ✕ 也能走到这里，而确认层长在面板卡片里（最小化时整卡片 display:none）：
+  // 先把面板恢复出来，否则确认框打开在看不见的地方
+  if (minimized) restoreModal()
+  openCloseConfirm(summary)
+}
+
+/** 关掉确认层（不改面板状态）；焦点还给打开它的那颗按钮。 */
+function closeCloseConfirm() {
+  if (confirmEl === null) return
+  confirmEl.remove()
+  confirmEl = null
+  const back = confirmReturnFocus
+  confirmReturnFocus = null
+  if (back !== null && typeof back.focus === 'function') {
+    try {
+      back.focus()
+    } catch {
+      /* 元素可能已经不在了 */
+    }
+  }
+}
+
+/**
+ * 渲染确认层。挂在 `.tt_modal` 里（不是 backdrop）——这样点它不会命中
+ * 「点空白处 = 最小化」那条 backdrop 处理器，也不会被 backdrop 的滚动/尺寸变化影响。
+ *
+ * 文案与「确定」的落点由 `spec` 给（0.29.0 起两处调用：关面板、批量关标签）——
+ * 破坏性确认只留这一层，别长出第二套手感。
+ */
+function openConfirmCard(spec) {
+  if (modalEl === null) return
+  closeCloseConfirm()
+  const card = modalEl.querySelector('.tt_modal')
+  if (card === null) return
+  const host = document.createElement('div')
+  host.className = 'tt_confirmLayer'
+  host.innerHTML =
+    '<div class="tt_confirmCard" role="dialog" aria-modal="true">' +
+    '<div class="tt_confirmTitle"></div>' +
+    '<div class="tt_confirmText"></div>' +
+    '<div class="tt_confirmHint"></div>' +
+    '<div class="tt_confirmActions">' +
+    '<button type="button" class="tt_toolBtn tt_confirmCancel"></button>' +
+    // 第三颗按钮（可选）：这次的错点往往不是「结束」，而是「想收起来」——把它放到手边
+    (spec.minimize === true ? '<button type="button" class="tt_toolBtn tt_confirmMin"></button>' : '') +
+    '<button type="button" class="tt_toolBtn tt_btnDanger tt_confirmOk"></button>' +
+    '</div>' +
+    '</div>'
+  host.querySelector('.tt_confirmTitle').textContent = spec.title
+  host.querySelector('.tt_confirmText').textContent = spec.text
+  host.querySelector('.tt_confirmHint').textContent = spec.hint
+  const cancel = host.querySelector('.tt_confirmCancel')
+  cancel.textContent = t('btn.cancel')
+  cancel.addEventListener('click', () => closeCloseConfirm())
+  if (spec.minimize === true) {
+    /*
+     * 「最小化」**只能接 `minimizeModal`**。接成 `closeModal` 就把这颗安全出路变成了
+     * 破坏按钮（结束全部会话）——而它出现在这里，正是因为用户点 ✕ 时本来就分不清
+     * ✕ 与「—」（issue #8）。preview 的 `close-confirm` 有一条断言专门钉这件事
+     * （把落点改成 closeModal 即红）。
+     * 普通 `tt_toolBtn`、不给 danger 配方：三颗按钮里只有「结束」是红的，
+     * 一次点错的代价不该被视觉抹平。
+     */
+    const min = host.querySelector('.tt_confirmMin')
+    min.textContent = t('btn.minimize')
+    min.addEventListener('click', () => {
+      closeCloseConfirm()
+      minimizeModal()
+    })
+  }
+  const ok = host.querySelector('.tt_confirmOk')
+  ok.textContent = spec.okLabel
+  ok.addEventListener('click', () => {
+    closeCloseConfirm()
+    spec.onOk()
+  })
+  /*
+   * 点层内空白 = 取消（对话框的常规手感；也就多一条不按「取消」也能退出来的路）。
+   * 判据是 `event.target === host`：点卡片任意位置都不算。
+   *
+   * 这一层**盖住整个视口**而不是只盖面板卡片——`.tt_modal` 是 static，绝对定位的包含块
+   * 落在 `position:fixed` 的 `.tt_modalBackdrop` 上。这是我们要的：确认期间下面任何东西
+   * （标签栏、✕、「—」、终端）都不该被点到。
+   */
+  host.addEventListener('mousedown', (event) => {
+    if (event.target === host) closeCloseConfirm()
+  })
+  confirmReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  card.appendChild(host)
+  confirmEl = host
+  // 焦点落在「取消」上（不是破坏性那颗）：回车不该顺手结束所有会话
+  try {
+    cancel.focus()
+  } catch {
+    /* 忽略 */
+  }
+}
+
+/** 关面板那条：文案与判据在 `close-guard.js`（D98），落点是把整个面板收掉。 */
+function openCloseConfirm(summary) {
+  openConfirmCard({
+    title: t('confirm.closeTitle', { n: String(summary.live) }),
+    text: summary.agentLive > 0
+      ? t('confirm.closeTextAgent', { n: String(summary.live), agent: String(summary.agentLive) })
+      : t('confirm.closeText', { n: String(summary.live) }),
+    hint: t('confirm.closeHint'),
+    okLabel: t('confirm.closeOk', { n: String(summary.live) }),
+    onOk: closeModal,
+    // 第三颗按钮（见 openConfirmCard）：这次错点的往往不是「结束」，而是「想收起来」
+    minimize: true,
+  })
+}
+
 function closeModal() {
   if (modalEl === null) return
+  closeCloseConfirm()
   // 面板被收掉：先通知 pane 的消费者清理自己的界面（React root 等），再摘 DOM
   teardownDockPane(true)
   // 还有嵌入终端（如 dsh-docker 抽屉里的那个）在跑时：连接不能断，也不能标成
@@ -7907,6 +8358,8 @@ function closeModal() {
   statsBarEl = null
   discardStatsItems()
   statsSubSid = null
+  exitBarEl = null
+  exitBarRenderKey = ''
   bodyEl = null
   bodyOverlayEl = null
   searchInputEl = null
@@ -7922,7 +8375,12 @@ function closeModal() {
 function onModalKeydown(event) {
   if (event.key === 'Escape' && modalEl !== null) {
     event.preventDefault()
-    // Esc 优先关浮层（SFTP 浏览 / SSH 对话框 /「+」菜单），再最小化（会话保活）；✕ 才真正关闭
+    // Esc 优先关浮层（关面板确认 / SFTP 浏览 / SSH 对话框 /「+」菜单），再最小化（会话保活）；
+    // ✕ 才真正关闭
+    if (confirmEl !== null) {
+      closeCloseConfirm()
+      return
+    }
     if (sftpDialogEl !== null) {
       closeSftpDialog()
       return
@@ -10086,7 +10544,7 @@ function TtySettingsCard(props) {
             const existing = findReusableTab(spawnSpec)
             if (existing !== null) {
               ensureModalVisible()
-              switchTab(existing.sid)
+              switchTab(existing.sid, { user: true })
               return existing
             }
           }

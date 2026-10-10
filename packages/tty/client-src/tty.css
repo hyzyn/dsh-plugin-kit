@@ -37,6 +37,8 @@
   --tt-h-lg: 32px;
   /* 服务器状态条高度：显隐时 .tt_term 的 top 跟着让位（JS 负责 fit 重算） */
   --tt-statsbar-h: 24px;
+  /* 退出提示条高度（issue #7①②）：里面有一颗 28px 的按钮，比状态条高一档 */
+  --tt-exitbar-h: 32px;
   /* 间距 */
   --tt-gap-xs: 4px;
   --tt-gap-sm: 6px;
@@ -126,6 +128,10 @@
   --tt-term-stats-label: rgba(255, 255, 255, .5);
   --tt-term-stats-value: rgba(255, 255, 255, .86);
   --tt-term-stats-track: rgba(255, 255, 255, .14);
+  /* 退出提示条（issue #7①）：终端域固定深色，与状态条同族的浅白系 */
+  --tt-term-exit-bg: rgba(255, 255, 255, .06);
+  --tt-term-exit-border: rgba(255, 255, 255, .10);
+  --tt-term-exit-fg: rgba(255, 255, 255, .86);
   --tt-term-overlay: rgba(6, 9, 15, .58);
   --tt-term-card-bg: rgba(18, 22, 31, .92);
   --tt-term-card-border: rgba(255, 255, 255, .12);
@@ -1381,6 +1387,123 @@
   font-size: 12px;
   line-height: 18px;
   font-weight: 500;
+}
+
+/* ======================= 退出提示条（D96 / issue #7①②） ======================= */
+
+/*
+ * 退出态**不再铺满遮罩**：那层 inset:0 + 半透明底 + 模糊 + 整块可点，把 AI 跑出来的结果
+ * 压在下面（用户上报：得去 F12 把 `.tt_overlay` 藏掉才看得清），而且整块吃点击——
+ * 连选中复制都做不到。改成本条：一行「已退出 / AI 已结束该会话」+ 最多一颗动作按钮。
+ *
+ * 几何与状态条同一套：绝对定位在 .tt_body 顶部，显隐只把 .tt_term 的 top 往下推
+ * （JS 在显隐翻转时重跑 fit，见 client-src 的 applyExitBar / refitActiveTab）。
+ * 两条同时可见时叠着放：状态条在上、退出条在下，.tt_term 让出两者之和。
+ */
+.tt_body[data-exited] .tt_term {
+  top: var(--tt-exitbar-h);
+}
+.tt_body[data-stats] .tt_exitBar {
+  top: var(--tt-statsbar-h);
+}
+.tt_body[data-stats][data-exited] .tt_term {
+  top: calc(var(--tt-statsbar-h) + var(--tt-exitbar-h));
+}
+.tt_exitBar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 4; /* 与状态条同级：高于 .tt_term(1)、低于 .tt_overlay(5) */
+  display: flex;
+  align-items: center;
+  gap: var(--tt-gap-md);
+  height: var(--tt-exitbar-h);
+  padding: 0 var(--tt-gap-lg);
+  border-bottom: 0.5px solid var(--tt-term-exit-border);
+  color: var(--tt-term-exit-fg);
+  background: var(--tt-term-exit-bg);
+  font-size: 12px;
+  line-height: 18px;
+}
+/*
+ * 显式兜底：上面的 display:flex 是作者样式，而 [hidden] 的 display:none 来自 UA 表——
+ * 老引擎 / 内嵌 WebView 不保证，残留的 32px 会盖住终端第一行（与状态条同款处理）。
+ */
+.tt_exitBar[hidden] {
+  display: none;
+}
+.tt_exitBarText {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 把按钮推到右端：条窄的时候文字先省略，别把按钮挤出可视区 */
+.tt_exitBarSpacer {
+  flex: 1 1 auto;
+}
+.tt_exitBarBtn {
+  flex: none;
+}
+
+/* ======================= 关面板确认（D98 / issue #8） ======================= */
+
+/*
+ * ✕ 是破坏性动作（结束全部会话）。有活会话时先问一句，判据见 client-src/close-guard.js。
+ *
+ * 层挂在 .tt_modal 里而不是 backdrop 上：backdrop 那层带着「点空白处 = 最小化」，
+ * 挂在里面才能保证确认层面前的点击都不会被那条顺手吃掉。卡片按高层级表面写
+ * （表面色 + elevation、不配中性 border，检查八），按钮复用面板的按钮族
+ * （次要 = .tt_toolBtn，破坏性 = .tt_toolBtn.tt_btnDanger，检查十一）。
+ */
+.tt_confirmLayer {
+  position: absolute;
+  inset: 0;
+  z-index: 6; /* 高于标签遮罩(5)：确认层上不该再叠别的动作卡片 */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--tt-gap-xl);
+  background: var(--tt-term-overlay);
+  -webkit-backdrop-filter: blur(1.5px);
+  backdrop-filter: blur(1.5px);
+}
+.tt_confirmCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tt-gap-sm);
+  width: min(380px, 92%);
+  padding: var(--tt-gap-xl);
+  border-radius: var(--tt-r-xl);
+  color: var(--tt-label);
+  background-color: var(--tt-surface-solid);
+  background-image: linear-gradient(var(--tt-surface), var(--tt-surface));
+  box-shadow: var(--dsw-elevation-prominent);
+  animation: ttModalIn .18s var(--tt-ease);
+}
+.tt_confirmTitle {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+}
+.tt_confirmText {
+  color: var(--tt-label-2);
+  font-size: 13px;
+  line-height: 20px;
+}
+.tt_confirmHint {
+  color: var(--tt-label-3);
+  font-size: 12px;
+  line-height: 18px;
+}
+.tt_confirmActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--tt-gap-md);
+  margin-top: var(--tt-gap-sm);
 }
 
 /* ======================= 最小化悬浮条 ======================= */

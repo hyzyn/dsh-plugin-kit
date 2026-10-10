@@ -67,3 +67,58 @@ export function liveSessionSids(list) {
   }
   return sids
 }
+
+/**
+ * 一帧 `sessions` 的三张表（D97 / #7④：agent 标签的生命周期判据）。
+ *
+ * D85 那两张判据回答的是「这条还活着吗」；这里多出的 `present` 回答的是**另一个**问题：
+ * 「宿主表里还有这一条吗」。两者必须分开——只读保留态（`exited: true`）**在表里、不活着**，
+ * 而宿主显式退役（agent 的 `tty_close` / `tty_run` 收尾 / 上限淘汰 / 宿主重启）之后它
+ * **连表都不在**。把后者也当成「活着与否」的另一个取值，就会把「AI 说用完了」和
+ * 「这条还能读」混成一件事（前者该收标签、后者该留标签）。
+ *
+ * @param list - 宿主 `sessions` 帧的 `list` 字段（形态不对时三张表都空）。
+ * @returns {{ present: Set<string>, retained: Set<string>, live: Set<string> }}
+ */
+export function sessionFrameIndex(list) {
+  const present = new Set()
+  const retained = new Set()
+  const live = new Set()
+  if (!Array.isArray(list)) return { present, retained, live }
+  for (const entry of list) {
+    if (entry === null || typeof entry !== 'object') continue
+    const sid = typeof entry.sid === 'string' ? entry.sid : ''
+    if (sid === '') continue
+    present.add(sid)
+    if (entry.exited === true) retained.add(sid)
+    else live.add(sid)
+  }
+  return { present, retained, live }
+}
+
+/**
+ * agent 标签的处置（D97 / #7④）——**标签生命周期 = 会话生命周期**：
+ *
+ * - `'remove'`     宿主表里已经没有这条会话（agent 显式释放 / 上限淘汰 / 宿主重启）。
+ *                  会话都没了，标签跟着走；上限淘汰与宿主重启也落在这里是**有意为之**：
+ *                  那两种情况输出在宿主侧同样已经不可达。
+ * - `'mark-exited'` 仍在只读保留里（D77：进程退出但输出还能读）→ 标签留着、可读。
+ * - `'keep'`       活着，或这条标签不归 agent（用户自己开的标签不归这条规则管）。
+ *
+ * 非 agent 标签一律 `'keep'`：用户的标签只由用户关。
+ *
+ * @param tab - { sid, agentOwned } 形态的最小对象（客户端标签的子集）。
+ * @param index - `sessionFrameIndex()` 的结果。
+ * @returns {'remove' | 'mark-exited' | 'keep'}
+ */
+export function agentTabDisposition(tab, index) {
+  if (tab === null || typeof tab !== 'object') return 'keep'
+  if (tab.agentOwned !== true) return 'keep'
+  // 嵌入终端挂在消费方（dsh-docker 抽屉）自己手里：它的收尾归 `dispose()` / 抽屉关闭，
+  // 不归面板这条扫描（真实标签不会同时是 embedded 与 agentOwned，这层是防误收）
+  if (tab.embedded === true) return 'keep'
+  const sid = typeof tab.sid === 'string' ? tab.sid : ''
+  if (sid === '' || index === null || typeof index !== 'object') return 'keep'
+  if (!index.present.has(sid)) return 'remove'
+  return index.retained.has(sid) ? 'mark-exited' : 'keep'
+}

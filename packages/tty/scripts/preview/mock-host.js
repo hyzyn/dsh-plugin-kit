@@ -443,6 +443,11 @@
   window.__mockSockets = []
   window.__mockLog = []
   window.__mockFrames = []
+  /**
+   * 宿主侧会话表的只读快照：预览场景要自己造 `sessions` 帧时用它当基准（#7④ 要逐帧改变
+   * 清单——先有这条 agent 会话、下一帧它出表）。返回副本：场景改它不该影响宿主。
+   */
+  window.__mockSessionList = () => SESSIONS.map((entry) => ({ ...entry }))
   window.WebSocket = MockSocket
 
   /* ---------- module loader ---------- */
