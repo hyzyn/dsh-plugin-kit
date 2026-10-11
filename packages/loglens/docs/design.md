@@ -159,6 +159,9 @@
   字段 `/loki/api/v1/label` + `/label/<name>/values`。多租户 `X-Scope-OrgID`。
   跟随 `/loki/api/v1/tail`（**WebSocket**，不是 SSE），需 `ws`（`tty` 已有先例，按 architecture §3 在 README 写理由）。
 - **ES + OpenSearch（P4）**：`POST /<index>/_search`，`sort` 按 `@timestamp` 降序；深分页 PIT + `search_after`；
+  **版本差异已实测并适配**（2026-10-11 在一台 7.10.2 上）：PIT 的响应键 7.10 是 `pit_id`（7.12+ 才是 `id`）、
+  7.10 / 7.11 **没有 `_shard_doc`**（退到 `_id`，按目标记住探测结果），且这类失败在 7.10 上是
+  **HTTP 200 + `_shards.failed` + 空 hits**；
   字段 `_field_caps` / `_cat/indices`。方言差异进 `capabilities()`（OS 的 PPL / SQL / tenant；
   ES 8.11+ 的 ES|QL）。认证统一 Basic / `Authorization: ApiKey`。
 - **Docker（P5）**：按选项 0；契约上它是退化 `LogBackend`（`queryLanguage:'none'`、`fields:'fixed'`）。

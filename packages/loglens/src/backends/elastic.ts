@@ -252,8 +252,25 @@ export function lineFromHit(hit: EsHit): LogLine | undefined {
   }
 }
 
+/**
+ * 分页的 tiebreaker。
+ *
+ * _shard_doc 是 **7.12 起**才有的特殊排序字段；7.10 / 7.11 上它会被当成普通字段，回
+ * 「No mapping found for [_shard_doc]」（2026-10-11 在真实的 7.10.2 上实测）。那时候退到 _id：
+ * 它是真字段、可排序（同一台机器上实测可用），能保证 search_after 有确定的全序。
+ */
+type Tiebreaker = '_shard_doc' | '_id'
+
+/** 这是不是「这台 ES 不认识 _shard_doc」。 */
+export function looksLikeMissingShardDoc(failure: { status: number; text: string; body: unknown }): boolean {
+  const haystack = (failure.text + ' ' + JSON.stringify(failure.body === undefined ? {} : failure.body)).toLowerCase()
+  return haystack.includes('_shard_doc') && haystack.includes('no mapping found')
+}
+
 export function createElasticBackend(options: ElasticOptions): LogBackend {
   const flavor = options.flavor
+  /** 按目标记住这台 ES 的 tiebreaker 探测结果：第一次吃到「不认识 _shard_doc」就换 _id，之后不再白试。 */
+  const tiebreakerByTarget = new Map<string, Tiebreaker>()
   const prefix = flavor === 'os' ? '[opensearch] ' : '[elasticsearch] '
   const fetchImpl = options.fetchImpl === undefined ? fetch : options.fetchImpl
   const timeoutMs = options.timeoutMs === undefined ? ES_TIMEOUT_MS : options.timeoutMs
@@ -264,8 +281,16 @@ export function createElasticBackend(options: ElasticOptions): LogBackend {
   async function openPit(access: { url: string; headers: Record<string, string> }, index: string): Promise<string> {
     const url = joinUrl(access.url, '/' + index + '/_pit') + '?keep_alive=' + keepAlive
     const body = await requestJson(fetchImpl, url, { method: 'POST', headers: access.headers }, timeoutMs, prefix)
-    const id = (body as { id?: unknown }).id
-    if (typeof id !== 'string' || id === '') throw new Error(prefix + '打开 PIT 没拿到 id（这一版的分页依赖 PIT）')
+    /*
+     * PIT 的响应键随版本改过名：**7.10 是 pit_id**，7.12+ 才是 id（2026-10-11 在一台真实的 7.10.2 上实测：
+     * 打开 PIT 回的是 {"pit_id": "..."}，而我只读 id → 报「没拿到 id」）。两个都认，别按版本号分支——
+     * 这条请求本来就把答案带着回来了。
+     */
+    const raw = body as { id?: unknown; pit_id?: unknown }
+    const id = typeof raw.id === 'string' && raw.id !== '' ? raw.id : raw.pit_id
+    if (typeof id !== 'string' || id === '') {
+      throw new Error(prefix + '打开 PIT 没拿到 id（这一版的分页依赖 PIT；响应里既没有 id 也没有 pit_id）')
+    }
     return id
   }
 
@@ -352,33 +377,63 @@ export function createElasticBackend(options: ElasticOptions): LogBackend {
       const conditions: Array<Record<string, unknown>> = [
         { range: { [ES_TIME_FIELD]: { gte: isoOf(query.from), lte: isoOf(query.to) } } },
       ]
+      const tiebreaker: Tiebreaker = tiebreakerByTarget.get(target.url) === undefined
+        ? '_shard_doc'
+        : (tiebreakerByTarget.get(target.url) as Tiebreaker)
       const must = query.q === '' ? [{ match_all: {} }] : [{ query_string: { query: query.q } }]
       const body: Record<string, unknown> = {
         size: query.limit,
         // 显式打开：要报精确命中数就得付这个代价（设计 §3.2 的归属）
         track_total_hits: true,
         query: { bool: { must, filter: conditions } },
-        sort: [{ [ES_TIME_FIELD]: { order, unmapped_type: 'date' } }, { _shard_doc: order }],
+        sort: [{ [ES_TIME_FIELD]: { order, unmapped_type: 'date' } }, { [tiebreaker]: order }],
         pit: { id: pitId, keep_alive: keepAlive },
       }
       if (cursor !== undefined) body.search_after = cursor.searchAfter
 
+      const runSearch = async (): Promise<unknown> => requestJson(fetchImpl, joinUrl(access.url, '/_search'), {
+        method: 'POST',
+        headers: { ...access.headers, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }, timeoutMs, prefix)
+
       let payload: unknown
       try {
-        payload = await requestJson(fetchImpl, joinUrl(access.url, '/_search'), {
-          method: 'POST',
-          headers: { ...access.headers, 'content-type': 'application/json' },
-          body: JSON.stringify(body),
-        }, timeoutMs, prefix)
+        payload = await runSearch()
       } catch (error) {
-        if (error instanceof ElasticHttpError && looksLikeExpiredCursor(error)) {
+        // 7.10 / 7.11 不认识 _shard_doc：换成 _id 再来一次，并把这台 ES 的选择记住
+        if (error instanceof ElasticHttpError && tiebreaker === '_shard_doc' && looksLikeMissingShardDoc(error)) {
+          tiebreakerByTarget.set(target.url, '_id')
+          body.sort = [{ [ES_TIME_FIELD]: { order, unmapped_type: 'date' } }, { _id: order }]
+          payload = await runSearch()
+        } else if (error instanceof ElasticHttpError && looksLikeExpiredCursor(error)) {
           return {
             lines: [],
             counts: countsOf({ returned: 0 }),
             truncation: truncationOf({ cursorExpired: true }),
           }
+        } else {
+          throw error
         }
-        throw error
+      }
+
+      /*
+       * 7.10 的 `_shard_doc` 失败**不是 4xx**：ES 回 200 + `_shards.failed` + 空 hits（默认
+       * allow_partial_search_results）。所以除了上面那条 catch，这里还要看响应体：失败原因里点着
+       * `_shard_doc` + `No mapping found` 就说明这台的 tiebreaker 该换 `_id`，重来一次并记住。
+       * （2026-10-11 在真实的 7.10.2 上实测：第一次 200 但 hits 空、_shards.failed>0；换成 _id 后
+       * 命中数、分片失败 0。）
+       */
+      if (tiebreaker === '_shard_doc') {
+        const shards = (payload as { _shards?: unknown })._shards
+        const failedShards = typeof shards === 'object' && shards !== null && typeof (shards as { failed?: unknown }).failed === 'number'
+          ? (shards as { failed: number }).failed
+          : 0
+        if (failedShards > 0 && looksLikeMissingShardDoc({ status: 200, text: '', body: shards })) {
+          tiebreakerByTarget.set(target.url, '_id')
+          body.sort = [{ [ES_TIME_FIELD]: { order, unmapped_type: 'date' } }, { _id: order }]
+          payload = await runSearch()
+        }
       }
 
       const root = payload as { hits?: { hits?: unknown; total?: unknown }; timed_out?: unknown; _shards?: { failed?: unknown } }

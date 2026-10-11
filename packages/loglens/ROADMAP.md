@@ -639,3 +639,24 @@ package.json 中以 platform: 'web' 声明 dsh.client，导出 ./client bundle�
 **一处连带发现**：宿主侧对**包元数据**的缓存是「按 Loader specifier 与 tree base URL 缓存至重启」——
 所以修完 manifest 后，那个**已经在跑**的宿主仍然认旧元数据，要**重启**（或让插件条目重新标脏）才会把
 客户端半体算进启动图。这条对「改完想看效果」的人很重要，记在这里。
+### 真机验收（用户环境）：ES 7.10 的三处差异（2026-10-11）
+
+用户拿一台 **Elasticsearch 7.10.2**（INFINI Labs 那套发行版）当来源，第一次查询直接报
+「[elasticsearch] 打开 PIT 没拿到 id」。逐条打那台机器后确认三件事，全部已修并配了用例
+（[test/elastic-710.test.ts](../loglens/test/elastic-710.test.ts)）：
+
+| 差异 | 7.10 的实际行为 | 适配器怎么改 |
+|---|---|---|
+| PIT 响应键 | `{"pit_id": "..."}`（7.12+ 才改叫 `id`） | 两个键都认 |
+| `_shard_doc` | **不存在**：回「No mapping found for [_shard_doc]」 | 退到 `_id`（真字段、可排序），**按目标记住**这次探测，之后不再白试 |
+| 失败的表现 | `_shard_doc` 那次的失败是 **HTTP 200 + `_shards.failed` + 空 hits**（不是 4xx） | 除了 catch 异常，还看响应体里的失败原因 |
+
+**真机验收结果**（用修好的适配器直接打用户那台 ES，只读）：
+
+    counts: {"returned":3,"totalKnown":true,"matched":24588}
+    truncation: {"truncated":true,"reasons":["hit_limit"]}   nextCursor: 有
+    第二页: 3 行 ✓
+
+`track_total_hits` 在这台上给的是**精确值**（`relation === "eq"`），所以 `totalKnown: true`；
+时间字段是 `@timestamp`（`app-logs-*` 的映射里就有）。**索引表达式写在来源地址的路径里**最好
+（不写会用 `*` 扫全部索引，包括 `.infini_*` 这类内部索引——又慢又噪）。

@@ -70,6 +70,12 @@ export declare function looksLikeExpiredCursor(failure: {
 export declare function isoOf(ms: number): string;
 /** 一行文档 → LogLine。**时间解析不出来的行直接跳过**（它没法被 loglens_context 重查回来）。 */
 export declare function lineFromHit(hit: EsHit): LogLine | undefined;
+/** 这是不是「这台 ES 不认识 _shard_doc」。 */
+export declare function looksLikeMissingShardDoc(failure: {
+    status: number;
+    text: string;
+    body: unknown;
+}): boolean;
 export declare function createElasticBackend(options: ElasticOptions): LogBackend;
 /** 进程内共用的两个实例（无状态，配置都在调用参数里）。 */
 export declare const elasticsearchBackend: LogBackend;

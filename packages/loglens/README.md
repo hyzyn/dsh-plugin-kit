@@ -58,7 +58,7 @@ curl -s -X POST http://127.0.0.1:3080/api/dsh-loglens/config -H 'content-type: a
 | 类型 | 地址 | 说明 |
 |---|---|---|
 | `loki` | `http://127.0.0.1:3100` | 可以带网关前缀（如 `https://gw.example/loki`）；查询走 `/loki/api/v1/query_range` |
-| `elasticsearch` / `opensearch` | `http://user:pass@127.0.0.1:9200/logs-*` | **路径部分是索引表达式**（不写就用 `*`）；凭据换成 Basic 头、不进 URL；分页走 PIT + `search_after` |
+| `elasticsearch` / `opensearch` | `http://user:pass@127.0.0.1:9200/logs-*` | **路径部分是索引表达式**（**建议写上**，如 `…/app-logs-*`；不写会用 `*` 扫全部索引）；凭据换成 Basic 头、不进 URL；分页走 PIT + `search_after`；**ES 7.10 / 7.11 也已适配**（PIT 键名与 `_shard_doc` 的差异见 [ROADMAP](./ROADMAP.md)） |
 | `docker` | 第三格填 **Docker 面板里的目标名**（如 `local`），**不是** URL | 采集来源（设计里的「选项 0」）：agent 侧用现成的 `docker_logs` / `docker_logs_grep`；面板侧走 Docker 插件自己的 `/api/dsh-docker/logs`（相对路径），弱面：无 `until`、`tail` 有上限、无 grep |
 
 ## 解剖
