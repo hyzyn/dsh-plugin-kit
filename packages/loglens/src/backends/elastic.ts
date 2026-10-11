@@ -39,6 +39,8 @@ export const ES_DEFAULT_MAX_PAGE_SIZE = 500
 export const ES_DEFAULT_MAX_WINDOW_MS = 24 * 60 * 60 * 1000
 /** 单次请求超时。 */
 export const ES_TIMEOUT_MS = 20_000
+/** 探测窗口：probe 时报「最近这么多分钟有多少条」。 */
+export const ES_PROBE_WINDOW_MS = 15 * 60 * 1000
 /** PIT 的保活时长（每次查询都会续）。 */
 export const ES_PIT_KEEP_ALIVE = '2m'
 /** 时间字段：ES 里日志索引的惯例。换索引形态时改这里（日后进配置）。 */
@@ -112,16 +114,32 @@ function joinUrl(base: string, path: string): string {
   return trimmed + path
 }
 
-/** 索引表达式：取地址的路径部分；没写就用通配（ES 8 没有 `_all` 了）。 */
+/**
+ * 默认索引表达式：`*,-.*`（**排除点号索引**）。
+ *
+ * 为什么不是裸 `*`（2026-10-11 真机反馈第 3 条）：一条只写 `http://host:9200` 的来源原本等于
+ * 全集群通配，把 `.kibana_1` / `.infini_*` 这些系统索引也算进来——查询更慢、命中更噪、
+ * 字段表被污染。点号索引是系统索引，不是日志；真要查它就显式写 index。
+ */
+export const ES_DEFAULT_INDEX = '*,-.*'
+
+/**
+ * 索引表达式，按**显式优先**的顺序解析：target.index（配置里写的）→ 地址的路径 → ES_DEFAULT_INDEX。
+ *
+ * 「路径即索引」保留是为了兼容旧配置，但它是一条暗号——所以 loglens_sources 会把**解析结果回显**
+ * （见 scope()），让 agent 不必猜自己正在打哪个范围。
+ */
 export function targetIndex(target: LoglensTarget): string {
+  const explicit = typeof target.index === 'string' ? target.index.trim() : ''
+  if (explicit !== '') return explicit
   try {
     const parsed = new URL(target.url)
     let path = parsed.pathname
     while (path.startsWith('/')) path = path.slice(1)
     while (path.endsWith('/')) path = path.slice(0, -1)
-    return path === '' ? '*' : path
+    return path === '' ? ES_DEFAULT_INDEX : path
   } catch {
-    return '*'
+    return ES_DEFAULT_INDEX
   }
 }
 
@@ -313,6 +331,26 @@ export function createElasticBackend(options: ElasticOptions): LogBackend {
     }
   }
 
+  /** 探测窗口内的条数（_count + 时间范围）。失败就回 undefined——「不知道」不写成 0。 */
+  async function recentCount(
+    target: LoglensTarget,
+    access: { url: string, headers: Record<string, string> },
+  ): Promise<{ windowMs: number, count: number } | undefined> {
+    try {
+      const to = Date.now()
+      const from = to - ES_PROBE_WINDOW_MS
+      const body = await callJson(target, joinUrl(access.url, '/' + targetIndex(target) + '/_count'), {
+        method: 'POST',
+        headers: { ...access.headers, 'content-type': 'application/json' },
+        body: JSON.stringify({ query: { range: { [ES_TIME_FIELD]: { gte: isoOf(from), lte: isoOf(to) } } } }),
+      })
+      const count = (body as { count?: unknown }).count
+      return typeof count === 'number' ? { windowMs: ES_PROBE_WINDOW_MS, count } : undefined
+    } catch {
+      return undefined
+    }
+  }
+
   return {
     id: flavor === 'os' ? 'opensearch' : 'elasticsearch',
 
@@ -362,6 +400,11 @@ export function createElasticBackend(options: ElasticOptions): LogBackend {
       }
     },
 
+    /** 这条来源覆盖的范围（工具面回显用：省得 agent 猜「路径即索引」这条暗号）。 */
+    scope(target: LoglensTarget): string {
+      return targetIndex(target)
+    },
+
     async health(target: LoglensTarget): Promise<BackendHealth> {
       const access = targetAccess(target)
       try {
@@ -383,7 +426,13 @@ export function createElasticBackend(options: ElasticOptions): LogBackend {
         const actual = distribution === undefined ? 'elasticsearch' : distribution
         const mismatch = actual !== (flavor === 'os' ? 'opensearch' : 'elasticsearch')
         // 版本读得到就算活着；distribution 与声明的 flavor 不一致要说出来（方言差异会咬人）
-        return { ok: true, detail: number + '（' + actual + (mismatch ? '：与来源类型不一致，查询方言可能有差异' : '') + '）' }
+        const detail = number + '（' + actual + (mismatch ? '：与来源类型不一致，查询方言可能有差异' : '') + '）'
+        /*
+         * 顺带数一下「最近 15 分钟有多少条」：只回一句「活着」等于没回答「这条来源里有没有我要的数据」
+         * （真机反馈第 3 条）。数不出来（没有权限 / 不是 count 能答的索引）就不写这一格。
+         */
+        const recent = await recentCount(target, access)
+        return recent === undefined ? { ok: true, detail } : { ok: true, detail, recent }
       } catch (error) {
         return { ok: false, detail: error instanceof Error ? error.message : String(error) }
       }

@@ -180,6 +180,27 @@ describe('id 生成', () => {
     expect(closed.ok && closed.config.targets[0].allowPublic).toBeUndefined()
   })
 
+  it('index 只对 ES / OpenSearch 有意义，且不许含空白 / 斜杠 / ? / #', () => {
+    const es = validateTargetInput({ kind: 'elasticsearch', url: 'http://h:9200', index: 'app-logs-*' }, [])
+    expect(es.ok && es.target.index).toBe('app-logs-*')
+    expect(validateTargetInput({ kind: 'elasticsearch', url: 'http://h:9200', index: '*,-.*' }, []).ok).toBe(true)
+    expect(validateTargetInput({ kind: 'loki', url: 'http://h:3100', index: 'x' }, []).ok).toBe(false)
+    const bad = validateTargetInput({ kind: 'elasticsearch', url: 'http://h:9200', index: 'a b/c?d#e' }, [])
+    expect(bad.ok).toBe(false)
+    expect(bad.ok === false ? bad.error : '').toContain('不能含空白')
+  })
+
+  it('改判能写 index 也能清掉它（清掉 = 回到「地址路径 / 默认通配」）', () => {
+    const start = configWith({ kind: 'elasticsearch', label: 'es', url: 'http://h:9200' })
+    const set = updateTarget(start, 'es', { index: 'app-logs-*' })
+    expect(set.ok && set.config.targets[0].index).toBe('app-logs-*')
+    const cleared = updateTarget(set.ok ? set.config : start, 'es', { index: '' })
+    expect(cleared.ok && cleared.config.targets[0].index).toBeUndefined()
+    // 只改 label 时不该把 index 冲掉
+    const kept = updateTarget(set.ok ? set.config : start, 'es', { label: 'ES' })
+    expect(kept.ok && kept.config.targets[0].index).toBe('app-logs-*')
+  })
+
   it('非对象输入拒（数组也算）', () => {
     expect(validateTargetInput([], []).ok).toBe(false)
     expect(validateTargetInput(null, []).ok).toBe(false)

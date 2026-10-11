@@ -135,6 +135,24 @@ describe('loglens_sources', () => {
     expect(value.targets[1].ok).toBeUndefined()
   })
 
+  it('回显范围（scope）与「最近 N 分钟多少条」（recent）——别让 agent 猜自己在打哪个范围', async () => {
+    const { add, captured } = capture()
+    const backend = fakeBackend({
+      scope: () => 'app-logs-*',
+      health: async () => ({ ok: true, detail: '7.10.2', recent: { windowMs: 15 * 60 * 1000, count: 1234 } }),
+    })
+    registerLoglensTools({ config: () => configWith(target('es', 'elasticsearch')), backendFor: () => backend, add })
+    const value = await captured.get('loglens_sources')!.execute({ probe: true }) as { targets: Array<Record<string, unknown>> }
+    expect(value.targets[0].scope).toBe('app-logs-*')
+    expect(value.targets[0].recent).toEqual({ windowMs: 900000, count: 1234 })
+    // 没有 scope 的适配器（Loki）不许凭空造一个
+    const bare = capture()
+    registerLoglensTools({ config: () => configWith(target('loki', 'loki')), backendFor: () => fakeBackend(), add: bare.add })
+    const loki = await bare.captured.get('loglens_sources')!.execute({}) as { targets: Array<Record<string, unknown>> }
+    expect(loki.targets[0].scope).toBeUndefined()
+    expect(loki.targets[0].recent).toBeUndefined()
+  })
+
   it('空清单是空数组，不是错误', async () => {
     const { add, captured } = capture()
     registerLoglensTools({ config: () => configWith(), backendFor: () => undefined, add })

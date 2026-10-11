@@ -38,6 +38,12 @@
 - `BackendCaps`：`queryLanguage`（`logql` / `lucene` / `ppl` / `none`）、`flavor?`、`follow`、
   `aggregations`、`requiresTimeRange`、`fields`（`indexed` / `discovered` / `fixed`）、
   **`pagination`（`cursor` / `offset` / `none`）、`maxPageSize`、`maxWindowMs`**。
+- **来源的「范围」可见**（2026-10-11 真机反馈第 3 条）：ES / OpenSearch 的索引表达式原先**只从地址路径
+  悄悄推出来**，没写路径就落 `*`——一条只写 `http://host:9200` 的来源其实是**全集群通配**，
+  把 `.kibana_1` / `.infini_*` 也算进来（查询更慢、命中更噪、字段表被污染），而 `loglens_sources`
+  只回 URL、agent 无从知道。现在三件事：target 有显式 `index` 字段（优先），
+  默认从 `*` 改成 `*,-.*`（排除点号索引），`scope()` 把**解析结果回显**给工具面；
+  `probe` 顺带回一句「最近 15 分钟 N 条」（只报存活等于没回答「这里有没有我要的数据」）。
 - `NormalizedQuery`：`targetId`（**单数**，v1 一次一源）、`q`、`from` / `to`（**统一 epoch ms**）、
   `limit`、`direction?`、**`cursor?`**（后端私有编码）、`filters?`。
   **入参的写法比契约宽**（2026-10-11 起）：工具面收 epoch 毫秒 / ISO 8601 / 相对时间（`-30m`），

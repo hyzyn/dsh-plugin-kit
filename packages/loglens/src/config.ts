@@ -35,6 +35,18 @@ export interface LoglensTarget {
    * 判据在 src/net.ts，开关跟着来源走，出错文案里会点名这条来源。
    */
   allowPublic?: boolean
+  /**
+   * 只对 ES / OpenSearch 有意义：**索引表达式**（如 `app-logs-*`、`logs-2026.*,-logs-2026.09.*`）。
+   *
+   * 为什么要有它（2026-10-11 真机反馈第 3 条）：原先索引表达式是从**地址的路径**悄悄推出来的，
+   * 没写路径就落 `*`——配置里只写了 `http://host:9200` 的一条来源，其实是**全集群通配**，
+   * 里面混着 grafana / prometheus / filebeat 的索引与 `.kibana_1` / `.infini_*` 一堆系统索引。
+   * 「路径即索引」是条暗号，agent 与人都猜不到；现在它可以显式写在这里，也会被回显出来。
+   *
+   * 留空时的口径（兼容旧配置）：地址里有路径就用路径，没有就用 `*,-.*`（**默认排除点号索引**：
+   * 那是系统索引，不是日志）。
+   */
+  index?: string
 }
 
 export interface LoglensConfig {
@@ -50,6 +62,8 @@ const ID_SHAPE = /^[a-z0-9][a-z0-9-]*$/u
 /** id 总长上限；留 4 个字符给 -2 / -3 这类去重后缀。 */
 const ID_MAX = 48
 const ID_BASE_MAX = ID_MAX - 4
+/** 索引表达式的形态：不许空白 / 斜杠 / ? / #（它是路径段，不是 URL）。 */
+const INDEX_SHAPE = /^[^\s/?#]+$/u
 /** IPv4 字面量判据；别名 / 十进制形态要靠 P4 的 net.ts 在解析之后判。 */
 const IPV4 = /^([0-9]{1,3})[.]([0-9]{1,3})[.]([0-9]{1,3})[.]([0-9]{1,3})$/u
 
@@ -175,6 +189,16 @@ export function validateTargetInput(input: unknown, taken: readonly string[] = [
     // docker 是采集来源：它的日志由 Docker 插件去取，本插件在这里没有任何出站，这个开关没有意义
     return { ok: false, error: 'allowPublic 只对查询类来源有意义（docker 来源没有出站请求）' }
   }
+  const rawIndex = typeof raw.index === 'string' ? raw.index.trim() : ''
+  if (rawIndex !== '' && kind !== 'elasticsearch' && kind !== 'opensearch') {
+    return { ok: false, error: 'index 只对 elasticsearch / opensearch 来源有意义（当前类型是 ' + kind + '）' }
+  }
+  if (rawIndex !== '' && INDEX_SHAPE.test(rawIndex) === false) {
+    return {
+      ok: false,
+      error: 'index 不能含空白 / 斜杠 / ? / #（索引表达式用逗号分隔、可用 * 与 - 前缀排除）：' + rawIndex,
+    }
+  }
   const requested = typeof raw.id === 'string' ? raw.id.trim().toLowerCase() : ''
   const base = requested === ''
     ? slugId(label, slugSourceForUrl(url))
@@ -184,6 +208,7 @@ export function validateTargetInput(input: unknown, taken: readonly string[] = [
   const target: LoglensTarget = { id, kind, label: label === '' ? id : label, url }
   if (rawDockerTarget !== '') target.dockerTarget = rawDockerTarget
   if (allowPublic) target.allowPublic = true
+  if (rawIndex !== '') target.index = rawIndex
   return { ok: true, target }
 }
 
@@ -243,6 +268,7 @@ export function updateTarget(config: LoglensConfig, id: unknown, patch: unknown)
     url: rawPatch.url === undefined ? current.url : rawPatch.url,
     dockerTarget: rawPatch.dockerTarget === undefined ? current.dockerTarget : rawPatch.dockerTarget,
     allowPublic: rawPatch.allowPublic === undefined ? current.allowPublic : rawPatch.allowPublic,
+    index: rawPatch.index === undefined ? current.index : rawPatch.index,
   }
   const others = config.targets.filter((target) => target.id !== current.id).map((target) => target.id)
   const checked = validateTargetInput(merged, others)

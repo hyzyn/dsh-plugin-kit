@@ -18,8 +18,11 @@ export function kindOptions() {
 
 /** 新行的草稿：id 为空表示「还没落盘」，提交走 targets.add。 */
 export function emptyDraft() {
-  return { id: '', kind: DEFAULT_KIND, label: '', url: '', dockerTarget: '', allowPublic: false }
+  return { id: '', kind: DEFAULT_KIND, label: '', url: '', dockerTarget: '', allowPublic: false, index: '' }
 }
+
+/** index 只对 ES / OpenSearch 有意义（其余类型带上它宿主会 400）——判据与宿主 src/config.ts 对齐。 */
+const INDEX_KINDS = ['elasticsearch', 'opensearch']
 
 /** 把宿主返回的一条来源还原成草稿（缺字段一律补成空串，界面里不出现 undefined）。 */
 export function draftFromTarget(target) {
@@ -33,6 +36,7 @@ export function draftFromTarget(target) {
     // 缺字段一律按「没开」：宿主那边的判据是 allowPublic === true，别的值等于没开（别在界面上
     // 显示成勾上了而宿主不认）
     allowPublic: row.allowPublic === true,
+    index: typeof row.index === 'string' ? row.index : '',
   }
 }
 
@@ -79,12 +83,15 @@ export function draftPayload(draft) {
       url: '',
     }
   }
-  return {
+  const payload = {
     kind,
     label: String(draft.label == null ? '' : draft.label).trim(),
     url: String(draft.url == null ? '' : draft.url).trim(),
     allowPublic: draft.allowPublic === true,
   }
+  // 索引表达式只对 ES / OpenSearch 发（其余类型带上它宿主会 400）。空串也发：清空要能真的清掉。
+  if (INDEX_KINDS.indexOf(kind) !== -1) payload.index = String(draft.index == null ? '' : draft.index).trim()
+  return payload
 }
 
 /* ============================ 查询表单（P6 面板侧） ============================ */

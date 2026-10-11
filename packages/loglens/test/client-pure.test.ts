@@ -31,13 +31,23 @@ describe('draft 形状', () => {
   })
 
   it('emptyDraft 是「还没落盘」的新行', () => {
-    expect(emptyDraft()).toEqual({ id: '', kind: 'loki', label: '', url: '', dockerTarget: '', allowPublic: false })
+    expect(emptyDraft()).toEqual({ id: '', kind: 'loki', label: '', url: '', dockerTarget: '', allowPublic: false, index: '' })
+  })
+
+  it('index 只在 ES / OpenSearch 的载荷里出现（其余类型带上它宿主会 400）', () => {
+    const es = draftPayload({ kind: 'elasticsearch', url: 'http://h:9200', index: '  app-logs-*  ' })
+    expect(es.index).toBe('app-logs-*')
+    expect(draftPayload({ kind: 'opensearch', url: 'http://h:9200' }).index).toBe('')
+    expect('index' in draftPayload({ kind: 'loki', url: 'http://h:3100' })).toBe(false)
+    expect('index' in draftPayload({ kind: 'docker' })).toBe(false)
+    expect(draftFromTarget({ kind: 'elasticsearch', index: 'logs-*' }).index).toBe('logs-*')
+    expect(draftFromTarget({ kind: 'elasticsearch' }).index).toBe('')
   })
 
   it('draftFromTarget 缺字段补空串、未知类型回落 loki', () => {
-    expect(draftFromTarget(undefined)).toEqual({ id: '', kind: 'loki', label: '', url: '', dockerTarget: '', allowPublic: false })
+    expect(draftFromTarget(undefined)).toEqual({ id: '', kind: 'loki', label: '', url: '', dockerTarget: '', allowPublic: false, index: '' })
     expect(draftFromTarget({ id: 'es', kind: 'elasticsearch', label: 'ES', url: 'http://127.0.0.1:9200' }))
-      .toEqual({ id: 'es', kind: 'elasticsearch', label: 'ES', url: 'http://127.0.0.1:9200', dockerTarget: '', allowPublic: false })
+      .toEqual({ id: 'es', kind: 'elasticsearch', label: 'ES', url: 'http://127.0.0.1:9200', dockerTarget: '', allowPublic: false, index: '' })
     // 只有真的 true 才算开了（宿主那边的判据就是严格相等，界面别显示成勾上了而宿主不认）
     expect(draftFromTarget({ id: 'es', kind: 'elasticsearch', allowPublic: true }).allowPublic).toBe(true)
     expect(draftFromTarget({ id: 'es', kind: 'elasticsearch', allowPublic: 'yes' }).allowPublic).toBe(false)

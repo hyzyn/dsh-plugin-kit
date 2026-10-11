@@ -686,6 +686,24 @@ package.json 中以 platform: 'web' 声明 dsh.client，导出 ./client bundle�
 **上游**：设计 §4.1 记的「第二个消费者出现时上收到 kit」**不触发**——两个消费者（Loki / ES）都在本包内。
 真要上收时，`net.ts` 是从 `assertReachable` + `requestJson` 两个导出切出去的。
 
+### 真机反馈第四批：来源的范围要看得见（索引表达式 + 探测条数）（2026-10-11）
+
+第 3 条：索引表达式从**地址路径**悄悄推出来，配置里只写 `http://host:9200` 的一条来源其实是**全集群
+通配**（那台机器上混着 grafana / prometheus / filebeat / easysearch 与 `.kibana_1` / `.infini_*`），
+而 `loglens_sources` 只回 URL、probe 只看存活——agent 只能自己 curl 去问「这台 ES 里到底有什么」。
+
+| 动作 | 落点 |
+|---|---|
+| target 加 **`index`**（只对 ES / OpenSearch；不许含空白 / 斜杠 / `?` / `#`），解析顺序：显式 index → 地址路径 → 默认 | `src/config.ts`（`INDEX_SHAPE`）、`elastic.ts` 的 `targetIndex` |
+| 默认索引从 `*` 改成 **`*,-.*`**：点号索引是系统索引，不是日志（要查它得显式写 index） | `ES_DEFAULT_INDEX` |
+| **回显范围**：适配器加可选 `scope(target)`，sources 行多一格 `scope`（ES 回解析后的索引表达式） | `types.ts` 的 `LogBackend.scope?`、`tools.ts` 的 `SourceRow.scope` |
+| probe 顺带报 **「最近 15 分钟 N 条」**（`_count` + 时间范围；探不到就不写，别拿 0 冒充「没有数据」） | `BackendHealth.recent` + `ES_PROBE_WINDOW_MS` |
+| 面板：ES / OpenSearch 行的地址格里**竖着多一行索引表达式**输入（横着再加一列会把行挤到看不清） | `client-src/index.js` 的 `.ll_stack`；`pure.js` 只在 es/os 的载荷里发 `index`（其余类型带上它宿主会 400） |
+
+用例：`config.test.ts`（index 的取值与拒绝面）、`elastic.test.ts`（`targetIndex` 三条优先顺序 + 请求路径
+变成 `/*,-.*/_pit`）、`tools.test.ts`（scope / recent 回显，且没有 scope 的适配器不许凭空造一个）、
+`client-pure.test.ts`（index 只进 es/os 载荷）、`client-smoke`（索引输入框只出现在 ES 行、保存时进请求体）。
+
 ### 真机反馈第三批：字段清单要带上限与顺序（2026-10-11）
 
 第 4 条：`loglens_fields` 打的是裸的 `/<index>/_field_caps?fields=*`——**没上限、没顺序、不看有没有数据**，

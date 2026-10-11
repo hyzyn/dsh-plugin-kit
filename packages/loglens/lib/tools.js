@@ -106,6 +106,13 @@ export function registerLoglensTools(deps) {
                                 queryLanguage: { type: 'string' },
                                 pagination: { type: 'string' },
                                 follow: { type: 'boolean' },
+                                scope: { type: 'string', description: '这条来源覆盖的范围（ES / OpenSearch 是解析后的索引表达式；默认 *,-.* 表示全局且排除点号索引）' },
+                                recent: {
+                                    type: 'object',
+                                    additionalProperties: false,
+                                    description: 'probe 时数出来的「探测窗口内有多少条」',
+                                    properties: { windowMs: { type: 'number', required: true }, count: { type: 'number', required: true } },
+                                },
                                 ok: { type: 'boolean' },
                                 error: { type: 'string' },
                                 hint: { type: 'string' },
@@ -121,8 +128,12 @@ export function registerLoglensTools(deps) {
                 const text = rows.map((row) => {
                     const head = String(row.id) + '（' + String(row.kind) + '）：' + String(row.label);
                     const health = row.ok === undefined ? '' : row.ok === true ? ' · 就绪' : ' · 不可用：' + String(row.error ?? '');
+                    const recent = row.recent === undefined || typeof row.recent !== 'object'
+                        ? ''
+                        : '，最近 ' + String(Math.round(row.recent.windowMs / 60000)) + ' 分钟 ' + String(row.recent.count) + ' 条';
+                    const scope = row.scope === undefined ? '' : '\n    范围：' + String(row.scope);
                     const tail = row.hint === undefined ? '' : '\n    → ' + String(row.hint);
-                    return head + health + '\n    ' + String(row.url) + '\n    适配器：' + String(row.adapter) + (row.pagination === undefined ? '' : ' · 分页 ' + String(row.pagination)) + tail;
+                    return head + health + recent + '\n    ' + String(row.url) + scope + '\n    适配器：' + String(row.adapter) + (row.pagination === undefined ? '' : ' · 分页 ' + String(row.pagination)) + tail;
                 }).join('\n');
                 return [{ type: 'text', text }];
             },
@@ -141,12 +152,16 @@ export function registerLoglensTools(deps) {
                     url: target.url,
                     adapter: backend === undefined ? adapterHint(target.kind) : backend.id,
                     ...(caps === undefined ? {} : { queryLanguage: caps.queryLanguage, pagination: caps.pagination, follow: caps.follow }),
+                    // 范围要回显：ES 的索引表达式可能来自配置、地址路径或默认通配，agent 猜不出来（真机反馈第 3 条）
+                    ...(backend === undefined || backend.scope === undefined ? {} : { scope: backend.scope(target) }),
                 };
                 if (input.probe === true && backend !== undefined) {
                     const health = await backend.health(target);
                     row.ok = health.ok;
                     if (!health.ok)
                         row.error = health.detail === undefined ? '未知错误' : health.detail;
+                    if (health.recent !== undefined)
+                        row.recent = health.recent;
                 }
                 const hint = hintFor(target.kind, caps, { dockerLoaded: deps.dockerLoaded === undefined ? undefined : deps.dockerLoaded() });
                 if (hint !== undefined)

@@ -349,7 +349,39 @@ await test('设置卡片渲染：公网那一格是勾选框、docker 行留空�
   assert.equal(publicBoxes.every((node) => node.props.checked === false), true, '宿主没开 allowPublic 时勾选框应是未勾上')
   assert.ok(treeText(tree).includes('允许公网地址'), '界面文案里应有「允许公网地址」（围栏报错点名的那一格）')
   assert.ok(treeText(tree).includes('公网'), '头行应有「公网」列名')
+
+  // ES 行多一个「索引表达式」输入框（真机反馈第 3 条：别让人猜「路径即索引」这条暗号）
+  const indexInputs = treeFind(tree, (node) => node.type === 'input' && typeof node.props?.placeholder === 'string' && node.props.placeholder.includes('索引表达式'))
+  assert.equal(indexInputs.length, 1, '只有 ES / OpenSearch 行该有索引表达式输入框，实得 ' + String(indexInputs.length))
   return tree
+})
+
+await test('填了索引表达式再保存：POST 请求体里带 index（值给 ES 行，别的类型不带）', async () => {
+  const runtime = createRuntime()
+  const exports_ = registration.factory((spec) => (spec === 'react' ? runtime.React : { jsx: runtime.jsx, jsxs: runtime.jsxs }))
+  const { ctx, state } = makeClientCtx()
+  exports_.apply(ctx)
+  calls.length = 0
+
+  const Card = state.cards.find((card) => card.options.name === 'settings.kit.item').component
+  let tree = await runtime.mount(Card, {})
+  treeFind(tree, (node) => String(node.props?.className ?? '').includes('ll_cardHeader'))[0].props.onClick()
+  runtime.tick()
+  tree = await runtime.update()
+
+  const box = treeFind(tree, (node) => node.type === 'input' && typeof node.props?.placeholder === 'string' && node.props.placeholder.includes('索引表达式'))[0]
+  box.props.onChange({ target: { value: 'app-logs-*' } })
+  runtime.tick()
+  tree = await runtime.update()
+
+  const save = treeFind(tree, (node) => node.type === 'button' && String(node.props?.className ?? '') === 'll_btn')[0]
+  save.props.onClick()
+  await runtime.update()
+  await runtime.update()
+
+  const post = calls.find((call) => call.method === 'POST' && call.body !== undefined && call.body.action === 'targets.update')
+  assert.ok(post !== undefined, '没有发出 targets.update：' + JSON.stringify(calls))
+  assert.equal(post.body.patch.index, 'app-logs-*', '索引表达式必须进请求体')
 })
 
 await test('勾上「允许公网地址」再保存：POST 请求体里带 allowPublic=true（关掉时带 false）', async () => {

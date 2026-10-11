@@ -39,8 +39,11 @@ window.__ModuleLoader__.load({
 
     /** 新行的草稿：id 为空表示「还没落盘」，提交走 targets.add。 */
     function emptyDraft() {
-      return { id: '', kind: DEFAULT_KIND, label: '', url: '', dockerTarget: '', allowPublic: false }
+      return { id: '', kind: DEFAULT_KIND, label: '', url: '', dockerTarget: '', allowPublic: false, index: '' }
     }
+
+    /** index 只对 ES / OpenSearch 有意义（其余类型带上它宿主会 400）——判据与宿主 src/config.ts 对齐。 */
+    const INDEX_KINDS = ['elasticsearch', 'opensearch']
 
     /** 把宿主返回的一条来源还原成草稿（缺字段一律补成空串，界面里不出现 undefined）。 */
     function draftFromTarget(target) {
@@ -54,6 +57,7 @@ window.__ModuleLoader__.load({
         // 缺字段一律按「没开」：宿主那边的判据是 allowPublic === true，别的值等于没开（别在界面上
         // 显示成勾上了而宿主不认）
         allowPublic: row.allowPublic === true,
+        index: typeof row.index === 'string' ? row.index : '',
       }
     }
 
@@ -100,12 +104,15 @@ window.__ModuleLoader__.load({
           url: '',
         }
       }
-      return {
+      const payload = {
         kind,
         label: String(draft.label == null ? '' : draft.label).trim(),
         url: String(draft.url == null ? '' : draft.url).trim(),
         allowPublic: draft.allowPublic === true,
       }
+      // 索引表达式只对 ES / OpenSearch 发（其余类型带上它宿主会 400）。空串也发：清空要能真的清掉。
+      if (INDEX_KINDS.indexOf(kind) !== -1) payload.index = String(draft.index == null ? '' : draft.index).trim()
+      return payload
     }
 
     /* ============================ 查询表单（P6 面板侧） ============================ */
@@ -318,6 +325,8 @@ window.__ModuleLoader__.load({
       // line-height，没有它就会比同排的 <input> 矮 2px；圆角取 token 而非 8px 字面量。
       '.ll_row{display:grid;grid-template-columns:minmax(120px,140px) minmax(140px,1.4fr) minmax(180px,2fr) 112px auto auto;gap:8px;align-items:center;background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-md);padding:8px 10px}',
       '.ll_pubSlot{min-width:0}',
+      // URL 与索引表达式竖着放一格：横着再加一列会把这一行挤到看不清
+      '.ll_stack{display:flex;flex-direction:column;gap:6px;min-width:0}',
       '.ll_pubSlot span{overflow:hidden;text-overflow:ellipsis}',
       '.ll_input{box-sizing:border-box;width:100%;height:34px;padding:0 12px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-3);border:.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-md);outline:none;font-family:inherit;font-size:13px;line-height:1.5}',
       '.ll_input:focus{border-color:var(--dsw-alias-state-business-primary)}',
@@ -366,6 +375,9 @@ window.__ModuleLoader__.load({
       'field.label': '名称',
       'field.url': '地址',
       'field.public': '公网',
+      'field.index': '索引',
+      'placeholder.index': '索引表达式（如 app-logs-*；留空 = 用地址路径，再留空则 *,-.*）',
+      'hint.index': 'ES / OpenSearch 的索引表达式：留空时用地址里的路径，地址里也没有就是 *,-.*（全部索引但排除点号系统索引）。',
       'check.allowPublic': '允许公网地址',
       'hint.allowPublic': '出站围栏默认只打回环与私网；这条来源解析到公网地址时要打开它才放行（链路本地 / 云元数据地址开了也不放行）。',
       'option.loki': 'Loki',
@@ -441,6 +453,9 @@ window.__ModuleLoader__.load({
       'field.label': 'Name',
       'field.url': 'URL',
       'field.public': 'Public',
+      'field.index': 'Index',
+      'placeholder.index': 'Index expression (e.g. app-logs-*; empty = the path in the URL, else *,-.*)',
+      'hint.index': 'Index expression for ES / OpenSearch: empty means the path in the URL, and if that is empty too it becomes *,-.* (all indices except dot-prefixed system indices).',
       'check.allowPublic': 'Allow public address',
       'hint.allowPublic': 'The outbound fence only allows loopback and private addresses by default; turn this on for a source that resolves to a public address (link-local / cloud-metadata addresses stay blocked either way).',
       'option.loki': 'Loki',
@@ -844,6 +859,28 @@ window.__ModuleLoader__.load({
                   ? (choice.label === choice.value ? choice.value : choice.value + '（' + choice.label + '）')
                   : choice.value + t('hint.dockerTargetUnknown'),
               }, 'll-docker-' + choice.value)),
+            ],
+          }) : (draft.kind === 'elasticsearch' || draft.kind === 'opensearch') ? jsxs('div', {
+            // ES / OpenSearch 多一行「索引表达式」：原先它是从地址路径悄悄推出来的（没写路径就成
+            // 全集群通配），agent 与人都猜不到自己要打哪个范围——真机反馈第 3 条。
+            className: 'll_stack',
+            children: [
+              jsx('input', {
+                className: 'll_input',
+                title: t('field.url'),
+                placeholder: t('placeholder.url'),
+                value: draft.url,
+                disabled: saving,
+                onChange: (event) => { updateDraft(index, { url: event.target.value }) },
+              }),
+              jsx('input', {
+                className: 'll_input',
+                title: t('hint.index'),
+                placeholder: t('placeholder.index'),
+                value: draft.index,
+                disabled: saving,
+                onChange: (event) => { updateDraft(index, { index: event.target.value }) },
+              }),
             ],
           }) : jsx('input', {
             className: 'll_input',

@@ -32,6 +32,18 @@ export interface LoglensTarget {
      * 判据在 src/net.ts，开关跟着来源走，出错文案里会点名这条来源。
      */
     allowPublic?: boolean;
+    /**
+     * 只对 ES / OpenSearch 有意义：**索引表达式**（如 `app-logs-*`、`logs-2026.*,-logs-2026.09.*`）。
+     *
+     * 为什么要有它（2026-10-11 真机反馈第 3 条）：原先索引表达式是从**地址的路径**悄悄推出来的，
+     * 没写路径就落 `*`——配置里只写了 `http://host:9200` 的一条来源，其实是**全集群通配**，
+     * 里面混着 grafana / prometheus / filebeat 的索引与 `.kibana_1` / `.infini_*` 一堆系统索引。
+     * 「路径即索引」是条暗号，agent 与人都猜不到；现在它可以显式写在这里，也会被回显出来。
+     *
+     * 留空时的口径（兼容旧配置）：地址里有路径就用路径，没有就用 `*,-.*`（**默认排除点号索引**：
+     * 那是系统索引，不是日志）。
+     */
+    index?: string;
 }
 export interface LoglensConfig {
     enabled: boolean;

@@ -13,6 +13,7 @@ import type { Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  ES_DEFAULT_INDEX,
   createElasticBackend,
   lineFromHit,
   looksLikeExpiredCursor,
@@ -219,11 +220,11 @@ describe('请求形态', () => {
     })
   })
 
-  it('有查询串就走 query_string；地址里没写路径就用通配', async () => {
+  it('有查询串就走 query_string；地址里没写路径就用 *,-.*（排除点号索引）', async () => {
     const fake = await startFakeEs({ docs: [] })
     const backend = createElasticBackend({ flavor: 'es' })
     await backend.query(normalized(backend, { targetId: 'es', q: 'level:error', from: FROM, to: NOW }), { ...fake.target, url: fake.url })
-    expect(fake.requests[0].path).toBe('/*/_pit')
+    expect(fake.requests[0].path).toBe('/*,-.*/_pit')
     const body = fake.requests[1].body as { query: { bool: { must: unknown[] } } }
     expect(body.query.bool.must).toEqual([{ query_string: { query: 'level:error' } }])
   })
@@ -483,7 +484,11 @@ describe('错误', () => {
 
   it('索引表达式与凭据的解析是纯函数，单独钉住', () => {
     expect(targetIndex({ id: 'x', kind: 'elasticsearch', label: 'x', url: 'http://h:9200/logs-2026.*/_search' })).toBe('logs-2026.*/_search')
-    expect(targetIndex({ id: 'x', kind: 'elasticsearch', label: 'x', url: 'http://h:9200/' })).toBe('*')
+    // 没写路径 → *,-.*（排除点号索引：全集群通配会把 .kibana / .infini_* 也算进来，真机反馈第 3 条）
+    expect(targetIndex({ id: 'x', kind: 'elasticsearch', label: 'x', url: 'http://h:9200/' })).toBe(ES_DEFAULT_INDEX)
+    // 显式 index 最优先——「路径即索引」只是兼容旧配置的暗号
+    expect(targetIndex({ id: 'x', kind: 'elasticsearch', label: 'x', url: 'http://h:9200/ignored-*', index: 'app-logs-*' })).toBe('app-logs-*')
+    expect(ES_DEFAULT_INDEX).toBe('*,-.*')
     // 基址是 origin（不带路径）：索引表达式单独给，搜索路径上不带索引（PIT 与它互斥）
     expect(targetAccess({ id: 'x', kind: 'elasticsearch', label: 'x', url: 'http://u:p@h:9200/i' }).url).toBe('http://h:9200')
     expect(looksLikeExpiredCursor({ status: 404, text: 'no such pit', body: {} })).toBe(true)

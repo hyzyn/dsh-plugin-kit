@@ -22,6 +22,8 @@ export declare const ES_DEFAULT_MAX_PAGE_SIZE = 500;
 export declare const ES_DEFAULT_MAX_WINDOW_MS: number;
 /** 单次请求超时。 */
 export declare const ES_TIMEOUT_MS = 20000;
+/** 探测窗口：probe 时报「最近这么多分钟有多少条」。 */
+export declare const ES_PROBE_WINDOW_MS: number;
 /** PIT 的保活时长（每次查询都会续）。 */
 export declare const ES_PIT_KEEP_ALIVE = "2m";
 /** 时间字段：ES 里日志索引的惯例。换索引形态时改这里（日后进配置）。 */
@@ -53,7 +55,20 @@ interface EsHit {
     _source?: unknown;
     sort?: unknown;
 }
-/** 索引表达式：取地址的路径部分；没写就用通配（ES 8 没有 `_all` 了）。 */
+/**
+ * 默认索引表达式：`*,-.*`（**排除点号索引**）。
+ *
+ * 为什么不是裸 `*`（2026-10-11 真机反馈第 3 条）：一条只写 `http://host:9200` 的来源原本等于
+ * 全集群通配，把 `.kibana_1` / `.infini_*` 这些系统索引也算进来——查询更慢、命中更噪、
+ * 字段表被污染。点号索引是系统索引，不是日志；真要查它就显式写 index。
+ */
+export declare const ES_DEFAULT_INDEX = "*,-.*";
+/**
+ * 索引表达式，按**显式优先**的顺序解析：target.index（配置里写的）→ 地址的路径 → ES_DEFAULT_INDEX。
+ *
+ * 「路径即索引」保留是为了兼容旧配置，但它是一条暗号——所以 loglens_sources 会把**解析结果回显**
+ * （见 scope()），让 agent 不必猜自己正在打哪个范围。
+ */
 export declare function targetIndex(target: LoglensTarget): string;
 /**
  * 基址与认证头：`http://user:pass@host:9200` 的凭据换成 Basic 头，URL 本身**去掉凭据**

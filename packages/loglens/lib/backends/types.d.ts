@@ -108,11 +108,26 @@ export interface FieldsOptions {
 export interface BackendHealth {
     ok: boolean;
     detail?: string;
+    /**
+     * 探测窗口内大概有多少条（真机反馈第 3 条：probe 只看存活不看数据，等于没说它能查什么）。
+     * 探测**失败或来源给不出**时留空——不知道就不写，别拿 0 冒充「没有数据」。
+     */
+    recent?: {
+        windowMs: number;
+        count: number;
+    };
 }
 /** 一个日志后端。`target` 是来源清单里的那一条（地址只存在宿主侧，浏览器永不传 URL）。 */
 export interface LogBackend {
     id: string;
     capabilities(): BackendCaps;
+    /**
+     * 这条来源覆盖的**范围**（人话，工具面回显）。
+     *
+     * ES / OpenSearch 回索引表达式（它可能来自配置、也可能来自地址路径或默认通配——正是那条
+     * 「路径即索引」的暗号），Loki 这类没有隐式范围的来源不实现它。见真机反馈第 3 条。
+     */
+    scope?(target: LoglensTarget): string;
     fields(target: LoglensTarget, options?: FieldsOptions): Promise<FieldsResult>;
     query(query: NormalizedQuery, target: LoglensTarget): Promise<LogQueryResult>;
     /** 跟随（长流）。Loki 是 WebSocket，ES 是 _search + 轮询——由适配器各自实现。 */
