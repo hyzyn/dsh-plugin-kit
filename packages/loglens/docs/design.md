@@ -1,6 +1,6 @@
 # @hyzyn/dsh-loglens 设计方案
 
-> **状态：未实现。** 本文件是**包特有的深层设计**（归属见 [conventions § 知识归属表](../../../docs/conventions.md#知识归属表唯一归宿)
+> **状态：P1 的契约与纯模块已落地（2026-10-11）；后端适配器与 agent 工具未实现。** 本文件是**包特有的深层设计**（归属见 [conventions § 知识归属表](../../../docs/conventions.md#知识归属表唯一归宿)
 > 的「包特有的深层设计 / API」一行 → L1 `packages/<pkg>/docs/`）。
 > 待办与执行计划见 [../ROADMAP.md](../ROADMAP.md)；包落地后按档位补齐 `README.md` / `DEFECTS.md`。
 
@@ -56,6 +56,10 @@
 **ES 的 `totalKnown:false` 是常态**：不显式 `track_total_hits: true` 时 `hits.total.value` 恒定在
 10000 封顶且 `relation === 'gte'`。契约必须写明**由适配器**在需要精确总数时显式打开它，并承担其代价。
 
+**P1 定稿（2026-10-11；代码在 [../src/query.ts](../src/query.ts) 的 `countsOf`）**：归属就是上面那一句——
+由**适配器**决定要不要打开 `track_total_hits`，本层只如实搬运（没打开 ⇒ `totalKnown: false`）。
+`matched` 与 `scannedRows` / `scannedBytes` 各占一格，不许挤进同一个数。
+
 ### 3.3 截断与游标
 
     interface Truncation { truncated: boolean; reasons: TruncationReason[] }
@@ -78,6 +82,14 @@
   **同 ts 同内容两行 / limit=1 不吞第二行**。P2 真机单独测顺序稳定性。
 - **保守退路**：测不出稳定序就把 Loki 标 `pagination:'none'`，只回「命中可能不完整，请缩小时间窗」。
   **诚实报不完整，好过给一个会丢行的游标。**
+
+**P1 定稿（2026-10-11；代码在 [../src/cursor.ts](../src/cursor.ts) 与 [../src/query.ts](../src/query.ts)）**：
+
+1. `cursor_expired` 与 `hit_limit` 是**两个**理由（`truncationOf` 的输入各占一个布尔位，理由顺序固定）；
+   过期不等于「还有更多」，适配器不许静默重开 PIT。
+2. `track_total_hits` 的归属见 §3.2（适配器自担代价）。
+3. **顺序稳定性仍是 P2 的真机活**；在那之前 Loki 的 `pagination` 由适配器自己声明，本层不假设顺序。
+   另把反面教材写成了用例：按「最旧 ts − 1ns」续页会把整个同值批丢掉（`test/cursor.test.ts`）。
 
 ## 4. 安全与凭据
 

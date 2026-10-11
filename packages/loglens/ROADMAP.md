@@ -1,6 +1,6 @@
 # @hyzyn/dsh-loglens — 路线图
 
-> **状态：P0 全部落地（2026-10-11）——设置面可用、查询未实现。** `packages/loglens/` 现在是 workspace 包
+> **状态：P0 与 P1 全部落地（2026-10-11）——设置面与查询地基（契约 / 归一化 / 游标）可用；后端适配器与 agent 工具未实现。** `packages/loglens/` 现在是 workspace 包
 > （`@hyzyn/dsh-loglens@0.1.2`，已进 [publish-targets.mjs](../../scripts/publish-targets.mjs) 与两份聚合清单，
 > `pnpm-lock.yaml` 已同步）——所以 [docs-index 判据 5](../../scripts/docs-index.mjs) 现在**看得见它**，
 > 而不再是「本目录不在解析面里」。设计与契约见 [docs/design.md](./docs/design.md)；
@@ -164,7 +164,9 @@
 | **P6** | Loki `tail`（`ws`）/ 直方图 / 浏览器视图（design.md §5 三选一） | — |
 | **P7** | 需要**跨后端统一查询**时才申请宿主半体插件间服务 | — |
 
-**P1 的前置**：§3.3 的 `cursor_expired`、`track_total_hits` 归属、Loki 顺序稳定性三件定稿后再落契约。
+**P1 的前置**（2026-10-11 已定稿，见 [design.md §3.2 / §3.3](./docs/design.md) 的「P1 定稿」两段）：
+§3.3 的 `cursor_expired` 与 `hit_limit` 分家、`track_total_hits` 归适配器、Loki 顺序稳定性的保守退路
+（这项的真机验证仍是 P2 的活；P1 只保证「声明成什么就按什么用」，不在本层假设顺序）。
 
 **验证与验收**
 
@@ -325,3 +327,35 @@
 
 **同轮修掉的三处自伤（记一笔）**：① `test/loglens.test.ts` 里描述 `D01` 时**又写了一次字面量斜杠**，把注释重新闭合（同一条缺陷的第二次踩中）；
 ② `src/index.ts` 的 JSDoc 里写了仓内 markdown 相对链接，被 `published-links` 抓出会随 `lib/index.d.ts` 发出去；③ 建包前 `packages/loglens/` 已存在导致 `create-plugin` 拒绝，靠临时挪目录解决。
+### P1：契约 + 纯模块 + 反例（2026-10-11 落地）
+
+**改了什么**
+
+- [src/backends/types.ts](../loglens/src/backends/types.ts)：契约形状——`LogBackend` / `BackendCaps` /
+  `NormalizedQuery` / `LogLine` / `LogCounts` / `Truncation` / `TruncationReason` / `LogQueryResult`。
+  只放形状、不放实现；契约正文仍在 [docs/design.md](./docs/design.md) §3。
+- [src/query.ts](../loglens/src/query.ts)：归一化与夹取——时间戳必须 **epoch 毫秒**（写成秒直接报错，
+  否则查的是 1970 年）、时间窗超上限**报错而不静默截短**（静默截短会把「查到的就是全部」变成谎话）、
+  `limit` 超上限是夹取 + 警告、方向默认 `backward`、游标只透传、`filters` 校验；`countsOf`
+  （`totalKnown` 只在真有精确总数时为真：ES 的 `relation === 'gte'` 不算）与 `truncationOf`
+  （理由集合与顺序固定）。
+- [src/cursor.ts](../loglens/src/cursor.ts)：Loki 游标——`{ endNs, streamIdx, ordinalAtTs }` 三件套 +
+  `slicePage` 切页；`decodeCursor` 解不开就报 `invalid`，**不回落成「当作没有游标」**——那会把
+  「续页」悄悄变成「重头再来」，用户看到的是重复行而不是一条错误。
+- 用例：`test/query.test.ts`（23 条）+ `test/cursor.test.ts`（12 条）。两条点名要有的反例在里面：
+  **同 ts 三行 / limit=2 不丢第三行**、**同 ts 同内容两行 / limit=1 不吞第二行**；另把反面教材
+  「按最旧 ts − 1ns 续页」写成了用例，证明那样会把整个同值批丢掉。
+
+**门槛与证据（全部实跑）**
+
+| 闸 | 结果 |
+|---|---|
+| 本包单测 | **84 条**（来源纯判据 22 + 宿主路由与围栏 17 + 客户端纯逻辑 10 + 归一化 23 + 游标 12） |
+| `pnpm --filter @hyzyn/dsh-loglens typecheck` | 通过（tsc + client-lint 十六条） |
+| 全仓门禁 | `pnpm typecheck && pnpm build && pnpm test && pnpm aggregate` 全绿：**156 文件 / 2620 用例**；doc-links / i18n / no-public-ip / package-contents / test-collection / publishable / kit-pins / dsh-peers / engines / toolchain / issue-forms / dsh-home 全绿 |
+
+**刻意不做的**
+
+- 不做后端适配器、不注册 agent 工具、不给浏览器面加查询 UI——那是 P2 / P3 / P6。
+- 不在本层假设 Loki 的返回顺序稳定：`pagination` 由适配器声明，测不出稳定序就声明 `'none'`。
+

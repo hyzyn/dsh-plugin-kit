@@ -44,6 +44,9 @@ curl -s -X POST http://127.0.0.1:3080/api/dsh-loglens/config -H 'content-type: a
 | `cordis.patch.yml` | bundle 补丁：`insert: { id: loglens, name: '@hyzyn/dsh-loglens' }` |
 | `src/index.ts` | 宿主半体：`/config` 路由 + 设置持久化（查询面还没有） |
 | `src/config.ts` | 来源清单的**纯**判据（id 生成 / 地址校验 / 宽松读盘 / 增删改），不碰 cordis 与网络 |
+| `src/backends/types.ts` | 后端契约的**形状**（`LogBackend` / `BackendCaps` / `LogCounts` / `Truncation`…），没有实现 |
+| `src/query.ts` | 归一化与夹取：时间戳单位、时间窗上限、limit 夹取、计数与截断归并 |
+| `src/cursor.ts` | Loki 游标（同 ts 多行不丢行）；解不开就报错，不当作没有游标 |
 | `client-src/index.js` → `client.js` | 构建型客户端半体：设置卡片，i18n 目录内联在源码里 |
 | `client-src/pure.js` | 客户端的纯逻辑（草稿合法性 / 提交载荷），进 vitest |
 | `scripts/build-client.mjs` | 客户端打包：剥 import + 内联 pure.js；发现残留 import 直接 `exit(1)` |
@@ -65,6 +68,7 @@ dsh plugin --profile <profile> add link:$(pwd)/packages/loglens
 
 ## 已知限制
 
-- **查询未实现**：没有后端适配器、没有 `loglens_*` 工具、没有结果视图（P1 起，见 [ROADMAP.md](./ROADMAP.md)）。
+- **查询未实现**：P1 的契约 / 归一化 / 游标已落地，但**没有后端适配器、没有 `loglens_*` 工具、没有结果视图**
+  （P2 起，见 [ROADMAP.md](./ROADMAP.md)）。
 - 一次只查一个来源（v1 不做跨后端 fan-out）；公网与链路本地地址默认禁。
 - Docker 只作为**采集来源**（设计里的「选项 0」：用现成的 `docker_logs` / `docker_logs_grep`），不做适配器。
