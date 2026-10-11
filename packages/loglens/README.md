@@ -10,7 +10,7 @@
 
 ## 现在能做什么
 
-- 在 **设置 → 插件配置 → 日志查询** 卡片里增删改「日志来源」（类型 / 名称 / 地址）与插件开关。
+- 在 **设置 → 插件配置 → 日志查询** 卡片里增删改「日志来源」（类型 / 名称 / 地址 / **允许公网地址**）与插件开关。
 - 让 agent 用四个工具查（配好来源之后）：`loglens_sources` 列来源与连通性、`loglens_search` 查、
   `loglens_fields` 看有哪些字段、`loglens_context` 取某一行前后的上下文。
   可查后端：**Loki**、**Elasticsearch**、**OpenSearch**（Docker 走现成的 `docker_logs` / `docker_logs_grep`）。
@@ -59,7 +59,7 @@ curl -s -X POST http://127.0.0.1:3080/api/dsh-loglens/config -H 'content-type: a
 |---|---|---|
 | `loki` | `http://127.0.0.1:3100` | 可以带网关前缀（如 `https://gw.example/loki`）；查询走 `/loki/api/v1/query_range` |
 | `elasticsearch` / `opensearch` | `http://user:pass@127.0.0.1:9200/logs-*` | **路径部分是索引表达式**（**建议写上**，如 `…/app-logs-*`；不写会用 `*` 扫全部索引）；凭据换成 Basic 头、不进 URL；分页走 PIT + `search_after`；**ES 7.10 / 7.11 也已适配**（PIT 键名与 `_shard_doc` 的差异见 [ROADMAP](./ROADMAP.md)） |
-| 公网地址 | 同上，额外要**显式打开** `allowPublic` | 默认只打回环与私网（内网日志就是这个插件的用法）；解析到公网的来源会被围栏拦下，报错文案里点名是哪个地址、怎么开 |
+| 公网地址 | 同上，额外要勾那一行的**「允许公网地址」** | 默认只打回环与私网（内网日志就是这个插件的用法）；解析到公网的来源会被围栏拦下，报错文案里点名是哪个地址、怎么开。内网装在非 RFC 1918 网段（如 `172.172/16`）也落这一档 |
 | `docker` | 第三格填 **Docker 面板里的目标名**（如 `local`），**不是** URL | 采集来源（设计里的「选项 0」）：agent 侧用现成的 `docker_logs` / `docker_logs_grep`；面板侧走 Docker 插件自己的 `/api/dsh-docker/logs`（相对路径），弱面：无 `until`、`tail` 有上限、无 grep |
 
 ## 解剖
@@ -82,6 +82,7 @@ curl -s -X POST http://127.0.0.1:3080/api/dsh-loglens/config -H 'content-type: a
 | `client-src/index.js` → `client.js` | 构建型客户端半体：设置卡片，i18n 目录内联在源码里 |
 | `client-src/pure.js` | 客户端的纯逻辑（草稿合法性 / 提交载荷），进 vitest |
 | `scripts/build-client.mjs` | 客户端打包：剥 import + 内联 pure.js；发现残留 import 直接 `exit(1)` |
+| `scripts/client-smoke.mjs` | **无浏览器的渲染回归**：最小 DOM / React（会真重渲染）/ fetch 桩把卡片渲染出来，断言来源行第 4 格、docker 行占位与「勾选 → 保存 → 请求体带 allowPublic」 |
 | `test/` | vitest 用例（仓库根 `pnpm test` 收集 `packages/<pkg>/test/`） |
 
 ## 开发
@@ -90,6 +91,7 @@ curl -s -X POST http://127.0.0.1:3080/api/dsh-loglens/config -H 'content-type: a
 pnpm --filter @hyzyn/dsh-loglens build       # tsc → lib/，并重建 client.js
 pnpm --filter @hyzyn/dsh-loglens typecheck   # tsc + client-lint（客户端半体六条硬规矩）
 pnpm --filter @hyzyn/dsh-loglens lint:client
+pnpm --filter @hyzyn/dsh-loglens smoke        # 客户端半体的装载 + 渲染回归（无浏览器）
 ```
 
 ## 安装到 DSH
@@ -107,9 +109,12 @@ dsh plugin --profile <profile> add link:$(pwd)/packages/loglens
 - Docker 目标在面板里仍只做指路（选项 0 的面板半格没接）。
 - 一次只查一个来源（v1 不做跨后端 fan-out）。
 - **出站围栏只放行回环与私网**（设计 §4.1 / [src/net.ts](./src/net.ts)）：链路本地与云元数据地址
-  （`169.254.169.254` 这类）**一律拒且无豁免**；**公网默认拒**，确实是托管日志服务就在这条来源上
-  打开 `allowPublic`（面板开关随后补，当前可从配置面写）。**不跟随重定向**：来源回 3xx 时报错并回显
+  （`169.254.169.254` 这类）**一律拒且无豁免**；**公网默认拒**——要放开就在那一行第 4 格勾
+  **「允许公网地址」**（`allowPublic`，按来源生效）。**不跟随重定向**：来源回 3xx 时报错并回显
   `Location`，改地址重来（一次 302 就能把请求带出白名单）。
+- **「公网」是地址分类，不等于流量出网**：内网用非 RFC 1918 网段（`172.172/16` 这类）也是公网档——
+  实测环境中就有这种内网日志服务器。这种情况勾上「允许公网地址」即可，流量本来就没出内网。
+- 一次请求的体积上限 8 MiB、超时默认 20s；时间窗与条数的上限由宿主夹取并在面板上如实提示。
 - 围栏判的是**域名解析之后的 IP**，而解析与建连是两步：两步之间 DNS 翻脸（rebinding）仍有窗口。
   来源地址是操作者自己填的，这一层挡的是事故与过期的名字，不是持域名的对手。
 - Docker 只作为**采集来源**（设计里的「选项 0」），不做适配器：agent 侧用现成的 `docker_logs` /

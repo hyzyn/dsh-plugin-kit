@@ -258,8 +258,11 @@ export async function assertReachable(url, options) {
         }
         if (tier === 'public' && options.allowPublic !== true) {
             throw new LoglensNetError('public_address', options.label + ' 出站围栏拦下了 ' + host + '：它解析到公网地址 ' + address
-                + '。本插件默认只打回环与私网地址（内网日志）；确实是托管日志服务的话，'
-                + '在这条来源上打开「允许公网地址」（allowPublic）后再试', shown);
+                + '。本插件默认只打回环与私网地址（RFC 1918 / CGNAT：10/8、172.16/12、192.168/16、100.64/10）。'
+                + '两种情况下打开这条来源的「允许公网地址」（allowPublic）即可放行：'
+                + '① 服务装在公网（托管日志服务）；'
+                + '② **内网用了非 RFC 1918 网段**——这不罕见（实测就有内网日志服务器落在 172.172/16 这类'
+                + '公网段上的环境），此时「公网段」只是地址分类，流量并没有出内网', shown);
         }
     }
     return { url: shown, host, addresses, tiers };

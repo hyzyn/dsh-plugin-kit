@@ -200,6 +200,21 @@ describe('解析与判定：字面量、别名、注入的解析结果', () => {
     expect(await codeOf('http://odd.internal:3100', { lookupImpl: mixed.impl })).toBe('blocked_address')
   })
 
+  it('内网装在非 RFC 1918 网段（真机上就有这种环境）也按公网档拦——文案要同时给两种解释', async () => {
+    /*
+     * 现场（2026-10-11 真机）：用户的内网日志服务器是一台 172.172.x.x。
+     * RFC 1918 只覆盖 172.16/12（也就是 172.16~172.31），**172.172 不在里面**——
+     * 于是字面量看着像「内网」，判据却只能按公网档走。这不是纸面情形：中文企业内网
+     * 用公网段不 NAT 的做法很常见。夹具按本仓规矩用 RFC 5737 文档段占位。
+     */
+    const error = await assertReachable('http://192.0.2.10:19200/app-logs-*', { label: LABEL })
+      .catch((caught: unknown) => caught)
+    expect((error as LoglensNetError).code).toBe('public_address')
+    expect((error as LoglensNetError).message).toContain('192.0.2.10')
+    expect((error as LoglensNetError).message).toContain('非 RFC 1918 网段')
+    expect((error as LoglensNetError).message).toContain('allowPublic')
+  })
+
   it('公网默认拒，这条来源显式打开 allowPublic 才放行', async () => {
     const { impl } = lookupOf({ 'logs.example.com': ['203.0.113.9'] })
     expect(await codeOf('https://logs.example.com:9200', { lookupImpl: impl })).toBe('public_address')

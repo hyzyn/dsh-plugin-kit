@@ -18,7 +18,7 @@ export function kindOptions() {
 
 /** 新行的草稿：id 为空表示「还没落盘」，提交走 targets.add。 */
 export function emptyDraft() {
-  return { id: '', kind: DEFAULT_KIND, label: '', url: '', dockerTarget: '' }
+  return { id: '', kind: DEFAULT_KIND, label: '', url: '', dockerTarget: '', allowPublic: false }
 }
 
 /** 把宿主返回的一条来源还原成草稿（缺字段一律补成空串，界面里不出现 undefined）。 */
@@ -30,6 +30,9 @@ export function draftFromTarget(target) {
     label: typeof row.label === 'string' ? row.label : '',
     url: typeof row.url === 'string' ? row.url : '',
     dockerTarget: typeof row.dockerTarget === 'string' ? row.dockerTarget : '',
+    // 缺字段一律按「没开」：宿主那边的判据是 allowPublic === true，别的值等于没开（别在界面上
+    // 显示成勾上了而宿主不认）
+    allowPublic: row.allowPublic === true,
   }
 }
 
@@ -61,6 +64,10 @@ export function draftProblem(draft) {
  * **docker 来源的「地址」那一格是 Docker 面板里的目标名**（dockerTarget）：那条日志视图走的是 Docker
  * 插件自己的路由，它按自己的目标名找主机——两个插件各有各的目标清单，名字不会自动对上，所以显式存
  * 一个。docker 来源本来就没有 URL，这一格正好拿来用。
+ *
+ * **allowPublic 每次提交都带上**（true / false 都带）：关掉一开关就得能真的关掉，而
+ * 「字段缺省」在宿主那边是「保持原值」——不带它等于关不掉。docker 分支刻意不带（宿主会 400：
+ * 采集来源没有出站）。
  */
 export function draftPayload(draft) {
   const kind = draft.kind
@@ -76,6 +83,7 @@ export function draftPayload(draft) {
     kind,
     label: String(draft.label == null ? '' : draft.label).trim(),
     url: String(draft.url == null ? '' : draft.url).trim(),
+    allowPublic: draft.allowPublic === true,
   }
 }
 

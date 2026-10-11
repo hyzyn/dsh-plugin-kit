@@ -39,7 +39,7 @@ window.__ModuleLoader__.load({
 
     /** 新行的草稿：id 为空表示「还没落盘」，提交走 targets.add。 */
     function emptyDraft() {
-      return { id: '', kind: DEFAULT_KIND, label: '', url: '', dockerTarget: '' }
+      return { id: '', kind: DEFAULT_KIND, label: '', url: '', dockerTarget: '', allowPublic: false }
     }
 
     /** 把宿主返回的一条来源还原成草稿（缺字段一律补成空串，界面里不出现 undefined）。 */
@@ -51,6 +51,9 @@ window.__ModuleLoader__.load({
         label: typeof row.label === 'string' ? row.label : '',
         url: typeof row.url === 'string' ? row.url : '',
         dockerTarget: typeof row.dockerTarget === 'string' ? row.dockerTarget : '',
+        // 缺字段一律按「没开」：宿主那边的判据是 allowPublic === true，别的值等于没开（别在界面上
+        // 显示成勾上了而宿主不认）
+        allowPublic: row.allowPublic === true,
       }
     }
 
@@ -82,6 +85,10 @@ window.__ModuleLoader__.load({
      * **docker 来源的「地址」那一格是 Docker 面板里的目标名**（dockerTarget）：那条日志视图走的是 Docker
      * 插件自己的路由，它按自己的目标名找主机——两个插件各有各的目标清单，名字不会自动对上，所以显式存
      * 一个。docker 来源本来就没有 URL，这一格正好拿来用。
+     *
+     * **allowPublic 每次提交都带上**（true / false 都带）：关掉一开关就得能真的关掉，而
+     * 「字段缺省」在宿主那边是「保持原值」——不带它等于关不掉。docker 分支刻意不带（宿主会 400：
+     * 采集来源没有出站）。
      */
     function draftPayload(draft) {
       const kind = draft.kind
@@ -97,6 +104,7 @@ window.__ModuleLoader__.load({
         kind,
         label: String(draft.label == null ? '' : draft.label).trim(),
         url: String(draft.url == null ? '' : draft.url).trim(),
+        allowPublic: draft.allowPublic === true,
       }
     }
 
@@ -302,11 +310,15 @@ window.__ModuleLoader__.load({
       '.ll_btnDanger{color:var(--dsw-alias-state-error-primary);border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 30%,transparent)}',
       '.ll_btnDanger:hover:not(:disabled){background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 8%,transparent)}',
       '.ll_list{display:flex;flex-direction:column;gap:8px;max-height:420px;overflow-y:auto}',
-      '.ll_head{display:grid;grid-template-columns:minmax(120px,140px) minmax(140px,1.4fr) minmax(180px,2fr) auto auto;gap:8px;align-items:center;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;padding:0 10px}',
+      // 第 4 列是「允许公网地址」的固定宽度格（112px）：**每行都得占这一格**（docker 行放一个空 span），
+      // 否则 auto 列各算各的宽度，几行之间就对不齐了。
+      '.ll_head{display:grid;grid-template-columns:minmax(120px,140px) minmax(140px,1.4fr) minmax(180px,2fr) 112px auto auto;gap:8px;align-items:center;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;padding:0 10px}',
       // 行内四列 + 两个动作位。输入档对齐宿主 settings-form 的 .input（H34 / R12 / border-l4 /
       // bg-layer-3 / 13px）：显式 height 是关键——同一个类套到 <select> 上时 Chrome 不看继承的
       // line-height，没有它就会比同排的 <input> 矮 2px；圆角取 token 而非 8px 字面量。
-      '.ll_row{display:grid;grid-template-columns:minmax(120px,140px) minmax(140px,1.4fr) minmax(180px,2fr) auto auto;gap:8px;align-items:center;background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-md);padding:8px 10px}',
+      '.ll_row{display:grid;grid-template-columns:minmax(120px,140px) minmax(140px,1.4fr) minmax(180px,2fr) 112px auto auto;gap:8px;align-items:center;background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-md);padding:8px 10px}',
+      '.ll_pubSlot{min-width:0}',
+      '.ll_pubSlot span{overflow:hidden;text-overflow:ellipsis}',
       '.ll_input{box-sizing:border-box;width:100%;height:34px;padding:0 12px;color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-3);border:.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-md);outline:none;font-family:inherit;font-size:13px;line-height:1.5}',
       '.ll_input:focus{border-color:var(--dsw-alias-state-business-primary)}',
       '.ll_input::placeholder{color:var(--dsw-alias-label-tertiary)}',
@@ -353,6 +365,9 @@ window.__ModuleLoader__.load({
       'field.kind': '类型',
       'field.label': '名称',
       'field.url': '地址',
+      'field.public': '公网',
+      'check.allowPublic': '允许公网地址',
+      'hint.allowPublic': '出站围栏默认只打回环与私网；这条来源解析到公网地址时要打开它才放行（链路本地 / 云元数据地址开了也不放行）。',
       'option.loki': 'Loki',
       'option.elasticsearch': 'Elasticsearch',
       'option.opensearch': 'OpenSearch',
@@ -425,6 +440,9 @@ window.__ModuleLoader__.load({
       'field.kind': 'Kind',
       'field.label': 'Name',
       'field.url': 'URL',
+      'field.public': 'Public',
+      'check.allowPublic': 'Allow public address',
+      'hint.allowPublic': 'The outbound fence only allows loopback and private addresses by default; turn this on for a source that resolves to a public address (link-local / cloud-metadata addresses stay blocked either way).',
       'option.loki': 'Loki',
       'option.elasticsearch': 'Elasticsearch',
       'option.opensearch': 'OpenSearch',
@@ -835,6 +853,22 @@ window.__ModuleLoader__.load({
             disabled: saving,
             onChange: (event) => { updateDraft(index, { url: event.target.value }) },
           }),
+          // 第 4 格：允许公网地址（出站围栏的开关，跟着**这条来源**走）。docker 行没有出站请求，
+          // 放一个空 span 占位（不给开关，免得看起来能开而宿主 400）。
+          draft.kind === 'docker' ? jsx('span', { className: 'll_pubSlot' }) : jsxs('label', {
+            className: 'll_switch ll_pubSlot',
+            title: t('hint.allowPublic'),
+            children: [
+              jsx('input', {
+                type: 'checkbox',
+                title: t('hint.allowPublic'),
+                checked: draft.allowPublic === true,
+                disabled: saving,
+                onChange: (event) => { updateDraft(index, { allowPublic: event.target.checked }) },
+              }),
+              jsx('span', { children: t('check.allowPublic') }),
+            ],
+          }),
           jsx('button', {
             type: 'button',
             className: 'll_btn',
@@ -929,6 +963,7 @@ window.__ModuleLoader__.load({
                         jsx('span', { children: t('field.kind') }),
                         jsx('span', { children: t('field.label') }),
                         jsx('span', { children: t('field.url') }),
+                        jsx('span', { children: t('field.public') }),
                         jsx('span', {}),
                         jsx('span', {}),
                       ],

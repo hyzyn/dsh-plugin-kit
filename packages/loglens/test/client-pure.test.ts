@@ -31,13 +31,16 @@ describe('draft 形状', () => {
   })
 
   it('emptyDraft 是「还没落盘」的新行', () => {
-    expect(emptyDraft()).toEqual({ id: '', kind: 'loki', label: '', url: '', dockerTarget: '' })
+    expect(emptyDraft()).toEqual({ id: '', kind: 'loki', label: '', url: '', dockerTarget: '', allowPublic: false })
   })
 
   it('draftFromTarget 缺字段补空串、未知类型回落 loki', () => {
-    expect(draftFromTarget(undefined)).toEqual({ id: '', kind: 'loki', label: '', url: '', dockerTarget: '' })
+    expect(draftFromTarget(undefined)).toEqual({ id: '', kind: 'loki', label: '', url: '', dockerTarget: '', allowPublic: false })
     expect(draftFromTarget({ id: 'es', kind: 'elasticsearch', label: 'ES', url: 'http://127.0.0.1:9200' }))
-      .toEqual({ id: 'es', kind: 'elasticsearch', label: 'ES', url: 'http://127.0.0.1:9200', dockerTarget: '' })
+      .toEqual({ id: 'es', kind: 'elasticsearch', label: 'ES', url: 'http://127.0.0.1:9200', dockerTarget: '', allowPublic: false })
+    // 只有真的 true 才算开了（宿主那边的判据就是严格相等，界面别显示成勾上了而宿主不认）
+    expect(draftFromTarget({ id: 'es', kind: 'elasticsearch', allowPublic: true }).allowPublic).toBe(true)
+    expect(draftFromTarget({ id: 'es', kind: 'elasticsearch', allowPublic: 'yes' }).allowPublic).toBe(false)
     expect(draftFromTarget({ kind: 'splunk', id: 7 }).kind).toBe('loki')
     expect(draftFromTarget({ kind: 'splunk', id: 7 }).id).toBe('')
   })
@@ -71,11 +74,21 @@ describe('draftProblem', () => {
 describe('draftPayload', () => {
   it('只发三列并去掉首尾空白（id 不进载荷）', () => {
     expect(draftPayload({ id: 'loki', kind: 'loki', label: '  本地 Loki  ', url: '  http://127.0.0.1:3100  ' }))
-      .toEqual({ kind: 'loki', label: '本地 Loki', url: 'http://127.0.0.1:3100' })
+      .toEqual({ kind: 'loki', label: '本地 Loki', url: 'http://127.0.0.1:3100', allowPublic: false })
+  })
+
+  it('allowPublic 每次都带上：false 也要发，否则开关关不掉（缺省 = 保持原值）', () => {
+    expect(draftPayload({ kind: 'elasticsearch', url: 'https://logs.example.com:9200' }).allowPublic).toBe(false)
+    expect(draftPayload({ kind: 'elasticsearch', url: 'https://logs.example.com:9200', allowPublic: true }).allowPublic).toBe(true)
+    expect(draftPayload({ kind: 'elasticsearch', url: 'https://logs.example.com:9200', allowPublic: 'yes' }).allowPublic).toBe(false)
   })
 
   it('缺字段不产出 undefined（宿主拿到的是字符串）', () => {
     expect(draftPayload({ kind: 'docker' })).toEqual({ kind: 'docker', label: '', dockerTarget: '', url: '' })
+  })
+
+  it('docker 分支不带 allowPublic（采集来源没有出站，宿主会 400）', () => {
+    expect('allowPublic' in draftPayload({ kind: 'docker', allowPublic: true })).toBe(false)
   })
 })
 
