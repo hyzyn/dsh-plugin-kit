@@ -748,7 +748,7 @@ const PANEL_DIRECTORY: PanelDefinition[] = [
     kind: 'card',
     titles: ['日志查询', 'Log Query'],
     keywords: ['loglens', '日志', 'log', 'loki', 'elasticsearch', 'opensearch', '检索', '查询'],
-    description: '把 Loki / Elasticsearch / OpenSearch 等日志后端归一化成一个查询面（功能尚未实现）',
+    description: '把 Loki / Elasticsearch / OpenSearch / Docker 等日志来源归一化成一个查询面（当前只有来源清单与开关，查询尚未实现）',
     registryName: 'loglens',
   },
 ]

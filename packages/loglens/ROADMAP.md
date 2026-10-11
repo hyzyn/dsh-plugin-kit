@@ -1,10 +1,10 @@
 # @hyzyn/dsh-loglens — 路线图
 
-> **状态：包已创建（2026-10-11，P0-乙 进行中）。** `packages/loglens/` 现在是 workspace 包
+> **状态：P0 全部落地（2026-10-11）——设置面可用、查询未实现。** `packages/loglens/` 现在是 workspace 包
 > （`@hyzyn/dsh-loglens@0.1.2`，已进 [publish-targets.mjs](../../scripts/publish-targets.mjs) 与两份聚合清单，
 > `pnpm-lock.yaml` 已同步）——所以 [docs-index 判据 5](../../scripts/docs-index.mjs) 现在**看得见它**，
 > 而不再是「本目录不在解析面里」。设计与契约见 [docs/design.md](./docs/design.md)；
-> `README.md` 目前还是模板生成的骨架，按 [conventions § 文档分档](../../docs/conventions.md#文档分档) 补内容排在 P1。
+> `README.md` 已按 [conventions § 文档分档](../../docs/conventions.md#文档分档) 补到当前状态（配置面 / 解剖 / 已知限制）。
 >
 > **id 已定：`loglens`**（包 `@hyzyn/dsh-loglens`）。`logs` 这个 loader id 已被第三方插件
 > `dsh-logbook` 占用，npm 上的 `dsh-logs` 也已被他人占位——理由与证据见 [design.md §8](./docs/design.md#8-已实测前提)。
@@ -245,7 +245,7 @@
 
 ---
 
-### P0-乙：原子建包（2026-10-11 落地 8 / 10 项；第 6、8 项见下）
+### P0-乙：原子建包（2026-10-11 落地 10 / 10 项）
 
 **落地了什么**
 
@@ -265,21 +265,49 @@
 **专门放了一个零宽空格**来躲开它——也就是说这个坑会随 `create-plugin` 复制进每一个新包。修法与编号见
 [DEFECTS.md](./DEFECTS.md)，源码侧也留了指向它的注释。
 
-**未落地 2 项（别丢：本次已把硬要求查清）**
+### P0-乙 收尾：客户端半体 + 设置面（2026-10-11 当天落地）
 
-`loglens` **还没有客户端半体**（`client-src/` 与 `client.js` 都不存在），因此第 6 项（`files` 加 `client.js`）与第 8 项
-（构建型声明）没落：`files` 仍是模板的 `["lib", "cordis.patch.yml", "README.md"]`、`build` 仍是纯 `tsc`。
-[i18n.md](../../docs/i18n.md) 里那句已按纪律 3 **加标注**（「已拍板、尚未落地」）而不是硬改数。落地时要知道：
+**改了什么**
 
-1. `client-src/index.js` 必须含 `const ROW_CONFIG_KEYS = [`，有一个 `<X>SettingsCard` 组件，且照
-   [plugin-settings-surface.test.ts](../../scripts/test/plugin-settings-surface.test.ts) 的 `expectedBlock()` 写**逐字节**契约块，否则那份用例红；
-2. 构建脚本照 [codegraph 的 build-client.mjs](../../packages/codegraph/scripts/build-client.mjs)：产物**单文件无 import**、遇残留 import `exit(1)`；
-   内联 `pure.js` 时替换必须用**函数**形式（字符串替换会把 `$&` 当替换模式吃掉，且整个过程确定性、CI 照绿）；
-3. `files` 加 `client.js`、`build` 串上 client 构建；`pnpm -r build` 后 `git diff` 必须干净（产物闸门）；
-4. 三处仓库级名单要加 `loglens`：[client-host-url.test.ts](../../scripts/test/client-host-url.test.ts) 与
-   [client-click-scope.test.ts](../../scripts/test/client-click-scope.test.ts) 的包数组、[plugin-settings-surface.test.ts](../../scripts/test/plugin-settings-surface.test.ts)
-   的期望名单与循环名单——不加 = 仓库级规则对 loglens **零覆盖**；
-5. 落地当天把 i18n.md 的注记摘掉、名单加回去（两处）。
+- [client-src/index.js](../loglens/client-src/index.js)（设置卡片）+ [client-src/pure.js](../loglens/client-src/pure.js)
+  （纯逻辑，进 vitest）+ [scripts/build-client.mjs](../loglens/scripts/build-client.mjs)——照 codegraph 那条路：
+  剥掉 pure.js 的 import、把它的 export 前缀去掉后内联进 factory 的内联锚点、发现残留 import 直接 `exit(1)`；
+  产物 `client.js` 入库。
+- 卡片：来源清单（类型 / 名称 / 地址三列，逐行保存与删除）、插件开关、以及「查询能力还没实现」这句明写的提示。
+  **一行一次请求**——新增走 `targets.add`、改走 `targets.update`、删走 `targets.remove`、开关走 `enabled`；
+  界面永远以宿主返回的那份为准（不做本地乐观合并）。
+- 设置面契约块从 [plugin-settings-surface.test.ts](../../scripts/test/plugin-settings-surface.test.ts) 的
+  `expectedBlock()` **正身**取出来拼接（不是手抄），所以「逐字节相同」是机械保证的。
+- `package.json`：`files` 加 `client.js`、`build` 串上客户端构建、`typecheck` 串上 `client-lint`
+  （模板给的 `tsc --noEmit` 对客户端半体零覆盖）、补 `lint:client`；三处仓库级名单加 `loglens`
+  （client-host-url / client-click-scope / plugin-settings-surface）。
+- **宿主侧同时补了最小可用的设置面**：`/api/dsh-loglens/config` 的 GET 与 POST
+  （[src/index.ts](../loglens/src/index.ts)），配置写在 `settings.update('loglens', …)` 的 volatile 路径上；
+  来源清单的纯判据在 [src/config.ts](../loglens/src/config.ts)（id 生成 / 地址校验 / 宽松读盘 / 增删改）。
+- [docs/i18n.md](../../docs/i18n.md) 的注记按计划摘掉，两个名单更新（构建型 3 → 4、客户端半体 11 个）。
+
+**门槛与证据（全部实跑）**
+
+| 闸 | 结果 |
+|---|---|
+| `pnpm typecheck` | 通过；loglens 的 `client-lint`：宿主地址来源 0 处、样式变量 55 处全部存在、胶囊/正圆 1 处配对 `corner-shape`、发丝线 5 处、圆角 6 处、危险按钮 1 处、按钮族 3 个类、排版 13 处、输入档 1 处、颜色 55 处 |
+| `plugin-settings-surface.test.ts` | 通过（12 条；含 loglens 的契约块逐字节比对与「bundle.config key 全仓两两不同」） |
+| `client-host-url` / `client-click-scope` 用例 | 通过（24 / 22 条）。loglens 已进两份名单；`bound` 那份「谁绑了 document 点击」的快照仍是 mcp / profile / prompt / rss 四张——本卡片用 React 的 onClick，不挂 document |
+| `check-i18n` | 通过：**11 / 11** 个客户端半体接入；loglens 30 条键 zh/en 一致、用法命中、剩余中文字面量 0 条 |
+| `check-package-contents` | 通过：loglens 10 个文件（含 `client.js`）都在 tarball 里 |
+| `check-test-collection` | 通过：盘面 155 / 收集 154 / 豁免 1 |
+| 全仓门禁 | `pnpm typecheck && pnpm build && pnpm test && pnpm aggregate` 全绿：**154 文件 / 2585 用例** |
+| 本包单测 | 49 条（来源纯判据 22 + 宿主路由与围栏 17 + 客户端纯逻辑 10） |
+
+**刻意的边界（别当成漏做）**
+
+- **查询面一行都没有**：没有适配器、没有 agent 工具、没有结果视图。卡片上把这句话写着——给一个
+  「看起来能用」的假界面比空着更糟。
+- 客户端只做**即时反馈**（`draftProblem`）；链路本地地址刻意不在浏览器侧拦——判据与围栏只有宿主一份
+  （`normalizeUrl` + 路由层的同源证明），堵两处就会有两份会漂的规则。
+- 不做 `docker exec`、不做写操作、不建浏览器侧共享包（i18n 目录内联在 `client-src/index.js`）。
+
+
 
 **门槛与证据（全部实跑）**
 

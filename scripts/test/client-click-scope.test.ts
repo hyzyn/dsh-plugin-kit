@@ -137,7 +137,7 @@ describe('真实语料：全部客户端半体 0 命中', () => {
    * 口径与 client-lint 完全一致（同一个 listClickScopeTargets）：有 client-src/ 查源码全量，
    * 否则查裸 client.js。这条同时是「规则上线即绿」的证据，和「以后有人写回去」的拦截网。
    */
-  const packages = ['codegraph', 'docker', 'env', 'kit-settings', 'mcp', 'profile', 'prompt', 'rss', 'search', 'tty']
+  const packages = ['codegraph', 'docker', 'env', 'kit-settings', 'loglens', 'mcp', 'profile', 'prompt', 'rss', 'search', 'tty']
 
   it('每个包都能被找到客户端半体（名单漂了要在这里发现）', () => {
     const missing = packages.filter((name) => listClickScopeTargets(join(repoRoot, 'packages', name)).length === 0)

@@ -33,7 +33,7 @@
 | `@hyzyn/dsh-codegraph` | 插件 | 代码图谱卡片 + MCP 托管 + 采纳率测量 | [README](../packages/codegraph/README.md) · [DEFECTS](../packages/codegraph/DEFECTS.md) · [ROADMAP](../packages/codegraph/ROADMAP.md) |
 | `@hyzyn/dsh-tty` | 插件 | 终端面板（PTY / SSH / SFTP / 隧道）+ `tty_*` `sftp_*` 工具 | [README](../packages/tty/README.md) · [DEFECTS](../packages/tty/DEFECTS.md) · [ROADMAP](../packages/tty/ROADMAP.md) |
 | `@hyzyn/dsh-docker` | 插件 | Docker 容器面板（本机 / SSH）+ `docker_*` 工具，默认只读 | [README](../packages/docker/README.md) · [DEFECTS](../packages/docker/DEFECTS.md) · [ROADMAP](../packages/docker/ROADMAP.md) |
-| `@hyzyn/dsh-loglens` | 插件 | 日志查询：把异构日志后端（Loki / Elasticsearch）归一化成统一查询前端 + `loglens_*` 工具（**未实现**，走构建型） | [README](../packages/loglens/README.md) · [设计](../packages/loglens/docs/design.md) · [ROADMAP](../packages/loglens/ROADMAP.md) |
+| `@hyzyn/dsh-loglens` | 插件 | 日志查询：把异构日志后端（Loki / Elasticsearch / OpenSearch / Docker）归一化成统一查询前端 + `loglens_*` 工具（**查询未实现**；来源清单 + 插件开关的设置面已落地，走构建型） | [README](../packages/loglens/README.md) · [设计](../packages/loglens/docs/design.md) · [ROADMAP](../packages/loglens/ROADMAP.md) |
 | `@hyzyn/dsh-all` | 聚合 | 一条 bundle patch 挂载上面 11 个插件 | [README](../packages/all/README.md) |
 
 > `kit` 是**唯一的库**：它没有 `cordis.patch.yml`，不挂载任何东西，也不出现在 `dsh-all` 的

@@ -113,10 +113,10 @@ describe('客户端设置面的注册契约（跨包一致）', () => {
   it('把「有设置卡片的包」都收进来了（新增包漏了契约会在这里露出来）', () => {
     // 设置卡片 = 注册过 row/config 或 kit/item 的包。search 的设置在自有面板里、kit-settings
     // 本身就是「插件配置」页的提供方，两者都没有 ROW_CONFIG_KEYS，因此不在名单里。
-    expect(withCard).toEqual(['codegraph', 'docker', 'env', 'mcp', 'profile', 'prompt', 'rss', 'tty'])
+    expect(withCard).toEqual(['codegraph', 'docker', 'env', 'loglens', 'mcp', 'profile', 'prompt', 'rss', 'tty'])
   })
 
-  for (const name of ['codegraph', 'docker', 'tty', 'env', 'mcp', 'profile', 'prompt', 'rss']) {
+  for (const name of ['codegraph', 'docker', 'tty', 'env', 'loglens', 'mcp', 'profile', 'prompt', 'rss']) {
     it(`${name}：内联优先 + 旧宿主回退，且 bundle 名由 row key 推导`, () => {
       const path = clientSourcePath(name)
       expect(path, `${name} 找不到客户端源码`).toBeDefined()

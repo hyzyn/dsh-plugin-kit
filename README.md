@@ -83,7 +83,7 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 | `@hyzyn/dsh-codegraph` | 代码图谱卡片 + MCP 托管 + 采纳率测量 | [README](packages/codegraph/README.md) · [DEFECTS](packages/codegraph/DEFECTS.md) · [ROADMAP](packages/codegraph/ROADMAP.md) |
 | `@hyzyn/dsh-tty` | 终端面板：PTY / SSH / SFTP / 隧道 | [README](packages/tty/README.md) · [DEFECTS](packages/tty/DEFECTS.md) · [ROADMAP](packages/tty/ROADMAP.md) |
 | `@hyzyn/dsh-docker` | Docker 容器面板（本机 / SSH），默认只读 | [README](packages/docker/README.md) · [DEFECTS](packages/docker/DEFECTS.md) · [ROADMAP](packages/docker/ROADMAP.md) |
-| `@hyzyn/dsh-loglens` | 日志查询：Loki / Elasticsearch 归一化查询前端 + `loglens_*` 工具（设计中，**未实现**） | [README](packages/loglens/README.md) |
+| `@hyzyn/dsh-loglens` | 日志查询：Loki / Elasticsearch / OpenSearch / Docker 归一化查询前端 + `loglens_*` 工具（**查询未实现**；来源清单与开关的设置面已落地） | [README](packages/loglens/README.md) |
 | `@hyzyn/dsh-all` | 聚合安装包：一条 bundle patch 挂载上面 11 个插件 | [README](packages/all/README.md) |
 
 ## 快速开始

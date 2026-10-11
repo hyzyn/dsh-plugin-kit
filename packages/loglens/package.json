@@ -25,6 +25,7 @@
     }
   },
   "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.4",
     "@hyzyn/dsh-kit": "0.5.2"
   },
   "devDependencies": {
@@ -33,11 +34,13 @@
     "typescript": "~5.9.3"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc --noEmit"
+    "build": "tsc -p tsconfig.json && node scripts/build-client.mjs",
+    "typecheck": "tsc --noEmit && node ../../scripts/client-lint.mjs",
+    "lint:client": "node ../../scripts/client-lint.mjs"
   },
   "files": [
     "lib",
+    "client.js",
     "cordis.patch.yml",
     "README.md"
   ],

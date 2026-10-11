@@ -85,7 +85,7 @@ direction and how they cooperate: [docs/architecture.md](docs/architecture.md) (
 | `@hyzyn/dsh-codegraph` | Code graph card + MCP management + adoption measurement | [README](packages/codegraph/README.md) · [DEFECTS](packages/codegraph/DEFECTS.md) · [ROADMAP](packages/codegraph/ROADMAP.md) |
 | `@hyzyn/dsh-tty` | Terminal panel: PTY / SSH / SFTP / tunnels | [README](packages/tty/README.md) · [DEFECTS](packages/tty/DEFECTS.md) · [ROADMAP](packages/tty/ROADMAP.md) |
 | `@hyzyn/dsh-docker` | Docker container panel (local / SSH), read-only by default | [README](packages/docker/README.md) · [DEFECTS](packages/docker/DEFECTS.md) · [ROADMAP](packages/docker/ROADMAP.md) |
-| `@hyzyn/dsh-loglens` | Log query front-end: normalized query over Loki / Elasticsearch + `loglens_*` tools (designed, **not implemented**) | [README](packages/loglens/README.md) |
+| `@hyzyn/dsh-loglens` | Log query front-end: normalized query over Loki / Elasticsearch / OpenSearch / Docker + `loglens_*` tools (**query not implemented**; the source list and enable switch are shipped) | [README](packages/loglens/README.md) |
 | `@hyzyn/dsh-all` | Aggregate package: one bundle patch that mounts the 11 plugins above | [README](packages/all/README.md) |
 
 ## Quick start

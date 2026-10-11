@@ -240,6 +240,9 @@ importers:
       '@deepseek-ai/dsh':
         specifier: link:../../scripts/dsh-peer-stub
         version: link:../../scripts/dsh-peer-stub
+      '@deepseek-ai/schemastery':
+        specifier: ^3.18.4
+        version: 3.18.4
       '@hyzyn/dsh-kit':
         specifier: 0.5.2
         version: link:../kit
