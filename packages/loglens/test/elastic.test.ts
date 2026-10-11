@@ -122,7 +122,7 @@ async function startFakeEs(options: {
         return
       }
       if (req.method === 'GET' && parsed.pathname.endsWith('/_field_caps')) {
-        send({ body: { fields: { '@timestamp': { date: {} }, message: { text: {} }, app: { keyword: {} } } } })
+        send({ body: { fields: options.fieldCaps ?? { '@timestamp': { date: {} }, message: { text: {} }, app: { keyword: {} } } } })
         return
       }
       if (req.method === 'POST' && parsed.pathname.endsWith('/_pit')) {
@@ -500,6 +500,20 @@ describe('flavor / fields / health', () => {
     expect(result.fields[0].preferred).toBe(true)
     expect(result.fields[2].preferred).toBeUndefined()
     expect(fake.requests[0].path).toBe('/' + INDEX + '/_field_caps')
+  })
+
+  it('字段表里不列 X.keyword 子字段行（调用方不该写 .keyword，适配器自己解析）', async () => {
+    const fake = await startFakeEs({
+      docs: [],
+      fieldCaps: {
+        'container.name': { text: { type: 'text' } },
+        'container.name.keyword': { keyword: { type: 'keyword' } },
+        'host.name': { keyword: { type: 'keyword' } },
+      },
+    })
+    const result = await createElasticBackend({ flavor: 'es' }).fields(fake.target)
+    expect(result.fields.map((field) => field.name)).toEqual(['container.name', 'host.name'])
+    expect(result.total).toBe(2)
   })
 
   it('字段表被上限截断时如实回报（真机反馈第 4 条：看不出截断等于没给）', async () => {

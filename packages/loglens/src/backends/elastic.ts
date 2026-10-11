@@ -66,7 +66,6 @@ export const PREFERRED_FIELDS: readonly string[] = [
   'host.name', 'service.name', 'log.file.path', 'log.logger', 'stream',
   'kubernetes.namespace', 'container.image.name', 'kubernetes.node.name',
   'log.level', 'level', 'message', '@timestamp',
-  'container.name.keyword', 'host.name.keyword', 'service.name.keyword',
 ]
 
 /** 字段排序：优先键按名单顺序在前，其余按字母（同一份清单在两次调用里顺序必须一样）。 */
@@ -467,7 +466,13 @@ export function createElasticBackend(options: ElasticOptions): LogBackend {
       })
       const fields = (body as { fields?: unknown }).fields
       if (typeof fields !== 'object' || fields === null) return { fields: [], total: 0, truncated: false }
-      const names = Object.keys(fields as Record<string, unknown>).filter((name) => !name.startsWith('_'))
+      const all = Object.keys(fields as Record<string, unknown>).filter((name) => !name.startsWith('_'))
+      /*
+       * 去掉 `X.keyword` 这类子字段行：**调用方根本不该写 .keyword**（适配器自己按 _field_caps 解析，
+       * 见 filterClauses / facets）。真机实测：不过滤的话 187 个字段里有一串 .keyword 重复行，
+       * 正是「字段表被污染」那一类噪声。
+       */
+      const names = all.filter((name) => !(name.endsWith('.keyword') && all.includes(name.slice(0, -'.keyword'.length))))
       const sorted = sortFieldNames(names)
       return {
         fields: sorted.slice(0, limit).map((name) => ({

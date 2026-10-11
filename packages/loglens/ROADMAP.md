@@ -704,9 +704,26 @@ package.json 中以 platform: 'web' 声明 dsh.client，导出 ./client bundle�
 `term` 打在 text 字段上匹配的是分词后的词，全串永远打不中，结果是一个静默的空集。所以解析权在适配器，
 判据（`native` / `keyword` / `text`）还带缓存，一次查询里同一字段只问一次 `_field_caps`。
 
-用例：`elastic.test.ts` 四条（filters 的两种打法、聚合请求体与三个信号、text 无子字段时的明确报错、
-既没给 by 也没给 interval）、`tools.test.ts` 三条（分组结果与两条 warning、interval 形态与硬上限、无能力来源的指路）、
-`tier-gate.test.ts`（五个工具全是 read）、`query-route.test.ts`（/facets 要同源证明）。
+用例：`elastic.test.ts` 五条（filters 的两种打法、聚合请求体与三个信号、text 无子字段时的明确报错、
+既没给 by 也没给 interval、字段表里不列 `.keyword` 子字段行）、`tools.test.ts` 三条（分组结果与两条 warning、
+interval 形态与硬上限、无能力来源的指路）、`tier-gate.test.ts`（五个工具全是 read）、
+`query-route.test.ts`（/facets 要同源证明）。
+
+**真机复核（2026-10-11，只读打用户那台 7.10.2）**——这一批的每一项都在真集群上验过：
+
+| 动作 | 真机结果 |
+|---|---|
+| `scope()` 回显 | `app-logs-*`（显式 index） |
+| `fields` | **187 个字段、truncated=true**，前几个就是 `container.name` / `host.name` / `log.file.path` / `stream` / `log.level`；`.keyword` 重复行已去掉（改前 agent 拿到的是 45KB 且看不出截断） |
+| `probe` | `7.10.2（elasticsearch）`，**最近 15 分钟 5987 条** |
+| `facets by container.name`（近 1h） | `chendan-ems-service 13404`、`chendan-cwms-service 10001`、`chendan-cdc-service 324`、prometheus 238、grafana 190…；**其余 32 条落在没列出来的桶里**（如实回报） |
+| `facets interval=10m`（近 1h） | 7 个时间点，1300~4300 条/10 分钟 |
+| `filters {container.name}` | 命中 13404，.keyword 解析成功（调用方没写 `.keyword`） |
+| 行的标签 | `container.name / host.name / log.file.path / stream / container.image.name / agent.name …`——agent 当初要的就是这个 |
+| 级别 | `[DEBUG] …` 这类正文推断出 debug，并标 `levelInferred`（这台集群的 `log.level` 确实是空的） |
+
+顺带一个**只有真机才能看到的观察**：`app-logs-*` 里混着 prometheus / grafana / filebeat 自己容器的日志——
+所以「哪个服务在报错」这句话在数据层面本来就要求先分组再筛，光靠拉行是拉不出来的（正是第 2 条的分量所在）。
 
 ### 真机反馈第四批：来源的范围要看得见（索引表达式 + 探测条数）（2026-10-11）
 

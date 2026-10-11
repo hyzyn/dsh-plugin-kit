@@ -288,7 +288,8 @@ export function registerLoglensTools(deps: ToolDeps): void {
     isConcurrencySafe: () => true,
     description: '列出一个日志来源可用的字段 / 标签（Loki 走 /loki/api/v1/labels；ES / OpenSearch 走 _field_caps）。'
       + '常用筛选项（container.name / host.name / log.level 这类）排在最前面，默认最多 80 个、硬上限 200；'
-      + '被截断时返回值里的 total / truncated 与 warnings 会说明——**别把这份截断过的清单当成全部字段**。',
+      + '被截断时返回值里的 total / truncated 与 warnings 会说明——**别把这份截断过的清单当成全部字段**。'
+      + '字段名**不用带 .keyword**（子字段行也不列）：适配器会自己按 _field_caps 决定怎么打。',
     parameters: {
       target: { type: 'string', description: '来源 id 或名称（loglens_sources 列出）；只有一个来源时可省略' },
       limit: { type: 'number', description: '最多列几个字段（默认 80，硬上限 200）' },
