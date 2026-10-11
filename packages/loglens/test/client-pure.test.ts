@@ -19,6 +19,7 @@ import {
   dockerLogLines,
   dockerProblem,
   dockerSince,
+  dockerTargetChoices,
 } from '../client-src/pure.js'
 
 describe('draft 形状', () => {
@@ -164,5 +165,25 @@ describe('dockerFlagOf：缺字段时保留上一次的判断', () => {
     expect(dockerFlagOf(true, { ok: true, config: {} })).toBe(true)
     expect(dockerFlagOf(false, undefined)).toBe(false)
     expect(dockerFlagOf(true, { plugins: 'nope' })).toBe(true)
+  })
+})
+
+describe('dockerTargetChoices：把 Docker 面板的目标清单变成选项', () => {
+  it('清单里的照原样给（label 缺省用 name）', () => {
+    expect(dockerTargetChoices([{ name: 'local', label: '本机' }, { name: '目标2' }], '')).toEqual([
+      { value: 'local', label: '本机', known: true },
+      { value: '目标2', label: '目标2', known: true },
+    ])
+  })
+
+  it('当前值不在清单里也要给出来，并标成「不在清单里」', () => {
+    const rows = dockerTargetChoices([{ name: 'local' }], 'hostma-test-161')
+    expect(rows).toHaveLength(2)
+    expect(rows[1]).toEqual({ value: 'hostma-test-161', label: 'hostma-test-161', known: false })
+  })
+
+  it('空清单 / 脏输入都不炸', () => {
+    expect(dockerTargetChoices(undefined, '')).toEqual([])
+    expect(dockerTargetChoices([null, { name: '' }, { name: 42 }], '')).toEqual([])
   })
 })

@@ -202,3 +202,29 @@ export function dockerFlagOf(previous, payload) {
   if (plugins === undefined || plugins === null || typeof plugins !== 'object') return previous
   return plugins.docker === true
 }
+
+/**
+ * Docker 目标名下拉：把 Docker 插件自己的目标清单变成选项。
+ *
+ * 现场（2026-10-11）：用户手填了主机名 `hostma-test-161`，而 Docker 面板里的目标名是 `目标2`
+ * ——两个插件各有各的目标清单，名字不会自动对上。这个函数负责：清单里有的照原样给，**当前值不在
+ * 清单里也要给出来并标出「不在清单里」**（让人一眼看见不一致，而不是等按下按钮才报错）。
+ *
+ * @param entries Docker 插件 /config 响应里的 config.targets（形如 { name, label }）
+ * @param current 当前草稿里的 dockerTarget 值
+ * @returns [{ value, label, known }]（不含「留空」那一项，它由界面自己加）
+ */
+export function dockerTargetChoices(entries, current) {
+  const list = Array.isArray(entries) ? entries : []
+  const rows = []
+  for (const entry of list) {
+    if (entry == null || typeof entry.name !== 'string' || entry.name === '') continue
+    const label = typeof entry.label === 'string' && entry.label !== '' ? entry.label : entry.name
+    rows.push({ value: entry.name, label, known: true })
+  }
+  const chosen = String(current == null ? '' : current).trim()
+  if (chosen !== '' && !rows.some((row) => row.value === chosen)) {
+    rows.push({ value: chosen, label: chosen, known: false })
+  }
+  return rows
+}

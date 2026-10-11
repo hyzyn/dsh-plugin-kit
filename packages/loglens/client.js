@@ -224,6 +224,32 @@ window.__ModuleLoader__.load({
       return plugins.docker === true
     }
 
+    /**
+     * Docker 目标名下拉：把 Docker 插件自己的目标清单变成选项。
+     *
+     * 现场（2026-10-11）：用户手填了主机名 `hostma-test-161`，而 Docker 面板里的目标名是 `目标2`
+     * ——两个插件各有各的目标清单，名字不会自动对上。这个函数负责：清单里有的照原样给，**当前值不在
+     * 清单里也要给出来并标出「不在清单里」**（让人一眼看见不一致，而不是等按下按钮才报错）。
+     *
+     * @param entries Docker 插件 /config 响应里的 config.targets（形如 { name, label }）
+     * @param current 当前草稿里的 dockerTarget 值
+     * @returns [{ value, label, known }]（不含「留空」那一项，它由界面自己加）
+     */
+    function dockerTargetChoices(entries, current) {
+      const list = Array.isArray(entries) ? entries : []
+      const rows = []
+      for (const entry of list) {
+        if (entry == null || typeof entry.name !== 'string' || entry.name === '') continue
+        const label = typeof entry.label === 'string' && entry.label !== '' ? entry.label : entry.name
+        rows.push({ value: entry.name, label, known: true })
+      }
+      const chosen = String(current == null ? '' : current).trim()
+      if (chosen !== '' && !rows.some((row) => row.value === chosen)) {
+        rows.push({ value: chosen, label: chosen, known: false })
+      }
+      return rows
+    }
+
     /* ================================ CSS ================================ */
 
     const CSS = [
@@ -371,6 +397,8 @@ window.__ModuleLoader__.load({
       'hint.docker': '容器日志走的是 Docker 面板插件自己的 /api/dsh-docker/logs：这条路没有 until、行数有上限、没有 grep——要精确检索请让 agent 用 docker_logs_grep。',
       'hint.dockerMissing': '这条路径要「Docker 容器面板」插件（当前没检测到它）：装上并启用后，这里可以直接看容器日志。',
       'error.needContainer': '先选一个容器',
+      'option.dockerAuto': '（让 Docker 面板自己回落）',
+      'hint.dockerTargetUnknown': '（不在 Docker 面板的目标里）',
     }
     const I18N_EN = {
       'card.name': 'Log query',
@@ -439,6 +467,8 @@ window.__ModuleLoader__.load({
       'hint.docker': 'Container logs come from the Docker panel plugin own /api/dsh-docker/logs: no until, a capped tail, and no grep — ask the agent for docker_logs_grep when you need real search.',
       'hint.dockerMissing': 'This path needs the Docker container panel plugin (not detected): install and enable it to read container logs here.',
       'error.needContainer': 'Pick a container first',
+      'option.dockerAuto': '(let the Docker panel pick)',
+      'hint.dockerTargetUnknown': ' (not a target in the Docker panel)',
     }
     /* ==== dsh-i18n:end ==== */
 
@@ -519,12 +549,14 @@ window.__ModuleLoader__.load({
       const [dockerLogs, setDockerLogs] = React.useState('')
       const [dockerTail, setDockerTail] = React.useState(200)
       const [dockerBusy, setDockerBusy] = React.useState(false)
+      const [dockerTargets, setDockerTargets] = React.useState([])
 
       /** 宿主回什么就照什么渲染：一切状态以服务端那份为准，不在本地做乐观合并。 */
       const applyConfig = React.useCallback((payload) => {
         const next = payload && payload.config ? payload.config : { enabled: true, targets: [] }
         setEnabled(next.enabled !== false)
         setDrafts((Array.isArray(next.targets) ? next.targets : []).map(draftFromTarget))
+        loadDockerTargets()
         // 只有响应真的带 plugins 才覆盖：保存走的 POST /config 也可能不带（缺字段 = 不知道，不是没装）
         setDocker((current) => dockerFlagOf(current, payload))
       }, [])
@@ -670,6 +702,17 @@ window.__ModuleLoader__.load({
         }
       }
 
+      /** 拉 Docker 面板自己的目标清单（拿不到就退回手填，不把整张卡片带下去）。 */
+      const loadDockerTargets = async () => {
+        try {
+          const parsed = await api('/api/dsh-docker/config')
+          const config = parsed.config === undefined || parsed.config === null ? {} : parsed.config
+          setDockerTargets(Array.isArray(config.targets) ? config.targets : [])
+        } catch {
+          /* Docker 面板没装 / 未启用：保持手填 */
+        }
+      }
+
       const loadContainers = async () => {
         if (!docker || selectedDraft === undefined) return
         setDockerBusy(true)
@@ -748,13 +791,28 @@ window.__ModuleLoader__.load({
             disabled: saving,
             onChange: (event) => { updateDraft(index, { label: event.target.value }) },
           }),
-          jsx('input', {
+          draft.kind === 'docker' ? jsx('select', {
             className: 'll_input',
-            title: draft.kind === 'docker' ? t('field.dockerTarget') : t('field.url'),
-            placeholder: draft.kind === 'docker' ? t('placeholder.dockerTarget') : t('placeholder.url'),
-            value: draft.kind === 'docker' ? draft.dockerTarget : draft.url,
+            title: t('field.dockerTarget'),
+            value: draft.dockerTarget,
             disabled: saving,
-            onChange: (event) => { updateDraft(index, draft.kind === 'docker' ? { dockerTarget: event.target.value } : { url: event.target.value }) },
+            onChange: (event) => { updateDraft(index, { dockerTarget: event.target.value }) },
+            children: [
+              jsx('option', { value: '', children: t('option.dockerAuto') }, 'll-docker-auto'),
+              ...dockerTargetChoices(dockerTargets, draft.dockerTarget).map((choice) => jsx('option', {
+                value: choice.value,
+                children: choice.known
+                  ? (choice.label === choice.value ? choice.value : choice.value + '（' + choice.label + '）')
+                  : choice.value + t('hint.dockerTargetUnknown'),
+              }, 'll-docker-' + choice.value)),
+            ],
+          }) : jsx('input', {
+            className: 'll_input',
+            title: t('field.url'),
+            placeholder: t('placeholder.url'),
+            value: draft.url,
+            disabled: saving,
+            onChange: (event) => { updateDraft(index, { url: event.target.value }) },
           }),
           jsx('button', {
             type: 'button',
