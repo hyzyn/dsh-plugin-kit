@@ -7,6 +7,7 @@
  */
 import type { LoglensConfig, LoglensTarget, SourceKind } from './config.js';
 import type { BackendCaps, LogBackend, LogCounts, LogLine, Truncation } from './backends/types.js';
+import type { CanonicalLevel } from './line.js';
 export interface ExecuteDeps {
     /** 当前生效的配置（宿主侧那一份，volatile 更新后跟着变）。 */
     config: () => LoglensConfig;
@@ -68,6 +69,21 @@ export type SearchOutcome = {
     nextCursor?: string;
     warnings: string[];
     hint?: string;
+    /** 生效的 level 过滤（只回显，便于调用方知道这一页被筛过；语义见 runSearch 的注释）。 */
+    level?: string;
+};
+/**
+ * level 参数：归一化成 CanonicalLevel；认不出来就报错（**不猜**）。
+ *
+ * 语义是「**及以上**」：level=warn 得到 warn + error + fatal（日志查看器的通行口径）。
+ * 行上没有级别**不算命中**——不能把「不知道」当成「是 error」。
+ */
+export declare function readLevel(value: unknown): {
+    ok: true;
+    level?: CanonicalLevel;
+} | {
+    ok: false;
+    error: string;
 };
 /** 查一次（抛错即失败，调用方把 message 回给对面：工具抛出去、路由回 400）。 */
 export declare function runSearch(deps: ExecuteDeps, input: Record<string, unknown>): Promise<SearchOutcome>;

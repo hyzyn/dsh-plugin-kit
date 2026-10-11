@@ -48,7 +48,15 @@ export interface NormalizedQuery {
  */
 export interface LogLine {
   ts: number
+  /** 级别。**归一化过**（trace / debug / info / warn / error / fatal），见 src/line.ts。 */
   level?: string
+  /**
+   * true = 这个级别是**从正文推断**的（文档 / 流标签里没有级别字段）。
+   *
+   * 为什么单列一位：level 是筛选项，而「文档说它是 error」与「我从正文看着像 error」是两种可信度。
+   * 契约不许把后者写成前者——与 LogCounts.totalKnown 同一口径。
+   */
+  levelInferred?: boolean
   message: string
   source: string
   labels: Record<string, string>

@@ -182,6 +182,33 @@ describe('loglens_search', () => {
     expect(seen.length).toBeGreaterThan(0)
   })
 
+  it('level 过滤：及以上语义、只筛本页并明说范围、认不出的级别直接报错', async () => {
+    const withLevel = (ts: number, message: string, level?: string): LogLine => (level === undefined
+      ? line(ts, message)
+      : { ...line(ts, message), level })
+    const backend = fakeBackend({
+      query: async () => resultOf([
+        withLevel(1, 'info line', 'info'),
+        withLevel(2, 'warn line', 'warn'),
+        withLevel(3, 'error line', 'error'),
+        withLevel(4, 'no level line'),
+      ]),
+    })
+    const value = await harness(backend).execute({ from: 1_700_000_000_000, to: 1_700_000_060_000, level: 'warn' }) as Record<string, unknown>
+    const lines = value.lines as Array<{ message: string, level?: string }>
+    expect(lines.map((item) => item.message)).toEqual(['warn line', 'error line'])
+    expect(value.returned).toBe(2)
+    expect(value.level).toBe('warn')
+    // 范围必须写在明面上：counts 是**未筛的整页**，不然 agent 会以为「就这么多」
+    const warnings = (value.warnings as string[]).join()
+    expect(warnings).toContain('这一页')
+    expect(warnings).toContain('2 / 4')
+    await expect(harness(backend).execute({ from: 1_700_000_000_000, to: 1_700_000_060_000, level: 'loud' })).rejects.toThrow('level 只能是')
+    // 不筛时不许冒出这一条 warning（否则每条查询都带噪音）
+    const plain = await harness(backend).execute({ from: 1_700_000_000_000, to: 1_700_000_060_000 }) as Record<string, unknown>
+    expect((plain.warnings as string[]).join()).not.toContain('这一页')
+  })
+
   it('来源不支持游标 + 命中被 limit 截断 → 明说「可能不完整，缩小时间窗」', async () => {
     const backend = fakeBackend({
       query: async () => resultOf([line(1, 'a')], { truncation: { truncated: true, reasons: ['hit_limit'] } }),

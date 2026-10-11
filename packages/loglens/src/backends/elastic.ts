@@ -15,6 +15,7 @@
 import type { LoglensTarget } from '../config.js'
 import { decodeSearchAfterCursor, encodeSearchAfterCursor } from '../cursor.js'
 import type { SearchAfterCursor } from '../cursor.js'
+import { flattenLabels, withLevel } from '../line.js'
 import { requestJson as fetchJson } from '../net.js'
 import type { LookupFn } from '../net.js'
 import { countsOf, truncationOf } from '../query.js'
@@ -40,8 +41,6 @@ export const ES_TIMEOUT_MS = 20_000
 export const ES_PIT_KEEP_ALIVE = '2m'
 /** 时间字段：ES 里日志索引的惯例。换索引形态时改这里（日后进配置）。 */
 export const ES_TIME_FIELD = '@timestamp'
-/** 已经搬到显式字段上的键，不再进 labels。 */
-const CONSUMED_KEYS = new Set(['@timestamp', 'timestamp', 'message', 'level', 'log.level'])
 /** labels 的条数上限：日志文档的字段可能几十个，全塞进每行会把工具返回值撑爆。 */
 const LABEL_LIMIT = 20
 
@@ -188,27 +187,20 @@ export function lineFromHit(hit: EsHit): LogLine | undefined {
   const ts = typeof rawTime === 'string' ? Date.parse(rawTime) : typeof rawTime === 'number' ? rawTime : Number.NaN
   if (!Number.isFinite(ts)) return undefined
   const message = typeof source.message === 'string' ? source.message : JSON.stringify(source)
-  const level = typeof source.level === 'string'
-    ? source.level
-    : typeof source['log.level'] === 'string'
-      ? (source['log.level'] as string)
-      : undefined
-  const labels: Record<string, string> = {}
-  for (const [key, value] of Object.entries(source)) {
-    if (CONSUMED_KEYS.has(key)) continue
-    if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') continue
-    if (Object.keys(labels).length >= LABEL_LIMIT) break
-    labels[key] = String(value)
-  }
-  return {
+  /*
+   * labels 走**展平 + 优先键**（src/line.ts）：filebeat 的 container / host / agent / log 全是嵌套对象，
+   * 早先那版只收标量，于是行上唯一的标签是 stream——看不出是哪台机器、哪个容器（真机反馈第 1 条）。
+   * 级别同理：文档里有 log.level / level 就用它，没有才从正文推断，并标出是推断来的（第 7 条）。
+   */
+  const line: LogLine = {
     ts,
-    ...(level === undefined ? {} : { level }),
     message,
     source: typeof hit._index === 'string' ? hit._index : '',
-    labels,
+    labels: flattenLabels(source, { limit: LABEL_LIMIT }),
     raw: JSON.stringify(source),
     id: typeof hit._id === 'string' ? hit._id : '',
   }
+  return withLevel(line, [source.level, source['log.level'], source.severity])
 }
 
 /**

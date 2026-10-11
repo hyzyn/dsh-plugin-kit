@@ -62,7 +62,12 @@ export interface SliceResult<T extends OrderedRow> {
  * 后者会把同 ts 上**还没返回过**的行一起丢掉——那正是这套游标要避免的丢行。
  */
 export declare function slicePage<T extends OrderedRow>(rows: T[], cursor: LokiCursor | undefined, limit: number): SliceResult<T>;
-/** 把 Loki 返回的 `[tsNs, line]` 对转成 LogLine（`id` 稳定：同 ts 同流同序号只算一行）。 */
+/**
+ * 把 Loki 返回的 `[tsNs, line]` 对转成 LogLine（`id` 稳定：同 ts 同流同序号只算一行）。
+ *
+ * 级别：Loki 3.x 会带 `detected_level` 标签，有的部署把 `level` 放在流标签里——**有就用它**；
+ * 都没有才从正文推断，并标出 levelInferred（真机反馈第 7 条）。
+ */
 export declare function lineFromLoki(row: OrderedRow & {
     tsNs: string;
     line: string;

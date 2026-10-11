@@ -7,6 +7,8 @@
  */
 import type { LoglensConfig, LoglensTarget, SourceKind } from './config.js'
 import type { BackendCaps, LogBackend, LogCounts, LogLine, Truncation } from './backends/types.js'
+import { CANONICAL_LEVELS, canonicalLevel, levelHint, levelMatches } from './line.js'
+import type { CanonicalLevel } from './line.js'
 import { normalizeQuery } from './query.js'
 
 export interface ExecuteDeps {
@@ -105,6 +107,23 @@ export type SearchOutcome = {
   nextCursor?: string
   warnings: string[]
   hint?: string
+  /** 生效的 level 过滤（只回显，便于调用方知道这一页被筛过；语义见 runSearch 的注释）。 */
+  level?: string
+}
+
+/**
+ * level 参数：归一化成 CanonicalLevel；认不出来就报错（**不猜**）。
+ *
+ * 语义是「**及以上**」：level=warn 得到 warn + error + fatal（日志查看器的通行口径）。
+ * 行上没有级别**不算命中**——不能把「不知道」当成「是 error」。
+ */
+export function readLevel(value: unknown): { ok: true, level?: CanonicalLevel } | { ok: false, error: string } {
+  if (value === undefined || value === null || value === '') return { ok: true }
+  const level = canonicalLevel(value)
+  if (level === undefined) {
+    return { ok: false, error: 'level 只能是 ' + CANONICAL_LEVELS.join(' / ') + '（收到 ' + JSON.stringify(value) + '）' }
+  }
+  return { ok: true, level }
 }
 
 /** 查一次（抛错即失败，调用方把 message 回给对面：工具抛出去、路由回 400）。 */
@@ -124,7 +143,27 @@ export async function runSearch(deps: ExecuteDeps, input: Record<string, unknown
     cursor: input.cursor,
   }, caps)
   if (!normalized.ok) throw new Error(normalized.error)
+  const wanted = readLevel(input.level)
+  if (!wanted.ok) throw new Error(wanted.error)
   const result = await backend.query(normalized.query, picked.target)
+  const warnings = normalized.warnings.slice()
+  /*
+   * level 过滤在**这一页**上做（真机反馈第 7 条）。
+   *
+   * 为什么不推给后端：级别字段在各家索引里名字与存在性都不一样（这套集群里 log.level 是空桶，
+   * 级别其实长在正文里），推下去就会变成「有时候筛了、有时候静默没筛」。所以本层如实做页内筛 +
+   * 一条明说范围的 warning：counts 与 truncation 仍是**未筛的整页**，要按级别统计该用聚合。
+   */
+  let lines = result.lines
+  if (wanted.level !== undefined) {
+    const kept = lines.filter((line) => levelMatches(line.level, wanted.level as CanonicalLevel))
+    warnings.push(
+      'level=' + wanted.level + '（' + levelHint(wanted.level) + '）是按**返回的这一页**筛的：'
+      + String(lines.length - kept.length) + ' / ' + String(lines.length) + ' 行被筛掉，'
+      + 'counts 与 truncation 仍是未筛的整页——要按级别看全量请用聚合（loglens_facets）',
+    )
+    lines = kept
+  }
   const reasons = result.truncation.reasons
   const limited = reasons.includes('hit_limit')
   const hint = reasons.includes('cursor_expired')
@@ -135,13 +174,14 @@ export async function runSearch(deps: ExecuteDeps, input: Record<string, unknown
   return {
     target: describeTarget(picked.target),
     window: { from: normalized.query.from, to: normalized.query.to },
-    returned: result.counts.returned,
+    returned: lines.length,
     counts: result.counts,
     truncation: result.truncation,
-    lines: result.lines,
+    lines,
     ...(result.nextCursor === undefined ? {} : { nextCursor: result.nextCursor }),
-    warnings: normalized.warnings,
+    warnings,
     ...(hint === undefined ? {} : { hint }),
+    ...(wanted.level === undefined ? {} : { level: wanted.level }),
   }
 }
 

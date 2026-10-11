@@ -686,6 +686,26 @@ package.json 中以 platform: 'web' 声明 dsh.client，导出 ./client bundle�
 **上游**：设计 §4.1 记的「第二个消费者出现时上收到 kit」**不触发**——两个消费者（Loki / ES）都在本包内。
 真要上收时，`net.ts` 是从 `assertReachable` + `requestJson` 两个导出切出去的。
 
+### 真机反馈第二批：行的可观性（标签展平 + 级别）（2026-10-11）
+
+agent 在真集群上给的批评里**代价最大**的一条：它拿到的 60 行输出里唯一的标签是 `stream=stdout`，
+看不出是哪台机器、哪个容器——于是只能绕出插件去 curl，而一绕出去，出站围栏 / 认证 / 归一化全没了。
+
+| # | 问题 | 落点 |
+|---|---|---|
+| 1 | `lineFromHit` 只把**标量**收进 labels，filebeat 的 container / host / agent / log 全是嵌套对象，整棵被跳过 | `src/line.ts` 的 `flattenLabels`：点分路径展平（下钻 3 层、标量数组拼逗号、值超 160 字符截断）+ **优先键**先占名额（container.name / pod / host.name / service.name / log.file.path / stream …；采集器 `agent.name` 刻意排后面——它整个集群都一样，是背景不是身份） |
+| 7 | `level` 是空字段（这套集群 `log.level` 是空桶，级别长在正文里），"只看错误"只能退化成 `message:ERROR`，还会捞进 logback 的 `Propagating ERROR level on Logger[...]` 噪声 | 级别**归一化**成六档（trace/debug/info/warn/error/fatal，含 SEVERE / CRITICAL / dbg 这类别名）+ 只在「级别该出现的位置」**推断**（行首断语、`level=ERROR`、logback 时间戳后那一位），推断来的标 `levelInferred: true`；`loglens_search` 加 `level` 参数（**及以上**语义，warn 得 warn+error+fatal） |
+
+**level 过滤在本页做，并把范围写在明面上**：级别字段在各家索引里名字与存在性都不一样，推给后端
+就会变成「有时候筛了、有时候静默没筛」。所以 execute 层如实做页内筛 + 一条 warning
+（「N / M 行被筛掉，counts 与 truncation 仍是未筛的整页」）；行上没有级别**不算命中**——
+不能把「不知道」当成「是 error」。要按级别看全量是聚合的活（下一批的 `loglens_facets`）。
+
+用例：`test/line.test.ts` 14 条（照 filebeat 真实文档形状写夹具：容器名 / 主机名 / 日志路径 / 深度上限 /
+值截断 / 优先键占位；五种真机写法各一条推断 + **噪声反例**）、`elastic.test.ts` 两条（嵌套文档进 labels、
+文档有 log.level 时不标推断）、`tools.test.ts` 一条端到端（及以上语义 / 页内筛 warning / 非法级别报错 /
+不筛时没有这条噪音）。
+
 ### 真机反馈第一批：时间入参与窗口兜底（2026-10-11）
 
 agent 在真集群上用完插件后给了 7 条批评，这是其中最便宜、收益最直接的两条（同一处：`src/query.ts`）。

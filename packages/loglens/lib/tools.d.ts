@@ -16,7 +16,12 @@ export interface ToolDeps {
     /** 注册漏斗：与 docker 的 add 同款（单个工具注册失败不该把一整批带下去）。 */
     add: (name: string, definition: unknown) => void;
 }
-/** 一行的可读形式：时间用 ISO（人看日志时以本地时间为准，ISO UTC 至少不含糊）。 */
+/**
+ * 一行的可读形式：时间用 ISO（人看日志时以本地时间为准，ISO UTC 至少不含糊）+ 级别 + 正文 + 标签。
+ *
+ * 级别带个问号（`error?`）= 它是**从正文推断**的（文档里没有级别字段）：agent 据此决定
+ * 「这条我能当级别用吗」。标签按 host / container 这类**谁写的**排在前面（src/line.ts 的优先键）。
+ */
 export declare function formatLine(line: LogLine): string;
 export declare function renderLines(lines: readonly LogLine[], markId?: string): string;
 export declare function registerLoglensTools(deps: ToolDeps): void;

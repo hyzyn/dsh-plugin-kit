@@ -31,12 +31,18 @@ export const LOGLENS_TIER_CLASS = {
 };
 /** 档位闸只认这些前缀（名单外一个都不碰）。 */
 export const LOGLENS_TIER_PREFIXES = ['loglens_'];
-/** 一行的可读形式：时间用 ISO（人看日志时以本地时间为准，ISO UTC 至少不含糊）。 */
+/**
+ * 一行的可读形式：时间用 ISO（人看日志时以本地时间为准，ISO UTC 至少不含糊）+ 级别 + 正文 + 标签。
+ *
+ * 级别带个问号（`error?`）= 它是**从正文推断**的（文档里没有级别字段）：agent 据此决定
+ * 「这条我能当级别用吗」。标签按 host / container 这类**谁写的**排在前面（src/line.ts 的优先键）。
+ */
 export function formatLine(line) {
+    const level = line.level === undefined ? '' : line.level + (line.levelInferred === true ? '? ' : ' ');
     const labels = Object.keys(line.labels).length === 0
         ? ''
         : '  ' + Object.entries(line.labels).map(([key, value]) => key + '=' + value).join(' ');
-    return new Date(line.ts).toISOString() + '  ' + line.message + labels;
+    return new Date(line.ts).toISOString() + '  ' + level + line.message + labels;
 }
 export function renderLines(lines, markId) {
     if (lines.length === 0)
@@ -50,7 +56,8 @@ const LINE_SCHEMA = {
     properties: {
         ts: { type: 'number', required: true },
         message: { type: 'string', required: true },
-        level: { type: 'string' },
+        level: { type: 'string', description: '归一化级别（trace / debug / info / warn / error / fatal）' },
+        levelInferred: { type: 'boolean', description: 'true = 级别是从正文推断的（文档里没有级别字段），不是来源自己标的' },
         source: { type: 'string', required: true },
         id: { type: 'string', required: true },
         labels: { type: 'object', additionalProperties: true, properties: {} },
@@ -174,6 +181,12 @@ export function registerLoglensTools(deps) {
             limit: { type: 'number', description: '返回条数上限（默认 100）；超过来源单页上限会被夹取，warnings 里会说明' },
             direction: { type: 'string', description: 'forward（旧的在前）或 backward（新的在前，默认）' },
             cursor: { type: 'string', description: '上一页返回的 nextCursor；来源声明 pagination=none 时不会有它' },
+            level: {
+                type: 'string',
+                description: '只要这个级别**及以上**的行（trace / debug / info / warn / error / fatal）。'
+                    + '注意：级别可能是从正文推断的（lines[].levelInferred），且来源侧没有统一的级别字段——'
+                    + '所以这是在**返回的这一页**上筛的，counts 仍是整页；要按级别看全量用 loglens_facets',
+            },
         },
         output: {
             schema: {
@@ -189,12 +202,13 @@ export function registerLoglensTools(deps) {
                     nextCursor: { type: 'string' },
                     warnings: { type: 'array', required: true, items: { type: 'string' } },
                     hint: { type: 'string' },
+                    level: { type: 'string', description: '生效的 level 过滤（回显）' },
                 },
             },
             render: (_args, value) => {
                 const result = value;
                 const lines = result.lines === undefined ? [] : result.lines;
-                const head = '返回 ' + String(result.returned) + ' 行' + (result.counts?.scannedRows === undefined ? '' : '，扫描 ' + String(result.counts.scannedRows) + ' 行') + (result.truncation?.truncated === true ? '（截断：' + (result.truncation.reasons ?? []).join(' / ') + '）' : '');
+                const head = '返回 ' + String(result.returned) + ' 行' + (result.level === undefined ? '' : '（level ≥ ' + result.level + '）') + (result.counts?.scannedRows === undefined ? '' : '，扫描 ' + String(result.counts.scannedRows) + ' 行') + (result.truncation?.truncated === true ? '（截断：' + (result.truncation.reasons ?? []).join(' / ') + '）' : '');
                 const tail = [result.hint === undefined ? '' : result.hint, ...(result.warnings ?? [])].filter((item) => item !== '');
                 return [{ type: 'text', text: [head, renderLines(lines), ...tail].join('\n') }];
             },

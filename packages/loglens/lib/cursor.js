@@ -1,3 +1,4 @@
+import { withLevel } from './line.js';
 /** 游标版本：形态变了就升版本，解不开的老游标按 invalid 处理（不猜）。 */
 export const CURSOR_VERSION = 1;
 export function encodeCursor(cursor) {
@@ -71,18 +72,23 @@ export function slicePage(rows, cursor, limit) {
     }
     return result;
 }
-/** 把 Loki 返回的 `[tsNs, line]` 对转成 LogLine（`id` 稳定：同 ts 同流同序号只算一行）。 */
+/**
+ * 把 Loki 返回的 `[tsNs, line]` 对转成 LogLine（`id` 稳定：同 ts 同流同序号只算一行）。
+ *
+ * 级别：Loki 3.x 会带 `detected_level` 标签，有的部署把 `level` 放在流标签里——**有就用它**；
+ * 都没有才从正文推断，并标出 levelInferred（真机反馈第 7 条）。
+ */
 export function lineFromLoki(row, ordinalInGroup) {
     const labels = row.labels === undefined ? {} : row.labels;
     const ts = Number(BigInt(row.tsNs) / 1000000n);
-    return {
+    return withLevel({
         ts,
         message: row.line,
         source: String(row.streamIdx) + '@' + row.tsNs,
         labels,
         raw: row.line,
         id: String(row.streamIdx) + ':' + row.tsNs + ':' + String(ordinalInGroup),
-    };
+    }, [labels.level, labels.detected_level, labels.severity]);
 }
 export function encodeSearchAfterCursor(cursor) {
     return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');

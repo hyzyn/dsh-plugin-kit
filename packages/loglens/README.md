@@ -17,6 +17,9 @@
   四个工具都归 **read** 档（分类表见 [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md) §2.1）。
 - **在同一张卡片里直接查**：来源 / 查询串 / 时间窗（15m · 1h · 6h · 24h）/ 条数 → 结果列表（时间到毫秒 ·
   级别 · 正文）+ 诚实的计数与截断提示；有游标时给「下一页」（按 id 去重）。
+- **行上能看出「谁写的」**：filebeat 那类嵌套字段（`container.name` / `host.name` / `log.file.path`）摊成
+  点分标签并排在前面；级别归一化成 trace→fatal 六档，文档里没有时从正文推断（此时 `levelInferred: true`，
+  `loglens_search` 的 `level` 参数是**及以上**语义）。
 - 面板与 agent 工具走**同一个执行层**（[src/execute.ts](./src/execute.ts)）：同一份归一化、同一份截断信号——
   不会出现「面板说的和工具说的不一样」。
 - **Docker 目标**在卡片里换成「容器日志」区（拉容器 → 选容器 / 行数 → 看日志），走 Docker 面板插件自己的
@@ -71,6 +74,7 @@ curl -s -X POST http://127.0.0.1:3080/api/dsh-loglens/config -H 'content-type: a
 | `src/index.ts` | 宿主半体：`/config` 路由 + 设置持久化（查询面还没有） |
 | `src/config.ts` | 来源清单的**纯**判据（id 生成 / 地址校验 / 宽松读盘 / 增删改），不碰 cordis 与网络 |
 | `src/net.ts` | **出站围栏**：解析后的 IP 判定（链路本地 / 元数据拒、私网放行、公网默认拒）+ 不跟随重定向 + 体积与超时上限；两个适配器的所有出站都过它 |
+| `src/line.ts` | 行的**可观性**：嵌套字段摊成点分标签（优先键先占名额）+ 级别归一化与正文推断（标 `levelInferred`） |
 | `src/execute.ts` | 找来源 / 归一化 / 拼返回形状：**agent 工具与面板路由共用**的那一层 |
 | `src/backends/registry.ts` | kind → 适配器（Loki / ES / OS；Docker 按设计不进这里） |
 | `src/backends/types.ts` | 后端契约的**形状**（`LogBackend` / `BackendCaps` / `LogCounts` / `Truncation`…），没有实现 |

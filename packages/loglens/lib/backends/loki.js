@@ -1,4 +1,5 @@
 import { decodeCursor, encodeCursor, lineFromLoki, slicePage } from '../cursor.js';
+import { withLevel } from '../line.js';
 import { requestJson as fetchJson } from '../net.js';
 import { countsOf, truncationOf } from '../query.js';
 /** Loki 单页上限的默认声明（Loki 自己的默认是 100，这里放宽；再大要动服务端 max_entries_limit）。 */

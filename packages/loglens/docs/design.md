@@ -40,8 +40,16 @@
   **入参的写法比契约宽**（2026-10-11 起）：工具面收 epoch 毫秒 / ISO 8601 / 相对时间（`-30m`），
   解析只发生在 `query.ts` 这一层，出去就是 ms——契约本身没变，变的是**入口的便利度**；
   理由见 [../ROADMAP.md](../ROADMAP.md) 那批真机反馈（让模型手算绝对毫秒是真的会错）。
-- `LogLine`：`{ ts, level?, message, source, labels, raw, id }`。
+- `LogLine`：`{ ts, level?, levelInferred?, message, source, labels, raw, id }`。
   `source` + `ts` 必须**可重查**——三个后端都没有原生的「某行前后 N 行」，`loglens_context` 靠它重查。
+  - **`labels` 是点分路径**（2026-10-11 真机反馈第 1 条）：filebeat 的 `container` / `host` / `log` 是嵌套对象，
+    只收标量会让行上唯一的标签变成 `stream`——那就看不出是哪台机器、哪个容器。展平 + **优先键**
+    （谁在写这行：container / pod / host / service / log.file.path …）在 `src/line.ts`，
+    优先键先占 `LABEL_LIMIT` 名额，值超长截断（全文在 `raw` 里）。
+  - **`level` 归一化成 trace/debug/info/warn/error/fatal**：文档 / 流标签里有就用它，
+    没有**才从正文推断**，此时 `levelInferred: true`——「文档说它是 error」与「我看着像 error」
+    是两种可信度，不许写成一样（与 `totalKnown` 同一口径）。推断只在「级别该出现的位置」找
+    （行首断语、`level=ERROR`、logback 的 `14:00:00.123 ERROR …`），正文里恰好提到 ERROR 不算。
 
 ### 3.2 计数（不许把语义不同的量挤进一个 number）
 

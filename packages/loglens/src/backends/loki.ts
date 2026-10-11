@@ -11,6 +11,7 @@
  */
 import type { LoglensTarget } from '../config.js'
 import { decodeCursor, encodeCursor, lineFromLoki, slicePage } from '../cursor.js'
+import { withLevel } from '../line.js'
 import { requestJson as fetchJson } from '../net.js'
 import type { LookupFn } from '../net.js'
 import type { LokiCursor } from '../cursor.js'

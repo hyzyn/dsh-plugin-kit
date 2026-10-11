@@ -269,6 +269,36 @@ describe('映射与计数', () => {
     expect(lineFromHit({ _id: 'x', _source: { timestamp: 1_700_000_000_000, message: 'x' } })?.ts).toBe(1_700_000_000_000)
   })
 
+  it('嵌套的 filebeat 文档：container / host / log 要摊进 labels（真机反馈第 1 条）', () => {
+    const line = lineFromHit({
+      _id: 'x',
+      _index: 'app-logs-2026.10.11',
+      _source: {
+        '@timestamp': '2026-10-11T14:00:00.000Z',
+        message: '[ERROR] exam service failed',
+        container: { name: 'chendan-ems-service', image: { name: 'registry.internal/ems:1.2.3' } },
+        host: { name: 'hostma-test-161' },
+        log: { file: { path: '/var/lib/docker/containers/abc/abc-json.log' } },
+        stream: 'stdout',
+      },
+    })
+    expect(line?.labels['container.name']).toBe('chendan-ems-service')
+    expect(line?.labels['host.name']).toBe('hostma-test-161')
+    expect(line?.labels['log.file.path']).toBe('/var/lib/docker/containers/abc/abc-json.log')
+    // 级别：文档里没有就按正文推断，并标出来（不许把推断写成「来源标的」）
+    expect(line?.level).toBe('error')
+    expect(line?.levelInferred).toBe(true)
+  })
+
+  it('文档里有 log.level 时用它，并且不标 levelInferred', () => {
+    const line = lineFromHit({
+      _id: 'x',
+      _source: { '@timestamp': '2026-10-11T14:00:00.000Z', message: '[ERROR] boom', 'log.level': 'warning' },
+    })
+    expect(line?.level).toBe('warn')
+    expect(line?.levelInferred).toBeUndefined()
+  })
+
   it('labels 有上限（文档字段几十个时不该把返回值撑爆）', () => {
     const source: Record<string, unknown> = { '@timestamp': '2026-10-11T10:00:00.000Z', message: 'm' }
     for (let index = 0; index < 40; index += 1) source['k' + String(index)] = 'v'
