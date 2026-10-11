@@ -210,6 +210,20 @@ window.__ModuleLoader__.load({
       return rows
     }
 
+    /**
+     * Docker 那半格的开关怎么更新：**只有响应里真的带了 plugins 才覆盖**。
+     *
+     * 现场（2026-10-11）：保存一次来源后，docker 区就变成「没检测到 Docker 面板插件」、按钮全灰——
+     * 因为保存走的是 POST /config，而那个响应**不带 plugins**；无条件覆盖就把「宿主说装了」
+     * 冲成了「不知道」。**不知道 ≠ 没装**：缺字段时保留上一次的判断。
+     */
+    function dockerFlagOf(previous, payload) {
+      if (payload === undefined || payload === null) return previous
+      const plugins = payload.plugins
+      if (plugins === undefined || plugins === null || typeof plugins !== 'object') return previous
+      return plugins.docker === true
+    }
+
     /* ================================ CSS ================================ */
 
     const CSS = [
@@ -511,7 +525,8 @@ window.__ModuleLoader__.load({
         const next = payload && payload.config ? payload.config : { enabled: true, targets: [] }
         setEnabled(next.enabled !== false)
         setDrafts((Array.isArray(next.targets) ? next.targets : []).map(draftFromTarget))
-        setDocker(payload !== undefined && payload !== null && payload.plugins !== undefined && payload.plugins.docker === true)
+        // 只有响应真的带 plugins 才覆盖：保存走的 POST /config 也可能不带（缺字段 = 不知道，不是没装）
+        setDocker((current) => dockerFlagOf(current, payload))
       }, [])
 
       const load = React.useCallback(async () => {

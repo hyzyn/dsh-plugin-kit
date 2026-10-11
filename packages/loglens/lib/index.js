@@ -141,7 +141,7 @@ export function makeRoutes(state) {
                     next = outcome.config;
                 }
                 const warning = await state.write(next);
-                writeJson(res, 200, { ok: true, config: next, ...(warning === undefined ? {} : { warning }) });
+                writeJson(res, 200, { ok: true, config: next, plugins: { docker: state.dockerLoaded() }, ...(warning === undefined ? {} : { warning }) });
             },
         },
     ];

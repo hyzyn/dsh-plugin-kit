@@ -15,6 +15,7 @@ import {
   queryProblem,
   windowOptions,
   windowRange,
+  dockerFlagOf,
   dockerLogLines,
   dockerProblem,
   dockerSince,
@@ -150,5 +151,18 @@ describe('Docker 目标的表单（P6 面板半格）', () => {
     const draft = draftFromTarget({ id: 'd', kind: 'docker', label: '本机 Docker', dockerTarget: 'local' })
     expect(draft.dockerTarget).toBe('local')
     expect(draftPayload(draft)).toEqual({ kind: 'docker', label: '本机 Docker', dockerTarget: 'local', url: '' })
+  })
+})
+
+describe('dockerFlagOf：缺字段时保留上一次的判断', () => {
+  it('带 plugins 就按它更新', () => {
+    expect(dockerFlagOf(false, { plugins: { docker: true } })).toBe(true)
+    expect(dockerFlagOf(true, { plugins: { docker: false } })).toBe(false)
+  })
+
+  it('不带 plugins（比如 POST /config 的响应）时**不覆盖**——不知道不等于没装', () => {
+    expect(dockerFlagOf(true, { ok: true, config: {} })).toBe(true)
+    expect(dockerFlagOf(false, undefined)).toBe(false)
+    expect(dockerFlagOf(true, { plugins: 'nope' })).toBe(true)
   })
 })

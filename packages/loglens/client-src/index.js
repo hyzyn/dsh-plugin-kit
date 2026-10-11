@@ -12,6 +12,7 @@
 import {
   appendLines,
   countsParts,
+  dockerFlagOf,
   dockerLogLines,
   dockerProblem,
   dockerSince,
@@ -338,7 +339,8 @@ window.__ModuleLoader__.load({
         const next = payload && payload.config ? payload.config : { enabled: true, targets: [] }
         setEnabled(next.enabled !== false)
         setDrafts((Array.isArray(next.targets) ? next.targets : []).map(draftFromTarget))
-        setDocker(payload !== undefined && payload !== null && payload.plugins !== undefined && payload.plugins.docker === true)
+        // 只有响应真的带 plugins 才覆盖：保存走的 POST /config 也可能不带（缺字段 = 不知道，不是没装）
+        setDocker((current) => dockerFlagOf(current, payload))
       }, [])
 
       const load = React.useCallback(async () => {
