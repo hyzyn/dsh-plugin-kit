@@ -212,7 +212,7 @@
    完全权限档零询问（该档审批策略是 `never`，ask 会被确定性拒绝），Auto review 档插件让位给
    宿主的模型预审。服务未组合（老宿主）时不闸 + 启动审计一行；监听器永不 claim `allow`
    （要么 `next()` 透传，要么 `deny` / `ask`）。机制推演、决策矩阵与运行时证据见
-   [permission-tier-plan.md](./permission-tier-plan.md)；各包的分类表在其 `src/index.ts`
+   [permission-tier-plan.md](./permission-tier-plan.md)；各包的分类表在其 `src/` 里（`tty` / `docker` 在 `index.ts`、`loglens` 在 `tools.ts`）
    （`TTY_TIER_CLASS` / `DOCKER_TIER_CLASS`，与注册处对账的守卫测试在各包 test）。
 3. **body 围栏**：`readJsonBody` 对畸形 / 超限 / 空 body **返回 `undefined` 而不抛错**——
    调用方必须把 `undefined` 当 **400**，**不能**当「没传这个字段」。写操作尤其。

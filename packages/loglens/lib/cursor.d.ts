@@ -68,3 +68,32 @@ export declare function lineFromLoki(row: OrderedRow & {
     line: string;
     labels?: Record<string, string>;
 }, ordinalInGroup: number): LogLine;
+/** ES / OpenSearch 的游标：PIT + search_after（`_shard_doc` 做 tiebreaker）。 */
+export interface SearchAfterCursor {
+    v: number;
+    /** 标明这是哪一种游标：解错适配器的游标时不许「凑合着用」。 */
+    kind: 'es';
+    /** PIT（point in time）的 id：分页要的是**同一个快照**，不是「每次都重新开始」。 */
+    pitId: string;
+    /** 上一页最后一行的 sort 数组（原样回传）。 */
+    searchAfter: unknown[];
+}
+export type SearchAfterCursorState = {
+    kind: 'none';
+} | {
+    kind: 'ok';
+    cursor: SearchAfterCursor;
+} | {
+    kind: 'invalid';
+    reason: string;
+};
+export declare function encodeSearchAfterCursor(cursor: SearchAfterCursor): string;
+/**
+ * 解析 ES / OpenSearch 的游标。与 Loki 那份同款判据：**解不开就说解不开**，不回落成「当作没有游标」
+ * ——那会把「续页」悄悄变成「重头再来」，用户看到的是重复行而不是一条错误。
+ */
+export declare function decodeSearchAfterCursor(text: unknown): SearchAfterCursorState;
+/**
+ * ES 游标与 Loki 游标共用一个版本号常量：两份形态各带 `kind`，拿错适配器的游标会在 decode 时被拒。
+ * （放在这里而不是各写一个常量——版本号是「形态变更」的信号，两边各写一份迟早漂。）
+ */

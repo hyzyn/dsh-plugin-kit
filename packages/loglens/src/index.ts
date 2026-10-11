@@ -15,6 +15,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import {
+  attachTierGate,
   definePlugin,
   hasSameOriginProof,
   isLoopbackRequestStrict,
@@ -27,6 +28,7 @@ import {
 import type { ReqLike, ResLike, SettingsEntryScope } from '@hyzyn/dsh-kit'
 import { MAX_TARGETS, addTarget, normalizeConfig, removeTarget, updateTarget } from './config.js'
 import type { LoglensConfig } from './config.js'
+import { LOGLENS_TIER_CLASS, LOGLENS_TIER_PREFIXES, backendFor, registerLoglensTools } from './tools.js'
 
 /** 本插件的路由前缀（一个 prefix 路由内部按子路径分发，与 docker / tty 同款）。 */
 export const ROUTE_PREFIX = '/api/dsh-loglens'
@@ -177,6 +179,8 @@ const plugin = definePlugin<Config>({
     /** 落盘并把内存那一份换掉；没有 settings 服务时如实回报「只在本次进程内有效」。 */
     async function persist(next: LoglensConfig): Promise<string | undefined> {
       live = next
+      // 启用 / 停用的热生效：工具与档位闸跟着走（禁用时一个工具都不注册）
+      refreshTools()
       if (scope === undefined) return '宿主没有 settings 服务，改动只在本次进程内有效'
       try {
         await scope.update({ enabled: next.enabled, targets: next.targets })
@@ -185,6 +189,72 @@ const plugin = definePlugin<Config>({
         return '写入 profile 配置失败：' + (error instanceof Error ? error.message : String(error))
       }
     }
+
+    /*
+     * agent 工具（P3）：只在插件启用时注册，禁用热生效时随 effect 一起撤下。工具读配置走闭包里的
+     * live，所以改来源清单不必重注册；只有 enabled 翻转才需要 rebuild（persist 会调 refreshTools）。
+     * 档位闸与工具**同生命周期**（方案见 docs/permission-tier-plan.md 的 loglens 表）。
+     */
+    let refreshTools: () => void = () => {}
+    ctx.inject(['tools'], (toolsCtx: Context) => {
+      toolsCtx.effect(() => {
+        let dispose: (() => void) | undefined
+        const rebuild = (): void => {
+          if (dispose !== undefined) {
+            try {
+              dispose()
+            } catch {
+              /* 工具已注销 */
+            }
+            dispose = undefined
+          }
+          if (!live.enabled) return
+          const tools = (toolsCtx as unknown as { tools: { register(definition: unknown): () => void } }).tools
+          const disposers: Array<() => void> = []
+          const failures: string[] = []
+          registerLoglensTools({
+            config: () => live,
+            backendFor,
+            add: (name, definition) => {
+              try {
+                disposers.push(tools.register(definition))
+              } catch (error) {
+                failures.push(name + '：' + (error instanceof Error ? error.message : String(error)))
+              }
+            },
+          })
+          disposers.push(attachTierGate(ctx, {
+            pkg: 'loglens',
+            prefixes: LOGLENS_TIER_PREFIXES,
+            classify: (tool) => LOGLENS_TIER_CLASS[tool],
+          }))
+          if (failures.length > 0) {
+            console.warn('[dsh-loglens] ' + String(failures.length) + ' 个 agent 工具注册失败：' + failures.join('；'))
+          }
+          dispose = () => {
+            for (const item of disposers) {
+              try {
+                item()
+              } catch {
+                /* 释放失败不阻塞 */
+              }
+            }
+          }
+        }
+        rebuild()
+        refreshTools = rebuild
+        return () => {
+          refreshTools = () => {}
+          if (dispose !== undefined) {
+            try {
+              dispose()
+            } catch {
+              /* 释放失败不阻塞 */
+            }
+          }
+        }
+      }, 'dsh-loglens: tools')
+    })
 
     ctx.inject(['webServer'], (webCtx: Context) => {
       webCtx.effect(() => {

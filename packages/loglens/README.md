@@ -3,14 +3,19 @@
 把**异构日志后端归一化成一个查询面**：Loki / Elasticsearch / OpenSearch / Docker 各走一层薄适配器，
 对外只有一套「归一化行模型 + 诚实的计数与截断信号 + 交给 Agent 的工具」。
 
-> **状态：设置面可用，查询未实现（2026-10-11）。** 宿主半体现在只有 `/config`（来源清单 + 插件开关）
-> 与设置卡片；**没有任何查询能力**（后端适配器、`loglens_*` 工具、结果视图都还没做）。
+> **状态：设置面、查询地基（契约 / 归一化 / 游标）、Loki 与 ES / OpenSearch 适配器、四个 agent 工具都已就位（2026-10-11）。**
+> 三条后端目前只有 **wire 级用例**（假 Loki / 假 ES 的真 HTTP 服务），**真机验收还没跑**；浏览器侧的
+> 结果视图没做（P6）——卡片上也写着这句。
 > 设计与契约的唯一归宿是 [docs/design.md](./docs/design.md)；分期与待办见 [ROADMAP.md](./ROADMAP.md)。
 
 ## 现在能做什么
 
 - 在 **设置 → 插件配置 → 日志查询** 卡片里增删改「日志来源」（类型 / 名称 / 地址）与插件开关。
-- 卡片上明写「查询能力还没实现」——不提供任何看起来能用的假界面。
+- 让 agent 用四个工具查（配好来源之后）：`loglens_sources` 列来源与连通性、`loglens_search` 查、
+  `loglens_fields` 看有哪些字段、`loglens_context` 取某一行前后的上下文。
+  可查后端：**Loki**、**Elasticsearch**、**OpenSearch**（Docker 走现成的 `docker_logs` / `docker_logs_grep`）。
+  四个工具都归 **read** 档（分类表见 [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md) §2.1）。
+- 卡片上明写「查询能力（搜索结果视图）还没实现」——浏览器侧不提供看起来能用的假界面。
 
 ## 配置面（HTTP，回环）
 
@@ -36,6 +41,14 @@ curl -s http://127.0.0.1:3080/api/dsh-loglens/config
 curl -s -X POST http://127.0.0.1:3080/api/dsh-loglens/config -H 'content-type: application/json' -H 'origin: http://127.0.0.1:3080' -d '{"action":"targets.add","target":{"kind":"loki","label":"本地 Loki","url":"http://127.0.0.1:3100"}}'
 ```
 
+## 来源地址怎么写
+
+| 类型 | 地址 | 说明 |
+|---|---|---|
+| `loki` | `http://127.0.0.1:3100` | 可以带网关前缀（如 `https://gw.example/loki`）；查询走 `/loki/api/v1/query_range` |
+| `elasticsearch` / `opensearch` | `http://user:pass@127.0.0.1:9200/logs-*` | **路径部分是索引表达式**（不写就用 `*`）；凭据换成 Basic 头、不进 URL；分页走 PIT + `search_after` |
+| `docker` | 不需要地址 | 采集来源（设计里的「选项 0」）：agent 侧用现成的 `docker_logs` / `docker_logs_grep` |
+
 ## 解剖
 
 | 文件 | 说明 |
@@ -45,6 +58,9 @@ curl -s -X POST http://127.0.0.1:3080/api/dsh-loglens/config -H 'content-type: a
 | `src/index.ts` | 宿主半体：`/config` 路由 + 设置持久化（查询面还没有） |
 | `src/config.ts` | 来源清单的**纯**判据（id 生成 / 地址校验 / 宽松读盘 / 增删改），不碰 cordis 与网络 |
 | `src/backends/types.ts` | 后端契约的**形状**（`LogBackend` / `BackendCaps` / `LogCounts` / `Truncation`…），没有实现 |
+| `src/backends/loki.ts` | Loki 适配器：`query_range` / `labels` / `ready`，摊平、合并顺序与计数（真机验收待跑） |
+| `src/backends/elastic.ts` | ES / OpenSearch 适配器（`flavor` 分流）：`_search` / PIT 分页 / `_field_caps` / health |
+| `src/tools.ts` | 四个 agent 工具（`loglens_sources` / `search` / `fields` / `context`）+ 档位分类表 |
 | `src/query.ts` | 归一化与夹取：时间戳单位、时间窗上限、limit 夹取、计数与截断归并 |
 | `src/cursor.ts` | Loki 游标（同 ts 多行不丢行）；解不开就报错，不当作没有游标 |
 | `client-src/index.js` → `client.js` | 构建型客户端半体：设置卡片，i18n 目录内联在源码里 |
@@ -68,7 +84,8 @@ dsh plugin --profile <profile> add link:$(pwd)/packages/loglens
 
 ## 已知限制
 
-- **查询未实现**：P1 的契约 / 归一化 / 游标已落地，但**没有后端适配器、没有 `loglens_*` 工具、没有结果视图**
-  （P2 起，见 [ROADMAP.md](./ROADMAP.md)）。
+- **真机验收还没跑**：三条适配器都只有 wire 级用例（假服务器）；真 Loki / 真 ES 上的行为（尤其是 Loki
+  同 ts 多行的顺序稳定性与 ES 的 PIT 寿命）要等有环境时补（见 [ROADMAP.md](./ROADMAP.md)）。
+- **浏览器侧没有结果视图**：面板里只有来源清单与开关，查询走 agent 工具（P6 三选一还没拍板）。
 - 一次只查一个来源（v1 不做跨后端 fan-out）；公网与链路本地地址默认禁。
 - Docker 只作为**采集来源**（设计里的「选项 0」：用现成的 `docker_logs` / `docker_logs_grep`），不做适配器。

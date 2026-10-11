@@ -130,3 +130,52 @@ export function lineFromLoki(row: OrderedRow & { tsNs: string; line: string; lab
     id: String(row.streamIdx) + ':' + row.tsNs + ':' + String(ordinalInGroup),
   }
 }
+
+/** ES / OpenSearch 的游标：PIT + search_after（`_shard_doc` 做 tiebreaker）。 */
+export interface SearchAfterCursor {
+  v: number
+  /** 标明这是哪一种游标：解错适配器的游标时不许「凑合着用」。 */
+  kind: 'es'
+  /** PIT（point in time）的 id：分页要的是**同一个快照**，不是「每次都重新开始」。 */
+  pitId: string
+  /** 上一页最后一行的 sort 数组（原样回传）。 */
+  searchAfter: unknown[]
+}
+
+export type SearchAfterCursorState =
+  | { kind: 'none' }
+  | { kind: 'ok'; cursor: SearchAfterCursor }
+  | { kind: 'invalid'; reason: string }
+
+export function encodeSearchAfterCursor(cursor: SearchAfterCursor): string {
+  return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url')
+}
+
+/**
+ * 解析 ES / OpenSearch 的游标。与 Loki 那份同款判据：**解不开就说解不开**，不回落成「当作没有游标」
+ * ——那会把「续页」悄悄变成「重头再来」，用户看到的是重复行而不是一条错误。
+ */
+export function decodeSearchAfterCursor(text: unknown): SearchAfterCursorState {
+  if (text === undefined || text === null || text === '') return { kind: 'none' }
+  if (typeof text !== 'string') return { kind: 'invalid', reason: '游标必须是字符串' }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(Buffer.from(text, 'base64url').toString('utf8'))
+  } catch {
+    return { kind: 'invalid', reason: '游标不是合法的 base64url + JSON' }
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return { kind: 'invalid', reason: '游标不是对象' }
+  }
+  const raw = parsed as Record<string, unknown>
+  if (raw.v !== CURSOR_VERSION) return { kind: 'invalid', reason: '游标版本不认识：' + JSON.stringify(raw.v) }
+  if (raw.kind !== 'es') return { kind: 'invalid', reason: '这不是 ES / OpenSearch 的游标（kind=' + JSON.stringify(raw.kind) + '）' }
+  if (typeof raw.pitId !== 'string' || raw.pitId === '') return { kind: 'invalid', reason: '游标缺 pitId' }
+  if (!Array.isArray(raw.searchAfter)) return { kind: 'invalid', reason: '游标缺 searchAfter' }
+  return { kind: 'ok', cursor: { v: CURSOR_VERSION, kind: 'es', pitId: raw.pitId, searchAfter: raw.searchAfter } }
+}
+
+/**
+ * ES 游标与 Loki 游标共用一个版本号常量：两份形态各带 `kind`，拿错适配器的游标会在 decode 时被拒。
+ * （放在这里而不是各写一个常量——版本号是「形态变更」的信号，两边各写一份迟早漂。）
+ */

@@ -1,6 +1,6 @@
 # @hyzyn/dsh-loglens 设计方案
 
-> **状态：P1 的契约与纯模块已落地（2026-10-11）；后端适配器与 agent 工具未实现。** 本文件是**包特有的深层设计**（归属见 [conventions § 知识归属表](../../../docs/conventions.md#知识归属表唯一归宿)
+> **状态：P1 契约与纯模块、P2 的 Loki 适配器、P4 的 ES / OpenSearch 适配器、P3 的四个 agent 工具都已落地（2026-10-11）；真机验收与浏览器侧结果视图未做。** 本文件是**包特有的深层设计**（归属见 [conventions § 知识归属表](../../../docs/conventions.md#知识归属表唯一归宿)
 > 的「包特有的深层设计 / API」一行 → L1 `packages/<pkg>/docs/`）。
 > 待办与执行计划见 [../ROADMAP.md](../ROADMAP.md)；包落地后按档位补齐 `README.md` / `DEFECTS.md`。
 

@@ -1,6 +1,6 @@
 # @hyzyn/dsh-loglens — 路线图
 
-> **状态：P0 与 P1 全部落地（2026-10-11）——设置面与查询地基（契约 / 归一化 / 游标）可用；后端适配器与 agent 工具未实现。** `packages/loglens/` 现在是 workspace 包
+> **状态：P0 / P1 / P3 / P4 全部落地，P2 的代码半体也落地（2026-10-11）——设置面、查询地基、Loki 与 ES / OpenSearch 适配器、四个 agent 工具都可用；剩下三条后端的**真机验收**（待有环境）与浏览器侧的结果视图（P6）。** `packages/loglens/` 现在是 workspace 包
 > （`@hyzyn/dsh-loglens@0.1.2`，已进 [publish-targets.mjs](../../scripts/publish-targets.mjs) 与两份聚合清单，
 > `pnpm-lock.yaml` 已同步）——所以 [docs-index 判据 5](../../scripts/docs-index.mjs) 现在**看得见它**，
 > 而不再是「本目录不在解析面里」。设计与契约见 [docs/design.md](./docs/design.md)；
@@ -358,4 +358,117 @@
 
 - 不做后端适配器、不注册 agent 工具、不给浏览器面加查询 UI——那是 P2 / P3 / P6。
 - 不在本层假设 Loki 的返回顺序稳定：`pagination` 由适配器声明，测不出稳定序就声明 `'none'`。
+
+### P2（代码半体）：Loki 适配器（2026-10-11 落地；真机验收待办）
+
+**为什么只有一半**：P2 的定义是「Loki 打通（本地容器真机验；并单独测同 ts 多行的顺序稳定性）」，
+而**本机没有 Loki 环境**。适配器本身不依赖真环境——它只是一层薄的翻译与摊平——所以先把代码与
+wire 级用例做完，真机那一半等有环境（你自带的 Loki，或允许在本机起容器）再补。
+
+**改了什么**
+
+- [src/backends/loki.ts](../loglens/src/backends/loki.ts)：`query_range` 的请求构造（路径拼接不丢子路径
+  前缀、纳秒时间戳用字符串原样传、空查询串发 `{}`）、`streams[].values` 摊平成行并**补一个确定的
+  跨流合并顺序**（Loki 按流返回，跨流没有全局顺序）、stats 搬进 `scannedRows` / `scannedBytes`、
+  `/labels` 与 `/ready`、请求超时（AbortController）与错误文案（状态码 + Loki 的 `error`）。
+- **同 ts 多行的边界**交给 P1 的游标：带游标时把窗口右端收到游标那个 ts（`minNanoString` 在纳秒
+  层面取较早者——先换成 ms 再换回来会把亚毫秒边界磨掉，那一批行就再也取不回来）。
+- **分页能力当前声明 `'none'`**（`LOKI_PAGINATION`）：顺序稳定性还没在真机上测过，所以不对外给游标，
+  只报 `hit_limit`，让调用方说「命中可能不完整，请缩小时间窗」。实现与用例都已就位，测出稳定序后
+  改这一个常量即可。
+- 结构化 `filters` 直接报错（LogQL 没有对应的独立参数）——**不静默忽略**：那会让用户以为筛过了。
+
+**门槛与证据（全部实跑）**
+
+| 闸 | 结果 |
+|---|---|
+| 本包单测 | **104 条**（+20 条 Loki wire 级：真 `node:http` 假 Loki、真 fetch、真参数与响应体） |
+| 用例覆盖 | 请求形态（纳秒 / limit / direction / 子路径前缀 / `{}`）、跨流合并顺序、同 ts 序号、stats 计数、`pagination:'none'` 的保守退路、**cursor 路径下的两条「不丢行」**、游标解不开报错、500 / 非 JSON / `status:error` / 超时、`/labels` 与 `/ready` |
+| 全仓门禁 | `pnpm typecheck && pnpm build && pnpm test && pnpm aggregate` 全绿：**157 文件 / 2640 用例** |
+| 守卫 | doc-links / i18n / no-public-ip / package-contents / test-collection / aggregate:check / artifacts:check 全绿 |
+
+**待办（P2 剩下的一半）**
+
+1. 起一个 Loki（本机容器，或你已有的环境），用真数据跑一次 `query_range`；
+2. **单独测同 ts 多行的顺序稳定性**：同 stream 同纳秒写 N 行、重复查询多次，看返回顺序稳不稳；
+3. 稳定 → `LOKI_PAGINATION` 改 `'cursor'`（用例里那条路径已经覆盖）；不稳定 → 保持 `'none'`，
+   并把「命中可能不完整」的提示写进工具的返回值。
+
+### P3：四个 agent 工具 + 档位分类表（2026-10-11 落地）
+
+**改了什么**
+
+- [src/tools.ts](../loglens/src/tools.ts)：`loglens_sources` / `loglens_search` / `loglens_fields` /
+  `loglens_context` 四个工具 + 分类表 `LOGLENS_TIER_CLASS`（**四个全是 `read`**）与前缀
+  `LOGLENS_TIER_PREFIXES`；`backendFor(kind)` 是后端注册表（目前只有 Loki）。
+- [src/index.ts](../loglens/src/index.ts)：`ctx.inject(['tools'])` 里注册工具与 `attachTierGate`，
+  与 `enabled` 同生命周期（禁用热生效时一起撤下；`persist` 会调 `refreshTools` 重挂）。
+- 用例 [test/tools.test.ts](../loglens/test/tools.test.ts)（20 条，假后端）+ 
+  [test/tier-gate.test.ts](../loglens/test/tier-gate.test.ts)（8 条：对账守卫 + 真闸行为）。
+- [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md) §2.1 多了 **loglens 那张表**（分类表的
+  唯一归宿）；[docs/architecture.md](../../docs/architecture.md) 里「分类表在各自 `src/index.ts`」的口径
+  补上「loglens 在 `src/tools.ts`」。
+
+**三条贯穿工具面的规矩**（都写进了文件头）
+
+1. **一次一个来源**：省略 `target` 只在「恰好一个来源」时回落，多个时把候选 id 列出来。
+2. **没有适配器就说清怎么绕**：Docker 指路到现成的 `docker_logs` / `docker_logs_grep`（选项 0）、
+   ES / OpenSearch 说明是 P4——不留一句干巴巴的「不支持」。
+3. **诚实的截断信号**：来源声明 `pagination:'none'` 且这一页被 limit 截断时，只报 `hit_limit` +
+   一句「命中可能不完整，请缩小时间窗」，**不给会丢行的游标**；声明了 `cursor` 的来源才透传 `nextCursor`。
+
+**门槛与证据（全部实跑）**
+
+| 闸 | 结果 |
+|---|---|
+| 本包单测 | **132 条**（8 个文件） |
+| 对账守卫 | 注册处现算名单 ↔ `LOGLENS_TIER_CLASS` 双向一致；四个工具都落在前缀里；四个全是 `read` |
+| 闸行为 | read-only + never 下四个工具全部放行；前缀外（bash / docker_ps / tty_run / loglen_search）零介入；未分类的前缀内工具放行 + 一条告警（兜底是对账守卫） |
+| 全仓门禁 | `pnpm typecheck && pnpm build && pnpm test && pnpm aggregate` 全绿：**159 文件 / 2668 用例** |
+| 守卫 | doc-links / i18n / no-public-ip / package-contents / test-collection / publishable / kit-pins / dsh-peers 全绿 |
+
+**对账守卫当场抓到一个真问题（记一笔）**：文件头注释里写了「从本文件 `add('loglens_x', …)` 的调用处
+现算」——守卫的字面量扫描把注释里那个名字当成了一个真的注册项，两条用例直接红。修法是改注释，不是
+放宽守卫：**注册处的字面量就是事实来源，注释里不该出现同形文本**。
+
+### P4：Elasticsearch / OpenSearch 适配器（2026-10-11 落地代码半体）
+
+**改了什么**
+
+- [src/backends/elastic.ts](../loglens/src/backends/elastic.ts)：两家的差异只在方言与版本号，查询面是同一条
+  `_search`，所以是**一个适配器 + `flavor` 分流**（设计 §2）。`src/tools.ts` 的 `backendFor` 随之接上
+  `elasticsearch` / `opensearch` 两个 kind。
+- **分页走 PIT + search_after**（不是 offset）：分的是**同一个快照**。开 PIT 用 `/<index>/_pit?keep_alive=2m`；
+  搜索走 `/_search`（带 PIT 时路径上**不许**再带索引，ES 直接报错）；最后一页顺手 `DELETE /_pit`
+  （不带游标那次的收尾也一样）。
+- **游标过期**：PIT 没了时 ES 回 404 `search_context_missing_exception`——本层把它映射成
+  `truncation.reasons = ['cursor_expired']` 而**不重开 PIT**（重开会悄悄换掉快照语义），工具层再补一句
+  「请重新发起一次带时间窗的查询」。
+- **`track_total_hits` 显式打开**：要报精确命中数就得付这个代价（设计 §3.2 的归属），响应里 `relation` 仍是
+  `gte` 时 countsOf 如实把 `totalKnown` 置假。
+- **索引表达式取自来源地址的路径**（`http://host:9200/logs-*`，不写就是 `*`）；`user:pass@` 换成 Basic 头、
+  **URL 里不留凭据**（错误文案与日志里也不该有密码）。
+- [src/cursor.ts](../loglens/src/cursor.ts) 多了 ES 那一份游标（`{ v, kind: 'es', pitId, searchAfter }`）：
+  两份形态共用版本号常量，**拿错适配器的游标会在 decode 时被拒**（`kind` 不匹配）。
+- 用例 [test/elastic.test.ts](../loglens/test/elastic.test.ts)（20 条，假 ES 是一个真的 `node:http` 服务：
+  真 fetch、真请求体、真响应体，连 `search_after` 与 PIT 生命周期都由假服务器自己演）。
+
+**刻意不做的**
+
+- **不谎报方言**：`capabilities().queryLanguage` 报 `lucene`——OpenSearch 的 PPL / SQL、ES 8.11+ 的 ES|QL
+  都还没做（设计 §6 列了它们的位置，但没做就不写进能力里）。
+- 不做 _msearch / fan-out；一次仍只查一个来源。
+- 真机验收（真 ES / OS）与浏览器侧结果视图分别是「待环境」与 P6。
+
+**门槛与证据（全部实跑）**
+
+| 闸 | 结果 |
+|---|---|
+| 本包单测 | **152 条**（9 个文件） |
+| ES 侧覆盖 | 请求形态（PIT 开在哪、搜索为什么不带索引、ISO range、sort 两键、`track_total_hits`）、映射与 labels 上限、`relation` 三态、`timed_out` / 分片失败、游标（复用 PIT / 收尾关 PIT / 过期不重开 / kind 不匹配）、Basic 头、401 与非 JSON、超时、`_field_caps`、`flavor` 不一致的提示 |
+| 全仓门禁 | `pnpm typecheck && pnpm build && pnpm test && pnpm aggregate` 全绿（数字见提交） |
+
+**踩到的一个真问题（记一笔）**：第一版把 `access.url` 当成「带索引路径的基址」用，于是搜索请求发到了
+`/logs-*/_search`——而带 PIT 的搜索**不能**在路径上带索引，11 条用例一起红。修法是把基址收成 **origin**、
+索引由 `targetIndex` 单独给；注释里写清了为什么这两者必须分开。
 

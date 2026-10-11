@@ -1,6 +1,8 @@
 # 插件工具接入会话权限档位（tier gate）实施方案
 
 > 执行对象：AI 代理。本文自包含，按 PR 顺序执行；每节末尾有可勾选验收项。
+> **2026-10-11**：第三个包 `loglens` 接进同一套闸——§2.1 多了一张表，四个工具全是 `read`。
+>
 > **状态**：**PR1–PR4 已落地（2026-10-07）**——kit `tier-gate.ts`、tty/docker 分类表与接线、守卫与单测、
 > README 与 architecture §7 全部就位，文档四处与 ROADMAP 已回填。§7 的真机验收**已跑一轮**：
 > V1（部分格）、V2、V3、V4、V5、V8 与 docker 侧读写分级**过**；V0 只到行为等价确认，事件级核对
@@ -122,6 +124,15 @@ const policy = approval?.overrideOf(exec.agent.session) ?? 'ask'        // 服�
 | `read` | `docker_targets` `docker_connect_local` `docker_ps` `docker_attention` `docker_inspect` `docker_logs` `docker_stats` `docker_events` `docker_images` `docker_image_inspect` `docker_networks` `docker_volumes` | 纯读 / 固定二进制探测（connect_local 不在能力开关里，见其注释） |
 | `write` | `docker_action` `docker_image_remove` `docker_image_prune` `docker_image_pull` | 容器与镜像的变更（pull 是拉取非破坏，但改本地状态，且已在 `allowMutations` 组里） |
 | `exec` | `docker_exec` | 容器内一次性命令 |
+
+**loglens**（2026-10-11 加入；名单以 [packages/loglens/src/tools.ts](../packages/loglens/src/tools.ts) 的注册处为准）：
+
+| 类 | 工具 | 判据 |
+|---|---|---|
+| `read` | `loglens_sources` `loglens_search` `loglens_fields` `loglens_context` | 纯读：查的是**别人的**日志后端，不改本地状态、也不在任何目标机上执行命令；目标由用户在设置卡片里显式添加（添加动作即白名单） |
+
+为什么四个全是 `read`：本包没有写操作（设计 §1 非目标）、不在目标机上跑命令（Docker 走现成工具，
+见 [design.md §5](../packages/loglens/docs/design.md) 的选项 0），它只是发 HTTP 查询。
 
 ### 2.2 决策矩阵（唯一判定处，纯函数）
 
