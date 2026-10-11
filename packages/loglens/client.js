@@ -250,6 +250,21 @@ window.__ModuleLoader__.load({
       return rows
     }
 
+    /**
+     * 取 Docker /logs 响应里的正文。
+     *
+     * 现场（2026-10-11）：Docker 插件的这条路由回的是 `{ ok, logs: { id, text } }`——**logs 是对象不是
+     * 字符串**。我第一版只认字符串，于是「取不到正文」被当成「没有日志」，界面上什么都不画：用户点了
+     * 「看日志」看起来毫无反应。两种形状都认，认不出就回空串（由界面显示「没有日志」，而不是静默）。
+     */
+    function dockerLogTextOf(payload) {
+      if (payload === undefined || payload === null) return ''
+      const logs = payload.logs
+      if (typeof logs === 'string') return logs
+      if (logs !== null && typeof logs === 'object' && typeof logs.text === 'string') return logs.text
+      return ''
+    }
+
     /* ================================ CSS ================================ */
 
     const CSS = [
@@ -398,6 +413,8 @@ window.__ModuleLoader__.load({
       'hint.dockerMissing': '这条路径要「Docker 容器面板」插件（当前没检测到它）：装上并启用后，这里可以直接看容器日志。',
       'error.needContainer': '先选一个容器',
       'option.dockerAuto': '（让 Docker 面板自己回落）',
+      'btn.logsLoading': '加载中…',
+      'list.noLogs': '没有日志（换个大点的时间窗或行数再试）',
       'hint.dockerTargetUnknown': '（不在 Docker 面板的目标里）',
     }
     const I18N_EN = {
@@ -468,6 +485,8 @@ window.__ModuleLoader__.load({
       'hint.dockerMissing': 'This path needs the Docker container panel plugin (not detected): install and enable it to read container logs here.',
       'error.needContainer': 'Pick a container first',
       'option.dockerAuto': '(let the Docker panel pick)',
+      'btn.logsLoading': 'Loading…',
+      'list.noLogs': 'No logs (try a wider time window or a larger tail)',
       'hint.dockerTargetUnknown': ' (not a target in the Docker panel)',
     }
     /* ==== dsh-i18n:end ==== */
@@ -547,6 +566,7 @@ window.__ModuleLoader__.load({
       const [containers, setContainers] = React.useState([])
       const [container, setContainer] = React.useState('')
       const [dockerLogs, setDockerLogs] = React.useState('')
+      const [dockerOpened, setDockerOpened] = React.useState(false)
       const [dockerTail, setDockerTail] = React.useState(200)
       const [dockerBusy, setDockerBusy] = React.useState(false)
       const [dockerTargets, setDockerTargets] = React.useState([])
@@ -748,7 +768,8 @@ window.__ModuleLoader__.load({
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify(selectedDraft.dockerTarget === '' ? common : { target: selectedDraft.dockerTarget, ...common }),
           })
-          setDockerLogs(typeof parsed.logs === 'string' ? parsed.logs : '')
+          setDockerLogs(dockerLogTextOf(parsed))
+          setDockerOpened(true)
         } catch (err) {
           setError(err.message)
         } finally {
@@ -986,6 +1007,14 @@ window.__ModuleLoader__.load({
                         }),
                         jsx('select', {
                           className: 'll_input',
+                          title: t('field.window'),
+                          value: query.preset,
+                          disabled: dockerBusy || !docker,
+                          onChange: (event) => { setQuery((current) => ({ ...current, preset: event.target.value })) },
+                          children: windowOptions().map((key) => jsx('option', { value: key, children: windowLabel(key) }, 'll-dw-' + key)),
+                        }),
+                        jsx('select', {
+                          className: 'll_input',
                           title: t('field.tail'),
                           value: String(dockerTail),
                           disabled: dockerBusy || !docker,
@@ -997,19 +1026,23 @@ window.__ModuleLoader__.load({
                           className: 'll_btn',
                           disabled: dockerBusy || !docker,
                           onClick: () => { openDockerLogs() },
-                          children: t('btn.logs'),
+                          children: dockerBusy ? t('btn.logsLoading') : t('btn.logs'),
                         }),
                       ],
                     }) : null,
                     isDocker
                       ? jsx('p', { className: 'll_hint', children: docker ? t('hint.docker') : t('hint.dockerMissing') })
                       : jsx('p', { className: 'll_hint', children: t('hint.query') }),
-                    isDocker && dockerLogs !== '' ? jsx('div', {
+                    isDocker && dockerOpened && dockerLogLines(dockerLogs).length > 0 ? jsx('div', {
                       className: 'll_results',
                       children: dockerLogLines(dockerLogs).map((text, at) => jsx('div', {
                         className: 'll_resultRow',
                         children: jsx('span', { className: 'll_resultMsg', children: text }),
                       }, 'll-docker-' + String(at))),
+                    }) : null,
+                    isDocker && dockerOpened && dockerLogLines(dockerLogs).length === 0 ? jsx('div', {
+                      className: 'll_empty',
+                      children: t('list.noLogs'),
                     }) : null,
                     outcome === undefined || isDocker ? null : jsxs('div', {
                       className: 'll_queryMeta',

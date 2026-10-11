@@ -18,6 +18,7 @@ import {
   dockerFlagOf,
   dockerLogLines,
   dockerProblem,
+  dockerLogTextOf,
   dockerSince,
   dockerTargetChoices,
 } from '../client-src/pure.js'
@@ -185,5 +186,22 @@ describe('dockerTargetChoices：把 Docker 面板的目标清单变成选项', (
   it('空清单 / 脏输入都不炸', () => {
     expect(dockerTargetChoices(undefined, '')).toEqual([])
     expect(dockerTargetChoices([null, { name: '' }, { name: 42 }], '')).toEqual([])
+  })
+})
+
+describe('dockerLogTextOf：Docker /logs 的两种形状', () => {
+  it('对象形状（真实响应）：取 logs.text', () => {
+    expect(dockerLogTextOf({ ok: true, logs: { id: 'upms', text: 'line1' } })).toBe('line1')
+  })
+
+  it('字符串形状也认（旧版/别的实现）', () => {
+    expect(dockerLogTextOf({ ok: true, logs: 'line1' })).toBe('line1')
+  })
+
+  it('认不出就回空串（由界面显示「没有日志」，不静默）', () => {
+    expect(dockerLogTextOf(undefined)).toBe('')
+    expect(dockerLogTextOf({ ok: true })).toBe('')
+    expect(dockerLogTextOf({ ok: true, logs: { id: 'x' } })).toBe('')
+    expect(dockerLogTextOf({ ok: true, logs: 42 })).toBe('')
   })
 })

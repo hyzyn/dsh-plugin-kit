@@ -228,3 +228,18 @@ export function dockerTargetChoices(entries, current) {
   }
   return rows
 }
+
+/**
+ * 取 Docker /logs 响应里的正文。
+ *
+ * 现场（2026-10-11）：Docker 插件的这条路由回的是 `{ ok, logs: { id, text } }`——**logs 是对象不是
+ * 字符串**。我第一版只认字符串，于是「取不到正文」被当成「没有日志」，界面上什么都不画：用户点了
+ * 「看日志」看起来毫无反应。两种形状都认，认不出就回空串（由界面显示「没有日志」，而不是静默）。
+ */
+export function dockerLogTextOf(payload) {
+  if (payload === undefined || payload === null) return ''
+  const logs = payload.logs
+  if (typeof logs === 'string') return logs
+  if (logs !== null && typeof logs === 'object' && typeof logs.text === 'string') return logs.text
+  return ''
+}
