@@ -15,6 +15,8 @@
 import type { LoglensTarget } from '../config.js'
 import { decodeSearchAfterCursor, encodeSearchAfterCursor } from '../cursor.js'
 import type { SearchAfterCursor } from '../cursor.js'
+import { requestJson as fetchJson } from '../net.js'
+import type { LookupFn } from '../net.js'
 import { countsOf, truncationOf } from '../query.js'
 import type {
   BackendCaps,
@@ -46,6 +48,8 @@ const LABEL_LIMIT = 20
 export interface ElasticOptions {
   flavor: ElasticFlavor
   fetchImpl?: typeof fetch
+  /** 解析器注入点（出站围栏用）：用例喂假解析结果，验证「域名解析到链路本地 / 公网」这类判据。 */
+  lookupImpl?: LookupFn
   timeoutMs?: number
   maxPageSize?: number
   maxWindowMs?: number
@@ -121,51 +125,6 @@ export function targetAccess(target: LoglensTarget): { url: string; headers: Rec
   } catch {
     return { url: target.url, headers: {} }
   }
-}
-
-function parseJson(text: string): unknown {
-  try {
-    return JSON.parse(text)
-  } catch {
-    return undefined
-  }
-}
-
-async function requestJson(
-  fetchImpl: typeof fetch,
-  url: string,
-  init: RequestInit,
-  timeoutMs: number,
-  prefix: string,
-): Promise<unknown> {
-  const controller = new AbortController()
-  const timer = setTimeout(() => { controller.abort() }, timeoutMs)
-  let response: Response
-  let text: string
-  try {
-    response = await fetchImpl(url, { ...init, signal: controller.signal })
-    text = await response.text()
-  } catch (error) {
-    if (error instanceof Error && error.name === 'AbortError') {
-      throw new Error(prefix + '请求超时（>' + String(timeoutMs) + 'ms）：' + url)
-    }
-    throw new Error(prefix + '请求失败：' + (error instanceof Error ? error.message : String(error)))
-  } finally {
-    clearTimeout(timer)
-  }
-  const body = parseJson(text)
-  if (!response.ok) {
-    throw new ElasticHttpError(prefix + 'HTTP ' + String(response.status) + '：' + detailOf(body, text), {
-      status: response.status,
-      text,
-      body,
-    })
-  }
-  if (body === undefined) {
-    const trimmed = text.trim()
-    throw new Error(prefix + '返回的不是 JSON：' + (trimmed.length > 120 ? trimmed.slice(0, 120) + '…' : trimmed))
-  }
-  return body
 }
 
 function detailOf(body: unknown, fallback: string): string {
@@ -271,16 +230,47 @@ export function createElasticBackend(options: ElasticOptions): LogBackend {
   const flavor = options.flavor
   /** 按目标记住这台 ES 的 tiebreaker 探测结果：第一次吃到「不认识 _shard_doc」就换 _id，之后不再白试。 */
   const tiebreakerByTarget = new Map<string, Tiebreaker>()
-  const prefix = flavor === 'os' ? '[opensearch] ' : '[elasticsearch] '
+  const label = flavor === 'os' ? '[opensearch]' : '[elasticsearch]'
+  const prefix = label + ' '
   const fetchImpl = options.fetchImpl === undefined ? fetch : options.fetchImpl
   const timeoutMs = options.timeoutMs === undefined ? ES_TIMEOUT_MS : options.timeoutMs
   const maxPageSize = options.maxPageSize === undefined ? ES_DEFAULT_MAX_PAGE_SIZE : options.maxPageSize
   const maxWindowMs = options.maxWindowMs === undefined ? ES_DEFAULT_MAX_WINDOW_MS : options.maxWindowMs
   const keepAlive = options.keepAlive === undefined ? ES_PIT_KEEP_ALIVE : options.keepAlive
 
-  async function openPit(access: { url: string; headers: Record<string, string> }, index: string): Promise<string> {
+  /**
+   * 一次 ES / OS 请求：出站围栏（src/net.ts）在本层之下，allowPublic 跟着**这条来源**走。
+   *
+   * 与 Loki 那侧的区别只在失败形状：ES 的失败响应**要读 body**（游标过期的判定就在里面），
+   * 所以这里把 status / text / body 原样包进 ElasticHttpError 交给上层分类。
+   */
+  async function callJson(target: LoglensTarget, url: string, init: RequestInit): Promise<unknown> {
+    const response = await fetchJson({
+      fetchImpl,
+      label,
+      url,
+      init,
+      timeoutMs,
+      ...(options.lookupImpl === undefined ? {} : { lookupImpl: options.lookupImpl }),
+      ...(target.allowPublic === true ? { allowPublic: true } : {}),
+    })
+    if (!response.ok) {
+      throw new ElasticHttpError(prefix + 'HTTP ' + String(response.status) + '：' + detailOf(response.body, response.text), {
+        status: response.status,
+        text: response.text,
+        body: response.body,
+      })
+    }
+    if (response.body === undefined) {
+      const trimmed = response.text.trim()
+      throw new Error(prefix + '返回的不是 JSON：' + (trimmed.length > 120 ? trimmed.slice(0, 120) + '…' : trimmed))
+    }
+    return response.body
+  }
+
+  async function openPit(access: { url: string; headers: Record<string, string> }, index: string, target: LoglensTarget): Promise<string> {
     const url = joinUrl(access.url, '/' + index + '/_pit') + '?keep_alive=' + keepAlive
-    const body = await requestJson(fetchImpl, url, { method: 'POST', headers: access.headers }, timeoutMs, prefix)
+    const body = await callJson(target, url, { method: 'POST', headers: access.headers })
     /*
      * PIT 的响应键随版本改过名：**7.10 是 pit_id**，7.12+ 才是 id（2026-10-11 在一台真实的 7.10.2 上实测：
      * 打开 PIT 回的是 {"pit_id": "..."}，而我只读 id → 报「没拿到 id」）。两个都认，别按版本号分支——
@@ -294,14 +284,14 @@ export function createElasticBackend(options: ElasticOptions): LogBackend {
     return id
   }
 
-  async function closePit(access: { url: string; headers: Record<string, string> }, pitId: string): Promise<void> {
+  async function closePit(access: { url: string; headers: Record<string, string> }, pitId: string, target: LoglensTarget): Promise<void> {
     // 尽力而为：关不掉不该把一次成功的查询变成失败（PIT 也会自己过期）
     try {
-      await requestJson(fetchImpl, joinUrl(access.url, '/_pit'), {
+      await callJson(target, joinUrl(access.url, '/_pit'), {
         method: 'DELETE',
         headers: { ...access.headers, 'content-type': 'application/json' },
         body: JSON.stringify({ id: pitId }),
-      }, timeoutMs, prefix)
+      })
     } catch {
       /* 忽略 */
     }
@@ -328,13 +318,10 @@ export function createElasticBackend(options: ElasticOptions): LogBackend {
     async fields(target: LoglensTarget): Promise<FieldInfo[]> {
       const access = targetAccess(target)
       const index = targetIndex(target)
-      const body = await requestJson(
-        fetchImpl,
-        joinUrl(access.url, '/' + index + '/_field_caps?fields=*'),
-        { method: 'GET', headers: access.headers },
-        timeoutMs,
-        prefix,
-      )
+      const body = await callJson(target, joinUrl(access.url, '/' + index + '/_field_caps?fields=*'), {
+        method: 'GET',
+        headers: access.headers,
+      })
       const fields = (body as { fields?: unknown }).fields
       if (typeof fields !== 'object' || fields === null) return []
       return Object.keys(fields as Record<string, unknown>).map((name) => ({ name, kind: 'indexed' as const }))
@@ -343,10 +330,18 @@ export function createElasticBackend(options: ElasticOptions): LogBackend {
     async health(target: LoglensTarget): Promise<BackendHealth> {
       const access = targetAccess(target)
       try {
-        const response = await fetchImpl(joinUrl(access.url, '/'), { method: 'GET', headers: access.headers })
-        const text = await response.text()
-        if (!response.ok) return { ok: false, detail: 'HTTP ' + String(response.status) + '：' + text.slice(0, 120) }
-        const body = parseJson(text)
+        // 探测也走围栏：绕开它等于留一条不打判据的出口
+        const response = await fetchJson({
+          fetchImpl,
+          label,
+          url: joinUrl(access.url, '/'),
+          init: { method: 'GET', headers: access.headers },
+          timeoutMs,
+          ...(options.lookupImpl === undefined ? {} : { lookupImpl: options.lookupImpl }),
+          ...(target.allowPublic === true ? { allowPublic: true } : {}),
+        })
+        if (!response.ok) return { ok: false, detail: 'HTTP ' + String(response.status) + '：' + response.text.slice(0, 120) }
+        const body = response.body
         const version = (body as { version?: { number?: unknown; distribution?: unknown } } | undefined)?.version
         const number = typeof version?.number === 'string' ? version.number : '未知版本'
         const distribution = typeof version?.distribution === 'string' ? version.distribution : undefined
@@ -372,7 +367,7 @@ export function createElasticBackend(options: ElasticOptions): LogBackend {
         if (state.kind === 'ok') cursor = state.cursor
       }
       // 只有第一页才开 PIT：带游标时**复用**同一个快照，过期就报过期（绝不偷偷重开）
-      const pitId = cursor === undefined ? await openPit(access, targetIndex(target)) : cursor.pitId
+      const pitId = cursor === undefined ? await openPit(access, targetIndex(target), target) : cursor.pitId
 
       const conditions: Array<Record<string, unknown>> = [
         { range: { [ES_TIME_FIELD]: { gte: isoOf(query.from), lte: isoOf(query.to) } } },
@@ -391,11 +386,11 @@ export function createElasticBackend(options: ElasticOptions): LogBackend {
       }
       if (cursor !== undefined) body.search_after = cursor.searchAfter
 
-      const runSearch = async (): Promise<unknown> => requestJson(fetchImpl, joinUrl(access.url, '/_search'), {
+      const runSearch = async (): Promise<unknown> => callJson(target, joinUrl(access.url, '/_search'), {
         method: 'POST',
         headers: { ...access.headers, 'content-type': 'application/json' },
         body: JSON.stringify(body),
-      }, timeoutMs, prefix)
+      })
 
       let payload: unknown
       try {
@@ -472,7 +467,7 @@ export function createElasticBackend(options: ElasticOptions): LogBackend {
         result.nextCursor = encodeSearchAfterCursor({ v: 1, kind: 'es', pitId, searchAfter: lastSort })
       } else {
         // 这一页就是最后了（不管它是不是带游标来的）：把 PIT 关掉，省得它挂到过期
-        await closePit(access, pitId)
+        await closePit(access, pitId, target)
       }
       return result
     },

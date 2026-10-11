@@ -1,3 +1,4 @@
+import type { LookupFn } from '../net.js';
 import type { LogBackend, PaginationKind } from './types.js';
 /** Loki 单页上限的默认声明（Loki 自己的默认是 100，这里放宽；再大要动服务端 max_entries_limit）。 */
 export declare const LOKI_DEFAULT_MAX_PAGE_SIZE = 1000;
@@ -23,6 +24,8 @@ export interface LokiOptions {
     timeoutMs?: number;
     /** 注入点：默认全局 fetch；用例起一个监听本机端口的假 Loki，走真 HTTP。 */
     fetchImpl?: typeof fetch;
+    /** 解析器注入点（出站围栏用）：用例喂假解析结果，验证「域名解析到链路本地」这类判据。 */
+    lookupImpl?: LookupFn;
 }
 /** Loki 的 query_range 返回体（只列我们用到的字段；多出来的原样忽略）。 */
 interface LokiRangeBody {

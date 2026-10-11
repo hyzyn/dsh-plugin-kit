@@ -59,6 +59,7 @@ curl -s -X POST http://127.0.0.1:3080/api/dsh-loglens/config -H 'content-type: a
 |---|---|---|
 | `loki` | `http://127.0.0.1:3100` | 可以带网关前缀（如 `https://gw.example/loki`）；查询走 `/loki/api/v1/query_range` |
 | `elasticsearch` / `opensearch` | `http://user:pass@127.0.0.1:9200/logs-*` | **路径部分是索引表达式**（**建议写上**，如 `…/app-logs-*`；不写会用 `*` 扫全部索引）；凭据换成 Basic 头、不进 URL；分页走 PIT + `search_after`；**ES 7.10 / 7.11 也已适配**（PIT 键名与 `_shard_doc` 的差异见 [ROADMAP](./ROADMAP.md)） |
+| 公网地址 | 同上，额外要**显式打开** `allowPublic` | 默认只打回环与私网（内网日志就是这个插件的用法）；解析到公网的来源会被围栏拦下，报错文案里点名是哪个地址、怎么开 |
 | `docker` | 第三格填 **Docker 面板里的目标名**（如 `local`），**不是** URL | 采集来源（设计里的「选项 0」）：agent 侧用现成的 `docker_logs` / `docker_logs_grep`；面板侧走 Docker 插件自己的 `/api/dsh-docker/logs`（相对路径），弱面：无 `until`、`tail` 有上限、无 grep |
 
 ## 解剖
@@ -69,6 +70,7 @@ curl -s -X POST http://127.0.0.1:3080/api/dsh-loglens/config -H 'content-type: a
 | `cordis.patch.yml` | bundle 补丁：`insert: { id: loglens, name: '@hyzyn/dsh-loglens' }` |
 | `src/index.ts` | 宿主半体：`/config` 路由 + 设置持久化（查询面还没有） |
 | `src/config.ts` | 来源清单的**纯**判据（id 生成 / 地址校验 / 宽松读盘 / 增删改），不碰 cordis 与网络 |
+| `src/net.ts` | **出站围栏**：解析后的 IP 判定（链路本地 / 元数据拒、私网放行、公网默认拒）+ 不跟随重定向 + 体积与超时上限；两个适配器的所有出站都过它 |
 | `src/execute.ts` | 找来源 / 归一化 / 拼返回形状：**agent 工具与面板路由共用**的那一层 |
 | `src/backends/registry.ts` | kind → 适配器（Loki / ES / OS；Docker 按设计不进这里） |
 | `src/backends/types.ts` | 后端契约的**形状**（`LogBackend` / `BackendCaps` / `LogCounts` / `Truncation`…），没有实现 |
@@ -103,7 +105,12 @@ dsh plugin --profile <profile> add link:$(pwd)/packages/loglens
 - **真机验收还没跑**：三条适配器都只有 wire 级用例（假服务器）；真 Loki / 真 ES 上的行为要等有环境时补。
 - 面板里的查询区是**受控重复**（设计 §5 的默认档）：日志视图建在本插件自己的卡片里，不与别的插件共享浏览器模块。
 - Docker 目标在面板里仍只做指路（选项 0 的面板半格没接）。
-- 一次只查一个来源（v1 不做跨后端 fan-out）；公网与链路本地地址默认禁。
-- **Docker 目标只做指路**（选项 0）：查容器日志请用 `docker_logs` / `docker_logs_grep`，本插件不包一层；
-  面板里那种「在 loglens 卡片里直接看容器日志」的视图没做（P6）。
-- Docker 只作为**采集来源**（设计里的「选项 0」：用现成的 `docker_logs` / `docker_logs_grep`），不做适配器。
+- 一次只查一个来源（v1 不做跨后端 fan-out）。
+- **出站围栏只放行回环与私网**（设计 §4.1 / [src/net.ts](./src/net.ts)）：链路本地与云元数据地址
+  （`169.254.169.254` 这类）**一律拒且无豁免**；**公网默认拒**，确实是托管日志服务就在这条来源上
+  打开 `allowPublic`（面板开关随后补，当前可从配置面写）。**不跟随重定向**：来源回 3xx 时报错并回显
+  `Location`，改地址重来（一次 302 就能把请求带出白名单）。
+- 围栏判的是**域名解析之后的 IP**，而解析与建连是两步：两步之间 DNS 翻脸（rebinding）仍有窗口。
+  来源地址是操作者自己填的，这一层挡的是事故与过期的名字，不是持域名的对手。
+- Docker 只作为**采集来源**（设计里的「选项 0」），不做适配器：agent 侧用现成的 `docker_logs` /
+  `docker_logs_grep`，本插件不包一层。

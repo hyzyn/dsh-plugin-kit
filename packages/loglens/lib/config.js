@@ -28,8 +28,9 @@ export function urlRequired(kind) {
 /**
  * 链路本地 / 云元数据地址：设计 §1 明列的非目标，添加动作直接拒。
  *
- * 全面出站围栏（重定向 / DNS rebinding / 体积 / 超时）是 P4 的 net.ts；本层只挡
- * 「用户按字面量填进来的那几种形态」，解析后的 IP 判定必须在那一层做。
+ * 这里是**添加期的字面量快筛**；真正的出站围栏在 src/net.ts（2026-10-11 落地）：那边判的是
+ * **解析之后的 IP**，还管重定向、体积与超时。两层都要有——本层让「填进来就明显不对的」当场报错，
+ * net.ts 那层才挡得住域名解析出来的东西。
  */
 export function isLinkLocalHost(hostname) {
     let host = hostname.trim().toLowerCase();
@@ -134,6 +135,11 @@ export function validateTargetInput(input, taken = []) {
     if (rawDockerTarget !== '' && kind !== 'docker') {
         return { ok: false, error: 'dockerTarget 只对 docker 来源有意义（当前类型是 ' + kind + '）' };
     }
+    const allowPublic = raw.allowPublic === true;
+    if (allowPublic && kind === 'docker') {
+        // docker 是采集来源：它的日志由 Docker 插件去取，本插件在这里没有任何出站，这个开关没有意义
+        return { ok: false, error: 'allowPublic 只对查询类来源有意义（docker 来源没有出站请求）' };
+    }
     const requested = typeof raw.id === 'string' ? raw.id.trim().toLowerCase() : '';
     const base = requested === ''
         ? slugId(label, slugSourceForUrl(url))
@@ -144,6 +150,8 @@ export function validateTargetInput(input, taken = []) {
     const target = { id, kind, label: label === '' ? id : label, url };
     if (rawDockerTarget !== '')
         target.dockerTarget = rawDockerTarget;
+    if (allowPublic)
+        target.allowPublic = true;
     return { ok: true, target };
 }
 /**
@@ -199,6 +207,7 @@ export function updateTarget(config, id, patch) {
         label: rawPatch.label === undefined ? current.label : rawPatch.label,
         url: rawPatch.url === undefined ? current.url : rawPatch.url,
         dockerTarget: rawPatch.dockerTarget === undefined ? current.dockerTarget : rawPatch.dockerTarget,
+        allowPublic: rawPatch.allowPublic === undefined ? current.allowPublic : rawPatch.allowPublic,
     };
     const others = config.targets.filter((target) => target.id !== current.id).map((target) => target.id);
     const checked = validateTargetInput(merged, others);

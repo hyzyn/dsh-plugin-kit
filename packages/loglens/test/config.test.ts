@@ -153,6 +153,33 @@ describe('id 生成', () => {
     expect(updated.ok ? updated.config.targets[0].dockerTarget : '').toBe('remote-1')
   })
 
+  it('allowPublic 只对查询类来源有意义（docker 没有出站，带上它直接报错）', () => {
+    const loki = validateTargetInput({ kind: 'loki', url: 'http://127.0.0.1:3100', allowPublic: true }, [])
+    expect(loki.ok && loki.target.allowPublic).toBe(true)
+    const docker = validateTargetInput({ kind: 'docker', label: '本机', allowPublic: true }, [])
+    expect(docker.ok).toBe(false)
+    expect(docker.ok === false ? docker.error : '').toContain('只对查询类来源有意义')
+  })
+
+  it('allowPublic 缺省不写进目标（默认拒公网，别给配置面留一个恒为 false 的字段）', () => {
+    const checked = validateTargetInput({ kind: 'loki', url: 'http://127.0.0.1:3100' }, [])
+    expect(checked.ok && 'allowPublic' in checked.target).toBe(false)
+    // 不是布尔的真值不当真（'yes' / 1 一律按「没开」）
+    const loose = validateTargetInput({ kind: 'loki', url: 'http://127.0.0.1:3100', allowPublic: 'yes' }, [])
+    expect(loose.ok && loose.target.allowPublic).toBeUndefined()
+  })
+
+  it('改判能开也能关 allowPublic（关了要真的从目标上消失）', () => {
+    const start = configWith({ kind: 'loki', label: 'loki', url: 'http://127.0.0.1:3100' })
+    const opened = updateTarget(start, 'loki', { allowPublic: true })
+    expect(opened.ok && opened.config.targets[0].allowPublic).toBe(true)
+    // 只改 label 时不该把开关冲掉
+    const kept = updateTarget(opened.ok ? opened.config : start, 'loki', { label: '本地 Loki' })
+    expect(kept.ok && kept.config.targets[0].allowPublic).toBe(true)
+    const closed = updateTarget(kept.ok ? kept.config : start, 'loki', { allowPublic: false })
+    expect(closed.ok && closed.config.targets[0].allowPublic).toBeUndefined()
+  })
+
   it('非对象输入拒（数组也算）', () => {
     expect(validateTargetInput([], []).ok).toBe(false)
     expect(validateTargetInput(null, []).ok).toBe(false)

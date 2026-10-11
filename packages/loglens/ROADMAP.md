@@ -1,6 +1,6 @@
 # @hyzyn/dsh-loglens — 路线图
 
-> **状态：P0 / P1 / P3 / P4 / P5（agent 侧）全部落地，P2 的代码半体也落地（2026-10-11）——设置面、查询地基、Loki 与 ES / OpenSearch 适配器、四个 agent 工具、Docker 的选项 0 指路都可用；剩下三条后端的**真机验收**（待有环境）与浏览器侧的结果视图（P6，含 Docker 面板那一格）。** `packages/loglens/` 现在是 workspace 包
+> **状态：P0 / P1 / P3 / P4（含出站围栏）/ P5（agent 侧）全部落地，P2 的代码半体也落地（2026-10-11）——设置面、查询地基、Loki 与 ES / OpenSearch 适配器、出站围栏、四个 agent 工具、Docker 的选项 0 指路都可用；剩下三条后端的**真机验收**（待有环境）与浏览器侧的结果视图（P6，含 Docker 面板那一格）。** `packages/loglens/` 现在是 workspace 包
 > （`@hyzyn/dsh-loglens@0.1.2`，已进 [publish-targets.mjs](../../scripts/publish-targets.mjs) 与两份聚合清单，
 > `pnpm-lock.yaml` 已同步）——所以 [docs-index 判据 5](../../scripts/docs-index.mjs) 现在**看得见它**，
 > 而不再是「本目录不在解析面里」。设计与契约见 [docs/design.md](./docs/design.md)；
@@ -160,6 +160,7 @@
 | **P2** | Loki 打通（本地容器真机验；并**单独测同 ts 多行的顺序稳定性**） | ✅ |
 | **P3** | `loglens_search` / `loglens_fields` / `loglens_sources` / `loglens_context` + 分类表与守卫 | ✅ |
 | **P4** | ES / OpenSearch 一个适配器（复用 P1 游标；`flavor` 分流） | ✅ |
+| **P4 尾** | 出站围栏 `src/net.ts`（设计 §4.1 那四条） | ✅ |
 | **P5** | Docker 作为来源（**选项 0**，零新机制） | ✅ |
 | **P6** | Loki `tail`（`ws`）/ 直方图 / 浏览器视图（design.md §5 三选一） | — |
 | **P7** | 需要**跨后端统一查询**时才申请宿主半体插件间服务 | — |
@@ -196,7 +197,9 @@
 
 **仍未拍板 3 项**（都不挡 P0-乙，分别落在 P4 / P6 / P7）：
 
-5. **私网语义**：私网允许、链路本地 / 云元数据与公网默认禁——确认（P4 出站围栏定稿前）。
+5. **私网语义**：私网允许、链路本地 / 云元数据与公网默认禁——**代码已按这个口径落地**（2026-10-11，
+   [src/net.ts](../packages/loglens/src/net.ts)：公网默认拒 + 来源级 `allowPublic` 开关，
+   见文末「P4 尾」落地记录）。维护者若推翻，改的是那一处判据与三处文案；本条**仍待在代码之外的确认**。
 6. **浏览器视图**：受控重复（默认）还是 `docker` 暴露视图服务（P6 三选一）。
 7. **宿主服务**：只在 P7 需要时再批（本仓第一条宿主半体插件间服务）。
 
@@ -660,3 +663,26 @@ package.json 中以 platform: 'web' 声明 dsh.client，导出 ./client bundle�
 `track_total_hits` 在这台上给的是**精确值**（`relation === "eq"`），所以 `totalKnown: true`；
 时间字段是 `@timestamp`（`app-logs-*` 的映射里就有）。**索引表达式写在来源地址的路径里**最好
 （不写会用 `*` 扫全部索引，包括 `.infini_*` 这类内部索引——又慢又噪）。
+### P4 尾：出站围栏 `src/net.ts`（2026-10-11 落地）
+
+设计 §4.1 那四条从「待做」变成代码。判据与分寸写在 [design.md §4.1](./docs/design.md#4-安全与凭据) 的落地记录里，
+这里只记**落点与门槛**：
+
+| # | 内容 | 落点 | 用例 |
+|---|---|---|---|
+| 1 | 解析后的 IP 判定（`dns.lookup` 之后；多地址逐条过；`localhost` 不打 DNS） | `src/net.ts` 的 `assertReachable` / `classifyAddress` | 六档分档表 · 元数据域名 · 多地址混合 · FQDN 尾点 |
+| 2 | **不跟随重定向**（`redirect:'manual'`，3xx 即失败并回显 `Location`） | 同上 `requestJson` | 302 用例**直接数那台服务器的请求数**（诱饵服务器必须收到 0 个请求） |
+| 3 | **公网默认拒 + 来源级 `allowPublic`**（链路本地 / 元数据无豁免） | `config.ts`（target 字段）→ `net.ts`（判据） | 默认拒 · 开了才放行 · 开了也不放行元数据 · HTTP 面往返 |
+| 4 | 体积上限（8 MiB：先看 `content-length` 再边读边数）与超时（默认 20s） | `net.ts` | 声明超限 · 未声明也拦得住 · 超时 · 连不上（`transport`） |
+
+**两条落在边界上的选择**（都记在这里，别当成遗漏）：
+
+- **判定与建连是两步**，DNS rebinding 的窗口关不掉（要关得把校验下沉到连接层，如 undici 的
+  `connect.lookup`）。来源地址是操作者自己填的，这一层的活是挡事故与过期的名字——README 的「已知限制」写了这句。
+- **非 2xx 不在围栏里抛**：ES 的 `cursor_expired` 判定要读失败响应体（7.10 上还是 200 + 分片失败），
+  所以 `net.ts` 把 status / text / body 原样交给适配器，只在「请求没打成 / 打成但形状不能要」时抛。
+  Loki 与 ES 各自的失败形状（`[loki] HTTP …` / `ElasticHttpError`）因此**一个字都没改**——既有断言全绿是证据。
+
+**上游**：设计 §4.1 记的「第二个消费者出现时上收到 kit」**不触发**——两个消费者（Loki / ES）都在本包内。
+真要上收时，`net.ts` 是从 `assertReachable` + `requestJson` 两个导出切出去的。
+

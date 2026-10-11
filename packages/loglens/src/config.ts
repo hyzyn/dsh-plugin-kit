@@ -27,6 +27,14 @@ export interface LoglensTarget {
    * 由 Docker 插件自己在「只有一个目标」时回落（多个目标时它会回一句带候选名的 400，面板照显）。
    */
   dockerTarget?: string
+  /**
+   * 只对**查询类**来源（loki / elasticsearch / opensearch）有意义：允许这条来源解析到公网地址吗。
+   *
+   * 出站围栏默认只放行回环与私网（设计 §4.1），要打托管日志服务（Elastic Cloud 之类）就得显式打开
+   * 这一位——「默认拒 + 一条来源一个开关」比「一刀切放行公网」和「一刀切禁止公网」都好解释：
+   * 判据在 src/net.ts，开关跟着来源走，出错文案里会点名这条来源。
+   */
+  allowPublic?: boolean
 }
 
 export interface LoglensConfig {
@@ -61,8 +69,9 @@ export function urlRequired(kind: SourceKind): boolean {
 /**
  * 链路本地 / 云元数据地址：设计 §1 明列的非目标，添加动作直接拒。
  *
- * 全面出站围栏（重定向 / DNS rebinding / 体积 / 超时）是 P4 的 net.ts；本层只挡
- * 「用户按字面量填进来的那几种形态」，解析后的 IP 判定必须在那一层做。
+ * 这里是**添加期的字面量快筛**；真正的出站围栏在 src/net.ts（2026-10-11 落地）：那边判的是
+ * **解析之后的 IP**，还管重定向、体积与超时。两层都要有——本层让「填进来就明显不对的」当场报错，
+ * net.ts 那层才挡得住域名解析出来的东西。
  */
 export function isLinkLocalHost(hostname: string): boolean {
   let host = hostname.trim().toLowerCase()
@@ -161,6 +170,11 @@ export function validateTargetInput(input: unknown, taken: readonly string[] = [
   if (rawDockerTarget !== '' && kind !== 'docker') {
     return { ok: false, error: 'dockerTarget 只对 docker 来源有意义（当前类型是 ' + kind + '）' }
   }
+  const allowPublic = raw.allowPublic === true
+  if (allowPublic && kind === 'docker') {
+    // docker 是采集来源：它的日志由 Docker 插件去取，本插件在这里没有任何出站，这个开关没有意义
+    return { ok: false, error: 'allowPublic 只对查询类来源有意义（docker 来源没有出站请求）' }
+  }
   const requested = typeof raw.id === 'string' ? raw.id.trim().toLowerCase() : ''
   const base = requested === ''
     ? slugId(label, slugSourceForUrl(url))
@@ -169,6 +183,7 @@ export function validateTargetInput(input: unknown, taken: readonly string[] = [
   if (!ID_SHAPE.test(id)) return { ok: false, error: 'id 形态不合法：' + id }
   const target: LoglensTarget = { id, kind, label: label === '' ? id : label, url }
   if (rawDockerTarget !== '') target.dockerTarget = rawDockerTarget
+  if (allowPublic) target.allowPublic = true
   return { ok: true, target }
 }
 
@@ -227,6 +242,7 @@ export function updateTarget(config: LoglensConfig, id: unknown, patch: unknown)
     label: rawPatch.label === undefined ? current.label : rawPatch.label,
     url: rawPatch.url === undefined ? current.url : rawPatch.url,
     dockerTarget: rawPatch.dockerTarget === undefined ? current.dockerTarget : rawPatch.dockerTarget,
+    allowPublic: rawPatch.allowPublic === undefined ? current.allowPublic : rawPatch.allowPublic,
   }
   const others = config.targets.filter((target) => target.id !== current.id).map((target) => target.id)
   const checked = validateTargetInput(merged, others)

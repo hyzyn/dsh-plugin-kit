@@ -221,6 +221,24 @@ describe('按动作豁免：enabled 免同源证明、targets 要', () => {
     expect(state().targets.map((target) => target.id)).toEqual(['docker'])
   })
 
+  it('allowPublic 从 HTTP body 一路落到配置（默认不写、能开能关）', async () => {
+    const { request, state } = harness()
+    const proof = { origin: 'http://127.0.0.1:3080' }
+    const kept = await request({
+      method: 'POST',
+      ...proof,
+      body: { action: 'targets.add', target: { kind: 'elasticsearch', label: 'es', url: 'https://logs.example.com:9200/logs-*' } },
+    })
+    expect(kept.status).toBe(200)
+    expect(state().targets[0].allowPublic).toBeUndefined()
+    const opened = await request({ method: 'POST', ...proof, body: { action: 'targets.update', id: 'es', patch: { allowPublic: true } } })
+    expect(opened.status).toBe(200)
+    expect(state().targets[0].allowPublic).toBe(true)
+    const closed = await request({ method: 'POST', ...proof, body: { action: 'targets.update', id: 'es', patch: { allowPublic: false } } })
+    expect(closed.status).toBe(200)
+    expect(state().targets[0].allowPublic).toBeUndefined()
+  })
+
   it('非法值 / 未知 id 都是 400，且不改动已生效的配置', async () => {
     const { request, state } = harness()
     const proof = { origin: 'http://127.0.0.1:3080' }

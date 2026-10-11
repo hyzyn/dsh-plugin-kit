@@ -97,6 +97,20 @@ function ipv6Allowed(addr) {
   // 内嵌 IPv4 的映射/兼容形式：按**内嵌的 IPv4 部分**判定（::ffff:127.0.0.1 是回环）
   const tail = a.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/)
   if (tail !== null) return ipv4Allowed(tail[1])
+  /*
+   * 十六进制写法的 IPv4-mapped：::ffff:a9fe:a9fe 就是 169.254.169.254。
+   *
+   * 为什么非认它不可：**URL 会把 ::ffff:169.254.169.254 归一成这种写法**（实测），
+   * 而这条链路本地地址是本仓 loglens 出站围栏的反例夹具（src/net.ts 的 classifyAddress
+   * 注释与 test/net.test.ts 都写着它）。不还原就会把它当成公网 IPv6 报违规，
+   * 而它恰恰**不是**公网地址——闸门的判据是「有没有公网地址」，不是「像不像」。
+   */
+  const mapped = a.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/)
+  if (mapped !== null) {
+    const high = parseInt(mapped[1], 16)
+    const low = parseInt(mapped[2], 16)
+    return ipv4Allowed([high >> 8, high & 255, low >> 8, low & 255].join('.'))
+  }
   return false
 }
 
@@ -195,6 +209,10 @@ function selfTest() {
     ['::1', 0, 'IPv6 回环'],
     ['fc00::1', 0, 'IPv6 ULA'],
     ['2606:4700::1111', 1, 'IPv6 公网'],
+    ['::ffff:169.254.169.254', 0, 'IPv4-mapped 链路本地（点分写法）'],
+    ['::ffff:a9fe:a9fe', 0, 'IPv4-mapped 链路本地（十六进制，URL 归一化形态）'],
+    ['::ffff:7f00:1', 0, 'IPv4-mapped 回环（十六进制）'],
+    ['::ffff:0808:0808', 1, 'IPv4-mapped 公网（十六进制）'],
     // —— 假阳性回归（本闸门第一版就栽在这里；宽松的 IPv6 正则把时间戳/MAC 全刷成违规）——
     ['2026-09-09 16:11:22 +0800 CST', 0, '时间戳 HH:MM:SS'],
     ["16:11:34,150 |INFO in ...", 0, '时间戳 + 毫秒'],

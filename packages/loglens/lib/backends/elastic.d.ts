@@ -13,6 +13,7 @@
  *      地址里的 user:pass 换成 Basic 认证头，**不进 URL**（别把凭据写进日志与错误文案）。
  */
 import type { LoglensTarget } from '../config.js';
+import type { LookupFn } from '../net.js';
 import type { LogBackend, LogLine } from './types.js';
 export type ElasticFlavor = 'es' | 'os';
 /** 单页上限的默认声明（深分页靠 search_after，所以这只是「一页多少行」）。 */
@@ -28,6 +29,8 @@ export declare const ES_TIME_FIELD = "@timestamp";
 export interface ElasticOptions {
     flavor: ElasticFlavor;
     fetchImpl?: typeof fetch;
+    /** 解析器注入点（出站围栏用）：用例喂假解析结果，验证「域名解析到链路本地 / 公网」这类判据。 */
+    lookupImpl?: LookupFn;
     timeoutMs?: number;
     maxPageSize?: number;
     maxWindowMs?: number;

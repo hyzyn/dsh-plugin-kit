@@ -1,6 +1,6 @@
 # @hyzyn/dsh-loglens 设计方案
 
-> **状态：P1 契约与纯模块、P2 的 Loki 适配器、P4 的 ES / OpenSearch 适配器、P3 的四个 agent 工具都已落地（2026-10-11）；真机验收与浏览器侧结果视图未做。** 本文件是**包特有的深层设计**（归属见 [conventions § 知识归属表](../../../docs/conventions.md#知识归属表唯一归宿)
+> **状态：P1 契约与纯模块、P2 的 Loki 适配器、P4 的 ES / OpenSearch 适配器与出站围栏（src/net.ts）、P3 的四个 agent 工具都已落地（2026-10-11）；真机验收与浏览器侧结果视图未做。** 本文件是**包特有的深层设计**（归属见 [conventions § 知识归属表](../../../docs/conventions.md#知识归属表唯一归宿)
 > 的「包特有的深层设计 / API」一行 → L1 `packages/<pkg>/docs/`）。
 > 待办与执行计划见 [../ROADMAP.md](../ROADMAP.md)；包落地后按档位补齐 `README.md` / `DEFECTS.md`。
 
@@ -102,6 +102,22 @@
    - **产品语义明写**：**私网是允许面**（否则插件没有用法），链路本地 / 云元数据与公网默认禁。
    - 体积上限 / 超时 / 时间窗上限 / 条数上限集中在 `net.ts` + `query.ts`。
    - 现况：`rss` 是裸 `fetch`、`kit` 里没有对偶物；**第二个消费者出现时这层上收到 kit**。
+
+   **落地状态（2026-10-11，代码在 [../src/net.ts](../src/net.ts)；用例 `test/net.test.ts` 25 条）**：
+
+   1. 判据落在**解析之后的 IP**上（`dns.lookup` 之后、建连之前），且**一个主机名解析出多个地址时每一条都要过**；
+      `localhost` / `*.localhost` 按 RFC 6761 直接当回环、不打 DNS。
+   2. **不跟随重定向**：`redirect:'manual'`，3xx 直接当失败并回显 `Location`。
+      实测（Node 22 的 undici）：`redirect:'manual'` 回的是**真实响应**（status 302 + location 头），
+      `redirect:'error'` 只给一句 `unexpected redirect`——要回显地址就得用前者。
+   3. **公网默认拒，按来源可开**：target 上的 `allowPublic`。判据里 `public` 档在 `allowPublic !== true` 时拒，
+      **链路本地 / 元数据 / 保留段没有豁免**（开了开关也不放行）。这是 [ROADMAP 待拍板第 5 项](../ROADMAP.md#待拍板先问清单)
+      在代码里的形态——维护者若推翻，改的是那一处判据与三处文案。
+   4. 体积上限（默认 8 MiB，先看 `content-length`、再边读边数）与超时（默认 20s，Loki 15s / ES 20s 各自传）
+      都在这一层；时间窗与 limit 的上限仍归 `query.ts`（`net.ts` 只做「一次请求」的量）。
+   5. **分寸**：解析与建连是两步，DNS rebinding 的窗口关不掉（要关得把校验下沉到连接层）；错误文案里
+      **去掉凭据**（`sanitizeUrl`）；非 2xx 由适配器解读（ES 的 `cursor_expired` 要读失败响应体），
+      `net.ts` 只在「请求没打成 / 打成但形状不能要」时抛错。
 2. **回环档位**：持有后端凭据 → **加固档** `isLoopbackRequestStrict` + `hasSameOriginProof`
    （[kit/src/http.ts](../../kit/src/http.ts)）。**改档要同步改** [architecture § 7.1 表](../../../docs/architecture.md#7-一条请求经过什么)。
 3. **`/config` 豁免按动作，不按方法**——否则跨站页面能从配置侧加一个指向内网的 target，再用本插件的

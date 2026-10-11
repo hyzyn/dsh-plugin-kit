@@ -11,6 +11,8 @@
  */
 import type { LoglensTarget } from '../config.js'
 import { decodeCursor, encodeCursor, lineFromLoki, slicePage } from '../cursor.js'
+import { requestJson as fetchJson } from '../net.js'
+import type { LookupFn } from '../net.js'
 import type { LokiCursor } from '../cursor.js'
 import { countsOf, truncationOf } from '../query.js'
 import type {
@@ -50,6 +52,8 @@ export interface LokiOptions {
   timeoutMs?: number
   /** 注入点：默认全局 fetch；用例起一个监听本机端口的假 Loki，走真 HTTP。 */
   fetchImpl?: typeof fetch
+  /** 解析器注入点（出站围栏用）：用例喂假解析结果，验证「域名解析到链路本地」这类判据。 */
+  lookupImpl?: LookupFn
 }
 
 /** Loki 的 query_range 返回体（只列我们用到的字段；多出来的原样忽略）。 */
@@ -109,43 +113,6 @@ function compareNano(left: string, right: string): number {
   return a === b ? 0 : a > b ? 1 : -1
 }
 
-async function requestJson(
-  fetchImpl: typeof fetch,
-  url: string,
-  init: RequestInit,
-  timeoutMs: number,
-): Promise<unknown> {
-  const controller = new AbortController()
-  const timer = setTimeout(() => { controller.abort() }, timeoutMs)
-  let response: Response
-  let text: string
-  try {
-    response = await fetchImpl(url, { ...init, signal: controller.signal })
-    text = await response.text()
-  } catch (error) {
-    if (error instanceof Error && error.name === 'AbortError') {
-      throw new Error('[loki] 请求超时（>' + String(timeoutMs) + 'ms）：' + url)
-    }
-    throw new Error('[loki] 请求失败：' + (error instanceof Error ? error.message : String(error)))
-  } finally {
-    clearTimeout(timer)
-  }
-  let body: unknown
-  try {
-    body = JSON.parse(text)
-  } catch {
-    body = undefined
-  }
-  if (!response.ok) {
-    throw new Error('[loki] HTTP ' + String(response.status) + '：' + detailOf(body, text))
-  }
-  if (body === undefined) {
-    const trimmed = text.trim()
-    throw new Error('[loki] 返回的不是 JSON：' + (trimmed.length > 120 ? trimmed.slice(0, 120) + '…' : trimmed))
-  }
-  return body
-}
-
 /** 把 query_range 的返回体摊平成行，并给出**全局有序**（同 ts 内按流序号、流内按出现次序）。 */
 export function rowsFromRange(body: LokiRangeBody, direction: 'forward' | 'backward'): LokiRow[] {
   const streams = body.data?.result
@@ -183,6 +150,31 @@ export function createLokiBackend(options: LokiOptions = {}): LogBackend {
   const maxWindowMs = options.maxWindowMs === undefined ? LOKI_DEFAULT_MAX_WINDOW_MS : options.maxWindowMs
   const timeoutMs = options.timeoutMs === undefined ? LOKI_TIMEOUT_MS : options.timeoutMs
   const fetchImpl = options.fetchImpl === undefined ? fetch : options.fetchImpl
+  const label = '[loki]'
+
+  /**
+   * 一次 Loki 请求：出站围栏（src/net.ts：解析后的 IP 判定 / 不跟随重定向 / 体积与超时）+ 本层的
+   * 「非 2xx 与不是 JSON 都算失败」。围栏的 allowPublic 跟着**这条来源**走——开关在来源上，不在插件上。
+   */
+  async function callJson(target: LoglensTarget, url: string, init: RequestInit): Promise<unknown> {
+    const response = await fetchJson({
+      fetchImpl,
+      label,
+      url,
+      init,
+      timeoutMs,
+      ...(options.lookupImpl === undefined ? {} : { lookupImpl: options.lookupImpl }),
+      ...(target.allowPublic === true ? { allowPublic: true } : {}),
+    })
+    if (!response.ok) {
+      throw new Error(label + ' HTTP ' + String(response.status) + '：' + detailOf(response.body, response.text))
+    }
+    if (response.body === undefined) {
+      const trimmed = response.text.trim()
+      throw new Error(label + ' 返回的不是 JSON：' + (trimmed.length > 120 ? trimmed.slice(0, 120) + '…' : trimmed))
+    }
+    return response.body
+  }
 
   return {
     id: 'loki',
@@ -201,7 +193,7 @@ export function createLokiBackend(options: LokiOptions = {}): LogBackend {
     },
 
     async fields(target: LoglensTarget): Promise<FieldInfo[]> {
-      const body = await requestJson(fetchImpl, joinUrl(target.url, '/loki/api/v1/labels'), { method: 'GET' }, timeoutMs)
+      const body = await callJson(target, joinUrl(target.url, '/loki/api/v1/labels'), { method: 'GET' })
       const data = (body as { data?: unknown }).data
       if (!Array.isArray(data)) return []
       return data
@@ -211,8 +203,17 @@ export function createLokiBackend(options: LokiOptions = {}): LogBackend {
 
     async health(target: LoglensTarget): Promise<BackendHealth> {
       try {
-        const response = await fetchImpl(joinUrl(target.url, '/ready'), { method: 'GET' })
-        const text = (await response.text()).trim()
+        // 探测也走围栏：/ready 是本次查询真正要打的那个地址，绕开它等于留一条不打判据的出口
+        const response = await fetchJson({
+          fetchImpl,
+          label,
+          url: joinUrl(target.url, '/ready'),
+          init: { method: 'GET' },
+          timeoutMs,
+          ...(options.lookupImpl === undefined ? {} : { lookupImpl: options.lookupImpl }),
+          ...(target.allowPublic === true ? { allowPublic: true } : {}),
+        })
+        const text = response.text.trim()
         return response.ok
           ? { ok: true, detail: text === '' ? 'ready' : text.slice(0, 120) }
           : { ok: false, detail: 'HTTP ' + String(response.status) + '：' + text.slice(0, 120) }
@@ -243,7 +244,7 @@ export function createLokiBackend(options: LokiOptions = {}): LogBackend {
       params.set('direction', query.direction)
       const url = joinUrl(target.url, '/loki/api/v1/query_range') + '?' + params.toString()
 
-      const body = (await requestJson(fetchImpl, url, { method: 'GET' }, timeoutMs)) as LokiRangeBody
+      const body = (await callJson(target, url, { method: 'GET' })) as LokiRangeBody
       if (body.status !== undefined && body.status !== 'success') {
         throw new Error('[loki] 查询失败：' + detailOf(body, 'status=' + String(body.status)))
       }
