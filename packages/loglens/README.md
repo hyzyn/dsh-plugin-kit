@@ -4,8 +4,8 @@
 对外只有一套「归一化行模型 + 诚实的计数与截断信号 + 交给 Agent 的工具」。
 
 > **状态：设置面、查询地基（契约 / 归一化 / 游标）、Loki 与 ES / OpenSearch 适配器、四个 agent 工具都已就位（2026-10-11）。**
-> 三条后端目前只有 **wire 级用例**（假 Loki / 假 ES 的真 HTTP 服务），**真机验收还没跑**；浏览器侧的
-> 结果视图没做（P6）——卡片上也写着这句。
+> 三条后端目前只有 **wire 级用例**（假 Loki / 假 ES 的真 HTTP 服务），**真机验收还没跑**；面板里的查询区
+> 已经能用（有能通的来源时才查得到东西）。
 > 设计与契约的唯一归宿是 [docs/design.md](./docs/design.md)；分期与待办见 [ROADMAP.md](./ROADMAP.md)。
 
 ## 现在能做什么
@@ -15,7 +15,10 @@
   `loglens_fields` 看有哪些字段、`loglens_context` 取某一行前后的上下文。
   可查后端：**Loki**、**Elasticsearch**、**OpenSearch**（Docker 走现成的 `docker_logs` / `docker_logs_grep`）。
   四个工具都归 **read** 档（分类表见 [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md) §2.1）。
-- 卡片上明写「查询能力（搜索结果视图）还没实现」——浏览器侧不提供看起来能用的假界面。
+- **在同一张卡片里直接查**：来源 / 查询串 / 时间窗（15m · 1h · 6h · 24h）/ 条数 → 结果列表（时间到毫秒 ·
+  级别 · 正文）+ 诚实的计数与截断提示；有游标时给「下一页」（按 id 去重）。
+- 面板与 agent 工具走**同一个执行层**（[src/execute.ts](./src/execute.ts)）：同一份归一化、同一份截断信号——
+  不会出现「面板说的和工具说的不一样」。
 
 ## HTTP 面（回环）
 
@@ -94,7 +97,9 @@ dsh plugin --profile <profile> add link:$(pwd)/packages/loglens
 
 - **真机验收还没跑**：三条适配器都只有 wire 级用例（假服务器）；真 Loki / 真 ES 上的行为（尤其是 Loki
   同 ts 多行的顺序稳定性与 ES 的 PIT 寿命）要等有环境时补（见 [ROADMAP.md](./ROADMAP.md)）。
-- **浏览器侧没有结果视图**：面板里只有来源清单与开关，查询走 agent 工具（P6 三选一还没拍板）。
+- **真机验收还没跑**：三条适配器都只有 wire 级用例（假服务器）；真 Loki / 真 ES 上的行为要等有环境时补。
+- 面板里的查询区是**受控重复**（设计 §5 的默认档）：日志视图建在本插件自己的卡片里，不与别的插件共享浏览器模块。
+- Docker 目标在面板里仍只做指路（选项 0 的面板半格没接）。
 - 一次只查一个来源（v1 不做跨后端 fan-out）；公网与链路本地地址默认禁。
 - **Docker 目标只做指路**（选项 0）：查容器日志请用 `docker_logs` / `docker_logs_grep`，本插件不包一层；
   面板里那种「在 loglens 卡片里直接看容器日志」的视图没做（P6）。

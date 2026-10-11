@@ -41,6 +41,12 @@
  *
  *   TS2304 找不到名字          TS2552 找不到名字（"是否想用 X"）
  *   TS2448 块级变量先用后声明   TS2454 变量未赋值就使用
+ *   TS2451 同一作用域里重复声明同一个名字
+ *
+ * TS2451 是 2026-10-11 补进来的（loglens 那次）：在 client-src 形态下，**内联进 factory 的兄弟模块
+ * 与入口共享同一个作用域**，一个重名的 const（比如入口里叫 rows 的渲染变量与兄弟模块里叫 rows 的
+ * state）会让**整个 bundle 解析失败**——卡片不是渲染错，是根本不加载。第一版把它归进噪音，结果
+ * 这条真实存在的重名只被打印出来、没有拦住提交。
  *
  * 其余诊断（`--checkJs` 下没有类型声明就来的模块解析、DOM 事件类型收窄等）在本项目的打包
  * 方式下是**噪音**：不判失败，但照样打印出来，免得它们悄悄积累成一片看不见的红。
@@ -121,7 +127,7 @@ const root = process.cwd()
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
 /** 只把这几类当失败：见文件头的说明。 */
-const FATAL_CODES = new Set(['TS2304', 'TS2552', 'TS2448', 'TS2454'])
+const FATAL_CODES = new Set(['TS2304', 'TS2552', 'TS2448', 'TS2451', 'TS2454'])
 
 // 目标选择：优先源码，没有源码就查构建产物（7 个裸 client.js 的包走这条）
 const target = ['client-src/index.js', 'client.js'].find((candidate) => existsSync(join(root, candidate)))
@@ -462,8 +468,8 @@ if (capsuleFindings.length > 0) {
 }
 
 if (fatal.length > 0) {
-  console.error('\n[' + packageName + '] 客户端静态检查失败：' + String(fatal.length) + ' 处"引用了不存在的名字 / 先用后声明"。'
-    + '这类错误编译不报、冒烟也未必抓到，只有真渲染到那条分支才炸——请修掉，别只是让它过。')
+  console.error('\n[' + packageName + '] 客户端静态检查失败：' + String(fatal.length) + ' 处致命诊断（找不到名字 / 先用后声明 / 同名重复声明）。'
+    + '这类错误编译不报、冒烟也未必抓到——轻则某条分支炸，重则整个 bundle 解析失败、卡片根本不加载。请修掉，别只是让它过。')
   process.exit(1)
 }
 

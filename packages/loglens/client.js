@@ -84,6 +84,94 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /* ============================ 查询表单（P6 面板侧） ============================ */
+
+    /**
+     * 时间窗预设：面板只给几档——用户不该被「epoch 毫秒」这种细节绊住，而宿主那边有窗口上限，
+     * 手填一个 30 天的窗口只会得到一句「请缩小时间窗」。
+     */
+    const WINDOW_PRESETS = [
+      { key: '15m', ms: 15 * 60 * 1000 },
+      { key: '1h', ms: 60 * 60 * 1000 },
+      { key: '6h', ms: 6 * 60 * 60 * 1000 },
+      { key: '24h', ms: 24 * 60 * 60 * 1000 },
+    ]
+
+    /** 预设的键（下拉选项顺序就是由近到远）。 */
+    function windowOptions() {
+      return WINDOW_PRESETS.map((item) => item.key)
+    }
+
+    /**
+     * 预设 → 具体时间窗（epoch 毫秒）。认不出的预设回落 1 小时——界面上永远有一个选中项，
+     * 不该因为传错一个字符串就查出一个空窗口（那就成了静默无操作）。
+     */
+    function windowRange(preset, nowMs) {
+      const found = WINDOW_PRESETS.find((item) => item.key === preset)
+      const span = found === undefined ? 60 * 60 * 1000 : found.ms
+      const now = typeof nowMs === 'number' && Number.isFinite(nowMs) ? nowMs : Date.now()
+      return { from: now - span, to: now }
+    }
+
+    /** 新查询的草稿：默认「最近 1 小时 / 100 条」。 */
+    function emptyQuery() {
+      return { target: '', q: '', preset: '1h', limit: 100 }
+    }
+
+    /**
+     * 表单能不能提交：空串表示可以，否则是 i18n 键名后缀。
+     *
+     * 这里只校验**面板自己知道的事**（选没选来源、条数是不是正整数）；时间戳单位、窗口上限、
+     * limit 夹取都由宿主判，并且会以原话回给面板显示——**不要在浏览器侧复制一套会漂的规则**。
+     */
+    function queryProblem(draft, targetCount) {
+      const chosen = String(draft.target == null ? '' : draft.target).trim()
+      if (chosen === '' && targetCount !== 1) return 'needTarget'
+      const limit = Number(draft.limit)
+      if (!Number.isInteger(limit) || limit < 1) return 'badLimit'
+      return ''
+    }
+
+    /** 提交载荷：面板只传来源 id / 查询串 / 时间窗 / 条数（游标由「下一页」单独带）。 */
+    function queryPayload(draft, targets, nowMs) {
+      const range = windowRange(draft.preset, nowMs)
+      const chosen = String(draft.target == null ? '' : draft.target).trim()
+      const fallback = Array.isArray(targets) && targets.length === 1 ? targets[0].id : ''
+      return {
+        target: chosen === '' ? fallback : chosen,
+        q: String(draft.q == null ? '' : draft.q),
+        from: range.from,
+        to: range.to,
+        limit: Number(draft.limit),
+      }
+    }
+
+    /** 追加一页：按 id 去重（同一份快照翻页不该出现重复行；真出现也先挡住）。 */
+    function appendLines(previous, incoming) {
+      const rows = Array.isArray(previous) ? previous.slice() : []
+      const seen = new Set(rows.map((line) => line.id))
+      for (const line of Array.isArray(incoming) ? incoming : []) {
+        if (line == null || seen.has(line.id)) continue
+        seen.add(line.id)
+        rows.push(line)
+      }
+      return rows
+    }
+
+    /**
+     * 计数要显示哪几个数（把「哪些数值得说、哪些是下界」这件判据留在纯模块里）。
+     * 返回 [{ key, value }]，key 由界面映射成文案——**不知道的不写**（matched 是下界时用另一个 key）。
+     */
+    function countsParts(counts) {
+      const parts = [{ key: 'returned', value: counts.returned }]
+      if (typeof counts.matched === 'number') {
+        parts.push({ key: counts.totalKnown === true ? 'matched' : 'matchedAtLeast', value: counts.matched })
+      }
+      if (typeof counts.scannedRows === 'number') parts.push({ key: 'scannedRows', value: counts.scannedRows })
+      if (typeof counts.scannedBytes === 'number') parts.push({ key: 'scannedBytes', value: counts.scannedBytes })
+      return parts
+    }
+
     /* ================================ CSS ================================ */
 
     const CSS = [
@@ -133,6 +221,16 @@ window.__ModuleLoader__.load({
       '.ll_empty,.ll_loading{text-align:center;color:var(--dsw-alias-label-tertiary);padding:24px 12px;font-size:12.5px;line-height:18px}',
       '.ll_error{color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:18px;margin:0;white-space:pre-wrap}',
       '.ll_ok{color:var(--dsw-alias-state-success-primary);font-size:12px;line-height:18px;margin:0}',
+      '.ll_query{display:flex;flex-direction:column;gap:10px;border-top:.5px solid var(--dsw-alias-border-l1);padding-top:12px}',
+      '.ll_queryGrid{display:grid;grid-template-columns:minmax(110px,130px) minmax(160px,2fr) minmax(96px,120px) minmax(64px,84px) auto;gap:8px;align-items:center}',
+      '.ll_queryMeta{display:flex;align-items:center;gap:10px;flex-wrap:wrap;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}',
+      '.ll_results{display:flex;flex-direction:column;gap:2px;max-height:420px;overflow-y:auto;font-family:var(--ds-font-family-code)}',
+      '.ll_resultRow{display:grid;grid-template-columns:auto auto minmax(0,1fr);gap:8px;align-items:baseline;padding:3px 8px;border-radius:var(--dsw-radius-sm);font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary)}',
+      '.ll_resultRow:hover{background:var(--dsw-alias-interactive-bg-hover)}',
+      '.ll_resultTime{color:var(--dsw-alias-label-tertiary);white-space:nowrap}',
+      '.ll_resultLevel{color:var(--dsw-alias-state-warn-primary);white-space:nowrap}',
+      '.ll_resultMsg{color:var(--dsw-alias-label-primary);white-space:pre-wrap;word-break:break-word}',
+      '.ll_warn{color:var(--dsw-alias-state-warn-primary);font-size:12px;line-height:18px}',
     ].join('\n')
 
     let styleEl
@@ -183,6 +281,36 @@ window.__ModuleLoader__.load({
       'error.needUrl': '这个类型必须填地址',
       'error.badUrl': '地址必须是 http:// 或 https:// 开头的绝对地址',
       'error.badKind': '类型不认识（支持 Loki / Elasticsearch / OpenSearch / Docker）',
+      'section.query': '查询',
+      'hint.query': '面板直查当前来源：走的是与 agent 工具同一套执行层（同一份归一化与截断信号）。',
+      'placeholder.query': '查询串（Loki 是 LogQL；留空即全量）',
+      'field.target': '来源',
+      'field.window': '时间窗',
+      'field.limit': '条数',
+      'btn.query': '查询',
+      'btn.querying': '查询中…',
+      'btn.nextPage': '下一页',
+      'btn.clear': '清空结果',
+      'option.15m': '最近 15 分钟',
+      'option.1h': '最近 1 小时',
+      'option.6h': '最近 6 小时',
+      'option.24h': '最近 24 小时',
+      'list.noHit': '没有命中（换个时间窗，或放宽查询串）',
+      'meta.returned': '返回 {count} 行',
+      'meta.matched': '命中 {count}',
+      'meta.matchedAtLeast': '至少命中 {count}',
+      'meta.scannedRows': '扫描 {count} 行',
+      'meta.scannedBytes': '扫描 {count} 字节',
+      'meta.truncated': '已截断：{reasons}',
+      'status.hit_limit': '达到条数上限',
+      'status.max_result_window': '超出结果窗口上限',
+      'status.partial_shards': '部分分片失败',
+      'status.timed_out': '查询超时',
+      'status.scan_cap': '扫描量到顶',
+      'status.byte_cap': '字节量到顶',
+      'status.cursor_expired': '游标已过期',
+      'error.needTarget': '先选一个来源',
+      'error.badLimit': '条数得是正整数',
     }
     const I18N_EN = {
       'card.name': 'Log query',
@@ -213,6 +341,36 @@ window.__ModuleLoader__.load({
       'error.needUrl': 'This kind needs a URL',
       'error.badUrl': 'The URL must be an absolute http:// or https:// address',
       'error.badKind': 'Unknown kind (Loki / Elasticsearch / OpenSearch / Docker)',
+      'section.query': 'Query',
+      'hint.query': 'Queries the selected source through the same execution layer the agent tools use (identical normalization and truncation signals).',
+      'placeholder.query': 'Query string (LogQL for Loki; empty means everything)',
+      'field.target': 'Source',
+      'field.window': 'Time window',
+      'field.limit': 'Limit',
+      'btn.query': 'Run',
+      'btn.querying': 'Running…',
+      'btn.nextPage': 'Next page',
+      'btn.clear': 'Clear',
+      'option.15m': 'Last 15 minutes',
+      'option.1h': 'Last hour',
+      'option.6h': 'Last 6 hours',
+      'option.24h': 'Last 24 hours',
+      'list.noHit': 'No hits (widen the window or loosen the query)',
+      'meta.returned': '{count} rows',
+      'meta.matched': '{count} matched',
+      'meta.matchedAtLeast': 'at least {count} matched',
+      'meta.scannedRows': 'scanned {count} rows',
+      'meta.scannedBytes': 'scanned {count} bytes',
+      'meta.truncated': 'Truncated: {reasons}',
+      'status.hit_limit': 'hit the row limit',
+      'status.max_result_window': 'beyond the result window',
+      'status.partial_shards': 'partial shards failed',
+      'status.timed_out': 'query timed out',
+      'status.scan_cap': 'scan cap reached',
+      'status.byte_cap': 'byte cap reached',
+      'status.cursor_expired': 'cursor expired',
+      'error.needTarget': 'Pick a source first',
+      'error.badLimit': 'The limit must be a positive integer',
     }
     /* ==== dsh-i18n:end ==== */
 
@@ -282,6 +440,11 @@ window.__ModuleLoader__.load({
       const [ok, setOk] = React.useState('')
       const [loading, setLoading] = React.useState(false)
       const [saving, setSaving] = React.useState(false)
+      const [query, setQuery] = React.useState(emptyQuery)
+      const [outcome, setOutcome] = React.useState(undefined)
+      const [lines, setLines] = React.useState([])
+      const [cursor, setCursor] = React.useState(undefined)
+      const [querying, setQuerying] = React.useState(false)
 
       /** 宿主回什么就照什么渲染：一切状态以服务端那份为准，不在本地做乐观合并。 */
       const applyConfig = React.useCallback((payload) => {
@@ -362,6 +525,81 @@ window.__ModuleLoader__.load({
           return
         }
         await mutate({ action: 'targets.remove', id: draft.id })
+      }
+
+      /* ---- 查询区（P6 面板侧）：走宿主那条 /query，与 agent 工具同一个执行层 ---- */
+
+      /** 一次展示用的时间格式：本地时间到毫秒（日志排查里毫秒常常就是线索）。 */
+      function formatTime(ms) {
+        const date = new Date(ms)
+        const pad = (value, width) => String(value).padStart(width, '0')
+        return pad(date.getHours(), 2) + ':' + pad(date.getMinutes(), 2) + ':' + pad(date.getSeconds(), 2) + '.' + pad(date.getMilliseconds(), 3)
+      }
+
+      /** 时间窗预设的文案：逐条列字面量，别用 'option.' + key 拼（静态闸门扫不到动态键）。 */
+      function windowLabel(key) {
+        if (key === '15m') return t('option.15m')
+        if (key === '1h') return t('option.1h')
+        if (key === '6h') return t('option.6h')
+        if (key === '24h') return t('option.24h')
+        return key
+      }
+
+      /** 截断理由 → 文案（同样逐条列字面量）。 */
+      function reasonText(reason) {
+        if (reason === 'hit_limit') return t('status.hit_limit')
+        if (reason === 'max_result_window') return t('status.max_result_window')
+        if (reason === 'partial_shards') return t('status.partial_shards')
+        if (reason === 'timed_out') return t('status.timed_out')
+        if (reason === 'scan_cap') return t('status.scan_cap')
+        if (reason === 'byte_cap') return t('status.byte_cap')
+        if (reason === 'cursor_expired') return t('status.cursor_expired')
+        return reason
+      }
+
+      /** 计数的一段 → 文案（matched 是下界时写「至少」，不把「不知道」说成「知道」）。 */
+      function countText(part) {
+        if (part.key === 'returned') return t('meta.returned', { count: part.value })
+        if (part.key === 'matched') return t('meta.matched', { count: part.value })
+        if (part.key === 'matchedAtLeast') return t('meta.matchedAtLeast', { count: part.value })
+        if (part.key === 'scannedRows') return t('meta.scannedRows', { count: part.value })
+        if (part.key === 'scannedBytes') return t('meta.scannedBytes', { count: part.value })
+        return String(part.value)
+      }
+
+      const runQuery = async (append) => {
+        const problem = queryProblem(query, drafts.length)
+        if (problem !== '') {
+          setError(problem === 'needTarget' ? t('error.needTarget') : t('error.badLimit'))
+          return
+        }
+        setQuerying(true)
+        setError('')
+        setOk('')
+        try {
+          const payload = queryPayload(query, drafts, Date.now())
+          if (append && cursor !== undefined) payload.cursor = cursor
+          const data = await api('/api/dsh-loglens/query', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(payload),
+          })
+          setOutcome(data)
+          setLines((current) => (append ? appendLines(current, data.lines) : data.lines))
+          setCursor(typeof data.nextCursor === 'string' ? data.nextCursor : undefined)
+        } catch (err) {
+          setError(err.message)
+        } finally {
+          setQuerying(false)
+        }
+      }
+
+      const clearResults = () => {
+        setOutcome(undefined)
+        setLines([])
+        setCursor(undefined)
+        setError('')
+        setOk('')
       }
 
       if (view === 'summary') {
@@ -492,6 +730,87 @@ window.__ModuleLoader__.load({
                       ],
                     }),
                     ...rows,
+                  ],
+                }) : null,
+                drafts.length > 0 ? jsxs('div', {
+                  className: 'll_query',
+                  children: [
+                    jsx('span', { className: 'll_panelTitle', children: t('section.query') }),
+                    jsxs('div', {
+                      className: 'll_queryGrid',
+                      children: [
+                        jsx('select', {
+                          className: 'll_input',
+                          title: t('field.target'),
+                          value: query.target,
+                          disabled: saving || querying,
+                          onChange: (event) => { setQuery((current) => ({ ...current, target: event.target.value })) },
+                          children: drafts.map((draft) => jsx('option', { value: draft.id, children: draft.label === '' ? draft.id : draft.label }, draft.id)),
+                        }),
+                        jsx('input', {
+                          className: 'll_input',
+                          placeholder: t('placeholder.query'),
+                          value: query.q,
+                          disabled: saving || querying,
+                          onChange: (event) => { setQuery((current) => ({ ...current, q: event.target.value })) },
+                        }),
+                        jsx('select', {
+                          className: 'll_input',
+                          title: t('field.window'),
+                          value: query.preset,
+                          disabled: saving || querying,
+                          onChange: (event) => { setQuery((current) => ({ ...current, preset: event.target.value })) },
+                          children: windowOptions().map((key) => jsx('option', { value: key, children: windowLabel(key) }, key)),
+                        }),
+                        jsx('input', {
+                          className: 'll_input',
+                          title: t('field.limit'),
+                          type: 'number',
+                          min: '1',
+                          value: String(query.limit),
+                          disabled: saving || querying,
+                          onChange: (event) => { setQuery((current) => ({ ...current, limit: Number(event.target.value) })) },
+                        }),
+                        jsx('button', {
+                          type: 'button',
+                          className: 'll_btn',
+                          disabled: saving || querying,
+                          onClick: () => { runQuery(false) },
+                          children: querying ? t('btn.querying') : t('btn.query'),
+                        }),
+                      ],
+                    }),
+                    jsx('p', { className: 'll_hint', children: t('hint.query') }),
+                    outcome === undefined ? null : jsxs('div', {
+                      className: 'll_queryMeta',
+                      children: [
+                        countsParts(outcome.counts === undefined ? { returned: 0 } : outcome.counts).map((part) => jsx('span', { children: countText(part) }, 'll-count-' + part.key)),
+                        outcome.truncation !== undefined && outcome.truncation.truncated === true
+                          ? jsx('span', { className: 'll_warn', children: t('meta.truncated', { reasons: (outcome.truncation.reasons === undefined ? [] : outcome.truncation.reasons).map((reason) => reasonText(reason)).join(' / ') }) })
+                          : null,
+                        outcome.hint === undefined ? null : jsx('span', { className: 'll_warn', children: outcome.hint }),
+                        jsx('button', { type: 'button', className: 'll_btnGhost', disabled: querying, onClick: clearResults, children: t('btn.clear') }),
+                      ],
+                    }),
+                    lines.length > 0 ? jsx('div', {
+                      className: 'll_results',
+                      children: lines.map((line) => jsxs('div', {
+                        className: 'll_resultRow',
+                        children: [
+                          jsx('span', { className: 'll_resultTime', children: formatTime(line.ts) }),
+                          jsx('span', { className: 'll_resultLevel', children: line.level === undefined ? '' : line.level }),
+                          jsx('span', { className: 'll_resultMsg', children: line.message }),
+                        ],
+                      }, 'll-line-' + line.id)),
+                    }) : null,
+                    outcome !== undefined && lines.length === 0 ? jsx('div', { className: 'll_empty', children: t('list.noHit') }) : null,
+                    cursor === undefined ? null : jsx('button', {
+                      type: 'button',
+                      className: 'll_btnGhost',
+                      disabled: querying,
+                      onClick: () => { runQuery(true) },
+                      children: t('btn.nextPage'),
+                    }),
                   ],
                 }) : null,
               ],

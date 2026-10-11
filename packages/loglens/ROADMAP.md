@@ -537,3 +537,40 @@ wire 级用例做完，真机那一半等有环境（你自带的 Loki，或允�
 **还差的（P6 剩下的）**：浏览器侧的**结果视图**（表单 + 结果列表 + 截断提示）还没画；Docker 那一格
 （面板相对路径 fetch `/api/dsh-docker/logs`）也还没接——两者的宿主侧地基这一刀已经铺好。
 
+### P6（面板侧第二刀）：卡片里的查询区（2026-10-11）
+
+**改了什么**
+
+- [client-src/index.js](../loglens/client-src/index.js)：设置卡片里多了一块**查询区**——来源下拉 / 查询串 /
+  时间窗（15m · 1h · 6h · 24h）/ 条数 + 「查询」；结果列表（时间到毫秒 · 级别 · 正文，等宽字体）；
+  计数行（返回 / 命中或**至少命中** / 扫描行数与字节数）+ 截断理由的文案 + 宿主的 hint；
+  有游标时给「下一页」（**按 id 去重**追加）。
+- [client-src/pure.js](../loglens/client-src/pure.js)：表单的判据全在纯模块里——`windowRange`（预设 → 时间窗，
+  认不出的回落 1 小时）、`queryProblem`（只判面板自己知道的事：选没选来源、条数是不是正整数）、
+  `queryPayload`、`appendLines`（去重）、`countsParts`（matched 是下界时用另一个键，界面写「至少」）。
+- 刻意**不在浏览器侧复制宿主的规则**（时间戳单位、窗口上限、limit 夹取都交给宿主），面板只显示宿主回的
+  原话——两处各写一套判据就是两份会漂的真相源。
+
+**两处被守卫当场抓到的真问题（都记一笔）**
+
+1. **漏了 5 个 `useState`**：查询区的处理函数引用了 `setQuery` / `setOutcome` / `setLines` 等却忘了声明。
+   client-lint 的**检查一**一次报出 39 处——正是它存在的理由（这类错误编译不报、只有真渲染到那条分支才炸）。
+2. **`rows` 重名**：入口里原有的渲染变量 `rows` 与新增的 state `rows` 撞在**同一个 factory 作用域**
+   （纯逻辑是内联进来的，兄弟模块与入口共享作用域）→ 浏览器里是**整个 bundle 解析失败、卡片根本不加载**，
+   而 client-lint 当时把 TS2451 归进了**噪音**（只打印、不拦）。修法两条：
+   - 把那个 state 改名 `lines`；
+   - **把 TS2451 升成致命码**（client-lint 的 `FATAL_CODES` + 文件头的成因说明 + 失败文案），
+     并给这条新判据配了反例用例 [scripts/test/client-lint-fatal.test.ts](../../scripts/test/client-lint-fatal.test.ts)：
+     临时目录里喂一份重名声明 → lint 必须非零退出且报 TS2451；同一 harness 跑干净文件必须通过（证明不是永远红）。
+
+**门槛与证据（全部实跑）**
+
+| 闸 | 结果 |
+|---|---|
+| 本包单测 | **169 条**（11 个文件；客户端纯逻辑 16 条） |
+| client-lint | loglens 通过：样式变量 64 处全部存在、自定义属性 65 处全部有定义、发丝线 6 处、圆角 7 处、排版 16 处均配对行高与字重、颜色 64 处无字面量兜底 |
+| check-i18n | 通过：loglens **58 条键** zh/en 一致、用法命中、剩余中文字面量 0 条（键名域全部落在白名单里——`query.*` 一开始越界，改用 `section` / `hint` / `placeholder` 三个已登记的域） |
+| 全仓 | `pnpm typecheck && pnpm build && pnpm test && pnpm aggregate` 全绿（数字见提交）；12 个包的 client-lint 都过（TS2451 升为致命后无人变红） |
+
+**还差的**：Docker 那一格（面板对 docker 目标相对路径 fetch `/api/dsh-docker/logs`）没接；真机验收仍待环境。
+

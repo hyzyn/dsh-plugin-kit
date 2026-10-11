@@ -62,3 +62,91 @@ export function draftPayload(draft) {
     url: String(draft.url == null ? '' : draft.url).trim(),
   }
 }
+
+/* ============================ 查询表单（P6 面板侧） ============================ */
+
+/**
+ * 时间窗预设：面板只给几档——用户不该被「epoch 毫秒」这种细节绊住，而宿主那边有窗口上限，
+ * 手填一个 30 天的窗口只会得到一句「请缩小时间窗」。
+ */
+const WINDOW_PRESETS = [
+  { key: '15m', ms: 15 * 60 * 1000 },
+  { key: '1h', ms: 60 * 60 * 1000 },
+  { key: '6h', ms: 6 * 60 * 60 * 1000 },
+  { key: '24h', ms: 24 * 60 * 60 * 1000 },
+]
+
+/** 预设的键（下拉选项顺序就是由近到远）。 */
+export function windowOptions() {
+  return WINDOW_PRESETS.map((item) => item.key)
+}
+
+/**
+ * 预设 → 具体时间窗（epoch 毫秒）。认不出的预设回落 1 小时——界面上永远有一个选中项，
+ * 不该因为传错一个字符串就查出一个空窗口（那就成了静默无操作）。
+ */
+export function windowRange(preset, nowMs) {
+  const found = WINDOW_PRESETS.find((item) => item.key === preset)
+  const span = found === undefined ? 60 * 60 * 1000 : found.ms
+  const now = typeof nowMs === 'number' && Number.isFinite(nowMs) ? nowMs : Date.now()
+  return { from: now - span, to: now }
+}
+
+/** 新查询的草稿：默认「最近 1 小时 / 100 条」。 */
+export function emptyQuery() {
+  return { target: '', q: '', preset: '1h', limit: 100 }
+}
+
+/**
+ * 表单能不能提交：空串表示可以，否则是 i18n 键名后缀。
+ *
+ * 这里只校验**面板自己知道的事**（选没选来源、条数是不是正整数）；时间戳单位、窗口上限、
+ * limit 夹取都由宿主判，并且会以原话回给面板显示——**不要在浏览器侧复制一套会漂的规则**。
+ */
+export function queryProblem(draft, targetCount) {
+  const chosen = String(draft.target == null ? '' : draft.target).trim()
+  if (chosen === '' && targetCount !== 1) return 'needTarget'
+  const limit = Number(draft.limit)
+  if (!Number.isInteger(limit) || limit < 1) return 'badLimit'
+  return ''
+}
+
+/** 提交载荷：面板只传来源 id / 查询串 / 时间窗 / 条数（游标由「下一页」单独带）。 */
+export function queryPayload(draft, targets, nowMs) {
+  const range = windowRange(draft.preset, nowMs)
+  const chosen = String(draft.target == null ? '' : draft.target).trim()
+  const fallback = Array.isArray(targets) && targets.length === 1 ? targets[0].id : ''
+  return {
+    target: chosen === '' ? fallback : chosen,
+    q: String(draft.q == null ? '' : draft.q),
+    from: range.from,
+    to: range.to,
+    limit: Number(draft.limit),
+  }
+}
+
+/** 追加一页：按 id 去重（同一份快照翻页不该出现重复行；真出现也先挡住）。 */
+export function appendLines(previous, incoming) {
+  const rows = Array.isArray(previous) ? previous.slice() : []
+  const seen = new Set(rows.map((line) => line.id))
+  for (const line of Array.isArray(incoming) ? incoming : []) {
+    if (line == null || seen.has(line.id)) continue
+    seen.add(line.id)
+    rows.push(line)
+  }
+  return rows
+}
+
+/**
+ * 计数要显示哪几个数（把「哪些数值得说、哪些是下界」这件判据留在纯模块里）。
+ * 返回 [{ key, value }]，key 由界面映射成文案——**不知道的不写**（matched 是下界时用另一个 key）。
+ */
+export function countsParts(counts) {
+  const parts = [{ key: 'returned', value: counts.returned }]
+  if (typeof counts.matched === 'number') {
+    parts.push({ key: counts.totalKnown === true ? 'matched' : 'matchedAtLeast', value: counts.matched })
+  }
+  if (typeof counts.scannedRows === 'number') parts.push({ key: 'scannedRows', value: counts.scannedRows })
+  if (typeof counts.scannedBytes === 'number') parts.push({ key: 'scannedBytes', value: counts.scannedBytes })
+  return parts
+}
