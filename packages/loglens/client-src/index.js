@@ -827,6 +827,9 @@ window.__ModuleLoader__.load({
                           ? jsx('span', { className: 'll_warn', children: t('meta.truncated', { reasons: (outcome.truncation.reasons === undefined ? [] : outcome.truncation.reasons).map((reason) => reasonText(reason)).join(' / ') }) })
                           : null,
                         outcome.hint === undefined ? null : jsx('span', { className: 'll_warn', children: outcome.hint }),
+                        // warnings 是宿主对这次查询做过什么调整（夹了 limit、兜了时间窗）——**不许吞掉**：
+                        // agent 工具看得到的东西，面板也得看得到
+                        ...(outcome.warnings === undefined ? [] : outcome.warnings.map((text, at) => jsx('span', { className: 'll_warn', children: text }, 'll-warn-' + String(at)))),
                         jsx('button', { type: 'button', className: 'll_btnGhost', disabled: querying, onClick: clearResults, children: t('btn.clear') }),
                       ],
                     }),
