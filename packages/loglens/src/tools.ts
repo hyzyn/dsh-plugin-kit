@@ -43,6 +43,8 @@ export interface ToolDeps {
   /** 当前生效的配置（宿主侧那一份，volatile 更新后跟着变）。 */
   config: () => LoglensConfig
   backendFor: (kind: SourceKind) => LogBackend | undefined
+  /** Docker 容器面板装没装（判据见 src/execute.ts 的 hintFor 与 index.ts 的接线）。 */
+  dockerLoaded?: () => boolean
   /** 注册漏斗：与 docker 的 add 同款（单个工具注册失败不该把一整批带下去）。 */
   add: (name: string, definition: unknown) => void
 }
@@ -178,7 +180,7 @@ export function registerLoglensTools(deps: ToolDeps): void {
           row.ok = health.ok
           if (!health.ok) row.error = health.detail === undefined ? '未知错误' : health.detail
         }
-        const hint = hintFor(target.kind, caps)
+        const hint = hintFor(target.kind, caps, { dockerLoaded: deps.dockerLoaded === undefined ? undefined : deps.dockerLoaded() })
         if (hint !== undefined) row.hint = hint
         rows.push(row)
       }

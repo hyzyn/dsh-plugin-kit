@@ -136,8 +136,11 @@
 现成机制见 [search/src/index.ts](../../search/src/index.ts) 的 `getLoadedRegistryNames`）+ `health()` 探测。
 **不要写成包版本比较**——registry 里没有版本号；服务对象自带的 `version` 只有 `provide` 那条路才有。
 
-**落地状态（2026-10-11，P5）**：Agent 那一格已按设计落地——`loglens_*` 里 docker 目标只做**指路**
-（`hintFor` / `adapterHint`：用现成的 `docker_logs` / `docker_logs_grep`），**没有包一层**。面板那一格属 P6。
+**落地状态（2026-10-11）**：**两格都落地了**。Agent 那一格：`loglens_*` 里 docker 目标只做**指路**
+（`hintFor` / `adapterHint`：用现成的 `docker_logs` / `docker_logs_grep`），**没有包一层**。面板那一格（P6）：
+选中 docker 目标时，卡片里换成 Docker 日志区，**相对路径** fetch `/api/dsh-docker/containers` 与
+`/api/dsh-docker/logs`（同源天然满足），弱面（无 until / tail 有上限 / 无 grep）在界面上如实标注。
+「装了没装」的宿主侧判据是 cordis 的 plugin registry（见本文件 §5 末与 `src/plugins.ts`）。
 
 **实测前提（2026-10-11 复核）**：宿主侧**没有**可用的「工具注册表列举」API——`@deepseek-ai/dsh-tools@0.1.2-rc.1`
 的 `ctx.tools` 只有 `register` / `restrict` / `guard`，**没有 list / has**。所以「docker 插件装没装」这件事

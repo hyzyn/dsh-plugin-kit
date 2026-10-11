@@ -65,9 +65,19 @@ export function describeTarget(target: LoglensTarget): { id: string; kind: strin
  * 存在性 + health），而宿主侧的工具注册表**没有公开的列举 API**（实测 @deepseek-ai/dsh-tools 0.1.2-rc.1
  * 的 ctx.tools 只有 register / restrict / guard）——猜一个私有字段去读，比不读更糟。
  */
-export function hintFor(kind: SourceKind, caps: BackendCaps | undefined): string | undefined {
+export interface HintOptions {
+  /** Docker 容器面板（@hyzyn/dsh-docker）装没装：判据见 src/plugins.ts（cordis 的 plugin registry）。 */
+  dockerLoaded?: boolean
+}
+
+export function hintFor(kind: SourceKind, caps: BackendCaps | undefined, options: HintOptions = {}): string | undefined {
   if (kind === 'docker') {
-    return 'Docker 是采集来源（选项 0）：agent 侧用现成的 docker_logs / docker_logs_grep，本插件不包一层'
+    if (options.dockerLoaded === true) {
+      return 'Docker 是采集来源（选项 0）：面板里可以直接看容器日志（走 Docker 面板插件自己的 /api/dsh-docker/logs）；'
+        + 'agent 侧用现成的 docker_logs / docker_logs_grep——本插件不包一层'
+    }
+    return 'Docker 是采集来源（选项 0）：agent 侧用现成的 docker_logs / docker_logs_grep；'
+      + '面板那条日志视图要「Docker 容器面板」插件（当前没检测到它）'
   }
   if (caps === undefined) return undefined
   if (caps.pagination === 'none') {

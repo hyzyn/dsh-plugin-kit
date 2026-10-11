@@ -19,6 +19,9 @@
   级别 · 正文）+ 诚实的计数与截断提示；有游标时给「下一页」（按 id 去重）。
 - 面板与 agent 工具走**同一个执行层**（[src/execute.ts](./src/execute.ts)）：同一份归一化、同一份截断信号——
   不会出现「面板说的和工具说的不一样」。
+- **Docker 目标**在卡片里换成「容器日志」区（拉容器 → 选容器 / 行数 → 看日志），走 Docker 面板插件自己的
+  路由（相对路径）；这条路没有 `until`、`tail` 有上限、没有 grep，界面上写着这句，要精确检索请用 agent 侧的
+  `docker_logs_grep`。
 
 ## HTTP 面（回环）
 
@@ -56,7 +59,7 @@ curl -s -X POST http://127.0.0.1:3080/api/dsh-loglens/config -H 'content-type: a
 |---|---|---|
 | `loki` | `http://127.0.0.1:3100` | 可以带网关前缀（如 `https://gw.example/loki`）；查询走 `/loki/api/v1/query_range` |
 | `elasticsearch` / `opensearch` | `http://user:pass@127.0.0.1:9200/logs-*` | **路径部分是索引表达式**（不写就用 `*`）；凭据换成 Basic 头、不进 URL；分页走 PIT + `search_after` |
-| `docker` | 不需要地址 | 采集来源（设计里的「选项 0」）：agent 侧用现成的 `docker_logs` / `docker_logs_grep` |
+| `docker` | 第三格填 **Docker 面板里的目标名**（如 `local`），**不是** URL | 采集来源（设计里的「选项 0」）：agent 侧用现成的 `docker_logs` / `docker_logs_grep`；面板侧走 Docker 插件自己的 `/api/dsh-docker/logs`（相对路径），弱面：无 `until`、`tail` 有上限、无 grep |
 
 ## 解剖
 

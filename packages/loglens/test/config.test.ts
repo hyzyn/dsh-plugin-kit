@@ -133,6 +133,26 @@ describe('id 生成', () => {
     expect(bad.ok === false ? bad.error : '').toContain('loki / elasticsearch / opensearch / docker')
   })
 
+  it('dockerTarget 只对 docker 来源有意义（别的类型带上它直接报错）', () => {
+    const docker = validateTargetInput({ kind: 'docker', label: '本机', dockerTarget: 'local' }, [])
+    expect(docker.ok && docker.target.dockerTarget).toBe('local')
+    const loki = validateTargetInput({ kind: 'loki', url: 'http://127.0.0.1:3100', dockerTarget: 'local' }, [])
+    expect(loki.ok).toBe(false)
+    expect(loki.ok === false ? loki.error : '').toContain('只对 docker 来源有意义')
+  })
+
+  it('dockerTarget 可以留空（由 Docker 面板自己在只有一个目标时回落）', () => {
+    const checked = validateTargetInput({ kind: 'docker', label: '本机' }, [])
+    expect(checked.ok && checked.target.dockerTarget).toBeUndefined()
+  })
+
+  it('改判也能改 dockerTarget', () => {
+    const start = configWith({ kind: 'docker', label: '本机 Docker', dockerTarget: 'local' })
+    // 这条来源的 id 由 label 推出来（「本机 Docker」→ docker）
+    const updated = updateTarget(start, 'docker', { dockerTarget: 'remote-1' })
+    expect(updated.ok ? updated.config.targets[0].dockerTarget : '').toBe('remote-1')
+  })
+
   it('非对象输入拒（数组也算）', () => {
     expect(validateTargetInput([], []).ok).toBe(false)
     expect(validateTargetInput(null, []).ok).toBe(false)

@@ -141,7 +141,7 @@ export function registerLoglensTools(deps) {
                     if (!health.ok)
                         row.error = health.detail === undefined ? '未知错误' : health.detail;
                 }
-                const hint = hintFor(target.kind, caps);
+                const hint = hintFor(target.kind, caps, { dockerLoaded: deps.dockerLoaded === undefined ? undefined : deps.dockerLoaded() });
                 if (hint !== undefined)
                     row.hint = hint;
                 rows.push(row);

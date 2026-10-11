@@ -18,7 +18,7 @@ export function kindOptions() {
 
 /** 新行的草稿：id 为空表示「还没落盘」，提交走 targets.add。 */
 export function emptyDraft() {
-  return { id: '', kind: DEFAULT_KIND, label: '', url: '' }
+  return { id: '', kind: DEFAULT_KIND, label: '', url: '', dockerTarget: '' }
 }
 
 /** 把宿主返回的一条来源还原成草稿（缺字段一律补成空串，界面里不出现 undefined）。 */
@@ -29,6 +29,7 @@ export function draftFromTarget(target) {
     kind: KIND_OPTIONS.indexOf(row.kind) === -1 ? DEFAULT_KIND : row.kind,
     label: typeof row.label === 'string' ? row.label : '',
     url: typeof row.url === 'string' ? row.url : '',
+    dockerTarget: typeof row.dockerTarget === 'string' ? row.dockerTarget : '',
   }
 }
 
@@ -54,10 +55,25 @@ export function draftProblem(draft) {
   return ''
 }
 
-/** 提交载荷：只发这三列（新建时 id 由宿主生成；改判时 id 走请求的 id 字段）。 */
+/**
+ * 提交载荷：新建时 id 由宿主生成、改判时 id 走请求的 id 字段。
+ *
+ * **docker 来源的「地址」那一格是 Docker 面板里的目标名**（dockerTarget）：那条日志视图走的是 Docker
+ * 插件自己的路由，它按自己的目标名找主机——两个插件各有各的目标清单，名字不会自动对上，所以显式存
+ * 一个。docker 来源本来就没有 URL，这一格正好拿来用。
+ */
 export function draftPayload(draft) {
+  const kind = draft.kind
+  if (kind === 'docker') {
+    return {
+      kind,
+      label: String(draft.label == null ? '' : draft.label).trim(),
+      dockerTarget: String(draft.dockerTarget == null ? '' : draft.dockerTarget).trim(),
+      url: '',
+    }
+  }
   return {
-    kind: draft.kind,
+    kind,
     label: String(draft.label == null ? '' : draft.label).trim(),
     url: String(draft.url == null ? '' : draft.url).trim(),
   }
@@ -149,4 +165,26 @@ export function countsParts(counts) {
   if (typeof counts.scannedRows === 'number') parts.push({ key: 'scannedRows', value: counts.scannedRows })
   if (typeof counts.scannedBytes === 'number') parts.push({ key: 'scannedBytes', value: counts.scannedBytes })
   return parts
+}
+
+/* ============================ Docker 目标（P6 面板半格，选项 0） ============================ */
+
+/** Docker 面板那条路径的 since 取值：直接复用时间窗预设（docker --since 认 15m / 1h 这类写法）。 */
+export function dockerSince(preset) {
+  const keys = WINDOW_PRESETS.map((item) => item.key)
+  return keys.indexOf(preset) === -1 ? '1h' : preset
+}
+
+/** 看容器日志前必须选一个容器（这条路径没有「全量」的说法）。 */
+export function dockerProblem(draft) {
+  const chosen = String(draft.container == null ? '' : draft.container).trim()
+  return chosen === '' ? 'needContainer' : ''
+}
+
+/** 日志正文 → 一行一条（去掉末尾那个空行；空串就是空列表，不要凭空造一行）。 */
+export function dockerLogLines(text) {
+  if (typeof text !== 'string' || text === '') return []
+  const rows = text.split(String.fromCharCode(10))
+  if (rows.length > 0 && rows[rows.length - 1] === '') rows.pop()
+  return rows
 }

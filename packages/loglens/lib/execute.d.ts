@@ -40,7 +40,11 @@ export declare function describeTarget(target: LoglensTarget): {
  * 存在性 + health），而宿主侧的工具注册表**没有公开的列举 API**（实测 @deepseek-ai/dsh-tools 0.1.2-rc.1
  * 的 ctx.tools 只有 register / restrict / guard）——猜一个私有字段去读，比不读更糟。
  */
-export declare function hintFor(kind: SourceKind, caps: BackendCaps | undefined): string | undefined;
+export interface HintOptions {
+    /** Docker 容器面板（@hyzyn/dsh-docker）装没装：判据见 src/plugins.ts（cordis 的 plugin registry）。 */
+    dockerLoaded?: boolean;
+}
+export declare function hintFor(kind: SourceKind, caps: BackendCaps | undefined, options?: HintOptions): string | undefined;
 /**
  * 一次查询的结果形状（工具与路由共用；路由直接把它序列化成 JSON）。
  *

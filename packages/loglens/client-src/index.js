@@ -12,6 +12,9 @@
 import {
   appendLines,
   countsParts,
+  dockerLogLines,
+  dockerProblem,
+  dockerSince,
   draftFromTarget,
   draftPayload,
   draftProblem,
@@ -127,7 +130,6 @@ window.__ModuleLoader__.load({
       'option.opensearch': 'OpenSearch',
       'option.docker': 'Docker（采集来源）',
       'check.enabled': '启用插件',
-      'check.dockerHint': 'Docker 来源不需要地址',
       'btn.add': '+ 新增来源',
       'btn.save': '保存',
       'btn.saving': '保存中…',
@@ -173,6 +175,15 @@ window.__ModuleLoader__.load({
       'status.cursor_expired': '游标已过期',
       'error.needTarget': '先选一个来源',
       'error.badLimit': '条数得是正整数',
+      'field.dockerTarget': 'Docker 目标名',
+      'placeholder.dockerTarget': 'Docker 面板里的目标名（如 local）',
+      'field.container': '容器',
+      'field.tail': '行数',
+      'btn.containers': '拉取容器',
+      'btn.logs': '看日志',
+      'hint.docker': '容器日志走的是 Docker 面板插件自己的 /api/dsh-docker/logs：这条路没有 until、行数有上限、没有 grep——要精确检索请让 agent 用 docker_logs_grep。',
+      'hint.dockerMissing': '这条路径要「Docker 容器面板」插件（当前没检测到它）：装上并启用后，这里可以直接看容器日志。',
+      'error.needContainer': '先选一个容器',
     }
     const I18N_EN = {
       'card.name': 'Log query',
@@ -187,7 +198,6 @@ window.__ModuleLoader__.load({
       'option.opensearch': 'OpenSearch',
       'option.docker': 'Docker (collector)',
       'check.enabled': 'Enable plugin',
-      'check.dockerHint': 'Docker sources need no URL',
       'btn.add': '+ Add source',
       'btn.save': 'Save',
       'btn.saving': 'Saving…',
@@ -233,6 +243,15 @@ window.__ModuleLoader__.load({
       'status.cursor_expired': 'cursor expired',
       'error.needTarget': 'Pick a source first',
       'error.badLimit': 'The limit must be a positive integer',
+      'field.dockerTarget': 'Docker target name',
+      'placeholder.dockerTarget': 'Target name inside the Docker panel (e.g. local)',
+      'field.container': 'Container',
+      'field.tail': 'Lines',
+      'btn.containers': 'Load containers',
+      'btn.logs': 'Show logs',
+      'hint.docker': 'Container logs come from the Docker panel plugin own /api/dsh-docker/logs: no until, a capped tail, and no grep — ask the agent for docker_logs_grep when you need real search.',
+      'hint.dockerMissing': 'This path needs the Docker container panel plugin (not detected): install and enable it to read container logs here.',
+      'error.needContainer': 'Pick a container first',
     }
     /* ==== dsh-i18n:end ==== */
 
@@ -307,12 +326,19 @@ window.__ModuleLoader__.load({
       const [lines, setLines] = React.useState([])
       const [cursor, setCursor] = React.useState(undefined)
       const [querying, setQuerying] = React.useState(false)
+      const [docker, setDocker] = React.useState(false)
+      const [containers, setContainers] = React.useState([])
+      const [container, setContainer] = React.useState('')
+      const [dockerLogs, setDockerLogs] = React.useState('')
+      const [dockerTail, setDockerTail] = React.useState(200)
+      const [dockerBusy, setDockerBusy] = React.useState(false)
 
       /** 宿主回什么就照什么渲染：一切状态以服务端那份为准，不在本地做乐观合并。 */
       const applyConfig = React.useCallback((payload) => {
         const next = payload && payload.config ? payload.config : { enabled: true, targets: [] }
         setEnabled(next.enabled !== false)
         setDrafts((Array.isArray(next.targets) ? next.targets : []).map(draftFromTarget))
+        setDocker(payload !== undefined && payload !== null && payload.plugins !== undefined && payload.plugins.docker === true)
       }, [])
 
       const load = React.useCallback(async () => {
@@ -456,6 +482,49 @@ window.__ModuleLoader__.load({
         }
       }
 
+      const loadContainers = async () => {
+        if (!docker || selectedDraft === undefined) return
+        setDockerBusy(true)
+        setError('')
+        try {
+          const parsed = await api('/api/dsh-docker/containers', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(selectedDraft.dockerTarget === '' ? { all: false } : { target: selectedDraft.dockerTarget, all: false }),
+          })
+          const list = Array.isArray(parsed.containers) ? parsed.containers : []
+          setContainers(list)
+          setContainer((current) => (current === '' && list.length > 0 ? list[0].id : current))
+        } catch (err) {
+          setError(err.message)
+        } finally {
+          setDockerBusy(false)
+        }
+      }
+
+      const openDockerLogs = async () => {
+        if (selectedDraft === undefined) return
+        if (dockerProblem({ container }) !== '') {
+          setError(t('error.needContainer'))
+          return
+        }
+        setDockerBusy(true)
+        setError('')
+        try {
+          const common = { id: container, tail: dockerTail, since: dockerSince(query.preset) }
+          const parsed = await api('/api/dsh-docker/logs', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(selectedDraft.dockerTarget === '' ? common : { target: selectedDraft.dockerTarget, ...common }),
+          })
+          setDockerLogs(typeof parsed.logs === 'string' ? parsed.logs : '')
+        } catch (err) {
+          setError(err.message)
+        } finally {
+          setDockerBusy(false)
+        }
+      }
+
       const clearResults = () => {
         setOutcome(undefined)
         setLines([])
@@ -467,6 +536,11 @@ window.__ModuleLoader__.load({
       if (view === 'summary') {
         return t('card.desc')
       }
+
+      const selectedDraft = drafts.find((draft) => draft.id === query.target) === undefined
+        ? (drafts.length === 1 ? drafts[0] : undefined)
+        : drafts.find((draft) => draft.id === query.target)
+      const isDocker = selectedDraft !== undefined && selectedDraft.kind === 'docker'
 
       const rows = drafts.map((draft, index) => jsxs('div', {
         className: 'll_row',
@@ -488,10 +562,11 @@ window.__ModuleLoader__.load({
           }),
           jsx('input', {
             className: 'll_input',
-            placeholder: draft.kind === 'docker' ? t('check.dockerHint') : t('placeholder.url'),
-            value: draft.kind === 'docker' ? '' : draft.url,
-            disabled: saving || draft.kind === 'docker',
-            onChange: (event) => { updateDraft(index, { url: event.target.value }) },
+            title: draft.kind === 'docker' ? t('field.dockerTarget') : t('field.url'),
+            placeholder: draft.kind === 'docker' ? t('placeholder.dockerTarget') : t('placeholder.url'),
+            value: draft.kind === 'docker' ? draft.dockerTarget : draft.url,
+            disabled: saving,
+            onChange: (event) => { updateDraft(index, draft.kind === 'docker' ? { dockerTarget: event.target.value } : { url: event.target.value }) },
           }),
           jsx('button', {
             type: 'button',
@@ -605,18 +680,18 @@ window.__ModuleLoader__.load({
                           className: 'll_input',
                           title: t('field.target'),
                           value: query.target,
-                          disabled: saving || querying,
+                          disabled: saving || querying || dockerBusy,
                           onChange: (event) => { setQuery((current) => ({ ...current, target: event.target.value })) },
                           children: drafts.map((draft) => jsx('option', { value: draft.id, children: draft.label === '' ? draft.id : draft.label }, draft.id)),
                         }),
-                        jsx('input', {
+                        isDocker ? null : jsx('input', {
                           className: 'll_input',
                           placeholder: t('placeholder.query'),
                           value: query.q,
                           disabled: saving || querying,
                           onChange: (event) => { setQuery((current) => ({ ...current, q: event.target.value })) },
                         }),
-                        jsx('select', {
+                        isDocker ? null : jsx('select', {
                           className: 'll_input',
                           title: t('field.window'),
                           value: query.preset,
@@ -624,7 +699,7 @@ window.__ModuleLoader__.load({
                           onChange: (event) => { setQuery((current) => ({ ...current, preset: event.target.value })) },
                           children: windowOptions().map((key) => jsx('option', { value: key, children: windowLabel(key) }, key)),
                         }),
-                        jsx('input', {
+                        isDocker ? null : jsx('input', {
                           className: 'll_input',
                           title: t('field.limit'),
                           type: 'number',
@@ -633,7 +708,7 @@ window.__ModuleLoader__.load({
                           disabled: saving || querying,
                           onChange: (event) => { setQuery((current) => ({ ...current, limit: Number(event.target.value) })) },
                         }),
-                        jsx('button', {
+                        isDocker ? null : jsx('button', {
                           type: 'button',
                           className: 'll_btn',
                           disabled: saving || querying,
@@ -642,8 +717,55 @@ window.__ModuleLoader__.load({
                         }),
                       ],
                     }),
-                    jsx('p', { className: 'll_hint', children: t('hint.query') }),
-                    outcome === undefined ? null : jsxs('div', {
+                    isDocker ? jsxs('div', {
+                      className: 'll_queryGrid',
+                      children: [
+                        jsx('button', {
+                          type: 'button',
+                          className: 'll_btnGhost',
+                          disabled: dockerBusy || !docker,
+                          onClick: () => { loadContainers() },
+                          children: t('btn.containers'),
+                        }),
+                        jsx('select', {
+                          className: 'll_input',
+                          title: t('field.container'),
+                          value: container,
+                          disabled: dockerBusy || !docker,
+                          onChange: (event) => { setContainer(event.target.value) },
+                          children: [
+                            jsx('option', { value: '', children: t('field.container') }, 'll-container-none'),
+                            ...containers.map((item) => jsx('option', { value: item.id, children: item.name === undefined || item.name === '' ? item.id : item.name }, item.id)),
+                          ],
+                        }),
+                        jsx('select', {
+                          className: 'll_input',
+                          title: t('field.tail'),
+                          value: String(dockerTail),
+                          disabled: dockerBusy || !docker,
+                          onChange: (event) => { setDockerTail(Number(event.target.value)) },
+                          children: [50, 100, 200, 500].map((value) => jsx('option', { value: String(value), children: String(value) }, 'll-tail-' + String(value))),
+                        }),
+                        jsx('button', {
+                          type: 'button',
+                          className: 'll_btn',
+                          disabled: dockerBusy || !docker,
+                          onClick: () => { openDockerLogs() },
+                          children: t('btn.logs'),
+                        }),
+                      ],
+                    }) : null,
+                    isDocker
+                      ? jsx('p', { className: 'll_hint', children: docker ? t('hint.docker') : t('hint.dockerMissing') })
+                      : jsx('p', { className: 'll_hint', children: t('hint.query') }),
+                    isDocker && dockerLogs !== '' ? jsx('div', {
+                      className: 'll_results',
+                      children: dockerLogLines(dockerLogs).map((text, at) => jsx('div', {
+                        className: 'll_resultRow',
+                        children: jsx('span', { className: 'll_resultMsg', children: text }),
+                      }, 'll-docker-' + String(at))),
+                    }) : null,
+                    outcome === undefined || isDocker ? null : jsxs('div', {
                       className: 'll_queryMeta',
                       children: [
                         countsParts(outcome.counts === undefined ? { returned: 0 } : outcome.counts).map((part) => jsx('span', { children: countText(part) }, 'll-count-' + part.key)),
@@ -654,7 +776,7 @@ window.__ModuleLoader__.load({
                         jsx('button', { type: 'button', className: 'll_btnGhost', disabled: querying, onClick: clearResults, children: t('btn.clear') }),
                       ],
                     }),
-                    lines.length > 0 ? jsx('div', {
+                    lines.length > 0 && !isDocker ? jsx('div', {
                       className: 'll_results',
                       children: lines.map((line) => jsxs('div', {
                         className: 'll_resultRow',
@@ -665,8 +787,8 @@ window.__ModuleLoader__.load({
                         ],
                       }, 'll-line-' + line.id)),
                     }) : null,
-                    outcome !== undefined && lines.length === 0 ? jsx('div', { className: 'll_empty', children: t('list.noHit') }) : null,
-                    cursor === undefined ? null : jsx('button', {
+                    outcome !== undefined && lines.length === 0 && !isDocker ? jsx('div', { className: 'll_empty', children: t('list.noHit') }) : null,
+                    cursor === undefined || isDocker ? null : jsx('button', {
                       type: 'button',
                       className: 'll_btnGhost',
                       disabled: querying,

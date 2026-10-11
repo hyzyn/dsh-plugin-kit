@@ -19,6 +19,14 @@ export interface LoglensTarget {
   label: string
   /** 地址；docker 是采集来源，允许留空（设计 §5 选项 0）。 */
   url: string
+  /**
+   * 只对 `docker` 有意义：**Docker 面板里的目标名**（如 `local`）。
+   *
+   * 面板那条日志视图走的是 Docker 插件自己的 `/api/dsh-docker/logs`，那条路由按**它自己的**目标名
+   * 找主机——两个插件各有各的目标清单，名字不会自动对上，所以这里显式存一个。留空时面板不传 target，
+   * 由 Docker 插件自己在「只有一个目标」时回落（多个目标时它会回一句带候选名的 400，面板照显）。
+   */
+  dockerTarget?: string
 }
 
 export interface LoglensConfig {
@@ -149,13 +157,19 @@ export function validateTargetInput(input: unknown, taken: readonly string[] = [
     url = checked.url
   }
   const label = typeof raw.label === 'string' ? raw.label.trim() : ''
+  const rawDockerTarget = typeof raw.dockerTarget === 'string' ? raw.dockerTarget.trim() : ''
+  if (rawDockerTarget !== '' && kind !== 'docker') {
+    return { ok: false, error: 'dockerTarget 只对 docker 来源有意义（当前类型是 ' + kind + '）' }
+  }
   const requested = typeof raw.id === 'string' ? raw.id.trim().toLowerCase() : ''
   const base = requested === ''
     ? slugId(label, slugSourceForUrl(url))
     : (requested.replace(/[^a-z0-9]+/gu, '-').replace(/^-+/u, '').replace(/-+$/u, '').slice(0, ID_BASE_MAX) || 'target')
   const id = uniqueId(base, taken)
   if (!ID_SHAPE.test(id)) return { ok: false, error: 'id 形态不合法：' + id }
-  return { ok: true, target: { id, kind, label: label === '' ? id : label, url } }
+  const target: LoglensTarget = { id, kind, label: label === '' ? id : label, url }
+  if (rawDockerTarget !== '') target.dockerTarget = rawDockerTarget
+  return { ok: true, target }
 }
 
 /**
@@ -212,6 +226,7 @@ export function updateTarget(config: LoglensConfig, id: unknown, patch: unknown)
     kind: rawPatch.kind === undefined ? current.kind : rawPatch.kind,
     label: rawPatch.label === undefined ? current.label : rawPatch.label,
     url: rawPatch.url === undefined ? current.url : rawPatch.url,
+    dockerTarget: rawPatch.dockerTarget === undefined ? current.dockerTarget : rawPatch.dockerTarget,
   }
   const others = config.targets.filter((target) => target.id !== current.id).map((target) => target.id)
   const checked = validateTargetInput(merged, others)

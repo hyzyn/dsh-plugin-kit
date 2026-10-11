@@ -75,6 +75,7 @@ function harness(config: LoglensConfig) {
     },
     runQuery: (input) => runSearch({ config: () => live, backendFor }, input),
     runFields: (input) => runFields({ config: () => live, backendFor }, input),
+    dockerLoaded: () => false,
   })[0] as unknown as FakeRoute
 
   return {

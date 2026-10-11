@@ -3,6 +3,7 @@ import { attachTierGate, definePlugin, hasSameOriginProof, isLoopbackRequestStri
 import { MAX_TARGETS, addTarget, normalizeConfig, removeTarget, updateTarget } from './config.js';
 import { backendFor } from './backends/registry.js';
 import { runFields, runSearch } from './execute.js';
+import { dockerPluginLoaded } from './plugins.js';
 import { LOGLENS_TIER_CLASS, LOGLENS_TIER_PREFIXES, registerLoglensTools } from './tools.js';
 /** 本插件的路由前缀（一个 prefix 路由内部按子路径分发，与 docker / tty 同款）。 */
 export const ROUTE_PREFIX = '/api/dsh-loglens';
@@ -58,7 +59,7 @@ export function makeRoutes(state) {
                         writeJson(res, 405, { error: '只支持 POST，收到 ' + String(req.method) });
                         return;
                     }
-                    writeJson(res, 200, { ok: true, config });
+                    writeJson(res, 200, { ok: true, config, plugins: { docker: state.dockerLoaded() } });
                     return;
                 }
                 if (req.method !== 'POST') {
@@ -204,6 +205,7 @@ const plugin = definePlugin({
                     registerLoglensTools({
                         config: () => live,
                         backendFor,
+                        dockerLoaded: () => dockerPluginLoaded(ctx),
                         add: (name, definition) => {
                             try {
                                 disposers.push(tools.register(definition));
@@ -256,6 +258,7 @@ const plugin = definePlugin({
                     write: persist,
                     runQuery: (input) => runSearch(executeDeps, input),
                     runFields: (input) => runFields(executeDeps, input),
+                    dockerLoaded: () => dockerPluginLoaded(ctx),
                 }).map((route) => server.register(route));
                 return () => {
                     for (const dispose of disposers) {

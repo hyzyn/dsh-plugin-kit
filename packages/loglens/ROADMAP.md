@@ -486,11 +486,10 @@ wire 级用例做完，真机那一半等有环境（你自带的 Loki，或允�
   3. **ES / OpenSearch**：分页走 PIT，游标有寿命，过期后要重新发起一次带时间窗的查询。
 - `adapterHint('docker')` 的措辞对齐「采集来源」这一身份（不再是「没有适配器」的口气）。
 
-**实测前提（新事实，已写进 design §5）**
-
-**宿主侧没有可用的「工具注册表列举」API**：`@deepseek-ai/dsh-tools@0.1.2-rc.1` 的 `ctx.tools` 只有
-`register` / `restrict` / `guard`，**没有 list / has**。所以「docker 插件装没装」这件事在宿主侧**不要去猜**
-（猜私有字段比不读更糟）；设计里那条判据（registry 存在性 + `health()`）本来就是**面板侧**的机制——属 P6。
+**实测前提**：**tools 服务**没有列举 API（`@deepseek-ai/dsh-tools@0.1.2-rc.1` 的 `ctx.tools` 只有
+`register` / `restrict` / `guard`），所以**不要从 tools 服务猜别的插件在不在**。但**插件本身**在不在有合法判据
+——cordis 的 plugin registry（`ctx.registry.values()`，先例是 search 的 `getLoadedRegistryNames`），
+P6 的 Docker 那半格用的就是它（见下一节的自我更正）。
 
 **刻意不做的**
 
@@ -573,4 +572,44 @@ wire 级用例做完，真机那一半等有环境（你自带的 Loki，或允�
 | 全仓 | `pnpm typecheck && pnpm build && pnpm test && pnpm aggregate` 全绿（数字见提交）；12 个包的 client-lint 都过（TS2451 升为致命后无人变红） |
 
 **还差的**：Docker 那一格（面板对 docker 目标相对路径 fetch `/api/dsh-docker/logs`）没接；真机验收仍待环境。
+
+### P6（面板侧第三刀）：Docker 目标在面板里看容器日志（2026-10-11）
+
+**做法**：选项 0 的**面板半格**——浏览器**相对路径** fetch Docker 插件自己的路由（同源天然满足，无需端口发现）。
+本插件不复制它的实现，只在界面上给它一个入口，并如实标注这条路的弱面。
+
+**改了什么**
+
+- 新增 [src/plugins.ts](../loglens/src/plugins.ts)：`loadedPluginNames` / `dockerPluginLoaded`——「某个插件装没装」的
+  宿主侧判据走 **cordis 的 plugin registry**（`ctx.registry.values()` 的 runtime.name）。
+- `GET /api/dsh-loglens/config` 的响应多了 `plugins: { docker: boolean }`：面板据此决定**给不给**那半格
+  （不给一个按下去 404 的按钮）。
+- `hintFor(kind, caps, { dockerLoaded })`：装了指向它的路由，没装就说清缺什么。
+- 来源的 `dockerTarget` 字段（**只对 docker 类型有意义**，带上别的类型会 400）：Docker 面板那条路由按它
+  **自己的**目标名找主机，两个插件各有各的目标清单，名字不会自动对上，所以显式存一个；留空时由 Docker
+  插件自己在「只有一个目标」时回落。面板上它填在**「地址」那一格**（docker 来源本来就没有 URL）。
+- 客户端：选中 docker 目标时，查询区换成 **Docker 日志区**——「拉取容器」（`POST /api/dsh-docker/containers`）
+  → 选容器 / 行数（50 / 100 / 200 / 500）→「看日志」（`POST /api/dsh-docker/logs`，`since` 复用时间窗预设），
+  结果按行渲染；附一句**诚实的弱面**：「这条路没有 until、行数有上限、没有 grep——要精确检索请让 agent 用
+  `docker_logs_grep`」。
+- 用例：新增 [test/plugins.test.ts](../loglens/test/plugins.test.ts)（registry 枚举 / 没有 registry / 枚举抛错都当
+  「没装」）、`config.test.ts` 的三条（dockerTarget 只在 docker 上有意义 / 可留空 / 改判能改）、
+  `tools.test.ts` 的 dockerLoaded 两个分支、`loglens.test.ts` 的 `/config` 新键。
+
+**一处自我更正（按实测）**
+
+P5 那段落地记录里写的「宿主侧没**有**判据、那条判据本来就是面板侧的机制」**不准确**，现在改正：
+**tools 服务**确实没有列举 API（dsh-tools 0.1.2-rc.1 的 `ctx.tools` 只有 register / restrict / guard）——所以
+**不要从 tools 服务猜别的插件在不在**；但**插件本身**在不在有合法判据：cordis 的 plugin registry
+（`ctx.registry.values()`，先例是 search 的 `getLoadedRegistryNames`）。这一刀用的就是它。
+
+**门槛与证据（全部实跑）**
+
+| 闸 | 结果 |
+|---|---|
+| 本包单测 | **179 条**（11 个文件） |
+| 全仓 | `pnpm typecheck && pnpm build && pnpm test && pnpm aggregate` 全绿（数字见提交） |
+| 守卫 | check-i18n（loglens 66 条键 zh/en 一致）、published-links、doc-links、no-public-ip、package-contents、test-collection、aggregate:check 全绿 |
+
+**还差的**：真机验收（本机 Docker 有容器时可直接在面板里点一遍）；Loki / ES 的真机验收仍待环境。
 

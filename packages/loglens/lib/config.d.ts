@@ -16,6 +16,14 @@ export interface LoglensTarget {
     label: string;
     /** 地址；docker 是采集来源，允许留空（设计 §5 选项 0）。 */
     url: string;
+    /**
+     * 只对 `docker` 有意义：**Docker 面板里的目标名**（如 `local`）。
+     *
+     * 面板那条日志视图走的是 Docker 插件自己的 `/api/dsh-docker/logs`，那条路由按**它自己的**目标名
+     * 找主机——两个插件各有各的目标清单，名字不会自动对上，所以这里显式存一个。留空时面板不传 target，
+     * 由 Docker 插件自己在「只有一个目标」时回落（多个目标时它会回一句带候选名的 400，面板照显）。
+     */
+    dockerTarget?: string;
 }
 export interface LoglensConfig {
     enabled: boolean;

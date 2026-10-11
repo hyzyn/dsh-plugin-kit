@@ -55,6 +55,11 @@ export interface RouteState {
     runQuery: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
     /** 列字段（面板的「有哪些字段」）。 */
     runFields: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+    /**
+     * Docker 容器面板装没装（panel 用它决定给不给「容器日志」那半格）。
+     * 判据是 cordis 的 plugin registry，见 src/plugins.ts——**不是** tools 服务（它没有列举 API）。
+     */
+    dockerLoaded: () => boolean;
 }
 /**
  * 构造面板用的三条路由：`/config`（读写）、`/query`（查）、`/fields`（列字段）。

@@ -100,6 +100,9 @@ function harness() {
       writes.push(next)
       return undefined
     },
+    runQuery: async () => ({}),
+    runFields: async () => ({}),
+    dockerLoaded: () => false,
   })[0]
   return {
     route,
@@ -150,7 +153,7 @@ describe('回环围栏与方法/路由判定', () => {
     const { request } = harness()
     const response = await request()
     expect(response.status).toBe(200)
-    expect(response.body).toEqual({ ok: true, config: { enabled: true, targets: [] } })
+    expect(response.body).toEqual({ ok: true, config: { enabled: true, targets: [] }, plugins: { docker: false } })
   })
 
   it('非回环来源 403（且不读 body）', async () => {

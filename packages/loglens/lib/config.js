@@ -130,6 +130,10 @@ export function validateTargetInput(input, taken = []) {
         url = checked.url;
     }
     const label = typeof raw.label === 'string' ? raw.label.trim() : '';
+    const rawDockerTarget = typeof raw.dockerTarget === 'string' ? raw.dockerTarget.trim() : '';
+    if (rawDockerTarget !== '' && kind !== 'docker') {
+        return { ok: false, error: 'dockerTarget 只对 docker 来源有意义（当前类型是 ' + kind + '）' };
+    }
     const requested = typeof raw.id === 'string' ? raw.id.trim().toLowerCase() : '';
     const base = requested === ''
         ? slugId(label, slugSourceForUrl(url))
@@ -137,7 +141,10 @@ export function validateTargetInput(input, taken = []) {
     const id = uniqueId(base, taken);
     if (!ID_SHAPE.test(id))
         return { ok: false, error: 'id 形态不合法：' + id };
-    return { ok: true, target: { id, kind, label: label === '' ? id : label, url } };
+    const target = { id, kind, label: label === '' ? id : label, url };
+    if (rawDockerTarget !== '')
+        target.dockerTarget = rawDockerTarget;
+    return { ok: true, target };
 }
 /**
  * 宽松读盘：坏行计入 dropped 后丢掉，**不整份作废**——一条脏数据不该让整张卡片空白
@@ -191,6 +198,7 @@ export function updateTarget(config, id, patch) {
         kind: rawPatch.kind === undefined ? current.kind : rawPatch.kind,
         label: rawPatch.label === undefined ? current.label : rawPatch.label,
         url: rawPatch.url === undefined ? current.url : rawPatch.url,
+        dockerTarget: rawPatch.dockerTarget === undefined ? current.dockerTarget : rawPatch.dockerTarget,
     };
     const others = config.targets.filter((target) => target.id !== current.id).map((target) => target.id);
     const checked = validateTargetInput(merged, others);

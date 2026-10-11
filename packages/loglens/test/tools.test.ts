@@ -295,6 +295,9 @@ describe('渲染', () => {
   it('hintFor：docker 给替代路径、无游标的来源提醒截断、ES/OS 提醒 PIT 寿命', () => {
     const lokiCaps = { ...CAPS, pagination: 'none' as const }
     expect(String(hintFor('docker', undefined))).toContain('选项 0')
+    // dockerLoaded 决定那句「面板那条路有没有」：装了指向它的路由，没装说清缺什么
+    expect(String(hintFor('docker', undefined, { dockerLoaded: true }))).toContain('/api/dsh-docker/logs')
+    expect(String(hintFor('docker', undefined, { dockerLoaded: false }))).toContain('没检测到')
     expect(String(hintFor('loki', lokiCaps))).toContain('hit_limit')
     expect(String(hintFor('elasticsearch', { ...CAPS, pagination: 'cursor' as const, flavor: 'es' }))).toContain('PIT')
     expect(String(hintFor('opensearch', { ...CAPS, pagination: 'cursor' as const, flavor: 'os' }))).toContain('PIT')

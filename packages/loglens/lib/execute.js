@@ -35,21 +35,14 @@ export function resolveTarget(config, wanted) {
 export function describeTarget(target) {
     return { id: target.id, kind: target.kind, label: target.label };
 }
-/**
- * 一条来源的指路文案（P5 的 agent 侧交付物，P6 的面板也照用）。
- *
- * 三条都不是「说明文」，是**会出现在返回值里的判据**：
- *   - docker：选项 0 的替代路径（现成的 docker_logs / docker_logs_grep），本插件不包一层；
- *   - 声明了 pagination:'none' 的来源（当前是 Loki）：被 limit 截断时只会报 hit_limit，得缩小时间窗；
- *   - ES / OpenSearch：分页走 PIT，游标有寿命，过期后要重新发起带时间窗的查询。
- *
- * **刻意不做**「探测 docker 插件在不在」：设计 §5 的「装了没装」判据是给**面板**用的（浏览器侧 registry
- * 存在性 + health），而宿主侧的工具注册表**没有公开的列举 API**（实测 @deepseek-ai/dsh-tools 0.1.2-rc.1
- * 的 ctx.tools 只有 register / restrict / guard）——猜一个私有字段去读，比不读更糟。
- */
-export function hintFor(kind, caps) {
+export function hintFor(kind, caps, options = {}) {
     if (kind === 'docker') {
-        return 'Docker 是采集来源（选项 0）：agent 侧用现成的 docker_logs / docker_logs_grep，本插件不包一层';
+        if (options.dockerLoaded === true) {
+            return 'Docker 是采集来源（选项 0）：面板里可以直接看容器日志（走 Docker 面板插件自己的 /api/dsh-docker/logs）；'
+                + 'agent 侧用现成的 docker_logs / docker_logs_grep——本插件不包一层';
+        }
+        return 'Docker 是采集来源（选项 0）：agent 侧用现成的 docker_logs / docker_logs_grep；'
+            + '面板那条日志视图要「Docker 容器面板」插件（当前没检测到它）';
     }
     if (caps === undefined)
         return undefined;

@@ -15,6 +15,9 @@ import {
   queryProblem,
   windowOptions,
   windowRange,
+  dockerLogLines,
+  dockerProblem,
+  dockerSince,
 } from '../client-src/pure.js'
 
 describe('draft 形状', () => {
@@ -25,13 +28,13 @@ describe('draft 形状', () => {
   })
 
   it('emptyDraft 是「还没落盘」的新行', () => {
-    expect(emptyDraft()).toEqual({ id: '', kind: 'loki', label: '', url: '' })
+    expect(emptyDraft()).toEqual({ id: '', kind: 'loki', label: '', url: '', dockerTarget: '' })
   })
 
   it('draftFromTarget 缺字段补空串、未知类型回落 loki', () => {
-    expect(draftFromTarget(undefined)).toEqual({ id: '', kind: 'loki', label: '', url: '' })
+    expect(draftFromTarget(undefined)).toEqual({ id: '', kind: 'loki', label: '', url: '', dockerTarget: '' })
     expect(draftFromTarget({ id: 'es', kind: 'elasticsearch', label: 'ES', url: 'http://127.0.0.1:9200' }))
-      .toEqual({ id: 'es', kind: 'elasticsearch', label: 'ES', url: 'http://127.0.0.1:9200' })
+      .toEqual({ id: 'es', kind: 'elasticsearch', label: 'ES', url: 'http://127.0.0.1:9200', dockerTarget: '' })
     expect(draftFromTarget({ kind: 'splunk', id: 7 }).kind).toBe('loki')
     expect(draftFromTarget({ kind: 'splunk', id: 7 }).id).toBe('')
   })
@@ -69,7 +72,7 @@ describe('draftPayload', () => {
   })
 
   it('缺字段不产出 undefined（宿主拿到的是字符串）', () => {
-    expect(draftPayload({ kind: 'docker' })).toEqual({ kind: 'docker', label: '', url: '' })
+    expect(draftPayload({ kind: 'docker' })).toEqual({ kind: 'docker', label: '', dockerTarget: '', url: '' })
   })
 })
 
@@ -121,5 +124,31 @@ describe('查询表单（P6 面板侧）', () => {
       { key: 'matchedAtLeast', value: 10000 },
       { key: 'scannedBytes', value: 2048 },
     ])
+  })
+})
+
+describe('Docker 目标的表单（P6 面板半格）', () => {
+  it('since 复用时间窗预设，认不出的回落 1h', () => {
+    expect(dockerSince('15m')).toBe('15m')
+    expect(dockerSince('24h')).toBe('24h')
+    expect(dockerSince('nonsense')).toBe('1h')
+  })
+
+  it('没选容器就不给看日志', () => {
+    expect(dockerProblem({ container: 'abc' })).toBe('')
+    expect(dockerProblem({ container: '' })).toBe('needContainer')
+    expect(dockerProblem({})).toBe('needContainer')
+  })
+
+  it('日志正文切成行：去掉末尾空行，空串是空列表', () => {
+    expect(dockerLogLines('a' + String.fromCharCode(10) + 'b' + String.fromCharCode(10))).toEqual(['a', 'b'])
+    expect(dockerLogLines('')).toEqual([])
+    expect(dockerLogLines(undefined)).toEqual([])
+  })
+
+  it('docker 来源的草稿把「地址」那一格当 Docker 目标名用（往返一致）', () => {
+    const draft = draftFromTarget({ id: 'd', kind: 'docker', label: '本机 Docker', dockerTarget: 'local' })
+    expect(draft.dockerTarget).toBe('local')
+    expect(draftPayload(draft)).toEqual({ kind: 'docker', label: '本机 Docker', dockerTarget: 'local', url: '' })
   })
 })
