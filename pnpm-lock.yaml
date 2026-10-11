@@ -26,6 +26,9 @@ importers:
       '@hyzyn/dsh-kit-settings':
         specifier: 0.2.5
         version: link:packages/kit-settings
+      '@hyzyn/dsh-loglens':
+        specifier: 0.1.2
+        version: link:packages/loglens
       '@hyzyn/dsh-mcp':
         specifier: 0.3.4
         version: link:packages/mcp
@@ -75,6 +78,9 @@ importers:
       '@hyzyn/dsh-kit-settings':
         specifier: 0.2.5
         version: link:../kit-settings
+      '@hyzyn/dsh-loglens':
+        specifier: 0.1.2
+        version: link:../loglens
       '@hyzyn/dsh-mcp':
         specifier: 0.3.4
         version: link:../mcp
@@ -225,6 +231,25 @@ importers:
       react:
         specifier: ^18.2.0
         version: 18.3.1
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+
+  packages/loglens:
+    dependencies:
+      '@deepseek-ai/dsh':
+        specifier: link:../../scripts/dsh-peer-stub
+        version: link:../../scripts/dsh-peer-stub
+      '@hyzyn/dsh-kit':
+        specifier: 0.5.2
+        version: link:../kit
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: ^4.0.4
+        version: 4.0.4(@deepseek-ai/cordis-plugin-include@1.0.9)(@deepseek-ai/cordis-plugin-loader@1.0.5)
+      '@types/node':
+        specifier: ^22.20.0
+        version: 22.20.1
       typescript:
         specifier: ~5.9.3
         version: 5.9.3

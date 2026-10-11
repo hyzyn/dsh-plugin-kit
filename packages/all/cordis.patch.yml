@@ -26,6 +26,11 @@
     - id: kit-settings
       name: '@hyzyn/dsh-kit-settings'
 
+# from ../loglens
+- insert:
+    - id: loglens
+      name: '@hyzyn/dsh-loglens'
+
 # from ../mcp
 - insert:
     - id: mcp-config

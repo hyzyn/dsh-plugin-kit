@@ -67,7 +67,7 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 
 ## 包索引
 
-**1 个共享库 + 10 个功能插件 + 1 个聚合包**；包之间的关系、依赖方向与跨插件协作见
+**1 个共享库 + 11 个功能插件 + 1 个聚合包**；包之间的关系、依赖方向与跨插件协作见
 [docs/architecture.md](docs/architecture.md)。
 
 | 包 | 干什么 | 文档 |
@@ -83,7 +83,8 @@ dsh-plugin-kit 是给 DeepSeek Harness（DSH）Web GUI 用的通用插件集合�
 | `@hyzyn/dsh-codegraph` | 代码图谱卡片 + MCP 托管 + 采纳率测量 | [README](packages/codegraph/README.md) · [DEFECTS](packages/codegraph/DEFECTS.md) · [ROADMAP](packages/codegraph/ROADMAP.md) |
 | `@hyzyn/dsh-tty` | 终端面板：PTY / SSH / SFTP / 隧道 | [README](packages/tty/README.md) · [DEFECTS](packages/tty/DEFECTS.md) · [ROADMAP](packages/tty/ROADMAP.md) |
 | `@hyzyn/dsh-docker` | Docker 容器面板（本机 / SSH），默认只读 | [README](packages/docker/README.md) · [DEFECTS](packages/docker/DEFECTS.md) · [ROADMAP](packages/docker/ROADMAP.md) |
-| `@hyzyn/dsh-all` | 聚合安装包：一条 bundle patch 挂载上面 10 个插件 | [README](packages/all/README.md) |
+| `@hyzyn/dsh-loglens` | 日志查询：Loki / Elasticsearch 归一化查询前端 + `loglens_*` 工具（设计中，**未实现**） | [README](packages/loglens/README.md) |
+| `@hyzyn/dsh-all` | 聚合安装包：一条 bundle patch 挂载上面 11 个插件 | [README](packages/all/README.md) |
 
 ## 快速开始
 
@@ -197,7 +198,7 @@ dsh plugin --profile web add link:$(pwd)/packages/<name>
 |---|---|
 | 项目是什么、装哪个 | 本文件 |
 | 刚上手，想先建立全局（按顺序读） | [docs/architecture.md](docs/architecture.md) → [docs/conventions.md](docs/conventions.md) → [docs/agent-real-test.md](docs/agent-real-test.md) |
-| 12 个包怎么协作、依赖方向、谁写哪个配置文件 | [docs/architecture.md](docs/architecture.md) |
+| 13 个包怎么协作、依赖方向、谁写哪个配置文件 | [docs/architecture.md](docs/architecture.md) |
 | 命名 / 提交 / 文档分层 / 编号规范 / 插件解剖 | [docs/conventions.md](docs/conventions.md) |
 | 术语（宿主半体、托管区块、TOFU、三代插槽…） | [docs/glossary.md](docs/glossary.md) |
 | 装不上、卡片不出现、插件整体消失、接口 401/403、已知限制 | [docs/troubleshooting.md](docs/troubleshooting.md) |

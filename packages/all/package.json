@@ -45,6 +45,7 @@
     "@hyzyn/dsh-docker": "0.13.0",
     "@hyzyn/dsh-env": "0.3.8",
     "@hyzyn/dsh-kit-settings": "0.2.5",
+    "@hyzyn/dsh-loglens": "0.1.2",
     "@hyzyn/dsh-mcp": "0.3.4",
     "@hyzyn/dsh-profile": "0.2.7",
     "@hyzyn/dsh-prompt": "0.2.7",

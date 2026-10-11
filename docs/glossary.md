@@ -12,7 +12,7 @@
 | **插件 id** | 短横线小写标识（`docker`、`kit-settings`）。决定路由前缀 `/api/dsh-<id>/` 与配置命名空间 |
 | **profile** | `~/.dsh/profiles/<name>` 下的一套独立 DSH 环境（自己的 bundle 层与补丁文件）。`dsh web` 默认用 `web` |
 | **bundle / bundle 补丁** | 一个声明了 `dsh.bundle.patch` → `cordis.patch.yml` 的包。装它 = 按补丁把插件挂进 profile 阵容 |
-| **聚合包** | `@hyzyn/dsh-all`：一条 bundle patch 挂载全部 10 个插件。仓库根 `package.json` 也是同等的 bundle |
+| **聚合包** | `@hyzyn/dsh-all`：一条 bundle patch 挂载全部 11 个插件。仓库根 `package.json` 也是同等的 bundle |
 | **Cordis** | DSH 的插件框架。插件导出 `{ name, inject, apply }` |
 | **scope** | Cordis 的隔离层。`agent.ctx` 本身就是一个 scope（per-agent MCP 挂载就挂在这里） |
 

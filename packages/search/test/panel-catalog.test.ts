@@ -81,6 +81,7 @@ const ALL_PLUGIN_REGISTRATIONS = [
   'codegraph',
   'docker',
   'env-manager',
+  'loglens',
   'mcp-config',
   'profile-manager',
   'prompt-manager',
@@ -95,10 +96,10 @@ describe('search 的面板目录：registryName 门禁', () => {
     expect(docker?.name).toBe('Docker 容器面板')
   })
 
-  it('六个插件卡片全都在（docker 不再缺席）', async () => {
+  it('插件卡片全都在（含后来补的 docker 与 loglens）', async () => {
     const panels = await catalog(mount(ALL_PLUGIN_REGISTRATIONS))
     const ids = panels.map((panel) => panel.id)
-    for (const id of ['codegraph', 'docker', 'env-manager', 'mcp-config', 'profile-manager', 'prompt-manager', 'rss-digest']) {
+    for (const id of ['codegraph', 'docker', 'env-manager', 'loglens', 'mcp-config', 'profile-manager', 'prompt-manager', 'rss-digest']) {
       expect(ids, `${id} 应在目录里`).toContain(id)
     }
   })

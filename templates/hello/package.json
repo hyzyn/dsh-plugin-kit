@@ -25,7 +25,7 @@
     }
   },
   "dependencies": {
-    "@hyzyn/dsh-kit": "0.3.0"
+    "@hyzyn/dsh-kit": "0.5.2"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.4",

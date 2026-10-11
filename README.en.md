@@ -69,7 +69,7 @@ Grouped configuration → panels → development:
 
 ## Packages
 
-**1 shared library + 10 feature plugins + 1 aggregate package.** How they relate, their dependency
+**1 shared library + 11 feature plugins + 1 aggregate package.** How they relate, their dependency
 direction and how they cooperate: [docs/architecture.md](docs/architecture.md) (Chinese).
 
 | Package | What it does | Docs |
@@ -85,7 +85,8 @@ direction and how they cooperate: [docs/architecture.md](docs/architecture.md) (
 | `@hyzyn/dsh-codegraph` | Code graph card + MCP management + adoption measurement | [README](packages/codegraph/README.md) · [DEFECTS](packages/codegraph/DEFECTS.md) · [ROADMAP](packages/codegraph/ROADMAP.md) |
 | `@hyzyn/dsh-tty` | Terminal panel: PTY / SSH / SFTP / tunnels | [README](packages/tty/README.md) · [DEFECTS](packages/tty/DEFECTS.md) · [ROADMAP](packages/tty/ROADMAP.md) |
 | `@hyzyn/dsh-docker` | Docker container panel (local / SSH), read-only by default | [README](packages/docker/README.md) · [DEFECTS](packages/docker/DEFECTS.md) · [ROADMAP](packages/docker/ROADMAP.md) |
-| `@hyzyn/dsh-all` | Aggregate package: one bundle patch that mounts the 10 plugins above | [README](packages/all/README.md) |
+| `@hyzyn/dsh-loglens` | Log query front-end: normalized query over Loki / Elasticsearch + `loglens_*` tools (designed, **not implemented**) | [README](packages/loglens/README.md) |
+| `@hyzyn/dsh-all` | Aggregate package: one bundle patch that mounts the 11 plugins above | [README](packages/all/README.md) |
 
 ## Quick start
 
@@ -212,7 +213,7 @@ pure logic into modules; scoping a `document`-level click delegate; theme variab
 |---|---|
 | What this is, what to install | this file |
 | New here and want the big picture (read in this order) | [docs/architecture.md](docs/architecture.md) → [docs/conventions.md](docs/conventions.md) → [docs/agent-real-test.md](docs/agent-real-test.md) |
-| How the 12 packages cooperate, dependency direction, who writes which config file | [docs/architecture.md](docs/architecture.md) |
+| How the 13 packages cooperate, dependency direction, who writes which config file | [docs/architecture.md](docs/architecture.md) |
 | Naming / commits / doc layers / numbering / package anatomy | [docs/conventions.md](docs/conventions.md) |
 | Terminology (host half, managed block, TOFU, slot generations…) | [docs/glossary.md](docs/glossary.md) |
 | Install failures, missing cards, every plugin gone, HTTP 401/403, known limits | [docs/troubleshooting.md](docs/troubleshooting.md) |

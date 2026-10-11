@@ -13,6 +13,7 @@ export const targets = [
   ['packages/search', '@hyzyn/dsh-search'],
   ['packages/docker', '@hyzyn/dsh-docker'],
   ['packages/tty', '@hyzyn/dsh-tty'],
+  ['packages/loglens', '@hyzyn/dsh-loglens'],
   ['packages/all', '@hyzyn/dsh-all'],
   ['.', '@hyzyn/dsh-plugin-kit'],
 ]

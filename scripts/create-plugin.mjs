@@ -11,6 +11,8 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 
+import { applyKitPin, readKitVersion } from './create-plugin-manifest.mjs'
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const packagesDir = join(root, 'packages')
 
@@ -65,7 +67,18 @@ rewrite(destDir)
 const templateTest = join(destDir, 'test', 'hello.test.ts')
 if (existsSync(templateTest)) renameSync(templateTest, join(destDir, 'test', `${name}.test.ts`))
 
-console.log(`[create-plugin] packages/${name} 已生成（包 @hyzyn/dsh-${name}，插件 id ${id}）`)
+// kit 钉子**现算**：模板里的字面值不是运行期事实（理由见 create-plugin-manifest.mjs 的文件头）。
+// 失败要在这里就停——静默产出一个带着旧钉子（或没有钉子）的包，正是这道改动要消灭的形态。
+const manifestPath = join(destDir, 'package.json')
+try {
+  const kitVersion = readKitVersion(root)
+  writeFileSync(manifestPath, applyKitPin(readFileSync(manifestPath, 'utf8'), kitVersion))
+  console.log(`[create-plugin] packages/${name} 已生成（包 @hyzyn/dsh-${name}，插件 id ${id}，kit 钉子 ${kitVersion}）`)
+} catch (error) {
+  console.error(`[create-plugin] kit 钉子写入失败：${error.message}`)
+  console.error(`[create-plugin] packages/${name} 只生成了一半，删掉它再重试`)
+  process.exit(1)
+}
 
 const agg = spawnSync(process.execPath, [join(root, 'scripts', 'aggregate.mjs')], { stdio: 'inherit' })
 if (agg.status !== 0) {

@@ -62,6 +62,36 @@ Windows 上的一种成因（真机现场）：profile 的 `node_modules` 被换
 另一种来源：web profile 里已经装过 `@hyzyn/dsh-all`（或任一子包），又 add 了仓库根包
 （或 `packages/all`），两处挂载同一批插件。
 
+**2026-10-11 实测（dsh 0.2.1-alpha.2 / Node v22.23.2）**：上面这句报错**只属于旧版宿主**。
+旧版现场还留在本机 `~/.dsh/dsh-safe/last-failure-web-copy.log`（2026-09-06）：原文是
+`Error: dsh: plugin tree failed to load: failed to apply loader entry include (cordis:include):
+duplicate loader entry id: describe-image`，由 `EntryGroup.update` 抛出、**宿主启动失败**。
+现在装的 `@deepseek-ai/cordis-plugin-loader@1.0.6-alpha.1` 全文 grep 不到这个字符串，
+两个独立 bundle 各 insert 同一个 id 时宿主**照常启动**——只有**组合顺序里靠后的那行生效**。
+
+所以「没报错」**不等于**「没撞名」：撞名现在是**静默的**，只能自己数。
+
+| 四格 | 2026-10-11 实测结论 |
+|---|---|
+| **症状** | 宿主不报错、不退出；`--dump-config` 里同一 `id` 出现**两行**，运行期只有一行生效 |
+| **谁赢** | **组合顺序里靠后的那个**：`dsh.profile.bundles` 越靠后越赢；home 层（`~/.dsh/cordis.patch.yml` 的手工行）叠在 bundle 层之后，所以 home 行会盖掉 bundle 行（实测：home 行即使 `name` 解析不到，被尝试挂载的仍是它 → 报 `failed to import`，**不回退**到 bundle 行） |
+| **有没有日志** | **没有**。stdout/stderr 一个字都不提重名（对照：只有当**胜出那行**的 `name` 解析不到时，才会出现 `dsh: warning: 1 entry did not activate` + `<id> (<name>): failed to import`） |
+| **能不能自愈** | 不能，也不会报——被覆盖的插件**永远不挂载**，界面上只像「这个插件没装」。修法是删掉/改掉重复行，重启没用 |
+
+自查三步（可复制；`<entry-id>` 换成你的插件行 id）：
+
+```sh
+# ① 组合层：同一 id 出现两次就是撞名——这是唯一能看见它的地方
+dsh --profile <profile> --dump-config | grep -n 'id: <entry-id>'
+# ② 看赢家是谁：第 ① 步最后一行 id 下面那个 name 才是真正挂上去的
+dsh --profile <profile> --dump-config | sed -n '/id: <entry-id>/,+1p'
+# ③ 找第二个来源：profile 的 dsh.profile.bundles 顺序，以及 home 层的手工行
+grep -n 'insert:' -A2 ~/.dsh/cordis.patch.yml
+```
+
+撞名重灾区是**通用词 id**（`logs`、`storage`、`search` 这类）：生态里 `dsh-logbook` 的 entry id
+就是 `logs`，碰上另一个日志插件时**谁在组合顺序后面谁赢**，输的那个静默消失。改 id 是唯一根治。
+
 </details>
 
 <details>

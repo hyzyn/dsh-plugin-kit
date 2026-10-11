@@ -629,6 +629,14 @@ const PANEL_DIRECTORY = [
         description: '容器 / 镜像 / 网络 / 卷的查看与变更，以及 SSH 远程 docker 目标',
         registryName: 'docker',
     },
+    {
+        id: 'loglens',
+        kind: 'card',
+        titles: ['日志查询', 'Log Query'],
+        keywords: ['loglens', '日志', 'log', 'loki', 'elasticsearch', 'opensearch', '检索', '查询'],
+        description: '把 Loki / Elasticsearch / OpenSearch 等日志后端归一化成一个查询面（功能尚未实现）',
+        registryName: 'loglens',
+    },
 ];
 function getLoadedRegistryNames(ctx) {
     const names = new Set();

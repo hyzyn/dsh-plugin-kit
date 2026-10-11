@@ -34,7 +34,7 @@ import {
   readDefectsInputs,
 } from '../defects-table.mjs'
 
-/** 真实仓库的 5 份文本（只读；反例都在它的副本上改）。 */
+/** 真实仓库里受检的全部文本（只读；反例都在它的副本上改）。 */
 const real = readDefectsInputs()
 const facts = new Map(computeFacts().map((fact) => [fact.name, fact]))
 
@@ -59,8 +59,8 @@ function checkWithConventions(text: string) {
 const kinds = (diffs: { kind: string }[]) => diffs.map((diff) => diff.kind)
 
 describe('缺陷台账：现算（唯一真值来源）', () => {
-  it('四包都能读到索引表，且编号连续、无空号、唯一号数 == 最大号', () => {
-    expect(LEDGER_SPECS.map((spec) => spec.name)).toEqual(['docker', 'tty', 'codegraph', 'kit'])
+  it('每个登记的包都能读到索引表，且编号连续、无空号、唯一号数 == 最大号', () => {
+    expect(LEDGER_SPECS.map((spec) => spec.name)).toEqual(['docker', 'tty', 'codegraph', 'kit', 'loglens'])
     for (const spec of LEDGER_SPECS) {
       const fact = facts.get(spec.name)
       expect(fact, `${spec.name} 没算出来`).toBeDefined()

@@ -90,8 +90,9 @@ const patchFile = join(dshHome(), 'cordis.patch.yml')
 
 - `isLoopbackRequest(req): boolean` —— loopback-only + 同源围栏：remoteAddress 必须是
   回环地址、Host 必须指向本机（防 DNS rebinding）、`sec-fetch-site: cross-site` 拒绝、
-  `Origin`（若有）必须与 Host 同源。9 个插件的重复围栏收敛于此（**同步档**，语义未动）。
-- **加固档**（2026-09-25 自 `docker` 上提，`docker` · `tty` · `dsh-mcp` 三包在用；
+  `Origin`（若有）必须与 Host 同源。10 个插件的重复围栏收敛于此模块（本函数是**同步档**，
+  语义未动；其中 4 个已升加固档，见下）。
+- **加固档**（2026-09-25 自 `docker` 上提，`docker` · `tty` · `dsh-mcp` · `loglens` 四包在用；
   两档的边界见 [architecture.md § 一条请求经过什么](../../docs/architecture.md#7-一条请求经过什么)）：
   - `isLoopbackRequestStrict(req): boolean | Promise<boolean>` —— 127/8 全段 + `::1` +
     IPv6 映射、`*.localhost` 与 `/etc/hosts` 别名的 DNS 确认（500ms 超时 / 60s LRU）、

@@ -15,6 +15,13 @@ import { defineConfig } from 'vitest/config'
  * 共享的隔离引导**（`live-harness.mjs`：临时目录 / 隔离 DSH_HOME / profile 播种 / 补丁自证），
  * 它不起宿主、不被 import 进来跑，而由 `scripts/test/live-scripts-safety.test.ts` 读源码钉住。
  *
+ * ⚠️ 上面这句**与现状不符**（2026-10-11 实测；按文档纪律 3 **只加标注、未改口径**）：
+ * `scripts/lib/dsh-runtime-store.mjs` 是「一件事实两处消费」抽出来的公共件，**被**
+ * `scripts/test/dsh-runtime-store.test.ts` 直接 import；它自己的文件头写的又是
+ * 「`scripts/lib/` 是 L0 脚本的公共件」（把 `live-harness.mjs` 一起归进这一类）。
+ * 所以仓库里同时存在两种口径。要统一得先拍板 `scripts/lib/` 管哪一类；在那之前，
+ * **被用例直接 import 的纯模块一律放 `scripts/` 根**（新先例：`scripts/create-plugin-manifest.mjs`）。
+ *
  * **打包后的 client.js 不在本层测**——它是 esbuild 产物，走各自的管线。所以
  * 浏览器半体里凡是要判对错的逻辑，请抽成不依赖 DOM 的纯模块：`client-lint.mjs`
  * 只查名字解析与宿主地址来源（静态），**不验行为**，留在 client.js 里的逻辑

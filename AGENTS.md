@@ -9,7 +9,7 @@
 | 想知道 | 读 |
 |---|---|
 | 项目是什么、装哪个、怎么开发新插件 | [README.md](README.md)（含文档地图） |
-| 系统怎么运作、12 个包谁依赖谁 | [docs/architecture.md](docs/architecture.md) |
+| 系统怎么运作、13 个包谁依赖谁 | [docs/architecture.md](docs/architecture.md) |
 | **改代码必须守什么**（命名 / 提交 / 文档分层 / 编号 / 客户端半体） | [docs/conventions.md](docs/conventions.md) |
 | 真机测试怎么跑、什么算通过 | [docs/agent-real-test.md](docs/agent-real-test.md) |
 | 某个包的用法 / 缺陷台账 / 待办 | `packages/<pkg>/README.md` · `DEFECTS.md` · `ROADMAP.md` |

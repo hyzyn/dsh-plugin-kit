@@ -1,6 +1,6 @@
-# 架构：12 个包怎么组成一个 DSH 插件全家桶
+# 架构：13 个包怎么组成一个 DSH 插件全家桶
 
-> **本文是「12 个包关系与协作」的唯一归宿。** 包内功能见各包 README；规矩见
+> **本文是「13 个包关系与协作」的唯一归宿。** 包内功能见各包 README；规矩见
 > [conventions.md](./conventions.md)；术语见 [glossary.md](./glossary.md)。
 >
 > 判据：**「改一个包就能说清」→ 写进包 README；「要跨 ≥2 个包才说得清」→ 写进本文。**
@@ -10,10 +10,10 @@
 
 ```
 @hyzyn/dsh-kit            ← 共享库（唯一的非插件包，无 cordis.patch.yml）
-    ↑ 被下面 9 个插件依赖（`kit-settings` 是唯一例外，见 §2）
-@hyzyn/dsh-<插件> ×10     ← 功能插件（各有自己的托管区块 / 配置 / 客户端半体）
+    ↑ 被下面 10 个插件依赖（`kit-settings` 是唯一例外，见 §2）
+@hyzyn/dsh-<插件> ×11     ← 功能插件（各有自己的托管区块 / 配置 / 客户端半体）
     ↑ 被聚合
-@hyzyn/dsh-all            ← 聚合安装包（一条 bundle patch 挂载上面 10 个）
+@hyzyn/dsh-all            ← 聚合安装包（一条 bundle patch 挂载上面 11 个）
 ```
 
 仓库根 `package.json` 本身也是一个 bundle，`dsh plugin add link:$(pwd)` 等价于装 `dsh-all`。
@@ -33,7 +33,8 @@
 | `@hyzyn/dsh-codegraph` | 插件 | 代码图谱卡片 + MCP 托管 + 采纳率测量 | [README](../packages/codegraph/README.md) · [DEFECTS](../packages/codegraph/DEFECTS.md) · [ROADMAP](../packages/codegraph/ROADMAP.md) |
 | `@hyzyn/dsh-tty` | 插件 | 终端面板（PTY / SSH / SFTP / 隧道）+ `tty_*` `sftp_*` 工具 | [README](../packages/tty/README.md) · [DEFECTS](../packages/tty/DEFECTS.md) · [ROADMAP](../packages/tty/ROADMAP.md) |
 | `@hyzyn/dsh-docker` | 插件 | Docker 容器面板（本机 / SSH）+ `docker_*` 工具，默认只读 | [README](../packages/docker/README.md) · [DEFECTS](../packages/docker/DEFECTS.md) · [ROADMAP](../packages/docker/ROADMAP.md) |
-| `@hyzyn/dsh-all` | 聚合 | 一条 bundle patch 挂载上面 10 个插件 | [README](../packages/all/README.md) |
+| `@hyzyn/dsh-loglens` | 插件 | 日志查询：把异构日志后端（Loki / Elasticsearch）归一化成统一查询前端 + `loglens_*` 工具（**未实现**，走构建型） | [README](../packages/loglens/README.md) · [设计](../packages/loglens/docs/design.md) · [ROADMAP](../packages/loglens/ROADMAP.md) |
+| `@hyzyn/dsh-all` | 聚合 | 一条 bundle patch 挂载上面 11 个插件 | [README](../packages/all/README.md) |
 
 > `kit` 是**唯一的库**：它没有 `cordis.patch.yml`，不挂载任何东西，也不出现在 `dsh-all` 的
 > 依赖里（它是各插件的 `dependencies`）。写新插件时先看
@@ -141,8 +142,15 @@
 
    | 包 | 闸门 | 变更端点的同源证明 |
    |---|---|---|
-   | `docker` · `tty` · `dsh-mcp` | `isLoopbackRequestStrict`（原子 `docker` 那份上提到 kit） | 有（按**动作**判定，不是按方法；`/config` 三处一致地豁免——它是禁用后唯一的恢复入口） |
+   | `docker` · `tty` · `dsh-mcp` · `loglens` | `isLoopbackRequestStrict`（原子 `docker` 那份上提到 kit） | 有（按**动作**判定，不是按方法）——`docker` / `tty` / `dsh-mcp` 三处 `/config` **整体豁免**（它是禁用后唯一的恢复入口）；`loglens` **按动作部分豁免**：`enabled` 免、`targets` 的增删改要同源证明 |
    | 其余 7 个插件 | `isLoopbackRequest`（同步档） | 无 |
+
+   > **口径标注（2026-10-11 加 `loglens` 时补）**：按 [conventions § 文档分档](./conventions.md#文档分档)
+   > 纪律 3，旧数只加标注、不擅自改。上一段的「9 个插件」与上表「其余 7 个」**本来就不同源**：
+   > 「9」= 围栏收敛进 kit 时**除 `kit-settings` 外**的插件数（它不依赖 kit）；「7」= **插件总数 − 加固档**
+   > （加本包前 10 − 3 = 7，含 `kit-settings`）。两者分母不同、不是同一集合的划分（9 + 7 = 16 ≠ 10）。
+   > **本次改动**：`loglens` 进**加固档** → 加固档 3 → 4、同步档仍是 7（11 − 4 = 7，成员与加包前那 7 个相同）；
+   > 豁免口径也随之从「三处一致地豁免」变成「**3 个包整体豁免 + 1 个包按动作部分豁免**」的不对称，改表时要同时记这一笔。
 
    为什么不一刀切：全仓收敛到加固档要连信任模型一起定（[ROADMAP.md](../ROADMAP.md) 第 5 项），
    单包先升级只会让插件之间的安全假设不一致。加固档的成因与桌面版例外写在

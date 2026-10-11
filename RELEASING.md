@@ -106,6 +106,12 @@ CI 另有两道兜底（`--no-verify`、别的机器、别的工具提交都能�
    `node_modules`——两份 kit 就是两套单例，`kit D11` 的症状会回来。所以 bump kit 时必须
    跟齐**每一个**消费者，一次发完；`node scripts/check-kit-pins.mjs` 兜底（CI 与 Release
    workflow 都跑）。
+   **新包的钉子不用手抄**：`pnpm create-plugin` 生成时从 `packages/kit/package.json#version`
+   **现算**（[scripts/create-plugin-manifest.mjs](scripts/create-plugin-manifest.mjs)），
+   模板 [templates/hello/package.json](templates/hello/package.json) 里的字面值只是给人看的
+   参考、**不是真相源**。模板仍要在同一轮跟着 bump（见下面「攒批」那一步），但**漏改不会再让新包
+   带着旧钉子上路**——而那条漂移此前是无人会红的：`templates/` 不在 `collectKitPins()` 的扫描面，
+   模板也不在 `pnpm-workspace.yaml` / `pnpm-lock.yaml` 里。
 5. 可安装插件必须用 `peerDependencies` 声明 DSH 兼容范围。DSH 0.1.7-rc.1 起
    **安装前与启动时**都强制校验，且只看 `@deepseek-ai/dsh` / `@deepseek-ai/dsh-*`
    的 peer（预发布参与范围匹配）。写法统一为**逐 cohort 写全**：

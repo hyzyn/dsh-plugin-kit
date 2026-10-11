@@ -145,6 +145,19 @@ export const LEDGER_SPECS = [
     codeRefs: false,
     // 末列是「落点」链接，没有 `✓` 列
   },
+  {
+    name: 'loglens',
+    prefix: 'D',
+    path: 'packages/loglens/DEFECTS.md',
+    tableHeading: /^## 1\. 编号索引表/,
+    selfSequence: true,
+    nextAnchor: true,
+    crossRefs: [],
+    statusLine: { closedColumn: false, untilSentence: true },
+    mirror: false,
+    codeRefs: false,
+    // 2026-10-11 建包当天登记：台账里只有建包当天真实发生的那一条（`D01`），末列是「涉及文件」、没有 `✓` 列
+  },
 ]
 
 /** 编号数字串的公共形状（`D01` / `CG140`）。 */
@@ -533,7 +546,7 @@ export function readPackageSources(spec, repoRoot = REPO_ROOT) {
   return files
 }
 
-/** 读入受检的全部文本（**只读**，不改任何东西）：四份台账 + conventions + 需要核 `✓` 的包内代码。 */
+/** 读入受检的全部文本（**只读**，不改任何东西）：每个登记包的台账 + conventions + 需要核 `✓` 的包内代码。 */
 export function readDefectsInputs(repoRoot = REPO_ROOT) {
   const ledgers = {}
   const sources = {}
