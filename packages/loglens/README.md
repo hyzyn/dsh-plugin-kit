@@ -17,7 +17,7 @@
   四个工具都归 **read** 档（分类表见 [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md) §2.1）。
 - 卡片上明写「查询能力（搜索结果视图）还没实现」——浏览器侧不提供看起来能用的假界面。
 
-## 配置面（HTTP，回环）
+## HTTP 面（回环）
 
 配置存在当前 profile 的 plugin entry 上（`settings.update('loglens', …)` 的 volatile 路径）。
 
@@ -28,6 +28,12 @@
 | 新增来源 | `POST {"action":"targets.add","target":{"kind":"loki","label":"本地 Loki","url":"http://127.0.0.1:3100"}}` | `kind` 取 `loki` / `elasticsearch` / `opensearch` / `docker` |
 | 改来源 | `POST {"action":"targets.update","id":"<id>","patch":{"url":"…"}}` | id 不可改（它是浏览器侧唯一的引用方式） |
 | 删来源 | `POST {"action":"targets.remove","id":"<id>"}` | |
+| 查一次 | `POST /api/dsh-loglens/query` `{"target":"<id>","q":"…","from":…,"to":…,"limit":…}` | 面板用；返回行 + 计数 + 截断信号，**形状与 `loglens_search` 一致**（同一个执行层） |
+| 列字段 | `POST /api/dsh-loglens/fields` `{"target":"<id>"}` | 面板的「有哪些字段」 |
+
+围栏：整条路由走**加固档** `isLoopbackRequestStrict`；`/config` 按**动作**豁免（只有 `enabled` 免同源证明）；
+**`/query` 与 `/fields` 要同源证明**——它们只读，却会**替请求方打到已配置的内网目标**并把结果带回来；
+插件禁用时三条路由里只留 `/config`。
 
 围栏（[docs/design.md §4](./docs/design.md)）：整条路由走**加固档** `isLoopbackRequestStrict`；
 `/config` 按**动作**豁免——只有 `enabled` 免同源证明，targets 的增 / 删 / 改要 `hasSameOriginProof`
@@ -57,6 +63,8 @@ curl -s -X POST http://127.0.0.1:3080/api/dsh-loglens/config -H 'content-type: a
 | `cordis.patch.yml` | bundle 补丁：`insert: { id: loglens, name: '@hyzyn/dsh-loglens' }` |
 | `src/index.ts` | 宿主半体：`/config` 路由 + 设置持久化（查询面还没有） |
 | `src/config.ts` | 来源清单的**纯**判据（id 生成 / 地址校验 / 宽松读盘 / 增删改），不碰 cordis 与网络 |
+| `src/execute.ts` | 找来源 / 归一化 / 拼返回形状：**agent 工具与面板路由共用**的那一层 |
+| `src/backends/registry.ts` | kind → 适配器（Loki / ES / OS；Docker 按设计不进这里） |
 | `src/backends/types.ts` | 后端契约的**形状**（`LogBackend` / `BackendCaps` / `LogCounts` / `Truncation`…），没有实现 |
 | `src/backends/loki.ts` | Loki 适配器：`query_range` / `labels` / `ready`，摊平、合并顺序与计数（真机验收待跑） |
 | `src/backends/elastic.ts` | ES / OpenSearch 适配器（`flavor` 分流）：`_search` / PIT 分页 / `_field_caps` / health |

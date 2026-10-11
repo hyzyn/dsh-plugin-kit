@@ -505,3 +505,35 @@ wire 级用例做完，真机那一半等有环境（你自带的 Loki，或允�
 | 本包单测 | **154 条**（+2：`hintFor` 的四条分支 + docker 行带替代路径） |
 | 全仓门禁 | `pnpm typecheck && pnpm build && pnpm test && pnpm aggregate` 全绿（数字见提交） |
 
+### P6（面板侧第一刀）：HTTP 查询面 + 共用执行层（2026-10-11）
+
+**为什么先做这一刀**：面板要能查，浏览器就得有一条**自己的** HTTP 路径——agent 工具（`loglens_search`）
+是模型侧的入口，浏览器调不到。于是把「找来源 / 归一化 / 拼返回形状」抽成一层给两边共用，再给面板开
+`/query` 与 `/fields`。
+
+**改了什么**
+
+- 新增 [src/execute.ts](../loglens/src/execute.ts)：`resolveTarget` / `adapterHint` / `hintFor` /
+  `describeTarget` 与 `runSearch` / `runFields`——**agent 工具与面板路由共用的唯一实现**（两处各写
+  一遍就是两份会漂的真相源，这正是本仓反复出现的反模式）。
+- 新增 [src/backends/registry.ts](../loglens/src/backends/registry.ts)：kind → 适配器（Loki / ES / OS；
+  Docker 按设计不进这里）。`src/tools.ts` 只留**注册与渲染**，`backendFor` 从注册表来。
+- [src/index.ts](../loglens/src/index.ts)：三条路由 `/config` / `/query` / `/fields`。围栏：
+  整条走加固档；`/config` 按动作豁免（只有 `enabled` 免证）；**`/query` 与 `/fields` 要同源证明**——
+  它们只读，却会**替请求方打到已配置的内网目标**并把结果带回来（设计 §4.3 说的「用读面打它」正是这两条）；
+  插件禁用时三条里只留 `/config`。
+- 用例 [test/query-route.test.ts](../loglens/test/query-route.test.ts)（9 条，端到端：路由 → 执行层 →
+  真 Loki 适配器 → 假 Loki 的真 HTTP 服务）：同源证明（**没证的 403 且根本没打后端**）、GET/未知路由/
+  非法 JSON、禁用时只留 /config、非回环、错误原话（找不到来源 / 没有适配器 / 秒级时间戳 / 后端 500）、
+  `/fields`。
+
+**门槛与证据（全部实跑）**
+
+| 闸 | 结果 |
+|---|---|
+| 本包单测 | **163 条**（10 个文件） |
+| 全仓门禁 | `pnpm typecheck && pnpm build && pnpm test && pnpm aggregate` 全绿（数字见提交） |
+
+**还差的（P6 剩下的）**：浏览器侧的**结果视图**（表单 + 结果列表 + 截断提示）还没画；Docker 那一格
+（面板相对路径 fetch `/api/dsh-docker/logs`）也还没接——两者的宿主侧地基这一刀已经铺好。
+

@@ -47,9 +47,24 @@ interface Route {
  * 于是路由本身没有状态，用例可以直接喂假实现——回环围栏 / 动作白名单 / 同源证明
  * 三条判据都能在不起宿主的前提下验（见 test/loglens.test.ts）。
  */
-export declare function makeRoutes(state: {
+/** 面板那三条路由要用到的状态：读配置、落盘、执行一次查询 / 列字段（都由 apply 注入）。 */
+export interface RouteState {
     read: () => LoglensConfig;
     write: (next: LoglensConfig) => Promise<string | undefined>;
-}): Route[];
+    /** 执行一次查询（面板那条路）：与 agent 工具共用 src/execute.ts，不另写一份判据。 */
+    runQuery: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+    /** 列字段（面板的「有哪些字段」）。 */
+    runFields: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+}
+/**
+ * 构造面板用的三条路由：`/config`（读写）、`/query`（查）、`/fields`（列字段）。
+ *
+ * 围栏（设计 §4）：整条路由走**加固档** `isLoopbackRequestStrict`；`/config` 按**动作**豁免——
+ * 只有 `enabled` 免同源证明（禁用后设置卡片是唯一的恢复入口）。**`/query` 与 `/fields` 要同源证明**：
+ * 它们虽然只读，却会**替请求方打到已配置的内网目标**并把结果带回来——跨站页面能借它读内网
+ * （设计 §4.3 那句「再从配置侧加一个指向内网的 target，用读面打它」的「读面」正是这里）。
+ * 插件禁用时三条路由里**只留 `/config`**（设置卡片靠它渲染，也是唯一的恢复入口）。
+ */
+export declare function makeRoutes(state: RouteState): Route[];
 export declare const name: string, inject: string[] | undefined, apply: (ctx: Context, config?: Config | undefined) => void;
 export {};

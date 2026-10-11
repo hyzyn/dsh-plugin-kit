@@ -14,11 +14,18 @@
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { TierClass } from '@hyzyn/dsh-kit'
-import { createElasticBackend } from './backends/elastic.js'
-import { createLokiBackend } from './backends/loki.js'
+import { backendFor } from './backends/registry.js'
 import type { BackendCaps, LogBackend, LogLine } from './backends/types.js'
-import type { LoglensConfig, LoglensTarget, SourceKind } from './config.js'
+import type { LoglensConfig, SourceKind } from './config.js'
+import { adapterHint, describeTarget, hintFor, resolveTarget, runFields, runSearch } from './execute.js'
 import { normalizeQuery } from './query.js'
+
+/*
+ * 找来源 / 夹取 / 拼返回形状都在 src/execute.ts——agent 工具与面板路由共用那一层，避免两份会漂的
+ * 真相源；这里只负责**注册**与**渲染**。下面这几个再导出一次，方便用例与调用方从一处取。
+ */
+export { adapterHint, describeTarget, hintFor, resolveTarget } from './execute.js'
+export { backendFor } from './backends/registry.js'
 
 /** 分类表：四个工具全是只读（查日志不改任何东西，也不在目标机上执行命令）。 */
 export const LOGLENS_TIER_CLASS: Record<string, TierClass> = {
@@ -31,29 +38,6 @@ export const LOGLENS_TIER_CLASS: Record<string, TierClass> = {
 /** 档位闸只认这些前缀（名单外一个都不碰）。 */
 export const LOGLENS_TIER_PREFIXES: readonly string[] = ['loglens_']
 
-const LOKI_BACKEND: LogBackend = createLokiBackend()
-const ELASTIC_BACKEND: LogBackend = createElasticBackend({ flavor: 'es' })
-const OPENSEARCH_BACKEND: LogBackend = createElasticBackend({ flavor: 'os' })
-
-/**
- * 后端注册表：Loki · Elasticsearch · OpenSearch 三家。
- * **Docker 刻意不进这里**：它是采集来源，走选项 0（现成的 docker_logs / docker_logs_grep），
- * 包一层只会造出第二份口径（设计 §5）。
- */
-export function backendFor(kind: SourceKind): LogBackend | undefined {
-  if (kind === 'loki') return LOKI_BACKEND
-  if (kind === 'elasticsearch') return ELASTIC_BACKEND
-  if (kind === 'opensearch') return OPENSEARCH_BACKEND
-  return undefined
-}
-
-/** 没有适配器时的指路文案：说清「怎么绕」，而不是一句「不支持」。 */
-export function adapterHint(kind: SourceKind): string {
-  if (kind === 'docker') {
-    return 'Docker 是采集来源（设计 §5 选项 0）：agent 侧请用现成的 docker_logs / docker_logs_grep——本插件刻意不包一层'
-  }
-  return '来源类型 ' + kind + ' 没有适配器（本插件支持 loki / elasticsearch / opensearch；Docker 走现成的 docker_logs）'
-}
 
 export interface ToolDeps {
   /** 当前生效的配置（宿主侧那一份，volatile 更新后跟着变）。 */
@@ -63,35 +47,7 @@ export interface ToolDeps {
   add: (name: string, definition: unknown) => void
 }
 
-/** 按 id 或名称找来源；省略时只在「恰好一个来源」时回落。 */
-export function resolveTarget(
-  config: LoglensConfig,
-  wanted: unknown,
-): { ok: true; target: LoglensTarget } | { ok: false; error: string } {
-  const targets = config.targets
-  if (targets.length === 0) {
-    return { ok: false, error: '还没有配置任何日志来源：请到「设置 → 插件配置 → 日志查询」加一个' }
-  }
-  if (wanted === undefined || wanted === null || wanted === '') {
-    if (targets.length === 1) return { ok: true, target: targets[0] }
-    return { ok: false, error: 'target 必填（有 ' + String(targets.length) + ' 个来源）：' + targets.map((target) => target.id).join(' / ') }
-  }
-  if (typeof wanted !== 'string') return { ok: false, error: 'target 必须是来源 id 或名称' }
-  const key = wanted.trim().toLowerCase()
-  const exact = targets.find((target) => target.id.toLowerCase() === key)
-  if (exact !== undefined) return { ok: true, target: exact }
-  const byLabel = targets.filter((target) => target.label.toLowerCase() === key)
-  if (byLabel.length === 1) return { ok: true, target: byLabel[0] }
-  if (byLabel.length > 1) {
-    return { ok: false, error: '名称「' + wanted + '」对应多个来源，请改用 id：' + byLabel.map((target) => target.id).join(' / ') }
-  }
-  return { ok: false, error: '找不到来源「' + wanted + '」：现有 ' + targets.map((target) => target.id).join(' / ') }
-}
 
-/** 目标的自述（工具返回值里统一用这一形状）。 */
-function describeTarget(target: LoglensTarget): { id: string; kind: string; label: string } {
-  return { id: target.id, kind: target.kind, label: target.label }
-}
 
 /** 一行的可读形式：时间用 ISO（人看日志时以本地时间为准，ISO UTC 至少不含糊）。 */
 export function formatLine(line: LogLine): string {
@@ -150,31 +106,6 @@ interface SourceRow {
   hint?: string
 }
 
-/**
- * 一条来源的指路文案（P5 的 agent 侧交付物）。
- *
- * 三条都不是「说明文」，是**会在返回值里出现的判据**：
- *   - docker：选项 0 的替代路径（现成的 docker_logs / docker_logs_grep），本插件不包一层；
- *   - 声明了 pagination:'none' 的来源（当前是 Loki）：被 limit 截断时只会报 hit_limit，得缩小时间窗；
- *   - ES / OpenSearch：分页走 PIT，游标有寿命，过期后要重新发起带时间窗的查询。
- *
- * **刻意不做**「探测 docker 插件在不在」：设计 §5 的「装了没装」判据是给**面板**用的（浏览器侧 registry
- * 存在性 + health），而宿主侧的工具注册表**没有公开的列举 API**（实测 @deepseek-ai/dsh-tools 0.1.2-rc.1
- * 的 ctx.tools 只有 register / restrict / guard）——猜一个私有字段去读，比不读更糟。
- */
-export function hintFor(kind: SourceKind, caps: BackendCaps | undefined): string | undefined {
-  if (kind === 'docker') {
-    return 'Docker 是采集来源（选项 0）：agent 侧用现成的 docker_logs / docker_logs_grep，本插件不包一层'
-  }
-  if (caps === undefined) return undefined
-  if (caps.pagination === 'none') {
-    return '这个来源目前不给游标：命中被 limit 截断时只报 hit_limit，请缩小时间窗分几次查'
-  }
-  if (caps.flavor === 'es' || caps.flavor === 'os') {
-    return '分页走 PIT：游标有寿命，过期后要重新发起一次带时间窗的查询'
-  }
-  return undefined
-}
 
 export function registerLoglensTools(deps: ToolDeps): void {
   const add = deps.add
@@ -293,41 +224,7 @@ export function registerLoglensTools(deps: ToolDeps): void {
       },
     },
     async execute(args: unknown) {
-      const input = (args ?? {}) as Record<string, unknown>
-      const picked = resolveTarget(deps.config(), input.target)
-      if (!picked.ok) throw new Error(picked.error)
-      const backend = deps.backendFor(picked.target.kind)
-      if (backend === undefined) throw new Error(adapterHint(picked.target.kind))
-      const caps = backend.capabilities()
-      const normalized = normalizeQuery({
-        targetId: picked.target.id,
-        q: input.q,
-        from: input.from,
-        to: input.to,
-        limit: input.limit,
-        direction: input.direction,
-        cursor: input.cursor,
-      }, caps)
-      if (!normalized.ok) throw new Error(normalized.error)
-      const result = await backend.query(normalized.query, picked.target)
-      const reasons = result.truncation.reasons
-      const limited = reasons.includes('hit_limit')
-      const hint = reasons.includes('cursor_expired')
-        ? '游标已过期（PIT 有寿命）：请重新发起一次带时间窗的查询，不要接着用这个游标'
-        : limited && caps.pagination === 'none'
-          ? '这个来源不支持游标，命中可能不完整：请缩小时间窗（或把 limit 调小后分段查）'
-          : undefined
-      return {
-        target: describeTarget(picked.target),
-        window: { from: normalized.query.from, to: normalized.query.to },
-        returned: result.counts.returned,
-        counts: result.counts,
-        truncation: result.truncation,
-        lines: result.lines,
-        ...(result.nextCursor === undefined ? {} : { nextCursor: result.nextCursor }),
-        warnings: normalized.warnings,
-        ...(hint === undefined ? {} : { hint }),
-      }
+      return await runSearch(deps, (args ?? {}) as Record<string, unknown>)
     },
   }))
 
@@ -366,12 +263,7 @@ export function registerLoglensTools(deps: ToolDeps): void {
       },
     },
     async execute(args: unknown) {
-      const input = (args ?? {}) as { target?: unknown }
-      const picked = resolveTarget(deps.config(), input.target)
-      if (!picked.ok) throw new Error(picked.error)
-      const backend = deps.backendFor(picked.target.kind)
-      if (backend === undefined) throw new Error(adapterHint(picked.target.kind))
-      return { target: describeTarget(picked.target), fields: await backend.fields(picked.target) }
+      return await runFields(deps, (args ?? {}) as Record<string, unknown>)
     },
   }))
 

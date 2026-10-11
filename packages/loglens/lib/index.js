@@ -1,7 +1,9 @@
 import z from '@deepseek-ai/schemastery';
 import { attachTierGate, definePlugin, hasSameOriginProof, isLoopbackRequestStrict, originProofHint, plainConfig, readJsonBody, settingsEntryScope, writeJson, } from '@hyzyn/dsh-kit';
 import { MAX_TARGETS, addTarget, normalizeConfig, removeTarget, updateTarget } from './config.js';
-import { LOGLENS_TIER_CLASS, LOGLENS_TIER_PREFIXES, backendFor, registerLoglensTools } from './tools.js';
+import { backendFor } from './backends/registry.js';
+import { runFields, runSearch } from './execute.js';
+import { LOGLENS_TIER_CLASS, LOGLENS_TIER_PREFIXES, registerLoglensTools } from './tools.js';
 /** 本插件的路由前缀（一个 prefix 路由内部按子路径分发，与 docker / tty 同款）。 */
 export const ROUTE_PREFIX = '/api/dsh-loglens';
 /** 配置面能做的动作白名单：不认识的动作一律 400，绝不「照单全收」后静默丢掉。 */
@@ -24,11 +26,13 @@ export const Config = z.object({
     })).default([]).volatile(),
 });
 /**
- * 构造 /config 的读写路由。
+ * 构造面板用的三条路由：`/config`（读写）、`/query`（查）、`/fields`（列字段）。
  *
- * read 取当前生效配置、write 落盘（并更新内存里的那一份）。两者都由 apply 注入，
- * 于是路由本身没有状态，用例可以直接喂假实现——回环围栏 / 动作白名单 / 同源证明
- * 三条判据都能在不起宿主的前提下验（见 test/loglens.test.ts）。
+ * 围栏（设计 §4）：整条路由走**加固档** `isLoopbackRequestStrict`；`/config` 按**动作**豁免——
+ * 只有 `enabled` 免同源证明（禁用后设置卡片是唯一的恢复入口）。**`/query` 与 `/fields` 要同源证明**：
+ * 它们虽然只读，却会**替请求方打到已配置的内网目标**并把结果带回来——跨站页面能借它读内网
+ * （设计 §4.3 那句「再从配置侧加一个指向内网的 target，用读面打它」的「读面」正是这里）。
+ * 插件禁用时三条路由里**只留 `/config`**（设置卡片靠它渲染，也是唯一的恢复入口）。
  */
 export function makeRoutes(state) {
     return [
@@ -44,16 +48,46 @@ export function makeRoutes(state) {
                     return;
                 }
                 const sub = new URL(req.url ?? '/', 'http://loopback').pathname.slice(ROUTE_PREFIX.length);
-                if (sub !== '/config') {
+                if (sub !== '/config' && sub !== '/query' && sub !== '/fields') {
                     writeJson(res, 404, { error: '未知路由：' + sub });
                     return;
                 }
+                const config = state.read();
                 if (req.method === 'GET') {
-                    writeJson(res, 200, { ok: true, config: state.read() });
+                    if (sub !== '/config') {
+                        writeJson(res, 405, { error: '只支持 POST，收到 ' + String(req.method) });
+                        return;
+                    }
+                    writeJson(res, 200, { ok: true, config });
                     return;
                 }
                 if (req.method !== 'POST') {
                     writeJson(res, 405, { error: '只支持 GET / POST，收到 ' + String(req.method) });
+                    return;
+                }
+                if (!config.enabled && sub !== '/config') {
+                    writeJson(res, 403, { error: '插件已禁用（设置 → 插件配置 → 日志查询 → 启用插件）' });
+                    return;
+                }
+                if (sub === '/query' || sub === '/fields') {
+                    // 只读但会替请求方打到内网目标：要同源证明（见函数头）
+                    if (!hasSameOriginProof(req)) {
+                        writeJson(res, 403, { error: '缺少同源证明（' + originProofHint(req) + '）' });
+                        return;
+                    }
+                    const payload = await readJsonBody(req);
+                    if (payload === undefined) {
+                        writeJson(res, 400, { error: '请求体不是合法的 JSON 对象' });
+                        return;
+                    }
+                    try {
+                        const outcome = sub === '/query' ? await state.runQuery(payload) : await state.runFields(payload);
+                        writeJson(res, 200, { ok: true, ...outcome });
+                    }
+                    catch (error) {
+                        // 校验失败与后端报错都回 400 + 原话（面板要把「下一步怎么做」显示出来）
+                        writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
+                    }
                     return;
                 }
                 const body = await readJsonBody(req);
@@ -216,7 +250,13 @@ const plugin = definePlugin({
         ctx.inject(['webServer'], (webCtx) => {
             webCtx.effect(() => {
                 const server = webCtx.webServer;
-                const disposers = makeRoutes({ read: () => live, write: persist }).map((route) => server.register(route));
+                const executeDeps = { config: () => live, backendFor };
+                const disposers = makeRoutes({
+                    read: () => live,
+                    write: persist,
+                    runQuery: (input) => runSearch(executeDeps, input),
+                    runFields: (input) => runFields(executeDeps, input),
+                }).map((route) => server.register(route));
                 return () => {
                     for (const dispose of disposers) {
                         try {
