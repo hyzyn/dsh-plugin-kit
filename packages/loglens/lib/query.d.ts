@@ -19,6 +19,13 @@ import type { BackendCaps, Direction, LogCounts, Truncation, TruncationReason } 
 export declare const DEFAULT_LIMIT = 100;
 /** 不声明时间窗上限时的兜底（24 小时）。 */
 export declare const DEFAULT_MAX_WINDOW_MS: number;
+/**
+ * 「只给了一端」时的兜底窗口：15 分钟。
+ *
+ * 为什么是它而不是 maxWindowMs（24 小时）：最常见的问法是「给我看最新的日志」，而 24 小时的
+ * 尾部在昂贵的集群上是几万行——兜底该给一个**能读完**的量，宽窗留给调用方自己说明。
+ */
+export declare const FALLBACK_WINDOW_MS: number;
 /** Agent / 面板给的原始参数（全部 unknown：校验在这一层做，调用方不用先判类型）。 */
 export interface QueryInput {
     targetId?: unknown;

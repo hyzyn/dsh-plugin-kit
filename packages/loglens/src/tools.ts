@@ -191,12 +191,25 @@ export function registerLoglensTools(deps: ToolDeps): void {
   add('loglens_search', defineTool({
     name: 'loglens_search',
     isConcurrencySafe: () => true,
-    description: '查一个日志来源：返回归一化后的行 + 诚实的计数与截断信号。一次只查一个来源（v1 不做跨后端 fan-out）。时间戳一律 epoch 毫秒。',
+    description: '查一个日志来源：返回归一化后的行 + 诚实的计数与截断信号。一次只查一个来源（v1 不做跨后端 fan-out）。'
+      + '返回值里的时间戳一律 epoch 毫秒；**入参**的 from / to 还能写 ISO 8601 或 -30m 这类相对时间（省得自己算毫秒）。',
     parameters: {
       target: { type: 'string', description: '来源 id 或名称（loglens_sources 列出）；只有一个来源时可省略' },
       q: { type: 'string', description: '查询串（Loki 是 LogQL，ES / OpenSearch 是各自的方言）；留空即全量' },
-      from: { type: 'number', description: '起始时间，epoch 毫秒（不是秒）' },
-      to: { type: 'number', description: '结束时间，epoch 毫秒；缺省取当前时刻' },
+      from: {
+        description: '起始时间：epoch 毫秒整数、ISO 8601（不带时区按本机时区）或相对时间；缺省 = to 前面 15 分钟',
+        oneOf: [
+          { type: 'number', description: 'epoch 毫秒整数，如 1760000000000（填成秒会报错）' },
+          { type: 'string', description: 'ISO 8601（2026-10-11T14:00:00Z）或相对时间（-30m / -2h / -1d）' },
+        ],
+      },
+      to: {
+        description: '结束时间，写法同 from；缺省取当前时刻（只给 to，「看最新日志」就够）。实际生效的时间窗见返回值 window',
+        oneOf: [
+          { type: 'number', description: 'epoch 毫秒整数' },
+          { type: 'string', description: 'ISO 8601 或相对时间（-30m / now 等）' },
+        ],
+      },
       limit: { type: 'number', description: '返回条数上限（默认 100）；超过来源单页上限会被夹取，warnings 里会说明' },
       direction: { type: 'string', description: 'forward（旧的在前）或 backward（新的在前，默认）' },
       cursor: { type: 'string', description: '上一页返回的 nextCursor；来源声明 pagination=none 时不会有它' },

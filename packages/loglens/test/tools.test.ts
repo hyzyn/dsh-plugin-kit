@@ -163,6 +163,25 @@ describe('loglens_search', () => {
     expect((value.warnings as string[]).join()).toContain('夹到 100')
   })
 
+  it('from / to 收 ISO 与相对时间（2026-10-11 真机反馈：让模型手算毫秒是真的会错）', async () => {
+    const seen: NormalizedQuery[] = []
+    const backend = fakeBackend({ query: async (query) => { seen.push(query); return resultOf([]) } })
+    const now = Date.now()
+    const relative = await harness(backend).execute({ from: '-30m', to: 'now' }) as Record<string, unknown>
+    const window = relative.window as { from: number, to: number }
+    expect(Math.abs(window.to - now)).toBeLessThan(5_000)
+    expect(window.to - window.from).toBe(30 * 60 * 1000)
+    const iso = await harness(backend).execute({ from: '2026-10-11T14:00:00Z', to: '2026-10-11T15:00:00Z' }) as Record<string, unknown>
+    expect(iso.window).toEqual({ from: Date.parse('2026-10-11T14:00:00Z'), to: Date.parse('2026-10-11T15:00:00Z') })
+    // 只给 to = 「给我看最新的日志」：不再被打回，from 按 15 分钟兜底并附一条 warning
+    const onlyTo = await harness(backend).execute({ to: '2026-10-11T15:00:00Z' }) as Record<string, unknown>
+    expect((onlyTo.window as { from: number }).from).toBe(Date.parse('2026-10-11T14:45:00Z'))
+    expect((onlyTo.warnings as string[]).join()).toContain('未给 from')
+    // 窗口上限对相对时间同样有效
+    await expect(harness(backend).execute({ from: '-1d', to: 'now' })).rejects.toThrow('超过这个来源的上限')
+    expect(seen.length).toBeGreaterThan(0)
+  })
+
   it('来源不支持游标 + 命中被 limit 截断 → 明说「可能不完整，缩小时间窗」', async () => {
     const backend = fakeBackend({
       query: async () => resultOf([line(1, 'a')], { truncation: { truncated: true, reasons: ['hit_limit'] } }),

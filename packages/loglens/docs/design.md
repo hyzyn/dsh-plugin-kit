@@ -37,6 +37,9 @@
   **`pagination`（`cursor` / `offset` / `none`）、`maxPageSize`、`maxWindowMs`**。
 - `NormalizedQuery`：`targetId`（**单数**，v1 一次一源）、`q`、`from` / `to`（**统一 epoch ms**）、
   `limit`、`direction?`、**`cursor?`**（后端私有编码）、`filters?`。
+  **入参的写法比契约宽**（2026-10-11 起）：工具面收 epoch 毫秒 / ISO 8601 / 相对时间（`-30m`），
+  解析只发生在 `query.ts` 这一层，出去就是 ms——契约本身没变，变的是**入口的便利度**；
+  理由见 [../ROADMAP.md](../ROADMAP.md) 那批真机反馈（让模型手算绝对毫秒是真的会错）。
 - `LogLine`：`{ ts, level?, message, source, labels, raw, id }`。
   `source` + `ts` 必须**可重查**——三个后端都没有原生的「某行前后 N 行」，`loglens_context` 靠它重查。
 
