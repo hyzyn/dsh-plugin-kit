@@ -1,7 +1,7 @@
 {
   "name": "@hyzyn/dsh-loglens",
   "version": "0.1.2",
-  "description": "dsh-plugin-kit 的最小 host 插件模板：dsh manifest、bundle patch 与构建配置的参考实现，也是 pnpm create-plugin 的复制蓝本。",
+  "description": "dsh 日志查询插件：把 Loki / Elasticsearch / OpenSearch 归一化成一个查询面（面板查询区 + loglens_* 工具）；Docker 走选项 0 的指路。",
   "type": "module",
   "engines": {
     "node": ">=22.19.0"
