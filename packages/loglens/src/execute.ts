@@ -185,22 +185,54 @@ export async function runSearch(deps: ExecuteDeps, input: Record<string, unknown
   }
 }
 
-/** 列字段的结果形状（同样用 type alias，理由见上）。 */
+/** 列字段的结果形状（同样用 type alias，理由见上）。截断信号跟着结果走（真机反馈第 4 条）。 */
 export type FieldsOutcome = {
   target: { id: string; kind: string; label: string }
-  fields: Array<{ name: string; kind: string; label?: string }>
+  fields: Array<{ name: string; kind: string; label?: string, preferred?: boolean }>
+  /** 来源里一共有多少字段（截断前）。 */
+  total: number
+  truncated: boolean
+  warnings: string[]
 }
+
+/** 列字段的默认上限与硬上限（工具面直接取用；适配器那边还有一份自己的默认值）。 */
+export const FIELDS_DEFAULT_LIMIT = 80
+export const FIELDS_MAX_LIMIT = 200
 
 export async function runFields(deps: ExecuteDeps, input: Record<string, unknown>): Promise<FieldsOutcome> {
   const picked = resolveTarget(deps.config(), input.target)
   if (!picked.ok) throw new Error(picked.error)
   const backend = deps.backendFor(picked.target.kind)
   if (backend === undefined) throw new Error(adapterHint(picked.target.kind))
-  const fields = await backend.fields(picked.target)
+  let requested = FIELDS_DEFAULT_LIMIT
+  if (input.limit !== undefined && input.limit !== null) {
+    if (typeof input.limit !== 'number' || !Number.isInteger(input.limit) || input.limit < 1) {
+      throw new Error('limit 必须是正整数（列字段的条数上限）')
+    }
+    requested = input.limit
+  }
+  const limit = Math.min(requested, FIELDS_MAX_LIMIT)
+  const result = await backend.fields(picked.target, { limit })
+  const warnings: string[] = []
+  if (requested > FIELDS_MAX_LIMIT) {
+    warnings.push('limit ' + String(requested) + ' 超过硬上限，已夹到 ' + String(FIELDS_MAX_LIMIT))
+  }
+  if (result.truncated) {
+    warnings.push(
+      '只列了前 ' + String(result.fields.length) + ' 个（这个来源共有 ' + String(result.total) + ' 个字段）：'
+      + '这正是「字段表看不出被截断」的坑——用 limit 要更多，或先用 loglens_facets 看哪些字段真有数据',
+    )
+  }
   return {
     target: describeTarget(picked.target),
-    fields: fields.map((field) => (field.label === undefined
-      ? { name: field.name, kind: field.kind }
-      : { name: field.name, kind: field.kind, label: field.label })),
+    fields: result.fields.map((field) => ({
+      name: field.name,
+      kind: field.kind,
+      ...(field.label === undefined ? {} : { label: field.label }),
+      ...(field.preferred === true ? { preferred: true } : {}),
+    })),
+    total: result.total,
+    truncated: result.truncated,
+    warnings,
   }
 }

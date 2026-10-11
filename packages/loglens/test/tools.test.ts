@@ -55,7 +55,7 @@ function fakeBackend(overrides: Partial<LogBackend> = {}): LogBackend {
   return {
     id: 'fake',
     capabilities: () => CAPS,
-    fields: async () => [{ name: 'app', kind: 'discovered' }],
+    fields: async () => ({ fields: [{ name: 'app', kind: 'discovered' }], total: 1, truncated: false }),
     query: async () => resultOf([]),
     health: async () => ({ ok: true, detail: 'ready' }),
     ...overrides,
@@ -256,11 +256,35 @@ describe('loglens_search', () => {
 })
 
 describe('loglens_fields', () => {
+  it('截断信号跟着结果走：被上限截断时 total / truncated / warning 都在（真机反馈第 4 条）', async () => {
+    const { add, captured } = capture()
+    const backend = fakeBackend({
+      fields: async (_target, options) => {
+        const all = Array.from({ length: 120 }, (_item, index) => ({ name: 'f' + String(index), kind: 'indexed' as const }))
+        const limit = options?.limit ?? all.length
+        return { fields: all.slice(0, limit), total: all.length, truncated: all.length > limit }
+      },
+    })
+    registerLoglensTools({ config: () => configWith(target('es', 'elasticsearch')), backendFor: () => backend, add })
+    const value = await captured.get('loglens_fields')!.execute({ limit: 150 }) as { fields: unknown[], total: number, truncated: boolean, warnings: string[] }
+    expect(value.fields).toHaveLength(120)   // 硬上限 200，120 个全给
+    expect(value.total).toBe(120)
+    expect(value.truncated).toBe(false)
+
+    const capped = await captured.get('loglens_fields')!.execute({ limit: 500 }) as { fields: unknown[], total: number, truncated: boolean, warnings: string[] }
+    expect(capped.fields).toHaveLength(120)
+    expect(capped.warnings.join()).toContain('硬上限')
+    await expect(captured.get('loglens_fields')!.execute({ limit: 0 })).rejects.toThrow('limit 必须是正整数')
+  })
+
   it('直接搬运后端报的字段', async () => {
     const { add, captured } = capture()
     registerLoglensTools({ config: () => configWith(target('loki', 'loki')), backendFor: () => fakeBackend(), add })
-    const value = await captured.get('loglens_fields')!.execute({}) as { fields: unknown[] }
+    const value = await captured.get('loglens_fields')!.execute({}) as { fields: unknown[], total: number, truncated: boolean, warnings: string[] }
     expect(value.fields).toEqual([{ name: 'app', kind: 'discovered' }])
+    expect(value.total).toBe(1)
+    expect(value.truncated).toBe(false)
+    expect(value.warnings).toEqual([])
   })
 })
 

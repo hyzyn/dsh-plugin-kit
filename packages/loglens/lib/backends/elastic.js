@@ -14,6 +14,26 @@ export const ES_PIT_KEEP_ALIVE = '2m';
 export const ES_TIME_FIELD = '@timestamp';
 /** labels 的条数上限：日志文档的字段可能几十个，全塞进每行会把工具返回值撑爆。 */
 const LABEL_LIMIT = 20;
+/** 列字段的默认上限（真机反馈：45KB 的字段表等于没给）。 */
+export const ES_DEFAULT_FIELD_LIMIT = 80;
+/** 列字段的硬上限：工具面再要也不能越过它（一次返回值撑爆上下文比少列几个字段糟得多）。 */
+export const ES_MAX_FIELD_LIMIT = 200;
+/**
+ * 「常用筛选项」：这些字段排在最前面（名单与 src/line.ts 的标签优先键同源，加几个 ES 侧的常见项）。
+ * 判据是**排查时真的会拿它筛**，不是「名字好听」。
+ */
+export const PREFERRED_FIELDS = [
+    'container.name', 'kubernetes.container.name', 'kubernetes.pod.name',
+    'host.name', 'service.name', 'log.file.path', 'log.logger', 'stream',
+    'kubernetes.namespace', 'container.image.name', 'kubernetes.node.name',
+    'log.level', 'level', 'message', '@timestamp',
+    'container.name.keyword', 'host.name.keyword', 'service.name.keyword',
+];
+/** 字段排序：优先键按名单顺序在前，其余按字母（同一份清单在两次调用里顺序必须一样）。 */
+export function sortFieldNames(names) {
+    const rest = names.filter((name) => !PREFERRED_FIELDS.includes(name)).sort();
+    return [...PREFERRED_FIELDS.filter((name) => names.includes(name)), ...rest];
+}
 /** 请求失败的载体（带上 status 与 body：`cursor_expired` 的判定要看它们）。 */
 class ElasticHttpError extends Error {
     status;
@@ -245,17 +265,36 @@ export function createElasticBackend(options) {
                 maxWindowMs,
             };
         },
-        async fields(target) {
+        /**
+         * 列字段。**必须带上限与顺序**（真机反馈第 4 条）：这一版原来是裸的 _field_caps?fields=*，
+         * 在一台全集群通配的来源上回了 45KB 的字段表（还混着 .kibana / .infini_* 的系统索引字段），
+         * 而 agent 拿到的是一份**看不出被截断**的清单——等于没给。
+         *
+         * 现在：去掉 ES 内部字段（下划线开头）、优先键排前面、按上限截断，并把 total / truncated
+         * 一起回给调用方（设计 §3.2 的诚实口径同样适用于字段表）。
+         */
+        async fields(target, options = {}) {
             const access = targetAccess(target);
             const index = targetIndex(target);
+            const limit = options.limit === undefined ? ES_DEFAULT_FIELD_LIMIT : options.limit;
             const body = await callJson(target, joinUrl(access.url, '/' + index + '/_field_caps?fields=*'), {
                 method: 'GET',
                 headers: access.headers,
             });
             const fields = body.fields;
             if (typeof fields !== 'object' || fields === null)
-                return [];
-            return Object.keys(fields).map((name) => ({ name, kind: 'indexed' }));
+                return { fields: [], total: 0, truncated: false };
+            const names = Object.keys(fields).filter((name) => !name.startsWith('_'));
+            const sorted = sortFieldNames(names);
+            return {
+                fields: sorted.slice(0, limit).map((name) => ({
+                    name,
+                    kind: 'indexed',
+                    ...(PREFERRED_FIELDS.includes(name) ? { preferred: true } : {}),
+                })),
+                total: names.length,
+                truncated: sorted.length > limit,
+            };
         },
         async health(target) {
             const access = targetAccess(target);

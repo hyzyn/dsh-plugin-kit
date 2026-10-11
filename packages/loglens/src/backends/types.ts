@@ -102,6 +102,26 @@ export interface FieldInfo {
   name: string
   kind: FieldKind
   label?: string
+  /** 这个字段是不是「常用筛选项」（优先键名单里的，排在前面）。 */
+  preferred?: boolean
+}
+
+/**
+ * 列字段的结果。**为什么不是裸数组**（2026-10-11 真机反馈第 4 条）：agent 拿到的是一份
+ * 被上限截断的清单，而它无从知道「还有多少没列出来」——于是把 45KB 的字段表当成了全部。
+ * 截断信号必须跟着结果走（与行的 hit_limit 同一口径）。
+ */
+export interface FieldsResult {
+  fields: FieldInfo[]
+  /** 来源里一共有多少个字段（截断前）。 */
+  total: number
+  /** true = fields 被上限截断了，还有 total - fields.length 个没列。 */
+  truncated: boolean
+}
+
+/** 列字段的选项：上限由调用方给（工具面默认 80，硬上限 200）。 */
+export interface FieldsOptions {
+  limit?: number
 }
 
 export interface BackendHealth {
@@ -113,7 +133,7 @@ export interface BackendHealth {
 export interface LogBackend {
   id: string
   capabilities(): BackendCaps
-  fields(target: LoglensTarget): Promise<FieldInfo[]>
+  fields(target: LoglensTarget, options?: FieldsOptions): Promise<FieldsResult>
   query(query: NormalizedQuery, target: LoglensTarget): Promise<LogQueryResult>
   /** 跟随（长流）。Loki 是 WebSocket，ES 是 _search + 轮询——由适配器各自实现。 */
   stream?(query: NormalizedQuery, target: LoglensTarget, onLine: (line: LogLine) => void): Promise<() => void>

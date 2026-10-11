@@ -422,15 +422,27 @@ describe('flavor / fields / health', () => {
     expect(String(osReport.detail)).toBe('2.13.0（opensearch）')
   })
 
-  it('字段走 _field_caps', async () => {
+  it('字段走 _field_caps：优先键排前面、ES 内部字段去掉、带上截断信号', async () => {
     const fake = await startFakeEs({ docs: [] })
     const backend = createElasticBackend({ flavor: 'es' })
-    expect(await backend.fields(fake.target)).toEqual([
-      { name: '@timestamp', kind: 'indexed' },
-      { name: 'message', kind: 'indexed' },
-      { name: 'app', kind: 'indexed' },
-    ])
+    const result = await backend.fields(fake.target)
+    expect(result.truncated).toBe(false)
+    expect(result.total).toBe(3)
+    // 'app' 不在优先键名单里，所以排在名单里的 @timestamp / message 之后
+    // 优先键名单里的顺序：message 与 @timestamp 都在名单里，app 不在 → app 落到最后
+    expect(result.fields.map((field) => field.name)).toEqual(['message', '@timestamp', 'app'])
+    expect(result.fields[0].preferred).toBe(true)
+    expect(result.fields[2].preferred).toBeUndefined()
     expect(fake.requests[0].path).toBe('/' + INDEX + '/_field_caps')
+  })
+
+  it('字段表被上限截断时如实回报（真机反馈第 4 条：看不出截断等于没给）', async () => {
+    const fake = await startFakeEs({ docs: [] })
+    const backend = createElasticBackend({ flavor: 'es' })
+    const result = await backend.fields(fake.target, { limit: 2 })
+    expect(result.fields).toHaveLength(2)
+    expect(result.total).toBe(3)
+    expect(result.truncated).toBe(true)
   })
 
   it('连不上时 health 如实回报（不是抛错）', async () => {

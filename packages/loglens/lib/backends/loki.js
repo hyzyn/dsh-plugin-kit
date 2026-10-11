@@ -131,14 +131,22 @@ export function createLokiBackend(options = {}) {
                 maxWindowMs,
             };
         },
-        async fields(target) {
+        /**
+         * Loki 的标签清单本来就短（它是索引里的流标签，不是文档字段），所以这里不排序、不截断——
+         * 但形状与 ES 那侧统一（truncated 恒为 false），免得调用方写两套。
+         */
+        async fields(target, options = {}) {
             const body = await callJson(target, joinUrl(target.url, '/loki/api/v1/labels'), { method: 'GET' });
             const data = body.data;
             if (!Array.isArray(data))
-                return [];
-            return data
-                .filter((name) => typeof name === 'string' && name !== '')
-                .map((name) => ({ name, kind: 'discovered' }));
+                return { fields: [], total: 0, truncated: false };
+            const names = data.filter((name) => typeof name === 'string' && name !== '');
+            const limit = options.limit === undefined ? names.length : options.limit;
+            return {
+                fields: names.slice(0, limit).map((name) => ({ name, kind: 'discovered' })),
+                total: names.length,
+                truncated: names.length > limit,
+            };
         },
         async health(target) {
             try {

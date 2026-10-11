@@ -87,7 +87,7 @@ export declare function readLevel(value: unknown): {
 };
 /** 查一次（抛错即失败，调用方把 message 回给对面：工具抛出去、路由回 400）。 */
 export declare function runSearch(deps: ExecuteDeps, input: Record<string, unknown>): Promise<SearchOutcome>;
-/** 列字段的结果形状（同样用 type alias，理由见上）。 */
+/** 列字段的结果形状（同样用 type alias，理由见上）。截断信号跟着结果走（真机反馈第 4 条）。 */
 export type FieldsOutcome = {
     target: {
         id: string;
@@ -98,6 +98,14 @@ export type FieldsOutcome = {
         name: string;
         kind: string;
         label?: string;
+        preferred?: boolean;
     }>;
+    /** 来源里一共有多少字段（截断前）。 */
+    total: number;
+    truncated: boolean;
+    warnings: string[];
 };
+/** 列字段的默认上限与硬上限（工具面直接取用；适配器那边还有一份自己的默认值）。 */
+export declare const FIELDS_DEFAULT_LIMIT = 80;
+export declare const FIELDS_MAX_LIMIT = 200;
 export declare function runFields(deps: ExecuteDeps, input: Record<string, unknown>): Promise<FieldsOutcome>;

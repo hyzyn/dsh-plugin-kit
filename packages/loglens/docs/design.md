@@ -31,7 +31,10 @@
 
 ### 3.1 接口
 
-- `LogBackend`：`id` / `capabilities()` / `fields(target)` / `query(req)` / `stream?()` / `health(target)`。
+- `LogBackend`：`id` / `capabilities()` / `fields(target, options?)` / `query(req)` / `stream?()` / `health(target)`。
+  **`fields` 返回 `{ fields, total, truncated }` 而不是裸数组**（2026-10-11 真机反馈第 4 条）：
+  字段清单会被上限截断（默认 80、硬上限 200，优先键排在前面），而调用方必须能看出「还有多少没列出来」——
+  一份看不出被截断的 45KB 字段表等于没给（与行的 `hit_limit` 同一口径）。
 - `BackendCaps`：`queryLanguage`（`logql` / `lucene` / `ppl` / `none`）、`flavor?`、`follow`、
   `aggregations`、`requiresTimeRange`、`fields`（`indexed` / `discovered` / `fixed`）、
   **`pagination`（`cursor` / `offset` / `none`）、`maxPageSize`、`maxWindowMs`**。

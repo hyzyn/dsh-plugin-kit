@@ -279,10 +279,14 @@ describe('fields 与 health', () => {
       return { body: { status: 'success', data: ['app', '', 42, 'level'] } }
     })
     const backend = createLokiBackend()
-    expect(await backend.fields(fake.target)).toEqual([
-      { name: 'app', kind: 'discovered' },
-      { name: 'level', kind: 'discovered' },
-    ])
+    expect(await backend.fields(fake.target)).toEqual({
+      fields: [
+        { name: 'app', kind: 'discovered' },
+        { name: 'level', kind: 'discovered' },
+      ],
+      total: 2,
+      truncated: false,
+    })
   })
 
   it('/ready 200 是就绪，503 带原因', async () => {

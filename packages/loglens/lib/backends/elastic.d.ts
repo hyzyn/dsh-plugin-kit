@@ -26,6 +26,17 @@ export declare const ES_TIMEOUT_MS = 20000;
 export declare const ES_PIT_KEEP_ALIVE = "2m";
 /** 时间字段：ES 里日志索引的惯例。换索引形态时改这里（日后进配置）。 */
 export declare const ES_TIME_FIELD = "@timestamp";
+/** 列字段的默认上限（真机反馈：45KB 的字段表等于没给）。 */
+export declare const ES_DEFAULT_FIELD_LIMIT = 80;
+/** 列字段的硬上限：工具面再要也不能越过它（一次返回值撑爆上下文比少列几个字段糟得多）。 */
+export declare const ES_MAX_FIELD_LIMIT = 200;
+/**
+ * 「常用筛选项」：这些字段排在最前面（名单与 src/line.ts 的标签优先键同源，加几个 ES 侧的常见项）。
+ * 判据是**排查时真的会拿它筛**，不是「名字好听」。
+ */
+export declare const PREFERRED_FIELDS: readonly string[];
+/** 字段排序：优先键按名单顺序在前，其余按字母（同一份清单在两次调用里顺序必须一样）。 */
+export declare function sortFieldNames(names: readonly string[]): string[];
 export interface ElasticOptions {
     flavor: ElasticFlavor;
     fetchImpl?: typeof fetch;

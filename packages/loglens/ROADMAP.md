@@ -686,6 +686,25 @@ package.json 中以 platform: 'web' 声明 dsh.client，导出 ./client bundle�
 **上游**：设计 §4.1 记的「第二个消费者出现时上收到 kit」**不触发**——两个消费者（Loki / ES）都在本包内。
 真要上收时，`net.ts` 是从 `assertReachable` + `requestJson` 两个导出切出去的。
 
+### 真机反馈第三批：字段清单要带上限与顺序（2026-10-11）
+
+第 4 条：`loglens_fields` 打的是裸的 `/<index>/_field_caps?fields=*`——**没上限、没顺序、不看有没有数据**，
+在一台全集群通配（索引表达式是 `*`）的来源上回了 45620 字节、还被截断落盘，agent 把它当成了全部字段。
+
+| 动作 | 落点 |
+|---|---|
+| 契约改成 `{ fields, total, truncated }`（裸数组 → 带截断信号的形状） | `src/backends/types.ts` 的 `FieldsResult` / `FieldsOptions`；Loki 与 ES 两侧同形（Loki 的标签本来就短，truncated 恒 false） |
+| 上限：默认 80、硬上限 200（工具面要更多会被夹并给 warning） | `execute.ts` 的 `FIELDS_DEFAULT_LIMIT` / `FIELDS_MAX_LIMIT`；ES 侧另有自己的默认值 |
+| 顺序：**常用筛选项排前面**（container.name / pod / host.name / service.name / log.file.path / log.level …），其余按字母 | `elastic.ts` 的 `PREFERRED_FIELDS` + `sortFieldNames`；被标 `preferred: true` |
+| 去掉 ES 内部字段（下划线开头：`_id` / `_index` 这类） | 同上，列之前过滤 |
+
+**顺带修一句假话**：卡片的 `hint.notImplemented` 还写着「查询能力还没实现，这张卡片现在只管来源清单」——
+面板里早就有查询区了（P6 第二刀），工具也早就有了。改成「下面可以直接问当前来源；字段清单与上下文在
+agent 侧的两个工具里」。界面文案说的是**做不到什么**，说错了比不说更糟。
+
+用例：`elastic.test.ts` 两条（优先键排序 + 被上限截断时 total/truncated 如实回报）、`loki.test.ts` 形状、
+`tools.test.ts` 两条（搬运新形状 + 硬上限夹取与 limit 校验）。
+
 ### 真机反馈第二批：行的可观性（标签展平 + 级别）（2026-10-11）
 
 agent 在真集群上给的批评里**代价最大**的一条：它拿到的 60 行输出里唯一的标签是 `stream=stdout`，
