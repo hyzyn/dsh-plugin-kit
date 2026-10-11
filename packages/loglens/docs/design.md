@@ -176,12 +176,19 @@
       test/*.test.ts
       scripts/*-smoke.mjs       # 真机脚本（进不了 CI）
 
+**客户端半体还必须在 manifest 里声明（2026-10-11 真机验收补）**：`package.json` 要有
+`dsh.client = { platform: 'web', inject: [] }` 与 `exports['./client'] = './client.js'`。宿主侧的
+client-modules 按这份声明把包变成可加载的浏览器 bundle——**缺了它 `client.js` 一次都不会被加载**：
+插件在宿主里 running、`files` 里也有 client.js、i18n 与 client-lint 全过，但**设置里永远没有卡片**。
+守卫见 [scripts/test/client-manifest.test.ts](../../../scripts/test/client-manifest.test.ts)。
+（这一条是建包时**模板没带、也没有守卫**的缺口，所以是「构建型要写死的三件事」之外的第四件。）
+
 **为什么必须明示「构建型」**：选了 `client-src/` 就等于选了构建步骤，而
 [client-host-url.mjs](../../../scripts/client-host-url.mjs) 在 `client-src/` 存在时**只扫 `client-src/**`、
 不再覆盖 `client.js`**（[client-lint.mjs](../../../scripts/client-lint.mjs) 同款分流，
 [i18n.md](../../../docs/i18n.md#为什么不建共享模块三条硬约束都实测过) 记了这条风险）。所以三件事要写死：
 **i18n 内联 `client-src/index.js`**、**构建脚本 residual-import exit(1)**、
-**「新包能不能选构建型」进先问清单**。
+**「新包能不能选构建型」进先问清单**，**外加 manifest 的 `dsh.client` / `exports['./client']` 声明**（2026-10-11 补，见上）。
 
 ## 8. 已实测前提
 

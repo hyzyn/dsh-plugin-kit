@@ -613,3 +613,29 @@ P5 那段落地记录里写的「宿主侧没**有**判据、那条判据本来�
 
 **还差的**：真机验收（本机 Docker 有容器时可直接在面板里点一遍）；Loki / ES 的真机验收仍待环境。
 
+### 建包缺口的补丁：客户端半体要在 manifest 里**声明**（2026-10-11 真机验收抓到）
+
+**现场**：loglens 装进 test-logs 后，「插件列表」里是 running、`/api/dsh-loglens/config` 也通，
+但 **设置 → 插件配置里永远没有卡片**。查下来不是注册写法的问题（与 env / profile 逐字同款），
+而是本包 `package.json` 少了同伴都有、而**没有任何守卫在查**的两条声明：
+
+- `dsh.client = { platform: 'web', inject: [] }`
+- `exports['./client'] = './client.js'`
+
+宿主侧的 client-modules 按这份声明把包变成可加载的浏览器 bundle（文档原话：「浏览器插件包在其
+package.json 中以 platform: 'web' 声明 dsh.client，导出 ./client bundle」）——**缺了它，`client.js`
+一次都不会被加载**，而 `files` 里有它照样打得出包、i18n 与 client-lint 也照样全过：表现就是
+「装了、在跑、就是看不到」。
+
+**修了什么**
+
+- 本包 manifest 补上两条（与 env / profile / codegraph / search / docker / tty 对齐）；
+- **补守卫** [scripts/test/client-manifest.test.ts](../../scripts/test/client-manifest.test.ts)：盘上有
+  `client.js` 或 `client-src/index.js` 的包，逐个对账这两条；配四条 fixture 反例（缺 `dsh.client` /
+  platform 写错 / 少 `exports['./client']` / 指向别的文件）。此前 `check-package-contents`（只看 tarball
+  条目）、check-i18n 与 client-lint 都查不到这个缺口；
+- 设计文档里「构建型要写死的三件事」因此变**四件**（见 design.md §7）。
+
+**一处连带发现**：宿主侧对**包元数据**的缓存是「按 Loader specifier 与 tree base URL 缓存至重启」——
+所以修完 manifest 后，那个**已经在跑**的宿主仍然认旧元数据，要**重启**（或让插件条目重新标脏）才会把
+客户端半体算进启动图。这条对「改完想看效果」的人很重要，记在这里。
