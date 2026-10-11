@@ -1,6 +1,6 @@
 # @hyzyn/dsh-loglens — 路线图
 
-> **状态：P0 / P1 / P3 / P4 全部落地，P2 的代码半体也落地（2026-10-11）——设置面、查询地基、Loki 与 ES / OpenSearch 适配器、四个 agent 工具都可用；剩下三条后端的**真机验收**（待有环境）与浏览器侧的结果视图（P6）。** `packages/loglens/` 现在是 workspace 包
+> **状态：P0 / P1 / P3 / P4 / P5（agent 侧）全部落地，P2 的代码半体也落地（2026-10-11）——设置面、查询地基、Loki 与 ES / OpenSearch 适配器、四个 agent 工具、Docker 的选项 0 指路都可用；剩下三条后端的**真机验收**（待有环境）与浏览器侧的结果视图（P6，含 Docker 面板那一格）。** `packages/loglens/` 现在是 workspace 包
 > （`@hyzyn/dsh-loglens@0.1.2`，已进 [publish-targets.mjs](../../scripts/publish-targets.mjs) 与两份聚合清单，
 > `pnpm-lock.yaml` 已同步）——所以 [docs-index 判据 5](../../scripts/docs-index.mjs) 现在**看得见它**，
 > 而不再是「本目录不在解析面里」。设计与契约见 [docs/design.md](./docs/design.md)；
@@ -471,4 +471,37 @@ wire 级用例做完，真机那一半等有环境（你自带的 Loki，或允�
 **踩到的一个真问题（记一笔）**：第一版把 `access.url` 当成「带索引路径的基址」用，于是搜索请求发到了
 `/logs-*/_search`——而带 PIT 的搜索**不能**在路径上带索引，11 条用例一起红。修法是把基址收成 **origin**、
 索引由 `targetIndex` 单独给；注释里写清了为什么这两者必须分开。
+
+### P5：Docker 作为来源（选项 0）——agent 侧落地（2026-10-11）
+
+**做法**：**不包一层**（设计 §5 选项 0 的 Agent 那一格）——docker 目标在 `loglens_*` 里只做**指路**，
+查询走现成的 `docker_logs` / `docker_logs_grep`。零新机制，也不造第二份口径。
+
+**改了什么**
+
+- [src/tools.ts](../loglens/src/tools.ts)：新增 `hintFor(kind, caps)`——把「下一步怎么走」变成**会出现在
+  工具返回值里的判据**（不是埋在文档里的说明文），`loglens_sources` 的每一行多一个 `hint` 字段：
+  1. **docker**：用现成的 `docker_logs` / `docker_logs_grep`，本插件不包一层；
+  2. **声明 `pagination:'none'` 的来源**（当前是 Loki）：被 limit 截断时只报 `hit_limit`，请缩小时间窗分几次查；
+  3. **ES / OpenSearch**：分页走 PIT，游标有寿命，过期后要重新发起一次带时间窗的查询。
+- `adapterHint('docker')` 的措辞对齐「采集来源」这一身份（不再是「没有适配器」的口气）。
+
+**实测前提（新事实，已写进 design §5）**
+
+**宿主侧没有可用的「工具注册表列举」API**：`@deepseek-ai/dsh-tools@0.1.2-rc.1` 的 `ctx.tools` 只有
+`register` / `restrict` / `guard`，**没有 list / has**。所以「docker 插件装没装」这件事在宿主侧**不要去猜**
+（猜私有字段比不读更糟）；设计里那条判据（registry 存在性 + `health()`）本来就是**面板侧**的机制——属 P6。
+
+**刻意不做的**
+
+- 不为 docker 造 `LogBackend` 适配器（那正是选项 0 要避免的重复）。
+- 不在宿主侧探测别的插件在不在（同上：没有公开 API，且用不上）。
+- 面板那一格（浏览器相对路径 fetch `/api/dsh-docker/logs`，弱面：无 until、tail 有上限、无 grep）没有做——属 P6。
+
+**门槛与证据（全部实跑）**
+
+| 闸 | 结果 |
+|---|---|
+| 本包单测 | **154 条**（+2：`hintFor` 的四条分支 + docker 行带替代路径） |
+| 全仓门禁 | `pnpm typecheck && pnpm build && pnpm test && pnpm aggregate` 全绿（数字见提交） |
 

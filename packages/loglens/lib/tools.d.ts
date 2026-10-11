@@ -1,5 +1,5 @@
 import type { TierClass } from '@hyzyn/dsh-kit';
-import type { LogBackend, LogLine } from './backends/types.js';
+import type { BackendCaps, LogBackend, LogLine } from './backends/types.js';
 import type { LoglensConfig, LoglensTarget, SourceKind } from './config.js';
 /** 分类表：四个工具全是只读（查日志不改任何东西，也不在目标机上执行命令）。 */
 export declare const LOGLENS_TIER_CLASS: Record<string, TierClass>;
@@ -31,6 +31,19 @@ export declare function resolveTarget(config: LoglensConfig, wanted: unknown): {
 /** 一行的可读形式：时间用 ISO（人看日志时以本地时间为准，ISO UTC 至少不含糊）。 */
 export declare function formatLine(line: LogLine): string;
 export declare function renderLines(lines: readonly LogLine[], markId?: string): string;
+/**
+ * 一条来源的指路文案（P5 的 agent 侧交付物）。
+ *
+ * 三条都不是「说明文」，是**会在返回值里出现的判据**：
+ *   - docker：选项 0 的替代路径（现成的 docker_logs / docker_logs_grep），本插件不包一层；
+ *   - 声明了 pagination:'none' 的来源（当前是 Loki）：被 limit 截断时只会报 hit_limit，得缩小时间窗；
+ *   - ES / OpenSearch：分页走 PIT，游标有寿命，过期后要重新发起带时间窗的查询。
+ *
+ * **刻意不做**「探测 docker 插件在不在」：设计 §5 的「装了没装」判据是给**面板**用的（浏览器侧 registry
+ * 存在性 + health），而宿主侧的工具注册表**没有公开的列举 API**（实测 @deepseek-ai/dsh-tools 0.1.2-rc.1
+ * 的 ctx.tools 只有 register / restrict / guard）——猜一个私有字段去读，比不读更糟。
+ */
+export declare function hintFor(kind: SourceKind, caps: BackendCaps | undefined): string | undefined;
 export declare function registerLoglensTools(deps: ToolDeps): void;
 /** before / after 的夹取（0~50，缺省 5）：负数或非整数一律回落缺省值。 */
 export declare function clampCount(value: unknown, fallback: number): number;

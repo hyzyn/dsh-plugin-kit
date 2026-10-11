@@ -45,7 +45,7 @@ export function backendFor(kind) {
 /** 没有适配器时的指路文案：说清「怎么绕」，而不是一句「不支持」。 */
 export function adapterHint(kind) {
     if (kind === 'docker') {
-        return 'Docker 是采集来源（设计 §5 选项 0）：请用现成的 docker_logs / docker_logs_grep，不要走 loglens';
+        return 'Docker 是采集来源（设计 §5 选项 0）：agent 侧请用现成的 docker_logs / docker_logs_grep——本插件刻意不包一层';
     }
     return '来源类型 ' + kind + ' 没有适配器（本插件支持 loki / elasticsearch / opensearch；Docker 走现成的 docker_logs）';
 }
@@ -116,6 +116,32 @@ const COUNT_SCHEMA = {
         totalKnown: { type: 'boolean', required: true },
     },
 };
+/**
+ * 一条来源的指路文案（P5 的 agent 侧交付物）。
+ *
+ * 三条都不是「说明文」，是**会在返回值里出现的判据**：
+ *   - docker：选项 0 的替代路径（现成的 docker_logs / docker_logs_grep），本插件不包一层；
+ *   - 声明了 pagination:'none' 的来源（当前是 Loki）：被 limit 截断时只会报 hit_limit，得缩小时间窗；
+ *   - ES / OpenSearch：分页走 PIT，游标有寿命，过期后要重新发起带时间窗的查询。
+ *
+ * **刻意不做**「探测 docker 插件在不在」：设计 §5 的「装了没装」判据是给**面板**用的（浏览器侧 registry
+ * 存在性 + health），而宿主侧的工具注册表**没有公开的列举 API**（实测 @deepseek-ai/dsh-tools 0.1.2-rc.1
+ * 的 ctx.tools 只有 register / restrict / guard）——猜一个私有字段去读，比不读更糟。
+ */
+export function hintFor(kind, caps) {
+    if (kind === 'docker') {
+        return 'Docker 是采集来源（选项 0）：agent 侧用现成的 docker_logs / docker_logs_grep，本插件不包一层';
+    }
+    if (caps === undefined)
+        return undefined;
+    if (caps.pagination === 'none') {
+        return '这个来源目前不给游标：命中被 limit 截断时只报 hit_limit，请缩小时间窗分几次查';
+    }
+    if (caps.flavor === 'es' || caps.flavor === 'os') {
+        return '分页走 PIT：游标有寿命，过期后要重新发起一次带时间窗的查询';
+    }
+    return undefined;
+}
 export function registerLoglensTools(deps) {
     const add = deps.add;
     add('loglens_sources', defineTool({
@@ -148,6 +174,7 @@ export function registerLoglensTools(deps) {
                                 follow: { type: 'boolean' },
                                 ok: { type: 'boolean' },
                                 error: { type: 'string' },
+                                hint: { type: 'string' },
                             },
                         },
                     },
@@ -160,7 +187,8 @@ export function registerLoglensTools(deps) {
                 const text = rows.map((row) => {
                     const head = String(row.id) + '（' + String(row.kind) + '）：' + String(row.label);
                     const health = row.ok === undefined ? '' : row.ok === true ? ' · 就绪' : ' · 不可用：' + String(row.error ?? '');
-                    return head + health + '\n    ' + String(row.url) + '\n    适配器：' + String(row.adapter) + (row.pagination === undefined ? '' : ' · 分页 ' + String(row.pagination));
+                    const tail = row.hint === undefined ? '' : '\n    → ' + String(row.hint);
+                    return head + health + '\n    ' + String(row.url) + '\n    适配器：' + String(row.adapter) + (row.pagination === undefined ? '' : ' · 分页 ' + String(row.pagination)) + tail;
                 }).join('\n');
                 return [{ type: 'text', text }];
             },
@@ -186,6 +214,9 @@ export function registerLoglensTools(deps) {
                     if (!health.ok)
                         row.error = health.detail === undefined ? '未知错误' : health.detail;
                 }
+                const hint = hintFor(target.kind, caps);
+                if (hint !== undefined)
+                    row.hint = hint;
                 rows.push(row);
             }
             return { targets: rows };

@@ -8,7 +8,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { BackendCaps, LogBackend, LogLine, LogQueryResult, NormalizedQuery } from '../src/backends/types.js'
 import type { LoglensConfig, LoglensTarget, SourceKind } from '../src/config.js'
-import { adapterHint, clampCount, formatLine, registerLoglensTools, renderLines, resolveTarget } from '../src/tools.js'
+import { adapterHint, clampCount, formatLine, hintFor, registerLoglensTools, renderLines, resolveTarget } from '../src/tools.js'
 
 interface Captured {
   execute: (args: unknown) => Promise<unknown>
@@ -114,6 +114,10 @@ describe('loglens_sources', () => {
     expect(value.targets[0].pagination).toBe('none')
     expect(String(value.targets[1].adapter)).toContain('没有适配器')
     expect(String(value.targets[2].adapter)).toContain('docker_logs')
+    // P5：docker 那行必须带「替代路径」这句（选项 0 的 agent 侧交付物）
+    expect(String(value.targets[2].hint)).toContain('docker_logs_grep')
+    // 声明 pagination:'none' 的来源（这里的假后端就是）要提醒「截断时只会报 hit_limit」
+    expect(String(value.targets[0].hint)).toContain('hit_limit')
   })
 
   it('probe 只探有适配器的来源（没有适配器就没得探）', async () => {
@@ -286,5 +290,15 @@ describe('渲染', () => {
   it('adapterHint 对 docker 指路到现成工具', () => {
     expect(adapterHint('docker')).toContain('docker_logs_grep')
     expect(adapterHint('opensearch')).toContain('loki / elasticsearch / opensearch')
+  })
+
+  it('hintFor：docker 给替代路径、无游标的来源提醒截断、ES/OS 提醒 PIT 寿命', () => {
+    const lokiCaps = { ...CAPS, pagination: 'none' as const }
+    expect(String(hintFor('docker', undefined))).toContain('选项 0')
+    expect(String(hintFor('loki', lokiCaps))).toContain('hit_limit')
+    expect(String(hintFor('elasticsearch', { ...CAPS, pagination: 'cursor' as const, flavor: 'es' }))).toContain('PIT')
+    expect(String(hintFor('opensearch', { ...CAPS, pagination: 'cursor' as const, flavor: 'os' }))).toContain('PIT')
+    expect(hintFor('loki', { ...CAPS, pagination: 'cursor' as const })).toBeUndefined()
+    expect(hintFor('elasticsearch', undefined)).toBeUndefined()
   })
 })

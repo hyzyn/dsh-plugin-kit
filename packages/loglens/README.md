@@ -88,4 +88,6 @@ dsh plugin --profile <profile> add link:$(pwd)/packages/loglens
   同 ts 多行的顺序稳定性与 ES 的 PIT 寿命）要等有环境时补（见 [ROADMAP.md](./ROADMAP.md)）。
 - **浏览器侧没有结果视图**：面板里只有来源清单与开关，查询走 agent 工具（P6 三选一还没拍板）。
 - 一次只查一个来源（v1 不做跨后端 fan-out）；公网与链路本地地址默认禁。
+- **Docker 目标只做指路**（选项 0）：查容器日志请用 `docker_logs` / `docker_logs_grep`，本插件不包一层；
+  面板里那种「在 loglens 卡片里直接看容器日志」的视图没做（P6）。
 - Docker 只作为**采集来源**（设计里的「选项 0」：用现成的 `docker_logs` / `docker_logs_grep`），不做适配器。
