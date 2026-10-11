@@ -33,8 +33,8 @@ describe('对账守卫：分类表 ↔ add() 注册处', () => {
     expect(ghosts, '这些分类条目没有对应的注册工具：' + ghosts.join('、')).toEqual([])
   })
 
-  it('四个工具**全是 read**：查日志不在任何目标机上执行命令，也不改本地状态', () => {
-    expect(registeredToolNames().sort()).toEqual(['loglens_context', 'loglens_fields', 'loglens_search', 'loglens_sources'])
+  it('五个工具**全是 read**：查日志不在任何目标机上执行命令，也不改本地状态', () => {
+    expect(registeredToolNames().sort()).toEqual(['loglens_context', 'loglens_facets', 'loglens_fields', 'loglens_search', 'loglens_sources'])
     for (const name of registeredToolNames()) expect(LOGLENS_TIER_CLASS[name]).toBe('read')
   })
 

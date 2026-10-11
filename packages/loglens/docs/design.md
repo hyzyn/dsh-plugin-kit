@@ -31,7 +31,16 @@
 
 ### 3.1 接口
 
-- `LogBackend`：`id` / `capabilities()` / `fields(target, options?)` / `query(req)` / `stream?()` / `health(target)`。
+- `LogBackend`：`id` / `capabilities()` / `scope?(target)` / `fields(target, options?)` / `query(req)` /
+  `facets?(req, target, spec)` / `stream?()` / `health(target)`。
+  - **`facets` 是可选方法**（2026-10-11 真机反馈第 2 条）：按字段分组（terms）/ 按时间分桶（date_histogram）。
+    「哪个服务在报错」只有它能回答——拉一页行到本地数既慢又错。没有实现它的适配器**不要声明**
+    （`capabilities().aggregations` 与它同真同假），调用方按能力给指路文案。
+  - 聚合的**近似性也是信号**：terms 的 `sum_other_doc_count`（没列出来的桶还有多少条）与
+    `doc_count_error_upper_bound`（误差上界）必须回传，理由与 `totalKnown` 一样。
+  - **`filters`（字段 → 值）由适配器决定怎么打**：ES / OpenSearch 查一次 `_field_caps` 决定打原生字段、
+    `.keyword` 子字段，还是退回 `match_phrase`（text 且无子字段时）——**不让调用方去记 `.keyword` 这条约定**。
+    Loki 不支持它（过滤写进 LogQL），报错文案要说清这一点。
   **`fields` 返回 `{ fields, total, truncated }` 而不是裸数组**（2026-10-11 真机反馈第 4 条）：
   字段清单会被上限截断（默认 80、硬上限 200，优先键排在前面），而调用方必须能看出「还有多少没列出来」——
   一份看不出被截断的 45KB 字段表等于没给（与行的 `hit_limit` 同一口径）。

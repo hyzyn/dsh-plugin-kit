@@ -105,6 +105,38 @@ export interface FieldsResult {
 export interface FieldsOptions {
     limit?: number;
 }
+/**
+ * 聚合（facets）请求：**按字段分组**（terms）与**按时间分桶**（date_histogram）二选一或都要。
+ *
+ * 为什么要有它（2026-10-11 真机反馈第 2 条）：agent 真正要回答的是「考试服务健不健康」，
+ * 靠的是「哪个 container 在报错、错误随时间的分布」——只有 terms / date_histogram 能给，
+ * 而这两件事只有后端能做（拉一页行到本地数，等于把 1 万条日志读一遍，还是错的）。
+ */
+export interface FacetsSpec {
+    /** 按这个字段分组（terms）。字段写法与 filters 一致，.keyword 由适配器自己决定。 */
+    by?: string;
+    /** 时间分桶的间隔（如 '5m' / '1h'；date_histogram 的 fixed_interval）。 */
+    interval?: string;
+    /** 桶数上限（terms 的 size；默认 10，硬上限 100）。 */
+    size?: number;
+}
+export interface FacetBucket {
+    key: string;
+    count: number;
+}
+export interface FacetsResult {
+    /** 按字段分组的桶（by 有值才有），按 count 降序。 */
+    buckets?: FacetBucket[];
+    /** 时间分桶（interval 有值才有），按时间升序。 */
+    overTime?: Array<{
+        ts: number;
+        count: number;
+    }>;
+    /** 没列出来的桶里还有多少条（terms 的 sum_other_doc_count）：**这是截断信号，必须回**。 */
+    otherCount?: number;
+    /** count 的误差上界（terms 的 doc_count_error_upper_bound；>0 说明桶计数是近似值）。 */
+    countErrorUpperBound?: number;
+}
 export interface BackendHealth {
     ok: boolean;
     detail?: string;
@@ -130,6 +162,11 @@ export interface LogBackend {
     scope?(target: LoglensTarget): string;
     fields(target: LoglensTarget, options?: FieldsOptions): Promise<FieldsResult>;
     query(query: NormalizedQuery, target: LoglensTarget): Promise<LogQueryResult>;
+    /**
+     * 聚合：按字段分组 / 按时间分桶。**没有实现的适配器不要声明它**（调用方按能力给指路文案，
+     * 而不是给一个永远报错的入口）。
+     */
+    facets?(query: NormalizedQuery, target: LoglensTarget, spec: FacetsSpec): Promise<FacetsResult>;
     /** 跟随（长流）。Loki 是 WebSocket，ES 是 _search + 轮询——由适配器各自实现。 */
     stream?(query: NormalizedQuery, target: LoglensTarget, onLine: (line: LogLine) => void): Promise<() => void>;
     health(target: LoglensTarget): Promise<BackendHealth>;

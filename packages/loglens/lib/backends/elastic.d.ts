@@ -22,6 +22,9 @@ export declare const ES_DEFAULT_MAX_PAGE_SIZE = 500;
 export declare const ES_DEFAULT_MAX_WINDOW_MS: number;
 /** 单次请求超时。 */
 export declare const ES_TIMEOUT_MS = 20000;
+/** 聚合的桶数上限：默认 10、硬上限 100（桶是给人看的，不是把整份基数拉回来）。 */
+export declare const ES_DEFAULT_FACET_SIZE = 10;
+export declare const ES_MAX_FACET_SIZE = 100;
 /** 探测窗口：probe 时报「最近这么多分钟有多少条」。 */
 export declare const ES_PROBE_WINDOW_MS: number;
 /** PIT 的保活时长（每次查询都会续）。 */
@@ -105,6 +108,14 @@ export declare function looksLikeMissingShardDoc(failure: {
     text: string;
     body: unknown;
 }): boolean;
+/**
+ * 一个字段该怎么打。**这就是 agent 猜 `.keyword` 那件事的归宿**（真机反馈第 2 条）：
+ * 由适配器查一次 _field_caps 决定，而不是让调用方去记约定。
+ */
+export type FieldShape = 'native' | 'keyword' | 'text';
+export declare function decideFieldShape(caps: Record<string, Record<string, {
+    type?: unknown;
+}>>, field: string): FieldShape;
 export declare function createElasticBackend(options: ElasticOptions): LogBackend;
 /** 进程内共用的两个实例（无状态，配置都在调用参数里）。 */
 export declare const elasticsearchBackend: LogBackend;

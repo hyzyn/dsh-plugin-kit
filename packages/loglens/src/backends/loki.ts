@@ -185,7 +185,12 @@ export function createLokiBackend(options: LokiOptions = {}): LogBackend {
       return {
         queryLanguage: 'logql',
         follow: true,
-        aggregations: true,
+        /*
+         * **聚合声明为 false**（2026-10-11 改）：本适配器没有实现 facets（聚合要 LogQL 的指标查询，
+         * 是另一件活），而这一位是给调用方看的「能不能按它分组统计」——声明成 true 等于撒谎，
+         * 调用方会照着文案去试一个永远报错的入口。实现那天再改回来，并补用例。
+         */
+        aggregations: false,
         requiresTimeRange: true,
         fields: 'discovered',
         pagination,

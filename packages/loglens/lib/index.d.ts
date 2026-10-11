@@ -56,6 +56,11 @@ export interface RouteState {
     /** 列字段（面板的「有哪些字段」）。 */
     runFields: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
     /**
+     * 聚合（按字段分组 / 按时间分桶）。工具面已有 loglens_facets；面板还没画它——
+     * 路由先留着，让「面板补这一格」是纯前端改动。
+     */
+    runFacets: (input: Record<string, unknown>) => Promise<Record<string, unknown>>;
+    /**
      * Docker 容器面板装没装（panel 用它决定给不给「容器日志」那半格）。
      * 判据是 cordis 的 plugin registry，见 src/plugins.ts——**不是** tools 服务（它没有列举 API）。
      */

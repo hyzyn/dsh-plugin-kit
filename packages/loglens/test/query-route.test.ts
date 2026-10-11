@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createLokiBackend } from '../src/backends/loki.js'
 import type { LogBackend } from '../src/backends/types.js'
 import type { LoglensConfig, SourceKind } from '../src/config.js'
-import { runFields, runSearch } from '../src/execute.js'
+import { runFacets, runFields, runSearch } from '../src/execute.js'
 import { ROUTE_PREFIX, makeRoutes } from '../src/index.js'
 
 const servers: Server[] = []
@@ -75,6 +75,7 @@ function harness(config: LoglensConfig) {
     },
     runQuery: (input) => runSearch({ config: () => live, backendFor }, input),
     runFields: (input) => runFields({ config: () => live, backendFor }, input),
+    runFacets: (input) => runFacets({ config: () => live, backendFor }, input),
     dockerLoaded: () => false,
   })[0] as unknown as FakeRoute
 
@@ -113,6 +114,18 @@ function configWith(url: string, enabled = true): LoglensConfig {
 }
 
 describe('围栏：/query 与 /fields 要同源证明', () => {
+  it('/facets 同样要同源证明（它是替请求方打内网的入口之一）', async () => {
+    const fake = await startFakeLoki()
+    const harnessed = harness(configWith(fake.url))
+    const blocked = await harnessed.request({ sub: '/facets', body: { by: 'app' } })
+    expect(blocked.status).toBe(403)
+    expect(fake.requests).toHaveLength(0)
+    // 有证明就放行到执行层（Loki 没有聚合适配器 → 400 + 指路文案，而不是 404 未知路由）
+    const allowed = await harnessed.request({ sub: '/facets', body: { by: 'app' }, ...PROOF })
+    expect(allowed.status).toBe(400)
+    expect(String(allowed.body?.error)).toContain('没有聚合适配器')
+  })
+
   it('没有同源证明的 /query 403，而且**根本没打后端**', async () => {
     const fake = await startFakeLoki()
     const harnessed = harness(configWith(fake.url))

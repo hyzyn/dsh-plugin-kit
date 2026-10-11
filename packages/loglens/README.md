@@ -11,8 +11,9 @@
 ## 现在能做什么
 
 - 在 **设置 → 插件配置 → 日志查询** 卡片里增删改「日志来源」（类型 / 名称 / 地址 / **允许公网地址**）与插件开关。
-- 让 agent 用四个工具查（配好来源之后）：`loglens_sources` 列来源与连通性、`loglens_search` 查、
-  `loglens_fields` 看有哪些字段、`loglens_context` 取某一行前后的上下文。
+- 让 agent 用五个工具查（配好来源之后）：`loglens_sources` 列来源（含**解析后的索引表达式**与探测条数）、
+  `loglens_search` 查（支持 `filters` 结构化过滤与 `level` 及以上筛选）、`loglens_fields` 看有哪些字段、
+  `loglens_facets` 按字段分组 / 按时间分桶（「哪个服务在报错」）、`loglens_context` 取某一行前后的上下文。
   可查后端：**Loki**、**Elasticsearch**、**OpenSearch**（Docker 走现成的 `docker_logs` / `docker_logs_grep`）。
   四个工具都归 **read** 档（分类表见 [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md) §2.1）。
 - **在同一张卡片里直接查**：来源 / 查询串 / 时间窗（15m · 1h · 6h · 24h）/ 条数 → 结果列表（时间到毫秒 ·
@@ -38,7 +39,8 @@
 | 改来源 | `POST {"action":"targets.update","id":"<id>","patch":{"url":"…"}}` | id 不可改（它是浏览器侧唯一的引用方式） |
 | 删来源 | `POST {"action":"targets.remove","id":"<id>"}` | |
 | 查一次 | `POST /api/dsh-loglens/query` `{"target":"<id>","q":"…","from":…,"to":…,"limit":…}` | 面板用；返回行 + 计数 + 截断信号，**形状与 `loglens_search` 一致**（同一个执行层） |
-| 列字段 | `POST /api/dsh-loglens/fields` `{"target":"<id>"}` | 面板的「有哪些字段」 |
+| 列字段 | `POST /api/dsh-loglens/fields` `{"target":"<id>","limit":80}` | 面板的「有哪些字段」；被截断时返回 `total` / `truncated` |
+| 聚合 | `POST /api/dsh-loglens/facets` `{"target":"<id>","by":"container.name","interval":"5m"}` | 按字段分组 / 按时间分桶（目前只有 ES / OpenSearch 有；面板还没画它，工具面已有 `loglens_facets`） |
 
 围栏：整条路由走**加固档** `isLoopbackRequestStrict`；`/config` 按**动作**豁免（只有 `enabled` 免同源证明）；
 **`/query` 与 `/fields` 要同源证明**——它们只读，却会**替请求方打到已配置的内网目标**并把结果带回来；

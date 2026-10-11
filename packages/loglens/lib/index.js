@@ -2,7 +2,7 @@ import z from '@deepseek-ai/schemastery';
 import { attachTierGate, definePlugin, hasSameOriginProof, isLoopbackRequestStrict, originProofHint, plainConfig, readJsonBody, settingsEntryScope, writeJson, } from '@hyzyn/dsh-kit';
 import { MAX_TARGETS, addTarget, normalizeConfig, removeTarget, updateTarget } from './config.js';
 import { backendFor } from './backends/registry.js';
-import { runFields, runSearch } from './execute.js';
+import { runFacets, runFields, runSearch } from './execute.js';
 import { dockerPluginLoaded } from './plugins.js';
 import { LOGLENS_TIER_CLASS, LOGLENS_TIER_PREFIXES, registerLoglensTools } from './tools.js';
 /** 本插件的路由前缀（一个 prefix 路由内部按子路径分发，与 docker / tty 同款）。 */
@@ -49,7 +49,7 @@ export function makeRoutes(state) {
                     return;
                 }
                 const sub = new URL(req.url ?? '/', 'http://loopback').pathname.slice(ROUTE_PREFIX.length);
-                if (sub !== '/config' && sub !== '/query' && sub !== '/fields') {
+                if (sub !== '/config' && sub !== '/query' && sub !== '/fields' && sub !== '/facets') {
                     writeJson(res, 404, { error: '未知路由：' + sub });
                     return;
                 }
@@ -70,7 +70,7 @@ export function makeRoutes(state) {
                     writeJson(res, 403, { error: '插件已禁用（设置 → 插件配置 → 日志查询 → 启用插件）' });
                     return;
                 }
-                if (sub === '/query' || sub === '/fields') {
+                if (sub === '/query' || sub === '/fields' || sub === '/facets') {
                     // 只读但会替请求方打到内网目标：要同源证明（见函数头）
                     if (!hasSameOriginProof(req)) {
                         writeJson(res, 403, { error: '缺少同源证明（' + originProofHint(req) + '）' });
@@ -82,7 +82,9 @@ export function makeRoutes(state) {
                         return;
                     }
                     try {
-                        const outcome = sub === '/query' ? await state.runQuery(payload) : await state.runFields(payload);
+                        const outcome = sub === '/query'
+                            ? await state.runQuery(payload)
+                            : sub === '/fields' ? await state.runFields(payload) : await state.runFacets(payload);
                         writeJson(res, 200, { ok: true, ...outcome });
                     }
                     catch (error) {
@@ -258,6 +260,7 @@ const plugin = definePlugin({
                     write: persist,
                     runQuery: (input) => runSearch(executeDeps, input),
                     runFields: (input) => runFields(executeDeps, input),
+                    runFacets: (input) => runFacets(executeDeps, input),
                     dockerLoaded: () => dockerPluginLoaded(ctx),
                 }).map((route) => server.register(route));
                 return () => {

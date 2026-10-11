@@ -17,7 +17,7 @@ import type { TierClass } from '@hyzyn/dsh-kit'
 import { backendFor } from './backends/registry.js'
 import type { BackendCaps, LogBackend, LogLine } from './backends/types.js'
 import type { LoglensConfig, SourceKind } from './config.js'
-import { adapterHint, describeTarget, hintFor, resolveTarget, runFields, runSearch } from './execute.js'
+import { adapterHint, describeTarget, facetsHint, hintFor, resolveTarget, runFacets, runFields, runSearch } from './execute.js'
 import { normalizeQuery } from './query.js'
 
 /*
@@ -32,6 +32,7 @@ export const LOGLENS_TIER_CLASS: Record<string, TierClass> = {
   loglens_sources: 'read',
   loglens_search: 'read',
   loglens_fields: 'read',
+  loglens_facets: 'read',
   loglens_context: 'read',
 }
 
@@ -238,6 +239,13 @@ export function registerLoglensTools(deps: ToolDeps): void {
       limit: { type: 'number', description: '返回条数上限（默认 100）；超过来源单页上限会被夹取，warnings 里会说明' },
       direction: { type: 'string', description: 'forward（旧的在前）或 backward（新的在前，默认）' },
       cursor: { type: 'string', description: '上一页返回的 nextCursor；来源声明 pagination=none 时不会有它' },
+      filters: {
+        type: 'object',
+        additionalProperties: true,
+        description: '结构化过滤：字段 → 值（如 {"container.name":"ems-service","log.level":"error"}）。'
+          + '**字段该不该带 .keyword 由适配器查 _field_caps 决定**，你不用管；是 text 且没有子字段时自动退回 match_phrase（近似匹配）。'
+          + 'Loki 不支持它（过滤写进 LogQL 的 {} 或过滤表达式）',
+      },
       level: {
         type: 'string',
         description: '只要这个级别**及以上**的行（trace / debug / info / warn / error / fatal）。'
@@ -322,6 +330,100 @@ export function registerLoglensTools(deps: ToolDeps): void {
     },
     async execute(args: unknown) {
       return await runFields(deps, (args ?? {}) as Record<string, unknown>)
+    },
+  }))
+
+  add('loglens_facets', defineTool({
+    name: 'loglens_facets',
+    isConcurrencySafe: () => true,
+    description: '聚合：按字段分组（terms）看「谁在报错」/  按时间分桶（date_histogram）看趋势。'
+      + '这是回答「某个服务健不健康」的正确工具——拉一页行到本地数既慢又错。'
+      + '返回里的 otherCount（没列出来的桶还有多少条）与 countErrorUpperBound（计数误差上界）是**截断与近似信号**，别当成精确值。'
+      + '当前只有 ES / OpenSearch 有它。',
+    parameters: {
+      target: { type: 'string', description: '来源 id 或名称（loglens_sources 列出）；只有一个来源时可省略' },
+      by: { type: 'string', description: '按这个字段分组（terms），如 container.name / host.name / log.level' },
+      interval: { type: 'string', description: '按时间分桶（如 5m / 1h / 1d）；与 by 可以同时要' },
+      q: { type: 'string', description: '查询串（先筛出要统计的那部分日志；留空即全量）' },
+      filters: {
+        type: 'object',
+        additionalProperties: true,
+        description: '结构化过滤：字段 → 值（与 loglens_search 同一口径）',
+      },
+      from: {
+        description: '起始时间：epoch 毫秒整数 / ISO 8601 / 相对时间；缺省 = to 前面 15 分钟',
+        oneOf: [
+          { type: 'number', description: 'epoch 毫秒整数' },
+          { type: 'string', description: 'ISO 8601 或相对时间（-30m / -2h）' },
+        ],
+      },
+      to: {
+        description: '结束时间，写法同 from；缺省取当前时刻',
+        oneOf: [
+          { type: 'number', description: 'epoch 毫秒整数' },
+          { type: 'string', description: 'ISO 8601 或相对时间' },
+        ],
+      },
+      size: { type: 'number', description: '桶数上限（默认 10，硬上限 100）' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          target: { type: 'object', required: true, additionalProperties: false, properties: { id: { type: 'string', required: true }, kind: { type: 'string', required: true }, label: { type: 'string', required: true } } },
+          window: { type: 'object', required: true, additionalProperties: false, properties: { from: { type: 'number', required: true }, to: { type: 'number', required: true } } },
+          by: { type: 'string' },
+          interval: { type: 'string' },
+          buckets: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: { key: { type: 'string', required: true }, count: { type: 'number', required: true } },
+            },
+          },
+          overTime: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: { ts: { type: 'number', required: true }, count: { type: 'number', required: true } },
+            },
+          },
+          otherCount: { type: 'number', description: '没列出来的桶里还有多少条（截断信号）' },
+          countErrorUpperBound: { type: 'number', description: '桶计数的误差上界（>0 = 近似值）' },
+          warnings: { type: 'array', required: true, items: { type: 'string' } },
+          hint: { type: 'string' },
+        },
+      },
+      render: (_args: unknown, value: unknown) => {
+        const result = value as {
+          by?: string
+          interval?: string
+          buckets?: Array<{ key: string, count: number }>
+          overTime?: Array<{ ts: number, count: number }>
+          otherCount?: number
+          countErrorUpperBound?: number
+          warnings?: string[]
+        }
+        const parts: string[] = []
+        if (result.buckets !== undefined) {
+          const total = result.buckets.reduce((sum, bucket) => sum + bucket.count, 0)
+          parts.push('按 ' + String(result.by) + ' 分组（' + String(result.buckets.length) + ' 个桶，共 ' + String(total) + ' 条）：')
+          for (const bucket of result.buckets) parts.push('  ' + String(bucket.count) + '  ' + bucket.key)
+          if (result.otherCount !== undefined) parts.push('  （另有 ' + String(result.otherCount) + ' 条在没列出来的桶里）')
+        }
+        if (result.overTime !== undefined) {
+          parts.push('按 ' + String(result.interval) + ' 分桶（' + String(result.overTime.length) + ' 个时间点）：')
+          for (const point of result.overTime) parts.push('  ' + new Date(point.ts).toISOString() + '  ' + String(point.count))
+        }
+        for (const warning of result.warnings ?? []) parts.push(warning)
+        return [{ type: 'text', text: parts.length === 0 ? '（没有结果）' : parts.join('\n') }]
+      },
+    },
+    async execute(args: unknown) {
+      return await runFacets(deps, (args ?? {}) as Record<string, unknown>)
     },
   }))
 

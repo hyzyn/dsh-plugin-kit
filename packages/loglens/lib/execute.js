@@ -130,6 +130,80 @@ export async function runSearch(deps, input) {
         ...(wanted.level === undefined ? {} : { level: wanted.level }),
     };
 }
+/* ============================ 聚合（facets） ============================ */
+/** 桶数上限（工具面默认 10、硬上限 100）——与适配器那边各有一份默认值，硬上限取小的那个。 */
+export const FACETS_DEFAULT_SIZE = 10;
+export const FACETS_MAX_SIZE = 100;
+/** 时间分桶的间隔形态：5m / 1h / 1d（不合形态的当场报错，别丢给后端回一句难懂的 400）。 */
+const FACET_INTERVAL = /^\d+(s|m|h|d)$/u;
+/** 没有聚合适配器时的指路文案（说清「怎么绕」，不是一句「不支持」）。 */
+export function facetsHint(kind) {
+    if (kind === 'docker') {
+        return 'Docker 是采集来源（设计 §5 选项 0）：聚合请用现成的 docker 工具，本插件不包一层';
+    }
+    return '这个来源目前没有聚合适配器（当前只有 ES / OpenSearch 有）：Loki 的指标查询（LogQL）还没接——'
+        + '先用 loglens_search 缩小时间窗看行，或把统计写进 LogQL';
+}
+export async function runFacets(deps, input) {
+    const picked = resolveTarget(deps.config(), input.target);
+    if (!picked.ok)
+        throw new Error(picked.error);
+    const backend = deps.backendFor(picked.target.kind);
+    if (backend === undefined)
+        throw new Error(adapterHint(picked.target.kind));
+    if (backend.facets === undefined)
+        throw new Error(facetsHint(picked.target.kind));
+    const by = typeof input.by === 'string' ? input.by.trim() : '';
+    const interval = typeof input.interval === 'string' ? input.interval.trim() : '';
+    if (by === '' && interval === '') {
+        throw new Error('至少要给 by（按字段分组，如 container.name）或 interval（按时间分桶，如 5m）之一');
+    }
+    if (interval !== '' && !FACET_INTERVAL.test(interval)) {
+        throw new Error('interval 形态不对（要 5m / 1h / 1d 这种）：' + interval);
+    }
+    let size = FACETS_DEFAULT_SIZE;
+    const warnings = [];
+    if (input.size !== undefined && input.size !== null) {
+        if (typeof input.size !== 'number' || !Number.isInteger(input.size) || input.size < 1) {
+            throw new Error('size 必须是正整数（桶数上限）');
+        }
+        size = input.size;
+        if (size > FACETS_MAX_SIZE) {
+            warnings.push('size ' + String(size) + ' 超过硬上限，已夹到 ' + String(FACETS_MAX_SIZE));
+            size = FACETS_MAX_SIZE;
+        }
+    }
+    const caps = backend.capabilities();
+    const normalized = normalizeQuery({
+        targetId: picked.target.id,
+        q: input.q,
+        from: input.from,
+        to: input.to,
+        filters: input.filters,
+    }, caps);
+    if (!normalized.ok)
+        throw new Error(normalized.error);
+    warnings.unshift(...normalized.warnings);
+    const result = await backend.facets(normalized.query, picked.target, { ...(by === '' ? {} : { by }), ...(interval === '' ? {} : { interval }), size });
+    if (result.otherCount !== undefined) {
+        warnings.push('还有 ' + String(result.otherCount) + ' 条落在没列出来的桶里：把 size 调大（上限 '
+            + String(FACETS_MAX_SIZE) + '）或收窄时间窗 / 加 filters');
+    }
+    if (result.countErrorUpperBound !== undefined) {
+        warnings.push('桶计数是**近似值**（误差上界 ' + String(result.countErrorUpperBound) + ' 条，terms 聚合在多分片上本来就是这个精度）');
+    }
+    return {
+        target: describeTarget(picked.target),
+        window: { from: normalized.query.from, to: normalized.query.to },
+        ...(by === '' ? {} : { by }),
+        ...(interval === '' ? {} : { interval }),
+        ...(result.buckets === undefined ? {} : { buckets: result.buckets }),
+        ...(result.overTime === undefined ? {} : { overTime: result.overTime }),
+        ...(result.otherCount === undefined ? {} : { otherCount: result.otherCount }),
+        ...(result.countErrorUpperBound === undefined ? {} : { countErrorUpperBound: result.countErrorUpperBound }),
+        warnings,
+    };
+}
 /** 列字段的默认上限与硬上限（工具面直接取用；适配器那边还有一份自己的默认值）。 */
 export const FIELDS_DEFAULT_LIMIT = 80;
 export const FIELDS_MAX_LIMIT = 200;

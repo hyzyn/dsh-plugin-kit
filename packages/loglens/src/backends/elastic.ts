@@ -22,6 +22,8 @@ import { countsOf, truncationOf } from '../query.js'
 import type {
   BackendCaps,
   BackendHealth,
+  FacetsResult,
+  FacetsSpec,
   FieldInfo,
   FieldsOptions,
   FieldsResult,
@@ -39,6 +41,9 @@ export const ES_DEFAULT_MAX_PAGE_SIZE = 500
 export const ES_DEFAULT_MAX_WINDOW_MS = 24 * 60 * 60 * 1000
 /** 单次请求超时。 */
 export const ES_TIMEOUT_MS = 20_000
+/** 聚合的桶数上限：默认 10、硬上限 100（桶是给人看的，不是把整份基数拉回来）。 */
+export const ES_DEFAULT_FACET_SIZE = 10
+export const ES_MAX_FACET_SIZE = 100
 /** 探测窗口：probe 时报「最近这么多分钟有多少条」。 */
 export const ES_PROBE_WINDOW_MS = 15 * 60 * 1000
 /** PIT 的保活时长（每次查询都会续）。 */
@@ -260,6 +265,38 @@ export function looksLikeMissingShardDoc(failure: { status: number; text: string
   return haystack.includes('_shard_doc') && haystack.includes('no mapping found')
 }
 
+/**
+ * 一个字段该怎么打。**这就是 agent 猜 `.keyword` 那件事的归宿**（真机反馈第 2 条）：
+ * 由适配器查一次 _field_caps 决定，而不是让调用方去记约定。
+ */
+export type FieldShape = 'native' | 'keyword' | 'text'
+
+/**
+ * 按「这个字段该怎么打」解析：
+ *   - `native`：本身就是 keyword / 数值 / 布尔 → term 直接打；
+ *   - `keyword`：是 text 且有 `.keyword` 子字段 → 打 `.keyword`；
+ *   - `text`：是 text 且没有子字段 → **不能**用 term（分词后打全串永远匹配不上，那是静默撒谎），
+ *     退回 match_phrase（近似匹配，语义在返回值里说明）。
+ */
+const NATIVE_TYPES = ['keyword', 'long', 'integer', 'short', 'byte', 'double', 'float', 'boolean', 'ip', 'date', 'date_nanos']
+
+export function decideFieldShape(caps: Record<string, Record<string, { type?: unknown }>>, field: string): FieldShape {
+  const entry = caps[field]
+  if (entry === undefined || entry === null) return 'text'
+  /*
+   * _field_caps 的响应是 fields.<字段>.<类型>.…：**内层键就是类型名**（同一个字段在不同索引里
+   * 类型不同时会并列出现），值里通常也带一份 type。两处都收，别只认一处。
+   */
+  const types = new Set<string>()
+  for (const [key, value] of Object.entries(entry)) {
+    types.add(key)
+    if (typeof value?.type === 'string') types.add(value.type)
+  }
+  if (NATIVE_TYPES.some((type) => types.has(type))) return 'native'
+  if (types.has('text')) return caps[field + '.keyword'] === undefined ? 'text' : 'keyword'
+  return 'text'
+}
+
 export function createElasticBackend(options: ElasticOptions): LogBackend {
   const flavor = options.flavor
   /** 按目标记住这台 ES 的 tiebreaker 探测结果：第一次吃到「不认识 _shard_doc」就换 _id，之后不再白试。 */
@@ -331,6 +368,49 @@ export function createElasticBackend(options: ElasticOptions): LogBackend {
     }
   }
 
+  /**
+   * 字段形态的缓存（按 target.url + 字段）：一次查询里可能要解析好几个字段，别每次都问 _field_caps。
+   * 缓存是**按进程**的，字段映射变了要重启——映射变化是运维动作，代价可接受（与 tiebreaker 同一权衡）。
+   */
+  const fieldShapeByTarget = new Map<string, FieldShape>()
+
+  /** 问一次 _field_caps 决定怎么打这个字段。解析失败按 text 处理（保守：宁可退回 match_phrase）。 */
+  async function fieldShape(target: LoglensTarget, access: { url: string, headers: Record<string, string> }, field: string): Promise<FieldShape> {
+    const cacheKey = target.url + '|' + field
+    const cached = fieldShapeByTarget.get(cacheKey)
+    if (cached !== undefined) return cached
+    let shape: FieldShape = 'text'
+    try {
+      const body = await callJson(target, joinUrl(access.url, '/' + targetIndex(target)
+        + '/_field_caps?fields=' + encodeURIComponent(field) + ',' + encodeURIComponent(field + '.keyword')), {
+        method: 'GET',
+        headers: access.headers,
+      })
+      const caps = (body as { fields?: Record<string, Record<string, { type?: unknown }>> }).fields
+      if (caps !== undefined && caps !== null) shape = decideFieldShape(caps, field)
+    } catch {
+      shape = 'text'
+    }
+    fieldShapeByTarget.set(cacheKey, shape)
+    return shape
+  }
+
+  /** 结构化过滤：字段 → 值。形状决定用 term（打 .keyword）还是 match_phrase。 */
+  async function filterClauses(
+    target: LoglensTarget,
+    access: { url: string, headers: Record<string, string> },
+    filters: Record<string, string>,
+  ): Promise<Array<Record<string, unknown>>> {
+    const clauses: Array<Record<string, unknown>> = []
+    for (const [field, value] of Object.entries(filters)) {
+      const shape = await fieldShape(target, access, field)
+      if (shape === 'keyword') clauses.push({ term: { [field + '.keyword']: value } })
+      else if (shape === 'native') clauses.push({ term: { [field]: value } })
+      else clauses.push({ match_phrase: { [field]: value } })
+    }
+    return clauses
+  }
+
   /** 探测窗口内的条数（_count + 时间范围）。失败就回 undefined——「不知道」不写成 0。 */
   async function recentCount(
     target: LoglensTarget,
@@ -400,6 +480,74 @@ export function createElasticBackend(options: ElasticOptions): LogBackend {
       }
     },
 
+    /**
+     * 聚合：按字段分组（terms）/ 按时间分桶（date_histogram）。
+     *
+     * 真机反馈第 2 条：agent 要回答「哪个服务在报错」只能出去 curl。这里把两件事做进来，并且
+     * **把聚合的近似性也如实回传**：terms 的 `sum_other_doc_count`（没列出来的桶还有多少条）与
+     * `doc_count_error_upper_bound`（计数误差上界）都是这层必须报的信号——不然又是一次「看起来是全部」。
+     */
+    async facets(query: NormalizedQuery, target: LoglensTarget, spec: FacetsSpec): Promise<FacetsResult> {
+      const access = targetAccess(target)
+      const size = spec.size === undefined ? ES_DEFAULT_FACET_SIZE : Math.min(spec.size, ES_MAX_FACET_SIZE)
+      const aggs: Record<string, unknown> = {}
+      if (spec.by !== undefined && spec.by !== '') {
+        const shape = await fieldShape(target, access, spec.by)
+        if (shape === 'text') {
+          throw new Error(prefix + '字段 ' + spec.by + ' 是 text 且没有 .keyword 子字段：terms 聚合没法按它分组'
+            + '（换一个字段，或给索引加 keyword 子字段；也可以先用 filters 加 match_phrase 近似筛）')
+        }
+        aggs.by = { terms: { field: shape === 'keyword' ? spec.by + '.keyword' : spec.by, size } }
+      }
+      if (spec.interval !== undefined && spec.interval !== '') {
+        // min_doc_count: 1 —— 没数据的桶不发出来（返回的是「有日志的那些时间点」，不是「日历」）
+        aggs.over_time = { date_histogram: { field: ES_TIME_FIELD, fixed_interval: spec.interval, min_doc_count: 1 } }
+      }
+      if (Object.keys(aggs).length === 0) {
+        throw new Error(prefix + 'facets 至少要给 by（按字段分组）或 interval（按时间分桶）之一')
+      }
+      const conditions: Array<Record<string, unknown>> = [
+        { range: { [ES_TIME_FIELD]: { gte: isoOf(query.from), lte: isoOf(query.to) } } },
+        ...(query.filters === undefined ? [] : await filterClauses(target, access, query.filters)),
+      ]
+      const body = {
+        size: 0,
+        track_total_hits: false,
+        query: { bool: { must: query.q === '' ? [{ match_all: {} }] : [{ query_string: { query: query.q } }], filter: conditions } },
+        aggs,
+      }
+      const payload = await callJson(target, joinUrl(access.url, '/_search'), {
+        method: 'POST',
+        headers: { ...access.headers, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const root = payload as {
+        aggregations?: {
+          by?: { buckets?: Array<{ key?: unknown, doc_count?: unknown }>, sum_other_doc_count?: unknown, doc_count_error_upper_bound?: unknown }
+          over_time?: { buckets?: Array<{ key?: unknown, doc_count?: unknown }> }
+        }
+      }
+      const result: FacetsResult = {}
+      const byBuckets = root.aggregations?.by?.buckets
+      if (Array.isArray(byBuckets)) {
+        result.buckets = byBuckets.map((bucket) => ({
+          key: bucket.key === undefined ? '' : String(bucket.key),
+          count: typeof bucket.doc_count === 'number' ? bucket.doc_count : 0,
+        }))
+        const other = root.aggregations?.by?.sum_other_doc_count
+        if (typeof other === 'number' && other > 0) result.otherCount = other
+        const error = root.aggregations?.by?.doc_count_error_upper_bound
+        if (typeof error === 'number' && error > 0) result.countErrorUpperBound = error
+      }
+      const timeBuckets = root.aggregations?.over_time?.buckets
+      if (Array.isArray(timeBuckets)) {
+        result.overTime = timeBuckets
+          .filter((bucket) => typeof bucket.key === 'number')
+          .map((bucket) => ({ ts: bucket.key as number, count: typeof bucket.doc_count === 'number' ? bucket.doc_count : 0 }))
+      }
+      return result
+    },
+
     /** 这条来源覆盖的范围（工具面回显用：省得 agent 猜「路径即索引」这条暗号）。 */
     scope(target: LoglensTarget): string {
       return targetIndex(target)
@@ -439,9 +587,6 @@ export function createElasticBackend(options: ElasticOptions): LogBackend {
     },
 
     async query(query: NormalizedQuery, target: LoglensTarget): Promise<LogQueryResult> {
-      if (query.filters !== undefined && Object.keys(query.filters).length > 0) {
-        throw new Error(prefix + '暂不支持结构化 filters：请把条件写进查询串')
-      }
       const access = targetAccess(target)
       const order = query.direction === 'forward' ? 'asc' : 'desc'
       let cursor: SearchAfterCursor | undefined
@@ -453,8 +598,14 @@ export function createElasticBackend(options: ElasticOptions): LogBackend {
       // 只有第一页才开 PIT：带游标时**复用**同一个快照，过期就报过期（绝不偷偷重开）
       const pitId = cursor === undefined ? await openPit(access, targetIndex(target), target) : cursor.pitId
 
+      /*
+       * 结构化过滤（真机反馈第 2 条）：通道早就在契约里（query.ts 的 filters），只是适配器当初直接抛
+       * 「暂不支持」，而工具面又没暴露——于是 agent 只能手写 Lucene 的 字段.keyword:"值" 去猜约定。
+       * 现在按 _field_caps 决定怎么打（term / .keyword / match_phrase），判据在 filterClauses。
+       */
       const conditions: Array<Record<string, unknown>> = [
         { range: { [ES_TIME_FIELD]: { gte: isoOf(query.from), lte: isoOf(query.to) } } },
+        ...(query.filters === undefined ? [] : await filterClauses(target, access, query.filters)),
       ]
       const tiebreaker: Tiebreaker = tiebreakerByTarget.get(target.url) === undefined
         ? '_shard_doc'

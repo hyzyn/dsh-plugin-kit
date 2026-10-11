@@ -87,6 +87,40 @@ export declare function readLevel(value: unknown): {
 };
 /** 查一次（抛错即失败，调用方把 message 回给对面：工具抛出去、路由回 400）。 */
 export declare function runSearch(deps: ExecuteDeps, input: Record<string, unknown>): Promise<SearchOutcome>;
+/** 桶数上限（工具面默认 10、硬上限 100）——与适配器那边各有一份默认值，硬上限取小的那个。 */
+export declare const FACETS_DEFAULT_SIZE = 10;
+export declare const FACETS_MAX_SIZE = 100;
+/** 没有聚合适配器时的指路文案（说清「怎么绕」，不是一句「不支持」）。 */
+export declare function facetsHint(kind: SourceKind): string;
+/** 聚合的结果形状（type alias，理由同 SearchOutcome）。 */
+export type FacetsOutcome = {
+    target: {
+        id: string;
+        kind: string;
+        label: string;
+    };
+    window: {
+        from: number;
+        to: number;
+    };
+    by?: string;
+    interval?: string;
+    buckets?: Array<{
+        key: string;
+        count: number;
+    }>;
+    overTime?: Array<{
+        ts: number;
+        count: number;
+    }>;
+    /** 没列出来的桶里还有多少条（terms 的 sum_other_doc_count）：**截断信号**。 */
+    otherCount?: number;
+    /** 桶计数的误差上界（terms 的近似性）：>0 时桶里的数字是近似值。 */
+    countErrorUpperBound?: number;
+    warnings: string[];
+    hint?: string;
+};
+export declare function runFacets(deps: ExecuteDeps, input: Record<string, unknown>): Promise<FacetsOutcome>;
 /** 列字段的结果形状（同样用 type alias，理由见上）。截断信号跟着结果走（真机反馈第 4 条）。 */
 export type FieldsOutcome = {
     target: {

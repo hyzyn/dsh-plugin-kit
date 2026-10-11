@@ -686,6 +686,28 @@ package.json 中以 platform: 'web' 声明 dsh.client，导出 ./client bundle�
 **上游**：设计 §4.1 记的「第二个消费者出现时上收到 kit」**不触发**——两个消费者（Loki / ES）都在本包内。
 真要上收时，`net.ts` 是从 `assertReachable` + `requestJson` 两个导出切出去的。
 
+### 真机反馈第五批：聚合与结构化过滤（2026-10-11）
+
+第 2 条（也是 agent 最想要的一条）：它真正要回答的是「考试服务健不健康」，靠的是 terms / date_histogram
+聚合；而插件面没有这个能力。更别扭的是 `filters` 的通道**早就在契约里**（`query.ts` 校验、
+`NormalizedQuery.filters` 有它），ES 适配器却直接抛「暂不支持结构化 filters」，工具面也没暴露——
+于是 agent 只能手写 Lucene 的 `container.name.keyword:"…"` 去猜约定，而 `.keyword` 这件事 schema 里一个字没提。
+
+| 动作 | 落点 |
+|---|---|
+| **`filters` 打通**：ES / OpenSearch 查一次 `_field_caps`（按 target+字段缓存）决定打 term / `.keyword` / `match_phrase` | `elastic.ts` 的 `decideFieldShape` + `filterClauses`；工具面 `loglens_search.filters` |
+| **`loglens_facets`**：按字段分组（terms，size 默认 10 / 硬上限 100）+ 按时间分桶（`fixed_interval`，`min_doc_count: 1` 只发有数据的点） | 契约 `LogBackend.facets?` + `FacetsSpec/FacetsResult`；执行层 `runFacets`；工具与 `/facets` 路由 |
+| **近似性如实回报**：`otherCount`（`sum_other_doc_count`）与 `countErrorUpperBound` 进返回值与 warning | `FacetsResult`；渲染里也写「另有 N 条在没列出来的桶里」 |
+| **`aggregations` 的诚实**：Loki 的 `capabilities().aggregations` 从 true 改成 **false**（它没有 facets 实现，LogQL 指标查询是另一件活） | `loki.ts`；调用方按这一位给指路文案（`facetsHint`） |
+
+**为什么 `filters` 不许让调用方写 `.keyword`**：那是 ES 映射的约定，各家索引不一样，而且写错了**不会报错**——
+`term` 打在 text 字段上匹配的是分词后的词，全串永远打不中，结果是一个静默的空集。所以解析权在适配器，
+判据（`native` / `keyword` / `text`）还带缓存，一次查询里同一字段只问一次 `_field_caps`。
+
+用例：`elastic.test.ts` 四条（filters 的两种打法、聚合请求体与三个信号、text 无子字段时的明确报错、
+既没给 by 也没给 interval）、`tools.test.ts` 三条（分组结果与两条 warning、interval 形态与硬上限、无能力来源的指路）、
+`tier-gate.test.ts`（五个工具全是 read）、`query-route.test.ts`（/facets 要同源证明）。
+
 ### 真机反馈第四批：来源的范围要看得见（索引表达式 + 探测条数）（2026-10-11）
 
 第 3 条：索引表达式从**地址路径**悄悄推出来，配置里只写 `http://host:9200` 的一条来源其实是**全集群

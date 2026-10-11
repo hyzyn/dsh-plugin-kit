@@ -29,7 +29,7 @@ import type { ReqLike, ResLike, SettingsEntryScope } from '@hyzyn/dsh-kit'
 import { MAX_TARGETS, addTarget, normalizeConfig, removeTarget, updateTarget } from './config.js'
 import type { LoglensConfig } from './config.js'
 import { backendFor } from './backends/registry.js'
-import { runFields, runSearch } from './execute.js'
+import { runFacets, runFields, runSearch } from './execute.js'
 import { dockerPluginLoaded } from './plugins.js'
 import { LOGLENS_TIER_CLASS, LOGLENS_TIER_PREFIXES, registerLoglensTools } from './tools.js'
 
@@ -87,6 +87,11 @@ export interface RouteState {
   /** 列字段（面板的「有哪些字段」）。 */
   runFields: (input: Record<string, unknown>) => Promise<Record<string, unknown>>
   /**
+   * 聚合（按字段分组 / 按时间分桶）。工具面已有 loglens_facets；面板还没画它——
+   * 路由先留着，让「面板补这一格」是纯前端改动。
+   */
+  runFacets: (input: Record<string, unknown>) => Promise<Record<string, unknown>>
+  /**
    * Docker 容器面板装没装（panel 用它决定给不给「容器日志」那半格）。
    * 判据是 cordis 的 plugin registry，见 src/plugins.ts——**不是** tools 服务（它没有列举 API）。
    */
@@ -116,7 +121,7 @@ export function makeRoutes(state: RouteState): Route[] {
           return
         }
         const sub = new URL(req.url ?? '/', 'http://loopback').pathname.slice(ROUTE_PREFIX.length)
-        if (sub !== '/config' && sub !== '/query' && sub !== '/fields') {
+        if (sub !== '/config' && sub !== '/query' && sub !== '/fields' && sub !== '/facets') {
           writeJson(res, 404, { error: '未知路由：' + sub })
           return
         }
@@ -137,7 +142,7 @@ export function makeRoutes(state: RouteState): Route[] {
           writeJson(res, 403, { error: '插件已禁用（设置 → 插件配置 → 日志查询 → 启用插件）' })
           return
         }
-        if (sub === '/query' || sub === '/fields') {
+        if (sub === '/query' || sub === '/fields' || sub === '/facets') {
           // 只读但会替请求方打到内网目标：要同源证明（见函数头）
           if (!hasSameOriginProof(req)) {
             writeJson(res, 403, { error: '缺少同源证明（' + originProofHint(req) + '）' })
@@ -149,7 +154,9 @@ export function makeRoutes(state: RouteState): Route[] {
             return
           }
           try {
-            const outcome = sub === '/query' ? await state.runQuery(payload) : await state.runFields(payload)
+            const outcome = sub === '/query'
+              ? await state.runQuery(payload)
+              : sub === '/fields' ? await state.runFields(payload) : await state.runFacets(payload)
             writeJson(res, 200, { ok: true, ...outcome })
           } catch (error) {
             // 校验失败与后端报错都回 400 + 原话（面板要把「下一步怎么做」显示出来）
@@ -319,6 +326,7 @@ const plugin = definePlugin<Config>({
           write: persist,
           runQuery: (input) => runSearch(executeDeps, input),
           runFields: (input) => runFields(executeDeps, input),
+          runFacets: (input) => runFacets(executeDeps, input),
           dockerLoaded: () => dockerPluginLoaded(ctx),
         }).map((route) => server.register(route))
         return () => {

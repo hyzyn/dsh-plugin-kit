@@ -144,6 +144,26 @@ async function startFakeEs(options: {
           send(options.failSearch)
           return
         }
+        /*
+         * 聚合请求不带 PIT（聚合不需要快照，也不需要把行拉回来）：先按「有没有 aggs」分流，
+         * 回一份固定的聚合响应——buckets / over_time / sum_other_doc_count 三个信号都要能测到。
+         */
+        if (body?.aggs !== undefined) {
+          const aggs = body.aggs as Record<string, unknown>
+          const aggregations: Record<string, unknown> = {}
+          if (aggs.by !== undefined) {
+            aggregations.by = {
+              buckets: [{ key: 'api', doc_count: 2 }, { key: 'web', doc_count: 1 }],
+              sum_other_doc_count: 7,
+              doc_count_error_upper_bound: 2,
+            }
+          }
+          if (aggs.over_time !== undefined) {
+            aggregations.over_time = { buckets: [{ key: NOW - 300_000, doc_count: 2 }, { key: NOW, doc_count: 1 }] }
+          }
+          send({ body: { timed_out: false, _shards: { failed: 0 }, hits: { total: { value: 10, relation: 'eq' }, hits: [] }, aggregations } })
+          return
+        }
         const pitId = typeof body?.pit === 'object' && body.pit !== null ? (body.pit as { id?: unknown }).id : undefined
         if (typeof pitId !== 'string' || !pits.valid.has(pitId)) {
           send({ status: 404, body: { error: { type: 'search_context_missing_exception', reason: 'No search context found for id [' + String(pitId) + ']', root_cause: [] }, status: 404 } })
@@ -238,13 +258,58 @@ describe('请求形态', () => {
     expect(fake.requests[0].path).not.toContain('user')
   })
 
-  it('结构化 filters 报错（不静默忽略）', async () => {
+  it('结构化 filters：keyword 字段打 term，text 且无子字段退回 match_phrase（真机反馈第 2 条）', async () => {
+    const fake = await startFakeEs({ docs: docsOf(THREE_DOCS) })
+    const backend = createElasticBackend({ flavor: 'es' })
+    await backend.query(
+      normalized(backend, { targetId: 'es', q: '', from: FROM, to: NOW, filters: { app: 'demo', level: 'error' } }),
+      fake.target,
+    )
+    // 每个字段先问一次 _field_caps 决定怎么打（.keyword 这件事不该让调用方猜）
+    const caps = fake.requests.filter((request) => request.path.endsWith('/_field_caps'))
+    expect(caps.length).toBeGreaterThanOrEqual(1)
+    const search = fake.requests.find((request) => request.path.endsWith('/_search'))
+    expect(search).toBeDefined()
+    const filter = (search?.body as { query: { bool: { filter: unknown[] } } }).query.bool.filter
+    // app 在假 ES 的 _field_caps 里是 keyword → term 直接打
+    expect(filter).toContainEqual({ term: { app: 'demo' } })
+    // level 不在那些字段里（假 ES 没说它是 keyword）→ 保守退回 match_phrase，而不是静默打不中的 term
+    expect(filter).toContainEqual({ match_phrase: { level: 'error' } })
+  })
+
+  it('聚合：terms 分组 + date_histogram 分桶，并把「没列出来的桶」如实回报', async () => {
+    const fake = await startFakeEs({ docs: docsOf(THREE_DOCS) })
+    const backend = createElasticBackend({ flavor: 'es' })
+    const result = await backend.facets(
+      normalized(backend, { targetId: 'es', q: '', from: FROM, to: NOW }),
+      fake.target,
+      { by: 'app', interval: '5m', size: 3 },
+    )
+    const search = fake.requests.find((request) => request.path.endsWith('/_search'))
+    const body = search?.body as { size: number, aggs: Record<string, unknown> }
+    expect(body.size).toBe(0)   // 聚合不该顺带把行拉回来
+    expect(body.aggs.by).toEqual({ terms: { field: 'app', size: 3 } })
+    expect(body.aggs.over_time).toEqual({ date_histogram: { field: '@timestamp', fixed_interval: '5m', min_doc_count: 1 } })
+    expect(result.buckets).toEqual([{ key: 'api', count: 2 }, { key: 'web', count: 1 }])
+    expect(result.overTime).toEqual([{ ts: NOW - 300_000, count: 2 }, { ts: NOW, count: 1 }])
+    expect(result.otherCount).toBe(7)                 // terms 只列 3 个桶时还剩多少条
+    expect(result.countErrorUpperBound).toBe(2)       // 多分片下的近似性
+  })
+
+  it('聚合：text 且无 .keyword 的字段明确报错（不猜、不静默空桶）', async () => {
+    const fake = await startFakeEs({ docs: docsOf(THREE_DOCS) })
+    const backend = createElasticBackend({ flavor: 'es' })
+    await expect(
+      backend.facets(normalized(backend, { targetId: 'es', q: '', from: FROM, to: NOW }), fake.target, { by: 'message' }),
+    ).rejects.toThrow('没有 .keyword 子字段')
+  })
+
+  it('聚合：既没给 by 也没给 interval 就报错', async () => {
     const fake = await startFakeEs({ docs: [] })
     const backend = createElasticBackend({ flavor: 'es' })
     await expect(
-      backend.query(normalized(backend, { targetId: 'es', from: FROM, to: NOW, filters: { level: 'error' } }), fake.target),
-    ).rejects.toThrow('暂不支持结构化 filters')
-    expect(fake.requests).toHaveLength(0)
+      backend.facets(normalized(backend, { targetId: 'es', q: '', from: FROM, to: NOW }), fake.target, {}),
+    ).rejects.toThrow('至少要给 by')
   })
 })
 

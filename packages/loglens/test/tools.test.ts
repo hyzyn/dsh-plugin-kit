@@ -306,6 +306,52 @@ describe('loglens_fields', () => {
   })
 })
 
+describe('loglens_facets', () => {
+  function facetsBackend(result: Partial<import('../src/backends/types.js').FacetsResult> = {}): LogBackend {
+    return fakeBackend({
+      facets: async () => ({ buckets: [{ key: 'api', count: 2 }, { key: 'web', count: 1 }], otherCount: 7, countErrorUpperBound: 2, ...result }),
+    })
+  }
+
+  it('按字段分组：把桶、截断（otherCount）与近似性（误差上界）都报出来', async () => {
+    const { add, captured } = capture()
+    registerLoglensTools({ config: () => configWith(target('es', 'elasticsearch')), backendFor: () => facetsBackend(), add })
+    const value = await captured.get('loglens_facets')!.execute({ by: 'container.name', from: 1_700_000_000_000, to: 1_700_000_060_000 }) as Record<string, unknown>
+    expect(value.by).toBe('container.name')
+    expect(value.buckets).toEqual([{ key: 'api', count: 2 }, { key: 'web', count: 1 }])
+    expect(value.otherCount).toBe(7)
+    const warnings = (value.warnings as string[]).join()
+    expect(warnings).toContain('落在没列出来的桶里')
+    expect(warnings).toContain('近似值')
+  })
+
+  it('时间分桶：interval 透传，非法形态与「两个都没给」都当场报错', async () => {
+    const { add, captured } = capture()
+    registerLoglensTools({ config: () => configWith(target('es', 'elasticsearch')), backendFor: () => facetsBackend({ overTime: [{ ts: 1_700_000_000_000, count: 3 }] }), add })
+    const value = await captured.get('loglens_facets')!.execute({ interval: '5m', from: 1_700_000_000_000, to: 1_700_000_060_000 }) as Record<string, unknown>
+    expect(value.interval).toBe('5m')
+    expect(value.overTime).toEqual([{ ts: 1_700_000_000_000, count: 3 }])
+    await expect(captured.get('loglens_facets')!.execute({ from: 1_700_000_000_000, to: 1_700_000_060_000 })).rejects.toThrow('至少要给 by')
+    await expect(captured.get('loglens_facets')!.execute({ interval: '5 minutes' })).rejects.toThrow('interval 形态不对')
+    await expect(captured.get('loglens_facets')!.execute({ by: 'x', size: 0 })).rejects.toThrow('size 必须是正整数')
+    const huge = await captured.get('loglens_facets')!.execute({ by: 'x', size: 5000, from: 1_700_000_000_000, to: 1_700_000_060_000 }) as Record<string, unknown>
+    expect((huge.warnings as string[]).join()).toContain('硬上限')
+  })
+
+  it('没有聚合能力的来源：给指路文案，而不是一个永远报错的入口', async () => {
+    const { add, captured } = capture()
+    registerLoglensTools({
+      config: () => configWith(target('loki', 'loki')),
+      backendFor: () => fakeBackend(),   // 假后端没实现 facets
+      add,
+    })
+    await expect(captured.get('loglens_facets')!.execute({ by: 'app' })).rejects.toThrow('没有聚合适配器')
+    const docker = capture()
+    registerLoglensTools({ config: () => configWith(target('d', 'docker')), backendFor: () => undefined, add: docker.add })
+    await expect(docker.captured.get('loglens_facets')!.execute({ by: 'app' })).rejects.toThrow('docker')
+  })
+})
+
 describe('loglens_context', () => {
   /*
    * 五行，新的在前（backward）。时间戳必须是**真实的 epoch 毫秒**（用例里拿小数字会被
