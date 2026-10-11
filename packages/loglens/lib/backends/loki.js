@@ -96,7 +96,7 @@ export function createLokiBackend(options = {}) {
     const label = '[loki]';
     /**
      * 一次 Loki 请求：出站围栏（src/net.ts：解析后的 IP 判定 / 不跟随重定向 / 体积与超时）+ 本层的
-     * 「非 2xx 与不是 JSON 都算失败」。围栏的 allowPublic 跟着**这条来源**走——开关在来源上，不在插件上。
+     * 「非 2xx 与不是 JSON 都算失败」。
      */
     async function callJson(target, url, init) {
         const response = await fetchJson({
@@ -106,7 +106,6 @@ export function createLokiBackend(options = {}) {
             init,
             timeoutMs,
             ...(options.lookupImpl === undefined ? {} : { lookupImpl: options.lookupImpl }),
-            ...(target.allowPublic === true ? { allowPublic: true } : {}),
         });
         if (!response.ok) {
             throw new Error(label + ' HTTP ' + String(response.status) + '：' + detailOf(response.body, response.text));
@@ -163,7 +162,6 @@ export function createLokiBackend(options = {}) {
                     init: { method: 'GET' },
                     timeoutMs,
                     ...(options.lookupImpl === undefined ? {} : { lookupImpl: options.lookupImpl }),
-                    ...(target.allowPublic === true ? { allowPublic: true } : {}),
                 });
                 const text = response.text.trim();
                 return response.ok

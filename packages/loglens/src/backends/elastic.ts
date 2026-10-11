@@ -309,7 +309,7 @@ export function createElasticBackend(options: ElasticOptions): LogBackend {
   const keepAlive = options.keepAlive === undefined ? ES_PIT_KEEP_ALIVE : options.keepAlive
 
   /**
-   * 一次 ES / OS 请求：出站围栏（src/net.ts）在本层之下，allowPublic 跟着**这条来源**走。
+   * 一次 ES / OS 请求：出站围栏（src/net.ts）在本层之下。
    *
    * 与 Loki 那侧的区别只在失败形状：ES 的失败响应**要读 body**（游标过期的判定就在里面），
    * 所以这里把 status / text / body 原样包进 ElasticHttpError 交给上层分类。
@@ -322,7 +322,6 @@ export function createElasticBackend(options: ElasticOptions): LogBackend {
       init,
       timeoutMs,
       ...(options.lookupImpl === undefined ? {} : { lookupImpl: options.lookupImpl }),
-      ...(target.allowPublic === true ? { allowPublic: true } : {}),
     })
     if (!response.ok) {
       throw new ElasticHttpError(prefix + 'HTTP ' + String(response.status) + '：' + detailOf(response.body, response.text), {
@@ -569,7 +568,6 @@ export function createElasticBackend(options: ElasticOptions): LogBackend {
           init: { method: 'GET', headers: access.headers },
           timeoutMs,
           ...(options.lookupImpl === undefined ? {} : { lookupImpl: options.lookupImpl }),
-          ...(target.allowPublic === true ? { allowPublic: true } : {}),
         })
         if (!response.ok) return { ok: false, detail: 'HTTP ' + String(response.status) + '：' + response.text.slice(0, 120) }
         const body = response.body

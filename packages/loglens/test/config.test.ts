@@ -153,31 +153,13 @@ describe('id 生成', () => {
     expect(updated.ok ? updated.config.targets[0].dockerTarget : '').toBe('remote-1')
   })
 
-  it('allowPublic 只对查询类来源有意义（docker 没有出站，带上它直接报错）', () => {
-    const loki = validateTargetInput({ kind: 'loki', url: 'http://127.0.0.1:3100', allowPublic: true }, [])
-    expect(loki.ok && loki.target.allowPublic).toBe(true)
-    const docker = validateTargetInput({ kind: 'docker', label: '本机', allowPublic: true }, [])
-    expect(docker.ok).toBe(false)
-    expect(docker.ok === false ? docker.error : '').toContain('只对查询类来源有意义')
-  })
-
-  it('allowPublic 缺省不写进目标（默认拒公网，别给配置面留一个恒为 false 的字段）', () => {
-    const checked = validateTargetInput({ kind: 'loki', url: 'http://127.0.0.1:3100' }, [])
-    expect(checked.ok && 'allowPublic' in checked.target).toBe(false)
-    // 不是布尔的真值不当真（'yes' / 1 一律按「没开」）
-    const loose = validateTargetInput({ kind: 'loki', url: 'http://127.0.0.1:3100', allowPublic: 'yes' }, [])
-    expect(loose.ok && loose.target.allowPublic).toBeUndefined()
-  })
-
-  it('改判能开也能关 allowPublic（关了要真的从目标上消失）', () => {
-    const start = configWith({ kind: 'loki', label: 'loki', url: 'http://127.0.0.1:3100' })
-    const opened = updateTarget(start, 'loki', { allowPublic: true })
-    expect(opened.ok && opened.config.targets[0].allowPublic).toBe(true)
-    // 只改 label 时不该把开关冲掉
-    const kept = updateTarget(opened.ok ? opened.config : start, 'loki', { label: '本地 Loki' })
-    expect(kept.ok && kept.config.targets[0].allowPublic).toBe(true)
-    const closed = updateTarget(kept.ok ? kept.config : start, 'loki', { allowPublic: false })
-    expect(closed.ok && closed.config.targets[0].allowPublic).toBeUndefined()
+  it('公网地址是允许面（常规做法）：字面量与私网一视同仁，只有链路本地那档被拒', () => {
+    expect(normalizeUrl('https://logs.example.com:9200').ok).toBe(true)
+    expect(normalizeUrl('http://198.51.100.7:9200/app-logs-*').ok).toBe(true)
+    // 非 RFC 1918 网段（真机那台内网服务器就在 172.172/16 上，RFC 1918 只覆盖 172.16~172.31）——照样收。
+    // 夹具按本仓规矩用 RFC 5737 文档段占位（具体的内网地址不入库）。
+    expect(normalizeUrl('http://192.0.2.10:19200').ok).toBe(true)
+    expect(normalizeUrl('http://169.254.169.254/latest/meta-data').ok).toBe(false)
   })
 
   it('index 只对 ES / OpenSearch 有意义，且不许含空白 / 斜杠 / ? / #', () => {

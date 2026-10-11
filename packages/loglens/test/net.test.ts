@@ -5,7 +5,7 @@
  *   1. **解析之后的 IP 才是判据**：同一个地址的别名 / 十六进制 / IPv4-mapped 写法都要落进同一档
  *      （localhost、::ffff:a9fe:a9fe、0x7f.0.0.1 都是实测过的绕过形态）；
  *   2. **重定向不跟随**：来源回 302 时请求**不能**打到 Location 上（用例直接数那台服务器的请求数）；
- *   3. **公网默认拒、按来源可开**：allowPublic 是来源级开关，开了才放行；
+ *   3. **公网放行、链路本地 / 云元数据硬拒**（常规做法，2026-10-11 定稿）：
  *   4. **体积与超时**：对面给多少读多少是会出事的，两条都要有上限。
  *
  * 假服务器只监听 127.0.0.1（回环是允许面），域名解析一律走注入的 lookupImpl——
@@ -100,7 +100,7 @@ function lookupOf(table: Record<string, string[]>): { impl: LookupFn; asked: str
 
 const LABEL = '[test]'
 
-async function codeOf(url: string, options: { allowPublic?: boolean; lookupImpl?: LookupFn; lookupTimeoutMs?: number } = {}): Promise<string> {
+async function codeOf(url: string, options: { lookupImpl?: LookupFn; lookupTimeoutMs?: number } = {}): Promise<string> {
   try {
     await assertReachable(url, { label: LABEL, ...options })
     return 'ok'
@@ -194,35 +194,23 @@ describe('解析与判定：字面量、别名、注入的解析结果', () => {
   })
 
   it('某个主机名只要解析出一个不能打的地址就整体拒（多地址时不能只看第一个）', async () => {
-    const dual = lookupOf({ 'dual.internal': ['10.0.0.7', '203.0.113.9'] })
-    expect(await codeOf('http://dual.internal:3100', { lookupImpl: dual.impl })).toBe('public_address')
     const mixed = lookupOf({ 'odd.internal': ['10.0.0.7', '169.254.169.254'] })
     expect(await codeOf('http://odd.internal:3100', { lookupImpl: mixed.impl })).toBe('blocked_address')
+    // 公网与私网混着解析也放行（连接面 = 你配的来源，常规做法）
+    const dual = lookupOf({ 'dual.internal': ['10.0.0.7', '203.0.113.9'] })
+    expect(await codeOf('http://dual.internal:3100', { lookupImpl: dual.impl })).toBe('ok')
   })
 
-  it('内网装在非 RFC 1918 网段（真机上就有这种环境）也按公网档拦——文案要同时给两种解释', async () => {
-    /*
-     * 现场（2026-10-11 真机）：用户的内网日志服务器是一台 172.172.x.x。
-     * RFC 1918 只覆盖 172.16/12（也就是 172.16~172.31），**172.172 不在里面**——
-     * 于是字面量看着像「内网」，判据却只能按公网档走。这不是纸面情形：中文企业内网
-     * 用公网段不 NAT 的做法很常见。夹具按本仓规矩用 RFC 5737 文档段占位。
-     */
-    const error = await assertReachable('http://192.0.2.10:19200/app-logs-*', { label: LABEL })
-      .catch((caught: unknown) => caught)
-    expect((error as LoglensNetError).code).toBe('public_address')
-    expect((error as LoglensNetError).message).toContain('192.0.2.10')
-    expect((error as LoglensNetError).message).toContain('非 RFC 1918 网段')
-    expect((error as LoglensNetError).message).toContain('allowPublic')
-  })
-
-  it('公网默认拒，这条来源显式打开 allowPublic 才放行', async () => {
+  it('公网地址照常放行（常规做法：连接面 = 你配的来源）', async () => {
     const { impl } = lookupOf({ 'logs.example.com': ['203.0.113.9'] })
-    expect(await codeOf('https://logs.example.com:9200', { lookupImpl: impl })).toBe('public_address')
-    const allowed = await assertReachable('https://logs.example.com:9200', { label: LABEL, lookupImpl: impl, allowPublic: true })
-    expect(allowed.addresses).toEqual(['203.0.113.9'])
-    // 开关只放宽公网这一档：链路本地仍然没有豁免
-    const metadata = lookupOf({ 'sneaky.example.com': ['169.254.169.254'] })
-    expect(await codeOf('https://sneaky.example.com', { lookupImpl: metadata.impl, allowPublic: true })).toBe('blocked_address')
+    const verdict = await assertReachable('https://logs.example.com:9200', { label: LABEL, lookupImpl: impl })
+    expect(verdict.addresses).toEqual(['203.0.113.9'])
+    expect(verdict.tiers).toEqual(['public'])
+    /*
+     * 内网装在非 RFC 1918 网段（真机那台就是 172.172/16，RFC 1918 只覆盖 172.16~172.31）也不例外——
+     * 那正是「公网档不该拦」的现场依据：地址分类是分类，流量并没有出内网。
+     */
+    expect(await codeOf('http://192.0.2.10:19200/app-logs-*')).toBe('ok')
   })
 
   it('解析失败 / 超时 / 没有记录都归 dns_failed（而不是放行）', async () => {
@@ -356,7 +344,7 @@ describe('适配器确实走在围栏后面（不是一个没人用的模块）'
     expect(health.detail).toContain('出站围栏')
   })
 
-  it('公网来源：默认拒；这条来源打开 allowPublic 后请求才真的发出去', async () => {
+  it('公网来源照常打出去（常规做法），且链路本地来源仍然被拦', async () => {
     const { impl } = lookupOf({ 'logs.example.com': ['203.0.113.9'] })
     const calls: string[] = []
     const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
@@ -366,15 +354,12 @@ describe('适配器确实走在围栏后面（不是一个没人用的模块）'
     const backend = createLokiBackend({ lookupImpl: impl, fetchImpl: fetchImpl as typeof fetch })
     const url = 'https://logs.example.com:3100'
 
-    await expect(backend.query(normalizedFor(backend), targetOf(url, 'loki'))).rejects.toThrow('allowPublic')
-    expect(calls).toEqual([])
-
-    const result = await backend.query(normalizedFor(backend), targetOf(url, 'loki', { allowPublic: true }))
+    const result = await backend.query(normalizedFor(backend), targetOf(url, 'loki'))
     expect(result.counts.returned).toBe(0)
     expect(calls).toEqual([url + '/loki/api/v1/query_range?query=%7B%7D&start=' + String((NOW - 60_000) * 1_000_000) + '&end=' + String(NOW * 1_000_000) + '&limit=10&direction=backward'])
   })
 
-  it('ES 来源打开 allowPublic 后同样能发出去（开关走的是一条来源，不是一个插件）', async () => {
+  it('ES 来源的公网地址同样能发出去（拦的是链路本地，不是公网）', async () => {
     const { impl } = lookupOf({ 'es.example.com': ['203.0.113.9'] })
     const calls: string[] = []
     const fetchImpl = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
@@ -387,10 +372,7 @@ describe('适配器确实走在围栏后面（不是一个没人用的模块）'
     const backend = createElasticBackend({ flavor: 'es', lookupImpl: impl, fetchImpl: fetchImpl as typeof fetch })
     const url = 'https://es.example.com:9200/logs-*'
 
-    await expect(backend.query(normalizedFor(backend), targetOf(url, 'elasticsearch'))).rejects.toThrow('allowPublic')
-    expect(calls).toEqual([])
-
-    const result = await backend.query(normalizedFor(backend), targetOf(url, 'elasticsearch', { allowPublic: true }))
+    const result = await backend.query(normalizedFor(backend), targetOf(url, 'elasticsearch'))
     expect(result.counts.returned).toBe(0)
     expect(calls.some((call) => call.includes('/_pit?keep_alive='))).toBe(true)
     expect(calls.some((call) => call.endsWith('/_search'))).toBe(true)

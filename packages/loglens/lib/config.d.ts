@@ -25,14 +25,6 @@ export interface LoglensTarget {
      */
     dockerTarget?: string;
     /**
-     * 只对**查询类**来源（loki / elasticsearch / opensearch）有意义：允许这条来源解析到公网地址吗。
-     *
-     * 出站围栏默认只放行回环与私网（设计 §4.1），要打托管日志服务（Elastic Cloud 之类）就得显式打开
-     * 这一位——「默认拒 + 一条来源一个开关」比「一刀切放行公网」和「一刀切禁止公网」都好解释：
-     * 判据在 src/net.ts，开关跟着来源走，出错文案里会点名这条来源。
-     */
-    allowPublic?: boolean;
-    /**
      * 只对 ES / OpenSearch 有意义：**索引表达式**（如 `app-logs-*`、`logs-2026.*,-logs-2026.09.*`）。
      *
      * 为什么要有它（2026-10-11 真机反馈第 3 条）：原先索引表达式是从**地址的路径**悄悄推出来的，
@@ -66,8 +58,8 @@ export declare function isLinkLocalHost(hostname: string): boolean;
 /**
  * 地址校验：只收 http / https 的绝对地址，并把链路本地 / 云元数据拒在门外。
  *
- * **私网是允许面**（10/8、172.16/12、192.168/16）——否则这个插件没有用法；这条产品
- * 语义在设计 §4.1 里写明，别在后端适配器里再收紧一遍。
+ * **连接面 = 你配置的来源**：回环、私网、公网一律放行（托管日志服务是正常用法）；唯一被
+ * 无条件拒绝的是链路本地 / 云元数据那一档。这条语义在设计 §4.1 里写明，别在后端适配器里再收紧一遍。
  */
 export declare function normalizeUrl(raw: unknown): {
     ok: true;

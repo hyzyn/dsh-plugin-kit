@@ -8,9 +8,9 @@
  * 断言的是**渲染树**与**交出去的请求体**，不是源码字符串：
  *   1. 产物形状：__ModuleLoader__.load 的 id / factory；factory 只 require 平台 seed 提供的那两个模块；
  *   2. 注册面：settings.kit.item / settings.plugin.item / plugins.bundle.config / plugins.row.config；
- *   3. 来源行：普通来源有第 4 格「允许公网地址」勾选框、docker 行留空占位（采集来源没有出站）；
- *   4. 勾选框 → 保存 → POST 请求体里确实带 allowPublic（这是「开关真的能开能关」的判据，
- *      宿主侧 allowPublic 缺省是「保持原值」，所以关掉时必须显式发 false）。
+ *   3. 来源行：四格齐（类型 / 名称 / 地址或 Docker 目标 / 两个动作），ES 行在地址格里多一个
+ *      「索引表达式」输入；除了插件开关之外**没有多余的勾选框**（「允许公网地址」按常规做法拆掉了）；
+ *   4. 填了索引表达式再保存 → POST 请求体里确实带 index（清空也要能发出去，否则宿主会「保持原值」）。
  *
  * 用法：pnpm --filter @hyzyn/dsh-loglens build && node scripts/client-smoke.mjs
  */
@@ -322,7 +322,7 @@ await test('apply 注册四个槽（含聚合包那一份 row）且都暴露组�
   if (typeof dispose === 'function') dispose()
 })
 
-await test('设置卡片渲染：公网那一格是勾选框、docker 行留空占位、头行列名齐', async () => {
+await test('设置卡片渲染：来源行四格齐、ES 行多一个索引表达式、没有多余的勾选框', async () => {
   const runtime = createRuntime()
   const exports_ = registration.factory((spec) => (spec === 'react' ? runtime.React : { jsx: runtime.jsx, jsxs: runtime.jsxs }))
   const { ctx, state } = makeClientCtx()
@@ -342,13 +342,10 @@ await test('设置卡片渲染：公网那一格是勾选框、docker 行留空�
   const rows = treeFind(tree, (node) => String(node.props?.className ?? '').includes('ll_row'))
   assert.equal(rows.length, 3, '三条来源该有 3 行，实得 ' + String(rows.length))
 
+  // 只有插件启用那一个勾选框（「允许公网地址」按常规做法已经拆掉了：连接面 = 你配的来源）
   const checkboxes = treeFind(tree, (node) => node.type === 'input' && node.props?.type === 'checkbox')
-  // 2 个「允许公网地址」+ 1 个插件开关
-  const publicBoxes = checkboxes.filter((node) => node.props.title !== undefined && String(node.props.title).includes('围栏'))
-  assert.equal(publicBoxes.length, 2, '两条查询类来源各有 1 个公网勾选框（docker 行不该有），实得 ' + String(publicBoxes.length))
-  assert.equal(publicBoxes.every((node) => node.props.checked === false), true, '宿主没开 allowPublic 时勾选框应是未勾上')
-  assert.ok(treeText(tree).includes('允许公网地址'), '界面文案里应有「允许公网地址」（围栏报错点名的那一格）')
-  assert.ok(treeText(tree).includes('公网'), '头行应有「公网」列名')
+  assert.equal(checkboxes.length, 1, '只剩插件开关那一个勾选框，实得 ' + String(checkboxes.length))
+  assert.equal(treeText(tree).includes('允许公网地址'), false, '不该再有「允许公网地址」这一格')
 
   // ES 行多一个「索引表达式」输入框（真机反馈第 3 条：别让人猜「路径即索引」这条暗号）
   const indexInputs = treeFind(tree, (node) => node.type === 'input' && typeof node.props?.placeholder === 'string' && node.props.placeholder.includes('索引表达式'))
@@ -382,54 +379,6 @@ await test('填了索引表达式再保存：POST 请求体里带 index（值给
   const post = calls.find((call) => call.method === 'POST' && call.body !== undefined && call.body.action === 'targets.update')
   assert.ok(post !== undefined, '没有发出 targets.update：' + JSON.stringify(calls))
   assert.equal(post.body.patch.index, 'app-logs-*', '索引表达式必须进请求体')
-})
-
-await test('勾上「允许公网地址」再保存：POST 请求体里带 allowPublic=true（关掉时带 false）', async () => {
-  const runtime = createRuntime()
-  const exports_ = registration.factory((spec) => (spec === 'react' ? runtime.React : { jsx: runtime.jsx, jsxs: runtime.jsxs }))
-  const { ctx, state } = makeClientCtx()
-  exports_.apply(ctx)
-  calls.length = 0
-
-  const Card = state.cards.find((card) => card.options.name === 'settings.kit.item').component
-  let tree = await runtime.mount(Card, {})
-  treeFind(tree, (node) => String(node.props?.className ?? '').includes('ll_cardHeader'))[0].props.onClick()
-  runtime.tick()
-  tree = await runtime.update()
-
-  const firstRow = treeFind(tree, (node) => String(node.props?.className ?? '').includes('ll_row'))[0]
-  const box = treeFind(firstRow, (node) => node.type === 'input' && node.props?.type === 'checkbox')
-    .find((node) => node.props.title !== undefined)
-  assert.ok(box !== undefined, '第一条来源没有公网勾选框')
-  box.props.onChange({ target: { checked: true } })
-  runtime.tick()
-  tree = await runtime.update()
-
-  const saveButton = treeFind(tree, (node) => node.type === 'button' && String(node.props?.className ?? '') === 'll_btn')[0]
-  assert.ok(saveButton !== undefined, '找不到保存按钮')
-  saveButton.props.onClick()
-  await runtime.update()
-  await runtime.update()
-
-  const post = calls.find((call) => call.method === 'POST' && call.body !== undefined && call.body.action === 'targets.update')
-  assert.ok(post !== undefined, '没有发出 targets.update：' + JSON.stringify(calls))
-  assert.equal(post.body.id, 'es', '改的应该是被勾的那条来源')
-  assert.equal(post.body.patch.allowPublic, true, '勾上后请求体必须带 allowPublic=true（否则宿主的「缺省 = 保持原值」会把它吃掉）')
-
-  // 关掉：同样要显式发 false（「缺省 = 保持原值」意味着不发就关不掉）
-  const again = treeFind(runtime.tree, (node) => String(node.props?.className ?? '').includes('ll_row'))[0]
-  const uncheck = treeFind(again, (node) => node.type === 'input' && node.props?.type === 'checkbox' && node.props.title !== undefined)[0]
-  assert.equal(uncheck.props.checked, true, '保存后勾选框应停在勾上的状态')
-  uncheck.props.onChange({ target: { checked: false } })
-  runtime.tick()
-  await runtime.update()
-  const saveAgain = treeFind(runtime.tree, (node) => node.type === 'button' && String(node.props?.className ?? '') === 'll_btn')[0]
-  saveAgain.props.onClick()
-  await runtime.update()
-  await runtime.update()
-  const closes = calls.filter((call) => call.method === 'POST' && call.body !== undefined && call.body.action === 'targets.update')
-  assert.equal(closes.length, 2, '应有两次 targets.update')
-  assert.equal(closes[1].body.patch.allowPublic, false, '取消勾选后必须显式发 allowPublic=false')
 })
 
 /* ------------------------------------------------------------------ *

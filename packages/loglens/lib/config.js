@@ -50,8 +50,8 @@ export function isLinkLocalHost(hostname) {
 /**
  * 地址校验：只收 http / https 的绝对地址，并把链路本地 / 云元数据拒在门外。
  *
- * **私网是允许面**（10/8、172.16/12、192.168/16）——否则这个插件没有用法；这条产品
- * 语义在设计 §4.1 里写明，别在后端适配器里再收紧一遍。
+ * **连接面 = 你配置的来源**：回环、私网、公网一律放行（托管日志服务是正常用法）；唯一被
+ * 无条件拒绝的是链路本地 / 云元数据那一档。这条语义在设计 §4.1 里写明，别在后端适配器里再收紧一遍。
  */
 export function normalizeUrl(raw) {
     if (typeof raw !== 'string')
@@ -137,11 +137,6 @@ export function validateTargetInput(input, taken = []) {
     if (rawDockerTarget !== '' && kind !== 'docker') {
         return { ok: false, error: 'dockerTarget 只对 docker 来源有意义（当前类型是 ' + kind + '）' };
     }
-    const allowPublic = raw.allowPublic === true;
-    if (allowPublic && kind === 'docker') {
-        // docker 是采集来源：它的日志由 Docker 插件去取，本插件在这里没有任何出站，这个开关没有意义
-        return { ok: false, error: 'allowPublic 只对查询类来源有意义（docker 来源没有出站请求）' };
-    }
     const rawIndex = typeof raw.index === 'string' ? raw.index.trim() : '';
     if (rawIndex !== '' && kind !== 'elasticsearch' && kind !== 'opensearch') {
         return { ok: false, error: 'index 只对 elasticsearch / opensearch 来源有意义（当前类型是 ' + kind + '）' };
@@ -162,8 +157,6 @@ export function validateTargetInput(input, taken = []) {
     const target = { id, kind, label: label === '' ? id : label, url };
     if (rawDockerTarget !== '')
         target.dockerTarget = rawDockerTarget;
-    if (allowPublic)
-        target.allowPublic = true;
     if (rawIndex !== '')
         target.index = rawIndex;
     return { ok: true, target };
@@ -221,7 +214,6 @@ export function updateTarget(config, id, patch) {
         label: rawPatch.label === undefined ? current.label : rawPatch.label,
         url: rawPatch.url === undefined ? current.url : rawPatch.url,
         dockerTarget: rawPatch.dockerTarget === undefined ? current.dockerTarget : rawPatch.dockerTarget,
-        allowPublic: rawPatch.allowPublic === undefined ? current.allowPublic : rawPatch.allowPublic,
         index: rawPatch.index === undefined ? current.index : rawPatch.index,
     };
     const others = config.targets.filter((target) => target.id !== current.id).map((target) => target.id);

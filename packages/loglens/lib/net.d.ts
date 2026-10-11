@@ -7,7 +7,7 @@ export declare const NET_DEFAULT_TIMEOUT_MS = 20000;
 /** 域名解析的超时：解析卡住不该把一次查询也跟着卡住。 */
 export declare const NET_LOOKUP_TIMEOUT_MS = 2000;
 /** 失败分档：路由与工具**按码**给下一步建议，不去匹配文案。 */
-export type NetErrorCode = 'blocked_address' | 'public_address' | 'dns_failed' | 'redirect' | 'too_large' | 'timeout' | 'transport';
+export type NetErrorCode = 'blocked_address' | 'dns_failed' | 'redirect' | 'too_large' | 'timeout' | 'transport';
 export declare class LoglensNetError extends Error {
     readonly code: NetErrorCode;
     /** 已去掉凭据的地址（错误文案里**不该出现密码**）。 */
@@ -41,8 +41,6 @@ export declare function sanitizeUrl(raw: string): string;
 export interface FenceOptions {
     /** 前缀（'[loki]' / '[es]'）：文案与两个适配器的既有前缀一致。 */
     label: string;
-    /** 这条来源允许公网地址吗（target.allowPublic；缺省 = 不允许）。 */
-    allowPublic?: boolean;
     /** 解析器注入点（用例）；缺省走 node:dns。 */
     lookupImpl?: LookupFn;
     lookupTimeoutMs?: number;

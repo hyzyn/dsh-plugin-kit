@@ -18,7 +18,7 @@ export function kindOptions() {
 
 /** 新行的草稿：id 为空表示「还没落盘」，提交走 targets.add。 */
 export function emptyDraft() {
-  return { id: '', kind: DEFAULT_KIND, label: '', url: '', dockerTarget: '', allowPublic: false, index: '' }
+  return { id: '', kind: DEFAULT_KIND, label: '', url: '', dockerTarget: '', index: '' }
 }
 
 /** index 只对 ES / OpenSearch 有意义（其余类型带上它宿主会 400）——判据与宿主 src/config.ts 对齐。 */
@@ -33,9 +33,6 @@ export function draftFromTarget(target) {
     label: typeof row.label === 'string' ? row.label : '',
     url: typeof row.url === 'string' ? row.url : '',
     dockerTarget: typeof row.dockerTarget === 'string' ? row.dockerTarget : '',
-    // 缺字段一律按「没开」：宿主那边的判据是 allowPublic === true，别的值等于没开（别在界面上
-    // 显示成勾上了而宿主不认）
-    allowPublic: row.allowPublic === true,
     index: typeof row.index === 'string' ? row.index : '',
   }
 }
@@ -69,9 +66,8 @@ export function draftProblem(draft) {
  * 插件自己的路由，它按自己的目标名找主机——两个插件各有各的目标清单，名字不会自动对上，所以显式存
  * 一个。docker 来源本来就没有 URL，这一格正好拿来用。
  *
- * **allowPublic 每次提交都带上**（true / false 都带）：关掉一开关就得能真的关掉，而
- * 「字段缺省」在宿主那边是「保持原值」——不带它等于关不掉。docker 分支刻意不带（宿主会 400：
- * 采集来源没有出站）。
+ * **index 只对 ES / OpenSearch 带上**（其余类型带上它宿主会 400）；而且空也要发——
+ * 「字段缺省」在宿主那边是「保持原值」，不发就等于清不掉。
  */
 export function draftPayload(draft) {
   const kind = draft.kind
@@ -87,7 +83,6 @@ export function draftPayload(draft) {
     kind,
     label: String(draft.label == null ? '' : draft.label).trim(),
     url: String(draft.url == null ? '' : draft.url).trim(),
-    allowPublic: draft.allowPublic === true,
   }
   // 索引表达式只对 ES / OpenSearch 发（其余类型带上它宿主会 400）。空串也发：清空要能真的清掉。
   if (INDEX_KINDS.indexOf(kind) !== -1) payload.index = String(draft.index == null ? '' : draft.index).trim()
