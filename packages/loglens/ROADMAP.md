@@ -849,7 +849,7 @@ interval 形态与硬上限、无能力来源的指路）、`tier-gate.test.ts`�
 | `scope()` 回显 | `app-logs-*`（显式 index） |
 | `fields` | **187 个字段、truncated=true**，前几个就是 `container.name` / `host.name` / `log.file.path` / `stream` / `log.level`；`.keyword` 重复行已去掉（改前 agent 拿到的是 45KB 且看不出截断） |
 | `probe` | `7.10.2（elasticsearch）`，**最近 15 分钟 5987 条** |
-| `facets by container.name`（近 1h） | `chendan-ems-service 13404`、`chendan-cwms-service 10001`、`chendan-cdc-service 324`、prometheus 238、grafana 190…；**其余 32 条落在没列出来的桶里**（如实回报） |
+| `facets by container.name`（近 1h） | `app-svc-1 13404`、`app-svc-2 10001`、`app-svc-3 324`、prometheus 238、grafana 190…；**其余 32 条落在没列出来的桶里**（如实回报）——**三个业务服务名已脱敏为 `app-svc-N`**（原名为内网服务标识，不入公共仓库；条数、桶数与各项结论一字未改） |
 | `facets interval=10m`（近 1h） | 7 个时间点，1300~4300 条/10 分钟 |
 | `filters {container.name}` | 命中 13404，.keyword 解析成功（调用方没写 `.keyword`） |
 | 行的标签 | `container.name / host.name / log.file.path / stream / container.image.name / agent.name …`——agent 当初要的就是这个 |

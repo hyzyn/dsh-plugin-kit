@@ -341,15 +341,15 @@ describe('映射与计数', () => {
       _index: 'app-logs-2026.10.11',
       _source: {
         '@timestamp': '2026-10-11T14:00:00.000Z',
-        message: '[ERROR] exam service failed',
-        container: { name: 'chendan-ems-service', image: { name: 'registry.internal/ems:1.2.3' } },
-        host: { name: 'hostma-test-161' },
+        message: '[ERROR] app service failed',
+        container: { name: 'app-svc-1', image: { name: 'registry.internal/app-svc-1:1.2.3' } },
+        host: { name: 'host-a.internal' },
         log: { file: { path: '/var/lib/docker/containers/abc/abc-json.log' } },
         stream: 'stdout',
       },
     })
-    expect(line?.labels['container.name']).toBe('chendan-ems-service')
-    expect(line?.labels['host.name']).toBe('hostma-test-161')
+    expect(line?.labels['container.name']).toBe('app-svc-1')
+    expect(line?.labels['host.name']).toBe('host-a.internal')
     expect(line?.labels['log.file.path']).toBe('/var/lib/docker/containers/abc/abc-json.log')
     // 级别：文档里没有就按正文推断，并标出来（不许把推断写成「来源标的」）
     expect(line?.level).toBe('error')

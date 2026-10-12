@@ -196,9 +196,9 @@ describe('dockerTargetChoices：把 Docker 面板的目标清单变成选项', (
   })
 
   it('当前值不在清单里也要给出来，并标成「不在清单里」', () => {
-    const rows = dockerTargetChoices([{ name: 'local' }], 'hostma-test-161')
+    const rows = dockerTargetChoices([{ name: 'local' }], 'host-a.internal')
     expect(rows).toHaveLength(2)
-    expect(rows[1]).toEqual({ value: 'hostma-test-161', label: 'hostma-test-161', known: false })
+    expect(rows[1]).toEqual({ value: 'host-a.internal', label: 'host-a.internal', known: false })
   })
 
   it('空清单 / 脏输入都不炸', () => {

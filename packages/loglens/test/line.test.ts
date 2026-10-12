@@ -19,17 +19,17 @@ import {
 } from '../src/line.js'
 import type { LogLine } from '../src/backends/types.js'
 
-/** filebeat 的容器日志文档（照真机那份裁剪，字段名一模一样）。 */
+/** filebeat 的容器日志文档（照真机那份裁剪，字段名一模一样；内网标识已脱敏）。 */
 const FILEBEAT_DOC = {
   '@timestamp': '2026-10-11T14:00:00.000Z',
-  message: 'exam service started',
+  message: 'app service started',
   container: {
     id: 'abc123',
-    name: 'chendan-ems-service',
-    image: { name: 'registry.internal/ems:1.2.3' },
-    labels: { 'com.docker.compose.project': 'ems' },
+    name: 'app-svc-1',
+    image: { name: 'registry.internal/app-svc-1:1.2.3' },
+    labels: { 'com.docker.compose.project': 'app-svc-1' },
   },
-  host: { name: 'hostma-test-161', architecture: 'x86_64', containerized: false },
+  host: { name: 'host-a.internal', architecture: 'x86_64', containerized: false },
   agent: { name: 'filebeat', type: 'filebeat', version: '8.6.2' },
   log: { file: { path: '/var/lib/docker/containers/abc123/abc123-json.log' }, offset: 4096 },
   stream: 'stdout',
@@ -43,9 +43,9 @@ function line(partial: Partial<LogLine> = {}): LogLine {
 describe('flattenLabels：嵌套对象要摊开，且「谁写的」排在前面', () => {
   it('filebeat 文档里能看出是哪台机器、哪个容器、哪个文件', () => {
     const labels = flattenLabels(FILEBEAT_DOC)
-    expect(labels['container.name']).toBe('chendan-ems-service')
-    expect(labels['container.image.name']).toBe('registry.internal/ems:1.2.3')
-    expect(labels['host.name']).toBe('hostma-test-161')
+    expect(labels['container.name']).toBe('app-svc-1')
+    expect(labels['container.image.name']).toBe('registry.internal/app-svc-1:1.2.3')
+    expect(labels['host.name']).toBe('host-a.internal')
     expect(labels['log.file.path']).toBe('/var/lib/docker/containers/abc123/abc123-json.log')
     expect(labels['agent.name']).toBe('filebeat')
     expect(labels.stream).toBe('stdout')
@@ -124,7 +124,7 @@ describe('级别：归一化、及以上语义、从正文推断', () => {
   })
 
   it('从正文推断：真机里出现过的五种写法各有一条', () => {
-    expect(inferLevel('[ERROR] exam service failed')).toBe('error')
+    expect(inferLevel('[ERROR] app service failed')).toBe('error')
     expect(inferLevel('[INFO ] started in 3s')).toBe('info')
     expect(inferLevel('level=ERROR msg=boom')).toBe('error')
     expect(inferLevel('{"level":"warn","msg":"slow"}')).toBe('warn')
