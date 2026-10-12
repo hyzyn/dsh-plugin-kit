@@ -26,54 +26,64 @@ export function decodeCursor(text) {
     const raw = parsed;
     if (raw.v !== CURSOR_VERSION)
         return { kind: 'invalid', reason: '游标版本不认识：' + JSON.stringify(raw.v) };
-    if (typeof raw.endNs !== 'string' || raw.endNs === '')
-        return { kind: 'invalid', reason: '游标缺 endNs' };
-    if (typeof raw.streamIdx !== 'number' || !Number.isInteger(raw.streamIdx) || raw.streamIdx < 0) {
-        return { kind: 'invalid', reason: '游标缺 streamIdx' };
+    if (typeof raw.boundaryNs !== 'string' || raw.boundaryNs === '')
+        return { kind: 'invalid', reason: '游标缺 boundaryNs' };
+    if (raw.direction !== 'forward' && raw.direction !== 'backward') {
+        return { kind: 'invalid', reason: '游标缺 direction（或值不认识）' };
     }
-    if (typeof raw.ordinalAtTs !== 'number' || !Number.isInteger(raw.ordinalAtTs) || raw.ordinalAtTs < 0) {
-        return { kind: 'invalid', reason: '游标缺 ordinalAtTs' };
-    }
-    return { kind: 'ok', cursor: { v: CURSOR_VERSION, endNs: raw.endNs, streamIdx: raw.streamIdx, ordinalAtTs: raw.ordinalAtTs } };
+    return {
+        kind: 'ok',
+        cursor: { v: CURSOR_VERSION, boundaryNs: raw.boundaryNs, direction: raw.direction },
+    };
 }
 /**
- * 切页：喂「后端这次按序返回的全部行」+「上一页的游标」+ limit。
+ * 一个 ts 组的**内容指纹**：`ts` + 组内每行的内容键（排序后拼起来）。
  *
- * 丢掉的规则刻意写成「同 ts、同流、前 ordinalAtTs 行」而不是「ts 小于等于某值」：
- * 后者会把同 ts 上**还没返回过**的行一起丢掉——那正是这套游标要避免的丢行。
+ * 用途是**用例与排查**：证明「同一个组无论组内次序怎么变，指纹都一样」。
+ * 分页本身靠 `boundaryNs + 1ns` 前进，不再依赖指纹去重（那版设计在真机上原地踏步）。
  */
-export function slicePage(rows, cursor, limit) {
-    let offset = 0;
-    if (cursor !== undefined) {
-        while (offset < rows.length && offset < cursor.ordinalAtTs) {
-            const row = rows[offset];
-            if (row.tsNs !== cursor.endNs || row.streamIdx !== cursor.streamIdx)
-                break;
-            offset += 1;
-        }
+export function groupFingerprint(tsNs, groupKeys) {
+    return tsNs + '|' + [...groupKeys].sort().join('\u0000');
+}
+/**
+ * 按「完整 ts 组」切页（loglens D03 之后的新坐标）。
+ *
+ * 输入是后端这次返回的行（已按 ts + 内容键定序）。规则：
+ *   - 取一页；
+ *   - **末组补全**：组是切不开的——半组交付会让续页丢行，所以末组整组一起交付
+ *     （页因此可以略超 limit，这是刻意取舍）；
+ *   - 末组在本次返回里完整时才产出游标；边界是末组的 ts，
+ *     由调用方按方向解释（forward → `ts + 1ns` 当 start；backward → `ts` 当 end）。
+ */
+export function slicePage(rows, cursor, limit, direction) {
+    // 取一页，然后**把末组补全**：组是切不开的——半组交付会让续页丢行（D03）。
+    // 适配器在调用前已经把末组整组取回，所以这里补全不会再打请求。
+    const page = rows.slice(0, Math.max(0, limit));
+    const lastKept = page[page.length - 1];
+    if (lastKept !== undefined) {
+        const groupTail = rows.filter((row) => row.tsNs === lastKept.tsNs);
+        const alreadyIn = page.filter((row) => row.tsNs === lastKept.tsNs).length;
+        if (groupTail.length > alreadyIn)
+            page.push(...groupTail.slice(alreadyIn));
     }
-    const available = rows.slice(offset);
-    const page = available.slice(0, Math.max(0, limit));
-    const result = { page, limited: page.length >= limit && limit > 0, skipped: offset };
+    const result = { page, limited: page.length >= limit && limit > 0, skipped: 0 };
     const last = page[page.length - 1];
     if (last !== undefined) {
-        // 同一 ts 同一流的第几行：从这一页所属的 ts 组**在本次返回里的起点**数起，
-        // 加上被丢掉的那几行——否则续页会把已经返回过的行再当新行发一次（重复而不是丢失）。
-        const groupStart = rows.findIndex((row) => row.tsNs === last.tsNs && row.streamIdx === last.streamIdx);
-        let ordinal = 0;
-        if (groupStart >= 0) {
-            for (let index = groupStart; index <= offset + page.length - 1; index += 1) {
-                const row = rows[index];
-                if (row !== undefined && row.tsNs === last.tsNs && row.streamIdx === last.streamIdx)
-                    ordinal += 1;
-            }
+        // 末组在**本次返回**里是否完整？完整才给游标——否则续页会把半组当整组，那正是丢行的老路。
+        const group = rows.filter((row) => row.tsNs === last.tsNs);
+        const delivered = page.filter((row) => row.tsNs === last.tsNs);
+        if (delivered.length === group.length) {
+            result.next = { v: CURSOR_VERSION, boundaryNs: last.tsNs, direction };
         }
-        result.next = { v: CURSOR_VERSION, endNs: last.tsNs, streamIdx: last.streamIdx, ordinalAtTs: ordinal };
     }
     return result;
 }
 /**
- * 把 Loki 返回的 `[tsNs, line]` 对转成 LogLine（`id` 稳定：同 ts 同流同序号只算一行）。
+ * 把 Loki 返回的 `[tsNs, line]` 对转成 LogLine。
+ *
+ * **`id` 与 `source` 不再含流序号**（loglens D03）：流序号来自响应次序，而那个次序跨查询会变，
+ * 拿它拼 id 会让同一个 ts 组在续页时算出不同的 id（去重失效、重复行）。现在用
+ * 「ts + 组内内容序」——内容序由 `rowsFromRange` 按内容定，跨页稳定。
  *
  * 级别：Loki 3.x 会带 `detected_level` 标签，有的部署把 `level` 放在流标签里——**有就用它**；
  * 都没有才从正文推断，并标出 levelInferred（真机反馈第 7 条）。
@@ -84,10 +94,10 @@ export function lineFromLoki(row, ordinalInGroup) {
     return withLevel({
         ts,
         message: row.line,
-        source: String(row.streamIdx) + '@' + row.tsNs,
+        source: row.tsNs,
         labels,
         raw: row.line,
-        id: String(row.streamIdx) + ':' + row.tsNs + ':' + String(ordinalInGroup),
+        id: row.tsNs + ':' + String(ordinalInGroup),
     }, [labels.level, labels.detected_level, labels.severity]);
 }
 export function encodeSearchAfterCursor(cursor) {

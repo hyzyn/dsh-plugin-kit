@@ -60,7 +60,8 @@ export function describeTarget(target: LoglensTarget): { id: string; kind: strin
  *
  * 三条都不是「说明文」，是**会出现在返回值里的判据**：
  *   - docker：选项 0 的替代路径（现成的 docker_logs / docker_logs_grep），本插件不包一层；
- *   - 声明了 pagination:'none' 的来源（当前是 Loki）：被 limit 截断时只会报 hit_limit，得缩小时间窗；
+ *   - 声明了 pagination:'none' 的来源：被 limit 截断时只会报 hit_limit，得缩小时间窗
+ *     （**当前没有来源走这条**——Loki 已在 2026-10-12 真机验收后翻成 'cursor'）；
  *   - ES / OpenSearch：分页走 PIT，游标有寿命，过期后要重新发起带时间窗的查询。
  *
  * **刻意不做**「探测 docker 插件在不在」：设计 §5 的「装了没装」判据是给**面板**用的（浏览器侧 registry

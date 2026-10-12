@@ -3,19 +3,22 @@
 把**异构日志后端归一化成一个查询面**：Loki / Elasticsearch / OpenSearch / Docker 各走一层薄适配器，
 对外只有一套「归一化行模型 + 诚实的计数与截断信号 + 交给 Agent 的工具」。
 
-> **状态：设置面、查询地基（契约 / 归一化 / 游标）、Loki 与 ES / OpenSearch 适配器、四个 agent 工具都已就位（2026-10-11）。**
-> 三条后端目前只有 **wire 级用例**（假 Loki / 假 ES 的真 HTTP 服务），**真机验收还没跑**；面板里的查询区
-> 已经能用（有能通的来源时才查得到东西）。
+> **状态：设置面、查询地基（契约 / 归一化 / 游标）、Loki 与 ES / OpenSearch 适配器、出站围栏与 agent 工具都已就位
+> （2026-10-11 ~ 10-12）。**
+> **Loki 侧已完成真机验收**（真 Loki 3.7.8，隔离环境）：分页翻成 `cursor`，真机抓到并修掉两个缺陷
+> （`loglens D02` / `D03`，逐条见 [DEFECTS.md](./DEFECTS.md)）；真机对账 12/12 组不丢不重。
+> ES / OpenSearch 侧已在真集群上跑过若干轮只读复核。逐条结论都在 [ROADMAP.md](./ROADMAP.md)，**不在这里复述**。
 > 设计与契约的唯一归宿是 [docs/design.md](./docs/design.md)；分期与待办见 [ROADMAP.md](./ROADMAP.md)。
 
 ## 现在能做什么
 
 - 在 **设置 → 插件配置 → 日志查询** 卡片里增删改「日志来源」（类型 / 名称 / 地址 / ES 的**索引表达式**）与插件开关。
-- 让 agent 用五个工具查（配好来源之后）：`loglens_sources` 列来源（含**解析后的索引表达式**与探测条数）、
+- 让 agent 用这几个工具查（配好来源之后，**名单以 [src/tools.ts](./src/tools.ts) 的注册处为准**）：
+  `loglens_sources` 列来源（含**解析后的索引表达式**与探测条数）、
   `loglens_search` 查（支持 `filters` 结构化过滤与 `level` 及以上筛选）、`loglens_fields` 看有哪些字段、
   `loglens_facets` 按字段分组 / 按时间分桶（「哪个服务在报错」）、`loglens_context` 取某一行前后的上下文。
   可查后端：**Loki**、**Elasticsearch**、**OpenSearch**（Docker 走现成的 `docker_logs` / `docker_logs_grep`）。
-  四个工具都归 **read** 档（分类表见 [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md) §2.1）。
+  它们**全部**归 **read** 档（分类表见 [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md) §2.1）。
 - **在同一张卡片里直接查**：来源 / 查询串 / 时间窗（15m · 1h · 6h · 24h）/ 条数 → 结果列表（时间到毫秒 ·
   级别 · 正文）+ 诚实的计数与截断提示；有游标时给「下一页」（按 id 去重）。
 - **行上能看出「谁写的」**：filebeat 那类嵌套字段（`container.name` / `host.name` / `log.file.path`）摊成
@@ -42,14 +45,11 @@
 | 列字段 | `POST /api/dsh-loglens/fields` `{"target":"<id>","limit":80}` | 面板的「有哪些字段」；被截断时返回 `total` / `truncated` |
 | 聚合 | `POST /api/dsh-loglens/facets` `{"target":"<id>","by":"container.name","interval":"5m"}` | 按字段分组 / 按时间分桶（目前只有 ES / OpenSearch 有；面板还没画它，工具面已有 `loglens_facets`） |
 
-围栏：整条路由走**加固档** `isLoopbackRequestStrict`；`/config` 按**动作**豁免（只有 `enabled` 免同源证明）；
-**`/query` 与 `/fields` 要同源证明**——它们只读，却会**替请求方打到已配置的内网目标**并把结果带回来；
-插件禁用时三条路由里只留 `/config`。
-
 围栏（[docs/design.md §4](./docs/design.md)）：整条路由走**加固档** `isLoopbackRequestStrict`；
 `/config` 按**动作**豁免——只有 `enabled` 免同源证明，targets 的增 / 删 / 改要 `hasSameOriginProof`
-（跨站页面能从配置侧加一个指向内网的来源，再用读面打它）。地址只收 http / https 的绝对地址；
-**私网是允许面**，链路本地 / 云元数据地址拒。
+（跨站页面能从配置侧加一个指向内网的来源，再用读面打它）。**`/query` / `/fields` / `/facets` 也都要同源证明**：
+它们只读，却会**替请求方打到已配置的内网目标**并把结果带回来。插件禁用时四条路由里只留 `/config`。
+地址只收 http / https 的绝对地址；回环 / 私网 / 公网都是允许面，**链路本地 / 云元数据地址拒**。
 
 ```bash
 # 读
@@ -73,7 +73,7 @@ curl -s -X POST http://127.0.0.1:3080/api/dsh-loglens/config -H 'content-type: a
 |---|---|
 | `package.json` | `dsh.bundle.patch` 指向 `cordis.patch.yml`；`main` / `exports["."]` 指向 `lib/index.js` |
 | `cordis.patch.yml` | bundle 补丁：`insert: { id: loglens, name: '@hyzyn/dsh-loglens' }` |
-| `src/index.ts` | 宿主半体：`/config` 路由 + 设置持久化（查询面还没有） |
+| `src/index.ts` | 宿主半体：`/config` / `/query` / `/fields` / `/facets` 四条路由 + 设置持久化 |
 | `src/config.ts` | 来源清单的**纯**判据（id 生成 / 地址校验 / 宽松读盘 / 增删改），不碰 cordis 与网络 |
 | `src/net.ts` | **出站围栏**：解析后的 IP 判定（链路本地 / 云元数据拒，回环 / 私网 / 公网放行）+ 不跟随重定向 + 体积与超时上限；两个适配器的所有出站都过它 |
 | `src/line.ts` | 行的**可观性**：嵌套字段摊成点分标签（优先键先占名额）+ 级别归一化与正文推断（标 `levelInferred`） |
@@ -82,9 +82,9 @@ curl -s -X POST http://127.0.0.1:3080/api/dsh-loglens/config -H 'content-type: a
 | `src/backends/types.ts` | 后端契约的**形状**（`LogBackend` / `BackendCaps` / `LogCounts` / `Truncation`…），没有实现 |
 | `src/backends/loki.ts` | Loki 适配器：`query_range` / `labels` / `ready`，摊平、合并顺序与计数（真机验收待跑） |
 | `src/backends/elastic.ts` | ES / OpenSearch 适配器（`flavor` 分流）：`_search` / PIT 分页 / `_field_caps` / health |
-| `src/tools.ts` | 四个 agent 工具（`loglens_sources` / `search` / `fields` / `context`）+ 档位分类表 |
+| `src/tools.ts` | agent 工具（`loglens_sources` / `search` / `fields` / `facets` / `context`）+ 档位分类表 |
 | `src/query.ts` | 归一化与夹取：时间戳单位、时间窗上限、limit 夹取、计数与截断归并 |
-| `src/cursor.ts` | Loki 游标（同 ts 多行不丢行）；解不开就报错，不当作没有游标 |
+| `src/cursor.ts` | 两份游标共用版本号常量：Loki 那份（同 ts 多行不丢行）与 ES 那份（`pitId` + `searchAfter`）；拿错适配器的游标在 decode 时被拒，解不开就报错、不当作没有游标 |
 | `client-src/index.js` → `client.js` | 构建型客户端半体：设置卡片，i18n 目录内联在源码里 |
 | `client-src/pure.js` | 客户端的纯逻辑（草稿合法性 / 提交载荷），进 vitest |
 | `scripts/build-client.mjs` | 客户端打包：剥 import + 内联 pure.js；发现残留 import 直接 `exit(1)` |
@@ -108,11 +108,17 @@ dsh plugin --profile <profile> add link:$(pwd)/packages/loglens
 
 ## 已知限制
 
-- **真机验收还没跑**：三条适配器都只有 wire 级用例（假服务器）；真 Loki / 真 ES 上的行为（尤其是 Loki
-  同 ts 多行的顺序稳定性与 ES 的 PIT 寿命）要等有环境时补（见 [ROADMAP.md](./ROADMAP.md)）。
-- **真机验收还没跑**：三条适配器都只有 wire 级用例（假服务器）；真 Loki / 真 ES 上的行为要等有环境时补。
+- **Loki 侧的真机验收已完成**（2026-10-12，真 Loki 3.7.8）：分页能力已翻成 `cursor`，同 ts 多行的
+  翻页在真机上 **12/12 组不丢不重**（多种 limit × forward/backward）。过程中抓到并修掉两个缺陷
+  （`loglens D02`：Loki 的 `end` 是开区间；`loglens D03`：「同 ts 第几行」不是稳定坐标）——
+  根因与修法见 [DEFECTS.md](./DEFECTS.md)，真机证据见 [ROADMAP.md](./ROADMAP.md) 的 P2 一节。
+  ES / OpenSearch 侧已在真集群上跑过若干轮只读复核，逐条结论同样在 ROADMAP 里，**不在这里复述**。
+- **翻页的取舍（明写）**：同一纳秒的行是**切不开的一组**——末组会让这一页**略超 `limit`**
+  （宁可多给几行，也不给一个会丢行的游标）；末组大到补不齐时**不给游标**，只报「命中可能不完整」。
 - 面板里的查询区是**受控重复**（设计 §5 的默认档）：日志视图建在本插件自己的卡片里，不与别的插件共享浏览器模块。
-- Docker 目标在面板里仍只做指路（选项 0 的面板半格没接）。
+- Docker 目标在面板里走的是**选项 0 的面板半格**（已接）：相对路径 fetch Docker 插件自己的
+  `/api/dsh-docker/containers` 与 `/logs`，弱面（无 `until`、`tail` 有上限、无 grep）在界面上如实标注；
+  agent 侧仍只做指路，不包一层。
 - 一次只查一个来源（v1 不做跨后端 fan-out）。
 - **出站围栏：连接面 = 你配置的来源**（设计 §4.1 / [src/net.ts](./src/net.ts)）：回环 / 私网 / 公网一律放行
   （托管日志服务、内网用非 RFC 1918 网段都算正常用法）；**链路本地与云元数据地址**（`169.254.169.254` 这类）

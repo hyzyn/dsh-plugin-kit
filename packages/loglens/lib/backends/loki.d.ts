@@ -7,14 +7,23 @@ export declare const LOKI_DEFAULT_MAX_WINDOW_MS: number;
 /** 单次请求超时（真机里卡住比报错更糟：面板会一直转圈）。 */
 export declare const LOKI_TIMEOUT_MS = 15000;
 /**
+ * 补齐一个 ts 组时单次请求的上限（loglens D03）。
+ *
+ * 为什么要有上限：同一个纳秒理论上可以写任意多行。取 5000 是个**诚实的边界**——
+ * 真超过它就不再假装这一组完整，而是让 `slicePage` 不产出游标（宁可报「命中可能不完整」，
+ * 也不给一个会丢行的游标）。
+ */
+export declare const LOKI_GROUP_MAX = 5000;
+/**
  * 分页能力的**当前声明**。
  *
- * 游标那套玩法的预设是「同一 stream、同一 ts 内多行的返回顺序稳定」，而这个前提**还没在真机上
- * 测过**（P2 的活）。测出来之前不对外给游标：只把 `hit_limit` 报出去，让调用方说「命中可能不
- * 完整，请缩小时间窗」。**诚实报不完整，好过给一个会丢行的游标。**
+ * **2026-10-12 翻成 `'cursor'`**：P2 的真机验收跑完了（真 Loki 3.7.8，本机隔离目录），
+ * 逐条证据见 ROADMAP 的「P2 真机验收」一节。这一位之所以能翻，靠的不是「顺序稳定」
+ * （真机证明它**不**稳定），而是把坐标从「同 ts 第几行」换成了「完整 ts 组」——见
+ * src/cursor.ts 的文件头与 loglens D02 / D03。
  *
- * 实现与用例都已就位（`pagination: 'cursor'` 的用例覆盖了「同 ts 三行 / limit=2 不丢第三行」与
- * 「同 ts 同内容两行 / limit=1 不吞第二行」两条），真机测出稳定序后改这一个常量即可。
+ * 真机对账：同一份 120 行（3 流 × 8 个时间点 × 每点同纳秒 5 行），limit 取 3 / 7 / 11 / 13 / 40
+ * 全部**不丢不重**；改之前的实现是 41 页 280 行、只有 7 行唯一。
  */
 export declare const LOKI_PAGINATION: PaginationKind;
 export interface LokiOptions {
@@ -47,14 +56,37 @@ interface LokiRow {
     streamIdx: number;
     line: string;
     labels: Record<string, string>;
-    /** 同 ts 同流里的第几行（从 0 起）：LogLine.id 靠它，**跨页也稳定**。 */
+    /** 同 ts 组里按**内容定序**之后的第几行（从 0 起）：LogLine.id 靠它，**跨页也稳定**。 */
     ordinalInGroup: number;
+    /** 内容键（标签 + 正文）：同 ts 组内的定序依据，也是「整组是否已交付」的指纹成分。 */
+    groupKey: string;
 }
 /** epoch 毫秒 → 纳秒字符串（BigInt 走一遍，别用浮点乘）。 */
 export declare function toNanoString(ms: number): string;
 /** 取两个纳秒字符串里较早的那个（不能先换成 ms：亚毫秒边界会被磨掉，而边界正是「含它」的那条线）。 */
 export declare function minNanoString(left: string, right: string): string;
-/** 把 query_range 的返回体摊平成行，并给出**全局有序**（同 ts 内按流序号、流内按出现次序）。 */
+/** 取两个纳秒字符串里较晚的那个（forward 续页把 start 推到游标边界时用）。 */
+export declare function maxNanoString(left: string, right: string): string;
+/**
+ * 纳秒字符串 +1ns。
+ *
+ * **为什么必须有这个函数**（loglens D02，2026-10-12 真机验收抓到）：Loki 的 `query_range`
+ * **`start` 是闭区间、`end` 是开区间**——真机上逐纳秒扫过：`start = ts` 命中、`end = ts` 命中 0 行、
+ * `end = ts + 1ns` 才命中。于是「窗口右端收到游标那个 ts」等于**把那一批同 ts 的行整批切掉**：
+ * 第一页拿到同 ts 的前 N 行之后，第二页 `end = ts` 直接回 0 行，同 ts 剩下的行与**其后所有数据**
+ * 一起永久丢失（真机实测：80 行只取回 7 行）。
+ *
+ * 修法是把续页的右端写成 `cursor.endNs + 1ns`（既包含游标那个 ts，又把它之后的数据挡在外面），
+ * 与 `slicePage` 里「丢掉同 ts 前 ordinalAtTs 行」的语义正好配套。
+ */
+export declare function plusOneNanoString(ns: string): string;
+/**
+ * 把 query_range 的返回体摊平成行，并给出**全局有序**。
+ *
+ * **组内按内容定序，不按响应位置**（loglens D03，2026-10-12 真机验收抓到）：Loki 返回的
+ * 流次序与组内次序会随查询窗口变化，拿位置当坐标的续页必然丢行或重复。这里改成
+ * 「ts → 内容键（标签 + 正文）」的定序，同一个 ts 组无论 Loki 怎么排，本层看到的次序都一样。
+ */
 export declare function rowsFromRange(body: LokiRangeBody, direction: 'forward' | 'backward'): LokiRow[];
 /** 建一个 Loki 后端。`options` 只为用例与日后的配置留口子，默认值就是线上口径。 */
 export declare function createLokiBackend(options?: LokiOptions): LogBackend;

@@ -11,8 +11,9 @@
  *      本层的 countsOf 只如实搬运，不猜。
  *   2. **cursor_expired 与 hit_limit 是两个理由**：过期不等于「还有更多」。适配器不许静默
  *      重开 PIT（那会悄悄换掉快照语义），Agent 侧应重新发一次带时间窗的查询。
- *   3. **Loki 的顺序稳定性**另有 P2 的真机测试；在那之前由适配器自己声明 pagination
- *      （测不出稳定序就声明 'none'，只回「命中可能不完整」），本层不做假设。
+ *   3. **Loki 的顺序稳定性**已由 P2 的真机验收测过（2026-10-12，结论：不稳定）；
+ *      游标的成立改由「完整 ts 组」这个坐标保证，而不是赌顺序——见 src/cursor.ts 与 loglens D03。
+ *      本层依旧不做任何顺序假设。
  */
 import type { BackendCaps, Direction, LogCounts, Truncation, TruncationReason } from './backends/types.js';
 /** 默认返回条数（面板与 agent 工具的默认值都取它）。 */

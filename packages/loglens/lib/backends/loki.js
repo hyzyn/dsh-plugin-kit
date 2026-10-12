@@ -9,16 +9,38 @@ export const LOKI_DEFAULT_MAX_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 /** 单次请求超时（真机里卡住比报错更糟：面板会一直转圈）。 */
 export const LOKI_TIMEOUT_MS = 15_000;
 /**
+ * 补齐一个 ts 组时单次请求的上限（loglens D03）。
+ *
+ * 为什么要有上限：同一个纳秒理论上可以写任意多行。取 5000 是个**诚实的边界**——
+ * 真超过它就不再假装这一组完整，而是让 `slicePage` 不产出游标（宁可报「命中可能不完整」，
+ * 也不给一个会丢行的游标）。
+ */
+export const LOKI_GROUP_MAX = 5000;
+/**
  * 分页能力的**当前声明**。
  *
- * 游标那套玩法的预设是「同一 stream、同一 ts 内多行的返回顺序稳定」，而这个前提**还没在真机上
- * 测过**（P2 的活）。测出来之前不对外给游标：只把 `hit_limit` 报出去，让调用方说「命中可能不
- * 完整，请缩小时间窗」。**诚实报不完整，好过给一个会丢行的游标。**
+ * **2026-10-12 翻成 `'cursor'`**：P2 的真机验收跑完了（真 Loki 3.7.8，本机隔离目录），
+ * 逐条证据见 ROADMAP 的「P2 真机验收」一节。这一位之所以能翻，靠的不是「顺序稳定」
+ * （真机证明它**不**稳定），而是把坐标从「同 ts 第几行」换成了「完整 ts 组」——见
+ * src/cursor.ts 的文件头与 loglens D02 / D03。
  *
- * 实现与用例都已就位（`pagination: 'cursor'` 的用例覆盖了「同 ts 三行 / limit=2 不丢第三行」与
- * 「同 ts 同内容两行 / limit=1 不吞第二行」两条），真机测出稳定序后改这一个常量即可。
+ * 真机对账：同一份 120 行（3 流 × 8 个时间点 × 每点同纳秒 5 行），limit 取 3 / 7 / 11 / 13 / 40
+ * 全部**不丢不重**；改之前的实现是 41 页 280 行、只有 7 行唯一。
  */
-export const LOKI_PAGINATION = 'none';
+export const LOKI_PAGINATION = 'cursor';
+/**
+ * 一行的内容键：稳定的流标签（去掉 Loki 自己加的那几个）+ 正文。
+ *
+ * 刻意**不含 ts**（同组共用一个 ts，放进去只是噪音）也**不含流序号**（序号随响应次序变）。
+ */
+function contentKey(labels, line) {
+    const stable = Object.keys(labels)
+        .filter((key) => key !== 'detected_level' && key !== 'service_name')
+        .sort()
+        .map((key) => key + '=' + labels[key])
+        .join(',');
+    return stable + '\u0000' + line;
+}
 /** 拼路径：只在中间补斜杠，不碰 base 里已有的前缀（Loki 常挂在网关的子路径下）。 */
 function joinUrl(base, path) {
     let trimmed = base;
@@ -34,6 +56,25 @@ export function toNanoString(ms) {
 export function minNanoString(left, right) {
     return BigInt(left) <= BigInt(right) ? left : right;
 }
+/** 取两个纳秒字符串里较晚的那个（forward 续页把 start 推到游标边界时用）。 */
+export function maxNanoString(left, right) {
+    return BigInt(left) >= BigInt(right) ? left : right;
+}
+/**
+ * 纳秒字符串 +1ns。
+ *
+ * **为什么必须有这个函数**（loglens D02，2026-10-12 真机验收抓到）：Loki 的 `query_range`
+ * **`start` 是闭区间、`end` 是开区间**——真机上逐纳秒扫过：`start = ts` 命中、`end = ts` 命中 0 行、
+ * `end = ts + 1ns` 才命中。于是「窗口右端收到游标那个 ts」等于**把那一批同 ts 的行整批切掉**：
+ * 第一页拿到同 ts 的前 N 行之后，第二页 `end = ts` 直接回 0 行，同 ts 剩下的行与**其后所有数据**
+ * 一起永久丢失（真机实测：80 行只取回 7 行）。
+ *
+ * 修法是把续页的右端写成 `cursor.endNs + 1ns`（既包含游标那个 ts，又把它之后的数据挡在外面），
+ * 与 `slicePage` 里「丢掉同 ts 前 ordinalAtTs 行」的语义正好配套。
+ */
+export function plusOneNanoString(ns) {
+    return String(BigInt(ns) + 1n);
+}
 function numberOrUndefined(value) {
     return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
@@ -46,13 +87,41 @@ function detailOf(body, fallback) {
     const text = fallback.trim();
     return text.length > 200 ? text.slice(0, 200) + '…' : text;
 }
-/** 比较两个纳秒字符串（字符串长度可能不同，必须按 BigInt 比）。 */
+/**
+ * 比较两个纳秒字符串（字符串长度可能不同，必须按 BigInt 比）。
+ */
 function compareNano(left, right) {
     const a = BigInt(left);
     const b = BigInt(right);
     return a === b ? 0 : a > b ? 1 : -1;
 }
-/** 把 query_range 的返回体摊平成行，并给出**全局有序**（同 ts 内按流序号、流内按出现次序）。 */
+/** 行序比较器：ts → 内容键 → 流序号（与 rowsFromRange 同一口径，供补齐末组后重排用）。 */
+function compareRows(direction) {
+    return (left, right) => {
+        const byTime = compareNano(left.tsNs, right.tsNs);
+        if (byTime !== 0)
+            return direction === 'forward' ? byTime : -byTime;
+        if (left.groupKey !== right.groupKey)
+            return left.groupKey < right.groupKey ? -1 : 1;
+        return left.streamIdx - right.streamIdx;
+    };
+}
+/** 重编每个 ts 组内的序号（定序变了就得重编，否则 LogLine.id 会错位）。 */
+function renumberGroups(rows) {
+    const seenAtTs = new Map();
+    for (const row of rows) {
+        const ordinal = seenAtTs.get(row.tsNs) ?? 0;
+        row.ordinalInGroup = ordinal;
+        seenAtTs.set(row.tsNs, ordinal + 1);
+    }
+}
+/**
+ * 把 query_range 的返回体摊平成行，并给出**全局有序**。
+ *
+ * **组内按内容定序，不按响应位置**（loglens D03，2026-10-12 真机验收抓到）：Loki 返回的
+ * 流次序与组内次序会随查询窗口变化，拿位置当坐标的续页必然丢行或重复。这里改成
+ * 「ts → 内容键（标签 + 正文）」的定序，同一个 ts 组无论 Loki 怎么排，本层看到的次序都一样。
+ */
 export function rowsFromRange(body, direction) {
     const streams = body.data?.result;
     if (!Array.isArray(streams))
@@ -62,7 +131,6 @@ export function rowsFromRange(body, direction) {
         const stream = streams[streamIdx];
         const labels = stream.stream === undefined ? {} : stream.stream;
         const values = Array.isArray(stream.values) ? stream.values : [];
-        const seenAtTs = new Map();
         for (const pair of values) {
             if (!Array.isArray(pair) || pair.length < 2)
                 continue;
@@ -70,20 +138,20 @@ export function rowsFromRange(body, direction) {
             const line = pair[1];
             if (typeof tsNs !== 'string' || typeof line !== 'string')
                 continue;
-            const ordinalInGroup = seenAtTs.get(tsNs) === undefined ? 0 : seenAtTs.get(tsNs) + 1;
-            seenAtTs.set(tsNs, ordinalInGroup);
-            rows.push({ tsNs, streamIdx, line, labels, ordinalInGroup });
+            rows.push({ tsNs, streamIdx, line, labels, ordinalInGroup: 0, groupKey: contentKey(labels, line) });
         }
     }
-    // Loki 按**流**返回（每条流内部有序），跨流没有全局顺序：这里补一个确定的合并顺序。
     rows.sort((left, right) => {
         const byTime = compareNano(left.tsNs, right.tsNs);
         if (byTime !== 0)
             return direction === 'forward' ? byTime : -byTime;
-        if (left.streamIdx !== right.streamIdx)
-            return left.streamIdx - right.streamIdx;
-        return left.ordinalInGroup - right.ordinalInGroup;
+        // 同 ts：先按内容键（稳定、与响应位置无关），再按流序号兜底（内容完全相同的两行）
+        if (left.groupKey !== right.groupKey)
+            return left.groupKey < right.groupKey ? -1 : 1;
+        return left.streamIdx - right.streamIdx;
     });
+    // 序号在**定序之后**编：LogLine.id 靠它，所以它必须与内容绑定、跨页稳定。
+    renumberGroups(rows);
     return rows;
 }
 /** 建一个 Loki 后端。`options` 只为用例与日后的配置留口子，默认值就是线上口径。 */
@@ -115,6 +183,24 @@ export function createLokiBackend(options = {}) {
             throw new Error(label + ' 返回的不是 JSON：' + (trimmed.length > 120 ? trimmed.slice(0, 120) + '…' : trimmed));
         }
         return response.body;
+    }
+    /**
+     * 打一次 query_range 并摊平成行（补齐末组时复用，免得把 URL 拼装抄第二遍）。
+     * 窗口语义与主查询一致：start 闭、end 开（loglens D02）。
+     */
+    async function rangeRows(target, q, startNs, endNs, limit, direction) {
+        const params = new URLSearchParams();
+        params.set('query', q === '' ? '{}' : q);
+        params.set('start', startNs);
+        params.set('end', endNs);
+        params.set('limit', String(limit));
+        params.set('direction', direction);
+        const url = joinUrl(target.url, '/loki/api/v1/query_range') + '?' + params.toString();
+        const body = (await callJson(target, url, { method: 'GET' }));
+        if (body.status !== undefined && body.status !== 'success') {
+            throw new Error(label + ' 查询失败：' + detailOf(body, 'status=' + String(body.status)));
+        }
+        return rowsFromRange(body, direction);
     }
     return {
         id: 'loki',
@@ -187,32 +273,68 @@ export function createLokiBackend(options = {}) {
             }
             const params = new URLSearchParams();
             params.set('query', query.q === '' ? '{}' : query.q);
-            params.set('start', toNanoString(query.from));
-            // 带游标时把窗口右端收到游标那个 ts：既省掉重读比它更新的数据，也保证「含边界」这条语义
-            // 精确到纳秒（先换成 ms 再换回来会把亚毫秒边界磨掉，那一批行就再也取不回来）。
-            params.set('end', skip === undefined ? toNanoString(query.to) : minNanoString(toNanoString(query.to), skip.endNs));
+            // 窗口按方向给：游标只用于**同方向续页**（loglens D03）。
+            // forward：从 boundaryNs 起（闭区间，靠内容指纹去重）；backward：到 boundaryNs 止（开区间）。
+            if (skip !== undefined && skip.direction !== query.direction) {
+                throw new Error(label + ' 游标方向与本次查询不一致（游标是 ' + skip.direction + '，查询是 ' + query.direction + '）：请重新发起查询');
+            }
+            const startNs = skip !== undefined && skip.direction === 'forward'
+                // forward：跨过已完整交付的那一组（start 是闭区间，+1ns 才叫前进；直接传边界会原地踏步）
+                ? maxNanoString(toNanoString(query.from), plusOneNanoString(skip.boundaryNs))
+                : toNanoString(query.from);
+            const endNs = skip !== undefined && skip.direction === 'backward'
+                // backward：end 本就是开区间，传边界即天然跨过该组
+                ? minNanoString(toNanoString(query.to), skip.boundaryNs)
+                : toNanoString(query.to);
+            params.set('start', startNs);
+            params.set('end', endNs);
             params.set('limit', String(query.limit));
             params.set('direction', query.direction);
             const url = joinUrl(target.url, '/loki/api/v1/query_range') + '?' + params.toString();
             const body = (await callJson(target, url, { method: 'GET' }));
             if (body.status !== undefined && body.status !== 'success') {
-                throw new Error('[loki] 查询失败：' + detailOf(body, 'status=' + String(body.status)));
+                throw new Error(label + ' 查询失败：' + detailOf(body, 'status=' + String(body.status)));
             }
-            const rows = rowsFromRange(body, query.direction);
-            const slice = slicePage(rows, skip, query.limit);
-            const summary = body.data?.stats?.summary ?? {};
+            let rows = rowsFromRange(body, query.direction);
+            let scannedRows = numberOrUndefined(body.data?.stats?.summary?.totalLinesProcessed);
+            let scannedBytes = numberOrUndefined(body.data?.stats?.summary?.totalBytesProcessed);
+            /*
+             * **补齐末组**（loglens D03）：limit 可能正好切在一个同 ts 组中间，而组内次序在 Loki 上
+             * 不稳定，所以「半组」不能当作一个完整的页交付。这里把末组整组单独再取一次，
+             * 用整组替换掉那半组；下一页靠内容指纹把这一组整组丢掉。
+             *
+             * 只多打一次请求，且只在「末组可能被切开」时才打（返回行数达到 limit）。
+             * 组大于 LOKI_GROUP_MAX 时**不假装完整**：照样交付，但下面不给游标（宁可报不完整）。
+             */
+            let groupCapped = false;
+            const lastRow = rows[rows.length - 1];
+            if (pagination === 'cursor' && lastRow !== undefined && rows.length >= query.limit) {
+                const groupRows = await rangeRows(target, query.q, lastRow.tsNs, plusOneNanoString(lastRow.tsNs), LOKI_GROUP_MAX, 'forward');
+                if (groupRows.length > 0) {
+                    groupCapped = groupRows.length >= LOKI_GROUP_MAX;
+                    rows = rows
+                        .filter((row) => row.tsNs !== lastRow.tsNs)
+                        .concat(groupRows)
+                        .sort(compareRows(query.direction));
+                    renumberGroups(rows);
+                    scannedRows = scannedRows === undefined ? undefined : scannedRows + groupRows.length;
+                    scannedBytes = scannedBytes === undefined ? undefined : scannedBytes + groupRows.reduce((n, row) => n + row.line.length, 0);
+                }
+            }
+            const slice = slicePage(rows, skip, query.limit, query.direction);
             const counts = countsOf({
                 returned: slice.page.length,
-                scannedRows: numberOrUndefined(summary.totalLinesProcessed),
-                scannedBytes: numberOrUndefined(summary.totalBytesProcessed),
+                scannedRows,
+                scannedBytes,
             });
             const lines = slice.page.map((row) => lineFromLoki(row, row.ordinalInGroup));
             const result = {
                 lines,
                 counts,
-                truncation: truncationOf({ limited: slice.limited }),
+                truncation: truncationOf({ limited: slice.limited || groupCapped }),
             };
-            if (pagination === 'cursor' && slice.next !== undefined) {
+            // groupCapped：末组大到补不齐 → 不产出游标（宁可报「可能不完整」，也不给会丢行的游标）。
+            if (pagination === 'cursor' && slice.next !== undefined && !groupCapped) {
                 result.nextCursor = encodeCursor(slice.next);
             }
             return result;
