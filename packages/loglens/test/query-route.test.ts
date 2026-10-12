@@ -10,7 +10,7 @@ import type { Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createLokiBackend } from '../src/backends/loki.js'
-import type { LogBackend } from '../src/backends/types.js'
+import type { BackendCaps, LogBackend } from '../src/backends/types.js'
 import type { LoglensConfig, SourceKind } from '../src/config.js'
 import { runFacets, runFields, runSearch } from '../src/execute.js'
 import { ROUTE_PREFIX, makeRoutes } from '../src/index.js'
@@ -64,9 +64,9 @@ interface FakeRoute {
   handler: (req: never, res: never) => unknown
 }
 
-function harness(config: LoglensConfig) {
+function harness(config: LoglensConfig, override?: (kind: SourceKind) => LogBackend | undefined) {
   let live = config
-  const backendFor = (kind: SourceKind): LogBackend | undefined => (kind === 'loki' ? createLokiBackend() : undefined)
+  const backendFor = override ?? ((kind: SourceKind): LogBackend | undefined => (kind === 'loki' ? createLokiBackend() : undefined))
   const route = makeRoutes({
     read: () => live,
     write: async (next) => {
@@ -77,6 +77,7 @@ function harness(config: LoglensConfig) {
     runFields: (input) => runFields({ config: () => live, backendFor }, input),
     runFacets: (input) => runFacets({ config: () => live, backendFor }, input),
     dockerLoaded: () => false,
+    backendFor,
   })[0] as unknown as FakeRoute
 
   return {
@@ -220,5 +221,71 @@ describe('校验与错误：原话要能指导下一步', () => {
       { name: 'level', kind: 'discovered' },
     ])
     expect(fake.requests[0].path).toBe('/loki/api/v1/labels')
+  })
+})
+
+/**
+ * 面板画「时间分布」要靠宿主随 `/query` 下发的 `capabilities`（判定理由见 src/index.ts 的
+ * capabilitiesOf）。这一节锁的是**那一格自述的来源**：它必须来自适配器，而不是面板按 kind 猜的
+ * 第二份判据——猜的那份会在 Loki 接上指标查询那天静默过期，而它正是「不给一个永远报错的入口」
+ * 所依赖的东西。
+ */
+describe('能力自述随 /query 下发', () => {
+  const STUB_CAPS: BackendCaps = {
+    queryLanguage: 'lucene',
+    follow: false,
+    aggregations: true,
+    requiresTimeRange: true,
+    fields: 'indexed',
+    pagination: 'cursor',
+    maxPageSize: 100,
+    maxWindowMs: 60 * 60 * 1000,
+  }
+
+  function stubHarness(caps: Partial<BackendCaps>) {
+    const stub: LogBackend = {
+      id: 'stub',
+      capabilities: () => ({ ...STUB_CAPS, ...caps }),
+      fields: async () => ({ fields: [], total: 0, truncated: false }),
+      query: async () => ({ lines: [], counts: { returned: 0, totalKnown: false }, truncation: { truncated: false, reasons: [] } }),
+      health: async () => ({ ok: true }),
+    }
+    const config: LoglensConfig = { enabled: true, targets: [{ id: 'x1', kind: 'elasticsearch', label: 'stub', url: 'http://127.0.0.1:1' }] }
+    return harness(config, () => stub)
+  }
+
+  it('带聚合能力的来源：响应里有 capabilities，聚合为真（面板据此去拉分布）', async () => {
+    const response = await stubHarness({ aggregations: true, pagination: 'cursor' }).request({ ...PROOF, body: { target: 'x1', from: 1_700_000_000_000, to: 1_700_000_060_000 } })
+    expect(response.status).toBe(200)
+    expect(response.body?.capabilities).toEqual({ queryLanguage: 'lucene', pagination: 'cursor', follow: false, aggregations: true })
+  })
+
+  it('**值是适配器说了算**：同一个桩换成聚合为假，响应立刻跟着变（不是面板猜的）', async () => {
+    const response = await stubHarness({ aggregations: false }).request({ ...PROOF, body: { target: 'x1', from: 1_700_000_000_000, to: 1_700_000_060_000 } })
+    expect(response.status).toBe(200)
+    expect(response.body?.capabilities).toEqual({ queryLanguage: 'lucene', pagination: 'cursor', follow: false, aggregations: false })
+  })
+
+  it('真实 Loki：聚合为假——面板据此**不画**分布、也不发那个请求', async () => {
+    const fake = await startFakeLoki()
+    const response = await harness(configWith(fake.url)).request({
+      ...PROOF,
+      body: { target: 'loki', from: 1_700_000_000_000, to: 1_700_000_060_000 },
+    })
+    expect(response.status).toBe(200)
+    expect(response.body?.capabilities).toEqual({ queryLanguage: 'logql', pagination: 'cursor', follow: false, aggregations: false })
+    // 只打了 query_range：没有「试一下聚合再说」那种白跑一趟的请求
+    expect(fake.requests.map((item) => item.path)).toEqual(['/loki/api/v1/query_range'])
+  })
+
+  it('只有 /query 带这一位：/fields 与 /facets 的响应不带（它们没有消费者）', async () => {
+    const fake = await startFakeLoki()
+    const harnessed = harness(configWith(fake.url))
+    const fields = await harnessed.request({ ...PROOF, sub: '/fields', body: { target: 'loki' } })
+    expect(fields.status).toBe(200)
+    expect('capabilities' in (fields.body ?? {})).toBe(false)
+    const facets = await harnessed.request({ ...PROOF, sub: '/facets', body: { target: 'loki', by: 'app' } })
+    expect(facets.status).toBe(400)
+    expect('capabilities' in (facets.body ?? {})).toBe(false)
   })
 })

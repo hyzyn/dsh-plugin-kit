@@ -1,10 +1,10 @@
 /**
  * @hyzyn/dsh-loglens — 宿主半体。
  *
- * 当前落地范围**只有来源清单与开关**：/api/dsh-loglens/config 的读写，供设置卡片
- * 增删改「日志来源」（Loki / Elasticsearch / OpenSearch / Docker）。查询能力（后端
- * 适配器、agent 工具、浏览器视图）**还没有**——那是 P1 起的事，见本包的 docs/design.md
- * 与 ROADMAP.md，卡片上也如实写着这一句。
+ * 落地范围：`/api/dsh-loglens/{config,query,fields,facets}` 四条子路由（一个 prefix 路由内部分发）
+ * ——设置卡片增删改「日志来源」（Loki / Elasticsearch / OpenSearch / Docker）、查日志、列字段、
+ * 按字段分组 / 按时间分桶。查询能力的实现与判据全在 src/execute.ts，**与 agent 工具共用同一份**
+ * （见本包的 docs/design.md）；本文件只管路由、围栏与「能力自述」的接线。
  *
  * 档位（维护者 2026-10-11 拍板）：进**加固档** isLoopbackRequestStrict；/config 按
  * **动作**豁免——enabled 不要同源证明（插件禁用后设置卡片是唯一的恢复入口），targets
@@ -27,8 +27,9 @@ import {
 } from '@hyzyn/dsh-kit'
 import type { ReqLike, ResLike, SettingsEntryScope } from '@hyzyn/dsh-kit'
 import { MAX_TARGETS, addTarget, normalizeConfig, removeTarget, updateTarget } from './config.js'
-import type { LoglensConfig } from './config.js'
+import type { LoglensConfig, SourceKind } from './config.js'
 import { backendFor } from './backends/registry.js'
+import type { LogBackend } from './backends/types.js'
 import { runFacets, runFields, runSearch } from './execute.js'
 import { dockerPluginLoaded } from './plugins.js'
 import { LOGLENS_TIER_CLASS, LOGLENS_TIER_PREFIXES, registerLoglensTools } from './tools.js'
@@ -87,8 +88,8 @@ export interface RouteState {
   /** 列字段（面板的「有哪些字段」）。 */
   runFields: (input: Record<string, unknown>) => Promise<Record<string, unknown>>
   /**
-   * 聚合（按字段分组 / 按时间分桶）。工具面已有 loglens_facets；面板还没画它——
-   * 路由先留着，让「面板补这一格」是纯前端改动。
+   * 聚合（按字段分组 / 按时间分桶）。工具面是 `loglens_facets`；面板用它画「时间分布」直方图
+   * （2026-10-12 接上，见 client-src 的 `loadHistogram`）——**同一份执行层**，不另写判据。
    */
   runFacets: (input: Record<string, unknown>) => Promise<Record<string, unknown>>
   /**
@@ -96,16 +97,46 @@ export interface RouteState {
    * 判据是 cordis 的 plugin registry，见 src/plugins.ts——**不是** tools 服务（它没有列举 API）。
    */
   dockerLoaded: () => boolean
+  /**
+   * kind → 适配器。**必须与执行层用的是同一个函数**（插件里传的就是 `executeDeps.backendFor`）：
+   * 能力自述要描述**真正跑的那个后端**，否则面板会照着一个跟实际不一样的名单去画分布。
+   */
+  backendFor: (kind: SourceKind) => LogBackend | undefined
 }
 
 /**
- * 构造面板用的三条路由：`/config`（读写）、`/query`（查）、`/fields`（列字段）。
+ * 查询响应里带上这条来源的**能力**：面板据此决定画不画「时间分布」（直方图）。
+ *
+ * **为什么不放 `/config`**：能力是**运行期事实**（来自适配器的 `capabilities()`），不是设置项；
+ * 而且它跟着**这一次查询**回来，正好是画分布所需要的时机（分布本来也只对这一次的窗口有意义）。
+ *
+ * **为什么不让面板按 `kind` 自己判**：那等于把「谁能聚合」抄成第二份判据——Loki 接上 LogQL
+ * 指标查询的那天，抄的那份会**静默过期**，而这一位正是「不给一个永远报错的入口」所依赖的东西。
+ * 所以只由宿主算、随响应下发。
+ */
+function capabilitiesOf(state: RouteState, outcome: Record<string, unknown>): Record<string, unknown> | undefined {
+  const target = outcome.target
+  const kind = target !== null && typeof target === 'object' ? (target as { kind?: unknown }).kind : undefined
+  if (typeof kind !== 'string') return undefined
+  const backend = state.backendFor(kind as SourceKind)
+  if (backend === undefined) return undefined
+  const caps = backend.capabilities()
+  return {
+    queryLanguage: caps.queryLanguage,
+    pagination: caps.pagination,
+    follow: caps.follow,
+    aggregations: caps.aggregations,
+  }
+}
+
+/**
+ * 构造面板用的四条路由：`/config`（读写）、`/query`（查）、`/fields`（列字段）、`/facets`（分组 / 分桶）。
  *
  * 围栏（设计 §4）：整条路由走**加固档** `isLoopbackRequestStrict`；`/config` 按**动作**豁免——
  * 只有 `enabled` 免同源证明（禁用后设置卡片是唯一的恢复入口）。**`/query` 与 `/fields` 要同源证明**：
  * 它们虽然只读，却会**替请求方打到已配置的内网目标**并把结果带回来——跨站页面能借它读内网
  * （设计 §4.3 那句「再从配置侧加一个指向内网的 target，用读面打它」的「读面」正是这里）。
- * 插件禁用时三条路由里**只留 `/config`**（设置卡片靠它渲染，也是唯一的恢复入口）。
+ * 插件禁用时四条路由里**只留 `/config`**（设置卡片靠它渲染，也是唯一的恢复入口）。
  */
 export function makeRoutes(state: RouteState): Route[] {
   return [
@@ -157,7 +188,9 @@ export function makeRoutes(state: RouteState): Route[] {
             const outcome = sub === '/query'
               ? await state.runQuery(payload)
               : sub === '/fields' ? await state.runFields(payload) : await state.runFacets(payload)
-            writeJson(res, 200, { ok: true, ...outcome })
+            // 只有 /query 带能力自述：面板拿它决定画不画「时间分布」（见 capabilitiesOf 的注释）。
+            const caps = sub === '/query' ? capabilitiesOf(state, outcome) : undefined
+            writeJson(res, 200, { ok: true, ...outcome, ...(caps === undefined ? {} : { capabilities: caps }) })
           } catch (error) {
             // 校验失败与后端报错都回 400 + 原话（面板要把「下一步怎么做」显示出来）
             writeJson(res, 400, { error: error instanceof Error ? error.message : String(error) })
@@ -328,6 +361,7 @@ const plugin = definePlugin<Config>({
           runFields: (input) => runFields(executeDeps, input),
           runFacets: (input) => runFacets(executeDeps, input),
           dockerLoaded: () => dockerPluginLoaded(ctx),
+          backendFor,
         }).map((route) => server.register(route))
         return () => {
           for (const dispose of disposers) {

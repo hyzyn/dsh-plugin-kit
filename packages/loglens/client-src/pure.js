@@ -177,6 +177,110 @@ export function countsParts(counts) {
   return parts
 }
 
+/* ============================ 时间分布（直方图，P6） ============================ */
+
+/**
+ * 这一格为什么**必须**走后端聚合，不能数页面上的行（这是本格的判据，不是实现细节）：
+ *
+ * 页面上的行是 `limit` 截断过的（默认 100），「数这一页的行」量到的是**这一页的分布**，
+ * 不是命中的分布——`limit=100` 打在「最近 1 小时」上，它会画出一条「后 10 分钟占 100%」的
+ * 假曲线。所以分布只能来自后端的 `date_histogram`（ES / OpenSearch 的 `facets`，
+ * 见 src/backends/elastic.ts）。本层只负责**挑间隔**与**铺柱子**。
+ */
+
+/** 分桶档位（从小到大）：挑**第一档**让柱数不超上限的——细节最多，又不至于糊成一片。 */
+const HISTOGRAM_STEPS = [
+  { ms: 10 * 1000, key: '10s' },
+  { ms: 30 * 1000, key: '30s' },
+  { ms: 60 * 1000, key: '1m' },
+  { ms: 5 * 60 * 1000, key: '5m' },
+  { ms: 15 * 60 * 1000, key: '15m' },
+  { ms: 30 * 60 * 1000, key: '30m' },
+  { ms: 60 * 60 * 1000, key: '1h' },
+  { ms: 6 * 60 * 60 * 1000, key: '6h' },
+  { ms: 24 * 60 * 60 * 1000, key: '1d' },
+]
+
+/** 柱数上限：60 根在卡片宽度里还看得清一根一根，再多就只剩一条色带。 */
+const HISTOGRAM_MAX_BARS = 60
+
+/**
+ * 按时间窗长度挑分桶档位，返回 `{ ms, key }`（key 是给 `/facets` 的 `interval`）。
+ *
+ * 认不出的窗口（NaN / 0 / 负数）回落 1 小时——与 `windowRange` 同一条态度：界面上永远有一个
+ * 能用的值，不该因为传错一个数就查出一个空分布。
+ */
+export function histogramInterval(windowMs) {
+  const span = typeof windowMs === 'number' && Number.isFinite(windowMs) && windowMs > 0 ? windowMs : 60 * 60 * 1000
+  for (const step of HISTOGRAM_STEPS) {
+    if (span / step.ms <= HISTOGRAM_MAX_BARS) return step
+  }
+  return HISTOGRAM_STEPS[HISTOGRAM_STEPS.length - 1]
+}
+
+/**
+ * 请求载荷：**窗口取响应回显的那一份**，不是面板请求的那一份。
+ *
+ * 宿主可能兜底过（只给一端时补 15 分钟）或按来源上限收窄过；用回显的那份才对得上
+ * 「这次查询实际查的是什么」——否则分布会画在一个跟结果列表不同的窗口上。
+ * 回显不完整（不是数）时回 `null`：让界面**不发这个请求**，而不是发一个畸形的。
+ */
+export function histogramPayload(draft, outcome, intervalKey) {
+  const echoed = outcome !== null && typeof outcome === 'object' && outcome.window !== null && typeof outcome.window === 'object' ? outcome.window : {}
+  const target = outcome !== null && typeof outcome === 'object' && outcome.target !== null && typeof outcome.target === 'object' ? outcome.target : {}
+  if (typeof target.id !== 'string' || target.id === '') return null
+  if (!Number.isFinite(echoed.from) || !Number.isFinite(echoed.to) || !(echoed.to > echoed.from)) return null
+  return {
+    target: target.id,
+    q: String(draft == null || draft.q == null ? '' : draft.q),
+    from: echoed.from,
+    to: echoed.to,
+    interval: intervalKey,
+  }
+}
+
+/**
+ * 把后端的桶铺成一根根柱子：**整个窗口都铺满，空档补 0**，并按峰值归一化。
+ *
+ * **为什么必须补 0**（这格的诚实底线）：适配器给 `date_histogram` 传的是 `min_doc_count: 1`
+ * （只发有数据的桶——这是对的，没数据的时间点不该在响应里占位）。于是「10:00 有 3 条、10:30
+ * 有 5 条」在响应里就是两个**相邻**的桶，中间那半小时根本不在数据里。照数组直接画，半小时的
+ * 空档会被压掉、两根柱子挨在一起——图上看起来「一直在刷日志」，而事实是**那段时间一条都没有**。
+ * 同理，末尾那段安静也要留着（不然看不出「半小时前就停了」）。
+ *
+ * 柱数上限只作兜底：间隔本来是按窗口挑的，两处对不上时（改了窗口没重查）才可能触到，
+ * 触发时 ``truncated: true``，界面要如实说出来——**少画的那部分是少画的**。
+ */
+export function histogramBars(overTime, from, to, intervalMs) {
+  const step = typeof intervalMs === 'number' && Number.isFinite(intervalMs) && intervalMs > 0 ? intervalMs : 0
+  const start = Number.isFinite(from) ? from : 0
+  const end = Number.isFinite(to) ? to : 0
+  if (step === 0 || !(end > start)) return { bars: [], max: 0, total: 0, truncated: false }
+  // 同一 ts 出现多次就相加（不同分片 / 不同聚合键的同名桶），而不是让后一个盖掉前一个。
+  const counts = new Map()
+  for (const row of Array.isArray(overTime) ? overTime : []) {
+    if (row == null || !Number.isFinite(row.ts) || !Number.isFinite(row.count)) continue
+    counts.set(row.ts, (counts.get(row.ts) || 0) + row.count)
+  }
+  // 从窗口左端所在的那个**桶边界**起铺（date_histogram 的桶按 epoch 整数倍对齐）。
+  const first = Math.floor(start / step) * step
+  const wanted = Math.ceil((end - first) / step)
+  const cap = HISTOGRAM_MAX_BARS * 2
+  const drawn = Math.min(wanted, cap)
+  const bars = []
+  let max = 0
+  let total = 0
+  for (let index = 0; index < drawn; index += 1) {
+    const ts = first + index * step
+    const count = counts.get(ts) || 0
+    if (count > max) max = count
+    total += count
+    bars.push({ ts, count: count })
+  }
+  for (const bar of bars) bar.ratio = max === 0 ? 0 : bar.count / max
+  return { bars, max, total, truncated: wanted > cap }
+}
+
 /* ============================ Docker 目标（P6 面板半格，选项 0） ============================ */
 
 /** Docker 面板那条路径的 since 取值：直接复用时间窗预设（docker --since 认 15m / 1h 这类写法）。 */

@@ -103,6 +103,10 @@ function harness() {
     runQuery: async () => ({}),
     runFields: async () => ({}),
     dockerLoaded: () => false,
+    // 能力自述要描述**真正跑的那个后端**，所以路由与执行层共用同一个 backendFor（见 RouteState 的注释）。
+    // 这一份 harness 只打 /config，用不上它；但字段是必需的——缺了会在「以后加一条 /query 用例」时
+    // 以 `state.backendFor is not a function` 的样子炸掉，那种失败很难对回到原因。
+    backendFor: () => undefined,
   })[0]
   return {
     route,

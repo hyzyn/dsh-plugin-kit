@@ -10,6 +10,9 @@ import {
   draftProblem,
   emptyDraft,
   emptyQuery,
+  histogramBars,
+  histogramInterval,
+  histogramPayload,
   kindOptions,
   queryPayload,
   queryProblem,
@@ -217,5 +220,139 @@ describe('dockerLogTextOf：Docker /logs 的两种形状', () => {
     expect(dockerLogTextOf({ ok: true })).toBe('')
     expect(dockerLogTextOf({ ok: true, logs: { id: 'x' } })).toBe('')
     expect(dockerLogTextOf({ ok: true, logs: 42 })).toBe('')
+  })
+})
+
+describe('时间分布：间隔怎么挑（P6 直方图）', () => {
+  it('柱数落在看得清的区间里：15m→30s、1h→1m、6h→15m、24h→30m', () => {
+    expect(histogramInterval(15 * 60 * 1000)).toEqual({ ms: 30 * 1000, key: '30s' })
+    expect(histogramInterval(60 * 60 * 1000)).toEqual({ ms: 60 * 1000, key: '1m' })
+    expect(histogramInterval(6 * 60 * 60 * 1000)).toEqual({ ms: 15 * 60 * 1000, key: '15m' })
+    expect(histogramInterval(24 * 60 * 60 * 1000)).toEqual({ ms: 30 * 60 * 1000, key: '30m' })
+  })
+
+  it('挑的是「第一档不超上限」的那一档：柱数恒 ≤ 60（超长窗口除外，那档已到顶）', () => {
+    for (const span of [10 * 1000, 15 * 60 * 1000, 60 * 60 * 1000, 6 * 60 * 60 * 1000, 24 * 60 * 60 * 1000]) {
+      const step = histogramInterval(span)
+      expect(span / step.ms, String(span)).toBeLessThanOrEqual(60)
+    }
+  })
+
+  it('认不出的窗口回落 1 小时那一档（不抛、也不会查出一个空分布）', () => {
+    const fallback = histogramInterval(60 * 60 * 1000)
+    for (const bad of [NaN, 0, -1, undefined, null, '1h' /* 字符串不是数 */]) {
+      expect(histogramInterval(bad), String(bad)).toEqual(fallback)
+    }
+  })
+
+  it('比最大档还长的窗口取最大档（不缩成更细的桶去撞上限）', () => {
+    expect(histogramInterval(365 * 24 * 60 * 60 * 1000)).toEqual({ ms: 24 * 60 * 60 * 1000, key: '1d' })
+  })
+})
+
+describe('时间分布：柱子怎么铺（空档必须补 0）', () => {
+  const STEP = 10 * 60 * 1000
+
+  it('**反例（本格的核心）**：两个相邻桶中间的空档补 0，不许挨在一起', () => {
+    // 适配器传的是 min_doc_count:1 —— 没数据的桶**不在响应里**。
+    // 10:00 有 3 条、10:30 有 5 条，中间那半小时是空的，图上必须有那两根 0。
+    const out = histogramBars([{ ts: 0, count: 3 }, { ts: 3 * STEP, count: 5 }], 0, 6 * STEP, STEP)
+    expect(out.bars.map((bar) => bar.count)).toEqual([3, 0, 0, 5, 0, 0])
+  })
+
+  it('末尾的安静也要留着（不然看不出「半小时前就停了」）', () => {
+    const out = histogramBars([{ ts: 0, count: 7 }], 0, 4 * STEP, STEP)
+    expect(out.bars.map((bar) => bar.count)).toEqual([7, 0, 0, 0])
+    expect(out.bars[out.bars.length - 1].count).toBe(0)
+  })
+
+  it('按峰值归一化，并给出峰值与合计', () => {
+    const out = histogramBars([{ ts: 0, count: 3 }, { ts: STEP, count: 6 }], 0, 2 * STEP, STEP)
+    expect(out.max).toBe(6)
+    expect(out.total).toBe(9)
+    expect(out.bars.map((bar) => bar.ratio)).toEqual([0.5, 1])
+  })
+
+  it('一条都没有：max / total 是 0，ratio 也是 0（**不除零**、不产生 NaN）', () => {
+    const out = histogramBars([], 0, 3 * STEP, STEP)
+    expect(out.max).toBe(0)
+    expect(out.total).toBe(0)
+    expect(out.bars.map((bar) => bar.count)).toEqual([0, 0, 0])
+    expect(out.bars.every((bar) => bar.ratio === 0)).toBe(true)
+  })
+
+  it('同一 ts 出现多次 → 相加（不是让后一个盖掉前一个）', () => {
+    const out = histogramBars([{ ts: 0, count: 2 }, { ts: 0, count: 3 }], 0, STEP, STEP)
+    expect(out.bars[0].count).toBe(5)
+    expect(out.max).toBe(5)
+  })
+
+  it('从窗口左端所在的**桶边界**起铺（date_histogram 按 epoch 整数倍对齐）', () => {
+    // from=12345 不在 STEP 的整数倍上 → 第一个桶是 0，不是 12345
+    const out = histogramBars([{ ts: 0, count: 1 }], 12345, 2 * STEP, STEP)
+    expect(out.bars[0].ts).toBe(0)
+    expect(out.bars[0].count).toBe(1)
+  })
+
+  it('坏输入不抛：间隔为 0 / 窗口反向 → 空结果', () => {
+    for (const args of [[[], 0, 1000, 0], [[], 1000, 0, STEP], [[], NaN, NaN, STEP], [[], 0, 1000, -5]]) {
+      const out = histogramBars(args[0], args[1], args[2], args[3])
+      expect(out).toEqual({ bars: [], max: 0, total: 0, truncated: false })
+    }
+  })
+
+  it('ts / count 不是数的桶被跳过（不把 NaN 带进 max 或柱高）', () => {
+    const out = histogramBars(
+      [{ ts: 0, count: 4 }, { ts: NaN, count: 9 }, { ts: STEP, count: NaN }, null, { count: 7 }],
+      0, 2 * STEP, STEP,
+    )
+    expect(out.bars.map((bar) => bar.count)).toEqual([4, 0])
+    expect(out.max).toBe(4)
+  })
+
+  it('窗口与间隔对不上时按上限兜底，并**如实标 truncated**（少画的就是少画的）', () => {
+    // 窗口 200 步、上限 120 根 → 截断，且柱数正好是上限
+    const out = histogramBars([], 0, 200 * STEP, STEP)
+    expect(out.truncated).toBe(true)
+    expect(out.bars).toHaveLength(120)
+  })
+
+  it('正常情况 truncated 为假（间隔是按窗口挑的，只有改了窗口没重查才会触发）', () => {
+    expect(histogramBars([], 0, 60 * STEP, STEP).truncated).toBe(false)
+  })
+})
+
+describe('时间分布：请求载荷', () => {
+  const outcome = {
+    target: { id: 't1', kind: 'elasticsearch', label: 'es' },
+    window: { from: 1_700_000_000_000, to: 1_700_000_600_000 },
+  }
+
+  it('**窗口取响应回显的那一份**——不是面板请求的那一份', () => {
+    // 面板请求的是「最近 1 小时」，宿主兜底/收窄后回显的是另一段：必须用回显的。
+    const draft = { q: 'level:ERROR', preset: '1h', target: 't1', limit: 100 }
+    expect(histogramPayload(draft, outcome, '1m')).toEqual({
+      target: 't1',
+      q: 'level:ERROR',
+      from: 1_700_000_000_000,
+      to: 1_700_000_600_000,
+      interval: '1m',
+    })
+  })
+
+  it('回显不完整就回 null——让界面**不发这个请求**，而不是发一个畸形的', () => {
+    const draft = { q: '' }
+    expect(histogramPayload(draft, undefined, '1m')).toBeNull()
+    expect(histogramPayload(draft, {}, '1m')).toBeNull()
+    expect(histogramPayload(draft, { target: { id: 't1' } }, '1m')).toBeNull()
+    expect(histogramPayload(draft, { target: { id: 't1' }, window: { from: 1, to: 1 } }, '1m')).toBeNull()
+    expect(histogramPayload(draft, { target: { id: 't1' }, window: { from: 2, to: 1 } }, '1m')).toBeNull()
+    expect(histogramPayload(draft, { target: { id: '' }, window: { from: 1, to: 2 } }, '1m')).toBeNull()
+  })
+
+  it('q 缺省是空串（「查全部」是合法查询，不是缺参数）', () => {
+    const payload = histogramPayload({}, outcome, '5m')
+    expect(payload.q).toBe('')
+    expect(payload.interval).toBe('5m')
   })
 })

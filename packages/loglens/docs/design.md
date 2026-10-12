@@ -38,6 +38,13 @@
     （`capabilities().aggregations` 与它同真同假），调用方按能力给指路文案。
   - 聚合的**近似性也是信号**：terms 的 `sum_other_doc_count`（没列出来的桶还有多少条）与
     `doc_count_error_upper_bound`（误差上界）必须回传，理由与 `totalKnown` 一样。
+  - **按时间分桶的三个约定**（2026-10-12 面板画「时间分布」时定死，落点在
+    [client-src/pure.js](../client-src/pure.js) 的 `histogramBars`）：① 面板上的分布**只能来自后端的
+    `date_histogram`**，**不许数这一页的行**——那一页是 `limit` 截断过的，数它量到的是「这一页的分布」
+    （`limit=100` 打在「最近 1 小时」上会画出「后 10 分钟占 100%」这种假曲线）；② 适配器传
+    `min_doc_count: 1`（没数据的桶不进响应，这是对的），所以**铺图的人必须把空档补 0**，
+    否则「那段时间一条都没有」会被压成「一直在刷」；③ 窗口**取响应回显的那一份**，
+    不是调用方请求的那一份（宿主可能兜底或收窄过）。
   - **`filters`（字段 → 值）由适配器决定怎么打**：ES / OpenSearch 查一次 `_field_caps` 决定打原生字段、
     `.keyword` 子字段，还是退回 `match_phrase`（text 且无子字段时）——**不让调用方去记 `.keyword` 这条约定**。
     Loki 不支持它（过滤写进 LogQL），报错文案要说清这一点。
@@ -217,11 +224,25 @@
 的 `ctx.tools` 只有 `register` / `restrict` / `guard`，**没有 list / has**。所以「docker 插件装没装」这件事
 在宿主侧**不要去猜**；上面那条判据本来就是**面板侧**的机制。
 
-### 浏览器日志视图：三选一
+### 浏览器日志视图：三选一 → **已拍板选项 1（2026-10-12）**
 
-1. **受控重复**（默认，合规）；
-2. `docker` 暴露视图挂载服务（本仓唯一被允许的浏览器侧共享形态，跨包改动）；
-3. 新增共享包（推翻已冻结结论，需明确批准）。
+1. **受控重复**（默认，合规）——**✅ 已拍板**；
+2. `docker` 暴露视图挂载服务（本仓唯一被允许的浏览器侧共享形态，跨包改动）——**未采纳**；
+3. 新增共享包（推翻已冻结结论，需明确批准）——**未采纳**。
+
+**判据（2026-10-12 维护者拍板）**：
+
+- **两份视图不是同一件事**。loglens 的日志视图是**每个来源一套自己的结果视图**（查询区 + 结果列表 +
+  计数 + 截断提示），docker 那份是**容器日志工作台**（流式跟随、`until`、grep、缓冲）。选项 2 要把后者
+  抽成可挂载服务，改的是一个 ~9200 行的客户端 bundle，换来的是**在两个地方看到同一份工作台**——
+  看容器日志的正常去处本来就是 Docker 面板自己，收益与代价不成比例。
+- **选项 2 不是「做不到」，是「不值得」**：跨包**浏览器侧**服务本仓已经有先例、而且已经在跑——
+  `docker/client-src` 的 `ctx.inject(['ttyTerminal'])` / `['ttyPanel']` / `['ttyConnbar']` /
+  `['sidebarRightTabs']` 就是这个形状（见 §8「已实测前提」）。将来真需要时按同一形状反过来做即可，
+  不需要新机制。
+- **loglens 的 docker 半格保留**：弱面（无 `until`、`tail` 有上限、无 grep）继续在界面上如实标注，
+  精确检索指回 `docker_logs_grep`——与选项 0 的 agent 侧同一条态度：**说清做不到什么**，而不是
+  给一个看着能干、实际被削弱了的入口。
 
 ## 6. 各后端要点
 
@@ -279,6 +300,11 @@ client-modules 按这份声明把包变成可加载的浏览器 bundle——**�
 - `pnpm-workspace.yaml` 只有 `packages/*`；`pnpm-lock.yaml` 对 `templates/hello` **零命中**
   → 模板的 kit 钉子不是运行期事实，是**种子值**。
 - `ctx.provide` 全仓仅 3 处，全在 `tty/client-src`；宿主半体插件间服务**零先例**。
+- **跨包浏览器侧服务的接线在运行期，不在 manifest（2026-10-12 复核）**：全仓每个包的
+  `package.json` 里 `dsh.client.inject` 都是 **`[]`**——**包括已经在消费 tty 服务的 `docker`**。
+  真正把服务接起来的是客户端半体里的 `ctx.inject(['ttyTerminal'], …)`。
+  → 要新增/改这类消费，**改的是 `client-src`，不是 manifest 那一格**；
+  判「某个客户端服务在不在」也不该读 manifest。（这条是拍板 §5 选项 2 时顺手核实的。）
 - docker `LogGrepResult` 已是五计数 + 双信号位（`truncated` / `limited`）。
 - docker 的 `/logs` 与 `/logs/stream` **都只转发 `since`、丢 `until`**（`DockerApi.logs()` 与 agent 工具
   都支持 `until`）；`/logs/grep` 路由**刻意不做**。

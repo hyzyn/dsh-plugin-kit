@@ -228,6 +228,13 @@ const calls = []
 let serverConfig = CONFIG.config
 
 /**
+ * 用例可以把自己那几条路由挂上来（key = path）。值就是**响应体**；要演「后端报错」那一侧就写成
+ * `{ ok: false, status: 400, body: { error } }`（有 `body` 键即视为「整份响应」）。
+ * 没挂的 path 仍然走 `/config` 那份默认响应——既有用例因此不受影响。
+ */
+let serverRoutes = {}
+
+/**
  * 最小动作实现（只够让人相信「保存 → 刷新」这一圈）：宿主侧的真判据在 src/config.ts，
  * 有自己的用例，这里不复制它，只把请求体落到状态上。
  */
@@ -247,6 +254,15 @@ const fetchStub = (url, options) => {
   const path = String(url)
   const body = options !== undefined && typeof options.body === 'string' ? JSON.parse(options.body) : undefined
   calls.push({ path, method: options === undefined ? 'GET' : (options.method ?? 'GET'), body })
+  if (serverRoutes[path] !== undefined) {
+    const spec = typeof serverRoutes[path] === 'function' ? serverRoutes[path](body) : serverRoutes[path]
+    const envelope = spec !== null && typeof spec === 'object' && 'body' in spec ? spec : { body: spec }
+    return Promise.resolve({
+      ok: envelope.ok !== false,
+      status: envelope.status === undefined ? 200 : envelope.status,
+      json: () => Promise.resolve(envelope.body),
+    })
+  }
   if (path === '/api/dsh-docker/targets') return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, targets: [] }) })
   if (path === '/api/dsh-loglens/config' && body !== undefined) applyAction(body)
   return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, config: serverConfig, plugins: { docker: true } }) })
@@ -379,6 +395,111 @@ await test('填了索引表达式再保存：POST 请求体里带 index（值给
   const post = calls.find((call) => call.method === 'POST' && call.body !== undefined && call.body.action === 'targets.update')
   assert.ok(post !== undefined, '没有发出 targets.update：' + JSON.stringify(calls))
   assert.equal(post.body.patch.index, 'app-logs-*', '索引表达式必须进请求体')
+})
+
+/* ------------------------------------------------------------------ *
+ * 时间分布（直方图）：能力由宿主随 /query 下发，面板据此决定画不画
+ * ------------------------------------------------------------------ */
+
+/** 一份 /query 的成功响应（形状与宿主 runSearch 的 SearchOutcome 一致，外加 capabilities）。 */
+function queryOutcome(target, aggregations) {
+  return {
+    ok: true,
+    target,
+    window: { from: 0, to: 900_000 },
+    returned: 1,
+    counts: { returned: 1, totalKnown: true, matched: 8 },
+    truncation: { truncated: false, reasons: [] },
+    lines: [{ ts: 0, message: 'boot', source: '0', labels: {}, raw: 'boot', id: '0:0' }],
+    warnings: [],
+    capabilities: { queryLanguage: 'lucene', pagination: 'cursor', follow: false, aggregations },
+  }
+}
+
+/** 打开卡片 → 选来源 → 点「查询」（三条分布用例共用这一串动作），返回最终渲染树。 */
+async function runPanelQuery(targetId) {
+  const runtime = createRuntime()
+  const exports_ = registration.factory((spec) => (spec === 'react' ? runtime.React : { jsx: runtime.jsx, jsxs: runtime.jsxs }))
+  const { ctx, state } = makeClientCtx()
+  exports_.apply(ctx)
+  calls.length = 0
+  const Card = state.cards.find((card) => card.options.name === 'settings.kit.item').component
+  let tree = await runtime.mount(Card, {})
+  treeFind(tree, (node) => String(node.props?.className ?? '').includes('ll_cardHeader'))[0].props.onClick()
+  runtime.tick()
+  tree = await runtime.update()
+  // 「来源」下拉：它的选项值就是来源 id（行的类型下拉用的是 loki / elasticsearch…，不会撞上）
+  const targetSelect = treeFind(tree, (node) => node.type === 'select'
+    && Array.isArray(node.props?.children)
+    && node.props.children.some((child) => child !== null && typeof child === 'object' && child.props?.value === targetId))[0]
+  assert.ok(targetSelect !== undefined, '找不到「来源」下拉')
+  targetSelect.props.onChange({ target: { value: targetId } })
+  runtime.tick()
+  tree = await runtime.update()
+  const queryBtn = treeFind(tree, (node) => node.type === 'button'
+    && String(node.props?.className ?? '') === 'll_btn' && treeText(node) === '查询')[0]
+  assert.ok(queryBtn !== undefined, '找不到「查询」按钮')
+  queryBtn.props.onClick()
+  await runtime.update()
+  await runtime.update()
+  return runtime.update()
+}
+
+await test('时间分布：有聚合能力的来源，按窗口画柱子，**空档补 0**（相邻两根不挨在一起）', async () => {
+  serverRoutes = {
+    '/api/dsh-loglens/query': queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true),
+    // 15 分钟窗口 → 30s 一档 = 30 根；只在第 0 与第 2 个桶有数据，中间那根必须是 0
+    '/api/dsh-loglens/facets': { ok: true, overTime: [{ ts: 0, count: 3 }, { ts: 60_000, count: 5 }], interval: '30s', warnings: [] },
+  }
+  const tree = await runPanelQuery('es')
+
+  const facets = calls.find((call) => call.path === '/api/dsh-loglens/facets')
+  assert.ok(facets !== undefined, '有聚合能力却没有拉分布：' + JSON.stringify(calls))
+  assert.equal(facets.body.interval, '30s', '15 分钟窗口该挑 30s 一档')
+  assert.equal(facets.body.from, 0, '窗口必须用宿主**回显**的那一份')
+  assert.equal(facets.body.to, 900_000, '窗口必须用宿主**回显**的那一份')
+  assert.equal(facets.body.target, 'es')
+
+  // 「空桶」是**两个类**（ll_histBar ll_histBarEmpty）——按空格切成 token 再比，别用整串相等
+  const tokens = (node) => (typeof node.props?.className === 'string' ? node.props.className.split(' ') : [])
+  const allBars = treeFind(tree, (node) => tokens(node).includes('ll_histBar'))
+  const empties = treeFind(tree, (node) => tokens(node).includes('ll_histBarEmpty'))
+  assert.equal(allBars.length, 30, '柱子数该等于 窗口 / 间隔，实得 ' + String(allBars.length))
+  assert.equal(empties.length, 28, '**空档必须补 0**：缺了这一步，两根柱子会挨在一起，图上看起来一直在刷')
+  assert.equal(allBars.length - empties.length, 2, '只有两个桶有数据')
+
+  const text = treeText(tree)
+  assert.ok(text.includes('时间分布'), '缺少小节名')
+  assert.ok(text.includes('每根柱子 30s'), '没说清一根柱子是多长时间')
+  assert.ok(text.includes('峰值 5 条'), '没报峰值')
+  assert.ok(text.includes('共 8 条'), '没截断时该报合计')
+})
+
+await test('时间分布：Loki（聚合为假）**不画、也不发那个请求**，只在界面上说清为什么', async () => {
+  serverRoutes = {
+    '/api/dsh-loglens/query': queryOutcome({ id: 'local', kind: 'loki', label: '本地 Loki' }, false),
+    // 故意挂一个「万一会调」的分布路由：真调了就会被下面那条断言抓到
+    '/api/dsh-loglens/facets': { ok: true, overTime: [{ ts: 0, count: 999 }], warnings: [] },
+  }
+  const tree = await runPanelQuery('local')
+
+  assert.equal(calls.some((call) => call.path === '/api/dsh-loglens/facets'), false,
+    '不支持聚合却还是发了分布请求（白跑一趟，而且可能是个永远失败的入口）')
+  assert.equal(treeFind(tree, (node) => String(node.props?.className ?? '').startsWith('ll_histBar')).length, 0, '不该画出柱子')
+  assert.ok(treeText(tree).includes('当前来源不支持聚合'), '该把「为什么没有」写在明面上')
+})
+
+await test('时间分布：拉不到时只说那一句，**结果列表不受影响**（分布是附加信息）', async () => {
+  serverRoutes = {
+    '/api/dsh-loglens/query': queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true),
+    '/api/dsh-loglens/facets': { ok: false, status: 400, body: { error: 'boom' } },
+  }
+  const tree = await runPanelQuery('es')
+
+  const text = treeText(tree)
+  assert.ok(text.includes('时间分布取不到：boom'), '拉不到时该把宿主那句话显示出来，实得：' + text.slice(0, 200))
+  assert.ok(text.includes('boot'), '分布失败不该把已经拿到的结果列表也带走')
+  assert.equal(treeFind(tree, (node) => String(node.props?.className ?? '').startsWith('ll_histBar')).length, 0, '失败时不该画半张图')
 })
 
 /* ------------------------------------------------------------------ *

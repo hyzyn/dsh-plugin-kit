@@ -71,6 +71,22 @@ describe('能力自述 ↔ 实现对账：注册表', () => {
     expect(loki!.stream).toBeUndefined()
   })
 
+  /**
+   * 面板画不画「时间分布」直接读这一位（见 src/index.ts 的 capabilitiesOf）。把它钉在这里，
+   * 是因为它一旦变了，**面板的行为会跟着变**（Loki 接上指标查询那天，分布图会自动出现）——
+   * 那是想要的效果，但它必须是一次**看得见的**改动，而不是悄悄漂过去的。
+   */
+  it('聚合能力：ES / OpenSearch 为真、Loki 为假（面板的分布图就跟着这一位走）', () => {
+    for (const kind of ['elasticsearch', 'opensearch'] as SourceKind[]) {
+      const backend = backendFor(kind)
+      expect(backend!.capabilities().aggregations, kind).toBe(true)
+      expect(typeof backend!.facets, kind).toBe('function')
+    }
+    const loki = backendFor('loki')
+    expect(loki!.capabilities().aggregations).toBe(false)
+    expect(loki!.facets).toBeUndefined()
+  })
+
   it('ALL_BACKENDS 与 backendFor 的分支是同一份事实（新增适配器漏登记就会被抓到）', () => {
     // kind → 适配器 这一侧：每个 kind 取回来的那一个必须在 ALL_BACKENDS 里。
     for (const kind of REGISTERED_KINDS) {

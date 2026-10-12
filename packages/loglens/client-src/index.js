@@ -6,8 +6,9 @@
  * client-src/pure.js 内联进来，并在发现任何残留 import 时 exit(1)）。设置面的注册与样式
  * 取值逐条对齐宿主（见 docs/conventions.md 的客户端半体六条硬规矩）。
  *
- * 当前能力**只有来源清单与开关**：查询面（结果列表 / 时间窗 / 直方图 / 跟随）还没有，
- * 卡片上把这句话写在明面上——不留一个「看起来能用」的假界面。
+ * 卡片里现在是四块：来源清单、查询区（时间窗 / 条数 / 结果列表 / 下一页）、**时间分布**（直方图，
+ * 只对有聚合能力的来源画——能力由宿主随 `/query` 响应下发）、Docker 容器日志区（选项 0 的面板半格）。
+ * **跟随（tail）还没有**：来源的 `capabilities().follow` 因此声明为 `false`，卡片不画一个按下去会失败的入口。
  */
 import {
   appendLines,
@@ -23,6 +24,9 @@ import {
   draftProblem,
   emptyDraft,
   emptyQuery,
+  histogramBars,
+  histogramInterval,
+  histogramPayload,
   kindOptions,
   queryPayload,
   queryProblem,
@@ -101,6 +105,14 @@ window.__ModuleLoader__.load({
       '.ll_resultLevel{color:var(--dsw-alias-state-warn-primary);white-space:nowrap}',
       '.ll_resultMsg{color:var(--dsw-alias-label-primary);white-space:pre-wrap;word-break:break-word}',
       '.ll_warn{color:var(--dsw-alias-state-warn-primary);font-size:12px;line-height:18px}',
+      // 时间分布（直方图）。柱子高度是**内联** style（每根都不一样，写不进类里）；类只管外观。
+      '.ll_hist{display:flex;flex-direction:column;gap:6px}',
+      '.ll_histHead{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}',
+      '.ll_histTitle{color:var(--dsw-alias-label-primary);font-weight:600}',
+      '.ll_histBars{display:flex;align-items:flex-end;gap:1px;height:56px;padding:4px;background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm)}',
+      '.ll_histBar{flex:1 1 0;min-width:1px;background:var(--dsw-alias-interactive-bg-hover);border-radius:1px}',
+      // 空桶只留一条 2% 的底座（见 pure.js histogramBars：补 0 是为了让「那段时间一条都没有」看得见）
+      '.ll_histBarEmpty{background:var(--dsw-alias-border-l1)}',
     ].join('\n')
 
     let styleEl
@@ -126,6 +138,15 @@ window.__ModuleLoader__.load({
       'card.name': '日志查询',
       'card.desc': '把 Loki / Elasticsearch / OpenSearch 等日志后端归一化成一个查询面；当前只有来源清单与开关。',
       'panel.title': '日志来源',
+      'panel.histogram': '时间分布',
+      'meta.histInterval': '每根柱子 {interval}',
+      'meta.histPeak': '峰值 {count} 条',
+      'meta.histTotal': '共 {count} 条',
+      'meta.histBucket': '{time} · {count} 条',
+      'hint.histogram': '这张图来自后端按时间分桶（不是数这一页——这一页被条数截断过，数它只会得到一个假的分布）。',
+      'hint.histogramTruncated': '窗口比这张图长，只画了前一部分。',
+      'hint.histogramUnsupported': '当前来源不支持聚合（Loki 的指标查询还没接），所以这里没有时间分布。',
+      'error.histogram': '时间分布取不到：{message}',
       'hint.notImplemented': '下面可以直接查当前来源；字段清单与「某一行前后」的上下文由 agent 侧的两个工具做（loglens_fields / loglens_context）——面板暂不画它们。',
       'field.kind': '类型',
       'field.label': '名称',
@@ -199,6 +220,15 @@ window.__ModuleLoader__.load({
       'card.name': 'Log query',
       'card.desc': 'Normalizes log backends such as Loki / Elasticsearch / OpenSearch into one query surface; for now only the source list and the switch.',
       'panel.title': 'Log sources',
+      'panel.histogram': 'Volume over time',
+      'meta.histInterval': 'each bar = {interval}',
+      'meta.histPeak': 'peak {count}',
+      'meta.histTotal': '{count} total',
+      'meta.histBucket': '{time} · {count}',
+      'hint.histogram': 'This chart comes from the backend time-bucketing (not from counting this page — the page is capped by the limit, so counting it would only give you a fake distribution).',
+      'hint.histogramTruncated': 'The window is longer than this chart; only the first part is drawn.',
+      'hint.histogramUnsupported': 'This source cannot aggregate (Loki metric queries are not wired yet), so there is no volume chart here.',
+      'error.histogram': 'Could not load the volume chart: {message}',
       'hint.notImplemented': 'You can query the selected source right below; the field list and per-line context live in the agent tools (loglens_fields / loglens_context) — this panel does not draw them yet.',
       'field.kind': 'Kind',
       'field.label': 'Name',
@@ -340,6 +370,7 @@ window.__ModuleLoader__.load({
       const [outcome, setOutcome] = React.useState(undefined)
       const [lines, setLines] = React.useState([])
       const [cursor, setCursor] = React.useState(undefined)
+      const [histogram, setHistogram] = React.useState(undefined)
       const [querying, setQuerying] = React.useState(false)
       const [docker, setDocker] = React.useState(false)
       const [containers, setContainers] = React.useState([])
@@ -474,6 +505,43 @@ window.__ModuleLoader__.load({
         return String(part.value)
       }
 
+      /**
+       * 拉「时间分布」：**只在来源支持聚合时才发**（能力由宿主随 /query 响应下发，见 src/index.ts 的
+       * capabilitiesOf——面板不自己按 kind 猜，那是第二份会漂的判据）。
+       *
+       * 三类诚实的收尾：
+       * - **不支持**（Loki）：不发请求，画一句「这个来源没有时间分布」而不是一个永远失败的按钮；
+       * - **拿不到**（后端报错）：只把这句话显示出来，**不动已经拿到的结果列表**——分布是附加信息，
+       *   它的失败不该把查询本身也变成失败；
+       * - **翻下一页**：窗口与查询串都没变，分布也不会变，所以**不重拉**（省一次打后端的请求）。
+       */
+      const loadHistogram = async (data, append) => {
+        if (append) return
+        if (data === null || typeof data !== 'object' || data.capabilities === undefined
+          || data.capabilities === null || data.capabilities.aggregations !== true) {
+          setHistogram(undefined)
+          return
+        }
+        const step = histogramInterval(data.window === undefined || data.window === null ? 0 : data.window.to - data.window.from)
+        const payload = histogramPayload(query, data, step.key)
+        // 回显不完整（拿不到窗口）：不发畸形的请求（见 pure.js histogramPayload）
+        if (payload === null) {
+          setHistogram(undefined)
+          return
+        }
+        try {
+          const parsed = await api('/api/dsh-loglens/facets', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(payload),
+          })
+          const bars = histogramBars(parsed.overTime, payload.from, payload.to, step.ms)
+          setHistogram(bars.bars.length === 0 ? undefined : { ...bars, interval: step.key })
+        } catch (err) {
+          setHistogram({ error: err.message })
+        }
+      }
+
       const runQuery = async (append) => {
         const problem = queryProblem(query, drafts.length)
         if (problem !== '') {
@@ -494,6 +562,7 @@ window.__ModuleLoader__.load({
           setOutcome(data)
           setLines((current) => (append ? appendLines(current, data.lines) : data.lines))
           setCursor(typeof data.nextCursor === 'string' ? data.nextCursor : undefined)
+          await loadHistogram(data, append)
         } catch (err) {
           setError(err.message)
         } finally {
@@ -560,6 +629,7 @@ window.__ModuleLoader__.load({
         setOutcome(undefined)
         setLines([])
         setCursor(undefined)
+        setHistogram(undefined)
         setError('')
         setOk('')
       }
@@ -870,6 +940,37 @@ window.__ModuleLoader__.load({
                         ],
                       }, 'll-line-' + line.id)),
                     }) : null,
+                    // 时间分布：拿不到就把那句话说出来（不动结果列表），不支持就说清不支持。
+                    isDocker || outcome === undefined ? null : histogram === undefined
+                      ? (outcome.capabilities !== undefined && outcome.capabilities !== null && outcome.capabilities.aggregations === true
+                        ? null
+                        : jsx('p', { className: 'll_hint', children: t('hint.histogramUnsupported') }))
+                      : (histogram.error === undefined ? jsxs('div', {
+                        className: 'll_hist',
+                        children: [
+                          jsxs('div', {
+                            className: 'll_histHead',
+                            children: [
+                              jsx('span', { className: 'll_histTitle', children: t('panel.histogram') }),
+                              jsx('span', { children: t('meta.histInterval', { interval: histogram.interval }) }),
+                              jsx('span', { children: t('meta.histPeak', { count: histogram.max }) }),
+                              // 合计只在没截断时才敢写：截断了它就是少算的（**不写一个自己知道是错的数**）
+                              histogram.truncated ? null : jsx('span', { children: t('meta.histTotal', { count: histogram.total }) }),
+                              histogram.truncated ? jsx('span', { className: 'll_warn', children: t('hint.histogramTruncated') }) : null,
+                            ],
+                          }),
+                          jsx('div', {
+                            className: 'll_histBars',
+                            children: histogram.bars.map((bar) => jsx('div', {
+                              className: bar.count === 0 ? 'll_histBar ll_histBarEmpty' : 'll_histBar',
+                              // 空桶给 2% 的底座：否则「那段时间一条都没有」与「这一段没画」看起来一样
+                              style: { height: String(Math.max(bar.ratio * 100, 2)) + '%' },
+                              title: t('meta.histBucket', { time: formatTime(bar.ts), count: bar.count }),
+                            }, 'll-hist-' + String(bar.ts))),
+                          }),
+                          jsx('p', { className: 'll_hint', children: t('hint.histogram') }),
+                        ],
+                      }) : jsx('p', { className: 'll_warn', children: t('error.histogram', { message: histogram.error }) })),
                     outcome !== undefined && lines.length === 0 && !isDocker ? jsx('div', { className: 'll_empty', children: t('list.noHit') }) : null,
                     cursor === undefined || isDocker ? null : jsx('button', {
                       type: 'button',

@@ -118,7 +118,14 @@ dsh plugin --profile <profile> add link:$(pwd)/packages/loglens
 - **`tail`（跟随）还没做**：Loki 的 `capabilities().follow` 因此声明为 **`false`**（`stream()` 未实现）。
   这一位会经 `loglens_sources` 原样回给 agent，声明成 true 等于指一个不存在的入口——判据与
   `aggregations` ↔ `facets()` 是同一条。守卫：[test/capabilities.test.ts](./test/capabilities.test.ts)。
-- 面板里的查询区是**受控重复**（设计 §5 的默认档）：日志视图建在本插件自己的卡片里，不与别的插件共享浏览器模块。
+- **时间分布（直方图）**画在结果列表上方，**只对有聚合能力的来源画**（当前是 ES / OpenSearch）——
+  能力由宿主随 `/query` 响应下发，面板**不自己按类型猜**（那会是第二份会漂的判据）。图**来自后端的
+  按时间分桶**，不是数这一页：那一页被 `limit` 截断过，数它只会得到一个假的分布。相邻桶之间的空档
+  **补 0**——否则「那段时间一条都没有」看起来会像「一直在刷」。Loki 没有指标查询，所以它这里没有分布图，
+  界面上如实写着这一句。
+- 面板里的查询区是**受控重复**——设计 §5 三选一的**最终口径**（2026-10-12 拍板，选项 1）：
+  日志视图建在本插件自己的卡片里，不与别的插件共享浏览器模块。理由（两份视图不是同一件事、
+  选项 2 不是做不到而是不值得）见 [docs/design.md §5](./docs/design.md)。
 - Docker 目标在面板里走的是**选项 0 的面板半格**（已接）：相对路径 fetch Docker 插件自己的
   `/api/dsh-docker/containers` 与 `/logs`，弱面（无 `until`、`tail` 有上限、无 grep）在界面上如实标注；
   agent 侧仍只做指路，不包一层。

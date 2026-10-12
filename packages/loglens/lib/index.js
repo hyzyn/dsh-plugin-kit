@@ -27,13 +27,39 @@ export const Config = z.object({
     })).default([]).volatile(),
 });
 /**
- * 构造面板用的三条路由：`/config`（读写）、`/query`（查）、`/fields`（列字段）。
+ * 查询响应里带上这条来源的**能力**：面板据此决定画不画「时间分布」（直方图）。
+ *
+ * **为什么不放 `/config`**：能力是**运行期事实**（来自适配器的 `capabilities()`），不是设置项；
+ * 而且它跟着**这一次查询**回来，正好是画分布所需要的时机（分布本来也只对这一次的窗口有意义）。
+ *
+ * **为什么不让面板按 `kind` 自己判**：那等于把「谁能聚合」抄成第二份判据——Loki 接上 LogQL
+ * 指标查询的那天，抄的那份会**静默过期**，而这一位正是「不给一个永远报错的入口」所依赖的东西。
+ * 所以只由宿主算、随响应下发。
+ */
+function capabilitiesOf(state, outcome) {
+    const target = outcome.target;
+    const kind = target !== null && typeof target === 'object' ? target.kind : undefined;
+    if (typeof kind !== 'string')
+        return undefined;
+    const backend = state.backendFor(kind);
+    if (backend === undefined)
+        return undefined;
+    const caps = backend.capabilities();
+    return {
+        queryLanguage: caps.queryLanguage,
+        pagination: caps.pagination,
+        follow: caps.follow,
+        aggregations: caps.aggregations,
+    };
+}
+/**
+ * 构造面板用的四条路由：`/config`（读写）、`/query`（查）、`/fields`（列字段）、`/facets`（分组 / 分桶）。
  *
  * 围栏（设计 §4）：整条路由走**加固档** `isLoopbackRequestStrict`；`/config` 按**动作**豁免——
  * 只有 `enabled` 免同源证明（禁用后设置卡片是唯一的恢复入口）。**`/query` 与 `/fields` 要同源证明**：
  * 它们虽然只读，却会**替请求方打到已配置的内网目标**并把结果带回来——跨站页面能借它读内网
  * （设计 §4.3 那句「再从配置侧加一个指向内网的 target，用读面打它」的「读面」正是这里）。
- * 插件禁用时三条路由里**只留 `/config`**（设置卡片靠它渲染，也是唯一的恢复入口）。
+ * 插件禁用时四条路由里**只留 `/config`**（设置卡片靠它渲染，也是唯一的恢复入口）。
  */
 export function makeRoutes(state) {
     return [
@@ -85,7 +111,9 @@ export function makeRoutes(state) {
                         const outcome = sub === '/query'
                             ? await state.runQuery(payload)
                             : sub === '/fields' ? await state.runFields(payload) : await state.runFacets(payload);
-                        writeJson(res, 200, { ok: true, ...outcome });
+                        // 只有 /query 带能力自述：面板拿它决定画不画「时间分布」（见 capabilitiesOf 的注释）。
+                        const caps = sub === '/query' ? capabilitiesOf(state, outcome) : undefined;
+                        writeJson(res, 200, { ok: true, ...outcome, ...(caps === undefined ? {} : { capabilities: caps }) });
                     }
                     catch (error) {
                         // 校验失败与后端报错都回 400 + 原话（面板要把「下一步怎么做」显示出来）
@@ -262,6 +290,7 @@ const plugin = definePlugin({
                     runFields: (input) => runFields(executeDeps, input),
                     runFacets: (input) => runFacets(executeDeps, input),
                     dockerLoaded: () => dockerPluginLoaded(ctx),
+                    backendFor,
                 }).map((route) => server.register(route));
                 return () => {
                     for (const dispose of disposers) {
