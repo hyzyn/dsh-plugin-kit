@@ -122,7 +122,7 @@ const policy = approval?.overrideOf(exec.agent.session) ?? 'ask'        // 服�
 
 | 类 | 工具 | 判据 |
 |---|---|---|
-| `read` | `docker_targets` `docker_connect_local` `docker_ps` `docker_attention` `docker_inspect` `docker_logs` `docker_stats` `docker_events` `docker_images` `docker_image_inspect` `docker_networks` `docker_volumes` | 纯读 / 固定二进制探测（connect_local 不在能力开关里，见其注释） |
+| `read` | `docker_targets` `docker_connect_local` `docker_ps` `docker_attention` `docker_inspect` `docker_logs` `docker_logs_grep` `docker_stats` `docker_events` `docker_images` `docker_image_inspect` `docker_networks` `docker_volumes` | 纯读 / 固定二进制探测（connect_local 不在能力开关里，见其注释）；`docker_logs_grep` 是**服务端检索**，与 `docker_logs` 同档（2026-10-12 补齐：它注册了却漏在这张表里，而此前**没有任何守卫**看着这张表——守卫见 [scripts/test/tier-plan-table.test.ts](../scripts/test/tier-plan-table.test.ts)） |
 | `write` | `docker_action` `docker_image_remove` `docker_image_prune` `docker_image_pull` | 容器与镜像的变更（pull 是拉取非破坏，但改本地状态，且已在 `allowMutations` 组里） |
 | `exec` | `docker_exec` | 容器内一次性命令 |
 
@@ -194,9 +194,17 @@ allow 不打（热路径）。ask 不由插件打（归宿主审计）。
 3. **读档失败不改现状**：`sandboxPolicy` / `approval` 未组合 → 与今天一致（不闸）+ apply 期一行
    启动审计（`tier-gate: services absent (sandboxPolicy=… approval=…), per-call gate disabled`）。
    不 fail-closed。
-4. **分类表全覆盖**：每个注册的 agent 工具名必须出现在分类表里。守卫测试从**注册处现算**名单
-   （tty 的 `registerAll` 清单 / docker 的 `add()` 调用）与分类表对账，缺一个就红——新工具漏分类
-   不许静默跳闸。
+4. **分类表全覆盖（限本方案三家的工具面）**：tty / docker / loglens 自己注册的每个 agent 工具名必须
+   出现在 §2.1 的分类表里。守卫测试从**注册处现算**名单（tty 的 `registerAll` 清单 / docker 的
+   `add()` 调用 / loglens 的注册处）与分类表对账，缺一个就红——新工具漏分类不许静默跳闸。
+   > **2026-10-12 补注（这是口径边界，别把它读成「所有 agent 工具都被覆盖了」）**：
+   > ① 宿主侧注册的 `mcp__<server>__<tool>` **不在**本条覆盖内——三个闸的前缀
+   > （`tty_`/`sftp_`/`tunnel_`、`docker_`、`loglens_`）一个都匹配不到它，宿主侧在四个常规档位下
+   > 也没有对应闸（机制与运行期实测见 [§10](#10-明确不做本方案范围外) 末条）。本条只管「谁声明的表谁负责」。
+   > ② §2.1 这张表现在有守卫了：[scripts/test/tier-plan-table.test.ts](../scripts/test/tier-plan-table.test.ts)
+   > 把文档表与各包导出的 `*_TIER_CLASS` **双向**对账（只在代码里 / 只在文档里 / 档不一致 三类分开报）。
+   > 立这道闸的当天就抓到一次真漂移：`docker_logs_grep` 注册为 `read` 而表里没有它（已补；同类还有
+   > 2026-10-11 的 `loglens_facets`）。
 5. **静态能力开关不动**：`allowMutations` / `allowExec` / `allowProxyCommand` 继续管「注册不注册」
    （启动期、宿主级、持久授权）；档位闸只管「已注册的这一次调用放不放行」（逐调用、会话级）。
    双层并存，先注册后闸；合并是后话（§10）。
@@ -351,6 +359,31 @@ approval 服务面都已验证；代价是 ask 发生在调用已展示之后（
   参数级留待第一轮真机反馈；
 - **插件工具 schema 加 escalation 参数**（`sandbox_permissions` 是 bash / fs 的编舞，插件不照搬）；
 - **客户端半体改动**（档位菜单是宿主的 UI，插件不加第二个控制面）。
+- **`mcp__*`（MCP 服务器提供的 agent 工具）——2026-10-12 现算发现、当日实测定性的边界，不是当时的决定**：
+  本方案原文没提过 MCP，§2.1 里没有它们，而 §3 不变量 4 的原措辞是「**每个**注册的 agent 工具名必须
+  出现在分类表里」。**已核实的机制 + 实测**（独立 `DSH_HOME` 的 headless profile + 自造 stdio MCP
+  server（工具只往 `/tmp` 写 marker）+ `dsh 0.2.1-alpha.2`）：
+  ① 三个闸都匹配不到 `mcp__*`——监听器只认自己声明的前缀（`packages/kit/src/tier-gate.ts` 的
+     `if (name === undefined || !options.prefixes.some((prefix) => name.startsWith(prefix))) return next()`）；
+  ② **宿主自己也不管**：`dsh-mcp-client` 用裸 `ctx.tools.register()` 注册 MCP 工具（`lib/index.js`，
+     无任何档位 / 审批 / sandbox 代码），宿主派发的兜底就是 `allow`（`dsh-tools` 的 `tools/pre-execute`
+     waterfall 末位是 `() => ({ kind: 'allow' })`）；
+  ③ **运行期实测**（四个 run）：`read-only + never` 与 `workspace-write + ask` 两种会话里，
+     `mcp__<server>__write_marker` 调用**都成功、零审批零拒绝**（同会话 bash 写被沙箱拒绝，证明档位
+     确实在生效）；另有单独一组把目标路径指到**会话工作目录之外**，仍然成功——MCP server 是挂载期
+     spawn 的独立进程，会话文件沙箱够不着它；
+  ④ 唯一的宿主侧覆盖是 **Auto review 档**：`dsh-experimental-auto-review` 的 `tools/pre-execute` 监听
+     **不筛工具名**（所以它盖得到 `mcp__*`），但它在 preset 不是 auto 时**第一行就早退**
+     （`if (permissionPresets.current(agent.session) !== AUTO_PRESET) return next()`）——四个常规档位下
+     `mcp__*` 是一个既无档位闸、也无沙箱约束的通道；该特性还是实验性的、宿主侧没有把它
+     钉成不变量（第三方补丁可以把它整体摘掉）。
+  **结论**：这不是「宿主的活」——宿主在常规档位下同样不闸；它是本方案威胁模型 (d) 的一个**未覆盖面**。
+  复现要点：隔离 `DSH_HOME`（拷 `headless` profile，别碰真 `~/.dsh`）+ `--patch` 插一条
+  `@deepseek-ai/dsh-mcp-client` 条目指向自造 server，两种档位各跑一次，看 marker 是否落盘、事件流里
+  有没有 `approval`。
+  三条收口路，**需先拍板**：(a) 只记边界，把不变量 4 的「每个」限定为三家的表（**本轮已做**）；
+  (b) 把 `mcp__` 前缀收进某一家闸并定档（一律 `exec`？按 server 白名单？——前缀过滤机制上支持，
+  但「谁替别人的工具声明档位」是策略问题）；(c) 推给宿主 / MCP 侧修，本仓只留这条记录与告警。
 
 ---
 
