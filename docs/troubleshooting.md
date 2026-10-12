@@ -92,6 +92,61 @@ grep -n 'insert:' -A2 ~/.dsh/cordis.patch.yml
 撞名重灾区是**通用词 id**（`logs`、`storage`、`search` 这类）：生态里 `dsh-logbook` 的 entry id
 就是 `logs`，碰上另一个日志插件时**谁在组合顺序后面谁赢**，输的那个静默消失。改 id 是唯一根治。
 
+**2026-10-12 隔离 profile 实测：两个各自独立的 bundle 各 insert 同一个 id**（上表四格的实测证据；与
+[architecture.md §4](./architecture.md#4-谁写哪个文件跨包冲突的唯一来源) 登记的那一侧——**手工往同一个 patch 文件追加**——是两回事）。
+
+装置（一次性、跑完即删；**全程独立 `DSH_HOME`**，真实 `~/.dsh` 只读）：
+
+```sh
+# ① 隔离 home + 一次性 profile（用 dsh 自带的 web 模板，不含任何用户插件）
+WORK=$(mktemp -d /tmp/dsh-loaderid-XXXXXX); export DSH_HOME="$WORK/dsh-home"; mkdir -p "$DSH_HOME"
+dsh --profile loaderid --from-default-profile web --dump-config
+
+# ② 两个各自独立的 bundle 包（各有自己的 dsh.bundle.patch，各自 insert 同一个 id）
+#    bundle-<x>/cordis.patch.yml：  - insert: [- id: clash-probe, name: '@probe/stub-<x>']
+#    外加两个最小 stub 插件包（挂载时打 [probe-<x>] mounted、写 marker、注册一条 /api/probe-<x>/ping）
+dsh plugin --profile loaderid add link:$WORK/pkgs/bundle-a link:$WORK/pkgs/bundle-b
+(cd "$DSH_HOME/profiles/loaderid" && pnpm add link:$WORK/pkgs/stub-a link:$WORK/pkgs/stub-b)
+#    stub 也必须是 profile 的依赖，否则 insert 行的 name: 解析不到——那是另一类症状（failed to import）
+
+# ③ 组合层：同一个 id 两行，上方 `# ==` 标明各自来自哪个 bundle
+dsh --profile loaderid --dump-config | grep -n -B1 'id: clash-probe'
+
+# ④ 起真宿主（判据：日志里出现带 token 的 URL）
+dsh --profile loaderid --no-open --port 32142
+```
+
+两个 stub 各走**三条互相独立**的通道（stdout 一行、marker 文件、HTTP 路由），免得「日志被吞掉」被误判成「没挂载」。
+
+| 四格 | 2026-10-12 实测结论（dsh 0.2.1-alpha.2 / Node v22.23.2；两个独立 bundle，同 id `clash-probe`） |
+|---|---|
+| **症状** | 宿主**照常启动、照常服务**（带 token 的 URL 与平常一模一样）；输的那个插件**整块消失**——它的 `apply()` 从未被调用（marker 不生成、挂载日志不打），所以它注册的路由 / 卡片 / 工具在运行期根本不存在：实测 `GET /api/probe-a/ping` → **`404 not found`**，而赢家同一条 → `200 {"probe":"b"}`。全程没有任何报错或提示。 |
+| **谁赢** | **组合顺序里靠后的那个 bundle**（`dsh.profile.bundles` 数组越靠后越赢），两个方向都实测：顺序 a,b → 只有 `[probe-b] mounted`；顺序 b,a → 只有 `[probe-a] mounted`。机制在已装的 `@deepseek-ai/cordis-plugin-loader@1.0.6-alpha.1` 的 `lib/index.js:78-93`：`newMap = Object.fromEntries(config.map((o) => [o.id ?? Symbol('anonymous'), o]))` 按 id 建 Map，**同 id 后写覆盖先写**，先写那条在 `create()` 之前就被丢掉（该文件全文 `grep duplicate` **0 命中**）。 |
+| **有没有日志** | **一条都没有。** 宿主 stdout/stderr 全文就两行（逐字）：`[probe-b] mounted` 与 `dsh web: http://127.0.0.1:32142/?token=…`——没有 `duplicate loader entry id`、没有 `warning`、没有 `failed to import`、没有 `N entry did not activate`。loader 源码里 `duplicate` 这个串也 `grep` 不到：**不是「打了没看见」，是这条日志路径不存在**。对照组（两个 bundle 用不同 id）同样干净，区别只是两行挂载日志都在。**唯一看得见撞名的地方是组合层**：`--dump-config` 里同一个 id 出现两行。 |
+| **能不能自愈** | **不能。** ① **重启**——同顺序复跑两次，赢家逐次一致；② **换顺序**——赢家会翻（这是「变脸」不是修好：输的那个换人，症状还在）；③ **从 `dsh.profile.bundles` 去掉其中一个 bundle**——另一个立刻正常挂载（实测 `[probe-a] mounted`）；④ **用户层 patch 写 `- id: clash-probe` + `disabled: true`**——**两个都不挂**（该 id 上只剩生效的那一条，禁掉它不会把被压住的另一条放出来），日志依旧一条没有；⑤ **手工往 home 层 `$DSH_HOME/cordis.patch.yml` insert 同一个 id**——**home 行赢**（实测 `[probe-a] mounted`；组合层里同一 id 出现**三**行）。**唯一根治：改 id。** |
+
+对照组（同一套装置，每次只改一个变量；每一行都是真宿主跑出来的）：
+
+| 变量 | 谁挂载了 | `GET /api/probe-a/ping` / `probe-b` |
+|---|---|---|
+| 两个 bundle 用**不同** id（`probe-alpha` / `probe-beta`） | 两个都挂 | `200` / `200` |
+| 同 id，bundle 顺序 **a,b** | 只有 `probe-b` | `404` / `200` |
+| 同 id，bundle 顺序 **b,a** | 只有 `probe-a` | `200` / `404` |
+| 同 id，顺序 b,a，**再跑一次** | 只有 `probe-a`（与上次逐字相同） | — |
+| 同 id，但把 bundle-b 从 `bundles` 里移除 | 只有 `probe-a` | — |
+| 同 id，profile patch 里 `disabled: true` | **两个都不挂** | — |
+| 同 id + home 层手工 insert（指向 `probe-a`） | 只有 `probe-a`（home 赢） | — |
+
+**用户侧排查顺序**（症状是「某个插件明明装了、却像没装：卡片不见 / 路由 404 / 工具不在」，而同一个 profile 里还有另一个插件在跑）：
+
+1. **先分诊「撞名」还是「真没装」**：拿该插件包**自己** `cordis.patch.yml` 里的 `id:`（别猜）去数组合层——用上面「自查三步」的第 ① 步。同一 id 出现两行（或更多）就是撞名；上一行的 `# == <bundle 或 patch 文件>` 告诉你是谁写的。
+2. **判赢家**：该 id **最后**一条的 `name:` 才是真正挂上的那个（**顺序即胜负**，与插件新旧、装载耗时无关）。
+3. **找第二个来源**：`<profile>/package.json` 的 `dsh.profile.bundles`（越靠后越赢）与 `$DSH_HOME/cordis.patch.yml` 的手工行（叠在 bundle 之后，实测能盖掉两个 bundle）。
+4. **别去翻插件代码，也别等日志**：这一类的宿主日志是干干净净的两行，全部线索都在第 1 步的组合层里。
+5. **处置**：给其中一个**换 id**（唯一根治，改完重启宿主）；只想先把另一个救活，就把它从 `dsh.profile.bundles` 里去掉。**别拿用户层 patch 的 `disabled: true` 当解法**——实测那样两个都不挂。
+
+**这一次没测到的**（别当成结论）：① 两个 bundle 争同一个 id 且**其中一个 `name` 解析不到**时的表现（2026-10-11 那行记的是 home 行 name 解析不到会报 `failed to import`，本次两个 name 都能解析）；② 三个以上 bundle 争同一个 id；③ bundle 层里 `insert` **之外**的 id 目标 patch（`config` 等）在同名下的落点——只测了 `disabled`；④ 浏览器面板里的具体呈现（本格用的是宿主侧三条通道 + HTTP 状态码）；⑤ 本次隔离 setup 的隔离 home 下没有生成 `logs/` 目录（真机安装里 `ctx.logger` 的落点是 `<DSH_HOME>/logs/startup-*.log`），所以「有没有日志」这一格的证据面是 **stdout/stderr 全文 + loader 源码**，不是「翻遍了每一个可能的文件」。
+
 </details>
 
 <details>

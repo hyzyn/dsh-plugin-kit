@@ -71,6 +71,24 @@
 
 **门槛**：说清「症状 / 谁赢 / 有没有日志 / 能不能自愈」四格，并给出用户侧的排查顺序。
 
+> **✅ 2026-10-12 收口：做完了**（隔离 profile 实测，四格 + 用户侧排查顺序都落进
+> [troubleshooting.md](../../docs/troubleshooting.md) 的「报 duplicate loader entry id？」那一块；
+> 原文按纪律 3 保留，本节只加这一句指路）。一句话结论：
+>
+> - **谁赢**：组合顺序里**靠后的那个 bundle**（`dsh.profile.bundles` 越靠后越赢），两向都实测过；
+> - **有没有日志**：**一条都没有**——输的那个插件的 `apply()` 从未被调用，路由 404、卡片不见，
+>   宿主照常启动照常服务。而且**不是「打了没看见」**：机制所在的
+>   `cordis-plugin-loader@1.0.6-alpha.1` 的 `lib/index.js` 里 `Object.fromEntries` 按 id 建 map
+>   （同 id 后写覆盖先写），全文 `grep duplicate` **零命中**——**这条日志路径根本不存在**。
+>   （本文档复核过 loader 源码：`newMap = Object.fromEntries(config.map((o) => [o.id ?? Symbol('anonymous'), o]))`
+>   与「无 duplicate 告警」两点都亲自确认。）
+> - **能不能自愈**：不能。重启不变、换顺序只是**赢家换人**、用户层 patch 写 `disabled: true` 反而
+>   **两个都不挂**；**唯一根治是改 id**。
+>
+> **纪律 3 的例外说明**：本节的待办文字**保留**（它记的是「当时为什么单列」），完成标记是上面这段。
+> 顺带产出的一个**建议**（未实施，留给维护者拍板）：加一道**纯静态守卫**——现算各包
+> `cordis.patch.yml` 的 insert `id`，断言仓内两两不同（挡「本仓两个包抢同一个通用词 id」）。
+
 ---
 ## P0-乙：原子建包（必须一次提交，中间态必红）
 
