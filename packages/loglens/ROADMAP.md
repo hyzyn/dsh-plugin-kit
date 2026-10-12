@@ -1015,11 +1015,19 @@ P6 真要做 tail 时把 `stream()` 与消费者一起落地，再把这一位�
 | [src/index.ts](../loglens/src/index.ts) | `/query` 响应多一位 `capabilities`（`capabilitiesOf`）：面板据此决定画不画分布。**`RouteState` 多一个 `backendFor`**，与执行层用的是**同一个函数**——能力自述必须描述**真正跑的那个后端** |
 | [client-src/pure.js](../loglens/client-src/pure.js) | `histogramInterval`（按窗口挑档，柱数 ≤ 60）、`histogramPayload`（**窗口取响应回显的那一份**，不完整就回 `null` 让界面不发请求）、`histogramBars`（铺满窗口 / 空档补 0 / 峰值归一化 / 上限兜底带 `truncated`） |
 | [client-src/index.js](../loglens/client-src/index.js) | 结果区上方的分布块（柱高是内联 style，外观走类）；`loadHistogram` 三类收尾：**不支持就不发请求**、**拿不到只说那句话**（不动结果列表）、**翻页不重拉**（窗口与查询串没变） |
-| 用例 | `client-pure.test.ts` **+17 条**（间隔 `{ms,key}` 三元形态、柱数上限、**空档补 0 的反例**、末尾安静、同一 ts 相加、桶边界对齐、坏输入不抛、上限截断、载荷取回显窗口）；`query-route.test.ts` **+4 条**（能力随 `/query` 下发、**换桩就跟着变**（不是面板猜的）、真 Loki 聚合为假且只打 `query_range`、只有 `/query` 带这一位）；`capabilities.test.ts` +1 条（ES / OS 聚合为真、Loki 为假） |
-| `scripts/client-smoke.mjs` | **+3 条渲染回归**（柱子数 = 窗口/间隔且空档是空的、Loki 不画也不发请求、拉不到时结果列表还在）；桩加了「按 path 挂响应」的能力（含演后端报错那一侧） |
+| 用例 | `client-pure.test.ts` **+19 条**（间隔 `{ms,key}` 三元形态、柱数上限、**空档补 0 的反例**、末尾安静、同一 ts 相加、桶边界对齐、坏输入不抛、上限截断、载荷取回显窗口、**能力自述的三态读法**）；`query-route.test.ts` **+4 条**（能力随 `/query` 下发、**换桩就跟着变**（不是面板猜的）、真 Loki 聚合为假且只打 `query_range`、只有 `/query` 带这一位）；`capabilities.test.ts` +1 条（ES / OS 聚合为真、Loki 为假） |
+| `scripts/client-smoke.mjs` | **+4 条渲染回归**（柱子数 = 窗口/间隔且空档是空的、Loki 不画也不发请求、拉不到时结果列表还在、**宿主没给 capabilities 时什么都不说**）；桩加了「按 path 挂响应」的能力（含演后端报错那一侧） |
 
 **反向验证**：把 `histogramBars` 的补 0 拿掉（`if (count === 0) continue`）→ 纯逻辑**红 3 条**、
 渲染回归**红 1 条**；改回来即绿。**两处守卫都会咬人**，不是装饰。
+
+**同轮自伤（记一笔，按先例不占编号）**：第一版把「宿主**没给** `capabilities`」与「宿主说**不支持**」
+走同一支，于是旧版宿主（或不是 `/query` 回来的响应）会让界面写一句「当前来源不支持聚合」——
+**替对方说一句我们没依据的话**。这正是本仓已有的判据（`dockerFlagOf` 的「不知道 ≠ 没装」）被我
+在同一天、同一张卡片上违反了一次。修法是把它变成**三态**（`supportsAggregation` 返回
+`true` / `false` / `undefined`），并且**有对象但缺这一位也算不知道**——「缺字段」与「明确说我不能」
+是两句话，只有后者才配上界面。反例已进用例（`{}` / `{ capabilities: {} }` / 字符串 `'true'` 都不许落成
+`false`）与渲染回归（没给 capabilities 时什么都不说、也不去试那一枪）。
 
 **顺手修掉的三处过期头注释**（同一类问题：注释说的与代码做的相反）
 
@@ -1031,8 +1039,8 @@ P6 真要做 tail 时把 `stream()` 与消费者一起落地，再把这一位�
 
 | 闸 | 结果 |
 |---|---|
-| 本包单测 | **291 条**（15 个文件） |
-| `client-smoke` | **7/7**（新增 3 条全过） |
+| 本包单测 | **293 条**（15 个文件） |
+| `client-smoke` | **8/8**（新增 4 条全过） |
 | `client-lint` | 通过：样式变量 71 处、自定义属性 72 处、**排版 17 处**字号均配对行高与官方字重、中性边框 7 处发丝线、圆角 8 处 token |
 | `check-i18n` | 本包 **80 条键** zh/en 一致、告警 0 条（新增 9 条键全落在已登记的 `panel.` / `meta.` / `hint.` / `error.` 域里，**没有新造域**） |
 | 全仓门禁 | `pnpm typecheck && pnpm build && pnpm test && pnpm aggregate` 全绿（数字见提交） |

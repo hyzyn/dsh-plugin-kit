@@ -502,6 +502,20 @@ await test('时间分布：拉不到时只说那一句，**结果列表不受影
   assert.equal(treeFind(tree, (node) => String(node.props?.className ?? '').startsWith('ll_histBar')).length, 0, '失败时不该画半张图')
 })
 
+await test('时间分布：宿主**没给** capabilities（不知道）时什么都不说，且不去试', async () => {
+  // 第一版把「缺字段」与「明确说不支持」走同一支，界面会写「当前来源不支持聚合」——
+  // 那是替对方说一句我们没依据的话（同一判据的先例：pure.js 的 dockerFlagOf「不知道 ≠ 没装」）。
+  const outcome = queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true)
+  delete outcome.capabilities
+  serverRoutes = { '/api/dsh-loglens/query': outcome }
+  const tree = await runPanelQuery('es')
+
+  assert.equal(calls.some((call) => call.path === '/api/dsh-loglens/facets'), false, '不知道就不该去试那一枪')
+  const text = treeText(tree)
+  assert.equal(text.includes('不支持聚合'), false, '缺字段不是「不支持」——不知道就什么都不说')
+  assert.equal(treeFind(tree, (node) => String(node.props?.className ?? '').startsWith('ll_histBar')).length, 0, '不知道也不该画')
+})
+
 /* ------------------------------------------------------------------ *
  * 结果
  * ------------------------------------------------------------------ */

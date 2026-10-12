@@ -16,6 +16,7 @@ import {
   kindOptions,
   queryPayload,
   queryProblem,
+  supportsAggregation,
   windowOptions,
   windowRange,
   dockerFlagOf,
@@ -354,5 +355,18 @@ describe('时间分布：请求载荷', () => {
     const payload = histogramPayload({}, outcome, '5m')
     expect(payload.q).toBe('')
     expect(payload.interval).toBe('5m')
+  })
+})
+
+describe('时间分布：能力自述的读法（三态）', () => {
+  it('宿主说真 → true；说假 → false', () => {
+    expect(supportsAggregation({ capabilities: { aggregations: true } })).toBe(true)
+    expect(supportsAggregation({ capabilities: { aggregations: false } })).toBe(false)
+  })
+
+  it('**不知道就是不知道**（undefined），不许落成 false', () => {
+    for (const payload of [undefined, null, {}, { capabilities: null }, { capabilities: {} }, { capabilities: { aggregations: 'true' } }]) {
+      expect(supportsAggregation(payload), JSON.stringify(payload)).toBeUndefined()
+    }
   })
 })

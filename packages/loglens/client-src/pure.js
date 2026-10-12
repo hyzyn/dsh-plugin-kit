@@ -219,6 +219,24 @@ export function histogramInterval(windowMs) {
 }
 
 /**
+ * 这次查询的来源**能不能**聚合：`true` / `false` / **`undefined` = 不知道**。
+ *
+ * **`undefined` 不许当成 `false`**：能力自述是宿主随响应下发的，缺字段只说明**我们不知道**
+ * （旧版宿主、或这不是 `/query` 回来的东西）。这时在界面上写「当前来源不支持聚合」，是替对方
+ * 说一句我们没依据的话——本仓同一条判据的先例是 `dockerFlagOf`（缺字段时保留上一次的判断，
+ * 不把「不知道」当成「没装」）。不知道就**什么都不说**。
+ */
+export function supportsAggregation(payload) {
+  const caps = payload === null || typeof payload !== 'object' ? undefined : payload.capabilities
+  if (caps === null || typeof caps !== 'object') return undefined
+  if (caps.aggregations === true) return true
+  if (caps.aggregations === false) return false
+  // 有 `capabilities` 对象但**没有这一位**（旧版宿主 / 自述不全）同样算不知道：
+  // 「缺字段」与「明确说我不能」是两句话，只有后者才该显示在界面上。
+  return undefined
+}
+
+/**
  * 请求载荷：**窗口取响应回显的那一份**，不是面板请求的那一份。
  *
  * 宿主可能兜底过（只给一端时补 15 分钟）或按来源上限收窄过；用回显的那份才对得上

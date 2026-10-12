@@ -30,6 +30,7 @@ import {
   kindOptions,
   queryPayload,
   queryProblem,
+  supportsAggregation,
   windowOptions,
 } from './pure.js'
 
@@ -517,8 +518,8 @@ window.__ModuleLoader__.load({
        */
       const loadHistogram = async (data, append) => {
         if (append) return
-        if (data === null || typeof data !== 'object' || data.capabilities === undefined
-          || data.capabilities === null || data.capabilities.aggregations !== true) {
+        // `!== true` 连同「不知道」（缺 capabilities）一起挡住：不知道就不发请求、也不画。
+        if (supportsAggregation(data) !== true) {
           setHistogram(undefined)
           return
         }
@@ -940,11 +941,12 @@ window.__ModuleLoader__.load({
                         ],
                       }, 'll-line-' + line.id)),
                     }) : null,
-                    // 时间分布：拿不到就把那句话说出来（不动结果列表），不支持就说清不支持。
+                    // 时间分布：拿不到就把那句话说出来（不动结果列表），**不支持**就说清不支持，
+                    // **不知道**（宿主没给 capabilities）什么都不说——「不知道 ≠ 不支持」。
                     isDocker || outcome === undefined ? null : histogram === undefined
-                      ? (outcome.capabilities !== undefined && outcome.capabilities !== null && outcome.capabilities.aggregations === true
-                        ? null
-                        : jsx('p', { className: 'll_hint', children: t('hint.histogramUnsupported') }))
+                      ? (supportsAggregation(outcome) === false
+                        ? jsx('p', { className: 'll_hint', children: t('hint.histogramUnsupported') })
+                        : null)
                       : (histogram.error === undefined ? jsxs('div', {
                         className: 'll_hist',
                         children: [
