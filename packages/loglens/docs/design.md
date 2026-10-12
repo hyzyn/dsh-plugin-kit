@@ -229,6 +229,11 @@
   `limit`、`direction=backward`；`streams[].values` 是 `[[tsNs, line]]`；`stats=true` 取扫描统计。
   字段 `/loki/api/v1/label` + `/label/<name>/values`。多租户 `X-Scope-OrgID`。
   跟随 `/loki/api/v1/tail`（**WebSocket**，不是 SSE），需 `ws`（`tty` 已有先例，按 architecture §3 在 README 写理由）。
+  **落地状态（2026-10-12）**：`stream()` **还没实现**，所以 `capabilities().follow` 现在声明为 **`false`**。
+  这一位原先是在 `stream()` 还没写的时候就写成 `true` 的——而它会被 `loglens_sources` **原样回给 agent**，
+  等于指一个不存在的入口。判据与 `aggregations` ↔ `facets()` 是同一条（§3.1）；守卫见
+  [test/capabilities.test.ts](../test/capabilities.test.ts)：**声明了 follow 就必须真的有 `stream()`**。
+  实现那天把这一位改回来，并补真机用例。
 - **ES + OpenSearch（P4）**：`POST /<index>/_search`，`sort` 按 `@timestamp` 降序；深分页 PIT + `search_after`；
   **版本差异已实测并适配**（2026-10-11 在一台 7.10.2 上）：PIT 的响应键 7.10 是 `pit_id`（7.12+ 才是 `id`）、
   7.10 / 7.11 **没有 `_shard_doc`**（退到 `_id`，按目标记住探测结果），且这类失败在 7.10 上是

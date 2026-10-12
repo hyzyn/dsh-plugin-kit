@@ -460,8 +460,10 @@ wire 级用例做完，真机那一半等有环境（你自带的 Loki，或允�
 
 #### 还没做的
 
-- **Loki 的 `tail`（WebSocket 跟随）**：`capabilities().follow` 仍声明 `true`，但 `stream()` 没实现——
-  这是 P6 三选一里剩下的那格。
+- **Loki 的 `tail`（WebSocket 跟随）**：`stream()` **没实现**，所以 `capabilities().follow` 现声明为
+  **`false`**（2026-10-12 改正；原先在没写 `stream()` 时就写成 `true`，而这一位会经 `loglens_sources`
+  原样回给 agent）。守卫 [test/capabilities.test.ts](../loglens/test/capabilities.test.ts) 钉住
+  「声明 follow 就必须真的有 `stream()`」；实现那天改回来。这是 P6 剩下的那格之一。
 - 真机只在本机单 ingester 上跑过；**多 ingester / 集群**下的组内次序没测（判据已改成不依赖它）。
 
 ### P3：四个 agent 工具 + 档位分类表（2026-10-11 落地）
@@ -900,6 +902,12 @@ agent 在真集群上用完插件后给了 7 条批评，这是其中最便宜�
 
 ### P4 尾（面板那一格）：来源行第 4 格「允许公网地址」+ 客户端渲染回归（2026-10-11）
 
+> **⚠ 本节描述的那一格当天晚些时候已被整条推翻，现在不存在**（2026-10-12 加注）：
+> `allowPublic` 字段、卡片上这一格开关与三组 i18n 键**全部拆掉了**（判据见下面的「公网档改判」一节）。
+> 按 [纪律 3](../../docs/conventions.md#文档分档) 原文保留，但**读它时以「公网档改判」为准**——
+> 界面与代码里现在搜不到 `allowPublic`，也没有 `check.allowPublic` 这句文案。
+> 本节真机表里「用户的内网来源被公网档拦下」那一行，**正是促成改判的现场**。
+
 出站围栏（上一节）落地时 `allowPublic` 只能从配置面写。这一刀把它做成**界面上的开关**，
 并按本仓既有约定给这个包补上第一条**客户端渲染回归**：
 
@@ -939,4 +947,44 @@ agent 在真集群上用完插件后给了 7 条批评，这是其中最便宜�
 - 设置卡片把开关做成了**那一行的第 4 格**（按来源，不是按插件），面板与 agent 走同一份判据。
 - 若维护者更愿意「公网默认放行、只拦链路本地 / 元数据」，改的是 `assertReachable` 里那一处判据——
   **本条仍属待拍板第 5 项**，代码按设计 §4.1 的现行口径落地。
+
+### 能力自述的对账：Loki 的 `follow` 说了没做（2026-10-12）
+
+**现场**：`loglens_sources` 会把 `capabilities()` **原样回给 agent**，而 Loki 的 `follow` 写的是 `true`——
+同一个文件里 `aggregations` 早在 2026-10-11 就因「声明成 true 等于撒谎，调用方会照着文案去试一个
+永远报错的入口」改成了 `false`，**`follow` 漏了**。同一条判据只改了一个，漏掉的那个照样会被 agent 看到
+（而且它比 `aggregations` 更直接：那一位是「能不能持续跟随」，agent 会照着去挂一个不存在的入口）。
+
+**改了什么**
+
+| 落点 | 内容 |
+|---|---|
+| [src/backends/loki.ts](../loglens/src/backends/loki.ts) | `follow: true` → **`false`**，并写上与 `aggregations` 同款的判据注释（`stream()` 仍未实现——Loki 的 tail 是 WebSocket，属 P6，见 [design.md §6](./docs/design.md)） |
+| [src/backends/registry.ts](../loglens/src/backends/registry.ts) | 新增 `ALL_BACKENDS` 与 `capabilityGaps()`：对账「自述为真」↔「方法在场」（`follow` ⇒ `stream()`、`aggregations` ⇒ `facets()`） |
+| [test/capabilities.test.ts](../loglens/test/capabilities.test.ts) | **10 条**：注册表逐个过对账；`ALL_BACKENDS` ↔ `backendFor` 两侧对账（新适配器漏登记会被抓到）；4 条反例 + 2 条对照组 |
+| client-src/index.js | 清掉 **2 条死 i18n 键**（`field.index` / `placeholder.dockerTarget`，zh + en 共 4 行） |
+| 本文件 | 本节；另给「P4 尾（面板那一格）」加注——那一格（`allowPublic`）当天晚些时候已整条拆掉，原文的现在时说法会误导读者 |
+
+**判据的写法**（本节的重点）：对账函数判的是**「声明与实现一不一致」**，不是「有没有方法」——
+所以「声明 `false` 且方法确实没有」**不报**（对照组 1），「方法在场但没声明」也**不报**（对照组 2，
+实现多于自述不是谎话）。判成后者的话，`follow: false` 这个**正确**的写法反而会被守卫打红。
+
+**反向验证**：把 `follow` 改回 `true` 再跑 `test/capabilities.test.ts` → **3 条红**，报的正是
+`declared: 'follow' / missing: 'stream()'`（`每个适配器都过对账` / 正面断言 / 钉住本条的那一条）。
+改回来即绿——守卫不是装饰。
+
+**门槛与证据（实跑）**
+
+| 闸 | 结果 |
+|---|---|
+| `test/capabilities.test.ts` | **10 条**全绿；反向验证见上 |
+| `check-i18n` | 本包 **71 条键** zh/en 一致、用法命中、**告警 0 条**（改前 73 条 + 2 条「没被静态扫到」——留着会让这条告警变噪音，下次真有死键就看不见了） |
+| 全仓门禁 | `pnpm typecheck && pnpm build && pnpm test && pnpm aggregate` 全绿：**168 文件 / 2809 用例** |
+| 守卫 | check-doc-links（587 条链接 / 48 条锚点）、docs-index、no-public-ip、defects-table（33 条）全绿 |
+
+**刻意不做的**：**不实现 `stream()`**。Loki 的 tail 是 **WebSocket**（要 `ws` 依赖），而它现在
+**没有任何消费者**（没有工具 / 路由用它）——按「不给不存在的入口」这同一条判据，先诚实地声明 `false`；
+P6 真要做 tail 时把 `stream()` 与消费者一起落地，再把这一位改回来。**声明与实现对上了**才是这一节的交付物，
+不是 tail 本身。
+
 

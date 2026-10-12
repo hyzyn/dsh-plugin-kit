@@ -286,7 +286,18 @@ export function createLokiBackend(options: LokiOptions = {}): LogBackend {
     capabilities(): BackendCaps {
       return {
         queryLanguage: 'logql',
-        follow: true,
+        /*
+         * **跟随声明为 false**（2026-10-12 改）：`stream()` 还没实现（Loki 的 tail 是 **WebSocket**
+         * `/loki/api/v1/tail`，要 `ws`），而这一位是给调用方看的「能不能持续跟随」——声明成 true
+         * 等于撒谎，而且这一位**会被 `loglens_sources` 原样回给 agent**，它照着一个不存在的入口去挂，
+         * 只会拿到「没实现」。
+         *
+         * 与下面 `aggregations` 同一条判据：**实现那天再改回来，并补用例**。守卫见
+         * `test/capabilities.test.ts`——声明了 follow 就必须真的有 `stream()`（这一位原先是在
+         * 还没写 `stream()` 时就声明成 true 的，属于「说了没做」）。路线图位置：P6 的 `tail`
+         * （见 docs/design.md §6）。
+         */
+        follow: false,
         /*
          * **聚合声明为 false**（2026-10-11 改）：本适配器没有实现 facets（聚合要 LogQL 的指标查询，
          * 是另一件活），而这一位是给调用方看的「能不能按它分组统计」——声明成 true 等于撒谎，

@@ -115,6 +115,9 @@ dsh plugin --profile <profile> add link:$(pwd)/packages/loglens
   ES / OpenSearch 侧已在真集群上跑过若干轮只读复核，逐条结论同样在 ROADMAP 里，**不在这里复述**。
 - **翻页的取舍（明写）**：同一纳秒的行是**切不开的一组**——末组会让这一页**略超 `limit`**
   （宁可多给几行，也不给一个会丢行的游标）；末组大到补不齐时**不给游标**，只报「命中可能不完整」。
+- **`tail`（跟随）还没做**：Loki 的 `capabilities().follow` 因此声明为 **`false`**（`stream()` 未实现）。
+  这一位会经 `loglens_sources` 原样回给 agent，声明成 true 等于指一个不存在的入口——判据与
+  `aggregations` ↔ `facets()` 是同一条。守卫：[test/capabilities.test.ts](./test/capabilities.test.ts)。
 - 面板里的查询区是**受控重复**（设计 §5 的默认档）：日志视图建在本插件自己的卡片里，不与别的插件共享浏览器模块。
 - Docker 目标在面板里走的是**选项 0 的面板半格**（已接）：相对路径 fetch Docker 插件自己的
   `/api/dsh-docker/containers` 与 `/logs`，弱面（无 `until`、`tail` 有上限、无 grep）在界面上如实标注；
