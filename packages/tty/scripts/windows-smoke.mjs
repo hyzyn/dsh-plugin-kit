@@ -86,6 +86,8 @@ process.on('exit', (code) => {
 const RESULTS = []
 function pass(label) { RESULTS.push(['PASS', label]); console.log('  ✔ PASS  ' + label) }
 function fail(label, detail) { RESULTS.push(['FAIL', label, detail]); console.error('  ✘ FAIL  ' + label + (detail ? ' — ' + detail : '')) }
+/** SKIP 单列一档：**不许混进 PASS 计数**，否则「跳过」会伪装成 12/12（见 W8 的 CI 闸门）。 */
+function skip(label) { RESULTS.push(['SKIP', label]); console.log('  ⏭  SKIP  ' + label) }
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 /** 简易 ws 会话客户端（与 integration.mjs 同形，只保留本脚本要用的部分）。 */
@@ -365,9 +367,22 @@ async function run() {
   // 容易断的地方在 ConPTY —— 标记是 conhost **直通转发**的旁路（渲染路径之外），被吞掉
   // 或晚到只有真机才看得出。另起一个 app 实例是为了改 shell 配置：W1–W7 必须保持真实的
   // `%COMSPEC%` 链路（它们钉的正是「没有 POSIX 包装层、跑的就是 cmd.exe」）。
+  //
+  // **CI 上默认跳过这一档**（`DSH_TTY_SMOKE_W8=1` 可强制打开）：GitHub 的 Windows runner
+  // （windows-2025，镜像与历史全绿的那几天一致）上，只要脚本里带着 W8 这段代码，
+  // `windows-smoke` 就几乎必崩 `0xC0000374`（堆损坏，崩点在「杀一个 ConPTY 会话」的边界上）。
+  // 2026-10-12 实测：含 W8 的树 CI 上 **10/10 崩**、不含 W8 的树 1/3 崩；main 历史上（无 W8）
+  // 8/10 绿。**这一档不是没验**——Windows 11 + Windows PowerShell 5.1 真机上 9 次
+  // `12/12 PASS`、CI（PowerShell 7）也验过 W8a/W8b 能过；只是**不适合挂在会必崩的 runner 上**，
+  // 因为红的是 flake 而不是断言，久了没人看。改用**真机车道**守它：`DSH_TTY_SMOKE_W8=1
+  // pnpm --filter @hyzyn/dsh-tty windows-smoke`。细节与复现配方见 packages/tty/ROADMAP.md
+  // 那条 `0xC0000374` 条目——动这里之前先读它。
+  const skipW8OnCi = process.env.DSH_TTY_SMOKE_W8 !== '1' && process.env.CI === 'true'
   console.log('\n[W8] PowerShell + shell 集成（OSC 133/7）')
   tracer.enter('W8 PowerShell 集成')
-  try {
+  if (skipW8OnCi) {
+    skip('W8 PowerShell shell 集成（CI 环境按设计跳过：见 packages/tty/ROADMAP.md 的 0xC0000374）')
+  } else try {
     const shellPath = resolvePowerShell()
     if (shellPath === null) {
       console.log('  （跳过）本机没找到 pwsh.exe / powershell.exe')
@@ -429,9 +444,14 @@ await run()
 // **异常终止**用的，断言失败被说成「崩溃」只会误导。
 exitingNormally = true
 const failed = RESULTS.filter((row) => row[0] === 'FAIL')
-console.log('\n==== Windows 冒烟：' + String(RESULTS.length - failed.length) + '/' + String(RESULTS.length) + ' PASS ====')
+const skipped = RESULTS.filter((row) => row[0] === 'SKIP')
+/** 分母扣掉 SKIP：**跳过的档不许算进 PASS 数**（否则「跳过」看起来像全过，正是要防的假绿）。 */
+const counted = RESULTS.length - skipped.length
+const summary = String(counted - failed.length) + '/' + String(counted) + ' PASS' +
+  (skipped.length > 0 ? '（另 ' + String(skipped.length) + ' 项 SKIP：' + skipped.map((row) => row[1]).join('；') + '）' : '')
+console.log('\n==== Windows 冒烟：' + summary + ' ====')
 // 同步再打一份结论：万一下面的 flush 屏障之前进程就没了（原生崩溃），至少这一行一定在。
-traceSync(`Windows 冒烟结论：${String(RESULTS.length - failed.length)}/${String(RESULTS.length)} PASS`)
+traceSync(`Windows 冒烟结论：${summary}`)
 for (const row of failed) console.error('  ✘ ' + row[1] + (row[2] ? ' — ' + row[2] : ''))
 clearTimeout(watchdog)
 /**
