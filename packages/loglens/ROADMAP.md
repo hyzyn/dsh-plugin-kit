@@ -4,9 +4,9 @@
 > Loki 与 ES / OpenSearch 适配器、出站围栏、agent 工具（**名单以 `src/tools.ts` 注册处为准**，`loglens_facets`
 > 是当天后补的第五个）、Docker 的选项 0 两格（agent 指路 + 面板容器日志区）、浏览器侧的结果视图都可用；
 > **Loki 分页已在真 Loki 3.7.8 上验收并翻成 `cursor`**（真机抓到 D02/D03 两个缺陷，见「P2 真机验收」一节）；
-> 剩下的只有 Loki 的 `tail`（WebSocket 跟随——`capabilities().follow` 现诚实声明为 `false`，见
-> 「能力自述的对账」一节）；**时间分布（直方图）**当天也已落地；「待拍板」的 5 / 6 两项都已拍板
-> （6 取选项 1「受控重复」，见 [design.md §5](./docs/design.md)）。**
+> Loki 的 `tail`（WebSocket 跟随）**已决定暂缓**（2026-10-12，理由见「P2 真机验收 → 还没做的」那一节；
+> `capabilities().follow` 因此诚实地声明为 `false`）；**时间分布（直方图）**当天也已落地；「待拍板」的
+> 5 / 6 两项都已拍板（6 取选项 1「受控重复」，见 [design.md §5](./docs/design.md)）。**
 > `packages/loglens/` 现在是 workspace 包
 > （`@hyzyn/dsh-loglens@0.1.2`，已进 [publish-targets.mjs](../../scripts/publish-targets.mjs) 与两份聚合清单，
 > `pnpm-lock.yaml` 已同步）——所以 [docs-index 判据 5](../../scripts/docs-index.mjs) 现在**看得见它**，
@@ -187,7 +187,7 @@
 | **P4** | ES / OpenSearch 一个适配器（复用 P1 游标；`flavor` 分流） | ✅ |
 | **P4 尾** | 出站围栏 `src/net.ts`（设计 §4.1 那四条） | ✅ |
 | **P5** | Docker 作为来源（**选项 0**，零新机制） | ✅ |
-| **P6** | Loki `tail`（`ws`）**仍未做**；直方图与浏览器视图（**口径已拍板 = 选项 1**）**已落地**（2026-10-12）；design.md §5 | — |
+| **P6** | Loki `tail`（`ws`）**已决定暂缓**（2026-10-12）；直方图与浏览器视图（**口径已拍板 = 选项 1**）**已落地**（2026-10-12）；design.md §5 | — |
 | **P7** | 需要**跨后端统一查询**时才申请宿主半体插件间服务 | — |
 
 **P1 的前置**（2026-10-11 已定稿，见 [design.md §3.2 / §3.3](./docs/design.md) 的「P1 定稿」两段）：
@@ -484,10 +484,18 @@ wire 级用例做完，真机那一半等有环境（你自带的 Loki，或允�
 
 #### 还没做的
 
-- **Loki 的 `tail`（WebSocket 跟随）**：`stream()` **没实现**，所以 `capabilities().follow` 现声明为
-  **`false`**（2026-10-12 改正；原先在没写 `stream()` 时就写成 `true`，而这一位会经 `loglens_sources`
-  原样回给 agent）。守卫 [test/capabilities.test.ts](../loglens/test/capabilities.test.ts) 钉住
-  「声明 follow 就必须真的有 `stream()`」；实现那天改回来。这是 P6 剩下的那格之一。
+- **Loki 的 `tail`（WebSocket 跟随）：已决定「暂缓」（2026-10-12，维护者）**——**不是被卡住，是主动不做**。
+  两条理由：
+  ① **没有消费者**：工具与面板都没有用它。`stream()` 从没实现过，所以 `capabilities().follow` 诚实地
+    声明为 **`false`**（这一位会经 `loglens_sources` 原样回给 agent，声明成 true 等于指一个不存在的入口）；
+    守卫 [test/capabilities.test.ts](../loglens/test/capabilities.test.ts) 钉住「声明 follow 就必须真的有
+    `stream()`」，实现那天改回来。
+  ② 维护者判断**验证不值**：手上真在用的日志来源是 **ES**（它的「跟随」是 `_search` + 轮询，不是 WebSocket），
+    Loki 的 tail 因此没有一个「真实的来源」可验收。
+  > **一条事实说明**（免得下一个人误以为是缺环境）：Loki 的验收环境本身**是能搭的**——P2 那次真机验收
+  > 就是在本机跑真 Loki 3.7.8 二进制（Docker Hub 不可达时从 GitHub Release 取的）。真正缺的是
+  > **长连接的验收口径**（tail 是持续流，「什么算通过」得先定）与一个会用到它的消费者。要做时按
+  > [design.md §6](./docs/design.md) 的 `ws` 方案、**连消费者一起**落地，再把这一位改回来。
 - 真机只在本机单 ingester 上跑过；**多 ingester / 集群**下的组内次序没测（判据已改成不依赖它）。
 
 ### P3：四个 agent 工具 + 档位分类表（2026-10-11 落地）

@@ -118,6 +118,8 @@ dsh plugin --profile <profile> add link:$(pwd)/packages/loglens
 - **`tail`（跟随）还没做**：Loki 的 `capabilities().follow` 因此声明为 **`false`**（`stream()` 未实现）。
   这一位会经 `loglens_sources` 原样回给 agent，声明成 true 等于指一个不存在的入口——判据与
   `aggregations` ↔ `facets()` 是同一条。守卫：[test/capabilities.test.ts](./test/capabilities.test.ts)。
+  **维护者 2026-10-12 决定「暂缓」**（不是被卡住）：没有消费者，且手上真在用的来源是 ES
+  （跟随要走 `_search` + 轮询）——理由与「要做时怎么做」见 [ROADMAP.md](./ROADMAP.md)。
 - **时间分布（直方图）**画在结果列表上方，**只对有聚合能力的来源画**（当前是 ES / OpenSearch）——
   能力由宿主随 `/query` 响应下发，面板**不自己按类型猜**（那会是第二份会漂的判据）。图**来自后端的
   按时间分桶**，不是数这一页：那一页被 `limit` 截断过，数它只会得到一个假的分布。相邻桶之间的空档
