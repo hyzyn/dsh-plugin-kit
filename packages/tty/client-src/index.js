@@ -453,8 +453,9 @@ const I18N_ZH = {
   'check.enabled': '启用插件（保存即热生效：工具与面板入口立刻收起，会话转保活）',
   'check.announce': '向 agent 公告终端面板能力',
   'check.shellIntegration': 'shell 集成（OSC 133/7 注入）',
-  'check.shellIntegrationWindows': 'shell 集成（OSC 133/7 注入，tty_capture{last} 与 cwd 跟随依赖它）',
-  'hint.shellIntegrationWindows': 'Windows 宿主上不适用：注入走的是 POSIX 的 `-c` 包装层与 rc 桩，cmd / PowerShell 上都不成立（实测 cmd 忽略 `-c` 空跑、PowerShell 报 export 不存在）。因此「本地」标签的 cwd 跟随与 tty_capture{last} 不可用；远程 Linux / macOS 主机照旧支持。',
+  'check.shellIntegrationWindows': 'shell 集成（OSC 133/7 注入：cwd 跟随、退出码、tty_expect 与「有没有命令在跑」）',
+  'hint.shellIntegrationWindows': 'cmd 没有命令开始/结束钩子，无法注入：把「Shell 路径」换成 powershell.exe 或 pwsh.exe（下拉候选里有），再确认这个开关是勾上的（此前的 Windows 装机上它可能已被存成关）。远程 Linux / macOS 主机照旧支持。',
+  'hint.shellIntegrationPowerShell': 'PowerShell 家族由 `-File` 桩注入：cwd 跟随、退出码、tty_expect 与「有没有命令在跑」都可用。已知限制：PowerShell 7 上命令输出在 ConPTY 里晚于 D 标记抵达，`tty_capture{last}` 可能取到空——那里请用 `tty_capture` 读尾部（Windows PowerShell 5.1 不受影响）。',
   'section.sftp': 'SFTP 文件传输',
   'field.sftpStyle': 'SFTP 文件浏览风格',
   'option.sftpDialog': '单窗体 — 远程目录 + 上传/下载/拖拽',
@@ -483,7 +484,7 @@ const I18N_ZH = {
   'placeholder.shell': '留空使用 $SHELL',
   'placeholder.shellWindows': '留空使用 %COMSPEC%（也可填 powershell.exe / pwsh.exe 完整路径）',
   'list.noShellCandidate': '没有匹配的候选 — 直接输入任意路径即可',
-  'hint.shellCandidatesWindows': 'Windows 宿主：候选来自 %COMSPEC% 与已安装的 PowerShell（Windows PowerShell 5.1 / PowerShell 7），也可直接输入任意路径；cmd / PowerShell 没有 POSIX 的命令边界钩子，所以这两者不支持 shell 集成',
+  'hint.shellCandidatesWindows': 'Windows 宿主：候选来自 %COMSPEC% 与已安装的 PowerShell（Windows PowerShell 5.1 / PowerShell 7），也可直接输入任意路径；PowerShell 家族支持 shell 集成（`-File` 桩注入 OSC 133/7），cmd 没有命令边界钩子、不支持',
   'hint.shellCandidates': '可下拉选择本机已安装 shell（$SHELL 优先），也可直接输入任意路径；zsh / bash 支持 shell 集成',
   'hint.term': 'TUI 程序依赖此值',
   'field.cwd': '兜底工作目录（客户端当前会话 cwd 优先）',
@@ -902,8 +903,9 @@ const I18N_EN = {
   'check.enabled': 'Enable the plugin (applies live on save: tools and the panel entry are withdrawn immediately, sessions move to keepalive)',
   'check.announce': 'Announce the terminal panel capabilities to the agent',
   'check.shellIntegration': 'Shell integration (OSC 133/7 injection)',
-  'check.shellIntegrationWindows': 'Shell integration (OSC 133/7 injection; tty_capture{last} and cwd following depend on it)',
-  'hint.shellIntegrationWindows': 'Not applicable on Windows hosts: injection relies on the POSIX `-c` wrapper and rc stubs, which do not hold for cmd / PowerShell (cmd ignores `-c` and exits, PowerShell reports that export does not exist). So cwd following and tty_capture{last} are unavailable for “local” tabs; remote Linux / macOS hosts are unaffected.',
+  'check.shellIntegrationWindows': 'Shell integration (OSC 133/7 injection: cwd following, exit codes, tty_expect and the running state)',
+  'hint.shellIntegrationWindows': 'cmd has no command-boundary hooks, so nothing can be injected: switch “Shell path” to powershell.exe or pwsh.exe (both are in the candidate list) and then make sure this switch is on (an earlier Windows install may have stored it as off). Remote Linux / macOS hosts are unaffected.',
+  'hint.shellIntegrationPowerShell': 'The PowerShell family is instrumented through a `-File` stub: cwd following, exit codes, tty_expect and the running state all work. Known limit: on PowerShell 7 the command output reaches ConPTY after the D mark, so `tty_capture{last}` may come back empty — use `tty_capture` to read the tail there (Windows PowerShell 5.1 is unaffected).',
   'section.sftp': 'SFTP file transfer',
   'field.sftpStyle': 'SFTP file browser style',
   'option.sftpDialog': 'Single pane — remote directory + upload/download/drag',
@@ -932,7 +934,7 @@ const I18N_EN = {
   'placeholder.shell': 'Leave empty to use $SHELL',
   'placeholder.shellWindows': 'Leave empty to use %COMSPEC% (or enter the full path to powershell.exe / pwsh.exe)',
   'list.noShellCandidate': 'No matching candidate — just type any path',
-  'hint.shellCandidatesWindows': 'Windows host: candidates come from %COMSPEC% and the installed PowerShell (Windows PowerShell 5.1 / PowerShell 7), and you can type any path; cmd / PowerShell have no POSIX command-boundary hooks, so shell integration is unsupported for them',
+  'hint.shellCandidatesWindows': 'Windows host: candidates come from %COMSPEC% and the installed PowerShell (Windows PowerShell 5.1 / PowerShell 7), and you can type any path; the PowerShell family supports shell integration (OSC 133/7 injected by a `-File` stub), cmd has no command-boundary hooks and is unsupported',
   'hint.shellCandidates': 'Pick an installed shell from the list ($SHELL first) or type any path; zsh / bash support shell integration',
   'hint.term': 'TUI programs depend on this value',
   'field.cwd': 'Fallback working directory (the client\'s current session cwd wins)',
@@ -9067,14 +9069,20 @@ function TtySettingsCard(props) {
    * `save()` 与脏检查共用这一份，避免两处各拼一遍「要提交哪些键」（那正是漂的种子）。
    */
   /*
-   * 快照里**不是配置项**的键（宿主会以「未知配置项」拒绝）：派生的授权状态与宿主平台。
+   * 快照里**不是配置项**的键（宿主会以「未知配置项」拒绝）：派生的授权状态、宿主平台、shell
+   * 集成的可注入性。
    *
    * D91 起这张表是**否定清单**，其余键**默认提交**。原先写的是肯定清单（一个一个列要提交的
    * 键），代价就是**新增 volatile 字段必须记得回来补**——`assistEnabled` 正是这么漏的：宿主
    * 侧压根没收到它，卡片上「保存后又弹回去」。否定清单漏一个的后果是宿主**响亮地**报
    * 「未知配置项: X」，而不是静默丢掉一个字段。
+   *
+   * 但「响亮」只在**有人点保存**时才响亮：单测与 CI 都不拿整份快照回提交，所以漏登记的派生
+   * 字段会让卡片**每一次保存**都 400 而闸门全绿（`shellIntegrationSupported` 就这么漏过一次）。
+   * 现算的守卫在 `test/config-roundtrip.test.ts` 的「整份快照回提交必须 200」那条——它直接
+   * 读本文件的这份清单，两边不可能各写一份。
    */
-  const NON_CONFIG_KEYS = new Set(['toolsRegistered', 'platform', 'allowProxyCommandGranted', 'allowProxyCommandGrantSource', 'allowProxyCommandGrantedAt'])
+  const NON_CONFIG_KEYS = new Set(['toolsRegistered', 'platform', 'shellIntegrationSupported', 'allowProxyCommandGranted', 'allowProxyCommandGrantSource', 'allowProxyCommandGrantedAt'])
   const toPayload = (source) => {
     const body = {}
     for (const [key, value] of Object.entries(source || {})) {
@@ -10360,6 +10368,11 @@ function TtySettingsCard(props) {
    * 都是另一套说法，界面上分别给对应的说明，而不是让用户照着 POSIX 的文案去填。
    */
   const winHost = form?.platform === 'win32'
+  /**
+   * Windows 上集成能不能注入由宿主判定（快照的 `shellIntegrationSupported`：PowerShell 家族
+   * true、cmd false）——判定规则只在服务端一处，界面不重写一遍 shell 名匹配。
+   */
+  const integrationAvailable = form?.shellIntegrationSupported === true
 
   if (view === 'summary') {
     return t('card.desc')
@@ -10408,10 +10421,23 @@ function TtySettingsCard(props) {
                       className: 'tt_cardField',
                       children: [
                         jsxs('label', { className: 'tt_cardRow', children: [
-                          jsx('input', { type: 'checkbox', className: 'tt_cardCheckbox', checked: false, disabled: true }),
-                          jsx('span', { className: 'tt_cardLabel', children: t('check.shellIntegration') }),
+                          jsx('input', {
+                            type: 'checkbox',
+                            className: 'tt_cardCheckbox',
+                            checked: form.shellIntegration === true,
+                            // cmd 下不可注入：置灰（快照里已是宿主归一化后的 false）
+                            disabled: !integrationAvailable,
+                            onChange: (event) => set('shellIntegration', event.target.checked),
+                          }),
+                          jsx('span', {
+                            className: 'tt_cardLabel',
+                            children: integrationAvailable ? t('check.shellIntegrationWindows') : t('check.shellIntegration'),
+                          }),
                         ] }),
-                        jsx('span', { className: 'tt_cardHint', children: t('hint.shellIntegrationWindows') }),
+                        jsx('span', {
+                          className: 'tt_cardHint',
+                          children: integrationAvailable ? t('hint.shellIntegrationPowerShell') : t('hint.shellIntegrationWindows'),
+                        }),
                       ],
                     })
                   : boolField(t('check.shellIntegrationWindows'), 'shellIntegration'),

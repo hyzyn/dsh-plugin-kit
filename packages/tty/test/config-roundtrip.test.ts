@@ -14,6 +14,7 @@
  * 它只能验客户端那一半。
  */
 import './isolated-home.js'
+import { readFileSync } from 'node:fs'
 import net from 'node:net'
 import { describe, expect, it } from 'vitest'
 import { apply } from '../src/index.js'
@@ -156,6 +157,7 @@ describe('/config 的拒绝面：客户端「否定清单」的另一半', () =>
     const derived: Array<[string, unknown]> = [
       ['toolsRegistered', true],
       ['platform', 'linux'],
+      ['shellIntegrationSupported', true],
       ['allowProxyCommandGranted', true],
       ['allowProxyCommandGrantSource', 'file'],
       ['allowProxyCommandGrantedAt', 1],
@@ -164,6 +166,56 @@ describe('/config 的拒绝面：客户端「否定清单」的另一半', () =>
       const res = await h.callPath(CONFIG_PATH, 'POST', { [key]: value })
       expect(res.status).toBe(400)
       expect(String(res.json.error)).toContain('未知配置项: ' + key)
+    }
+  })
+})
+
+/* ------------- 快照 ↔ 客户端否定清单的现算不变量（D91 同族第三次） ------------- */
+
+describe('/config 不变量：整份快照按客户端否定清单回提交必须成功', () => {
+  /*
+   * 现场（2026-10-12 评审 PR#9）：给 `ConfigSnapshot` 加了派生字段 `shellIntegrationSupported`
+   * 却没登记进客户端那份否定清单——于是它跟着**整表提交**走，宿主对未知键点名拒绝，卡片
+   * **每一次保存**都红字 400（`未知配置项: shellIntegrationSupported`）。而单测与 CI 全绿，
+   * 因为它们只提交零散补丁、从不提交整份快照。这就是 D91「显式清单漏一行」的同族实例。
+   *
+   * 判据必须**直接读客户端那份清单**：守卫里再抄一份「派生键清单」，抄漏的正是同一件事，
+   * 守卫自己会跟着一起漂。这里读 `client-src/index.js` 的 `NON_CONFIG_KEYS`，与宿主 GET 到的
+   * 快照现算对齐——加字段的人只要改客户端一处，两条方向都被钉住。
+   */
+  const listSource = /NON_CONFIG_KEYS = new Set\(\[([^\]]*)\]\)/.exec(
+    readFileSync(new URL('../client-src/index.js', import.meta.url), 'utf8'),
+  )?.[1]
+  const clientDerived = (listSource ?? '')
+    .split(',')
+    .map((item) => item.trim().replace(/^'|'$/g, ''))
+    .filter((item) => item !== '')
+
+  it('读得到客户端那份否定清单（改名 / 换形态时这条先红，守卫不许静默空转）', () => {
+    expect(clientDerived.length).toBeGreaterThan(0)
+  })
+
+  it('整份快照扣掉它之后提交 → 200（漏登记一个派生字段就会变成 400）', async () => {
+    const h = mount()
+    const snap = configOf((await h.callPath(CONFIG_PATH, 'GET')).json)
+    const body: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(snap)) {
+      if (clientDerived.includes(key) || value === undefined) continue
+      body[key] = value
+    }
+    body.sshHosts = Array.isArray(snap.sshHosts) ? snap.sshHosts : []
+    body.tunnels = Array.isArray(snap.tunnels) ? snap.tunnels : []
+    const res = await h.callPath(CONFIG_PATH, 'POST', body)
+    // 报错文案里带着是哪个键：守卫红的时候直接告诉你该往否定清单里补什么
+    expect(res.status, String(res.json.error ?? '')).toBe(200)
+  })
+
+  it('清单里的每个键都不是配置项（多写一个 = 那个字段再也存不下去，且是静默的）', async () => {
+    const h = mount()
+    for (const key of clientDerived) {
+      const res = await h.callPath(CONFIG_PATH, 'POST', { [key]: true })
+      expect(res.status, key).toBe(400)
+      expect(String(res.json.error), key).toContain('未知配置项: ' + key)
     }
   })
 })

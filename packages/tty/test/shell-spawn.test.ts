@@ -20,6 +20,7 @@ import {
   commandShellHint,
   defaultShellPath,
   isPowerShellShell,
+  shellIntegrationSupported,
 } from '../src/shell-integration.js'
 
 /*
@@ -75,14 +76,93 @@ describe('buildShellSpawn：Windows 分支', () => {
     expect(plan.env).toEqual({})
   })
 
-  it('PowerShell 补 -NoLogo；不补 -NoProfile（用户的 profile 正是别名与函数的来源）', () => {
-    const plan = buildShellSpawn('C:\\Program Files\\PowerShell\\7\\pwsh.exe', 'xterm-256color', 'truecolor', true, 'win32')
-    expect(plan.argv).toEqual(['C:\\Program Files\\PowerShell\\7\\pwsh.exe', '-NoLogo'])
+  it('integration=false 时只补 -NoLogo；不补 -NoProfile（用户的 profile 正是别名与函数的来源）', () => {
+    const plan = buildShellSpawn('C:/Program Files/PowerShell/7/pwsh.exe', 'xterm-256color', 'truecolor', false, 'win32')
+    expect(plan.argv).toEqual(['C:/Program Files/PowerShell/7/pwsh.exe', '-NoLogo'])
+    expect(plan.argv).not.toContain('-NoProfile')
   })
 
-  it('integration=true 在 Windows 上也不注入（那边没有 POSIX 的 rc 桩）', () => {
-    const text = buildShellSpawn('powershell.exe', 'xterm-256color', 'truecolor', true, 'win32').argv.join(' ')
-    expect(text).not.toMatch(/export|ZDOTDIR|rcfile|DSH_TTY_ORIG/)
+  it('PowerShell + integration：走 -File 桩（-NoExit 必给，否则桩跑完标签就关）', () => {
+    const plan = buildShellSpawn('C:/Program Files/PowerShell/7/pwsh.exe', 'xterm-256color', 'truecolor', true, 'win32')
+    const [bin, ...rest] = plan.argv
+    expect(bin).toBe('C:/Program Files/PowerShell/7/pwsh.exe')
+    expect(rest.slice(0, 3)).toEqual(['-NoLogo', '-NoExit', '-ExecutionPolicy'])
+    expect(rest[3]).toBe('Bypass')
+    expect(rest[4]).toBe('-File')
+    const stub = rest[5]
+    expect(stub.endsWith('bootstrap.ps1')).toBe(true)
+    // 桩落在 $DSH_HOME 下（测试把它指向临时目录，见文件头）
+    expect(stub.startsWith(stubHome)).toBe(true)
+    expect(readFileSync(stub, 'utf8')).toContain('dsh-tty shell integration')
+  })
+
+  it('cmd + integration：一个标记都不注入（没有命令开始/结束钩子可比）', () => {
+    const plan = buildShellSpawn('C:/Windows/System32/cmd.exe', 'xterm-256color', 'truecolor', true, 'win32')
+    expect(plan.argv).toEqual(['C:/Windows/System32/cmd.exe'])
+    // 也不能把 POSIX 那套混进来（PowerShell 会把 export 当不存在的 cmdlet 报错）
+    expect(plan.argv.join(' ')).not.toMatch(/export|ZDOTDIR|rcfile|DSH_TTY_ORIG/)
+  })
+})
+
+/** PowerShell 桩的落盘路径（走公开入口取，不在测试里重写一遍路径推导）。 */
+function stubOf(): string {
+  const argv = buildShellSpawn('powershell.exe', 'xterm-256color', 'truecolor', true, 'win32').argv
+  return argv[argv.length - 1]
+}
+
+/*
+ * 桩内容的三条硬约束，每条都对应一个真实故障：
+ *   1. 纯 ASCII —— Windows PowerShell 5.1 按当前 ANSI 代码页读无 BOM 的 .ps1，
+ *      中文注释会让解析错位，而 `-File` 解析失败＝集成静默失效；
+ *   2. ESC/BEL 用 [char] 现构造 —— PS 5.1 没有 `e 转义（6+ 才有）；
+ *   3. 拿不到原 PSConsoleHostReadLine（用户关了 PSReadLine）时**一个标记都不发** ——
+ *      只发 A/7 会让宿主 sawMark=true 而 inCommand 恒 false，running 从「未知」退化成
+ *      「没在跑」，正是 D77 要防的「往正在跑的程序里塞命令」。
+ */
+describe('PowerShell 桩内容', () => {
+  it('纯 ASCII，且用 [char] 构造 ESC/BEL', () => {
+    const content = readFileSync(stubOf(), 'utf8')
+    expect(/[^\x00-\x7F]/.test(content)).toBe(false)
+    expect(content).toContain('[char]27')
+    expect(content).toContain('[char]7')
+  })
+
+  it('挂 prompt 与 PSConsoleHostReadLine 双钩子，发全 A/B/D 与 OSC 7', () => {
+    const content = readFileSync(stubOf(), 'utf8')
+    expect(content).toContain('function global:prompt')
+    expect(content).toContain('function global:PSConsoleHostReadLine')
+    expect(content).toContain(']133;A')
+    expect(content).toContain(']133;B')
+    expect(content).toContain(']133;D;')
+    expect(content).toContain(']7;')
+    // 用户自定义的 prompt 要被包住、原样调用（桩在 profile 之后载入）
+    expect(content).toContain('& $global:__DSH_TTY_ORIG_PROMPT')
+    // 没有 PSReadLine 就什么都不发
+    expect(content).toContain('if ($null -ne $global:__DSH_TTY_ORIG_RL) {')
+  })
+
+  it('不碰用户可见状态：不清空 $LASTEXITCODE（清了 `echo $LASTEXITCODE` 会读到空）', () => {
+    const content = readFileSync(stubOf(), 'utf8')
+    expect(content).not.toMatch(/LASTEXITCODE\s*=\s*\$null/)
+    // 退出码口径：B 时刻快照，D 时刻变了才报（原生命令用真码，cmdlet 用 $? 的 0/1）
+    expect(content).toContain('$global:__DSH_TTY_LEC_AT_B')
+  })
+})
+
+describe('shellIntegrationSupported（宿主把开关存成什么值的判据）', () => {
+  it('POSIX 恒 true（具体能不能注入由 buildShellSpawn 按 shell 家族决定，历史行为）', () => {
+    for (const shell of ['/bin/zsh', '/bin/bash', '/usr/bin/fish']) {
+      expect(shellIntegrationSupported(shell, 'darwin'), shell).toBe(true)
+    }
+  })
+
+  it('Windows：PowerShell 家族 true（-File 桩），cmd / Git Bash / WSL false', () => {
+    for (const shell of ['powershell.exe', 'C:/Program Files/PowerShell/7/pwsh.exe', 'PWSH.EXE']) {
+      expect(shellIntegrationSupported(shell, 'win32'), shell).toBe(true)
+    }
+    for (const shell of ['C:/Windows/System32/cmd.exe', 'C:/Program Files/Git/bin/bash.exe', 'wsl.exe']) {
+      expect(shellIntegrationSupported(shell, 'win32'), shell).toBe(false)
+    }
   })
 })
 

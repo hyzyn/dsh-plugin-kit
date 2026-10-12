@@ -16,6 +16,7 @@
 import './isolated-home.js'
 import { describe, expect, it } from 'vitest'
 import { feedShellIntegration } from '../src/index.js'
+import { withPlatform } from './platform.js'
 
 const B = '\x1b]133;B\x07'
 const A = '\x1b]133;A\x07'
@@ -78,5 +79,30 @@ describe('feedShellIntegration：B/D 配对', () => {
     feed(s, `${B}out\n${CWD}${D('0')}`)
     expect(s.cwd).toBe('/tmp')
     expect((s.shellState as { lastCommand: { output: string } }).lastCommand.output).toContain('out')
+  })
+})
+
+/*
+ * Windows 盘符归一（PowerShell 桩）：桩用 `[Uri]::AbsoluteUri` 上报 cwd，`D:\DSH\x` 于是变成
+ * `file:///D:/DSH/x`、`URL.pathname` 是 `/D:/DSH/x`。盘符前那根斜杠是 URI 语法的产物、不是
+ * 路径的一部分，留着会让 session.cwd 显示成 `/D:/…`（tty_list 与 assist 上下文都跟着失真）。
+ *
+ * 平台**必须钉住**：归一化只在 win32 生效，不钉的话同一条用例在 Linux/macOS 腿上必红。
+ */
+describe('feedShellIntegration：OSC 7 的 Windows 盘符归一', () => {
+  it('win32：/D:/x → D:/x（并解 %20）', async () => {
+    const s = makeSession()
+    await withPlatform('win32', async () => {
+      feed(s, '\x1b]7;file:///D:/DSH/DSH%20Desktop\x07')
+    })
+    expect(s.cwd).toBe('D:/DSH/DSH Desktop')
+  })
+
+  it('非 win32：POSIX 路径原样（本来就以 / 开头，不做任何裁剪）', async () => {
+    const s = makeSession()
+    await withPlatform('darwin', async () => {
+      feed(s, `${CWD}`)
+    })
+    expect(s.cwd).toBe('/tmp')
   })
 })

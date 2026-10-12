@@ -51,9 +51,10 @@
  * reconnectGraceSec（默认 120s，0 = 旧行为立即结束），等待新连接 attach
  * 并回放 256KB 环形缓冲；到点由回收器清理。
  *
- * shell 集成（src/shell-integration.ts，0.4.0）：spawn 时经 -c 包装层注入
- * OSC 133/7 钩子（zsh ZDOTDIR 桩 / bash --rcfile 桩），输出流解析出命令
- * 边界（tty_capture{last} / tty_expect 早停）与实时 cwd（tty_list）。
+ * shell 集成（src/shell-integration.ts，0.4.0）：spawn 时注入 OSC 133/7 钩子，
+ * 输出流解析出命令边界（tty_capture{last} / tty_expect 早停）与实时 cwd（tty_list）。
+ * 注入形态按平台分：POSIX 走 `-c` 包装层 + rc 桩（zsh ZDOTDIR 桩 / bash --rcfile 桩），
+ * Windows 走 PowerShell 的 `-File` 稳定桩（cmd 没有命令边界钩子，不注入）。
  * 辅助路由：/api/dsh-tty/ssh-config（~/.ssh/config 导入候选）、
  * /api/dsh-tty/credential-refs（凭据存储里已知的引用名，SSH 对话框选择器候选，只要名字）、
  * /api/dsh-tty/env-vars（env 插件托管变量名；SSH 对话框已改从连接簿 + 凭据存储取候选，此路由保留兼容）、
@@ -480,7 +481,7 @@ interface ShellIntegrationState {
     carry: string;
     /**
      * 这个会话**见过至少一个 OSC 133 标记**（0.23.0）。tty_list 的 `running` 能不能
-     * 下结论全看它：没有标记 = 命令边界不可信（非持久 SSH / fish·csh / Windows 本地 /
+     * 下结论全看它：没有标记 = 命令边界不可信（非持久 SSH / fish·csh / Windows 的 cmd /
      * 集成被关 / tmux <3.3 吞了 DCS 信封），此时**必须报「未知」而不是「没在跑」**。
      */
     sawMark: boolean;
@@ -767,7 +768,7 @@ export interface SessionSnapshot {
     /**
      * 有命令正在执行（0.23.0）：true = 在跑；false = 命令已结束（或进程已退出）；
      * **省略 = 无法判断**——这个会话没有 shell 集成标记（非持久 SSH / fish·csh /
-     * Windows 本地 / 集成被关 / tmux <3.3 吞了信封），或命令型会话尚未收到终局。
+     * Windows 的 cmd / 集成被关 / tmux <3.3 吞了信封），或命令型会话尚未收到终局。
      * 拿它当「现在可以往里发命令」的许可时要按三态处理：省略 ≠ 没在跑。
      */
     running?: boolean;

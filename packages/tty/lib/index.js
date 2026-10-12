@@ -17,7 +17,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 import { sanitizeJumpSpec, sanitizeProxyCommand, spawnSsh, sshTarget, expandHome, setCredentialResolver, setProxyCommandPolicy, validateJumpSpec, validateProxyCommand } from './ssh.js';
 import { sharedGrantStore, auditLoadedGrants, attachTierGate, bindCapabilitySources, capabilityDeniedMessage, capabilityGrantAt, capabilityGrantVia, capabilityGranted, capabilityPaths, createElevationManager, } from '@hyzyn/dsh-kit';
 import { probeSsh } from './probe.js';
-import { buildCommandSpawn, buildShellSpawn, commandShellHint, defaultShellPath, tmuxSocketName } from './shell-integration.js';
+import { buildCommandSpawn, buildShellSpawn, commandShellHint, defaultShellPath, shellIntegrationSupported, tmuxSocketName } from './shell-integration.js';
 import { KEY_VOCABULARY, resolveKeys } from './keys.js';
 import { parseSshConfigDetailed } from './ssh-config.js';
 import { parseKnownHostsDetailed } from './known-hosts.js';
@@ -701,7 +701,18 @@ function osc7Path(body) {
         const url = new URL(body);
         if (url.protocol !== 'file:')
             return undefined;
-        const decoded = decodeURIComponent(url.pathname);
+        let decoded = decodeURIComponent(url.pathname);
+        /*
+         * Windows 盘符：PowerShell 桩用 `[Uri]::AbsoluteUri` 上报，`D:\DSH\x` 于是变成
+         * `file:///D:/DSH/x`、`URL.pathname` 是 `/D:/DSH/x` —— 去掉盘符前那根多余的斜杠才是
+         * 可用的 Windows 路径（`/D:/x` 形态拿去 spawn 会被当成相对盘根的路径）。
+         *
+         * UNC（`\\server\share` → `file://server/share`）的服务器段住在 host 里，而本函数按
+         * 既有语义（POSIX shell 上报的 host 是本机名）忽略 host，所以 UNC cwd 只显示成
+         * `/share/…`：纯展示降级，不参与任何 spawn 决策。
+         */
+        if (process.platform === 'win32' && /^\/[A-Za-z]:[\\/]/.test(decoded))
+            decoded = decoded.slice(1);
         return decoded !== '' ? decoded : undefined;
     }
     catch {
@@ -1097,7 +1108,8 @@ function advanceReadMark(session) {
  * 水位线之后的**未读**原始输出。下界再抬到「最后一个 B 标记之后」：回显落在
  * A（prompt 开始）与 B（命令开始）之间，所以这样能零启发式地排除回显——按
  * 文本比对「跳过与发送内容相同的行」会被折行 / ANSI / 多行粘贴打碎。
- * 没有 B 标记（未开 shell 集成 / Windows PowerShell / 远端未装集成）时无法按边界切片：
+ * 没有 B 标记（未开 shell 集成 / Windows 的 cmd / 远端未装集成 / 用户关了 PSReadLine）时
+ * 无法按边界切片：
  * D75 起改用「最近提交过的输入」这份回显候选把回显行从匹配窗口里剔掉（见 echoOnlyMatch），
  * 不再直接拿回显当命中。
  */
@@ -3727,20 +3739,21 @@ const plugin = definePlugin({
         const config = plainConfig((rawConfig ?? {}));
         if (config?.enabled === false)
             return;
+        // 默认 shell 按平台取（Windows 没有 $SHELL，回落 /bin/zsh 会让本地终端一条都开不起来；
+        // 见 defaultShellPath）。用户显式填了「Shell 路径」就照用。
+        const configuredShell = config?.shell?.trim() || defaultShellPath();
         const live = new LiveConfig({
-            // 默认 shell 按平台取（Windows 没有 $SHELL，回落 /bin/zsh 会让本地终端一条都开不起来；
-            // 见 defaultShellPath）。用户显式填了「Shell 路径」就照用。
-            shell: config?.shell?.trim() || defaultShellPath(),
+            shell: configuredShell,
             term: config?.term?.trim() || 'xterm-256color',
             colorTerm: config?.colorTerm?.trim() || 'truecolor',
             cwd: config?.cwd?.trim() || process.cwd(),
             reconnectGraceSec: typeof config?.reconnectGraceSec === 'number' && Number.isInteger(config.reconnectGraceSec) && config.reconnectGraceSec >= 0 ? config.reconnectGraceSec : DEFAULT_RECONNECT_GRACE_SEC,
             sshHosts: Array.isArray(config?.sshHosts) ? config.sshHosts : [],
             hostKeys: Array.isArray(config?.hostKeys) ? config.hostKeys : [],
-            // shell 集成（OSC 133/7）靠 POSIX rc 注入 + `-c` 包装层：Windows 上的 cmd / PowerShell
-            // 两者都不成立（实测 cmd 忽略 -c 空跑、PowerShell 报 export 不存在），所以恒关。
-            // 配置项照旧留着（快照里会显示 false），界面上也说明原因。
-            shellIntegration: process.platform !== 'win32' && config?.shellIntegration !== false,
+            // shell 集成（OSC 133/7）：POSIX 走 rc 注入 + `-c` 包装层，Windows 走 PowerShell 的
+            // `-File` 桩（见 buildWindowsShellSpawn）。Windows + cmd 仍是 false —— 没有命令开始/
+            // 结束钩子，硬开只会让界面摆一个不生效的开关。
+            shellIntegration: config?.shellIntegration !== false && shellIntegrationSupported(configuredShell),
             tunnels: Array.isArray(config?.tunnels) ? config.tunnels : [],
             persistence: config?.persistence === 'tmux' ? 'tmux' : 'off',
             endOnPageClose: config?.endOnPageClose === true,
@@ -3839,6 +3852,7 @@ const plugin = definePlugin({
             hostKeys: live.hostKeys,
             tunnels: live.tunnels,
             shellIntegration: live.shellIntegration,
+            shellIntegrationSupported: shellIntegrationSupported(live.shell),
             sftpStyle: stateRef.sftpStyle,
             persistence: live.persistence,
             endOnPageClose: live.endOnPageClose,
@@ -4978,7 +4992,7 @@ const plugin = definePlugin({
                         name: 'tty_list',
                         // 只读工具：与同轮其它工具并发执行（宿主默认把未声明的工具当独占，见项目级 ROADMAP 第 4 项）
                         isConcurrencySafe: () => true,
-                        description: '列出当前终端面板会话（sid / kind(local|ssh) / target / pid / cwd / 创建与最后活动时间），**含进程已退出但仍只读保留着的会话**（带 exited:true + 退出码/信号；按时间释放时另带 retainMs）。**running** 说明这个会话有没有命令在跑（true = 在跑，现在别往里发命令，那些字节会被正在跑的程序当输入吃掉；false = 命令已结束；**省略 = 无法判断**——该会话没有 shell 集成标记，例如非持久 SSH / fish·csh / Windows 本地 / 集成被关，**不是**「没在跑」）；同源的 lastExitCode / lastExitAt 是「上一条已完成命令」的退出码与结束时刻。用户开了终端面板后，用 tty_capture 读取某个 sid 的输出、用 tty_send 向该会话发送按键。已退出的会话只能读（写会报错），要接着操作请 tty_open 新开一条。',
+                        description: '列出当前终端面板会话（sid / kind(local|ssh) / target / pid / cwd / 创建与最后活动时间），**含进程已退出但仍只读保留着的会话**（带 exited:true + 退出码/信号；按时间释放时另带 retainMs）。**running** 说明这个会话有没有命令在跑（true = 在跑，现在别往里发命令，那些字节会被正在跑的程序当输入吃掉；false = 命令已结束；**省略 = 无法判断**——该会话没有 shell 集成标记，例如非持久 SSH / fish·csh / Windows 的 cmd / 集成被关，**不是**「没在跑」）；同源的 lastExitCode / lastExitAt 是「上一条已完成命令」的退出码与结束时刻。用户开了终端面板后，用 tty_capture 读取某个 sid 的输出、用 tty_send 向该会话发送按键。已退出的会话只能读（写会报错），要接着操作请 tty_open 新开一条。',
                         parameters: {},
                         output: {
                             schema: {
