@@ -218,10 +218,12 @@ flush 屏障），而**原生崩溃没有「末尾」**，屏障来不及跑，�
      只 spawn 四种各若干轮，**240 次 0 崩**；
   2. **插件层**（经插件 + WS 的 spawn → 输入 → kill → 关连接，**不带** W6/W7/W8）：**168 个会话崩 2 次**
      ≈1.2%/会话 ⇒ **与 W8 无关**（最小复现里根本没有 W8），也与 Bash 工具那侧无关。
-- **预载探针**（`node -r pty-probe.cjs`：patch `Module._load`，给 `conpty.node` 的
+- **预载探针**（`node -r ./scripts/pty-kill-probe.cjs`：patch `Module._load`，给 `conpty.node` 的
   `startProcess`/`connect`/`kill`、`WindowsPtyAgent.kill`、`WindowsTerminal.kill`、
   `ConoutConnection.dispose` 记账，`writeSync` 直写文件——原生崩溃会连异步写队列一起丢掉）在
   **3/3** 个会话上抓到同一件事：**同一个 pty 被原生 kill 两次**，间隔约 40 ms。
+  三个脚本都已收进本包 `scripts/`（`pty-kill-probe.cjs` / `pty-kill-repro.mjs` /
+  `pty-kill-repro-plugin.mjs`），复现不必再手搭 harness。
 - **两个调用方为什么必然叠加**（探针同一份日志里的第二条线索）：每轮都是 `spawned pid=0`——
   node-pty 的 `pid` 要等 conout 连接建立才有值，而 `dsh-subprocess-local` 在
   `new LocalTerminalHandle(...)` 那一刻就取 `terminal.pid`，拿到 0，于是
