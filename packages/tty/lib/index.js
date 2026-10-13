@@ -312,9 +312,18 @@ const TTY_GUIDANCE = '**先判断要不要用终端**：只有「需要跨调用
     + '标签栏「+」还能开 SSH 标签（ssh2 原生连接；连接簿、agent forwarding、主机指纹 TOFU、单跳跳板机都在设置卡片维护）；面板内另有 SFTP 文件浏览（上传/下载/建目录/重命名/删除），以及由连接簿条目配置的端口转发隧道；设置卡片开「会话持久化（tmux）」后新标签由 tmux 托管，能跨宿主重启恢复，长任务建议开着它跑。'
     + '用户提到「开个终端 / 在终端里跑 / SSH 到某台机器 / 传文件 / 转发端口」时，引导他打开这个面板。'
     + '典型流程：tty_send 启动长任务 → tty_expect 等就绪标记 → tty_capture{last:true} 拿结果。';
-/** 本地 PTY 包装成 TermHandle（resize/kill 仍是透传 node-pty 的内部耦合；防御性降级）。 */
-export function wrapLocalPty(handle) {
+/** 本地 PTY 包装成 TermHandle（resize/kill 仍是透传 node-pty 的内部耦合；防御性降级）。
+ *
+ *  `platform` 只为单测注入（D100 的闸门是 win32-only，macOS/Linux 上要能断言两条分支）。
+ */
+export function wrapLocalPty(handle, platform = process.platform) {
     let resizeWarned = false;
+    // D100：在 DSH 拿到这个 terminal 之前装好一次性原生 kill 闸门（D48 的预杀与 DSH 的
+    // stopShellWindows 兜底会调同一个 terminal.kill()，而这个原生调用不幂等）。
+    if (!installWindowsKillGate(handle, platform) && !killGateUnavailableLogged) {
+        killGateUnavailableLogged = true;
+        console.warn('[dsh-tty] 未能在 node-pty 的 conout 代理（terminal._agent）上安装一次性 kill 闸门（D100）：node-pty 内部结构可能已变化。Windows 上「插件的预杀 + DSH 的兜底 kill」叠加时会把同一个 HPCON 交给 ClosePseudoConsole 两次，实测可打死宿主进程（0xC0000374）');
+    }
     // D79：README 承诺「DSH 升级若改内部结构会警告一次并退化为固定尺寸」，但老写法是
     // `handle.terminal?.resize?.(…)` —— `?.` 只在**抛错**时才进 catch，DSH 若把
     // `handle.terminal` 改名 / 移除（而不是让 resize 抛错），这里既不 resize 也不警告，
@@ -375,6 +384,79 @@ export function killLocalShellTerminal(terminal, platform = process.platform) {
     catch {
         /* 已退出 */
     }
+}
+/** 「闸门没装上」只在这一处记一次（每个会话 spawn 都记就是刷屏；见 D100）。 */
+let killGateUnavailableLogged = false;
+/** 「闸门吞掉了一次重复终止」只记一次（正常路径上每次 Windows kill 都会命中，逐次记就是刷屏）。 */
+let killGateSwallowedLogged = false;
+/**
+ * 一次性原生 kill 闸门（D100，2026-10-12 Windows 真机实测）。
+ *
+ * **为什么必须有**：node-pty 的 `WindowsTerminal.kill()` 落到 `WindowsPtyAgent.kill()`，
+ * 后者对同一个 `_pty` 调 `conpty.node` 的 `kill(id)`；而 `conpty.cc` 的 `PtyKill` **不幂等**——
+ * 它 `ClosePseudoConsole(handle->hpc)` 之后**不置空 `hpc`**，那条 baton 要等 shell 进程真的退出、
+ * 由 exit 线程从 `ptyHandles` 里 `erase_if` 摘掉才算消失。这段窗口里再调一次，同一个**已释放的
+ * HPCON** 会被第二次交给 `ClosePseudoConsole`。
+ *
+ * 而 Windows 上**两个调用方必然叠加**：
+ *   1. DSH 的 `LocalTerminalHandle.stopShellWindows()` 在 `rootIdentity === undefined` 时调
+ *      `terminal.kill()`；而 Windows 上 rootIdentity **恒为 undefined**——node-pty 的 `pid` 要等
+ *      conout 连接建立才有值，DSH 在 `new LocalTerminalHandle(...)` 那一刻就取 `terminal.pid`，
+ *      拿到的是 **0**（真机探针逐轮实测 `spawned pid=0`；真实 pid 直到 `connect` 才出现），
+ *      于是 `snapshot().tree(0)` 找不到自己、必然走那条兜底分支；
+ *   2. 本插件 D48 的预杀（`killSessionNow` 里的 `handle.forceKill?.()`）又调一次。
+ * 两次叠加 = 同一个 HPCON 被 ClosePseudoConsole 两次 = **STATUS_HEAP_CORRUPTION（0xC0000374）**，
+ * 被 Windows 打死的是**整个宿主进程**，不是某一个会话。
+ *
+ * **实测**（Win11 ARM64，同一 harness、同一 `kill+terminate` 顺序，各 150 轮，只差这一个变量）：
+ *   无闸门 → 累计 94 次双重原生 kill，第 75 轮宿主崩（退出码 -1073740940）；
+ *   装闸门 → 150/150 每 pty 恰好 1 次原生 kill、0 次双重，跑满 150 轮不崩；
+ *   单次 kill 的对照（只调 terminate）150 轮也不崩。
+ *
+ * **为什么装在 `_agent.kill`（执行点）而不是 `terminal.kill`（调用点）**：node-pty 在终端 ready
+ * 之前会把自己收到的 kill **排队**（`_deferNoArgs`），到第一次 data 才执行。装在调用点的话
+ * 「排队的那次」会先把闸门占掉、DSH 真到执行的那次被吞——万一排队的那次永远不执行（进程没产出
+ * 数据、deferred 从不跑），就变成**一个都没杀**（进程泄漏）。装在执行点则谁先真正动手谁生效、
+ * 后到的才被吞，两个方向的坏结果都不会出现。
+ *
+ * **边界**：只在 win32 装——POSIX 的 `stopShell` 本来就要 SIGTERM→SIGKILL **两次**，吞第二次是错的。
+ * `_agent` 是 node-pty 的私有字段（与 `terminal.resize` 同级的内部耦合）：取不到时返回 false，
+ * 调用方记一条警告后照旧调用——退化的后果是回到「双重 kill」（今天的现状），不是新增故障（D79 同款）。
+ *
+ * 导出仅供单测（test/host-frames.test.ts）：平台参数注入，两个分支都能在 macOS/Linux 断言。
+ *
+ * @returns 闸门是否已就位（非 win32 恒 true）
+ */
+export function installWindowsKillGate(handle, platform = process.platform) {
+    if (platform !== 'win32')
+        return true;
+    const terminal = handle?.terminal;
+    // 不是真 node-pty 终端（测试夹具 / 未来结构变化）不算「闸门装不上」：先看有没有 kill
+    if (terminal === undefined || typeof terminal.kill !== 'function')
+        return true;
+    const agent = terminal._agent;
+    if (agent === undefined || typeof agent.kill !== 'function')
+        return false;
+    if (agent.__dshKillGated === true)
+        return true;
+    agent.__dshKillGated = true;
+    const real = agent.kill;
+    let killed = false;
+    agent.kill = function () {
+        if (killed) {
+            // 这一行就是「闸门真的拦到了一次双重终止」的证据：排查 Windows 上的宿主崩溃时有它可查
+            if (!killGateSwallowedLogged) {
+                killGateSwallowedLogged = true;
+                console.warn('[dsh-tty] 原生 kill 闸门已生效：同一个 PTY 的重复终止被吞掉（node-pty 的产线 kill 不幂等，重复调用会把已释放的 HPCON 再交给 ClosePseudoConsole，实测会打死宿主进程；见 D100）');
+            }
+            return undefined;
+        }
+        // 先落标记再真调（失败也不放开）：放开的代价是可能再来一次双重 kill → 宿主崩溃；
+        // 不放开的代价只是「这一次没杀掉」，而调用方还有 terminate 兜底。
+        killed = true;
+        return real.call(this);
+    };
+    return true;
 }
 /**
  * Windows 本地 PTY 的**输入归一化**（D74，2026-09-27 真机报告）：conhost 把 Enter 当

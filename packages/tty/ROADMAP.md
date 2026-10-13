@@ -29,8 +29,15 @@
 > 按本仓「先记账、复现够了再动手」的纪律暂不进 [DEFECTS.md](./DEFECTS.md) 的索引表（那张表要求
 > `待修 == 0`，进表就意味着已修）。**2026-10-12 样本补足**：触发率实测 **17%–50%**（VM）
 > 且**含 W8 的树在 CI 上 10/10 崩**（不再是「只观测到 1 次」）；「与 W8 是否相关」**VM 与 CI
-> 结论相反、仍未定性**——实测数据、崩点分布、复现配方与「CI 上暂时跳过 W8」的处置见该条目内
+> 结论相反**——实测数据、崩点分布、复现配方与「CI 上暂时跳过 W8」的处置见该条目内
 > 的 2026-10-12 一节。
+>
+> **2026-10-13 已定性并修复 → 编号 [D100](./DEFECTS.md)**：崩因**不是** flake、也**不是** W8——
+> 是**同一个 PTY 被两个调用方各原生 kill 一次**（`conpty.cc` 的 `PtyKill` 不幂等，第二次把已释放的
+> HPCON 再交给 `ClosePseudoConsole` → `STATUS_HEAP_CORRUPTION`）。`installWindowsKillGate`
+> 已在 `wrapLocalPty` 里装上一次性闸门；真机 A/B 各 150 轮：无闸门第 75 轮崩、装闸门 150/150
+> 不崩。**CI 上那条「跳过 W8」的临时处置因此可以撤**（待一次 CI 运行确认，见该条目内
+> 的 2026-10-13 一节）。
 
 - **机器级资源的 profile 维度（D60）** —— 复制 profile 会把固定端口（webserver / 隧道
   `localPort`）一并拷走，且 tmux socket（`-L dsh-tty`）全 profile 共用。**2026-10-06 部分落地**：
@@ -81,7 +88,7 @@
 环境变量 `DSH_TTY_ALLOW_PROXY_COMMAND`（启动时采样一次），HTTP 只能关不能开；未授权时设置卡片
 里那个开关点不动 + 附一行说明，「试连」与拨号按**原因**分两条文案（未授权 vs 未启用）。
 
-### `windows-smoke` 在 CI 上原生崩溃（`0xC0000374`，2026-10-04 首次观测；2026-10-12 实测：VM 上 17%–50%、**含 W8 的树在 CI 上 10/10 崩**，**根因仍未定性**）
+### `windows-smoke` 在 CI 上原生崩溃（`0xC0000374`，2026-10-04 首次观测；**2026-10-13 定位并修复 → [D100](./DEFECTS.md)**）
 
 **症状**：CI 的 Windows 腿上 `pnpm --filter @hyzyn/dsh-tty run windows-smoke` 以
 **`Exit status 3221226356`（= `0xC0000374`，Windows 堆损坏 / `STATUS_HEAP_CORRUPTION`）**
@@ -204,9 +211,60 @@ flush 屏障），而**原生崩溃没有「末尾」**，屏障来不及跑，�
   **第一条怀疑线**：`node-pty@1.2.0-beta.15`（随 `@deepseek-ai/dsh-subprocess-local` 进来）是
   **beta** 版本，而全部崩点都落在它的 teardown 上。
 
+**2026-10-13 定位与修复：同一个 PTY 被原生 kill 两次（→ [D100](./DEFECTS.md)；上面「第一条怀疑线」命中，但不是 beta 的锅，是 `PtyKill` 不幂等）**
+
+- **怎么缩到那一层的**：先做两级最小复现，把「smoke 的哪一档」这个词换掉——
+  1. **裸层**（只 `spawnTerminal` + 终止，不过插件）：`terminate` / node-pty `kill()` / 两者都来 /
+     只 spawn 四种各若干轮，**240 次 0 崩**；
+  2. **插件层**（经插件 + WS 的 spawn → 输入 → kill → 关连接，**不带** W6/W7/W8）：**168 个会话崩 2 次**
+     ≈1.2%/会话 ⇒ **与 W8 无关**（最小复现里根本没有 W8），也与 Bash 工具那侧无关。
+- **预载探针**（`node -r pty-probe.cjs`：patch `Module._load`，给 `conpty.node` 的
+  `startProcess`/`connect`/`kill`、`WindowsPtyAgent.kill`、`WindowsTerminal.kill`、
+  `ConoutConnection.dispose` 记账，`writeSync` 直写文件——原生崩溃会连异步写队列一起丢掉）在
+  **3/3** 个会话上抓到同一件事：**同一个 pty 被原生 kill 两次**，间隔约 40 ms。
+- **两个调用方为什么必然叠加**（探针同一份日志里的第二条线索）：每轮都是 `spawned pid=0`——
+  node-pty 的 `pid` 要等 conout 连接建立才有值，而 `dsh-subprocess-local` 在
+  `new LocalTerminalHandle(...)` 那一刻就取 `terminal.pid`，拿到 0，于是
+  `rootIdentity = snapshot().tree(0).find(…)` **恒为 undefined**、`stopShellWindows()` 每次必走
+  `this.terminal.kill()` 兜底分支；本包 D48 的预杀（`killSessionNow` → `handle.forceKill?.()`）
+  再调一次。两次都落到 `conpty.cc` 的 `PtyKill(id)`，而它 `ClosePseudoConsole(hpc)` 之后**不置空
+  `hpc`**、记录要等 shell 真退出才被 exit 线程 `erase_if` 摘掉 —— 这段窗口里第二次调用就是把
+  **已释放的 HPCON** 再交给 `ClosePseudoConsole` → `0xC0000374`，死的是**整个宿主进程**。
+- **真机 A/B（同一 harness、同一 `kill+terminate` 顺序，各 150 轮，只差一个变量）**：
+
+  | 变体 | 轮数 | 原生 kill 总数 | 双重 kill | 退出码 |
+  | --- | --- | --- | --- | --- |
+  | 插件顺序（先 node-pty kill、后 terminate），无闸门 | 150 | 188 | **94** | **-1073740940（`0xC0000374`）** |
+  | 同一顺序 + 一次性闸门 | 150 | 150 | **0** | 0 |
+  | 只调 `terminate`（单次 kill 对照） | 150 | 150 | 0 | 0 |
+
+  无闸门那轮死在第 75 轮、第 94 次双重 kill 之后；`terminate` 对照 150 轮不崩 ⇒「单次 kill 无害、
+  双重 kill 致命」被单独隔离出来。
+- **修法**：`installWindowsKillGate`（win32-only，装在 `wrapLocalPty` 里）把闸门放在
+  **`terminal._agent.kill`（原生调用的执行时点）**而不是 `terminal.kill`（调用时点）——node-pty 在
+  终端 ready 之前会把收到的 kill 排队（`_deferNoArgs`），装在调用点会让「排队那次」先占掉闸门、
+  DSH 真到执行那次被吞，万一排队那次永不执行就变成**一个都没杀**（进程泄漏）。POSIX 不装
+  （那边的 `stopShell` 本来就要 SIGTERM→SIGKILL 两次）。取不到 `_agent`（node-pty 结构变化）时
+  返回 false 并记一条警告，退化为现状而不是新增故障（D79 同款）。回归：
+  `test/host-frames.test.ts` 的「Windows 原生 kill 闸门（D100）」6 条。
+- **装上闸门后的真机复验（同一台 Win11 ARM64）**：插件层 **150 个会话一轮跑满、0 崩**
+  （探针：150 次 `NATIVE-KILL`、**0 次双重 kill**＝每 pty 恰好一次）；`windows-smoke` **强制带 W8**
+  连跑 **6 轮全部 `12/12 PASS`、6/6 退出码 0、0 SKIP**。修前：CI 上含 W8 的树 10/10 崩、VM 里
+  17%–50%。
+- **上游两处报道（2026-10-13）**：node-pty 已有人开着同一条（
+  [microsoft/node-pty#983](https://github.com/microsoft/node-pty/issues/983)，2026-09-30），我们在那条下
+  附了本轮的独立复现与 A/B（尤其补上「`useConptyDll: false` 那条路**同样**会崩，不是只有 bundled
+  conpty.dll 才会」）——<https://github.com/microsoft/node-pty/issues/983#issuecomment-6135026590>；
+  DSH 侧「`pid=0` ⇒ `rootIdentity` 恒 undefined ⇒ `stopShellWindows` 必走 `terminal.kill()` 兜底、
+  且 `stopDescendants` 在 Windows 本地终端上是空转」按该仓库现有渠道（issues 关闭，只有 Discussions）
+  发在 <https://github.com/deepseek-ai/deepseek-harness/discussions/9558>。
+- **下一步**：把 CI 上「默认跳过 W8」那条临时处置撤掉（它当初只是绕开未定性的根因），让 windows 腿
+  重新覆盖 PR #9 的 PowerShell 断言；撤之前先在临时分支上跑一次 CI 确认。
+
 **若将来确认是 flake 而非真 bug**：按项目级 ROADMAP 9.4 的口径处理（那条讲的是「争用强度
 不随机器漂」）；若确认是真 bug，另开 `Dxx` 编号进 [DEFECTS.md](./DEFECTS.md) 索引表
 （**注意**：索引表要求 `待修 == 0`，所以只有修好之后才进表，见 `scripts/defects-table.mjs`）。
+*（2026-10-13：**已确认是真 bug 而非 flake**，编号定为 `D100` 并已进表——见上面那节。）*
 
 - **「面板标签整体消失、又自己回来」仍未定性（2026-10-10，观测到 3 轮；只记账，未动手）** —— 现场：
   面板上 4 个标签（3 个 tmux 持久 + 1 个 SSH）在用户**没刷新、没手动关**的情况下整体消失，随后又
