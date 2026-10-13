@@ -4,7 +4,7 @@
 对外只有一套「归一化行模型 + 诚实的计数与截断信号 + 交给 Agent 的工具」。
 
 > **状态：设置面、查询地基（契约 / 归一化 / 游标）、Loki 与 ES / OpenSearch 适配器、出站围栏与 agent 工具都已就位
-> （2026-10-11 ~ 10-12）。**
+> （2026-10-11 ~ 10-12）；浏览器侧的结果视图、时间分布与**按字段分组榜**也已就位（榜是 2026-10-13 补的）。**
 > **Loki 侧已完成真机验收**（真 Loki 3.7.8，隔离环境）：分页翻成 `cursor`，真机抓到并修掉两个缺陷
 > （`loglens D02` / `D03`，逐条见 [DEFECTS.md](./DEFECTS.md)）；真机对账 12/12 组不丢不重。
 > ES / OpenSearch 侧已在真集群上跑过若干轮只读复核。逐条结论都在 [ROADMAP.md](./ROADMAP.md)，**不在这里复述**。
@@ -21,6 +21,9 @@
   它们**全部**归 **read** 档（分类表见 [docs/permission-tier-plan.md](../../docs/permission-tier-plan.md) §2.1）。
 - **在同一张卡片里直接查**：来源 / 查询串 / 时间窗（15m · 1h · 6h · 24h）/ 条数 → 结果列表（时间到毫秒 ·
   级别 · 正文）+ 诚实的计数与截断提示；有游标时给「下一页」（按 id 去重）。
+- **两种聚合都在卡片里画**（都由宿主随 `/query` 响应下发的能力自述决定画不画，面板不按类型猜）：
+  **时间分布**（按时间分桶的柱状图）与**按字段分组**（terms 榜——「哪个服务在报错」的那个答案）。
+  榜要先填一个分组字段：手填，或点「有哪些字段」拉当前来源的字段名当候选（不传 `limit`，用宿主的默认值）。
 - **行上能看出「谁写的」**：filebeat 那类嵌套字段（`container.name` / `host.name` / `log.file.path`）摊成
   点分标签并排在前面；级别归一化成 trace→fatal 六档，文档里没有时从正文推断（此时 `levelInferred: true`，
   `loglens_search` 的 `level` 参数是**及以上**语义）。
@@ -43,7 +46,7 @@
 | 删来源 | `POST {"action":"targets.remove","id":"<id>"}` | |
 | 查一次 | `POST /api/dsh-loglens/query` `{"target":"<id>","q":"…","from":…,"to":…,"limit":…}` | 面板用；返回行 + 计数 + 截断信号，**形状与 `loglens_search` 一致**（同一个执行层） |
 | 列字段 | `POST /api/dsh-loglens/fields` `{"target":"<id>","limit":80}` | 面板的「有哪些字段」；被截断时返回 `total` / `truncated` |
-| 聚合 | `POST /api/dsh-loglens/facets` `{"target":"<id>","by":"container.name","interval":"5m"}` | 按字段分组 / 按时间分桶（目前只有 ES / OpenSearch 有；面板还没画它，工具面已有 `loglens_facets`） |
+| 聚合 | `POST /api/dsh-loglens/facets` `{"target":"<id>","by":"container.name","interval":"5m"}` | 按字段分组 / 按时间分桶（目前只有 ES / OpenSearch 有；面板用 `interval` 画时间分布、用 `by` 画分组榜，工具面是 `loglens_facets`） |
 
 围栏（[docs/design.md §4](./docs/design.md)）：整条路由走**加固档** `isLoopbackRequestStrict`；
 `/config` 按**动作**豁免——只有 `enabled` 免同源证明，targets 的增 / 删 / 改要 `hasSameOriginProof`
@@ -86,7 +89,7 @@ curl -s -X POST http://127.0.0.1:3080/api/dsh-loglens/config -H 'content-type: a
 | `src/query.ts` | 归一化与夹取：时间戳单位、时间窗上限、limit 夹取、计数与截断归并 |
 | `src/cursor.ts` | 两份游标共用版本号常量：Loki 那份（同 ts 多行不丢行）与 ES 那份（`pitId` + `searchAfter`）；拿错适配器的游标在 decode 时被拒，解不开就报错、不当作没有游标 |
 | `client-src/index.js` → `client.js` | 构建型客户端半体：设置卡片，i18n 目录内联在源码里 |
-| `client-src/pure.js` | 客户端的纯逻辑（草稿合法性 / 提交载荷），进 vitest |
+| `client-src/pure.js` | 客户端的纯逻辑（草稿合法性 / 提交载荷 / 时间分布与分组榜的铺图与载荷），进 vitest |
 | `scripts/build-client.mjs` | 客户端打包：剥 import + 内联 pure.js；发现残留 import 直接 `exit(1)` |
 | `scripts/client-smoke.mjs` | **无浏览器的渲染回归**：最小 DOM / React（会真重渲染）/ fetch 桩把卡片渲染出来，断言来源行四格齐、ES 行多一个索引表达式、以及「填索引 → 保存 → 请求体带 index」 |
 | `test/` | vitest 用例（仓库根 `pnpm test` 收集 `packages/<pkg>/test/`） |
@@ -120,11 +123,18 @@ dsh plugin --profile <profile> add link:$(pwd)/packages/loglens
   `aggregations` ↔ `facets()` 是同一条。守卫：[test/capabilities.test.ts](./test/capabilities.test.ts)。
   **维护者 2026-10-12 决定「暂缓」**（不是被卡住）：没有消费者，且手上真在用的来源是 ES
   （跟随要走 `_search` + 轮询）——理由与「要做时怎么做」见 [ROADMAP.md](./ROADMAP.md)。
-- **时间分布（直方图）**画在结果列表上方，**只对有聚合能力的来源画**（当前是 ES / OpenSearch）——
-  能力由宿主随 `/query` 响应下发，面板**不自己按类型猜**（那会是第二份会漂的判据）。图**来自后端的
-  按时间分桶**，不是数这一页：那一页被 `limit` 截断过，数它只会得到一个假的分布。相邻桶之间的空档
-  **补 0**——否则「那段时间一条都没有」看起来会像「一直在刷」。Loki 没有指标查询，所以它这里没有分布图，
-  界面上如实写着这一句。宿主**没给**能力自述时（旧版宿主）则**什么都不说**——「不知道」不等于「不支持」。
+- **两种聚合（时间分布 / 按字段分组）**都画在结果列表**下方**，且**只对有聚合能力的来源画**（当前是
+  ES / OpenSearch）——能力由宿主随 `/query` 响应下发，面板**不自己按类型猜**（那会是第二份会漂的判据）。
+  两份图都**来自后端的聚合**，不是数这一页：那一页被 `limit` 截断过，数它只会得到一个假的分布 /
+  假的排名。
+  - **时间分布**：按窗口挑分桶档位；相邻桶之间的空档**补 0**——否则「那段时间一条都没有」看起来会像
+    「一直在刷」。合计只在没被上限截断时才写。
+  - **按字段分组（terms 榜）**：分组字段由用户给（面板**没有默认字段**——各家索引的字段名不一样，猜一个
+    等于替用户伪造范围），可点「有哪些字段」拉候选。**不写合计**：列出来的桶加起来不是命中总数，
+    没列出来的由宿主的警告原话回报（「还有 N 条落在没列出来的桶里」）；桶计数是近似值时同样照抄那条警告。
+    空值键（文档缺这个字段）显示成「（空值）」，而不是一条没有名字的横条。
+  - Loki 没有指标查询，所以它这里两种图都没有，界面上如实写着这一句。宿主**没给**能力自述时（旧版宿主）
+    则**什么都不说**——「不知道」不等于「不支持」。
 - 面板里的查询区是**受控重复**——设计 §5 三选一的**最终口径**（2026-10-12 拍板，选项 1）：
   日志视图建在本插件自己的卡片里，不与别的插件共享浏览器模块。理由（两份视图不是同一件事、
   选项 2 不是做不到而是不值得）见 [docs/design.md §5](./docs/design.md)。

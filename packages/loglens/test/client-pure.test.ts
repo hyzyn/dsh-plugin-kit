@@ -10,6 +10,9 @@ import {
   draftProblem,
   emptyDraft,
   emptyQuery,
+  groupBars,
+  groupPayload,
+  groupProblem,
   histogramBars,
   histogramInterval,
   histogramPayload,
@@ -368,5 +371,94 @@ describe('时间分布：能力自述的读法（三态）', () => {
     for (const payload of [undefined, null, {}, { capabilities: null }, { capabilities: {} }, { capabilities: { aggregations: 'true' } }]) {
       expect(supportsAggregation(payload), JSON.stringify(payload)).toBeUndefined()
     }
+  })
+})
+
+/* ============================ 按字段分组（terms 榜） ============================ */
+
+describe('按字段分组：请求载荷', () => {
+  const outcome = {
+    target: { id: 't1', kind: 'elasticsearch', label: 'es' },
+    window: { from: 1_700_000_000_000, to: 1_700_000_600_000 },
+  }
+
+  it('窗口取响应回显的那一份，字段名洗干净（与直方图共用一份判据）', () => {
+    expect(groupPayload({ q: 'level:ERROR' }, outcome, '  container.name  ')).toEqual({
+      target: 't1',
+      q: 'level:ERROR',
+      from: 1_700_000_000_000,
+      to: 1_700_000_600_000,
+      by: 'container.name',
+    })
+  })
+
+  it('字段为空就回 null——界面**不发**一个没头没脑的聚合请求', () => {
+    expect(groupPayload({}, outcome, '')).toBeNull()
+    expect(groupPayload({}, outcome, '   ')).toBeNull()
+    expect(groupPayload({}, outcome, undefined)).toBeNull()
+  })
+
+  it('回显不完整同样回 null（与直方图同一份信封）', () => {
+    expect(groupPayload({}, undefined, 'a')).toBeNull()
+    expect(groupPayload({}, {}, 'a')).toBeNull()
+    expect(groupPayload({}, { target: { id: 't1' } }, 'a')).toBeNull()
+    expect(groupPayload({}, { target: { id: 't1' }, window: { from: 2, to: 1 } }, 'a')).toBeNull()
+    expect(groupPayload({}, { window: { from: 1, to: 2 } }, 'a')).toBeNull()
+  })
+
+  it('q 缺省是空串，且**不带 size**——桶数上限是后端的事，面板不写死「前十」', () => {
+    const payload = groupPayload({}, outcome, 'container.name')
+    expect(payload.q).toBe('')
+    expect('size' in payload).toBe(false)
+  })
+})
+
+describe('按字段分组：榜单怎么铺', () => {
+  it('保持后端给的顺序（契约就是按 count 降序），并按峰值归一化', () => {
+    const out = groupBars([{ key: 'a', count: 8 }, { key: 'b', count: 4 }, { key: 'c', count: 2 }])
+    expect(out.bars.map((bar) => bar.key)).toEqual(['a', 'b', 'c'])
+    expect(out.bars.map((bar) => bar.ratio)).toEqual([1, 0.5, 0.25])
+    expect(out.max).toBe(8)
+    expect(out.truncated).toBe(false)
+  })
+
+  it('**不写合计**：列出来的桶加起来不是命中总数（没列出来的在宿主的警告里）', () => {
+    const out = groupBars([{ key: 'a', count: 8 }, { key: 'b', count: 4 }])
+    // 返回形状本身就是判据：多一个 total，它就会被读成「这个窗口一共这么多」
+    expect(Object.keys(out).sort()).toEqual(['bars', 'max', 'truncated'])
+  })
+
+  it('空值键标出来（缺字段的文档在 ES 那边 key 是空串；直接画就是一条没名字的横条）', () => {
+    const out = groupBars([{ key: '', count: 3 }, { key: 'ok', count: 1 }, { key: '   ', count: 1 }])
+    expect(out.bars.map((bar) => bar.blank)).toEqual([true, false, true])
+  })
+
+  it('畸形的桶丢掉：不许把 NaN 画进条宽', () => {
+    const out = groupBars([null, { count: 3 }, { key: 'a' }, { key: 'b', count: 'x' }, { key: 'c', count: 2 }, 'nope'])
+    expect(out.bars).toEqual([{ key: 'c', count: 2, blank: false, ratio: 1 }])
+    expect(out.max).toBe(2)
+  })
+
+  it('没有桶（或根本不是数组）就是空榜，不抛', () => {
+    for (const input of [[], undefined, null, {}]) {
+      expect(groupBars(input as never)).toEqual({ bars: [], max: 0, truncated: false })
+    }
+  })
+
+  it('桶数超过兜底上限时只画前一部分，并如实标 truncated（峰值仍按整份算）', () => {
+    const many = Array.from({ length: 60 }, (_item, index) => ({ key: 'k' + String(index), count: 60 - index }))
+    const out = groupBars(many)
+    expect(out.truncated).toBe(true)
+    expect(out.bars).toHaveLength(50)
+    expect(out.max).toBe(60)
+  })
+})
+
+describe('按字段分组：字段名能不能提交', () => {
+  it('空串 / 只有空白 / 缺值都是 needGroupBy；有值就放行', () => {
+    expect(groupProblem('container.name')).toBe('')
+    expect(groupProblem('')).toBe('needGroupBy')
+    expect(groupProblem('   ')).toBe('needGroupBy')
+    expect(groupProblem(undefined)).toBe('needGroupBy')
   })
 })

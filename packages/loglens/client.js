@@ -6,8 +6,9 @@
  * client-src/pure.js 内联进来，并在发现任何残留 import 时 exit(1)）。设置面的注册与样式
  * 取值逐条对齐宿主（见 docs/conventions.md 的客户端半体六条硬规矩）。
  *
- * 卡片里现在是四块：来源清单、查询区（时间窗 / 条数 / 结果列表 / 下一页）、**时间分布**（直方图，
- * 只对有聚合能力的来源画——能力由宿主随 `/query` 响应下发）、Docker 容器日志区（选项 0 的面板半格）。
+ * 卡片里现在是五块：来源清单、查询区（时间窗 / 条数 / 结果列表 / 下一页）、**时间分布**（直方图）、
+ * **按字段分组**（terms 榜，回答「哪个服务在报错」）、Docker 容器日志区（选项 0 的面板半格）。
+ * 两份聚合（分布 / 榜）都由宿主随 `/query` 响应下发的**能力自述**决定画不画——面板不按 kind 猜。
  * **跟随（tail）还没有**：来源的 `capabilities().follow` 因此声明为 `false`，卡片不画一个按下去会失败的入口。
  */
 
@@ -259,13 +260,14 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 请求载荷：**窗口取响应回显的那一份**，不是面板请求的那一份。
+     * `/facets` 载荷的公共部分（**两份聚合载荷共用**，别各自再抄一遍窗口判据）。
      *
-     * 宿主可能兜底过（只给一端时补 15 分钟）或按来源上限收窄过；用回显的那份才对得上
-     * 「这次查询实际查的是什么」——否则分布会画在一个跟结果列表不同的窗口上。
-     * 回显不完整（不是数）时回 `null`：让界面**不发这个请求**，而不是发一个畸形的。
+     * 窗口取**响应回显的那一份**，不是面板请求的那一份：宿主可能兜底过（只给一端时补 15 分钟）
+     * 或按来源上限收窄过；用回显的才对得上「这次查询实际查的是什么」——否则聚合会画在一个跟
+     * 结果列表不同的窗口上。回显不完整（不是数）时回 `null`：让界面**不发这个请求**，
+     * 而不是发一个畸形的。
      */
-    function histogramPayload(draft, outcome, intervalKey) {
+    function facetsEnvelope(draft, outcome) {
       const echoed = outcome !== null && typeof outcome === 'object' && outcome.window !== null && typeof outcome.window === 'object' ? outcome.window : {}
       const target = outcome !== null && typeof outcome === 'object' && outcome.target !== null && typeof outcome.target === 'object' ? outcome.target : {}
       if (typeof target.id !== 'string' || target.id === '') return null
@@ -275,8 +277,14 @@ window.__ModuleLoader__.load({
         q: String(draft == null || draft.q == null ? '' : draft.q),
         from: echoed.from,
         to: echoed.to,
-        interval: intervalKey,
       }
+    }
+
+    /** 时间分布的请求载荷（窗口 + 间隔）。 */
+    function histogramPayload(draft, outcome, intervalKey) {
+      const envelope = facetsEnvelope(draft, outcome)
+      if (envelope === null) return null
+      return { ...envelope, interval: intervalKey }
     }
 
     /**
@@ -319,6 +327,66 @@ window.__ModuleLoader__.load({
       }
       for (const bar of bars) bar.ratio = max === 0 ? 0 : bar.count / max
       return { bars, max, total, truncated: wanted > cap }
+    }
+
+    /* ============================ 按字段分组（terms 榜，P6 第二格） ============================ */
+
+    /**
+     * 榜与直方图是**同一件事的两种切法**（都只能来自后端聚合，不许数页面上的行——判据见上面
+     * `histogramBars` 的函数头）。这一格补的是 agent 那句话里真正的问题：「**哪个服务在报错**」——
+     * 光拉一页行答不出来，得先分组再排。
+     *
+     * 本层只做三件事：把字段名洗干净、按响应回显的窗口拼载荷、把后端的桶铺成横条。
+     * **size 不由面板传**（用后端的默认值），所以这里也不写死「前十」这类数字——那是后端的事。
+     */
+
+    /** 横条上限（纯兜底）：面板不传 size，桶数由后端默认值与宿主硬上限（100）管；畸形输入才可能触到。 */
+    const GROUP_MAX_BARS = 50
+
+    /** 分组字段能不能提交：空串表示可以，否则是 i18n 键名后缀（needGroupBy）。 */
+    function groupProblem(field) {
+      return String(field == null ? '' : field).trim() === '' ? 'needGroupBy' : ''
+    }
+
+    /**
+     * 分组的请求载荷（窗口同 `histogramPayload`，取响应回显的那一份）。
+     * 字段为空、或回显不完整 → `null`：界面**不发这个请求**。
+     */
+    function groupPayload(draft, outcome, by) {
+      const field = String(by == null ? '' : by).trim()
+      if (field === '') return null
+      const envelope = facetsEnvelope(draft, outcome)
+      if (envelope === null) return null
+      return { ...envelope, by: field }
+    }
+
+    /**
+     * 把后端的 terms 桶铺成一根根横条。
+     *
+     * 三条判据：
+     *
+     * - **保持后端给的顺序**（契约就是按 count 降序，见 src/backends/types.ts）：这里再排一次，
+     *   等于把「后端顺序不对」这回事盖掉——榜的顺序就是结论本身，不该由前端悄悄改写。
+     * - **不写合计**：列出来的桶加起来**不是**命中总数（没列出来的在 `otherCount` 里，由宿主用
+     *   警告原话回报，面板照抄）。写一个「部分之和」会被读成「这个窗口一共这么多」。
+     * - **空值键要标出来**：文档缺这个字段时 ES 给的 key 是空串——直接画出来是一条没有名字的横条，
+     *   看起来像渲染丢了东西。标成空白键，由界面给一句「（空值）」。
+     */
+    function groupBars(buckets) {
+      const rows = []
+      let max = 0
+      for (const bucket of Array.isArray(buckets) ? buckets : []) {
+        if (bucket == null || typeof bucket.key !== 'string' || !Number.isFinite(bucket.count)) continue
+        if (bucket.count > max) max = bucket.count
+        rows.push({ key: bucket.key, count: bucket.count })
+      }
+      const truncated = rows.length > GROUP_MAX_BARS
+      const kept = truncated ? rows.slice(0, GROUP_MAX_BARS) : rows
+      for (const row of kept) {
+        row.blank = row.key.trim() === ''
+        row.ratio = max === 0 ? 0 : row.count / max
+      }
+      return { bars: kept, max, truncated }
     }
 
     /* ============================ Docker 目标（P6 面板半格，选项 0） ============================ */
@@ -451,6 +519,8 @@ window.__ModuleLoader__.load({
       '.ll_ok{color:var(--dsw-alias-state-success-primary);font-size:12px;line-height:18px;margin:0}',
       '.ll_query{display:flex;flex-direction:column;gap:10px;border-top:.5px solid var(--dsw-alias-border-l1);padding-top:12px}',
       '.ll_queryGrid{display:grid;grid-template-columns:minmax(110px,130px) minmax(160px,2fr) minmax(96px,120px) minmax(64px,84px) auto;gap:8px;align-items:center}',
+      // 分组那一行只有「字段 / 两个按钮 / 一句回话」，列宽与查询行不同（宽输入 + 两个 auto + 说明）
+      '.ll_groupGrid{display:grid;grid-template-columns:minmax(180px,2fr) auto auto minmax(0,1fr);gap:8px;align-items:center}',
       '.ll_queryMeta{display:flex;align-items:center;gap:10px;flex-wrap:wrap;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}',
       '.ll_results{display:flex;flex-direction:column;gap:2px;max-height:420px;overflow-y:auto;font-family:var(--ds-font-family-code)}',
       '.ll_resultRow{display:grid;grid-template-columns:auto auto minmax(0,1fr);gap:8px;align-items:baseline;padding:3px 8px;border-radius:var(--dsw-radius-sm);font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary)}',
@@ -467,6 +537,18 @@ window.__ModuleLoader__.load({
       '.ll_histBar{flex:1 1 0;min-width:1px;background:var(--dsw-alias-interactive-bg-hover);border-radius:1px}',
       // 空桶只留一条 2% 的底座（见 pure.js histogramBars：补 0 是为了让「那段时间一条都没有」看得见）
       '.ll_histBarEmpty{background:var(--dsw-alias-border-l1)}',
+      // 按字段分组（terms 榜）。条的宽度是**内联** style（每条都不一样，写不进类里）；类只管外观。
+      '.ll_groups{display:flex;flex-direction:column;gap:6px}',
+      '.ll_groupHead{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}',
+      '.ll_groupTitle{color:var(--dsw-alias-label-primary);font-weight:600}',
+      '.ll_groupRows{display:flex;flex-direction:column;gap:4px;max-height:200px;overflow-y:auto;padding:6px 8px;background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-sm)}',
+      // 键名一格会被长容器名撑开，所以要能省略；条数用等宽数字，纵向一列才对得齐
+      '.ll_groupRow{display:grid;grid-template-columns:minmax(72px,1fr) auto minmax(48px,1fr);gap:8px;align-items:center;font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary)}',
+      '.ll_groupKey{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+      '.ll_groupKeyBlank{color:var(--dsw-alias-label-tertiary)}',
+      '.ll_groupCount{color:var(--dsw-alias-label-secondary);font-variant-numeric:tabular-nums;white-space:nowrap}',
+      '.ll_groupTrack{height:8px;background:var(--dsw-alias-bg-layer-3);border-radius:var(--dsw-radius-sm);overflow:hidden}',
+      '.ll_groupFill{height:100%;background:var(--dsw-alias-interactive-bg-hover);border-radius:var(--dsw-radius-sm)}',
     ].join('\n')
 
     let styleEl
@@ -490,21 +572,30 @@ window.__ModuleLoader__.load({
     const I18N_NS = 'loglens'
     const I18N_ZH = {
       'card.name': '日志查询',
-      'card.desc': '把 Loki / Elasticsearch / OpenSearch 等日志后端归一化成一个查询面；当前只有来源清单与开关。',
+      'card.desc': '把 Loki / Elasticsearch / OpenSearch 等日志后端归一化成一个查询面：来源清单、直连查询、时间分布与按字段分组。',
       'panel.title': '日志来源',
       'panel.histogram': '时间分布',
+      'panel.groups': '按字段分组',
       'meta.histInterval': '每根柱子 {interval}',
       'meta.histPeak': '峰值 {count} 条',
       'meta.histTotal': '共 {count} 条',
       'meta.histBucket': '{time} · {count} 条',
+      'meta.groupsCount': '{count} 条',
+      'meta.groupsBlankKey': '（空值）',
       'hint.histogram': '这张图来自后端按时间分桶（不是数这一页——这一页被条数截断过，数它只会得到一个假的分布）。',
       'hint.histogramTruncated': '窗口比这张图长，只画了前一部分。',
-      'hint.histogramUnsupported': '当前来源不支持聚合（Loki 的指标查询还没接），所以这里没有时间分布。',
+      'hint.groups': '这张榜来自后端的 terms 聚合（不是数这一页——这一页被条数截断过，数它只会得到一个假的排名）。',
+      'hint.groupsTruncated': '桶比这张榜长，只画了前一部分。',
+      'hint.aggregationUnsupported': '当前来源不支持聚合（Loki 的指标查询还没接），所以这里没有时间分布与分组榜。',
       'error.histogram': '时间分布取不到：{message}',
-      'hint.notImplemented': '下面可以直接查当前来源；字段清单与「某一行前后」的上下文由 agent 侧的两个工具做（loglens_fields / loglens_context）——面板暂不画它们。',
+      'error.groups': '分组取不到：{message}',
+      'error.needGroupBy': '先填要分组的字段（不知道有哪些字段就点「有哪些字段」）',
+      'list.noBuckets': '这个窗口里没有可分组的数据',
+      'hint.notImplemented': '下面可以直接查当前来源；「有哪些字段」列的是当前来源的字段名，用来挑分组字段。整份字段清单与「某一行前后」的上下文仍在 agent 侧的两个工具里（loglens_fields / loglens_context）。',
       'field.kind': '类型',
       'field.label': '名称',
       'field.url': '地址',
+      'field.groupBy': '分组字段',
       'placeholder.index': '索引表达式（如 app-logs-*；留空 = 用地址路径，再留空则 *,-.*）',
       'hint.index': 'ES / OpenSearch 的索引表达式：留空时用地址里的路径，地址里也没有就是 *,-.*（全部索引但排除点号系统索引）。',
       'option.loki': 'Loki',
@@ -524,17 +615,24 @@ window.__ModuleLoader__.load({
       'placeholder.url': 'http://127.0.0.1:3100',
       'msg.saved': '已保存',
       'msg.memoryOnly': '宿主没有 settings 服务，改动只在本次进程内有效',
+      'msg.fieldsLoaded': '字段清单 {count} 个（挑一个填进分组字段）',
+      'msg.fieldsEmpty': '这个来源没有返回字段名（可以直接手填，比如 container.name）',
       'error.needUrl': '这个类型必须填地址',
       'error.badUrl': '地址必须是 http:// 或 https:// 开头的绝对地址',
       'error.badKind': '类型不认识（支持 Loki / Elasticsearch / OpenSearch / Docker）',
       'section.query': '查询',
       'hint.query': '面板直查当前来源：走的是与 agent 工具同一套执行层（同一份归一化与截断信号）。',
       'placeholder.query': '查询串（Loki 是 LogQL；留空即全量）',
+      'placeholder.groupBy': 'container.name',
       'field.target': '来源',
       'field.window': '时间窗',
       'field.limit': '条数',
       'btn.query': '查询',
       'btn.querying': '查询中…',
+      'btn.group': '分组',
+      'btn.grouping': '分组中…',
+      'btn.fields': '有哪些字段',
+      'btn.fieldsLoading': '加载中…',
       'btn.nextPage': '下一页',
       'btn.clear': '清空结果',
       'option.15m': '最近 15 分钟',
@@ -572,21 +670,30 @@ window.__ModuleLoader__.load({
     }
     const I18N_EN = {
       'card.name': 'Log query',
-      'card.desc': 'Normalizes log backends such as Loki / Elasticsearch / OpenSearch into one query surface; for now only the source list and the switch.',
+      'card.desc': 'Normalizes log backends such as Loki / Elasticsearch / OpenSearch into one query surface: source list, direct query, volume over time and grouping by field.',
       'panel.title': 'Log sources',
       'panel.histogram': 'Volume over time',
+      'panel.groups': 'Grouped by field',
       'meta.histInterval': 'each bar = {interval}',
       'meta.histPeak': 'peak {count}',
       'meta.histTotal': '{count} total',
       'meta.histBucket': '{time} · {count}',
+      'meta.groupsCount': '{count}',
+      'meta.groupsBlankKey': '(empty value)',
       'hint.histogram': 'This chart comes from the backend time-bucketing (not from counting this page — the page is capped by the limit, so counting it would only give you a fake distribution).',
       'hint.histogramTruncated': 'The window is longer than this chart; only the first part is drawn.',
-      'hint.histogramUnsupported': 'This source cannot aggregate (Loki metric queries are not wired yet), so there is no volume chart here.',
+      'hint.groups': 'This ranking comes from the backend terms aggregation (not from counting this page — the page is capped by the limit, so counting it would only give you a fake ranking).',
+      'hint.groupsTruncated': 'There are more buckets than this ranking; only the first part is drawn.',
+      'hint.aggregationUnsupported': 'This source cannot aggregate (Loki metric queries are not wired yet), so there is no volume chart or group ranking here.',
       'error.histogram': 'Could not load the volume chart: {message}',
-      'hint.notImplemented': 'You can query the selected source right below; the field list and per-line context live in the agent tools (loglens_fields / loglens_context) — this panel does not draw them yet.',
+      'error.groups': 'Could not group by field: {message}',
+      'error.needGroupBy': 'Fill in a field to group by first (click “List fields” if you do not know them)',
+      'list.noBuckets': 'No data to group by in this window',
+      'hint.notImplemented': 'You can query the selected source right below; “List fields” shows the field names of the current source so you can pick a grouping field. The full field list and per-line context still live in the agent tools (loglens_fields / loglens_context).',
       'field.kind': 'Kind',
       'field.label': 'Name',
       'field.url': 'URL',
+      'field.groupBy': 'Group by field',
       'placeholder.index': 'Index expression (e.g. app-logs-*; empty = the path in the URL, else *,-.*)',
       'hint.index': 'Index expression for ES / OpenSearch: empty means the path in the URL, and if that is empty too it becomes *,-.* (all indices except dot-prefixed system indices).',
       'option.loki': 'Loki',
@@ -606,17 +713,24 @@ window.__ModuleLoader__.load({
       'placeholder.url': 'http://127.0.0.1:3100',
       'msg.saved': 'Saved',
       'msg.memoryOnly': 'The host has no settings service; changes last only in this process',
+      'msg.fieldsLoaded': '{count} field names loaded (pick one for the grouping field)',
+      'msg.fieldsEmpty': 'This source returned no field names (you can type one, e.g. container.name)',
       'error.needUrl': 'This kind needs a URL',
       'error.badUrl': 'The URL must be an absolute http:// or https:// address',
       'error.badKind': 'Unknown kind (Loki / Elasticsearch / OpenSearch / Docker)',
       'section.query': 'Query',
       'hint.query': 'Queries the selected source through the same execution layer the agent tools use (identical normalization and truncation signals).',
       'placeholder.query': 'Query string (LogQL for Loki; empty means everything)',
+      'placeholder.groupBy': 'container.name',
       'field.target': 'Source',
       'field.window': 'Time window',
       'field.limit': 'Limit',
       'btn.query': 'Run',
       'btn.querying': 'Running…',
+      'btn.group': 'Group',
+      'btn.grouping': 'Grouping…',
+      'btn.fields': 'List fields',
+      'btn.fieldsLoading': 'Loading…',
       'btn.nextPage': 'Next page',
       'btn.clear': 'Clear',
       'option.15m': 'Last 15 minutes',
@@ -709,6 +823,12 @@ window.__ModuleLoader__.load({
 
     const CHEVRON_PATH = 'M11.8486 5.5L11.4238 5.92383L8.69727 8.65137C8.44157 8.90706 8.21562 9.13382 8.01172 9.29785C7.79912 9.46883 7.55595 9.61756 7.25 9.66602C7.08435 9.69222 6.91565 9.69222 6.75 9.66602C6.44405 9.61756 6.20088 9.46883 5.98828 9.29785C5.78438 9.13382 5.55843 9.13382 5.30273 8.65137L2.57617 5.92383L2.15137 5.5L3 4.65137L3.42383 5.07617L6.15137 7.80273C6.42595 8.07732 6.59876 8.24849 6.74023 8.3623C6.87291 8.46904 6.92272 8.47813 6.9375 8.48047C6.97895 8.48703 7.02105 8.48703 7.0625 8.48047C7.07728 8.47813 7.12709 8.46904 7.25977 8.3623C7.40124 8.24849 7.57405 8.07732 7.84863 7.80273L10.5762 5.07617L11 4.65137L11.8486 5.5Z'
 
+    /**
+     * datalist 的 id **每张卡片实例一个**：写死一个 id 时，后一张卡的候选会指向先一张卡的
+     * datalist——同一页挂两张卡不是假想（本包 bundle 与聚合包各一行时就是这样，见文件尾的注册注释）。
+     */
+    let fieldsListSeq = 0
+
     function LoglensSettingsCard(props) {
       // DSH ≥0.1.6 的插件配置页把同一条目按 view 渲染两次：summary 一句话摘要、page 完整表单。
       const view = props && props.view
@@ -725,6 +845,12 @@ window.__ModuleLoader__.load({
       const [lines, setLines] = React.useState([])
       const [cursor, setCursor] = React.useState(undefined)
       const [histogram, setHistogram] = React.useState(undefined)
+      const [groups, setGroups] = React.useState(undefined)
+      const [groupBy, setGroupBy] = React.useState('')
+      const [grouping, setGrouping] = React.useState(false)
+      const [fields, setFields] = React.useState([])
+      const [fieldsBusy, setFieldsBusy] = React.useState(false)
+      const [fieldsNote, setFieldsNote] = React.useState('')
       const [querying, setQuerying] = React.useState(false)
       const [docker, setDocker] = React.useState(false)
       const [containers, setContainers] = React.useState([])
@@ -734,6 +860,13 @@ window.__ModuleLoader__.load({
       const [dockerTail, setDockerTail] = React.useState(200)
       const [dockerBusy, setDockerBusy] = React.useState(false)
       const [dockerTargets, setDockerTargets] = React.useState([])
+
+      // 每张卡片实例一个 datalist id（理由见 CHEVRON_PATH 下面那段）
+      const fieldsListRef = React.useRef('')
+      if (fieldsListRef.current === '') {
+        fieldsListSeq += 1
+        fieldsListRef.current = 'll-fields-' + String(fieldsListSeq)
+      }
 
       /** 宿主回什么就照什么渲染：一切状态以服务端那份为准，不在本地做乐观合并。 */
       const applyConfig = React.useCallback((payload) => {
@@ -896,6 +1029,51 @@ window.__ModuleLoader__.load({
         }
       }
 
+      /**
+       * 拉「按字段分组」榜。三类收尾与直方图**逐条相同**（不支持就不发、拿不到只说那一句、
+       * 翻页不重拉），另加一条：**没填分组字段就不发**——面板没有默认字段（各家索引的字段名
+       * 不一样，猜一个「container.name」在这里等于替用户伪造一个范围）。
+       *
+       * 榜是「哪个服务在报错」这个问题的直接答案（真机反馈第 2 条），所以它与直方图一样，
+       * **只信后端聚合**：`terms` 的分组与计数都在 ES 那边算，面板只负责画。
+       */
+      const loadGroups = async (data, append) => {
+        if (append) return
+        if (supportsAggregation(data) !== true) {
+          setGroups(undefined)
+          return
+        }
+        if (groupProblem(groupBy) !== '') {
+          setGroups(undefined)
+          return
+        }
+        const payload = groupPayload(query, data, groupBy)
+        // 回显不完整（拿不到窗口）：不发畸形的请求（见 pure.js facetsEnvelope）
+        if (payload === null) {
+          setGroups(undefined)
+          return
+        }
+        setGrouping(true)
+        try {
+          const parsed = await api('/api/dsh-loglens/facets', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(payload),
+          })
+          // 回显**这一次真正用的字段**（payload.by），不是输入框里此刻的字——用户改了输入框
+          // 还没点「分组」时，榜上的标题不能跟着改（那就成了「说的和画的不一样」）。
+          setGroups({
+            ...groupBars(parsed.buckets),
+            by: payload.by,
+            warnings: Array.isArray(parsed.warnings) ? parsed.warnings : [],
+          })
+        } catch (err) {
+          setGroups({ error: err.message })
+        } finally {
+          setGrouping(false)
+        }
+      }
+
       const runQuery = async (append) => {
         const problem = queryProblem(query, drafts.length)
         if (problem !== '') {
@@ -916,11 +1094,58 @@ window.__ModuleLoader__.load({
           setOutcome(data)
           setLines((current) => (append ? appendLines(current, data.lines) : data.lines))
           setCursor(typeof data.nextCursor === 'string' ? data.nextCursor : undefined)
-          await loadHistogram(data, append)
+          // 两份聚合并行（互不依赖）：分布与榜都是附加信息，谁拿不到都不该拖住结果列表
+          await Promise.all([loadHistogram(data, append), loadGroups(data, append)])
         } catch (err) {
           setError(err.message)
         } finally {
           setQuerying(false)
+        }
+      }
+
+      /**
+       * 「分组」按钮：窗口与查询串沿用**上一次查询回显的那一份**（不重新查一遍行）。
+       * 三条即时反馈：还没查过 / 没填字段 / 来源明确不支持——都不发请求，界面直接说为什么。
+       */
+      const runGroups = async () => {
+        if (outcome === undefined) return
+        if (groupProblem(groupBy) !== '') {
+          setError(t('error.needGroupBy'))
+          return
+        }
+        if (supportsAggregation(outcome) !== true) return
+        setError('')
+        await loadGroups(outcome, false)
+      }
+
+      /**
+       * 拉「有哪些字段」：只用来给分组字段输入框做候选（datalist），不做成字段表格。
+       * limit 不传——用宿主自己的默认值与它那句截断警告，别在浏览器侧抄一份会漂的默认值。
+       */
+      const loadFields = async () => {
+        if (selectedDraft === undefined) {
+          setError(t('error.needTarget'))
+          return
+        }
+        setFieldsBusy(true)
+        setError('')
+        setFieldsNote('')
+        try {
+          const parsed = await api('/api/dsh-loglens/fields', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ target: selectedDraft.id }),
+          })
+          const list = Array.isArray(parsed.fields) ? parsed.fields : []
+          setFields(list)
+          const warnings = Array.isArray(parsed.warnings) ? parsed.warnings : []
+          if (warnings.length > 0) setFieldsNote(warnings.join(' '))
+          else if (list.length > 0) setFieldsNote(t('msg.fieldsLoaded', { count: list.length }))
+          else setFieldsNote(t('msg.fieldsEmpty'))
+        } catch (err) {
+          setError(err.message)
+        } finally {
+          setFieldsBusy(false)
         }
       }
 
@@ -984,6 +1209,7 @@ window.__ModuleLoader__.load({
         setLines([])
         setCursor(undefined)
         setHistogram(undefined)
+        setGroups(undefined)
         setError('')
         setOk('')
       }
@@ -1209,6 +1435,43 @@ window.__ModuleLoader__.load({
                         }),
                       ],
                     }),
+                    // 分组那一行：字段名 + 「有哪些字段」（候选）+ 「分组」（沿用上一次查询的窗口）。
+                    // 「分组」只在来源**明确说**能聚合时可用——不知道（旧版宿主）按直方图同款处理，
+                    // 不替对方说一句没依据的话，也不发一个可能永远失败的请求。
+                    isDocker ? null : jsxs('div', {
+                      className: 'll_groupGrid',
+                      children: [
+                        jsx('input', {
+                          className: 'll_input',
+                          list: fieldsListRef.current,
+                          title: t('field.groupBy'),
+                          placeholder: t('placeholder.groupBy'),
+                          value: groupBy,
+                          disabled: saving || querying || grouping,
+                          onChange: (event) => { setGroupBy(event.target.value) },
+                        }),
+                        jsx('button', {
+                          type: 'button',
+                          className: 'll_btnGhost',
+                          disabled: saving || querying || fieldsBusy || selectedDraft === undefined,
+                          onClick: () => { loadFields() },
+                          children: fieldsBusy ? t('btn.fieldsLoading') : t('btn.fields'),
+                        }),
+                        jsx('button', {
+                          type: 'button',
+                          className: 'll_btnGhost',
+                          disabled: saving || querying || grouping || outcome === undefined || supportsAggregation(outcome) !== true,
+                          onClick: () => { runGroups() },
+                          children: grouping ? t('btn.grouping') : t('btn.group'),
+                        }),
+                        // datalist 不被渲染（UA 样式表里是 display:none），所以它不占这一行的格子
+                        jsx('datalist', {
+                          id: fieldsListRef.current,
+                          children: fields.map((field) => jsx('option', { value: field.name }, 'll-field-' + field.name)),
+                        }),
+                        fieldsNote === '' ? null : jsx('span', { className: 'll_hint', children: fieldsNote }),
+                      ],
+                    }),
                     isDocker ? jsxs('div', {
                       className: 'll_queryGrid',
                       children: [
@@ -1296,9 +1559,10 @@ window.__ModuleLoader__.load({
                     }) : null,
                     // 时间分布：拿不到就把那句话说出来（不动结果列表），**不支持**就说清不支持，
                     // **不知道**（宿主没给 capabilities）什么都不说——「不知道 ≠ 不支持」。
+                    // 两句聚合（分布 / 榜）共用这一句「不支持」：它们是同一个能力，说两遍只是噪音。
                     isDocker || outcome === undefined ? null : histogram === undefined
                       ? (supportsAggregation(outcome) === false
-                        ? jsx('p', { className: 'll_hint', children: t('hint.histogramUnsupported') })
+                        ? jsx('p', { className: 'll_hint', children: t('hint.aggregationUnsupported') })
                         : null)
                       : (histogram.error === undefined ? jsxs('div', {
                         className: 'll_hist',
@@ -1326,6 +1590,46 @@ window.__ModuleLoader__.load({
                           jsx('p', { className: 'll_hint', children: t('hint.histogram') }),
                         ],
                       }) : jsx('p', { className: 'll_warn', children: t('error.histogram', { message: histogram.error }) })),
+                    // 按字段分组（terms 榜）：与直方图同一片地方、同一套诚实收尾（见 loadGroups）。
+                    // 标题回显 **groups.by**（这一次真正用的字段），不是输入框里的此刻值。
+                    isDocker || outcome === undefined || groups === undefined ? null : (groups.error === undefined ? jsxs('div', {
+                      className: 'll_groups',
+                      children: [
+                        jsxs('div', {
+                          className: 'll_groupHead',
+                          children: [
+                            jsx('span', { className: 'll_groupTitle', children: t('panel.groups') }),
+                            jsx('span', { children: groups.by }),
+                            groups.truncated ? jsx('span', { className: 'll_warn', children: t('hint.groupsTruncated') }) : null,
+                            // warnings 是宿主对这次聚合的说明（「还有 N 条落在没列出来的桶里」「计数是近似值」）
+                            // ——**照抄**：agent 工具看得到的东西，面板也得看得到
+                            ...groups.warnings.map((text, at) => jsx('span', { className: 'll_warn', children: text }, 'll-group-warn-' + String(at))),
+                          ],
+                        }),
+                        groups.bars.length === 0 ? jsx('div', { className: 'll_empty', children: t('list.noBuckets') }) : jsx('div', {
+                          className: 'll_groupRows',
+                          children: groups.bars.map((bar, at) => jsxs('div', {
+                            className: 'll_groupRow',
+                            children: [
+                              jsx('span', {
+                                className: bar.blank ? 'll_groupKey ll_groupKeyBlank' : 'll_groupKey',
+                                children: bar.blank ? t('meta.groupsBlankKey') : bar.key,
+                              }),
+                              jsx('span', { className: 'll_groupCount', children: t('meta.groupsCount', { count: bar.count }) }),
+                              // 条的宽度是**内联** style（每条都不一样，写不进类里）；空值键也给一条 2% 的底座
+                              jsx('div', {
+                                className: 'll_groupTrack',
+                                children: jsx('div', {
+                                  className: 'll_groupFill',
+                                  style: { width: String(Math.max(bar.ratio * 100, 2)) + '%' },
+                                }),
+                              }),
+                            ],
+                          }, 'll-group-' + String(at))),
+                        }),
+                        jsx('p', { className: 'll_hint', children: t('hint.groups') }),
+                      ],
+                    }) : jsx('p', { className: 'll_warn', children: t('error.groups', { message: groups.error }) })),
                     outcome !== undefined && lines.length === 0 && !isDocker ? jsx('div', { className: 'll_empty', children: t('list.noHit') }) : null,
                     cursor === undefined || isDocker ? null : jsx('button', {
                       type: 'button',

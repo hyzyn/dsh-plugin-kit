@@ -237,13 +237,14 @@ export function supportsAggregation(payload) {
 }
 
 /**
- * 请求载荷：**窗口取响应回显的那一份**，不是面板请求的那一份。
+ * `/facets` 载荷的公共部分（**两份聚合载荷共用**，别各自再抄一遍窗口判据）。
  *
- * 宿主可能兜底过（只给一端时补 15 分钟）或按来源上限收窄过；用回显的那份才对得上
- * 「这次查询实际查的是什么」——否则分布会画在一个跟结果列表不同的窗口上。
- * 回显不完整（不是数）时回 `null`：让界面**不发这个请求**，而不是发一个畸形的。
+ * 窗口取**响应回显的那一份**，不是面板请求的那一份：宿主可能兜底过（只给一端时补 15 分钟）
+ * 或按来源上限收窄过；用回显的才对得上「这次查询实际查的是什么」——否则聚合会画在一个跟
+ * 结果列表不同的窗口上。回显不完整（不是数）时回 `null`：让界面**不发这个请求**，
+ * 而不是发一个畸形的。
  */
-export function histogramPayload(draft, outcome, intervalKey) {
+function facetsEnvelope(draft, outcome) {
   const echoed = outcome !== null && typeof outcome === 'object' && outcome.window !== null && typeof outcome.window === 'object' ? outcome.window : {}
   const target = outcome !== null && typeof outcome === 'object' && outcome.target !== null && typeof outcome.target === 'object' ? outcome.target : {}
   if (typeof target.id !== 'string' || target.id === '') return null
@@ -253,8 +254,14 @@ export function histogramPayload(draft, outcome, intervalKey) {
     q: String(draft == null || draft.q == null ? '' : draft.q),
     from: echoed.from,
     to: echoed.to,
-    interval: intervalKey,
   }
+}
+
+/** 时间分布的请求载荷（窗口 + 间隔）。 */
+export function histogramPayload(draft, outcome, intervalKey) {
+  const envelope = facetsEnvelope(draft, outcome)
+  if (envelope === null) return null
+  return { ...envelope, interval: intervalKey }
 }
 
 /**
@@ -297,6 +304,66 @@ export function histogramBars(overTime, from, to, intervalMs) {
   }
   for (const bar of bars) bar.ratio = max === 0 ? 0 : bar.count / max
   return { bars, max, total, truncated: wanted > cap }
+}
+
+/* ============================ 按字段分组（terms 榜，P6 第二格） ============================ */
+
+/**
+ * 榜与直方图是**同一件事的两种切法**（都只能来自后端聚合，不许数页面上的行——判据见上面
+ * `histogramBars` 的函数头）。这一格补的是 agent 那句话里真正的问题：「**哪个服务在报错**」——
+ * 光拉一页行答不出来，得先分组再排。
+ *
+ * 本层只做三件事：把字段名洗干净、按响应回显的窗口拼载荷、把后端的桶铺成横条。
+ * **size 不由面板传**（用后端的默认值），所以这里也不写死「前十」这类数字——那是后端的事。
+ */
+
+/** 横条上限（纯兜底）：面板不传 size，桶数由后端默认值与宿主硬上限（100）管；畸形输入才可能触到。 */
+const GROUP_MAX_BARS = 50
+
+/** 分组字段能不能提交：空串表示可以，否则是 i18n 键名后缀（needGroupBy）。 */
+export function groupProblem(field) {
+  return String(field == null ? '' : field).trim() === '' ? 'needGroupBy' : ''
+}
+
+/**
+ * 分组的请求载荷（窗口同 `histogramPayload`，取响应回显的那一份）。
+ * 字段为空、或回显不完整 → `null`：界面**不发这个请求**。
+ */
+export function groupPayload(draft, outcome, by) {
+  const field = String(by == null ? '' : by).trim()
+  if (field === '') return null
+  const envelope = facetsEnvelope(draft, outcome)
+  if (envelope === null) return null
+  return { ...envelope, by: field }
+}
+
+/**
+ * 把后端的 terms 桶铺成一根根横条。
+ *
+ * 三条判据：
+ *
+ * - **保持后端给的顺序**（契约就是按 count 降序，见 src/backends/types.ts）：这里再排一次，
+ *   等于把「后端顺序不对」这回事盖掉——榜的顺序就是结论本身，不该由前端悄悄改写。
+ * - **不写合计**：列出来的桶加起来**不是**命中总数（没列出来的在 `otherCount` 里，由宿主用
+ *   警告原话回报，面板照抄）。写一个「部分之和」会被读成「这个窗口一共这么多」。
+ * - **空值键要标出来**：文档缺这个字段时 ES 给的 key 是空串——直接画出来是一条没有名字的横条，
+ *   看起来像渲染丢了东西。标成空白键，由界面给一句「（空值）」。
+ */
+export function groupBars(buckets) {
+  const rows = []
+  let max = 0
+  for (const bucket of Array.isArray(buckets) ? buckets : []) {
+    if (bucket == null || typeof bucket.key !== 'string' || !Number.isFinite(bucket.count)) continue
+    if (bucket.count > max) max = bucket.count
+    rows.push({ key: bucket.key, count: bucket.count })
+  }
+  const truncated = rows.length > GROUP_MAX_BARS
+  const kept = truncated ? rows.slice(0, GROUP_MAX_BARS) : rows
+  for (const row of kept) {
+    row.blank = row.key.trim() === ''
+    row.ratio = max === 0 ? 0 : row.count / max
+  }
+  return { bars: kept, max, truncated }
 }
 
 /* ============================ Docker 目标（P6 面板半格，选项 0） ============================ */

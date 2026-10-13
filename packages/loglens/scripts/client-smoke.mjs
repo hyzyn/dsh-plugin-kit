@@ -416,8 +416,16 @@ function queryOutcome(target, aggregations) {
   }
 }
 
-/** 打开卡片 → 选来源 → 点「查询」（三条分布用例共用这一串动作），返回最终渲染树。 */
-async function runPanelQuery(targetId) {
+/** 按文案找按钮（按钮文字就是 t('btn.*') 的中文兜底）。 */
+function buttonByText(tree, text) {
+  return treeFind(tree, (node) => node.type === 'button' && treeText(node) === text)[0]
+}
+
+/**
+ * 打开卡片 → 选来源 →（可选：填分组字段）→（默认）点「查询」；返回 `{ runtime, tree }`。
+ * 需要自己接着点的用例把 `skipQuery` 打开（例如先点「有哪些字段」再点「分组」）。
+ */
+async function runPanelQueryFull(targetId, options = {}) {
   const runtime = createRuntime()
   const exports_ = registration.factory((spec) => (spec === 'react' ? runtime.React : { jsx: runtime.jsx, jsxs: runtime.jsxs }))
   const { ctx, state } = makeClientCtx()
@@ -436,13 +444,27 @@ async function runPanelQuery(targetId) {
   targetSelect.props.onChange({ target: { value: targetId } })
   runtime.tick()
   tree = await runtime.update()
-  const queryBtn = treeFind(tree, (node) => node.type === 'button'
-    && String(node.props?.className ?? '') === 'll_btn' && treeText(node) === '查询')[0]
+  // 分组字段：占位符是语法示例（不翻），所以按它找得到那个输入框
+  if (typeof options.groupBy === 'string') {
+    const fieldBox = treeFind(tree, (node) => node.type === 'input' && node.props?.placeholder === 'container.name')[0]
+    assert.ok(fieldBox !== undefined, '找不到「分组字段」输入框')
+    fieldBox.props.onChange({ target: { value: options.groupBy } })
+    runtime.tick()
+    tree = await runtime.update()
+  }
+  if (options.skipQuery === true) return { runtime, tree }
+  const queryBtn = buttonByText(tree, '查询')
   assert.ok(queryBtn !== undefined, '找不到「查询」按钮')
   queryBtn.props.onClick()
   await runtime.update()
   await runtime.update()
-  return runtime.update()
+  return { runtime, tree: await runtime.update() }
+}
+
+/** 只要最终渲染树的用例（分布那几条用这个）。 */
+async function runPanelQuery(targetId, options = {}) {
+  const { tree } = await runPanelQueryFull(targetId, options)
+  return tree
 }
 
 await test('时间分布：有聚合能力的来源，按窗口画柱子，**空档补 0**（相邻两根不挨在一起）', async () => {
@@ -514,6 +536,137 @@ await test('时间分布：宿主**没给** capabilities（不知道）时什么
   const text = treeText(tree)
   assert.equal(text.includes('不支持聚合'), false, '缺字段不是「不支持」——不知道就什么都不说')
   assert.equal(treeFind(tree, (node) => String(node.props?.className ?? '').startsWith('ll_histBar')).length, 0, '不知道也不该画')
+})
+
+/* ------------------------------------------------------------------ *
+ * 按字段分组（terms 榜）：能力自述 + 字段名决定发不发，画出来的条与警告都要对得上
+ * ------------------------------------------------------------------ */
+
+/** 带 by 的聚合响应（榜）与不带的（分布）走同一条 /facets——桩按请求体分流。 */
+function facetsRoute(bySpec, overTimeSpec) {
+  return (body) => (body.by === undefined ? overTimeSpec : bySpec)
+}
+
+const HIST_OK = { ok: true, overTime: [{ ts: 0, count: 3 }], warnings: [] }
+
+await test('按字段分组：填了字段就按**回显窗口**拉 terms 榜，条数 / 条宽 / 空值键 / 警告都对得上', async () => {
+  serverRoutes = {
+    '/api/dsh-loglens/query': queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true),
+    '/api/dsh-loglens/facets': facetsRoute({
+      ok: true,
+      buckets: [{ key: 'app-svc-1', count: 8 }, { key: 'app-svc-2', count: 4 }, { key: '', count: 2 }],
+      otherCount: 3,
+      warnings: ['还有 3 条落在没列出来的桶里：把 size 调大'],
+    }, HIST_OK),
+  }
+  const tree = await runPanelQuery('es', { groupBy: 'container.name' })
+
+  const byCalls = calls.filter((call) => call.path === '/api/dsh-loglens/facets' && call.body.by !== undefined)
+  assert.equal(byCalls.length, 1, '该拉一次榜：' + JSON.stringify(calls))
+  assert.equal(byCalls[0].body.by, 'container.name')
+  assert.equal(byCalls[0].body.from, 0, '窗口必须用宿主**回显**的那一份')
+  assert.equal(byCalls[0].body.to, 900_000, '窗口必须用宿主**回显**的那一份')
+  assert.equal('size' in byCalls[0].body, false, 'size 不传：桶数上限是后端的事，面板不写死「前十」')
+
+  const text = treeText(tree)
+  assert.ok(text.includes('按字段分组'), '缺少小节名：' + text.slice(0, 200))
+  assert.ok(text.includes('container.name'), '榜要看得出「按什么分的」')
+  assert.ok(text.includes('app-svc-1'), '缺了排名里的键名')
+  assert.ok(text.includes('8 条'), '缺了条数')
+  assert.ok(text.includes('（空值）'), '空值键要给一句人话，不然是一条没有名字的横条')
+  assert.ok(text.includes('还有 3 条落在没列出来的桶里'), '宿主的警告要照抄——agent 看得到的东西，面板也得看得到')
+
+  const fills = treeFind(tree, (node) => String(node.props?.className ?? '') === 'll_groupFill')
+  assert.equal(fills.length, 3, '三个桶就该有三条横条，实得 ' + String(fills.length))
+  assert.equal(fills[0].props.style.width, '100%', '最大的桶该铺满')
+  assert.equal(fills[1].props.style.width, '50%')
+  assert.equal(fills[2].props.style.width, '25%')
+  // 「不写合计」：列出来的桶加起来不是命中总数（没列出来的那条在宿主的警告里）
+  assert.equal(text.includes('共 14 条'), false, '不许把「列出来的桶之和」写成合计')
+})
+
+await test('按字段分组：Loki（聚合为假）填了字段也**不发、不画**，一句话说清为什么', async () => {
+  serverRoutes = {
+    '/api/dsh-loglens/query': queryOutcome({ id: 'local', kind: 'loki', label: '本地 Loki' }, false),
+    '/api/dsh-loglens/facets': facetsRoute({ ok: true, buckets: [{ key: 'x', count: 9 }], warnings: [] }, HIST_OK),
+  }
+  const tree = await runPanelQuery('local', { groupBy: 'container.name' })
+
+  assert.equal(calls.some((call) => call.path === '/api/dsh-loglens/facets'), false,
+    '不支持聚合却还是发了请求（白跑一趟，而且可能是个永远失败的入口）')
+  assert.equal(treeFind(tree, (node) => String(node.props?.className ?? '') === 'll_groupFill').length, 0, '不该画出横条')
+  const text = treeText(tree)
+  assert.ok(text.includes('当前来源不支持聚合'), '该把「为什么没有」写在明面上')
+  assert.ok(text.includes('时间分布与分组榜'), '两句聚合共用一句话，别在界面上说两遍')
+  assert.equal(buttonByText(tree, '分组').props.disabled, true, '不支持的来源，「分组」该是灰的')
+})
+
+await test('按字段分组：拉不到时只说那一句，**结果列表不受影响**（榜也是附加信息）', async () => {
+  serverRoutes = {
+    '/api/dsh-loglens/query': queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true),
+    '/api/dsh-loglens/facets': facetsRoute({ ok: false, status: 400, body: { error: 'boom-group' } }, HIST_OK),
+  }
+  const tree = await runPanelQuery('es', { groupBy: 'container.name' })
+
+  const text = treeText(tree)
+  assert.ok(text.includes('分组取不到：boom-group'), '该把宿主那句话显示出来，实得：' + text.slice(0, 300))
+  assert.ok(text.includes('boot'), '榜失败不该把已经拿到的结果列表也带走')
+  assert.equal(treeFind(tree, (node) => String(node.props?.className ?? '') === 'll_groupFill').length, 0, '失败时不该画半张榜')
+})
+
+await test('按字段分组：**没填字段就不发**；点「分组」给一句「先填字段」，不是静默无操作', async () => {
+  serverRoutes = {
+    '/api/dsh-loglens/query': queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true),
+    '/api/dsh-loglens/facets': facetsRoute({ ok: true, buckets: [{ key: 'x', count: 9 }], warnings: [] }, HIST_OK),
+  }
+  const { runtime, tree } = await runPanelQueryFull('es')
+  assert.equal(calls.some((call) => call.path === '/api/dsh-loglens/facets' && call.body.by !== undefined), false,
+    '没填分组字段，查询时不该顺手拉一个没有字段的榜')
+
+  const groupBtn = buttonByText(tree, '分组')
+  assert.ok(groupBtn !== undefined, '找不到「分组」按钮')
+  assert.equal(groupBtn.props.disabled, false, '能力支持、只是没填字段——按钮该能点，点了给提示')
+  groupBtn.props.onClick()
+  await runtime.update()
+  await runtime.update()
+
+  assert.equal(calls.some((call) => call.path === '/api/dsh-loglens/facets' && call.body.by !== undefined), false,
+    '字段为空不许发请求（一个没有字段的聚合请求只会拿到后端的报错）')
+  assert.ok(treeText(runtime.tree).includes('先填要分组的字段'), '该给一句「先填字段」')
+})
+
+await test('「有哪些字段」：拉一次 /fields 把候选填进 datalist（不传 limit，用宿主的默认值）', async () => {
+  serverRoutes = {
+    '/api/dsh-loglens/fields': {
+      ok: true,
+      fields: [{ name: 'container.name', kind: 'keyword', preferred: true }, { name: 'host.name', kind: 'keyword' }],
+      total: 2,
+      truncated: false,
+      warnings: [],
+    },
+  }
+  const { runtime, tree } = await runPanelQueryFull('es', { skipQuery: true })
+  const fieldsBtn = buttonByText(tree, '有哪些字段')
+  assert.ok(fieldsBtn !== undefined, '找不到「有哪些字段」按钮')
+  fieldsBtn.props.onClick()
+  await runtime.update()
+  await runtime.update()
+  const after = runtime.tree
+
+  const call = calls.find((item) => item.path === '/api/dsh-loglens/fields')
+  assert.ok(call !== undefined, '没打 /fields：' + JSON.stringify(calls))
+  assert.equal(call.body.target, 'es')
+  assert.equal('limit' in call.body, false, 'limit 不传：用宿主自己的默认值，别在浏览器侧抄一份会漂的')
+
+  const options = treeFind(after, (node) => node.type === 'option').filter((node) => node.props?.value === 'container.name' || node.props?.value === 'host.name')
+  assert.equal(options.length, 2, '两个字段名都该成为候选')
+  // 输入框的 list 必须指向**本卡自己的**那个 datalist（写死 id 时，后一张卡会指向先一张的）
+  const fieldBox = treeFind(after, (node) => node.type === 'input' && node.props?.placeholder === 'container.name')[0]
+  assert.equal(typeof fieldBox.props.list, 'string')
+  assert.ok(fieldBox.props.list !== '', 'list 指向一个空 id')
+  assert.ok(treeFind(after, (node) => node.type === 'datalist' && node.props?.id === fieldBox.props.list)[0] !== undefined,
+    '输入框的 list 必须指向一个真的存在的 datalist（id 为 ' + String(fieldBox.props.list) + '）')
+  assert.ok(treeText(after).includes('字段清单 2 个'), '该回一句「拉到了什么」，否则点了像没反应')
 })
 
 /* ------------------------------------------------------------------ *
