@@ -146,11 +146,11 @@ dsh plugin --profile web add link:$(pwd)/packages/tty   # 仓库开发调试
 - **端到端覆盖（0.19.0）**：`scripts/windows-smoke.mjs` 在 CI 的 windows-latest 上跑真实 `cmd.exe`
   的 spawn → 输入回显 → kill → 重开，外加两条只在真机上成立的链路（W6：`tty_send` 的裸 LF 经归一化
   后 conhost 真的执行了命令，D74；W7：`command` 型会话跑完退出后转只读保留、`tty_capture` 仍读得到
-  退出前的输出，D77）。**W8（PowerShell 的 OSC 133/7 档）在 CI 上默认跳过**：那条 runner 上
-  「杀一个 ConPTY 会话」会踩已知原生崩溃 `0xC0000374`，红的是 flake 而不是断言；它由**真机车道**
-  守——`DSH_TTY_SMOKE_W8=1 pnpm --filter @hyzyn/dsh-tty windows-smoke`，跳过的档在结果里单列
-  `SKIP` 并点名（分母扣掉，不许装成 `12/12`）。原因、实测与复现配方见
-  [ROADMAP.md](./ROADMAP.md) 那条 `0xC0000374` 条目。它抓出并钉住了「强杀本地 PTY 会崩宿主」这类只在 Windows
+  退出前的输出，D77）。**W8（PowerShell 的 OSC 133/7 档）在 CI 上照常跑**（2026-10-13 起）：
+  它此前只在真机车道守，是因为「杀一个 ConPTY 会话」会踩 `0xC0000374`——根因（同一个 PTY 被原生
+  `kill()` 两次）已定位并修好，见 [DEFECTS.md](./DEFECTS.md) 的 **D100** 与
+  [ROADMAP.md](./ROADMAP.md) 的 2026-10-13 一节；本机找不到 PowerShell 时它会如实进 `SKIP` 一档
+  （分母扣掉、汇总行点名，不许装成 `12/12`）。它抓出并钉住了「强杀本地 PTY 会崩宿主」这类只在 Windows
   出现的问题——node-pty 在 Windows 上不接受 signal，而它的 `_deferNoArgs` 会把这个异常推迟到
   socket 回调里抛出，调用方的 try/catch 拦不住。
 

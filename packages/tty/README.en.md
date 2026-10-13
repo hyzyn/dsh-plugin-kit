@@ -166,12 +166,12 @@ Both were reproduced on **Windows 11 ARM (24H2) + Node 22 ARM64**. The fix:
   spawn → input echo → kill → respawn on the CI windows-latest runner, plus two links that only hold on
   a real machine (W6: after normalisation a bare LF really does submit in conhost, D74; W7: a `command`
   session that exits turns into read-only retention and `tty_capture` still reads its pre-exit output, D77).
-  **W8 (the PowerShell OSC 133/7 stage) is skipped on CI by default**: on that runner killing a ConPTY
-  session trips a known native crash (`0xC0000374`), so what goes red is a flake rather than an assertion;
-  the stage is guarded by the **real-machine lane** instead —
-  `DSH_TTY_SMOKE_W8=1 pnpm --filter @hyzyn/dsh-tty windows-smoke` — and a skipped stage is reported as its
-  own `SKIP` row (excluded from the denominator, never dressed up as `12/12`). Reasons, measurements and a
-  repro recipe live in the `0xC0000374` entry of [ROADMAP.md](./ROADMAP.md). It caught and now pins a
+  **W8 (the PowerShell OSC 133/7 stage) runs on CI** (since 2026-10-13): it used to be guarded by the
+  **real-machine lane** only, because killing a ConPTY session there tripped `0xC0000374` — the root cause
+  (the same PTY being natively `kill()`ed twice) is now located and fixed, see **D100** in
+  [DEFECTS.md](./DEFECTS.md) and the 2026-10-13 section of [ROADMAP.md](./ROADMAP.md). Where no PowerShell
+  exists the stage honestly reports its own `SKIP` row (excluded from the denominator, never dressed up as
+  `12/12`). It caught and now pins a
   Windows-only failure class: force-killing a local PTY crashed the host — node-pty rejects signals
   on Windows, and its `_deferNoArgs` re-throws that error from a socket callback, where the caller’s
   try/catch cannot see it.

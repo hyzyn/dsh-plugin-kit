@@ -86,7 +86,7 @@ process.on('exit', (code) => {
 const RESULTS = []
 function pass(label) { RESULTS.push(['PASS', label]); console.log('  ✔ PASS  ' + label) }
 function fail(label, detail) { RESULTS.push(['FAIL', label, detail]); console.error('  ✘ FAIL  ' + label + (detail ? ' — ' + detail : '')) }
-/** SKIP 单列一档：**不许混进 PASS 计数**，否则「跳过」会伪装成 12/12（见 W8 的 CI 闸门）。 */
+/** SKIP 单列一档：**不许混进 PASS 计数**，否则「跳过」会伪装成 12/12（W8 在本机没有 PowerShell 时走这条）。 */
 function skip(label) { RESULTS.push(['SKIP', label]); console.log('  ⏭  SKIP  ' + label) }
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -368,24 +368,18 @@ async function run() {
   // 或晚到只有真机才看得出。另起一个 app 实例是为了改 shell 配置：W1–W7 必须保持真实的
   // `%COMSPEC%` 链路（它们钉的正是「没有 POSIX 包装层、跑的就是 cmd.exe」）。
   //
-  // **CI 上默认跳过这一档**（`DSH_TTY_SMOKE_W8=1` 可强制打开）：GitHub 的 Windows runner
-  // （windows-2025，镜像与历史全绿的那几天一致）上，只要脚本里带着 W8 这段代码，
-  // `windows-smoke` 就几乎必崩 `0xC0000374`（堆损坏，崩点在「杀一个 ConPTY 会话」的边界上）。
-  // 2026-10-12 实测：含 W8 的树 CI 上 **10/10 崩**、不含 W8 的树 1/3 崩；main 历史上（无 W8）
-  // 8/10 绿。**这一档不是没验**——Windows 11 + Windows PowerShell 5.1 真机上 9 次
-  // `12/12 PASS`、CI（PowerShell 7）也验过 W8a/W8b 能过；只是**不适合挂在会必崩的 runner 上**，
-  // 因为红的是 flake 而不是断言，久了没人看。改用**真机车道**守它：`DSH_TTY_SMOKE_W8=1
-  // pnpm --filter @hyzyn/dsh-tty windows-smoke`。细节与复现配方见 packages/tty/ROADMAP.md
-  // 那条 `0xC0000374` 条目——动这里之前先读它。
-  const skipW8OnCi = process.env.DSH_TTY_SMOKE_W8 !== '1' && process.env.CI === 'true'
+  // **不再按 CI 跳过**（2026-10-13）：2026-10-12 那版「CI 上默认跳过 W8」是**绕开**当时未定性的
+  // `0xC0000374`，而根因已经定位并修好（同一个 PTY 被两个调用方各原生 kill 一次 → 见
+  // packages/tty/DEFECTS.md 的 D100 / ROADMAP 的 2026-10-13 一节）。装上闸门后真机（Win11 ARM64）
+  // 强制带 W8 连跑 6 轮全部 `12/12 PASS`。**动这里之前先读那条**：它记着当时的崩点分布与 A/B。
   console.log('\n[W8] PowerShell + shell 集成（OSC 133/7）')
   tracer.enter('W8 PowerShell 集成')
-  if (skipW8OnCi) {
-    skip('W8 PowerShell shell 集成（CI 环境按设计跳过：见 packages/tty/ROADMAP.md 的 0xC0000374）')
-  } else try {
+  try {
     const shellPath = resolvePowerShell()
     if (shellPath === null) {
-      console.log('  （跳过）本机没找到 pwsh.exe / powershell.exe')
+      // 本机没有 PowerShell：这是**真跳过**（不是「按设计绕过」），如实进 SKIP 一档——
+      // 分母扣掉它、汇总行点名，不许装成 12/12。
+      skip('W8 PowerShell shell 集成（本机没找到 pwsh.exe / powershell.exe）')
     } else {
       const app2 = new Context()
       const ws2Fiber = app2.plugin(WebServerRuntime, { host: '127.0.0.1', port: 0 })
