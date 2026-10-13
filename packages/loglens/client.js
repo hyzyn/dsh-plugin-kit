@@ -788,6 +788,7 @@ window.__ModuleLoader__.load({
       'hint.docker': '容器日志走的是 Docker 面板插件自己的 /api/dsh-docker/logs：这条路没有 until、行数有上限、没有 grep——要精确检索请让 agent 用 docker_logs_grep。',
       'hint.dockerMissing': '这条路径要「Docker 容器面板」插件（当前没检测到它）：装上并启用后，这里可以直接看容器日志。',
       'error.needContainer': '先选一个容器',
+      'option.pickTarget': '（先选一个来源）',
       'option.dockerAuto': '（让 Docker 面板自己回落）',
       'btn.logsLoading': '加载中…',
       'list.noLogs': '没有日志（换个大点的时间窗或行数再试）',
@@ -893,6 +894,7 @@ window.__ModuleLoader__.load({
       'hint.docker': 'Container logs come from the Docker panel plugin own /api/dsh-docker/logs: no until, a capped tail, and no grep — ask the agent for docker_logs_grep when you need real search.',
       'hint.dockerMissing': 'This path needs the Docker container panel plugin (not detected): install and enable it to read container logs here.',
       'error.needContainer': 'Pick a container first',
+      'option.pickTarget': '(pick a source)',
       'option.dockerAuto': '(let the Docker panel pick)',
       'btn.logsLoading': 'Loading…',
       'list.noLogs': 'No logs (try a wider time window or a larger tail)',
@@ -1213,7 +1215,10 @@ window.__ModuleLoader__.load({
        */
       const runQuery = async (append, override) => {
         const draft = override === undefined ? query : override
-        const problem = queryProblem(draft, drafts.length)
+        // 来源用**回落之后**的那一项（render 里的 chosenTarget），与下拉显示的那个逐字相同：
+        // 于是「选中的来源被删掉」时，这里回的是「先选一个来源」，而不是打一个已经不存在的 id。
+        const effective = { ...draft, target: chosenTarget }
+        const problem = queryProblem(effective, drafts.length)
         if (problem !== '') {
           setError(problem === 'needTarget' ? t('error.needTarget') : t('error.badLimit'))
           return
@@ -1222,7 +1227,7 @@ window.__ModuleLoader__.load({
         setError('')
         setOk('')
         try {
-          const payload = queryPayload(draft, drafts, Date.now())
+          const payload = queryPayload(effective, drafts, Date.now())
           if (append && cursor !== undefined) payload.cursor = cursor
           const data = await api('/api/dsh-loglens/query', {
             method: 'POST',
@@ -1233,7 +1238,7 @@ window.__ModuleLoader__.load({
           setLines((current) => (append ? appendLines(current, data.lines) : data.lines))
           setCursor(typeof data.nextCursor === 'string' ? data.nextCursor : undefined)
           // 两份聚合并行（互不依赖）：分布与榜都是附加信息，谁拿不到都不该拖住结果列表
-          await Promise.all([loadHistogram(data, append, draft), loadGroups(data, append, draft)])
+          await Promise.all([loadHistogram(data, append, effective), loadGroups(data, append, effective)])
         } catch (err) {
           setError(err.message)
         } finally {
@@ -1394,6 +1399,20 @@ window.__ModuleLoader__.load({
         ? (drafts.length === 1 ? drafts[0] : undefined)
         : drafts.find((draft) => draft.id === query.target)
       const isDocker = selectedDraft !== undefined && selectedDraft.kind === 'docker'
+      /*
+       * 「来源」下拉显示的那一项 = 这次查询**真正会用的**那一项（同一个判据，不是第二份）。
+       *
+       * `query.target` 在刚进卡片时是空串，而 `<select value="">` 没有一个 value 为空串的选项时，
+       * 浏览器会**回落显示第一项**——于是下拉写着「161（Docker）」，面板其余部分却按「没选来源」走：
+       * `isDocker` 为假（该画容器日志区却画了普通查询行）、分组那两个按钮是灰的、点「查询」回一句
+       * 「先选一个来源」。三处症状一个根因：**显示的那一项与实际用的那一项不是同一个判断**
+       * （loglens D04，见 DEFECTS.md：说的和画的不一样）。所以加一个空 value 的占位项，并让下拉跟着它走。
+       *
+       * 顺带兜住同源的另一个边：**选中的来源被删掉之后**，`query.target` 还留着那个已经不存在的 id。
+       * `selectedDraft` 会回落（只有一个来源就回落它，否则没有），下拉与请求必须一起回落——否则会出现
+       * 「下拉写着没选、请求却打一个已经不存在的 id」。
+       */
+      const chosenTarget = selectedDraft === undefined ? '' : selectedDraft.id
       // 当前生效的筛选（芯片那一行、榜上「正在按它下钻」的高亮都用它）
       const activeFilters = Array.isArray(query.filters) ? query.filters : []
 
@@ -1571,10 +1590,17 @@ window.__ModuleLoader__.load({
                         jsx('select', {
                           className: 'll_input',
                           title: t('field.target'),
-                          value: query.target,
+                          // 显示的那一项 = 真正会用的那一项（见 render 里的 chosenTarget）：
+                          // 都没选时 value 是空串，由下面那个占位项把它显示成「（先选一个来源）」
+                          value: chosenTarget,
                           disabled: saving || querying || dockerBusy,
                           onChange: (event) => { setQuery((current) => ({ ...current, target: event.target.value })) },
-                          children: drafts.map((draft) => jsx('option', { value: draft.id, children: draft.label === '' ? draft.id : draft.label }, draft.id)),
+                          children: [
+                            // 占位项：value 空、且不可选——它就是「还没选」这句话本身（loglens D04）。
+                            // 少了它，浏览器会把第一项画成已选（一个源码里看不见的谎）。
+                            jsx('option', { value: '', disabled: true, children: t('option.pickTarget') }, 'll-target-none'),
+                            ...drafts.map((draft) => jsx('option', { value: draft.id, children: draft.label === '' ? draft.id : draft.label }, draft.id)),
+                          ],
                         }),
                         isDocker ? null : jsx('input', {
                           className: 'll_input',

@@ -369,6 +369,89 @@ await test('设置卡片渲染：来源行四格齐、ES 行多一个索引表�
   return tree
 })
 
+await test('刚进卡片（几个来源、还没选）：「来源」下拉显示占位项，不许把第一项画成已选', async () => {
+  // 真机（用户第一眼）就是这么发现的：下拉写着「161（Docker）」——面板其余部分却按「没选来源」走
+  // （不画容器日志区、分组按钮是灰的、点「查询」回一句「先选一个来源」）。三处症状一个根因：
+  // 显示的那一项与实际用的那一项不是同一个判断。
+  serverRoutes = { '/api/dsh-loglens/query': queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true) }
+  const { runtime, tree } = await runPanelQueryFull('es', { skipTarget: true })
+
+  const select = treeFind(tree, (node) => node.type === 'select'
+    && Array.isArray(node.props?.children)
+    && node.props.children.some((child) => child?.props?.value === 'es'))[0]
+  assert.ok(select !== undefined, '找不到「来源」下拉')
+  assert.equal(select.props.value, '', '还没选来源时下拉的 value 必须是空：写成第一项的 id 就是替用户挑了一个来源')
+  const first = select.props.children[0]
+  assert.equal(first.props.value, '', '第一项该是那个空 value 的占位项')
+  assert.equal(first.props.disabled, true, '占位项不可选——它就是「还没选」这句话本身')
+  assert.ok(treeText(select).includes('先选一个来源'), '占位项要写着人话，别是一个白板项')
+
+  // 这一眼看到的按钮状态得跟下拉一致
+  assert.equal(buttonByText(tree, '有哪些字段').props.disabled, true, '没选来源时它是灰的（与下拉显示的一致）')
+
+  calls.length = 0
+  buttonByText(tree, '查询').props.onClick()
+  await runtime.update()
+  assert.equal(calls.some((call) => call.path === '/api/dsh-loglens/query'), false, '没选来源不许发查询')
+  assert.ok(treeText(runtime.tree).includes('先选一个来源'), '该说清为什么点不动，而不是静默按下拉里看到的那一项去查')
+})
+
+await test('只有一个来源时：「来源」下拉就显示它（与请求里真正用的那一项逐字相同）', async () => {
+  const backup = serverConfig
+  serverRoutes = { '/api/dsh-loglens/query': queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, false) }
+  try {
+    serverConfig = { enabled: true, targets: [backup.targets[0]] }
+    const { runtime, tree } = await runPanelQueryFull('es', { skipTarget: true })
+
+    const select = treeFind(tree, (node) => node.type === 'select'
+      && Array.isArray(node.props?.children)
+      && node.props.children.some((child) => child?.props?.value === 'es'))[0]
+    assert.equal(select.props.value, 'es', '只有一个来源时该回落显示它（queryProblem / queryPayload 也是这么回落的）')
+
+    calls.length = 0
+    buttonByText(tree, '查询').props.onClick()
+    await runtime.update()
+    await runtime.update()
+    const query = calls.find((call) => call.path === '/api/dsh-loglens/query')
+    assert.ok(query !== undefined, '只有一个来源时不选也能直接查（面板与宿主都是这条判据）')
+    assert.equal(query.body.target, 'es', '请求里的来源必须与下拉显示的那一项逐字相同')
+  } finally {
+    serverConfig = backup
+  }
+})
+
+await test('选中的来源被删掉之后：下拉回到占位、查询回一句「先选一个来源」——不许打一个已经不存在的 id', async () => {
+  const backup = serverConfig
+  serverRoutes = { '/api/dsh-loglens/query': queryOutcome({ id: 'es', kind: 'elasticsearch', label: '内网 ES' }, true) }
+  try {
+    const { runtime, tree } = await runPanelQueryFull('es')
+    // 真点那一行的「删除」（POST targets.remove + 重新读配置）
+    const esRow = treeFind(tree, (node) => hasClass(node, 'll_row'))[0]
+    const del = esRow.props.children.filter((child) => child?.type === 'button')[1]
+    assert.ok(del !== undefined, '找不到那一行的「删除」')
+    del.props.onClick()
+    await runtime.update()
+    await runtime.update()
+    await runtime.update()
+
+    const after = runtime.tree
+    assert.equal(treeFind(after, (node) => node.type === 'option' && node.props?.value === 'es').length, 0,
+      'es 那一行删掉之后，下拉里不该还有它')
+    const select = treeFind(after, (node) => node.type === 'select'
+      && Array.isArray(node.props?.children)
+      && node.props.children.some((child) => child?.props?.value === 'local'))[0]
+    assert.equal(select.props.value, '', '选中的来源没了 → 下拉该回到占位，而不是继续显示一个不存在的 id')
+
+    calls.length = 0
+    buttonByText(after, '查询').props.onClick()
+    await runtime.update()
+    assert.equal(calls.some((call) => call.path === '/api/dsh-loglens/query'), false, '不许拿一个已经不存在的 id 去查')
+    assert.ok(treeText(runtime.tree).includes('先选一个来源'))
+  } finally {
+    serverConfig = backup
+  }
+})
+
 await test('填了索引表达式再保存：POST 请求体里带 index（值给 ES 行，别的类型不带）', async () => {
   const runtime = createRuntime()
   const exports_ = registration.factory((spec) => (spec === 'react' ? runtime.React : { jsx: runtime.jsx, jsxs: runtime.jsxs }))
@@ -436,6 +519,8 @@ async function runPanelQueryFull(targetId, options = {}) {
   treeFind(tree, (node) => String(node.props?.className ?? '').includes('ll_cardHeader'))[0].props.onClick()
   runtime.tick()
   tree = await runtime.update()
+  // 「刚进卡片、还没选来源」那个状态本身也要能测（那是第一眼看到的画面）
+  if (options.skipTarget === true) return { runtime, tree }
   // 「来源」下拉：它的选项值就是来源 id（行的类型下拉用的是 loki / elasticsearch…，不会撞上）
   const targetSelect = treeFind(tree, (node) => node.type === 'select'
     && Array.isArray(node.props?.children)
