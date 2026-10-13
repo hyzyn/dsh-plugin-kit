@@ -1331,3 +1331,67 @@ agent 工具早就在了）。它与上一格修掉的三处头注释属同一�
 同一类判据本包早有先例：`dockerTargetChoices` 遇到「当前值不在清单里」也是**显式给出来**
 （标成「（不在 Docker 面板的目标里）」），而不是让那一格静默变成别的东西。这一格的修法不同
 （这里该显示的恰恰是「还没选」），出发点一样：**显示的那一项必须与真正用的那一项是同一个判断**。
+
+#### 顺带改的一处：字段候选换成自画的浮层 + 箭头换成官方那颗 chevron（2026-10-13）
+
+**怎么发现的**：维护者贴了候选浮层的图，两句话——「这个样式优化一下」「图标要和官方的一致」。
+
+**为什么必须自画**：`<input list>` + `<datalist>` 那个浮层是**浏览器画的**，CSS 一点都改不动
+（字体、行高、圆角、投影、滚动条全是平台的）。一张卡片里和宿主自己的下拉并排，一眼看出是两个东西。
+
+**官方配方从哪来（可复核）**：读**宿主自己的构建产物**，不靠猜——
+`…/@deepseek-ai/dsh-web-frontend/dist/assets/index-*.css` 里的菜单模块（`._list_4ub78_7` / `._item_4ub78_90`）：
+
+| 件 | 官方取值（逐条抄进本卡片） |
+|---|---|
+| 浮层 | `padding:4px` · `border:0` · `box-shadow:var(--dsw-elevation-prominent)` · `--dsw-elevation-stroke-color:var(--dsw-alias-border-l1)`（那层描边在投影里，不是 `border`） · `top:calc(100% + 4px)` · `z-index:100` · `border-radius:var(--dsw-radius-lg)` |
+| 行 | `min-height:34px` · `padding:6px 8px` · `border:none` · `border-radius:var(--dsw-radius-md)` · `background:transparent` · `font-size:13px/line-height:20px` · hover 与聚焦都用 `var(--dsw-alias-interactive-bg-hover)` |
+| 箭头 | `IconChevronDownOutlineRegular`：`viewBox 0 0 16 16`、14×14、`stroke-width:1`、`fill="none"` + `stroke="currentColor"`、路径 `M4 6L7.29289 9.29289C7.68342 9.68342 8.31658 9.68342 8.70711 9.29289L12 6`（取自同目录的 `index-*.js`） |
+
+> 官方那条 `list` 规则自己**没写背景**（它的祖先给）。这里按本卡片既有层级用 `--dsw-alias-bg-layer-2`
+> ——这一处是**我们的选择**，不是抄来的，写在这里免得下一个人以为是逐字照抄。
+>
+> 本卡片原来那颗箭头是**另一套图标的填色 chevron**（`viewBox 0 0 14 14` + `fill="currentColor"`）。
+> 现在**卡头折叠箭头与字段框箭头共用官方这一颗**（`CHEVRON_VIEWBOX` / `CHEVRON_STROKE` / `CHEVRON_PATH`）。
+
+**换成自画的，就得把原生浮层自带的能力接回来**（不然是**悄悄降级**：鼠标能用、键盘只能一路 Tab）：
+
+| 原来的（原生） | 现在的 |
+|---|---|
+| 输入时按字过滤候选 | `fieldChoices`（子串、大小写不敏感、**保持宿主顺序**、命中 0 个回空 → 界面**不画**空浮层） |
+| 方向键在候选里走 | `pickMove`（**到头就停，不绕回**）+ 当前行高亮（`ll_pickItemActive`，与 hover 同一个底） |
+| 回车选中 | 回车取**当前那一行**（没挪过就是第一条） |
+| Esc 关掉 | Esc 收起 |
+| 点一行即填 | 点一行即填（行自己 `preventDefault` 保住输入框焦点；失焦用 `relatedTarget` 判「还在不在这一格」） |
+
+**顺带清掉一个隐患**：原生 `datalist` 要靠一个**全局唯一 id** 关联，同一页挂两张卡时得给每张卡
+生成一个（原来的 `fieldsListSeq`）。自画的浮层没有 id，那一套连同注释一起去掉了。
+
+**守卫**（`client-smoke` 这几条都会咬人，逐条做过反向验证）：
+
+| 拆掉什么 | 谁红 |
+|---|---|
+| `fieldChoices` 不按输入值过滤 | pure「子串过滤」红 + smoke「筛候选」红 2 条 |
+| 命中 0 个也画浮层（只看 `pickOpen`） | smoke「命中 0 个不该画一个空浮层」红 |
+| 换回旧那颗填色 chevron | smoke「官方那颗 chevron」红 |
+| 失焦就收（不看 `relatedTarget`） | smoke「焦点还在格子里不许收」红 |
+| `pickMove` 不夹取（越界照给） | pure「到头就停」红 + smoke 方向键那条红 |
+| 回车死取第一条（不看当前行） | smoke 红 |
+| 当前行不高亮 | smoke 红 |
+
+**门槛**：`client-smoke` **23/23**（上一格 20 条 → 把原 datalist 那条换成 3 条候选浮层的 + 1 条箭头，
+现 23）；本包单测 **72 条**（+5：`fieldChoices` 4 条 + `pickMove` 1 条）；`client-lint` 通过
+（样式变量 106 处、自定义属性 107 处、圆角 16 处、排版 23 处）。
+
+**真机验收**（真宿主 + 真 Chrome；隔离方式同上，临时 profile `loglens-pick-20261013` 跑完即删）：
+
+| 步骤 | 实测 | 判定 |
+|---|---|---|
+| 刚进卡片 | DOM 里「来源」下拉是 `option "（先选一个来源）" [disabled] [selected]`（**上一格 D04 的修法在真机上也对**） | PASS |
+| 点「有哪些字段」 | 浮层直接摆出来，`document.querySelectorAll('.ll_pickItem').length === 80`（宿主的默认上限） | PASS |
+| 浮层外观 | 截图：4px 内边距 + `radius-lg` + 发丝描边投影 + 34px 行高 + 首行 hover/当前行高亮，与宿主自己的下拉一致 | PASS |
+| 输入框右侧箭头 | DOM 读出 `viewBox="0 0 16 16"`、`stroke-width="1"`、`d="M4 6L7.29289…"`、`stroke="currentColor"`、**无 `fill`** | PASS |
+| 方向键 | 按两下 `ArrowDown` → `.ll_pickItemActive` = `log.file.path`（第 3 行），且 `document.activeElement` 仍是那个输入框（光标没跑、浮层没关） | PASS |
+| 回车 | 输入框的 value 变成 `log.file.path`、浮层收起 | PASS |
+
+产物（三张截图 / DOM 快照）含内网标识，**移出仓库**到 `/tmp/loglens-pick-20261013/`。

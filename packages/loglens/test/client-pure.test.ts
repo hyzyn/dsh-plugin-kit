@@ -10,12 +10,14 @@ import {
   draftProblem,
   emptyDraft,
   emptyQuery,
+  fieldChoices,
   filterAdd,
   filterHas,
   filterOf,
   filterProblem,
   filterRemove,
   filtersOf,
+  pickMove,
   groupBars,
   groupPayload,
   groupProblem,
@@ -468,6 +470,47 @@ describe('按字段分组：字段名能不能提交', () => {
     expect(groupProblem('')).toBe('needGroupBy')
     expect(groupProblem('   ')).toBe('needGroupBy')
     expect(groupProblem(undefined)).toBe('needGroupBy')
+  })
+})
+
+describe('字段候选（分组字段那一格的浮层）', () => {
+  const fields = [
+    { name: 'container.name', kind: 'keyword', preferred: true },
+    { name: 'host.name' },
+    { name: 'log.file.path' },
+  ]
+
+  it('空输入给全部，且**保持宿主给的顺序**（顺聚得动的排在前面是适配器的判据，别在这儿再排一次）', () => {
+    expect(fieldChoices(fields, '')).toEqual([{ name: 'container.name' }, { name: 'host.name' }, { name: 'log.file.path' }])
+    expect(fieldChoices(fields, undefined)).toEqual([{ name: 'container.name' }, { name: 'host.name' }, { name: 'log.file.path' }])
+  })
+
+  it('按输入值做**子串**过滤，大小写不敏感，两端空白不算字（这就是原生 `<input list>` 的行为）', () => {
+    expect(fieldChoices(fields, 'name')).toEqual([{ name: 'container.name' }, { name: 'host.name' }])
+    expect(fieldChoices(fields, 'LOG.')).toEqual([{ name: 'log.file.path' }])
+    expect(fieldChoices(fields, '  host  ')).toEqual([{ name: 'host.name' }])
+  })
+
+  it('命中 0 个就回空数组——界面据此**不画**那个浮层（空盒子比不画更像坏了）', () => {
+    expect(fieldChoices(fields, 'nope')).toEqual([])
+    expect(fieldChoices([], 'x')).toEqual([])
+    expect(fieldChoices(undefined, '')).toEqual([])
+  })
+
+  it('畸形的条目跳过：不许把 undefined / 空名字画成一行', () => {
+    expect(fieldChoices([null, { name: '' }, { name: 'ok' }, {}], '')).toEqual([{ name: 'ok' }])
+  })
+
+  it('当前那一行上下挪：**到头就停**（不绕回），空列表明明说是 0', () => {
+    expect(pickMove(0, 1, 3)).toBe(1)
+    expect(pickMove(1, -1, 3)).toBe(0)
+    expect(pickMove(2, 1, 3)).toBe(2)
+    expect(pickMove(0, -1, 3)).toBe(0)
+    // 打字把候选改短了、而「当前行」还留在旧位置上时，也要夹回合法范围
+    expect(pickMove(5, 0, 3)).toBe(2)
+    expect(pickMove(0, 1, 0)).toBe(0)
+    expect(pickMove(undefined, 1, 2)).toBe(1)
+    expect(pickMove(0, Number.NaN, 2)).toBe(0)
   })
 })
 

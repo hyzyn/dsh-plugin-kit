@@ -427,6 +427,46 @@ export function groupProblem(field) {
 }
 
 /**
+ * 字段候选面板要摆哪些字段（「有哪些字段」拉回来的那一份）。
+ *
+ * 三条判据：
+ *
+ * - **按输入框里的字做子串过滤**（大小写不敏感）：这就是原来 `<input list>` 的原生行为——
+ *   输入 `log.` 时只剩 `log.file.path` / `log.level` 这类。空输入 = 全都给（「点一下看有哪些字段」）。
+ * - **保持宿主给的顺序**：适配器已经把「聚得动的」（`.keyword` / 原生类型）排在前面，
+ *   再排一次等于把那条判据盖掉（与 `groupBars` 同一条：顺序是结论的一部分）。
+ * - **命中 0 个就回空数组**：界面据此**不画**那个浮层——一个空浮层比不画更像坏了
+ *   （同一判据的先例：`list.noBuckets` 是一句话，不是一条没有名字的横条）。
+ */
+export function fieldChoices(fields, typed) {
+  const needle = String(typed == null ? '' : typed).trim().toLowerCase()
+  const rows = []
+  for (const item of Array.isArray(fields) ? fields : []) {
+    if (item == null) continue
+    const name = String(item.name == null ? '' : item.name)
+    if (name === '') continue
+    if (needle !== '' && name.toLowerCase().indexOf(needle) === -1) continue
+    rows.push({ name })
+  }
+  return rows
+}
+
+/**
+ * 候选里「当前那一行」上下挪一格：**到头就停**（不绕回）。
+ *
+ * 为什么不绕回：绕回会让「按了一下方向键」看起来像跳过了几行（候选只有两三条时尤其如此），
+ * 而这里没有任何东西提示「你绕了一圈」。停住是可预期的，绕回不是。
+ * 空列表回 0（那种情况下界面根本不画浮层，也就无所谓哪一行）。
+ */
+export function pickMove(current, delta, length) {
+  const count = Number.isInteger(length) && length > 0 ? length : 0
+  if (count === 0) return 0
+  const at = Number.isInteger(current) ? current : 0
+  const step = Number.isFinite(delta) ? delta : 0
+  return Math.min(Math.max(at + step, 0), count - 1)
+}
+
+/**
  * 分组的请求载荷（窗口同 `histogramPayload`，取响应回显的那一份）。
  * 字段为空、或回显不完整 → `null`：界面**不发这个请求**。
  */

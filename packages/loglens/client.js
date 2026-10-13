@@ -451,6 +451,46 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 字段候选面板要摆哪些字段（「有哪些字段」拉回来的那一份）。
+     *
+     * 三条判据：
+     *
+     * - **按输入框里的字做子串过滤**（大小写不敏感）：这就是原来 `<input list>` 的原生行为——
+     *   输入 `log.` 时只剩 `log.file.path` / `log.level` 这类。空输入 = 全都给（「点一下看有哪些字段」）。
+     * - **保持宿主给的顺序**：适配器已经把「聚得动的」（`.keyword` / 原生类型）排在前面，
+     *   再排一次等于把那条判据盖掉（与 `groupBars` 同一条：顺序是结论的一部分）。
+     * - **命中 0 个就回空数组**：界面据此**不画**那个浮层——一个空浮层比不画更像坏了
+     *   （同一判据的先例：`list.noBuckets` 是一句话，不是一条没有名字的横条）。
+     */
+    function fieldChoices(fields, typed) {
+      const needle = String(typed == null ? '' : typed).trim().toLowerCase()
+      const rows = []
+      for (const item of Array.isArray(fields) ? fields : []) {
+        if (item == null) continue
+        const name = String(item.name == null ? '' : item.name)
+        if (name === '') continue
+        if (needle !== '' && name.toLowerCase().indexOf(needle) === -1) continue
+        rows.push({ name })
+      }
+      return rows
+    }
+
+    /**
+     * 候选里「当前那一行」上下挪一格：**到头就停**（不绕回）。
+     *
+     * 为什么不绕回：绕回会让「按了一下方向键」看起来像跳过了几行（候选只有两三条时尤其如此），
+     * 而这里没有任何东西提示「你绕了一圈」。停住是可预期的，绕回不是。
+     * 空列表回 0（那种情况下界面根本不画浮层，也就无所谓哪一行）。
+     */
+    function pickMove(current, delta, length) {
+      const count = Number.isInteger(length) && length > 0 ? length : 0
+      if (count === 0) return 0
+      const at = Number.isInteger(current) ? current : 0
+      const step = Number.isFinite(delta) ? delta : 0
+      return Math.min(Math.max(at + step, 0), count - 1)
+    }
+
+    /**
      * 分组的请求载荷（窗口同 `histogramPayload`，取响应回显的那一份）。
      * 字段为空、或回显不完整 → `null`：界面**不发这个请求**。
      */
@@ -667,6 +707,24 @@ window.__ModuleLoader__.load({
       '.ll_chipBtn:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-interactive-bg-hover)}',
       // 筛选那句说明自成一行（免得跟芯片挤在一起读不出哪是芯片哪是说明）
       '.ll_filtersHint{flex-basis:100%}',
+      /*
+       * 分组字段那一格：输入框 + 官方 chevron + **自画**的候选浮层（替掉浏览器画的原生 datalist）。
+       * 浮层按**宿主自己的菜单配方**取值（读了宿主的构建产物 `dsh-web-frontend/dist/assets/*.css`
+       * 里那份菜单模块）：panel = padding 4px + border:0 + 圆角 lg + 描边投影 + 行高 34px；
+       * item = radius-md + 13px/20px + hover/聚焦都用 interactive-bg-hover；
+       * `--dsw-elevation-stroke-color` 也照官方改成中性发丝线（那层描边在投影里，不是 border）。
+       * 官方那条 list 规则自己没写背景（它的祖先给），这里按本卡片既有的层级用 bg-layer-2。
+       */
+      '.ll_pick{position:relative;min-width:0}',
+      // 右侧留出箭头的位子（输入框的 padding 归 .ll_input，这里只补右内边距）
+      '.ll_pickInput{padding-right:30px}',
+      '.ll_pickChevron{position:absolute;right:10px;top:50%;transform:translateY(-50%);pointer-events:none;color:var(--dsw-alias-label-tertiary)}',
+      '.ll_pickList{position:absolute;z-index:100;top:calc(100% + 4px);left:0;right:0;box-sizing:border-box;max-height:216px;overflow-y:auto;padding:4px;border:0;border-radius:var(--dsw-radius-lg);background:var(--dsw-alias-bg-layer-2);--dsw-elevation-stroke-color:var(--dsw-alias-border-l1);box-shadow:var(--dsw-elevation-prominent)}',
+      '.ll_pickItem{display:block;width:100%;min-height:34px;padding:6px 8px;border:0;border-radius:var(--dsw-radius-md);background:transparent;color:var(--dsw-alias-label-primary);font-family:inherit;font-size:13px;line-height:20px;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}',
+      '.ll_pickItem:hover{background:var(--dsw-alias-interactive-bg-hover)}',
+      // 方向键停在那一行（与 hover 同一个底：两套输入说的是同一件事）
+      '.ll_pickItemActive{background:var(--dsw-alias-interactive-bg-hover)}',
+      '.ll_pickItem:focus-visible{background:var(--dsw-alias-interactive-bg-hover);outline:none}',
     ].join('\n')
 
     let styleEl
@@ -955,13 +1013,21 @@ window.__ModuleLoader__.load({
 
     /* ================================ 设置卡片 ================================ */
 
-    const CHEVRON_PATH = 'M11.8486 5.5L11.4238 5.92383L8.69727 8.65137C8.44157 8.90706 8.21562 9.13382 8.01172 9.29785C7.79912 9.46883 7.55595 9.61756 7.25 9.66602C7.08435 9.69222 6.91565 9.69222 6.75 9.66602C6.44405 9.61756 6.20088 9.46883 5.98828 9.29785C5.78438 9.13382 5.55843 9.13382 5.30273 8.65137L2.57617 5.92383L2.15137 5.5L3 4.65137L3.42383 5.07617L6.15137 7.80273C6.42595 8.07732 6.59876 8.24849 6.74023 8.3623C6.87291 8.46904 6.92272 8.47813 6.9375 8.48047C6.97895 8.48703 7.02105 8.48703 7.0625 8.48047C7.07728 8.47813 7.12709 8.46904 7.25977 8.3623C7.40124 8.24849 7.57405 8.07732 7.84863 7.80273L10.5762 5.07617L11 4.65137L11.8486 5.5Z'
-
     /**
-     * datalist 的 id **每张卡片实例一个**：写死一个 id 时，后一张卡的候选会指向先一张卡的
-     * datalist——同一页挂两张卡不是假想（本包 bundle 与聚合包各一行时就是这样，见文件尾的注册注释）。
+     * 官方 chevron（`IconChevronDownOutlineRegular`）——**描边**图标，不是填色图标。
+     *
+     * 取自宿主自己的前端产物（`dsh-web-frontend/dist/assets/index-*.js` 里
+     * `IconChevronDownOutlineRegular`）：`viewBox="0 0 16 16"`、14×14、`stroke-width:1`、
+     * `fill="none"` + `stroke="currentColor"`，路径逐字如下（**不补 linecap / linejoin**：
+     * 官方没写，补了就不是那一颗）。
+     *
+     * 本卡片原来用的是一条**填色** chevron（`fill="currentColor"`、`viewBox 0 0 14 14`）——
+     * 那是另一套图标的形状，与宿主自己的展开箭头不是同一颗（维护者 2026-10-13 看图后提的
+     * 「图标要和官方的一致」）。现在卡头折叠箭头与字段候选框的箭头**共用这一颗**。
      */
-    let fieldsListSeq = 0
+    const CHEVRON_VIEWBOX = '0 0 16 16'
+    const CHEVRON_STROKE = '1'
+    const CHEVRON_PATH = 'M4 6L7.29289 9.29289C7.68342 9.68342 8.31658 9.68342 8.70711 9.29289L12 6'
 
     function LoglensSettingsCard(props) {
       // DSH ≥0.1.6 的插件配置页把同一条目按 view 渲染两次：summary 一句话摘要、page 完整表单。
@@ -984,6 +1050,12 @@ window.__ModuleLoader__.load({
       const [grouping, setGrouping] = React.useState(false)
       const [fields, setFields] = React.useState([])
       const [fieldsBusy, setFieldsBusy] = React.useState(false)
+      // 字段候选面板开着没有（自画的那个浮层；原生 datalist 的替身，见下面 fieldChoices 那一段）
+      const [pickOpen, setPickOpen] = React.useState(false)
+      // 浮层里「当前那一行」（方向键挪它、回车取它；打字时回到第一条）
+      const [pickIndex, setPickIndex] = React.useState(0)
+      // 此刻要摆的候选（纯判据在 pure.js 的 fieldChoices：子串过滤 / 保持宿主顺序 / 命中 0 个回空）
+      const choices = pickOpen ? fieldChoices(fields, groupBy) : []
       const [fieldsNote, setFieldsNote] = React.useState('')
       const [querying, setQuerying] = React.useState(false)
       const [docker, setDocker] = React.useState(false)
@@ -994,13 +1066,6 @@ window.__ModuleLoader__.load({
       const [dockerTail, setDockerTail] = React.useState(200)
       const [dockerBusy, setDockerBusy] = React.useState(false)
       const [dockerTargets, setDockerTargets] = React.useState([])
-
-      // 每张卡片实例一个 datalist id（理由见 CHEVRON_PATH 下面那段）
-      const fieldsListRef = React.useRef('')
-      if (fieldsListRef.current === '') {
-        fieldsListSeq += 1
-        fieldsListRef.current = 'll-fields-' + String(fieldsListSeq)
-      }
 
       /** 宿主回什么就照什么渲染：一切状态以服务端那份为准，不在本地做乐观合并。 */
       const applyConfig = React.useCallback((payload) => {
@@ -1296,7 +1361,8 @@ window.__ModuleLoader__.load({
       }
 
       /**
-       * 拉「有哪些字段」：只用来给分组字段输入框做候选（datalist），不做成字段表格。
+       * 拉「有哪些字段」：只用来给分组字段输入框做候选（自画的浮层，见 `fieldChoices`），
+       * 不做成字段表格。
        * limit 不传——用宿主自己的默认值与它那句截断警告，别在浏览器侧抄一份会漂的默认值。
        */
       const loadFields = async () => {
@@ -1319,6 +1385,9 @@ window.__ModuleLoader__.load({
           if (warnings.length > 0) setFieldsNote(warnings.join(' '))
           else if (list.length > 0) setFieldsNote(t('msg.fieldsLoaded', { count: list.length }))
           else setFieldsNote(t('msg.fieldsEmpty'))
+          // 拉到字段就**直接把候选摆出来**：按这个按钮要的就是这份清单，还要再点一下输入框才看得到
+          // 就成了「点了像没反应」（空清单则不开——那会开一个空盒子，见 pure.js fieldChoices）
+          if (list.length > 0) setPickOpen(true)
         } catch (err) {
           setError(err.message)
         } finally {
@@ -1516,11 +1585,13 @@ window.__ModuleLoader__.load({
               jsx('svg', {
                 width: '14',
                 height: '14',
-                viewBox: '0 0 14 14',
+                viewBox: CHEVRON_VIEWBOX,
                 fill: 'none',
+                strokeWidth: CHEVRON_STROKE,
                 xmlns: 'http://www.w3.org/2000/svg',
+                'aria-hidden': 'true',
                 className: 'll_chevron',
-                children: jsx('path', { d: CHEVRON_PATH, fill: 'currentColor' }),
+                children: jsx('path', { d: CHEVRON_PATH, stroke: 'currentColor' }),
               }),
             ],
           }),
@@ -1641,14 +1712,91 @@ window.__ModuleLoader__.load({
                     isDocker ? null : jsxs('div', {
                       className: 'll_groupGrid',
                       children: [
-                        jsx('input', {
-                          className: 'll_input',
-                          list: fieldsListRef.current,
-                          title: t('field.groupBy'),
-                          placeholder: t('placeholder.groupBy'),
-                          value: groupBy,
-                          disabled: saving || querying || grouping,
-                          onChange: (event) => { setGroupBy(event.target.value) },
+                        /*
+                         * 分组字段那一格 = 输入框 + 官方 chevron + **自画的候选浮层**。
+                         *
+                         * 原来是 `<input list>` + `<datalist>`：那个浮层是浏览器画的，**CSS 改不动**
+                         * （字体、行高、圆角、投影、滚动条全是平台的），和宿主自己的下拉放在一屏里
+                         * 一眼能看出是两个东西（维护者 2026-10-13 看图后提的「这个样式优化一下」）。
+                         * 现在候选盒按宿主自己的菜单配方画：`border:0` + 描边投影 + 4px 内边距 +
+                         * 每行 34px / `radius-md` / hover 用 `interactive-bg-hover`。
+                         *
+                         * 顺带去掉一个隐患：datalist 要靠一个全局唯一的 id 关联，同一页挂两张卡时
+                         * 得给每张卡生成一个（原来的 `fieldsListSeq`）。自画的浮层没有 id，也就没有这回事。
+                         */
+                        jsxs('div', {
+                          className: 'll_pick',
+                          onBlur: (event) => {
+                            // 焦点离开这一格就收起来。判据用 relatedTarget（下一个焦点落在哪里），
+                            // 而不是「一 blur 就关」——点浮层里的行不该把它关掉（那些行自己 preventDefault 保住焦点）。
+                            const next = event.relatedTarget
+                            const inside = next !== null && next !== undefined && typeof event.currentTarget.contains === 'function'
+                              ? event.currentTarget.contains(next)
+                              : false
+                            if (!inside) setPickOpen(false)
+                          },
+                          children: [
+                            jsx('input', {
+                              className: 'll_input ll_pickInput',
+                              title: t('field.groupBy'),
+                              placeholder: t('placeholder.groupBy'),
+                              value: groupBy,
+                              disabled: saving || querying || grouping,
+                              onChange: (event) => {
+                                setGroupBy(event.target.value)
+                                setPickIndex(0)
+                              },
+                              onFocus: () => { setPickOpen(true) },
+                              onClick: () => { setPickOpen(true) },
+                              onKeyDown: (event) => {
+                                // 方向键是原来那套原生浮层**自带**的能力：换成自画的就得自己接回来，
+                                // 否则是悄悄降级（鼠标能用、键盘只能一路 Tab）
+                                if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                                  event.preventDefault()
+                                  setPickOpen(true)
+                                  setPickIndex((current) => pickMove(current, event.key === 'ArrowDown' ? 1 : -1, choices.length))
+                                  return
+                                }
+                                if (event.key === 'Escape') setPickOpen(false)
+                                // 回车取**当前那一行**（没挪过就是第一条）
+                                if (event.key === 'Enter' && pickOpen && choices.length > 0) {
+                                  setGroupBy(choices[pickMove(pickIndex, 0, choices.length)].name)
+                                  setPickOpen(false)
+                                }
+                              },
+                            }),
+                            // 箭头用的是**官方那颗描边 chevron**（与卡头折叠箭头同一颗，见 CHEVRON_* 常量）
+                            jsx('svg', {
+                              width: '14',
+                              height: '14',
+                              viewBox: CHEVRON_VIEWBOX,
+                              fill: 'none',
+                              strokeWidth: CHEVRON_STROKE,
+                              xmlns: 'http://www.w3.org/2000/svg',
+                              'aria-hidden': 'true',
+                              className: 'll_pickChevron',
+                              children: jsx('path', { d: CHEVRON_PATH, stroke: 'currentColor' }),
+                            }),
+                            // 没有候选就**不画**浮层：一个空盒子比不画更像坏了（见 pure.js fieldChoices）
+                            pickOpen && choices.length > 0 ? jsx('div', {
+                              className: 'll_pickList',
+                              children: choices.map((item, at) => jsx('button', {
+                                type: 'button',
+                                // 当前那一行要高亮出来：方向键挪的是它，回车取的是它（不然键盘用户看不见自己停在哪）
+                                className: at === pickIndex ? 'll_pickItem ll_pickItemActive' : 'll_pickItem',
+                                title: item.name,
+                                // 保住输入框的焦点：一失焦那一格就收起来了，点击会先 blur 再 click
+                                onMouseDown: (event) => { event.preventDefault() },
+                                // 鼠标划到哪一行，方向键就从哪一行接着走（两套输入共用同一个「当前行」）
+                                onMouseEnter: () => { setPickIndex(at) },
+                                onClick: () => {
+                                  setGroupBy(item.name)
+                                  setPickOpen(false)
+                                },
+                                children: item.name,
+                              }, 'll-field-' + item.name)),
+                            }) : null,
+                          ],
                         }),
                         jsx('button', {
                           type: 'button',
@@ -1663,11 +1811,6 @@ window.__ModuleLoader__.load({
                           disabled: saving || querying || grouping || outcome === undefined || supportsAggregation(outcome) !== true,
                           onClick: () => { runGroups() },
                           children: grouping ? t('btn.grouping') : t('btn.group'),
-                        }),
-                        // datalist 不被渲染（UA 样式表里是 display:none），所以它不占这一行的格子
-                        jsx('datalist', {
-                          id: fieldsListRef.current,
-                          children: fields.map((field) => jsx('option', { value: field.name }, 'll-field-' + field.name)),
                         }),
                         fieldsNote === '' ? null : jsx('span', { className: 'll_hint', children: fieldsNote }),
                       ],

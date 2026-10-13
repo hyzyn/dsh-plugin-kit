@@ -206,6 +206,21 @@ function treeText(node, out = []) {
   return out.join('')
 }
 
+/** className 里有没有这一类（节点上的 className 可能是 'a b c'）。 */
+function hasClass(node, name) {
+  return typeof node.props?.className === 'string' && node.props.className.split(' ').includes(name)
+}
+
+/** 字段候选浮层里的行（每一行是一个 `<button class="ll_pickItem">`）。 */
+function pickRows(tree) {
+  return treeFind(tree, (node) => node.type === 'button' && hasClass(node, 'll_pickItem'))
+}
+
+/** 分组字段那个输入框（它的占位符是语法示例，所以按占位符找得到）。 */
+function pickInput(tree) {
+  return treeFind(tree, (node) => node.type === 'input' && node.props?.placeholder === 'container.name')[0]
+}
+
 /* ------------------------------------------------------------------ *
  * 桩：fetch / window
  * ------------------------------------------------------------------ */
@@ -720,7 +735,7 @@ await test('按字段分组：**没填字段就不发**；点「分组」给一�
   assert.ok(treeText(runtime.tree).includes('先填要分组的字段'), '该给一句「先填字段」')
 })
 
-await test('「有哪些字段」：拉一次 /fields 把候选填进 datalist（不传 limit，用宿主的默认值）', async () => {
+await test('「有哪些字段」：拉一次 /fields（不传 limit）并把候选**摆出来**（自画的浮层，不是原生 datalist）', async () => {
   serverRoutes = {
     '/api/dsh-loglens/fields': {
       ok: true,
@@ -743,25 +758,143 @@ await test('「有哪些字段」：拉一次 /fields 把候选填进 datalist�
   assert.equal(call.body.target, 'es')
   assert.equal('limit' in call.body, false, 'limit 不传：用宿主自己的默认值，别在浏览器侧抄一份会漂的')
 
-  const options = treeFind(after, (node) => node.type === 'option').filter((node) => node.props?.value === 'container.name' || node.props?.value === 'host.name')
-  assert.equal(options.length, 2, '两个字段名都该成为候选')
-  // 输入框的 list 必须指向**本卡自己的**那个 datalist（写死 id 时，后一张卡会指向先一张的）
-  const fieldBox = treeFind(after, (node) => node.type === 'input' && node.props?.placeholder === 'container.name')[0]
-  assert.equal(typeof fieldBox.props.list, 'string')
-  assert.ok(fieldBox.props.list !== '', 'list 指向一个空 id')
-  assert.ok(treeFind(after, (node) => node.type === 'datalist' && node.props?.id === fieldBox.props.list)[0] !== undefined,
-    '输入框的 list 必须指向一个真的存在的 datalist（id 为 ' + String(fieldBox.props.list) + '）')
+  // 候选是**自画**的浮层：一行一个按钮，名字逐字在那里
+  assert.deepEqual(pickRows(after).map((node) => treeText(node)), ['container.name', 'host.name'])
+  // 原生 datalist / option 一个都不许有：那个浮层由浏览器画，字体 / 行高 / 圆角 / 投影 / 滚动条
+  // 全改不动，跟宿主自己的下拉放一屏里一眼看出是两个东西（维护者 2026-10-13 看图提的）
+  assert.equal(treeFind(after, (node) => node.type === 'datalist').length, 0, '不该再有原生 datalist')
+  // 字段名不许以 `<option>` 的形式出现（那时候就还是 datalist 那条路；下拉框自己的 option 不算）
+  assert.equal(treeFind(after, (node) => node.type === 'option'
+    && (node.props?.value === 'container.name' || node.props?.value === 'host.name')).length, 0,
+  '字段名不该再作为 option 出现')
+  assert.equal(pickInput(after).props.list, undefined, '输入框不该再挂 list 属性（那会引出浏览器自己那个浮层）')
   assert.ok(treeText(after).includes('字段清单 2 个'), '该回一句「拉到了什么」，否则点了像没反应')
+})
+
+await test('候选浮层：输入框里的字**筛**候选，命中 0 个不画浮层；回车取第一条命中', async () => {
+  serverRoutes = {
+    '/api/dsh-loglens/fields': {
+      ok: true,
+      fields: [{ name: 'container.name' }, { name: 'host.name' }, { name: 'log.file.path' }],
+      total: 3,
+      truncated: false,
+      warnings: [],
+    },
+  }
+  const { runtime, tree } = await runPanelQueryFull('es', { skipQuery: true })
+  buttonByText(tree, '有哪些字段').props.onClick()
+  await runtime.update()
+  await runtime.update()
+
+  // 候选摆出来之后，往输入框里打字就是过滤（原生 <input list> 的行为）
+  pickInput(runtime.tree).props.onChange({ target: { value: 'name' } })
+  await runtime.update()
+  assert.deepEqual(pickRows(runtime.tree).map((node) => treeText(node)), ['container.name', 'host.name'])
+
+  // 一个字都不命中 → 浮层**不画**（空盒子比不画更像坏了）
+  pickInput(runtime.tree).props.onChange({ target: { value: 'nope' } })
+  await runtime.update()
+  assert.equal(treeFind(runtime.tree, (node) => hasClass(node, 'll_pickList')).length, 0, '命中 0 个不该画一个空浮层')
+
+  // 方向键 + 回车：这是原生那套浮层**自带**的能力，换成自画的就得自己接回来
+  // （不然是悄悄降级：鼠标能用、键盘只能一路 Tab）。先让候选有两条命中。
+  pickInput(runtime.tree).props.onChange({ target: { value: 'name' } })
+  await runtime.update()
+  assert.deepEqual(pickRows(runtime.tree).map((node) => treeText(node)), ['container.name', 'host.name'])
+  // 每行自己报一下是不是「当前那一行」
+  const activeRows = () => treeFind(runtime.tree, (node) => node.type === 'button' && hasClass(node, 'll_pickItemActive'))
+  assert.deepEqual(activeRows().map((node) => treeText(node)), ['container.name'], '一打开第一行就是当前行')
+  pickInput(runtime.tree).props.onKeyDown({ key: 'ArrowDown', preventDefault: () => {} })
+  await runtime.update()
+  assert.deepEqual(activeRows().map((node) => treeText(node)), ['host.name'], '方向键往下挪一行')
+  assert.deepEqual(pickRows(runtime.tree).map((node) => treeText(node)), ['container.name', 'host.name'], '挪的是「当前行」，候选本身不动')
+  pickInput(runtime.tree).props.onKeyDown({ key: 'ArrowDown', preventDefault: () => {} })
+  await runtime.update()
+  assert.deepEqual(activeRows().map((node) => treeText(node)), ['host.name'], '到头就停（不绕回第一条）')
+  pickInput(runtime.tree).props.onKeyDown({ key: 'Enter' })
+  await runtime.update()
+  assert.equal(pickInput(runtime.tree).props.value, 'host.name', '回车取的是**当前那一行**，不是死板的第一条')
+
+  // 再聚焦（此时输入框是 host，只剩一条命中）；Esc 收起
+  pickInput(runtime.tree).props.onFocus()
+  await runtime.update()
+  assert.deepEqual(pickRows(runtime.tree).map((node) => treeText(node)), ['host.name'])
+  pickInput(runtime.tree).props.onKeyDown({ key: 'Escape' })
+  await runtime.update()
+  assert.equal(pickRows(runtime.tree).length, 0, 'Esc 该收起浮层')
+})
+
+await test('候选浮层：点一行把字段填进去并收起；焦点离开这一格也收起（还在格子里则不收）', async () => {
+  serverRoutes = {
+    '/api/dsh-loglens/fields': {
+      ok: true,
+      fields: [{ name: 'container.name' }, { name: 'host.name' }],
+      total: 2,
+      truncated: false,
+      warnings: [],
+    },
+  }
+  const { runtime, tree } = await runPanelQueryFull('es', { skipQuery: true })
+  buttonByText(tree, '有哪些字段').props.onClick()
+  await runtime.update()
+  await runtime.update()
+
+  const rows = pickRows(runtime.tree)
+  assert.equal(rows.length, 2)
+  rows[1].props.onClick()
+  await runtime.update()
+  assert.equal(pickInput(runtime.tree).props.value, 'host.name', '点一行就把那个字段名填进去')
+  assert.equal(pickRows(runtime.tree).length, 0, '选完该收起')
+
+  // 焦点离开这一格 → 收起（relatedTarget 落在格子外面）
+  pickInput(runtime.tree).props.onFocus()
+  await runtime.update()
+  assert.equal(pickRows(runtime.tree).length, 1)
+  treeFind(runtime.tree, (node) => hasClass(node, 'll_pick'))[0].props.onBlur({ currentTarget: { contains: () => false }, relatedTarget: null })
+  await runtime.update()
+  assert.equal(pickRows(runtime.tree).length, 0, '焦点走了就该收起')
+
+  // 焦点还在格子里面（点了浮层里的行会先 blur 一下）→ 不许收
+  pickInput(runtime.tree).props.onFocus()
+  await runtime.update()
+  assert.equal(pickRows(runtime.tree).length, 1)
+  const wrapper = treeFind(runtime.tree, (node) => hasClass(node, 'll_pick'))[0]
+  wrapper.props.onBlur({ currentTarget: { contains: () => true }, relatedTarget: {} })
+  await runtime.update()
+  assert.equal(pickRows(runtime.tree).length, 1, '焦点还在这一格里面时不许收')
+})
+
+await test('箭头用**官方那颗** chevron：卡头折叠箭头与字段框箭头同一颗（viewBox 16 / stroke-width 1 / 描边不填色）', async () => {
+  // 官方名 IconChevronDownOutlineRegular：viewBox 0 0 16 16、14×14、stroke-width 1、fill=none + stroke=currentColor。
+  // 原来是一颗**填色** chevron（另一套图标的形状），与宿主自己的箭头不是同一颗（维护者 2026-10-13 提的）。
+  const OFFICIAL = 'M4 6L7.29289 9.29289C7.68342 9.68342 8.31658 9.68342 8.70711 9.29289L12 6'
+  serverRoutes = {
+    '/api/dsh-loglens/fields': { ok: true, fields: [{ name: 'container.name' }], total: 1, truncated: false, warnings: [] },
+  }
+  const { runtime, tree } = await runPanelQueryFull('es', { skipQuery: true })
+  buttonByText(tree, '有哪些字段').props.onClick()
+  await runtime.update()
+  await runtime.update()
+
+  const chevrons = treeFind(runtime.tree, (node) => node.type === 'svg'
+    && (hasClass(node, 'll_chevron') || hasClass(node, 'll_pickChevron')))
+  assert.equal(chevrons.length, 2, '卡头折叠箭头 + 字段框箭头，一共两颗，实得 ' + String(chevrons.length))
+  for (const svg of chevrons) {
+    assert.equal(svg.props.viewBox, '0 0 16 16', '官方那颗的 viewBox 是 0 0 16 16')
+    assert.equal(svg.props.fill, 'none', '描边图标：svg 上的 fill 是 none')
+    assert.equal(svg.props.strokeWidth, '1', 'Regular 档的 stroke-width 是 1')
+    assert.equal(svg.props.width, '14')
+    assert.equal(svg.props.height, '14')
+    const path = svg.props.children
+    assert.equal(path.props.d, OFFICIAL, '路径必须是官方那一条（换一颗就是又走样了）')
+    assert.equal(path.props.stroke, 'currentColor')
+    assert.equal(path.props.fill, undefined, '不许再填色：官方这颗是描边图标')
+  }
 })
 
 /* ------------------------------------------------------------------ *
  * 点桶下钻（结构化筛选）：点榜上一条 → 带 filters 重查一次
  * ------------------------------------------------------------------ */
-
-/** className 里有没有这一类（节点上的 className 可能是 'a b c'）。 */
-function hasClass(node, name) {
-  return typeof node.props?.className === 'string' && node.props.className.split(' ').includes(name)
-}
 
 /** 一份带空值桶的榜：既用来测下钻，也用来测「空值那一条不给点」。 */
 const DRILL_BUCKETS = {
